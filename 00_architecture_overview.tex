@@ -1,0 +1,560 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!60!black,
+    citecolor=blue!60!black,
+    urlcolor=blue!60!black
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\textit{Architecture Overview}}
+\fancyhead[R]{\small\textit{v0.2 -- March 2026}}
+\fancyfoot[C]{\thepage}
+
+\title{%
+    \vspace{-1cm}
+    \textbf{Breach}\\[0.3cm]
+    \Large A Tactical Spaceship Boarding Game\\[0.2cm]
+    \large Document 00: Architecture Overview \& Design Decisions
+}
+\author{Erik \and Idir}
+\date{March 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document summarizes the core architectural decisions for
+\textbf{Breach}, a tactical squad-based spaceship boarding game.  It
+serves as the foundation reference for all subsequent system-specific
+design documents and as a discussion basis for the development team.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%----------------------------------------------------------------------
+\section{Game Overview}
+%----------------------------------------------------------------------
+
+A top-down, turn-based tactical game in which squads board spaceships to
+complete objectives (assassination, theft, hostage rescue, etc.).  The
+core design philosophy is \textbf{emergent complexity from simple rules}:
+a small number of interconnected systems---destructible environments,
+pressure, fire, liquids, creatures---combine to produce a vast space of
+possible situations.
+
+The game is set in a satirical 2087 world ruled by central banking
+dynasties.  Tone is darkly humorous and absurdist.
+
+%----------------------------------------------------------------------
+\section{Engine \& Tooling}
+\label{sec:engine}
+%----------------------------------------------------------------------
+
+The core architecture is a \textbf{headless simulation layer} fully
+separated from the presentation layer (Section~\ref{sec:twolayer}).
+This means the engine choice affects \emph{only} the presentation
+layer---rendering, input, audio, UI---while the simulation remains
+engine-agnostic.
+
+\subsection{Engine Candidates}
+
+\begin{description}[style=nextline]
+    \item[Unreal Engine]
+        Idir's primary expertise.  Powerful rendering, mature tooling,
+        C++ native.  However, Unreal is fundamentally 3D-first---heavy
+        for a 2D tile-based game with significant overhead that goes
+        unused.  Makes more sense if the project later moves to 2.5D
+        or 3D.
+
+    \item[Unity]
+        Excellent 2D support with a built-in 2D lighting system that
+        supports normal maps natively.  Large asset store and community
+        for 2D game development.  Lighter weight than Unreal for 2D
+        projects.  The simulation is C++ regardless; Unity calls it via
+        native plugin.  Licensing terms should be reviewed.
+
+    \item[Godot]
+        Free, open source, lightweight, with excellent 2D support.
+        Built-in \texttt{CanvasItem} shaders with normal map support.
+        C++ integration via GDExtension.  Smaller ecosystem than
+        Unity/Unreal but very well suited to 2D games with dynamic
+        lighting.
+
+    \item[Custom Engine]
+        Total control, no licensing issues, educational value.  But an
+        enormous time investment on solved problems (rendering, input,
+        audio, UI, asset loading).  Not recommended unless engine
+        development is a goal in itself.
+\end{description}
+
+\subsection{Recommendation}
+
+For a 2D tile-based game with dynamic lighting and normal-mapped
+sprites, \textbf{Unity or Godot} are the strongest candidates.  Both
+have native 2D lighting pipelines that match our design requirements
+(see Document~13: Graphics, Lighting \& Art Pipeline).  Unreal remains
+viable---especially given Idir's expertise---but the 2D lighting
+workflow may be smoother in Unity or Godot.
+
+\medskip
+\noindent\textbf{Decision status:} Open---to be discussed and confirmed
+with Idir before prototyping begins.
+
+%----------------------------------------------------------------------
+\section{Two-Layer Architecture}
+\label{sec:twolayer}
+%----------------------------------------------------------------------
+
+\begin{description}[style=nextline]
+    \item[Simulation Layer]
+        A self-contained simulation that owns all game rules and state.
+        This layer has \textbf{no dependency on any game engine} and can
+        run headless for AI training and automated testing.  It exposes
+        a clean interface: \texttt{get\_state()},
+        \texttt{apply\_action()}, \texttt{step()}.
+
+    \item[Presentation Layer]
+        The game engine reads simulation state each frame and renders
+        it.  Player input is captured by the engine, translated into
+        game actions, and forwarded to the simulation.
+
+    \item[Neural Network Training]
+        The headless simulation generates training data and runs
+        self-play at scale without spinning up a rendering engine.
+\end{description}
+
+This separation allows parallel development: simulation logic can
+progress independently of visual implementation.
+
+%----------------------------------------------------------------------
+\section{Spatial Representation}
+\label{sec:spatial}
+%----------------------------------------------------------------------
+
+\subsection{Grid-Based World}
+
+The game world is represented as a \textbf{uniform 2D grid}.  Every
+structural element (walls, floors, hull, doors, windows) occupies one or
+more grid cells.  This was chosen over continuous geometry for the
+following reasons:
+
+\begin{itemize}
+    \item All propagation systems (pressure, fire, liquid) become
+          cellular automata---simple, fast, and predictable.
+    \item Game state maps directly to a 2D tensor for neural network
+          input (stacked feature planes, cf.\ AlphaStar).
+    \item Pathfinding, line-of-sight, and cover calculations are
+          straightforward on a grid.
+    \item Serialization, replay, and debugging are trivial.
+\end{itemize}
+
+\subsection{Fine Grid with Coarse Logical Structure}
+
+A single player entity occupies a \textbf{3$\times$3 block} of tiles.
+The grid resolution is therefore finer than the logical ``square'' a
+character stands in.  This gives us:
+
+\begin{itemize}
+    \item Smoother movement and sub-positioning (center, edges, corners).
+    \item Granular destruction---a wall segment can have a small hole,
+          a large hole, or be fully destroyed.
+    \item Natural partial cover and line-of-sight without a separate
+          high-resolution system.
+    \item Better visual fidelity for gore, splatter patterns, and debris.
+\end{itemize}
+
+Room layout, doors, and corridors are still designed on the
+\textbf{coarse grid} (each coarse cell = 3$\times$3 fine tiles).
+The fine grid provides resolution \emph{within} that structure.
+
+\medskip
+\noindent\textbf{Implementation note:}  Grid resolution should be a
+configurable parameter.  Initial development can use 1:1 (one tile per
+logical cell) and scale to 3:1 once core systems are stable.
+
+%----------------------------------------------------------------------
+\section{State Representation}
+\label{sec:state}
+%----------------------------------------------------------------------
+
+\subsection{Tile Objects + Cached Arrays}
+
+The map is a 2D grid of \textbf{Tile objects}---each tile stores its
+material, hit points, fire state, liquid contents, and a list of
+entities.  This object-based representation is easy to extend (adding a
+property means adding a field, not changing every tensor consumer) and
+naturally handles mixed state (type information alongside continuous
+values like fire intensity).
+
+For physics and propagation, the simulation maintains \textbf{cached
+arrays} derived from tile state: light-blocking, gas-blocking,
+walkability, flammability.  These caches are rebuilt on tile change
+(\texttt{on\_tile\_changed(x, y)}) and allow all propagation systems to
+operate as fast bulk array operations.
+
+This hybrid gives us the best of both worlds: rich per-tile data for
+game logic, and fast array operations for physics.
+
+\subsection{Data-Driven Material System}
+
+Tile behavior is determined by \textbf{material type}.  All material
+properties are defined in a single lookup table---adding a new material
+requires one table entry and zero code changes:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+\textbf{Material} & \textbf{Max HP} & \textbf{Flammable} & \textbf{Blocks Light} & \textbf{Blocks Gas} & \textbf{Blast Resist.} \\
+\midrule
+None   & 0   & No  & No  & No  & 0.0 \\
+Steel  & 200 & No  & Yes & Yes & 0.8 \\
+Wood   & 60  & Yes & Yes & Yes & 0.2 \\
+Glass  & 15  & No  & No  & Yes & 0.0 \\
+Hull   & 300 & No  & Yes & Yes & 0.9 \\
+\bottomrule
+\end{tabular}
+\caption{Material properties.  Each tile's behavior derives entirely
+from its material.  The level editor paints materials; all properties
+auto-derive.}
+\label{tab:materials}
+\end{table}
+
+\subsection{State Layers}
+
+The following fields are tracked per tile, either as Tile object
+properties or as cached arrays for bulk computation:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Field}       & \textbf{Storage}   & \textbf{Description} \\
+\midrule
+Material             & Tile object         & Determines all structural properties \\
+Hit points           & Tile object         & Per-tile structural HP \\
+Pressure             & Cached array        & Atmospheric pressure (gradual decompression) \\
+Fire intensity       & Tile object         & Heat / flame level \\
+Liquid type          & Tile object         & None, blood, water, fuel \ldots \\
+Liquid depth         & Tile object         & Volume of liquid in tile \\
+Smoke density        & Cached array        & Obscures vision, spreads through gaps \\
+Oxygen               & Cached array        & Supports suffocation, consumed by fire \\
+Temperature          & Tile object         & Thermal state \\
+Entity list          & Tile object         & Creatures/players occupying tile \\
+\bottomrule
+\end{tabular}
+\caption{Per-tile state fields.  ``Cached array'' fields are also
+stored per-tile but maintained as contiguous arrays for physics
+computation.  Additional layers may be added per system document.}
+\label{tab:fields}
+\end{table}
+
+\subsection{Why This Approach?}
+
+\begin{itemize}
+    \item \textbf{Game logic as array operations.}  Explosions, pressure
+          propagation, and fire spread operate on cached arrays---fast
+          bulk computation via NumPy (prototype) or Eigen/raw arrays
+          (C++).
+    \item \textbf{Emergent interactions are automatic.}  Each system
+          reads shared arrays and writes to its own.  Fire checks the
+          liquid array for fuel; creatures check it for blood.  No
+          explicit cross-system wiring.
+    \item \textbf{ML-ready.}  Stack the cached arrays into channels and
+          feed directly to a CNN---no conversion step.
+    \item \textbf{Extensible.}  Adding a new tile property is a field
+          addition, not a tensor schema change.
+    \item \textbf{Serializable.}  Dump tile objects $\rightarrow$
+          complete snapshot.  Save/load, replay, and undo come nearly
+          for free.
+\end{itemize}
+
+\subsection{Entity List}
+
+Mobile entities (squad members, creatures, items) are stored in a
+\textbf{separate entity list}, since they carry properties that do not
+map well to spatial grids: inventory, action points, status effects,
+allegiance, AI state.  Their position is an $(x, y)$ index into the
+grid.
+
+%----------------------------------------------------------------------
+\section{Simulation Tick \& Double Buffering}
+\label{sec:tick}
+%----------------------------------------------------------------------
+
+\subsection{Turn Resolution}
+
+Each player turn proceeds as follows:
+
+\begin{enumerate}
+    \item Player (or AI) selects and submits actions.
+    \item Actions are applied as direct state modifications (damage,
+          movement, item use, etc.).
+    \item The simulation runs $N$ propagation ticks to let the
+          environment settle (pressure equalization, fire spread, liquid
+          flow, creature reactions).
+    \item The new steady-state is presented; the next player's turn
+          begins.
+\end{enumerate}
+
+\subsection{Double-Buffered Propagation}
+
+All propagation systems resolve \textbf{simultaneously} within each
+tick.  This is implemented via double buffering:
+
+\begin{enumerate}
+    \item Each cached array has a \emph{current} buffer (read-only
+          during the tick) and a \emph{next} buffer (write target).
+    \item Every system reads from \emph{current} and writes to
+          \emph{next}.
+    \item At the end of the tick, \emph{next} becomes \emph{current}
+          (pointer swap).
+\end{enumerate}
+
+This avoids order-of-operations bugs and produces physically more
+accurate behavior.
+
+%----------------------------------------------------------------------
+\section{Design Document Roadmap}
+\label{sec:roadmap}
+%----------------------------------------------------------------------
+
+Each system is specified in its own design document.  Documents progress
+through: \textbf{brainstorm} (Markdown notes) $\rightarrow$
+\textbf{design document} (\LaTeX) $\rightarrow$ \textbf{implementation}.
+
+\subsection{Environmental Simulation}
+
+Matrix-based physics and propagation systems---the cellular automata
+that drive emergent gameplay.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}llp{5.5cm}l@{}}
+\toprule
+\textbf{Doc} & \textbf{System} & \textbf{Primary State (read/write)} & \textbf{Status} \\
+\midrule
+01 & Structure, Materials \& Destruction & Material (rw), HP (rw), Pressure (w) & Designed \\
+02 & Pressure \& Decompression & Pressure (rw), Oxygen (rw), Gas-block (r) & Designed \\
+03 & Fire Propagation & Fire (rw), Oxygen (r), Liquid (r), HP (w) & Brainstorm \\
+04 & Liquids (blood, water, fuel) & Liquid type/depth (rw), Pressure (r) & Brainstorm \\
+05 & Smoke Propagation & Smoke (rw), Pressure (r), Gas-block (r) & Designed \\
+06 & Explosions & Pressure (w), HP (w), Fire (w), Smoke (w) & Designed \\
+07 & Line of Sight \& Cover & Light-block (r), Fire (r), Smoke (r) & Brainstorm \\
+\bottomrule
+\end{tabular}
+\caption{Environmental simulation documents.  ``Designed'' indicates
+that core equations and algorithms have been worked out in brainstorm
+notes; the \LaTeX{} design document is pending.}
+\label{tab:env-systems}
+\end{table}
+
+\subsection{Game Mechanics}
+
+Higher-level rules and systems that run on top of the environmental
+simulation.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}llp{5.5cm}l@{}}
+\toprule
+\textbf{Doc} & \textbf{System} & \textbf{Scope} & \textbf{Status} \\
+\midrule
+08 & Turn System \& Simultaneous Turns & Turn structure, simultaneous resolution, action points & Brainstorm \\
+09 & Combat Mechanics & Damage, weapons, hit calculation & Brainstorm \\
+10 & Economy \& Currency & CBD / Gold / Bitcoin, inflation, tracking & Brainstorm \\
+11 & Inventory \& Equipment & Loadout, weight, item interactions & Brainstorm \\
+12 & Player Interface \& Interaction & Controls, HUD, action selection, feedback & Not started \\
+\bottomrule
+\end{tabular}
+\caption{Game mechanics documents.}
+\label{tab:game-systems}
+\end{table}
+
+\subsection{Presentation}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}llp{5.5cm}l@{}}
+\toprule
+\textbf{Doc} & \textbf{System} & \textbf{Scope} & \textbf{Status} \\
+\midrule
+13 & Graphics, Lighting \& Art Pipeline & 2D raycasting, normal maps, shadow stealth, art phases & Designed \\
+\bottomrule
+\end{tabular}
+\caption{Presentation layer documents.}
+\label{tab:presentation}
+\end{table}
+
+\subsection{Content Design}
+
+Game content that populates the simulation---enemies, missions, levels,
+and narrative.  These documents are relatively independent of the
+simulation architecture.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}llp{5.5cm}l@{}}
+\toprule
+\textbf{Doc} & \textbf{System} & \textbf{Scope} & \textbf{Status} \\
+\midrule
+14 & Creatures \& AI Behaviors & Swarms, predators, genetic soldiers, AI design & Brainstorm \\
+15 & Missions \& Objectives & Mission types, objectives, extraction/sabotage & Brainstorm \\
+16 & Ship Layouts \& Level Design & Map design, room types, level editor & Brainstorm \\
+17 & Narrative \& Lore & Satirical 2087 world, Watergate/Princes plot, factions & Designed \\
+\bottomrule
+\end{tabular}
+\caption{Content design documents.}
+\label{tab:content}
+\end{table}
+
+%----------------------------------------------------------------------
+\section{Language Pipeline}
+\label{sec:language}
+%----------------------------------------------------------------------
+
+\subsection{Prototyping Phase: Python}
+
+The simulation is prototyped in \textbf{Python with NumPy}.  This
+enables rapid iteration on game rules, physics parameters, and system
+interactions before committing to a compiled language.  All propagation
+systems (explosions, decompression, smoke) have been designed and
+validated as NumPy array operations.
+
+\subsection{Production Phase: C++ with Python Bindings}
+
+Once core systems are validated, the simulation moves to \textbf{C++}
+for performance (pathfinding, propagation, and bulk array operations at
+thousands of steps per second).  The ML training pipeline remains in
+\textbf{Python} (PyTorch).  The two are connected via \textbf{pybind11}
+(or nanobind), exposing the C++ simulation as an importable Python
+module with zero-copy array sharing.
+
+\subsection{Architecture}
+
+\begin{verbatim}
+  +------------------+       +-------------------+
+  |  C++ Simulation  | <---> |  pybind11 bindings|
+  |  (core logic,    |       |  (thin wrapper,   |
+  |   array data)    |       |   zero-copy NumPy)|
+  +------------------+       +-------------------+
+         |                            |
+         |  same source               |  import sim
+         v                            v
+  +------------------+       +-------------------+
+  |  Engine Plugin   |       |  Python ML Script |
+  |  (game build)    |       |  (training loop)  |
+  +------------------+       +-------------------+
+\end{verbatim}
+
+\subsection{Zero-Copy Array Sharing}
+
+The C++ simulation class owns the raw array data.  pybind11 wraps
+these buffers as NumPy arrays \emph{without copying}---both languages
+point at the same memory.  From Python, accessing
+\texttt{env.state.pressure} returns a standard NumPy array that can be
+fed directly into a neural network.
+
+A typical training loop:
+
+\begin{verbatim}
+  import sim          # compiled C++ module
+  env = sim.BoardingEnv(map="frigate_01")
+
+  obs = env.reset()   # returns dict of NumPy arrays (zero-copy)
+  for step in range(max_steps):
+      action = agent.act(obs)
+      obs, reward, done, info = env.step(action)
+      agent.learn(obs, reward, done)
+\end{verbatim}
+
+This follows the standard Gymnasium interface, making it compatible with
+existing RL libraries (Stable Baselines3, RLlib, CleanRL, etc.).
+
+\subsection{Build Targets}
+
+The C++ simulation compiles into two targets from the \textbf{same
+source code}:
+
+\begin{description}[style=nextline]
+    \item[Engine Plugin]
+        Compiled as a module within the game engine project.  The
+        presentation layer calls directly into the simulation via C++
+        APIs.
+    \item[Python Module (\texttt{.so} / \texttt{.pyd})]
+        Built with CMake + pybind11.  Produces an importable Python
+        package for headless training, evaluation, and analysis.
+\end{description}
+
+\noindent This ensures that the game and the training environment run
+\emph{identical} simulation logic---no translation bugs, no drift
+between the two.
+
+\subsection{Precedent}
+
+This pattern is standard in high-performance RL research.  Notable
+examples include DeepMind's MuJoCo bindings, OpenAI Gym's Atari
+environments, and PettingZoo's multi-agent environments---all C++
+simulations with thin Python wrappers.
+
+%----------------------------------------------------------------------
+\section{Neural Network Considerations}
+\label{sec:nn}
+%----------------------------------------------------------------------
+
+The array-based state representation is designed to be directly
+consumable by convolutional neural networks, following the stacked
+feature-plane approach used by AlphaStar (StarCraft~II).
+
+\begin{itemize}
+    \item Each cached array becomes one (or more) input channels.
+    \item For training, the fine grid can be downsampled to coarse
+          resolution if full resolution proves unnecessary.
+    \item The headless simulation enables massively parallel self-play
+          without rendering overhead.
+    \item Action space definition and reward shaping are deferred to a
+          future document.
+\end{itemize}
+
+\medskip
+\noindent\textbf{Design principle:}  No architectural decision should
+foreclose the option of training a neural network agent.  The grid
+representation, clean state serialization, and headless simulation
+capability are all in service of this goal.
+
+%----------------------------------------------------------------------
+\section{Open Questions \& Next Steps}
+%----------------------------------------------------------------------
+
+\begin{enumerate}
+    \item \textbf{Engine choice:} Review engine candidates with Idir
+          and select one (Section~\ref{sec:engine}).
+    \item \textbf{Presentation layer integration:} Once the engine is
+          chosen---how does the presentation layer poll or subscribe to
+          simulation state?  Tile rendering approach?  Sprite/animation
+          pipeline?
+    \item \textbf{Convert brainstorm notes to design documents:}
+          Prioritize Documents~01--07 (environmental simulation), then
+          08--12 (game mechanics).
+    \item \textbf{Prototype:} Build the Python/NumPy simulation
+          prototype with core environmental systems.
+    \item \textbf{Establish shared repository} and document conventions.
+    \item \textbf{Network replication strategy} if multiplayer is
+          pursued.
+\end{enumerate}
+
+\end{document}
