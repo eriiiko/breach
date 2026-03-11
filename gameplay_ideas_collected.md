@@ -206,7 +206,14 @@ Other candidates that came up: Star Chamber, Diplomatic Immunity, Void Ops, Boar
 - **Tear gas** — already discussed, now confirmed the simulation framework handles it naturally. Same advection by pressure gradients, same wall interactions.
 - All hazards ride on the same atmosphere field — a breach sucks *everything* out (smoke, poison, tear gas).
 
-### Decompression Tuning Notes
+### Fire Ignition Model (Not Yet Implemented)
+- **Concept:** Fire ignition as a function of O2 (atmosphere field) + temperature (from explosions, nearby fire). We already have both fields on the grid.
+- Current fire spread: diffusion to adjacent flammable tiles only (contact spreading).
+- **Proposed:** Add a temperature field. Explosion deposits heat. Heat diffuses. When temperature + O2 exceed ignition threshold → spontaneous combustion. This would let explosions *cause* fires naturally rather than scripting ignition points.
+- This connects to the wave equation: blast deposits heat along its path → fires break out in the aftermath, especially in rooms where the blast was channeled and amplified.
+- Low priority to implement — document for when we build the real engine.
+
+
 - 3-tile breach drains a room fast. 1-tile breach is a slow leak. The physics scales naturally with breach width — no special cases needed.
 - High D_ATM (~200) gives dramatic fast venting but requires small dt for CFL stability → computationally expensive. Optimization needed for real-time gameplay (this is a known future task, not a current priority).
 - Fire near a breach gets starved of O2 and dies. Fire far from a breach keeps burning with remaining atmosphere. Emergent tactical implication: *deliberately breach the hull to fight fire*.
