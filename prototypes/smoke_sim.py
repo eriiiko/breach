@@ -34,11 +34,11 @@ D_SMOKE = 0.4            # smoke diffusion
 D_FIRE = .3             # fire spread rate (to neighboring flammable tiles)
 ADVECTION_RATE = 25.0    # smoke advection by pressure gradient
 dx = 1.0
-dt = 0.001              # CFL: dt < dx^2/(4*D) = 0.00125 for D=200
+dt = 0.001              # CFL: dt < dx^2/(4*D) = 0.00125 for D=200 -> stable
 SMOKE_DECAY = 1.0
 
 # Fire
-FIRE_O2_THRESHOLD = 0.15   # fire dies below this atmosphere level
+FIRE_O2_THRESHOLD = 0.60   # fire dies below this atmosphere level
 FIRE_O2_CONSUMPTION = 0.3  # how much atmosphere fire eats per step
 FIRE_SMOKE_EMISSION = 0.8  # how much smoke fire produces per step
 FIRE_WALL_DAMAGE = 0.4     # HP damage to wall per step while burning
