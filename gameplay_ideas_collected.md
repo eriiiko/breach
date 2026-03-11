@@ -185,3 +185,28 @@ Other candidates that came up: Star Chamber, Diplomatic Immunity, Void Ops, Boar
 - Specific mission scripts and level designs
 - Sound design and music direction
 - Turn based mechanic - Eriks simultanious turns version worth exploring.
+
+---
+
+## 10. Observations from Physics Prototype (Mar 11, 2026)
+
+*From running the smoke/fire/decompression simulation prototype.*
+
+### Fire Maze Level Concept
+- **Level idea:** Fire spreading through a maze. Player must run in, retrieve an item, and get back out. The maze difficulty *increases dynamically* as fire blocks corridors. The path that looks best initially might be blocked by the time you reach it — constant adaptation required.
+- This could be a standalone mission type or a consequence of an explosion during any mission.
+
+### O2 Starvation & Fire Extinction Cycle
+- When enough of the station is on fire, atmosphere drops globally. Eventually O2 drops below ~0.15 atm and fires start going out on their own.
+- **Gameplay dynamic:** Survive the fire phase (find pockets the fire doesn't reach), then when O2 starvation extinguishes the flames, a second phase opens up — new combat, new routes through the burned-out structure.
+- Burned-through walls create new paths that didn't exist before.
+
+### Environmental Hazards as Mechanics
+- **Poison mist** — same diffusion system as smoke, but damages player. Spreads through corridors, blocked by sealed doors.
+- **Tear gas** — already discussed, now confirmed the simulation framework handles it naturally. Same advection by pressure gradients, same wall interactions.
+- All hazards ride on the same atmosphere field — a breach sucks *everything* out (smoke, poison, tear gas).
+
+### Decompression Tuning Notes
+- 3-tile breach drains a room fast. 1-tile breach is a slow leak. The physics scales naturally with breach width — no special cases needed.
+- High D_ATM (~200) gives dramatic fast venting but requires small dt for CFL stability → computationally expensive. Optimization needed for real-time gameplay (this is a known future task, not a current priority).
+- Fire near a breach gets starved of O2 and dies. Fire far from a breach keeps burning with remaining atmosphere. Emergent tactical implication: *deliberately breach the hull to fight fire*.

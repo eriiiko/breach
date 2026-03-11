@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Breach Marine - 8 Direction Top Down Sprite Sheet</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
+  
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: #0a0a0a;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 40px 20px;
+    font-family: 'Share Tech Mono', monospace;
+    color: #889988;
+  }
+  
+  h1 {
+    font-size: 14px;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    color: #556655;
+    margin-bottom: 10px;
+  }
+  
+  .subtitle {
+    font-size: 11px;
+    color: #445544;
+    letter-spacing: 2px;
+    margin-bottom: 40px;
+  }
+  
+  .compass-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(3, 1fr);
+    gap: 12px;
+    margin-bottom: 40px;
+  }
+  
+  .compass-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+  
+  .compass-cell canvas {
+    border: 1px solid #1a2a1a;
+    image-rendering: pixelated;
+  }
+  
+  .compass-center {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #334433;
+    font-size: 20px;
+    letter-spacing: 2px;
+  }
+  
+  .dir-label {
+    font-size: 10px;
+    color: #445544;
+    letter-spacing: 2px;
+    margin-top: 6px;
+    text-transform: uppercase;
+  }
+  
+  .sheet-section {
+    margin-top: 30px;
+    text-align: center;
+  }
+  
+  .sheet-section h2 {
+    font-size: 12px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: #445544;
+    margin-bottom: 15px;
+  }
+  
+  .strip {
+    display: flex;
+    gap: 4px;
+    justify-content: center;
+    align-items: center;
+    background: #111;
+    padding: 8px;
+    border: 1px solid #1a2a1a;
+  }
+  
+  .strip canvas {
+    image-rendering: pixelated;
+  }
+
+  .actual-size-row {
+    display: flex;
+    gap: 6px;
+    justify-content: center;
+    align-items: center;
+    margin-top: 20px;
+  }
+  
+  .actual-size-row canvas {
+    image-rendering: pixelated;
+    border: 1px solid #1a2a1a;
+  }
+  
+  .info {
+    margin-top: 30px;
+    font-size: 11px;
+    color: #445544;
+    letter-spacing: 1px;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+
+<h1>Breach // Marine Operative — 8-Dir Sprite Sheet</h1>
+<div class="subtitle">true 90° top-down // 32×32 grid</div>
+
+<div class="compass-grid" id="compassGrid">
+  <!-- Filled by JS: NW N NE / W center E / SW S SE -->
+</div>
+
+<div class="sheet-section">
+  <h2>Sprite Strip — All Facings (4x)</h2>
+  <div class="strip" id="spriteStrip"></div>
+</div>
+
+<div class="sheet-section">
+  <h2>Actual Game Size (1x = 32px)</h2>
+  <div class="actual-size-row" id="actualRow"></div>
+</div>
+
+<div class="info">
+  N / NE / E / SE / S / SW / W / NW — dark olive EVA armor — bullpup SMG — life support pack
+</div>
+
+<script>
+// Color palette
+const C = {
+  // Armor
+  armorDark:    '#252e22',
+  armorMid:     '#2e3b28',
+  armorBase:    '#3a4a32',
+  armorLight:   '#4a5a40',
+  armorHighlight:'#566a4c',
+  spine:        '#354530',
+  // Equipment
+  belt:         '#1a2117',
+  buckle:       '#3d3520',
+  neck:         '#1e2619',
+  boot:         '#1a2117',
+  bootTop:      '#1e2619',
+  // Weapon
+  gunDark:      '#181818',
+  gunBody:      '#222222',
+  gunMid:       '#282828',
+  gunLight:     '#333333',
+  gunRail:      '#2a2a2a',
+  gunMetal:     '#2e2e2e',
+  // Visor
+  visorDark:    '#0f1510',
+  visorGlass:   '#1a2820',
+  // Comms
+  comms:        '#252e22',
+  // Glove
+  glove:        '#1e2619',
+  // Squad mark
+  squadMark:    '#556a48',
+  // Transparent
+  clear:        null,
+};
+
+const SIZE = 32;
+
+// Each sprite is defined as a set of pixel operations on a 32x32 grid.
+// We define the marine facing South (toward viewer = down on screen),
+// then transform for other directions.
+
+function drawPixel(ctx, x, y, color) {
+  if (!color) return;
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, 1, 1);
+}
+
+function drawRect(ctx, x, y, w, h, color) {
+  if (!color) return;
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, w, h);
+}
+
+// Draw the marine facing South (down). True top-down: we see the top of head, shoulders, back.
+// "South" means the character is walking toward the bottom of the screen.
+function drawMarineSouth(ctx) {
+  // --- BOOTS (tips visible below legs) ---
+  drawRect(ctx, 12, 26, 2, 2, C.bootTop);
+  drawRect(ctx, 18, 26, 2, 2, C.bootTop);
+  
+  // --- LEGS (below torso) ---
+  drawRect(ctx, 11, 23, 3, 3, C.armorMid);
+  drawPixel(ctx, 12, 24, C.spine);
+  drawRect(ctx, 18, 23, 3, 3, C.armorMid);
+  drawPixel(ctx, 19, 24, C.spine);
+  
+  // --- TORSO (back plate - main mass) ---
+  drawRect(ctx, 10, 12, 12, 10, C.armorBase);
+  // Edges
+  drawRect(ctx, 10, 12, 12, 1, C.armorLight); // top edge
+  drawRect(ctx, 10, 21, 12, 1, C.armorMid);   // bottom edge
+  drawRect(ctx, 10, 12, 1, 10, C.armorMid);   // left edge
+  drawRect(ctx, 21, 12, 1, 10, C.armorMid);   // right edge
+  // Spine ridge
+  drawRect(ctx, 15, 11, 2, 13, C.spine);
+  // Panel highlights
+  drawRect(ctx, 11, 14, 3, 6, C.armorLight);
+  drawRect(ctx, 18, 14, 3, 6, C.armorLight);
+
+  // --- BELT ---
+  drawRect(ctx, 10, 21, 12, 2, C.belt);
+  drawRect(ctx, 10, 21, 2, 2, C.armorDark); // pouch L
+  drawRect(ctx, 20, 21, 2, 2, C.armorDark); // pouch R
+
+  // --- LIFE SUPPORT PACK ---
+  drawRect(ctx, 12, 14, 8, 6, C.armorDark);
+  drawRect(ctx, 13, 15, 6, 4, C.neck);
+  drawRect(ctx, 12, 14, 8, 1, C.armorMid);
+  // Cylinders
+  drawRect(ctx, 13, 15, 2, 3, C.spine);
+  drawPixel(ctx, 14, 16, C.armorLight);
+  drawRect(ctx, 17, 15, 2, 3, C.spine);
+  drawPixel(ctx, 18, 16, C.armorLight);
+  // Center valve
+  drawRect(ctx, 15, 16, 2, 2, C.belt);
+  // Hose to helmet
+  drawPixel(ctx, 15, 13, C.neck);
+
+  // --- SHOULDER PADS ---
+  // Left
+  drawRect(ctx, 7, 12, 4, 7, C.armorBase);
+  drawRect(ctx, 7, 12, 4, 1, C.armorHighlight);
+  drawRect(ctx, 7, 18, 4, 1, C.armorMid);
+  drawRect(ctx, 7, 13, 1, 5, C.armorLight);
+  drawRect(ctx, 8, 14, 2, 4, C.armorLight);
+  // Right
+  drawRect(ctx, 21, 12, 4, 7, C.armorBase);
+  drawRect(ctx, 21, 12, 4, 1, C.armorHighlight);
+  drawRect(ctx, 21, 18, 4, 1, C.armorMid);
+  drawRect(ctx, 24, 13, 1, 5, C.armorLight);
+  drawRect(ctx, 22, 14, 2, 4, C.armorLight);
+  // Squad mark on right shoulder
+  drawRect(ctx, 22, 14, 2, 1, C.squadMark);
+  drawPixel(ctx, 22, 15, C.squadMark);
+
+  // --- ARMS ---
+  // Left arm reaching to weapon
+  drawRect(ctx, 7, 19, 2, 3, C.armorMid);
+  drawRect(ctx, 6, 17, 2, 3, C.armorMid);
+  drawPixel(ctx, 6, 17, C.armorDark);
+  drawRect(ctx, 4, 15, 2, 3, C.armorMid);
+  drawRect(ctx, 4, 14, 2, 2, C.glove);
+  // Right arm
+  drawRect(ctx, 23, 19, 2, 3, C.armorMid);
+  drawRect(ctx, 24, 17, 2, 3, C.armorMid);
+  drawRect(ctx, 26, 16, 2, 2, C.armorMid);
+  
+  // --- WEAPON (bullpup, held left, pointing south/down) ---
+  // Stock (near body)
+  drawRect(ctx, 4, 12, 3, 2, C.gunDark);
+  // Receiver
+  drawRect(ctx, 3, 14, 4, 4, C.gunBody);
+  drawRect(ctx, 3, 14, 4, 1, C.gunMetal);
+  // Rail
+  drawRect(ctx, 4, 14, 2, 4, C.gunRail);
+  // Magazine
+  drawRect(ctx, 3, 16, 1, 2, C.gunDark);
+  // Barrel
+  drawRect(ctx, 4, 18, 2, 4, C.gunMid);
+  // Muzzle
+  drawRect(ctx, 4, 22, 2, 2, C.gunLight);
+  drawPixel(ctx, 5, 23, C.gunBody);
+  // Optic
+  drawRect(ctx, 4, 17, 2, 1, C.gunMetal);
+  drawPixel(ctx, 5, 17, C.armorDark);
+
+  // --- HELMET (top of head, forward = bottom) ---
+  drawRect(ctx, 11, 5, 10, 8, C.armorBase);
+  // Front of helmet (bottom edge, facing south)
+  drawRect(ctx, 12, 12, 8, 1, C.armorMid);
+  // Rear curve (top)
+  drawRect(ctx, 12, 4, 8, 1, C.armorBase);
+  drawRect(ctx, 13, 3, 6, 1, C.armorLight);
+  drawRect(ctx, 14, 2, 4, 1, C.armorLight);
+  // Center ridge
+  drawRect(ctx, 15, 2, 2, 11, C.spine);
+  drawRect(ctx, 15, 3, 2, 2, C.armorLight);
+  // Dome highlight
+  drawRect(ctx, 13, 4, 2, 3, C.armorLight);
+  drawPixel(ctx, 14, 3, C.armorHighlight);
+  // Side edges
+  drawRect(ctx, 11, 6, 1, 6, C.armorMid);
+  drawRect(ctx, 20, 6, 1, 6, C.armorMid);
+  // Comms
+  drawRect(ctx, 10, 7, 1, 3, C.comms);
+  drawRect(ctx, 21, 7, 1, 3, C.comms);
+  // Visor (front = bottom of helmet from top-down, visible as thin edge)
+  drawRect(ctx, 12, 11, 3, 1, C.visorDark);
+  drawRect(ctx, 17, 11, 3, 1, C.visorDark);
+  drawRect(ctx, 14, 12, 4, 1, C.visorGlass);
+  // Neck seal
+  drawRect(ctx, 12, 12, 8, 1, C.neck);
+}
+
+// To get other directions, we'll rotate the canvas.
+// We draw at center and rotate in 45° increments.
+function createDirectionalSprite(direction) {
+  const canvas = document.createElement('canvas');
+  canvas.width = SIZE;
+  canvas.height = SIZE;
+  const ctx = canvas.getContext('2d');
+  
+  // We draw the "South" sprite onto a temp canvas, then rotate it.
+  const temp = document.createElement('canvas');
+  temp.width = SIZE;
+  temp.height = SIZE;
+  const tCtx = temp.getContext('2d');
+  tCtx.imageSmoothingEnabled = false;
+  drawMarineSouth(tCtx);
+  
+  // Rotation angles (South = 0, clockwise)
+  const angles = {
+    'S':  0,
+    'SW': Math.PI * 0.25,
+    'W':  Math.PI * 0.5,
+    'NW': Math.PI * 0.75,
+    'N':  Math.PI,
+    'NE': Math.PI * 1.25,
+    'E':  Math.PI * 1.5,
+    'SE': Math.PI * 1.75,
+  };
+  
+  ctx.imageSmoothingEnabled = false;
+  ctx.translate(SIZE / 2, SIZE / 2);
+  ctx.rotate(angles[direction] || 0);
+  ctx.translate(-SIZE / 2, -SIZE / 2);
+  ctx.drawImage(temp, 0, 0);
+  
+  return canvas;
+}
+
+// Direction layout for compass grid
+const compassLayout = [
+  ['NW', 'N',  'NE'],
+  ['W',  null, 'E' ],
+  ['SW', 'S',  'SE'],
+];
+
+// Build compass grid
+const grid = document.getElementById('compassGrid');
+const DISPLAY_SCALE = 4;
+const allCanvases = {};
+
+compassLayout.forEach(row => {
+  row.forEach(dir => {
+    const cell = document.createElement('div');
+    cell.className = 'compass-cell';
+    
+    if (dir === null) {
+      cell.className = 'compass-cell compass-center';
+      cell.textContent = '✦';
+      grid.appendChild(cell);
+      return;
+    }
+    
+    const sprite = createDirectionalSprite(dir);
+    allCanvases[dir] = sprite;
+    
+    // Scale up for display
+    const display = document.createElement('canvas');
+    display.width = SIZE * DISPLAY_SCALE;
+    display.height = SIZE * DISPLAY_SCALE;
+    display.style.width = (SIZE * DISPLAY_SCALE) + 'px';
+    display.style.height = (SIZE * DISPLAY_SCALE) + 'px';
+    display.style.imageRendering = 'pixelated';
+    display.style.border = '1px solid #1a2a1a';
+    const dCtx = display.getContext('2d');
+    dCtx.imageSmoothingEnabled = false;
+    dCtx.drawImage(sprite, 0, 0, SIZE * DISPLAY_SCALE, SIZE * DISPLAY_SCALE);
+    
+    cell.appendChild(display);
+    
+    const label = document.createElement('div');
+    label.className = 'dir-label';
+    label.textContent = dir;
+    cell.appendChild(label);
+    
+    grid.appendChild(cell);
+  });
+});
+
+// Build sprite strip (4x scale)
+const strip = document.getElementById('spriteStrip');
+const stripOrder = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+stripOrder.forEach(dir => {
+  const display = document.createElement('canvas');
+  const sc = 3;
+  display.width = SIZE * sc;
+  display.height = SIZE * sc;
+  display.style.width = (SIZE * sc) + 'px';
+  display.style.height = (SIZE * sc) + 'px';
+  display.style.imageRendering = 'pixelated';
+  const dCtx = display.getContext('2d');
+  dCtx.imageSmoothingEnabled = false;
+  dCtx.drawImage(allCanvases[dir], 0, 0, SIZE * sc, SIZE * sc);
+  strip.appendChild(display);
+});
+
+// Build actual-size row
+const actualRow = document.getElementById('actualRow');
+stripOrder.forEach(dir => {
+  const display = document.createElement('canvas');
+  display.width = SIZE;
+  display.height = SIZE;
+  display.style.width = SIZE + 'px';
+  display.style.height = SIZE + 'px';
+  display.style.imageRendering = 'pixelated';
+  display.style.border = '1px solid #1a2a1a';
+  const dCtx = display.getContext('2d');
+  dCtx.imageSmoothingEnabled = false;
+  dCtx.drawImage(allCanvases[dir], 0, 0);
+  actualRow.appendChild(display);
+});
+</script>
+
+</body>
+</html>

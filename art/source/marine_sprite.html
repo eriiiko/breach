@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Breach Marine - Top Down Sprite</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
+  
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: #0a0a0a;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Share Tech Mono', monospace;
+    color: #889988;
+  }
+  
+  .container {
+    text-align: center;
+  }
+  
+  h1 {
+    font-size: 14px;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    color: #556655;
+    margin-bottom: 30px;
+  }
+  
+  .sprite-display {
+    position: relative;
+    display: inline-block;
+  }
+  
+  /* Grid overlay */
+  .grid-bg {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    pointer-events: none;
+    opacity: 0.06;
+  }
+  
+  .scales {
+    display: flex;
+    gap: 60px;
+    justify-content: center;
+    margin-top: 40px;
+  }
+  
+  .scale-view {
+    text-align: center;
+  }
+  
+  .scale-label {
+    font-size: 11px;
+    color: #445544;
+    letter-spacing: 2px;
+    margin-top: 8px;
+  }
+  
+  .info {
+    margin-top: 30px;
+    font-size: 11px;
+    color: #445544;
+    letter-spacing: 1px;
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <h1>Breach // Marine Operative — Top Down</h1>
+  
+  <div class="sprite-display">
+    <!-- Main large view -->
+    <svg xmlns="http://www.w3.org/2000/svg" width="320" height="320" viewBox="0 0 32 32" style="image-rendering: pixelated;">
+      <defs>
+        <!-- Armor base dark olive -->
+        <linearGradient id="armorBase" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#3a4a32"/>
+          <stop offset="100%" stop-color="#2e3b28"/>
+        </linearGradient>
+        <!-- Armor highlight -->
+        <linearGradient id="armorLight" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#4a5a40"/>
+          <stop offset="100%" stop-color="#3a4a32"/>
+        </linearGradient>
+        <!-- Dark panels -->
+        <linearGradient id="darkPanel" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#252e22"/>
+          <stop offset="100%" stop-color="#1e2619"/>
+        </linearGradient>
+      </defs>
+      
+      <!-- ==================== -->
+      <!-- BOOTS / LOWER LEGS   -->
+      <!-- ==================== -->
+      <!-- Left boot -->
+      <rect x="11" y="27" width="3" height="3" fill="#1e2619"/>
+      <rect x="12" y="27" width="1" height="1" fill="#2a3325"/>
+      <!-- Right boot -->
+      <rect x="18" y="27" width="3" height="3" fill="#1e2619"/>
+      <rect x="19" y="27" width="1" height="1" fill="#2a3325"/>
+      
+      <!-- ==================== -->
+      <!-- LOWER LEGS           -->
+      <!-- ==================== -->
+      <!-- Left leg -->
+      <rect x="11" y="24" width="3" height="3" fill="#2e3b28"/>
+      <rect x="12" y="24" width="1" height="3" fill="#3a4a32"/> <!-- highlight strip -->
+      <!-- Right leg -->
+      <rect x="18" y="24" width="3" height="3" fill="#2e3b28"/>
+      <rect x="19" y="24" width="1" height="3" fill="#3a4a32"/>
+      
+      <!-- ==================== -->
+      <!-- UPPER LEGS / THIGHS  -->
+      <!-- ==================== -->
+      <!-- Left thigh -->
+      <rect x="11" y="21" width="3" height="3" fill="#3a4a32"/>
+      <rect x="12" y="21" width="1" height="2" fill="#4a5a40"/>
+      <!-- Knee pad left -->
+      <rect x="11" y="23" width="3" height="1" fill="#252e22"/>
+      
+      <!-- Right thigh -->
+      <rect x="18" y="21" width="3" height="3" fill="#3a4a32"/>
+      <rect x="19" y="21" width="1" height="2" fill="#4a5a40"/>
+      <!-- Knee pad right -->
+      <rect x="18" y="23" width="3" height="1" fill="#252e22"/>
+      
+      <!-- Gap between legs -->
+      <rect x="14" y="22" width="4" height="5" fill="transparent"/>
+      
+      <!-- ==================== -->
+      <!-- WAIST / HIP ARMOR    -->
+      <!-- ==================== -->
+      <rect x="10" y="19" width="12" height="3" fill="#2e3b28"/>
+      <!-- Belt -->
+      <rect x="10" y="19" width="12" height="1" fill="#1a2117"/>
+      <!-- Belt buckle -->
+      <rect x="15" y="19" width="2" height="1" fill="#3d3520"/>
+      <!-- Waist armor panels -->
+      <rect x="11" y="20" width="4" height="2" fill="#3a4a32"/>
+      <rect x="17" y="20" width="4" height="2" fill="#3a4a32"/>
+      <!-- Groin armor -->
+      <rect x="14" y="20" width="4" height="2" fill="#252e22"/>
+      
+      <!-- ==================== -->
+      <!-- TORSO / CHEST ARMOR  -->
+      <!-- ==================== -->
+      <!-- Main torso block -->
+      <rect x="9" y="12" width="14" height="7" fill="#3a4a32"/>
+      
+      <!-- Center chest plate -->
+      <rect x="12" y="12" width="8" height="5" fill="#4a5a40"/>
+      <!-- Chest plate seam -->
+      <rect x="16" y="12" width="1" height="5" fill="#3a4a32" opacity="0.6"/>
+      
+      <!-- Side armor panels (ribs) -->
+      <rect x="9" y="13" width="3" height="5" fill="#2e3b28"/>
+      <rect x="20" y="13" width="3" height="5" fill="#2e3b28"/>
+      
+      <!-- Spine / back plate center line -->
+      <rect x="15" y="14" width="2" height="4" fill="#354530"/>
+      
+      <!-- Chest armor edge highlights -->
+      <rect x="12" y="12" width="8" height="1" fill="#566a4c"/>
+      
+      <!-- Lower chest shadow -->
+      <rect x="10" y="17" width="12" height="2" fill="#2e3b28"/>
+      
+      <!-- Life support / back unit -->
+      <rect x="13" y="15" width="6" height="3" fill="#252e22"/>
+      <rect x="14" y="16" width="4" height="1" fill="#1a2117"/>
+      <!-- Small vent details on backpack -->
+      <rect x="14" y="15" width="1" height="1" fill="#2a3325"/>
+      <rect x="17" y="15" width="1" height="1" fill="#2a3325"/>
+
+      <!-- ==================== -->
+      <!-- SHOULDER PADS        -->
+      <!-- ==================== -->
+      <!-- Left shoulder pad -->
+      <rect x="7" y="11" width="4" height="5" fill="#3a4a32"/>
+      <rect x="7" y="11" width="4" height="1" fill="#4a5a40"/>
+      <rect x="7" y="12" width="1" height="4" fill="#4a5a40"/>
+      <!-- Shoulder pad edge -->
+      <rect x="7" y="15" width="4" height="1" fill="#252e22"/>
+      
+      <!-- Right shoulder pad -->
+      <rect x="21" y="11" width="4" height="5" fill="#3a4a32"/>
+      <rect x="21" y="11" width="4" height="1" fill="#4a5a40"/>
+      <rect x="24" y="12" width="1" height="4" fill="#4a5a40"/>
+      <!-- Shoulder pad edge -->
+      <rect x="21" y="15" width="4" height="1" fill="#252e22"/>
+      
+      <!-- ==================== -->
+      <!-- ARMS                 -->
+      <!-- ==================== -->
+      <!-- Left upper arm -->
+      <rect x="8" y="16" width="3" height="3" fill="#2e3b28"/>
+      <rect x="9" y="16" width="1" height="3" fill="#3a4a32"/>
+      <!-- Left forearm (angled forward toward weapon) -->
+      <rect x="7" y="19" width="3" height="2" fill="#2e3b28"/>
+      <rect x="7" y="19" width="3" height="1" fill="#252e22"/> <!-- vambrace -->
+      <!-- Left hand/glove (on weapon grip) -->
+      <rect x="5" y="15" width="2" height="2" fill="#1e2619"/>
+      
+      <!-- Right upper arm -->
+      <rect x="21" y="16" width="3" height="3" fill="#2e3b28"/>
+      <rect x="22" y="16" width="1" height="3" fill="#3a4a32"/>
+      <!-- Right forearm -->
+      <rect x="22" y="19" width="3" height="2" fill="#2e3b28"/>
+      <rect x="22" y="19" width="3" height="1" fill="#252e22"/>
+      <!-- Right hand (on weapon foregrip) -->
+      <rect x="4" y="12" width="2" height="2" fill="#1e2619"/>
+      
+      <!-- ==================== -->
+      <!-- WEAPON (Bullpup SMG) -->
+      <!-- ==================== -->
+      <!-- Main weapon body - compact bullpup held in front-left -->
+      <!-- Stock / rear (by the body) -->
+      <rect x="6" y="16" width="2" height="1" fill="#1a1a1a"/>
+      <!-- Receiver -->
+      <rect x="4" y="14" width="3" height="3" fill="#222222"/>
+      <rect x="4" y="14" width="3" height="1" fill="#2a2a2a"/> <!-- top rail -->
+      <!-- Magazine -->
+      <rect x="5" y="17" width="1" height="2" fill="#181818"/>
+      <!-- Barrel -->
+      <rect x="3" y="14" width="1" height="2" fill="#2a2a2a"/>
+      <rect x="2" y="14" width="1" height="2" fill="#333333"/>
+      <rect x="1" y="15" width="1" height="1" fill="#2a2a2a"/> <!-- muzzle -->
+      <!-- Foregrip -->
+      <rect x="3" y="12" width="2" height="2" fill="#1e1e1e"/>
+      <!-- Optic/sight -->
+      <rect x="4" y="13" width="2" height="1" fill="#333333"/>
+      <rect x="5" y="13" width="1" height="1" fill="#2a3325"/> <!-- lens tint -->
+      
+      <!-- ==================== -->
+      <!-- HELMET               -->
+      <!-- ==================== -->
+      <!-- Main helmet shape -->
+      <rect x="11" y="5" width="10" height="7" fill="#3a4a32"/>
+      
+      <!-- Helmet top curve -->
+      <rect x="12" y="4" width="8" height="1" fill="#3a4a32"/>
+      <rect x="13" y="3" width="6" height="1" fill="#4a5a40"/>
+      
+      <!-- Helmet sides -->
+      <rect x="11" y="6" width="1" height="5" fill="#2e3b28"/>
+      <rect x="20" y="6" width="1" height="5" fill="#2e3b28"/>
+      
+      <!-- Visor slit -->
+      <rect x="12" y="7" width="8" height="1" fill="#0f1510"/>
+      <!-- Visor glass - very subtle dark reflection, no glow -->
+      <rect x="13" y="7" width="6" height="1" fill="#1a2820"/>
+      
+      <!-- Helmet front plate -->
+      <rect x="12" y="5" width="8" height="2" fill="#4a5a40"/>
+      
+      <!-- Helmet rear -->
+      <rect x="12" y="9" width="8" height="3" fill="#2e3b28"/>
+      
+      <!-- Neck seal -->
+      <rect x="12" y="11" width="8" height="1" fill="#1e2619"/>
+      
+      <!-- Helmet ridge / crest line -->
+      <rect x="15" y="3" width="2" height="5" fill="#354530"/>
+      
+      <!-- Rebreather / chin guard (front of helmet) -->
+      <rect x="13" y="5" width="6" height="1" fill="#252e22"/>
+      
+      <!-- Ear / comms housing -->
+      <rect x="10" y="7" width="1" height="3" fill="#252e22"/>
+      <rect x="21" y="7" width="1" height="3" fill="#252e22"/>
+      
+      <!-- ==================== -->
+      <!-- DETAILS & POUCHES    -->
+      <!-- ==================== -->
+      <!-- Thigh pouch left -->
+      <rect x="10" y="22" width="1" height="2" fill="#252e22"/>
+      
+      <!-- Small marking on right shoulder (squad identifier — subtle) -->
+      <rect x="22" y="12" width="2" height="1" fill="#445538"/>
+      <rect x="22" y="13" width="1" height="1" fill="#445538"/>
+      
+    </svg>
+  </div>
+  
+  <div class="scales">
+    <!-- 2x scale -->
+    <div class="scale-view">
+      <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 32 32" style="image-rendering: pixelated; border: 1px solid #1a2a1a;">
+        <!-- Copy of main sprite at small scale -->
+        <rect x="11" y="27" width="3" height="3" fill="#1e2619"/>
+        <rect x="12" y="27" width="1" height="1" fill="#2a3325"/>
+        <rect x="18" y="27" width="3" height="3" fill="#1e2619"/>
+        <rect x="19" y="27" width="1" height="1" fill="#2a3325"/>
+        <rect x="11" y="24" width="3" height="3" fill="#2e3b28"/>
+        <rect x="12" y="24" width="1" height="3" fill="#3a4a32"/>
+        <rect x="18" y="24" width="3" height="3" fill="#2e3b28"/>
+        <rect x="19" y="24" width="1" height="3" fill="#3a4a32"/>
+        <rect x="11" y="21" width="3" height="3" fill="#3a4a32"/>
+        <rect x="12" y="21" width="1" height="2" fill="#4a5a40"/>
+        <rect x="11" y="23" width="3" height="1" fill="#252e22"/>
+        <rect x="18" y="21" width="3" height="3" fill="#3a4a32"/>
+        <rect x="19" y="21" width="1" height="2" fill="#4a5a40"/>
+        <rect x="18" y="23" width="3" height="1" fill="#252e22"/>
+        <rect x="10" y="19" width="12" height="3" fill="#2e3b28"/>
+        <rect x="10" y="19" width="12" height="1" fill="#1a2117"/>
+        <rect x="15" y="19" width="2" height="1" fill="#3d3520"/>
+        <rect x="11" y="20" width="4" height="2" fill="#3a4a32"/>
+        <rect x="17" y="20" width="4" height="2" fill="#3a4a32"/>
+        <rect x="14" y="20" width="4" height="2" fill="#252e22"/>
+        <rect x="9" y="12" width="14" height="7" fill="#3a4a32"/>
+        <rect x="12" y="12" width="8" height="5" fill="#4a5a40"/>
+        <rect x="16" y="12" width="1" height="5" fill="#3a4a32" opacity="0.6"/>
+        <rect x="9" y="13" width="3" height="5" fill="#2e3b28"/>
+        <rect x="20" y="13" width="3" height="5" fill="#2e3b28"/>
+        <rect x="15" y="14" width="2" height="4" fill="#354530"/>
+        <rect x="12" y="12" width="8" height="1" fill="#566a4c"/>
+        <rect x="10" y="17" width="12" height="2" fill="#2e3b28"/>
+        <rect x="13" y="15" width="6" height="3" fill="#252e22"/>
+        <rect x="14" y="16" width="4" height="1" fill="#1a2117"/>
+        <rect x="14" y="15" width="1" height="1" fill="#2a3325"/>
+        <rect x="17" y="15" width="1" height="1" fill="#2a3325"/>
+        <rect x="7" y="11" width="4" height="5" fill="#3a4a32"/>
+        <rect x="7" y="11" width="4" height="1" fill="#4a5a40"/>
+        <rect x="7" y="12" width="1" height="4" fill="#4a5a40"/>
+        <rect x="7" y="15" width="4" height="1" fill="#252e22"/>
+        <rect x="21" y="11" width="4" height="5" fill="#3a4a32"/>
+        <rect x="21" y="11" width="4" height="1" fill="#4a5a40"/>
+        <rect x="24" y="12" width="1" height="4" fill="#4a5a40"/>
+        <rect x="21" y="15" width="4" height="1" fill="#252e22"/>
+        <rect x="8" y="16" width="3" height="3" fill="#2e3b28"/>
+        <rect x="9" y="16" width="1" height="3" fill="#3a4a32"/>
+        <rect x="7" y="19" width="3" height="2" fill="#2e3b28"/>
+        <rect x="7" y="19" width="3" height="1" fill="#252e22"/>
+        <rect x="5" y="15" width="2" height="2" fill="#1e2619"/>
+        <rect x="21" y="16" width="3" height="3" fill="#2e3b28"/>
+        <rect x="22" y="16" width="1" height="3" fill="#3a4a32"/>
+        <rect x="22" y="19" width="3" height="2" fill="#2e3b28"/>
+        <rect x="22" y="19" width="3" height="1" fill="#252e22"/>
+        <rect x="4" y="12" width="2" height="2" fill="#1e2619"/>
+        <rect x="6" y="16" width="2" height="1" fill="#1a1a1a"/>
+        <rect x="4" y="14" width="3" height="3" fill="#222222"/>
+        <rect x="4" y="14" width="3" height="1" fill="#2a2a2a"/>
+        <rect x="5" y="17" width="1" height="2" fill="#181818"/>
+        <rect x="3" y="14" width="1" height="2" fill="#2a2a2a"/>
+        <rect x="2" y="14" width="1" height="2" fill="#333333"/>
+        <rect x="1" y="15" width="1" height="1" fill="#2a2a2a"/>
+        <rect x="3" y="12" width="2" height="2" fill="#1e1e1e"/>
+        <rect x="4" y="13" width="2" height="1" fill="#333333"/>
+        <rect x="5" y="13" width="1" height="1" fill="#2a3325"/>
+        <rect x="11" y="5" width="10" height="7" fill="#3a4a32"/>
+        <rect x="12" y="4" width="8" height="1" fill="#3a4a32"/>
+        <rect x="13" y="3" width="6" height="1" fill="#4a5a40"/>
+        <rect x="11" y="6" width="1" height="5" fill="#2e3b28"/>
+        <rect x="20" y="6" width="1" height="5" fill="#2e3b28"/>
+        <rect x="12" y="7" width="8" height="1" fill="#0f1510"/>
+        <rect x="13" y="7" width="6" height="1" fill="#1a2820"/>
+        <rect x="12" y="5" width="8" height="2" fill="#4a5a40"/>
+        <rect x="12" y="9" width="8" height="3" fill="#2e3b28"/>
+        <rect x="12" y="11" width="8" height="1" fill="#1e2619"/>
+        <rect x="15" y="3" width="2" height="5" fill="#354530"/>
+        <rect x="13" y="5" width="6" height="1" fill="#252e22"/>
+        <rect x="10" y="7" width="1" height="3" fill="#252e22"/>
+        <rect x="21" y="7" width="1" height="3" fill="#252e22"/>
+        <rect x="10" y="22" width="1" height="2" fill="#252e22"/>
+        <rect x="22" y="12" width="2" height="1" fill="#445538"/>
+        <rect x="22" y="13" width="1" height="1" fill="#445538"/>
+      </svg>
+      <div class="scale-label">2x (64px)</div>
+    </div>
+    
+    <!-- 1x scale -->
+    <div class="scale-view">
+      <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" style="image-rendering: pixelated; border: 1px solid #1a2a1a;">
+        <rect x="11" y="27" width="3" height="3" fill="#1e2619"/>
+        <rect x="18" y="27" width="3" height="3" fill="#1e2619"/>
+        <rect x="11" y="24" width="3" height="3" fill="#2e3b28"/>
+        <rect x="18" y="24" width="3" height="3" fill="#2e3b28"/>
+        <rect x="11" y="21" width="3" height="3" fill="#3a4a32"/>
+        <rect x="11" y="23" width="3" height="1" fill="#252e22"/>
+        <rect x="18" y="21" width="3" height="3" fill="#3a4a32"/>
+        <rect x="18" y="23" width="3" height="1" fill="#252e22"/>
+        <rect x="10" y="19" width="12" height="3" fill="#2e3b28"/>
+        <rect x="10" y="19" width="12" height="1" fill="#1a2117"/>
+        <rect x="15" y="19" width="2" height="1" fill="#3d3520"/>
+        <rect x="9" y="12" width="14" height="7" fill="#3a4a32"/>
+        <rect x="12" y="12" width="8" height="5" fill="#4a5a40"/>
+        <rect x="13" y="15" width="6" height="3" fill="#252e22"/>
+        <rect x="10" y="17" width="12" height="2" fill="#2e3b28"/>
+        <rect x="7" y="11" width="4" height="5" fill="#3a4a32"/>
+        <rect x="7" y="11" width="4" height="1" fill="#4a5a40"/>
+        <rect x="7" y="15" width="4" height="1" fill="#252e22"/>
+        <rect x="21" y="11" width="4" height="5" fill="#3a4a32"/>
+        <rect x="21" y="11" width="4" height="1" fill="#4a5a40"/>
+        <rect x="21" y="15" width="4" height="1" fill="#252e22"/>
+        <rect x="8" y="16" width="3" height="3" fill="#2e3b28"/>
+        <rect x="21" y="16" width="3" height="3" fill="#2e3b28"/>
+        <rect x="5" y="15" width="2" height="2" fill="#1e2619"/>
+        <rect x="4" y="12" width="2" height="2" fill="#1e2619"/>
+        <rect x="4" y="14" width="3" height="3" fill="#222222"/>
+        <rect x="3" y="14" width="1" height="2" fill="#2a2a2a"/>
+        <rect x="2" y="14" width="1" height="2" fill="#333333"/>
+        <rect x="1" y="15" width="1" height="1" fill="#2a2a2a"/>
+        <rect x="3" y="12" width="2" height="2" fill="#1e1e1e"/>
+        <rect x="11" y="5" width="10" height="7" fill="#3a4a32"/>
+        <rect x="12" y="4" width="8" height="1" fill="#3a4a32"/>
+        <rect x="13" y="3" width="6" height="1" fill="#4a5a40"/>
+        <rect x="12" y="7" width="8" height="1" fill="#0f1510"/>
+        <rect x="13" y="7" width="6" height="1" fill="#1a2820"/>
+        <rect x="12" y="5" width="8" height="2" fill="#4a5a40"/>
+        <rect x="12" y="9" width="8" height="3" fill="#2e3b28"/>
+        <rect x="15" y="3" width="2" height="5" fill="#354530"/>
+        <rect x="10" y="7" width="1" height="3" fill="#252e22"/>
+        <rect x="21" y="7" width="1" height="3" fill="#252e22"/>
+      </svg>
+      <div class="scale-label">1x (32px)</div>
+    </div>
+  </div>
+  
+  <div class="info">
+    32×32 grid // dark olive EVA armor // bullpup smg // no-glow visor
+  </div>
+</div>
+
+</body>
+</html>
