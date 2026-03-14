@@ -73,6 +73,9 @@ The grays monitored the situation remotely. When it became clear the ship was lo
 
 *Rough concepts to develop. Each should introduce or deepen a creature type, a lore thread, or a gameplay mechanic.*
 
+- **The Assassination (protection detail)** — the squad is assigned to protect a popular political figure. Routine security mission. Then the femme fatale takes the shot. The VIP dies on the player's watch. The squad is blamed. The Princes killed their target AND framed the player in one move. Introduces the femme fatale as a recurring character. See `lore_the_femme_fatale.md`.
+- **Sniper scene** — Erik has a specific scene in mind. To be discussed.
+- **Rescue mission** — Erik has a concept. To be discussed.
 - **Organ harvesting ship** — board a Princes-owned luxury vessel. Upper decks are lavish (the "establishment" rooms). Lower decks hide the horror. Introduces the Princes as antagonists. Human enemies (guards, security) plus creature containment that can go wrong.
 - **Xenomorph containment breach** — a research station has lost containment. Military-grade threat. The player might find evidence that the containment was sabotaged — by the grays? To prevent humans from studying the specimens?
 - **Political extraction gone wrong** — extract a VIP from a ship. Simple mission, except the VIP knows something. Mid-mission, things escalate. Introduces intelligent tactical enemies (genetic soldiers).
