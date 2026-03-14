@@ -49,6 +49,20 @@ D_SMOKE = 0.4
 ADVECTION_RATE = 25.0
 PHYSICS_DT = 0.001
 
+# Material properties: {material_id: {name, hp, reflectivity, absorption, flammable, passable, color}}
+# reflectivity: how much blast energy bounces back (1.0 = perfect mirror, 0.0 = none)
+# absorption:   how much blast energy is absorbed/lost (1.0 = absorbs all, 0.0 = none)
+# What passes through = 1.0 - reflectivity - absorption
+MATERIALS = {
+    0: {"name": "air",    "hp": 0,    "reflectivity": 0.0,  "absorption": 0.0,  "flammable": False, "passable": True},
+    1: {"name": "hull",   "hp": 300,  "reflectivity": 0.9,  "absorption": 0.1,  "flammable": False, "passable": False},
+    2: {"name": "wood",   "hp": 60,   "reflectivity": 0.4,  "absorption": 0.5,  "flammable": True,  "passable": False},
+    3: {"name": "door",   "hp": 40,   "reflectivity": 0.3,  "absorption": 0.3,  "flammable": True,  "passable": True},
+    # Special: unit bodies (not a map material, but used for physics)
+    # High absorption, low reflectivity — bodies soak up blast, don't bounce it
+    99: {"name": "unit",  "hp": 100,  "reflectivity": 0.1,  "absorption": 0.85, "flammable": False, "passable": False},
+}
+
 # Colors
 COL_BG = (10, 10, 15)
 COL_FLOOR = (30, 35, 45)
@@ -86,6 +100,28 @@ EXPLOSIVE_BLAST_RADIUS = 3  # fine tiles — small, focused
 EXPLOSIVE_PRESSURE = 5.0
 EXPLOSIVE_WALL_DAMAGE = 500  # enough to destroy any wall
 
+# Zombies
+ZOMBIE_SPEED = 6.0          # fine tiles per second during execution
+ZOMBIE_DAMAGE = 15          # damage per melee hit
+ZOMBIE_HP = 40
+ZOMBIE_ATTACK_RANGE = 4     # fine tiles — adjacent
+ZOMBIE_DETECT_RANGE = 30    # fine tiles — LOS activation range
+ZOMBIE_ATTACK_COOLDOWN = 1.0  # seconds between attacks
+COL_ZOMBIE = (180, 40, 40)
+
+# Combat
+OVERWATCH_RANGE = 40        # fine tiles
+OVERWATCH_DAMAGE = 35
+OVERWATCH_COOLDOWN = 0.8    # seconds between overwatch shots
+SHOT_DURATION = 0.4         # how long tracer line shows
+MOVE_ATTACK_RANGE = 30      # fine tiles — auto-fire range during move & attack
+MOVE_ATTACK_DAMAGE = 25
+MOVE_ATTACK_COOLDOWN = 1.0  # seconds between auto-fire shots
+GRENADE_UNIT_DAMAGE = 60    # damage to units in grenade blast
+BLAST_DAMAGE_THRESHOLD = 5  # minimum blast damage to register
+UNIT_ABSORPTION = 0.85      # units absorb 85% of blast energy passing through
+UNIT_REFLECTIVITY = 0.10    # units reflect only 10% of blast energy back
+
 # Game states
 STATE_PLANNING = 0
 STATE_EXECUTING = 1
@@ -96,6 +132,7 @@ ORDER_MOVE_COVER = 1
 ORDER_SPRINT = 2
 ORDER_GRENADE = 3
 ORDER_EXPLOSIVE = 4
+ORDER_OVERWATCH = 5
 
 ORDER_NAMES = {
     ORDER_MOVE_ATTACK: "Move & Attack",
@@ -103,7 +140,10 @@ ORDER_NAMES = {
     ORDER_SPRINT: "Sprint",
     ORDER_GRENADE: "Grenade",
     ORDER_EXPLOSIVE: "Explosive",
+    ORDER_OVERWATCH: "Overwatch",
 }
+
+COL_OVERWATCH = (255, 255, 100)
 
 ORDER_COLORS = {
     ORDER_MOVE_ATTACK: COL_MOVE_ATTACK,
@@ -111,6 +151,7 @@ ORDER_COLORS = {
     ORDER_SPRINT: COL_SPRINT,
     ORDER_GRENADE: COL_GRENADE_TARGET,
     ORDER_EXPLOSIVE: COL_EXPLOSIVE_TARGET,
+    ORDER_OVERWATCH: COL_OVERWATCH,
 }
 
 ORDER_SPEEDS = {
@@ -137,6 +178,7 @@ class GameMap:
         # Physics fields
         self.atmosphere = np.ones((FINE_H, FINE_W), dtype=np.float32)
         self.smoke = np.zeros((FINE_H, FINE_W), dtype=np.float32)
+        self.unit_absorb = np.zeros((FINE_H, FINE_W), dtype=np.float32)
 
         self._build_ship()
         self._update_caches()
@@ -211,25 +253,50 @@ class GameMap:
         m[:, FINE_W - hull_t:] = 1
 
     def _update_caches(self):
-        """Rebuild cached arrays from material grid."""
+        """Rebuild cached arrays from material grid using MATERIALS table."""
         m = self.material
-        self.is_wall = (m == 1) | (m == 2)  # hull and wood are walls (doors are passable)
+        # Build caches from material properties
+        self.is_wall = np.zeros((FINE_H, FINE_W), dtype=bool)
+        self.flammable = np.zeros((FINE_H, FINE_W), dtype=bool)
+        self.wall_hp = np.zeros((FINE_H, FINE_W), dtype=np.float32)
+        self.mat_reflectivity = np.zeros((FINE_H, FINE_W), dtype=np.float32)
+        self.mat_absorption = np.zeros((FINE_H, FINE_W), dtype=np.float32)
+
+        for mat_id, props in MATERIALS.items():
+            if mat_id == 99:  # skip unit pseudo-material
+                continue
+            mask = (m == mat_id)
+            if not props["passable"]:
+                self.is_wall[mask] = True
+            if props["flammable"]:
+                self.flammable[mask] = True
+            if props["hp"] > 0:
+                self.wall_hp[mask] = props["hp"]
+            self.mat_reflectivity[mask] = props["reflectivity"]
+            self.mat_absorption[mask] = props["absorption"]
+
         self.is_vacuum = np.zeros_like(self.is_wall)
         # Outside the hull = vacuum
-        # For now, just the outer edge
         self.is_vacuum[0:COARSE, :] = True
         self.is_vacuum[FINE_H - COARSE:, :] = True
         self.is_vacuum[:, 0:COARSE] = True
         self.is_vacuum[:, FINE_W - COARSE:] = True
 
-        self.flammable = (m == 2)  # wood walls
-        self.wall_hp = np.zeros((FINE_H, FINE_W), dtype=np.float32)
-        self.wall_hp[m == 1] = 300.0  # hull
-        self.wall_hp[m == 2] = 60.0   # wood
-        self.wall_hp[m == 3] = 40.0   # door
-
         # Atmosphere
         self.atmosphere = np.where(self.is_wall | self.is_vacuum, 0.0, 1.0).astype(np.float32)
+
+    def stamp_units(self, units):
+        """Stamp living unit positions onto the unit_absorb array."""
+        self.unit_absorb[:] = 0.0
+        for u in units:
+            if not u.alive:
+                continue
+            uy, ux = int(u.fy), int(u.fx)
+            for dy in range(COARSE):
+                for dx in range(COARSE):
+                    ny, nx = uy + dy, ux + dx
+                    if 0 <= ny < FINE_H and 0 <= nx < FINE_W:
+                        self.unit_absorb[ny, nx] = UNIT_ABSORPTION
 
     def is_passable(self, fy, fx):
         """Check if a fine tile is passable (air or door)."""
@@ -244,6 +311,38 @@ class GameMap:
             for dx in range(COARSE):
                 if not self.is_passable(fy + dy, fx + dx):
                     return False
+        return True
+
+    def is_passable_block(self, fy, fx):
+        """Check if a 3x3 fine-tile block (unit footprint) is fully passable."""
+        if fy < 0 or fx < 0 or fy + COARSE > FINE_H or fx + COARSE > FINE_W:
+            return False
+        for dy in range(COARSE):
+            for dx in range(COARSE):
+                if not self.is_passable(fy + dy, fx + dx):
+                    return False
+        return True
+
+    def has_los(self, fy1, fx1, fy2, fx2):
+        """Bresenham line-of-sight check between two fine tile positions."""
+        dx = abs(fx2 - fx1)
+        dy = abs(fy2 - fy1)
+        sx = 1 if fx1 < fx2 else -1
+        sy = 1 if fy1 < fy2 else -1
+        err = dx - dy
+        x, y = fx1, fy1
+        while True:
+            if x == fx2 and y == fy2:
+                return True
+            if 0 <= y < FINE_H and 0 <= x < FINE_W and self.is_wall[y, x]:
+                return False
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                x += sx
+            if e2 < dx:
+                err += dx
+                y += sy
         return True
 
     def destroy_wall(self, fy, fx):
@@ -271,7 +370,7 @@ class Physics:
     """Handles atmosphere and smoke simulation."""
 
     @staticmethod
-    def compute_laplacian(p, wall):
+    def compute_laplacian(p, wall, unit_absorb=None):
         up = np.roll(p, 1, axis=0)
         down = np.roll(p, -1, axis=0)
         left = np.roll(p, 1, axis=1)
@@ -280,18 +379,39 @@ class Physics:
         wall_down = np.roll(wall, -1, axis=0)
         wall_left = np.roll(wall, 1, axis=1)
         wall_right = np.roll(wall, -1, axis=1)
+        # Walls: full reflection (neighbor pressure = own pressure)
         up = np.where(wall_up, p, up)
         down = np.where(wall_down, p, down)
         left = np.where(wall_left, p, left)
         right = np.where(wall_right, p, right)
+        # Units: high absorption, low reflectivity
+        # At rest (p=1.0, neighbor=1.0) there should be no effect.
+        # Only excess pressure (shockwaves) gets reflected/absorbed.
+        if unit_absorb is not None:
+            abs_up = np.roll(unit_absorb, 1, axis=0)
+            abs_down = np.roll(unit_absorb, -1, axis=0)
+            abs_left = np.roll(unit_absorb, 1, axis=1)
+            abs_right = np.roll(unit_absorb, -1, axis=1)
+            # Blend neighbor toward: baseline + reflected portion of excess
+            # neighbor_eff = 1.0 + (neighbor - 1.0) * REFLECTIVITY
+            up = np.where(abs_up > 0, 1.0 + (up - 1.0) * UNIT_REFLECTIVITY, up)
+            down = np.where(abs_down > 0, 1.0 + (down - 1.0) * UNIT_REFLECTIVITY, down)
+            left = np.where(abs_left > 0, 1.0 + (left - 1.0) * UNIT_REFLECTIVITY, left)
+            right = np.where(abs_right > 0, 1.0 + (right - 1.0) * UNIT_REFLECTIVITY, right)
         return up + down + left + right - 4.0 * p
 
     @staticmethod
     def step_atmosphere(gmap, dt):
-        lap = Physics.compute_laplacian(gmap.atmosphere, gmap.is_wall)
+        lap = Physics.compute_laplacian(gmap.atmosphere, gmap.is_wall,
+                                         gmap.unit_absorb)
         gmap.atmosphere += D_ATM * dt * lap
         gmap.atmosphere[gmap.is_wall] = 0.0
         gmap.atmosphere[gmap.is_vacuum] = 0.0
+        # Units absorb excess pressure (shockwaves) but not baseline atmosphere
+        absorb_mask = gmap.unit_absorb > 0
+        excess = gmap.atmosphere[absorb_mask] - 1.0
+        excess[excess > 0] *= (1.0 - gmap.unit_absorb[absorb_mask][excess > 0])
+        gmap.atmosphere[absorb_mask] = 1.0 + excess
         np.clip(gmap.atmosphere, 0.0, 20.0, out=gmap.atmosphere)
 
     @staticmethod
@@ -316,7 +436,28 @@ class Physics:
 
     @staticmethod
     def apply_explosion(gmap, fy, fx, radius, pressure, wall_damage):
-        """Apply explosion: damage walls, spike atmosphere, clear smoke."""
+        """Apply explosion: damage walls, spike atmosphere, clear smoke.
+        Units act as blast absorbers — pressure is reduced behind them."""
+        # Precompute which tiles are blocked by units using radial raycasts
+        blocked = np.zeros((FINE_H, FINE_W), dtype=np.float32)
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                ny, nx = fy + dy, fx + dx
+                if 0 <= ny < FINE_H and 0 <= nx < FINE_W:
+                    dist = math.sqrt(dy * dy + dx * dx)
+                    if dist <= radius:
+                        # Walk ray from blast center to this tile,
+                        # accumulate absorption from unit tiles along the way
+                        steps = max(abs(dy), abs(dx))
+                        absorbed = 0.0
+                        if steps > 0:
+                            for s in range(1, steps):
+                                sy = fy + int(round(dy * s / steps))
+                                sx = fx + int(round(dx * s / steps))
+                                if 0 <= sy < FINE_H and 0 <= sx < FINE_W:
+                                    absorbed += gmap.unit_absorb[sy, sx]
+                        blocked[ny, nx] = min(absorbed, 1.0)
+
         for dy in range(-radius, radius + 1):
             for dx in range(-radius, radius + 1):
                 ny, nx = fy + dy, fx + dx
@@ -324,16 +465,19 @@ class Physics:
                     dist = math.sqrt(dy * dy + dx * dx)
                     if dist <= radius:
                         falloff = 1.0 - (dist / radius)
+                        # Reduce by unit absorption along the ray
+                        shield = 1.0 - blocked[ny, nx]
+                        effective = falloff * shield
                         # Damage walls
                         if gmap.material[ny, nx] in (2, 3):
-                            gmap.wall_hp[ny, nx] -= wall_damage * falloff
+                            gmap.wall_hp[ny, nx] -= wall_damage * effective
                             if gmap.wall_hp[ny, nx] <= 0:
                                 gmap.destroy_wall(ny, nx)
                         # Spike atmosphere (only in air tiles)
                         if not gmap.is_wall[ny, nx] and not gmap.is_vacuum[ny, nx]:
-                            gmap.atmosphere[ny, nx] += pressure * falloff
+                            gmap.atmosphere[ny, nx] += pressure * effective
                         # Clear smoke near center
-                        if dist <= radius * 0.4:
+                        if dist <= radius * 0.4 and shield > 0.5:
                             gmap.smoke[ny, nx] = 0.0
 
     @staticmethod
@@ -392,10 +536,8 @@ class Unit:
     def clear_orders(self):
         self.orders = []
 
-    def add_move_order(self, target_cx, target_cy, order_type, t_start):
-        """Add a movement order to a coarse tile."""
-        target_fx = target_cx * COARSE
-        target_fy = target_cy * COARSE
+    def add_move_order(self, target_fx, target_fy, order_type, t_start):
+        """Add a movement order to a fine tile position."""
         speed = ORDER_SPEEDS.get(order_type, SPEED_MOVE_ATTACK)
 
         # Calculate how many timesteps this move takes
@@ -498,6 +640,17 @@ class Projectile:
 
 
 # ---------------------------------------------------------------------------
+# Shot tracers (visual feedback for gunfire)
+# ---------------------------------------------------------------------------
+class Shot:
+    def __init__(self, fx1, fy1, fx2, fy2, time):
+        self.fx1, self.fy1 = fx1, fy1
+        self.fx2, self.fy2 = fx2, fy2
+        self.time = time
+        self.duration = SHOT_DURATION
+
+
+# ---------------------------------------------------------------------------
 # Game
 # ---------------------------------------------------------------------------
 class Game:
@@ -526,6 +679,15 @@ class Game:
             Unit("Charlie", 5, 6, team=0),
         ]
 
+        # Zombies — in the right section rooms
+        zombie_positions = [(20, 9), (22, 10), (24, 8), (21, 14), (26, 15), (28, 10)]
+        for i, (zx, zy) in enumerate(zombie_positions):
+            z = Unit(f"Z{i+1}", zx, zy, team=1)
+            z.hp = ZOMBIE_HP
+            z.zombie_activated = False
+            z.last_attack_time = -999.0
+            self.units.append(z)
+
         self.selected_unit = None
         self.current_mode = ORDER_MOVE_ATTACK
         self.grenade_delay = 2.0  # default detonation delay in T
@@ -536,8 +698,10 @@ class Game:
 
         # Execution state
         self.exec_time = 0.0  # current time in T during execution
-        self.exec_speed = 2.0  # T per real second during playback
+        self.exec_speed = 1.0  # T per real second during playback
         self.projectiles = []
+        self.shots = []  # tracer visuals
+        self.real_time = 0.0  # total real seconds elapsed during execution
 
         # Camera / scroll (for future use)
         self.cam_x = 0
@@ -586,12 +750,13 @@ class Game:
                 self.current_mode = ORDER_GRENADE
             elif event.key == pygame.K_b:
                 self.current_mode = ORDER_EXPLOSIVE
+            elif event.key == pygame.K_o:
+                self.current_mode = ORDER_OVERWATCH
+            elif event.key == pygame.K_BACKSPACE:
+                if self.selected_unit and self.selected_unit.orders:
+                    self.selected_unit.orders.pop()
             elif event.key == pygame.K_ESCAPE:
-                if self.selected_unit:
-                    self.selected_unit.clear_orders()
-                else:
-                    # Deselect
-                    self.selected_unit = None
+                self.selected_unit = None
             elif event.key in (pygame.K_SPACE, pygame.K_RETURN):
                 self._start_execution()
 
@@ -611,13 +776,13 @@ class Game:
                                              self.grenade_delay + event.y * 0.5))
 
     def _handle_map_left_click(self, mx, my):
-        # Convert to coarse tile
-        cx = mx // COARSE_PX
-        cy = my // COARSE_PX
+        # Convert to fine tile
+        fx = mx // FINE_TILE
+        fy = my // FINE_TILE
 
-        # Try to select a unit first
+        # Try to select a player unit (check if click is inside unit's 3x3 block)
         for u in self.units:
-            if u.alive and u.cx == cx and u.cy == cy:
+            if u.alive and u.team == 0 and u.fx <= fx < u.fx + COARSE and u.fy <= fy < u.fy + COARSE:
                 self.selected_unit = u
                 return
 
@@ -639,10 +804,16 @@ class Game:
             return  # no more timesteps available
 
         if self.current_mode in (ORDER_MOVE_ATTACK, ORDER_MOVE_COVER, ORDER_SPRINT):
-            cx = mx // COARSE_PX
-            cy = my // COARSE_PX
-            if self.gmap.is_passable_coarse(cy, cx):
-                u.add_move_order(cx, cy, self.current_mode, next_t)
+            # Fine-tile targeting: center the unit's 3x3 block on the clicked tile
+            fx = mx // FINE_TILE
+            fy = my // FINE_TILE
+            target_fx = fx - COARSE // 2
+            target_fy = fy - COARSE // 2
+            # Clamp to map bounds
+            target_fx = max(0, min(FINE_W - COARSE, target_fx))
+            target_fy = max(0, min(FINE_H - COARSE, target_fy))
+            if self.gmap.is_passable_block(target_fy, target_fx):
+                u.add_move_order(target_fx, target_fy, self.current_mode, next_t)
 
         elif self.current_mode == ORDER_GRENADE:
             # Fine tile target
@@ -657,11 +828,26 @@ class Game:
             if u.has_explosive > 0:
                 u.add_explosive_order(fx, fy, next_t, self.grenade_delay)
 
+        elif self.current_mode == ORDER_OVERWATCH:
+            # Overwatch fills remaining timesteps — unit holds and watches
+            order = Order(ORDER_OVERWATCH, u.get_planned_end_fx(),
+                          u.get_planned_end_fy(), next_t, t_end=T_STEPS)
+            u.orders.append(order)
+            u.overwatch_last_fire = -999.0
+
     # --- Execution ---
     def _start_execution(self):
         self.state = STATE_EXECUTING
         self.exec_time = 0.0
+        self.real_time = 0.0
         self.projectiles = []
+        self.shots = []
+
+        # Init combat tracking
+        for u in self.units:
+            if u.team == 0:
+                u.overwatch_last_fire = -999.0
+                u.move_attack_last_fire = -999.0
 
         # Prepare projectiles from orders
         for u in self.units:
@@ -693,15 +879,35 @@ class Game:
             u._exec_start_fx = float(u.fx)
             u._exec_start_fy = float(u.fy)
 
+        # Stamp initial unit positions for physics
+        self.gmap.stamp_units(self.units)
+
     def _update_execution(self, dt):
         prev_time = self.exec_time
         self.exec_time += dt * self.exec_speed
+        self.real_time += dt
 
-        # Update unit positions based on orders
+        # Update player unit positions based on orders
         for u in self.units:
-            if not u.alive:
+            if not u.alive or u.team != 0:
                 continue
             self._update_unit_position(u)
+
+        # Update zombie AI
+        self._update_zombies(dt)
+
+        # Re-stamp unit positions for physics (units move each tick)
+        self.gmap.stamp_units(self.units)
+
+        # Update overwatch
+        self._update_overwatch()
+
+        # Update move & attack auto-fire
+        self._update_move_attack()
+
+        # Expire old shot tracers
+        self.shots = [s for s in self.shots if
+                      self.real_time - s.time < s.duration]
 
         # Update and detonate projectiles
         for proj in self.projectiles:
@@ -715,6 +921,9 @@ class Game:
                             self.gmap, fy, fx,
                             GRENADE_BLAST_RADIUS, GRENADE_PRESSURE,
                             wall_damage=200)
+                        # Damage units in blast radius
+                        self._apply_blast_damage(fx, fy, GRENADE_BLAST_RADIUS,
+                                                 GRENADE_UNIT_DAMAGE)
                         # Add smoke
                         for ddy in range(-4, 5):
                             for ddx in range(-4, 5):
@@ -730,6 +939,9 @@ class Game:
                             self.gmap, fy, fx,
                             EXPLOSIVE_BLAST_RADIUS, EXPLOSIVE_PRESSURE,
                             wall_damage=EXPLOSIVE_WALL_DAMAGE)
+                        # Damage units in blast radius
+                        self._apply_blast_damage(fx, fy, EXPLOSIVE_BLAST_RADIUS,
+                                                 GRENADE_UNIT_DAMAGE)
                         self.gmap._update_caches()
 
         # Run physics
@@ -785,17 +997,200 @@ class Game:
         self.state = STATE_PLANNING
         self.turn_number += 1
 
-        # Snap units to nearest coarse tile
+        # Snap units to nearest fine tile
         for u in self.units:
-            u.fx = round(u.fxf / COARSE) * COARSE
-            u.fy = round(u.fyf / COARSE) * COARSE
+            u.fx = round(u.fxf)
+            u.fy = round(u.fyf)
             u.fxf = float(u.fx)
             u.fyf = float(u.fy)
             u.clear_orders()
 
+        # Clear unit physics mask
+        self.gmap.unit_absorb[:] = 0.0
+
         # Clean up projectiles
         self.projectiles = [p for p in self.projectiles if not p.detonated
                             and p.detonate_time > T_STEPS]
+
+    def _update_zombies(self, dt):
+        """AI for zombie units during execution."""
+        players = [u for u in self.units if u.team == 0 and u.alive]
+        if not players:
+            return
+
+        for z in self.units:
+            if z.team != 1 or not z.alive:
+                continue
+
+            # Check if any player is visible
+            nearest = None
+            nearest_dist = float('inf')
+            zc_fy, zc_fx = z.fy + COARSE // 2, z.fx + COARSE // 2
+
+            for p in players:
+                pc_fy, pc_fx = p.fy + COARSE // 2, p.fx + COARSE // 2
+                dist = math.sqrt((zc_fx - pc_fx) ** 2 + (zc_fy - pc_fy) ** 2)
+                if dist < ZOMBIE_DETECT_RANGE:
+                    if self.gmap.has_los(zc_fy, zc_fx, pc_fy, pc_fx):
+                        z.zombie_activated = True
+                        if dist < nearest_dist:
+                            nearest_dist = dist
+                            nearest = p
+
+            if not z.zombie_activated or nearest is None:
+                continue
+
+            # Attack if close enough
+            if nearest_dist <= ZOMBIE_ATTACK_RANGE:
+                if self.real_time - z.last_attack_time >= ZOMBIE_ATTACK_COOLDOWN:
+                    z.last_attack_time = self.real_time
+                    nearest.hp -= ZOMBIE_DAMAGE
+                    if nearest.hp <= 0:
+                        nearest.alive = False
+                continue
+
+            # Move toward nearest player
+            dx = nearest.fx - z.fx
+            dy = nearest.fy - z.fy
+            dist = max(1.0, math.sqrt(dx * dx + dy * dy))
+            move = ZOMBIE_SPEED * dt * self.exec_speed
+            ndx = (dx / dist) * move
+            ndy = (dy / dist) * move
+
+            # Try full movement
+            nx = z.fxf + ndx
+            ny = z.fyf + ndy
+            nfx, nfy = int(round(nx)), int(round(ny))
+
+            if self.gmap.is_passable_block(nfy, nfx):
+                z.fxf, z.fyf = nx, ny
+                z.fx, z.fy = nfx, nfy
+            else:
+                # Try horizontal only
+                nx2 = z.fxf + ndx
+                nfx2 = int(round(nx2))
+                if self.gmap.is_passable_block(z.fy, nfx2):
+                    z.fxf = nx2
+                    z.fx = nfx2
+                else:
+                    # Try vertical only
+                    ny2 = z.fyf + ndy
+                    nfy2 = int(round(ny2))
+                    if self.gmap.is_passable_block(nfy2, z.fx):
+                        z.fyf = ny2
+                        z.fy = nfy2
+
+    def _update_overwatch(self):
+        """Check overwatch units and fire at visible enemies."""
+        for u in self.units:
+            if u.team != 0 or not u.alive:
+                continue
+            # Check if unit has an active overwatch order at current time
+            has_ow = False
+            for o in u.orders:
+                if (o.order_type == ORDER_OVERWATCH and
+                        o.t_start <= self.exec_time <= (o.t_end or T_STEPS)):
+                    has_ow = True
+                    break
+            if not has_ow:
+                continue
+
+            if self.real_time - getattr(u, 'overwatch_last_fire', -999) < OVERWATCH_COOLDOWN:
+                continue
+
+            uc_fy, uc_fx = u.fy + COARSE // 2, u.fx + COARSE // 2
+
+            for z in self.units:
+                if z.team != 1 or not z.alive:
+                    continue
+                zc_fy, zc_fx = z.fy + COARSE // 2, z.fx + COARSE // 2
+                dist = math.sqrt((uc_fx - zc_fx) ** 2 + (uc_fy - zc_fy) ** 2)
+                if dist <= OVERWATCH_RANGE:
+                    if self.gmap.has_los(uc_fy, uc_fx, zc_fy, zc_fx):
+                        # Fire!
+                        z.hp -= OVERWATCH_DAMAGE
+                        if z.hp <= 0:
+                            z.alive = False
+                        u.overwatch_last_fire = self.real_time
+                        self.shots.append(Shot(
+                            uc_fx, uc_fy, zc_fx, zc_fy, self.real_time))
+                        break  # one target per cooldown
+
+    def _apply_blast_damage(self, fx, fy, radius, max_damage):
+        """Damage all units within blast radius (both teams — friendly fire!).
+        Units between blast and target absorb damage (body shielding)."""
+        for u in self.units:
+            if not u.alive:
+                continue
+            # Distance from blast center to unit center
+            uc_fx = u.fx + COARSE // 2
+            uc_fy = u.fy + COARSE // 2
+            dist = math.sqrt((uc_fx - fx) ** 2 + (uc_fy - fy) ** 2)
+            if dist <= radius:
+                falloff = 1.0 - (dist / radius)
+                # Check for shielding by other units along blast ray
+                shield = self._calc_unit_shielding(fx, fy, uc_fx, uc_fy, u)
+                damage = int(max_damage * falloff * shield)
+                if damage >= BLAST_DAMAGE_THRESHOLD:
+                    u.hp -= damage
+                    if u.hp <= 0:
+                        u.alive = False
+
+    def _calc_unit_shielding(self, bx, by, tx, ty, target_unit):
+        """Calculate how much blast reaches target, accounting for unit bodies
+        blocking the path. Returns multiplier 0.0 (fully shielded) to 1.0."""
+        dx = tx - bx
+        dy = ty - by
+        steps = max(abs(dx), abs(dy))
+        if steps == 0:
+            return 1.0
+        absorbed = 0.0
+        for s in range(1, steps):
+            sx = bx + int(round(dx * s / steps))
+            sy = by + int(round(dy * s / steps))
+            # Check if any other alive unit occupies this fine tile
+            for u in self.units:
+                if u is target_unit or not u.alive:
+                    continue
+                if u.fx <= sx < u.fx + COARSE and u.fy <= sy < u.fy + COARSE:
+                    absorbed += UNIT_ABSORPTION
+                    break
+        return max(0.0, 1.0 - min(absorbed, 1.0))
+
+    def _update_move_attack(self):
+        """Units with Move & Attack orders auto-fire at visible enemies."""
+        for u in self.units:
+            if u.team != 0 or not u.alive:
+                continue
+            # Check if unit has an active move & attack order
+            has_ma = False
+            for o in u.orders:
+                if (o.order_type == ORDER_MOVE_ATTACK and
+                        o.t_start <= self.exec_time <= (o.t_end or T_STEPS)):
+                    has_ma = True
+                    break
+            if not has_ma:
+                continue
+
+            if self.real_time - getattr(u, 'move_attack_last_fire', -999) < MOVE_ATTACK_COOLDOWN:
+                continue
+
+            uc_fy, uc_fx = u.fy + COARSE // 2, u.fx + COARSE // 2
+
+            for z in self.units:
+                if z.team != 1 or not z.alive:
+                    continue
+                zc_fy, zc_fx = z.fy + COARSE // 2, z.fx + COARSE // 2
+                dist = math.sqrt((uc_fx - zc_fx) ** 2 + (uc_fy - zc_fy) ** 2)
+                if dist <= MOVE_ATTACK_RANGE:
+                    if self.gmap.has_los(uc_fy, uc_fx, zc_fy, zc_fx):
+                        z.hp -= MOVE_ATTACK_DAMAGE
+                        if z.hp <= 0:
+                            z.alive = False
+                        u.move_attack_last_fire = self.real_time
+                        self.shots.append(Shot(
+                            uc_fx, uc_fy, zc_fx, zc_fy, self.real_time))
+                        break
 
     def _handle_execution_event(self, event):
         # Allow speed adjustment during execution
@@ -814,6 +1209,7 @@ class Game:
         self._draw_orders()
         self._draw_projectiles()
         self._draw_units()
+        self._draw_shots()
         self._draw_ui_panel()
 
         if self.state == STATE_PLANNING:
@@ -861,14 +1257,17 @@ class Game:
             for cx in range(MAP_W):
                 fy, fx = cy * COARSE, cx * COARSE
                 val = atm[fy:fy+COARSE, fx:fx+COARSE].mean()
-                if val > 1.01:
-                    # Overpressure: yellow tint
-                    intensity = min(255, int((val - 1.0) * 50))
-                    overlay.set_at((cx, cy), (255, 200, 0, intensity))
+                if val > 1.05:
+                    # Overpressure shockwave: bright orange-white
+                    intensity = min(255, int((val - 1.0) * 200))
+                    r = min(255, 200 + int((val - 1.0) * 55))
+                    g = min(255, 120 + int((val - 1.0) * 80))
+                    b = min(255, int((val - 1.0) * 40))
+                    overlay.set_at((cx, cy), (r, g, b, intensity))
                 elif val < 0.9 and not self.gmap.is_wall[fy, fx]:
-                    # Low pressure: red tint
-                    intensity = min(180, int((1.0 - val) * 200))
-                    overlay.set_at((cx, cy), (255, 50, 0, intensity))
+                    # Low pressure / vacuum pull: blue-purple tint
+                    intensity = min(220, int((1.0 - val) * 300))
+                    overlay.set_at((cx, cy), (80, 50, 255, intensity))
 
         scaled = pygame.transform.scale(overlay,
                                          (FINE_W * FINE_TILE, FINE_H * FINE_TILE))
@@ -907,19 +1306,38 @@ class Game:
                 sel_rect = (px - 2, py - 2, COARSE_PX + 4, COARSE_PX + 4)
                 pygame.draw.rect(self.screen, COL_SELECT, sel_rect, 2)
 
-            # Draw sprite
-            sprite = self.sprites.get(u.facing, self.sprites.get("S"))
-            if sprite:
-                scaled = pygame.transform.scale(sprite, (COARSE_PX, COARSE_PX))
-                self.screen.blit(scaled, (px, py))
-            else:
-                # Fallback colored rectangle
-                pygame.draw.rect(self.screen, (0, 180, 0),
+            if u.team == 1:
+                # Zombie: red rectangle
+                pygame.draw.rect(self.screen, COL_ZOMBIE,
                                  (px + 2, py + 2, COARSE_PX - 4, COARSE_PX - 4))
+                # HP bar
+                if u.hp < ZOMBIE_HP:
+                    bar_w = int((u.hp / ZOMBIE_HP) * (COARSE_PX - 4))
+                    pygame.draw.rect(self.screen, (255, 0, 0),
+                                     (px + 2, py + COARSE_PX - 4, COARSE_PX - 4, 3))
+                    pygame.draw.rect(self.screen, (0, 255, 0),
+                                     (px + 2, py + COARSE_PX - 4, bar_w, 3))
+            else:
+                # Marine: sprite or green fallback
+                sprite = self.sprites.get(u.facing, self.sprites.get("S"))
+                if sprite:
+                    scaled = pygame.transform.scale(sprite, (COARSE_PX, COARSE_PX))
+                    self.screen.blit(scaled, (px, py))
+                else:
+                    pygame.draw.rect(self.screen, (0, 180, 0),
+                                     (px + 2, py + 2, COARSE_PX - 4, COARSE_PX - 4))
+                # Player HP bar
+                if u.hp < 100:
+                    bar_w = int((u.hp / 100) * (COARSE_PX - 4))
+                    pygame.draw.rect(self.screen, (255, 0, 0),
+                                     (px + 2, py + COARSE_PX - 4, COARSE_PX - 4, 3))
+                    pygame.draw.rect(self.screen, (0, 255, 0),
+                                     (px + 2, py + COARSE_PX - 4, bar_w, 3))
 
-            # Unit name label
-            label = self.font_small.render(u.name, True, (200, 200, 200))
-            self.screen.blit(label, (px, py - 12))
+            # Unit name label (only for marines)
+            if u.team == 0:
+                label = self.font_small.render(u.name, True, (200, 200, 200))
+                self.screen.blit(label, (px, py - 12))
 
     def _draw_orders(self):
         """Draw planned orders for selected unit."""
@@ -949,8 +1367,9 @@ class Game:
                     # Draw waypoint marker
                     pygame.draw.circle(self.screen, color,
                                        (target_px, target_py), 5, 2)
-                    # Draw timestep label
-                    t_label = self.font_small.render(f"T{o.t_start}", True, color)
+                    # Draw time label showing arrival time
+                    t_label = self.font_small.render(
+                        f"T{o.t_start}-{o.t_end}", True, color)
                     self.screen.blit(t_label, (target_px + 6, target_py - 6))
                     prev_px, prev_py = target_px, target_py
 
@@ -984,6 +1403,22 @@ class Game:
                     pygame.draw.circle(self.screen, (*color[:3], 40),
                                        (target_px, target_py), radius_px, 1)
 
+                elif o.order_type == ORDER_OVERWATCH:
+                    # Draw overwatch indicator: crosshair + range circle at unit position
+                    ow_px = int(o.target_fx * FINE_TILE + COARSE_PX // 2)
+                    ow_py = int(o.target_fy * FINE_TILE + COARSE_PX // 2)
+                    pygame.draw.circle(self.screen, color, (ow_px, ow_py),
+                                       OVERWATCH_RANGE * FINE_TILE, 1)
+                    # Eye icon (simple crosshair)
+                    pygame.draw.circle(self.screen, color, (ow_px, ow_py), 6, 1)
+                    pygame.draw.line(self.screen, color, (ow_px - 3, ow_py),
+                                     (ow_px + 3, ow_py), 1)
+                    pygame.draw.line(self.screen, color, (ow_px, ow_py - 3),
+                                     (ow_px, ow_py + 3), 1)
+                    t_label = self.font_small.render(
+                        f"OW T{o.t_start}-{o.t_end}", True, color)
+                    self.screen.blit(t_label, (ow_px + 8, ow_py - 6))
+
     def _draw_projectiles(self):
         """Draw in-flight projectiles during execution."""
         for proj in self.projectiles:
@@ -995,22 +1430,42 @@ class Game:
             pygame.draw.circle(self.screen, color, (px, py), 4)
             pygame.draw.circle(self.screen, (255, 255, 255), (px, py), 4, 1)
 
+    def _draw_shots(self):
+        """Draw shot tracer lines."""
+        for s in self.shots:
+            age = self.real_time - s.time
+            alpha = max(0, 1.0 - age / s.duration)
+            brightness = int(255 * alpha)
+            color = (brightness, brightness, int(brightness * 0.6))
+            p1 = (int(s.fx1 * FINE_TILE), int(s.fy1 * FINE_TILE))
+            p2 = (int(s.fx2 * FINE_TILE), int(s.fy2 * FINE_TILE))
+            pygame.draw.line(self.screen, color, p1, p2, 2)
+            # Muzzle flash
+            if age < 0.05:
+                pygame.draw.circle(self.screen, (255, 255, 200), p1, 5)
+
     def _draw_cursor_info(self):
         """Draw info at cursor position during planning."""
         mx, my = pygame.mouse.get_pos()
         if mx >= FINE_W * FINE_TILE:
             return
 
-        # Highlight hovered coarse tile
-        cx = mx // COARSE_PX
-        cy = my // COARSE_PX
-        hover_rect = (cx * COARSE_PX, cy * COARSE_PX, COARSE_PX, COARSE_PX)
-
         color = ORDER_COLORS.get(self.current_mode, (200, 200, 200))
-        pygame.draw.rect(self.screen, color, hover_rect, 1)
 
-        # Grenade/explosive crosshair at fine tile resolution
-        if self.current_mode in (ORDER_GRENADE, ORDER_EXPLOSIVE):
+        if self.current_mode in (ORDER_MOVE_ATTACK, ORDER_MOVE_COVER, ORDER_SPRINT):
+            # Show 3x3 unit footprint at fine-tile resolution
+            fx = mx // FINE_TILE - COARSE // 2
+            fy = my // FINE_TILE - COARSE // 2
+            fx = max(0, min(FINE_W - COARSE, fx))
+            fy = max(0, min(FINE_H - COARSE, fy))
+            ghost_rect = (fx * FINE_TILE, fy * FINE_TILE,
+                          COARSE * FINE_TILE, COARSE * FINE_TILE)
+            passable = self.gmap.is_passable_block(fy, fx)
+            c = color if passable else (255, 0, 0)
+            pygame.draw.rect(self.screen, c, ghost_rect, 2)
+
+        elif self.current_mode in (ORDER_GRENADE, ORDER_EXPLOSIVE):
+            # Grenade/explosive crosshair at fine tile resolution
             fx = mx // FINE_TILE
             fy = my // FINE_TILE
             cpx = fx * FINE_TILE + FINE_TILE // 2
@@ -1022,6 +1477,19 @@ class Game:
             delay_text = self.font_small.render(
                 f"Delay: {self.grenade_delay:.1f}T (scroll to change)", True, color)
             self.screen.blit(delay_text, (mx + 15, my - 5))
+
+        elif self.current_mode == ORDER_OVERWATCH:
+            # Show overwatch range circle centered on unit's planned end position
+            if self.selected_unit:
+                u = self.selected_unit
+                efx = u.get_planned_end_fx()
+                efy = u.get_planned_end_fy()
+                cx_px = int(efx * FINE_TILE + COARSE_PX // 2)
+                cy_px = int(efy * FINE_TILE + COARSE_PX // 2)
+                pygame.draw.circle(self.screen, COL_OVERWATCH,
+                                   (cx_px, cy_px), OVERWATCH_RANGE * FINE_TILE, 1)
+                ow_text = self.font_small.render("Click to set Overwatch", True, COL_OVERWATCH)
+                self.screen.blit(ow_text, (mx + 15, my - 5))
 
     def _draw_ui_panel(self):
         """Draw the right-side UI panel."""
@@ -1071,6 +1539,7 @@ class Game:
             (ORDER_SPRINT, "3: Sprint"),
             (ORDER_GRENADE, "G: Grenade"),
             (ORDER_EXPLOSIVE, "B: Explosive"),
+            (ORDER_OVERWATCH, "O: Overwatch"),
         ]
         for mode_id, label in modes:
             color = ORDER_COLORS[mode_id] if self.current_mode == mode_id else (120, 120, 130)
@@ -1163,8 +1632,9 @@ class Game:
         help_lines = [
             "Click unit to select",
             "Click/Right-click: place order",
+            "Backspace: undo last order",
             "Scroll: grenade delay",
-            "Esc: clear orders",
+            "Esc: deselect unit",
             "Space/Enter: execute turn",
         ]
         for line in help_lines:
