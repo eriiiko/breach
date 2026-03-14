@@ -9,6 +9,10 @@
 *.bbl
 *.blg
 
+# Python
+__pycache__/
+*.pyc
+
 # Claude Code
 .claude/
 
