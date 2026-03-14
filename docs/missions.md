@@ -41,17 +41,23 @@ They're not here to rescue anyone. They're here to destroy evidence — and that
 
 The player now has to fight through the kill team *and* the remaining zombies to reach an exit point. The kill team treats zombies as hostiles too — three-way chaos in the corridors. The squad can use this: lure zombies into kill team positions, let them thin each other out.
 
+The squad is pinned down. Outnumbered, outgunned, out of options. This is a wipe.
+
+Then — something happens. A blinding flash. An energy discharge that drops half the kill team instantly. The walls have new scorch marks — the same signature as the one on the helipad. Something moved through the corridor faster than anything human. The surviving kill team operators panic, break formation, some flee. For a moment the squad sees — or thinks they see — a small figure, wrong proportions, too-large head, moving impossibly fast. Then it's gone. The corridor is empty. Just bodies and burn marks and silence.
+
+The gray was still on the ship. It hadn't left yet — it was hiding, finishing its work, observing. The kill team threatened its exit, or risked discovering it. It intervened to save *itself*, not the player. The squad just happened to be in the blast shadow.
+
 The escape is frantic. The player reaches the extraction point (the cargo bay they entered through, or a lifeboat station) as demolition charges start detonating. The ship is sinking. The squad barely makes it out.
 
-**Who sent the kill team?** The player doesn't know. The debrief doesn't explain it. Their superiors act like it didn't happen. This is the first real sign that the conspiracy extends into the player's own chain of command.
+**Who sent the kill team?** The player doesn't know. **What killed the kill team?** The player *really* doesn't know. The debrief doesn't explain either. Their superiors act like it didn't happen. This is the first real sign that the conspiracy extends into the player's own chain of command — and the first hint that something else is operating on a level beyond anyone's control.
 
-**What the player takes away**: zombies are real, the WHO ship was carrying something dangerous, someone else was here before them (the wiped console, the scorch mark), and now someone tried to kill them to bury the whole thing. The mission ends with more questions than answers — and a strong sense that the player's own side isn't safe. The scorch mark and the strange case are details the player might forget — until they see something similar ten missions later.
+**What the player takes away**: zombies are real. The WHO ship was carrying something dangerous. Someone tried to kill them to bury the whole thing. And something *else* — something inhuman, impossibly fast, armed with technology that shouldn't exist — saved their lives without meaning to. The mission ends with more questions than answers. The scorch marks, the strange case, the glimpse of that figure — details the player might dismiss as combat stress. Until they see something similar ten missions later.
 
 ### What Actually Happened (Hidden from the Player)
 
 The *Caduceus* was carrying standard WHO medical supplies — plus, unknowingly, a batch of gray anti-xenomorph bioagent disguised as routine vaccines. Crates broke during rough seas. Crew members handling the spill were exposed. Within 48 hours, the mutation spread through the crew.
 
-The grays monitored the situation remotely. When it became clear the ship was lost, they boarded (the scorch mark), retrieved the remaining bioagent samples from the bridge (the unmarked case), wiped all records that could trace the cargo's origin, and left. They were gone hours before the player's squad arrived. The grays don't care about the crew. They care about evidence.
+The grays monitored the situation remotely. When it became clear the ship was lost, a gray boarded (the helipad scorch mark), retrieved the remaining bioagent samples from the bridge (the unmarked case), and wiped all records that could trace the cargo's origin. But it was still on the ship when the player's squad arrived — hiding, finishing its work, perhaps observing the humans with clinical interest. When the kill team arrived and threatened to discover it, the gray eliminated the immediate threat with overwhelming force and fled. It didn't intend to save the squad. It just needed the corridor clear.
 
 ### Design Notes
 
