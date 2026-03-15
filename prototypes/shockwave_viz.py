@@ -5,12 +5,14 @@ Real-time interactive pressure field viewer at full fine-tile resolution.
 Click anywhere to detonate an explosion. Adjust visualization with keyboard.
 
 Controls:
-  Left click:  Detonate grenade at cursor
+  Left click:  Detonate grenade at cursor (with smoke)
   Right click: Detonate big explosion at cursor
-  R:           Reset atmosphere
+  Middle click: Destroy wall at cursor (creates hull breach for wind demo)
+  R:           Reset atmosphere and smoke
   Space:       Pause/resume physics
   +/-:         Adjust physics speed
   1-5:         Change color scheme
+  T:           Toggle smoke overlay on/off
   S:           Save current frame as PNG
   ESC:         Quit
 """
@@ -111,9 +113,13 @@ class AtmosphereField:
         self.atmosphere = np.where(
             self.is_wall | self.is_vacuum, 0.0, 1.0
         ).astype(np.float32)
+        # Wave equation fields: pressure (p) and velocity (v)
+        self.p = np.zeros((FINE_H, FINE_W), dtype=np.float32)  # pressure deviation from 1.0
+        self.v = np.zeros((FINE_H, FINE_W), dtype=np.float32)  # velocity (dp/dt)
+        self.smoke = np.zeros((FINE_H, FINE_W), dtype=np.float32)
         self.peak_pressure = 1.0
 
-    def detonate(self, fy, fx, pressure=10.0, radius=6):
+    def detonate(self, fy, fx, pressure=10.0, radius=6, add_smoke=True):
         """Deposit pressure at explosion site."""
         for dy in range(-radius, radius + 1):
             for dx in range(-radius, radius + 1):
@@ -123,29 +129,102 @@ class AtmosphereField:
                     if dist <= radius:
                         falloff = 1.0 - (dist / radius)
                         if not self.is_wall[ny, nx] and not self.is_vacuum[ny, nx]:
-                            self.atmosphere[ny, nx] += pressure * falloff
+                            self.p[ny, nx] += pressure * falloff
+                            # Also add smoke at explosion site
+                            if add_smoke and dist < radius * 0.8:
+                                self.smoke[ny, nx] = min(1.0,
+                                    self.smoke[ny, nx] + 0.9 * falloff)
+
+    def destroy_wall_at(self, fy, fx):
+        """Destroy a wall tile to create a hull breach."""
+        if 0 <= fy < FINE_H and 0 <= fx < FINE_W:
+            if self.material[fy, fx] in (MAT_WOOD, MAT_DOOR):
+                self.material[fy, fx] = MAT_AIR
+                self.is_wall[fy, fx] = False
+                self.atmosphere[fy, fx] = 0.5
 
     def step(self, n_substeps=5, dt=0.001):
+        """Run wave equation for shockwaves + diffusion for atmosphere + smoke advection."""
+        # Wave equation: ∂²p/∂t² = c² ∇²p - damping * ∂p/∂t
+        # Discretized: v += c² * lap(p) * dt - damping * v * dt
+        #              p += v * dt
+        c_squared = 800.0   # speed of sound squared (controls wave speed)
+        damping = 3.0       # wave energy dissipation (converts wave to sustained pressure)
+
         for _ in range(n_substeps):
-            up = np.roll(self.atmosphere, 1, axis=0)
-            down = np.roll(self.atmosphere, -1, axis=0)
-            left = np.roll(self.atmosphere, 1, axis=1)
-            right = np.roll(self.atmosphere, -1, axis=1)
+            # --- Wave equation step ---
+            up = np.roll(self.p, 1, axis=0)
+            down = np.roll(self.p, -1, axis=0)
+            left = np.roll(self.p, 1, axis=1)
+            right = np.roll(self.p, -1, axis=1)
+            # Neumann BCs: walls reflect
             wall_up = np.roll(self.is_wall, 1, axis=0)
             wall_down = np.roll(self.is_wall, -1, axis=0)
             wall_left = np.roll(self.is_wall, 1, axis=1)
             wall_right = np.roll(self.is_wall, -1, axis=1)
-            up = np.where(wall_up, self.atmosphere, up)
-            down = np.where(wall_down, self.atmosphere, down)
-            left = np.where(wall_left, self.atmosphere, left)
-            right = np.where(wall_right, self.atmosphere, right)
-            lap = up + down + left + right - 4.0 * self.atmosphere
-            self.atmosphere += CFG.physics.d_atm * dt * lap
+            up = np.where(wall_up, self.p, up)
+            down = np.where(wall_down, self.p, down)
+            left = np.where(wall_left, self.p, left)
+            right = np.where(wall_right, self.p, right)
+            lap = up + down + left + right - 4.0 * self.p
+
+            self.v += (c_squared * lap - damping * self.v) * dt
+            self.p += self.v * dt
+            self.p[self.is_wall] = 0.0
+            self.p[self.is_vacuum] = 0.0
+
+            # Transfer wave energy into atmosphere (sustained pressure changes)
+            # The wave deposits a fraction of its energy into the atmosphere
+            transfer = 0.5 * dt
+            self.atmosphere += self.p * transfer
+            self.atmosphere[self.is_wall] = 0.0
+            self.atmosphere[self.is_vacuum] = 0.0
+
+            # --- Atmosphere diffusion (slow, for sustained pressure equalization) ---
+            a_up = np.roll(self.atmosphere, 1, axis=0)
+            a_down = np.roll(self.atmosphere, -1, axis=0)
+            a_left = np.roll(self.atmosphere, 1, axis=1)
+            a_right = np.roll(self.atmosphere, -1, axis=1)
+            a_up = np.where(wall_up, self.atmosphere, a_up)
+            a_down = np.where(wall_down, self.atmosphere, a_down)
+            a_left = np.where(wall_left, self.atmosphere, a_left)
+            a_right = np.where(wall_right, self.atmosphere, a_right)
+            a_lap = a_up + a_down + a_left + a_right - 4.0 * self.atmosphere
+            self.atmosphere += 5.0 * dt * a_lap  # slow diffusion for equalization
             self.atmosphere[self.is_wall] = 0.0
             self.atmosphere[self.is_vacuum] = 0.0
             np.clip(self.atmosphere, 0.0, 20.0, out=self.atmosphere)
 
-        self.peak_pressure = self.atmosphere.max()
+            # --- Smoke advection by pressure gradient (wind) ---
+            # Wind = -∇(atmosphere), smoke moves with wind
+            grad_y = (np.roll(self.atmosphere, -1, axis=0) -
+                      np.roll(self.atmosphere, 1, axis=0)) / 2.0
+            grad_x = (np.roll(self.atmosphere, -1, axis=1) -
+                      np.roll(self.atmosphere, 1, axis=1)) / 2.0
+            ds_dy = (np.roll(self.smoke, -1, axis=0) -
+                     np.roll(self.smoke, 1, axis=0)) / 2.0
+            ds_dx = (np.roll(self.smoke, -1, axis=1) -
+                     np.roll(self.smoke, 1, axis=1)) / 2.0
+            # Also advect by wave pressure gradient (shockwave pushes smoke)
+            wp_grad_y = (np.roll(self.p, -1, axis=0) -
+                         np.roll(self.p, 1, axis=0)) / 2.0
+            wp_grad_x = (np.roll(self.p, -1, axis=1) -
+                         np.roll(self.p, 1, axis=1)) / 2.0
+            self.smoke += 25.0 * dt * (grad_x * ds_dx + grad_y * ds_dy)
+            self.smoke += 80.0 * dt * (wp_grad_x * ds_dx + wp_grad_y * ds_dy)
+
+            # Smoke diffusion
+            s_lap = (np.roll(self.smoke, 1, axis=0) + np.roll(self.smoke, -1, axis=0) +
+                     np.roll(self.smoke, 1, axis=1) + np.roll(self.smoke, -1, axis=1) -
+                     4.0 * self.smoke)
+            self.smoke += 0.4 * dt * s_lap
+            self.smoke[self.is_wall] = 0.0
+            self.smoke[self.is_vacuum] = 0.0
+            np.clip(self.smoke, 0.0, 1.0, out=self.smoke)
+
+        # Total visible pressure = atmosphere + wave pressure
+        self.total_pressure = self.atmosphere + self.p
+        self.peak_pressure = self.total_pressure.max()
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +375,7 @@ def main():
     physics_speed = 10  # substeps per frame
     frame_count = 0
     save_count = 0
+    show_smoke = True
 
     running = True
     while running:
@@ -313,6 +393,8 @@ def main():
                     physics_speed = min(50, physics_speed + 2)
                 elif event.key == pygame.K_MINUS:
                     physics_speed = max(1, physics_speed - 2)
+                elif event.key == pygame.K_t:
+                    show_smoke = not show_smoke
                 elif event.key == pygame.K_s:
                     fname = f"shockwave_frame_{save_count:04d}.png"
                     pygame.image.save(screen, fname)
@@ -330,6 +412,17 @@ def main():
                         field.detonate(fy, fx, pressure=10.0, radius=6)
                     elif event.button == 3:
                         field.detonate(fy, fx, pressure=20.0, radius=10)
+                    elif event.button == 2:
+                        # Middle click: destroy wall (hull breach)
+                        for dy in range(-1, 2):
+                            for dx in range(-1, 2):
+                                field.destroy_wall_at(fy + dy, fx + dx)
+                        # Rebuild map background
+                        for bfy in range(max(0, fy-1), min(FINE_H, fy+2)):
+                            for bfx in range(max(0, fx-1), min(FINE_W, fx+2)):
+                                c = wall_colors.get(field.material[bfy, bfx], (20, 25, 35))
+                                pygame.draw.rect(map_bg, c,
+                                    (bfx * SCALE, bfy * SCALE, SCALE, SCALE))
 
         # Physics
         if not paused:
@@ -339,17 +432,16 @@ def main():
         # Draw map background
         screen.blit(map_bg, (0, 0))
 
-        # Draw atmosphere overlay at fine tile resolution
+        # Draw pressure overlay at fine tile resolution
         scheme_name, color_fn = SCHEMES[scheme_id]
-        atm = field.atmosphere
+        total = field.total_pressure
 
-        # Build overlay surface
         overlay = pygame.Surface((FINE_W, FINE_H), pygame.SRCALPHA)
         for fy in range(FINE_H):
             for fx in range(FINE_W):
                 if field.is_wall[fy, fx] or field.is_vacuum[fy, fx]:
                     continue
-                val = atm[fy, fx]
+                val = total[fy, fx]
                 c = color_fn(val)
                 if c is not None:
                     overlay.set_at((fx, fy), c)
@@ -357,18 +449,34 @@ def main():
         scaled = pygame.transform.scale(overlay, (FINE_W * SCALE, FINE_H * SCALE))
         screen.blit(scaled, (0, 0))
 
+        # Draw smoke overlay
+        if show_smoke:
+            smoke_overlay = pygame.Surface((FINE_W, FINE_H), pygame.SRCALPHA)
+            for fy in range(FINE_H):
+                for fx in range(FINE_W):
+                    sv = field.smoke[fy, fx]
+                    if sv > 0.01:
+                        a = min(220, int(sv * 250))
+                        smoke_overlay.set_at((fx, fy), (180, 170, 150, a))
+            smoke_scaled = pygame.transform.scale(smoke_overlay,
+                                                   (FINE_W * SCALE, FINE_H * SCALE))
+            screen.blit(smoke_scaled, (0, 0))
+
         # Info bar
         info_y = FINE_H * SCALE + 5
         pygame.draw.rect(screen, (15, 15, 20),
                          (0, FINE_H * SCALE, SCREEN_W, 80))
 
+        wave_max = abs(field.p).max()
         texts = [
-            f"Scheme: {scheme_id} {scheme_name} (1-5 to change)",
+            f"Scheme: {scheme_id} {scheme_name} (1-5) | "
+            f"Smoke: {'ON' if show_smoke else 'OFF'} (T)",
             f"Peak: {field.peak_pressure:.2f} atm | "
-            f"Speed: {physics_speed} substeps/frame | "
+            f"Wave: {wave_max:.2f} | "
+            f"Speed: {physics_speed} | "
             f"{'PAUSED' if paused else 'RUNNING'}",
-            "LClick: grenade | RClick: big bomb | R: reset | "
-            "Space: pause | S: save | +/-: speed",
+            "LClick: grenade | RClick: bomb | MClick: breach wall | "
+            "R: reset | Space: pause",
         ]
         for i, t in enumerate(texts):
             color = (200, 200, 210) if i > 0 else (0, 200, 255)
