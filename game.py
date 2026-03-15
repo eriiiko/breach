@@ -458,7 +458,7 @@ class Physics:
                             gmap.smoke[ny, nx] = 0.0
 
     # Wave parameters — all in physical units (per second, SI-ish)
-    WAVE_C = 300.0          # wave speed in tiles/s (≈100 m/s, tiles are 1/3 m)
+    WAVE_C =10.0          # wave speed in tiles/s (≈100 m/s, tiles are 1/3 m)
     WAVE_DAMPING = 3.0      # velocity damping rate (1/s)
     WAVE_TRANSFER = 0.5     # wave→atmosphere transfer rate (1/s)
     SOURCE_FEED_RATE = 200.0  # how fast source deposits into wave_p (1/s)
@@ -518,8 +518,8 @@ class Physics:
             gmap.atmosphere += gmap.wave_p * transfer * dt_wave
             np.clip(gmap.atmosphere, 0.0, 20.0, out=gmap.atmosphere)
 
-        # --- Diffusion substeps (slow: atmosphere equalization) ---
-        n_diff = max(1, n_substeps // 2)  # fewer steps needed
+        # --- Diffusion substeps (atmosphere equalization) ---
+        n_diff = n_substeps * 3  # diffusion is cheap, run plenty for visible air drain
         for _ in range(n_diff):
             Physics.step_atmosphere(gmap, dt_diff)
 
