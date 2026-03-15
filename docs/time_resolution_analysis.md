@@ -3,6 +3,9 @@
 > **Context**: The two-phase turn system needs a shared time resolution for movement,
 > the reservation table (temporal A*), action ordering, and physics. This note compares
 > three approaches.
+>
+> **DECIDED**: Pure grid (Strategy A variant) at **12 ticks/second**. No continuous
+> positions. See design_v2_turn_and_combat_overhaul.md for final spec.
 
 ---
 

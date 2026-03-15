@@ -1,7 +1,7 @@
 # Design Document: Turn & Combat Overhaul (v2)
 
-> **Status**: DRAFT — requires review and sign-off before implementation
-> **Date**: 2026-03-15
+> **Status**: READY FOR IMPLEMENTATION — all major decisions resolved
+> **Date**: 2026-03-15 (updated evening session)
 > **Goal**: Reach the critical mass of changes needed to evaluate whether the game is fun.
 
 ---
@@ -18,16 +18,18 @@ defines what "enough" means and how each piece fits together.
 
 Each round (triggered by pressing Space) is divided into **Phase 1** and **Phase 2**.
 
-### Execution order within each phase
+### Execution order within each phase (60 ticks)
 
+Each tick resolves in this priority order:
 ```
-1. Door explosives detonate (instant, before anything else)
-2. Pathfinding is computed (walls/doors have already changed)
-3. All other actions execute simultaneously:
-   - Units move
-   - Grenades are thrown and detonate
-   - Units shoot
-   - Physics advance (atmosphere, smoke, fire)
+1. Door explosives detonate (if scheduled for this tick — highest priority)
+2. Wall/map state updates (destroyed walls removed)
+3. Grenade detonations (if fuse expires this tick)
+4. Shooting damage resolves (hitscan)
+5. Units advance along paths (1 tile per N ticks, depending on speed)
+6. Melee/contact damage (zombies adjacent to marines)
+7. Death and conversion checks
+8. Physics substeps (atmosphere, smoke — multiple substeps per tick as needed)
 ```
 
 ### The sync point
@@ -58,14 +60,16 @@ The player assigns actions to Phase 1 or Phase 2 for each unit.
 ### Time Points (TP)
 
 - Movement costs **time**, not action points.
-- Each movement mode has a fixed distance budget per phase (in coarse tiles, where 1 coarse tile = 1 meter = 3×3 fine tiles):
-  - **Move & Attack**: 4 coarse tiles per phase
-  - **Move with Cover**: 5 coarse tiles per phase
-  - **Sprint**: 6 coarse tiles per phase
+- All positions and distances are in **fine tiles** (1 tile = 1/3 meter, unit = 3×3 tiles).
+- Movement speed is expressed as **ticks per tile** (how many game ticks to traverse 1
+  fine tile):
+  - **Move & Attack**: 9 ticks/tile (4 tiles/s, 1.33 m/s)
+  - **Move with Cover**: 6 ticks/tile (6 tiles/s, 2.0 m/s)
+  - **Sprint**: 4 ticks/tile (9 tiles/s, 3.0 m/s)
 - Units move at a **constant speed** determined by their mode. If the destination is
   closer than the budget, they arrive early and wait at the sync point.
-- Diagonal movement costs √2 tiles. Fractional costs accumulate and round at phase end
-  (track the error so it doesn't drift over multiple moves).
+- Diagonal movement: **alternating 1-2 cost** (D&D 3.5 style). First diagonal step costs
+  1 tile, second costs 2, repeat. Average ≈ √2. No error tracking needed.
 
 ### Simultaneous actions
 
@@ -73,16 +77,17 @@ A unit can **move and act** in the same phase. The time cost is whichever takes 
 (movement or action), not the sum. Example: a unit can move 4 tiles and fire twice in
 one phase — the movement and shooting happen concurrently.
 
-### Movement speeds (display time)
+### Game clock
 
-Since units move at constant speed and phases have a fixed duration, the speed determines
-how quickly the unit reaches its destination during the execution animation. A unit
-moving its full budget arrives exactly at the phase boundary. A unit moving half the
-budget arrives at the midpoint and waits.
-
-**Phase duration**: 5 seconds per phase (10 seconds per round). This gives enough time
-to watch the action unfold and appreciate the tactical choreography. Adjustable via
-config.
+- **12 game ticks per second** (83ms per tick).
+- **Phase duration**: 5 seconds = **60 ticks per phase**, 120 ticks per round.
+- **Pure grid positions** — no continuous coordinates. Units are always on exact tile
+  positions. Movement hops tile-to-tile at the unit's tick rate.
+- Fast units (xeno sprint: 1 tick/tile) may traverse multiple tiles per tick. Check all
+  tiles along the path within that tick to prevent tunneling.
+- Slow units (marine attack: 9 ticks/tile) sit on a tile for multiple ticks before
+  advancing to the next.
+- Rendering interpolates between ticks for smooth animation.
 
 ---
 
@@ -246,49 +251,47 @@ editing code. Use a simple format — either TOML or JSON.
 ### Config file structure
 
 ```
-[phases]
+[clock]
+ticks_per_second = 12              # game ticks per second (83ms per tick)
 phases_per_round = 2
-phase_duration_seconds = 5.0        # real-time execution duration per phase
+phase_duration_seconds = 5.0       # real-time per phase (= 60 ticks per phase)
 ap_per_phase = 2
 
 [movement]
-# Distances in coarse tiles per phase
-move_attack_range = 4
-move_cover_range = 5
-sprint_range = 6
-# Speeds in coarse tiles per second (for animation)
-move_attack_speed = 2.0
-move_cover_speed = 2.5
-sprint_speed = 3.0
+# Speed in ticks per fine tile (lower = faster)
+marine_attack_ticks_per_tile = 9   # 4 tiles/s, 1.33 m/s
+marine_cover_ticks_per_tile = 6    # 6 tiles/s, 2.0 m/s
+marine_sprint_ticks_per_tile = 4   # 9 tiles/s, 3.0 m/s
+xeno_sprint_ticks_per_tile = 1     # 36 tiles/s, 12.0 m/s (fastest in game)
 
 [weapons.rifle]
 damage_per_bullet = 10
 bullets_per_burst = 5
 cone_half_angle_degrees = 3.0
-range_coarse_tiles = 30
+range_tiles = 90                   # in fine tiles (= 30 meters)
 ap_cost = 1
 
 [weapons.grenade]
-blast_radius_fine = 6
+blast_radius = 6                   # fine tiles
 pressure = 10.0
 fuse_min_seconds = 0.0
 fuse_max_seconds = 10.0
 fuse_default_seconds = 0.5
 ap_cost = 1
-max_throw_range_fine = 30
+max_throw_range = 30               # fine tiles
 
 [weapons.door_explosive]
-blast_radius_fine = 3
+blast_radius = 3                   # fine tiles
 pressure = 5.0
 wall_damage = 500
 ap_cost = 1
 
 [zombie]
 hp = 400
-speed_coarse_per_phase = 3
+ticks_per_tile = 9                 # same speed as marine attack move
 melee_damage = 60
-trigger_radius_coarse = 8
-propagation_radius_coarse = 5
+trigger_radius = 24                # fine tiles (= 8 meters)
+propagation_radius = 15            # fine tiles (= 5 meters)
 bullet_damage_multiplier = 0.25
 fire_damage_multiplier = 4.0
 
@@ -373,7 +376,8 @@ These need answers before or during implementation:
 
 ## 12. Pathfinding
 
-Two distinct pathfinding systems, both operating on the **coarse grid** (1 tile = 1 meter).
+Two distinct pathfinding systems, both operating on the **fine grid** (1 tile = 1/3 meter).
+Units occupy 3×3 fine tiles — collision checks test all 9 tiles of the unit's footprint.
 
 ### 12.1 Zombie pathfinding: Standard A*
 
@@ -382,38 +386,41 @@ Two distinct pathfinding systems, both operating on the **coarse grid** (1 tile 
 - Walls and intact doors are impassable. Destroyed doors are passable.
 - Recomputed every phase — zombies always chase the current nearest target.
 - Cost: uniform 1 per cardinal step, alternating 1-2 per diagonal step.
+- Collision: 3×3 footprint checked at each candidate position.
 
 ### 12.2 Player unit pathfinding: Temporal A* (A* in time)
 
 Player units use manual waypoints (click-to-move), but their paths must avoid collisions
-with **friendly units**. This requires pathfinding in a 3D space: (x, y, time).
+with **friendly units**. This requires pathfinding in a 3D space: (x, y, tick).
 
 #### The reservation table
 
-A shared data structure tracks which coarse tiles are occupied at which time steps:
+A shared data structure tracks which fine tiles are occupied at which game ticks:
 
 ```
-reservations[t][x][y] → unit_id or None
+reservations[tick][x][y] → unit_id or None
 ```
 
-- When a unit's path is computed, all tiles it occupies at each timestep are reserved.
+- When a unit's path is computed, all 3×3 tiles it occupies at each tick are reserved.
 - When computing a path for the next unit, reserved tiles are treated as impassable at
-  those specific timesteps.
+  those specific ticks.
 - Order of computation matters: units planned first get priority. The UI should let the
   player see and adjust the planning order if needed (or we use a sensible default like
   selection order).
+- Phase = 60 ticks. Table size: 60 × 120 × 75 ≈ 540K entries per phase. Trivial.
 
 #### How it works
 
 1. Player clicks a destination for a unit.
 2. The game computes A* from the unit's current position to the destination, where each
-   node is (x, y, t) and neighbors include:
-   - Move to adjacent tile: (x±1, y, t+1) or (x, y±1, t+1) — costs 1 time step
-   - Move diagonally: (x±1, y±1, t+1) — costs 1 or 2 time steps (alternating)
-   - Wait in place: (x, y, t+1) — costs 1 time step (unit stays put to let another pass)
+   node is (x, y, tick) and neighbors include:
+   - Move to adjacent tile: (x±1, y, tick+speed) or (x, y±1, tick+speed) — where speed
+     is ticks_per_tile for the unit's movement mode
+   - Move diagonally: (x±1, y±1, tick+speed) or (x±1, y±1, tick+2×speed) — alternating
+   - Wait in place: (x, y, tick+1) — unit stays put for 1 tick
 3. A tile is blocked if:
-   - It's a wall/door at time t (respecting door explosives that will have gone off)
-   - It's reserved by another friendly unit at time t
+   - It's a wall/door at that tick (respecting door explosives that will have gone off)
+   - Any of the unit's 3×3 footprint tiles are reserved by another friendly unit at that tick
 4. The resulting path is displayed as the planned route. The unit follows it during
    execution.
 
@@ -422,15 +429,10 @@ reservations[t][x][y] → unit_id or None
 - **Teammates are always aware of each other** — no fog between friendlies.
 - **Enemies are NOT in the reservation table** — only friendlies avoid each other.
   Enemies and friendlies can occupy the same tile (that's combat).
-- **Waiting is free** — a unit can spend a timestep standing still to let a teammate pass
+- **Waiting is free** — a unit can spend ticks standing still to let a teammate pass
   through a corridor first. This should feel natural, not punishing.
 - **Replanning**: If the player changes one unit's orders, all subsequent units' paths
   may need to be recomputed (their reservations shift). This should be fast enough to
-  feel instant — A* on a 40×25 grid with ~10 time steps is trivial.
-
-#### Time resolution
-
-The temporal axis should match the movement system. If a phase is divided into discrete
-movement steps (based on speed and distance), the reservation table uses the same steps.
-For a unit moving 4 tiles in a phase at constant speed, that's 4 timesteps of movement
-plus possible wait steps.
+  feel instant — A* on 120×75 with 60 ticks is very manageable.
+- **Corridors**: Two marines (3×3 each) need a corridor at least 6 tiles wide to pass
+  side by side. In narrower corridors, one waits while the other passes.
