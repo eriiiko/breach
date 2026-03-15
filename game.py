@@ -1528,7 +1528,7 @@ class Game:
             rgba[under, 3] = np.clip(deficit * 400, 0, 220).astype(np.uint8)
 
         # Convert to pygame surface
-        overlay = pygame.image.frombuffer(rgba.tobytes(), (fw, fh), "RGBA")
+        overlay = pygame.image.frombuffer(rgba.tobytes(), (fw, fh), "RGBA").convert_alpha()
         scaled = pygame.transform.scale(overlay, (fw * ft, fh * ft))
         self.screen.blit(scaled, (0, 0))
 
@@ -1549,7 +1549,7 @@ class Game:
             rgba[has_smoke, 2] = 140
             rgba[has_smoke, 3] = np.clip(smoke[has_smoke] * 220, 0, 200).astype(np.uint8)
 
-        overlay = pygame.image.frombuffer(rgba.tobytes(), (fw, fh), "RGBA")
+        overlay = pygame.image.frombuffer(rgba.tobytes(), (fw, fh), "RGBA").convert_alpha()
         scaled = pygame.transform.scale(overlay, (fw * ft, fh * ft))
         self.screen.blit(scaled, (0, 0))
 
