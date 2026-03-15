@@ -465,10 +465,13 @@ class Physics:
         # Wave speed: 100 m/s physical = 300 tiles/s on our 1/3m grid
         c_grid = 300.0                          # tiles per second
         c_squared = c_grid * c_grid             # 90,000
-        damping_per_sec = 1200.0                # physical damping rate (per second)
 
-        # CFL-optimal dt: largest stable timestep
-        dt = 0.70 / c_grid                      # ~0.00233s (slightly under 1/√2 for safety)
+        # CFL-optimal dt: largest stable timestep for wave equation
+        dt = 0.70 / c_grid                      # ~0.00233s
+
+        # Damping: must satisfy damping * dt < 2 for stability
+        # Use 0.8 / dt as safe max, then scale by desired fraction
+        damping_per_sec = min(400.0, 0.8 / dt)  # ~343/s, safe and physical
 
         for _ in range(n_substeps):
             # --- Wave equation: shockwave propagation ---
@@ -492,7 +495,7 @@ class Physics:
             gmap.wave_p[gmap.is_vacuum] = 0.0
 
             # Transfer wave energy into sustained atmosphere
-            transfer_rate = 150.0  # per second
+            transfer_rate = 30.0  # per second (gentle — wave persists)
             gmap.atmosphere += gmap.wave_p * transfer_rate * dt
 
             # --- Atmosphere diffusion (slow equalization) ---
