@@ -14,8 +14,8 @@ xeno_sprint_ticks_per_tile = 1
 d_atm = 200.0
 d_smoke = 0.4
 advection_rate = 25.0
-physics_dt = 0.001
-physics_substeps = 8
+physics_dt = 0.0005              # 0.5ms (CFL stable for c=900 tiles/s)
+physics_substeps = 16             # 16 * 0.5ms = 8ms physics per game tick
 
 [display]
 fine_tile_px = 10

@@ -461,8 +461,8 @@ class Physics:
         if n_substeps is None:
             n_substeps = CFG.physics.physics_substeps
         dt = CFG.physics.physics_dt
-        c_squared = 800.0   # speed of sound squared
-        damping = 3.0       # wave energy dissipation
+        c_squared = 810000.0  # ~300 m/s (900 tiles/s, tiles are 1/3 m)
+        damping = 8.0         # higher damping needed at higher wave speed
 
         for _ in range(n_substeps):
             # --- Wave equation: shockwave propagation ---
@@ -728,6 +728,8 @@ class Game:
         self.projectiles = []
         self.shots = []
         self.real_time = 0.0
+        self.frame_times = []   # last N frame times for FPS display
+        self.physics_ms = 0.0   # physics compute time in ms
 
         # Sprites
         self.sprites = {}
@@ -742,8 +744,10 @@ class Game:
     # Main loop
     # ===================================================================
     def run(self):
+        import time as _time
         running = True
         while running:
+            frame_start = _time.perf_counter()
             dt = self.clock.tick(60) / 1000.0
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -757,6 +761,11 @@ class Game:
             if self.state == STATE_EXECUTING:
                 self._update_execution(dt)
             self._draw()
+            # Frame timing
+            frame_ms = (_time.perf_counter() - frame_start) * 1000.0
+            self.frame_times.append(frame_ms)
+            if len(self.frame_times) > 60:
+                self.frame_times.pop(0)
             pygame.display.flip()
         pygame.quit()
 
@@ -1110,8 +1119,11 @@ class Game:
         # 5. Re-stamp unit positions
         self.gmap.stamp_units(self.units)
 
-        # 6. Physics substep
+        # 6. Physics substep (timed)
+        import time as _time
+        t0 = _time.perf_counter()
         Physics.step(self.gmap)
+        self.physics_ms = (_time.perf_counter() - t0) * 1000.0
 
     def _process_shooting(self, tick):
         """Handle fire orders for the current tick."""
@@ -1890,8 +1902,31 @@ class Game:
             self.screen.blit(no_sel, (x, y))
             y += 20
 
+        # Performance stats
+        y = self.screen_h - 180
+        pygame.draw.line(self.screen, (50, 50, 60), (x, y), (x + 230, y), 1)
+        y += 5
+        if self.frame_times:
+            avg_frame = sum(self.frame_times) / len(self.frame_times)
+            fps = 1000.0 / avg_frame if avg_frame > 0 else 0
+            perf_color = (0, 255, 0) if avg_frame < 16.7 else (255, 255, 0) if avg_frame < 33.3 else (255, 0, 0)
+            ft_text = self.font_small.render(
+                f"FPS: {fps:.0f}  Frame: {avg_frame:.1f}ms", True, perf_color)
+            self.screen.blit(ft_text, (x, y))
+            y += 14
+            phys_text = self.font_small.render(
+                f"Physics: {self.physics_ms:.1f}ms / tick", True, perf_color)
+            self.screen.blit(phys_text, (x, y))
+            y += 14
+            wave_max = abs(self.gmap.wave_p).max()
+            atm_max = self.gmap.atmosphere.max()
+            pf_text = self.font_small.render(
+                f"Wave: {wave_max:.1f}  Atm: {atm_max:.2f}", True, COL_UI_TEXT)
+            self.screen.blit(pf_text, (x, y))
+        y += 18
+
         # Controls help
-        y = self.screen_h - 140
+        y = self.screen_h - 120
         pygame.draw.line(self.screen, (50, 50, 60), (x, y), (x + 230, y), 1)
         y += 5
         help_lines = [
