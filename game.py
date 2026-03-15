@@ -425,8 +425,7 @@ class Physics:
                     np.roll(gmap.wave_p, 1, axis=0)) / 2.0
         w_grad_x = (np.roll(gmap.wave_p, -1, axis=1) -
                     np.roll(gmap.wave_p, 1, axis=1)) / 2.0
-        wave_advection_rate = 25000.0  # per second — shockwaves push smoke hard
-        gmap.smoke += wave_advection_rate * dt * (w_grad_x * ds_dx + w_grad_y * ds_dy)
+        gmap.smoke += 80.0 * dt * (w_grad_x * ds_dx + w_grad_y * ds_dy)
 
         gmap.smoke[gmap.is_wall] = 0.0
         gmap.smoke[gmap.is_vacuum] = 0.0
@@ -462,16 +461,10 @@ class Physics:
         if n_substeps is None:
             n_substeps = CFG.physics.physics_substeps
 
-        # Wave speed: 100 m/s physical = 300 tiles/s on our 1/3m grid
-        c_grid = 300.0                          # tiles per second
-        c_squared = c_grid * c_grid             # 90,000
-
-        # CFL-optimal dt: largest stable timestep for wave equation
-        dt = 0.70 / c_grid                      # ~0.00233s
-
-        # Damping: must satisfy damping * dt < 2 for stability
-        # Use 0.8 / dt as safe max, then scale by desired fraction
-        damping_per_sec = min(400.0, 0.8 / dt)  # ~343/s, safe and physical
+        # Exact same values as the working shockwave viz tool
+        c_squared = 800.0
+        damping = 3.0
+        dt = 0.001
 
         for _ in range(n_substeps):
             # --- Wave equation: shockwave propagation ---
@@ -489,14 +482,13 @@ class Physics:
             right = np.where(wall_right, gmap.wave_p, right)
             lap = up + down + left + right - 4.0 * gmap.wave_p
 
-            gmap.wave_v += (c_squared * lap - damping_per_sec * gmap.wave_v) * dt
+            gmap.wave_v += (c_squared * lap - damping * gmap.wave_v) * dt
             gmap.wave_p += gmap.wave_v * dt
             gmap.wave_p[gmap.is_wall] = 0.0
             gmap.wave_p[gmap.is_vacuum] = 0.0
 
             # Transfer wave energy into sustained atmosphere
-            transfer_rate = 30.0  # per second (gentle — wave persists)
-            gmap.atmosphere += gmap.wave_p * transfer_rate * dt
+            gmap.atmosphere += gmap.wave_p * 0.5 * dt
 
             # --- Atmosphere diffusion (slow equalization) ---
             Physics.step_atmosphere(gmap, dt)
@@ -807,6 +799,11 @@ class Game:
                     removed = self.selected_unit.orders.pop()
                     if removed.ap_cost > 0:
                         self.selected_unit.ap[removed.phase] += removed.ap_cost
+                    # Refund inventory
+                    if removed.order_type == ORDER_GRENADE:
+                        self.selected_unit.has_grenade += 1
+                    elif removed.order_type == ORDER_EXPLOSIVE:
+                        self.selected_unit.has_explosive += 1
             elif event.key == pygame.K_ESCAPE:
                 if self.selected_unit:
                     self.selected_unit = None
