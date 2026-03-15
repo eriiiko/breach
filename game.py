@@ -522,6 +522,8 @@ class Physics:
             gmap.wave_p[gmap.is_vacuum] = 0.0
 
             gmap.atmosphere += gmap.wave_p * transfer * dt_wave
+            gmap.atmosphere[gmap.is_wall] = 0.0
+            gmap.atmosphere[gmap.is_vacuum] = 0.0
             np.clip(gmap.atmosphere, 0.0, 20.0, out=gmap.atmosphere)
 
         # --- Diffusion substeps ---
