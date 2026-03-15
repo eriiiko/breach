@@ -466,6 +466,7 @@ class Unit:
         self.orders = []  # list of Order objects
         self.alive = True
         self.hp = CFG.marine.hp if team == 0 else CFG.zombie.hp
+        self.max_hp = self.hp
         self.facing = "S"
         self.current_order_type = ORDER_MOVE_ATTACK
         self.has_grenade = CFG.marine.grenades if team == 0 else 0
@@ -627,12 +628,28 @@ class Game:
             Unit("Charlie", 5, 6, team=0),
         ]
 
-        # Zombies — in right section, higher HP from config
-        zombie_positions = [(20, 9), (22, 10), (24, 8), (21, 14), (26, 15),
-                            (28, 10), (32, 5), (34, 8)]
-        for i, (zx, zy) in enumerate(zombie_positions):
+        # Zombies — mixed tiers for tension
+        # Regular zombies (config HP)
+        zombie_regular = [(20, 9), (22, 10), (24, 8), (26, 15)]
+        for i, (zx, zy) in enumerate(zombie_regular):
             z = Unit(f"Z{i+1}", zx, zy, team=1)
             self.units.append(z)
+
+        # Fast weak zombies (runners) — low HP, faster
+        zombie_runners = [(21, 14), (28, 10), (34, 8)]
+        for i, (zx, zy) in enumerate(zombie_runners):
+            z = Unit(f"Zr{i+1}", zx, zy, team=1)
+            z.hp = CFG.zombie.hp // 4  # 100 HP — fragile
+            z.max_hp = z.hp
+            z.zombie_speed_override = max(1, CFG.zombie.ticks_per_tile - 3)  # faster
+            self.units.append(z)
+
+        # Tank zombie (brute) — very high HP, slower
+        z = Unit("BRUTE", 32, 5, team=1)
+        z.hp = CFG.zombie.hp * 3  # 1200 HP — bullet sponge
+        z.max_hp = z.hp
+        z.zombie_speed_override = CFG.zombie.ticks_per_tile + 3  # slower
+        self.units.append(z)
 
         self.selected_unit = None
         self.current_mode = ORDER_MOVE_ATTACK
@@ -1232,7 +1249,7 @@ class Game:
 
             # Move toward nearest player using A* pathfinding
             z.zombie_move_accumulator += 1
-            speed = CFG.zombie.ticks_per_tile
+            speed = getattr(z, 'zombie_speed_override', CFG.zombie.ticks_per_tile)
             if z.zombie_move_accumulator >= speed:
                 z.zombie_move_accumulator = 0
 
@@ -1311,6 +1328,7 @@ class Game:
                 u.team = 1
                 u.alive = True
                 u.hp = CFG.zombie.hp
+                u.max_hp = CFG.zombie.hp
                 u.zombie_activated = True
                 u.killed_by_zombie = False
                 u.name = f"Z-{u.name}"
@@ -1384,8 +1402,15 @@ class Game:
             pygame.draw.line(self.screen, COL_GRID, (0, y), (fw * ft, y), 1)
 
     def _draw_atmosphere(self):
+        """Draw atmosphere pressure as a dramatic overlay.
+        Shockwave front (high pressure): bright white flash
+        Moderate overpressure: orange/yellow
+        Slight breeze: subtle warm tint
+        Underpressure (vacuum pull): blue/purple
+        """
         atm = self.gmap.atmosphere
-        if atm.max() - atm.min() < 0.01:
+        atm_max = atm.max()
+        if atm_max - atm.min() < 0.01:
             return
         co = CFG.display.coarse
         ft = CFG.display.fine_tile_px
@@ -1399,15 +1424,42 @@ class Game:
             for cx in range(mw):
                 fy, fx = cy * co, cx * co
                 val = atm[fy:fy+co, fx:fx+co].mean()
-                if val > 1.05:
-                    intensity = min(255, int((val - 1.0) * 200))
-                    r = min(255, 200 + int((val - 1.0) * 55))
-                    g = min(255, 120 + int((val - 1.0) * 80))
-                    b = min(255, int((val - 1.0) * 40))
-                    overlay.set_at((cx, cy), (r, g, b, intensity))
+
+                if val > 1.02:
+                    excess = val - 1.0
+                    if excess > 3.0:
+                        # Shockwave front: blinding white flash
+                        a = min(255, int(excess * 40))
+                        overlay.set_at((cx, cy), (255, 255, 255, a))
+                    elif excess > 1.0:
+                        # Strong overpressure: bright orange-white
+                        t = min(1.0, (excess - 1.0) / 2.0)
+                        r = 255
+                        g = int(180 + 75 * t)
+                        b = int(80 + 175 * t)
+                        a = min(240, int(excess * 80))
+                        overlay.set_at((cx, cy), (r, g, b, a))
+                    elif excess > 0.3:
+                        # Moderate pressure wave: warm orange
+                        t = (excess - 0.3) / 0.7
+                        r = int(200 + 55 * t)
+                        g = int(100 + 80 * t)
+                        b = int(20 + 60 * t)
+                        a = min(200, int(excess * 120))
+                        overlay.set_at((cx, cy), (r, g, b, a))
+                    else:
+                        # Gentle breeze: subtle warm tint
+                        a = min(80, int(excess * 200))
+                        if a > 5:
+                            overlay.set_at((cx, cy), (180, 120, 50, a))
+
                 elif val < 0.9 and not self.gmap.is_wall[fy, fx]:
-                    intensity = min(220, int((1.0 - val) * 300))
-                    overlay.set_at((cx, cy), (80, 50, 255, intensity))
+                    # Underpressure / vacuum pull: blue-purple
+                    deficit = 1.0 - val
+                    a = min(220, int(deficit * 400))
+                    r = int(60 + 40 * min(1.0, deficit))
+                    overlay.set_at((cx, cy), (r, 40, 255, a))
+
         scaled = pygame.transform.scale(overlay, (fw * ft, fh * ft))
         self.screen.blit(scaled, (0, 0))
 
@@ -1461,7 +1513,7 @@ class Game:
                     pygame.draw.rect(self.screen, (255, 0, 0),
                                      (px, py, co_px, co_px), 1)
                 # HP bar
-                max_hp = CFG.zombie.hp
+                max_hp = u.max_hp
                 if u.hp < max_hp:
                     bar_w = int((u.hp / max_hp) * (co_px - 4))
                     pygame.draw.rect(self.screen, (255, 0, 0),

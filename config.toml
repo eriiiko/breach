@@ -15,7 +15,7 @@ d_atm = 200.0
 d_smoke = 0.4
 advection_rate = 25.0
 physics_dt = 0.001
-physics_substeps = 3
+physics_substeps = 8
 
 [display]
 fine_tile_px = 10
