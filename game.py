@@ -1447,7 +1447,7 @@ class Game:
             u.move_path = []
             u.last_fire_tick = -999
 
-        self.gmap.unit_absorb[:] = 0.0
+        self.gmap.obstacles = self.gmap.is_wall.copy()
         # Keep unexploded projectiles (grenades with long fuses)
         self.projectiles = [p for p in self.projectiles if not p.detonated]
         self.planning_phase = 0
