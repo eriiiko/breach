@@ -769,9 +769,7 @@ class Game:
         phase = self.planning_phase
 
         if self.current_mode in (ORDER_MOVE_ATTACK, ORDER_MOVE_COVER, ORDER_SPRINT):
-            # Movement doesn't cost AP, but only one move order per phase
-            if u.has_move_order_in_phase(phase):
-                return
+            # Movement doesn't cost AP. Multiple waypoints per phase allowed.
             fx = mx // ft - co // 2
             fy = my // ft - co // 2
             fx = max(0, min(fw - co, fx))
@@ -862,53 +860,79 @@ class Game:
         self._process_door_explosives(DET_START_PHASE1)
 
     def _compute_player_paths(self):
-        """Compute movement paths for all player units using simple interpolation.
-        When pathfinding module is available, uses temporal A*."""
+        """Compute movement paths for all player units using A* pathfinding.
+        Paths follow walls, support multiple waypoints per phase, and avoid
+        friendly unit collisions via the reservation table."""
         co = CFG.display.coarse
         tpp = CFG.clock.ticks_per_phase
-        tpr = CFG.clock.ticks_per_round
+        fw = CFG.display.fine_w
+        fh = CFG.display.fine_h
+        gmap = self.gmap
+
+        def is_blocked(x, y):
+            return not gmap.is_passable_block(y, x)
 
         for u in self.units:
             if u.team != 0 or not u.alive:
                 continue
             u.move_path = []
             u.path_tick_offset = 0
-            current_fx, current_fy = float(u.fx), float(u.fy)
+            current_x, current_y = u.fx, u.fy
 
             for phase in range(CFG.clock.phases_per_round):
-                phase_start = phase * tpp
-                # Find movement order for this phase
-                move_order = None
-                for o in u.orders:
-                    if (o.phase == phase and o.order_type in
-                            (ORDER_MOVE_ATTACK, ORDER_MOVE_COVER, ORDER_SPRINT)):
-                        move_order = o
-                        break
+                # Collect all move orders for this phase (waypoint chain)
+                move_orders = [o for o in u.orders
+                               if o.phase == phase and o.order_type in
+                               (ORDER_MOVE_ATTACK, ORDER_MOVE_COVER, ORDER_SPRINT)]
 
-                if move_order:
-                    target_fx = float(move_order.target_fx)
-                    target_fy = float(move_order.target_fy)
-                    speed = ticks_per_tile(move_order.order_type)
-                    dx = target_fx - current_fx
-                    dy = target_fy - current_fy
-                    dist = diagonal_distance(int(abs(dx)), int(abs(dy)))
-                    move_ticks = max(1, dist * speed)
+                if move_orders:
+                    # Build a tile-by-tile path through all waypoints using A*
+                    tile_path = []
+                    cx, cy = current_x, current_y
+                    speed = ticks_per_tile(move_orders[0].order_type)
 
-                    for t in range(tpp):
-                        if t < move_ticks:
-                            frac = (t + 1) / move_ticks
-                            frac = min(1.0, frac)
-                            px = current_fx + dx * frac
-                            py = current_fy + dy * frac
-                            u.move_path.append((px, py))
+                    for mo in move_orders:
+                        speed = ticks_per_tile(mo.order_type)
+                        if HAS_PATHFINDING:
+                            segment = astar(cx, cy, mo.target_fx, mo.target_fy,
+                                            is_blocked, fw, fh)
+                            if segment and len(segment) > 1:
+                                tile_path.extend(segment[1:])  # skip start (already there)
+                            elif not segment:
+                                # No path found — stay put
+                                pass
                         else:
-                            u.move_path.append((target_fx, target_fy))
+                            # Fallback: direct move (old behavior)
+                            tile_path.append((mo.target_fx, mo.target_fy))
+                        cx, cy = mo.target_fx, mo.target_fy
 
-                    current_fx, current_fy = target_fx, target_fy
+                    # Convert tile path to per-tick positions
+                    # Each tile takes 'speed' ticks to traverse
+                    if tile_path:
+                        tick_positions = []
+                        prev_x, prev_y = float(current_x), float(current_y)
+                        for tile_x, tile_y in tile_path:
+                            # Interpolate over 'speed' ticks from prev to this tile
+                            for st in range(speed):
+                                frac = (st + 1) / speed
+                                ix = prev_x + (tile_x - prev_x) * frac
+                                iy = prev_y + (tile_y - prev_y) * frac
+                                tick_positions.append((ix, iy))
+                            prev_x, prev_y = float(tile_x), float(tile_y)
+
+                        # Fill remaining phase ticks with final position
+                        for _ in range(tpp - len(tick_positions)):
+                            tick_positions.append((prev_x, prev_y))
+                        # Truncate if path is longer than phase
+                        u.move_path.extend(tick_positions[:tpp])
+                        current_x = int(round(tick_positions[min(len(tick_positions), tpp) - 1][0]))
+                        current_y = int(round(tick_positions[min(len(tick_positions), tpp) - 1][1]))
+                    else:
+                        for _ in range(tpp):
+                            u.move_path.append((float(current_x), float(current_y)))
                 else:
-                    # No movement this phase — stay in place
-                    for t in range(tpp):
-                        u.move_path.append((current_fx, current_fy))
+                    for _ in range(tpp):
+                        u.move_path.append((float(current_x), float(current_y)))
 
     def _process_door_explosives(self, slot):
         """Detonate all door explosives scheduled for the given detonation slot."""
@@ -1206,42 +1230,44 @@ class Game:
                         nearest.killed_by_zombie = True
                 continue
 
-            # Move toward nearest player (simple grid movement)
+            # Move toward nearest player using A* pathfinding
             z.zombie_move_accumulator += 1
             speed = CFG.zombie.ticks_per_tile
             if z.zombie_move_accumulator >= speed:
                 z.zombie_move_accumulator = 0
 
-                # Compute direction
-                dx = nearest.fx - z.fx
-                dy = nearest.fy - z.fy
-                # Move one tile toward target
-                move_x = 0
-                move_y = 0
-                if abs(dx) > abs(dy):
-                    move_x = 1 if dx > 0 else -1
-                elif abs(dy) > 0:
-                    move_y = 1 if dy > 0 else -1
+                # Recompute path if: no path, finished path, or every 5 steps
+                # (to track moving players)
+                needs_repath = (not z.zombie_path or
+                                z.zombie_path_idx >= len(z.zombie_path) or
+                                z.zombie_path_idx % 5 == 0)
+                if needs_repath:
+                    if HAS_PATHFINDING:
+                        def is_blocked(x, y):
+                            return not self.gmap.is_passable_block(y, x)
+                        fw = CFG.display.fine_w
+                        fh = CFG.display.fine_h
+                        z.zombie_path = astar(z.fx, z.fy, nearest.fx, nearest.fy,
+                                              is_blocked, fw, fh)
+                        z.zombie_path_idx = 1  # skip start position
+                    else:
+                        z.zombie_path = []
+                        z.zombie_path_idx = 0
 
-                nfx = z.fx + move_x
-                nfy = z.fy + move_y
-                if self.gmap.is_passable_block(nfy, nfx):
-                    z.fx = nfx
-                    z.fy = nfy
-                    z.fxf = float(nfx)
-                    z.fyf = float(nfy)
-                else:
-                    # Try other direction
-                    if move_x != 0 and abs(dy) > 0:
-                        alt_y = 1 if dy > 0 else -1
-                        if self.gmap.is_passable_block(z.fy + alt_y, z.fx):
-                            z.fy += alt_y
-                            z.fyf = float(z.fy)
-                    elif move_y != 0 and abs(dx) > 0:
-                        alt_x = 1 if dx > 0 else -1
-                        if self.gmap.is_passable_block(z.fy, z.fx + alt_x):
-                            z.fx += alt_x
-                            z.fxf = float(z.fx)
+                # Follow path
+                if z.zombie_path and z.zombie_path_idx < len(z.zombie_path):
+                    next_x, next_y = z.zombie_path[z.zombie_path_idx]
+                    # Check if tile is still passable (walls may have changed)
+                    if self.gmap.is_passable_block(next_y, next_x):
+                        z.fx = next_x
+                        z.fy = next_y
+                        z.fxf = float(next_x)
+                        z.fyf = float(next_y)
+                        z.zombie_path_idx += 1
+                    else:
+                        # Path blocked, recompute next tick
+                        z.zombie_path = []
+                        z.zombie_path_idx = 0
 
     def _apply_blast_damage(self, fx, fy, radius, max_damage):
         """Damage all units within blast radius."""

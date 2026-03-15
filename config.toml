@@ -61,7 +61,7 @@ unit_damage = 60
 
 [zombie]
 hp = 400
-ticks_per_tile = 9
+ticks_per_tile = 7                 # slightly faster than marine attack move (9)
 melee_damage = 60
 trigger_radius = 24
 propagation_radius = 15
