@@ -486,13 +486,21 @@ class Physics:
             print(f"[physics] CFL: c*dt = {cfl:.4f} (limit 0.707) {'OK' if cfl < 0.707 else 'UNSTABLE!'}")
             print(f"[physics] Damping: γ*dt = {damp_stability:.4f} (limit 2.0) {'OK' if damp_stability < 2 else 'UNSTABLE!'}")
 
+        def _check(name, arr):
+            mx = np.nanmax(np.abs(arr))
+            if not np.isfinite(mx) or mx > 1e6:
+                print(f"[BLOWUP] {name}: max={mx}")
+                return True
+            return False
+
         for _ in range(n_substeps):
             # --- Feed pressure source into wave field gradually ---
             if np.any(gmap.wave_source > 0.001):
                 feed = gmap.wave_source * feed_rate * dt
-                feed = np.minimum(feed, gmap.wave_source)  # don't overshoot
+                feed = np.minimum(feed, gmap.wave_source)
                 gmap.wave_p += feed
                 gmap.wave_source -= feed
+                if _check("after source feed", gmap.wave_p): return
 
             # --- Wave equation: shockwave propagation ---
             up = np.roll(gmap.wave_p, 1, axis=0)
@@ -510,21 +518,26 @@ class Physics:
             lap = up + down + left + right - 4.0 * gmap.wave_p
 
             gmap.wave_v += (c_squared * lap - damping * gmap.wave_v) * dt
+            if _check("after wave_v update", gmap.wave_v): return
             gmap.wave_p += gmap.wave_v * dt
             gmap.wave_p[gmap.is_wall] = 0.0
             gmap.wave_p[gmap.is_vacuum] = 0.0
+            if _check("after wave_p update", gmap.wave_p): return
 
             # Transfer wave energy into sustained atmosphere
             gmap.atmosphere += gmap.wave_p * transfer * dt
             gmap.atmosphere[gmap.is_wall] = 0.0
             gmap.atmosphere[gmap.is_vacuum] = 0.0
             np.clip(gmap.atmosphere, 0.0, 20.0, out=gmap.atmosphere)
+            if _check("after atmosphere transfer", gmap.atmosphere): return
 
             # --- Atmosphere diffusion (slow equalization) ---
             Physics.step_atmosphere(gmap, dt)
+            if _check("after atm diffusion", gmap.atmosphere): return
 
             # --- Smoke ---
             Physics.step_smoke(gmap, dt)
+            if _check("after smoke", gmap.smoke): return
 
 
 # ---------------------------------------------------------------------------
