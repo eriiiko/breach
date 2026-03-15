@@ -1960,9 +1960,11 @@ class Game:
             self.screen.blit(phys_text, (x, y))
             y += 14
             wave_max = abs(self.gmap.wave_p).max()
-            atm_max = self.gmap.atmosphere.max()
+            interior = ~self.gmap.is_wall & ~self.gmap.is_vacuum
+            atm_min = self.gmap.atmosphere[interior].min() if interior.any() else 0
+            atm_max = self.gmap.atmosphere[interior].max() if interior.any() else 0
             pf_text = self.font_small.render(
-                f"Wave: {wave_max:.1f}  Atm: {atm_max:.2f}", True, COL_UI_TEXT)
+                f"Wave: {wave_max:.1f}  Atm: {atm_min:.2f}-{atm_max:.2f}", True, COL_UI_TEXT)
             self.screen.blit(pf_text, (x, y))
         y += 18
 
