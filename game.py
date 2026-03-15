@@ -178,6 +178,7 @@ class GameMap:
         self.atmosphere = np.ones((fh, fw), dtype=np.float32)
         self.wave_p = np.zeros((fh, fw), dtype=np.float32)  # wave pressure deviation
         self.wave_v = np.zeros((fh, fw), dtype=np.float32)  # wave velocity (dp/dt)
+        self.wave_source = np.zeros((fh, fw), dtype=np.float32)  # pressure source (fed over time)
         self.smoke = np.zeros((fh, fw), dtype=np.float32)
         self.unit_absorb = np.zeros((fh, fw), dtype=np.float32)
 
@@ -449,24 +450,50 @@ class Physics:
                             if gmap.wall_hp[ny, nx] <= 0:
                                 gmap.destroy_wall(ny, nx)
                         if not gmap.is_wall[ny, nx] and not gmap.is_vacuum[ny, nx]:
-                            # Wave field (shockwave propagation)
-                            gmap.wave_p[ny, nx] += pressure * falloff
+                            # Feed pressure source (delivered over multiple substeps)
+                            gmap.wave_source[ny, nx] += pressure * falloff
                             # Also deposit into atmosphere (creates sustained wind)
                             gmap.atmosphere[ny, nx] += pressure * falloff * 0.3
                         if dist <= radius * 0.4:
                             gmap.smoke[ny, nx] = 0.0
+
+    # Wave parameters — all in physical units (per second, SI-ish)
+    WAVE_C = 28.3           # wave speed in tiles/s (≈9.4 m/s, tiles are 1/3 m)
+    WAVE_DAMPING = 3.0      # velocity damping rate (1/s)
+    WAVE_TRANSFER = 0.5     # wave→atmosphere transfer rate (1/s)
+    SOURCE_FEED_RATE = 200.0  # how fast source deposits into wave_p (1/s)
 
     @staticmethod
     def step(gmap, n_substeps=None):
         if n_substeps is None:
             n_substeps = CFG.physics.physics_substeps
 
-        # Exact same values as the working shockwave viz tool
-        c_squared = 800.0
-        damping = 3.0
-        dt = 0.001
+        c = Physics.WAVE_C
+        c_squared = c * c
+        damping = Physics.WAVE_DAMPING
+        transfer = Physics.WAVE_TRANSFER
+        feed_rate = Physics.SOURCE_FEED_RATE
+
+        # Auto-compute stable dt from CFL
+        dt = 0.65 / c   # CFL: c*dt < 1/√2 ≈ 0.707, use 0.65 for safety margin
+
+        # Stability checks (run once, printed to console)
+        if not hasattr(Physics, '_checked'):
+            Physics._checked = True
+            cfl = c * dt
+            damp_stability = damping * dt
+            print(f"[physics] c={c:.1f} tiles/s, dt={dt*1000:.2f}ms")
+            print(f"[physics] CFL: c*dt = {cfl:.4f} (limit 0.707) {'OK' if cfl < 0.707 else 'UNSTABLE!'}")
+            print(f"[physics] Damping: γ*dt = {damp_stability:.4f} (limit 2.0) {'OK' if damp_stability < 2 else 'UNSTABLE!'}")
 
         for _ in range(n_substeps):
+            # --- Feed pressure source into wave field gradually ---
+            if np.any(gmap.wave_source > 0.001):
+                feed = gmap.wave_source * feed_rate * dt
+                feed = np.minimum(feed, gmap.wave_source)  # don't overshoot
+                gmap.wave_p += feed
+                gmap.wave_source -= feed
+
             # --- Wave equation: shockwave propagation ---
             up = np.roll(gmap.wave_p, 1, axis=0)
             down = np.roll(gmap.wave_p, -1, axis=0)
@@ -488,7 +515,10 @@ class Physics:
             gmap.wave_p[gmap.is_vacuum] = 0.0
 
             # Transfer wave energy into sustained atmosphere
-            gmap.atmosphere += gmap.wave_p * 0.5 * dt
+            gmap.atmosphere += gmap.wave_p * transfer * dt
+            gmap.atmosphere[gmap.is_wall] = 0.0
+            gmap.atmosphere[gmap.is_vacuum] = 0.0
+            np.clip(gmap.atmosphere, 0.0, 20.0, out=gmap.atmosphere)
 
             # --- Atmosphere diffusion (slow equalization) ---
             Physics.step_atmosphere(gmap, dt)
