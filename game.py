@@ -336,13 +336,25 @@ class GameMap:
     def destroy_wall(self, fy, fx):
         fw = CFG.display.fine_w
         fh = CFG.display.fine_h
+        co = CFG.display.coarse
         if 0 <= fy < fh and 0 <= fx < fw:
-            if self.material[fy, fx] in (MAT_WOOD, MAT_DOOR):
+            was_hull = (self.material[fy, fx] == MAT_HULL)
+            if self.material[fy, fx] in (MAT_HULL, MAT_WOOD, MAT_DOOR):
                 self.material[fy, fx] = MAT_AIR
                 self.wall_hp[fy, fx] = 0
                 self.is_wall[fy, fx] = False
                 self.flammable[fy, fx] = False
-                self.atmosphere[fy, fx] = 0.5
+                # Hull breach: tile becomes vacuum-adjacent, starts at 0 atm
+                # Interior wall: gets some atmosphere from neighbors
+                if was_hull:
+                    # Check if this tile is on the map edge (true hull breach)
+                    if fy < co or fy >= fh - co or fx < co or fx >= fw - co:
+                        self.is_vacuum[fy, fx] = True
+                        self.atmosphere[fy, fx] = 0.0
+                    else:
+                        self.atmosphere[fy, fx] = 0.3
+                else:
+                    self.atmosphere[fy, fx] = 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -393,23 +405,35 @@ class Physics:
     def step_smoke(gmap, dt):
         lap = Physics.compute_laplacian(gmap.smoke, gmap.is_wall)
         gmap.smoke += CFG.physics.d_smoke * dt * lap
-        grad_y = (np.roll(gmap.atmosphere, -1, axis=0) -
-                  np.roll(gmap.atmosphere, 1, axis=0)) / 2.0
-        grad_x = (np.roll(gmap.atmosphere, -1, axis=1) -
-                  np.roll(gmap.atmosphere, 1, axis=1)) / 2.0
+
+        # Smoke gradient (shared by both advection sources)
         ds_dy = (np.roll(gmap.smoke, -1, axis=0) -
                  np.roll(gmap.smoke, 1, axis=0)) / 2.0
         ds_dx = (np.roll(gmap.smoke, -1, axis=1) -
                  np.roll(gmap.smoke, 1, axis=1)) / 2.0
+
+        # Advection by atmosphere gradient (sustained wind, e.g. hull breach)
+        a_grad_y = (np.roll(gmap.atmosphere, -1, axis=0) -
+                    np.roll(gmap.atmosphere, 1, axis=0)) / 2.0
+        a_grad_x = (np.roll(gmap.atmosphere, -1, axis=1) -
+                    np.roll(gmap.atmosphere, 1, axis=1)) / 2.0
         gmap.smoke += CFG.physics.advection_rate * dt * (
-            grad_x * ds_dx + grad_y * ds_dy)
+            a_grad_x * ds_dx + a_grad_y * ds_dy)
+
+        # Advection by wave pressure gradient (shockwave pushes smoke hard)
+        w_grad_y = (np.roll(gmap.wave_p, -1, axis=0) -
+                    np.roll(gmap.wave_p, 1, axis=0)) / 2.0
+        w_grad_x = (np.roll(gmap.wave_p, -1, axis=1) -
+                    np.roll(gmap.wave_p, 1, axis=1)) / 2.0
+        gmap.smoke += 80.0 * dt * (w_grad_x * ds_dx + w_grad_y * ds_dy)
+
         gmap.smoke[gmap.is_wall] = 0.0
         gmap.smoke[gmap.is_vacuum] = 0.0
         np.clip(gmap.smoke, 0.0, 1.0, out=gmap.smoke)
 
     @staticmethod
     def apply_explosion(gmap, fy, fx, radius, pressure, wall_damage):
-        """Apply explosion: damage walls, deposit wave pressure, clear smoke."""
+        """Apply explosion: damage walls, deposit wave + atmosphere pressure."""
         fh = CFG.display.fine_h
         fw = CFG.display.fine_w
         for dy in range(-radius, radius + 1):
@@ -419,13 +443,16 @@ class Physics:
                     dist = math.sqrt(dy * dy + dx * dx)
                     if dist <= radius:
                         falloff = 1.0 - (dist / radius)
-                        if gmap.material[ny, nx] in (MAT_WOOD, MAT_DOOR):
+                        # Damage ALL wall types (including hull)
+                        if gmap.material[ny, nx] in (MAT_HULL, MAT_WOOD, MAT_DOOR):
                             gmap.wall_hp[ny, nx] -= wall_damage * falloff
                             if gmap.wall_hp[ny, nx] <= 0:
                                 gmap.destroy_wall(ny, nx)
                         if not gmap.is_wall[ny, nx] and not gmap.is_vacuum[ny, nx]:
-                            # Deposit into wave field (propagates as shockwave)
+                            # Wave field (shockwave propagation)
                             gmap.wave_p[ny, nx] += pressure * falloff
+                            # Also deposit into atmosphere (creates sustained wind)
+                            gmap.atmosphere[ny, nx] += pressure * falloff * 0.3
                         if dist <= radius * 0.4:
                             gmap.smoke[ny, nx] = 0.0
 
