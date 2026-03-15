@@ -457,16 +457,19 @@ class Physics:
                         if dist <= radius * 0.4:
                             gmap.smoke[ny, nx] = 0.0
 
-    # Wave parameters — all in physical units (per second, SI-ish)
-    WAVE_C =10.0          # wave speed in tiles/s (≈100 m/s, tiles are 1/3 m)
+    # Wave parameters — all in physical units (per second)
+    WAVE_C = 300.0          # wave speed in tiles/s (100 m/s, tiles are 1/3 m)
     WAVE_DAMPING = 3.0      # velocity damping rate (1/s)
-    WAVE_TRANSFER = 0.5     # wave→atmosphere transfer rate (1/s)
+    WAVE_TRANSFER = 0.5     # wave->atmosphere transfer rate (1/s)
     SOURCE_FEED_RATE = 200.0  # how fast source deposits into wave_p (1/s)
 
     @staticmethod
-    def step(gmap, n_substeps=None):
-        if n_substeps is None:
-            n_substeps = CFG.physics.physics_substeps
+    def step(gmap, sim_time=None):
+        """Advance all physics by sim_time seconds.
+        Each system auto-computes its substep count from its own stability dt.
+        If sim_time is None, advances one game tick (1/ticks_per_second)."""
+        if sim_time is None:
+            sim_time = 1.0 / CFG.clock.ticks_per_second  # 83.3ms per game tick
 
         c = Physics.WAVE_C
         c_squared = c * c
@@ -474,27 +477,31 @@ class Physics:
         transfer = Physics.WAVE_TRANSFER
         feed_rate = Physics.SOURCE_FEED_RATE
 
-        # --- Separate dt for each system ---
-        dt_wave = 0.65 / c                              # wave CFL
-        dt_diff = 0.24 / max(CFG.physics.d_atm, 0.01)  # diffusion stability
+        # Each system's stable dt
+        dt_wave = 0.65 / c
+        dt_diff = 0.24 / max(CFG.physics.d_atm, 0.01)
+
+        # How many substeps to cover sim_time
+        n_wave = max(1, int(math.ceil(sim_time / dt_wave)))
+        n_diff = max(1, int(math.ceil(sim_time / dt_diff)))
+        # Smoke: one step per call, using full sim_time (no CFL issue)
+        dt_smoke = sim_time
 
         # Stability checks (once at startup)
         if not hasattr(Physics, '_checked'):
             Physics._checked = True
-            print(f"[physics] Wave: c={c:.1f} tiles/s, dt={dt_wave*1000:.2f}ms")
-            print(f"[physics] Diffusion: D={CFG.physics.d_atm}, dt={dt_diff*1000:.2f}ms")
-            print(f"[physics] CFL: c*dt={c*dt_wave:.4f} (<0.707) | D*dt={CFG.physics.d_atm*dt_diff:.4f} (<0.25)")
+            print(f"[physics] sim_time={sim_time*1000:.1f}ms per game tick")
+            print(f"[physics] Wave: c={c:.1f} tiles/s, dt={dt_wave*1000:.2f}ms, {n_wave} substeps")
+            print(f"[physics] Diffusion: D={CFG.physics.d_atm}, dt={dt_diff*1000:.2f}ms, {n_diff} substeps")
 
-        # --- Wave substeps (fast: shockwave propagation) ---
-        for _ in range(n_substeps):
-            # Feed pressure source gradually
+        # --- Wave substeps ---
+        for _ in range(n_wave):
             if np.any(gmap.wave_source > 0.001):
                 feed = gmap.wave_source * feed_rate * dt_wave
                 feed = np.minimum(feed, gmap.wave_source)
                 gmap.wave_p += feed
                 gmap.wave_source -= feed
 
-            # Wave equation
             up = np.roll(gmap.wave_p, 1, axis=0)
             down = np.roll(gmap.wave_p, -1, axis=0)
             left = np.roll(gmap.wave_p, 1, axis=1)
@@ -514,17 +521,15 @@ class Physics:
             gmap.wave_p[gmap.is_wall] = 0.0
             gmap.wave_p[gmap.is_vacuum] = 0.0
 
-            # Transfer wave energy into atmosphere
             gmap.atmosphere += gmap.wave_p * transfer * dt_wave
             np.clip(gmap.atmosphere, 0.0, 20.0, out=gmap.atmosphere)
 
-        # --- Diffusion substeps (atmosphere equalization) ---
-        n_diff = n_substeps * 3  # diffusion is cheap, run plenty for visible air drain
+        # --- Diffusion substeps ---
         for _ in range(n_diff):
             Physics.step_atmosphere(gmap, dt_diff)
 
-        # --- Smoke: once per game tick (advection + diffusion) ---
-        Physics.step_smoke(gmap, dt_diff * n_diff)
+        # --- Smoke (advection + diffusion, one step) ---
+        Physics.step_smoke(gmap, dt_smoke)
 
 
 # ---------------------------------------------------------------------------
