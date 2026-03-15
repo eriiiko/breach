@@ -176,6 +176,8 @@ class GameMap:
         self.is_vacuum = np.zeros((fh, fw), dtype=bool)
         self.flammable = np.zeros((fh, fw), dtype=bool)
         self.atmosphere = np.ones((fh, fw), dtype=np.float32)
+        self.wave_p = np.zeros((fh, fw), dtype=np.float32)  # wave pressure deviation
+        self.wave_v = np.zeros((fh, fw), dtype=np.float32)  # wave velocity (dp/dt)
         self.smoke = np.zeros((fh, fw), dtype=np.float32)
         self.unit_absorb = np.zeros((fh, fw), dtype=np.float32)
 
@@ -407,7 +409,7 @@ class Physics:
 
     @staticmethod
     def apply_explosion(gmap, fy, fx, radius, pressure, wall_damage):
-        """Apply explosion: damage walls, spike atmosphere, clear smoke."""
+        """Apply explosion: damage walls, deposit wave pressure, clear smoke."""
         fh = CFG.display.fine_h
         fw = CFG.display.fine_w
         for dy in range(-radius, radius + 1):
@@ -422,7 +424,8 @@ class Physics:
                             if gmap.wall_hp[ny, nx] <= 0:
                                 gmap.destroy_wall(ny, nx)
                         if not gmap.is_wall[ny, nx] and not gmap.is_vacuum[ny, nx]:
-                            gmap.atmosphere[ny, nx] += pressure * falloff
+                            # Deposit into wave field (propagates as shockwave)
+                            gmap.wave_p[ny, nx] += pressure * falloff
                         if dist <= radius * 0.4:
                             gmap.smoke[ny, nx] = 0.0
 
@@ -431,8 +434,37 @@ class Physics:
         if n_substeps is None:
             n_substeps = CFG.physics.physics_substeps
         dt = CFG.physics.physics_dt
+        c_squared = 800.0   # speed of sound squared
+        damping = 3.0       # wave energy dissipation
+
         for _ in range(n_substeps):
+            # --- Wave equation: shockwave propagation ---
+            up = np.roll(gmap.wave_p, 1, axis=0)
+            down = np.roll(gmap.wave_p, -1, axis=0)
+            left = np.roll(gmap.wave_p, 1, axis=1)
+            right = np.roll(gmap.wave_p, -1, axis=1)
+            wall_up = np.roll(gmap.is_wall, 1, axis=0)
+            wall_down = np.roll(gmap.is_wall, -1, axis=0)
+            wall_left = np.roll(gmap.is_wall, 1, axis=1)
+            wall_right = np.roll(gmap.is_wall, -1, axis=1)
+            up = np.where(wall_up, gmap.wave_p, up)
+            down = np.where(wall_down, gmap.wave_p, down)
+            left = np.where(wall_left, gmap.wave_p, left)
+            right = np.where(wall_right, gmap.wave_p, right)
+            lap = up + down + left + right - 4.0 * gmap.wave_p
+
+            gmap.wave_v += (c_squared * lap - damping * gmap.wave_v) * dt
+            gmap.wave_p += gmap.wave_v * dt
+            gmap.wave_p[gmap.is_wall] = 0.0
+            gmap.wave_p[gmap.is_vacuum] = 0.0
+
+            # Transfer wave energy into sustained atmosphere
+            gmap.atmosphere += gmap.wave_p * 0.5 * dt
+
+            # --- Atmosphere diffusion (slow equalization) ---
             Physics.step_atmosphere(gmap, dt)
+
+            # --- Smoke ---
             Physics.step_smoke(gmap, dt)
 
 
@@ -1402,63 +1434,42 @@ class Game:
             pygame.draw.line(self.screen, COL_GRID, (0, y), (fw * ft, y), 1)
 
     def _draw_atmosphere(self):
-        """Draw atmosphere pressure as a dramatic overlay.
-        Shockwave front (high pressure): bright white flash
-        Moderate overpressure: orange/yellow
-        Slight breeze: subtle warm tint
-        Underpressure (vacuum pull): blue/purple
-        """
-        atm = self.gmap.atmosphere
-        atm_max = atm.max()
-        if atm_max - atm.min() < 0.01:
+        """Draw pressure field (atmosphere + wave) at fine tile resolution.
+        Uses fire color scheme from the shockwave viz tool."""
+        total = self.gmap.atmosphere + self.gmap.wave_p
+        if total.max() - total.min() < 0.01:
             return
-        co = CFG.display.coarse
         ft = CFG.display.fine_tile_px
-        mw = CFG.display.map_w
-        mh = CFG.display.map_h
         fw = CFG.display.fine_w
         fh = CFG.display.fine_h
 
-        overlay = pygame.Surface((mw, mh), pygame.SRCALPHA)
-        for cy in range(mh):
-            for cx in range(mw):
-                fy, fx = cy * co, cx * co
-                val = atm[fy:fy+co, fx:fx+co].mean()
-
-                if val > 1.02:
-                    excess = val - 1.0
-                    if excess > 3.0:
-                        # Shockwave front: blinding white flash
-                        a = min(255, int(excess * 40))
-                        overlay.set_at((cx, cy), (255, 255, 255, a))
-                    elif excess > 1.0:
-                        # Strong overpressure: bright orange-white
-                        t = min(1.0, (excess - 1.0) / 2.0)
-                        r = 255
-                        g = int(180 + 75 * t)
-                        b = int(80 + 175 * t)
-                        a = min(240, int(excess * 80))
-                        overlay.set_at((cx, cy), (r, g, b, a))
-                    elif excess > 0.3:
-                        # Moderate pressure wave: warm orange
-                        t = (excess - 0.3) / 0.7
-                        r = int(200 + 55 * t)
-                        g = int(100 + 80 * t)
-                        b = int(20 + 60 * t)
-                        a = min(200, int(excess * 120))
-                        overlay.set_at((cx, cy), (r, g, b, a))
+        overlay = pygame.Surface((fw, fh), pygame.SRCALPHA)
+        for fy in range(fh):
+            for fx in range(fw):
+                if self.gmap.is_wall[fy, fx] or self.gmap.is_vacuum[fy, fx]:
+                    continue
+                val = total[fy, fx]
+                excess = val - 1.0
+                if excess > 0.02:
+                    t = min(1.0, excess / 5.0)
+                    if t < 0.25:
+                        s = t / 0.25
+                        r, g, b = int(255 * s), 0, 0
+                    elif t < 0.5:
+                        s = (t - 0.25) / 0.25
+                        r, g, b = 255, int(140 * s), 0
+                    elif t < 0.75:
+                        s = (t - 0.5) / 0.25
+                        r, g, b = 255, int(140 + 115 * s), int(80 * s)
                     else:
-                        # Gentle breeze: subtle warm tint
-                        a = min(80, int(excess * 200))
-                        if a > 5:
-                            overlay.set_at((cx, cy), (180, 120, 50, a))
-
-                elif val < 0.9 and not self.gmap.is_wall[fy, fx]:
-                    # Underpressure / vacuum pull: blue-purple
+                        s = (t - 0.75) / 0.25
+                        r, g, b = 255, 255, int(80 + 175 * s)
+                    a = min(255, int(excess * 80))
+                    overlay.set_at((fx, fy), (r, g, b, a))
+                elif val < 0.9:
                     deficit = 1.0 - val
                     a = min(220, int(deficit * 400))
-                    r = int(60 + 40 * min(1.0, deficit))
-                    overlay.set_at((cx, cy), (r, 40, 255, a))
+                    overlay.set_at((fx, fy), (int(60 + 40 * min(1.0, deficit)), 40, 255, a))
 
         scaled = pygame.transform.scale(overlay, (fw * ft, fh * ft))
         self.screen.blit(scaled, (0, 0))
