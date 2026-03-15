@@ -1,0 +1,81 @@
+[clock]
+ticks_per_second = 12
+phases_per_round = 2
+phase_duration_seconds = 5.0
+ap_per_phase = 2
+
+[movement]
+marine_attack_ticks_per_tile = 9
+marine_cover_ticks_per_tile = 6
+marine_sprint_ticks_per_tile = 4
+xeno_sprint_ticks_per_tile = 1
+
+[physics]
+d_atm = 200.0
+d_smoke = 0.4
+advection_rate = 25.0
+physics_dt = 0.001
+physics_substeps = 3
+
+[display]
+fine_tile_px = 10
+coarse = 3
+map_w = 40
+map_h = 25
+panel_width = 250
+
+[materials]
+# Material properties: [hp, reflectivity, absorption, flammable, passable]
+# 0=air, 1=hull, 2=wood, 3=door
+air = [0, 0.0, 0.0, false, true]
+hull = [300, 0.9, 0.1, false, false]
+wood = [60, 0.4, 0.5, true, false]
+door = [40, 0.3, 0.3, true, true]
+
+[weapons.rifle]
+damage_per_bullet = 10
+bullets_per_burst = 5
+cone_half_angle_degrees = 3.0
+range_tiles = 90
+ap_cost = 1
+burst_interval_ticks = 2
+
+[weapons.grenade]
+blast_radius = 6
+pressure = 10.0
+fuse_min_seconds = 0.0
+fuse_max_seconds = 10.0
+fuse_default_seconds = 0.5
+ap_cost = 1
+max_throw_range = 30
+unit_damage = 60
+wall_damage = 200
+travel_speed = 30.0
+
+[weapons.door_explosive]
+blast_radius = 3
+pressure = 5.0
+wall_damage = 500
+ap_cost = 1
+unit_damage = 60
+
+[zombie]
+hp = 400
+ticks_per_tile = 9
+melee_damage = 60
+trigger_radius = 24
+propagation_radius = 15
+bullet_damage_multiplier = 0.25
+fire_damage_multiplier = 4.0
+attack_cooldown_ticks = 12
+
+[marine]
+hp = 100
+grenades = 2
+explosives = 2
+
+[combat]
+blast_damage_threshold = 5
+unit_absorption = 0.85
+unit_reflectivity = 0.10
+shot_tracer_duration = 0.4
