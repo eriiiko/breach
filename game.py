@@ -425,7 +425,8 @@ class Physics:
                     np.roll(gmap.wave_p, 1, axis=0)) / 2.0
         w_grad_x = (np.roll(gmap.wave_p, -1, axis=1) -
                     np.roll(gmap.wave_p, 1, axis=1)) / 2.0
-        gmap.smoke += 80.0 * dt * (w_grad_x * ds_dx + w_grad_y * ds_dy)
+        wave_advection_rate = 25000.0  # per second — shockwaves push smoke hard
+        gmap.smoke += wave_advection_rate * dt * (w_grad_x * ds_dx + w_grad_y * ds_dy)
 
         gmap.smoke[gmap.is_wall] = 0.0
         gmap.smoke[gmap.is_vacuum] = 0.0
@@ -460,9 +461,14 @@ class Physics:
     def step(gmap, n_substeps=None):
         if n_substeps is None:
             n_substeps = CFG.physics.physics_substeps
-        dt = CFG.physics.physics_dt
-        c_squared = 810000.0  # ~300 m/s (900 tiles/s, tiles are 1/3 m)
-        damping = 8.0         # higher damping needed at higher wave speed
+
+        # Wave speed: 100 m/s physical = 300 tiles/s on our 1/3m grid
+        c_grid = 300.0                          # tiles per second
+        c_squared = c_grid * c_grid             # 90,000
+        damping_per_sec = 1200.0                # physical damping rate (per second)
+
+        # CFL-optimal dt: largest stable timestep
+        dt = 0.70 / c_grid                      # ~0.00233s (slightly under 1/√2 for safety)
 
         for _ in range(n_substeps):
             # --- Wave equation: shockwave propagation ---
@@ -480,13 +486,14 @@ class Physics:
             right = np.where(wall_right, gmap.wave_p, right)
             lap = up + down + left + right - 4.0 * gmap.wave_p
 
-            gmap.wave_v += (c_squared * lap - damping * gmap.wave_v) * dt
+            gmap.wave_v += (c_squared * lap - damping_per_sec * gmap.wave_v) * dt
             gmap.wave_p += gmap.wave_v * dt
             gmap.wave_p[gmap.is_wall] = 0.0
             gmap.wave_p[gmap.is_vacuum] = 0.0
 
             # Transfer wave energy into sustained atmosphere
-            gmap.atmosphere += gmap.wave_p * 0.5 * dt
+            transfer_rate = 150.0  # per second
+            gmap.atmosphere += gmap.wave_p * transfer_rate * dt
 
             # --- Atmosphere diffusion (slow equalization) ---
             Physics.step_atmosphere(gmap, dt)
@@ -1473,43 +1480,52 @@ class Game:
             pygame.draw.line(self.screen, COL_GRID, (0, y), (fw * ft, y), 1)
 
     def _draw_atmosphere(self):
-        """Draw pressure field (atmosphere + wave) at fine tile resolution.
-        Uses fire color scheme from the shockwave viz tool."""
+        """Draw pressure field (atmosphere + wave) using numpy for speed.
+        Fire color scheme: black -> red -> orange -> yellow -> white."""
         total = self.gmap.atmosphere + self.gmap.wave_p
         if total.max() - total.min() < 0.01:
             return
         ft = CFG.display.fine_tile_px
         fw = CFG.display.fine_w
         fh = CFG.display.fine_h
+        mask = ~(self.gmap.is_wall | self.gmap.is_vacuum)
 
-        overlay = pygame.Surface((fw, fh), pygame.SRCALPHA)
-        for fy in range(fh):
-            for fx in range(fw):
-                if self.gmap.is_wall[fy, fx] or self.gmap.is_vacuum[fy, fx]:
-                    continue
-                val = total[fy, fx]
-                excess = val - 1.0
-                if excess > 0.02:
-                    t = min(1.0, excess / 5.0)
-                    if t < 0.25:
-                        s = t / 0.25
-                        r, g, b = int(255 * s), 0, 0
-                    elif t < 0.5:
-                        s = (t - 0.25) / 0.25
-                        r, g, b = 255, int(140 * s), 0
-                    elif t < 0.75:
-                        s = (t - 0.5) / 0.25
-                        r, g, b = 255, int(140 + 115 * s), int(80 * s)
-                    else:
-                        s = (t - 0.75) / 0.25
-                        r, g, b = 255, 255, int(80 + 175 * s)
-                    a = min(255, int(excess * 80))
-                    overlay.set_at((fx, fy), (r, g, b, a))
-                elif val < 0.9:
-                    deficit = 1.0 - val
-                    a = min(220, int(deficit * 400))
-                    overlay.set_at((fx, fy), (int(60 + 40 * min(1.0, deficit)), 40, 255, a))
+        # RGBA array for the overlay
+        rgba = np.zeros((fh, fw, 4), dtype=np.uint8)
 
+        # Overpressure (fire color ramp)
+        excess = np.clip(total - 1.0, 0.0, None)
+        t = np.clip(excess / 5.0, 0.0, 1.0)
+        over = mask & (excess > 0.02)
+
+        if np.any(over):
+            # Piecewise color: 0-0.25 red, 0.25-0.5 orange, 0.5-0.75 yellow, 0.75-1 white
+            t_o = t[over]
+            r = np.where(t_o < 0.25, (t_o / 0.25) * 255,
+                np.where(t_o < 0.75, 255, 255)).astype(np.uint8)
+            g = np.where(t_o < 0.25, 0,
+                np.where(t_o < 0.5, ((t_o - 0.25) / 0.25) * 140,
+                np.where(t_o < 0.75, 140 + ((t_o - 0.5) / 0.25) * 115, 255))).astype(np.uint8)
+            b = np.where(t_o < 0.5, 0,
+                np.where(t_o < 0.75, ((t_o - 0.5) / 0.25) * 80,
+                80 + ((t_o - 0.75) / 0.25) * 175)).astype(np.uint8)
+            a = np.clip(excess[over] * 80, 0, 255).astype(np.uint8)
+            rgba[over, 0] = r
+            rgba[over, 1] = g
+            rgba[over, 2] = b
+            rgba[over, 3] = a
+
+        # Underpressure (blue-purple)
+        under = mask & (total < 0.9)
+        if np.any(under):
+            deficit = 1.0 - total[under]
+            rgba[under, 0] = np.clip(60 + 40 * deficit, 0, 255).astype(np.uint8)
+            rgba[under, 1] = 40
+            rgba[under, 2] = 255
+            rgba[under, 3] = np.clip(deficit * 400, 0, 220).astype(np.uint8)
+
+        # Convert to pygame surface
+        overlay = pygame.image.frombuffer(rgba.tobytes(), (fw, fh), "RGBA")
         scaled = pygame.transform.scale(overlay, (fw * ft, fh * ft))
         self.screen.blit(scaled, (0, 0))
 
@@ -1517,21 +1533,20 @@ class Game:
         smoke = self.gmap.smoke
         if smoke.max() < 0.01:
             return
-        co = CFG.display.coarse
         ft = CFG.display.fine_tile_px
-        mw = CFG.display.map_w
-        mh = CFG.display.map_h
         fw = CFG.display.fine_w
         fh = CFG.display.fine_h
 
-        overlay = pygame.Surface((mw, mh), pygame.SRCALPHA)
-        for cy in range(mh):
-            for cx in range(mw):
-                fy, fx = cy * co, cx * co
-                val = smoke[fy:fy+co, fx:fx+co].mean()
-                if val > 0.01:
-                    intensity = min(200, int(val * 220))
-                    overlay.set_at((cx, cy), (180, 160, 140, intensity))
+        # Numpy RGBA overlay at fine tile resolution
+        rgba = np.zeros((fh, fw, 4), dtype=np.uint8)
+        has_smoke = smoke > 0.01
+        if np.any(has_smoke):
+            rgba[has_smoke, 0] = 180
+            rgba[has_smoke, 1] = 160
+            rgba[has_smoke, 2] = 140
+            rgba[has_smoke, 3] = np.clip(smoke[has_smoke] * 220, 0, 200).astype(np.uint8)
+
+        overlay = pygame.image.frombuffer(rgba.tobytes(), (fw, fh), "RGBA")
         scaled = pygame.transform.scale(overlay, (fw * ft, fh * ft))
         self.screen.blit(scaled, (0, 0))
 
