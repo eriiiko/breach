@@ -180,7 +180,7 @@ class GameMap:
         self.wave_v = np.zeros((fh, fw), dtype=np.float32)  # wave velocity (dp/dt)
         self.wave_source = np.zeros((fh, fw), dtype=np.float32)  # pressure source (fed over time)
         self.smoke = np.zeros((fh, fw), dtype=np.float32)
-        self.unit_absorb = np.zeros((fh, fw), dtype=np.float32)
+        self.obstacles = np.zeros((fh, fw), dtype=bool)  # walls + units combined
 
         self._build_ship()
         self._update_caches()
@@ -279,11 +279,13 @@ class GameMap:
         ).astype(np.float32)
 
     def stamp_units(self, units):
-        """Stamp living unit positions onto the unit_absorb array."""
+        """Update obstacles map: walls + living unit positions.
+        Units are treated as walls by all physics (waves, diffusion, smoke)."""
         co = CFG.display.coarse
         fw = CFG.display.fine_w
         fh = CFG.display.fine_h
-        self.unit_absorb[:] = 0.0
+        # Start from static walls, add units
+        self.obstacles = self.is_wall.copy()
         for u in units:
             if not u.alive:
                 continue
@@ -292,7 +294,7 @@ class GameMap:
             y2 = min(fh, uy + co)
             x1 = max(0, ux)
             x2 = min(fw, ux + co)
-            self.unit_absorb[y1:y2, x1:x2] = CFG.combat.unit_absorption
+            self.obstacles[y1:y2, x1:x2] = True
 
     def is_passable(self, fy, fx):
         fw = CFG.display.fine_w
@@ -364,7 +366,9 @@ class GameMap:
 class Physics:
 
     @staticmethod
-    def compute_laplacian(p, wall, unit_absorb=None):
+    def compute_laplacian(p, wall):
+        """Discrete laplacian with Neumann BCs at walls.
+        Wall includes static walls AND unit positions (via gmap.obstacles)."""
         up = np.roll(p, 1, axis=0)
         down = np.roll(p, -1, axis=0)
         left = np.roll(p, 1, axis=1)
@@ -377,34 +381,19 @@ class Physics:
         down = np.where(wall_down, p, down)
         left = np.where(wall_left, p, left)
         right = np.where(wall_right, p, right)
-        if unit_absorb is not None:
-            refl = CFG.combat.unit_reflectivity
-            abs_up = np.roll(unit_absorb, 1, axis=0)
-            abs_down = np.roll(unit_absorb, -1, axis=0)
-            abs_left = np.roll(unit_absorb, 1, axis=1)
-            abs_right = np.roll(unit_absorb, -1, axis=1)
-            up = np.where(abs_up > 0, 1.0 + (up - 1.0) * refl, up)
-            down = np.where(abs_down > 0, 1.0 + (down - 1.0) * refl, down)
-            left = np.where(abs_left > 0, 1.0 + (left - 1.0) * refl, left)
-            right = np.where(abs_right > 0, 1.0 + (right - 1.0) * refl, right)
         return up + down + left + right - 4.0 * p
 
     @staticmethod
     def step_atmosphere(gmap, dt):
-        lap = Physics.compute_laplacian(gmap.atmosphere, gmap.is_wall,
-                                        gmap.unit_absorb)
+        lap = Physics.compute_laplacian(gmap.atmosphere, gmap.obstacles)
         gmap.atmosphere += CFG.physics.d_atm * dt * lap
         gmap.atmosphere[gmap.is_wall] = 0.0
         gmap.atmosphere[gmap.is_vacuum] = 0.0
-        absorb_mask = gmap.unit_absorb > 0
-        excess = gmap.atmosphere[absorb_mask] - 1.0
-        excess[excess > 0] *= (1.0 - gmap.unit_absorb[absorb_mask][excess > 0])
-        gmap.atmosphere[absorb_mask] = 1.0 + excess
         np.clip(gmap.atmosphere, 0.0, 20.0, out=gmap.atmosphere)
 
     @staticmethod
     def step_smoke(gmap, dt):
-        lap = Physics.compute_laplacian(gmap.smoke, gmap.is_wall)
+        lap = Physics.compute_laplacian(gmap.smoke, gmap.obstacles)
         gmap.smoke += CFG.physics.d_smoke * dt * lap
 
         # Smoke gradient (shared by both advection sources)
@@ -506,10 +495,10 @@ class Physics:
             down = np.roll(gmap.wave_p, -1, axis=0)
             left = np.roll(gmap.wave_p, 1, axis=1)
             right = np.roll(gmap.wave_p, -1, axis=1)
-            wall_up = np.roll(gmap.is_wall, 1, axis=0)
-            wall_down = np.roll(gmap.is_wall, -1, axis=0)
-            wall_left = np.roll(gmap.is_wall, 1, axis=1)
-            wall_right = np.roll(gmap.is_wall, -1, axis=1)
+            wall_up = np.roll(gmap.obstacles, 1, axis=0)
+            wall_down = np.roll(gmap.obstacles, -1, axis=0)
+            wall_left = np.roll(gmap.obstacles, 1, axis=1)
+            wall_right = np.roll(gmap.obstacles, -1, axis=1)
             up = np.where(wall_up, gmap.wave_p, up)
             down = np.where(wall_down, gmap.wave_p, down)
             left = np.where(wall_left, gmap.wave_p, left)
