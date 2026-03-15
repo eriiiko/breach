@@ -458,7 +458,7 @@ class Physics:
                             gmap.smoke[ny, nx] = 0.0
 
     # Wave parameters — all in physical units (per second, SI-ish)
-    WAVE_C = 28.3           # wave speed in tiles/s (≈9.4 m/s, tiles are 1/3 m)
+    WAVE_C = 300.0          # wave speed in tiles/s (≈100 m/s, tiles are 1/3 m)
     WAVE_DAMPING = 3.0      # velocity damping rate (1/s)
     WAVE_TRANSFER = 0.5     # wave→atmosphere transfer rate (1/s)
     SOURCE_FEED_RATE = 200.0  # how fast source deposits into wave_p (1/s)
@@ -474,35 +474,27 @@ class Physics:
         transfer = Physics.WAVE_TRANSFER
         feed_rate = Physics.SOURCE_FEED_RATE
 
-        # Auto-compute stable dt from CFL
-        dt = 0.65 / c   # CFL: c*dt < 1/√2 ≈ 0.707, use 0.65 for safety margin
+        # --- Separate dt for each system ---
+        dt_wave = 0.65 / c                              # wave CFL
+        dt_diff = 0.24 / max(CFG.physics.d_atm, 0.01)  # diffusion stability
 
-        # Stability checks (run once, printed to console)
+        # Stability checks (once at startup)
         if not hasattr(Physics, '_checked'):
             Physics._checked = True
-            cfl = c * dt
-            damp_stability = damping * dt
-            print(f"[physics] c={c:.1f} tiles/s, dt={dt*1000:.2f}ms")
-            print(f"[physics] CFL: c*dt = {cfl:.4f} (limit 0.707) {'OK' if cfl < 0.707 else 'UNSTABLE!'}")
-            print(f"[physics] Damping: γ*dt = {damp_stability:.4f} (limit 2.0) {'OK' if damp_stability < 2 else 'UNSTABLE!'}")
+            print(f"[physics] Wave: c={c:.1f} tiles/s, dt={dt_wave*1000:.2f}ms")
+            print(f"[physics] Diffusion: D={CFG.physics.d_atm}, dt={dt_diff*1000:.2f}ms")
+            print(f"[physics] CFL: c*dt={c*dt_wave:.4f} (<0.707) | D*dt={CFG.physics.d_atm*dt_diff:.4f} (<0.25)")
 
-        def _check(name, arr):
-            mx = np.nanmax(np.abs(arr))
-            if not np.isfinite(mx) or mx > 1e6:
-                print(f"[BLOWUP] {name}: max={mx}")
-                return True
-            return False
-
+        # --- Wave substeps (fast: shockwave propagation) ---
         for _ in range(n_substeps):
-            # --- Feed pressure source into wave field gradually ---
+            # Feed pressure source gradually
             if np.any(gmap.wave_source > 0.001):
-                feed = gmap.wave_source * feed_rate * dt
+                feed = gmap.wave_source * feed_rate * dt_wave
                 feed = np.minimum(feed, gmap.wave_source)
                 gmap.wave_p += feed
                 gmap.wave_source -= feed
-                if _check("after source feed", gmap.wave_p): return
 
-            # --- Wave equation: shockwave propagation ---
+            # Wave equation
             up = np.roll(gmap.wave_p, 1, axis=0)
             down = np.roll(gmap.wave_p, -1, axis=0)
             left = np.roll(gmap.wave_p, 1, axis=1)
@@ -517,27 +509,22 @@ class Physics:
             right = np.where(wall_right, gmap.wave_p, right)
             lap = up + down + left + right - 4.0 * gmap.wave_p
 
-            gmap.wave_v += (c_squared * lap - damping * gmap.wave_v) * dt
-            if _check("after wave_v update", gmap.wave_v): return
-            gmap.wave_p += gmap.wave_v * dt
+            gmap.wave_v += (c_squared * lap - damping * gmap.wave_v) * dt_wave
+            gmap.wave_p += gmap.wave_v * dt_wave
             gmap.wave_p[gmap.is_wall] = 0.0
             gmap.wave_p[gmap.is_vacuum] = 0.0
-            if _check("after wave_p update", gmap.wave_p): return
 
-            # Transfer wave energy into sustained atmosphere
-            gmap.atmosphere += gmap.wave_p * transfer * dt
-            gmap.atmosphere[gmap.is_wall] = 0.0
-            gmap.atmosphere[gmap.is_vacuum] = 0.0
+            # Transfer wave energy into atmosphere
+            gmap.atmosphere += gmap.wave_p * transfer * dt_wave
             np.clip(gmap.atmosphere, 0.0, 20.0, out=gmap.atmosphere)
-            if _check("after atmosphere transfer", gmap.atmosphere): return
 
-            # --- Atmosphere diffusion (slow equalization) ---
-            Physics.step_atmosphere(gmap, dt)
-            if _check("after atm diffusion", gmap.atmosphere): return
+        # --- Diffusion substeps (slow: atmosphere equalization) ---
+        n_diff = max(1, n_substeps // 2)  # fewer steps needed
+        for _ in range(n_diff):
+            Physics.step_atmosphere(gmap, dt_diff)
 
-            # --- Smoke ---
-            Physics.step_smoke(gmap, dt)
-            if _check("after smoke", gmap.smoke): return
+        # --- Smoke: once per game tick (advection + diffusion) ---
+        Physics.step_smoke(gmap, dt_diff * n_diff)
 
 
 # ---------------------------------------------------------------------------
