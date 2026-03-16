@@ -429,8 +429,8 @@ class Physics:
     FIRE_O2_CONSUMPTION = 0.3  # atmosphere consumed per step by fire
     FIRE_SMOKE_EMISSION = 0.8  # smoke produced per step by fire
     FIRE_WALL_DAMAGE = 0.4   # HP damage to wall per step while burning
-    FIRE_K_COOL = 1.5        # wind cooling coefficient (blows out weak fire)
-    FIRE_K_O2 = 2.0          # wind O2 feeding coefficient (fans strong fire)
+    FIRE_K_WIND_THRESH = 0.5  # fire intensity must exceed this * wind_speed to survive
+    FIRE_K_WIND_NET = 3.0    # rate of wind effect (both feeding and cooling)
 
     @staticmethod
     def step_fire(gmap, dt):
@@ -463,15 +463,15 @@ class Physics:
             boost_ignite = gmap.flammable & (fire < 0.01) & (nf > 0.05)
             fire[boost_ignite] += Physics.FIRE_D * dt * nf[boost_ignite] * wind_boost[boost_ignite]
 
-        # Wind modulates fire intensity (cooling vs O2 boost)
-        # wind_x, wind_y already computed above for biased spreading
+        # Wind modulates fire intensity: fire must be strong enough relative
+        # to wind to survive. Weak wind + weak fire = feeds. Strong wind +
+        # weak fire = blown out. Strong wind + strong fire = burns hotter.
         wind_speed = np.sqrt(wind_x**2 + wind_y**2)
         burning = fire > 0.01
-        # Cooling: weak fire loses heat easily (no thermal mass to resist wind)
-        cooling = Physics.FIRE_K_COOL * wind_speed * (1.0 - fire)
-        # O2 boost: strong fire has more fuel, wind feeds oxygen to flames
-        o2_boost = Physics.FIRE_K_O2 * wind_speed * fire
-        fire[burning] += dt * (o2_boost[burning] - cooling[burning])
+        wind_threshold = Physics.FIRE_K_WIND_THRESH * wind_speed
+        fire_margin = fire - wind_threshold
+        wind_effect = Physics.FIRE_K_WIND_NET * wind_speed * fire_margin
+        fire[burning] += dt * wind_effect[burning]
         fire[fire < 0.01] = 0.0
 
         # Burning tiles grow toward full intensity (even without wind)

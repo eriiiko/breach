@@ -117,31 +117,35 @@ wind_speed = np.sqrt(wind_x**2 + wind_y**2)
 # Two competing effects on burning tiles:
 burning = gmap.fire > 0.01
 
-# Cooling: weak fire loses heat easily (no thermal mass to resist wind)
-cooling = K_COOL * wind_speed * (1.0 - gmap.fire)
+# Fire must be strong enough relative to wind to survive
+wind_threshold = K_THRESH * wind_speed  # e.g. K_THRESH = 0.5
+fire_margin = gmap.fire - wind_threshold
 
-# O2 boost: strong fire has more fuel, wind feeds oxygen to flames
-o2_boost = K_O2 * wind_speed * gmap.fire
+# Below threshold: wind overwhelms fire (blown out)
+# Above threshold: wind feeds fire (burns hotter)
+# Effect scales with wind speed (no wind = no effect)
+wind_effect = K_NET * wind_speed * fire_margin  # e.g. K_NET = 3.0
+gmap.fire[burning] += dt * wind_effect[burning]
 
-# Net effect
-gmap.fire[burning] += dt * (o2_boost[burning] - cooling[burning])
-
-# If fire drops below threshold, extinguish
+# Clean up extinguished fire
 gmap.fire[gmap.fire < 0.01] = 0.0
 ```
 
 ### Behavior
 
-- **Weak fire + strong wind**: cooling >> O2 boost → fire extinguished
-- **Strong fire + strong wind**: O2 boost >> cooling → fire grows hotter
+The effect depends on the ratio of fire intensity to wind strength, not fire intensity alone:
+
+- **Weak wind + weak fire**: gentle breeze feeds small flame (fire above threshold)
+- **Strong wind + weak fire**: fire below wind-dependent threshold → blown out
+- **Strong wind + strong fire**: fire well above threshold → burns much hotter
 - **No wind**: neither term contributes → fire behaves as current (grows toward 1.0)
-- **Explosion shockwave**: creates massive transient wind → small fires blown out, big fires flare up
+- **Explosion shockwave**: massive transient wind → small fires blown out, big fires flare up
 
 ### Parameters to tune
 
-- `K_COOL`: convective cooling coefficient
-- `K_O2`: oxygen feeding coefficient
-- The crossover point (where wind helps vs. hurts) is determined by fire intensity alone
+- `K_THRESH`: wind survival threshold (fire must exceed `K_THRESH * wind_speed` to survive)
+- `K_NET`: rate of wind effect (both feeding and cooling)
+- The crossover point shifts with wind speed: stronger wind requires bigger fire to survive
 
 ### Connection to explosions
 

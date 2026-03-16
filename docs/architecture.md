@@ -427,14 +427,16 @@ flux(A → B) = κ_interface * (T_B - T_A)
 
 ```
 wind_speed = magnitude(atmosphere_gradient)
-cooling = K_COOL * wind_speed * (1.0 - fire_intensity)   # weak fire loses heat easily
-o2_boost = K_O2 * wind_speed * fire_intensity              # strong fire: more fuel for wind to feed
-fire_intensity += dt * (o2_boost - cooling)
+wind_threshold = K_THRESH * wind_speed     # fire must exceed this to survive
+fire_margin = fire_intensity - wind_threshold
+fire_intensity += dt * K_NET * wind_speed * fire_margin
 ```
 
-- Weak fire + strong wind → extinguished (cooling wins)
-- Strong fire + strong wind → burns hotter (O2 wins)
-- Explosion shockwave → brief intense wind → blows out small fires, fans big ones
+The effect depends on the ratio of fire intensity to wind strength:
+- Weak wind + weak fire → gentle breeze feeds small flame (margin positive)
+- Strong wind + weak fire → blown out (fire below threshold, margin negative)
+- Strong wind + strong fire → burns much hotter (large positive margin × strong wind)
+- Explosion shockwave → massive transient wind → small fires blown out, big fires flare up
 
 ### 6.8 Physics Step Orchestration
 
