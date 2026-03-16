@@ -182,6 +182,7 @@ class GameMap:
         self.smoke = np.zeros((fh, fw), dtype=np.float32)
         self.fire = np.zeros((fh, fw), dtype=np.float32)  # fire intensity (0-1, lives on flammable walls)
         self.obstacles = np.zeros((fh, fw), dtype=bool)  # walls + units combined
+        self.light_map = np.zeros((fh, fw), dtype=np.float32)  # accumulated light intensity
 
         self._build_ship()
         self._update_caches()
@@ -428,6 +429,8 @@ class Physics:
     FIRE_O2_CONSUMPTION = 0.3  # atmosphere consumed per step by fire
     FIRE_SMOKE_EMISSION = 0.8  # smoke produced per step by fire
     FIRE_WALL_DAMAGE = 0.4   # HP damage to wall per step while burning
+    FIRE_K_COOL = 1.5        # wind cooling coefficient (blows out weak fire)
+    FIRE_K_O2 = 2.0          # wind O2 feeding coefficient (fans strong fire)
 
     @staticmethod
     def step_fire(gmap, dt):
@@ -460,7 +463,18 @@ class Physics:
             boost_ignite = gmap.flammable & (fire < 0.01) & (nf > 0.05)
             fire[boost_ignite] += Physics.FIRE_D * dt * nf[boost_ignite] * wind_boost[boost_ignite]
 
-        # Burning tiles grow toward full intensity
+        # Wind modulates fire intensity (cooling vs O2 boost)
+        # wind_x, wind_y already computed above for biased spreading
+        wind_speed = np.sqrt(wind_x**2 + wind_y**2)
+        burning = fire > 0.01
+        # Cooling: weak fire loses heat easily (no thermal mass to resist wind)
+        cooling = Physics.FIRE_K_COOL * wind_speed * (1.0 - fire)
+        # O2 boost: strong fire has more fuel, wind feeds oxygen to flames
+        o2_boost = Physics.FIRE_K_O2 * wind_speed * fire
+        fire[burning] += dt * (o2_boost[burning] - cooling[burning])
+        fire[fire < 0.01] = 0.0
+
+        # Burning tiles grow toward full intensity (even without wind)
         burning = fire > 0.01
         fire[burning] += 0.5 * dt
 
@@ -614,6 +628,204 @@ class Physics:
 
         # --- Fire (spreading, O2, smoke emission, wall damage) ---
         Physics.step_fire(gmap, dt_smoke)
+
+        # --- Raycasting (light + heat) ---
+        Raycaster.update(gmap)
+
+
+# ---------------------------------------------------------------------------
+# Raycasting
+# ---------------------------------------------------------------------------
+class LightSource:
+    """A light/heat emitter for the raycaster."""
+    __slots__ = ('x', 'y', 'max_range', 'ray_count', 'angle_center',
+                 'angle_spread', 'intensity', 'color', 'heat', 'jitter',
+                 'falloff_fn')
+
+    def __init__(self, x, y, max_range=20, ray_count=None,
+                 angle_center=0.0, angle_spread=2*math.pi,
+                 intensity=1.0, color=(1.0, 0.9, 0.8), heat=0.0,
+                 jitter=0.0, falloff_fn='uniform'):
+        self.x = x
+        self.y = y
+        self.max_range = max_range
+        self.ray_count = ray_count
+        self.angle_center = angle_center
+        self.angle_spread = angle_spread
+        self.intensity = intensity
+        self.color = color
+        self.heat = heat
+        self.jitter = jitter
+        self.falloff_fn = falloff_fn
+
+    def get_ray_count(self):
+        if self.ray_count is not None:
+            return self.ray_count
+        full_circle = int(math.ceil(2.0 * math.pi * self.max_range))
+        fraction = self.angle_spread / (2.0 * math.pi)
+        return max(8, int(math.ceil(full_circle * fraction)))
+
+
+# Prebuilt profiles (factory functions)
+def light_fire(x, y, intensity=0.8):
+    return LightSource(x, y, max_range=15, intensity=intensity,
+                       color=(1.0, 0.6, 0.2), heat=1.0,
+                       jitter=0.05, falloff_fn='uniform')
+
+def light_point(x, y, intensity=1.0):
+    return LightSource(x, y, max_range=20, intensity=intensity,
+                       color=(1.0, 0.9, 0.8), heat=0.0,
+                       jitter=0.0, falloff_fn='uniform')
+
+def light_flashlight(x, y, angle, intensity=1.5):
+    return LightSource(x, y, max_range=30, angle_center=angle,
+                       angle_spread=0.7, intensity=intensity,
+                       color=(1.0, 1.0, 0.95), heat=0.0,
+                       jitter=0.0, falloff_fn='cosine')
+
+def light_muzzle_flash(x, y, intensity=5.0):
+    return LightSource(x, y, max_range=12, ray_count=64,
+                       intensity=intensity,
+                       color=(1.0, 0.9, 0.5), heat=0.0,
+                       jitter=0.02, falloff_fn='uniform')
+
+def light_emergency(x, y, intensity=0.4):
+    return LightSource(x, y, max_range=12, intensity=intensity,
+                       color=(1.0, 0.1, 0.05), heat=0.0,
+                       jitter=0.01, falloff_fn='uniform')
+
+
+class Raycaster:
+    """2D raycaster: marches rays tile-by-tile (DDA), deposits light and heat."""
+
+    SMOKE_ABSORPTION = 0.8  # how much smoke attenuates light per tile
+
+    @staticmethod
+    def march_ray(sx, sy, angle, ray_intensity, max_range, gmap, light_map, heat):
+        """March a single ray from (sx,sy), depositing light at each tile."""
+        fh, fw = light_map.shape
+        dx = math.cos(angle)
+        dy = math.sin(angle)
+
+        # DDA setup
+        step_x = 1 if dx >= 0 else -1
+        step_y = 1 if dy >= 0 else -1
+        dt_dx = abs(1.0 / dx) if abs(dx) > 1e-8 else 1e8
+        dt_dy = abs(1.0 / dy) if abs(dy) > 1e-8 else 1e8
+
+        # Distance to first tile boundary from tile center
+        t_max_x = 0.5 * dt_dx
+        t_max_y = 0.5 * dt_dy
+
+        x, y = sx, sy
+        remaining = ray_intensity
+        distance = 0.0
+
+        while remaining > 0.01:
+            # Bounds check
+            if x < 0 or x >= fw or y < 0 or y >= fh:
+                break
+
+            # Distance attenuation (inverse-square-ish, tunable)
+            if distance > 0:
+                dist_atten = 1.0 / (1.0 + distance * distance * 0.01)
+            else:
+                dist_atten = 1.0
+            deposited = remaining * dist_atten
+
+            # Deposit light
+            light_map[y, x] += deposited
+
+            # Wall: stop (first tile is the source, don't block on it)
+            if distance > 0 and gmap.is_wall[y, x]:
+                break
+
+            # Smoke absorption
+            smoke_d = gmap.smoke[y, x]
+            if smoke_d > 0.001:
+                remaining *= (1.0 - smoke_d * Raycaster.SMOKE_ABSORPTION)
+
+            # Step to next tile (DDA)
+            if t_max_x < t_max_y:
+                x += step_x
+                distance = t_max_x
+                t_max_x += dt_dx
+            else:
+                y += step_y
+                distance = t_max_y
+                t_max_y += dt_dy
+
+            if distance > max_range:
+                break
+
+    @staticmethod
+    def cast_source(source, gmap, light_map):
+        """Cast all rays for a single light source."""
+        ray_count = source.get_ray_count()
+        half_spread = source.angle_spread / 2.0
+
+        for i in range(ray_count):
+            # Evenly spaced angles within the cone
+            t = (i + 0.5) / ray_count  # 0..1
+            angle = source.angle_center - half_spread + t * source.angle_spread
+
+            # Jitter
+            if source.jitter > 0:
+                angle += np.random.uniform(-source.jitter, source.jitter)
+
+            # Angular intensity falloff
+            if source.angle_spread < 2.0 * math.pi - 0.01:
+                offset = angle - source.angle_center
+                # Wrap to [-pi, pi]
+                while offset > math.pi: offset -= 2.0 * math.pi
+                while offset < -math.pi: offset += 2.0 * math.pi
+                norm_offset = abs(offset) / (half_spread + 1e-6)
+                if source.falloff_fn == 'cosine':
+                    angular_atten = math.cos(min(norm_offset, 1.0) * math.pi / 2.0)
+                elif source.falloff_fn == 'sharp':
+                    angular_atten = 1.0 if norm_offset < 0.9 else 0.0
+                else:
+                    angular_atten = 1.0
+            else:
+                angular_atten = 1.0
+
+            ray_intensity = source.intensity * angular_atten
+            if ray_intensity > 0.01:
+                Raycaster.march_ray(source.x, source.y, angle,
+                                    ray_intensity, source.max_range,
+                                    gmap, light_map, source.heat)
+
+    @staticmethod
+    def update(gmap):
+        """Rebuild light_map from all active light sources."""
+        gmap.light_map[:] = 0.0
+
+        # Collect light sources: every burning tile is a fire light
+        fire = gmap.fire
+        if fire.max() < 0.01:
+            return
+
+        # Sample fire tiles (avoid casting from every single burning tile —
+        # cluster nearby fires by sampling on a coarse grid)
+        co = max(CFG.display.coarse, 3)
+        fh, fw = fire.shape
+        sources = []
+        for cy in range(0, fh, co):
+            for cx in range(0, fw, co):
+                # Check block for max fire
+                by2 = min(cy + co, fh)
+                bx2 = min(cx + co, fw)
+                block_fire = fire[cy:by2, cx:bx2]
+                max_fire = block_fire.max()
+                if max_fire > 0.1:
+                    # Place source at the brightest tile in this block
+                    local_idx = np.unravel_index(block_fire.argmax(), block_fire.shape)
+                    sy, sx = cy + local_idx[0], cx + local_idx[1]
+                    sources.append(light_fire(sx, sy, intensity=0.8 * max_fire))
+
+        # Cast all sources
+        for src in sources:
+            Raycaster.cast_source(src, gmap, gmap.light_map)
 
 
 # ---------------------------------------------------------------------------
@@ -1561,6 +1773,7 @@ class Game:
         self._draw_atmosphere()
         self._draw_smoke()
         self._draw_fire()
+        self._draw_light()
         self._draw_orders()
         self._draw_projectiles()
         self._draw_units()
@@ -1687,6 +1900,30 @@ class Game:
             rgba[burning, 1] = np.clip(80 * t, 0, 255).astype(np.uint8)
             rgba[burning, 2] = np.clip(20 * t, 0, 255).astype(np.uint8)
             rgba[burning, 3] = np.clip(180 + 75 * t, 0, 255).astype(np.uint8)
+
+        overlay = pygame.image.frombuffer(rgba.tobytes(), (fw, fh), "RGBA").convert_alpha()
+        scaled = pygame.transform.scale(overlay, (fw * ft, fh * ft))
+        self.screen.blit(scaled, (0, 0))
+
+    def _draw_light(self):
+        """Draw light map as a warm glow overlay on lit tiles."""
+        lm = self.gmap.light_map
+        if lm.max() < 0.01:
+            return
+        ft = CFG.display.fine_tile_px
+        fw = CFG.display.fine_w
+        fh = CFG.display.fine_h
+
+        rgba = np.zeros((fh, fw, 4), dtype=np.uint8)
+        lit = lm > 0.01
+        if np.any(lit):
+            # Normalize to 0-1 range (clamp at reasonable max)
+            t = np.clip(lm[lit] / 3.0, 0.0, 1.0)
+            # Warm orange glow
+            rgba[lit, 0] = np.clip(255 * t, 0, 255).astype(np.uint8)
+            rgba[lit, 1] = np.clip(160 * t, 0, 255).astype(np.uint8)
+            rgba[lit, 2] = np.clip(60 * t, 0, 255).astype(np.uint8)
+            rgba[lit, 3] = np.clip(80 * t, 0, 255).astype(np.uint8)
 
         overlay = pygame.image.frombuffer(rgba.tobytes(), (fw, fh), "RGBA").convert_alpha()
         scaled = pygame.transform.scale(overlay, (fw * ft, fh * ft))

@@ -117,12 +117,11 @@ wind_speed = np.sqrt(wind_x**2 + wind_y**2)
 # Two competing effects on burning tiles:
 burning = gmap.fire > 0.01
 
-# Cooling: convective heat loss, proportional to wind speed and fire intensity
-cooling = K_COOL * wind_speed * gmap.fire
+# Cooling: weak fire loses heat easily (no thermal mass to resist wind)
+cooling = K_COOL * wind_speed * (1.0 - gmap.fire)
 
-# O2 boost: more wind = more oxygen = faster combustion
-# Stronger at LOW intensity (small fire has room to grow)
-o2_boost = K_O2 * wind_speed * (1.0 - gmap.fire)
+# O2 boost: strong fire has more fuel, wind feeds oxygen to flames
+o2_boost = K_O2 * wind_speed * gmap.fire
 
 # Net effect
 gmap.fire[burning] += dt * (o2_boost[burning] - cooling[burning])

@@ -427,8 +427,8 @@ flux(A → B) = κ_interface * (T_B - T_A)
 
 ```
 wind_speed = magnitude(atmosphere_gradient)
-cooling = K_COOL * wind_speed * fire_intensity
-o2_boost = K_O2 * wind_speed * (1.0 - fire_intensity)
+cooling = K_COOL * wind_speed * (1.0 - fire_intensity)   # weak fire loses heat easily
+o2_boost = K_O2 * wind_speed * fire_intensity              # strong fire: more fuel for wind to feed
 fire_intensity += dt * (o2_boost - cooling)
 ```
 
