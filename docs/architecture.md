@@ -415,13 +415,15 @@ flux(A → B) = κ_interface * (T_B - T_A)
 
 **Gameplay:** Laser hits hull → heat conducts fast along metal → reaches wood wall → wood crosses ignition_temp → fire starts. Hull glows grey → orange → white (color lerp on render).
 
-### 6.7 Wind/Fire Interaction (NEW — not yet implemented)
+### 6.7 Wind/Fire Interaction (partially implemented)
 
 *Full design in `docs/implementation_plan_radiation_temperature.md` Section 2.*
 
-**Decision:** Modeled directly on fire tiles using existing wind (atmosphere gradient). No air temperature field needed.
+**Implemented: wind-biased spreading.** The atmosphere gradient steers fire ignition direction — downwind neighbors ignite faster (up to 3x boost). This is already in `step_fire()` (game.py lines 450-461).
 
-**Mechanic:** Added to `step_fire()`:
+**Not yet implemented: wind/fire intensity interaction.** Wind should also affect *how intensely* existing fire burns, not just where it spreads. Modeled directly on fire tiles using existing wind (atmosphere gradient). No air temperature field needed.
+
+**New mechanic** to add to `step_fire()`:
 
 ```
 wind_speed = magnitude(atmosphere_gradient)
@@ -437,6 +439,8 @@ fire_intensity += dt * (o2_boost - cooling)
 ### 6.8 Physics Step Orchestration
 
 All physics advance in `Physics.step(gmap, sim_time)`:
+
+**Python prototype (current — Lie splitting):** Systems run sequentially, each completing all substeps before the next begins.
 
 ```
 sim_time = 1 / ticks_per_second = 83.3 ms per game tick
@@ -463,17 +467,40 @@ sim_time = 1 / ticks_per_second = 83.3 ms per game tick
    - Update light_map and heat deposits
 ```
 
-### 6.9 Double-Buffered Propagation (TODO — not yet implemented)
+**C++ target (interleaved time advancement):** Wave and diffusion operate on the same atmosphere field but at different substep sizes (dt_wave=2.17ms, dt_diff=1.2ms). Running all wave substeps first means diffusion sees the final atmosphere from the entire wave pass, rather than the gradual energy deposition. The physically correct approach is to interleave them:
 
-All propagation systems should resolve **simultaneously** within each tick. This is implemented via double buffering:
+```
+t_wave = 0, t_diff = 0
+while t_wave < sim_time or t_diff < sim_time:
+    if t_wave <= t_diff:
+        wave_substep(dt_wave)       // deposits into atmosphere
+        t_wave += dt_wave
+    else:
+        diffusion_substep(dt_diff)  // spreads atmosphere
+        t_diff += dt_diff
 
-1. Each cached array has a *current* buffer (read-only during the tick) and a *next* buffer (write target).
-2. Every system reads from *current* and writes to *next*.
-3. At the end of the tick, *next* becomes *current* (pointer swap).
+// Then single-step systems that read the final state:
+smoke_step(sim_time)
+fire_step(sim_time)
+temperature_step(sim_time)    // substeps internally
+raycaster_update()
+```
 
-This avoids order-of-operations bugs (where system A's writes within a tick affect system B's reads within the same tick) and produces physically more accurate behavior.
+Both systems advance through the same 83.3ms but stay within one substep of each other in simulated time. Atmosphere energy from the wave starts diffusing immediately rather than waiting for all wave substeps to complete. Same total substep count — no extra compute cost. Smoke, fire, and temperature still run after the coupled wave+diffusion pass since they only need the final atmospheric state for the tick.
 
-**Current state:** The Python prototype writes arrays in-place sequentially. This works but means system execution order matters. Double buffering should be introduced during the C++ port — it maps naturally to the pointer-swap pattern and has negligible cost.
+### 6.9 Double-Buffered Propagation (TODO — needs design before implementation)
+
+Within each system's substeps, the Laplacian reads neighbor values and writes updated values. In C++ with raw tile-by-tile loops, tiles updated early in the loop produce different neighbor values for tiles updated later — an order-of-operations bug. Double buffering fixes this:
+
+1. Each system's primary array has a *current* buffer (read-only during the substep) and a *next* buffer (write target).
+2. The substep reads from *current* and writes to *next*.
+3. After each substep, *next* becomes *current* (pointer swap).
+
+**Important nuance:** Double buffering applies **within each system's substeps**, not across the whole tick. The cross-system pipeline (wave → atmosphere → smoke → fire) is intentionally sequential — wave deposits energy into atmosphere, then diffusion spreads it. Double-buffering at the tick level would break this coupling.
+
+**Python prototype:** Not an issue today. NumPy bulk array operations (`wave_p += c2 * laplacian * dt`) read the entire array before writing — effectively atomic. No per-tile ordering exists.
+
+**C++ port:** Needs double buffering within each system's substep loop. The exact design (which arrays need current/next pairs, how cross-system writes like wave→atmosphere interact with the buffers) needs to be worked out before implementation.
 
 ---
 
@@ -557,20 +584,22 @@ This separation is already how the Python prototype works (units are objects in 
 Currently one `Unit` class serves both marines and zombies. This causes field bloat:
 
 - Marines don't use: `zombie_activated`, `zombie_path`, `zombie_path_idx`, `zombie_move_accumulator`, `last_melee_tick`, `killed_by_zombie`
-- Zombies don't use: `has_grenade`, `has_explosive`, `orders`, `ap`
+- Zombies don't use: `orders`, `ap` (but see inventory note below)
 
 ### Target: Separated Unit Types
 
 **Base fields (all units):**
 ```
-name, team, fx, fy, alive, hp, max_hp, facing
+name, team, fx, fy, alive, hp, max_hp, facing, inventory[]
 ```
 
 Note: the current code also has `fxf, fyf` (float position for interpolation). Per the v2 design, these should be removed from game state — units are always on integer tile positions. The renderer handles interpolation between ticks.
 
+**Inventory is a base field, not marine-specific.** When a marine is converted to a zombie, it retains its inventory (grenades, explosives). Zombies can't *use* items, but they still *carry* them. This creates emergent interactions: converted zombie carries a grenade → walks through fire → grenade overheats past ignition_temp → detonation. No special-case code — the temperature system and explosion system handle it naturally.
+
 **Marine-specific:**
 ```
-orders[], ap[2], has_grenade, has_explosive, move_path[], last_fire_tick, fire_target
+orders[], ap[2], move_path[], last_fire_tick, fire_target
 ```
 
 **Zombie-specific:**
@@ -579,7 +608,9 @@ zombie_activated, zombie_path[], zombie_path_idx, zombie_move_accumulator,
 last_melee_tick, speed (replaces zombie_speed_override hack)
 ```
 
-In C++: either subclasses (`Marine : Unit`, `Zombie : Unit`) or composition (Unit + MarineComponent / ZombieComponent). For Python prototype: continue with single class but be aware of the separation.
+**Zombie as state, not type.** A zombie is any unit that has been converted — it switches to zombie AI but retains its base fields and inventory. When zombified: unit uses zombie AI (activation, pathfinding toward nearest living player, melee), ignores orders/AP, and cannot use items.
+
+**Unit type architecture: TBD.** The game will have many entity types beyond marines and zombies — robots, animals, worms, etc. Some may need specialized representations (e.g. a worm could store body segment positions in a ring buffer — compute new head position, recycle tail slot, the rest shift automatically). Whether this means one flexible Unit class, a type hierarchy, or composition is an open design question. Decide per-entity as they're implemented, not upfront.
 
 ### Zombie Variants (current)
 
