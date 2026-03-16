@@ -175,7 +175,35 @@ Other candidates that came up: Star Chamber, Diplomatic Immunity, Void Ops, Boar
 
 ---
 
-## 9. Ideas Still TBD / Unexplored
+## 9. Storytelling Technique: The Ambiguous Warning (Masks)
+
+A narrative device where a character says something that appears to mean one thing, but actually refers to something else entirely — and the true meaning carries enormous consequence. The viewer/player feels uneasy because they sense the statement wasn't fully understood.
+
+### Example 1: Twin Peaks — Fire Walk With Me
+A boy wearing a mask says: *"The man with the mask is inside your house now."*
+- The viewer assumes he's talking about himself (he's the one wearing a mask)
+- He's actually warning Laura about BOB, who is living inside her father Leland Palmer
+- The mask the boy wears is misdirection — it draws attention to the wrong "masked man"
+- The unease comes from the gap between what you think you understood and what was actually said
+
+### Example 2: Spirited Away
+A similar moment exists early in the film involving a warning or rule stated by a spirit character. The statement seems like a general rule of the spirit world, but actually describes exactly what Chihiro's parents are doing (or are about to do) — likely related to greed or consuming what isn't yours. The parents eat the spirit food and are turned into pigs.
+
+**TODO: Rewatch the early section of Spirited Away to find the exact dialogue. Erik will recognize it when he sees/reads it.**
+
+### How This Fits Breach
+This technique is perfect for the whistleblower's messages and the twist structure:
+- The anonymous source leaves cryptic messages that seem to mean one thing
+- The player interprets them as supporting the case against the president
+- Later, the player realizes the messages were warnings about the *investigation itself*
+- "The man with the mask is inside your house" = the conspirator is inside the president's own circle (the John Dean figure)
+- The unease of not-quite-understanding is exactly the feeling the mid-game should create
+
+This is distinct from a plot twist — it's not hidden information revealed later. The information is given to the player *openly*, but framed so they misinterpret it. On replay, the true meaning is obvious.
+
+---
+
+## 10. Ideas Still TBD / Unexplored
 
 - Germany and Great Britain's satirical 2087 identities
 - Specific creature stats and AI behaviors
