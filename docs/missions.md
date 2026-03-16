@@ -10,9 +10,9 @@
 
 ### The Hook
 
-A WHO medical transport — the *MV Caduceus* — entered national waters three days ago carrying humanitarian vaccine supplies. Routine docking was expected. Instead: silence. No radio contact. No crew movement visible on satellite. The ship is drifting.
+A UNHCR transport — the *MV Caduceus* — entered national waters three days ago carrying WHO humanitarian vaccine supplies. Routine docking was expected. Instead: silence. No radio contact. No crew movement visible on satellite. The ship is drifting.
 
-This is politically sensitive. WHO ships are sovereign — boarding one without permission is an international incident. But people are nervous. The government can't be seen ignoring a ghost ship off the coast. Your squad is sent quietly: investigate, report, get out. No media. No footprint.
+This is politically sensitive. UNHCR ships are sovereign — boarding one without permission is an international incident. But people are nervous. The government can't be seen ignoring a ghost ship off the coast. Your squad is sent quietly: investigate, report, get out. No media. No footprint.
 
 **Player briefing**: "Board the vessel. Determine crew status. Secure the bridge. Report findings. Rules of engagement: defensive only — these are medical personnel."
 
@@ -20,7 +20,7 @@ This is politically sensitive. WHO ships are sovereign — boarding one without 
 
 The squad breaches through a lower cargo bay. The ship is dark — emergency lighting only. Power is on but systems are in standby. The air smells wrong.
 
-**Phase 1: Cargo Hold** — crates everywhere, WHO markings, medical supplies. Some crates are smashed open. Spilled vials, broken cold-storage units. A body — but it's not dead. It moves wrong. The first zombie encounter. The player's rules of engagement said "defensive only" — but these things aren't crew anymore. The ROE becomes irrelevant fast.
+**Phase 1: Cargo Hold** — crates everywhere, UNHCR and WHO markings, medical supplies. Some crates are smashed open. Spilled vials, broken cold-storage units. A body — but it's not dead. It moves wrong. The first zombie encounter. The player's rules of engagement said "defensive only" — but these things aren't crew anymore. The ROE becomes irrelevant fast.
 
 The opening combat is tight, claustrophobic. Cargo containers create natural cover and chokepoints. The player learns movement, shooting, cover mechanics against a slow, low-threat enemy. Zombies teach the basics without being overwhelming.
 
@@ -51,11 +51,13 @@ The escape is frantic. The player reaches the extraction point (the cargo bay th
 
 **Who sent the kill team?** The player doesn't know. **What killed the kill team?** The player *really* doesn't know. The debrief doesn't explain either. Their superiors act like it didn't happen. This is the first real sign that the conspiracy extends into the player's own chain of command — and the first hint that something else is operating on a level beyond anyone's control.
 
-**What the player takes away**: zombies are real. The WHO ship was carrying something dangerous. Someone tried to kill them to bury the whole thing. And something *else* — something inhuman, impossibly fast, armed with technology that shouldn't exist — saved their lives without meaning to. The mission ends with more questions than answers. The scorch marks, the strange case, the glimpse of that figure — details the player might dismiss as combat stress. Until they see something similar ten missions later.
+**What the player takes away**: zombies are real. The UNHCR ship was carrying something dangerous. Someone tried to kill them to bury the whole thing. And something *else* — something inhuman, impossibly fast, armed with technology that shouldn't exist — saved their lives without meaning to. The mission ends with more questions than answers. The scorch marks, the strange case, the glimpse of that figure — details the player might dismiss as combat stress. Until they see something similar ten missions later.
+
+**The aftermath**: days later, the news reports that the *MV Caduceus* was attacked by a primitive indigenous group from a nearby coastal region. The narrative is clean, confident, and completely fabricated. The government uses the incident as a casus belli — a UNHCR ship attacked, humanitarian workers killed, vaccines destroyed. Within weeks, military action begins against the blamed country. The player knows exactly what really happened on that ship. Nobody else does. This is the first time the player sees the conspiracy's machinery in action: a real event, rewritten in real time, weaponized to start a war.
 
 ### What Actually Happened (Hidden from the Player)
 
-The *Caduceus* was carrying standard WHO medical supplies — plus, unknowingly, a batch of gray anti-xenomorph bioagent disguised as routine vaccines. Crates broke during rough seas. Crew members handling the spill were exposed. Within 48 hours, the mutation spread through the crew.
+The *Caduceus* was a UNHCR transport carrying standard WHO medical supplies — plus, unknowingly, a batch of gray anti-xenomorph bioagent disguised as routine vaccines. Crates broke during rough seas. Crew members handling the spill were exposed. Within 48 hours, the mutation spread through the crew.
 
 The grays monitored the situation remotely. When it became clear the ship was lost, a gray boarded (the helipad scorch mark), retrieved the remaining bioagent samples from the bridge (the unmarked case), and wiped all records that could trace the cargo's origin. But it was still on the ship when the player's squad arrived — hiding, finishing its work, perhaps observing the humans with clinical interest. When the kill team arrived and threatened to discover it, the gray eliminated the immediate threat with overwhelming force and fled. It didn't intend to save the squad. It just needed the corridor clear.
 
@@ -65,7 +67,7 @@ The grays monitored the situation remotely. When it became clear the ship was lo
 - **Tone setter**: establishes the game's atmosphere — dark, tense, something is very wrong and nobody is telling you the full story
 - **Mystery seed**: the wiped console, the strange case, the scorch mark — these are Chekhov's guns for the gray storyline. Planted early, paid off late
 - **No gray combat**: the player doesn't see or fight grays here. They only see traces. This is important — the grays are introduced as *absence*, not presence
-- **Political layer**: the post-mission debrief is tense. WHO denies the ship was carrying anything unusual. Your superiors want the incident buried. The player's report gets redacted. First taste of the cover-up machinery
+- **Political layer**: the post-mission debrief is tense. UNHCR and WHO both deny the ship was carrying anything unusual. Your superiors want the incident buried. The player's report gets redacted. Then the false flag drops — the attack is blamed on a primitive group, used to justify a war. First taste of the full conspiracy machinery: not just cover-up, but weaponization
 
 ---
 
