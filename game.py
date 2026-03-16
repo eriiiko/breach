@@ -180,6 +180,7 @@ class GameMap:
         self.wave_v = np.zeros((fh, fw), dtype=np.float32)  # wave velocity (dp/dt)
         self.wave_source = np.zeros((fh, fw), dtype=np.float32)  # pressure source (fed over time)
         self.smoke = np.zeros((fh, fw), dtype=np.float32)
+        self.fire = np.zeros((fh, fw), dtype=np.float32)  # fire intensity (0-1, lives on flammable walls)
         self.obstacles = np.zeros((fh, fw), dtype=bool)  # walls + units combined
 
         self._build_ship()
@@ -421,6 +422,91 @@ class Physics:
         gmap.smoke[gmap.is_vacuum] = 0.0
         np.clip(gmap.smoke, 0.0, 1.0, out=gmap.smoke)
 
+    # Fire parameters (from prototype smoke_sim.py + design docs)
+    FIRE_D = 0.3             # fire spread rate to neighbors
+    FIRE_O2_THRESHOLD = 0.60 # fire dies below this atmosphere
+    FIRE_O2_CONSUMPTION = 0.3  # atmosphere consumed per step by fire
+    FIRE_SMOKE_EMISSION = 0.8  # smoke produced per step by fire
+    FIRE_WALL_DAMAGE = 0.4   # HP damage to wall per step while burning
+
+    @staticmethod
+    def step_fire(gmap, dt):
+        """Fire spreads on flammable walls, consumes O2, emits smoke, damages walls.
+        Straight port from smoke_sim.py prototype."""
+        fire = gmap.fire
+        if fire.max() < 0.001:
+            return
+
+        # Spread: burning tiles ignite neighboring flammable tiles
+        # Check direct + diagonal + 2-tile range (radiant heat)
+        neighbor_fire = np.zeros_like(fire)
+        for dy, dx in [(-1,0),(1,0),(0,-1),(0,1),(-2,0),(2,0),(0,-2),(0,2),
+                        (-1,-1),(-1,1),(1,-1),(1,1)]:
+            neighbor_fire += np.roll(fire, (dy, dx), axis=(0, 1))
+
+        can_ignite = gmap.flammable & (fire < 0.01) & (neighbor_fire > 0.1)
+        fire[can_ignite] += Physics.FIRE_D * dt * neighbor_fire[can_ignite]
+
+        # Wind-biased spreading (from design doc Topic 3)
+        wind_x = -(np.roll(gmap.atmosphere, -1, axis=1) -
+                    np.roll(gmap.atmosphere, 1, axis=1)) / 2.0
+        wind_y = -(np.roll(gmap.atmosphere, -1, axis=0) -
+                    np.roll(gmap.atmosphere, 1, axis=0)) / 2.0
+        # Bias ignition toward downwind direction
+        for dy, dx in [(-1,0),(1,0),(0,-1),(0,1)]:
+            dot = dx * wind_x + dy * wind_y  # positive = downwind
+            wind_boost = np.clip(1.0 + 2.0 * dot, 0.0, 3.0)
+            nf = np.roll(fire, (dy, dx), axis=(0, 1))
+            boost_ignite = gmap.flammable & (fire < 0.01) & (nf > 0.05)
+            fire[boost_ignite] += Physics.FIRE_D * dt * nf[boost_ignite] * wind_boost[boost_ignite]
+
+        # Burning tiles grow toward full intensity
+        burning = fire > 0.01
+        fire[burning] += 0.5 * dt
+
+        # Fire only lives on flammable tiles
+        fire[~gmap.flammable] = 0.0
+
+        # O2 check: fire needs atmosphere in neighboring air tiles
+        neighbor_atm = np.zeros_like(gmap.atmosphere)
+        count = np.zeros_like(gmap.atmosphere)
+        for dy, dx in [(-1,0),(1,0),(0,-1),(0,1)]:
+            shifted_atm = np.roll(gmap.atmosphere, (dy, dx), axis=(0, 1))
+            shifted_wall = np.roll(gmap.is_wall, (dy, dx), axis=(0, 1))
+            is_air = ~shifted_wall
+            neighbor_atm += shifted_atm * is_air.astype(float)
+            count += is_air.astype(float)
+        count = np.maximum(count, 1.0)
+        avg_atm = neighbor_atm / count
+        fire[avg_atm < Physics.FIRE_O2_THRESHOLD] = 0.0
+
+        # Fire consumes O2 from neighboring air tiles
+        for dy, dx in [(-1,0),(1,0),(0,-1),(0,1)]:
+            shifted_wall = np.roll(gmap.is_wall, (dy, dx), axis=(0, 1))
+            is_air = ~shifted_wall
+            consumption = Physics.FIRE_O2_CONSUMPTION * dt * np.roll(fire, (-dy, -dx), axis=(0, 1))
+            gmap.atmosphere -= consumption * is_air.astype(float)
+
+        # Fire produces smoke in neighboring air tiles
+        for dy, dx in [(-1,0),(1,0),(0,-1),(0,1)]:
+            shifted_wall = np.roll(gmap.is_wall, (dy, dx), axis=(0, 1))
+            is_air = ~shifted_wall
+            emission = Physics.FIRE_SMOKE_EMISSION * dt * np.roll(fire, (-dy, -dx), axis=(0, 1))
+            gmap.smoke += emission * is_air.astype(float)
+
+        # Fire damages walls
+        gmap.wall_hp -= Physics.FIRE_WALL_DAMAGE * dt * fire
+        burned_out = (gmap.wall_hp <= 0) & gmap.flammable & gmap.is_wall
+        for fy in range(burned_out.shape[0]):
+            for fx in range(burned_out.shape[1]):
+                if burned_out[fy, fx]:
+                    gmap.destroy_wall(fy, fx)
+                    fire[fy, fx] = 0.0
+
+        np.clip(fire, 0.0, 1.0, out=fire)
+        np.clip(gmap.smoke, 0.0, 1.0, out=gmap.smoke)
+        np.clip(gmap.atmosphere, 0.0, 20.0, out=gmap.atmosphere)
+
     @staticmethod
     def apply_explosion(gmap, fy, fx, radius, pressure, wall_damage):
         """Apply explosion: damage walls, deposit wave + atmosphere pressure."""
@@ -445,6 +531,10 @@ class Physics:
                             gmap.atmosphere[ny, nx] += pressure * falloff * 0.3
                         if dist <= radius * 0.4:
                             gmap.smoke[ny, nx] = 0.0
+                        # Ignite flammable tiles near explosion
+                        if gmap.flammable[ny, nx] and dist <= radius * 0.7:
+                            gmap.fire[ny, nx] = max(gmap.fire[ny, nx],
+                                                     0.5 * falloff)
 
     # Wave parameters — all in physical units (per second)
     WAVE_C = 300.0          # wave speed in tiles/s (100 m/s, tiles are 1/3 m)
@@ -521,6 +611,9 @@ class Physics:
 
         # --- Smoke (advection + diffusion, one step) ---
         Physics.step_smoke(gmap, dt_smoke)
+
+        # --- Fire (spreading, O2, smoke emission, wall damage) ---
+        Physics.step_fire(gmap, dt_smoke)
 
 
 # ---------------------------------------------------------------------------
@@ -1467,6 +1560,7 @@ class Game:
         self._draw_map()
         self._draw_atmosphere()
         self._draw_smoke()
+        self._draw_fire()
         self._draw_orders()
         self._draw_projectiles()
         self._draw_units()
@@ -1571,6 +1665,28 @@ class Game:
             rgba[has_smoke, 1] = 160
             rgba[has_smoke, 2] = 140
             rgba[has_smoke, 3] = np.clip(smoke[has_smoke] * 220, 0, 200).astype(np.uint8)
+
+        overlay = pygame.image.frombuffer(rgba.tobytes(), (fw, fh), "RGBA").convert_alpha()
+        scaled = pygame.transform.scale(overlay, (fw * ft, fh * ft))
+        self.screen.blit(scaled, (0, 0))
+
+    def _draw_fire(self):
+        fire = self.gmap.fire
+        if fire.max() < 0.01:
+            return
+        ft = CFG.display.fine_tile_px
+        fw = CFG.display.fine_w
+        fh = CFG.display.fine_h
+
+        rgba = np.zeros((fh, fw, 4), dtype=np.uint8)
+        burning = fire > 0.01
+        if np.any(burning):
+            t = fire[burning]
+            # Fire glow: dark red -> orange -> bright yellow
+            rgba[burning, 0] = np.clip(150 + 105 * t, 0, 255).astype(np.uint8)
+            rgba[burning, 1] = np.clip(80 * t, 0, 255).astype(np.uint8)
+            rgba[burning, 2] = np.clip(20 * t, 0, 255).astype(np.uint8)
+            rgba[burning, 3] = np.clip(180 + 75 * t, 0, 255).astype(np.uint8)
 
         overlay = pygame.image.frombuffer(rgba.tobytes(), (fw, fh), "RGBA").convert_alpha()
         scaled = pygame.transform.scale(overlay, (fw * ft, fh * ft))
