@@ -1,0 +1,10 @@
+^C:\USERS\STEEN\PROJECTS\BREACH\CPP\BUILD\CMAKEFILES\B492DA49F8F5488672D80498A20830E1\GENERATE.STAMP.RULE
+setlocal
+C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\bin\cmake.exe -SC:/Users/steen/projects/breach/cpp -BC:/Users/steen/projects/breach/cpp/build --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file C:/Users/steen/projects/breach/cpp/build/breach_physics.slnx
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

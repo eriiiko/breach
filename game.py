@@ -38,6 +38,16 @@ try:
 except ImportError:
     HAS_PATHFINDING = False
 
+# Try to import C++ physics (falls back to Python if not built)
+try:
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'cpp', 'build', 'Release'))
+    import breach_physics
+    HAS_CPP_PHYSICS = True
+    print("[physics] C++ module loaded")
+except ImportError:
+    HAS_CPP_PHYSICS = False
+    print("[physics] C++ module not found, using Python fallback")
+
 # ---------------------------------------------------------------------------
 # Convenience aliases from config (updated on reload)
 # ---------------------------------------------------------------------------
@@ -247,6 +257,14 @@ class GameMap:
         m[:, 0:hull_t] = MAT_HULL
         m[:, fw - hull_t:] = MAT_HULL
 
+        # Start a fire on the vertical wood wall (coarse x=15) for testing
+        wall_x = 15 * co
+        mid_y = 12 * co  # middle of the wall
+        for dy in range(-2, 3):
+            fy = mid_y + dy
+            if 0 <= fy < fh and m[fy, wall_x] == MAT_WOOD:
+                self.fire[fy, wall_x] = 0.8
+
     def _update_caches(self):
         """Rebuild cached arrays from material grid."""
         fw = CFG.display.fine_w
@@ -391,7 +409,7 @@ class Physics:
         gmap.atmosphere += CFG.physics.d_atm * dt * lap
         gmap.atmosphere[gmap.is_wall] = 0.0
         gmap.atmosphere[gmap.is_vacuum] = 0.0
-        np.clip(gmap.atmosphere, 0.0, 20.0, out=gmap.atmosphere)
+        # No clamping — allow negative (rarefaction) and overpressure
 
     @staticmethod
     def step_smoke(gmap, dt):
@@ -519,7 +537,7 @@ class Physics:
 
         np.clip(fire, 0.0, 1.0, out=fire)
         np.clip(gmap.smoke, 0.0, 1.0, out=gmap.smoke)
-        np.clip(gmap.atmosphere, 0.0, 20.0, out=gmap.atmosphere)
+        # No clamping — allow negative (rarefaction) and overpressure
 
     @staticmethod
     def apply_explosion(gmap, fy, fx, radius, pressure, wall_damage):
@@ -541,14 +559,16 @@ class Physics:
                         if not gmap.is_wall[ny, nx] and not gmap.is_vacuum[ny, nx]:
                             # Feed pressure source (delivered over multiple substeps)
                             gmap.wave_source[ny, nx] += pressure * falloff
-                            # Also deposit into atmosphere (creates sustained wind)
-                            gmap.atmosphere[ny, nx] += pressure * falloff * 0.3
                         if dist <= radius * 0.4:
                             gmap.smoke[ny, nx] = 0.0
                         # Ignite flammable tiles near explosion
                         if gmap.flammable[ny, nx] and dist <= radius * 0.7:
                             gmap.fire[ny, nx] = max(gmap.fire[ny, nx],
                                                      0.5 * falloff)
+
+        # Deposit sustained pressure at center only (creates wind after shockwave)
+        if not gmap.is_wall[fy, fx] and not gmap.is_vacuum[fy, fx]:
+            gmap.atmosphere[fy, fx] += pressure * 0.3
 
     # Wave parameters — all in physical units (per second)
     WAVE_C = 300.0          # wave speed in tiles/s (100 m/s, tiles are 1/3 m)
@@ -583,54 +603,105 @@ class Physics:
         # Stability checks (once at startup)
         if not hasattr(Physics, '_checked'):
             Physics._checked = True
+            backend = "C++" if HAS_CPP_PHYSICS else "Python"
+            print(f"[physics] Backend: {backend}")
             print(f"[physics] sim_time={sim_time*1000:.1f}ms per game tick")
             print(f"[physics] Wave: c={c:.1f} tiles/s, dt={dt_wave*1000:.2f}ms, {n_wave} substeps")
             print(f"[physics] Diffusion: D={CFG.physics.d_atm}, dt={dt_diff*1000:.2f}ms, {n_diff} substeps")
+            if HAS_CPP_PHYSICS:
+                Physics._cpp_wave = breach_physics.WaveSolver()
+                Physics._cpp_wave.c = c
+                Physics._cpp_wave.damping = damping
+                Physics._cpp_wave.transfer = transfer
+                Physics._cpp_wave.feed_rate = feed_rate
+                Physics._cpp_atmo = breach_physics.AtmoDiffusion()
+                Physics._cpp_atmo.d_atm = CFG.physics.d_atm
 
-        # --- Wave substeps ---
-        for _ in range(n_wave):
-            if np.any(gmap.wave_source > 0.001):
-                feed = gmap.wave_source * feed_rate * dt_wave
-                feed = np.minimum(feed, gmap.wave_source)
-                gmap.wave_p += feed
-                gmap.wave_source -= feed
+        if HAS_CPP_PHYSICS:
+            # --- C++ wave + diffusion (single call each, handles substeps internally) ---
+            Physics._cpp_wave.step(
+                gmap.wave_p, gmap.wave_v, gmap.wave_source, gmap.atmosphere,
+                gmap.obstacles, gmap.is_wall, gmap.is_vacuum, sim_time)
+            Physics._cpp_atmo.step(
+                gmap.atmosphere, gmap.obstacles, gmap.is_wall, gmap.is_vacuum, sim_time)
+        else:
+            # --- Python fallback: wave substeps ---
+            for _ in range(n_wave):
+                if np.any(gmap.wave_source > 0.001):
+                    feed = gmap.wave_source * feed_rate * dt_wave
+                    feed = np.minimum(feed, gmap.wave_source)
+                    gmap.wave_p += feed
+                    gmap.wave_source -= feed
 
-            up = np.roll(gmap.wave_p, 1, axis=0)
-            down = np.roll(gmap.wave_p, -1, axis=0)
-            left = np.roll(gmap.wave_p, 1, axis=1)
-            right = np.roll(gmap.wave_p, -1, axis=1)
-            wall_up = np.roll(gmap.obstacles, 1, axis=0)
-            wall_down = np.roll(gmap.obstacles, -1, axis=0)
-            wall_left = np.roll(gmap.obstacles, 1, axis=1)
-            wall_right = np.roll(gmap.obstacles, -1, axis=1)
-            up = np.where(wall_up, gmap.wave_p, up)
-            down = np.where(wall_down, gmap.wave_p, down)
-            left = np.where(wall_left, gmap.wave_p, left)
-            right = np.where(wall_right, gmap.wave_p, right)
-            lap = up + down + left + right - 4.0 * gmap.wave_p
+                up = np.roll(gmap.wave_p, 1, axis=0)
+                down = np.roll(gmap.wave_p, -1, axis=0)
+                left = np.roll(gmap.wave_p, 1, axis=1)
+                right = np.roll(gmap.wave_p, -1, axis=1)
+                wall_up = np.roll(gmap.obstacles, 1, axis=0)
+                wall_down = np.roll(gmap.obstacles, -1, axis=0)
+                wall_left = np.roll(gmap.obstacles, 1, axis=1)
+                wall_right = np.roll(gmap.obstacles, -1, axis=1)
+                up = np.where(wall_up, gmap.wave_p, up)
+                down = np.where(wall_down, gmap.wave_p, down)
+                left = np.where(wall_left, gmap.wave_p, left)
+                right = np.where(wall_right, gmap.wave_p, right)
+                lap = up + down + left + right - 4.0 * gmap.wave_p
 
-            gmap.wave_v += (c_squared * lap - damping * gmap.wave_v) * dt_wave
-            gmap.wave_p += gmap.wave_v * dt_wave
-            gmap.wave_p[gmap.is_wall] = 0.0
-            gmap.wave_p[gmap.is_vacuum] = 0.0
+                gmap.wave_v += (c_squared * lap - damping * gmap.wave_v) * dt_wave
+                gmap.wave_p += gmap.wave_v * dt_wave
+                gmap.wave_p[gmap.is_wall] = 0.0
+                gmap.wave_p[gmap.is_vacuum] = 0.0
 
-            gmap.atmosphere += gmap.wave_p * transfer * dt_wave
-            gmap.atmosphere[gmap.is_wall] = 0.0
-            gmap.atmosphere[gmap.is_vacuum] = 0.0
-            np.clip(gmap.atmosphere, 0.0, 20.0, out=gmap.atmosphere)
+                gmap.atmosphere += gmap.wave_p * transfer * dt_wave
+                gmap.atmosphere[gmap.is_wall] = 0.0
+                gmap.atmosphere[gmap.is_vacuum] = 0.0
+                # No clamping — allow negative (rarefaction) and overpressure
 
-        # --- Diffusion substeps ---
-        for _ in range(n_diff):
-            Physics.step_atmosphere(gmap, dt_diff)
+            # --- Python fallback: diffusion substeps ---
+            for _ in range(n_diff):
+                Physics.step_atmosphere(gmap, dt_diff)
 
         # --- Smoke (advection + diffusion, one step) ---
-        Physics.step_smoke(gmap, dt_smoke)
+        if HAS_CPP_PHYSICS:
+            if not hasattr(Physics, '_cpp_smoke'):
+                Physics._cpp_smoke = breach_physics.SmokeDynamics()
+                Physics._cpp_smoke.d_smoke = CFG.physics.d_smoke
+                Physics._cpp_smoke.advection_rate = CFG.physics.advection_rate
+                Physics._cpp_smoke.wave_advection = 80.0
+            Physics._cpp_smoke.step(
+                gmap.smoke, gmap.atmosphere, gmap.wave_p,
+                gmap.obstacles, gmap.is_wall, gmap.is_vacuum, dt_smoke)
+        else:
+            Physics.step_smoke(gmap, dt_smoke)
 
         # --- Fire (spreading, O2, smoke emission, wall damage) ---
-        Physics.step_fire(gmap, dt_smoke)
+        if HAS_CPP_PHYSICS:
+            if not hasattr(Physics, '_cpp_fire'):
+                Physics._cpp_fire = breach_physics.FireSimulation()
+                Physics._cpp_fire.params.spread_rate = Physics.FIRE_D
+                Physics._cpp_fire.params.o2_threshold = Physics.FIRE_O2_THRESHOLD
+                Physics._cpp_fire.params.o2_consumption = Physics.FIRE_O2_CONSUMPTION
+                Physics._cpp_fire.params.smoke_emission = Physics.FIRE_SMOKE_EMISSION
+                Physics._cpp_fire.params.wall_damage = Physics.FIRE_WALL_DAMAGE
+                Physics._cpp_fire.params.k_wind_thresh = Physics.FIRE_K_WIND_THRESH
+                Physics._cpp_fire.params.k_wind_net = Physics.FIRE_K_WIND_NET
+            destroyed = Physics._cpp_fire.step(
+                gmap.fire, gmap.atmosphere, gmap.smoke, gmap.wall_hp,
+                gmap.is_wall, gmap.flammable, dt_smoke)
+            for fy, fx in destroyed:
+                gmap.destroy_wall(fy, fx)
+        else:
+            Physics.step_fire(gmap, dt_smoke)
 
         # --- Raycasting (light + heat) ---
-        Raycaster.update(gmap)
+        if HAS_CPP_PHYSICS:
+            if not hasattr(Physics, '_cpp_ray'):
+                Physics._cpp_ray = breach_physics.Raycaster()
+                Physics._cpp_ray.coarse_cluster = CFG.display.coarse
+            Physics._cpp_ray.update_from_fire(
+                gmap.light_map, gmap.fire, gmap.smoke, gmap.is_wall)
+        else:
+            Raycaster.update(gmap)
 
 
 # ---------------------------------------------------------------------------

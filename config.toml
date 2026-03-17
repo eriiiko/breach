@@ -11,7 +11,7 @@ marine_sprint_ticks_per_tile = 4
 xeno_sprint_ticks_per_tile = 1
 
 [physics]
-d_atm = 200.0
+d_atm = 50.0
 d_smoke = 0.4
 advection_rate = 25.0
 physics_dt = 0.001                # 1ms (CFL stable for c=300 tiles/s)

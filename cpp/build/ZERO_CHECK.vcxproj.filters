@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\steen\projects\breach\cpp\build\CMakeFiles\b492da49f8f5488672d80498a20830e1\generate.stamp.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{085EA25B-2232-308F-A24F-0A558269C09B}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

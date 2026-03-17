@@ -1,0 +1,413 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
+  </PropertyGroup>
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="MinSizeRel|x64">
+      <Configuration>MinSizeRel</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="RelWithDebInfo|x64">
+      <Configuration>RelWithDebInfo</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{0E26598C-0FFB-3D97-A41B-4F7E750FED97}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <Platform>x64</Platform>
+    <ProjectName>breach_physics</ProjectName>
+    <VCProjectUpgraderObjectName>NoUpgrade</VCProjectUpgraderObjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <_ProjectFileVersion>10.0.20506.1</_ProjectFileVersion>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\Users\steen\projects\breach\cpp\build\Debug\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">breach_physics.dir\Debug\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">breach_physics.cp311-win_amd64</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">.pyd</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</GenerateManifest>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Users\steen\projects\breach\cpp\build\Release\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">breach_physics.dir\Release\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">breach_physics.cp311-win_amd64</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='Release|x64'">.pyd</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</GenerateManifest>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\Users\steen\projects\breach\cpp\build\MinSizeRel\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">breach_physics.dir\MinSizeRel\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">breach_physics.cp311-win_amd64</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">.pyd</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">true</GenerateManifest>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\Users\steen\projects\breach\cpp\build\RelWithDebInfo\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">breach_physics.dir\RelWithDebInfo\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">breach_physics.cp311-win_amd64</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">.pyd</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">true</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">true</GenerateManifest>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\Users\steen\projects\breach\cpp\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "C:/Users/steen/anaconda3/Include" /external:I "C:/Users/steen/anaconda3/Lib/site-packages/pybind11/include" /bigobj</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <FloatingPointModel>Fast</FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>Disabled</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <MinimalRebuild></MinimalRebuild>
+      <Optimization>MaxSpeed</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <RuntimeTypeInfo>true</RuntimeTypeInfo>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <WarningLevel>Level3</WarningLevel>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;Py_NO_LINK_LIB;CMAKE_INTDIR="Debug";breach_physics_EXPORTS</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_DEBUG;_WINDOWS;Py_NO_LINK_LIB;CMAKE_INTDIR=\"Debug\";breach_physics_EXPORTS</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\Users\steen\projects\breach\cpp\src;C:\Users\steen\anaconda3\Include;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\Users\steen\projects\breach\cpp\src;C:\Users\steen\anaconda3\Include;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <Link>
+      <AdditionalDependencies>C:\Users\steen\anaconda3\libs\python311.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>C:/Users/steen/projects/breach/cpp/build/Debug/breach_physics.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <ProgramDataBaseFile>C:/Users/steen/projects/breach/cpp/build/Debug/breach_physics.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\Users\steen\projects\breach\cpp\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "C:/Users/steen/anaconda3/Include" /external:I "C:/Users/steen/anaconda3/Lib/site-packages/pybind11/include" /bigobj</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <FloatingPointModel>Fast</FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <MinimalRebuild></MinimalRebuild>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <Optimization>MaxSpeed</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <RuntimeTypeInfo>true</RuntimeTypeInfo>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <WarningLevel>Level3</WarningLevel>
+      <WholeProgramOptimization>true</WholeProgramOptimization>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;Py_NO_LINK_LIB;CMAKE_INTDIR="Release";breach_physics_EXPORTS</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <DebugInformationFormat>
+      </DebugInformationFormat>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;Py_NO_LINK_LIB;CMAKE_INTDIR=\"Release\";breach_physics_EXPORTS</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\Users\steen\projects\breach\cpp\src;C:\Users\steen\anaconda3\Include;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\Users\steen\projects\breach\cpp\src;C:\Users\steen\anaconda3\Include;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <Link>
+      <AdditionalDependencies>C:\Users\steen\anaconda3\libs\python311.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>C:/Users/steen/projects/breach/cpp/build/Release/breach_physics.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
+      <ProgramDataBaseFile>C:/Users/steen/projects/breach/cpp/build/Release/breach_physics.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\Users\steen\projects\breach\cpp\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "C:/Users/steen/anaconda3/Include" /external:I "C:/Users/steen/anaconda3/Lib/site-packages/pybind11/include" /bigobj</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <FloatingPointModel>Fast</FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <MinimalRebuild></MinimalRebuild>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <Optimization>MaxSpeed</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <RuntimeTypeInfo>true</RuntimeTypeInfo>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <WarningLevel>Level3</WarningLevel>
+      <WholeProgramOptimization>true</WholeProgramOptimization>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;Py_NO_LINK_LIB;CMAKE_INTDIR="MinSizeRel";breach_physics_EXPORTS</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <DebugInformationFormat>
+      </DebugInformationFormat>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;Py_NO_LINK_LIB;CMAKE_INTDIR=\"MinSizeRel\";breach_physics_EXPORTS</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\Users\steen\projects\breach\cpp\src;C:\Users\steen\anaconda3\Include;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\Users\steen\projects\breach\cpp\src;C:\Users\steen\anaconda3\Include;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <Link>
+      <AdditionalDependencies>C:\Users\steen\anaconda3\libs\python311.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>C:/Users/steen/projects/breach/cpp/build/MinSizeRel/breach_physics.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
+      <ProgramDataBaseFile>C:/Users/steen/projects/breach/cpp/build/MinSizeRel/breach_physics.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\Users\steen\projects\breach\cpp\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "C:/Users/steen/anaconda3/Include" /external:I "C:/Users/steen/anaconda3/Lib/site-packages/pybind11/include" /bigobj</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <FloatingPointModel>Fast</FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <MinimalRebuild></MinimalRebuild>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <Optimization>MaxSpeed</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <RuntimeTypeInfo>true</RuntimeTypeInfo>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <WarningLevel>Level3</WarningLevel>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;Py_NO_LINK_LIB;CMAKE_INTDIR="RelWithDebInfo";breach_physics_EXPORTS</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;Py_NO_LINK_LIB;CMAKE_INTDIR=\"RelWithDebInfo\";breach_physics_EXPORTS</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\Users\steen\projects\breach\cpp\src;C:\Users\steen\anaconda3\Include;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\Users\steen\projects\breach\cpp\src;C:\Users\steen\anaconda3\Include;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <Link>
+      <AdditionalDependencies>C:\Users\steen\anaconda3\libs\python311.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>C:/Users/steen/projects/breach/cpp/build/RelWithDebInfo/breach_physics.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <ProgramDataBaseFile>C:/Users/steen/projects/breach/cpp/build/RelWithDebInfo/breach_physics.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\steen\projects\breach\cpp\CMakeLists.txt">
+      <UseUtf8Encoding>Always</UseUtf8Encoding>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Building Custom Rule C:/Users/steen/projects/breach/cpp/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">setlocal
+C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\bin\cmake.exe -SC:/Users/steen/projects/breach/cpp -BC:/Users/steen/projects/breach/cpp/build --check-stamp-file C:/Users/steen/projects/breach/cpp/build/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeCXXInformation.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeCheckCompilerFlagCommonPatterns.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeCommonLanguageInclude.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeGenericSystem.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeInitializeConfigs.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeLanguageInformation.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeRCInformation.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeSystemSpecificInformation.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeSystemSpecificInitialize.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CheckCXXCompilerFlag.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CheckCXXSourceCompiles.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Compiler\MSVC-CXX.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Compiler\MSVC.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\FindPackageHandleStandardArgs.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\FindPackageMessage.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\FindPython.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\FindPython\Support.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Internal\CMakeCXXLinkerInformation.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Internal\CMakeCommonLinkerInformation.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Internal\CheckCompilerFlag.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Internal\CheckFlagCommonConfig.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Internal\CheckSourceCompiles.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Linker\MSVC-CXX.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Linker\MSVC.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC-CXX.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\Windows-Initialize.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\Windows-MSVC-CXX.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\Windows-MSVC.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\Windows.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\WindowsPaths.cmake;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\share\cmake\pybind11\pybind11Common.cmake;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\share\cmake\pybind11\pybind11Config.cmake;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\share\cmake\pybind11\pybind11ConfigVersion.cmake;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\share\cmake\pybind11\pybind11NewTools.cmake;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\share\cmake\pybind11\pybind11Targets.cmake;C:\Users\steen\projects\breach\cpp\build\CMakeFiles\4.2.3\CMakeCXXCompiler.cmake;C:\Users\steen\projects\breach\cpp\build\CMakeFiles\4.2.3\CMakeRCCompiler.cmake;C:\Users\steen\projects\breach\cpp\build\CMakeFiles\4.2.3\CMakeSystem.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\Users\steen\projects\breach\cpp\build\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Building Custom Rule C:/Users/steen/projects/breach/cpp/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">setlocal
+C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\bin\cmake.exe -SC:/Users/steen/projects/breach/cpp -BC:/Users/steen/projects/breach/cpp/build --check-stamp-file C:/Users/steen/projects/breach/cpp/build/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeCXXInformation.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeCheckCompilerFlagCommonPatterns.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeCommonLanguageInclude.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeGenericSystem.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeInitializeConfigs.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeLanguageInformation.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeRCInformation.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeSystemSpecificInformation.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeSystemSpecificInitialize.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CheckCXXCompilerFlag.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CheckCXXSourceCompiles.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Compiler\MSVC-CXX.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Compiler\MSVC.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\FindPackageHandleStandardArgs.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\FindPackageMessage.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\FindPython.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\FindPython\Support.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Internal\CMakeCXXLinkerInformation.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Internal\CMakeCommonLinkerInformation.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Internal\CheckCompilerFlag.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Internal\CheckFlagCommonConfig.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Internal\CheckSourceCompiles.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Linker\MSVC-CXX.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Linker\MSVC.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC-CXX.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\Windows-Initialize.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\Windows-MSVC-CXX.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\Windows-MSVC.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\Windows.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\WindowsPaths.cmake;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\share\cmake\pybind11\pybind11Common.cmake;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\share\cmake\pybind11\pybind11Config.cmake;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\share\cmake\pybind11\pybind11ConfigVersion.cmake;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\share\cmake\pybind11\pybind11NewTools.cmake;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\share\cmake\pybind11\pybind11Targets.cmake;C:\Users\steen\projects\breach\cpp\build\CMakeFiles\4.2.3\CMakeCXXCompiler.cmake;C:\Users\steen\projects\breach\cpp\build\CMakeFiles\4.2.3\CMakeRCCompiler.cmake;C:\Users\steen\projects\breach\cpp\build\CMakeFiles\4.2.3\CMakeSystem.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Users\steen\projects\breach\cpp\build\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">Building Custom Rule C:/Users/steen/projects/breach/cpp/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">setlocal
+C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\bin\cmake.exe -SC:/Users/steen/projects/breach/cpp -BC:/Users/steen/projects/breach/cpp/build --check-stamp-file C:/Users/steen/projects/breach/cpp/build/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeCXXInformation.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeCheckCompilerFlagCommonPatterns.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeCommonLanguageInclude.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeGenericSystem.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeInitializeConfigs.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeLanguageInformation.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeRCInformation.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeSystemSpecificInformation.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeSystemSpecificInitialize.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CheckCXXCompilerFlag.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CheckCXXSourceCompiles.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Compiler\MSVC-CXX.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Compiler\MSVC.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\FindPackageHandleStandardArgs.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\FindPackageMessage.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\FindPython.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\FindPython\Support.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Internal\CMakeCXXLinkerInformation.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Internal\CMakeCommonLinkerInformation.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Internal\CheckCompilerFlag.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Internal\CheckFlagCommonConfig.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Internal\CheckSourceCompiles.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Linker\MSVC-CXX.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Linker\MSVC.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC-CXX.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\Windows-Initialize.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\Windows-MSVC-CXX.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\Windows-MSVC.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\Windows.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\WindowsPaths.cmake;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\share\cmake\pybind11\pybind11Common.cmake;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\share\cmake\pybind11\pybind11Config.cmake;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\share\cmake\pybind11\pybind11ConfigVersion.cmake;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\share\cmake\pybind11\pybind11NewTools.cmake;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\share\cmake\pybind11\pybind11Targets.cmake;C:\Users\steen\projects\breach\cpp\build\CMakeFiles\4.2.3\CMakeCXXCompiler.cmake;C:\Users\steen\projects\breach\cpp\build\CMakeFiles\4.2.3\CMakeRCCompiler.cmake;C:\Users\steen\projects\breach\cpp\build\CMakeFiles\4.2.3\CMakeSystem.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\Users\steen\projects\breach\cpp\build\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">Building Custom Rule C:/Users/steen/projects/breach/cpp/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">setlocal
+C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\bin\cmake.exe -SC:/Users/steen/projects/breach/cpp -BC:/Users/steen/projects/breach/cpp/build --check-stamp-file C:/Users/steen/projects/breach/cpp/build/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeCXXInformation.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeCheckCompilerFlagCommonPatterns.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeCommonLanguageInclude.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeGenericSystem.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeInitializeConfigs.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeLanguageInformation.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeRCInformation.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeSystemSpecificInformation.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CMakeSystemSpecificInitialize.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CheckCXXCompilerFlag.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\CheckCXXSourceCompiles.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Compiler\MSVC-CXX.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Compiler\MSVC.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\FindPackageHandleStandardArgs.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\FindPackageMessage.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\FindPython.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\FindPython\Support.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Internal\CMakeCXXLinkerInformation.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Internal\CMakeCommonLinkerInformation.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Internal\CheckCompilerFlag.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Internal\CheckFlagCommonConfig.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Internal\CheckSourceCompiles.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Linker\MSVC-CXX.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Linker\MSVC.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC-CXX.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\Windows-Initialize.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\Windows-MSVC-CXX.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\Windows-MSVC.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\Windows.cmake;C:\Users\steen\anaconda3\Lib\site-packages\cmake\data\share\cmake-4.2\Modules\Platform\WindowsPaths.cmake;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\share\cmake\pybind11\pybind11Common.cmake;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\share\cmake\pybind11\pybind11Config.cmake;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\share\cmake\pybind11\pybind11ConfigVersion.cmake;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\share\cmake\pybind11\pybind11NewTools.cmake;C:\Users\steen\anaconda3\Lib\site-packages\pybind11\share\cmake\pybind11\pybind11Targets.cmake;C:\Users\steen\projects\breach\cpp\build\CMakeFiles\4.2.3\CMakeCXXCompiler.cmake;C:\Users\steen\projects\breach\cpp\build\CMakeFiles\4.2.3\CMakeRCCompiler.cmake;C:\Users\steen\projects\breach\cpp\build\CMakeFiles\4.2.3\CMakeSystem.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\Users\steen\projects\breach\cpp\build\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">false</LinkObjects>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="C:\Users\steen\projects\breach\cpp\src\wave_solver.cpp" />
+    <ClCompile Include="C:\Users\steen\projects\breach\cpp\src\atmo_diffusion.cpp" />
+    <ClCompile Include="C:\Users\steen\projects\breach\cpp\src\smoke_dynamics.cpp" />
+    <ClCompile Include="C:\Users\steen\projects\breach\cpp\src\fire_simulation.cpp" />
+    <ClCompile Include="C:\Users\steen\projects\breach\cpp\src\raycaster.cpp" />
+    <ClCompile Include="C:\Users\steen\projects\breach\cpp\src\bindings.cpp" />
+  </ItemGroup>
+  <ItemGroup />
+  <ItemGroup>
+    <ProjectReference Include="C:\Users\steen\projects\breach\cpp\build\ZERO_CHECK.vcxproj">
+      <Project>{96E193C8-7C9F-385E-946B-F961E5F20041}</Project>
+      <Name>ZERO_CHECK</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>
