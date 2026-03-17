@@ -566,9 +566,15 @@ class Physics:
                             gmap.fire[ny, nx] = max(gmap.fire[ny, nx],
                                                      0.5 * falloff)
 
-        # Deposit sustained pressure at center only (creates wind after shockwave)
-        if not gmap.is_wall[fy, fx] and not gmap.is_vacuum[fy, fx]:
-            gmap.atmosphere[fy, fx] += pressure * 0.3
+        # Deposit sustained pressure in cross pattern (creates wind after shockwave)
+        # Center gets 2x, cardinal neighbors get 1x each (total = 6x factor)
+        fh_map = CFG.display.fine_h
+        fw_map = CFG.display.fine_w
+        for dy, dx, mult in [(0,0,2), (-1,0,1), (1,0,1), (0,-1,1), (0,1,1)]:
+            ty, tx = fy + dy, fx + dx
+            if 0 <= ty < fh_map and 0 <= tx < fw_map:
+                if not gmap.is_wall[ty, tx] and not gmap.is_vacuum[ty, tx]:
+                    gmap.atmosphere[ty, tx] += pressure * 0.3 * mult
 
     # Wave parameters — all in physical units (per second)
     WAVE_C = 300.0          # wave speed in tiles/s (100 m/s, tiles are 1/3 m)
