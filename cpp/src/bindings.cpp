@@ -34,28 +34,30 @@ PYBIND11_MODULE(breach_physics, m) {
         .def(py::init<>())
         .def_readwrite("c",         &WaveSolver::c)
         .def_readwrite("damping",   &WaveSolver::damping)
-        .def_readwrite("transfer",  &WaveSolver::transfer)
         .def_readwrite("feed_rate", &WaveSolver::feed_rate)
         .def("step", [](const WaveSolver& self,
-                        py::array_t<float> wave_p,
+                        py::array_t<float> atmosphere,
                         py::array_t<float> wave_v,
                         py::array_t<float> wave_source,
-                        py::array_t<float> atmosphere,
+                        py::array_t<float> wind_x,
+                        py::array_t<float> wind_y,
                         py::array_t<bool>  obstacles,
                         py::array_t<bool>  is_wall,
                         py::array_t<bool>  is_vacuum,
                         float sim_time) {
-            auto [wp, h, w] = get_2d(wave_p);
+            auto [atm, h, w] = get_2d(atmosphere);
             auto [wv, h2, w2] = get_2d(wave_v);
             auto [ws, h3, w3] = get_2d(wave_source);
-            auto [atm, h4, w4] = get_2d(atmosphere);
-            auto [obs, h5, w5] = get_2d_const(obstacles);
-            auto [wl, h6, w6] = get_2d_const(is_wall);
-            auto [vac, h7, w7] = get_2d_const(is_vacuum);
-            self.step(wp, wv, ws, atm, obs, wl, vac, h, w, sim_time);
-        }, py::arg("wave_p"), py::arg("wave_v"), py::arg("wave_source"),
-           py::arg("atmosphere"), py::arg("obstacles"),
-           py::arg("is_wall"), py::arg("is_vacuum"), py::arg("sim_time"));
+            auto [wx, h4, w4] = get_2d(wind_x);
+            auto [wy, h5, w5] = get_2d(wind_y);
+            auto [obs, h6, w6] = get_2d_const(obstacles);
+            auto [wl, h7, w7] = get_2d_const(is_wall);
+            auto [vac, h8, w8] = get_2d_const(is_vacuum);
+            self.step(atm, wv, ws, wx, wy, obs, wl, vac, h, w, sim_time);
+        }, py::arg("atmosphere"), py::arg("wave_v"), py::arg("wave_source"),
+           py::arg("wind_x"), py::arg("wind_y"),
+           py::arg("obstacles"), py::arg("is_wall"), py::arg("is_vacuum"),
+           py::arg("sim_time"));
 
     // --- AtmoDiffusion ---
     py::class_<AtmoDiffusion>(m, "AtmoDiffusion")
@@ -80,23 +82,22 @@ PYBIND11_MODULE(breach_physics, m) {
         .def(py::init<>())
         .def_readwrite("d_smoke",        &SmokeDynamics::d_smoke)
         .def_readwrite("advection_rate", &SmokeDynamics::advection_rate)
-        .def_readwrite("wave_advection", &SmokeDynamics::wave_advection)
         .def("step", [](const SmokeDynamics& self,
                         py::array_t<float> smoke,
-                        py::array_t<float> atmosphere,
-                        py::array_t<float> wave_p,
+                        py::array_t<float> wind_x,
+                        py::array_t<float> wind_y,
                         py::array_t<bool>  obstacles,
                         py::array_t<bool>  is_wall,
                         py::array_t<bool>  is_vacuum,
                         float dt) {
             auto [sm, h, w] = get_2d(smoke);
-            auto [atm, h2, w2] = get_2d_const(atmosphere);
-            auto [wp, h3, w3] = get_2d_const(wave_p);
+            auto [wx, h2, w2] = get_2d_const(wind_x);
+            auto [wy, h3, w3] = get_2d_const(wind_y);
             auto [obs, h4, w4] = get_2d_const(obstacles);
             auto [wl, h5, w5] = get_2d_const(is_wall);
             auto [vac, h6, w6] = get_2d_const(is_vacuum);
-            self.step(sm, atm, wp, obs, wl, vac, h, w, dt);
-        }, py::arg("smoke"), py::arg("atmosphere"), py::arg("wave_p"),
+            self.step(sm, wx, wy, obs, wl, vac, h, w, dt);
+        }, py::arg("smoke"), py::arg("wind_x"), py::arg("wind_y"),
            py::arg("obstacles"), py::arg("is_wall"), py::arg("is_vacuum"),
            py::arg("dt"));
 

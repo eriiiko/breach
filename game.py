@@ -178,13 +178,13 @@ def diagonal_distance(dx, dy):
 class PhysicsRecorder:
     """Ring buffer that records physics state each tick.
     Keeps last `capacity` snapshots in memory.  Dumps to .npz on:
-      - blowup detected  (max |wave_p| > threshold)
+      - blowup detected  (max |atmosphere| > threshold)
       - manual trigger    (F8 key)
     Which fields to record is configurable per session via `fields`."""
 
     # Default fields to record (must match GameMap array attribute names)
-    DEFAULT_FIELDS = ('wave_p', 'wave_v', 'atmosphere', 'smoke', 'fire', 'obstacles')
-    BLOWUP_THRESHOLD = 50.0  # max |wave_p| that triggers auto-dump
+    DEFAULT_FIELDS = ('wave_v', 'atmosphere', 'smoke', 'fire', 'obstacles')
+    BLOWUP_THRESHOLD = 50.0  # max |atmosphere| that triggers auto-dump
 
     def __init__(self, fh, fw, capacity=1200, fields=None):
         self.fh = fh
@@ -238,10 +238,10 @@ class PhysicsRecorder:
         self.count += 1
 
         # Auto-dump on blowup
-        if 'wave_p' in self.buffers:
-            max_wave = np.max(np.abs(self.buffers['wave_p'][i]))
-            if max_wave > self.BLOWUP_THRESHOLD and not self.dumped:
-                print(f"[recorder] BLOWUP DETECTED: max |wave_p| = {max_wave:.1f}")
+        if 'atmosphere' in self.buffers:
+            max_atm = np.max(np.abs(self.buffers['atmosphere'][i]))
+            if max_atm > self.BLOWUP_THRESHOLD and not self.dumped:
+                print(f"[recorder] BLOWUP DETECTED: max |atmosphere| = {max_atm:.1f}")
                 self.dump("blowup")
                 self.dumped = True
 
@@ -301,10 +301,11 @@ class GameMap:
         self.is_wall = np.zeros((fh, fw), dtype=bool)
         self.is_vacuum = np.zeros((fh, fw), dtype=bool)
         self.flammable = np.zeros((fh, fw), dtype=bool)
-        self.atmosphere = np.ones((fh, fw), dtype=np.float32)
-        self.wave_p = np.zeros((fh, fw), dtype=np.float32)  # wave pressure deviation
+        self.atmosphere = np.ones((fh, fw), dtype=np.float32)  # unified pressure field
         self.wave_v = np.zeros((fh, fw), dtype=np.float32)  # wave velocity (dp/dt)
         self.wave_source = np.zeros((fh, fw), dtype=np.float32)  # pressure source (fed over time)
+        self.wind_x = np.zeros((fh, fw), dtype=np.float32)  # wind field x (from wave solver)
+        self.wind_y = np.zeros((fh, fw), dtype=np.float32)  # wind field y (from wave solver)
         self.smoke = np.zeros((fh, fw), dtype=np.float32)
         self.fire = np.zeros((fh, fw), dtype=np.float32)  # fire intensity (0-1, lives on flammable walls)
         self.obstacles = np.zeros((fh, fw), dtype=bool)  # walls + units combined
@@ -411,7 +412,7 @@ class GameMap:
         self.is_vacuum[:, fw - co:] = True
 
         self.atmosphere = np.where(
-            self.is_wall | self.is_vacuum, 0.0, 1.0
+            self.is_vacuum, 0.0, 1.0  # walls at 1.0 (equilibrium), vacuum at 0.0
         ).astype(np.float32)
 
     def stamp_units(self, units):
@@ -544,9 +545,7 @@ class Physics:
     def step_atmosphere(gmap, dt):
         lap = Physics.compute_laplacian(gmap.atmosphere, gmap.obstacles)
         gmap.atmosphere += CFG.physics.d_atm * dt * lap
-        gmap.atmosphere[gmap.is_wall] = 0.0
-        gmap.atmosphere[gmap.is_vacuum] = 0.0
-        # No clamping — allow negative (rarefaction) and overpressure
+        gmap.atmosphere[gmap.is_vacuum] = 0.0  # vacuum Dirichlet BC
 
     @staticmethod
     def step_smoke(gmap, dt):
@@ -559,20 +558,9 @@ class Physics:
         ds_dx = (np.roll(gmap.smoke, -1, axis=1) -
                  np.roll(gmap.smoke, 1, axis=1)) / 2.0
 
-        # Advection by atmosphere gradient (sustained wind, e.g. hull breach)
-        a_grad_y = (np.roll(gmap.atmosphere, -1, axis=0) -
-                    np.roll(gmap.atmosphere, 1, axis=0)) / 2.0
-        a_grad_x = (np.roll(gmap.atmosphere, -1, axis=1) -
-                    np.roll(gmap.atmosphere, 1, axis=1)) / 2.0
+        # Advection by precomputed wind field
         gmap.smoke += CFG.physics.advection_rate * dt * (
-            a_grad_x * ds_dx + a_grad_y * ds_dy)
-
-        # Advection by wave pressure gradient (shockwave pushes smoke hard)
-        w_grad_y = (np.roll(gmap.wave_p, -1, axis=0) -
-                    np.roll(gmap.wave_p, 1, axis=0)) / 2.0
-        w_grad_x = (np.roll(gmap.wave_p, -1, axis=1) -
-                    np.roll(gmap.wave_p, 1, axis=1)) / 2.0
-        gmap.smoke += 80.0 * dt * (w_grad_x * ds_dx + w_grad_y * ds_dy)
+            gmap.wind_x * ds_dx + gmap.wind_y * ds_dy)
 
         gmap.smoke[gmap.is_wall] = 0.0
         gmap.smoke[gmap.is_vacuum] = 0.0
@@ -606,13 +594,12 @@ class Physics:
         fire[can_ignite] += Physics.FIRE_D * dt * neighbor_fire[can_ignite]
 
         # Wind-biased spreading (from design doc Topic 3)
-        wind_x = -(np.roll(gmap.atmosphere, -1, axis=1) -
-                    np.roll(gmap.atmosphere, 1, axis=1)) / 2.0
-        wind_y = -(np.roll(gmap.atmosphere, -1, axis=0) -
-                    np.roll(gmap.atmosphere, 1, axis=0)) / 2.0
+        # Use precomputed wind field (negated: wind blows from high to low pressure)
+        wx = -gmap.wind_x
+        wy = -gmap.wind_y
         # Bias ignition toward downwind direction
         for dy, dx in [(-1,0),(1,0),(0,-1),(0,1)]:
-            dot = dx * wind_x + dy * wind_y  # positive = downwind
+            dot = dx * wx + dy * wy  # positive = downwind
             wind_boost = np.clip(1.0 + 2.0 * dot, 0.0, 3.0)
             nf = np.roll(fire, (dy, dx), axis=(0, 1))
             boost_ignite = gmap.flammable & (fire < 0.01) & (nf > 0.05)
@@ -621,7 +608,7 @@ class Physics:
         # Wind modulates fire intensity: fire must be strong enough relative
         # to wind to survive. Weak wind + weak fire = feeds. Strong wind +
         # weak fire = blown out. Strong wind + strong fire = burns hotter.
-        wind_speed = np.sqrt(wind_x**2 + wind_y**2)
+        wind_speed = np.sqrt(wx**2 + wy**2)
         burning = fire > 0.01
         wind_threshold = Physics.FIRE_K_WIND_THRESH * wind_speed
         fire_margin = fire - wind_threshold
@@ -715,9 +702,8 @@ class Physics:
 
     # Wave parameters — all in physical units (per second)
     WAVE_C = 300.0          # wave speed in tiles/s (100 m/s, tiles are 1/3 m)
-    WAVE_DAMPING = 3.0      # velocity damping rate (1/s)
-    WAVE_TRANSFER = 0.5     # wave->atmosphere transfer rate (1/s)
-    SOURCE_FEED_RATE = 200.0  # how fast source deposits into wave_p (1/s)
+    WAVE_DAMPING = 30.0     # velocity damping rate (1/s)
+    SOURCE_FEED_RATE = 200.0  # how fast source deposits into atmosphere (1/s)
 
     @staticmethod
     def step(gmap, sim_time=None):
@@ -730,7 +716,6 @@ class Physics:
         c = Physics.WAVE_C
         c_squared = c * c
         damping = Physics.WAVE_DAMPING
-        transfer = Physics.WAVE_TRANSFER
         feed_rate = Physics.SOURCE_FEED_RATE
 
         # Each system's stable dt
@@ -755,52 +740,52 @@ class Physics:
                 Physics._cpp_wave = breach_physics.WaveSolver()
                 Physics._cpp_wave.c = c
                 Physics._cpp_wave.damping = damping
-                Physics._cpp_wave.transfer = transfer
                 Physics._cpp_wave.feed_rate = feed_rate
                 Physics._cpp_atmo = breach_physics.AtmoDiffusion()
                 Physics._cpp_atmo.d_atm = CFG.physics.d_atm
 
         if HAS_CPP_PHYSICS:
-            # --- C++ wave + diffusion (single call each, handles substeps internally) ---
+            # --- C++ wave (operates on atmosphere directly, outputs wind field) ---
             Physics._cpp_wave.step(
-                gmap.wave_p, gmap.wave_v, gmap.wave_source, gmap.atmosphere,
+                gmap.atmosphere, gmap.wave_v, gmap.wave_source,
+                gmap.wind_x, gmap.wind_y,
                 gmap.obstacles, gmap.is_wall, gmap.is_vacuum, sim_time)
             Physics._cpp_atmo.step(
                 gmap.atmosphere, gmap.obstacles, gmap.is_wall, gmap.is_vacuum, sim_time)
         else:
-            # --- Python fallback: wave substeps ---
+            # --- Python fallback: wave substeps (operates on atmosphere directly) ---
             for _ in range(n_wave):
                 if np.any(gmap.wave_source > 0.001):
                     feed = gmap.wave_source * feed_rate * dt_wave
                     feed = np.minimum(feed, gmap.wave_source)
-                    gmap.wave_p += feed
+                    gmap.atmosphere += feed
                     gmap.wave_source -= feed
 
-                up = np.roll(gmap.wave_p, 1, axis=0)
-                down = np.roll(gmap.wave_p, -1, axis=0)
-                left = np.roll(gmap.wave_p, 1, axis=1)
-                right = np.roll(gmap.wave_p, -1, axis=1)
+                up = np.roll(gmap.atmosphere, 1, axis=0)
+                down = np.roll(gmap.atmosphere, -1, axis=0)
+                left = np.roll(gmap.atmosphere, 1, axis=1)
+                right = np.roll(gmap.atmosphere, -1, axis=1)
                 wall_up = np.roll(gmap.obstacles, 1, axis=0)
                 wall_down = np.roll(gmap.obstacles, -1, axis=0)
                 wall_left = np.roll(gmap.obstacles, 1, axis=1)
                 wall_right = np.roll(gmap.obstacles, -1, axis=1)
-                up = np.where(wall_up, gmap.wave_p, up)
-                down = np.where(wall_down, gmap.wave_p, down)
-                left = np.where(wall_left, gmap.wave_p, left)
-                right = np.where(wall_right, gmap.wave_p, right)
-                lap = up + down + left + right - 4.0 * gmap.wave_p
+                up = np.where(wall_up, gmap.atmosphere, up)
+                down = np.where(wall_down, gmap.atmosphere, down)
+                left = np.where(wall_left, gmap.atmosphere, left)
+                right = np.where(wall_right, gmap.atmosphere, right)
+                lap = up + down + left + right - 4.0 * gmap.atmosphere
 
                 gmap.wave_v += (c_squared * lap - damping * gmap.wave_v) * dt_wave
-                gmap.wave_p += gmap.wave_v * dt_wave
-                gmap.wave_p[gmap.obstacles] = 0.0
-                gmap.wave_v[gmap.obstacles] = 0.0
-                gmap.wave_p[gmap.is_vacuum] = 0.0
+                gmap.atmosphere += gmap.wave_v * dt_wave
+                gmap.atmosphere[gmap.is_vacuum] = 0.0  # vacuum Dirichlet BC
                 gmap.wave_v[gmap.is_vacuum] = 0.0
+                gmap.wave_v[gmap.obstacles] = 0.0  # Neumann: zero velocity at walls/units
 
-                gmap.atmosphere += gmap.wave_p * transfer * dt_wave
-                gmap.atmosphere[gmap.is_wall] = 0.0
-                gmap.atmosphere[gmap.is_vacuum] = 0.0
-                # No clamping — allow negative (rarefaction) and overpressure
+            # Compute wind field (Python fallback)
+            gmap.wind_x[:] = (np.roll(gmap.atmosphere, -1, axis=1) -
+                              np.roll(gmap.atmosphere, 1, axis=1)) * 0.5
+            gmap.wind_y[:] = (np.roll(gmap.atmosphere, -1, axis=0) -
+                              np.roll(gmap.atmosphere, 1, axis=0)) * 0.5
 
             # --- Python fallback: diffusion substeps ---
             for _ in range(n_diff):
@@ -812,9 +797,8 @@ class Physics:
                 Physics._cpp_smoke = breach_physics.SmokeDynamics()
                 Physics._cpp_smoke.d_smoke = CFG.physics.d_smoke
                 Physics._cpp_smoke.advection_rate = CFG.physics.advection_rate
-                Physics._cpp_smoke.wave_advection = 80.0
             Physics._cpp_smoke.step(
-                gmap.smoke, gmap.atmosphere, gmap.wave_p,
+                gmap.smoke, gmap.wind_x, gmap.wind_y,
                 gmap.obstacles, gmap.is_wall, gmap.is_vacuum, dt_smoke)
         else:
             Physics.step_smoke(gmap, dt_smoke)
@@ -2035,9 +2019,9 @@ class Game:
             pygame.draw.line(self.screen, COL_GRID, (0, y), (fw * ft, y), 1)
 
     def _draw_atmosphere(self):
-        """Draw pressure field (atmosphere + wave) using numpy for speed.
+        """Draw pressure field using numpy for speed.
         Fire color scheme: black -> red -> orange -> yellow -> white."""
-        total = self.gmap.atmosphere + self.gmap.wave_p
+        total = self.gmap.atmosphere
         if total.max() - total.min() < 0.01:
             return
         ft = CFG.display.fine_tile_px
@@ -2534,12 +2518,12 @@ class Game:
                 f"Physics: {self.physics_ms:.1f}ms / tick", True, perf_color)
             self.screen.blit(phys_text, (x, y))
             y += 14
-            wave_max = abs(self.gmap.wave_p).max()
             interior = ~self.gmap.is_wall & ~self.gmap.is_vacuum
             atm_min = self.gmap.atmosphere[interior].min() if interior.any() else 0
             atm_max = self.gmap.atmosphere[interior].max() if interior.any() else 0
+            wv_max = abs(self.gmap.wave_v).max()
             pf_text = self.font_small.render(
-                f"Wave: {wave_max:.1f}  Atm: {atm_min:.2f}-{atm_max:.2f}", True, COL_UI_TEXT)
+                f"Atm: {atm_min:.2f}-{atm_max:.2f}  WaveV: {wv_max:.1f}", True, COL_UI_TEXT)
             self.screen.blit(pf_text, (x, y))
         y += 18
 

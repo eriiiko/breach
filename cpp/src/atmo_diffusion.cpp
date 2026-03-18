@@ -46,9 +46,10 @@ void AtmoDiffusion::step(
             atmosphere[i] += coeff * lap[i];
         }
 
-        // --- Zero walls/vacuum (no clamping — allow negative for rarefaction) ---
+        // --- Boundary conditions ---
+        // Vacuum: Dirichlet BC (p=0). Walls: Neumann (don't touch).
         for (int i = 0; i < h * w; ++i) {
-            if (is_wall[i] || is_vacuum[i]) {
+            if (is_vacuum[i]) {
                 atmosphere[i] = 0.0f;
             }
         }
