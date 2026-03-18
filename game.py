@@ -21,6 +21,7 @@ Controls:
     +/- = adjust playback speed
 
   F5 = Hot-reload config.toml
+  F8 = Dump physics ring buffer to .npz file
 """
 
 import pygame
@@ -28,6 +29,8 @@ import numpy as np
 import math
 import os
 import sys
+import time as _time
+from datetime import datetime
 
 from config import CFG
 
@@ -170,6 +173,119 @@ def diagonal_distance(dx, dy):
 
 
 # ---------------------------------------------------------------------------
+# Physics Ring Buffer Recorder
+# ---------------------------------------------------------------------------
+class PhysicsRecorder:
+    """Ring buffer that records physics state each tick.
+    Keeps last `capacity` snapshots in memory.  Dumps to .npz on:
+      - blowup detected  (max |wave_p| > threshold)
+      - manual trigger    (F8 key)
+    Which fields to record is configurable per session via `fields`."""
+
+    # Default fields to record (must match GameMap array attribute names)
+    DEFAULT_FIELDS = ('wave_p', 'wave_v', 'atmosphere', 'smoke', 'fire', 'obstacles')
+    BLOWUP_THRESHOLD = 50.0  # max |wave_p| that triggers auto-dump
+
+    def __init__(self, fh, fw, capacity=1200, fields=None):
+        self.fh = fh
+        self.fw = fw
+        self.capacity = capacity
+        self.fields = list(fields or self.DEFAULT_FIELDS)
+        self.index = 0        # next write position
+        self.count = 0        # total snapshots written (for knowing if buffer is full)
+        self.dumped = False    # prevent repeated auto-dumps for same blowup
+
+        # Pre-allocate ring buffers
+        self.buffers = {}
+        for name in self.fields:
+            dtype = np.bool_ if name == 'obstacles' else np.float32
+            self.buffers[name] = np.zeros((capacity, fh, fw), dtype=dtype)
+
+        # Tick metadata (tick number, real_time, etc.)
+        self.tick_ids = np.zeros(capacity, dtype=np.int32)
+        self.tick_times = np.zeros(capacity, dtype=np.float64)
+
+        # Unit state per tick: list of dicts, ring buffer style
+        self.unit_snapshots = [None] * capacity
+
+        print(f"[recorder] Ring buffer: {capacity} slots, fields={self.fields}, "
+              f"~{self._mem_mb():.0f} MB")
+
+    def _mem_mb(self):
+        total = 0
+        for buf in self.buffers.values():
+            total += buf.nbytes
+        total += self.tick_ids.nbytes + self.tick_times.nbytes
+        return total / (1024 * 1024)
+
+    def record(self, gmap, tick, real_time, units):
+        """Snapshot current state into ring buffer."""
+        i = self.index % self.capacity
+        for name in self.fields:
+            arr = getattr(gmap, name)
+            self.buffers[name][i] = arr
+        self.tick_ids[i] = tick
+        self.tick_times[i] = real_time
+
+        # Unit state snapshot (lightweight dict per unit)
+        self.unit_snapshots[i] = [
+            {'name': u.name, 'team': u.team, 'fx': u.fx, 'fy': u.fy,
+             'hp': u.hp, 'alive': u.alive}
+            for u in units
+        ]
+
+        self.index += 1
+        self.count += 1
+
+        # Auto-dump on blowup
+        if 'wave_p' in self.buffers:
+            max_wave = np.max(np.abs(self.buffers['wave_p'][i]))
+            if max_wave > self.BLOWUP_THRESHOLD and not self.dumped:
+                print(f"[recorder] BLOWUP DETECTED: max |wave_p| = {max_wave:.1f}")
+                self.dump("blowup")
+                self.dumped = True
+
+    def dump(self, reason="manual"):
+        """Write ring buffer contents to timestamped .npz file."""
+        n = min(self.count, self.capacity)
+        if n == 0:
+            print("[recorder] Nothing to dump.")
+            return
+
+        # Unroll ring buffer into chronological order
+        if self.count <= self.capacity:
+            slc = slice(0, n)
+        else:
+            # Buffer has wrapped — reorder so oldest is first
+            start = self.index % self.capacity
+            order = np.roll(np.arange(self.capacity), -start)
+            slc = order
+
+        data = {}
+        for name in self.fields:
+            data[name] = self.buffers[name][slc]
+        data['tick_ids'] = self.tick_ids[slc]
+        data['tick_times'] = self.tick_times[slc]
+
+        # Pack unit snapshots into structured arrays
+        unit_snaps = [self.unit_snapshots[i] for i in (range(n) if isinstance(slc, slice) else slc)]
+        # Store as: unit_fx[tick, unit_idx], unit_fy, unit_hp, unit_alive
+        if unit_snaps[0] is not None:
+            n_units = len(unit_snaps[0])
+            data['unit_fx'] = np.array([[u['fx'] for u in snap] for snap in unit_snaps], dtype=np.int32)
+            data['unit_fy'] = np.array([[u['fy'] for u in snap] for snap in unit_snaps], dtype=np.int32)
+            data['unit_hp'] = np.array([[u['hp'] for u in snap] for snap in unit_snaps], dtype=np.int32)
+            data['unit_alive'] = np.array([[u['alive'] for u in snap] for snap in unit_snaps], dtype=np.bool_)
+            data['unit_names'] = np.array([u['name'] for u in unit_snaps[0]])
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"debug_{reason}_{timestamp}.npz"
+        np.savez_compressed(filename, **data)
+        print(f"[recorder] Dumped {n} snapshots to {filename}")
+        return filename
+
+
+# ---------------------------------------------------------------------------
 # Map
 # ---------------------------------------------------------------------------
 class GameMap:
@@ -300,10 +416,13 @@ class GameMap:
 
     def stamp_units(self, units):
         """Update obstacles map: walls + living unit positions.
-        Units are treated as walls by all physics (waves, diffusion, smoke)."""
+        Units are treated as walls by all physics (waves, diffusion, smoke).
+        Fills atmosphere on tiles that transition from obstacle to free
+        (unit moved or died) with neighbor mean to avoid vacuum artifacts."""
         co = CFG.display.coarse
         fw = CFG.display.fine_w
         fh = CFG.display.fine_h
+        prev_obstacles = self.obstacles
         # Start from static walls, add units
         self.obstacles = self.is_wall.copy()
         for u in units:
@@ -315,6 +434,12 @@ class GameMap:
             x1 = max(0, ux)
             x2 = min(fw, ux + co)
             self.obstacles[y1:y2, x1:x2] = True
+        # Fill atmosphere on tiles that just became free (were obstacle, now aren't)
+        freed = prev_obstacles & ~self.obstacles
+        if freed.any():
+            for fy, fx in zip(*np.where(freed)):
+                if not self.is_vacuum[fy, fx]:
+                    self.atmosphere[fy, fx] = self._neighbor_mean(self.atmosphere, fy, fx)
 
     def is_passable(self, fy, fx):
         fw = CFG.display.fine_w
@@ -356,6 +481,18 @@ class GameMap:
                 err += dx
                 y += sy
 
+    def _neighbor_mean(self, field, fy, fx):
+        """Mean of field values from passable (non-wall, non-vacuum) neighbors."""
+        fh, fw = field.shape
+        total = 0.0
+        count = 0
+        for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            ny, nx = fy + dy, fx + dx
+            if 0 <= ny < fh and 0 <= nx < fw and not self.is_wall[ny, nx] and not self.is_vacuum[ny, nx]:
+                total += field[ny, nx]
+                count += 1
+        return total / count if count > 0 else 0.0
+
     def destroy_wall(self, fy, fx):
         fw = CFG.display.fine_w
         fh = CFG.display.fine_h
@@ -367,17 +504,17 @@ class GameMap:
                 self.wall_hp[fy, fx] = 0
                 self.is_wall[fy, fx] = False
                 self.flammable[fy, fx] = False
-                # Hull breach: tile becomes vacuum-adjacent, starts at 0 atm
-                # Interior wall: gets some atmosphere from neighbors
                 if was_hull:
                     # Check if this tile is on the map edge (true hull breach)
                     if fy < co or fy >= fh - co or fx < co or fx >= fw - co:
                         self.is_vacuum[fy, fx] = True
                         self.atmosphere[fy, fx] = 0.0
                     else:
-                        self.atmosphere[fy, fx] = 0.3
+                        # Interior hull: fill with neighbor mean
+                        self.atmosphere[fy, fx] = self._neighbor_mean(self.atmosphere, fy, fx)
                 else:
-                    self.atmosphere[fy, fx] = 0.5
+                    # Interior wall: fill with neighbor mean
+                    self.atmosphere[fy, fx] = self._neighbor_mean(self.atmosphere, fy, fx)
 
 
 # ---------------------------------------------------------------------------
@@ -655,8 +792,10 @@ class Physics:
 
                 gmap.wave_v += (c_squared * lap - damping * gmap.wave_v) * dt_wave
                 gmap.wave_p += gmap.wave_v * dt_wave
-                gmap.wave_p[gmap.is_wall] = 0.0
+                gmap.wave_p[gmap.obstacles] = 0.0
+                gmap.wave_v[gmap.obstacles] = 0.0
                 gmap.wave_p[gmap.is_vacuum] = 0.0
+                gmap.wave_v[gmap.is_vacuum] = 0.0
 
                 gmap.atmosphere += gmap.wave_p * transfer * dt_wave
                 gmap.atmosphere[gmap.is_wall] = 0.0
@@ -1090,6 +1229,9 @@ class Game:
         # Map
         self.gmap = GameMap()
 
+        # Physics recorder (ring buffer, auto-dumps on blowup)
+        self.recorder = PhysicsRecorder(fh, fw)
+
         # Units
         self.units = [
             Unit("Alpha", 4, 4, team=0),
@@ -1154,7 +1296,6 @@ class Game:
     # Main loop
     # ===================================================================
     def run(self):
-        import time as _time
         running = True
         while running:
             frame_start = _time.perf_counter()
@@ -1164,6 +1305,8 @@ class Game:
                     running = False
                 elif event.type == pygame.KEYDOWN and event.key == pygame.K_F5:
                     CFG.reload()
+                elif event.type == pygame.KEYDOWN and event.key == pygame.K_F8:
+                    self.recorder.dump("manual")
                 elif self.state == STATE_PLANNING:
                     self._handle_planning_event(event)
                 elif self.state == STATE_EXECUTING:
@@ -1535,10 +1678,12 @@ class Game:
         self.gmap.stamp_units(self.units)
 
         # 6. Physics substep (timed)
-        import time as _time
         t0 = _time.perf_counter()
         Physics.step(self.gmap)
         self.physics_ms = (_time.perf_counter() - t0) * 1000.0
+
+        # 7. Record state for debugging
+        self.recorder.record(self.gmap, tick, self.real_time, self.units)
 
     def _process_shooting(self, tick):
         """Handle fire orders for the current tick."""

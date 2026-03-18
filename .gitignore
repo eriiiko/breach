@@ -16,6 +16,12 @@ __pycache__/
 # Claude Code
 .claude/
 
+# C++ build artifacts
+cpp/build/
+
+# Debug recordings
+debug_*.npz
+
 # OS files
 Thumbs.db
 .DS_Store

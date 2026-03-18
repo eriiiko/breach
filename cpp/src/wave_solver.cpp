@@ -72,10 +72,11 @@ void WaveSolver::step(
             wave_p[i] += wave_v[i] * actual_dt;
         }
 
-        // --- Zero pressure on walls and vacuum ---
+        // --- Zero pressure on all obstacles (walls + units + vacuum) ---
         for (int i = 0; i < h * w; ++i) {
-            if (is_wall[i] || is_vacuum[i]) {
+            if (obstacles[i] || is_vacuum[i]) {
                 wave_p[i] = 0.0f;
+                wave_v[i] = 0.0f;
             }
         }
 
