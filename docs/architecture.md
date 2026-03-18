@@ -258,8 +258,8 @@ This hybrid gives the best of both worlds: rich per-tile data for game logic, an
 
 ### Key methods
 
-- `stamp_units(units)` — rebuild `obstacles` = `is_wall` + living unit positions. Called every tick. Units are treated as walls by all physics (waves reflect, smoke blocked, etc.).
-- `destroy_wall(fy, fx)` — set material to air, update HP/caches, handle hull breach (edge tile becomes vacuum).
+- `stamp_units(units)` — rebuild `obstacles` = `is_wall` + living unit positions. Called every tick. Units are treated as walls by all physics (waves reflect, smoke blocked, etc.). When tiles transition from obstacle to free (unit moved or died), atmosphere is filled with the mean of passable neighbors — avoiding artificial vacuum pulses.
+- `destroy_wall(fy, fx)` — set material to air, update HP/caches, handle hull breach (edge tile becomes vacuum). Interior walls are filled with neighbor-mean atmosphere rather than hardcoded values. This preserves pressure differentials (wall between high/low pressure rooms still creates equalization rush) while avoiding artificial vacuum spikes when equal-pressure walls break.
 - `is_passable_block(fy, fx)` — check if a 3x3 unit block can occupy this position.
 - `has_los(fy1, fx1, fy2, fx2)` — Bresenham line-of-sight check against `is_wall`.
 
@@ -306,8 +306,10 @@ p += v * dt
 **CFL stability:** `dt_wave = 0.65 / c = 2.17 ms`. Per game tick (83.3 ms): ~39 substeps.
 
 **Boundary conditions:**
-- Walls: `wave_p = 0` (hard reflection via Neumann BC on the Laplacian) - looks suspicious that both condtuoins are the same? I think neumann cond means somethibng on the derivative, right? 
-- Vacuum: `wave_p = 0` (perfect absorber — energy exits the ship)
+- The Laplacian uses **Neumann BC** (∂p/∂n = 0): if a neighbor is an obstacle, substitute this cell's own value. This reflects wave energy back.
+- After each substep, **Dirichlet zeroing**: `wave_p = 0` and `wave_v = 0` on all obstacle tiles (walls + unit footprints + vacuum). This prevents energy from accumulating inside solid tiles.
+- **Critical invariant:** The zeroing must cover ALL obstacle tiles, not just `is_wall`/`is_vacuum`. Unit footprints are obstacles too. Without zeroing them, Neumann reflection traps wave energy inside the 3×3 unit block, causing exponential blowup within a few ticks.
+- Vacuum tiles are also zeroed (energy exits the ship — acts as perfect absorber).
 
 **Atmosphere coupling:** Each wave substep transfers a fraction of `wave_p` into `atmosphere`, creating sustained wind after the shockwave passes. This is the mechanism by which explosions create lasting airflow.
 
