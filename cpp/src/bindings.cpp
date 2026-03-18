@@ -6,6 +6,7 @@
 #include "smoke_dynamics.h"
 #include "fire_simulation.h"
 #include "raycaster.h"
+#include "physics_engine.h"
 
 namespace py = pybind11;
 
@@ -157,4 +158,36 @@ PYBIND11_MODULE(breach_physics, m) {
             self.update_from_fire(lm, f, sm, wl, h, w);
         }, py::arg("light_map"), py::arg("fire"),
            py::arg("smoke"), py::arg("is_wall"));
+
+    // --- PhysicsEngine (interleaved wave + smoke in single C++ loop) ---
+    py::class_<PhysicsEngine>(m, "PhysicsEngine")
+        .def(py::init<>())
+        .def_readwrite("wave",      &PhysicsEngine::wave)
+        .def_readwrite("smoke",     &PhysicsEngine::smoke)
+        .def_readwrite("diffusion", &PhysicsEngine::diffusion)
+        .def("tick", [](const PhysicsEngine& self,
+                        py::array_t<float> atmosphere,
+                        py::array_t<float> wave_v,
+                        py::array_t<float> wave_source,
+                        py::array_t<float> wind_x,
+                        py::array_t<float> wind_y,
+                        py::array_t<float> smoke_field,
+                        py::array_t<bool>  obstacles,
+                        py::array_t<bool>  is_wall,
+                        py::array_t<bool>  is_vacuum,
+                        float sim_time) {
+            auto [atm, h, w] = get_2d(atmosphere);
+            auto [wv, h2, w2] = get_2d(wave_v);
+            auto [ws, h3, w3] = get_2d(wave_source);
+            auto [wx, h4, w4] = get_2d(wind_x);
+            auto [wy, h5, w5] = get_2d(wind_y);
+            auto [sm, h6, w6] = get_2d(smoke_field);
+            auto [obs, h7, w7] = get_2d_const(obstacles);
+            auto [wl, h8, w8] = get_2d_const(is_wall);
+            auto [vac, h9, w9] = get_2d_const(is_vacuum);
+            self.tick(atm, wv, ws, wx, wy, sm, obs, wl, vac, h, w, sim_time);
+        }, py::arg("atmosphere"), py::arg("wave_v"), py::arg("wave_source"),
+           py::arg("wind_x"), py::arg("wind_y"), py::arg("smoke"),
+           py::arg("obstacles"), py::arg("is_wall"), py::arg("is_vacuum"),
+           py::arg("sim_time"));
 }

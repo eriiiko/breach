@@ -725,8 +725,9 @@ class Physics:
         # How many substeps to cover sim_time
         n_wave = max(1, int(math.ceil(sim_time / dt_wave)))
         n_diff = max(1, int(math.ceil(sim_time / dt_diff)))
-        # Smoke: one step per call, using full sim_time (no CFL issue)
-        dt_smoke = sim_time
+        # Smoke: same substep count as wave (needs frequent wind updates)
+        n_smoke = n_wave
+        dt_smoke = sim_time / n_smoke
 
         # Stability checks (once at startup)
         if not hasattr(Physics, '_checked'):
@@ -737,21 +738,20 @@ class Physics:
             print(f"[physics] Wave: c={c:.1f} tiles/s, dt={dt_wave*1000:.2f}ms, {n_wave} substeps")
             print(f"[physics] Diffusion: D={CFG.physics.d_atm}, dt={dt_diff*1000:.2f}ms, {n_diff} substeps")
             if HAS_CPP_PHYSICS:
-                Physics._cpp_wave = breach_physics.WaveSolver()
-                Physics._cpp_wave.c = c
-                Physics._cpp_wave.damping = damping
-                Physics._cpp_wave.feed_rate = feed_rate
-                Physics._cpp_atmo = breach_physics.AtmoDiffusion()
-                Physics._cpp_atmo.d_atm = CFG.physics.d_atm
+                Physics._cpp_engine = breach_physics.PhysicsEngine()
+                Physics._cpp_engine.wave.c = c
+                Physics._cpp_engine.wave.damping = damping
+                Physics._cpp_engine.wave.feed_rate = feed_rate
+                Physics._cpp_engine.smoke.d_smoke = CFG.physics.d_smoke
+                Physics._cpp_engine.smoke.advection_rate = CFG.physics.advection_rate
+                Physics._cpp_engine.diffusion.d_atm = CFG.physics.d_atm
 
         if HAS_CPP_PHYSICS:
-            # --- C++ wave (operates on atmosphere directly, outputs wind field) ---
-            Physics._cpp_wave.step(
+            # --- C++ engine: interleaved wave + smoke + diffusion in one call ---
+            Physics._cpp_engine.tick(
                 gmap.atmosphere, gmap.wave_v, gmap.wave_source,
-                gmap.wind_x, gmap.wind_y,
+                gmap.wind_x, gmap.wind_y, gmap.smoke,
                 gmap.obstacles, gmap.is_wall, gmap.is_vacuum, sim_time)
-            Physics._cpp_atmo.step(
-                gmap.atmosphere, gmap.obstacles, gmap.is_wall, gmap.is_vacuum, sim_time)
         else:
             # --- Python fallback: wave substeps (operates on atmosphere directly) ---
             for _ in range(n_wave):
@@ -791,17 +791,10 @@ class Physics:
             for _ in range(n_diff):
                 Physics.step_atmosphere(gmap, dt_diff)
 
-        # --- Smoke (advection + diffusion, one step) ---
-        if HAS_CPP_PHYSICS:
-            if not hasattr(Physics, '_cpp_smoke'):
-                Physics._cpp_smoke = breach_physics.SmokeDynamics()
-                Physics._cpp_smoke.d_smoke = CFG.physics.d_smoke
-                Physics._cpp_smoke.advection_rate = CFG.physics.advection_rate
-            Physics._cpp_smoke.step(
-                gmap.smoke, gmap.wind_x, gmap.wind_y,
-                gmap.obstacles, gmap.is_wall, gmap.is_vacuum, dt_smoke)
-        else:
-            Physics.step_smoke(gmap, dt_smoke)
+        # --- Smoke (Python fallback only — C++ handled by engine above) ---
+        if not HAS_CPP_PHYSICS:
+            for _ in range(n_smoke):
+                Physics.step_smoke(gmap, dt_smoke)
 
         # --- Fire (spreading, O2, smoke emission, wall damage) ---
         if HAS_CPP_PHYSICS:

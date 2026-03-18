@@ -26,6 +26,7 @@ pybind11_add_module(breach_physics
     src/smoke_dynamics.cpp
     src/fire_simulation.cpp
     src/raycaster.cpp
+    src/physics_engine.cpp
     src/bindings.cpp
 )
 
