@@ -35,7 +35,7 @@ TILT_OMEGA = 2.0 * np.pi / TILT_PERIOD
 DT = 0.02                # 20ms per step (fluid is slow, big dt is fine)
 STEPS_PER_FRAME = 4
 FPS = 30
-TOTAL_FRAMES = 450       # 15 seconds — see full slosh cycle
+TOTAL_FRAMES = 60        # 2 seconds — quick comparison
 DAMPING = 1.0            # velocity damping (1/s)
 
 # Walls: border around the ship
@@ -323,20 +323,21 @@ def update(frame):
         f"Pipe water: {pipe_vol:.4f}m³  |  Shallow water: {shallow_vol:.4f}m³"
     )
 
-    if frame % 30 == 0:
+    if frame <= 1 or frame % 30 == 0:
         print(f"  Frame {frame}/{TOTAL_FRAMES}, t={sim_time:.1f}s, "
-              f"tilt={tilt_now:+.1f}°, pipe={pipe_vol:.4f}, shallow={shallow_vol:.4f}")
+              f"tilt={tilt_now:+.1f}°, pipe={pipe_vol:.4f}, shallow={shallow_vol:.4f}",
+              flush=True)
 
     return imgs + [suptitle]
 
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
-print(f"Running: {TOTAL_FRAMES} frames at {FPS} fps")
+print(f"Running: {TOTAL_FRAMES} frames at {FPS} fps", flush=True)
 anim = FuncAnimation(fig, update, frames=TOTAL_FRAMES, blit=True, interval=1000//FPS)
 
 output_path = "C:/Users/steen/projects/breach/prototypes/fluid_test.gif"
-print(f"Saving to {output_path} ...")
+print(f"Saving to {output_path} ...", flush=True)
 anim.save(output_path, writer=PillowWriter(fps=FPS))
 print("Done!")
 plt.close()
