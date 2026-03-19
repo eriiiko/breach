@@ -11,7 +11,7 @@ marine_sprint_ticks_per_tile = 4
 xeno_sprint_ticks_per_tile = 1
 
 [physics]
-wave_c = 100.0                        # wave speed (tiles/s), ~100 m/s physical
+wave_c = 66.0                        # wave speed (tiles/s), ~c / 3 m/s physical
 wave_damping = 3.0                    # wave velocity damping (1/s)
 wave_transfer = 0.5                   # wave_p -> atmosphere transfer rate (1/s)
 source_feed_rate = 200.0              # wave_source -> wave_p feed rate (1/s)
