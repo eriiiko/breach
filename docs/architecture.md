@@ -25,6 +25,10 @@ I was thinking of the scene in titanic as the boat is sinking, the ship starts t
 things good to notte - wavce speed on fluid surface is very slow compared to shopckwaves, we can have a much larger dt
 we could limit the simulation to where we have fluids - we domt have to simulate dry aresas
 
+so basically when we create floor tiles (grahpics) - we autimatically create a normal map  and a height map
+
+for the depth of the fluid sim - we base it of the height map + a lienar offset from the tilting of the ship
+
 ## Table of Contents
 
 1. [Design Philosophy](#1-design-philosophy)
@@ -329,13 +333,13 @@ The implicit diffusion factor `1/(1+μσ)` is always positive and ≤1 for any �
 
 **Parameters:**
 
-| Parameter | Config key | Value | Description |
+| Parameter | Config key | Default | Description |
 |---|---|---|---|
-| `c` | — | 300.0 | Wave speed (tiles/s) |
-| `damping` | — | 3.0 | Wave velocity damping (1/s) |
-| `transfer` | — | 0.5 | wave_p → atmosphere transfer rate (1/s) |
+| `c` | `physics.wave_c` | 300.0 | Wave speed (tiles/s) |
+| `damping` | `physics.wave_damping` | 3.0 | Wave velocity damping (1/s) |
+| `transfer` | `physics.wave_transfer` | 0.5 | wave_p → atmosphere transfer rate (1/s) |
+| `feed_rate` | `physics.source_feed_rate` | 200.0 | Source → wave_p feed rate (1/s) |
 | `D_atm` | `physics.d_atm` | 200.0 | Atmosphere diffusion coefficient (IMEX = no CFL limit) |
-| `feed_rate` | — | 200.0 | Source → wave_p feed rate (1/s) |
 | `breach_rate` | `physics.breach_rate` | 5.0 | Relaxation rate at vacuum (1/s) |
 | `max_source_per_step` | `physics.max_source_per_step` | 10.0 | Max wave energy fed per substep |
 | `gs_iters` | — | 8 | Gauss-Seidel iterations per substep |
@@ -358,52 +362,50 @@ Diffusion is now handled inside the unified atmosphere solver (§6.2) via implic
 
 ### 6.4 Smoke Dynamics (Diffusion + Advection)
 
-**Physics:** Diffusion (self-spreading) + advection by precomputed wind field.
+**Physics:** Wind-dependent diffusion + advection by precomputed wind field.
 
 ```
-smoke += D_smoke * dt * laplacian(smoke)                           # diffusion
-smoke -= advection_rate * dt * (wind . grad_smoke)                 # wind transport
+D_effective = d_smoke * (1 + wind_diffusion_scale * |wind|²)       # turbulent mixing
+actual_dt = dt * dt_scale                                          # time amplification
+smoke += D_effective * actual_dt * laplacian(smoke)                # diffusion
+smoke -= advection_rate * actual_dt * (wind . grad_smoke)          # wind transport
 ```
 
-The advection uses the `grad_p · grad_smoke` formulation (matching prototype `wind_test.py`). Wind is `−grad(atmosphere + wave_p)`, precomputed by the AtmosphereSolver every substep — no redundant gradient computation.
+**Advection:** Uses the `grad_p · grad_smoke` formulation (matching prototype `wind_test.py`). Wind is `−grad(atmosphere + wave_p)`, precomputed by the AtmosphereSolver every substep — no redundant gradient computation.
 
-**Interleaved with atmosphere:** Smoke is updated every atmosphere substep (~50×/tick), not once per tick. This lets smoke ride the shockwave in real time — each 1.67ms step, smoke sees the active wave front. A `smoke_dt_scale` multiplier amplifies the effect for more dramatic visuals without changing physical dt.
+**Wind-dependent diffusion:** Diffusion coefficient scales with local wind magnitude **squared** (`wx² + wy²`). The quadratic response means calm areas are barely affected (smoke holds shape) while high-wind areas (breaches, explosions) get strong diffusion. This prevents checkerboard oscillations near high-wind boundaries while keeping interesting smoke patterns in calm interiors.
 
-**Parameters:**
+**Interleaved with atmosphere:** Smoke is updated every atmosphere substep (~50×/tick), not once per tick. This lets smoke ride the shockwave in real time. `dt_scale` amplifies the effect for more dramatic visuals.
+
+**All parameters live on the C++ `SmokeDynamics` class**, set from config at init:
 
 | Parameter | Config key | Value | Notes |
 |---|---|---|---|
-| `D_smoke` | `physics.d_smoke` | 0.04 | Smoke self-diffusion (low = smoke holds shape) |
+| `d_smoke` | `physics.d_smoke` | 0.1 | Base smoke diffusion (low = holds shape) |
 | `advection_rate` | `physics.advection_rate` | 100.0 | Wind advection strength |
-| `smoke_dt_scale` | `physics.smoke_dt_scale` | 3.0 | Time multiplier for smoke (visual cheat) |
+| `dt_scale` | `physics.smoke_dt_scale` | 3.0 | Time multiplier (amplifies smoke response) |
+| `wind_diffusion_scale` | `physics.wind_diffusion_scale` | 50.0 | Wind-dependent diffusion: D *= (1 + scale * |wind|²) |
 
-**Sources:** Fire emits smoke into adjacent air tiles (`FIRE_SMOKE_EMISSION * dt * fire_intensity`). Explosions deposit initial smoke cloud with random density variation (0.4–1.0× base) to create texture that the advection term can grip.
+**Sources:** Fire emits smoke into adjacent air tiles (`FIRE_SMOKE_EMISSION * dt * fire_intensity`). Explosions deposit initial smoke cloud with per-tile random variation (0.4–1.0× base). **Known issue:** the noise is too subtle — most tiles near the center saturate at 1.0 regardless of noise, and diffusion smooths the edges within a few substeps. Needs more dramatic variation (e.g. missing patches, larger-scale noise) to create visible texture for the advection to grip.
 
-**Stability note:** No hard CFL limit on the advection term. Practical limit: `advection_rate * dt * smoke_dt_scale * |wind| * |grad_smoke| < 1.0` per step to avoid oscillation. Current parameters are well within this.
+**Stability note:** No hard CFL limit on the advection term. Practical limit: `advection_rate * actual_dt * |wind| * |grad_smoke| < 1.0` per step to avoid oscillation. The wind-dependent diffusion counteracts this by smoothing high-frequency modes in windy areas.
 
 ### 6.5 Fire Simulation
 
 Fire lives on flammable wall tiles. Intensity 0.0 (no fire) to 1.0 (full blaze).
 
-**Mechanics (in order of execution):**
+**Current implementation** (C++ `FireSimulation` class, called once per tick):
 
-1. **Spread to neighbors** — burning tiles ignite adjacent flammable tiles. Checks direct (4-dir), diagonal (4-dir), and 2-tile range (4-dir). Total 12 neighbor checks.
-
-2. **Wind-biased spreading** — atmosphere gradient steers ignition direction. Downwind neighbors ignite faster (up to 3x boost).
-
+1. **Wind-biased spreading** — fire computes its own wind from `grad(atmosphere)` and uses it to bias ignition direction (up to 3x boost downwind).
+2. **Wind modulates intensity** — `fire += dt * k_wind_net * wind_speed * (fire - k_wind_thresh * wind_speed)`. Strong wind + weak fire = blown out. Strong wind + strong fire = burns hotter.
 3. **Intensity growth** — burning tiles grow toward 1.0 at 0.5/s.
-
 4. **Flammable constraint** — fire zeroed on non-flammable tiles.
+5. **O2 check** — average atmosphere in 4-connected air neighbors must exceed threshold. Below: fire extinguished.
+6. **O2 consumption** — fire reduces atmosphere in adjacent air tiles.
+7. **Smoke emission** — fire adds smoke to adjacent air tiles.
+8. **Wall damage** — fire reduces `wall_hp`. At 0: `destroy_wall()`.
 
-5. **O2 check** — average atmosphere in adjacent air tiles must exceed `FIRE_O2_THRESHOLD` (0.60). Below: fire extinguished instantly.
-
-6. **O2 consumption** — fire reduces atmosphere in adjacent air tiles by `FIRE_O2_CONSUMPTION * dt * fire_intensity`.
-
-7. **Smoke emission** — fire adds smoke to adjacent air tiles by `FIRE_SMOKE_EMISSION * dt * fire_intensity`.
-
-8. **Wall damage** — fire reduces `wall_hp` by `FIRE_WALL_DAMAGE * dt * fire_intensity`. When HP reaches 0: `destroy_wall()` — tile becomes air, fire extinguished, potentially creating new breach.
-
-**Parameters (currently hardcoded — should move to config):**
+**Parameters** (set on C++ `FireParams`, hardcoded in Python — **TODO: move to config.toml**):
 
 | Parameter | Value | Description |
 |---|---|---|
@@ -412,6 +414,15 @@ Fire lives on flammable wall tiles. Intensity 0.0 (no fire) to 1.0 (full blaze).
 | `FIRE_O2_CONSUMPTION` | 0.3 | Atmosphere consumed per step |
 | `FIRE_SMOKE_EMISSION` | 0.8 | Smoke produced per step |
 | `FIRE_WALL_DAMAGE` | 0.4 | HP damage per step |
+| `K_WIND_THRESH` | 0.5 | Fire must exceed this × wind_speed to survive |
+| `K_WIND_NET` | 3.0 | Rate of wind effect on intensity |
+
+**Known issues — to be addressed in fire overhaul:**
+- Fire computes its own wind internally instead of using precomputed `wind_x`/`wind_y`
+- Fire wind uses `grad(atmosphere)` only — missing `wave_p` contribution (shockwave doesn't affect fire)
+- Fire wind has no Neumann BC (reads across walls)
+- Parameters hardcoded in Python — should move to config.toml
+- Fire logic and principles need review and redesign
 
 ### 6.6 Temperature & Heat Conduction (NEW — not yet implemented)
 
@@ -441,28 +452,17 @@ flux(A → B) = κ_interface * (T_B - T_A)
 
 **Gameplay:** Laser hits hull → heat conducts fast along metal → reaches wood wall → wood crosses ignition_temp → fire starts. Hull glows grey → orange → white (color lerp on render).
 
-### 6.7 Wind/Fire Interaction (partially implemented)
+### 6.7 Wind/Fire Interaction (implemented in C++)
 
-*Full design in `docs/implementation_plan_radiation_temperature.md` Section 2.*
-
-**Implemented: wind-biased spreading.** The atmosphere gradient steers fire ignition direction — downwind neighbors ignite faster (up to 3x boost). This is already in `step_fire()` (game.py lines 450-461).
-
-**Not yet implemented: wind/fire intensity interaction.** Wind should also affect *how intensely* existing fire burns, not just where it spreads. Modeled directly on fire tiles using existing wind (atmosphere gradient). No air temperature field needed.
-
-**New mechanic** to add to `step_fire()`:
-
-```
-wind_speed = magnitude(atmosphere_gradient)
-wind_threshold = K_THRESH * wind_speed     # fire must exceed this to survive
-fire_margin = fire_intensity - wind_threshold
-fire_intensity += dt * K_NET * wind_speed * fire_margin
-```
+Both wind-biased spreading and wind-intensity modulation are implemented in `fire_simulation.cpp`. See §6.5 for details.
 
 The effect depends on the ratio of fire intensity to wind strength:
-- Weak wind + weak fire → gentle breeze feeds small flame (margin positive)
-- Strong wind + weak fire → blown out (fire below threshold, margin negative)
-- Strong wind + strong fire → burns much hotter (large positive margin × strong wind)
+- Weak wind + weak fire → gentle breeze feeds small flame
+- Strong wind + weak fire → blown out (fire below threshold)
+- Strong wind + strong fire → burns much hotter
 - Explosion shockwave → massive transient wind → small fires blown out, big fires flare up
+
+**Note:** Currently fire computes its own wind from `grad(atmosphere)` only. It should use the precomputed wind field (which includes `wave_p`) — to be fixed in the fire overhaul.
 
 ### 6.8 Physics Step Orchestration
 

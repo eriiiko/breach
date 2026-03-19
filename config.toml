@@ -11,12 +11,17 @@ marine_sprint_ticks_per_tile = 4
 xeno_sprint_ticks_per_tile = 1
 
 [physics]
+wave_c = 100.0                        # wave speed (tiles/s), ~100 m/s physical
+wave_damping = 3.0                    # wave velocity damping (1/s)
+wave_transfer = 0.5                   # wave_p -> atmosphere transfer rate (1/s)
+source_feed_rate = 200.0              # wave_source -> wave_p feed rate (1/s)
 d_atm = 200.0                         # atmosphere diffusion (IMEX = no CFL limit!)
-d_smoke = 0.04
+d_smoke = 0.1
 advection_rate = 100.0                # smoke advection by wind (higher = smoke moves more)
 breach_rate = 5.0                     # relaxation rate toward vacuum at hull breaches (1/s)
 max_source_per_step = 10.0             # max wave energy fed per substep (IMEX handles big spikes)
 smoke_dt_scale = 3.0                  # smoke time multiplier (>1 = smoke reacts faster to wind)
+wind_diffusion_scale = 50.0            # wind-dependent diffusion: D = d_smoke * (1 + scale * |wind|)
 physics_dt = 0.001                # 1ms (CFL stable for c=300 tiles/s)
 physics_substeps = 8              # 8 * 1ms = 8ms physics per game tick
 
@@ -76,6 +81,20 @@ attack_cooldown_ticks = 12
 hp = 100
 grenades = 2
 explosives = 2
+
+[rendering]
+# Pressure colormap: [pressure, R, G, B, alpha]
+# Linear interpolation between stops. Tweak and restart to iterate.
+pressure_scale = 2.0    # scales deviation from 1.0: displayed = 1 + (raw - 1) * scale
+pressure_stops = [
+    [0.0,    0,   0,   0,   0],       # vacuum: fully transparent
+    [3.3,  255, 255, 255,   5],       # normal air: faint white veil
+    [6.0,  255, 255, 255,  15],       # slight overpressure: steam
+    [7.0,  200,  50,  30, 120],       # shockwave: dark red
+    [8.0,  255, 140,  30, 180],       # blast: orange
+    [9.0,  255, 220,  80, 220],       # intense: yellow
+    [10.0, 255, 255, 255, 255],       # max: white
+]
 
 [combat]
 blast_damage_threshold = 5

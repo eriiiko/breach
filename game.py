@@ -723,12 +723,12 @@ class Physics:
         # smoothing and created grid-scale discontinuities near vacuum.
         # The wave_source + feed_rate mechanism injects energy smoothly.
 
-    # Wave parameters — all in physical units (per second)
-    WAVE_C = 300.0          # wave speed in tiles/s (100 m/s, tiles are 1/3 m)
-    WAVE_DAMPING = 3.0      # velocity damping rate (1/s)
-    WAVE_TRANSFER = 0.5     # wave->atmosphere transfer rate (1/s)
-    SOURCE_FEED_RATE = 200.0  # how fast source deposits into wave_p (1/s)
-    BREACH_RATE = 5.0       # relaxation rate toward vacuum (1/s)
+    # Wave parameters — defaults, overridden by config.toml [physics] section
+    WAVE_C = 300.0
+    WAVE_DAMPING = 3.0
+    WAVE_TRANSFER = 0.5
+    SOURCE_FEED_RATE = 200.0
+    BREACH_RATE = 5.0
 
     @staticmethod
     def _init_solvers():
@@ -738,11 +738,11 @@ class Physics:
         backend = "C++" if HAS_CPP_PHYSICS else "Python"
         if HAS_CPP_PHYSICS:
             Physics._atmo = breach_physics.AtmosphereSolver()
-            Physics._atmo.c = Physics.WAVE_C
-            Physics._atmo.damping = Physics.WAVE_DAMPING
-            Physics._atmo.transfer = Physics.WAVE_TRANSFER
+            Physics._atmo.c = getattr(CFG.physics, 'wave_c', Physics.WAVE_C)
+            Physics._atmo.damping = getattr(CFG.physics, 'wave_damping', Physics.WAVE_DAMPING)
+            Physics._atmo.transfer = getattr(CFG.physics, 'wave_transfer', Physics.WAVE_TRANSFER)
             Physics._atmo.d_atm = CFG.physics.d_atm
-            Physics._atmo.feed_rate = Physics.SOURCE_FEED_RATE
+            Physics._atmo.feed_rate = getattr(CFG.physics, 'source_feed_rate', Physics.SOURCE_FEED_RATE)
             Physics._atmo.breach_rate = getattr(CFG.physics, 'breach_rate', Physics.BREACH_RATE)
             Physics._atmo.max_source_per_step = getattr(CFG.physics, 'max_source_per_step', 0.5)
             Physics._atmo_dt = Physics._atmo.max_dt()
@@ -750,6 +750,8 @@ class Physics:
             Physics._smoke = breach_physics.SmokeDynamics()
             Physics._smoke.d_smoke = CFG.physics.d_smoke
             Physics._smoke.advection_rate = CFG.physics.advection_rate
+            Physics._smoke.dt_scale = getattr(CFG.physics, 'smoke_dt_scale', 1.0)
+            Physics._smoke.wind_diffusion_scale = getattr(CFG.physics, 'wind_diffusion_scale', 0.0)
 
             Physics._fire = breach_physics.FireSimulation()
             Physics._fire.params.spread_rate = Physics.FIRE_D
@@ -764,15 +766,17 @@ class Physics:
             Physics._ray.coarse_cluster = CFG.display.coarse
         else:
             Physics._atmo = None
-            Physics._atmo_dt = 0.5 / Physics.WAVE_C
+            Physics._atmo_dt = 0.5 / getattr(CFG.physics, 'wave_c', Physics.WAVE_C)
 
         sim_time = 1.0 / CFG.clock.ticks_per_second
         n_steps = max(1, int(math.ceil(sim_time / Physics._atmo_dt)))
         print(f"[physics] Backend: {backend} (IMEX: explicit wave + implicit diffusion)")
         print(f"[physics] sim_time={sim_time*1000:.1f}ms, dt={Physics._atmo_dt*1000:.3f}ms, "
               f"{n_steps} substeps/tick")
-        print(f"[physics] c={Physics.WAVE_C}, D={CFG.physics.d_atm}, "
-              f"damping={Physics.WAVE_DAMPING}, breach_rate={Physics.BREACH_RATE}")
+        c_val = getattr(CFG.physics, 'wave_c', Physics.WAVE_C)
+        damp_val = getattr(CFG.physics, 'wave_damping', Physics.WAVE_DAMPING)
+        print(f"[physics] c={c_val}, D={CFG.physics.d_atm}, "
+              f"damping={damp_val}, breach_rate={Physics.BREACH_RATE}")
 
     @staticmethod
     def step(gmap, sim_time=None):
@@ -798,14 +802,12 @@ class Physics:
                     gmap.atmosphere,
                     gmap.wind_x, gmap.wind_y,
                     gmap.obstacles, gmap.is_wall, gmap.is_vacuum, actual_dt)
-                smoke_dt_scale = getattr(CFG.physics, 'smoke_dt_scale', 1.0)
                 Physics._smoke.step(
                     gmap.smoke, gmap.wind_x, gmap.wind_y,
-                    gmap.obstacles, gmap.is_wall, gmap.is_vacuum,
-                    actual_dt * smoke_dt_scale)
+                    gmap.obstacles, gmap.is_wall, gmap.is_vacuum, actual_dt)
         else:
             # Python fallback (explicit only — no implicit diffusion)
-            c_sq = Physics.WAVE_C ** 2
+            c_sq = getattr(CFG.physics, 'wave_c', Physics.WAVE_C) ** 2
             damp = Physics.WAVE_DAMPING
             xfer = Physics.WAVE_TRANSFER
             feed_rate = Physics.SOURCE_FEED_RATE
@@ -2075,49 +2077,53 @@ class Game:
             pygame.draw.line(self.screen, COL_GRID, (0, y), (fw * ft, y), 1)
 
     def _draw_atmosphere(self):
-        """Draw pressure field (atmosphere + wave) using numpy for speed.
-        Fire color scheme: black -> red -> orange -> yellow -> white."""
+        """Draw pressure field using configurable colormap from config.toml.
+        Linear interpolation between pressure stops [pressure, R, G, B, alpha]."""
         total = self.gmap.atmosphere + self.gmap.wave_p
-        if total.max() - total.min() < 0.01:
-            return
         ft = CFG.display.fine_tile_px
         fw = CFG.display.fine_w
         fh = CFG.display.fine_h
         mask = ~(self.gmap.is_wall | self.gmap.is_vacuum)
 
+        # Load colormap stops (cached after first call)
+        if not hasattr(self, '_pressure_stops'):
+            stops = getattr(CFG.rendering, 'pressure_stops',
+                            [[0,0,0,0,0], [1,255,255,255,15], [10,255,255,255,255]])
+            self._pressure_stops = np.array(stops, dtype=np.float32)
+
+        stops = self._pressure_stops
+        p_vals = stops[:, 0]
+
         # RGBA array for the overlay
         rgba = np.zeros((fh, fw, 4), dtype=np.uint8)
 
-        # Overpressure (fire color ramp)
-        excess = np.clip(total - 1.0, 0.0, None)
-        t = np.clip(excess / 5.0, 0.0, 1.0)
-        over = mask & (excess > 0.02)
+        # Only process air tiles
+        air = mask
+        if not np.any(air):
+            return
+        # Scale: stops are authored in 0-10 range, pressure_scale maps actual
+        # pressure to that range. scale=3 means actual 3.0 = stop 10.0
+        scale = getattr(CFG.rendering, 'pressure_scale', 10.0)
+        p = total[air] * (10.0 / scale)
 
-        if np.any(over):
-            # Piecewise color: 0-0.25 red, 0.25-0.5 orange, 0.5-0.75 yellow, 0.75-1 white
-            t_o = t[over]
-            r = np.where(t_o < 0.25, (t_o / 0.25) * 255,
-                np.where(t_o < 0.75, 255, 255)).astype(np.uint8)
-            g = np.where(t_o < 0.25, 0,
-                np.where(t_o < 0.5, ((t_o - 0.25) / 0.25) * 140,
-                np.where(t_o < 0.75, 140 + ((t_o - 0.5) / 0.25) * 115, 255))).astype(np.uint8)
-            b = np.where(t_o < 0.5, 0,
-                np.where(t_o < 0.75, ((t_o - 0.5) / 0.25) * 80,
-                80 + ((t_o - 0.75) / 0.25) * 175)).astype(np.uint8)
-            a = np.clip(excess[over] * 80, 0, 255).astype(np.uint8)
-            rgba[over, 0] = r
-            rgba[over, 1] = g
-            rgba[over, 2] = b
-            rgba[over, 3] = a
+        # Clamp pressure to colormap range
+        p_clamped = np.clip(p, p_vals[0], p_vals[-1])
 
-        # Underpressure (blue-purple)
-        under = mask & (total < 0.9)
-        if np.any(under):
-            deficit = 1.0 - total[under]
-            rgba[under, 0] = np.clip(60 + 40 * deficit, 0, 255).astype(np.uint8)
-            rgba[under, 1] = 40
-            rgba[under, 2] = 255
-            rgba[under, 3] = np.clip(deficit * 400, 0, 220).astype(np.uint8)
+        # Find which segment each tile falls in
+        # For each pressure value, find the index of the stop just below it
+        indices = np.searchsorted(p_vals, p_clamped, side='right') - 1
+        indices = np.clip(indices, 0, len(p_vals) - 2)
+
+        # Interpolation factor within segment
+        p_lo = p_vals[indices]
+        p_hi = p_vals[indices + 1]
+        t = np.where(p_hi > p_lo, (p_clamped - p_lo) / (p_hi - p_lo), 0.0)
+
+        # Lerp RGBA
+        for ch in range(4):
+            lo = stops[indices, ch + 1]
+            hi = stops[indices + 1, ch + 1]
+            rgba[air, ch] = np.clip(lo + t * (hi - lo), 0, 255).astype(np.uint8)
 
         # Convert to pygame surface
         overlay = pygame.image.frombuffer(rgba.tobytes(), (fw, fh), "RGBA").convert_alpha()

@@ -23,8 +23,11 @@ void SmokeDynamics::step(
     float dt
 ) const {
     const int n = h * w;
+    const float actual_dt = dt * dt_scale;
 
-    // --- Smoke diffusion (Laplacian with Neumann BCs) ---
+    // --- Smoke diffusion (wind-dependent) ---
+    // D_effective = d_smoke * (1 + wind_diffusion_scale * |wind|)
+    // Higher wind = more turbulent mixing = smoke disperses faster.
     std::vector<float> lap(n);
 
     for (int y = 0; y < h; ++y) {
@@ -40,33 +43,25 @@ void SmokeDynamics::step(
     }
 
     for (int i = 0; i < n; ++i) {
-        smoke[i] += d_smoke * dt * lap[i];
+        float wind_sq = wind_x[i] * wind_x[i] + wind_y[i] * wind_y[i];
+        float d_eff = d_smoke * (1.0f + wind_diffusion_scale * wind_sq);
+        smoke[i] += d_eff * actual_dt * lap[i];
     }
 
     // --- Advection by precomputed wind field ---
-    // Exact match of prototype (wind_test.py line 85):
-    //   smoke += ADVECTION_RATE * dt * (grad_atm_x * dsmoke_dx + grad_atm_y * dsmoke_dy)
-    //
-    // wind_x/wind_y = -grad(pressure), so we negate to get grad_p:
-    //   grad_p = -wind  →  smoke += rate * dt * (-wind . grad_smoke)
-    //
-    // But the prototype used +grad_p . +grad_smoke (both positive gradients).
-    // Our wind = -grad(p), so: grad_p . grad_smoke = (-wind) . grad_smoke
-    // → smoke += rate * dt * ((-wind_x) * ds_dx + (-wind_y) * ds_dy)
-    // → smoke -= rate * dt * (wind_x * ds_dx + wind_y * ds_dy)
+    // grad_p . grad_smoke formulation (matches prototype wind_test.py).
+    // wind = -grad(p), so: smoke -= rate * dt * (wind . grad_smoke)
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             int i = y * w + x;
             if (obstacles[i] || is_wall[i] || is_vacuum[i]) continue;
 
-            // Smoke gradient (central difference)
             float ds_dx = (neighbor(smoke, obstacles, y, x, 0,  1, h, w) -
                            neighbor(smoke, obstacles, y, x, 0, -1, h, w)) * 0.5f;
             float ds_dy = (neighbor(smoke, obstacles, y, x,  1, 0, h, w) -
                            neighbor(smoke, obstacles, y, x, -1, 0, h, w)) * 0.5f;
 
-            // grad_p . grad_smoke (wind = -grad_p, so negate)
-            smoke[i] -= advection_rate * dt * (wind_x[i] * ds_dx + wind_y[i] * ds_dy);
+            smoke[i] -= advection_rate * actual_dt * (wind_x[i] * ds_dx + wind_y[i] * ds_dy);
         }
     }
 

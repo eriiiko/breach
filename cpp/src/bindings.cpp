@@ -70,8 +70,10 @@ PYBIND11_MODULE(breach_physics, m) {
     // --- SmokeDynamics (uses precomputed wind from AtmosphereSolver) ---
     py::class_<SmokeDynamics>(m, "SmokeDynamics")
         .def(py::init<>())
-        .def_readwrite("d_smoke",        &SmokeDynamics::d_smoke)
-        .def_readwrite("advection_rate", &SmokeDynamics::advection_rate)
+        .def_readwrite("d_smoke",               &SmokeDynamics::d_smoke)
+        .def_readwrite("advection_rate",         &SmokeDynamics::advection_rate)
+        .def_readwrite("dt_scale",               &SmokeDynamics::dt_scale)
+        .def_readwrite("wind_diffusion_scale",   &SmokeDynamics::wind_diffusion_scale)
         .def("step", [](const SmokeDynamics& self,
                         py::array_t<float> smoke,
                         py::array_t<float> wind_x,
