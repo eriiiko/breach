@@ -6,6 +6,25 @@
 
 ---
 
+
+Update form Erik - please rewrite this and put everything weher it belongs.
+i habve some comments on the current layout:
+2d raycasting and lightning bolts are physiucs systems, i think they should be under that 
+
+I wanted to discuss here a new system which will model fluids and be based off height maps
+i have some ideas - i must confess i dont really know much about height maps, but what i know is that it's like a scalar map of height
+i was wondering how well that would couple with a fluid simulation that is based off depth (=hieght)
+i'd like wave equations to ripple on the surface, adjusting the depths at each point.
+I was wondering if i could run this in a higger resolutioion as well, i was thinking that it could be in the same respolution as the textures for my floors - and that the heighmap would be this as well
+that would give riseto beautiful effects where we can see tiles fill with fluid, and if the surface is not totally flat, we see furniture or other stuff get emerged in the fluid gradually
+
+Then i was wondering if it would be possible to combine a classical height map with a tilting
+
+I was thinking of the scene in titanic as the boat is sinking, the ship starts to tilt more and more and more - What would it take to have a fluid simulation that could run over a hegiht map (we would just use a basic heigt map per tile first - and then offset it by a linear fucntion that coreesponds to the tilting of the ship) - and have the fluid run overthis surface - are there any good algorithms that could solve this?
+
+things good to notte - wavce speed on fluid surface is very slow compared to shopckwaves, we can have a much larger dt
+we could limit the simulation to where we have fluids - we domt have to simulate dry aresas
+
 ## Table of Contents
 
 1. [Design Philosophy](#1-design-philosophy)
@@ -306,7 +325,7 @@ Step 3 — Implicit diffusion on atmosphere (Gauss-Seidel):
 
 The implicit diffusion factor `1/(1+μσ)` is always positive and ≤1 for any μ — **unconditionally stable**. No diffusion CFL limit. Only the wave CFL matters.
 
-**Source feeding:** Explosions deposit into `wave_source`, smoothed over a 3×3 kernel (`[1,2,1; 2,4,2; 1,2,1]/16`). Each substep feeds a rate-limited fraction into `wave_p` (`max_source_per_step` cap prevents grid-scale spikes from stacked grenades).
+**Source feeding:** Explosions deposit into both `wave_source` (for shockwave propagation) and directly into `atmosphere` (for sustained pressure gradient that drives smoke transport). The wave_source deposit is smoothed over a 3×3 kernel (`[1,2,1; 2,4,2; 1,2,1]/16`). Each substep feeds a rate-limited fraction from wave_source into `wave_p` (`max_source_per_step` cap). The direct atmosphere deposit is safe because IMEX implicit diffusion handles spikes.
 
 **Parameters:**
 
@@ -315,10 +334,10 @@ The implicit diffusion factor `1/(1+μσ)` is always positive and ≤1 for any �
 | `c` | — | 300.0 | Wave speed (tiles/s) |
 | `damping` | — | 3.0 | Wave velocity damping (1/s) |
 | `transfer` | — | 0.5 | wave_p → atmosphere transfer rate (1/s) |
-| `D_atm` | `physics.d_atm` | 50.0 | Atmosphere diffusion coefficient |
+| `D_atm` | `physics.d_atm` | 200.0 | Atmosphere diffusion coefficient (IMEX = no CFL limit) |
 | `feed_rate` | — | 200.0 | Source → wave_p feed rate (1/s) |
 | `breach_rate` | `physics.breach_rate` | 5.0 | Relaxation rate at vacuum (1/s) |
-| `max_source_per_step` | — | 0.5 | Max energy fed per substep |
+| `max_source_per_step` | `physics.max_source_per_step` | 10.0 | Max wave energy fed per substep |
 | `gs_iters` | — | 8 | Gauss-Seidel iterations per substep |
 
 **CFL:** `dt = 0.5 / c ≈ 1.67 ms`. ~50 substeps per tick.
@@ -339,25 +358,28 @@ Diffusion is now handled inside the unified atmosphere solver (§6.2) via implic
 
 ### 6.4 Smoke Dynamics (Diffusion + Advection)
 
-**Physics:** Diffusion (self-spreading) + advection (carried by wind from two sources).
+**Physics:** Diffusion (self-spreading) + advection by precomputed wind field.
 
 ```
-smoke += D_smoke * dt * laplacian(smoke)
-smoke += advection_rate * dt * (atmo_gradient dot smoke_gradient)    # sustained wind
-smoke += 80.0 * dt * (wave_gradient dot smoke_gradient)              # shockwave push
+smoke += D_smoke * dt * laplacian(smoke)                           # diffusion
+smoke -= advection_rate * dt * (wind . grad_smoke)                 # wind transport
 ```
+
+The advection uses the `grad_p · grad_smoke` formulation (matching prototype `wind_test.py`). Wind is `−grad(atmosphere + wave_p)`, precomputed by the AtmosphereSolver every substep — no redundant gradient computation.
+
+**Interleaved with atmosphere:** Smoke is updated every atmosphere substep (~50×/tick), not once per tick. This lets smoke ride the shockwave in real time — each 1.67ms step, smoke sees the active wave front. A `smoke_dt_scale` multiplier amplifies the effect for more dramatic visuals without changing physical dt.
 
 **Parameters:**
 
 | Parameter | Config key | Value | Notes |
 |---|---|---|---|
-| `D_smoke` | `physics.d_smoke` | 0.4 | Smoke self-diffusion |
-| `advection_rate` | `physics.advection_rate` | 25.0 | Wind advection strength |
-| Wave advection | (hardcoded) | 80.0 | **TODO: move to config** |
+| `D_smoke` | `physics.d_smoke` | 0.04 | Smoke self-diffusion (low = smoke holds shape) |
+| `advection_rate` | `physics.advection_rate` | 100.0 | Wind advection strength |
+| `smoke_dt_scale` | `physics.smoke_dt_scale` | 3.0 | Time multiplier for smoke (visual cheat) |
 
-**Note:** Smoke runs once per tick (no substeps), using full sim_time as dt. This is stable because D_smoke is small (0.4 vs. 200 for atmosphere).
+**Sources:** Fire emits smoke into adjacent air tiles (`FIRE_SMOKE_EMISSION * dt * fire_intensity`). Explosions deposit initial smoke cloud with random density variation (0.4–1.0× base) to create texture that the advection term can grip.
 
-**Sources:** Fire emits smoke into adjacent air tiles. Explosions deposit initial smoke cloud.
+**Stability note:** No hard CFL limit on the advection term. Practical limit: `advection_rate * dt * smoke_dt_scale * |wind| * |grad_smoke| < 1.0` per step to avoid oscillation. Current parameters are well within this.
 
 ### 6.5 Fire Simulation
 
@@ -446,22 +468,20 @@ The effect depends on the ratio of fire intensity to wind strength:
 
 All physics advance in `Physics.step(gmap, sim_time)`:
 
-**Python prototype (current — Lie splitting):** Systems run sequentially, each completing all substeps before the next begins.
+**Current implementation (IMEX, Python-orchestrated):** Single substep loop calls C++ solvers. Atmosphere and smoke are interleaved so smoke rides the shockwave.
 
 ```
 sim_time = 1 / ticks_per_second = 83.3 ms per game tick
+dt = AtmosphereSolver.max_dt() ≈ 1.67 ms (wave CFL only)
+n = ceil(sim_time / dt) ≈ 50 substeps
 
-1. Wave substeps:   n = ceil(sim_time / dt_wave)  = ~39 substeps
-   - Feed wave_source into wave_p
-   - Laplacian + leapfrog integration
-   - Transfer wave_p into atmosphere
-   - Boundary enforcement
+for each substep:
+   1. AtmosphereSolver.step(dt)     — wave kick + transfer + implicit diffusion + BCs + wind
+   2. SmokeDynamics.step(dt * scale) — diffusion + advection by precomputed wind
 
-2. Diffusion substeps: n = ceil(sim_time / dt_diff) = ~70 substeps
-   - Atmosphere diffusion via Laplacian
-
-3. Smoke step: single step at full sim_time
-   - Diffusion + advection (atmosphere + wave gradients)
+after all substeps:
+   3. FireSimulation.step(sim_time)  — spreading, O2, smoke emission, wall damage
+   4. Raycaster.update_from_fire()   — light map from fire sources
 
 4. Fire step: single step at full sim_time
    - Spread, wind bias, O2 check, consumption, smoke emission, wall damage

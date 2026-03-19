@@ -27,6 +27,7 @@ Controls:
 import pygame
 import numpy as np
 import math
+import random
 import os
 import sys
 import time as _time
@@ -797,9 +798,11 @@ class Physics:
                     gmap.atmosphere,
                     gmap.wind_x, gmap.wind_y,
                     gmap.obstacles, gmap.is_wall, gmap.is_vacuum, actual_dt)
+                smoke_dt_scale = getattr(CFG.physics, 'smoke_dt_scale', 1.0)
                 Physics._smoke.step(
                     gmap.smoke, gmap.wind_x, gmap.wind_y,
-                    gmap.obstacles, gmap.is_wall, gmap.is_vacuum, actual_dt)
+                    gmap.obstacles, gmap.is_wall, gmap.is_vacuum,
+                    actual_dt * smoke_dt_scale)
         else:
             # Python fallback (explicit only — no implicit diffusion)
             c_sq = Physics.WAVE_C ** 2
@@ -1970,7 +1973,7 @@ class Game:
                         u.alive = False
 
     def _add_explosion_smoke(self, fy, fx, radius):
-        """Add smoke from an explosion."""
+        """Add smoke from an explosion with random density variation."""
         fh = CFG.display.fine_h
         fw = CFG.display.fine_w
         for ddy in range(-radius, radius + 1):
@@ -1980,8 +1983,10 @@ class Game:
                         not self.gmap.is_wall[ny, nx]):
                     dist = math.sqrt(ddy**2 + ddx**2)
                     if dist < radius:
+                        base = 0.8 * (1 - dist/radius)
+                        noise = random.uniform(0.4, 1.0)  # 40-100% variation
                         self.gmap.smoke[ny, nx] = min(
-                            1.0, self.gmap.smoke[ny, nx] + 0.8 * (1 - dist/radius))
+                            1.0, self.gmap.smoke[ny, nx] + base * noise)
 
     def _end_execution(self):
         """End execution, handle zombie conversion, return to planning."""
