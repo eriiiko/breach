@@ -67,28 +67,27 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("obstacles"), py::arg("is_wall"), py::arg("is_vacuum"),
            py::arg("dt"));
 
-    // --- SmokeDynamics ---
+    // --- SmokeDynamics (uses precomputed wind from AtmosphereSolver) ---
     py::class_<SmokeDynamics>(m, "SmokeDynamics")
         .def(py::init<>())
         .def_readwrite("d_smoke",        &SmokeDynamics::d_smoke)
         .def_readwrite("advection_rate", &SmokeDynamics::advection_rate)
-        .def_readwrite("wave_advection", &SmokeDynamics::wave_advection)
         .def("step", [](const SmokeDynamics& self,
                         py::array_t<float> smoke,
-                        py::array_t<float> atmosphere,
-                        py::array_t<float> wave_p,
+                        py::array_t<float> wind_x,
+                        py::array_t<float> wind_y,
                         py::array_t<bool>  obstacles,
                         py::array_t<bool>  is_wall,
                         py::array_t<bool>  is_vacuum,
                         float dt) {
             auto [sm, h, w] = get_2d(smoke);
-            auto [atm, h2, w2] = get_2d_const(atmosphere);
-            auto [wp, h3, w3] = get_2d_const(wave_p);
+            auto [wx, h2, w2] = get_2d_const(wind_x);
+            auto [wy, h3, w3] = get_2d_const(wind_y);
             auto [obs, h4, w4] = get_2d_const(obstacles);
             auto [wl, h5, w5] = get_2d_const(is_wall);
             auto [vac, h6, w6] = get_2d_const(is_vacuum);
-            self.step(sm, atm, wp, obs, wl, vac, h, w, dt);
-        }, py::arg("smoke"), py::arg("atmosphere"), py::arg("wave_p"),
+            self.step(sm, wx, wy, obs, wl, vac, h, w, dt);
+        }, py::arg("smoke"), py::arg("wind_x"), py::arg("wind_y"),
            py::arg("obstacles"), py::arg("is_wall"), py::arg("is_vacuum"),
            py::arg("dt"));
 

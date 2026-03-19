@@ -233,8 +233,9 @@ void AtmosphereSolver::step(
             float p_up    = (!obstacles[rup+x])                  ? total(rup+x)   : p_here;
             float p_down  = (!obstacles[rdn+x])                  ? total(rdn+x)   : p_here;
 
-            wind_x[i] = (p_right - p_left) * 0.5f;
-            wind_y[i] = (p_down  - p_up)   * 0.5f;
+            // Wind = -grad(p): air flows from high to low pressure
+            wind_x[i] = -(p_right - p_left) * 0.5f;
+            wind_y[i] = -(p_down  - p_up)   * 0.5f;
         }
     }
 }

@@ -11,10 +11,11 @@ marine_sprint_ticks_per_tile = 4
 xeno_sprint_ticks_per_tile = 1
 
 [physics]
-d_atm = 50.0
+d_atm = 200.0                         # atmosphere diffusion (IMEX = no CFL limit!)
 d_smoke = 0.4
-advection_rate = 25.0
+advection_rate = 100.0                # smoke advection by wind (higher = smoke moves more)
 breach_rate = 5.0                     # relaxation rate toward vacuum at hull breaches (1/s)
+max_source_per_step = 10.0             # max wave energy fed per substep (IMEX handles big spikes)
 physics_dt = 0.001                # 1ms (CFL stable for c=300 tiles/s)
 physics_substeps = 8              # 8 * 1ms = 8ms physics per game tick
 
@@ -42,11 +43,11 @@ ap_cost = 1
 burst_interval_ticks = 2
 
 [weapons.grenade]
-blast_radius = 6
+blast_radius = 5
 pressure = 10.0
 fuse_min_seconds = 0.0
 fuse_max_seconds = 10.0
-fuse_default_seconds = 0.5
+fuse_default_seconds = 1.0
 ap_cost = 1
 max_throw_range = 30
 unit_damage = 60
@@ -64,7 +65,7 @@ unit_damage = 60
 hp = 400
 ticks_per_tile = 7                 # slightly faster than marine attack move (9)
 melee_damage = 60
-trigger_radius = 24
+trigger_radius = 48
 propagation_radius = 15
 bullet_damage_multiplier = 0.25
 fire_damage_multiplier = 4.0

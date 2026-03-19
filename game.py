@@ -697,8 +697,8 @@ class Physics:
                             if gmap.wall_hp[ny, nx] <= 0:
                                 gmap.destroy_wall(ny, nx)
                         if not gmap.is_wall[ny, nx] and not gmap.is_vacuum[ny, nx]:
-                            # Feed pressure source, smoothed over 3x3 kernel
-                            # [1,2,1; 2,4,2; 1,2,1]/16 — reduces high-freq excitation
+                            # Deposit into both wave_source (shockwave) and atmosphere (sustained wind)
+                            # Wave source: smoothed 3x3, creates propagating shockwave
                             amount = pressure * falloff
                             for ky, kx, kw in [
                                 (0,0,4), (-1,0,2),(1,0,2),(0,-1,2),(0,1,2),
@@ -708,6 +708,9 @@ class Physics:
                                         and not gmap.is_wall[sy, sx]
                                         and not gmap.is_vacuum[sy, sx]):
                                     gmap.wave_source[sy, sx] += amount * kw / 16.0
+                            # Direct atmosphere deposit: creates sustained pressure gradient
+                            # that drives smoke transport (IMEX handles the spike safely)
+                            gmap.atmosphere[ny, nx] += pressure * falloff
                         if dist <= radius * 0.4:
                             gmap.smoke[ny, nx] = 0.0
                         # Ignite flammable tiles near explosion
@@ -740,12 +743,12 @@ class Physics:
             Physics._atmo.d_atm = CFG.physics.d_atm
             Physics._atmo.feed_rate = Physics.SOURCE_FEED_RATE
             Physics._atmo.breach_rate = getattr(CFG.physics, 'breach_rate', Physics.BREACH_RATE)
+            Physics._atmo.max_source_per_step = getattr(CFG.physics, 'max_source_per_step', 0.5)
             Physics._atmo_dt = Physics._atmo.max_dt()
 
             Physics._smoke = breach_physics.SmokeDynamics()
             Physics._smoke.d_smoke = CFG.physics.d_smoke
             Physics._smoke.advection_rate = CFG.physics.advection_rate
-            Physics._smoke.wave_advection = 80.0
 
             Physics._fire = breach_physics.FireSimulation()
             Physics._fire.params.spread_rate = Physics.FIRE_D
@@ -784,13 +787,18 @@ class Physics:
         n_atmo = max(1, int(math.ceil(sim_time / dt)))
         actual_dt = sim_time / n_atmo
 
-        # --- Atmosphere: IMEX substeps (wave + diffusion unified) ---
+        # --- Atmosphere + Smoke: interleaved substeps ---
+        # Smoke is updated every atmosphere substep so it rides the shockwave.
+        # Wind (precomputed by atmosphere solver) drives smoke advection.
         if HAS_CPP_PHYSICS:
             for _ in range(n_atmo):
                 Physics._atmo.step(
                     gmap.wave_p, gmap.wave_v, gmap.wave_source,
                     gmap.atmosphere,
                     gmap.wind_x, gmap.wind_y,
+                    gmap.obstacles, gmap.is_wall, gmap.is_vacuum, actual_dt)
+                Physics._smoke.step(
+                    gmap.smoke, gmap.wind_x, gmap.wind_y,
                     gmap.obstacles, gmap.is_wall, gmap.is_vacuum, actual_dt)
         else:
             # Python fallback (explicit only — no implicit diffusion)
@@ -833,13 +841,8 @@ class Physics:
                 gmap.atmosphere[gmap.is_vacuum] *= (1.0 - eta)
                 gmap.atmosphere[gmap.is_wall] = 0.0
 
-        # --- Smoke ---
-        if HAS_CPP_PHYSICS:
-            Physics._smoke.step(
-                gmap.smoke, gmap.atmosphere, gmap.wave_p,
-                gmap.obstacles, gmap.is_wall, gmap.is_vacuum, sim_time)
-        else:
-            Physics.step_smoke(gmap, sim_time)
+                # Smoke (Python fallback)
+                Physics.step_smoke(gmap, actual_dt)
 
         # --- Fire ---
         if HAS_CPP_PHYSICS:

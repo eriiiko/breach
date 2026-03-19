@@ -14,8 +14,8 @@ static inline float neighbor(const float* f, const bool* obs, int y, int x,
 
 void SmokeDynamics::step(
     float* smoke,
-    const float* atmosphere,
-    const float* wave_p,
+    const float* wind_x,
+    const float* wind_y,
     const bool* obstacles,
     const bool* is_wall,
     const bool* is_vacuum,
@@ -25,7 +25,6 @@ void SmokeDynamics::step(
     const int n = h * w;
 
     // --- Smoke diffusion (Laplacian with Neumann BCs) ---
-    // We need a copy since we read neighbors while writing
     std::vector<float> lap(n);
 
     for (int y = 0; y < h; ++y) {
@@ -44,32 +43,30 @@ void SmokeDynamics::step(
         smoke[i] += d_smoke * dt * lap[i];
     }
 
-    // --- Advection by atmosphere gradient and wave gradient ---
-    // Compute gradients and apply advection: smoke += rate * dt * (grad_p . grad_s)
+    // --- Advection by precomputed wind field ---
+    // Exact match of prototype (wind_test.py line 85):
+    //   smoke += ADVECTION_RATE * dt * (grad_atm_x * dsmoke_dx + grad_atm_y * dsmoke_dy)
+    //
+    // wind_x/wind_y = -grad(pressure), so we negate to get grad_p:
+    //   grad_p = -wind  →  smoke += rate * dt * (-wind . grad_smoke)
+    //
+    // But the prototype used +grad_p . +grad_smoke (both positive gradients).
+    // Our wind = -grad(p), so: grad_p . grad_smoke = (-wind) . grad_smoke
+    // → smoke += rate * dt * ((-wind_x) * ds_dx + (-wind_y) * ds_dy)
+    // → smoke -= rate * dt * (wind_x * ds_dx + wind_y * ds_dy)
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             int i = y * w + x;
+            if (obstacles[i] || is_wall[i] || is_vacuum[i]) continue;
 
             // Smoke gradient (central difference)
-            float ds_dy = (neighbor(smoke, obstacles, y, x,  1, 0, h, w) -
-                           neighbor(smoke, obstacles, y, x, -1, 0, h, w)) * 0.5f;
             float ds_dx = (neighbor(smoke, obstacles, y, x, 0,  1, h, w) -
                            neighbor(smoke, obstacles, y, x, 0, -1, h, w)) * 0.5f;
+            float ds_dy = (neighbor(smoke, obstacles, y, x,  1, 0, h, w) -
+                           neighbor(smoke, obstacles, y, x, -1, 0, h, w)) * 0.5f;
 
-            // Atmosphere gradient
-            float ag_dy = (neighbor(atmosphere, obstacles, y, x,  1, 0, h, w) -
-                           neighbor(atmosphere, obstacles, y, x, -1, 0, h, w)) * 0.5f;
-            float ag_dx = (neighbor(atmosphere, obstacles, y, x, 0,  1, h, w) -
-                           neighbor(atmosphere, obstacles, y, x, 0, -1, h, w)) * 0.5f;
-
-            // Wave pressure gradient
-            float wg_dy = (neighbor(wave_p, obstacles, y, x,  1, 0, h, w) -
-                           neighbor(wave_p, obstacles, y, x, -1, 0, h, w)) * 0.5f;
-            float wg_dx = (neighbor(wave_p, obstacles, y, x, 0,  1, h, w) -
-                           neighbor(wave_p, obstacles, y, x, 0, -1, h, w)) * 0.5f;
-
-            smoke[i] += advection_rate * dt * (ag_dx * ds_dx + ag_dy * ds_dy);
-            smoke[i] += wave_advection * dt * (wg_dx * ds_dx + wg_dy * ds_dy);
+            // grad_p . grad_smoke (wind = -grad_p, so negate)
+            smoke[i] -= advection_rate * dt * (wind_x[i] * ds_dx + wind_y[i] * ds_dy);
         }
     }
 
