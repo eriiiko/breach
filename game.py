@@ -1293,7 +1293,7 @@ class Game:
         self.frame_times = []   # last N frame times for FPS display
         self.physics_ms = 0.0   # physics compute time in ms
 
-        # Sprites
+        # Marine sprites (directional)
         self.sprites = {}
         sprite_dir = os.path.join(os.path.dirname(__file__), "art", "sprites", "marine")
         for direction in ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]:
@@ -1301,6 +1301,28 @@ class Game:
             if os.path.exists(path):
                 img = pygame.image.load(path).convert_alpha()
                 self.sprites[direction] = img
+
+        # Zombie sprites (one per zombie, assigned by type)
+        self.zombie_sprites = {}
+        zombie_dir = os.path.join(os.path.dirname(__file__), "art", "sprites", "zombies")
+        zombie_sprite_names = [
+            "zombie-scientist", "zombie-researcher", "zombie-mechanic",
+            "zombie-civilian-1", "zombie-civilian-2", "zombie-soldier",
+            "zombie-civilian-3", "zombie-officer", "zombie-civilian-4",
+        ]
+        self._zombie_sprite_images = []
+        for name in zombie_sprite_names:
+            path = os.path.join(zombie_dir, f"{name}_32.png")
+            if os.path.exists(path):
+                img = pygame.image.load(path).convert_alpha()
+                self._zombie_sprite_images.append(img)
+        # Assign sprites to zombies round-robin
+        if self._zombie_sprite_images:
+            zombie_idx = 0
+            for u in self.units:
+                if u.team == 1:
+                    self.zombie_sprites[u.name] = self._zombie_sprite_images[zombie_idx % len(self._zombie_sprite_images)]
+                    zombie_idx += 1
 
     # ===================================================================
     # Main loop
@@ -2177,13 +2199,17 @@ class Game:
                 pygame.draw.rect(self.screen, COL_SELECT, sel_rect, 2)
 
             if u.team == 1:
-                # Zombie
-                zombie_col = COL_ZOMBIE
-                if u.name.startswith("Z-"):
-                    # Converted marine — use a different shade
-                    zombie_col = (200, 80, 80)
-                pygame.draw.rect(self.screen, zombie_col,
-                                 (px + 2, py + 2, co_px - 4, co_px - 4))
+                # Zombie — use sprite if available
+                z_sprite = self.zombie_sprites.get(u.name)
+                if z_sprite:
+                    scaled = pygame.transform.scale(z_sprite, (co_px, co_px))
+                    self.screen.blit(scaled, (px, py))
+                else:
+                    zombie_col = COL_ZOMBIE
+                    if u.name.startswith("Z-"):
+                        zombie_col = (200, 80, 80)
+                    pygame.draw.rect(self.screen, zombie_col,
+                                     (px + 2, py + 2, co_px - 4, co_px - 4))
                 # Activation indicator
                 if u.zombie_activated:
                     pygame.draw.rect(self.screen, (255, 0, 0),

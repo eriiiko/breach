@@ -1204,3 +1204,58 @@ The following changes implement the rollout steps from §13:
 | `breach_rate` | 5.0 | `config.toml` |
 | unified dt | 1.667ms | computed by `max_dt()` |
 | substeps/tick | ~50 | `ceil(83.3ms / 1.667ms)` |
+
+---
+
+## 18. Implementation notes (main branch, 2026-03-19)
+
+### What was implemented: Plan B (IMEX — implicit diffusion)
+
+**Two-field architecture:** `wave_p` (acoustic) + `atmosphere` (bulk pressure), coupled via anomaly transfer.
+
+**1. AtmosphereSolver with IMEX scheme** (`cpp/src/atmosphere_solver.cpp/.h`):
+- Single `step(dt)` function with explicit wave + implicit diffusion
+- Wave: explicit kick on wave_p (Laplacian → wave_v update → wave_p update → BCs)
+- Transfer: wave anomaly `(wave_p - mean)` transferred into atmosphere
+- Diffusion: **implicit** via red-black Gauss-Seidel (8 iterations/substep)
+  - Solve `(I - μΔ) atm_new = atm_current` where `μ = D * dt`
+  - Amplification factor `1/(1+μσ)` always positive, always ≤1 → unconditionally stable
+- Wind: gradient of `atmosphere + wave_p` computed every substep
+- Only wave CFL matters: `dt = 0.5/c = 1.67ms`, ~50 substeps/tick
+
+**2. Boundary conditions — sealed vs breach distinction:**
+- Border vacuum tiles are `is_vacuum + obstacles + is_wall` → Neumann reflection blocks waves/diffusion
+- Breach vacuum tiles are `is_vacuum` only (wall was destroyed) → waves/diffusion propagate into them
+- Sponge layer seeds ONLY from exposed (non-obstacle) vacuum → sealed ship doesn't leak
+- Relaxation BC: `atmosphere *= (1-η)` on vacuum tiles (smooth drain)
+- Neighbor-mean fill on wall destruction (no hard atmosphere=0)
+
+**3. Source injection stabilization:**
+- 3×3 kernel smoothing on wave_source deposits
+- Rate limiter: `max_source_per_step = 0.5` caps per-substep injection
+- Direct atmosphere deposit in `apply_explosion` removed (caused spikes)
+
+**4. Architecture: PhysicsEngine removed, Python orchestrates:**
+- `AtmosphereSolver.step(dt)` — one substep, called N times from Python
+- `SmokeDynamics.step(dt)` — unchanged, called once per tick
+- `FireSimulation.step(dt)` — unchanged
+- `Raycaster.update_from_fire()` — unchanged
+
+**5. Stress test results:**
+- `wave_source = 50` (5× triple grenade): no NaN, no blowup
+- Sealed ship: holds pressure indefinitely (sponge blocked by hull)
+- Hull breach: drains correctly via relaxation + diffusion
+
+### Parameters (main branch)
+| Parameter | Value | Source |
+|---|---|---|
+| `c` | 300.0 | `Physics.WAVE_C` |
+| `damping` | 3.0 | `Physics.WAVE_DAMPING` |
+| `transfer` | 0.5 | `Physics.WAVE_TRANSFER` |
+| `d_atm` | 50.0 | `config.toml` |
+| `feed_rate` | 200.0 | `Physics.SOURCE_FEED_RATE` |
+| `breach_rate` | 5.0 | `config.toml` |
+| `max_source_per_step` | 0.5 | `AtmosphereSolver` default |
+| `gs_iters` | 8 | `AtmosphereSolver` default |
+| dt | 1.667ms | wave CFL only (diffusion is implicit) |
+| substeps/tick | ~50 | `ceil(83.3ms / 1.667ms)` |

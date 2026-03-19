@@ -283,57 +283,59 @@ def compute_laplacian(p, wall):
 
 This gives: reflection off walls, diffraction through doorways, channeling through corridors. The `wall` parameter is `gmap.obstacles` (walls + units), so units block waves and gas flow.
 
-### 6.2 Wave Equation (Explosions)
+### 6.2 Unified Atmosphere Solver (IMEX: Explicit Wave + Implicit Diffusion)
 
-**Physics:** 2D wave equation, leapfrog integration.
+**Design document:** See `docs/atmosphere_solver_analysis_and_patch_plan_20260319.md` for full Fourier stability analysis.
 
-```
-v += (c² * laplacian(p) - damping * v) * dt
-p += v * dt
-```
+**Architecture:** Two-field system — `wave_p` (zero-mean acoustic shockwave) + `atmosphere` (bulk air pressure). Single `AtmosphereSolver` class with a single-step API (`step(dt)`). Python orchestrates the substep loop.
 
-**Source feeding:** Explosions deposit energy into `wave_source`. Each substep feeds a fraction into `wave_p`, preventing an instantaneous pressure spike that would blow the CFL condition.
-
-**Parameters (currently hardcoded — should move to config):**
-
-| Parameter | Value | Description |
-|---|---|---|
-| `WAVE_C` | 300.0 | Wave speed (tiles/s). ~100 m/s physical (tiles are 1/3 m) |
-| `WAVE_DAMPING` | 3.0 | Velocity damping rate (1/s) |
-| `WAVE_TRANSFER` | 0.5 | Wave-to-atmosphere transfer rate (1/s) |
-| `SOURCE_FEED_RATE` | 200.0 | Source deposit rate into wave_p (1/s) |
-
-**CFL stability:** `dt_wave = 0.65 / c = 2.17 ms`. Per game tick (83.3 ms): ~39 substeps.
-
-**Boundary conditions:**
-- The Laplacian uses **Neumann BC** (∂p/∂n = 0): if a neighbor is an obstacle, substitute this cell's own value. This reflects wave energy back.
-- After each substep, **Dirichlet zeroing**: `wave_p = 0` and `wave_v = 0` on all obstacle tiles (walls + unit footprints + vacuum). This prevents energy from accumulating inside solid tiles.
-- **Critical invariant:** The zeroing must cover ALL obstacle tiles, not just `is_wall`/`is_vacuum`. Unit footprints are obstacles too. Without zeroing them, Neumann reflection traps wave energy inside the 3×3 unit block, causing exponential blowup within a few ticks.
-- Vacuum tiles are also zeroed (energy exits the ship — acts as perfect absorber).
-
-**Atmosphere coupling:** Each wave substep transfers a fraction of `wave_p` into `atmosphere`, creating sustained wind after the shockwave passes. This is the mechanism by which explosions create lasting airflow.
-
-### 6.3 Atmosphere Diffusion (Decompression)
-
-**Physics:** Simple diffusion equation.
+**Physics:** Per substep:
 
 ```
-atmosphere += D_atm * dt * laplacian(atmosphere)
+Step 1 — Explicit wave kick (on wave_p):
+  v += dt * (c² * Δ(wave_p) - γ * v)
+  wave_p += dt * v
+
+Step 2 — Transfer wave anomaly → atmosphere:
+  atmosphere += (wave_p - mean(wave_p)) * transfer * dt
+
+Step 3 — Implicit diffusion on atmosphere (Gauss-Seidel):
+  Solve (I - D*dt*Δ) atm_new = atm_current
+  via red-black Gauss-Seidel iteration (8 iterations default)
 ```
+
+The implicit diffusion factor `1/(1+μσ)` is always positive and ≤1 for any μ — **unconditionally stable**. No diffusion CFL limit. Only the wave CFL matters.
+
+**Source feeding:** Explosions deposit into `wave_source`, smoothed over a 3×3 kernel (`[1,2,1; 2,4,2; 1,2,1]/16`). Each substep feeds a rate-limited fraction into `wave_p` (`max_source_per_step` cap prevents grid-scale spikes from stacked grenades).
 
 **Parameters:**
 
 | Parameter | Config key | Value | Description |
 |---|---|---|---|
-| `D_atm` | `physics.d_atm` | 200.0 | Atmosphere diffusion rate |
+| `c` | — | 300.0 | Wave speed (tiles/s) |
+| `damping` | — | 3.0 | Wave velocity damping (1/s) |
+| `transfer` | — | 0.5 | wave_p → atmosphere transfer rate (1/s) |
+| `D_atm` | `physics.d_atm` | 50.0 | Atmosphere diffusion coefficient |
+| `feed_rate` | — | 200.0 | Source → wave_p feed rate (1/s) |
+| `breach_rate` | `physics.breach_rate` | 5.0 | Relaxation rate at vacuum (1/s) |
+| `max_source_per_step` | — | 0.5 | Max energy fed per substep |
+| `gs_iters` | — | 8 | Gauss-Seidel iterations per substep |
 
-**CFL stability:** `dt_diff = 0.24 / D_atm = 1.2 ms`. Per game tick: ~70 substeps.
+**CFL:** `dt = 0.5 / c ≈ 1.67 ms`. ~50 substeps per tick.
 
 **Boundary conditions:**
-- Walls: Neumann BC (no flow through walls)
-- Vacuum: `atmosphere = 0` (fixed Dirichlet — vacuum stays at 0)
+- **Neumann BC** on all Laplacians: obstacles reflect (neighbor → self value). Border vacuum is also `obstacles` → reflected. Breach vacuum is NOT obstacles → waves/diffusion propagate into it.
+- **Vacuum relaxation**: `atmosphere *= (1 - η)` where `η = breach_rate * dt`. Smooth drain, not hard Dirichlet.
+- **2-tile sponge layer**: Only seeds from **exposed vacuum** (breach tiles that are NOT obstacles). Border vacuum blocked — sponge doesn't reach through sealed hull. Inner sponge: strong wave_v damping + atmosphere relaxation + wave_source zeroing. Outer sponge: moderate damping.
+- **Neighbor-mean fill**: When walls are destroyed or units vacate, atmosphere is filled with the mean of passable neighbors. No artificial vacuum pulses.
 
-**Gameplay:** Interior starts at 1.0 atm. Hull breach creates vacuum source. Air flows through corridors and doorways. Sealed compartments hold pressure. Suffocation below 0.3 atm.
+**Wind:** Computed as gradient of total pressure (`atmosphere + wave_p`) every substep, output alongside the atmosphere fields.
+
+**Gameplay:** Interior starts at 1.0 atm. Sealed ship holds pressure (sponge blocked by hull). Hull breach → relaxation drains, diffusion flows outward, sponge damps ringing. Sealed compartments hold pressure. Suffocation below 0.3 atm.
+
+### 6.3 Atmosphere Diffusion
+
+Diffusion is now handled inside the unified atmosphere solver (§6.2) via implicit Gauss-Seidel. No separate diffusion pass.
 
 ### 6.4 Smoke Dynamics (Diffusion + Advection)
 
