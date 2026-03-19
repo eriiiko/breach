@@ -28,14 +28,14 @@ G = 9.81                 # gravity m/s²
 
 # Tilt
 TILT_AMPLITUDE = 3.0     # degrees
-TILT_PERIOD = 12.0       # seconds per full oscillation (slow slosh)
+TILT_PERIOD = 48.0       # seconds per full oscillation (slow slosh)
 TILT_OMEGA = 2.0 * np.pi / TILT_PERIOD
 
 # Simulation
 DT = 0.02                # 20ms per step (fluid is slow, big dt is fine)
 STEPS_PER_FRAME = 4
 FPS = 30
-TOTAL_FRAMES = 60        # 2 seconds — quick comparison
+TOTAL_FRAMES = 1440      # 48 seconds — one full tilt cycle
 DAMPING = 1.0            # velocity damping (1/s)
 
 # Walls: border around the ship
@@ -275,23 +275,19 @@ print(f"Initial water: {pipe.h.sum() * DX * DX:.3f} m³")
 # ---------------------------------------------------------------------------
 # Visualization
 # ---------------------------------------------------------------------------
-fig, axes = plt.subplots(1, 2, figsize=(16, 5), dpi=100)
+fig, ax = plt.subplots(1, 1, figsize=(12, 4), dpi=100)
 fig.patch.set_facecolor("black")
 
-titles = ["Pipe + Damped Velocity", "Shallow Water Equations"]
-imgs = []
-for i, ax in enumerate(axes):
-    ax.set_facecolor("black")
-    im = ax.imshow(np.zeros((H_TILES, W_TILES)), origin="upper",
-                   cmap="Blues", vmin=0, vmax=0.08, interpolation="bilinear")
-    ax.set_title(titles[i], color="white", fontsize=12)
-    ax.set_xticks([])
-    ax.set_yticks([])
-    # Draw walls
-    wall_overlay = np.ma.masked_where(~walls, np.ones_like(walls, dtype=float))
-    ax.imshow(wall_overlay, origin="upper", cmap="gray_r", vmin=0, vmax=1,
-              interpolation="nearest", alpha=0.5)
-    imgs.append(im)
+ax.set_facecolor("black")
+im = ax.imshow(np.zeros((H_TILES, W_TILES)), origin="upper",
+               cmap="Blues", vmin=0, vmax=0.08, interpolation="bilinear")
+ax.set_title("Pipe + Damped Velocity", color="white", fontsize=12)
+ax.set_xticks([])
+ax.set_yticks([])
+wall_overlay = np.ma.masked_where(~walls, np.ones_like(walls, dtype=float))
+ax.imshow(wall_overlay, origin="upper", cmap="gray_r", vmin=0, vmax=1,
+          interpolation="nearest", alpha=0.5)
+imgs = [im]
 
 suptitle = fig.suptitle("", color="white", fontsize=11, y=0.98)
 fig.tight_layout(rect=[0, 0, 1, 0.93])
@@ -307,25 +303,22 @@ def update(frame):
         tilt_offset = compute_tilt(tilt_x)
 
         pipe.step(tilt_offset, DT)
-        shallow.step(tilt_offset, DT)
         sim_time += DT
 
     tilt_now = TILT_AMPLITUDE * np.sin(TILT_OMEGA * sim_time)
 
     imgs[0].set_data(pipe.h)
-    imgs[1].set_data(shallow.h)
 
     pipe_vol = pipe.h.sum() * DX * DX
-    shallow_vol = shallow.h.sum() * DX * DX
 
     suptitle.set_text(
         f"t={sim_time:.1f}s  |  Tilt: {tilt_now:+.1f}°  |  "
-        f"Pipe water: {pipe_vol:.4f}m³  |  Shallow water: {shallow_vol:.4f}m³"
+        f"Water: {pipe_vol:.4f}m³"
     )
 
     if frame <= 1 or frame % 30 == 0:
         print(f"  Frame {frame}/{TOTAL_FRAMES}, t={sim_time:.1f}s, "
-              f"tilt={tilt_now:+.1f}°, pipe={pipe_vol:.4f}, shallow={shallow_vol:.4f}",
+              f"tilt={tilt_now:+.1f}°, water={pipe_vol:.4f}",
               flush=True)
 
     return imgs + [suptitle]
@@ -336,7 +329,7 @@ def update(frame):
 print(f"Running: {TOTAL_FRAMES} frames at {FPS} fps", flush=True)
 anim = FuncAnimation(fig, update, frames=TOTAL_FRAMES, blit=True, interval=1000//FPS)
 
-output_path = "C:/Users/steen/projects/breach/prototypes/fluid_test.gif"
+output_path = "C:/Users/steen/projects/breach/prototypes/fluid_pipe_only_48s.gif"
 print(f"Saving to {output_path} ...", flush=True)
 anim.save(output_path, writer=PillowWriter(fps=FPS))
 print("Done!")
