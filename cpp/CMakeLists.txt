@@ -21,8 +21,7 @@ find_package(pybind11 REQUIRED)
 
 # The physics module
 pybind11_add_module(breach_physics
-    src/wave_solver.cpp
-    src/atmo_diffusion.cpp
+    src/atmosphere_solver.cpp
     src/smoke_dynamics.cpp
     src/fire_simulation.cpp
     src/raycaster.cpp

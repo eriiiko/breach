@@ -1,8 +1,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
-#include "wave_solver.h"
-#include "atmo_diffusion.h"
+#include "atmosphere_solver.h"
 #include "smoke_dynamics.h"
 #include "fire_simulation.h"
 #include "raycaster.h"
@@ -29,51 +28,44 @@ static std::tuple<const T*, int, int> get_2d_const(const py::array_t<T>& arr) {
 PYBIND11_MODULE(breach_physics, m) {
     m.doc() = "Breach physics engine -- C++ accelerated simulation";
 
-    // --- WaveSolver ---
-    py::class_<WaveSolver>(m, "WaveSolver")
+    // --- AtmosphereSolver (IMEX: explicit wave + implicit diffusion) ---
+    py::class_<AtmosphereSolver>(m, "AtmosphereSolver")
         .def(py::init<>())
-        .def_readwrite("c",         &WaveSolver::c)
-        .def_readwrite("damping",   &WaveSolver::damping)
-        .def_readwrite("transfer",  &WaveSolver::transfer)
-        .def_readwrite("feed_rate", &WaveSolver::feed_rate)
-        .def("step", [](const WaveSolver& self,
+        .def_readwrite("c",                   &AtmosphereSolver::c)
+        .def_readwrite("damping",             &AtmosphereSolver::damping)
+        .def_readwrite("transfer",            &AtmosphereSolver::transfer)
+        .def_readwrite("d_atm",               &AtmosphereSolver::d_atm)
+        .def_readwrite("feed_rate",           &AtmosphereSolver::feed_rate)
+        .def_readwrite("breach_rate",         &AtmosphereSolver::breach_rate)
+        .def_readwrite("max_source_per_step", &AtmosphereSolver::max_source_per_step)
+        .def_readwrite("gs_iters",            &AtmosphereSolver::gs_iters)
+        .def("max_dt", &AtmosphereSolver::max_dt)
+        .def("step", [](const AtmosphereSolver& self,
                         py::array_t<float> wave_p,
                         py::array_t<float> wave_v,
                         py::array_t<float> wave_source,
                         py::array_t<float> atmosphere,
+                        py::array_t<float> wind_x,
+                        py::array_t<float> wind_y,
                         py::array_t<bool>  obstacles,
                         py::array_t<bool>  is_wall,
                         py::array_t<bool>  is_vacuum,
-                        float sim_time) {
-            auto [wp, h, w] = get_2d(wave_p);
+                        float dt) {
+            auto [wp, h, w]   = get_2d(wave_p);
             auto [wv, h2, w2] = get_2d(wave_v);
             auto [ws, h3, w3] = get_2d(wave_source);
             auto [atm, h4, w4] = get_2d(atmosphere);
-            auto [obs, h5, w5] = get_2d_const(obstacles);
-            auto [wl, h6, w6] = get_2d_const(is_wall);
-            auto [vac, h7, w7] = get_2d_const(is_vacuum);
-            self.step(wp, wv, ws, atm, obs, wl, vac, h, w, sim_time);
+            auto [wx, h5, w5] = get_2d(wind_x);
+            auto [wy, h6, w6] = get_2d(wind_y);
+            auto [obs, h7, w7] = get_2d_const(obstacles);
+            auto [wl, h8, w8] = get_2d_const(is_wall);
+            auto [vac, h9, w9] = get_2d_const(is_vacuum);
+            self.step(wp, wv, ws, atm, wx, wy, obs, wl, vac, h, w, dt);
         }, py::arg("wave_p"), py::arg("wave_v"), py::arg("wave_source"),
-           py::arg("atmosphere"), py::arg("obstacles"),
-           py::arg("is_wall"), py::arg("is_vacuum"), py::arg("sim_time"));
-
-    // --- AtmoDiffusion ---
-    py::class_<AtmoDiffusion>(m, "AtmoDiffusion")
-        .def(py::init<>())
-        .def_readwrite("d_atm", &AtmoDiffusion::d_atm)
-        .def("step", [](const AtmoDiffusion& self,
-                        py::array_t<float> atmosphere,
-                        py::array_t<bool>  obstacles,
-                        py::array_t<bool>  is_wall,
-                        py::array_t<bool>  is_vacuum,
-                        float sim_time) {
-            auto [atm, h, w] = get_2d(atmosphere);
-            auto [obs, h2, w2] = get_2d_const(obstacles);
-            auto [wl, h3, w3] = get_2d_const(is_wall);
-            auto [vac, h4, w4] = get_2d_const(is_vacuum);
-            self.step(atm, obs, wl, vac, h, w, sim_time);
-        }, py::arg("atmosphere"), py::arg("obstacles"),
-           py::arg("is_wall"), py::arg("is_vacuum"), py::arg("sim_time"));
+           py::arg("atmosphere"),
+           py::arg("wind_x"), py::arg("wind_y"),
+           py::arg("obstacles"), py::arg("is_wall"), py::arg("is_vacuum"),
+           py::arg("dt"));
 
     // --- SmokeDynamics ---
     py::class_<SmokeDynamics>(m, "SmokeDynamics")
@@ -129,7 +121,6 @@ PYBIND11_MODULE(breach_physics, m) {
             auto [wl, h5, w5] = get_2d_const(is_wall);
             auto [fl, h6, w6] = get_2d_const(flammable);
             auto destroyed = self.step(f, atm, sm, whp, wl, fl, h, w, dt);
-            // Return as list of (y, x) tuples
             py::list result;
             for (const auto& [dy, dx] : destroyed) {
                 result.append(py::make_tuple(dy, dx));

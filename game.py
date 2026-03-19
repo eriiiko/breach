@@ -305,6 +305,8 @@ class GameMap:
         self.wave_p = np.zeros((fh, fw), dtype=np.float32)  # wave pressure deviation
         self.wave_v = np.zeros((fh, fw), dtype=np.float32)  # wave velocity (dp/dt)
         self.wave_source = np.zeros((fh, fw), dtype=np.float32)  # pressure source (fed over time)
+        self.wind_x = np.zeros((fh, fw), dtype=np.float32)     # wind field (dp/dx)
+        self.wind_y = np.zeros((fh, fw), dtype=np.float32)     # wind field (dp/dy)
         self.smoke = np.zeros((fh, fw), dtype=np.float32)
         self.fire = np.zeros((fh, fw), dtype=np.float32)  # fire intensity (0-1, lives on flammable walls)
         self.obstacles = np.zeros((fh, fw), dtype=bool)  # walls + units combined
@@ -508,7 +510,8 @@ class GameMap:
                     # Check if this tile is on the map edge (true hull breach)
                     if fy < co or fy >= fh - co or fx < co or fx >= fw - co:
                         self.is_vacuum[fy, fx] = True
-                        self.atmosphere[fy, fx] = 0.0
+                        # Don't hard-zero — let relaxation BC drain smoothly
+                        self.atmosphere[fy, fx] = self._neighbor_mean(self.atmosphere, fy, fx)
                     else:
                         # Interior hull: fill with neighbor mean
                         self.atmosphere[fy, fx] = self._neighbor_mean(self.atmosphere, fy, fx)
@@ -694,8 +697,17 @@ class Physics:
                             if gmap.wall_hp[ny, nx] <= 0:
                                 gmap.destroy_wall(ny, nx)
                         if not gmap.is_wall[ny, nx] and not gmap.is_vacuum[ny, nx]:
-                            # Feed pressure source (delivered over multiple substeps)
-                            gmap.wave_source[ny, nx] += pressure * falloff
+                            # Feed pressure source, smoothed over 3x3 kernel
+                            # [1,2,1; 2,4,2; 1,2,1]/16 — reduces high-freq excitation
+                            amount = pressure * falloff
+                            for ky, kx, kw in [
+                                (0,0,4), (-1,0,2),(1,0,2),(0,-1,2),(0,1,2),
+                                (-1,-1,1),(-1,1,1),(1,-1,1),(1,1,1)]:
+                                sy, sx = ny + ky, nx + kx
+                                if (0 <= sy < fh and 0 <= sx < fw
+                                        and not gmap.is_wall[sy, sx]
+                                        and not gmap.is_vacuum[sy, sx]):
+                                    gmap.wave_source[sy, sx] += amount * kw / 16.0
                         if dist <= radius * 0.4:
                             gmap.smoke[ny, nx] = 0.0
                         # Ignite flammable tiles near explosion
@@ -703,147 +715,145 @@ class Physics:
                             gmap.fire[ny, nx] = max(gmap.fire[ny, nx],
                                                      0.5 * falloff)
 
-        # Deposit sustained pressure in cross pattern (creates wind after shockwave)
-        # Center gets 2x, cardinal neighbors get 1x each (total = 6x factor)
-        fh_map = CFG.display.fine_h
-        fw_map = CFG.display.fine_w
-        for dy, dx, mult in [(0,0,2), (-1,0,1), (1,0,1), (0,-1,1), (0,1,1)]:
-            ty, tx = fy + dy, fx + dx
-            if 0 <= ty < fh_map and 0 <= tx < fw_map:
-                if not gmap.is_wall[ty, tx] and not gmap.is_vacuum[ty, tx]:
-                    gmap.atmosphere[ty, tx] += pressure * 0.3 * mult
+        # NOTE: Direct atmosphere deposit removed — it bypassed wave_source
+        # smoothing and created grid-scale discontinuities near vacuum.
+        # The wave_source + feed_rate mechanism injects energy smoothly.
 
     # Wave parameters — all in physical units (per second)
     WAVE_C = 300.0          # wave speed in tiles/s (100 m/s, tiles are 1/3 m)
     WAVE_DAMPING = 3.0      # velocity damping rate (1/s)
     WAVE_TRANSFER = 0.5     # wave->atmosphere transfer rate (1/s)
     SOURCE_FEED_RATE = 200.0  # how fast source deposits into wave_p (1/s)
+    BREACH_RATE = 5.0       # relaxation rate toward vacuum (1/s)
+
+    @staticmethod
+    def _init_solvers():
+        """Initialize C++ solvers (called once on first physics tick)."""
+        if hasattr(Physics, '_atmo'):
+            return
+        backend = "C++" if HAS_CPP_PHYSICS else "Python"
+        if HAS_CPP_PHYSICS:
+            Physics._atmo = breach_physics.AtmosphereSolver()
+            Physics._atmo.c = Physics.WAVE_C
+            Physics._atmo.damping = Physics.WAVE_DAMPING
+            Physics._atmo.transfer = Physics.WAVE_TRANSFER
+            Physics._atmo.d_atm = CFG.physics.d_atm
+            Physics._atmo.feed_rate = Physics.SOURCE_FEED_RATE
+            Physics._atmo.breach_rate = getattr(CFG.physics, 'breach_rate', Physics.BREACH_RATE)
+            Physics._atmo_dt = Physics._atmo.max_dt()
+
+            Physics._smoke = breach_physics.SmokeDynamics()
+            Physics._smoke.d_smoke = CFG.physics.d_smoke
+            Physics._smoke.advection_rate = CFG.physics.advection_rate
+            Physics._smoke.wave_advection = 80.0
+
+            Physics._fire = breach_physics.FireSimulation()
+            Physics._fire.params.spread_rate = Physics.FIRE_D
+            Physics._fire.params.o2_threshold = Physics.FIRE_O2_THRESHOLD
+            Physics._fire.params.o2_consumption = Physics.FIRE_O2_CONSUMPTION
+            Physics._fire.params.smoke_emission = Physics.FIRE_SMOKE_EMISSION
+            Physics._fire.params.wall_damage = Physics.FIRE_WALL_DAMAGE
+            Physics._fire.params.k_wind_thresh = Physics.FIRE_K_WIND_THRESH
+            Physics._fire.params.k_wind_net = Physics.FIRE_K_WIND_NET
+
+            Physics._ray = breach_physics.Raycaster()
+            Physics._ray.coarse_cluster = CFG.display.coarse
+        else:
+            Physics._atmo = None
+            Physics._atmo_dt = 0.5 / Physics.WAVE_C
+
+        sim_time = 1.0 / CFG.clock.ticks_per_second
+        n_steps = max(1, int(math.ceil(sim_time / Physics._atmo_dt)))
+        print(f"[physics] Backend: {backend} (IMEX: explicit wave + implicit diffusion)")
+        print(f"[physics] sim_time={sim_time*1000:.1f}ms, dt={Physics._atmo_dt*1000:.3f}ms, "
+              f"{n_steps} substeps/tick")
+        print(f"[physics] c={Physics.WAVE_C}, D={CFG.physics.d_atm}, "
+              f"damping={Physics.WAVE_DAMPING}, breach_rate={Physics.BREACH_RATE}")
 
     @staticmethod
     def step(gmap, sim_time=None):
         """Advance all physics by sim_time seconds.
-        Each system auto-computes its substep count from its own stability dt.
-        If sim_time is None, advances one game tick (1/ticks_per_second)."""
+        IMEX scheme: explicit wave on wave_p, implicit diffusion on atmosphere.
+        Python orchestrates single-step C++ calls."""
         if sim_time is None:
-            sim_time = 1.0 / CFG.clock.ticks_per_second  # 83.3ms per game tick
+            sim_time = 1.0 / CFG.clock.ticks_per_second
 
-        c = Physics.WAVE_C
-        c_squared = c * c
-        damping = Physics.WAVE_DAMPING
-        transfer = Physics.WAVE_TRANSFER
-        feed_rate = Physics.SOURCE_FEED_RATE
+        Physics._init_solvers()
 
-        # Each system's stable dt
-        dt_wave = 0.65 / c
-        dt_diff = 0.24 / max(CFG.physics.d_atm, 0.01)
+        dt = Physics._atmo_dt
+        n_atmo = max(1, int(math.ceil(sim_time / dt)))
+        actual_dt = sim_time / n_atmo
 
-        # How many substeps to cover sim_time
-        n_wave = max(1, int(math.ceil(sim_time / dt_wave)))
-        n_diff = max(1, int(math.ceil(sim_time / dt_diff)))
-        # Smoke: one step per call, using full sim_time (no CFL issue)
-        dt_smoke = sim_time
-
-        # Stability checks (once at startup)
-        if not hasattr(Physics, '_checked'):
-            Physics._checked = True
-            backend = "C++" if HAS_CPP_PHYSICS else "Python"
-            print(f"[physics] Backend: {backend}")
-            print(f"[physics] sim_time={sim_time*1000:.1f}ms per game tick")
-            print(f"[physics] Wave: c={c:.1f} tiles/s, dt={dt_wave*1000:.2f}ms, {n_wave} substeps")
-            print(f"[physics] Diffusion: D={CFG.physics.d_atm}, dt={dt_diff*1000:.2f}ms, {n_diff} substeps")
-            if HAS_CPP_PHYSICS:
-                Physics._cpp_wave = breach_physics.WaveSolver()
-                Physics._cpp_wave.c = c
-                Physics._cpp_wave.damping = damping
-                Physics._cpp_wave.transfer = transfer
-                Physics._cpp_wave.feed_rate = feed_rate
-                Physics._cpp_atmo = breach_physics.AtmoDiffusion()
-                Physics._cpp_atmo.d_atm = CFG.physics.d_atm
-
+        # --- Atmosphere: IMEX substeps (wave + diffusion unified) ---
         if HAS_CPP_PHYSICS:
-            # --- C++ wave + diffusion (single call each, handles substeps internally) ---
-            Physics._cpp_wave.step(
-                gmap.wave_p, gmap.wave_v, gmap.wave_source, gmap.atmosphere,
-                gmap.obstacles, gmap.is_wall, gmap.is_vacuum, sim_time)
-            Physics._cpp_atmo.step(
-                gmap.atmosphere, gmap.obstacles, gmap.is_wall, gmap.is_vacuum, sim_time)
+            for _ in range(n_atmo):
+                Physics._atmo.step(
+                    gmap.wave_p, gmap.wave_v, gmap.wave_source,
+                    gmap.atmosphere,
+                    gmap.wind_x, gmap.wind_y,
+                    gmap.obstacles, gmap.is_wall, gmap.is_vacuum, actual_dt)
         else:
-            # --- Python fallback: wave substeps ---
-            for _ in range(n_wave):
-                if np.any(gmap.wave_source > 0.001):
-                    feed = gmap.wave_source * feed_rate * dt_wave
+            # Python fallback (explicit only — no implicit diffusion)
+            c_sq = Physics.WAVE_C ** 2
+            damp = Physics.WAVE_DAMPING
+            xfer = Physics.WAVE_TRANSFER
+            feed_rate = Physics.SOURCE_FEED_RATE
+            D = CFG.physics.d_atm
+            breach_rate = getattr(CFG.physics, 'breach_rate', Physics.BREACH_RATE)
+            for _ in range(n_atmo):
+                # Feed sources
+                active = gmap.wave_source > 0.001
+                if np.any(active):
+                    feed = gmap.wave_source * feed_rate * actual_dt
                     feed = np.minimum(feed, gmap.wave_source)
                     gmap.wave_p += feed
                     gmap.wave_source -= feed
 
-                up = np.roll(gmap.wave_p, 1, axis=0)
-                down = np.roll(gmap.wave_p, -1, axis=0)
-                left = np.roll(gmap.wave_p, 1, axis=1)
-                right = np.roll(gmap.wave_p, -1, axis=1)
-                wall_up = np.roll(gmap.obstacles, 1, axis=0)
-                wall_down = np.roll(gmap.obstacles, -1, axis=0)
-                wall_left = np.roll(gmap.obstacles, 1, axis=1)
-                wall_right = np.roll(gmap.obstacles, -1, axis=1)
-                up = np.where(wall_up, gmap.wave_p, up)
-                down = np.where(wall_down, gmap.wave_p, down)
-                left = np.where(wall_left, gmap.wave_p, left)
-                right = np.where(wall_right, gmap.wave_p, right)
-                lap = up + down + left + right - 4.0 * gmap.wave_p
-
-                gmap.wave_v += (c_squared * lap - damping * gmap.wave_v) * dt_wave
-                gmap.wave_p += gmap.wave_v * dt_wave
+                # Laplacian of wave_p
+                lap = Physics.compute_laplacian(gmap.wave_p, gmap.obstacles)
+                gmap.wave_v += (c_sq * lap - damp * gmap.wave_v) * actual_dt
+                gmap.wave_p += gmap.wave_v * actual_dt
                 gmap.wave_p[gmap.obstacles] = 0.0
                 gmap.wave_v[gmap.obstacles] = 0.0
                 gmap.wave_p[gmap.is_vacuum] = 0.0
                 gmap.wave_v[gmap.is_vacuum] = 0.0
 
-                gmap.atmosphere += gmap.wave_p * transfer * dt_wave
+                # Transfer wave anomaly into atmosphere
+                mean_wp = gmap.wave_p[~gmap.obstacles & ~gmap.is_wall & ~gmap.is_vacuum].mean() \
+                          if np.any(~gmap.obstacles & ~gmap.is_wall & ~gmap.is_vacuum) else 0.0
+                mask = ~gmap.obstacles & ~gmap.is_wall & ~gmap.is_vacuum
+                gmap.atmosphere[mask] += (gmap.wave_p[mask] - mean_wp) * xfer * actual_dt
+
+                # Diffusion (explicit fallback — not implicit)
+                lap_atm = Physics.compute_laplacian(gmap.atmosphere, gmap.obstacles)
+                gmap.atmosphere += D * actual_dt * lap_atm
+
+                # Relaxation BC at vacuum
+                eta = min(breach_rate * actual_dt, 1.0)
+                gmap.atmosphere[gmap.is_vacuum] *= (1.0 - eta)
                 gmap.atmosphere[gmap.is_wall] = 0.0
-                gmap.atmosphere[gmap.is_vacuum] = 0.0
-                # No clamping — allow negative (rarefaction) and overpressure
 
-            # --- Python fallback: diffusion substeps ---
-            for _ in range(n_diff):
-                Physics.step_atmosphere(gmap, dt_diff)
-
-        # --- Smoke (advection + diffusion, one step) ---
+        # --- Smoke ---
         if HAS_CPP_PHYSICS:
-            if not hasattr(Physics, '_cpp_smoke'):
-                Physics._cpp_smoke = breach_physics.SmokeDynamics()
-                Physics._cpp_smoke.d_smoke = CFG.physics.d_smoke
-                Physics._cpp_smoke.advection_rate = CFG.physics.advection_rate
-                Physics._cpp_smoke.wave_advection = 80.0
-            Physics._cpp_smoke.step(
+            Physics._smoke.step(
                 gmap.smoke, gmap.atmosphere, gmap.wave_p,
-                gmap.obstacles, gmap.is_wall, gmap.is_vacuum, dt_smoke)
+                gmap.obstacles, gmap.is_wall, gmap.is_vacuum, sim_time)
         else:
-            Physics.step_smoke(gmap, dt_smoke)
+            Physics.step_smoke(gmap, sim_time)
 
-        # --- Fire (spreading, O2, smoke emission, wall damage) ---
+        # --- Fire ---
         if HAS_CPP_PHYSICS:
-            if not hasattr(Physics, '_cpp_fire'):
-                Physics._cpp_fire = breach_physics.FireSimulation()
-                Physics._cpp_fire.params.spread_rate = Physics.FIRE_D
-                Physics._cpp_fire.params.o2_threshold = Physics.FIRE_O2_THRESHOLD
-                Physics._cpp_fire.params.o2_consumption = Physics.FIRE_O2_CONSUMPTION
-                Physics._cpp_fire.params.smoke_emission = Physics.FIRE_SMOKE_EMISSION
-                Physics._cpp_fire.params.wall_damage = Physics.FIRE_WALL_DAMAGE
-                Physics._cpp_fire.params.k_wind_thresh = Physics.FIRE_K_WIND_THRESH
-                Physics._cpp_fire.params.k_wind_net = Physics.FIRE_K_WIND_NET
-            destroyed = Physics._cpp_fire.step(
+            destroyed = Physics._fire.step(
                 gmap.fire, gmap.atmosphere, gmap.smoke, gmap.wall_hp,
-                gmap.is_wall, gmap.flammable, dt_smoke)
+                gmap.is_wall, gmap.flammable, sim_time)
             for fy, fx in destroyed:
                 gmap.destroy_wall(fy, fx)
         else:
-            Physics.step_fire(gmap, dt_smoke)
+            Physics.step_fire(gmap, sim_time)
 
-        # --- Raycasting (light + heat) ---
+        # --- Raycasting ---
         if HAS_CPP_PHYSICS:
-            if not hasattr(Physics, '_cpp_ray'):
-                Physics._cpp_ray = breach_physics.Raycaster()
-                Physics._cpp_ray.coarse_cluster = CFG.display.coarse
-            Physics._cpp_ray.update_from_fire(
+            Physics._ray.update_from_fire(
                 gmap.light_map, gmap.fire, gmap.smoke, gmap.is_wall)
         else:
             Raycaster.update(gmap)

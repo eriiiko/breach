@@ -14,6 +14,7 @@ xeno_sprint_ticks_per_tile = 1
 d_atm = 50.0
 d_smoke = 0.4
 advection_rate = 25.0
+breach_rate = 5.0                     # relaxation rate toward vacuum at hull breaches (1/s)
 physics_dt = 0.001                # 1ms (CFL stable for c=300 tiles/s)
 physics_substeps = 8              # 8 * 1ms = 8ms physics per game tick
 
