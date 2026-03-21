@@ -44,7 +44,7 @@ int main() {
     UnloadImage(darkImg);
 
     // Emissive: load mask file if it exists, otherwise auto-detect
-    Image maskImg = LoadImage("../../art/ships/emissive_mask.png");
+    Image maskImg = LoadImage("../../art/ships/chatgptSpaceShip1-emissive_mask.png");
     Texture2D emissiveTex;
     if (maskImg.data != NULL) {
         printf("Loaded emissive_mask.png\n");
