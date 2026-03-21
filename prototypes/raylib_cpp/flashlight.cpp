@@ -97,6 +97,13 @@ int main() {
     Image shipImgCopy = ImageCopy(shipImg);
     UnloadImage(shipImg);
 
+    // Load normal map
+    Image normalImg = LoadImage("../../art/ships/chatgptSpaceShip1-normal_map.png");
+    bool hasNormals = (normalImg.data != NULL);
+    if (hasNormals) printf("Loaded normal map\n");
+    else printf("No normal map found\n");
+    bool useNormals = true;
+
     // Render texture for the lit layer (we draw the lit image here, then mask it)
     RenderTexture2D litRT = LoadRenderTexture(winW, winH);
 
@@ -113,26 +120,37 @@ int main() {
     float bloomAlpha = 200;
     int editChannel = 0; // 0=none, 1=R, 2=G, 3=B, 4=Alpha
 
-    // --- Generate wall map from ship image ---
-    // Load the ship image again for wall detection
-    Image wallSrcImg = LoadImage("../../art/ships/chatgptSpaceShip1.png");
+    // --- Load wall map ---
+    // Try hand-edited wall mask first, fall back to auto-detection
+    Image wallMaskImg = LoadImage("../../art/ships/chatgptSpaceShip1_wall_map_test.png");
     // vector<bool> is special in C++, use vector<char> for .data() access
     std::vector<char> wallMapRaw(imgW * imgH, 0);
-    std::vector<float> smokeField(imgW * imgH, 0.0f); // no smoke for now
+    std::vector<float> smokeField(imgW * imgH, 0.0f);
     std::vector<float> lightMap(imgW * imgH, 0.0f);
-    if (wallSrcImg.data != NULL) {
+    if (wallMaskImg.data != NULL) {
+        printf("Loaded wall mask from file\n");
         for (int y = 0; y < imgH; y++) {
             for (int x = 0; x < imgW; x++) {
-                Color c = GetImageColor(wallSrcImg, x, y);
+                Color c = GetImageColor(wallMaskImg, x, y);
                 float brightness = (c.r + c.g + c.b) / 3.0f;
-                // Dark pixels = walls/hull, bright pixels = floors/objects
-                // Also treat pure black (outside ship) as wall
-                bool isWall = (brightness < 45) || (c.r < 30 && c.g < 30 && c.b < 30);
-                wallMapRaw[y * imgW + x] = isWall ? 1 : 0;
+                wallMapRaw[y * imgW + x] = (brightness > 128) ? 1 : 0;
             }
         }
-        UnloadImage(wallSrcImg);
-        printf("Wall map generated: %dx%d\n", imgW, imgH);
+        UnloadImage(wallMaskImg);
+    } else {
+        printf("No wall mask found, auto-detecting\n");
+        Image autoImg = LoadImage("../../art/ships/chatgptSpaceShip1.png");
+        if (autoImg.data != NULL) {
+            for (int y = 0; y < imgH; y++) {
+                for (int x = 0; x < imgW; x++) {
+                    Color c = GetImageColor(autoImg, x, y);
+                    float brightness = (c.r + c.g + c.b) / 3.0f;
+                    bool isWall = (brightness < 45) || (c.r < 30 && c.g < 30 && c.b < 30);
+                    wallMapRaw[y * imgW + x] = isWall ? 1 : 0;
+                }
+            }
+            UnloadImage(autoImg);
+        }
     }
 
     // Convert to bool array for raycaster
@@ -170,6 +188,7 @@ int main() {
         if (IsKeyPressed(KEY_G)) showGlow = !showGlow;
         if (IsKeyPressed(KEY_F)) showFlashlight = !showFlashlight;
         if (IsKeyPressed(KEY_R)) useRaycast = !useRaycast;
+        if (IsKeyPressed(KEY_N)) useNormals = !useNormals;
 
         // Bloom color editing: hold key + scroll
         float wheel = GetMouseWheelMove();
@@ -184,25 +203,22 @@ int main() {
             printf("Bloom color: {%d, %d, %d, %d}\n", (int)bloomR, (int)bloomG, (int)bloomB, (int)bloomAlpha);
         }
 
-        // --- Render the lit layer into the render texture with a circular mask ---
-        BeginTextureMode(litRT);
-        ClearBackground(BLANK);
-
-        // Draw a white gradient circle (this will be our alpha mask)
-        // Using multiple concentric circles for smooth falloff
-        int steps = 80;
-        for (int i = steps; i >= 0; i--) {
-            float t = (float)i / steps;
-            float r = flashRadius * t;
-            // Smooth falloff: bright in center, fading outward
-            float intensity = 1.0f - t;
-            intensity = intensity * intensity; // quadratic falloff for softer edge
-            unsigned char alpha = (unsigned char)(intensity * 255);
-            Color col = {alpha, alpha, alpha, 255};
-            DrawCircleV(mouse, r, col);
+        // --- Render texture for circular mode only ---
+        if (showFlashlight && !useRaycast) {
+            BeginTextureMode(litRT);
+            ClearBackground(BLANK);
+            int steps = 80;
+            for (int i = steps; i >= 0; i--) {
+                float t = (float)i / steps;
+                float r = flashRadius * t;
+                float intensity = 1.0f - t;
+                intensity = intensity * intensity;
+                unsigned char alpha = (unsigned char)(intensity * 255);
+                Color col = {alpha, alpha, alpha, 255};
+                DrawCircleV(mouse, r, col);
+            }
+            EndTextureMode();
         }
-
-        EndTextureMode();
 
         // --- Draw everything ---
         BeginDrawing();
@@ -232,15 +248,13 @@ int main() {
                 raycaster.cast_source(flashlight, lightMap.data(), smokeField.data(),
                     wallPtr, imgH, imgW);
 
-                // Draw lit texture where rays reach, using scissor regions
-                // Group lit pixels into horizontal spans for efficiency
+                // Draw lit texture where rays reach using spans (same as before)
                 int startX = (int)offX, startY = (int)offY;
                 int endY = std::min(startY + winH, imgH);
                 int endX = std::min(startX + winW, imgW);
 
                 for (int iy = startY; iy < endY; iy++) {
                     int sy = iy - startY;
-                    // Find spans of lit pixels in this row
                     int spanStart = -1;
                     float spanMaxLight = 0;
                     for (int ix = startX; ix <= endX; ix++) {
@@ -249,7 +263,6 @@ int main() {
                             if (spanStart < 0) { spanStart = ix - startX; spanMaxLight = 0; }
                             if (lv > spanMaxLight) spanMaxLight = lv;
                         } else if (spanStart >= 0) {
-                            // End of span — draw lit texture for this span
                             if (spanMaxLight > 1.0f) spanMaxLight = 1.0f;
                             unsigned char alpha = (unsigned char)(spanMaxLight * 255);
                             int spanW = (ix - startX) - spanStart;
@@ -309,7 +322,7 @@ int main() {
             DrawRectangle(0, hy - 5, 420, 150, Color{0, 0, 0, 180});
             DrawText("Mouse wheel: flashlight radius", 10, hy, 14, LIGHTGRAY);
             DrawText("Arrow keys / WASD: scroll", 10, hy + 18, 14, LIGHTGRAY);
-            DrawText("E: emissive, G: blue glow, F: flashlight", 10, hy + 36, 14, LIGHTGRAY);
+            DrawText("E: emissive, G: glow, F: flash, R: raycast, N: normals", 10, hy + 36, 14, LIGHTGRAY);
             DrawText("Hold 1/2/3/4 + scroll: bloom R/G/B/Alpha", 10, hy + 54, 14, YELLOW);
             DrawText("P: print bloom values to console", 10, hy + 72, 14, LIGHTGRAY);
             DrawText("H: toggle help", 10, hy + 90, 14, LIGHTGRAY);
