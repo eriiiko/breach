@@ -43,36 +43,24 @@ int main() {
     Texture2D darkTex = LoadTextureFromImage(darkImg);
     UnloadImage(darkImg);
 
-    // Emissive: load mask file if it exists, otherwise auto-detect
+    // --- Emissive sprites (sharp screen pixels) ---
     Image maskImg = LoadImage("../../art/ships/chatgptSpaceShip1-emissive_mask.png");
     Texture2D emissiveTex;
     if (maskImg.data != NULL) {
-        printf("Loaded emissive_mask.png\n");
-        // Mask brightness controls glow intensity:
-        // White = full glow, gray = dim glow, black = off
-        // Blur the mask for soft halos around light sources
+        printf("Loaded emissive mask\n");
+        // Where mask has content, show original ship color boosted
         Image emImg = GenImageColor(imgW, imgH, Color{0, 0, 0, 0});
         for (int y = 0; y < imgH; y++) {
             for (int x = 0; x < imgW; x++) {
                 Color m = GetImageColor(maskImg, x, y);
-                // Use max channel as intensity (0-255)
-                float intensity = m.r;
-                if (m.g > intensity) intensity = m.g;
-                if (m.b > intensity) intensity = m.b;
-                if (intensity < 1.0f) continue; // skip fully black
-                float t = intensity / 255.0f; // 0-1 intensity
+                float intensity = (float)m.a / 255.0f;
+                if (intensity < 0.01f) continue;
                 Color c = GetImageColor(shipImg, x, y);
                 Color ec;
-                // Blend between dark version and boosted original based on intensity
-                float darkR = (0.299f*c.r + 0.587f*c.g + 0.114f*c.b) * 0.08f;
-                float darkG = darkR, darkB = darkR;
-                ec.r = (unsigned char)(darkR + (c.r * 1.3f - darkR) * t);
-                ec.g = (unsigned char)(darkG + (c.g * 1.3f - darkG) * t);
-                ec.b = (unsigned char)(darkB + (c.b * 1.3f - darkB) * t);
-                if (ec.r > 255) ec.r = 255;
-                if (ec.g > 255) ec.g = 255;
-                if (ec.b > 255) ec.b = 255;
-                ec.a = (unsigned char)(t * 255);
+                ec.r = (unsigned char)(c.r * 1.3f > 255 ? 255 : c.r * 1.3f);
+                ec.g = (unsigned char)(c.g * 1.3f > 255 ? 255 : c.g * 1.3f);
+                ec.b = (unsigned char)(c.b * 1.3f > 255 ? 255 : c.b * 1.3f);
+                ec.a = (unsigned char)(intensity * 255);
                 ImageDrawPixel(&emImg, x, y, ec);
             }
         }
@@ -80,27 +68,26 @@ int main() {
         UnloadImage(emImg);
         UnloadImage(maskImg);
     } else {
-        printf("No emissive_mask.png found, auto-detecting blue screens\n");
-        Image emImg = ImageCopy(shipImg);
-        for (int y = 0; y < imgH; y++) {
-            for (int x = 0; x < imgW; x++) {
-                Color c = GetImageColor(shipImg, x, y);
-                bool isScreen = (c.b > 140 && c.r < 100 && c.g < 140 && (c.r + c.g + c.b) > 180);
-                if (!isScreen) {
-                    ImageDrawPixel(&emImg, x, y, Color{0, 0, 0, 0});
-                } else {
-                    Color ec;
-                    ec.r = (unsigned char)(c.r * 1.3f > 255 ? 255 : c.r * 1.3f);
-                    ec.g = (unsigned char)(c.g * 1.3f > 255 ? 255 : c.g * 1.3f);
-                    ec.b = (unsigned char)(c.b * 1.3f > 255 ? 255 : c.b * 1.3f);
-                    ec.a = 255;
-                    ImageDrawPixel(&emImg, x, y, ec);
-                }
-            }
-        }
-        emissiveTex = LoadTextureFromImage(emImg);
-        UnloadImage(emImg);
+        printf("No emissive mask found\n");
+        emissiveTex = LoadTextureFromImage(GenImageColor(imgW, imgH, Color{0, 0, 0, 0}));
     }
+
+    // --- Emissive lightmap (blurred halos, reveals lit image tinted blue) ---
+    Image lmapImg = LoadImage("../../art/ships/chatgptSpaceShip1-emissive_bloom.png");
+    Texture2D lightmapTex;
+    bool hasLightmap = false;
+    if (lmapImg.data != NULL) {
+        printf("Loaded emissive lightmap\n");
+        hasLightmap = true;
+        // Load as-is — white pixels with alpha gradient
+        // We'll tint it blue at draw time
+        lightmapTex = LoadTextureFromImage(lmapImg);
+        UnloadImage(lmapImg);
+    } else {
+        printf("No lightmap found\n");
+        lightmapTex = LoadTextureFromImage(GenImageColor(1, 1, Color{0, 0, 0, 0}));
+    }
+
     UnloadImage(shipImg);
 
     // Render texture for the lit layer (we draw the lit image here, then mask it)
@@ -110,6 +97,9 @@ int main() {
     float offX = (imgW > winW) ? (imgW - winW) / 2.0f : 0;
     float offY = (imgH > winH) ? (imgH - winH) / 2.0f : 0;
     bool showHelp = true;
+    bool showEmissive = true;
+    bool showGlow = true;
+    bool showFlashlight = true;
 
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
@@ -132,8 +122,11 @@ int main() {
 
         Vector2 mouse = GetMousePosition();
 
-        // Toggle help
+        // Toggles
         if (IsKeyPressed(KEY_H)) showHelp = !showHelp;
+        if (IsKeyPressed(KEY_E)) showEmissive = !showEmissive;
+        if (IsKeyPressed(KEY_G)) showGlow = !showGlow;
+        if (IsKeyPressed(KEY_F)) showFlashlight = !showFlashlight;
 
         // --- Render the lit layer into the render texture with a circular mask ---
         BeginTextureMode(litRT);
@@ -165,9 +158,6 @@ int main() {
         // 1. Draw dark layer as base
         DrawTexturePro(darkTex, srcRect, dstRect, Vector2{0, 0}, 0, WHITE);
 
-        // 2. Draw emissive (screens always visible)
-        DrawTexturePro(emissiveTex, srcRect, dstRect, Vector2{0, 0}, 0, WHITE);
-
         // 3. Draw the lit image, but multiply its alpha by the light mask
         // Approach: draw lit image with the render texture as alpha
         // We'll use BLEND_MULTIPLIED: lit * mask
@@ -178,7 +168,7 @@ int main() {
 
         // Actually, the simplest Raylib approach:
         // Draw the lit texture tinted by each circle ring (radial light)
-        {
+        if (showFlashlight) {
             int rings = 40;
             for (int i = 0; i < rings; i++) {
                 float t = (float)i / rings;
@@ -209,16 +199,30 @@ int main() {
             }
         }
 
+        // 4. Draw emissive mask (sharp screens, reveals original ship colors)
+        if (showEmissive)
+            DrawTexturePro(emissiveTex, srcRect, dstRect, Vector2{0, 0}, 0, WHITE);
+
+        // 5. Blue glow from lightmap (blurred halos, additive blue)
+        if (showGlow && hasLightmap) {
+            BeginBlendMode(BLEND_ADDITIVE);
+            DrawTexturePro(lightmapTex, srcRect, dstRect, Vector2{0, 0}, 0, Color{80, 120, 255, 200});
+            EndBlendMode();
+        }
+
         // HUD
         DrawFPS(winW - 100, 10);
-        DrawText(TextFormat("Radius: %.0f", flashRadius), 10, 10, 20, GREEN);
+        DrawText(TextFormat("R:%.0f E:%s G:%s F:%s", flashRadius,
+            showEmissive ? "ON" : "off", showGlow ? "ON" : "off",
+            showFlashlight ? "ON" : "off"), 10, 10, 20, GREEN);
 
         if (showHelp) {
             int hy = winH - 80;
-            DrawRectangle(0, hy - 5, 350, 90, Color{0, 0, 0, 180});
+            DrawRectangle(0, hy - 5, 350, 110, Color{0, 0, 0, 180});
             DrawText("Mouse wheel: flashlight radius", 10, hy, 14, LIGHTGRAY);
             DrawText("Arrow keys / WASD: scroll", 10, hy + 18, 14, LIGHTGRAY);
-            DrawText("H: toggle help", 10, hy + 36, 14, LIGHTGRAY);
+            DrawText("E: emissive, G: blue glow, F: flashlight", 10, hy + 36, 14, LIGHTGRAY);
+            DrawText("H: toggle help", 10, hy + 54, 14, LIGHTGRAY);
         }
 
         EndDrawing();
@@ -227,6 +231,7 @@ int main() {
     UnloadTexture(litTex);
     UnloadTexture(darkTex);
     UnloadTexture(emissiveTex);
+    UnloadTexture(lightmapTex);
     UnloadRenderTexture(litRT);
     CloseWindow();
     return 0;
