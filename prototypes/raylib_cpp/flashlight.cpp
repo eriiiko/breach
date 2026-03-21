@@ -6,7 +6,7 @@
 #include <cstdio>
 
 int main() {
-    Image shipImg = LoadImage("../../chatgptSpaceShip1.png");
+    Image shipImg = LoadImage("../../art/ships/chatgptSpaceShip1.png");
     if (shipImg.data == NULL) {
         printf("ERROR: Could not load ship image!\n");
         return 1;
@@ -44,7 +44,7 @@ int main() {
     UnloadImage(darkImg);
 
     // Emissive: load mask file if it exists, otherwise auto-detect
-    Image maskImg = LoadImage("../../emissive_mask.png");
+    Image maskImg = LoadImage("../../art/ships/emissive_mask.png");
     Texture2D emissiveTex;
     if (maskImg.data != NULL) {
         printf("Loaded emissive_mask.png\n");
