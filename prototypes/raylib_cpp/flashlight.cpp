@@ -56,10 +56,11 @@ int main() {
                 float intensity = (float)m.a / 255.0f;
                 if (intensity < 0.01f) continue;
                 Color c = GetImageColor(shipImg, x, y);
+                // Tint toward screen blue: crush red, keep green moderate, boost blue
                 Color ec;
-                ec.r = (unsigned char)(c.r * 1.3f > 255 ? 255 : c.r * 1.3f);
-                ec.g = (unsigned char)(c.g * 1.3f > 255 ? 255 : c.g * 1.3f);
-                ec.b = (unsigned char)(c.b * 1.3f > 255 ? 255 : c.b * 1.3f);
+                ec.r = (unsigned char)(c.r * 0.3f);
+                ec.g = (unsigned char)(c.g * 0.6f);
+                ec.b = (unsigned char)(c.b * 1.5f > 255 ? 255 : c.b * 1.5f);
                 ec.a = (unsigned char)(intensity * 255);
                 ImageDrawPixel(&emImg, x, y, ec);
             }
@@ -73,7 +74,7 @@ int main() {
     }
 
     // --- Emissive lightmap (blurred halos, reveals lit image tinted blue) ---
-    Image lmapImg = LoadImage("../../art/ships/chatgptSpaceShip1-emissive_bloom.png");
+    Image lmapImg = LoadImage("../../art/ships/chatgptSpaceShip1-emissive_bloom_v2.png");
     Texture2D lightmapTex;
     bool hasLightmap = false;
     if (lmapImg.data != NULL) {
@@ -101,6 +102,11 @@ int main() {
     bool showGlow = true;
     bool showFlashlight = true;
 
+    // Live-tweakable bloom parameters
+    float bloomR = 80, bloomG = 120, bloomB = 255;
+    float bloomAlpha = 200;
+    int editChannel = 0; // 0=none, 1=R, 2=G, 3=B, 4=Alpha
+
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
 
@@ -127,6 +133,19 @@ int main() {
         if (IsKeyPressed(KEY_E)) showEmissive = !showEmissive;
         if (IsKeyPressed(KEY_G)) showGlow = !showGlow;
         if (IsKeyPressed(KEY_F)) showFlashlight = !showFlashlight;
+
+        // Bloom color editing: hold key + scroll
+        float wheel = GetMouseWheelMove();
+        if (IsKeyDown(KEY_ONE)) { bloomR += wheel * 10; if (bloomR < 0) bloomR = 0; if (bloomR > 255) bloomR = 255; editChannel = 1; }
+        else if (IsKeyDown(KEY_TWO)) { bloomG += wheel * 10; if (bloomG < 0) bloomG = 0; if (bloomG > 255) bloomG = 255; editChannel = 2; }
+        else if (IsKeyDown(KEY_THREE)) { bloomB += wheel * 10; if (bloomB < 0) bloomB = 0; if (bloomB > 255) bloomB = 255; editChannel = 3; }
+        else if (IsKeyDown(KEY_FOUR)) { bloomAlpha += wheel * 10; if (bloomAlpha < 0) bloomAlpha = 0; if (bloomAlpha > 255) bloomAlpha = 255; editChannel = 4; }
+        else { editChannel = 0; }
+
+        // Print values when P is pressed (so you can copy them)
+        if (IsKeyPressed(KEY_P)) {
+            printf("Bloom color: {%d, %d, %d, %d}\n", (int)bloomR, (int)bloomG, (int)bloomB, (int)bloomAlpha);
+        }
 
         // --- Render the lit layer into the render texture with a circular mask ---
         BeginTextureMode(litRT);
@@ -206,23 +225,33 @@ int main() {
         // 5. Blue glow from lightmap (blurred halos, additive blue)
         if (showGlow && hasLightmap) {
             BeginBlendMode(BLEND_ADDITIVE);
-            DrawTexturePro(lightmapTex, srcRect, dstRect, Vector2{0, 0}, 0, Color{80, 120, 255, 200});
+            DrawTexturePro(lightmapTex, srcRect, dstRect, Vector2{0, 0}, 0,
+                Color{(unsigned char)bloomR, (unsigned char)bloomG, (unsigned char)bloomB, (unsigned char)bloomAlpha});
             EndBlendMode();
         }
 
         // HUD
         DrawFPS(winW - 100, 10);
-        DrawText(TextFormat("R:%.0f E:%s G:%s F:%s", flashRadius,
+        DrawText(TextFormat("E:%s G:%s F:%s",
             showEmissive ? "ON" : "off", showGlow ? "ON" : "off",
             showFlashlight ? "ON" : "off"), 10, 10, 20, GREEN);
+        // Show bloom color with channel highlight
+        DrawText(TextFormat("Bloom: R=%d G=%d B=%d A=%d",
+            (int)bloomR, (int)bloomG, (int)bloomB, (int)bloomAlpha), 10, 32, 16,
+            editChannel == 1 ? RED : editChannel == 2 ? GREEN : editChannel == 3 ? BLUE :
+            editChannel == 4 ? YELLOW : LIGHTGRAY);
+        // Color preview swatch
+        DrawRectangle(350, 30, 30, 20, Color{(unsigned char)bloomR, (unsigned char)bloomG, (unsigned char)bloomB, 255});
 
         if (showHelp) {
             int hy = winH - 80;
-            DrawRectangle(0, hy - 5, 350, 110, Color{0, 0, 0, 180});
+            DrawRectangle(0, hy - 5, 420, 150, Color{0, 0, 0, 180});
             DrawText("Mouse wheel: flashlight radius", 10, hy, 14, LIGHTGRAY);
             DrawText("Arrow keys / WASD: scroll", 10, hy + 18, 14, LIGHTGRAY);
             DrawText("E: emissive, G: blue glow, F: flashlight", 10, hy + 36, 14, LIGHTGRAY);
-            DrawText("H: toggle help", 10, hy + 54, 14, LIGHTGRAY);
+            DrawText("Hold 1/2/3/4 + scroll: bloom R/G/B/Alpha", 10, hy + 54, 14, YELLOW);
+            DrawText("P: print bloom values to console", 10, hy + 72, 14, LIGHTGRAY);
+            DrawText("H: toggle help", 10, hy + 90, 14, LIGHTGRAY);
         }
 
         EndDrawing();
