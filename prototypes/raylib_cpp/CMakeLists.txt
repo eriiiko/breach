@@ -18,7 +18,7 @@ add_executable(breach_raylib_test main.cpp)
 target_link_libraries(breach_raylib_test PRIVATE raylib)
 
 # Flashlight test
-add_executable(flashlight_test flashlight.cpp)
+add_executable(flashlight_test flashlight.cpp ../../cpp/src/raycaster.cpp)
 target_link_libraries(flashlight_test PRIVATE raylib)
 
 # Copy executables after build

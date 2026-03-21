@@ -3,7 +3,11 @@
 // Mouse wheel = flashlight radius, arrow keys = scroll
 
 #include "raylib.h"
+#include "../../cpp/src/raycaster.h"
 #include <cstdio>
+#include <cstring>
+#include <cmath>
+#include <vector>
 
 int main() {
     Image shipImg = LoadImage("../../art/ships/chatgptSpaceShip1.png");
@@ -89,6 +93,8 @@ int main() {
         lightmapTex = LoadTextureFromImage(GenImageColor(1, 1, Color{0, 0, 0, 0}));
     }
 
+    // Keep a CPU copy for raycasted light masking
+    Image shipImgCopy = ImageCopy(shipImg);
     UnloadImage(shipImg);
 
     // Render texture for the lit layer (we draw the lit image here, then mask it)
@@ -106,6 +112,36 @@ int main() {
     float bloomR = 80, bloomG = 120, bloomB = 255;
     float bloomAlpha = 200;
     int editChannel = 0; // 0=none, 1=R, 2=G, 3=B, 4=Alpha
+
+    // --- Generate wall map from ship image ---
+    // Load the ship image again for wall detection
+    Image wallSrcImg = LoadImage("../../art/ships/chatgptSpaceShip1.png");
+    // vector<bool> is special in C++, use vector<char> for .data() access
+    std::vector<char> wallMapRaw(imgW * imgH, 0);
+    std::vector<float> smokeField(imgW * imgH, 0.0f); // no smoke for now
+    std::vector<float> lightMap(imgW * imgH, 0.0f);
+    if (wallSrcImg.data != NULL) {
+        for (int y = 0; y < imgH; y++) {
+            for (int x = 0; x < imgW; x++) {
+                Color c = GetImageColor(wallSrcImg, x, y);
+                float brightness = (c.r + c.g + c.b) / 3.0f;
+                // Dark pixels = walls/hull, bright pixels = floors/objects
+                // Also treat pure black (outside ship) as wall
+                bool isWall = (brightness < 45) || (c.r < 30 && c.g < 30 && c.b < 30);
+                wallMapRaw[y * imgW + x] = isWall ? 1 : 0;
+            }
+        }
+        UnloadImage(wallSrcImg);
+        printf("Wall map generated: %dx%d\n", imgW, imgH);
+    }
+
+    // Convert to bool array for raycaster
+    bool* wallPtr = new bool[imgW * imgH];
+    for (int i = 0; i < imgW * imgH; i++) wallPtr[i] = wallMapRaw[i] != 0;
+
+    Raycaster raycaster;
+    raycaster.smoke_absorption = 0.0f;
+    bool useRaycast = true; // toggle with R
 
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
@@ -133,6 +169,7 @@ int main() {
         if (IsKeyPressed(KEY_E)) showEmissive = !showEmissive;
         if (IsKeyPressed(KEY_G)) showGlow = !showGlow;
         if (IsKeyPressed(KEY_F)) showFlashlight = !showFlashlight;
+        if (IsKeyPressed(KEY_R)) useRaycast = !useRaycast;
 
         // Bloom color editing: hold key + scroll
         float wheel = GetMouseWheelMove();
@@ -177,44 +214,68 @@ int main() {
         // 1. Draw dark layer as base
         DrawTexturePro(darkTex, srcRect, dstRect, Vector2{0, 0}, 0, WHITE);
 
-        // 3. Draw the lit image, but multiply its alpha by the light mask
-        // Approach: draw lit image with the render texture as alpha
-        // We'll use BLEND_MULTIPLIED: lit * mask
-
-        // First draw the lit image into position
-        // Use the light mask's luminance as alpha for the lit layer
-        // Simple approach: draw lit layer, then use the mask to cut it
-
-        // Actually, the simplest Raylib approach:
-        // Draw the lit texture tinted by each circle ring (radial light)
+        // 3. Flashlight — raycasted or circular
         if (showFlashlight) {
-            int rings = 40;
-            for (int i = 0; i < rings; i++) {
-                float t = (float)i / rings;
-                float outerR = flashRadius * (1.0f - t);
-                float innerR = flashRadius * (1.0f - (float)(i + 1) / rings);
-                if (innerR < 0) innerR = 0;
+            if (useRaycast) {
+                // Cast rays from cursor position in image space
+                std::memset(lightMap.data(), 0, imgW * imgH * sizeof(float));
+                float imgMX = mouse.x + offX;
+                float imgMY = mouse.y + offY;
+                LightSource flashlight;
+                flashlight.x = imgMX;
+                flashlight.y = imgMY;
+                flashlight.max_range = flashRadius;
+                flashlight.intensity = 1.5f;
+                flashlight.angle_spread = 2.0f * 3.14159265f;
+                flashlight.falloff = Falloff::UNIFORM;
+                flashlight.jitter = 0.01f;
+                raycaster.cast_source(flashlight, lightMap.data(), smokeField.data(),
+                    wallPtr, imgH, imgW);
 
-                // Alpha fades toward edge
-                float intensity = t; // brighter toward center
-                intensity = intensity * intensity;
-                unsigned char alpha = (unsigned char)(intensity * 255);
+                // Draw lit texture where rays reach, using scissor regions
+                // Group lit pixels into horizontal spans for efficiency
+                int startX = (int)offX, startY = (int)offY;
+                int endY = std::min(startY + winH, imgH);
+                int endX = std::min(startX + winW, imgW);
 
-                // Use scissor mode to only draw within this ring
-                float cx = mouse.x;
-                float cy = mouse.y;
-
-                // Draw a quad covering the ring area, with the lit texture
-                // This is hacky but works without shaders
-                BeginScissorMode(
-                    (int)(cx - outerR), (int)(cy - outerR),
-                    (int)(outerR * 2), (int)(outerR * 2)
-                );
-
-                Color tint = {255, 255, 255, alpha};
-                DrawTexturePro(litTex, srcRect, dstRect, Vector2{0, 0}, 0, tint);
-
-                EndScissorMode();
+                for (int iy = startY; iy < endY; iy++) {
+                    int sy = iy - startY;
+                    // Find spans of lit pixels in this row
+                    int spanStart = -1;
+                    float spanMaxLight = 0;
+                    for (int ix = startX; ix <= endX; ix++) {
+                        float lv = (ix < endX) ? lightMap[iy * imgW + ix] : 0;
+                        if (lv > 0.01f) {
+                            if (spanStart < 0) { spanStart = ix - startX; spanMaxLight = 0; }
+                            if (lv > spanMaxLight) spanMaxLight = lv;
+                        } else if (spanStart >= 0) {
+                            // End of span — draw lit texture for this span
+                            if (spanMaxLight > 1.0f) spanMaxLight = 1.0f;
+                            unsigned char alpha = (unsigned char)(spanMaxLight * 255);
+                            int spanW = (ix - startX) - spanStart;
+                            BeginScissorMode(spanStart, sy, spanW, 1);
+                            DrawTexturePro(litTex, srcRect, dstRect, Vector2{0, 0}, 0,
+                                Color{255, 255, 255, alpha});
+                            EndScissorMode();
+                            spanStart = -1;
+                        }
+                    }
+                }
+            } else {
+                // Fallback: circular rings (old method)
+                int rings = 40;
+                for (int i = 0; i < rings; i++) {
+                    float t = (float)i / rings;
+                    float outerR = flashRadius * (1.0f - t);
+                    float intensity = t * t;
+                    unsigned char alpha = (unsigned char)(intensity * 255);
+                    BeginScissorMode(
+                        (int)(mouse.x - outerR), (int)(mouse.y - outerR),
+                        (int)(outerR * 2), (int)(outerR * 2)
+                    );
+                    DrawTexturePro(litTex, srcRect, dstRect, Vector2{0, 0}, 0, Color{255, 255, 255, alpha});
+                    EndScissorMode();
+                }
             }
         }
 
