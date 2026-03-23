@@ -58,6 +58,42 @@ The political consequences hit immediately: your squad was responsible, and now 
 
 ---
 
+## The Honeypot — Mission/Story Beat Concept
+
+_Added: 2026-03-22 (from brainstorm session)_
+
+Before the assassination mission, or in between missions, the player encounters an
+attractive NPC — charming, interested, seemingly trustworthy. This is her in a different
+role. Not the sniper — the intelligence operative. The seduction happens outside the
+tactical layer: a station hub, a bar, a comms channel.
+
+**Mechanical consequences** (not just cutscene drama):
+- Mission parameters leaked — enemies know you're coming, positions adjusted
+- Squad composition exposed — counters deployed against your loadout
+- A safehouse compromised — lose access to a resupply point or intel cache
+
+**Player culpability**: There should be warning signs the player can choose to ignore.
+The sting hits harder when the player made a choice. Were there inconsistencies in
+her story? Did she ask too-specific questions about the next operation?
+
+**The reveal**: Multiple options —
+- Mid-mission: she trips an alarm from inside, or enemies are waiting exactly where
+  she'd know to place them
+- Post-debrief: something doesn't add up in the timeline
+- Much later: the damage compounds before the player connects the dots
+
+**Recurring threat**: She escapes, creating a nemesis with personal history. Someone
+who knows your squad, your habits, your weaknesses. This feeds the Princes' information
+advantage throughout the campaign.
+
+**Chase Hughes connection**: This character should be written using the influence
+techniques from `narrative_media_systems_update_2026-03-08.md` — pacing and leading
+in dialogue, embedded commands, utilisation of player choices. She should feel
+compelling in ways the player can't quite articulate, which makes the betrayal hit
+harder. See also: trance induction techniques (note in narrative doc).
+
+---
+
 ## Open Threads
 
 - What's her name? (Should feel international, elegant, dangerous)

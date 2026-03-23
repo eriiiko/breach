@@ -216,3 +216,35 @@ The political stage in the game should be designed as a **literal theatre stage*
 ---
 
 *Next steps: These systems need to be integrated with the existing turn/mission structure. The news cycle and notifications could be the primary inter-mission narrative delivery mechanism. The footage system requires decisions about what the "camera" captures during missions and how replay is presented.*
+
+---
+
+## Future: Chase Hughes Trance Induction Techniques
+
+_Added: 2026-03-23_
+
+**Intent**: Erik wants to apply Chase Hughes' trance induction techniques to NPC
+dialogue writing — particularly for the honeypot/femme fatale character
+(see `lore_the_femme_fatale.md`).
+
+**Specific technique to investigate**: From either the Ellipsis Manual or another
+Hughes source — a method of inducing trance through sentences that *sound* meaningful
+but are semantically hollow. The technique involves:
+- Switching the meaning of a word mid-sentence (exploiting double meanings)
+- Sentences that feel like they contain content but are actually jibberish
+- The listener's brain fills in meaning, creating a compliant/receptive state
+
+**Application in Breach**: NPC dialogue that feels compelling in ways the player can't
+articulate. When the honeypot betrayal is revealed, the player replays the conversations
+in their head and realizes the words never actually said anything — they just *felt* like
+they did. This is the emotional payoff of well-crafted manipulation.
+
+**Other applicable techniques** (from the 6 Layers of Reality, already documented above):
+- Pacing and leading — dialogue that matches the player's emotional state then gradually shifts it
+- Embedded commands — instructions hidden in narrative framing ("you find yourself wanting to know...")
+- Trance through rhythm — repetitive briefing structure creating cognitive lull, then pattern break at moment of maximum impact
+- Utilisation — weaving the player's own choices/losses back into dialogue so it feels eerily personal
+
+**TODO**: Re-read the relevant Chase Hughes sections with Breach dialogue writing
+specifically in mind. Create a dialogue design framework based on the techniques.
+This is gold — but needs dedicated reading time to extract properly.
