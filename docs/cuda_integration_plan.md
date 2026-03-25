@@ -140,12 +140,11 @@ computes the update, writes one value.
   1s of simulation, we can run 100 iterations inside one kernel (ping-pong between
   two shared memory buffers) without returning to CPU. This eliminates launch
   overhead for sub-stepping.
-- **Hexagonal grid**: Our grid is axial hex, not Cartesian. The Laplacian has 6
-  neighbors, not 4. The stencil pattern is different but the shared memory tiling
-  approach is the same. Need to work out the hex stencil weights.
+- **Square grid (3×3 fine tiles per unit tile)**: Standard 4-neighbor Laplacian
+  stencil — the textbook GPU case. No hex complications.
 
 **Research before implementing**:
-- [ ] Hex grid Laplacian stencil on GPU — any existing implementations?
+- [ ] Standard 2D stencil implementations on GPU (abundant literature)
 - [ ] Optimal shared memory tile size for our grid dimensions
 - [ ] Multi-step kernel (how many iterations can we fit in shared memory?)
 - [ ] Compare explicit (Euler) vs implicit (Jacobi iteration on GPU) for stability
@@ -241,7 +240,7 @@ use guarantees it. For the raycaster: DDA step calculation uses no sqrt at all
 multiply-adds, no sqrt needed. For distance calculations: `rsqrtf` if needed.
 
 **Where sqrt actually appears in our code**:
-- Distance calculations (hex distance is max/abs, no sqrt!)
+- Distance calculations (Euclidean needs sqrt, but can use rsqrtf)
 - Normal map lighting (normalize light direction — needs rsqrt)
 - Wave equation (wave speed = sqrt(tension/density) — precompute, not per-frame)
 
