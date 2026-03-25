@@ -442,59 +442,82 @@ The effect depends on the ratio of fire intensity to wind strength:
 
 **Note:** Currently fire computes its own wind from `grad(atmosphere)` only. It should use the precomputed wind field (which includes `wave_p`) — to be fixed in the fire overhaul.
 
-### 6.8 Fluid Simulation (NEW — under development)
+### 6.8 Fluid Simulation
 
-**Prototype:** `prototypes/fluid_test.py` — side-by-side comparison of two models on a tilting ship.
+**Decision (2026-03-25):** Pipe + damped velocity model. Shallow water equations
+diverge and are not worth the complexity for our use case.
 
-**Concept:** Water (and later oil) flows over the ship's floor, driven by gravity and ship tilt. Aquariums break, pipes burst, hull takes on water. Fluid pools in low areas, sloshes when the ship rocks, and interacts with gameplay (movement penalty, oil ignites, electrical hazard).
+**Prototypes:** `prototypes/fluid_test.py`, `prototypes/fluid_scenarios.py`
+(aquarium burst, maze flooding), `prototypes/fluid_tilted_ship.py` (Titanic-style
+flooding through sloped corridors). All working and visually convincing.
 
-**Two-layer resolution:**
-- **Flow simulation:** 1/3m tiles (same as physics grid). Water depth, velocity, flow between tiles.
-- **Heightmap for rendering:** Higher resolution (per-pixel or per-subtile). Floor textures generate a heightmap; pixels below the water surface level render as submerged. This means water visually creeps around furniture legs and fills uneven floors — but the flow sim stays coarse and cheap.
+**Concept:** Water (and later oil) flows over the ship's floor, driven by gravity
+and ship tilt. Aquariums break, pipes burst, hull takes on water. Fluid pools in
+low areas, sloshes when the ship rocks, and interacts with gameplay.
+
+**Resolution: pixel-level, driven by height map.**
+
+The pipe model is so cheap (~10 ops per tile, dt = 10-16 ms, 1-2 steps per frame)
+that we can run it at the same resolution as the pixel art textures. This means:
+
+- The **height map** is the single source of truth for floor geometry
+- The **normal map** is generated from the height map (used for lighting)
+- The **water sim** uses the same height map as terrain (used for fluid flow)
+- Water reacts to every detail in the textures — drain grooves, raised thresholds,
+  furniture legs, sloped corridors — automatically
+
+No need for a separate coarse physics grid. At pixel-art resolution (e.g. 320x180),
+that's ~57,600 tiles. At 10 ops x 2 steps = ~1.1M operations per frame — trivial
+on CPU, microseconds on CUDA.
 
 **Terrain + tilt:**
 ```
-effective_height(x, y, t) = terrain[y, x]
+effective_height(x, y, t) = height_map[y, x]
     + tilt_x(t) * (x - center_x) * dx
     + tilt_y(t) * (y - center_y) * dx
 ```
-The ship can tilt on both axes. A sinusoidal tilt creates rocking; progressive tilt from hull damage creates the Titanic effect — water rushes to the low side, sloshing back and forth with inertia.
+Ship tilt on both axes. Sinusoidal tilt = rocking. Progressive tilt from hull
+damage = Titanic effect (water rushes to the low side through corridors and
+doorways). Tested in `fluid_tilted_ship.py` — works beautifully.
 
-**Two candidate models (under evaluation):**
-
-| Model | Prototype status | Stability | Cost | Quality |
-|---|---|---|---|---|
-| **Pipe + damped velocity** | Working, stable | Unconditionally stable | Very cheap (no substeps needed) | Good pooling + gentle sloshing |
-| **Shallow water equations** | Blows up without CFL substeps | Needs CFL-limited dt | More expensive (substeps required) | Physically accurate waves |
-
-**Pipe + damped velocity** (current favorite):
+**The model (pipe + damped velocity):**
 ```
-surface = terrain + tilt_offset + water_depth
+surface = height_map + tilt_offset + water_depth
 flow_velocity += dt * (-g * grad(surface) - damping * flow_velocity)
-water_depth -= dt * div(flow_velocity * water_depth)
+water_depth -= dt * div(flow_velocity * water_depth)   # upwind flux
 ```
-Same architecture as the atmosphere solver but much slower wave speed (~1-5 m/s vs 300 m/s for shockwaves). With dt = 0.08s (one step per game tick), substeps may not even be needed. Mass is conserved. The prototype shows beautiful sloshing on a 30m × 8m ship with ±3° tilt.
+Unconditionally stable with damping. No CFL constraint. Mass conserved.
+dt = 10-16 ms (1-2 steps per 60fps frame). Upwind flux selection prevents
+numerical oscillation.
 
-**Shallow water equations** (alternative, for comparison):
-```
-∂h/∂t + div(h*u) = 0                              # mass conservation
-∂(hu)/∂t + div(hu⊗u + ½gh²I) = -gh * grad(B)     # momentum
-```
-More physically accurate (proper wave propagation, momentum) but requires CFL-limited substeps (`dt ≤ dx / sqrt(g*h)`), which is more expensive. Lax-Friedrichs flux splitting for numerical stability.
+**Why not shallow water equations:** Tested extensively. Lax-Friedrichs flux
+splitting with CFL substeps still diverges at wet/dry boundaries and when
+water piles against walls. The momentum conservation isn't worth the instability
+for our use case. The pipe model produces visually convincing flooding, pooling,
+and flow through corridors — which is all we need.
 
-**Fluid sources:** Aquariums (break wall → water floods out + marine creatures), broken pipes, hull breaches taking on water.
+**Fluid sources:**
+- Aquariums (break wall -> water floods out + marine creatures)
+- Broken pipes (continuous source)
+- Hull breaches taking on water (continuous, pressure-dependent)
 
-**Fluid types:** Water first. Oil planned (flammable — oil + fire = spreading inferno). Types stored as a tag per tile; stacking (oil floats on water) deferred.
+**Fluid types:** Water first. Oil planned (flammable — oil + fire = spreading
+inferno). Types stored as a tag per tile; stacking (oil floats on water) deferred.
 
 **Gameplay effects (planned):**
 - Movement penalty in water (deeper = slower)
-- Oil ignites from fire → spreading fire across floor
+- Oil ignites from fire -> spreading fire across floor
 - Electrical hazard (water + damaged wiring)
 - Blocked corridors if water is deep enough
 
-**Sparse simulation:** Only tiles with fluid need updating. Dry areas are skipped entirely — significant performance win since fluid typically covers a small fraction of the ship.
+**Surface rendering (planned):** Augment the water surface with slow sine waves
+or a low-speed wave equation to give an ocean/ripple look. Wave speed for surface
+waves is sqrt(g * depth) ~ 1-3 m/s (100x cheaper than atmosphere's sound waves).
 
-**Next steps:** Complete the prototype comparison (pipe vs shallow water gif), decide on model, implement in C++ with single-step API matching AtmosphereSolver/SmokeDynamics pattern.
+**Sparse simulation:** Only tiles with fluid need updating. Dry areas skipped.
+
+**Next steps:** Implement in C++ with single-step API matching AtmosphereSolver
+/ SmokeDynamics pattern. Test at pixel resolution with actual game textures.
 
 ### 6.9 Physics Step Orchestration
 
