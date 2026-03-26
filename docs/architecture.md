@@ -519,6 +519,73 @@ waves is sqrt(g * depth) ~ 1-3 m/s (100x cheaper than atmosphere's sound waves).
 **Next steps:** Implement in C++ with single-step API matching AtmosphereSolver
 / SmokeDynamics pattern. Test at pixel resolution with actual game textures.
 
+#### Water–Air Coupling: Volume Displacement
+
+_Design idea (2026-03-26)_
+
+The pipe model already simulates water flow. The atmosphere sim already simulates
+pressure and gas advection. **Coupling them requires almost no new machinery** —
+the water surface defines how much air volume remains in each cell, and pressure
+does the rest.
+
+**Why it works — one-directional coupling:**
+Water is ~1000× denser than air. Water doesn't care about air (gravity and the
+pipe model drive it). Air cares about water (water defines available volume).
+Water sim runs first, air sim reacts. No two-phase solver needed.
+
+**The mechanism:**
+
+Each cell has a total capacity (floor-to-ceiling volume). Water occupies some of it.
+Air gets the rest:
+
+```
+air_volume[i] = cell_capacity[i] - water_depth[i] * cell_area
+P[i] = air_mass[i] * R * T / air_volume[i]    # ideal gas law
+```
+
+Compress air into smaller volume → pressure rises → pressure difference drives
+airflow through openings (doors, holes, ducts). Smoke and gas piggyback on this
+flow as passive scalars — exactly as they already do with the wind field.
+
+**Update schedule integration:**
+
+| Step | What happens |
+|------|-------------|
+| 1 | **Water pipe model** runs (unchanged) — updates `water_depth` per cell |
+| 2 | Compute `air_volume = capacity - water_depth × area` per cell |
+| 3 | Compute air pressure from ideal gas: `P = nRT/V` |
+| 4 | **Atmosphere wave equation** runs, with per-cell pressure influenced by reduced volume |
+| 5 | Gas advection runs as normal, riding the wind field |
+
+Steps 2–3 are the only new work. Everything else already exists.
+
+**Motivating scenario:** Ship tilts → water sloshes to starboard (pipe model) →
+air volume on starboard shrinks → pressure spikes → smoke and gas get shoved to
+port through doors and corridors → crew on port side suddenly gets hit by smoke
+they thought was contained. Emergent gameplay from two systems that already exist.
+
+**Implementation notes:**
+- **No boundary tracking.** The water surface height IS the boundary — the pipe
+  model already computes it per cell per tick.
+- **Total pressure stays consistent.** Air mass is conserved (just redistributes).
+  Water is incompressible. No mass appears or disappears.
+- **Cost is trivial.** Two extra scalar operations per wet cell per tick (volume
+  subtraction + pressure recomputation).
+- **Fully flooded cell:** `water_depth ≥ cell_capacity` → air volume = 0, cell
+  becomes a wall for the atmosphere sim. Physically correct — a flooded corridor
+  blocks airflow.
+- **Interaction with breaches.** Hull breach lets water IN and air OUT. Vacuum
+  relaxation at the breach handles the air side. Water entering via the pipe model
+  raises water depth, further compressing air — creating a brief pressure spike
+  before air escapes. Dramatic and correct.
+
+**Open questions:**
+- Should volume-displacement pressure feed into the wave equation as a source term,
+  or run as a separate pressure-equalization pass? (Probably source term — cleaner.)
+- At what water depth does a cell become impassable to air? Full ceiling, or a
+  threshold (e.g. 90%) for air pockets?
+- Oil floats on water — if implemented, does it seal the surface and trap air below?
+
 ### 6.9 Physics Step Orchestration
 
 All physics advance in `Physics.step(gmap, sim_time)`:

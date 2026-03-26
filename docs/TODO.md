@@ -4,7 +4,37 @@
 
 ---
 
-## Blocking: One Perfect Level
+## NEXT SESSION: Build One Complete Level
+
+_Priority #1 — everything else is blocked on having a real testbed._
+
+**Goal:** One fully layered level (textures, heightmaps, normalmaps) that can run
+all physics systems (atmosphere, smoke, fire, water, water-air coupling). Pick a
+reference ship section and build it end to end.
+
+**Plan:**
+1. **Research tools** — search the internet for the best tools to create layered
+   ship levels. We need tools that can produce: diffuse textures, height maps,
+   normal maps — ideally with layer-based workflows matching the ship build-up
+   described in the graphics docs.
+2. **Choose a workflow** — evaluate candidates, pick a pipeline. Consider:
+   what creates the layers, what exports the maps, how do we scale/align to our
+   pixel grid (may need manual or heterogeneous scaling).
+3. **Choose materials** — decide on surface types (metal hull, deck plating,
+   interior walls, grating, etc.) so the heightmap has real physical detail for
+   the water sim to interact with.
+4. **Build the level** — execute the workflow. Produce all required layers for
+   one complete ship section.
+5. **Integration test** — load it into the engine and run every physics system
+   on it: atmosphere, smoke, fire, fluid sim, water-air coupling. This becomes
+   the permanent testbed.
+
+**Open question:** Pick a specific reference ship/deck type before starting, so
+tool research is grounded in something concrete.
+
+---
+
+## Blocking: One Perfect Level (original notes)
 
 1. **Art assets** — 4 congruent textures: ship hull, interior, skeleton, + normal/height maps. Erik's job, requires graphic design work.
 2. **Normal map shader** — integrate into raylib rendering pipeline. Course notes in `breach_graphics_course.md`. Huge visual upgrade once textures exist.
