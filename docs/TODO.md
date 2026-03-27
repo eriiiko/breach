@@ -34,6 +34,23 @@ tool research is grounded in something concrete.
 
 ---
 
+## Migrate Rendering: pygame → pyray
+
+Replace all pygame rendering with pyray (Python bindings for raylib). Game logic
+stays in Python, only the draw calls change. This unlocks GPU-accelerated
+rendering, normal map shaders, and aligns with the C++ physics / CUDA pipeline.
+
+- [ ] Set up pyray in the main game loop (window, input, frame cycle)
+- [ ] Port tile/map rendering
+- [ ] Port unit sprite rendering
+- [ ] Port UI (orders, phase indicator, debug overlays)
+- [ ] Port physics debug visualization (pressure, smoke, fire colormaps)
+- [ ] Remove pygame dependency entirely
+
+**Prototype exists:** `prototypes/raylib_test.py` already uses pyray.
+
+---
+
 ## Blocking: One Perfect Level (original notes)
 
 1. **Art assets** — 4 congruent textures: ship hull, interior, skeleton, + normal/height maps. Erik's job, requires graphic design work.

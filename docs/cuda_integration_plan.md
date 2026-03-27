@@ -195,7 +195,54 @@ movement — a particle at (3.7, 5.2) reads from interpolated grid positions.
 
 ---
 
-## 7. Data Flow Architecture
+## 7. Unified PhysicsEngine Class
+
+The current C++ code exposes separate classes to Python (`AtmosphereSolver`,
+`SmokeDynamics`, `FireSimulation`, `Raycaster`). Before CUDA migration, unify
+these into a single `PhysicsEngine` class:
+
+- **Owns all shared grids**: atmosphere, wave_p, velocity, smoke, fuel, fire,
+  temperature, light. Allocated once, reused across solvers.
+- **Single `step(dt)` entry point**: orchestrates the correct update order
+  (atmosphere → wind → smoke/fuel advection → fire → raycaster) so Python
+  makes one call per tick instead of four.
+- **Shared Laplacian**: wave equation, atmosphere diffusion, smoke diffusion,
+  and fuel diffusion all use the same discrete 2D Laplacian on the same grid.
+  The PhysicsEngine computes it once and feeds it to each subsystem.
+- **Clean CUDA boundary**: when GPU kernels replace CPU solvers, only the
+  internals of PhysicsEngine change. Python still calls `step(dt)` and reads
+  numpy arrays. Grid data stays on GPU between substeps, copied to CPU once
+  per tick for rendering.
+- Individual solvers become private implementation details (methods or internal
+  objects), not separate Python-visible classes.
+
+This also simplifies the **fuel field** for new weapons (see §6b below).
+
+---
+
+## 7b. Flamethrower, Teargas & Fuel Fields
+
+A flamethrower is modeled as a **directed fuel gas** — a new scalar field that
+burns on contact with oxygen, using systems we already have:
+
+- **Fuel field**: same grid as smoke, same diffusion + advection. Emitted in a
+  cone from the nozzle with a strong directional velocity impulse (inject
+  momentum into the local velocity field, not a separate wind vector).
+- **Combustion rule**: where `fuel > threshold` AND `atmosphere > o2_threshold`
+  → spawn fire, consume O₂, emit smoke. Same logic as existing fire spread.
+- **Emergent behavior for free**: fuel bounces off walls (same wall reflection
+  as smoke), pools in corners, gets sucked through breaches, starves in vacuum.
+  Flamethrower through a doorway fills the room. Zero special-case code.
+- **Teargas**: same fuel-field pattern but with a different effect (damage/slow
+  instead of combustion). Reuses 100% of the diffusion + advection pipeline.
+
+**CUDA implication**: fuel is just another scalar field on the same grid. The
+diffusion + advection kernels run on it identically to smoke — no new kernel
+code, just one more field in the batch.
+
+---
+
+## 8. Data Flow Architecture (GPU-Resident State)
 
 The ideal: **upload once, compute everything on GPU, download once per frame.**
 
@@ -222,7 +269,7 @@ deltas (tile destroyed, light added) and reads the final result for rendering.
 
 ---
 
-## 8. Carmack's Fast Inverse Square Root & Related
+## 9. Carmack's Fast Inverse Square Root & Related
 
 The famous `0x5f3f759df` trick is obsolete on modern GPUs — they have hardware
 `rsqrt()` that's faster and exact. But the thinking applies:
@@ -246,7 +293,7 @@ multiply-adds, no sqrt needed. For distance calculations: `rsqrtf` if needed.
 
 ---
 
-## 9. For Civulator
+## 10. For Civulator
 
 Not the priority, but worth noting:
 
@@ -261,22 +308,36 @@ independent. On GPU, 50 units pathfinding simultaneously = same time as 1.
 
 ---
 
-## 10. Implementation Order
+## 11. Implementation Order
+
+Priority is **what runs most often per frame** — 8 substeps/tick × 12 ticks/s
+= 96 physics passes per second of game time.
 
 1. **Setup**: Install CUDA toolkit, add CUDA to CMakeLists.txt, compile a
    "hello world" kernel to verify the toolchain works.
-2. **Raycaster**: Port existing DDA to CUDA kernel. Benchmark vs CPU.
-3. **Diffusion**: 2D stencil kernel with shared memory tiling. Benchmark.
-4. **Wave equation**: Extend diffusion kernel. Benchmark.
-5. **Smoke**: Semi-Lagrangian advection + diffusion. Benchmark.
-6. **Architecture**: Persistent GPU state, upload deltas, download results.
+2. **PhysicsEngine class**: Unify C++ solvers behind a single `step(dt)`
+   before touching CUDA. This is the migration boundary.
+3. **Diffusion + wave stencil**: Runs 96×/s, textbook GPU kernel. Implement
+   the shared Laplacian as one kernel that services atmosphere, smoke, fuel,
+   and temperature diffusion. Highest bang-for-buck.
+4. **Smoke/fuel advection**: Same frequency, semi-Lagrangian is embarrassingly
+   parallel per cell. Uses GPU texture interpolation hardware.
+5. **Raycaster**: Embarrassingly parallel and gives the most visible result,
+   but runs once per frame (not per substep) so less critical for throughput.
+   Still a big win for enabling many more light sources.
+6. **Persistent GPU state**: Upload tile map once, run all of 3-5 on GPU,
+   download light + smoke + fuel buffers for rendering. This is the payoff.
 
 **At every step**: profile, measure, compare. No premature optimization —
 but when we optimize, do it thoroughly.
 
+**Architecture note**: Python game logic stays in Python (with pyray for
+rendering). C++ PhysicsEngine is the only thing that touches CUDA. Python
+calls `engine.step(dt)` and reads numpy arrays — zero awareness of GPU.
+
 ---
 
-## 11. Resources to Study
+## 12. Resources to Study
 
 - [ ] NVIDIA CUDA Programming Guide (official, comprehensive)
 - [ ] "GPU Gems" chapters on fluid simulation and ray casting
