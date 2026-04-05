@@ -22,6 +22,9 @@ cpp/build/
 # Debug recordings
 debug_*.npz
 
+# AI tools (large repos + models, re-clone with setup script)
+tools/
+
 # OS files
 Thumbs.db
 .DS_Store
