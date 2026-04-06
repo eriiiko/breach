@@ -18,6 +18,13 @@ __pycache__/
 
 # C++ build artifacts
 cpp/build/
+prototypes/raylib_cpp/build/
+*.exe
+
+# Large fluid sim recordings (>50MB GitHub limit)
+prototypes/fluid_pipe_only.gif
+prototypes/fluid_pipe_only_24s.gif
+prototypes/fluid_pipe_only_48s.gif
 
 # Debug recordings
 debug_*.npz
