@@ -354,16 +354,214 @@ All cloned to `breach/tools/`:
 
 ---
 
+## Second Test Results — Hand-Painted Map (2026-04-06)
+
+**Input**: `levels/Ship_walls_mats_test_20260406.png` — a hand-painted ship in
+the Breach material palette (1 pixel = 1 tile, 112×112). Photopea palette file
+provided at `art/breach_materials.aco`.
+
+**Pipeline improvements**:
+- Crop to bounding box of non-air pixels (much better resolution per tile)
+- Auto-pick scale factor to fit ~1024×1024 (SDXL native size)
+- Cropped to 81×41, scaled 12x → 488×968 output (much sharper than first test)
+
+### Run A: Canny ControlNet — `prototypes/level_variations/`
+
+5 variations at strengths 0.7, 1.0, 1.0, 1.0, 1.3 (different seeds).
+
+**What worked:**
+- **Ship outline clearly recognizable** in all 5. The dome at top, central
+  spine, bottom appendage — all visible. The hand-painted layout has cleaner
+  geometry than the random layout, which the AI handled much better.
+- Style is consistent — a top-down sci-fi tile floor look.
+- 5 minutes per variation at 488×968 (down from 10 minutes at 960×600).
+
+**What didn't work:**
+- Interior walls (compartment dividers) still ignored — the model painted
+  decorative elements where the walls were instead of solid walls.
+- Look is more "wooden tavern floor" than spaceship — prompt issue.
+
+### Run B: Segmentation ControlNet (SargeZT/sdxl-controlnet-seg) — `prototypes/seg_variations/`
+
+Same input, segmentation model instead of canny.
+
+**What worked:**
+- **Much better atmospheric quality.** Dark sci-fi corridors, blue accent
+  lighting, looks like an actual top-down spaceship interior. Variation 4
+  (seed 7) is particularly striking.
+- More "dungeon map" / "facility floor plan" style.
+
+**What didn't work:**
+- **Completely ignored the ship outline.** Filled the entire rectangle with
+  rooms; the dome and bottom appendage are gone.
+- Reason: SargeZT was trained on **ADE20K segmentation colors** (a specific
+  150-class palette). Our colors don't map to any of those classes, so the
+  model treats the input as an abstract guide rather than a strict mask.
+
+### Key Insight
+
+We have two complementary failures:
+- Canny respects geometry but produces wrong style
+- Segmentation produces right style but ignores geometry
+
+Both are tools we can fix — see "Pipeline Ideas" below.
+
+---
+
+## Pipeline Ideas (2026-04-06)
+
+The right pipeline is probably not "one big generation" — it's compositional.
+Below are ideas to explore.
+
+### Idea 1: ADE20K Color Mapping
+
+The SargeZT segmentation model expects ADE20K class colors. We can build a
+mapping from Breach materials to the closest semantically-meaningful ADE20K
+classes, then convert our material map before feeding to the model.
+
+| Breach material | Likely ADE20K class | ADE20K class color |
+|---|---|---|
+| Air (interior floor) | floor (#50,#50,#50) | TBD |
+| Hull | wall (#120,#120,#120) | TBD |
+| Wood | wall (different shade) | TBD |
+| Door | door class | TBD |
+| Steel | wall | TBD |
+| Glass | window class | TBD |
+
+Either build this mapping ourselves or just copy the ADE20K palette. Could
+unlock the segmentation model's full power.
+
+### Idea 2: Per-Region Generation (room-by-room)
+
+Instead of generating the whole ship at once, segment it into rectangles and
+generate each separately, then composite:
+
+1. Detect rooms in the material map (flood-fill connected air regions)
+2. For each room: extract bounding rectangle
+3. Generate art for that room with a room-specific prompt:
+   - "cockpit, control panels, captain's chair"
+   - "biology lab, glass tanks, specimens"
+   - "living quarters, bunks, lockers"
+   - "engineering, reactors, pipes"
+4. Generate corridors separately with a corridor-specific prompt
+5. Composite all generations into a single image
+6. Blend seams (feather edges, or use SD inpainting to smooth transitions)
+
+Benefits:
+- Each room can have its own purpose and aesthetic
+- Smaller images = faster generation, more detail per tile
+- Can iterate on individual rooms without regenerating the whole level
+- Naturally produces variety
+
+Challenges:
+- Seam blending between rooms
+- Maintaining consistent global style (use IP-Adapter with fixed reference)
+- Decoration must respect game logic (no walls inside an air region)
+
+### Idea 3: Layer Stitching (floor first, then walls)
+
+The layered architecture (see "Layered Graphics Architecture" above) suggests
+generating each layer independently and stitching them:
+
+1. **Floor layer**: Generate as one large image, OR stitch from per-region
+   floor segments. Floor is mostly continuous and can be more relaxed.
+2. **Wall layer**: Generate separately, possibly using **content-aware Wang
+   tiles** (the technique we discussed earlier). Walls are constrained to the
+   tile grid and need to be pixel-perfect.
+3. **Furniture/decoration layer**: Generated per-region, placed on top of floor.
+4. **Composite**: Walls on top of floor, furniture on top of walls, etc.
+
+This is closer to how a game artist would build a level by hand.
+
+### Idea 4: Wall Mask Post-Processing
+
+Regardless of how we generate the art, we can ALWAYS guarantee wall correctness:
+1. Generate art with any method
+2. Apply the original material map as a hard mask
+3. Where the material map says "wall", overlay a wall texture (or darken)
+4. Where it says "air", show the generated art
+
+This is the safety net — even if the AI invents a corridor where there
+shouldn't be one, the post-processing fixes it. Walls always land on the grid.
+
+### Idea 5: Furniture as Heightmap (Climbable Geometry)
+
+Furniture could be generated as part of the floor art, then a height map
+extracted from it (Laigter does this from grayscale). The game then treats
+anything above a height threshold as "climbable" rather than "passable":
+- Players can climb on tables, crates, beds
+- Aliens use them differently (jumping AI)
+- Fluids pool around them (already supported by the pipe model)
+- Fire spreads over them
+- No need for explicit "this is a table" entities
+
+This is elegant: the same height map that drives the lighting normal map
+ALSO drives the gameplay collision and fluid simulation.
+
+### Idea 6: Iterative Workflow
+
+Whatever pipeline we land on, we need to be able to iterate:
+
+```
+Design layout in Photopea (1px = 1 tile)
+    ↓
+Save material map PNG to levels/
+    ↓
+Run pipeline → preview
+    ↓
+Tweak prompt / regions / seed
+    ↓
+Re-run only the parts that changed
+    ↓
+Final assets baked to game-ready files
+```
+
+The "re-run only what changed" part is critical for iteration speed.
+Per-region generation supports this naturally — change one room, regenerate
+just that room.
+
+### Pipeline Sketch (Combining the Ideas)
+
+```
+1. Designer paints material map in Photopea (palette: art/breach_materials.aco)
+2. Tool detects rectangular regions (rooms) and corridors
+3. Designer can label each region (cockpit, lab, etc.) — optional
+4. For each region:
+     a. Generate floor + furniture art (region-specific prompt + IP-Adapter)
+     b. Extract height map via Laigter
+     c. Cache result, keyed on region content + prompt
+5. Composite floors into one big image (with feathered seams)
+6. Generate or look up wall textures (Content-Aware Wang tiles)
+7. Stamp walls onto the composite (hard mask from material map)
+8. Generate normal maps from final composite via Laigter
+9. Export to game-ready assets:
+     - diffuse.png
+     - normal.png
+     - height.png
+     - material_map.npy (the original layout)
+10. Game loads these and renders
+```
+
+This is a sketch — not implemented yet. Each step has subtleties to work out.
+
+---
+
 ## Open Questions
 
 - **Graphics resolution**: Not yet decided. Higher than physics grid. Needs to
   be chosen — affects ControlNet output size, tile texture size, performance.
   Suggestion: start with 32x32 px per fine tile (3840x2400 for test map) and
   see how it looks.
-- **ControlNet model**: Which ControlNet variant? Segmentation-conditioned is
-  the closest to our material-map-as-input approach. Need to download the right
-  ControlNet checkpoint.
 - **How to handle destroyed walls**: When a wall is destroyed, what's behind it?
   Pre-generate the "revealed" layer? Or dynamically switch to a lower layer?
 - **Art style**: Pixel art leaning, with normal maps for lighting depth. Need
   reference images to lock the style with IP-Adapter.
+- **Region detection**: How do we detect rooms in a material map? Simple
+  flood-fill of air regions, then bounding box? Or smarter rectangle
+  decomposition?
+- **Region labelling**: Should the designer label rooms manually, or should
+  we use an LLM to look at a room's shape/position and suggest a purpose?
+- **Furniture authoring**: Is furniture generated by the AI as part of the
+  room art, or placed manually as separate sprites? Or both?
+- **Seam blending**: How do we blend the edges between independently-generated
+  regions? Feathering? SD inpainting on the seams? Both?

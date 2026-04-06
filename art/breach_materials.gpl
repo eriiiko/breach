@@ -1,0 +1,10 @@
+GIMP Palette
+Name: Breach Materials
+Columns: 6
+#
+  0   0   0	Air (MAT_AIR)
+ 80  80  90	Hull (MAT_HULL)
+ 70  50  30	Wood (MAT_WOOD)
+ 50 120  50	Door (MAT_DOOR)
+140 140 140	Steel (MAT_STEEL)
+ 80 180 200	Glass (MAT_GLASS)

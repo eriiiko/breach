@@ -73,6 +73,7 @@ rendering, normal map shaders, and aligns with the C++ physics / CUDA pipeline.
 
 10. **Remove deprecated solvers** — `wave_solver.cpp` and `atmo_diffusion.cpp` are superseded by `atmosphere_solver.cpp`.
 11. **Fix debug_physics.py** — references `WaveSolver` which doesn't exist anymore (should be `AtmosphereSolver`).
+12. **Flashlight prototype: take CLI args** — `prototypes/raylib_cpp/flashlight.cpp` hardcodes `art/ships/chatgptSpaceShip1.png` and the matching wall mask / normal map / emissive files. Should accept `--ship`, `--walls`, `--normals` arguments so we can test arbitrary levels without overwriting files. Recompile with cmake after changes.
 
 ## Gameplay
 
