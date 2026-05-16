@@ -67,6 +67,7 @@ class TextureSet:
     normal: Optional[rl.Texture] = None
     emissive_mask: Optional[rl.Texture] = None
     emissive_bloom: Optional[rl.Texture] = None
+    background: Optional[rl.Texture] = None
     _loaded: Dict[str, rl.Texture] = field(default_factory=dict)
 
     def unload_all(self) -> None:
@@ -77,6 +78,7 @@ class TextureSet:
         self.normal = None
         self.emissive_mask = None
         self.emissive_bloom = None
+        self.background = None
 
 
 def load_texture_from_path(path: Path) -> rl.Texture:
@@ -104,6 +106,9 @@ def load_level_textures(level) -> TextureSet:
     if level.emissive_bloom_path:
         ts.emissive_bloom = load_texture_from_path(level.emissive_bloom_path)
         ts._loaded["emissive_bloom"] = ts.emissive_bloom
+    if level.background_path:
+        ts.background = load_texture_from_path(level.background_path)
+        ts._loaded["background"] = ts.background
     return ts
 
 

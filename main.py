@@ -259,6 +259,9 @@ def main():
 
             renderer.begin_frame()
             renderer.compose_world(units_marines=[], units_zombies=[])
+            # Render order: background (screen-fixed) -> world RT (the ship,
+            # with vacuum tiles discarded by the shader) -> UI panel.
+            renderer.draw_background_to_screen()
             renderer.blit_world_to_screen()
             renderer.draw_panel(None)
             renderer.end_frame()

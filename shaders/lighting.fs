@@ -24,6 +24,8 @@ in vec4 fragColor;
 uniform sampler2D u_diffuse;
 uniform sampler2D u_normal;
 uniform sampler2D u_light;
+uniform sampler2D u_vacuum;        // physics-res mask, R>0.5 = vacuum tile
+                                   // (don't draw — let background show through)
 
 uniform vec3  u_ambient;
 uniform float u_normal_strength;
@@ -41,6 +43,13 @@ vec3 srgb_to_linear(vec3 c) { return pow(c, vec3(2.2)); }
 vec3 linear_to_srgb(vec3 c) { return pow(c, vec3(1.0 / 2.2)); }
 
 void main() {
+    // Vacuum tiles are not part of the ship — discard so the screen-space
+    // background (stars, void) shows through.
+    float vacuum = texture(u_vacuum, fragTexCoord).r;
+    if (vacuum > 0.5) {
+        discard;
+    }
+
     vec3 diffuse = texture(u_diffuse, fragTexCoord).rgb;
     if (u_srgb_decode == 1) {
         // PNG textures from image editors / AI tools are sRGB-encoded.

@@ -37,6 +37,7 @@ class LevelData:
     emissive_mask_path: Optional[Path] = None
     emissive_bloom_path: Optional[Path] = None
     wall_mask_path: Optional[Path] = None
+    background_path: Optional[Path] = None     # screen-fixed backdrop
     floor_id: int = 0
     raw_toml: dict = field(default_factory=dict)
 
@@ -111,6 +112,7 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
         emissive_mask_path=opt("emissive_mask"),
         emissive_bloom_path=opt("emissive_bloom"),
         wall_mask_path=opt("wall_mask"),
+        background_path=opt("background"),
         floor_id=int(raw.get("floor_id", 0)),
         raw_toml=raw,
     )

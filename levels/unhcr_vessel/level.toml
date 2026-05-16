@@ -14,6 +14,8 @@ tile_size_m = 0.333    # 1/3 meter per tile
 # Art layers
 diffuse = "diffuse.png"           # required: base color art
 normal = "normal.png"             # optional: surface normals for lighting
+background = "background.png"     # optional: screen-fixed backdrop (stars,
+                                  # void, etc.) shown behind vacuum tiles
 # emissive_mask = "emissive_mask.png"  # optional: pixels that glow (omitted)
 # emissive_bloom = "emissive_bloom.png" # optional: blurred halos     (omitted)
 # wall_mask = "wall_mask.png"           # optional: overrides CSV-derived walls (omitted)

@@ -34,6 +34,12 @@ class LightingPass:
 
         # GPU resources
         self.light_tex = core.create_dynamic_rgba_texture(grid_w, grid_h)
+        # Vacuum mask texture (R=255 where vacuum, R=0 elsewhere). Built once
+        # at level load via set_vacuum_mask; used in the shader to discard
+        # vacuum pixels so the screen-space background can show through.
+        self.vacuum_tex = core.create_dynamic_rgba_texture(grid_w, grid_h)
+        rl.set_texture_filter(self.vacuum_tex,
+                              rl.TextureFilter.TEXTURE_FILTER_POINT)
         # Toggle bilinear vs nearest on the light texture
         self.bilinear = True
 
@@ -44,6 +50,7 @@ class LightingPass:
         # Look up uniform locations once. Warn (but continue) on any -1.
         self._loc_normal_tex      = self._lookup("u_normal")
         self._loc_light_tex       = self._lookup("u_light")
+        self._loc_vacuum_tex      = self._lookup("u_vacuum")
         self._loc_ambient         = self._lookup("u_ambient")
         self._loc_normal_strength = self._lookup("u_normal_strength")
         self._loc_use_normal      = self._lookup("u_use_normal")
@@ -96,6 +103,15 @@ class LightingPass:
         val = rl.ffi.new("int[1]", [1 if on else 0])
         rl.set_shader_value(self.shader, self._loc_srgb_decode, val,
                             rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
+
+    def set_vacuum_mask(self, is_vacuum: np.ndarray) -> None:
+        """Upload the vacuum mask once at level load. (H, W) bool array.
+        Vacuum tiles will be discarded by the shader."""
+        packed = np.zeros((is_vacuum.shape[0], is_vacuum.shape[1], 4),
+                          dtype=np.uint8)
+        packed[is_vacuum, 0] = 255
+        packed[..., 3] = 255
+        core.update_rgba_texture(self.vacuum_tex, packed)
 
     def set_light_z(self, z: float):
         """0.0 = light skims along the floor (high relief).
@@ -168,6 +184,7 @@ class LightingPass:
         if normal is not None:
             rl.set_shader_value_texture(self.shader, self._loc_normal_tex, normal)
         rl.set_shader_value_texture(self.shader, self._loc_light_tex, self.light_tex)
+        rl.set_shader_value_texture(self.shader, self._loc_vacuum_tex, self.vacuum_tex)
 
         src = rl.Rectangle(0, 0, float(diffuse.width), float(diffuse.height))
         dst = rl.Rectangle(0, 0, float(world_px_w), float(world_px_h))

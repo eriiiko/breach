@@ -88,6 +88,11 @@ class GameRenderer:
         self.raycaster = breach_physics.Raycaster()
         self.raycaster.smoke_absorption = 0.8
         self.lighting = LightingPass(self.raycaster, cfg.grid_h, cfg.grid_w)
+        # Upload the level's vacuum mask once — the shader uses it to discard
+        # vacuum pixels so the screen-fixed background shows through.
+        from level_loader import materials_from_tilemap
+        _mat, vacuum_mask = materials_from_tilemap(level_data.tilemap)
+        self.lighting.set_vacuum_mask(vacuum_mask)
         self.smoke_overlay = FieldOverlay(cfg.grid_h, cfg.grid_w,
                                           tint=(190, 195, 210), max_alpha=180)
         self.fire_overlay = FireOverlay(cfg.grid_h, cfg.grid_w)
@@ -128,12 +133,17 @@ class GameRenderer:
             core.update_rgba_texture(self.lighting.light_tex, self.lighting.packed)
             self.last_raycast_ms = 0.0
 
-        # Smoke + fire overlays
+        # Smoke + fire overlays. Mask out vacuum tiles — smoke and fire in
+        # vacuum tiles would draw on top of the screen-fixed background.
+        # (Physically: no medium in vacuum.) Use np.where so the mask is
+        # applied as a copy without mutating the simulation state.
         light_mod = self.lighting.light_map if self.show_lighting else None
         if self.show_smoke:
-            self.smoke_overlay.update(gmap.smoke, light_modulation=light_mod)
+            smoke_view = np.where(gmap.is_vacuum, 0.0, gmap.smoke)
+            self.smoke_overlay.update(smoke_view, light_modulation=light_mod)
         if self.show_fire:
-            self.fire_overlay.update(gmap.fire)
+            fire_view = np.where(gmap.is_vacuum, 0.0, gmap.fire)
+            self.fire_overlay.update(fire_view)
 
         self.lighting.set_use_normal(self.show_normal_map)
         self.last_frame_ms = (time.perf_counter() - t_start) * 1000
@@ -159,8 +169,11 @@ class GameRenderer:
         Order: lit ship (diffuse + normal + light), smoke, fire, units,
         waypoints, grid. Each is drawn at world-pixel coordinates inside
         the RT — no camera math; the RT IS the world.
+
+        Clear color is fully transparent so vacuum/breach areas (where the
+        shader discards) show through to the screen-fixed background.
         """
-        self.world.begin(clear_color=(0, 0, 0, 255))
+        self.world.begin(clear_color=(0, 0, 0, 0))
 
         # 1. Lit ship — covers the entire world RT
         if self.textures.diffuse:
@@ -220,6 +233,20 @@ class GameRenderer:
         draw_grid(self.cfg.grid_w, self.cfg.grid_h, wpt, step=3)
 
     # ---- final blit -----------------------------------------------------
+
+    def draw_background_to_screen(self) -> None:
+        """Draw the level's screen-fixed background behind the map area.
+        Stretched to fill the map viewport. Camera-independent."""
+        bg = self.textures.background
+        if bg is None:
+            return
+        src = rl.Rectangle(0, 0, float(bg.width), float(bg.height))
+        dst = rl.Rectangle(
+            float(self.camera.viewport_screen_x),
+            float(self.camera.viewport_screen_y),
+            float(self.cfg.map_px_w), float(self.cfg.map_px_h),
+        )
+        rl.draw_texture_pro(bg, src, dst, rl.Vector2(0, 0), 0.0, rl.WHITE)
 
     def blit_world_to_screen(self) -> None:
         """Single DrawTexturePro from world RT to the map area of the screen.
@@ -364,6 +391,7 @@ class GameRenderer:
         self.textures.unload_all()
         rl.unload_shader(self.lighting.shader)
         rl.unload_texture(self.lighting.light_tex)
+        rl.unload_texture(self.lighting.vacuum_tex)
         rl.unload_texture(self.smoke_overlay.tex)
         rl.unload_texture(self.fire_overlay.tex)
         self.world.unload()

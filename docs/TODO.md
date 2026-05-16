@@ -4,6 +4,20 @@
 
 ---
 
+## Pending — small (background, queue up next session)
+
+- **Smoke at vacuum tiles** — smoke draws over vacuum where stars are
+  meant to show. Zero `gmap.smoke` at vacuum positions before uploading
+  to the overlay texture. ~30 second fix in renderer/game_renderer.py.
+
+- **Scorch marks** — grenades and fire should leave permanent visual
+  marks on the floor/walls where they hit. Persistent darkening, soot,
+  burn patterns. Could be a separate texture (additional layer in
+  compose_world) or baked into the diffuse via a damage map. Design
+  before implementing.
+
+---
+
 ## NEXT SESSION: Build One Complete Level
 
 _Priority #1 — everything else is blocked on having a real testbed._
