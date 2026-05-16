@@ -43,6 +43,10 @@ class Unit:
         self.team = team
         self.is_zombie = (team == 1)
 
+        # Stable integer id, assigned by Simulation.add_unit. -1 means the
+        # unit has not yet been added (constructor usage / tests).
+        self.id = -1
+
         # Position: integer fine-tile (top-left of 3x3 unit block).
         # fxf/fyf are float positions used by the renderer for smooth
         # interpolation between ticks. They stay in sync with fx/fy.

@@ -16,17 +16,26 @@ points (``apply_explosion``, ``add_explosion_smoke``) live in
 :mod:`simulation.physics`; combat just calls into them at detonation
 sites.
 
-Note: ``random`` is process-global today. The Phase 2 Simulation facade
-plumbs a dedicated :class:`numpy.random.Generator` through these
-functions so AI rollouts are reproducible. Flagged in the migration
-plan as one of three nondeterminism sites.
+Determinism — Phase 2:
+    ``fire_burst`` and the explosion-smoke helper accept a
+    :class:`numpy.random.Generator` (``rng`` parameter) for the bullet
+    cone offsets and smoke noise. The Simulation facade owns one
+    :class:`numpy.random.Generator` and plumbs it through these calls
+    on every tick so AI rollouts can be reproduced bit-for-bit. If you
+    invoke these helpers ad-hoc (e.g. from a test), pass an RNG with a
+    known seed — the legacy fallback to process-global ``random`` has
+    been removed.
 """
 from __future__ import annotations
 
 import math
-import random
+
+import numpy as np
 
 from config import CFG
+from simulation.events import (
+    ShotFiredEvent, ExplosionEvent, UnitHitEvent, UnitKilledEvent,
+)
 from simulation.orders import (
     ORDER_GRENADE, ORDER_EXPLOSIVE, ORDER_FIRE, ORDER_MOVE_ATTACK,
 )
@@ -98,13 +107,17 @@ class Shot:
 # ---------------------------------------------------------------------------
 # Blast damage to units
 # ---------------------------------------------------------------------------
-def apply_blast_damage(units, fx, fy, radius, max_damage):
+def apply_blast_damage(units, fx, fy, radius, max_damage, events=None):
     """Damage every unit within ``radius`` of (fx, fy), with linear falloff.
 
     Units below ``CFG.combat.blast_damage_threshold`` damage take none
     (prevents chip damage at the edge of distant blasts). Marks the
     unit dead if HP <= 0. Does NOT set ``killed_by_zombie`` — explosion
     deaths don't convert.
+
+    If ``events`` is a list, append a :class:`UnitHitEvent` per hit and a
+    :class:`UnitKilledEvent` per kill so the renderer can spawn matching
+    visual effects.
     """
     for u in units:
         if not u.alive:
@@ -117,21 +130,33 @@ def apply_blast_damage(units, fx, fy, radius, max_damage):
             damage = int(max_damage * falloff)
             if damage >= CFG.combat.blast_damage_threshold:
                 u.hp -= damage
+                if events is not None:
+                    uid = getattr(u, "id", -1)
+                    events.append(UnitHitEvent(unit_id=uid, damage=damage,
+                                                source="explosion"))
                 if u.hp <= 0:
                     u.alive = False
+                    if events is not None:
+                        uid = getattr(u, "id", -1)
+                        events.append(UnitKilledEvent(unit_id=uid,
+                                                       killed_by="explosion"))
 
 
 # ---------------------------------------------------------------------------
 # Shooting (fire orders + auto-fire)
 # ---------------------------------------------------------------------------
-def process_shooting(gmap, units, tick, shots, real_time):
+def process_shooting(gmap, units, tick, shots, real_time, rng, events=None):
     """Run one tick of shooting for every player unit with a fire order
     (or auto-fire during Move & Attack).
 
     Lifted from ``game.py:_process_shooting``. ``shots`` is a list the
     caller owns; new :class:`Shot` tracer events are appended to it.
     ``real_time`` is the wall-clock seconds since the round started
-    (used as the Shot's spawn time for tracer fade-out).
+    (used as the Shot's spawn time for tracer fade-out). ``rng`` is the
+    simulation's :class:`numpy.random.Generator` (used in
+    :func:`fire_burst` for the per-bullet cone). If ``events`` is a list,
+    :class:`ShotFiredEvent` / :class:`UnitHitEvent` / :class:`UnitKilledEvent`
+    are appended for the renderer to consume.
     """
     tpp = CFG.clock.ticks_per_phase
     phase = tick // tpp
@@ -146,7 +171,8 @@ def process_shooting(gmap, units, tick, shots, real_time):
             # Move & Attack: auto-fire at nearest visible enemy.
             for o in u.orders:
                 if o.order_type == ORDER_MOVE_ATTACK and o.phase == phase:
-                    auto_fire(gmap, units, u, tick, shots, real_time)
+                    auto_fire(gmap, units, u, tick, shots, real_time, rng,
+                              events=events)
                     break
             continue
 
@@ -169,11 +195,11 @@ def process_shooting(gmap, units, tick, shots, real_time):
             continue
 
         fire_burst(gmap, units, u, uc_fx, uc_fy, target_fx, target_fy,
-                   tick, shots, real_time)
+                   tick, shots, real_time, rng, events=events)
         u.last_fire_tick = tick
 
 
-def auto_fire(gmap, units, u, tick, shots, real_time):
+def auto_fire(gmap, units, u, tick, shots, real_time, rng, events=None):
     """Find the nearest visible enemy within rifle range and fire a burst.
 
     Lifted from ``game.py:_auto_fire``. Skipped if still within the burst
@@ -202,18 +228,23 @@ def auto_fire(gmap, units, u, tick, shots, real_time):
     if best_enemy:
         fire_burst(gmap, units, u, uc_fx, uc_fy,
                    best_enemy.center_fx(), best_enemy.center_fy(),
-                   tick, shots, real_time)
+                   tick, shots, real_time, rng, events=events)
         u.last_fire_tick = tick
 
 
-def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2, tick, shots, real_time):
+def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
+               tick, shots, real_time, rng, events=None):
     """Fire a burst of bullets from (fx1, fy1) toward (fx2, fy2).
 
     Lifted from ``game.py:_fire_burst``. Each bullet picks a random
-    angle within the rifle's cone, marches tile-by-tile, stops on
+    angle within the rifle's cone (sampled from ``rng`` — a
+    :class:`numpy.random.Generator`), marches tile-by-tile, stops on
     wall hit or unit hit. Zombies take damage scaled by
     ``CFG.zombie.bullet_damage_multiplier``. Every bullet appends one
-    :class:`Shot` tracer to ``shots`` regardless of hit/miss.
+    :class:`Shot` tracer to ``shots`` regardless of hit/miss; if
+    ``events`` is a list, a matching :class:`ShotFiredEvent` is also
+    appended, plus :class:`UnitHitEvent` / :class:`UnitKilledEvent` on
+    a hit.
     """
     co = CFG.display.coarse
     cone = math.radians(CFG.weapons.rifle.cone_half_angle_degrees)
@@ -222,8 +253,10 @@ def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2, tick, shots, real_time)
     base_angle = math.atan2(fy2 - fy1, fx2 - fx1)
     h, w = gmap.material.shape
 
+    shooter_id = getattr(shooter, "id", -1)
+
     for _ in range(n_bullets):
-        angle = base_angle + random.uniform(-cone, cone)
+        angle = base_angle + float(rng.uniform(-cone, cone))
         rx, ry = float(fx1), float(fy1)
         hit_unit = None
         for _step in range(int(CFG.weapons.rifle.range_tiles)):
@@ -251,21 +284,40 @@ def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2, tick, shots, real_time)
             if hit_unit.team == 1:  # zombie
                 actual_dmg = int(dmg * CFG.zombie.bullet_damage_multiplier)
             hit_unit.hp -= actual_dmg
+            if events is not None:
+                hit_id = getattr(hit_unit, "id", -1)
+                events.append(UnitHitEvent(unit_id=hit_id, damage=actual_dmg,
+                                            source="bullet"))
             if hit_unit.hp <= 0:
                 hit_unit.alive = False
+                if events is not None:
+                    hit_id = getattr(hit_unit, "id", -1)
+                    events.append(UnitKilledEvent(unit_id=hit_id,
+                                                   killed_by="bullet"))
 
         shots.append(Shot(fx1, fy1, rx, ry, real_time))
+        if events is not None:
+            hit_id = getattr(hit_unit, "id", -1) if hit_unit else None
+            events.append(ShotFiredEvent(
+                unit_id=shooter_id,
+                from_tile=(fx1, fy1),
+                to_tile=(rx, ry),
+                hit_target_id=hit_id,
+            ))
 
 
 # ---------------------------------------------------------------------------
 # Door explosives (scheduled detonations at phase boundaries)
 # ---------------------------------------------------------------------------
-def process_door_explosives(gmap, units, slot):
+def process_door_explosives(gmap, units, slot, rng, events=None):
     """Detonate every door-explosive order scheduled for ``slot``.
 
     Lifted from ``game.py:_process_door_explosives``. Called three times
     per round (start P1, between phases, end P2). Skips zombies — only
-    player-issued orders detonate.
+    player-issued orders detonate. ``rng`` flows into
+    :func:`simulation.physics.add_explosion_smoke` for the per-tile
+    noise; ``events`` (optional) collects :class:`ExplosionEvent` and
+    unit hit / kill events for the renderer.
     """
     radius   = CFG.weapons.door_explosive.blast_radius
     pressure = CFG.weapons.door_explosive.pressure
@@ -279,5 +331,9 @@ def process_door_explosives(gmap, units, slot):
             if o.order_type == ORDER_EXPLOSIVE and o.det_slot == slot:
                 fy, fx = o.target_fy, o.target_fx
                 apply_explosion(gmap, fy, fx, radius, pressure, wall_dmg)
-                apply_blast_damage(units, fx, fy, radius, unit_dmg)
-                add_explosion_smoke(gmap, fy, fx, radius)
+                apply_blast_damage(units, fx, fy, radius, unit_dmg,
+                                   events=events)
+                add_explosion_smoke(gmap, fy, fx, radius, rng)
+                if events is not None:
+                    events.append(ExplosionEvent(
+                        pos=(fx, fy), radius=radius, kind="door_explosive"))

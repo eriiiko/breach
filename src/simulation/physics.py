@@ -15,7 +15,6 @@ into this module — they never reach into individual physics fields directly.
 from __future__ import annotations
 
 import math
-import random
 
 from config import CFG
 from simulation.gamemap import MAT_HULL, MAT_WOOD, MAT_DOOR
@@ -74,7 +73,7 @@ def apply_explosion(gmap, fy, fx, radius, pressure, wall_damage):
                                                  0.5 * falloff)
 
 
-def add_explosion_smoke(gmap, fy, fx, radius):
+def add_explosion_smoke(gmap, fy, fx, radius, rng):
     """Deposit noisy smoke into ``gmap.smoke`` over a disc.
 
     Lifted from ``game.py:_add_explosion_smoke`` (lines 1998-2012). Random
@@ -82,10 +81,9 @@ def add_explosion_smoke(gmap, fy, fx, radius):
     inner tiles still saturate at 1.0 — flagged as a known issue in
     docs/architecture.md §6.4.
 
-    Note: ``random.uniform`` here is process-global. The Simulation
-    facade (Phase 2) plumbs a dedicated :class:`numpy.random.Generator`
-    through this function so AI rollouts stay deterministic — flagged
-    in the migration plan.
+    ``rng`` is a :class:`numpy.random.Generator`, owned by the Simulation
+    facade. Sampling through it (instead of process-global ``random``)
+    keeps AI rollouts deterministic from the seed.
     """
     h, w = gmap.material.shape
     for ddy in range(-radius, radius + 1):
@@ -96,6 +94,6 @@ def add_explosion_smoke(gmap, fy, fx, radius):
                 dist = math.sqrt(ddy ** 2 + ddx ** 2)
                 if dist < radius:
                     base = 0.8 * (1 - dist / radius)
-                    noise = random.uniform(0.4, 1.0)
+                    noise = float(rng.uniform(0.4, 1.0))
                     gmap.smoke[ny, nx] = min(
                         1.0, gmap.smoke[ny, nx] + base * noise)
