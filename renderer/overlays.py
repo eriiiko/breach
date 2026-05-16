@@ -33,13 +33,23 @@ class FieldOverlay:
         self.tint_r, self.tint_g, self.tint_b = tint
         self.max_alpha = max_alpha
 
-    def update(self, field: np.ndarray) -> None:
-        """field: (H, W) float in [0,1]. Pack to RGBA, upload."""
+    def update(self, field: np.ndarray, light_modulation: Optional[np.ndarray] = None) -> None:
+        """field: (H, W) float in [0,1]. Pack to RGBA, upload.
+
+        If light_modulation is provided (also (H,W) float in [0,1]), alpha is
+        multiplied by it — smoke only visible where light reaches it.
+        """
         v = np.clip(field, 0.0, 1.0)
         self.packed[..., 0] = self.tint_r
         self.packed[..., 1] = self.tint_g
         self.packed[..., 2] = self.tint_b
-        self.packed[..., 3] = (v * self.max_alpha).astype(np.uint8)
+        if light_modulation is not None:
+            mod = np.clip(light_modulation, 0.0, 1.0)
+            # Add a small ambient floor so smoke isn't completely invisible
+            mod = 0.15 + 0.85 * mod
+            self.packed[..., 3] = (v * mod * self.max_alpha).astype(np.uint8)
+        else:
+            self.packed[..., 3] = (v * self.max_alpha).astype(np.uint8)
         core.update_rgba_texture(self.tex, self.packed)
 
     def draw(self, dst_x: int, dst_y: int, dst_w: int, dst_h: int) -> None:
@@ -54,8 +64,9 @@ class FireOverlay(FieldOverlay):
     def __init__(self, grid_h: int, grid_w: int):
         super().__init__(grid_h, grid_w, tint=(255, 140, 30), max_alpha=220)
 
-    def update(self, fire: np.ndarray) -> None:
-        # Slight color modulation by intensity (hotter = more white)
+    def update(self, fire: np.ndarray, light_modulation: Optional[np.ndarray] = None) -> None:
+        # Slight color modulation by intensity (hotter = more white).
+        # Fire is its own light source — ignore the light_modulation argument.
         v = np.clip(fire, 0.0, 1.0)
         self.packed[..., 0] = 255
         self.packed[..., 1] = (140 + (255 - 140) * v * 0.5).astype(np.uint8)

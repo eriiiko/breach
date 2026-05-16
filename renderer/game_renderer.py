@@ -34,6 +34,9 @@ class RenderConfig:
     fine_tile_px: float    # pixels per tile in the map area
     grid_w: int            # physics grid width in tiles
     grid_h: int            # physics grid height in tiles
+    # Camera offset in tile units. (0,0) means top-left of map is shown.
+    camera_x: float = 0.0
+    camera_y: float = 0.0
 
 
 class GameRenderer:
@@ -86,8 +89,11 @@ class GameRenderer:
         import time
         t_start = time.perf_counter()
 
+        # Use the most recently computed light map for smoke modulation.
+        # This makes smoke only visible where light reaches — much more atmospheric.
+        light_mod = self.lighting.light_map if self.show_lighting else None
         if self.show_smoke:
-            self.smoke_overlay.update(gmap.smoke)
+            self.smoke_overlay.update(gmap.smoke, light_modulation=light_mod)
         if self.show_fire:
             self.fire_overlay.update(gmap.fire)
 
@@ -122,22 +128,62 @@ class GameRenderer:
     # ---- drawing layers -------------------------------------------------
 
     def draw_world(self) -> None:
-        """Lit ship + smoke + fire."""
+        """Lit ship + smoke + fire. Honors camera offset + zoom."""
         cfg = self.cfg
+        # Compute the rectangle of world (in tiles) that the map area shows.
+        # We render the world at zoom = fine_tile_px (px per tile). The visible
+        # tile range is camera..(camera + map_px / fine_tile_px).
+        ft = cfg.fine_tile_px
+        tiles_x = cfg.map_px_w / ft
+        tiles_y = cfg.map_px_h / ft
+
+        # Scissor map area so nothing draws into the panel
+        rl.begin_scissor_mode(0, 0, cfg.map_px_w, cfg.map_px_h)
+
+        # Destination is full map area; source rect in the texture
         if self.textures.diffuse:
-            self.lighting.draw_lit_ship(
-                self.textures.diffuse,
-                self.textures.normal,
-                0, 0, cfg.map_px_w, cfg.map_px_h,
-            )
+            # Diffuse spans 0..grid_w in U (across tile coords).
+            tex = self.textures.diffuse
+            u0 = cfg.camera_x / cfg.grid_w
+            v0 = cfg.camera_y / cfg.grid_h
+            u1 = (cfg.camera_x + tiles_x) / cfg.grid_w
+            v1 = (cfg.camera_y + tiles_y) / cfg.grid_h
+            src = rl.Rectangle(u0 * tex.width, v0 * tex.height,
+                               (u1 - u0) * tex.width, (v1 - v0) * tex.height)
+            dst = rl.Rectangle(0, 0, float(cfg.map_px_w), float(cfg.map_px_h))
+            # Use the lighting shader by drawing the diffuse with shader bound
+            normal = self.textures.normal
+            if normal is not None:
+                rl.set_shader_value_texture(self.lighting.shader,
+                                            self.lighting._loc_normal_tex, normal)
+            rl.set_shader_value_texture(self.lighting.shader,
+                                        self.lighting._loc_light_tex,
+                                        self.lighting.light_tex)
+            rl.begin_shader_mode(self.lighting.shader)
+            rl.draw_texture_pro(tex, src, dst, rl.Vector2(0, 0), 0.0, rl.WHITE)
+            rl.end_shader_mode()
+
+        # Overlays: smoke + fire, sampled with same camera rect
+        def _draw_overlay(field_tex):
+            u0 = cfg.camera_x / cfg.grid_w
+            v0 = cfg.camera_y / cfg.grid_h
+            u1 = (cfg.camera_x + tiles_x) / cfg.grid_w
+            v1 = (cfg.camera_y + tiles_y) / cfg.grid_h
+            src = rl.Rectangle(u0 * field_tex.width, v0 * field_tex.height,
+                               (u1 - u0) * field_tex.width, (v1 - v0) * field_tex.height)
+            dst = rl.Rectangle(0, 0, float(cfg.map_px_w), float(cfg.map_px_h))
+            rl.draw_texture_pro(field_tex, src, dst, rl.Vector2(0, 0), 0.0, rl.WHITE)
+
         if self.show_smoke:
-            self.smoke_overlay.draw(0, 0, cfg.map_px_w, cfg.map_px_h)
+            _draw_overlay(self.smoke_overlay.tex)
         if self.show_fire:
-            self.fire_overlay.draw(0, 0, cfg.map_px_w, cfg.map_px_h)
+            rl.begin_blend_mode(rl.BlendMode.BLEND_ADDITIVE)
+            _draw_overlay(self.fire_overlay.tex)
+            rl.end_blend_mode()
         if self.show_grid:
-            # Scale tile_px so the grid covers the map area
-            ft = cfg.map_px_w / cfg.grid_w
             draw_grid(cfg.grid_w, cfg.grid_h, ft, step=3)
+
+        rl.end_scissor_mode()
 
     def draw_units(self, marines: Sequence, zombies: Sequence) -> None:
         ft = self.cfg.map_px_w / self.cfg.grid_w
@@ -210,13 +256,40 @@ class GameRenderer:
     # ---- coordinate conversions -----------------------------------------
 
     def mouse_to_tile(self) -> Optional[tuple]:
-        """Returns (fx, fy) tile coords under mouse, or None if outside map area."""
+        """Returns (fx, fy) tile coords under mouse (in world space), or None if
+        outside map area. Accounts for camera offset and zoom."""
+        cfg = self.cfg
         mx = rl.get_mouse_x()
         my = rl.get_mouse_y()
-        if mx < 0 or mx >= self.cfg.map_px_w or my < 0 or my >= self.cfg.map_px_h:
+        if mx < 0 or mx >= cfg.map_px_w or my < 0 or my >= cfg.map_px_h:
             return None
-        ft = self.cfg.map_px_w / self.cfg.grid_w
-        return int(mx / ft), int(my / ft)
+        ft = cfg.fine_tile_px
+        tx = int(cfg.camera_x + mx / ft)
+        ty = int(cfg.camera_y + my / ft)
+        return tx, ty
+
+    def update_camera(self, dt: float, pan_speed_tiles_per_s: float = 30.0) -> None:
+        """WASD / arrow keys pan the camera. Clamp to map bounds."""
+        cfg = self.cfg
+        K = rl.KeyboardKey
+        dx = dy = 0.0
+        if rl.is_key_down(K.KEY_A) or rl.is_key_down(K.KEY_LEFT):  dx -= 1
+        if rl.is_key_down(K.KEY_D) or rl.is_key_down(K.KEY_RIGHT): dx += 1
+        if rl.is_key_down(K.KEY_W) or rl.is_key_down(K.KEY_UP):    dy -= 1
+        if rl.is_key_down(K.KEY_S) or rl.is_key_down(K.KEY_DOWN):  dy += 1
+        if dx == 0 and dy == 0:
+            return
+        # Hold shift to pan faster
+        speed = pan_speed_tiles_per_s
+        if rl.is_key_down(K.KEY_LEFT_SHIFT) or rl.is_key_down(K.KEY_RIGHT_SHIFT):
+            speed *= 3
+        cfg.camera_x += dx * speed * dt
+        cfg.camera_y += dy * speed * dt
+        # Clamp so camera doesn't show past the world bounds
+        tiles_x = cfg.map_px_w / cfg.fine_tile_px
+        tiles_y = cfg.map_px_h / cfg.fine_tile_px
+        cfg.camera_x = max(0.0, min(cfg.grid_w - tiles_x, cfg.camera_x))
+        cfg.camera_y = max(0.0, min(cfg.grid_h - tiles_y, cfg.camera_y))
 
     # ---- shutdown -------------------------------------------------------
 

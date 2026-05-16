@@ -32,7 +32,10 @@ out vec4 finalColor;
 void main() {
     vec3 diffuse = texture(u_diffuse, fragTexCoord).rgb;
 
-    // Sample light field (low res, bilinear sampling smooths automatically).
+    // KNOWN BUG: light field is sampled at fragTexCoord (visible-window UV)
+    // instead of world UV. When camera scrolls, light/smoke/fire stay anchored
+    // at world (0,0) instead of following the camera. To be solved properly
+    // via a Camera/coordinate-system design — see todo "camera architecture".
     vec3 light_sample = texture(u_light, fragTexCoord).rgb;
     float intensity = light_sample.r;
     // Decode signed direction: stored as 0.5 + 0.5*x, so (sample - 0.5) * 2.

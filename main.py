@@ -139,25 +139,58 @@ def main():
     gmap = GameMap(level)
     physics = PhysicsRunner()
 
-    # 3. Render config: derive map area pixels from window-friendly dims
-    target_h = 960
-    fine_tile_px = target_h / level.height          # fit height into 960px
-    map_px_w = int(round(level.width * fine_tile_px))
-    map_px_h = int(round(level.height * fine_tile_px))
+    # 3. Render config — 1280x720 landscape window (16:9)
     panel_px_w = 280
+    map_px_w   = 1000      # 1280 - 280
+    map_px_h   = 720
+    fine_tile_px = 24.0    # 24 px per tile zoom-in (50 tiles -> 1200 wide, scrolls horizontally)
     cfg = RenderConfig(
         map_px_w=map_px_w, map_px_h=map_px_h,
         panel_px_w=panel_px_w,
         fine_tile_px=fine_tile_px,
         grid_w=level.width, grid_h=level.height,
+        camera_x=0.0, camera_y=20.0,   # start near the cockpit
     )
     print(f"  Window: {map_px_w + panel_px_w}x{map_px_h} "
-          f"(tile {fine_tile_px:.1f} px)")
+          f"(zoom {fine_tile_px:.1f} px/tile, world {level.width}x{level.height})")
+    print(f"  WASD / arrows pan, Shift = fast pan")
 
     renderer = GameRenderer(level, bp, cfg)
 
-    # Demo: drop some smoke + a tiny fire so we can see overlays
-    gmap.smoke[40:60, 18:32] = 0.4
+    # Dramatic dark scene so lighting is obvious
+    renderer.lighting.set_ambient((0.10, 0.10, 0.13))
+
+    # ----- Demo scene setup -----
+    # 1. Persistent smoke source in mid-ship (re-deposited each tick)
+    SMOKE_SOURCE = (slice(45, 50), slice(22, 28))
+    # 2. Fire intensity bound to wall tiles (won't actually spread without
+    #    flammable walls but the orange overlay is visible)
+    FIRE_SOURCE = (slice(75, 80), slice(22, 28))
+    gmap.flammable[FIRE_SOURCE] = True  # let it persist
+    gmap.fire[FIRE_SOURCE] = 0.8
+    # 3. Pre-breach the hull on the starboard side, mid-ship — air will rush out
+    BREACH = (slice(58, 64), slice(33, 36))
+    gmap.material[BREACH] = 0  # MAT_AIR
+    gmap.is_wall[BREACH] = False
+    gmap.is_vacuum[BREACH] = True
+    gmap.atmosphere[BREACH] = 0.0
+    gmap.obstacles[BREACH] = False
+
+    # Static emergency lights — always-on, scattered through the ship
+    static_lights = []
+    for (lx, ly, color_unused) in [
+        (25, 10, None),   # cockpit
+        (25, 30, None),   # crew quarters
+        (25, 55, None),   # lab
+        (25, 88, None),   # plants
+        (25, 110, None),  # storage
+    ]:
+        src = bp.LightSource()
+        src.x, src.y = float(lx), float(ly)
+        src.max_range = 18
+        src.intensity = 0.9
+        src.angle_spread = 6.283
+        static_lights.append(src)
 
     # 4. Run loop
     last_time = time.perf_counter()
@@ -173,21 +206,25 @@ def main():
             # Step physics at game tick rate
             tick_accum += dt
             while tick_accum >= sim_time_per_tick:
+                # Re-deposit smoke + fire each tick so the demo stays visible
+                gmap.smoke[SMOKE_SOURCE] = np.maximum(gmap.smoke[SMOKE_SOURCE], 0.7)
+                gmap.fire[FIRE_SOURCE]   = np.maximum(gmap.fire[FIRE_SOURCE],   0.8)
                 physics.step(gmap, sim_time_per_tick)
                 tick_accum -= sim_time_per_tick
 
             renderer.poll_toggles()
+            renderer.update_camera(dt)
 
-            # Flashlight at mouse cursor
-            sources = []
+            # Flashlight at mouse cursor + static emergency lights
+            sources = list(static_lights)
             mouse = renderer.mouse_to_tile()
             if mouse is not None:
                 src = bp.LightSource()
                 src.x = float(mouse[0])
                 src.y = float(mouse[1])
-                src.max_range = 20
-                src.intensity = 1.4
-                src.angle_spread = 6.283  # omni for now (cone later)
+                src.max_range = 25
+                src.intensity = 2.5         # brighter than static lights (0.9)
+                src.angle_spread = 6.283
                 sources.append(src)
 
             renderer.upload_state(gmap, light_sources=sources)
