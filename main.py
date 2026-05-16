@@ -9,7 +9,6 @@ Run:
 """
 from __future__ import annotations
 
-import math
 import sys
 import time
 from pathlib import Path
@@ -31,56 +30,7 @@ from level_loader import load as load_level
 from renderer import GameRenderer
 from renderer.game_renderer import RenderConfig
 from simulation.gamemap import GameMap
-
-
-# ---------------------------------------------------------------------------
-# Physics step adapter
-# ---------------------------------------------------------------------------
-
-class PhysicsRunner:
-    """Wraps the C++ atmosphere/smoke/fire solvers."""
-
-    def __init__(self):
-        self.atmos = bp.AtmosphereSolver()
-        self.atmos.c             = float(CFG.physics.wave_c)
-        self.atmos.damping       = float(CFG.physics.wave_damping)
-        self.atmos.transfer      = float(CFG.physics.wave_transfer)
-        self.atmos.d_atm         = float(CFG.physics.d_atm)
-        self.atmos.feed_rate     = float(CFG.physics.source_feed_rate)
-        self.atmos.breach_rate   = float(CFG.physics.breach_rate)
-
-        self.smoke = bp.SmokeDynamics()
-        self.smoke.d_smoke              = float(CFG.physics.d_smoke)
-        self.smoke.advection_rate       = float(CFG.physics.advection_rate)
-        self.smoke.dt_scale             = float(CFG.physics.smoke_dt_scale)
-        self.smoke.wind_diffusion_scale = float(CFG.physics.wind_diffusion_scale)
-
-        self.fire = bp.FireSimulation()
-
-    def step(self, gmap: GameMap, sim_time: float) -> None:
-        """Advance physics by sim_time seconds (default: 1 game tick)."""
-        dt = self.atmos.max_dt()
-        n = max(1, int(math.ceil(sim_time / dt)))
-        dt_actual = sim_time / n
-        for _ in range(n):
-            self.atmos.step(
-                gmap.wave_p, gmap.wave_v, gmap.wave_source, gmap.atmosphere,
-                gmap.wind_x, gmap.wind_y,
-                gmap.obstacles, gmap.is_wall, gmap.is_vacuum,
-                dt_actual,
-            )
-            self.smoke.step(
-                gmap.smoke, gmap.wind_x, gmap.wind_y,
-                gmap.obstacles, gmap.is_wall, gmap.is_vacuum,
-                dt_actual * self.smoke.dt_scale,
-            )
-        # Fire step at full sim_time
-        destroyed = self.fire.step(
-            gmap.fire, gmap.atmosphere, gmap.smoke, gmap.wall_hp,
-            gmap.is_wall, gmap.flammable,
-            sim_time,
-        )
-        return destroyed
+from simulation.physics_runner import PhysicsRunner
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +47,7 @@ def main():
 
     # 2. Build map + physics
     gmap = GameMap(level)
-    physics = PhysicsRunner()
+    physics = PhysicsRunner(bp)
 
     # 3. Render config — borderless windowed at monitor resolution.
     # We need to open a temporary window first so Raylib can query the
