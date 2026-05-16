@@ -313,44 +313,29 @@ class GameMap:
         self.obstacles = np.zeros((fh, fw), dtype=bool)  # walls + units combined
         self.light_map = np.zeros((fh, fw), dtype=np.float32)  # accumulated light intensity
 
-        csv_path = getattr(CFG.display, "tilemap_csv", None)
-        if csv_path:
-            self._load_from_csv(csv_path)
+        level_name = getattr(CFG.display, "level", None)
+        if level_name:
+            self._load_level(level_name)
         else:
             self._build_ship()
         self._update_caches()
 
-    def _load_from_csv(self, path):
-        """Load ship layout from a tilemap CSV.
+    def _load_level(self, level_name):
+        """Load a level via level_loader, populate material grid + vacuum mask."""
+        from level_loader import load as load_level, materials_from_tilemap
+        self.level = load_level(level_name)
 
-        CSV tile values map to materials:
-          0       -> MAT_AIR + is_vacuum (outer space)
-          1       -> MAT_HULL (wall)
-          3       -> MAT_DOOR
-          else    -> MAT_AIR (interior floor; 2,4,5,6,7,8 are room variants)
-        """
-        import os
-        if not os.path.isabs(path):
-            path = os.path.join(os.path.dirname(__file__), path)
-
-        grid = np.loadtxt(path, delimiter=",", dtype=np.int32)
-        fh, fw = grid.shape
-        if (fh, fw) != self.material.shape:
+        if (self.level.height, self.level.width) != self.material.shape:
             raise ValueError(
-                f"CSV shape {grid.shape} doesn't match game grid "
+                f"Level grid {self.level.tilemap.shape} doesn't match game grid "
                 f"{self.material.shape}. Update config.toml display.fine_w/fine_h "
-                f"to match the CSV."
+                f"(or change the level)."
             )
 
-        m = self.material
-        m[:] = MAT_AIR
-        m[grid == 1] = MAT_HULL
-        m[grid == 3] = MAT_DOOR
-        # 0 (outer space) and everything else stays MAT_AIR
-
-        # Mark outer space tiles as vacuum (no atmosphere)
-        self.is_vacuum[grid == 0] = True
-        self.atmosphere[grid == 0] = 0.0
+        mat, vac = materials_from_tilemap(self.level.tilemap)
+        self.material[:] = mat
+        self.is_vacuum[vac] = True
+        self.atmosphere[vac] = 0.0
 
     def _build_ship(self):
         """Build a simple ship layout for testing."""

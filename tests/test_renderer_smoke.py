@@ -1,0 +1,97 @@
+"""Smoke test: open the renderer with a real level, render a few frames with
+a synthetic flashlight at the cursor, and exit cleanly.
+
+Run:
+    C:/Users/steen/anaconda3/python.exe tests/test_renderer_smoke.py
+"""
+from __future__ import annotations
+
+import math
+import os
+import sys
+from pathlib import Path
+
+# Add project root + C++ build dir to import path
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
+
+import numpy as np
+import pyray as rl
+
+import breach_physics as bp
+from level_loader import load as load_level, materials_from_tilemap
+from renderer import GameRenderer
+from renderer.game_renderer import RenderConfig
+
+
+def main():
+    # Load level
+    level = load_level("unhcr_vessel")
+    print(f"Loaded level: {level.name} ({level.width}x{level.height})")
+
+    # Build a minimal gmap-shim with just the fields the renderer needs.
+    class Shim:
+        pass
+    g = Shim()
+    g.smoke = np.zeros((level.height, level.width), dtype=np.float32)
+    g.fire  = np.zeros((level.height, level.width), dtype=np.float32)
+    mat, vac = materials_from_tilemap(level.tilemap)
+    g.material  = mat
+    g.is_vacuum = vac
+    g.is_wall   = np.isin(mat, [1])     # MAT_HULL only for now
+
+    # Drop some smoke and fire for visual test
+    g.smoke[60:80, 20:30] = 0.7
+    g.fire[110:115, 25:30] = 1.0
+
+    # Render config: window size = map area + panel
+    MAP_PX_W = 400          # 8 px per tile horizontally (50 tiles)
+    MAP_PX_H = 960          # 8 px per tile vertically  (120 tiles)
+    PANEL_W  = 280
+    cfg = RenderConfig(
+        map_px_w=MAP_PX_W, map_px_h=MAP_PX_H,
+        panel_px_w=PANEL_W,
+        fine_tile_px=8.0,
+        grid_w=level.width, grid_h=level.height,
+    )
+
+    renderer = GameRenderer(level, bp, cfg)
+    renderer.show_lighting = True
+
+    frames = 0
+    try:
+        while not renderer.should_close():
+            renderer.poll_toggles()
+
+            # Build one moving light source at the mouse
+            sources = []
+            mouse = renderer.mouse_to_tile()
+            if mouse is not None:
+                src = bp.LightSource()
+                src.x = float(mouse[0])
+                src.y = float(mouse[1])
+                src.max_range = 25
+                src.intensity = 1.5
+                src.angle_spread = 6.283  # omni
+                sources.append(src)
+
+            renderer.upload_state(g, light_sources=sources)
+
+            renderer.begin_frame()
+            renderer.draw_world()
+            renderer.draw_units([], [])
+            renderer.draw_panel(None)
+            renderer.end_frame()
+
+            frames += 1
+            if frames >= 600 and "--auto" in sys.argv:
+                break
+    finally:
+        renderer.shutdown()
+
+    print(f"OK — rendered {frames} frames")
+
+
+if __name__ == "__main__":
+    main()

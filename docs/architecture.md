@@ -470,6 +470,16 @@ No need for a separate coarse physics grid. At pixel-art resolution (e.g. 320x18
 that's ~57,600 tiles. At 10 ops x 2 steps = ~1.1M operations per frame — trivial
 on CPU, microseconds on CUDA.
 
+**Cheap high-res trick (experimental, to be evaluated):** Pixel-resolution water
+might still be too expensive on weaker hardware. An alternative: run the pipe
+model at the **physics tile resolution** (one water depth per tile, ~50x120 for
+a typical level). For rendering, each art pixel within a tile compares its
+heightmap value to the tile's water depth — pixels below the water level appear
+submerged, pixels above appear dry. This gives pixel-accurate visual flooding
+without per-pixel simulation cost. The tradeoff: floor detail (drain grooves,
+small ridges) won't channel flow at sub-tile scale, only affect the visual
+boundary. Worth testing before committing to full pixel-res sim.
+
 **Terrain + tilt:**
 ```
 effective_height(x, y, t) = height_map[y, x]

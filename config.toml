@@ -33,7 +33,7 @@ fine_h = 120                  # grid height in fine tiles
 map_w = 40                    # legacy (unused when fine_w set directly)
 map_h = 25                    # legacy (unused when fine_h set directly)
 panel_width = 250
-tilemap_csv = "prototypes/space_ship_gpt_pipeline1/tilemap.csv"
+level = "unhcr_vessel"            # folder under levels/ to load on startup
 
 [materials]
 # Material properties: [hp, reflectivity, absorption, flammable, passable]

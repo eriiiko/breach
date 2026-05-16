@@ -132,6 +132,18 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("dt"));
 
     // --- Raycaster ---
+    py::class_<LightSource>(m, "LightSource")
+        .def(py::init<>())
+        .def_readwrite("x", &LightSource::x)
+        .def_readwrite("y", &LightSource::y)
+        .def_readwrite("max_range", &LightSource::max_range)
+        .def_readwrite("ray_count", &LightSource::ray_count)
+        .def_readwrite("angle_center", &LightSource::angle_center)
+        .def_readwrite("angle_spread", &LightSource::angle_spread)
+        .def_readwrite("intensity", &LightSource::intensity)
+        .def_readwrite("heat", &LightSource::heat)
+        .def_readwrite("jitter", &LightSource::jitter);
+
     py::class_<Raycaster>(m, "Raycaster")
         .def(py::init<>())
         .def_readwrite("smoke_absorption", &Raycaster::smoke_absorption)
@@ -147,5 +159,28 @@ PYBIND11_MODULE(breach_physics, m) {
             auto [wl, h4, w4] = get_2d_const(is_wall);
             self.update_from_fire(lm, f, sm, wl, h, w);
         }, py::arg("light_map"), py::arg("fire"),
-           py::arg("smoke"), py::arg("is_wall"));
+           py::arg("smoke"), py::arg("is_wall"))
+        .def("cast_source_directional",
+             [](const Raycaster& self,
+                const LightSource& src,
+                py::array_t<float> light_map,
+                py::array_t<float> light_dx,
+                py::array_t<float> light_dy,
+                py::array_t<float> smoke,
+                py::array_t<bool>  is_wall) {
+            auto [lm,  h, w]   = get_2d(light_map);
+            auto [ldx, h2, w2] = get_2d(light_dx);
+            auto [ldy, h3, w3] = get_2d(light_dy);
+            auto [sm,  h4, w4] = get_2d_const(smoke);
+            auto [wl,  h5, w5] = get_2d_const(is_wall);
+            self.cast_source_directional(src, lm, ldx, ldy, sm, wl, h, w);
+        }, py::arg("source"), py::arg("light_map"),
+           py::arg("light_dx"), py::arg("light_dy"),
+           py::arg("smoke"), py::arg("is_wall"))
+        .def_static("normalize_directions",
+             [](py::array_t<float> light_dx, py::array_t<float> light_dy) {
+            auto [ldx, h, w]   = get_2d(light_dx);
+            auto [ldy, h2, w2] = get_2d(light_dy);
+            Raycaster::normalize_directions(ldx, ldy, h, w);
+        }, py::arg("light_dx"), py::arg("light_dy"));
 }

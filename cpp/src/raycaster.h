@@ -32,8 +32,9 @@ public:
     float smoke_absorption = 0.8f;
     int   coarse_cluster   = 3;    // cluster fire sources on this grid
 
+    // ---- Legacy API (intensity only) ----
+
     // Cast all fire sources and deposit into light_map.
-    // Collects fire tiles, clusters them, creates LightSources, casts rays.
     void update_from_fire(
         float* light_map,
         const float* fire,
@@ -51,11 +52,54 @@ public:
         int h, int w
     ) const;
 
+    // ---- Directional API (intensity + dominant light direction) ----
+    //
+    // Outputs three fields:
+    //   light_map[i]  = accumulated intensity arriving at tile i
+    //   light_dx[i]   = x component of the (unit) light direction at tile i
+    //   light_dy[i]   = y component of the (unit) light direction at tile i
+    //
+    // light_dx/light_dy are unit-normalized after all rays are cast (vector
+    // magnitude, not by intensity — see expert review notes in
+    // docs/patch_level_pipeline_v1.md). At tiles where opposing rays cancel
+    // (or no rays arrive), direction is (0,0) — the shader must handle that.
+
+    // Cast a single source and accumulate intensity + direction.
+    // Caller is responsible for zeroing the output buffers before calling.
+    // Normalization is NOT performed here — call normalize_directions() once
+    // after all sources have been cast for the frame.
+    void cast_source_directional(
+        const LightSource& src,
+        float* light_map,
+        float* light_dx,
+        float* light_dy,
+        const float* smoke_field,
+        const bool* is_wall,
+        int h, int w
+    ) const;
+
+    // Normalize direction vectors in place: (dx, dy) /= length(dx, dy).
+    // Tiles with zero-length direction stay (0, 0).
+    static void normalize_directions(
+        float* light_dx, float* light_dy,
+        int h, int w
+    );
+
 private:
     void march_ray(
         float sx, float sy, float angle,
         float ray_intensity, float max_range,
         float* light_map,
+        const float* smoke_field,
+        const bool* is_wall,
+        int h, int w
+    ) const;
+
+    void march_ray_directional(
+        float sx, float sy, float angle,
+        float ray_intensity, float max_range,
+        float* light_map,
+        float* light_dx, float* light_dy,
         const float* smoke_field,
         const bool* is_wall,
         int h, int w
