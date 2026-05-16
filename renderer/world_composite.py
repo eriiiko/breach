@@ -63,23 +63,52 @@ class WorldComposite:
                        dst_w: int, dst_h: int) -> None:
         """Blit the camera's visible world rectangle from the RT to the screen.
 
-        Y-FLIP: source rect uses negative height because Raylib RTs are
-        Y-up internally but the screen is Y-down.
+        Letterboxes when the camera's visible region extends past the world
+        bounds (i.e. zoomed too far out). The source rect is clipped to the
+        world; the destination rect is shrunk proportionally and centered so
+        the camera's visible region "frame" still spans dst_w x dst_h on
+        screen — empty space ends up as black bars.
+
+        Y-FLIP: Raylib RTs are Y-up internally. Standard idiom: src.y at
+        the BOTTOM edge of the sampled region (in Y-up coords), negative
+        source height for the flip on draw.
         """
-        # Visible region in world pixels
         x_wpx, y_wpx, w_wpx, h_wpx = camera.visible_world_rect_world_px(
             self.world_px_per_tile
         )
-        # Build source rectangle, flipped vertically.
+
+        # Clip the visible region to the world bounds.
+        clip_x0 = max(0.0, x_wpx)
+        clip_y0 = max(0.0, y_wpx)
+        clip_x1 = min(float(self.world_px_w), x_wpx + w_wpx)
+        clip_y1 = min(float(self.world_px_h), y_wpx + h_wpx)
+        clip_w = max(0.0, clip_x1 - clip_x0)
+        clip_h = max(0.0, clip_y1 - clip_y0)
+
+        if clip_w <= 0 or clip_h <= 0:
+            return  # camera is entirely outside the world; nothing to draw
+
+        # Pixel scale: how many screen pixels per world pixel under this camera
+        scale_x = dst_w / max(w_wpx, 1.0)
+        scale_y = dst_h / max(h_wpx, 1.0)
+        # The dst rectangle for the clipped portion is also clipped and shifted
+        dst_off_x = (clip_x0 - x_wpx) * scale_x
+        dst_off_y = (clip_y0 - y_wpx) * scale_y
+        dst_real_w = clip_w * scale_x
+        dst_real_h = clip_h * scale_y
+
         src = rl.Rectangle(
-            float(x_wpx),
-            float(self.world_px_h - y_wpx),   # Y flip: top of viewport is
-                                              # high in world-RT Y space
-            float(w_wpx),
-            -float(h_wpx),                    # negative height = vertical flip
+            float(clip_x0),
+            float(self.world_px_h - (clip_y0 + clip_h)),
+            float(clip_w),
+            -float(clip_h),
         )
-        dst = rl.Rectangle(float(dst_x), float(dst_y),
-                           float(dst_w), float(dst_h))
+        dst = rl.Rectangle(
+            float(dst_x + dst_off_x),
+            float(dst_y + dst_off_y),
+            float(dst_real_w),
+            float(dst_real_h),
+        )
         rl.draw_texture_pro(self.rt.texture, src, dst,
                             rl.Vector2(0, 0), 0.0, rl.WHITE)
 

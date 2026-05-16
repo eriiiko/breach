@@ -52,14 +52,17 @@ class GameRenderer:
     """Encapsulates pyray drawing. One per game session."""
 
     def __init__(self, level_data, breach_physics, cfg: RenderConfig,
-                 initial_camera: Optional[Camera2D] = None):
+                 initial_camera: Optional[Camera2D] = None,
+                 borderless: bool = False):
         self.level = level_data
         self.bp = breach_physics
         self.cfg = cfg
 
         total_w = cfg.map_px_w + cfg.panel_px_w
         total_h = cfg.map_px_h
-        core.init_window(total_w, total_h, title=f"Breach — {level_data.name}")
+        core.init_window(total_w, total_h,
+                         title=f"Breach — {level_data.name}",
+                         borderless=borderless)
 
         # Camera (default: top-left of world, zoom set to fit width or fixed)
         if initial_camera is not None:
@@ -109,10 +112,12 @@ class GameRenderer:
     def upload_state(self, gmap, light_sources: Optional[List] = None) -> None:
         t_start = time.perf_counter()
 
-        # Light field
+        # Light field. Use `obstacles` (walls + stamped units) so units cast
+        # shadows. Falls back to `is_wall` if obstacles isn't set up.
+        occluders = getattr(gmap, "obstacles", gmap.is_wall)
         if self.show_lighting and light_sources:
             t_ray = time.perf_counter()
-            self.lighting.compute_light_field(light_sources, gmap.smoke, gmap.is_wall)
+            self.lighting.compute_light_field(light_sources, gmap.smoke, occluders)
             self.last_raycast_ms = (time.perf_counter() - t_ray) * 1000
         else:
             self.lighting.light_map.fill(0)
@@ -268,6 +273,10 @@ class GameRenderer:
             color = (180, 255, 180, 255) if on else (140, 140, 140, 255)
             draw_text(label, x, y, 13, color=color)
             y += 16
+        y += 6
+        draw_text(f"[/] Light Z: {self.lighting.light_z:.2f}", x, y, 13,
+                  color=(220, 220, 180, 255))
+        y += 16
 
     # ---- input ----------------------------------------------------------
 
@@ -290,6 +299,31 @@ class GameRenderer:
         if rl.is_key_pressed(rl.KeyboardKey.KEY_G):
             self.srgb_decode = not self.srgb_decode
             self.lighting.set_srgb_decode(self.srgb_decode)
+        # Adjust light Z (vertical incidence) live: [ = lower (grazing),
+        # ] = higher (overhead). 0..1.5 range. Hold Shift for fine steps.
+        shift_held = (rl.is_key_down(rl.KeyboardKey.KEY_LEFT_SHIFT) or
+                      rl.is_key_down(rl.KeyboardKey.KEY_RIGHT_SHIFT))
+        step = 0.02 if shift_held else 0.1
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_LEFT_BRACKET):
+            self.lighting.set_light_z(self.lighting.light_z - step)
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_RIGHT_BRACKET):
+            self.lighting.set_light_z(self.lighting.light_z + step)
+        # Zoom: Q = out, E = in. Also bound to - / + for US keyboards.
+        # Held auto-repeats. Mouse wheel works too.
+        zoom_step = 1.0 if shift_held else 4.0
+        K = rl.KeyboardKey
+        zoom_out = (rl.is_key_down(K.KEY_Q) or rl.is_key_down(K.KEY_MINUS) or
+                    rl.is_key_down(K.KEY_KP_SUBTRACT))
+        zoom_in  = (rl.is_key_down(K.KEY_E) or rl.is_key_down(K.KEY_EQUAL) or
+                    rl.is_key_down(K.KEY_KP_ADD))
+        if zoom_out:
+            self.camera.set_zoom(self.camera.zoom_px_per_tile - zoom_step * 0.4)
+        if zoom_in:
+            self.camera.set_zoom(self.camera.zoom_px_per_tile + zoom_step * 0.4)
+        # Mouse wheel zoom
+        wheel = rl.get_mouse_wheel_move()
+        if wheel != 0:
+            self.camera.set_zoom(self.camera.zoom_px_per_tile + wheel * zoom_step)
 
     def update_camera(self, dt: float, pan_speed_tiles_per_s: float = 30.0) -> None:
         K = rl.KeyboardKey
@@ -308,16 +342,21 @@ class GameRenderer:
     # ---- coordinate conversions -----------------------------------------
 
     def mouse_to_tile(self) -> Optional[tuple]:
-        """Mouse screen position -> integer world tile. None if mouse is
-        outside the camera's viewport. Uses the camera's anchor so multi-
-        camera (security cam, split screen) will route clicks correctly when
-        we have multiple cameras."""
+        """Mouse screen position -> integer world tile (for clicks /
+        snapped placement). None if outside the camera's viewport."""
+        coord = self.mouse_to_tile_float()
+        if coord is None:
+            return None
+        return int(coord[0]), int(coord[1])
+
+    def mouse_to_tile_float(self) -> Optional[tuple]:
+        """Mouse screen position -> fractional world tile (for things like
+        flashlight position where sub-tile precision matters)."""
         mx = rl.get_mouse_x()
         my = rl.get_mouse_y()
         if not self.camera.contains_screen_px(mx, my):
             return None
-        tx, ty = self.camera.screen_px_to_world_tile(mx, my)
-        return int(tx), int(ty)
+        return self.camera.screen_px_to_world_tile(mx, my)
 
     # ---- shutdown -------------------------------------------------------
 

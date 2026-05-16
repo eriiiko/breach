@@ -49,12 +49,17 @@ class LightingPass:
         self._loc_use_normal      = self._lookup("u_use_normal")
         self._loc_normal_y_sign   = self._lookup("u_normal_y_sign")
         self._loc_srgb_decode     = self._lookup("u_srgb_decode")
+        self._loc_light_z         = self._lookup("u_light_z")
+
+        # Cached state (for HUD display + bound checks)
+        self.light_z = 0.5            # default — overhead lamp feel
 
         # Default uniforms
         self.set_ambient((0.18, 0.18, 0.22))
         self.set_normal_strength(1.0)
         self.set_normal_y_sign(1.0)   # OpenGL convention; flip to -1 if needed
         self.set_srgb_decode(True)    # PNG diffuse art is sRGB
+        self.set_light_z(self.light_z)
 
     # ---- uniform setters -----------------------------------------------
 
@@ -92,6 +97,16 @@ class LightingPass:
         rl.set_shader_value(self.shader, self._loc_srgb_decode, val,
                             rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
 
+    def set_light_z(self, z: float):
+        """0.0 = light skims along the floor (high relief).
+        0.5 = standing-height / overhead lamp feel.
+        1.0 = light from directly above (flat shading)."""
+        z = max(0.0, min(1.5, float(z)))
+        self.light_z = z
+        val = rl.ffi.new("float[1]", [z])
+        rl.set_shader_value(self.shader, self._loc_light_z, val,
+                            rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT)
+
     def toggle_bilinear(self):
         self.bilinear = not self.bilinear
         filt = (rl.TextureFilter.TEXTURE_FILTER_BILINEAR
@@ -100,8 +115,14 @@ class LightingPass:
 
     # ---- light field computation ---------------------------------------
 
-    def compute_light_field(self, sources: List, smoke: np.ndarray, is_wall: np.ndarray) -> None:
-        """Cast all sources, accumulate intensity + direction, normalize, pack."""
+    def compute_light_field(self, sources: List, smoke: np.ndarray,
+                            occluders: np.ndarray) -> None:
+        """Cast all sources, accumulate intensity + direction, normalize, pack.
+
+        `occluders` is a bool mask that blocks rays. Pass `gmap.obstacles`
+        (walls + stamped units) so units cast shadows, OR pass `gmap.is_wall`
+        if you only want static geometry to occlude.
+        """
         self.light_map.fill(0)
         self.light_dx.fill(0)
         self.light_dy.fill(0)
@@ -109,7 +130,7 @@ class LightingPass:
         for src in sources:
             self.raycaster.cast_source_directional(
                 src, self.light_map, self.light_dx, self.light_dy,
-                smoke, is_wall,
+                smoke, occluders,
             )
         # Normalize direction to unit vectors (vector-magnitude normalization).
         # See expert review notes in docs/patch_level_pipeline_v1.md.

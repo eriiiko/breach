@@ -30,6 +30,8 @@ uniform float u_normal_strength;
 uniform int   u_use_normal;
 uniform float u_normal_y_sign;
 uniform int   u_srgb_decode;
+uniform float u_light_z;           // 0..1: 0 = grazing horizontal, 1 = straight down
+                                   // (more grazing = stronger normal-map relief)
 
 out vec4 finalColor;
 
@@ -65,9 +67,11 @@ void main() {
         N = mix(vec3(0.0, 0.0, 1.0), N, u_normal_strength);
         N = normalize(N);
 
-        // Construct 3D light direction. Z is a placeholder (0.5 for v1).
-        // See patch_level_pipeline_v1.md "Expert review feedback".
-        vec3 L = normalize(vec3(light_dir_2d, 0.5));
+        // Construct 3D light direction. Z controlled live via u_light_z:
+        //   small Z (~0.1)  = light skims along the floor → high relief
+        //   medium Z (~0.5) = standing height / overhead lamp feel
+        //   large Z (~1.0)  = light from directly above → flat shading
+        vec3 L = normalize(vec3(light_dir_2d, u_light_z));
 
         ndotl = max(dot(N, L), 0.0);
     }

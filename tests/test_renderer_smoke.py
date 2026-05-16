@@ -40,6 +40,7 @@ def main():
     g.material  = mat
     g.is_vacuum = vac
     g.is_wall   = np.isin(mat, [1])     # MAT_HULL only for now
+    g.obstacles = g.is_wall.copy()     # no units in this test
 
     # Drop some smoke and fire for visual test
     g.smoke[60:80, 20:30] = 0.7

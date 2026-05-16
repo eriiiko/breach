@@ -18,17 +18,33 @@ import pyray as rl
 # Window / context
 # ----------------------------------------------------------------------------
 
-def init_window(width: int, height: int, title: str = "Breach") -> None:
-    """Open the application window. Idempotent: safe to call once at startup.
+def init_window(width: int, height: int, title: str = "Breach",
+                borderless: bool = False) -> None:
+    """Open the application window.
 
-    Window is fixed-size in v1. RenderConfig + Camera2D do not yet
-    respond to window resize; making them do so cleanly is on the roadmap.
+    If borderless=True, set up a borderless-windowed-mode window covering the
+    user's primary monitor (no decorations, fast alt-tab, taskbar may show).
+    The supplied width/height are ignored in that case; the actual size comes
+    from the monitor.
+
+    Window is fixed-size in v1 — no resize handling. The borderless option
+    sidesteps the resize problem by matching the monitor exactly.
     """
     if rl.is_window_ready():
         return
-    rl.set_config_flags(rl.ConfigFlags.FLAG_VSYNC_HINT)
+    flags = rl.ConfigFlags.FLAG_VSYNC_HINT
+    if borderless:
+        flags |= rl.ConfigFlags.FLAG_BORDERLESS_WINDOWED_MODE
+    rl.set_config_flags(flags)
     rl.init_window(width, height, title)
     rl.set_target_fps(60)
+
+
+def get_monitor_size() -> tuple:
+    """Return (width, height) of the current monitor in pixels. Call after
+    init_window so Raylib knows which monitor we're on."""
+    mon = rl.get_current_monitor()
+    return rl.get_monitor_width(mon), rl.get_monitor_height(mon)
 
 
 def shutdown() -> None:

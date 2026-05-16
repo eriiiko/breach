@@ -139,29 +139,48 @@ def main():
     gmap = GameMap(level)
     physics = PhysicsRunner()
 
-    # 3. Render config — 1280x720 landscape window (16:9)
+    # 3. Render config — borderless windowed at monitor resolution.
+    # We need to open a temporary window first so Raylib can query the
+    # monitor; then we resize. Simpler: open borderless directly with a
+    # placeholder size; Raylib's borderless mode picks up the monitor.
+    from renderer.camera import Camera2D
+    from renderer import core as rcore
+
+    BORDERLESS = "--windowed" not in sys.argv
+    if BORDERLESS:
+        # Will be sized to monitor by Raylib; supply hints anyway.
+        screen_w, screen_h = 1920, 1080
+    else:
+        screen_w, screen_h = 1280, 720
+
     panel_px_w = 280
-    map_px_w   = 1000      # 1280 - 280
-    map_px_h   = 720
+    map_px_w   = screen_w - panel_px_w
+    map_px_h   = screen_h
     cfg = RenderConfig(
         map_px_w=map_px_w, map_px_h=map_px_h,
         panel_px_w=panel_px_w,
         grid_w=level.width, grid_h=level.height,
-        world_px_per_tile=24.0,        # world RT resolution
+        world_px_per_tile=24.0,
     )
-    print(f"  Window: {map_px_w + panel_px_w}x{map_px_h} "
-          f"(world RT {int(level.width*cfg.world_px_per_tile)}x"
+    print(f"  Window: {screen_w}x{screen_h} "
+          f"(borderless={BORDERLESS}, world RT "
+          f"{int(level.width*cfg.world_px_per_tile)}x"
           f"{int(level.height*cfg.world_px_per_tile)})")
-    print(f"  WASD / arrows pan, Shift = fast pan")
+    print(f"  WASD/arrows pan | Q/E or mousewheel zoom | [/] light Z | F1-F5,B,G,H toggles")
 
-    from renderer.camera import Camera2D
+    # Zoom: fit the world WIDTH in the viewport (vertical scrolling for tall
+    # ships). Bounded to keep tiles readable.
+    fit_w_zoom = map_px_w / max(level.width, 1)
+    initial_zoom = max(20.0, min(64.0, fit_w_zoom))
     initial_camera = Camera2D(
-        pos_tile_x=0.0, pos_tile_y=20.0,    # start near the cockpit
-        zoom_px_per_tile=24.0,              # default zoom
+        pos_tile_x=0.0, pos_tile_y=0.0,
+        zoom_px_per_tile=initial_zoom,
         viewport_px_w=map_px_w, viewport_px_h=map_px_h,
         world_size_tile_w=level.width, world_size_tile_h=level.height,
     )
-    renderer = GameRenderer(level, bp, cfg, initial_camera=initial_camera)
+    renderer = GameRenderer(level, bp, cfg,
+                            initial_camera=initial_camera,
+                            borderless=BORDERLESS)
 
     # Dramatic dark scene so lighting is obvious
     renderer.lighting.set_ambient((0.10, 0.10, 0.13))
@@ -221,15 +240,18 @@ def main():
             renderer.poll_toggles()
             renderer.update_camera(dt)
 
-            # Flashlight at mouse cursor + static emergency lights
+            # Flashlight at mouse cursor + static emergency lights.
+            # Use the FRACTIONAL cursor coordinate so the brightness peak
+            # appears exactly under the cursor (not half-a-tile south of it
+            # due to bilinear texel-center sampling).
             sources = list(static_lights)
-            mouse = renderer.mouse_to_tile()
-            if mouse is not None:
+            mouse_f = renderer.mouse_to_tile_float()
+            if mouse_f is not None:
                 src = bp.LightSource()
-                src.x = float(mouse[0])
-                src.y = float(mouse[1])
+                src.x = float(mouse_f[0])
+                src.y = float(mouse_f[1])
                 src.max_range = 25
-                src.intensity = 2.5         # brighter than static lights (0.9)
+                src.intensity = 2.5
                 src.angle_spread = 6.283
                 sources.append(src)
 

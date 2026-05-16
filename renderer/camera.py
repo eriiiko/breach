@@ -90,6 +90,10 @@ class Camera2D:
         self.clamp_to_world()
 
     def set_zoom(self, zoom_px_per_tile: float) -> None:
+        """Set zoom level. Hard floor of 1 spx/tile so we don't go crazy.
+        Below min_zoom_to_fit_width the world becomes narrower than the
+        viewport — the renderer should letterbox (black bars) rather than
+        stretch the edge."""
         self.zoom_px_per_tile = max(1.0, zoom_px_per_tile)
         self.clamp_to_world()
 
@@ -107,9 +111,11 @@ class Camera2D:
         self.pos_tile_x = max(0.0, min(max_x, self.pos_tile_x))
         self.pos_tile_y = max(0.0, min(max_y, self.pos_tile_y))
 
-    def min_zoom_to_fit(self) -> float:
-        """Smallest zoom (spx/tile) that still keeps the world filling the
-        viewport in BOTH dimensions. Below this, parts of the viewport will
-        be outside the world (and a stretched edge sample if not letterboxed)."""
-        return max(self.viewport_px_w / self.world_size_tile_w,
-                   self.viewport_px_h / self.world_size_tile_h)
+    def min_zoom_to_fit_width(self) -> float:
+        """Smallest zoom that keeps the world wider than the viewport
+        horizontally (so the user always scrolls left/right at the edges
+        rather than seeing letterbox / edge-stretch)."""
+        return self.viewport_px_w / max(1, self.world_size_tile_w)
+
+    def min_zoom_to_fit_height(self) -> float:
+        return self.viewport_px_h / max(1, self.world_size_tile_h)
