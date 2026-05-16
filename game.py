@@ -313,8 +313,44 @@ class GameMap:
         self.obstacles = np.zeros((fh, fw), dtype=bool)  # walls + units combined
         self.light_map = np.zeros((fh, fw), dtype=np.float32)  # accumulated light intensity
 
-        self._build_ship()
+        csv_path = getattr(CFG.display, "tilemap_csv", None)
+        if csv_path:
+            self._load_from_csv(csv_path)
+        else:
+            self._build_ship()
         self._update_caches()
+
+    def _load_from_csv(self, path):
+        """Load ship layout from a tilemap CSV.
+
+        CSV tile values map to materials:
+          0       -> MAT_AIR + is_vacuum (outer space)
+          1       -> MAT_HULL (wall)
+          3       -> MAT_DOOR
+          else    -> MAT_AIR (interior floor; 2,4,5,6,7,8 are room variants)
+        """
+        import os
+        if not os.path.isabs(path):
+            path = os.path.join(os.path.dirname(__file__), path)
+
+        grid = np.loadtxt(path, delimiter=",", dtype=np.int32)
+        fh, fw = grid.shape
+        if (fh, fw) != self.material.shape:
+            raise ValueError(
+                f"CSV shape {grid.shape} doesn't match game grid "
+                f"{self.material.shape}. Update config.toml display.fine_w/fine_h "
+                f"to match the CSV."
+            )
+
+        m = self.material
+        m[:] = MAT_AIR
+        m[grid == 1] = MAT_HULL
+        m[grid == 3] = MAT_DOOR
+        # 0 (outer space) and everything else stays MAT_AIR
+
+        # Mark outer space tiles as vacuum (no atmosphere)
+        self.is_vacuum[grid == 0] = True
+        self.atmosphere[grid == 0] = 0.0
 
     def _build_ship(self):
         """Build a simple ship layout for testing."""
@@ -2048,28 +2084,25 @@ class Game:
 
     def _draw_map(self):
         ft = CFG.display.fine_tile_px
-        co = CFG.display.coarse
         co_px = CFG.display.coarse_px
-        mw = CFG.display.map_w
-        mh = CFG.display.map_h
         fw = CFG.display.fine_w
         fh = CFG.display.fine_h
 
-        for cy in range(mh):
-            for cx in range(mw):
-                px = cx * co_px
-                py = cy * co_px
-                fy, fx = cy * co, cx * co
-                mat = self.gmap.material[fy:fy+co, fx:fx+co]
-                if np.any(mat == MAT_HULL):
+        # Draw at fine-tile resolution (one tile = one CSV cell)
+        for fy in range(fh):
+            for fx in range(fw):
+                m = self.gmap.material[fy, fx]
+                if self.gmap.is_vacuum[fy, fx]:
+                    color = (0, 0, 0)  # outer space
+                elif m == MAT_HULL:
                     color = COL_WALL_HULL
-                elif np.any(mat == MAT_WOOD):
+                elif m == MAT_WOOD:
                     color = COL_WALL_WOOD
-                elif np.any(mat == MAT_DOOR):
+                elif m == MAT_DOOR:
                     color = MATERIAL_COLORS[MAT_DOOR]
                 else:
                     color = COL_FLOOR
-                pygame.draw.rect(self.screen, color, (px, py, co_px, co_px))
+                pygame.draw.rect(self.screen, color, (fx * ft, fy * ft, ft, ft))
 
         for x in range(0, fw * ft, co_px):
             pygame.draw.line(self.screen, COL_GRID, (x, 0), (x, fh * ft), 1)
