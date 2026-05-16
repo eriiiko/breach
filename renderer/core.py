@@ -19,10 +19,14 @@ import pyray as rl
 # ----------------------------------------------------------------------------
 
 def init_window(width: int, height: int, title: str = "Breach") -> None:
-    """Open the application window. Idempotent: safe to call once at startup."""
+    """Open the application window. Idempotent: safe to call once at startup.
+
+    Window is fixed-size in v1. RenderConfig + Camera2D do not yet
+    respond to window resize; making them do so cleanly is on the roadmap.
+    """
     if rl.is_window_ready():
         return
-    rl.set_config_flags(rl.ConfigFlags.FLAG_WINDOW_RESIZABLE | rl.ConfigFlags.FLAG_VSYNC_HINT)
+    rl.set_config_flags(rl.ConfigFlags.FLAG_VSYNC_HINT)
     rl.init_window(width, height, title)
     rl.set_target_fps(60)
 

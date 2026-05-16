@@ -143,19 +143,25 @@ def main():
     panel_px_w = 280
     map_px_w   = 1000      # 1280 - 280
     map_px_h   = 720
-    fine_tile_px = 24.0    # 24 px per tile zoom-in (50 tiles -> 1200 wide, scrolls horizontally)
     cfg = RenderConfig(
         map_px_w=map_px_w, map_px_h=map_px_h,
         panel_px_w=panel_px_w,
-        fine_tile_px=fine_tile_px,
         grid_w=level.width, grid_h=level.height,
-        camera_x=0.0, camera_y=20.0,   # start near the cockpit
+        world_px_per_tile=24.0,        # world RT resolution
     )
     print(f"  Window: {map_px_w + panel_px_w}x{map_px_h} "
-          f"(zoom {fine_tile_px:.1f} px/tile, world {level.width}x{level.height})")
+          f"(world RT {int(level.width*cfg.world_px_per_tile)}x"
+          f"{int(level.height*cfg.world_px_per_tile)})")
     print(f"  WASD / arrows pan, Shift = fast pan")
 
-    renderer = GameRenderer(level, bp, cfg)
+    from renderer.camera import Camera2D
+    initial_camera = Camera2D(
+        pos_tile_x=0.0, pos_tile_y=20.0,    # start near the cockpit
+        zoom_px_per_tile=24.0,              # default zoom
+        viewport_px_w=map_px_w, viewport_px_h=map_px_h,
+        world_size_tile_w=level.width, world_size_tile_h=level.height,
+    )
+    renderer = GameRenderer(level, bp, cfg, initial_camera=initial_camera)
 
     # Dramatic dark scene so lighting is obvious
     renderer.lighting.set_ambient((0.10, 0.10, 0.13))
@@ -230,8 +236,8 @@ def main():
             renderer.upload_state(gmap, light_sources=sources)
 
             renderer.begin_frame()
-            renderer.draw_world()
-            renderer.draw_units([], [])
+            renderer.compose_world(units_marines=[], units_zombies=[])
+            renderer.blit_world_to_screen()
             renderer.draw_panel(None)
             renderer.end_frame()
     finally:

@@ -13,6 +13,7 @@ import numpy as np
 import pyray as rl
 
 from . import core
+from .coords import tile_to_world_px
 
 
 # ----------------------------------------------------------------------------
@@ -84,37 +85,53 @@ class FireOverlay(FieldOverlay):
 # Units, orders, HUD
 # ----------------------------------------------------------------------------
 
-def draw_unit(fx: float, fy: float, ft: float, color, label: str = "", radius_tiles: float = 1.5) -> None:
-    """Draw a unit at integer tile position (fx, fy) with radius in tile units.
-    ft is fine_tile_px (pixels per tile in the rendered map area).
+def draw_unit(x_tile: float, y_tile: float, world_px_per_tile: float,
+              color, label: str = "", radius_tiles: float = 1.5,
+              footprint_tiles: int = 3) -> None:
+    """Draw a unit centered on its footprint, in world-pixel coordinates.
+
+    x_tile, y_tile = top-left of the unit's footprint in world-tile coords.
+    world_px_per_tile = how many world pixels per tile (set by WorldComposite).
+    footprint_tiles = side length of the unit's tile footprint (3 for marines).
+    radius_tiles = visual radius in tile units.
     """
-    cx = (fx + 1.5) * ft  # 3x3 footprint, center at +1.5 tiles
-    cy = (fy + 1.5) * ft
-    r = radius_tiles * ft
-    rl.draw_circle(int(cx), int(cy), r, rl.Color(*color))
+    half = footprint_tiles * 0.5
+    cx_wpx = tile_to_world_px(x_tile + half, world_px_per_tile)
+    cy_wpx = tile_to_world_px(y_tile + half, world_px_per_tile)
+    r_wpx  = radius_tiles * world_px_per_tile
+    rl.draw_circle(int(cx_wpx), int(cy_wpx), r_wpx, rl.Color(*color))
     if label:
-        rl.draw_text(label, int(cx - r), int(cy - r - 14), 12, rl.WHITE)
+        rl.draw_text(label, int(cx_wpx - r_wpx),
+                     int(cy_wpx - r_wpx - 14), 12, rl.WHITE)
 
 
-def draw_waypoint_line(p1, p2, ft: float, color=(60, 200, 255, 200)) -> None:
-    """p1, p2 are (fx, fy) tile coords. Draws a line between them in map space."""
-    x1 = (p1[0] + 1.5) * ft
-    y1 = (p1[1] + 1.5) * ft
-    x2 = (p2[0] + 1.5) * ft
-    y2 = (p2[1] + 1.5) * ft
-    rl.draw_line_ex(rl.Vector2(x1, y1), rl.Vector2(x2, y2), 2.0, rl.Color(*color))
+def draw_waypoint_line(p1_tile, p2_tile, world_px_per_tile: float,
+                       color=(60, 200, 255, 200), unit_footprint_tiles: int = 3
+                       ) -> None:
+    """Draw a line between two waypoints in world-pixel coordinates.
+    p1, p2 are (x_tile, y_tile). The line is drawn through the centers of
+    the unit's footprint at each waypoint."""
+    half = unit_footprint_tiles * 0.5
+    x1_wpx = tile_to_world_px(p1_tile[0] + half, world_px_per_tile)
+    y1_wpx = tile_to_world_px(p1_tile[1] + half, world_px_per_tile)
+    x2_wpx = tile_to_world_px(p2_tile[0] + half, world_px_per_tile)
+    y2_wpx = tile_to_world_px(p2_tile[1] + half, world_px_per_tile)
+    rl.draw_line_ex(rl.Vector2(x1_wpx, y1_wpx),
+                    rl.Vector2(x2_wpx, y2_wpx),
+                    2.0, rl.Color(*color))
 
 
-def draw_grid(grid_w: int, grid_h: int, ft: float, color=(80, 80, 100, 60), step: int = 3) -> None:
-    """Faint grid overlay at every `step` tiles (default coarse=3)."""
+def draw_grid(grid_w_tile: int, grid_h_tile: int, world_px_per_tile: float,
+              color=(80, 80, 100, 60), step: int = 3) -> None:
+    """Faint grid overlay at every `step` tiles, drawn in world pixels."""
     color_obj = rl.Color(*color)
-    px_w = grid_w * ft
-    px_h = grid_h * ft
-    for x in range(0, grid_w + 1, step):
-        xp = x * ft
+    px_w = grid_w_tile * world_px_per_tile
+    px_h = grid_h_tile * world_px_per_tile
+    for x_tile in range(0, grid_w_tile + 1, step):
+        xp = tile_to_world_px(x_tile, world_px_per_tile)
         rl.draw_line_ex(rl.Vector2(xp, 0), rl.Vector2(xp, px_h), 1.0, color_obj)
-    for y in range(0, grid_h + 1, step):
-        yp = y * ft
+    for y_tile in range(0, grid_h_tile + 1, step):
+        yp = tile_to_world_px(y_tile, world_px_per_tile)
         rl.draw_line_ex(rl.Vector2(0, yp), rl.Vector2(px_w, yp), 1.0, color_obj)
 
 

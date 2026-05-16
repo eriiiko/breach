@@ -52,8 +52,8 @@ def main():
     cfg = RenderConfig(
         map_px_w=MAP_PX_W, map_px_h=MAP_PX_H,
         panel_px_w=PANEL_W,
-        fine_tile_px=8.0,
         grid_w=level.width, grid_h=level.height,
+        world_px_per_tile=8.0,
     )
 
     renderer = GameRenderer(level, bp, cfg)
@@ -79,8 +79,8 @@ def main():
             renderer.upload_state(g, light_sources=sources)
 
             renderer.begin_frame()
-            renderer.draw_world()
-            renderer.draw_units([], [])
+            renderer.compose_world(units_marines=[], units_zombies=[])
+            renderer.blit_world_to_screen()
             renderer.draw_panel(None)
             renderer.end_frame()
 

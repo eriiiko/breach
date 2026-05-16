@@ -46,10 +46,11 @@ void main() {
         diffuse = srgb_to_linear(diffuse);
     }
 
-    // KNOWN BUG: light field is sampled at fragTexCoord (visible-window UV)
-    // instead of world UV. When camera scrolls, light/smoke/fire stay
-    // anchored at world (0,0) instead of following the camera. To be solved
-    // via the Camera/coordinate-system design (see docs/).
+    // Light field sample: this shader is invoked inside the world RT, where
+    // the diffuse covers the full world (0..1 fragTexCoord <-> 0..1 world).
+    // The light field also covers the full world, so sampling at the same
+    // fragTexCoord gives the right tile. Camera scrolling happens later, as
+    // a separate blit from the world RT to the screen — see WorldComposite.
     vec3 light_sample = texture(u_light, fragTexCoord).rgb;
     float intensity = light_sample.r;
     // Decode signed direction: stored as 0.5 + 0.5*x, so (sample - 0.5) * 2.

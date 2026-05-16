@@ -130,26 +130,27 @@ class LightingPass:
 
     # ---- drawing --------------------------------------------------------
 
-    def draw_lit_ship(self, diffuse: rl.Texture, normal: Optional[rl.Texture],
-                      dst_x: int, dst_y: int, dst_w: int, dst_h: int) -> None:
-        """Draw the diffuse with the lighting shader applied.
+    def draw_lit_world(self, diffuse: rl.Texture, normal: Optional[rl.Texture],
+                       world_px_w: int, world_px_h: int) -> None:
+        """Draw the lit diffuse over the full world render target.
 
-        Pyray binds texture0 = diffuse implicitly when we call draw_texture_pro
-        inside a shader mode. We bind normal and light field via extra samplers.
+        Caller must already be inside BeginTextureMode(world_rt). The diffuse
+        covers (0, 0) to (world_px_w, world_px_h), so fragTexCoord runs 0..1
+        over the world — light field UV matches naturally, no camera math.
+
+        Sampler bindings are issued INSIDE BeginShaderMode so they apply to
+        the active shader. Calling set_shader_value_texture before
+        BeginShaderMode can target the wrong shader in some raylib versions
+        (see research note Gotcha 3).
         """
-        # Bind extra textures (slot 1 = normal, slot 2 = light field)
-        # Raylib's BeginShaderMode + DrawTexture passes texture0 automatically.
-        # For additional textures, SetShaderValueTexture binds by uniform name.
+        rl.begin_shader_mode(self.shader)
         if normal is not None:
             rl.set_shader_value_texture(self.shader, self._loc_normal_tex, normal)
         rl.set_shader_value_texture(self.shader, self._loc_light_tex, self.light_tex)
 
-        rl.begin_shader_mode(self.shader)
-
         src = rl.Rectangle(0, 0, float(diffuse.width), float(diffuse.height))
-        dst = rl.Rectangle(float(dst_x), float(dst_y), float(dst_w), float(dst_h))
+        dst = rl.Rectangle(0, 0, float(world_px_w), float(world_px_h))
         rl.draw_texture_pro(diffuse, src, dst, rl.Vector2(0, 0), 0.0, rl.WHITE)
-
         rl.end_shader_mode()
 
 
