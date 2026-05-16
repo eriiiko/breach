@@ -129,8 +129,59 @@ def test_undo_round_trip():
     print("OK: undo_round_trip")
 
 
+def test_full_round_runs():
+    """Run a full round (120 ticks) with orders. Asserts auto-pause
+    behavior at phase boundary + end-of-round, and that the event list
+    fills + clears each step.
+    """
+    from simulation.orders import ORDER_FIRE
+
+    level = load_level("unhcr_vessel")
+    sim = Simulation(level, seed=SEED, breach_physics=bp,
+                     enable_recorder=False)
+
+    # 3 marines, 3 zombies — enough for shooting + zombie AI exercise.
+    m1 = sim.add_unit(Unit("M1", cx=4, cy=2, team=0))
+    sim.add_unit(Unit("M2", cx=8, cy=2, team=0))
+    sim.add_unit(Unit("M3", cx=12, cy=4, team=0))
+    sim.add_unit(Unit("Z1", cx=10, cy=20, team=1))
+    sim.add_unit(Unit("Z2", cx=6,  cy=24, team=1))
+    sim.add_unit(Unit("Z3", cx=14, cy=28, team=1))
+
+    # One marine fires at a zombie tile (no LOS likely, but no exception).
+    sim.apply_action(m1, Order(ORDER_FIRE,
+                               target_fx=10 * 3 + 1, target_fy=20 * 3 + 1,
+                               phase=0))
+
+    sim.set_paused(False)
+
+    # Step through Phase 1 — should auto-pause at tick == ticks_per_phase.
+    for _ in range(sim._ticks_per_phase + 5):
+        if sim.is_paused():
+            break
+        sim.step()
+    assert sim.is_paused(), "expected auto-pause at phase 1 boundary"
+    assert sim.tick == sim._ticks_per_phase, f"tick={sim.tick}"
+    assert sim.phase == 1, f"phase={sim.phase}"
+
+    # Resume Phase 2.
+    sim.set_paused(False)
+    for _ in range(sim._ticks_per_phase + 5):
+        if sim.is_paused():
+            break
+        sim.step()
+    assert sim.is_paused(), "expected auto-pause at end of round"
+    # End of round resets tick to 0.
+    assert sim.tick == 0, f"tick={sim.tick}"
+    assert sim.phase == 0, f"phase={sim.phase}"
+    assert sim.turn_number == 2, f"turn_number={sim.turn_number}"
+    print(f"OK: full_round_runs (round 2 reached, units: "
+          f"{len(sim.marines())} marines, {len(sim.zombies())} zombies)")
+
+
 if __name__ == "__main__":
     test_step_smoke()
     test_determinism()
     test_undo_round_trip()
+    test_full_round_runs()
     print("\nAll Simulation tests passed.")

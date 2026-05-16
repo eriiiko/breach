@@ -110,6 +110,13 @@ class GameRenderer:
         self.last_frame_ms = 0.0
         self.last_raycast_ms = 0.0
 
+        # Visual effects list (short-lived). Each entry is a dict with
+        # "kind", lifecycle ("t" seconds elapsed, "life" total) and
+        # kind-specific payload (e.g. "from"/"to" for tracers). Populated
+        # by consume_events, advanced by _advance_effects, drawn by
+        # _draw_effects_world.
+        self._effects: list = []
+
         self.lighting.set_ambient((0.18, 0.18, 0.22))
 
     # ---- per-frame physics->GPU upload ---------------------------------
@@ -163,15 +170,22 @@ class GameRenderer:
 
     def compose_world(self, units_marines: Sequence = (),
                       units_zombies: Sequence = (),
+                      projectiles: Sequence = (),
                       orders_per_unit: Optional[dict] = None) -> None:
         """Draw every world-space layer into the world RT.
 
         Order: lit ship (diffuse + normal + light), smoke, fire, units,
-        waypoints, grid. Each is drawn at world-pixel coordinates inside
-        the RT — no camera math; the RT IS the world.
+        projectiles, waypoints, visual effects, grid. Each is drawn at
+        world-pixel coordinates inside the RT — no camera math; the RT
+        IS the world.
 
         Clear color is fully transparent so vacuum/breach areas (where the
         shader discards) show through to the screen-fixed background.
+
+        ``projectiles`` is a sequence of objects with ``.fx``, ``.fy``,
+        and ``.proj_type`` (the simulation's Projectile dataclass works).
+        ``orders_per_unit`` is ``{unit_id: [(fx, fy), ...]}`` — waypoint
+        polylines for the order overlay.
         """
         self.world.begin(clear_color=(0, 0, 0, 0))
 
@@ -192,10 +206,15 @@ class GameRenderer:
             self._draw_overlay_to_world(self.fire_overlay.tex)
             rl.end_blend_mode()
 
-        # 3. Units, waypoints, grid — drawn in world-pixel space
+        # 3. Units, waypoints, projectiles, effects, grid — drawn in world-pixel space
         if orders_per_unit:
             self._draw_orders_world(orders_per_unit)
         self._draw_units_world(units_marines, units_zombies)
+        if projectiles:
+            self._draw_projectiles_world(projectiles)
+        # Visual effects (tracers, explosions, hit splats) — driven by
+        # tick events the renderer pulls from the sim via consume_events.
+        self._draw_effects_world()
         if self.show_grid:
             self._draw_grid_world()
 
@@ -227,6 +246,121 @@ class GameRenderer:
                 continue
             for a, b in zip(waypoints, waypoints[1:]):
                 draw_waypoint_line(a, b, wpt)
+
+    def _draw_projectiles_world(self, projectiles: Sequence) -> None:
+        """Draw each in-flight projectile as a small marker.
+
+        Grenades = orange circle; future kinds (plasma, rockets) get their
+        own simple shapes here. Detonated projectiles are skipped.
+        """
+        wpt = self.world.world_px_per_tile
+        from renderer.coords import tile_to_world_px
+        from simulation.orders import ORDER_GRENADE
+        for proj in projectiles:
+            if getattr(proj, "detonated", False):
+                continue
+            cx = tile_to_world_px(proj.fx + 0.5, wpt)
+            cy = tile_to_world_px(proj.fy + 0.5, wpt)
+            kind = getattr(proj, "proj_type", -1)
+            if kind == ORDER_GRENADE:
+                # Grenade: red-orange filled circle + a thin dark outline.
+                r = max(2.0, 0.4 * wpt)
+                rl.draw_circle(int(cx), int(cy), r, rl.Color(255, 120, 40, 255))
+                rl.draw_circle_lines(int(cx), int(cy), r, rl.Color(40, 20, 0, 255))
+            else:
+                # Generic fallback: small yellow dot.
+                rl.draw_circle(int(cx), int(cy), 3.0, rl.Color(255, 255, 100, 255))
+
+    def _draw_effects_world(self) -> None:
+        """Draw the renderer's short-lived visual effects (tracers, blasts).
+
+        Effects are pushed by :meth:`consume_events` and tick down each
+        frame via :meth:`_advance_effects`. Drawn into the world RT so
+        the camera transforms them like everything else.
+        """
+        wpt = self.world.world_px_per_tile
+        from renderer.coords import tile_to_world_px
+        for fx in self._effects:
+            t = fx["t"]
+            life = fx["life"]
+            alpha_norm = max(0.0, 1.0 - t / max(life, 1e-6))
+            kind = fx["kind"]
+            if kind == "tracer":
+                a, b = fx["from"], fx["to"]
+                x1 = tile_to_world_px(a[0], wpt)
+                y1 = tile_to_world_px(a[1], wpt)
+                x2 = tile_to_world_px(b[0], wpt)
+                y2 = tile_to_world_px(b[1], wpt)
+                col = rl.Color(255, 240, 160, int(220 * alpha_norm))
+                rl.draw_line_ex(rl.Vector2(x1, y1), rl.Vector2(x2, y2),
+                                1.5, col)
+            elif kind == "explosion":
+                pos = fx["pos"]
+                radius = fx["radius"]
+                cx = tile_to_world_px(pos[0] + 0.5, wpt)
+                cy = tile_to_world_px(pos[1] + 0.5, wpt)
+                # Expanding ring then fading flash.
+                grow = 1.0 - alpha_norm    # 0 -> 1 as effect ages
+                r_wpx = (0.3 + grow * radius) * wpt
+                ring = rl.Color(255, 200, 100, int(220 * alpha_norm))
+                rl.draw_circle_lines(int(cx), int(cy), r_wpx, ring)
+                # Inner flash on first frames.
+                if alpha_norm > 0.6:
+                    flash = rl.Color(255, 255, 220, int(180 * (alpha_norm - 0.6) / 0.4))
+                    rl.draw_circle(int(cx), int(cy), 0.5 * radius * wpt, flash)
+            elif kind == "hit":
+                pos = fx["pos"]
+                cx = tile_to_world_px(pos[0] + 0.5, wpt)
+                cy = tile_to_world_px(pos[1] + 0.5, wpt)
+                col = rl.Color(255, 60, 60, int(220 * alpha_norm))
+                rl.draw_circle(int(cx), int(cy), 4.0, col)
+
+    def consume_events(self, events: Sequence) -> None:
+        """Read simulation tick events, spawn matching visual effects.
+
+        Called once per frame after compose_world (or before — order
+        doesn't matter since this only queues, not draws). The
+        renderer maintains its own short-lived effect list; the sim
+        does not track decay or fade.
+
+        Recognised event types: :class:`simulation.events.ShotFiredEvent`,
+        :class:`ExplosionEvent`, :class:`UnitHitEvent`. Unknown event
+        types are ignored — additive design lets the sim emit new
+        events without breaking older renderers.
+        """
+        # Lazy import — keeps renderer importable without the simulation pkg.
+        from simulation.events import (
+            ShotFiredEvent, ExplosionEvent, UnitHitEvent,
+        )
+        for ev in events:
+            if isinstance(ev, ShotFiredEvent):
+                self._effects.append({
+                    "kind": "tracer",
+                    "from": ev.from_tile,
+                    "to": ev.to_tile,
+                    "t": 0.0,
+                    "life": 0.18,    # ~5 frames @ 30 FPS
+                })
+            elif isinstance(ev, ExplosionEvent):
+                self._effects.append({
+                    "kind": "explosion",
+                    "pos": ev.pos,
+                    "radius": ev.radius,
+                    "t": 0.0,
+                    "life": 0.6,
+                })
+            elif isinstance(ev, UnitHitEvent):
+                # We don't know the unit's position from the event alone —
+                # main.py looks up the unit and passes its pos when
+                # converting; for now skip drawing UnitHit unless we
+                # extend the event. Kept here to acknowledge the contract.
+                pass
+
+    def _advance_effects(self, dt: float) -> None:
+        """Tick effect lifetimes; drop expired entries."""
+        for fx in self._effects:
+            fx["t"] += dt
+        self._effects = [fx for fx in self._effects if fx["t"] < fx["life"]]
 
     def _draw_grid_world(self) -> None:
         wpt = self.world.world_px_per_tile
@@ -264,7 +398,12 @@ class GameRenderer:
 
     # ---- panel ----------------------------------------------------------
 
-    def draw_panel(self, state) -> None:
+    def draw_panel(self, sim=None, selected_unit=None,
+                   planning_phase: int = 0,
+                   current_mode: Optional[int] = None) -> None:
+        """Right-side info panel. ``sim`` may be ``None`` for the demo;
+        when provided we show turn/phase/tick state and (optionally) the
+        selected unit's HP / inventory / orders summary."""
         cfg = self.cfg
         panel_x = cfg.map_px_w
         draw_panel_background(panel_x, 0, cfg.panel_px_w, cfg.map_px_h)
@@ -274,11 +413,57 @@ class GameRenderer:
         y += 28
         draw_text(f"{cfg.grid_w} x {cfg.grid_h} tiles", x, y, 14)
         y += 22
-        draw_text(f"Camera: ({self.camera.pos_tile_x:.1f}, "
-                  f"{self.camera.pos_tile_y:.1f})", x, y, 13)
-        y += 18
-        draw_text(f"Zoom:   {self.camera.zoom_px_per_tile:.1f} spx/tile", x, y, 13)
-        y += 22
+
+        # ----- Game state (if a Simulation was passed) -----
+        if sim is not None:
+            paused = sim.is_paused()
+            state_label = "PAUSED — planning" if paused else "EXECUTING"
+            state_color = (255, 220, 120, 255) if paused else (120, 255, 120, 255)
+            draw_text(state_label, x, y, 16, color=state_color)
+            y += 22
+            draw_text(f"Round {getattr(sim, 'turn_number', 1)}   "
+                      f"Phase {sim.get_phase() + 1}/2", x, y, 14)
+            y += 18
+            draw_text(f"Tick {sim.get_tick()} / "
+                      f"{sim._ticks_per_round}", x, y, 13,
+                      color=(180, 180, 200, 255))
+            y += 18
+            n_events = len(getattr(sim, "tick_events", []))
+            draw_text(f"Tick events: {n_events}", x, y, 12,
+                      color=(150, 150, 180, 255))
+            y += 18
+            if paused:
+                draw_text(f"Planning phase {planning_phase + 1}",
+                          x, y, 12, color=(200, 200, 120, 255))
+                y += 16
+            y += 6
+
+            # Selected unit summary.
+            if selected_unit is not None and getattr(selected_unit, "alive", False):
+                draw_text(f"Selected: {selected_unit.name}", x, y, 14,
+                          color=(120, 220, 255, 255))
+                y += 18
+                draw_text(f"HP: {selected_unit.hp}/{selected_unit.max_hp}",
+                          x, y, 13)
+                y += 16
+                draw_text(f"AP: {selected_unit.ap[0]}, {selected_unit.ap[1]}",
+                          x, y, 13)
+                y += 16
+                draw_text(f"Grenades: {selected_unit.has_grenade}   "
+                          f"Charges: {selected_unit.has_explosive}",
+                          x, y, 12)
+                y += 18
+                n_orders = len(selected_unit.orders)
+                draw_text(f"Queued orders: {n_orders}",
+                          x, y, 12, color=(180, 180, 180, 255))
+                y += 18
+            if current_mode is not None:
+                from simulation.orders import ORDER_NAMES
+                mode_name = ORDER_NAMES.get(current_mode, str(current_mode))
+                draw_text(f"Mode: {mode_name}", x, y, 13,
+                          color=(255, 200, 120, 255))
+                y += 22
+
         draw_text(f"FPS: {rl.get_fps()}", x, y, 14)
         y += 18
         draw_text(f"Raycast: {self.last_raycast_ms:.1f} ms", x, y, 14)
@@ -304,6 +489,17 @@ class GameRenderer:
         draw_text(f"[/] Light Z: {self.lighting.light_z:.2f}", x, y, 13,
                   color=(220, 220, 180, 255))
         y += 16
+        # Hint key bindings.
+        y += 6
+        draw_text("Ctrl+R reload config", x, y, 11,
+                  color=(160, 160, 180, 255))
+        y += 14
+        draw_text("Space pause | Bksp undo", x, y, 11,
+                  color=(160, 160, 180, 255))
+        y += 14
+        draw_text("Tab switch phase", x, y, 11,
+                  color=(160, 160, 180, 255))
+        y += 14
 
     # ---- input ----------------------------------------------------------
 
