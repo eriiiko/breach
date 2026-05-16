@@ -64,19 +64,44 @@ read-only; AI training serializes it.
 
 ---
 
-## Migration order (13 steps, each independently runnable)
+## Migration order
+
+### Pre-Step 0 — Reconcile two GameMap constructors
+
+Legacy `game.py:GameMap` takes no args (calls `_build_ship()` internally),
+the shim in `main.py:GameMap(level)` takes a LevelData and populates from
+CSV. Step 1 cannot be a verbatim lift — it must merge these. Resolution:
+the canonical `GameMap.__init__(level_data)` always takes a level. Drop
+`_build_ship` entirely (already dead — CSV loading covers it). Caller
+(`Simulation`) holds the level reference.
+
+### Set up the Python package layout BEFORE step 1
+
+Create `src/simulation/__init__.py`. Add `src` to `sys.path` (or use a
+proper `setup.py` / `pyproject.toml`). Pick ONE qualifier and use it
+everywhere — recommend `from simulation import Simulation` with
+`sys.path.insert(0, str(ROOT / "src"))` in main.py. Document in the
+module docstring.
 
 ### Phase 1 — Lift simulation pieces out of game.py
 
-Each step here is a refactor: copy code, adjust imports, keep behavior identical, run the smoke test.
+Each step is a refactor: copy code, adjust imports, keep behavior
+identical, run the smoke test. **Note:** "independently runnable" means
+the renderer still launches and shows the ship — gameplay features
+accumulate across steps. Game is not fully playable until Phase 3.
 
 **Step 1: `src/simulation/gamemap.py`**
 Lift the `GameMap` class. Drop dead code (`_build_ship`). Levels load via `level_loader`. The shim in `main.py:GameMap` gets replaced with this.
 
 **Step 2: `src/simulation/unit.py`**
-Lift `Unit`. Inventory becomes a base field. Make zombie a state (`is_zombie: bool`). Marine-only fields stay on Unit but conditional on state.
+Lift `Unit`. Inventory becomes a base field. Make zombie a state
+(`is_zombie: bool`). Marine-only fields stay on Unit but conditional on
+state. **Fix the `zombie_speed_override` monkey-patch** at this point —
+replace with a proper `speed_ticks_per_tile: int` field. Bonus: easier
+to balance later.
 
-After Step 2: `main.py` can instantiate marines and zombies. They can be rendered (already supported by `renderer.compose_world`). No orders yet.
+After Step 2: `main.py` can instantiate marines and zombies. They can be
+rendered (already supported by `renderer.compose_world`). No orders yet.
 
 **Step 3: `src/simulation/orders.py`**
 Lift order classes (Order, MoveOrder with the three move modes, FireOrder, GrenadeOrder, ExplosiveOrder). Pure data — no execution logic here.
@@ -87,7 +112,11 @@ Lift `Projectile`, `Shot`, the shooting / line-of-sight functions. Functions tak
 `apply_explosion` stays in the physics namespace (it is a physical event that has gameplay consequences — pressure waves, fire ignition, wall damage, unit blast). Splitting it would scatter event-effect logic and make calling code error-prone (easy to forget the damage step). The same pattern is already present in C++ (fire damages walls, atmosphere drains through breaches). Combat calls into `physics.apply_explosion(gmap, ...)` from grenades / explosives / weapon impacts — physics owns the "this is a physical event" entry point.
 
 **Step 5: `src/simulation/physics_runner.py`**
-Lift `PhysicsRunner` from main.py (already extracted, just move to its proper home).
+Lift `PhysicsRunner` from main.py (already extracted, just move to its
+proper home). **Important:** legacy `game.py` binds Fire parameters via
+`_init_solvers` (FIRE_D, FIRE_O2_THRESHOLD, etc.). The current main.py
+`PhysicsRunner` silently SKIPS this. Bring the fire binding over too —
+otherwise fire behavior subtly diverges.
 
 **Step 6: `src/simulation/ai_zombie.py`**
 Lift zombie activation, pathfinding orchestration, target selection, conversion-to-zombie logic.
@@ -98,20 +127,57 @@ Move `PhysicsRecorder` verbatim. Hook into Simulation's tick step.
 ### Phase 2 — The Simulation facade
 
 **Step 8: `src/simulation/simulation.py`**
-Create the `Simulation` class. It owns the GameMap, the unit list, the order queue, the physics_runner, the recorder. Public API:
+Create the `Simulation` class. It owns the GameMap, the unit list, the
+order queue, the physics_runner, the recorder, and an `np.random.Generator`
+for all nondeterminism. Public API designed for **both** human play AND
+AI training rollouts:
+
 ```python
 class Simulation:
+    # -- construction / lifecycle --
     def __init__(self, level_data, seed: int | None = None): ...
+    def reset(self, seed: int | None = None) -> None: ...
+        # Re-init from level_data with new seed. For AI training rollouts.
+
+    # -- units --
     def add_unit(self, unit: Unit, position: tuple) -> int: ...
+
+    # -- actions --
     def apply_action(self, unit_id: int, order: Order) -> None: ...
     def undo_last_order(self, unit_id: int) -> None: ...
-    def step(self) -> None: ...                  # advance one tick
-    def get_state(self) -> SimState: ...          # frozen snapshot
+    def get_legal_actions(self, unit_id: int) -> list[Order]: ...
+        # For AI: enumerate valid orders this unit can issue NOW.
+
+    # -- tick loop --
+    def step(self) -> None: ...                 # advance one tick
     def get_tick(self) -> int: ...
-    def get_phase(self) -> int: ...               # round phase for pause-points
+    def get_phase(self) -> int: ...
+
+    # -- pause (human convenience; AI ignores) --
     def is_paused(self) -> bool: ...
     def set_paused(self, pause: bool) -> None: ...
+
+    # -- state access --
+    def get_state(self) -> SimState: ...        # snapshot for renderer + AI
+
+    # -- AI training --
+    def get_reward(self, unit_id: int) -> float: ...
+        # Per-agent reward signal. Default is 0; subclasses override
+        # for specific training environments.
+    def is_terminal(self) -> bool: ...          # round ended / all units dead?
+
+    # -- determinism plumbing --
+    @property
+    def rng(self) -> np.random.Generator: ...
+        # ALL nondeterminism in combat (rifle cone), explosion smoke
+        # noise, and Raycaster jitter MUST pull from this. Otherwise
+        # AI replays / rollouts diverge.
 ```
+
+**Three nondeterminism call sites** the implementation must plumb the
+RNG through (caught by reviewer): `Physics._add_explosion_smoke` (smoke
+noise), `Raycaster.cast_source` (jitter for fire flicker — pass seed),
+`_fire_burst` (bullet cone offsets).
 
 ### Phase 3 — Wire into main.py
 
@@ -119,7 +185,30 @@ class Simulation:
 Replace the GameMap shim with `Simulation`. Call `sim.step()` from the tick loop. Renderer reads `sim.get_state()`.
 
 **Step 10: Input + order placement**
-Click handlers in main.py translate mouse clicks into orders. Calls `sim.apply_action(unit_id, order)`. Backspace undoes via `sim.undo_last_order`. Phase pause: spacebar toggles `sim.set_paused()`.
+Click handlers in main.py translate mouse clicks into orders. Calls
+`sim.apply_action(unit_id, order)`. Backspace undoes via
+`sim.undo_last_order`. Phase pause: spacebar toggles `sim.set_paused()`.
+
+**Real-time + pause walkthrough** (caught by reviewer — be explicit):
+- Game starts paused, in planning mode for Phase 1.
+- Player places orders for all marines for Phase 1 + Phase 2 (Tab switches).
+- Spacebar starts execution. `sim.set_paused(False)`. Time flows.
+- At any moment during execution, spacebar pauses. `sim.set_paused(True)`.
+  Orders can be MODIFIED during pause (replace / add waypoints).
+- At end of Phase 1 (tick 60), sim auto-pauses (`sim.set_paused(True)`),
+  player tweaks Phase 2 orders, spacebar resumes.
+- At end of round (tick 120), auto-pause, planning UI for next round.
+- AI training rollouts ignore pause entirely — they call `sim.step()`
+  in a tight loop and never set_paused.
+
+**Sprite loading**: legacy game.py loads `art/sprites/zombies/*.png` on
+init. Lift to a `renderer.sprites` module or have main.py load them
+once and pass to renderer. Do NOT scatter image loading across
+gameplay code.
+
+**F5 key collision**: renderer currently binds F5 to "normal map
+toggle." Legacy game.py binds F5 to "reload config." Decide: rebind
+config reload to F12 or Ctrl+R; keep F5 for renderer toggle. Document.
 
 **Step 11: Render units + projectiles + shot tracers**
 Use the existing `renderer.compose_world(units_marines=..., units_zombies=...)` API. Add projectile rendering (bullets, grenades in flight, explosive markers).
@@ -154,10 +243,42 @@ These are explicitly NOT part of this patch — don't get sucked into them:
 - AI training scaffolding (`train.py`) — separate patch
 - Network multiplayer
 - Splitting Unit into Marine/Zombie subclasses
+- **Sprite rework** — keep the existing zombie civilian sprites as-is
+- **Temporal A*** — the `temporal_astar` + `ReservationTable` in
+  pathfinding.py are unused scaffolding. Leave them alone. Do NOT wire
+  them up "while I'm here."
+- **Removing the float position fields** (`fxf`, `fyf` on Unit) — they
+  are still used by the renderer for interpolation. The architecture
+  doc says they shouldn't be in game state, but that's a separate
+  patch. Keep them for now.
+- **Order subclassing** — keep Order as a single class with a
+  type discriminator + payload. Subclasses are a different patch.
+- **Fixing apply_explosion's mixed concerns** — already discussed,
+  decided to keep cross-cutting. Don't refactor it here.
 
 Each of these is worth doing — but each is its own patch. This one is a pure refactor + boundary cleanup. We need to land on the new entry point first.
 
 ---
+
+## Testing strategy
+
+- After **each step in Phase 1**: run `tests/test_renderer_smoke.py
+  --auto` and `tests/test_level_loader.py`. Both must still pass.
+- **Add** `tests/test_simulation.py` during step 8: instantiate
+  `Simulation(level_data, seed=42)`, call `step()` 100 times,
+  assert no exceptions. Then `reset(seed=42)`, step 100 times again,
+  assert state matches the first run (determinism check).
+- **Defer** end-to-end gameplay tests until after Phase 3 (full
+  feature parity). Not worth writing tests against logic that's
+  still moving.
+- **Error handling convention**: gameplay code raises clear
+  `ValueError` / `RuntimeError` with context. No silent failures.
+  Renderer never raises during normal operation — it logs and
+  continues.
+- **Save / load**: out of scope for this patch. `Simulation.get_state()`
+  returns enough info that a future patch can implement save/load on
+  top via `pickle`. Note in docstring: "future save/load reads from
+  this snapshot."
 
 ## After-migration follow-ups (track in TODO.md)
 
@@ -174,12 +295,33 @@ Each of these is worth doing — but each is its own patch. This one is a pure r
 
 ## How to execute this patch
 
-Given the conversation context budget remaining is tight, the recommended approach:
+1. **Reviewer agent ran** (see `docs/review_game_logic_migration.md`).
+   3 critical + 3 high + 4 medium findings — addressed inline in this
+   plan above.
 
-1. **Spawn a reviewer agent** on this plan first. Catch design problems before code touches the disk. (~5 min)
-2. **Spawn an implementation agent** with this plan + full read access to game.py. The implementation agent does steps 1-7 (the lift). They have fresh context to read game.py thoroughly. (~30-60 min of agent work)
-3. **Erik + this conversation reviews the lift result.** Smoke-test, commit incrementally per step.
-4. **Then spawn a second implementation agent** for steps 8-12 (Simulation facade + wiring + UI). (~30-60 min)
-5. **Step 13 (delete game.py)** happens last when Erik is confident.
+2. **Implementation agent #1** does Phase 1 (steps 0, set-up, 1-7 —
+   the lift). Read access to:
+   - This plan: `docs/patch_game_logic_migration.md`
+   - Reviewer notes: `docs/review_game_logic_migration.md`
+   - Inventory: `docs/game_py_inventory_and_migration_plan.md`
+   - Architecture: `docs/architecture.md`
+   - Files to lift FROM: `game.py`, `main.py` (GameMap shim)
+   - Files to lift INTO: create `src/simulation/` package
+   - Reference: `config.py`, `level_loader.py`, `pathfinding.py`,
+     `cpp/src/fire_simulation.h` (for FireParams field names)
+   - Renderer API not to break: `renderer/game_renderer.py`,
+     `tests/test_renderer_smoke.py`
+   Commit per step.
 
-The "this conversation" stays in orchestration and review mode. We don't run out of context reading game.py ourselves.
+3. **Erik reviews** the lift result. Smoke test + ship + a hardcoded
+   marine should render.
+
+4. **Implementation agent #2** does Phase 2-3 (steps 8-12 — Simulation
+   facade + wiring + UI). Needs everything agent #1 had, plus the new
+   `src/simulation/` modules agent #1 produced.
+
+5. **Erik does Step 13** (delete `game.py`) when confident gameplay
+   parity is reached.
+
+The orchestration conversation does not read `game.py` itself — that
+work is delegated to the implementation agents, who get fresh context.
