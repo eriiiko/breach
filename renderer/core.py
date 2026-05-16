@@ -108,13 +108,16 @@ def create_dynamic_rgba_texture(width: int, height: int) -> rl.Texture:
 def update_rgba_texture(tex: rl.Texture, pixels_rgba: np.ndarray) -> None:
     """Upload an (H, W, 4) uint8 RGBA array to a texture.
 
-    Pyray's update_texture expects a void* — cast explicitly via ffi.
+    Zero-copy: cffi's from_buffer reads numpy via the Python buffer protocol
+    directly — no tobytes() allocation per frame. The caller's array must
+    stay alive for the duration of this call (it does — pyray's update_texture
+    is synchronous and copies into GPU memory before returning).
     """
     assert pixels_rgba.dtype == np.uint8, f"expected uint8, got {pixels_rgba.dtype}"
     assert pixels_rgba.ndim == 3 and pixels_rgba.shape[2] == 4, \
         f"expected (H,W,4), got {pixels_rgba.shape}"
     contig = np.ascontiguousarray(pixels_rgba)
-    buf = rl.ffi.from_buffer("uint8_t[]", contig.tobytes())
+    buf = rl.ffi.from_buffer("uint8_t[]", contig)
     rl.update_texture(tex, rl.ffi.cast("void *", buf))
 
 

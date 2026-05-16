@@ -2,16 +2,18 @@
 // Lighting shader for Breach: composites diffuse + normal map + light field.
 //
 // Input textures:
-//   u_diffuse   — RGB diffuse art at high resolution (sRGB-ish, treated linear here)
-//   u_normal    — normal map at the SAME resolution as diffuse (linear)
-//   u_light     — light field at low (physics) resolution:
+//   u_diffuse   - RGB diffuse art at high resolution (sRGB-encoded PNG)
+//   u_normal    - normal map at the SAME resolution as diffuse (linear)
+//   u_light     - light field at low (physics) resolution:
 //                   R = intensity, G = light_dx, B = light_dy
 //                 (G/B are signed; we encode/decode via 0.5 + 0.5*x in CPU)
 //
 // Uniforms:
-//   u_ambient        — base light color when no light source reaches a tile
-//   u_normal_strength — 0 disables normal map, 1 = full strength
-//   u_use_normal     — bool toggle for normal mapping
+//   u_ambient         - base light color when no light source reaches a tile
+//   u_normal_strength - 0 disables normal map, 1 = full strength
+//   u_use_normal      - bool toggle (0/1) for normal mapping
+//   u_normal_y_sign   - +1 for OpenGL Y-up normals, -1 for DirectX Y-down
+//   u_srgb_decode     - 1 = decode sRGB diffuse to linear, re-encode on output
 //
 // Pyray sends texture0 as u_diffuse implicitly (Raylib convention).
 // Additional samplers are bound by name via SetShaderValueTexture.
@@ -25,17 +27,29 @@ uniform sampler2D u_light;
 
 uniform vec3  u_ambient;
 uniform float u_normal_strength;
-uniform int   u_use_normal;    // 0 = off, 1 = on
+uniform int   u_use_normal;
+uniform float u_normal_y_sign;
+uniform int   u_srgb_decode;
 
 out vec4 finalColor;
 
+// Cheap sRGB <-> linear approximations (gamma 2.2). Adequate for game
+// lighting; not strict sRGB which uses a piecewise function near zero.
+vec3 srgb_to_linear(vec3 c) { return pow(c, vec3(2.2)); }
+vec3 linear_to_srgb(vec3 c) { return pow(c, vec3(1.0 / 2.2)); }
+
 void main() {
     vec3 diffuse = texture(u_diffuse, fragTexCoord).rgb;
+    if (u_srgb_decode == 1) {
+        // PNG textures from image editors / AI tools are sRGB-encoded.
+        // Lighting math must happen in linear space.
+        diffuse = srgb_to_linear(diffuse);
+    }
 
     // KNOWN BUG: light field is sampled at fragTexCoord (visible-window UV)
-    // instead of world UV. When camera scrolls, light/smoke/fire stay anchored
-    // at world (0,0) instead of following the camera. To be solved properly
-    // via a Camera/coordinate-system design — see todo "camera architecture".
+    // instead of world UV. When camera scrolls, light/smoke/fire stay
+    // anchored at world (0,0) instead of following the camera. To be solved
+    // via the Camera/coordinate-system design (see docs/).
     vec3 light_sample = texture(u_light, fragTexCoord).rgb;
     float intensity = light_sample.r;
     // Decode signed direction: stored as 0.5 + 0.5*x, so (sample - 0.5) * 2.
@@ -45,6 +59,8 @@ void main() {
     if (u_use_normal == 1) {
         // Normal map: unpack from [0,1] to [-1,1].
         vec3 N = texture(u_normal, fragTexCoord).rgb * 2.0 - 1.0;
+        // Flip Y if the normal map uses DirectX convention (Laigter varies).
+        N.y *= u_normal_y_sign;
         N = mix(vec3(0.0, 0.0, 1.0), N, u_normal_strength);
         N = normalize(N);
 
@@ -56,5 +72,9 @@ void main() {
     }
 
     vec3 lit = diffuse * (u_ambient + intensity * ndotl);
+    if (u_srgb_decode == 1) {
+        // Encode back to sRGB for the default framebuffer.
+        lit = linear_to_srgb(lit);
+    }
     finalColor = vec4(lit, 1.0);
 }

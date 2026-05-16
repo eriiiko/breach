@@ -74,6 +74,8 @@ class GameRenderer:
         self.show_fire = True
         self.show_lighting = True
         self.show_normal_map = True
+        self.normal_y_flipped = False    # H key: flip normal map Y axis
+        self.srgb_decode = True          # G key: toggle sRGB gamma handling
 
         # Frame timing
         self.last_frame_ms = 0.0
@@ -226,11 +228,14 @@ class GameRenderer:
         draw_text("Toggles:", x, y, 14, color=(180, 200, 255, 255))
         y += 20
         for label, on in [
-            ("F1 grid",   self.show_grid),
-            ("F2 smoke",  self.show_smoke),
-            ("F3 fire",   self.show_fire),
-            ("F4 light",  self.show_lighting),
-            ("F5 normal", self.show_normal_map),
+            ("F1 grid",        self.show_grid),
+            ("F2 smoke",       self.show_smoke),
+            ("F3 fire",        self.show_fire),
+            ("F4 light",       self.show_lighting),
+            ("F5 normal map",  self.show_normal_map),
+            ("B  bilinear",    self.lighting.bilinear),
+            ("G  sRGB",        self.srgb_decode),
+            ("H  flip-Y norm", self.normal_y_flipped),
         ]:
             color = (180, 255, 180, 255) if on else (140, 140, 140, 255)
             draw_text(label, x, y, 13, color=color)
@@ -252,6 +257,12 @@ class GameRenderer:
             self.show_normal_map = not self.show_normal_map
         if rl.is_key_pressed(rl.KeyboardKey.KEY_B):
             self.lighting.toggle_bilinear()
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_H):
+            self.normal_y_flipped = not self.normal_y_flipped
+            self.lighting.set_normal_y_sign(-1.0 if self.normal_y_flipped else 1.0)
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_G):
+            self.srgb_decode = not self.srgb_decode
+            self.lighting.set_srgb_decode(self.srgb_decode)
 
     # ---- coordinate conversions -----------------------------------------
 

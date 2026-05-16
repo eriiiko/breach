@@ -41,18 +41,28 @@ class LightingPass:
             str(SHADERS_DIR / "lighting.vs"),
             str(SHADERS_DIR / "lighting.fs"),
         )
-        # Look up uniform locations once
-        self._loc_normal_tex     = rl.get_shader_location(self.shader, "u_normal")
-        self._loc_light_tex      = rl.get_shader_location(self.shader, "u_light")
-        self._loc_ambient        = rl.get_shader_location(self.shader, "u_ambient")
-        self._loc_normal_strength= rl.get_shader_location(self.shader, "u_normal_strength")
-        self._loc_use_normal     = rl.get_shader_location(self.shader, "u_use_normal")
+        # Look up uniform locations once. Warn (but continue) on any -1.
+        self._loc_normal_tex      = self._lookup("u_normal")
+        self._loc_light_tex       = self._lookup("u_light")
+        self._loc_ambient         = self._lookup("u_ambient")
+        self._loc_normal_strength = self._lookup("u_normal_strength")
+        self._loc_use_normal      = self._lookup("u_use_normal")
+        self._loc_normal_y_sign   = self._lookup("u_normal_y_sign")
+        self._loc_srgb_decode     = self._lookup("u_srgb_decode")
 
         # Default uniforms
         self.set_ambient((0.18, 0.18, 0.22))
         self.set_normal_strength(1.0)
+        self.set_normal_y_sign(1.0)   # OpenGL convention; flip to -1 if needed
+        self.set_srgb_decode(True)    # PNG diffuse art is sRGB
 
     # ---- uniform setters -----------------------------------------------
+
+    def _lookup(self, name: str) -> int:
+        loc = rl.get_shader_location(self.shader, name)
+        if loc == -1:
+            print(f"[lighting] WARN: shader uniform '{name}' not found (loc=-1)")
+        return loc
 
     def set_ambient(self, rgb):
         val = rl.ffi.new("float[3]", [float(rgb[0]), float(rgb[1]), float(rgb[2])])
@@ -67,6 +77,19 @@ class LightingPass:
     def set_use_normal(self, on: bool):
         val = rl.ffi.new("int[1]", [1 if on else 0])
         rl.set_shader_value(self.shader, self._loc_use_normal, val,
+                            rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
+
+    def set_normal_y_sign(self, sign: float):
+        """Set +1 for OpenGL convention (Y up), -1 for DirectX (Y down)."""
+        val = rl.ffi.new("float[1]", [float(sign)])
+        rl.set_shader_value(self.shader, self._loc_normal_y_sign, val,
+                            rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT)
+
+    def set_srgb_decode(self, on: bool):
+        """When True, treat the diffuse texture as sRGB-encoded and do lighting
+        math in linear space, re-encoding on output."""
+        val = rl.ffi.new("int[1]", [1 if on else 0])
+        rl.set_shader_value(self.shader, self._loc_srgb_decode, val,
                             rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
 
     def toggle_bilinear(self):
