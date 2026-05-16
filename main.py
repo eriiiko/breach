@@ -14,10 +14,13 @@ import sys
 import time
 from pathlib import Path
 
-# Ensure we can import the C++ physics module + project modules
+# Ensure we can import the C++ physics module + project modules.
+# `src/` hosts the new ``simulation`` package — imported as ``from simulation
+# import X`` everywhere (no ``src.`` prefix). See src/simulation/__init__.py.
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
 
 import numpy as np
 import pyray as rl
