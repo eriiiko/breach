@@ -27,53 +27,10 @@ import pyray as rl
 
 import breach_physics as bp
 from config import CFG
-from level_loader import load as load_level, materials_from_tilemap
+from level_loader import load as load_level
 from renderer import GameRenderer
 from renderer.game_renderer import RenderConfig
-
-
-# ---------------------------------------------------------------------------
-# Minimal GameMap shim — replaces game.GameMap for the renderer's needs.
-# ---------------------------------------------------------------------------
-
-class GameMap:
-    """Bare GameMap: just the fields the renderer + physics need. Full version
-    in game.py — we'll migrate it later. For now this is enough to test the
-    pipeline end-to-end with the new renderer."""
-
-    def __init__(self, level):
-        h, w = level.height, level.width
-        self.level = level
-        self.material  = np.zeros((h, w), dtype=np.int8)
-        self.is_wall   = np.zeros((h, w), dtype=bool)
-        self.is_vacuum = np.zeros((h, w), dtype=bool)
-        self.flammable = np.zeros((h, w), dtype=bool)
-        self.wall_hp   = np.zeros((h, w), dtype=np.float32)
-        self.atmosphere = np.ones((h, w), dtype=np.float32)
-        self.wave_p     = np.zeros((h, w), dtype=np.float32)
-        self.wave_v     = np.zeros((h, w), dtype=np.float32)
-        self.wave_source= np.zeros((h, w), dtype=np.float32)
-        self.wind_x     = np.zeros((h, w), dtype=np.float32)
-        self.wind_y     = np.zeros((h, w), dtype=np.float32)
-        self.smoke      = np.zeros((h, w), dtype=np.float32)
-        self.fire       = np.zeros((h, w), dtype=np.float32)
-        self.obstacles  = np.zeros((h, w), dtype=bool)
-
-        # Populate from level
-        mat, vac = materials_from_tilemap(level.tilemap)
-        self.material[:] = mat
-        self.is_wall[:]  = (mat == 1)   # MAT_HULL
-        self.is_vacuum[:] = vac
-        self.atmosphere[vac] = 0.0
-        self.flammable[:] = False  # No wood in this level (yet)
-        self.obstacles[:] = self.is_wall
-
-        # HP from config (only hull cells need HP)
-        try:
-            hull_hp = CFG.materials.hull[0]
-        except Exception:
-            hull_hp = 300.0
-        self.wall_hp[self.is_wall] = float(hull_hp)
+from simulation.gamemap import GameMap
 
 
 # ---------------------------------------------------------------------------
