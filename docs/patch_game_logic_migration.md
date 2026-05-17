@@ -280,6 +280,59 @@ Each of these is worth doing — but each is its own patch. This one is a pure r
   top via `pickle`. Note in docstring: "future save/load reads from
   this snapshot."
 
+## Playtest findings (2026-05-17) — before deleting game.py
+
+Erik playtested a round after Phase 2-3 landed. Game is broadly working,
+but several behaviors regressed or differ from legacy game.py. Investigate
+each by running both side by side before step 13.
+
+### To investigate / restore
+
+1. **Explosions visuals are weak.** No flame burst, no flash. Legacy
+   `game.py` had a pressure-to-color mapping that made explosions look
+   dramatic. Verify it was actually there (might be misremembered) and
+   either port it or design something better.
+
+2. **Explosions should emit a light source** at the center for a few
+   ticks. Currently the world goes dark again immediately. New idea —
+   could be implemented as a transient LightSource added to the
+   `ExplosionEvent` consumer in the renderer (high intensity, short
+   life), OR a `Simulation`-side temporary entity.
+
+3. **Spawn sites are hardcoded.** Marines should spawn at level-defined
+   spawn points (likely a new field in `level.toml` — `marine_spawns`,
+   `zombie_spawns`). Currently main.py drops a few hardcoded marines for
+   the demo.
+
+4. **Sprite models** — Phase 2-3 left units as circles per anti-goal.
+   Need to wire `art/sprites/*` back. Legacy game.py used round-robin
+   assignment (game.py:1349-1354).
+
+5. **Strong / weak zombie variants** — legacy had multiple zombie kinds
+   (runner: low HP fast, brute: high HP slow). Check `unit.py` carries
+   the `speed_ticks_per_tile` and `max_hp` fields (it should), then
+   reintroduce variant spawning.
+
+6. **Turn / phase flow is not working properly.** Investigate against
+   game.py — possible candidates: phase transition trigger, pause
+   release timing, order resolution at tick boundaries. Specific
+   symptom not captured at playtest time; reproduce + diagnose.
+
+### New design ideas (might do, might not)
+
+7. **Level editor mode** — a tool/mode that loads a level and lets the
+   designer place monsters, spawn points, and triggers interactively.
+   Could be its own entry point (`editor.py`) reusing `renderer` +
+   `level_loader`, writing to a `level_extras.toml` per level.
+
+### Anti-goal still standing
+
+Do not delete `game.py` until items 1-6 are reconciled against the
+legacy reference. The playtest pass + this list is exactly why we held
+back on step 13.
+
+---
+
 ## After-migration follow-ups (track in TODO.md)
 
 - Scorch marks on tiles from grenades / fire (permanent visual scarring)
