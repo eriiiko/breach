@@ -28,6 +28,7 @@ from .overlays import (
     FieldOverlay, FireOverlay,
     draw_unit, draw_waypoint_line, draw_grid, draw_text, draw_panel_background,
 )
+from .sprites import UnitSprites
 from .world_composite import WorldComposite
 
 
@@ -119,6 +120,10 @@ class GameRenderer:
         self._effects: list = []
 
         self.lighting.set_ambient((0.18, 0.18, 0.22))
+
+        # Unit sprites — loaded once, unloaded in shutdown().
+        self.sprites = UnitSprites()
+        self.sprites.load()
 
     # ---- per-frame physics->GPU upload ---------------------------------
 
@@ -233,12 +238,19 @@ class GameRenderer:
         for m in marines:
             if not getattr(m, "alive", True):
                 continue
+            facing = getattr(m, "facing", "N")
+            sprite = self.sprites.get_marine(facing)
             draw_unit(m.x, m.y, wpt, (60, 180, 60, 255),
-                      label=getattr(m, "name", ""))
+                      label=getattr(m, "name", ""),
+                      footprint_tiles=getattr(m, "footprint", 3),
+                      sprite=sprite)
         for z in zombies:
             if not getattr(z, "alive", True):
                 continue
-            draw_unit(z.x, z.y, wpt, (200, 50, 50, 255))
+            sprite = self.sprites.get_zombie(z)
+            draw_unit(z.x, z.y, wpt, (200, 50, 50, 255),
+                      footprint_tiles=getattr(z, "footprint", 3),
+                      sprite=sprite)
 
     def _draw_orders_world(self, orders_per_unit: dict) -> None:
         wpt = self.world.world_px_per_tile
@@ -623,6 +635,7 @@ class GameRenderer:
     # ---- shutdown -------------------------------------------------------
 
     def shutdown(self) -> None:
+        self.sprites.unload()
         self.textures.unload_all()
         rl.unload_shader(self.lighting.shader)
         rl.unload_texture(self.lighting.light_tex)

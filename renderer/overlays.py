@@ -87,20 +87,37 @@ class FireOverlay(FieldOverlay):
 
 def draw_unit(x_tile: float, y_tile: float, world_px_per_tile: float,
               color, label: str = "", radius_tiles: float = 1.5,
-              footprint_tiles: int = 3) -> None:
-    """Draw a unit centered on its footprint, in world-pixel coordinates.
+              footprint_tiles: int = 3,
+              sprite: Optional[rl.Texture] = None) -> None:
+    """Draw a unit on its footprint, in world-pixel coordinates.
 
     x_tile, y_tile = top-left of the unit's footprint in world-tile coords.
     world_px_per_tile = how many world pixels per tile (set by WorldComposite).
     footprint_tiles = side length of the unit's tile footprint (3 for marines).
-    radius_tiles = visual radius in tile units.
+    radius_tiles = visual radius in tile units (used only for the circle fallback).
+    sprite = optional Texture; if provided, draws sprite scaled to the footprint
+             instead of the circle placeholder.
     """
-    half = footprint_tiles * 0.5
-    cx_wpx = tile_to_world_px(x_tile + half, world_px_per_tile)
-    cy_wpx = tile_to_world_px(y_tile + half, world_px_per_tile)
-    r_wpx  = radius_tiles * world_px_per_tile
-    rl.draw_circle(int(cx_wpx), int(cy_wpx), r_wpx, rl.Color(*color))
+    x_wpx = tile_to_world_px(x_tile, world_px_per_tile)
+    y_wpx = tile_to_world_px(y_tile, world_px_per_tile)
+    size_wpx = footprint_tiles * world_px_per_tile
+
+    if sprite is not None:
+        src = rl.Rectangle(0.0, 0.0, float(sprite.width), float(sprite.height))
+        dst = rl.Rectangle(x_wpx, y_wpx, size_wpx, size_wpx)
+        rl.draw_texture_pro(sprite, src, dst, rl.Vector2(0.0, 0.0), 0.0, rl.WHITE)
+    else:
+        # Circle fallback — also used when sprite failed to load.
+        half = footprint_tiles * 0.5
+        cx_wpx = x_wpx + half * world_px_per_tile
+        cy_wpx = y_wpx + half * world_px_per_tile
+        r_wpx  = radius_tiles * world_px_per_tile
+        rl.draw_circle(int(cx_wpx), int(cy_wpx), r_wpx, rl.Color(*color))
+
     if label:
+        r_wpx = radius_tiles * world_px_per_tile
+        cx_wpx = x_wpx + (footprint_tiles * 0.5) * world_px_per_tile
+        cy_wpx = y_wpx + (footprint_tiles * 0.5) * world_px_per_tile
         rl.draw_text(label, int(cx_wpx - r_wpx),
                      int(cy_wpx - r_wpx - 14), 12, rl.WHITE)
 

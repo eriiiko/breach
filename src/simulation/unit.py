@@ -64,7 +64,7 @@ class Unit:
         self.footprint = int(footprint)
 
         self.alive = True
-        self.facing = "S"
+        self.facing = "N"   # default spawn pose: facing north (marines spawn south, look north)
 
         # HP from config based on type.
         self.hp = CFG.zombie.hp if self.is_zombie else CFG.marine.hp
