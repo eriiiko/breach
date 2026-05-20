@@ -25,3 +25,52 @@ floor_id = 0
 # teleporters = [
 #     { from = [tile_x, tile_y], to_level = "next_level", to_tile = [x, y] }
 # ]
+
+# Unit spawns. team 0 = marine (player), team 1 = zombie.
+# (x, y) is the physics-tile position (top-left of the unit's footprint).
+# Coords read directly from the F6 HUD (physics-tile grid).
+# When the unit-variant system lands, size + subtype fields will appear here.
+
+[[spawn]]
+name = "Alpha"
+team = 0
+x = 24
+y = 90
+
+[[spawn]]
+name = "Bravo"
+team = 0
+x = 24
+y = 94
+
+[[spawn]]
+name = "Cobra"
+team = 0
+x = 24
+y = 98
+
+# TODO once unit-variant system lands: make this one a size-3 (ogryn) human
+# in the is_zombie state. See docs/unit_variants_design_brainstorm.md.
+[[spawn]]
+name = "Zomb1"
+team = 1
+x = 36
+y = 76
+
+[[spawn]]
+name = "Zomb2"
+team = 1
+x = 24
+y = 77
+
+[[spawn]]
+name = "Zomb3"
+team = 1
+x = 19
+y = 78
+
+[[spawn]]
+name = "Zomb4"
+team = 1
+x = 25
+y = 16

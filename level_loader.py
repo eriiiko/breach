@@ -26,6 +26,16 @@ SUPPORTED_VERSIONS = {"1"}
 
 
 @dataclass
+class SpawnEntry:
+    """One unit spawn declared in level.toml. Fed to Simulation.add_unit."""
+    name: str
+    team: int           # 0 = marine, 1 = zombie
+    x: float            # physics-tile x (top-left of footprint)
+    y: float            # physics-tile y
+    footprint: int = 3  # side length of unit's square footprint in tiles
+
+
+@dataclass
 class LevelData:
     name: str
     version: str
@@ -39,6 +49,7 @@ class LevelData:
     wall_mask_path: Optional[Path] = None
     background_path: Optional[Path] = None     # screen-fixed backdrop
     floor_id: int = 0
+    spawns: list = field(default_factory=list)  # list[SpawnEntry]
     raw_toml: dict = field(default_factory=dict)
 
     @property
@@ -101,6 +112,22 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
             raise ValueError(f"{key} declared but file missing: {p}")
         return p
 
+    spawns = []
+    for i, entry in enumerate(raw.get("spawn", [])):
+        try:
+            spawns.append(SpawnEntry(
+                name=str(entry["name"]),
+                team=int(entry["team"]),
+                x=float(entry["x"]),
+                y=float(entry["y"]),
+                footprint=int(entry.get("footprint", 3)),
+            ))
+        except (KeyError, TypeError, ValueError) as e:
+            raise ValueError(
+                f"Invalid [[spawn]] entry #{i} in {toml_path}: {e}. "
+                f"Required fields: name (str), team (int), x (float), y (float)."
+            )
+
     return LevelData(
         name=name,
         version=version,
@@ -114,6 +141,7 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
         wall_mask_path=opt("wall_mask"),
         background_path=opt("background"),
         floor_id=int(raw.get("floor_id", 0)),
+        spawns=spawns,
         raw_toml=raw,
     )
 
