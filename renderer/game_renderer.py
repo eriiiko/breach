@@ -105,6 +105,7 @@ class GameRenderer:
         self.show_normal_map = True
         self.normal_y_flipped = False
         self.srgb_decode = True
+        self.show_debug_coords = False
 
         # Frame timing
         self.last_frame_ms = 0.0
@@ -232,12 +233,12 @@ class GameRenderer:
         for m in marines:
             if not getattr(m, "alive", True):
                 continue
-            draw_unit(m.fx, m.fy, wpt, (60, 180, 60, 255),
+            draw_unit(m.x, m.y, wpt, (60, 180, 60, 255),
                       label=getattr(m, "name", ""))
         for z in zombies:
             if not getattr(z, "alive", True):
                 continue
-            draw_unit(z.fx, z.fy, wpt, (200, 50, 50, 255))
+            draw_unit(z.x, z.y, wpt, (200, 50, 50, 255))
 
     def _draw_orders_world(self, orders_per_unit: dict) -> None:
         wpt = self.world.world_px_per_tile
@@ -478,6 +479,7 @@ class GameRenderer:
             ("F3 fire",        self.show_fire),
             ("F4 light",       self.show_lighting),
             ("F5 normal map",  self.show_normal_map),
+            ("F6 coords",      self.show_debug_coords),
             ("B  bilinear",    self.lighting.bilinear),
             ("G  sRGB",        self.srgb_decode),
             ("H  flip-Y norm", self.normal_y_flipped),
@@ -514,6 +516,8 @@ class GameRenderer:
             self.show_lighting = not self.show_lighting
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F5):
             self.show_normal_map = not self.show_normal_map
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_F6):
+            self.show_debug_coords = not self.show_debug_coords
         if rl.is_key_pressed(rl.KeyboardKey.KEY_B):
             self.lighting.toggle_bilinear()
         if rl.is_key_pressed(rl.KeyboardKey.KEY_H):
@@ -580,6 +584,41 @@ class GameRenderer:
         if not self.camera.contains_screen_px(mx, my):
             return None
         return self.camera.screen_px_to_world_tile(mx, my)
+
+    # ---- debug HUD ------------------------------------------------------
+
+    def draw_debug_hud(self, gmap) -> None:
+        """Cursor tile (x, y) + material readout. F6 toggles. Useful for
+        scouting spawn coordinates and verifying level geometry."""
+        if not self.show_debug_coords:
+            return
+        mouse_f = self.mouse_to_tile_float()
+        if mouse_f is None:
+            text = "tile (—, —) — cursor outside map"
+        else:
+            cx, cy = int(mouse_f[0]), int(mouse_f[1])
+            H, W = gmap.is_wall.shape
+            if 0 <= cx < W and 0 <= cy < H:
+                if gmap.is_vacuum[cy, cx]:
+                    mat = "vacuum"
+                elif gmap.is_wall[cy, cx]:
+                    mat = "hull"
+                else:
+                    mat_val = int(gmap.material[cy, cx])
+                    mat = {0: "air", 1: "hull", 3: "door"}.get(
+                        mat_val, f"mat{mat_val}")
+                blocked = bool(gmap.is_wall[cy, cx] or gmap.is_vacuum[cy, cx])
+                tag = "BLOCKED" if blocked else "walkable"
+                text = f"tile ({cx}, {cy}) — {mat} — {tag}"
+            else:
+                text = f"tile ({cx}, {cy}) — out of bounds"
+        pad, font_size = 6, 16
+        x0, y0 = 12, 40
+        tw = rl.measure_text(text, font_size)
+        rl.draw_rectangle(x0, y0, tw + 2 * pad, font_size + 2 * pad,
+                          rl.Color(0, 0, 0, 180))
+        rl.draw_text(text, x0 + pad, y0 + pad, font_size,
+                     rl.Color(255, 230, 120, 255))
 
     # ---- shutdown -------------------------------------------------------
 
