@@ -748,10 +748,10 @@ Currently one `Unit` class serves both marines and zombies. This causes field bl
 
 **Base fields (all units):**
 ```
-name, team, fx, fy, alive, hp, max_hp, facing, inventory[]
+name, team, x, y, footprint, alive, hp, max_hp, facing, inventory[]
 ```
 
-Note: the current code also has `fxf, fyf` (float position for interpolation). Per the v2 design, these should be removed from game state — units are always on integer tile positions. The renderer handles interpolation between ticks.
+`x` and `y` are float positions in physics-tile units. `footprint` is the side length of the unit's square footprint in tiles (default 3). Integer tile-index access goes through `unit.tile_x` / `unit.tile_y` properties. The renderer reads the float `x`/`y` directly for sub-tile interpolation. The old `fx/fy` (int) and `fxf/fyf` (float) fields have been merged into this single `x/y` float — coord system cleanup completed 2026-05-20.
 
 **Inventory is a base field, not marine-specific.** When a marine is converted to a zombie, it retains its inventory (grenades, explosives). Zombies can't *use* items, but they still *carry* them. This creates emergent interactions: converted zombie carries a grenade → walks through fire → grenade overheats past ignition_temp → detonation. No special-case code — the temperature system and explosion system handle it naturally.
 
@@ -942,9 +942,6 @@ Raylib is the intended rendering backend for the C++ version. The clean render s
 `config.toml` is loaded at startup into a `GameConfig` object with nested `Namespace` attribute access (`CFG.clock.ticks_per_second`). `CFG.reload()` re-reads the file (bound to F5).
 
 **Derived values** computed on load:
-- `fine_w = map_w * coarse` (tiles_per_unit, historically called "coarse")
-- `fine_h = map_h * coarse`
-- `coarse_px = fine_tile_px * coarse`
 - `ticks_per_phase = ticks_per_second * phase_duration_seconds`
 - `ticks_per_round = ticks_per_phase * phases_per_round`
 
@@ -1104,7 +1101,7 @@ class PhysicsEngine {
 
 9. **UI panel** — `_draw_ui_panel()` is 207 lines. Could use a lightweight UI layout system.
 
-10. **Float positions should be removed** — `fxf/fyf` exist in Unit but per `design_v2_turn_and_combat_overhaul.md`, units should always be on integer tile positions. Movement is tile-to-tile hops. Rendering interpolates between ticks for smooth animation — this is a renderer concern, not game state.
+10. **Coord system cleanup completed (2026-05-20)** — `fxf/fyf` and `fx/fy` (dual float+int position) removed from Unit. Position is now `unit.x / unit.y` (float, physics-tile units). Integer matrix access via `unit.tile_x / unit.tile_y` properties. `unit.footprint` (default 3) replaces the global `CFG.display.coarse`. Dead config keys (`coarse`, `fine_w`, `fine_h`, `map_w`, `map_h`, `coarse_px`, `fine_tile_px`) removed from `config.toml`.
 
 11. **Liquids system not yet implemented** — Liquid type (none, blood, water, fuel) and liquid depth are planned per-tile state fields. Liquids interact with fire (water extinguishes, fuel accelerates), creatures (blood attracts), and electricity (lightning conducts through water). Needs its own design pass before implementation.
 
