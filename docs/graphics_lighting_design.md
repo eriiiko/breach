@@ -35,7 +35,7 @@ All assets snap to the tile grid. Destruction operates along tile boundaries, ke
 - From each light source, cast rays outward across the 2D plane
 - Rays terminate when they hit an opaque occluder (wall, closed door, solid object)
 - Everything behind the occluder is in shadow
-- Result: a per-tile (or per-sub-tile) light map storing light intensity and color
+- Result: a per-tile light map storing light intensity, direction and color
 
 ### Light sources
 - **Room lights:** static ceiling fixtures, update only when walls change
@@ -49,10 +49,39 @@ All assets snap to the tile grid. Destruction operates along tile boundaries, ke
 - Walls cast hard shadows
 - Destroyed walls update the occlusion map → light floods into previously dark areas
 - Doors opening/closing changes shadow geometry
-- Characters and objects can cast shadows (optional, adds atmosphere)
+- Characters and objects cast shadows
 
 ### Integration with destructible environments
 This is the key payoff: every time a wall is destroyed, the light map recalculates. A dark cargo bay suddenly floods with corridor light when a wall is blown open. This is emergent and dramatic with zero additional design effort — it falls out of the system naturally.
+
+### Color treatment: desaturation in shadow
+
+Brightness and saturation are independent dimensions. Darkness should feel **colorless**, not merely dim. An earlier prototype achieved this with two texture versions — one full-color, one fully (or 90%) desaturated — blended by light intensity. The contrast was strong: shadowed areas read as drained, lit areas pop with color. This effect was lost in the renderer refactor (we need to confirm but i think so) and needs to be reintroduced.
+
+Two viable implementations:
+- **Two-texture blend** — keep both versions, blend by light intensity. (What the original did.)
+- **Shader (preferred)** — desaturate at render time in the fragment shader. Pass in the light field / raycast result; lerp each pixel from full saturation to grayscale based on how lit it is. Cleaner than maintaining two diffuse textures, and makes the saturation-vs-brightness distinction explicit in one place.
+
+### Implementation status: disable Raylib's built-in lights
+
+After the renderer refactor, the custom raycast lighting works correctly, but Raylib's built-in lighting is also still active — everything is brighter than intended and the directional light gets washed out. **Decision:** disable Raylib's built-in lights and run on the custom raycast alone. If a hybrid is ever wanted, it can be layered back on deliberately rather than by accident.
+
+### Per-source update strategy (light source class)
+
+Each light source has a different natural update cadence. Recasting all sources every tick is wasteful when most of them haven't moved.
+
+- **Flashlight / helmet lights:** recast every tick — they follow the character.
+- **Muzzle flash, explosion flash:** one-shot, recast only on the trigger frame.
+- **Static room lights:** recast only when occlusion changes (wall destroyed, door opens/closes). Otherwise cached.
+- **Fires:** the ray geometry is static-ish for a few rounds at a time (fires move slowly), but moving characters cast shadows through firelight every tick. Open design question: can the per-source ray paths be cached and only the moving-occluder contributions recomputed each tick? Worth exploring.
+
+This points toward a `LightSource` wrapper on the Python side that knows its own dirty state ("needs recast?") and a lighting pass that iterates only dirty sources. The C++ `LightSource` struct in [cpp/src/raycaster.h](../cpp/src/raycaster.h) already holds the geometry (position, range, angle, falloff, jitter); the Python wrapper would add the scheduling layer on top.
+
+### Note on raycaster implementation (not GPU, not RTX)
+
+The lighting raycaster is **2D CPU code in C++** ([cpp/src/raycaster.cpp](../cpp/src/raycaster.cpp), DDA ray marching), called from Python via pybind. Not GPU-accelerated despite the rest of the pipeline using GPU for rendering. CUDA-ing it is listed in [TODO.md](TODO.md) under "CUDA Migration" — it's embarrassingly parallel and a natural first kernel.
+
+For clarity: **"RTX" specifically means NVIDIA's hardware-accelerated 3D ray tracing** (BVH traversal + ray-triangle intersection in dedicated silicon, for 3D scenes). Breach does 2D ray *marching* through a tile grid — same word "ray," entirely different machinery. The grid structure also makes this cheap in ways 3D ray tracing isn't.
 
 ---
 
@@ -66,6 +95,14 @@ This is the key payoff: every time a wall is destroyed, the light map recalculat
 ### Visual effect
 Light beam visible in smoke (god rays / volumetric light approximation). Can be done as a post-process or by rendering light intensity along the ray path where smoke density > 0.
 
+### Idea: normal-mapped smoke tiles
+
+Smoke concentration lives at physics resolution (one value per tile), but the **visual** smoke pixels within a tile sit at game resolution. That opens the door to painting a normal map onto smoke — a "smoke normal" sub-texture that lets the smoke not just attenuate light, but also catch directional highlights from it.
+
+Use the same per-pixel dot-product treatment as solid sprites: each smoke pixel gets a fake surface normal, dotted with the local light direction (already available in our packed light field, G/B channels). The result is internal shading inside the smoke volume — wisps, eddies, density variation reading visually instead of as flat gray fog.
+
+Cheap to add since the renderer already samples light direction per pixel; the only cost is authoring or generating the smoke normal texture. Worth exploring once the basic lit-smoke + god-rays approach is in.
+
 ---
 
 ## 5. Shadow Stealth Mechanic
@@ -78,6 +115,7 @@ Simple rule built on top of the lighting system:
 - Creates tactical decisions: shoot out lights, use smoke, exploit dark rooms
 
 This is a gameplay mechanic that emerges from the graphics system with minimal additional code.
+Also - PErhaps the AI's main input will be the physics grid or even the rendered image - so that if we have trouble seeing something, it also has trouble seeing something. Im not sure if it's the right way to implement htis . but perhaps it is very cool. (different species have different views of the gamestate, infravision etc)
 
 ---
 
@@ -92,6 +130,7 @@ A normal map is a texture where each pixel stores a **surface direction** (the n
 - **Bump map:** older term, similar concept to normal maps but implemented differently. People use the terms loosely.
 
 ### Production pipeline
+0. Create the walls and rooms at physics resolution first. The pipeline is still in prototype phase as of 20260520.
 1. Draw/obtain the base sprite (diffuse/color texture)
 2. Create or auto-generate a height map (grayscale depth)
 3. Convert height map → normal map (automated)
@@ -111,7 +150,51 @@ Most 2D engines support this natively or with minimal shader work:
 
 ---
 
-## 7. Art Asset Strategy
+## 7. Destruction Painting Layer
+
+A single full-level "edit texture" is the substrate for **all** destructive visual changes — bullet holes, blood splatter, scorch marks, rubble, floor painted over destroyed walls. One texture, not one layer or sprite per effect type.
+
+### 7.1 Core paint system
+
+**Goal:** unlimited, effectively free destructive edits to the level without exploding sprite or layer counts.
+
+**Approach:** one edit-layer texture sized to the level. All destructive effects are paint operations onto this texture; the original level PNG stays untouched.
+
+- A handful of pixels per event is microseconds; even filling the screen with edits is fast.
+- The real cost is VRAM for the texture — negligible for a single-level game.
+- Raylib supports the texture manipulation directly.
+
+**Decision:** single-layer, paint freely. Only optimize if a real bottleneck shows up.
+
+### 7.2 Patch A — Grenade scorch marks via normal map
+
+When a grenade explodes, for each pixel inside the blast radius:
+
+1. Sample the normal map at that pixel.
+2. Compute the dot product between the pixel's normal and the explosion direction (vector from blast center outward to the pixel).
+3. Paint the scorch scaled by that dot product — surfaces facing the blast darken strongly; surfaces parallel to or facing away pick up little or no mark.
+
+Directionally realistic burn marks fall out for free, reusing normal-map data the renderer already has. Same painting code path as the rest of the destruction layer, with a directional mask applied based on surface orientation.
+
+### 7.3 Patch B — Destroyed wall tiles (quickfix)
+
+When a wall tile is destroyed:
+- Paint floor or rubble texture over those pixels so the tile reads as walkable.
+
+-After thinking aobut this - i'm a litte intrigued. perhaps we can paint with texturs, and perhaps this vcan be done really really cool. Paint with assets is another possability, rubble etc.
+- Straight replacement is fine for v1 — no animation needed.
+
+(v2 idea: lerp between intact and destroyed states for a gradual crumble.)
+
+Same texture-paint code path as scorch marks.
+
+### 7.4 Future: doors as animated assets, not paint operations
+
+The wall-destruction patch above is a quickfix. Long-term, **doors specifically should become first-class animated assets** — not tiles painted on the edit layer — so they can play open/close animations, hold per-door state, and interact properly with the occlusion grid for the lighting system. The paint-based approach stays for genuinely destructive edits (rubble, scorch, blood); animated/stateful tiles graduate to assets.
+
+---
+
+## 8. Art Asset Strategy
 
 ### Phase 1: Prototype (now)
 - Colored rectangles or ultra-simple shapes for characters
@@ -138,7 +221,7 @@ Most 2D engines support this natively or with minimal shader work:
 
 ---
 
-## 8. Related Documents
+## 9. Related Documents
 
 - **Document 00: Architecture Overview** — engine choice discussion, two-layer architecture, full document roadmap
 - **Document 07: Line of Sight & Cover** — the shadow stealth mechanic (Section 5 above) feeds directly into the LOS system

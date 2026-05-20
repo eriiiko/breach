@@ -12,9 +12,29 @@
 
 - **Scorch marks** — grenades and fire should leave permanent visual
   marks on the floor/walls where they hit. Persistent darkening, soot,
-  burn patterns. Could be a separate texture (additional layer in
-  compose_world) or baked into the diffuse via a damage map. Design
-  before implementing.
+  burn patterns. **Design now in `graphics_lighting_design.md` §7
+  (Destruction Painting Layer)** — single edit-texture approach, with
+  normal-map dot product giving directional grenade burns. Ready to
+  implement.
+
+---
+
+## Resolution audit & consolidation
+
+Tile size / pixel resolution decisions are sprinkled across multiple docs and
+sometimes contradict each other (e.g. `graphics_lighting_design.md` still says
+"32px tile — exact size TBD"). The actual decisions are presumably resolved in
+code now.
+
+Task:
+1. Find every doc and code location that touches on resolution / tile size /
+   sprite size / normal-map dimensions / physics-vs-render resolution.
+2. Consolidate the canonical decisions into a single doc
+   (e.g. `docs/resolution.md`).
+3. Audit: for each claim, is it (a) still the design intent and
+   (b) actually what the implementation does?
+4. Update or remove stale resolution mentions in the other docs; have them
+   point to the canonical doc instead.
 
 ---
 
