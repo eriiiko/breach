@@ -54,14 +54,6 @@ class GameConfig:
                 setattr(self, key, value)
 
         # Derived values
-        # fine_w/fine_h can be set directly in config.toml (level-dependent),
-        # otherwise derive from map_w/map_h * coarse (legacy fallback).
-        if not hasattr(self.display, "fine_w"):
-            self.display.fine_w = self.display.map_w * self.display.coarse
-        if not hasattr(self.display, "fine_h"):
-            self.display.fine_h = self.display.map_h * self.display.coarse
-        self.display.coarse_px = self.display.fine_tile_px * self.display.coarse
-
         self.clock.ticks_per_phase = int(
             self.clock.ticks_per_second * self.clock.phase_duration_seconds
         )

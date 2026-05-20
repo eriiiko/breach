@@ -26,12 +26,6 @@ physics_dt = 0.001                # 1ms (CFL stable for c=300 tiles/s)
 physics_substeps = 8              # 8 * 1ms = 8ms physics per game tick
 
 [display]
-fine_tile_px = 6
-coarse = 3                    # unit footprint: 3x3 fine tiles = 1 marine (1m x 1m)
-fine_w = 50                   # grid width in fine tiles
-fine_h = 120                  # grid height in fine tiles
-map_w = 40                    # legacy (unused when fine_w set directly)
-map_h = 25                    # legacy (unused when fine_h set directly)
 panel_width = 250
 level = "unhcr_vessel"            # folder under levels/ to load on startup
 
