@@ -40,9 +40,10 @@ def main():
                      enable_recorder=False)
 
     # Spawn a small squad so units/effects exercise their code paths.
-    sim.add_unit(Unit("Alpha", cx=4,  cy=2,  team=0))
-    sim.add_unit(Unit("Bravo", cx=8,  cy=2,  team=0))
-    sim.add_unit(Unit("Zomb1", cx=10, cy=20, team=1))
+    # Coords are physics-tile positions inside the ship interior.
+    sim.add_unit(Unit("Alpha", x=22, y=50, team=0))
+    sim.add_unit(Unit("Bravo", x=28, y=50, team=0))
+    sim.add_unit(Unit("Zomb1", x=22, y=70, team=1))
 
     cfg = RenderConfig(
         map_px_w=400, map_px_h=960, panel_px_w=280,

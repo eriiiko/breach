@@ -35,9 +35,15 @@ SEED = 42
 
 
 def _spawn_demo_units(sim: Simulation) -> tuple:
-    """Add one marine and one zombie at fixed positions. Returns ids."""
-    marine = Unit("M1", cx=10, cy=10, team=0)
-    zombie = Unit("Z1", cx=12, cy=15, team=1)
+    """Add one marine and one zombie at fixed positions (physics-tile coords).
+
+    Both positions are inside the ship interior with passable 3×3 blocks.
+    Marine at (22, 50): rows 50-52, cols 22-24 are all interior air.
+    Zombie at (22, 70): rows 70-72, cols 22-24 are all interior air.
+    They are far enough apart that zombie AI won't trigger within 100 ticks.
+    """
+    marine = Unit("M1", x=22, y=50, team=0)
+    zombie = Unit("Z1", x=22, y=70, team=1)
     m_id = sim.add_unit(marine)
     z_id = sim.add_unit(zombie)
     return m_id, z_id
@@ -55,7 +61,7 @@ def _state_signature(sim: Simulation):
         "fire_mean": float(g.fire.mean()),
         "wave_p_mean": float(g.wave_p.mean()),
         "n_projectiles": len(sim.projectiles),
-        "units": [(u.id, u.fx, u.fy, u.hp, u.alive) for u in sim.units],
+        "units": [(u.id, u.tile_x, u.tile_y, u.hp, u.alive) for u in sim.units],
     }
     return sig
 
@@ -114,8 +120,8 @@ def test_undo_round_trip():
 
     # Place a move order. It should succeed and not consume AP.
     ok = sim.apply_action(m_id, Order(ORDER_MOVE_ATTACK,
-                                       target_fx=marine.fx + 6,
-                                       target_fy=marine.fy,
+                                       target_fx=marine.tile_x + 6,
+                                       target_fy=marine.tile_y,
                                        phase=0))
     assert ok, "expected movement order to succeed"
     assert marine.ap == ap_before, "movement should not consume AP"
@@ -141,16 +147,16 @@ def test_full_round_runs():
                      enable_recorder=False)
 
     # 3 marines, 3 zombies — enough for shooting + zombie AI exercise.
-    m1 = sim.add_unit(Unit("M1", cx=4, cy=2, team=0))
-    sim.add_unit(Unit("M2", cx=8, cy=2, team=0))
-    sim.add_unit(Unit("M3", cx=12, cy=4, team=0))
-    sim.add_unit(Unit("Z1", cx=10, cy=20, team=1))
-    sim.add_unit(Unit("Z2", cx=6,  cy=24, team=1))
-    sim.add_unit(Unit("Z3", cx=14, cy=28, team=1))
+    m1 = sim.add_unit(Unit("M1", x=12, y=6, team=0))
+    sim.add_unit(Unit("M2", x=24, y=6, team=0))
+    sim.add_unit(Unit("M3", x=36, y=12, team=0))
+    sim.add_unit(Unit("Z1", x=30, y=60, team=1))
+    sim.add_unit(Unit("Z2", x=18, y=72, team=1))
+    sim.add_unit(Unit("Z3", x=42, y=84, team=1))
 
     # One marine fires at a zombie tile (no LOS likely, but no exception).
     sim.apply_action(m1, Order(ORDER_FIRE,
-                               target_fx=10 * 3 + 1, target_fy=20 * 3 + 1,
+                               target_fx=31, target_fy=61,
                                phase=0))
 
     sim.set_paused(False)
