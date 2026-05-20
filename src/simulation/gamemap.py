@@ -113,23 +113,23 @@ class GameMap:
     def stamp_units(self, units):
         """Rebuild ``obstacles`` = static walls + living unit footprints.
 
-        Units occupy a ``coarse``-sized block (3x3 fine tiles for marines).
+        Each unit's footprint block is stamped onto the obstacle grid.
         When tiles transition from blocked to free (unit moved away or
         died), fill them with the neighbor mean of ``atmosphere`` to
         avoid spurious vacuum pulses.
         """
-        co = CFG.display.coarse
         h, w = self._h, self._w
         prev_obstacles = self.obstacles
         self.obstacles = self.is_wall.copy()
         for u in units:
             if not u.alive:
                 continue
-            uy, ux = u.fy, u.fx
+            uy, ux = u.tile_y, u.tile_x
+            fp = u.footprint
             y1 = max(0, uy)
-            y2 = min(h, uy + co)
+            y2 = min(h, uy + fp)
             x1 = max(0, ux)
-            x2 = min(w, ux + co)
+            x2 = min(w, ux + fp)
             self.obstacles[y1:y2, x1:x2] = True
 
         freed = prev_obstacles & ~self.obstacles
@@ -148,12 +148,11 @@ class GameMap:
             return False
         return self.material[fy, fx] in (MAT_AIR, MAT_DOOR)
 
-    def is_passable_block(self, fy, fx):
-        """True if a 3x3 unit footprint at (fy, fx) is fully passable."""
-        co = CFG.display.coarse
-        if fy < 0 or fx < 0 or fy + co > self._h or fx + co > self._w:
+    def is_passable_block(self, fy, fx, footprint: int = 3):
+        """True if a footprint-sized block at (fy, fx) is fully passable."""
+        if fy < 0 or fx < 0 or fy + footprint > self._h or fx + footprint > self._w:
             return False
-        block = self.material[fy:fy + co, fx:fx + co]
+        block = self.material[fy:fy + footprint, fx:fx + footprint]
         return bool(np.all((block == MAT_AIR) | (block == MAT_DOOR)))
 
     def has_los(self, fy1, fx1, fy2, fx2):
@@ -203,7 +202,6 @@ class GameMap:
         pulse. Edge hull tiles become vacuum and rely on relaxation BCs
         to drain smoothly.
         """
-        co = CFG.display.coarse
         h, w = self._h, self._w
         if not (0 <= fy < h and 0 <= fx < w):
             return
@@ -214,9 +212,9 @@ class GameMap:
             self.is_wall[fy, fx] = False
             self.flammable[fy, fx] = False
             if was_hull:
-                if (fy < co or fy >= h - co
-                        or fx < co or fx >= w - co):
-                    # True hull breach on the map edge.
+                if (fy < 1 or fy >= h - 1
+                        or fx < 1 or fx >= w - 1):
+                    # True hull breach — wall tile is on the map edge.
                     self.is_vacuum[fy, fx] = True
                     # Don't hard-zero — let relaxation BC drain smoothly.
                     self.atmosphere[fy, fx] = self._neighbor_mean(

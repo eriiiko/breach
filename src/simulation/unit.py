@@ -16,9 +16,11 @@ locked design decisions (``docs/patch_game_logic_migration.md``):
   ``zombie_speed_override`` monkey-patch (game.py:1294, 1301, 1944).
   It always exists; default comes from CFG.zombie.ticks_per_tile for
   zombies, CFG.marine attack speed for marines.
-- Float positions ``fxf`` / ``fyf`` are KEPT — the renderer interpolates
-  between them for smooth animation. The architecture doc flags them
-  as a future cleanup; out of scope for this migration.
+- Position lives in physics-tile units as float ``x`` / ``y``.
+  Integer matrix indexing via ``tile_x`` / ``tile_y`` properties.
+  The old fxf/fyf float fields and fx/fy integer fields are gone —
+  ``x`` and ``y`` are the sole source of truth (coord system cleanup
+  2026-05-20).
 """
 from __future__ import annotations
 
@@ -31,14 +33,18 @@ from simulation.orders import (
 class Unit:
     """Game entity: marine, zombie, or future creature.
 
+    Position lives in physics-tile units. ``x`` and ``y`` are float;
+    integer tile indices for matrix access come from ``tile_x`` /
+    ``tile_y`` properties (which simply floor the float).
+
     ``team`` semantics: 0 = marine (player), 1 = zombie (enemy). The
     ``is_zombie`` flag mirrors this and is the source-of-truth check for
     "should AI take over this unit". Conversion (marine killed by
     zombie -> zombified at round end) flips both fields.
     """
 
-    def __init__(self, name, cx, cy, team=0):
-        co = CFG.display.coarse
+    def __init__(self, name: str, x: float, y: float, team: int = 0,
+                 footprint: int = 3):
         self.name = name
         self.team = team
         self.is_zombie = (team == 1)
@@ -47,13 +53,15 @@ class Unit:
         # unit has not yet been added (constructor usage / tests).
         self.id = -1
 
-        # Position: integer fine-tile (top-left of 3x3 unit block).
-        # fxf/fyf are float positions used by the renderer for smooth
-        # interpolation between ticks. They stay in sync with fx/fy.
-        self.fx = cx * co
-        self.fy = cy * co
-        self.fxf = float(self.fx)
-        self.fyf = float(self.fy)
+        # Position on the physics-tile grid. Float so renderer can
+        # interpolate; integer indexing via tile_x / tile_y properties.
+        self.x = float(x)
+        self.y = float(y)
+
+        # Side length of the unit's square footprint, in physics tiles.
+        # Default 3 (size-1 human). Will become a function of the variant
+        # system later — see unit_variants_design_brainstorm.md.
+        self.footprint = int(footprint)
 
         self.alive = True
         self.facing = "S"
@@ -104,30 +112,24 @@ class Unit:
     # ------------------------------------------------------------------
     # Tile-coordinate helpers
     # ------------------------------------------------------------------
-    @property
-    def cx(self):
-        """Coarse tile X (3-tile blocks)."""
-        return self.fx // CFG.display.coarse
 
     @property
-    def cy(self):
-        """Coarse tile Y."""
-        return self.fy // CFG.display.coarse
+    def tile_x(self) -> int:
+        """Integer tile index (col) — for matrix access."""
+        return int(self.x)
 
-    def center_fx(self):
-        """Approximate fine-tile X at the unit's center (top-left + co/2)."""
-        return self.fx + CFG.display.coarse // 2
+    @property
+    def tile_y(self) -> int:
+        """Integer tile index (row) — for matrix access."""
+        return int(self.y)
 
-    def center_fy(self):
-        """Approximate fine-tile Y at the unit's center."""
-        return self.fy + CFG.display.coarse // 2
+    def center_tile_x(self) -> int:
+        """Col index of the unit's center tile."""
+        return self.tile_x + self.footprint // 2
 
-    def get_center_px(self):
-        """Pixel-space center using float position. Used by renderer/UI."""
-        co_px = CFG.display.coarse_px
-        ft = CFG.display.fine_tile_px
-        return (int(self.fxf * ft + co_px / 2),
-                int(self.fyf * ft + co_px / 2))
+    def center_tile_y(self) -> int:
+        """Row index of the unit's center tile."""
+        return self.tile_y + self.footprint // 2
 
     # ------------------------------------------------------------------
     # Orders / AP helpers (used by the planning phase + UI)
@@ -144,13 +146,13 @@ class Unit:
         self.ap[phase] -= cost
 
     def get_planned_end_pos(self):
-        """Return the fine-tile position the unit will reach after all
-        queued movement orders. Used by grenade projectile spawn (the
-        marine throws from where they'll be at the start of the phase)."""
+        """Return the tile position the unit will reach after all queued
+        movement orders. Used by grenade projectile spawn (the marine
+        throws from where they'll be at the start of the phase)."""
         for o in reversed(self.orders):
             if o.order_type in MOVE_ORDER_TYPES:
                 return o.target_fx, o.target_fy
-        return self.fx, self.fy
+        return self.tile_x, self.tile_y
 
     def get_orders_for_phase(self, phase):
         return [o for o in self.orders if o.phase == phase]

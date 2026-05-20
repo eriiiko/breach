@@ -226,17 +226,14 @@ class Simulation:
     def add_unit(self, unit, position=None) -> int:
         """Register ``unit`` with the sim, assign it a stable id.
 
-        ``position`` is optional — if provided as ``(cx, cy)`` (coarse
-        tile coords), the unit is teleported there before its first
-        tick. Otherwise the unit keeps its constructor-set position.
+        ``position`` is optional — if provided as ``(x, y)`` in
+        physics-tile coords, the unit is teleported there before its
+        first tick. Otherwise the unit keeps its constructor-set position.
         """
         if position is not None:
-            cx, cy = position
-            co = CFG.display.coarse
-            unit.fx = int(cx) * co
-            unit.fy = int(cy) * co
-            unit.fxf = float(unit.fx)
-            unit.fyf = float(unit.fy)
+            x, y = position
+            unit.x = float(x)
+            unit.y = float(y)
         unit.id = self._next_unit_id
         self._next_unit_id += 1
         self.units.append(unit)
@@ -380,21 +377,21 @@ class Simulation:
         placed or undone — so the renderer's overlay can always show a
         live preview, and execution reads the same data.
         """
-        co = CFG.display.coarse
         tpp = self._ticks_per_phase
         h = self.gmap.material.shape[0]
         w = self.gmap.material.shape[1]
         gmap = self.gmap
-
-        def is_blocked(x, y):
-            return not gmap.is_passable_block(y, x)
 
         for u in self.units:
             if u.team != 0 or not u.alive:
                 continue
             u.move_path = []
             u.path_tick_offset = 0
-            current_x, current_y = u.fx, u.fy
+            current_x, current_y = u.tile_x, u.tile_y
+            fp = u.footprint
+
+            def is_blocked(x, y, _gmap=gmap, _fp=fp):
+                return not _gmap.is_passable_block(y, x, _fp)
 
             for phase in range(self._phases_per_round):
                 move_orders = [o for o in u.orders
@@ -477,7 +474,7 @@ class Simulation:
         for u in self.units:
             if u.team != 0 or not u.alive:
                 continue
-            waypoints = [(u.fx, u.fy)]
+            waypoints = [(u.tile_x, u.tile_y)]
             for o in u.orders:
                 if o.phase == phase and o.order_type in MOVE_ORDER_TYPES:
                     waypoints.append((o.target_fx, o.target_fy))
@@ -663,10 +660,8 @@ class Simulation:
             path_idx = self.tick - u.path_tick_offset
             if 0 <= path_idx < len(u.move_path):
                 px, py = u.move_path[path_idx]
-                u.fxf = px
-                u.fyf = py
-                u.fx = int(round(px))
-                u.fy = int(round(py))
+                u.x = px
+                u.y = py
 
     def _end_round(self) -> None:
         """End-of-round teardown — convert dead-by-zombie marines, reset state.
@@ -679,10 +674,9 @@ class Simulation:
         convert_marines_to_zombies(self.units)
 
         for u in self.units:
-            u.fx = round(u.fxf)
-            u.fy = round(u.fyf)
-            u.fxf = float(u.fx)
-            u.fyf = float(u.fy)
+            # Snap float position to nearest integer tile boundary.
+            u.x = float(round(u.x))
+            u.y = float(round(u.y))
             u.clear_orders()
             u.move_path = []
             u.last_fire_tick = -999
@@ -711,7 +705,6 @@ class Simulation:
         ``game.py:_start_execution`` does at lines 1538-1556.
         """
         tpp = self._ticks_per_phase
-        co = CFG.display.coarse
         for u in self.units:
             if u.team != 0:
                 continue
@@ -721,8 +714,8 @@ class Simulation:
                     end_x, end_y = u.get_planned_end_pos()
                     proj = Projectile(
                         ORDER_GRENADE,
-                        end_x + co // 2,
-                        end_y + co // 2,
+                        end_x + u.footprint // 2,
+                        end_y + u.footprint // 2,
                         o.target_fx + 0.5,
                         o.target_fy + 0.5,
                         fuse_seconds=o.grenade_fuse,

@@ -49,7 +49,6 @@ def update_zombies_tick(gmap, units, tick):
 
     Mutates unit HP / alive / killed_by_zombie / zombie_* fields.
     """
-    co = CFG.display.coarse
     players = [u for u in units if u.team == 0 and u.alive]
     if not players:
         return
@@ -60,11 +59,11 @@ def update_zombies_tick(gmap, units, tick):
     for z in zombies:
         if z.zombie_activated:
             continue
-        zc_fx = z.center_fx()
-        zc_fy = z.center_fy()
+        zc_fx = z.center_tile_x()
+        zc_fy = z.center_tile_y()
         for p in players:
-            pc_fx = p.center_fx()
-            pc_fy = p.center_fy()
+            pc_fx = p.center_tile_x()
+            pc_fy = p.center_tile_y()
             dist = math.sqrt((zc_fx - pc_fx) ** 2 + (zc_fy - pc_fy) ** 2)
             if dist < CFG.zombie.trigger_radius:
                 if gmap.has_los(zc_fy, zc_fx, pc_fy, pc_fx):
@@ -82,8 +81,8 @@ def update_zombies_tick(gmap, units, tick):
                 if z2.zombie_activated or z2 is z:
                     continue
                 dist = math.sqrt(
-                    (z.center_fx() - z2.center_fx()) ** 2 +
-                    (z.center_fy() - z2.center_fy()) ** 2)
+                    (z.center_tile_x() - z2.center_tile_x()) ** 2 +
+                    (z.center_tile_y() - z2.center_tile_y()) ** 2)
                 if dist < CFG.zombie.propagation_radius:
                     z2.zombie_activated = True
                     changed = True
@@ -97,11 +96,11 @@ def update_zombies_tick(gmap, units, tick):
         # Nearest living player by Euclidean distance.
         nearest = None
         nearest_dist = float('inf')
-        zc_fx = z.center_fx()
-        zc_fy = z.center_fy()
+        zc_fx = z.center_tile_x()
+        zc_fy = z.center_tile_y()
         for p in players:
-            pc_fx = p.center_fx()
-            pc_fy = p.center_fy()
+            pc_fx = p.center_tile_x()
+            pc_fy = p.center_tile_y()
             dist = math.sqrt((zc_fx - pc_fx) ** 2 + (zc_fy - pc_fy) ** 2)
             if dist < nearest_dist:
                 nearest_dist = dist
@@ -110,8 +109,8 @@ def update_zombies_tick(gmap, units, tick):
         if not nearest:
             continue
 
-        # Melee attack if adjacent (distance threshold: coarse + 1 fine tile).
-        if nearest_dist <= co + 1:
+        # Melee attack if adjacent (footprint + 1 tiles threshold).
+        if nearest_dist <= z.footprint + 1:
             cooldown = CFG.zombie.attack_cooldown_ticks
             if tick - z.last_melee_tick >= cooldown:
                 z.last_melee_tick = tick
@@ -132,9 +131,10 @@ def update_zombies_tick(gmap, units, tick):
                             or z.zombie_path_idx % 5 == 0)
             if needs_repath:
                 if HAS_PATHFINDING:
-                    def is_blocked(x, y, _gmap=gmap):
-                        return not _gmap.is_passable_block(y, x)
-                    z.zombie_path = astar(z.fx, z.fy, nearest.fx, nearest.fy,
+                    def is_blocked(x, y, _gmap=gmap, _fp=z.footprint):
+                        return not _gmap.is_passable_block(y, x, _fp)
+                    z.zombie_path = astar(z.tile_x, z.tile_y,
+                                          nearest.tile_x, nearest.tile_y,
                                           is_blocked, w, h)
                     z.zombie_path_idx = 1  # skip current position
                 else:
@@ -145,11 +145,9 @@ def update_zombies_tick(gmap, units, tick):
             if z.zombie_path and z.zombie_path_idx < len(z.zombie_path):
                 next_x, next_y = z.zombie_path[z.zombie_path_idx]
                 # Re-check passability (walls may have changed).
-                if gmap.is_passable_block(next_y, next_x):
-                    z.fx = next_x
-                    z.fy = next_y
-                    z.fxf = float(next_x)
-                    z.fyf = float(next_y)
+                if gmap.is_passable_block(next_y, next_x, z.footprint):
+                    z.x = float(next_x)
+                    z.y = float(next_y)
                     z.zombie_path_idx += 1
                 else:
                     # Blocked: drop the stale path and try again next tick.

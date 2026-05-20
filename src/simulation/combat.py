@@ -122,8 +122,8 @@ def apply_blast_damage(units, fx, fy, radius, max_damage, events=None):
     for u in units:
         if not u.alive:
             continue
-        uc_fx = u.center_fx()
-        uc_fy = u.center_fy()
+        uc_fx = u.center_tile_x()
+        uc_fy = u.center_tile_y()
         dist = math.sqrt((uc_fx - fx) ** 2 + (uc_fy - fy) ** 2)
         if dist <= radius:
             falloff = 1.0 - (dist / radius)
@@ -182,8 +182,8 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None):
 
         target_fx = fire_order.target_fx
         target_fy = fire_order.target_fy
-        uc_fx = u.center_fx()
-        uc_fy = u.center_fy()
+        uc_fx = u.center_tile_x()
+        uc_fy = u.center_tile_y()
 
         # Range check.
         dist = math.sqrt((uc_fx - target_fx) ** 2 + (uc_fy - target_fy) ** 2)
@@ -209,16 +209,16 @@ def auto_fire(gmap, units, u, tick, shots, real_time, rng, events=None):
     if tick - u.last_fire_tick < burst_interval:
         return
 
-    uc_fx = u.center_fx()
-    uc_fy = u.center_fy()
+    uc_fx = u.center_tile_x()
+    uc_fy = u.center_tile_y()
     best_dist = float('inf')
     best_enemy = None
 
     for e in units:
         if e.team == u.team or not e.alive:
             continue
-        ec_fx = e.center_fx()
-        ec_fy = e.center_fy()
+        ec_fx = e.center_tile_x()
+        ec_fy = e.center_tile_y()
         dist = math.sqrt((uc_fx - ec_fx) ** 2 + (uc_fy - ec_fy) ** 2)
         if dist <= CFG.weapons.rifle.range_tiles and dist < best_dist:
             if gmap.has_los(uc_fy, uc_fx, ec_fy, ec_fx):
@@ -227,7 +227,7 @@ def auto_fire(gmap, units, u, tick, shots, real_time, rng, events=None):
 
     if best_enemy:
         fire_burst(gmap, units, u, uc_fx, uc_fy,
-                   best_enemy.center_fx(), best_enemy.center_fy(),
+                   best_enemy.center_tile_x(), best_enemy.center_tile_y(),
                    tick, shots, real_time, rng, events=events)
         u.last_fire_tick = tick
 
@@ -246,7 +246,6 @@ def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
     appended, plus :class:`UnitHitEvent` / :class:`UnitKilledEvent` on
     a hit.
     """
-    co = CFG.display.coarse
     cone = math.radians(CFG.weapons.rifle.cone_half_angle_degrees)
     n_bullets = CFG.weapons.rifle.bullets_per_burst
     dmg = CFG.weapons.rifle.damage_per_bullet
@@ -273,7 +272,8 @@ def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
             for e in units:
                 if e is shooter or not e.alive:
                     continue
-                if e.fx <= ix < e.fx + co and e.fy <= iy < e.fy + co:
+                if (e.tile_x <= ix < e.tile_x + e.footprint
+                        and e.tile_y <= iy < e.tile_y + e.footprint):
                     hit_unit = e
                     break
             if hit_unit:
