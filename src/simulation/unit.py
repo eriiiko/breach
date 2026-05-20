@@ -21,13 +21,74 @@ locked design decisions (``docs/patch_game_logic_migration.md``):
   The old fxf/fyf float fields and fx/fy integer fields are gone —
   ``x`` and ``y`` are the sole source of truth (coord system cleanup
   2026-05-20).
+
+Unit class foundation additions (2026-05-21):
+- ``species_id``, ``base_stats``, ``mass``, ``base_speed`` — sampled from
+  the species distribution at construction (spec §11).
+- ``life_state`` (LifeState enum) — the authoritative life status;
+  ``alive`` is a @property derived from it.
+- ``faction_id`` — alias for ``team`` (spec §10.1); full relationship
+  table deferred.
+- ``environment`` — pointer to species EnvironmentProfile (data only).
+- ``inventory`` — empty Inventory stub (spec §9).
+- ``offsets`` — per-unit copy of species footprint tile offsets.
+- ``awakened`` / hidden stat fields — data only; behaviour deferred (spec §13).
+- ``facing`` changed from str to float radians (0=East CCW, π/2=North).
+  ``facing_compass()`` converts to "N"/"NE"/"E"/... for sprite lookup.
+- ``hp`` renamed to ``current_hp``. ``max_hp`` removed; use
+  ``effective_vitality(unit)`` from simulation.stats instead.
+- ``occupied_tiles()`` / ``occupies()`` — spec §6 interface for collision,
+  LOS, hit-detection, stamp_units.
 """
 from __future__ import annotations
 
+import math
+from enum import Enum
+
+import numpy as np
+
 from config import CFG
+from simulation.generation import sample_unit_attributes
+from simulation.inventory import Inventory
 from simulation.orders import (
     ORDER_MOVE_ATTACK, ORDER_FIRE, MOVE_ORDER_TYPES,
 )
+from simulation.species import get_species
+
+
+# ---------------------------------------------------------------------------
+# LifeState enum
+# ---------------------------------------------------------------------------
+
+class LifeState(Enum):
+    """Authoritative life status (spec §12).
+
+    Placed in unit.py (not a separate module) because it is used
+    exclusively by Unit and its close consumers (combat, conversion).
+    """
+    ALIVE  = "alive"
+    DOWNED = "downed"
+    DEAD   = "dead"
+
+
+# ---------------------------------------------------------------------------
+# Facing convention (agent decision, 2026-05-21)
+# ---------------------------------------------------------------------------
+# Standard math convention: 0 = East, angles increase CCW.
+#   π/2  = North  (default spawn — marines face north)
+#   π    = West
+#   3π/2 = South
+#
+# This matches Python's math.atan2 / trigonometry convention and makes
+# angle arithmetic (e.g. angular difference between two positions) natural.
+
+_NORTH = math.pi / 2   # 1.5707963267948966 radians
+
+# 8-compass snap table (sector width = π/4 = 45°).
+# Each entry: (low_bound, high_bound, label) where angles wrap at ±π.
+# Sectors are centred on the 8 cardinal + intercardinal directions.
+_COMPASS_LABELS = ("E", "NE", "N", "NW", "W", "SW", "S", "SE")
+_SECTOR_HALF = math.pi / 8   # 22.5°; each direction owns a 45° wedge
 
 
 class Unit:
@@ -41,10 +102,13 @@ class Unit:
     ``is_zombie`` flag mirrors this and is the source-of-truth check for
     "should AI take over this unit". Conversion (marine killed by
     zombie -> zombified at round end) flips both fields.
+
+    Facing convention: float radians, 0=East, CCW positive.
+    Default spawn: π/2 (North).
     """
 
     def __init__(self, name: str, x: float, y: float, team: int = 0,
-                 footprint: int = 3):
+                 footprint: int = 3, species_id: str = "human"):
         self.name = name
         self.team = team
         self.is_zombie = (team == 1)
@@ -59,36 +123,78 @@ class Unit:
         self.y = float(y)
 
         # Side length of the unit's square footprint, in physics tiles.
-        # Default 3 (size-1 human). Will become a function of the variant
-        # system later — see unit_variants_design_brainstorm.md.
+        # Kept as a plain int field for backward compatibility with callers
+        # that read unit.footprint directly (input_handler, AI pathfinding).
         self.footprint = int(footprint)
 
-        self.alive = True
-        self.facing = "N"   # default spawn pose: facing north (marines spawn south, look north)
+        # ---- Foundation additions: species + stat sampling ---------------
 
-        # HP from config based on type.
-        self.hp = CFG.zombie.hp if self.is_zombie else CFG.marine.hp
-        self.max_hp = self.hp
+        self.species_id = species_id
+        species = get_species(species_id)
+
+        # Sample the stat vector from the species distribution. Use a fresh
+        # default-seeded RNG so Unit() can be constructed standalone in tests
+        # without booting a Simulation. Simulation.add_unit may optionally
+        # re-sample with the sim's seeded RNG for deterministic spawns — see
+        # the architectural note in docs/patch_unit_class_foundation.md §6.
+        # Agent decision: no re-sampling in add_unit for this pass (simpler
+        # diff, and combat balance doesn't yet depend on seed-stable stats).
+        _rng = np.random.default_rng()
+        self.base_stats, self.mass, self.base_speed = \
+            sample_unit_attributes(species, _rng)
+
+        # Per-unit footprint offset list copied from the species default.
+        # A 3×3 human uses the species default offsets; any other footprint
+        # size gets a square grid of (footprint × footprint) offsets.
+        if footprint == 3:
+            self.offsets: list[tuple[int, int]] = list(species.default_offsets)
+        else:
+            self.offsets = [
+                (dx, dy)
+                for dy in range(footprint)
+                for dx in range(footprint)
+            ]
+
+        # Life state — authoritative. ``alive`` is a @property derived from it.
+        self.life_state = LifeState.ALIVE
+
+        # Faction id — alias for team in this pass (spec §10.1).
+        self.faction_id: int = int(team)
+
+        # Environment profile pointer (species baseline; modifiers deferred).
+        self.environment = species.environment
+
+        # Inventory stub (real item system deferred; has_grenade/explosive stay).
+        self.inventory = Inventory()
+
+        # Hidden Hartmann fields — data only; behaviour deferred (spec §13).
+        self.awakened: bool = False
+
+        # ---- Facing (float radians, 0=East CCW, π/2=North) ---------------
+        # Default spawn facing = North (π/2), matching legacy "N" default.
+        self.facing: float = _NORTH
+
+        # ---- HP: current_hp from sampled vitality ------------------------
+        # max_hp is removed; use effective_vitality(unit) from stats module.
+        self.current_hp: float = float(self.base_stats.vitality)
+
+        # ---- Legacy fields: kept unchanged --------------------------------
 
         # Movement speed in ticks per fine tile. Replaces the legacy
         # zombie_speed_override monkey-patch. Marines override per-order
         # (movement.marine_attack/cover/sprint_ticks_per_tile); zombies
-        # use this field directly. Caller (e.g. spawn helper) can adjust
-        # for runners (faster) and brutes (slower).
+        # use this field directly.
         if self.is_zombie:
             self.speed_ticks_per_tile = CFG.zombie.ticks_per_tile
         else:
             self.speed_ticks_per_tile = CFG.movement.marine_attack_ticks_per_tile
 
-        # Order / planning state. Always present (zombie may still carry
-        # orders pre-conversion; AI just doesn't read them once converted).
+        # Order / planning state.
         self.orders = []
         self.current_order_type = ORDER_MOVE_ATTACK
         self.ap = [CFG.clock.ap_per_phase, CFG.clock.ap_per_phase]
 
-        # Inventory — BASE field. Marines get a starting loadout from
-        # config; zombies start with none. Stays with the unit through
-        # conversion (the grenade is still in the zombie's pocket).
+        # Inventory booleans — BASE fields. Wiring into self.inventory deferred.
         self.has_grenade   = 0 if self.is_zombie else CFG.marine.grenades
         self.has_explosive = 0 if self.is_zombie else CFG.marine.explosives
 
@@ -97,17 +203,87 @@ class Unit:
         self.fire_target = None
 
         # Zombie AI state.
-        self.zombie_activated = False
-        self.zombie_path = []
-        self.zombie_path_idx = 0
+        self.zombie_activated       = False
+        self.zombie_path            = []
+        self.zombie_path_idx        = 0
         self.zombie_move_accumulator = 0
-        self.last_melee_tick = -999
-        self.killed_by_zombie = False  # tracked for end-of-round conversion
+        self.last_melee_tick        = -999
+        self.killed_by_zombie       = False
 
-        # Precomputed per-tick movement path (filled by the planning step
-        # at start of execution; consumed tick-by-tick during execution).
-        self.move_path = []
+        # Precomputed per-tick movement path.
+        self.move_path        = []
         self.path_tick_offset = 0
+
+    # ------------------------------------------------------------------
+    # Life state
+    # ------------------------------------------------------------------
+
+    @property
+    def alive(self) -> bool:
+        """True if the unit is in the ALIVE state.
+
+        Kept as a @property (was a plain bool field) so all existing callers
+        of ``unit.alive`` continue to work without change. The authoritative
+        field is ``unit.life_state``.
+        """
+        return self.life_state is LifeState.ALIVE
+
+    @alive.setter
+    def alive(self, value: bool) -> None:
+        """Support legacy assignments: ``unit.alive = False``."""
+        self.life_state = LifeState.ALIVE if value else LifeState.DEAD
+
+    # ------------------------------------------------------------------
+    # Occupancy interface (spec §5, §6)
+    # ------------------------------------------------------------------
+
+    def occupied_tiles(self) -> list[tuple[int, int]]:
+        """Tiles this unit currently occupies (spec §6 interface).
+
+        Returns [(anchor_x + dx, anchor_y + dy) for (dx, dy) in self.offsets].
+
+        No rotation applied — the 3×3 symmetric default doesn't need it.
+        TODO: apply facing rotation for non-symmetric rigid shapes (spec §15
+        item 3) when those footprints are introduced.
+        """
+        ax, ay = self.tile_x, self.tile_y
+        return [(ax + dx, ay + dy) for (dx, dy) in self.offsets]
+
+    def occupies(self, tile: tuple[int, int]) -> bool:
+        """True if this unit occupies the given tile (spec §6 interface)."""
+        ax, ay = self.tile_x, self.tile_y
+        tx, ty = tile
+        for dx, dy in self.offsets:
+            if ax + dx == tx and ay + dy == ty:
+                return True
+        return False
+
+    # ------------------------------------------------------------------
+    # Facing helpers
+    # ------------------------------------------------------------------
+
+    def facing_compass(self) -> str:
+        """Convert self.facing (radians) to 8-compass string.
+
+        Convention: 0=East, increasing CCW. Snaps to the nearest 45°
+        sector. Returns one of: "N", "NE", "E", "SE", "S", "SW", "W", "NW".
+
+        Used by the sprite system for directional art selection.
+        """
+        # Normalise to [-π, π].
+        angle = self.facing
+        while angle > math.pi:
+            angle -= 2 * math.pi
+        while angle < -math.pi:
+            angle += 2 * math.pi
+
+        # East=0, NE=π/4, N=π/2, NW=3π/4, W=±π
+        # SE=-π/4, S=-π/2, SW=-3π/4
+        # Sector index = round(angle / (π/4)) mod 8.
+        sector = round(angle / (math.pi / 4)) % 8
+        # sector 0=E, 1=NE, 2=N, 3=NW, 4=W, 5=SW, 6=S, 7=SE
+        labels = ("E", "NE", "N", "NW", "W", "SW", "S", "SE")
+        return labels[sector]
 
     # ------------------------------------------------------------------
     # Tile-coordinate helpers
@@ -134,6 +310,7 @@ class Unit:
     # ------------------------------------------------------------------
     # Orders / AP helpers (used by the planning phase + UI)
     # ------------------------------------------------------------------
+
     def clear_orders(self):
         """Drop all queued orders and refill AP. Called at round teardown."""
         self.orders = []
@@ -147,8 +324,7 @@ class Unit:
 
     def get_planned_end_pos(self):
         """Return the tile position the unit will reach after all queued
-        movement orders. Used by grenade projectile spawn (the marine
-        throws from where they'll be at the start of the phase)."""
+        movement orders. Used by grenade projectile spawn."""
         for o in reversed(self.orders):
             if o.order_type in MOVE_ORDER_TYPES:
                 return o.target_fx, o.target_fy

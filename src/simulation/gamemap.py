@@ -113,7 +113,8 @@ class GameMap:
     def stamp_units(self, units):
         """Rebuild ``obstacles`` = static walls + living unit footprints.
 
-        Each unit's footprint block is stamped onto the obstacle grid.
+        Uses ``unit.occupied_tiles()`` so the footprint contract (spec §6)
+        is the only dependency — no assumption about storage representation.
         When tiles transition from blocked to free (unit moved away or
         died), fill them with the neighbor mean of ``atmosphere`` to
         avoid spurious vacuum pulses.
@@ -124,13 +125,9 @@ class GameMap:
         for u in units:
             if not u.alive:
                 continue
-            uy, ux = u.tile_y, u.tile_x
-            fp = u.footprint
-            y1 = max(0, uy)
-            y2 = min(h, uy + fp)
-            x1 = max(0, ux)
-            x2 = min(w, ux + fp)
-            self.obstacles[y1:y2, x1:x2] = True
+            for (tx, ty) in u.occupied_tiles():
+                if 0 <= ty < h and 0 <= tx < w:
+                    self.obstacles[ty, tx] = True
 
         freed = prev_obstacles & ~self.obstacles
         if freed.any():

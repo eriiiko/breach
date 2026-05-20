@@ -238,8 +238,10 @@ class GameRenderer:
         for m in marines:
             if not getattr(m, "alive", True):
                 continue
-            facing = getattr(m, "facing", "N")
-            sprite = self.sprites.get_marine(facing)
+            # facing is now float radians; facing_compass() → "N"/"NE"/...
+            compass = (m.facing_compass() if callable(getattr(m, "facing_compass", None))
+                       else getattr(m, "facing", "N"))
+            sprite = self.sprites.get_marine(compass)
             draw_unit(m.x, m.y, wpt, (60, 180, 60, 255),
                       label=getattr(m, "name", ""),
                       footprint_tiles=getattr(m, "footprint", 3),
@@ -456,7 +458,8 @@ class GameRenderer:
                 draw_text(f"Selected: {selected_unit.name}", x, y, 14,
                           color=(120, 220, 255, 255))
                 y += 18
-                draw_text(f"HP: {selected_unit.hp}/{selected_unit.max_hp}",
+                from simulation.stats import effective_vitality
+                draw_text(f"HP: {int(selected_unit.current_hp)}/{int(effective_vitality(selected_unit))}",
                           x, y, 13)
                 y += 16
                 draw_text(f"AP: {selected_unit.ap[0]}, {selected_unit.ap[1]}",

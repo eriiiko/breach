@@ -114,8 +114,8 @@ def update_zombies_tick(gmap, units, tick):
             cooldown = CFG.zombie.attack_cooldown_ticks
             if tick - z.last_melee_tick >= cooldown:
                 z.last_melee_tick = tick
-                nearest.hp -= CFG.zombie.melee_damage
-                if nearest.hp <= 0:
+                nearest.current_hp -= CFG.zombie.melee_damage
+                if nearest.current_hp <= 0:
                     nearest.alive = False
                     nearest.killed_by_zombie = True
             continue
@@ -173,8 +173,7 @@ def convert_marines_to_zombies(units):
             u.team = 1
             u.is_zombie = True
             u.alive = True
-            u.hp = CFG.zombie.hp
-            u.max_hp = CFG.zombie.hp
+            u.current_hp = float(CFG.zombie.hp)
             u.zombie_activated = True
             u.killed_by_zombie = False
             u.name = f"Z-{u.name}"

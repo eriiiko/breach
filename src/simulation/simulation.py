@@ -65,6 +65,8 @@ import numpy as np
 
 from config import CFG
 from simulation.ai_zombie import update_zombies_tick, convert_marines_to_zombies
+from simulation.generation import sample_unit_attributes
+from simulation.species import get_species
 from simulation.combat import (
     apply_blast_damage, process_door_explosives, process_shooting,
     Projectile, Shot,
@@ -229,11 +231,24 @@ class Simulation:
         ``position`` is optional — if provided as ``(x, y)`` in
         physics-tile coords, the unit is teleported there before its
         first tick. Otherwise the unit keeps its constructor-set position.
+
+        Re-samples the unit's BaseStats using ``self.rng`` so that spawns
+        are deterministic when the Simulation was constructed with a seed.
+        This overwrites the random-seeded stats drawn at Unit construction.
         """
         if position is not None:
             x, y = position
             unit.x = float(x)
             unit.y = float(y)
+
+        # Re-sample with the sim's seeded RNG for deterministic rollouts.
+        species = get_species(getattr(unit, "species_id", "human"))
+        base_stats, mass, base_speed = sample_unit_attributes(species, self.rng)
+        unit.base_stats = base_stats
+        unit.mass = mass
+        unit.base_speed = base_speed
+        unit.current_hp = float(base_stats.vitality)
+
         unit.id = self._next_unit_id
         self._next_unit_id += 1
         self.units.append(unit)

@@ -61,7 +61,7 @@ def _state_signature(sim: Simulation):
         "fire_mean": float(g.fire.mean()),
         "wave_p_mean": float(g.wave_p.mean()),
         "n_projectiles": len(sim.projectiles),
-        "units": [(u.id, u.tile_x, u.tile_y, u.hp, u.alive) for u in sim.units],
+        "units": [(u.id, u.tile_x, u.tile_y, u.current_hp, u.alive) for u in sim.units],
     }
     return sig
 

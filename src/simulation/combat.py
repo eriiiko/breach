@@ -129,12 +129,12 @@ def apply_blast_damage(units, fx, fy, radius, max_damage, events=None):
             falloff = 1.0 - (dist / radius)
             damage = int(max_damage * falloff)
             if damage >= CFG.combat.blast_damage_threshold:
-                u.hp -= damage
+                u.current_hp -= damage
                 if events is not None:
                     uid = getattr(u, "id", -1)
                     events.append(UnitHitEvent(unit_id=uid, damage=damage,
                                                 source="explosion"))
-                if u.hp <= 0:
+                if u.current_hp <= 0:
                     u.alive = False
                     if events is not None:
                         uid = getattr(u, "id", -1)
@@ -283,12 +283,12 @@ def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
             actual_dmg = dmg
             if hit_unit.team == 1:  # zombie
                 actual_dmg = int(dmg * CFG.zombie.bullet_damage_multiplier)
-            hit_unit.hp -= actual_dmg
+            hit_unit.current_hp -= actual_dmg
             if events is not None:
                 hit_id = getattr(hit_unit, "id", -1)
                 events.append(UnitHitEvent(unit_id=hit_id, damage=actual_dmg,
                                             source="bullet"))
-            if hit_unit.hp <= 0:
+            if hit_unit.current_hp <= 0:
                 hit_unit.alive = False
                 if events is not None:
                     hit_id = getattr(hit_unit, "id", -1)
