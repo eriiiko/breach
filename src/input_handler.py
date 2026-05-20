@@ -156,12 +156,12 @@ class InputHandler:
         if tile is None:
             return
         fx, fy = tile
-        co = CFG.display.coarse
 
         # Try to select a marine first.
         for u in sim.units:
             if (u.alive and u.team == 0 and
-                    u.fx <= fx < u.fx + co and u.fy <= fy < u.fy + co):
+                    u.tile_x <= fx < u.tile_x + u.footprint
+                    and u.tile_y <= fy < u.tile_y + u.footprint):
                 self.selected_unit_id = u.id
                 return
         # Otherwise place an order with the current mode.
@@ -178,18 +178,19 @@ class InputHandler:
         self._place_order(sim, fx, fy)
 
     def _place_order(self, sim, fx, fy):
-        co = CFG.display.coarse
         mode = self.current_mode
         phase = self.planning_phase
 
         if mode in (ORDER_MOVE_ATTACK, ORDER_MOVE_COVER, ORDER_SPRINT):
             # Move target snapped so unit center is under cursor; clamp
-            # to map bounds.
-            tx = fx - co // 2
-            ty = fy - co // 2
+            # to map bounds. Use selected unit's footprint if available.
+            u = sim.get_unit(self.selected_unit_id)
+            fp = u.footprint if u is not None else 3
+            tx = fx - fp // 2
+            ty = fy - fp // 2
             h, w = sim.gmap.material.shape
-            tx = max(0, min(w - co, tx))
-            ty = max(0, min(h - co, ty))
+            tx = max(0, min(w - fp, tx))
+            ty = max(0, min(h - fp, ty))
             order = Order(mode, tx, ty, phase)
             sim.apply_action(self.selected_unit_id, order)
         elif mode == ORDER_GRENADE:

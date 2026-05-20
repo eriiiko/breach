@@ -74,21 +74,28 @@ def main():
     sim.gmap.atmosphere[BREACH] = 0.0
     sim.gmap.obstacles[BREACH] = False
 
-    # ----- Spawn a small demo squad so the player has something to play.
-    sim.add_unit(Unit("Alpha", cx=4,  cy=2,  team=0))
-    sim.add_unit(Unit("Bravo", cx=8,  cy=2,  team=0))
-    sim.add_unit(Unit("Cobra", cx=12, cy=4,  team=0))
-    # A few zombies sprinkled mid-ship.
-    sim.add_unit(Unit("Zomb1", cx=10, cy=20, team=1))
-    sim.add_unit(Unit("Zomb2", cx=6,  cy=24, team=1))
-    sim.add_unit(Unit("Zomb3", cx=14, cy=28, team=1))
+    # ----- Spawn units from level.toml [[spawn]] entries.
+    if not level.spawns:
+        raise RuntimeError(
+            f"Level '{level.name}' has no [[spawn]] entries — nothing to play."
+        )
+    for s in level.spawns:
+        sim.add_unit(Unit(s.name, x=s.x, y=s.y, team=s.team,
+                          footprint=s.footprint))
+    print(f"  Spawned {len(level.spawns)} units from level.toml")
 
     # 2. Render config — borderless windowed at monitor resolution.
     from renderer.camera import Camera2D
 
     BORDERLESS = "--windowed" not in sys.argv
     if BORDERLESS:
-        screen_w, screen_h = 1920, 1080
+        # Borderless windowed mode uses the actual monitor size, not the
+        # numbers we pass to init_window. Open the window first so we can
+        # query the real dimensions and lay the panel/map out to fit.
+        from renderer import core as rcore
+        rcore.init_window(0, 0, title=f"Breach — {level.name}",
+                          borderless=True)
+        screen_w, screen_h = rcore.get_monitor_size()
     else:
         screen_w, screen_h = 1280, 720
 
@@ -199,6 +206,7 @@ def main():
             )
             renderer.draw_background_to_screen()
             renderer.blit_world_to_screen()
+            renderer.draw_debug_hud(sim.gmap)
 
             # Pull tick events into the renderer's effect queue, then age
             # the queue. tick_events is cleared by the next sim.step(),
