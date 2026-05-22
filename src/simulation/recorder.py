@@ -90,7 +90,7 @@ class PhysicsRecorder:
         # Unit state snapshot (lightweight dict per unit)
         self.unit_snapshots[i] = [
             {'name': u.name, 'team': u.team, 'x': u.x, 'y': u.y,
-             'hp': u.hp, 'alive': u.alive}
+             'hp': u.current_hp, 'alive': u.alive}
             for u in units
         ]
 
