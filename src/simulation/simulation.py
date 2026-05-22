@@ -675,6 +675,7 @@ class Simulation:
             path_idx = self.tick - u.path_tick_offset
             if 0 <= path_idx < len(u.move_path):
                 px, py = u.move_path[path_idx]
+                u.face_towards(px, py)
                 u.x = px
                 u.y = py
 

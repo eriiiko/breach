@@ -262,6 +262,21 @@ class Unit:
     # Facing helpers
     # ------------------------------------------------------------------
 
+    def face_towards(self, target_x: float, target_y: float) -> None:
+        """Update ``self.facing`` to point from the unit's current position
+        toward ``(target_x, target_y)``. Called by the movement code each
+        tick a unit takes a step, so sprites visibly track direction of
+        travel. No-op if the target is the current position.
+
+        World Y increases downward; the facing convention is math-style
+        (Y-up). The negation on dy converts between them.
+        """
+        dx = target_x - self.x
+        dy = target_y - self.y
+        if dx == 0 and dy == 0:
+            return
+        self.facing = math.atan2(-dy, dx)
+
     def facing_compass(self) -> str:
         """Convert self.facing (radians) to 8-compass string.
 

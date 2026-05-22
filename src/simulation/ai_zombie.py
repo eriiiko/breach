@@ -146,6 +146,7 @@ def update_zombies_tick(gmap, units, tick):
                 next_x, next_y = z.zombie_path[z.zombie_path_idx]
                 # Re-check passability (walls may have changed).
                 if gmap.is_passable_block(next_y, next_x, z.footprint):
+                    z.face_towards(float(next_x), float(next_y))
                     z.x = float(next_x)
                     z.y = float(next_y)
                     z.zombie_path_idx += 1
