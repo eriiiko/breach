@@ -19,6 +19,33 @@
 
 ---
 
+## Gameplay / graphics — before returning to physics (Erik, 2026-05-23)
+
+Three small items to land before the next deep physics-engine pass.
+
+1. **Ambient lighting + two-kinds-of-lights discussion** — picks up the
+   prior thread (see [[project-lighting-vision]] in memory and
+   `graphics_lighting_design.md`). Goal: an ambient floor of light that
+   reveals room geometry plus the existing directional/raycast lights
+   for flashlights, fires, emergency. Two roles, distinct rendering paths.
+
+2. **Line-of-sight for AI + players** — don't draw zombies (or any
+   enemy unit) that the player has no LOS to (e.g. behind closed doors,
+   around corners). Representation of "areas we don't see" is undecided
+   — fog-of-war shroud, dimmed render, simple "don't draw"; start with
+   the simplest "don't draw units there" and iterate. LOS check exists
+   in `gamemap.has_los` (Bresenham); the question is how to integrate
+   it into both the renderer (visibility filter) and the AI (already
+   uses it for trigger detection).
+
+3. **Wall collision** — units can currently walk through walls during
+   execution (no per-tick collision check; only `is_passable_block`
+   at order placement). Need real collision in the movement loop.
+   Also: **grenades should bounce** off walls (currently they just
+   stop / detonate). Grenade *explosions* still destroy walls as today.
+
+---
+
 ## Resolution audit & consolidation
 
 Tile size / pixel resolution decisions are sprinkled across multiple docs and
