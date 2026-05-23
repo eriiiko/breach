@@ -152,13 +152,17 @@ def materials_from_tilemap(tilemap: np.ndarray):
     Returns (material, is_vacuum) — both (H, W) numpy arrays.
     Convention:
       CSV 0     -> outer space (vacuum, MAT_AIR)
-      CSV 1     -> hull wall  (MAT_HULL)
-      CSV 3     -> door       (MAT_DOOR)
-      else      -> interior air (MAT_AIR) with no vacuum
+      CSV 1     -> hull wall    (MAT_HULL)
+      CSV 2     -> wood wall    (MAT_WOOD) — flammable
+      CSV 3     -> door         (MAT_DOOR) — currently behaves as a wall
+                                  for occlusion; movement still allowed
+                                  through it; full door system deferred
+      4..8      -> interior air (MAT_AIR) with no vacuum
     """
-    MAT_AIR, MAT_HULL, MAT_DOOR = 0, 1, 3
+    MAT_AIR, MAT_HULL, MAT_WOOD, MAT_DOOR = 0, 1, 2, 3
     material = np.full(tilemap.shape, MAT_AIR, dtype=np.int8)
     material[tilemap == 1] = MAT_HULL
+    material[tilemap == 2] = MAT_WOOD
     material[tilemap == 3] = MAT_DOOR
     is_vacuum = (tilemap == 0)
     return material, is_vacuum

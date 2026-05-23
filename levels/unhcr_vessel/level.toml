@@ -5,7 +5,9 @@ version = "1"
 name = "UNHCR Vessel"
 
 # Tilemap (required): physics tile grid, CSV with int values per cell
-# Values: 0=outer space (vacuum), 1=hull wall, 3=door, 2/4/5/6/7/8=interior air
+# Values: 0=outer space (vacuum), 1=hull wall, 2=wood wall (flammable),
+#         3=door (occludes like a wall for now; movement allowed),
+#         4..8=interior air variants
 tilemap = "tilemap.csv"
 
 # Physical scale

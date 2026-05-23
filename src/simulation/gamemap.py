@@ -79,11 +79,16 @@ class GameMap:
         """Rebuild cached arrays from the material grid.
 
         Atmosphere starts at 1.0 in interior air, 0.0 at walls and vacuum.
-        ``is_wall`` covers hull + wood; flammable covers wood only. HP
-        comes from ``CFG.materials.<name>[0]`` per material ID.
+        ``is_wall`` covers hull + wood + door (the latter is temporary —
+        doors occlude smoke/light until the proper door system lands,
+        even though ``is_passable_block`` still lets units walk through).
+        Flammable covers wood only. HP comes from
+        ``CFG.materials.<name>[0]`` per material ID.
         """
         m = self.material
-        self.is_wall = np.isin(m, [MAT_HULL, MAT_WOOD])
+        # TODO: drop MAT_DOOR from is_wall when the dynamic door system
+        # is implemented — for now they occlude like static walls.
+        self.is_wall = np.isin(m, [MAT_HULL, MAT_WOOD, MAT_DOOR])
         self.flammable = (m == MAT_WOOD)
         self.wall_hp = np.zeros_like(self.wall_hp)
 

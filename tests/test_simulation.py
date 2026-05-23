@@ -37,13 +37,14 @@ SEED = 42
 def _spawn_demo_units(sim: Simulation) -> tuple:
     """Add one marine and one zombie at fixed positions (physics-tile coords).
 
-    Both positions are inside the ship interior with passable 3×3 blocks.
-    Marine at (22, 50): rows 50-52, cols 22-24 are all interior air.
-    Zombie at (22, 70): rows 70-72, cols 22-24 are all interior air.
-    They are far enough apart that zombie AI won't trigger within 100 ticks.
+    Both positions are inside the ship interior with passable 3×3 blocks
+    after the 2026-05-23 wall fix (CSV value 2 now maps to MAT_WOOD, so the
+    interior actually has walls). Marine at (14, 50) and zombie at (14, 100)
+    are both in passable corridors with a 6-tile move target also passable.
+    The 50-tile vertical gap keeps them outside zombie trigger radius (24).
     """
-    marine = Unit("M1", x=22, y=50, team=0)
-    zombie = Unit("Z1", x=22, y=70, team=1)
+    marine = Unit("M1", x=14, y=50, team=0)
+    zombie = Unit("Z1", x=14, y=100, team=1)
     m_id = sim.add_unit(marine)
     z_id = sim.add_unit(zombie)
     return m_id, z_id
