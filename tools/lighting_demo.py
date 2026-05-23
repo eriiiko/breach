@@ -181,38 +181,41 @@ def _state_to_toml_section(name: str, s: dict) -> str:
     return "\n".join(lines)
 
 
-def save_preset(name: str, state: dict) -> None:
-    """Write or update a named preset in tools/lighting_presets.toml."""
+def save_preset(name: str, state: dict) -> str:
+    """Write or update a named preset in tools/lighting_presets.toml.
+
+    Returns a status message suitable for the HUD.
+    """
+    # Sanitise name — TOML section headers cannot be empty or contain ].
+    name = name.strip().replace("]", "_") or "default"
+
     # Read existing presets, replace/add the named section.
     existing: dict = {}
     if PRESETS_PATH.exists():
-        with open(PRESETS_PATH, "rb") as f:
-            existing = tomllib.load(f)
+        try:
+            with open(PRESETS_PATH, "rb") as f:
+                existing = tomllib.load(f)
+        except Exception:
+            existing = {}  # corrupt file — start fresh
 
-    # Serialise the new section.
-    new_section = _state_to_toml_section(name, state)
-
-    # Re-write the file: preserve other sections, replace ours.
-    # Hand-written round-trip: emit each section fresh.
-    existing[name] = {}  # just used as a key marker; we write raw text
+    # Serialise the new section first, then any others.
+    existing[name] = {}   # mark the key so it appears in iteration
 
     lines = [
         "# Auto-managed by tools/lighting_demo.py — do not hand-edit while the demo is open.",
         "",
+        _state_to_toml_section(name, state),
+        "",
     ]
-    # Write the new/updated section first, then any others.
-    lines.append(new_section)
-    lines.append("")
     for key, val in existing.items():
         if key == name:
             continue
-        # Re-serialise other sections from whatever tomllib parsed.
-        # We stored the raw dict from tomllib — reconstruct it.
         sec_state = _toml_dict_to_state(val)
         lines.append(_state_to_toml_section(key, sec_state))
         lines.append("")
 
     PRESETS_PATH.write_text("\n".join(lines), encoding="utf-8")
+    return f"Saved '{name}' → {PRESETS_PATH.name}"
 
 
 def _toml_dict_to_state(d: dict) -> dict:
@@ -714,8 +717,7 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     # Save button
     if rl.gui_button(rl.Rectangle(x, y, 90, 22), "Save"):
         name = state.preset_name.strip() or "default"
-        save_preset(name, state.as_dict())
-        state.status_msg = f"Saved preset '{name}'"
+        state.status_msg = save_preset(name, state.as_dict())
         state.status_until = now + 3.0
     y += 28
 
