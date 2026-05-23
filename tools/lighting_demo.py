@@ -12,8 +12,9 @@ Controls:
     Q / E          — zoom out / in
     Mouse wheel    — zoom
     Space          — pause / resume sim
-    G              — toggle grenade-spawn mode
+    T              — toggle grenade-spawn mode (click to detonate)
     Left click     — spawn grenade (when in spawn mode)
+    G              — toggle sRGB decode (renderer toggle from game)
     F1             — toggle grid overlay
     F2             — toggle smoke
     F4             — toggle lighting
@@ -319,10 +320,10 @@ class PanelState:
 # ---------------------------------------------------------------------------
 
 PANEL_W = 340
-SLIDER_H = 18
+SLIDER_H = 16
 SLIDER_W = 200
-LABEL_W = 120
-ROW_GAP = 26   # vertical spacing between rows
+LABEL_W = 110
+ROW_GAP = 20   # tight packing to fit all sections in 720px height
 
 
 def _slider(state: PanelState, key: str,
@@ -351,9 +352,9 @@ def _checkbox(state: PanelState, key: str,
 
 def _section_header(label: str, x: int, y: int) -> int:
     """Draw a section divider label. Returns new y."""
-    rl.gui_label(rl.Rectangle(x, y, PANEL_W - 20, 16),
+    rl.gui_label(rl.Rectangle(x, y, PANEL_W - 20, 14),
                  f"-- {label} --")
-    return y + 22
+    return y + 18
 
 
 # ---------------------------------------------------------------------------
@@ -450,7 +451,8 @@ def main() -> None:
             K = rl.KeyboardKey
             if rl.is_key_pressed(K.KEY_SPACE):
                 state.paused = not state.paused
-            if rl.is_key_pressed(K.KEY_G):
+            # T = toggle grenade-spawn mode. (G is taken by sRGB decode in poll_toggles.)
+            if rl.is_key_pressed(K.KEY_T):
                 state.spawn_mode = not state.spawn_mode
 
             # ---- Sim tick ----
@@ -592,7 +594,7 @@ def _draw_hud(renderer: GameRenderer, gmap, state: PanelState,
     mouse_f = renderer.mouse_to_tile_float()
     H, W = gmap.is_wall.shape
 
-    spawn_tag = " [SPAWN MODE]" if state.spawn_mode else ""
+    spawn_tag = " [SPAWN MODE — click to detonate]" if state.spawn_mode else ""
     pause_tag = " [PAUSED]" if state.paused else ""
     header = f"BREACH Lighting Demo{spawn_tag}{pause_tag}"
 
@@ -659,12 +661,11 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     x = px + 10
     y = 10
 
-    # Title
-    rl.draw_text("Lighting Demo", x, y, 18, rl.Color(200, 220, 255, 255))
-    y += 26
-    fps_str = f"FPS:{rl.get_fps()}  RT:{renderer.last_raycast_ms:.1f}ms"
-    rl.draw_text(fps_str, x, y, 12, rl.Color(160, 160, 180, 255))
-    y += 20
+    # Title + perf on same line
+    rl.draw_text("Lighting Demo", x, y, 16, rl.Color(200, 220, 255, 255))
+    fps_str = f"  FPS:{rl.get_fps()} RT:{renderer.last_raycast_ms:.0f}ms"
+    rl.draw_text(fps_str, x + 100, y + 2, 11, rl.Color(140, 140, 160, 255))
+    y += 22
 
     # -- §4.1 Ambient --
     y = _section_header("Ambient", x, y)
@@ -698,11 +699,11 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     y = _slider(state, "pressure_scale", "P scale", 0.5, 10.0, x, y)
 
     # -- §4.6 Grenade tuning --
-    y = _section_header("Grenade [G=spawn]", x, y)
-    y = _slider(state, "blast_radius", "Blast radius", 1.0, 15.0, x, y)
+    y = _section_header("Grenade [T=spawn mode]", x, y)
+    y = _slider(state, "blast_radius", "Radius", 1.0, 15.0, x, y)
     y = _slider(state, "blast_pressure", "Pressure", 1.0, 30.0, x, y)
     y = _slider(state, "wall_damage", "Wall dmg", 0.0, 1000.0, x, y)
-    y = _slider(state, "unit_damage", "Unit dmg", 0.0, 200.0, x, y)
+    # unit_damage stored but not applied in direct-spawn (no apply_blast_damage call)
     y = _slider(state, "fuse_seconds", "Fuse (s)", 0.0, 5.0, x, y)
     y = _slider(state, "smoke_amount", "Smoke mult", 0.0, 2.0, x, y)
 
@@ -715,26 +716,25 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     y += ROW_GAP
 
     # Save button
-    if rl.gui_button(rl.Rectangle(x, y, 90, 22), "Save"):
+    # Save + Reset on same row
+    if rl.gui_button(rl.Rectangle(x, y, 70, 20), "Save"):
         name = state.preset_name.strip() or "default"
         state.status_msg = save_preset(name, state.as_dict())
         state.status_until = now + 3.0
-    y += 28
+    if rl.gui_button(rl.Rectangle(x + 80, y, 110, 20), "Reset defaults"):
+        state.reset_defaults()
+    y += 24
 
-    # Load button + preset list
+    # Load button + preset dropdown
     presets = list_presets()
     if presets:
-        preset_str = ";".join(presets)
-        active_ptr = rl.ffi.new("int *", state.dropdown_active)
-        # Clamp active index
         if state.dropdown_active >= len(presets):
             state.dropdown_active = 0
-
-        # Draw dropdown. raygui gui_dropdown_box manages its own open state
-        # internally — we just toggle editMode and read the active index.
+        active_ptr = rl.ffi.new("int *", state.dropdown_active)
+        # gui_dropdown_box: editMode=True = open. Returns 1 when user picks.
         clicked = rl.gui_dropdown_box(
-            rl.Rectangle(x, y, 180, 22),
-            preset_str,
+            rl.Rectangle(x, y, 150, 20),
+            ";".join(presets),
             active_ptr,
             state.dropdown_open,
         )
@@ -742,29 +742,21 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
         if clicked:
             state.dropdown_open = not state.dropdown_open
 
-        y += 28
-
-        if rl.gui_button(rl.Rectangle(x, y, 90, 22), "Load"):
-            chosen = presets[state.dropdown_active] if presets else "default"
+        if rl.gui_button(rl.Rectangle(x + 158, y, 60, 20), "Load"):
+            chosen = presets[state.dropdown_active]
             loaded = load_preset(chosen)
             if loaded:
                 state.apply_dict(loaded)
-                state.status_msg = f"Loaded preset '{chosen}'"
+                state.status_msg = f"Loaded '{chosen}'"
                 state.status_until = now + 3.0
             state.dropdown_open = False
-        y += 28
+        y += 26
     else:
-        rl.gui_label(rl.Rectangle(x, y, PANEL_W - 20, 16),
-                     "(no presets saved yet)")
-        y += 22
-
-    # Reset to defaults
-    if rl.gui_button(rl.Rectangle(x, y, 130, 22), "Reset to defaults"):
-        state.reset_defaults()
-    y += 30
+        rl.gui_label(rl.Rectangle(x, y, PANEL_W - 20, 14), "(save a preset first)")
+        y += 18
 
     # Keybind reminder
-    rl.draw_text("Space=pause  G=spawn  WASD=pan  Q/E=zoom",
+    rl.draw_text("Space=pause  T=spawn  WASD=pan  Q/E=zoom  G=sRGB",
                  x, y, 10, rl.Color(120, 120, 140, 255))
 
 
