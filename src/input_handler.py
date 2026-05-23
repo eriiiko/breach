@@ -51,9 +51,19 @@ class InputHandler:
     def __init__(self):
         self.selected_unit_id = None
         self.current_mode = ORDER_MOVE_ATTACK
-        self.planning_phase = 0
+        # Planning phase is remembered per-unit: first selection defaults
+        # to Phase 1; Tab toggles only the selected unit's entry. So
+        # switching between marines preserves where you left off.
+        self.per_unit_phase: dict[int, int] = {}
         self.grenade_fuse = CFG.weapons.grenade.fuse_default_seconds
         self.det_slot = DET_START_PHASE1
+
+    @property
+    def planning_phase(self) -> int:
+        """Current planning phase for the selected unit. 0 if no selection."""
+        if self.selected_unit_id is None:
+            return 0
+        return self.per_unit_phase.get(self.selected_unit_id, 0)
 
     # ------------------------------------------------------------------
     # Per-frame poll. Returns nothing; side effects on ``sim``.
@@ -97,9 +107,11 @@ class InputHandler:
         if rl.is_key_pressed(K.KEY_BACKSPACE) and self.selected_unit_id is not None:
             sim.undo_last_order(self.selected_unit_id)
 
-        # Tab: switch planning phase.
-        if rl.is_key_pressed(K.KEY_TAB):
-            self.planning_phase = 1 - self.planning_phase
+        # Tab: switch the SELECTED unit's planning phase. No-op if no
+        # selection (planning a phase without a unit makes no sense).
+        if rl.is_key_pressed(K.KEY_TAB) and self.selected_unit_id is not None:
+            cur = self.per_unit_phase.get(self.selected_unit_id, 0)
+            self.per_unit_phase[self.selected_unit_id] = 1 - cur
 
         # Esc: clear selection / reset mode.
         if rl.is_key_pressed(K.KEY_ESCAPE):
@@ -163,6 +175,8 @@ class InputHandler:
                     u.tile_x <= fx < u.tile_x + u.footprint
                     and u.tile_y <= fy < u.tile_y + u.footprint):
                 self.selected_unit_id = u.id
+                # First-time selection defaults to Phase 1.
+                self.per_unit_phase.setdefault(u.id, 0)
                 return
         # Otherwise place an order with the current mode.
         if self.selected_unit_id is not None:

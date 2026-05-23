@@ -91,7 +91,9 @@ def main():
                 units_marines=sim.marines(),
                 units_zombies=sim.zombies(),
                 projectiles=sim.projectiles,
-                orders_per_unit=sim.orders_for_phase(input_handler.planning_phase),
+                orders_phase1=sim.orders_for_phase(0),
+                orders_phase2=sim.orders_for_phase(1),
+                current_phase=input_handler.planning_phase,
             )
             renderer.draw_background_to_screen()
             renderer.blit_world_to_screen()

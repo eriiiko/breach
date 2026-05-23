@@ -345,6 +345,15 @@ class Unit:
                 return o.target_fx, o.target_fy
         return self.tile_x, self.tile_y
 
+    def get_planned_pos_after_phase(self, phase: int):
+        """Position after executing all queued move orders up through and
+        including ``phase``. Used by the order overlay so a Phase 2 line
+        starts where Phase 1 leaves the unit, not where it currently is."""
+        for o in reversed(self.orders):
+            if o.order_type in MOVE_ORDER_TYPES and o.phase <= phase:
+                return o.target_fx, o.target_fy
+        return self.tile_x, self.tile_y
+
     def get_orders_for_phase(self, phase):
         return [o for o in self.orders if o.phase == phase]
 

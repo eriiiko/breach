@@ -480,16 +480,19 @@ class Simulation:
     def orders_for_phase(self, phase) -> dict:
         """Per-unit waypoint lists for the renderer's overlay.
 
-        Returns ``{unit_id: [(fx, fy), (fx2, fy2), ...]}``. The first
-        waypoint is the unit's current position; subsequent are the
-        targets of each move order in that phase. Empty for units with
-        no movement.
+        Returns ``{unit_id: [(x, y), (x2, y2), ...]}``. The first waypoint
+        is where the unit will be at the *start* of ``phase`` — that's
+        the current position for Phase 1, and the planned end of Phase 1
+        for Phase 2. Subsequent entries are the targets of each move
+        order in that phase. Empty for units with no movement.
         """
         out = {}
         for u in self.units:
             if u.team != 0 or not u.alive:
                 continue
-            waypoints = [(u.tile_x, u.tile_y)]
+            start = (u.tile_x, u.tile_y) if phase == 0 else \
+                    u.get_planned_pos_after_phase(phase - 1)
+            waypoints = [start]
             for o in u.orders:
                 if o.phase == phase and o.order_type in MOVE_ORDER_TYPES:
                     waypoints.append((o.target_fx, o.target_fy))

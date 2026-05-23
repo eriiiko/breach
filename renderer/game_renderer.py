@@ -177,7 +177,9 @@ class GameRenderer:
     def compose_world(self, units_marines: Sequence = (),
                       units_zombies: Sequence = (),
                       projectiles: Sequence = (),
-                      orders_per_unit: Optional[dict] = None) -> None:
+                      orders_phase1: Optional[dict] = None,
+                      orders_phase2: Optional[dict] = None,
+                      current_phase: int = 0) -> None:
         """Draw every world-space layer into the world RT.
 
         Order: lit ship (diffuse + normal + light), smoke, fire, units,
@@ -190,8 +192,9 @@ class GameRenderer:
 
         ``projectiles`` is a sequence of objects with ``.fx``, ``.fy``,
         and ``.proj_type`` (the simulation's Projectile dataclass works).
-        ``orders_per_unit`` is ``{unit_id: [(fx, fy), ...]}`` — waypoint
-        polylines for the order overlay.
+        ``orders_phase1`` / ``orders_phase2`` are ``{unit_id: [(x, y), ...]}``
+        waypoint polylines per phase. ``current_phase`` (0 or 1) controls
+        which is drawn brighter; the other is dimmed.
         """
         self.world.begin(clear_color=(0, 0, 0, 0))
 
@@ -213,8 +216,8 @@ class GameRenderer:
             rl.end_blend_mode()
 
         # 3. Units, waypoints, projectiles, effects, grid — drawn in world-pixel space
-        if orders_per_unit:
-            self._draw_orders_world(orders_per_unit)
+        if orders_phase1 or orders_phase2:
+            self._draw_orders_world(orders_phase1, orders_phase2, current_phase)
         self._draw_units_world(units_marines, units_zombies)
         if projectiles:
             self._draw_projectiles_world(projectiles)
@@ -254,13 +257,34 @@ class GameRenderer:
                       footprint_tiles=getattr(z, "footprint", 3),
                       sprite=sprite)
 
-    def _draw_orders_world(self, orders_per_unit: dict) -> None:
+    # Single hue (cyan) for both phases; the currently-planning phase is
+    # drawn bright, the other phase dimmer. Same colour communicates
+    # "they're both your plan"; brightness disambiguates which one is
+    # active for editing.
+    _PHASE_BRIGHT = (60, 200, 255, 230)
+    _PHASE_DIM    = (60, 200, 255, 90)
+
+    def _draw_orders_world(self, orders_p1: Optional[dict],
+                            orders_p2: Optional[dict],
+                            current_phase: int) -> None:
         wpt = self.world.world_px_per_tile
-        for waypoints in orders_per_unit.values():
-            if len(waypoints) < 2:
-                continue
-            for a, b in zip(waypoints, waypoints[1:]):
-                draw_waypoint_line(a, b, wpt)
+
+        def draw_lines(orders, color):
+            if not orders:
+                return
+            for waypoints in orders.values():
+                if len(waypoints) < 2:
+                    continue
+                for a, b in zip(waypoints, waypoints[1:]):
+                    draw_waypoint_line(a, b, wpt, color=color)
+
+        # Draw the non-current phase first so the current phase is on top.
+        if current_phase == 0:
+            draw_lines(orders_p2, self._PHASE_DIM)
+            draw_lines(orders_p1, self._PHASE_BRIGHT)
+        else:
+            draw_lines(orders_p1, self._PHASE_DIM)
+            draw_lines(orders_p2, self._PHASE_BRIGHT)
 
     def _draw_projectiles_world(self, projectiles: Sequence) -> None:
         """Draw each in-flight projectile as a small marker.
@@ -506,16 +530,27 @@ class GameRenderer:
         draw_text(f"[/] Light Z: {self.lighting.light_z:.2f}", x, y, 13,
                   color=(220, 220, 180, 255))
         y += 16
-        # Hint key bindings.
+        # Order-control cheat sheet.
+        y += 10
+        draw_text("Orders:", x, y, 14, color=(180, 200, 255, 255))
+        y += 20
+        for label in [
+            "1  Move & Attack",
+            "2  Move w/ Cover",
+            "3  Sprint",
+            "F  Fire (target tile)",
+            "G  Grenade  (wheel = fuse)",
+            "B  Breach   (wheel = slot)",
+            "Tab  toggle unit's phase",
+            "Bksp  undo last order",
+            "Esc  clear selection",
+            "Space  resume / pause",
+        ]:
+            draw_text(label, x, y, 12, color=(170, 170, 190, 255))
+            y += 15
         y += 6
         draw_text("Ctrl+R reload config", x, y, 11,
-                  color=(160, 160, 180, 255))
-        y += 14
-        draw_text("Space pause | Bksp undo", x, y, 11,
-                  color=(160, 160, 180, 255))
-        y += 14
-        draw_text("Tab switch phase", x, y, 11,
-                  color=(160, 160, 180, 255))
+                  color=(140, 140, 160, 255))
         y += 14
 
     # ---- input ----------------------------------------------------------
