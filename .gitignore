@@ -30,7 +30,21 @@ prototypes/fluid_pipe_only_48s.gif
 debug_*.npz
 
 # AI tools (large repos + models, re-clone with setup script)
-tools/
+# Ignore the specific AI sub-repos and model dirs; leave tools/*.py / *.toml tracked.
+tools/content_aware_tiles/
+tools/tiled-diffusion/
+tools/GLIGEN/
+tools/IP-Adapter/
+tools/ComfyUI-seamless-tiling/
+tools/ComfyUI/
+tools/ControlAR/
+tools/WaveFunctionDiffusion/
+tools/canvas-to-image/
+tools/ctrlora/
+tools/models/
+tools/resynth-tiles/
+tools/seamless-tile-inpainting/
+tools/texturelab/
 
 # OS files
 Thumbs.db
