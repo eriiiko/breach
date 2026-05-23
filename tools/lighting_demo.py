@@ -452,6 +452,12 @@ def main() -> None:
 
             # ---- Sim tick ----
             if not state.paused:
+                # The sim auto-pauses at end of round. In the demo we want
+                # continuous physics — re-enable after each auto-pause so
+                # smoke/pressure keeps evolving even when no grenades land.
+                if sim.is_paused():
+                    sim.set_paused(False)
+
                 tick_accum += dt
                 steps = 0
                 while tick_accum >= sim_dt and steps < max_catch_up:
