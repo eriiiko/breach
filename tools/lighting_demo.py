@@ -434,9 +434,6 @@ def main() -> None:
     # For click spawn — debounce so one press = one grenade
     last_click_handled = False
 
-    # Preset name text input — 32 byte buffer for raygui text_box
-    _preset_name_buf = bytearray(b"default\x00" + b"\x00" * 24)
-
     try:
         while not renderer.should_close():
             now = time.perf_counter()
@@ -559,7 +556,7 @@ def main() -> None:
             _draw_hud(renderer, sim.gmap, state, now)
 
             # ---- raygui panel ----
-            _draw_panel(state, renderer, now, _preset_name_buf)
+            _draw_panel(state, renderer, now)
 
             renderer.end_frame()
 
@@ -628,7 +625,7 @@ def _draw_hud(renderer: GameRenderer, gmap, state: PanelState,
 # ---------------------------------------------------------------------------
 
 def _draw_panel(state: PanelState, renderer: GameRenderer,
-                now: float, preset_name_buf: bytearray) -> None:
+                now: float) -> None:
     """Draw the full raygui slider panel on the right side of the window."""
     cfg = renderer.cfg
     px = cfg.map_px_w        # panel left edge
@@ -694,15 +691,12 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
 
     # Preset name text box
     rl.gui_label(rl.Rectangle(x, y, LABEL_W, SLIDER_H), "Name:")
-    _draw_preset_textbox(state, preset_name_buf, x + LABEL_W, y,
-                         SLIDER_W, SLIDER_H)
+    _draw_preset_textbox(state, x + LABEL_W, y, SLIDER_W, SLIDER_H)
     y += ROW_GAP
 
     # Save button
     if rl.gui_button(rl.Rectangle(x, y, 90, 22), "Save"):
-        name = _buf_to_str(preset_name_buf)
-        if not name:
-            name = "default"
+        name = state.preset_name.strip() or "default"
         save_preset(name, state.as_dict())
         state.status_msg = f"Saved preset '{name}'"
         state.status_until = now + 3.0
@@ -762,36 +756,29 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
 _textbox_edit = False   # module-level since there's only one text box
 
 
-def _draw_preset_textbox(state: PanelState, buf: bytearray,
+MAX_PRESET_NAME = 32   # maximum preset name length
+
+
+def _draw_preset_textbox(state: PanelState,
                           x: int, y: int, w: int, h: int) -> None:
-    """Draw an editable text box backed by a bytearray buffer."""
+    """Draw an editable text box for the preset name.
+
+    gui_text_box takes a cffi char* — we build it from state.preset_name
+    each frame and write back after raygui edits it.
+    """
     global _textbox_edit
-    # gui_text_box takes a cffi char* — we build it from the bytearray
-    # each frame and write back. This is the cleanest approach with pyray's
-    # cffi binding: create a cdata char[] of fixed size.
-    MAX = len(buf)
-    cstr = rl.ffi.new(f"char[{MAX}]")
-    # Copy current string into cdata buffer
-    s_bytes = state.preset_name.encode("ascii", "replace")[:MAX-1]
+    cstr = rl.ffi.new(f"char[{MAX_PRESET_NAME}]")
+    s_bytes = state.preset_name.encode("ascii", "replace")[:MAX_PRESET_NAME - 1]
     for i, b in enumerate(s_bytes):
         cstr[i] = b
     cstr[len(s_bytes)] = 0
 
-    clicked = rl.gui_text_box(rl.Rectangle(x, y, w, h), cstr, MAX, _textbox_edit)
+    clicked = rl.gui_text_box(rl.Rectangle(x, y, w, h), cstr, MAX_PRESET_NAME,
+                               _textbox_edit)
     if clicked:
         _textbox_edit = not _textbox_edit
 
-    # Read back string from cdata
-    result = rl.ffi.string(cstr).decode("ascii", "replace")
-    state.preset_name = result
-
-
-def _buf_to_str(buf: bytearray) -> str:
-    """Extract null-terminated string from a bytearray buffer."""
-    try:
-        return buf[:buf.index(0)].decode("ascii", "replace").strip()
-    except ValueError:
-        return buf.decode("ascii", "replace").strip()
+    state.preset_name = rl.ffi.string(cstr).decode("ascii", "replace")
 
 
 if __name__ == "__main__":
