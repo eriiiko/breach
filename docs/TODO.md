@@ -6,16 +6,27 @@
 
 ## Pending — small (background, queue up next session)
 
-- **Smoke at vacuum tiles** — smoke draws over vacuum where stars are
-  meant to show. Zero `gmap.smoke` at vacuum positions before uploading
-  to the overlay texture. ~30 second fix in renderer/game_renderer.py.
-
 - **Scorch marks** — grenades and fire should leave permanent visual
   marks on the floor/walls where they hit. Persistent darkening, soot,
   burn patterns. **Design now in `graphics_lighting_design.md` §7
   (Destruction Painting Layer)** — single edit-texture approach, with
   normal-map dot product giving directional grenade burns. Ready to
   implement.
+
+- **Blood splats** — reuse the destruction-painting tech from scorch
+  marks for blood. Triggered by ranged/melee damage and unit death;
+  brush is a dark-red feathered blob, no normal-map relief. Design
+  added to `graphics_lighting_design.md` §7.5.
+
+- **Fire as a short-range light source** — wire burning tiles into
+  the raycaster as `LightSource` instances with small `max_range`
+  (2–4 tiles). Design in `docs/fire_design_notes.md`. Lands with the
+  upcoming physics-engine pass.
+
+- **1-bounce raycaster with surface tint** — light rays bounce once
+  off walls, tinted by the surface colour. Cheap caustics-lite for
+  metal corridors and coloured rooms. Note in `architecture.md` §7
+  flags this as "secondary priority".
 
 ---
 

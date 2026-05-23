@@ -192,6 +192,17 @@ Same texture-paint code path as scorch marks.
 
 The wall-destruction patch above is a quickfix. Long-term, **doors specifically should become first-class animated assets** — not tiles painted on the edit layer — so they can play open/close animations, hold per-door state, and interact properly with the occlusion grid for the lighting system. The paint-based approach stays for genuinely destructive edits (rubble, scorch, blood); animated/stateful tiles graduate to assets.
 
+### 7.5 Blood splats — same paint layer, unit-driven source (Erik, 2026-05-23)
+
+Blood splats reuse the destruction painting layer (§7.1). The mechanism is the same as scorch marks; only the trigger and the brush change:
+
+- **Trigger**: a unit takes ranged damage, melee damage, or dies. Each such event paints onto the floor "behind" the unit relative to the source of the hit. A bullet's direction of travel determines the splatter direction.
+- **Brush**: a small irregular blob of dark-red pixels with feathered edges and minor variance. Multiple hits stack and grow the stain.
+- **Normal-map interaction**: blood doesn't relieve like scorch does — it's a stain, not a burn — so the normal-map contribution stays at zero (or very subtle wet sheen). The diffuse layer carries the entire effect.
+- **Pooling around dying units**: a downed unit grows a spreading pool over a few seconds (could be a timed expansion of the stain centered on the unit's anchor tile).
+
+Implementation note: same code path as `paint_scorch_at(tile, direction)` — add `paint_blood_at(tile, direction)`. The painting layer doesn't care what's painting; the brush is the variable.
+
 ---
 
 ## 8. Art Asset Strategy

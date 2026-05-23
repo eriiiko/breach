@@ -146,14 +146,16 @@ class GameRenderer:
             core.update_rgba_texture(self.lighting.light_tex, self.lighting.packed)
             self.last_raycast_ms = 0.0
 
-        # Smoke + fire overlays. Mask out vacuum tiles — smoke and fire in
-        # vacuum tiles would draw on top of the screen-fixed background.
-        # (Physically: no medium in vacuum.) Use np.where so the mask is
-        # applied as a copy without mutating the simulation state.
-        light_mod = self.lighting.light_map if self.show_lighting else None
+        # Smoke is a physical medium — always visible regardless of light
+        # (the light/smoke coupling is the OTHER way: smoke attenuates rays
+        # in the raycaster). Smoke can drift through vacuum too — particles
+        # don't vanish at the hull edge. So no light_modulation, no vacuum
+        # mask on smoke.
         if self.show_smoke:
-            smoke_view = np.where(gmap.is_vacuum, 0.0, gmap.smoke)
-            self.smoke_overlay.update(smoke_view, light_modulation=light_mod)
+            self.smoke_overlay.update(gmap.smoke)
+        # Fire still gets the vacuum mask: combustion requires oxygen, so
+        # fire physically cannot exist in vacuum. Keep this until the fire
+        # sim is taught to extinguish at vacuum tiles directly.
         if self.show_fire:
             fire_view = np.where(gmap.is_vacuum, 0.0, gmap.fire)
             self.fire_overlay.update(fire_view)
