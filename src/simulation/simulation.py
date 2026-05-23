@@ -616,7 +616,10 @@ class Simulation:
         self.tick += 1
         self.real_time += sim_time_per_tick
 
-        # Phase 1 → Phase 2 boundary: fire between-phase explosives, auto-pause.
+        # Phase 1 → Phase 2 boundary: fire between-phase explosives and
+        # advance the phase counter. NO auto-pause — the round plays
+        # through both phases smoothly in one execution. The split is a
+        # mental planning aid for the player, not a sim interruption.
         if (self.tick == self._ticks_per_phase
                 and not self._fired_between):
             process_door_explosives(
@@ -625,7 +628,6 @@ class Simulation:
             )
             self._fired_between = True
             self.phase = 1
-            self.paused = True
 
         # End of round: fire end-of-phase-2 explosives, convert zombies, reset.
         if self.tick >= self._ticks_per_round:

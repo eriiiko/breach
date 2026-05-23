@@ -6,11 +6,15 @@ legacy) is scheduled for deletion as step 13 of the migration.
 
 Game loop (real time + pause):
 
-  - Sim starts paused. Player plans Phase 1 orders.
+  - Sim starts paused. Player plans all orders for the round across
+    Phase 1 (preparation) and Phase 2 (engagement) — Tab switches
+    which phase the next order belongs to.
   - Spacebar resumes execution; sim ticks at CFG.clock.ticks_per_second
     (12 Hz by default).
-  - Sim auto-pauses at end of Phase 1 (tick 60) and end of round (tick
-    120). Player tweaks Phase 2 orders, presses Spacebar again.
+  - Sim runs the full round (120 ticks) in one go without pausing
+    between phases — phase 1 and phase 2 play through smoothly like
+    a movie. Auto-pause fires only at end of round, returning to
+    planning for the next round.
   - Backspace undoes last order; Tab switches planning phase; Esc
     clears selection; Ctrl+R reloads config; F8 dumps physics .npz.
 

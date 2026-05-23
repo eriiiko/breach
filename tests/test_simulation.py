@@ -161,21 +161,17 @@ def test_full_round_runs():
 
     sim.set_paused(False)
 
-    # Step through Phase 1 — should auto-pause at tick == ticks_per_phase.
-    for _ in range(sim._ticks_per_phase + 5):
+    # The round runs through BOTH phases without pausing between —
+    # one Space press = one full round. Auto-pause only at end of round.
+    # Phase counter still advances at the midpoint (tick 60).
+    saw_phase_1 = False
+    for _ in range(sim._ticks_per_round + 5):
         if sim.is_paused():
             break
         sim.step()
-    assert sim.is_paused(), "expected auto-pause at phase 1 boundary"
-    assert sim.tick == sim._ticks_per_phase, f"tick={sim.tick}"
-    assert sim.phase == 1, f"phase={sim.phase}"
-
-    # Resume Phase 2.
-    sim.set_paused(False)
-    for _ in range(sim._ticks_per_phase + 5):
-        if sim.is_paused():
-            break
-        sim.step()
+        if sim.phase == 1:
+            saw_phase_1 = True
+    assert saw_phase_1, "expected phase to advance to 1 mid-round"
     assert sim.is_paused(), "expected auto-pause at end of round"
     # End of round resets tick to 0.
     assert sim.tick == 0, f"tick={sim.tick}"
