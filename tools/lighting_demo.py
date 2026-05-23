@@ -628,10 +628,13 @@ def _draw_hud(renderer: GameRenderer, gmap, state: PanelState,
         color = rl.Color(255, 230, 80, 255) if i == 0 else rl.Color(200, 230, 255, 255)
         rl.draw_text(line, x0 + pad, y0 + pad + i * (font_size + 4), font_size, color)
 
-    # Status message (Save / Load feedback)
+    # Status message (Save / Load feedback) or pressure hint
     if state.status_msg and now < state.status_until:
         rl.draw_text(state.status_msg, x0, y0 + box_h + 8, 14,
                      rl.Color(120, 255, 120, 255))
+    elif state.get("show_pressure"):
+        rl.draw_text("[P overlay ON — spawn a grenade to see shockwave]",
+                     x0, y0 + box_h + 8, 11, rl.Color(180, 180, 100, 200))
 
 
 # ---------------------------------------------------------------------------
