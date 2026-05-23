@@ -778,11 +778,12 @@ def _draw_preset_textbox(state: PanelState,
     each frame and write back after raygui edits it.
     """
     global _textbox_edit
-    cstr = rl.ffi.new(f"char[{MAX_PRESET_NAME}]")
+    # Build a null-padded byte buffer of exactly MAX_PRESET_NAME and hand it
+    # to ffi.new as the char[] initializer. Per-cell assignment doesn't work
+    # because Python 3's bytes-iteration yields ints, not single-byte values.
     s_bytes = state.preset_name.encode("ascii", "replace")[:MAX_PRESET_NAME - 1]
-    for i, b in enumerate(s_bytes):
-        cstr[i] = b
-    cstr[len(s_bytes)] = 0
+    padded = s_bytes + b"\x00" * (MAX_PRESET_NAME - len(s_bytes))
+    cstr = rl.ffi.new(f"char[{MAX_PRESET_NAME}]", padded)
 
     clicked = rl.gui_text_box(rl.Rectangle(x, y, w, h), cstr, MAX_PRESET_NAME,
                                _textbox_edit)
