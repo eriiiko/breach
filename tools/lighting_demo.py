@@ -495,6 +495,14 @@ def main() -> None:
                             # Rescale: new = before + delta * mult (clamped to 1.0)
                             sim.gmap.smoke = np.clip(before + delta * smoke_mult,
                                                      0.0, 1.0).astype(np.float32)
+                        # Queue a visual flash so the renderer draws the ring.
+                        renderer._effects.append({
+                            "kind": "explosion",
+                            "pos": (tx, ty),
+                            "radius": r,
+                            "t": 0.0,
+                            "life": 0.6,
+                        })
                 last_click_handled = True
             elif not left_down:
                 last_click_handled = False
