@@ -130,7 +130,20 @@ rendering, normal map shaders, and aligns with the C++ physics / CUDA pipeline.
 
 ## Physics — Open Items
 
-3. **Breach decompression fix** — sponge layer works but isn't physical. See `atmosphere_solver_analysis_and_patch_plan_20260319.md`. Not blocking but worth fixing.
+3. **Pressure-driven wall failure** (Erik, 2026-05-24) — walls break when
+   the pressure gradient across them exceeds a threshold. Solves the
+   "stack N grenades in a sealed room and pressure builds forever" issue
+   elegantly: rooms self-breach when overpressured, releasing the energy.
+   Implementation sketch: at each tick, compute `|p[a] - p[b]|` for each
+   wall-air boundary; if `> burst_threshold`, call `gmap.destroy_wall(...)`
+   on that wall tile (becomes air; if hull-edge, becomes vacuum →
+   automatic decompression release). Threshold per material (hull holds
+   more than wood). Cool emergent explosion: chain reactions where
+   breaching one wall vents enough pressure to reset the gradient, but a
+   sealed-enough cluster of rooms could "pop" multiple walls in sequence.
+   Lands with the physics-engine pass.
+
+4. **Breach decompression fix** — sponge layer works but isn't physical. See `atmosphere_solver_analysis_and_patch_plan_20260319.md`. Not blocking but worth fixing.
 4. **Shallow water / fluid simulation** — prototype exists (`prototypes/fluid_test.py`: pipe model + shallow water equations, ship tilting). Needs integration into game engine. Use cases: water flooding, coolant leaks, blood pooling.
 5. **Fire ignition model** — ignition as O₂ + temperature function. Explosions deposit heat, temperature diffuses, spontaneous ignition above threshold. Pieces exist but integration glue is missing.
 
