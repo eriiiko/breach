@@ -26,7 +26,7 @@ class FieldOverlay:
     Use for smoke (gray semi-transparent) and fire (orange glow).
     """
 
-    def __init__(self, grid_h: int, grid_w: int, tint=(180, 180, 200), max_alpha=200):
+    def __init__(self, grid_h: int, grid_w: int, tint=(180, 180, 200), max_alpha=255):
         self.h = grid_h
         self.w = grid_w
         self.tex = core.create_dynamic_rgba_texture(grid_w, grid_h)
@@ -37,20 +37,24 @@ class FieldOverlay:
     def update(self, field: np.ndarray, light_modulation: Optional[np.ndarray] = None) -> None:
         """field: (H, W) float in [0,1]. Pack to RGBA, upload.
 
-        If light_modulation is provided (also (H,W) float in [0,1]), alpha is
-        multiplied by it — smoke only visible where light reaches it.
+        If ``light_modulation`` is provided ((H,W) float in [0,1]), the
+        smoke's RGB *colour* is multiplied by it — lit smoke shows its
+        tint, unlit smoke fades toward black. Alpha is NEVER modulated by
+        light: smoke as a physical medium is always there; light only
+        determines whether you can SEE its colour. (Beam through smoke
+        = bright streak; same smoke in darkness = black silhouette.)
         """
         v = np.clip(field, 0.0, 1.0)
-        self.packed[..., 0] = self.tint_r
-        self.packed[..., 1] = self.tint_g
-        self.packed[..., 2] = self.tint_b
         if light_modulation is not None:
             mod = np.clip(light_modulation, 0.0, 1.0)
-            # Add a small ambient floor so smoke isn't completely invisible
-            mod = 0.15 + 0.85 * mod
-            self.packed[..., 3] = (v * mod * self.max_alpha).astype(np.uint8)
+            self.packed[..., 0] = (self.tint_r * mod).astype(np.uint8)
+            self.packed[..., 1] = (self.tint_g * mod).astype(np.uint8)
+            self.packed[..., 2] = (self.tint_b * mod).astype(np.uint8)
         else:
-            self.packed[..., 3] = (v * self.max_alpha).astype(np.uint8)
+            self.packed[..., 0] = self.tint_r
+            self.packed[..., 1] = self.tint_g
+            self.packed[..., 2] = self.tint_b
+        self.packed[..., 3] = (v * self.max_alpha).astype(np.uint8)
         core.update_rgba_texture(self.tex, self.packed)
 
     def draw(self, dst_x: int, dst_y: int, dst_w: int, dst_h: int) -> None:
@@ -88,7 +92,8 @@ class FireOverlay(FieldOverlay):
 def draw_unit(x_tile: float, y_tile: float, world_px_per_tile: float,
               color, label: str = "", radius_tiles: float = 1.5,
               footprint_tiles: int = 3,
-              sprite: Optional[rl.Texture] = None) -> None:
+              sprite: Optional[rl.Texture] = None,
+              light_intensity: float = 1.0) -> None:
     """Draw a unit on its footprint, in world-pixel coordinates.
 
     x_tile, y_tile = top-left of the unit's footprint in world-tile coords.
@@ -97,15 +102,22 @@ def draw_unit(x_tile: float, y_tile: float, world_px_per_tile: float,
     radius_tiles = visual radius in tile units (used only for the circle fallback).
     sprite = optional Texture; if provided, draws sprite scaled to the footprint
              instead of the circle placeholder.
+    light_intensity = scalar 0..1+ (clamped) used to tint the sprite. 1.0 = full
+             brightness; 0.0 = black silhouette. Lets the unit respond to the
+             room's lighting without needing a per-sprite normal map yet.
     """
     x_wpx = tile_to_world_px(x_tile, world_px_per_tile)
     y_wpx = tile_to_world_px(y_tile, world_px_per_tile)
     size_wpx = footprint_tiles * world_px_per_tile
 
     if sprite is not None:
+        # Tint by local light. Clamp to [0, 1] so we never overdrive past white.
+        L = max(0.0, min(1.0, float(light_intensity)))
+        c = int(L * 255)
+        tint = rl.Color(c, c, c, 255)
         src = rl.Rectangle(0.0, 0.0, float(sprite.width), float(sprite.height))
         dst = rl.Rectangle(x_wpx, y_wpx, size_wpx, size_wpx)
-        rl.draw_texture_pro(sprite, src, dst, rl.Vector2(0.0, 0.0), 0.0, rl.WHITE)
+        rl.draw_texture_pro(sprite, src, dst, rl.Vector2(0.0, 0.0), 0.0, tint)
     else:
         # Circle fallback — also used when sprite failed to load.
         half = footprint_tiles * 0.5

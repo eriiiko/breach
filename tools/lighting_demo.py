@@ -80,7 +80,7 @@ DEFAULTS = {
     "wall_damage": 200.0,
     "unit_damage": 60.0,
     "fuse_seconds": 0.0,
-    "smoke_amount": 1.0,
+    "smoke_amount": 0.3,  # default tuning baseline; 1.0 fills 2 rooms per nade
 }
 
 # ---------------------------------------------------------------------------
@@ -559,17 +559,26 @@ def main() -> None:
                 units_zombies=sim.zombies(),
                 projectiles=sim.projectiles,
             )
-            renderer.draw_background_to_screen()
-            renderer.blit_world_to_screen()
 
-            # Pressure overlay — draw after blit, screen-space stretch over map
+            # Pressure overlay drawn INTO the world RT so it goes through the
+            # camera transform like everything else (lit ship, smoke, units).
+            # Previously this was drawn screen-space after the blit, which
+            # made it visually drift relative to the world when the camera
+            # panned or zoomed.
             if state.get("show_pressure"):
-                src_r = rl.Rectangle(0, 0, float(level.width), float(level.height))
-                dst_r = rl.Rectangle(0, 0, float(map_px_w), float(map_px_h))
+                rl.begin_texture_mode(renderer.world.rt)
                 rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA)
+                src_r = rl.Rectangle(0, 0, float(level.width), float(level.height))
+                dst_r = rl.Rectangle(0, 0,
+                                     float(renderer.world.world_px_w),
+                                     float(renderer.world.world_px_h))
                 rl.draw_texture_pro(pressure_tex, src_r, dst_r,
                                     rl.Vector2(0, 0), 0.0, rl.WHITE)
                 rl.end_blend_mode()
+                rl.end_texture_mode()
+
+            renderer.draw_background_to_screen()
+            renderer.blit_world_to_screen()
 
             # ---- HUD ----
             _draw_hud(renderer, sim.gmap, state, now)

@@ -87,7 +87,14 @@ class GameRenderer:
         # Level textures + lighting + overlays
         self.textures = core.load_level_textures(level_data)
         self.raycaster = breach_physics.Raycaster()
-        self.raycaster.smoke_absorption = 0.8
+        # smoke_absorption = 1.0 makes the smoke density field itself the
+        # absorption fraction: smoke=0.4 → 40% absorbed, smoke=1.0 → 100%
+        # absorbed. Physically intuitive ("more smoke blocks more light")
+        # and matches Erik's spec 2026-05-24. The deferred upgrade is to
+        # also DEPOSIT the absorbed light at the smoke tile (so lit smoke
+        # glows brighter than just the through-flux suggests) — that's a
+        # C++ raycaster change for the next physics pass.
+        self.raycaster.smoke_absorption = 1.0
         self.lighting = LightingPass(self.raycaster, cfg.grid_h, cfg.grid_w)
         # Upload the level's vacuum mask once — the shader uses it to discard
         # vacuum pixels so the screen-fixed background shows through.
@@ -146,13 +153,15 @@ class GameRenderer:
             core.update_rgba_texture(self.lighting.light_tex, self.lighting.packed)
             self.last_raycast_ms = 0.0
 
-        # Smoke is a physical medium — always visible regardless of light
-        # (the light/smoke coupling is the OTHER way: smoke attenuates rays
-        # in the raycaster). Smoke can drift through vacuum too — particles
-        # don't vanish at the hull edge. So no light_modulation, no vacuum
-        # mask on smoke.
+        # Smoke is a physical medium — alpha is density-driven only (always
+        # there regardless of light). But the RGB *colour* of smoke IS
+        # modulated by the local light intensity: lit smoke shows its tint,
+        # unlit smoke fades toward black. This is the visual half of the
+        # smoke/light coupling; the simulation half (smoke absorbing rays)
+        # lives in the C++ raycaster.
+        light_mod = self.lighting.light_map if self.show_lighting else None
         if self.show_smoke:
-            self.smoke_overlay.update(gmap.smoke)
+            self.smoke_overlay.update(gmap.smoke, light_modulation=light_mod)
         # Fire still gets the vacuum mask: combustion requires oxygen, so
         # fire physically cannot exist in vacuum. Keep this until the fire
         # sim is taught to extinguish at vacuum tiles directly.
@@ -240,6 +249,16 @@ class GameRenderer:
 
     def _draw_units_world(self, marines: Sequence, zombies: Sequence) -> None:
         wpt = self.world.world_px_per_tile
+        lmap = self.lighting.light_map
+        H, W = lmap.shape
+        def light_at(u):
+            # Sample at the unit's center tile (footprint // 2 offset).
+            fp = int(getattr(u, "footprint", 3))
+            cx = int(u.x) + fp // 2
+            cy = int(u.y) + fp // 2
+            if 0 <= cx < W and 0 <= cy < H:
+                return float(lmap[cy, cx])
+            return 0.0
         for m in marines:
             if not getattr(m, "alive", True):
                 continue
@@ -250,14 +269,16 @@ class GameRenderer:
             draw_unit(m.x, m.y, wpt, (60, 180, 60, 255),
                       label=getattr(m, "name", ""),
                       footprint_tiles=getattr(m, "footprint", 3),
-                      sprite=sprite)
+                      sprite=sprite,
+                      light_intensity=light_at(m))
         for z in zombies:
             if not getattr(z, "alive", True):
                 continue
             sprite = self.sprites.get_zombie(z)
             draw_unit(z.x, z.y, wpt, (200, 50, 50, 255),
                       footprint_tiles=getattr(z, "footprint", 3),
-                      sprite=sprite)
+                      sprite=sprite,
+                      light_intensity=light_at(z))
 
     # Single hue (cyan) for both phases; the currently-planning phase is
     # drawn bright, the other phase dimmer. Same colour communicates
