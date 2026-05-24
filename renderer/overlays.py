@@ -44,17 +44,33 @@ class FieldOverlay:
         determines whether you can SEE its colour. (Beam through smoke
         = bright streak; same smoke in darkness = black silhouette.)
         """
+        # Pack as PREMULTIPLIED alpha so the overlay can be drawn with
+        # BLEND_ALPHA_PREMULTIPLY (Porter-Duff "over"). Raylib's default
+        # BLEND_ALPHA uses SRC_ALPHA for BOTH the colour AND alpha
+        # channels, which means drawing semi-transparent smoke over an
+        # opaque ship pixel REDUCES the destination alpha (e.g. ship
+        # alpha 1.0 + smoke alpha 0.5 -> result alpha 0.75 instead of
+        # 1.0). When the world RT is then blitted to screen, the lower
+        # alpha lets the screen-fixed background bleed through what
+        # should be opaque ship pixels — exactly the "galaxies through
+        # the ship after a grenade" bug. PREMUL gets the correct
+        # Porter-Duff alpha math: ship alpha 1.0 stays at 1.0.
         v = np.clip(field, 0.0, 1.0)
+        alpha = v * self.max_alpha   # uint range, 0..255
+        a_norm = alpha / 255.0       # 0..1 multiplier for premultiplication
         if light_modulation is not None:
             mod = np.clip(light_modulation, 0.0, 1.0)
-            self.packed[..., 0] = (self.tint_r * mod).astype(np.uint8)
-            self.packed[..., 1] = (self.tint_g * mod).astype(np.uint8)
-            self.packed[..., 2] = (self.tint_b * mod).astype(np.uint8)
+            r = self.tint_r * mod * a_norm
+            g = self.tint_g * mod * a_norm
+            b = self.tint_b * mod * a_norm
         else:
-            self.packed[..., 0] = self.tint_r
-            self.packed[..., 1] = self.tint_g
-            self.packed[..., 2] = self.tint_b
-        self.packed[..., 3] = (v * self.max_alpha).astype(np.uint8)
+            r = self.tint_r * a_norm
+            g = self.tint_g * a_norm
+            b = self.tint_b * a_norm
+        self.packed[..., 0] = r.astype(np.uint8)
+        self.packed[..., 1] = g.astype(np.uint8)
+        self.packed[..., 2] = b.astype(np.uint8)
+        self.packed[..., 3] = alpha.astype(np.uint8)
         core.update_rgba_texture(self.tex, self.packed)
 
     def draw(self, dst_x: int, dst_y: int, dst_w: int, dst_h: int) -> None:

@@ -218,9 +218,16 @@ class GameRenderer:
                 world_px_h=self.world.world_px_h,
             )
 
-        # 2. Smoke + fire overlays — stretched to world RT bounds
+        # 2. Smoke + fire overlays — stretched to world RT bounds.
+        # Smoke is packed with PREMULTIPLIED alpha (see FieldOverlay.update),
+        # so we draw it with BLEND_ALPHA_PREMULTIPLY for correct Porter-Duff
+        # compositing — preserves the destination alpha (ship stays opaque)
+        # instead of Raylib's default BLEND_ALPHA which reduces dest alpha
+        # when src alpha < 1.
         if self.show_smoke:
+            rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
             self._draw_overlay_to_world(self.smoke_overlay.tex)
+            rl.end_blend_mode()
         if self.show_fire:
             rl.begin_blend_mode(rl.BlendMode.BLEND_ADDITIVE)
             self._draw_overlay_to_world(self.fire_overlay.tex)
