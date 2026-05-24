@@ -498,8 +498,16 @@ def main() -> None:
                             add_explosion_smoke(sim.gmap, ty, tx, r, _tmp_rng)
                             delta = sim.gmap.smoke - before
                             # Rescale: new = before + delta * mult (clamped to 1.0)
-                            sim.gmap.smoke = np.clip(before + delta * smoke_mult,
-                                                     0.0, 1.0).astype(np.float32)
+                            # IN-PLACE write: the C++ atmosphere / raycaster
+                            # solvers hold a pointer to this specific numpy
+                            # array. Replacing the array via `gmap.smoke = ...`
+                            # leaves C++ pointing at the old memory and the
+                            # raycaster ends up sampling garbage on subsequent
+                            # frames — which manifests visually as the ship
+                            # going transparent after the first grenade.
+                            np.copyto(sim.gmap.smoke,
+                                      np.clip(before + delta * smoke_mult,
+                                              0.0, 1.0))
                         # Queue a visual flash so the renderer draws the ring.
                         renderer._effects.append({
                             "kind": "explosion",
