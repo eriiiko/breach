@@ -109,8 +109,18 @@ class WorldComposite:
             float(dst_real_w),
             float(dst_real_h),
         )
+        # Use premultiplied alpha for the RT-to-screen blit. The contents
+        # of the world RT are already in premultiplied form: any overlay
+        # drawn into it with default alpha blending produces
+        # rt.rgb = src.rgb * src.a + dest.rgb * (1 - src.a), and where
+        # dest is transparent (vacuum tiles), this leaves rt.rgb as the
+        # premultiplied smoke contribution. Blitting with normal alpha
+        # would multiply by alpha AGAIN — producing smoke.rgb * a² and
+        # excessive background bleed. PREMUL gives correct compositing.
+        rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
         rl.draw_texture_pro(self.rt.texture, src, dst,
                             rl.Vector2(0, 0), 0.0, rl.WHITE)
+        rl.end_blend_mode()
 
     # ---- Shutdown -------------------------------------------------------
 
