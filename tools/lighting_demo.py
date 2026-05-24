@@ -73,7 +73,7 @@ DEFAULTS = {
     "smoke_tint_g": 195.0,
     "smoke_tint_b": 210.0,
     "smoke_max_alpha": 180.0,
-    "show_pressure": False,
+    "show_pressure": True,
     "pressure_scale": 2.0,
     "blast_radius": 6.0,
     "blast_pressure": 10.0,
@@ -83,70 +83,10 @@ DEFAULTS = {
     "smoke_amount": 0.3,  # default tuning baseline; 1.0 fills 2 rooms per nade
 }
 
-# ---------------------------------------------------------------------------
-# Pressure colormap helpers
-# ---------------------------------------------------------------------------
-
-def _load_pressure_stops() -> np.ndarray:
-    """Load pressure colormap from config.toml [[rendering]] pressure_stops."""
-    raw = getattr(CFG.rendering, "pressure_stops", None)
-    if raw is None:
-        # Fallback — matches config.toml defaults
-        raw = [
-            [0.0,    0,   0,   0,   0],
-            [3.3,  255, 255, 255,   5],
-            [6.0,  255, 255, 255,  15],
-            [7.0,  200,  50,  30, 120],
-            [8.0,  255, 140,  30, 180],
-            [9.0,  255, 220,  80, 220],
-            [10.0, 255, 255, 255, 255],
-        ]
-    return np.array(raw, dtype=np.float32)
-
-
-def _build_pressure_rgba(gmap, pressure_scale: float,
-                          stops: np.ndarray) -> np.ndarray:
-    """Compute pressure RGBA overlay for the current physics state.
-
-    Formula matches the legacy game.py:2095-2149 port:
-      total_p = atmosphere + wave_p
-      p = 1 + (total_p - 1) * (10.0 / pressure_scale)  (deviation from neutral)
-    We clamp p to [stops[0,0], stops[-1,0]] and do linear segment interp.
-    """
-    total = gmap.atmosphere + gmap.wave_p
-    # Scale deviation from neutral (1.0) to match the 0-10 stop range
-    if pressure_scale > 0:
-        p = 1.0 + (total - 1.0) * (10.0 / pressure_scale)
-    else:
-        p = total.copy()
-
-    h, w = p.shape
-    rgba = np.zeros((h, w, 4), dtype=np.uint8)
-
-    n = len(stops)
-    for i in range(n - 1):
-        lo, hi = stops[i, 0], stops[i + 1, 0]
-        mask = (p >= lo) & (p < hi)
-        if not np.any(mask):
-            continue
-        t = np.clip((p[mask] - lo) / (hi - lo + 1e-9), 0.0, 1.0)
-        for ch in range(4):
-            rgba[mask, ch] = (
-                stops[i, ch + 1] + t * (stops[i + 1, ch + 1] - stops[i, ch + 1])
-            ).astype(np.uint8)
-
-    # Last stop
-    mask_last = p >= stops[-1, 0]
-    if np.any(mask_last):
-        for ch in range(4):
-            rgba[mask_last, ch] = int(stops[-1, ch + 1])
-
-    # Mask out walls and vacuum — pressure is not a visible overlay there.
-    solid = gmap.is_wall | gmap.is_vacuum
-    rgba[solid] = 0
-
-    return rgba
-
+# Pressure colormap was previously implemented here; lifted into
+# renderer/pressure_overlay.py so the main game can use it too. The demo
+# now drives renderer.show_pressure + renderer.pressure_overlay.pressure_scale
+# from the panel state.
 
 # ---------------------------------------------------------------------------
 # TOML save/load (hand-written — no tomli-w dependency)
@@ -402,10 +342,8 @@ def main() -> None:
                             initial_camera=initial_camera,
                             borderless=False)
 
-    # ---- 3. Pressure overlay — separate dynamic texture ----
-    pressure_stops = _load_pressure_stops()
-    pressure_tex = rcore.create_dynamic_rgba_texture(level.width, level.height)
-    _pressure_rgba = np.zeros((level.height, level.width, 4), dtype=np.uint8)
+    # Pressure overlay is now built into the renderer (renderer/pressure_overlay.py),
+    # shared with the main game. No demo-local allocations needed.
 
     # ---- 4. Panel state ----
     state = PanelState()
@@ -553,12 +491,14 @@ def main() -> None:
             renderer.consume_events(sim.tick_events)
             renderer._advance_effects(dt)
 
-            # ---- Update pressure texture if enabled ----
-            if state.get("show_pressure"):
-                _pressure_rgba[:] = _build_pressure_rgba(
-                    sim.gmap, state.get("pressure_scale"), pressure_stops
-                )
-                rcore.update_rgba_texture(pressure_tex, _pressure_rgba)
+            # Pressure overlay is now owned by the renderer (shared with
+            # main game). Sync the slider state to the renderer's overlay
+            # and the toggle to renderer.show_pressure — the actual update
+            # + draw happen inside upload_state / compose_world.
+            renderer.show_pressure = bool(state.get("show_pressure"))
+            renderer.pressure_overlay.pressure_scale = float(
+                state.get("pressure_scale")
+            )
 
             # ---- Draw ----
             renderer.begin_frame()
@@ -567,23 +507,6 @@ def main() -> None:
                 units_zombies=sim.zombies(),
                 projectiles=sim.projectiles,
             )
-
-            # Pressure overlay drawn INTO the world RT so it goes through the
-            # camera transform like everything else (lit ship, smoke, units).
-            # Previously this was drawn screen-space after the blit, which
-            # made it visually drift relative to the world when the camera
-            # panned or zoomed.
-            if state.get("show_pressure"):
-                rl.begin_texture_mode(renderer.world.rt)
-                rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA)
-                src_r = rl.Rectangle(0, 0, float(level.width), float(level.height))
-                dst_r = rl.Rectangle(0, 0,
-                                     float(renderer.world.world_px_w),
-                                     float(renderer.world.world_px_h))
-                rl.draw_texture_pro(pressure_tex, src_r, dst_r,
-                                    rl.Vector2(0, 0), 0.0, rl.WHITE)
-                rl.end_blend_mode()
-                rl.end_texture_mode()
 
             renderer.draw_background_to_screen()
             renderer.blit_world_to_screen()
@@ -597,7 +520,6 @@ def main() -> None:
             renderer.end_frame()
 
     finally:
-        rl.unload_texture(pressure_tex)
         renderer.shutdown()
 
 

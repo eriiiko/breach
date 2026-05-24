@@ -28,6 +28,7 @@ from .overlays import (
     FieldOverlay, FireOverlay,
     draw_unit, draw_waypoint_line, draw_grid, draw_text, draw_panel_background,
 )
+from .pressure_overlay import PressureOverlay
 from .sprites import UnitSprites
 from .world_composite import WorldComposite
 
@@ -104,6 +105,7 @@ class GameRenderer:
         self.smoke_overlay = FieldOverlay(cfg.grid_h, cfg.grid_w,
                                           tint=(190, 195, 210), max_alpha=180)
         self.fire_overlay = FireOverlay(cfg.grid_h, cfg.grid_w)
+        self.pressure_overlay = PressureOverlay(cfg.grid_h, cfg.grid_w)
 
         # Toggles
         self.show_grid = False
@@ -114,6 +116,9 @@ class GameRenderer:
         self.normal_y_flipped = False
         self.srgb_decode = True
         self.show_debug_coords = False
+        # Pressure colormap defaults ON in the main game — explosions
+        # look dramatic by default. Toggle with F7.
+        self.show_pressure = True
 
         # Frame timing
         self.last_frame_ms = 0.0
@@ -168,6 +173,11 @@ class GameRenderer:
         if self.show_fire:
             fire_view = np.where(gmap.is_vacuum, 0.0, gmap.fire)
             self.fire_overlay.update(fire_view)
+        # Pressure colormap: refresh the per-tile texture from the current
+        # atmosphere + wave_p fields. Skipped when toggled off to save the
+        # numpy work.
+        if self.show_pressure:
+            self.pressure_overlay.update(gmap)
 
         self.lighting.set_use_normal(self.show_normal_map)
         self.last_frame_ms = (time.perf_counter() - t_start) * 1000
@@ -232,6 +242,14 @@ class GameRenderer:
             rl.begin_blend_mode(rl.BlendMode.BLEND_ADDITIVE)
             self._draw_overlay_to_world(self.fire_overlay.tex)
             rl.end_blend_mode()
+        # Pressure colormap (white shockwave + coloured radiating bands at
+        # explosions). Off-by-toggle F7. The overlay was updated in
+        # upload_state alongside smoke/fire to keep all per-frame work in
+        # one place; here we just draw the precomputed texture.
+        if self.show_pressure:
+            self.pressure_overlay.draw_into_world_rt(
+                self.world.world_px_w, self.world.world_px_h
+            )
 
         # 3. Units, waypoints, projectiles, effects, grid — drawn in world-pixel space
         if orders_phase1 or orders_phase2:
@@ -554,6 +572,7 @@ class GameRenderer:
             ("F4 light",       self.show_lighting),
             ("F5 normal map",  self.show_normal_map),
             ("F6 coords",      self.show_debug_coords),
+            ("F7 pressure",    self.show_pressure),
             ("B  bilinear",    self.lighting.bilinear),
             ("G  sRGB",        self.srgb_decode),
             ("H  flip-Y norm", self.normal_y_flipped),
@@ -603,6 +622,8 @@ class GameRenderer:
             self.show_normal_map = not self.show_normal_map
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F6):
             self.show_debug_coords = not self.show_debug_coords
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_F7):
+            self.show_pressure = not self.show_pressure
         if rl.is_key_pressed(rl.KeyboardKey.KEY_B):
             self.lighting.toggle_bilinear()
         if rl.is_key_pressed(rl.KeyboardKey.KEY_H):
@@ -715,6 +736,7 @@ class GameRenderer:
         rl.unload_texture(self.lighting.vacuum_tex)
         rl.unload_texture(self.smoke_overlay.tex)
         rl.unload_texture(self.fire_overlay.tex)
+        self.pressure_overlay.unload()
         self.world.unload()
         core.shutdown()
 
