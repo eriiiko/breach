@@ -251,14 +251,19 @@ class GameRenderer:
         wpt = self.world.world_px_per_tile
         lmap = self.lighting.light_map
         H, W = lmap.shape
+        # Same ambient floor the lit-ship shader uses (lighting.fs:88 does
+        # diffuse * (ambient + intensity * ndotl)). Without this, units in
+        # unlit rooms are pitch-black while the ship around them still
+        # shows a faint ambient baseline — visually mismatched.
+        amb = self.lighting.ambient
+        amb_floor = (amb[0] + amb[1] + amb[2]) / 3.0
         def light_at(u):
             # Sample at the unit's center tile (footprint // 2 offset).
             fp = int(getattr(u, "footprint", 3))
             cx = int(u.x) + fp // 2
             cy = int(u.y) + fp // 2
-            if 0 <= cx < W and 0 <= cy < H:
-                return float(lmap[cy, cx])
-            return 0.0
+            base = float(lmap[cy, cx]) if (0 <= cx < W and 0 <= cy < H) else 0.0
+            return amb_floor + base
         for m in marines:
             if not getattr(m, "alive", True):
                 continue

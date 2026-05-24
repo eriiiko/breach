@@ -77,7 +77,11 @@ class LightingPass:
         return loc
 
     def set_ambient(self, rgb):
-        val = rl.ffi.new("float[3]", [float(rgb[0]), float(rgb[1]), float(rgb[2])])
+        # Cache as a Python tuple so non-shader consumers (e.g. unit sprite
+        # tinting in game_renderer._draw_units_world) can read the same
+        # ambient value the ship is lit by. Single source of truth.
+        self.ambient = (float(rgb[0]), float(rgb[1]), float(rgb[2]))
+        val = rl.ffi.new("float[3]", list(self.ambient))
         rl.set_shader_value(self.shader, self._loc_ambient, val,
                             rl.ShaderUniformDataType.SHADER_UNIFORM_VEC3)
 
