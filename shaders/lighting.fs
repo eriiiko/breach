@@ -49,6 +49,18 @@ out vec4 finalColor;
 vec3 srgb_to_linear(vec3 c) { return pow(c, vec3(2.2)); }
 vec3 linear_to_srgb(vec3 c) { return pow(c, vec3(1.0 / 2.2)); }
 
+// ACES filmic tone-map (Narkowicz approximation): compresses HDR over-bright
+// colour toward [0,1] while staying punchy/saturated, instead of per-channel
+// clipping that hue-shifts bright warm light toward white. ch.05 §Tone-mapping.
+vec3 aces_tonemap(vec3 x) {
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
 void main() {
     // Vacuum tiles are not part of the ship — discard so the screen-space
     // background (stars, void) shows through.
@@ -95,8 +107,10 @@ void main() {
 
     // Diffuse: albedo x incoming RGB (a red lamp lights surfaces red).
     // ndotl modulates the directional contribution; ambient is a flat floor.
-    // No ACES yet (next slice) — keep the existing ambient/encode, RGB-ified.
     vec3 lit = diffuse * (u_ambient + incoming_rgb * ndotl);
+    // ACES filmic tone-map on the linear HDR value (ch.05 §Tone-mapping):
+    // tames over-bright coloured light without per-channel clip / hue-shift.
+    lit = aces_tonemap(lit);
     if (u_srgb_decode == 1) {
         // Encode back to sRGB for the default framebuffer.
         lit = linear_to_srgb(lit);
