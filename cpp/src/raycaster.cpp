@@ -120,8 +120,11 @@ void Raycaster::march_ray_directional(
     float sx, float sy, float angle,
     float ray_intensity, float max_range,
     const float color[3],
+    float heat_emit,
     float* light_rgb,
     float* light_dx, float* light_dy,
+    int32_t* heat,
+    float* smoke_glow,
     const float* smoke_field,
     const float* light_atten,
     int h, int w
@@ -182,6 +185,16 @@ void Raycaster::march_ray_directional(
         light_dx[idx] += dep_agg * (-dx);
         light_dy[idx] += dep_agg * (-dy);
 
+        // Heat deposit (ch.04 §Fixed-point format). When the source emits heat
+        // (heat_emit > 0), deposit the AGGREGATE per-tile light energy times the
+        // source's heat multiplier into the Q16.16 `heat` buffer — quantized,
+        // SATURATING add (clamp at INT32_MAX, never wrap). dep_agg is the energy
+        // this tile received; src.heat scales light energy -> heat energy. The
+        // ordered scalar += keeps it deterministic (CUDA atomicAdd later).
+        if (heat != nullptr && heat_emit > 0.0f) {
+            heat_saturating_add(&heat[idx], heat_quantize(dep_agg * heat_emit));
+        }
+
         // Occlusion via per-channel attenuation (ch.03 §the march). Static
         // material attenuation from the table; then the live smoke attenuation,
         // both applied per channel. (1 - atten): opaque 1.0 -> 0, glass 0.1 ->
@@ -195,7 +208,22 @@ void Raycaster::march_ray_directional(
 
         float sd = smoke_field[idx];
         if (sd > 0.001f) {
-            float smoke_t = (1.0f - sd * smoke_absorption);
+            // Fraction of the ray each smoke tile absorbs this step.
+            float absorb_frac = sd * smoke_absorption;
+            // God-rays (ch.03 C16): deposit the light the smoke ABSORBS into
+            // smoke_glow, per channel. The absorbed energy is the survivor at
+            // this tile (remaining[c] * dist_atten — the same energy `dep_*`
+            // the light buffer saw) times the absorbed fraction. RGB-preserving
+            // (a red beam casts a red shaft); energy-conserving by construction
+            // (this is exactly the energy removed from `remaining` below).
+            // Supersedes the old surface-tint light_modulation path (no
+            // double-count) — see overlays.py / ch.05.
+            if (smoke_glow != nullptr) {
+                smoke_glow[idx * 3 + 0] += dep_r * absorb_frac;
+                smoke_glow[idx * 3 + 1] += dep_g * absorb_frac;
+                smoke_glow[idx * 3 + 2] += dep_b * absorb_frac;
+            }
+            float smoke_t = (1.0f - absorb_frac);
             remaining[0] *= smoke_t;
             remaining[1] *= smoke_t;
             remaining[2] *= smoke_t;
@@ -220,6 +248,8 @@ void Raycaster::cast_source_directional(
     float* light_rgb,
     float* light_dx,
     float* light_dy,
+    int32_t* heat,
+    float* smoke_glow,
     const float* smoke_field,
     const float* light_atten,
     int h, int w
@@ -262,8 +292,8 @@ void Raycaster::cast_source_directional(
         float intensity = src.intensity * angular_atten;
         if (intensity > 0.01f) {
             march_ray_directional(src.x, src.y, angle, intensity, src.max_range,
-                      src.color, light_rgb, light_dx, light_dy,
-                      smoke_field, light_atten, h, w);
+                      src.color, src.heat, light_rgb, light_dx, light_dy,
+                      heat, smoke_glow, smoke_field, light_atten, h, w);
         }
     }
 }

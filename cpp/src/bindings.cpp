@@ -186,7 +186,9 @@ PYBIND11_MODULE(breach_physics, m) {
                 py::array_t<float> light_dx,
                 py::array_t<float> light_dy,
                 py::array_t<float> smoke,
-                py::array_t<float> light_atten) {
+                py::array_t<float> light_atten,
+                py::object heat,
+                py::object smoke_glow) {
             auto [lrgb, h, w]  = get_3d(light_rgb);
             auto [ldx, h2, w2] = get_2d(light_dx);
             auto [ldy, h3, w3] = get_2d(light_dy);
@@ -196,10 +198,32 @@ PYBIND11_MODULE(breach_physics, m) {
             // occlusion is now per-channel (opaque [1,1,1] == old wall stop).
             auto a = light_atten.unchecked<3>();
             const float* atten = a.data(0, 0, 0);
-            self.cast_source_directional(src, lrgb, ldx, ldy, sm, atten, h, w);
+            // Slice-4 optional outputs. `heat` is Q16.16 int32 (h, w); the
+            // sim/headless owns it. `smoke_glow` is f32 RGB (h, w, 3) — the
+            // render-only god-ray buffer. Both default to None (skip the
+            // deposit) so render-only callers can pass only what they need.
+            // Hold the arrays alive for the duration of the cast.
+            int32_t* heat_ptr = nullptr;
+            py::array_t<int32_t> heat_arr;
+            if (!heat.is_none()) {
+                heat_arr = heat.cast<py::array_t<int32_t>>();
+                auto ha = heat_arr.mutable_unchecked<2>();
+                heat_ptr = ha.mutable_data(0, 0);
+            }
+            float* glow_ptr = nullptr;
+            py::array_t<float> glow_arr;
+            if (!smoke_glow.is_none()) {
+                glow_arr = smoke_glow.cast<py::array_t<float>>();
+                auto ga = glow_arr.mutable_unchecked<3>();
+                glow_ptr = ga.mutable_data(0, 0, 0);
+            }
+            self.cast_source_directional(src, lrgb, ldx, ldy,
+                                         heat_ptr, glow_ptr, sm, atten, h, w);
         }, py::arg("source"), py::arg("light_rgb"),
            py::arg("light_dx"), py::arg("light_dy"),
-           py::arg("smoke"), py::arg("light_atten"))
+           py::arg("smoke"), py::arg("light_atten"),
+           py::arg("heat") = py::none(),
+           py::arg("smoke_glow") = py::none())
         .def_static("normalize_directions",
              [](py::array_t<float> light_dx, py::array_t<float> light_dy) {
             auto [ldx, h, w]   = get_2d(light_dx);

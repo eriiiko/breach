@@ -149,7 +149,9 @@ class LightingPass:
     # ---- light field computation ---------------------------------------
 
     def compute_light_field(self, sources: List, smoke: np.ndarray,
-                            light_atten: np.ndarray) -> None:
+                            light_atten: np.ndarray,
+                            heat: Optional[np.ndarray] = None,
+                            smoke_glow: Optional[np.ndarray] = None) -> None:
         """Cast all sources, accumulate intensity + direction, normalize, pack.
 
         `light_atten` is the per-channel attenuation field the march reads,
@@ -162,15 +164,31 @@ class LightingPass:
         (default opacity [1,1,1]); smoke remains the separate live input passed
         as `smoke`. (Folding smoke/water into the dynamic field is a later
         slice.)
+
+        `heat` (Q16.16 int32, (h,w)) and `smoke_glow` (f32 RGB, (h,w,3)) are the
+        Slice-4 march outputs — pass `gmap.heat` / `gmap.smoke_glow`. They are
+        accumulators: cleared here before the frame's sources, then written
+        IN-PLACE by the C++ march. `heat` is the sim-affecting deposit (nothing
+        reads it yet, ch.04); `smoke_glow` is the render-only god-ray glow that
+        supersedes the old surface-tint light_modulation. Both may be None
+        (the cast skips that deposit) — kept optional during the renderer-owns-
+        the-cast phase (the cast moves into the sim in S5).
         """
         self.light_rgb.fill(0)
         self.light_dx.fill(0)
         self.light_dy.fill(0)
+        # Zero the per-frame accumulators IN-PLACE (never reassign — a C++ view
+        # of these buffers must stay valid). heat is the per-tick deposit;
+        # smoke_glow re-accumulates every frame from scratch.
+        if heat is not None:
+            heat.fill(0)
+        if smoke_glow is not None:
+            smoke_glow.fill(0)
 
         for src in sources:
             self.raycaster.cast_source_directional(
                 src, self.light_rgb, self.light_dx, self.light_dy,
-                smoke, light_atten,
+                smoke, light_atten, heat, smoke_glow,
             )
         # Normalize direction to unit vectors (vector-magnitude normalization).
         # See expert review notes in docs/patch_level_pipeline_v1.md.
@@ -183,10 +201,17 @@ class LightingPass:
         # Pack into two RGBA16F textures (ch.05). 16F stores HDR RGB and
         # SIGNED light_dir directly (no 0.5-centered encode):
         #   Texture A = light_rgb (RGB) + light_dir.x (A)
-        #   Texture B = smoke_glow (RGB, zero this slice) + light_dir.y (A)
+        #   Texture B = smoke_glow (RGB) + light_dir.y (A)
+        # smoke_glow is the god-ray glow deposited by the march (ch.03 C16):
+        # the light the smoke absorbed, per channel. Drawn additively as the
+        # volumetric shaft (ch.05 §God-rays). When no smoke_glow buffer is
+        # passed it stays zero (no glow), matching the pre-slice behaviour.
         self.packed_a[..., 0:3] = self.light_rgb
         self.packed_a[..., 3]   = self.light_dx
-        self.packed_b[..., 0:3] = 0.0          # smoke_glow reserved (later slice)
+        if smoke_glow is not None:
+            self.packed_b[..., 0:3] = smoke_glow
+        else:
+            self.packed_b[..., 0:3] = 0.0
         self.packed_b[..., 3]   = self.light_dy
 
         core.update_rgba16f_texture(self.light_tex_a, self.packed_a)

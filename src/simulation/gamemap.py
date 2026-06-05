@@ -10,7 +10,7 @@ Owns the cached arrays the physics systems read and write:
 
     material, wall_hp, is_wall, is_vacuum, flammable,
     atmosphere, wave_p, wave_v, wave_source, wind_x, wind_y,
-    smoke, fire, obstacles, light_map
+    smoke, fire, obstacles, light_map, heat, smoke_glow
 
 Plus ``self.level`` (the :class:`level_loader.LevelData` instance) and the
 methods needed by combat / pathfinding / physics (``stamp_units``,
@@ -102,6 +102,23 @@ class GameMap:
         # Per-tile thermal conductivity (table-derived). Allocated + populated
         # now; consumed later by the temperature/conduction pass (ch.04).
         self.conductivity = np.zeros((h, w), dtype=np.float32)
+        # Heat deposit buffer (ch.03 output / ch.04 §Fixed-point format): the
+        # only SIM-affecting ray output. Q16.16 FIXED-POINT int32 — 16 integer
+        # bits, 16 fractional bits, so 1.0 energy == 65536 raw counts (the C++
+        # HEAT_SCALE constant). The ray march SATURATING-adds into it (clamp at
+        # INT32_MAX, never wrap). Integer += is order-independent -> determinism
+        # (cross-machine / future lockstep multiplayer). Nothing READS it this
+        # slice — the temperature pass (ch.04) consumes it non-destructively and
+        # the per-tick deposit is cleared at cleanup. Allocated once, written
+        # IN-PLACE (never reassigned) so any C++ view stays valid.
+        self.heat = np.zeros((h, w), dtype=np.int32)
+        # Smoke-glow buffer (ch.03 C16 / ch.05 §God-rays): RENDER-ONLY god-ray
+        # glow. The light each tile's smoke ABSORBS is deposited here per
+        # channel by the march (energy-conserving). Shape (h, w, 3) f32 ->
+        # packed into render Texture B at pack time (ch.05). Supersedes the old
+        # surface-tint light_modulation path (no double-count). float (no
+        # downstream sim threshold). Allocated once, written IN-PLACE.
+        self.smoke_glow = np.zeros((h, w, 3), dtype=np.float32)
 
         # Populate material + vacuum from the level's CSV.
         mat, vac = materials_from_tilemap(level_data.tilemap)

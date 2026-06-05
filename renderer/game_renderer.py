@@ -25,7 +25,7 @@ from . import core
 from .camera import Camera2D
 from .lighting import LightingPass
 from .overlays import (
-    FieldOverlay, FireOverlay,
+    FieldOverlay, FireOverlay, GlowOverlay,
     draw_unit, draw_waypoint_line, draw_grid, draw_text, draw_panel_background,
 )
 from .pressure_overlay import PressureOverlay
@@ -105,6 +105,9 @@ class GameRenderer:
         self.smoke_overlay = FieldOverlay(cfg.grid_h, cfg.grid_w,
                                           tint=(190, 195, 210), max_alpha=180)
         self.fire_overlay = FireOverlay(cfg.grid_h, cfg.grid_w)
+        # God-ray / lit-smoke glow (ch.05): additive shaft from the ray march's
+        # smoke_glow output. Supersedes the retired light_modulation surface-tint.
+        self.glow_overlay = GlowOverlay(cfg.grid_h, cfg.grid_w)
         self.pressure_overlay = PressureOverlay(cfg.grid_h, cfg.grid_w)
 
         # Toggles
@@ -151,7 +154,13 @@ class GameRenderer:
         # over a unit footprint it restores the pre-S2 unit shadow.
         if self.show_lighting and light_sources:
             t_ray = time.perf_counter()
-            self.lighting.compute_light_field(light_sources, gmap.smoke, gmap.dyn_light_atten)
+            # Pass gmap.heat (Q16.16 deposit) and gmap.smoke_glow (god-ray
+            # glow) so the march writes both Slice-4 outputs in-place. The cast
+            # still lives here in the renderer; it moves into the sim in S5.
+            self.lighting.compute_light_field(
+                light_sources, gmap.smoke, gmap.dyn_light_atten,
+                heat=gmap.heat, smoke_glow=gmap.smoke_glow,
+            )
             self.last_raycast_ms = (time.perf_counter() - t_ray) * 1000
         else:
             self.lighting.light_rgb.fill(0)
@@ -160,21 +169,23 @@ class GameRenderer:
             self.lighting.light_dy.fill(0)
             self.lighting.packed_a.fill(0)
             self.lighting.packed_b.fill(0)
+            # No cast this frame -> no deposits. Clear the glow so a stale shaft
+            # doesn't linger (heat is sim-owned; left to the sim's cleanup).
+            gmap.smoke_glow.fill(0)
             core.update_rgba16f_texture(self.lighting.light_tex_a,
                                         self.lighting.packed_a)
             core.update_rgba16f_texture(self.lighting.light_tex_b,
                                         self.lighting.packed_b)
             self.last_raycast_ms = 0.0
 
-        # Smoke is a physical medium — alpha is density-driven only (always
-        # there regardless of light). But the RGB *colour* of smoke IS
-        # modulated by the local light intensity: lit smoke shows its tint,
-        # unlit smoke fades toward black. This is the visual half of the
-        # smoke/light coupling; the simulation half (smoke absorbing rays)
-        # lives in the C++ raycaster.
-        light_mod = self.lighting.light_map if self.show_lighting else None
+        # Smoke is drawn as a flat grey density medium — alpha is density-driven
+        # only (always there regardless of light). The lit-smoke colour now
+        # comes from the additive god-ray glow overlay (gmap.smoke_glow, the
+        # energy the smoke scattered), NOT a surface-tint multiply — the old
+        # light_modulation path is retired (ch.03 C16, ch.05 §God-rays).
         if self.show_smoke:
-            self.smoke_overlay.update(gmap.smoke, light_modulation=light_mod)
+            self.smoke_overlay.update(gmap.smoke)
+            self.glow_overlay.update(gmap.smoke_glow)
         # Fire still gets the vacuum mask: combustion requires oxygen, so
         # fire physically cannot exist in vacuum. Keep this until the fire
         # sim is taught to extinguish at vacuum tiles directly.
@@ -246,6 +257,12 @@ class GameRenderer:
             rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
             self._draw_overlay_to_world(self.smoke_overlay.tex)
             rl.end_blend_mode()
+            # God-ray glow: additive shaft composited WITH the smoke, before
+            # units (ch.05 §God-rays). GlowOverlay.draw sets its own
+            # BLEND_ADDITIVE (not premultiplied — additive doesn't touch dest
+            # alpha). Supersedes the retired light_modulation surface-tint.
+            self.glow_overlay.draw(
+                0, 0, self.world.world_px_w, self.world.world_px_h)
         if self.show_fire:
             rl.begin_blend_mode(rl.BlendMode.BLEND_ADDITIVE)
             self._draw_overlay_to_world(self.fire_overlay.tex)
@@ -746,6 +763,7 @@ class GameRenderer:
         rl.unload_texture(self.lighting.vacuum_tex)
         rl.unload_texture(self.smoke_overlay.tex)
         rl.unload_texture(self.fire_overlay.tex)
+        rl.unload_texture(self.glow_overlay.tex)
         self.pressure_overlay.unload()
         self.world.unload()
         core.shutdown()

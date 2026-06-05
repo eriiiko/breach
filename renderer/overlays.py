@@ -34,15 +34,17 @@ class FieldOverlay:
         self.tint_r, self.tint_g, self.tint_b = tint
         self.max_alpha = max_alpha
 
-    def update(self, field: np.ndarray, light_modulation: Optional[np.ndarray] = None) -> None:
+    def update(self, field: np.ndarray) -> None:
         """field: (H, W) float in [0,1]. Pack to RGBA, upload.
 
-        If ``light_modulation`` is provided ((H,W) float in [0,1]), the
-        smoke's RGB *colour* is multiplied by it — lit smoke shows its
-        tint, unlit smoke fades toward black. Alpha is NEVER modulated by
-        light: smoke as a physical medium is always there; light only
-        determines whether you can SEE its colour. (Beam through smoke
-        = bright streak; same smoke in darkness = black silhouette.)
+        Smoke is drawn as a flat grey DENSITY medium: alpha is density-driven,
+        the RGB tint is constant. The old ``light_modulation`` parameter (which
+        multiplied the smoke colour by the local light to fake lit-smoke tint)
+        is RETIRED — the god-ray glow (``GlowOverlay``, fed by the ray march's
+        ``smoke_glow`` output) now provides lit-smoke shafts as an additive
+        layer, one energy-conserving mechanism with no double-count (ch.03 C16,
+        ch.05 §God-rays). Alpha is never modulated by light: smoke as a physical
+        medium is always there; the glow overlay adds the colour it scatters.
         """
         # Pack as PREMULTIPLIED alpha so the overlay can be drawn with
         # BLEND_ALPHA_PREMULTIPLY (Porter-Duff "over"). Raylib's default
@@ -58,15 +60,9 @@ class FieldOverlay:
         v = np.clip(field, 0.0, 1.0)
         alpha = v * self.max_alpha   # uint range, 0..255
         a_norm = alpha / 255.0       # 0..1 multiplier for premultiplication
-        if light_modulation is not None:
-            mod = np.clip(light_modulation, 0.0, 1.0)
-            r = self.tint_r * mod * a_norm
-            g = self.tint_g * mod * a_norm
-            b = self.tint_b * mod * a_norm
-        else:
-            r = self.tint_r * a_norm
-            g = self.tint_g * a_norm
-            b = self.tint_b * a_norm
+        r = self.tint_r * a_norm
+        g = self.tint_g * a_norm
+        b = self.tint_b * a_norm
         self.packed[..., 0] = r.astype(np.uint8)
         self.packed[..., 1] = g.astype(np.uint8)
         self.packed[..., 2] = b.astype(np.uint8)
@@ -85,9 +81,9 @@ class FireOverlay(FieldOverlay):
     def __init__(self, grid_h: int, grid_w: int):
         super().__init__(grid_h, grid_w, tint=(255, 140, 30), max_alpha=220)
 
-    def update(self, fire: np.ndarray, light_modulation: Optional[np.ndarray] = None) -> None:
+    def update(self, fire: np.ndarray) -> None:
         # Slight color modulation by intensity (hotter = more white).
-        # Fire is its own light source — ignore the light_modulation argument.
+        # Fire is its own light source.
         v = np.clip(fire, 0.0, 1.0)
         self.packed[..., 0] = 255
         self.packed[..., 1] = (140 + (255 - 140) * v * 0.5).astype(np.uint8)
@@ -98,6 +94,51 @@ class FireOverlay(FieldOverlay):
     def draw(self, dst_x: int, dst_y: int, dst_w: int, dst_h: int) -> None:
         rl.begin_blend_mode(rl.BlendMode.BLEND_ADDITIVE)
         super().draw(dst_x, dst_y, dst_w, dst_h)
+        rl.end_blend_mode()
+
+
+class GlowOverlay:
+    """God-ray / lit-smoke glow overlay (ch.05 §God-rays).
+
+    Draws the ray march's ``smoke_glow`` field — the RGB light the smoke
+    *absorbed*, per channel — as an ADDITIVE volumetric shaft. This supersedes
+    the retired ``light_modulation`` smoke surface-tint: a red beam through
+    smoke casts a red shaft, energy-conserving by construction (the energy is
+    exactly what the smoke removed from the ray). Additive blend raises RGB
+    without touching destination alpha, so (unlike the alpha-blended smoke) it
+    is NOT premultiplied (ch.05 §Blend discipline). Drawn before units so they
+    occlude it in screen space; the march deposits no glow past opaque tiles,
+    so shafts already terminate at walls.
+    """
+
+    def __init__(self, grid_h: int, grid_w: int, gain: float = 1.0):
+        self.h = grid_h
+        self.w = grid_w
+        # `gain` scales the glow brightness before the 0..255 quantize — a
+        # render-only knob (the deposit is energy-conserving and typically dim).
+        self.gain = gain
+        self.tex = core.create_dynamic_rgba_texture(grid_w, grid_h)
+        self.packed = np.zeros((grid_h, grid_w, 4), dtype=np.uint8)
+
+    def update(self, smoke_glow: np.ndarray) -> None:
+        """smoke_glow: (H, W, 3) float — the absorbed-light god-ray field.
+
+        Tone-map by simple clamp (ACES is the final-slice job) and pack into
+        an RGBA texture with full alpha. Under BLEND_ADDITIVE (SRC_ALPHA, ONE)
+        full alpha passes the RGB straight through as an additive contribution.
+        """
+        glow = np.clip(smoke_glow * self.gain, 0.0, 1.0)
+        self.packed[..., 0] = (glow[..., 0] * 255.0).astype(np.uint8)
+        self.packed[..., 1] = (glow[..., 1] * 255.0).astype(np.uint8)
+        self.packed[..., 2] = (glow[..., 2] * 255.0).astype(np.uint8)
+        self.packed[..., 3] = 255
+        core.update_rgba_texture(self.tex, self.packed)
+
+    def draw(self, dst_x: int, dst_y: int, dst_w: int, dst_h: int) -> None:
+        rl.begin_blend_mode(rl.BlendMode.BLEND_ADDITIVE)
+        src = rl.Rectangle(0, 0, float(self.w), float(self.h))
+        dst = rl.Rectangle(float(dst_x), float(dst_y), float(dst_w), float(dst_h))
+        rl.draw_texture_pro(self.tex, src, dst, rl.Vector2(0, 0), 0.0, rl.WHITE)
         rl.end_blend_mode()
 
 
@@ -190,7 +231,7 @@ def draw_panel_background(x: int, y: int, w: int, h: int, color=(20, 20, 28, 240
 
 
 __all__ = [
-    "FieldOverlay", "FireOverlay",
+    "FieldOverlay", "FireOverlay", "GlowOverlay",
     "draw_unit", "draw_waypoint_line",
     "draw_grid", "draw_text", "draw_panel_background",
 ]

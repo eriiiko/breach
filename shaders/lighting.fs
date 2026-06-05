@@ -7,8 +7,12 @@
 //   u_light_a   - RGBA16F light field A at low (physics) resolution:
 //                   RGB = incoming light colour, A = light_dir.x (signed)
 //   u_light_b   - RGBA16F light field B at low (physics) resolution:
-//                   RGB = smoke_glow (reserved/zero this slice), A = light_dir.y (signed)
+//                   RGB = smoke_glow (god-ray glow, ch.03 C16), A = light_dir.y (signed)
 //                 (light_dir is stored signed in 16F — no 0.5-centered encode)
+//                 NOTE: smoke_glow RGB is carried here for the render contract,
+//                 but the god-ray shaft is drawn as a SEPARATE additive overlay
+//                 (renderer/overlays.py GlowOverlay) composited with the smoke,
+//                 before units (ch.05 §God-rays). This shader only reads tex_b.a.
 //
 // Uniforms:
 //   u_ambient         - base light color when no light source reaches a tile
@@ -26,7 +30,7 @@ in vec4 fragColor;
 uniform sampler2D u_diffuse;
 uniform sampler2D u_normal;
 uniform sampler2D u_light_a;       // RGB = incoming light colour, A = light_dir.x
-uniform sampler2D u_light_b;       // RGB = smoke_glow (reserved), A = light_dir.y
+uniform sampler2D u_light_b;       // RGB = smoke_glow (god-ray), A = light_dir.y
 uniform sampler2D u_vacuum;        // physics-res mask, R>0.5 = vacuum tile
                                    // (don't draw — let background show through)
 
