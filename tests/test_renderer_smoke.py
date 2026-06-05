@@ -49,6 +49,11 @@ def main():
     from config import CFG
     g.light_atten = np.ascontiguousarray(
         MaterialTable.from_config(CFG).light_atten[mat], dtype=np.float32)
+    # Dynamic per-channel attenuation field (ch.03 §units): the live field the
+    # march reads = static material atten MAX'd with stamped-unit opacity. With
+    # no units in this smoke test it equals the static field. (A real GameMap
+    # rebuilds this in stamp_units each tick; the shim has no units.)
+    g.dyn_light_atten = g.light_atten.copy()
 
     # Drop some smoke and fire for visual test
     g.smoke[60:80, 20:30] = 0.7

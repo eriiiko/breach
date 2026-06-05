@@ -152,13 +152,16 @@ class LightingPass:
                             light_atten: np.ndarray) -> None:
         """Cast all sources, accumulate intensity + direction, normalize, pack.
 
-        `light_atten` is the static per-channel material attenuation field,
-        shape (h, w, 3) f32 — pass `gmap.light_atten`. Occlusion is now
-        per-channel (ch.03 §the march): opaque tiles ([1,1,1]) kill the ray
-        exactly like the old wall hard-stop, glass transmits dimmed, an unequal
-        triple tints the surviving light. (Dynamic unit/smoke occlusion as a
-        live field is a later slice; this slice is static material only, so
-        stamped units no longer cast shadows here.)
+        `light_atten` is the per-channel attenuation field the march reads,
+        shape (h, w, 3) f32 — pass `gmap.dyn_light_atten` (the live dynamic
+        field = static material attenuation MAX'd with stamped-unit opacity,
+        rebuilt each tick in `stamp_units`). Occlusion is per-channel (ch.03
+        §the march): opaque tiles ([1,1,1]) kill the ray exactly like the old
+        wall hard-stop, glass transmits dimmed, an unequal triple tints the
+        surviving light. Units stamped into this field restore their shadows
+        (default opacity [1,1,1]); smoke remains the separate live input passed
+        as `smoke`. (Folding smoke/water into the dynamic field is a later
+        slice.)
         """
         self.light_rgb.fill(0)
         self.light_dx.fill(0)

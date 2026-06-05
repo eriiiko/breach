@@ -142,14 +142,16 @@ class GameRenderer:
     def upload_state(self, gmap, light_sources: Optional[List] = None) -> None:
         t_start = time.perf_counter()
 
-        # Light field. Occlusion is per-channel static material attenuation
-        # (ch.03 §the march): pass `gmap.light_atten` (h, w, 3). Opaque walls
+        # Light field. Occlusion is the per-channel DYNAMIC attenuation field
+        # (ch.03 §units, ch.02 §static×dynamic): pass `gmap.dyn_light_atten`
+        # (h, w, 3) = static material attenuation MAX'd with stamped-unit
+        # opacity, rebuilt each tick in `stamp_units`. Opaque walls/units
         # ([1,1,1]) block exactly like the old wall hard-stop; glass transmits.
-        # (Dynamic unit/smoke occlusion as a live field is a later slice, so
-        # stamped units do not cast shadows here this slice.)
+        # Away from units it equals the static field, so behaviour matches S2;
+        # over a unit footprint it restores the pre-S2 unit shadow.
         if self.show_lighting and light_sources:
             t_ray = time.perf_counter()
-            self.lighting.compute_light_field(light_sources, gmap.smoke, gmap.light_atten)
+            self.lighting.compute_light_field(light_sources, gmap.smoke, gmap.dyn_light_atten)
             self.last_raycast_ms = (time.perf_counter() - t_ray) * 1000
         else:
             self.lighting.light_rgb.fill(0)

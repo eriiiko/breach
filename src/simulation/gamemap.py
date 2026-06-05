@@ -88,6 +88,17 @@ class GameMap:
         # ray march reads it per channel: opaque [1,1,1] kills the ray (== old
         # wall hard-stop), air [0,0,0] passes untouched, glass [0.1,..] dims.
         self.light_atten  = np.zeros((h, w, 3), dtype=np.float32)
+        # Per-tile DYNAMIC light attenuation (ch.02 §static×dynamic, ch.03
+        # §units): the live per-channel field the ray march actually reads.
+        # Rebuilt every tick in ``stamp_units`` = static ``light_atten`` (copy)
+        # combined per-channel via MAX with each living unit's opacity stamped
+        # over its footprint (default [1,1,1] = opaque → unit shadow, restoring
+        # pre-S2 behaviour). An occluder can only ADD opacity, never remove it.
+        # Allocated once here and filled IN-PLACE each tick (never reassigned)
+        # so a C++ view of the buffer never goes stale (project gotcha:
+        # in-place writes vs reassignment). Away from units it equals the
+        # static field, so behaviour matches S2 in unoccupied regions.
+        self.dyn_light_atten = np.zeros((h, w, 3), dtype=np.float32)
         # Per-tile thermal conductivity (table-derived). Allocated + populated
         # now; consumed later by the temperature/conduction pass (ch.04).
         self.conductivity = np.zeros((h, w), dtype=np.float32)
@@ -190,7 +201,19 @@ class GameMap:
     # Per-tick rebuild: units act as walls for all physics
     # ------------------------------------------------------------------
     def stamp_units(self, units):
-        """Rebuild ``obstacles`` = static walls + living unit footprints.
+        """Rebuild ``obstacles`` = static walls + living unit footprints, and
+        in the SAME pass rebuild the dynamic per-channel light-attenuation
+        field ``dyn_light_atten`` = static material attenuation combined with
+        each living unit's opacity (ch.03 §units, ch.02 §static×dynamic).
+
+        Two outputs of one pass (not a separate ``block_light`` array): the
+        wave/smoke physics read ``obstacles``; the ray march reads
+        ``dyn_light_atten`` read-only. Because the attenuation field is RGB, a
+        unit can occlude *per colour* — its opacity comes from an optional
+        ``unit.light_atten`` (default ``[1,1,1]`` = full block → a shadow), so
+        a future creature can pass green, an aquarium can tint, etc. Static and
+        unit contributions combine via per-channel MAX (an occluder can only
+        ADD opacity, never remove it).
 
         Uses ``unit.occupied_tiles()`` so the footprint contract (spec §6)
         is the only dependency — no assumption about storage representation.
@@ -201,12 +224,25 @@ class GameMap:
         h, w = self._h, self._w
         prev_obstacles = self.obstacles
         self.obstacles = self.is_wall.copy()
+        # Reset the dynamic attenuation field to the static material baseline
+        # IN-PLACE (no reassignment — keeps any C++ view valid). Units then
+        # raise opacity per-channel below.
+        self.dyn_light_atten[:] = self.light_atten
+        default_atten = (1.0, 1.0, 1.0)
         for u in units:
             if not u.alive:
                 continue
+            # Per-unit opacity hook: a unit may declare ``light_atten`` (RGB)
+            # to occlude per colour; default is fully opaque (a shadow).
+            u_atten = getattr(u, "light_atten", default_atten)
             for (tx, ty) in u.occupied_tiles():
                 if 0 <= ty < h and 0 <= tx < w:
                     self.obstacles[ty, tx] = True
+                    # Per-channel MAX: opacity can only increase.
+                    cell = self.dyn_light_atten[ty, tx]
+                    cell[0] = cell[0] if cell[0] >= u_atten[0] else u_atten[0]
+                    cell[1] = cell[1] if cell[1] >= u_atten[1] else u_atten[1]
+                    cell[2] = cell[2] if cell[2] >= u_atten[2] else u_atten[2]
 
         freed = prev_obstacles & ~self.obstacles
         if freed.any():
