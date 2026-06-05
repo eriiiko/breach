@@ -4,6 +4,12 @@
 
 *Last updated: 2026-03-19*
 
+> **⚠️ PARTIALLY SUPERSEDED (2026-06-05).** Sections **4 (Material System)**, **5 (GameMap /
+> State)**, **6.6 (Temperature & Heat)**, and **7 (Raycasting)** are superseded by the per-system
+> chapters in [`docs/architecture/`](architecture/) (the reviewed rev.3 ray-engine spec). Where
+> this doc and those chapters disagree, **the chapters win.** The remaining sections (units, AI,
+> combat, pathfinding, turn system, etc.) are still current here.
+
 ---
 
 ## Table of Contents

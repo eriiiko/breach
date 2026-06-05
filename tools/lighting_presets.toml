@@ -1,0 +1,13 @@
+# Auto-managed by tools/lighting_demo.py — do not hand-edit while the demo is open.
+
+[default]
+ambient = [0.0100, 0.0100, 0.0100]
+light_z = 1.0050
+normal_strength = 0.4900
+use_normal = true
+srgb_decode = true
+flashlight = { max_range = 35.45, intensity = 0.4500, angle_spread = 2.0420 }
+smoke_tint = [190, 195, 210]
+smoke_max_alpha = 141
+pressure_scale = 2.0000
+grenade = { blast_radius = 6, pressure = 10.00, wall_damage = 200, unit_damage = 60, fuse_seconds = 0.00, smoke_amount = 0.1100 }

@@ -2,6 +2,11 @@
 
 *Design decisions from discussion 2026-03-16. Intended to guide both Python prototype and C++ implementation.*
 
+> **⚠️ SUPERSEDED (2026-06-05)** by [`docs/architecture/`](architecture/) ch.03 (Ray Engine) +
+> ch.04 (Temperature & Heat). This doc's recursive in-engine reflection, scalar light, and
+> CFL-diffusion temperature are replaced (no in-kernel forking, RGB light, faked relaxation). Kept
+> for history; **the chapters are canonical.**
+
 ---
 
 ## 1. Temperature Field & Heat Conduction (Solids Only)

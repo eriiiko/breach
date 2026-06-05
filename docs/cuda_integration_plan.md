@@ -2,6 +2,13 @@
 
 _Created: 2026-03-25_
 
+> **⚠️ PARTIALLY SUPERSEDED (2026-06-05).** §3 (Raycaster — scalar light), §4 (temperature as
+> CFL-substep diffusion), and §7 (PhysicsEngine "owns all grids") are superseded by
+> [`docs/architecture/`](architecture/) — light is **RGB + heat + smoke_glow** (ch.03), temperature
+> is a **faked one-pass relaxation** (ch.04), and ownership is the **GameMap interface, hot fields
+> GPU-resident** (ch.01). Read those chapters for the current design; this plan's GPU *mechanics*
+> (memory hierarchy, kernel patterns, data-flow) remain valid.
+
 > **Goal**: Move performance-critical systems to the GPU via CUDA.
 > Every kernel must be optimized — if it runs a million times per second,
 > every instruction matters. Research before implementing.
