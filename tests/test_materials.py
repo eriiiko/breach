@@ -1,0 +1,171 @@
+"""Tests for the material-property table + table-driven gamemap caches.
+
+Covers ch.02 (Material System) foundation:
+  - the table loads from config and exposes every column (scalars + RGB)
+  - the unified MAT_* ids are shared (no duplication drift)
+  - derived caches (is_wall/flammable/wall_hp/conductivity) match the table
+  - on_tile_changed patches ALL caches after a destroy_wall, with no O(grid)
+    rebuild and identical observable behaviour
+
+Run:
+    C:/Users/steen/anaconda3/python.exe tests/test_materials.py
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
+
+import numpy as np
+
+from config import CFG
+from level_loader import load as load_level
+from simulation.gamemap import GameMap
+from simulation.materials import (
+    MAT_AIR, MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_STEEL, MAT_GLASS,
+    MATERIAL_NAMES, MaterialTable,
+)
+
+
+SCALAR_COLUMNS = (
+    "hp", "flammable", "passable", "conductivity",
+    "ignition_temp", "heat_atten", "wave_reflect", "wave_absorb",
+    "blast_resist",
+)
+
+
+def test_ids_unified():
+    """level_loader and gamemap must share ONE set of ids (no duplication)."""
+    import level_loader
+    import simulation.gamemap as gm
+    for name, expected in (
+        ("MAT_AIR", 0), ("MAT_HULL", 1), ("MAT_WOOD", 2),
+        ("MAT_DOOR", 3), ("MAT_STEEL", 4), ("MAT_GLASS", 5),
+    ):
+        assert getattr(gm, name) == expected, f"gamemap.{name}"
+    # gamemap re-exports the canonical ids from simulation.materials.
+    from simulation import materials as mats
+    assert gm.MAT_HULL is mats.MAT_HULL
+    print("OK: ids_unified")
+
+
+def test_table_loads_all_columns():
+    tbl = MaterialTable.from_config(CFG)
+    assert tbl.n == len(MATERIAL_NAMES), "row count mismatch"
+    for col in SCALAR_COLUMNS:
+        arr = getattr(tbl, col)
+        assert arr.shape == (tbl.n,), f"{col} shape {arr.shape}"
+    # light_atten is per-channel RGB.
+    assert tbl.light_atten.shape == (tbl.n, 3), "light_atten not (N,3)"
+    # Spot-check known illustrative values from ch.02 / config.toml.
+    assert tbl.hp[MAT_HULL] == 300
+    assert tbl.hp[MAT_WOOD] == 60
+    assert tbl.hp[MAT_GLASS] == 15
+    assert bool(tbl.flammable[MAT_WOOD]) is True
+    assert bool(tbl.flammable[MAT_HULL]) is False
+    assert bool(tbl.passable[MAT_AIR]) is True
+    assert bool(tbl.passable[MAT_DOOR]) is True
+    assert bool(tbl.passable[MAT_HULL]) is False
+    assert tbl.conductivity[MAT_HULL] == 50.0
+    # air fully transparent, hull/door fully opaque, glass partial.
+    assert np.all(tbl.light_atten[MAT_AIR] == 0.0)
+    assert np.all(tbl.light_atten[MAT_HULL] == 1.0)
+    assert np.all(tbl.light_atten[MAT_DOOR] == 1.0)
+    assert np.all(tbl.light_atten[MAT_GLASS] < 1.0)
+    print("OK: table_loads_all_columns")
+
+
+def test_table_missing_material_raises():
+    bad = {name: {} for name in MATERIAL_NAMES.values()}
+    del bad["glass"]
+    try:
+        MaterialTable(bad)
+    except KeyError:
+        print("OK: table_missing_material_raises")
+        return
+    raise AssertionError("expected KeyError for missing material row")
+
+
+def test_caches_match_table():
+    """Derived caches must equal the table projection (no hardcoded lists)."""
+    g = GameMap(load_level("unhcr_vessel"))
+    m = g.material
+    tbl = g.materials
+    # Occlusion mask == old {HULL, WOOD, DOOR} behaviour for current set.
+    expected_wall = np.isin(m, [MAT_HULL, MAT_WOOD, MAT_DOOR])
+    assert np.array_equal(g.is_wall, expected_wall), "is_wall regressed"
+    assert np.array_equal(g.flammable, (m == MAT_WOOD)), "flammable regressed"
+    assert np.array_equal(g.flammable, tbl.flammable[m]), "flammable != table"
+    assert np.array_equal(g.wall_hp, tbl.hp[m]), "wall_hp != table"
+    assert np.array_equal(g.conductivity, tbl.conductivity[m]), "conductivity != table"
+    # conductivity allocated + populated (metal hull spreads heat).
+    assert g.conductivity.shape == m.shape
+    if (m == MAT_HULL).any():
+        assert g.conductivity[m == MAT_HULL].max() == 50.0
+    print("OK: caches_match_table")
+
+
+def test_on_tile_changed_patches_all_caches_after_destroy():
+    g = GameMap(load_level("unhcr_vessel"))
+    # Use an interior (non-edge) hull tile so destroy_wall does NOT open a
+    # vacuum breach — we are testing the cache patch, not breach behaviour.
+    h, w = g.material.shape
+    interior = np.zeros_like(g.is_wall)
+    interior[2:h - 2, 2:w - 2] = True
+    ys, xs = np.where((g.material == MAT_HULL) & interior)
+    assert len(ys) > 0, "level has no interior hull to destroy"
+    y, x = int(ys[0]), int(xs[0])
+
+    # Pre-conditions: hull occludes, has hp + conductivity.
+    assert g.is_wall[y, x]
+    assert g.wall_hp[y, x] == g.materials.hp[MAT_HULL]
+    assert g.conductivity[y, x] == g.materials.conductivity[MAT_HULL]
+
+    # Snapshot the rest of the grid to prove no O(grid) rebuild happened.
+    wall_before = g.is_wall.copy()
+    cond_before = g.conductivity.copy()
+
+    g.destroy_wall(y, x)
+
+    # The one tile is fully patched to AIR semantics.
+    assert g.material[y, x] == MAT_AIR
+    assert not g.is_wall[y, x]
+    assert not g.flammable[y, x]
+    assert g.wall_hp[y, x] == 0
+    assert g.conductivity[y, x] == 0.0
+
+    # Every OTHER tile is untouched (incremental patch, not a rebuild).
+    wall_before[y, x] = False
+    cond_before[y, x] = 0.0
+    assert np.array_equal(g.is_wall, wall_before), "is_wall touched other tiles"
+    assert np.array_equal(g.conductivity, cond_before), "conductivity touched others"
+    print("OK: on_tile_changed_patches_all_caches_after_destroy")
+
+
+def test_on_tile_changed_direct_patch():
+    """Directly editing material + calling on_tile_changed updates caches."""
+    g = GameMap(load_level("unhcr_vessel"))
+    ys, xs = np.where(g.material == MAT_AIR)
+    y, x = int(ys[0]), int(xs[0])
+    assert not g.is_wall[y, x]
+    # Promote an air tile to steel and patch its caches.
+    g.material[y, x] = MAT_STEEL
+    g.on_tile_changed(y, x)
+    assert g.is_wall[y, x], "steel must occlude"
+    assert g.wall_hp[y, x] == g.materials.hp[MAT_STEEL]
+    assert g.conductivity[y, x] == g.materials.conductivity[MAT_STEEL]
+    assert not g.flammable[y, x]
+    print("OK: on_tile_changed_direct_patch")
+
+
+if __name__ == "__main__":
+    test_ids_unified()
+    test_table_loads_all_columns()
+    test_table_missing_material_raises()
+    test_caches_match_table()
+    test_on_tile_changed_patches_all_caches_after_destroy()
+    test_on_tile_changed_direct_patch()
+    print("\nAll material tests passed.")

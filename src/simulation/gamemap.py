@@ -25,14 +25,18 @@ import numpy as np
 from config import CFG
 from level_loader import materials_from_tilemap
 
-
-# ---------------------------------------------------------------------------
-# Material IDs (gameplay constants; renderer uses its own color table)
-# ---------------------------------------------------------------------------
-MAT_AIR = 0
-MAT_HULL = 1
-MAT_WOOD = 2
-MAT_DOOR = 3
+# Material IDs are defined once in :mod:`simulation.materials` (the single
+# source of truth) and re-exported here so existing
+# ``from simulation.gamemap import MAT_*`` imports keep working.
+from simulation.materials import (  # noqa: F401  (re-exported)
+    MAT_AIR,
+    MAT_HULL,
+    MAT_WOOD,
+    MAT_DOOR,
+    MAT_STEEL,
+    MAT_GLASS,
+    MaterialTable,
+)
 
 
 class GameMap:
@@ -47,6 +51,12 @@ class GameMap:
         self.level = level_data
         h, w = int(level_data.tilemap.shape[0]), int(level_data.tilemap.shape[1])
         self._h, self._w = h, w
+
+        # Material-property table (ch.02): single source of every per-material
+        # constant. Derived caches below are projections of this table indexed
+        # by the ``material`` grid. Rebuilt on config hot-reload via
+        # :meth:`reload_material_table`.
+        self.materials = MaterialTable.from_config(CFG)
 
         # Field grids (allocate up front; populate from level + caches below)
         self.material     = np.zeros((h, w), dtype=np.int8)
@@ -64,6 +74,9 @@ class GameMap:
         self.fire         = np.zeros((h, w), dtype=np.float32)
         self.obstacles    = np.zeros((h, w), dtype=bool)
         self.light_map    = np.zeros((h, w), dtype=np.float32)
+        # Per-tile thermal conductivity (table-derived). Allocated + populated
+        # now; consumed later by the temperature/conduction pass (ch.04).
+        self.conductivity = np.zeros((h, w), dtype=np.float32)
 
         # Populate material + vacuum from the level's CSV.
         mat, vac = materials_from_tilemap(level_data.tilemap)
@@ -76,33 +89,33 @@ class GameMap:
     # Cache rebuild
     # ------------------------------------------------------------------
     def _update_caches(self):
-        """Rebuild cached arrays from the material grid.
+        """Rebuild all table-derived caches from the material grid.
 
-        Atmosphere starts at 1.0 in interior air, 0.0 at walls and vacuum.
-        ``is_wall`` covers hull + wood + door (the latter is temporary —
-        doors occlude smoke/light until the proper door system lands,
-        even though ``is_passable_block`` still lets units walk through).
-        Flammable covers wood only. HP comes from
-        ``CFG.materials.<name>[0]`` per material ID.
+        Every cache is a projection of the material-property table
+        (``self.materials``) indexed by ``material`` — no hardcoded material
+        lists. The two distinct masks are preserved (ch.02 §two masks):
+
+        - ``is_wall`` — the **occlusion** mask (physics/light/smoke/vision
+          boundary). Derived from ``light_atten`` (a tile occludes if it
+          attenuates any channel), so it includes doors (``[1,1,1]``) but not
+          air (``[0,0,0]``) — exactly the old ``{HULL, WOOD, DOOR}`` set for
+          the current materials.
+        - ``is_passable`` (the walkability predicate, AIR+DOOR) lives in the
+          query methods and is derived from the table's ``passable`` column.
+
+        ``flammable`` and ``wall_hp`` come from the table; ``conductivity`` is
+        populated for the later thermal pass. Atmosphere starts at 1.0 in
+        interior air, 0.0 at walls and vacuum.
         """
         m = self.material
-        # TODO: drop MAT_DOOR from is_wall when the dynamic door system
-        # is implemented — for now they occlude like static walls.
-        self.is_wall = np.isin(m, [MAT_HULL, MAT_WOOD, MAT_DOOR])
-        self.flammable = (m == MAT_WOOD)
-        self.wall_hp = np.zeros_like(self.wall_hp)
+        tbl = self.materials
 
-        # HP from config (only walls with positive HP get one stamped in).
-        mat_props = {
-            MAT_AIR: CFG.materials.air,
-            MAT_HULL: CFG.materials.hull,
-            MAT_WOOD: CFG.materials.wood,
-            MAT_DOOR: CFG.materials.door,
-        }
-        for mat_id, props in mat_props.items():
-            hp = props[0]
-            if hp > 0:
-                self.wall_hp[m == mat_id] = hp
+        # Occlusion mask from the table (doors occlude; air does not). Always
+        # boolean-typed regardless of the input grid's dtype.
+        self.is_wall = np.asarray(tbl.occludes(m), dtype=bool)
+        self.flammable = tbl.flammable[m]
+        self.wall_hp = tbl.hp[m].astype(np.float32, copy=True)
+        self.conductivity = tbl.conductivity[m].astype(np.float32, copy=True)
 
         # Atmosphere: 1.0 in interior air, 0.0 at walls and vacuum.
         self.atmosphere = np.where(
@@ -111,6 +124,48 @@ class GameMap:
 
         # Obstacles == walls until stamp_units paints unit footprints over it.
         self.obstacles = self.is_wall.copy()
+
+    # ------------------------------------------------------------------
+    # Incremental cache patch (single structural-edit seam — ch.02 review #10)
+    # ------------------------------------------------------------------
+    def on_tile_changed(self, fy, fx):
+        """Patch ALL table-derived static caches for one tile after a
+        structural edit to ``material[fy, fx]``.
+
+        Centralizes cache invalidation so callers (``destroy_wall``, the future
+        laser pre-phase) never patch caches inline. O(1) per tile — never an
+        O(grid) ``_update_caches`` rebuild (which won't scale when a firestorm
+        melts many walls per tick). Does NOT touch atmosphere/vacuum — those
+        carry edit-specific semantics owned by the caller (see
+        ``destroy_wall``).
+        """
+        if not (0 <= fy < self._h and 0 <= fx < self._w):
+            return
+        mat_id = int(self.material[fy, fx])
+        tbl = self.materials
+        self.is_wall[fy, fx] = bool(tbl.light_atten[mat_id].max() > 0.0)
+        self.flammable[fy, fx] = bool(tbl.flammable[mat_id])
+        self.wall_hp[fy, fx] = float(tbl.hp[mat_id])
+        self.conductivity[fy, fx] = float(tbl.conductivity[mat_id])
+
+    # ------------------------------------------------------------------
+    # Config hot-reload: rebuild the table + static caches (ch.02 §14)
+    # ------------------------------------------------------------------
+    def reload_material_table(self):
+        """Re-read the material table from config and rebuild static caches.
+
+        Call after ``CFG.reload()``. Preserves the live ``material``/vacuum
+        grids; only table-derived caches change. (A GPU material-mirror re-sync
+        wires in here when CUDA lands — ch.02 §14.)
+        """
+        self.materials = MaterialTable.from_config(CFG)
+        # Rebuild only the table-derived caches; keep atmosphere/obstacles as
+        # the running sim left them by snapshotting and restoring them.
+        atmosphere = self.atmosphere
+        obstacles = self.obstacles
+        self._update_caches()
+        self.atmosphere = atmosphere
+        self.obstacles = obstacles
 
     # ------------------------------------------------------------------
     # Per-tick rebuild: units act as walls for all physics
@@ -208,11 +263,14 @@ class GameMap:
         if not (0 <= fy < h and 0 <= fx < w):
             return
         was_hull = (self.material[fy, fx] == MAT_HULL)
-        if self.material[fy, fx] in (MAT_HULL, MAT_WOOD, MAT_DOOR):
+        # A wall is anything the occlusion mask marks (hull/wood/door today,
+        # plus steel/glass when placed) — replaces the hardcoded id list.
+        if self.is_wall[fy, fx]:
             self.material[fy, fx] = MAT_AIR
-            self.wall_hp[fy, fx] = 0
-            self.is_wall[fy, fx] = False
-            self.flammable[fy, fx] = False
+            # Patch ALL table-derived caches for this tile through the single
+            # incremental seam (is_wall, flammable, wall_hp, conductivity) —
+            # no inline cache fixups, no O(grid) rebuild.
+            self.on_tile_changed(fy, fx)
             if was_hull:
                 if (fy < 1 or fy >= h - 1
                         or fx < 1 or fx >= w - 1):

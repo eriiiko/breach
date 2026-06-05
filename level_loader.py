@@ -14,12 +14,20 @@ The CSV is the source of truth for physics. Art assets are for rendering only.
 from __future__ import annotations
 
 import os
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
+
+# The unified material ids live in ``src/simulation/materials.py``. Ensure
+# ``src/`` is importable even when a caller (e.g. a focused unit test) only put
+# the repo root on sys.path — every other entry point already adds ``src/``.
+_SRC_DIR = Path(__file__).resolve().parent / "src"
+if _SRC_DIR.is_dir() and str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
 
 
 SUPPORTED_VERSIONS = {"1"}
@@ -150,16 +158,28 @@ def materials_from_tilemap(tilemap: np.ndarray):
     """Translate CSV tile values into material grid + vacuum mask.
 
     Returns (material, is_vacuum) — both (H, W) numpy arrays.
-    Convention:
-      CSV 0     -> outer space (vacuum, MAT_AIR)
-      CSV 1     -> hull wall    (MAT_HULL)
-      CSV 2     -> wood wall    (MAT_WOOD) — flammable
-      CSV 3     -> door         (MAT_DOOR) — currently behaves as a wall
-                                  for occlusion; movement still allowed
-                                  through it; full door system deferred
-      4..8      -> interior air (MAT_AIR) with no vacuum
+
+    Material ids come from :mod:`simulation.materials` — the single source of
+    truth shared with :mod:`simulation.gamemap`. The mapping below is the
+    *CSV code* convention; CSV codes are distinct from material ids (e.g. the
+    existing levels use codes 4..8 as interior-floor decoration variants, all
+    of which are MAT_AIR — they are NOT steel/glass).
+
+    CSV code -> material id:
+      0     -> outer space (vacuum, MAT_AIR)
+      1     -> hull wall    (MAT_HULL)
+      2     -> wood wall    (MAT_WOOD) — flammable
+      3     -> door         (MAT_DOOR) — currently behaves as a wall
+               for occlusion; movement still allowed through it;
+               full door system deferred
+      4..8  -> interior air (MAT_AIR), no vacuum
+
+    Steel (MAT_STEEL) and glass (MAT_GLASS) exist in the material table but
+    have no CSV code yet — no shipped level places them, and reusing codes
+    4/5 would silently solidify existing interior-air tiles. A dedicated CSV
+    code is added when a level first needs them.
     """
-    MAT_AIR, MAT_HULL, MAT_WOOD, MAT_DOOR = 0, 1, 2, 3
+    from simulation.materials import MAT_AIR, MAT_HULL, MAT_WOOD, MAT_DOOR
     material = np.full(tilemap.shape, MAT_AIR, dtype=np.int8)
     material[tilemap == 1] = MAT_HULL
     material[tilemap == 2] = MAT_WOOD
