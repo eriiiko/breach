@@ -483,6 +483,8 @@ def main() -> None:
                 src.max_range = int(max(1, state.get("flash_max_range")))
                 src.intensity = state.get("flash_intensity")
                 src.angle_spread = state.get("flash_angle_spread")
+                # Flashlight — cool white (profile: flashlight).
+                src.color = (1.0, 1.0, 0.95)
                 src.jitter = 0.0
                 sources.append(src)
 

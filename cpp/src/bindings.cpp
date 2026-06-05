@@ -1,6 +1,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
+#include <array>
 #include "atmosphere_solver.h"
 #include "smoke_dynamics.h"
 #include "fire_simulation.h"
@@ -21,6 +22,16 @@ template<typename T>
 static std::tuple<const T*, int, int> get_2d_const(const py::array_t<T>& arr) {
     auto a = arr.template unchecked<2>();
     return {a.data(0, 0),
+            static_cast<int>(a.shape(0)),
+            static_cast<int>(a.shape(1))};
+}
+
+// Helper: extract raw pointer + (h, w) from a 3D (h, w, 3) numpy array.
+// Returns the H and W dimensions (channel count is the trailing axis).
+template<typename T>
+static std::tuple<T*, int, int> get_3d(py::array_t<T>& arr) {
+    auto a = arr.template mutable_unchecked<3>();
+    return {a.mutable_data(0, 0, 0),
             static_cast<int>(a.shape(0)),
             static_cast<int>(a.shape(1))};
 }
@@ -142,7 +153,15 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("angle_spread", &LightSource::angle_spread)
         .def_readwrite("intensity", &LightSource::intensity)
         .def_readwrite("heat", &LightSource::heat)
-        .def_readwrite("jitter", &LightSource::jitter);
+        .def_readwrite("jitter", &LightSource::jitter)
+        // RGB tint exposed as a 3-tuple (r, g, b). Default white {1,1,1}.
+        .def_property("color",
+            [](const LightSource& s) {
+                return py::make_tuple(s.color[0], s.color[1], s.color[2]);
+            },
+            [](LightSource& s, const std::array<float, 3>& c) {
+                s.color[0] = c[0]; s.color[1] = c[1]; s.color[2] = c[2];
+            });
 
     py::class_<Raycaster>(m, "Raycaster")
         .def(py::init<>())
@@ -163,18 +182,18 @@ PYBIND11_MODULE(breach_physics, m) {
         .def("cast_source_directional",
              [](const Raycaster& self,
                 const LightSource& src,
-                py::array_t<float> light_map,
+                py::array_t<float> light_rgb,
                 py::array_t<float> light_dx,
                 py::array_t<float> light_dy,
                 py::array_t<float> smoke,
                 py::array_t<bool>  is_wall) {
-            auto [lm,  h, w]   = get_2d(light_map);
+            auto [lrgb, h, w]  = get_3d(light_rgb);
             auto [ldx, h2, w2] = get_2d(light_dx);
             auto [ldy, h3, w3] = get_2d(light_dy);
             auto [sm,  h4, w4] = get_2d_const(smoke);
             auto [wl,  h5, w5] = get_2d_const(is_wall);
-            self.cast_source_directional(src, lm, ldx, ldy, sm, wl, h, w);
-        }, py::arg("source"), py::arg("light_map"),
+            self.cast_source_directional(src, lrgb, ldx, ldy, sm, wl, h, w);
+        }, py::arg("source"), py::arg("light_rgb"),
            py::arg("light_dx"), py::arg("light_dy"),
            py::arg("smoke"), py::arg("is_wall"))
         .def_static("normalize_directions",

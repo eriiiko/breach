@@ -73,7 +73,13 @@ class GameMap:
         self.smoke        = np.zeros((h, w), dtype=np.float32)
         self.fire         = np.zeros((h, w), dtype=np.float32)
         self.obstacles    = np.zeros((h, w), dtype=bool)
+        # Scalar light field (legacy: fire raycaster output + render unit/smoke
+        # tinting). Kept alongside light_rgb during the RGB migration.
         self.light_map    = np.zeros((h, w), dtype=np.float32)
+        # RGB light field (ch.03 render byproduct): total light colour reaching
+        # each tile, summed over all sources. Shape (h, w, 3), f32 accumulator
+        # down-converted to the RGBA16F render textures at pack time (ch.05).
+        self.light_rgb    = np.zeros((h, w, 3), dtype=np.float32)
         # Per-tile thermal conductivity (table-derived). Allocated + populated
         # now; consumed later by the temperature/conduction pass (ch.04).
         self.conductivity = np.zeros((h, w), dtype=np.float32)

@@ -150,12 +150,16 @@ class GameRenderer:
             self.lighting.compute_light_field(light_sources, gmap.smoke, occluders)
             self.last_raycast_ms = (time.perf_counter() - t_ray) * 1000
         else:
+            self.lighting.light_rgb.fill(0)
             self.lighting.light_map.fill(0)
             self.lighting.light_dx.fill(0)
             self.lighting.light_dy.fill(0)
-            self.lighting.packed.fill(0)
-            self.lighting.packed[..., 3] = 255
-            core.update_rgba_texture(self.lighting.light_tex, self.lighting.packed)
+            self.lighting.packed_a.fill(0)
+            self.lighting.packed_b.fill(0)
+            core.update_rgba16f_texture(self.lighting.light_tex_a,
+                                        self.lighting.packed_a)
+            core.update_rgba16f_texture(self.lighting.light_tex_b,
+                                        self.lighting.packed_b)
             self.last_raycast_ms = 0.0
 
         # Smoke is a physical medium — alpha is density-driven only (always
@@ -276,10 +280,11 @@ class GameRenderer:
         wpt = self.world.world_px_per_tile
         lmap = self.lighting.light_map
         H, W = lmap.shape
-        # Same ambient floor the lit-ship shader uses (lighting.fs:88 does
-        # diffuse * (ambient + intensity * ndotl)). Without this, units in
-        # unlit rooms are pitch-black while the ship around them still
-        # shows a faint ambient baseline — visually mismatched.
+        # Same ambient floor the lit-ship shader uses (lighting.fs does
+        # diffuse * (ambient + incoming_rgb * ndotl)). light_map is the
+        # render-side scalar brightness (max over the RGB channels). Without
+        # this, units in unlit rooms are pitch-black while the ship around
+        # them still shows a faint ambient baseline — visually mismatched.
         amb = self.lighting.ambient
         amb_floor = (amb[0] + amb[1] + amb[2]) / 3.0
         def light_at(u):
@@ -732,7 +737,8 @@ class GameRenderer:
         self.sprites.unload()
         self.textures.unload_all()
         rl.unload_shader(self.lighting.shader)
-        rl.unload_texture(self.lighting.light_tex)
+        rl.unload_texture(self.lighting.light_tex_a)
+        rl.unload_texture(self.lighting.light_tex_b)
         rl.unload_texture(self.lighting.vacuum_tex)
         rl.unload_texture(self.smoke_overlay.tex)
         rl.unload_texture(self.fire_overlay.tex)

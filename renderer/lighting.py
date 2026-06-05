@@ -1,6 +1,9 @@
-"""Lighting renderer: computes the directional light field via the C++
-raycaster, packs it into a small RGBA texture, and draws the diffuse
-ship lit by the lighting shader.
+"""Lighting renderer: computes the RGB directional light field via the C++
+raycaster, packs it into two small RGBA16F textures (ch.05), and draws the
+diffuse ship lit by the lighting shader.
+
+Texture A = light_rgb (RGB) + light_dir.x (A, signed).
+Texture B = smoke_glow (RGB, reserved/zero this slice) + light_dir.y (A, signed).
 """
 from __future__ import annotations
 
@@ -26,14 +29,22 @@ class LightingPass:
         self.w = grid_w
 
         # CPU-side scratch buffers for the raycaster
-        self.light_map = np.zeros((grid_h, grid_w), dtype=np.float32)
+        # RGB light accumulator (f32), shape (h, w, 3) — interleaved per ch.03.
+        self.light_rgb = np.zeros((grid_h, grid_w, 3), dtype=np.float32)
         self.light_dx  = np.zeros((grid_h, grid_w), dtype=np.float32)
         self.light_dy  = np.zeros((grid_h, grid_w), dtype=np.float32)
-        # Packed RGBA8: R=intensity, G=dx (0.5-centered), B=dy (0.5-centered)
-        self.packed = np.zeros((grid_h, grid_w, 4), dtype=np.uint8)
+        # Legacy scalar light field, derived from light_rgb (max over channels)
+        # for the render-side unit/smoke tinting consumers that still read it.
+        self.light_map = np.zeros((grid_h, grid_w), dtype=np.float32)
+        # Packed RGBA16F render textures (ch.05):
+        #   Texture A = light_rgb (RGB) + light_dir.x (A, signed)
+        #   Texture B = smoke_glow (RGB, reserved/zero this slice) + light_dir.y (A, signed)
+        self.packed_a = np.zeros((grid_h, grid_w, 4), dtype=np.float16)
+        self.packed_b = np.zeros((grid_h, grid_w, 4), dtype=np.float16)
 
         # GPU resources
-        self.light_tex = core.create_dynamic_rgba_texture(grid_w, grid_h)
+        self.light_tex_a = core.create_dynamic_rgba16f_texture(grid_w, grid_h)
+        self.light_tex_b = core.create_dynamic_rgba16f_texture(grid_w, grid_h)
         # Vacuum mask texture (R=255 where vacuum, R=0 elsewhere). Built once
         # at level load via set_vacuum_mask; used in the shader to discard
         # vacuum pixels so the screen-space background can show through.
@@ -49,7 +60,8 @@ class LightingPass:
         )
         # Look up uniform locations once. Warn (but continue) on any -1.
         self._loc_normal_tex      = self._lookup("u_normal")
-        self._loc_light_tex       = self._lookup("u_light")
+        self._loc_light_tex_a     = self._lookup("u_light_a")
+        self._loc_light_tex_b     = self._lookup("u_light_b")
         self._loc_vacuum_tex      = self._lookup("u_vacuum")
         self._loc_ambient         = self._lookup("u_ambient")
         self._loc_normal_strength = self._lookup("u_normal_strength")
@@ -131,7 +143,8 @@ class LightingPass:
         self.bilinear = not self.bilinear
         filt = (rl.TextureFilter.TEXTURE_FILTER_BILINEAR
                 if self.bilinear else rl.TextureFilter.TEXTURE_FILTER_POINT)
-        rl.set_texture_filter(self.light_tex, filt)
+        rl.set_texture_filter(self.light_tex_a, filt)
+        rl.set_texture_filter(self.light_tex_b, filt)
 
     # ---- light field computation ---------------------------------------
 
@@ -143,31 +156,34 @@ class LightingPass:
         (walls + stamped units) so units cast shadows, OR pass `gmap.is_wall`
         if you only want static geometry to occlude.
         """
-        self.light_map.fill(0)
+        self.light_rgb.fill(0)
         self.light_dx.fill(0)
         self.light_dy.fill(0)
 
         for src in sources:
             self.raycaster.cast_source_directional(
-                src, self.light_map, self.light_dx, self.light_dy,
+                src, self.light_rgb, self.light_dx, self.light_dy,
                 smoke, occluders,
             )
         # Normalize direction to unit vectors (vector-magnitude normalization).
         # See expert review notes in docs/patch_level_pipeline_v1.md.
         type(self.raycaster).normalize_directions(self.light_dx, self.light_dy)
 
-        # Pack into RGBA8:
-        #   R = intensity clamped 0..1
-        #   G = (dx + 1) / 2  (0.5 = no direction)
-        #   B = (dy + 1) / 2
-        #   A = 255 (unused, reserved)
-        np.clip(self.light_map, 0.0, 1.0, out=self.light_map)
-        self.packed[..., 0] = (self.light_map * 255).astype(np.uint8)
-        self.packed[..., 1] = ((self.light_dx * 0.5 + 0.5) * 255).clip(0, 255).astype(np.uint8)
-        self.packed[..., 2] = ((self.light_dy * 0.5 + 0.5) * 255).clip(0, 255).astype(np.uint8)
-        self.packed[..., 3] = 255
+        # Legacy scalar field for render-side unit/smoke tinting: max over the
+        # RGB channels (a brightness proxy). Render-only; not in the sim.
+        self.light_map[:] = self.light_rgb.max(axis=2)
 
-        core.update_rgba_texture(self.light_tex, self.packed)
+        # Pack into two RGBA16F textures (ch.05). 16F stores HDR RGB and
+        # SIGNED light_dir directly (no 0.5-centered encode):
+        #   Texture A = light_rgb (RGB) + light_dir.x (A)
+        #   Texture B = smoke_glow (RGB, zero this slice) + light_dir.y (A)
+        self.packed_a[..., 0:3] = self.light_rgb
+        self.packed_a[..., 3]   = self.light_dx
+        self.packed_b[..., 0:3] = 0.0          # smoke_glow reserved (later slice)
+        self.packed_b[..., 3]   = self.light_dy
+
+        core.update_rgba16f_texture(self.light_tex_a, self.packed_a)
+        core.update_rgba16f_texture(self.light_tex_b, self.packed_b)
 
     # ---- drawing --------------------------------------------------------
 
@@ -187,7 +203,8 @@ class LightingPass:
         rl.begin_shader_mode(self.shader)
         if normal is not None:
             rl.set_shader_value_texture(self.shader, self._loc_normal_tex, normal)
-        rl.set_shader_value_texture(self.shader, self._loc_light_tex, self.light_tex)
+        rl.set_shader_value_texture(self.shader, self._loc_light_tex_a, self.light_tex_a)
+        rl.set_shader_value_texture(self.shader, self._loc_light_tex_b, self.light_tex_b)
         rl.set_shader_value_texture(self.shader, self._loc_vacuum_tex, self.vacuum_tex)
 
         src = rl.Rectangle(0, 0, float(diffuse.width), float(diffuse.height))

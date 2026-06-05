@@ -4,9 +4,11 @@
 // Input textures:
 //   u_diffuse   - RGB diffuse art at high resolution (sRGB-encoded PNG)
 //   u_normal    - normal map at the SAME resolution as diffuse (linear)
-//   u_light     - light field at low (physics) resolution:
-//                   R = intensity, G = light_dx, B = light_dy
-//                 (G/B are signed; we encode/decode via 0.5 + 0.5*x in CPU)
+//   u_light_a   - RGBA16F light field A at low (physics) resolution:
+//                   RGB = incoming light colour, A = light_dir.x (signed)
+//   u_light_b   - RGBA16F light field B at low (physics) resolution:
+//                   RGB = smoke_glow (reserved/zero this slice), A = light_dir.y (signed)
+//                 (light_dir is stored signed in 16F — no 0.5-centered encode)
 //
 // Uniforms:
 //   u_ambient         - base light color when no light source reaches a tile
@@ -23,7 +25,8 @@ in vec4 fragColor;
 
 uniform sampler2D u_diffuse;
 uniform sampler2D u_normal;
-uniform sampler2D u_light;
+uniform sampler2D u_light_a;       // RGB = incoming light colour, A = light_dir.x
+uniform sampler2D u_light_b;       // RGB = smoke_glow (reserved), A = light_dir.y
 uniform sampler2D u_vacuum;        // physics-res mask, R>0.5 = vacuum tile
                                    // (don't draw — let background show through)
 
@@ -62,10 +65,11 @@ void main() {
     // The light field also covers the full world, so sampling at the same
     // fragTexCoord gives the right tile. Camera scrolling happens later, as
     // a separate blit from the world RT to the screen — see WorldComposite.
-    vec3 light_sample = texture(u_light, fragTexCoord).rgb;
-    float intensity = light_sample.r;
-    // Decode signed direction: stored as 0.5 + 0.5*x, so (sample - 0.5) * 2.
-    vec2 light_dir_2d = (light_sample.gb - 0.5) * 2.0;
+    vec4 tex_a = texture(u_light_a, fragTexCoord);
+    vec4 tex_b = texture(u_light_b, fragTexCoord);
+    vec3 incoming_rgb = tex_a.rgb;      // total light colour reaching this tile
+    // light_dir is stored signed in 16F — reconstruct directly (no decode).
+    vec2 light_dir_2d = vec2(tex_a.a, tex_b.a);
 
     float ndotl = 1.0;  // default: flat (no normal map)
     if (u_use_normal == 1) {
@@ -85,7 +89,10 @@ void main() {
         ndotl = max(dot(N, L), 0.0);
     }
 
-    vec3 lit = diffuse * (u_ambient + intensity * ndotl);
+    // Diffuse: albedo x incoming RGB (a red lamp lights surfaces red).
+    // ndotl modulates the directional contribution; ambient is a flat floor.
+    // No ACES yet (next slice) — keep the existing ambient/encode, RGB-ified.
+    vec3 lit = diffuse * (u_ambient + incoming_rgb * ndotl);
     if (u_srgb_decode == 1) {
         // Encode back to sRGB for the default framebuffer.
         lit = linear_to_srgb(lit);

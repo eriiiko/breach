@@ -119,7 +119,8 @@ void Raycaster::cast_source(
 void Raycaster::march_ray_directional(
     float sx, float sy, float angle,
     float ray_intensity, float max_range,
-    float* light_map,
+    const float color[3],
+    float* light_rgb,
     float* light_dx, float* light_dy,
     const float* smoke_field,
     const bool* is_wall,
@@ -150,7 +151,12 @@ void Raycaster::march_ray_directional(
         float deposit = remaining * dist_atten;
         int idx = y * w + x;
 
-        light_map[idx] += deposit;
+        // Per-channel RGB deposit: the scalar deposit times the source tint.
+        // Attenuation/occlusion below stays scalar (identical to the old
+        // intensity-only path) — colour is purely a deposit multiplier.
+        light_rgb[idx * 3 + 0] += deposit * color[0];
+        light_rgb[idx * 3 + 1] += deposit * color[1];
+        light_rgb[idx * 3 + 2] += deposit * color[2];
         // Direction = where the light is COMING FROM (toward the source).
         // Ray travel direction is (dx, dy). Light arrives FROM (-dx, -dy).
         // For shading we want the vector from the surface toward the light,
@@ -181,7 +187,7 @@ void Raycaster::march_ray_directional(
 
 void Raycaster::cast_source_directional(
     const LightSource& src,
-    float* light_map,
+    float* light_rgb,
     float* light_dx,
     float* light_dy,
     const float* smoke_field,
@@ -226,7 +232,7 @@ void Raycaster::cast_source_directional(
         float intensity = src.intensity * angular_atten;
         if (intensity > 0.01f) {
             march_ray_directional(src.x, src.y, angle, intensity, src.max_range,
-                      light_map, light_dx, light_dy,
+                      src.color, light_rgb, light_dx, light_dy,
                       smoke_field, is_wall, h, w);
         }
     }

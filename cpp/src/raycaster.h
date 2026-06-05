@@ -17,6 +17,7 @@ struct LightSource {
     float intensity  = 1.0f;
     float heat       = 0.0f;
     float jitter     = 0.0f;
+    float color[3]   = {1.0f, 1.0f, 1.0f};   // RGB tint, default white
     Falloff falloff  = Falloff::UNIFORM;
 
     int get_ray_count() const {
@@ -52,25 +53,30 @@ public:
         int h, int w
     ) const;
 
-    // ---- Directional API (intensity + dominant light direction) ----
+    // ---- Directional API (RGB light + dominant light direction) ----
     //
     // Outputs three fields:
-    //   light_map[i]  = accumulated intensity arriving at tile i
-    //   light_dx[i]   = x component of the (unit) light direction at tile i
-    //   light_dy[i]   = y component of the (unit) light direction at tile i
+    //   light_rgb[i*3 + c] = accumulated RGB light arriving at tile i (c=0..2)
+    //   light_dx[i]        = x component of the (unit) light direction at tile i
+    //   light_dy[i]        = y component of the (unit) light direction at tile i
+    //
+    // light_rgb is interleaved (R,G,B per tile), shape (h, w, 3) in row-major.
+    // The per-channel deposit is the scalar deposit (distance falloff) times
+    // the source's color[c]; attenuation/occlusion behaviour is identical to
+    // the scalar path (one aggregate smoke attenuation + wall hard-stop).
     //
     // light_dx/light_dy are unit-normalized after all rays are cast (vector
     // magnitude, not by intensity — see expert review notes in
     // docs/patch_level_pipeline_v1.md). At tiles where opposing rays cancel
     // (or no rays arrive), direction is (0,0) — the shader must handle that.
 
-    // Cast a single source and accumulate intensity + direction.
+    // Cast a single source and accumulate RGB light + direction.
     // Caller is responsible for zeroing the output buffers before calling.
     // Normalization is NOT performed here — call normalize_directions() once
     // after all sources have been cast for the frame.
     void cast_source_directional(
         const LightSource& src,
-        float* light_map,
+        float* light_rgb,
         float* light_dx,
         float* light_dy,
         const float* smoke_field,
@@ -98,7 +104,8 @@ private:
     void march_ray_directional(
         float sx, float sy, float angle,
         float ray_intensity, float max_range,
-        float* light_map,
+        const float color[3],
+        float* light_rgb,
         float* light_dx, float* light_dy,
         const float* smoke_field,
         const bool* is_wall,

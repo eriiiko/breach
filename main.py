@@ -142,6 +142,8 @@ def main():
         src.max_range = 18
         src.intensity = 0.9
         src.angle_spread = 6.283
+        # Emergency lighting — red (profile: emergency_light).
+        src.color = (1.0, 0.1, 0.05)
         # Fire-style sources default to jitter=0.0 — natural smoke
         # advection creates the flicker we want without C++ RNG drift.
         src.jitter = 0.0
@@ -194,6 +196,8 @@ def main():
                 src.max_range = 25
                 src.intensity = 2.5
                 src.angle_spread = 6.283
+                # Flashlight — cool white (profile: flashlight).
+                src.color = (1.0, 1.0, 0.95)
                 src.jitter = 0.0
                 sources.append(src)
 

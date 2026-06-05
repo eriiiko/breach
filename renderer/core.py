@@ -130,6 +130,40 @@ def create_dynamic_rgba_texture(width: int, height: int) -> rl.Texture:
     return tex
 
 
+def create_dynamic_rgba16f_texture(width: int, height: int) -> rl.Texture:
+    """Create an RGBA16F (half-float) texture updated each frame.
+
+    Used for the light field render textures (ch.05): RGB carries HDR light
+    colour, alpha carries a signed light-direction component. 16-bit float is
+    chosen to avoid near-dark banding at ambient ~0.01 and to carry HDR for the
+    tone-map stage.
+    """
+    blank = rl.gen_image_color(width, height, rl.BLACK)
+    rl.image_format(blank, rl.PixelFormat.PIXELFORMAT_UNCOMPRESSED_R16G16B16A16)
+    tex = rl.load_texture_from_image(blank)
+    rl.unload_image(blank)
+    rl.set_texture_filter(tex, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
+    rl.set_texture_wrap(tex, rl.TextureWrap.TEXTURE_WRAP_CLAMP)
+    return tex
+
+
+def update_rgba16f_texture(tex: rl.Texture, pixels_rgba: np.ndarray) -> None:
+    """Upload an (H, W, 4) float16 RGBA array to an RGBA16F texture.
+
+    Zero-copy via cffi from_buffer (same contract as update_rgba_texture):
+    the half-float layout matches Raylib's PIXELFORMAT_UNCOMPRESSED_R16G16B16A16,
+    so the raw bytes upload directly. Direction components may be signed; RGB
+    may exceed 1.0 (HDR) — both are fine in 16F.
+    """
+    assert pixels_rgba.dtype == np.float16, \
+        f"expected float16, got {pixels_rgba.dtype}"
+    assert pixels_rgba.ndim == 3 and pixels_rgba.shape[2] == 4, \
+        f"expected (H,W,4), got {pixels_rgba.shape}"
+    contig = np.ascontiguousarray(pixels_rgba)
+    buf = rl.ffi.from_buffer("uint16_t[]", contig)
+    rl.update_texture(tex, rl.ffi.cast("void *", buf))
+
+
 def update_rgba_texture(tex: rl.Texture, pixels_rgba: np.ndarray) -> None:
     """Upload an (H, W, 4) uint8 RGBA array to a texture.
 
@@ -192,6 +226,7 @@ __all__ = [
     "init_window", "shutdown", "should_close",
     "TextureSet", "load_texture_from_path", "load_level_textures",
     "create_dynamic_rgba_texture", "update_rgba_texture",
+    "create_dynamic_rgba16f_texture", "update_rgba16f_texture",
     "begin_frame", "end_frame", "draw_fps",
     "load_shader_with_fallback",
 ]
