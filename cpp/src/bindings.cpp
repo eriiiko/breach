@@ -186,16 +186,20 @@ PYBIND11_MODULE(breach_physics, m) {
                 py::array_t<float> light_dx,
                 py::array_t<float> light_dy,
                 py::array_t<float> smoke,
-                py::array_t<bool>  is_wall) {
+                py::array_t<float> light_atten) {
             auto [lrgb, h, w]  = get_3d(light_rgb);
             auto [ldx, h2, w2] = get_2d(light_dx);
             auto [ldy, h3, w3] = get_2d(light_dy);
             auto [sm,  h4, w4] = get_2d_const(smoke);
-            auto [wl,  h5, w5] = get_2d_const(is_wall);
-            self.cast_source_directional(src, lrgb, ldx, ldy, sm, wl, h, w);
+            // Per-tile static material attenuation, shape (h, w, 3) — same
+            // interleaved layout as light_rgb. Replaces the binary is_wall:
+            // occlusion is now per-channel (opaque [1,1,1] == old wall stop).
+            auto a = light_atten.unchecked<3>();
+            const float* atten = a.data(0, 0, 0);
+            self.cast_source_directional(src, lrgb, ldx, ldy, sm, atten, h, w);
         }, py::arg("source"), py::arg("light_rgb"),
            py::arg("light_dx"), py::arg("light_dy"),
-           py::arg("smoke"), py::arg("is_wall"))
+           py::arg("smoke"), py::arg("light_atten"))
         .def_static("normalize_directions",
              [](py::array_t<float> light_dx, py::array_t<float> light_dy) {
             auto [ldx, h, w]   = get_2d(light_dx);

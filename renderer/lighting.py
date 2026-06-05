@@ -149,12 +149,16 @@ class LightingPass:
     # ---- light field computation ---------------------------------------
 
     def compute_light_field(self, sources: List, smoke: np.ndarray,
-                            occluders: np.ndarray) -> None:
+                            light_atten: np.ndarray) -> None:
         """Cast all sources, accumulate intensity + direction, normalize, pack.
 
-        `occluders` is a bool mask that blocks rays. Pass `gmap.obstacles`
-        (walls + stamped units) so units cast shadows, OR pass `gmap.is_wall`
-        if you only want static geometry to occlude.
+        `light_atten` is the static per-channel material attenuation field,
+        shape (h, w, 3) f32 — pass `gmap.light_atten`. Occlusion is now
+        per-channel (ch.03 §the march): opaque tiles ([1,1,1]) kill the ray
+        exactly like the old wall hard-stop, glass transmits dimmed, an unequal
+        triple tints the surviving light. (Dynamic unit/smoke occlusion as a
+        live field is a later slice; this slice is static material only, so
+        stamped units no longer cast shadows here.)
         """
         self.light_rgb.fill(0)
         self.light_dx.fill(0)
@@ -163,7 +167,7 @@ class LightingPass:
         for src in sources:
             self.raycaster.cast_source_directional(
                 src, self.light_rgb, self.light_dx, self.light_dy,
-                smoke, occluders,
+                smoke, light_atten,
             )
         # Normalize direction to unit vectors (vector-magnitude normalization).
         # See expert review notes in docs/patch_level_pipeline_v1.md.

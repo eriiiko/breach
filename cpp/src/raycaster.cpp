@@ -123,7 +123,7 @@ void Raycaster::march_ray_directional(
     float* light_rgb,
     float* light_dx, float* light_dy,
     const float* smoke_field,
-    const bool* is_wall,
+    const float* light_atten,
     int h, int w
 ) const {
     float dx = std::cos(angle);
@@ -139,36 +139,66 @@ void Raycaster::march_ray_directional(
 
     int x = static_cast<int>(sx);
     int y = static_cast<int>(sy);
-    float remaining = ray_intensity;
+    // Per-channel remaining energy. The source tint is folded in here so the
+    // deposit is the per-channel survivor (matches the old scalar*color deposit
+    // on the source tile) and each colour attenuates independently downstream.
+    float remaining[3] = {
+        ray_intensity * color[0],
+        ray_intensity * color[1],
+        ray_intensity * color[2],
+    };
     float distance = 0.0f;
 
-    while (remaining > 0.01f) {
+    // Aggregate remaining-energy termination (max over channels). Opaque tiles
+    // drive every channel to 0 -> aggregate < 0.01 -> ray ends next step,
+    // identical to the old wall hard-stop. No per-channel early-out: all three
+    // channels march in lockstep to the same aggregate range (CUDA-divergence
+    // rule, ch.03 §CUDA contract).
+    auto aggregate = [](const float r[3]) {
+        return std::max(r[0], std::max(r[1], r[2]));
+    };
+
+    while (aggregate(remaining) > 0.01f) {
         if (x < 0 || x >= w || y < 0 || y >= h) break;
 
         float dist_atten = (distance > 0.0f)
             ? 1.0f / (1.0f + distance * distance * 0.01f)
             : 1.0f;
-        float deposit = remaining * dist_atten;
         int idx = y * w + x;
 
-        // Per-channel RGB deposit: the scalar deposit times the source tint.
-        // Attenuation/occlusion below stays scalar (identical to the old
-        // intensity-only path) — colour is purely a deposit multiplier.
-        light_rgb[idx * 3 + 0] += deposit * color[0];
-        light_rgb[idx * 3 + 1] += deposit * color[1];
-        light_rgb[idx * 3 + 2] += deposit * color[2];
-        // Direction = where the light is COMING FROM (toward the source).
-        // Ray travel direction is (dx, dy). Light arrives FROM (-dx, -dy).
-        // For shading we want the vector from the surface toward the light,
-        // which is -ray_direction. We accumulate weighted unit ray-from-light.
-        light_dx[idx] += deposit * (-dx);
-        light_dy[idx] += deposit * (-dy);
+        // Per-channel deposit: this channel's survivor times distance falloff.
+        float dep_r = remaining[0] * dist_atten;
+        float dep_g = remaining[1] * dist_atten;
+        float dep_b = remaining[2] * dist_atten;
+        light_rgb[idx * 3 + 0] += dep_r;
+        light_rgb[idx * 3 + 1] += dep_g;
+        light_rgb[idx * 3 + 2] += dep_b;
 
-        if (distance > 0.0f && is_wall[idx]) break;
+        // Direction = where the light is COMING FROM (toward the source).
+        // Ray travel direction is (dx, dy); light arrives FROM (-dx, -dy).
+        // Weight by the AGGREGATE deposit (sum of channels) so the intensity-
+        // weighting intent of the scalar path is preserved with RGB rays.
+        float dep_agg = dep_r + dep_g + dep_b;
+        light_dx[idx] += dep_agg * (-dx);
+        light_dy[idx] += dep_agg * (-dy);
+
+        // Occlusion via per-channel attenuation (ch.03 §the march). Static
+        // material attenuation from the table; then the live smoke attenuation,
+        // both applied per channel. (1 - atten): opaque 1.0 -> 0, glass 0.1 ->
+        // 0.9 survives, asymmetric triples tint the survivor.
+        float ma_r = light_atten[idx * 3 + 0];
+        float ma_g = light_atten[idx * 3 + 1];
+        float ma_b = light_atten[idx * 3 + 2];
+        remaining[0] *= (1.0f - ma_r);
+        remaining[1] *= (1.0f - ma_g);
+        remaining[2] *= (1.0f - ma_b);
 
         float sd = smoke_field[idx];
         if (sd > 0.001f) {
-            remaining *= (1.0f - sd * smoke_absorption);
+            float smoke_t = (1.0f - sd * smoke_absorption);
+            remaining[0] *= smoke_t;
+            remaining[1] *= smoke_t;
+            remaining[2] *= smoke_t;
         }
 
         if (t_max_x < t_max_y) {
@@ -191,7 +221,7 @@ void Raycaster::cast_source_directional(
     float* light_dx,
     float* light_dy,
     const float* smoke_field,
-    const bool* is_wall,
+    const float* light_atten,
     int h, int w
 ) const {
     int ray_count = src.get_ray_count();
@@ -233,7 +263,7 @@ void Raycaster::cast_source_directional(
         if (intensity > 0.01f) {
             march_ray_directional(src.x, src.y, angle, intensity, src.max_range,
                       src.color, light_rgb, light_dx, light_dy,
-                      smoke_field, is_wall, h, w);
+                      smoke_field, light_atten, h, w);
         }
     }
 }

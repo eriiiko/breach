@@ -80,6 +80,14 @@ class GameMap:
         # each tile, summed over all sources. Shape (h, w, 3), f32 accumulator
         # down-converted to the RGBA16F render textures at pack time (ch.05).
         self.light_rgb    = np.zeros((h, w, 3), dtype=np.float32)
+        # Per-tile STATIC light attenuation (ch.02/03): the material table's
+        # ``light_atten`` projected onto the grid, shape (h, w, 3) f32. This is
+        # the static half of ``total_atten = material(static) × dynamic(live)``
+        # — a structural-change cache (rebuilt in _update_caches, patched per
+        # tile in on_tile_changed), NOT recomputed each tick. The directional
+        # ray march reads it per channel: opaque [1,1,1] kills the ray (== old
+        # wall hard-stop), air [0,0,0] passes untouched, glass [0.1,..] dims.
+        self.light_atten  = np.zeros((h, w, 3), dtype=np.float32)
         # Per-tile thermal conductivity (table-derived). Allocated + populated
         # now; consumed later by the temperature/conduction pass (ch.04).
         self.conductivity = np.zeros((h, w), dtype=np.float32)
@@ -119,6 +127,10 @@ class GameMap:
         # Occlusion mask from the table (doors occlude; air does not). Always
         # boolean-typed regardless of the input grid's dtype.
         self.is_wall = np.asarray(tbl.occludes(m), dtype=bool)
+        # Static per-channel light attenuation: table column projected onto the
+        # grid (ch.03 march input). C-contiguous f32 so it crosses to C++ as a
+        # plain (h, w, 3) buffer with no copy.
+        self.light_atten = np.ascontiguousarray(tbl.light_atten[m], dtype=np.float32)
         self.flammable = tbl.flammable[m]
         self.wall_hp = tbl.hp[m].astype(np.float32, copy=True)
         self.conductivity = tbl.conductivity[m].astype(np.float32, copy=True)
@@ -150,6 +162,7 @@ class GameMap:
         mat_id = int(self.material[fy, fx])
         tbl = self.materials
         self.is_wall[fy, fx] = bool(tbl.light_atten[mat_id].max() > 0.0)
+        self.light_atten[fy, fx] = tbl.light_atten[mat_id]
         self.flammable[fy, fx] = bool(tbl.flammable[mat_id])
         self.wall_hp[fy, fx] = float(tbl.hp[mat_id])
         self.conductivity[fy, fx] = float(tbl.conductivity[mat_id])

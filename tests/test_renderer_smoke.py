@@ -14,6 +14,7 @@ from pathlib import Path
 # Add project root + C++ build dir to import path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
 
 import numpy as np
@@ -41,6 +42,13 @@ def main():
     g.is_vacuum = vac
     g.is_wall   = np.isin(mat, [1])     # MAT_HULL only for now
     g.obstacles = g.is_wall.copy()     # no units in this test
+    # Static per-channel light attenuation (ch.03 march input). Derive from the
+    # material table so opaque tiles ([1,1,1]) block light like the old wall
+    # hard-stop. upload_state reads gmap.light_atten now (replaces the bool mask).
+    from simulation.materials import MaterialTable
+    from config import CFG
+    g.light_atten = np.ascontiguousarray(
+        MaterialTable.from_config(CFG).light_atten[mat], dtype=np.float32)
 
     # Drop some smoke and fire for visual test
     g.smoke[60:80, 20:30] = 0.7

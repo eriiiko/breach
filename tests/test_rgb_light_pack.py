@@ -27,14 +27,15 @@ def _cast(color):
     dx = np.zeros((h, w), np.float32)
     dy = np.zeros((h, w), np.float32)
     smoke = np.zeros((h, w), np.float32)
-    wall = np.zeros((h, w), bool)
+    # Per-channel static material attenuation (all air -> no occlusion).
+    light_atten = np.zeros((h, w, 3), np.float32)
     s = bp.LightSource()
     s.x, s.y = 15, 15
     s.max_range = 10
     s.intensity = 1.0
     s.angle_spread = 6.283
     s.color = color
-    rc.cast_source_directional(s, rgb, dx, dy, smoke, wall)
+    rc.cast_source_directional(s, rgb, dx, dy, smoke, light_atten)
     bp.Raycaster.normalize_directions(dx, dy)
     return rgb, dx, dy
 

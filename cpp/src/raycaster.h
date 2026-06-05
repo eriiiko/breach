@@ -62,8 +62,16 @@ public:
     //
     // light_rgb is interleaved (R,G,B per tile), shape (h, w, 3) in row-major.
     // The per-channel deposit is the scalar deposit (distance falloff) times
-    // the source's color[c]; attenuation/occlusion behaviour is identical to
-    // the scalar path (one aggregate smoke attenuation + wall hard-stop).
+    // the source's color[c].
+    //
+    // Occlusion is PER-CHANNEL material attenuation (ch.03 §the march): the
+    // per-tile `light_atten` input (h, w, 3, interleaved) is the material
+    // table's static attenuation. After depositing into a tile the ray
+    // attenuates each channel by (1 - mat_atten[c]) and (1 - smoke*absorb);
+    // opaque tiles ([1,1,1]) drive every channel to 0 == the old wall
+    // hard-stop, glass ([0.1,..]) transmits dimmed, an unequal triple tints.
+    // There is NO binary wall stop and NO per-channel early-out — the ray
+    // terminates on the AGGREGATE remaining energy (CUDA-divergence rule).
     //
     // light_dx/light_dy are unit-normalized after all rays are cast (vector
     // magnitude, not by intensity — see expert review notes in
@@ -80,7 +88,7 @@ public:
         float* light_dx,
         float* light_dy,
         const float* smoke_field,
-        const bool* is_wall,
+        const float* light_atten,   // per-tile static material atten (h,w,3)
         int h, int w
     ) const;
 
@@ -108,7 +116,7 @@ private:
         float* light_rgb,
         float* light_dx, float* light_dy,
         const float* smoke_field,
-        const bool* is_wall,
+        const float* light_atten,   // per-tile static material atten (h,w,3)
         int h, int w
     ) const;
 };

@@ -142,12 +142,14 @@ class GameRenderer:
     def upload_state(self, gmap, light_sources: Optional[List] = None) -> None:
         t_start = time.perf_counter()
 
-        # Light field. Use `obstacles` (walls + stamped units) so units cast
-        # shadows. Falls back to `is_wall` if obstacles isn't set up.
-        occluders = getattr(gmap, "obstacles", gmap.is_wall)
+        # Light field. Occlusion is per-channel static material attenuation
+        # (ch.03 §the march): pass `gmap.light_atten` (h, w, 3). Opaque walls
+        # ([1,1,1]) block exactly like the old wall hard-stop; glass transmits.
+        # (Dynamic unit/smoke occlusion as a live field is a later slice, so
+        # stamped units do not cast shadows here this slice.)
         if self.show_lighting and light_sources:
             t_ray = time.perf_counter()
-            self.lighting.compute_light_field(light_sources, gmap.smoke, occluders)
+            self.lighting.compute_light_field(light_sources, gmap.smoke, gmap.light_atten)
             self.last_raycast_ms = (time.perf_counter() - t_ray) * 1000
         else:
             self.lighting.light_rgb.fill(0)
