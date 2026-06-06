@@ -103,8 +103,9 @@ the level's TOML; currently 1/3 m), **not** a global config constant. The render
 and simulation read it from the level. This is why metre conversions are isolated to
 `coords.py`: if a level ships at a different physical resolution, only the
 metre-conversion call sites are affected — everything expressed in tile units is
-unchanged, because tile units are the stable currency.
-
+unchanged, because tile units are the stable currency. 
+***Erik comment I wonder if this holds true for
+unit speeds, which I suspect are expressed in tiles. this is worth a look as well.
 ### Grid dimensions come from the level
 
 The grid is sized from the level's tilemap CSV, not from a config key. `GameMap`
