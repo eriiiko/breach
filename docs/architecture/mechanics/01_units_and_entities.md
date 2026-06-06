@@ -1,6 +1,6 @@
 # Units & Entities
 
-**Depends on:** state, materials.
+**Depends on:** [State & Ownership](../engine/02_state_and_ownership.md), [Material System](../engine/03_material_system.md).
 
 A **unit** is a mobile entity in the world — a marine, a zombie, and in time any
 creature, robot, or worm the game grows to need. Units are the only things in

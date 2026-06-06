@@ -1,6 +1,6 @@
 # Atmosphere & Pressure
 
-**Depends on:** Grid & Coordinate System, State & Ownership
+**Depends on:** [Grid & Coordinates](01_grid_and_coordinates.md), [State & Ownership](02_state_and_ownership.md)
 
 ---
 

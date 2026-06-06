@@ -1,6 +1,6 @@
 # Smoke
 
-**Depends on:** [Grid & Coordinates](06_grid_and_coordinates.md) · [State & Ownership](01_state_and_ownership.md) · [Atmosphere & Pressure](06_atmosphere_pressure.md)
+**Depends on:** [Grid & Coordinates](01_grid_and_coordinates.md) · [State & Ownership](02_state_and_ownership.md) · [Atmosphere & Pressure](04_atmosphere_and_pressure.md)
 
 > Note: the dependency chapters are listed by role — the grid/coordinate model, the
 > array-and-table state contract (ch.01), and the atmosphere solver that produces the wind

@@ -1,6 +1,6 @@
 # Temperature & Fire
 
-**Depends on:** Grid, State & Ownership, Material System, Atmosphere, Ray Engine.
+**Depends on:** [Grid & Coordinates](01_grid_and_coordinates.md), [State & Ownership](02_state_and_ownership.md), [Material System](03_material_system.md), [Atmosphere & Pressure](04_atmosphere_and_pressure.md), [Ray Engine](08_ray_engine.md).
 
 This chapter describes how Breach turns deposited heat into temperature, how
 temperature ignites and destroys the world, and how fire lives, spreads, and

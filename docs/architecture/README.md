@@ -68,7 +68,7 @@ Legend: ✅ implemented · ⚠️ partial (foundation built, advanced parts desi
 ### Engine — the deterministic world (read in order; each depends on the ones above)
 | # | Chapter | Status |
 |---|---------|--------|
-| 01 | [Grid & coordinates](engine/01_grid_and_coordinates.md) | ✅ |
+| 01 | [Grid & coordinates](engine/01_grid_and_coordinates.md) | ⚠️ (core built; drop is_wall, vision-via-atten, physics scaling owed) |
 | 02 | [State & ownership (GameMap)](engine/02_state_and_ownership.md) | ⚠️ |
 | 03 | [Material system](engine/03_material_system.md) | ✅ |
 | 04 | [Atmosphere & pressure](engine/04_atmosphere_and_pressure.md) | ✅ |

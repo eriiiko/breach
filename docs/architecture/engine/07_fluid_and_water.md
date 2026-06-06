@@ -1,6 +1,6 @@
 # Fluid & Water
 
-**Depends on:** Grid & Coordinates, State & Ownership (GameMap)
+**Depends on:** [Grid & Coordinates](01_grid_and_coordinates.md), [State & Ownership](02_state_and_ownership.md) (GameMap)
 
 ---
 

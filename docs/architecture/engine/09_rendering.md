@@ -1,6 +1,6 @@
 # Rendering
 
-**Depends on:** [State](../state) (world arrays + material table, the `gmap.<field>` interface, the `Simulation` facade), [Ray engine](./08_ray_engine.md) (per-channel `light_atten`, the `light_rgb` / `heat` / `smoke_glow` outputs, ACES tone-mapping).
+**Depends on:** [State & Ownership](02_state_and_ownership.md) (world arrays + material table, the `gmap.<field>` interface, the `Simulation` facade), [Ray engine](08_ray_engine.md) (per-channel `light_atten`, the `light_rgb` / `heat` / `smoke_glow` outputs, ACES tone-mapping).
 
 ---
 

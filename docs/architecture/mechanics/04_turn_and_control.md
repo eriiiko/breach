@@ -1,6 +1,6 @@
 # Turn System & Control
 
-**Depends on:** state
+**Depends on:** [State & Ownership](../engine/02_state_and_ownership.md)
 
 This chapter defines how time advances in Breach and how a player drives it. It
 covers the round/phase clock, the planning-then-execution rhythm, the

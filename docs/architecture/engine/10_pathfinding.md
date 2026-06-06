@@ -1,6 +1,6 @@
 # Pathfinding
 
-**Depends on:** Grid & Coordinates, Material System
+**Depends on:** [Grid & Coordinates](01_grid_and_coordinates.md), [Material System](03_material_system.md)
 
 Pathfinding answers one question: given a unit at one tile and a destination at
 another, what sequence of tiles takes it there without walking through walls?

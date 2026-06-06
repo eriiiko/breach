@@ -1,6 +1,6 @@
 # Electricity & Lightning Arcs
 
-**Depends on:** [Material System](03_material_system.md), Fluid & Water (future).
+**Depends on:** [Material System](03_material_system.md), [Fluid & Water](07_fluid_and_water.md) (future).
 
 Electricity in Breach is not a continuous field like atmosphere or heat. It is a
 **discrete, event-driven effect**: a single electrical arc that fires once, from one

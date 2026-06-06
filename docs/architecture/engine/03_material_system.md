@@ -1,6 +1,6 @@
 # Material System
 
-**Depends on:** [grid](01_state_and_ownership.md), [state](01_state_and_ownership.md)
+**Depends on:** [grid](01_grid_and_coordinates.md), [state](02_state_and_ownership.md)
 
 Every tile in Breach is made of a **material**: air, hull, wood, door, steel, glass.
 A material is not an object — it is a small integer id stored in the `material` grid, plus a
@@ -90,25 +90,50 @@ This is why there are no tile-objects: every "property of a tile" is a column of
 read through the `material` index. A C++/CUDA port keeps the same shape — the table is a few
 small constant arrays uploaded once, and the per-tile caches are array projections.
 
-## Occlusion comes from the table, not a wall flag
+## Interaction is per-system — a coefficient, not one flag
 
-Two predicates that an older design conflated are kept strictly separate:
+A tile has no single "is it solid" property. *What* a tile blocks depends on *which* system is
+asking, and the answers are independent: a **grill** stops a unit but passes light, gas, and fluid; a
+pane of **glass** stops a unit and passes light (dimmed); a **hull plate** stops everything. No one
+boolean can carry that, so each transport system reads **its own coefficient**, and the table holds
+one column (or set) per system:
 
-- **`is_wall` — occlusion.** The physics/light/smoke/vision boundary. A tile occludes if it
-  attenuates *any* light channel: `occludes = light_atten.max(axis=channel) > 0`. So hull,
-  wood, door, and steel (all `[1,1,1]`) occlude; air (`[0,0,0]`) does not; glass
-  (`[0.1,0.1,0.1]`) occludes for the static mask but only *dims* light in the march (it is a
-  wall you can see through). This is derived **purely from the table** — there is no hardcoded
-  `material in {HULL, WOOD, DOOR}` list anywhere, so a new opaque material occludes with zero
-  code changes.
-- **`is_passable` — walkability.** A separate predicate (`material in {AIR, DOOR}`) used by
-  movement, pathfinding, and combat. A **door is passable and also occludes** — it stops light
-  and smoke but lets units walk through. That duality is expressed by the table (`passable =
-  true`, `light_atten = [1,1,1]`), not by a special case.
+| System | Medium | Material coefficient(s) | a wall | **a unit** | a grill |
+|--------|--------|-------------------------|--------|------------|---------|
+| Light | ray | `light_atten` (RGB) | opaque | partial (shadow) | clear |
+| Vision | ray (= light) | aggregate of `light_atten` | blocks | blocks (cover) | clear |
+| Heat | ray | `heat_atten` / absorption | blocks | absorbs → ignites | clear |
+| Pressure | gas *wave* | `wave_reflect` / `wave_absorb` / transmit | reflect | absorb | transmit |
+| Wind + smoke | gas *flow* | permeability | impermeable | partial (slows) | permeable |
+| Fluid | liquid | permeability *(TBD)* | impermeable | *TBD* | permeable |
+| **Movement** | — | `passable` (boolean) | no | **no — hard block** | no |
+| *Electricity* | conduction | `conductivity` | low | high (attracts arcs) | metal: high |
 
-There is currently **no open/closed door state**: a door always occludes and is always
-passable. The dynamic door system (an open/closed bit that flips occlusion) is deferred; until
-it lands, both predicates treat every door identically.
+Read the **unit** column top to bottom: a unit is *partial* in every system — it dims light, soaks
+heat (and so catches fire), absorbs a shockwave, slows but does not seal smoke — with exactly **one**
+exception. **Movement** is the only interaction where a unit is a hard, binary blocker; it is the one
+boolean, expressed as `passable` (a cell a unit may occupy). Everything else is a coefficient.
+
+**`is_wall` is retired.** It used to mean "occludes" — derived from `light_atten > 0` — and three
+different systems leaned on that one accidental flag at once (the smoke/pressure boundary, the vision
+blocker, the wall hard-stop). Each now reads the coefficient it actually needs: light and vision →
+`light_atten`, the gas wave → the wave coefficients, gas flow → permeability, movement → `passable`.
+No system asks "is this a wall?" — it asks "how much does this stop *me*?"
+
+The door is why `passable` and the flow coefficients must stay separate: a **closed door** is
+impermeable to gas (it stops smoke *now*) yet `passable` (a unit traverses it — it opens). Two
+systems, two answers, one tile — a single boolean could never hold both. (There is currently no
+open/closed door state in code; a door is always passable and always opaque until the dynamic-door
+system lands.)
+
+### A unit is a mobile material patch
+
+Because every interaction is a coefficient, a unit needs no bespoke physics: it is **matter that
+moves**, carrying the same coefficient set a material does and writing it into the *dynamic* copy of
+each field every tick — exactly as the static material table fills the static fields. The shipped
+instance is light (next section); heat, the gas wave, and gas flow follow the same per-tick stamp as
+their solvers are built. The lone non-coefficient interaction, movement, is the hard `passable` stamp
+(a unit's footprint marks its cells un-enterable).
 
 ## Per-channel attenuation: static × dynamic
 
@@ -146,7 +171,11 @@ total_atten[channel] = material_atten[channel]  (static)
   aquarium could tint blue-green — per colour, for free.
 
 `stamp_units()` produces two outputs in one pass: `obstacles` (static walls + unit footprints,
-read by the wave and smoke physics) and `dyn_light_atten` (read by the ray march). The march
+read by the wave and smoke physics) and `dyn_light_atten` (read by the ray march). Stamping units
+into `obstacles` as **full boolean blockers is interim** — per the interaction model above, a unit
+should write *partial* gas coefficients (high pressure-absorption, reduced permeability) so a person
+slows smoke and soaks a blast without sealing a corridor; that upgrade is owed when the gas solvers
+move off the boolean boundary (see Implementation status). The march
 reads `dyn_light_atten` **read-only** — units occlude rays by being stamped into the field
 before the march, never by the kernel writing units. This keeps the march a deposit-only pass
 over a frozen world, which is what makes the eventual CUDA port (one thread per ray, read-only
@@ -247,6 +276,14 @@ They are listed here so the schema is understood as intentionally incomplete, no
   `Simulation`/PhysicsEngine step has not happened. This is a ray-engine concern, not a material
   concern, but it means the material attenuation is consumed by a render-time call today.
 - **Door open/closed state** — both predicates treat every door identically; no occlusion flip.
+- **Retire `is_wall`.** The cache still derives `is_wall` from `light_atten`, and the wave/smoke
+  solvers and `has_los` read it as a hard boundary. Per the interaction model `is_wall` is gone:
+  light/vision → `light_atten`, gas flow → a **permeability** column (not yet in the table), the gas
+  wave → the wave coefficients, movement → `passable`. Owed (shared with the Grid chapter).
+- **Units as partial gas occluders.** `stamp_units` writes unit footprints into `obstacles` as full
+  boolean blockers; the model calls for *partial* gas coefficients (pressure-absorption, reduced
+  permeability) so a unit impedes flow without sealing it — requires the gas solvers to read a
+  coefficient field instead of the boolean boundary.
 - **`heat_atten`, `conductivity`, `ignition_temp`, `wave_reflect`, `wave_absorb`, `blast_resist`
   columns** are stored but **consumed by nobody**. The temperature/conduction pass and the
   wave-solver boundary conditions (which currently use `is_wall` as a hard reflective wall) wire

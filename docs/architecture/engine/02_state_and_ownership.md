@@ -1,6 +1,6 @@
 # State & Ownership (GameMap)
 
-**Depends on:** grid
+**Depends on:** [Grid & Coordinates](01_grid_and_coordinates.md)
 
 This chapter defines how Breach represents the world's state, who owns it, and how
 that ownership survives the move of hot fields onto the GPU. It is the foundation

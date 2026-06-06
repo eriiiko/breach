@@ -1,6 +1,6 @@
 # ML & Training
 
-**Depends on:** Two-Layer Architecture (Simulation facade), World State & Materials, Atmosphere & Fire Physics, Ray Engine (light/heat), Turn System & Orders, Units & Combat.
+**Depends on:** [State & Ownership](../engine/02_state_and_ownership.md) (the `Simulation` facade), [Material System](../engine/03_material_system.md), [Atmosphere & Pressure](../engine/04_atmosphere_and_pressure.md), [Temperature & Fire](../engine/06_temperature_and_fire.md), [Ray Engine](../engine/08_ray_engine.md), [Turn & Control](../mechanics/04_turn_and_control.md), [Units & Entities](../mechanics/01_units_and_entities.md), [Combat & Weapons](../mechanics/03_combat_and_weapons.md).
 
 Breach is built so that a neural-network agent can learn to play it without a
 second, divergent implementation of the rules. The same headless,

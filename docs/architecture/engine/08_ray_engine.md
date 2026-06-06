@@ -1,6 +1,6 @@
 # Ray Engine
 
-**Depends on:** [Grid & Levels](../grid.md), [World State & Ownership](../state.md), [Material System](../materials.md)
+**Depends on:** [Grid & Coordinates](01_grid_and_coordinates.md), [World State & Ownership](02_state_and_ownership.md), [Material System](03_material_system.md)
 
 One DDA ray-march primitive serves every directional energy query in Breach — light,
 heat, vision, and energy weapons. The core is a **deposit-only accumulator over a

@@ -1,6 +1,6 @@
 # Combat & Weapons
 
-**Depends on:** [Units](../01_units.md), [Ray Engine](../engine/ray_engine.md)
+**Depends on:** [Units & Entities](01_units_and_entities.md), [Ray Engine](../engine/08_ray_engine.md)
 
 Combat in Breach is two cooperating layers. The first is **direct combat** —
 bullets, melee, line-of-sight — which is fast, serial, and resolved per tick
