@@ -4,11 +4,11 @@
 
 *Last updated: 2026-03-19*
 
-> **⚠️ PARTIALLY SUPERSEDED (2026-06-05).** Sections **4 (Material System)**, **5 (GameMap /
-> State)**, **6.6 (Temperature & Heat)**, and **7 (Raycasting)** are superseded by the per-system
-> chapters in [`docs/architecture/`](architecture/) (the reviewed rev.3 ray-engine spec). Where
-> this doc and those chapters disagree, **the chapters win.** The remaining sections (units, AI,
-> combat, pathfinding, turn system, etc.) are still current here.
+> **⚠️ FULLY SUPERSEDED (2026-06-06) — archived for reference.** This monolithic doc was split into
+> per-system chapters under `docs/architecture/` (engine / mechanics / ml, with `README.md` as the
+> index + status map): §1–2 → README, §3–14 → the engine & mechanics chapters, §15 →
+> `cuda_integration_plan.md`, §16 → `TODO.md`, §17 → `ml/`, §18 → the README index. Kept only as
+> historical reference — **the chapters are canon.**
 
 ---
 

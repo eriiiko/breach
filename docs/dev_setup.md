@@ -3,7 +3,7 @@
 *Everything needed to build and run Breach on a fresh Windows machine.*
 *Repeat these steps on each dev PC (Home Desktop, Work Desktop, Work Laptop).*
 
-*Last updated: 2026-03-17*
+*Last updated: 2026-06-06*
 
 ---
 
@@ -73,10 +73,11 @@ Install these from the Extensions panel (Ctrl+Shift+X):
 ## Step 5: Install Python dependencies
 
 ```bash
-C:/Users/steen/anaconda3/python.exe -m pip install pygame-ce
+C:/Users/steen/anaconda3/python.exe -m pip install raylib pytest
 ```
 
-(pygame-ce is the community edition, works on Python 3.11)
+- **raylib** provides the `pyray` module — the renderer (replaces the old pygame prototype).
+- **pytest** for the test suite. (numpy ships with Anaconda.)
 
 ---
 
@@ -96,8 +97,16 @@ This produces `breach_physics.pyd` in `cpp/build/Release/`.
 
 ```bash
 cd C:/Users/steen/projects/breach
-C:/Users/steen/anaconda3/python.exe game.py
+C:/Users/steen/anaconda3/python.exe main.py
 ```
+
+Run the tests (scope to `tests/` — a bare `pytest` tries to collect the vendored third-party
+`tools/` and fails on import):
+```bash
+C:/Users/steen/anaconda3/python.exe -m pytest tests/ -q
+```
+
+Lighting / visual tuning tool: `C:/Users/steen/anaconda3/python.exe tools/lighting_demo.py`
 
 ---
 
@@ -111,8 +120,13 @@ CMake should auto-detect MSVC. If not, run from a "Developer Command Prompt".
 Ensure pybind11 is installed in the same Python environment CMake uses.
 The CMakeLists.txt uses `find_package(pybind11)` which checks the active Python.
 
-### pygame import error
-On Python 3.14+, pygame doesn't build. Use Anaconda's Python 3.11 instead.
-On Home Desktop: `C:/Users/steen/anaconda3/python.exe`
-On Work Desktop: `C:/Users/steen/anaconda3/python.exe`
+### Wrong Python / missing modules (raylib, breach_physics)
+Use Anaconda's Python 3.11 — that's where `raylib` and the compiled `breach_physics` module live —
+not a bare system Python.
+On Home/Work Desktop: `C:/Users/steen/anaconda3/python.exe`
 On Laptop: `C:/Users/steen/miniconda3/python.exe`
+
+### pytest errors on collection
+Always scope to the project tests: `python -m pytest tests/`. A bare `pytest` from the repo root
+tries to import the vendored third-party `tools/` (ControlAR, IP-Adapter, …) and fails before it
+reaches the real tests.
