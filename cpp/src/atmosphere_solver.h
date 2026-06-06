@@ -53,6 +53,7 @@ public:
         const bool* obstacles,
         const bool* is_wall,
         const bool* is_vacuum,
+        const float* permeability,
         int h, int w,
         float dt
     ) const;

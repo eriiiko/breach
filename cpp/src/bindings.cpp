@@ -61,6 +61,7 @@ PYBIND11_MODULE(breach_physics, m) {
                         py::array_t<bool>  obstacles,
                         py::array_t<bool>  is_wall,
                         py::array_t<bool>  is_vacuum,
+                        py::array_t<float> permeability,
                         float dt) {
             auto [wp, h, w]   = get_2d(wave_p);
             auto [wv, h2, w2] = get_2d(wave_v);
@@ -71,11 +72,13 @@ PYBIND11_MODULE(breach_physics, m) {
             auto [obs, h7, w7] = get_2d_const(obstacles);
             auto [wl, h8, w8] = get_2d_const(is_wall);
             auto [vac, h9, w9] = get_2d_const(is_vacuum);
-            self.step(wp, wv, ws, atm, wx, wy, obs, wl, vac, h, w, dt);
+            auto [perm, h10, w10] = get_2d_const(permeability);
+            self.step(wp, wv, ws, atm, wx, wy, obs, wl, vac, perm, h, w, dt);
         }, py::arg("wave_p"), py::arg("wave_v"), py::arg("wave_source"),
            py::arg("atmosphere"),
            py::arg("wind_x"), py::arg("wind_y"),
            py::arg("obstacles"), py::arg("is_wall"), py::arg("is_vacuum"),
+           py::arg("permeability"),
            py::arg("dt"));
 
     // --- SmokeDynamics (uses precomputed wind from AtmosphereSolver) ---
@@ -92,6 +95,7 @@ PYBIND11_MODULE(breach_physics, m) {
                         py::array_t<bool>  obstacles,
                         py::array_t<bool>  is_wall,
                         py::array_t<bool>  is_vacuum,
+                        py::array_t<float> permeability,
                         float dt) {
             auto [sm, h, w] = get_2d(smoke);
             auto [wx, h2, w2] = get_2d_const(wind_x);
@@ -99,9 +103,11 @@ PYBIND11_MODULE(breach_physics, m) {
             auto [obs, h4, w4] = get_2d_const(obstacles);
             auto [wl, h5, w5] = get_2d_const(is_wall);
             auto [vac, h6, w6] = get_2d_const(is_vacuum);
-            self.step(sm, wx, wy, obs, wl, vac, h, w, dt);
+            auto [perm, h7, w7] = get_2d_const(permeability);
+            self.step(sm, wx, wy, obs, wl, vac, perm, h, w, dt);
         }, py::arg("smoke"), py::arg("wind_x"), py::arg("wind_y"),
            py::arg("obstacles"), py::arg("is_wall"), py::arg("is_vacuum"),
+           py::arg("permeability"),
            py::arg("dt"));
 
     // --- FireSimulation ---

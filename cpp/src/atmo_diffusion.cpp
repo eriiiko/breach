@@ -8,6 +8,7 @@ void AtmoDiffusion::step(
     const bool* obstacles,
     const bool* is_wall,
     const bool* is_vacuum,
+    const float* permeability,
     int h, int w,
     float sim_time
 ) const {
@@ -30,13 +31,18 @@ void AtmoDiffusion::step(
             for (int x = 0; x < w; ++x) {
                 const int i = row + x;
                 const float p = atmosphere[i];
+                const float perm_i = permeability[i];
 
-                float p_up    = (y > 0     && !obstacles[row_up + x])   ? atmosphere[row_up + x]   : p;
-                float p_down  = (y < h - 1 && !obstacles[row_down + x]) ? atmosphere[row_down + x] : p;
-                float p_left  = (x > 0     && !obstacles[row + x - 1])  ? atmosphere[row + x - 1]  : p;
-                float p_right = (x < w - 1 && !obstacles[row + x + 1])  ? atmosphere[row + x + 1]  : p;
+                // Face-permeability flux: face = min(perm[self], perm[n]);
+                // contribution += face*(field[n] - p). Bit-identical to the old
+                // obstacle mirror for perm∈{0,1}.
+                float lap_i = 0.0f;
+                if (y > 0)     { const int nb = row_up + x;   lap_i += std::min(perm_i, permeability[nb]) * (atmosphere[nb] - p); }
+                if (y < h - 1) { const int nb = row_down + x; lap_i += std::min(perm_i, permeability[nb]) * (atmosphere[nb] - p); }
+                if (x > 0)     { const int nb = row + x - 1;  lap_i += std::min(perm_i, permeability[nb]) * (atmosphere[nb] - p); }
+                if (x < w - 1) { const int nb = row + x + 1;  lap_i += std::min(perm_i, permeability[nb]) * (atmosphere[nb] - p); }
 
-                lap[i] = p_up + p_down + p_left + p_right - 4.0f * p;
+                lap[i] = lap_i;
             }
         }
 

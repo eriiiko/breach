@@ -110,6 +110,14 @@ class GameMap:
         # unchanged; the gas/smoke solver consuming it as a *continuous* field
         # (partial units/grills) lands in a later step (ch.04).
         self.permeability = np.ones((h, w), dtype=np.float32)
+        # Per-tile DYNAMIC gas/smoke permeability (ch.04 §3a): the live field
+        # the C++ flux gather actually reads, = static ``permeability`` (copy)
+        # with each living unit's footprint stamped to 0 (a unit fully blocks
+        # flow this step — identical to today's obstacle stamp). Rebuilt IN-PLACE
+        # each tick in ``stamp_units`` (never reassigned, so a C++ view of the
+        # buffer never goes stale). Away from units it equals the static field,
+        # so behaviour matches the pre-3a obstacle-mirror in unoccupied regions.
+        self.dyn_permeability = np.ones((h, w), dtype=np.float32)
         # Heat deposit buffer (ch.03 output / ch.04 §Fixed-point format): the
         # only SIM-affecting ray output. Q16.16 FIXED-POINT int32 — 16 integer
         # bits, 16 fractional bits, so 1.0 energy == 65536 raw counts (the C++
@@ -259,6 +267,11 @@ class GameMap:
         # IN-PLACE (no reassignment — keeps any C++ view valid). Units then
         # raise opacity per-channel below.
         self.dyn_light_atten[:] = self.light_atten
+        # Reset the dynamic permeability field to the static material baseline
+        # IN-PLACE (no reassignment — keeps any C++ view valid). Units then
+        # seal their footprint (permeability 0) below, identical to the
+        # obstacle stamp.
+        self.dyn_permeability[:] = self.permeability
         default_atten = (1.0, 1.0, 1.0)
         for u in units:
             if not u.alive:
@@ -269,6 +282,8 @@ class GameMap:
             for (tx, ty) in u.occupied_tiles():
                 if 0 <= ty < h and 0 <= tx < w:
                     self.obstacles[ty, tx] = True
+                    # Unit fully blocks flow this step (== obstacle stamp).
+                    self.dyn_permeability[ty, tx] = 0.0
                     # Per-channel MAX: opacity can only increase.
                     cell = self.dyn_light_atten[ty, tx]
                     cell[0] = cell[0] if cell[0] >= u_atten[0] else u_atten[0]

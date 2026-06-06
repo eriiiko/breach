@@ -19,6 +19,7 @@ void AtmosphereSolver::step(
     const bool* obstacles,
     const bool* is_wall,
     const bool* is_vacuum,
+    const float* permeability,
     int h, int w,
     float dt
 ) const {
@@ -47,16 +48,22 @@ void AtmosphereSolver::step(
         for (int x = 0; x < w; ++x) {
             const int i = row + x;
             const float p = wave_p[i];
+            const float perm_i = permeability[i];
 
-            // Neumann BC: obstacle neighbors reflect.
-            // Border vacuum is also obstacle → reflected (sealed).
-            // Breach vacuum is NOT obstacle → waves propagate into it (correct).
-            float p_up    = (y > 0     && !obstacles[row_up + x])   ? wave_p[row_up + x]   : p;
-            float p_down  = (y < h - 1 && !obstacles[row_down + x]) ? wave_p[row_down + x] : p;
-            float p_left  = (x > 0     && !obstacles[row + x - 1])  ? wave_p[row + x - 1]  : p;
-            float p_right = (x < w - 1 && !obstacles[row + x + 1])  ? wave_p[row + x + 1]  : p;
+            // Face-permeability flux: face = min(perm[self], perm[n]); the
+            // contribution is face*(field[n] - p). For perm∈{0,1} this is
+            // bit-identical to the old obstacle mirror: face=0 (a unit/wall
+            // neighbor, perm 0) → no flux, exactly like the mirror's p_n=p
+            // zero term; face=1 (open neighbor) → field[n]-p, exactly like a
+            // non-obstacle neighbor. Border vacuum is sealed (perm 0), breach
+            // vacuum is open (perm 1) — waves propagate into it, as before.
+            float lap_i = 0.0f;
+            if (y > 0)     { const int n = row_up + x;   lap_i += std::min(perm_i, permeability[n]) * (wave_p[n] - p); }
+            if (y < h - 1) { const int n = row_down + x; lap_i += std::min(perm_i, permeability[n]) * (wave_p[n] - p); }
+            if (x > 0)     { const int n = row + x - 1;  lap_i += std::min(perm_i, permeability[n]) * (wave_p[n] - p); }
+            if (x < w - 1) { const int n = row + x + 1;  lap_i += std::min(perm_i, permeability[n]) * (wave_p[n] - p); }
 
-            lap[i] = p_up + p_down + p_left + p_right - 4.0f * p;
+            lap[i] = lap_i;
         }
     }
 
@@ -110,9 +117,6 @@ void AtmosphereSolver::step(
         std::vector<float> rhs(n);
         for (int i = 0; i < n; ++i) rhs[i] = atmosphere[i];
 
-        const float diag = 1.0f + 4.0f * mu;
-        const float inv_diag = 1.0f / diag;
-
         for (int iter = 0; iter < gs_iters; ++iter) {
             // Red-black Gauss-Seidel: two sweeps per iteration
             for (int color = 0; color < 2; ++color) {
@@ -127,20 +131,30 @@ void AtmosphereSolver::step(
                         // Skip vacuum (handled by relaxation BC below)
                         if (is_vacuum[i]) continue;
 
-                        // Gather neighbors with Neumann BC
-                        // Obstacles and walls reflect. Vacuum is NOT reflected here —
-                        // air should diffuse toward exposed breach vacuum tiles.
-                        // (The sealed border is vacuum+obstacle, which IS reflected.)
-                        float a_up    = (y > 0     && !obstacles[(y-1)*w+x] && !is_wall[(y-1)*w+x])
-                                        ? atmosphere[(y-1)*w+x] : atmosphere[i];
-                        float a_down  = (y < h-1   && !obstacles[(y+1)*w+x] && !is_wall[(y+1)*w+x])
-                                        ? atmosphere[(y+1)*w+x] : atmosphere[i];
-                        float a_left  = (x > 0     && !obstacles[row+x-1]   && !is_wall[row+x-1])
-                                        ? atmosphere[row+x-1]   : atmosphere[i];
-                        float a_right = (x < w-1   && !obstacles[row+x+1]   && !is_wall[row+x+1])
-                                        ? atmosphere[row+x+1]   : atmosphere[i];
+                        // Gather neighbors with face-permeability weighting.
+                        // face = min(perm[self], perm[neighbor]); the implicit
+                        // operator is (I - mu*Σ face*(atm_n - atm_i)). For
+                        // perm∈{0,1} this is bit-identical to the old Neumann
+                        // mirror: an open neighbor (face=1) contributes mu*atm_n
+                        // and 1 to the diagonal weight (== the old fixed 4mu with
+                        // mirrored blocked terms cancelling), a blocked neighbor
+                        // (face=0) contributes nothing — exactly the old reflect.
+                        // Vacuum is NOT blocked here (perm 1) — air diffuses
+                        // toward exposed breach vacuum, as before. (The sealed
+                        // border is vacuum+wall, perm 0, which IS blocked.)
+                        const float perm_i = permeability[i];
+                        float w_up    = (y > 0)   ? std::min(perm_i, permeability[(y-1)*w+x]) : 0.0f;
+                        float w_down  = (y < h-1) ? std::min(perm_i, permeability[(y+1)*w+x]) : 0.0f;
+                        float w_left  = (x > 0)   ? std::min(perm_i, permeability[row+x-1])   : 0.0f;
+                        float w_right = (x < w-1) ? std::min(perm_i, permeability[row+x+1])   : 0.0f;
 
-                        atmosphere[i] = (rhs[i] + mu * (a_up + a_down + a_left + a_right)) * inv_diag;
+                        float nb = w_up   * (y > 0   ? atmosphere[(y-1)*w+x] : 0.0f)
+                                 + w_down * (y < h-1 ? atmosphere[(y+1)*w+x] : 0.0f)
+                                 + w_left * (x > 0   ? atmosphere[row+x-1]   : 0.0f)
+                                 + w_right* (x < w-1 ? atmosphere[row+x+1]   : 0.0f);
+                        float wsum = w_up + w_down + w_left + w_right;
+
+                        atmosphere[i] = (rhs[i] + mu * nb) / (1.0f + mu * wsum);
                     }
                 }
             }
@@ -225,13 +239,26 @@ void AtmosphereSolver::step(
             // Total pressure for gradient
             auto total = [&](int idx) { return atmosphere[idx] + wave_p[idx]; };
             float p_here = total(i);
+            const float perm_i = permeability[i];
 
-            float p_left  = (x > 0     && !obstacles[row+x-1])  ? total(row+x-1) : p_here;
-            float p_right = (x < w-1   && !obstacles[row+x+1])  ? total(row+x+1) : p_here;
-            int rup       = (y > 0)     ? (y-1)*w : row;
-            int rdn       = (y < h-1)   ? (y+1)*w : row;
-            float p_up    = (!obstacles[rup+x])                  ? total(rup+x)   : p_here;
-            float p_down  = (!obstacles[rdn+x])                  ? total(rdn+x)   : p_here;
+            // Face-permeability gradient: p_side = p_here + face*(total(n) -
+            // p_here). For perm∈{0,1} this is bit-identical to the old mirror
+            // (face=0 → p_here, exactly the reflect; face=1 → total(n)).
+            // Indices clamp to self when out of bounds (face is 0 there, so
+            // the term vanishes — but the read must stay in bounds).
+            int il = (x > 0)   ? row + x - 1 : i;
+            int ir = (x < w-1) ? row + x + 1 : i;
+            int iu = (y > 0)   ? (y-1)*w + x : i;
+            int id = (y < h-1) ? (y+1)*w + x : i;
+            float f_left  = (x > 0)   ? std::min(perm_i, permeability[il]) : 0.0f;
+            float f_right = (x < w-1) ? std::min(perm_i, permeability[ir]) : 0.0f;
+            float f_up    = (y > 0)   ? std::min(perm_i, permeability[iu]) : 0.0f;
+            float f_down  = (y < h-1) ? std::min(perm_i, permeability[id]) : 0.0f;
+
+            float p_left  = p_here + f_left  * (total(il) - p_here);
+            float p_right = p_here + f_right * (total(ir) - p_here);
+            float p_up    = p_here + f_up    * (total(iu) - p_here);
+            float p_down  = p_here + f_down  * (total(id) - p_here);
 
             // Wind = -grad(p): air flows from high to low pressure
             wind_x[i] = -(p_right - p_left) * 0.5f;

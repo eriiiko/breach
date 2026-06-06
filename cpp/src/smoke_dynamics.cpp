@@ -3,13 +3,20 @@
 #include <cmath>
 #include <vector>
 
-// Helper: safe neighbor access with Neumann BC
-static inline float neighbor(const float* f, const bool* obs, int y, int x,
+// Helper: face-permeability neighbour value with Neumann fallback.
+// Returns f[self] + face*(f[neighbour] - f[self]) where
+// face = min(perm[self], perm[neighbour]). For perm∈{0,1} this is
+// bit-identical to the old obstacle mirror: a sealed neighbour (face=0,
+// perm 0 == old obstacle) returns f[self] (the reflect); an open neighbour
+// (face=1) returns f[neighbour]. Out-of-bounds also reflects (returns f[self]).
+static inline float neighbor(const float* f, const float* perm, int y, int x,
                               int dy, int dx, int h, int w) {
+    int self_i = y * w + x;
     int ny = y + dy, nx = x + dx;
-    if (ny < 0 || ny >= h || nx < 0 || nx >= w) return f[y * w + x];
+    if (ny < 0 || ny >= h || nx < 0 || nx >= w) return f[self_i];
     int ni = ny * w + nx;
-    return obs[ni] ? f[y * w + x] : f[ni];
+    float face = std::min(perm[self_i], perm[ni]);
+    return f[self_i] + face * (f[ni] - f[self_i]);
 }
 
 void SmokeDynamics::step(
@@ -19,6 +26,7 @@ void SmokeDynamics::step(
     const bool* obstacles,
     const bool* is_wall,
     const bool* is_vacuum,
+    const float* permeability,
     int h, int w,
     float dt
 ) const {
@@ -34,10 +42,10 @@ void SmokeDynamics::step(
         for (int x = 0; x < w; ++x) {
             int i = y * w + x;
             float s = smoke[i];
-            float s_up    = neighbor(smoke, obstacles, y, x, -1,  0, h, w);
-            float s_down  = neighbor(smoke, obstacles, y, x,  1,  0, h, w);
-            float s_left  = neighbor(smoke, obstacles, y, x,  0, -1, h, w);
-            float s_right = neighbor(smoke, obstacles, y, x,  0,  1, h, w);
+            float s_up    = neighbor(smoke, permeability, y, x, -1,  0, h, w);
+            float s_down  = neighbor(smoke, permeability, y, x,  1,  0, h, w);
+            float s_left  = neighbor(smoke, permeability, y, x,  0, -1, h, w);
+            float s_right = neighbor(smoke, permeability, y, x,  0,  1, h, w);
             lap[i] = s_up + s_down + s_left + s_right - 4.0f * s;
         }
     }
@@ -56,10 +64,10 @@ void SmokeDynamics::step(
             int i = y * w + x;
             if (obstacles[i] || is_wall[i] || is_vacuum[i]) continue;
 
-            float ds_dx = (neighbor(smoke, obstacles, y, x, 0,  1, h, w) -
-                           neighbor(smoke, obstacles, y, x, 0, -1, h, w)) * 0.5f;
-            float ds_dy = (neighbor(smoke, obstacles, y, x,  1, 0, h, w) -
-                           neighbor(smoke, obstacles, y, x, -1, 0, h, w)) * 0.5f;
+            float ds_dx = (neighbor(smoke, permeability, y, x, 0,  1, h, w) -
+                           neighbor(smoke, permeability, y, x, 0, -1, h, w)) * 0.5f;
+            float ds_dy = (neighbor(smoke, permeability, y, x,  1, 0, h, w) -
+                           neighbor(smoke, permeability, y, x, -1, 0, h, w)) * 0.5f;
 
             smoke[i] -= advection_rate * actual_dt * (wind_x[i] * ds_dx + wind_y[i] * ds_dy);
         }
