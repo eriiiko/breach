@@ -239,29 +239,48 @@ class GameMap:
     # Per-tick rebuild: units act as walls for all physics
     # ------------------------------------------------------------------
     def stamp_units(self, units):
-        """Rebuild ``obstacles`` = static walls + living unit footprints, and
-        in the SAME pass rebuild the dynamic per-channel light-attenuation
-        field ``dyn_light_atten`` = static material attenuation combined with
-        each living unit's opacity (ch.03 §units, ch.02 §static×dynamic).
+        """Rebuild ``obstacles`` = static walls (units are NO LONGER stamped
+        here), and in the SAME pass rebuild the dynamic per-channel
+        light-attenuation field ``dyn_light_atten`` and the dynamic gas/smoke
+        permeability field ``dyn_permeability`` from each living unit's
+        footprint (ch.04 §3b, ch.03 §units, ch.02 §static×dynamic).
 
-        Two outputs of one pass (not a separate ``block_light`` array): the
-        wave/smoke physics read ``obstacles``; the ray march reads
-        ``dyn_light_atten`` read-only. Because the attenuation field is RGB, a
-        unit can occlude *per colour* — its opacity comes from an optional
-        ``unit.light_atten`` (default ``[1,1,1]`` = full block → a shadow), so
-        a future creature can pass green, an aquarium can tint, etc. Static and
-        unit contributions combine via per-channel MAX (an occluder can only
-        ADD opacity, never remove it).
+        Three outputs of one pass:
+
+        * ``obstacles`` = solid set (``permeability == 0``), i.e. WALLS ONLY.
+          The C++ hard-zeroing BCs (zero pressure / Neumann skip) key off
+          ``obstacles``/``is_wall``, so walls keep their hard wall behaviour
+          and a unit is no longer force-zeroed — gas/pressure may exist in a
+          unit's cell.
+        * ``dyn_permeability`` = static ``permeability`` with each living unit's
+          footprint set to a PARTIAL value ``unit_perm`` (ch.04 §3b). A unit is
+          a *soft, porous body*: smoke/air seep past it (slowed by the
+          ``face = min(perm)`` flux weighting), not perfectly blocked. The value
+          comes from an optional per-unit ``unit.permeability`` hook, defaulting
+          to ``CFG.physics.unit_permeability`` (0.5 = "slows flow, doesn't
+          seal"). 0 would restore the old hard wall; 1 would be invisible.
+        * ``dyn_light_atten`` = static material attenuation combined per-channel
+          via MAX with each living unit's opacity (UNCHANGED — units still cast
+          solid shadows). Because the field is RGB a unit can occlude *per
+          colour* via an optional ``unit.light_atten`` (default ``[1,1,1]`` =
+          full block → a shadow). An occluder can only ADD opacity, never remove
+          it.
 
         Uses ``unit.occupied_tiles()`` so the footprint contract (spec §6)
         is the only dependency — no assumption about storage representation.
-        When tiles transition from blocked to free (unit moved away or
-        died), fill them with the neighbor mean of ``atmosphere`` to
-        avoid spurious vacuum pulses.
+
+        When *wall* tiles transition from blocked to free (wall destroyed),
+        fill them with the neighbor mean of ``atmosphere`` to avoid a spurious
+        vacuum pulse. ``freed`` keys off ``prev_obstacles & ~obstacles``, which
+        now only changes on wall destruction (units are no longer in
+        ``obstacles``), so a moving/dying unit triggers no fill — correct, since
+        a unit no longer zeros its cell's atmosphere.
         """
         h, w = self._h, self._w
         prev_obstacles = self.obstacles
-        # Base = solid tiles (permeability == 0); units painted on below.
+        # Base = solid tiles (permeability == 0) = WALLS ONLY. Units are no
+        # longer painted into ``obstacles`` (3b): they are soft bodies, not
+        # hard walls, so the C++ hard-zeroing BCs must not fire on them.
         self.obstacles = self.permeability <= 0.0
         # Reset the dynamic attenuation field to the static material baseline
         # IN-PLACE (no reassignment — keeps any C++ view valid). Units then
@@ -269,21 +288,24 @@ class GameMap:
         self.dyn_light_atten[:] = self.light_atten
         # Reset the dynamic permeability field to the static material baseline
         # IN-PLACE (no reassignment — keeps any C++ view valid). Units then
-        # seal their footprint (permeability 0) below, identical to the
-        # obstacle stamp.
+        # lower their footprint to a PARTIAL value below (3b: porous body).
         self.dyn_permeability[:] = self.permeability
         default_atten = (1.0, 1.0, 1.0)
+        default_perm = float(getattr(CFG.physics, "unit_permeability", 0.5))
         for u in units:
             if not u.alive:
                 continue
             # Per-unit opacity hook: a unit may declare ``light_atten`` (RGB)
             # to occlude per colour; default is fully opaque (a shadow).
             u_atten = getattr(u, "light_atten", default_atten)
+            # Per-unit permeability hook (mirrors light_atten): a unit may
+            # declare ``permeability`` (e.g. a denser/looser body); default is
+            # the config value (porous, slows flow but does not seal).
+            u_perm = float(getattr(u, "permeability", default_perm))
             for (tx, ty) in u.occupied_tiles():
                 if 0 <= ty < h and 0 <= tx < w:
-                    self.obstacles[ty, tx] = True
-                    # Unit fully blocks flow this step (== obstacle stamp).
-                    self.dyn_permeability[ty, tx] = 0.0
+                    # Unit is a soft body: partial permeability, NOT an obstacle.
+                    self.dyn_permeability[ty, tx] = u_perm
                     # Per-channel MAX: opacity can only increase.
                     cell = self.dyn_light_atten[ty, tx]
                     cell[0] = cell[0] if cell[0] >= u_atten[0] else u_atten[0]
