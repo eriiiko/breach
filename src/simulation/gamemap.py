@@ -102,6 +102,14 @@ class GameMap:
         # Per-tile thermal conductivity (table-derived). Allocated + populated
         # now; consumed later by the temperature/conduction pass (ch.04).
         self.conductivity = np.zeros((h, w), dtype=np.float32)
+        # Per-tile gas/smoke PERMEABILITY (table-derived): 0 = sealed wall,
+        # 1 = open air, partial = porous. The physics-solid boundary derives
+        # from this (a tile is solid to flow iff permeability == 0), replacing
+        # the old occlusion-flag (is_wall) as the gas/wave boundary source. For
+        # the current materials it equals the is_wall set, so behaviour is
+        # unchanged; the gas/smoke solver consuming it as a *continuous* field
+        # (partial units/grills) lands in a later step (ch.04).
+        self.permeability = np.ones((h, w), dtype=np.float32)
         # Heat deposit buffer (ch.03 output / ch.04 §Fixed-point format): the
         # only SIM-affecting ray output. Q16.16 FIXED-POINT int32 — 16 integer
         # bits, 16 fractional bits, so 1.0 energy == 65536 raw counts (the C++
@@ -162,14 +170,18 @@ class GameMap:
         self.flammable = tbl.flammable[m]
         self.wall_hp = tbl.hp[m].astype(np.float32, copy=True)
         self.conductivity = tbl.conductivity[m].astype(np.float32, copy=True)
+        # Gas/smoke permeability projected onto the grid (0 sealed, 1 open).
+        self.permeability = tbl.permeability[m].astype(np.float32, copy=True)
 
         # Atmosphere: 1.0 in interior air, 0.0 at walls and vacuum.
         self.atmosphere = np.where(
             self.is_wall | self.is_vacuum, 0.0, 1.0
         ).astype(np.float32)
 
-        # Obstacles == walls until stamp_units paints unit footprints over it.
-        self.obstacles = self.is_wall.copy()
+        # Obstacles (the physics solid boundary) == solid tiles (permeability
+        # == 0) until stamp_units paints unit footprints over it. Sourced from
+        # permeability, not the occlusion flag, so flow and optics can diverge.
+        self.obstacles = self.permeability <= 0.0
 
     # ------------------------------------------------------------------
     # Incremental cache patch (single structural-edit seam — ch.02 review #10)
@@ -194,6 +206,7 @@ class GameMap:
         self.flammable[fy, fx] = bool(tbl.flammable[mat_id])
         self.wall_hp[fy, fx] = float(tbl.hp[mat_id])
         self.conductivity[fy, fx] = float(tbl.conductivity[mat_id])
+        self.permeability[fy, fx] = float(tbl.permeability[mat_id])
 
     # ------------------------------------------------------------------
     # Config hot-reload: rebuild the table + static caches (ch.02 §14)
@@ -240,7 +253,8 @@ class GameMap:
         """
         h, w = self._h, self._w
         prev_obstacles = self.obstacles
-        self.obstacles = self.is_wall.copy()
+        # Base = solid tiles (permeability == 0); units painted on below.
+        self.obstacles = self.permeability <= 0.0
         # Reset the dynamic attenuation field to the static material baseline
         # IN-PLACE (no reassignment — keeps any C++ view valid). Units then
         # raise opacity per-channel below.

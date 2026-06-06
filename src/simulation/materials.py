@@ -103,6 +103,22 @@ class MaterialTable:
             atten[idx] = arr
         self.light_atten = atten
 
+        # permeability: gas + smoke flow coefficient (0 = sealed wall, 1 = open
+        # air; partial = a leaky/porous material). OPTIONAL column — if a
+        # material omits it, derive a behaviour-preserving default: sealed where
+        # the material occludes light, open otherwise (== the legacy is_wall
+        # set). Config may set it explicitly to decouple flow from optics — e.g.
+        # a grill is opaque-ish to nothing but highly permeable, glass is opaque
+        # to flow but clear to light. Consumed by the gas/smoke boundary
+        # (ch.02/03/04); see docs/architecture/engine/03_material_system.md.
+        occludes_per_id = self.light_atten.max(axis=1) > 0.0
+        perm = []
+        for idx, (row, name) in enumerate(zip(rows, self.names)):
+            val = self._get_field_opt(row, "permeability")
+            perm.append(float(val) if val is not None
+                        else (0.0 if occludes_per_id[idx] else 1.0))
+        self.permeability = np.array(perm, dtype=np.float32)
+
     # -- accessors -------------------------------------------------------
     @staticmethod
     def _get_row(cfg, name):
@@ -123,6 +139,17 @@ class MaterialTable:
         if not hasattr(row, col):
             raise KeyError(f"materials.{mat_name} missing column '{col}'")
         return getattr(row, col)
+
+    @staticmethod
+    def _get_field_opt(row, col):
+        """Like ``_get_field`` but returns ``None`` for an absent column.
+
+        Used for *optional* columns (e.g. ``permeability``) that carry a
+        derived default when omitted, so existing configs need no edit.
+        """
+        if isinstance(row, dict):
+            return row.get(col)
+        return getattr(row, col, None)
 
     @classmethod
     def from_config(cls, cfg=None):

@@ -145,6 +145,22 @@ def test_on_tile_changed_patches_all_caches_after_destroy():
     print("OK: on_tile_changed_patches_all_caches_after_destroy")
 
 
+def test_permeability_defaults_to_solid_set():
+    """permeability is sealed (0) exactly where a tile occludes today and open
+    (1) elsewhere, so the physics `obstacles` boundary == the legacy is_wall
+    set — behaviour-preserving while flow now sources from permeability."""
+    tbl = MaterialTable.from_config(CFG)
+    assert tbl.permeability[MAT_AIR] == 1.0, "air must be open"
+    for mid in (MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_STEEL, MAT_GLASS):
+        assert tbl.permeability[mid] == 0.0, f"material {mid} must be sealed"
+    g = GameMap(load_level("unhcr_vessel"))
+    # obstacles base (before any unit stamp) derives from permeability and must
+    # equal the occlusion set for the current materials.
+    assert np.array_equal(g.obstacles, g.is_wall), "obstacles != solid set"
+    assert np.array_equal((g.permeability <= 0.0), g.is_wall)
+    print("OK: permeability_defaults_to_solid_set")
+
+
 def test_on_tile_changed_direct_patch():
     """Directly editing material + calling on_tile_changed updates caches."""
     g = GameMap(load_level("unhcr_vessel"))
@@ -167,5 +183,6 @@ if __name__ == "__main__":
     test_table_missing_material_raises()
     test_caches_match_table()
     test_on_tile_changed_patches_all_caches_after_destroy()
+    test_permeability_defaults_to_solid_set()
     test_on_tile_changed_direct_patch()
     print("\nAll material tests passed.")
