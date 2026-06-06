@@ -57,6 +57,12 @@ wave speed, and the CFL-bounded `dt` are all functions of `dx = tile_size_m`; a 
 This is the substance of "variable tile size" — the knob only *means* anything once the constants
 follow it.
 
+The same caveat reaches **gameplay** quantities expressed in tiles. A unit speed of "one tile every
+N ticks" is really a physical speed of `tile_size_m · (ticks_per_s) / N`, so it is just as
+resolution-dependent as a diffusion rate: speeds — and any tiles-per-tick rate — are defined in m/s
+and converted through `tile_size_m`, never frozen as raw tiles. Where that conversion lives for units
+is the Units chapter's call.
+
 Grid **dimensions** likewise come from the level: `GameMap` allocates every field at the tilemap
 CSV's `(h, w)` (the test vessel is 120 × 75 tiles = 40 m × 25 m). There are no
 `map_w`/`map_h`/`fine_w`/`fine_h` config knobs — those belonged to the dead dual-grid.
