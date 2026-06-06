@@ -3,6 +3,13 @@
 _Created: 2026-06-06 · **Temporary working doc** — delete once every design doc is folded into the
 `docs/architecture/` chapters and the originals are removed._
 
+> **✅ EXECUTED (2026-06-06).** The consolidation ran via agent waves — the canon now lives as
+> per-system chapters in `engine/` · `mechanics/` · `ml/` (see **[README.md](README.md)** for the
+> index + status table). The old `01–05` chapters and several source docs referenced below have been
+> **archived**; their content was regenerated/folded into the chapters, so links here to those moved
+> files are stale by design. This file is retained only as a record of the remaining loose ends
+> (the archive sweep + the *keep-until* / *refresh* / *content* docs); delete it once those land.
+
 **Purpose:** reorganize the scattered design docs into the new **one-file-per-system** canon
 (`docs/architecture/`). Read + fold in **dependency order (foundation first)**, ticking each off.
 

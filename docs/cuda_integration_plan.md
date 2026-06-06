@@ -208,7 +208,9 @@ The current C++ code exposes separate classes to Python (`AtmosphereSolver`,
 `SmokeDynamics`, `FireSimulation`, `Raycaster`). Before CUDA migration, unify
 these into a single `PhysicsEngine` class:
 
-- **Owns all shared grids**: atmosphere, wave_p, velocity, smoke, fuel, fire,
+- **Holds GameMap's grids** (GameMap is the logical owner via the `gmap.<field>` interface — see
+  `docs/architecture/engine/02_state_and_ownership.md`; the hot fields become GPU-resident here):
+  atmosphere, wave_p, velocity, smoke, fuel, fire,
   temperature, light. Allocated once, reused across solvers.
 - **Single `step(dt)` entry point**: orchestrates the correct update order
   (atmosphere → wind → smoke/fuel advection → fire → raycaster) so Python

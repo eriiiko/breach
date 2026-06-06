@@ -1,67 +1,120 @@
-# Breach Architecture — Spec Chapters
+# Breach — Architecture
 
-_Created: 2026-06-05 · Status: **DRAFT rev.3 — two review rounds applied; build-ready pending Erik's final sign-off.**_
+The canonical architecture: **one focused design document per system**, grouped into
+**engine** (the deterministic world), **mechanics** (game logic on the engine), and **ml**.
+Each chapter declares the chapters it **depends on** and ends with an honest
+**implementation-status** section. Process artifacts (reviews, patch records, research) live
+outside this folder and are archived once their work lands.
 
-This folder is the canonical architecture, **one focused file per system**, replacing the
-monolithic `docs/architecture.md` (which is being retired chapter-by-chapter). Each chapter
-declares the chapters it **depends on** at the top.
+---
 
-These chapters consolidate the **ray-engine design reconciliation** (June 2026) — 18
-cross-doc conflicts resolved, recorded in `docs/ray_engine_reconciliation.md`. That tracker
-plus the stray drafts (`ray_engine_design.md`, `implementation_plan_radiation_temperature.md`)
-are **superseded by these chapters and will be deleted once this draft passes review** — do
-not delete them yet.
+## 1. Design philosophy
 
-## Chapters
+These principles govern every design decision. They are non-negotiable.
 
-| # | Chapter | Covers | Depends on |
-|---|---------|--------|-----------|
-| 01 | [State & Ownership](01_state_and_ownership.md) | who owns world state; GPU-residency model | — |
-| 02 | [Material System](02_material_system.md) | the material-property table; per-channel attenuation | 01 |
-| 03 | [Ray Engine](03_ray_engine.md) | the DDA raycaster: light + heat + vision + weapons | 01, 02 |
-| 04 | [Temperature & Heat](04_temperature_and_heat.md) | conduction, ignition, fixed-point determinism | 01, 02, 03 |
-| 05 | [Lighting & Render](05_lighting_and_render.md) | buffers → pixels; shader; normal maps | 03 |
+- **Systems, not scripts.** Every mechanic is a system interacting with others through shared
+  fields. No special-case code for specific scenarios — an `if` for one scenario means you're
+  doing it wrong.
+- **Emergent complexity from simple rules.** Explosion breaks hull → atmosphere vents → smoke is
+  sucked out → fire starves near the breach. Zero scripting — it falls out of systems reading and
+  writing shared fields.
+- **Full physical simulation.** While something is happening, every in-game second is fully
+  simulated (no "simulate a fraction to save compute"). Skipping simulation when *nothing* is
+  happening is fine — that's smart, not cheating.
+- **Game time = real time.** One in-game second = one real second during execution; slow-motion is
+  purely aesthetic (the sim still runs fully).
+- **Data-driven parameters.** All tunable values live in `config.toml`, not source — enabling
+  hot-reload and iteration without recompilation.
+- **Prototype in Python, ship in C++.** Python+numpy for rapid iteration; C++ (via pybind11,
+  shared memory) for performance. The architecture works in both; the port is incremental, one
+  system at a time.
+- **Neural-network-compatible.** No decision forecloses training an NN agent: grid state maps to
+  CNN feature planes, and clean serialization + headless simulation serve that goal.
 
-## The spine (one paragraph)
+---
 
-**Python/`GameMap` owns world state behind a `gmap.<field>` interface; C++ owns the math; the
-GPU owns the field *memory* when CUDA lands.** World state is **numerical arrays + a
-material-property table** (no tile-objects). The **ray engine is physics** — a deposit-only
-DDA marcher over a read-only world that writes buffers (`light_rgb`, `light_dir`, `heat`,
-`smoke_glow`); the **renderer is a downstream consumer** of those buffers. **Determinism**
-is preserved by fixed-point integers exactly where a value crosses a gameplay threshold
-(heat, temperature), float everywhere render-only. Everything is shaped to port to CUDA
-unchanged: one-thread-per-ray, read-only world, `atomicAdd` deposits, no in-kernel forking.
+## 2. System overview — two layers
 
-**Why a "ray engine" lives in a *simulation* spec:** in Breach you made light *physical* — rays
-carry heat that ignites fire and melts walls. Once light has gameplay consequences, *computing*
-it is a simulation task, so the raycaster moves out of the renderer into the sim and the renderer
-becomes a pure read-only consumer of a small **summed** buffer set. Render reads sim; sim never
-reads render. (Full rationale: ch.03 §"Why the raycaster is simulation".)
+**Simulation (the engine).** Self-contained, **headless-capable**, deterministic; owns all rules
+and state; depends on no game engine. Interface: `get_state()` (read-only world snapshot —
+**numerical arrays + a material-property table**, not objects), `apply_action(action)`, `step()`,
+`reset(seed)`. This is also the RL environment interface (see `ml/01_ml_and_training.md`).
 
-## Principles
+**Presentation (the renderer).** pyray reads sim state each frame and draws it; it captures input,
+translates it to actions, and forwards them to the simulation. It **never mutates game state**.
+
+```
+            config.toml
+                │
+            GameMap  ── world state: numerical arrays + material table (numpy now, GPU-resident later)
+                │       the single gmap.<field> interface every system reads/writes
+   ┌─────┬──────┼───────┬───────┬────────┐
+ atmosphere  smoke   fire   temperature  …      (engine physics, on shared fields)
+   └─────┴──────┼───────┴───────┴────────┘
+            Ray engine  ── light (RGB) + heat + vision + energy, deposit-only over the read-only world
+                │
+            Renderer (pyray)  ── reads buffers → shader → screen
+```
+
+Enables: headless self-play for NN training at scale, parallel sim/render development, and testing
+without a renderer.
+
+---
+
+## 3. Chapters
+
+Legend: ✅ implemented · ⚠️ partial (foundation built, advanced parts designed) · 🧪 prototype-only · 📝 design-only
+
+### Engine — the deterministic world (read in order; each depends on the ones above)
+| # | Chapter | Status |
+|---|---------|--------|
+| 01 | [Grid & coordinates](engine/01_grid_and_coordinates.md) | ✅ |
+| 02 | [State & ownership (GameMap)](engine/02_state_and_ownership.md) | ⚠️ |
+| 03 | [Material system](engine/03_material_system.md) | ✅ |
+| 04 | [Atmosphere & pressure](engine/04_atmosphere_and_pressure.md) | ✅ |
+| 05 | [Smoke](engine/05_smoke.md) | ✅ |
+| 06 | [Temperature & fire](engine/06_temperature_and_fire.md) | ⚠️ (fire built, temperature designed) |
+| 07 | [Fluid & water](engine/07_fluid_and_water.md) | 🧪 |
+| 08 | [Ray engine](engine/08_ray_engine.md) | ⚠️ (Tier-1 shipped) |
+| 09 | [Rendering](engine/09_rendering.md) | ✅ |
+| 10 | [Pathfinding](engine/10_pathfinding.md) | ⚠️ (A* built; temporal A* unused) |
+| 11 | [Electricity / lightning](engine/11_electricity.md) | 📝 |
+| 12 | [Config & hot-reload](engine/12_config_and_hot_reload.md) | ✅ |
+
+### Mechanics — game logic on the engine
+| # | Chapter | Status |
+|---|---------|--------|
+| 01 | [Units & entities](mechanics/01_units_and_entities.md) | ⚠️ |
+| 02 | [AI & line-of-sight](mechanics/02_ai_and_los.md) | ⚠️ |
+| 03 | [Combat & weapons](mechanics/03_combat_and_weapons.md) | ⚠️ |
+| 04 | [Turn system & control](mechanics/04_turn_and_control.md) | ⚠️ |
+
+### ML
+| # | Chapter | Status |
+|---|---------|--------|
+| 01 | [ML & training](ml/01_ml_and_training.md) | 📝 |
+
+---
+
+## 4. Principles (how we keep this folder honest)
 
 - **Canon over prototype.** Prototypes (`prototypes/`, prototype-authored levels, scratch tools)
-  may freely diverge from canon. But on **any** conflict between a prototype and canon — the engine
-  source (`cpp/`, `src/`, `renderer/`) + these design docs — it is resolved **in canon's favour**:
-  fix the prototype, never bend the engine or the docs to it. Canon changes only if canon itself is
-  found wrong, and then deliberately, via its design doc.
-- **Canonize bottom-up.** A system is only locked as canon once the systems it *depends on* are
-  canon — design docs sit on settled ground, not shifting ground.
+  may diverge freely; on any prototype-vs-canon conflict, **canon wins** — fix the prototype, not
+  the engine or these docs. Canon changes only if canon itself is found wrong, deliberately.
+- **Canonize bottom-up.** A system is locked as canon only once the systems it *depends on* are
+  canon — docs sit on settled ground.
+- **Design docs are canon chapters.** New design lands directly here as a chapter (right bucket, a
+  "Depends on:" header, an implementation-status section) — not as a loose `docs/*.md` note.
 
-## Deferred (own chapters, after the core lands)
+---
 
-- **Hot-tile emission** (blackbody ray-emitters above a glow threshold) — adds an
-  `emissivity` column to the material table; powers the wind→fire→firestorm loop.
-- **Entity re-emission** (prisms / mirrors / refractive glass) — direction-changing optics
-  as secondary-pass emitters (never in-kernel forking).
-- **Temperature → pressure coupling** (thermal-expansion firestorms).
+## 5. Conventions
 
-## Doc-debt to close at the end of this phase
+- **Reading order:** foundation first — engine `01→12`, then mechanics, then ml.
+- **Dependencies:** every chapter's "Depends on:" header names what it builds on; the engine list
+  above is already in dependency order.
+- **Status is honest:** the implementation-status section reflects the *code*, not aspiration. A
+  chapter being canon does not mean the system is fully built — see its status line.
 
-- Reword `cuda_integration_plan.md` **§7** (ownership → ch.01), **§3** (scalar light → RGB +
-  deposit channels), **§4** (CFL-diffusion temperature → faked relaxation) so the CUDA plan stops
-  contradicting the locked chapters.
-- Delete `ray_engine_reconciliation.md`, `ray_engine_design.md`,
-  `implementation_plan_radiation_temperature.md`, and retire the superseded sections of the
-  old `architecture.md`.
+_The CUDA migration plan (`docs/cuda_integration_plan.md`) and the living `docs/TODO.md` sit
+alongside this folder; the GPU port re-implements the engine chapters once they're settled._
