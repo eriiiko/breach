@@ -39,6 +39,16 @@ it is a simulation task, so the raycaster moves out of the renderer into the sim
 becomes a pure read-only consumer of a small **summed** buffer set. Render reads sim; sim never
 reads render. (Full rationale: ch.03 §"Why the raycaster is simulation".)
 
+## Principles
+
+- **Canon over prototype.** Prototypes (`prototypes/`, prototype-authored levels, scratch tools)
+  may freely diverge from canon. But on **any** conflict between a prototype and canon — the engine
+  source (`cpp/`, `src/`, `renderer/`) + these design docs — it is resolved **in canon's favour**:
+  fix the prototype, never bend the engine or the docs to it. Canon changes only if canon itself is
+  found wrong, and then deliberately, via its design doc.
+- **Canonize bottom-up.** A system is only locked as canon once the systems it *depends on* are
+  canon — design docs sit on settled ground, not shifting ground.
+
 ## Deferred (own chapters, after the core lands)
 
 - **Hot-tile emission** (blackbody ray-emitters above a glow threshold) — adds an
