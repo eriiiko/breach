@@ -248,13 +248,33 @@ per-pixel dot-product the renderer already does for solid sprites (the light dir
 structure instead of flat fog. Cheap because the renderer already samples light direction per
 pixel; the only new cost is authoring or generating the normal texture. (See ch.05.)
 
-**Fuel and teargas fields.** A flamethrower is a directed *fuel* gas: a new scalar field on the
-same grid, with the exact same diffusion + advection as smoke, emitted in a cone with a velocity
-impulse, that spawns fire where `fuel > threshold` and `atmosphere > o2_threshold`. Teargas is
-the same fuel-field pattern with a damage/slow effect instead of combustion. Both reuse 100 % of
-the smoke transport pipeline — on CUDA they are just additional fields in the same diffusion +
-advection batch, no new kernel. This is the natural generalisation of the smoke model to new
-weapons.
+**Multi-gas system (colour, poison, teargas, fuel).** Smoke generalises from one scalar field to a
+small **set of gas density fields** `(h, w, N)` — one per gas type — sharing the *same* diffusion +
+advection solver (they all ride the same wind; on CUDA it is one batched stencil). Normal smoke
+becomes gas type 0. The planned set is **normal smoke · poison · tear gas · flammable fuel gas**;
+because a gas type is a data row, white/black smoke or any other variant are free additions later —
+just more rows, not more system.
+
+A gas type is **data-driven, exactly like a material** — a `[gases.*]` config table, one row per gas:
+
+- **Optical signature = colour.** Each gas carries a *per-channel* attenuation triple (the
+  per-channel `smoke_absorption` the shipped model lacks — see Gaps). That single coefficient is both
+  how the gas *looks* and how it *tints light* through it: green poison absorbs red+blue and passes
+  green, so it reads green *and* greens the light behind it. **Mixing falls out for free** as the
+  density-weighted sum of signatures — poison over fuel blends to a murky olive in both the look and
+  the light-tint, through the same per-channel attenuation combine `dyn_light_atten` already does. No
+  blend code.
+- **Effect** — poison = damage-over-time to a unit in the cell; teargas = slow / blind. (A unit-side
+  reading of the gas fields; mechanics chapter.)
+- **Flammability** — fuel ignites where `fuel > threshold` with oxygen/heat present, spawning fire. A
+  **flamethrower** is then just: emit the fuel gas in a cone (directed injection — the
+  momentum-at-nozzle idea from atmosphere) and ignite it. Fuel + the advection model + fire, no new
+  mechanic.
+
+This unifies what were separate forward ideas (a fuel field, a teargas field) into one system and
+reuses 100 % of the smoke transport plus the per-channel attenuation machinery. v1 keeps the gases
+independent — they coexist and blend *visually*, each with its own effect; chemical interaction
+between gases is a later layer. Cost is ≈ N× the (cheap, batchable) smoke solver.
 
 ---
 
@@ -294,7 +314,9 @@ Audited against `cpp/src/smoke_dynamics.{h,cpp}`, `src/simulation/physics_runner
   partial, walls sealed), and the lingering-haze-on-vacuum artifact is fixed by the atmosphere
   **face-flux** drain. Both owed.
 - **Normal-mapped smoke** (§6) — render-side idea only; no smoke-normal texture or shader path.
-- **Fuel / teargas fields** (§6) — no separate fuel field; flamethrower/teargas not implemented.
+- **Multi-gas system** (§6) — smoke is a single scalar field today; the N-field gas set
+  (poison / teargas / fuel, a data-driven `[gases.*]` table, per-channel colour/attenuation, and
+  density-weighted mixing) is not built. Flamethrower (fuel + ignition) follows from it.
 - **CUDA path** (§3) — semi-Lagrangian GPU advection is planned; the current solver is CPU C++.
 
 **Gaps / known issues:**
@@ -306,7 +328,8 @@ Audited against `cpp/src/smoke_dynamics.{h,cpp}`, `src/simulation/physics_runner
   the colour of god-rays comes from the deposited light's colour, not from three independent smoke
   coefficients. Coloured smoke (e.g. a tinted gas that absorbs selectively per channel) would need
   a per-channel `smoke_absorption`, which the current model does not provide. Not a defect — the
-  shipped model is monochrome-absorbing — but a named extension point.
+  shipped model is monochrome-absorbing — but a named extension point: this per-channel signature *is*
+  the colour model of the multi-gas system (§6).
 - **No smoke substep stability cap** — the design relies on wind-dependent diffusion to suppress
   advection oscillation rather than a hard CFL limit; large `advection_rate` or `dt_scale` values
   can still oscillate. Consistent with the design intent but worth noting for tuning.
