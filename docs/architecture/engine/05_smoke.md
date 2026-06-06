@@ -54,8 +54,6 @@ smoke      -= advection_rate * actual_dt * (wind · grad smoke)   # wind transpo
 clamp smoke to [0, 1]; zero on walls and vacuum
 ```
 
-# One note from Erik - when a room is emptied from air- the smoke is still there, it empties slower at the current settings, i wonder how to solve this, it doesnt look too good when a ship is breached to vacuum, and the smoke is still there... i need to think about this a little bit. Perhaps the drop to vacuum is too low ,perhaps we should set vacuum to a negative number just to speed it up artificially a little bit (get winds out quuicker, the problem is when the pressure approaches zero, the gradient becomes too small) i guess the problem with negatie pressure outside would result in negative pressure inside as well. perahps we can clamp to 0, or just silentyl treat negative numbers as zero, butis also not good- i'd like to have a thourgough discussion with claude on how to solve this problem.
-
 **Diffusion** is the shared 4-neighbour Laplacian with Neumann boundary conditions (the same
 operator the atmosphere and wave solvers use): where a neighbour is an obstacle, its value is
 mirrored from the centre, so smoke reflects off walls, diffracts through doorways, and channels
@@ -68,7 +66,6 @@ The advection term is the gradient-dot form `wind · grad(smoke)`: smoke flows d
 gradient, away from overpressure and toward breaches. Using the precomputed wind is what lets
 smoke ride a shockwave — the same `wave_p` that drives the blast also drives the smoke in front
 of it.
-# One more comment from Erik - Perhaps this is the solution - perhaps we let hte smoke travel fasdter than the wind even, we multiply the wind by a scalar, until it feels right -  discuss with Claude.
 
 ### Why wind-dependent diffusion
 
@@ -117,16 +114,25 @@ its smoke emission therefore lands as a per-tick deposit, not a per-substep one.
 
 ### Boundary handling
 
-Walls and vacuum are hard sinks: after every step, smoke on any `is_wall` or `is_vacuum` tile is
-zeroed, and interior smoke is clamped to `[0, 1]`. Advection is skipped on obstacle, wall, and
-vacuum tiles (it would read garbage gradients there). The Neumann Laplacian already prevents smoke
-from diffusing *into* walls; zeroing vacuum is what makes a breach drain a room — smoke advects
-toward the low-pressure breach tiles and is then deleted there, exactly as venting to space
-should look.
+Smoke's boundary is the **gas-flow** boundary, not the light-occlusion one: smoke is stopped by what
+is impermeable to gas, which is *not* the same set as what blocks light (a grill passes both light
+and smoke; glass blocks smoke yet passes light). Today the solver reads the boolean `obstacles` mask
+(walls + units) — the interim form — and per the coefficient model (ch.03) this becomes a per-cell
+**permeability**: walls `0` (sealed), units/grills partial. Walkability is a different predicate
+again and is irrelevant to smoke.
 
-`is_wall` here is the **occlusion** mask (closed doors included), per the ch.01/ch.02 split: smoke
-is blocked by anything that blocks light, which is the correct physical set. Walkability is a
-separate predicate and is irrelevant to smoke.
+Vacuum tiles are a hard sink: smoke on any `is_vacuum` tile is zeroed each step (interior smoke
+clamped to `[0, 1]`), and advection is skipped on impermeable and vacuum tiles (they would read
+garbage gradients). Zeroing vacuum is what makes a breach drain a room — smoke advects toward the
+breach and is deleted there, exactly as venting to space should look.
+
+**Lingering-smoke fix (owed).** With the current vacuum-*relaxation* drain, the wind that carries
+smoke out dies as interior pressure approaches zero (the gradient vanishes), so a ship breached to
+vacuum keeps a stubborn haze long after the air is gone — it looks wrong. The fix is the atmosphere
+chapter's **face-flux drain** (ch.04): outflow to vacuum sustains a face velocity even at near-zero
+pressure, so the wind keeps dragging smoke through the breach until the room is clear. (`dt_scale`
+and `advection_rate` already let smoke move faster than a literal wind reading for feel; that is
+tuning, not the root fix — face-flux is.)
 
 ### Parameters
 
@@ -283,6 +289,10 @@ Audited against `cpp/src/smoke_dynamics.{h,cpp}`, `src/simulation/physics_runner
 
 **Designed but not built:**
 
+- **Permeability boundary + lingering-smoke fix** — smoke's boundary is still the boolean
+  `obstacles`/occlusion mask; per ch.03/ch.04 it becomes a gas **permeability** (units/grills
+  partial, walls sealed), and the lingering-haze-on-vacuum artifact is fixed by the atmosphere
+  **face-flux** drain. Both owed.
 - **Normal-mapped smoke** (§6) — render-side idea only; no smoke-normal texture or shader path.
 - **Fuel / teargas fields** (§6) — no separate fuel field; flamethrower/teargas not implemented.
 - **CUDA path** (§3) — semi-Lagrangian GPU advection is planned; the current solver is CPU C++.

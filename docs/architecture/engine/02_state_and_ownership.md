@@ -84,31 +84,14 @@ motivate a tile-object grid. It goes in a **sparse side-structure keyed by
 
 ---
 
-## The two masks: occlusion vs. walkability
+## What a cell blocks: see the Material chapter
 
-A single boolean "is this a wall?" is two different questions, and Breach keeps
-them separate:
-
-- **`is_wall` — the occlusion mask.** The boundary for physics, light, smoke, and
-  vision. It is derived from the table: a tile occludes if it attenuates *any*
-  light channel (`light_atten.max() > 0`). A door has `light_atten = [1,1,1]`, so
-  it occludes; air is `[0,0,0]`, so it does not. For the current material set this
-  is exactly the old `{HULL, WOOD, DOOR}` set — but it is now derived, so a new
-  opaque material needs no code edit.
-- **`is_passable` — the walkability predicate.** A separate query
-  (`gmap.is_passable`, `is_passable_block`) used by A* pathfinding and unit-movement
-  collision. It is `AIR` or `DOOR` — a door is passable (you can walk through it)
-  yet occluding (you cannot see or shoot through it). That distinction is the whole
-  reason the masks are separate.
-
-Glass makes the same point from the other direction: it is a wall for *collision*
-(`is_wall` true) but **transmits light** for *rays* (low `light_atten`). The ray
-engine therefore reads `material` + the attenuation columns, never the binary
-`is_wall` — see the ray engine chapter.
-
-Walkability is a **CPU-only concern** and never goes GPU-side. The GPU kernels need
-the occlusion mask, the attenuation field, and `obstacles`; they never need
-walkability.
+How a cell interacts with each system is **per-system coefficients**, not a single occlusion flag —
+`light_atten` for light/vision, the wave coefficients for pressure, `permeability` for gas/smoke
+flow, `passable` for movement. That model (and why `is_wall` is retired) is owned by the **Material
+chapter**; State only needs its one ownership consequence: **`passable` (walkability) is a CPU-only
+predicate and never goes GPU-side**, while the coefficient fields the kernels read (`light_atten`,
+the permeability/wave boundaries, `obstacles`) are GPU-resident.
 
 ---
 
@@ -121,7 +104,6 @@ CSV decides world size — not a fixed config resolution):
 |---|---|---|
 | `material` | `int8` | Material id per tile — the structural source of truth |
 | `wall_hp` | `float32` | Current wall HP (table-derived; depleted by fire/heat) |
-| `is_wall` | `bool` | Occlusion mask (derived) |
 | `is_vacuum` | `bool` | Vacuum boundary mask |
 | `flammable` | `bool` | Can ignite (derived) |
 | `conductivity` | `float32` | Thermal conductivity (derived; consumed by ch. temperature) |
@@ -130,7 +112,7 @@ CSV decides world size — not a fixed config resolution):
 | `wind_x`, `wind_y` | `float32` | Wind velocity field |
 | `smoke` | `float32` | Smoke density |
 | `fire` | `float32` | Fire intensity |
-| `obstacles` | `bool` | Walls + living unit footprints (rebuilt each tick) |
+| `obstacles` | `bool` | Gas-flow / wave boundary: walls + unit footprints, rebuilt each tick (interim boolean — becomes a `permeability` field) |
 | `light_atten` | `(h,w,3) float32` | **Static** per-channel light attenuation (table projection) |
 | `dyn_light_atten` | `(h,w,3) float32` | **Dynamic** attenuation: static combined with unit opacity, rebuilt each tick |
 | `light_rgb` | `(h,w,3) float32` | Summed light colour reaching each tile (ray output) |
@@ -206,9 +188,11 @@ stats; faction owned by the mission, not the unit). They are *actors*, not field
 so they are never baked into the grid permanently. Instead they are **projected**
 onto two fields once per tick by `stamp_units`, which does two outputs in one pass:
 
-1. **`obstacles`** = `is_wall` plus every living unit's footprint. The wave and
-   smoke solvers read this read-only, so units act as walls for all physics —
-   shockwaves reflect off them, smoke is blocked.
+1. **`obstacles`** = the solid/flow boundary (walls) plus every living unit's footprint, read
+   read-only by the wave and smoke solvers. Today it is a boolean, so units act as full walls —
+   shockwaves reflect, smoke is blocked. **Interim:** per the Material chapter, units should write
+   *partial* gas coefficients (absorb the wave, slow-not-seal smoke), which arrives when the gas
+   solvers read a `permeability` field instead of this boolean.
 2. **`dyn_light_atten`** = the static `light_atten` with each living unit's opacity
    combined in per channel (`max`). A unit's opacity comes from an optional
    `unit.light_atten` (default `[1,1,1]` = a full shadow), so the design already
@@ -312,8 +296,9 @@ the same inputs gives a bit-identical trajectory on any machine.
   `material` is `int8`; all per-material constants come from the table
   (`src/simulation/materials.py`); caches are table projections built in
   `GameMap._update_caches`.
-- The two-mask split: `is_wall` (occlusion, derived from `light_atten`) vs.
-  `is_passable` / `is_passable_block` (walkability, `AIR`/`DOOR`).
+- Walkability predicate `is_passable` / `is_passable_block` (`AIR`/`DOOR`), CPU-only. (The legacy
+  `is_wall` occlusion cache still exists in code; per the Material chapter it is **retired** in favour
+  of per-system coefficients — a removal owed across the gas solvers and `has_los`.)
 - The full field inventory above is allocated in `GameMap.__init__`, sized from the
   level grid.
 - Static vs. dynamic attenuation (`light_atten` / `dyn_light_atten`), with the
@@ -363,3 +348,6 @@ the same inputs gives a bit-identical trajectory on any machine.
   fully onto the table (a new material map plus minor glue) is outstanding.
 - **Sparse side-structures for unique tiles** (named doors, terminals) are specified
   but not yet present — no level needs one today.
+- **`fy/fx` naming.** Some `GameMap` methods still take `(fy, fx)` parameters (e.g.
+  `on_tile_changed`). The canon convention (Grid chapter) is `(row, col)` for indices and `(x, y)`
+  for tile/metre coords; a rename to match is owed — cosmetic, not behavioural.

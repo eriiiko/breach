@@ -132,7 +132,7 @@ per-cell.
 How a cell interacts with each system is **not one "is it solid" flag — it is a per-system
 coefficient.** A grill passes light, gas, and fluid but stops a unit; glass stops a unit and passes
 light (dimmed); a hull plate stops everything. No single mask can express that, so each transport
-system reads its own coefficient — light/heat → attenuation, the gas wave → reflect/absorb/transmit,
+system reads its own coefficient — light/heat → attenuation, the gas wave → reflect/absorb,
 gas flow → permeability, and so on — and both static materials and dynamic units write them. That
 model (the master table of system → coefficient, and the rule that **a unit is a mobile material
 patch**, partial in every system but one) is the subject of the **Material chapter**. The grid only

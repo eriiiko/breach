@@ -33,25 +33,34 @@ conductivity  = 50.0         # high = heat spreads fast along the material (meta
 ignition_temp = 0.0          # catches fire at this temperature; 0 = non-flammable
 # --- acoustics (pressure-wave boundary) ---
 wave_reflect  = 0.9          # fraction of shockwave energy bounced back
-wave_absorb   = 0.1          # fraction damped; transmit = 1 - reflect - absorb
+wave_absorb   = 0.1          # damped; for now reflect + absorb = 1 (transmit = sound through the wall = deferred 4b)
+# --- flow (gas + smoke share one permeability) ---
+permeability  = 0.0          # 0 = sealed (wall); 1 = open (air); units write partial values
 # --- structural ---
 blast_resist  = 0.0          # blast resistance
 ```
 
-The full shipped set:
+The full shipped set — **one table**, columns grouped by the **system** that reads each
+(structural · fire · optics/rays · acoustic wave · gas-flow · movement):
 
-| id | key | hp | flammable | passable | `light_atten` | `heat_atten` | conductivity | ignition_temp |
-|----|------|-----|-----------|----------|---------------|--------------|--------------|---------------|
-| 0 | `air`   | 0   | no  | yes | `[0,0,0]`       | 0.0 | 0.0  | 0.0   |
-| 1 | `hull`  | 300 | no  | no  | `[1,1,1]`       | 1.0 | 50.0 | 0.0   |
-| 2 | `wood`  | 60  | yes | no  | `[1,1,1]`       | 1.0 | 0.15 | 300.0 |
-| 3 | `door`  | 40  | no  | yes | `[1,1,1]`       | 1.0 | 0.3  | 280.0 |
-| 4 | `steel` | 200 | no  | no  | `[1,1,1]`       | 1.0 | 45.0 | 0.0   |
-| 5 | `glass` | 15  | no  | no  | `[0.1,0.1,0.1]` | 0.3 | 1.0  | 0.0   |
+| id · key | hp | blast | flammable | ignition | conductivity | `light_atten` | `heat_atten` | wave R / A | `permeability` | passable |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 0 `air`   | 0   | 0    | no  | –   | 0    | `[0,0,0]`       | 0   | 0 / 0     | 1  | yes |
+| 1 `hull`  | 300 | high | no  | –   | 50   | `[1,1,1]`       | 1   | 0.9 / 0.1 | 0  | no  |
+| 2 `wood`  | 60  | 0    | yes | 300 | 0.15 | `[1,1,1]`       | 1   | –         | 0  | no  |
+| 3 `door`  | 40  | 0    | no  | 280 | 0.3  | `[1,1,1]`       | 1   | –         | 0¹ | yes |
+| 4 `steel` | 200 | high | no  | –   | 45   | `[1,1,1]`       | 1   | –         | 0  | no  |
+| 5 `glass` | 15  | 0    | no  | –   | 1    | `[0.1,0.1,0.1]` | 0.3 | –         | 0  | no  |
 
-(Optics, thermal, and acoustic values are illustrative — they are tuned in the lighting demo
-and a future wave test. Only the columns the ray march reads — `light_atten` — are consumed
-today; the rest are stored and wait for their consumers.)
+¹ door `permeability` is 0 only while closed; the dynamic-door system flips it open. Wave:
+`reflect + absorb = 1` for now — *transmit* (sound through a wall) is the deferred 4b extension.
+
+This single table **is** the per-system coefficient set — each column is consumed by exactly one
+system (the next section spells out which). Only `light_atten` is **consumed today**; `heat_atten`,
+the acoustic `wave_reflect`/`absorb`, `permeability`, and the thermal columns are stored and wait for
+their solvers (the per-material wave boundary, the gas/smoke permeability boundary, the temperature
+pass). Values are illustrative — tuned in the lighting demo and a future wave test; `–` means "not
+yet tuned".
 
 ### Why a named-key table and not flat arrays
 
@@ -96,23 +105,17 @@ A tile has no single "is it solid" property. *What* a tile blocks depends on *wh
 asking, and the answers are independent: a **grill** stops a unit but passes light, gas, and fluid; a
 pane of **glass** stops a unit and passes light (dimmed); a **hull plate** stops everything. No one
 boolean can carry that, so each transport system reads **its own coefficient**, and the table holds
-one column (or set) per system:
+one column (or set) per system — **the master table above is grouped exactly this way**: `light_atten`
+for light (and vision, which reads its aggregate), `heat_atten` for heat, `wave_reflect`/`wave_absorb`
+for the pressure wave, `permeability` for gas + smoke flow, `passable` for movement, `conductivity`
+for electricity (and fluid will reuse a permeability when it exists). The grill is the proof that one
+mask cannot serve all of them: it passes light, gas, and fluid yet stops a unit, so its columns
+disagree — `permeability = 1`, `light_atten = [0,0,0]`, `passable = no`.
 
-| System | Medium | Material coefficient(s) | a wall | **a unit** | a grill |
-|--------|--------|-------------------------|--------|------------|---------|
-| Light | ray | `light_atten` (RGB) | opaque | partial (shadow) | clear |
-| Vision | ray (= light) | aggregate of `light_atten` | blocks | blocks (cover) | clear |
-| Heat | ray | `heat_atten` / absorption | blocks | absorbs → ignites | clear |
-| Pressure | gas *wave* | `wave_reflect` / `wave_absorb` / transmit | reflect | absorb | transmit |
-| Wind + smoke | gas *flow* | permeability | impermeable | partial (slows) | permeable |
-| Fluid | liquid | permeability *(TBD)* | impermeable | *TBD* | permeable |
-| **Movement** | — | `passable` (boolean) | no | **no — hard block** | no |
-| *Electricity* | conduction | `conductivity` | low | high (attracts arcs) | metal: high |
-
-Read the **unit** column top to bottom: a unit is *partial* in every system — it dims light, soaks
-heat (and so catches fire), absorbs a shockwave, slows but does not seal smoke — with exactly **one**
-exception. **Movement** is the only interaction where a unit is a hard, binary blocker; it is the one
-boolean, expressed as `passable` (a cell a unit may occupy). Everything else is a coefficient.
+The unifying rule is how a **unit** sits in those columns: a unit is *partial* in every system — it
+dims light, soaks heat (and so catches fire), absorbs a shockwave, slows but does not seal smoke —
+with exactly **one** exception. **Movement** is the only interaction where a unit is a hard, binary
+blocker (the `passable` stamp); everything else is a coefficient.
 
 **`is_wall` is retired.** It used to mean "occludes" — derived from `light_atten > 0` — and three
 different systems leaned on that one accidental flag at once (the smoke/pressure boundary, the vision
@@ -185,15 +188,13 @@ What attenuation does **not** cover is **direction-changing** optics — refract
 mirrors. Those are a deferred entity-re-emission pattern (secondary rays spawned outside the
 kernel), never in-kernel ray forking. Attenuation is straight-through dimming and tinting only.
 
-## Cache invalidation: one incremental seam
+## Cache invalidation
 
-Structural edits (a wall destroyed, a future laser burning through a tile) must **not** trigger
-a full `_update_caches()` rebuild — that is O(grid) and will not scale when a firestorm melts
-many walls per tick. Instead every structural edit funnels through one incremental seam,
-`on_tile_changed(fy, fx)`, which patches all table-derived static caches for that single tile in
-O(1): `is_wall`, `light_atten`, `flammable`, `wall_hp`, `conductivity`. `destroy_wall` routes
-through it; no caller patches caches inline. (Atmosphere and vacuum carry edit-specific
-semantics and are handled by the caller, not the generic seam.) This per-tile delta is exactly
+The table-derived caches are patched incrementally on each structural edit through the single
+`on_tile_changed` seam — never an O(grid) rebuild, which would not scale when a firestorm melts many
+walls per tick. That seam, and `destroy_wall`'s edit-specific atmosphere/vacuum handling, are owned
+by the **State & Ownership chapter**; materials only adds that the caches patched there are the table
+projections (`light_atten`, `flammable`, `wall_hp`, `conductivity`, …) — one per-tile delta, exactly
 what the CPU→GPU upload would push.
 
 ## Config hot-reload
@@ -234,9 +235,14 @@ exist yet:
 
 - **`emissivity`** — for hot-tile emission (tiles above a glow threshold becoming light
   sources, powering the wind→fire→firestorm loop). Added when that chapter lands.
-- **`light_reflect`** (specular reflection) — for the deferred entity-reflection pattern.
 
-They are listed here so the schema is understood as intentionally incomplete, not forgotten.
+It is listed here so the schema is understood as intentionally incomplete, not forgotten.
+
+Specular reflection is deliberately **not** a material column. Mirrors and prisms are the explicit
+Tier-3 entity re-emission pattern (secondary rays we spawn *outside* the kernel — see "direction-
+changing optics" above), so reflectivity lives on that entity, never on the material the march reads.
+A per-material `light_reflect` would imply automatic in-march bouncing, which the CUDA contract
+(one thread per ray, no forking) rules out.
 
 ---
 
@@ -278,17 +284,18 @@ They are listed here so the schema is understood as intentionally incomplete, no
 - **Door open/closed state** — both predicates treat every door identically; no occlusion flip.
 - **Retire `is_wall`.** The cache still derives `is_wall` from `light_atten`, and the wave/smoke
   solvers and `has_los` read it as a hard boundary. Per the interaction model `is_wall` is gone:
-  light/vision → `light_atten`, gas flow → a **permeability** column (not yet in the table), the gas
-  wave → the wave coefficients, movement → `passable`. Owed (shared with the Grid chapter).
+  light/vision → `light_atten`, gas flow → the **permeability** column (now in the schema, unconsumed),
+  the gas wave → the wave coefficients, movement → `passable`. Owed (shared with the Grid chapter).
 - **Units as partial gas occluders.** `stamp_units` writes unit footprints into `obstacles` as full
   boolean blockers; the model calls for *partial* gas coefficients (pressure-absorption, reduced
   permeability) so a unit impedes flow without sealing it — requires the gas solvers to read a
   coefficient field instead of the boolean boundary.
-- **`heat_atten`, `conductivity`, `ignition_temp`, `wave_reflect`, `wave_absorb`, `blast_resist`
-  columns** are stored but **consumed by nobody**. The temperature/conduction pass and the
-  wave-solver boundary conditions (which currently use `is_wall` as a hard reflective wall) wire
-  into these later.
-- **`emissivity` / `light_reflect`** columns — not in the table; deferred with their features.
+- **`heat_atten`, `conductivity`, `ignition_temp`, `wave_reflect`, `wave_absorb`, `permeability`,
+  `blast_resist` columns** are in the schema but **consumed by nobody yet**. The temperature/conduction
+  pass, the per-material wave boundary, and the gas/smoke permeability boundary (which currently use
+  `is_wall`/`obstacles` as a hard reflective wall) wire into these later.
+- **`emissivity`** column — not in the table; deferred with hot-tile emission. (Specular reflection is
+  not a material column at all — it is the Tier-3 entity re-emission pattern.)
 
 **Gaps and inconsistencies to be aware of:**
 

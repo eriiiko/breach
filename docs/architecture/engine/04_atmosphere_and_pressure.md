@@ -247,10 +247,16 @@ single-field decompression feel — is handled by the **direct atmosphere deposi
 **relaxation BC** (§2.3): the bulk field still receives blast energy and still drains hard through
 a breach, so the game feel survives the split.
 
-A path not taken is the **face-flux breach law** (outflow ∝ `max(p_inside − p_ext, 0)` per breach
-face), which would scale venting with opening size more physically than cell relaxation. It is the
-preferred long-term breach model but is not implemented; the relaxation + sponge combination is the
-current, stable choice.
+The **face-flux breach law is the chosen drain** (it replaces vacuum relaxation; the sponge stays,
+for wave anti-ringing). Outflow is `∝ max(p_inside − p_ext, 0)` across each breach *face*
+(`p_ext = 0` for vacuum). It wins for two reasons: it **scales venting with opening size** physically,
+and — because escape to vacuum sustains a strong face *velocity* even as interior pressure collapses —
+it **keeps the wind carrying smoke out**, fixing the lingering-smoke artifact relaxation has (the
+gradient, hence the wind, dies before the room is clear). And it generalises: a *face flux*
+`= f(p_a, p_b, face)` is one primitive serving **breaches** (face to vacuum), **vents/ducts** (a
+throughput cap), **fans/pumps** (a forced flux), and **cracked doors** (a small conductance) — so it
+is built as a face-flux **system**, breach as the first client. Relaxation is the current stopgap
+until it lands.
 
 ---
 
@@ -264,13 +270,32 @@ consistently when implemented.
   toward the hole and a shockwave shoves them outward — the same `wind_x/wind_y` the smoke already
   reads. This is the gameplay payoff of the wind field and is the natural next consumer.
 
-- **Pressure-driven wall failure.** A sealed room that keeps absorbing grenades currently builds
-  pressure without limit. The intended fix is emergent rather than a cap: each tick, for every
-  wall↔air boundary, if `|p[a] − p[b]| > burst_threshold` (per-material — hull holds more than
-  wood), call `gmap.destroy_wall` on that tile. An interior wall becomes air; a hull-edge wall
-  becomes exposed vacuum → automatic decompression release. This produces chain-reaction
-  self-breaching: an over-pressured cluster pops walls in sequence until the gradient relaxes.
-  It reuses the existing `destroy_wall` + neighbour-mean machinery and adds no new field.
+- **Over-pressure wall failure — the pressure-relief valve.** A sealed room that keeps absorbing
+  grenades builds pressure without limit; the fix is emergent, not a cap. Each tick, for every
+  wall↔air boundary, if `|p[a] − p[b]| > burst_threshold` (per-material — hull holds more than wood),
+  call `gmap.destroy_wall` on that tile: an interior wall becomes air, a hull-edge wall becomes
+  exposed vacuum → the **face-flux** then vents it. Over-pressured clusters self-breach in a chain
+  until the gradient relaxes. This is *why we keep* the wave→atmosphere deposit (§2.3–2.4): pressure
+  building is physically correct, so the answer is an emergent relief valve, not removing the deposit
+  (which would make blasts feel weak). Reuses `destroy_wall` + neighbour-mean; no new field.
+
+- **Bulk permeability (gas + smoke).** The diffusion/advection boundary becomes a per-cell
+  *permeability* (a variable-coefficient Laplacian) instead of the boolean `obstacles` mask: walls
+  stay `0` (sealed — bit-identical to today, *no* wind or smoke through walls), while units and grills
+  carry a partial value, so a body slows smoke and a grill passes gas without sealing the cell. A
+  strict generalisation — the boolean is just permeability ∈ {0, 1}.
+
+- **Per-material wave boundary (4a now; 4b deferred).** Replace the perfect Neumann mirror with a
+  **lossy reflector**: at a wall/unit face, reflect `wave_reflect`·(wave) and drop `wave_absorb`
+  (`reflect + absorb = 1`). The wave still never enters solids, so the IMEX stability is untouched —
+  but **units absorb blasts** instead of mirroring them, and soft materials damp while hull rings.
+  **Deferred (4b):** *transmission through walls* (sound crossing into a wall and out the far side,
+  thick walls blocking more). It needs the wave to propagate inside solids with a per-material speed,
+  which (a) demands re-deriving the IMEX stability for variable coefficients and (b) raises `c_max` →
+  smaller `dt` → more substeps everywhere — and we already run the wave *below* real sound speed
+  because the dt is punishing, so a *higher* in-wall `c` is infeasible for now. Bulk flow (wind/smoke)
+  stays sealed at walls regardless; only the acoustic wave would ever cross, and that is the deferred
+  flourish.
 
 - **Water → atmosphere coupling.** Once a fluid layer exists, a rising water surface displaces
   air volume; with `P = nRT/V`, shrinking volume raises pressure and drives airflow and smoke.
@@ -309,10 +334,17 @@ Audited against `cpp/src/atmosphere_solver.{h,cpp}`, `src/simulation/physics_run
 - **Decompression/shockwave suction on units** — `wind_x/wind_y` are produced and consumed by
   smoke (and fire), but **no unit-movement code reads them**. The marquee gameplay effect of the
   wind field is unwired.
-- **Pressure-driven wall failure** — no over-pressure burst check exists; a sealed room's pressure
-  is unbounded.
-- **Water→atmosphere volume coupling**, **fuel/directed-gas field**, **face-flux breach law**, and
-  **CUDA residency** — all forward ideas only.
+- **Face-flux breach drain (chosen)** — the current drain is vacuum relaxation; face-flux (and the
+  general face-flux system) is the chosen replacement, not yet built.
+- **Over-pressure wall failure** — no burst check exists; a sealed room's pressure is unbounded until
+  this relief valve lands.
+- **Bulk permeability boundary** — the gas/smoke boundary is still the boolean `obstacles`; the
+  per-cell permeability (units/grills partial, walls sealed) is owed.
+- **Per-material wave boundary (4a)** — the wave boundary is still a perfect Neumann mirror; the
+  lossy per-material reflector (units absorb, soft materials damp) is owed. Through-wall transmission
+  (4b) is deferred.
+- **Water→atmosphere volume coupling**, **fuel/directed-gas field**, and **CUDA residency** — forward
+  ideas only.
 
 **Gaps / known issues:**
 
