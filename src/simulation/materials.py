@@ -119,6 +119,18 @@ class MaterialTable:
                         else (0.0 if occludes_per_id[idx] else 1.0))
         self.permeability = np.array(perm, dtype=np.float32)
 
+        # burst_threshold: max pressure DIFFERENTIAL a wall tile can hold across
+        # its opposing sides before it fails (over-pressure relief valve, ch.04
+        # §5). OPTIONAL column — a material that omits it defaults to 0.0, which
+        # the burst scan treats as "n/a" (a 0-threshold material never bursts;
+        # see GameMap.find_burst_walls). Interior pressure is ~1.0, so real
+        # thresholds sit comfortably above 1 to never pop a normal ship.
+        burst = []
+        for row, name in zip(rows, self.names):
+            val = self._get_field_opt(row, "burst_threshold")
+            burst.append(float(val) if val is not None else 0.0)
+        self.burst_threshold = np.array(burst, dtype=np.float32)
+
     # -- accessors -------------------------------------------------------
     @staticmethod
     def _get_row(cfg, name):

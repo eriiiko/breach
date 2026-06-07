@@ -372,6 +372,80 @@ class GameMap:
         return total / count if count > 0 else 0.0
 
     # ------------------------------------------------------------------
+    # Over-pressure wall failure — the emergent pressure-relief valve (ch.04 §5)
+    # ------------------------------------------------------------------
+    def find_burst_walls(self, max_pops: int | None = None):
+        """Find wall tiles holding a pressure differential above their material's
+        ``burst_threshold``. Pure scan — does NOT mutate state.
+
+        A sealed room that keeps absorbing grenades builds pressure without
+        limit; this is the emergent relief valve (ch.04 §5). For each wall tile,
+        the differential it holds is the **spread across its opposing sides**:
+        ``max(neighbour atmosphere) - min(neighbour atmosphere)`` over its
+        in-bounds 4-neighbours, where a *solid or sealed-vacuum* neighbour
+        contributes 0 (so a hull between a pressurised room and outside-vacuum
+        sees ``p_room - 0``). A wall between two equal-pressure rooms has ~0
+        spread and never pops — correct.
+
+        A material with ``burst_threshold <= 0`` is treated as never-bursting
+        (air, or any material omitting the column).
+
+        Parameters
+        ----------
+        max_pops
+            Optional cap. When set, only the ``max_pops`` worst-differential
+            tiles are returned (sorted descending), so a mistuned threshold
+            cannot nuke the whole ship in one tick.
+
+        Returns
+        -------
+        list of (int, int)
+            ``(fy, fx)`` wall tiles that should fail this tick. Caller runs
+            :meth:`destroy_wall` on each (mirrors fire burn-through plumbing).
+        """
+        h, w = self._h, self._w
+        atm = self.atmosphere
+        is_wall = self.is_wall
+        is_vacuum = self.is_vacuum
+        thresh = self.materials.burst_threshold
+
+        failing = []  # (differential, fy, fx)
+        ys, xs = np.where(is_wall)
+        for fy, fx in zip(ys.tolist(), xs.tolist()):
+            mat_id = int(self.material[fy, fx])
+            t = float(thresh[mat_id])
+            if t <= 0.0:
+                continue  # n/a material (e.g. air) never bursts
+            lo = None
+            hi = None
+            for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                ny, nx = fy + dy, fx + dx
+                if not (0 <= ny < h and 0 <= nx < w):
+                    continue
+                # A solid neighbour (wall, incl. sealed-hull which is also
+                # is_wall) or an exposed-vacuum breach holds no air → 0; an
+                # air tile contributes its atmosphere.
+                if is_wall[ny, nx] or is_vacuum[ny, nx]:
+                    p = 0.0
+                else:
+                    p = float(atm[ny, nx])
+                lo = p if lo is None or p < lo else lo
+                hi = p if hi is None or p > hi else hi
+            if lo is None:
+                continue
+            spread = hi - lo
+            if spread > t:
+                failing.append((spread, fy, fx))
+
+        if not failing:
+            return []
+        # Worst differentials first; apply the per-tick cap.
+        failing.sort(key=lambda r: r[0], reverse=True)
+        if max_pops is not None:
+            failing = failing[:max_pops]
+        return [(fy, fx) for _, fy, fx in failing]
+
+    # ------------------------------------------------------------------
     # Mutators (used by explosions, fire wall burn-through)
     # ------------------------------------------------------------------
     def destroy_wall(self, fy, fx):

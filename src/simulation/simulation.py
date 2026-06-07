@@ -606,6 +606,22 @@ class Simulation:
             else:
                 self.tick_events.append(WallDestroyedEvent(pos=(yy, xx)))
 
+        # 9b. Over-pressure wall failure (ch.04 §5) — the emergent pressure
+        # relief valve. After physics settles, any wall holding a differential
+        # above its material's burst_threshold fails and vents; over-pressured
+        # clusters self-breach in a chain across ticks. Mirrors fire
+        # burn-through: scan returns tiles, destroy_wall does the topology edit.
+        # Capped per tick so a mistuned threshold can't nuke the whole ship.
+        if getattr(CFG.physics, "burst_enabled", True):
+            cap = int(getattr(CFG.physics, "burst_max_per_tick", 16))
+            for (yy, xx) in self.gmap.find_burst_walls(max_pops=cap):
+                mat = int(self.gmap.material[yy, xx])
+                self.gmap.destroy_wall(yy, xx)
+                if mat == MAT_DOOR:
+                    self.tick_events.append(DoorDestroyedEvent(pos=(yy, xx)))
+                else:
+                    self.tick_events.append(WallDestroyedEvent(pos=(yy, xx)))
+
         # Recorder snapshot.
         if self.recorder is not None:
             self.recorder.record(self.gmap, self.tick, self.real_time, self.units)
