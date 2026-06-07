@@ -215,6 +215,7 @@ class Simulation:
             self.recorder = PhysicsRecorder(
                 fh=self.gmap.material.shape[0],
                 fw=self.gmap.material.shape[1],
+                capacity=CFG.recorder.capacity,
             )
         else:
             self.recorder = None
