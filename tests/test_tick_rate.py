@@ -43,17 +43,21 @@ RIFLE_BURST_S = 0.16666667     # 2/12
 REPLAY_S = 100.0
 
 
-def test_default_tps_matches_legacy_integers():
-    """At the shipped 12 tps, derived tick counts == the old hard-coded ones."""
-    assert CFG.clock.ticks_per_second == 12
+def test_live_config_is_consistent_with_helper():
+    """The live config's derived tick counts match the pure helper at whatever
+    ``ticks_per_second`` is shipped (24 currently). This stays green when the
+    default tps changes; the legacy-12 equivalence is locked separately in
+    ``test_helper_reproduces_legacy_at_12_tps``."""
+    tps = CFG.clock.ticks_per_second
+    assert tps > 0
 
-    assert CFG.movement.marine_attack_ticks_per_tile == 9
-    assert CFG.movement.marine_cover_ticks_per_tile == 6
-    assert CFG.movement.marine_sprint_ticks_per_tile == 4
-    assert CFG.zombie.ticks_per_tile == 7
-    assert CFG.zombie.attack_cooldown_ticks == 12
-    assert CFG.weapons.rifle.burst_interval_ticks == 2
-    assert CFG.recorder.capacity == 1200
+    assert CFG.movement.marine_attack_ticks_per_tile == ticks_from_seconds(MARINE_ATTACK_S, tps)
+    assert CFG.movement.marine_cover_ticks_per_tile == ticks_from_seconds(MARINE_COVER_S, tps)
+    assert CFG.movement.marine_sprint_ticks_per_tile == ticks_from_seconds(MARINE_SPRINT_S, tps)
+    assert CFG.zombie.ticks_per_tile == ticks_from_seconds(ZOMBIE_S, tps)
+    assert CFG.zombie.attack_cooldown_ticks == ticks_from_seconds(ATTACK_COOLDOWN_S, tps)
+    assert CFG.weapons.rifle.burst_interval_ticks == ticks_from_seconds(RIFLE_BURST_S, tps)
+    assert CFG.recorder.capacity == round(REPLAY_S * tps)
 
 
 def test_helper_reproduces_legacy_at_12_tps():

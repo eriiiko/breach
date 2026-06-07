@@ -97,8 +97,14 @@ def test_pops_under_overpressure():
     interior = _interior_mask(g)
     assert interior.any(), "test level has no interior air"
 
+    # The hull now ships at burst_threshold=0 (never pressure-collapses; it
+    # breaches via damage/explosions — ch.04). Re-enable the relief valve on the
+    # test's wall material so we exercise the mechanism on a burstable wall.
+    for wid in np.unique(g.material[g.solid]):
+        g.materials.burst_threshold[int(wid)] = 6.0
+
     walls_before = int(g.solid.sum())
-    # Pump the interior far above any burst_threshold (hull = 6.0).
+    # Pump the interior far above the (re-enabled) burst_threshold.
     g.atmosphere[interior] = 50.0
     peak_before = float(g.atmosphere.max())
 
@@ -123,6 +129,12 @@ def test_no_spurious_pops_at_normal_pressure():
     g = sim.gmap
 
     interior = _interior_mask(g)
+
+    # Same burstable wall as the pop test (hull ships at 0=never), so this
+    # meaningfully checks that a normal-pressure ship does NOT trip the valve.
+    for wid in np.unique(g.material[g.solid]):
+        g.materials.burst_threshold[int(wid)] = 6.0
+
     g.atmosphere[interior] = 1.0  # normal interior pressure
 
     wall_set_before = g.solid.copy()
