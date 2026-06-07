@@ -252,12 +252,22 @@ per-pixel dot-product the renderer already does for solid sprites (the light dir
 structure instead of flat fog. Cheap because the renderer already samples light direction per
 pixel; the only new cost is authoring or generating the normal texture. (See ch.05.)
 
-**Multi-gas system (colour, poison, teargas, fuel).** Smoke generalises from one scalar field to a
-small **set of gas density fields** `(h, w, N)` — one per gas type — sharing the *same* diffusion +
-advection solver (they all ride the same wind; on CUDA it is one batched stencil). Normal smoke
-becomes gas type 0. The planned set is **normal smoke · poison · tear gas · flammable fuel gas**;
-because a gas type is a data row, white/black smoke or any other variant are free additions later —
-just more rows, not more system.
+The normal need not be authored — two cheap *generated* sources (idea from Erik, 2026-06): **wind as
+a dynamic normal** — the per-tile `wind_x/wind_y` (already computed) tilts the smoke surface so it
+leans into the flow and catches light along it (free, and makes smoke read as *moving*); but wind is
+a flow vector at tile resolution, not a true surface normal, so it gives orientation/motion rather
+than fine wisp detail. And **∇smoke** — the density gradient is the cloud's actual silhouette/edge,
+the more physically normal-like signal for shading its shape. The strong combo is **∇smoke (or a base
+noise) for structure + wind for motion/orientation**, both per-pixel-cheap.
+
+**Multi-gas system (white/black smoke, poison, teargas, fuel).** Smoke generalises from one scalar
+field to a small **set of gas density fields** `(h, w, N)` — one per gas type — sharing the *same*
+diffusion + advection solver (they all ride the same wind; on CUDA it is one batched stencil). The
+planned set is **white smoke (water vapour) · black smoke (combustion soot) · poison · tear gas ·
+flammable fuel gas** — white and black are a **confirmed requirement** (Erik): white vapour rises
+from water/steam, black soot from fire and explosions, and the two blend to grey via the colour
+model below. Because a gas type is just a data row, further variants stay free additions — more
+rows, not more system.
 
 A gas type is **data-driven, exactly like a material** — a `[gases.*]` config table, one row per gas:
 
