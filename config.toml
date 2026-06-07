@@ -34,6 +34,24 @@ burst_max_per_tick = 16                # cap on walls that may burst in one tick
 physics_dt = 0.001                # 1ms (CFL stable for c=300 tiles/s)
 physics_substeps = 8              # 8 * 1ms = 8ms physics per game tick
 
+[smoke]
+# Ray-engine smoke optics (ch.05 §6.1 §6 — decoupled per-channel absorption vs
+# glow). Two INDEPENDENT budgets, NOT constrained to absorb + glow = 1:
+#
+#   transmission:  tau_c = absorption[c] * density * absorb_scale; trans_c = exp(-tau_c)
+#   scatter/glow:  smoke_glow[c] += local_light[c] * scatter_albedo[c] * density   (additive)
+#
+# smoke_absorb_scale is the global "beam reach" dial. Dial it DOWN for the
+# long-beam "flashlight travels far through smoke and still glows" look Erik
+# wants (exp(-tau) never hard-zeroes the beam, so it survives deep smoke). Dial
+# it UP for a beam that dies fast. Defaults below approximate the shipped look:
+# exp(-1.4*density) tracks the old (1-density) attenuation at mid density, and
+# scatter_albedo = [1,1,1] reproduces the shipped god-ray glow magnitude.
+# Per-channel absorption != grey enables COLOURED smoke later (per-channel = hue).
+smoke_absorption = [1.0, 1.0, 1.0]       # Beer-Lambert per-channel absorption (R,G,B)
+smoke_scatter_albedo = [1.0, 1.0, 1.0]   # additive god-ray/glow gain (R,G,B), decoupled from absorption
+smoke_absorb_scale = 1.4                 # beam-reach dial: LOW = long beam (flashlight travels far), HIGH = beam dies fast
+
 [display]
 panel_width = 250
 level = "unhcr_vessel"            # folder under levels/ to load on startup

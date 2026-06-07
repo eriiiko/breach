@@ -46,10 +46,20 @@ def _make_source(color=(1.0, 1.0, 1.0), heat=0.0, intensity=1.0, w=20):
 
 def _cast(h=1, w=20, color=(1.0, 1.0, 1.0), heat_emit=0.0,
           smoke=None, atten=None, intensity=1.0,
-          want_heat=True, want_glow=True, smoke_absorption=0.8):
-    """Cast one +x beam; return (rgb, heat, smoke_glow)."""
+          want_heat=True, want_glow=True,
+          absorption_rgb=(1.0, 1.0, 1.0),
+          scatter_albedo=(1.0, 1.0, 1.0),
+          absorb_scale=1.4):
+    """Cast one +x beam; return (rgb, heat, smoke_glow).
+
+    Smoke optics are the decoupled per-channel model (ch.05 §6.1 §6):
+      transmission  trans_c = exp(-absorption_rgb[c] * density * absorb_scale)
+      scatter/glow  smoke_glow[c] += local_light[c] * scatter_albedo[c] * density
+    """
     rc = bp.Raycaster()
-    rc.smoke_absorption = smoke_absorption
+    rc.smoke_absorption_rgb = absorption_rgb
+    rc.smoke_scatter_albedo = scatter_albedo
+    rc.smoke_absorb_scale = absorb_scale
     rgb = np.zeros((h, w, 3), np.float32)
     dx = np.zeros((h, w), np.float32)
     dy = np.zeros((h, w), np.float32)
@@ -153,23 +163,101 @@ def test_smoke_glow_only_where_smoke_present():
     assert list(nz[1]) == [5], f"glow appeared off the smoke tile: cols {nz[1]}"
 
 
-def test_smoke_glow_equals_absorbed_energy():
-    # The glow deposited at a smoke tile == the light that tile's smoke removed
-    # from the ray: dep[c] * (smoke_density * smoke_absorption). Reconstruct the
-    # pre-absorption deposit `dep[c]` from the light buffer (which deposits
-    # BEFORE attenuation), then check the glow matches the absorbed fraction.
+def test_smoke_glow_equals_scatter_deposit():
+    # Decoupled scatter model (ch.05 §6.1 6b): the glow deposited at a smoke tile
+    # == local_light[c] * scatter_albedo[c] * density. It is a SEPARATE additive
+    # budget, NOT the absorbed amount. Reconstruct the deposit `dep[c]` from the
+    # light buffer (which deposits BEFORE attenuation) and check the scatter.
     h, w = 1, 20
-    sd, absorp = 0.5, 0.8
+    sd, albedo = 0.5, 0.7
     smoke = np.zeros((h, w), np.float32)
     smoke[0, 5] = sd
-    rgb, _, glow = _cast(h=h, w=w, smoke=smoke, smoke_absorption=absorp,
+    rgb, _, glow = _cast(h=h, w=w, smoke=smoke,
+                         scatter_albedo=(albedo, 0.0, 0.0),
                          color=(1.0, 0.0, 0.0))  # red beam -> red shaft
     dep_r = rgb[0, 5, 0]                  # red light deposited at the smoke tile
-    absorbed = dep_r * (sd * absorp)
-    assert np.isclose(glow[0, 5, 0], absorbed, rtol=1e-4), (
-        f"glow {glow[0,5,0]} != absorbed {absorbed}")
+    expected = dep_r * albedo * sd
+    assert np.isclose(glow[0, 5, 0], expected, rtol=1e-4), (
+        f"glow {glow[0,5,0]} != scatter {expected}")
     # Red beam -> only the red channel of the shaft glows.
     assert glow[0, 5, 1] == 0.0 and glow[0, 5, 2] == 0.0, "non-red shaft leaked"
+
+
+# ---------------------------------------------- decoupled per-channel optics
+
+
+def test_transmission_follows_beer_lambert():
+    # The surviving beam past a smoke tile follows exp(-absorption*density*scale).
+    # Compare the light deposited at the tile AFTER the smoke tile (col 6) for a
+    # neutral white beam, against the analytic transmission of the col-5 tile.
+    h, w = 1, 20
+    sd, absorp, scale = 0.5, 1.0, 1.4
+    smoke = np.zeros((h, w), np.float32)
+    smoke[0, 5] = sd
+    rgb, _, _ = _cast(h=h, w=w, smoke=smoke,
+                      absorption_rgb=(absorp, absorp, absorp),
+                      absorb_scale=scale)
+    # dep at col5 is pre-attenuation; dep at col6 is col5's deposit * trans *
+    # (dist falloff ratio). Easiest invariant: the RATIO of surviving energy
+    # across the smoke tile equals exp(-tau) up to the distance-falloff factor.
+    # Cross-check directly against a no-smoke control (same geometry, no smoke):
+    rgb0, _, _ = _cast(h=h, w=w, absorption_rgb=(absorp, absorp, absorp),
+                       absorb_scale=scale)
+    trans = float(np.exp(-absorp * sd * scale))
+    # col6 with smoke / col6 without smoke == transmission of the col5 tile.
+    ratio = rgb[0, 6, 0] / rgb0[0, 6, 0]
+    assert np.isclose(ratio, trans, rtol=1e-3), (
+        f"transmission ratio {ratio} != exp(-tau) {trans}")
+    # exp(-tau) NEVER reaches zero -> the beam survives deep smoke.
+    assert rgb[0, 6, 0] > 0.0, "beam must survive a smoke tile (exp never hits 0)"
+
+
+def test_higher_absorption_channel_is_dimmed_more():
+    # Per-channel: a channel with higher absorption is attenuated more. Blue
+    # absorbed hardest -> least blue survives past the smoke tile.
+    h, w = 1, 20
+    smoke = np.zeros((h, w), np.float32)
+    smoke[0, 5] = 0.6
+    rgb, _, _ = _cast(h=h, w=w, smoke=smoke, color=(1.0, 1.0, 1.0),
+                      absorption_rgb=(0.2, 0.5, 1.0), absorb_scale=1.4)
+    r, g, b = rgb[0, 6, 0], rgb[0, 6, 1], rgb[0, 6, 2]
+    assert r > g > b > 0.0, (
+        f"higher absorption must dim more: r={r} g={g} b={b}")
+
+
+def test_lower_absorb_scale_increases_beam_reach():
+    # absorb_scale is the beam-reach dial: LOWER -> more light survives (longer
+    # beam). Same smoke, two scales; the low scale transmits strictly more.
+    h, w = 1, 30
+    smoke = np.zeros((h, w), np.float32)
+    smoke[0, 5] = 0.7
+    rgb_far, _, _ = _cast(h=h, w=w, smoke=smoke, absorb_scale=0.3)
+    rgb_near, _, _ = _cast(h=h, w=w, smoke=smoke, absorb_scale=3.0)
+    # Light deposited well past the smoke tile (col 15).
+    assert rgb_far[0, 15, 0] > rgb_near[0, 15, 0], (
+        "lower absorb_scale must transmit MORE light (longer beam reach)")
+
+
+def test_scatter_is_independent_of_absorption():
+    # Decoupling: glow depends ONLY on scatter_albedo, not on absorption. Two
+    # casts with very different absorption but the same scatter_albedo deposit
+    # the same glow at the smoke tile (the glow is the SEPARATE additive budget,
+    # not the absorbed amount). This is the "barely absorbs, glows brightly"
+    # property (steam).
+    h, w = 1, 20
+    smoke = np.zeros((h, w), np.float32)
+    smoke[0, 3] = 0.5
+    glow_lo = _cast(h=h, w=w, smoke=smoke, absorb_scale=0.1,
+                    scatter_albedo=(1.0, 1.0, 1.0))[2]
+    glow_hi = _cast(h=h, w=w, smoke=smoke, absorb_scale=5.0,
+                    scatter_albedo=(1.0, 1.0, 1.0))[2]
+    # The deposit at the smoke tile happens BEFORE attenuation, so the local
+    # light (and thus the scatter) is identical regardless of absorb_scale.
+    assert np.isclose(glow_lo[0, 3, 0], glow_hi[0, 3, 0], rtol=1e-5), (
+        f"scatter must not depend on absorption: {glow_lo[0,3,0]} vs {glow_hi[0,3,0]}")
+    # And glow can EXCEED what absorption alone removes: with tiny absorption,
+    # albedo>0 still produces a bright deposit.
+    assert glow_lo[0, 3, 0] > 0.0, "glow present even when absorption is tiny"
 
 
 def test_smoke_glow_rgb_preserves_beam_colour():

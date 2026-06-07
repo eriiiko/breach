@@ -21,6 +21,8 @@ from typing import List, Optional, Sequence
 import numpy as np
 import pyray as rl
 
+from config import CFG
+
 from . import core
 from .camera import Camera2D
 from .lighting import LightingPass
@@ -88,14 +90,21 @@ class GameRenderer:
         # Level textures + lighting + overlays
         self.textures = core.load_level_textures(level_data)
         self.raycaster = breach_physics.Raycaster()
-        # smoke_absorption = 1.0 makes the smoke density field itself the
-        # absorption fraction: smoke=0.4 → 40% absorbed, smoke=1.0 → 100%
-        # absorbed. Physically intuitive ("more smoke blocks more light")
-        # and matches Erik's spec 2026-05-24. The deferred upgrade is to
-        # also DEPOSIT the absorbed light at the smoke tile (so lit smoke
-        # glows brighter than just the through-flux suggests) — that's a
-        # C++ raycaster change for the next physics pass.
-        self.raycaster.smoke_absorption = 1.0
+        # Smoke optics: decoupled per-channel Beer-Lambert absorption + a
+        # SEPARATE additive scatter/glow budget (ch.05 §6.1 §6). Bound from
+        # the [smoke] config section so the look is tunable live (F5 reload).
+        #   transmission:  trans_c = exp(-absorption[c] * density * absorb_scale)
+        #   scatter/glow:  smoke_glow[c] += local_light[c] * scatter_albedo[c] * density
+        # Dialing smoke_absorb_scale DOWN gives the long-beam "flashlight travels
+        # far through smoke and still glows" look (the beam survives deep smoke
+        # because exp(-tau) never hits 0). Defaults approximate the shipped look.
+        smoke_cfg = getattr(CFG, "smoke", None)
+        self.raycaster.smoke_absorption_rgb = tuple(
+            getattr(smoke_cfg, "smoke_absorption", (1.0, 1.0, 1.0)))
+        self.raycaster.smoke_scatter_albedo = tuple(
+            getattr(smoke_cfg, "smoke_scatter_albedo", (1.0, 1.0, 1.0)))
+        self.raycaster.smoke_absorb_scale = float(
+            getattr(smoke_cfg, "smoke_absorb_scale", 1.4))
         self.lighting = LightingPass(self.raycaster, cfg.grid_h, cfg.grid_w)
         # Upload the level's vacuum mask once — the shader uses it to discard
         # vacuum pixels so the screen-fixed background shows through.

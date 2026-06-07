@@ -66,7 +66,38 @@ struct LightSource {
 
 class Raycaster {
 public:
+    // ---- Smoke optics (ch.05 §6.1 §6 — decoupled per-channel absorption vs glow) ----
+    //
+    // Two INDEPENDENT per-channel budgets, NOT constrained to absorb + glow = 1:
+    //
+    //   1. Per-channel transmission (Beer-Lambert):
+    //        tau_c   = smoke_absorption[c] * smoke_density * smoke_absorb_scale
+    //        trans_c = exp(-tau_c)               // never reaches 0 -> beam survives deep smoke
+    //        remaining[c] *= trans_c
+    //      smoke_absorb_scale is the global "beam reach" dial: LOW = long beam
+    //      (flashlight travels far through smoke and still glows), HIGH = beam
+    //      dies fast. Per-channel absorption is the (future) gas COLOUR.
+    //
+    //   2. Separate additive scatter/glow (god-rays, smoke_glow buffer):
+    //        smoke_glow[c] += deposited_light[c] * smoke_scatter_albedo[c] * smoke_density
+    //      This is the light the smoke SCATTERS BACK toward the viewer. It is
+    //      independent of (and may exceed) absorption -> "barely absorbs, glows
+    //      brightly" gases (steam) are expressible.
+    //
+    // Legacy scalar `smoke_absorption` (kept for the scalar march_ray /
+    // update_from_fire path which has no per-channel notion).
     float smoke_absorption = 0.8f;
+
+    // Per-channel Beer-Lambert absorption coefficients (R,G,B). Defaults [1,1,1]
+    // (neutral grey smoke). Per-channel != grey -> coloured smoke later.
+    float smoke_absorption_rgb[3] = {1.0f, 1.0f, 1.0f};
+    // Per-channel scatter/glow albedo (R,G,B). Defaults [1,1,1].
+    float smoke_scatter_albedo[3] = {1.0f, 1.0f, 1.0f};
+    // Global beam-reach dial. LOW = long beam (flashlight travels far). Default
+    // 1.4 chosen so exp(-1.4*sd) approximates the shipped (1-sd) attenuation at
+    // mid density while never hard-zeroing the beam.
+    float smoke_absorb_scale = 1.4f;
+
     int   coarse_cluster   = 3;    // cluster fire sources on this grid
 
     // ---- Legacy API (intensity only) ----

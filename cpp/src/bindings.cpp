@@ -182,6 +182,31 @@ PYBIND11_MODULE(breach_physics, m) {
     py::class_<Raycaster>(m, "Raycaster")
         .def(py::init<>())
         .def_readwrite("smoke_absorption", &Raycaster::smoke_absorption)
+        .def_readwrite("smoke_absorb_scale", &Raycaster::smoke_absorb_scale)
+        // Per-channel Beer-Lambert absorption (R,G,B) — exposed as a 3-tuple.
+        .def_property("smoke_absorption_rgb",
+            [](const Raycaster& r) {
+                return py::make_tuple(r.smoke_absorption_rgb[0],
+                                      r.smoke_absorption_rgb[1],
+                                      r.smoke_absorption_rgb[2]);
+            },
+            [](Raycaster& r, const std::array<float, 3>& c) {
+                r.smoke_absorption_rgb[0] = c[0];
+                r.smoke_absorption_rgb[1] = c[1];
+                r.smoke_absorption_rgb[2] = c[2];
+            })
+        // Per-channel additive scatter/glow albedo (R,G,B) — 3-tuple.
+        .def_property("smoke_scatter_albedo",
+            [](const Raycaster& r) {
+                return py::make_tuple(r.smoke_scatter_albedo[0],
+                                      r.smoke_scatter_albedo[1],
+                                      r.smoke_scatter_albedo[2]);
+            },
+            [](Raycaster& r, const std::array<float, 3>& c) {
+                r.smoke_scatter_albedo[0] = c[0];
+                r.smoke_scatter_albedo[1] = c[1];
+                r.smoke_scatter_albedo[2] = c[2];
+            })
         .def_readwrite("coarse_cluster",   &Raycaster::coarse_cluster)
         .def("update_from_fire", [](const Raycaster& self,
                                      py::array_t<float> light_map,

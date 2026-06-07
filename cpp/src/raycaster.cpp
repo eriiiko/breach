@@ -208,25 +208,33 @@ void Raycaster::march_ray_directional(
 
         float sd = smoke_field[idx];
         if (sd > 0.001f) {
-            // Fraction of the ray each smoke tile absorbs this step.
-            float absorb_frac = sd * smoke_absorption;
-            // God-rays (ch.03 C16): deposit the light the smoke ABSORBS into
-            // smoke_glow, per channel. The absorbed energy is the survivor at
-            // this tile (remaining[c] * dist_atten — the same energy `dep_*`
-            // the light buffer saw) times the absorbed fraction. RGB-preserving
-            // (a red beam casts a red shaft); energy-conserving by construction
-            // (this is exactly the energy removed from `remaining` below).
+            // ---- Decoupled per-channel smoke optics (ch.05 §6.1 §6) ----
+            // Two INDEPENDENT budgets, NOT constrained to absorb + glow = 1.
+            //
+            // (1) God-rays / scatter (ADDITIVE deposit into smoke_glow): the
+            // light the smoke SCATTERS BACK toward the viewer, per channel. This
+            // is a SEPARATE gain (smoke_scatter_albedo) on the local light
+            // (dep_c, the same energy the light buffer saw) times density — it is
+            // NOT the absorbed amount, so glow is independent of (and may exceed)
+            // absorption. RGB-preserving (a red beam casts a red shaft).
             // Supersedes the old surface-tint light_modulation path (no
             // double-count) — see overlays.py / ch.05.
             if (smoke_glow != nullptr) {
-                smoke_glow[idx * 3 + 0] += dep_r * absorb_frac;
-                smoke_glow[idx * 3 + 1] += dep_g * absorb_frac;
-                smoke_glow[idx * 3 + 2] += dep_b * absorb_frac;
+                smoke_glow[idx * 3 + 0] += dep_r * smoke_scatter_albedo[0] * sd;
+                smoke_glow[idx * 3 + 1] += dep_g * smoke_scatter_albedo[1] * sd;
+                smoke_glow[idx * 3 + 2] += dep_b * smoke_scatter_albedo[2] * sd;
             }
-            float smoke_t = (1.0f - absorb_frac);
-            remaining[0] *= smoke_t;
-            remaining[1] *= smoke_t;
-            remaining[2] *= smoke_t;
+            // (2) Per-channel transmission (Beer-Lambert, ch.05 §6.1 6a):
+            //   tau_c   = absorption_c * density * absorb_scale
+            //   trans_c = exp(-tau_c)        // never reaches 0 -> beam survives
+            //   remaining[c] *= trans_c      // multiplicative tint, long reach
+            // absorb_scale is the global beam-reach dial (LOW = far). exp(-x) is
+            // the physically correct law: the difference between "beam dies in 2
+            // tiles" and "beam visibly tints across the whole room."
+            float scaled = sd * smoke_absorb_scale;
+            remaining[0] *= std::exp(-smoke_absorption_rgb[0] * scaled);
+            remaining[1] *= std::exp(-smoke_absorption_rgb[1] * scaled);
+            remaining[2] *= std::exp(-smoke_absorption_rgb[2] * scaled);
         }
 
         if (t_max_x < t_max_y) {
