@@ -244,51 +244,480 @@ the same `smoke` field; only the RGB path performs the god-ray deposit.
 These are routed, agreed directions layered on top of the shipped model — not yet built. They are
 recorded here so the canon model and its extension points stay in one place.
 
-**Normal-mapped smoke (render).** Smoke density is one value per physics tile, but the *visual*
-smoke pixels within a tile sit at render resolution. A per-pixel "smoke normal" sub-texture would
-let smoke not just attenuate light but catch directional highlights from it, using the same
-per-pixel dot-product the renderer already does for solid sprites (the light direction is in
-`gmap.light_dir`). The result is internal shading inside the volume — wisps and eddies reading as
-structure instead of flat fog. Cheap because the renderer already samples light direction per
-pixel; the only new cost is authoring or generating the normal texture. (See ch.05.)
+### 6.1 Normal-mapped smoke — render model
 
-The normal need not be authored — two cheap *generated* sources (idea from Erik, 2026-06): **wind as
-a dynamic normal** — the per-tile `wind_x/wind_y` (already computed) tilts the smoke surface so it
-leans into the flow and catches light along it (free, and makes smoke read as *moving*); but wind is
-a flow vector at tile resolution, not a true surface normal, so it gives orientation/motion rather
-than fine wisp detail. And **∇smoke** — the density gradient is the cloud's actual silhouette/edge,
-the more physically normal-like signal for shading its shape. The strong combo is **∇smoke (or a base
-noise) for structure + wind for motion/orientation**, both per-pixel-cheap.
+Smoke density is one value per physics tile, but the *visual* smoke pixels within a tile sit at
+render resolution. A per-pixel "smoke normal" sub-texture lets smoke not just attenuate light but
+catch directional highlights from it, using the same per-pixel dot-product the renderer already does
+for solid sprites (the light direction is in `gmap.light_dir`). The result is internal shading
+inside the volume — wisps and eddies reading as structure instead of flat fog. The original seed —
+that the normal need not be authored but can be *generated* from **wind** (a dynamic tilt that makes
+smoke read as moving) plus **∇smoke** (the density gradient, the cloud's true silhouette/edge) — was
+Erik's idea (2026-06); the model below is the worked-out spec built on it. **This is a design spec,
+not yet built** (no shader path exists; see Implementation status).
 
-**Multi-gas system (white/black smoke, poison, teargas, fuel).** Smoke generalises from one scalar
-field to a small **set of gas density fields** `(h, w, N)` — one per gas type — sharing the *same*
-diffusion + advection solver (they all ride the same wind; on CUDA it is one batched stencil). The
-planned set is **white smoke (water vapour) · black smoke (combustion soot) · poison · tear gas ·
-flammable fuel gas** — white and black are a **confirmed requirement** (Erik): white vapour rises
-from water/steam, black soot from fire and explosions, and the two blend to grey via the colour
-model below. Because a gas type is just a data row, further variants stay free additions — more
-rows, not more system.
+Design target: 2D top-down, real-time, coarse per-tile inputs (`smoke_density`, `wind`, optional
+`temperature`), per-pixel `light_dir` already available from the normal-map shading path, and a
+per-gas per-channel `ABSORPTION` triple (§6.2). This is the richest reasonable version; **every block
+is independently disable-able** for performance scaling (see tiers at the end).
 
-A gas type is **data-driven, exactly like a material** — a `[gases.*]` config table, one row per gas:
+**Key principle:** density gives the silhouette and bulk; a higher-res, wind-advected noise layer
+gives the wisps; they live at different resolutions and are combined per-pixel. Never let the coarse
+tile grid be visible — all per-pixel richness comes from the advected noise.
 
-- **Optical signature = colour.** Each gas carries a *per-channel* attenuation triple (the
-  per-channel `smoke_absorption` the shipped model lacks — see Gaps). That single coefficient is both
-  how the gas *looks* and how it *tints light* through it: green poison absorbs red+blue and passes
-  green, so it reads green *and* greens the light behind it. **Mixing falls out for free** as the
-  density-weighted sum of signatures — poison over fuel blends to a murky olive in both the look and
-  the light-tint, through the same per-channel attenuation combine `dyn_light_atten` already does. No
-  blend code.
-- **Effect** — poison = damage-over-time to a unit in the cell; teargas = slow / blind. (A unit-side
-  reading of the gas fields; mechanics chapter.)
-- **Flammability** — fuel ignites where `fuel > threshold` with oxygen/heat present, spawning fire. A
-  **flamethrower** is then just: emit the fuel gas in a cone (directed injection — the
-  momentum-at-nozzle idea from atmosphere) and ignite it. Fuel + the advection model + fire, no new
-  mechanic.
+#### Inputs and resolutions
 
-This unifies what were separate forward ideas (a fuel field, a teargas field) into one system and
-reuses 100 % of the smoke transport plus the per-channel attenuation machinery. v1 keeps the gases
-independent — they coexist and blend *visually*, each with its own effect; chemical interaction
-between gases is a later layer. Cost is ≈ N× the (cheap, batchable) smoke solver.
+| Field | Resolution | Source |
+|---|---|---|
+| `D = smoke_density` | per-tile, bilinear → per-pixel | atmosphere solver |
+| `W = wind (wx,wy)` | per-tile, bilinear | atmosphere solver |
+| `T = temperature` | per-tile, bilinear | heat buffer (commit `6d3cc22`) |
+| `ABS = (aR,aG,aB)` | per-gas constant | gas material (`[gases.*]`, §6.2) |
+| `light_dir` | per-pixel (x,y,z) | existing normal-map shading path |
+| `h` detail height | ≥ 4× density res | procedural fbm/curl, advected (step 2) |
+
+**1. Per-pixel smoke NORMAL (the core).** Build a screen-space normal `N` (x right, y down, z toward
+viewer) by summing four contributions, then normalizing.
+
+*1a. Density-gradient normal (silhouette / bulk shape).* Central differences on the smoothed density
+field — makes cloud *edges* catch light like a rounded shoulder.
+```
+gD       = vec2( D(x+e)-D(x-e), D(y+e)-D(y-e) ) / (2e)   // e = 1 tile
+n_dens.xy = -gD                  // surface tilts away from increasing density -> lit rim
+```
+
+*1b. Wind orientation tilt (motion shaping).* A small constant surface tilt along wind so moving
+smoke reads as flowing, and highlights bias to the windward face:
+```
+n_wind.xy = k_wind * W           // k_wind ~ 0.15..0.3
+```
+
+*1c. High-res animated noise normal (wisps — the money layer).* Gradient of the advected detail
+height `h` (step 2), sampled far finer than the tile grid:
+```
+gh         = vec2( h(u+du)-h(u-du), h(v+dv)-h(v-dv) ) / (2du)
+n_noise.xy = -k_noise * gh        // k_noise ~ 0.6..1.2
+k_noise   *= mix(1.2, 0.5, saturate(D))   // thin smoke wispier, dense smoke smoother
+```
+
+*1d. Z-component (puffiness).* Denser/higher regions bulge toward camera; never let z→0 (avoids flat
+black normals):
+```
+nz = mix(0.4, 1.0, saturate(D)) + 0.3*h
+```
+
+*Combine and normalize* (weights are the main artistic knobs — typical: density 1.0, wind 0.2, noise
+0.8):
+```
+N.xy = n_dens.xy + n_wind.xy + n_noise.xy
+N.z  = nz
+N    = normalize(N)
+```
+
+**2. Flow-map / curl-noise advection of the detail texture.** The detail height `h` must roil and
+travel along the wind, or it looks like a static screen-door over moving smoke. Use curl-noise for
+the velocity field and a two-phase flow-map blend for the texture sampling.
+
+*2a. Curl-noise velocity (divergence-free roiling — Bridson 2007).* From a scalar fbm potential `ψ`,
+the 2D divergence-free velocity is the perpendicular gradient. Divergence-free ⇒ no sources/sinks ⇒
+swirling, mass-conserving look. Wind is the bulk drift; curl is turbulence on top:
+```
+v_curl = ( ∂ψ/∂y , -∂ψ/∂x )       // discrete central diff, small ε
+flow   = W + k_curl * v_curl       // k_curl ~ 0.3*|W| + small const
+// 2-3 fbm octaves in psi; higher octaves -> smaller vortices / finer wisps
+```
+
+*2b. Two-phase flow-map advection (Valve / Catlike Coding) to hide UV stretch.* Advecting UVs by
+`flow*t` stretches unboundedly; reset with two half-period-offset phases and a triangle-wave
+crossfade so the seam is never visible:
+```
+prog_A = frac(t*speed)
+prog_B = frac(t*speed + 0.5)
+uvA    = uv_base - flow*prog_A
+uvB    = uv_base - flow*prog_B
+hA     = fbm(uvA * detail_scale)
+hB     = fbm(uvB * detail_scale)
+wA     = 1 - abs(1 - 2*prog_A)     // triangle: 0 at reset, 1 mid-phase
+wB     = 1 - abs(1 - 2*prog_B)     // wA + wB == 1
+h      = hA*wA + hB*wB
+// anti-pulse (Vlachos): t += noise(uv)*0.3 so pixels don't reset in lockstep
+// speed scales with |W| -> faster wind = faster roil
+```
+This single advected `h` feeds both the noise normal (1c) and the density detail break-up (step 5) —
+one sample set, reused.
+
+**3. Cheap self-shadowing / internal lighting (normal·light_dir).** With per-pixel `light_dir` and
+`N`, do Lambert + a wrap term to fake the subsurface/multi-scatter glow real volumetric smoke has on
+its lit side:
+```
+ndl   = dot(N, light_dir)
+lit   = saturate(ndl)                       // direct lit face
+wrap  = saturate((ndl + w) / (1 + w))       // w ~ 0.5, soft wrap = cheap scatter
+shade = mix(ambient, 1.0, lerp(wrap, lit, 0.5))   // shade in ~[ambient, 1]
+```
+This single per-pixel normal stands in for the AAA "6-way lighting" idea (6 directional
+density-occlusion maps blended by `dot` with the light) — the right tradeoff at 2D tile resolution.
+
+Add a coarse **directional self-shadow** by marching density a few tiles toward the light (tile-res,
+not per-pixel — Beer–Lambert along the light):
+```
+occ = 0
+for s in 1..3:  occ += D( pos + light_dir.xy * s*tile )
+selfshadow = exp(-k_sh * occ)
+shade *= selfshadow
+```
+3 taps is plenty: the per-pixel normal carries fine relief, this carries the bulk "back of the cloud
+is dark" cue.
+
+**4. Black-body EMISSION (hot smoke glows).** Hot smoke/fire is *additive* and must not be attenuated
+like cold smoke. Drive emission from `T` (heat buffer) through the black-body curve — the same curve
+as the `[gases.*]` sub-note (§6.2), expressed here as a real-time fit.
+
+*4a. Temperature → RGB (cheap polynomial fit, Kelvin).* Anchors: ~1000 K deep red, ~1900 K orange,
+~4500 K yellow-white, ~6500 K white.
+```
+bb(T):   // T in Kelvin
+  r = saturate( 1.0 )                              // red saturates early
+  g = saturate( 0.39*ln(T/100) - 0.63 )
+  b = saturate( 0.543*ln(T/100 - 10) - 1.196 )     // ~0 below 2000K
+emit_color = bb(T)
+```
+(For artist-controlled exactness, sample the LUT in the `[gases.*]` sub-note (§6.2) instead of this
+fit — same shape.)
+
+*4b. Intensity (tunable ramp, threshold + power).* Don't use raw T⁴ — it clips instantly; use a
+tunable power and threshold so only genuinely hot tiles glow:
+```
+e        = pow( saturate((T - T_glow0) / (T_max - T_glow0)), p )   // T_glow0 ~ 600K, p ~ 2..4
+emission = glow_gain * e * emit_color
+```
+
+*4c. Fold in additively, post-attenuation:*
+```
+out_rgb += emission        // ADD, not multiply — emission ignores ABS
+```
+Reuses the existing `smoke_glow` buffer; `T` already exists from the heat pass.
+
+**5. The `smoke^gamma` contrast trick.** Raw density-opacity looks like flat fog. Remapping density
+through a power curve restores high-contrast wispy edges that read as "smoke," not "haze." Apply to
+the **opacity / detail-modulation**, not the light:
+```
+D_eff = pow( saturate( D * (0.5 + 0.5*h) ), gamma )   // gamma ~ 1.5..2.5
+gamma = mix(2.5, 1.2, saturate(D))                    // thin wisps sharp, dense walls soft
+```
+- `gamma > 1` crushes thin smoke toward transparent and sharpens edges (wispy, filmic).
+- Modulating `D` by detail height `h` *before* the power breaks the coarse tile silhouette into
+  filaments — this is what kills the visible tile grid.
+
+**6. Decoupled, SCALABLE per-channel absorption vs glow gain.** The crux for Breach's gameplay (a
+beam must travel *far* through coloured smoke and the smoke must still glow). **Absorption and glow
+are independent and must not sum to 1.** This is the model that resolves the per-channel-attenuation
+gap the shipped ray march has (see Implementation status).
+
+*6a. Per-channel transmission (Beer–Lambert, scalable).* Exponential attenuation with a global
+scalar so you can dial *how far light reaches* without changing the gas's hue:
+```
+tau_c   = ABS_c * D_eff * absorb_scale     // c in {R,G,B}; absorb_scale << 1 -> long reach
+trans_c = exp( -tau_c )                     // never reaches zero -> beam survives deep smoke
+```
+`exp(-x)` is the physically correct Beer–Lambert law — the difference between "beam dies in 2 tiles"
+and "beam visibly tints across the whole room." Green poison `ABS=(0.45,0.10,0.80)` ⇒ `trans≈(mid,
+high, low)` ⇒ passes/tints yellow-green.
+
+*6b. Glow gain is a separate, larger budget.* The light the smoke *scatters back* (internal lighting
+step 3) uses its own gain, independent of absorption — can be > 1 while absorption is ≪ 1
+simultaneously:
+```
+scatter_c = glow_gain_c * shade * inscatter_color_c * D_eff
+```
+This decoupling is what lets you author "barely absorbs, glows brightly" gases (and is exactly how
+steam works: tiny absorption, large additive scatter).
+
+*6c. Final per-channel composite* (per channel c, incoming light `L_in`):
+```
+L_out_c =  L_in_c * trans_c     // 1. light passing THROUGH (tinted, long reach)
+        +  scatter_c             // 2. light scattered toward viewer by lit smoke
+        +  emission_c            // 3. black-body self-emission (hot smoke)
+```
+Order matters: transmit first (multiplicative tint), then add scatter and emission (additive,
+unaffected by the gas's own absorption).
+
+#### Putting it together — per-pixel pseudo-shader
+
+```
+// --- sample coarse fields (bilinear) ---
+D = sample(density); W = sample(wind); T = sample(temp);
+
+// --- advected detail (step 2) ---
+flow = W + k_curl * curl(psi, uv);
+h    = twophase_fbm(uv, flow, t);              // reused below
+
+// --- normal (step 1) ---
+n_dens  = -grad(D);
+n_wind  =  k_wind * W;
+n_noise = -k_noise * mix(1.2,0.5,D) * grad(h);
+N = normalize( vec3(n_dens + n_wind + n_noise, mix(0.4,1.0,D) + 0.3*h) );
+
+// --- lighting (step 3) ---
+ndl   = dot(N, light_dir);
+shade = mix(ambient, 1.0, saturate((ndl+0.5)/1.5)) * selfshadow_3tap(D, light_dir);
+
+// --- opacity / contrast (step 5) ---
+gamma = mix(2.5, 1.2, D);
+D_eff = pow( saturate(D*(0.5+0.5*h)), gamma );
+
+// --- emission (step 4) ---
+e        = pow(saturate((T - T_glow0)/(T_max - T_glow0)), p);
+emission = glow_gain * e * blackbody(T);
+
+// --- per-channel composite (step 6) ---
+for c in R,G,B:
+   trans_c   = exp( -ABS[c] * D_eff * absorb_scale );
+   scatter_c = glow_gain_c * shade * inscatter[c] * D_eff;
+   L_out[c]  = L_in[c]*trans_c + scatter_c + emission[c];
+```
+
+#### Tuning cheat-sheet (starting numbers)
+
+| Knob | Start | Effect |
+|---|---|---|
+| `k_wind` | 0.2 | wisp lean / motion read |
+| `k_noise` | 0.8 | wisp relief strength |
+| `k_curl` | 0.3·\|W\| | turbulence vs bulk drift |
+| `detail_scale` | 4–8× tile | wisp fineness (fbm octaves 2–3) |
+| `gamma` | 1.2 (dense) → 2.5 (thin) | edge contrast |
+| `absorb_scale` | 0.1–0.4 | **beam reach** (low = far) |
+| `glow_gain_c` | 1.0–3.0 | scatter/glow brightness (decoupled) |
+| `T_glow0 / p` | 600 K / 3 | when/how sharply hot smoke ignites |
+| wrap `w` | 0.5 | cheap subsurface softness |
+| selfshadow taps | 3 @ tile-res | bulk dark-side |
+
+#### Scaling tiers (drop blocks for perf)
+
+- **Tier 0 (cheapest):** normal 1a+1d, Lambert (3), contrast (5), exp transmission (6). No noise, no
+  advection.
+- **Tier 1:** add advected noise normal 1c+step 2 (wisps) and emission (4). — *the visual sweet
+  spot.*
+- **Tier 2 (richest):** add wind tilt 1b, wrap + 3-tap self-shadow (3), separate per-channel scatter
+  6b, curl-noise turbulence. Full filmic look.
+
+#### Why these choices (physics notes)
+
+- **`exp(-τ)` over `(1-a)`** is the actual Beer–Lambert law — the difference between a beam dying in 2
+  tiles and visibly tinting across the whole room. Essential for Breach's gameplay beams.
+- **Divergence-free curl noise** (Bridson) makes procedural smoke roil convincingly instead of just
+  scrolling — no fake sources/sinks.
+- **Two-phase flow blend** (Valve) is the standard cheap way to advect a tiling detail texture
+  indefinitely without visible UV stretch — 2 samples + a triangle crossfade.
+- **Single-normal stand-in for 6-way lighting**: full 6-directional lightmaps are overkill at tile
+  density; one advected per-pixel normal + a 3-tap bulk shadow captures the same lit-face / dark-face
+  / rim cues at a fraction of the cost.
+- **Additive emission post-attenuation** is physically right: a gas's self-emission and back-scatter
+  are not subject to its own front-face absorption in the thin-slab approximation rendered here.
+- **2D top-down ⇒ no buoyancy term**: gas motion comes purely from diffusion + wind/pressure
+  advection in the solver, never from a vertical rise; "puffiness" (1d) is a *lighting* cue only, not
+  physical lift.
+
+### 6.2 Multi-gas system — `[gases.*]` material table
+
+Smoke generalises from one scalar field to a small **set of gas density fields** — one per gas type —
+sharing the *same* diffusion + advection solver (they all ride the same wind; on CUDA it is one
+batched stencil). A gas type is **data-driven, exactly like a material**: a `[gases.*]` config table,
+one row per gas. White and black smoke are a **confirmed requirement** (Erik): white vapour from
+water/steam, black soot from fire and explosions, blending to grey through the optical model below.
+Because a gas type is just a data row, further variants stay free additions — more rows, not more
+system. This unifies what were separate forward ideas (a fuel field, a teargas field) into one system
+and reuses 100 % of the smoke transport plus the per-channel attenuation machinery. **Design-only,
+not built** — smoke is one scalar field today (see Implementation status).
+
+The two gameplay/structural properties that ride alongside the optics:
+
+- **Effect** is a per-gas gameplay tag, read **unit-side** (a mechanics-chapter concern, not the
+  solver's): `poison` = damage-over-time to a unit in the cell; `teargas` = slow / blind / area
+  denial; `white_smoke` = pure vision block. The solver only transports the field; the cell-occupancy
+  reading of it lives in mechanics.
+- **Flammability** is the `fuel_gas` row's defining flag: it ignites where `fuel_gas > threshold`
+  with oxygen/heat present, spawning fire (heat + `black_smoke`). A **flamethrower** is then just
+  *emit `fuel_gas` in a cone* (directed injection — the momentum-at-nozzle idea from the atmosphere
+  chapter) *and ignite it*. That may grow into its own system owning ignition/spread; the gas is the
+  combustible **substrate** it burns, and the `fuel_gas` `diffusion` is the knob between a tight
+  flamethrower jet and a diffuse explosive fog. `fuel_gas` is the only flammable gas.
+
+**Mixing falls out for free.** When several gases share a cell, the cell's optical signature is the
+**density-weighted sum** of the per-gas per-channel signatures — poison over `fuel_gas` blends to a
+murky olive in both the look *and* the light-tint, through the same per-channel attenuation combine
+`dyn_light_atten` already performs. No blend code. **v1 keeps the gases independent**: they coexist
+and blend *visually*, each with its own effect, but do not react with one another — chemical
+interaction between gases is a later layer. Cost is ≈ N× the (cheap, batchable) smoke solver.
+
+This table defines the physical/optical parameters of every gas. Each gas is a per-channel
+**absorption** triple (Beer–Lambert, applied multiplicatively to the light field per §6.1 step 6),
+plus diffusion/decay rates, an optional glow term, and the gameplay flags above. **All values are
+design defaults — tune them in play.** RGB triples are *per-unit-density absorption*: higher = more
+of that channel removed, so the gas tints transmitted light toward the channels it does *not* absorb.
+
+> Two conventions used below:
+> - **Absorption** is the *subtractive* term: `trans_c = exp(-ABS_c · D · absorb_scale)` (render model
+>   §6.1 step 6). It never reaches zero, so a bright beam survives through deep smoke.
+> - **Scatter/glow** is a *separate, additive* budget (not constrained to `absorb + glow = 1`). Steam
+>   in particular is dominated by additive brightening, not absorption — see its `scatter_albedo`
+>   note.
+
+#### Config-shaped spec (TOML-ish)
+
+```toml
+# Per-channel ABSORPTION is (R, G, B), per unit density.
+# diffusion / decay are per-tick rates (atmosphere-solver units), design defaults.
+# glow is the baseline self-glow gain (separate from black-body emission, §6.1 step 4).
+
+[gases.white_smoke]            # water vapour / steam
+absorption   = [0.10, 0.10, 0.10]   # flat, low — Mie scattering is spectrally neutral
+scatter_albedo = [0.92, 0.92, 0.95] # NEAR-WHITE additive brighten — the dominant visual term
+diffusion    = 0.18                 # spreads readily, light gas
+decay        = 0.020                # condenses / dissipates moderately fast
+glow         = 0.0                  # no self-glow (but scatters local light brightly)
+flammable    = false
+effect       = "vision_block"       # pure concealment; clears on decompression
+# NOTE: steam READS as bright white because scatter_albedo * local_light dominates.
+#       Absorption alone would make it look like dilute grey smoke — do not raise it.
+
+[gases.black_smoke]            # combustion soot
+absorption   = [0.88, 0.90, 0.93]   # near-neutral, slight blue tilt: thin soot reads warm/brown
+scatter_albedo = [0.04, 0.04, 0.04] # soot barely scatters — it is the dark gas
+diffusion    = 0.10                 # heavier, clings; slower spread than steam
+decay        = 0.008                # lingers — soot settles slowly
+glow         = 0.0                  # cold soot does NOT glow; see black-body sub-note for hot soot
+flammable    = false                # the soot itself is spent fuel
+emits_when_hot = true               # black-body emission driven by heat buffer (see sub-note)
+effect       = "vision_block_heavy" # near-opaque concealment at density
+
+[gases.poison]                # chlorine (Cl2), yellow-green
+absorption   = [0.45, 0.10, 0.80]   # B absorbed hardest, R moderate, G passes -> yellow-green tint
+scatter_albedo = [0.10, 0.30, 0.06] # faint green inscatter
+diffusion    = 0.12                 # creeps and pools (heavier-than-air feel)
+decay        = 0.004                # persistent — the hazard lingers
+glow         = 0.0
+flammable    = false
+effect       = "damage_over_time"   # lethal cloud; saturates to iconic green at mid-high density
+# NOTE: scale opacity with density so thin wisps read near-clear and only thick
+#       columns saturate to the WW1 yellow-green. Tune density->opacity to put the
+#       "deadly green cloud" at mid-high density, not at trace levels.
+
+[gases.teargas]               # CS aerosol, pale near-white (DELIBERATELY ambiguous vs steam)
+absorption   = [0.12, 0.16, 0.30]   # low overall, B ~2x R -> faint warm/yellow only in thick plumes
+scatter_albedo = [0.88, 0.90, 0.92] # near-white scatter, like steam — sustains the ambiguity
+diffusion    = 0.15                 # disperses like a fine aerosol
+decay        = 0.010                # clears moderately
+glow         = 0.0
+flammable    = false
+effect       = "area_denial"        # forces units out of the area; non-lethal
+# NOTE: kept visually NEAR white_smoke ON PURPOSE (tactical ambiguity, confirmed).
+#       At a glance reads as steam; only thick plumes betray the faint yellow cast.
+#       For more "off" look nudge to [0.14,0.18,0.34]; to vanish into steam drop to [0.11,0.14,0.24].
+
+[gases.fuel_gas]              # combustible vapour, faint, FLAMMABLE
+absorption   = [0.08, 0.10, 0.16]   # very faint, slight blue tilt — nearly invisible haze
+scatter_albedo = [0.20, 0.22, 0.28] # weak, faintly cool scatter
+diffusion    = 0.22                 # GAMEPLAY KNOB: high = gassy cloud, low = tight flamethrower jet
+decay        = 0.006                # lingers as an ignition hazard
+glow         = 0.0
+flammable    = true                 # IGNITES -> spawns heat + black_smoke; the only flammable gas
+emits_when_hot = true               # while burning it glows via the black-body curve
+effect       = "ignition_hazard"    # invisible-ish until lit; then a fireball
+# NOTE: diffusion is the flamethrower feel knob. A dedicated flamethrower system may
+#       own ignition/spread; this gas is the substrate it burns. Low diffusion = a
+#       directed jet that hangs in the air; high diffusion = a diffuse explosive fog.
+```
+
+#### Readable summary
+
+| Gas | Real-world | Absorption (R,G,B) | Diffusion | Decay | Glow | Flammable | Gameplay effect |
+|---|---|---|---|---|---|---|---|
+| **white_smoke** | water vapour / steam | `[0.10, 0.10, 0.10]` | 0.18 (fast) | 0.020 (fast) | scatter-bright, no self-glow | no | Vision block; clears on decompression |
+| **black_smoke** | combustion soot | `[0.88, 0.90, 0.93]` | 0.10 (slow) | 0.008 (lingers) | **hot → black-body** | no | Heavy vision block; near-opaque |
+| **poison** | chlorine (Cl₂) | `[0.45, 0.10, 0.80]` | 0.12 (pools) | 0.004 (persistent) | none | no | Damage-over-time; iconic green |
+| **teargas** | CS aerosol | `[0.12, 0.16, 0.30]` | 0.15 | 0.010 | scatter-bright (ambiguous) | no | Area denial; *reads as steam* |
+| **fuel_gas** | combustible vapour | `[0.08, 0.10, 0.16]` | 0.22 (knob) | 0.006 (lingers) | hot → black-body when lit | **yes** | Ignition hazard → fireball |
+
+**Notes on the chosen values (research-backed):**
+- **white_smoke** absorption dropped from the starting `[0.30,0.30,0.30]` to `[0.10,0.10,0.10]`:
+  steam is Mie-regime (droplets ≫ wavelength), so extinction is spectrally flat *and* its signature
+  is **additive brightening**, not subtractive darkening. The visual weight lives in `scatter_albedo`
+  coupled to the local RGB light field, not in absorption. Equal-RGB shape was correct;
+  magnitude/sign were not.
+- **black_smoke** nudged to `[0.88,0.90,0.93]`: soot absorption rises toward blue (`~1/λ^α`, complex
+  index ≈ 1.95 + 0.79i), so thin soot transmits a little extra red and reads faintly warm/brown while
+  dense soot goes near-black. The starting `[0.90,0.90,0.92]` is also defensible if a more neutral
+  look is wanted.
+- **poison** changed from `[0.75,0.20,0.65]` to `[0.45,0.10,0.80]`: Cl₂'s visible absorption tail
+  peaks in the violet/blue, so **blue must be absorbed hardest**, red only moderately (red partially
+  survives → *yellow*-green, the sickly WW1 hue), green passes. The original over-absorbed red, which
+  skewed toward pure cyan-green. Push R→0.6 for colder/greener; R→0.35 for more sulfurous-yellow.
+- **teargas** softened from `[0.25,0.35,0.60]` to `[0.12,0.16,0.30]`: real CS is near-white
+  pyrotechnic smoke with only a faint warm cast. Low overall absorption keeps thin haze bright/white
+  (scatter-dominated) so it stays ambiguous with steam; B≈2×R gives a faint yellow that only emerges
+  in thick plumes. The starting value was too dark and too saturated-yellow to pass for water vapour.
+- **fuel_gas** (renamed from `fuel`) kept faint and near-invisible per the approved palette; it is
+  the only flammable gas and the substrate a flamethrower/ignition system burns. Its `diffusion` is
+  the primary gameplay knob (tight jet ↔ explosive fog).
+
+#### Sub-note — temperature → black-body emission (`black_smoke`, and any gas with `emits_when_hot`)
+
+Hot soot glows. Emission is **additive and is not subject to the gas's own absorption** (thin-slab
+approximation), so it is composited *after* transmission (render model §6.1 step 4 / step 6). It has
+two separable parts: **chromaticity** from a temperature LUT, and **intensity** from a
+Stefan–Boltzmann-style (∝ T⁴) ramp. Although `black_smoke` is the canonical emitter, *any* gas
+flagged `emits_when_hot` (e.g. burning `fuel_gas`) uses the same curve — drive `T` from the heat
+buffer (commit `6d3cc22`).
+
+**Chromaticity LUT** (Planckian locus, clipped to sRGB, normalized so brightest channel = 1.0; lerp
+between rows):
+
+| Temp (K) | R | G | B | Look |
+|---|---|---|---|---|
+| 600  | 0.10 | 0.00 | 0.00 | barely-visible dull red (near black) |
+| 800  | 0.40 | 0.05 | 0.00 | dim ember red |
+| 1000 | 1.00 | 0.22 | 0.00 | deep red-orange |
+| 1300 | 1.00 | 0.40 | 0.05 | orange |
+| 1600 | 1.00 | 0.55 | 0.16 | bright orange |
+| 2000 | 1.00 | 0.68 | 0.33 | amber / candle |
+| 2500 | 1.00 | 0.78 | 0.55 | warm yellow-white |
+| 3000 | 1.00 | 0.84 | 0.68 | incandescent (soft white) |
+| 4000 | 1.00 | 0.92 | 0.85 | warm white |
+| 5000 | 1.00 | 0.98 | 0.96 | near-neutral white |
+
+Red saturates to 1.0 by ~1000 K and stays there; G then B climb as T rises, walking
+red→orange→yellow→white. Fire/smoke never exceeds ~5000 K, so that is a fine top of the table. Store
+as a small LUT and linear-interp between rows.
+
+**Intensity + final emission** (Stefan–Boltzmann, shifted so cool smoke is genuinely dark):
+
+```
+# --- colour (chromaticity only) ---
+rgb_chroma = LUT_lerp(T)                 # table above, linear interp between rows
+
+# --- intensity (relative, Stefan-Boltzmann, shifted) ---
+T0   = 800.0                             # visible-emission threshold; below this -> dark
+Tref = 2000.0                            # reference where I ~= 1.0
+if T <= T0:
+    I = 0.0
+else:
+    I = ((T - T0) / (Tref - T0))**4      # T^4 law, shifted so it is dark below T0
+I = min(I, I_max)                        # clamp; I_max ~ 3.0..4.0 for white-hot core
+
+# --- final emission folded into the light field (ADDED, post-attenuation) ---
+emission_rgb = rgb_chroma * I * smoke_density   # glow lives in the soot that is actually there
+```
+
+Why this shape: **T⁴** gives the correct steep ramp (cool 1000 K soot is a dim red ember; 2000 K+
+blows out to yellow-white). **Shifting by `T0 = 800 K`** before the power makes cool smoke genuinely
+dark (I → 0) — selling "cool smoke is just shadow." **Clamping `I_max`** lets the hottest core
+saturate to white and feed the existing ACES tone-map (commit `6df05ec`), which does the
+red→orange→yellow→white roll-off for free as I drives all channels past 1.0. **Multiplying by
+`smoke_density`** ties glow to the soot present, so it lives in the smoke volume, not empty air. If a
+separate `heat` buffer exists (commit `6d3cc22`), drive `T` from it and keep density purely as the
+visibility/attenuation term. *Pure-Planck alternative:* `I = (T/Tref)**4` minus a small floor,
+clamped at 0 — same behaviour, softer cutoff.
 
 ---
 
@@ -328,26 +757,41 @@ Audited against `cpp/src/smoke_dynamics.{h,cpp}`, `src/simulation/physics_runner
 **Designed but not built:**
 
 - **Lingering-smoke venting** — the permeability boundary and soft units have landed (above), but the
-  lingering-haze-on-vacuum artifact is **not** fixed: face-flux as a pressure sink was reverted, and
-  the real fix needs a *sustained continuity wind toward the breach* (an open atmosphere-side design
-  decision — ch.04 §4). Owed.
-- **Normal-mapped smoke** (§6) — render-side idea only; no smoke-normal texture or shader path.
-- **Multi-gas system** (§6) — smoke is a single scalar field today; the N-field gas set
-  (poison / teargas / fuel, a data-driven `[gases.*]` table, per-channel colour/attenuation, and
-  density-weighted mixing) is not built. Flamethrower (fuel + ignition) follows from it.
-- **CUDA path** (§3) — semi-Lagrangian GPU advection is planned; the current solver is CPU C++.
+  lingering-haze-on-vacuum artifact is **not** fixed. The fix is **smoke-side**, not atmosphere-side:
+  the atmosphere's vacuum-relaxation drain is adequate, and adding a continuity-wind / *second wind*
+  to the atmosphere is the wrong layer (resolved in ch.04 §4, which now says the same). The lingering
+  haze is **smoke v2**: replace the central-difference advection stencil (which checkerboards near
+  breaches) with **semi-Lagrangian advection**, plus a **dial-able smoke-side sink-pull** that biases
+  smoke advection toward the nearest breach. That sink-pull is a bias inside *smoke* transport — it
+  never touches the pressure field. Designed, not built.
+- **Normal-mapped smoke** (§6.1) — now **fully specified** (the per-pixel normal + curl-noise
+  advection + per-channel composite model in §6.1); still not built — there is no smoke-normal
+  texture and no shader path.
+- **Multi-gas system** (§6.2) — smoke is a single scalar field today; the N-field gas set is now
+  **specified**: a data-driven `[gases.*]` table (`white_smoke / black_smoke / poison / teargas /
+  fuel_gas`) with per-channel **absorption** (subtractive, Beer–Lambert) **plus a separate additive
+  `scatter_albedo`**, density-weighted mixing, and `emits_when_hot` black-body emission. Not built.
+  Flamethrower (`fuel_gas` + ignition) follows from it.
+- **CUDA path** (§3) — semi-Lagrangian GPU advection is planned; the current solver is CPU C++. (Note
+  the smoke-v2 semi-Lagrangian advection above is wanted on the CPU path first, and ports to the GPU
+  pattern unchanged.)
 
 **Gaps / known issues:**
 
 - **Explosion-smoke noise too subtle** (§4) — confirmed in code: the `[0.4, 1.0]` per-tile
   multiplier saturates near the blast centre and diffuses out at the edges within a few substeps,
-  so the cloud lacks visible texture. Needs more dramatic initial structure. Open.
-- **Per-channel smoke attenuation** — the *light* march uses a single scalar `smoke_absorption`;
-  the colour of god-rays comes from the deposited light's colour, not from three independent smoke
-  coefficients. Coloured smoke (e.g. a tinted gas that absorbs selectively per channel) would need
-  a per-channel `smoke_absorption`, which the current model does not provide. Not a defect — the
-  shipped model is monochrome-absorbing — but a named extension point: this per-channel signature *is*
-  the colour model of the multi-gas system (§6).
+  so the cloud lacks visible texture. Needs more dramatic initial structure. A live **dial/knob** to
+  tune the noise amplitude and scale in the demo (rather than editing constants and rebuilding) is
+  wanted so the look can be found by eye. Open.
+- **Per-channel smoke attenuation** — the design now resolves this. The multi-gas optical model
+  (§6.2) splits a gas's signature into a per-channel **`absorption`** triple — subtractive,
+  Beer–Lambert `exp(-τ)`, with a global `absorb_scale` so beams travel *far* through coloured smoke
+  without changing its hue — **plus a separate additive `scatter_albedo`** so a gas can brighten
+  (steam) without darkening. That is the colour model the shipped path lacks. The *shipped*
+  `march_ray_directional` still uses a **single scalar `smoke_absorption`**: the colour of god-rays
+  comes from the deposited light's colour, not from three independent smoke coefficients. Not a defect
+  — the shipped model is monochrome-absorbing — but the named build gap: realising §6.2 means giving
+  the ray march the per-channel `absorption` + additive `scatter_albedo`.
 - **No smoke substep stability cap** — the design relies on wind-dependent diffusion to suppress
   advection oscillation rather than a hard CFL limit; large `advection_rate` or `dt_scale` values
   can still oscillate. Consistent with the design intent but worth noting for tuning.

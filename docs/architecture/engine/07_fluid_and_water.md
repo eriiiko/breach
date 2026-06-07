@@ -271,6 +271,13 @@ similar stains are *not* the fluid sim. They are decals on the destruction paint
 depth and never flow. The fluid system is only the simulated liquid layer; stains are
 paint.
 
+**Forward — water-optics research pass (Erik's request, 2026-06-07).** When we build the
+water surface for real, do a realism-research pass on its optics and rendering the same
+way we did for smoke and gases (see Smoke ch.05 §6.1): Fresnel reflection, refraction,
+depth-tint, foam at wet/dry fronts, caustics, and normal / ripple maps for the surface.
+The notes above are the placeholder; the dedicated pass is what should land the shipped
+look.
+
 ---
 
 ## 7. Forward path
