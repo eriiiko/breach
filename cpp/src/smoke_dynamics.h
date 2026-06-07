@@ -8,12 +8,15 @@ public:
     float advection_rate      = 25.0f;  // advection strength by wind field
     float dt_scale            = 1.0f;   // time multiplier (>1 = smoke reacts faster)
     float wind_diffusion_scale = 0.0f;  // wind-dependent diffusion: D = d_smoke * (1 + scale * |wind|)
+    float sink_strength       = 0.0f;   // smoke-side sink-pull toward nearest breach (0 = off)
 
     // Single step of size dt. Uses precomputed wind field from atmosphere solver.
     void step(
         float* smoke,
         const float* wind_x,       // precomputed: -d/dx(atmosphere + wave_p)
         const float* wind_y,       // precomputed: -d/dy(atmosphere + wave_p)
+        const float* sink_x,       // smoke-side sink direction toward nearest breach (unit-ish, 0 if none)
+        const float* sink_y,
         const bool* obstacles,
         const bool* is_wall,
         const bool* is_vacuum,

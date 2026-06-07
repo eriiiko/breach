@@ -72,6 +72,20 @@ def _walled_box(h, w):
     return obstacles, is_wall, is_vacuum, perm
 
 
+def _step(s, smoke, wind_x, wind_y, obstacles, is_wall, is_vacuum, perm, dt):
+    """Call ``SmokeDynamics.step`` with a ZERO sink field.
+
+    Smoke v2 S2 added a required sink-direction field (toward the nearest
+    breach) to the solver signature. These S1 advection tests have no breach,
+    so the sink is all-zero and the step is bit-identical to the pre-S2 plain
+    semi-Lagrangian advection — exactly what these tests assert.
+    """
+    sink_x = np.zeros_like(smoke)
+    sink_y = np.zeros_like(smoke)
+    s.step(smoke, wind_x, wind_y, sink_x, sink_y,
+           obstacles, is_wall, is_vacuum, perm, dt)
+
+
 def _center_of_mass(field):
     total = field.sum()
     assert total > 0
@@ -97,7 +111,7 @@ def test_constant_wind_translates_in_wind_direction():
 
     cy0, cx0 = _center_of_mass(smoke)
     for _ in range(20):
-        s.step(smoke, wind_x, wind_y, obstacles, is_wall, is_vacuum, perm, dt)
+        _step(s, smoke, wind_x, wind_y, obstacles, is_wall, is_vacuum, perm, dt)
     cy1, cx1 = _center_of_mass(smoke)
 
     assert cx1 > cx0 + 3.0, f"cloud did not move right enough: {cx0:.2f} -> {cx1:.2f}"
@@ -125,7 +139,7 @@ def test_translation_speed_matches_wind_times_dt_adv():
     n_steps = 10
     cy0, cx0 = _center_of_mass(smoke)
     for _ in range(n_steps):
-        s.step(smoke, wind_x, wind_y, obstacles, is_wall, is_vacuum, perm, dt)
+        _step(s, smoke, wind_x, wind_y, obstacles, is_wall, is_vacuum, perm, dt)
     cy1, cx1 = _center_of_mass(smoke)
 
     expected = wind_x[0, 0] * advection_rate * dt * n_steps  # = 2*1*0.5*10 = 10
@@ -157,7 +171,7 @@ def test_values_stay_in_range_and_finite():
     dt = 0.3
 
     for _ in range(200):
-        s.step(smoke, wind_x, wind_y, obstacles, is_wall, is_vacuum, perm, dt)
+        _step(s, smoke, wind_x, wind_y, obstacles, is_wall, is_vacuum, perm, dt)
         assert np.all(np.isfinite(smoke)), "NaN/Inf appeared in smoke field"
         assert smoke.min() >= 0.0 and smoke.max() <= 1.0, \
             f"smoke escaped [0,1]: min={smoke.min()}, max={smoke.max()}"
@@ -193,7 +207,7 @@ def test_closed_domain_no_mass_growth():
     zero = np.zeros((h, w), dtype=np.float32)
     s0 = _make_solver(advection_rate=2.0, d_smoke=0.0)  # diffusion off
     for _ in range(50):
-        s0.step(smoke, zero, zero, obstacles, is_wall, is_vacuum, perm, 0.4)
+        _step(s0, smoke, zero, zero, obstacles, is_wall, is_vacuum, perm, 0.4)
     assert np.allclose(smoke, base, atol=1e-6), \
         "zero-wind advection changed the field (should be identity)"
 
@@ -207,7 +221,7 @@ def test_closed_domain_no_mass_growth():
 
     total0 = float(smoke.sum())
     for _ in range(40):
-        s.step(smoke, wind_x, wind_y, obstacles, is_wall, is_vacuum, perm, dt)
+        _step(s, smoke, wind_x, wind_y, obstacles, is_wall, is_vacuum, perm, dt)
     total1 = float(smoke.sum())
 
     # No growth (allow a tiny epsilon for float accumulation).
@@ -249,7 +263,7 @@ def test_no_smoke_pulled_through_wall():
     dt = 0.5
 
     for _ in range(40):
-        s.step(smoke, wind_x, wind_y, obstacles, is_wall, is_vacuum, perm, dt)
+        _step(s, smoke, wind_x, wind_y, obstacles, is_wall, is_vacuum, perm, dt)
 
     # Left of the wall must remain (essentially) clear.
     left = smoke[:, :wall_x]
@@ -282,7 +296,7 @@ def test_single_cell_does_not_checkerboard():
     dt = 0.5
 
     for _ in range(60):
-        s.step(smoke, wind_x, wind_y, obstacles, is_wall, is_vacuum, perm, dt)
+        _step(s, smoke, wind_x, wind_y, obstacles, is_wall, is_vacuum, perm, dt)
 
     # Bounded, non-negative (semi-Lagrangian only averages existing values, so
     # it can never exceed the source range or go negative).

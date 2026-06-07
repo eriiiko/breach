@@ -72,6 +72,19 @@ class GameMap:
         self.smoke        = np.zeros((h, w), dtype=np.float32)
         self.fire         = np.zeros((h, w), dtype=np.float32)
         self.obstacles    = np.zeros((h, w), dtype=bool)
+        # Smoke sink-direction field (ch.05 smoke v2): a per-cell unit-ish
+        # vector pointing, through air only, toward the NEAREST exposed-vacuum
+        # breach; (0, 0) where there is no path to a breach (and everywhere when
+        # the map is unbreached). The smoke solver adds ``sink_strength`` times
+        # this to its advecting velocity, so smoke is gently pulled out of a
+        # breached room even after the interior wind has died (the lingering-haze
+        # fix). Built lazily from a BFS over air cells whenever topology changes;
+        # ``_sink_dirty`` marks it stale. Allocated once, filled IN-PLACE by
+        # :meth:`_rebuild_sink_field` (never reassigned → any C++ view stays
+        # valid). Read through :meth:`sink_fields`.
+        self.sink_x       = np.zeros((h, w), dtype=np.float32)
+        self.sink_y       = np.zeros((h, w), dtype=np.float32)
+        self._sink_dirty  = True
         # Scalar light field (legacy: fire raycaster output + render unit/smoke
         # tinting). Kept alongside light_rgb during the RGB migration.
         self.light_map    = np.zeros((h, w), dtype=np.float32)
@@ -405,6 +418,122 @@ class GameMap:
         return total / count if count > 0 else 0.0
 
     # ------------------------------------------------------------------
+    # Smoke sink-direction field — toward the nearest breach (ch.05 smoke v2)
+    # ------------------------------------------------------------------
+    def sink_fields(self):
+        """Return the (``sink_x``, ``sink_y``) sink-direction arrays, rebuilding
+        them first if the map topology has changed since the last build.
+
+        This is the read seam the physics runner uses each tick. The rebuild is
+        lazy and gated by ``_sink_dirty`` (set at init and wherever ``solid`` /
+        ``is_vacuum`` change), so the O(h·w) BFS runs only on the rare ticks a
+        wall is destroyed, not every tick.
+        """
+        if self._sink_dirty:
+            self._rebuild_sink_field()
+        return self.sink_x, self.sink_y
+
+    def _rebuild_sink_field(self):
+        """Rebuild the smoke sink-direction field by a BFS over air cells.
+
+        The field is a per-cell unit-ish vector pointing toward the nearest
+        exposed-vacuum breach, propagated **through air only** (never through a
+        solid / impermeable tile). It is what biases smoke advection toward a
+        breach so a vented room actually clears (ch.05 smoke v2).
+
+        Algorithm:
+
+        1. An **air** cell is non-solid and non-vacuum (``~solid & ~is_vacuum``).
+        2. **Sources** are air cells 4-adjacent to an exposed-vacuum tile (a
+           breach: ``is_vacuum`` that is not solid). These start the BFS at
+           distance 0.
+        3. 4-connected BFS over air cells assigns each a hop-distance to the
+           nearest breach. The BFS never steps onto a solid / impermeable /
+           vacuum tile, so the distance respects walls — a sealed neighbouring
+           room is unreachable and stays at "no path".
+        4. Each reached air cell's **direction** = unit vector toward the
+           in-bounds air neighbour with the SMALLEST distance (descending the
+           distance field, i.e. the next hop along a shortest path to a breach).
+        5. Cells with no path to a breach — and the whole field when the map has
+           no breach at all — are (0, 0). Safe by construction: no breach ⇒ no
+           pull ⇒ a sealed room is bit-identical to the no-sink solver.
+
+        Written IN-PLACE into ``self.sink_x`` / ``self.sink_y`` (never
+        reassigned), then clears ``_sink_dirty``.
+        """
+        from collections import deque
+
+        h, w = self._h, self._w
+        self.sink_x[:] = 0.0
+        self.sink_y[:] = 0.0
+        self._sink_dirty = False
+
+        solid = self.solid
+        is_vacuum = self.is_vacuum
+        # Air = traversable by gas/smoke: not a wall, not vacuum.
+        air = (~solid) & (~is_vacuum)
+
+        INF = np.iinfo(np.int32).max
+        dist = np.full((h, w), INF, dtype=np.int32)
+        dirs = ((-1, 0), (1, 0), (0, -1), (0, 1))
+
+        # Sources: air cells adjacent to an EXPOSED-VACUUM tile (a breach is a
+        # vacuum tile that is NOT solid; an intact hull is vacuum AND solid).
+        breach = is_vacuum & (~solid)
+        q = deque()
+        ys, xs = np.where(air)
+        for y, x in zip(ys.tolist(), xs.tolist()):
+            for dy, dx in dirs:
+                ny, nx = y + dy, x + dx
+                if 0 <= ny < h and 0 <= nx < w and breach[ny, nx]:
+                    dist[y, x] = 0
+                    q.append((y, x))
+                    break
+
+        if not q:
+            # No breach reachable from any air cell → field stays all-zero.
+            return
+
+        # BFS through air only.
+        while q:
+            y, x = q.popleft()
+            d = dist[y, x]
+            for dy, dx in dirs:
+                ny, nx = y + dy, x + dx
+                if (0 <= ny < h and 0 <= nx < w and air[ny, nx]
+                        and dist[ny, nx] == INF):
+                    dist[ny, nx] = d + 1
+                    q.append((ny, nx))
+
+        # Direction = toward the in-bounds air neighbour of smallest distance
+        # (the next hop down the shortest path to a breach), then normalised.
+        reached_ys, reached_xs = np.where((dist < INF) & air)
+        for y, x in zip(reached_ys.tolist(), reached_xs.tolist()):
+            best_d = dist[y, x]
+            best_dy = best_dx = 0
+            for dy, dx in dirs:
+                ny, nx = y + dy, x + dx
+                if (0 <= ny < h and 0 <= nx < w and air[ny, nx]
+                        and dist[ny, nx] < best_d):
+                    best_d = dist[ny, nx]
+                    best_dy, best_dx = dy, dx
+            # A breach-adjacent source (best_d == its own 0) still has a smaller
+            # neighbour only if one exists; otherwise it points at the breach via
+            # the vacuum step it can't descend to — fall back to the breach dir.
+            if best_dy == 0 and best_dx == 0:
+                # No air neighbour is strictly closer (this is a source cell, or
+                # a local min). Point directly at the adjacent breach tile.
+                for dy, dx in dirs:
+                    ny, nx = y + dy, x + dx
+                    if 0 <= ny < h and 0 <= nx < w and breach[ny, nx]:
+                        best_dy, best_dx = dy, dx
+                        break
+            # (best_dy, best_dx) is one of the 4 unit steps → already unit length
+            # for cardinals; store as float (sink_x is +x = column, sink_y = row).
+            self.sink_x[y, x] = float(best_dx)
+            self.sink_y[y, x] = float(best_dy)
+
+    # ------------------------------------------------------------------
     # Over-pressure wall failure — the emergent pressure-relief valve (ch.04 §5)
     # ------------------------------------------------------------------
     def find_burst_walls(self, max_pops: int | None = None):
@@ -497,6 +626,9 @@ class GameMap:
         # plus steel/glass when placed) — replaces the hardcoded id list.
         if self.solid[fy, fx]:
             self.material[fy, fx] = MAT_AIR
+            # Topology changed → the smoke sink-direction field is stale; the
+            # next ``sink_fields()`` read rebuilds it (cheap, breaches are rare).
+            self._sink_dirty = True
             # Patch ALL table-derived caches for this tile through the single
             # incremental seam (solid, flammable, wall_hp, conductivity) —
             # no inline cache fixups, no O(grid) rebuild.

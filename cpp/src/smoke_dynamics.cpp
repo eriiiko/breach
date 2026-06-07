@@ -19,16 +19,21 @@ static inline float neighbor(const float* f, const float* perm, int y, int x,
     return f[self_i] + face * (f[ni] - f[self_i]);
 }
 
-// Helper: is the tile that contains the (clamped) sample point sealed to gas?
-// Sealed == solid/wall/vacuum or zero permeability. Used by the semi-Lagrangian
-// back-trace to stop the departure ray at the first wall it would cross, so a
-// long back-trace step cannot tunnel through a one-cell-thick wall.
-static inline bool sealed_at(int y, int x,
-                             const bool* obstacles, const bool* is_wall,
-                             const bool* is_vacuum, const float* perm,
-                             int h, int w) {
+// Helper: is the tile that contains the (clamped) sample point a SOLID WALL?
+// Solid wall == obstacle / wall / zero permeability (a sealed hull is solid AND
+// vacuum). A BREACH (exposed vacuum that is NOT solid) is deliberately NOT a
+// wall here: the back-trace is allowed to reach a breach so smoke can vent into
+// it (sampled as 0 by the bilinear pass). Used by the back-trace ray to stop at
+// the first solid wall it would cross, so a long step cannot tunnel through a
+// one-cell-thick wall — while still letting the sink ray reach the breach.
+static inline bool solid_wall_at(int y, int x,
+                                 const bool* obstacles, const bool* is_wall,
+                                 const bool* is_vacuum, const float* perm,
+                                 int h, int w) {
     if (y < 0 || y >= h || x < 0 || x >= w) return true;  // outside == wall
     int i = y * w + x;
+    bool is_breach = is_vacuum[i] && !(obstacles[i] || is_wall[i] || perm[i] <= 0.0f);
+    if (is_breach) return false;                            // venting target, not a wall
     return obstacles[i] || is_wall[i] || is_vacuum[i] || perm[i] <= 0.0f;
 }
 
@@ -36,6 +41,8 @@ void SmokeDynamics::step(
     float* smoke,
     const float* wind_x,
     const float* wind_y,
+    const float* sink_x,
+    const float* sink_y,
     const bool* obstacles,
     const bool* is_wall,
     const bool* is_vacuum,
@@ -96,9 +103,40 @@ void SmokeDynamics::step(
             // wind there is meaningless (handled by the final zeroing pass).
             if (obstacles[i] || is_wall[i] || is_vacuum[i]) continue;
 
-            // Back-trace the departure point.
-            float bx = -wind_x[i] * dt_adv;   // displacement from the cell
-            float by = -wind_y[i] * dt_adv;
+            // Smoke-side sink-pull toward the nearest breach. The sink field is
+            // a per-cell unit-ish vector pointing down the BFS distance gradient
+            // to the nearest exposed-vacuum tile, and is (0,0) wherever there is
+            // no path to a breach (and everywhere when the map is unbreached) —
+            // so with no breach the sink term vanishes and this step is bit-
+            // identical to the plain semi-Lagrangian advection (smoke v2 S1).
+            // The sink is a bias inside *smoke* transport only; it never touches
+            // the pressure field. It exists because with aggressive atmosphere
+            // diffusion the interior wind dies as pressure flattens, leaving a
+            // stubborn haze a real vent would have cleared.
+            //
+            // Back-trace the departure point. Wind uses the standard pull form
+            //   p = cell - wind * dt_adv          (sample upwind, smoke rides wind)
+            // The sink, however, is a DRAIN: a cell should inherit the emptiness
+            // that lies toward the breach, so the sink term back-traces *toward*
+            // the breach the sink vector points at (it samples down-gradient and
+            // pulls in the vacuum's 0 via the breach-corner sampling below). For
+            // a uniform saturated room pure pull-advection by a converging field
+            // is the identity, so the drain comes entirely from sampling the
+            // breach's emptiness — hence the sink samples toward it.
+            //
+            // The sink displacement is taken as ``sink_strength`` cells along the
+            // unit sink vector and is CAPPED at one cell per substep: the field
+            // is a per-cell next-hop direction down the BFS gradient, not a
+            // straight shot to a possibly-around-a-corner breach, so the drain
+            // must propagate one cell at a time (the emptied down-gradient
+            // neighbour is sampled this substep; its own neighbour next substep).
+            // An uncapped multi-cell sink ray would fly straight off the BFS path
+            // into a wall and stall. Capping keeps the drain following the
+            // gradient. The wind term keeps its full (uncapped) displacement.
+            float sink_disp = sink_strength;
+            if (sink_disp > 1.0f) sink_disp = 1.0f;
+            float bx = -wind_x[i] * dt_adv + sink_disp * sink_x[i];
+            float by = -wind_y[i] * dt_adv + sink_disp * sink_y[i];
             float px = static_cast<float>(x) + bx;
             float py = static_cast<float>(y) + by;
 
@@ -120,11 +158,20 @@ void SmokeDynamics::step(
                         float nxp = cx + sx, nyp = cy + sy;
                         int ti = static_cast<int>(std::floor(nxp + 0.5f));
                         int tj = static_cast<int>(std::floor(nyp + 0.5f));
-                        if (sealed_at(tj, ti, obstacles, is_wall, is_vacuum,
-                                      permeability, h, w)) {
-                            break;          // stop at the last open point
+                        if (solid_wall_at(tj, ti, obstacles, is_wall, is_vacuum,
+                                          permeability, h, w)) {
+                            break;          // stop at the last open point (wall)
                         }
+                        // Advance onto this point. If it is a breach (exposed
+                        // vacuum, not a wall), advance ONTO it and stop: the
+                        // bilinear sample there reads the vacuum's 0, so the
+                        // cell vents into the breach. Otherwise keep marching.
                         cx = nxp; cy = nyp;
+                        int bi = tj * w + ti;
+                        if (tj >= 0 && tj < h && ti >= 0 && ti < w &&
+                            is_vacuum[bi]) {
+                            break;          // reached the breach — vent here
+                        }
                     }
                     px = cx; py = cy;
                 }
@@ -162,10 +209,20 @@ void SmokeDynamics::step(
             float wsum = 0.0f;
             for (int k = 0; k < 4; ++k) {
                 int j = ci[k];
-                bool sealed = obstacles[j] || is_wall[j] || is_vacuum[j] ||
-                              permeability[j] <= 0.0f;
-                if (sealed) continue;
-                acc  += cw[k] * src[j];
+                // A SEALED corner (solid wall / hull / zero-permeability) is
+                // excluded: smoke is never pulled out of, or teleported through,
+                // a wall. A BREACH corner (exposed vacuum: is_vacuum but NOT
+                // solid) is different — it is genuinely empty space, so it is
+                // INCLUDED with value 0. Pulling that 0 into the interior is the
+                // drain: a cell back-tracing toward the breach (the sink term
+                // above) inherits the vacuum's emptiness and loses smoke, which
+                // is exactly venting to space. Without this a uniform saturated
+                // room is invariant under pull-advection and never clears.
+                bool solid_corner = obstacles[j] || is_wall[j] ||
+                                    permeability[j] <= 0.0f;
+                if (solid_corner) continue;
+                bool breach_corner = is_vacuum[j];   // vacuum & !solid (sealed hull is solid)
+                acc  += cw[k] * (breach_corner ? 0.0f : src[j]);
                 wsum += cw[k];
             }
 

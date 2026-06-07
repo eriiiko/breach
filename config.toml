@@ -25,6 +25,7 @@ breach_rate = 5.0                     # relaxation rate toward vacuum at hull br
 max_source_per_step = 10.0             # max wave energy fed per substep (IMEX handles big spikes)
 smoke_dt_scale = 3.0                  # smoke time multiplier (>1 = smoke reacts faster to wind)
 wind_diffusion_scale = 50.0            # wind-dependent diffusion: D = d_smoke * (1 + scale * |wind|)
+smoke_sink_strength = 2.0              # smoke-side sink-pull toward nearest breach (cells/substep along the breach-ward gradient, capped at 1 to follow the BFS path). 0 = off (sealed-room behaviour); effective dial range 0..1, >=1 = full drain rate. Clears a vented room while a sealed room is untouched.
 unit_permeability = 0.5                # gas/smoke permeability of a living unit's footprint (0 = seals, 1 = open; 0.5 = porous body slows flow)
 unit_wave_absorb = 0.5                  # shockwave energy a living unit's footprint absorbs (0 = none, 1 = full; high = a body soaks the blast)
 wave_absorb_strength = 8.0             # global scale on per-cell wave_absorb damping (tuned so units visibly soak the wave without nuking it)

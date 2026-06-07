@@ -75,6 +75,12 @@ class PhysicsRunner:
         self.smoke.advection_rate       = float(CFG.physics.advection_rate)
         self.smoke.dt_scale             = float(CFG.physics.smoke_dt_scale)
         self.smoke.wind_diffusion_scale = float(CFG.physics.wind_diffusion_scale)
+        # Smoke-side sink-pull toward the nearest breach (ch.05 smoke v2). The
+        # dial Erik wants: 0 disables it (sealed-room behaviour is then bit-
+        # identical to the plain semi-Lagrangian advection). Default 2.0 clears
+        # a breached room in ~a dozen ticks while leaving a sealed room untouched.
+        self.smoke.sink_strength        = float(
+            getattr(CFG.physics, 'smoke_sink_strength', 2.0))
 
         # FireSimulation — the binding the legacy entry point did and
         # main.py's previous shim DID NOT. Without these the C++
@@ -110,6 +116,11 @@ class PhysicsRunner:
         dt = self.atmos.max_dt()
         n = max(1, int(math.ceil(sim_time / dt)))
         dt_actual = sim_time / n
+        # Smoke sink-direction field toward the nearest breach (ch.05 smoke v2).
+        # Fetched once per tick: it only changes on topology edits, and the
+        # accessor rebuilds it lazily (gated by gmap._sink_dirty), so this is a
+        # cheap array hand-back on every tick except the rare one after a breach.
+        sink_x, sink_y = gmap.sink_fields()
         for _ in range(n):
             self.atmos.step(
                 gmap.wave_p, gmap.wave_v, gmap.wave_source, gmap.atmosphere,
@@ -121,6 +132,7 @@ class PhysicsRunner:
             )
             self.smoke.step(
                 gmap.smoke, gmap.wind_x, gmap.wind_y,
+                sink_x, sink_y,
                 gmap.obstacles, gmap.solid, gmap.is_vacuum,
                 gmap.dyn_permeability,
                 dt_actual * self.smoke.dt_scale,
