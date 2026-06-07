@@ -128,15 +128,18 @@ clamped to `[0, 1]`), and advection is skipped on impermeable and vacuum tiles (
 garbage gradients). Zeroing vacuum is what makes a breach drain a room — smoke advects toward the
 breach and is deleted there, exactly as venting to space should look.
 
-**Lingering-smoke venting (owed).** With the current vacuum-*relaxation* drain, the wind that carries
-smoke out dies as interior pressure approaches zero (the gradient vanishes), so a ship breached to
-vacuum keeps a stubborn haze long after the air is gone — it looks wrong. The atmosphere chapter's
-**face-flux drain** (ch.04) was the intended fix, but face-flux *as a pressure sink* was attempted
-and reverted: with `d_atm = 200` it cannot clear a vented room (diffusion flattens the interior
-gradient → wind → 0 → smoke still lingers). The real fix needs a *sustained continuity wind toward
-the breach*, which is an open atmosphere-side design decision (§4 there). (`dt_scale` and
-`advection_rate` already let smoke move faster than a literal wind reading for feel; that is tuning,
-not the root fix.)
+**Lingering-smoke venting (built — smoke v2).** Previously the vacuum-*relaxation* drain left a
+stubborn haze: the wind that carries smoke out dies as interior pressure approaches zero (the
+gradient vanishes), so a ship breached to vacuum kept a haze long after the air was gone. The fix is
+**smoke-side**, not a second atmosphere wind (still resolved in ch.04 §4): smoke v2 replaces the
+central-difference advection with **semi-Lagrangian advection** (`de255ff`) and adds a **dial-able
+sink-pull** (`a016e19`) that biases the back-trace toward the nearest breach. A BFS sink-direction
+field (`sink_x`/`sink_y` on `GameMap`, sources = air cells adjacent to exposed vacuum, propagated
+through air only) pulls the back-trace toward the breach corner — sampled as `0`, so its emptiness is
+drawn inward and the room vents. The bias is **safe by construction**: no breach ⇒ zero sink ⇒ a
+sealed room is bit-identical to plain semi-Lagrangian, and it **never touches the pressure field**
+(matches ch.04 §4). Strength is `[physics] smoke_sink_strength` (default `2.0`; effective `0..1`,
+`≥1` = full drain), displacement capped at 1 cell/substep.
 
 ### Parameters
 
@@ -730,9 +733,18 @@ Audited against `cpp/src/smoke_dynamics.{h,cpp}`, `src/simulation/physics_runner
 **Built and shipped:**
 
 - **Transport solver** — `SmokeDynamics::step` implements wind-dependent diffusion (D scales with
-  `wind_diffusion_scale · |wind|²`), `grad_p · grad_smoke` advection by the precomputed wind
-  field, `dt_scale` amplification, clamp to `[0,1]`, and wall/vacuum zeroing — exactly as
-  described in §2. Built in C++.
+  `wind_diffusion_scale · |wind|²`), **semi-Lagrangian advection** (`de255ff`: back-trace +
+  bilinear sampling, with a **ray-clip wall guard** that marches the back-trace and stops before the
+  first sealed tile so smoke is never pulled through a 1-tile wall), `dt_scale` amplification, clamp
+  to `[0,1]`, and wall/vacuum zeroing — exactly as described in §2. Unconditionally stable, no
+  checkerboard. Built in C++.
+- **Lingering-smoke venting (sink-pull)** — `a016e19`: a BFS sink-direction field (`sink_x`/`sink_y`
+  on `GameMap`, sources = air cells adjacent to exposed vacuum, propagated through air only; rebuilt
+  on topology change via `_sink_dirty` set in `destroy_wall`, lazily in `sink_fields()`) biases the
+  semi-Lagrangian back-trace toward the nearest breach (corner sampled as `0` ⇒ venting), capped at
+  1 cell/substep. Config `[physics] smoke_sink_strength` (default `2.0`). Safe by construction: no
+  breach ⇒ zero sink ⇒ sealed room bit-identical to plain semi-Lagrangian; never touches the
+  pressure field.
 - **Atmosphere interleaving** — `PhysicsRunner.step` runs `smoke.step(dt · dt_scale)` inside the
   per-substep loop, immediately after `atmos.step`, reading the freshly-computed
   `wind_x`/`wind_y`. Matches §2.
@@ -748,50 +760,62 @@ Audited against `cpp/src/smoke_dynamics.{h,cpp}`, `src/simulation/physics_runner
 - **Sources** — fire smoke emission (`fire_simulation.cpp`, into 4-connected air neighbours);
   explosion smoke clear (inner 40 %, `physics.apply_explosion`) and noisy disc deposit
   (`physics.add_explosion_smoke`) via the seeded RNG. Matches §4.
-- **Ray-engine coupling** — `raycaster.cpp` `march_ray_directional` applies live smoke attenuation
-  per channel after static material attenuation, and deposits the absorbed light into the RGB
-  `smoke_glow` buffer (god-rays), superseding `light_modulation`. The legacy scalar path
-  (`march_ray`) also attenuates by smoke. Matches §5. `smoke` and `smoke_glow` are allocated on
-  `GameMap` and written in place. `smoke` stays `float32` (§3).
+- **Ray-engine coupling (per-channel `exp(-τ)` + additive scatter)** — `6e568f8`:
+  `raycaster.cpp` `march_ray_directional` now applies live smoke attenuation as **per-channel
+  Beer–Lambert** `trans_c = exp(-absorption_c · density · absorb_scale)` (the beam survives deep
+  smoke) after static material attenuation, and the `smoke_glow` (god-ray) deposit uses a **separate
+  additive `scatter_albedo`** gain — glow is decoupled from the absorbed fraction (glow ≠ 1−absorbed).
+  New `[smoke]` config — `smoke_absorption` `[r,g,b]`, `smoke_scatter_albedo` `[r,g,b]`,
+  `smoke_absorb_scale` — bound onto the `Raycaster` in `renderer/game_renderer.py` (struct members in
+  `raycaster.h`, exposed in `bindings.cpp`); defaults reproduce the shipped look, dialing
+  `smoke_absorb_scale` down gives the long-beam "flashlight travels far" look. The legacy scalar
+  `march_ray` path is untouched and still attenuates by smoke. Matches §5. `smoke` and `smoke_glow`
+  are allocated on `GameMap` and written in place. `smoke` stays `float32` (§3).
+- **Render contrast — `smoke^gamma`** — `346b7c1`: a `smoke^gamma` opacity curve applied at pack
+  time in `renderer/overlays.py` (`FieldOverlay.gamma`), config `[smoke] smoke_render_gamma`
+  (default `1.5`). Pure render/Python, no C++ change.
+- **Explosion-smoke noise dial** — `346b7c1`: `physics.add_explosion_smoke` gained a `noise` param
+  fed by `[physics] explosion_smoke_noise` (default `0.85`), with live sliders + N / Shift+N keys in
+  `tools/lighting_demo.py`. Pure render/Python authoring knob, no transport-model change.
 
 **Designed but not built:**
 
-- **Lingering-smoke venting** — the permeability boundary and soft units have landed (above), but the
-  lingering-haze-on-vacuum artifact is **not** fixed. The fix is **smoke-side**, not atmosphere-side:
-  the atmosphere's vacuum-relaxation drain is adequate, and adding a continuity-wind / *second wind*
-  to the atmosphere is the wrong layer (resolved in ch.04 §4, which now says the same). The lingering
-  haze is **smoke v2**: replace the central-difference advection stencil (which checkerboards near
-  breaches) with **semi-Lagrangian advection**, plus a **dial-able smoke-side sink-pull** that biases
-  smoke advection toward the nearest breach. That sink-pull is a bias inside *smoke* transport — it
-  never touches the pressure field. Designed, not built.
-- **Normal-mapped smoke** (§6.1) — now **fully specified** (the per-pixel normal + curl-noise
-  advection + per-channel composite model in §6.1); still not built — there is no smoke-normal
-  texture and no shader path.
-- **Multi-gas system** (§6.2) — smoke is a single scalar field today; the N-field gas set is now
-  **specified**: a data-driven `[gases.*]` table (`white_smoke / black_smoke / poison / teargas /
-  fuel_gas`) with per-channel **absorption** (subtractive, Beer–Lambert) **plus a separate additive
-  `scatter_albedo`**, density-weighted mixing, and `emits_when_hot` black-body emission. Not built.
-  Flamethrower (`fuel_gas` + ignition) follows from it.
+- **Normal-mapped smoke** (§6.1) — **partly built.** The per-channel composite half (per-channel
+  `exp(-τ)` absorption + separate additive `scatter_albedo`, §6.1 step 6) and the `smoke^gamma`
+  contrast (§6.1 step 5) **are shipped** (smoke v2, above). The **normal/wisp half is not**: there is
+  no per-pixel smoke-normal (§6.1 step 1), no curl-noise / flow-map advection of a detail texture
+  (step 2), and no self-shadow shader (step 3) — no smoke-normal texture and no shader path exists.
+- **Multi-gas system** (§6.2) — **partly applicable.** The per-channel optical model (absorption +
+  additive `scatter_albedo`) is built for the **single** smoke field (above). The **N-field gas set**
+  is not: there is no data-driven `[gases.*]` table (`white_smoke / black_smoke / poison / teargas /
+  fuel_gas`), no density-weighted mixing across multiple fields, and no `emits_when_hot` black-body
+  emission. Smoke is one scalar field today. Flamethrower (`fuel_gas` + ignition) follows from it.
 - **CUDA path** (§3) — semi-Lagrangian GPU advection is planned; the current solver is CPU C++. (Note
   the smoke-v2 semi-Lagrangian advection above is wanted on the CPU path first, and ports to the GPU
   pattern unchanged.)
 
 **Gaps / known issues:**
 
-- **Explosion-smoke noise too subtle** (§4) — confirmed in code: the `[0.4, 1.0]` per-tile
-  multiplier saturates near the blast centre and diffuses out at the edges within a few substeps,
-  so the cloud lacks visible texture. Needs more dramatic initial structure. A live **dial/knob** to
-  tune the noise amplitude and scale in the demo (rather than editing constants and rebuilding) is
-  wanted so the look can be found by eye. Open.
-- **Per-channel smoke attenuation** — the design now resolves this. The multi-gas optical model
-  (§6.2) splits a gas's signature into a per-channel **`absorption`** triple — subtractive,
-  Beer–Lambert `exp(-τ)`, with a global `absorb_scale` so beams travel *far* through coloured smoke
-  without changing its hue — **plus a separate additive `scatter_albedo`** so a gas can brighten
-  (steam) without darkening. That is the colour model the shipped path lacks. The *shipped*
-  `march_ray_directional` still uses a **single scalar `smoke_absorption`**: the colour of god-rays
-  comes from the deposited light's colour, not from three independent smoke coefficients. Not a defect
-  — the shipped model is monochrome-absorbing — but the named build gap: realising §6.2 means giving
-  the ray march the per-channel `absorption` + additive `scatter_albedo`.
-- **No smoke substep stability cap** — the design relies on wind-dependent diffusion to suppress
-  advection oscillation rather than a hard CFL limit; large `advection_rate` or `dt_scale` values
-  can still oscillate. Consistent with the design intent but worth noting for tuning.
+- **Explosion-smoke noise — knob exists, tune by eye** (§4) — the `[0.4, 1.0]` per-tile multiplier
+  alone still saturates near the blast centre and diffuses out at the edges, so the cloud can read
+  flat. The live **dial** is now built (`346b7c1`): `[physics] explosion_smoke_noise` (default
+  `0.85`) plus demo slider and N / Shift+N keys in `tools/lighting_demo.py`. Remaining work is
+  authoring/tuning the look by eye, not a missing mechanism.
+- **Per-channel smoke attenuation — built for the single field** — `march_ray_directional` now does
+  per-channel Beer–Lambert `trans_c = exp(-absorption_c · density · absorb_scale)` with a separate
+  additive `scatter_albedo` glow (`6e568f8`, above), so the shipped single smoke field already has
+  the coloured-beam optics §6.1 step 6 / §6.2 describe. The remaining gap is only the **N-field
+  multi-gas generalisation**: one `absorption` (+ `scatter_albedo`) signature *per gas*, summed
+  density-weighted across coexisting gas fields (§6.2). The legacy scalar `march_ray` path is
+  unaffected.
+- **Smoke substep stability — resolved** — semi-Lagrangian advection (`de255ff`) is unconditionally
+  stable and produces no checkerboard, so the old "large `advection_rate` / `dt_scale` can oscillate"
+  caveat no longer applies. One **tuning-cleanup item** remains: `dt_scale` is applied **twice** —
+  the runner passes `dt · dt_scale` into `smoke.step(...)` and the solver multiplies by `dt_scale`
+  again — so the effective advection timestep is `dt_adv ≈ dt · dt_scale² ≈ 6.25` rather than the
+  nominal value. This affects advection *magnitude* (a tuning constant), not stability; worth
+  collapsing to a single application.
+- **`[smoke]` optics not re-pushed on Ctrl+R reload** — the renderer-side `[smoke]` optics
+  (`smoke_absorption` / `smoke_scatter_albedo` / `smoke_absorb_scale` / `smoke_render_gamma`) are
+  bound at `__init__` and are **not** re-applied on a Ctrl+R config reload, so the main game needs a
+  full restart to pick them up. The **demo** (`tools/lighting_demo.py`) exposes them as live sliders.
