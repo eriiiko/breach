@@ -201,6 +201,7 @@ breaches.)
 what lets a laser tunnel a clear line through a smoke-filled corridor: the beam
 deposits heat as it marches, and the burn-off reaction clears the smoke along
 that path — while keeping the ray pass itself read-only.
+**erik comment** im not sure if we want this inherent in the smoke system, or perhaps we want a methdo that can remove / add smoke at will at any coorinates- a method that  could be used by the laser weapons or whatever, and grenades alike. let's think it through togetehr.
 
 **Unit damage.** Units take environmental heat damage by **sampling the `heat`
 buffer at their footprint tiles** after the pass, in serial CPU unit logic
@@ -225,7 +226,8 @@ order:
 1. **Spread.** Burning tiles raise the intensity of neighbouring *flammable*
    tiles. The neighbourhood is 12-connected (4-orthogonal + 4 diagonal +
    2-tile-range orthogonal), so fire reaches slightly past its immediate
-   neighbours and feels like it leaps gaps.
+   neighbours and feels like it leaps gaps. **Erik comment** This wasnt how i had imagined it, i thought it woulr cast rays, (not that high intensiry rays, only a few is probably enough, but actually the light rays needs to be a few probably, and we could reuse them for heat, everything is set up for that all ready) - - What i was thinking about originally tho, was if fire spreads alot, perhaps we dont need to recompute its rays each time, wecould cache it - this needs to be quite smartly done too tho. Should we cache it using sparse arrays, and one array per source of fire? then we can also puit out fires one by one without recomputing everyhing - and they need to recompute only on map destruction , and how do we design a system that only computes the affected light sources for that? Is this too complex? Does it cost mroe than it tastes? Let's reserach our possibilities - because if we can get it ray based, it will look fantastic.
+
 2. **Wind-biased spread.** Fire steers its spread downwind. It computes a local
    wind from the `atmosphere` gradient and boosts ignition of the downwind
    neighbour by up to 3× (and suppresses the upwind one).
@@ -243,7 +245,7 @@ order:
    crossover scales with wind, so the same gust that fans a blaze snuffs a
    guttering flame. An explosion's shockwave is a massive transient wind spike:
    it blows out small fires and flares up big ones.
-4. **Growth.** Any burning tile grows toward full intensity (≈ 0.5 / s).
+4. **Growth.** Any burning tile grows toward full intensity (≈ 0.5 / s). --- **erik comment** Im not sure, let's reserach this proper, how does fire behave`? What does it need to grow? I feel like cerytain fires grows, probably when they've reached a certain intensity they do grow, but actually it's afeedback system. too littel intensity (or temperature) they die out - more temp - t hey spread more - but are constrained by o2 i htink.
 5. **Flammable constraint.** Fire is zeroed on non-flammable tiles — only fuel
    burns.
 6. **O₂ check.** A burning tile dies if the average `atmosphere` of its
@@ -251,7 +253,7 @@ order:
    and in already-burnt-out rooms — the decompression-extinguishes-fire loop.
 7. **O₂ consumption.** Fire draws down `atmosphere` in adjacent air tiles,
    scaled by its intensity, so a sustained blaze starves itself and its
-   neighbours over time.
+   neighbours over time. **Erik comment** I'm not surew about this either - perhaps we want fires to deposit some prssure even, so that smokee will naturally spread - i htin this original thought was not well thought through, because if we remove atmosphere at hte fire, it will start to suck smoke towards it, which is not what we want at all--- we'll need to find anoter system for the O2 proxy i think, perhaps the pressure on the fire source tile can be used - and i assume it's enougyht to add just a little bit of pressure to let the smoke spread out - or perhaps the smoke will spread out even without adding pressure- then we can just read of the pressure aat the source - and create some function that maps pressure and temperature to weather the intensity is growing or decreasing.
 8. **Smoke emission.** Fire adds `smoke` to adjacent air tiles, which the smoke
    dynamics then advect on the wind.
 9. **Wall burn-through.** Fire depletes `wall_hp` on the tile it burns; when a
@@ -389,3 +391,11 @@ Built, running, and honest about the seam between the three layers.
 - The per-tick `heat` deposit must be cleared each tick once a consumer exists
   (it is a deposit buffer, not an accumulator across ticks); the temperature
   pass reads it non-destructively, then it resets.
+
+**comments from erik**  exact fixed point - should we make a class out of it? or does it basically all ready exist?
+
+**comments from erik** water and fire must interact obviously, i havent talked about it much since water is not yet done
+water should be able to be turned to vapour
+Water has 3 states in pressure, gas, fluid and solid, but in vacuum only gas and solid - let's try to get this modelled !
+water turning to water vapour will cool it's tile, as in real life. this stuff probably belong in water rather than here, all though it's hard to say since it affects temperature just as much as fire in a way. Actually there is an argument that temperature should be its own chapter, and water and fire as well, but i guess it's fine as it is now as well.
+Fluids really deserve it's file so in a way, it's reasonable to link fire with temp and water with fluid. even tho we'll have more fluids.
