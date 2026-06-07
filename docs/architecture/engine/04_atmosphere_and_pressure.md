@@ -142,9 +142,12 @@ special venting code exists.
 The drain itself is **not** a hard Dirichlet `p = 0` (which is numerically sharp and rings).
 Instead:
 
-- **Vacuum relaxation:** on exposed vacuum tiles, `atmosphere *= (1 − η)`, `η = clamp(breach_rate·dt, 0, 1)`.
-  A smooth ramp toward zero that drains a room over ~1–2 s while still generating the gradient
-  that drives wind and smoke outward.
+- **Vacuum relaxation:** on exposed vacuum tiles, `atmosphere *= (1 − η)`, `η = clamp(breach_rate·dt, 0, 1)`
+  (`breach_rate` is a *vacuum-drain* rate, **not** wall failure — a misleading name; see §3).
+  A smooth ramp toward zero that drains a room's **pressure** over ~1–2 s. It raises the near-breach
+  gradient that drives wind, but the deep-interior gradient flattens, so this does **not** by itself
+  carry *smoke* out of a deep room — clearing lingering smoke is a smoke-side concern (ch.05), not the
+  atmosphere's.
 - **2-tile sponge layer:** a short absorbing region seeded **only from exposed vacuum**. The inner
   ring (distance 1) strongly damps `wave_v`, relaxes `atmosphere`, and zeros `wave_source`; the
   outer ring (distance 2) damps moderately. This kills reflections and grid-scale ringing at the
@@ -224,16 +227,27 @@ the current materials and open air, and only differ where a partial coefficient 
   enters solids, so the IMEX stability is untouched; this is energy-out only. (Through-wall
   *transmission*, 4b, is still deferred — §5.)
 
-- **Over-pressure wall failure — the pressure-relief valve.** A sealed room that keeps absorbing
-  grenades would build pressure without limit; the fix is emergent, not a cap.
-  `GameMap.find_burst_walls(max_pops)` scans wall↔air boundaries and, where the differential exceeds
-  the wall's per-material `burst_threshold` (hull holds more than wood), `Simulation.step` calls
-  `destroy_wall` on it — after the fire burn-through pass, capped by `[physics] burst_max_per_tick`
-  and gated by `[physics] burst_enabled`. An interior wall becomes air, a hull-edge wall becomes
-  exposed vacuum → it then vents. Over-pressured clusters self-breach in a chain until the gradient
-  relaxes. This is *why we keep* the wave→atmosphere deposit (§2.3–2.4): pressure building is
-  physically correct, so the answer is an emergent relief valve, not removing the deposit (which would
-  make blasts feel weak). Reuses `destroy_wall` + neighbour-mean; no new field.
+- **Over-pressure wall failure — an opt-in pressure-relief valve.** A sealed room that keeps absorbing
+  grenades would build pressure without limit; the relief is emergent, not a cap.
+  `GameMap.find_burst_walls(max_pops)` scans wall tiles and, where the **pressure spread across the
+  wall's neighbours** exceeds its per-material `burst_threshold`, `Simulation.step` calls `destroy_wall`
+  on it — after the fire burn-through pass, capped by `[physics] burst_max_per_tick`, gated by
+  `[physics] burst_enabled`. An interior wall becomes air, a hull-edge wall becomes exposed vacuum → it
+  then vents. Over-pressured clusters self-breach in a chain until the gradient relaxes.
+  - **Opt-in per material.** `burst_threshold <= 0` means *never* (the default, and `air`). You set a
+    positive threshold only on the walls you *want* collapsible. The spread counts a *solid* or
+    sealed-vacuum neighbour as 0, so the differential is an **absolute** pressure (normal air ≈ 1.0); a
+    threshold therefore sits above 1.0 plus the over-pressure you want it to tolerate.
+  - **The hull never pressure-collapses.** This valve was designed for *collapsible interior walls*, not
+    the hull — the hull breaches from damage/explosions, so it ships at `burst_threshold = 0`. Weak
+    bulkheads (wood/glass) carry low thresholds; steel is high.
+  - **Thick walls are fine.** Walls hold normal pressure (`atmosphere` initialises to 1.0 everywhere, so
+    destroying one fills via neighbour-mean, never a vacuum punch). A thick wall's *inner* tile has only
+    solid neighbours → spread 0 → never bursts; only the air-facing tile bursts, exposing the next layer
+    the next tick. It erodes one layer at a time from the pressurised face — intended.
+  This is *why we keep* the wave→atmosphere deposit (§2.3–2.4): building pressure is physically correct,
+  so the answer is an emergent relief valve, not removing the deposit (which would make blasts feel
+  weak). Reuses `destroy_wall` + neighbour-mean; no new field.
 
 ---
 
@@ -249,7 +263,7 @@ All tunables live in `[physics]` of `config.toml` and are bound onto the C++ sol
 | `transfer` | `wave_transfer` | 0.5 | wave_p → atmosphere anomaly transfer rate (1/s). |
 | `feed_rate` | `source_feed_rate` | 200.0 | wave_source → wave_p feed rate (1/s). |
 | `d_atm` | `d_atm` | 200.0 | Diffusion coefficient. Free of CFL (implicit). |
-| `breach_rate` | `breach_rate` | 5.0 | Vacuum relaxation rate (1/s). |
+| `breach_rate` | `breach_rate` | 5.0 | **Vacuum-drain** rate (1/s) on exposed-vacuum tiles — *not* wall failure (misleading name; cf. `burst_threshold`). |
 | `max_source_per_step` | `max_source_per_step` | 10.0 | Cap on wave energy fed per substep. |
 | `gs_iters` | — | 8 | Red-black Gauss-Seidel sweeps per substep. |
 
@@ -276,20 +290,23 @@ single-field decompression feel — is handled by the **direct atmosphere deposi
 **relaxation BC** (§2.3): the bulk field still receives blast energy and still drains hard through
 a breach, so the game feel survives the split.
 
-A **face-flux breach law** remains the intended drain (replacing vacuum relaxation; the sponge stays,
-for wave anti-ringing). The appeal: outflow `∝ max(p_inside − p_ext, 0)` across each breach *face*
-(`p_ext = 0` for vacuum) **scales venting with opening size** physically, and it generalises — a
-*face flux* `= f(p_a, p_b, face)` is one primitive serving **breaches** (face to vacuum),
-**vents/ducts** (a throughput cap), **fans/pumps** (a forced flux), and **cracked doors** (a small
-conductance).
+A **face-flux breach law** is a *forward* generalisation of the drain — **not** required for
+correctness (vacuum relaxation is adequate; the sponge stays for wave anti-ringing). Its appeal:
+outflow `∝ max(p_inside − p_ext, 0)` across each breach *face* (`p_ext = 0` for vacuum) **scales
+venting with opening size** physically, and it generalises — a *face flux* `= f(p_a, p_b, face)` is one
+primitive serving **breaches** (face to vacuum), **vents/ducts** (a throughput cap), **fans/pumps** (a
+forced flux), and **cracked doors** (a small conductance).
 
-**Open design issue (attempted and reverted).** Face-flux as a pressure *sink* does **not** clear a
-vented room. With the aggressive `d_atm = 200`, diffusion flattens the interior gradient faster than
-the face drains it, so wind → 0 and the **lingering smoke never leaves** — the very artifact the drain
-was meant to fix. The real fix needs a **sustained continuity wind toward the breach** (a flux that
-keeps a face *velocity* alive even as interior pressure collapses), not merely a sink at the opening.
-How to source that wind without re-introducing instability is unresolved; vacuum relaxation remains the
-shipped drain until it is.
+**Resolved — lingering smoke is a *smoke* problem, not an atmosphere one.** Face-flux as a pressure
+*sink* was tried and reverted: with the aggressive `d_atm = 200`, diffusion flattens the interior
+gradient faster than the face drains it, so wind → 0 and the smoke never leaves. The venting
+experiments concluded the **atmosphere needs no new mechanism** — its pressure drain is adequate, and
+adding a *second wind* to the atmosphere is the wrong layer. The real cause was the **smoke advection
+stencil** (central-difference → checkerboard); the fix lives in **ch.05 (smoke v2): semi-Lagrangian
+advection plus a dial-able smoke-side sink-pull** toward the nearest breach. That sink-pull is a bias
+inside *smoke* advection — **not** a second wind, and it never touches the pressure field. Face-flux
+therefore stays the forward idea above, valued for size-scaled venting and the vent/fan/airlock
+primitive — not as the lingering-smoke fix.
 
 ---
 
@@ -358,10 +375,11 @@ Audited against `cpp/src/atmosphere_solver.{h,cpp}`, `src/simulation/physics_run
 - **Decompression/shockwave suction on units** — `wind_x/wind_y` are produced and consumed by
   smoke (and fire), but **no unit-movement code reads them**. The marquee gameplay effect of the
   wind field is unwired.
-- **Face-flux breach drain / lingering-smoke venting** — the current drain is still vacuum relaxation.
-  Face-flux as a pressure *sink* was attempted and reverted: with `d_atm = 200` it cannot clear a
-  vented room (the interior gradient flattens → wind → 0 → smoke lingers). The real fix needs a
-  *sustained continuity wind toward the breach*, which is an open design decision (§4).
+- **Lingering-smoke venting (decided — smoke-side).** The atmosphere drain (vacuum relaxation) is
+  adequate and unchanged; the lingering smoke was a *smoke* problem (the central-difference advection
+  stencil), fixed in **ch.05 (smoke v2): semi-Lagrangian advection + a dial-able smoke sink-pull**.
+  No atmosphere continuity-wind / second wind (§4). Face-flux as a pressure *sink* was attempted and
+  reverted; it survives only as a forward vent/fan/airlock idea (§4–§5).
 - **Through-wall wave transmission (4b)** — the lossy reflector (4a) shipped; transmission across walls
   is deferred (variable-coefficient IMEX + higher `c_max`).
 - **Water→atmosphere volume coupling**, **fuel/directed-gas field**, and **CUDA residency** — forward

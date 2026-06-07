@@ -80,7 +80,7 @@ ignition_temp = 0.0
 wave_reflect = 0.9
 wave_absorb = 0.1
 blast_resist = 0.0
-burst_threshold = 6.0
+burst_threshold = 0.0  # 0 = never; the hull breaches via damage/explosions, not over-pressure
 
 [materials.wood]
 hp = 60
