@@ -112,7 +112,12 @@ CSV decides world size — not a fixed config resolution):
 | `wind_x`, `wind_y` | `float32` | Wind velocity field |
 | `smoke` | `float32` | Smoke density |
 | `fire` | `float32` | Fire intensity |
-| `obstacles` | `bool` | Gas-flow / wave boundary: walls + unit footprints, rebuilt each tick (interim boolean — becomes a `permeability` field) |
+| `solid` | `bool` | Static solidity (`permeability <= 0`); replaces the retired `is_wall`. Movement hard-stop + LoS basis |
+| `permeability` | `float32` | Static gas/smoke flux coefficient per material (0 = sealed wall, 1 = open air) |
+| `dyn_permeability` | `float32` | Live flux coefficient: static `permeability` with unit footprints (partial — soft bodies) combined in, rebuilt each tick |
+| `wave_absorb` | `float32` | Static per-material wave-energy damping; units add to `dyn_wave_absorb` |
+| `dyn_wave_absorb` | `float32` | Live wave damping (material + unit footprints), rebuilt each tick — units absorb blasts |
+| `obstacles` | `bool` | Wave/flow boundary mask (walls + unit footprints), rebuilt each tick. Now sourced from `permeability == 0`, not the old occlusion flag |
 | `light_atten` | `(h,w,3) float32` | **Static** per-channel light attenuation (table projection) |
 | `dyn_light_atten` | `(h,w,3) float32` | **Dynamic** attenuation: static combined with unit opacity, rebuilt each tick |
 | `light_rgb` | `(h,w,3) float32` | Summed light colour reaching each tile (ray output) |
@@ -157,7 +162,7 @@ structural edit funnels through one seam:
 ```text
 on_tile_changed(fy, fx):
     re-read material[fy, fx]
-    patch is_wall, light_atten, flammable, wall_hp, conductivity for that tile  # O(1)
+    patch permeability/solid, light_atten, wave_absorb, flammable, wall_hp, conductivity  # O(1)
 ```
 
 `destroy_wall` is the canonical caller. It sets `material` to air, calls
@@ -188,11 +193,15 @@ stats; faction owned by the mission, not the unit). They are *actors*, not field
 so they are never baked into the grid permanently. Instead they are **projected**
 onto two fields once per tick by `stamp_units`, which does two outputs in one pass:
 
-1. **`obstacles`** = the solid/flow boundary (walls) plus every living unit's footprint, read
-   read-only by the wave and smoke solvers. Today it is a boolean, so units act as full walls —
-   shockwaves reflect, smoke is blocked. **Interim:** per the Material chapter, units should write
-   *partial* gas coefficients (absorb the wave, slow-not-seal smoke), which arrives when the gas
-   solvers read a `permeability` field instead of this boolean.
+1. **The gas/wave coefficient fields** — `dyn_permeability` and `dyn_wave_absorb`, plus the boolean
+   `obstacles` mask, all read by the wave and smoke solvers. A living unit is now a **soft** patch,
+   not a full wall: its footprint gets a *partial* `dyn_permeability` (default 0.5, per-unit hook +
+   `[physics] unit_permeability`), so smoke and air **seep past a body** rather than reflecting off
+   it, and it adds to `dyn_wave_absorb` (`[physics] unit_wave_absorb`) so it **absorbs blasts**
+   instead of mirroring them. Units still stamp into `obstacles` (movement hard-stop) and cast light
+   shadows. The C++ atmosphere + smoke solvers gather flux via `face = min(perm[self], perm[neighbor])`
+   over `dyn_permeability`; with the current materials the behaviour is identical to the old boolean
+   boundary. (Wave transmission *through* walls — 4b — is still deferred.)
 2. **`dyn_light_atten`** = the static `light_atten` with each living unit's opacity
    combined in per channel (`max`). A unit's opacity comes from an optional
    `unit.light_atten` (default `[1,1,1]` = a full shadow), so the design already
@@ -296,9 +305,23 @@ the same inputs gives a bit-identical trajectory on any machine.
   `material` is `int8`; all per-material constants come from the table
   (`src/simulation/materials.py`); caches are table projections built in
   `GameMap._update_caches`.
-- Walkability predicate `is_passable` / `is_passable_block` (`AIR`/`DOOR`), CPU-only. (The legacy
-  `is_wall` occlusion cache still exists in code; per the Material chapter it is **retired** in favour
-  of per-system coefficients — a removal owed across the gas solvers and `has_los`.)
+- Walkability predicate `is_passable` / `is_passable_block` (`AIR`/`DOOR`), CPU-only.
+- **`is_wall` retired.** `GameMap.solid` (= `permeability <= 0`) replaces it everywhere in Python;
+  the flow boundary and `has_los` now read `solid`. The C++ solvers keep a now-vestigial `is_wall`
+  *parameter* (fed `gmap.solid`) — removing that param + rebuild is a pending follow-up.
+- **Per-material `permeability` column** built and consumed: `GameMap.permeability` /
+  `dyn_permeability` caches; the C++ atmosphere + smoke solvers gather flux via
+  `face = min(perm[self], perm[neighbor])`. Behaviour-identical for the current materials.
+- **Soft units.** `stamp_units` writes unit footprints as a *partial* `dyn_permeability` (default
+  0.5, per-unit hook + `[physics] unit_permeability`) so gas/air seep past a body; units still
+  hard-stop movement and cast light shadows.
+- **Units absorb blasts.** `wave_absorb` / `dyn_wave_absorb` caches (material `wave_absorb` + units
+  via `[physics] unit_wave_absorb`); the C++ wave update damps per cell by it. Energy-out only —
+  open air is bit-identical.
+- **Over-pressure wall failure.** `MaterialTable.burst_threshold` column +
+  `GameMap.find_burst_walls(max_pops)`; `Simulation.step` (after fire burn-through) destroys walls
+  holding a pressure differential above their `burst_threshold`, capped by `[physics]
+  burst_max_per_tick`, gated by `[physics] burst_enabled`.
 - The full field inventory above is allocated in `GameMap.__init__`, sized from the
   level grid.
 - Static vs. dynamic attenuation (`light_atten` / `dyn_light_atten`), with the

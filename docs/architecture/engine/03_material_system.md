@@ -38,6 +38,7 @@ wave_absorb   = 0.1          # damped; for now reflect + absorb = 1 (transmit = 
 permeability  = 0.0          # 0 = sealed (wall); 1 = open (air); units write partial values
 # --- structural ---
 blast_resist  = 0.0          # blast resistance
+burst_threshold = 0.0        # over-pressure differential a wall holds before it bursts (0 = never)
 ```
 
 The full shipped set — **one table**, columns grouped by the **system** that reads each
@@ -56,11 +57,12 @@ The full shipped set — **one table**, columns grouped by the **system** that r
 `reflect + absorb = 1` for now — *transmit* (sound through a wall) is the deferred 4b extension.
 
 This single table **is** the per-system coefficient set — each column is consumed by exactly one
-system (the next section spells out which). Only `light_atten` is **consumed today**; `heat_atten`,
-the acoustic `wave_reflect`/`absorb`, `permeability`, and the thermal columns are stored and wait for
-their solvers (the per-material wave boundary, the gas/smoke permeability boundary, the temperature
-pass). Values are illustrative — tuned in the lighting demo and a future wave test; `–` means "not
-yet tuned".
+system (the next section spells out which). **Consumed today:** `light_atten` (the ray march),
+`permeability` (the gas/smoke flux boundary), `wave_absorb` (per-cell wave damping), and
+`burst_threshold` (over-pressure wall failure). Still stored-and-waiting: `heat_atten`,
+`wave_reflect`/transmit, and the thermal columns (`conductivity`, `ignition_temp`) wait for their
+solvers (the temperature pass, the through-wall 4b extension). Values are illustrative — tuned in
+the lighting demo and a future wave test; `–` means "not yet tuned".
 
 ### Why a named-key table and not flat arrays
 
@@ -88,8 +90,10 @@ HP column across the whole grid in one vectorised operation. `GameMap._update_ca
 exactly this to build the derived caches:
 
 ```python
-self.is_wall      = table.occludes(material)              # occlusion mask
+self.permeability = table.permeability[material]           # gas/smoke flux coefficient
+self.solid        = self.permeability <= 0                 # solidity mask (replaces is_wall)
 self.light_atten  = table.light_atten[material]            # (h, w, 3) static optics
+self.wave_absorb  = table.wave_absorb[material]            # per-cell wave damping
 self.flammable    = table.flammable[material]
 self.wall_hp      = table.hp[material]
 self.conductivity = table.conductivity[material]
@@ -134,9 +138,11 @@ system lands.)
 Because every interaction is a coefficient, a unit needs no bespoke physics: it is **matter that
 moves**, carrying the same coefficient set a material does and writing it into the *dynamic* copy of
 each field every tick — exactly as the static material table fills the static fields. The shipped
-instance is light (next section); heat, the gas wave, and gas flow follow the same per-tick stamp as
-their solvers are built. The lone non-coefficient interaction, movement, is the hard `passable` stamp
-(a unit's footprint marks its cells un-enterable).
+instances are **light** (`dyn_light_atten`), **gas/smoke flow** (a partial `dyn_permeability`, so a
+body is *soft* — air and smoke seep past it), and the **pressure wave** (`dyn_wave_absorb`, so a body
+absorbs a blast instead of mirroring it); heat follows the same per-tick stamp once its solver is
+built. The lone non-coefficient interaction, movement, is the hard `passable` stamp (a unit's
+footprint marks its cells un-enterable).
 
 ## Per-channel attenuation: static × dynamic
 
@@ -173,13 +179,13 @@ total_atten[channel] = material_atten[channel]  (static)
   fully opaque, casting a solid shadow), so a future creature could pass green light or an
   aquarium could tint blue-green — per colour, for free.
 
-`stamp_units()` produces two outputs in one pass: `obstacles` (static walls + unit footprints,
-read by the wave and smoke physics) and `dyn_light_atten` (read by the ray march). Stamping units
-into `obstacles` as **full boolean blockers is interim** — per the interaction model above, a unit
-should write *partial* gas coefficients (high pressure-absorption, reduced permeability) so a person
-slows smoke and soaks a blast without sealing a corridor; that upgrade is owed when the gas solvers
-move off the boolean boundary (see Implementation status). The march
-reads `dyn_light_atten` **read-only** — units occlude rays by being stamped into the field
+`stamp_units()` produces the live coefficient fields in one pass: `dyn_permeability` and
+`dyn_wave_absorb` (gas/smoke flux + wave damping, read by the wave and smoke physics), the
+`obstacles` mask, and `dyn_light_atten` (read by the ray march). Units now write *partial* gas
+coefficients — a reduced `dyn_permeability` (soft body) and an added `dyn_wave_absorb` — so a person
+slows-not-seals smoke and soaks a blast without reflecting it, exactly as the interaction model
+above requires. The march reads `dyn_light_atten` **read-only** — units occlude rays by being
+stamped into the field
 before the march, never by the kernel writing units. This keeps the march a deposit-only pass
 over a frozen world, which is what makes the eventual CUDA port (one thread per ray, read-only
 world) mechanical.
@@ -256,11 +262,23 @@ A per-material `light_reflect` would imply automatic in-march bouncing, which th
 - **All six materials** present as rows: air, hull, wood, door, steel, glass.
 - **Single source of `MAT_*` ids** in `simulation.materials`, re-exported by `gamemap.py` and
   used by `level_loader.py` — the "two places" duplication is gone.
-- **Table → per-tile caches** via fancy-index in `GameMap._update_caches()`: `is_wall`,
-  `light_atten`, `flammable`, `wall_hp`, `conductivity`.
-- **Occlusion from the table** — `MaterialTable.occludes()` derives `is_wall` from
-  `light_atten`; no hardcoded id list remains in the cache rebuild or in `destroy_wall`.
+- **Table → per-tile caches** via fancy-index in `GameMap._update_caches()`: `permeability`,
+  `solid`, `light_atten`, `wave_absorb`, `flammable`, `wall_hp`, `conductivity`.
+- **`is_wall` retired.** `GameMap.solid` (= `permeability <= 0`) replaces it everywhere in Python;
+  the flow boundary (`obstacles`) and `has_los` now read `solid`/`permeability`, not the old
+  light-occlusion accident. (The C++ solvers keep a now-vestigial `is_wall` *parameter*, fed
+  `gmap.solid`; removing it + rebuild is a pending follow-up.)
 - **`is_passable` / `is_passable_block`** as the separate walkability predicate (AIR + DOOR).
+- **`permeability` column consumed** — `GameMap.permeability` / `dyn_permeability`; the C++
+  atmosphere + smoke solvers gather flux via `face = min(perm[self], perm[neighbor])`. Default is
+  sealed iff the material occludes light; behaviour-identical for the current materials.
+- **`wave_absorb` column consumed** — `GameMap.wave_absorb` / `dyn_wave_absorb`; the C++ wave update
+  damps per cell by it (`wave_absorb_strength`). Energy-out only; open air bit-identical.
+- **`burst_threshold` column consumed** — over-pressure wall failure: `GameMap.find_burst_walls`
+  destroys walls holding a pressure differential above their `burst_threshold` (see ch.04).
+- **Soft units in the gas fields.** `stamp_units` writes unit footprints as a *partial*
+  `dyn_permeability` (default 0.5, per-unit hook + `[physics] unit_permeability`) and an added
+  `dyn_wave_absorb` (`[physics] unit_wave_absorb`) — soft body, absorbs blasts; movement still hard.
 - **Per-channel RGB attenuation, consumed for real.** The C++ raycaster
   (`cpp/src/raycaster.cpp`) reads `light_atten` per channel and applies `(1 - atten)` to the
   ray's RGB; opaque `[1,1,1]` kills the ray, glass `[0.1,…]` dims it, asymmetric triples tint.
@@ -282,18 +300,11 @@ A per-material `light_reflect` would imply automatic in-march bouncing, which th
   `Simulation`/PhysicsEngine step has not happened. This is a ray-engine concern, not a material
   concern, but it means the material attenuation is consumed by a render-time call today.
 - **Door open/closed state** — both predicates treat every door identically; no occlusion flip.
-- **Retire `is_wall`.** The cache still derives `is_wall` from `light_atten`, and the wave/smoke
-  solvers and `has_los` read it as a hard boundary. Per the interaction model `is_wall` is gone:
-  light/vision → `light_atten`, gas flow → the **permeability** column (now in the schema, unconsumed),
-  the gas wave → the wave coefficients, movement → `passable`. Owed (shared with the Grid chapter).
-- **Units as partial gas occluders.** `stamp_units` writes unit footprints into `obstacles` as full
-  boolean blockers; the model calls for *partial* gas coefficients (pressure-absorption, reduced
-  permeability) so a unit impedes flow without sealing it — requires the gas solvers to read a
-  coefficient field instead of the boolean boundary.
-- **`heat_atten`, `conductivity`, `ignition_temp`, `wave_reflect`, `wave_absorb`, `permeability`,
-  `blast_resist` columns** are in the schema but **consumed by nobody yet**. The temperature/conduction
-  pass, the per-material wave boundary, and the gas/smoke permeability boundary (which currently use
-  `is_wall`/`obstacles` as a hard reflective wall) wire into these later.
+- **Remove the vestigial C++ `is_wall` parameter** (+ rebuild). The Python side is fully off
+  `is_wall`; the solvers still take an `is_wall` argument (fed `gmap.solid`) that should be dropped.
+- **`heat_atten`, `conductivity`, `ignition_temp`, `wave_reflect`, `blast_resist` columns** are in
+  the schema but **consumed by nobody yet**. The temperature/conduction pass and the per-material
+  *reflective* wave boundary (the lossy mirror; through-wall 4b) wire into these later.
 - **`emissivity`** column — not in the table; deferred with hot-tile emission. (Specular reflection is
   not a material column at all — it is the Tier-3 entity re-emission pattern.)
 
@@ -305,12 +316,11 @@ A per-material `light_reflect` would imply automatic in-march bouncing, which th
   wood flammable. The door's `ignition_temp` is set to 280 regardless. This is a deliberate,
   documented hold (see the comment in `config.toml`), to be flipped when igniting doors becomes
   an intended gameplay change.
-- **`occludes()` docstring vs. glass.** The `MaterialTable.occludes()` docstring claims "for the
-  current behaviour-preserving set, only air is fully transparent," but the shipped glass row has
-  `light_atten = [0.1,0.1,0.1]`, so glass *does* register as occluding in `is_wall` (max > 0)
-  while still transmitting most light in the march. No shipped level places glass, so this is
-  latent; when a level does, glass will correctly appear in vision/smoke boundaries yet pass
-  light. The two behaviours (occludes for `is_wall`, dims for the march) are intentional and
-  consistent — only the docstring's aside is stale.
+- **Glass default permeability via occlusion.** `permeability` is optional in config and defaults
+  to *sealed iff the material occludes light* (`MaterialTable.occludes()`), so the shipped glass row
+  (`light_atten = [0.1,0.1,0.1]`, occludes) defaults to `permeability = 0` — sealed to gas/smoke
+  while still transmitting most light in the march. No shipped level places glass, so this is latent;
+  when a level does, glass will correctly seal gas yet pass dimmed light. A grill (passes gas) would
+  declare `permeability = 1` explicitly to override the occlusion-derived default.
 - **Scalar `light_map` lingers** alongside `light_rgb` during the RGB migration; the scalar field
   is a legacy render-tint path, not part of the material table.

@@ -68,11 +68,11 @@ Legend: ✅ implemented · ⚠️ partial (foundation built, advanced parts desi
 ### Engine — the deterministic world (read in order; each depends on the ones above)
 | # | Chapter | Status |
 |---|---------|--------|
-| 01 | [Grid & coordinates](engine/01_grid_and_coordinates.md) | ⚠️ (core built; drop is_wall, vision-via-atten, physics scaling owed) |
-| 02 | [State & ownership (GameMap)](engine/02_state_and_ownership.md) | ⚠️ |
-| 03 | [Material system](engine/03_material_system.md) | ✅ |
-| 04 | [Atmosphere & pressure](engine/04_atmosphere_and_pressure.md) | ✅ |
-| 05 | [Smoke](engine/05_smoke.md) | ✅ |
+| 01 | [Grid & coordinates](engine/01_grid_and_coordinates.md) | ⚠️ (core built, is_wall dropped; vision-via-atten, physics scaling owed) |
+| 02 | [State & ownership (GameMap)](engine/02_state_and_ownership.md) | ⚠️ (permeability/soft-unit fields built; GPU residency owed) |
+| 03 | [Material system](engine/03_material_system.md) | ✅ (permeability, wave_absorb, burst_threshold consumed; is_wall retired) |
+| 04 | [Atmosphere & pressure](engine/04_atmosphere_and_pressure.md) | ⚠️ (permeability boundary, 4a absorption, over-pressure burst built; venting/4b owed) |
+| 05 | [Smoke](engine/05_smoke.md) | ⚠️ (permeability + soft units built; lingering-smoke venting owed) |
 | 06 | [Temperature & fire](engine/06_temperature_and_fire.md) | ⚠️ (fire built, temperature designed) |
 | 07 | [Fluid & water](engine/07_fluid_and_water.md) | 🧪 |
 | 08 | [Ray engine](engine/08_ray_engine.md) | ⚠️ (Tier-1 shipped) |

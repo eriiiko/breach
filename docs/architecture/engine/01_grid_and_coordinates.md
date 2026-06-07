@@ -223,20 +223,21 @@ Audited against the shipped code, not the prose above.
   footprints into the solid mask and the dynamic attenuation field; `occupied_tiles()` / `occupies()`
   exist and drive it.
 
+**Built and in use (recently landed):**
+
+- **`is_wall` dropped.** Done. `GameMap.solid` (= `permeability <= 0`) replaces `is_wall`
+  everywhere on the Python side; the flow boundary (`obstacles`) is now sourced from the material
+  `permeability` column, not from the old light-occlusion accident. (A vestigial C++ `is_wall`
+  *parameter* remains — fed `gmap.solid` — pending removal + rebuild.)
+
 **Designed — owed by the code (this chapter is now canon; code catches up):**
 
-- **Drop `is_wall`.** Today `is_wall` = "occludes light" (derived from `light_atten`), and both the
-  solid mask (`obstacles`) and `has_los` depend on it. Build the flow boundary (`is_solid`) from a
-  dedicated material solidity column, route every consumer off `is_wall`, and remove it.
-- **Vision via attenuation.** `has_los` is Bresenham-on-`is_wall` today; it should march the
-  attenuation field (smoke dims sight; infravision on the heat channel) behind the same `has_los(a,b)`
-  interface.
+- **Vision via attenuation.** `has_los` is still Bresenham — now on `solid`, not `is_wall` — and
+  should march the attenuation field (smoke dims sight; infravision on the heat channel) behind the
+  same `has_los(a,b)` interface.
 - **Physics constants from tile size.** Audit `physics.py` / the solvers: confirm diffusion, wave
   speed, and `dt` derive from `dx = tile_size_m` rather than assuming 1/3. Required before the
   tile-size knob is real.
-- **Material `blocks_flow` / `walkable` columns.** Add explicit solidity and walkability properties
-  to the material table so `is_solid` / `is_passable` derive from intent, not from the
-  light-attenuation accident. (Shared with the Material chapter.)
 - **`coords.py` adoption.** Helpers are under-used — many call sites floor inline or open-code metre
   conversions; route them through `coords.py` as the single seam.
 

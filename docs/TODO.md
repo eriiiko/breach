@@ -80,6 +80,10 @@ Task:
 
 _Priority #1 — everything else is blocked on having a real testbed._
 
+> Status note: the current `unhcr_vessel` level is **render-complete** (walls
+> cast shadows, normal map present). The goal below — a fully layered level
+> running every physics system end to end — remains OPEN.
+
 **Goal:** One fully layered level (textures, heightmaps, normalmaps) that can run
 all physics systems (atmosphere, smoke, fire, water, water-air coupling). Pick a
 reference ship section and build it end to end.
@@ -128,22 +132,42 @@ rendering, normal map shaders, and aligns with the C++ physics / CUDA pipeline.
 1. **Art assets** — 4 congruent textures: ship hull, interior, skeleton, + normal/height maps. Erik's job, requires graphic design work.
 2. **Normal map shader** — integrate into raylib rendering pipeline. Course notes in `breach_graphics_course.md`. Huge visual upgrade once textures exist.
 
+## Physics — recently landed (coefficient model)
+
+- ~~**Pressure-driven wall failure**~~ **DONE** (commit 3fbdc12) —
+  `MaterialTable.burst_threshold` + `GameMap.find_burst_walls(max_pops)`;
+  `Simulation.step` (after fire burn-through) destroys walls holding a
+  pressure differential above their per-material `burst_threshold`, capped
+  by `[physics] burst_max_per_tick`, gated by `[physics] burst_enabled`.
+  The emergent pressure-relief valve. (Architecture: engine/04 §2.7.)
+- ~~**Permeability column + permeability boundary**~~ **DONE** (5220148,
+  e005c9a) — `MaterialTable.permeability` (default sealed iff occludes
+  light); `GameMap.permeability`/`dyn_permeability`; the C++ atmosphere +
+  smoke solvers gather flux via `face = min(perm[self], perm[neighbor])`.
+  `obstacles` now sourced from `permeability == 0`. Behaviour-identical for
+  the current materials.
+- ~~**Soft units (units as partial gas)**~~ **DONE** (4f26f0c) — a living
+  unit writes a partial `dyn_permeability` (default 0.5, per-unit hook +
+  `[physics] unit_permeability`) so smoke/air seep past a body; still casts
+  light shadows + impassable to movement.
+- ~~**Units absorb blasts (4a)**~~ **DONE** (89026ca) — `GameMap.wave_absorb`
+  / `dyn_wave_absorb` (material `wave_absorb` + units via
+  `[physics] unit_wave_absorb`); the C++ wave update damps per cell by it.
+  Energy-out only; open air bit-identical.
+- ~~**Retire `is_wall`**~~ **DONE** (3c99b1c) — `GameMap.solid`
+  (= `permeability <= 0`) replaces `is_wall` everywhere in Python.
+  *Follow-up still open:* remove the now-vestigial C++ `is_wall` parameter
+  (fed `gmap.solid`) + rebuild.
+
 ## Physics — Open Items
 
-3. **Pressure-driven wall failure** (Erik, 2026-05-24) — walls break when
-   the pressure gradient across them exceeds a threshold. Solves the
-   "stack N grenades in a sealed room and pressure builds forever" issue
-   elegantly: rooms self-breach when overpressured, releasing the energy.
-   Implementation sketch: at each tick, compute `|p[a] - p[b]|` for each
-   wall-air boundary; if `> burst_threshold`, call `gmap.destroy_wall(...)`
-   on that wall tile (becomes air; if hull-edge, becomes vacuum →
-   automatic decompression release). Threshold per material (hull holds
-   more than wood). Cool emergent explosion: chain reactions where
-   breaching one wall vents enough pressure to reset the gradient, but a
-   sealed-enough cluster of rooms could "pop" multiple walls in sequence.
-   Lands with the physics-engine pass.
-
-4. **Breach decompression fix** — sponge layer works but isn't physical. See `atmosphere_solver_analysis_and_patch_plan_20260319.md`. Not blocking but worth fixing.
+4. **Breach decompression / lingering-smoke venting fix** — sponge + vacuum
+   relaxation work but aren't physical, and leave a stubborn haze in a
+   vented room. Face-flux *as a pressure sink* was attempted and reverted:
+   with `d_atm = 200` it cannot clear the room (interior gradient flattens
+   → wind → 0). The real fix needs a *sustained continuity wind toward the
+   breach* — an open design decision. (Architecture: engine/04 §4; smoke
+   ch.05.) See `atmosphere_solver_analysis_and_patch_plan_20260319.md`.
 4. **Shallow water / fluid simulation** — prototype exists (`prototypes/fluid_test.py`: pipe model + shallow water equations, ship tilting). Needs integration into game engine. Use cases: water flooding, coolant leaks, blood pooling.
 5. **Fire ignition model** — ignition as O₂ + temperature function. Explosions deposit heat, temperature diffuses, spontaneous ignition above threshold. Pieces exist but integration glue is missing.
 

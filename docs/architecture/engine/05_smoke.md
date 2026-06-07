@@ -116,23 +116,27 @@ its smoke emission therefore lands as a per-tick deposit, not a per-substep one.
 
 Smoke's boundary is the **gas-flow** boundary, not the light-occlusion one: smoke is stopped by what
 is impermeable to gas, which is *not* the same set as what blocks light (a grill passes both light
-and smoke; glass blocks smoke yet passes light). Today the solver reads the boolean `obstacles` mask
-(walls + units) — the interim form — and per the coefficient model (ch.03) this becomes a per-cell
-**permeability**: walls `0` (sealed), units/grills partial. Walkability is a different predicate
-again and is irrelevant to smoke.
+and smoke; glass blocks smoke yet passes light). The solver now reads a per-cell **permeability**
+field (`gmap.dyn_permeability`, rebuilt each tick in `stamp_units`), gathering flux across each face
+as `face = min(perm[self], perm[neighbor])`: walls are `0` (sealed), and a living unit is **soft** —
+a partial value (default 0.5, `[physics] unit_permeability`) so smoke seeps *past* a body instead of
+reflecting off it. Behaviour is identical to the old boolean `obstacles` boundary for the current
+materials. Walkability is a different predicate again and is irrelevant to smoke.
 
 Vacuum tiles are a hard sink: smoke on any `is_vacuum` tile is zeroed each step (interior smoke
 clamped to `[0, 1]`), and advection is skipped on impermeable and vacuum tiles (they would read
 garbage gradients). Zeroing vacuum is what makes a breach drain a room — smoke advects toward the
 breach and is deleted there, exactly as venting to space should look.
 
-**Lingering-smoke fix (owed).** With the current vacuum-*relaxation* drain, the wind that carries
+**Lingering-smoke venting (owed).** With the current vacuum-*relaxation* drain, the wind that carries
 smoke out dies as interior pressure approaches zero (the gradient vanishes), so a ship breached to
-vacuum keeps a stubborn haze long after the air is gone — it looks wrong. The fix is the atmosphere
-chapter's **face-flux drain** (ch.04): outflow to vacuum sustains a face velocity even at near-zero
-pressure, so the wind keeps dragging smoke through the breach until the room is clear. (`dt_scale`
-and `advection_rate` already let smoke move faster than a literal wind reading for feel; that is
-tuning, not the root fix — face-flux is.)
+vacuum keeps a stubborn haze long after the air is gone — it looks wrong. The atmosphere chapter's
+**face-flux drain** (ch.04) was the intended fix, but face-flux *as a pressure sink* was attempted
+and reverted: with `d_atm = 200` it cannot clear a vented room (diffusion flattens the interior
+gradient → wind → 0 → smoke still lingers). The real fix needs a *sustained continuity wind toward
+the breach*, which is an open atmosphere-side design decision (§4 there). (`dt_scale` and
+`advection_rate` already let smoke move faster than a literal wind reading for feel; that is tuning,
+not the root fix.)
 
 ### Parameters
 
@@ -293,6 +297,10 @@ Audited against `cpp/src/smoke_dynamics.{h,cpp}`, `src/simulation/physics_runner
 - **Atmosphere interleaving** — `PhysicsRunner.step` runs `smoke.step(dt · dt_scale)` inside the
   per-substep loop, immediately after `atmos.step`, reading the freshly-computed
   `wind_x`/`wind_y`. Matches §2.
+- **Permeability boundary + soft units** — the solver reads per-cell `dyn_permeability`
+  (`face = min(perm[self], perm[neighbor])`) instead of the bare boolean; a living unit writes a
+  *partial* value (default 0.5, `[physics] unit_permeability`), so smoke seeps past a body.
+  Behaviour-identical to the old boolean boundary for the current materials.
 - **Parameters from config** — all four (`d_smoke`, `advection_rate`, `smoke_dt_scale`,
   `wind_diffusion_scale`) are bound from `config.toml` in `PhysicsRunner.__init__`. Defaults in
   the doc match `config.toml` (`0.1 / 100.0 / 3.0 / 50.0`). Note the *C++ class defaults*
@@ -309,10 +317,10 @@ Audited against `cpp/src/smoke_dynamics.{h,cpp}`, `src/simulation/physics_runner
 
 **Designed but not built:**
 
-- **Permeability boundary + lingering-smoke fix** — smoke's boundary is still the boolean
-  `obstacles`/occlusion mask; per ch.03/ch.04 it becomes a gas **permeability** (units/grills
-  partial, walls sealed), and the lingering-haze-on-vacuum artifact is fixed by the atmosphere
-  **face-flux** drain. Both owed.
+- **Lingering-smoke venting** — the permeability boundary and soft units have landed (above), but the
+  lingering-haze-on-vacuum artifact is **not** fixed: face-flux as a pressure sink was reverted, and
+  the real fix needs a *sustained continuity wind toward the breach* (an open atmosphere-side design
+  decision — ch.04 §4). Owed.
 - **Normal-mapped smoke** (§6) — render-side idea only; no smoke-normal texture or shader path.
 - **Multi-gas system** (§6) — smoke is a single scalar field today; the N-field gas set
   (poison / teargas / fuel, a data-driven `[gases.*]` table, per-channel colour/attenuation, and
