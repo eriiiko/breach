@@ -1,5 +1,5 @@
 [clock]
-ticks_per_second = 12
+ticks_per_second = 24
 phases_per_round = 2
 phase_duration_seconds = 5.0
 ap_per_phase = 2
