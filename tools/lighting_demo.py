@@ -14,6 +14,7 @@ Controls:
     Space          — pause / resume sim
     T              — toggle grenade-spawn mode (click to detonate)
     Left click     — spawn grenade (when in spawn mode)
+    N / Shift+N    — explosion smoke noise down / up (live cloud-texture dial)
     G              — toggle sRGB decode (renderer toggle from game)
     F1             — toggle grid overlay
     F2             — toggle smoke
@@ -73,6 +74,9 @@ DEFAULTS = {
     "smoke_tint_g": 195.0,
     "smoke_tint_b": 210.0,
     "smoke_max_alpha": 180.0,
+    # smoke^gamma render contrast (ch.05 §6.1 step 5): power curve on the
+    # rendered smoke opacity, render-only. 1.0 = off; ~1.2 dense -> 2.5 thin.
+    "smoke_render_gamma": 1.5,
     "show_pressure": True,
     "pressure_scale": 2.0,
     "blast_radius": 6.0,
@@ -81,6 +85,11 @@ DEFAULTS = {
     "unit_damage": 60.0,
     "fuse_seconds": 0.0,
     "smoke_amount": 0.3,  # default tuning baseline; 1.0 fills 2 rooms per nade
+    # Per-tile contrast of the explosion smoke deposit (ch.05 §4). Drawn uniform
+    # in [1 - noise, 1.0]: 0 = flat blob, 0.6 = old look, 0.85 = ragged holes
+    # (config default), 1.0 = maximal contrast. Live dial Erik can nudge by eye
+    # (slider in the panel, plus N / Shift+N keys).
+    "explosion_smoke_noise": 0.85,
 }
 
 # Pressure colormap was previously implemented here; lifted into
@@ -366,6 +375,7 @@ def main() -> None:
     renderer.smoke_overlay.tint_g = int(state.get("smoke_tint_g"))
     renderer.smoke_overlay.tint_b = int(state.get("smoke_tint_b"))
     renderer.smoke_overlay.max_alpha = int(state.get("smoke_max_alpha"))
+    renderer.smoke_overlay.gamma = float(state.get("smoke_render_gamma"))
 
     # ---- 5. Sim timing ----
     last_time = time.perf_counter()
@@ -392,6 +402,15 @@ def main() -> None:
             # T = toggle grenade-spawn mode. (G is taken by sRGB decode in poll_toggles.)
             if rl.is_key_pressed(K.KEY_T):
                 state.spawn_mode = not state.spawn_mode
+            # N / Shift+N = nudge explosion smoke noise down / up live, so the
+            # cloud's initial texture can be dialled in by eye between throws.
+            # (Mirrors the panel slider; clamped to [0, 1].)
+            if rl.is_key_pressed(K.KEY_N):
+                shift = (rl.is_key_down(K.KEY_LEFT_SHIFT) or
+                         rl.is_key_down(K.KEY_RIGHT_SHIFT))
+                cur = state.get("explosion_smoke_noise")
+                cur = cur + 0.05 if shift else cur - 0.05
+                state.set("explosion_smoke_noise", min(1.0, max(0.0, cur)))
 
             # ---- Sim tick ----
             if not state.paused:
@@ -433,7 +452,9 @@ def main() -> None:
                             # deposit" — we interpret that as calling once and
                             # scaling the newly deposited values.
                             before = sim.gmap.smoke.copy()
-                            add_explosion_smoke(sim.gmap, ty, tx, r, _tmp_rng)
+                            add_explosion_smoke(
+                                sim.gmap, ty, tx, r, _tmp_rng,
+                                noise=state.get("explosion_smoke_noise"))
                             delta = sim.gmap.smoke - before
                             # Rescale: new = before + delta * mult (clamped to 1.0)
                             # IN-PLACE write: the C++ atmosphere / raycaster
@@ -463,6 +484,9 @@ def main() -> None:
             renderer.smoke_overlay.tint_g = int(state.get("smoke_tint_g"))
             renderer.smoke_overlay.tint_b = int(state.get("smoke_tint_b"))
             renderer.smoke_overlay.max_alpha = int(state.get("smoke_max_alpha"))
+            # smoke^gamma render contrast — live re-push so the slider takes
+            # effect immediately (render-only; never touches the sim field).
+            renderer.smoke_overlay.gamma = float(state.get("smoke_render_gamma"))
 
             # ---- Lighting setters ----
             renderer.lighting.set_ambient((state.get("ambient_r"),
@@ -633,6 +657,8 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     y = _slider(state, "smoke_tint_g", "Tint G", 0.0, 255.0, x, y)
     y = _slider(state, "smoke_tint_b", "Tint B", 0.0, 255.0, x, y)
     y = _slider(state, "smoke_max_alpha", "Max alpha", 0.0, 255.0, x, y)
+    # smoke^gamma render contrast (render-only). 1.0 = off; >1 = wispier/filmic.
+    y = _slider(state, "smoke_render_gamma", "Gamma", 1.0, 3.0, x, y)
 
     # -- §4.5 Pressure overlay --
     y = _section_header("Pressure overlay", x, y)
@@ -647,6 +673,9 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     # unit_damage stored but not applied in direct-spawn (no apply_blast_damage call)
     y = _slider(state, "fuse_seconds", "Fuse (s)", 0.0, 5.0, x, y)
     y = _slider(state, "smoke_amount", "Smoke mult", 0.0, 2.0, x, y)
+    # Per-tile contrast of the deposited cloud (ch.05 §4). 0 = flat blob,
+    # 0.85 = ragged holes (default), 1.0 = max. Also N / Shift+N keys.
+    y = _slider(state, "explosion_smoke_noise", "Noise", 0.0, 1.0, x, y)
 
     # -- §4.7 Save / Load --
     y = _section_header("Presets", x, y)

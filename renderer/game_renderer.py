@@ -111,8 +111,19 @@ class GameRenderer:
         from level_loader import materials_from_tilemap
         _mat, vacuum_mask = materials_from_tilemap(level_data.tilemap)
         self.lighting.set_vacuum_mask(vacuum_mask)
+        # smoke^gamma render-contrast knob (ch.05 §6.1 step 5): a power curve on
+        # the RENDERED smoke opacity (FieldOverlay.update), not the sim field.
+        # gamma > 1 crushes thin smoke toward transparent and sharpens wispy
+        # edges (filmic), killing the flat-fog look; 1.0 = off. Bound from
+        # [smoke] smoke_render_gamma (default 1.5). Like the other [smoke] optics
+        # above it is read at init; Ctrl+R config reload does not re-push it
+        # (consistent with the renderer's other smoke params — see ch.12). The
+        # tuning tool (tools/lighting_demo.py) re-pushes it live via a slider.
+        smoke_render_gamma = float(
+            getattr(smoke_cfg, "smoke_render_gamma", 1.5))
         self.smoke_overlay = FieldOverlay(cfg.grid_h, cfg.grid_w,
-                                          tint=(190, 195, 210), max_alpha=180)
+                                          tint=(190, 195, 210), max_alpha=180,
+                                          gamma=smoke_render_gamma)
         self.fire_overlay = FireOverlay(cfg.grid_h, cfg.grid_w)
         # God-ray / lit-smoke glow (ch.05): additive shaft from the ray march's
         # smoke_glow output. Supersedes the retired light_modulation surface-tint.

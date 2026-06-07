@@ -26,13 +26,21 @@ class FieldOverlay:
     Use for smoke (gray semi-transparent) and fire (orange glow).
     """
 
-    def __init__(self, grid_h: int, grid_w: int, tint=(180, 180, 200), max_alpha=255):
+    def __init__(self, grid_h: int, grid_w: int, tint=(180, 180, 200),
+                 max_alpha=255, gamma: float = 1.0):
         self.h = grid_h
         self.w = grid_w
         self.tex = core.create_dynamic_rgba_texture(grid_w, grid_h)
         self.packed = np.zeros((grid_h, grid_w, 4), dtype=np.uint8)
         self.tint_r, self.tint_g, self.tint_b = tint
         self.max_alpha = max_alpha
+        # Render-contrast power curve applied to the rendered density in update()
+        # (ch.05 §6.1 step 5 "smoke^gamma"). RENDER-ONLY — never touches the sim
+        # field. gamma > 1 crushes thin smoke toward transparent and sharpens
+        # wispy edges (filmic); 1.0 = identity (linear opacity, the default for
+        # the base class so FireOverlay and any other field is untouched). The
+        # smoke overlay's gamma is bound from [smoke] smoke_render_gamma.
+        self.gamma = gamma
 
     def update(self, field: np.ndarray) -> None:
         """field: (H, W) float in [0,1]. Pack to RGBA, upload.
@@ -58,6 +66,13 @@ class FieldOverlay:
         # the ship after a grenade" bug. PREMUL gets the correct
         # Porter-Duff alpha math: ship alpha 1.0 stays at 1.0.
         v = np.clip(field, 0.0, 1.0)
+        # smoke^gamma render contrast (ch.05 §6.1 step 5): remap the rendered
+        # density through a power curve so thin smoke crushes toward transparent
+        # and wispy edges sharpen — a filmic look that kills flat fog. gamma=1.0
+        # is identity (skip the pow for speed; also what the base class / fire
+        # use). This is render-time only; gmap.smoke is never modified.
+        if self.gamma != 1.0:
+            v = v ** self.gamma
         alpha = v * self.max_alpha   # uint range, 0..255
         a_norm = alpha / 255.0       # 0..1 multiplier for premultiplication
         r = self.tint_r * a_norm

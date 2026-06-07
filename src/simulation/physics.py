@@ -73,18 +73,34 @@ def apply_explosion(gmap, fy, fx, radius, pressure, wall_damage):
                                                  0.5 * falloff)
 
 
-def add_explosion_smoke(gmap, fy, fx, radius, rng):
+def add_explosion_smoke(gmap, fy, fx, radius, rng, noise=None):
     """Deposit noisy smoke into ``gmap.smoke`` over a disc.
 
-    Lifted from ``game.py:_add_explosion_smoke`` (lines 1998-2012). Random
-    multiplier in [0.4, 1.0] per tile gives texture; in practice the
-    inner tiles still saturate at 1.0 — flagged as a known issue in
-    docs/architecture.md §6.4.
+    Lifted from ``game.py:_add_explosion_smoke`` (lines 1998-2012). Each tile
+    gets ``base * mult`` where ``base = 0.8 * (1 - dist/radius)`` and ``mult``
+    is drawn per-tile uniform in ``[1 - noise, 1.0]`` from the seeded ``rng``.
+    ``noise`` is the per-tile *contrast* knob (ch.05 §4 "explosion smoke noise
+    too subtle"):
+
+    - ``noise = 0`` -> ``mult == 1`` everywhere: a flat blob, no texture.
+    - ``noise = 0.6`` -> ``[0.4, 1.0]``: the old shipped look (too subtle).
+    - ``noise = 0.85`` (default) -> ``[0.15, 1.0]``: floor low enough that some
+      tiles read near-empty (ragged holes / missing patches), giving the cloud
+      visible initial structure for advection to grab and carry.
+    - ``noise = 1.0`` -> ``[0.0, 1.0]``: maximal contrast / holes.
+
+    When ``noise`` is ``None`` it is read from ``CFG.physics.explosion_smoke_noise``
+    so the look is config-tunable; callers (e.g. the demo dial) may override it.
 
     ``rng`` is a :class:`numpy.random.Generator`, owned by the Simulation
     facade. Sampling through it (instead of process-global ``random``)
     keeps AI rollouts deterministic from the seed.
     """
+    if noise is None:
+        noise = float(getattr(CFG.physics, "explosion_smoke_noise", 0.85))
+    # Clamp so the multiplier range [low, 1] stays well-formed: noise in [0, 1].
+    noise = min(1.0, max(0.0, noise))
+    low = 1.0 - noise
     h, w = gmap.material.shape
     for ddy in range(-radius, radius + 1):
         for ddx in range(-radius, radius + 1):
@@ -94,6 +110,6 @@ def add_explosion_smoke(gmap, fy, fx, radius, rng):
                 dist = math.sqrt(ddy ** 2 + ddx ** 2)
                 if dist < radius:
                     base = 0.8 * (1 - dist / radius)
-                    noise = float(rng.uniform(0.4, 1.0))
+                    mult = float(rng.uniform(low, 1.0))
                     gmap.smoke[ny, nx] = min(
-                        1.0, gmap.smoke[ny, nx] + base * noise)
+                        1.0, gmap.smoke[ny, nx] + base * mult)

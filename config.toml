@@ -26,6 +26,7 @@ max_source_per_step = 10.0             # max wave energy fed per substep (IMEX h
 smoke_dt_scale = 3.0                  # smoke time multiplier (>1 = smoke reacts faster to wind)
 wind_diffusion_scale = 50.0            # wind-dependent diffusion: D = d_smoke * (1 + scale * |wind|)
 smoke_sink_strength = 2.0              # smoke-side sink-pull toward nearest breach (cells/substep along the breach-ward gradient, capped at 1 to follow the BFS path). 0 = off (sealed-room behaviour); effective dial range 0..1, >=1 = full drain rate. Clears a vented room while a sealed room is untouched.
+explosion_smoke_noise = 0.85           # per-tile contrast of the explosion smoke deposit (add_explosion_smoke). The per-tile multiplier is drawn uniform in [1 - noise, 1.0]: noise=0 => flat blob (no texture); noise=0.6 => the old [0.4,1.0] look; noise=0.85 (default) drops the floor to 0.15 so some tiles read near-empty (ragged holes / missing patches) giving the cloud visible initial texture for advection to grab; noise=1.0 => full contrast ([0.0,1.0], maximal holes). Seeded RNG => deterministic.
 unit_permeability = 0.5                # gas/smoke permeability of a living unit's footprint (0 = seals, 1 = open; 0.5 = porous body slows flow)
 unit_wave_absorb = 0.5                  # shockwave energy a living unit's footprint absorbs (0 = none, 1 = full; high = a body soaks the blast)
 wave_absorb_strength = 8.0             # global scale on per-cell wave_absorb damping (tuned so units visibly soak the wave without nuking it)
@@ -51,6 +52,13 @@ physics_substeps = 8              # 8 * 1ms = 8ms physics per game tick
 smoke_absorption = [1.0, 1.0, 1.0]       # Beer-Lambert per-channel absorption (R,G,B)
 smoke_scatter_albedo = [1.0, 1.0, 1.0]   # additive god-ray/glow gain (R,G,B), decoupled from absorption
 smoke_absorb_scale = 1.4                 # beam-reach dial: LOW = long beam (flashlight travels far), HIGH = beam dies fast
+# Render-contrast curve applied to the *rendered* smoke opacity only (ch.05 §6.1
+# step 5 "smoke^gamma"): value = pow(saturate(smoke_density), gamma) at pack time
+# in FieldOverlay.update. This NEVER touches the simulation field — pure look.
+# gamma > 1 crushes thin smoke toward transparent and sharpens wispy edges
+# (filmic), killing the flat-fog look. Useful range ~1.2 (dense, soft) -> 2.5
+# (thin, very wispy). 1.0 = off / identity (linear density-opacity, the old look).
+smoke_render_gamma = 1.5                  # default mild, visible contrast bump (1.0 = off)
 
 [display]
 panel_width = 250
