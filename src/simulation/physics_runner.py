@@ -65,6 +65,9 @@ class PhysicsRunner:
         self.atmos.breach_rate         = float(CFG.physics.breach_rate)
         self.atmos.max_source_per_step = float(
             getattr(CFG.physics, 'max_source_per_step', 0.5))
+        # Global scale on per-cell wave-absorption (4a — lossy wave boundary).
+        self.atmos.absorb_strength = float(
+            getattr(CFG.physics, 'wave_absorb_strength', 8.0))
 
         # SmokeDynamics.
         self.smoke = bp.SmokeDynamics()
@@ -113,6 +116,7 @@ class PhysicsRunner:
                 gmap.wind_x, gmap.wind_y,
                 gmap.obstacles, gmap.is_wall, gmap.is_vacuum,
                 gmap.dyn_permeability,
+                gmap.dyn_wave_absorb,
                 dt_actual,
             )
             self.smoke.step(

@@ -20,6 +20,7 @@ void AtmosphereSolver::step(
     const bool* is_wall,
     const bool* is_vacuum,
     const float* permeability,
+    const float* wave_absorb,
     int h, int w,
     float dt
 ) const {
@@ -75,6 +76,23 @@ void AtmosphereSolver::step(
     // Wave pressure update
     for (int i = 0; i < n; ++i) {
         wave_p[i] += wave_v[i] * dt;
+    }
+
+    // --- 2b. Lossy boundary: per-cell wave-energy ABSORPTION (4a) ---
+    // Pure energy removal at cells the wave already touches — strictly
+    // stabilizing (damping out), so it needs no CFL/stability re-analysis and
+    // does NOT touch the Laplacian or the global `damping`. Air has
+    // wave_absorb=0 → k=1 → open-air wave behaviour is bit-identical to before.
+    // A body (high wave_absorb) soaks the blast; lossy materials damp while
+    // hull (low absorb) stays ringy. Scale by absorb_strength and dt; clamp
+    // k∈[0,1] so a single overshooting step can't flip the sign.
+    for (int i = 0; i < n; ++i) {
+        const float a = wave_absorb[i] * absorb_strength * dt;
+        if (a > 0.0f) {
+            const float k = (a < 1.0f) ? (1.0f - a) : 0.0f;
+            wave_v[i] *= k;
+            wave_p[i] *= k;
+        }
     }
 
     // Wave BCs: zero on walls and vacuum

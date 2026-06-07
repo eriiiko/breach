@@ -118,6 +118,20 @@ class GameMap:
         # buffer never goes stale). Away from units it equals the static field,
         # so behaviour matches the pre-3a obstacle-mirror in unoccupied regions.
         self.dyn_permeability = np.ones((h, w), dtype=np.float32)
+        # Per-tile STATIC wave-absorption (ch.04 §4a): the material table's
+        # ``wave_absorb`` projected onto the grid (air 0, hull/steel/glass 0.1,
+        # wood/door 0.4). Fraction of shockwave energy a tile damps. A
+        # structural-change cache (rebuilt in _update_caches, patched per tile in
+        # on_tile_changed), NOT recomputed each tick.
+        self.wave_absorb = np.zeros((h, w), dtype=np.float32)
+        # Per-tile DYNAMIC wave-absorption (ch.04 §4a): the live field the C++
+        # wave update reads = static ``wave_absorb`` (copy) combined via MAX with
+        # each living unit's footprint absorption (default
+        # ``CFG.physics.unit_wave_absorb``, high — a body soaks blast). Rebuilt
+        # IN-PLACE each tick in ``stamp_units`` (never reassigned, so a C++ view
+        # of the buffer never goes stale). Away from units it equals the static
+        # field; air is 0 there, so OPEN-AIR WAVE BEHAVIOUR IS UNCHANGED.
+        self.dyn_wave_absorb = np.zeros((h, w), dtype=np.float32)
         # Heat deposit buffer (ch.03 output / ch.04 §Fixed-point format): the
         # only SIM-affecting ray output. Q16.16 FIXED-POINT int32 — 16 integer
         # bits, 16 fractional bits, so 1.0 energy == 65536 raw counts (the C++
@@ -180,6 +194,8 @@ class GameMap:
         self.conductivity = tbl.conductivity[m].astype(np.float32, copy=True)
         # Gas/smoke permeability projected onto the grid (0 sealed, 1 open).
         self.permeability = tbl.permeability[m].astype(np.float32, copy=True)
+        # Shockwave absorption projected onto the grid (ch.04 §4a).
+        self.wave_absorb = tbl.wave_absorb[m].astype(np.float32, copy=True)
 
         # Atmosphere: 1.0 in interior air, 0.0 at walls and vacuum.
         self.atmosphere = np.where(
@@ -215,6 +231,7 @@ class GameMap:
         self.wall_hp[fy, fx] = float(tbl.hp[mat_id])
         self.conductivity[fy, fx] = float(tbl.conductivity[mat_id])
         self.permeability[fy, fx] = float(tbl.permeability[mat_id])
+        self.wave_absorb[fy, fx] = float(tbl.wave_absorb[mat_id])
 
     # ------------------------------------------------------------------
     # Config hot-reload: rebuild the table + static caches (ch.02 §14)
@@ -290,8 +307,13 @@ class GameMap:
         # IN-PLACE (no reassignment — keeps any C++ view valid). Units then
         # lower their footprint to a PARTIAL value below (3b: porous body).
         self.dyn_permeability[:] = self.permeability
+        # Reset the dynamic wave-absorption field to the static material baseline
+        # IN-PLACE (no reassignment — keeps any C++ view valid). Units then raise
+        # their footprint via MAX below (4a: a body soaks the blast).
+        self.dyn_wave_absorb[:] = self.wave_absorb
         default_atten = (1.0, 1.0, 1.0)
         default_perm = float(getattr(CFG.physics, "unit_permeability", 0.5))
+        default_wabsorb = float(getattr(CFG.physics, "unit_wave_absorb", 0.5))
         for u in units:
             if not u.alive:
                 continue
@@ -302,10 +324,18 @@ class GameMap:
             # declare ``permeability`` (e.g. a denser/looser body); default is
             # the config value (porous, slows flow but does not seal).
             u_perm = float(getattr(u, "permeability", default_perm))
+            # Per-unit wave-absorption hook (mirrors the others): a unit may
+            # declare ``wave_absorb``; default is the config value (high — a
+            # body soaks the blast).
+            u_wabsorb = float(getattr(u, "wave_absorb", default_wabsorb))
             for (tx, ty) in u.occupied_tiles():
                 if 0 <= ty < h and 0 <= tx < w:
                     # Unit is a soft body: partial permeability, NOT an obstacle.
                     self.dyn_permeability[ty, tx] = u_perm
+                    # Wave absorption: MAX so a unit can only ADD damping, never
+                    # remove a lossy material's absorption underneath it.
+                    cur = self.dyn_wave_absorb[ty, tx]
+                    self.dyn_wave_absorb[ty, tx] = cur if cur >= u_wabsorb else u_wabsorb
                     # Per-channel MAX: opacity can only increase.
                     cell = self.dyn_light_atten[ty, tx]
                     cell[0] = cell[0] if cell[0] >= u_atten[0] else u_atten[0]

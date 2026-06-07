@@ -25,6 +25,7 @@ public:
     // Wave parameters
     float c          = 300.0f;   // wave speed (tiles/s)
     float damping    = 3.0f;     // wave velocity damping (1/s)
+    float absorb_strength = 8.0f;// global scale on per-cell wave_absorb damping (4a)
     float transfer   = 0.5f;    // wave_p → atmosphere transfer rate (1/s)
     float feed_rate  = 200.0f;  // wave_source → wave_p feed rate (1/s)
 
@@ -54,6 +55,7 @@ public:
         const bool* is_wall,
         const bool* is_vacuum,
         const float* permeability,
+        const float* wave_absorb,
         int h, int w,
         float dt
     ) const;

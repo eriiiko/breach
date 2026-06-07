@@ -44,6 +44,7 @@ PYBIND11_MODULE(breach_physics, m) {
         .def(py::init<>())
         .def_readwrite("c",                   &AtmosphereSolver::c)
         .def_readwrite("damping",             &AtmosphereSolver::damping)
+        .def_readwrite("absorb_strength",     &AtmosphereSolver::absorb_strength)
         .def_readwrite("transfer",            &AtmosphereSolver::transfer)
         .def_readwrite("d_atm",               &AtmosphereSolver::d_atm)
         .def_readwrite("feed_rate",           &AtmosphereSolver::feed_rate)
@@ -62,6 +63,7 @@ PYBIND11_MODULE(breach_physics, m) {
                         py::array_t<bool>  is_wall,
                         py::array_t<bool>  is_vacuum,
                         py::array_t<float> permeability,
+                        py::array_t<float> wave_absorb,
                         float dt) {
             auto [wp, h, w]   = get_2d(wave_p);
             auto [wv, h2, w2] = get_2d(wave_v);
@@ -73,12 +75,14 @@ PYBIND11_MODULE(breach_physics, m) {
             auto [wl, h8, w8] = get_2d_const(is_wall);
             auto [vac, h9, w9] = get_2d_const(is_vacuum);
             auto [perm, h10, w10] = get_2d_const(permeability);
-            self.step(wp, wv, ws, atm, wx, wy, obs, wl, vac, perm, h, w, dt);
+            auto [wabs, h11, w11] = get_2d_const(wave_absorb);
+            self.step(wp, wv, ws, atm, wx, wy, obs, wl, vac, perm, wabs, h, w, dt);
         }, py::arg("wave_p"), py::arg("wave_v"), py::arg("wave_source"),
            py::arg("atmosphere"),
            py::arg("wind_x"), py::arg("wind_y"),
            py::arg("obstacles"), py::arg("is_wall"), py::arg("is_vacuum"),
            py::arg("permeability"),
+           py::arg("wave_absorb"),
            py::arg("dt"));
 
     // --- SmokeDynamics (uses precomputed wind from AtmosphereSolver) ---
