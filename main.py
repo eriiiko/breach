@@ -73,7 +73,7 @@ def main():
     sim.gmap.fire[FIRE_SOURCE] = 0.8
     BREACH = (slice(58, 64), slice(33, 36))
     sim.gmap.material[BREACH] = 0  # MAT_AIR
-    sim.gmap.is_wall[BREACH] = False
+    sim.gmap.solid[BREACH] = False
     sim.gmap.is_vacuum[BREACH] = True
     sim.gmap.atmosphere[BREACH] = 0.0
     sim.gmap.obstacles[BREACH] = False

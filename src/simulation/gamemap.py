@@ -8,7 +8,7 @@ form and ``_build_ship`` fallback from the legacy implementation are gone
 
 Owns the cached arrays the physics systems read and write:
 
-    material, wall_hp, is_wall, is_vacuum, flammable,
+    material, wall_hp, solid, is_vacuum, flammable,
     atmosphere, wave_p, wave_v, wave_source, wind_x, wind_y,
     smoke, fire, obstacles, light_map, heat, smoke_glow
 
@@ -61,7 +61,6 @@ class GameMap:
         # Field grids (allocate up front; populate from level + caches below)
         self.material     = np.zeros((h, w), dtype=np.int8)
         self.wall_hp      = np.zeros((h, w), dtype=np.float32)
-        self.is_wall      = np.zeros((h, w), dtype=bool)
         self.is_vacuum    = np.zeros((h, w), dtype=bool)
         self.flammable    = np.zeros((h, w), dtype=bool)
         self.atmosphere   = np.ones((h, w), dtype=np.float32)
@@ -167,11 +166,10 @@ class GameMap:
         (``self.materials``) indexed by ``material`` — no hardcoded material
         lists. The two distinct masks are preserved (ch.02 §two masks):
 
-        - ``is_wall`` — the **occlusion** mask (physics/light/smoke/vision
-          boundary). Derived from ``light_atten`` (a tile occludes if it
-          attenuates any channel), so it includes doors (``[1,1,1]``) but not
-          air (``[0,0,0]``) — exactly the old ``{HULL, WOOD, DOOR}`` set for
-          the current materials.
+        - ``solid`` — the physics/light/smoke/vision boundary mask. Derived from
+          ``permeability`` (a tile is solid iff ``permeability == 0``), so it
+          includes doors but not air — exactly the old ``{HULL, WOOD, DOOR}``
+          set for the current materials.
         - ``is_passable`` (the walkability predicate, AIR+DOOR) lives in the
           query methods and is derived from the table's ``passable`` column.
 
@@ -182,9 +180,6 @@ class GameMap:
         m = self.material
         tbl = self.materials
 
-        # Occlusion mask from the table (doors occlude; air does not). Always
-        # boolean-typed regardless of the input grid's dtype.
-        self.is_wall = np.asarray(tbl.occludes(m), dtype=bool)
         # Static per-channel light attenuation: table column projected onto the
         # grid (ch.03 march input). C-contiguous f32 so it crosses to C++ as a
         # plain (h, w, 3) buffer with no copy.
@@ -197,15 +192,22 @@ class GameMap:
         # Shockwave absorption projected onto the grid (ch.04 §4a).
         self.wave_absorb = tbl.wave_absorb[m].astype(np.float32, copy=True)
 
-        # Atmosphere: 1.0 in interior air, 0.0 at walls and vacuum.
+        # Solid mask (the physics solid boundary): a tile is solid iff it is
+        # impermeable to gas (permeability == 0). For the current materials this
+        # is exactly the old occlusion set ({HULL, WOOD, DOOR}), so behaviour is
+        # unchanged; it replaces the retired ``is_wall`` flag as the
+        # physics/light/smoke/vision boundary source. Always boolean-typed.
+        self.solid = self.permeability <= 0.0
+
+        # Atmosphere: 1.0 in interior air, 0.0 at solid tiles and vacuum.
         self.atmosphere = np.where(
-            self.is_wall | self.is_vacuum, 0.0, 1.0
+            self.solid | self.is_vacuum, 0.0, 1.0
         ).astype(np.float32)
 
         # Obstacles (the physics solid boundary) == solid tiles (permeability
         # == 0) until stamp_units paints unit footprints over it. Sourced from
         # permeability, not the occlusion flag, so flow and optics can diverge.
-        self.obstacles = self.permeability <= 0.0
+        self.obstacles = self.solid
 
     # ------------------------------------------------------------------
     # Incremental cache patch (single structural-edit seam — ch.02 review #10)
@@ -225,13 +227,14 @@ class GameMap:
             return
         mat_id = int(self.material[fy, fx])
         tbl = self.materials
-        self.is_wall[fy, fx] = bool(tbl.light_atten[mat_id].max() > 0.0)
         self.light_atten[fy, fx] = tbl.light_atten[mat_id]
         self.flammable[fy, fx] = bool(tbl.flammable[mat_id])
         self.wall_hp[fy, fx] = float(tbl.hp[mat_id])
         self.conductivity[fy, fx] = float(tbl.conductivity[mat_id])
         self.permeability[fy, fx] = float(tbl.permeability[mat_id])
         self.wave_absorb[fy, fx] = float(tbl.wave_absorb[mat_id])
+        # Solid mask follows permeability (sealed iff permeability == 0).
+        self.solid[fy, fx] = bool(self.permeability[fy, fx] <= 0.0)
 
     # ------------------------------------------------------------------
     # Config hot-reload: rebuild the table + static caches (ch.02 §14)
@@ -366,7 +369,7 @@ class GameMap:
         return bool(np.all((block == MAT_AIR) | (block == MAT_DOOR)))
 
     def has_los(self, fy1, fx1, fy2, fx2):
-        """Bresenham line-of-sight check. Stops on ``is_wall``."""
+        """Bresenham line-of-sight check. Stops on ``solid``."""
         h, w = self._h, self._w
         dx = abs(fx2 - fx1)
         dy = abs(fy2 - fy1)
@@ -377,7 +380,7 @@ class GameMap:
         while True:
             if x == fx2 and y == fy2:
                 return True
-            if 0 <= y < h and 0 <= x < w and self.is_wall[y, x]:
+            if 0 <= y < h and 0 <= x < w and self.solid[y, x]:
                 return False
             e2 = 2 * err
             if e2 > -dy:
@@ -388,14 +391,14 @@ class GameMap:
                 y += sy
 
     def _neighbor_mean(self, field, fy, fx):
-        """Mean of field values from passable (non-wall, non-vacuum) 4-neighbors."""
+        """Mean of field values from passable (non-solid, non-vacuum) 4-neighbors."""
         h, w = field.shape
         total = 0.0
         count = 0
         for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
             ny, nx = fy + dy, fx + dx
             if (0 <= ny < h and 0 <= nx < w
-                    and not self.is_wall[ny, nx]
+                    and not self.solid[ny, nx]
                     and not self.is_vacuum[ny, nx]):
                 total += field[ny, nx]
                 count += 1
@@ -435,12 +438,12 @@ class GameMap:
         """
         h, w = self._h, self._w
         atm = self.atmosphere
-        is_wall = self.is_wall
+        solid = self.solid
         is_vacuum = self.is_vacuum
         thresh = self.materials.burst_threshold
 
         failing = []  # (differential, fy, fx)
-        ys, xs = np.where(is_wall)
+        ys, xs = np.where(solid)
         for fy, fx in zip(ys.tolist(), xs.tolist()):
             mat_id = int(self.material[fy, fx])
             t = float(thresh[mat_id])
@@ -453,9 +456,9 @@ class GameMap:
                 if not (0 <= ny < h and 0 <= nx < w):
                     continue
                 # A solid neighbour (wall, incl. sealed-hull which is also
-                # is_wall) or an exposed-vacuum breach holds no air → 0; an
+                # solid) or an exposed-vacuum breach holds no air → 0; an
                 # air tile contributes its atmosphere.
-                if is_wall[ny, nx] or is_vacuum[ny, nx]:
+                if solid[ny, nx] or is_vacuum[ny, nx]:
                     p = 0.0
                 else:
                     p = float(atm[ny, nx])
@@ -490,12 +493,12 @@ class GameMap:
         if not (0 <= fy < h and 0 <= fx < w):
             return
         was_hull = (self.material[fy, fx] == MAT_HULL)
-        # A wall is anything the occlusion mask marks (hull/wood/door today,
+        # A wall is anything the solid mask marks (hull/wood/door today,
         # plus steel/glass when placed) — replaces the hardcoded id list.
-        if self.is_wall[fy, fx]:
+        if self.solid[fy, fx]:
             self.material[fy, fx] = MAT_AIR
             # Patch ALL table-derived caches for this tile through the single
-            # incremental seam (is_wall, flammable, wall_hp, conductivity) —
+            # incremental seam (solid, flammable, wall_hp, conductivity) —
             # no inline cache fixups, no O(grid) rebuild.
             self.on_tile_changed(fy, fx)
             if was_hull:

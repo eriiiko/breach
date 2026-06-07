@@ -3,7 +3,7 @@
 Covers ch.02 (Material System) foundation:
   - the table loads from config and exposes every column (scalars + RGB)
   - the unified MAT_* ids are shared (no duplication drift)
-  - derived caches (is_wall/flammable/wall_hp/conductivity) match the table
+  - derived caches (solid/flammable/wall_hp/conductivity) match the table
   - on_tile_changed patches ALL caches after a destroy_wall, with no O(grid)
     rebuild and identical observable behaviour
 
@@ -94,9 +94,9 @@ def test_caches_match_table():
     g = GameMap(load_level("unhcr_vessel"))
     m = g.material
     tbl = g.materials
-    # Occlusion mask == old {HULL, WOOD, DOOR} behaviour for current set.
+    # Solid mask == old {HULL, WOOD, DOOR} behaviour for current set.
     expected_wall = np.isin(m, [MAT_HULL, MAT_WOOD, MAT_DOOR])
-    assert np.array_equal(g.is_wall, expected_wall), "is_wall regressed"
+    assert np.array_equal(g.solid, expected_wall), "solid regressed"
     assert np.array_equal(g.flammable, (m == MAT_WOOD)), "flammable regressed"
     assert np.array_equal(g.flammable, tbl.flammable[m]), "flammable != table"
     assert np.array_equal(g.wall_hp, tbl.hp[m]), "wall_hp != table"
@@ -113,26 +113,26 @@ def test_on_tile_changed_patches_all_caches_after_destroy():
     # Use an interior (non-edge) hull tile so destroy_wall does NOT open a
     # vacuum breach — we are testing the cache patch, not breach behaviour.
     h, w = g.material.shape
-    interior = np.zeros_like(g.is_wall)
+    interior = np.zeros_like(g.solid)
     interior[2:h - 2, 2:w - 2] = True
     ys, xs = np.where((g.material == MAT_HULL) & interior)
     assert len(ys) > 0, "level has no interior hull to destroy"
     y, x = int(ys[0]), int(xs[0])
 
-    # Pre-conditions: hull occludes, has hp + conductivity.
-    assert g.is_wall[y, x]
+    # Pre-conditions: hull is solid, has hp + conductivity.
+    assert g.solid[y, x]
     assert g.wall_hp[y, x] == g.materials.hp[MAT_HULL]
     assert g.conductivity[y, x] == g.materials.conductivity[MAT_HULL]
 
     # Snapshot the rest of the grid to prove no O(grid) rebuild happened.
-    wall_before = g.is_wall.copy()
+    wall_before = g.solid.copy()
     cond_before = g.conductivity.copy()
 
     g.destroy_wall(y, x)
 
     # The one tile is fully patched to AIR semantics.
     assert g.material[y, x] == MAT_AIR
-    assert not g.is_wall[y, x]
+    assert not g.solid[y, x]
     assert not g.flammable[y, x]
     assert g.wall_hp[y, x] == 0
     assert g.conductivity[y, x] == 0.0
@@ -140,14 +140,14 @@ def test_on_tile_changed_patches_all_caches_after_destroy():
     # Every OTHER tile is untouched (incremental patch, not a rebuild).
     wall_before[y, x] = False
     cond_before[y, x] = 0.0
-    assert np.array_equal(g.is_wall, wall_before), "is_wall touched other tiles"
+    assert np.array_equal(g.solid, wall_before), "solid touched other tiles"
     assert np.array_equal(g.conductivity, cond_before), "conductivity touched others"
     print("OK: on_tile_changed_patches_all_caches_after_destroy")
 
 
 def test_permeability_defaults_to_solid_set():
     """permeability is sealed (0) exactly where a tile occludes today and open
-    (1) elsewhere, so the physics `obstacles` boundary == the legacy is_wall
+    (1) elsewhere, so the physics `obstacles` boundary == the legacy solid
     set — behaviour-preserving while flow now sources from permeability."""
     tbl = MaterialTable.from_config(CFG)
     assert tbl.permeability[MAT_AIR] == 1.0, "air must be open"
@@ -156,8 +156,8 @@ def test_permeability_defaults_to_solid_set():
     g = GameMap(load_level("unhcr_vessel"))
     # obstacles base (before any unit stamp) derives from permeability and must
     # equal the occlusion set for the current materials.
-    assert np.array_equal(g.obstacles, g.is_wall), "obstacles != solid set"
-    assert np.array_equal((g.permeability <= 0.0), g.is_wall)
+    assert np.array_equal(g.obstacles, g.solid), "obstacles != solid set"
+    assert np.array_equal((g.permeability <= 0.0), g.solid)
     print("OK: permeability_defaults_to_solid_set")
 
 
@@ -166,11 +166,11 @@ def test_on_tile_changed_direct_patch():
     g = GameMap(load_level("unhcr_vessel"))
     ys, xs = np.where(g.material == MAT_AIR)
     y, x = int(ys[0]), int(xs[0])
-    assert not g.is_wall[y, x]
+    assert not g.solid[y, x]
     # Promote an air tile to steel and patch its caches.
     g.material[y, x] = MAT_STEEL
     g.on_tile_changed(y, x)
-    assert g.is_wall[y, x], "steel must occlude"
+    assert g.solid[y, x], "steel must be solid"
     assert g.wall_hp[y, x] == g.materials.hp[MAT_STEEL]
     assert g.conductivity[y, x] == g.materials.conductivity[MAT_STEEL]
     assert not g.flammable[y, x]

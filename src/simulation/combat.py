@@ -264,7 +264,7 @@ def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
             ix, iy = int(rx), int(ry)
 
             if 0 <= iy < h and 0 <= ix < w:
-                if gmap.is_wall[iy, ix]:
+                if gmap.solid[iy, ix]:
                     break
             else:
                 break

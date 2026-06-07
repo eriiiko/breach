@@ -86,7 +86,7 @@ class PressureOverlay:
                 rgba[mask_last, ch] = int(stops[-1, ch + 1])
 
         # Pressure is only meaningful in air: hide on walls and vacuum.
-        solid = gmap.is_wall | gmap.is_vacuum
+        solid = gmap.solid | gmap.is_vacuum
         rgba[solid] = 0
 
         # Pre-multiply alpha so the draw can use BLEND_ALPHA_PREMULTIPLY

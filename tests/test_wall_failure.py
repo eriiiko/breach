@@ -78,8 +78,8 @@ def _sealed_room_level():
 
 
 def _interior_mask(gmap: GameMap):
-    """Boolean mask of the interior air tiles (not wall, not vacuum)."""
-    return (~gmap.is_wall) & (~gmap.is_vacuum)
+    """Boolean mask of the interior air tiles (not solid, not vacuum)."""
+    return (~gmap.solid) & (~gmap.is_vacuum)
 
 
 def _make_sim():
@@ -97,7 +97,7 @@ def test_pops_under_overpressure():
     interior = _interior_mask(g)
     assert interior.any(), "test level has no interior air"
 
-    walls_before = int(g.is_wall.sum())
+    walls_before = int(g.solid.sum())
     # Pump the interior far above any burst_threshold (hull = 6.0).
     g.atmosphere[interior] = 50.0
     peak_before = float(g.atmosphere.max())
@@ -105,7 +105,7 @@ def test_pops_under_overpressure():
     for _ in range(N_STEPS):
         sim.step()
 
-    walls_after = int(g.is_wall.sum())
+    walls_after = int(g.solid.sum())
     peak_after = float(g.atmosphere.max())
 
     assert walls_after < walls_before, (
@@ -125,14 +125,14 @@ def test_no_spurious_pops_at_normal_pressure():
     interior = _interior_mask(g)
     g.atmosphere[interior] = 1.0  # normal interior pressure
 
-    wall_set_before = g.is_wall.copy()
+    wall_set_before = g.solid.copy()
 
     for _ in range(N_STEPS):
         sim.step()
 
-    assert np.array_equal(g.is_wall, wall_set_before), (
+    assert np.array_equal(g.solid, wall_set_before), (
         f"normal-pressure room lost walls: "
-        f"{int(wall_set_before.sum())} -> {int(g.is_wall.sum())}")
+        f"{int(wall_set_before.sum())} -> {int(g.solid.sum())}")
     print(f"OK: no_spurious_pops_at_normal_pressure "
           f"({int(wall_set_before.sum())} walls intact)")
 

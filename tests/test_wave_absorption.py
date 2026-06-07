@@ -67,7 +67,7 @@ def _make_arena() -> GameMap:
     g = GameMap(load_level("unhcr_vessel"))
     ys = slice(ARENA_Y0, ARENA_Y1)
     xs = slice(ARENA_X0, ARENA_X1)
-    g.is_wall[ys, xs] = False
+    g.solid[ys, xs] = False
     g.is_vacuum[ys, xs] = False
     g.obstacles[ys, xs] = False
     g.permeability[ys, xs] = 1.0
@@ -110,7 +110,7 @@ def _run(g: GameMap, units):
         solver.step(
             g.wave_p, g.wave_v, g.wave_source, g.atmosphere,
             g.wind_x, g.wind_y,
-            g.obstacles, g.is_wall, g.is_vacuum,
+            g.obstacles, g.solid, g.is_vacuum,
             g.dyn_permeability, g.dyn_wave_absorb,
             dt,
         )
@@ -163,7 +163,7 @@ def test_open_air_unchanged():
         for g in (ga2, gb2):
             s.step(
                 g.wave_p, g.wave_v, g.wave_source, g.atmosphere,
-                g.wind_x, g.wind_y, g.obstacles, g.is_wall, g.is_vacuum,
+                g.wind_x, g.wind_y, g.obstacles, g.solid, g.is_vacuum,
                 g.dyn_permeability, g.dyn_wave_absorb, dt,
             )
     assert np.array_equal(ga2.wave_p, gb2.wave_p)

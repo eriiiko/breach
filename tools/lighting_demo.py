@@ -533,7 +533,7 @@ def _draw_hud(renderer: GameRenderer, gmap, state: PanelState,
               now: float) -> None:
     """Cursor tile coords + pressure + smoke, always visible top-left."""
     mouse_f = renderer.mouse_to_tile_float()
-    H, W = gmap.is_wall.shape
+    H, W = gmap.solid.shape
 
     spawn_tag = " [SPAWN MODE — click to detonate]" if state.spawn_mode else ""
     pause_tag = " [PAUSED]" if state.paused else ""
@@ -548,7 +548,7 @@ def _draw_hud(renderer: GameRenderer, gmap, state: PanelState,
         if 0 <= cx < W and 0 <= cy < H:
             if gmap.is_vacuum[cy, cx]:
                 mat_name = "vacuum"
-            elif gmap.is_wall[cy, cx]:
+            elif gmap.solid[cy, cx]:
                 mat_name = "hull"
             else:
                 mat_val = int(gmap.material[cy, cx])

@@ -719,7 +719,7 @@ class Simulation:
             u.last_fire_tick = -999
 
         # Reset obstacles so dead bodies don't keep blocking physics.
-        self.gmap.obstacles = self.gmap.is_wall.copy()
+        self.gmap.obstacles = self.gmap.solid.copy()
         # Keep un-detonated projectiles (long-fuse grenades carry over).
         self.projectiles = [p for p in self.projectiles if not p.detonated]
         # Rewind for the next round.

@@ -114,21 +114,21 @@ class PhysicsRunner:
             self.atmos.step(
                 gmap.wave_p, gmap.wave_v, gmap.wave_source, gmap.atmosphere,
                 gmap.wind_x, gmap.wind_y,
-                gmap.obstacles, gmap.is_wall, gmap.is_vacuum,
+                gmap.obstacles, gmap.solid, gmap.is_vacuum,
                 gmap.dyn_permeability,
                 gmap.dyn_wave_absorb,
                 dt_actual,
             )
             self.smoke.step(
                 gmap.smoke, gmap.wind_x, gmap.wind_y,
-                gmap.obstacles, gmap.is_wall, gmap.is_vacuum,
+                gmap.obstacles, gmap.solid, gmap.is_vacuum,
                 gmap.dyn_permeability,
                 dt_actual * self.smoke.dt_scale,
             )
 
         destroyed = self.fire.step(
             gmap.fire, gmap.atmosphere, gmap.smoke, gmap.wall_hp,
-            gmap.is_wall, gmap.flammable,
+            gmap.solid, gmap.flammable,
             sim_time,
         )
         return destroyed

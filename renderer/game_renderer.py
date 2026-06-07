@@ -729,17 +729,17 @@ class GameRenderer:
             text = "tile (—, —) — cursor outside map"
         else:
             cx, cy = int(mouse_f[0]), int(mouse_f[1])
-            H, W = gmap.is_wall.shape
+            H, W = gmap.solid.shape
             if 0 <= cx < W and 0 <= cy < H:
                 if gmap.is_vacuum[cy, cx]:
                     mat = "vacuum"
-                elif gmap.is_wall[cy, cx]:
+                elif gmap.solid[cy, cx]:
                     mat = "hull"
                 else:
                     mat_val = int(gmap.material[cy, cx])
                     mat = {0: "air", 1: "hull", 3: "door"}.get(
                         mat_val, f"mat{mat_val}")
-                blocked = bool(gmap.is_wall[cy, cx] or gmap.is_vacuum[cy, cx])
+                blocked = bool(gmap.solid[cy, cx] or gmap.is_vacuum[cy, cx])
                 tag = "BLOCKED" if blocked else "walkable"
                 text = f"tile ({cx}, {cy}) — {mat} — {tag}"
             else:

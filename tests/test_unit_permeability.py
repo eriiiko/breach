@@ -66,7 +66,7 @@ def test_unit_is_soft_body_not_obstacle():
             f"unit tile ({tx},{ty}) shadow changed: {g.dyn_light_atten[ty, tx]}"
 
     # obstacles is now walls-only == solid set.
-    assert np.array_equal(g.obstacles, g.is_wall), \
+    assert np.array_equal(g.obstacles, g.solid), \
         "obstacles must equal the solid (wall) set after stamping a unit"
 
 
@@ -96,5 +96,5 @@ def test_dead_unit_leaves_permeability_open():
 
     assert np.array_equal(g.dyn_permeability, g.permeability), \
         "dead unit must not alter the permeability field"
-    assert np.array_equal(g.obstacles, g.is_wall), \
+    assert np.array_equal(g.obstacles, g.solid), \
         "dead unit must not add obstacles"

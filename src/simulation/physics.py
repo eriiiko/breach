@@ -50,7 +50,7 @@ def apply_explosion(gmap, fy, fx, radius, pressure, wall_damage):
                         gmap.wall_hp[ny, nx] -= wall_damage * falloff
                         if gmap.wall_hp[ny, nx] <= 0:
                             gmap.destroy_wall(ny, nx)
-                    if not gmap.is_wall[ny, nx] and not gmap.is_vacuum[ny, nx]:
+                    if not gmap.solid[ny, nx] and not gmap.is_vacuum[ny, nx]:
                         # Smoothed 3x3 deposit into wave_source (shockwave).
                         amount = pressure * falloff
                         for ky, kx, kw in [
@@ -59,7 +59,7 @@ def apply_explosion(gmap, fy, fx, radius, pressure, wall_damage):
                                 (-1, -1, 1), (-1, 1, 1), (1, -1, 1), (1, 1, 1)]:
                             sy, sx = ny + ky, nx + kx
                             if (0 <= sy < h and 0 <= sx < w
-                                    and not gmap.is_wall[sy, sx]
+                                    and not gmap.solid[sy, sx]
                                     and not gmap.is_vacuum[sy, sx]):
                                 gmap.wave_source[sy, sx] += amount * kw / 16.0
                         # Direct atmosphere boost (sustained pressure gradient
@@ -90,7 +90,7 @@ def add_explosion_smoke(gmap, fy, fx, radius, rng):
         for ddx in range(-radius, radius + 1):
             ny, nx = fy + ddy, fx + ddx
             if (0 <= ny < h and 0 <= nx < w
-                    and not gmap.is_wall[ny, nx]):
+                    and not gmap.solid[ny, nx]):
                 dist = math.sqrt(ddy ** 2 + ddx ** 2)
                 if dist < radius:
                     base = 0.8 * (1 - dist / radius)
