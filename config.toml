@@ -259,6 +259,32 @@ unit_absorption = 0.85
 unit_reflectivity = 0.10
 shot_tracer_duration = 0.4
 
+# --- Unit heat damage (engine/06 §4, proposal §4.2) -----------------------
+# A LIVING unit sampled at its footprint takes radiant heat damage from the
+# already-occluded `heat` buffer (units are full ray-blockers, so heat[tile]
+# IS the incident, distance-attenuated, occluded radiant flux at that tile):
+#
+#   Phi     = max(heat over footprint) / HEAT_SCALE          # incident flux
+#   Phi_abs = Phi * unit_absorption * (1 - unit_reflectivity) # 0.85 * 0.90 = 0.765
+#   T_felt  = heat_ambient_ref + heat_flux_to_temp * Phi_abs  # radiation -> felt temp
+#   over    = T_felt - temperature_max                        # damage band (per-unit profile)
+#   dmg     = environmental_damage_rate * (1 + heat_overtemp_scale * over) * dt_tick
+#   if zombie: dmg *= zombie.fire_damage_multiplier
+#
+# Defaults are tuned so a unit in a strong beam cooks while a warm room is
+# survivable (temperature_max defaults to 60 in EnvironmentProfile):
+#   - faint warmth (Phi ~1):  T_felt ~26  -> over < 0  -> no damage (survivable)
+#   - modest beam  (Phi ~10): T_felt ~81  -> over ~21  -> ~2 HP/s on a marine
+#   - strong beam  (Phi ~100):T_felt ~632 -> over ~572 -> ~30 HP/s (cooks in ~3 s)
+# environmental_damage_rate / temperature_max come from each unit's
+# EnvironmentProfile (config keys below are the global fallback if absent).
+# dt_tick = 1/ticks_per_second keeps the real DPS tick-rate independent.
+heat_flux_to_temp = 8.0          # felt-degrees per absorbed heat-unit (k_flux_to_temp)
+heat_ambient_ref = 20.0          # baseline felt temperature, no beam (T_ambient_ref)
+heat_overtemp_scale = 0.05       # damage ramp above the band (k_over), small +ve
+temperature_max = 60.0           # global fallback band ceiling if a unit has no EnvironmentProfile
+environmental_damage_rate = 1.0  # global fallback env-damage rate (per unit/sec) if no profile
+
 [recorder]
 # Physics ring-buffer length in seconds. config.py derives the integer slot
 # capacity via round(replay_seconds * ticks_per_second). 100 s -> 1200 @ 12 tps.

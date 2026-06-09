@@ -184,15 +184,14 @@ class PhysicsRunner:
             gmap.is_vacuum, gmap.atmosphere,
         )
 
-        # Clear the per-tick `heat` deposit — END OF TICK, AFTER the conversion
-        # consumer (engine/06 §1.3, proposal §6 step 7). `heat` is a per-tick
-        # deposit buffer, not a cross-tick accumulator; it must be wiped once
-        # every reader (currently just the conversion above) has run, so the
-        # next frame's ray pass deposits into a clean buffer. The clear used to
-        # live at the START of the renderer's ray cast (lighting.compute_light_
-        # field), which wiped the deposit before any consumer saw it; it moves
-        # here so conversion reads `heat` first. In-place (never reassigned) so
-        # any C++ view of the buffer stays valid.
-        gmap.heat.fill(0)
+        # NOTE: the per-tick `heat` clear does NOT live here. `heat` has a
+        # SECOND consumer downstream — unit heat damage (engine/06 §4,
+        # apply_environmental_damage) — which must also read the buffer before
+        # it is wiped. Per proposal §6 the clear is therefore the very last
+        # step of the tick, AFTER every heat reader (the C++ conversion above,
+        # the Python unit-damage, and the render-glow sample). It now lives at
+        # the end of Simulation.step(), following apply_environmental_damage and
+        # the recorder snapshot. (STEP A originally placed the clear here, when
+        # conversion was the only consumer; STEP D moves it out.)
 
         return destroyed

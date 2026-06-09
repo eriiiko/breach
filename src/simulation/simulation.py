@@ -68,7 +68,8 @@ from simulation.ai_zombie import update_zombies_tick, convert_marines_to_zombies
 from simulation.generation import sample_unit_attributes
 from simulation.species import get_species
 from simulation.combat import (
-    apply_blast_damage, process_door_explosives, process_shooting,
+    apply_blast_damage, apply_environmental_damage,
+    process_door_explosives, process_shooting,
     Projectile, Shot,
 )
 from simulation.events import (
@@ -623,9 +624,36 @@ class Simulation:
                 else:
                     self.tick_events.append(WallDestroyedEvent(pos=(yy, xx)))
 
+        # 9c. Unit heat damage (engine/06 §4, proposal §4.2/§6 step 4a). The
+        # SECOND consumer of the per-tick `heat` deposit (the C++ heat ->
+        # temperature conversion inside physics_runner.step() is the first):
+        # each living unit samples the already-occluded `heat` buffer at its
+        # footprint and takes radiant damage if the felt temperature pushes
+        # past its tolerance band. Runs AFTER physics fills `heat`, BEFORE the
+        # recorder snapshot (so the snapshot captures post-damage HP) and BEFORE
+        # the end-of-tick heat clear below — its existence is precisely what
+        # makes wiping `heat` correct (a reader finally consumes it).
+        if self.physics_runner is not None:
+            apply_environmental_damage(
+                self.units, self.gmap, self._tps,
+                events=self.tick_events,
+            )
+
         # Recorder snapshot.
         if self.recorder is not None:
             self.recorder.record(self.gmap, self.tick, self.real_time, self.units)
+
+        # Clear the per-tick `heat` deposit — END OF TICK, AFTER every heat
+        # consumer (engine/06 §1.3/§6 step 7). `heat` is a per-tick deposit
+        # buffer, not a cross-tick accumulator; it is wiped once both readers
+        # have run — the C++ heat->temperature conversion inside
+        # physics_runner.step() AND the unit heat damage above (plus the render
+        # glow sample) — so the next frame's ray pass deposits into a clean
+        # buffer. The clear moved here from PhysicsRunner.step() (STEP A) so the
+        # downstream unit-damage consumer sees the pre-clear value. In-place
+        # (never reassigned) so any C++ view of the buffer stays valid.
+        if self.physics_runner is not None:
+            self.gmap.heat.fill(0)
 
         # Expire visual shot tracers (legacy fade-out behaviour).
         if self.shots:
