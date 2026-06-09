@@ -2,17 +2,14 @@
 
 Lifted from ``main.py`` (the inline ``PhysicsRunner`` shim from before
 this migration) and reconciled with the parameter-binding side channel
-in ``game.py:Physics._init_solvers`` (lines 754-800). The legacy code
-set FireSimulation parameters (FIRE_D, FIRE_O2_THRESHOLD, etc.) and an
-``max_source_per_step`` cap that ``main.py``'s PhysicsRunner silently
-omitted — bringing both over here keeps fire / shockwave behavior
-identical to the legacy entry point.
+in ``game.py:Physics._init_solvers``.
 
-Fire parameter defaults match the legacy ``Physics.FIRE_*`` class
-constants. They live on this module instead of in config.toml — that's
-a known issue (architecture.md §6.5 flags it as TODO: move to config).
-The migration intentionally does not change behavior; the config move
-is a separate patch.
+Fire is the signed-logistic intensity FEEDBACK model
+(fire_design_proposal §2/§3/§5): the cellular spread is deleted (spread is
+now radiation -> heat -> temperature -> ignition), and the per-tile
+life/death + own-tile plume pressure deposit are bound from
+``config.toml`` ``[physics.fire]`` (the ``FIRE_*`` module constants are the
+fallbacks when a key is absent).
 
 ``step(gmap, sim_time)`` advances all physics by ``sim_time`` seconds
 (usually one game tick = 1 / CFG.clock.ticks_per_second). The IMEX
@@ -30,15 +27,26 @@ from config import CFG
 
 
 # ---------------------------------------------------------------------------
-# Fire parameter defaults (lifted from game.py:Physics.FIRE_* class constants)
+# Fire feedback parameter defaults (fire_design_proposal §2/§3/§5). Cellular
+# spread is GONE — spread is now radiation -> heat -> temperature -> ignition
+# (apply_temperature_ignition). These drive the signed-logistic life/death of an
+# already-lit tile. Bound from config [physics.fire]; these constants are the
+# fallback when a key is absent. Erik tunes them live.
 # ---------------------------------------------------------------------------
-FIRE_D              = 0.3   # fire spread rate to neighbors
-FIRE_O2_THRESHOLD   = 0.60  # fire dies below this atmosphere
-FIRE_O2_CONSUMPTION = 0.3   # atmosphere consumed per step by fire
-FIRE_SMOKE_EMISSION = 0.8   # smoke produced per step by fire
-FIRE_WALL_DAMAGE    = 0.4   # HP damage to wall per step while burning
-FIRE_K_WIND_THRESH  = 0.5   # fire must exceed this * wind_speed to survive
-FIRE_K_WIND_NET     = 3.0   # rate of wind effect (both feeding and cooling)
+FIRE_K_GROW         = 4.0    # logistic growth gain (1/s)
+FIRE_K_DIE          = 2.0    # decay rate when starved/cold (1/s)
+FIRE_T_EXT          = 350.0  # extinction temperature (~ignition_temp + 50)
+FIRE_T_SPAN         = 150.0  # width of the `hot` ramp above T_ext
+FIRE_FUEL_REF       = 60.0   # wall_hp normaliser: F = clamp01(wall_hp/fuel_ref)
+FIRE_P_MIN          = 0.60   # pressure below which the O2 proxy is 0
+FIRE_P_FULL         = 1.00   # pressure at which the O2 proxy is full
+FIRE_I_MIN          = 0.02   # snap-to-zero extinguish floor
+FIRE_K_WIND_FAN     = 0.5    # (1 + k_wind_fan*W) fans growth (firestorm); TUNE vs wind scale
+FIRE_K_WIND_STRIP   = 0.5    # W*(1-I)*I blows out small fires (crossover); TUNE vs wind scale
+FIRE_PRESSURE_GAIN  = 0.15   # own-tile plume overpressure gain (1/s)
+FIRE_P_EXPAND_REF   = 1.30   # self-limiting plume saturation ceiling
+FIRE_SMOKE_EMISSION = 0.8    # smoke produced per step by fire
+FIRE_WALL_DAMAGE    = 0.4    # HP damage to wall per step while burning (the burn-out brake)
 
 
 class PhysicsRunner:
@@ -84,19 +92,39 @@ class PhysicsRunner:
         self.smoke.sink_strength        = float(
             getattr(CFG.physics, 'smoke_sink_strength', 2.0))
 
-        # FireSimulation — the binding the legacy entry point did and
-        # main.py's previous shim DID NOT. Without these the C++
-        # defaults (set in FireParams in fire_simulation.h) take over;
-        # they happen to match the constants here in the current build,
-        # but the legacy intent was for the Python-side values to win.
+        # FireSimulation — signed-logistic intensity FEEDBACK (fire_design_proposal
+        # §2/§3/§5). Cellular spread is gone: spread is radiation -> heat ->
+        # temperature -> ignition (apply_temperature_ignition). This step is the
+        # life/death of an already-lit tile: grow when hot + fuelled + pressurised,
+        # decay/blow-out otherwise; deposit a self-limiting own-tile plume into
+        # `atmosphere` (smoke pushed OUTWARD); burn the wall through (fuel brake).
+        # All tunables bound from config [physics.fire] (FIRE_* are the fallbacks).
+        fire_cfg = getattr(CFG.physics, "fire", None)
+
+        def _fp(key, default):
+            return float(getattr(fire_cfg, key, default))
+
         self.fire = bp.FireSimulation()
-        self.fire.params.spread_rate    = FIRE_D
-        self.fire.params.o2_threshold   = FIRE_O2_THRESHOLD
-        self.fire.params.o2_consumption = FIRE_O2_CONSUMPTION
-        self.fire.params.smoke_emission = FIRE_SMOKE_EMISSION
-        self.fire.params.wall_damage    = FIRE_WALL_DAMAGE
-        self.fire.params.k_wind_thresh  = FIRE_K_WIND_THRESH
-        self.fire.params.k_wind_net     = FIRE_K_WIND_NET
+        self.fire.params.k_grow         = _fp("k_grow", FIRE_K_GROW)
+        self.fire.params.k_die          = _fp("k_die", FIRE_K_DIE)
+        self.fire.params.fire_T_ext     = _fp("fire_T_ext", FIRE_T_EXT)
+        self.fire.params.fire_T_span    = _fp("fire_T_span", FIRE_T_SPAN)
+        self.fire.params.fuel_ref       = _fp("fuel_ref", FIRE_FUEL_REF)
+        self.fire.params.P_min          = _fp("P_min", FIRE_P_MIN)
+        self.fire.params.P_full         = _fp("P_full", FIRE_P_FULL)
+        self.fire.params.I_min          = _fp("I_min", FIRE_I_MIN)
+        self.fire.params.k_wind_fan     = _fp("k_wind_fan", FIRE_K_WIND_FAN)
+        self.fire.params.k_wind_strip   = _fp("k_wind_strip", FIRE_K_WIND_STRIP)
+        self.fire.params.fire_pressure_gain = _fp(
+            "fire_pressure_gain", FIRE_PRESSURE_GAIN)
+        self.fire.params.p_expand_ref   = _fp("p_expand_ref", FIRE_P_EXPAND_REF)
+        self.fire.params.smoke_emission = _fp("smoke_emission", FIRE_SMOKE_EMISSION)
+        self.fire.params.wall_damage    = _fp("wall_damage", FIRE_WALL_DAMAGE)
+        # Q16.16 scale of the temperature field (== HEAT_SCALE). Keep C++/config
+        # in lockstep so T = temperature/temp_scale matches ignition_temp units.
+        thermal_cfg = getattr(CFG.physics, "thermal", None)
+        self.fire.params.temp_scale = float(
+            getattr(thermal_cfg, "TEMP_SCALE", 65536))
 
         # TemperatureSolver (engine/06 §1–§2): turns the per-tick `heat` deposit
         # into the persistent `temperature` field on solids (§1 conversion), then
@@ -210,9 +238,19 @@ class PhysicsRunner:
                 dt_actual * self.smoke.dt_scale,
             )
 
+        # Fire feedback step (fire_design_proposal §2/§3/§5). Reads the
+        # conduction-pass `temperature` (Q16.16) for the `hot` gate, the SHARED
+        # `wind_x`/`wind_y` field (= -grad p incl. shockwaves, so a grenade blast
+        # fans/blows fires) for the wind term, and `is_vacuum` to exclude vacuum
+        # from the pressure (O2-proxy) neighbour mean. NOTE: it reads the
+        # temperature from the PREVIOUS tick's conduction pass — the
+        # TemperatureSolver below updates it for next tick (this tick's fire-heat
+        # was already cast at the top of step()). Deposits an own-tile plume into
+        # `atmosphere` so smoke is pushed OUTWARD.
         destroyed = self.fire.step(
             gmap.fire, gmap.atmosphere, gmap.smoke, gmap.wall_hp,
-            gmap.solid, gmap.flammable,
+            gmap.temperature, gmap.wind_x, gmap.wind_y,
+            gmap.solid, gmap.is_vacuum, gmap.flammable,
             sim_time,
         )
 

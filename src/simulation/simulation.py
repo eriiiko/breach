@@ -678,20 +678,19 @@ class Simulation:
         # above and filled `temperature`; here each FLAMMABLE tile whose
         # `temperature` has crossed its (Q16.16-quantized) `ignition_temp` AND
         # has O2 (the same air-side-neighbour atmosphere check the fire uses) is
-        # ignited via `fire = max(fire, ignition_seed)`. A SECOND ignition path
-        # that runs alongside the existing cellular fire spread (it does not
-        # replace it). Reads `temperature` (gather) + `atmosphere`, writes `fire`;
-        # deterministic, no RNG. With no sim heat sources wired yet, `temperature`
-        # is ~0, so this is DORMANT in-game (no behaviour change) until fire/beams
-        # emit heat. Slotted alongside the unit-heat-damage consumer (§6 step 4),
+        # ignited via `fire = max(fire, ignition_seed)`. With the cellular spread
+        # DELETED (fire_design_proposal §1), this radiation -> heat -> temperature
+        # -> ignition path is now the SOLE way fire spreads tile-to-tile. Reads
+        # `temperature` (gather) + `atmosphere`, writes `fire`; deterministic, no
+        # RNG. With no sim heat sources active `temperature` is ~0, so it is
+        # dormant. Slotted alongside the unit-heat-damage consumer (§6 step 4),
         # after the temperature passes, before the end-of-tick heat clear.
         if self.physics_runner is not None:
             fire_cfg = getattr(CFG.physics, "fire", None)
             ignition_seed = float(getattr(fire_cfg, "ignition_seed", 0.1))
-            # Reuse the fire's O2 survival threshold so a tile cannot be ignited
-            # into a state the next fire step would immediately suffocate. The
-            # fire's runtime value lives on the runner (FIRE_O2_THRESHOLD); the
-            # config block mirrors it (defaulting to the same 0.60).
+            # Reuse the fire's O2 (pressure) survival threshold so a tile cannot be
+            # ignited into a state the next fire step would immediately suffocate.
+            # config [physics.fire].o2_threshold (0.60) mirrors the feedback P_min.
             o2_threshold = float(getattr(fire_cfg, "o2_threshold", 0.60))
             apply_temperature_ignition(self.gmap, o2_threshold, ignition_seed)
 

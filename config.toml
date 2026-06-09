@@ -66,6 +66,39 @@ o2_vacuum_thresh  = 0.3  # atmosphere below which a 4-neighbour counts as vacuum
 ignition_seed = 0.1   # seed fire intensity a temperature-ignited tile gets (I_seed)
 o2_threshold  = 0.60  # min air-side-neighbour atmosphere to ignite (mirrors the fire's o2_threshold)
 
+# --- Signed-logistic fire FEEDBACK (fire_design_proposal §2/§3/§5) ------------
+# Cellular spread is DELETED: spread is now radiation -> heat -> temperature ->
+# ignition (apply_temperature_ignition above). The fire step is purely the
+# life/death of an already-lit tile. Per burning tile of intensity I in [0,1]:
+#   T     = temperature[i] / TEMP_SCALE              (game units; ignition_temp=300 wood)
+#   F     = clamp01(wall_hp[i] / fuel_ref)           (fuel from remaining wall HP)
+#   P     = mean atmosphere over open (non-solid,non-vacuum) 4-neighbours  (O2 proxy)
+#   W     = |wind| from the SHARED wind field (= -grad p, incl. shockwaves)
+#   hot   = clamp01((T - fire_T_ext) / fire_T_span)
+#   o2    = smoothstep(P_min, P_full, P)             (pressure IS oxygen — no O2 field)
+#   avail = F * o2
+#   grow  = k_grow * avail * hot * I*(1-I) * (1 + k_wind_fan*W)   (logistic, wind-fanned)
+#   die   = k_die*(1 - avail*hot)*I + k_wind_strip*W*(1-I)*I      (decay + wind blow-out)
+#   I    += dt*(grow - die);  clamp01;  if I < I_min -> 0 (snap-extinguish)
+# Plume: atmosphere[i] += max(fire_pressure_gain*I*(1 - atmosphere[i]/p_expand_ref)*dt, 0)
+#   -> own-tile overpressure -> wind points OUTWARD -> smoke pushed away (not pulled in).
+# A sealed-room fire over-pressurises -> may pop a weak wall (find_burst_walls) -> vents
+# -> P falls -> starves. Emergent. Erik tunes all of these live.
+k_grow            = 4.0    # logistic growth gain (1/s)
+k_die             = 2.0    # decay rate when starved/cold (1/s)
+fire_T_ext        = 350.0  # extinction temperature (~ignition_temp + 50; below it, fire dies)
+fire_T_span       = 150.0  # width of the `hot` ramp above fire_T_ext
+fuel_ref          = 60.0   # wall_hp normaliser: F = clamp01(wall_hp/fuel_ref)
+P_min             = 0.60   # pressure below which the O2 proxy is 0 (decompression extinguishes)
+P_full            = 1.00   # interior pressure where the O2 proxy is full
+I_min             = 0.02   # snap-to-zero extinguish floor
+k_wind_fan        = 0.5    # (1 + k_wind_fan*W) fans growth into a firestorm. NEEDS TUNING vs the live wind scale (a shockwave is a large transient spike).
+k_wind_strip      = 0.5    # W*(1-I)*I blows out small/marginal fires (the realistic crossover). NEEDS TUNING vs the live wind scale.
+fire_pressure_gain = 0.15  # own-tile plume overpressure gain (1/s) — pushes smoke OUTWARD
+p_expand_ref      = 1.30   # self-limiting plume saturation ceiling (atm + thermal-expansion headroom)
+smoke_emission    = 0.8    # smoke produced per second per unit intensity (KEPT)
+wall_damage       = 0.4    # wall HP lost per second per unit intensity (KEPT — the burn-out brake)
+
 # --- K2: fire as a sim-side heat ray source (proposal §1, fire_design_notes) --
 # Each burning tile (fire > 0) becomes a short-range heat `LightSource` cast IN
 # THE SIM at the START of the physics step, BEFORE the TemperatureSolver, so this

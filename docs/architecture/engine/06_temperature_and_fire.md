@@ -218,66 +218,89 @@ path. (The unit reads the buffer; the kernel never writes the unit.)
 
 ## 5. Fire
 
-Fire is the built, running layer. It is a cellular system on flammable tiles:
-each tile carries a `fire` intensity in `[0, 1]` (0 = unlit, 1 = full blaze),
-stepped once per tick by the C++ `FireSimulation`. A tick runs these stages in
-order:
+Fire is the built, running layer. Each flammable tile carries a `fire` intensity
+in `[0, 1]` (0 = unlit, 1 = full blaze), stepped once per tick by the C++
+`FireSimulation`. **Spread is no longer cellular** — it comes entirely from
+radiation → heat → temperature → ignition (§4 `apply_temperature_ignition`, fed
+by fire's own heat-ray source, §"Fire as a light source"). The fire step is now
+purely the *life and death* of an already-lit tile: a signed-logistic
+**feedback** that grows a fed fire and decays a starved one
+(`fire_design_proposal` §2/§3/§5). A tick runs these stages in order:
 
-1. **Spread.** Burning tiles raise the intensity of neighbouring *flammable*
-   tiles. The neighbourhood is 12-connected (4-orthogonal + 4 diagonal +
-   2-tile-range orthogonal), so fire reaches slightly past its immediate
-   neighbours and feels like it leaps gaps. **Erik comment** This wasnt how i had imagined it, i thought it woulr cast rays, (not that high intensiry rays, only a few is probably enough, but actually the light rays needs to be a few probably, and we could reuse them for heat, everything is set up for that all ready) - - What i was thinking about originally tho, was if fire spreads alot, perhaps we dont need to recompute its rays each time, wecould cache it - this needs to be quite smartly done too tho. Should we cache it using sparse arrays, and one array per source of fire? then we can also puit out fires one by one without recomputing everyhing - and they need to recompute only on map destruction , and how do we design a system that only computes the affected light sources for that? Is this too complex? Does it cost mroe than it tastes? Let's reserach our possibilities - because if we can get it ray based, it will look fantastic.
-
-2. **Wind-biased spread.** Fire steers its spread downwind. It computes a local
-   wind from the `atmosphere` gradient and boosts ignition of the downwind
-   neighbour by up to 3× (and suppresses the upwind one).
-3. **Wind modulates intensity.** Existing fire is fed or blown out by wind
-   according to its strength *relative to* the wind:
+1. **Signed-logistic intensity feedback.** Per burning *flammable* tile of
+   intensity `I`:
 
    ```
-   wind_speed = |grad(atmosphere)|
-   margin     = fire − k_wind_thresh · wind_speed
-   fire      += dt · k_wind_net · wind_speed · margin
+   T     = temperature[i] / TEMP_SCALE            # conduction-pass field (game units; wood ignites at 300)
+   F     = clamp01(wall_hp[i] / fuel_ref)         # fuel from remaining wall HP
+   P     = mean atmosphere over open (non-solid, non-vacuum) 4-neighbours   # O2 proxy
+   W     = sqrt(wind_x² + wind_y²)                # the SHARED wind field (= −grad p, incl. shockwaves)
+   hot   = clamp01((T − fire_T_ext) / fire_T_span)
+   o2    = smoothstep(P_min, P_full, P)           # pressure IS oxygen — there is no O2 field
+   avail = F · o2
+   grow  = k_grow · avail · hot · I·(1−I) · (1 + k_wind_fan·W)     # logistic, wind-fanned
+   die   = k_die · (1 − avail·hot) · I  +  k_wind_strip · W · (1−I) · I   # decay + wind blow-out
+   I    += dt·(grow − die);  clamp01;  if I < I_min → 0            # snap-extinguish
    ```
 
-   The sign of `margin` decides the outcome: a fire above the
-   wind-dependent threshold is fed (burns hotter); below it, blown out. The
-   crossover scales with wind, so the same gust that fans a blaze snuffs a
-   guttering flame. An explosion's shockwave is a massive transient wind spike:
-   it blows out small fires and flares up big ones.
-4. **Growth.** Any burning tile grows toward full intensity (≈ 0.5 / s). --- **erik comment** Im not sure, let's reserach this proper, how does fire behave`? What does it need to grow? I feel like cerytain fires grows, probably when they've reached a certain intensity they do grow, but actually it's afeedback system. too littel intensity (or temperature) they die out - more temp - t hey spread more - but are constrained by o2 i htink.
-5. **Flammable constraint.** Fire is zeroed on non-flammable tiles — only fuel
-   burns.
-6. **O₂ check.** A burning tile dies if the average `atmosphere` of its
-   air-side neighbours falls below `o2_threshold`. Fire suffocates in vacuum
-   and in already-burnt-out rooms — the decompression-extinguishes-fire loop.
-7. **O₂ consumption.** Fire draws down `atmosphere` in adjacent air tiles,
-   scaled by its intensity, so a sustained blaze starves itself and its
-   neighbours over time. **Erik comment** I'm not surew about this either - perhaps we want fires to deposit some prssure even, so that smokee will naturally spread - i htin this original thought was not well thought through, because if we remove atmosphere at hte fire, it will start to suck smoke towards it, which is not what we want at all--- we'll need to find anoter system for the O2 proxy i think, perhaps the pressure on the fire source tile can be used - and i assume it's enougyht to add just a little bit of pressure to let the smoke spread out - or perhaps the smoke will spread out even without adding pressure- then we can just read of the pressure aat the source - and create some function that maps pressure and temperature to weather the intensity is growing or decreasing.
-8. **Smoke emission.** Fire adds `smoke` to adjacent air tiles, which the smoke
+   `I·(1−I)` gives accelerating growth at low `I` and saturation near 1. `hot`
+   is the critical-flame-temperature brake (below `fire_T_ext` the fire dies even
+   with fuel + O2). `o2` is the pressure-as-oxygen brake (a vented/low-pressure
+   room reads `P → 0` → the fire suffocates — the **decompression-extinguishes**
+   loop, now driven by a read, not a kill-threshold). `avail = F·o2` couples the
+   fuel and O2 brakes. **Wind** (`W`) both *fans* growth (`1 + k_wind_fan·W` — a
+   grenade shockwave is a transient wind spike that flares a blaze into a
+   firestorm) and *blows out* small/marginal fires (`k_wind_strip·W·(1−I)·I` — the
+   realistic crossover: the same gust that fans a big fire snuffs a guttering one).
+
+2. **Own-tile plume pressure deposit.** Each burning tile adds a small
+   self-limiting overpressure to its **own** tile (an order-independent own-cell
+   write, *not* the deleted backwards subtraction that sucked smoke in):
+
+   ```
+   atmosphere[i] += max(fire_pressure_gain · I · (1 − atmosphere[i]/p_expand_ref) · dt, 0)
+   ```
+
+   So `wind = −grad p` points **outward** and the plume/smoke is pushed *away*
+   from the flame. The sustain read `P` (stage 1) is the *neighbour* mean, so the
+   fire reads incoming fresh air, not its own bump. A sealed-room fire
+   over-pressurises → the existing `find_burst_walls` may pop a weak wall → the
+   room vents → `P` falls → the fire starves. Emergent, no new code.
+
+3. **Smoke emission.** Fire adds `smoke` to adjacent air tiles, which the smoke
    dynamics then advect on the wind.
-9. **Wall burn-through.** Fire depletes `wall_hp` on the tile it burns; when a
+
+4. **Wall burn-through.** Fire depletes `wall_hp` on the tile it burns; when a
    flammable wall reaches zero HP it is reported as destroyed. The fire step
    returns the list of `(y, x)` tiles that burned through; the per-tick runner
    calls `destroy_wall` on each (the solver itself never edits the material
-   grid).
+   grid). **Burn-through *is* the fuel-consumption brake**: as `wall_hp → 0`,
+   `F → 0` in stage 1, and the fire starves (burnout) before / as the wall fails.
 
 Finally `fire` and `smoke` are clamped to `[0, 1]`; `atmosphere` is left
 unclamped (the atmosphere solver owns its own bounds).
 
 ### Fire parameters
 
-Set on the C++ `FireParams` struct, bound from the Python runner:
+Set on the C++ `FireParams` struct, bound from `config.toml` `[physics.fire]`
+(Erik tunes these live):
 
-| Parameter | Value | Meaning |
-|-----------|------:|---------|
-| `spread_rate`    | 0.3  | Spread rate to neighbours |
-| `o2_threshold`   | 0.60 | Minimum neighbour atmosphere for survival |
-| `o2_consumption` | 0.3  | Atmosphere consumed per second per unit intensity |
-| `smoke_emission` | 0.8  | Smoke produced per second per unit intensity |
-| `wall_damage`    | 0.4  | Wall HP lost per second per unit intensity |
-| `k_wind_thresh`  | 0.5  | Fire must exceed `k_wind_thresh · wind_speed` to survive |
-| `k_wind_net`     | 3.0  | Rate of the wind feed/cool effect |
+| Parameter | Default | Meaning |
+|-----------|--------:|---------|
+| `k_grow`             | 4.0   | Logistic growth gain (1/s) |
+| `k_die`              | 2.0   | Decay rate when starved/cold (1/s) |
+| `fire_T_ext`         | 350.0 | Extinction temperature (~`ignition_temp` + 50) |
+| `fire_T_span`        | 150.0 | Width of the `hot` ramp above `fire_T_ext` |
+| `fuel_ref`           | 60.0  | `wall_hp` normaliser: `F = clamp01(wall_hp/fuel_ref)` |
+| `P_min`              | 0.60  | Pressure below which the O2 proxy is 0 |
+| `P_full`             | 1.00  | Interior pressure where the O2 proxy is full |
+| `I_min`              | 0.02  | Snap-to-zero extinguish floor |
+| `k_wind_fan`         | 0.5   | `(1 + k_wind_fan·W)` fans growth — *needs tuning vs the wind scale* |
+| `k_wind_strip`       | 0.5   | `W·(1−I)·I` blows out small fires — *needs tuning vs the wind scale* |
+| `fire_pressure_gain` | 0.15  | Own-tile plume overpressure gain (1/s) |
+| `p_expand_ref`       | 1.30  | Self-limiting plume saturation ceiling |
+| `smoke_emission`     | 0.8   | Smoke produced per second per unit intensity |
+| `wall_damage`        | 0.4   | Wall HP lost per second per unit intensity (the burnout brake) |
 
 ### Fire as a light source
 
@@ -324,14 +347,19 @@ Built, running, and honest about the seam between the three layers.
 
 **Built (layer 3 — fire):**
 
-- `FireSimulation` in `cpp/src/fire_simulation.{h,cpp}` implements every stage
-  in §5: 12-connected spread, wind-biased spread, wind intensity modulation,
-  growth, flammable constraint, O₂ check, O₂ consumption, smoke emission, and
-  wall burn-through. It returns destroyed-tile coordinates; the runner destroys
-  them.
+- `FireSimulation` in `cpp/src/fire_simulation.{h,cpp}` implements the §5
+  signed-logistic intensity feedback (grow/die with the `hot`/`o2`/`avail` gates
+  + the wind fan/strip terms), the own-tile plume pressure deposit, smoke
+  emission, and wall burn-through. The cellular spread (12-connected stencil,
+  wind-biased spread) and the backwards O₂-consumption subtraction are
+  **deleted** — spread is radiation → heat → temperature → ignition (§4). It
+  returns destroyed-tile coordinates; the runner destroys them.
 - `PhysicsRunner` (`src/simulation/physics_runner.py`) constructs the solver,
-  binds the parameter table, and calls `fire.step(...)` once per tick at full
-  `sim_time`, then forwards burned-through tiles to `gmap.destroy_wall`.
+  binds the `[physics.fire]` parameter table from `config.toml`, and calls
+  `fire.step(...)` once per tick at full `sim_time` — passing `gmap.temperature`
+  (the `hot` gate), the shared `gmap.wind_x`/`wind_y` (the wind term, so
+  shockwaves fan/blow fires), and `gmap.is_vacuum` — then forwards
+  burned-through tiles to `gmap.destroy_wall`.
 - Fire ignition by explosion is built: `apply_explosion`
   (`src/simulation/physics.py`) sets `fire` on flammable tiles inside the blast.
 
@@ -391,13 +419,12 @@ Built, running, and honest about the seam between the three layers.
   deposit is fixed at Q16.16; temperature can match it). Validate cross-machine
   bit-exactness before committing to lockstep; the float-temperature fallback
   (§3) stays available.
-- Fire still computes its own wind from `grad(atmosphere)` internally rather
-  than reading the precomputed `wind_x`/`wind_y` field, so the shockwave
-  (`wave_p`) does not yet influence fire, and the internal gradient has no
-  Neumann wall boundary (it reads across walls). Folding fire onto the shared
-  wind field is the intended cleanup.
-- Fire parameters are hardcoded in `physics_runner.py` rather than living in
-  `config.toml` alongside the other physics tunables.
+- **Resolved:** fire now reads the shared `wind_x`/`wind_y` field (= −grad of
+  `atmosphere + wave_p`), so a shockwave's transient wind spike fans/blows fires
+  directly. The old internal `grad(atmosphere)` (no wall boundary, read across
+  walls) is gone.
+- **Resolved:** fire parameters live in `config.toml` `[physics.fire]`, bound
+  through `physics_runner.py` (the `FIRE_*` module constants are only fallbacks).
 - The per-tick `heat` deposit must be cleared each tick once a consumer exists
   (it is a deposit buffer, not an accumulator across ticks); the temperature
   pass reads it non-destructively, then it resets.

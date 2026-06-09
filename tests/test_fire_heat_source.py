@@ -181,17 +181,16 @@ def test_heat_lands_on_solid_not_lost_in_air_conversion():
 # ---------------------------------------------------------------------------
 def test_full_chain_heat_ignites_adjacent_wood():
     """A flammable wood wall held next to a burning tile crosses ignition_temp
-    and IGNITES — purely via fire heat (cellular spread disabled to isolate the
-    Step-E path). Proves heat -> temperature -> ignition end-to-end."""
+    and IGNITES — via fire heat -> temperature -> ignition. With the cellular
+    spread DELETED (fire_design_proposal §1), radiation->ignition is now the ONLY
+    spread path, so no spread toggle is needed to isolate it. Proves the chain
+    heat -> temperature -> ignition end-to-end."""
     level = load_level("unhcr_vessel")
     sim = Simulation(level, seed=42, breach_physics=bp, enable_recorder=False)
     g = sim.gmap
     g.material[50, 14] = MAT_WOOD          # burner
     g.material[50, 15] = MAT_WOOD          # target (adjacent)
     g._update_caches()
-    # Isolate the heat-ignition path: turn OFF the cellular fire spread so the
-    # ONLY way the target can light is heat -> temperature -> ignition (Step E).
-    sim.physics_runner.fire.params.spread_rate = 0.0
     sim.set_paused(False)
 
     assert g.fire[50, 15] == 0.0
@@ -313,8 +312,10 @@ def test_cast_fire_heat_does_not_touch_rng():
 def test_lone_fire_does_not_firestorm_in_a_couple_ticks():
     # Build a hollow wood ROOM (28 wall tiles around an air interior), ignite ONE
     # wall tile, and confirm the fire does NOT engulf the whole structure in a
-    # couple of ticks — heat-spread is gentle, the cellular spread dominates but
-    # is itself bounded (a neighbour or two, not the map).
+    # couple of ticks. With the cellular spread DELETED, spread is now purely
+    # radiation -> heat -> temperature -> ignition, which is gentle: a neighbour
+    # needs a few seconds of conducted heat to cross ignition_temp, so a lone
+    # fire cannot firestorm the structure in a handful of ticks.
     level = load_level("unhcr_vessel")
     sim = Simulation(level, seed=1, breach_physics=bp, enable_recorder=False)
     g = sim.gmap

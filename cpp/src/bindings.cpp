@@ -121,16 +121,24 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("permeability"),
            py::arg("dt"));
 
-    // --- FireSimulation ---
+    // --- FireSimulation (signed-logistic feedback; fire_design_proposal §2/§3) ---
     py::class_<FireParams>(m, "FireParams")
         .def(py::init<>())
-        .def_readwrite("spread_rate",    &FireParams::spread_rate)
-        .def_readwrite("o2_threshold",   &FireParams::o2_threshold)
-        .def_readwrite("o2_consumption", &FireParams::o2_consumption)
+        .def_readwrite("k_grow",         &FireParams::k_grow)
+        .def_readwrite("k_die",          &FireParams::k_die)
+        .def_readwrite("fire_T_ext",     &FireParams::fire_T_ext)
+        .def_readwrite("fire_T_span",    &FireParams::fire_T_span)
+        .def_readwrite("fuel_ref",       &FireParams::fuel_ref)
+        .def_readwrite("P_min",          &FireParams::P_min)
+        .def_readwrite("P_full",         &FireParams::P_full)
+        .def_readwrite("I_min",          &FireParams::I_min)
+        .def_readwrite("k_wind_fan",     &FireParams::k_wind_fan)
+        .def_readwrite("k_wind_strip",   &FireParams::k_wind_strip)
+        .def_readwrite("fire_pressure_gain", &FireParams::fire_pressure_gain)
+        .def_readwrite("p_expand_ref",   &FireParams::p_expand_ref)
         .def_readwrite("smoke_emission", &FireParams::smoke_emission)
         .def_readwrite("wall_damage",    &FireParams::wall_damage)
-        .def_readwrite("k_wind_thresh",  &FireParams::k_wind_thresh)
-        .def_readwrite("k_wind_net",     &FireParams::k_wind_net);
+        .def_readwrite("temp_scale",     &FireParams::temp_scale);
 
     py::class_<FireSimulation>(m, "FireSimulation")
         .def(py::init<>())
@@ -140,23 +148,34 @@ PYBIND11_MODULE(breach_physics, m) {
                         py::array_t<float> atmosphere,
                         py::array_t<float> smoke,
                         py::array_t<float> wall_hp,
+                        py::array_t<int32_t> temperature,
+                        py::array_t<float> wind_x,
+                        py::array_t<float> wind_y,
                         py::array_t<bool>  is_wall,
+                        py::array_t<bool>  is_vacuum,
                         py::array_t<bool>  flammable,
                         float dt) -> py::list {
             auto [f, h, w] = get_2d(fire);
             auto [atm, h2, w2] = get_2d(atmosphere);
             auto [sm, h3, w3] = get_2d(smoke);
             auto [whp, h4, w4] = get_2d(wall_hp);
-            auto [wl, h5, w5] = get_2d_const(is_wall);
-            auto [fl, h6, w6] = get_2d_const(flammable);
-            auto destroyed = self.step(f, atm, sm, whp, wl, fl, h, w, dt);
+            auto [temp, h5, w5] = get_2d_const(temperature);
+            auto [wx, h6, w6] = get_2d_const(wind_x);
+            auto [wy, h7, w7] = get_2d_const(wind_y);
+            auto [wl, h8, w8] = get_2d_const(is_wall);
+            auto [vac, h9, w9] = get_2d_const(is_vacuum);
+            auto [fl, h10, w10] = get_2d_const(flammable);
+            auto destroyed = self.step(f, atm, sm, whp, temp, wx, wy,
+                                       wl, vac, fl, h, w, dt);
             py::list result;
             for (const auto& [dy, dx] : destroyed) {
                 result.append(py::make_tuple(dy, dx));
             }
             return result;
         }, py::arg("fire"), py::arg("atmosphere"), py::arg("smoke"),
-           py::arg("wall_hp"), py::arg("is_wall"), py::arg("flammable"),
+           py::arg("wall_hp"), py::arg("temperature"),
+           py::arg("wind_x"), py::arg("wind_y"),
+           py::arg("is_wall"), py::arg("is_vacuum"), py::arg("flammable"),
            py::arg("dt"));
 
     // --- TemperatureSolver (heat -> temperature conversion §1 + conduction §2
