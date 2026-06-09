@@ -68,7 +68,7 @@ from simulation.ai_zombie import update_zombies_tick, convert_marines_to_zombies
 from simulation.generation import sample_unit_attributes
 from simulation.species import get_species
 from simulation.combat import (
-    apply_blast_damage, apply_environmental_damage,
+    apply_blast_damage, apply_environmental_damage, apply_temperature_ignition,
     process_door_explosives, process_shooting,
     Projectile, Shot,
 )
@@ -638,6 +638,29 @@ class Simulation:
                 self.units, self.gmap, self._tps,
                 events=self.tick_events,
             )
+
+        # 9d. Ignition from temperature (engine/06 §4, proposal §6 step 4b). The
+        # READ side of the temperature substrate: the C++ TemperatureSolver
+        # (convert -> conduction -> cooling) ran inside physics_runner.step()
+        # above and filled `temperature`; here each FLAMMABLE tile whose
+        # `temperature` has crossed its (Q16.16-quantized) `ignition_temp` AND
+        # has O2 (the same air-side-neighbour atmosphere check the fire uses) is
+        # ignited via `fire = max(fire, ignition_seed)`. A SECOND ignition path
+        # that runs alongside the existing cellular fire spread (it does not
+        # replace it). Reads `temperature` (gather) + `atmosphere`, writes `fire`;
+        # deterministic, no RNG. With no sim heat sources wired yet, `temperature`
+        # is ~0, so this is DORMANT in-game (no behaviour change) until fire/beams
+        # emit heat. Slotted alongside the unit-heat-damage consumer (§6 step 4),
+        # after the temperature passes, before the end-of-tick heat clear.
+        if self.physics_runner is not None:
+            fire_cfg = getattr(CFG.physics, "fire", None)
+            ignition_seed = float(getattr(fire_cfg, "ignition_seed", 0.1))
+            # Reuse the fire's O2 survival threshold so a tile cannot be ignited
+            # into a state the next fire step would immediately suffocate. The
+            # fire's runtime value lives on the runner (FIRE_O2_THRESHOLD); the
+            # config block mirrors it (defaulting to the same 0.60).
+            o2_threshold = float(getattr(fire_cfg, "o2_threshold", 0.60))
+            apply_temperature_ignition(self.gmap, o2_threshold, ignition_seed)
 
         # Recorder snapshot.
         if self.recorder is not None:

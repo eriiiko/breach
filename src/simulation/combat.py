@@ -248,6 +248,108 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
 
 
 # ---------------------------------------------------------------------------
+# Ignition from temperature — engine/06 §4 ("Ignition"), proposal §6 step 4b
+# ---------------------------------------------------------------------------
+def apply_temperature_ignition(gmap, o2_threshold, ignition_seed):
+    """Ignite flammable tiles whose `temperature` has crossed `ignition_temp`
+    AND that have oxygen (engine/06 §4, proposal §6 step 4b).
+
+    This is the READ side of the temperature substrate: the C++
+    ``TemperatureSolver`` (convert -> conduction -> cooling, inside
+    ``PhysicsRunner.step``) has already filled ``gmap.temperature`` for this
+    tick; here we gather it and start fires. For each FLAMMABLE tile::
+
+        if temperature[y,x] >= ignition_temp_q16[material]   # Q16.16 threshold
+           and mean(atmosphere of air-side 4-neighbours) >= o2_threshold:   # O2
+               fire[y,x] = max(fire[y,x], ignition_seed)      # never lowers a fire
+
+    Determinism / coexistence:
+
+    - **Q16.16 threshold compare.** ``temperature`` is Q16.16 fixed-point;
+      ``ignition_temp_q16`` is the per-material threshold quantized into the
+      SAME domain ONCE at load (``MaterialTable.ignition_temp_q16``). The test
+      is a plain integer ``>=`` — no per-tick rescale, no float on the threshold
+      path, bit-identical cross-machine.
+    - **Flammable gate.** Non-flammable materials carry ``ignition_temp = 0`` (so
+      ``q16 == 0``); gating on ``gmap.flammable`` is what stops a red-hot hull or
+      glass tile (also threshold 0) from ever catching. Only fuel ignites.
+    - **O2 check reuses the existing fire semantics.** The C++ ``FireSimulation``
+      kills a burning tile when the mean ``atmosphere`` of its 4-connected
+      AIR-SIDE (non-solid) neighbours drops below ``o2_threshold``; ignition uses
+      the SAME predicate (same threshold, same neighbourhood) so a tile cannot be
+      ignited into a state the fire step would immediately suffocate. A flammable
+      tile is itself solid (wood/door), so its O2 comes from the adjacent air.
+    - **``max``, not assign.** ``fire = max(fire, ignition_seed)`` never lowers an
+      existing, possibly larger, fire (e.g. one an explosion already set).
+    - **Second, additive ignition path.** This runs ALONGSIDE the existing
+      cellular fire spread/ignition — it does not replace it. With no sim heat
+      sources wired yet, ``temperature`` is ~0, so this path is DORMANT in-game
+      (no behaviour change) until fire/beams emit heat — the intended safe seam.
+    - **Deterministic.** Fixed row-major traversal (vectorised, order-independent
+      anyway — a pure gather that writes each tile from frozen inputs), no RNG.
+
+    Parameters
+    ----------
+    gmap
+        The :class:`GameMap`. Reads ``temperature`` (Q16.16), ``material``,
+        ``flammable``, ``solid``, ``atmosphere`` and the material table's
+        ``ignition_temp_q16``; writes ``fire`` in place.
+    o2_threshold : float
+        Minimum air-side-neighbour atmosphere for ignition (reuse the fire's
+        ``o2_threshold``, 0.60).
+    ignition_seed : float
+        Seed intensity a freshly-ignited tile gets (``I_seed`` ~ 0.1).
+
+    Must run AFTER physics fills ``temperature`` (so the threshold sees this
+    tick's heat) and ALONGSIDE the other temperature consumers (unit damage).
+    """
+    flammable = gmap.flammable
+    if not bool(flammable.any()):
+        return  # no fuel on this map -> nothing can ever ignite
+
+    temperature = gmap.temperature
+    material = gmap.material
+    # Per-material Q16.16 ignition threshold (quantized once at load). Project
+    # onto the grid so the compare is element-wise against `temperature`.
+    thresh_q16 = gmap.materials.ignition_temp_q16[material]   # (h, w) int64
+
+    # Hot enough? (Q16.16 integer compare.) Restrict to flammable tiles only.
+    hot = flammable & (temperature.astype(np.int64) >= thresh_q16)
+    if not bool(hot.any()):
+        return  # nothing crossed its threshold this tick (the dormant case)
+
+    # --- O2 proxy: mean `atmosphere` over the air-side (non-solid) 4-neighbours,
+    # exactly the predicate the C++ fire O2 check uses. Vectorised: accumulate
+    # neighbour atmosphere and an air-side count per tile, then average. A
+    # flammable wall tile's own cell is solid; its oxygen comes from adjacent air.
+    h, w = temperature.shape
+    air_side = ~gmap.solid                      # True on tiles that count toward O2
+    atm = gmap.atmosphere
+    sum_atm = np.zeros((h, w), dtype=np.float32)
+    count = np.zeros((h, w), dtype=np.float32)
+    # N, S, E, W (fixed order; sum is order-independent regardless).
+    for dy, dx in ((-1, 0), (1, 0), (0, 1), (0, -1)):
+        ys0, ys1 = max(0, -dy), h - max(0, dy)      # this-tile row span
+        xs0, xs1 = max(0, -dx), w - max(0, dx)
+        nbr_atm = atm[ys0 + dy:ys1 + dy, xs0 + dx:xs1 + dx]
+        nbr_air = air_side[ys0 + dy:ys1 + dy, xs0 + dx:xs1 + dx]
+        sum_atm[ys0:ys1, xs0:xs1] += np.where(nbr_air, nbr_atm, 0.0)
+        count[ys0:ys1, xs0:xs1] += nbr_air
+    # Match the C++ guard `if (count < 1) count = 1` so a fully walled-in tile
+    # (no air neighbour) averages to 0 -> below threshold -> never ignites.
+    safe_count = np.where(count < 1.0, 1.0, count)
+    has_o2 = (sum_atm / safe_count) >= o2_threshold
+
+    ignite = hot & has_o2
+    if not bool(ignite.any()):
+        return
+    # max(fire, ignition_seed) on the igniting tiles only — never lowers a bigger
+    # existing fire.
+    np.maximum(gmap.fire, np.where(ignite, np.float32(ignition_seed), gmap.fire),
+               out=gmap.fire)
+
+
+# ---------------------------------------------------------------------------
 # Shooting (fire orders + auto-fire)
 # ---------------------------------------------------------------------------
 def process_shooting(gmap, units, tick, shots, real_time, rng, events=None):

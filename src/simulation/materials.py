@@ -66,6 +66,7 @@ _SCALAR_COLUMNS = {
 # Kept here so a dict-built table (tests) and any config-less build still produce
 # a valid face table.
 _THERMAL_DEFAULTS = {
+    "TEMP_SCALE": 65536,  # Q16.16, == HEAT_SCALE (shared temperature/heat domain)
     "SHIFT_AT_REF": 2,    # metal self-rate = 1/4 (fastest stable on 4-nbr)
     "SHIFT_MIN": 2,       # rate floor / stability bound (4 * 1/4 <= 1)
     "KAPPA_REF": 50.0,    # reference conductivity (hull) for the log bucket
@@ -133,6 +134,24 @@ class MaterialTable:
         # All log2 / harmonic-mean / division happens HERE, at LOAD, in float;
         # the runtime conduction pass is a pure signed-add + arithmetic shift.
         self._build_conduction_tables(thermal_cfg)
+
+        # ignition_temp_q16: the per-material ignition threshold QUANTIZED ONCE
+        # AT LOAD into the Q16.16 fixed-point domain shared by `heat` /
+        # `temperature` (engine/06 §3, proposal §1.2/§7.1). Stored as
+        # round(ignition_temp * TEMP_SCALE) with a pinned rounding mode, so the
+        # ignition consumer's runtime test is a direct integer compare
+        # `temperature[tile] >= ignition_temp_q16[material]` against the Q16.16
+        # `temperature` field — no per-tick rescale, no float on the threshold
+        # path. This is the single most determinism-critical conversion in the
+        # system; it is fixed here, never recomputed per tick. int64 so the
+        # multiply can't overflow before it lands (the field itself is int32, but
+        # a threshold beyond INT32_MAX simply never fires, which is correct).
+        temp_scale = self._thermal_get(thermal_cfg, "TEMP_SCALE")
+        self.ignition_temp_q16 = np.array(
+            [int(round(float(it) * temp_scale))
+             for it in self.ignition_temp.tolist()],
+            dtype=np.int64,
+        )
 
         # light_atten: per-channel RGB, (N, 3) float32.
         atten = np.zeros((self.n, 3), dtype=np.float32)
@@ -204,17 +223,10 @@ class MaterialTable:
         Symmetric N×N. NO_FACE on every face a kappa==0 material touches makes
         the air no-op STRUCTURAL (not a runtime value-branch) — see §2.6.
         """
-        def _get(name):
-            if thermal_cfg is None:
-                return _THERMAL_DEFAULTS[name]
-            if isinstance(thermal_cfg, dict):
-                return thermal_cfg.get(name, _THERMAL_DEFAULTS[name])
-            return getattr(thermal_cfg, name, _THERMAL_DEFAULTS[name])
-
-        shift_at_ref = float(_get("SHIFT_AT_REF"))
-        shift_min = int(_get("SHIFT_MIN"))
-        kappa_ref = float(_get("KAPPA_REF"))
-        no_face = int(_get("NO_FACE"))
+        shift_at_ref = float(self._thermal_get(thermal_cfg, "SHIFT_AT_REF"))
+        shift_min = int(self._thermal_get(thermal_cfg, "SHIFT_MIN"))
+        kappa_ref = float(self._thermal_get(thermal_cfg, "KAPPA_REF"))
+        no_face = int(self._thermal_get(thermal_cfg, "NO_FACE"))
         self.no_face = no_face
 
         kappa = self.conductivity.astype(np.float64)
@@ -254,6 +266,17 @@ class MaterialTable:
         self.face_shift_table = face
 
     # -- accessors -------------------------------------------------------
+    @staticmethod
+    def _thermal_get(thermal_cfg, name):
+        """Read one ``[physics.thermal]`` constant, falling back to
+        :data:`_THERMAL_DEFAULTS` so a dict-built / config-less table still
+        produces valid load-time tables. Accepts a namespace or a plain dict."""
+        if thermal_cfg is None:
+            return _THERMAL_DEFAULTS[name]
+        if isinstance(thermal_cfg, dict):
+            return thermal_cfg.get(name, _THERMAL_DEFAULTS[name])
+        return getattr(thermal_cfg, name, _THERMAL_DEFAULTS[name])
+
     @staticmethod
     def _get_row(cfg, name):
         if isinstance(cfg, dict):

@@ -56,6 +56,16 @@ COOL_SHIFT        = 5    # interior decay: T -= T >> 5 (~1/32 per tick, ~32-tick
 COOL_SHIFT_VACUUM = 3    # space-exposed decay: T -= T >> 3 (~1/8 per tick, 4× faster)
 o2_vacuum_thresh  = 0.3  # atmosphere below which a 4-neighbour counts as vacuum-exposed
 
+# Fire / ignition-from-temperature (engine/06 §4, proposal §6 step 4b). The READ
+# side of the temperature substrate: a flammable tile whose `temperature` (set by
+# the conduction pass above) crosses its quantized `ignition_temp` AND has oxygen
+# ignites via `fire = max(fire, ignition_seed)`. This is a SECOND ignition path
+# that runs alongside the existing cellular fire spread (it does not replace it).
+# Dormant in-game until fire/beams emit heat (temperature is ~0 with no sources).
+[physics.fire]
+ignition_seed = 0.1   # seed fire intensity a temperature-ignited tile gets (I_seed)
+o2_threshold  = 0.60  # min air-side-neighbour atmosphere to ignite (mirrors the fire's o2_threshold)
+
 [smoke]
 # Ray-engine smoke optics (ch.05 §6.1 §6 — decoupled per-channel absorption vs
 # glow). Two INDEPENDENT budgets, NOT constrained to absorb + glow = 1:
