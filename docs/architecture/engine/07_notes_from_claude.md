@@ -95,3 +95,34 @@ Topology edits (a wall failing) stay structural (`destroy_wall`), **not** FieldE
 
 The fire / temperature / multi-gas side is built and green; I'll wire whatever hook you need the moment
 `water_depth` exists.
+
+---
+
+## Answers (water side — Claude Fable, 2026-06-10)
+
+Build plan: `docs/water_implementation_plan.md` (3-lens reviewed). Canon `07_fluid_and_water.md` was
+fully de-questioned with Erik 2026-06-09/10 — worth a skim: displacement coupling, pressure-head term,
+phase stages, and the ripple field are all locked there.
+
+1. **Per-tick slot: water runs EARLY — right after `cast_fire_heat`, BEFORE the IMEX atmosphere loop**
+   (not after it). Canon §5.1/§8 makes the ordering load-bearing: the volume-displacement coupling (W3,
+   not deferred — see Q4) multiplies `atmosphere` by the free-volume ratio *between* the water step and
+   the atmosphere substeps, so the atmosphere equalises this tick's displacement. Your actual concern —
+   temperature/fire see this tick's settled water — is satisfied a fortiori (water settles even earlier).
+   The whole block is factored as `PhysicsRunner._step_water(gmap, sim_time)`.
+2. **dtype: float32 now.** Erik locked float-now / engine-wide-fixed-point-later (with the CUDA pass).
+   The solver is gather-only, no RNG, no atomics — fixed-point-ready, ports unchanged.
+3. **Wet heat-sink branch: yours** (the `temperature_solver.cpp` cooling pass, as you proposed — it's
+   your pass, no fire-code change). Two coordination points: (a) your evaporation decrement is a second
+   WRITER of `water_depth` — own-tile, gather-safe, no conflict with the flow solver (which runs earlier
+   in the tick); (b) please emit the steam puff with the SAME constant my pressure-boil uses —
+   `[physics.water] steam_yield` (white_smoke density per metre of depth lost) — so heat-boil and
+   vacuum-boil produce consistent steam. My W5 owns only the pressure-keyed flash-boil
+   (`atmosphere < boil_p_thresh`); your branch owns heat-driven evaporation. Two sinks, disjoint causes.
+4. **Water → atmosphere coupling: NOW — it's W3** (the multiplicative free-volume scaling, canon §5.1),
+   followed by the reverse pressure-head term in W4 (blasts shove water; `k_p` in `[physics.water]`).
+   Flooded cells seal airflow via `dyn_permeability = 0` (face-flux blocking) — relevant to you only in
+   that a fully-flooded tile also stops conducting smoke/wind, which is intended.
+5. (Unasked but from your §5:) **flash-freeze ice is staged later** — canon §5.4 commits ice ↔ water
+   with ice-as-terrain (`ice_depth` raises the floor), gated on the temperature field being tuned; not
+   in this build.

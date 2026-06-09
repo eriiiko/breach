@@ -1,6 +1,6 @@
 # Fluid & Water
 
-**Depends on:** [Grid & Coordinates](01_grid_and_coordinates.md), [State & Ownership](02_state_and_ownership.md) (GameMap)
+**Depends on:** [Grid & Coordinates](01_grid_and_coordinates.md), [State & Ownership](02_state_and_ownership.md) (GameMap); the phase transitions (§5.4) additionally depend on [Temperature & Fire](06_temperature_and_fire.md)
 
 ---
 
@@ -51,12 +51,14 @@ ticks, exactly as the atmosphere's `wave_v` does for the wave field. Depth is th
 quantity gameplay and rendering read; velocity exists only to make the flow look and
 behave like a fluid rather than instantly levelling.
 
-The terrain the fluid flows over is the **floor height map** — a static per-tile
-height that is the single source of truth for floor geometry (it also generates the
-lighting normal map; see the Graphics chapter). Drain grooves, raised thresholds,
-furniture legs, and sloped corridors are all just features of this height field, so
-the water reacts to them automatically without any of them being modelled as a
-special case.
+The terrain the fluid flows over is the **floor height field** (`floor_height`) — a
+static per-tile height. Drain grooves, raised thresholds, furniture legs, and sloped
+corridors are all just features of this height field, so the water reacts to them
+automatically without any of them being modelled as a special case. The field is
+**optional**: it defaults to flat zero, and on a flat floor the model still delivers
+pooling, tilt-sloshing, and doorway flow — water ships before any art height map
+exists. When the art pipeline does deliver one (the same data that generates the
+lighting normal map; see the Graphics chapter), it simply becomes the terrain (§3).
 
 ### 2.2 The update
 
@@ -64,7 +66,7 @@ The solver advances `water_depth` and the velocity field one step with three lin
 of physics:
 
 ```
-surface          = height_map + tilt_offset + water_depth
+surface          = floor_height + tilt_offset + water_depth
 flow_velocity   += dt · (−g · ∇surface − damping · flow_velocity)
 water_depth     -= dt · div(flow_velocity · water_depth)      # upwind flux
 ```
@@ -86,6 +88,19 @@ each step, velocity is zeroed on walls, fluxes are zeroed across any face touchi
 wall, and depth is clamped non-negative and zeroed on walls. Those three masks are
 the entire wall interaction: water cannot accelerate into a wall, cannot flux through
 one, and cannot stand inside one.
+
+**Units never block water** (decided 2026-06-10). The wall mask is the *static* solid
+mask only: a unit in a doorway is washed over, not a dam — it would look absurd for a
+standing body to hold back a flooded room. Partial unit drag was considered and
+rejected: the natural vehicle (`dyn_permeability`, where units sit at 0.5 for air)
+is also written to 0 on fully-flooded cells by the displacement coupling (§5.1), so
+reusing it for water flux would make flooded cells block their own water. Units
+interact with water the other way around: depth slows them, and strong flow pushes
+them (§5.5).
+
+One coupling later adds a fourth term to this same potential: air pressure as a
+**head term** (§5.1), so blasts and decompression shove water through the identical
+gradient machinery — no second flow mechanism exists.
 
 ### 2.3 Ship tilt
 
@@ -115,9 +130,10 @@ solver rather than living inside it:
   then flows under its own gradient.
 - **Burst pipe** — a continuous source: each tick, hold one or more tiles at a
   target depth (`depth = max(depth, source_level)`).
-- **Hull breach below the waterline** — a continuous, pressure-dependent inflow at
-  the holed tiles, the water analogue of the air *draining out* through the same
-  breach.
+- **Hull breach below the waterline** — at sea: a continuous, pressure-dependent inflow
+  at the holed tiles, the water analogue of the air *draining out* through the same
+  breach. In space the same hole runs the other way: exposed water flash-boils away
+  into vacuum — a depth *sink*, not a source (§5.4).
 
 The aquarium-burst, maze-flood, continuous-pipe, and tilted-ship source patterns are
 all demonstrated in the prototypes.
@@ -126,23 +142,29 @@ all demonstrated in the prototypes.
 
 ## 3. Resolution
 
-The pipe model is cheap — on the order of ten arithmetic operations per tile per
-step, unconditionally stable, run one or two steps per frame. That cheapness is what
-makes the resolution decision: the sim runs at the **fine-tile grid** the rest of the
-world state lives on (`GameMap` is sized at fine resolution from the loaded level),
-sharing the same height map the renderer already uses for normals. There is no
-separate coarse physics grid for fluid. Water reacts to every floor feature the art
-encodes, because the art's height map *is* the terrain.
+There is exactly **one grid** (ch.01): `water_depth`, like every other field, lives on it
+at the level's `tile_size_m`, and the solver derives its constants from that `dx` — never
+from a hardcoded 1/3 m. The pipe model is cheap — on the order of ten arithmetic
+operations per tile per step, unconditionally stable, run one or two steps per frame — so
+it simply runs where everything else runs. There is no separate fluid grid in either
+direction; resolution is the *level's* fidelity/performance knob, not this system's.
 
-A documented fallback exists if per-tile simulation proves too expensive on weak
-hardware: run one depth value per **coarse** physics tile, and at render time compare
-each fine pixel's height-map value against its tile's water level — pixels below
-appear submerged, pixels above dry. This buys pixel-accurate visual flooding at
-coarse-grid simulation cost, trading away only sub-tile flow channelling. It is a
-tuning option, not the default.
+The simulation is **dense**, like the atmosphere and smoke solvers, with one scalar
+early-out: the runner tracks total water and skips the solver entirely while the ship is
+dry. A ship that has taken no water costs nothing — no sparse active-set bookkeeping is
+needed to get that, and none is used. (If profiling ever demands more, a wet-region
+bounding box is the documented optimization lever; it is an implementation detail, not a
+design commitment.)
 
-The simulation is **sparse**: only tiles that currently hold (or border) fluid are
-updated. A ship that has taken no water costs nothing.
+**Terrain comes in two resolutions, and only one is simulated.** The solver reads the
+per-tile `floor_height` field (§2.1), optional and defaulting to flat zero — water ships
+before any height map exists. Separately, *if* the art pipeline delivers a height map at
+art resolution, the **renderer** refines the picture per pixel: compare each pixel's
+height against its tile's water surface — below appears submerged, above dry. That buys
+pixel-accurate shorelines and puddle edges at zero simulation cost, and it is purely
+visual: the depth that gameplay and physics read is the per-tile value. Sub-tile flow
+channelling (water following a groove narrower than a tile) is the one thing this cannot
+do, and we give it up knowingly.
 
 ---
 
@@ -182,51 +204,78 @@ The fluid layer is designed to plug into the existing physics tick the same way 
 and fire do: a single-step solver, orchestrated from Python, sharing fields with its
 neighbours rather than reimplementing them. Three couplings are designed.
 
-### 5.1 Water → atmosphere: volume displacement
+### 5.1 Water ↔ atmosphere: volume displacement and pressure head
 
 This is the most important coupling, and it needs almost no new machinery, because the
 water surface already tells the atmosphere everything it needs.
 
-Air is ~1000× less dense than water, so the coupling is **one-directional**: water
-ignores air (gravity and the floor drive it), and air reacts to water (water decides
-how much volume is left for air). The water step runs first; the atmosphere step then
-reads the new depths. No two-phase solver is needed.
+Air is ~1000× less dense than water, so the coupling is **asymmetric**: water decides how
+much volume is left for air, and air pushes back only through a deliberately small head
+term (below). The water step runs first; the atmosphere step then reads the new depths.
+No two-phase solver is needed — and **no air-mass field** either: both directions stay
+entirely in the pressure formulation the atmosphere already uses.
 
-Each cell has a floor-to-ceiling capacity. Water takes some of it; air gets the rest:
+**Water → air: volume displacement.** Each cell has a floor-to-ceiling air column; water
+takes some of it, and air that keeps its mass in a smaller volume rises in pressure.
+Isothermal compression, applied multiplicatively between the two solver steps:
 
 ```
-air_volume[i] = cell_capacity[i] − water_depth[i] · cell_area
-P[i]          = air_mass[i] · R · T / air_volume[i]      # ideal gas law
+free_h[i]      = ceiling_h − water_depth[i]              # the cell's remaining air column
+atmosphere[i] *= free_h_before[i] / free_h_after[i]      # isothermal P·V = const  (ratio capped)
 ```
 
-Rising water shrinks the available volume, which raises the pressure, which drives
-airflow through the openings the atmosphere solver already handles — and smoke and gas
-ride that flow as the passive scalars they already are. The order in the tick is:
+(`ceiling_h` is a per-level constant for now, per-tile later if a level ever wants it.)
+Rising water shrinks the column and the pressure climbs; the gradient drives airflow
+through the openings the atmosphere solver already handles — and smoke and gas ride that
+flow as the passive scalars they already are. The order in the tick:
 
 | Step | What happens |
 |------|--------------|
 | 1 | **Water pipe model** runs — updates `water_depth` per cell |
-| 2 | `air_volume = capacity − water_depth · area` per cell |
-| 3 | air pressure from `P = nRT/V` |
-| 4 | **Atmosphere solver** runs, with per-cell pressure influenced by reduced volume |
-| 5 | Smoke / gas advection rides the resulting wind, unchanged |
+| 2 | **Volume scaling** — `atmosphere[i] *= free_h_before / free_h_after`, ratio capped |
+| 3 | **Atmosphere solver** runs — implicit diffusion equalises the displacement bump; wind follows |
+| 4 | Smoke / gas advection rides the resulting wind, unchanged |
 
-Steps 2–3 are the only new work; everything else already exists. Two consequences fall
-out cleanly. A cell whose water reaches the ceiling (`water_depth ≥ capacity` →
-`air_volume = 0`) becomes a **wall for the atmosphere** — a fully flooded corridor
-correctly blocks airflow. And at a hull breach below the waterline, water comes *in*
-while air goes *out*: the rising depth compresses the remaining air, briefly spiking
-its pressure before it vents through the same hole — dramatic and physically correct,
-with no special-case code.
+**Resolved (2026-06-09): there is no separate equalisation pass.** The atmosphere's
+implicit diffusion *is* the equaliser, and pressure equalising across cells of different
+free volume is the physically correct equilibrium. Step 2 is the only new work.
+
+Consequences fall out cleanly. A cell flooded to the ceiling (`free_h ≤ 0`) becomes a
+**wall for the atmosphere** — a fully flooded corridor correctly blocks airflow. At a
+hull breach below the waterline, water comes *in* while air goes *out*: the rising depth
+compresses the remaining air, briefly spiking its pressure before it vents through the
+same hole — dramatic and physically correct, with no special-case code. And the rule is
+symmetric: *receding* water leaves its cell under-pressured, so air rushes back into a
+draining compartment — including into a re-opened flooded cell, which re-enters the
+atmosphere near zero and fills by the same diffusion.
 
 The marquee emergent scene: the ship lists, water slides to starboard, starboard air
 volume shrinks, pressure spikes, and smoke that the crew thought was contained gets
 shoved through doorways to port. Two systems that each already exist, producing a
 result neither was written to produce.
 
-*(Open question carried from the design: whether the displacement pressure should
-enter the atmosphere as a source term in its wave equation or run as a separate
-equalisation pass. The source-term form is the leaning choice — cleaner, one pass.)*
+**Air → water: the pressure head.** The reverse coupling is one term added to the
+potential the water already falls down (§2.2):
+
+```
+surface = floor_height + tilt_offset + water_depth + k_p · (atmosphere + wave_p)
+```
+
+Constant pressure vanishes under the gradient, so a uniform 1 atm changes nothing — only
+pressure *differences* push water, which is exactly right. Physically the head constant is
+`k_p = 1/(ρ_w·g) ≈ 10.3 m` of water per atmosphere; the shipped `k_p` is tuned far lower,
+because our `wave_p` rings for ~a second where a real blast's overpressure lasts
+milliseconds — realistic head applied over game timescales would over-displace. What it
+buys: a grenade over a flooded deck punches a **crater into the water and sends a ring
+wave** outward (the §6 ripple field rings with it); decompression through a breach drags
+the standing water toward the hole along with the air. Shockwaves in water — no new
+solver, no air mass, one term in a potential we already compute. **Tuning/realism research
+pass at implementation (Erik's request, 2026-06-09).**
+
+**The whoosh (flourish, deferred).** Violent displacement can also deposit into
+`wave_source` in proportion to the rate of depth change above a threshold, so fast
+flooding is heard as pressure, not just seen as geometry. Cheap, optional, lands after the
+core coupling ships.
 
 ### 5.2 Water + electricity: conduction
 
@@ -245,25 +294,88 @@ feeding the fire layer. The fluid type is stored as a tag per tile. Stacking (oi
 floating on water, sealing the surface and trapping air below) is a real interaction
 the model permits but is deferred — water-only first, then oil, then layering.
 
-### 5.4 Gameplay effects
+### 5.4 Phase transitions: ice ↔ water → vapour
+
+Water is the liquid middle of a phase triple, and both neighbours earn their place:
+vacuum boils it, cold freezes it. The committed transitions are **ice ↔ water →
+vapour**; closing the cycle (vapour back down) is a research-flagged stretch. All of
+them are cheap local conversion rules over fields that already exist or are already
+being built — none of them touches the solver.
+
+- **Water → vapour** *(ships with the water core)*. Water exposed to near-vacuum
+  pressure flash-boils: a rate-limited depth sink on exposed tiles — the §2.4
+  space-breach behaviour. Once the gas layer exists, the boiled-off mass can enter it
+  as a steam puff (visible venting); until then it simply leaves the world. When the
+  temperature field lands, the same sink also runs at high temperature: fire boils
+  shallow puddles dry.
+- **Ice ↔ water** *(needs the temperature field, ch.06 — in flight)*. Where tile
+  temperature crosses freezing, `water_depth` converts (rate-limited) into `ice_depth`
+  — and **ice is terrain**: it stops flowing and adds to the effective floor height,
+  so later water flows *over* it, and melting converts it back. No new solid state, no
+  solver change — a transfer between a flowing field and the height field. Frozen
+  tiles drop out of the §5.2 conduction body (ice doesn't conduct), and venting a
+  flooded corridor to space can leave a walkable ice floor behind.
+- **Vapour → water / ice — rain and snow** *(research)*. The sim rule is nearly
+  trivial once steam is a gas species with a temperature: cold steam deposits back as
+  `water_depth` (rain) or, below freezing, as `ice_depth` (snow). The open half is
+  **rendering** — droplet particles, rainfall as ripple-field sources, white albedo
+  for snow accretion. Indoor weather on a dying ship is worth the research pass; it is
+  not load-bearing for anything above. **(Erik's request, 2026-06-09.)**
+
+### 5.5 Gameplay effects
 
 Beyond the physical couplings, the depth field is read by gameplay:
 
 - **Movement penalty** — deeper water slows units; past a threshold a corridor is
   impassable.
+- **Washed along** — strong flow pushes units along `flow_v` (a unit in a draining
+  doorway goes *with* the water). The same read-the-gradient pattern as the designed
+  decompression suction (ch.04 §5) — both unbuilt; they should land together.
 - **Electrical hazard** — §5.2.
 - **Oil ignition** — §5.3.
+- **Ice underfoot** — a frozen tile reads as solid floor (flooded-impassable becomes
+  walkable) and optionally as slippery; a flourish that lands with §5.4's second stage.
 
 ---
 
 ## 6. Surface rendering
 
 The simulation produces a depth field; making it *look* like water is a render-side
-concern. The planned approach augments the settled water surface with slow ripples —
-a low-speed wave overlaid on the depth, either a few summed sine waves or a cheap
-surface-wave equation. The physical surface-wave speed `√(g·depth)` is ~1–3 m/s, two
-orders of magnitude slower than the atmosphere's acoustic waves, so this is nearly
-free. This is purely visual; it does not feed back into the flow.
+concern, built from **two layers with distinct jobs** — and one hard rule shared by
+both: **neither feeds back into the flow.** The transport gradient (§2.2) never sees
+them. Feeding surface waves back into depth would reinvent the shallow-water wet/dry
+instability through the back door — the exact failure the pipe model was chosen to
+avoid (§4).
+
+- **The ripple field — a real, but visual-only, wave.** A `ripple` displacement field
+  with its velocity auxiliary, advanced by the same damped kick-drift wave update the
+  atmosphere uses (`v += dt·(c²·Δripple − γ·v)`; `ripple += dt·v`), with
+  `c² = g·min(depth, h_cap)` and both fields zeroed on dry tiles and walls. Its sources
+  are events: a `wave_p` blast passing over wet tiles (§5.1), breach inflow, units
+  wading — so explosions splash, waves ring off walls, and wakes trail through flooded
+  corridors, all emergent from one stencil.
+  - **The cap is physics, not a fudge.** `√(g·depth)` is the *shallow-water* speed,
+    valid while depth ≪ wavelength; once `depth ≳ λ/2π`, real waves go depth-blind
+    (deep-water dispersion). The grid resolves ripples of λ ≈ 3–6 tiles (~1–2 m), so
+    `h_cap = λ/2π ≈ 0.2–0.3 m` splices the two regimes — and pins `c_cap ≈ 4–5 tiles/s`
+    against the atmosphere's 66. The solver derives a **static** `max_dt = 0.5/c_cap`
+    at init, exactly as the atmosphere does: no adaptive stepping, **one substep per
+    tick at any tick rate we use**.
+  - **Shoaling and refraction are free** — `c` varies with depth, so ripples slow and
+    bunch up entering shallows and wavefronts bend toward them. True *breaking* is
+    deliberately out: it is the nonlinear regime (`c` read from `depth + ripple`, crest
+    overtaking trough, shock formation), the classic explicit-scheme divergence — and
+    this field is linear precisely so it cannot steepen into a shock. The look is
+    bought cheaply instead: clamp `|ripple| ≤ k·depth` (waves no taller than the water
+    — also a hard amplitude guarantee), and render **foam where `|∇ripple|` exceeds a
+    threshold** — whitecaps at the steep fronts (feeding the optics pass below). The
+    wet/dry edge is self-absorbing (`c² → 0` plus damping), so shores dissipate
+    arriving ripples the way beaches do.
+- **Ambient ripples — shader-side sine waves.** Standing water needs idle texture; a
+  few summed sines in the shader provide it. The modulation rule is deliberately
+  simple: ambient amplitude = a base level + the local ripple-field energy. The two
+  layers then read as one surface that gets agitated when something happens nearby and
+  calms down afterwards.
 
 A separate, unrelated render effect worth distinguishing here: **blood splats** and
 similar stains are *not* the fluid sim. They are decals on the destruction paint layer
@@ -285,18 +397,26 @@ look.
 The integration, in the order the design implies:
 
 1. **Port the pipe model to C++** as a single-step solver with the same shape as
-   `AtmosphereSolver` / the smoke solver: construct with grid + parameters, expose one
-   `step(dt)`, let Python own the substep loop.
+   `AtmosphereSolver` / the smoke solver: construct with grid + parameters
+   (`dx = tile_size_m` from the level), expose one `step(dt)`, let Python own the
+   substep loop.
 2. **Add fields to `GameMap`** — `water_depth` and the `flow_vx`/`flow_vy` auxiliary,
-   plus the floor `height_map` as the shared terrain — following the array-plus-mask
-   state contract (no tile objects; accessed as `gmap.<field>`).
+   following the array-plus-mask state contract (no tile objects; accessed as
+   `gmap.<field>`). `floor_height` is optional from day one: flat zero until the art
+   pipeline delivers it.
 3. **Wire sources** to existing topology events: `destroy_wall` releases tanks,
-   designated tiles act as pipe/breach sources.
+   designated tiles act as pipe/breach sources, vacuum exposure runs the flash-boil
+   sink (§5.4).
 4. **Insert into the physics tick** before the atmosphere step, so volume displacement
    (§5.1) reads fresh depths.
-5. **Add the couplings** — volume displacement first (highest payoff, least code),
-   then conduction, then oil + fire.
-6. **CUDA residency** — the stencil and flux passes are local 2D operations and port to
+5. **Add the couplings, in payoff order** — volume displacement with its capped scaling
+   first (highest payoff, least code), then the pressure-head term (blasts shove
+   water), then conduction, then oil + fire.
+6. **Surface presentation** — the ripple field and ambient sines (§6), and the
+   per-pixel render refinement once an art-resolution height map exists (§3).
+7. **Phase transitions, staged** (§5.4) — flash-boil ships with the core; ice ↔ water
+   once the temperature field lands; rain/snow after the research pass.
+8. **CUDA residency** — the stencil and flux passes are local 2D operations and port to
    GPU unchanged, alongside the atmosphere and smoke fields when state goes
    GPU-resident.
 
@@ -307,7 +427,8 @@ The integration, in the order the design implies:
 Audited against the codebase: `prototypes/archive/fluid_test.py`,
 `fluid_sandbox.py`, `fluid_scenarios.py`, `fluid_tilted_ship.py`;
 `src/simulation/gamemap.py`; `src/simulation/environment.py`;
-`src/simulation/physics_runner.py`.
+`src/simulation/physics_runner.py`. (The temperature/fire integration is in flight and
+may extend `GameMap` / `PhysicsRunner` beyond what this audit lists.)
 
 **Status: prototype-only. Not integrated into the game.**
 
@@ -330,25 +451,27 @@ Audited against the codebase: `prototypes/archive/fluid_test.py`,
 
 - **C++ single-step solver.** None exists. The shipped atmosphere and smoke solvers
   are C++ in `cpp/`; the fluid solver is still NumPy in a prototype.
-- **`GameMap` fields.** There is **no** `water_depth`, no flow-velocity field, and no
-  floor `height_map` on `GameMap`. (`GameMap` carries `atmosphere`, `smoke`,
-  `light_rgb`, `light_dir`, `heat`, `smoke_glow`, and the material masks — no fluid.)
+- **`GameMap` fields.** There is **no** `water_depth`, no flow-velocity field, no
+  optional `floor_height`, and no `ice_depth` on `GameMap`. (`GameMap` carries
+  `atmosphere`, `smoke`, `light_rgb`, `light_dir`, `heat`, `smoke_glow`, and the
+  material masks — no fluid.)
 - **Physics-tick integration.** `PhysicsRunner.step` orchestrates atmosphere, smoke,
   and fire only. The fluid solver is not called.
-- **Water → atmosphere volume displacement** (§5.1) — design only; no `cell_capacity`,
-  no volume/pressure coupling exists.
-- **Water + electricity conduction** (§5.2), **oil / fluid types** (§5.3), **movement
-  penalty and other gameplay reads** (§5.4), **surface-wave rendering** (§6) — all
-  design only.
-- **Coarse-grid + per-pixel-visual fallback** (§3) — documented option, not built.
+- **Water ↔ atmosphere coupling** (§5.1) — design only; no `ceiling_h`, no volume
+  scaling, no pressure-head term exists.
+- **Water + electricity conduction** (§5.2), **oil / fluid types** (§5.3), **phase
+  transitions** (§5.4), **movement penalty and other gameplay reads** (§5.5), **ripple
+  field + ambient sines** (§6) — all design only.
+- **Per-pixel render refinement** (§3) — documented render-side option, not built.
 - **CUDA residency** — forward idea.
 
 **Gaps / things to resolve at integration time:**
 
-- **Terrain source.** The pipe model needs a per-tile floor height map. The art
-  pipeline designates the floor layer's height map as that terrain (and as the lighting
-  normal-map source), but no height-map field is loaded onto `GameMap` today. This is
-  the prerequisite the integration depends on, and it is unbuilt.
+- **Terrain is optional, not a prerequisite.** The solver reads `floor_height` but
+  defaults it to flat zero, so integration does not wait on the art pipeline. When the
+  art height map lands (the same data feeds the lighting normal map; see the Graphics
+  chapter), it becomes the terrain — and, at art resolution, the per-pixel render
+  refinement (§3).
 - **Naming collision to avoid.** `environment.py` already defines `REQUIRES_WATER` and
   `can_breathe_water` — these are **creature trait** flags (a fish needs water to
   breathe), entirely unrelated to the fluid sim. Fluid fields should not reuse this
@@ -356,8 +479,11 @@ Audited against the codebase: `prototypes/archive/fluid_test.py`,
 - **Tick ordering is load-bearing.** Volume displacement requires the water step to run
   *before* the atmosphere step within the tick; this ordering must be honoured when the
   solver is inserted into `PhysicsRunner`.
-- **Prototype `dx` values vary.** The prototypes use `dx` of 1.0, 0.33, and 1/3
-  depending on scenario; the real solver must take the world's fine-tile size (1/3 m)
-  rather than a hardcoded constant.
-- **Source-term vs. equalisation-pass** for displacement pressure (§5.1) is an open
-  modelling choice to settle when the coupling is implemented.
+- **`dx` comes from the level.** The prototypes used assorted hardcoded `dx` values
+  (1.0, 0.33, 1/3); the real solver takes `dx = tile_size_m` from the loaded level
+  (ch.01) and derives its constants from it. The prototype variation is historical
+  noise, not a choice to port.
+- **Resolved (2026-06-09): displacement enters as the multiplicative volume scaling**
+  of §5.1 — no separate equalisation pass (implicit diffusion is the equaliser), and no
+  air-mass field. The pressure-head constant `k_p` and the flash-boil/freeze rates are
+  the tunables the implementation pass owns.
