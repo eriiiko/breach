@@ -231,7 +231,24 @@ void Raycaster::march_ray_directional(
         // walls 1.0 -> killed (== the old wall hard-stop for heat), glass 0.3 ->
         // 0.7 transmits. Independent of the RGB multiply above. nullptr field ==
         // no attenuation (pre-S6 behaviour: heat survival stays 1.0).
-        if (heat_atten != nullptr) {
+        //
+        // SOURCE-TILE SKIP (K2 — fire as a sim-side heat source): a fire only
+        // ever burns on a FLAMMABLE solid (wood/door), which is heat-opaque
+        // (heat_atten 1.0). A radiating surface emits OUTWARD — it does not
+        // absorb its own emission — so the burning tile's own heat_atten must
+        // NOT kill the ray before it leaves the cell, or fire could never
+        // radiate across the adjacent room (the canon model, engine/06 §1:
+        // "a fire radiates heat across an open room; distant wood catches").
+        // On the SOURCE tile (distance == 0, the very first marched cell) we
+        // therefore deposit the heat (done above) but SKIP this self-occlusion,
+        // so heat_survival stays 1.0 leaving the source and the ray radiates
+        // into the air beyond. Every downrange tile attenuates normally, so a
+        // wall still blocks the fire's heat beyond it (occlusion intact). This
+        // is INERT for air-sourced lights/beams (their source heat_atten is 0,
+        // so 1-0 == no-op) — it only matters for a heat source that sits inside
+        // an opaque tile, i.e. fire. Light occlusion is untouched (a lamp never
+        // sits in a wall; fire emits no meaningful light here anyway).
+        if (heat_atten != nullptr && distance > 0.0f) {
             heat_survival *= (1.0f - heat_atten[idx]);
         }
 

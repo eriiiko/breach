@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
+
 from config import CFG
 
 
@@ -115,6 +117,43 @@ class PhysicsRunner:
         self.temperature.o2_vacuum_thresh = float(
             getattr(thermal, "o2_vacuum_thresh", 0.3))
 
+        # --- K2: sim-side fire heat ray source (proposal §1) ------------------
+        # Fire is a DETERMINISTIC heat source cast IN THE SIM (not the renderer).
+        # Each burning tile becomes a short-range heat `LightSource`; we cast the
+        # whole fire source list with the C++ raycaster into `gmap.heat` at the
+        # START of step(), BEFORE the TemperatureSolver, so this tick's fire heat
+        # converts to temperature this same tick. Heat-only: we pass scratch light
+        # buffers (the render glow is a separate later step) and `heat_atten` so
+        # the deposit is occluded per K1 (a wall blocks the fire's heat beyond it).
+        #
+        # Own Raycaster instance (headless — the renderer owns a separate one for
+        # the light pass; this one only ever fills `heat`). coarse_cluster reuses
+        # the shipped clustering when many tiles burn (a firestorm casts from a
+        # coarse grid, not every tile). Determinism: fixed ray count, fixed angles
+        # (no jitter / RNG), fixed row-major source order, integer saturating-add.
+        self.raycaster = bp.Raycaster()
+        fire_cfg = getattr(CFG.physics, "fire", None)
+        self.raycaster.coarse_cluster = int(
+            getattr(fire_cfg, "coarse_cluster", 3))
+        self.k_fire_heat = float(getattr(fire_cfg, "k_fire_heat", 9.0))
+        self.fire_ray_count = int(getattr(fire_cfg, "fire_ray_count", 8))
+        self.fire_range_base = float(getattr(fire_cfg, "range_base", 2.0))
+        self.fire_range_per_i = float(getattr(fire_cfg, "range_per_intensity", 3.0))
+        self.fire_intensity_base = float(getattr(fire_cfg, "intensity_base", 0.3))
+        self.fire_intensity_per_i = float(
+            getattr(fire_cfg, "intensity_per_intensity", 0.7))
+        col = getattr(fire_cfg, "color", [1.0, 0.45, 0.12])
+        self.fire_color = (float(col[0]), float(col[1]), float(col[2]))
+        # Throwaway light buffers for the heat-only cast. The march REQUIRES
+        # light_rgb / light_dx / light_dy (it writes the RGB/direction channels
+        # unconditionally), but fire's visual glow is a later step, so we discard
+        # them. Allocated lazily on first cast (we don't know the grid size here)
+        # and zeroed each pass so the discarded float accumulators can't grow
+        # unbounded over a long session. `smoke_glow` is passed as None (skip).
+        self._fire_scratch_rgb = None
+        self._fire_scratch_dx = None
+        self._fire_scratch_dy = None
+
     # ------------------------------------------------------------------
     # Per-tick step
     # ------------------------------------------------------------------
@@ -132,6 +171,20 @@ class PhysicsRunner:
             wall this tick. Caller should run ``gmap.destroy_wall(y, x)``
             for each (PhysicsRunner does not touch the material grid).
         """
+        # K2: cast the fire heat pass FIRST — at the very START of the physics
+        # step, BEFORE the atmosphere/smoke loop and BEFORE the TemperatureSolver
+        # below. Each burning tile deposits HEAT into `gmap.heat` (Q16.16,
+        # saturating-add, occluded by `heat_atten`); the TemperatureSolver then
+        # converts THIS tick's fire heat to temperature, conducts and cools it,
+        # and the downstream consumers (ignition, unit damage in Simulation.step)
+        # read the resulting temperature/heat. Per-tick order becomes:
+        #   fire heat pass -> heat buffer -> temperature convert -> conduction
+        #   -> cooling -> {ignition, unit-damage} -> ... -> clear heat.
+        # ADDITIVE / de-risked: the render-side ray pass (cold sources -> ~0 heat)
+        # is untouched, so there is no double-count; the cellular fire spread
+        # (self.fire.step below) keeps running unchanged.
+        self.cast_fire_heat(gmap)
+
         dt = self.atmos.max_dt()
         n = max(1, int(math.ceil(sim_time / dt)))
         dt_actual = sim_time / n
@@ -174,9 +227,11 @@ class PhysicsRunner:
         # using the smaller vacuum shift where a 4-neighbour is space-facing
         # (is_vacuum / atmosphere < o2_vacuum_thresh) — the same fields the
         # atmosphere/smoke solvers read, so a breached wall cools fast through
-        # the existing seam. With no heat sources wired into the sim tick yet,
-        # `heat` is 0 and a 0 field conducts/cools to nothing, so the field stays
-        # 0 (no behaviour change) — but the seam is now in place for fire/beams.
+        # the existing seam. The fire heat pass at the TOP of this step (K2) has
+        # already filled `heat` for any burning tile, so this conversion turns
+        # this tick's fire heat into temperature on the burning tile and its
+        # solid neighbours; with no fire on the map `heat` is 0 and a 0 field
+        # conducts/cools to nothing (the field stays 0 — no behaviour change).
         # Unit damage (§4) becomes a further pass in step().
         self.temperature.step(
             gmap.temperature, gmap.heat, gmap.heat_inv_shift,
@@ -195,3 +250,95 @@ class PhysicsRunner:
         # conversion was the only consumer; STEP D moves it out.)
 
         return destroyed
+
+    # ------------------------------------------------------------------
+    # K2: sim-side fire heat ray pass
+    # ------------------------------------------------------------------
+    def cast_fire_heat(self, gmap):
+        """Deposit fire's radiant heat into ``gmap.heat`` (proposal §1).
+
+        Enumerate every burning tile (``fire > 0``) in fixed ROW-MAJOR order,
+        turn each into a short-range heat :class:`LightSource`, and cast the
+        whole list with the C++ raycaster into ``gmap.heat`` — Q16.16,
+        saturating-add, occluded per tile by ``gmap.heat_atten`` (K1). HEAT-ONLY:
+        the render light buffers are throwaway scratch (fire's visual glow is a
+        separate later step) and ``smoke_glow`` is skipped (None).
+
+        Determinism (must hold — ``heat`` is sim-affecting and feeds ignition /
+        unit damage downstream):
+
+        - **Fixed ray count, fixed angles, NO RNG.** Each source uses exactly
+          ``fire_ray_count`` (8) rays with ``jitter == 0``. The 8 rays are evenly
+          spaced over the full circle by the C++ march; a fixed per-source phase
+          (``angle_center``) derived from the tile coords rotates the fan so
+          neighbouring fires don't all fire the same 8 directions — but it is a
+          pure function of (row, col), never random. No ``sim.rng`` is touched.
+        - **Fixed source order.** Row-major enumeration of the burning tiles.
+        - **Integer saturating-add deposit.** Order-independent -> bit-identical
+          across machines / runs (the property that lets ``heat`` be a CUDA
+          atomicAdd later).
+
+        Many tiles burning is handled by the raycaster's ``coarse_cluster``
+        (the shipped clustering) only inside the C++ ``update_from_fire`` path;
+        here we build per-tile sources in Python and rely on the small per-source
+        ``max_range`` for cost (many sources x few short rays == cheap, the
+        cost discipline in fire_design_notes). The cluster dial is still bound on
+        the raycaster for when the source build moves into C++.
+
+        Called at the START of :meth:`step`, BEFORE the TemperatureSolver.
+        """
+        fire = gmap.fire
+        # Fast out: nothing burning -> no deposit (heat stays whatever it was;
+        # the sim clears it at end of tick). Mirrors the C++ early-exit.
+        burning = fire > 0.0
+        if not bool(burning.any()):
+            return
+
+        h, w = fire.shape
+        # Lazily allocate / zero the throwaway light buffers (the march writes
+        # RGB + direction unconditionally; we discard them). Zeroed each pass so
+        # the discarded float accumulators cannot grow unbounded over a session.
+        if (self._fire_scratch_rgb is None
+                or self._fire_scratch_rgb.shape[:2] != (h, w)):
+            self._fire_scratch_rgb = np.zeros((h, w, 3), dtype=np.float32)
+            self._fire_scratch_dx = np.zeros((h, w), dtype=np.float32)
+            self._fire_scratch_dy = np.zeros((h, w), dtype=np.float32)
+        else:
+            self._fire_scratch_rgb.fill(0.0)
+            self._fire_scratch_dx.fill(0.0)
+            self._fire_scratch_dy.fill(0.0)
+
+        bp = self.bp
+        two_pi = 2.0 * math.pi
+        ray_count = self.fire_ray_count
+        # Build the source list in ROW-MAJOR order (deterministic). np.argwhere
+        # yields (row, col) pairs in C order, i.e. row-major.
+        ys, xs = np.nonzero(burning)
+        for yy, xx in zip(ys.tolist(), xs.tolist()):
+            intensity_fire = float(fire[yy, xx])
+            src = bp.LightSource()
+            # Cast from the tile CENTRE so the 8 rays leave symmetrically.
+            src.x = float(xx) + 0.5
+            src.y = float(yy) + 0.5
+            src.max_range = self.fire_range_base + self.fire_range_per_i * intensity_fire
+            src.ray_count = ray_count          # FIXED 8 — overrides the auto count
+            src.angle_spread = two_pi          # omni
+            # Fixed per-source phase from the tile coords — deterministic, NOT
+            # random. Rotates the 8-ray fan so adjacent fires cover complementary
+            # directions; a pure function of (col, row), bit-identical everywhere.
+            src.angle_center = ((xx * 7 + yy * 13) % ray_count) * (two_pi / ray_count)
+            src.intensity = self.fire_intensity_base + self.fire_intensity_per_i * intensity_fire
+            src.heat = self.k_fire_heat * intensity_fire   # the sim payload
+            src.jitter = 0.0                   # NO dither — heat is sim-affecting
+            src.color = self.fire_color        # render-only tint (discarded here)
+            self.raycaster.cast_source_directional(
+                src,
+                self._fire_scratch_rgb,
+                self._fire_scratch_dx,
+                self._fire_scratch_dy,
+                gmap.smoke,
+                gmap.dyn_light_atten,
+                gmap.heat,            # <- the only output that survives the cast
+                None,                 # smoke_glow: skipped (render-only, later)
+                gmap.heat_atten,      # K1 per-tile heat occlusion
+            )

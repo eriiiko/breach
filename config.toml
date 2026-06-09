@@ -66,6 +66,38 @@ o2_vacuum_thresh  = 0.3  # atmosphere below which a 4-neighbour counts as vacuum
 ignition_seed = 0.1   # seed fire intensity a temperature-ignited tile gets (I_seed)
 o2_threshold  = 0.60  # min air-side-neighbour atmosphere to ignite (mirrors the fire's o2_threshold)
 
+# --- K2: fire as a sim-side heat ray source (proposal §1, fire_design_notes) --
+# Each burning tile (fire > 0) becomes a short-range heat `LightSource` cast IN
+# THE SIM at the START of the physics step, BEFORE the TemperatureSolver, so this
+# tick's fire heat converts to temperature this same tick. The cast deposits ONLY
+# into `gmap.heat` (Q16.16, saturating-add, attenuated by `heat_atten` per K1) —
+# the render-side light glow is a separate later step. DETERMINISTIC: fixed ray
+# count, fixed angles (no RNG), fixed row-major source order, integer add.
+#
+# Per burning tile of intensity I (fire value in [0,1]):
+#   heat       = k_fire_heat * I                 (the gameplay payload — energy)
+#   max_range  = range_base + range_per_I * I    (tiles; hotter fire reaches farther)
+#   intensity  = intensity_base + intensity_per_I * I   (ray light weight; ~render)
+#   ray_count  = fire_ray_count  (FIXED 8, no auto, no jitter)
+#   color      = warm orange (render-only tint; heat is the sim payload)
+#
+# k_fire_heat is tuned (proposal §1 target): a lone burning tile (I=0.8) self-
+# heats its own wood cell and conducts toward an adjacent wood wall's ignition_temp
+# (300) so the neighbour crosses it over a FEW SECONDS (~1.5 s here — toward but
+# not instantly past), while the existing cellular fire spread (spread_rate 0.3,
+# neighbour ignition in a few ticks) still DOMINATES the spread. The heat path
+# mainly adds unit damage + a slow secondary heat-ignition; it does NOT firestorm
+# the map in a couple of ticks. Erik tunes this live. (`temperature` is ΔT in
+# game units above a 20° reference, not literal Celsius — a fire reads hot.)
+k_fire_heat          = 200.0  # heat energy per unit fire intensity, per ray, per tick
+fire_ray_count       = 8      # FIXED rays per burning tile (no auto-count, no RNG dither)
+range_base           = 2.0    # max_range = range_base + range_per_intensity * I  (tiles)
+range_per_intensity  = 3.0
+intensity_base       = 0.3    # ray light intensity = intensity_base + intensity_per_I * I
+intensity_per_intensity = 0.7
+color                = [1.0, 0.45, 0.12]   # warm orange (render-only; heat is colourless)
+coarse_cluster       = 3      # reuse the raycaster's coarse clustering when many tiles burn
+
 [smoke]
 # Ray-engine smoke optics (ch.05 §6.1 §6 — decoupled per-channel absorption vs
 # glow). Two INDEPENDENT budgets, NOT constrained to absorb + glow = 1:
