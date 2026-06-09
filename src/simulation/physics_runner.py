@@ -49,6 +49,21 @@ FIRE_SMOKE_EMISSION = 0.8    # smoke produced per step by fire
 FIRE_WALL_DAMAGE    = 0.4    # HP damage to wall per step while burning (the burn-out brake)
 
 
+# ---------------------------------------------------------------------------
+# Water pipe-model parameter defaults (engine/07 §2, water plan W2). Bound from
+# config [physics.water] by _bind_water_params; these constants are the
+# fallback when a key is absent. NOTE: `dx` has no constant here — the solver's
+# CFL bound and gradients need the LEVEL's physical tile size, so it lazy-binds
+# from ``gmap.tile_size_m`` on the first _step_water call (never assumed).
+# ---------------------------------------------------------------------------
+WATER_G         = 9.81   # m/s^2
+WATER_DAMPING   = 1.0    # 1/s pipe friction (prototype-validated: fluid_test.py)
+WATER_K_P       = 0.0    # pressure head m/atm — 0 == head OFF (W4 turns it on)
+WATER_V_MAX     = 8.0    # m/s velocity clamp (paired with the C++ outflow limiter)
+WATER_DEPTH_EPS = 1e-5   # m snap-to-zero (kills denormal creep)
+WATER_CEILING_H = 2.5    # m air column == the solver's h_ref CFL reference
+
+
 class PhysicsRunner:
     """Wraps the C++ atmosphere / smoke / fire solvers for one game session."""
 
@@ -182,6 +197,47 @@ class PhysicsRunner:
         self._fire_scratch_dx = None
         self._fire_scratch_dy = None
 
+        # WaterSolver (engine/07 §2, water plan W2): the pipe model that
+        # advances gmap.water_depth. Params are bound through a METHOD (not
+        # inline here) so a future config-reload hook can re-call it; all
+        # [physics.water] keys are restart-bound today (engine/12 §5). `dx`
+        # lazy-binds from the level's tile_size_m on the first _step_water
+        # call. DORMANT-SAFE: with zero water on the map _step_water early-
+        # outs and the tick is bit-identical to before water existed.
+        self.water = bp.WaterSolver()
+        self._bind_water_params()
+        # Previous-tick water-depth snapshot (lazy alloc, the _fire_scratch_*
+        # pattern). Semantics (plan W2 numerics-review fix): the depth at the
+        # END of the previous tick's water accounting — NOT a copy taken this
+        # tick — so FieldEdit dumps (flushed before physics) and source holds
+        # are each counted EXACTLY ONCE by W3's displacement when it lands.
+        self._water_depth_before = None
+
+    def _bind_water_params(self):
+        """Bind [physics.water] onto the WaterSolver (water plan W2).
+
+        A separate method so a future config-reload hook can re-call it (the
+        keys are restart-bound today — Ctrl+R does not re-bind solver params,
+        engine/12 §5). The ``WATER_*`` module constants are the fallbacks when
+        a key is absent, mirroring the fire block above. ``h_ref`` — the CFL
+        reference column — is the config's ``ceiling_h`` key: ONE constant for
+        the air column, shared with W3's displacement accounting. ``k_p``
+        ships 0.0 (pressure head OFF until W4). ``dx`` is NOT bound here: it
+        needs the level's tile size, which only exists once a GameMap is in
+        hand, so it lazy-binds on the first :meth:`_step_water` call.
+        """
+        water_cfg = getattr(CFG.physics, "water", None)
+
+        def _fp(key, default):
+            return float(getattr(water_cfg, key, default))
+
+        self.water.g         = _fp("g", WATER_G)
+        self.water.damping   = _fp("damping", WATER_DAMPING)
+        self.water.k_p       = _fp("k_p", WATER_K_P)
+        self.water.v_max     = _fp("v_max", WATER_V_MAX)
+        self.water.depth_eps = _fp("depth_eps", WATER_DEPTH_EPS)
+        self.water.h_ref     = _fp("ceiling_h", WATER_CEILING_H)
+
     # ------------------------------------------------------------------
     # Per-tick step
     # ------------------------------------------------------------------
@@ -212,6 +268,14 @@ class PhysicsRunner:
         # is untouched, so there is no double-count; the cellular fire spread
         # (self.fire.step below) keeps running unchanged.
         self.cast_fire_heat(gmap)
+
+        # Water layer (engine/07 §2, water plan W2): pour / flow / settle the
+        # standing-water field ONCE per tick, before the atmosphere loop — so
+        # when W3's displacement lands (water compressing the air column), the
+        # pressure change is on `atmosphere` BEFORE diffusion re-equalises it
+        # this same tick. Dormant-safe: with zero water the method early-outs
+        # and the tick is bit-identical to before the water system existed.
+        self._step_water(gmap, sim_time)
 
         dt = self.atmos.max_dt()
         n = max(1, int(math.ceil(sim_time / dt)))
@@ -416,3 +480,60 @@ class PhysicsRunner:
                 None,                 # smoke_glow: skipped (render-only, later)
                 gmap.heat_atten,      # K1 per-tile heat occlusion
             )
+
+    # ------------------------------------------------------------------
+    # Water layer (engine/07 §2, water plan W2)
+    # ------------------------------------------------------------------
+    def _step_water(self, gmap, sim_time):
+        """Advance the standing-water layer by ``sim_time`` seconds.
+
+        Factored out of :meth:`step` (the dormancy-test enabler — a no-op
+        monkeypatch here is the A/B baseline). Per tick: apply the continuous
+        source holds, run the C++ pipe-model substeps, then (W3/W5, later)
+        the boil sink + displacement accounting against the ``before``
+        snapshot. Walls are ``gmap.solid`` — STATIC walls only; units do NOT
+        block water (Erik's explicit call: water flows under feet).
+        """
+        if (self._water_depth_before is None
+                or self._water_depth_before.shape != gmap.water_depth.shape):
+            # First call (or a new map): alloc AND seed with the CURRENT depth
+            # -> level-painted water is "pre-existing" (no tick-1 compression
+            # spike once W3's displacement reads `before`). A FieldEdit dump
+            # landing on the very first physics tick is absorbed by this seed
+            # too — same semantics, intended. Also the lazy `dx` bind: the
+            # solver's CFL bound and gradients need the LEVEL's physical tile
+            # size, which we only meet here (never assume a default).
+            self._water_depth_before = gmap.water_depth.copy()
+            self.water.dx = float(gmap.tile_size_m)
+        before = self._water_depth_before
+        # Dormant early-out: no sources, no water now, no water last tick ->
+        # nothing to do (a dry ship costs ~one .any() per tick) and the whole
+        # tick stays bit-identical to before the water system existed.
+        if (not gmap.water_sources and not gmap.water_depth.any()
+                and not before.any()):
+            return
+        # Continuous source holds (pipe leak / breach inflow): per-tick
+        # `depth = max(depth, level_m)` — the same architectural slot as
+        # wave_source feeding. Event-shaped dumps go through the FieldEdit
+        # queue (flushed before physics) instead. Both are counted vs
+        # `before` exactly once when W3's displacement lands.
+        for (y, x, lvl) in gmap.water_sources:
+            gmap.water_depth[y, x] = max(gmap.water_depth[y, x], lvl)
+        # Substep count derived from the solver's CFL bound (house pattern:
+        # AtmosphereSolver.max_dt in step() above; no config `substeps` key).
+        # k_p = 0 at dx = 1/3 -> max_dt = 33.6 ms -> 2 substeps at 24 tps.
+        wdt_max = self.water.max_dt()
+        n = max(1, int(math.ceil(sim_time / wdt_max)))
+        wdt = sim_time / n
+        for _ in range(n):
+            self.water.step(gmap.water_depth, gmap.flow_vx, gmap.flow_vy,
+                            gmap.floor_height, gmap.atmosphere, gmap.wave_p,
+                            gmap.solid, wdt, gmap.tilt_x, gmap.tilt_y)
+        # W5 flash-boil vacuum sink goes HERE (before the displacement below:
+        # a boiled-off column reads as receding water -> slight decompression,
+        # the physically-right sign).
+        #
+        # W3 volume-displacement accounting goes HERE: reads `before` vs the
+        # new depth -> isothermal P*V ratio onto `atmosphere`; flooded cells
+        # seal via dyn_permeability — then closes the accounting loop:
+        np.copyto(before, gmap.water_depth)

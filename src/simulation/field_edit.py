@@ -191,6 +191,7 @@ FIELD_POLICY = {
     "wave_source": _FieldPolicy("float", None,       _skip_solid_or_vacuum),
     "fire":        _FieldPolicy("float", (0.0, 1.0), _skip_non_flammable),
     "heat":        _FieldPolicy("heat",  None,       None),
+    "water_depth": _FieldPolicy("float", (0.0, float("inf")), _skip_solid),
 }
 
 

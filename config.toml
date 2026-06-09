@@ -131,6 +131,28 @@ intensity_per_intensity = 0.7
 color                = [1.0, 0.45, 0.12]   # warm orange (render-only; heat is colourless)
 coarse_cluster       = 3      # reuse the raycaster's coarse clustering when many tiles burn
 
+# Water pipe model (engine/07 §2, water plan W2). The C++ WaterSolver advances
+# gmap.water_depth (metres of standing water) each tick: damped velocity kick +
+# donor-cell upwind flux + per-cell outflow limiter. All keys are RESTART-BOUND
+# (engine/12 §5: PhysicsRunner binds once at construction; Ctrl+R does NOT
+# re-bind solver params). `dx` has no key — it binds from the level's
+# tile_size_m, never assumed. No `substeps` key either: the count is derived
+# house-style from the solver's CFL bound, n = ceil(sim_time / max_dt()) — 2 at
+# 24 tps with k_p = 0. The boil_*/ratio_*/flood_eps keys are pre-declared for
+# W3 (displacement) / W5 (flash-boil) and unused until those steps — harmless.
+[physics.water]
+g = 9.81          # m/s^2
+damping = 1.0     # 1/s pipe friction (prototype-validated: fluid_test.py used 1.0)
+v_max = 8.0       # m/s velocity clamp (paired with the C++ outflow limiter)
+depth_eps = 1e-5  # m dry snap
+k_p = 0.0         # pressure head m/atm — OFF until W4 (real 10.3 is numerically AND feel-wise too hot)
+ceiling_h = 2.5   # m air column (W3 displacement + the solver's h_ref CFL reference)
+ratio_cap = 1.5   # max per-tick compression ratio (W3)
+flood_eps = 0.05  # m remaining air column below which a cell counts flooded (W3)
+boil_rate = 0.02      # m/s flash-boil sink in near-vacuum (W5)
+boil_p_thresh = 0.3   # atmosphere below this boils (W5; pressure-keyed — drained rooms boil too, intended)
+steam_yield = 4.0     # white_smoke density per metre boiled (W5)
+
 [smoke]
 # Ray-engine smoke optics (ch.05 §6.1 §6 — decoupled per-channel absorption vs
 # glow). Two INDEPENDENT budgets, NOT constrained to absorb + glow = 1:

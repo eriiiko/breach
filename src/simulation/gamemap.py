@@ -239,6 +239,39 @@ class GameMap:
         # surface-tint light_modulation path (no double-count). float (no
         # downstream sim threshold). Allocated once, written IN-PLACE.
         self.smoke_glow = np.zeros((h, w, 3), dtype=np.float32)
+        # --- Water layer (engine/07 §2, water plan W2) --------------------
+        # ``water_depth`` — metres of standing water on the floor — is THE
+        # shared field of the water<->fire interface: the C++ WaterSolver pipe
+        # model advances it each tick, and the fire side will read it as a
+        # heat sink (boil-off emits white_smoke; that consumer is the fire
+        # side's lane). Written IN-PLACE by the solver (never reassigned) so
+        # any C++ view of the buffer stays valid.
+        self.water_depth  = np.zeros((h, w), dtype=np.float32)
+        # Cell-centred pipe-model flow velocity (m/s) — PERSISTENT solver
+        # state, not a per-tick scratch: the damped velocity kick integrates
+        # across ticks (water keeps sloshing between calls).
+        self.flow_vx      = np.zeros((h, w), dtype=np.float32)
+        self.flow_vy      = np.zeros((h, w), dtype=np.float32)
+        # OPTIONAL terrain height (m) under the water (canon §2.1/§3): raises
+        # the surface potential so water pools in low spots. Flat zero until
+        # a level paints it (the solver also accepts None == flat).
+        self.floor_height = np.zeros((h, w), dtype=np.float32)
+        # Ship tilt (radians, about the grid centre) — gameplay writes these;
+        # the solver adds the tilt plane to the surface potential so water
+        # slides low-side (the Titanic). Sane range |tilt| < ~30 deg.
+        self.tilt_x       = 0.0
+        self.tilt_y       = 0.0
+        # Physical tile size in metres, from the level (a REQUIRED LevelData
+        # field — the loader supplies the 0.333 default; do NOT add a second
+        # default here). The water solver is the first consumer needing real
+        # SI lengths: its CFL bound and gradients are in metres, unlike the
+        # tile-unit shockwave.
+        self.tile_size_m  = float(level_data.tile_size_m)
+        # Continuous water sources [(y, x, level_m)]: per-tick HOLDS applied
+        # in the runner (depth = max(depth, level_m)) — the pipe/breach
+        # analogue of wave_source feeding. Event-shaped dumps (tank rupture,
+        # scripted flood) go through the FieldEdit queue instead.
+        self.water_sources = []
 
         # Populate material + vacuum from the level's CSV.
         mat, vac = materials_from_tilemap(level_data.tilemap)
