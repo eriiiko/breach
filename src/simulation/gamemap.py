@@ -38,6 +38,18 @@ from simulation.materials import (  # noqa: F401  (re-exported)
     MaterialTable,
 )
 
+# Multi-gas system (engine/05 §6.2, M1): the gas-property table + slice ids.
+# Re-exported so ``from simulation.gamemap import BLACK_SMOKE`` keeps working.
+from simulation.gases import (  # noqa: F401  (re-exported)
+    GasTable,
+    N_GASES,
+    WHITE_SMOKE,
+    BLACK_SMOKE,
+    POISON,
+    TEARGAS,
+    FUEL_GAS,
+)
+
 
 class GameMap:
     """2D grid map at fine-tile resolution, sized from the loaded level."""
@@ -58,6 +70,13 @@ class GameMap:
         # :meth:`reload_material_table`.
         self.materials = MaterialTable.from_config(CFG)
 
+        # Gas-property table (engine/05 §6.2, M1): the multi-gas analogue of the
+        # material table — one row per gas (white_smoke / black_smoke / poison /
+        # teargas / fuel_gas), loaded into per-gas absorption/scatter/diffusion/
+        # decay/flag arrays + a name->index map. Drives the per-gas transport
+        # loop (PhysicsRunner.step). Allocated once; rebuilt on hot-reload.
+        self.gases = GasTable.from_config(CFG)
+
         # Field grids (allocate up front; populate from level + caches below)
         self.material     = np.zeros((h, w), dtype=np.int8)
         self.wall_hp      = np.zeros((h, w), dtype=np.float32)
@@ -69,7 +88,24 @@ class GameMap:
         self.wave_source  = np.zeros((h, w), dtype=np.float32)
         self.wind_x       = np.zeros((h, w), dtype=np.float32)
         self.wind_y       = np.zeros((h, w), dtype=np.float32)
-        self.smoke        = np.zeros((h, w), dtype=np.float32)
+        # Multi-gas density fields (engine/05 §6.2, M1): a dense (N, h, w) float32
+        # array, one (h, w) slice per gas type (slice order == the GAS_* ids).
+        # ``gas`` is C-contiguous, so each ``gas[i]`` is itself a CONTIGUOUS
+        # (h, w) view — the smoke/raycaster C++ solvers hold a raw pointer to the
+        # buffer they are handed, and a contiguous slice's pointer stays valid
+        # for in-place writes (project gotcha: in-place vs reassignment). The
+        # per-gas transport loop (PhysicsRunner.step) steps each non-empty slice.
+        self.gas          = np.zeros((N_GASES, h, w), dtype=np.float32)
+        # ``smoke`` is the canonical name for the BLACK_SMOKE slice (combustion
+        # soot — what fire/explosions emit; its diffusion 0.10 matches today's
+        # d_smoke=0.1). It is a VIEW into ``gas[BLACK_SMOKE]``: every reader and
+        # in-place writer of ``gmap.smoke`` (recorder, renderer, raycaster, fire,
+        # sink-pull, the FieldEdit deposit path) sees the same buffer, and writing
+        # one is visible in the other. Behaviour-preserving: with only black_smoke
+        # populated the result matches the pre-multigas single smoke field. NEVER
+        # reassign ``smoke`` (do ``smoke[:] = ...``) — a reassignment would break
+        # the aliasing and orphan any C++ view of the slice.
+        self.smoke        = self.gas[BLACK_SMOKE]
         self.fire         = np.zeros((h, w), dtype=np.float32)
         self.obstacles    = np.zeros((h, w), dtype=bool)
         # Smoke sink-direction field (ch.05 smoke v2): a per-cell unit-ish
@@ -386,6 +422,10 @@ class GameMap:
         wires in here when CUDA lands — ch.02 §14.)
         """
         self.materials = MaterialTable.from_config(CFG)
+        # Gas table is data-only (no per-tile cache projection in M1), so rebuild
+        # it straight from config — the per-gas transport loop reads the fresh
+        # diffusion/decay/flags next tick. Does NOT touch the ``gas`` array.
+        self.gases = GasTable.from_config(CFG)
         # Rebuild only the table-derived caches; keep atmosphere/obstacles as
         # the running sim left them by snapshotting and restoring them.
         atmosphere = self.atmosphere

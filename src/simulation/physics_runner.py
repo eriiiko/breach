@@ -230,13 +230,42 @@ class PhysicsRunner:
                 gmap.dyn_wave_absorb,
                 dt_actual,
             )
-            self.smoke.step(
-                gmap.smoke, gmap.wind_x, gmap.wind_y,
-                sink_x, sink_y,
-                gmap.obstacles, gmap.solid, gmap.is_vacuum,
-                gmap.dyn_permeability,
-                dt_actual * self.smoke.dt_scale,
-            )
+            # Per-gas transport (engine/05 §6.2, M1). The single smoke field is
+            # generalised to N gas density fields (gmap.gas, shape (N, h, w)):
+            # we loop over the slices and call the SAME C++ smoke solver once per
+            # gas, passing that gas's slice + its per-gas DIFFUSION (from the gas
+            # table) and the SHARED wind / sink / permeability / dt (all gases
+            # ride the same wind — on CUDA this is one batched stencil). No
+            # structural C++ change: the solver is invoked per gas.
+            #
+            # DECAY: the M1 C++ solver has NO decay term, and today's smoke does
+            # not decay, so we do NOT apply per-gas decay here — applying it would
+            # change behaviour and break the M1 behaviour-preservation guarantee.
+            # The per-gas ``decay`` is loaded in the gas table (data only) for
+            # M2/M3, where a decay term is added to the solver. Noted in §6.2.
+            #
+            # Behaviour preservation: black_smoke's diffusion is 0.10, the same as
+            # the legacy d_smoke=0.1 the solver was bound to, so with only the
+            # black_smoke (== gmap.smoke) slice populated the result is identical
+            # to the pre-multigas single smoke field. Empty gas slices are a cheap
+            # no-op (skipped via ``.any()``).
+            gas_diffusion = gmap.gases.diffusion
+            dt_smoke = dt_actual * self.smoke.dt_scale
+            for gi in range(gmap.gas.shape[0]):
+                gas_slice = gmap.gas[gi]
+                if not gas_slice.any():
+                    continue  # empty slice — nothing to transport
+                # Bind this gas's base diffusion onto the shared solver instance
+                # before stepping its slice (the only per-gas knob in M1; wind /
+                # sink / advection / dt_scale are shared across all gases).
+                self.smoke.d_smoke = float(gas_diffusion[gi])
+                self.smoke.step(
+                    gas_slice, gmap.wind_x, gmap.wind_y,
+                    sink_x, sink_y,
+                    gmap.obstacles, gmap.solid, gmap.is_vacuum,
+                    gmap.dyn_permeability,
+                    dt_smoke,
+                )
 
         # Fire feedback step (fire_design_proposal §2/§3/§5). Reads the
         # conduction-pass `temperature` (Q16.16) for the `hot` gate, the SHARED

@@ -156,6 +156,82 @@ smoke_absorb_scale = 1.4                 # beam-reach dial: LOW = long beam (fla
 # (thin, very wispy). 1.0 = off / identity (linear density-opacity, the old look).
 smoke_render_gamma = 1.5                  # default mild, visible contrast bump (1.0 = off)
 
+# Multi-gas material table (engine/05 §6.2). Smoke generalises from one scalar
+# field to N gas density fields, one row per gas, sharing the SAME diffusion +
+# advection solver (all gases ride the same wind). A gas type is data-driven,
+# exactly like a material: one [gases.<name>] row. Loaded by
+# simulation.gases.GasTable into per-gas arrays (absorption Nx3, scatter Nx3,
+# diffusion, decay, flags) + a name->index map.
+#
+# Columns (research-approved values, §6.2):
+#   absorption     [R,G,B] per-unit-density Beer-Lambert absorption (subtractive
+#                  tint of transmitted light). M2 sums these density-weighted
+#                  across coexisting gases in the raycaster; M1 only loads them.
+#   scatter_albedo [R,G,B] additive god-ray/glow gain (decoupled from absorption,
+#                  NOT constrained to absorb+glow=1).
+#   diffusion      per-gas base diffusion coefficient (the per-gas d_smoke the
+#                  transport loop binds before stepping that slice).
+#   decay          per-tick decay rate (LOADED for M2/M3; NOT yet applied in
+#                  transport — the M1 solver has no decay term, so applying it
+#                  would break behaviour preservation; see physics_runner).
+#   flammable      ignites where density > threshold (fuel_gas only) — read M3.
+#   emits_when_hot black-body emission driven by the heat buffer — read M2/M3.
+#   effect         per-gas gameplay tag, read unit-side in mechanics (not here).
+#
+# black_smoke is combustion soot — what fire and explosions emit. Its diffusion
+# (0.10) matches today's d_smoke (0.1), so mapping the EXISTING generic smoke to
+# the black_smoke slice is behaviour-preserving (engine/05 §6.2; M1).
+
+[gases.white_smoke]            # water vapour / steam
+absorption     = [0.10, 0.10, 0.10]   # flat, low — Mie scattering is spectrally neutral
+scatter_albedo = [0.92, 0.92, 0.95]   # NEAR-WHITE additive brighten — the dominant visual term
+diffusion      = 0.18                 # spreads readily, light gas
+decay          = 0.020                # condenses / dissipates moderately fast
+glow           = 0.0                  # no self-glow (but scatters local light brightly)
+flammable      = false
+emits_when_hot = false
+effect         = "vision_block"       # pure concealment; clears on decompression
+
+[gases.black_smoke]            # combustion soot (== today's generic smoke)
+absorption     = [0.88, 0.90, 0.93]   # near-neutral, slight blue tilt: thin soot reads warm/brown
+scatter_albedo = [0.04, 0.04, 0.04]   # soot barely scatters — it is the dark gas
+diffusion      = 0.10                 # heavier, clings; matches today's d_smoke=0.1 (behaviour-preserving)
+decay          = 0.008                # lingers — soot settles slowly
+glow           = 0.0                  # cold soot does NOT glow; hot soot via emits_when_hot
+flammable      = false                # the soot itself is spent fuel
+emits_when_hot = true                 # black-body emission driven by heat buffer (M2/M3)
+effect         = "vision_block_heavy" # near-opaque concealment at density
+
+[gases.poison]                 # chlorine (Cl2), yellow-green
+absorption     = [0.45, 0.10, 0.80]   # B absorbed hardest, R moderate, G passes -> yellow-green tint
+scatter_albedo = [0.10, 0.30, 0.06]   # faint green inscatter
+diffusion      = 0.12                 # creeps and pools (heavier-than-air feel)
+decay          = 0.004                # persistent — the hazard lingers
+glow           = 0.0
+flammable      = false
+emits_when_hot = false
+effect         = "damage_over_time"   # lethal cloud; saturates to iconic green at mid-high density
+
+[gases.teargas]                # CS aerosol, pale near-white (ambiguous vs steam)
+absorption     = [0.12, 0.16, 0.30]   # low overall, B ~2x R -> faint warm/yellow only in thick plumes
+scatter_albedo = [0.88, 0.90, 0.92]   # near-white scatter, like steam — sustains the ambiguity
+diffusion      = 0.15                 # disperses like a fine aerosol
+decay          = 0.010                # clears moderately
+glow           = 0.0
+flammable      = false
+emits_when_hot = false
+effect         = "area_denial"        # forces units out of the area; non-lethal
+
+[gases.fuel_gas]               # combustible vapour, faint, FLAMMABLE
+absorption     = [0.08, 0.10, 0.16]   # very faint, slight blue tilt — nearly invisible haze
+scatter_albedo = [0.20, 0.22, 0.28]   # weak, faintly cool scatter
+diffusion      = 0.22                 # GAMEPLAY KNOB: high = gassy cloud, low = tight flamethrower jet
+decay          = 0.006                # lingers as an ignition hazard
+glow           = 0.0
+flammable      = true                 # IGNITES -> spawns heat + black_smoke; the only flammable gas
+emits_when_hot = true                 # while burning it glows via the black-body curve
+effect         = "ignition_hazard"    # invisible-ish until lit; then a fireball
+
 [display]
 panel_width = 250
 level = "unhcr_vessel"            # folder under levels/ to load on startup
