@@ -210,14 +210,23 @@ LINE_X = 10          # the flooded line's column in the 21-long corridor
 def _corridor_sim(with_water: bool):
     """Corridor scene: gas + overpressure on the LEFT of column LINE_X.
 
-    The line cell (1, LINE_X) is a 1-cell BASIN: its floor sits ceiling_h
-    BELOW the corridor's, so a full-depth column painted into it has a flat
+    The line cell (1, LINE_X) is a 1-cell BASIN: its floor sits 2*ceiling_h
+    BELOW the corridor's, so a 2*ceiling_h column painted into it has a flat
     surface with its dry neighbours (floor + depth == 0 on both sides) — a
-    settled water trap (the plumber's U-bend) that stays at full depth, hence
-    flooded, for the whole run. A full-depth line painted on a FLAT floor
-    would slump below ceiling_h - flood_eps within a few ticks and the seal
-    would blink open — the basin keeps the painted line full-depth, which is
-    the property this test probes (a flooded cell seals the corridor).
+    settled water trap (the plumber's U-bend) that stays above the flooded
+    threshold, hence sealed, for the whole run. A deep line painted on a
+    FLAT floor would slump below ceiling_h - flood_eps within a few ticks
+    and the seal would blink open — the basin holds the plug, which is the
+    property this test probes (a flooded cell seals the corridor).
+
+    Basin 2x-deepened by W4 (pressure head ON, k_p = 0.5): the sustained
+    1.3-vs-1.0 step across the line now SHOVES plug water over the east lip
+    — MEASURED: a ceiling_h-deep plug dips to 2.405 < 2.45 by tick 3 and the
+    seal blinks open (gas crosses) until the spill drains back. The deeper
+    U-bend absorbs the shove (~0.09 m spilt; min depth over the run 4.86,
+    far above the 2.45 threshold), keeping the scene's premise — a plug that
+    STAYS flooded — true with the head live. The invariants asserted below
+    are unchanged.
 
     The left-side pressure step (1.3 atm vs 1.0) drives wind — and gas
     advection + diffusion — RIGHTWARD, straight at the line: the no-water
@@ -227,9 +236,9 @@ def _corridor_sim(with_water: bool):
     sim = Simulation(level, seed=SEED, breach_physics=bp, enable_recorder=False)
     g = sim.gmap
     ceil_h = float(sim.physics_runner.water_ceiling_h)
-    g.floor_height[1, LINE_X] = -ceil_h
+    g.floor_height[1, LINE_X] = -2.0 * ceil_h
     if with_water:
-        g.water_depth[1, LINE_X] = ceil_h    # >= ceiling_h - flood_eps
+        g.water_depth[1, LINE_X] = 2.0 * ceil_h   # stays >= ceiling_h - flood_eps
     g.gas[BLACK_SMOKE][1, 1:LINE_X] = 10.0
     g.atmosphere[1, 1:LINE_X] = 1.3
     sim.set_paused(False)

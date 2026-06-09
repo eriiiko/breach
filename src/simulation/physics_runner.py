@@ -224,7 +224,9 @@ class PhysicsRunner:
         a key is absent, mirroring the fire block above. ``h_ref`` — the CFL
         reference column — is the config's ``ceiling_h`` key: ONE constant for
         the air column, shared with W3's displacement accounting. ``k_p``
-        ships 0.0 (pressure head OFF until W4). ``dx`` is NOT bound here: it
+        ships 0.5 (pressure head ON since W4 — the live tuning dial; the
+        absent-key fallback stays 0.0, head-off-safe). ``dx`` is NOT bound
+        here: it
         needs the level's tile size, which only exists once a GameMap is in
         hand, so it lazy-binds on the first :meth:`_step_water` call.
 
@@ -535,7 +537,8 @@ class PhysicsRunner:
             gmap.water_depth[y, x] = max(gmap.water_depth[y, x], lvl)
         # Substep count derived from the solver's CFL bound (house pattern:
         # AtmosphereSolver.max_dt in step() above; no config `substeps` key).
-        # k_p = 0 at dx = 1/3 -> max_dt = 33.6 ms -> 2 substeps at 24 tps.
+        # Shipped k_p = 0.5 at dx = 1/3 -> max_dt = 18.0 ms -> 3 substeps at
+        # 24 tps (k_p = 0 -> 33.6 ms -> 2).
         wdt_max = self.water.max_dt()
         n = max(1, int(math.ceil(sim_time / wdt_max)))
         wdt = sim_time / n

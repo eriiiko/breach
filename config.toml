@@ -137,15 +137,17 @@ coarse_cluster       = 3      # reuse the raycaster's coarse clustering when man
 # (engine/12 §5: PhysicsRunner binds once at construction; Ctrl+R does NOT
 # re-bind solver params). `dx` has no key — it binds from the level's
 # tile_size_m, never assumed. No `substeps` key either: the count is derived
-# house-style from the solver's CFL bound, n = ceil(sim_time / max_dt()) — 2 at
-# 24 tps with k_p = 0. The boil_*/ratio_*/flood_eps keys are pre-declared for
+# house-style from the solver's CFL bound, n = ceil(sim_time / max_dt()) — 3 at
+# 24 tps with the shipped k_p = 0.5 (2 with k_p = 0). The boil_*/ratio_*/flood_eps keys are pre-declared for
 # W3 (displacement) / W5 (flash-boil) and unused until those steps — harmless.
 [physics.water]
 g = 9.81          # m/s^2
 damping = 1.0     # 1/s pipe friction (prototype-validated: fluid_test.py used 1.0)
 v_max = 8.0       # m/s velocity clamp (paired with the C++ outflow limiter)
 depth_eps = 1e-5  # m dry snap
-k_p = 0.0         # pressure head m/atm — OFF until W4 (real 10.3 is numerically AND feel-wise too hot)
+k_p = 0.5         # pressure head m/atm — ON (W4): THE tuning dial. Physical 10.3 is excluded by feel
+                  # (wave_p rings ~1 s vs a real blast's ms) AND by numerics: the head stiffens the wave,
+                  # c_eff = sqrt(g*h*(1 + k_p*P/free_h)) — near-flooded cells (free_h -> 0) are the worst case.
 ceiling_h = 2.5   # m air column (W3 displacement + the solver's h_ref CFL reference)
 ratio_cap = 1.5   # max per-tick compression ratio (W3)
 flood_eps = 0.05  # m remaining air column below which a cell counts flooded (W3)

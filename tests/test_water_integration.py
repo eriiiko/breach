@@ -195,13 +195,16 @@ def test_source_spread_fills_sealed_room():
     assert totals[-1] > totals[0], "total water never rose from the source"
 
     # ... then plateaus: the pool levels at the hold height, the hold adds ~0.
-    # Sampled at tick 260, not the plan's 200 — MEASURED: the 20-tick window
-    # first satisfies < 1e-3 at tick 215 (at 200 the fill is still finishing,
-    # d ~ 2.7e-2; from 240 on it is locked at ~1e-6 noise, total 24.61516).
-    # The plan's 200 was an estimate made before W2 was runnable; the
-    # mechanism (hard plateau) is exactly as designed. Ticks 201..260 cross
-    # the end-of-round auto-pause at 240, hence the unpause guard.
-    for _ in range(60):                      # ticks 201..260
+    # Sampled at tick 320, not the plan's 200 — MEASURED (re-measured for W4,
+    # head ON): the 20-tick window first satisfies < 1e-3 at tick 264 (at
+    # k_p = 0 it was 215; the fill's displacement compression — the sealed
+    # room climbs to 1.251 atm — leaves transient head gradients that slosh
+    # the pool ~50 ticks longer); from 300 on it is locked at ~1e-6 noise,
+    # total 24.5173. The plan's 200 was an estimate made before W2 was
+    # runnable; the mechanism (hard plateau) is exactly as designed. Ticks
+    # 201..320 cross the end-of-round auto-pause at 240, hence the unpause
+    # guard.
+    for _ in range(120):                     # ticks 201..320
         sim.step()
         if sim.paused:                       # end-of-round auto-pause (240)
             sim.set_paused(False)
