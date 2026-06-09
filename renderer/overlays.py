@@ -112,6 +112,93 @@ class FireOverlay(FieldOverlay):
         rl.end_blend_mode()
 
 
+class HeatFieldOverlay:
+    """Debug temperature overlay — a black-body / heat ramp over a Q16.16 field.
+
+    DEBUG / TUNING ONLY (engine/06 temperature). Render-time view of
+    ``gmap.temperature`` (Q16.16 int32 ΔT above ambient, 0 = ambient/cold); it
+    NEVER mutates the field. The field is converted to a 0..1 display value by
+    ``(temperature / TEMP_SCALE) / temp_display_max`` (so a tile sitting at the
+    wood ignition_temp ~300 reads near the top of the ramp), then mapped through
+    a black-body ramp:
+
+        0.00  transparent          (cold / ambient — nothing drawn)
+        0.20  deep red             (just-warm)
+        0.45  orange
+        0.70  yellow
+        1.00  white-hot
+
+    Drawn ADDITIVELY (heat glows like the fire overlay): alpha rises with the
+    display value so cold tiles stay invisible and hot tiles read as a glow.
+    """
+
+    # Q16.16 scale of the temperature field (materials.TEMP_SCALE / HEAT_SCALE).
+    TEMP_SCALE = 65536.0
+
+    # Black-body ramp stops: (display_value, (R, G, B)). The alpha is derived
+    # from the display value separately (see update) so 0 is fully transparent.
+    _STOPS = (
+        (0.00, (0, 0, 0)),
+        (0.20, (140, 0, 0)),
+        (0.45, (255, 80, 0)),
+        (0.70, (255, 200, 40)),
+        (1.00, (255, 255, 240)),
+    )
+
+    def __init__(self, grid_h: int, grid_w: int,
+                 temp_display_max: float = 300.0, max_alpha: int = 220):
+        self.h = grid_h
+        self.w = grid_w
+        # temp_display_max is the ΔT (in the field's game units) that maps to the
+        # top of the ramp. ~300 == the wood ignition_temp, so an igniting tile
+        # reads white-hot. A render-only tuning knob; never touches the sim.
+        self.temp_display_max = float(temp_display_max)
+        self.max_alpha = int(max_alpha)
+        self.tex = core.create_dynamic_rgba_texture(grid_w, grid_h)
+        self.packed = np.zeros((grid_h, grid_w, 4), dtype=np.uint8)
+
+        # Precompute the 256-entry ramp LUT (display 0..1 -> RGB) by
+        # piecewise-linear interpolation between the stops. Vectorised lookup in
+        # update() keeps the per-frame cost to an index + a couple of multiplies.
+        idx = np.linspace(0.0, 1.0, 256)
+        xs = np.array([s[0] for s in self._STOPS], dtype=np.float32)
+        rs = np.array([s[1][0] for s in self._STOPS], dtype=np.float32)
+        gs = np.array([s[1][1] for s in self._STOPS], dtype=np.float32)
+        bs = np.array([s[1][2] for s in self._STOPS], dtype=np.float32)
+        self._lut_r = np.interp(idx, xs, rs)
+        self._lut_g = np.interp(idx, xs, gs)
+        self._lut_b = np.interp(idx, xs, bs)
+
+    def update(self, temperature: np.ndarray) -> None:
+        """temperature: (H, W) Q16.16 int32 — ΔT above ambient (0 = cold).
+
+        Convert to a 0..1 display value, map through the black-body ramp, and
+        pack to an additive RGBA texture. RENDER-ONLY: `temperature` is read,
+        never written.
+        """
+        # Q16.16 -> float ΔT, then normalise against the display max. Cast to
+        # float so the divide doesn't truncate; clip to the ramp domain.
+        dt = temperature.astype(np.float32) / self.TEMP_SCALE
+        disp = np.clip(dt / max(self.temp_display_max, 1e-6), 0.0, 1.0)
+        # Index into the 256-entry ramp LUT.
+        li = (disp * 255.0).astype(np.int32)
+        self.packed[..., 0] = self._lut_r[li].astype(np.uint8)
+        self.packed[..., 1] = self._lut_g[li].astype(np.uint8)
+        self.packed[..., 2] = self._lut_b[li].astype(np.uint8)
+        # Alpha grows with the display value so cold tiles stay invisible. The
+        # ramp colour already darkens toward 0, but an explicit alpha keeps the
+        # additive draw from tinting near-cold tiles.
+        self.packed[..., 3] = (disp * self.max_alpha).astype(np.uint8)
+        core.update_rgba_texture(self.tex, self.packed)
+
+    def draw(self, dst_x: int, dst_y: int, dst_w: int, dst_h: int) -> None:
+        rl.begin_blend_mode(rl.BlendMode.BLEND_ADDITIVE)
+        src = rl.Rectangle(0, 0, float(self.w), float(self.h))
+        dst = rl.Rectangle(float(dst_x), float(dst_y), float(dst_w), float(dst_h))
+        rl.draw_texture_pro(self.tex, src, dst, rl.Vector2(0, 0), 0.0, rl.WHITE)
+        rl.end_blend_mode()
+
+
 class GlowOverlay:
     """God-ray / lit-smoke glow overlay (ch.05 §God-rays).
 
@@ -246,7 +333,7 @@ def draw_panel_background(x: int, y: int, w: int, h: int, color=(20, 20, 28, 240
 
 
 __all__ = [
-    "FieldOverlay", "FireOverlay", "GlowOverlay",
+    "FieldOverlay", "FireOverlay", "GlowOverlay", "HeatFieldOverlay",
     "draw_unit", "draw_waypoint_line",
     "draw_grid", "draw_text", "draw_panel_background",
 ]

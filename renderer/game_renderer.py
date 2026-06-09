@@ -27,7 +27,7 @@ from . import core
 from .camera import Camera2D
 from .lighting import LightingPass
 from .overlays import (
-    FieldOverlay, FireOverlay, GlowOverlay,
+    FieldOverlay, FireOverlay, GlowOverlay, HeatFieldOverlay,
     draw_unit, draw_waypoint_line, draw_grid, draw_text, draw_panel_background,
 )
 from .pressure_overlay import PressureOverlay
@@ -129,6 +129,15 @@ class GameRenderer:
         # smoke_glow output. Supersedes the retired light_modulation surface-tint.
         self.glow_overlay = GlowOverlay(cfg.grid_h, cfg.grid_w)
         self.pressure_overlay = PressureOverlay(cfg.grid_h, cfg.grid_w)
+        # Debug temperature overlay (engine/06): black-body ramp over
+        # gmap.temperature. temp_display_max = the ΔT that maps to white-hot;
+        # default ~300 == the wood ignition_temp so an igniting tile reads at
+        # the top of the ramp. Tunable via [display] temp_display_max. Off by
+        # default; toggled with T. RENDER-ONLY — never mutates the field.
+        temp_display_max = float(
+            getattr(getattr(CFG, "display", None), "temp_display_max", 300.0))
+        self.temperature_overlay = HeatFieldOverlay(
+            cfg.grid_h, cfg.grid_w, temp_display_max=temp_display_max)
 
         # Toggles
         self.show_grid = False
@@ -142,6 +151,8 @@ class GameRenderer:
         # Pressure colormap defaults ON in the main game — explosions
         # look dramatic by default. Toggle with F7.
         self.show_pressure = True
+        # Debug temperature overlay (engine/06) — OFF by default; toggle with T.
+        self.show_temperature = False
 
         # Frame timing
         self.last_frame_ms = 0.0
@@ -218,6 +229,11 @@ class GameRenderer:
         # numpy work.
         if self.show_pressure:
             self.pressure_overlay.update(gmap)
+        # Debug temperature overlay: refresh the black-body texture from the
+        # Q16.16 temperature field. Skipped when toggled off to save the work.
+        # Render-only — gmap.temperature is read, never written.
+        if self.show_temperature:
+            self.temperature_overlay.update(gmap.temperature)
 
         self.lighting.set_use_normal(self.show_normal_map)
         self.last_frame_ms = (time.perf_counter() - t_start) * 1000
@@ -296,6 +312,12 @@ class GameRenderer:
             self.pressure_overlay.draw_into_world_rt(
                 self.world.world_px_w, self.world.world_px_h
             )
+        # Debug temperature overlay (engine/06): additive black-body ramp over
+        # gmap.temperature. Drawn AFTER the field overlays but BEFORE units so
+        # units stay readable on top of the heat glow. Off-by-toggle (T).
+        if self.show_temperature:
+            self.temperature_overlay.draw(
+                0, 0, self.world.world_px_w, self.world.world_px_h)
 
         # 3. Units, waypoints, projectiles, effects, grid — drawn in world-pixel space
         if orders_phase1 or orders_phase2:
@@ -620,6 +642,7 @@ class GameRenderer:
             ("F5 normal map",  self.show_normal_map),
             ("F6 coords",      self.show_debug_coords),
             ("F7 pressure",    self.show_pressure),
+            ("T  temperature", self.show_temperature),
             ("B  bilinear",    self.lighting.bilinear),
             ("G  sRGB",        self.srgb_decode),
             ("H  flip-Y norm", self.normal_y_flipped),
@@ -671,6 +694,9 @@ class GameRenderer:
             self.show_debug_coords = not self.show_debug_coords
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F7):
             self.show_pressure = not self.show_pressure
+        # T: debug temperature overlay (black-body ramp over gmap.temperature).
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_T):
+            self.show_temperature = not self.show_temperature
         if rl.is_key_pressed(rl.KeyboardKey.KEY_B):
             self.lighting.toggle_bilinear()
         if rl.is_key_pressed(rl.KeyboardKey.KEY_H):
@@ -785,6 +811,7 @@ class GameRenderer:
         rl.unload_texture(self.smoke_overlay.tex)
         rl.unload_texture(self.fire_overlay.tex)
         rl.unload_texture(self.glow_overlay.tex)
+        rl.unload_texture(self.temperature_overlay.tex)
         self.pressure_overlay.unload()
         self.world.unload()
         core.shutdown()

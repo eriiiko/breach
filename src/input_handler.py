@@ -89,6 +89,14 @@ class InputHandler:
         if rl.is_key_pressed(K.KEY_F8) and sim.recorder is not None:
             sim.recorder.dump("manual")
 
+        # I: DEBUG ignite the tile under the cursor (engine/06 fire tuning).
+        # Drops fire anywhere — forces the tile flammable so Erik can light up
+        # any spot without hunting for a wood wall. Writes gmap.fire directly
+        # (not via sim.edit) so it lands immediately even while paused. Debug
+        # only; guarded behind a single key, no gameplay path touches it.
+        if rl.is_key_pressed(K.KEY_I):
+            self._debug_ignite(sim, renderer)
+
         # Spacebar: pause toggle. If we're resuming AND there are queued
         # grenade orders, materialise them before time starts flowing.
         if rl.is_key_pressed(K.KEY_SPACE):
@@ -159,6 +167,30 @@ class InputHandler:
         elif sim.is_paused() and rl.is_mouse_button_pressed(
                 rl.MouseButton.MOUSE_BUTTON_RIGHT):
             self._handle_right_click(sim, renderer)
+
+    # ------------------------------------------------------------------
+    # Debug actions
+    # ------------------------------------------------------------------
+    def _debug_ignite(self, sim, renderer):
+        """DEBUG: ignite a small patch at the tile under the mouse cursor.
+
+        Forces the patch flammable and sets ``fire`` directly so a fire starts
+        anywhere (no need for a wood wall) and lands immediately even while
+        paused. A render/tuning aid only — no gameplay code reaches this path.
+        """
+        tile = renderer.mouse_to_tile()
+        if tile is None:
+            return
+        fx, fy = tile
+        gmap = sim.gmap
+        h, w = gmap.fire.shape
+        if not (0 <= fy < h and 0 <= fx < w):
+            return
+        # Light a 3x3 patch so it reads at typical zoom; clamp to bounds.
+        y0, y1 = max(0, fy - 1), min(h, fy + 2)
+        x0, x1 = max(0, fx - 1), min(w, fx + 2)
+        gmap.flammable[y0:y1, x0:x1] = True   # force-flammable for debug
+        gmap.fire[y0:y1, x0:x1] = 1.0          # full-intensity seed
 
     # ------------------------------------------------------------------
     # Click handlers
