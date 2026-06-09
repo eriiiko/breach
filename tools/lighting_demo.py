@@ -437,7 +437,7 @@ def main() -> None:
                     if 0 <= tx < W and 0 <= ty < H:
                         r = max(1, int(state.get("blast_radius")))
                         apply_explosion(
-                            sim.gmap, ty, tx, r,
+                            sim.gmap, sim.edit_queue, ty, tx, r,
                             state.get("blast_pressure"),
                             state.get("wall_damage"),
                         )
@@ -453,7 +453,7 @@ def main() -> None:
                             # scaling the newly deposited values.
                             before = sim.gmap.smoke.copy()
                             add_explosion_smoke(
-                                sim.gmap, ty, tx, r, _tmp_rng,
+                                sim.gmap, sim.edit_queue, ty, tx, r,
                                 noise=state.get("explosion_smoke_noise"))
                             delta = sim.gmap.smoke - before
                             # Rescale: new = before + delta * mult (clamped to 1.0)
