@@ -148,14 +148,24 @@ public:
     // Cast a single source and accumulate RGB light + direction, plus the two
     // Slice-4 outputs:
     //   heat       : Q16.16 fixed-point int32, shape (h,w). Deposited where the
-    //                source emits heat (src.heat > 0): the AGGREGATE per-tile
-    //                deposit energy * src.heat, quantized, SATURATING-added.
-    //                Nothing reads it this slice (ch.04). May be nullptr to skip
-    //                (headless still wants it; render-only callers may pass it).
+    //                source emits heat (src.heat > 0). Heat is the INDEPENDENT
+    //                4th ray channel (engine/06 §1): it carries its OWN scalar
+    //                survival, attenuated per tile by `heat_atten` exactly as
+    //                each RGB channel is attenuated by `light_atten[c]`. The
+    //                deposit is src.heat * heat_survival * falloff, quantized +
+    //                SATURATING-added — independent of the RGB survival, so a
+    //                heat-shield (light-clear, heat-opaque) blocks heat while
+    //                passing light, and smoked glass (light-opaque, heat-clear)
+    //                does the converse. May be nullptr to skip.
     //   smoke_glow : f32 RGB, shape (h,w,3), interleaved. God-ray glow (ch.03
     //                C16): the light each tile's SMOKE ABSORBS is deposited here
     //                per channel — energy-conserving by construction (the energy
     //                the smoke removed from the ray). May be nullptr to skip.
+    //
+    // heat_atten : per-tile scalar heat-ray attenuation (h,w), the heat analogue
+    //              of light_atten (air 0, walls 1.0, glass 0.3). May be nullptr,
+    //              in which case heat is NOT attenuated (the pre-S6 behaviour:
+    //              heat survival stays 1.0 the whole march).
     //
     // Caller is responsible for zeroing the output buffers before casting the
     // frame's sources. Normalization of light_dx/dy is NOT performed here —
@@ -169,6 +179,7 @@ public:
         float* smoke_glow,          // RGB god-ray glow, (h,w,3) or nullptr
         const float* smoke_field,
         const float* light_atten,   // per-tile static material atten (h,w,3)
+        const float* heat_atten,    // per-tile heat atten (h,w) or nullptr
         int h, int w
     ) const;
 
@@ -200,6 +211,7 @@ private:
         float* smoke_glow,          // RGB god-ray glow, (h,w,3) or nullptr
         const float* smoke_field,
         const float* light_atten,   // per-tile static material atten (h,w,3)
+        const float* heat_atten,    // per-tile heat atten (h,w) or nullptr
         int h, int w
     ) const;
 };

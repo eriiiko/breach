@@ -7,7 +7,8 @@ aliasing). Verifies:
   - heat deposits as a POSITIVE int where the source emits heat, zero where it
     does not (src.heat == 0);
   - heat SATURATES (a huge deposit clamps at INT32_MAX, never wraps negative);
-  - heat is the Q16.16 quantization of the aggregate light energy (scale check);
+  - heat is the Q16.16 quantization of heat_emit * heat_survival * falloff — the
+    INDEPENDENT 4th channel, decoupled from the RGB light energy (engine/06 §1);
   - smoke_glow is non-zero only where smoke > 0 along a lit ray, and ~equals the
     light the smoke ABSORBED (energy-conserving);
   - a no-smoke scene leaves smoke_glow exactly zero.
@@ -94,14 +95,17 @@ def test_heat_deposits_positive_int_where_source_emits():
     assert np.all(heat >= 0), "heat must never be negative (no wrap)"
 
 
-def test_heat_equals_q16_16_of_aggregate_energy():
-    # With heat_emit=1.0 the deposit is round(aggregate_light_energy * SCALE),
-    # where aggregate = sum of the RGB deposit at that tile (the same energy the
-    # light buffer saw). Check the source tile (dist_atten == 1).
-    rgb, heat, _ = _cast(heat_emit=1.0, color=(1.0, 1.0, 1.0))
-    agg = float(rgb[0, 0].sum())            # aggregate light energy at source tile
-    expected = round(agg * HEAT_SCALE)
-    assert heat[0, 0] == expected, f"heat {heat[0,0]} != Q16.16({agg}) = {expected}"
+def test_heat_equals_q16_16_of_emit_independent_of_colour():
+    # Heat is the INDEPENDENT 4th channel (engine/06 §1): the deposit is
+    # heat_emit * heat_survival * dist_atten, NOT the RGB aggregate. At the source
+    # tile (heat_survival == 1, dist_atten == 1) it is exactly round(emit * SCALE)
+    # regardless of the source colour — a dim colour no longer dims the heat.
+    for color in [(1.0, 1.0, 1.0), (1.0, 0.0, 0.0), (0.2, 0.2, 0.2)]:
+        _, heat, _ = _cast(heat_emit=1.0, color=color)
+        expected = round(1.0 * HEAT_SCALE)
+        assert heat[0, 0] == expected, (
+            f"heat {heat[0,0]} != Q16.16(emit=1.0) = {expected} for colour {color} "
+            f"(heat must be decoupled from RGB)")
 
 
 def test_heat_scales_with_emit_multiplier():

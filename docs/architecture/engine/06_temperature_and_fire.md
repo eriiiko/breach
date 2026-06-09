@@ -346,8 +346,18 @@ Built, running, and honest about the seam between the three layers.
   side*.
 - The `conductivity` per-tile cache is built and patched by the GameMap
   (`_update_caches`, `on_tile_changed`) from the material table's
-  `conductivity` column. The `ignition_temp` and `heat_atten` columns exist in
-  `config.toml` and `MaterialTable`.
+  `conductivity` column. The `ignition_temp` column exists in `config.toml` and
+  `MaterialTable`.
+- **`heat_atten` is consumed (§1): the ray march's independent 4th channel.**
+  The directional march carries R, G, B, AND a scalar heat survival, each
+  attenuated by its own material coefficient — the RGB channels by `light_atten`,
+  the heat channel by `heat_atten` (air 0.0, walls 1.0, glass 0.3). The deposit
+  is `src.heat · heat_survival · falloff` (quantized + saturating-added into the
+  Q16.16 `heat` buffer), decoupled from the RGB survival, so heat and light
+  occlusion diverge (a heat-shield blocks heat but passes light; smoked glass the
+  converse). The ray marches until ALL FOUR channels are below the cull epsilon.
+  The per-tile `GameMap.heat_atten` cache is the `heat_atten` column projected
+  onto the grid, built/patched through the same seam as `light_atten`.
 - The `EnvironmentProfile` (`src/simulation/environment.py`) carries
   `temperature_min`/`temperature_max` and `environmental_damage_rate`.
 

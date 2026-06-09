@@ -127,6 +127,7 @@ void Raycaster::march_ray_directional(
     float* smoke_glow,
     const float* smoke_field,
     const float* light_atten,
+    const float* heat_atten,
     int h, int w
 ) const {
     float dx = std::cos(angle);
@@ -150,18 +151,32 @@ void Raycaster::march_ray_directional(
         ray_intensity * color[1],
         ray_intensity * color[2],
     };
+    // Heat is the INDEPENDENT 4th ray channel (engine/06 §1). It carries its own
+    // scalar survival, starting at 1.0 at the source, attenuated per tile by
+    // `heat_atten` exactly as each RGB channel is attenuated by `light_atten[c]`.
+    // The heat DEPOSIT is src.heat * heat_survival * falloff — decoupled from the
+    // RGB survival above, so a heat-shield (light-clear, heat-opaque) blocks heat
+    // while passing light, and smoked glass does the converse. Only meaningful
+    // when this ray emits heat; for a pure light source (heat_emit == 0) it stays
+    // 1.0 and contributes nothing (heat_emit gates every deposit and the cull).
+    float heat_survival = 1.0f;
     float distance = 0.0f;
 
-    // Aggregate remaining-energy termination (max over channels). Opaque tiles
-    // drive every channel to 0 -> aggregate < 0.01 -> ray ends next step,
-    // identical to the old wall hard-stop. No per-channel early-out: all three
-    // channels march in lockstep to the same aggregate range (CUDA-divergence
-    // rule, ch.03 §CUDA contract).
-    auto aggregate = [](const float r[3]) {
-        return std::max(r[0], std::max(r[1], r[2]));
+    // Aggregate remaining-energy termination over ALL FOUR channels {R,G,B,heat}.
+    // Opaque-to-light tiles drive R,G,B to ~0; opaque-to-heat tiles drive the
+    // heat term to ~0; the ray ends only when EVERY channel is below cull, so it
+    // keeps marching while ANY of the four still carries energy (a heat-shield is
+    // light-transparent but heat-opaque -> the ray must continue carrying light
+    // past it, and vice-versa). The heat term is weighted by heat_emit so a pure
+    // light source (heat_emit == 0) is not kept alive by heat_survival == 1.0.
+    // No per-channel early-out: all four march in lockstep to the same aggregate
+    // range (CUDA-divergence rule, ch.03 §CUDA contract).
+    float heat_energy = heat_emit * heat_survival;
+    auto aggregate = [](const float r[3], float he) {
+        return std::max(std::max(r[0], std::max(r[1], r[2])), he);
     };
 
-    while (aggregate(remaining) > 0.01f) {
+    while (aggregate(remaining, heat_energy) > 0.01f) {
         if (x < 0 || x >= w || y < 0 || y >= h) break;
 
         float dist_atten = (distance > 0.0f)
@@ -185,14 +200,18 @@ void Raycaster::march_ray_directional(
         light_dx[idx] += dep_agg * (-dx);
         light_dy[idx] += dep_agg * (-dy);
 
-        // Heat deposit (ch.04 §Fixed-point format). When the source emits heat
-        // (heat_emit > 0), deposit the AGGREGATE per-tile light energy times the
-        // source's heat multiplier into the Q16.16 `heat` buffer — quantized,
-        // SATURATING add (clamp at INT32_MAX, never wrap). dep_agg is the energy
-        // this tile received; src.heat scales light energy -> heat energy. The
-        // ordered scalar += keeps it deterministic (CUDA atomicAdd later).
+        // Heat deposit (ch.04 §Fixed-point format, engine/06 §1). Heat is the
+        // INDEPENDENT 4th channel: the deposit is the source's heat emission
+        // times THIS channel's own survivor (heat_survival) times the distance
+        // falloff — NOT the RGB aggregate (dep_agg). Decoupling is the whole
+        // point: heat_survival is attenuated below by `heat_atten`, the RGB
+        // survivors by `light_atten`, so the two can diverge (heat-shield /
+        // smoked glass). Quantized + SATURATING add (clamp at INT32_MAX, never
+        // wrap). The ordered scalar += keeps it deterministic (CUDA atomicAdd
+        // later).
         if (heat != nullptr && heat_emit > 0.0f) {
-            heat_saturating_add(&heat[idx], heat_quantize(dep_agg * heat_emit));
+            float heat_dep = heat_emit * heat_survival * dist_atten;
+            heat_saturating_add(&heat[idx], heat_quantize(heat_dep));
         }
 
         // Occlusion via per-channel attenuation (ch.03 §the march). Static
@@ -205,6 +224,16 @@ void Raycaster::march_ray_directional(
         remaining[0] *= (1.0f - ma_r);
         remaining[1] *= (1.0f - ma_g);
         remaining[2] *= (1.0f - ma_b);
+
+        // Heat survival attenuates by the per-tile `heat_atten` EXACTLY as each
+        // RGB channel attenuates by its `light_atten[c]`: multiplicative
+        // transmission (1 - heat_atten). air 0.0 -> survives untouched,
+        // walls 1.0 -> killed (== the old wall hard-stop for heat), glass 0.3 ->
+        // 0.7 transmits. Independent of the RGB multiply above. nullptr field ==
+        // no attenuation (pre-S6 behaviour: heat survival stays 1.0).
+        if (heat_atten != nullptr) {
+            heat_survival *= (1.0f - heat_atten[idx]);
+        }
 
         float sd = smoke_field[idx];
         if (sd > 0.001f) {
@@ -235,7 +264,15 @@ void Raycaster::march_ray_directional(
             remaining[0] *= std::exp(-smoke_absorption_rgb[0] * scaled);
             remaining[1] *= std::exp(-smoke_absorption_rgb[1] * scaled);
             remaining[2] *= std::exp(-smoke_absorption_rgb[2] * scaled);
+            // NOTE: smoke does NOT attenuate heat — only material `heat_atten`
+            // blocks the heat channel. (Heat radiates through smoke; the
+            // god-ray/transmission optics above are a light-only model.)
         }
+
+        // Refresh the heat-channel energy for the termination test below, now
+        // that this tile's `heat_atten` has been applied (the RGB survivors are
+        // read directly by the loop's aggregate()).
+        heat_energy = heat_emit * heat_survival;
 
         if (t_max_x < t_max_y) {
             x += step_x;
@@ -260,6 +297,7 @@ void Raycaster::cast_source_directional(
     float* smoke_glow,
     const float* smoke_field,
     const float* light_atten,
+    const float* heat_atten,
     int h, int w
 ) const {
     int ray_count = src.get_ray_count();
@@ -301,7 +339,8 @@ void Raycaster::cast_source_directional(
         if (intensity > 0.01f) {
             march_ray_directional(src.x, src.y, angle, intensity, src.max_range,
                       src.color, src.heat, light_rgb, light_dx, light_dy,
-                      heat, smoke_glow, smoke_field, light_atten, h, w);
+                      heat, smoke_glow, smoke_field, light_atten, heat_atten,
+                      h, w);
         }
     }
 }

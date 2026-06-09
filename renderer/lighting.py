@@ -151,7 +151,8 @@ class LightingPass:
     def compute_light_field(self, sources: List, smoke: np.ndarray,
                             light_atten: np.ndarray,
                             heat: Optional[np.ndarray] = None,
-                            smoke_glow: Optional[np.ndarray] = None) -> None:
+                            smoke_glow: Optional[np.ndarray] = None,
+                            heat_atten: Optional[np.ndarray] = None) -> None:
         """Cast all sources, accumulate intensity + direction, normalize, pack.
 
         `light_atten` is the per-channel attenuation field the march reads,
@@ -173,6 +174,13 @@ class LightingPass:
         supersedes the old surface-tint light_modulation. Both may be None
         (the cast skips that deposit) — kept optional during the renderer-owns-
         the-cast phase (the cast moves into the sim in S5).
+
+        `heat_atten` (f32 (h,w)) is the per-tile heat-ray attenuation field
+        (engine/06 §1), the heat analogue of `light_atten` — pass
+        `gmap.heat_atten`. It attenuates the march's independent heat channel
+        exactly as `light_atten` attenuates the RGB channels, so heat and light
+        occlusion diverge for materials transparent to one but not the other.
+        May be None (heat is not attenuated — the pre-S6 behaviour).
         """
         self.light_rgb.fill(0)
         self.light_dx.fill(0)
@@ -195,7 +203,7 @@ class LightingPass:
         for src in sources:
             self.raycaster.cast_source_directional(
                 src, self.light_rgb, self.light_dx, self.light_dy,
-                smoke, light_atten, heat, smoke_glow,
+                smoke, light_atten, heat, smoke_glow, heat_atten,
             )
         # Normalize direction to unit vectors (vector-magnitude normalization).
         # See expert review notes in docs/patch_level_pipeline_v1.md.

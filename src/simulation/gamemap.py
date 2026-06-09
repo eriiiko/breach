@@ -100,6 +100,20 @@ class GameMap:
         # ray march reads it per channel: opaque [1,1,1] kills the ray (== old
         # wall hard-stop), air [0,0,0] passes untouched, glass [0.1,..] dims.
         self.light_atten  = np.zeros((h, w, 3), dtype=np.float32)
+        # Per-tile STATIC heat attenuation (ch.02/03, engine/06 §1): the heat
+        # analogue of ``light_atten`` — the material table's scalar ``heat_atten``
+        # column projected onto the grid, shape (h, w) f32 (air 0.0, walls 1.0,
+        # glass 0.3). The directional ray march reads it as the INDEPENDENT 4th
+        # channel: heat survival attenuates by ``(1 - heat_atten)`` exactly as
+        # each RGB channel attenuates by ``(1 - light_atten[c])``, so heat and
+        # light occlusion can diverge (a heat-shield is light-clear/heat-opaque;
+        # smoked glass is the converse). A structural-change cache, NOT recomputed
+        # each tick: built in ``_update_caches`` and patched per tile in
+        # ``on_tile_changed`` — the SAME seam as ``light_atten`` / ``conductivity``
+        # / ``face_shift``. Static material heat only; units blocking heat is a
+        # later dynamic refinement (no ``dyn_heat_atten`` yet). Allocated once,
+        # filled IN-PLACE (never reassigned) so a C++ view stays valid.
+        self.heat_atten   = np.zeros((h, w), dtype=np.float32)
         # Per-tile DYNAMIC light attenuation (ch.02 §static×dynamic, ch.03
         # §units): the live per-channel field the ray march actually reads.
         # Rebuilt every tick in ``stamp_units`` = static ``light_atten`` (copy)
@@ -225,6 +239,12 @@ class GameMap:
         # grid (ch.03 march input). C-contiguous f32 so it crosses to C++ as a
         # plain (h, w, 3) buffer with no copy.
         self.light_atten = np.ascontiguousarray(tbl.light_atten[m], dtype=np.float32)
+        # Static scalar heat attenuation: the heat analogue of light_atten
+        # (engine/06 §1), the material table's ``heat_atten`` column projected
+        # onto the grid. C-contiguous f32 so it crosses to C++ as a plain (h, w)
+        # buffer with no copy. The ray march reads it as the independent 4th
+        # channel; built/patched through the same seam as light_atten.
+        self.heat_atten = np.ascontiguousarray(tbl.heat_atten[m], dtype=np.float32)
         self.flammable = tbl.flammable[m]
         self.wall_hp = tbl.hp[m].astype(np.float32, copy=True)
         self.conductivity = tbl.conductivity[m].astype(np.float32, copy=True)
@@ -337,6 +357,9 @@ class GameMap:
         mat_id = int(self.material[fy, fx])
         tbl = self.materials
         self.light_atten[fy, fx] = tbl.light_atten[mat_id]
+        # Heat attenuation — patched through the SAME seam as light_atten so a
+        # breached wall's heat occlusion updates the instant the tile changes.
+        self.heat_atten[fy, fx] = float(tbl.heat_atten[mat_id])
         self.flammable[fy, fx] = bool(tbl.flammable[mat_id])
         self.wall_hp[fy, fx] = float(tbl.hp[mat_id])
         self.conductivity[fy, fx] = float(tbl.conductivity[mat_id])

@@ -57,12 +57,12 @@ The full shipped set — **one table**, columns grouped by the **system** that r
 `reflect + absorb = 1` for now — *transmit* (sound through a wall) is the deferred 4b extension.
 
 This single table **is** the per-system coefficient set — each column is consumed by exactly one
-system (the next section spells out which). **Consumed today:** `light_atten` (the ray march),
+system (the next section spells out which). **Consumed today:** `light_atten` (the ray march's
+RGB channels), `heat_atten` (the ray march's independent heat channel — engine/06 §1),
 `permeability` (the gas/smoke flux boundary), `wave_absorb` (per-cell wave damping), and
-`burst_threshold` (over-pressure wall failure). Still stored-and-waiting: `heat_atten`,
-`wave_reflect`/transmit, and the thermal columns (`conductivity`, `ignition_temp`) wait for their
-solvers (the temperature pass, the through-wall 4b extension). Values are illustrative — tuned in
-the lighting demo and a future wave test; `–` means "not yet tuned".
+`burst_threshold` (over-pressure wall failure). Still stored-and-waiting: `wave_reflect`/transmit
+waits for the through-wall 4b extension. Values are illustrative — tuned in the lighting demo and a
+future wave test; `–` means "not yet tuned".
 
 ### Why a named-key table and not flat arrays
 
@@ -282,6 +282,14 @@ A per-material `light_reflect` would imply automatic in-march bouncing, which th
 - **Per-channel RGB attenuation, consumed for real.** The C++ raycaster
   (`cpp/src/raycaster.cpp`) reads `light_atten` per channel and applies `(1 - atten)` to the
   ray's RGB; opaque `[1,1,1]` kills the ray, glass `[0.1,…]` dims it, asymmetric triples tint.
+- **Scalar `heat_atten`, consumed for real (engine/06 §1).** The same march carries an
+  INDEPENDENT 4th channel — a scalar heat survival attenuated per tile by `(1 - heat_atten)`,
+  exactly as each RGB channel is attenuated by `light_atten`. The per-tile `GameMap.heat_atten`
+  cache is the table column projected onto the grid (built in `_update_caches`, patched in
+  `on_tile_changed` — same seam as `light_atten`). Heat and light occlusion now diverge: a
+  heat-shield (light-clear, heat-opaque) blocks heat while passing light, smoked glass the
+  converse. Static material heat only — no `dyn_heat_atten` (units blocking heat is a later
+  refinement). The ray terminates on the aggregate of all four channels {R,G,B,heat}.
 - **Static × dynamic split.** `dyn_light_atten` is rebuilt in `stamp_units()` as static atten
   combined per-channel (MAX) with each unit's opacity (default opaque), allocated once and
   written in-place; the march reads it read-only. Per-unit `light_atten` hook exists.
@@ -302,9 +310,10 @@ A per-material `light_reflect` would imply automatic in-march bouncing, which th
 - **Door open/closed state** — both predicates treat every door identically; no occlusion flip.
 - **Remove the vestigial C++ `is_wall` parameter** (+ rebuild). The Python side is fully off
   `is_wall`; the solvers still take an `is_wall` argument (fed `gmap.solid`) that should be dropped.
-- **`heat_atten`, `conductivity`, `ignition_temp`, `wave_reflect`, `blast_resist` columns** are in
-  the schema but **consumed by nobody yet**. The temperature/conduction pass and the per-material
-  *reflective* wave boundary (the lossy mirror; through-wall 4b) wire into these later.
+- **`wave_reflect`, `blast_resist` columns** are in the schema but **consumed by nobody yet**.
+  The per-material *reflective* wave boundary (the lossy mirror; through-wall 4b) wires into
+  `wave_reflect` later. (`heat_atten` is now consumed by the ray march's heat channel — see
+  the "Built and shipped" list above; `conductivity`/`ignition_temp` feed the temperature solver.)
 - **`emissivity`** column — not in the table; deferred with hot-tile emission. (Specular reflection is
   not a material column at all — it is the Tier-3 entity re-emission pattern.)
 

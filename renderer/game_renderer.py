@@ -180,6 +180,7 @@ class GameRenderer:
             self.lighting.compute_light_field(
                 light_sources, gmap.smoke, gmap.dyn_light_atten,
                 heat=gmap.heat, smoke_glow=gmap.smoke_glow,
+                heat_atten=gmap.heat_atten,
             )
             self.last_raycast_ms = (time.perf_counter() - t_ray) * 1000
         else:

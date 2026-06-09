@@ -300,12 +300,15 @@ lightning spec; it is not yet implemented.
 - `cpp/src/raycaster.{h,cpp}` — the full directional march. `LightSource` carries RGB `color`,
   `heat`, `jitter`, falloff. `cast_source_directional` / `march_ray_directional` deposit
   `light_rgb`, `light_dir` (dx/dy), Q16.16 `heat` (quantized, saturating-add), and RGB
-  `smoke_glow`. Occlusion reads the per-channel `light_atten` field; aggregate-energy
-  termination; god-rays from smoke-absorbed energy; `normalize_directions` post-pass
-  (vector-magnitude).
+  `smoke_glow`. Heat is the **independent 4th channel**: a scalar heat survival attenuated per
+  tile by `heat_atten` exactly as each RGB channel is attenuated by `light_atten`, so heat and
+  light occlusion diverge (heat-shield vs smoked glass). The deposit is
+  `src.heat · heat_survival · falloff`, decoupled from RGB. Aggregate-energy termination over
+  ALL FOUR channels {R,G,B,heat}; god-rays from smoke-absorbed energy; `normalize_directions`
+  post-pass (vector-magnitude).
 - `cpp/src/bindings.cpp` — `LightSource` and `Raycaster` exposed to Python; `heat` /
-  `smoke_glow` are optional (`None` skips that deposit), so render-only callers pass only what
-  they need.
+  `smoke_glow` / `heat_atten` are optional (`None` skips that deposit / attenuation), so
+  render-only callers pass only what they need.
 - `src/simulation/gamemap.py` — owns `light_rgb`, `light_atten` (static, table-derived),
   `dyn_light_atten` (rebuilt each tick in `stamp_units`), `heat` (int32 Q16.16), `smoke_glow`,
   `conductivity`. Buffers are filled in place, never reassigned, so C++ views stay valid.

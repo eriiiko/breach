@@ -271,7 +271,8 @@ PYBIND11_MODULE(breach_physics, m) {
                 py::array_t<float> smoke,
                 py::array_t<float> light_atten,
                 py::object heat,
-                py::object smoke_glow) {
+                py::object smoke_glow,
+                py::object heat_atten) {
             auto [lrgb, h, w]  = get_3d(light_rgb);
             auto [ldx, h2, w2] = get_2d(light_dx);
             auto [ldy, h3, w3] = get_2d(light_dy);
@@ -300,13 +301,26 @@ PYBIND11_MODULE(breach_physics, m) {
                 auto ga = glow_arr.mutable_unchecked<3>();
                 glow_ptr = ga.mutable_data(0, 0, 0);
             }
+            // Per-tile heat attenuation (h, w) f32 — the heat analogue of
+            // light_atten (engine/06 §1). Optional: None -> nullptr -> heat is
+            // NOT attenuated (heat survival stays 1.0 the whole march, the
+            // pre-S6 behaviour). The const pointer is held alive by heat_atten_arr.
+            const float* hatten = nullptr;
+            py::array_t<float> heat_atten_arr;
+            if (!heat_atten.is_none()) {
+                heat_atten_arr = heat_atten.cast<py::array_t<float>>();
+                auto haa = heat_atten_arr.unchecked<2>();
+                hatten = haa.data(0, 0);
+            }
             self.cast_source_directional(src, lrgb, ldx, ldy,
-                                         heat_ptr, glow_ptr, sm, atten, h, w);
+                                         heat_ptr, glow_ptr, sm, atten,
+                                         hatten, h, w);
         }, py::arg("source"), py::arg("light_rgb"),
            py::arg("light_dx"), py::arg("light_dy"),
            py::arg("smoke"), py::arg("light_atten"),
            py::arg("heat") = py::none(),
-           py::arg("smoke_glow") = py::none())
+           py::arg("smoke_glow") = py::none(),
+           py::arg("heat_atten") = py::none())
         .def_static("normalize_directions",
              [](py::array_t<float> light_dx, py::array_t<float> light_dy) {
             auto [ldx, h, w]   = get_2d(light_dx);
