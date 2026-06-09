@@ -46,6 +46,15 @@ SHIFT_AT_REF = 2        # metal self-rate = 1/4 (fastest stable on a 4-nbr grid)
 SHIFT_MIN    = 2        # rate floor / stability bound: 4 faces * 1/4 = 1 (convex)
 KAPPA_REF    = 50.0     # reference conductivity (hull) for the log bucket
 NO_FACE      = 63       # sentinel: kappa==0 face / grid edge -> zero conduction
+# Ambient cooling (engine/06 §3, proposal §3.3). Newtonian decay toward ambient
+# (T_ambient == 0, since temperature stores ΔT above a reference): T -= T >> shift.
+# Interior tiles use COOL_SHIFT; a tile whose 4-neighbourhood touches vacuum (or
+# atmosphere < o2_vacuum_thresh) sheds via the smaller COOL_SHIFT_VACUUM, so a
+# space-facing breached wall cools 4× faster. Pure signed-add + arithmetic right
+# shift -> deterministic. These are the burn-out tuning dials.
+COOL_SHIFT        = 5    # interior decay: T -= T >> 5 (~1/32 per tick, ~32-tick e-fold)
+COOL_SHIFT_VACUUM = 3    # space-exposed decay: T -= T >> 3 (~1/8 per tick, 4× faster)
+o2_vacuum_thresh  = 0.3  # atmosphere below which a 4-neighbour counts as vacuum-exposed
 
 [smoke]
 # Ray-engine smoke optics (ch.05 §6.1 §6 — decoupled per-channel absorption vs

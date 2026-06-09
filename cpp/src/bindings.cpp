@@ -159,8 +159,8 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("wall_hp"), py::arg("is_wall"), py::arg("flammable"),
            py::arg("dt"));
 
-    // --- TemperatureSolver (heat -> temperature conversion §1 + conduction §2;
-    //     engine/06 §1–§2) ---
+    // --- TemperatureSolver (heat -> temperature conversion §1 + conduction §2
+    //     + ambient cooling §3; engine/06 §1–§3) ---
     py::class_<TemperatureSolver>(m, "TemperatureSolver")
         .def(py::init<>())
         // NO_FACE sentinel (face_shift == this -> skip the face). Bound from
@@ -168,23 +168,37 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_property("no_face",
             &TemperatureSolver::get_no_face,
             &TemperatureSolver::set_no_face)
+        // Ambient cooling dials (§3.3), bound from config [physics.thermal].
+        .def_property("cool_shift",
+            &TemperatureSolver::get_cool_shift,
+            &TemperatureSolver::set_cool_shift)
+        .def_property("cool_shift_vacuum",
+            &TemperatureSolver::get_cool_shift_vacuum,
+            &TemperatureSolver::set_cool_shift_vacuum)
+        .def_property("o2_vacuum_thresh",
+            &TemperatureSolver::get_o2_vacuum_thresh,
+            &TemperatureSolver::set_o2_vacuum_thresh)
         .def("step", [](const TemperatureSolver& self,
                         py::array_t<int32_t> temperature,
                         py::array_t<int32_t> heat,
                         py::array_t<int32_t> heat_inv_shift,
                         py::array_t<int32_t> face_shift,
-                        py::array_t<bool>    solid) {
+                        py::array_t<bool>    solid,
+                        py::array_t<bool>    is_vacuum,
+                        py::array_t<float>   atmosphere) {
             auto [temp, h, w]     = get_2d(temperature);
             auto [hp, h2, w2]     = get_2d_const(heat);
             auto [shift, h3, w3]  = get_2d_const(heat_inv_shift);
             auto [sol, h4, w4]    = get_2d_const(solid);
+            auto [vac, h5, w5]    = get_2d_const(is_vacuum);
+            auto [atm, h6, w6]    = get_2d_const(atmosphere);
             // face_shift is (h, w, 4) int32 — fixed dir order N,S,E,W.
             auto fa = face_shift.unchecked<3>();
             const int32_t* fs = fa.data(0, 0, 0);
-            self.step(temp, hp, shift, fs, sol, h, w);
+            self.step(temp, hp, shift, fs, sol, vac, atm, h, w);
         }, py::arg("temperature"), py::arg("heat"),
            py::arg("heat_inv_shift"), py::arg("face_shift"),
-           py::arg("solid"));
+           py::arg("solid"), py::arg("is_vacuum"), py::arg("atmosphere"));
 
     // --- Raycaster ---
     py::class_<LightSource>(m, "LightSource")

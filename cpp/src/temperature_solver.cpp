@@ -23,6 +23,8 @@ void TemperatureSolver::step(
     const int32_t* heat_inv_shift,
     const int32_t* face_shift,
     const bool* solid,
+    const bool* is_vacuum,
+    const float* atmosphere,
     int h, int w
 ) const {
     const int n = h * w;
@@ -88,6 +90,60 @@ void TemperatureSolver::step(
     // caller's buffer is the persistent one, scratch_ is reused next tick).
     for (int i = 0; i < n; ++i) temperature[i] = temp_new[i];
 
-    // STEP C (ambient cooling, §3) and STEP D (unit damage, §4) will add
-    // further passes here, reading the just-conducted field.
+    // ---- Pass 3: ambient cooling (proposal §3) ----
+    // The LAST thermal pass (§3.5): runs AFTER conduction so this tick's fresh
+    // deposit is spread across the metal BEFORE any of it is shed, and BEFORE
+    // consumers so thresholds test the net post-loss temperature (the burn-out
+    // mechanism). Temperature stores ΔT above ambient, so T_ambient == 0 and
+    // cooling relaxes toward 0 with no subtraction:  T -= T >> shift.
+    //
+    // Vacuum-exposure (§3.3): a solid tile sheds 4× faster if ANY in-bounds
+    // 4-neighbour is space-facing — `is_vacuum[n]` OR `atmosphere[n] <
+    // o2_vacuum_thresh`. This reuses the SAME geometric N,S,E,W gather the
+    // conduction pass walks (the four neighbour cells are already in hand),
+    // independent of the conduction face_shift (a wall facing vacuum has a
+    // NO_FACE conduction face there, but is still exposed for cooling). Ties to
+    // the existing is_vacuum/atmosphere fields — no new field/buffer — so a
+    // freshly-breached, now-space-facing wall flips to the fast shift instantly.
+    //
+    // Solid tiles only (air is already 0 and skipped, staying bit-exactly 0).
+    // The signed arithmetic right shift is pinned to round toward 0 symmetrically
+    // (`x<0 ? -((-x)>>s) : x>>s`) so it is deterministic / identical
+    // cross-machine. The residual DEAD-BAND is intentional and preserved: the
+    // last (1<<shift)-1 counts above ambient shift to 0 and never decay -> an
+    // exact, jitter-free resting state at ambient (NO "+1 if nonzero" nudge).
+    // Since the shifted magnitude is always <= |T|, a single isolated tile
+    // relaxes toward 0 and never crosses below ambient.
+    const float thresh = o2_vacuum_thresh;
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const int i = y * w + x;
+            if (!solid[i]) continue;          // air / non-solid: already 0
+            const int32_t t = temperature[i];
+            if (t == 0) continue;             // exact rest: nothing to shed
+
+            // Vacuum-exposure: same geometric 4-neighbour gather as conduction.
+            bool exposed = false;
+            for (int d = 0; d < 4; ++d) {
+                const int ny = y + DY[d];
+                const int nx = x + DX[d];
+                if (ny < 0 || ny >= h || nx < 0 || nx >= w) continue;
+                const int ni = ny * w + nx;
+                if (is_vacuum[ni] || atmosphere[ni] < thresh) {
+                    exposed = true;
+                    break;
+                }
+            }
+            const int shift = exposed ? cool_shift_vacuum : cool_shift;
+
+            // Signed arithmetic right shift, pinned to round toward 0 (portable,
+            // deterministic). The dead-band (loss == 0 for |t| < (1<<shift))
+            // gives an exact resting state at ambient.
+            const int32_t loss = (t < 0) ? -((-t) >> shift) : (t >> shift);
+            temperature[i] = t - loss;
+        }
+    }
+
+    // STEP D (unit damage, §4) will add a further pass here, reading the
+    // post-cool temperature field.
 }

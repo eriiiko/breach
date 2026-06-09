@@ -76,13 +76,29 @@ def _build_caches(material_grid):
 
 
 def _solver():
+    # Cooling disabled (both shifts pinned huge -> T >> 31 == 0 for every test
+    # value, swallowed by the dead-band) so this module exercises the §2
+    # CONDUCTION pass in ISOLATION, the way it uses zero heat to isolate it from
+    # the §1 conversion. Ambient cooling has its own module
+    # (test_temperature_cooling.py).
     s = bp.TemperatureSolver()
     s.no_face = NO_FACE
+    s.cool_shift = 31
+    s.cool_shift_vacuum = 31
     return s
 
 
 def _zero_heat(shape):
     return np.ascontiguousarray(np.zeros(shape, dtype=np.int32))
+
+
+def _cooling_fields(shape):
+    """Sealed-interior vacuum/atmosphere fields for the cooling pass. Cooling is
+    disabled in this module's _solver (shift 31), so the values are immaterial —
+    but valid arrays must still be passed."""
+    is_vacuum = np.ascontiguousarray(np.zeros(shape, dtype=bool))
+    atmosphere = np.ascontiguousarray(np.ones(shape, dtype=np.float32))
+    return is_vacuum, atmosphere
 
 
 def _run(temp, shift, face, solid, n_ticks, heat=None):
@@ -91,8 +107,9 @@ def _run(temp, shift, face, solid, n_ticks, heat=None):
     solver = _solver()
     if heat is None:
         heat = _zero_heat(temp.shape)
+    is_vacuum, atmosphere = _cooling_fields(temp.shape)
     for _ in range(n_ticks):
-        solver.step(temp, heat, shift, face, solid)
+        solver.step(temp, heat, shift, face, solid, is_vacuum, atmosphere)
     return temp
 
 
@@ -191,9 +208,10 @@ def test_discrete_maximum_principle():
     init_min = int(temp.min())
     solver = _solver()
     heat = _zero_heat(temp.shape)
+    is_vacuum, atmosphere = _cooling_fields(temp.shape)
     prev_max, prev_min = init_max, init_min
     for _ in range(200):
-        solver.step(temp, heat, shift, face, solid)
+        solver.step(temp, heat, shift, face, solid, is_vacuum, atmosphere)
         cur_max, cur_min = int(temp.max()), int(temp.min())
         assert cur_max <= prev_max, "global max increased (extremum created)"
         assert cur_min >= prev_min, "global min decreased (extremum created)"

@@ -1,12 +1,15 @@
 #pragma once
 // Temperature solver — turns the per-tick `heat` deposit into a persistent
 // `temperature` field on solids (engine/06 §1), then spreads it by CONDUCTION
-// (engine/06 §2; temperature_design_proposal §2).
+// (engine/06 §2; temperature_design_proposal §2), then sheds it by AMBIENT
+// COOLING (engine/06 §3; proposal §3).
 //
 // STEP A scope: the heat -> temperature CONVERSION pass (shipped).
-// STEP B scope (this file): the CONDUCTION RELAXATION pass, run AFTER the
-// conversion, per the proposal §6 order. Ambient cooling (§3) and unit damage
-// (§4) are LATER steps and will be added to step() as further passes.
+// STEP B scope: the CONDUCTION RELAXATION pass, run AFTER the conversion, per
+// the proposal §6 order.
+// STEP C scope (this file): the AMBIENT COOLING pass, run AFTER conduction (it
+// is the LAST thermal pass, §3.5). Unit damage (§4) is a LATER step and will be
+// added to step() as a further pass.
 //
 // Determinism (engine/06 §3, proposal §1.2 / §2.7): both `heat` and
 // `temperature` are Q16.16 int32 sharing one scale (TEMP_SCALE == HEAT_SCALE).
@@ -32,6 +35,24 @@
 //   neighbours, Σr ≤ 1, so the update is a convex combination of {T_i, T_n} —
 //   the discrete maximum principle holds (no new extremum ever created),
 //   unconditionally stable for all time (proposal §2.6).
+//
+//   Ambient cooling (§3, gather over the geometric 4-neighbours):
+//       shift = exposed ? cool_shift_vacuum : cool_shift
+//       T    -= (T < 0) ? -((-T) >> shift) : (T >> shift)
+//   Temperature stores ΔT above ambient, so T_ambient == 0 and cooling relaxes
+//   toward 0 with NO subtraction (`T -= T >> shift`). `exposed` is true when ANY
+//   in-bounds 4-neighbour is vacuum (is_vacuum) OR has atmosphere < a quantized
+//   threshold — read from the SAME atmosphere/vacuum fields the rest of the
+//   physics uses (no new field/buffer), so a freshly-breached, now-space-facing
+//   wall sheds 4× faster through the existing seam. Runs on SOLID tiles only
+//   (air is already 0, so it is skipped and stays bit-exactly 0). The signed
+//   arithmetic right shift is pinned to round toward 0 symmetrically
+//   (`x<0 ? -((-x)>>s) : x>>s`) — deterministic, identical cross-machine. The
+//   residual DEAD-BAND is intentional: the last `(1<<shift)-1` counts above
+//   ambient shift to 0 and never decay, giving an exact, jitter-free resting
+//   state at ambient (NO "+1 if nonzero" nudge — that would break the fixed
+//   point). The cooled magnitude is always ≤ |T|, so a single isolated tile
+//   relaxes toward 0 and never crosses below ambient.
 
 #include <cstdint>
 #include <vector>
@@ -45,9 +66,26 @@ public:
     void set_no_face(int v) { no_face = v; }
     int  get_no_face() const { return no_face; }
 
+    // Ambient cooling shifts (§3.3), bound from config [physics.thermal].
+    //   cool_shift        — interior Newtonian decay (T -= T >> cool_shift).
+    //   cool_shift_vacuum — space-exposed decay (smaller shift -> faster).
+    // o2_vacuum_thresh — atmosphere value below which a neighbour counts as
+    //   vacuum for the exposure test (in the same units as gmap.atmosphere).
+    int   cool_shift = 5;
+    int   cool_shift_vacuum = 3;
+    float o2_vacuum_thresh = 0.3f;
+
+    void  set_cool_shift(int v) { cool_shift = v; }
+    int   get_cool_shift() const { return cool_shift; }
+    void  set_cool_shift_vacuum(int v) { cool_shift_vacuum = v; }
+    int   get_cool_shift_vacuum() const { return cool_shift_vacuum; }
+    void  set_o2_vacuum_thresh(float v) { o2_vacuum_thresh = v; }
+    float get_o2_vacuum_thresh() const { return o2_vacuum_thresh; }
+
     // One tick of thermal work.
     //   Pass 1 — heat -> temperature conversion (§1.2), solids only.
     //   Pass 2 — conduction relaxation (§2.2), gather + double-buffered.
+    //   Pass 3 — ambient cooling (§3), solids only, vacuum-exposure 1-bit.
     //
     //   temperature : Q16.16 int32, (h, w). Persistent field (ΔT above ambient;
     //                 T_ambient == 0, proposal §3.1). Mutated in place.
@@ -61,15 +99,23 @@ public:
     //                 order N,S,E,W. NO_FACE == grid edge or κ==0 either side ->
     //                 that face does not conduct. Baked at load from the
     //                 harmonic-mean face table, patched in on_tile_changed.
-    //   solid       : bool, (h, w). The physics solid mask. Conversion runs on
-    //                 solids only; air is skipped (stays 0). (Conduction needs no
-    //                 solid branch — air faces are all NO_FACE.)
+    //   solid       : bool, (h, w). The physics solid mask. Conversion and
+    //                 cooling run on solids only; air is skipped (stays 0).
+    //                 (Conduction needs no solid branch — air faces are all
+    //                 NO_FACE.)
+    //   is_vacuum   : bool, (h, w). The physics vacuum mask. A solid tile cools
+    //                 at cool_shift_vacuum if ANY in-bounds 4-neighbour is vacuum
+    //                 (§3.3). Same field the atmosphere/smoke solvers read.
+    //   atmosphere  : float, (h, w). The atmosphere field. A neighbour with
+    //                 atmosphere < o2_vacuum_thresh also counts as vacuum-exposed.
     void step(
         int32_t* temperature,
         const int32_t* heat,
         const int32_t* heat_inv_shift,
         const int32_t* face_shift,
         const bool* solid,
+        const bool* is_vacuum,
+        const float* atmosphere,
         int h, int w
     ) const;
 

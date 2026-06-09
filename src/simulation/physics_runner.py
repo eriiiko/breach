@@ -105,6 +105,15 @@ class PhysicsRunner:
         self.temperature = bp.TemperatureSolver()
         thermal = getattr(CFG.physics, "thermal", None)
         self.temperature.no_face = int(getattr(thermal, "NO_FACE", 63))
+        # Ambient cooling dials (§3.3): interior vs vacuum-exposed decay shifts
+        # and the atmosphere threshold below which a 4-neighbour counts as
+        # space-facing. Bound from config so the burn-out tuning lives in one
+        # place. Cooling relaxes ΔT toward 0 (T_ambient == 0): T -= T >> shift.
+        self.temperature.cool_shift = int(getattr(thermal, "COOL_SHIFT", 5))
+        self.temperature.cool_shift_vacuum = int(
+            getattr(thermal, "COOL_SHIFT_VACUUM", 3))
+        self.temperature.o2_vacuum_thresh = float(
+            getattr(thermal, "o2_vacuum_thresh", 0.3))
 
     # ------------------------------------------------------------------
     # Per-tick step
@@ -154,20 +163,25 @@ class PhysicsRunner:
             sim_time,
         )
 
-        # Heat -> temperature conversion + CONDUCTION (engine/06 §1.2 + §2,
-        # proposal §6 steps 1–2). Pass 1 reads the `heat` deposit
-        # NON-DESTRUCTIVELY and accumulates it (scaled by 1/thermal_mass via the
-        # precomputed shift) onto `temperature` on SOLID tiles. Pass 2 spreads
-        # the just-converted field one conduction relaxation step (gather,
-        # double-buffered) along the harmonic-mean face shifts in `face_shift`;
-        # kappa==0 air faces are NO_FACE -> air stays bit-exactly 0. With no heat
-        # sources wired into the sim tick yet, `heat` is 0 and an all-equal field
-        # (0 everywhere) conducts to nothing, so the field stays 0 (no behaviour
-        # change) — but the seam is now in place for fire/beams to feed it.
-        # Cooling (§3) + unit damage (§4) become further passes in step().
+        # Heat -> temperature conversion + CONDUCTION + AMBIENT COOLING
+        # (engine/06 §1.2 + §2 + §3, proposal §6 steps 1–3). Pass 1 reads the
+        # `heat` deposit NON-DESTRUCTIVELY and accumulates it (scaled by
+        # 1/thermal_mass via the precomputed shift) onto `temperature` on SOLID
+        # tiles. Pass 2 spreads the just-converted field one conduction
+        # relaxation step (gather, double-buffered) along the harmonic-mean face
+        # shifts in `face_shift`; kappa==0 air faces are NO_FACE -> air stays
+        # bit-exactly 0. Pass 3 sheds it: T -= T >> shift toward ambient (0),
+        # using the smaller vacuum shift where a 4-neighbour is space-facing
+        # (is_vacuum / atmosphere < o2_vacuum_thresh) — the same fields the
+        # atmosphere/smoke solvers read, so a breached wall cools fast through
+        # the existing seam. With no heat sources wired into the sim tick yet,
+        # `heat` is 0 and a 0 field conducts/cools to nothing, so the field stays
+        # 0 (no behaviour change) — but the seam is now in place for fire/beams.
+        # Unit damage (§4) becomes a further pass in step().
         self.temperature.step(
             gmap.temperature, gmap.heat, gmap.heat_inv_shift,
             gmap.face_shift, gmap.solid,
+            gmap.is_vacuum, gmap.atmosphere,
         )
 
         # Clear the per-tick `heat` deposit — END OF TICK, AFTER the conversion
