@@ -49,6 +49,7 @@ _SCALAR_COLUMNS = {
     "flammable": bool,
     "passable": bool,
     "conductivity": np.float32,
+    "thermal_mass": np.float32,
     "ignition_temp": np.float32,
     "heat_atten": np.float32,
     "wave_reflect": np.float32,
@@ -89,6 +90,23 @@ class MaterialTable:
             values = [self._get_field(row, name, col)
                       for row, name in zip(rows, self.names)]
             setattr(self, col, np.array(values, dtype=dtype))
+
+        # heat_inv_shift: per-id log2(thermal_mass) (engine/06 §1.2). The
+        # heat -> temperature conversion is `temperature += heat >> shift`, a
+        # pure arithmetic right shift (no divide, bit-identical cross-machine),
+        # so `thermal_mass` MUST be a power of two. Validate here and freeze the
+        # integer shift; the per-tile cache (GameMap.heat_inv_shift) is this
+        # column indexed by the material grid.
+        shifts = []
+        for tm, name in zip(self.thermal_mass.tolist(), self.names):
+            tm_int = int(round(tm))
+            if tm_int < 1 or (tm_int & (tm_int - 1)) != 0:
+                raise ValueError(
+                    f"materials.{name}.thermal_mass must be a power of two "
+                    f">= 1 (it sits on the heat->temperature divide); got {tm!r}"
+                )
+            shifts.append(tm_int.bit_length() - 1)   # log2 of a power of two
+        self.heat_inv_shift = np.array(shifts, dtype=np.int32)
 
         # light_atten: per-channel RGB, (N, 3) float32.
         atten = np.zeros((self.n, 3), dtype=np.float32)

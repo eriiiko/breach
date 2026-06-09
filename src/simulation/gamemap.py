@@ -154,6 +154,24 @@ class GameMap:
         # the per-tick deposit is cleared at cleanup. Allocated once, written
         # IN-PLACE (never reassigned) so any C++ view stays valid.
         self.heat = np.zeros((h, w), dtype=np.int32)
+        # Temperature field (engine/06 §1, proposal §1 / §3.1): the persistent
+        # consumer of the `heat` deposit. Q16.16 FIXED-POINT int32, SAME format
+        # and scale as `heat` (TEMP_SCALE == HEAT_SCALE == 65536). Allocated to
+        # 0 == AMBIENT: we store ΔT above a 20°C reference (T_ambient == 0,
+        # proposal §3.1), so a freshly-allocated field is "cold" by construction.
+        # Lives on SOLIDS only — the conversion/conduction passes skip air, so an
+        # air tile starting at 0 stays bit-exactly 0. Written IN-PLACE by the C++
+        # TemperatureSolver (never reassigned) so any C++ view stays valid.
+        # STEP A: only the heat -> temperature conversion consumes it; conduction
+        # (§2) and cooling (§3) land in later steps.
+        self.temperature = np.zeros((h, w), dtype=np.int32)
+        # Per-tile inverse-thermal-mass SHIFT cache (engine/06 §1.2): the
+        # precomputed log2(thermal_mass) per tile, so the conversion is a pure
+        # arithmetic right shift `temperature += heat >> heat_inv_shift` (no
+        # divide, bit-identical cross-machine). Table-derived, built in
+        # _update_caches and patched per tile in on_tile_changed — the SAME seam
+        # as the `conductivity` cache. int32 to cross to C++ as a plain (h, w).
+        self.heat_inv_shift = np.zeros((h, w), dtype=np.int32)
         # Smoke-glow buffer (ch.03 C16 / ch.05 §God-rays): RENDER-ONLY god-ray
         # glow. The light each tile's smoke ABSORBS is deposited here per
         # channel by the march (energy-conserving). Shape (h, w, 3) f32 ->
@@ -200,6 +218,10 @@ class GameMap:
         self.flammable = tbl.flammable[m]
         self.wall_hp = tbl.hp[m].astype(np.float32, copy=True)
         self.conductivity = tbl.conductivity[m].astype(np.float32, copy=True)
+        # Per-tile inverse-thermal-mass shift = log2(thermal_mass), parallel to
+        # the conductivity cache (engine/06 §1.2). Drives the heat -> temperature
+        # conversion `temperature += heat >> heat_inv_shift`. int32 for C++.
+        self.heat_inv_shift = tbl.heat_inv_shift[m].astype(np.int32, copy=True)
         # Gas/smoke permeability projected onto the grid (0 sealed, 1 open).
         self.permeability = tbl.permeability[m].astype(np.float32, copy=True)
         # Shockwave absorption projected onto the grid (ch.04 §4a).
@@ -244,6 +266,9 @@ class GameMap:
         self.flammable[fy, fx] = bool(tbl.flammable[mat_id])
         self.wall_hp[fy, fx] = float(tbl.hp[mat_id])
         self.conductivity[fy, fx] = float(tbl.conductivity[mat_id])
+        # Inverse-thermal-mass shift cache — patched through the SAME seam as
+        # conductivity so a breached wall's thermal coupling updates instantly.
+        self.heat_inv_shift[fy, fx] = int(tbl.heat_inv_shift[mat_id])
         self.permeability[fy, fx] = float(tbl.permeability[mat_id])
         self.wave_absorb[fy, fx] = float(tbl.wave_absorb[mat_id])
         # Solid mask follows permeability (sealed iff permeability == 0).

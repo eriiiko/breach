@@ -96,6 +96,13 @@ class PhysicsRunner:
         self.fire.params.k_wind_thresh  = FIRE_K_WIND_THRESH
         self.fire.params.k_wind_net     = FIRE_K_WIND_NET
 
+        # TemperatureSolver (engine/06 §1): turns the per-tick `heat` deposit
+        # into the persistent `temperature` field on solids. STEP A is the
+        # heat -> temperature conversion only (conduction + cooling land later).
+        # Stateless today (no tunables); kept as an instance for the later
+        # passes that gain parameters.
+        self.temperature = bp.TemperatureSolver()
+
     # ------------------------------------------------------------------
     # Per-tick step
     # ------------------------------------------------------------------
@@ -143,4 +150,27 @@ class PhysicsRunner:
             gmap.solid, gmap.flammable,
             sim_time,
         )
+
+        # Heat -> temperature conversion (engine/06 §1.2, proposal §6 step 1).
+        # Reads the `heat` deposit NON-DESTRUCTIVELY and accumulates it (scaled
+        # by 1/thermal_mass via the precomputed shift) onto `temperature` on
+        # SOLID tiles. With no heat sources wired into the sim tick yet, `heat`
+        # is 0 here and the field stays 0 (no behaviour change) — but the seam
+        # is now in place for fire/beams to feed it. STEP A: conversion only;
+        # conduction (§2) and cooling (§3) become further passes in step().
+        self.temperature.step(
+            gmap.temperature, gmap.heat, gmap.heat_inv_shift, gmap.solid,
+        )
+
+        # Clear the per-tick `heat` deposit — END OF TICK, AFTER the conversion
+        # consumer (engine/06 §1.3, proposal §6 step 7). `heat` is a per-tick
+        # deposit buffer, not a cross-tick accumulator; it must be wiped once
+        # every reader (currently just the conversion above) has run, so the
+        # next frame's ray pass deposits into a clean buffer. The clear used to
+        # live at the START of the renderer's ray cast (lighting.compute_light_
+        # field), which wiped the deposit before any consumer saw it; it moves
+        # here so conversion reads `heat` first. In-place (never reassigned) so
+        # any C++ view of the buffer stays valid.
+        gmap.heat.fill(0)
+
         return destroyed

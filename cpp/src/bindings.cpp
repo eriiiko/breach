@@ -5,6 +5,7 @@
 #include "atmosphere_solver.h"
 #include "smoke_dynamics.h"
 #include "fire_simulation.h"
+#include "temperature_solver.h"
 #include "raycaster.h"
 
 namespace py = pybind11;
@@ -157,6 +158,22 @@ PYBIND11_MODULE(breach_physics, m) {
         }, py::arg("fire"), py::arg("atmosphere"), py::arg("smoke"),
            py::arg("wall_hp"), py::arg("is_wall"), py::arg("flammable"),
            py::arg("dt"));
+
+    // --- TemperatureSolver (heat -> temperature conversion; engine/06 §1) ---
+    py::class_<TemperatureSolver>(m, "TemperatureSolver")
+        .def(py::init<>())
+        .def("step", [](const TemperatureSolver& self,
+                        py::array_t<int32_t> temperature,
+                        py::array_t<int32_t> heat,
+                        py::array_t<int32_t> heat_inv_shift,
+                        py::array_t<bool>    solid) {
+            auto [temp, h, w]     = get_2d(temperature);
+            auto [hp, h2, w2]     = get_2d_const(heat);
+            auto [shift, h3, w3]  = get_2d_const(heat_inv_shift);
+            auto [sol, h4, w4]    = get_2d_const(solid);
+            self.step(temp, hp, shift, sol, h, w);
+        }, py::arg("temperature"), py::arg("heat"),
+           py::arg("heat_inv_shift"), py::arg("solid"));
 
     // --- Raycaster ---
     py::class_<LightSource>(m, "LightSource")

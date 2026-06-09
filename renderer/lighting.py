@@ -177,11 +177,18 @@ class LightingPass:
         self.light_rgb.fill(0)
         self.light_dx.fill(0)
         self.light_dy.fill(0)
-        # Zero the per-frame accumulators IN-PLACE (never reassign — a C++ view
-        # of these buffers must stay valid). heat is the per-tick deposit;
-        # smoke_glow re-accumulates every frame from scratch.
-        if heat is not None:
-            heat.fill(0)
+        # Zero the per-frame render accumulator IN-PLACE (never reassign — a C++
+        # view of the buffer must stay valid). smoke_glow re-accumulates every
+        # frame from scratch.
+        #
+        # NOTE: `heat` is NOT cleared here. It is the sim-owned per-tick deposit
+        # and is now cleared at END OF TICK in PhysicsRunner.step (engine/06
+        # §1.3) — AFTER the heat -> temperature conversion has read it. Clearing
+        # it here (before the cast) used to wipe the deposit before any consumer
+        # existed; that clear has moved to the sim so conversion reads it first.
+        # The ray march below deposits into `heat` with a SATURATING add, so the
+        # sim's end-of-tick clear is what keeps it a per-tick (not cross-tick)
+        # buffer.
         if smoke_glow is not None:
             smoke_glow.fill(0)
 
