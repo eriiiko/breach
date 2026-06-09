@@ -62,6 +62,8 @@ WATER_K_P       = 0.0    # pressure head m/atm — 0 == head OFF (W4 turns it on
 WATER_V_MAX     = 8.0    # m/s velocity clamp (paired with the C++ outflow limiter)
 WATER_DEPTH_EPS = 1e-5   # m snap-to-zero (kills denormal creep)
 WATER_CEILING_H = 2.5    # m air column == the solver's h_ref CFL reference
+WATER_RATIO_CAP = 1.5    # max per-tick isothermal compression ratio (W3)
+WATER_FLOOD_EPS = 0.05   # m air column below which a cell counts FLOODED (W3)
 
 
 class PhysicsRunner:
@@ -210,7 +212,7 @@ class PhysicsRunner:
         # pattern). Semantics (plan W2 numerics-review fix): the depth at the
         # END of the previous tick's water accounting — NOT a copy taken this
         # tick — so FieldEdit dumps (flushed before physics) and source holds
-        # are each counted EXACTLY ONCE by W3's displacement when it lands.
+        # are each counted EXACTLY ONCE by the W3 displacement accounting.
         self._water_depth_before = None
 
     def _bind_water_params(self):
@@ -225,6 +227,12 @@ class PhysicsRunner:
         ships 0.0 (pressure head OFF until W4). ``dx`` is NOT bound here: it
         needs the level's tile size, which only exists once a GameMap is in
         hand, so it lazy-binds on the first :meth:`_step_water` call.
+
+        The W3 displacement accounting runs PYTHON-side in :meth:`_step_water`
+        (it is not a solver knob), so its params — ``ceiling_h`` /
+        ``ratio_cap`` / ``flood_eps`` — bind onto the runner itself.
+        ``water_ceiling_h`` reads the SAME config key as ``h_ref`` above:
+        one constant for the air column, two consumers.
         """
         water_cfg = getattr(CFG.physics, "water", None)
 
@@ -237,6 +245,9 @@ class PhysicsRunner:
         self.water.v_max     = _fp("v_max", WATER_V_MAX)
         self.water.depth_eps = _fp("depth_eps", WATER_DEPTH_EPS)
         self.water.h_ref     = _fp("ceiling_h", WATER_CEILING_H)
+        self.water_ceiling_h = _fp("ceiling_h", WATER_CEILING_H)
+        self.water_ratio_cap = _fp("ratio_cap", WATER_RATIO_CAP)
+        self.water_flood_eps = _fp("flood_eps", WATER_FLOOD_EPS)
 
     # ------------------------------------------------------------------
     # Per-tick step
@@ -269,12 +280,14 @@ class PhysicsRunner:
         # (self.fire.step below) keeps running unchanged.
         self.cast_fire_heat(gmap)
 
-        # Water layer (engine/07 §2, water plan W2): pour / flow / settle the
-        # standing-water field ONCE per tick, before the atmosphere loop — so
-        # when W3's displacement lands (water compressing the air column), the
-        # pressure change is on `atmosphere` BEFORE diffusion re-equalises it
-        # this same tick. Dormant-safe: with zero water the method early-outs
-        # and the tick is bit-identical to before the water system existed.
+        # Water layer (engine/07 §2, water plan W2/W3): pour / flow / settle
+        # the standing-water field ONCE per tick, before the atmosphere loop —
+        # so the W3 displacement (water compressing the air column) lands its
+        # pressure change on `atmosphere` BEFORE diffusion re-equalises it
+        # this same tick, and the flooded dyn_permeability seal is in place
+        # for every atmosphere/smoke substep below. Dormant-safe: with zero
+        # water the method early-outs and the tick is bit-identical to before
+        # the water system existed.
         self._step_water(gmap, sim_time)
 
         dt = self.atmos.max_dt()
@@ -489,9 +502,10 @@ class PhysicsRunner:
 
         Factored out of :meth:`step` (the dormancy-test enabler — a no-op
         monkeypatch here is the A/B baseline). Per tick: apply the continuous
-        source holds, run the C++ pipe-model substeps, then (W3/W5, later)
-        the boil sink + displacement accounting against the ``before``
-        snapshot. Walls are ``gmap.solid`` — STATIC walls only; units do NOT
+        source holds, run the C++ pipe-model substeps, then (W5, later) the
+        boil sink, then the W3 volume-displacement accounting against the
+        ``before`` snapshot (isothermal P*V onto ``atmosphere`` + the flooded
+        air-seal). Walls are ``gmap.solid`` — STATIC walls only; units do NOT
         block water (Erik's explicit call: water flows under feet).
         """
         if (self._water_depth_before is None
@@ -533,7 +547,36 @@ class PhysicsRunner:
         # a boiled-off column reads as receding water -> slight decompression,
         # the physically-right sign).
         #
-        # W3 volume-displacement accounting goes HERE: reads `before` vs the
-        # new depth -> isothermal P*V ratio onto `atmosphere`; flooded cells
-        # seal via dyn_permeability — then closes the accounting loop:
+        # W3 volume displacement (water -> atmosphere; plan W3, canon §5.1):
+        # the air column above each cell went from `free_before` to
+        # `free_after` this tick; isothermal P*V = const scales the pressure
+        # by their ratio. Dry cells: both maxima hit ceiling_h -> ratio == 1.
+        # Stays-flooded cells: both clamp to flood_eps -> ratio == 1 -> the
+        # pressure trapped under the water is frozen, correct. A settled pool
+        # (depth unchanged since last tick) gives x/x == IEEE-exact 1.0, so
+        # atmosphere is bit-untouched (the wet-static guarantee). Receding
+        # water -> ratio < 1 -> decompression inrush (canon §5.1 symmetry).
+        # The cap deliberately leaks P*V on ceiling-slams (ratio_cap per tick
+        # vs the true ~50x) — stability-over-bookkeeping; diffusion
+        # re-equalises.
+        ceiling_h = self.water_ceiling_h
+        flood_eps = self.water_flood_eps
+        ratio_cap = self.water_ratio_cap
+        free_before = np.maximum(ceiling_h - before, flood_eps)
+        free_after = np.maximum(ceiling_h - gmap.water_depth, flood_eps)
+        ratio = np.clip(free_before / free_after, 1.0 / ratio_cap, ratio_cap)
+        np.multiply(gmap.atmosphere, ratio, out=gmap.atmosphere)  # P*V const
+        # Flooded cells (air column squeezed down to the clamp) SEAL the tile
+        # by face-flux blocking: the wave Laplacian, IMEX diffusion and wind
+        # gradient all gather faces as min(perm[self], perm[n])
+        # (atmosphere_solver.cpp), so zeroing dyn_permeability stops air,
+        # smoke and wind across every face of the cell. stamp_units rebuilds
+        # the field at the START of next tick, so the seal lives exactly one
+        # tick and auto-clears when the cell drains. The hard-zero wave BC
+        # does NOT key off this: trapped wave_p under the water decays via
+        # damping, it is not zeroed (plan W3, contracts review).
+        flooded = free_after <= flood_eps
+        gmap.dyn_permeability[flooded] = 0.0
+        # Close the accounting loop: next tick's displacement counts from
+        # this tick's end-of-accounting depth.
         np.copyto(before, gmap.water_depth)
