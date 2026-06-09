@@ -188,8 +188,15 @@ class GameRenderer:
             # Pass gmap.heat (Q16.16 deposit) and gmap.smoke_glow (god-ray
             # glow) so the march writes both Slice-4 outputs in-place. The cast
             # still lives here in the renderer; it moves into the sim in S5.
+            # Multi-gas coloured optics (engine/05 §6.2): pass the full (N,h,w)
+            # gas array + the per-gas absorption/scatter tables so the march sums
+            # all gases density-weighted per channel (poison greens the beam,
+            # black_smoke dims it, mixing falls out of the sum). `gmap.smoke` is
+            # just the black_smoke slice of `gmap.gas`.
             self.lighting.compute_light_field(
-                light_sources, gmap.smoke, gmap.dyn_light_atten,
+                light_sources, gmap.gas,
+                gmap.gases.absorption, gmap.gases.scatter_albedo,
+                gmap.dyn_light_atten,
                 heat=gmap.heat, smoke_glow=gmap.smoke_glow,
                 heat_atten=gmap.heat_atten,
             )

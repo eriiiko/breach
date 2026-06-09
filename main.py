@@ -120,6 +120,8 @@ def main():
           f"Space resume | Tab phase | Bksp undo | Ctrl+R reload")
     print(f"  DEBUG: T toggles temperature overlay (black-body heat ramp) | "
           f"I ignites the tile under the cursor")
+    print(f"  DEBUG: J spawns the selected gas under the cursor | "
+          f"K cycles the gas (white→black→poison→teargas→fuel)")
 
     fit_w_zoom = map_px_w / max(level.width, 1)
     initial_zoom = max(20.0, min(64.0, fit_w_zoom))

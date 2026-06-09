@@ -46,10 +46,15 @@ from simulation.physics_runner import PhysicsRunner  # noqa: E402
 from simulation.materials import (  # noqa: E402
     MaterialTable, MAT_AIR, MAT_WOOD, MAT_HULL,
 )
+from simulation.gases import GasTable, N_GASES  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
 
 HEAT_SCALE = 65536          # Q16.16 (== TEMP_SCALE), shared heat/temperature domain
 _TBL = MaterialTable.from_config()
+# Per-gas optics table for the multi-gas march (engine/05 §6.2). Gases never
+# attenuate the heat channel, so an empty gas field leaves the heat cast
+# bit-identical to the pre-multigas single-smoke path — these tests stay valid.
+_GASES = GasTable.from_config()
 IGN_WOOD_Q16 = int(_TBL.ignition_temp_q16[MAT_WOOD])   # 300 * 65536
 
 
@@ -66,6 +71,10 @@ class _FireScene:
         self.fire = np.zeros((h, w), dtype=np.float32)
         self.heat = np.zeros((h, w), dtype=np.int32)
         self._h, self._w = h, w
+        # Multi-gas march inputs (engine/05 §6.2): an empty gas field + the canon
+        # per-gas tables. Gases do not attenuate heat, so this is inert here.
+        self.gas = np.zeros((N_GASES, h, w), dtype=np.float32)
+        self.gases = _GASES
 
     def set_wood(self, y, x):
         self.material[y, x] = MAT_WOOD

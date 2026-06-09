@@ -148,12 +148,21 @@ class LightingPass:
 
     # ---- light field computation ---------------------------------------
 
-    def compute_light_field(self, sources: List, smoke: np.ndarray,
+    def compute_light_field(self, sources: List, gas: np.ndarray,
+                            gas_absorption: np.ndarray, gas_scatter: np.ndarray,
                             light_atten: np.ndarray,
                             heat: Optional[np.ndarray] = None,
                             smoke_glow: Optional[np.ndarray] = None,
                             heat_atten: Optional[np.ndarray] = None) -> None:
         """Cast all sources, accumulate intensity + direction, normalize, pack.
+
+        `gas` is the multi-gas density field, shape (n_gases, h, w) f32 — pass
+        `gmap.gas`. `gas_absorption` / `gas_scatter` are the per-gas per-channel
+        tables (n_gases, 3) f32 from `GasTable` (`gmap.gases.absorption` /
+        `.scatter_albedo`). The march sums the two decoupled optical budgets
+        (Beer-Lambert transmission + additive scatter/glow) density-weighted
+        across all gases (engine/05 §6.2), so coexisting gases mix automatically
+        and each gas tints the beam by its own colour.
 
         `light_atten` is the per-channel attenuation field the march reads,
         shape (h, w, 3) f32 — pass `gmap.dyn_light_atten` (the live dynamic
@@ -203,7 +212,8 @@ class LightingPass:
         for src in sources:
             self.raycaster.cast_source_directional(
                 src, self.light_rgb, self.light_dx, self.light_dy,
-                smoke, light_atten, heat, smoke_glow, heat_atten,
+                gas, gas_absorption, gas_scatter, light_atten,
+                heat, smoke_glow, heat_atten,
             )
         # Normalize direction to unit vectors (vector-magnitude normalization).
         # See expert review notes in docs/patch_level_pipeline_v1.md.

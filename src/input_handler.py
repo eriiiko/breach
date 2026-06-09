@@ -27,6 +27,9 @@ Key bindings (decisions locked this morning):
 - Ctrl+R → reload config.toml from disk
 - Esc → clear selection / cancel mode
 - F8 → manual physics recorder dump
+- I → DEBUG ignite the tile under the cursor
+- J → DEBUG spawn the selected gas under the cursor
+- K → DEBUG cycle the selected gas (white→black→poison→teargas→fuel)
 
 F5 is NOT remapped here — it's still the renderer's normal-map toggle
 (see ``GameRenderer.poll_toggles``). The patch plan moved config reload
@@ -37,6 +40,7 @@ from __future__ import annotations
 import pyray as rl
 
 from config import CFG
+from simulation.gases import GAS_NAMES, N_GASES
 from simulation.orders import (
     DET_START_PHASE1,
     ORDER_MOVE_ATTACK, ORDER_MOVE_COVER, ORDER_SPRINT,
@@ -57,6 +61,10 @@ class InputHandler:
         self.per_unit_phase: dict[int, int] = {}
         self.grenade_fuse = CFG.weapons.grenade.fuse_default_seconds
         self.det_slot = DET_START_PHASE1
+        # DEBUG multi-gas spawn (engine/05 §6.2, M2): which gas the J key drops
+        # under the cursor. K cycles white_smoke -> black_smoke -> poison ->
+        # teargas -> fuel_gas. Pure UI state — the sim never sees it.
+        self.selected_gas = 0   # WHITE_SMOKE (== GAS id 0)
 
     @property
     def planning_phase(self) -> int:
@@ -96,6 +104,20 @@ class InputHandler:
         # only; guarded behind a single key, no gameplay path touches it.
         if rl.is_key_pressed(K.KEY_I):
             self._debug_ignite(sim, renderer)
+
+        # K: DEBUG cycle which gas the spawn key drops (engine/05 §6.2, M2).
+        # Prints the new selection so Erik can see what J will spawn.
+        if rl.is_key_pressed(K.KEY_K):
+            self.selected_gas = (self.selected_gas + 1) % N_GASES
+            print(f"[debug] selected gas -> {self.selected_gas} "
+                  f"({GAS_NAMES[self.selected_gas]})")
+
+        # J: DEBUG spawn a blob of the currently-selected gas under the cursor
+        # (engine/05 §6.2, M2). Writes gmap.gas[sel] directly so it lands
+        # immediately even while paused — the colour render then sums it with any
+        # other gases present. Debug-only; mirrors the I-ignite path.
+        if rl.is_key_pressed(K.KEY_J):
+            self._debug_spawn_gas(sim, renderer)
 
         # Spacebar: pause toggle. If we're resuming AND there are queued
         # grenade orders, materialise them before time starts flowing.
@@ -191,6 +213,28 @@ class InputHandler:
         x0, x1 = max(0, fx - 1), min(w, fx + 2)
         gmap.flammable[y0:y1, x0:x1] = True   # force-flammable for debug
         gmap.fire[y0:y1, x0:x1] = 1.0          # full-intensity seed
+
+    def _debug_spawn_gas(self, sim, renderer):
+        """DEBUG: spawn a blob of the selected gas at the tile under the cursor.
+
+        Writes the selected slice of ``gmap.gas`` directly (a small clamped
+        patch at full density) so the coloured ray march picks it up immediately,
+        even while paused. Mirrors :meth:`_debug_ignite`. ``gmap.smoke`` is a view
+        of the black_smoke slice, so spawning black_smoke also fills ``smoke``.
+        A render/tuning aid only — no gameplay code reaches this path.
+        """
+        tile = renderer.mouse_to_tile()
+        if tile is None:
+            return
+        fx, fy = tile
+        gmap = sim.gmap
+        _, h, w = gmap.gas.shape
+        if not (0 <= fy < h and 0 <= fx < w):
+            return
+        # A 3x3 patch at full density so it reads at typical zoom; clamp to bounds.
+        y0, y1 = max(0, fy - 1), min(h, fy + 2)
+        x0, x1 = max(0, fx - 1), min(w, fx + 2)
+        gmap.gas[self.selected_gas, y0:y1, x0:x1] = 1.0
 
     # ------------------------------------------------------------------
     # Click handlers

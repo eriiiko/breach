@@ -125,11 +125,17 @@ void Raycaster::march_ray_directional(
     float* light_dx, float* light_dy,
     int32_t* heat,
     float* smoke_glow,
-    const float* smoke_field,
+    const float* gas_field,
+    const float* gas_absorption,
+    const float* gas_scatter,
+    int n_gases,
     const float* light_atten,
     const float* heat_atten,
     int h, int w
 ) const {
+    // Stride of one gas slice in the (n_gases, h, w) contiguous array: each
+    // gas[g] starts at gas_field + g*plane and is itself a (h, w) plane.
+    const int plane = h * w;
     float dx = std::cos(angle);
     float dy = std::sin(angle);
 
@@ -252,36 +258,52 @@ void Raycaster::march_ray_directional(
             heat_survival *= (1.0f - heat_atten[idx]);
         }
 
-        float sd = smoke_field[idx];
-        if (sd > 0.001f) {
-            // ---- Decoupled per-channel smoke optics (ch.05 §6.1 §6) ----
-            // Two INDEPENDENT budgets, NOT constrained to absorb + glow = 1.
-            //
+        // ---- Multi-gas coloured optics (engine/05 §6.2 — density-weighted
+        // per-channel sum over ALL gases) ----
+        // Sum the two decoupled budgets across every gas sharing this tile, each
+        // weighted by its local density and its OWN per-channel table row:
+        //   tau_c     = absorb_scale * Σ_g ( gas[g][tile] * absorption[g][c] )
+        //   scatter_c =                Σ_g ( gas[g][tile] * scatter_albedo[g][c] )
+        // Mixing falls out of the sum (poison+black -> murky automatically); a
+        // single populated gas reproduces the old single-`smoke` path for that
+        // gas's coefficients. The 5-gas inner loop is a few FLOPs per tile-step.
+        float tau_r = 0.0f, tau_g = 0.0f, tau_b = 0.0f;
+        float sca_r = 0.0f, sca_g = 0.0f, sca_b = 0.0f;
+        for (int g = 0; g < n_gases; ++g) {
+            float gd = gas_field[g * plane + idx];
+            if (gd <= 0.001f) continue;
+            const float* ab = &gas_absorption[g * 3];
+            const float* sc = &gas_scatter[g * 3];
+            tau_r += gd * ab[0];
+            tau_g += gd * ab[1];
+            tau_b += gd * ab[2];
+            sca_r += gd * sc[0];
+            sca_g += gd * sc[1];
+            sca_b += gd * sc[2];
+        }
+        if (tau_r > 0.0f || tau_g > 0.0f || tau_b > 0.0f ||
+            sca_r > 0.0f || sca_g > 0.0f || sca_b > 0.0f) {
             // (1) God-rays / scatter (ADDITIVE deposit into smoke_glow): the
-            // light the smoke SCATTERS BACK toward the viewer, per channel. This
-            // is a SEPARATE gain (smoke_scatter_albedo) on the local light
-            // (dep_c, the same energy the light buffer saw) times density — it is
-            // NOT the absorbed amount, so glow is independent of (and may exceed)
-            // absorption. RGB-preserving (a red beam casts a red shaft).
-            // Supersedes the old surface-tint light_modulation path (no
-            // double-count) — see overlays.py / ch.05.
+            // light the gases SCATTER BACK toward the viewer, per channel — the
+            // density-weighted scatter sum times the LOCAL light (dep_c, the same
+            // energy the light buffer saw). SEPARATE budget, decoupled from (and
+            // may exceed) absorption -> "barely absorbs, glows brightly" (steam).
+            // RGB-preserving (a red beam casts a red shaft).
             if (smoke_glow != nullptr) {
-                smoke_glow[idx * 3 + 0] += dep_r * smoke_scatter_albedo[0] * sd;
-                smoke_glow[idx * 3 + 1] += dep_g * smoke_scatter_albedo[1] * sd;
-                smoke_glow[idx * 3 + 2] += dep_b * smoke_scatter_albedo[2] * sd;
+                smoke_glow[idx * 3 + 0] += dep_r * sca_r;
+                smoke_glow[idx * 3 + 1] += dep_g * sca_g;
+                smoke_glow[idx * 3 + 2] += dep_b * sca_b;
             }
             // (2) Per-channel transmission (Beer-Lambert, ch.05 §6.1 6a):
-            //   tau_c   = absorption_c * density * absorb_scale
-            //   trans_c = exp(-tau_c)        // never reaches 0 -> beam survives
-            //   remaining[c] *= trans_c      // multiplicative tint, long reach
-            // absorb_scale is the global beam-reach dial (LOW = far). exp(-x) is
-            // the physically correct law: the difference between "beam dies in 2
-            // tiles" and "beam visibly tints across the whole room."
-            float scaled = sd * smoke_absorb_scale;
-            remaining[0] *= std::exp(-smoke_absorption_rgb[0] * scaled);
-            remaining[1] *= std::exp(-smoke_absorption_rgb[1] * scaled);
-            remaining[2] *= std::exp(-smoke_absorption_rgb[2] * scaled);
-            // NOTE: smoke does NOT attenuate heat — only material `heat_atten`
+            //   trans_c = exp(-absorb_scale * tau_c)   // never reaches 0 -> beam survives
+            //   remaining[c] *= trans_c                // multiplicative tint, long reach
+            // absorb_scale is the global beam-reach dial (LOW = far). Green poison
+            // absorbs R+B and passes G -> the surviving beam (and the light behind)
+            // is greened; mixing falls out of the summed tau.
+            remaining[0] *= std::exp(-smoke_absorb_scale * tau_r);
+            remaining[1] *= std::exp(-smoke_absorb_scale * tau_g);
+            remaining[2] *= std::exp(-smoke_absorb_scale * tau_b);
+            // NOTE: gases do NOT attenuate heat — only material `heat_atten`
             // blocks the heat channel. (Heat radiates through smoke; the
             // god-ray/transmission optics above are a light-only model.)
         }
@@ -312,7 +334,10 @@ void Raycaster::cast_source_directional(
     float* light_dy,
     int32_t* heat,
     float* smoke_glow,
-    const float* smoke_field,
+    const float* gas_field,
+    const float* gas_absorption,
+    const float* gas_scatter,
+    int n_gases,
     const float* light_atten,
     const float* heat_atten,
     int h, int w
@@ -356,8 +381,8 @@ void Raycaster::cast_source_directional(
         if (intensity > 0.01f) {
             march_ray_directional(src.x, src.y, angle, intensity, src.max_range,
                       src.color, src.heat, light_rgb, light_dx, light_dy,
-                      heat, smoke_glow, smoke_field, light_atten, heat_atten,
-                      h, w);
+                      heat, smoke_glow, gas_field, gas_absorption, gas_scatter,
+                      n_gases, light_atten, heat_atten, h, w);
         }
     }
 }

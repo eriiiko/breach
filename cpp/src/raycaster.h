@@ -88,14 +88,16 @@ public:
     // update_from_fire path which has no per-channel notion).
     float smoke_absorption = 0.8f;
 
-    // Per-channel Beer-Lambert absorption coefficients (R,G,B). Defaults [1,1,1]
-    // (neutral grey smoke). Per-channel != grey -> coloured smoke later.
+    // SUPERSEDED (engine/05 §6.2, M2): the single-field per-channel coefficients.
+    // The directional march now reads the per-GAS `absorption`/`scatter_albedo`
+    // tables passed per-cast (from GasTable), summed density-weighted across the
+    // (N,h,w) gas array — these two struct members no longer drive the directional
+    // look. They are kept INERT (still bound) so any non-gas caller compiles; the
+    // active dial for the gas path is `smoke_absorb_scale` below.
     float smoke_absorption_rgb[3] = {1.0f, 1.0f, 1.0f};
-    // Per-channel scatter/glow albedo (R,G,B). Defaults [1,1,1].
     float smoke_scatter_albedo[3] = {1.0f, 1.0f, 1.0f};
-    // Global beam-reach dial. LOW = long beam (flashlight travels far). Default
-    // 1.4 chosen so exp(-1.4*sd) approximates the shipped (1-sd) attenuation at
-    // mid density while never hard-zeroing the beam.
+    // Global beam-reach dial (STILL ACTIVE for the gas path): scales the summed
+    // per-gas tau. LOW = long beam (flashlight travels far). Default 1.4.
     float smoke_absorb_scale = 1.4f;
 
     int   coarse_cluster   = 3;    // cluster fire sources on this grid
@@ -145,6 +147,23 @@ public:
     // docs/patch_level_pipeline_v1.md). At tiles where opposing rays cancel
     // (or no rays arrive), direction is (0,0) — the shader must handle that.
 
+    // ---- Multi-gas optics (engine/05 §6.2 — coloured N-gas summation) ----
+    //
+    // The directional march generalises the single `smoke` scalar to N gas
+    // density fields (gmap.gas, shape (N,h,w)), each with its OWN per-channel
+    // `absorption` (N,3) and `scatter_albedo` (N,3) row from GasTable. Per tile,
+    // per channel c, the two decoupled budgets above are SUMMED density-weighted
+    // across all gases (engine/05 §6.2 — "mixing falls out of the sum"):
+    //
+    //   transmission:  tau_c = smoke_absorb_scale * Σ_g ( gas[g][tile] * absorption[g][c] )
+    //                  trans_c = exp(-tau_c);  remaining[c] *= trans_c
+    //   scatter/glow:  smoke_glow[c] += dep_c * Σ_g ( gas[g][tile] * scatter_albedo[g][c] )
+    //
+    // `smoke_absorb_scale` stays the global beam-reach dial. A single populated
+    // gas reproduces exactly what the old single-`smoke` path did for that gas's
+    // coefficients (with absorption/scatter = that gas's row). Heat is untouched
+    // (smoke/gas does not attenuate the heat channel).
+
     // Cast a single source and accumulate RGB light + direction, plus the two
     // Slice-4 outputs:
     //   heat       : Q16.16 fixed-point int32, shape (h,w). Deposited where the
@@ -177,7 +196,10 @@ public:
         float* light_dy,
         int32_t* heat,              // Q16.16 fixed-point, (h,w) or nullptr
         float* smoke_glow,          // RGB god-ray glow, (h,w,3) or nullptr
-        const float* smoke_field,
+        const float* gas_field,     // (n_gases, h, w) contiguous gas densities
+        const float* gas_absorption,// (n_gases, 3) per-gas per-channel absorption
+        const float* gas_scatter,   // (n_gases, 3) per-gas per-channel scatter
+        int n_gases,
         const float* light_atten,   // per-tile static material atten (h,w,3)
         const float* heat_atten,    // per-tile heat atten (h,w) or nullptr
         int h, int w
@@ -209,7 +231,10 @@ private:
         float* light_dx, float* light_dy,
         int32_t* heat,              // Q16.16 fixed-point, (h,w) or nullptr
         float* smoke_glow,          // RGB god-ray glow, (h,w,3) or nullptr
-        const float* smoke_field,
+        const float* gas_field,     // (n_gases, h, w) contiguous gas densities
+        const float* gas_absorption,// (n_gases, 3) per-gas per-channel absorption
+        const float* gas_scatter,   // (n_gases, 3) per-gas per-channel scatter
+        int n_gases,
         const float* light_atten,   // per-tile static material atten (h,w,3)
         const float* heat_atten,    // per-tile heat atten (h,w) or nullptr
         int h, int w

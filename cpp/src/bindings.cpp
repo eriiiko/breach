@@ -287,7 +287,9 @@ PYBIND11_MODULE(breach_physics, m) {
                 py::array_t<float> light_rgb,
                 py::array_t<float> light_dx,
                 py::array_t<float> light_dy,
-                py::array_t<float> smoke,
+                py::array_t<float> gas,
+                py::array_t<float> gas_absorption,
+                py::array_t<float> gas_scatter,
                 py::array_t<float> light_atten,
                 py::object heat,
                 py::object smoke_glow,
@@ -295,7 +297,17 @@ PYBIND11_MODULE(breach_physics, m) {
             auto [lrgb, h, w]  = get_3d(light_rgb);
             auto [ldx, h2, w2] = get_2d(light_dx);
             auto [ldy, h3, w3] = get_2d(light_dy);
-            auto [sm,  h4, w4] = get_2d_const(smoke);
+            // Multi-gas density fields (engine/05 §6.2): contiguous (n_gases,h,w).
+            // Each gas[g] is a (h,w) plane; the march sums them density-weighted
+            // with the per-gas absorption/scatter table rows below.
+            auto gv = gas.unchecked<3>();
+            const float* gas_field = gv.data(0, 0, 0);
+            const int n_gases = static_cast<int>(gv.shape(0));
+            // Per-gas per-channel tables, shape (n_gases, 3) contiguous.
+            auto ga = gas_absorption.unchecked<2>();
+            const float* gabs = ga.data(0, 0);
+            auto gs = gas_scatter.unchecked<2>();
+            const float* gsca = gs.data(0, 0);
             // Per-tile static material attenuation, shape (h, w, 3) — same
             // interleaved layout as light_rgb. Replaces the binary is_wall:
             // occlusion is now per-channel (opaque [1,1,1] == old wall stop).
@@ -332,11 +344,13 @@ PYBIND11_MODULE(breach_physics, m) {
                 hatten = haa.data(0, 0);
             }
             self.cast_source_directional(src, lrgb, ldx, ldy,
-                                         heat_ptr, glow_ptr, sm, atten,
-                                         hatten, h, w);
+                                         heat_ptr, glow_ptr,
+                                         gas_field, gabs, gsca, n_gases,
+                                         atten, hatten, h, w);
         }, py::arg("source"), py::arg("light_rgb"),
            py::arg("light_dx"), py::arg("light_dy"),
-           py::arg("smoke"), py::arg("light_atten"),
+           py::arg("gas"), py::arg("gas_absorption"), py::arg("gas_scatter"),
+           py::arg("light_atten"),
            py::arg("heat") = py::none(),
            py::arg("smoke_glow") = py::none(),
            py::arg("heat_atten") = py::none())

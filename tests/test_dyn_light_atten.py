@@ -151,7 +151,9 @@ def test_dyn_field_blocks_a_cpp_ray_downstream():
         rgb = np.zeros((1, w, 3), np.float32)
         dx = np.zeros((1, w), np.float32)
         dy = np.zeros((1, w), np.float32)
-        smoke = np.zeros((1, w), np.float32)
+        gas = np.zeros((1, 1, w), np.float32)
+        gas_absorption = np.ones((1, 3), np.float32)
+        gas_scatter = np.ones((1, 3), np.float32)
         s = bp.LightSource()
         s.x, s.y = 0.0, 0.0
         s.max_range = float(w * 2)
@@ -160,7 +162,8 @@ def test_dyn_field_blocks_a_cpp_ray_downstream():
         s.angle_spread = 0.05
         s.ray_count = 1
         s.color = (1.0, 1.0, 1.0)
-        rc.cast_source_directional(s, rgb, dx, dy, smoke, atten_row)
+        rc.cast_source_directional(s, rgb, dx, dy,
+                                   gas, gas_absorption, gas_scatter, atten_row)
         return rgb
 
     rgb_no = cast(row_no_unit)

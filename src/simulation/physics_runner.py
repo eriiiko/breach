@@ -403,7 +403,14 @@ class PhysicsRunner:
                 self._fire_scratch_rgb,
                 self._fire_scratch_dx,
                 self._fire_scratch_dy,
-                gmap.smoke,
+                # Multi-gas march (engine/05 §6.2): pass the full gas array +
+                # per-gas tables. Gases NEVER attenuate the heat channel (only
+                # material heat_atten does), so the heat deposit — the only output
+                # that survives this cast (smoke_glow=None) — is bit-identical to
+                # the pre-multigas single-smoke call.
+                gmap.gas,
+                gmap.gases.absorption,
+                gmap.gases.scatter_albedo,
                 gmap.dyn_light_atten,
                 gmap.heat,            # <- the only output that survives the cast
                 None,                 # smoke_glow: skipped (render-only, later)

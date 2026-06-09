@@ -58,8 +58,6 @@ def _cast(h=1, w=20, color=(1.0, 1.0, 1.0), heat_emit=0.0,
       scatter/glow  smoke_glow[c] += local_light[c] * scatter_albedo[c] * density
     """
     rc = bp.Raycaster()
-    rc.smoke_absorption_rgb = absorption_rgb
-    rc.smoke_scatter_albedo = scatter_albedo
     rc.smoke_absorb_scale = absorb_scale
     rgb = np.zeros((h, w, 3), np.float32)
     dx = np.zeros((h, w), np.float32)
@@ -70,8 +68,16 @@ def _cast(h=1, w=20, color=(1.0, 1.0, 1.0), heat_emit=0.0,
         atten = np.zeros((h, w, 3), np.float32)
     heat = np.zeros((h, w), np.int32) if want_heat else None
     glow = np.zeros((h, w, 3), np.float32) if want_glow else None
+    # Multi-gas march (engine/05 §6.2): drive the single `smoke` field as ONE gas
+    # whose per-channel absorption/scatter rows ARE the old scalar coefficients.
+    # A single populated gas reproduces exactly what the old single-smoke path
+    # did for those coefficients, so every assertion below is preserved.
+    gas = smoke[np.newaxis, :, :].astype(np.float32)
+    gas_absorption = np.array([absorption_rgb], np.float32)
+    gas_scatter = np.array([scatter_albedo], np.float32)
     s = _make_source(color=color, heat=heat_emit, intensity=intensity, w=w)
-    rc.cast_source_directional(s, rgb, dx, dy, smoke, atten,
+    rc.cast_source_directional(s, rgb, dx, dy,
+                               gas, gas_absorption, gas_scatter, atten,
                                heat=heat, smoke_glow=glow)
     return rgb, heat, glow
 
@@ -132,17 +138,21 @@ def test_heat_accumulates_across_two_sources_saturating():
     rgb = np.zeros((h, w, 3), np.float32)
     dx = np.zeros((h, w), np.float32)
     dy = np.zeros((h, w), np.float32)
-    smoke = np.zeros((h, w), np.float32)
+    gas = np.zeros((1, h, w), np.float32)
+    gas_absorption = np.ones((1, 3), np.float32)
+    gas_scatter = np.ones((1, 3), np.float32)
     atten = np.zeros((h, w, 3), np.float32)
     heat = np.zeros((h, w), np.int32)
     glow = np.zeros((h, w, 3), np.float32)
     s = _make_source(heat=1e9, w=w)
-    rc.cast_source_directional(s, rgb, dx, dy, smoke, atten,
+    rc.cast_source_directional(s, rgb, dx, dy,
+                               gas, gas_absorption, gas_scatter, atten,
                                heat=heat, smoke_glow=glow)
     before = heat.copy()
     assert np.all(before >= 0)
     # Cast the same source AGAIN into the same buffer (accumulate).
-    rc.cast_source_directional(s, rgb, dx, dy, smoke, atten,
+    rc.cast_source_directional(s, rgb, dx, dy,
+                               gas, gas_absorption, gas_scatter, atten,
                                heat=heat, smoke_glow=glow)
     assert np.all(heat >= 0), "second deposit must not wrap"
     assert np.all(heat >= before), "saturating add never decreases a cell"
