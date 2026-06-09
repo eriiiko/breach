@@ -26,6 +26,7 @@ pybind11_add_module(breach_physics
     src/fire_simulation.cpp
     src/temperature_solver.cpp
     src/raycaster.cpp
+    src/water_solver.cpp
     src/bindings.cpp
 )
 

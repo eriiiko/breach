@@ -7,6 +7,7 @@
 #include "fire_simulation.h"
 #include "temperature_solver.h"
 #include "raycaster.h"
+#include "water_solver.h"
 
 namespace py = pybind11;
 
@@ -360,4 +361,62 @@ PYBIND11_MODULE(breach_physics, m) {
             auto [ldy, h2, w2] = get_2d(light_dy);
             Raycaster::normalize_directions(ldx, ldy, h, w);
         }, py::arg("light_dx"), py::arg("light_dy"));
+
+    // --- WaterSolver (pipe model: damped velocity + donor-cell upwind flux;
+    //     engine/07 §2, water_implementation_plan Step W1) ---
+    py::class_<WaterSolver>(m, "WaterSolver")
+        .def(py::init<>())
+        .def_readwrite("g",         &WaterSolver::g)
+        .def_readwrite("damping",   &WaterSolver::damping)
+        .def_readwrite("dx",        &WaterSolver::dx)
+        .def_readwrite("k_p",       &WaterSolver::k_p)
+        .def_readwrite("v_max",     &WaterSolver::v_max)
+        .def_readwrite("depth_eps", &WaterSolver::depth_eps)
+        .def_readwrite("h_ref",     &WaterSolver::h_ref)
+        .def("max_dt", &WaterSolver::max_dt)
+        .def("step", [](const WaterSolver& self,
+                        py::array_t<float> water_depth,
+                        py::array_t<float> flow_vx,
+                        py::array_t<float> flow_vy,
+                        py::object floor_height,
+                        py::object atmosphere,
+                        py::object wave_p,
+                        py::array_t<bool> solid,
+                        float dt, float tilt_x, float tilt_y) {
+            auto [wd, h, w]    = get_2d(water_depth);
+            auto [vx, h2, w2]  = get_2d(flow_vx);
+            auto [vy, h3, w3]  = get_2d(flow_vy);
+            auto [sol, h4, w4] = get_2d_const(solid);
+            // Nullable fields (cast_source_directional precedent): None ->
+            // nullptr, else cast to an array kept alive in this scope.
+            // floor_height None -> flat zero; atmosphere/wave_p None -> no
+            // head term (and with k_p == 0 they are never read at all).
+            const float* fl = nullptr;
+            py::array_t<float> fl_arr;
+            if (!floor_height.is_none()) {
+                fl_arr = floor_height.cast<py::array_t<float>>();
+                auto fa = fl_arr.unchecked<2>();
+                fl = fa.data(0, 0);
+            }
+            const float* atm = nullptr;
+            py::array_t<float> atm_arr;
+            if (!atmosphere.is_none()) {
+                atm_arr = atmosphere.cast<py::array_t<float>>();
+                auto aa = atm_arr.unchecked<2>();
+                atm = aa.data(0, 0);
+            }
+            const float* wp = nullptr;
+            py::array_t<float> wp_arr;
+            if (!wave_p.is_none()) {
+                wp_arr = wave_p.cast<py::array_t<float>>();
+                auto wa = wp_arr.unchecked<2>();
+                wp = wa.data(0, 0);
+            }
+            self.step(wd, vx, vy, fl, atm, wp, sol, h, w, dt, tilt_x, tilt_y);
+        }, py::arg("water_depth"), py::arg("flow_vx"), py::arg("flow_vy"),
+           py::arg("floor_height") = py::none(),
+           py::arg("atmosphere")   = py::none(),
+           py::arg("wave_p")       = py::none(),
+           py::arg("solid"), py::arg("dt"),
+           py::arg("tilt_x"), py::arg("tilt_y"));
 }
