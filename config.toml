@@ -138,8 +138,9 @@ coarse_cluster       = 3      # reuse the raycaster's coarse clustering when man
 # re-bind solver params). `dx` has no key — it binds from the level's
 # tile_size_m, never assumed. No `substeps` key either: the count is derived
 # house-style from the solver's CFL bound, n = ceil(sim_time / max_dt()) — 3 at
-# 24 tps with the shipped k_p = 0.5 (2 with k_p = 0). The boil_*/ratio_*/flood_eps keys are pre-declared for
-# W3 (displacement) / W5 (flash-boil) and unused until those steps — harmless.
+# 24 tps with the shipped k_p = 0.5 (2 with k_p = 0). ratio_cap/flood_eps drive
+# the W3 displacement; boil_* drive the W5 flash-boil (steam_yield is SHARED
+# with the fire side's evaporative heat-boil, so all steam puffs consistently).
 [physics.water]
 g = 9.81          # m/s^2
 damping = 1.0     # 1/s pipe friction (prototype-validated: fluid_test.py used 1.0)

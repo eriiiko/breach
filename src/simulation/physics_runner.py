@@ -64,6 +64,9 @@ WATER_DEPTH_EPS = 1e-5   # m snap-to-zero (kills denormal creep)
 WATER_CEILING_H = 2.5    # m air column == the solver's h_ref CFL reference
 WATER_RATIO_CAP = 1.5    # max per-tick isothermal compression ratio (W3)
 WATER_FLOOD_EPS = 0.05   # m air column below which a cell counts FLOODED (W3)
+WATER_BOIL_RATE = 0.02   # m/s flash-boil sink in near-vacuum (W5)
+WATER_BOIL_P_THRESH = 0.3  # atmosphere below this boils (W5; pressure-keyed)
+WATER_STEAM_YIELD = 4.0  # white_smoke density per metre boiled (W5)
 
 
 class PhysicsRunner:
@@ -214,6 +217,11 @@ class PhysicsRunner:
         # tick — so FieldEdit dumps (flushed before physics) and source holds
         # are each counted EXACTLY ONCE by the W3 displacement accounting.
         self._water_depth_before = None
+        # W5 steam gas index: which gmap.gas slice the flash-boil puff lands
+        # in. Resolved BY NAME from the gas table ONCE, on the first
+        # _step_water call (never hardcode the slice index) — the same lazy
+        # bind as `dx` above; gmap is not in hand at construction.
+        self._steam_idx = None
 
     def _bind_water_params(self):
         """Bind [physics.water] onto the WaterSolver (water plan W2).
@@ -230,11 +238,15 @@ class PhysicsRunner:
         needs the level's tile size, which only exists once a GameMap is in
         hand, so it lazy-binds on the first :meth:`_step_water` call.
 
-        The W3 displacement accounting runs PYTHON-side in :meth:`_step_water`
-        (it is not a solver knob), so its params — ``ceiling_h`` /
-        ``ratio_cap`` / ``flood_eps`` — bind onto the runner itself.
-        ``water_ceiling_h`` reads the SAME config key as ``h_ref`` above:
-        one constant for the air column, two consumers.
+        The W3 displacement accounting and the W5 flash-boil sink run
+        PYTHON-side in :meth:`_step_water` (they are not solver knobs), so
+        their params — ``ceiling_h`` / ``ratio_cap`` / ``flood_eps`` and
+        ``boil_rate`` / ``boil_p_thresh`` / ``steam_yield`` — bind onto the
+        runner itself. ``water_ceiling_h`` reads the SAME config key as
+        ``h_ref`` above: one constant for the air column, two consumers.
+        ``steam_yield`` is SHARED with the fire side's evaporative
+        heat-boil (their lane), so heat-boil and vacuum-boil steam
+        consistently.
         """
         water_cfg = getattr(CFG.physics, "water", None)
 
@@ -250,6 +262,9 @@ class PhysicsRunner:
         self.water_ceiling_h = _fp("ceiling_h", WATER_CEILING_H)
         self.water_ratio_cap = _fp("ratio_cap", WATER_RATIO_CAP)
         self.water_flood_eps = _fp("flood_eps", WATER_FLOOD_EPS)
+        self.water_boil_rate = _fp("boil_rate", WATER_BOIL_RATE)
+        self.water_boil_p_thresh = _fp("boil_p_thresh", WATER_BOIL_P_THRESH)
+        self.water_steam_yield = _fp("steam_yield", WATER_STEAM_YIELD)
 
     # ------------------------------------------------------------------
     # Per-tick step
@@ -504,8 +519,8 @@ class PhysicsRunner:
 
         Factored out of :meth:`step` (the dormancy-test enabler — a no-op
         monkeypatch here is the A/B baseline). Per tick: apply the continuous
-        source holds, run the C++ pipe-model substeps, then (W5, later) the
-        boil sink, then the W3 volume-displacement accounting against the
+        source holds, run the C++ pipe-model substeps, then the W5 flash-boil
+        vacuum sink, then the W3 volume-displacement accounting against the
         ``before`` snapshot (isothermal P*V onto ``atmosphere`` + the flooded
         air-seal). Walls are ``gmap.solid`` — STATIC walls only; units do NOT
         block water (Erik's explicit call: water flows under feet).
@@ -521,6 +536,10 @@ class PhysicsRunner:
             # size, which we only meet here (never assume a default).
             self._water_depth_before = gmap.water_depth.copy()
             self.water.dx = float(gmap.tile_size_m)
+            # W5 steam slice: resolved BY NAME from the map's gas table, once
+            # (gases.py is the single source of truth — never hardcode the
+            # white_smoke index here).
+            self._steam_idx = int(gmap.gases.name_to_id["white_smoke"])
         before = self._water_depth_before
         # Dormant early-out: no sources, no water now, no water last tick ->
         # nothing to do (a dry ship costs ~one .any() per tick) and the whole
@@ -546,10 +565,35 @@ class PhysicsRunner:
             self.water.step(gmap.water_depth, gmap.flow_vx, gmap.flow_vy,
                             gmap.floor_height, gmap.atmosphere, gmap.wave_p,
                             gmap.solid, wdt, gmap.tilt_x, gmap.tilt_y)
-        # W5 flash-boil vacuum sink goes HERE (before the displacement below:
-        # a boiled-off column reads as receding water -> slight decompression,
-        # the physically-right sign).
-        #
+        # W5 flash-boil vacuum sink (plan W5): standing water under low
+        # pressure boils off at boil_rate m/s and puffs white_smoke (steam)
+        # at steam_yield density per metre boiled. PRESSURE-keyed
+        # (atmosphere < boil_p_thresh), not vacuum-keyed — a drained-but-
+        # sealed room boils too, intended. Runs BEFORE the displacement
+        # accounting below, so a boiled-off column reads as receding water
+        # -> slight decompression (the physically-right sign; ~0.03%/tick,
+        # negligible either way). `boiled` via np.where — NOT
+        # np.minimum(where=...) (where-without-out leaves garbage in the
+        # unselected entries). Direct array writes: a continuous sim rule
+        # like the vacuum drain, not an event — no FieldEdit. The fire-side
+        # evaporative heat sink (wet tiles staying cool) is the temperature
+        # solver's lane, NOT implemented here; it shares this same
+        # steam_yield constant so heat-boil and vacuum-boil steam
+        # consistently. The .any() guard skips the writes when nothing
+        # boils (the dormant early-out above already covers the dry map).
+        boiling = ((gmap.atmosphere < self.water_boil_p_thresh)
+                   & (gmap.water_depth > 0))
+        if boiling.any():
+            boiled = np.where(
+                boiling,
+                np.minimum(gmap.water_depth,
+                           self.water_boil_rate * sim_time),
+                0.0)
+            gmap.water_depth -= boiled
+            # water_depth is float32, so `boiled` already is too — the
+            # astype is belt-and-braces (plan W5).
+            gmap.gas[self._steam_idx] += (
+                self.water_steam_yield * boiled).astype(np.float32)
         # W3 volume displacement (water -> atmosphere; plan W3, canon §5.1):
         # the air column above each cell went from `free_before` to
         # `free_after` this tick; isothermal P*V = const scales the pressure
