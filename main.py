@@ -51,6 +51,14 @@ from simulation import Simulation
 from simulation.unit import Unit
 from input_handler import InputHandler
 
+# Windows consoles default to cp1252, which can't encode unicode (arrows etc.)
+# that creep into startup help text — force utf-8 so a stray glyph can never
+# crash launch (errors='replace' is a final belt-and-suspenders).
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 
 def main():
     # 1. Load level + build the simulation.
@@ -121,7 +129,7 @@ def main():
     print(f"  DEBUG: T toggles temperature overlay (black-body heat ramp) | "
           f"I ignites the tile under the cursor")
     print(f"  DEBUG: J spawns the selected gas under the cursor | "
-          f"K cycles the gas (white→black→poison→teargas→fuel)")
+          f"K cycles the gas (white->black->poison->teargas->fuel)")
 
     fit_w_zoom = map_px_w / max(level.width, 1)
     initial_zoom = max(20.0, min(64.0, fit_w_zoom))
