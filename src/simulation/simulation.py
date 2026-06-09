@@ -587,7 +587,7 @@ class Simulation:
         # On the very first tick of a round, fire the start-of-P1 explosives.
         if self.tick == 0 and not self._fired_start_p1:
             process_door_explosives(
-                self.gmap, self.units, DET_START_PHASE1, self.rng,
+                self.gmap, self.edit_queue, self.units, DET_START_PHASE1, self.rng,
                 events=self.tick_events,
             )
             self._fired_start_p1 = True
@@ -727,7 +727,7 @@ class Simulation:
         if (self.tick == self._ticks_per_phase
                 and not self._fired_between):
             process_door_explosives(
-                self.gmap, self.units, DET_BETWEEN_PHASES, self.rng,
+                self.gmap, self.edit_queue, self.units, DET_BETWEEN_PHASES, self.rng,
                 events=self.tick_events,
             )
             self._fired_between = True
@@ -737,7 +737,7 @@ class Simulation:
         if self.tick >= self._ticks_per_round:
             if not self._fired_end_p2:
                 process_door_explosives(
-                    self.gmap, self.units, DET_END_PHASE2, self.rng,
+                    self.gmap, self.edit_queue, self.units, DET_END_PHASE2, self.rng,
                     events=self.tick_events,
                 )
                 self._fired_end_p2 = True

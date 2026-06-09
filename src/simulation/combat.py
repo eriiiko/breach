@@ -516,7 +516,7 @@ def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
 # ---------------------------------------------------------------------------
 # Door explosives (scheduled detonations at phase boundaries)
 # ---------------------------------------------------------------------------
-def process_door_explosives(gmap, units, slot, rng, events=None):
+def process_door_explosives(gmap, queue, units, slot, rng, events=None):
     """Detonate every door-explosive order scheduled for ``slot``.
 
     Lifted from ``game.py:_process_door_explosives``. Called three times
@@ -537,10 +537,10 @@ def process_door_explosives(gmap, units, slot, rng, events=None):
         for o in u.orders:
             if o.order_type == ORDER_EXPLOSIVE and o.det_slot == slot:
                 fy, fx = o.target_fy, o.target_fx
-                apply_explosion(gmap, fy, fx, radius, pressure, wall_dmg)
+                apply_explosion(gmap, queue, fy, fx, radius, pressure, wall_dmg)
                 apply_blast_damage(units, fx, fy, radius, unit_dmg,
                                    events=events)
-                add_explosion_smoke(gmap, fy, fx, radius, rng)
+                add_explosion_smoke(gmap, queue, fy, fx, radius)
                 if events is not None:
                     events.append(ExplosionEvent(
                         pos=(fx, fy), radius=radius, kind="door_explosive"))
