@@ -16,6 +16,8 @@ into the ray/wave passes in later chapters.
 """
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 
@@ -58,6 +60,19 @@ _SCALAR_COLUMNS = {
 }
 
 
+# Conduction log-bucket constants (engine/06 §2.4–§2.5, proposal §7.2
+# [physics.thermal]). Defaults mirror config.toml; the live values are read from
+# CFG and threaded in via :meth:`from_config` so the table tracks config edits.
+# Kept here so a dict-built table (tests) and any config-less build still produce
+# a valid face table.
+_THERMAL_DEFAULTS = {
+    "SHIFT_AT_REF": 2,    # metal self-rate = 1/4 (fastest stable on 4-nbr)
+    "SHIFT_MIN": 2,       # rate floor / stability bound (4 * 1/4 <= 1)
+    "KAPPA_REF": 50.0,    # reference conductivity (hull) for the log bucket
+    "NO_FACE": 63,        # sentinel: kappa==0 face / grid edge -> zero conduction
+}
+
+
 class MaterialTable:
     """Per-material property table, indexed by material id.
 
@@ -70,12 +85,18 @@ class MaterialTable:
     Rebuild via :meth:`from_config` after a config hot-reload.
     """
 
-    def __init__(self, materials_cfg):
+    def __init__(self, materials_cfg, thermal_cfg=None):
         """Build from the ``CFG.materials`` namespace (or any equivalent).
 
         ``materials_cfg`` is the :class:`config.Namespace` for ``[materials]``;
         each attribute (``air``, ``hull``, ...) is itself a namespace of the
         named columns. A plain dict-of-dicts is also accepted (for tests).
+
+        ``thermal_cfg`` is the optional ``[physics.thermal]`` namespace (or dict)
+        carrying the conduction log-bucket constants (``SHIFT_AT_REF``,
+        ``SHIFT_MIN``, ``KAPPA_REF``, ``NO_FACE``). When omitted the
+        :data:`_THERMAL_DEFAULTS` are used so a dict-built table (tests) still
+        produces a valid face-shift table.
         """
         ids = sorted(MATERIAL_NAMES)
         # Contiguity: ids must be 0..N-1 so an array indexed by id has no gaps.
@@ -107,6 +128,11 @@ class MaterialTable:
                 )
             shifts.append(tm_int.bit_length() - 1)   # log2 of a power of two
         self.heat_inv_shift = np.array(shifts, dtype=np.int32)
+
+        # --- Conduction face-shift tables (engine/06 §2.4–§2.5) ---------------
+        # All log2 / harmonic-mean / division happens HERE, at LOAD, in float;
+        # the runtime conduction pass is a pure signed-add + arithmetic shift.
+        self._build_conduction_tables(thermal_cfg)
 
         # light_atten: per-channel RGB, (N, 3) float32.
         atten = np.zeros((self.n, 3), dtype=np.float32)
@@ -149,6 +175,84 @@ class MaterialTable:
             burst.append(float(val) if val is not None else 0.0)
         self.burst_threshold = np.array(burst, dtype=np.float32)
 
+    # -- conduction face-shift tables (engine/06 §2.4–§2.5) --------------
+    def _build_conduction_tables(self, thermal_cfg):
+        """Build ``self_shift[N]`` and ``face_shift_table[N][N]`` from the
+        per-material ``conductivity`` column (engine/06 §2.4–§2.5, proposal §2).
+
+        These are the LOAD-TIME float computations (base-2 log buckets + the
+        harmonic-mean face resolve). The runtime conduction pass only ever
+        indexes ``face_shift_table[mat_a][mat_b]`` and shifts — no float, no
+        division — so the whole spread is division-free and bit-identical
+        cross-machine (proposal §2.7).
+
+        ``self_shift[a]`` — the material's own log-bucket shift (§2.4):
+
+            shift = clamp(SHIFT_MIN,
+                          round(SHIFT_AT_REF - log2(kappa / KAPPA_REF)),
+                          NO_FACE)            # NO_FACE if kappa == 0
+
+        ``face_shift_table[a][b]`` — the shift for a face BETWEEN materials a, b,
+        from the HARMONIC MEAN of their conductivities (§2.5), so two resistances
+        in series add (a wood/metal face conducts at ~the wood, slow, rate; an
+        arithmetic mean would leak heat into insulators too fast):
+
+            hm = 2*ka*kb / (ka + kb)
+            face = clamp(SHIFT_MIN, round(-log2(hm / KAPPA_REF)), NO_FACE)
+                   NO_FACE if either kappa == 0
+
+        Symmetric N×N. NO_FACE on every face a kappa==0 material touches makes
+        the air no-op STRUCTURAL (not a runtime value-branch) — see §2.6.
+        """
+        def _get(name):
+            if thermal_cfg is None:
+                return _THERMAL_DEFAULTS[name]
+            if isinstance(thermal_cfg, dict):
+                return thermal_cfg.get(name, _THERMAL_DEFAULTS[name])
+            return getattr(thermal_cfg, name, _THERMAL_DEFAULTS[name])
+
+        shift_at_ref = float(_get("SHIFT_AT_REF"))
+        shift_min = int(_get("SHIFT_MIN"))
+        kappa_ref = float(_get("KAPPA_REF"))
+        no_face = int(_get("NO_FACE"))
+        self.no_face = no_face
+
+        kappa = self.conductivity.astype(np.float64)
+        n = self.n
+
+        def _clamp_shift(s):
+            s = int(round(s))
+            if s < shift_min:
+                s = shift_min
+            if s > no_face:
+                s = no_face
+            return s
+
+        # self_shift[a] — per-material log-bucket self-rate (§2.4).
+        self_shift = np.empty(n, dtype=np.int32)
+        for a in range(n):
+            ka = kappa[a]
+            if ka <= 0.0:
+                self_shift[a] = no_face
+            else:
+                self_shift[a] = _clamp_shift(
+                    shift_at_ref - math.log2(ka / kappa_ref)
+                )
+        self.self_shift = self_shift
+
+        # face_shift_table[a][b] — harmonic-mean face resolve (§2.5), symmetric.
+        face = np.full((n, n), no_face, dtype=np.int32)
+        for a in range(n):
+            ka = kappa[a]
+            for b in range(n):
+                kb = kappa[b]
+                if ka <= 0.0 or kb <= 0.0:
+                    face[a, b] = no_face        # kappa==0 either side -> no face
+                    continue
+                hm = 2.0 * ka * kb / (ka + kb)  # harmonic mean (one float div)
+                face[a, b] = _clamp_shift(-math.log2(hm / kappa_ref))
+        self.face_shift_table = face
+
     # -- accessors -------------------------------------------------------
     @staticmethod
     def _get_row(cfg, name):
@@ -183,11 +287,17 @@ class MaterialTable:
 
     @classmethod
     def from_config(cls, cfg=None):
-        """Build from the global :data:`config.CFG` (or a provided config)."""
+        """Build from the global :data:`config.CFG` (or a provided config).
+
+        Threads the ``[physics.thermal]`` namespace (conduction log-bucket
+        constants) into the table so the face-shift tables track config edits.
+        Tolerates a config without that block (falls back to defaults).
+        """
         if cfg is None:
             from config import CFG
             cfg = CFG
-        return cls(cfg.materials)
+        thermal_cfg = getattr(getattr(cfg, "physics", None), "thermal", None)
+        return cls(cfg.materials, thermal_cfg)
 
     def occludes(self, material_grid):
         """Static occlusion mask: a tile occludes if it attenuates any channel.

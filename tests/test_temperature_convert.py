@@ -49,10 +49,19 @@ SHIFT_WOOD = int(_TBL.heat_inv_shift[MAT_WOOD])
 SHIFT_HULL = int(_TBL.heat_inv_shift[MAT_HULL])
 
 
+# NO_FACE sentinel — must match config [physics.thermal].NO_FACE and the
+# materials table. These conversion-only tests use an all-NO_FACE face cache so
+# the conduction pass (engine/06 §2) is a no-op and only the §1 conversion is
+# exercised (conduction has its own test module).
+NO_FACE = int(_TBL.no_face)
+
+
 def _grid(material_ids):
-    """Build (temperature, heat, heat_inv_shift, solid) for a 1-row grid whose
-    tiles have the given material ids. temperature starts at 0; heat starts at
-    0; the shift/solid caches are derived from the material table."""
+    """Build (temperature, heat, heat_inv_shift, face_shift, solid) for a 1-row
+    grid whose tiles have the given material ids. temperature starts at 0; heat
+    starts at 0; the shift/solid caches are derived from the material table. The
+    face_shift cache is all-NO_FACE (conduction disabled — this module tests the
+    conversion pass only)."""
     mats = np.asarray(material_ids, dtype=np.int8).reshape(1, -1)
     w = mats.shape[1]
     temperature = np.zeros((1, w), dtype=np.int32)
@@ -61,8 +70,9 @@ def _grid(material_ids):
     # Solid mask: a tile is solid iff impermeable. For this synthetic grid we
     # use the table's permeability the same way GameMap._update_caches does.
     solid = (_TBL.permeability[mats] <= 0.0)
+    face_shift = np.full((1, w, 4), NO_FACE, dtype=np.int32)
     return temperature, np.ascontiguousarray(heat), np.ascontiguousarray(shift), \
-        np.ascontiguousarray(solid)
+        np.ascontiguousarray(face_shift), np.ascontiguousarray(solid)
 
 
 def test_shipped_shifts():
@@ -74,11 +84,12 @@ def test_shipped_shifts():
 def test_solid_conversion_equals_heat_shifted():
     # One solid wood tile and one solid hull tile. After one tick, temperature
     # is exactly heat >> shift for each material.
-    temp, heat, shift, solid = _grid([MAT_WOOD, MAT_HULL])
+    temp, heat, shift, face_shift, solid = _grid([MAT_WOOD, MAT_HULL])
     heat[0, 0] = 800 * HEAT_SCALE     # a big, clean Q16.16 heat value (wood tile)
     heat[0, 1] = 800 * HEAT_SCALE     # same deposit on the hull tile
     solver = bp.TemperatureSolver()
-    solver.step(temp, heat, shift, solid)
+    solver.no_face = NO_FACE
+    solver.step(temp, heat, shift, face_shift, solid)
     assert temp[0, 0] == heat[0, 0] >> SHIFT_WOOD, "wood: temp != heat >> 3"
     assert temp[0, 1] == heat[0, 1] >> SHIFT_HULL, "hull: temp != heat >> 5"
     # Sanity: metal soaks more energy/degree -> lower temperature for equal heat.
@@ -88,37 +99,40 @@ def test_solid_conversion_equals_heat_shifted():
 def test_air_tile_stays_exactly_zero():
     # An air (non-solid) tile is skipped by the conversion: even with a huge heat
     # deposit, its temperature stays bit-exactly 0.
-    temp, heat, shift, solid = _grid([MAT_AIR])
+    temp, heat, shift, face_shift, solid = _grid([MAT_AIR])
     assert not solid[0, 0], "sanity: air must be non-solid"
     # Air's shift is 0 (>>0), so if it were wrongly converted the full deposit
     # would land. Use the int32 ceiling to make any leak unmistakable.
     heat[0, 0] = INT32_MAX
     solver = bp.TemperatureSolver()
-    solver.step(temp, heat, shift, solid)
+    solver.no_face = NO_FACE
+    solver.step(temp, heat, shift, face_shift, solid)
     assert temp[0, 0] == 0, f"air tile gained temperature: {temp[0, 0]}"
 
 
 def test_accumulates_over_two_ticks():
     # The conversion is a SATURATING ADD onto the persistent field: a solid tile
     # under a steady deposit accumulates across ticks.
-    temp, heat, shift, solid = _grid([MAT_WOOD])
+    temp, heat, shift, face_shift, solid = _grid([MAT_WOOD])
     heat[0, 0] = 100 * HEAT_SCALE
     solver = bp.TemperatureSolver()
+    solver.no_face = NO_FACE
     per_tick = heat[0, 0] >> SHIFT_WOOD
-    solver.step(temp, heat, shift, solid)       # tick 1 (heat NOT cleared here)
+    solver.step(temp, heat, shift, face_shift, solid)   # tick 1 (heat NOT cleared)
     assert temp[0, 0] == per_tick
-    solver.step(temp, heat, shift, solid)       # tick 2: same deposit again
+    solver.step(temp, heat, shift, face_shift, solid)   # tick 2: same deposit
     assert temp[0, 0] == 2 * per_tick, "two ticks must accumulate"
 
 
 def test_saturating_add_pins_at_int32_max():
     # Pre-load temperature near the ceiling; a further deposit must clamp at
     # INT32_MAX, never wrap negative.
-    temp, heat, shift, solid = _grid([MAT_WOOD])
+    temp, heat, shift, face_shift, solid = _grid([MAT_WOOD])
     temp[0, 0] = INT32_MAX - 10
     heat[0, 0] = 1000 * HEAT_SCALE        # deposit >> 3 is far more than 10
     solver = bp.TemperatureSolver()
-    solver.step(temp, heat, shift, solid)
+    solver.no_face = NO_FACE
+    solver.step(temp, heat, shift, face_shift, solid)
     assert temp[0, 0] == INT32_MAX, f"saturating add did not pin: {temp[0, 0]}"
     assert temp[0, 0] >= 0, "must never wrap negative"
 
@@ -136,8 +150,10 @@ def test_deterministic_same_inputs_bit_identical():
         shift = np.ascontiguousarray(_TBL.heat_inv_shift[mats].astype(np.int32))
         solid = np.ascontiguousarray(_TBL.permeability[mats] <= 0.0)
         heat = np.ascontiguousarray(heat)
+        face_shift = np.full((1, w, 4), NO_FACE, dtype=np.int32)
         solver = bp.TemperatureSolver()
-        solver.step(temp, heat, shift, solid)
+        solver.no_face = NO_FACE
+        solver.step(temp, heat, shift, np.ascontiguousarray(face_shift), solid)
         return temp
 
     a = run()

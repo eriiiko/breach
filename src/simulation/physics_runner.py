@@ -96,12 +96,15 @@ class PhysicsRunner:
         self.fire.params.k_wind_thresh  = FIRE_K_WIND_THRESH
         self.fire.params.k_wind_net     = FIRE_K_WIND_NET
 
-        # TemperatureSolver (engine/06 §1): turns the per-tick `heat` deposit
-        # into the persistent `temperature` field on solids. STEP A is the
-        # heat -> temperature conversion only (conduction + cooling land later).
-        # Stateless today (no tunables); kept as an instance for the later
-        # passes that gain parameters.
+        # TemperatureSolver (engine/06 §1–§2): turns the per-tick `heat` deposit
+        # into the persistent `temperature` field on solids (§1 conversion), then
+        # spreads it by CONDUCTION (§2). The conduction pass keys faces off the
+        # NO_FACE sentinel; bind it from config so Python (the per-tile
+        # face_shift bake) and C++ never disagree. Ambient cooling (§3) + unit
+        # damage (§4) land in later passes.
         self.temperature = bp.TemperatureSolver()
+        thermal = getattr(CFG.physics, "thermal", None)
+        self.temperature.no_face = int(getattr(thermal, "NO_FACE", 63))
 
     # ------------------------------------------------------------------
     # Per-tick step
@@ -151,15 +154,20 @@ class PhysicsRunner:
             sim_time,
         )
 
-        # Heat -> temperature conversion (engine/06 §1.2, proposal §6 step 1).
-        # Reads the `heat` deposit NON-DESTRUCTIVELY and accumulates it (scaled
-        # by 1/thermal_mass via the precomputed shift) onto `temperature` on
-        # SOLID tiles. With no heat sources wired into the sim tick yet, `heat`
-        # is 0 here and the field stays 0 (no behaviour change) — but the seam
-        # is now in place for fire/beams to feed it. STEP A: conversion only;
-        # conduction (§2) and cooling (§3) become further passes in step().
+        # Heat -> temperature conversion + CONDUCTION (engine/06 §1.2 + §2,
+        # proposal §6 steps 1–2). Pass 1 reads the `heat` deposit
+        # NON-DESTRUCTIVELY and accumulates it (scaled by 1/thermal_mass via the
+        # precomputed shift) onto `temperature` on SOLID tiles. Pass 2 spreads
+        # the just-converted field one conduction relaxation step (gather,
+        # double-buffered) along the harmonic-mean face shifts in `face_shift`;
+        # kappa==0 air faces are NO_FACE -> air stays bit-exactly 0. With no heat
+        # sources wired into the sim tick yet, `heat` is 0 and an all-equal field
+        # (0 everywhere) conducts to nothing, so the field stays 0 (no behaviour
+        # change) — but the seam is now in place for fire/beams to feed it.
+        # Cooling (§3) + unit damage (§4) become further passes in step().
         self.temperature.step(
-            gmap.temperature, gmap.heat, gmap.heat_inv_shift, gmap.solid,
+            gmap.temperature, gmap.heat, gmap.heat_inv_shift,
+            gmap.face_shift, gmap.solid,
         )
 
         # Clear the per-tick `heat` deposit — END OF TICK, AFTER the conversion

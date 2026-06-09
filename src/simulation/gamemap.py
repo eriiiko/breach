@@ -172,6 +172,16 @@ class GameMap:
         # _update_caches and patched per tile in on_tile_changed — the SAME seam
         # as the `conductivity` cache. int32 to cross to C++ as a plain (h, w).
         self.heat_inv_shift = np.zeros((h, w), dtype=np.int32)
+        # Per-tile CONDUCTION face-shift cache (engine/06 §2.5): for each tile
+        # the shift for its 4 faces in fixed dir order N,S,E,W, looked up from
+        # the material table's harmonic-mean `face_shift_table[mat_i][mat_n]`.
+        # A face is NO_FACE (== materials.no_face) at a grid edge or when either
+        # side has kappa==0 (air) — so the runtime conduction pass skips it and
+        # air is a structural no-op. Baked in _update_caches and patched per tile
+        # (plus its 4 neighbours) in on_tile_changed — the SAME structural-edit
+        # seam as conductivity/heat_inv_shift, so a breached wall's faces update
+        # the instant the tile changes. (h, w, 4) int32, C-contiguous for C++.
+        self.face_shift = np.zeros((h, w, 4), dtype=np.int32)
         # Smoke-glow buffer (ch.03 C16 / ch.05 §God-rays): RENDER-ONLY god-ray
         # glow. The light each tile's smoke ABSORBS is deposited here per
         # channel by the march (energy-conserving). Shape (h, w, 3) f32 ->
@@ -222,6 +232,11 @@ class GameMap:
         # the conductivity cache (engine/06 §1.2). Drives the heat -> temperature
         # conversion `temperature += heat >> heat_inv_shift`. int32 for C++.
         self.heat_inv_shift = tbl.heat_inv_shift[m].astype(np.int32, copy=True)
+        # Per-tile conduction face-shift cache (engine/06 §2.5): baked from the
+        # material grid via the harmonic-mean face table. NO_FACE at grid edges
+        # and on any kappa==0 (air) face -> structural air no-op (built IN-PLACE
+        # so a C++ view stays valid).
+        self._rebuild_face_shift()
         # Gas/smoke permeability projected onto the grid (0 sealed, 1 open).
         self.permeability = tbl.permeability[m].astype(np.float32, copy=True)
         # Shockwave absorption projected onto the grid (ch.04 §4a).
@@ -243,6 +258,65 @@ class GameMap:
         # == 0) until stamp_units paints unit footprints over it. Sourced from
         # permeability, not the occlusion flag, so flow and optics can diverge.
         self.obstacles = self.solid
+
+    # Conduction face directions, fixed order N,S,E,W (MUST match the C++
+    # TemperatureSolver DIR_* / DY,DX and the binding's (h,w,4) layout).
+    _FACE_DIRS = ((-1, 0), (1, 0), (0, 1), (0, -1))
+
+    def _rebuild_face_shift(self):
+        """Bake the per-tile ``face_shift[y][x][dir]`` cache from the material
+        grid (engine/06 §2.5), IN-PLACE so any C++ view of the buffer stays
+        valid.
+
+        For each tile ``i`` and each of its 4 faces (dir order N,S,E,W) the cache
+        holds ``materials.face_shift_table[mat_i][mat_n]`` — the harmonic-mean
+        face shift between this tile's material and the neighbour's. NO_FACE
+        (``materials.no_face``) is written where the neighbour is OUT OF BOUNDS
+        (grid edge) or on any kappa==0 (air) face; the face table already encodes
+        the kappa==0 case as NO_FACE, so the only edge-specific work here is the
+        grid boundary. Vectorised per direction (no Python per-tile loop).
+        """
+        m = self.material
+        h, w = self._h, self._w
+        face_tbl = self.materials.face_shift_table     # (N, N) int32
+        no_face = int(self.materials.no_face)
+
+        # Default every face to NO_FACE, then fill the in-bounds slabs per dir.
+        self.face_shift[:] = no_face
+        for d, (dy, dx) in enumerate(self._FACE_DIRS):
+            # Slices of the (tile, neighbour) overlap region for this direction.
+            ty0, ty1 = max(0, -dy), h - max(0, dy)
+            tx0, tx1 = max(0, -dx), w - max(0, dx)
+            mi = m[ty0:ty1, tx0:tx1]                   # this tile's material
+            mn = m[ty0 + dy:ty1 + dy, tx0 + dx:tx1 + dx]  # neighbour's material
+            self.face_shift[ty0:ty1, tx0:tx1, d] = face_tbl[mi, mn]
+
+    def _patch_face_shift(self, fy, fx):
+        """Patch the face_shift cache for tile (fy, fx) AND the facing entry of
+        each of its 4 neighbours, after a structural edit to ``material``.
+
+        A face is shared: changing tile i's material flips both ``face_shift[i]``
+        (its 4 faces) and the ONE entry of each neighbour that points back at i.
+        Symmetric table -> ``face(a,b) == face(b,a)``, so the neighbour's facing
+        face gets the same value. O(1) (a handful of cells) — never an O(grid)
+        rebuild. NO_FACE at the grid edge.
+        """
+        m = self.material
+        h, w = self._h, self._w
+        face_tbl = self.materials.face_shift_table
+        no_face = int(self.materials.no_face)
+        mi = int(m[fy, fx])
+        for d, (dy, dx) in enumerate(self._FACE_DIRS):
+            ny, nx = fy + dy, fx + dx
+            if 0 <= ny < h and 0 <= nx < w:
+                mn = int(m[ny, nx])
+                self.face_shift[fy, fx, d] = int(face_tbl[mi, mn])
+                # The neighbour's face that points BACK at (fy, fx) is the
+                # opposite direction: N<->S (0<->1), E<->W (2<->3).
+                opp = d ^ 1
+                self.face_shift[ny, nx, opp] = int(face_tbl[mn, mi])
+            else:
+                self.face_shift[fy, fx, d] = no_face
 
     # ------------------------------------------------------------------
     # Incremental cache patch (single structural-edit seam — ch.02 review #10)
@@ -269,6 +343,10 @@ class GameMap:
         # Inverse-thermal-mass shift cache — patched through the SAME seam as
         # conductivity so a breached wall's thermal coupling updates instantly.
         self.heat_inv_shift[fy, fx] = int(tbl.heat_inv_shift[mat_id])
+        # Conduction face-shift cache — patch this tile's 4 faces AND the facing
+        # entry of each neighbour (a shared face), so a breached wall's thermal
+        # coupling to its neighbours updates the instant it changes.
+        self._patch_face_shift(fy, fx)
         self.permeability[fy, fx] = float(tbl.permeability[mat_id])
         self.wave_absorb[fy, fx] = float(tbl.wave_absorb[mat_id])
         # Solid mask follows permeability (sealed iff permeability == 0).

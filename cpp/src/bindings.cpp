@@ -159,21 +159,32 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("wall_hp"), py::arg("is_wall"), py::arg("flammable"),
            py::arg("dt"));
 
-    // --- TemperatureSolver (heat -> temperature conversion; engine/06 §1) ---
+    // --- TemperatureSolver (heat -> temperature conversion §1 + conduction §2;
+    //     engine/06 §1–§2) ---
     py::class_<TemperatureSolver>(m, "TemperatureSolver")
         .def(py::init<>())
+        // NO_FACE sentinel (face_shift == this -> skip the face). Bound from
+        // config [physics.thermal].NO_FACE so Python and C++ never disagree.
+        .def_property("no_face",
+            &TemperatureSolver::get_no_face,
+            &TemperatureSolver::set_no_face)
         .def("step", [](const TemperatureSolver& self,
                         py::array_t<int32_t> temperature,
                         py::array_t<int32_t> heat,
                         py::array_t<int32_t> heat_inv_shift,
+                        py::array_t<int32_t> face_shift,
                         py::array_t<bool>    solid) {
             auto [temp, h, w]     = get_2d(temperature);
             auto [hp, h2, w2]     = get_2d_const(heat);
             auto [shift, h3, w3]  = get_2d_const(heat_inv_shift);
             auto [sol, h4, w4]    = get_2d_const(solid);
-            self.step(temp, hp, shift, sol, h, w);
+            // face_shift is (h, w, 4) int32 — fixed dir order N,S,E,W.
+            auto fa = face_shift.unchecked<3>();
+            const int32_t* fs = fa.data(0, 0, 0);
+            self.step(temp, hp, shift, fs, sol, h, w);
         }, py::arg("temperature"), py::arg("heat"),
-           py::arg("heat_inv_shift"), py::arg("solid"));
+           py::arg("heat_inv_shift"), py::arg("face_shift"),
+           py::arg("solid"));
 
     // --- Raycaster ---
     py::class_<LightSource>(m, "LightSource")

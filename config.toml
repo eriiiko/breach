@@ -35,6 +35,18 @@ burst_max_per_tick = 16                # cap on walls that may burst in one tick
 physics_dt = 0.001                # 1ms (CFL stable for c=300 tiles/s)
 physics_substeps = 8              # 8 * 1ms = 8ms physics per game tick
 
+# Temperature / conduction constants (engine/06 §2, proposal §7.2). Q16.16
+# domain shared with `heat` (TEMP_SCALE == HEAT_SCALE). The self/face shift
+# tables are derived from `conductivity` ONCE at load using these; the runtime
+# conduction pass is a pure signed-add + arithmetic right shift (no float, no
+# divide) -> deterministic / bit-identical cross-machine.
+[physics.thermal]
+TEMP_SCALE   = 65536    # Q16.16, = HEAT_SCALE (shared temperature/heat domain)
+SHIFT_AT_REF = 2        # metal self-rate = 1/4 (fastest stable on a 4-nbr grid)
+SHIFT_MIN    = 2        # rate floor / stability bound: 4 faces * 1/4 = 1 (convex)
+KAPPA_REF    = 50.0     # reference conductivity (hull) for the log bucket
+NO_FACE      = 63       # sentinel: kappa==0 face / grid edge -> zero conduction
+
 [smoke]
 # Ray-engine smoke optics (ch.05 §6.1 §6 — decoupled per-channel absorption vs
 # glow). Two INDEPENDENT budgets, NOT constrained to absorb + glow = 1:
