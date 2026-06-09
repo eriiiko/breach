@@ -83,6 +83,7 @@ from simulation.orders import (
 )
 from simulation.physics import apply_explosion, add_explosion_smoke
 from simulation.physics_runner import PhysicsRunner
+from simulation.field_edit import EditQueue, FieldEdit
 from simulation.recorder import PhysicsRecorder
 
 try:
@@ -191,6 +192,14 @@ class Simulation:
         self.projectiles: List = []
         self.shots: List = []          # legacy tracer list; renderer reads it
         self.tick_events: List = []    # cleared each step()
+
+        # Field-edit queue (engine/13): the canonical WRITE path. Weapon / fire /
+        # explosion phases enqueue FieldEdits during the tick via :meth:`edit`;
+        # :meth:`step` flushes the whole queue once — in a deterministic
+        # stable-sorted order — just before the physics solvers run, so the
+        # solvers see the settled net deposit. Recreated each reset so a fresh
+        # rollout starts with an empty queue.
+        self.edit_queue = EditQueue()
 
         self.tick = 0                  # tick within the round (0 .. ticks_per_round - 1)
         self.phase = 0                 # 0 = phase 1, 1 = phase 2
@@ -532,6 +541,20 @@ class Simulation:
         return False
 
     # ------------------------------------------------------------------
+    # Field-edit enqueue API (engine/13 — the canonical WRITE primitive)
+    # ------------------------------------------------------------------
+    def edit(self, field_edit: FieldEdit) -> None:
+        """Enqueue one :class:`FieldEdit` for this tick's flush.
+
+        The single entry point any system uses to write a continuous field
+        (smoke / atmosphere / wave_source / fire / heat / future gases). Nothing
+        is applied here — :meth:`step` flushes the queue in deterministic
+        stable-sorted order before the physics solvers run. Topology-changing
+        edits (wall destruction) are NOT FieldEdits; they stay structural.
+        """
+        self.edit_queue.enqueue(field_edit)
+
+    # ------------------------------------------------------------------
     # Tick loop — the core simulation step
     # ------------------------------------------------------------------
     def step(self) -> None:
@@ -591,6 +614,16 @@ class Simulation:
 
         # 6. Re-stamp obstacles.
         self.gmap.stamp_units(self.units)
+
+        # 6b. Flush the field-edit queue (engine/13). The weapon / fire /
+        # explosion phases above enqueued their FieldEdits (smoke / atmosphere /
+        # wave_source / fire / heat deposits) via :meth:`edit`; we apply them ALL
+        # here, in one deterministic stable-sorted pass, BEFORE the physics
+        # solvers run — so the solvers advect / propagate the settled NET deposit
+        # for this tick (a laser burn-off and a grenade cloud issued the same
+        # tick both land before smoke advection). This is the single RNG consumer
+        # for noise>0 edits, drawing from the seeded sim.rng in sorted order.
+        self.edit_queue.flush(self.gmap, self.rng)
 
         # 7. Physics.
         sim_time_per_tick = 1.0 / float(self._tps)
@@ -727,7 +760,7 @@ class Simulation:
                     fy = int(proj.target_fy)
                     radius = CFG.weapons.grenade.blast_radius
                     apply_explosion(
-                        self.gmap, fy, fx, radius,
+                        self.gmap, self.edit_queue, fy, fx, radius,
                         CFG.weapons.grenade.pressure,
                         CFG.weapons.grenade.wall_damage,
                     )
@@ -736,7 +769,8 @@ class Simulation:
                         CFG.weapons.grenade.unit_damage,
                         events=self.tick_events,
                     )
-                    add_explosion_smoke(self.gmap, fy, fx, radius, self.rng)
+                    add_explosion_smoke(
+                        self.gmap, self.edit_queue, fy, fx, radius)
                     self.tick_events.append(ExplosionEvent(
                         pos=(fx, fy), radius=radius, kind="grenade"))
 

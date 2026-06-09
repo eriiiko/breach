@@ -34,6 +34,7 @@ import breach_physics as bp
 from level_loader import LevelData
 from simulation import Simulation
 from simulation.physics import add_explosion_smoke
+from simulation.field_edit import EditQueue
 
 SEED = 11
 
@@ -75,7 +76,12 @@ def _deposit(noise: float, radius: int = 8):
     rng = np.random.default_rng(SEED)
     h, w = g.material.shape
     cy, cx = h // 2, w // 2
-    add_explosion_smoke(g, cy, cx, radius, rng, noise=noise)
+    # engine/13: the deposit is now an enqueued FieldEdit; the per-tile noise
+    # multiplier is drawn from `rng` at flush time, in the queue's deterministic
+    # tile order — so a fixed seed gives the same deposit as the old inline draw.
+    queue = EditQueue()
+    add_explosion_smoke(g, queue, cy, cx, radius, noise=noise)
+    queue.flush(g, rng)
     smoke = g.smoke.copy()
 
     # Reconstruct base per tile to recover the noise multiplier deposit/base.

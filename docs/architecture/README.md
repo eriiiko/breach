@@ -80,6 +80,7 @@ Legend: ✅ implemented · ⚠️ partial (foundation built, advanced parts desi
 | 10 | [Pathfinding](engine/10_pathfinding.md) | ⚠️ (A* built; temporal A* unused) |
 | 11 | [Electricity / lightning](engine/11_electricity.md) | 📝 |
 | 12 | [Config & hot-reload](engine/12_config_and_hot_reload.md) | ✅ |
+| 13 | [FieldEdit (write primitive)](engine/13_field_edit.md) | ⚠️ (queue + applier + explosion/smoke migration built; wall_hp/destruction-sweep + laser/gas consumers designed) |
 
 ### Mechanics — game logic on the engine
 | # | Chapter | Status |
