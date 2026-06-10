@@ -15,7 +15,10 @@ Controls:
     T              — toggle grenade-spawn mode (click to detonate)
     Left click     — spawn grenade (when in spawn mode)
     N / Shift+N    — explosion smoke noise down / up (live cloud-texture dial)
+    U              — pour water under cursor (0.2 m per press)
+    P / Shift+P    — tilt ship +2° / −2° (the Titanic dial, clamped ±20°)
     G              — toggle sRGB decode (renderer toggle from game)
+    O              — toggle water depth overlay (renderer toggle from game)
     F1             — toggle grid overlay
     F2             — toggle smoke
     F4             — toggle lighting
@@ -411,6 +414,29 @@ def main() -> None:
                 cur = state.get("explosion_smoke_noise")
                 cur = cur + 0.05 if shift else cur - 0.05
                 state.set("explosion_smoke_noise", min(1.0, max(0.0, cur)))
+            # U = pour 0.2 m of water under the cursor (clamped at 2.5 m
+            # total) — the main game's debug-pour, demo-local copy. Direct
+            # write, so it lands even while paused.
+            if rl.is_key_pressed(K.KEY_U):
+                tile = renderer.mouse_to_tile()
+                if tile is not None:
+                    tx, ty = tile
+                    H, W = sim.gmap.material.shape
+                    if (0 <= tx < W and 0 <= ty < H
+                            and not sim.gmap.solid[ty, tx]):
+                        sim.gmap.water_depth[ty, tx] = min(
+                            sim.gmap.water_depth[ty, tx] + 0.2, 2.5)
+            # P / Shift+P = ship tilt_x +2 / −2 degrees (clamped ±20) — the
+            # Titanic dial; standing water slides to the low side.
+            if rl.is_key_pressed(K.KEY_P):
+                shift = (rl.is_key_down(K.KEY_LEFT_SHIFT) or
+                         rl.is_key_down(K.KEY_RIGHT_SHIFT))
+                step_r = float(np.radians(-2.0 if shift else 2.0))
+                lim = float(np.radians(20.0))
+                sim.gmap.tilt_x = max(-lim, min(lim,
+                                                sim.gmap.tilt_x + step_r))
+                print(f"[demo] ship tilt_x -> "
+                      f"{np.degrees(sim.gmap.tilt_x):+.1f} deg")
 
             # ---- Sim tick ----
             if not state.paused:

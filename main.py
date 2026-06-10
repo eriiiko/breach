@@ -39,7 +39,6 @@ sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-import numpy as np
 import pyray as rl
 
 import breach_physics as bp
@@ -71,20 +70,11 @@ def main():
     sim = Simulation(level, seed=42, breach_physics=bp,
                      enable_recorder=True)
 
-    # ----- Demo scene: pre-breach + smoke source + persistent fire patch.
-    # Gameplay isn't fully content-driven yet, so we keep the visible
-    # ambient effects from the prior main loop so the renderer has
-    # something to show. Replace with level-defined hazards later.
-    SMOKE_SOURCE = (slice(45, 50), slice(22, 28))
-    FIRE_SOURCE  = (slice(75, 80), slice(22, 28))
-    sim.gmap.flammable[FIRE_SOURCE] = True
-    sim.gmap.fire[FIRE_SOURCE] = 0.8
-    BREACH = (slice(58, 64), slice(33, 36))
-    sim.gmap.material[BREACH] = 0  # MAT_AIR
-    sim.gmap.solid[BREACH] = False
-    sim.gmap.is_vacuum[BREACH] = True
-    sim.gmap.atmosphere[BREACH] = 0.0
-    sim.gmap.obstacles[BREACH] = False
+    # The old hardcoded demo scene (pre-breach + persistent smoke/fire
+    # sources) is gone: it permanently vented the ship from an interior
+    # vacuum pool and dragged all smoke toward it via the sink-pull.
+    # Hazards are interactive now — I ignite, J gas, U pour water,
+    # explosives breach — and will be level-defined later.
 
     # ----- Spawn units from level.toml [[spawn]] entries.
     if not level.spawns:
@@ -181,12 +171,6 @@ def main():
 
             # ----- Tick the simulation while not paused -----
             if not sim.is_paused():
-                # Persistent demo hazards.
-                sim.gmap.smoke[SMOKE_SOURCE] = np.maximum(
-                    sim.gmap.smoke[SMOKE_SOURCE], 0.7)
-                sim.gmap.fire[FIRE_SOURCE] = np.maximum(
-                    sim.gmap.fire[FIRE_SOURCE], 0.8)
-
                 tick_accum += dt
                 # Cap the per-frame catch-up to avoid spirals if a
                 # background pause stalls the loop.
