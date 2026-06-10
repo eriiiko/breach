@@ -499,6 +499,10 @@ class GameMap:
           comes from an optional per-unit ``unit.permeability`` hook, defaulting
           to ``CFG.physics.unit_permeability`` (0.5 = "slows flow, doesn't
           seal"). 0 would restore the old hard wall; 1 would be invisible.
+          The stamp takes MIN with the static permeability: a body can make an
+          open tile porous but never RAISE a sealed tile's permeability (a
+          closed door under a unit stays flow-sealed — stamping it open made
+          the solvers destroy mass at its faces, the door-stamp leak).
         * ``dyn_light_atten`` = static material attenuation combined per-channel
           via MAX with each living unit's opacity (UNCHANGED — units still cast
           solid shadows). Because the field is RGB a unit can occlude *per
@@ -554,7 +558,14 @@ class GameMap:
             for (tx, ty) in u.occupied_tiles():
                 if 0 <= ty < h and 0 <= tx < w:
                     # Unit is a soft body: partial permeability, NOT an obstacle.
-                    self.dyn_permeability[ty, tx] = u_perm
+                    # MIN vs the static material: a body makes an OPEN tile
+                    # porous, but must never RAISE a sealed tile's permeability.
+                    # A closed DOOR is passable to movement yet solid to flow;
+                    # stamping u_perm over it opened a flow face into a cell the
+                    # solvers exclude and hold at zero — a mass sink that
+                    # drained the sealed ship (the door-stamp leak).
+                    sp = self.permeability[ty, tx]
+                    self.dyn_permeability[ty, tx] = u_perm if u_perm < sp else sp
                     # Wave absorption: MAX so a unit can only ADD damping, never
                     # remove a lossy material's absorption underneath it.
                     cur = self.dyn_wave_absorb[ty, tx]

@@ -160,11 +160,32 @@ void AtmosphereSolver::step(
                         // Vacuum is NOT blocked here (perm 1) — air diffuses
                         // toward exposed breach vacuum, as before. (The sealed
                         // border is vacuum+wall, perm 0, which IS blocked.)
+                        //
+                        // CONSERVATION GUARD: a neighbour the solve EXCLUDES
+                        // and hard-zeroes (wall/obstacle — skipped above,
+                        // zeroed in the BC pass below) must contribute 0 to
+                        // BOTH sums. Such a cell has no equation of its own,
+                        // so a nonzero face there is a one-sided flux into a
+                        // cell held at p=0 — a Dirichlet sink that DESTROYS
+                        // mass. (Trigger: unit footprints stamped
+                        // dyn_permeability=0.5 over solid DOOR tiles — doors
+                        // are passable to movement but solid to flow — and the
+                        // sealed ship drained at a few %/s.) Static walls
+                        // carry perm 0, so for perm ∈ {0,1} inputs min() is
+                        // already 0 and this guard changes nothing — the 3a
+                        // bit-identical guarantee holds. Vacuum is NOT
+                        // guarded: a breach face keeps its perm weight and
+                        // drains via the relaxation BC, as designed.
                         const float perm_i = permeability[i];
-                        float w_up    = (y > 0)   ? std::min(perm_i, permeability[(y-1)*w+x]) : 0.0f;
-                        float w_down  = (y < h-1) ? std::min(perm_i, permeability[(y+1)*w+x]) : 0.0f;
-                        float w_left  = (x > 0)   ? std::min(perm_i, permeability[row+x-1])   : 0.0f;
-                        float w_right = (x < w-1) ? std::min(perm_i, permeability[row+x+1])   : 0.0f;
+                        auto face = [&](int nb) {
+                            return (obstacles[nb] || is_wall[nb])
+                                ? 0.0f
+                                : std::min(perm_i, permeability[nb]);
+                        };
+                        float w_up    = (y > 0)   ? face((y-1)*w+x) : 0.0f;
+                        float w_down  = (y < h-1) ? face((y+1)*w+x) : 0.0f;
+                        float w_left  = (x > 0)   ? face(row+x-1)   : 0.0f;
+                        float w_right = (x < w-1) ? face(row+x+1)   : 0.0f;
 
                         float nb = w_up   * (y > 0   ? atmosphere[(y-1)*w+x] : 0.0f)
                                  + w_down * (y < h-1 ? atmosphere[(y+1)*w+x] : 0.0f)
