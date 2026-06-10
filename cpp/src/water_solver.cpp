@@ -10,6 +10,13 @@ float WaterSolver::max_dt() const {
     return 0.5f * dx / std::sqrt(g * h_ref * (1.0f + k_p * P_REF / HEAD_REF));
 }
 
+float WaterSolver::ripple_max_dt() const {
+    // STATIC bound at the deep-water cap (canon §6): c <= sqrt(g*h_cap)
+    // everywhere by construction, so 0.5*dx/c_cap (~106 ms at dx = 1/3) is a
+    // true CFL for step_ripple — one call per tick at any tick rate we use.
+    return 0.5f * dx / std::sqrt(g * h_cap);
+}
+
 void WaterSolver::step(float* water_depth, float* flow_vx, float* flow_vy,
                        const float* floor_height,
                        const float* atmosphere,
@@ -159,5 +166,67 @@ void WaterSolver::step(float* water_depth, float* flow_vx, float* flow_vy,
         float d = std::max(water_depth[i], 0.0f);
         if (solid[i] || d < depth_eps) d = 0.0f;
         water_depth[i] = d;
+    }
+}
+
+void WaterSolver::step_ripple(float* ripple, float* ripple_v,
+                              const float* water_depth,
+                              const float* wave_p,
+                              const bool*  solid,
+                              int h, int w, float dt) const {
+    const int n = h * w;
+    const float inv_dx2 = 1.0f / (dx * dx);
+
+    // --- 1. splash source FIRST (plan W6a): a wave_p blast passing over wet
+    //        tiles kicks the surface. wave_p nullable -> no splash and the
+    //        pointer is NEVER read (W1's nullable discipline). k_splash is
+    //        the pure feel dial. Wet tiles only — dry/solid get re-zeroed in
+    //        pass 3 regardless.
+    if (wave_p) {
+        for (int i = 0; i < n; ++i) {
+            if (water_depth[i] > 0.0f) ripple_v[i] += k_splash * wave_p[i];
+        }
+    }
+
+    // --- 2. damped velocity kick from the PRE-update ripple (gather-then-
+    //        apply: `ripple` is only written in pass 3, so every laplacian
+    //        here reads the pre-update field — deterministic, no sweep-order
+    //        dependence). c2 = g*min(depth, h_cap) is SI m^2/s^2 (the deep-
+    //        water splice, canon §6), so the laplacian REQUIRES the 1/dx^2 —
+    //        unlike the atmosphere's tile-unit wave; do not copy-paste.
+    //        Neumann mirror of the centre value at solid / out-of-bounds
+    //        neighbours (grid border = wall), exactly as step() above. DRY
+    //        open neighbours are read as-is — their ripple is 0 (pass 3
+    //        invariant), which with c2 -> 0 makes shores self-absorbing.
+    for (int y = 0; y < h; ++y) {
+        const int row = y * w;
+        for (int x = 0; x < w; ++x) {
+            const int i = row + x;
+            if (solid[i]) continue;                 // zeroed in pass 3
+            const float r_c = ripple[i];
+            const float r_e = (x < w - 1 && !solid[i + 1]) ? ripple[i + 1] : r_c;
+            const float r_w = (x > 0     && !solid[i - 1]) ? ripple[i - 1] : r_c;
+            const float r_s = (y < h - 1 && !solid[i + w]) ? ripple[i + w] : r_c;
+            const float r_n = (y > 0     && !solid[i - w]) ? ripple[i - w] : r_c;
+            const float lap = (r_n + r_s + r_e + r_w - 4.0f * r_c) * inv_dx2;
+            const float c2  = g * std::min(water_depth[i], h_cap);
+            ripple_v[i] += dt * (c2 * lap - gamma_r * ripple_v[i]);
+        }
+    }
+
+    // --- 3. drift, clamp AFTER the drift, zero on dry/solid ---
+    //        |ripple| <= k_amp*depth: waves no taller than the water — the
+    //        hard amplitude guarantee; gamma_r eats clamp-injected energy.
+    //        Zeroing both fields where depth == 0 or solid is the canon §6
+    //        rule that ripple exists only on standing water (and keeps the
+    //        dry-tile invariant pass 2 relies on).
+    for (int i = 0; i < n; ++i) {
+        if (solid[i] || water_depth[i] <= 0.0f) {
+            ripple[i]   = 0.0f;
+            ripple_v[i] = 0.0f;
+            continue;
+        }
+        const float amp = k_amp * water_depth[i];
+        ripple[i] = std::clamp(ripple[i] + dt * ripple_v[i], -amp, amp);
     }
 }

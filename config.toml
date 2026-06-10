@@ -141,6 +141,8 @@ coarse_cluster       = 3      # reuse the raycaster's coarse clustering when man
 # 24 tps with the shipped k_p = 0.5 (2 with k_p = 0). ratio_cap/flood_eps drive
 # the W3 displacement; boil_* drive the W5 flash-boil (steam_yield is SHARED
 # with the fire side's evaporative heat-boil, so all steam puffs consistently).
+# gamma_r/h_cap/k_amp/k_splash drive the W6a ripple — the VISUAL-ONLY surface
+# wave (canon §6): it never feeds back into transport.
 [physics.water]
 g = 9.81          # m/s^2
 damping = 1.0     # 1/s pipe friction (prototype-validated: fluid_test.py used 1.0)
@@ -155,6 +157,10 @@ flood_eps = 0.05  # m remaining air column below which a cell counts flooded (W3
 boil_rate = 0.02      # m/s flash-boil sink in near-vacuum (W5)
 boil_p_thresh = 0.3   # atmosphere below this boils (W5; pressure-keyed — drained rooms boil too, intended)
 steam_yield = 4.0     # white_smoke density per metre boiled (W5)
+gamma_r = 2.0     # 1/s ripple damping (W6a)
+h_cap = 0.25      # m deep-water cap: c^2 = g*min(depth, h_cap) — pins ripple speed at ~4.7 tiles/s (W6a)
+k_amp = 0.5       # ripple amplitude clamp |ripple| <= k_amp*depth — waves no taller than the water (W6a)
+k_splash = 2.0    # wave_p -> ripple_v splash gain (W6a) — PURE FEEL DIAL, awaiting Erik's eyeball with W6b
 
 [smoke]
 # Ray-engine smoke optics (ch.05 §6.1 §6 — decoupled per-channel absorption vs

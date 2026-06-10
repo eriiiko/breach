@@ -252,6 +252,14 @@ class GameMap:
         # across ticks (water keeps sloshing between calls).
         self.flow_vx      = np.zeros((h, w), dtype=np.float32)
         self.flow_vy      = np.zeros((h, w), dtype=np.float32)
+        # W6a ripple — the VISUAL-ONLY surface wave (canon §6, plan W6a): a
+        # damped kick-drift displacement (m) riding ON TOP of water_depth,
+        # splash-fed by wave_p, clamped to k_amp*depth, zeroed on dry/solid.
+        # It NEVER feeds back into transport (the locked canon rule) — the
+        # renderer is its only consumer (W6b). PERSISTENT solver state
+        # (ripple_v is its m/s velocity auxiliary), written IN-PLACE.
+        self.ripple       = np.zeros((h, w), dtype=np.float32)
+        self.ripple_v     = np.zeros((h, w), dtype=np.float32)
         # OPTIONAL terrain height (m) under the water (canon §2.1/§3): raises
         # the surface potential so water pools in low spots. Flat zero until
         # a level paints it (the solver also accepts None == flat).

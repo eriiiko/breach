@@ -32,6 +32,13 @@ struct WaterSolver {
     float depth_eps = 1e-5f;   // m snap-to-zero (kills denormal creep)
     float h_ref     = 2.5f;    // m reference column for the CFL bound (= ceiling_h)
 
+    // W6a ripple tunables (the VISUAL-ONLY surface wave, canon §6 — it NEVER
+    // feeds back into transport; step() above never reads ripple state):
+    float gamma_r   = 2.0f;    // 1/s ripple damping (gamma in v += dt*(c2*lap - gamma*v))
+    float h_cap     = 0.25f;   // m deep-water cap: c2 = g*min(depth, h_cap) (lambda/2pi splice)
+    float k_amp     = 0.5f;    // amplitude clamp |ripple| <= k_amp*depth (waves no taller than the water)
+    float k_splash  = 2.0f;    // wave_p -> ripple_v splash gain — a PURE FEEL dial (Erik's eyeball, W6b)
+
     // Plain constants for the CFL head margin (NOT tunables):
     static constexpr float P_REF    = 1.0f;  // atm — reference pressure in the bound
     static constexpr float HEAD_REF = 0.2f;  // m — W4 documented worst-case free column
@@ -52,4 +59,34 @@ struct WaterSolver {
               const bool*  solid,                 // STATIC walls (gmap.solid) — units do NOT block water
               int h, int w, float dt,
               float tilt_x, float tilt_y) const;  // radians about grid centre; sane range |tilt| < ~30 deg
+
+    // --- W6a: the ripple field (canon §6, plan W6a) ----------------------
+    // STATIC CFL bound for step_ripple at the deep-water cap: the ripple's
+    // wave speed is c = sqrt(g*min(depth, h_cap)) <= sqrt(g*h_cap), so
+    //   ripple_max_dt = 0.5*dx/sqrt(g*h_cap)   (~106 ms at dx = 1/3)
+    // — derived once, far above any tick we use: ONE step_ripple call per
+    // tick, no substep loop (unlike max_dt() above, which substeps divide).
+    float ripple_max_dt() const;
+
+    // Advance the visual-only ripple displacement field by one damped
+    // kick-drift wave step (canon §6's stencil; same scheme family as the
+    // atmosphere wave, but in SI units — c2 is m^2/s^2, the laplacian
+    // carries the REQUIRED 1/dx^2). Per call:
+    //   1. splash source: ripple_v += k_splash*wave_p where depth > 0
+    //      (wave_p nullable -> no splash, never read — W1's discipline)
+    //   2. kick:  ripple_v += dt*(c2*lap(ripple) - gamma_r*ripple_v),
+    //      c2 = g*min(depth, h_cap); laplacian from the PRE-update ripple
+    //      (gather-then-apply); Neumann mirror at solid/out-of-bounds —
+    //      DRY neighbours read as-is (ripple 0 there: the absorbing shore)
+    //   3. drift: ripple += dt*ripple_v; THEN clamp |ripple| <= k_amp*depth
+    //      (gamma_r eats clamp-injected energy)
+    //   4. ripple = ripple_v = 0 where depth == 0 or solid
+    // Reads water_depth/wave_p/solid as CONST — the locked canon rule:
+    // the ripple NEVER feeds back into transport. Deterministic: no RNG,
+    // fixed iteration order.
+    void step_ripple(float* ripple, float* ripple_v,
+                     const float* water_depth,
+                     const float* wave_p,           // nullable -> no splash source
+                     const bool*  solid,
+                     int h, int w, float dt) const;
 };

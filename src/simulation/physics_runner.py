@@ -67,6 +67,10 @@ WATER_FLOOD_EPS = 0.05   # m air column below which a cell counts FLOODED (W3)
 WATER_BOIL_RATE = 0.02   # m/s flash-boil sink in near-vacuum (W5)
 WATER_BOIL_P_THRESH = 0.3  # atmosphere below this boils (W5; pressure-keyed)
 WATER_STEAM_YIELD = 4.0  # white_smoke density per metre boiled (W5)
+WATER_GAMMA_R   = 2.0    # 1/s ripple damping (W6a — visual-only surface wave)
+WATER_H_CAP     = 0.25   # m deep-water cap: c^2 = g*min(depth, h_cap) (W6a)
+WATER_K_AMP     = 0.5    # ripple amplitude clamp |ripple| <= k_amp*depth (W6a)
+WATER_K_SPLASH  = 2.0    # wave_p -> ripple_v splash gain (W6a; pure feel dial)
 
 
 class PhysicsRunner:
@@ -247,6 +251,12 @@ class PhysicsRunner:
         ``steam_yield`` is SHARED with the fire side's evaporative
         heat-boil (their lane), so heat-boil and vacuum-boil steam
         consistently.
+
+        The W6a ripple keys — ``gamma_r`` / ``h_cap`` / ``k_amp`` /
+        ``k_splash`` — are SOLVER knobs (they drive ``step_ripple``, the
+        visual-only surface wave) and bind onto the solver like the pipe
+        params above. ``k_splash`` is a pure feel dial awaiting Erik's
+        eyeball once W6b renders the ripple.
         """
         water_cfg = getattr(CFG.physics, "water", None)
 
@@ -259,6 +269,10 @@ class PhysicsRunner:
         self.water.v_max     = _fp("v_max", WATER_V_MAX)
         self.water.depth_eps = _fp("depth_eps", WATER_DEPTH_EPS)
         self.water.h_ref     = _fp("ceiling_h", WATER_CEILING_H)
+        self.water.gamma_r   = _fp("gamma_r", WATER_GAMMA_R)
+        self.water.h_cap     = _fp("h_cap", WATER_H_CAP)
+        self.water.k_amp     = _fp("k_amp", WATER_K_AMP)
+        self.water.k_splash  = _fp("k_splash", WATER_K_SPLASH)
         self.water_ceiling_h = _fp("ceiling_h", WATER_CEILING_H)
         self.water_ratio_cap = _fp("ratio_cap", WATER_RATIO_CAP)
         self.water_flood_eps = _fp("flood_eps", WATER_FLOOD_EPS)
@@ -360,6 +374,14 @@ class PhysicsRunner:
                     gmap.dyn_permeability,
                     dt_smoke,
                 )
+
+        # W6a ripple — the VISUAL-ONLY surface wave (canon §6, plan W6a).
+        # Placed immediately AFTER the IMEX substep loop so its splash source
+        # reads the FRESH post-substep wave_p (explosions splash the moment
+        # they pass over water), and BEFORE the fire feedback step (the order
+        # the plan pins). It feeds NOTHING back into transport — the locked
+        # canon rule: the solver writes only gmap.ripple / gmap.ripple_v.
+        self._step_ripple(gmap, sim_time)
 
         # Fire feedback step (fire_design_proposal §2/§3/§5). Reads the
         # conduction-pass `temperature` (Q16.16) for the `hot` gate, the SHARED
@@ -627,3 +649,34 @@ class PhysicsRunner:
         # Close the accounting loop: next tick's displacement counts from
         # this tick's end-of-accounting depth.
         np.copyto(before, gmap.water_depth)
+
+    def _step_ripple(self, gmap, sim_time):
+        """Advance the VISUAL-ONLY ripple field (plan W6a, canon §6).
+
+        A damped kick-drift surface wave riding ON TOP of ``water_depth``:
+        c² = g·min(depth, h_cap) (the deep-water cap), splash-sourced from
+        the fresh post-substep ``wave_p`` (gain ``k_splash`` — the pure feel
+        dial), clamped to |ripple| ≤ k_amp·depth, zeroed on dry/solid. It
+        NEVER feeds back into transport (the locked canon rule): the solver
+        writes only ``gmap.ripple`` / ``gmap.ripple_v``; ``water_depth`` /
+        ``wave_p`` / ``solid`` are read-only. Factored out of :meth:`step`
+        (the ``_step_water`` precedent) so the W6a visual-only A/B test can
+        no-op it.
+
+        Dormancy: skipped when there is no water AND no leftover ripple
+        anywhere. Ripple is zero wherever depth is zero by construction, so
+        on a dry ship both ``.any()`` are cheap falses; the extra
+        ``ripple.any()`` term lets ONE final call sweep ghost ripple to zero
+        if the last wet tile drains/boils away between calls, after which
+        the skip is total again.
+
+        ONE call per tick at full ``sim_time`` — no substep loop:
+        ``ripple_max_dt() = 0.5·dx/sqrt(g·h_cap)`` ≈ 106 ms at dx = 1/3,
+        comfortably above any tick we use (41.7 ms at 24 tps) — the same
+        derived-bound discipline as the substep counts above, with the
+        substep machinery statically unnecessary.
+        """
+        if not gmap.water_depth.any() and not gmap.ripple.any():
+            return
+        self.water.step_ripple(gmap.ripple, gmap.ripple_v, gmap.water_depth,
+                               gmap.wave_p, gmap.solid, sim_time)

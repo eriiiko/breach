@@ -373,7 +373,12 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("v_max",     &WaterSolver::v_max)
         .def_readwrite("depth_eps", &WaterSolver::depth_eps)
         .def_readwrite("h_ref",     &WaterSolver::h_ref)
+        .def_readwrite("gamma_r",   &WaterSolver::gamma_r)
+        .def_readwrite("h_cap",     &WaterSolver::h_cap)
+        .def_readwrite("k_amp",     &WaterSolver::k_amp)
+        .def_readwrite("k_splash",  &WaterSolver::k_splash)
         .def("max_dt", &WaterSolver::max_dt)
+        .def("ripple_max_dt", &WaterSolver::ripple_max_dt)
         .def("step", [](const WaterSolver& self,
                         py::array_t<float> water_depth,
                         py::array_t<float> flow_vx,
@@ -418,5 +423,30 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("atmosphere")   = py::none(),
            py::arg("wave_p")       = py::none(),
            py::arg("solid"), py::arg("dt"),
-           py::arg("tilt_x"), py::arg("tilt_y"));
+           py::arg("tilt_x"), py::arg("tilt_y"))
+        // W6a ripple: the VISUAL-ONLY surface wave (canon §6). water_depth /
+        // wave_p / solid are read-only — the ripple never feeds back into
+        // transport. wave_p nullable (None -> no splash source, never read).
+        .def("step_ripple", [](const WaterSolver& self,
+                               py::array_t<float> ripple,
+                               py::array_t<float> ripple_v,
+                               py::array_t<float> water_depth,
+                               py::object wave_p,
+                               py::array_t<bool> solid,
+                               float dt) {
+            auto [r, h, w]     = get_2d(ripple);
+            auto [rv, h2, w2]  = get_2d(ripple_v);
+            auto [wd, h3, w3]  = get_2d_const(water_depth);
+            auto [sol, h4, w4] = get_2d_const(solid);
+            const float* wp = nullptr;
+            py::array_t<float> wp_arr;
+            if (!wave_p.is_none()) {
+                wp_arr = wave_p.cast<py::array_t<float>>();
+                auto wa = wp_arr.unchecked<2>();
+                wp = wa.data(0, 0);
+            }
+            self.step_ripple(r, rv, wd, wp, sol, h, w, dt);
+        }, py::arg("ripple"), py::arg("ripple_v"), py::arg("water_depth"),
+           py::arg("wave_p") = py::none(),
+           py::arg("solid"), py::arg("dt"));
 }
