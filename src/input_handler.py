@@ -30,12 +30,16 @@ Key bindings (decisions locked this morning):
 - I → DEBUG ignite the tile under the cursor
 - J → DEBUG spawn the selected gas under the cursor
 - K → DEBUG cycle the selected gas (white→black→poison→teargas→fuel)
+- U → DEBUG pour 0.2 m of water on the tile under the cursor
+- P / Shift+P → DEBUG tilt the ship: tilt_x +2/-2 degrees (clamped to +/-20)
 
 F5 is NOT remapped here — it's still the renderer's normal-map toggle
 (see ``GameRenderer.poll_toggles``). The patch plan moved config reload
 to Ctrl+R for this reason.
 """
 from __future__ import annotations
+
+import math
 
 import pyray as rl
 
@@ -118,6 +122,28 @@ class InputHandler:
         # other gases present. Debug-only; mirrors the I-ignite path.
         if rl.is_key_pressed(K.KEY_J):
             self._debug_spawn_gas(sim, renderer)
+
+        # U: DEBUG pour 0.2 m of water on the tile under the cursor (water
+        # W2b). Writes gmap.water_depth directly so it lands immediately even
+        # while paused — the FieldEdit queue only flushes in an unpaused step.
+        # Mirrors the I-ignite / J-gas path.
+        if rl.is_key_pressed(K.KEY_U):
+            self._debug_pour_water(sim, renderer)
+
+        # P / Shift+P: DEBUG tilt the ship about x (water W2b — feel the
+        # Titanic slide): +2 degrees per press, -2 with Shift, clamped to
+        # +/-20. gmap.tilt_x is the water solver's tilt input, stored in
+        # RADIANS. Prints the new tilt (the K-cycle style) — nothing on
+        # screen shows the tilt yet, so the console line IS the feedback.
+        if rl.is_key_pressed(K.KEY_P):
+            shift_held = (rl.is_key_down(K.KEY_LEFT_SHIFT) or
+                          rl.is_key_down(K.KEY_RIGHT_SHIFT))
+            step = math.radians(-2.0 if shift_held else 2.0)
+            lim = math.radians(20.0)
+            gmap = sim.gmap
+            gmap.tilt_x = max(-lim, min(lim, gmap.tilt_x + step))
+            print(f"[debug] ship tilt_x -> "
+                  f"{math.degrees(gmap.tilt_x):+.1f} deg")
 
         # Spacebar: pause toggle. If we're resuming AND there are queued
         # grenade orders, materialise them before time starts flowing.
@@ -235,6 +261,30 @@ class InputHandler:
         y0, y1 = max(0, fy - 1), min(h, fy + 2)
         x0, x1 = max(0, fx - 1), min(w, fx + 2)
         gmap.gas[self.selected_gas, y0:y1, x0:x1] = 1.0
+
+    def _debug_pour_water(self, sim, renderer):
+        """DEBUG: pour 0.2 m of water on the tile under the mouse cursor.
+
+        Writes ``gmap.water_depth`` directly (the :meth:`_debug_ignite` /
+        :meth:`_debug_spawn_gas` precedent) so the pour lands immediately
+        even while paused — the FieldEdit queue only flushes in an unpaused
+        step. Single tile (the pipe model spreads it next tick); skips solid
+        tiles (water never stands on a wall); total depth clamps at 2.5 m
+        (the air-column ceiling). A render/tuning aid only — no gameplay
+        code reaches this path.
+        """
+        tile = renderer.mouse_to_tile()
+        if tile is None:
+            return
+        fx, fy = tile
+        gmap = sim.gmap
+        h, w = gmap.water_depth.shape
+        if not (0 <= fy < h and 0 <= fx < w):
+            return
+        if gmap.solid[fy, fx]:
+            return
+        gmap.water_depth[fy, fx] = min(
+            float(gmap.water_depth[fy, fx]) + 0.2, 2.5)
 
     # ------------------------------------------------------------------
     # Click handlers

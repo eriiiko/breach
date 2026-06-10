@@ -28,6 +28,7 @@ from .camera import Camera2D
 from .lighting import LightingPass
 from .overlays import (
     FieldOverlay, FireOverlay, GlowOverlay, HeatFieldOverlay,
+    WaterFieldOverlay,
     draw_unit, draw_waypoint_line, draw_grid, draw_text, draw_panel_background,
 )
 from .pressure_overlay import PressureOverlay
@@ -138,6 +139,14 @@ class GameRenderer:
             getattr(getattr(CFG, "display", None), "temp_display_max", 300.0))
         self.temperature_overlay = HeatFieldOverlay(
             cfg.grid_h, cfg.grid_w, temp_display_max=temp_display_max)
+        # Debug water overlay (water W2b): blue tint scaled by standing-water
+        # depth (gmap.water_depth, metres). water_display_max = the depth that
+        # maps to full tint; tunable via [display] water_display_max. Off by
+        # default; toggled with O. RENDER-ONLY — never mutates the field.
+        water_display_max = float(
+            getattr(getattr(CFG, "display", None), "water_display_max", 1.0))
+        self.water_overlay = WaterFieldOverlay(
+            cfg.grid_h, cfg.grid_w, depth_display_max=water_display_max)
 
         # Toggles
         self.show_grid = False
@@ -153,6 +162,8 @@ class GameRenderer:
         self.show_pressure = True
         # Debug temperature overlay (engine/06) — OFF by default; toggle with T.
         self.show_temperature = False
+        # Debug water-depth overlay (water W2b) — OFF by default; toggle with O.
+        self.show_water = False
 
         # Frame timing
         self.last_frame_ms = 0.0
@@ -241,6 +252,11 @@ class GameRenderer:
         # Render-only — gmap.temperature is read, never written.
         if self.show_temperature:
             self.temperature_overlay.update(gmap.temperature)
+        # Debug water overlay: refresh the blue depth-tint texture from
+        # gmap.water_depth. Skipped when toggled off to save the work.
+        # Render-only — water_depth is read, never written.
+        if self.show_water:
+            self.water_overlay.update(gmap.water_depth)
 
         self.lighting.set_use_normal(self.show_normal_map)
         self.last_frame_ms = (time.perf_counter() - t_start) * 1000
@@ -325,6 +341,15 @@ class GameRenderer:
         if self.show_temperature:
             self.temperature_overlay.draw(
                 0, 0, self.world.world_px_w, self.world.world_px_h)
+        # Debug water overlay (water W2b): blue depth tint, packed
+        # PREMULTIPLIED (FieldOverlay), so draw it with
+        # BLEND_ALPHA_PREMULTIPLY exactly like the smoke overlay. Same slot
+        # as the T overlay — after the field overlays, before units, so the
+        # squad stays readable on top of the water. Off-by-toggle (O).
+        if self.show_water:
+            rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
+            self._draw_overlay_to_world(self.water_overlay.tex)
+            rl.end_blend_mode()
 
         # 3. Units, waypoints, projectiles, effects, grid — drawn in world-pixel space
         if orders_phase1 or orders_phase2:
@@ -650,6 +675,7 @@ class GameRenderer:
             ("F6 coords",      self.show_debug_coords),
             ("F7 pressure",    self.show_pressure),
             ("T  temperature", self.show_temperature),
+            ("O  water",       self.show_water),
             ("B  bilinear",    self.lighting.bilinear),
             ("G  sRGB",        self.srgb_decode),
             ("H  flip-Y norm", self.normal_y_flipped),
@@ -704,6 +730,9 @@ class GameRenderer:
         # T: debug temperature overlay (black-body ramp over gmap.temperature).
         if rl.is_key_pressed(rl.KeyboardKey.KEY_T):
             self.show_temperature = not self.show_temperature
+        # O: debug water-depth overlay (blue tint over gmap.water_depth).
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_O):
+            self.show_water = not self.show_water
         if rl.is_key_pressed(rl.KeyboardKey.KEY_B):
             self.lighting.toggle_bilinear()
         if rl.is_key_pressed(rl.KeyboardKey.KEY_H):

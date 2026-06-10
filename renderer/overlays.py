@@ -112,6 +112,38 @@ class FireOverlay(FieldOverlay):
         rl.end_blend_mode()
 
 
+class WaterFieldOverlay(FieldOverlay):
+    """Debug water-depth overlay — blue tint scaled by standing-water depth.
+
+    DEBUG / TUNING ONLY (water W2b, docs/water_implementation_plan.md).
+    Render-time view of ``gmap.water_depth`` (float32, metres of standing
+    water on the floor); it NEVER mutates the field. Depth is normalised by
+    ``depth_display_max`` (the depth in metres that maps to full tint) and
+    packed through the FieldOverlay premultiplied-alpha path, so it is drawn
+    with BLEND_ALPHA_PREMULTIPLY exactly like the smoke overlay.
+
+    gamma = 0.5 LIFTS thin films toward visible — the opposite of smoke's
+    wisp-crushing 1.5 — because the point of a debug overlay is to SEE where
+    the water went, and a spreading pour thins to centimetres fast
+    (0.04 m reads at ~20% alpha instead of 4%).
+    """
+
+    def __init__(self, grid_h: int, grid_w: int,
+                 depth_display_max: float = 1.0):
+        super().__init__(grid_h, grid_w, tint=(40, 110, 230),
+                         max_alpha=200, gamma=0.5)
+        # Depth (m) that maps to the top of the tint ramp. Render-only knob;
+        # depths above it just clamp to full tint (FieldOverlay clips to 1).
+        self.depth_display_max = float(depth_display_max)
+
+    def update(self, water_depth: np.ndarray) -> None:
+        """water_depth: (H, W) float metres. Normalise, then FieldOverlay-pack.
+
+        RENDER-ONLY: the divide makes a new array; the field is never written.
+        """
+        super().update(water_depth / max(self.depth_display_max, 1e-6))
+
+
 class HeatFieldOverlay:
     """Debug temperature overlay — a black-body / heat ramp over a Q16.16 field.
 
@@ -334,6 +366,7 @@ def draw_panel_background(x: int, y: int, w: int, h: int, color=(20, 20, 28, 240
 
 __all__ = [
     "FieldOverlay", "FireOverlay", "GlowOverlay", "HeatFieldOverlay",
+    "WaterFieldOverlay",
     "draw_unit", "draw_waypoint_line",
     "draw_grid", "draw_text", "draw_panel_background",
 ]
