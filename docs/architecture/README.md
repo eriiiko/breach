@@ -74,7 +74,7 @@ Legend: ✅ implemented · ⚠️ partial (foundation built, advanced parts desi
 | 04 | [Atmosphere & pressure](engine/04_atmosphere_and_pressure.md) | ⚠️ (permeability boundary, 4a absorption, over-pressure burst built; venting/4b owed) |
 | 05 | [Smoke](engine/05_smoke.md) | ⚠️ (permeability + soft units built; lingering-smoke venting owed) |
 | 06 | [Temperature & fire](engine/06_temperature_and_fire.md) | ⚠️ (fire built, temperature designed) |
-| 07 | [Fluid & water](engine/07_fluid_and_water.md) | 🧪 |
+| 07 | [Fluid & water](engine/07_fluid_and_water.md) | ⚠️ (core built: C++ solver + tick + displacement/pressure-head couplings + flash-boil→steam + ripple + debug overlay; conduction/oil/ice/gameplay-reads designed) |
 | 08 | [Ray engine](engine/08_ray_engine.md) | ⚠️ (Tier-1 shipped) |
 | 09 | [Rendering](engine/09_rendering.md) | ✅ |
 | 10 | [Pathfinding](engine/10_pathfinding.md) | ⚠️ (A* built; temporal A* unused) |

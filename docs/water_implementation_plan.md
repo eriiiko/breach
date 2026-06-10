@@ -416,6 +416,21 @@ Fire-side evaporative heat sink (their lane — interface note up top) · conduc
 oil (§5.3) · ice ↔ water (§5.4, post-temperature-tuning) · rain/snow research · movement
 penalty (§5.5) · the whoosh · per-pixel art-resolution refinement · CUDA.
 
+## Build log (2026-06-10)
+
+All steps shipped green, per-step commits: W1 `3ebf62b` (237 tests) → W2a `aea3956` (244)
+→ W3 `194d383` (249) → W4 `00c67b3` (253) → W5 `1f104fa` (257) → W2b `8789567` (262) →
+W6a `ae98284` (268) → W6b `cb229c7` (277). Honest in-flight corrections by the
+implementer agents (each documented in the test files): the W2 spread plateau is at tick
+~260–320 (the plan's 200 was a pre-run estimate, re-pinned again when W4's head shifted
+it); the W6a far-field bound shipped as 1%-of-splash at `c_cap·t + 2` (the plan's
+1e-7·splash_amp first holds ~+6 tiles — the stencil tail decays ~a decade per tile);
+pybind methods are read-only, so dormancy stubs swap whole solver objects / runner
+methods; the W3 flooded-corridor test uses a basin floor (a flat-floor full-depth line is
+not an equilibrium — and with `k_p` on, a sustained pressure step measurably shoves a
+near-flooded plug, the live specimen of the W4 churn-zone note). `k_p = 0.5` and
+`k_splash = 2.0` are LIVE and await the feel session.
+
 ## Review log
 
 - **R1 numerics (2026-06-10):** wall-BC prototype divergence documented + test; real CFL

@@ -27,12 +27,13 @@ single solver reading and writing one shared depth field under one set of bounda
 rules. Where the water goes is decided by gravity, by the floor's shape, and by the
 ship's tilt — not by a designer placing it.
 
-**Status note.** This system is designed and prototyped but **not integrated**. The
-solver exists and is visually validated in `prototypes/archive/` (see §8); it is not
-yet a C++ solver, has no fields on `GameMap`, and is not in the physics tick. This
-chapter is the canonical design the integration should follow, written so the
-prototype's choices land as shipped contracts. Everything in §2–§6 is the intended
-design; §8 audits honestly what exists today.
+**Status note.** The core of this system is **built and integrated** (2026-06-10,
+commits `3ebf62b`…`cb229c7`): the C++ pipe-model solver, the `GameMap` fields, the
+physics-tick insertion, the volume-displacement and pressure-head couplings, the
+flash-boil sink with its steam puff, the ripple field, and the debug-render layer all
+ship green (277 tests). Built from this chapter via the two-round-reviewed
+`docs/water_implementation_plan.md`. §8 audits exactly what shipped and what remains
+(conduction, oil, ice, gameplay reads, the optics research pass).
 
 ---
 
@@ -424,66 +425,69 @@ The integration, in the order the design implies:
 
 ## 8. Implementation status
 
-Audited against the codebase: `prototypes/archive/fluid_test.py`,
-`fluid_sandbox.py`, `fluid_scenarios.py`, `fluid_tilted_ship.py`;
-`src/simulation/gamemap.py`; `src/simulation/environment.py`;
-`src/simulation/physics_runner.py`. (The temperature/fire integration is in flight and
-may extend `GameMap` / `PhysicsRunner` beyond what this audit lists.)
+Audited against the shipped code (2026-06-10): `cpp/src/water_solver.{h,cpp}`,
+`cpp/src/bindings.cpp`, `src/simulation/gamemap.py`, `src/simulation/physics_runner.py`,
+`src/simulation/field_edit.py`, `config.toml [physics.water]`, `renderer/overlays.py`,
+`tests/test_water_*.py`. Build record: `docs/water_implementation_plan.md` (two-round
+review + per-step commits, suite 228 → 277 green).
 
-**Status: prototype-only. Not integrated into the game.**
+**Status: core built and integrated.** Water flows, pools, slides under tilt, displaces
+air, gets shoved by blasts, boils in vacuum, and ripples — in the game tick, dormant-safe
+(a dry ship pays one `.any()`).
 
-**Built (prototype, Python/NumPy, `prototypes/archive/`):**
+**Built and shipped (W1–W6b, commits `3ebf62b` → `cb229c7`):**
 
-- The pipe + damped-velocity solver itself — surface gradient, damped velocity update,
-  upwind mass-flux divergence, wall masking, non-negative depth clamp. This is the
-  model §2 describes and is consistent across all four prototype files.
-- The rejected shallow-water solver (Lax–Friedrichs flux, CFL substepping), kept
-  alongside the pipe model for the side-by-side comparison that justified the choice
-  (`fluid_test.py`, `fluid_sandbox.py`).
-- Ship tilt as a time-varying terrain offset, including the progressive-tilt *Titanic*
-  flooding through connected rooms (`fluid_tilted_ship.py`).
-- Source patterns: aquarium/dam burst on wall removal, continuous pipe source, maze
-  flood-through, hull-breach inflow (`fluid_scenarios.py`, `fluid_tilted_ship.py`).
-- Visual validation only — the prototypes render to Matplotlib animations / GIFs
-  (`prototypes/fluid_pipe_only*.gif`, `fluid_test.gif`). No headless solver API.
+- **C++ `WaterSolver`** (§2) — surface-gradient + damped-velocity pipe model, donor-cell
+  upwind flux with a per-cell outflow limiter (mass-exact), Neumann mirror at the static
+  `solid` mask (units never block water), `dx` from the level's `tile_size_m`, real wave
+  CFL via `max_dt()` (substeps derived house-style; 2/tick at 24 tps, 3 with the head on).
+- **`GameMap` fields** — `water_depth`, `flow_vx/vy`, `floor_height` (optional, flat-zero
+  default), `ripple`, `ripple_v`, `tilt_x/tilt_y`, `tile_size_m`, `water_sources`;
+  `water_depth` registered in the FieldEdit policy table (ADD/REMOVE, clamped ≥ 0).
+- **Tick insertion** (§5.1 ordering) — `PhysicsRunner._step_water` right before the IMEX
+  loop: source holds → substeps → flash-boil → displacement accounting (persistent
+  end-of-previous-tick snapshot, so FieldEdit dumps and holds are each counted once).
+- **Volume displacement** (§5.1) — multiplicative isothermal free-column scaling, ratio
+  capped, flooded cells seal airflow via `dyn_permeability = 0` (face-flux blocking;
+  trapped `wave_p` decays rather than being zeroed — by design).
+- **Pressure head** (§5.1) — live at `k_p = 0.5` (`config.toml`); blasts crater pools,
+  venting drags water. Feel-tuning owed (Erik's research flag): worst case is
+  near-flooded cells, `c_eff = √(g·h·(1 + k_p·P/free_h))`.
+- **Flash-boil + steam** (§5.4 stage 1) — pressure-keyed (`atmosphere < boil_p_thresh`)
+  depth sink; boiled mass enters `gas[white_smoke]` via `steam_yield` (the constant the
+  fire-side evaporation branch must reuse — see `07_notes_from_claude.md` Answers).
+- **Ripple field** (§6) — `step_ripple` damped kick-drift wave, `c² = g·min(depth, h_cap)`
+  (deep-water splice), amplitude-clamped, one call per tick, splash-fed by `wave_p` over
+  wet tiles; proven visual-only by a 60-tick A/B rollout (transport bit-identical).
+- **Debug layer** — U pour / O depth overlay / P tilt nudge; overlay v2 with ripple
+  shading, foam from `|∇ripple|` + wet/dry-front speed, ambient sines whose amplitude
+  tracks local ripple energy (`[display] water_*` knobs, restart-bound).
+
+**Prototype record (historical, `prototypes/archive/`):** the NumPy pipe model + the
+rejected shallow-water side-by-side (`fluid_test.py`, `fluid_sandbox.py`), tilt flooding
+(`fluid_tilted_ship.py`), source patterns (`fluid_scenarios.py`). One deliberate
+divergence from them shipped: walls use the canon Neumann mirror, not the prototypes'
+tall-terrain fake (§2.2; tested by the settled-pool-flat-at-wall property).
 
 **Designed but not built:**
 
-- **C++ single-step solver.** None exists. The shipped atmosphere and smoke solvers
-  are C++ in `cpp/`; the fluid solver is still NumPy in a prototype.
-- **`GameMap` fields.** There is **no** `water_depth`, no flow-velocity field, no
-  optional `floor_height`, and no `ice_depth` on `GameMap`. (`GameMap` carries
-  `atmosphere`, `smoke`, `light_rgb`, `light_dir`, `heat`, `smoke_glow`, and the
-  material masks — no fluid.)
-- **Physics-tick integration.** `PhysicsRunner.step` orchestrates atmosphere, smoke,
-  and fire only. The fluid solver is not called.
-- **Water ↔ atmosphere coupling** (§5.1) — design only; no `ceiling_h`, no volume
-  scaling, no pressure-head term exists.
-- **Water + electricity conduction** (§5.2), **oil / fluid types** (§5.3), **phase
-  transitions** (§5.4), **movement penalty and other gameplay reads** (§5.5), **ripple
-  field + ambient sines** (§6) — all design only.
-- **Per-pixel render refinement** (§3) — documented render-side option, not built.
-- **CUDA residency** — forward idea.
+- **Water + electricity conduction** (§5.2), **oil / fluid types** (§5.3).
+- **Phase transitions beyond flash-boil** (§5.4) — ice ↔ water (gated on temperature
+  tuning; `ice_depth` does not exist yet), rain/snow (research pass owed).
+- **Fire-side evaporative heat sink** — the other half of the §5.4/fire interface; lives
+  in the temperature cooling pass (fire side's lane), unblocked now that `water_depth`
+  exists.
+- **Gameplay reads** (§5.5) — movement penalty, washed-along, ice underfoot.
+- **Per-pixel render refinement** (§3) and the **water-optics research pass** (§6) —
+  the shipped overlay is the placeholder look.
+- **The whoosh** (§5.1 flourish), **CUDA residency**, engine-wide fixed-point.
 
-**Gaps / things to resolve at integration time:**
+**Standing facts (kept from the design audit):**
 
-- **Terrain is optional, not a prerequisite.** The solver reads `floor_height` but
-  defaults it to flat zero, so integration does not wait on the art pipeline. When the
-  art height map lands (the same data feeds the lighting normal map; see the Graphics
-  chapter), it becomes the terrain — and, at art resolution, the per-pixel render
-  refinement (§3).
-- **Naming collision to avoid.** `environment.py` already defines `REQUIRES_WATER` and
-  `can_breathe_water` — these are **creature trait** flags (a fish needs water to
-  breathe), entirely unrelated to the fluid sim. Fluid fields should not reuse this
-  vocabulary.
-- **Tick ordering is load-bearing.** Volume displacement requires the water step to run
-  *before* the atmosphere step within the tick; this ordering must be honoured when the
-  solver is inserted into `PhysicsRunner`.
-- **`dx` comes from the level.** The prototypes used assorted hardcoded `dx` values
-  (1.0, 0.33, 1/3); the real solver takes `dx = tile_size_m` from the loaded level
-  (ch.01) and derives its constants from it. The prototype variation is historical
-  noise, not a choice to port.
-- **Resolved (2026-06-09): displacement enters as the multiplicative volume scaling**
-  of §5.1 — no separate equalisation pass (implicit diffusion is the equaliser), and no
-  air-mass field. The pressure-head constant `k_p` and the flash-boil/freeze rates are
-  the tunables the implementation pass owns.
+- **Terrain is optional** — `floor_height` defaults flat zero; the art height map, when
+  it lands, becomes the terrain (and enables the §3 per-pixel refinement).
+- **Naming** — `REQUIRES_WATER` / `can_breathe_water` in `environment.py` are creature
+  traits, unrelated to the fluid sim; the vocabularies stay disjoint (honoured).
+- **Tuning dials for the feel session:** `[physics.water]` `damping` (prototype-validated
+  range 0.5–1.0), `k_p` (0.5), `boil_rate`/`steam_yield`, ripple `gamma_r`/`k_amp`/
+  `k_splash` (pure feel), `[display] water_*` (overlay look).
