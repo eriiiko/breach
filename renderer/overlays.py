@@ -291,6 +291,29 @@ class WaterFieldOverlay(FieldOverlay):
         self._tex_blank = not has_water
 
 
+def _begin_additive_rgb_only_blend() -> None:
+    """Begin an additive blend for light/glow passes — RGB only, dstA untouched.
+
+    RULE: additive passes must not write destination alpha. Raylib's
+    BLEND_ADDITIVE is ``glBlendFunc(SRC_ALPHA, ONE)`` for ALL channels, so it
+    also adds ``srcA*srcA`` to dstA — one full-RT additive draw with packed
+    alpha saturates the world RT's alpha to 255 everywhere, including the
+    vacuum tiles the lighting shader deliberately left transparent. The
+    premultiplied RT->screen blit (``world_composite.blit_to_screen``,
+    ``out = rt.rgb + bg*(1 - rt.a)``) then multiplies the backdrop by zero:
+    the galaxy disappears and vacuum renders opaque black.
+
+    Fix: separate blend factors — RGB additive ``(SRC_ALPHA, ONE)``, alpha
+    untouched ``(ZERO, ONE)`` so ``dstA' = dstA`` exactly. The RGB result is
+    identical to BLEND_ADDITIVE. Pair with ``rl.end_blend_mode()``.
+    """
+    rl.rl_set_blend_factors_separate(
+        rl.RL_SRC_ALPHA, rl.RL_ONE,   # RGB: classic additive (src*srcA + dst)
+        rl.RL_ZERO, rl.RL_ONE,        # A:   dstA' = dstA — never written
+        rl.RL_FUNC_ADD, rl.RL_FUNC_ADD)
+    rl.begin_blend_mode(rl.BlendMode.BLEND_CUSTOM_SEPARATE)
+
+
 class HeatFieldOverlay:
     """Debug temperature overlay — a black-body / heat ramp over a Q16.16 field.
 
@@ -309,6 +332,9 @@ class HeatFieldOverlay:
 
     Drawn ADDITIVELY (heat glows like the fire overlay): alpha rises with the
     display value so cold tiles stay invisible and hot tiles read as a glow.
+    The packed alpha only weights the additive RGB contribution — draw() uses
+    RGB-only separate blend factors so destination alpha is never written
+    (see ``_begin_additive_rgb_only_blend``).
     """
 
     # Q16.16 scale of the temperature field (materials.TEMP_SCALE / HEAT_SCALE).
@@ -371,7 +397,10 @@ class HeatFieldOverlay:
         core.update_rgba_texture(self.tex, self.packed)
 
     def draw(self, dst_x: int, dst_y: int, dst_w: int, dst_h: int) -> None:
-        rl.begin_blend_mode(rl.BlendMode.BLEND_ADDITIVE)
+        # Additive passes must not write destination alpha (BLEND_ADDITIVE
+        # touches dstA; this erases the backdrop under the premultiplied
+        # blit) — see _begin_additive_rgb_only_blend.
+        _begin_additive_rgb_only_blend()
         src = rl.Rectangle(0, 0, float(self.w), float(self.h))
         dst = rl.Rectangle(float(dst_x), float(dst_y), float(dst_w), float(dst_h))
         rl.draw_texture_pro(self.tex, src, dst, rl.Vector2(0, 0), 0.0, rl.WHITE)
@@ -385,9 +414,13 @@ class GlowOverlay:
     *absorbed*, per channel — as an ADDITIVE volumetric shaft. This supersedes
     the retired ``light_modulation`` smoke surface-tint: a red beam through
     smoke casts a red shaft, energy-conserving by construction (the energy is
-    exactly what the smoke removed from the ray). Additive blend raises RGB
-    without touching destination alpha, so (unlike the alpha-blended smoke) it
-    is NOT premultiplied (ch.05 §Blend discipline). Drawn before units so they
+    exactly what the smoke removed from the ray). The additive draw must raise
+    RGB *only*: plain BLEND_ADDITIVE also writes destination alpha, and with
+    this texture's packed alpha=255 it saturated the world RT's alpha across
+    vacuum tiles, turning the backdrop opaque black under the premultiplied
+    blit — so draw() uses RGB-only separate blend factors instead (see
+    ``_begin_additive_rgb_only_blend``). Unlike the alpha-blended smoke it is
+    NOT premultiplied (ch.05 §Blend discipline). Drawn before units so they
     occlude it in screen space; the march deposits no glow past opaque tiles,
     so shafts already terminate at walls.
     """
@@ -405,8 +438,11 @@ class GlowOverlay:
         """smoke_glow: (H, W, 3) float — the absorbed-light god-ray field.
 
         Tone-map by simple clamp (ACES is the final-slice job) and pack into
-        an RGBA texture with full alpha. Under BLEND_ADDITIVE (SRC_ALPHA, ONE)
-        full alpha passes the RGB straight through as an additive contribution.
+        an RGBA texture with full alpha. With the RGB factors (SRC_ALPHA, ONE)
+        full alpha passes the RGB straight through as an additive
+        contribution; draw() keeps the alpha channel out of the blend
+        entirely (RGB-only additive — dstA must never be written, see
+        ``_begin_additive_rgb_only_blend``).
         """
         glow = np.clip(smoke_glow * self.gain, 0.0, 1.0)
         self.packed[..., 0] = (glow[..., 0] * 255.0).astype(np.uint8)
@@ -416,7 +452,12 @@ class GlowOverlay:
         core.update_rgba_texture(self.tex, self.packed)
 
     def draw(self, dst_x: int, dst_y: int, dst_w: int, dst_h: int) -> None:
-        rl.begin_blend_mode(rl.BlendMode.BLEND_ADDITIVE)
+        # Additive passes must not write destination alpha (BLEND_ADDITIVE
+        # touches dstA; this erases the backdrop under the premultiplied
+        # blit). This texture packs alpha=255 on EVERY texel, so a plain
+        # BLEND_ADDITIVE here saturated the whole world RT's alpha — vacuum
+        # tiles went opaque black. See _begin_additive_rgb_only_blend.
+        _begin_additive_rgb_only_blend()
         src = rl.Rectangle(0, 0, float(self.w), float(self.h))
         dst = rl.Rectangle(float(dst_x), float(dst_y), float(dst_w), float(dst_h))
         rl.draw_texture_pro(self.tex, src, dst, rl.Vector2(0, 0), 0.0, rl.WHITE)

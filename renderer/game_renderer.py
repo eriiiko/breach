@@ -336,9 +336,12 @@ class GameRenderer:
             self._draw_overlay_to_world(self.smoke_overlay.tex)
             rl.end_blend_mode()
             # God-ray glow: additive shaft composited WITH the smoke, before
-            # units (ch.05 §God-rays). GlowOverlay.draw sets its own
-            # BLEND_ADDITIVE (not premultiplied — additive doesn't touch dest
-            # alpha). Supersedes the retired light_modulation surface-tint.
+            # units (ch.05 §God-rays). GlowOverlay.draw sets its own RGB-only
+            # additive blend — additive passes must NOT write dest alpha, or
+            # the world RT's alpha saturates and vacuum tiles render opaque
+            # black under the premultiplied blit (overlays.
+            # _begin_additive_rgb_only_blend). Not premultiplied. Supersedes
+            # the retired light_modulation surface-tint.
             self.glow_overlay.draw(
                 0, 0, self.world.world_px_w, self.world.world_px_h)
         if self.show_fire:
