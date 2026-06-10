@@ -95,8 +95,11 @@ diffuse+normal exactly as today — no shader changes for layering.
 `emissive_mask` pixels keep their diffuse brightness regardless of light (add `mask · diffuse` after
 the lighting multiply, before ACES). Cheap, exactly the "pixels that always keep their brightness"
 Erik described — and the loader has carried optional emissive slots since v1, unused until now.
-Bright *dynamic* sources (the cargo-bay warning lamp) are NOT emissive pixels — they're
-LightEmitter entities (out of scope here, mission-1 entity pass).
+**Authoring (decided 2026-06-10): automate the bulk, human eyes refine.** The editor seeds the mask
+automatically — a luminance/saturation threshold over the dim-lit diffuse finds screens and panels
+(they're the bright saturated pixels in otherwise dim art) — then the EMISSIVE paint mode adds and
+removes by hand. Bright *dynamic* sources (the cargo-bay warning lamp) are NOT emissive pixels —
+they're LightEmitter entities (out of scope here, mission-1 entity pass).
 
 ### 2.3 Specular — stored now, consumed later
 
@@ -118,7 +121,15 @@ from state and art can never contradict it.
 - **Trigger v1:** proximity — any unit within ~2 tiles opens it; closes after a short empty delay.
   (Hissing open in a pitch-black corridor is free horror.) Locked/powered doors are later gameplay.
 - Movement-while-closed becomes *blocked* once doors can open (today's walk-through-closed-doors is
-  a stopgap) — needs Erik's nod, it changes pathing feel.
+  a stopgap) — approved 2026-06-10.
+- **Atmosphere through open doors is free** (Erik's ask, confirmed cheap): the open-state material
+  swap carries `permeability 1`, so pressure, smoke, and gas pour through the moment it opens — no
+  extra code. The payoff scene works day one: grenade a room into overpressure, walk up, the door
+  slides open, and the smoke billows out at you.
+- **Doors are objects, tiles stay materials** (decided 2026-06-10): a small `Door` object on the
+  Simulation owns the state machine (`open_t`, timers, its tile span) and drives the material swap +
+  slab render; the *physics* presence remains purely material-driven. Whether `Door` later merges
+  into a general entity system is open — v1 keeps it a minimal object list.
 
 ## 4. Editor v1 — an in-game mode
 
@@ -130,7 +141,8 @@ running game (physics keeps running — painting hull while smoke flows *is* the
 - **MATERIAL PAINT** — palette (air, hull, wood/furniture, door, steel, glass, SPACE) on number
   keys, brush size on scroll, click-drag paints material ids; `on_tile_changed` updates the live
   sim per stroke. Furniture is just painting wood-family material over furnished art regions.
-- **EMISSIVE PAINT** — same brush onto the emissive mask (screens, panels, strip lights).
+- **EMISSIVE PAINT** — auto-seed the mask from the diffuse (threshold pass, §2.2), then the same
+  brush adds/removes by hand (screens, panels, strip lights).
 - **SAVE** — `tilemap.csv` (canon v2 codes) + `level.toml` + `emissive_mask.png`, with a `.bak` of
   whatever it overwrites. **Undo** — a small snapshot ring of the paint targets (one keypress back).
 
@@ -168,12 +180,16 @@ route + the Gray's exit), laser pointers (trivial ray-engine source), lights-on 
 6. **F6** — doors v1 (slab render + state machine + proximity).
 7. (later) specular consumption; entity pass; decals.
 
-## Open questions for Erik
+## Open questions — ANSWERED (Erik, 2026-06-10)
 
-1. SPACE code = 9 (or prefer -1 / a separate vacuum mask file?).
-2. Furniture material: plain MAT_WOOD, or a dedicated `furniture` row (lower hp, partial
-   permeability so smoke drifts past crates, still flammable)? I lean dedicated row.
-3. Doors blocking movement when closed (the honest behaviour) — OK to flip on with doors v1?
-4. Destroyed layer: per-tile reveal only where damage happened (recommended), or whole-room swap?
-5. Editor as a mode inside the game (recommended — live physics while painting) vs a separate tool
-   window?
+1. SPACE code = **9**. ✓
+2. Furniture = **dedicated material row** (lower hp, partial permeability so smoke drifts past
+   crates, flammable). ✓
+3. Doors block movement when closed — **approved**. (Plain-language version of the question: today
+   units walk straight through closed doors as if they weren't there — a stopgap. With doors v1, a
+   closed door actually stops you until it opens. Changes pathing feel; Erik OK'd it.)
+4. Destroyed-layer reveal: **per tile, only where damage happened**. ✓
+5. Editor: **in-game mode** (live physics while painting). ✓
+
+Proposal is GO — build order §7 starts at F1 next working session, after the asset-pipeline
+session (upscale + normals, §5) which Erik wants to do hands-on together.
