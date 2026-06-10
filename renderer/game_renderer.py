@@ -139,14 +139,20 @@ class GameRenderer:
             getattr(getattr(CFG, "display", None), "temp_display_max", 300.0))
         self.temperature_overlay = HeatFieldOverlay(
             cfg.grid_h, cfg.grid_w, temp_display_max=temp_display_max)
-        # Debug water overlay (water W2b): blue tint scaled by standing-water
-        # depth (gmap.water_depth, metres). water_display_max = the depth that
-        # maps to full tint; tunable via [display] water_display_max. Off by
-        # default; toggled with O. RENDER-ONLY — never mutates the field.
-        water_display_max = float(
-            getattr(getattr(CFG, "display", None), "water_display_max", 1.0))
+        # Water overlay v2 (water W6b; canon engine/07 §6 placeholder): depth-
+        # blue tint + ripple shading + foam + ambient sines over the sim's
+        # water fields. All four knobs bind from [display] with getattr
+        # defaults (the W2b water_display_max precedent) and are RENDER-ONLY +
+        # RESTART-BOUND: read once here; Ctrl+R re-reads config.toml but never
+        # re-binds the renderer's overlays. Off by default; toggled with O.
+        # RENDER-ONLY — never mutates any field.
+        disp = getattr(CFG, "display", None)
         self.water_overlay = WaterFieldOverlay(
-            cfg.grid_h, cfg.grid_w, depth_display_max=water_display_max)
+            cfg.grid_h, cfg.grid_w,
+            depth_display_max=float(getattr(disp, "water_display_max", 1.0)),
+            ripple_shade=float(getattr(disp, "water_ripple_shade", 0.35)),
+            foam_thresh=float(getattr(disp, "water_foam_thresh", 0.03)),
+            ambient_base=float(getattr(disp, "water_ambient_base", 0.06)))
 
         # Toggles
         self.show_grid = False
@@ -168,6 +174,11 @@ class GameRenderer:
         # Frame timing
         self.last_frame_ms = 0.0
         self.last_raycast_ms = 0.0
+        # Render-animation epoch: the water overlay's ambient sines take a
+        # seconds clock; epoch-relative keeps the float32 sine phases small.
+        # Wall-clock (animates through pause) — render-only, determinism-
+        # irrelevant by the locked canon §6 visual-only rule.
+        self._anim_t0 = time.perf_counter()
 
         # Visual effects list (short-lived). Each entry is a dict with
         # "kind", lifecycle ("t" seconds elapsed, "life" total) and
@@ -252,11 +263,18 @@ class GameRenderer:
         # Render-only — gmap.temperature is read, never written.
         if self.show_temperature:
             self.temperature_overlay.update(gmap.temperature)
-        # Debug water overlay: refresh the blue depth-tint texture from
-        # gmap.water_depth. Skipped when toggled off to save the work.
-        # Render-only — water_depth is read, never written.
+        # Water overlay v2 (W6b): depth tint + ripple shading + foam +
+        # ambient sines. Skipped when toggled off; the overlay itself also
+        # early-outs when the ship is dry (zero-water fast path). Render-only
+        # — every field is read, never written. `t_start` is this frame's
+        # perf_counter sample from the top of upload_state (no extra clock
+        # call); epoch-relative so the sine phases stay float32-small.
         if self.show_water:
-            self.water_overlay.update(gmap.water_depth)
+            self.water_overlay.update(
+                gmap.water_depth,
+                ripple=gmap.ripple, ripple_v=gmap.ripple_v,
+                flow_vx=gmap.flow_vx, flow_vy=gmap.flow_vy,
+                t=t_start - self._anim_t0)
 
         self.lighting.set_use_normal(self.show_normal_map)
         self.last_frame_ms = (time.perf_counter() - t_start) * 1000
@@ -848,6 +866,7 @@ class GameRenderer:
         rl.unload_texture(self.fire_overlay.tex)
         rl.unload_texture(self.glow_overlay.tex)
         rl.unload_texture(self.temperature_overlay.tex)
+        rl.unload_texture(self.water_overlay.tex)
         self.pressure_overlay.unload()
         self.world.unload()
         core.shutdown()

@@ -266,6 +266,14 @@ effect         = "ignition_hazard"    # invisible-ish until lit; then a fireball
 [display]
 panel_width = 250
 level = "unhcr_vessel"            # folder under levels/ to load on startup
+# Water overlay v2 look knobs (water W6b; canon engine/07 §6 — the tasteful
+# placeholder, not the shipped optics pass). RENDER-ONLY and RESTART-BOUND:
+# GameRenderer binds them once at construction (the water_display_max
+# precedent); Ctrl+R re-reads config.toml but does NOT re-bind overlays —
+# restart the game to apply. Erik's eyeball-tuning dials.
+water_ripple_shade = 0.35   # ripple-slope brightness gain: full +/-35% of the tint at slope 0.05 m/tile (fresh splash)
+water_foam_thresh = 0.03    # |grad ripple| (m/tile) above which foam whitens; splash slope ~0.075 foams, settled ~0 never
+water_ambient_base = 0.06   # idle ambient-sine shimmer amplitude on standing water; grows with local ripple energy, cap 0.40
 
 # Material property table (named-key format, ch.02 — Material System).
 # One [materials.<name>] row per material id; columns indexed into per-id

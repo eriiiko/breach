@@ -113,35 +113,182 @@ class FireOverlay(FieldOverlay):
 
 
 class WaterFieldOverlay(FieldOverlay):
-    """Debug water-depth overlay — blue tint scaled by standing-water depth.
+    """Water overlay v2 — depth-blue tint + ripple shading + foam + ambient sines.
 
-    DEBUG / TUNING ONLY (water W2b, docs/water_implementation_plan.md).
-    Render-time view of ``gmap.water_depth`` (float32, metres of standing
-    water on the floor); it NEVER mutates the field. Depth is normalised by
-    ``depth_display_max`` (the depth in metres that maps to full tint) and
-    packed through the FieldOverlay premultiplied-alpha path, so it is drawn
-    with BLEND_ALPHA_PREMULTIPLY exactly like the smoke overlay.
+    Water W6b (docs/water_implementation_plan.md; canon engine/07 §6). Still
+    the TASTEFUL PLACEHOLDER, not the shipped look — the dedicated water-optics
+    research pass (Fresnel, refraction, caustics) is a separate canon §6 item.
+    Render-time view of the sim's water fields; it NEVER mutates any of them.
+    Depth is normalised by ``depth_display_max`` (metres mapping to full tint)
+    and packed PREMULTIPLIED, drawn with BLEND_ALPHA_PREMULTIPLY like smoke.
+
+    Three render effects on top of the W2b depth tint, all CPU-side numpy at
+    overlay resolution (everything stays O(h·w); no per-pixel Python loops):
+
+    1. **Ripple shading** — a cheap directional pseudo-normal from
+       d(ripple)/dx: positive slope brightens the tint, negative darkens, gain
+       ``ripple_shade`` (fraction of the tint at the saturation slope
+       ``_SLOPE_REF``). Brightened channels are clipped before the
+       premultiply so the composite stays premultiplied-valid.
+    2. **Foam** — where ``|grad ripple|`` exceeds ``foam_thresh`` (m/tile) the
+       colour blends toward white and alpha lifts toward opaque froth
+       (whitecaps at steep fronts, canon §6). A fresh splash (slope ~0.075
+       m/tile from a 0.05 m amplitude over ~2 tiles) foams; settled water
+       (slope ~0) never does. Advancing wet/dry FRONTS also foam when the
+       local |flow| exceeds ``_FRONT_SPEED``.
+    3. **Ambient sines** — a precomputed 3-wave sine lattice over (x, y, t)
+       gives standing water idle shimmer. Canon §6 modulation rule: amplitude
+       = ``ambient_base`` + local ripple ENERGY (|ripple| + |ripple_v|,
+       4-neighbour smoothed), so the surface gets agitated near events and
+       calms down after. ``t`` is wall-clock render time — animation only,
+       deterministic-irrelevant (render-only by the locked §6 rule).
+
+    Knobs bind from ``[display]`` (water_ripple_shade / water_foam_thresh /
+    water_ambient_base / water_display_max) via getattr-defaults in
+    GameRenderer. RENDER-ONLY and RESTART-BOUND: read once at renderer
+    construction; Ctrl+R re-reads config.toml but never re-binds overlays
+    (the W2b water_display_max precedent).
 
     gamma = 0.5 LIFTS thin films toward visible — the opposite of smoke's
-    wisp-crushing 1.5 — because the point of a debug overlay is to SEE where
-    the water went, and a spreading pour thins to centimetres fast
-    (0.04 m reads at ~20% alpha instead of 4%).
+    wisp-crushing 1.5 — because the point is to SEE where the water went,
+    and a spreading pour thins to centimetres fast (0.04 m reads at ~20%
+    alpha instead of 4%).
+
+    Zero-water fast path: when ``water_depth`` is all zero AND the last
+    upload already wrote all-zero texels, ``update`` returns without packing
+    or uploading (a dry ship costs one ``.any()``). The GPU texture starts
+    OPAQUE BLACK (core.create_dynamic_rgba_texture), so the first update
+    always uploads to clear it.
     """
 
+    # Saturation slope (m/tile): d(ripple)/dx at which the shading hits its
+    # full ±ripple_shade swing — the fresh-splash scale (a 0.05 m splash over
+    # ~2 tiles ≈ 0.075 m/tile reads fully shaded; gentle swell reads partial).
+    _SLOPE_REF = 0.05
+    # Ambient amplitude = ambient_base + _AMB_ENERGY_GAIN * energy, capped at
+    # _AMB_MAX (energy is the |ripple| + |ripple_v| heuristic in ~metres; a
+    # fresh splash saturates the cap, settled water decays back to the base).
+    _AMB_ENERGY_GAIN = 2.0
+    _AMB_MAX = 0.40
+    # Wet/dry front foam: a wet tile with a dry 4-neighbour and local |flow|
+    # above _FRONT_SPEED (m/s) gets at least _FRONT_FOAM whitening.
+    _FRONT_SPEED = 0.10
+    _FRONT_FOAM = 0.6
+    # Full foam lifts alpha toward this fraction of max_alpha (opaque froth
+    # stays readable even over centimetre films).
+    _FOAM_ALPHA_FRAC = 0.85
+    # Ambient sine lattice: (kx, ky, omega) per wave — rad/tile spatial
+    # frequencies (wavelengths ~10 tiles) and rad/s temporal (slow idle,
+    # periods 3–7 s). Three directions so the sum never reads as stripes.
+    _WAVES = ((0.55, 0.25, 1.3),
+              (-0.35, 0.45, 0.9),
+              (0.20, -0.60, 1.9))
+
     def __init__(self, grid_h: int, grid_w: int,
-                 depth_display_max: float = 1.0):
+                 depth_display_max: float = 1.0,
+                 ripple_shade: float = 0.35,
+                 foam_thresh: float = 0.03,
+                 ambient_base: float = 0.06):
         super().__init__(grid_h, grid_w, tint=(40, 110, 230),
                          max_alpha=200, gamma=0.5)
         # Depth (m) that maps to the top of the tint ramp. Render-only knob;
         # depths above it just clamp to full tint (FieldOverlay clips to 1).
         self.depth_display_max = float(depth_display_max)
+        self.ripple_shade = float(ripple_shade)
+        self.foam_thresh = float(foam_thresh)
+        self.ambient_base = float(ambient_base)
+        # Precomputed sine-lattice spatial phases, one (h, w) float32 array
+        # per wave — per frame only sin(phase + omega*t) remains.
+        ys = np.arange(grid_h, dtype=np.float32)[:, None]
+        xs = np.arange(grid_w, dtype=np.float32)[None, :]
+        self._phases = [np.asarray(kx * xs + ky * ys, dtype=np.float32)
+                        for (kx, ky, _w) in self._WAVES]
+        # True once the last upload wrote all-zero texels (see class doc).
+        self._tex_blank = False
 
-    def update(self, water_depth: np.ndarray) -> None:
-        """water_depth: (H, W) float metres. Normalise, then FieldOverlay-pack.
+    def update(self, water_depth: np.ndarray,
+               ripple: Optional[np.ndarray] = None,
+               ripple_v: Optional[np.ndarray] = None,
+               flow_vx: Optional[np.ndarray] = None,
+               flow_vy: Optional[np.ndarray] = None,
+               t: float = 0.0) -> None:
+        """Pack water_depth (+ optional ripple fields) to RGBA and upload.
 
-        RENDER-ONLY: the divide makes a new array; the field is never written.
+        water_depth: (H, W) float metres. ripple (m) / ripple_v (m/s) enable
+        the v2 shading/foam/ambient path; ``ripple=None`` falls back to the
+        plain W2b depth tint (bit-identical to the old overlay). flow_vx /
+        flow_vy (m/s) optionally add wet/dry-front foam. ``t`` is the render
+        animation clock in seconds (any epoch).
+
+        RENDER-ONLY: every input is read, never written.
         """
-        super().update(water_depth / max(self.depth_display_max, 1e-6))
+        has_water = bool(water_depth.any())
+        if not has_water and self._tex_blank:
+            return  # dry ship + texture already clear: skip pack AND upload
+        if ripple is None:
+            # Legacy W2b path — plain depth-blue tint via the base pack.
+            super().update(water_depth / max(self.depth_display_max, 1e-6))
+            self._tex_blank = not has_water
+            return
+
+        # --- base depth tint (the W2b ramp) -----------------------------
+        v = np.clip(water_depth / max(self.depth_display_max, 1e-6), 0.0, 1.0)
+        v = v ** self.gamma                       # 0.5: lift thin films
+        alpha = v * self.max_alpha                # float (h, w), 0..max_alpha
+        wet = water_depth > 0.0
+
+        # --- 1. ripple shading: directional pseudo-normal from d/dx -----
+        gx = np.gradient(ripple, axis=1)          # m per tile
+        gy = np.gradient(ripple, axis=0)
+        shade = self.ripple_shade * np.clip(gx / self._SLOPE_REF, -1.0, 1.0)
+
+        # --- 3. ambient sines, amplitude = base + local ripple energy ---
+        energy = np.abs(ripple) + np.abs(ripple_v)
+        # Cheap 4-neighbour smooth (np.roll wraps at the border; borders are
+        # walls/vacuum -> depth 0 -> invisible texels, so the wrap is moot).
+        energy = (4.0 * energy
+                  + np.roll(energy, 1, 0) + np.roll(energy, -1, 0)
+                  + np.roll(energy, 1, 1) + np.roll(energy, -1, 1)) * 0.125
+        amp = np.clip(self.ambient_base + self._AMB_ENERGY_GAIN * energy,
+                      0.0, self._AMB_MAX)
+        sines = np.sin(self._phases[0] + self._WAVES[0][2] * t)
+        sines += np.sin(self._phases[1] + self._WAVES[1][2] * t)
+        sines += np.sin(self._phases[2] + self._WAVES[2][2] * t)
+        # Brightness factor >= 0; per-channel 0..255 clip below keeps the
+        # premultiply valid (channel <= alpha) however hard this brightens.
+        bright = np.maximum(1.0 + shade + amp * (sines / 3.0), 0.0)
+
+        # --- 2. foam: whitecaps where the surface is steep ---------------
+        mag = np.hypot(gx, gy)
+        foam = np.clip(mag / max(self.foam_thresh, 1e-9) - 1.0, 0.0, 1.0)
+        if flow_vx is not None and flow_vy is not None:
+            # Advancing wet/dry front: wet tile, dry 4-neighbour, moving.
+            dry = ~wet
+            edge = (np.roll(dry, 1, 0) | np.roll(dry, -1, 0) |
+                    np.roll(dry, 1, 1) | np.roll(dry, -1, 1))
+            fast = (flow_vx * flow_vx + flow_vy * flow_vy
+                    ) > self._FRONT_SPEED ** 2
+            foam = np.maximum(foam, np.where(wet & edge & fast,
+                                             self._FRONT_FOAM, 0.0))
+        foam = np.where(wet, foam, 0.0)            # foam only ON water
+        # Foam lifts alpha toward opaque froth (dry tiles stay 0: v and foam
+        # are both 0 there, so alpha stays 0 and the premultiply zeroes RGB).
+        alpha = np.maximum(alpha, foam * (self._FOAM_ALPHA_FRAC
+                                          * self.max_alpha))
+        a_norm = alpha / 255.0
+
+        # --- compose: shaded tint -> foam blend -> premultiply LAST ------
+        inv = 1.0 - foam
+        white = 255.0 * foam
+        cr = np.clip(self.tint_r * bright, 0.0, 255.0) * inv + white
+        cg = np.clip(self.tint_g * bright, 0.0, 255.0) * inv + white
+        cb = np.clip(self.tint_b * bright, 0.0, 255.0) * inv + white
+        self.packed[..., 0] = (cr * a_norm).astype(np.uint8)
+        self.packed[..., 1] = (cg * a_norm).astype(np.uint8)
+        self.packed[..., 2] = (cb * a_norm).astype(np.uint8)
+        self.packed[..., 3] = alpha.astype(np.uint8)
+        core.update_rgba_texture(self.tex, self.packed)
+        self._tex_blank = not has_water
 
 
 class HeatFieldOverlay:
