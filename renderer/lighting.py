@@ -20,6 +20,25 @@ from . import core
 SHADERS_DIR = Path(__file__).resolve().parent.parent / "shaders"
 
 
+def art_src_and_uv_rect(art_align, grid_w: int, grid_h: int,
+                        art_w: float, art_h: float):
+    """Pure [art.align] draw math (level format v2 §1.3) — unit-testable.
+
+    ``art_align`` is ``None`` (legacy full-stretch draw) or the 4-tuple
+    ``(off_x, off_y, ppt_x, ppt_y)`` stored by :meth:`LightingPass.set_art_align`.
+    Returns ``(src_rect, uv_rect)`` as plain ``(x, y, w, h)`` tuples:
+    ``src_rect`` is the art-pixel region spanning the grid (offset_px +
+    per-axis px_per_tile * grid), ``uv_rect`` the same rect normalized by the
+    art dimensions per axis — exactly what is pushed as ``u_art_uv_rect``.
+    """
+    if art_align is None:
+        return (0.0, 0.0, float(art_w), float(art_h)), (0.0, 0.0, 1.0, 1.0)
+    off_x, off_y, ppt_x, ppt_y = art_align
+    src = (off_x, off_y, ppt_x * float(grid_w), ppt_y * float(grid_h))
+    aw, ah = float(art_w), float(art_h)
+    return src, (src[0] / aw, src[1] / ah, src[2] / aw, src[3] / ah)
+
+
 class LightingPass:
     """Owns the lighting shader and the dynamic light-field texture."""
 
@@ -75,8 +94,9 @@ class LightingPass:
         self.light_z = 0.5            # default — overhead lamp feel
         # [art.align] transform (level format v2 §1.3): None = legacy
         # stretch-art-to-grid-rect draw (bit-identical to pre-F2 output);
-        # (offset_x, offset_y, px_per_tile) = explicit alignment, consumed by
-        # draw_lit_world. Set via set_art_align at level-load time.
+        # (offset_x, offset_y, ppt_x, ppt_y) = explicit alignment (per-axis
+        # px_per_tile), consumed by draw_lit_world. Set via set_art_align at
+        # level-load time.
         self.art_align = None
 
         # Default uniforms
@@ -148,17 +168,24 @@ class LightingPass:
         rl.set_shader_value(self.shader, self._loc_light_z, val,
                             rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT)
 
-    def set_art_align(self, offset_px, px_per_tile: float) -> None:
+    def set_art_align(self, offset_px, px_per_tile) -> None:
         """Bind the level's explicit [art.align] transform (format v2 §1.3).
 
         Art pixel ``offset_px`` lands on grid (0, 0); ``px_per_tile`` art
-        pixels span one tile. draw_lit_world derives the src rect + the
-        shader's u_art_uv_rect from this each draw (the art dimensions are
-        only known from the bound texture). Never called for levels without
-        an explicit [art.align] — those keep the legacy full-stretch draw.
+        pixels span one tile — a scalar (same both axes) or an ``(x, y)``
+        pair (LevelData always carries the pair; the v2 art's proportions
+        differ from the tilemap per axis). draw_lit_world derives the src
+        rect + the shader's u_art_uv_rect from this each draw (the art
+        dimensions are only known from the bound texture). Never called for
+        levels without an explicit [art.align] — those keep the legacy
+        full-stretch draw.
         """
+        if isinstance(px_per_tile, (list, tuple)):
+            ppt_x, ppt_y = float(px_per_tile[0]), float(px_per_tile[1])
+        else:
+            ppt_x = ppt_y = float(px_per_tile)
         self.art_align = (float(offset_px[0]), float(offset_px[1]),
-                          float(px_per_tile))
+                          ppt_x, ppt_y)
 
     def _set_art_uv_rect(self, rect) -> None:
         """Upload u_art_uv_rect (art-UV subrect: x, y, w, h)."""
@@ -283,7 +310,7 @@ class LightingPass:
         diffuse — the legacy stretch-art-to-grid-rect draw, fragTexCoord runs
         0..1 over the world, u_art_uv_rect stays (0,0,1,1) and the output is
         bit-identical to pre-F2. With an explicit align, the src rect is the
-        art region that spans the grid (offset_px + px_per_tile·grid), so
+        art region that spans the grid (offset_px + per-axis px_per_tile·grid), so
         fragTexCoord interpolates over that art-UV subrect; the same subrect
         is pushed as u_art_uv_rect so the shader can recover world UV for the
         grid-resolution samplers (light field, vacuum mask). The normal map
@@ -295,15 +322,10 @@ class LightingPass:
         BeginShaderMode can target the wrong shader in some raylib versions
         (see research note Gotcha 3).
         """
-        if self.art_align is None:
-            src = rl.Rectangle(0, 0, float(diffuse.width), float(diffuse.height))
-            uv_rect = (0.0, 0.0, 1.0, 1.0)
-        else:
-            off_x, off_y, ppt = self.art_align
-            src = rl.Rectangle(off_x, off_y,
-                               ppt * float(self.w), ppt * float(self.h))
-            dw, dh = float(diffuse.width), float(diffuse.height)
-            uv_rect = (src.x / dw, src.y / dh, src.width / dw, src.height / dh)
+        src_rect, uv_rect = art_src_and_uv_rect(
+            self.art_align, self.w, self.h,
+            float(diffuse.width), float(diffuse.height))
+        src = rl.Rectangle(*src_rect)
 
         rl.begin_shader_mode(self.shader)
         if normal is not None:
@@ -318,4 +340,4 @@ class LightingPass:
         rl.end_shader_mode()
 
 
-__all__ = ["LightingPass"]
+__all__ = ["LightingPass", "art_src_and_uv_rect"]

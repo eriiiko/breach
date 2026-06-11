@@ -14,7 +14,9 @@ The CSV is the source of truth for physics. Art assets are for rendering only.
 Level format v2 adds an ``[art]`` block (level_editor_and_format_v2_proposal
 §1.2/§1.3): layered art (``[art.bare]`` / ``[art.furniture]`` /
 ``[art.destroyed]``, each with diffuse/normal/specular) plus a non-destructive
-grid alignment (``[art.align]`` with ``offset_px`` + ``px_per_tile``).
+grid alignment (``[art.align]`` with ``offset_px`` + ``px_per_tile``; the
+latter is a scalar or a per-axis ``[x, y]`` pair — the v2 art's proportions
+differ from the tilemap per axis).
 ``[art.bare]`` is the new spelling of the old flat ``diffuse``/``normal`` keys;
 the flat keys keep working unchanged (v1 levels parse bit-identically, and v2
 levels may still use them). Furniture/destroyed layers are stored as paths now
@@ -66,15 +68,21 @@ def _png_size(path: Path) -> tuple:
 
 
 def tile_to_art_px(tile_x: float, tile_y: float,
-                   offset_px, px_per_tile: float) -> tuple:
+                   offset_px, px_per_tile) -> tuple:
     """Align transform (level format v2 §1.3): grid tile -> art pixel.
 
     Art pixel ``offset_px`` lands on grid (0, 0); ``px_per_tile`` art pixels
-    span one tile. Single source of truth for the renderer's art src-rect and
-    the (F4) editor's ALIGN mode. Accepts fractional tiles.
+    span one tile — a scalar (same scale both axes) or an ``(x, y)`` pair
+    (the v2 art's proportions differ from the tilemap per axis). Single
+    source of truth for the renderer's art src-rect and the ALIGN tooling
+    (``tools/align_level_art.py``). Accepts fractional tiles.
     """
-    return (float(offset_px[0]) + float(tile_x) * float(px_per_tile),
-            float(offset_px[1]) + float(tile_y) * float(px_per_tile))
+    if isinstance(px_per_tile, (list, tuple)):
+        ppt_x, ppt_y = float(px_per_tile[0]), float(px_per_tile[1])
+    else:
+        ppt_x = ppt_y = float(px_per_tile)
+    return (float(offset_px[0]) + float(tile_x) * ppt_x,
+            float(offset_px[1]) + float(tile_y) * ppt_y)
 
 
 @dataclass
@@ -118,13 +126,16 @@ class LevelData:
     destroyed_specular_path: Optional[Path] = None
     # [art.align] — non-destructive grid alignment (proposal §1.3): art pixel
     # `art_offset_px` lands on grid (0, 0); `art_px_per_tile` art pixels span
-    # one tile. When level.toml carries no [art.align], the defaults are
-    # offset (0, 0) + px_per_tile = art_width / grid_width (None if the art
-    # dimensions could not be read) and `art_align_explicit` stays False —
-    # the renderer then keeps the legacy stretch-art-to-grid-rect draw, which
-    # is exactly the same transform and bit-identical to the pre-F2 output.
+    # one tile, normalized to an (x, y) PAIR (the toml may say a scalar =
+    # same scale both axes, or [x, y] — the v2 art's proportions differ from
+    # the tilemap per axis). When level.toml carries no [art.align], the
+    # defaults are offset (0, 0) + px_per_tile = (art_w / grid_w,
+    # art_h / grid_h) (None if the art dimensions could not be read) and
+    # `art_align_explicit` stays False — the renderer then keeps the legacy
+    # stretch-art-to-grid-rect draw, which is exactly the same per-axis
+    # transform and bit-identical to the pre-F2 output.
     art_offset_px: tuple = (0.0, 0.0)
-    art_px_per_tile: Optional[float] = None
+    art_px_per_tile: Optional[tuple] = None
     art_align_explicit: bool = False
 
     @property
@@ -251,17 +262,30 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
     art_offset_px = (float(offset_raw[0]), float(offset_raw[1]))
     ppt_raw = align_tbl.get("px_per_tile")
     if ppt_raw is not None:
-        if not isinstance(ppt_raw, (int, float)) or float(ppt_raw) <= 0.0:
+        # Scalar = same scale both axes; [x, y] = per-axis. Either spelling
+        # normalizes to a pair on LevelData (the renderer always consumes the
+        # pair).
+        if isinstance(ppt_raw, (int, float)):
+            ppt_pair = (float(ppt_raw), float(ppt_raw))
+        elif (isinstance(ppt_raw, (list, tuple)) and len(ppt_raw) == 2
+                and all(isinstance(v, (int, float)) for v in ppt_raw)):
+            ppt_pair = (float(ppt_raw[0]), float(ppt_raw[1]))
+        else:
             raise ValueError(
-                f"[art.align] px_per_tile must be a positive number, "
-                f"got {ppt_raw!r}")
-        art_px_per_tile: Optional[float] = float(ppt_raw)
+                f"[art.align] px_per_tile must be a positive number or an "
+                f"[x, y] pair of positive numbers, got {ppt_raw!r}")
+        if ppt_pair[0] <= 0.0 or ppt_pair[1] <= 0.0:
+            raise ValueError(
+                f"[art.align] px_per_tile must be positive, got {ppt_raw!r}")
+        art_px_per_tile: Optional[tuple] = ppt_pair
     else:
-        # Default px_per_tile = art_width / grid_width (§1.2) — the implicit
-        # transform of the legacy stretch-art-to-grid draw.
+        # Default px_per_tile = (art_width / grid_width, art_height /
+        # grid_height) (§1.2) — exactly the implicit per-axis transform of
+        # the legacy stretch-art-to-grid draw.
         try:
-            art_w, _art_h = _png_size(diffuse_path)
-            art_px_per_tile = art_w / float(tilemap.shape[1])
+            art_w, art_h = _png_size(diffuse_path)
+            art_px_per_tile = (art_w / float(tilemap.shape[1]),
+                               art_h / float(tilemap.shape[0]))
         except (OSError, ValueError):
             if art_align_explicit:
                 raise ValueError(
