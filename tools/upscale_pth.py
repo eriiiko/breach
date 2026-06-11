@@ -34,6 +34,8 @@ def upscale(model_path: str, in_path: str, out_path: str) -> None:
     h, w, _ = img.shape
     out = np.zeros((h * scale, w * scale, 3), dtype=np.float32)
 
+    use_half = device == "cuda"  # dropped permanently on first NaN tile —
+    # transformer SR (DAT/HAT) overflows fp16; ESRGAN keeps the fast path
     with torch.inference_mode():
         for y0 in range(0, h, TILE):
             for x0 in range(0, w, TILE):
@@ -43,7 +45,11 @@ def upscale(model_path: str, in_path: str, out_path: str) -> None:
                 tile = img[py0:py1, px0:px1]
                 t = torch.from_numpy(tile.transpose(2, 0, 1))[None].to(device)
                 with torch.autocast(device, dtype=torch.float16,
-                                    enabled=(device == "cuda")):
+                                    enabled=use_half):
+                    r = model(t)
+                if use_half and bool(torch.isnan(r).any()):
+                    use_half = False
+                    print("fp16 NaN — falling back to fp32 for this model")
                     r = model(t)
                 r = r.float().clamp_(0, 1)[0].cpu().numpy().transpose(1, 2, 0)
                 # crop the padding off in output space, place the core tile
