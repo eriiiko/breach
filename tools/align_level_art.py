@@ -59,10 +59,10 @@ Controls — two modes, TAB toggles (HUD shows the active one):
     Right click/drag     - erase (paint AIR)
     0 1 2 3 4 5 6        - select AIR / HULL / WOOD / DOOR / STEEL / GLASS /
                            FURNITURE
-    9 or S               - select SPACE (code 9; S is an alias)
+    9                    - select SPACE (code 9)
     I                    - eyedropper (select the id under the cursor)
     [ / ]                - brush size 1..9 (square; shown in HUD)
-    W/A/D + arrow keys   - pan (S is taken by SPACE in this mode)
+    WASD + arrow keys    - pan (SPACE paints via 9 only)
 """
 from __future__ import annotations
 
@@ -495,8 +495,9 @@ def main() -> None:
                 cam_x -= pan
             if rl.is_key_down(rl.KeyboardKey.KEY_D):
                 cam_x += pan
-            if not mode_paint and rl.is_key_down(rl.KeyboardKey.KEY_S):
-                cam_y += pan               # PAINT: S selects SPACE instead
+            if rl.is_key_down(rl.KeyboardKey.KEY_S):
+                cam_y += pan               # S pans in BOTH modes (Erik's call;
+                                           # SPACE paints via 9 only)
             if mode_paint:                 # PAINT: arrows pan (no align nudge)
                 if rl.is_key_down(rl.KeyboardKey.KEY_UP):
                     cam_y -= pan
@@ -561,8 +562,6 @@ def main() -> None:
                     ((K.KEY_NINE, K.KEY_KP_9), SPACE_CODE)):
                 if any(rl.is_key_pressed(k) for k in keys):
                     selected_id = pid
-            if rl.is_key_pressed(K.KEY_S) and not ctrl:   # S = SPACE alias
-                selected_id = SPACE_CODE
             if rl.is_key_pressed(K.KEY_I) and cursor_in:  # eyedropper
                 selected_id = int(grid[cur_ty, cur_tx])
             if _pressed(K.KEY_LEFT_BRACKET):
@@ -723,7 +722,7 @@ def main() -> None:
             x = 8
             for pid in PALETTE_ORDER:
                 pname, c = PALETTE[pid]
-                label = (f"9/S {pname}" if pid == SPACE_CODE
+                label = (f"9 {pname}" if pid == SPACE_CODE
                          else f"{pid} {pname}")
                 chip = (rl.Color(c[0], c[1], c[2], 255) if c is not None
                         else rl.Color(70, 70, 76, 255))
@@ -738,7 +737,7 @@ def main() -> None:
             rl.draw_text(f"|  brush {brush}x{brush}   undo {len(undo)}",
                          x + 2, 30, 16, rl.Color(*COL_TEXT_HOT))
             line3 = ("LMB paint  RMB erase  Shift+click line  |  0-6 material, "
-                     "9/S space  |  I eyedrop  |  [ ] brush  |  Ctrl+Z undo")
+                     "9 space  |  I eyedrop  |  [ ] brush  |  Ctrl+Z undo")
             line4 = ("Ctrl+S save csv+align | B backdrop | G space fill | "
                      "L grid | TAB align | wheel zoom, MMB drag / "
                      "WAD+arrows pan | Esc quit")
