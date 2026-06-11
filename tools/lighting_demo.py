@@ -346,7 +346,8 @@ def main() -> None:
         map_px_w=map_px_w, map_px_h=map_px_h,
         panel_px_w=panel_px_w,
         grid_w=level.width, grid_h=level.height,
-        world_px_per_tile=24.0,
+        world_px_per_tile=float(getattr(CFG.rendering, "world_px_per_tile",
+                                        24.0)),
     )
 
     fit_zoom = map_px_w / max(level.width, 1)

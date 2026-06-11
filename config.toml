@@ -450,6 +450,13 @@ grenades = 2
 explosives = 2
 
 [rendering]
+# Resolution of the world composite RT in pixels per tile — the sharpness
+# CEILING for everything (art, lights, overlays): art above this is
+# downsampled on entry, zoom beyond it shows scaled-up RT pixels. The v2 art
+# is 78 px/tile; 48 matches the deepest practical on-screen zoom (sharp in
+# play), 78 = true native (RT grows ~2.6x, GPU fill cost rises with it).
+# Read at renderer construction (restart, not Ctrl+R).
+world_px_per_tile = 48.0
 # Pressure colormap: [pressure, R, G, B, alpha]
 # Linear interpolation between stops. Tweak and restart to iterate.
 pressure_scale = 2.0    # scales deviation from 1.0: displayed = 1 + (raw - 1) * scale
