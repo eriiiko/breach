@@ -69,9 +69,15 @@ class LightingPass:
         self._loc_normal_y_sign   = self._lookup("u_normal_y_sign")
         self._loc_srgb_decode     = self._lookup("u_srgb_decode")
         self._loc_light_z         = self._lookup("u_light_z")
+        self._loc_art_uv_rect     = self._lookup("u_art_uv_rect")
 
         # Cached state (for HUD display + bound checks)
         self.light_z = 0.5            # default — overhead lamp feel
+        # [art.align] transform (level format v2 §1.3): None = legacy
+        # stretch-art-to-grid-rect draw (bit-identical to pre-F2 output);
+        # (offset_x, offset_y, px_per_tile) = explicit alignment, consumed by
+        # draw_lit_world. Set via set_art_align at level-load time.
+        self.art_align = None
 
         # Default uniforms
         self.set_ambient((0.18, 0.18, 0.22))
@@ -79,6 +85,9 @@ class LightingPass:
         self.set_normal_y_sign(1.0)   # OpenGL convention; flip to -1 if needed
         self.set_srgb_decode(True)    # PNG diffuse art is sRGB
         self.set_light_z(self.light_z)
+        # u_art_uv_rect MUST be initialised: an unset vec4 uniform reads as
+        # (0,0,0,0) and the shader's world_uv division would produce NaNs.
+        self._set_art_uv_rect((0.0, 0.0, 1.0, 1.0))
 
     # ---- uniform setters -----------------------------------------------
 
@@ -138,6 +147,24 @@ class LightingPass:
         val = rl.ffi.new("float[1]", [z])
         rl.set_shader_value(self.shader, self._loc_light_z, val,
                             rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT)
+
+    def set_art_align(self, offset_px, px_per_tile: float) -> None:
+        """Bind the level's explicit [art.align] transform (format v2 §1.3).
+
+        Art pixel ``offset_px`` lands on grid (0, 0); ``px_per_tile`` art
+        pixels span one tile. draw_lit_world derives the src rect + the
+        shader's u_art_uv_rect from this each draw (the art dimensions are
+        only known from the bound texture). Never called for levels without
+        an explicit [art.align] — those keep the legacy full-stretch draw.
+        """
+        self.art_align = (float(offset_px[0]), float(offset_px[1]),
+                          float(px_per_tile))
+
+    def _set_art_uv_rect(self, rect) -> None:
+        """Upload u_art_uv_rect (art-UV subrect: x, y, w, h)."""
+        val = rl.ffi.new("float[4]", [float(v) for v in rect])
+        rl.set_shader_value(self.shader, self._loc_art_uv_rect, val,
+                            rl.ShaderUniformDataType.SHADER_UNIFORM_VEC4)
 
     def toggle_bilinear(self):
         self.bilinear = not self.bilinear
@@ -248,23 +275,44 @@ class LightingPass:
                        world_px_w: int, world_px_h: int) -> None:
         """Draw the lit diffuse over the full world render target.
 
-        Caller must already be inside BeginTextureMode(world_rt). The diffuse
-        covers (0, 0) to (world_px_w, world_px_h), so fragTexCoord runs 0..1
-        over the world — light field UV matches naturally, no camera math.
+        Caller must already be inside BeginTextureMode(world_rt). The drawn
+        quad covers (0, 0) to (world_px_w, world_px_h).
+
+        Art -> grid mapping (level format v2 §1.3): without an explicit
+        [art.align] (``self.art_align is None``) the src rect is the FULL
+        diffuse — the legacy stretch-art-to-grid-rect draw, fragTexCoord runs
+        0..1 over the world, u_art_uv_rect stays (0,0,1,1) and the output is
+        bit-identical to pre-F2. With an explicit align, the src rect is the
+        art region that spans the grid (offset_px + px_per_tile·grid), so
+        fragTexCoord interpolates over that art-UV subrect; the same subrect
+        is pushed as u_art_uv_rect so the shader can recover world UV for the
+        grid-resolution samplers (light field, vacuum mask). The normal map
+        is sampled at fragTexCoord (art space) — it must cover the same image
+        extent as the diffuse (any resolution).
 
         Sampler bindings are issued INSIDE BeginShaderMode so they apply to
         the active shader. Calling set_shader_value_texture before
         BeginShaderMode can target the wrong shader in some raylib versions
         (see research note Gotcha 3).
         """
+        if self.art_align is None:
+            src = rl.Rectangle(0, 0, float(diffuse.width), float(diffuse.height))
+            uv_rect = (0.0, 0.0, 1.0, 1.0)
+        else:
+            off_x, off_y, ppt = self.art_align
+            src = rl.Rectangle(off_x, off_y,
+                               ppt * float(self.w), ppt * float(self.h))
+            dw, dh = float(diffuse.width), float(diffuse.height)
+            uv_rect = (src.x / dw, src.y / dh, src.width / dw, src.height / dh)
+
         rl.begin_shader_mode(self.shader)
         if normal is not None:
             rl.set_shader_value_texture(self.shader, self._loc_normal_tex, normal)
         rl.set_shader_value_texture(self.shader, self._loc_light_tex_a, self.light_tex_a)
         rl.set_shader_value_texture(self.shader, self._loc_light_tex_b, self.light_tex_b)
         rl.set_shader_value_texture(self.shader, self._loc_vacuum_tex, self.vacuum_tex)
+        self._set_art_uv_rect(uv_rect)
 
-        src = rl.Rectangle(0, 0, float(diffuse.width), float(diffuse.height))
         dst = rl.Rectangle(0, 0, float(world_px_w), float(world_px_h))
         rl.draw_texture_pro(diffuse, src, dst, rl.Vector2(0, 0), 0.0, rl.WHITE)
         rl.end_shader_mode()

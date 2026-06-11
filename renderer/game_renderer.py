@@ -107,6 +107,16 @@ class GameRenderer:
         self.raycaster.smoke_absorb_scale = float(
             getattr(smoke_cfg, "smoke_absorb_scale", 1.4))
         self.lighting = LightingPass(self.raycaster, cfg.grid_h, cfg.grid_w)
+        # [art.align] (level format v2 §1.3): bind the level's explicit art
+        # alignment so draw_lit_world samples the art through the transform
+        # (art pixel offset_px lands on grid (0,0); px_per_tile art pixels
+        # span one tile). Levels without an explicit [art.align] — every v1
+        # level — keep LightingPass's legacy stretch-art-to-grid draw, which
+        # is bit-identical to the pre-F2 output. getattr guards stub levels.
+        if (getattr(level_data, "art_align_explicit", False)
+                and level_data.art_px_per_tile):
+            self.lighting.set_art_align(level_data.art_offset_px,
+                                        level_data.art_px_per_tile)
         # Upload the level's vacuum mask once — the shader uses it to discard
         # vacuum pixels so the screen-fixed background shows through.
         from level_loader import materials_from_tilemap

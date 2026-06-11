@@ -10,6 +10,15 @@ A "level" lives at levels/<name>/ and contains:
   - wall_mask.png   : overrides CSV-derived walls (optional)
 
 The CSV is the source of truth for physics. Art assets are for rendering only.
+
+Level format v2 adds an ``[art]`` block (level_editor_and_format_v2_proposal
+§1.2/§1.3): layered art (``[art.bare]`` / ``[art.furniture]`` /
+``[art.destroyed]``, each with diffuse/normal/specular) plus a non-destructive
+grid alignment (``[art.align]`` with ``offset_px`` + ``px_per_tile``).
+``[art.bare]`` is the new spelling of the old flat ``diffuse``/``normal`` keys;
+the flat keys keep working unchanged (v1 levels parse bit-identically, and v2
+levels may still use them). Furniture/destroyed layers are stored as paths now
+and consumed by the layer compose in F3.
 """
 from __future__ import annotations
 
@@ -35,6 +44,37 @@ SUPPORTED_VERSIONS = {"1", "2"}
 # v2 CSV vocabulary (level format v2 §1.1): codes ARE canon material ids from
 # ``simulation.materials``, plus exactly ONE reserved non-material code:
 SPACE_CODE = 9   # SPACE — MAT_AIR + is_vacuum (the one thing that isn't a material)
+
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def _png_size(path: Path) -> tuple:
+    """Read (width, height) from a PNG header without decoding the image.
+
+    Pure-Python IHDR parse (the IHDR chunk is mandatory and always first), so
+    the loader can compute the default ``px_per_tile`` (= art_width /
+    grid_width) without an imaging dependency. Raises ValueError on anything
+    that is not a well-formed PNG.
+    """
+    with open(path, "rb") as f:
+        head = f.read(33)   # 8 signature + 8 chunk header + 13 IHDR payload
+    if len(head) < 24 or head[:8] != _PNG_SIGNATURE or head[12:16] != b"IHDR":
+        raise ValueError(f"Not a PNG file (cannot read dimensions): {path}")
+    width = int.from_bytes(head[16:20], "big")
+    height = int.from_bytes(head[20:24], "big")
+    return width, height
+
+
+def tile_to_art_px(tile_x: float, tile_y: float,
+                   offset_px, px_per_tile: float) -> tuple:
+    """Align transform (level format v2 §1.3): grid tile -> art pixel.
+
+    Art pixel ``offset_px`` lands on grid (0, 0); ``px_per_tile`` art pixels
+    span one tile. Single source of truth for the renderer's art src-rect and
+    the (F4) editor's ALIGN mode. Accepts fractional tiles.
+    """
+    return (float(offset_px[0]) + float(tile_x) * float(px_per_tile),
+            float(offset_px[1]) + float(tile_y) * float(px_per_tile))
 
 
 @dataclass
@@ -63,6 +103,29 @@ class LevelData:
     floor_id: int = 0
     spawns: list = field(default_factory=list)  # list[SpawnEntry]
     raw_toml: dict = field(default_factory=dict)
+    # ---- level format v2 [art] block (F2) --------------------------------
+    # [art.bare] is the new spelling of diffuse_path/normal_path above (the
+    # loader maps it onto them); specular is stored now, consumed when the
+    # lighting learns specular (proposal §2.3).
+    specular_path: Optional[Path] = None
+    # [art.furniture] / [art.destroyed] overlay layers — stored as paths in
+    # F2, consumed by the per-tile layer compose in F3.
+    furniture_diffuse_path: Optional[Path] = None
+    furniture_normal_path: Optional[Path] = None
+    furniture_specular_path: Optional[Path] = None
+    destroyed_diffuse_path: Optional[Path] = None
+    destroyed_normal_path: Optional[Path] = None
+    destroyed_specular_path: Optional[Path] = None
+    # [art.align] — non-destructive grid alignment (proposal §1.3): art pixel
+    # `art_offset_px` lands on grid (0, 0); `art_px_per_tile` art pixels span
+    # one tile. When level.toml carries no [art.align], the defaults are
+    # offset (0, 0) + px_per_tile = art_width / grid_width (None if the art
+    # dimensions could not be read) and `art_align_explicit` stays False —
+    # the renderer then keeps the legacy stretch-art-to-grid-rect draw, which
+    # is exactly the same transform and bit-identical to the pre-F2 output.
+    art_offset_px: tuple = (0.0, 0.0)
+    art_px_per_tile: Optional[float] = None
+    art_align_explicit: bool = False
 
     @property
     def height(self) -> int:
@@ -108,21 +171,103 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
 
     tile_size_m = float(raw.get("tile_size_m", 0.333))
 
-    diffuse_rel = raw.get("diffuse")
+    # ---- [art] block (level format v2 §1.2) ------------------------------
+    # Parsed format-driven, not version-gated: the `version` gate governs the
+    # CSV *vocabulary* (see materials_from_tilemap); art keys are recognised
+    # by spelling. v1 levels carry no [art] table and take the flat-key paths
+    # below completely unchanged.
+    art_tbl = raw.get("art", {})
+    if not isinstance(art_tbl, dict):
+        raise ValueError("level.toml [art] must be a table")
+
+    def art_sub(name: str) -> dict:
+        sub = art_tbl.get(name, {})
+        if not isinstance(sub, dict):
+            raise ValueError(f"level.toml [art.{name}] must be a table")
+        return sub
+
+    bare_tbl = art_sub("bare")
+    furniture_tbl = art_sub("furniture")
+    destroyed_tbl = art_sub("destroyed")
+    align_tbl = art_sub("align")
+
+    def resolve(rel, label: str) -> Path:
+        p = base / rel
+        if not p.is_file():
+            raise ValueError(f"{label} declared but file missing: {p}")
+        return p
+
+    def opt(key: str) -> Optional[Path]:
+        """Optional flat (v1-spelling) key — behaviour unchanged from v1."""
+        rel = raw.get(key)
+        if not rel:
+            return None
+        return resolve(rel, key)
+
+    def opt_art(table: dict, label_prefix: str, key: str) -> Optional[Path]:
+        """Optional [art...] key; errors name the full toml location."""
+        rel = table.get(key)
+        if not rel:
+            return None
+        return resolve(rel, f"{label_prefix} {key}")
+
+    # Bare diffuse — required. [art.bare] diffuse is the new spelling; the
+    # old flat `diffuse` keeps working and acts as the fallback when both
+    # spellings appear.
+    diffuse_rel = bare_tbl.get("diffuse") or raw.get("diffuse")
     if not diffuse_rel:
+        if art_tbl:
+            raise ValueError(
+                "level.toml missing required [art.bare] 'diffuse' field "
+                "(or the legacy flat 'diffuse' key)")
         raise ValueError("level.toml missing required 'diffuse' field")
     diffuse_path = base / diffuse_rel
     if not diffuse_path.is_file():
         raise ValueError(f"Diffuse texture not found: {diffuse_path}")
 
-    def opt(key: str) -> Optional[Path]:
-        rel = raw.get(key)
-        if not rel:
-            return None
-        p = base / rel
-        if not p.is_file():
-            raise ValueError(f"{key} declared but file missing: {p}")
-        return p
+    normal_path = opt_art(bare_tbl, "[art.bare]", "normal") or opt("normal")
+    specular_path = opt_art(bare_tbl, "[art.bare]", "specular")
+    emissive_mask_path = (opt_art(art_tbl, "[art]", "emissive_mask")
+                          or opt("emissive_mask"))
+    background_path = (opt_art(art_tbl, "[art]", "background")
+                       or opt("background"))
+
+    # Overlay layers — stored in F2, consumed by the layer compose in F3.
+    furniture_diffuse_path = opt_art(furniture_tbl, "[art.furniture]", "diffuse")
+    furniture_normal_path = opt_art(furniture_tbl, "[art.furniture]", "normal")
+    furniture_specular_path = opt_art(furniture_tbl, "[art.furniture]", "specular")
+    destroyed_diffuse_path = opt_art(destroyed_tbl, "[art.destroyed]", "diffuse")
+    destroyed_normal_path = opt_art(destroyed_tbl, "[art.destroyed]", "normal")
+    destroyed_specular_path = opt_art(destroyed_tbl, "[art.destroyed]", "specular")
+
+    # [art.align] — non-destructive grid alignment (§1.3).
+    art_align_explicit = "align" in art_tbl
+    offset_raw = align_tbl.get("offset_px", (0, 0))
+    if (not isinstance(offset_raw, (list, tuple)) or len(offset_raw) != 2
+            or not all(isinstance(v, (int, float)) for v in offset_raw)):
+        raise ValueError(
+            f"[art.align] offset_px must be an [x, y] number pair, "
+            f"got {offset_raw!r}")
+    art_offset_px = (float(offset_raw[0]), float(offset_raw[1]))
+    ppt_raw = align_tbl.get("px_per_tile")
+    if ppt_raw is not None:
+        if not isinstance(ppt_raw, (int, float)) or float(ppt_raw) <= 0.0:
+            raise ValueError(
+                f"[art.align] px_per_tile must be a positive number, "
+                f"got {ppt_raw!r}")
+        art_px_per_tile: Optional[float] = float(ppt_raw)
+    else:
+        # Default px_per_tile = art_width / grid_width (§1.2) — the implicit
+        # transform of the legacy stretch-art-to-grid draw.
+        try:
+            art_w, _art_h = _png_size(diffuse_path)
+            art_px_per_tile = art_w / float(tilemap.shape[1])
+        except (OSError, ValueError):
+            if art_align_explicit:
+                raise ValueError(
+                    f"[art.align] declared without px_per_tile and the "
+                    f"diffuse dimensions could not be read: {diffuse_path}")
+            art_px_per_tile = None
 
     spawns = []
     for i, entry in enumerate(raw.get("spawn", [])):
@@ -147,14 +292,24 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
         tilemap=tilemap,
         tile_size_m=tile_size_m,
         diffuse_path=diffuse_path,
-        normal_path=opt("normal"),
-        emissive_mask_path=opt("emissive_mask"),
+        normal_path=normal_path,
+        emissive_mask_path=emissive_mask_path,
         emissive_bloom_path=opt("emissive_bloom"),
         wall_mask_path=opt("wall_mask"),
-        background_path=opt("background"),
+        background_path=background_path,
         floor_id=int(raw.get("floor_id", 0)),
         spawns=spawns,
         raw_toml=raw,
+        specular_path=specular_path,
+        furniture_diffuse_path=furniture_diffuse_path,
+        furniture_normal_path=furniture_normal_path,
+        furniture_specular_path=furniture_specular_path,
+        destroyed_diffuse_path=destroyed_diffuse_path,
+        destroyed_normal_path=destroyed_normal_path,
+        destroyed_specular_path=destroyed_specular_path,
+        art_offset_px=art_offset_px,
+        art_px_per_tile=art_px_per_tile,
+        art_align_explicit=art_align_explicit,
     )
 
 
@@ -226,6 +381,10 @@ if __name__ == "__main__":
     print(f"  Emissive: {lvl.emissive_mask_path.name if lvl.emissive_mask_path else '(none)'}")
     print(f"  Bloom:   {lvl.emissive_bloom_path.name if lvl.emissive_bloom_path else '(none)'}")
     print(f"  Wall mask: {lvl.wall_mask_path.name if lvl.wall_mask_path else '(derived from CSV)'}")
+    print(f"  Align:   offset={lvl.art_offset_px} px_per_tile={lvl.art_px_per_tile}"
+          f" ({'explicit' if lvl.art_align_explicit else 'default'})")
+    print(f"  Layers:  furniture={'yes' if lvl.furniture_diffuse_path else 'no'}"
+          f" destroyed={'yes' if lvl.destroyed_diffuse_path else 'no'}")
     print(f"  Floor:   {lvl.floor_id}")
     print(f"  Tile values: {sorted(np.unique(lvl.tilemap).tolist())}")
     mat, vac = materials_from_tilemap(lvl.tilemap, lvl.version)

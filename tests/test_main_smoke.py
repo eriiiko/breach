@@ -8,9 +8,14 @@ update with sim, all in one).
 
 Run:
     C:/Users/steen/anaconda3/python.exe tests/test_main_smoke.py --auto
+
+Set the BREACH_LEVEL env var to smoke-test another level folder (test tooling
+only — the game's level selection stays [display] level in config.toml):
+    BREACH_LEVEL=unhcr_vessel_2 C:/Users/steen/anaconda3/python.exe tests/test_main_smoke.py --auto
 """
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -35,7 +40,7 @@ from simulation.unit import Unit
 
 
 def main():
-    level = load_level("unhcr_vessel")
+    level = load_level(os.environ.get("BREACH_LEVEL", "unhcr_vessel"))
     sim = Simulation(level, seed=42, breach_physics=bp,
                      enable_recorder=False)
 

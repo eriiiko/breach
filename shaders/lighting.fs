@@ -41,6 +41,15 @@ uniform float u_normal_y_sign;
 uniform int   u_srgb_decode;
 uniform float u_light_z;           // 0..1: 0 = grazing horizontal, 1 = straight down
                                    // (more grazing = stronger normal-map relief)
+uniform vec4  u_art_uv_rect;       // art-UV subrect drawn over the world RT
+                                   // (xy = origin, zw = size) — the [art.align]
+                                   // transform (level format v2 §1.3). The quad's
+                                   // fragTexCoord interpolates over THIS rect (art
+                                   // space, samples diffuse/normal); world-space
+                                   // samplers (light field, vacuum) need world UV
+                                   // = (fragTexCoord - xy) / zw. Default (0,0,1,1)
+                                   // = legacy full-stretch: world_uv == fragTexCoord
+                                   // bit-exactly ((x - 0) / 1 == x in IEEE 754).
 
 out vec4 finalColor;
 
@@ -62,9 +71,15 @@ vec3 aces_tonemap(vec3 x) {
 }
 
 void main() {
+    // World-space UV (0..1 over the world RT / grid). With the default
+    // u_art_uv_rect (0,0,1,1) this IS fragTexCoord (bit-exact); with an
+    // explicit [art.align] it inverts the art->world src-rect mapping so the
+    // grid-resolution samplers stay glued to the grid while the art shifts.
+    vec2 world_uv = (fragTexCoord - u_art_uv_rect.xy) / u_art_uv_rect.zw;
+
     // Vacuum tiles are not part of the ship — discard so the screen-space
     // background (stars, void) shows through.
-    float vacuum = texture(u_vacuum, fragTexCoord).r;
+    float vacuum = texture(u_vacuum, world_uv).r;
     if (vacuum > 0.5) {
         discard;
     }
@@ -77,12 +92,13 @@ void main() {
     }
 
     // Light field sample: this shader is invoked inside the world RT, where
-    // the diffuse covers the full world (0..1 fragTexCoord <-> 0..1 world).
-    // The light field also covers the full world, so sampling at the same
-    // fragTexCoord gives the right tile. Camera scrolling happens later, as
-    // a separate blit from the world RT to the screen — see WorldComposite.
-    vec4 tex_a = texture(u_light_a, fragTexCoord);
-    vec4 tex_b = texture(u_light_b, fragTexCoord);
+    // the drawn quad covers the full world. The light field also covers the
+    // full world, so it is sampled at world_uv (== fragTexCoord for the
+    // legacy full-stretch draw; the [art.align] inverse otherwise). Camera
+    // scrolling happens later, as a separate blit from the world RT to the
+    // screen — see WorldComposite.
+    vec4 tex_a = texture(u_light_a, world_uv);
+    vec4 tex_b = texture(u_light_b, world_uv);
     vec3 incoming_rgb = tex_a.rgb;      // total light colour reaching this tile
     // light_dir is stored signed in 16F — reconstruct directly (no decode).
     vec2 light_dir_2d = vec2(tex_a.a, tex_b.a);
