@@ -329,7 +329,16 @@ def main() -> None:
     print(f"[lighting_demo] Spawned {len(level.spawns)} units")
 
     # ---- 2. Window ----
-    screen_w, screen_h = 1280, 720   # windowed by default
+    # Borderless at the real monitor resolution by default (same pattern as
+    # main.py): open the window first, then query the actual size and lay the
+    # panel/map out to fit. `--windowed` falls back to the old fixed 1280x720.
+    BORDERLESS = "--windowed" not in sys.argv
+    if BORDERLESS:
+        rcore.init_window(0, 0, title="Breach — Lighting Demo",
+                          borderless=True)
+        screen_w, screen_h = rcore.get_monitor_size()
+    else:
+        screen_w, screen_h = 1280, 720
     panel_px_w = PANEL_W
     map_px_w = screen_w - panel_px_w
     map_px_h = screen_h
@@ -349,10 +358,11 @@ def main() -> None:
         world_size_tile_w=level.width, world_size_tile_h=level.height,
     )
 
-    # GameRenderer creates the window internally.
+    # GameRenderer attaches to the already-open window in borderless mode
+    # (or creates the fixed one in --windowed).
     renderer = GameRenderer(level, bp, cfg,
                             initial_camera=initial_camera,
-                            borderless=False)
+                            borderless=BORDERLESS)
 
     # Pressure overlay is now built into the renderer (renderer/pressure_overlay.py),
     # shared with the main game. No demo-local allocations needed.
