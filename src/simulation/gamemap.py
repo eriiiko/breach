@@ -35,6 +35,7 @@ from simulation.materials import (  # noqa: F401  (re-exported)
     MAT_DOOR,
     MAT_STEEL,
     MAT_GLASS,
+    MAT_FURNITURE,
     MaterialTable,
 )
 

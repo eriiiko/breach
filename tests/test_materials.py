@@ -26,7 +26,7 @@ from level_loader import load as load_level
 from simulation.gamemap import GameMap
 from simulation.materials import (
     MAT_AIR, MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_STEEL, MAT_GLASS,
-    MATERIAL_NAMES, MaterialTable,
+    MAT_FURNITURE, MATERIAL_NAMES, MaterialTable,
 )
 
 
@@ -44,6 +44,7 @@ def test_ids_unified():
     for name, expected in (
         ("MAT_AIR", 0), ("MAT_HULL", 1), ("MAT_WOOD", 2),
         ("MAT_DOOR", 3), ("MAT_STEEL", 4), ("MAT_GLASS", 5),
+        ("MAT_FURNITURE", 6),
     ):
         assert getattr(gm, name) == expected, f"gamemap.{name}"
     # gamemap re-exports the canonical ids from simulation.materials.
@@ -161,6 +162,58 @@ def test_permeability_defaults_to_solid_set():
     print("OK: permeability_defaults_to_solid_set")
 
 
+def test_furniture_row_values():
+    """FURNITURE (id 6, editor proposal Q2): dedicated material row — lower
+    hp, flammable, PARTIAL permeability (smoke drifts past crates), partial
+    light occlusion, movement-blocking."""
+    assert MAT_FURNITURE == 6
+    assert MATERIAL_NAMES[MAT_FURNITURE] == "furniture"
+    tbl = MaterialTable.from_config(CFG)
+    assert tbl.hp[MAT_FURNITURE] == 30
+    assert bool(tbl.flammable[MAT_FURNITURE]) is True
+    assert tbl.ignition_temp[MAT_FURNITURE] == 280.0
+    assert bool(tbl.passable[MAT_FURNITURE]) is False
+    # The approved partial permeability — explicitly 0.5, NOT the derived
+    # sealed-because-it-occludes default.
+    assert tbl.permeability[MAT_FURNITURE] == np.float32(0.5)
+    assert np.all(tbl.light_atten[MAT_FURNITURE] == np.float32(0.55))
+    assert tbl.heat_atten[MAT_FURNITURE] == np.float32(0.5)
+    assert tbl.conductivity[MAT_FURNITURE] == 0.0
+    assert tbl.heat_inv_shift[MAT_FURNITURE] == 3       # thermal_mass 8 = 2**3
+    assert tbl.wave_reflect[MAT_FURNITURE] == np.float32(0.2)
+    assert tbl.wave_absorb[MAT_FURNITURE] == np.float32(0.5)
+    assert tbl.blast_resist[MAT_FURNITURE] == 0.0
+    assert tbl.burst_threshold[MAT_FURNITURE] == np.float32(2.0)
+    # Ignition threshold lands in the shared Q16.16 temperature domain.
+    assert tbl.ignition_temp_q16[MAT_FURNITURE] == round(280.0 * 65536)
+    # kappa == 0 -> structural no-conduction face, like air (engine/06 §2.6).
+    assert tbl.self_shift[MAT_FURNITURE] == tbl.no_face
+    assert np.all(tbl.face_shift_table[MAT_FURNITURE, :] == tbl.no_face)
+    print("OK: furniture_row_values")
+
+
+def test_furniture_projects_into_grid_caches():
+    """A tile patched to FURNITURE lands in every derived grid: flammable
+    mask True, permeability 0.5 (NOT solid — flow drifts past), wall_hp 30,
+    movement still blocked via is_passable."""
+    g = GameMap(load_level("unhcr_vessel"))
+    ys, xs = np.where((g.material == MAT_AIR) & ~g.is_vacuum)
+    y, x = int(ys[len(ys) // 2]), int(xs[len(ys) // 2])
+    g.material[y, x] = MAT_FURNITURE
+    g.on_tile_changed(y, x)
+    assert bool(g.flammable[y, x]) is True
+    assert g.permeability[y, x] == np.float32(0.5)
+    assert not g.solid[y, x], "partial permeability must NOT make it solid"
+    assert g.wall_hp[y, x] == 30
+    assert g.conductivity[y, x] == 0.0
+    # Movement: furniture is not in the walkable set (AIR + DOOR only).
+    assert not g.is_passable(y, x)
+    # And the projection equals the table everywhere (no hardcoded list).
+    assert np.array_equal(g.flammable, g.materials.flammable[g.material])
+    assert np.array_equal(g.permeability, g.materials.permeability[g.material])
+    print("OK: furniture_projects_into_grid_caches")
+
+
 def test_on_tile_changed_direct_patch():
     """Directly editing material + calling on_tile_changed updates caches."""
     g = GameMap(load_level("unhcr_vessel"))
@@ -184,5 +237,7 @@ if __name__ == "__main__":
     test_caches_match_table()
     test_on_tile_changed_patches_all_caches_after_destroy()
     test_permeability_defaults_to_solid_set()
+    test_furniture_row_values()
+    test_furniture_projects_into_grid_caches()
     test_on_tile_changed_direct_patch()
     print("\nAll material tests passed.")

@@ -36,7 +36,8 @@ from level_loader import (  # noqa: E402
     SPACE_CODE, SUPPORTED_VERSIONS, load as load_level, materials_from_tilemap,
 )
 from simulation.materials import (  # noqa: E402
-    MAT_AIR, MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_STEEL, MAT_GLASS, MATERIAL_NAMES,
+    MAT_AIR, MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_STEEL, MAT_GLASS, MAT_FURNITURE,
+    MATERIAL_NAMES,
 )
 from migrate_tilemap_v2 import V1_TO_V2, migrate_grid, migrate_level  # noqa: E402
 
@@ -85,9 +86,23 @@ def test_v2_literal_mapping_and_space():
     assert int((mat == MAT_GLASS).sum()) == 1
 
 
-@pytest.mark.parametrize("bad", [6, 7, 8, 42, -1])
+def test_v2_accepts_furniture():
+    """Code 6 = MAT_FURNITURE (dedicated material row, proposal Q2): the v2
+    vocabulary legalised it the moment the material-table row landed."""
+    tm = np.array([[0, 6],
+                   [6, 9]], dtype=np.int32)
+    mat, vac = materials_from_tilemap(tm, "2")
+    np.testing.assert_array_equal(
+        mat, np.array([[MAT_AIR, MAT_FURNITURE],
+                       [MAT_FURNITURE, MAT_AIR]]))
+    np.testing.assert_array_equal(
+        vac, np.array([[False, False], [False, True]]))
+
+
+@pytest.mark.parametrize("bad", [7, 8, 42, -1])
 def test_v2_unknown_code_raises(bad):
-    """v2 tolerates ONLY material-table ids + SPACE_CODE — fail loud."""
+    """v2 tolerates ONLY material-table ids + SPACE_CODE — fail loud.
+    (6 left this list when FURNITURE became a real material row.)"""
     tm = np.array([[0, bad]], dtype=np.int32)
     with pytest.raises(ValueError, match="unknown codes"):
         materials_from_tilemap(tm, "2")

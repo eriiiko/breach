@@ -32,6 +32,7 @@ MAT_WOOD = 2
 MAT_DOOR = 3
 MAT_STEEL = 4
 MAT_GLASS = 5
+MAT_FURNITURE = 6
 
 # Config-key <-> id mapping. The key is the ``[materials.<name>]`` table name.
 # Listed in id order; ``MaterialTable`` validates contiguity.
@@ -42,6 +43,7 @@ MATERIAL_NAMES = {
     MAT_DOOR: "door",
     MAT_STEEL: "steel",
     MAT_GLASS: "glass",
+    MAT_FURNITURE: "furniture",
 }
 
 # Scalar columns: name -> numpy dtype. ``light_atten`` is handled separately

@@ -36,8 +36,9 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools"))
 
 from level_loader import SPACE_CODE, tile_to_art_px  # noqa: E402
-from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_GLASS, MAT_HULL,  # noqa: E402
-                                  MAT_STEEL, MAT_WOOD, MATERIAL_NAMES)
+from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_FURNITURE,  # noqa: E402
+                                  MAT_GLASS, MAT_HULL, MAT_STEEL, MAT_WOOD,
+                                  MATERIAL_NAMES)
 from align_level_art import (PALETTE, UndoRing, art_px_to_tile, brush_rect,  # noqa: E402
                              line_tiles, paint_tiles, save_tilemap_csv)
 
@@ -56,9 +57,13 @@ def test_palette_is_canon_v2_vocabulary():
     # AIR is the absence of an overlay; everything else has an RGB fill.
     assert PALETTE[MAT_AIR][1] is None
     for mid in (MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_STEEL, MAT_GLASS,
-                SPACE_CODE):
+                MAT_FURNITURE, SPACE_CODE):
         rgb = PALETTE[mid][1]
         assert len(rgb) == 3 and all(0 <= v <= 255 for v in rgb)
+    # FURNITURE is paintable on key 6 with its own chip colour, visually
+    # distinct from WOOD's orange (both are warm — the ids must read apart).
+    assert PALETTE[MAT_FURNITURE][0] == "FURNITURE"
+    assert PALETTE[MAT_FURNITURE][1] != PALETTE[MAT_WOOD][1]
 
 
 # ---------------------------------------------------------------------------

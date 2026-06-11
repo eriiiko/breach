@@ -57,8 +57,9 @@ Controls — two modes, TAB toggles (HUD shows the active one):
   PAINT mode (level format v2 only — CSV codes ARE canon material ids):
     Left click/drag      - paint the selected id under the cursor
     Right click/drag     - erase (paint AIR)
-    0 1 2 3 4 5          - select AIR / HULL / WOOD / DOOR / STEEL / GLASS
-    9, 6 or S            - select SPACE (code 9; 6 and S are aliases)
+    0 1 2 3 4 5 6        - select AIR / HULL / WOOD / DOOR / STEEL / GLASS /
+                           FURNITURE
+    9 or S               - select SPACE (code 9; S is an alias)
     I                    - eyedropper (select the id under the cursor)
     [ / ]                - brush size 1..9 (square; shown in HUD)
     W/A/D + arrow keys   - pan (S is taken by SPACE in this mode)
@@ -81,8 +82,9 @@ import pyray as rl
 
 from level_loader import (SPACE_CODE, load as load_level,
                           materials_from_tilemap, tile_to_art_px)
-from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_GLASS, MAT_HULL,
-                                  MAT_STEEL, MAT_WOOD, MATERIAL_NAMES)
+from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_FURNITURE, MAT_GLASS,
+                                  MAT_HULL, MAT_STEEL, MAT_WOOD,
+                                  MATERIAL_NAMES)
 
 
 # ---------------------------------------------------------------------------
@@ -175,10 +177,11 @@ PALETTE = {
     MAT_DOOR:   (MATERIAL_NAMES[MAT_DOOR].upper(), (240, 220, 60)),    # yellow
     MAT_STEEL:  (MATERIAL_NAMES[MAT_STEEL].upper(), (70, 130, 180)),   # steel blue
     MAT_GLASS:  (MATERIAL_NAMES[MAT_GLASS].upper(), (80, 220, 230)),   # cyan
+    MAT_FURNITURE: (MATERIAL_NAMES[MAT_FURNITURE].upper(), (160, 110, 60)),  # warm brown (crates)
     SPACE_CODE: ("SPACE", (40, 70, 200)),                              # deep blue
 }
 PALETTE_ORDER = (MAT_AIR, MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_STEEL,
-                 MAT_GLASS, SPACE_CODE)
+                 MAT_GLASS, MAT_FURNITURE, SPACE_CODE)
 OVERLAY_ALPHA = 102            # ~40% — live per-material fill (WYSIWYG paint)
 OVERLAY_COLORS = {pid: (c[0], c[1], c[2], OVERLAY_ALPHA)
                   for pid, (_, c) in PALETTE.items() if c is not None}
@@ -554,8 +557,8 @@ def main() -> None:
                     ((K.KEY_THREE, K.KEY_KP_3), MAT_DOOR),
                     ((K.KEY_FOUR, K.KEY_KP_4), MAT_STEEL),
                     ((K.KEY_FIVE, K.KEY_KP_5), MAT_GLASS),
-                    ((K.KEY_NINE, K.KEY_KP_9, K.KEY_SIX, K.KEY_KP_6),
-                     SPACE_CODE)):
+                    ((K.KEY_SIX, K.KEY_KP_6), MAT_FURNITURE),
+                    ((K.KEY_NINE, K.KEY_KP_9), SPACE_CODE)):
                 if any(rl.is_key_pressed(k) for k in keys):
                     selected_id = pid
             if rl.is_key_pressed(K.KEY_S) and not ctrl:   # S = SPACE alias
@@ -720,7 +723,7 @@ def main() -> None:
             x = 8
             for pid in PALETTE_ORDER:
                 pname, c = PALETTE[pid]
-                label = (f"9/6/S {pname}" if pid == SPACE_CODE
+                label = (f"9/S {pname}" if pid == SPACE_CODE
                          else f"{pid} {pname}")
                 chip = (rl.Color(c[0], c[1], c[2], 255) if c is not None
                         else rl.Color(70, 70, 76, 255))
@@ -734,8 +737,8 @@ def main() -> None:
                 x += 21 + rl.measure_text(label, 16) + 14
             rl.draw_text(f"|  brush {brush}x{brush}   undo {len(undo)}",
                          x + 2, 30, 16, rl.Color(*COL_TEXT_HOT))
-            line3 = ("LMB paint  RMB erase  Shift+click line  |  0-5 material, "
-                     "9/6/S space  |  I eyedrop  |  [ ] brush  |  Ctrl+Z undo")
+            line3 = ("LMB paint  RMB erase  Shift+click line  |  0-6 material, "
+                     "9/S space  |  I eyedrop  |  [ ] brush  |  Ctrl+Z undo")
             line4 = ("Ctrl+S save csv+align | B backdrop | G space fill | "
                      "L grid | TAB align | wheel zoom, MMB drag / "
                      "WAD+arrows pan | Esc quit")
