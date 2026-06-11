@@ -265,7 +265,7 @@ effect         = "ignition_hazard"    # invisible-ish until lit; then a fireball
 
 [display]
 panel_width = 250
-level = "unhcr_vessel"            # folder under levels/ to load on startup
+level = "unhcr_vessel_2"          # folder under levels/ to load on startup (the repainted v2 ship; v1 = "unhcr_vessel")
 # Water overlay v2 look knobs (water W6b; canon engine/07 §6 — the tasteful
 # placeholder, not the shipped optics pass). RENDER-ONLY and RESTART-BOUND:
 # GameRenderer binds them once at construction (the water_display_max
