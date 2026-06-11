@@ -36,6 +36,10 @@ Controls — two modes, TAB toggles (HUD shows the active one):
     Middle-drag          - pan
     G                    - toggle SPACE fill in the overlay (on by default)
     L                    - toggle grid lines
+    Shift+click          - line tool: fill the segment from the last painted /
+                           clicked tile (the anchor) to the cursor with the
+                           selected material; Shift+right-click erases the
+                           segment; consecutive Shift+clicks chain a polyline
     Ctrl+Z               - undo last paint stroke (ring of ~100)
     Ctrl+S               - SAVE BOTH: tilemap.csv (canon v2 codes, newline
                            style preserved, .bak once per session) + the
@@ -420,6 +424,8 @@ def main() -> None:
     stroke_pending = None    # pre-stroke snapshot; pushed on the 1st real change
     stroke_active = False
     last_paint_tile = None   # drag-interpolation anchor
+    anchor_tile = None       # line-tool anchor: the last tile painted/clicked;
+                             # Shift+click fills the line anchor -> cursor
     dirty = False            # unsaved paint edits
     csv_bak_written = False  # tilemap.csv.bak: once per session
     esc_armed = 0            # frames left of "Esc again to quit" arming
@@ -563,7 +569,26 @@ def main() -> None:
 
             lmb = rl.is_mouse_button_down(rl.MouseButton.MOUSE_BUTTON_LEFT)
             rmb = rl.is_mouse_button_down(rl.MouseButton.MOUSE_BUTTON_RIGHT)
-            if (lmb or rmb) and not over_hud:
+            lmb_click = rl.is_mouse_button_pressed(
+                rl.MouseButton.MOUSE_BUTTON_LEFT)
+            rmb_click = rl.is_mouse_button_pressed(
+                rl.MouseButton.MOUSE_BUTTON_RIGHT)
+            if shift and (lmb_click or rmb_click) and not over_hud and cursor_in:
+                # LINE TOOL: Shift+click fills anchor -> cursor with the brush
+                # (Erik's flow: click a tile, release, Shift+click the far end;
+                # chaining Shift+clicks draws a polyline). Shift+RMB erases.
+                if anchor_tile is not None:
+                    pid = selected_id if lmb_click else MAT_AIR
+                    snap = grid.copy()             # one undo entry per segment
+                    changed = 0
+                    for sx_, sy_ in line_tiles(anchor_tile[0], anchor_tile[1],
+                                               cur_tx, cur_ty):
+                        changed += paint_tiles(grid, sx_, sy_, pid, brush)
+                    if changed:
+                        undo.push(snap)
+                        dirty = True
+                anchor_tile = (cur_tx, cur_ty)
+            elif (lmb or rmb) and not over_hud and not shift:
                 if not stroke_active:
                     stroke_active = True
                     stroke_pending = grid.copy()   # one undo entry per stroke
@@ -575,6 +600,8 @@ def main() -> None:
                 for sx_, sy_ in line_tiles(p0[0], p0[1], cur_tx, cur_ty):
                     changed += paint_tiles(grid, sx_, sy_, pid, brush)
                 last_paint_tile = (cur_tx, cur_ty)
+                if cursor_in:
+                    anchor_tile = (cur_tx, cur_ty)  # line tool follows the brush
                 if changed:
                     dirty = True
                     if stroke_pending is not None:
@@ -707,8 +734,8 @@ def main() -> None:
                 x += 21 + rl.measure_text(label, 16) + 14
             rl.draw_text(f"|  brush {brush}x{brush}   undo {len(undo)}",
                          x + 2, 30, 16, rl.Color(*COL_TEXT_HOT))
-            line3 = ("LMB paint  RMB erase  |  0-5 material, 9/6/S space  |  "
-                     "I eyedrop  |  [ ] brush  |  Ctrl+Z undo")
+            line3 = ("LMB paint  RMB erase  Shift+click line  |  0-5 material, "
+                     "9/6/S space  |  I eyedrop  |  [ ] brush  |  Ctrl+Z undo")
             line4 = ("Ctrl+S save csv+align | B backdrop | G space fill | "
                      "L grid | TAB align | wheel zoom, MMB drag / "
                      "WAD+arrows pan | Esc quit")
