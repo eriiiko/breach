@@ -90,7 +90,7 @@ def _twin_cell_level(tile_size_m: float = 0.333) -> LevelData:
     tm[B] = 4
     return LevelData(
         name="water_boil_test",
-        version="test",
+        version="1",
         path=Path("."),
         tilemap=tm,
         tile_size_m=tile_size_m,

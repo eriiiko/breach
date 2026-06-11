@@ -65,7 +65,7 @@ def _room_level(h=16, w=16):
     tm[1:h - 1, 1:w - 1] = 4                  # carve interior air
     return LevelData(
         name="multigas_room",
-        version="test",
+        version="1",
         path=Path("."),
         tilemap=tm,
         tile_size_m=1.0,

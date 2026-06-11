@@ -69,7 +69,7 @@ def _sealed_room_level():
     tm[3:9, 3:9] = 4                        # ...then carve interior air.
     return LevelData(
         name="sealed_room_test",
-        version="test",
+        version="1",
         path=Path("."),
         tilemap=tm,
         tile_size_m=1.0,

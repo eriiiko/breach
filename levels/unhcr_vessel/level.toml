@@ -1,13 +1,12 @@
 # Level metadata for the UNHCR Vessel.
 # Source-of-truth tilemap defines walls; all other assets are visual.
 
-version = "1"
+version = "2"
 name = "UNHCR Vessel"
 
-# Tilemap (required): physics tile grid, CSV with int values per cell
-# Values: 0=outer space (vacuum), 1=hull wall, 2=wood wall (flammable),
-#         3=door (occludes like a wall for now; movement allowed),
-#         4..8=interior air variants
+# Tilemap (required): physics tile grid, CSV with int values per cell.
+# v2 codes ARE canon material ids (src/simulation/materials.py):
+#   0=air, 1=hull, 2=wood, 3=door, 4=steel, 5=glass, 9=SPACE (air + vacuum)
 tilemap = "tilemap.csv"
 
 # Physical scale

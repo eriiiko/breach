@@ -110,7 +110,8 @@ class GameRenderer:
         # Upload the level's vacuum mask once — the shader uses it to discard
         # vacuum pixels so the screen-fixed background shows through.
         from level_loader import materials_from_tilemap
-        _mat, vacuum_mask = materials_from_tilemap(level_data.tilemap)
+        _mat, vacuum_mask = materials_from_tilemap(level_data.tilemap,
+                                                   level_data.version)
         self.lighting.set_vacuum_mask(vacuum_mask)
         # smoke^gamma render-contrast knob (ch.05 §6.1 step 5): a power curve on
         # the RENDERED smoke opacity (FieldOverlay.update), not the sim field.

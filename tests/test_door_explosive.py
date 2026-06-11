@@ -37,7 +37,7 @@ def _room_level():
     tm[2:10, 2:10] = 1   # hull box
     tm[3:9, 3:9] = 4     # interior air
     return LevelData(
-        name="door_explosive_test", version="test", path=Path("."),
+        name="door_explosive_test", version="1", path=Path("."),
         tilemap=tm, tile_size_m=1.0, diffuse_path=Path("."),
     )
 

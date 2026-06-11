@@ -75,7 +75,7 @@ def _edge_room_level():
     tm[1:11, 1:11] = 4                       # carve interior air
     return LevelData(
         name="edge_room_test",
-        version="test",
+        version="1",
         path=Path("."),
         tilemap=tm,
         tile_size_m=1.0,

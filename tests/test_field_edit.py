@@ -367,7 +367,7 @@ def _open_gmap(h=24, w=24):
     from simulation.gamemap import GameMap
     tm = np.ones((h, w), dtype=np.int32)  # border hull
     tm[1:h - 1, 1:w - 1] = 4              # interior air
-    level = LevelData(name="fe_test", version="t", path=Path("."),
+    level = LevelData(name="fe_test", version="1", path=Path("."),
                       tilemap=tm, tile_size_m=1.0, diffuse_path=Path("."))
     return GameMap(level)
 

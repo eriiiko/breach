@@ -48,7 +48,7 @@ def _open_level(h: int = 24, w: int = 24):
     tm[1:h - 1, 1:w - 1] = 4               # interior air
     return LevelData(
         name="open_room_test",
-        version="test",
+        version="1",
         path=Path("."),
         tilemap=tm,
         tile_size_m=1.0,

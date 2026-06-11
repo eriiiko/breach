@@ -281,8 +281,9 @@ class GameMap:
         # scripted flood) go through the FieldEdit queue instead.
         self.water_sources = []
 
-        # Populate material + vacuum from the level's CSV.
-        mat, vac = materials_from_tilemap(level_data.tilemap)
+        # Populate material + vacuum from the level's CSV (vocabulary is
+        # format-version dependent — v1 generator codes vs v2 canon ids).
+        mat, vac = materials_from_tilemap(level_data.tilemap, level_data.version)
         self.material[:] = mat
         self.is_vacuum[vac] = True
 

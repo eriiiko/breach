@@ -68,7 +68,7 @@ def _single_cell_level(tile_size_m: float = 0.333) -> LevelData:
     tm[2, 2] = 4
     return LevelData(
         name="water_cell_test",
-        version="test",
+        version="1",
         path=Path("."),
         tilemap=tm,
         tile_size_m=tile_size_m,
@@ -82,7 +82,7 @@ def _corridor_level(length: int = 21) -> LevelData:
     tm[1, 1:length - 1] = 4
     return LevelData(
         name="water_corridor_test",
-        version="test",
+        version="1",
         path=Path("."),
         tilemap=tm,
         tile_size_m=0.333,
@@ -96,7 +96,7 @@ def _sealed_room_level(n: int = 9) -> LevelData:
     tm[1:n - 1, 1:n - 1] = 4
     return LevelData(
         name="water_room_test",
-        version="test",
+        version="1",
         path=Path("."),
         tilemap=tm,
         tile_size_m=0.333,

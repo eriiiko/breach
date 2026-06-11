@@ -73,7 +73,7 @@ def _sealed_room_level(n: int = 12, tile_size_m: float = 0.333) -> LevelData:
     tm[1:n - 1, 1:n - 1] = 4
     return LevelData(
         name="ripple_room_test",
-        version="test",
+        version="1",
         path=Path("."),
         tilemap=tm,
         tile_size_m=tile_size_m,

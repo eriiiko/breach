@@ -37,7 +37,7 @@ def main():
     g = Shim()
     g.smoke = np.zeros((level.height, level.width), dtype=np.float32)
     g.fire  = np.zeros((level.height, level.width), dtype=np.float32)
-    mat, vac = materials_from_tilemap(level.tilemap)
+    mat, vac = materials_from_tilemap(level.tilemap, level.version)
     g.material  = mat
     g.is_vacuum = vac
     g.solid     = np.isin(mat, [1])     # MAT_HULL only for now

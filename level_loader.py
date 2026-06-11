@@ -30,7 +30,11 @@ if _SRC_DIR.is_dir() and str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
 
-SUPPORTED_VERSIONS = {"1"}
+SUPPORTED_VERSIONS = {"1", "2"}
+
+# v2 CSV vocabulary (level format v2 §1.1): codes ARE canon material ids from
+# ``simulation.materials``, plus exactly ONE reserved non-material code:
+SPACE_CODE = 9   # SPACE — MAT_AIR + is_vacuum (the one thing that isn't a material)
 
 
 @dataclass
@@ -154,18 +158,22 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
     )
 
 
-def materials_from_tilemap(tilemap: np.ndarray):
+def materials_from_tilemap(tilemap: np.ndarray, version: str):
     """Translate CSV tile values into material grid + vacuum mask.
 
-    Returns (material, is_vacuum) — both (H, W) numpy arrays.
+    Returns (material, is_vacuum) — both (H, W) numpy arrays. ``version`` is
+    the level.toml format version (``LevelData.version``); the CSV *vocabulary*
+    depends on it, so callers must thread it through.
 
-    Material ids come from :mod:`simulation.materials` — the single source of
-    truth shared with :mod:`simulation.gamemap`. The mapping below is the
-    *CSV code* convention; CSV codes are distinct from material ids (e.g. the
-    existing levels use codes 4..8 as interior-floor decoration variants, all
-    of which are MAT_AIR — they are NOT steel/glass).
+    **version "2" (canon, level format v2 §1.1): codes ARE material ids** from
+    :mod:`simulation.materials` — read literally, no translation — plus exactly
+    one reserved non-material code, :data:`SPACE_CODE` (9) = outer space
+    (MAT_AIR + ``is_vacuum``). Any other value is a hard ValueError: a v2 CSV
+    never carries silent garbage.
 
-    CSV code -> material id:
+    **version "1" (legacy generator vocabulary)** — kept bit-exact for old
+    levels; codes are distinct from material ids:
+
       0     -> outer space (vacuum, MAT_AIR)
       1     -> hull wall    (MAT_HULL)
       2     -> wood wall    (MAT_WOOD) — flammable
@@ -174,18 +182,37 @@ def materials_from_tilemap(tilemap: np.ndarray):
                full door system deferred
       4..8  -> interior air (MAT_AIR), no vacuum
 
-    Steel (MAT_STEEL) and glass (MAT_GLASS) exist in the material table but
-    have no CSV code yet — no shipped level places them, and reusing codes
-    4/5 would silently solidify existing interior-air tiles. A dedicated CSV
-    code is added when a level first needs them.
+    ``tools/migrate_tilemap_v2.py`` converts a v1 level in place (0->9, 1->1,
+    3->3, 2/4..8->0 — code 2 was the generator's *floor*, retired as the
+    "generator floor vs MAT_WOOD wall" landmine).
     """
-    from simulation.materials import MAT_AIR, MAT_HULL, MAT_WOOD, MAT_DOOR
-    material = np.full(tilemap.shape, MAT_AIR, dtype=np.int8)
-    material[tilemap == 1] = MAT_HULL
-    material[tilemap == 2] = MAT_WOOD
-    material[tilemap == 3] = MAT_DOOR
-    is_vacuum = (tilemap == 0)
-    return material, is_vacuum
+    from simulation.materials import (
+        MAT_AIR, MAT_HULL, MAT_WOOD, MAT_DOOR, MATERIAL_NAMES,
+    )
+    version = str(version)
+    if version == "1":
+        material = np.full(tilemap.shape, MAT_AIR, dtype=np.int8)
+        material[tilemap == 1] = MAT_HULL
+        material[tilemap == 2] = MAT_WOOD
+        material[tilemap == 3] = MAT_DOOR
+        is_vacuum = (tilemap == 0)
+        return material, is_vacuum
+    if version == "2":
+        allowed = set(MATERIAL_NAMES) | {SPACE_CODE}
+        bad = sorted(int(c) for c in np.unique(tilemap) if int(c) not in allowed)
+        if bad:
+            raise ValueError(
+                f"v2 tilemap contains unknown codes {bad}; valid codes are "
+                f"material ids {sorted(MATERIAL_NAMES)} + {SPACE_CODE} (SPACE)"
+            )
+        is_vacuum = (tilemap == SPACE_CODE)
+        material = tilemap.astype(np.int8, copy=True)
+        material[is_vacuum] = MAT_AIR
+        return material, is_vacuum
+    raise ValueError(
+        f"materials_from_tilemap: unsupported tilemap version {version!r}; "
+        f"supported: {sorted(SUPPORTED_VERSIONS)}"
+    )
 
 
 if __name__ == "__main__":
@@ -201,5 +228,5 @@ if __name__ == "__main__":
     print(f"  Wall mask: {lvl.wall_mask_path.name if lvl.wall_mask_path else '(derived from CSV)'}")
     print(f"  Floor:   {lvl.floor_id}")
     print(f"  Tile values: {sorted(np.unique(lvl.tilemap).tolist())}")
-    mat, vac = materials_from_tilemap(lvl.tilemap)
+    mat, vac = materials_from_tilemap(lvl.tilemap, lvl.version)
     print(f"  Materials: hull={int((mat==1).sum())} door={int((mat==3).sum())} air={int((mat==0).sum())} vacuum={int(vac.sum())}")
