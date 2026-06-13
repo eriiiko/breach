@@ -78,6 +78,13 @@ uniform float u_glint_strength;
 uniform float u_alpha_scale;
 uniform float u_alpha_min;
 uniform float u_alpha_max;
+// Global ambient light (matches lighting.fs's u_ambient). The dry ship is lit
+// by `diffuse * (ambient + sources)`; the water body must be lit the same way,
+// else the refracted floor goes black outside any raycast source and shallow
+// water reads as a void only visible inside the flashlight beam. Pushed every
+// frame from the LightingPass's ambient (renderer/game_renderer.py) so the
+// demo's ambient sliders drive the water ambient too.
+uniform vec3  u_ambient;
 
 out vec4 finalColor;
 
@@ -164,7 +171,11 @@ void main() {
     if (u_srgb_decode == 1) {
         floorDiffuse = srgb_to_linear(floorDiffuse);
     }
-    vec3 floorLight = texture(u_light_a, world_uv + off).rgb;
+    // Light the refracted floor by ambient + source, exactly as lighting.fs
+    // lights the dry floor (`diffuse * (ambient + sources)`). Without the
+    // ambient term the floor is black wherever no raycast source reaches, so
+    // shallow water read as a black void only visible inside the flashlight.
+    vec3 floorLight = u_ambient + texture(u_light_a, world_uv + off).rgb;
     vec3 floorC = floorDiffuse * floorLight;
 
     // Beer-Lambert depth tint: the floor fades toward the deep-water colour
@@ -193,13 +204,18 @@ void main() {
 
     // --- BASE: the see-through refraction + depth tint -------------------
     // The base is the refraction/Beer-Lambert term — the floor seen through
-    // the water. Add a small Fresnel reflection of the ambient light back into
-    // the base (grazing ripples pick up a touch of the source colour) — this
-    // is the SUBTLE, alpha-bound part; the bright sparkle is the additive
-    // glint above, NOT this.
+    // the water. Add a small Fresnel reflection back into the base (grazing
+    // ripples pick up a touch of reflected light) — this is the SUBTLE, alpha-
+    // bound part; the bright sparkle is the additive glint above, NOT this.
+    // The reflected colour is ambient + source so the surface has a faint
+    // sheen (presence) OUTSIDE any source, not only under the flashlight. This
+    // ambient sheen is the placeholder for the deferred matcap/environment
+    // reflection — keep it subtle. (The glint stays source-only; ambient gives
+    // a flat sheen, not a sharp specular.)
     float NdotV = max(dot(N, V), 0.0);
     float F = u_r0 + (1.0 - u_r0) * pow(1.0 - NdotV, 5.0);
-    vec3 base = mix(refr, refr + lightRGB * F, F);  // ≈ refr + small ambient sheen
+    vec3 sheenRGB = u_ambient + lightRGB;
+    vec3 base = mix(refr, refr + sheenRGB * F, F);  // ≈ refr + small ambient sheen
 
     // --- output: PREMULTIPLIED base + ADDITIVE glint ---------------------
     // alpha ramps in over the first ~few cm of depth so the wet/dry shoreline

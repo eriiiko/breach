@@ -94,6 +94,7 @@ class WaterPass:
         self._loc_alpha_scale = self._lookup("u_alpha_scale")
         self._loc_alpha_min = self._lookup("u_alpha_min")
         self._loc_alpha_max = self._lookup("u_alpha_max")
+        self._loc_ambient   = self._lookup("u_ambient")
 
         # Bind the static [graphics.water] uniforms once (look-tuning lives in
         # config per the graphics README; restart to re-apply, like the other
@@ -134,6 +135,11 @@ class WaterPass:
         self.set_srgb_decode(True)
         # light_z default mirrors LightingPass (overhead-lamp feel).
         self.set_light_z(0.5)
+        # Ambient default mirrors LightingPass.set_ambient((0.18,0.18,0.22)) so
+        # the water body is lit by `ambient + sources` like the dry floor even
+        # before the per-frame push. game_renderer pushes the lighting pass's
+        # live ambient each frame, so the demo's ambient sliders drive this too.
+        self.set_ambient((0.18, 0.18, 0.22))
 
     # ---- uniform helpers -----------------------------------------------
 
@@ -207,6 +213,14 @@ class WaterPass:
 
     def set_water_color(self, rgb) -> None:
         self._set_vec3(self._loc_water_col,
+                       (float(rgb[0]), float(rgb[1]), float(rgb[2])))
+
+    def set_ambient(self, rgb) -> None:
+        """Push the global ambient (mirror LightingPass.set_ambient). Lights
+        the refracted floor + the faint surface sheen by `ambient + sources`,
+        so water is visible OUTSIDE the flashlight beam. game_renderer keeps
+        this in step with the lighting pass's ambient each frame."""
+        self._set_vec3(self._loc_ambient,
                        (float(rgb[0]), float(rgb[1]), float(rgb[2])))
 
     def set_alpha_scale(self, v: float) -> None:

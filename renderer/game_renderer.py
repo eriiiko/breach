@@ -308,6 +308,13 @@ class GameRenderer:
         # written. Keep the light_z in step with the lighting pass so the
         # glints' L matches the ship's lighting.
         self.water_pass.set_light_z(self.lighting.light_z)
+        # Keep the water's global ambient in step with the lit ship's ambient
+        # (lighting.fs lights by `ambient + sources`; the water body must too,
+        # else the refracted floor goes black outside any source and shallow
+        # water reads as a void only visible in the flashlight). self.lighting
+        # .ambient is the single source of truth, fed by the demo's ambient
+        # sliders + config — so those sliders drive the water ambient as well.
+        self.water_pass.set_ambient(self.lighting.ambient)
         self.water_pass.update(
             gmap.water_depth, ripple=gmap.ripple, ripple_v=gmap.ripple_v)
 
