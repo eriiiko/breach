@@ -108,6 +108,7 @@ class WaterPass:
         self._loc_has_height    = self._lookup("u_has_height")
         self._loc_height_scale  = self._lookup("u_height_scale")
         self._loc_height_edge   = self._lookup("u_height_edge")
+        self._loc_height_floor  = self._lookup("u_height_floor")
 
         # Bind the static [graphics.water] uniforms once (look-tuning lives in
         # config per the graphics README; restart to re-apply, like the other
@@ -170,6 +171,12 @@ class WaterPass:
                     float(getattr(wc, "height_scale", 0.4)))
         self._set_f(self._loc_height_edge,
                     float(getattr(wc, "height_edge", 0.1)))
+        # height_floor = the heightmap value treated as floor level (the "level 0"
+        # baseline): subtracted from relief BEFORE scaling so a floor pixel lifts
+        # ~0 and water shows on the floor immediately (fixes the fill-forever
+        # offset). Inert on the no-heightmap path (relief_term forced to 0).
+        self._set_f(self._loc_height_floor,
+                    float(getattr(wc, "height_floor", 0.3)))
         # u_texel = neighbour-tap offset in UV = 1/grid (per axis).
         self._set_vec2(self._loc_texel, (1.0 / grid_w, 1.0 / grid_h))
         # Default art-UV rect — overwritten per-draw when an [art.align] is set.
@@ -323,6 +330,12 @@ class WaterPass:
 
     def set_height_edge(self, v: float) -> None:
         self._set_f(self._loc_height_edge, float(v))
+
+    def set_height_floor(self, v: float) -> None:
+        """The heightmap value treated as floor level (the 'level 0' baseline),
+        subtracted from relief before scaling so water clears the floor without
+        over-filling. Inert on a level with no heightmap."""
+        self._set_f(self._loc_height_floor, float(v))
 
     # ---- per-frame upload ----------------------------------------------
 

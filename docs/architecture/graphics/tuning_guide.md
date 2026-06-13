@@ -53,6 +53,7 @@ Tune in this order — each stage makes the next easier to judge:
 | **ambient_amp** (Amb amp) | 0.06 | 0–0.3 | **Idle-shimmer strength** on still water — the amplitude base of the ambient sine lattice (the old hardcoded `0.06`). **Up** = more idle motion/shimmer even on a dead-calm puddle; **down/0** = still water reads glassy-flat (only real ripples move it). Energy from actual ripples still adds on top regardless. |
 | **height_scale** (Height scl) | 0.4 | 0–2 | **Heightmap floor-relief gain** (metres of floor lift subtracted from depth). Needs a level WITH a floor heightmap ([art.bare] `height`, e.g. `unhcr_vessel_2`) — **inert** with no heightmap. The per-pixel relief × this gain is **subtracted from the per-tile water depth**, so the shader sees a *shallower* water column over raised floor: that ADJUSTED per-pixel depth drives **every** effect — refraction offset, Beer–Lambert tint, and the alpha ramp all vary per-pixel with it (a crate refracts/tints as the shallow water it sits in). Where the relief lifts the floor above the surface (depth ≤ 0) the feature **protrudes** (transparent, pokes through). **NOT alpha-only** — it adjusts the depth the whole pass computes off. **Up** = relief reads taller (more protrudes / shallower over features); **0** = off (depth == per-tile depth, bit-identical). Tuned ~0.4 so furniture emerges from a ~0.3–0.5 m puddle. |
 | **height_edge** (Height edge) | 0.1 | 0.01–0.5 | **Protrusion-shoreline softness** (metres) — a `smoothstep` ramp over the first metres of *positive* adjusted depth, fading the alpha to 0 right at the protrusion edge so the waterline laps softly around a feature instead of cutting hard (it overrides the `alpha_min` floor at the edge). **Down** = a harder, crisper waterline against the crate; **up** = a softer, wider wet→dry fade. Only matters when `height_scale > 0` and a heightmap is bound. |
+| **height_floor** (Height floor) | 0.3 | 0–1 | **The "level 0" baseline** — the heightmap value treated as floor level. The art heightmap is a *relative* depth map: the floor itself sits at a nonzero relief, so without this the shader subtracts a constant everywhere and water has to **over-fill before it clears the floor** (the "fill forever" bug). `height_floor` is subtracted from the relief *before* `height_scale`, so a floor pixel (relief ≈ `height_floor`) reads ~0 lift and **water shows on the floor immediately**; a raised crate (relief > floor) still protrudes; a dip (relief < floor) reads slightly deeper. **Tune it to your heightmap's floor grey** — flood the floor (`F`) and raise/lower until a thin puddle covers the bare floor at the depth you pour. Inert on a level with no heightmap. |
 
 ### Interactions worth knowing
 - **No glints without ripples.** `glint_strength` does nothing on a dead-flat puddle — the normal must tilt. Splash it.
@@ -71,12 +72,16 @@ the core look:
 8. **Foam** (`foam_threshold`, then `foam_intensity`) — keep it subtle: white at the steepest crests +
    the wet/dry edge, not a snowfield. Lower the threshold for more, raise the intensity for whiter.
 9. **Chromatic aberration** (`ca_amount`) — barely-there; nudge up only if you want a stylised fringe.
-10. **Heightmap depth-adjust** (`height_scale`, then `height_edge`) — *only on a level with a floor
-    heightmap* (e.g. `unhcr_vessel_2`). Pour/flood the floor (`U`), then raise `height_scale` until the
-    furniture/debris pokes through the puddle at the depth you want, and set `height_edge` for the
-    waterline crispness around it. The relief now ADJUSTS the per-pixel depth, so as you raise it you
-    also see the refraction/tint vary across a feature (shallower water over the raised parts) — not just
-    the protrusion appearing. `height_edge` softens the waterline where a feature breaks the surface.
+10. **Heightmap depth-adjust** (`height_floor`, then `height_scale`, then `height_edge`) — *only on a
+    level with a floor heightmap* (e.g. `unhcr_vessel_2`). **Flood the floor first** (`F` fills the whole
+    interior; `Shift+F` drains; `U` still pours under the cursor). Set `height_floor` to your heightmap's
+    floor grey **first** — it is the "level 0" baseline that makes a thin puddle clear the bare floor
+    immediately instead of having to over-fill (without it the relief subtracts a constant everywhere).
+    Then raise `height_scale` until the furniture/debris pokes through the puddle at the depth you want,
+    and set `height_edge` for the waterline crispness around it. The relief (measured against
+    `height_floor`) ADJUSTS the per-pixel depth, so as you raise `height_scale` you also see the
+    refraction/tint vary across a feature (shallower water over the raised parts) — not just the
+    protrusion appearing. `height_edge` softens the waterline where a feature breaks the surface.
 
 ### Still deferred
 - **matcap (environment reflection)** — the outdoor sky-reflection hook (off indoors; `water_rendering.md`
@@ -103,7 +108,7 @@ Detailed rows can be added here as each gets a tuning pass:
 
 **Status:** water section reflects the shipped v1 core + ambient (`a5d177a` + the ambient fix), the
 phase-2 mood pass (caustics × light, foam, chromatic aberration, the `wave_scale`/`ambient_amp` wave-
-size dials) **and the heightmap depth-adjust** (`height_scale`/`height_edge`, optional per-level floor
-relief that adjusts the per-pixel depth all effects compute off — supersedes the earlier alpha-only
-attenuation). Only the matcap hook + SSR remain deferred. Grows as the other systems get their tuning
-passes.
+size dials) **and the heightmap depth-adjust** (`height_floor`/`height_scale`/`height_edge`, optional
+per-level floor relief that adjusts the per-pixel depth all effects compute off — supersedes the earlier
+alpha-only attenuation; `height_floor` is the "level 0" baseline that fixes the over-fill offset). Only
+the matcap hook + SSR remain deferred. Grows as the other systems get their tuning passes.

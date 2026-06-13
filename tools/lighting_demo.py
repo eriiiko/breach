@@ -6,6 +6,8 @@ blast) via raygui sliders while seeing the result in real time.
 
 Run:
     C:/Users/steen/anaconda3/python.exe tools/lighting_demo.py
+    (--flood pre-fills the ship interior with standing water at startup, for
+     tuning the water look without pouring by hand; --windowed for fixed 1280x720)
 
 Controls:
     WASD / arrows  — pan camera
@@ -16,6 +18,7 @@ Controls:
     Left click     — spawn grenade (when in spawn mode)
     N / Shift+N    — explosion smoke noise down / up (live cloud-texture dial)
     U              — pour water under cursor (0.2 m per press)
+    F / Shift+F    — flood the whole interior to ~0.6 m / drain all water
     P / Shift+P    — tilt ship +2° / −2° (the Titanic dial, clamped ±20°)
     G              — toggle sRGB decode (renderer toggle from game)
     O              — toggle water depth overlay (renderer toggle from game)
@@ -120,6 +123,12 @@ DEFAULTS = {
     # texture, so these sliders are inert (u_has_height = 0).
     "water_height_scale": 0.4,
     "water_height_edge": 0.1,
+    # height_floor: the heightmap value treated as floor level (the "level 0"
+    # baseline) — subtracted from relief before scaling so standing water clears
+    # the floor immediately instead of having to over-fill (the art heightmap is
+    # a RELATIVE depth map with the floor at a nonzero relief). Inert on the
+    # demo's default level (no heightmap).
+    "water_height_floor": 0.3,
 }
 
 # Pressure colormap was previously implemented here; lifted into
@@ -177,7 +186,8 @@ def _state_to_toml_section(name: str, s: dict) -> str:
         f"wave_scale = {s['water_wave_scale']:.4f}, "
         f"ambient_amp = {s['water_ambient_amp']:.4f}, "
         f"height_scale = {s['water_height_scale']:.4f}, "
-        f"height_edge = {s['water_height_edge']:.4f} }}"
+        f"height_edge = {s['water_height_edge']:.4f}, "
+        f"height_floor = {s['water_height_floor']:.4f} }}"
     )
     return "\n".join(lines)
 
@@ -270,6 +280,7 @@ def _toml_dict_to_state(d: dict) -> dict:
         s["water_ambient_amp"] = float(w.get("ambient_amp", s["water_ambient_amp"]))
         s["water_height_scale"] = float(w.get("height_scale", s["water_height_scale"]))
         s["water_height_edge"] = float(w.get("height_edge", s["water_height_edge"]))
+        s["water_height_floor"] = float(w.get("height_floor", s["water_height_floor"]))
     return s
 
 
@@ -382,6 +393,37 @@ def _section_header(label: str, x: int, y: int) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Flood / drain — pre-fill the ship interior with standing water for tuning
+# ---------------------------------------------------------------------------
+
+# Default standing-water level for --flood / the F key (metres). ~0.6 m clears
+# the floor and pokes furniture/crates through (a ~0.3-0.5 m relief), which is
+# exactly the case the height_floor / heightmap dials are tuned against.
+FLOOD_LEVEL_M = 0.6
+
+
+def flood_interior(gmap, level_m: float = FLOOD_LEVEL_M) -> int:
+    """Pre-fill every INTERIOR tile with standing water (direct write).
+
+    Interior = a tile that is NON-solid AND NON-vacuum — i.e. there is actual
+    floor there (not a wall, not open space outside the hull). This is the same
+    mask the atmosphere/water solvers treat as "inside the ship", so we only pour
+    where water could physically stand. Writes gmap.water_depth in place (like the
+    U pour) so it lands immediately. Returns the number of tiles filled.
+    """
+    interior = (~gmap.solid) & (~gmap.is_vacuum)
+    gmap.water_depth[interior] = float(level_m)
+    return int(interior.sum())
+
+
+def drain_all(gmap) -> int:
+    """Zero out all standing water (the Shift+F drain). Returns tiles cleared."""
+    n = int((gmap.water_depth > 0.0).sum())
+    gmap.water_depth[:] = 0.0
+    return n
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -399,6 +441,15 @@ def main() -> None:
         sim.add_unit(Unit(s.name, x=s.x, y=s.y, team=s.team,
                           footprint=s.footprint))
     print(f"[lighting_demo] Spawned {len(level.spawns)} units")
+
+    # --flood: pre-fill the ship interior with standing water at startup so the
+    # water look/heightmap dials can be tuned without pouring tile-by-tile (U).
+    # Direct in-place write to gmap.water_depth (like the U pour / the --auto
+    # seed below), so it lands on the first frame. Works headlessly (--auto).
+    if "--flood" in sys.argv:
+        n = flood_interior(sim.gmap)
+        print(f"[lighting_demo] --flood: filled {n} interior tiles to "
+              f"{FLOOD_LEVEL_M} m standing water")
 
     # ---- 2. Window ----
     # Borderless at the real monitor resolution by default (same pattern as
@@ -502,6 +553,8 @@ def main() -> None:
                   float(getattr(_wc, "height_scale", 0.4)))
         state.set("water_height_edge",
                   float(getattr(_wc, "height_edge", 0.1)))
+        state.set("water_height_floor",
+                  float(getattr(_wc, "height_floor", 0.3)))
 
     # ---- 5. Sim timing ----
     last_time = time.perf_counter()
@@ -568,6 +621,20 @@ def main() -> None:
                             and not sim.gmap.solid[ty, tx]):
                         sim.gmap.water_depth[ty, tx] = min(
                             sim.gmap.water_depth[ty, tx] + 0.2, 2.5)
+            # F = flood the whole interior to the default level; Shift+F = drain
+            # all water. Fast fill/drain for tuning the water look (and the
+            # heightmap / height_floor dials) without pouring tile-by-tile with U.
+            # Direct write, so it lands even while paused.
+            if rl.is_key_pressed(K.KEY_F):
+                shift = (rl.is_key_down(K.KEY_LEFT_SHIFT) or
+                         rl.is_key_down(K.KEY_RIGHT_SHIFT))
+                if shift:
+                    n = drain_all(sim.gmap)
+                    print(f"[demo] drained all water ({n} tiles)")
+                else:
+                    n = flood_interior(sim.gmap)
+                    print(f"[demo] flooded interior -> {FLOOD_LEVEL_M} m "
+                          f"({n} tiles)")
             # P / Shift+P = ship tilt_x +2 / −2 degrees (clamped ±20) — the
             # Titanic dial; standing water slides to the low side.
             if rl.is_key_pressed(K.KEY_P):
@@ -689,6 +756,7 @@ def main() -> None:
             # height texture bound; inert on the demo's default level.
             wp.set_height_scale(state.get("water_height_scale"))
             wp.set_height_edge(state.get("water_height_edge"))
+            wp.set_height_floor(state.get("water_height_floor"))
 
             # ---- Build mouse flashlight ----
             sources = []
@@ -884,6 +952,9 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     # Heightmap attenuation (alpha-only; needs a level WITH a heightmap to bite).
     y = _slider(state, "water_height_scale", "Height scl", 0.0, 2.0, x, y)
     y = _slider(state, "water_height_edge", "Height edge", 0.01, 0.5, x, y)
+    # height_floor = the "level 0" baseline relief (subtracted before scaling so
+    # water clears the floor immediately). Inert on a level with no heightmap.
+    y = _slider(state, "water_height_floor", "Height floor", 0.0, 1.0, x, y)
 
     # -- §4.5 Pressure overlay --
     y = _section_header("Pressure overlay", x, y)

@@ -81,7 +81,13 @@ vec4  water  = vec4(base * alpha + glint, alpha);           // glint = HDR light
 - **Heightmap per-pixel depth-adjust (optional per level; shipped 2026-06-13).** An optional per-level
   floor **heightmap** (`[art.bare]` `height`, greyscale relief 0..1, sampled in art space like
   `u_diffuse`) **adjusts the per-pixel depth the renderer sees** — high floor relief makes the local
-  water shallower: `depth = tileDepth − relief·heightScale`. **Every depth-driven effect computes off
+  water shallower: `depth = tileDepth − (relief − heightFloor)·heightScale`. The **`heightFloor`
+  baseline** (the "level 0" offset, ~0.3) is the heightmap value treated as floor level, subtracted from
+  the relief *before* scaling — because the art heightmap is a *relative* depth map (the floor itself
+  sits at a nonzero relief), so without it the term subtracts a constant everywhere and water has to
+  over-fill before it clears the floor (the "fill-forever" bug). With it, a floor pixel (relief ≈
+  `heightFloor`) lifts ~0 → water shows on the floor immediately; a crate (relief > floor) protrudes; a
+  dip (relief < floor) reads slightly deeper. **Every depth-driven effect computes off
   this adjusted depth** — the refraction offset, the Beer–Lambert depth tint, and the alpha ramp — so a
   raised crate refracts and tints as the shallow water it sits in (per-pixel volume/refraction variation
   across the feature, not a flat per-tile wash). Where the relief lifts the floor above the surface
@@ -90,11 +96,13 @@ vec4  water  = vec4(base * alpha + glint, alpha);           // glint = HDR light
   so the waterline laps rather than cuts. This is the §3 per-pixel-submersion idea in its **full
   depth-adjust form** (it **supersedes** the earlier alpha-only attenuation, which only faded the final
   alpha). It is **dormant by default** — with no heightmap (`u_has_height == 0`) or `heightScale == 0`,
-  `relief ≡ 0` so the per-pixel `depth == tileDepth` *exactly* and the render is **bit-identical**
-  (verified: 0 px delta on the default level, new vs. pre-change shader). The per-tile DRY gate
-  (`tileDepth ≤ 0 → vec4(0)`) is unchanged. `heightScale` (floor-relief metres subtracted from depth,
-  ~0.4) and `heightEdge` (protrusion-shoreline softness, ~0.1) are `[graphics.water]` dials. *(Only
-  `unhcr_vessel_2` supplies a heightmap; the tracked default level has none → unaffected.)*
+  the **`relief_term ≡ 0`** (the `heightFloor` baseline is inside that gated branch, so it cannot leak
+  in) so the per-pixel `depth == tileDepth` *exactly* and the render is **bit-identical** (verified: 0 px
+  delta on the default level, new vs. pre-change shader). The per-tile DRY gate (`tileDepth ≤ 0 →
+  vec4(0)`) is unchanged. `heightFloor` (the "level 0" floor-grey baseline subtracted from relief before
+  scaling, ~0.3), `heightScale` (floor-relief metres subtracted from depth, ~0.4) and `heightEdge`
+  (protrusion-shoreline softness, ~0.1) are `[graphics.water]` dials. *(Only `unhcr_vessel_2` supplies a
+  heightmap; the tracked default level has none → unaffected.)*
 
 Full per-method rationale, tiers, and citations: the research doc. All of 2b ships in v1 (refraction,
 depth-tint, caustics, chromatic aberration — Erik); SSR is held as polish (low return straight-down).
@@ -263,17 +271,24 @@ idea in its **full depth-adjust** form). Pieces:
   `WaterPass.set_height_texture` (`game_renderer.py`). Sampled `.r` in the shader (art-space UV).
   *(Unchanged.)*
 - **Shader** (`shaders/water.fs`): the per-tile DRY gate `tileDepth = texture(u_water, world_uv).b;
-  if (tileDepth ≤ 0) return vec4(0)` is unchanged. Then `relief = (u_has_height==1 && u_height_scale>0)
-  ? texture(u_height, fragTexCoord).r : 0; depth = tileDepth − relief·u_height_scale`. This per-pixel
-  `depth` (clamped ≥ 0 as `depthPos` for the effect inputs) feeds the **refraction offset, the
-  Beer–Lambert tint, and the alpha ramp**. Output: where `depth ≤ 0` the feature protrudes (`vec4(0)`);
-  otherwise the alpha is softened by `smoothstep(0, u_height_edge, depth)` for the lap shoreline.
-  `u_has_height == 0` or `u_height_scale == 0` → `relief ≡ 0` → `depth == tileDepth` and the render is
-  bit-identical (the foam wet/dry shoreline and caustics stay on the per-tile field — intentionally).
-- **Dials**: `height_scale` (~0.4, floor-relief metres subtracted from depth) and `height_edge` (~0.1,
-  protrusion-shoreline softness) — `[graphics.water]` config keys + `WaterPass.set_height_scale`/
-  `set_height_edge` + lighting-demo sliders + the demo Save `water` table. *(Keys/setters/sliders carried
-  over from the alpha-only version; only their meaning shifted from alpha-cut to depth-adjust.)*
+  if (tileDepth ≤ 0) return vec4(0)` is unchanged. Then `relief_term = (u_has_height==1 &&
+  u_height_scale>0) ? (texture(u_height, fragTexCoord).r − u_height_floor) : 0; depth = tileDepth −
+  relief_term·u_height_scale`. The **`u_height_floor` baseline** (the heightmap value treated as floor
+  level, ~0.3) is subtracted from relief *before* scaling, so a floor pixel lifts ~0 and water clears the
+  floor immediately — without it the relative-relief heightmap subtracts a constant everywhere and water
+  must over-fill (the "fill-forever" offset). This per-pixel `depth` (clamped ≥ 0 as `depthPos` for the
+  effect inputs) feeds the **refraction offset, the Beer–Lambert tint, and the alpha ramp**. Output:
+  where `depth ≤ 0` the feature protrudes (`vec4(0)`); otherwise the alpha is softened by
+  `smoothstep(0, u_height_edge, depth)` for the lap shoreline. `u_has_height == 0` or `u_height_scale ==
+  0` → `relief_term ≡ 0` (the `u_height_floor` baseline lives inside that gated branch, so it never
+  leaks into the no-height path) → `depth == tileDepth` and the render is bit-identical (the foam wet/dry
+  shoreline and caustics stay on the per-tile field — intentionally).
+- **Dials**: `height_floor` (~0.3, the "level 0" floor-grey baseline subtracted from relief before
+  scaling — fixes the fill-forever offset), `height_scale` (~0.4, floor-relief metres subtracted from
+  depth) and `height_edge` (~0.1, protrusion-shoreline softness) — `[graphics.water]` config keys +
+  `WaterPass.set_height_floor`/`set_height_scale`/`set_height_edge` + lighting-demo sliders + the demo
+  Save `water` table. *(`height_scale`/`height_edge` carried over from the alpha-only version with their
+  meaning shifted to depth-adjust; `height_floor` is new with the baseline fix.)*
 - **Wiring**: only `unhcr_vessel_2` points `[art.bare] height` at `upscaled/ship_w_furniture_reg_height_large.png`
   (the displayed furniture layer). The tracked default level (`unhcr_vessel`) has no heightmap → the
   water pass is bit-identical there (verified: a headless RT compare of the default level rendered with

@@ -127,13 +127,28 @@ uniform vec3  u_ambient;
 // feature protrudes (transparent) with a soft u_height_edge-wide lap shoreline.
 //   u_has_height     1 if the level supplied a heightmap, else 0 (-> relief = 0)
 //   u_height_scale   relief metres of floor lift subtracted from depth (0
-//                    disables -> relief = 0); ~0.4 so furniture pokes through a
-//                    ~0.3-0.5 m puddle
+//                    disables -> relief_term = 0); ~0.4 so furniture pokes
+//                    through a ~0.3-0.5 m puddle
 //   u_height_edge    soft protrusion-shoreline width (m) — the smoothstep ramp
 //                    over the first metres of positive depth (~0.1; min-clamped)
+//   u_height_floor   the heightmap value treated as floor level ("level 0"
+//                    baseline), subtracted from relief BEFORE scaling so a floor
+//                    pixel lifts ~0 and water shows on the floor immediately
+//                    (no over-fill). Inert on the no-heightmap path.
 uniform int   u_has_height;
 uniform float u_height_scale;
 uniform float u_height_edge;
+// Heightmap BASELINE (the "level 0" floor relief). The art heightmap is a
+// RELATIVE depth map: the floor itself sits at a nonzero relief value, so the
+// raw `relief * u_height_scale` subtracts a constant everywhere and water must
+// over-fill before it clears the floor. u_height_floor is the heightmap value
+// treated as floor level — subtracted from relief BEFORE scaling, so a floor
+// pixel (relief ≈ u_height_floor) reads ~0 lift and water shows on the floor
+// immediately; a raised crate (relief > floor) protrudes; a dip (relief < floor)
+// reads slightly deeper. ONLY bites on the heightmap path: with u_has_height==0
+// or u_height_scale==0 the relief_term is forced to 0 (depth == tileDepth EXACTLY
+// — the no-heightmap path stays bit-identical and u_height_floor cannot leak in).
+uniform float u_height_floor;
 
 out vec4 finalColor;
 
@@ -195,13 +210,22 @@ void main() {
     // wet/dry shoreline still reads the per-TILE depth field gradient — the
     // tile-level water edge — and caustics read ripple curvature; neither is a
     // per-pixel-depth term, so they are intentionally left on the tile field.)
-    // When there is no heightmap (u_has_height == 0) or the gain is off
-    // (u_height_scale == 0), relief is forced to 0 so `depth == tileDepth`
-    // EXACTLY (bit-identical, the no-regression / dormant-safe guarantee the
-    // default level relies on).
-    float relief = (u_has_height == 1 && u_height_scale > 0.0)
-                 ? texture(u_height, fragTexCoord).r : 0.0;
-    float depth = tileDepth - relief * u_height_scale;
+    // The raw relief is measured against u_height_floor (the heightmap value
+    // treated as floor level) so the floor itself lifts ~0 and water clears it
+    // immediately (no over-fill). When there is no heightmap (u_has_height == 0)
+    // or the gain is off (u_height_scale == 0), the relief_term is forced to 0 so
+    // `depth == tileDepth` EXACTLY (bit-identical, the no-regression / dormant-
+    // safe guarantee the default level relies on; u_height_floor cannot leak in).
+    // relief_term is the per-pixel floor LIFT above the baseline floor level:
+    // (heightmap relief - u_height_floor). Subtracting u_height_floor before
+    // scaling means a floor pixel (relief ≈ u_height_floor) lifts ~0 (water on
+    // the floor immediately), a crate (relief > floor) lifts positive (shallower
+    // / protrudes), a dip (relief < floor) lifts negative (slightly deeper). With
+    // no heightmap or the gain off, relief_term is forced to 0 so depth ==
+    // tileDepth EXACTLY (bit-identical; u_height_floor never touches this path).
+    float relief_term = (u_has_height == 1 && u_height_scale > 0.0)
+                      ? (texture(u_height, fragTexCoord).r - u_height_floor) : 0.0;
+    float depth = tileDepth - relief_term * u_height_scale;
     // Effect inputs must never see a negative depth (a protruding floor): clamp
     // to >= 0 for the refraction/fog/alpha math; the protrusion itself is decided
     // by the raw `depth <= 0` test at output.
