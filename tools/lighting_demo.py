@@ -107,6 +107,14 @@ DEFAULTS = {
     "water_alpha_scale": 6.0,
     "water_alpha_min": 0.15,
     "water_alpha_max": 0.95,
+    # Phase 2 (mood pass): caustics / foam / chromatic aberration / wave size.
+    "water_caustic_strength": 2.5,
+    "water_caustic_scale": 6.0,
+    "water_foam_threshold": 0.02,
+    "water_foam_intensity": 0.6,
+    "water_ca_amount": 0.012,
+    "water_wave_scale": 2.0,
+    "water_ambient_amp": 0.06,
 }
 
 # Pressure colormap was previously implemented here; lifted into
@@ -427,6 +435,19 @@ def main() -> None:
                   float(getattr(_wc, "alpha_scale", 6.0)))
         state.set("water_alpha_min", float(getattr(_wc, "alpha_min", 0.15)))
         state.set("water_alpha_max", float(getattr(_wc, "alpha_max", 0.95)))
+        # Phase 2 (mood pass).
+        state.set("water_caustic_strength",
+                  float(getattr(_wc, "caustic_strength", 2.5)))
+        state.set("water_caustic_scale",
+                  float(getattr(_wc, "caustic_scale", 6.0)))
+        state.set("water_foam_threshold",
+                  float(getattr(_wc, "foam_threshold", 0.02)))
+        state.set("water_foam_intensity",
+                  float(getattr(_wc, "foam_intensity", 0.6)))
+        state.set("water_ca_amount", float(getattr(_wc, "ca_amount", 0.012)))
+        state.set("water_wave_scale", float(getattr(_wc, "wave_scale", 2.0)))
+        state.set("water_ambient_amp",
+                  float(getattr(_wc, "ambient_amp", 0.06)))
 
     # ---- 5. Sim timing ----
     last_time = time.perf_counter()
@@ -602,6 +623,14 @@ def main() -> None:
             wp.set_alpha_scale(state.get("water_alpha_scale"))
             wp.set_alpha_min(state.get("water_alpha_min"))
             wp.set_alpha_max(state.get("water_alpha_max"))
+            # Phase 2 (mood pass) — caustics / foam / CA / wave size.
+            wp.set_caustic_strength(state.get("water_caustic_strength"))
+            wp.set_caustic_scale(state.get("water_caustic_scale"))
+            wp.set_foam_threshold(state.get("water_foam_threshold"))
+            wp.set_foam_intensity(state.get("water_foam_intensity"))
+            wp.set_ca_amount(state.get("water_ca_amount"))
+            wp.set_wave_scale(state.get("water_wave_scale"))
+            wp.set_ambient_amp(state.get("water_ambient_amp"))
 
             # ---- Build mouse flashlight ----
             sources = []
@@ -786,6 +815,14 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     y = _slider(state, "water_alpha_scale", "Alpha scl", 0.0, 20.0, x, y)
     y = _slider(state, "water_alpha_min", "Alpha min", 0.0, 0.6, x, y)
     y = _slider(state, "water_alpha_max", "Alpha max", 0.4, 1.0, x, y)
+    # Phase 2 (mood pass): caustics / foam / CA / wave size.
+    y = _slider(state, "water_caustic_strength", "Caustic", 0.0, 8.0, x, y)
+    y = _slider(state, "water_caustic_scale", "Caust scl", 0.0, 24.0, x, y)
+    y = _slider(state, "water_foam_threshold", "Foam thr", 0.001, 0.1, x, y)
+    y = _slider(state, "water_foam_intensity", "Foam int", 0.0, 2.0, x, y)
+    y = _slider(state, "water_ca_amount", "Chrom ab", 0.0, 0.06, x, y)
+    y = _slider(state, "water_wave_scale", "Wave scl", 0.2, 6.0, x, y)
+    y = _slider(state, "water_ambient_amp", "Amb amp", 0.0, 0.3, x, y)
 
     # -- §4.5 Pressure overlay --
     y = _section_header("Pressure overlay", x, y)

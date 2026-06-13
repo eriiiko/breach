@@ -306,6 +306,32 @@ glint_strength = 2.0
 alpha_scale = 6.0
 alpha_min = 0.15
 alpha_max = 0.95
+# --- Phase 2 (mood pass): caustics / foam / chromatic aberration / waves ---
+# Caustics (§3): focused light dancing on the flooded floor under a flashlight.
+# caustic = max(+laplacian(ripple), 0) * caustic_strength * lightRGB, ADDED
+# into the refracted floor term (rides the floor, × alpha). SIGN load-bearing:
+# +laplacian focuses (bright in dips); -div(N) ≡ same; +div(N) would invert it.
+# caustic_scale > 0 layers a touch of high-frequency procedural detail (× the
+# surface energy) for crispness; 0 = pure surface curvature.
+caustic_strength = 2.5
+caustic_scale = 6.0
+# Foam (port of overlays.py:261-277): white whitecaps where |grad ripple| >
+# foam_threshold + the wet/dry shoreline (high depth gradient). Composited LAST
+# into the base (surface scatter, alpha-bound — NOT additive). foam_intensity
+# scales the whiteness; foam_threshold is the steepness/edge above which foam
+# starts (lower = more foam).
+foam_threshold = 0.02
+foam_intensity = 0.6
+# Chromatic aberration (subtle polish): floor refraction r/g/b sampled at
+# offsets scaled 1 ± ca_amount per channel. Tiny — a barely-there prismatic
+# fringe. 0 = off (single sample).
+ca_amount = 0.012
+# Wave-size dials (Erik: idle shimmer waves read "very big"). wave_scale
+# MULTIPLIES the ambient-sine spatial frequencies (higher = smaller/tighter
+# waves, lower = bigger). ambient_amp = idle amplitude base (the old hardcoded
+# 0.06) — the idle shimmer strength on still water.
+wave_scale = 2.0
+ambient_amp = 0.06
 
 # Material property table (named-key format, ch.02 — Material System).
 # One [materials.<name>] row per material id; columns indexed into per-id

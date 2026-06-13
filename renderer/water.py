@@ -95,6 +95,14 @@ class WaterPass:
         self._loc_alpha_min = self._lookup("u_alpha_min")
         self._loc_alpha_max = self._lookup("u_alpha_max")
         self._loc_ambient   = self._lookup("u_ambient")
+        # Phase 2 (mood pass): caustics / foam / chromatic aberration / waves.
+        self._loc_caustic_str   = self._lookup("u_caustic_strength")
+        self._loc_caustic_scale = self._lookup("u_caustic_scale")
+        self._loc_foam_thresh   = self._lookup("u_foam_threshold")
+        self._loc_foam_int      = self._lookup("u_foam_intensity")
+        self._loc_ca_amount     = self._lookup("u_ca_amount")
+        self._loc_wave_scale    = self._lookup("u_wave_scale")
+        self._loc_ambient_amp   = self._lookup("u_ambient_amp")
 
         # Bind the static [graphics.water] uniforms once (look-tuning lives in
         # config per the graphics README; restart to re-apply, like the other
@@ -127,6 +135,23 @@ class WaterPass:
                     float(getattr(wc, "alpha_min", 0.15)))
         self._set_f(self._loc_alpha_max,
                     float(getattr(wc, "alpha_max", 0.95)))
+        # Phase 2 (mood pass) defaults — caustics / foam / CA / wave size.
+        self._set_f(self._loc_caustic_str,
+                    float(getattr(wc, "caustic_strength", 2.5)))
+        self._set_f(self._loc_caustic_scale,
+                    float(getattr(wc, "caustic_scale", 6.0)))
+        self._set_f(self._loc_foam_thresh,
+                    float(getattr(wc, "foam_threshold", 0.02)))
+        self._set_f(self._loc_foam_int,
+                    float(getattr(wc, "foam_intensity", 0.6)))
+        self._set_f(self._loc_ca_amount,
+                    float(getattr(wc, "ca_amount", 0.012)))
+        # wave_scale multiplies the ambient-sine spatial frequencies; ambient_amp
+        # is the idle-shimmer amplitude base (the old hardcoded 0.06).
+        self._set_f(self._loc_wave_scale,
+                    float(getattr(wc, "wave_scale", 2.0)))
+        self._set_f(self._loc_ambient_amp,
+                    float(getattr(wc, "ambient_amp", 0.06)))
         # u_texel = neighbour-tap offset in UV = 1/grid (per axis).
         self._set_vec2(self._loc_texel, (1.0 / grid_w, 1.0 / grid_h))
         # Default art-UV rect — overwritten per-draw when an [art.align] is set.
@@ -234,6 +259,29 @@ class WaterPass:
 
     def set_ripple_scale(self, v: float) -> None:
         self._set_f(self._loc_ripple_scale, float(v))
+
+    # ---- Phase 2 (mood pass) setters -----------------------------------
+
+    def set_caustic_strength(self, v: float) -> None:
+        self._set_f(self._loc_caustic_str, float(v))
+
+    def set_caustic_scale(self, v: float) -> None:
+        self._set_f(self._loc_caustic_scale, float(v))
+
+    def set_foam_threshold(self, v: float) -> None:
+        self._set_f(self._loc_foam_thresh, float(v))
+
+    def set_foam_intensity(self, v: float) -> None:
+        self._set_f(self._loc_foam_int, float(v))
+
+    def set_ca_amount(self, v: float) -> None:
+        self._set_f(self._loc_ca_amount, float(v))
+
+    def set_wave_scale(self, v: float) -> None:
+        self._set_f(self._loc_wave_scale, float(v))
+
+    def set_ambient_amp(self, v: float) -> None:
+        self._set_f(self._loc_ambient_amp, float(v))
 
     # ---- per-frame upload ----------------------------------------------
 

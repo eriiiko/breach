@@ -1,9 +1,11 @@
 #version 330
-// Water surface optics pass for Breach (graphics/water_rendering.md §2, §7
-// steps 1+2 — the CORE look: perturbed-ripple normal + Schlick Fresnel + GGX
-// glints (reusing the light buffer) + normal-driven refraction × depth +
-// Beer-Lambert depth tint). Caustics / foam / chromatic-aberration / matcap
-// are the NEXT step (§7 step 3/4) and are deliberately ABSENT here.
+// Water surface optics pass for Breach (graphics/water_rendering.md §2, §7).
+// CORE look (steps 1+2): perturbed-ripple normal + Schlick Fresnel + GGX glints
+// (reusing the light buffer) + normal-driven refraction × depth + Beer-Lambert
+// depth tint. MOOD PASS (step 3, phase 2, ADDED below the core and dormant-
+// safe): real-surface caustics × light (§3, SIGN load-bearing), foam port
+// (§4-foam, composited last), chromatic aberration, and the wave-size dials
+// (u_wave_scale / u_ambient_amp). Matcap (§6) + SSR remain out.
 //
 // This is a SEPARATE pass from lighting.fs (§5): it draws a full-RT quad in
 // the WaterFieldOverlay compose slot, AFTER the lit ship, BEFORE units, and
@@ -78,6 +80,28 @@ uniform float u_glint_strength;
 uniform float u_alpha_scale;
 uniform float u_alpha_min;
 uniform float u_alpha_max;
+// --- Phase 2 (mood pass) uniforms ------------------------------------------
+// Caustics (§3): focused light on the floor where the surface is concave-up.
+//   caustic ~ +laplacian(ripple) (clamp negatives to 0) * lightRGB * strength,
+//   ADDED into the refraction/floor term (rides the floor, × alpha). The SIGN
+//   is load-bearing: +laplacian focuses (bright in dips), -div(N) ≡ same; a +
+//   div(N) would invert it (bright on bumps). u_caustic_scale drives an
+//   optional high-frequency procedural detail modulated by surface energy.
+uniform float u_caustic_strength;
+uniform float u_caustic_scale;
+// Foam (§4-foam, port of overlays.py:261-277): white-ish whitecaps where the
+// ripple front is steep (|grad ripple| > threshold) + the wet/dry shoreline
+// (high depth gradient). Composited LAST into the base (surface scatter).
+uniform float u_foam_threshold;
+uniform float u_foam_intensity;
+// Chromatic aberration (subtle polish): the floor refraction r/g/b are sampled
+// at slightly different offsets (scaled 1 ± u_ca_amount per channel). Tiny.
+uniform float u_ca_amount;
+// Wave-size dials (Erik: idle shimmer waves read "very big"). u_wave_scale
+// MULTIPLIES the ambient-sine spatial frequencies (higher = smaller/tighter
+// waves); u_ambient_amp scales the idle amplitude base (the old 0.06 term).
+uniform float u_wave_scale;
+uniform float u_ambient_amp;
 // Global ambient light (matches lighting.fs's u_ambient). The dry ship is lit
 // by `diffuse * (ambient + sources)`; the water body must be lit the same way,
 // else the refracted floor goes black outside any raycast source and shallow
@@ -96,10 +120,14 @@ vec3 linear_to_srgb(vec3 c) { return pow(c, vec3(1.0 / 2.2)); }
 // offset in the same (m-ish) units as ripple, so it feeds the same gradient.
 //   (kx, ky, omega) rad/tile spatial, rad/s temporal.
 float ambientSine(vec2 grid_xy) {
+    // u_wave_scale MULTIPLIES the spatial frequencies (the temporal terms keep
+    // their original rad/s so the idle motion stays the same speed): higher =
+    // smaller/tighter waves, lower = bigger sweeping waves (Erik's dial).
+    vec2 g = grid_xy * u_wave_scale;
     float s = 0.0;
-    s += sin( 0.55 * grid_xy.x + 0.25 * grid_xy.y + 1.3 * u_time);
-    s += sin(-0.35 * grid_xy.x + 0.45 * grid_xy.y + 0.9 * u_time);
-    s += sin( 0.20 * grid_xy.x - 0.60 * grid_xy.y + 1.9 * u_time);
+    s += sin( 0.55 * g.x + 0.25 * g.y + 1.3 * u_time);
+    s += sin(-0.35 * g.x + 0.45 * g.y + 0.9 * u_time);
+    s += sin( 0.20 * g.x - 0.60 * g.y + 1.9 * u_time);
     return s * (1.0 / 3.0);
 }
 
@@ -134,7 +162,8 @@ void main() {
     // (|ripple| + |ripple_v|, the overlays.py energy heuristic, channels R+G.)
     vec4 wtex = texture(u_water, world_uv);
     float energy = abs(wtex.r) + abs(wtex.g);
-    float amb_amp = clamp(0.06 + 2.0 * energy, 0.0, 0.40); // overlays.py _AMB_*
+    // Idle amplitude = u_ambient_amp base (old hardcoded 0.06) + energy gain.
+    float amb_amp = clamp(u_ambient_amp + 2.0 * energy, 0.0, 0.40); // overlays.py _AMB_*
 
     // --- A. perturbed surface normal -------------------------------------
     // Height-field normal from neighbour taps of the ripple texture (+ the
@@ -167,7 +196,17 @@ void main() {
     // with the reused light buffer at the refracted UV (§4-F) — NEVER sample
     // the world RT this pass draws into (read-while-write feedback).
     vec2 off = N.xy * u_refract_strength * clamp(depth, 0.0, 1.0);
-    vec3 floorDiffuse = texture(u_diffuse, fragTexCoord + off).rgb;
+    // --- chromatic aberration (subtle polish, phase 2) ------------------
+    // Sample the floor diffuse r/g/b at slightly different refraction offsets
+    // (the offset scaled by 1 ± u_ca_amount per channel) — a faint prismatic
+    // fringe on the refracted floor. u_ca_amount default is tiny; 0 collapses
+    // to the single-sample core (the three offsets coincide).
+    vec2 offR = off * (1.0 + u_ca_amount);
+    vec2 offB = off * (1.0 - u_ca_amount);
+    vec3 floorDiffuse = vec3(
+        texture(u_diffuse, fragTexCoord + offR).r,
+        texture(u_diffuse, fragTexCoord + off ).g,
+        texture(u_diffuse, fragTexCoord + offB).b);
     if (u_srgb_decode == 1) {
         floorDiffuse = srgb_to_linear(floorDiffuse);
     }
@@ -182,6 +221,36 @@ void main() {
     // with depth, reading as a true volume rather than a flat blue wash.
     float fog = exp2(-u_fog_density * depth);
     vec3 refr = mix(u_water_color, floorC, fog);
+
+    // --- caustics from the REAL surface (§3; SIGN IS LOAD-BEARING) -------
+    // Caustics = where the wavy surface focuses the downward light onto the
+    // floor. Intensity ∝ +laplacian(ripple): a CONCAVE-UP (focusing) patch is
+    // BRIGHT, a convex bump is dark. With the height-field normal
+    // N ≈ (-∂r/∂x, -∂r/∂y, 1), div(N_xy) = -laplacian(ripple), so
+    //   caustic ~ +laplacian(ripple) ≡ -div(N_xy)   (CLAMP NEGATIVES TO 0).
+    // Brightening by +div(N) would INVERT it (bright on bumps) — do NOT.
+    // 5-point Laplacian of the ripple texture R channel (the same neighbour
+    // taps the normal uses, but the raw R — no ambient sine, no ripple_scale):
+    float rC = texture(u_water, world_uv).r;
+    float rL = texture(u_water, world_uv - tx).r;
+    float rR = texture(u_water, world_uv + tx).r;
+    float rD = texture(u_water, world_uv - ty).r;
+    float rU = texture(u_water, world_uv + ty).r;
+    float lap = (rL + rR + rD + rU - 4.0 * rC) * u_ripple_scale;
+    float caustic = max(lap, 0.0);              // focusing only; bumps -> 0
+    // Optional subtle hybrid: a touch of high-frequency procedural detail
+    // (modulated by surface energy) for crispness — the Laplacian × light is
+    // the core; u_caustic_scale drives the detail (0 = pure surface curvature).
+    if (u_caustic_scale > 0.0) {
+        vec2 g = world_uv / max(u_texel, vec2(1e-6));
+        float hf = 0.5 + 0.5 * sin(u_caustic_scale * (g.x + g.y) + 2.7 * u_time)
+                              * sin(u_caustic_scale * (g.x - g.y) - 1.9 * u_time);
+        caustic *= mix(1.0, hf, clamp(2.0 * energy, 0.0, 1.0));
+    }
+    // × lightRGB so caustics only appear under a flashlight/fire (correct —
+    // focused light needs light); × strength; ride the floor/base (× alpha
+    // below, NOT the surface-additive glint).
+    refr += caustic * u_caustic_strength * lightRGB;
 
     // --- REFLECTION branch (the GGX GLINT — light OFF the surface) -------
     // GGX specular, cheap dot(L,H) form (§2). roughness drives α = roughness²;
@@ -216,6 +285,37 @@ void main() {
     float F = u_r0 + (1.0 - u_r0) * pow(1.0 - NdotV, 5.0);
     vec3 sheenRGB = u_ambient + lightRGB;
     vec3 base = mix(refr, refr + sheenRGB * F, F);  // ≈ refr + small ambient sheen
+
+    // --- FOAM (port of overlays.py:261-277, composited LAST) ------------
+    // Whitecaps where the ripple front is steep (|grad ripple| over a
+    // threshold) + the wet/dry shoreline (where the water depth gradient is
+    // high — the advancing/receding edge). Both from the ripple + depth this
+    // pass already samples (no new texture). Foam is white-ish SURFACE SCATTER
+    // mixed into the (Fresnel) base before the premultiply — NOT additive
+    // light (it does not ride on top like the glint) and NOT × the floor
+    // (it sits on the surface). It is alpha-bound with the base.
+    // |grad ripple| from the RAW ripple R taps (central difference, per UV):
+    float gxr = (rR - rL) * 0.5;
+    float gyr = (rU - rD) * 0.5;
+    float gradRipple = length(vec2(gxr, gyr));
+    float crestFoam = clamp(gradRipple / max(u_foam_threshold, 1e-6) - 1.0,
+                            0.0, 1.0);
+    // Wet/dry shoreline: high depth gradient = the water edge. The neighbour
+    // depths from the same water texture (B channel).
+    float dL = texture(u_water, world_uv - tx).b;
+    float dR = texture(u_water, world_uv + tx).b;
+    float dD = texture(u_water, world_uv - ty).b;
+    float dU = texture(u_water, world_uv + ty).b;
+    float depthGrad = length(vec2(dR - dL, dU - dD)) * 0.5;
+    float shoreFoam = clamp(depthGrad / max(u_foam_threshold, 1e-6) - 1.0,
+                            0.0, 1.0);
+    float foam = max(crestFoam, shoreFoam) * u_foam_intensity;
+    foam = clamp(foam, 0.0, 1.0);
+    // Composite foam LAST into the base: a white-ish term lerped over the
+    // Fresnel base. lightRGB-aware so foam isn't a flat grey in the dark — it
+    // catches ambient + the source like real froth (kept simple).
+    vec3 foamColor = (u_ambient + lightRGB) * vec3(1.0);
+    base = mix(base, foamColor, foam);
 
     // --- output: PREMULTIPLIED base + ADDITIVE glint ---------------------
     // alpha ramps in over the first ~few cm of depth so the wet/dry shoreline

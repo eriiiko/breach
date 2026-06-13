@@ -44,6 +44,13 @@ Tune in this order — each stage makes the next easier to judge:
 | **alpha_min** (Alpha min) | 0.15 | 0–0.6 | Minimum opacity of *any* water (even a thin film). **Up** = even a shallow puddle has visible presence; **down** = thin water nearly invisible. This is the "see-through vs. always-visible" floor — raise it if water disappears on you. |
 | **alpha_max** (Alpha max) | 0.95 | 0.4–1.0 | Maximum opacity (deep water). **Down** = even deep water stays partly see-through (the "see-through, not opaque blue" look Erik wanted); **up** = deep water reads solid. |
 | **ambient** (driven by the Ambient lighting sliders) | from lighting | — | How much the water body is lit by the scene's *ambient* light (vs. only the flashlight). Shares the lighting pass's ambient — raise the **Ambient** sliders to make water visible outside the flashlight beam, dim it to make water near-black except under a light. (Glints stay flashlight/fire-driven regardless — ambient lights the *body*, sources *glint*.) |
+| **caustic_strength** (Caustic) | 2.5 | 0–8 | Brightness of the **caustics** — focused light dancing on the flooded floor, where the wavy surface acts as a lens. Computed from `+laplacian(ripple)` (concave-up/focusing = bright, clamped ≥ 0) × the per-pixel light, so it **only appears under a flashlight/fire** and **dances with the real ripples** (splash a grenade in a puddle, `T` then click). **Up** = brighter filigree; **0** = off. Rides the floor (× alpha), not the surface. |
+| **caustic_scale** (Caust scl) | 6.0 | 0–24 | Spatial frequency of the optional **high-frequency procedural detail** layered onto the surface-curvature caustics for crispness (modulated by ripple energy, so it only crisps up where the water is moving). **Up** = finer sparkle; **0** = pure surface-curvature caustics (softer, the physics-only look). |
+| **foam_threshold** (Foam thr) | 0.02 | 0.001–0.1 | The steepness/edge above which **foam** forms. Foam = whitecaps where `|grad ripple|` exceeds this + the wet/dry shoreline (high depth gradient). **Down** = foam appears on gentler fronts (more foam everywhere); **up** = only the steepest crests/edges foam (subtle). |
+| **foam_intensity** (Foam int) | 0.6 | 0–2 | How **white/strong** the foam reads once it forms. **Up** = thicker, brighter whitecaps; **0** = no foam. Composited last into the base (surface scatter, alpha-bound — not additive light). Keep subtle: white at crests, not a snowfield. |
+| **ca_amount** (Chrom ab) | 0.012 | 0–0.06 | **Chromatic aberration** on the refracted floor — the r/g/b channels are sampled at slightly offset refraction UVs (scaled `1 ± ca_amount`), giving a faint prismatic fringe. **Barely-there by default**; **up** = stronger colour fringing (stylised); **0** = off (single sample). |
+| **wave_scale** (Wave scl) | 2.0 | 0.2–6 | **Idle-shimmer wave size.** Multiplies the ambient-sine spatial frequencies. **Up** = smaller/tighter idle waves; **down** = bigger sweeping waves. (Erik's fix for the idle waves reading "very big" — default 2.0 tightens them from the old hardcoded `1.0`.) The temporal speed is unchanged; this only resizes the lattice. |
+| **ambient_amp** (Amb amp) | 0.06 | 0–0.3 | **Idle-shimmer strength** on still water — the amplitude base of the ambient sine lattice (the old hardcoded `0.06`). **Up** = more idle motion/shimmer even on a dead-calm puddle; **down/0** = still water reads glassy-flat (only real ripples move it). Energy from actual ripples still adds on top regardless. |
 
 ### Interactions worth knowing
 - **No glints without ripples.** `glint_strength` does nothing on a dead-flat puddle — the normal must tilt. Splash it.
@@ -51,14 +58,22 @@ Tune in this order — each stage makes the next easier to judge:
 - **`fog_density` and `alpha_*` both affect "presence"** but differently: fog is *color* (darkens toward water_color), alpha is *opacity* (how much floor shows through). A shallow puddle that's too invisible → raise `alpha_min`; a deep pool that doesn't feel deep → raise `fog_density`.
 - **`r0` and `alpha` both add "wetness"** — r0 via surface sheen, alpha via opacity. Start with alpha; use r0 for the final gloss.
 
-### Phase-2 knobs (not yet built — gated on Erik's sign-off of the core look)
-These land with the caustics/foam/chromatic-aberration pass (`water_rendering.md` §7 step 3) and will
-get their own sliders + rows here when they ship:
-- **caustic_strength / caustic_scale** — the dancing refracted light on the flooded floor under the
-  flashlight (the signature mood effect).
-- **foam_threshold / foam_color** — whitecaps at steep ripple fronts + the wet/dry shoreline.
-- **chromatic_aberration** — subtle prismatic fringe on the refraction.
-- **matcap (environment reflection)** — the outdoor sky-reflection hook (off indoors).
+### Tuning the mood pass (phase 2 — shipped)
+Caustics, foam, chromatic aberration, and the wave-size dials are now live (rows above). Tune them after
+the core look:
+6. **Wave size** (`wave_scale`, `ambient_amp`) — get the idle shimmer reading right (small + present,
+   not the old big sweeping waves) before judging caustics/foam, since both react to the surface motion.
+7. **Caustics** (`caustic_strength`, then `caustic_scale`) — pour a puddle (`U`) under the flashlight,
+   throw a grenade in it (`T` + click), and dial the dancing focused light. Caustics are × the light, so
+   they only show under a source — aim the flashlight at the puddle.
+8. **Foam** (`foam_threshold`, then `foam_intensity`) — keep it subtle: white at the steepest crests +
+   the wet/dry edge, not a snowfield. Lower the threshold for more, raise the intensity for whiter.
+9. **Chromatic aberration** (`ca_amount`) — barely-there; nudge up only if you want a stylised fringe.
+
+### Still deferred
+- **matcap (environment reflection)** — the outdoor sky-reflection hook (off indoors; `water_rendering.md`
+  §6). Not built — gated on dropping in a matcap texture.
+- **SSR** — screen-space reflections of literal shapes; out (polish, low return straight-down).
 
 ---
 
@@ -78,5 +93,7 @@ Detailed rows can be added here as each gets a tuning pass:
 
 ---
 
-**Status:** water section reflects the shipped v1 core + ambient (`a5d177a` + the ambient fix). Grows
-as phase-2 water and the other systems get their tuning passes.
+**Status:** water section reflects the shipped v1 core + ambient (`a5d177a` + the ambient fix) **and the
+phase-2 mood pass** (caustics × light, foam, chromatic aberration, the `wave_scale`/`ambient_amp` wave-
+size dials). Only the matcap hook + SSR remain deferred. Grows as the other systems get their tuning
+passes.

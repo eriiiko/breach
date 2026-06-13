@@ -193,8 +193,8 @@ by dropping in a matcap texture. (Erik wants to play with it; not a v1 authoring
    normal-driven refraction×depth (reuse F/E) + Beer–Lambert tint. This is "flashlight glints off the
    wet floor, floor warps and darkens with depth." Tune `roughness`/`fogDensity`/`refractStrength`.
 3. **Mood + polish** — real-surface caustics × light (G, hybrid §3), foam port (composite last),
-   chromatic aberration (subtle).
-4. **Matcap hook** (§6) — optional term, off by default.
+   chromatic aberration (subtle). **Shipped (phase 2, 2026-06-13).**
+4. **Matcap hook** (§6) — optional term, off by default. *(Not built — gated on a matcap texture.)*
 SSR remains out (polish, revisit only for literal reflected shapes).
 
 ## 8. Implementation status
@@ -213,6 +213,24 @@ config defaults.
 the ship diffuse texture; the `ripple`/`water_depth` fields (engine ch.07, W6); the RGBA16F upload
 helpers (`core.py:133,150`); the premultiplied/additive blend helpers (`overlays.py:294-314`).
 
-**Phase 2 — not yet built (gated on Erik's sign-off of the core look):** real-surface caustics × light
-(§3), the foam port (the CPU algorithm at `overlays.py:261-277` moved into the shader, composited
-last), chromatic aberration, and the matcap hook (§6). SSR remains out (polish).
+**Phase 2 — the mood pass — shipped (2026-06-13).** Added to the same `shaders/water.fs` pass, all
+dormant-safe (dry tiles still return `vec4(0)`):
+- **Real-surface caustics × light (§3).** `caustic = max(+∇²ripple, 0) · u_caustic_strength · lightRGB`,
+  the Laplacian from a 5-point neighbour-tap of the ripple R channel (the SIGN is load-bearing —
+  `+∇²ripple ≡ −div(N)`, concave-up/focusing brightens; clamped ≥ 0). **Added into the refraction/floor
+  term** so it rides the floor (× alpha), seen through the water — not the surface-additive glint.
+  × `lightRGB` gates it to under a flashlight/fire. Optional `u_caustic_scale` high-frequency procedural
+  detail (× ripple energy) for crispness.
+- **Foam port (§4-foam).** The CPU algorithm at `overlays.py:261-277` moved into the shader: whitecaps
+  where `|∇ripple| > u_foam_threshold` + the wet/dry shoreline (high depth gradient), composited **last**
+  into the (Fresnel) base before the premultiply (surface scatter, alpha-bound — not additive). Dials
+  `u_foam_threshold`, `u_foam_intensity`.
+- **Chromatic aberration.** The refracted floor r/g/b sampled at offsets scaled `1 ± u_ca_amount`
+  per channel (default tiny). One dial `u_ca_amount`.
+- **Wave-size dials.** `u_wave_scale` multiplies the ambient-sine spatial frequencies (Erik: idle waves
+  read "very big" — default 2.0 tightens them); `u_ambient_amp` is the idle-shimmer amplitude base (the
+  old hardcoded `0.06`).
+
+All seven new knobs are `[graphics.water]` config keys, `WaterPass` per-frame setters, and live sliders
+in the lighting demo (Water section), per the v1 pattern. **Still deferred:** the matcap hook (§6, gated
+on a matcap texture) and SSR (polish).
