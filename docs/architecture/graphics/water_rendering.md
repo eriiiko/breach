@@ -42,22 +42,23 @@ vec3  floorC = sampleDiffuse(uv + off) * sampleLight(uv + off);  // §4-F: UNLIT
 //   in-shader with the reused light buffer (B) at the refracted position — NEVER sample the world
 //   RT this pass draws into (read-while-write feedback). chromatic aberration: r/g/b at slightly
 //   offset UVs (subtle; +2 fetches)
-//   chromatic aberration: sample r/g/b at slightly different offsets (subtle; +2 fetches)
 float fog    = exp2(-fogDensity * d);                          // Beer–Lambert
 vec3  refr   = mix(waterColor, floorC, fog);                  // depth tint → reads as volume
-refr        += causticTerm(uv) * lightRGB;                    // §3, ride the light (phase 2)
+refr        += causticTerm(uv) * lightRGB;                    // §3, ride the light (floor light; phase 2)
 
-// --- REFLECTION branch (grazing + glints) ---
+// --- REFLECTION: GGX glints, ADDED on top (not Fresnel-mixed — see note) ---
 float spec   = ggxSpecular(N, L, V, roughness);              // §4-C reuse L; cheap dot(L,H) form
-vec3  refl   = spec * lightRGB;                              // §4-B reuse light; the wet glint
-refl        += matcapAmbient(N);                            // §6 optional, ~0 indoors
+vec3  glint  = spec * NdotL * lightRGB * glintStrength;      // §4-B reuse light; gated to LIT, forward-facing ripples
 
-// --- UNIFY with Schlick Fresnel (on the PERTURBED normal) ---
+// --- BASE: refraction + a faint Fresnel ambient sheen (this is what Fresnel weights) ---
 float F      = R0 + (1.0 - R0) * pow(1.0 - max(dot(N, V), 0.0), 5.0);   // R0 ≈ 0.02
-vec3  water  = mix(refr, refl, F);
+vec3  base   = mix(refr, refr + lightRGB * F, F);           // mostly the see-through floor; a faint sheen at crests
+base         = mix(base, foamColor, foamMask(uv));          // foam last (surface scatter; §4-foam, phase 2)
+//             (+ matcapAmbient(N) under the Fresnel weight when enabled, §6)
 
-// --- foam on top (surface scatter, not transmissive) ---
-water = mix(water, foamColor, foamMask(uv));                 // §4-foam: |∇ripple| crests + wet/dry front
+// --- OUTPUT: premultiplied base + the glint ADDED on top (the §5 additive discipline) ---
+float alpha  = clamp(d * alphaScale, alphaMin, alphaMax);    // transparency ramp (all three tunable)
+vec4  water  = vec4(base * alpha + glint, alpha);           // glint = HDR light ON TOP, NOT × alpha
 ```
 
 - **GGX, not Blinn-Phong**, for the glints (Erik, locked) — its narrow-core/soft-tail lobe attenuates
@@ -65,7 +66,16 @@ water = mix(water, foamColor, foamMask(uv));                 // §4-foam: |∇ri
   the `dot(L,H)` simplification makes it barely costlier than Blinn-Phong.
 - **Roughness is a gameplay/art lever** (locked): drive `α = roughness²` from the local ripple
   agitation — still puddles glint sharp (low roughness), disturbed/sloshing water shimmers broad.
-- **Order:** refract + tint + caustics → spec/reflect → Fresnel-mix → composite foam last.
+- **Order:** refract + tint (+ floor caustics) → Fresnel-weighted base → foam → premultiply → **add
+  the glint (and surface caustics) on top** as additive HDR light.
+- **Why the glint is *added*, not Fresnel-mixed (shipped 2026-06-13, `a5d177a`).** Blending the
+  reflection in by `F` weights it ~2% head-on (top-down), which crushes the glint *invisible* on calm
+  water — the near-flat normal means `F` never spikes. A specular highlight is reflected *source*
+  light, so it must be **added** on top: an HDR term gated by `lightRGB`·`NdotL`, scaled by a
+  `glintStrength` dial, surviving the premultiplied blit as additive light regardless of the water's
+  transparency. Only the faint *ambient* sheen stays Fresnel-weighted. This is the §5 additive-RGB-only
+  discipline, applied to the glint from v1 (not deferred to caustics). The naïve `mix(refr, refl, F)`
+  is the trap that made the first build's glints invisible.
 - Top-down, geometric `F ≈ 0.02` (we mostly see the floor — correct); the **ripple normals locally
   spike `F`** to draw glints riding the wave crests.
 
@@ -139,11 +149,14 @@ same textures.
   (the squad reads over the water); the lit ship beneath is the floor sample. This *replaces* the
   CPU-tinted `WaterFieldOverlay` placeholder (the W6b overlay) with the GLSL pass in the same slot.
 - **Blend discipline (the god-ray-fix rule):** the world RT composites to screen premultiplied
-  (`world_composite.py:120`, `out = rt.rgb + bg·(1−rt.a)`). The base refraction/tint term draws
-  premultiplied (like today's overlays). Every **additive** sub-term — specular glints, caustics —
-  **must not write destination alpha** (or vacuum goes opaque-black under the blit); use the existing
-  `_begin_additive_rgb_only_blend()` helper (`overlays.py:294-314`). Net: the pass outputs
-  premultiplied `vec4` with `alpha < 1` only on water tiles.
+  (`world_composite.py:120`, `out = rt.rgb + bg·(1−rt.a)`). Every **additive** sub-term — specular
+  glints (shipped), caustics (phase 2) — **must not write destination alpha** (or vacuum goes
+  opaque-black under the blit). The shipped v1 does this *within the single premultiplied draw*:
+  `finalColor = vec4(base·alpha + glint, alpha)` — the glint adds to the premultiplied RGB while
+  `alpha` is left untouched, so under the premultiplied blit it rides as additive light that never
+  blackens vacuum. (A term drawn as a *separate* pass would instead use the
+  `_begin_additive_rgb_only_blend()` helper, `overlays.py:294-314`.) Net: a premultiplied `vec4` with
+  `alpha < 1` only on water tiles; dry tiles return `vec4(0)`.
 
 ### 5.1 Relationship to the CUDA migration — build now, don't wait
 
@@ -186,16 +199,20 @@ SSR remains out (polish, revisit only for literal reflected shapes).
 
 ## 8. Implementation status
 
-**Design-only (this chapter).** No water GLSL pass exists; the current water render is the CPU-tinted
-`WaterFieldOverlay` placeholder (`overlays.py:115-291`, the W6b overlay — depth-blue tint + crude
-∂ripple brightness + the foam algorithm + ambient sines).
+**v1 CORE shipped (`ab2bd25` + `a5d177a`, 2026-06-13).** The GLSL water fragment pass is live
+(`shaders/water.fs`, `renderer/water.py`, drawn in the `WaterFieldOverlay` compose slot — the CPU
+placeholder is retired): the RGBA16F water texture (ripple + depth packed/uploaded per frame), the
+`[graphics.water]` uniforms, the perturbed-ripple normal build, Schlick Fresnel, **additive GGX
+glints** (the corrected design, §2), normal-driven refraction × depth, and Beer–Lambert depth tint.
+Dormant-safe (dry tiles return `vec4(0)`; verified bit-identical on a dry ship). **Live tuning:** all
+params are sliders in the lighting demo (`tools/lighting_demo.py`), pushed to per-frame `WaterPass`
+setters — drag + pour with `U`, no restart; the values that look right become the `[graphics.water]`
+config defaults.
 
-**Already exists and is reused (built):** `light_rgb` + light-direction GPU textures (ray engine, Tier-1
-shipped); the ship diffuse texture; the `ripple`/`ripple_v` + `water_depth` + `flow_vx/vy` fields
-(engine ch.07, W6 shipped); the foam algorithm (CPU, `overlays.py:261-277`); the RGBA16F upload helpers
-(`core.py:133,150`); the premultiplied/additive blend helpers (`overlays.py:294-314`).
+**Reused (built, no new plumbing):** `light_rgb` + light-direction GPU textures (ray engine Tier-1);
+the ship diffuse texture; the `ripple`/`water_depth` fields (engine ch.07, W6); the RGBA16F upload
+helpers (`core.py:133,150`); the premultiplied/additive blend helpers (`overlays.py:294-314`).
 
-**Unbuilt (this chapter's work):** the GLSL water fragment pass; the `ripple`/`water_depth` float-texture
-upload; the `[graphics.water]` uniforms; the perturbed-normal GLSL build; the Fresnel/GGX/refraction/
-tint/caustics/CA math; the matcap hook. Methods locked with Erik 2026-06-12; grounded in the
-code-verified reuse map (§4).
+**Phase 2 — not yet built (gated on Erik's sign-off of the core look):** real-surface caustics × light
+(§3), the foam port (the CPU algorithm at `overlays.py:261-277` moved into the shader, composited
+last), chromatic aberration, and the matcap hook (§6). SSR remains out (polish).
