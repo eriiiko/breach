@@ -67,14 +67,26 @@ says where 0–1 sits "in the grand scheme of things" **[E]** — `metres = reli
 with the **floor re-baselined to 0**. Two pieces, both done on the *global* map first (§6),
 independent of the patch tool:
 
-- **Level 0 — the floor baseline.** The floor is the most *common* surface, so the dominant mode of
-  the relief histogram ≈ floor level. Subtract it → **floor = 0** in the 0–1 map, raised features
-  positive. Set once globally; every merged patch inherits it. Retires the `height_floor` render
-  fudge at the source.
-- **The 0–1 → metres scale — a real-world reference [E].** Set `metres_per_unit` once from a known
-  object — *"this feature is a 1.8 m human"* → solve the scale. Now `relief = 0.25` *means* 0.5 m.
-  Grounds the water depth physically (a 0.4 m crate really protrudes from a 0.3 m puddle) and is what
-  the height-probe (§2) displays.
+- **Level 0 — the floor baseline. [REVIEW-CORRECTED]** *Not* the global histogram mode — that breaks
+  on wall- or furniture-dominated interiors (the modal surface is then the wall, not the floor) and on
+  sloped/multi-deck relief. Instead **use the tilemap material mask** (which is authoritative and
+  already loaded): sample relief **only over known floor/air tiles** (`MAT_AIR` / `mobility > 0`) and
+  take a robust statistic there — the **median or a low percentile** of the floor-tile relief.
+  Immune to wall/furniture dominance and to slope. Manual click-a-floor-tile override as fallback when
+  no tilemap is present. → **floor = 0**, set once globally; every merged patch inherits it. Retires
+  the `height_floor` render fudge at the source.
+- **The 0–1 → metres scale. [REVIEW-CORRECTED — this was the doc's subtlest error.]** A two-point
+  *length* gives metres-per-**pixel** (horizontal/in-plane), which is a *different axis* from
+  metres-per-**relief-unit** (vertical). You cannot calibrate vertical relief from a horizontal ruler.
+  Split into two separately-stored constants: **`metres_per_pixel`** (from a known in-plane length —
+  drives water area / footprints) and **`metres_per_relief_unit`** (from a known **height** `H` of one
+  object: read its relief delta `Δrelief = relief(top) − relief(floor)` off the map, then
+  `metres_per_relief_unit = H / Δrelief`). **And the honest caveat:** monocular depth on flat-lit
+  top-down art barely encodes *true* vertical relief — it hallucinates from shading/edges — so a single
+  global `metres_per_relief_unit` is **approximate, an art-direction tuning constant, not a measured
+  physical depth.** Calibrate from several objects, store the spread, and do **not** advertise the
+  height-probe's metre readout as exact. The water protrusion still looks great; we just frame the
+  scale as a dial, not a survey.
 - **One scale for all levels is the goal [E].** Erik: each level needn't *have* to share the scale,
   but striving for a single project-wide `metres_per_unit` (and the floor-at-0 convention) is worth
   it — *it makes swapping art/height assets between levels just work*. So the standard is: every
@@ -90,14 +102,28 @@ The seam is the risk, and Erik's insight fixes it robustly. The merge:
    matches the global map *in the patch region* — so the added detail sits at the right baseline.
 2. **As a delta** — the patch contributes a height *delta* (the new detail) over that aligned
    baseline, not a wholesale replacement. (This is "edit the selection by *adding* detail" **[E]**.)
-3. **Zero at the border [E] — the key rule.** Force the delta to **zero at the patch edges** and
-   feather it up toward the interior. Then the border pixels are *unchanged* (= the global map), so
-   the transition is seamless **regardless of how good the alignment is** — the edges can't disagree
-   because they're pinned to the original. Interior gets the new detail; edges are untouched.
-4. **Add** the tapered delta to the global height; **re-derive the normal** from the merged *height*
-   (one Sobel pass — heights merge cleanly, normals don't).
-5. This is a **destructive save** to the global heightmap **[E]** (with a `.bak`), since the patch
-   record persists in the sidecar for re-runs.
+3. **Zero at the border [E] — the key rule, REVIEW-REFINED.** Feather the delta to **zero near the
+   edges** so the border pixels stay = the global map and the seam is seamless by construction. **But
+   do NOT pin to the literal rectangle** — that would *flatten a real feature the selection clips* (a
+   crate straddling the edge gets its true step dented back down to the mushy baseline). Two guards:
+   (a) **margin rule** — the user selects *whole objects plus blank floor margin*, and the tool
+   **warns** if `|delta|` on the border ring exceeds a small threshold ("feature touches edge —
+   reselect with margin"); (b) **mask the feather to agreeing regions** — taper to zero where patch
+   and global *already agree* (small delta), not on the geometric box, so a clipped feature isn't
+   force-zeroed. Use a **smoothstep / raised-cosine** falloff (linear leaves a C¹ crease the normal
+   picks up as a lit line), feather width ~8–16 px and **< the selection margin**.
+4. **Add (or REPLACE) the tapered delta** to the global height. **[REVIEW-ADDED] Per-patch ADD vs
+   REPLACE mode:** ADD (default) injects detail onto a baseline that's *right on average*; REPLACE
+   (`global = feather·patch + (1−feather)·global`) is for when the global is simply *wrong* there
+   (Depth-Anything inverted a recess into a bump) — same zero-border/feather seam machinery, one extra
+   branch. Store the mode per patch in the sidecar.
+5. **Re-derive the normal** from the merged *height* (one Sobel/`np.gradient` pass — heights merge
+   cleanly, normals don't), over the patch **plus a 1–2 px halo** so the stencil straddles the merge
+   boundary cleanly. Destructive save **[E]** to the global heightmap (`.bak`); the patch record
+   persists in the sidecar for re-runs.
+6. **Numbers shown:** scale + offset applied; patch-vs-global mean/range in the overlap; the seam error
+   (≈0); **and `max |delta| discarded by the feather`** — because the seam error reads ≈0 *even when a
+   feature was silently flattened*, so this second stat is what flags a clipped feature.
 
 **Show numbers during the merge [E]** — the stats that tell you the fit is good:
 - the **scale** and **offset** applied to fit the patch to the global,
@@ -133,3 +159,38 @@ Minor calls I'll proceed with unless you say otherwise (each cheap to flip):
   override.*
 - **Per-layer maps** — yes, one heightmap per art layer (base/furniture/destroyed), mirroring the
   diffuse layers.
+
+## 8. Build realities (feasibility review) — bigger than the design implied
+
+The viewer/coordinate foundation is real (`align_level_art.py`'s pyray viewer, wheel-zoom, and the
+`art_px_to_tile` inverse through `[art.align]`), but the design **understated** how much is net-new.
+Load-bearing realities, in build order:
+
+1. **Per-layer height is a SCHEMA MIGRATION, do it first.** The `[art]` schema today has **one**
+   `height` key, under `[art.bare]` only — and it currently *points at the furniture map* (interim
+   hack in `unhcr_vessel_2/level.toml`). Real per-layer height = 3 `height` keys + 3 `LevelData`
+   fields + loader parsing + renderer active-layer selection. Resolve this *before* the inspector/merge
+   or both get rebuilt.
+2. **`height_floor` lives in two places.** It's a *water render dial* (`renderer/water.py`, default
+   0.3), not a baked zero. "Retire at source" = re-bake the PNG to floor-0 **and** change the water
+   default **and** keep the dial as an override. Cross-system — coordinate, don't silently bake.
+3. **Live preview needs a RESIDENT model.** `depth_to_normal.py` reloads the full Depth-Anything torch
+   model from cache on *every* call (multi-second). "Hit generate, see it live" requires refactoring it
+   into an importable function with a **cached/resident pipeline** (ideally a background worker so pyray
+   doesn't block). Plan this up front, or "live" won't be live. (Also confirm the tool's runtime env
+   has torch+transformers — flagged "home desktop" only.)
+4. **No JSON-sidecar precedent exists** (no tool imports `json`). The `<layer>_patches.json` schema +
+   read-back is new; the byte-preserving TOML `.bak` rewriter (`save_align`) is the model for `.bak`
+   discipline only.
+5. **The inspector's view-rendering IS the build**, not a viewer tweak. The `B`-key "layer toggle"
+   today loads only **diffuse** backdrops; height/normal-per-layer loading, the colour ramp + legend,
+   the height+normal overlay, and the metres probe are all net-new (and the probe depends on §4's scale
+   landing first).
+6. **Pin to the `_reg` heightmaps** (3900×6456, match the diffuse) — the older non-`reg` maps are
+   3884×6476; mixing them puts crop rects off by ~20 px.
+
+**Net scope:** the **level-0/scale re-baseline (§6.1) is a contained, standalone numpy script** that
+fixes today's *visible* problems (fill-forever + no scale) and retires the `height_floor` fudge — a
+quick, high-value win. The **inspector + select + regen + merge are a genuinely bigger build** (schema
+migration + a model-residency refactor + the net-new view-rendering). So the natural staging is:
+**ship the re-baseline first, then build the tool proper.**
