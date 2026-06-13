@@ -31,7 +31,7 @@ The split exists because the compose phase grows with every entity type. Keeping
 
 ## The world render target
 
-Everything that lives in the game world is drawn into a single render target sized to the *entire world*, not the screen. `WorldComposite` allocates an RT of `world_tile_w * world_px_per_tile` by `world_tile_h * world_px_per_tile` pixels (default `world_px_per_tile = 24`). For a 50 x 120 ship that is 1200 x 2880 RGBA8 — about 14 MB, trivial on any modern GPU.
+Everything that lives in the game world is drawn into a single render target sized to the *entire world*, not the screen. `WorldComposite` allocates an RT of `world_tile_w * world_px_per_tile` by `world_tile_h * world_px_per_tile` pixels (config knob `world_px_per_tile`, default `48`). For a 50 x 120 ship that is 2400 x 5760 RGBA8 — about 55 MB, trivial on any modern GPU.
 
 This is the architectural keystone. Because the diffuse art and every overlay cover the *full* world RT, every shader and every overlay samples `fragTexCoord` running 0..1 over the world. The light field covers the same 0..1 space. They line up *by construction* — no shader ever needs camera UVs. This is why an entire class of bug ("the flashlight points at the wrong tile after the camera scrolls") cannot recur: the camera transform does not exist during compose. It happens later, exactly once.
 
@@ -180,7 +180,7 @@ This audits the renderer against the shipped code in `renderer/` and `shaders/`,
 - **Desaturation in shadow.** The "darkness reads as colourless, not merely dim" effect (a saturation→grayscale lerp by light level in the shader) is a stated design goal that was lost in an earlier refactor and is not in the current shader. Listed in `docs/TODO.md`.
 - **Ambient lighting + two light roles.** A dedicated ambient-floor pass distinct from the directional/raycast lights (reveal geometry vs. flashlights/fires/emergency) is designed but not yet a separate path; today there is one flat `ambient` uniform plus the cast field.
 - **Destruction painting layer.** Scorch marks (normal-map dot-product directional burns), blood splats, and floor/rubble over destroyed walls — all on one edit-texture — are fully designed (`graphics_lighting_design.md` §7) but unimplemented. No destruction is painted today.
-- **Fire as a short-range light source.** Burning tiles wired into the ray engine as `LightSource` instances; designed (`fire_design_notes.md`), lands with the next physics pass. Today fire is an additive overlay only, not an emitter into the light field.
+- **Fire as a short-range *light* source.** Fire already emits HEAT rays into `gmap.heat` (the sim-side K2 pass `cast_fire_heat`, cast through the ray engine each tick); only its emission of *visual* light into the `light_rgb` field — burning tiles wired into the ray engine as visible `LightSource` instances, designed (`fire_design_notes.md`) — is still a later step. For the light field today, fire is an additive overlay only, not an emitter.
 - **Normal-mapped / shader-lit units.** Units are currently tinted by a scalar `light_map` sample; they do not have normal maps and are not lit by the lighting shader like the ship.
 - **LOS-based visibility filtering.** Not drawing enemy units the player has no line-of-sight to. The `gmap.has_los` Bresenham check exists; the renderer-side visibility filter does not.
 - **1-bounce reflection** with surface tint (cheap caustics for metal corridors) — noted as secondary priority, not built.
@@ -189,7 +189,7 @@ This audits the renderer against the shipped code in `renderer/` and `shaders/`,
 
 - **The cast lives in the renderer**, not the simulation step. The heat/glow buffers are passed in optionally and the renderer owns the per-frame invocation. Headless runs therefore do not produce the light/heat fields. Moving the cast into the sim is the planned boundary correction.
 - **Smoke does not occlude units.** Compose order draws units after smoke, so a unit inside a smoke cloud renders in front of it. Matches the legacy convention but is visually backwards; whether smoke should occlude is an open design question.
-- **`world_px_per_tile` is a silent constant (24).** If it does not match `diffuse_width / world_tile_w`, the art is up- or down-scaled into the RT before the camera blit re-scales it, costing sharpness. It is neither computed from the asset nor asserted against it.
+- **`world_px_per_tile` is a config knob (default 48), not validated against the art.** If it does not match `diffuse_width / world_tile_w`, the art is up- or down-scaled into the RT before the camera blit re-scales it, costing sharpness. It is config-bound (`config.toml [rendering]`) but neither computed from the asset nor asserted against it.
 - **Window resize is not wired.** The window is treated as fixed-size; `RenderConfig.map_px_w/h` and the camera viewport do not react to a resize. The borderless-windowed option sidesteps this by matching the monitor.
 - **`renderer/coords.py` is effectively unused** outside its own naming-discipline role — the overlay helpers take `world_px_per_tile` directly rather than routing through it.
 - **Camera niceties** (zoom-around-cursor focal preservation, shake, smooth follow) are not yet on `Camera2D`; the first explosion/effect that wants them will need them added.

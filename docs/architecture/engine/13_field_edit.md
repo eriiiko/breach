@@ -32,7 +32,7 @@ A pure, stateless value object. No state, no application logic — it only
 ```python
 @dataclass(frozen=True)
 class FieldEdit:
-    field: str            # "smoke" / "atmosphere" / "wave_source" / "fire" / "heat" / future gases
+    field: str            # "smoke" / "atmosphere" / "wave_source" / "fire" / "heat" / per-gas (pending)
     region: Region        # TILE · DISC · BEAM · RECT
     coords: tuple         # TILE:(r,c) · DISC:(r,c,radius) · BEAM:(r0,c0,r1,c1,width) · RECT:(r0,c0,r1,c1)
     amount: float
@@ -133,6 +133,7 @@ have to remember:
 | `wave_source` | float | — | skip `solid` + `is_vacuum` |
 | `fire` | float | `[0, 1]` | skip non-`flammable` |
 | `heat` | Q16.16 | — | (none) |
+| `water_depth` | float | `[0, ∞)` | skip `solid` |
 
 - **dtype** selects the `_combine` branch: `float` (`+=` / `-=` / `max`) or
   `heat` (Q16.16). The fixed-point discipline is implemented **once** here, not
@@ -143,8 +144,10 @@ have to remember:
 - **clamp** is the post-combine bound used when the `FieldEdit` sets none.
 - **skip-mask** is a per-cell veto (`smoke`/`atmosphere` never enter a wall;
   `wave_source` never sources in a wall or vacuum; `fire` only ignites flammable
-  tiles). When `smoke` grows from one scalar to the planned N gas fields, a new
-  gas is a new policy row — *zero* consumer code changes.
+  tiles). The N gas fields now exist (`gmap.gas` is `(N, h, w)`, with `smoke` a
+  view into the black-smoke slice); only the black-smoke deposit has a policy row
+  (`"smoke"`) today, so each additional gas is a new `FIELD_POLICY` row when it
+  needs a deposit path — *zero* consumer code changes.
 
 This is the write-side mirror of the data-driven gas table: `field` is a string
 key, so a poison grenade is `FieldEdit("poison", …)` and "new gas = new field
@@ -183,7 +186,7 @@ Edits that change **topology** — `destroy_wall` (which retriggers the
 conductivity/occlusion cache patch via `on_tile_changed`, marks the smoke sink
 field dirty, refills atmosphere) — are **not** FieldEdits. They stay immediate
 and structural. `FieldEdit` is strictly continuous scalar/vector values on a
-*fixed* grid (smoke, atmosphere, wave_source, fire, heat, future gases).
+*fixed* grid (smoke, atmosphere, wave_source, fire, heat, the other gas slices).
 
 `wall_hp -= dmg` *is* a clean `REMOVE` FieldEdit in shape, but the destruction it
 triggers must run as a separate **post-flush structural sweep**: collect tiles at
@@ -215,7 +218,7 @@ the port.
   `_combine` (float and Q16.16 `heat` branch); `heat_quantize` /
   `heat_saturating_add` mirroring the C++ helpers.
 - `FIELD_POLICY` for the live fields (`smoke`, `atmosphere`, `wave_source`,
-  `fire`, `heat`).
+  `fire`, `heat`, `water_depth`).
 - `EditQueue` with the stable-sorted, single-RNG-consumer flush; one flush point
   in `Simulation.step()` before the solvers; `sim.edit(...)` enqueue API.
 - Migration of `apply_explosion` and `add_explosion_smoke` (behaviour-preserving;
@@ -229,7 +232,9 @@ the port.
 - `wall_hp` damage via a `REMOVE` FieldEdit + the post-flush `<= 0` destruction
   sweep (lands with the fire phase — §5).
 - The laser / gas emitters that motivated the primitive (BEAM burn-off, poison
-  DISC) — built on `FieldEdit` from day one when they land.
+  DISC) — built on `FieldEdit` from day one when they land. The gas *fields* now
+  exist (`gmap.gas`, incl. poison); the per-gas `FIELD_POLICY` rows and the
+  emitters that write them are still pending.
 - `SET` (lerp-to-value) and `MIN` modes; additional falloffs (`SHARP`, `GAUSS`)
   — added when a consumer needs them.
 - Fire's smoke emission and the §3-plume `atmosphere` deposit re-expressed as

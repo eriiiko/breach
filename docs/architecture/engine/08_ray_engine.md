@@ -25,11 +25,12 @@ as a byproduct of the same march, the visual fields the renderer reads (`light_r
 **Render reads sim; sim never reads render.** The boundary between the two is the buffer set —
 not a function call, not a shared object, just four arrays on `GameMap`.
 
-> **Implementation reality:** the cast currently runs in `renderer/lighting.py`
-> (`LightingPass.compute_light_field`, invoked from `game_renderer.upload_state`). Moving it
-> into the deterministic sim step is a planned, mechanical relocation — the C++ kernel and the
-> buffer contract are already in their final form, so the move is a caller change, not a
-> redesign. See *Implementation status*.
+> **Implementation reality:** the sim-side **heat** cast already runs inside the deterministic
+> step (`PhysicsRunner.cast_fire_heat`, depositing `gmap.heat`). The **render light** cast still
+> runs in `renderer/lighting.py` (`LightingPass.compute_light_field`, invoked from
+> `game_renderer.upload_state`). Moving that render cast into the sim step is a planned, mechanical
+> relocation — the C++ kernel and the buffer contract are already in their final form, so the move
+> is a caller change, not a redesign. See *Implementation status*.
 
 ## The ray and its payload
 
@@ -138,8 +139,11 @@ A DDA tile walk from the source outward. At each tile:
    in a separate full-grid pass after all sources are cast (see below).
 3. **Deposit heat** (only if the source emits heat): `heat_quantize(dep_aggregate · src.heat)`,
    saturating-added into `heat`.
-4. **Attenuate per channel** by the material's static attenuation, then by live smoke.
-5. **Deposit god-ray glow** — the energy the smoke just absorbed goes into `smoke_glow`.
+4. **Attenuate per channel** by the material's static attenuation, then by the live gases —
+   a per-channel Beer-Lambert transmission summed (density-weighted) over every gas sharing the
+   tile (see [Smoke & Gases](smoke.md)), so mixed gases tint the survivor automatically.
+5. **Deposit god-ray glow** — the energy the gases scatter back (their per-channel scatter
+   budget, decoupled from absorption) goes into `smoke_glow`.
 6. **Step** to the next tile; terminate when range is exceeded or aggregate energy drops below
    a small epsilon.
 
@@ -300,12 +304,16 @@ lightning spec; it is not yet implemented.
 - `cpp/src/raycaster.{h,cpp}` — the full directional march. `LightSource` carries RGB `color`,
   `heat`, `jitter`, falloff. `cast_source_directional` / `march_ray_directional` deposit
   `light_rgb`, `light_dir` (dx/dy), Q16.16 `heat` (quantized, saturating-add), and RGB
-  `smoke_glow`. Heat is the **independent 4th channel**: a scalar heat survival attenuated per
-  tile by `heat_atten` exactly as each RGB channel is attenuated by `light_atten`, so heat and
-  light occlusion diverge (heat-shield vs smoked glass). The deposit is
-  `src.heat · heat_survival · falloff`, decoupled from RGB. Aggregate-energy termination over
-  ALL FOUR channels {R,G,B,heat}; god-rays from smoke-absorbed energy; `normalize_directions`
-  post-pass (vector-magnitude).
+  `smoke_glow`. Per-tile optics now read the **multi-gas** field, not a single smoke array: the
+  kernel takes `gas_field` (shape `(n_gases, h, w)`) plus per-gas `gas_absorption` /
+  `gas_scatter` tables and `n_gases`, and sums a density-weighted per-channel Beer-Lambert
+  transmission (absorption) and god-ray scatter over every gas sharing the tile (a single
+  populated gas reproduces the old single-`smoke` path). Heat is the **independent 4th channel**:
+  a scalar heat survival attenuated per tile by `heat_atten` exactly as each RGB channel is
+  attenuated by `light_atten`, so heat and light occlusion diverge (heat-shield vs smoked glass);
+  gases never attenuate heat. The deposit is `src.heat · heat_survival · falloff`, decoupled from
+  RGB. Aggregate-energy termination over ALL FOUR channels {R,G,B,heat}; god-rays from the
+  per-gas scatter budget; `normalize_directions` post-pass (vector-magnitude).
 - `cpp/src/bindings.cpp` — `LightSource` and `Raycaster` exposed to Python; `heat` /
   `smoke_glow` / `heat_atten` are optional (`None` skips that deposit / attenuation), so
   render-only callers pass only what they need.
@@ -321,18 +329,26 @@ lightning spec; it is not yet implemented.
   encode, vacuum discard.
 - `renderer/lighting.py` — casts all sources, normalizes, derives the legacy scalar `light_map`
   (max over channels) for render-side tinting consumers, packs into two RGBA16F textures.
+- **Heat consumers.** `heat` is read, not just deposited. Two consumers run each tick:
+  the `TemperatureSolver` converts this tick's `gmap.heat` to `temperature`, conducts, and cools
+  it (`physics_runner.step`); then unit heat damage samples the still-occluded `heat` at each
+  unit's footprint (`apply_environmental_damage`, called from `Simulation.step`). Temperature
+  ignition derives from the resulting field, and the per-tick `heat` deposit is cleared at
+  end-of-tick after both readers (see [Temperature & Heat](temperature.md)).
 - Tests: `tests/test_rgb_light_atten.py`, `test_dyn_light_atten.py`, `test_heat_smoke_glow.py`,
   `test_rgb_light_pack.py` cover the per-channel attenuation, unit-shadow stamping, heat +
   god-ray deposit, and pack contract.
 
 **Designed but not yet built:**
 
-- **Raycaster relocation into the sim.** The cast still runs in `renderer/lighting.py` from
-  `game_renderer.upload_state`; `src/simulation/simulation.py` does not yet call it. The kernel
+- **Render light cast relocation into the sim.** The sim-side **heat** cast already ships:
+  `PhysicsRunner.cast_fire_heat` (`src/simulation/physics_runner.py`) casts every burning tile
+  as a heat `LightSource` into `gmap.heat` at the START of the deterministic `step()`
+  (`physics_runner.step` → called from `Simulation.step`). What remains renderer-side is the
+  **render light** cast: it still runs in `renderer/lighting.py` from `game_renderer.upload_state`
+  (the RGB/`light_dir`/`smoke_glow` buffers are not yet filled inside the sim step). The kernel
   and buffer contract are final, so this is a caller move plus extending the determinism test to
-  the heat/temperature fields — not a redesign.
-- **Heat consumer.** `heat` is deposited but nothing reads it yet; the temperature pass
-  ([Temperature & Heat](temperature.md)) and unit-damage sampling are the consumers.
+  the render fields — not a redesign.
 - **Energy-weapon pre-phase** — no laser pre-phase exists; weapons do not yet mark the map or
   deposit heat.
 - **Attenuation-aware LoS** — `gamemap.has_los` is still binary Bresenham on `is_wall`; the

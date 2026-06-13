@@ -252,11 +252,14 @@ chapter is the proper home for. Concretely:
 - **Water conduction (§5) is blocked on the fluid system**, which is itself designed
   but unbuilt (see Fluid & Water). `is_water` and `flood_fill_water` do not exist;
   the hook is written here but cannot be wired until fluids land.
-- **Heat / fire / smoke couplings (§6) are blocked on their consumers.** The `heat`
-  buffer is deposited into but **read by nobody** (no temperature field, no ignition
-  pass — see [Temperature & Fire](06_temperature_and_fire.md)), so an arc's heat
-  pulse would currently fall on the floor. Arc → ignition is automatic *only once*
-  the temperature consumer exists.
+- **Smoke coupling (§6) is purely visual and blocked on no consumer; the heat/fire
+  couplings now have a home.** The `heat` buffer **is read** — the C++
+  `TemperatureSolver` converts it to `temperature` each tick, `apply_temperature_ignition`
+  reads that for ignition, and `apply_environmental_damage` reads `heat` for unit
+  damage (see [Temperature & Fire](06_temperature_and_fire.md)). So an arc's heat
+  pulse, once arcs exist, would **land**: get converted, drive ignition past
+  `ignition_temp`, and feed unit heat damage — no longer falling on the floor. The
+  only thing missing is the arc that deposits it.
 - **`ELECTRICAL_DAMAGE_MULT`, `WATER_CONDUCT_MULT`, the metal-conductivity
   threshold, default `radius`, `energy`, bolt `depth`, and the frame lifetime are
   unspecified tunables.** Per the engine's data-driven rule they belong in

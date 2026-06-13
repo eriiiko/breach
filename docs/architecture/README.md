@@ -1,7 +1,9 @@
 # Breach — Architecture
 
 The canonical architecture: **one focused design document per system**, grouped into
-**engine** (the deterministic world), **mechanics** (game logic on the engine), and **ml**.
+**engine** (the deterministic world), **mechanics** (game logic on the engine),
+**graphics** (the look layer — how the world is shown; see [graphics/README.md](graphics/README.md)),
+and **ml**.
 Each chapter declares the chapters it **depends on** and ends with an honest
 **implementation-status** section. Process artifacts (reviews, patch records, research) live
 outside this folder and are archived once their work lands.
@@ -70,14 +72,14 @@ Legend: ✅ implemented · ⚠️ partial (foundation built, advanced parts desi
 |---|---------|--------|
 | 01 | [Grid & coordinates](engine/01_grid_and_coordinates.md) | ⚠️ (core built, is_wall dropped; vision-via-atten, physics scaling owed) |
 | 02 | [State & ownership (GameMap)](engine/02_state_and_ownership.md) | ⚠️ (permeability/soft-unit fields built; GPU residency owed) |
-| 03 | [Material system](engine/03_material_system.md) | ✅ (permeability, wave_absorb, burst_threshold consumed; is_wall retired) |
+| 03 | [Material system](engine/03_material_system.md) | ✅ (permeability, wave_absorb, burst_threshold, mobility consumed; is_wall retired, passable→mobility) |
 | 04 | [Atmosphere & pressure](engine/04_atmosphere_and_pressure.md) | ⚠️ (permeability boundary, 4a absorption, over-pressure burst built; venting/4b owed) |
-| 05 | [Smoke](engine/05_smoke.md) | ⚠️ (permeability + soft units built; lingering-smoke venting owed) |
-| 06 | [Temperature & fire](engine/06_temperature_and_fire.md) | ⚠️ (fire built, temperature designed) |
+| 05 | [Smoke](engine/05_smoke.md) | ⚠️ (smoke v2 + multi-gas M1/M2 coloured optics shipped; per-gas decay/flammability owed) |
+| 06 | [Temperature & fire](engine/06_temperature_and_fire.md) | ⚠️ (heat→temperature→ignition + conduction + cooling + fire-as-heat-ray shipped; thermal wall-failure + unit-damage tuning owed) |
 | 07 | [Fluid & water](engine/07_fluid_and_water.md) | ⚠️ (core built: C++ solver + tick + displacement/pressure-head couplings + flash-boil→steam + ripple + debug overlay; conduction/oil/ice/gameplay-reads designed) |
 | 08 | [Ray engine](engine/08_ray_engine.md) | ⚠️ (Tier-1 shipped) |
 | 09 | [Rendering](engine/09_rendering.md) | ✅ |
-| 10 | [Pathfinding](engine/10_pathfinding.md) | ⚠️ (A* built; temporal A* unused) |
+| 10 | [Pathfinding](engine/10_pathfinding.md) | ⚠️ (A* built, speed-blind enterability via mobility; temporal A* unused) |
 | 11 | [Electricity / lightning](engine/11_electricity.md) | 📝 |
 | 12 | [Config & hot-reload](engine/12_config_and_hot_reload.md) | ✅ |
 | 13 | [FieldEdit (write primitive)](engine/13_field_edit.md) | ⚠️ (queue + applier + explosion/smoke migration built; wall_hp/destruction-sweep + laser/gas consumers designed) |
@@ -85,10 +87,16 @@ Legend: ✅ implemented · ⚠️ partial (foundation built, advanced parts desi
 ### Mechanics — game logic on the engine
 | # | Chapter | Status |
 |---|---------|--------|
-| 01 | [Units & entities](mechanics/01_units_and_entities.md) | ⚠️ |
+| 01 | [Units & entities](mechanics/01_units_and_entities.md) | ⚠️ (mobility speed_fn seam shipped; footprint variants/cadence owed) |
 | 02 | [AI & line-of-sight](mechanics/02_ai_and_los.md) | ⚠️ |
 | 03 | [Combat & weapons](mechanics/03_combat_and_weapons.md) | ⚠️ |
 | 04 | [Turn system & control](mechanics/04_turn_and_control.md) | ⚠️ |
+
+### Graphics — the look layer (chapters by topic, not numbered; see [graphics/README.md](graphics/README.md))
+| Chapter | Status |
+|---------|--------|
+| [Water rendering](graphics/water_rendering.md) | 📝 (in progress — Fresnel reflect/refract surface pass; research landed) |
+| Smoke & gas optics · Lighting mood & post · Surface materials · Decals & particles | (planned — migrated/written as each look-pass is done) |
 
 ### ML
 | # | Chapter | Status |

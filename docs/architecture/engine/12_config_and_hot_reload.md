@@ -77,7 +77,7 @@ shape:
 | `[movement]` | per-mode move costs | `marine_sprint_ticks_per_tile`, `xeno_sprint_ticks_per_tile` |
 | `[physics]` | atmosphere/smoke/wave solver coefficients | `wave_c`, `d_atm`, `breach_rate`, `physics_dt`, `physics_substeps` |
 | `[display]` | window + active level | `panel_width`, `level` |
-| `[materials.<name>]` | one table per material | `hp`, `flammable`, `passable`, `light_atten`, `conductivity`, … |
+| `[materials.<name>]` | one table per material | `hp`, `flammable`, `mobility`, `light_atten`, `conductivity`, … |
 | `[weapons.<name>]` | per-weapon stats | rifle/grenade/door-explosive damage, radius, AP cost |
 | `[zombie]`, `[marine]` | unit stats | `hp`, `melee_damage`, `trigger_radius` |
 | `[rendering]` | pressure-overlay colormap | `pressure_scale`, `pressure_stops` |
@@ -270,11 +270,11 @@ Audited against `config.py`, `config.toml`, `level_loader.py`,
   section or key fails only at the consuming call site. Several consumers guard
   with `getattr(..., default)`, which masks missing keys rather than reporting
   them.
-- **Residual hardcoded constants.** Fire-simulation parameters (`FIRE_D`,
-  `FIRE_O2_THRESHOLD`, `FIRE_O2_CONSUMPTION`, …) are still module-level constants
-  in `physics_runner.py`, not in `config.toml` — the last remnant of the
-  "inconsistent parameter locations" issue. A handful of inline magic numbers
-  (e.g. explosion smoke/atmosphere deposit factors) also remain outside config.
+- **Residual fallback constants.** Fire-simulation parameters now bind from
+  `[physics.fire]` in `config.toml` (`PhysicsRunner.__init__`); the `FIRE_*`
+  module-level constants in `physics_runner.py` survive only as fallbacks used
+  when a config key is absent. A handful of inline magic numbers (e.g. explosion
+  smoke/atmosphere deposit factors) still remain outside config.
 - **Door flammability mismatch.** `[materials.door]` ships `flammable = false`
   to preserve existing behaviour, even though the material-system design treats
   doors as flammable; a comment in `config.toml` flags this for a future flip.

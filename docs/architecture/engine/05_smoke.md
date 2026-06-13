@@ -530,8 +530,11 @@ one row per gas. White and black smoke are a **confirmed requirement** (Erik): w
 water/steam, black soot from fire and explosions, blending to grey through the optical model below.
 Because a gas type is just a data row, further variants stay free additions — more rows, not more
 system. This unifies what were separate forward ideas (a fuel field, a teargas field) into one system
-and reuses 100 % of the smoke transport plus the per-channel attenuation machinery. **Design-only,
-not built** — smoke is one scalar field today (see Implementation status).
+and reuses 100 % of the smoke transport plus the per-channel attenuation machinery. **M1 + M2
+shipped** — the `[gases.*]` table loads (`simulation.gases.GasTable`), `gmap.gas` is a real
+`(N, h, w)` field stepped per-gas by the transport loop, and the raycaster already sums the
+density-weighted coloured optics across all N gases. Only per-gas decay, the `flammable` /
+`emits_when_hot` consumption, and chemical interaction remain unbuilt (see Implementation status).
 
 The two gameplay/structural properties that ride alongside the optics:
 
@@ -785,11 +788,16 @@ Audited against `cpp/src/smoke_dynamics.{h,cpp}`, `src/simulation/physics_runner
   contrast (§6.1 step 5) **are shipped** (smoke v2, above). The **normal/wisp half is not**: there is
   no per-pixel smoke-normal (§6.1 step 1), no curl-noise / flow-map advection of a detail texture
   (step 2), and no self-shadow shader (step 3) — no smoke-normal texture and no shader path exists.
-- **Multi-gas system** (§6.2) — **partly applicable.** The per-channel optical model (absorption +
-  additive `scatter_albedo`) is built for the **single** smoke field (above). The **N-field gas set**
-  is not: there is no data-driven `[gases.*]` table (`white_smoke / black_smoke / poison / teargas /
-  fuel_gas`), no density-weighted mixing across multiple fields, and no `emits_when_hot` black-body
-  emission. Smoke is one scalar field today. Flamethrower (`fuel_gas` + ignition) follows from it.
+- **Multi-gas system** (§6.2) — **M1 + M2 shipped.** The data-driven `[gases.*]` table
+  (`white_smoke / black_smoke / poison / teargas / fuel_gas`) loads into `simulation.gases.GasTable`,
+  `gmap.gas` is a dense `(N, h, w)` field (one slice per gas; `gmap.smoke` is a view of the
+  `black_smoke` slice), and the per-gas transport loop steps each non-empty slice on the shared smoke
+  solver (`physics_runner.py`). The **N-field coloured optics are fully built in the raycaster**:
+  `march_ray_directional` sums the density-weighted per-channel `tau_c` / `scatter_c` across all N
+  gases (`raycaster.cpp`), so multi-gas mixing (poison + black → murky) falls out for free. Still
+  unbuilt: per-gas **decay** (loaded but not applied in transport — would break M1 behaviour
+  preservation), `emits_when_hot` black-body emission, the `flammable` consumption / ignition, and
+  chemical interaction between gases. Flamethrower (`fuel_gas` + ignition) follows from those.
 - **CUDA path** (§3) — semi-Lagrangian GPU advection is planned; the current solver is CPU C++. (Note
   the smoke-v2 semi-Lagrangian advection above is wanted on the CPU path first, and ports to the GPU
   pattern unchanged.)
@@ -801,13 +809,13 @@ Audited against `cpp/src/smoke_dynamics.{h,cpp}`, `src/simulation/physics_runner
   flat. The live **dial** is now built (`346b7c1`): `[physics] explosion_smoke_noise` (default
   `0.85`) plus demo slider and N / Shift+N keys in `tools/lighting_demo.py`. Remaining work is
   authoring/tuning the look by eye, not a missing mechanism.
-- **Per-channel smoke attenuation — built for the single field** — `march_ray_directional` now does
-  per-channel Beer–Lambert `trans_c = exp(-absorption_c · density · absorb_scale)` with a separate
-  additive `scatter_albedo` glow (`6e568f8`, above), so the shipped single smoke field already has
-  the coloured-beam optics §6.1 step 6 / §6.2 describe. The remaining gap is only the **N-field
-  multi-gas generalisation**: one `absorption` (+ `scatter_albedo`) signature *per gas*, summed
-  density-weighted across coexisting gas fields (§6.2). The legacy scalar `march_ray` path is
-  unaffected.
+- **Per-channel smoke attenuation — built, including the N-field generalisation** —
+  `march_ray_directional` does per-channel Beer–Lambert `trans_c = exp(-absorption_c · density ·
+  absorb_scale)` with a separate additive `scatter_albedo` glow (`6e568f8`, above). The **N-field
+  multi-gas generalisation has also shipped**: the raycaster sums one `absorption` (+
+  `scatter_albedo`) signature *per gas*, density-weighted across all coexisting gas fields
+  (`raycaster.cpp`), exactly the coloured-beam optics §6.1 step 6 / §6.2 describe — so this is no
+  longer an open gap. The legacy scalar `march_ray` path is unaffected.
 - **Smoke substep stability — resolved** — semi-Lagrangian advection (`de255ff`) is unconditionally
   stable and produces no checkerboard, so the old "large `advection_rate` / `dt_scale` can oscillate"
   caveat no longer applies. One **tuning-cleanup item** remains: `dt_scale` is applied **twice** —

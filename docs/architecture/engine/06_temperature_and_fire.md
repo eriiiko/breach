@@ -18,10 +18,12 @@ gameplay-scripted:
    consumes oxygen, emits smoke, is steered and modulated by wind, and burns
    walls through.
 
-Today layer 3 is fully built and running; layers 1 and 2 are designed and the
-plumbing they need (the `heat` buffer, the `conductivity` cache, the
-`ignition_temp` column) is shipped but not yet consumed. The
-**Implementation status** section at the end is explicit about the seam.
+All three layers are built and running: the `heat` buffer is deposited into
+*and read* — a C++ conduction solver turns it into the `temperature` field every
+tick, temperature ignites flammable tiles (the sole tile-to-tile fire spread),
+and fire feeds the loop as a heat-ray source. The remaining gaps are tuning
+(unit heat-damage band) and cross-machine bit-exactness validation. The
+**Implementation status** section at the end is explicit about what shipped.
 
 
 ## 1. Where heat comes from, where temperature lives
@@ -363,7 +365,7 @@ Built, running, and honest about the seam between the three layers.
 - Fire ignition by explosion is built: `apply_explosion`
   (`src/simulation/physics.py`) sets `fire` on flammable tiles inside the blast.
 
-**Built (layer 1 plumbing — shipped, unconsumed):**
+**Built (layer 1 plumbing — shipped, consumed):**
 
 - The `heat` buffer is shipped on the GameMap as a **Q16.16 int32** field,
   written in-place, and the ray engine **does deposit into it** — the
@@ -386,48 +388,62 @@ Built, running, and honest about the seam between the three layers.
   converse). The ray marches until ALL FOUR channels are below the cull epsilon.
   The per-tile `GameMap.heat_atten` cache is the `heat_atten` column projected
   onto the grid, built/patched through the same seam as `light_atten`.
+
+**Built (layers 1–2 — the consumers, SHIPPED):**
+
+- **The `temperature` field is real.** `gmap.temperature` is a dense int32
+  field (`gamemap.py`); the C++ `TemperatureSolver`
+  (`cpp/src/temperature_solver.{h,cpp}`) runs every tick via
+  `PhysicsRunner.step` (`self.temperature.step(...)`), doing convert →
+  conduction → ambient-cooling. The `heat` buffer is deposited into **and read**
+  — the convert pass consumes this tick's deposit before it is cleared.
+- **Ignition-by-temperature is built and is the sole tile-to-tile spread.**
+  `apply_temperature_ignition` (`combat.py`), called from `Simulation.step`,
+  tests `temperature ≥ ignition_temp_q16 ∧ O₂` (§4). `ignition_temp` is quantized
+  into the Q16.16 domain once at load (`MaterialTable.ignition_temp_q16`,
+  `materials.py`) and compared directly against the field.
+- **Fire as a heat-ray source is wired.** `cast_fire_heat`
+  (`physics_runner.py`) enumerates every burning tile at the start of the tick
+  and casts short-range heat `LightSource`s into `gmap.heat` (Q16.16,
+  saturating-add, occluded by `heat_atten`); the convert pass then turns that
+  fire heat into temperature. This is the fire → heat → temperature → ignition
+  loop, and it is the *only* fire spread mechanism (the cellular stencil is
+  deleted).
+- **Heat has two readers, cleared after both.** The `TemperatureSolver` convert
+  pass reads `heat`, and unit heat-damage samples it at unit footprints; the
+  per-tick clear is the *last* step of `Simulation.step` (`gmap.heat.fill(0)`),
+  after both readers — so a deposit is never wiped before it is consumed.
 - The `EnvironmentProfile` (`src/simulation/environment.py`) carries
-  `temperature_min`/`temperature_max` and `environmental_damage_rate`.
+  `temperature_min`/`temperature_max` and `environmental_damage_rate`, the band
+  unit heat-damage reads.
 
-**Designed, not built (layers 1–2 — the consumers):**
+**Still open (tuning + validation, not plumbing):**
 
-- **No `temperature` field exists.** There is no `gmap.temperature` array and no
-  conduction/relaxation pass. The `heat` buffer is deposited into but **read by
-  nobody** — it is cleared (intended) at cleanup and never consumed. The §2
-  relaxation scheme is design only.
-- **No ignition-by-temperature.** Fire today starts only from explosions; the
-  `temperature ≥ ignition_temp ∧ O₂` path (§4) is unbuilt. `ignition_temp` is
-  loaded but unused.
-- **No thermal wall failure.** Walls are destroyed by fire burn-through and
-  explosion damage only; the temperature→`wall_hp` melt path (energy-weapon
-  melt-through) is unbuilt.
-- **No smoke burn-off, no laser tunnels.**
-- **No unit heat damage.** `EnvironmentProfile` temperature tolerance is data
-  only; no tick handler samples `heat` at unit footprints or applies
-  environmental damage. (This is consistent with the unit spec, which defers all
-  environment-damage behaviour.)
-- **Fire as a ray light source is not yet wired.** Fire deposits heat *only*
-  through the legacy scalar `update_from_fire` path (which writes the scalar
-  `light_map`, not the RGB/heat buffers). The §5 "fire as a normal `LightSource`
-  in the directional pass" integration — and therefore fire's heat reaching the
-  `heat` buffer — is designed but not connected; fire tiles are not yet added to
-  the directional source list.
+- **Unit heat-damage tuning.** The sample-and-apply path exists; the tolerance
+  band and `environmental_damage_rate` against the radiated `heat` scale still
+  need balancing.
+- **Thermal wall failure (energy-weapon melt-through).** Walls are destroyed by
+  fire burn-through and explosion damage; the temperature→`wall_hp` melt path
+  (§4) is not yet wired.
+- **Smoke burn-off / laser tunnels** (§4, and Erik's open comment) are not yet
+  built.
 
 **Gaps / things to settle at build time:**
 
-- The exact fixed-point width and rate set for `temperature` (the `heat`
-  deposit is fixed at Q16.16; temperature can match it). Validate cross-machine
-  bit-exactness before committing to lockstep; the float-temperature fallback
-  (§3) stays available.
+- `temperature` ships at Q16.16 (`TEMP_SCALE == HEAT_SCALE == 65536`), matching
+  the `heat` deposit. The conduction update is shift-based (no divide), so it is
+  designed to be bit-identical cross-machine — but that still needs a
+  cross-machine bit-exactness test before committing to lockstep; the
+  float-temperature fallback (§3) stays available.
 - **Resolved:** fire now reads the shared `wind_x`/`wind_y` field (= −grad of
   `atmosphere + wave_p`), so a shockwave's transient wind spike fans/blows fires
   directly. The old internal `grad(atmosphere)` (no wall boundary, read across
   walls) is gone.
 - **Resolved:** fire parameters live in `config.toml` `[physics.fire]`, bound
   through `physics_runner.py` (the `FIRE_*` module constants are only fallbacks).
-- The per-tick `heat` deposit must be cleared each tick once a consumer exists
-  (it is a deposit buffer, not an accumulator across ticks); the temperature
-  pass reads it non-destructively, then it resets.
+- **Resolved:** the per-tick `heat` deposit is cleared at the end of each tick
+  (`Simulation.step`, `gmap.heat.fill(0)`), after both readers (the convert pass
+  and unit heat-damage) — a deposit buffer, not a cross-tick accumulator.
 
 **comments from erik**  exact fixed point - should we make a class out of it? or does it basically all ready exist?
 
