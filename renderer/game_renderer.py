@@ -33,6 +33,7 @@ from .overlays import (
 )
 from .pressure_overlay import PressureOverlay
 from .sprites import UnitSprites
+from .water import WaterPass
 from .world_composite import WorldComposite
 
 
@@ -164,6 +165,20 @@ class GameRenderer:
             ripple_shade=float(getattr(disp, "water_ripple_shade", 0.35)),
             foam_thresh=float(getattr(disp, "water_foam_thresh", 0.03)),
             ambient_base=float(getattr(disp, "water_ambient_base", 0.06)))
+        # Water OPTICS pass (graphics/water_rendering.md §7 steps 1+2): the
+        # shipped GLSL Fresnel/GGX/refraction look that REPLACES the CPU
+        # WaterFieldOverlay placeholder in the same compose slot. Binds the
+        # [graphics.water] uniforms once; reuses the lighting pass's light
+        # textures + the level diffuse (no new plumbing). DORMANT-SAFE: the
+        # shader emits alpha 0 on dry tiles, so a ship with no standing water
+        # renders identically (the safety property the gate checks). The
+        # WaterFieldOverlay above is kept constructed (so nothing else breaks)
+        # but is no longer drawn — the GLSL pass is the live water render.
+        self.water_pass = WaterPass(cfg.grid_h, cfg.grid_w)
+        if (getattr(level_data, "art_align_explicit", False)
+                and level_data.art_px_per_tile):
+            self.water_pass.set_art_align(level_data.art_offset_px,
+                                          level_data.art_px_per_tile)
 
         # Toggles
         self.show_grid = False
@@ -179,8 +194,11 @@ class GameRenderer:
         self.show_pressure = True
         # Debug temperature overlay (engine/06) — OFF by default; toggle with T.
         self.show_temperature = False
-        # Debug water-depth overlay (water W2b) — OFF by default; toggle with O.
-        self.show_water = False
+        # Water OPTICS pass (graphics/water_rendering.md) — ON by default; the
+        # GLSL pass is dormant-safe (alpha 0 on dry tiles), so a dry ship looks
+        # identical whether it's on or off. Toggle with O to disable the water
+        # render entirely (e.g. to A/B against the bare floor).
+        self.show_water = True
 
         # Frame timing
         self.last_frame_ms = 0.0
@@ -280,12 +298,18 @@ class GameRenderer:
         # — every field is read, never written. `t_start` is this frame's
         # perf_counter sample from the top of upload_state (no extra clock
         # call); epoch-relative so the sine phases stay float32-small.
-        if self.show_water:
-            self.water_overlay.update(
-                gmap.water_depth,
-                ripple=gmap.ripple, ripple_v=gmap.ripple_v,
-                flow_vx=gmap.flow_vx, flow_vy=gmap.flow_vy,
-                t=t_start - self._anim_t0)
+        # Water OPTICS pass (graphics/water_rendering.md): pack ripple +
+        # water_depth into the RGBA16F water texture every frame. The pass is
+        # the LIVE water render now (not a debug toggle), so it uploads
+        # unconditionally — but it is DORMANT-SAFE (the shader emits alpha 0 on
+        # dry tiles) and has its own dry-ship fast path (skips the upload when
+        # there is no standing water and the texture is already blank), so a dry
+        # ship costs one .any(). RENDER-ONLY — every field is read, never
+        # written. Keep the light_z in step with the lighting pass so the
+        # glints' L matches the ship's lighting.
+        self.water_pass.set_light_z(self.lighting.light_z)
+        self.water_pass.update(
+            gmap.water_depth, ripple=gmap.ripple, ripple_v=gmap.ripple_v)
 
         self.lighting.set_use_normal(self.show_normal_map)
         self.last_frame_ms = (time.perf_counter() - t_start) * 1000
@@ -373,15 +397,20 @@ class GameRenderer:
         if self.show_temperature:
             self.temperature_overlay.draw(
                 0, 0, self.world.world_px_w, self.world.world_px_h)
-        # Debug water overlay (water W2b): blue depth tint, packed
-        # PREMULTIPLIED (FieldOverlay), so draw it with
-        # BLEND_ALPHA_PREMULTIPLY exactly like the smoke overlay. Same slot
-        # as the T overlay — after the field overlays, before units, so the
-        # squad stays readable on top of the water. Off-by-toggle (O).
-        if self.show_water:
-            rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
-            self._draw_overlay_to_world(self.water_overlay.tex)
-            rl.end_blend_mode()
+        # Water OPTICS pass (graphics/water_rendering.md §5): the GLSL
+        # Fresnel/GGX/refraction pass, in the slot the CPU WaterFieldOverlay
+        # used to draw (after the field overlays, before units — the squad
+        # reads over the water; the lit ship beneath is the floor sample). It
+        # binds the lighting pass's light textures + the level diffuse and
+        # draws premultiplied; the shader emits alpha 0 on dry tiles so this is
+        # a no-op with no standing water (dormant-safe). Off-by-toggle (O).
+        if self.show_water and self.textures.diffuse:
+            self.water_pass.draw(
+                self.textures.diffuse,
+                self.lighting.light_tex_a, self.lighting.light_tex_b,
+                world_px_w=self.world.world_px_w,
+                world_px_h=self.world.world_px_h,
+                anim_t=time.perf_counter() - self._anim_t0)
 
         # 3. Units, waypoints, projectiles, effects, grid — drawn in world-pixel space
         if orders_phase1 or orders_phase2:
@@ -707,7 +736,7 @@ class GameRenderer:
             ("F6 coords",      self.show_debug_coords),
             ("F7 pressure",    self.show_pressure),
             ("T  temperature", self.show_temperature),
-            ("O  water",       self.show_water),
+            ("O  water optics", self.show_water),
             ("B  bilinear",    self.lighting.bilinear),
             ("G  sRGB",        self.srgb_decode),
             ("H  flip-Y norm", self.normal_y_flipped),
@@ -762,7 +791,9 @@ class GameRenderer:
         # T: debug temperature overlay (black-body ramp over gmap.temperature).
         if rl.is_key_pressed(rl.KeyboardKey.KEY_T):
             self.show_temperature = not self.show_temperature
-        # O: debug water-depth overlay (blue tint over gmap.water_depth).
+        # O: toggle the water optics pass (GLSL Fresnel/GGX/refraction). The
+        # pass is dormant-safe (alpha 0 on dry tiles); toggling only matters
+        # once water is on the floor — disable to A/B against the bare floor.
         if rl.is_key_pressed(rl.KeyboardKey.KEY_O):
             self.show_water = not self.show_water
         if rl.is_key_pressed(rl.KeyboardKey.KEY_B):
@@ -881,6 +912,7 @@ class GameRenderer:
         rl.unload_texture(self.glow_overlay.tex)
         rl.unload_texture(self.temperature_overlay.tex)
         rl.unload_texture(self.water_overlay.tex)
+        self.water_pass.unload()
         self.pressure_overlay.unload()
         self.world.unload()
         core.shutdown()

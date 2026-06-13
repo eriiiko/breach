@@ -275,6 +275,22 @@ water_ripple_shade = 0.35   # ripple-slope brightness gain: full +/-35% of the t
 water_foam_thresh = 0.03    # |grad ripple| (m/tile) above which foam whitens; splash slope ~0.075 foams, settled ~0 never
 water_ambient_base = 0.06   # idle ambient-sine shimmer amplitude on standing water; grows with local ripple energy, cap 0.40
 
+# Water surface OPTICS pass (graphics/water_rendering.md §2/§4/§7 — the shipped
+# GLSL Fresnel/GGX/refraction look, NOT the CPU placeholder above). RENDER-ONLY
+# and RESTART-BOUND: WaterPass binds these once at construction; Ctrl+R re-reads
+# config.toml but does NOT re-push them (the renderer-render-params precedent —
+# restart to apply). Erik's eyeball-tuning dials. The pass is DORMANT-SAFE: with
+# no standing water it outputs alpha 0 (identical render), so these only bite
+# once water is on the floor. v1 CORE only — caustics/foam/CA are a later step.
+[graphics.water]
+roughness_base = 0.08       # GGX roughness floor — still puddles glint sharp (alpha = roughness^2)
+roughness_agitation = 0.6   # added roughness per unit local ripple energy — sloshing water shimmers broad
+fog_density = 3.0           # Beer-Lambert depth-tint rate: floor fades to water_color over ~1/fog_density m
+refract_strength = 0.02     # normal-driven floor-warp magnitude (UV units), scaled by depth (no shoreline swim)
+r0 = 0.02                   # Schlick Fresnel reflectance at normal incidence (top-down ~2%; ripple tilts spike it)
+ripple_scale = 8.0          # metres-of-ripple-height -> on-screen normal-slope gain (ripples are millimetric vs a 1.0 UV)
+water_color = [0.03, 0.10, 0.18]   # deep-water tint (the volume colour the floor fades toward with depth)
+
 # Material property table (named-key format, ch.02 — Material System).
 # One [materials.<name>] row per material id; columns indexed into per-id
 # arrays by simulation.materials.MaterialTable.
