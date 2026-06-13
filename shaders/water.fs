@@ -53,12 +53,14 @@ uniform sampler2D u_light_a;
 uniform sampler2D u_light_b;
 uniform sampler2D u_water;
 // Optional per-pixel floor HEIGHTMAP (greyscale relief, 0..1), sampled in art
-// space (fragTexCoord, like u_diffuse). ATTENUATES THE FINAL ALPHA ONLY — where
-// the relief rises above the local water depth, the tile is "above water" and
-// the alpha fades to 0 (raised crates/consoles poke through, the water laps
-// around them). It does NOT feed depth/volume/tint/refraction (those stay
-// per-tile). u_has_height = 0 (no level heightmap) or u_height_scale == 0
-// makes the attenuation factor exactly 1.0 (no change) — the dormant default.
+// space (fragTexCoord, like u_diffuse). ADJUSTS THE PER-PIXEL DEPTH the renderer
+// sees: depth = tileDepth - relief*u_height_scale, so raised floor relief makes
+// the local water shallower. ALL depth-driven effects (refraction offset,
+// Beer-Lambert depth tint, the alpha ramp) compute off this adjusted depth, and
+// where it goes <= 0 the floor pokes above the surface (the feature protrudes,
+// the water laps around it with a soft u_height_edge shoreline). u_has_height = 0
+// (no level heightmap) or u_height_scale == 0 forces relief = 0 so the per-pixel
+// depth == the per-tile depth EXACTLY — bit-identical, the dormant default.
 uniform sampler2D u_height;
 
 uniform float u_roughness_base;
@@ -117,17 +119,18 @@ uniform float u_ambient_amp;
 // frame from the LightingPass's ambient (renderer/game_renderer.py) so the
 // demo's ambient sliders drive the water ambient too.
 uniform vec3  u_ambient;
-// Heightmap attenuation (graphics/water_rendering.md §2 §8, alpha-only). The
-// final alpha is multiplied by a wetness factor:
-//   wet = clamp((depth - relief * u_height_scale) / u_height_edge, 0, 1)
-// where relief = texture(u_height, fragTexCoord).r. Raised relief (a crate)
-// rises above the local water depth -> wet -> 0 -> the water fades out around
-// it. ONLY the alpha is touched; refr/fog/glint/caustics/foam are unchanged.
-//   u_has_height     1 if the level supplied a heightmap, else 0 (-> wet = 1)
-//   u_height_scale   relief metres gain (0 disables -> wet = 1); ~0.4 tuned so
-//                    furniture pokes through a ~0.3-0.5 m puddle
-//   u_height_edge    shoreline softness (m) — the gradient width of the lap
-//                    edge around a protruding feature (~0.1; min-clamped > 0)
+// Heightmap depth-adjust (graphics/water_rendering.md §2 §8). The per-pixel
+// relief = texture(u_height, fragTexCoord).r raises the floor, REDUCING the
+// per-pixel water depth the whole shader sees:
+//   depth = tileDepth - relief * u_height_scale
+// so refraction/tint/alpha all vary per-pixel with it, and where depth <= 0 the
+// feature protrudes (transparent) with a soft u_height_edge-wide lap shoreline.
+//   u_has_height     1 if the level supplied a heightmap, else 0 (-> relief = 0)
+//   u_height_scale   relief metres of floor lift subtracted from depth (0
+//                    disables -> relief = 0); ~0.4 so furniture pokes through a
+//                    ~0.3-0.5 m puddle
+//   u_height_edge    soft protrusion-shoreline width (m) — the smoothstep ramp
+//                    over the first metres of positive depth (~0.1; min-clamped)
 uniform int   u_has_height;
 uniform float u_height_scale;
 uniform float u_height_edge;
@@ -170,15 +173,39 @@ void main() {
     vec2 world_uv = (fragTexCoord - u_art_uv_rect.xy) / u_art_uv_rect.zw;
 
     // --- depth gate (E) — the DORMANT-SAFE early-out ---------------------
-    // water_depth (B) is the only thing that says "there is water here". On a
-    // dry tile we emit a fully-transparent premultiplied fragment, so the pass
-    // is a no-op over the composite. This is the gate the safety property
-    // checks: no standing water -> identical render.
-    float depth = texture(u_water, world_uv).b;
-    if (depth <= 0.0) {
+    // water_depth (B) is the per-TILE depth — the only thing that says "there
+    // is standing water on this tile". On a dry tile we emit a fully-transparent
+    // premultiplied fragment, so the pass is a no-op over the composite. This is
+    // the gate the safety property checks: no standing water -> identical render.
+    // (UNCHANGED from the alpha-only version — the dormant-safe tile gate.)
+    float tileDepth = texture(u_water, world_uv).b;
+    if (tileDepth <= 0.0) {
         finalColor = vec4(0.0);
         return;
     }
+
+    // --- PER-PIXEL ADJUSTED DEPTH from the floor heightmap relief --------
+    // The per-pixel art heightmap RAISES THE FLOOR locally: high relief subtracts
+    // from the tile's water depth, so `depth` is the actual water column ABOVE
+    // the floor at THIS pixel. Everything depth-driven below computes off this
+    // adjusted `depth` (via depthPos, the >= 0 clamp): the refraction offset, the
+    // Beer-Lambert tint, and the alpha ramp — a raised crate refracts/tints/laps
+    // as the shallower water it sits in, and where the floor pokes ABOVE the
+    // surface (depth <= 0) the feature protrudes (handled at output). (The foam
+    // wet/dry shoreline still reads the per-TILE depth field gradient — the
+    // tile-level water edge — and caustics read ripple curvature; neither is a
+    // per-pixel-depth term, so they are intentionally left on the tile field.)
+    // When there is no heightmap (u_has_height == 0) or the gain is off
+    // (u_height_scale == 0), relief is forced to 0 so `depth == tileDepth`
+    // EXACTLY (bit-identical, the no-regression / dormant-safe guarantee the
+    // default level relies on).
+    float relief = (u_has_height == 1 && u_height_scale > 0.0)
+                 ? texture(u_height, fragTexCoord).r : 0.0;
+    float depth = tileDepth - relief * u_height_scale;
+    // Effect inputs must never see a negative depth (a protruding floor): clamp
+    // to >= 0 for the refraction/fog/alpha math; the protrusion itself is decided
+    // by the raw `depth <= 0` test at output.
+    float depthPos = max(depth, 0.0);
 
     // Local ripple energy -> ambient idle amplitude + roughness agitation.
     // (|ripple| + |ripple_v|, the overlays.py energy heuristic, channels R+G.)
@@ -217,7 +244,7 @@ void main() {
     // shoreline (depth->0) doesn't swim. Re-light the UNLIT diffuse in-shader
     // with the reused light buffer at the refracted UV (§4-F) — NEVER sample
     // the world RT this pass draws into (read-while-write feedback).
-    vec2 off = N.xy * u_refract_strength * clamp(depth, 0.0, 1.0);
+    vec2 off = N.xy * u_refract_strength * clamp(depthPos, 0.0, 1.0);
     // --- chromatic aberration (subtle polish, phase 2) ------------------
     // Sample the floor diffuse r/g/b at slightly different refraction offsets
     // (the offset scaled by 1 ± u_ca_amount per channel) — a faint prismatic
@@ -240,8 +267,10 @@ void main() {
     vec3 floorC = floorDiffuse * floorLight;
 
     // Beer-Lambert depth tint: the floor fades toward the deep-water colour
-    // with depth, reading as a true volume rather than a flat blue wash.
-    float fog = exp2(-u_fog_density * depth);
+    // with depth, reading as a true volume rather than a flat blue wash. Uses
+    // the per-pixel ADJUSTED depth — shallower water over a raised feature tints
+    // less (the protrusion reads near the floor colour).
+    float fog = exp2(-u_fog_density * depthPos);
     vec3 refr = mix(u_water_color, floorC, fog);
 
     // --- caustics from the REAL surface (§3; SIGN IS LOAD-BEARING) -------
@@ -348,24 +377,28 @@ void main() {
     // premultiplied blit as additive light — a bright highlight visible
     // regardless of how transparent the water is. The glint does NOT raise
     // alpha (a specular highlight does not make the water more opaque).
-    float alpha = clamp(depth * u_alpha_scale, u_alpha_min, u_alpha_max);
-    // --- HEIGHTMAP ATTENUATION (alpha ONLY) -----------------------------
-    // Where the per-pixel floor relief rises above the LOCAL (per-tile) water
-    // depth, the tile is "above water": fade the alpha to 0 so a protruding
-    // crate/console/debris pokes through and the water laps around it with a
-    // soft shoreline (u_height_edge wide). This is the §3 per-pixel-submersion
-    // idea in its lighter ALPHA-attenuation form — relief is NOT fed into the
-    // depth/volume/tint/refraction math above (those are all per-tile, exactly
-    // as before); we only scale the final alpha. wet = 1.0 (no change) when the
-    // level has no heightmap (u_has_height == 0) or the gain is off
-    // (u_height_scale == 0), so the dormant/default path is bit-identical.
-    float wet = 1.0;
-    if (u_has_height == 1 && u_height_scale > 0.0) {
-        float relief = texture(u_height, fragTexCoord).r;
-        wet = clamp((depth - relief * u_height_scale)
-                    / max(u_height_edge, 1e-4), 0.0, 1.0);
+    float alpha = clamp(depthPos * u_alpha_scale, u_alpha_min, u_alpha_max);
+    // --- PROTRUSION + SOFT LAP EDGE (per-pixel depth) -------------------
+    // The heightmap adjusted the floor per-pixel above (subtracting relief from
+    // the tile depth). Where the adjusted `depth` has gone <= 0 the floor pokes
+    // ABOVE the surface — the feature protrudes, so emit a fully-transparent
+    // fragment (the crate/console/debris shows through; the water laps around
+    // it). For a SOFT shoreline (not a hard cut) we fade the alpha to 0 over the
+    // first u_height_edge metres of positive depth: smoothstep is ~0 right at
+    // the protrusion edge and ramps to 1 over height_edge, OVERRIDING the
+    // alpha_min floor so the waterline against the feature reads as a soft lap
+    // rather than a step. With NO heightmap relief == 0 -> depth == tileDepth > 0
+    // (passed the gate), and smoothstep(0, edge, depth) == 1 for any depth beyond
+    // a sub-cm edge, so the alpha is bit-identical to the pre-heightmap render
+    // (and to a no-water ship). This SUBSUMES the b5e7bdb alpha-only block:
+    // where depth <= 0 the feature is dry; the soft edge replaces the old wet=...
+    // ramp but now drives every effect through the adjusted depth, not just alpha.
+    float lapEdge = smoothstep(0.0, max(u_height_edge, 1e-4), depth);
+    alpha *= lapEdge;
+    if (depth <= 0.0) {
+        finalColor = vec4(0.0);
+        return;
     }
-    alpha *= wet;
     if (u_srgb_decode == 1) {
         base  = linear_to_srgb(base);
         glint = linear_to_srgb(glint);
