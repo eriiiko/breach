@@ -93,6 +93,20 @@ DEFAULTS = {
     # (config default), 1.0 = maximal contrast. Live dial Erik can nudge by eye
     # (slider in the panel, plus N / Shift+N keys).
     "explosion_smoke_noise": 0.85,
+    # --- Water surface optics ([graphics.water]; live in the demo only) -----
+    # Overwritten below from config.toml at startup so the panel opens where the
+    # config sits; dragging a slider re-pushes the matching WaterPass setter
+    # every frame. Pour water with U to see them bite. (Defaults mirror config.)
+    "water_glint_strength": 2.0,
+    "water_roughness_base": 0.08,
+    "water_roughness_agitation": 0.6,
+    "water_fog_density": 3.0,
+    "water_refract_strength": 0.02,
+    "water_r0": 0.02,
+    "water_ripple_scale": 8.0,
+    "water_alpha_scale": 6.0,
+    "water_alpha_min": 0.15,
+    "water_alpha_max": 0.95,
 }
 
 # Pressure colormap was previously implemented here; lifted into
@@ -391,6 +405,29 @@ def main() -> None:
     renderer.smoke_overlay.max_alpha = int(state.get("smoke_max_alpha"))
     renderer.smoke_overlay.gamma = float(state.get("smoke_render_gamma"))
 
+    # Apply the initial water-optics params from config so the panel opens
+    # where [graphics.water] sits (the main game restart-binds these; here they
+    # are live). getattr-defaults keep the demo alive if the block is absent.
+    _wc = getattr(getattr(CFG, "graphics", None), "water", None)
+    if _wc is not None:
+        state.set("water_glint_strength",
+                  float(getattr(_wc, "glint_strength", 2.0)))
+        state.set("water_roughness_base",
+                  float(getattr(_wc, "roughness_base", 0.08)))
+        state.set("water_roughness_agitation",
+                  float(getattr(_wc, "roughness_agitation", 0.6)))
+        state.set("water_fog_density",
+                  float(getattr(_wc, "fog_density", 3.0)))
+        state.set("water_refract_strength",
+                  float(getattr(_wc, "refract_strength", 0.02)))
+        state.set("water_r0", float(getattr(_wc, "r0", 0.02)))
+        state.set("water_ripple_scale",
+                  float(getattr(_wc, "ripple_scale", 8.0)))
+        state.set("water_alpha_scale",
+                  float(getattr(_wc, "alpha_scale", 6.0)))
+        state.set("water_alpha_min", float(getattr(_wc, "alpha_min", 0.15)))
+        state.set("water_alpha_max", float(getattr(_wc, "alpha_max", 0.95)))
+
     # ---- 5. Sim timing ----
     last_time = time.perf_counter()
     sim_dt = 1.0 / float(CFG.clock.ticks_per_second)
@@ -399,6 +436,25 @@ def main() -> None:
 
     # For click spawn — debounce so one press = one grenade
     last_click_handled = False
+
+    # --auto: render a fixed number of frames then exit 0 (smoke test; no input
+    # injection). Mirrors test_main_smoke / align_level_art's --auto tails.
+    auto = "--auto" in sys.argv
+    AUTO_FRAMES = 120
+    frames = 0
+
+    # Under --auto there is no cursor/keyboard to pour water, so seed a small
+    # puddle directly: this drives the water pass OFF its dormant early-out so
+    # the new additive-glint + alpha-ramp branch is actually exercised (and the
+    # per-frame WaterPass setters run against a live pass). Direct in-place
+    # write — same pattern as the U-key pour below.
+    if auto:
+        H, W = sim.gmap.material.shape
+        cy, cx = H // 2, W // 2
+        for ty in range(max(0, cy - 2), min(H, cy + 3)):
+            for tx in range(max(0, cx - 2), min(W, cx + 3)):
+                if not sim.gmap.solid[ty, tx]:
+                    sim.gmap.water_depth[ty, tx] = 0.4
 
     try:
         while not renderer.should_close():
@@ -534,6 +590,19 @@ def main() -> None:
             renderer.lighting.set_use_normal(state.get("use_normal"))
             renderer.lighting.set_srgb_decode(state.get("srgb_decode"))
 
+            # ---- Water optics setters (live; the main game restart-binds) ----
+            wp = renderer.water_pass
+            wp.set_glint_strength(state.get("water_glint_strength"))
+            wp.set_roughness_base(state.get("water_roughness_base"))
+            wp.set_roughness_agitation(state.get("water_roughness_agitation"))
+            wp.set_fog_density(state.get("water_fog_density"))
+            wp.set_refract_strength(state.get("water_refract_strength"))
+            wp.set_r0(state.get("water_r0"))
+            wp.set_ripple_scale(state.get("water_ripple_scale"))
+            wp.set_alpha_scale(state.get("water_alpha_scale"))
+            wp.set_alpha_min(state.get("water_alpha_min"))
+            wp.set_alpha_max(state.get("water_alpha_max"))
+
             # ---- Build mouse flashlight ----
             sources = []
             mouse_f = renderer.mouse_to_tile_float()
@@ -582,8 +651,16 @@ def main() -> None:
 
             renderer.end_frame()
 
+            frames += 1
+            if auto and frames >= AUTO_FRAMES:
+                # Pour a little water under the auto path so the water pass +
+                # its live setters are actually exercised (not just dormant).
+                break
     finally:
         renderer.shutdown()
+
+    if auto:
+        print(f"OK — lighting_demo rendered {frames} frames (--auto)")
 
 
 # ---------------------------------------------------------------------------
@@ -696,6 +773,19 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     y = _slider(state, "smoke_max_alpha", "Max alpha", 0.0, 255.0, x, y)
     # smoke^gamma render contrast (render-only). 1.0 = off; >1 = wispier/filmic.
     y = _slider(state, "smoke_render_gamma", "Gamma", 1.0, 3.0, x, y)
+
+    # -- §4.4b Water optics (live; pour with U to see them bite) --
+    y = _section_header("Water [U=pour]", x, y)
+    y = _slider(state, "water_glint_strength", "Glint", 0.0, 8.0, x, y)
+    y = _slider(state, "water_roughness_base", "Roughness", 0.02, 0.5, x, y)
+    y = _slider(state, "water_roughness_agitation", "Rough agit", 0.0, 2.0, x, y)
+    y = _slider(state, "water_fog_density", "Fog dens", 0.2, 12.0, x, y)
+    y = _slider(state, "water_refract_strength", "Refract", 0.0, 0.08, x, y)
+    y = _slider(state, "water_r0", "R0 Fresnel", 0.0, 0.2, x, y)
+    y = _slider(state, "water_ripple_scale", "Ripple scl", 0.0, 24.0, x, y)
+    y = _slider(state, "water_alpha_scale", "Alpha scl", 0.0, 20.0, x, y)
+    y = _slider(state, "water_alpha_min", "Alpha min", 0.0, 0.6, x, y)
+    y = _slider(state, "water_alpha_max", "Alpha max", 0.4, 1.0, x, y)
 
     # -- §4.5 Pressure overlay --
     y = _section_header("Pressure overlay", x, y)

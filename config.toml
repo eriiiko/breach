@@ -290,6 +290,22 @@ refract_strength = 0.02     # normal-driven floor-warp magnitude (UV units), sca
 r0 = 0.02                   # Schlick Fresnel reflectance at normal incidence (top-down ~2%; ripple tilts spike it)
 ripple_scale = 8.0          # metres-of-ripple-height -> on-screen normal-slope gain (ripples are millimetric vs a 1.0 UV)
 water_color = [0.03, 0.10, 0.18]   # deep-water tint (the volume colour the floor fades toward with depth)
+# Glint: the GGX highlight is ADDITIVE on top of the see-through base (light
+# reflecting OFF the surface), NOT Fresnel-blended at ~2% nor alpha-attenuated.
+# glint = ggx * NdotL * lightRGB * glint_strength, added to the premultiplied
+# rgb WITHOUT × alpha — survives the premultiplied blit as additive HDR light,
+# visible regardless of water transparency. Gated by lightRGB (only under a
+# flashlight/fire) and NdotL (no back-lit glint). 2.0 = clearly visible on a
+# flashlit rippled puddle; raise for sparklier, lower toward 0 to mute.
+glint_strength = 2.0
+# Transparency ramp: alpha = clamp(depth * alpha_scale, alpha_min, alpha_max).
+# alpha_scale = depth->opacity rate (was the hardcoded 6.0); alpha_min = the
+# shoreline floor (was 0.15); alpha_max = the deep-water ceiling (was 0.95).
+# The glint does NOT touch alpha. Dial these to make standing water clearer or
+# more opaque.
+alpha_scale = 6.0
+alpha_min = 0.15
+alpha_max = 0.95
 
 # Material property table (named-key format, ch.02 — Material System).
 # One [materials.<name>] row per material id; columns indexed into per-id

@@ -38,6 +38,10 @@
 //   u_texel                1/grid (x,y): neighbour tap offset for the gradient
 //   u_art_uv_rect          art-UV subrect (matches lighting.fs; default 0,0,1,1)
 //   u_time                 render animation clock (s) for the ambient sines
+//   u_glint_strength       ADDITIVE GGX-glint HDR multiplier (light off surface)
+//   u_alpha_scale          depth->opacity rate (alpha = clamp(depth*scale,...))
+//   u_alpha_min            shoreline alpha floor   (transparency dial)
+//   u_alpha_max            deep-water alpha ceiling (transparency dial)
 
 in vec2 fragTexCoord;
 in vec4 fragColor;
@@ -59,6 +63,21 @@ uniform float u_ripple_scale;
 uniform vec2  u_texel;
 uniform vec4  u_art_uv_rect;
 uniform float u_time;
+// Glint strength: the ADDITIVE HDR multiplier on the GGX highlight. The glint
+// is light reflecting OFF the surface, so it is added on top of the (see-
+// through, premultiplied) base — NOT Fresnel-blended at ~2% nor alpha-
+// attenuated. Already gated by × lightRGB (only under a source) and × NdotL
+// (no back-lit glint). Default ~2.0 makes glints clearly visible on a flashlit
+// rippled puddle. ([graphics.water] glint_strength)
+uniform float u_glint_strength;
+// Alpha (transparency) ramp dials: alpha = clamp(depth*u_alpha_scale,
+//   u_alpha_min, u_alpha_max). u_alpha_scale = depth->opacity rate (old 6.0),
+//   u_alpha_min = shoreline floor (old 0.15), u_alpha_max = deep ceiling
+//   (old 0.95). The glint does NOT raise alpha — it survives the premultiplied
+//   blit as additive light regardless of how transparent the water is.
+uniform float u_alpha_scale;
+uniform float u_alpha_min;
+uniform float u_alpha_max;
 
 out vec4 finalColor;
 
@@ -153,10 +172,14 @@ void main() {
     float fog = exp2(-u_fog_density * depth);
     vec3 refr = mix(u_water_color, floorC, fog);
 
-    // --- REFLECTION branch (grazing + glints) ----------------------------
+    // --- REFLECTION branch (the GGX GLINT — light OFF the surface) -------
     // GGX specular, cheap dot(L,H) form (§2). roughness drives α = roughness²;
     // still puddles (low energy) glint sharp, sloshing water (high energy)
-    // shimmers broad. lightRGB tints the glint to the actual source colour.
+    // shimmers broad. The glint is ADDITIVE light reflecting off the surface,
+    // so it does NOT go through the Fresnel mix (which top-down on near-flat
+    // water sits at ~R0 ≈ 0.02 and crushes the highlight to ~2%); it is added
+    // on top of the premultiplied base instead. Gates kept: × lightRGB (only
+    // appears under the flashlight/fire) and × NdotL (no back-lit glint).
     float roughness = clamp(u_roughness_base + u_roughness_agitation * energy,
                             0.02, 1.0);
     float a = roughness * roughness;
@@ -165,25 +188,32 @@ void main() {
     float a2 = a * a;
     float d = (NdotH * NdotH) * (a2 - 1.0) + 1.0;
     float ggx = a2 / max(3.14159265 * d * d, 1e-6);
-    // Weight by N·L so back-lit ripples don't glint, and keep it bounded.
     float NdotL = max(dot(N, L), 0.0);
-    vec3 refl = ggx * NdotL * lightRGB;
+    vec3 glint = ggx * NdotL * lightRGB * u_glint_strength;
 
-    // --- UNIFY with Schlick Fresnel (on the PERTURBED normal) ------------
-    // Top-down, a flat surface sees ~R0 (we mostly see the floor — correct);
-    // the ripple tilts locally spike F, drawing glints riding the wave crests.
+    // --- BASE: the see-through refraction + depth tint -------------------
+    // The base is the refraction/Beer-Lambert term — the floor seen through
+    // the water. Add a small Fresnel reflection of the ambient light back into
+    // the base (grazing ripples pick up a touch of the source colour) — this
+    // is the SUBTLE, alpha-bound part; the bright sparkle is the additive
+    // glint above, NOT this.
     float NdotV = max(dot(N, V), 0.0);
     float F = u_r0 + (1.0 - u_r0) * pow(1.0 - NdotV, 5.0);
-    vec3 water = mix(refr, refl, F);
+    vec3 base = mix(refr, refr + lightRGB * F, F);  // ≈ refr + small ambient sheen
 
-    // --- output: PREMULTIPLIED, alpha = water presence -------------------
+    // --- output: PREMULTIPLIED base + ADDITIVE glint ---------------------
     // alpha ramps in over the first ~few cm of depth so the wet/dry shoreline
     // reads as a soft edge rather than a hard step; it never reaches 0 here
     // (depth > 0 already passed the gate), and is 0 on dry tiles (returned
-    // above). The blit composites premultiplied, so we pre-multiply rgb by a.
-    float alpha = clamp(depth * 6.0, 0.15, 0.95);
+    // above). The base is premultiplied by alpha (see-through, transparency-
+    // bound); the GLINT is added on top WITHOUT × alpha, so it survives the
+    // premultiplied blit as additive light — a bright highlight visible
+    // regardless of how transparent the water is. The glint does NOT raise
+    // alpha (a specular highlight does not make the water more opaque).
+    float alpha = clamp(depth * u_alpha_scale, u_alpha_min, u_alpha_max);
     if (u_srgb_decode == 1) {
-        water = linear_to_srgb(water);
+        base  = linear_to_srgb(base);
+        glint = linear_to_srgb(glint);
     }
-    finalColor = vec4(water * alpha, alpha);
+    finalColor = vec4(base * alpha + glint, alpha);
 }

@@ -1,10 +1,12 @@
 """Water surface optics pass (graphics/water_rendering.md §7 steps 1+2).
 
 A SEPARATE GLSL fragment pass (not an extension of lighting.fs, §5) that turns
-the sim's water fields into convincing water: perturbed-ripple normal -> Schlick
-Fresnel -> GGX glints (reusing the light buffer) + normal-driven refraction ×
-depth + Beer-Lambert depth tint. Caustics / foam / chromatic-aberration / matcap
-are the next staging step (§7 step 3/4) and are NOT in this pass.
+the sim's water fields into convincing water: perturbed-ripple normal -> a
+see-through refraction + Beer-Lambert depth-tint BASE (with a small Fresnel
+ambient sheen) + an ADDITIVE GGX glint (reusing the light buffer) that rides on
+top as HDR specular light. The glint is added, not Fresnel-blended at ~2% (which
+crushed it top-down) — see shaders/water.fs. Caustics / foam / chromatic-
+aberration / matcap are the next staging step (§7 step 3/4) and are NOT here.
 
 It draws in the WaterFieldOverlay compose slot (after the lit ship, before
 units), REPLACING the CPU-tinted WaterFieldOverlay placeholder. It is
@@ -88,6 +90,10 @@ class WaterPass:
         self._loc_texel     = self._lookup("u_texel")
         self._loc_art_uv    = self._lookup("u_art_uv_rect")
         self._loc_time      = self._lookup("u_time")
+        self._loc_glint     = self._lookup("u_glint_strength")
+        self._loc_alpha_scale = self._lookup("u_alpha_scale")
+        self._loc_alpha_min = self._lookup("u_alpha_min")
+        self._loc_alpha_max = self._lookup("u_alpha_max")
 
         # Bind the static [graphics.water] uniforms once (look-tuning lives in
         # config per the graphics README; restart to re-apply, like the other
@@ -110,6 +116,16 @@ class WaterPass:
         # ripple_scale: metres-of-ripple-height -> screen-readable normal slope.
         self._set_f(self._loc_ripple_scale,
                     float(getattr(wc, "ripple_scale", 8.0)))
+        # glint_strength: ADDITIVE GGX-glint multiplier (light off the surface).
+        self._set_f(self._loc_glint,
+                    float(getattr(wc, "glint_strength", 2.0)))
+        # alpha (transparency) ramp dials: alpha = clamp(depth*scale, min, max).
+        self._set_f(self._loc_alpha_scale,
+                    float(getattr(wc, "alpha_scale", 6.0)))
+        self._set_f(self._loc_alpha_min,
+                    float(getattr(wc, "alpha_min", 0.15)))
+        self._set_f(self._loc_alpha_max,
+                    float(getattr(wc, "alpha_max", 0.95)))
         # u_texel = neighbour-tap offset in UV = 1/grid (per axis).
         self._set_vec2(self._loc_texel, (1.0 / grid_w, 1.0 / grid_h))
         # Default art-UV rect — overwritten per-draw when an [art.align] is set.
@@ -165,6 +181,46 @@ class WaterPass:
         self.art_align = (float(offset_px[0]), float(offset_px[1]),
                           ppt_x, ppt_y)
 
+    # ---- live tunable setters (demo slider hookup) ---------------------
+    # The MAIN game binds [graphics.water] once at construction (restart to
+    # re-apply, the render-params precedent). These per-frame setters let the
+    # tuning DEMO drag each dial live: each just re-binds its uniform (cheap;
+    # safe to call every frame). Mirrors LightingPass.set_* / the _set_f helper.
+
+    def set_glint_strength(self, v: float) -> None:
+        self._set_f(self._loc_glint, float(v))
+
+    def set_roughness_base(self, v: float) -> None:
+        self._set_f(self._loc_rough_base, float(v))
+
+    def set_roughness_agitation(self, v: float) -> None:
+        self._set_f(self._loc_rough_agit, float(v))
+
+    def set_fog_density(self, v: float) -> None:
+        self._set_f(self._loc_fog, float(v))
+
+    def set_refract_strength(self, v: float) -> None:
+        self._set_f(self._loc_refract, float(v))
+
+    def set_r0(self, v: float) -> None:
+        self._set_f(self._loc_r0, float(v))
+
+    def set_water_color(self, rgb) -> None:
+        self._set_vec3(self._loc_water_col,
+                       (float(rgb[0]), float(rgb[1]), float(rgb[2])))
+
+    def set_alpha_scale(self, v: float) -> None:
+        self._set_f(self._loc_alpha_scale, float(v))
+
+    def set_alpha_min(self, v: float) -> None:
+        self._set_f(self._loc_alpha_min, float(v))
+
+    def set_alpha_max(self, v: float) -> None:
+        self._set_f(self._loc_alpha_max, float(v))
+
+    def set_ripple_scale(self, v: float) -> None:
+        self._set_f(self._loc_ripple_scale, float(v))
+
     # ---- per-frame upload ----------------------------------------------
 
     def update(self, water_depth: np.ndarray,
@@ -199,10 +255,13 @@ class WaterPass:
         shader gates on water_depth and emits premultiplied alpha = 0 on dry
         tiles, so we draw with BLEND_ALPHA_PREMULTIPLY — exactly the smoke /
         old-water-overlay blend (preserves the ship's destination alpha; the
-        god-ray-fix discipline §5). The base refraction/tint term is the only
-        thing drawn here (the additive glints are folded INTO the premultiplied
-        output via the Fresnel mix, so no separate additive sub-pass is needed
-        for the v1 core — that discipline matters once caustics land).
+        god-ray-fix discipline §5). The fragment output is
+        ``rgb = base*alpha + glint`` with ``a = alpha``: under premultiplied
+        blend (out = src.rgb + dst.rgb*(1-src.a)) the base composites OVER the
+        floor (transparency-bound) while the GGX `glint` rides on top as pure
+        additive HDR light — a true additive specular term that does NOT raise
+        alpha, all in one draw (no separate additive sub-pass needed for the v1
+        core; that discipline matters once caustics land).
 
         Sampler bindings are issued INSIDE BeginShaderMode (raylib gotcha: a
         SetShaderValueTexture before BeginShaderMode can target the wrong
