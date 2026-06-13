@@ -153,6 +153,25 @@ def _state_to_toml_section(name: str, s: dict) -> str:
         f"fuse_seconds = {s['fuse_seconds']:.2f}, "
         f"smoke_amount = {s['smoke_amount']:.4f} }}"
     )
+    lines.append(
+        f"water = {{ glint_strength = {s['water_glint_strength']:.4f}, "
+        f"roughness_base = {s['water_roughness_base']:.4f}, "
+        f"roughness_agitation = {s['water_roughness_agitation']:.4f}, "
+        f"fog_density = {s['water_fog_density']:.4f}, "
+        f"refract_strength = {s['water_refract_strength']:.4f}, "
+        f"r0 = {s['water_r0']:.4f}, "
+        f"ripple_scale = {s['water_ripple_scale']:.4f}, "
+        f"alpha_scale = {s['water_alpha_scale']:.4f}, "
+        f"alpha_min = {s['water_alpha_min']:.4f}, "
+        f"alpha_max = {s['water_alpha_max']:.4f}, "
+        f"caustic_strength = {s['water_caustic_strength']:.4f}, "
+        f"caustic_scale = {s['water_caustic_scale']:.4f}, "
+        f"foam_threshold = {s['water_foam_threshold']:.4f}, "
+        f"foam_intensity = {s['water_foam_intensity']:.4f}, "
+        f"ca_amount = {s['water_ca_amount']:.4f}, "
+        f"wave_scale = {s['water_wave_scale']:.4f}, "
+        f"ambient_amp = {s['water_ambient_amp']:.4f} }}"
+    )
     return "\n".join(lines)
 
 
@@ -220,6 +239,28 @@ def _toml_dict_to_state(d: dict) -> dict:
         s["unit_damage"] = float(g.get("unit_damage", s["unit_damage"]))
         s["fuse_seconds"] = float(g.get("fuse_seconds", s["fuse_seconds"]))
         s["smoke_amount"] = float(g.get("smoke_amount", s["smoke_amount"]))
+    # Water surface optics. The inline `water` table maps short keys to the
+    # flat water_* state; .get falls back to the DEFAULTS value already in `s`,
+    # so OLD presets without a water table load cleanly (no KeyError).
+    if "water" in d:
+        w = d["water"]
+        s["water_glint_strength"] = float(w.get("glint_strength", s["water_glint_strength"]))
+        s["water_roughness_base"] = float(w.get("roughness_base", s["water_roughness_base"]))
+        s["water_roughness_agitation"] = float(w.get("roughness_agitation", s["water_roughness_agitation"]))
+        s["water_fog_density"] = float(w.get("fog_density", s["water_fog_density"]))
+        s["water_refract_strength"] = float(w.get("refract_strength", s["water_refract_strength"]))
+        s["water_r0"] = float(w.get("r0", s["water_r0"]))
+        s["water_ripple_scale"] = float(w.get("ripple_scale", s["water_ripple_scale"]))
+        s["water_alpha_scale"] = float(w.get("alpha_scale", s["water_alpha_scale"]))
+        s["water_alpha_min"] = float(w.get("alpha_min", s["water_alpha_min"]))
+        s["water_alpha_max"] = float(w.get("alpha_max", s["water_alpha_max"]))
+        s["water_caustic_strength"] = float(w.get("caustic_strength", s["water_caustic_strength"]))
+        s["water_caustic_scale"] = float(w.get("caustic_scale", s["water_caustic_scale"]))
+        s["water_foam_threshold"] = float(w.get("foam_threshold", s["water_foam_threshold"]))
+        s["water_foam_intensity"] = float(w.get("foam_intensity", s["water_foam_intensity"]))
+        s["water_ca_amount"] = float(w.get("ca_amount", s["water_ca_amount"]))
+        s["water_wave_scale"] = float(w.get("wave_scale", s["water_wave_scale"]))
+        s["water_ambient_amp"] = float(w.get("ambient_amp", s["water_ambient_amp"]))
     return s
 
 
