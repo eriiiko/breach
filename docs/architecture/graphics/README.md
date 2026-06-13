@@ -67,5 +67,9 @@ Legend: ✅ built · ⚠️ partial · 🧪 prototype · 📝 design-only
 - *(planned)* **Decals & particles** — blood, stains, sparks (the "Graphics chapter" the fluid doc
   already references for blood).
 
+**Companion:** [tuning_guide.md](tuning_guide.md) — what every look-knob means and how to tune it by
+eye (the live `lighting_demo.py` sliders → `config.toml`). Water section is detailed; grows as each
+system gets a tuning pass.
+
 **Status:** folder + index established 2026-06-12. `water_rendering` is the first chapter, pending the
 methods decision (the research recommends a 3-term v1 pass + a phase-2 caustics mood pass).

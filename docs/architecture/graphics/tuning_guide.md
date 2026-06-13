@@ -1,0 +1,82 @@
+# Visual tuning guide
+
+The practical companion to the graphics chapters: **what each look-knob means and how to tune it by
+eye**. Per the graphics README, look-and-feel tuning is a first-class graphics concern — this is where
+the "what does this slider do" lives, separate from the *why* in the design chapters.
+
+**The tuning workflow.** Run `tools/lighting_demo.py` — it exposes every visual knob as a live raygui
+slider (the panel on the right), so you drag and see the result instantly while the sim runs. When a
+value looks right: either **Save** a preset (to `tools/lighting_presets.toml`) or copy the number into
+the matching `config.toml` section (those are the *shipped* defaults; the demo seeds its sliders from
+them at startup). The main game reads config at construction, so config changes need a restart; the
+demo sliders are live.
+
+---
+
+## Water surface optics — `[graphics.water]`
+
+The water look is a single shader pass (`shaders/water.fs`, design: `water_rendering.md`). It reuses
+the ripple field + depth the sim already computes, and the scene's light buffers. **Glints only ride
+real ripples** — a dead-flat puddle barely glints by design, so to evaluate the surface, *pour a puddle
+(`U`) and throw a grenade in it* (`T`, then click) to get waves moving.
+
+### Recommended tuning order
+Tune in this order — each stage makes the next easier to judge:
+1. **Presence** (`alpha_*`) — get the water visible at the opacity you want first.
+2. **Volume** (`fog_density`, `water_color`) — the depth/menace feel.
+3. **Surface shape** (`ripple_scale`) — how pronounced the ripples read.
+4. **Sparkle** (`glint_strength`, then `roughness_base`/`roughness_agitation`) — the highlights.
+5. **Floor warp** (`refract_strength`) — the refraction, last (subtle).
+
+### The knobs
+
+| Knob (config key / slider) | Default | Range | What it does — how to tune |
+|---|---|---|---|
+| **glint_strength** (Glint) | 2.0 | 0–8 | Brightness of the specular highlights — light glinting off the ripple crests. **Up** = brighter, more prominent sparkle; **down** = subtle. This is the master "how much does the surface catch the light" dial. (Glints are gated to lit, forward-facing ripples, so they only appear under a flashlight/fire and where the surface tilts toward it.) |
+| **roughness_base** (Roughness) | 0.08 | 0.02–0.5 | How **sharp vs. broad** the glints are. **Low** = tight, mirror-like, bright pinpoint glints (a still puddle); **high** = broad, soft shimmer (choppy water). The art lever for "glassy" vs. "agitated." |
+| **roughness_agitation** (Rough agit) | 0.6 | 0–2 | How much *ripple activity* broadens the roughness. **Up** = sloshing/disturbed water shimmers broad while calm water stays sharp (ties the look to what's happening); **0** = roughness is constant regardless of motion. |
+| **fog_density** (Fog dens) | 3.0 | 0.2–12 | Beer–Lambert depth tint rate — how fast the floor fades into `water_color` with depth. **Up** = water reads deep/murky, darkens quickly (menace, can't see the bottom); **down** = clear, you see the floor through deep water. The main "how deep does it feel" dial. |
+| **water_color** (config only) | 0.03, 0.10, 0.18 | rgb 0–1 | The deep-water volume tint the floor fades toward. On a **dark ship**, a desaturated green-black reads more like grim flooded steel than ocean-blue — push toward green/teal-black, away from bright blue. (No slider yet — edit config + restart, or we can add one.) |
+| **ripple_scale** (Ripple scl) | 8.0 | 0–24 | Converts the (millimetric) ripple height into an on-screen normal slope — i.e. how **pronounced/bumpy** the surface reads. **Up** = ripples tilt the normal more → more glint variation + more floor-warp; **down** = flatter, calmer surface. Interacts with glint and refract (it scales the normal both feed on). |
+| **refract_strength** (Refract) | 0.02 | 0–0.08 | How much the floor **warps/wobbles** under the surface (the refraction UV offset). **Up** = more distortion, watery wobble; **too high** = swimmy/unreal. Depth-scaled, so shoreline doesn't shimmer. Keep subtle. |
+| **r0** (R0 Fresnel) | 0.02 | 0–0.2 | Fresnel reflectance head-on — the base "wet sheen" the surface reflects even looking straight down. Physically ~0.02 for water; **up** = more uniform sheen everywhere (glossier, less see-through). Mostly leave low; nudge up for a wetter, more reflective floor. |
+| **alpha_scale** (Alpha scl) | 6.0 | 0–20 | How fast opacity ramps with depth. **Up** = water becomes opaque/present at *shallower* depth; **down** = stays see-through deeper. |
+| **alpha_min** (Alpha min) | 0.15 | 0–0.6 | Minimum opacity of *any* water (even a thin film). **Up** = even a shallow puddle has visible presence; **down** = thin water nearly invisible. This is the "see-through vs. always-visible" floor — raise it if water disappears on you. |
+| **alpha_max** (Alpha max) | 0.95 | 0.4–1.0 | Maximum opacity (deep water). **Down** = even deep water stays partly see-through (the "see-through, not opaque blue" look Erik wanted); **up** = deep water reads solid. |
+| **ambient** (driven by the Ambient lighting sliders) | from lighting | — | How much the water body is lit by the scene's *ambient* light (vs. only the flashlight). Shares the lighting pass's ambient — raise the **Ambient** sliders to make water visible outside the flashlight beam, dim it to make water near-black except under a light. (Glints stay flashlight/fire-driven regardless — ambient lights the *body*, sources *glint*.) |
+
+### Interactions worth knowing
+- **No glints without ripples.** `glint_strength` does nothing on a dead-flat puddle — the normal must tilt. Splash it.
+- **`ripple_scale` amplifies both glint variation and floor-warp** (they share the normal). If both feel too strong/weak together, it's probably `ripple_scale`.
+- **`fog_density` and `alpha_*` both affect "presence"** but differently: fog is *color* (darkens toward water_color), alpha is *opacity* (how much floor shows through). A shallow puddle that's too invisible → raise `alpha_min`; a deep pool that doesn't feel deep → raise `fog_density`.
+- **`r0` and `alpha` both add "wetness"** — r0 via surface sheen, alpha via opacity. Start with alpha; use r0 for the final gloss.
+
+### Phase-2 knobs (not yet built — gated on Erik's sign-off of the core look)
+These land with the caustics/foam/chromatic-aberration pass (`water_rendering.md` §7 step 3) and will
+get their own sliders + rows here when they ship:
+- **caustic_strength / caustic_scale** — the dancing refracted light on the flooded floor under the
+  flashlight (the signature mood effect).
+- **foam_threshold / foam_color** — whitecaps at steep ripple fronts + the wet/dry shoreline.
+- **chromatic_aberration** — subtle prismatic fringe on the refraction.
+- **matcap (environment reflection)** — the outdoor sky-reflection hook (off indoors).
+
+---
+
+## Other visual knobs (reference)
+
+The demo also tunes these; they live in their own config sections and are documented in their chapters.
+Detailed rows can be added here as each gets a tuning pass:
+
+- **Lighting** — `Ambient r/g/b`, `Light z` (overhead-ness of the light direction → affects glint
+  geometry too), `Normal strength`, flashlight `max_range`/`intensity`/`angle_spread`. (Ray engine
+  ch.08 / rendering ch.09.)
+- **Smoke / gas** — `smoke_tint`, `smoke_max_alpha`, `smoke_render_gamma` (contrast), per-throw
+  `explosion_smoke_noise` (cloud texture, also `N`/`Shift+N`). (Smoke ch.05 §6.)
+- **Pressure overlay** — `pressure_scale` (debug viz). (Atmosphere ch.04.)
+- **Grenade (demo)** — `blast_radius`, `blast_pressure`, `wall_damage`, `unit_damage`, `fuse_seconds`,
+  `smoke_amount` — gameplay/test tuning, not a visual look.
+
+---
+
+**Status:** water section reflects the shipped v1 core + ambient (`a5d177a` + the ambient fix). Grows
+as phase-2 water and the other systems get their tuning passes.
