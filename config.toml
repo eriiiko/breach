@@ -332,6 +332,20 @@ ca_amount = 0.012
 # 0.06) — the idle shimmer strength on still water.
 wave_scale = 2.0
 ambient_amp = 0.06
+# --- Heightmap attenuation (alpha-only; graphics/water_rendering.md §2 §8) ---
+# An OPTIONAL per-level floor heightmap ([art.bare] height) attenuates the water
+# ALPHA where raised relief (crates, consoles, debris) rises above the local
+# water depth, so those features poke ABOVE the surface and the water laps around
+# them. It does NOT feed depth/volume/tint/refraction (those stay per-tile). On a
+# level with no heightmap these dials do nothing (u_has_height = 0 -> the pass is
+# bit-identical). wet = clamp((depth - relief*height_scale)/height_edge, 0, 1);
+# alpha *= wet.
+#   height_scale = relief metres gain — how tall the relief reads vs the water
+#     depth. Tuned (~0.4) so furniture pokes through a ~0.3-0.5 m puddle. 0 = off.
+#   height_edge  = shoreline softness (m) — the gradient width of the lap edge
+#     around a protruding feature (lower = harder cut; higher = softer fade).
+height_scale = 0.4
+height_edge = 0.1
 
 # Material property table (named-key format, ch.02 — Material System).
 # One [materials.<name>] row per material id; columns indexed into per-id

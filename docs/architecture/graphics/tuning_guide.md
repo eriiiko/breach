@@ -51,6 +51,8 @@ Tune in this order — each stage makes the next easier to judge:
 | **ca_amount** (Chrom ab) | 0.012 | 0–0.06 | **Chromatic aberration** on the refracted floor — the r/g/b channels are sampled at slightly offset refraction UVs (scaled `1 ± ca_amount`), giving a faint prismatic fringe. **Barely-there by default**; **up** = stronger colour fringing (stylised); **0** = off (single sample). |
 | **wave_scale** (Wave scl) | 2.0 | 0.2–6 | **Idle-shimmer wave size.** Multiplies the ambient-sine spatial frequencies. **Up** = smaller/tighter idle waves; **down** = bigger sweeping waves. (Erik's fix for the idle waves reading "very big" — default 2.0 tightens them from the old hardcoded `1.0`.) The temporal speed is unchanged; this only resizes the lattice. |
 | **ambient_amp** (Amb amp) | 0.06 | 0–0.3 | **Idle-shimmer strength** on still water — the amplitude base of the ambient sine lattice (the old hardcoded `0.06`). **Up** = more idle motion/shimmer even on a dead-calm puddle; **down/0** = still water reads glassy-flat (only real ripples move it). Energy from actual ripples still adds on top regardless. |
+| **height_scale** (Height scl) | 0.4 | 0–2 | **Heightmap relief gain** (metres). Needs a level WITH a floor heightmap ([art.bare] `height`, e.g. `unhcr_vessel_2`) — **inert** with no heightmap. Where the per-pixel relief × this gain rises above the local water depth, that pixel is "above water" and the water **alpha fades to 0** so raised crates/consoles/debris poke through and the water laps around them. **ALPHA-ONLY** — it does *not* change depth/volume/tint/refraction (those stay per-tile). **Up** = relief reads taller (more pokes through a given puddle); **0** = off (no attenuation). Tuned ~0.4 so furniture emerges from a ~0.3–0.5 m puddle. |
+| **height_edge** (Height edge) | 0.1 | 0.01–0.5 | **Shoreline softness** (metres) of the heightmap lap edge — the gradient width over which the alpha ramps from full water to dry around a protruding feature. **Down** = a harder, crisper waterline against the crate; **up** = a softer, wider wet→dry fade. Only matters when `height_scale > 0` and a heightmap is bound. |
 
 ### Interactions worth knowing
 - **No glints without ripples.** `glint_strength` does nothing on a dead-flat puddle — the normal must tilt. Splash it.
@@ -69,6 +71,11 @@ the core look:
 8. **Foam** (`foam_threshold`, then `foam_intensity`) — keep it subtle: white at the steepest crests +
    the wet/dry edge, not a snowfield. Lower the threshold for more, raise the intensity for whiter.
 9. **Chromatic aberration** (`ca_amount`) — barely-there; nudge up only if you want a stylised fringe.
+10. **Heightmap attenuation** (`height_scale`, then `height_edge`) — *only on a level with a floor
+    heightmap* (e.g. `unhcr_vessel_2`). Pour/flood the floor (`U`), then raise `height_scale` until the
+    furniture/debris pokes through the puddle at the depth you want, and set `height_edge` for the
+    waterline crispness around it. Alpha-only — it never changes how deep/murky the water itself reads,
+    only *where* the water surface is present.
 
 ### Still deferred
 - **matcap (environment reflection)** — the outdoor sky-reflection hook (off indoors; `water_rendering.md`
@@ -93,7 +100,8 @@ Detailed rows can be added here as each gets a tuning pass:
 
 ---
 
-**Status:** water section reflects the shipped v1 core + ambient (`a5d177a` + the ambient fix) **and the
-phase-2 mood pass** (caustics × light, foam, chromatic aberration, the `wave_scale`/`ambient_amp` wave-
-size dials). Only the matcap hook + SSR remain deferred. Grows as the other systems get their tuning
+**Status:** water section reflects the shipped v1 core + ambient (`a5d177a` + the ambient fix), the
+phase-2 mood pass (caustics × light, foam, chromatic aberration, the `wave_scale`/`ambient_amp` wave-
+size dials) **and the heightmap alpha-attenuation** (`height_scale`/`height_edge`, optional per-level
+floor relief). Only the matcap hook + SSR remain deferred. Grows as the other systems get their tuning
 passes.

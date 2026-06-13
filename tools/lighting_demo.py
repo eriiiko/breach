@@ -115,6 +115,11 @@ DEFAULTS = {
     "water_ca_amount": 0.012,
     "water_wave_scale": 2.0,
     "water_ambient_amp": 0.06,
+    # Heightmap attenuation (alpha-only): only bites on a level WITH a heightmap
+    # (unhcr_vessel_2). On the demo's default level the water pass has no height
+    # texture, so these sliders are inert (u_has_height = 0).
+    "water_height_scale": 0.4,
+    "water_height_edge": 0.1,
 }
 
 # Pressure colormap was previously implemented here; lifted into
@@ -170,7 +175,9 @@ def _state_to_toml_section(name: str, s: dict) -> str:
         f"foam_intensity = {s['water_foam_intensity']:.4f}, "
         f"ca_amount = {s['water_ca_amount']:.4f}, "
         f"wave_scale = {s['water_wave_scale']:.4f}, "
-        f"ambient_amp = {s['water_ambient_amp']:.4f} }}"
+        f"ambient_amp = {s['water_ambient_amp']:.4f}, "
+        f"height_scale = {s['water_height_scale']:.4f}, "
+        f"height_edge = {s['water_height_edge']:.4f} }}"
     )
     return "\n".join(lines)
 
@@ -261,6 +268,8 @@ def _toml_dict_to_state(d: dict) -> dict:
         s["water_ca_amount"] = float(w.get("ca_amount", s["water_ca_amount"]))
         s["water_wave_scale"] = float(w.get("wave_scale", s["water_wave_scale"]))
         s["water_ambient_amp"] = float(w.get("ambient_amp", s["water_ambient_amp"]))
+        s["water_height_scale"] = float(w.get("height_scale", s["water_height_scale"]))
+        s["water_height_edge"] = float(w.get("height_edge", s["water_height_edge"]))
     return s
 
 
@@ -489,6 +498,10 @@ def main() -> None:
         state.set("water_wave_scale", float(getattr(_wc, "wave_scale", 2.0)))
         state.set("water_ambient_amp",
                   float(getattr(_wc, "ambient_amp", 0.06)))
+        state.set("water_height_scale",
+                  float(getattr(_wc, "height_scale", 0.4)))
+        state.set("water_height_edge",
+                  float(getattr(_wc, "height_edge", 0.1)))
 
     # ---- 5. Sim timing ----
     last_time = time.perf_counter()
@@ -672,6 +685,10 @@ def main() -> None:
             wp.set_ca_amount(state.get("water_ca_amount"))
             wp.set_wave_scale(state.get("water_wave_scale"))
             wp.set_ambient_amp(state.get("water_ambient_amp"))
+            # Heightmap attenuation (alpha-only). Only bites on a level WITH a
+            # height texture bound; inert on the demo's default level.
+            wp.set_height_scale(state.get("water_height_scale"))
+            wp.set_height_edge(state.get("water_height_edge"))
 
             # ---- Build mouse flashlight ----
             sources = []
@@ -864,6 +881,9 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     y = _slider(state, "water_ca_amount", "Chrom ab", 0.0, 0.06, x, y)
     y = _slider(state, "water_wave_scale", "Wave scl", 0.2, 6.0, x, y)
     y = _slider(state, "water_ambient_amp", "Amb amp", 0.0, 0.3, x, y)
+    # Heightmap attenuation (alpha-only; needs a level WITH a heightmap to bite).
+    y = _slider(state, "water_height_scale", "Height scl", 0.0, 2.0, x, y)
+    y = _slider(state, "water_height_edge", "Height edge", 0.01, 0.5, x, y)
 
     # -- §4.5 Pressure overlay --
     y = _section_header("Pressure overlay", x, y)

@@ -68,6 +68,11 @@ class TextureSet:
     emissive_mask: Optional[rl.Texture] = None
     emissive_bloom: Optional[rl.Texture] = None
     background: Optional[rl.Texture] = None
+    # Optional per-pixel floor heightmap (greyscale relief, 0..1). Static; used
+    # by the water pass to attenuate the water alpha (raised features poke above
+    # the surface). None on levels with no [art.bare] height. Sampled .r in the
+    # shader, so the RGB channels are all the same on a greyscale PNG.
+    height: Optional[rl.Texture] = None
     _loaded: Dict[str, rl.Texture] = field(default_factory=dict)
 
     def unload_all(self) -> None:
@@ -79,6 +84,7 @@ class TextureSet:
         self.emissive_mask = None
         self.emissive_bloom = None
         self.background = None
+        self.height = None
 
 
 def load_texture_from_path(path: Path) -> rl.Texture:
@@ -109,6 +115,14 @@ def load_level_textures(level) -> TextureSet:
     if level.background_path:
         ts.background = load_texture_from_path(level.background_path)
         ts._loaded["background"] = ts.background
+    # Optional floor heightmap (greyscale relief). Static; the water pass binds
+    # it to attenuate the water alpha. Bilinear/clamp like the other art layers
+    # so the shoreline reads smoothly between art texels. getattr guards stub
+    # levels that predate the field.
+    height_path = getattr(level, "height_path", None)
+    if height_path:
+        ts.height = load_texture_from_path(height_path)
+        ts._loaded["height"] = ts.height
     return ts
 
 

@@ -52,6 +52,14 @@ uniform sampler2D u_diffuse;
 uniform sampler2D u_light_a;
 uniform sampler2D u_light_b;
 uniform sampler2D u_water;
+// Optional per-pixel floor HEIGHTMAP (greyscale relief, 0..1), sampled in art
+// space (fragTexCoord, like u_diffuse). ATTENUATES THE FINAL ALPHA ONLY — where
+// the relief rises above the local water depth, the tile is "above water" and
+// the alpha fades to 0 (raised crates/consoles poke through, the water laps
+// around them). It does NOT feed depth/volume/tint/refraction (those stay
+// per-tile). u_has_height = 0 (no level heightmap) or u_height_scale == 0
+// makes the attenuation factor exactly 1.0 (no change) — the dormant default.
+uniform sampler2D u_height;
 
 uniform float u_roughness_base;
 uniform float u_roughness_agitation;
@@ -109,6 +117,20 @@ uniform float u_ambient_amp;
 // frame from the LightingPass's ambient (renderer/game_renderer.py) so the
 // demo's ambient sliders drive the water ambient too.
 uniform vec3  u_ambient;
+// Heightmap attenuation (graphics/water_rendering.md §2 §8, alpha-only). The
+// final alpha is multiplied by a wetness factor:
+//   wet = clamp((depth - relief * u_height_scale) / u_height_edge, 0, 1)
+// where relief = texture(u_height, fragTexCoord).r. Raised relief (a crate)
+// rises above the local water depth -> wet -> 0 -> the water fades out around
+// it. ONLY the alpha is touched; refr/fog/glint/caustics/foam are unchanged.
+//   u_has_height     1 if the level supplied a heightmap, else 0 (-> wet = 1)
+//   u_height_scale   relief metres gain (0 disables -> wet = 1); ~0.4 tuned so
+//                    furniture pokes through a ~0.3-0.5 m puddle
+//   u_height_edge    shoreline softness (m) — the gradient width of the lap
+//                    edge around a protruding feature (~0.1; min-clamped > 0)
+uniform int   u_has_height;
+uniform float u_height_scale;
+uniform float u_height_edge;
 
 out vec4 finalColor;
 
@@ -327,6 +349,23 @@ void main() {
     // regardless of how transparent the water is. The glint does NOT raise
     // alpha (a specular highlight does not make the water more opaque).
     float alpha = clamp(depth * u_alpha_scale, u_alpha_min, u_alpha_max);
+    // --- HEIGHTMAP ATTENUATION (alpha ONLY) -----------------------------
+    // Where the per-pixel floor relief rises above the LOCAL (per-tile) water
+    // depth, the tile is "above water": fade the alpha to 0 so a protruding
+    // crate/console/debris pokes through and the water laps around it with a
+    // soft shoreline (u_height_edge wide). This is the §3 per-pixel-submersion
+    // idea in its lighter ALPHA-attenuation form — relief is NOT fed into the
+    // depth/volume/tint/refraction math above (those are all per-tile, exactly
+    // as before); we only scale the final alpha. wet = 1.0 (no change) when the
+    // level has no heightmap (u_has_height == 0) or the gain is off
+    // (u_height_scale == 0), so the dormant/default path is bit-identical.
+    float wet = 1.0;
+    if (u_has_height == 1 && u_height_scale > 0.0) {
+        float relief = texture(u_height, fragTexCoord).r;
+        wet = clamp((depth - relief * u_height_scale)
+                    / max(u_height_edge, 1e-4), 0.0, 1.0);
+    }
+    alpha *= wet;
     if (u_srgb_decode == 1) {
         base  = linear_to_srgb(base);
         glint = linear_to_srgb(glint);

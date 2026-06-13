@@ -78,6 +78,7 @@ class WaterPass:
         self._loc_light_a   = self._lookup("u_light_a")
         self._loc_light_b   = self._lookup("u_light_b")
         self._loc_water     = self._lookup("u_water")
+        self._loc_height    = self._lookup("u_height")
         self._loc_rough_base = self._lookup("u_roughness_base")
         self._loc_rough_agit = self._lookup("u_roughness_agitation")
         self._loc_fog       = self._lookup("u_fog_density")
@@ -103,6 +104,10 @@ class WaterPass:
         self._loc_ca_amount     = self._lookup("u_ca_amount")
         self._loc_wave_scale    = self._lookup("u_wave_scale")
         self._loc_ambient_amp   = self._lookup("u_ambient_amp")
+        # Heightmap attenuation (alpha-only): the relief-vs-depth wetness gate.
+        self._loc_has_height    = self._lookup("u_has_height")
+        self._loc_height_scale  = self._lookup("u_height_scale")
+        self._loc_height_edge   = self._lookup("u_height_edge")
 
         # Bind the static [graphics.water] uniforms once (look-tuning lives in
         # config per the graphics README; restart to re-apply, like the other
@@ -152,6 +157,19 @@ class WaterPass:
                     float(getattr(wc, "wave_scale", 2.0)))
         self._set_f(self._loc_ambient_amp,
                     float(getattr(wc, "ambient_amp", 0.06)))
+        # Heightmap attenuation dials (alpha-only). height_scale = relief metres
+        # gain (default 0.4 so furniture pokes through a ~0.3-0.5 m puddle),
+        # height_edge = shoreline softness (default 0.1). u_has_height starts 0
+        # (no heightmap bound) — the dormant default makes the wetness factor
+        # exactly 1.0 so the pass is bit-identical until a level supplies a
+        # height texture via set_height_texture().
+        self._has_height = False
+        self._height_tex = None
+        self._set_i(self._loc_has_height, 0)
+        self._set_f(self._loc_height_scale,
+                    float(getattr(wc, "height_scale", 0.4)))
+        self._set_f(self._loc_height_edge,
+                    float(getattr(wc, "height_edge", 0.1)))
         # u_texel = neighbour-tap offset in UV = 1/grid (per axis).
         self._set_vec2(self._loc_texel, (1.0 / grid_w, 1.0 / grid_h))
         # Default art-UV rect — overwritten per-draw when an [art.align] is set.
@@ -178,6 +196,11 @@ class WaterPass:
         val = rl.ffi.new("float[1]", [float(v)])
         rl.set_shader_value(self.shader, loc, val,
                             rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT)
+
+    def _set_i(self, loc: int, v: int) -> None:
+        val = rl.ffi.new("int[1]", [int(v)])
+        rl.set_shader_value(self.shader, loc, val,
+                            rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
 
     def _set_vec2(self, loc: int, v) -> None:
         val = rl.ffi.new("float[2]", [float(v[0]), float(v[1])])
@@ -283,6 +306,24 @@ class WaterPass:
     def set_ambient_amp(self, v: float) -> None:
         self._set_f(self._loc_ambient_amp, float(v))
 
+    # ---- heightmap attenuation (alpha-only) ----------------------------
+
+    def set_height_texture(self, tex: Optional[rl.Texture]) -> None:
+        """Bind the level's static floor heightmap (greyscale relief). Pass the
+        level's height texture once at load to enable the alpha attenuation; the
+        texture is owned by the TextureSet (unloaded there), we only hold a
+        reference + flip u_has_height. Passing None disables the attenuation
+        (u_has_height -> 0; wetness factor 1.0, the dormant default)."""
+        self._height_tex = tex
+        self._has_height = tex is not None
+        self._set_i(self._loc_has_height, 1 if self._has_height else 0)
+
+    def set_height_scale(self, v: float) -> None:
+        self._set_f(self._loc_height_scale, float(v))
+
+    def set_height_edge(self, v: float) -> None:
+        self._set_f(self._loc_height_edge, float(v))
+
     # ---- per-frame upload ----------------------------------------------
 
     def update(self, water_depth: np.ndarray,
@@ -343,6 +384,15 @@ class WaterPass:
         rl.set_shader_value_texture(self.shader, self._loc_light_a, light_tex_a)
         rl.set_shader_value_texture(self.shader, self._loc_light_b, light_tex_b)
         rl.set_shader_value_texture(self.shader, self._loc_water, self.water_tex)
+        # Heightmap sampler. Bind the level's relief if present; otherwise bind
+        # the diffuse as a harmless stand-in so the sampler is always backed by
+        # a valid texture (the shader's u_has_height == 0 branch never reads it,
+        # so the bound stand-in is inert — this keeps the dormant path safe and
+        # avoids an unbound-sampler warning).
+        if self._loc_height != -1:
+            rl.set_shader_value_texture(
+                self.shader, self._loc_height,
+                self._height_tex if self._height_tex is not None else diffuse)
         self._set_vec4(self._loc_art_uv, uv_rect)
 
         dst = rl.Rectangle(0, 0, float(world_px_w), float(world_px_h))

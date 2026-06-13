@@ -78,6 +78,18 @@ vec4  water  = vec4(base * alpha + glint, alpha);           // glint = HDR light
   is the trap that made the first build's glints invisible.
 - Top-down, geometric `F ≈ 0.02` (we mostly see the floor — correct); the **ripple normals locally
   spike `F`** to draw glints riding the wave crests.
+- **Heightmap alpha-attenuation (optional per level; shipped 2026-06-13).** An optional per-level floor
+  **heightmap** (`[art.bare]` `height`, greyscale relief 0..1, sampled in art space like `u_diffuse`)
+  fades the **final alpha** to 0 where the relief rises above the local water depth, so raised features
+  (crates, consoles, debris) poke *above* the surface and the water laps around them with a soft
+  shoreline. This is the §3 per-pixel-submersion idea in its **lighter alpha-attenuation form**: the
+  relief feeds **only the alpha**, never the depth/volume/tint/refraction math (those stay per-tile —
+  intentionally simpler + lower-risk than per-pixel depth). After the alpha ramp:
+  `wet = clamp((d − relief·heightScale) / heightEdge, 0, 1); alpha *= wet`. It is **dormant by
+  default** — with no heightmap (`u_has_height == 0`) or `heightScale == 0`, `wet ≡ 1` and the pass is
+  bit-identical. `heightScale` (relief metres gain, ~0.4) and `heightEdge` (shoreline softness, ~0.1)
+  are `[graphics.water]` dials. *(Only `unhcr_vessel_2` supplies a heightmap; the tracked default level
+  has none → unaffected.)*
 
 Full per-method rationale, tiers, and citations: the research doc. All of 2b ships in v1 (refraction,
 depth-tint, caustics, chromatic aberration — Erik); SSR is held as polish (low return straight-down).
@@ -232,5 +244,27 @@ dormant-safe (dry tiles still return `vec4(0)`):
   old hardcoded `0.06`).
 
 All seven new knobs are `[graphics.water]` config keys, `WaterPass` per-frame setters, and live sliders
-in the lighting demo (Water section), per the v1 pattern. **Still deferred:** the matcap hook (§6, gated
-on a matcap texture) and SSR (polish).
+in the lighting demo (Water section), per the v1 pattern.
+
+**Heightmap alpha-attenuation — shipped (2026-06-13).** An OPTIONAL per-level floor heightmap attenuates
+the water alpha so raised features poke above the surface (the §2 bullet; the §3 per-pixel-submersion
+idea in its lighter **alpha-only** form — *not* per-pixel depth). Pieces:
+- **Loader** (`level_loader.py`): `[art.bare]` `height` (or the flat `height` key) → `LevelData.height_path`
+  (parsed with the same `opt_art`/flat-fallback pattern as `normal`/`specular`; optional everywhere — a
+  level with no height loads fine, field `None`).
+- **Texture** (`renderer/core.py`): the greyscale relief PNG is loaded once at level load into
+  `TextureSet.height` (bilinear/clamp like the other art layers) and bound to the water pass via
+  `WaterPass.set_height_texture` (`game_renderer.py`). Sampled `.r` in the shader (art-space UV).
+- **Shader** (`shaders/water.fs`): `relief = texture(u_height, fragTexCoord).r`;
+  `wet = clamp((depth − relief·u_height_scale)/u_height_edge, 0, 1); alpha *= wet`. **Only the final
+  alpha is touched** — `refr`/`fog`/`glint`/`caustics`/`foam` are unchanged. `u_has_height == 0` (no
+  heightmap) or `u_height_scale == 0` → `wet ≡ 1` (no change); dry tiles still early-out to `vec4(0)`.
+- **Dials**: `height_scale` (~0.4, relief metres gain) and `height_edge` (~0.1, shoreline softness) —
+  `[graphics.water]` config keys + `WaterPass.set_height_scale`/`set_height_edge` + lighting-demo sliders
+  + the demo Save `water` table.
+- **Wiring**: only `unhcr_vessel_2` points `[art.bare] height` at `upscaled/ship_w_furniture_reg_height_large.png`
+  (the displayed furniture layer). The tracked default level (`unhcr_vessel`) has no heightmap → the
+  water pass is bit-identical there (verified: the default level renders the same RT with the
+  height-support code added but no height map bound).
+
+**Still deferred:** the matcap hook (§6, gated on a matcap texture) and SSR (polish).

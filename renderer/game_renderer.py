@@ -179,6 +179,13 @@ class GameRenderer:
                 and level_data.art_px_per_tile):
             self.water_pass.set_art_align(level_data.art_offset_px,
                                           level_data.art_px_per_tile)
+        # Heightmap attenuation (graphics/water_rendering.md §2 §8): bind the
+        # level's static floor relief so the water pass fades its alpha where
+        # raised features poke above the surface (alpha-only — not depth/tint).
+        # Levels with no [art.bare] height load textures.height == None, which
+        # leaves u_has_height = 0 and the pass behaves exactly as before (no
+        # attenuation — the dormant default the default level relies on).
+        self.water_pass.set_height_texture(getattr(self.textures, "height", None))
 
         # Toggles
         self.show_grid = False

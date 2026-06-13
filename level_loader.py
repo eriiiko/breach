@@ -116,6 +116,15 @@ class LevelData:
     # loader maps it onto them); specular is stored now, consumed when the
     # lighting learns specular (proposal §2.3).
     specular_path: Optional[Path] = None
+    # Optional per-pixel floor HEIGHTMAP (greyscale relief, 0..1) for the
+    # DISPLAYED layer — parsed exactly like normal/specular (same opt_art /
+    # flat-fallback pattern). Consumed ONLY by the water pass to ATTENUATE the
+    # water alpha so raised features (crates, consoles, debris) poke above the
+    # surface and the water laps around them (graphics/water_rendering.md §2 §8).
+    # It does NOT feed depth/volume/tint/refraction (those stay per-tile). Most
+    # levels carry no height; this stays None and the water pass behaves exactly
+    # as before (no attenuation).
+    height_path: Optional[Path] = None
     # [art.furniture] / [art.destroyed] overlay layers — stored as paths in
     # F2, consumed by the per-tile layer compose in F3.
     furniture_diffuse_path: Optional[Path] = None
@@ -238,6 +247,10 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
 
     normal_path = opt_art(bare_tbl, "[art.bare]", "normal") or opt("normal")
     specular_path = opt_art(bare_tbl, "[art.bare]", "specular")
+    # Optional displayed-layer heightmap (greyscale relief). Mirrors the
+    # normal/specular spelling: [art.bare] height (or the flat `height` key).
+    # Optional everywhere — a level with no height loads fine (field None).
+    height_path = opt_art(bare_tbl, "[art.bare]", "height") or opt("height")
     emissive_mask_path = (opt_art(art_tbl, "[art]", "emissive_mask")
                           or opt("emissive_mask"))
     background_path = (opt_art(art_tbl, "[art]", "background")
@@ -325,6 +338,7 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
         spawns=spawns,
         raw_toml=raw,
         specular_path=specular_path,
+        height_path=height_path,
         furniture_diffuse_path=furniture_diffuse_path,
         furniture_normal_path=furniture_normal_path,
         furniture_specular_path=furniture_specular_path,
@@ -402,6 +416,7 @@ if __name__ == "__main__":
     print(f"  Grid: {lvl.width} x {lvl.height} tiles @ {lvl.tile_size_m} m each")
     print(f"  Diffuse: {lvl.diffuse_path.name}")
     print(f"  Normal:  {lvl.normal_path.name if lvl.normal_path else '(none)'}")
+    print(f"  Height:  {lvl.height_path.name if lvl.height_path else '(none)'}")
     print(f"  Emissive: {lvl.emissive_mask_path.name if lvl.emissive_mask_path else '(none)'}")
     print(f"  Bloom:   {lvl.emissive_bloom_path.name if lvl.emissive_bloom_path else '(none)'}")
     print(f"  Wall mask: {lvl.wall_mask_path.name if lvl.wall_mask_path else '(derived from CSV)'}")
