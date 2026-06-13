@@ -31,7 +31,7 @@ from simulation.materials import (
 
 
 SCALAR_COLUMNS = (
-    "hp", "flammable", "passable", "conductivity",
+    "hp", "flammable", "mobility", "conductivity",
     "ignition_temp", "heat_atten", "wave_reflect", "wave_absorb",
     "blast_resist",
 )
@@ -67,9 +67,11 @@ def test_table_loads_all_columns():
     assert tbl.hp[MAT_GLASS] == 15
     assert bool(tbl.flammable[MAT_WOOD]) is True
     assert bool(tbl.flammable[MAT_HULL]) is False
-    assert bool(tbl.passable[MAT_AIR]) is True
-    assert bool(tbl.passable[MAT_DOOR]) is True
-    assert bool(tbl.passable[MAT_HULL]) is False
+    # mobility (fixed-point milli-units) replaces the old passable bool:
+    # air/door normal-speed (1000), hull a wall (0).
+    assert int(tbl.mobility[MAT_AIR]) == 1000
+    assert int(tbl.mobility[MAT_DOOR]) == 1000
+    assert int(tbl.mobility[MAT_HULL]) == 0
     assert tbl.conductivity[MAT_HULL] == 50.0
     # air fully transparent, hull/door fully opaque, glass partial.
     assert np.all(tbl.light_atten[MAT_AIR] == 0.0)
@@ -165,14 +167,17 @@ def test_permeability_defaults_to_solid_set():
 def test_furniture_row_values():
     """FURNITURE (id 6, editor proposal Q2): dedicated material row — lower
     hp, flammable, PARTIAL permeability (smoke drifts past crates), partial
-    light occlusion, movement-blocking."""
+    light occlusion, climbable-at-a-penalty movement (mobility 400, not a
+    wall)."""
     assert MAT_FURNITURE == 6
     assert MATERIAL_NAMES[MAT_FURNITURE] == "furniture"
     tbl = MaterialTable.from_config(CFG)
     assert tbl.hp[MAT_FURNITURE] == 30
     assert bool(tbl.flammable[MAT_FURNITURE]) is True
     assert tbl.ignition_temp[MAT_FURNITURE] == 280.0
-    assert bool(tbl.passable[MAT_FURNITURE]) is False
+    # Furniture is now climbable-at-a-penalty, not a wall: mobility 400
+    # (40% speed = 2.5x step time), the boolean it replaced was passable=false.
+    assert int(tbl.mobility[MAT_FURNITURE]) == 400
     # The approved partial permeability — explicitly 0.5, NOT the derived
     # sealed-because-it-occludes default.
     assert tbl.permeability[MAT_FURNITURE] == np.float32(0.5)
@@ -195,7 +200,7 @@ def test_furniture_row_values():
 def test_furniture_projects_into_grid_caches():
     """A tile patched to FURNITURE lands in every derived grid: flammable
     mask True, permeability 0.5 (NOT solid — flow drifts past), wall_hp 30,
-    movement still blocked via is_passable."""
+    movement climbable-at-a-penalty (mobility 400 -> is_passable True)."""
     g = GameMap(load_level("unhcr_vessel"))
     ys, xs = np.where((g.material == MAT_AIR) & ~g.is_vacuum)
     y, x = int(ys[len(ys) // 2]), int(xs[len(ys) // 2])
@@ -206,8 +211,9 @@ def test_furniture_projects_into_grid_caches():
     assert not g.solid[y, x], "partial permeability must NOT make it solid"
     assert g.wall_hp[y, x] == 30
     assert g.conductivity[y, x] == 0.0
-    # Movement: furniture is not in the walkable set (AIR + DOOR only).
-    assert not g.is_passable(y, x)
+    # Movement: furniture is now ENTERABLE (mobility 400 > 0) — climbable at a
+    # penalty, no longer a wall. The is_passable view is mobility > 0.
+    assert g.is_passable(y, x)
     # And the projection equals the table everywhere (no hardcoded list).
     assert np.array_equal(g.flammable, g.materials.flammable[g.material])
     assert np.array_equal(g.permeability, g.materials.permeability[g.material])

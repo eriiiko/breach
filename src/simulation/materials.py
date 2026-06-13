@@ -51,7 +51,14 @@ MATERIAL_NAMES = {
 _SCALAR_COLUMNS = {
     "hp": np.float32,
     "flammable": bool,
-    "passable": bool,
+    # mobility: fixed-point integer milli-units — the ease-of-movement
+    # coefficient that replaces the old ``passable`` boolean (mobility design
+    # §2/§6). 1000 = normal walking speed (air, open door), 400 = furniture
+    # (40% speed, 2.5x step time), 0 = impassable (a wall). The walkability
+    # predicate is the derived view ``mobility > 0`` (gamemap.is_passable);
+    # the cadence speed_fn area-averages it over the footprint. Stored int so
+    # the runtime cost expression is pure integer arithmetic (§3).
+    "mobility": np.int64,
     "conductivity": np.float32,
     "thermal_mass": np.float32,
     "ignition_temp": np.float32,

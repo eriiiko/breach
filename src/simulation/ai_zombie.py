@@ -23,6 +23,7 @@ from __future__ import annotations
 import math
 
 from config import CFG
+from simulation.movement import FootprintSamples, default_speed
 
 try:
     from pathfinding import astar
@@ -120,9 +121,16 @@ def update_zombies_tick(gmap, units, tick):
                     nearest.killed_by_zombie = True
             continue
 
-        # Movement: one tile every speed_ticks_per_tile ticks.
+        # Movement: one tile every (terrain-scaled) speed_ticks_per_tile ticks.
+        # Terrain cadence (mobility design §4.1): the §4 area-average mobility
+        # over the zombie's CURRENT footprint scales its base cadence into the
+        # ticks this step costs — a zombie clambering through furniture is 2.5x
+        # slower. A* stays speed-blind; the multiplier composes here only.
+        samples = FootprintSamples(
+            mobility=gmap.footprint_mobility(z.tile_y, z.tile_x, z.footprint))
+        step_ticks = default_speed(samples, z.speed_ticks_per_tile)
         z.zombie_move_accumulator += 1
-        if z.zombie_move_accumulator >= z.speed_ticks_per_tile:
+        if z.zombie_move_accumulator >= step_ticks:
             z.zombie_move_accumulator = 0
 
             # Repath if no path, finished, or every 5 steps to track movement.

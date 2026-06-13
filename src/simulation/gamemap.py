@@ -304,8 +304,10 @@ class GameMap:
           ``permeability`` (a tile is solid iff ``permeability == 0``), so it
           includes doors but not air — exactly the old ``{HULL, WOOD, DOOR}``
           set for the current materials.
-        - ``is_passable`` (the walkability predicate, AIR+DOOR) lives in the
-          query methods and is derived from the table's ``passable`` column.
+        - ``is_passable`` (the walkability predicate) lives in the query
+          methods and is the derived view ``mobility > 0`` over the material
+          table's ``mobility`` column (mobility design §2/§8) — a terrain-only
+          accessor; callers compose it with the live occupancy re-check.
 
         ``flammable`` and ``wall_hp`` come from the table; ``conductivity`` is
         populated for the later thermal pass. Atmosphere starts at 1.0 in
@@ -589,17 +591,48 @@ class GameMap:
     # Pure queries (used by AI, combat, pathfinding)
     # ------------------------------------------------------------------
     def is_passable(self, fy, fx):
-        """True if (fy, fx) is in-bounds and not a solid wall."""
+        """True if (fy, fx) is in-bounds and terrain-enterable.
+
+        The walkability predicate is the derived view ``mobility > 0`` over the
+        material table (mobility design §2/§8): a tile is enterable iff its
+        material has positive mobility. ``mobility <= 0`` is the impassable
+        sentinel (a wall), mirroring ``solid = permeability <= 0``. Terrain
+        only — the caller composes this with the live occupancy re-check.
+        """
         if fy < 0 or fy >= self._h or fx < 0 or fx >= self._w:
             return False
-        return self.material[fy, fx] in (MAT_AIR, MAT_DOOR)
+        return bool(self.materials.mobility[self.material[fy, fx]] > 0)
 
     def is_passable_block(self, fy, fx, footprint: int = 3):
-        """True if a footprint-sized block at (fy, fx) is fully passable."""
+        """True if every tile of a footprint-sized block at (fy, fx) is enterable.
+
+        Enterability is geometry: a unit cannot overlap a wall, so *any* single
+        ``mobility <= 0`` tile blocks the placement (mobility design §4 — the
+        "best tile wins" intuition must NOT reach enterability). Projects the
+        material block through the table's ``mobility`` column and requires all
+        positive. Terrain only; speed (the area-average) is a separate axis.
+        """
         if fy < 0 or fx < 0 or fy + footprint > self._h or fx + footprint > self._w:
             return False
         block = self.material[fy:fy + footprint, fx:fx + footprint]
-        return bool(np.all((block == MAT_AIR) | (block == MAT_DOOR)))
+        return bool(np.all(self.materials.mobility[block] > 0))
+
+    def footprint_mobility(self, fy, fx, footprint: int = 3):
+        """Per-tile ``mobility`` (milli-units) under a footprint at (fy, fx).
+
+        The static-terrain input to the movement-cadence speed reduction
+        (mobility design §4 / §4.1): the ``mobility`` column projected through
+        the material grid for every tile of the footprint, as a flat list of
+        Python ints. Out-of-bounds is clamped to the in-bounds overlap (the
+        caller has already passed ``is_passable_block`` for a real step, so the
+        footprint is in-bounds; the clamp is purely defensive). Pure read.
+        """
+        y0 = max(0, fy)
+        x0 = max(0, fx)
+        y1 = min(self._h, fy + footprint)
+        x1 = min(self._w, fx + footprint)
+        block = self.material[y0:y1, x0:x1]
+        return self.materials.mobility[block].reshape(-1).tolist()
 
     def has_los(self, fy1, fx1, fy2, fx2):
         """Bresenham line-of-sight check. Stops on ``solid``."""

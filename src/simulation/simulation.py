@@ -76,6 +76,7 @@ from simulation.events import (
     DoorDestroyedEvent, ExplosionEvent, WallDestroyedEvent,
 )
 from simulation.gamemap import GameMap, MAT_DOOR
+from simulation.movement import FootprintSamples, default_speed
 from simulation.orders import (
     DET_START_PHASE1, DET_BETWEEN_PHASES, DET_END_PHASE2,
     ORDER_GRENADE, ORDER_EXPLOSIVE, ORDER_FIRE, ORDER_MOVE_ATTACK,
@@ -444,8 +445,17 @@ class Simulation:
                         tick_positions = []
                         prev_x, prev_y = float(current_x), float(current_y)
                         for tile_x, tile_y in tile_path:
-                            for st in range(speed):
-                                frac = (st + 1) / speed
+                            # Terrain cadence (mobility design §4.1): the §4
+                            # area-average mobility over the destination
+                            # footprint scales the base order cadence ``speed``
+                            # into the ticks this tile-step actually costs (a
+                            # furniture tile is 2.5x slower). A* is speed-blind;
+                            # this composes the multiplier at execution only.
+                            samples = FootprintSamples(
+                                mobility=gmap.footprint_mobility(tile_y, tile_x, fp))
+                            step_ticks = default_speed(samples, speed)
+                            for st in range(step_ticks):
+                                frac = (st + 1) / step_ticks
                                 ix = prev_x + (tile_x - prev_x) * frac
                                 iy = prev_y + (tile_y - prev_y) * frac
                                 tick_positions.append((ix, iy))

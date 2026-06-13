@@ -280,7 +280,12 @@ water_ambient_base = 0.06   # idle ambient-sine shimmer amplitude on standing wa
 # arrays by simulation.materials.MaterialTable.
 #   hp            structural HP (0 = not a destructible wall)
 #   flammable     can ignite
-#   passable      unit walkability (door is passable but still occludes)
+#   mobility      ease-of-movement coefficient in fixed-point milli-units
+#                 (1000 = normal walk speed; 400 = 40% speed / 2.5x step time;
+#                 0 = impassable wall). Replaces the old `passable` bool:
+#                 walkability is the derived view `mobility > 0`, and the
+#                 movement cadence area-averages it over the unit footprint.
+#                 (door has mobility 1000 — walk-through — but still occludes.)
 #   light_atten   [R,G,B] per-channel optic attenuation (1=opaque, 0=clear)
 #   heat_atten    heat-ray attenuation
 #   conductivity  thermal: high = heat spreads fast (metal)
@@ -305,7 +310,7 @@ water_ambient_base = 0.06   # idle ambient-sine shimmer amplitude on standing wa
 [materials.air]
 hp = 0
 flammable = false
-passable = true
+mobility = 1000
 light_atten = [0.0, 0.0, 0.0]
 heat_atten = 0.0
 conductivity = 0.0
@@ -319,7 +324,7 @@ burst_threshold = 0.0
 [materials.hull]
 hp = 300
 flammable = false
-passable = false
+mobility = 0
 light_atten = [1.0, 1.0, 1.0]
 heat_atten = 1.0
 conductivity = 50.0
@@ -333,7 +338,7 @@ burst_threshold = 0.0  # 0 = never; the hull breaches via damage/explosions, not
 [materials.wood]
 hp = 60
 flammable = true
-passable = false
+mobility = 0
 light_atten = [1.0, 1.0, 1.0]
 heat_atten = 1.0
 conductivity = 0.15
@@ -351,7 +356,7 @@ hp = 40
 # flammable in practice. Kept false here to preserve existing physics behaviour
 # (doors don't ignite). Flip to true once that gameplay change is intended.
 flammable = false
-passable = true
+mobility = 1000
 light_atten = [1.0, 1.0, 1.0]
 heat_atten = 1.0
 conductivity = 0.3
@@ -365,7 +370,7 @@ burst_threshold = 2.0
 [materials.steel]
 hp = 200
 flammable = false
-passable = false
+mobility = 0
 light_atten = [1.0, 1.0, 1.0]
 heat_atten = 1.0
 conductivity = 45.0
@@ -379,7 +384,7 @@ burst_threshold = 10.0
 [materials.glass]
 hp = 15
 flammable = false
-passable = false
+mobility = 0
 light_atten = [0.1, 0.1, 0.1]
 heat_atten = 0.3
 conductivity = 1.0
@@ -395,7 +400,7 @@ burst_threshold = 1.0
 [materials.furniture]
 hp = 30              # burns out / breaks fast; fuel for fire = wall_hp
 flammable = true
-passable = false     # blocks movement (you climb over a crate, you don't ghost through it)
+mobility = 400       # climbable at a penalty: 40% speed = 2.5x step time (you clamber over a crate)
 permeability = 0.5   # partial: smoke/air drift past crates (sealed walls omit this -> 0)
 light_atten = [0.55, 0.55, 0.55]   # partial occlusion: a crate stack leaks some light
 heat_atten = 0.5
