@@ -54,27 +54,33 @@ upscaling step.
   regen, iterate until satisfied — *then* merge. Nothing is committed until you like it.
 - The regen produces a fresh local heightmap for the crop; the *merge* (§5) turns it into added
   detail on the global map.
+- **The pipeline tracks every coordinate end to end [E].** From the moment of selection, it records
+  the art-space rect *per layer*, the crop's origin/size, and the exact merge-back position — so the
+  whole start-to-finish chain (select → crop → regen → align → merge → save) is reproducible, and a
+  patch can be re-run or re-merged without re-selecting. The sidecar `<layer>_patches.json` is that
+  ledger (one entry per refined region).
 
-> **[E] — your sentence got cut off: "the regen pipeline needs to …" — what did you mean it needs to
-> do?** My assumption: produce a local heightmap that the merge can align + scale into the global. If
-> you meant something else (a specific output, a constraint), tell me and I'll fix this section.
+## 4. Level 0 + a 0–1 → metres map [E]
 
-## 4. Level 0 + a real scale [E]
-
-Two calibrations give the heightmap physical meaning — and they're worth doing on the *global* map
-first (§6), independent of the patch tool:
+**The heightmap data stays 0–1** (the PNG is fine as-is). What we add is a **mapping function** that
+says where 0–1 sits "in the grand scheme of things" **[E]** — `metres = relief × metres_per_unit`,
+with the **floor re-baselined to 0**. Two pieces, both done on the *global* map first (§6),
+independent of the patch tool:
 
 - **Level 0 — the floor baseline.** The floor is the most *common* surface, so the dominant mode of
-  the relief histogram ≈ floor level. Subtract it → **floor = 0**, raised features positive, dips
-  negative. Set once globally; every merged patch inherits it. Retires the `height_floor` render
+  the relief histogram ≈ floor level. Subtract it → **floor = 0** in the 0–1 map, raised features
+  positive. Set once globally; every merged patch inherits it. Retires the `height_floor` render
   fudge at the source.
-- **Height scale — a real-world reference [E].** Calibrate metres-per-relief-unit with a known object:
-  *"this feature is a 1.8 m human"* → the tool solves the scale so the whole heightmap reads in
-  **metres**. Gives the relief meaning and grounds the water depth physically (a 0.4 m crate really
-  protrudes from a 0.3 m puddle).
-- Together these turn the heightmap from an abstract 0–1 grey field into *floor-relative metres*,
-  which is what the height-probe (§2) displays and what `height_scale`/`height_floor` in the water
-  shader consume (eventually as fixed values, not eyeballed dials).
+- **The 0–1 → metres scale — a real-world reference [E].** Set `metres_per_unit` once from a known
+  object — *"this feature is a 1.8 m human"* → solve the scale. Now `relief = 0.25` *means* 0.5 m.
+  Grounds the water depth physically (a 0.4 m crate really protrudes from a 0.3 m puddle) and is what
+  the height-probe (§2) displays.
+- **One scale for all levels is the goal [E].** Erik: each level needn't *have* to share the scale,
+  but striving for a single project-wide `metres_per_unit` (and the floor-at-0 convention) is worth
+  it — *it makes swapping art/height assets between levels just work*. So the standard is: every
+  level's heightmap re-baselined to floor = 0 and read through the *same* `metres_per_unit`. The
+  water shader's `height_scale`/`height_floor` then become these *calibrated constants*, not eyeballed
+  dials (they stay as overrides, but default to the calibrated values).
 
 ## 5. Merge — aligned, then **zero at the border** [E]
 
@@ -112,15 +118,18 @@ The seam is the risk, and Erik's insight fixes it robustly. The merge:
 4. **Regen-a-patch with the live preview loop** + the generator knobs.
 5. **The aligned + zero-border feathered merge** + the numbers + destructive save.
 
-## 7. Open threads (need you)
+## 7. Decisions + remaining minor calls
 
-1. **[E]** Your cut-off thought — "the regen pipeline needs to …" — what's the rest?
-2. **Select tool** — always equipped, or armed with a key? (you floated both — I'd default to *armed
-   with a key*, so panning/inspecting is the default and you only select when you mean to.)
-3. **Scale reference UX** — drop/measure a known-length marker in the tool to set the 1.8 m reference,
-   or type a number against a feature you click? (lean: click two points = a known length.)
-4. **Level-0 floor detection** — histogram-mode auto-detect, or click-a-floor-tile-to-set-zero?
-   (lean: auto-detect with a manual override.)
-5. **v1 scope** — ship the **standalone level-0 + scale re-baseline** first (fixes today's visible
-   problems within an hour), then the inspector + region-regen as the fast-follow? Or build the whole
-   loop in one go? (I still lean: re-baseline first.)
+**DECIDED (Erik, 2026-06-13): build the whole tool** — full design → adversarial review → build, in
+the §6 order (level-0/scale re-baseline first as the foundation, then inspector → select → regen →
+merge). Resolved this round: the cut-off thought (§3 coord-tracking), the 0–1→metres map (§4), the
+smooth zero-at-border merge (§5).
+
+Minor calls I'll proceed with unless you say otherwise (each cheap to flip):
+- **Select tool** — *armed with a key* (pan/inspect is the default; you only select when you mean to).
+- **Scale reference UX** — *click two points of a known length* (then type the metres) to set
+  `metres_per_unit`.
+- **Level-0 floor detection** — *histogram-mode auto-detect, with a manual click-a-floor-tile
+  override.*
+- **Per-layer maps** — yes, one heightmap per art layer (base/furniture/destroyed), mirroring the
+  diffuse layers.
