@@ -52,7 +52,7 @@ to the level's grid:
 
 **Every per-material constant lives in one place:** the `MaterialTable`
 (`src/simulation/materials.py`), indexed by material id. It holds `hp`,
-`flammable`, `passable`, `conductivity`, `ignition_temp`, the per-channel
+`flammable`, `mobility`, `conductivity`, `ignition_temp`, the per-channel
 `light_atten` triple, `heat_atten`, and the acoustic columns. The table is built
 from the `[materials]` section of `config.toml`, so **adding a material is one
 config row plus one CSV mapping in the level loader — no code change.**
@@ -82,16 +82,48 @@ motivate a tile-object grid. It goes in a **sparse side-structure keyed by
 > prototype cache" framing in `architecture.md` §5. Arrays + table is the canon
 > target, not a stepping stone — the tile-object layer is not coming.
 
+### State economy: one richest representation, view by consumer
+
+The "caches are not a second source of truth" rule above generalises into a standing principle for
+*how* to represent each fact. It is stated **conditionally**, because the engine already does the
+right thing in two different ways depending on the consumer, and the principle must license both
+rather than contradict either:
+
+> **Store the single richest representation of each fact; choose the *view strategy* by the
+> consumer.**
+>
+> - Where a consumer already holds the source in a register, **derive** the cheap view in-register.
+>   A boolean from a coefficient is a free comparison: `is_passable = mobility > 0`, `solid =
+>   permeability <= 0`. No second field is stored.
+> - Where a **native / CUDA kernel** needs a contiguous per-tile buffer, **materialise** a derived
+>   cache — never a second source of truth, always a projection of the one source. The engine already
+>   does exactly this for `permeability`, `light_atten`, and `face_shift` (the static caches in
+>   `_update_caches`, patched per-tile in `on_tile_changed`). Materialising is correct here, not a
+>   violation, *because* the cache is regenerable from its source and a kernel needs the contiguous
+>   buffer.
+> - **Never store two independent fields that encode one fact** — they drift, and the drift is a bug.
+>   `passable` stored beside a speed penalty was one fact written twice; `mobility` is the single
+>   field, the bool is derived.
+> - Representation is **per independent axis.** Movement (`mobility`) and flow (`permeability`) are
+>   separate coefficients that *legitimately disagree* — a closed door is walkable yet gas-sealed —
+>   and stay separate. "One richest representation" is per-axis, not one field for all systems.
+
+The parallel-sim training farm — every field × N instances resident at once — makes "derive, don't
+duplicate" the sensible default tiebreaker, but it is **not** the headline: for `mobility` itself the
+byte saving is ~zero (the old boolean was never materialised). The case rests on
+single-source-of-truth and the climbable-furniture *feature*, not on memory.
+
 ---
 
 ## What a cell blocks: see the Material chapter
 
 How a cell interacts with each system is **per-system coefficients**, not a single occlusion flag —
 `light_atten` for light/vision, the wave coefficients for pressure, `permeability` for gas/smoke
-flow, `passable` for movement. That model (and why `is_wall` is retired) is owned by the **Material
-chapter**; State only needs its one ownership consequence: **`passable` (walkability) is a CPU-only
-predicate and never goes GPU-side**, while the coefficient fields the kernels read (`light_atten`,
-the permeability/wave boundaries, `obstacles`) are GPU-resident.
+flow, `mobility` for movement. That model (movement is now a coefficient like the rest; why `is_wall`
+is retired) is owned by the **Material chapter**; State only needs its one ownership consequence:
+**the walkability predicate (`is_passable = mobility > 0`, composed with live occupancy) is a CPU-only
+query and never goes GPU-side**, while the coefficient fields the kernels read (`light_atten`, the
+permeability/wave boundaries, `obstacles`) are GPU-resident.
 
 ---
 
@@ -112,7 +144,7 @@ CSV decides world size — not a fixed config resolution):
 | `wind_x`, `wind_y` | `float32` | Wind velocity field |
 | `smoke` | `float32` | Smoke density |
 | `fire` | `float32` | Fire intensity |
-| `solid` | `bool` | Static solidity (`permeability <= 0`); replaces the retired `is_wall`. Movement hard-stop + LoS basis |
+| `solid` | `bool` | Static solidity (`permeability <= 0`); replaces the retired `is_wall`. Flow/LoS boundary (movement reads `mobility`, not `solid`) |
 | `permeability` | `float32` | Static gas/smoke flux coefficient per material (0 = sealed wall, 1 = open air) |
 | `dyn_permeability` | `float32` | Live flux coefficient: static `permeability` with unit footprints (partial — soft bodies) combined in, rebuilt each tick |
 | `wave_absorb` | `float32` | Static per-material wave-energy damping; units add to `dyn_wave_absorb` |
@@ -198,8 +230,11 @@ onto two fields once per tick by `stamp_units`, which does two outputs in one pa
    not a full wall: its footprint gets a *partial* `dyn_permeability` (default 0.5, per-unit hook +
    `[physics] unit_permeability`), so smoke and air **seep past a body** rather than reflecting off
    it, and it adds to `dyn_wave_absorb` (`[physics] unit_wave_absorb`) so it **absorbs blasts**
-   instead of mirroring them. Units still stamp into `obstacles` (movement hard-stop) and cast light
-   shadows. The C++ atmosphere + smoke solvers gather flux via `face = min(perm[self], perm[neighbor])`
+   instead of mirroring them, and they cast light shadows. (`obstacles` itself is now **walls only** —
+   `permeability <= 0`; units are no longer painted into it, since a soft body must not trip the C++
+   hard-zeroing wall BCs. Unit-vs-unit movement blocking is the live footprint occupancy re-check, not
+   this mask — see the mobility model in engine/01 / engine/03.) The C++ atmosphere + smoke solvers
+   gather flux via `face = min(perm[self], perm[neighbor])`
    over `dyn_permeability`; with the current materials the behaviour is identical to the old boolean
    boundary. (Wave transmission *through* walls — 4b — is still deferred.)
 2. **`dyn_light_atten`** = the static `light_atten` with each living unit's opacity
@@ -305,7 +340,11 @@ the same inputs gives a bit-identical trajectory on any machine.
   `material` is `int8`; all per-material constants come from the table
   (`src/simulation/materials.py`); caches are table projections built in
   `GameMap._update_caches`.
-- Walkability predicate `is_passable` / `is_passable_block` (`AIR`/`DOOR`), CPU-only.
+- **Mobility coefficient (SHIPPED, commit a440d05).** The walkability predicate `is_passable` /
+  `is_passable_block` is now the derived view `mobility > 0` over the material table's `mobility`
+  column (was the `AIR`/`DOOR` whitelist), CPU-only and terrain-only; the caller composes the live
+  occupancy re-check. `mobility` is the single representation — the boolean is derived, never stored
+  twice (the state-economy principle above). Furniture (`mobility 400`) is now climbable.
 - **`is_wall` retired.** `GameMap.solid` (= `permeability <= 0`) replaces it everywhere in Python;
   the flow boundary and `has_los` now read `solid`. The C++ solvers keep a now-vestigial `is_wall`
   *parameter* (fed `gmap.solid`) — removing that param + rebuild is a pending follow-up.
@@ -313,8 +352,9 @@ the same inputs gives a bit-identical trajectory on any machine.
   `dyn_permeability` caches; the C++ atmosphere + smoke solvers gather flux via
   `face = min(perm[self], perm[neighbor])`. Behaviour-identical for the current materials.
 - **Soft units.** `stamp_units` writes unit footprints as a *partial* `dyn_permeability` (default
-  0.5, per-unit hook + `[physics] unit_permeability`) so gas/air seep past a body; units still
-  hard-stop movement and cast light shadows.
+  0.5, per-unit hook + `[physics] unit_permeability`) so gas/air seep past a body; units cast light
+  shadows. Movement blocking between units is the live footprint occupancy re-check (not the
+  `obstacles` mask, which is now walls-only).
 - **Units absorb blasts.** `wave_absorb` / `dyn_wave_absorb` caches (material `wave_absorb` + units
   via `[physics] unit_wave_absorb`); the C++ wave update damps per cell by it. Energy-out only —
   open air is bit-identical.

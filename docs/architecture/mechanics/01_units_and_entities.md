@@ -290,9 +290,51 @@ behaviour pass.
 `base_speed` is generated with the stat vector (tight variance). Effective speed
 is intended to derive from base speed, agility, encumbrance, wounds,
 zombification, and terrain, mapping to a movement **cadence** in ticks-per-tile.
-That derivation is not built: today movement uses `speed_ticks_per_tile`, set
-directly from config (zombies use `CFG.zombie.ticks_per_tile`; marines override
-per order). `base_speed` is stored but not yet consumed.
+The unit-level derivation (agility/wounds/encumbrance) is not built — today the
+order/species base cadence comes from config (zombies use `CFG.zombie.ticks_per_tile`;
+marines override per order), and `base_speed` is stored but not yet consumed. The
+**terrain** half, however, has shipped (commit a440d05) as the footprint→speed seam
+described next.
+
+### The footprint→speed function seam (SHIPPED, commit a440d05)
+
+A unit covers a block of tiles of mixed `mobility` (the per-material terrain
+coefficient, engine/03). How it reduces those tiles to an effective step time is a
+**single swappable function behind a fixed contract** — the engine owns the
+`mobility` *field*; how a creature reads its footprint is *unit policy*, so the
+catalogue can grow (heavy/bulldoze, chokepoint-crawler) without touching the engine.
+This is the same engine/game split as the swappable ControlModes direction.
+
+```
+speed_fn(footprint_samples, speed_class) -> tick_cost: int   # pure, integer, deterministic
+```
+
+- **Consumed by the movement CADENCE only — A\* never calls it.** Pathfinding is
+  deliberately speed-blind (engine/10): terrain speed must not bend a route, so the
+  reduction runs once per *executed* tile-step, not per search node.
+- **Integer / deterministic.** Pure integer-in / integer-out, fixed-point milli-units,
+  a single documented rounding rule (half-up `(num + den//2) // den`, never `round()`
+  — Python 3 `round` is banker's). It takes a baked integer `speed_class` (the unit's
+  order/species base cadence), **never the unit object** — a float field like
+  `base_speed` must not leak in and break lockstep.
+- **`mobility` is the static terrain floor the function composes.** The **v1 default**
+  (`default_speed` in `src/simulation/movement.py`) is the **area-weighted average**
+  mobility over the footprint: `tick_cost = half_up(base_ticks · n · 1000, Σ mobility)`.
+  A single obstacle is then a *fraction* of the body — a large unit is not penalised
+  for clipping one crate-corner, while a unit buried in clutter is genuinely slowed.
+  (Enterability is the separate geometry axis: *every* footprint tile must have
+  `mobility > 0`, engine/10 / `is_passable_block` — the "best tile wins" intuition must
+  not reach it or units clip into walls.)
+- **Forward-compatible inputs.** The function takes a `FootprintSamples` struct, not a
+  bare array, so it can later *compose* dynamic field factors —
+  `effective = mobility_factor × water_factor(depth) × …` — without a breaking
+  signature change. The water movement-penalty already in canon (engine/07 §5.5,
+  "deeper water slows units") is the first planned extension; its home is this
+  function. v1's struct carries `mobility` only.
+
+v1 ships exactly one function (the default average) behind the seam; the seam is
+load-bearing, the catalogue grows. A determinism test asserts it returns `int` and is
+run-to-run identical.
 
 ---
 
@@ -394,6 +436,12 @@ and its consumers.
 - **Occupancy interface.** `occupied_tiles()` / `occupies()` are implemented and
   `GameMap.stamp_units` / `is_passable_block` consume them. The 3×3 assumption is
   out of the physics path.
+- **Footprint→speed seam (SHIPPED, commit a440d05).** `speed_fn(footprint_samples,
+  speed_class) -> int` in `src/simulation/movement.py`, with `FootprintSamples` (carries
+  `mobility`; forward-compatible struct), the `half_up` integer rounding rule, and the
+  v1 `default_speed` area-weighted-average reduction. Pure / integer / deterministic;
+  consumed by movement cadence, never A\* (engine/10 is speed-blind). `GameMap.
+  footprint_mobility` supplies the per-tile terrain samples.
 - **Facing as radians** + `facing_compass()`; the renderer selects sprites via it.
 - **`current_hp`** is the sole sampled stat consumed by gameplay (combat and
   zombie melee deduct from it; the panel shows it against `effective_vitality`).
@@ -416,8 +464,10 @@ and its consumers.
   footprint thresholds) is brainstorm only.
 - **Metaphysics behaviour** — fear, the Gray image-seeding hook, will-orientation
   drift, manifestation, the awakening trigger. Only the fields exist.
-- **Derived movement from `base_speed`** — movement uses config
-  `speed_ticks_per_tile`; `base_speed` is stored but unconsumed.
+- **Derived movement from `base_speed`** — the *unit-level* terms (agility,
+  encumbrance, wounds, zombification) are unbuilt; movement's base cadence comes from
+  config `speed_ticks_per_tile`, and `base_speed` is stored but unconsumed. The
+  *terrain* half **has** shipped — see the next item.
 - **Real item system** — `Inventory` is a stub; ammo lives in `has_grenade` /
   `has_explosive` booleans, not migrated into it.
 

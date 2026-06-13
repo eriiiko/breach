@@ -51,9 +51,13 @@ def is_blocked(x, y):
     return not gmap.is_passable_block(y, x, unit.footprint)
 ```
 
-`is_passable_block(fy, fx, footprint)` is true only when the *entire*
-`footprint × footprint` square anchored at `(fx, fy)` is air or open door — a
-single wall tile inside the block makes the whole position impassable. Because the
+`is_passable_block(fy, fx, footprint)` is true only when *every* tile of the
+`footprint × footprint` square anchored at `(fx, fy)` has `mobility > 0` — a
+single `mobility 0` (wall) tile inside the block makes the whole position
+impassable, but a furniture tile (`mobility 400`) does **not** — it is enterable,
+just slow (the speed penalty is the cadence's business, not A\*'s; see below).
+This replaced the old `material in (AIR, DOOR)` whitelist, so furniture and any
+future partial-mobility terrain became pathable. Because the
 predicate carries the footprint, **A\* itself is footprint-agnostic**: the same
 search plans for a 3-tile marine, and would plan for a hypothetical 2- or 4-tile
 unit, with no change to the algorithm. The footprint contract — `occupied_tiles()`
@@ -96,6 +100,27 @@ assumes the cheaper-on-average 1.5, `h` can mildly overestimate a path that is
 forced onto many consecutive expensive diagonals. In practice this is harmless —
 it only ever makes the search marginally greedier — and the heuristic never blocks
 a valid path.
+
+**A\* is speed-blind: terrain `mobility` does not bend a route.** The cost above is
+purely *geometric* — step count and the diagonal rule — and A\* ignores terrain
+speed entirely. The `mobility` coefficient touches A\* in exactly **one** place: the
+enterability gate (`mobility > 0`, via `is_passable_block`). Furniture is *enterable
+but slow*, and that slowness is applied by the movement **cadence** as the unit
+crosses the tile (mechanics/01 §6) — it is **not** a search cost. The rationale is
+player agency: if a unit re-routed itself around slow terrain, then the one time you
+send it straight at an alien it would detour around a puddle and get eaten, reading
+as the unit disobeying. A speed-blind planner means *if* a unit crosses slow ground,
+it is because **you** sent it there — the consequence is yours. (It also gives the
+barricade tactic for free: dumb units take the direct path and are slowed climbing a
+crate wall rather than cleverly routing around it.) There is no cost-aware A\*, no
+per-tile cost hook, and no new float on any search path — the existing float
+`g`/heuristic is unchanged.
+
+> *Deferred nicety (not built):* A\* could break ties **among equal-length paths** by
+> preferring higher mobility — "don't trudge through mud when a same-length clear
+> route exists." Because it can never *lengthen* a path, it cannot cause the
+> avoid-the-puddle-and-die failure the speed-blind rule guards against. A documented
+> option, off by default.
 
 ### Determinism and the node budget
 
@@ -233,7 +258,10 @@ Two directions are noted but not built:
   diagonal cost as a search-state parity flag, octile heuristic, deterministic
   tie-breaking, 50k node cap. Returns a flat `list[(x, y)]`.
 - Footprint-aware blocking via caller-supplied `is_blocked_fn` wrapping
-  `GameMap.is_passable_block(fy, fx, footprint)`.
+  `GameMap.is_passable_block(fy, fx, footprint)`. (SHIPPED, commit a440d05) the
+  enterability gate now reads `mobility > 0` (was the `AIR`/`DOOR` whitelist), so
+  furniture is pathable; A\* stays speed-blind — terrain `mobility` never enters the
+  cost, only the gate.
 - Player path lowering: `Simulation._compute_player_paths` runs A\* at order
   time (and on undo), interpolates to per-tick float positions at the order's
   `ticks_per_tile` cadence, fills `unit.move_path`. Replayed by

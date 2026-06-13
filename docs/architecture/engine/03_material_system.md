@@ -24,7 +24,11 @@ section per material. The section name is the material's config key; its positio
 [materials.hull]
 hp            = 300          # structural HP; 0 = not a destructible wall
 flammable     = false        # can ignite
-passable      = true|false   # unit walkability (independent of occlusion — see below)
+# --- movement (the cadence reduction) ---
+mobility      = 1000         # ease-of-movement coefficient, fixed-point milli-units:
+#                              1000 = normal walk speed, 400 = furniture (40% speed),
+#                              0 = impassable wall. Walkability is the derived view
+#                              `mobility > 0` (independent of occlusion — see below)
 # --- optics (the ray march) ---
 light_atten   = [1.0, 1.0, 1.0]  # per-channel RGB attenuation; 1 = opaque, 0 = clear
 heat_atten    = 1.0          # heat-ray attenuation (scalar)
@@ -44,30 +48,38 @@ burst_threshold = 0.0        # over-pressure differential a wall holds before it
 The full shipped set — **one table**, columns grouped by the **system** that reads each
 (structural · fire · optics/rays · acoustic wave · gas-flow · movement):
 
-| id · key | hp | blast | flammable | ignition | conductivity | `light_atten` | `heat_atten` | wave R / A | `permeability` | passable |
+| id · key | hp | blast | flammable | ignition | conductivity | `light_atten` | `heat_atten` | wave R / A | `permeability` | `mobility` |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 0 `air`   | 0   | 0    | no  | –   | 0    | `[0,0,0]`       | 0   | 0 / 0     | 1  | yes |
-| 1 `hull`  | 300 | high | no  | –   | 50   | `[1,1,1]`       | 1   | 0.9 / 0.1 | 0  | no  |
-| 2 `wood`  | 60  | 0    | yes | 300 | 0.15 | `[1,1,1]`       | 1   | –         | 0  | no  |
-| 3 `door`  | 40  | 0    | no  | 280 | 0.3  | `[1,1,1]`       | 1   | –         | 0¹ | yes |
-| 4 `steel` | 200 | high | no  | –   | 45   | `[1,1,1]`       | 1   | –         | 0  | no  |
-| 5 `glass` | 15  | 0    | no  | –   | 1    | `[0.1,0.1,0.1]` | 0.3 | –         | 0  | no  |
+| 0 `air`       | 0   | 0    | no  | –   | 0    | `[0,0,0]`       | 0   | 0 / 0     | 1  | 1000 |
+| 1 `hull`      | 300 | high | no  | –   | 50   | `[1,1,1]`       | 1   | 0.9 / 0.1 | 0  | 0    |
+| 2 `wood`      | 60  | 0    | yes | 300 | 0.15 | `[1,1,1]`       | 1   | –         | 0  | 0    |
+| 3 `door`      | 40  | 0    | no  | 280 | 0.3  | `[1,1,1]`       | 1   | –         | 0¹ | 1000 |
+| 4 `steel`     | 200 | high | no  | –   | 45   | `[1,1,1]`       | 1   | –         | 0  | 0    |
+| 5 `glass`     | 15  | 0    | no  | –   | 1    | `[0.1,0.1,0.1]` | 0.3 | –         | 0  | 0    |
+| 6 `furniture` | –   | 0    | yes | –   | –    | `[…]`           | –   | –         | 0.5² | 400  |
 
-¹ door `permeability` is 0 only while closed; the dynamic-door system flips it open. Wave:
+`mobility` is **fixed-point integer milli-units** (1000 = normal walk speed, 400 = furniture's
+40%-speed climb penalty, 0 = impassable). Walkability is the derived view `mobility > 0`; the
+movement cadence area-averages it over the unit footprint (§movement below; mechanics/01 §6).
+
+¹ door `permeability` is 0 only while closed; the dynamic-door system flips it open — yet `mobility`
+stays 1000 (a unit walks through, it opens), the canonical case where the two coefficients disagree.
+² furniture is **partially permeable** (`permeability = 0.5`): smoke/air drift past crates. Wave:
 `reflect + absorb = 1` for now — *transmit* (sound through a wall) is the deferred 4b extension.
 
 This single table **is** the per-system coefficient set — each column is consumed by exactly one
 system (the next section spells out which). **Consumed today:** `light_atten` (the ray march's
 RGB channels), `heat_atten` (the ray march's independent heat channel — engine/06 §1),
-`permeability` (the gas/smoke flux boundary), `wave_absorb` (per-cell wave damping), and
-`burst_threshold` (over-pressure wall failure). Still stored-and-waiting: `wave_reflect`/transmit
+`permeability` (the gas/smoke flux boundary), `wave_absorb` (per-cell wave damping),
+`burst_threshold` (over-pressure wall failure), and `mobility` (walkability via the derived
+`mobility > 0`, and the movement-cadence speed reduction). Still stored-and-waiting: `wave_reflect`/transmit
 waits for the through-wall 4b extension. Values are illustrative — tuned in the lighting demo and a
 future wave test; `–` means "not yet tuned".
 
 ### Why a named-key table and not flat arrays
 
 An earlier design stored materials as parallel flat arrays
-(`[hp, reflectivity, absorption, flammable, passable]`), one array per material indexed by
+(`[hp, reflectivity, absorption, flammable, mobility]`), one array per material indexed by
 column number. That format conflated two physically distinct things under one "absorption"
 number — *optical* absorption (how much light a tile eats) and *acoustic* absorption (how
 much shockwave energy it damps) — and made adding a column a positional, error-prone edit.
@@ -111,27 +123,33 @@ pane of **glass** stops a unit and passes light (dimmed); a **hull plate** stops
 boolean can carry that, so each transport system reads **its own coefficient**, and the table holds
 one column (or set) per system — **the master table above is grouped exactly this way**: `light_atten`
 for light (and vision, which reads its aggregate), `heat_atten` for heat, `wave_reflect`/`wave_absorb`
-for the pressure wave, `permeability` for gas + smoke flow, `passable` for movement, `conductivity`
+for the pressure wave, `permeability` for gas + smoke flow, `mobility` for movement, `conductivity`
 for electricity (and fluid will reuse a permeability when it exists). The grill is the proof that one
 mask cannot serve all of them: it passes light, gas, and fluid yet stops a unit, so its columns
-disagree — `permeability = 1`, `light_atten = [0,0,0]`, `passable = no`.
+disagree — `permeability = 1`, `light_atten = [0,0,0]`, `mobility = 0`.
 
-The unifying rule is how a **unit** sits in those columns: a unit is *partial* in every system — it
-dims light, soaks heat (and so catches fire), absorbs a shockwave, slows but does not seal smoke —
-with exactly **one** exception. **Movement** is the only interaction where a unit is a hard, binary
-blocker (the `passable` stamp); everything else is a coefficient.
+**Movement is now a coefficient like every other system — the model has no boolean exception left.**
+An earlier draft of this chapter called movement the *single deliberate exception*: a hard binary
+`passable` stamp, the lone wall hard-stop in an otherwise all-coefficient model. That exception is
+gone. `passable` was promoted to **`mobility`** — a per-material scalar (air 1000, furniture 400, a
+wall 0) read exactly the way `permeability` and `light_atten` are. A unit is now *partial* in **every**
+system without exception: it dims light, soaks heat (and so catches fire), absorbs a shockwave, slows
+but does not seal smoke, and is **slowed — not hard-stopped — climbing furniture**. The familiar
+walkability question is just the derived view `is_passable = mobility > 0`; a wall is `mobility 0`,
+and nothing in the model is a standalone boolean anymore.
 
 **`is_wall` is retired.** It used to mean "occludes" — derived from `light_atten > 0` — and three
 different systems leaned on that one accidental flag at once (the smoke/pressure boundary, the vision
 blocker, the wall hard-stop). Each now reads the coefficient it actually needs: light and vision →
-`light_atten`, the gas wave → the wave coefficients, gas flow → permeability, movement → `passable`.
+`light_atten`, the gas wave → the wave coefficients, gas flow → permeability, movement → `mobility`.
 No system asks "is this a wall?" — it asks "how much does this stop *me*?"
 
-The door is why `passable` and the flow coefficients must stay separate: a **closed door** is
-impermeable to gas (it stops smoke *now*) yet `passable` (a unit traverses it — it opens). Two
-systems, two answers, one tile — a single boolean could never hold both. (There is currently no
-open/closed door state in code; a door is always passable and always opaque until the dynamic-door
-system lands.)
+The door is why `mobility` and the flow coefficients must stay separate: a **closed door** is
+impermeable to gas (it stops smoke *now*, `permeability = 0`) yet fully mobile (`mobility = 1000` — a
+unit traverses it, it opens). Two systems, two answers, one tile — a single boolean could never hold
+both, and the two coefficients legitimately disagree per axis. (There is currently no open/closed
+door state in code; a door is always walk-through and always opaque until the dynamic-door system
+lands.)
 
 ### A unit is a mobile material patch
 
@@ -141,8 +159,9 @@ each field every tick — exactly as the static material table fills the static 
 instances are **light** (`dyn_light_atten`), **gas/smoke flow** (a partial `dyn_permeability`, so a
 body is *soft* — air and smoke seep past it), and the **pressure wave** (`dyn_wave_absorb`, so a body
 absorbs a blast instead of mirroring it); heat follows the same per-tick stamp once its solver is
-built. The lone non-coefficient interaction, movement, is the hard `passable` stamp (a unit's
-footprint marks its cells un-enterable).
+built. Movement is no longer the odd one out: terrain `mobility` is a coefficient too, and a unit's
+own occupancy (the footprint re-check, not a stamped boolean field) is the only remaining per-tick
+*binary* in the model — a dynamic occupancy axis, not a per-material exception.
 
 ## Per-channel attenuation: static × dynamic
 
@@ -268,7 +287,12 @@ A per-material `light_reflect` would imply automatic in-march bouncing, which th
   the flow boundary (`obstacles`) and `has_los` now read `solid`/`permeability`, not the old
   light-occlusion accident. (The C++ solvers keep a now-vestigial `is_wall` *parameter*, fed
   `gmap.solid`; removing it + rebuild is a pending follow-up.)
-- **`is_passable` / `is_passable_block`** as the separate walkability predicate (AIR + DOOR).
+- **`mobility` column + walkability predicate (SHIPPED, commit a440d05).** The `passable` bool
+  became the `mobility` coefficient (fixed-point milli-units: air/door 1000, furniture 400, walls 0).
+  `is_passable` / `is_passable_block` are now the derived view `mobility > 0` (terrain-only; the
+  caller composes the live occupancy re-check), and `GameMap.footprint_mobility` projects the column
+  under a footprint for the cadence speed reduction. Furniture is now *climbable at a penalty*, not a
+  wall. (Per-race speed reduction lives in `simulation.movement` — mechanics/01 §6.)
 - **`permeability` column consumed** — `GameMap.permeability` / `dyn_permeability`; the C++
   atmosphere + smoke solvers gather flux via `face = min(perm[self], perm[neighbor])`. Default is
   sealed iff the material occludes light; behaviour-identical for the current materials.
@@ -278,7 +302,8 @@ A per-material `light_reflect` would imply automatic in-march bouncing, which th
   destroys walls holding a pressure differential above their `burst_threshold` (see ch.04).
 - **Soft units in the gas fields.** `stamp_units` writes unit footprints as a *partial*
   `dyn_permeability` (default 0.5, per-unit hook + `[physics] unit_permeability`) and an added
-  `dyn_wave_absorb` (`[physics] unit_wave_absorb`) — soft body, absorbs blasts; movement still hard.
+  `dyn_wave_absorb` (`[physics] unit_wave_absorb`) — soft body, absorbs blasts. Movement blocking
+  between units is the live footprint occupancy re-check, not a stamped boolean field.
 - **Per-channel RGB attenuation, consumed for real.** The C++ raycaster
   (`cpp/src/raycaster.cpp`) reads `light_atten` per channel and applies `(1 - atten)` to the
   ray's RGB; opaque `[1,1,1]` kills the ray, glass `[0.1,…]` dims it, asymmetric triples tint.

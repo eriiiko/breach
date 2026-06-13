@@ -138,10 +138,14 @@ model (the master table of system → coefficient, and the rule that **a unit is
 patch**, partial in every system but one) is the subject of the **Material chapter**. The grid only
 fixes that every such field shares this one grid and is indexed identically.
 
-The single interaction that *is* a grid-level boolean is **`is_passable`** — walkability for units
-and pathfinding: a cell a unit may occupy (walkable material, not already occupied). Movement is the
-one place occupancy is hard and binary; every other "blocking" is a coefficient in which a unit is
-only partial. (The full field set and the coefficient model live in the State and Material chapters.)
+Movement is **no exception to that coefficient model** — terrain walkability is now the per-material
+`mobility` coefficient (air 1000, furniture 400 = climbable-at-a-penalty, a wall 0), read like
+`permeability` or `light_atten`. **`is_passable` is a derived terrain accessor**, not a stored grid:
+it is the view `mobility > 0`, which the caller composes with the live occupancy check. And occupancy
+is itself **not a stored boolean grid** — "is a unit standing here *right now*" lives in the footprint
+re-check over live unit positions (`is_passable_block`), not in an `occupied` array. So the one
+remaining *dynamic* binary is occupancy, computed on demand; terrain is a coefficient like everything
+else. (The full field set and the coefficient model live in the State and Material chapters.)
 
 ---
 
@@ -219,7 +223,9 @@ Audited against the shipped code, not the prose above.
 - **Coord cleanup complete.** `Unit` stores float `x`/`y` as source of truth, exposes integer
   `tile_x`/`tile_y`, carries `footprint` (default 3); the `cx/cy/fx/fy/fxf/fyf` vocabulary and
   `CFG.display.coarse` are gone; spawn entries use physics-tile `x`/`y`.
-- **Walkability + stamp.** `is_passable` / `is_passable_block` exist; the per-tick stamp paints unit
+- **Walkability + stamp.** `is_passable` / `is_passable_block` exist and (SHIPPED, commit a440d05)
+  now read the derived terrain view `mobility > 0` over the material table, not a stored boolean grid;
+  occupancy stays the live footprint re-check, not an `occupied` array. The per-tick stamp paints unit
   footprints into the solid mask and the dynamic attenuation field; `occupied_tiles()` / `occupies()`
   exist and drive it.
 
