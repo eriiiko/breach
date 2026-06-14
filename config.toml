@@ -345,15 +345,16 @@ ambient_amp = 0.06
 #   height_edge  = shoreline softness (m) — the gradient width of the lap edge
 #     around a protruding feature (lower = harder cut; higher = softer fade).
 #   height_floor = the heightmap value treated as floor level (the "level 0"
-#     baseline). The art heightmap is a RELATIVE depth map: the floor itself sits
-#     at a nonzero relief value, so without this subtraction water has to over-
-#     fill before it clears the floor. height_floor is subtracted from relief
-#     BEFORE scaling, so a floor pixel (relief ≈ height_floor) reads ~0 lift and
-#     water shows on the floor immediately; a raised crate (relief > floor)
-#     protrudes; a dip (relief < floor) reads slightly deeper. ~0.3 — tune by eye.
+#     baseline), subtracted from relief BEFORE scaling. DEFAULT 0.0 because the
+#     heightmaps are now re-baselined at the SOURCE so the floor sits at relief 0
+#     (tools/heightmap_level0.py — material-mask floor detection -> floor-to-0,
+#     run per level). With a re-baselined map a floor pixel already reads ~0 lift,
+#     so no offset is needed and water shows on the floor immediately. The dial is
+#     KEPT as a live override for any level whose map has NOT been re-baselined
+#     (raw Depth-Anything floor at a nonzero relief): set it to that floor value.
 height_scale = 0.4
 height_edge = 0.1
-height_floor = 0.3
+height_floor = 0.0
 
 # Material property table (named-key format, ch.02 — Material System).
 # One [materials.<name>] row per material id; columns indexed into per-id
