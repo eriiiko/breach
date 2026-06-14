@@ -82,6 +82,22 @@ subcycle a blast, some don't → warp divergence; the alternative (per-*batch* m
 savings. So the gate is a **single-game / dev-loop win** and roughly a wash on the farm. Land it now;
 don't cite it as evidence the architecture scales.
 
+**BUILD FINDING (2026-06-15) — the gate is NOT a decision-free standalone; it's a dt-policy problem.**
+A first attempt (wave-active gate + dead-wave snap-to-zero + smoke-diffusion-CFL floor) **broke
+breach-venting** (`tests/test_smoke_sink_pull.py::test_breached_room_clears`): a "calm" venting room
+stopped clearing. Root cause: **the substep count is overloaded.** The smoke **sink-pull** (the
+drain-toward-breach mechanism) is **capped at 1 cell/substep**, so its drain *rate* is silently coupled
+to the substep count — the old ~18 wave-CFL substeps were doing double duty (wave CFL **and** 18 cells/
+tick of venting drain). Collapsing to 1 substep cut the drain 18×. So at least **four** distinct needs
+ride one number: wave CFL, implicit-diffusion stability (needs 1), smoke explicit-diffusion CFL, and the
+**sink-pull drain rate**. Decoupling them is exactly the unification's "coherent dt policy" pillar — so
+the gate is **folded into the unification**, not shipped standalone. (A venting-detection hack that
+preserves the old count was rejected: it hard-wires the drain rate to the arbitrary wave-CFL count and
+the unification redoes it anyway. The proper fix likely decouples the sink-pull cap from the substep
+count — a smoke-solver change — so the drain rate is a tuned constant independent of how the wave
+substeps.) The dead-wave snap-to-zero (prevents the explicit kick amplifying a sub-eps residual at the
+big dt) and the smoke-diffusion-CFL floor are both correct and carry forward into that work.
+
 ---
 
 ## The reframe: one finer grid, not per-system grids
@@ -149,11 +165,13 @@ of it — consistent with your "fixed-point first, tested, then CUDA" instinct, 
 
 ## Recommended sequence (revised by the research)
 
-1. **Subcycle-when-active gate** — days, decision-free, immediate single-game win; also the
-   instrumentation hook to log the post-8-sweep GS residual for Decision 6.
+1. ~~Subcycle-when-active gate (standalone)~~ — **tried, reverted (2026-06-15): not decision-free.** The
+   substep count is overloaded (the sink-pull drain rate is coupled to it), so this is a **dt-policy
+   problem folded into the unification** (#3), not a standalone first step. See the BUILD FINDING above.
 2. **Move `stamp_units` to C++ / edit-triggered** — decision-free farm win, prerequisite for resolution.
-3. **PhysicsEngine unification** — the glue→C++, the wave/diffusion dt-split, the shared stencil (already
-   planned; now also folds in #1 and #2).
+3. **PhysicsEngine unification** — the glue→C++, the **coherent dt policy** (decouple wave CFL /
+   diffusion stability / smoke-diffusion CFL / sink-pull drain rate — incl. the now-folded
+   subcycle-when-active + dead-wave snap + the GS-residual instrumentation), the shared stencil, and #2.
 4. **Q16.16 fixed-point migration + the two-seeded determinism harness** — *the* project; prerequisite to
    determinism and CUDA.
 5. **Resolution** — adopt the uniform `base/2` + coarse/strided wave; measure whether it needs anything
