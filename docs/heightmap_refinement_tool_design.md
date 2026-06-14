@@ -67,14 +67,22 @@ says where 0–1 sits "in the grand scheme of things" **[E]** — `metres = reli
 with the **floor re-baselined to 0**. Two pieces, both done on the *global* map first (§6),
 independent of the patch tool:
 
-- **Level 0 — the floor baseline. [REVIEW-CORRECTED]** *Not* the global histogram mode — that breaks
-  on wall- or furniture-dominated interiors (the modal surface is then the wall, not the floor) and on
-  sloped/multi-deck relief. Instead **use the tilemap material mask** (which is authoritative and
-  already loaded): sample relief **only over known floor/air tiles** (`MAT_AIR` / `mobility > 0`) and
-  take a robust statistic there — the **median or a low percentile** of the floor-tile relief.
-  Immune to wall/furniture dominance and to slope. Manual click-a-floor-tile override as fallback when
-  no tilemap is present. → **floor = 0**, set once globally; every merged patch inherits it. Retires
-  the `height_floor` render fudge at the source.
+- **Level 0 — the floor baseline. [REVIEW-CORRECTED, then BUILD-PROVEN: it is a SURFACE, not a scalar.]**
+  First correction (still true): *not* the global histogram mode — that breaks on wall-/furniture-dominated
+  interiors and on slope; use the tilemap material mask (`MAT_AIR` / `mobility > 0`) to sample relief over
+  known floor tiles. **But building the scalar version (`tools/heightmap_level0.py`, commit d25a2db) proved
+  even a robust floor *constant* is the wrong tool.** Measured on unhcr_vessel_2: the raw Depth-Anything
+  heightmap carries a **smooth top→bottom relief gradient — floor ≈ 0.28 at the bow, ≈ 0.53 at the stern**
+  (a DA monocular top-down artifact: the image top reads "farther/lower"). So the floor median (0.43) was
+  *too high at the bow* (subtract-and-clamp wiped the bow floor **and its furniture** to black) and *too low
+  at the stern* (floor survived as raised relief). **No single constant flattens a sloped floor.** ⇒ the
+  correct operation is **background subtraction**: estimate the floor as a **low-frequency surface** (a
+  heavy blur / rolling-ball / morphological opening of the floor-tile relief, the gradient with the
+  furniture bumps removed) and subtract *that*. This flattens the floor to ~0 *everywhere* **and preserves
+  furniture** (the high-frequency relief sitting above the local floor survives instead of being clamped).
+  Per-region (the inspector's real job) this is just per-room local flattening. → **floor surface = 0**;
+  retires `height_floor` properly. *(The scalar script was reverted, 0a04903; rework it to background
+  subtraction whenever this resumes.)*
 - **The 0–1 → metres scale. [REVIEW-CORRECTED — this was the doc's subtlest error.]** A two-point
   *length* gives metres-per-**pixel** (horizontal/in-plane), which is a *different axis* from
   metres-per-**relief-unit** (vertical). You cannot calibrate vertical relief from a horizontal ruler.
