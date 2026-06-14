@@ -174,13 +174,14 @@ class WaterPass:
         # height_floor = the heightmap value treated as floor level (the "level 0"
         # baseline): subtracted from relief BEFORE scaling so a floor pixel lifts
         # ~0 and water shows on the floor immediately (fixes the fill-forever
-        # offset). DEFAULT 0.0 because the heightmaps are now re-baselined at the
-        # SOURCE (tools/heightmap_level0.py bakes the floor to relief 0), so no
-        # offset is needed — that script is what makes 0 correct. The dial stays
-        # as a live override for any map that has NOT been re-baselined. Inert on
-        # the no-heightmap path (relief_term forced to 0).
+        # offset). DEFAULT 0.3 — a hand-tuned stopgap for the raw Depth-Anything
+        # maps. A single constant is only approximate: the raw maps carry a smooth
+        # floor gradient (DA artifact), so the proper fix is a background-
+        # subtraction re-baseline (a floor SURFACE, not a scalar) — see
+        # docs/heightmap_refinement_tool_design.md §6.1. Inert on the
+        # no-heightmap path (relief_term forced to 0).
         self._set_f(self._loc_height_floor,
-                    float(getattr(wc, "height_floor", 0.0)))
+                    float(getattr(wc, "height_floor", 0.3)))
         # u_texel = neighbour-tap offset in UV = 1/grid (per axis).
         self._set_vec2(self._loc_texel, (1.0 / grid_w, 1.0 / grid_h))
         # Default art-UV rect — overwritten per-draw when an [art.align] is set.
