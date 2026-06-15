@@ -1,254 +1,197 @@
-# PhysicsEngine unification — plan (draft for panel review)
+# PhysicsEngine unification — plan v2 (post-panel)
 
-**Status:** draft, pre-panel. The first of the CUDA-prep patches. Grounded in
-`docs/physics_field_interaction_map.md`, `docs/resolution_architecture_proposal.md`, and the locked
-decisions (D-A uniform grid, D-C full fixed-point cross-GPU). **Scope is float-and-CPU only** — this
-patch changes *structure*, not arithmetic; the Q16.16 migration is a separate later patch that overlays
-onto the surface this one creates.
+**Status:** v2, revised after the expert+adversarial panel (6 reviewers, code-grounded). The panel
+verdict on v1 was **needs-rework / over-scoped**; this v2 acts on it. Grounded in
+`docs/physics_field_interaction_map.md`, `docs/resolution_architecture_proposal.md`, the locked
+decisions (uniform grid, full fixed-point cross-GPU — both *later*), and the panel findings.
 
----
-
-## 1. Goal & scope
-
-**Goal:** collapse the eight separate C++ solvers + the Python orchestration glue into **one C++
-`PhysicsEngine` that owns the grids and exposes a single `step(dt)`** — the migration boundary the CUDA
-port plugs into. Per engine/02: *"the physics engine **contains** the grid owner,"* so this is not a new
-owner competing with `GameMap` — `GameMap` stays the interface (`gmap.<field>`), and the engine becomes
-the physical home those fields will later migrate onto the GPU from.
-
-**In scope:**
-- A C++ `PhysicsEngine` holding the solver instances + binding the grids; one `step(dt)` entry point.
-- Move the **field→field glue** now in Python (`physics_runner.py`) into C++: W3 displacement, W5
-  flash-boil, the per-gas transport loop, the substep derivation, the fire heat-source build.
-- The **coherent dt policy** (§6) — decouple the four overloaded substep needs, incl. the folded
-  subcycle-when-active and the sink-pull-cap decoupling.
-- **`stamp_units` → C++**, delta-based (§7).
-- The **shared stencil** consolidation (§8).
-- **Cleanups:** remove the vestigial `AtmoDiffusion`; `dt_scale → advection_rate` (§9).
-- **Fixed-point-aware structure** (§10) so the later Q16.16 overlay is mechanical.
-
-**Out of scope (explicitly):** the Q16.16 arithmetic migration; GPU residency / CUDA kernels; the
-resolution change (uniform `base/k`); per-field format tuning. Those are downstream patches.
-
-**Guiding constraint:** **behavior test-identical where the change is structural** (Phases A, B, E, the
-cleanups), and **behavior-changed-with-feel-test where the change is the dt policy** (Phase C) — flagged
-explicitly, never silent. The 336-test suite is the regression guard; the determinism and
-conservation/dormancy tests are the hard gates.
+**The one-line change from v1:** the "unification" was six subsystems in one patch resting on two false
+claims (a 0-ULP gate that can't hold under `/fp:fast`, and a harness that doesn't exist). v2 **splits it
+into three patches**, makes the missing harness Patch 0, and corrects five code-level errors v1 made.
 
 ---
 
-## 2. Grounding — where physics lives today
+## 0. The split (the panel's unanimous call)
 
-The **game tick** (`Simulation.step`, Python — actors, FieldEdit flush, structural edits) wraps the
-**physics tick** (`PhysicsRunner.step`, Python — the unification target). The physics tick is *not* pure
-solver calls: real numpy physics lives in the orchestrator —
-- `cast_fire_heat` (builds the row-major fire source list, calls the raycaster per source → `heat`),
-- `_step_water` (W3 isothermal displacement onto `atmosphere`, W5 flash-boil → steam, the flooded-cell
-  `dyn_permeability` seal),
-- the **per-gas loop** (binds each gas's diffusion onto the shared solver, steps each slice),
-- the **substep derivation** (`n = ceil(sim_time / atmos.max_dt())`),
-- `_step_ripple` (visual-only).
+| Patch | Contents | Gate |
+|---|---|---|
+| **0 — the harness** (prerequisite) | a field-level A/B determinism harness (per-cell, every sim field, old-path vs new-path, same seed) | builds + passes on the *current* code (identity) |
+| **1 — unification (THIS plan)** | C++ `PhysicsEngine` skeleton + glue→C++ + `stamp_units` full-rebuild→C++ + GPU-prep hooks + trivial deletions | **pure structure**, A/B harness green per field per tick |
+| **2 — coherent dt policy** (feel-gated) | subcycle-when-active + dead-wave snap + smoke-CFL floor + the sink-pull decouple + the `dt_scale` cleanup + the GS-residual hook | new venting/sealed/residual tests **+ Erik's eye** |
+| **3+ — with the CUDA port** | the shared stencil; the `stamp_units` *delta* (refcounted + flooded-restore + flat buffer) | GPU occupancy / farm bandwidth |
+| **separate** | the Q16.16 fixed-point migration + the cross-machine two-seeded harness | its own multi-week project |
 
-The eight solvers (`atmosphere`, `smoke`, `fire`, `temperature`, `raycaster`, `water`, + the vestigial
-`atmo_diffusion`, `wave_solver`) are **stateless** and bind to the numpy arrays zero-copy. Per engine/02:
-*"the model is already in place on the CPU; CUDA only moves the memory."* So the unification is mostly a
-**re-home + re-sequence**, not an algorithm rewrite.
+Rationale: Patch 1 stays on a **hard determinism gate with no feel-tests**; the one behavior change
+(dt policy) is isolated in Patch 2; both pay-later-on-GPU optimizations move to the patch that pays for
+them. This directly fixes v1's self-flagged scope creep.
 
 ---
 
-## 3. The target structure
+## 1. Patch 0 — the A/B determinism harness (must exist before Patch 1 touches a solver)
 
-```
-Simulation.step()  [Python — actors, FieldEdit flush, destroy_wall, unit damage, ignition, heat clear]
-   │  (unchanged except: one call instead of the inline PhysicsRunner orchestration)
-   ▼
-PhysicsEngine.step(gmap_fields, dt)   [C++ — owns solvers + the per-tick order + the field→field glue]
-   ├─ cast_fire_heat            (fire sources → heat)         ← moved into C++
-   ├─ step_water + W3 + W5 + seal                              ← moved into C++
-   ├─ dt-policy: derive substeps (§6)                          ← new, C++
-   ├─ for each substep: wave+diffusion ; per-gas smoke         ← shared stencil (§8)
-   ├─ step_ripple              (visual-only)
-   ├─ fire feedback            → returns destroyed walls
-   └─ heat→temperature+conduction+cooling
-```
+v1 cited a "0-ULP A/B harness" as the gate. **It does not exist.** Today's only determinism test
+(`tests/test_simulation.py`) compares five whole-grid *means/maxes* in same-process replay — it cancels
+per-cell sign-flipped errors and re-runs the same build, so it **cannot** detect the float-reorder
+desync this patch risks. The one glue-refactor precedent accepted `atol=1e-5`; `_water_dormant_check` is
+an untracked render-RT byte compare.
 
-`GameMap` keeps allocating + owning the field arrays (this patch); the engine **binds** to them (today's
-zero-copy pybind pattern, one bind at construction, honoring the in-place-write discipline). The
-`gmap.<field>` read interface is **untouched** — no caller changes, exactly as engine/02 requires. (When
-GPU residency lands later, only the *home* of those arrays moves, inside `GameMap`/the engine; callers
-still don't change.)
+**Build it first:** snapshot every sim field (`atmosphere`, `wave_p/v/source`, `wind_x/y`, `gas[N]`,
+`fire`, `water_depth`, `flow_vx/vy`, `heat`, `temperature`) each tick; run the old path and the new path
+on the same seed+inputs; assert per-field per-tick equality. **The tolerance is itself a decision (§2).**
 
 ---
 
-## 4. What moves to C++, what stays Python
+## 2. The `/fp:fast` decision (Erik's call — recommendation inside)
 
-| Logic | Today | Target | Why |
-|---|---|---|---|
-| Per-tick solver order | Python (`PhysicsRunner.step`) | **C++** | the one `step(dt)` boundary |
-| W3 displacement, W5 boil, flooded seal | Python numpy | **C++** | field→field physics; the stable foundation |
-| Per-gas transport loop | Python | **C++** | field→field; batched stencil on GPU later |
-| Substep derivation / dt policy | Python | **C++** | §6, the coherent policy |
-| Fire heat-source build | Python (row-major + per-source cast) | **C++** | field-driven; `update_from_fire` C++ path already exists |
-| `stamp_units` field writes | Python full-field rebuild | **C++ (delta)** | §7 |
-| **Reading the `Unit` list** (footprints, opacity) | Python | **stays Python** | actors are CPU/Python (engine/02); the engine gets a *footprint delta list*, not the unit objects |
-| FieldEdit enqueue (weapons/fire) | Python | **stays Python** | actor-driven writes; the flush already lands before physics |
-| `destroy_wall`, burst, ignition, unit heat-damage | Python (`Simulation.step`) | **stays Python** | topology + actor/threshold logic; engine/13 carve-out |
+The build is `/O2 /fp:fast /arch:AVX2` (`cpp/CMakeLists.txt:14,16`). Under that, the compiler may
+reassociate, contract to FMA, and flush denormals, and AVX2 reduces 8-wide — a *different* order than
+strict-IEEE numpy. So a numpy→C++ glue port **will not** match to 0 ULP except by luck (the
+`water_solver.cpp:31-35` `zeros()` scratch exists precisely because `+0.0f` folds differently under
+`/fp:fast`). Two ways to make the gate honest, **pick one:**
 
-The split rule (engine/02): **field→field → C++; actor→field → the boundary stays Python, only the
-field-write half is C++** (the engine receives a delta list of footprint coefficient-writes, computed
-Python-side from the unit objects).
+- **(A, recommended) Compile the moved glue in an `/fp:precise` translation unit** and prove 0-ULP per
+  expression. The glue (W3/W5/per-gas) is small and elementwise, so the perf cost is negligible and the
+  determinism story stays *hard* — which the fixed-point future wants anyway.
+- **(B) Drop the gate to a stated tolerance** (repo precedent `atol=1e-5`) **and add a separate
+  same-build replay-determinism gate.** Cheaper, but the tolerance gate can't certify bit-identity, so
+  it can mask a real desync.
 
----
-
-## 5. Phased build (each phase: implement → build → pytest → commit/revert, per the house workflow)
-
-- **Phase A — the skeleton (behavior test-identical).** Create the C++ `PhysicsEngine` class holding the
-  existing solver instances; move the per-tick *order* into its `step(dt)`, still calling the same solver
-  methods on the same `gmap` arrays. Python `PhysicsRunner` becomes a thin shim that calls
-  `engine.step(...)`. **No physics changes** — the bytes match. Gate: full suite green incl. the
-  determinism + dormancy bit-identity tests; both smoke `--auto` runs exit 0.
-- **Phase B — glue → C++ (behavior test-identical).** Port W3/W5/the flooded seal/the per-gas loop/the
-  fire-source build into the engine, one at a time, each behavior-preserving (the existing
-  conservation + dormancy tests are the guard). The numpy and C++ must agree bit-for-bit in float
-  (verify with the dormancy-style A/B harness).
-- **Phase C — the coherent dt policy (BEHAVIOR CHANGE — feel-test gated).** §6. This is the one phase
-  that changes the felt result (calm-room substep collapse, the sink-pull decoupling). Land behind a
-  config flag, **Erik feel-tests** the calm air + breach-venting before it becomes default. New
-  regression tests pin: venting still clears, sealed room still conserves, the GS residual stays bounded.
-- **Phase D — shared stencil (behavior test-identical or near).** §8. One Laplacian/gather kernel
-  parameterized by field+operation, serving wave + atmosphere-diffusion + smoke-diffusion. Bit-identical
-  if the stencil math is preserved; if consolidation changes a rounding/iteration detail, treat as a
-  flagged behavior change.
-- **Phase E — `stamp_units` → C++ delta (behavior test-identical).** §7.
-- **Cleanups** (anytime after A): remove `AtmoDiffusion` (vestigial — `PhysicsRunner` uses the IMEX
-  `AtmosphereSolver`, not it); `dt_scale → advection_rate` (§9, behavior-preserving fold or flagged).
-
-Phasing rationale: **A and B are pure structure** (safe, test-identical) and establish the surface; **C
-is the only real behavior change** (isolated, feel-tested); **D/E are optimizations** on the established
-surface. The panel should challenge whether C belongs in this patch at all or should be its own.
+My lean is **(A) for the glue.** This is the one genuinely-yours decision in Patch 1.
 
 ---
 
-## 6. The coherent dt policy (folds in the subcycle finding)
+## 3. Patch 1 — scope & structure (pure, test-identical)
 
-Today **one substep count `n = ceil(sim_time / wave_CFL)` is overloaded** across four needs (the
-2026-06-15 build finding): (i) the explicit wave CFL, (ii) implicit diffusion stability (wants 1), (iii)
-the smoke explicit-diffusion CFL, (iv) the **sink-pull drain rate** (capped 1 cell/substep, so coupled
-to `n`). Decouple them:
+**Goal unchanged:** one C++ `PhysicsEngine` owning the (verified stateless/const) solver instances +
+the per-tick order, exposing `step(dt)` — the CUDA migration boundary. `GameMap` stays the interface
+(`gmap.<field>`); no caller changes. **Arithmetic is not touched** (Q16.16 is a separate patch).
 
-- **Wave:** substep at its CFL **only when active** (`wave_source`/`wave_p`/`wave_v` above an ε dial).
-  When inactive, **snap the sub-ε acoustic field to exactly 0** (so the explicit kick can't amplify a
-  residual at the big dt) and take **one** big implicit-diffusion step.
-- **Implicit diffusion:** one step (unconditionally stable). Instrument the **post-sweep GS residual**
-  here — the measurement that settles Decision 6 (two-grid correction yes/no). *(Needs a small C++ hook
-  to expose the residual.)*
-- **Smoke diffusion:** its own CFL floor (`dt < dx²/(4·d_eff)`, `d_eff = d_smoke·(1+wds·|wind|²)`) —
-  ≈1 at rest, tightens only under strong wind (where the wave already dominates).
-- **Sink-pull drain — the key decouple:** lift the **1-cell-per-substep cap off the substep count.** Make
-  the drain a **tuned rate constant** (cells/second) realized independent of `n` — e.g. a per-tick drain
-  budget applied in one pass, or a cap expressed per-`dt` not per-substep. Then a calm venting room
-  drains at the same feel with `n=1`, and the wave-CFL number stops secretly setting the venting speed.
+### 3a. Corrected invariants (v1 errors the panel caught)
+- **Re-fetch field pointers every `step()`** (today's per-call `get_2d` pattern) — **NOT** "one bind at
+  construction." A construction-time bind is a dangling-pointer trap against `reset()`
+  (`simulation.py:188` reallocates GameMap) and `_end_round` (`simulation.py:817` *reassigns*
+  `obstacles`). The per-call re-fetch is zero-cost and already how it works.
+- **`smoke == gas[BLACK_SMOKE]` aliasing is an invariant:** the engine binds ONE gas buffer; `smoke` is
+  a view into `gas[BLACK_SMOKE]` (`gamemap.py:109`), never a second allocation — `fire.step` writes
+  `smoke`, the per-gas loop writes `gas[gi]`, same backing store. Add to the gate list.
+- **Per-gas diffusion is a `step()` argument, not a mutated member.** Today the orchestrator does
+  `self.smoke.d_smoke = gas_diffusion[gi]` per slice (`physics_runner.py:369`) — a hidden per-tick write
+  to a "config" member. Pass it as an arg; keep `SmokeDynamics` stateless (matches the GPU want: one
+  batched stencil over `(n_gases,h,w)` with diffusion as a coefficient vector).
 
-Net substep count: `n = max(n_wave_if_active, 1, n_smoke_cfl)` — and the sink-pull no longer contributes
-to `n` at all. **Open for the panel:** the exact sink-pull decoupling (per-tick budget vs per-dt cap),
-and whether the smoke-diffusion floor should instead become *implicit* smoke diffusion (the fine-res
-fix) now or later.
+### 3b. Phase A — skeleton
+C++ `PhysicsEngine` holds the const solver instances + the **outer** per-tick order:
+`fire-heat → water(+W3/W5/seal) → substep-loop → ripple → fire → temperature`. `PhysicsRunner` becomes
+a thin Python shim calling `engine.step(...)`. **No arithmetic change.** *(The substep loop is NOT pure
+order — see 3c; Phase A owns the outer order, the loop moves as a unit in Phase B.)*
 
----
+### 3c. Phase B — glue → C++, one coupling at a time, each behind the A/B harness
+- **The IMEX substep loop + per-gas loop move as ONE entangled unit** (v1 wrongly split them). The loop
+  body interleaves `n = ceil(sim_time / atmos.max_dt())`, `dt_actual = sim_time / n`, the per-gas
+  `d_smoke` rebind + `.any()` empty-slice skip. **Pin `n` and `dt_actual`:** compute them in ONE
+  language/precision and pass across the boundary — `n` is an integer cliff where a 1-ULP difference in
+  `sim_time/n` flips `n` and desyncs everything downstream.
+- **W3/W5/flooded-seal** (`physics_runner.py:606-651`): pure elementwise `np.where`/`clip`/`multiply` —
+  the cleanest to port (1:1 to a per-cell kernel later), so do these first. **`/fp:precise` per §2(A).**
+- **Keep `cast_fire_heat` in Python** (Q3): it feeds the raycaster, which is out of scope; moving only
+  the enumeration buys nothing and adds a C++↔raycaster coupling. *(Doc fix: §4's old note "the
+  `update_from_fire` C++ path exists" is wrong — the runner calls `cast_source_directional`, a different
+  path; `update_from_fire` is the legacy scalar `light_map` updater.)*
 
-## 7. `stamp_units` → C++, delta-based
+### 3d. Phase E — `stamp_units` full-rebuild → C++ (NO delta)
+Move the per-tick full-field rebuild (`gamemap.py:532-544`: `dyn_permeability[:] = permeability`,
+`dyn_light_atten` ×3 RGB, `dyn_wave_absorb`, + the unit loop) into C++ **as an idempotent full rebuild**
+— still a big farm win (no Python loop, no per-tick re-build cost) and bit-trivially identical. **The
+delta is deferred** (Patch 3) because it breaks three things v1 missed: the W3 flood-seal auto-clear
+(`physics_runner.py:648` is a *second* writer of `dyn_permeability` relying on the full reset to clear —
+no test covers "water recedes, air flows again"), overlapping-footprint MIN/MAX combine
+(`gamemap.py:572-581`, non-composable without per-cell occupancy refcounting), and the freed-wall
+neighbour-mean atmosphere fill (`gamemap.py:583-588`).
+**Pin the cross-tick order:** `stamp_units(rebuild) → W3/W5/flooded-seal → substep loop`. The seal lives
+exactly one tick today only because `stamp_units` (Simulation step 6) runs *before* physics (step 7);
+moving either into the engine without fixing the order clobbers or staleness-breaks the seal.
 
-Today (`gamemap.py`): full-field reset (`dyn_permeability[:] = permeability`, ×3 for `dyn_light_atten`,
-+ `dyn_wave_absorb`) **every tick**, then a Python loop over unit footprints. The reset is the dominant
-cost and the farm-killer (whole fields re-uploaded per tick). Target:
-- The engine holds the static base caches; per tick it receives a **delta list** from Python: for each
-  unit that *moved*, `(cleared_footprint_cells, new_footprint_cells, coefficients)`; for each *destroyed
-  wall*, the patched tile. Python still reads the `Unit` objects (actors stay CPU) and emits the delta;
-  C++ applies it — **only touched cells change**, no whole-field reset.
-- The unit's stamped coefficients: `dyn_light_atten` (RGB opacity), `dyn_permeability` (0.5 default),
-  `dyn_wave_absorb`. The `obstacles` mask stays walls-only (units are soft).
-- This *is* engine/02's "deltas-up" seam, pre-built on the CPU so the GPU port inherits it.
+### 3e. GPU-prep hooks (behavior-neutral, fold in now — they're free and save a repaint)
+- **A reusable scratch arena owned by the engine.** Every solver except temperature allocates fresh
+  `std::vector`s inside `step()` (atmosphere `lap/rhs/vac_dist`, smoke `lap/src`, water
+  `surface/fx/fy/scale`) — on CUDA that's a per-step `cudaMalloc` (fatal). `temperature_solver.h:126`'s
+  `mutable scratch_` is the template; the `PhysicsEngine` owns the pool, solvers take from it.
+  Bit-identical → fits the test-identical phase.
+- **The `mean_wp` deterministic-reduction helper, with its summation ORDER pinned now**
+  (`atmosphere_solver.cpp:108-116`). This is the deepest determinism trap (CPU-scalar/SIMD/CUDA-warp
+  give different float sums). Isolating the call site without fixing the *order* defers the hardest work
+  to a rewrite — so fix the order now (a deterministic reduction tree), even while still float.
+- *(Deferred to Patch 3: the flat packed delta buffer for the eventual `stamp_units` delta.)*
 
-**Open for the panel:** the clear-old-footprint bookkeeping (track each unit's previous footprint;
-handle death/spawn/teleport); whether a moved-this-tick set is cheaper than diffing footprints.
-
----
-
-## 8. Shared stencil
-
-Wave, atmosphere-diffusion, and smoke-diffusion each re-implement their own 2D grid traversal. Per the
-CUDA plan §7, consolidate into **one stencil/gather kernel parameterized by field + operation** (the
-`face = min(perm[self], perm[n])` gather is already shared in spirit). On CPU a modest win; on GPU it's
-the difference between one well-occupied kernel and several mediocre ones. Must preserve the per-system
-boundary handling (Neumann at walls, the `dyn_permeability` face gather).
-
----
-
-## 9. Cleanups
-
-- **Remove `AtmoDiffusion`** — `PhysicsRunner` uses the IMEX `AtmosphereSolver`; `AtmoDiffusion` (separate
-  explicit Euler) is unreferenced. Delete + rebuild; no behavior change.
-- **`dt_scale → advection_rate`** — express "how hard smoke rides the wind" as the `advection_rate`
-  coefficient on the real dt, drop the timestep-faking `dt_scale` (the ~6.25× double-scale). Likely
-  behavior-preserving (`new advection_rate = old advection_rate × old dt_scale`) **iff** `dt_scale` only
-  scaled advection — verify against `smoke_dynamics.cpp` whether it also scaled diffusion; if so,
-  separate the two and re-tune diffusion with Erik's eye.
-
----
-
-## 10. Fixed-point-aware structure (prep, not the migration)
-
-Structure the C++ so the later Q16.16 overlay is mechanical, without doing it now:
-- **Isolate the arithmetic** behind typedef'd scalars + inline ops (`add/mul/div/scale`), so swapping
-  `float → fixed` is a type change, not a rewrite. (The `heat`/`temperature` Q16.16 lane is the existing
-  template.)
-- **Pin reduction sites** (e.g. `mean_wp`) behind a single helper, so the float→integer (order-
-  independent) swap is one place — and flag that `mean_wp` is a *known* determinism hazard today.
-- **No new float-only idioms** in the moved glue (avoid FMA-dependent expressions, transcendentals where
-  avoidable) so the migration doesn't fight the structure.
-- Keep render-only buffers (`light_rgb`, `smoke_glow`, `ripple`) clearly separated — they **stay float**
-  forever (not sim state, never synced).
+### 3f. Trivial deletions (separate micro-commits)
+- Remove the vestigial `AtmoDiffusion` (`PhysicsRunner` uses `AtmosphereSolver`, never it — confirmed).
+- Remove the vestigial `is_wall` C++ param (fed `gmap.solid`; redundant since the retire).
+- Fix `simulation.py:817` `obstacles = solid.copy()` → in-place `obstacles[:] = solid` (honor engine/02).
 
 ---
 
-## 11. Gates
+## 4. §10 rescoped (the panel: don't oversell it)
 
-- **Bit-identity** (Phases A, B, D-if-claimed, E): the dormancy-style A/B harness (run old vs new on the
-  same seed, assert 0-ULP field deltas) — extend it to the unified path.
-- **Determinism:** the existing same-seed determinism test stays green (per-machine). *(The cross-machine
-  two-seeded harness is owed to the fixed-point patch, not this one.)*
-- **Conservation/dormancy:** the sealed-hull conservation + water/smoke dormancy tests are the
-  non-negotiable guards.
-- **Phase C:** new tests pin venting-clears, sealed-conserves, GS-residual-bounded; **+ Erik feel-test.**
+There is **no** existing typedef'd-scalar arithmetic template (temperature/raycaster use raw `int32` +
+hand shifts + free functions). "float→fixed is a type change not a rewrite" is aspirational, and the
+hard fixed-point sites (the GS per-cell divide `atmosphere_solver.cpp:196`, the gather `min`, `sqrt`) are
+not free type-swaps. So **drop the "typedef-swappable arithmetic across all solvers" framing.** The
+defensible, cheap, behavior-neutral fixed-point-*aware* core that stays in Patch 1 is exactly the three
+hooks in §3e (scratch arena, `mean_wp` deterministic reduction, the deferred flat delta) **+ "write no
+new gratuitously-float idioms in the moved glue."** The real arithmetic migration is its own patch.
+
+---
+
+## 5. What stays Python / out of scope (unchanged, confirmed correct by the panel)
+
+FieldEdit enqueue, `destroy_wall`, burst, ignition, unit-heat-damage stay in `Simulation.step` (actor/
+topology/threshold logic). Reading the `Unit` list to compute footprints stays Python (actors are CPU);
+only the field-write half is C++. The split rule (engine/02): field→field → C++; actor→field → boundary
+Python. The fixed-point migration, GPU residency, the resolution change: all separate later patches.
+
+---
+
+## 6. Gates (Patch 1)
+
+- **Per-field A/B equality** (Patch 0 harness) every phase — at the tolerance chosen in §2.
+- The existing 336 suite green incl. `test_atmosphere_conservation` (the door-stamp-leak guard),
+  `test_smoke_sink_pull` (venting — unchanged in Patch 1), the water/smoke dormancy checks.
 - Both `tests/test_main_smoke.py --auto` runs (default + `unhcr_vessel_2`) exit 0 each phase.
+- The `smoke==gas[BLACK_SMOKE]` aliasing + in-place-write invariants in the bit-identity checklist.
 
 ---
 
-## 12. Open questions for the panel
+## 7. Top risks (panel-sourced)
 
-1. **Does Phase C (dt policy) belong in this patch**, or should the unification be pure structure (A, B,
-   D, E) and the dt policy + sink-pull decouple be its own feel-test-gated patch right after? (Lean:
-   split it out — keep the unification test-identical, isolate the one behavior change.)
-2. **The sink-pull decouple mechanism** — per-tick drain budget vs per-`dt` cap? Which preserves the
-   venting feel with `n` decoupled?
-3. **Glue ownership granularity** — does the fire heat-source build move to C++ now (it's field-driven
-   but currently Python-row-major-deterministic), or stay Python until the raycaster port?
-4. **Shared-stencil scope** — consolidate now (Phase D) or defer to the CUDA port where it actually pays?
-   Risk of churn vs the determinism guarantee.
-5. **`stamp_units` delta vs keep-full-rebuild-but-move-to-C++** — is the delta bookkeeping worth it on
-   CPU, or does the C++ full-rebuild suffice until the GPU port forces deltas?
-6. **Fixed-point-aware vs fixed-point-now** — is structuring-for-later enough, or does touching every
-   solver twice (unify-float then migrate-fixed) waste enough effort to justify doing them together?
+1. **Bit-identity under `/fp:fast`+AVX2** — the load-bearing one. Mitigated by §2's decision (lean: glue
+   in `/fp:precise`, prove 0-ULP per expression).
+2. **The harness doesn't exist** — Patch 0 builds it before any solver is touched.
+3. **Dangling pointers** — solved by per-call pointer re-fetch (§3a) + the `:817` in-place fix.
+4. **Phase A/B entanglement + the integer cliff at `n`** — move the substep loop as a unit, compute
+   `n`/`dt_actual` once and pass across (§3c).
+5. **`stamp_units` delta correctness** — avoided by shipping the C++ full-rebuild only (§3d).
+6. **GPU-port repaint** if the scratch arena / per-gas-as-arg aren't done now — they are (§3e, §3a).
 
 ---
 
-## 13. Risks
+## 8. Carried into Patch 2 (the dt policy — recorded so it's not lost)
 
-- **Glue→C++ float bit-identity** — the W3/W5 numpy math must reproduce exactly in C++ (float order, the
-  `np.where`/clip idioms). Mitigate: port one coupling at a time behind the A/B harness.
-- **Phase C feel regression** — the dt policy changes calm-room and venting dynamics; the whole reason
-  it's feel-test-gated behind a flag.
-- **Touching solvers twice** (unify-float, then fixed-point) — accepted for reviewability unless the
-  panel argues to bundle (Q6).
-- **Scope creep** — six sub-systems in one patch. The phasing + the "split Phase C out" option (Q1) are
-  the controls; the panel should prune hard.
+The coherent dt policy, **with the panel's corrections:**
+- Subcycle-when-active + the **dead-wave snap-to-zero** (note the feel risk: snapping the sub-eps
+  acoustic tail can deaden the deliberately-*ringy* steel hull — the feel-test must include a
+  sealed-steel-room blast ringdown, not just calm air + venting). The gate is a float-`max > eps` branch
+  → a cross-machine divergence hazard, so design it against the determinism harness.
+- The **smoke-CFL floor** from the *actual* expression
+  `dt < dx² / (4 · d_smoke · (1 + wind_diffusion_scale·|wind|²) · dt_scale²)` using the **spatial-max**
+  `d_eff` (it tightens under shockwave wind — correct) and the corrected `dt_scale²` (=9× at the shipped
+  3.0, double-applied).
+- The **sink-pull decouple (Q2):** keep the 1-cell-per-hop BFS-gradient cap (it's a correctness
+  requirement — an uncapped multi-cell hop flies off the BFS path into a wall) and run the sink sub-pass
+  its **own K = round(drain_rate·dt) times per tick, independent of `n`**. No bit-identical baseline —
+  the old drain *was* `min(sink_strength,1)·n`, an artifact of the wave CFL; Erik re-tunes K by eye,
+  with `test_breached_room_clears` as a floor and a new "venting half-life invariant as n varies" test.
+- The **`dt_scale` cleanup** moves here as a **flagged behavior change** (9×, scales both) with a
+  diffusion re-tune under Erik's eye — not the "behavior-preserving fold" v1 claimed.
+- The **GS-residual hook** must be *built* (it doesn't exist — fixed 8-sweep loop, no residual eval),
+  measured AFTER the GS sweeps but BEFORE the vacuum/sponge BC pass (`atmosphere_solver.cpp:243-264`
+  mutates atmosphere post-solve and would contaminate it), norm + normalization specified.
