@@ -33,9 +33,13 @@ void WaterSolver::step(float* water_depth, float* flow_vx, float* flow_vy,
     // run — under /fp:fast a "+ 0.0f constant" branch is folded differently
     // and breaks the plan's bit-identity contract (W1 test 6). The k_p gate
     // stays exact: with k_p == 0 the pressure pointers are NEVER touched.
+    // Reused scratch via swap idiom: holds zeros and is read as zeros, so it
+    // stays zero across steps; re-assign zeros only when it is first needed at
+    // this size. (Swapped back at end of step.)
     std::vector<float> zeros_scratch;
+    zeros_scratch.swap(zeros_scratch_);
     auto zeros = [&]() -> const float* {
-        if (zeros_scratch.empty()) zeros_scratch.assign(n, 0.0f);
+        if (zeros_scratch.size() != (size_t)n) zeros_scratch.assign(n, 0.0f);
         return zeros_scratch.data();
     };
     const float* floor_p = floor_height ? floor_height : zeros();
@@ -54,7 +58,11 @@ void WaterSolver::step(float* water_depth, float* flow_vx, float* flow_vy,
     const float cx = 0.5f * static_cast<float>(w);
     const float cy = 0.5f * static_cast<float>(h);
 
-    std::vector<float> surface(n);
+    // Reused scratch via swap idiom: every surface[i] is written below before
+    // pass 2 reads it, so just size it to n (no re-init of contents needed).
+    std::vector<float> surface;
+    surface.swap(surface_);
+    surface.resize(n);
     for (int y = 0; y < h; ++y) {
         const int row = y * w;
         const float tilt_row = tan_ty * (static_cast<float>(y) - cy) * dx;
@@ -102,7 +110,12 @@ void WaterSolver::step(float* water_depth, float* flow_vx, float* flow_vy,
     // fy[i] = flux across the face between (y,x) and (y+1,x)  (0 for y == h-1)
     // Positive flux moves mass toward +x / +y. Solid faces carry no flux;
     // border faces do not exist (grid border = wall).
-    std::vector<float> fx(n, 0.0f), fy(n, 0.0f);
+    // Reused scratch via swap idiom: only non-solid/non-border faces are
+    // written; the remaining 0s ARE read by the outflow limiter and divergence
+    // passes, so re-assign 0 each step.
+    std::vector<float> fx, fy;
+    fx.swap(fx_);  fy.swap(fy_);
+    fx.assign(n, 0.0f);  fy.assign(n, 0.0f);
     for (int y = 0; y < h; ++y) {
         const int row = y * w;
         for (int x = 0; x < w; ++x) {
@@ -123,7 +136,11 @@ void WaterSolver::step(float* water_depth, float* flow_vx, float* flow_vy,
     // depth and the non-negative clamp below would CREATE mass. Per cell:
     // out_sum = sum of its outgoing fluxes; if out_sum*dt/dx > depth, scale
     // THAT CELL'S outgoing fluxes by depth*dx/(dt*out_sum).
-    std::vector<float> scale(n, 1.0f);
+    // Reused scratch via swap idiom: the default 1.0 (unlimited cell) IS read
+    // in the scaling pass below, so re-assign 1.0 each step.
+    std::vector<float> scale;
+    scale.swap(scale_);
+    scale.assign(n, 1.0f);
     for (int y = 0; y < h; ++y) {
         const int row = y * w;
         for (int x = 0; x < w; ++x) {
@@ -167,6 +184,12 @@ void WaterSolver::step(float* water_depth, float* flow_vx, float* flow_vy,
         if (solid[i] || d < depth_eps) d = 0.0f;
         water_depth[i] = d;
     }
+
+    // Retain all scratch storage for the next step (swap idiom; no per-step alloc).
+    zeros_scratch.swap(zeros_scratch_);
+    surface.swap(surface_);
+    fx.swap(fx_);  fy.swap(fy_);
+    scale.swap(scale_);
 }
 
 void WaterSolver::step_ripple(float* ripple, float* ripple_v,

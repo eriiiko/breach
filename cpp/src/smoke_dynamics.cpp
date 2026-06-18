@@ -56,7 +56,14 @@ void SmokeDynamics::step(
     // --- Smoke diffusion (wind-dependent) ---
     // D_effective = d_smoke * (1 + wind_diffusion_scale * |wind|)
     // Higher wind = more turbulent mixing = smoke disperses faster.
-    std::vector<float> lap(n);
+    // Reused scratch (GPU-prep: no per-step alloc). Every lap[i] is written
+    // below before the diffusion apply loop reads it, so no re-init needed.
+    // `__restrict`: lap_ is solver-private and aliases no field pointer —
+    // restores the fresh-local no-alias property /fp:fast needs for identical
+    // codegen (read in the pure-FP apply loop). No self-aliasing (lap is never
+    // read in the loop that writes it).
+    if (lap_.size() != (size_t)n) lap_.assign(n, 0.0f);
+    float* __restrict lap = lap_.data();
 
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
@@ -94,7 +101,14 @@ void SmokeDynamics::step(
 
     // Double buffer: read from the post-diffusion snapshot, write the advected
     // result. Never overwrite mid-pass (a cell may be sampled by its neighbours).
-    std::vector<float> src(smoke, smoke + n);
+    // Reused scratch via the SWAP idiom: `src` stays a genuine local std::vector
+    // (the branchy advection loop below READS src while writing smoke — a member
+    // pointer there shifts the float rounding under /fp:fast), with storage
+    // retained in src_ across steps. Re-copy smoke into it each step (was a copy
+    // of smoke at construction; smoke has just been mutated by diffusion above).
+    std::vector<float> src;
+    src.swap(src_);                          // steal retained storage
+    src.assign(smoke, smoke + n);            // reproduce the original copy (no realloc if cap>=n)
 
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
@@ -238,4 +252,7 @@ void SmokeDynamics::step(
             smoke[i] = std::clamp(smoke[i], 0.0f, 1.0f);
         }
     }
+
+    // Retain src's storage for the next step (swap idiom; no per-step alloc).
+    src.swap(src_);
 }

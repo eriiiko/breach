@@ -40,7 +40,13 @@ void AtmosphereSolver::step(
     }
 
     // --- 2. Explicit wave kick: Laplacian of wave_p ---
-    std::vector<float> lap(n);
+    // Reused scratch (GPU-prep: no per-step alloc). Every lap[i] is written
+    // below before the velocity update reads it, so no re-init needed.
+    // `__restrict`: lap_ is solver-private and aliases none of the field
+    // pointers — restores the fresh-local no-alias property /fp:fast relies on
+    // for bit-identical codegen (a member ref/data() ptr without it desyncs).
+    if (lap_.size() != (size_t)n) lap_.assign(n, 0.0f);
+    float* __restrict lap = lap_.data();
     for (int y = 0; y < h; ++y) {
         const int row = y * w;
         const int row_up   = (y > 0)     ? (y - 1) * w : row;
@@ -131,8 +137,10 @@ void AtmosphereSolver::step(
     // We iterate in-place: Gauss-Seidel naturally converges.
     // Red-black ordering for better convergence.
     if (mu > 1e-8f) {
-        // Store RHS (current atmosphere = u*)
-        std::vector<float> rhs(n);
+        // Store RHS (current atmosphere = u*). Reused scratch: the copy loop
+        // writes every rhs[i] before any read, so no re-init needed.
+        if (rhs_.size() != (size_t)n) rhs_.assign(n, 0.0f);
+        float* __restrict rhs = rhs_.data();
         for (int i = 0; i < n; ++i) rhs[i] = atmosphere[i];
 
         for (int iter = 0; iter < gs_iters; ++iter) {
@@ -205,7 +213,18 @@ void AtmosphereSolver::step(
     // Only vacuum tiles that are NOT obstacles count as seeds (breaches).
     // Border vacuum (which is also obstacle/wall) is blocked — the sponge
     // doesn't reach through hull walls to drain the sealed interior.
-    std::vector<uint8_t> vac_dist(n, 255);
+    // Reused scratch via the SWAP idiom: `vac_dist` stays a genuine local
+    // std::vector (so the float BC pass that READS it below keeps the exact
+    // fresh-local codegen /fp:fast emitted before — a member pointer/ref defeats
+    // the optimizer's no-alias view of that loop and shifts the float rounding),
+    // while its allocation is RETAINED across steps in vac_dist_ (no per-step
+    // alloc — the GPU-prep goal). Re-fill to 255 each step: the default 255 IS
+    // read (cells that never reach 0/1/2 stay 255 and fall through the final
+    // pass). NB: a member __restrict pointer would ALSO miscompile here — the
+    // BFS reads neighbours an earlier iteration wrote (self-aliasing).
+    std::vector<uint8_t> vac_dist;
+    vac_dist.swap(vac_dist_);          // steal retained storage (capacity kept)
+    vac_dist.assign(n, 255);           // size to n + re-init to 255 (no realloc if cap>=n)
     for (int i = 0; i < n; ++i) {
         if (is_vacuum[i] && !obstacles[i] && !is_wall[i]) vac_dist[i] = 0;
     }
@@ -304,4 +323,7 @@ void AtmosphereSolver::step(
             wind_y[i] = -(p_down  - p_up)   * 0.5f;
         }
     }
+
+    // Retain vac_dist's storage for the next step (swap idiom; no per-step alloc).
+    vac_dist.swap(vac_dist_);
 }

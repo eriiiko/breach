@@ -2,6 +2,8 @@
 // Smoke dynamics — diffusion + advection by precomputed wind field.
 // Wind is computed by the AtmosphereSolver (gradient of atmosphere + wave_p).
 
+#include <vector>
+
 class SmokeDynamics {
 public:
     float d_smoke             = 0.4f;   // base smoke diffusion coefficient
@@ -24,4 +26,17 @@ public:
         int h, int w,
         float dt
     ) const;
+
+private:
+    // Reused per-step scratch (GPU-prep: no per-step alloc). `mutable` so the
+    // const step() can use them (temperature_solver idiom).
+    //   lap_ — diffusion Laplacian; FULLY overwritten each step before read,
+    //          read in a pure-FP loop -> accessed via `float* __restrict` (it
+    //          aliases no field pointer; restores fresh-local /fp:fast codegen).
+    //   src_ — pre-advection snapshot (was a COPY of smoke). It is read by the
+    //          BRANCHY advection loop that writes smoke; a member pointer there
+    //          shifts the float codegen, so it uses the SWAP idiom (stays a
+    //          genuine local, storage retained) and is re-copied from smoke.
+    mutable std::vector<float> lap_;
+    mutable std::vector<float> src_;
 };

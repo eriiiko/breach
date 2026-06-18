@@ -1,4 +1,5 @@
 #pragma once
+#include <vector>
 // WaterSolver — the pipe model: damped velocity + donor-cell upwind mass flux.
 //
 // Canon design: docs/architecture/engine/07_fluid_and_water.md §2.
@@ -89,4 +90,29 @@ struct WaterSolver {
                      const float* wave_p,           // nullable -> no splash source
                      const bool*  solid,
                      int h, int w, float dt) const;
+
+private:
+    // Reused per-step scratch for step() (GPU-prep: no per-step alloc; on CUDA a
+    // per-step std::vector becomes a per-step cudaMalloc). `mutable` so const
+    // step() can use them. step_ripple has no per-step vector — nothing there.
+    //
+    // ALL are accessed in step() through the SWAP idiom (each is read by a
+    // BRANCHY float loop, and fx_/fy_/scale_ are also self-written across
+    // iterations; under /fp:fast a member pointer/ref shifts the float rounding
+    // and an __restrict promise would miscompile the self-aliasing). The swap
+    // keeps them genuine LOCAL std::vectors inside step() (bit-identical
+    // codegen) while RETAINING their allocation across steps.
+    //   zeros_scratch_ — lazy all-zeros stand-in for nullable fields; stays zero
+    //                    across steps (re-assigned zeros only on size change).
+    //   surface_       — surface potential; FULLY overwritten each step.
+    //   fx_, fy_       — face fluxes; init 0 but only non-solid/non-border faces
+    //                    are written and the remaining 0s ARE read later -> the
+    //                    swap re-assigns 0 each step.
+    //   scale_         — outflow limiter; default 1.0 IS read in the scale pass
+    //                    -> the swap re-assigns 1.0 each step.
+    mutable std::vector<float> zeros_scratch_;
+    mutable std::vector<float> surface_;
+    mutable std::vector<float> fx_;
+    mutable std::vector<float> fy_;
+    mutable std::vector<float> scale_;
 };

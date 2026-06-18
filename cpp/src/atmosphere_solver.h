@@ -20,6 +20,9 @@
 //
 // See docs/atmosphere_solver_analysis_and_patch_plan_20260319.md §8.
 
+#include <cstdint>
+#include <vector>
+
 class AtmosphereSolver {
 public:
     // Wave parameters
@@ -59,4 +62,20 @@ public:
         int h, int w,
         float dt
     ) const;
+
+private:
+    // Reused per-step scratch (GPU-prep: no per-step alloc; on CUDA a per-step
+    // std::vector becomes a per-step cudaMalloc). Resized once, reused; `mutable`
+    // so the const step() can use them as pure scratch (temperature_solver idiom).
+    // Accessed in step() through `T* __restrict` locals — these buffers alias no
+    // field pointer, so __restrict restores the fresh-local no-alias property
+    // /fp:fast needs for bit-identical codegen.
+    //   lap_      — wave Laplacian; FULLY overwritten each step before read.
+    //   rhs_      — implicit-diffusion RHS; FULLY overwritten (copy of atmosphere)
+    //               before read, inside the mu-gated block.
+    //   vac_dist_ — sponge distance; default 255 IS read (cells that never reach
+    //               0/1/2 stay 255), so it MUST be re-filled to 255 each step.
+    mutable std::vector<float>   lap_;
+    mutable std::vector<float>   rhs_;
+    mutable std::vector<uint8_t> vac_dist_;
 };
