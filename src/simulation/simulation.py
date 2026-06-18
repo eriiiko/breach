@@ -813,8 +813,11 @@ class Simulation:
             u.move_path = []
             u.last_fire_tick = -999
 
-        # Reset obstacles so dead bodies don't keep blocking physics.
-        self.gmap.obstacles = self.gmap.solid.copy()
+        # Reset obstacles so dead bodies don't keep blocking physics. IN-PLACE
+        # (not reassignment) so any bound view of the buffer stays valid — the
+        # in-place-write discipline the PhysicsEngine will rely on (engine/02;
+        # unification plan v2 §3a, the panel-flagged dangling-pointer trap).
+        self.gmap.obstacles[:] = self.gmap.solid
         # Keep un-detonated projectiles (long-fuse grenades carry over).
         self.projectiles = [p for p in self.projectiles if not p.detonated]
         # Rewind for the next round.

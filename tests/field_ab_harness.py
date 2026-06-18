@@ -149,6 +149,25 @@ def assert_trajectories_match(a, b, tol=0.0, max_report=10):
             f"A/B trajectories differ ({len(diffs)} mismatch group(s)):\n  {head}{more}")
 
 
+def save_trajectory(traj, path):
+    """Persist a trajectory so the OLD path's golden survives a C++ rebuild.
+
+    The unification gate is OLD-build vs NEW-build on the SAME machine; since a
+    rebuild swaps the .pyd in-process, capture the golden, pickle it here, rebuild,
+    then ``load_trajectory`` + ``assert_trajectories_match`` against a fresh capture.
+    (Underscore-prefixed golden files are untracked dev artifacts, never committed.)
+    """
+    import pickle
+    with open(path, "wb") as f:
+        pickle.dump(traj, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def load_trajectory(path):
+    import pickle
+    with open(path, "rb") as f:
+        return pickle.load(f)
+
+
 if __name__ == "__main__":
     a = capture_trajectory()
     b = capture_trajectory()
