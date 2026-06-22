@@ -11,6 +11,9 @@
 
 #include "physics_engine.h"
 
+#include <algorithm>   // std::max
+#include <cmath>       // std::ceil
+
 // Patch 1 S4a — the per-tick TAIL, the three trailing pure-solver-call steps of
 // PhysicsRunner.step (everything AFTER the IMEX atmosphere/smoke substep loop):
 //
@@ -91,4 +94,81 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         h, w);
 
     return destroyed;
+}
+
+// Patch 1 S4b — the IMEX atmosphere/smoke substep loop, lifted verbatim from the
+// middle of PhysicsRunner.step (the block between _step_water and step_tail).
+// BIT-IDENTICAL to the Python: the arithmetic below reproduces numpy's strict-
+// IEEE rounding and the EXACT double->float32 cast points at the pybind boundary.
+// See the header for the precision contract; the inline comments mark each spot
+// where the precision (not just the value) had to be matched.
+void PhysicsEngine::run_substeps(
+        float* wave_p, float* wave_v, float* wave_source, float* atmosphere,
+        float* wind_x, float* wind_y,
+        const bool* obstacles, const bool* solid, const bool* is_vacuum,
+        const float* dyn_permeability, const float* dyn_wave_absorb,
+        float* gas, const float* gas_diffusion, int n_gases,
+        const float* sink_x, const float* sink_y,
+        int h, int w, float sim_time) {
+
+    // --- The integer cliff: n = max(1, int(ceil(sim_time / dt))) ----------
+    // Python: dt = self.atmos.max_dt() is a float32 PROMOTED to a Python double;
+    // sim_time / dt is a DOUBLE division; ceil + int truncates. Match it byte for
+    // byte: promote max_dt() to double, do the division in double, ceil in double,
+    // truncate to int. A 1-ULP slip here flips n and desyncs the whole tick.
+    const double dt = (double)this->atmos.max_dt();
+    const int n = std::max(1, (int)std::ceil((double)sim_time / dt));
+    // dt_actual stays DOUBLE — Python keeps `dt_actual = sim_time / n` as a double
+    // and pybind narrows it to float32 only at the .step(...) call boundary.
+    const double dt_actual = (double)sim_time / n;
+    // dt_smoke = dt_actual * dt_scale, BOTH doubles, narrowed to float32 only at
+    // the smoke.step boundary. dt_scale is the float member promoted to double;
+    // the order (double-multiply THEN cast) must match pybind. The dt_scale is
+    // deliberately applied AGAIN inside smoke.step (the known double-application);
+    // we reproduce Python's value exactly and DO NOT "fix" it (not this patch).
+    const double dt_smoke = dt_actual * (double)this->smoke.dt_scale;
+
+    const int plane = h * w;  // elements per gas plane (gas is (N,h,w) contiguous)
+
+    for (int s = 0; s < n; ++s) {
+        // Atmosphere substep — arg order matches the AtmosphereSolver.step
+        // binding (wave_p, wave_v, wave_source, atmosphere, wind_x, wind_y,
+        // obstacles, is_wall(=solid), is_vacuum, permeability, wave_absorb, dt).
+        // (float)dt_actual reproduces pybind's double->float32 cast.
+        this->atmos.step(
+            wave_p, wave_v, wave_source, atmosphere,
+            wind_x, wind_y,
+            obstacles, solid, is_vacuum,
+            dyn_permeability,
+            dyn_wave_absorb,
+            h, w,
+            (float)dt_actual);
+
+        // Per-gas smoke transport (engine/05 §6.2, M1). Loop the N gas planes;
+        // skip an all-zero plane (reproduces numpy's `.any()` -> "any element
+        // != 0"; a 0.0/-0.0/NaN scan, matching numpy truthiness). Set d_smoke
+        // BEFORE each step (member-set, EXACTLY as Python — not a parameter).
+        for (int gi = 0; gi < n_gases; ++gi) {
+            float* gas_slice = gas + (size_t)gi * plane;
+            bool any = false;
+            for (int i = 0; i < plane; ++i) {
+                if (gas_slice[i] != 0.0f) { any = true; break; }
+            }
+            if (!any) {
+                continue;  // empty slice — nothing to transport (matches `.any()`)
+            }
+            // gas_diffusion[gi] is a float32; (float)... is the exact float32->
+            // double->float32 round-trip Python's float(gas_diffusion[gi]) +
+            // the d_smoke (float) member store performs — bit-identical.
+            this->smoke.d_smoke = (float)gas_diffusion[gi];
+            // (float)dt_smoke reproduces pybind's double->float32 cast.
+            this->smoke.step(
+                gas_slice, wind_x, wind_y,
+                sink_x, sink_y,
+                obstacles, solid, is_vacuum,
+                dyn_permeability,
+                h, w,
+                (float)dt_smoke);
+        }
+    }
 }

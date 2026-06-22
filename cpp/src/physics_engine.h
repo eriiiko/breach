@@ -75,4 +75,49 @@ public:
         int32_t* temperature_mut, const int32_t* heat,
         const int32_t* heat_inv_shift, const int32_t* face_shift,
         int h, int w, float sim_time) const;
+
+    // --- Patch 1 S4b: the IMEX atmosphere/smoke substep loop -------------
+    // Moves the per-tick IMEX substep block out of PhysicsRunner.step (Python)
+    // into C++ — the loop that runs BETWEEN the water/fire-heat steps (still
+    // Python, before) and step_tail (already C++, after). It advances the
+    // atmosphere wave+diffusion and the per-gas smoke transport `n` times, where
+    // `n` is derived from the atmosphere solver's CFL bound and `sim_time`.
+    //
+    // BIT-IDENTITY is the whole point — this reproduces Python's arithmetic
+    // EXACTLY (the /fp:precise TU makes the FP strict-IEEE; we must match the
+    // PRECISION + ORDER numpy's pybind boundary produced):
+    //   * `n` is an INTEGER CLIFF: n = max(1, (int)ceil((double)sim_time / dt))
+    //     where dt = (double)atmos.max_dt(). DOUBLE division — a 1-ULP slip flips
+    //     n and desyncs the whole tick.
+    //   * `dt_actual` and `dt_smoke` stay DOUBLE until the solver-call boundary:
+    //     dt_actual = (double)sim_time / n; dt_smoke = dt_actual * (double)dt_scale.
+    //     They are cast to float ONLY when passed to the solvers — matching
+    //     pybind's double->float32 cast at the .step() call site (do NOT pre-
+    //     narrow; the order double-multiply-then-cast must match).
+    //   * Per-gas loop: gi over the N planes of `gas` ((N,h,w) contiguous, plane
+    //     gi at gas + gi*h*w); SKIP an all-zero plane (reproduces numpy .any());
+    //     set this->smoke.d_smoke = (float)gas_diffusion[gi] BEFORE each
+    //     smoke.step (member-set EXACTLY as Python; NOT a parameter — that is a
+    //     later GPU-prep cleanup, not this bit-identical step).
+    //
+    // sink_fields() stays PYTHON — the runner fetches sink_x/sink_y and passes
+    // them in (it is a lazy BFS Python method, not called from C++).
+    //
+    //   wave_p, wave_v, wave_source : float (h, w) — atmosphere wave state
+    //   atmosphere                  : float (h, w) — bulk pressure
+    //   wind_x, wind_y              : float (h, w) — written by atmos, read by smoke
+    //   obstacles, solid, is_vacuum : bool  (h, w) — masks (solid == is_wall)
+    //   dyn_permeability            : float (h, w) — per-tick face permeability
+    //   dyn_wave_absorb             : float (h, w) — per-cell wave absorption
+    //   gas                         : float (N, h, w) — the per-gas density planes
+    //   gas_diffusion               : float (N,)     — per-gas base diffusion
+    //   sink_x, sink_y              : float (h, w) — smoke sink direction (Python-fetched)
+    void run_substeps(
+        float* wave_p, float* wave_v, float* wave_source, float* atmosphere,
+        float* wind_x, float* wind_y,
+        const bool* obstacles, const bool* solid, const bool* is_vacuum,
+        const float* dyn_permeability, const float* dyn_wave_absorb,
+        float* gas, const float* gas_diffusion, int n_gases,
+        const float* sink_x, const float* sink_y,
+        int h, int w, float sim_time);
 };

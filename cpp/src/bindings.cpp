@@ -553,5 +553,66 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("wind_x"), py::arg("wind_y"),
            py::arg("is_vacuum"), py::arg("flammable"),
            py::arg("heat"), py::arg("heat_inv_shift"), py::arg("face_shift"),
+           py::arg("sim_time"))
+        // --- Patch 1 S4b: the IMEX atmosphere/smoke substep loop ------------
+        // run_substeps moves the per-tick IMEX substep block of PhysicsRunner.step
+        // (between _step_water and step_tail) into C++. Pointer extraction mirrors
+        // the AtmosphereSolver.step / SmokeDynamics.step bindings above. `gas` is
+        // the (N, h, w) contiguous density array (each plane (h, w) is one gas);
+        // `gas_diffusion` is the (N,) per-gas base-diffusion column. sink_x/sink_y
+        // are fetched Python-side (gmap.sink_fields() — a lazy BFS) and passed in.
+        // `solid` is passed once and used as both the atmos/smoke `is_wall`. The
+        // n / dt_actual / dt_smoke precision matching (the integer cliff + the
+        // double-until-the-solver-boundary contract) lives in C++ (run_substeps).
+        .def("run_substeps", [](PhysicsEngine& self,
+                                py::array_t<float> wave_p,
+                                py::array_t<float> wave_v,
+                                py::array_t<float> wave_source,
+                                py::array_t<float> atmosphere,
+                                py::array_t<float> wind_x,
+                                py::array_t<float> wind_y,
+                                py::array_t<bool>  obstacles,
+                                py::array_t<bool>  solid,
+                                py::array_t<bool>  is_vacuum,
+                                py::array_t<float> dyn_permeability,
+                                py::array_t<float> dyn_wave_absorb,
+                                py::array_t<float> gas,
+                                py::array_t<float> gas_diffusion,
+                                py::array_t<float> sink_x,
+                                py::array_t<float> sink_y,
+                                float sim_time) {
+            auto [wp, h, w]    = get_2d(wave_p);
+            auto [wv, h2, w2]  = get_2d(wave_v);
+            auto [ws, h3, w3]  = get_2d(wave_source);
+            auto [atm, h4, w4] = get_2d(atmosphere);
+            auto [wx, h5, w5]  = get_2d(wind_x);
+            auto [wy, h6, w6]  = get_2d(wind_y);
+            auto [obs, h7, w7] = get_2d_const(obstacles);
+            auto [sol, h8, w8] = get_2d_const(solid);
+            auto [vac, h9, w9] = get_2d_const(is_vacuum);
+            auto [perm, h10, w10] = get_2d_const(dyn_permeability);
+            auto [wabs, h11, w11] = get_2d_const(dyn_wave_absorb);
+            // gas: (N, h, w) contiguous — pass the base pointer + N; run_substeps
+            // strides by plane (h*w) internally. h/w come from the 2D fields above.
+            auto gv = gas.mutable_unchecked<3>();
+            float* gas_ptr = gv.mutable_data(0, 0, 0);
+            const int n_gases = static_cast<int>(gv.shape(0));
+            // gas_diffusion: (N,) float32 — the per-gas base-diffusion column.
+            auto gd = gas_diffusion.unchecked<1>();
+            const float* gdiff = gd.data(0);
+            auto [skx, h12, w12] = get_2d_const(sink_x);
+            auto [sky, h13, w13] = get_2d_const(sink_y);
+            self.run_substeps(
+                wp, wv, ws, atm, wx, wy,
+                obs, sol, vac, perm, wabs,
+                gas_ptr, gdiff, n_gases,
+                skx, sky,
+                h, w, sim_time);
+        }, py::arg("wave_p"), py::arg("wave_v"), py::arg("wave_source"),
+           py::arg("atmosphere"), py::arg("wind_x"), py::arg("wind_y"),
+           py::arg("obstacles"), py::arg("solid"), py::arg("is_vacuum"),
+           py::arg("dyn_permeability"), py::arg("dyn_wave_absorb"),
+           py::arg("gas"), py::arg("gas_diffusion"),
+           py::arg("sink_x"), py::arg("sink_y"),
            py::arg("sim_time"));
 }

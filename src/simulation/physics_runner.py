@@ -329,59 +329,34 @@ class PhysicsRunner:
         # the water system existed.
         self._step_water(gmap, sim_time)
 
-        dt = self.atmos.max_dt()
-        n = max(1, int(math.ceil(sim_time / dt)))
-        dt_actual = sim_time / n
-        # Smoke sink-direction field toward the nearest breach (ch.05 smoke v2).
-        # Fetched once per tick: it only changes on topology edits, and the
-        # accessor rebuilds it lazily (gated by gmap._sink_dirty), so this is a
-        # cheap array hand-back on every tick except the rare one after a breach.
+        # IMEX atmosphere/smoke substep loop — moved into C++ in Patch 1 S4b
+        # (PhysicsEngine::run_substeps, physics_engine.cpp, compiled /fp:precise).
+        # The block that used to live here — derive the substep count `n` from the
+        # atmosphere CFL bound, then `n` times: one AtmosphereSolver.step followed
+        # by a per-gas SmokeDynamics.step over the (N, h, w) gas planes — now runs
+        # as one C++ call, on the engine's own solver instances, BIT-IDENTICALLY.
+        #
+        # The precision contract (reproduced exactly in run_substeps): `n` is an
+        # integer cliff — n = max(1, int(ceil(sim_time / atmos.max_dt()))) in
+        # DOUBLE; `dt_actual = sim_time / n` and `dt_smoke = dt_actual * dt_scale`
+        # stay DOUBLE until pybind narrows them to float32 at the solver boundary;
+        # the per-gas loop skips all-zero planes (numpy `.any()`) and sets the
+        # solver's `d_smoke` member per gas before stepping its plane. The
+        # deliberate dt_scale double-application inside smoke.step is preserved
+        # (no cleanup — bit-identity is the only goal). Gated by the per-cell A/B
+        # harness (0-ULP vs the post-S4a AND the pre-Patch-1 goldens).
+        #
+        # sink_fields() STAYS Python — it is a lazy BFS (rebuilt only on topology
+        # edits, gated by gmap._sink_dirty); the runner fetches the sink direction
+        # field once per tick and hands it to run_substeps (not called from C++).
         sink_x, sink_y = gmap.sink_fields()
-        for _ in range(n):
-            self.atmos.step(
-                gmap.wave_p, gmap.wave_v, gmap.wave_source, gmap.atmosphere,
-                gmap.wind_x, gmap.wind_y,
-                gmap.obstacles, gmap.solid, gmap.is_vacuum,
-                gmap.dyn_permeability,
-                gmap.dyn_wave_absorb,
-                dt_actual,
-            )
-            # Per-gas transport (engine/05 §6.2, M1). The single smoke field is
-            # generalised to N gas density fields (gmap.gas, shape (N, h, w)):
-            # we loop over the slices and call the SAME C++ smoke solver once per
-            # gas, passing that gas's slice + its per-gas DIFFUSION (from the gas
-            # table) and the SHARED wind / sink / permeability / dt (all gases
-            # ride the same wind — on CUDA this is one batched stencil). No
-            # structural C++ change: the solver is invoked per gas.
-            #
-            # DECAY: the M1 C++ solver has NO decay term, and today's smoke does
-            # not decay, so we do NOT apply per-gas decay here — applying it would
-            # change behaviour and break the M1 behaviour-preservation guarantee.
-            # The per-gas ``decay`` is loaded in the gas table (data only) for
-            # M2/M3, where a decay term is added to the solver. Noted in §6.2.
-            #
-            # Behaviour preservation: black_smoke's diffusion is 0.10, the same as
-            # the legacy d_smoke=0.1 the solver was bound to, so with only the
-            # black_smoke (== gmap.smoke) slice populated the result is identical
-            # to the pre-multigas single smoke field. Empty gas slices are a cheap
-            # no-op (skipped via ``.any()``).
-            gas_diffusion = gmap.gases.diffusion
-            dt_smoke = dt_actual * self.smoke.dt_scale
-            for gi in range(gmap.gas.shape[0]):
-                gas_slice = gmap.gas[gi]
-                if not gas_slice.any():
-                    continue  # empty slice — nothing to transport
-                # Bind this gas's base diffusion onto the shared solver instance
-                # before stepping its slice (the only per-gas knob in M1; wind /
-                # sink / advection / dt_scale are shared across all gases).
-                self.smoke.d_smoke = float(gas_diffusion[gi])
-                self.smoke.step(
-                    gas_slice, gmap.wind_x, gmap.wind_y,
-                    sink_x, sink_y,
-                    gmap.obstacles, gmap.solid, gmap.is_vacuum,
-                    gmap.dyn_permeability,
-                    dt_smoke,
-                )
+        self.engine.run_substeps(
+            gmap.wave_p, gmap.wave_v, gmap.wave_source, gmap.atmosphere,
+            gmap.wind_x, gmap.wind_y,
+            gmap.obstacles, gmap.solid, gmap.is_vacuum,
+            gmap.dyn_permeability, gmap.dyn_wave_absorb,
+            gmap.gas, gmap.gases.diffusion, sink_x, sink_y, sim_time,
+        )
 
         # Per-tick orchestration TAIL — moved into C++ in Patch 1 S4a
         # (PhysicsEngine::step_tail, physics_engine.cpp, compiled /fp:precise).
