@@ -270,9 +270,17 @@ _TRANSPORT_FIELDS = ("water_depth", "flow_vx", "flow_vy", "atmosphere",
 def _ab_rollout(noop_ripple: bool):
     """Sealed room with a painted pool and a wave_p bump (the splash source —
     with k_p = 0.5 it also shoves the water, so transport is genuinely
-    active). Runner-side no-op via the ``_step_water`` monkeypatch precedent
-    (test_water_integration): pybind methods are read-only, the factored
-    ``_step_ripple`` is the swap point."""
+    active).
+
+    Ripple no-op swap point (Patch 1 S4a): the ripple call moved INTO
+    ``PhysicsEngine::step_tail`` (C++) alongside the fire/temperature steps, so
+    the old ``_step_ripple`` monkeypatch no longer intercepts it. pybind methods
+    are read-only, so we wrap the engine the runner calls with a thin proxy that
+    snapshots ``ripple`` / ``ripple_v`` around ``step_tail`` and restores them —
+    the ripple solver still RUNS (and feeds nothing back, which is the whole
+    point), but its output is discarded each tick, so a divergence in any
+    transport field could only come from a ripple->transport feedback. Fire and
+    temperature (the other two tail steps) are untouched by the wrapper."""
     level = _sealed_room_level(12)
     sim = Simulation(level, seed=SEED, breach_physics=bp, enable_recorder=False)
     g = sim.gmap
@@ -280,7 +288,24 @@ def _ab_rollout(noop_ripple: bool):
     g.water_depth[interior] = 0.3            # painted pool (pre-existing water)
     g.wave_p[5, 4:8] = 0.8                   # a blast ringing over the pool
     if noop_ripple:
-        sim.physics_runner._step_ripple = lambda gmap, sim_time: None
+        class _NoRippleEngine:
+            """Forward everything to the real engine, but discard the ripple
+            field's update each tick (restore ripple/ripple_v after step_tail)."""
+            def __init__(self, engine):
+                self._engine = engine
+
+            def __getattr__(self, name):
+                return getattr(self._engine, name)
+
+            def step_tail(self, ripple, ripple_v, *args, **kwargs):
+                r_before = ripple.copy()
+                rv_before = ripple_v.copy()
+                out = self._engine.step_tail(ripple, ripple_v, *args, **kwargs)
+                ripple[...] = r_before
+                ripple_v[...] = rv_before
+                return out
+
+        sim.physics_runner.engine = _NoRippleEngine(sim.physics_runner.engine)
     sim.set_paused(False)
 
     ripple_ever = False

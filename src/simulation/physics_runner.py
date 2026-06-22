@@ -383,51 +383,38 @@ class PhysicsRunner:
                     dt_smoke,
                 )
 
-        # W6a ripple — the VISUAL-ONLY surface wave (canon §6, plan W6a).
-        # Placed immediately AFTER the IMEX substep loop so its splash source
-        # reads the FRESH post-substep wave_p (explosions splash the moment
-        # they pass over water), and BEFORE the fire feedback step (the order
-        # the plan pins). It feeds NOTHING back into transport — the locked
-        # canon rule: the solver writes only gmap.ripple / gmap.ripple_v.
-        self._step_ripple(gmap, sim_time)
-
-        # Fire feedback step (fire_design_proposal §2/§3/§5). Reads the
-        # conduction-pass `temperature` (Q16.16) for the `hot` gate, the SHARED
-        # `wind_x`/`wind_y` field (= -grad p incl. shockwaves, so a grenade blast
-        # fans/blows fires) for the wind term, and `is_vacuum` to exclude vacuum
-        # from the pressure (O2-proxy) neighbour mean. NOTE: it reads the
-        # temperature from the PREVIOUS tick's conduction pass — the
-        # TemperatureSolver below updates it for next tick (this tick's fire-heat
-        # was already cast at the top of step()). Deposits an own-tile plume into
-        # `atmosphere` so smoke is pushed OUTWARD.
-        destroyed = self.fire.step(
+        # Per-tick orchestration TAIL — moved into C++ in Patch 1 S4a
+        # (PhysicsEngine::step_tail, physics_engine.cpp, compiled /fp:precise).
+        # The three trailing PURE-SOLVER-CALL steps that used to live here —
+        # the W6a ripple, the fire feedback step, and the temperature
+        # heat->conduction->cooling pass — now run as one C++ call, in the same
+        # order, on the engine's own solver instances. Bit-identical (no new
+        # arithmetic; gated by the per-cell A/B harness). The substep loop above
+        # and the water/fire-heat steps before it move in LATER S4 sub-steps.
+        #
+        # The tail, for reference (the order step_tail pins):
+        #   1. W6a ripple — VISUAL-ONLY surface wave (canon §6, plan W6a). Runs
+        #      AFTER the IMEX loop so its splash source reads the FRESH
+        #      post-substep wave_p, and BEFORE the fire step. It feeds NOTHING
+        #      back into transport (writes only ripple / ripple_v). The dormancy
+        #      guard — skip unless water_depth.any() or ripple.any() — is
+        #      reproduced inside step_tail.
+        #   2. Fire feedback (fire_design_proposal §2/§3/§5) — reads the
+        #      conduction-pass `temperature` (Q16.16), the SHARED wind field, and
+        #      `is_vacuum`; deposits an own-tile plume into `atmosphere`; returns
+        #      the burn-through wall list.
+        #   3. Temperature (engine/06 §1.2 + §2 + §3) — heat->temperature
+        #      conversion on solids, one conduction relaxation, then ambient
+        #      cooling. Reads THIS tick's `heat` (cast at the top of step()) and
+        #      updates `temperature` in place for next tick.
+        destroyed = self.engine.step_tail(
+            gmap.ripple, gmap.ripple_v, gmap.water_depth, gmap.wave_p,
+            gmap.solid,
             gmap.fire, gmap.atmosphere, gmap.smoke, gmap.wall_hp,
             gmap.temperature, gmap.wind_x, gmap.wind_y,
-            gmap.solid, gmap.is_vacuum, gmap.flammable,
+            gmap.is_vacuum, gmap.flammable,
+            gmap.heat, gmap.heat_inv_shift, gmap.face_shift,
             sim_time,
-        )
-
-        # Heat -> temperature conversion + CONDUCTION + AMBIENT COOLING
-        # (engine/06 §1.2 + §2 + §3, proposal §6 steps 1–3). Pass 1 reads the
-        # `heat` deposit NON-DESTRUCTIVELY and accumulates it (scaled by
-        # 1/thermal_mass via the precomputed shift) onto `temperature` on SOLID
-        # tiles. Pass 2 spreads the just-converted field one conduction
-        # relaxation step (gather, double-buffered) along the harmonic-mean face
-        # shifts in `face_shift`; kappa==0 air faces are NO_FACE -> air stays
-        # bit-exactly 0. Pass 3 sheds it: T -= T >> shift toward ambient (0),
-        # using the smaller vacuum shift where a 4-neighbour is space-facing
-        # (is_vacuum / atmosphere < o2_vacuum_thresh) — the same fields the
-        # atmosphere/smoke solvers read, so a breached wall cools fast through
-        # the existing seam. The fire heat pass at the TOP of this step (K2) has
-        # already filled `heat` for any burning tile, so this conversion turns
-        # this tick's fire heat into temperature on the burning tile and its
-        # solid neighbours; with no fire on the map `heat` is 0 and a 0 field
-        # conducts/cools to nothing (the field stays 0 — no behaviour change).
-        # Unit damage (§4) becomes a further pass in step().
-        self.temperature.step(
-            gmap.temperature, gmap.heat, gmap.heat_inv_shift,
-            gmap.face_shift, gmap.solid,
-            gmap.is_vacuum, gmap.atmosphere,
         )
 
         # NOTE: the per-tick `heat` clear does NOT live here. `heat` has a

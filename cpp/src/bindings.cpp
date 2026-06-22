@@ -477,5 +477,81 @@ PYBIND11_MODULE(breach_physics, m) {
             py::return_value_policy::reference_internal)
         .def_property_readonly("water",
             [](PhysicsEngine& e) -> WaterSolver& { return e.water; },
-            py::return_value_policy::reference_internal);
+            py::return_value_policy::reference_internal)
+        // --- Patch 1 S4a: the per-tick TAIL ---------------------------------
+        // step_tail moves the three trailing pure-solver-call steps of
+        // PhysicsRunner.step (ripple, fire, temperature — after the IMEX substep
+        // loop) into C++. Pointer extraction mirrors the FireSimulation /
+        // TemperatureSolver / WaterSolver.step_ripple bindings above. `gmap.solid`
+        // is passed once and used as BOTH the ripple `solid` and the fire/temp
+        // `is_wall`/`solid` arg (the Python passes gmap.solid to all three).
+        // `temperature` is the one numpy array, extracted both const (the fire
+        // read) and mutable (the temperature-solver write). Returns the (y, x)
+        // burn-through list exactly as FireSimulation.step does.
+        .def("step_tail", [](const PhysicsEngine& self,
+                             // ripple group
+                             py::array_t<float> ripple,
+                             py::array_t<float> ripple_v,
+                             py::array_t<float> water_depth,
+                             py::array_t<float> wave_p,
+                             py::array_t<bool>  solid,
+                             // fire group
+                             py::array_t<float> fire,
+                             py::array_t<float> atmosphere,
+                             py::array_t<float> smoke,
+                             py::array_t<float> wall_hp,
+                             py::array_t<int32_t> temperature,
+                             py::array_t<float> wind_x,
+                             py::array_t<float> wind_y,
+                             py::array_t<bool>  is_vacuum,
+                             py::array_t<bool>  flammable,
+                             // temperature group
+                             py::array_t<int32_t> heat,
+                             py::array_t<int32_t> heat_inv_shift,
+                             py::array_t<int32_t> face_shift,
+                             float sim_time) -> py::list {
+            // ripple group
+            auto [rip, h, w]    = get_2d(ripple);
+            auto [ripv, h2, w2] = get_2d(ripple_v);
+            auto [wd, h3, w3]   = get_2d_const(water_depth);
+            auto [wp, h4, w4]   = get_2d_const(wave_p);
+            auto [sol, h5, w5]  = get_2d_const(solid);
+            // fire group
+            auto [f, h6, w6]    = get_2d(fire);
+            auto [atm, h7, w7]  = get_2d(atmosphere);
+            auto [sm, h8, w8]   = get_2d(smoke);
+            auto [whp, h9, w9]  = get_2d(wall_hp);
+            // temperature is read const by fire AND mutated by temperature.step —
+            // extract a mutable pointer (one mutable_unchecked view) and use it
+            // for both; aliasing is exactly the Python behaviour (same array).
+            auto [temp, h10, w10] = get_2d(temperature);
+            auto [wx, h11, w11] = get_2d_const(wind_x);
+            auto [wy, h12, w12] = get_2d_const(wind_y);
+            auto [vac, h13, w13] = get_2d_const(is_vacuum);
+            auto [fl, h14, w14] = get_2d_const(flammable);
+            // temperature group
+            auto [hp, h15, w15]    = get_2d_const(heat);
+            auto [shift, h16, w16] = get_2d_const(heat_inv_shift);
+            // face_shift is (h, w, 4) int32 — mirror the TemperatureSolver binding.
+            auto fa = face_shift.unchecked<3>();
+            const int32_t* fs = fa.data(0, 0, 0);
+
+            auto destroyed = self.step_tail(
+                rip, ripv, wd, wp, sol,
+                f, atm, sm, whp, temp, wx, wy, vac, fl,
+                temp, hp, shift, fs,
+                h, w, sim_time);
+            py::list result;
+            for (const auto& [dy, dx] : destroyed) {
+                result.append(py::make_tuple(dy, dx));
+            }
+            return result;
+        }, py::arg("ripple"), py::arg("ripple_v"),
+           py::arg("water_depth"), py::arg("wave_p"), py::arg("solid"),
+           py::arg("fire"), py::arg("atmosphere"), py::arg("smoke"),
+           py::arg("wall_hp"), py::arg("temperature"),
+           py::arg("wind_x"), py::arg("wind_y"),
+           py::arg("is_vacuum"), py::arg("flammable"),
+           py::arg("heat"), py::arg("heat_inv_shift"), py::arg("face_shift"),
+           py::arg("sim_time"));
 }
