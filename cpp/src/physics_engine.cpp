@@ -97,12 +97,16 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     return destroyed;
 }
 
-// Patch 1 S4b — the IMEX atmosphere/smoke substep loop, lifted verbatim from the
-// middle of PhysicsRunner.step (the block between _step_water and step_tail).
-// BIT-IDENTICAL to the Python: the arithmetic below reproduces numpy's strict-
-// IEEE rounding and the EXACT double->float32 cast points at the pybind boundary.
-// See the header for the precision contract; the inline comments mark each spot
-// where the precision (not just the value) had to be matched.
+// Patch 1 S4b — the IMEX atmosphere/smoke substep loop, lifted from the middle
+// of PhysicsRunner.step (between _step_water and step_tail).
+//
+// Patch 2a RESHAPE (BEHAVIOR CHANGE, feel-gated — the 0-ULP A/B harness no
+// longer applies): the fused atmos.step that ran `n` times is split into a wave
+// loop (n_wave substeps at the wave CFL) + a SINGLE implicit diffusion solve at
+// the full sim_time + the per-gas smoke loop (n_wave×, unchanged) relocated to
+// run AFTER the single diffuse on the once-computed wind. The integer-cliff `n`
+// derivation and the dt_actual/dt_smoke double-until-the-boundary contract are
+// preserved exactly; only the loop STRUCTURE changed. See the body comment.
 void PhysicsEngine::run_substeps(
         float* wave_p, float* wave_v, float* wave_source, float* atmosphere,
         float* wind_x, float* wind_y,
@@ -131,24 +135,53 @@ void PhysicsEngine::run_substeps(
 
     const int plane = h * w;  // elements per gas plane (gas is (N,h,w) contiguous)
 
-    for (int s = 0; s < n; ++s) {
-        // Atmosphere substep — arg order matches the AtmosphereSolver.step
-        // binding (wave_p, wave_v, wave_source, atmosphere, wind_x, wind_y,
-        // obstacles, is_wall(=solid), is_vacuum, permeability, wave_absorb, dt).
-        // (float)dt_actual reproduces pybind's double->float32 cast.
-        this->atmos.step(
+    // === Patch 2a: the dt-policy decouple — wave / diffusion / smoke split ===
+    // BEHAVIOR CHANGE (feel-gated, not 0-ULP). Previously the fused atmos.step
+    // (explicit wave + implicit diffusion) ran `n` times interleaved with the
+    // per-gas smoke. Now:
+    //   1. the WAVE substeps `n_wave` times at its CFL dt_actual (cheap explicit
+    //      kick + the per-substep anomaly transfer onto atmosphere);
+    //   2. the implicit DIFFUSION solves ONCE per tick at the FULL sim_time
+    //      (μ = d_atm·sim_time is large, but implicit GS is unconditionally
+    //      stable) — this is the ~3× atmosphere-cost win (one ~8-sweep solve
+    //      instead of n solves), and it also computes the wind ONCE;
+    //   3. the SMOKE then runs `n_wave`× the same per-gas loop as before, but
+    //      AFTER the single diffuse — riding the once-computed (quasi-static)
+    //      wind. The smoke is OTHERWISE UNCHANGED: same per-gas loop, same
+    //      `.any()` skip, same d_smoke member-set, same dt_smoke (the dt_scale
+    //      double-application is preserved — its removal is a separate step).
+    // Mass conservation is unchanged: the wave->atmosphere transfer is summed
+    // over the same n_wave substeps the fused step ran, and the implicit
+    // diffusion conserves regardless of how big a single solve dt is.
+    const int n_wave = n;
+
+    // 1. Wave substeps at the wave CFL (dt_actual), n_wave times.
+    for (int s = 0; s < n_wave; ++s) {
+        this->atmos.wave_substep(
             wave_p, wave_v, wave_source, atmosphere,
-            wind_x, wind_y,
             obstacles, solid, is_vacuum,
             dyn_permeability,
             dyn_wave_absorb,
             h, w,
             (float)dt_actual);
+    }
 
-        // Per-gas smoke transport (engine/05 §6.2, M1). Loop the N gas planes;
-        // skip an all-zero plane (reproduces numpy's `.any()` -> "any element
-        // != 0"; a 0.0/-0.0/NaN scan, matching numpy truthiness). Set d_smoke
-        // BEFORE each step (member-set, EXACTLY as Python — not a parameter).
+    // 2. Implicit diffusion + BCs + wind, ONCE, at the FULL sim_time. The wind
+    // is written here for the smoke below. sim_time is the float passed from
+    // Python; the diffuse_solve dt is that full tick length (NOT dt_actual).
+    this->atmos.diffuse_solve(
+        atmosphere, wave_p, wave_v, wave_source,
+        wind_x, wind_y,
+        obstacles, solid, is_vacuum,
+        dyn_permeability,
+        h, w,
+        sim_time);
+
+    // 3. Per-gas smoke transport (engine/05 §6.2, M1) — UNCHANGED from before
+    // except it now runs AFTER the single diffuse, on the once-computed wind.
+    // n_wave× the per-gas loop; skip an all-zero plane (numpy `.any()`); set
+    // d_smoke BEFORE each step (member-set, EXACTLY as Python — not a param).
+    for (int s = 0; s < n_wave; ++s) {
         for (int gi = 0; gi < n_gases; ++gi) {
             float* gas_slice = gas + (size_t)gi * plane;
             bool any = false;
@@ -160,7 +193,7 @@ void PhysicsEngine::run_substeps(
             }
             // gas_diffusion[gi] is a float32; (float)... is the exact float32->
             // double->float32 round-trip Python's float(gas_diffusion[gi]) +
-            // the d_smoke (float) member store performs — bit-identical.
+            // the d_smoke (float) member store performs.
             this->smoke.d_smoke = (float)gas_diffusion[gi];
             // (float)dt_smoke reproduces pybind's double->float32 cast.
             this->smoke.step(

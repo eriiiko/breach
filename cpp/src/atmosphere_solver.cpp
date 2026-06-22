@@ -9,6 +9,11 @@ float AtmosphereSolver::max_dt() const {
     return 0.5f / std::max(c, 1e-6f);
 }
 
+// Patch 2a: step() = wave_substep() then diffuse_solve(). Kept as the
+// single-substep convenience entry (and what the conservation test drives).
+// The engine's run_substeps splits these — the wave loops at its CFL while the
+// implicit diffusion runs ONCE per tick — so this fused form is no longer on
+// the hot per-tick path, but it stays the reference single-step behaviour.
 void AtmosphereSolver::step(
     float* wave_p,
     float* wave_v,
@@ -24,9 +29,33 @@ void AtmosphereSolver::step(
     int h, int w,
     float dt
 ) const {
+    wave_substep(wave_p, wave_v, wave_source, atmosphere,
+                 obstacles, is_wall, is_vacuum, permeability, wave_absorb,
+                 h, w, dt);
+    diffuse_solve(atmosphere, wave_p, wave_v, wave_source, wind_x, wind_y,
+                  obstacles, is_wall, is_vacuum, permeability,
+                  h, w, dt);
+}
+
+// --- Patch 2a: the explicit-wave sub-steps (1-3) ---------------------------
+// Sub-steps 1 (feed source), 2 (explicit kick + per-cell absorb + wave BCs)
+// and 3 (transfer wave anomaly -> atmosphere). Runs `n_wave` times at the wave
+// CFL dt. No diffusion / BCs / wind here — those are diffuse_solve.
+void AtmosphereSolver::wave_substep(
+    float* wave_p,
+    float* wave_v,
+    float* wave_source,
+    float* atmosphere,
+    const bool* obstacles,
+    const bool* is_wall,
+    const bool* is_vacuum,
+    const float* permeability,
+    const float* wave_absorb,
+    int h, int w,
+    float dt
+) const {
     const int n = h * w;
     const float c_sq = c * c;
-    const float mu = d_atm * dt;  // implicit diffusion coefficient
 
     // --- 1. Feed wave_source into wave_p (rate-limited) ---
     for (int i = 0; i < n; ++i) {
@@ -128,6 +157,30 @@ void AtmosphereSolver::step(
             atmosphere[i] += (wave_p[i] - mean_wp) * xfer;
         }
     }
+}
+
+// --- Patch 2a: the implicit diffusion + BCs + wind (4-7) -------------------
+// Sub-steps 4 (u* = atmosphere), 5 (implicit Gauss-Seidel diffusion, μ = d_atm·
+// dt), 6 (vacuum/sponge BCs), 7 (wind = -grad(atmosphere + wave_p)). Runs ONCE
+// per tick at the FULL sim_time dt (so μ is large) — the implicit GS is
+// unconditionally stable, so this is fine. The GS-residual hook measures the
+// solve quality AFTER the sweeps but BEFORE the BC pass.
+void AtmosphereSolver::diffuse_solve(
+    float* atmosphere,
+    float* wave_p,
+    float* wave_v,
+    float* wave_source,
+    float* wind_x,
+    float* wind_y,
+    const bool* obstacles,
+    const bool* is_wall,
+    const bool* is_vacuum,
+    const float* permeability,
+    int h, int w,
+    float dt
+) const {
+    const int n = h * w;
+    const float mu = d_atm * dt;  // implicit diffusion coefficient
 
     // --- 4. Implicit diffusion on atmosphere (Gauss-Seidel) ---
     // Solve: (I - mu * Δ) atm_new = atm_current
@@ -206,6 +259,50 @@ void AtmosphereSolver::step(
                 }
             }
         }
+
+        // --- Patch 2a: GS-residual hook (read-only; AFTER the sweeps, BEFORE
+        // the BC pass so the post-solve BC mutation can't contaminate it).
+        // Residual of the implicit operator (I - μΔ)atm - rhs, evaluated with
+        // the SAME face/neighbour gather the GS update used:
+        //   res_i = (1 + μ·wsum)·atm_i - μ·nb - rhs_i
+        // over the non-obstacle interior (the cells the solve actually updates;
+        // walls/obstacles/vacuum are excluded — they have no equation). Linf
+        // norm, normalized by max|atm| over the same cells. Diagnostic only —
+        // nothing reads it; the diffusion is unconditionally stable regardless.
+        // (At the big once-per-tick dt, μ is large; this measures whether
+        // gs_iters sweeps under-relax — a tuning signal, not a correctness gate.)
+        float res_max = 0.0f;
+        float atm_absmax = 0.0f;
+        for (int y = 0; y < h; ++y) {
+            const int row = y * w;
+            for (int x = 0; x < w; ++x) {
+                const int i = row + x;
+                if (obstacles[i] || is_wall[i] || is_vacuum[i]) continue;
+                const float perm_i = permeability[i];
+                auto face = [&](int nb) {
+                    return (obstacles[nb] || is_wall[nb])
+                        ? 0.0f
+                        : std::min(perm_i, permeability[nb]);
+                };
+                float w_up    = (y > 0)   ? face((y-1)*w+x) : 0.0f;
+                float w_down  = (y < h-1) ? face((y+1)*w+x) : 0.0f;
+                float w_left  = (x > 0)   ? face(row+x-1)   : 0.0f;
+                float w_right = (x < w-1) ? face(row+x+1)   : 0.0f;
+                float nb = w_up   * (y > 0   ? atmosphere[(y-1)*w+x] : 0.0f)
+                         + w_down * (y < h-1 ? atmosphere[(y+1)*w+x] : 0.0f)
+                         + w_left * (x > 0   ? atmosphere[row+x-1]   : 0.0f)
+                         + w_right* (x < w-1 ? atmosphere[row+x+1]   : 0.0f);
+                float wsum = w_up + w_down + w_left + w_right;
+                float res = (1.0f + mu * wsum) * atmosphere[i] - mu * nb - rhs[i];
+                res_max = std::max(res_max, std::fabs(res));
+                atm_absmax = std::max(atm_absmax, std::fabs(atmosphere[i]));
+            }
+        }
+        last_gs_residual = (atm_absmax > 1e-12f) ? (res_max / atm_absmax) : res_max;
+    } else {
+        // No diffusion this step (μ ~ 0) — the operator is the identity, so the
+        // residual is exactly 0.
+        last_gs_residual = 0.0f;
     }
 
     // --- 5. Boundary conditions ---

@@ -45,8 +45,25 @@ public:
     // Compute the maximum stable dt (wave CFL only — diffusion is implicit).
     float max_dt() const;
 
+    // --- Patch 2a: GS-residual diagnostic (read-only) --------------------
+    // Linf norm of the implicit-operator residual (I - μΔ)atm - rhs over the
+    // non-obstacle interior, normalized by max|atm|, measured INSIDE
+    // diffuse_solve AFTER the GS sweeps but BEFORE the vacuum/sponge BC pass
+    // (the BC pass mutates atmosphere post-solve and would contaminate it).
+    // Answers "do gs_iters sweeps under-relax at this dt?". Nothing reads it
+    // yet — pure instrumentation. Default 0 until the first diffuse_solve.
+    // `mutable` so the const diffuse_solve()/step() can write it (it is pure
+    // diagnostic state, not a solver output).
+    mutable float last_gs_residual = 0.0f;
+    float gs_residual() const { return last_gs_residual; }
+
     // Advance ONE timestep of size dt.
     // Updates all fields in-place. Writes wind_x, wind_y.
+    //
+    // Patch 2a: step() is now wave_substep() followed by diffuse_solve() —
+    // kept as the single-substep convenience entry (and what the conservation
+    // test drives). The engine's run_substeps splits these so the wave loops
+    // at its CFL while the implicit diffusion solves ONCE per tick.
     void step(
         float* wave_p,
         float* wave_v,
@@ -59,6 +76,45 @@ public:
         const bool* is_vacuum,
         const float* permeability,
         const float* wave_absorb,
+        int h, int w,
+        float dt
+    ) const;
+
+    // --- Patch 2a: the explicit-wave sub-steps (1-3) ----------------------
+    // Feed wave_source -> wave_p, the explicit wave kick (+ per-cell absorb +
+    // wave wall/vacuum BCs), then transfer the wave anomaly into atmosphere.
+    // Runs `n_wave` times at the wave CFL dt. Mutates wave_p/wave_v/wave_source
+    // and accumulates the per-substep anomaly transfer onto atmosphere.
+    void wave_substep(
+        float* wave_p,
+        float* wave_v,
+        float* wave_source,
+        float* atmosphere,
+        const bool* obstacles,
+        const bool* is_wall,
+        const bool* is_vacuum,
+        const float* permeability,
+        const float* wave_absorb,
+        int h, int w,
+        float dt
+    ) const;
+
+    // --- Patch 2a: the implicit diffusion + BCs + wind (4-7) --------------
+    // u* = atmosphere, implicit Gauss-Seidel diffusion (μ = d_atm·dt; here dt
+    // is the FULL tick sim_time — runs ONCE per tick, unconditionally stable),
+    // the vacuum/sponge BC pass, then wind = -grad(atmosphere + wave_p).
+    // Measures last_gs_residual after the sweeps, before the BC pass.
+    void diffuse_solve(
+        float* atmosphere,
+        float* wave_p,
+        float* wave_v,
+        float* wave_source,
+        float* wind_x,
+        float* wind_y,
+        const bool* obstacles,
+        const bool* is_wall,
+        const bool* is_vacuum,
+        const float* permeability,
         int h, int w,
         float dt
     ) const;

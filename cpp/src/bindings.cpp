@@ -54,6 +54,13 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("breach_rate",         &AtmosphereSolver::breach_rate)
         .def_readwrite("max_source_per_step", &AtmosphereSolver::max_source_per_step)
         .def_readwrite("gs_iters",            &AtmosphereSolver::gs_iters)
+        // Patch 2a: GS-residual diagnostic (read-only). Linf of the implicit
+        // operator residual normalized by max|atm|, measured inside
+        // diffuse_solve after the GS sweeps but before the BC pass. Lets Python
+        // read `engine.atmos.last_gs_residual` to check 8 sweeps don't under-
+        // relax at the big once-per-tick dt. Nothing reads it yet.
+        .def_readonly("last_gs_residual",     &AtmosphereSolver::last_gs_residual)
+        .def("gs_residual", &AtmosphereSolver::gs_residual)
         .def("max_dt", &AtmosphereSolver::max_dt)
         .def("step", [](const AtmosphereSolver& self,
                         py::array_t<float> wave_p,
