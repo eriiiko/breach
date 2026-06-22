@@ -8,6 +8,7 @@
 #include "temperature_solver.h"
 #include "raycaster.h"
 #include "water_solver.h"
+#include "physics_engine.h"
 
 namespace py = pybind11;
 
@@ -449,4 +450,32 @@ PYBIND11_MODULE(breach_physics, m) {
         }, py::arg("ripple"), py::arg("ripple_v"), py::arg("water_depth"),
            py::arg("wave_p") = py::none(),
            py::arg("solid"), py::arg("dt"));
+
+    // --- PhysicsEngine (Patch 1 S3) — owns the solver instances ---------------
+    // The scaffold for the unification: holds the six solvers and exposes each
+    // as a reference (reference_internal ties the solver's lifetime to the engine
+    // + returns the SAME held instance, so Python set-params + step() act on the
+    // engine's solver). PhysicsRunner uses engine.<solver> instead of building
+    // them itself — same objects, same calls, bit-identical. The per-tick step()
+    // moves in here in S4.
+    py::class_<PhysicsEngine>(m, "PhysicsEngine")
+        .def(py::init<>())
+        .def_property_readonly("atmos",
+            [](PhysicsEngine& e) -> AtmosphereSolver& { return e.atmos; },
+            py::return_value_policy::reference_internal)
+        .def_property_readonly("smoke",
+            [](PhysicsEngine& e) -> SmokeDynamics& { return e.smoke; },
+            py::return_value_policy::reference_internal)
+        .def_property_readonly("fire",
+            [](PhysicsEngine& e) -> FireSimulation& { return e.fire; },
+            py::return_value_policy::reference_internal)
+        .def_property_readonly("temperature",
+            [](PhysicsEngine& e) -> TemperatureSolver& { return e.temperature; },
+            py::return_value_policy::reference_internal)
+        .def_property_readonly("raycaster",
+            [](PhysicsEngine& e) -> Raycaster& { return e.raycaster; },
+            py::return_value_policy::reference_internal)
+        .def_property_readonly("water",
+            [](PhysicsEngine& e) -> WaterSolver& { return e.water; },
+            py::return_value_policy::reference_internal);
 }

@@ -88,9 +88,17 @@ class PhysicsRunner:
         bp = breach_physics
         self.bp = bp
 
+        # PhysicsEngine (Patch 1 S3) owns the solver instances. The runner uses
+        # its solvers (engine.<solver>) instead of constructing them itself —
+        # same objects, same calls, bit-identical. engine.<solver> returns a
+        # reference to the held C++ instance (reference_internal), so the param
+        # binds and step() calls below act on the engine's solvers. The per-tick
+        # orchestration moves INTO engine.step() in S4.
+        self.engine = bp.PhysicsEngine()
+
         # AtmosphereSolver: wave + IMEX diffusion. Same params as legacy
         # _init_solvers; main.py's shim was missing max_source_per_step.
-        self.atmos = bp.AtmosphereSolver()
+        self.atmos = self.engine.atmos
         self.atmos.c                   = float(CFG.physics.wave_c)
         self.atmos.damping             = float(CFG.physics.wave_damping)
         self.atmos.transfer            = float(CFG.physics.wave_transfer)
@@ -104,7 +112,7 @@ class PhysicsRunner:
             getattr(CFG.physics, 'wave_absorb_strength', 8.0))
 
         # SmokeDynamics.
-        self.smoke = bp.SmokeDynamics()
+        self.smoke = self.engine.smoke
         self.smoke.d_smoke              = float(CFG.physics.d_smoke)
         self.smoke.advection_rate       = float(CFG.physics.advection_rate)
         self.smoke.dt_scale             = float(CFG.physics.smoke_dt_scale)
@@ -128,7 +136,7 @@ class PhysicsRunner:
         def _fp(key, default):
             return float(getattr(fire_cfg, key, default))
 
-        self.fire = bp.FireSimulation()
+        self.fire = self.engine.fire
         self.fire.params.k_grow         = _fp("k_grow", FIRE_K_GROW)
         self.fire.params.k_die          = _fp("k_die", FIRE_K_DIE)
         self.fire.params.fire_T_ext     = _fp("fire_T_ext", FIRE_T_EXT)
@@ -156,7 +164,7 @@ class PhysicsRunner:
         # NO_FACE sentinel; bind it from config so Python (the per-tile
         # face_shift bake) and C++ never disagree. Ambient cooling (§3) + unit
         # damage (§4) land in later passes.
-        self.temperature = bp.TemperatureSolver()
+        self.temperature = self.engine.temperature
         thermal = getattr(CFG.physics, "thermal", None)
         self.temperature.no_face = int(getattr(thermal, "NO_FACE", 63))
         # Ambient cooling dials (§3.3): interior vs vacuum-exposed decay shifts
@@ -183,7 +191,7 @@ class PhysicsRunner:
         # the shipped clustering when many tiles burn (a firestorm casts from a
         # coarse grid, not every tile). Determinism: fixed ray count, fixed angles
         # (no jitter / RNG), fixed row-major source order, integer saturating-add.
-        self.raycaster = bp.Raycaster()
+        self.raycaster = self.engine.raycaster
         fire_cfg = getattr(CFG.physics, "fire", None)
         self.raycaster.coarse_cluster = int(
             getattr(fire_cfg, "coarse_cluster", 3))
@@ -213,7 +221,7 @@ class PhysicsRunner:
         # lazy-binds from the level's tile_size_m on the first _step_water
         # call. DORMANT-SAFE: with zero water on the map _step_water early-
         # outs and the tick is bit-identical to before water existed.
-        self.water = bp.WaterSolver()
+        self.water = self.engine.water
         self._bind_water_params()
         # Previous-tick water-depth snapshot (lazy alloc, the _fire_scratch_*
         # pattern). Semantics (plan W2 numerics-review fix): the depth at the
