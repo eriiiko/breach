@@ -614,5 +614,64 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("dyn_permeability"), py::arg("dyn_wave_absorb"),
            py::arg("gas"), py::arg("gas_diffusion"),
            py::arg("sink_x"), py::arg("sink_y"),
-           py::arg("sim_time"));
+           py::arg("sim_time"))
+        // --- Patch 1 S4c: the water-layer array arithmetic ------------------
+        // step_water moves the array-op body of PhysicsRunner._step_water into
+        // C++ (substep loop + W5 flash-boil + W3 displacement/seal + the final
+        // copyto). Pointer extraction mirrors the WaterSolver.step binding above:
+        // floor_height/atmosphere/wave_p are passed here as plain arrays (the
+        // Python call site always passes all three — they are nullable only in the
+        // standalone WaterSolver.step binding). `gas` is the (N, h, w) contiguous
+        // density array; step_water strides to the steam slice internally via
+        // steam_idx. `before` is the runner's _water_depth_before snapshot — READ
+        // by the W3 displacement and MUTATED by the final copyto (passed in, the
+        // runner keeps owning it across ticks). The W3/W5 scalar params arrive as
+        // Python doubles (config-bound floats) and are cast to float32 INSIDE
+        // step_water at numpy's exact cast points — the whole bit-identity hinge.
+        // KEPT IN PYTHON (the runner does these, then calls step_water only when
+        // NOT dormant): the lazy-init (before-seed, water.dx bind, steam_idx
+        // resolve), the dormancy early-out, and the sparse source-holds loop.
+        .def("step_water", [](const PhysicsEngine& self,
+                              py::array_t<float> water_depth,
+                              py::array_t<float> flow_vx,
+                              py::array_t<float> flow_vy,
+                              py::array_t<float> floor_height,
+                              py::array_t<float> atmosphere,
+                              py::array_t<float> wave_p,
+                              py::array_t<bool>  solid,
+                              py::array_t<float> gas,
+                              py::array_t<float> before,
+                              py::array_t<float> dyn_permeability,
+                              int steam_idx, float tilt_x, float tilt_y,
+                              float sim_time,
+                              double ceiling_h, double flood_eps,
+                              double ratio_cap, double boil_rate,
+                              double boil_p_thresh, double steam_yield) {
+            auto [wd, h, w]    = get_2d(water_depth);
+            auto [vx, h2, w2]  = get_2d(flow_vx);
+            auto [vy, h3, w3]  = get_2d(flow_vy);
+            auto [fl, h4, w4]  = get_2d_const(floor_height);
+            auto [atm, h5, w5] = get_2d(atmosphere);
+            auto [wp, h6, w6]  = get_2d_const(wave_p);
+            auto [sol, h7, w7] = get_2d_const(solid);
+            auto [bef, h8, w8] = get_2d(before);
+            auto [perm, h9, w9] = get_2d(dyn_permeability);
+            // gas: (N, h, w) contiguous — pass the base pointer; step_water strides
+            // by plane (h*w) internally to reach the steam slice (steam_idx).
+            auto gv = gas.mutable_unchecked<3>();
+            float* gas_ptr = gv.mutable_data(0, 0, 0);
+            self.step_water(
+                wd, vx, vy, fl, atm, wp, sol,
+                gas_ptr, bef, perm,
+                steam_idx, tilt_x, tilt_y,
+                h, w, sim_time,
+                ceiling_h, flood_eps, ratio_cap,
+                boil_rate, boil_p_thresh, steam_yield);
+        }, py::arg("water_depth"), py::arg("flow_vx"), py::arg("flow_vy"),
+           py::arg("floor_height"), py::arg("atmosphere"), py::arg("wave_p"),
+           py::arg("solid"), py::arg("gas"), py::arg("before"),
+           py::arg("dyn_permeability"), py::arg("steam_idx"),
+           py::arg("tilt_x"), py::arg("tilt_y"), py::arg("sim_time"),
+           py::arg("ceiling_h"), py::arg("flood_eps"), py::arg("ratio_cap"),
+           py::arg("boil_rate"), py::arg("boil_p_thresh"), py::arg("steam_yield"));
 }

@@ -543,82 +543,52 @@ class PhysicsRunner:
         # `depth = max(depth, level_m)` — the same architectural slot as
         # wave_source feeding. Event-shaped dumps go through the FieldEdit
         # queue (flushed before physics) instead. Both are counted vs
-        # `before` exactly once when W3's displacement lands.
+        # `before` exactly once when W3's displacement lands. KEPT PYTHON
+        # (sparse, stateful) — the array-arithmetic that follows moved into
+        # C++ in Patch 1 S4c (PhysicsEngine::step_water, /fp:precise).
         for (y, x, lvl) in gmap.water_sources:
             gmap.water_depth[y, x] = max(gmap.water_depth[y, x], lvl)
-        # Substep count derived from the solver's CFL bound (house pattern:
-        # AtmosphereSolver.max_dt in step() above; no config `substeps` key).
-        # Shipped k_p = 0.5 at dx = 1/3 -> max_dt = 18.0 ms -> 3 substeps at
-        # 24 tps (k_p = 0 -> 33.6 ms -> 2).
-        wdt_max = self.water.max_dt()
-        n = max(1, int(math.ceil(sim_time / wdt_max)))
-        wdt = sim_time / n
-        for _ in range(n):
-            self.water.step(gmap.water_depth, gmap.flow_vx, gmap.flow_vy,
-                            gmap.floor_height, gmap.atmosphere, gmap.wave_p,
-                            gmap.solid, wdt, gmap.tilt_x, gmap.tilt_y)
-        # W5 flash-boil vacuum sink (plan W5): standing water under low
-        # pressure boils off at boil_rate m/s and puffs white_smoke (steam)
-        # at steam_yield density per metre boiled. PRESSURE-keyed
-        # (atmosphere < boil_p_thresh), not vacuum-keyed — a drained-but-
-        # sealed room boils too, intended. Runs BEFORE the displacement
-        # accounting below, so a boiled-off column reads as receding water
-        # -> slight decompression (the physically-right sign; ~0.03%/tick,
-        # negligible either way). `boiled` via np.where — NOT
-        # np.minimum(where=...) (where-without-out leaves garbage in the
-        # unselected entries). Direct array writes: a continuous sim rule
-        # like the vacuum drain, not an event — no FieldEdit. The fire-side
-        # evaporative heat sink (wet tiles staying cool) is the temperature
-        # solver's lane, NOT implemented here; it shares this same
-        # steam_yield constant so heat-boil and vacuum-boil steam
-        # consistently. The .any() guard skips the writes when nothing
-        # boils (the dormant early-out above already covers the dry map).
-        boiling = ((gmap.atmosphere < self.water_boil_p_thresh)
-                   & (gmap.water_depth > 0))
-        if boiling.any():
-            boiled = np.where(
-                boiling,
-                np.minimum(gmap.water_depth,
-                           self.water_boil_rate * sim_time),
-                0.0)
-            gmap.water_depth -= boiled
-            # water_depth is float32, so `boiled` already is too — the
-            # astype is belt-and-braces (plan W5).
-            gmap.gas[self._steam_idx] += (
-                self.water_steam_yield * boiled).astype(np.float32)
-        # W3 volume displacement (water -> atmosphere; plan W3, canon §5.1):
-        # the air column above each cell went from `free_before` to
-        # `free_after` this tick; isothermal P*V = const scales the pressure
-        # by their ratio. Dry cells: both maxima hit ceiling_h -> ratio == 1.
-        # Stays-flooded cells: both clamp to flood_eps -> ratio == 1 -> the
-        # pressure trapped under the water is frozen, correct. A settled pool
-        # (depth unchanged since last tick) gives x/x == IEEE-exact 1.0, so
-        # atmosphere is bit-untouched (the wet-static guarantee). Receding
-        # water -> ratio < 1 -> decompression inrush (canon §5.1 symmetry).
-        # The cap deliberately leaks P*V on ceiling-slams (ratio_cap per tick
-        # vs the true ~50x) — stability-over-bookkeeping; diffusion
-        # re-equalises.
-        ceiling_h = self.water_ceiling_h
-        flood_eps = self.water_flood_eps
-        ratio_cap = self.water_ratio_cap
-        free_before = np.maximum(ceiling_h - before, flood_eps)
-        free_after = np.maximum(ceiling_h - gmap.water_depth, flood_eps)
-        ratio = np.clip(free_before / free_after, 1.0 / ratio_cap, ratio_cap)
-        np.multiply(gmap.atmosphere, ratio, out=gmap.atmosphere)  # P*V const
-        # Flooded cells (air column squeezed down to the clamp) SEAL the tile
-        # by face-flux blocking: the wave Laplacian, IMEX diffusion and wind
-        # gradient all gather faces as min(perm[self], perm[n])
-        # (atmosphere_solver.cpp), so zeroing dyn_permeability stops air,
-        # smoke and wind across every face of the cell. stamp_units rebuilds
-        # the field at the START of next tick, so the seal lives exactly one
-        # tick and auto-clears when the cell drains. The hard-zero wave BC
-        # does NOT key off this: trapped wave_p under the water decays via
-        # damping, it is not zeroed (plan W3, contracts review).
-        flooded = free_after <= flood_eps
-        gmap.dyn_permeability[flooded] = 0.0
-        # Close the accounting loop: next tick's displacement counts from
-        # this tick's end-of-accounting depth.
-        np.copyto(before, gmap.water_depth)
+        # The water-layer ARRAY ARITHMETIC — moved into C++ in Patch 1 S4c
+        # (PhysicsEngine::step_water, physics_engine.cpp, compiled /fp:precise).
+        # The block that used to live here — the substep-count derivation + the
+        # `water.step` substep loop, the W5 flash-boil, the W3 volume
+        # displacement + flooded dyn_permeability seal, and the final
+        # `copyto(before, water_depth)` — now runs as one C++ call, on the
+        # engine's own WaterSolver instance, BIT-IDENTICALLY.
+        #
+        # The precision contract (reproduced exactly in step_water):
+        #   * substep count: n = max(1, int(ceil(sim_time / water.max_dt()))) in
+        #     DOUBLE (the integer cliff); wdt = (float)(sim_time / n) at the
+        #     water.step boundary.
+        #   * W5: boiling = (atmosphere < boil_p_thresh) & (water_depth > 0) with
+        #     each scalar cast to float32; boil amount = min(water_depth,
+        #     (f32)(boil_rate*sim_time)) (the product in double, cast once); the
+        #     steam puff (steam_yield * boiled) in float32; guarded by .any().
+        #   * W3: free_before/after = max(ceiling_h - x, flood_eps) in f32; ratio
+        #     = clip(free_before/free_after, 1.0/ratio_cap, ratio_cap) (clip ==
+        #     min(max(.))), the low bound's reciprocal in double then cast f32;
+        #     atmosphere *= ratio; flooded = free_after <= flood_eps -> seal; then
+        #     before = water_depth (the copyto). The W3/W5 scalar params (config
+        #     doubles) are cast to float32 INSIDE step_water at numpy's exact cast
+        #     points — the bit-identity hinge. Gated by the per-cell A/B harness
+        #     (0-ULP vs the post-S4b AND the pre-Patch-1 goldens).
+        #
+        # The water pipe params (g/damping/k_p/v_max/depth_eps/h_ref/dx) are
+        # already members on the engine's WaterSolver (bound in
+        # _bind_water_params), and water.dx is bound on the lazy init above — so
+        # step_water re-passes none of them. `before` (the _water_depth_before
+        # snapshot) is passed in and MUTATED by the final copyto (the runner keeps
+        # owning it across ticks). `gmap.gas` is the (N,h,w) array; the steam puff
+        # lands in slice self._steam_idx.
+        self.engine.step_water(
+            gmap.water_depth, gmap.flow_vx, gmap.flow_vy,
+            gmap.floor_height, gmap.atmosphere, gmap.wave_p,
+            gmap.solid, gmap.gas, before, gmap.dyn_permeability,
+            self._steam_idx, gmap.tilt_x, gmap.tilt_y, sim_time,
+            self.water_ceiling_h, self.water_flood_eps, self.water_ratio_cap,
+            self.water_boil_rate, self.water_boil_p_thresh,
+            self.water_steam_yield,
+        )
 
     def _step_ripple(self, gmap, sim_time):
         """Advance the VISUAL-ONLY ripple field (plan W6a, canon §6).

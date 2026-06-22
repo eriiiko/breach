@@ -120,4 +120,67 @@ public:
         float* gas, const float* gas_diffusion, int n_gases,
         const float* sink_x, const float* sink_y,
         int h, int w, float sim_time);
+
+    // --- Patch 1 S4c: the water-layer ARRAY ARITHMETIC -------------------
+    // Moves the array-op core of PhysicsRunner._step_water into C++ — the part
+    // AFTER the (still-Python) lazy-init + dormancy early-out + sparse
+    // source-holds. The runner does those stateful/sparse steps, then calls
+    // step_water ONLY when not dormant. What moves here, in order:
+    //   1. substep-count derivation + the WaterSolver.step substep loop;
+    //   2. the W5 flash-boil vacuum sink (boil-off -> steam puff);
+    //   3. the W3 volume displacement (isothermal P*V onto atmosphere) + the
+    //      flooded dyn_permeability seal;
+    //   4. the final copyto(before, water_depth) — closes the accounting loop.
+    //
+    // BIT-IDENTITY is the whole point: the arrays are float32, the scalar params
+    // are Python doubles, and numpy elementwise `f32_array OP double_scalar`
+    // casts the scalar to float32 for the op. We reproduce that EXACTLY (every
+    // scalar cast to float at numpy's cast point; /fp:precise makes the f32 ops
+    // strict-IEEE, matching numpy). The precision pitfalls, each verified vs
+    // numpy 1.26.4 and matched here:
+    //   * n = max(1, (int)ceil((double)sim_time / (double)water.max_dt())) — the
+    //     integer cliff in DOUBLE; wdt = (float)((double)sim_time / n) at the
+    //     water.step boundary (pybind's double->float32 cast).
+    //   * W5: boiling = (atmosphere < (f32)boil_p_thresh) & (water_depth > 0.0f);
+    //     boil amount = min(water_depth, (f32)((double)boil_rate*(double)sim_time))
+    //     — the product is DOUBLE, cast to f32 ONCE, then min in f32. steam puff
+    //     = (f32)steam_yield * boiled — the multiply is in FLOAT32 (numpy keeps
+    //     the f32 array's dtype; a double-multiply-then-cast is 1 ULP off). The
+    //     whole block is guarded by boiling.any() (matches numpy's `.any()`).
+    //   * W3: free_before/after = max((f32)ceiling_h - x, (f32)flood_eps) in f32;
+    //     ratio = clip(free_before/free_after, lo, hi) = min(max(., lo), hi) with
+    //     lo = (f32)(1.0/ratio_cap) (the reciprocal in DOUBLE then cast) and hi =
+    //     (f32)ratio_cap; atmosphere *= ratio; flooded = free_after <= (f32)
+    //     flood_eps -> dyn_permeability = 0; then before[i] = water_depth[i].
+    //
+    // KEPT IN PYTHON (the runner does these, then calls step_water): the lazy
+    // init (_water_depth_before seed, water.dx bind, _steam_idx resolve), the
+    // dormancy early-out, and the sparse source-holds loop. The water pipe params
+    // (g/damping/k_p/v_max/depth_eps/h_ref/dx) are already members on this->water
+    // (set in _bind_water_params), and this->water.dx is already bound — so
+    // step_water calls this->water.step(...) without re-passing them.
+    //
+    //   water_depth, flow_vx, flow_vy : float (h, w) — pipe-model state (mutated)
+    //   floor_height                  : float (h, w) — solver floor (read)
+    //   atmosphere                    : float (h, w) — bulk pressure; W3 scales it
+    //   wave_p                        : float (h, w) — solver head term (read)
+    //   solid                         : bool  (h, w) — static walls
+    //   gas                           : float (N, h, w) — steam puff lands in slice
+    //   before                        : float (h, w) — the _water_depth_before
+    //                                   snapshot; READ by W3, MUTATED by the copyto
+    //   dyn_permeability              : float (h, w) — W3 flooded seal (mutated)
+    //   steam_idx                     : which gas plane the steam puff adds to
+    //   tilt_x, tilt_y                : solver tilt (read)
+    //   sim_time                      : tick length (seconds)
+    //   ceiling_h..steam_yield        : the W3/W5 scalar params (Python doubles)
+    void step_water(
+        float* water_depth, float* flow_vx, float* flow_vy,
+        const float* floor_height, float* atmosphere, const float* wave_p,
+        const bool* solid,
+        float* gas,
+        float* before, float* dyn_permeability,
+        int steam_idx, float tilt_x, float tilt_y,
+        int h, int w, float sim_time,
+        double ceiling_h, double flood_eps, double ratio_cap,
+        double boil_rate, double boil_p_thresh, double steam_yield) const;
 };

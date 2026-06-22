@@ -11,8 +11,9 @@
 
 #include "physics_engine.h"
 
-#include <algorithm>   // std::max
+#include <algorithm>   // std::max, std::min
 #include <cmath>       // std::ceil
+#include <cstddef>     // std::size_t
 
 // Patch 1 S4a — the per-tick TAIL, the three trailing pure-solver-call steps of
 // PhysicsRunner.step (everything AFTER the IMEX atmosphere/smoke substep loop):
@@ -170,5 +171,143 @@ void PhysicsEngine::run_substeps(
                 h, w,
                 (float)dt_smoke);
         }
+    }
+}
+
+// Patch 1 S4c — the water-layer ARRAY ARITHMETIC, lifted verbatim from the body
+// of PhysicsRunner._step_water (everything AFTER the Python lazy-init + dormancy
+// early-out + sparse source-holds): the substep loop, the W5 flash-boil, the W3
+// displacement + flooded seal, and the final copyto(before, water_depth).
+//
+// BIT-IDENTICAL to the Python: the arrays are float32, the scalar params are
+// Python doubles, and numpy casts each double scalar to float32 at the op. We
+// reproduce that EXACTLY — every scalar cast to `float` at numpy's cast point,
+// every array op in float32 (the /fp:precise TU makes them strict-IEEE, matching
+// numpy; /fp:precise does NOT reassociate, so per-cell fusion of the W5/W3 array
+// ops is bit-identical to numpy's array-at-a-time order — each cell's arithmetic
+// is independent, the only cross-cell op is `.any()`, handled by a separate scan).
+// See the header for the per-op precision contract; the inline comments mark each
+// spot where the PRECISION (not just the value) had to be matched.
+void PhysicsEngine::step_water(
+        float* water_depth, float* flow_vx, float* flow_vy,
+        const float* floor_height, float* atmosphere, const float* wave_p,
+        const bool* solid,
+        float* gas,
+        float* before, float* dyn_permeability,
+        int steam_idx, float tilt_x, float tilt_y,
+        int h, int w, float sim_time,
+        double ceiling_h, double flood_eps, double ratio_cap,
+        double boil_rate, double boil_p_thresh, double steam_yield) const {
+
+    const int n_cells = h * w;
+
+    // --- Substep count + the WaterSolver.step substep loop ----------------
+    // Python: wdt_max = self.water.max_dt() (a float32 PROMOTED to a Python
+    // double); n = max(1, int(ceil(sim_time / wdt_max))) — DOUBLE division +
+    // ceil + int truncation (the S4b integer-cliff pattern; a 1-ULP slip flips n).
+    // wdt = sim_time / n stays a Python double, narrowed to float32 only at the
+    // water.step boundary (pybind's double->float32 cast).
+    const double wdt_max = (double)this->water.max_dt();
+    const int n = std::max(1, (int)std::ceil((double)sim_time / wdt_max));
+    const float wdt = (float)((double)sim_time / n);
+    for (int s = 0; s < n; ++s) {
+        // Arg order matches the WaterSolver.step binding: (water_depth, flow_vx,
+        // flow_vy, floor_height, atmosphere, wave_p, solid, dt, tilt_x, tilt_y).
+        // floor_height/atmosphere/wave_p are nullable in the binding but here are
+        // always passed (the Python call site passes all three). this->water.dx is
+        // already bound (set Python-side on the lazy init), and the pipe params are
+        // members on this->water — so they are NOT re-passed.
+        this->water.step(water_depth, flow_vx, flow_vy,
+                         floor_height, atmosphere, wave_p,
+                         solid, h, w, wdt, tilt_x, tilt_y);
+    }
+
+    // --- W5 flash-boil vacuum sink (plan W5) ------------------------------
+    // Python:
+    //   boiling = (atmosphere < boil_p_thresh) & (water_depth > 0)
+    //   if boiling.any():
+    //       boiled = np.where(boiling,
+    //                         np.minimum(water_depth, boil_rate*sim_time), 0.0)
+    //       water_depth -= boiled
+    //       gas[steam_idx] += (steam_yield * boiled).astype(np.float32)
+    // numpy semantics matched exactly:
+    //   * `atmosphere < boil_p_thresh`: the double scalar is cast to float32 for
+    //     the comparison -> atmosphere[i] < (float)boil_p_thresh.
+    //   * `water_depth > 0`: 0 (int) vs float32 -> water_depth[i] > 0.0f.
+    //   * `boil_rate*sim_time`: DOUBLE * DOUBLE = double, computed ONCE; the
+    //     np.minimum then casts that double to float32 ONCE -> min(water_depth[i],
+    //     (float)boil_amount_d). (sim_time is the float passed from Python,
+    //     promoted to double for the product — matching Python's double*double.)
+    //   * `steam_yield * boiled`: numpy keeps the float32 array's dtype, so the
+    //     multiply is in FLOAT32 ((float)steam_yield * boiled[i]); a double-
+    //     multiply-then-cast is 1 ULP off (verified vs numpy 1.26.4). .astype is
+    //     then a no-op.
+    //   * `.any()` guard: scan boiling first; skip the whole block if nothing
+    //     boils (matches the Python `if boiling.any():`).
+    const float boil_p_thresh_f = (float)boil_p_thresh;
+    bool boiling_any = false;
+    for (int i = 0; i < n_cells; ++i) {
+        if (atmosphere[i] < boil_p_thresh_f && water_depth[i] > 0.0f) {
+            boiling_any = true;
+            break;
+        }
+    }
+    if (boiling_any) {
+        // boil_rate*sim_time in DOUBLE, cast to float32 ONCE (the np.minimum cast).
+        const float boil_amount_f = (float)((double)boil_rate * (double)sim_time);
+        const float steam_yield_f = (float)steam_yield;   // the (f32)steam_yield cast
+        float* gas_slice = gas + (std::size_t)steam_idx * n_cells;
+        for (int i = 0; i < n_cells; ++i) {
+            // boiled = where(boiling, minimum(water_depth, boil_amount), 0.0) — f32
+            float boiled;
+            if (atmosphere[i] < boil_p_thresh_f && water_depth[i] > 0.0f) {
+                boiled = std::min(water_depth[i], boil_amount_f);
+            } else {
+                boiled = 0.0f;
+            }
+            water_depth[i] -= boiled;
+            // (steam_yield * boiled) in FLOAT32 (numpy keeps the f32 dtype).
+            gas_slice[i] += steam_yield_f * boiled;
+        }
+    }
+
+    // --- W3 volume displacement + flooded seal (plan W3, canon §5.1) ------
+    // Python:
+    //   free_before = np.maximum(ceiling_h - before, flood_eps)
+    //   free_after  = np.maximum(ceiling_h - water_depth, flood_eps)
+    //   ratio = np.clip(free_before / free_after, 1.0 / ratio_cap, ratio_cap)
+    //   np.multiply(atmosphere, ratio, out=atmosphere)
+    //   flooded = free_after <= flood_eps
+    //   dyn_permeability[flooded] = 0.0
+    //   np.copyto(before, water_depth)
+    // numpy semantics matched exactly:
+    //   * `ceiling_h - x`: double scalar cast to float32, subtraction in float32
+    //     -> (float)ceiling_h - x[i].
+    //   * `np.maximum(., flood_eps)`: flood_eps cast to float32 -> max(., (float)
+    //     flood_eps).
+    //   * `np.clip(x, lo, hi)` == min(max(x, lo), hi) in float32 with the bounds
+    //     cast to f32; the LOW bound 1.0/ratio_cap is computed in DOUBLE then cast
+    //     to f32 (the reciprocal precision point), HIGH bound is (float)ratio_cap.
+    //   * `atmosphere *= ratio` in float32.
+    //   * `flooded = free_after <= flood_eps` -> free_after[i] <= (float)flood_eps
+    //     (same f32 flood_eps as the maxima above).
+    //   * the copyto closes the accounting loop: before[i] = water_depth[i].
+    // Per-cell fusion is safe (each cell independent, no reassociation under
+    // /fp:precise) and bit-identical to numpy's array-at-a-time order.
+    const float ceiling_h_f = (float)ceiling_h;
+    const float flood_eps_f = (float)flood_eps;
+    const float clip_lo_f   = (float)(1.0 / ratio_cap);   // reciprocal in DOUBLE, then f32
+    const float clip_hi_f   = (float)ratio_cap;
+    for (int i = 0; i < n_cells; ++i) {
+        const float free_before = std::max(ceiling_h_f - before[i], flood_eps_f);
+        const float free_after  = std::max(ceiling_h_f - water_depth[i], flood_eps_f);
+        // np.clip == min(max(x, lo), hi) in float32.
+        float ratio = free_before / free_after;
+        ratio = std::min(std::max(ratio, clip_lo_f), clip_hi_f);
+        atmosphere[i] *= ratio;                            // P*V const
+        if (free_after <= flood_eps_f) {
+            dyn_permeability[i] = 0.0f;                     // flooded -> seal the cell
+        }
+        before[i] = water_depth[i];                        // the copyto
     }
 }
