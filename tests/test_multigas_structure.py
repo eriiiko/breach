@@ -214,15 +214,15 @@ def test_poison_transports_through_per_gas_loop():
     # solver each substep, so pin the wind back inside the loop by stepping the
     # gas solver directly (the same call the per-gas loop makes) to keep this a
     # focused transport test.
-    sink_x = np.zeros_like(g.smoke)
-    sink_y = np.zeros_like(g.smoke)
     runner.smoke.d_smoke = float(g.gases.diffusion[POISON])
     dt = 0.05
+    # Patch 2b: step is WIND-ONLY (no sink args), smoke moves on the real dt
+    # (dt_scale gone). advection_rate is now ×9 so this advects even further right.
     for _ in range(20):
         runner.smoke.step(
-            g.gas[POISON], g.wind_x, g.wind_y, sink_x, sink_y,
+            g.gas[POISON], g.wind_x, g.wind_y,
             g.obstacles, g.solid, g.is_vacuum, g.dyn_permeability,
-            dt * runner.smoke.dt_scale,
+            dt,
         )
 
     cx1 = _com_x(g.gas[POISON])
@@ -265,28 +265,31 @@ def test_black_smoke_matches_pre_refactor_reference():
     def _solver():
         s = bp.SmokeDynamics()
         s.advection_rate = float(CFG.physics.advection_rate)
-        s.dt_scale = float(CFG.physics.smoke_dt_scale)
         s.wind_diffusion_scale = float(CFG.physics.wind_diffusion_scale)
         s.sink_strength = float(CFG.physics.smoke_sink_strength)
         return s
 
     dt = 0.02
 
+    # Patch 2b: step is WIND-ONLY (no sink args) and runs on the real dt
+    # (dt_scale gone). This test compares black_smoke's per-gas diffusion against
+    # the legacy single-smoke d_smoke path — both stepped identically, so the
+    # equality still holds regardless of the dt_scale removal.
     # Reference (pre-refactor): the single smoke field with legacy d_smoke.
     ref = deposit.copy()
     s_ref = _solver()
     s_ref.d_smoke = float(CFG.physics.d_smoke)   # 0.1
     for _ in range(30):
-        s_ref.step(ref, wind_x, wind_y, sink_x, sink_y,
-                   obstacles, is_wall, is_vacuum, perm, dt * s_ref.dt_scale)
+        s_ref.step(ref, wind_x, wind_y,
+                   obstacles, is_wall, is_vacuum, perm, dt)
 
     # New path: the SAME field stepped with black_smoke's per-gas diffusion.
     gas = deposit.copy()
     s_new = _solver()
     s_new.d_smoke = float(GasTable.from_config().diffusion[BLACK_SMOKE])  # 0.10
     for _ in range(30):
-        s_new.step(gas, wind_x, wind_y, sink_x, sink_y,
-                   obstacles, is_wall, is_vacuum, perm, dt * s_new.dt_scale)
+        s_new.step(gas, wind_x, wind_y,
+                   obstacles, is_wall, is_vacuum, perm, dt)
 
     assert np.allclose(gas, ref, atol=1e-5), \
         f"black_smoke diverged from the legacy single-field path: " \

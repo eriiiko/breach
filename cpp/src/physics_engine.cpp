@@ -126,33 +126,25 @@ void PhysicsEngine::run_substeps(
     // dt_actual stays DOUBLE — Python keeps `dt_actual = sim_time / n` as a double
     // and pybind narrows it to float32 only at the .step(...) call boundary.
     const double dt_actual = (double)sim_time / n;
-    // dt_smoke = dt_actual * dt_scale, BOTH doubles, narrowed to float32 only at
-    // the smoke.step boundary. dt_scale is the float member promoted to double;
-    // the order (double-multiply THEN cast) must match pybind. The dt_scale is
-    // deliberately applied AGAIN inside smoke.step (the known double-application);
-    // we reproduce Python's value exactly and DO NOT "fix" it (not this patch).
-    const double dt_smoke = dt_actual * (double)this->smoke.dt_scale;
+    // Patch 2b: dt_scale is GONE. Smoke advects/diffuses on the REAL tick length
+    // (sim_time, sub-stepped n_smoke× below for the smoke-CFL floor). The visible
+    // wind-ride is preserved by the ×dt_scale²-bumped advection_rate default; the
+    // smoke DIFFUSION is now dt_scale² (≈9×) weaker than the shipped build —
+    // Erik re-tunes d_smoke / the per-gas [gases.*] diffusion table.
 
     const int plane = h * w;  // elements per gas plane (gas is (N,h,w) contiguous)
 
-    // === Patch 2a: the dt-policy decouple — wave / diffusion / smoke split ===
-    // BEHAVIOR CHANGE (feel-gated, not 0-ULP). Previously the fused atmos.step
-    // (explicit wave + implicit diffusion) ran `n` times interleaved with the
-    // per-gas smoke. Now:
-    //   1. the WAVE substeps `n_wave` times at its CFL dt_actual (cheap explicit
-    //      kick + the per-substep anomaly transfer onto atmosphere);
-    //   2. the implicit DIFFUSION solves ONCE per tick at the FULL sim_time
-    //      (μ = d_atm·sim_time is large, but implicit GS is unconditionally
-    //      stable) — this is the ~3× atmosphere-cost win (one ~8-sweep solve
-    //      instead of n solves), and it also computes the wind ONCE;
-    //   3. the SMOKE then runs `n_wave`× the same per-gas loop as before, but
-    //      AFTER the single diffuse — riding the once-computed (quasi-static)
-    //      wind. The smoke is OTHERWISE UNCHANGED: same per-gas loop, same
-    //      `.any()` skip, same d_smoke member-set, same dt_smoke (the dt_scale
-    //      double-application is preserved — its removal is a separate step).
-    // Mass conservation is unchanged: the wave->atmosphere transfer is summed
-    // over the same n_wave substeps the fused step ran, and the implicit
-    // diffusion conserves regardless of how big a single solve dt is.
+    // === Patch 2: the dt-policy decouple — wave / diffusion / smoke / sink ===
+    // BEHAVIOR CHANGE (feel-gated, not 0-ULP). Each system runs on its OWN count:
+    //   1. the WAVE substeps `n_wave` times at its CFL dt_actual (Patch 2a);
+    //   2. the implicit DIFFUSION solves ONCE per tick at the FULL sim_time, and
+    //      computes the wind ONCE (Patch 2a);
+    //   3. (Patch 2b) the SMOKE runs `n_smoke`× on the once-computed wind — a
+    //      smoke-CFL FLOOR from the spatial-max d_eff (auto-tightens under a
+    //      shockwave, ≈1 at rest); WIND-ONLY advection now (no fused sink);
+    //   4. (Patch 2b) the breach SINK runs as its OWN loop, K = smoke.vent_hops
+    //      one-cell BFS hops per tick — a real "vent cells/tick" dial decoupled
+    //      from n_wave (was implicitly n_wave×/tick when fused in the back-trace).
     const int n_wave = n;
 
     // 1. Wave substeps at the wave CFL (dt_actual), n_wave times.
@@ -177,11 +169,42 @@ void PhysicsEngine::run_substeps(
         h, w,
         sim_time);
 
-    // 3. Per-gas smoke transport (engine/05 §6.2, M1) — UNCHANGED from before
-    // except it now runs AFTER the single diffuse, on the once-computed wind.
-    // n_wave× the per-gas loop; skip an all-zero plane (numpy `.any()`); set
-    // d_smoke BEFORE each step (member-set, EXACTLY as Python — not a param).
-    for (int s = 0; s < n_wave; ++s) {
+    // 3. Smoke-CFL floor (Patch 2b). Smoke's explicit diffusion is forward-Euler,
+    // so it is CFL-bound; the effective diffusion spikes under wind:
+    //   d_eff = d_smoke·(1 + wind_diffusion_scale·|wind|²).
+    // Use the SPATIAL-MAX |wind|² over the grid (the wind is known now — diffuse
+    // wrote it) and the MAX per-gas d_smoke (the worst-case plane), then the
+    // forward-Euler stability bound dt < dx²/(4·d_eff_max) with dx=1 (tile units)
+    // gives n_smoke = max(1, ceil(sim_time / (dx²/(4·d_eff_max)))). At rest this
+    // is ≈1; it tightens only under a shockwave (the safety net against a
+    // checkerboard). With dt_scale gone the smoke dt is already ~9× smaller, so
+    // this is usually 1 — it only bites in extreme wind.
+    float max_wind_sq = 0.0f;
+    for (int i = 0; i < plane; ++i) {
+        const float ws = wind_x[i] * wind_x[i] + wind_y[i] * wind_y[i];
+        if (ws > max_wind_sq) max_wind_sq = ws;
+    }
+    float d_smoke_max = 0.0f;
+    for (int gi = 0; gi < n_gases; ++gi) {
+        if (gas_diffusion[gi] > d_smoke_max) d_smoke_max = gas_diffusion[gi];
+    }
+    const double d_eff_max =
+        (double)d_smoke_max *
+        (1.0 + (double)this->smoke.wind_diffusion_scale * (double)max_wind_sq);
+    int n_smoke = 1;
+    if (d_eff_max > 0.0) {
+        const double dt_stable = 1.0 / (4.0 * d_eff_max);   // dx²/(4·d_eff), dx=1
+        n_smoke = std::max(1, (int)std::ceil((double)sim_time / dt_stable));
+    }
+    // The smoke dt: the full tick split n_smoke ways, so total advection over the
+    // tick is sim_time·wind regardless of n_smoke (the wind is the once-computed
+    // quasi-static field). cast to float at the .step() boundary.
+    const float dt_smoke = (float)((double)sim_time / n_smoke);
+
+    // Per-gas smoke transport (engine/05 §6.2, M1) — WIND-ONLY now (the breach
+    // sink is the separate K-hop loop below). n_smoke× the per-gas loop; skip an
+    // all-zero plane (numpy `.any()`); set d_smoke BEFORE each step (member-set).
+    for (int s = 0; s < n_smoke; ++s) {
         for (int gi = 0; gi < n_gases; ++gi) {
             float* gas_slice = gas + (size_t)gi * plane;
             bool any = false;
@@ -191,18 +214,38 @@ void PhysicsEngine::run_substeps(
             if (!any) {
                 continue;  // empty slice — nothing to transport (matches `.any()`)
             }
-            // gas_diffusion[gi] is a float32; (float)... is the exact float32->
-            // double->float32 round-trip Python's float(gas_diffusion[gi]) +
-            // the d_smoke (float) member store performs.
             this->smoke.d_smoke = (float)gas_diffusion[gi];
-            // (float)dt_smoke reproduces pybind's double->float32 cast.
             this->smoke.step(
                 gas_slice, wind_x, wind_y,
-                sink_x, sink_y,
                 obstacles, solid, is_vacuum,
                 dyn_permeability,
                 h, w,
-                (float)dt_smoke);
+                dt_smoke);
+        }
+    }
+
+    // 4. The decoupled breach SINK (Patch 2b): K = smoke.vent_hops one-cell BFS
+    // hops per tick, its OWN loop AFTER the smoke loop. K is a real "vent
+    // cells/tick" dial independent of n_wave (was implicitly n_wave×/tick when
+    // the sink was fused into the back-trace). With no breach sink_x/sink_y are
+    // all-zero, so each hop is the identity — sealed rooms are untouched. The
+    // per-gas `.any()` skip avoids hopping an empty plane.
+    const int K = this->smoke.vent_hops;
+    for (int k = 0; k < K; ++k) {
+        for (int gi = 0; gi < n_gases; ++gi) {
+            float* gas_slice = gas + (size_t)gi * plane;
+            bool any = false;
+            for (int i = 0; i < plane; ++i) {
+                if (gas_slice[i] != 0.0f) { any = true; break; }
+            }
+            if (!any) {
+                continue;
+            }
+            this->smoke.sink_hop(
+                gas_slice, sink_x, sink_y,
+                obstacles, solid, is_vacuum,
+                dyn_permeability,
+                h, w);
         }
     }
 }

@@ -35,18 +35,18 @@ import breach_physics as bp
 # --------------------------------------------------------------------------
 # Helpers
 # --------------------------------------------------------------------------
-def _make_solver(advection_rate=1.0, d_smoke=0.0, dt_scale=1.0,
+def _make_solver(advection_rate=1.0, d_smoke=0.0,
                  wind_diffusion_scale=0.0):
     """A solver with diffusion off by default so advection is isolated.
 
-    With these knobs the back-trace distance per step is
-        dt_adv = advection_rate * (dt * dt_scale)
+    Patch 2b: dt_scale is gone — smoke moves on the real dt. The back-trace
+    distance per step is now
+        dt_adv = advection_rate * dt
     so a constant wind w moves the field by w * dt_adv each step.
     """
     s = bp.SmokeDynamics()
     s.d_smoke = d_smoke
     s.advection_rate = advection_rate
-    s.dt_scale = dt_scale
     s.wind_diffusion_scale = wind_diffusion_scale
     return s
 
@@ -73,16 +73,14 @@ def _walled_box(h, w):
 
 
 def _step(s, smoke, wind_x, wind_y, obstacles, is_wall, is_vacuum, perm, dt):
-    """Call ``SmokeDynamics.step`` with a ZERO sink field.
+    """Call ``SmokeDynamics.step`` (Patch 2b: WIND-ONLY).
 
-    Smoke v2 S2 added a required sink-direction field (toward the nearest
-    breach) to the solver signature. These S1 advection tests have no breach,
-    so the sink is all-zero and the step is bit-identical to the pre-S2 plain
-    semi-Lagrangian advection — exactly what these tests assert.
+    The breach sink-pull is no longer fused into the advection back-trace (it
+    is the standalone ``sink_hop``), so ``step`` takes no sink field — these S1
+    advection tests have no breach anyway, so this is exactly the plain
+    semi-Lagrangian wind advection they assert.
     """
-    sink_x = np.zeros_like(smoke)
-    sink_y = np.zeros_like(smoke)
-    s.step(smoke, wind_x, wind_y, sink_x, sink_y,
+    s.step(smoke, wind_x, wind_y,
            obstacles, is_wall, is_vacuum, perm, dt)
 
 

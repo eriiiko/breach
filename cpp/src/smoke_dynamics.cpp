@@ -37,12 +37,95 @@ static inline bool solid_wall_at(int y, int x,
     return obstacles[i] || is_wall[i] || is_vacuum[i] || perm[i] <= 0.0f;
 }
 
+// Helper: semi-Lagrangian back-trace from cell (x,y) by displacement (bx,by),
+// with the wall-clip march + permeability-aware bilinear sample, writing the
+// result into smoke[i]. Shared by step()'s WIND advection and sink_hop()'s
+// breach pull — they differ ONLY in how (bx,by) is computed (wind*dt vs the
+// 1-cell-capped sink direction). `src` is the pre-pass snapshot the bilinear
+// sample reads (never the live smoke array). Returns the new value for smoke[i].
+//
+// The wall-clip + breach-corner logic is identical to the original fused step:
+// march toward the departure point in ~1-cell substeps, stop at the first solid
+// wall (so a long step cannot tunnel a one-cell wall) or ON a breach (so the
+// cell vents into the vacuum's 0); then bilinear-sample with sealed corners
+// excluded and a breach corner contributing 0 (the drain).
+static inline float backtrace_sample(
+        const float* src, int x, int y, float bx, float by,
+        const bool* obstacles, const bool* is_wall, const bool* is_vacuum,
+        const float* perm, int h, int w) {
+    float px = static_cast<float>(x) + bx;
+    float py = static_cast<float>(y) + by;
+
+    // Wall-clip the back-trace ray (see the original step comment): march from
+    // the cell toward the departure point in sub-cell steps and stop just before
+    // the first sealed tile, or ON a breach (vent target).
+    {
+        float dist = std::sqrt(bx * bx + by * by);
+        int steps = static_cast<int>(std::ceil(dist));  // ~1 sample/cell
+        if (steps > 0) {
+            float inv = 1.0f / static_cast<float>(steps);
+            float sx = bx * inv, sy = by * inv;
+            float cx = static_cast<float>(x);
+            float cy = static_cast<float>(y);
+            for (int t = 0; t < steps; ++t) {
+                float nxp = cx + sx, nyp = cy + sy;
+                int ti = static_cast<int>(std::floor(nxp + 0.5f));
+                int tj = static_cast<int>(std::floor(nyp + 0.5f));
+                if (solid_wall_at(tj, ti, obstacles, is_wall, is_vacuum,
+                                  perm, h, w)) {
+                    break;          // stop at the last open point (wall)
+                }
+                cx = nxp; cy = nyp;
+                int bi = tj * w + ti;
+                if (tj >= 0 && tj < h && ti >= 0 && ti < w &&
+                    is_vacuum[bi]) {
+                    break;          // reached the breach — vent here
+                }
+            }
+            px = cx; py = cy;
+        }
+    }
+
+    // Clamp the sample position in-bounds.
+    if (px < 0.0f)              px = 0.0f;
+    else if (px > w - 1.0f)     px = static_cast<float>(w - 1);
+    if (py < 0.0f)              py = 0.0f;
+    else if (py > h - 1.0f)     py = static_cast<float>(h - 1);
+
+    int x0 = static_cast<int>(std::floor(px));
+    int y0 = static_cast<int>(std::floor(py));
+    int x1 = std::min(x0 + 1, w - 1);
+    int y1 = std::min(y0 + 1, h - 1);
+    float fx = px - static_cast<float>(x0);
+    float fy = py - static_cast<float>(y0);
+
+    const int ci[4] = { y0 * w + x0, y0 * w + x1, y1 * w + x0, y1 * w + x1 };
+    const float cw[4] = {
+        (1.0f - fx) * (1.0f - fy),
+        fx         * (1.0f - fy),
+        (1.0f - fx) * fy,
+        fx         * fy,
+    };
+
+    float acc = 0.0f;
+    float wsum = 0.0f;
+    for (int k = 0; k < 4; ++k) {
+        int j = ci[k];
+        // Sealed corner excluded; breach corner (vacuum & !solid) included as 0.
+        bool solid_corner = obstacles[j] || is_wall[j] || perm[j] <= 0.0f;
+        if (solid_corner) continue;
+        bool breach_corner = is_vacuum[j];
+        acc  += cw[k] * (breach_corner ? 0.0f : src[j]);
+        wsum += cw[k];
+    }
+
+    return (wsum > 1e-6f) ? (acc / wsum) : src[y * w + x];
+}
+
 void SmokeDynamics::step(
     float* smoke,
     const float* wind_x,
     const float* wind_y,
-    const float* sink_x,
-    const float* sink_y,
     const bool* obstacles,
     const bool* is_wall,
     const bool* is_vacuum,
@@ -51,7 +134,11 @@ void SmokeDynamics::step(
     float dt
 ) const {
     const int n = h * w;
-    const float actual_dt = dt * dt_scale;
+    // Patch 2b: dt_scale is GONE — smoke advects/diffuses on the REAL dt. The
+    // visible wind-ride is preserved by the ×dt_scale²-bumped advection_rate
+    // default; the DIFFUSION is now dt_scale² (≈9×) weaker than the shipped
+    // build — Erik re-tunes d_smoke / the per-gas [gases.*] diffusion table.
+    const float actual_dt = dt;
 
     // --- Smoke diffusion (wind-dependent) ---
     // D_effective = d_smoke * (1 + wind_diffusion_scale * |wind|)
@@ -88,27 +175,19 @@ void SmokeDynamics::step(
     // stencil it replaces oscillated near breaches/explosions). This is also
     // the CUDA-ready algorithm (Stable-Fluids back-trace + texture bilerp).
     //
-    // Back-trace distance preserves the *effective advection strength* of the
-    // old central-difference term: that term integrated d(smoke)/dtau =
-    // -wind . grad(smoke) with a tau-step of (advection_rate * actual_dt),
-    // i.e. it advected smoke by the wind for that pseudo-time. The equivalent
-    // semi-Lagrangian displacement is therefore wind * dt_adv with
-    //   dt_adv = advection_rate * actual_dt
-    // (actual_dt already folds in dt_scale), so the cloud moves at the same
-    // per-substep speed. We do NOT add a CFL cap: back-trace is stable for any
-    // displacement.
+    // Patch 2b: WIND-ONLY now. The breach sink-pull that used to be fused into
+    // this back-trace velocity is gone — it is the standalone sink_hop() pass the
+    // engine runs K× per tick. The displacement is purely wind * dt_adv with
+    //   dt_adv = advection_rate * actual_dt        (actual_dt == the real dt)
+    // No CFL cap: back-trace is stable for any displacement.
     const float dt_adv = advection_rate * actual_dt;
 
     // Double buffer: read from the post-diffusion snapshot, write the advected
     // result. Never overwrite mid-pass (a cell may be sampled by its neighbours).
-    // Reused scratch via the SWAP idiom: `src` stays a genuine local std::vector
-    // (the branchy advection loop below READS src while writing smoke — a member
-    // pointer there shifts the float rounding under /fp:fast), with storage
-    // retained in src_ across steps. Re-copy smoke into it each step (was a copy
-    // of smoke at construction; smoke has just been mutated by diffusion above).
+    // Reused scratch via the SWAP idiom (storage retained in src_ across steps).
     std::vector<float> src;
     src.swap(src_);                          // steal retained storage
-    src.assign(smoke, smoke + n);            // reproduce the original copy (no realloc if cap>=n)
+    src.assign(smoke, smoke + n);            // snapshot the post-diffusion field
 
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
@@ -117,130 +196,12 @@ void SmokeDynamics::step(
             // wind there is meaningless (handled by the final zeroing pass).
             if (obstacles[i] || is_wall[i] || is_vacuum[i]) continue;
 
-            // Smoke-side sink-pull toward the nearest breach. The sink field is
-            // a per-cell unit-ish vector pointing down the BFS distance gradient
-            // to the nearest exposed-vacuum tile, and is (0,0) wherever there is
-            // no path to a breach (and everywhere when the map is unbreached) —
-            // so with no breach the sink term vanishes and this step is bit-
-            // identical to the plain semi-Lagrangian advection (smoke v2 S1).
-            // The sink is a bias inside *smoke* transport only; it never touches
-            // the pressure field. It exists because with aggressive atmosphere
-            // diffusion the interior wind dies as pressure flattens, leaving a
-            // stubborn haze a real vent would have cleared.
-            //
-            // Back-trace the departure point. Wind uses the standard pull form
-            //   p = cell - wind * dt_adv          (sample upwind, smoke rides wind)
-            // The sink, however, is a DRAIN: a cell should inherit the emptiness
-            // that lies toward the breach, so the sink term back-traces *toward*
-            // the breach the sink vector points at (it samples down-gradient and
-            // pulls in the vacuum's 0 via the breach-corner sampling below). For
-            // a uniform saturated room pure pull-advection by a converging field
-            // is the identity, so the drain comes entirely from sampling the
-            // breach's emptiness — hence the sink samples toward it.
-            //
-            // The sink displacement is taken as ``sink_strength`` cells along the
-            // unit sink vector and is CAPPED at one cell per substep: the field
-            // is a per-cell next-hop direction down the BFS gradient, not a
-            // straight shot to a possibly-around-a-corner breach, so the drain
-            // must propagate one cell at a time (the emptied down-gradient
-            // neighbour is sampled this substep; its own neighbour next substep).
-            // An uncapped multi-cell sink ray would fly straight off the BFS path
-            // into a wall and stall. Capping keeps the drain following the
-            // gradient. The wind term keeps its full (uncapped) displacement.
-            float sink_disp = sink_strength;
-            if (sink_disp > 1.0f) sink_disp = 1.0f;
-            float bx = -wind_x[i] * dt_adv + sink_disp * sink_x[i];
-            float by = -wind_y[i] * dt_adv + sink_disp * sink_y[i];
-            float px = static_cast<float>(x) + bx;
-            float py = static_cast<float>(y) + by;
-
-            // Wall-clip the back-trace ray. A long step can leap *over* a
-            // one-cell-thick wall; the per-corner exclusion below only sees the
-            // four cells around the landing point, not the cells the ray
-            // crossed. So march from the cell toward the departure point in
-            // sub-cell steps and stop just before the first sealed tile — smoke
-            // is then pulled from the near side of the wall, never through it.
-            {
-                float dist = std::sqrt(bx * bx + by * by);
-                int steps = static_cast<int>(std::ceil(dist));  // ~1 sample/cell
-                if (steps > 0) {
-                    float inv = 1.0f / static_cast<float>(steps);
-                    float sx = bx * inv, sy = by * inv;
-                    float cx = static_cast<float>(x);
-                    float cy = static_cast<float>(y);
-                    for (int t = 0; t < steps; ++t) {
-                        float nxp = cx + sx, nyp = cy + sy;
-                        int ti = static_cast<int>(std::floor(nxp + 0.5f));
-                        int tj = static_cast<int>(std::floor(nyp + 0.5f));
-                        if (solid_wall_at(tj, ti, obstacles, is_wall, is_vacuum,
-                                          permeability, h, w)) {
-                            break;          // stop at the last open point (wall)
-                        }
-                        // Advance onto this point. If it is a breach (exposed
-                        // vacuum, not a wall), advance ONTO it and stop: the
-                        // bilinear sample there reads the vacuum's 0, so the
-                        // cell vents into the breach. Otherwise keep marching.
-                        cx = nxp; cy = nyp;
-                        int bi = tj * w + ti;
-                        if (tj >= 0 && tj < h && ti >= 0 && ti < w &&
-                            is_vacuum[bi]) {
-                            break;          // reached the breach — vent here
-                        }
-                    }
-                    px = cx; py = cy;
-                }
-            }
-
-            // Clamp the sample position in-bounds so we never read past the grid
-            // (cell-centred sampling domain [0, w-1] x [0, h-1]).
-            if (px < 0.0f)              px = 0.0f;
-            else if (px > w - 1.0f)     px = static_cast<float>(w - 1);
-            if (py < 0.0f)              py = 0.0f;
-            else if (py > h - 1.0f)     py = static_cast<float>(h - 1);
-
-            int x0 = static_cast<int>(std::floor(px));
-            int y0 = static_cast<int>(std::floor(py));
-            int x1 = std::min(x0 + 1, w - 1);
-            int y1 = std::min(y0 + 1, h - 1);
-            float fx = px - static_cast<float>(x0);
-            float fy = py - static_cast<float>(y0);
-
-            // Permeability-aware bilinear sample. Each of the four corners is
-            // weighted by its bilinear weight, BUT a corner that is sealed
-            // (solid/wall/vacuum or permeability<=0) is excluded so smoke is
-            // never pulled out of, or teleported through, a wall. Weights of the
-            // surviving corners are renormalised; if every corner is sealed we
-            // fall back to the cell's own value (no transport this step).
-            const int ci[4] = { y0 * w + x0, y0 * w + x1, y1 * w + x0, y1 * w + x1 };
-            const float cw[4] = {
-                (1.0f - fx) * (1.0f - fy),
-                fx         * (1.0f - fy),
-                (1.0f - fx) * fy,
-                fx         * fy,
-            };
-
-            float acc = 0.0f;
-            float wsum = 0.0f;
-            for (int k = 0; k < 4; ++k) {
-                int j = ci[k];
-                // A SEALED corner (solid wall / hull / zero-permeability) is
-                // excluded: smoke is never pulled out of, or teleported through,
-                // a wall. A BREACH corner (exposed vacuum: is_vacuum but NOT
-                // solid) is different — it is genuinely empty space, so it is
-                // INCLUDED with value 0. Pulling that 0 into the interior is the
-                // drain: a cell back-tracing toward the breach (the sink term
-                // above) inherits the vacuum's emptiness and loses smoke, which
-                // is exactly venting to space. Without this a uniform saturated
-                // room is invariant under pull-advection and never clears.
-                bool solid_corner = obstacles[j] || is_wall[j] ||
-                                    permeability[j] <= 0.0f;
-                if (solid_corner) continue;
-                bool breach_corner = is_vacuum[j];   // vacuum & !solid (sealed hull is solid)
-                acc  += cw[k] * (breach_corner ? 0.0f : src[j]);
-                wsum += cw[k];
-            }
-
-            smoke[i] = (wsum > 1e-6f) ? (acc / wsum) : src[i];
+            // Wind pull-advection: sample upwind, p = cell - wind * dt_adv.
+            const float bx = -wind_x[i] * dt_adv;
+            const float by = -wind_y[i] * dt_adv;
+            smoke[i] = backtrace_sample(src.data(), x, y, bx, by,
+                                        obstacles, is_wall, is_vacuum,
+                                        permeability, h, w);
         }
     }
 
@@ -254,5 +215,63 @@ void SmokeDynamics::step(
     }
 
     // Retain src's storage for the next step (swap idiom; no per-step alloc).
+    src.swap(src_);
+}
+
+// Patch 2b: the decoupled breach sink-pull — ONE 1-cell BFS-gradient hop. This
+// is the EXACT mechanism formerly fused into step()'s back-trace, extracted so
+// the engine can run it K× per tick on its own schedule (independent of the wave
+// CFL). The back-trace velocity is the sink direction ONLY, capped at one cell.
+void SmokeDynamics::sink_hop(
+    float* smoke,
+    const float* sink_x,
+    const float* sink_y,
+    const bool* obstacles,
+    const bool* is_wall,
+    const bool* is_vacuum,
+    const float* permeability,
+    int h, int w
+) const {
+    const int n = h * w;
+
+    // Snapshot (double-buffer) so a cell's pull samples the pre-hop field, never
+    // a half-updated neighbour. Reuse src_'s retained storage (swap idiom).
+    std::vector<float> src;
+    src.swap(src_);
+    src.assign(smoke, smoke + n);
+
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            int i = y * w + x;
+            if (obstacles[i] || is_wall[i] || is_vacuum[i]) continue;
+
+            // The sink is a DRAIN: the cell back-traces TOWARD the breach the
+            // sink vector points at, inheriting the emptiness down-gradient (the
+            // breach corner samples 0). The displacement is sink_strength cells
+            // along the unit sink vector, CAPPED at one cell (LOAD-BEARING: the
+            // field is a per-cell next-hop down the BFS shortest path, not a
+            // straight shot — an uncapped multi-cell ray flies off the path into
+            // a wall and stalls; one cell per hop walks the path). With no breach
+            // the sink field is (0,0) here, so bx=by=0 -> backtrace_sample is the
+            // identity (sealed rooms untouched).
+            float sink_disp = sink_strength;
+            if (sink_disp > 1.0f) sink_disp = 1.0f;
+            const float bx = sink_disp * sink_x[i];
+            const float by = sink_disp * sink_y[i];
+            smoke[i] = backtrace_sample(src.data(), x, y, bx, by,
+                                        obstacles, is_wall, is_vacuum,
+                                        permeability, h, w);
+        }
+    }
+
+    // Clamp and zero walls/vacuum (same invariant as step()).
+    for (int i = 0; i < n; ++i) {
+        if (is_wall[i] || is_vacuum[i]) {
+            smoke[i] = 0.0f;
+        } else {
+            smoke[i] = std::clamp(smoke[i], 0.0f, 1.0f);
+        }
+    }
+
     src.swap(src_);
 }

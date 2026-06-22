@@ -115,8 +115,11 @@ class PhysicsRunner:
         self.smoke = self.engine.smoke
         self.smoke.d_smoke              = float(CFG.physics.d_smoke)
         self.smoke.advection_rate       = float(CFG.physics.advection_rate)
-        self.smoke.dt_scale             = float(CFG.physics.smoke_dt_scale)
         self.smoke.wind_diffusion_scale = float(CFG.physics.wind_diffusion_scale)
+        # Patch 2b: K = vent hops/tick (the decoupled breach-sink rate). dt_scale
+        # is gone (smoke moves on the real dt; advection_rate absorbed the ×9).
+        self.smoke.vent_hops            = int(
+            getattr(CFG.physics, 'smoke_vent_hops', 16))
         # Smoke-side sink-pull toward the nearest breach (ch.05 smoke v2). The
         # dial Erik wants: 0 disables it (sealed-room behaviour is then bit-
         # identical to the plain semi-Lagrangian advection). Default 2.0 clears
@@ -329,26 +332,20 @@ class PhysicsRunner:
         # the water system existed.
         self._step_water(gmap, sim_time)
 
-        # IMEX atmosphere/smoke substep loop — moved into C++ in Patch 1 S4b
-        # (PhysicsEngine::run_substeps, physics_engine.cpp, compiled /fp:precise).
-        # The block that used to live here — derive the substep count `n` from the
-        # atmosphere CFL bound, then `n` times: one AtmosphereSolver.step followed
-        # by a per-gas SmokeDynamics.step over the (N, h, w) gas planes — now runs
-        # as one C++ call, on the engine's own solver instances, BIT-IDENTICALLY.
-        #
-        # The precision contract (reproduced exactly in run_substeps): `n` is an
-        # integer cliff — n = max(1, int(ceil(sim_time / atmos.max_dt()))) in
-        # DOUBLE; `dt_actual = sim_time / n` and `dt_smoke = dt_actual * dt_scale`
-        # stay DOUBLE until pybind narrows them to float32 at the solver boundary;
-        # the per-gas loop skips all-zero planes (numpy `.any()`) and sets the
-        # solver's `d_smoke` member per gas before stepping its plane. The
-        # deliberate dt_scale double-application inside smoke.step is preserved
-        # (no cleanup — bit-identity is the only goal). Gated by the per-cell A/B
-        # harness (0-ULP vs the post-S4a AND the pre-Patch-1 goldens).
+        # IMEX atmosphere/smoke substep loop — in C++ (PhysicsEngine::run_substeps,
+        # physics_engine.cpp). Patch 2 reshaped it into four decoupled loops, each
+        # on its OWN count (BEHAVIOR CHANGE, feel-gated — not 0-ULP):
+        #   - the WAVE substeps n_wave× at its CFL (2a);
+        #   - the implicit DIFFUSION solves ONCE per tick, computing the wind (2a);
+        #   - the SMOKE runs n_smoke× (a smoke-CFL floor from the spatial-max
+        #     d_eff) on the once-computed wind — WIND-ONLY advection now (2b);
+        #   - the breach SINK runs K = smoke.vent_hops one-cell BFS hops as its own
+        #     loop, decoupled from n_wave (2b). dt_scale is GONE (smoke on real dt).
         #
         # sink_fields() STAYS Python — it is a lazy BFS (rebuilt only on topology
         # edits, gated by gmap._sink_dirty); the runner fetches the sink direction
-        # field once per tick and hands it to run_substeps (not called from C++).
+        # field once per tick and hands it to run_substeps (now feeding the K-hop
+        # sink loop, not the smoke advection back-trace).
         sink_x, sink_y = gmap.sink_fields()
         self.engine.run_substeps(
             gmap.wave_p, gmap.wave_v, gmap.wave_source, gmap.atmosphere,

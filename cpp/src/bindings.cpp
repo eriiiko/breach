@@ -100,15 +100,15 @@ PYBIND11_MODULE(breach_physics, m) {
         .def(py::init<>())
         .def_readwrite("d_smoke",               &SmokeDynamics::d_smoke)
         .def_readwrite("advection_rate",         &SmokeDynamics::advection_rate)
-        .def_readwrite("dt_scale",               &SmokeDynamics::dt_scale)
         .def_readwrite("wind_diffusion_scale",   &SmokeDynamics::wind_diffusion_scale)
         .def_readwrite("sink_strength",          &SmokeDynamics::sink_strength)
+        .def_readwrite("vent_hops",              &SmokeDynamics::vent_hops)
+        // Patch 2b: step() is WIND-ONLY (no sink_x/sink_y) — the breach sink-pull
+        // moved to sink_hop() below. dt_scale is removed (smoke moves on real dt).
         .def("step", [](const SmokeDynamics& self,
                         py::array_t<float> smoke,
                         py::array_t<float> wind_x,
                         py::array_t<float> wind_y,
-                        py::array_t<float> sink_x,
-                        py::array_t<float> sink_y,
                         py::array_t<bool>  obstacles,
                         py::array_t<bool>  is_wall,
                         py::array_t<bool>  is_vacuum,
@@ -117,18 +117,36 @@ PYBIND11_MODULE(breach_physics, m) {
             auto [sm, h, w] = get_2d(smoke);
             auto [wx, h2, w2] = get_2d_const(wind_x);
             auto [wy, h3, w3] = get_2d_const(wind_y);
-            auto [skx, h4b, w4b] = get_2d_const(sink_x);
-            auto [sky, h4c, w4c] = get_2d_const(sink_y);
             auto [obs, h4, w4] = get_2d_const(obstacles);
             auto [wl, h5, w5] = get_2d_const(is_wall);
             auto [vac, h6, w6] = get_2d_const(is_vacuum);
             auto [perm, h7, w7] = get_2d_const(permeability);
-            self.step(sm, wx, wy, skx, sky, obs, wl, vac, perm, h, w, dt);
+            self.step(sm, wx, wy, obs, wl, vac, perm, h, w, dt);
         }, py::arg("smoke"), py::arg("wind_x"), py::arg("wind_y"),
-           py::arg("sink_x"), py::arg("sink_y"),
            py::arg("obstacles"), py::arg("is_wall"), py::arg("is_vacuum"),
            py::arg("permeability"),
-           py::arg("dt"));
+           py::arg("dt"))
+        // Patch 2b: ONE 1-cell BFS-gradient breach pull (the decoupled sink). No
+        // dt — each call is exactly one hop; the engine runs it K× per tick.
+        .def("sink_hop", [](const SmokeDynamics& self,
+                            py::array_t<float> smoke,
+                            py::array_t<float> sink_x,
+                            py::array_t<float> sink_y,
+                            py::array_t<bool>  obstacles,
+                            py::array_t<bool>  is_wall,
+                            py::array_t<bool>  is_vacuum,
+                            py::array_t<float> permeability) {
+            auto [sm, h, w] = get_2d(smoke);
+            auto [skx, h2, w2] = get_2d_const(sink_x);
+            auto [sky, h3, w3] = get_2d_const(sink_y);
+            auto [obs, h4, w4] = get_2d_const(obstacles);
+            auto [wl, h5, w5] = get_2d_const(is_wall);
+            auto [vac, h6, w6] = get_2d_const(is_vacuum);
+            auto [perm, h7, w7] = get_2d_const(permeability);
+            self.sink_hop(sm, skx, sky, obs, wl, vac, perm, h, w);
+        }, py::arg("smoke"), py::arg("sink_x"), py::arg("sink_y"),
+           py::arg("obstacles"), py::arg("is_wall"), py::arg("is_vacuum"),
+           py::arg("permeability"));
 
     // --- FireSimulation (signed-logistic feedback; fire_design_proposal §2/§3) ---
     py::class_<FireParams>(m, "FireParams")
