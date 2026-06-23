@@ -42,17 +42,22 @@ that every system reads or writes by name.
 
 ## 2. The model: diffusion + advection
 
-Smoke evolves by two forces applied every atmosphere substep. Both use fields the atmosphere
-solver has already produced this substep — there is no redundant gradient computation.
+Smoke evolves by two forces — diffusion and wind advection — riding the **once-per-tick wind
+field** the atmosphere solver produces. Both read fields the atmosphere solver has already computed
+this tick, so there is no redundant gradient computation.
 
 ```
-actual_dt   = dt * dt_scale                                  # time amplification
 wind_sq     = wind_x² + wind_y²                              # per tile
 D_eff       = d_smoke * (1 + wind_diffusion_scale * wind_sq) # turbulent mixing
-smoke      += D_eff * actual_dt * laplacian(smoke)           # diffusion
-smoke      -= advection_rate * actual_dt * (wind · grad smoke)   # wind transport
+smoke      += D_eff * dt * laplacian(smoke)                  # diffusion (real dt)
+smoke      -= advection_rate * dt * (wind · grad smoke)      # wind transport (real dt)
 clamp smoke to [0, 1]; zero on walls and vacuum
 ```
+
+> **Patch 2 (2026-06-23):** smoke now steps on the *real* tick length. The old `dt_scale` amplifier
+> (applied twice, ≈9×) was removed — "how hard smoke rides the wind" is now the single clean
+> `advection_rate` coefficient, and the wind is solved once per tick rather than re-derived every
+> wave substep. The full dt-policy is in "How smoke is stepped", below.
 
 **Diffusion** is the shared 4-neighbour Laplacian with Neumann boundary conditions (the same
 operator the atmosphere and wave solvers use): where a neighbour is an obstacle, its value is
@@ -84,33 +89,59 @@ The quadratic (rather than linear) response sharpens this split: in still air `w
 reads as turbulent mixing — fast-moving air disperses smoke faster — so the stabiliser and the
 visual goal point the same way.
 
-### Why smoke is interleaved with atmosphere, not stepped once per tick
+### How smoke is stepped — the dt policy (Patch 2)
 
-Smoke is advanced **every atmosphere substep** (~50× per game tick at the wave CFL), inside the
-same loop as the atmosphere solver, immediately after it. It does not run once per tick at the
-full ~83 ms `dt`.
+Originally smoke was advanced *every* atmosphere substep (~50× per tick at the wave CFL), because
+the atmosphere solver fused the explicit wave kick with the implicit diffusion and the orchestrator
+ran the whole thing `n` times. **Patch 2 untangled that.** One number — the wave-CFL substep count
+`n` — had been doing four unrelated jobs (wave CFL, diffusion step count, smoke-diffusion CFL, and
+the sink-pull drain rate). Now each system runs on its own count.
 
-The reason is the shockwave. A blast crosses the map in a few milliseconds; if smoke only saw the
-final post-tick wind it would teleport rather than billow. Interleaving means each tiny wind
-update immediately pushes the smoke a tiny step, so smoke visibly rolls ahead of the pressure
-front in real time. `dt_scale` (default `3.0`) is a deliberate, non-physical amplification of the
-smoke timestep: it makes smoke react faster and more dramatically than a literal reading of the
-wind would give, which reads better on screen without affecting the atmosphere it rides on.
-
-The orchestration (per tick) is therefore:
+The reshaped per-tick order (in `PhysicsEngine::run_substeps`) is:
 
 ```
-dt = AtmosphereSolver.max_dt()        # wave CFL, ~1.67 ms
-n  = ceil(sim_time / dt)              # ~50 substeps
-for each substep:
-    AtmosphereSolver.step(dt)        # wave + diffusion + BCs + wind field
-    SmokeDynamics.step(dt * dt_scale) # diffusion + advection on the fresh wind
-after the loop:
-    FireSimulation.step(sim_time)    # emits smoke (single full-tick step)
+sim_time = full tick length (the real dt)
+dt_wave  = AtmosphereSolver.max_dt()          # wave CFL, ~1.67 ms
+n_wave   = ceil(sim_time / dt_wave)            # wave substeps
+
+for s in range(n_wave):                        # 1. the WAVE at its CFL
+    AtmosphereSolver.wave_substep(dt_wave)
+AtmosphereSolver.diffuse_solve(sim_time)       # 2. implicit diffusion + BCs + WIND, ONCE
+                                               #    (also computes the tick's wind_x/wind_y)
+for s in range(n_smoke):                       # 3. SMOKE rides the quasi-static wind
+    SmokeDynamics.step(dt_smoke)                #    wind-only; dt_smoke = sim_time / n_smoke
+for k in range(K):                             # 4. the breach SINK, its own K-hop drain
+    SmokeDynamics.sink_hop()
+FireSimulation.step(sim_time)                  # emits smoke (single full-tick step)
 ```
 
-Fire runs once per tick after the substep loop because it only needs the final atmospheric state;
-its smoke emission therefore lands as a per-tick deposit, not a per-substep one.
+Each loop runs on its **own** count, none secretly setting another's:
+
+- **`n_wave`** — the explicit wave's CFL. The wave is hyperbolic, so it genuinely needs substeps.
+- **`1`** — the diffusion solve. The implicit (Gauss-Seidel) diffusion is *unconditionally stable*,
+  so it never needed the substeps — solving it once instead of ~`n_wave×` is the headline ~3× cut to
+  the atmosphere cost (commit `3ca6b17`).
+- **`n_smoke`** — a **smoke-CFL floor**. Smoke's *diffusion* is explicit forward-Euler, so it has a
+  stability speed limit that tightens under wind
+  (`d_eff = d_smoke·(1 + wind_diffusion_scale·|wind|²)`):
+  `n_smoke = max(1, ceil(sim_time / (1/(4·d_eff_max))))` from the spatial-max `d_eff`. At rest it is
+  `1`; it rises only under a strong shockwave (a safety net against checkerboard). With `dt_scale`
+  gone the smoke dt is already ~9× smaller, so in practice it stays low — a strong in-game blast
+  peaks around `n_smoke ≈ 29`, not the hundreds the formula allows in the abstract.
+- **`K`** — the breach vent rate, `smoke_vent_hops` (default `16`): a real "vent cells/tick" dial
+  (see boundary handling), **decoupled from `n_wave`**. Previously the sink-pull was fused into the
+  advection back-trace and drained at *whatever* `n_wave` happened to be.
+
+The shockwave still reads right — a blast crosses the map in a few ms and smoke must roll ahead of
+the pressure front, not teleport. That now comes from the wave substeps feeding the once-solved wind
+plus `n_smoke` tightening under high wind, *without* coupling four unrelated rates to one number.
+Fire runs once per tick after the loop because it only needs the final atmospheric state; its smoke
+emission lands as a per-tick deposit.
+
+This is a deliberate **behavior change** (the diffusion sees the accumulated wave transfers at once
+rather than incrementally), so it is **feel-gated, not bit-identical**: the acceptance tests are
+conservation (sealed room conserves mass), venting (a breached room clears), no-blowup, and Erik's
+eye. See `docs/patch2_dt_policy_plan.md`.
 
 ### Boundary handling
 
@@ -138,20 +169,27 @@ field (`sink_x`/`sink_y` on `GameMap`, sources = air cells adjacent to exposed v
 through air only) pulls the back-trace toward the breach corner — sampled as `0`, so its emptiness is
 drawn inward and the room vents. The bias is **safe by construction**: no breach ⇒ zero sink ⇒ a
 sealed room is bit-identical to plain semi-Lagrangian, and it **never touches the pressure field**
-(matches ch.04 §4). Strength is `[physics] smoke_sink_strength` (default `2.0`; effective `0..1`,
-`≥1` = full drain), displacement capped at 1 cell/substep.
+(matches ch.04 §4). Per-hop strength is `[physics] smoke_sink_strength` (default `2.0`; effective `0..1`, `≥1` = full
+drain), displacement capped at **one cell per hop**. **Patch 2** extracted this pull *out* of the
+advection back-trace into a standalone `SmokeDynamics::sink_hop` pass that the engine runs **K =
+`[physics] smoke_vent_hops`** times per tick (default `16`) — a real "vent cells/tick" dial,
+decoupled from the wave substep count (it used to drain at whatever the wave CFL `n` happened to be).
 
 ### Parameters
 
-All four parameters live on the C++ `SmokeDynamics` instance and are bound from `config.toml`
+These parameters live on the C++ `SmokeDynamics` instance and are bound from `config.toml`
 at init (`PhysicsRunner.__init__`). None are hardcoded in the solver.
 
 | Parameter | Config key | Default | Role |
 |---|---|---|---|
-| `d_smoke` | `physics.d_smoke` | `0.1` | Base diffusion (low → smoke holds shape) |
-| `advection_rate` | `physics.advection_rate` | `100.0` | Wind transport strength |
-| `dt_scale` | `physics.smoke_dt_scale` | `3.0` | Smoke timestep multiplier (visual amplification) |
+| `d_smoke` | `physics.d_smoke` | `0.1` | Base diffusion (low → smoke holds shape). **Re-tune (Patch 2):** ~9× weaker in effect now that `dt_scale` is gone. |
+| `advection_rate` | `physics.advection_rate` | `900.0` | Wind transport strength on the real dt (was `100.0`, ×`dt_scale²`=9). |
 | `wind_diffusion_scale` | `physics.wind_diffusion_scale` | `50.0` | Turbulent-mixing strength: `D = d_smoke·(1 + scale·\|wind\|²)` |
+| `vent_hops` (K) | `physics.smoke_vent_hops` | `16` | Breach vent rate: 1-cell `sink_hop` passes per tick (Patch 2). Higher = faster drain. |
+
+`dt_scale` (`physics.smoke_dt_scale`) was **removed in Patch 2** — smoke steps on the real tick
+length. The separate `physics.smoke_sink_strength` (default `2.0`) sets the *per-hop* pull
+magnitude; `vent_hops` sets *how many* hops run per tick.
 
 ---
 
@@ -738,28 +776,39 @@ Audited against `cpp/src/smoke_dynamics.{h,cpp}`, `src/simulation/physics_runner
 - **Transport solver** — `SmokeDynamics::step` implements wind-dependent diffusion (D scales with
   `wind_diffusion_scale · |wind|²`), **semi-Lagrangian advection** (`de255ff`: back-trace +
   bilinear sampling, with a **ray-clip wall guard** that marches the back-trace and stops before the
-  first sealed tile so smoke is never pulled through a 1-tile wall), `dt_scale` amplification, clamp
-  to `[0,1]`, and wall/vacuum zeroing — exactly as described in §2. Unconditionally stable, no
-  checkerboard. Built in C++.
-- **Lingering-smoke venting (sink-pull)** — `a016e19`: a BFS sink-direction field (`sink_x`/`sink_y`
-  on `GameMap`, sources = air cells adjacent to exposed vacuum, propagated through air only; rebuilt
-  on topology change via `_sink_dirty` set in `destroy_wall`, lazily in `sink_fields()`) biases the
-  semi-Lagrangian back-trace toward the nearest breach (corner sampled as `0` ⇒ venting), capped at
-  1 cell/substep. Config `[physics] smoke_sink_strength` (default `2.0`). Safe by construction: no
-  breach ⇒ zero sink ⇒ sealed room bit-identical to plain semi-Lagrangian; never touches the
+  first sealed tile so smoke is never pulled through a 1-tile wall), clamp to `[0,1]`, and
+  wall/vacuum zeroing — exactly as described in §2. **Patch 2b (`71b6ebf`):** `step` is now
+  **wind-only** (the breach sink-pull was lifted into the standalone `sink_hop`, below) and steps on
+  the **real dt** — the `dt_scale` amplifier is gone. Unconditionally stable, no checkerboard. Built
+  in C++.
+- **Lingering-smoke venting (sink-pull)** — `a016e19`, restructured in **Patch 2b (`71b6ebf`)**: a
+  BFS sink-direction field (`sink_x`/`sink_y` on `GameMap`, sources = air cells adjacent to exposed
+  vacuum, propagated through air only; rebuilt on topology change via `_sink_dirty` set in
+  `destroy_wall`, lazily in `sink_fields()`) pulls smoke toward the nearest breach (corner sampled as
+  `0` ⇒ venting), one cell per hop. **Patch 2 extracted this from the advection back-trace into a
+  standalone `SmokeDynamics::sink_hop` pass** — a shared `backtrace_sample` helper makes the per-hop
+  pull byte-for-byte the mechanism formerly fused into `step` — which the engine runs **`K =
+  smoke_vent_hops` times per tick** (default `16`), a vent-rate dial **decoupled from the wave
+  substep count** (it used to drain at whatever `n_wave` was). Config `[physics] smoke_sink_strength`
+  (per-hop magnitude, default `2.0`) + `[physics] smoke_vent_hops` (K). Safe by construction: no
+  breach ⇒ all-zero sink ⇒ each hop is the identity ⇒ sealed room untouched; never touches the
   pressure field.
-- **Atmosphere interleaving** — `PhysicsRunner.step` runs `smoke.step(dt · dt_scale)` inside the
-  per-substep loop, immediately after `atmos.step`, reading the freshly-computed
-  `wind_x`/`wind_y`. Matches §2.
+- **The dt policy (Patch 2)** — `PhysicsEngine::run_substeps` runs the **wave at its CFL**
+  (`n_wave × wave_substep`, `3ca6b17`), then the **implicit diffusion once** at the full `sim_time`
+  (`diffuse_solve`, which also computes the tick's `wind_x`/`wind_y` — the ~3× atmosphere-cost win),
+  then **smoke `n_smoke ×`** on that quasi-static wind (a smoke-CFL floor from the spatial-max
+  `d_eff`; ≈1 at rest, ≈29 at a strong blast), then the **sink `K ×`** (`71b6ebf`). Matches §2's
+  dt-policy order. Behavior change, feel-gated (not 0-ULP): conservation stays green (~9e-5 drift
+  over 200 ticks = GS under-convergence at the big dt, not a leak), venting clears, no blowup.
 - **Permeability boundary + soft units** — the solver reads per-cell `dyn_permeability`
   (`face = min(perm[self], perm[neighbor])`) instead of the bare boolean; a living unit writes a
   *partial* value (default 0.5, `[physics] unit_permeability`), so smoke seeps past a body.
   Behaviour-identical to the old boolean boundary for the current materials.
-- **Parameters from config** — all four (`d_smoke`, `advection_rate`, `smoke_dt_scale`,
-  `wind_diffusion_scale`) are bound from `config.toml` in `PhysicsRunner.__init__`. Defaults in
-  the doc match `config.toml` (`0.1 / 100.0 / 3.0 / 50.0`). Note the *C++ class defaults*
-  (`d_smoke=0.4`, `advection_rate=25.0`, `wind_diffusion_scale=0.0`) differ but are always
-  overwritten at init, so config wins.
+- **Parameters from config** — `d_smoke`, `advection_rate`, `wind_diffusion_scale`, and
+  `smoke_vent_hops` (K) are bound from `config.toml` in `PhysicsRunner.__init__` (`smoke_dt_scale`
+  was **removed in Patch 2**). Defaults in the doc match `config.toml` (`0.1 / 900.0 / 50.0 / 16`).
+  Note the *C++ class defaults* (`d_smoke=0.4`, `advection_rate=225.0`, `wind_diffusion_scale=0.0`,
+  `vent_hops=16`) differ but are always overwritten at init, so config wins.
 - **Sources** — fire smoke emission (`fire_simulation.cpp`, into 4-connected air neighbours);
   explosion smoke clear (inner 40 %, `physics.apply_explosion`) and noisy disc deposit
   (`physics.add_explosion_smoke`) via the seeded RNG. Matches §4.
@@ -816,13 +865,14 @@ Audited against `cpp/src/smoke_dynamics.{h,cpp}`, `src/simulation/physics_runner
   `scatter_albedo`) signature *per gas*, density-weighted across all coexisting gas fields
   (`raycaster.cpp`), exactly the coloured-beam optics §6.1 step 6 / §6.2 describe — so this is no
   longer an open gap. The legacy scalar `march_ray` path is unaffected.
-- **Smoke substep stability — resolved** — semi-Lagrangian advection (`de255ff`) is unconditionally
-  stable and produces no checkerboard, so the old "large `advection_rate` / `dt_scale` can oscillate"
-  caveat no longer applies. One **tuning-cleanup item** remains: `dt_scale` is applied **twice** —
-  the runner passes `dt · dt_scale` into `smoke.step(...)` and the solver multiplies by `dt_scale`
-  again — so the effective advection timestep is `dt_adv ≈ dt · dt_scale² ≈ 6.25` rather than the
-  nominal value. This affects advection *magnitude* (a tuning constant), not stability; worth
-  collapsing to a single application.
+- **Smoke substep stability — resolved; `dt_scale` double-apply fixed (Patch 2b)** —
+  semi-Lagrangian advection (`de255ff`) is unconditionally stable and produces no checkerboard. The
+  old **`dt_scale` applied twice** (runner passed `dt · dt_scale`, solver multiplied by `dt_scale`
+  again ⇒ `dt_adv ≈ dt · dt_scale² ≈ 9×`) is **gone as of `71b6ebf`**: smoke advects/diffuses on the
+  real `sim_time` (split `n_smoke` ways for the explicit-diffusion CFL floor), and `advection_rate`
+  (bumped to `900` = old `100 × 9`) is the single wind-ride coefficient — same on-screen ride, one
+  honest timestep. **Re-tune side effect:** the smoke *diffusion* is now ~9× weaker (the `dt_scale²`
+  that inflated it is gone) — bump `d_smoke` / the per-gas `[gases.*]` diffusion by eye.
 - **`[smoke]` optics not re-pushed on Ctrl+R reload** — the renderer-side `[smoke]` optics
   (`smoke_absorption` / `smoke_scatter_albedo` / `smoke_absorb_scale` / `smoke_render_gamma`) are
   bound at `__init__` and are **not** re-applied on a Ctrl+R config reload, so the main game needs a
