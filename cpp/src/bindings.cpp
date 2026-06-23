@@ -698,5 +698,65 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("dyn_permeability"), py::arg("steam_idx"),
            py::arg("tilt_x"), py::arg("tilt_y"), py::arg("sim_time"),
            py::arg("ceiling_h"), py::arg("flood_eps"), py::arg("ratio_cap"),
-           py::arg("boil_rate"), py::arg("boil_p_thresh"), py::arg("steam_yield"));
+           py::arg("boil_rate"), py::arg("boil_p_thresh"), py::arg("steam_yield"))
+        // --- stamp_units: the per-tick dynamic-field rebuild ----------------
+        // Moves the FIELD-REBUILD half of GameMap.stamp_units into C++ (the unit
+        // iteration / occupied_tiles() / alive-filter / bounds-check / defaults
+        // stay Python, flattened into per-row arrays). Static (h,w) grids
+        // permeability/wave_absorb + (h,w,3) light_atten are read; the dyn_*
+        // targets + the (h,w) bool obstacles are written IN-PLACE. The flat stamp
+        // arrays (ys/xs int32; perm/wabsorb/atten_{r,g,b} float32) carry one row
+        // per stamped footprint tile. PURE-STRUCTURE, 0-ULP (copies + compare +
+        // min/max only). The atmosphere-refill bit stays Python (Q1, locked).
+        .def("stamp_units", [](const PhysicsEngine& self,
+                               py::array_t<float> permeability,
+                               py::array_t<float> wave_absorb,
+                               py::array_t<float> light_atten,
+                               py::array_t<float> dyn_permeability,
+                               py::array_t<float> dyn_wave_absorb,
+                               py::array_t<float> dyn_light_atten,
+                               py::array_t<bool>  obstacles,
+                               py::array_t<int32_t> ys,
+                               py::array_t<int32_t> xs,
+                               py::array_t<float> perm,
+                               py::array_t<float> wabsorb,
+                               py::array_t<float> atten_r,
+                               py::array_t<float> atten_g,
+                               py::array_t<float> atten_b) {
+            auto [pm, h, w]    = get_2d_const(permeability);
+            auto [wa, h2, w2]  = get_2d_const(wave_absorb);
+            auto [dpm, h3, w3] = get_2d(dyn_permeability);
+            auto [dwa, h4, w4] = get_2d(dyn_wave_absorb);
+            auto [obs, h5, w5] = get_2d(obstacles);
+            // light_atten / dyn_light_atten are (h, w, 3) f32 — pass the base
+            // pointer; the loop strides the trailing channel axis internally.
+            auto la_v  = light_atten.unchecked<3>();
+            const float* la = la_v.data(0, 0, 0);
+            auto dla_v = dyn_light_atten.mutable_unchecked<3>();
+            float* dla = dla_v.mutable_data(0, 0, 0);
+            // Flat per-row stamp arrays (1D). Empty arrays (no living units) are
+            // valid — n_stamp == 0 -> the stamp loop is a no-op (reset only).
+            auto ys_v = ys.unchecked<1>();
+            auto xs_v = xs.unchecked<1>();
+            const int n_stamp = static_cast<int>(ys_v.shape(0));
+            const int32_t* ys_p = (n_stamp > 0) ? ys_v.data(0) : nullptr;
+            const int32_t* xs_p = (n_stamp > 0) ? xs_v.data(0) : nullptr;
+            auto perm_v = perm.unchecked<1>();
+            auto wabs_v = wabsorb.unchecked<1>();
+            auto ar_v   = atten_r.unchecked<1>();
+            auto ag_v   = atten_g.unchecked<1>();
+            auto ab_v   = atten_b.unchecked<1>();
+            const float* perm_p = (n_stamp > 0) ? perm_v.data(0) : nullptr;
+            const float* wabs_p = (n_stamp > 0) ? wabs_v.data(0) : nullptr;
+            const float* ar_p   = (n_stamp > 0) ? ar_v.data(0) : nullptr;
+            const float* ag_p   = (n_stamp > 0) ? ag_v.data(0) : nullptr;
+            const float* ab_p   = (n_stamp > 0) ? ab_v.data(0) : nullptr;
+            self.stamp_units(pm, wa, la, dpm, dwa, dla, obs,
+                             ys_p, xs_p, perm_p, wabs_p, ar_p, ag_p, ab_p,
+                             n_stamp, h, w);
+        }, py::arg("permeability"), py::arg("wave_absorb"), py::arg("light_atten"),
+           py::arg("dyn_permeability"), py::arg("dyn_wave_absorb"),
+           py::arg("dyn_light_atten"), py::arg("obstacles"),
+           py::arg("ys"), py::arg("xs"), py::arg("perm"), py::arg("wabsorb"),
+           py::arg("atten_r"), py::arg("atten_g"), py::arg("atten_b"));
 }

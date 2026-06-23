@@ -282,6 +282,20 @@ class GameMap:
         # scripted flood) go through the FieldEdit queue instead.
         self.water_sources = []
 
+        # --- stamp_units C++ seam --------------------------------------------
+        # The per-tick dynamic-field rebuild (``stamp_units``) can run either in
+        # Python (the reference path) or in the C++ ``PhysicsEngine`` (the live
+        # path). ``Simulation`` injects the engine via :meth:`bind_physics_engine`
+        # once its ``PhysicsRunner`` is built; a bare ``GameMap`` (e.g. a unit
+        # test that calls ``stamp_units`` directly) has no engine and falls back
+        # to the Python path automatically. ``use_cpp_stamp`` is the A/B toggle:
+        # the C++ path is the DEFAULT, but the field-level harness flips it to
+        # False to capture the Python reference trajectory for the 0-ULP diff.
+        # Both paths are byte-for-byte identical (the C++ port is a pure-structure
+        # move — copies + a boolean compare + per-cell min/max, no float math).
+        self._physics_engine = None
+        self.use_cpp_stamp = True
+
         # Populate material + vacuum from the level's CSV (vocabulary is
         # format-version dependent — v1 generator codes vs v2 canon ids).
         mat, vac = materials_from_tilemap(level_data.tilemap, level_data.version)
@@ -482,7 +496,105 @@ class GameMap:
     # ------------------------------------------------------------------
     # Per-tick rebuild: units act as walls for all physics
     # ------------------------------------------------------------------
+    def bind_physics_engine(self, engine):
+        """Wire the C++ ``PhysicsEngine`` for the C++ ``stamp_units`` path.
+
+        Called by :class:`Simulation` once its :class:`PhysicsRunner` is built
+        (the runner owns the engine). A bare ``GameMap`` with no engine bound
+        always uses the Python reference path. Idempotent."""
+        self._physics_engine = engine
+
     def stamp_units(self, units):
+        """Per-tick dynamic-field rebuild — dispatches to C++ or Python.
+
+        The field rebuild (``obstacles`` + ``dyn_permeability`` +
+        ``dyn_wave_absorb`` + ``dyn_light_atten``) runs in the C++
+        ``PhysicsEngine`` when one is bound (:meth:`bind_physics_engine`) AND
+        ``use_cpp_stamp`` is True (the default); otherwise the Python reference
+        path (:meth:`_stamp_units_python`). The two are byte-for-byte identical
+        (the C++ port is a pure-structure move: copies + a boolean compare +
+        per-cell min/max — no float arithmetic). The atmosphere-refill bit
+        (wall->free transitions) ALWAYS runs in Python — it is not unit-driven
+        and is intentionally unchanged (design intent: units do NOT push
+        atmosphere as they walk; they only block shockwaves via ``wave_absorb``).
+        """
+        if self._physics_engine is not None and self.use_cpp_stamp:
+            self._stamp_units_cpp(units)
+        else:
+            self._stamp_units_python(units)
+
+    def _stamp_units_cpp(self, units):
+        """C++ path: flatten living units' footprints, call the engine, then run
+        the Python-only atmosphere refill.
+
+        The unit iteration + ``occupied_tiles()`` + the ``u.alive`` filter + the
+        per-tile bounds check + the per-unit getattr-or-default all stay in
+        Python (CPU actors own that). We build one row per stamped footprint
+        tile — ``ys/xs`` (int32) and ``perm/wabsorb/atten_{r,g,b}`` (float32) —
+        and hand them to :meth:`PhysicsEngine.stamp_units`, which does the
+        in-place reset (``obstacles`` + the three ``dyn_*`` copies) and the
+        min/max stamp loop. ``prev_obstacles`` is captured HERE, before the C++
+        reset overwrites ``obstacles`` in place, so the atmosphere-refill diff
+        below sees the pre-tick walls (exactly as the Python path did)."""
+        # Capture the previous walls BEFORE the C++ reset writes obstacles in
+        # place (the Python path snapshots self.obstacles, then reassigns; here
+        # the engine writes the SAME buffer in place, so copy first).
+        prev_obstacles = self.obstacles.copy()
+
+        default_atten = (1.0, 1.0, 1.0)
+        default_perm = float(getattr(CFG.physics, "unit_permeability", 0.5))
+        default_wabsorb = float(getattr(CFG.physics, "unit_wave_absorb", 0.5))
+        h, w = self._h, self._w
+
+        # Build the flat stamp rows: one per (living unit, in-bounds footprint
+        # tile). Plain Python lists — the unit count and footprints are tiny.
+        ys, xs = [], []
+        perm, wabsorb = [], []
+        atten_r, atten_g, atten_b = [], [], []
+        for u in units:
+            if not u.alive:
+                continue
+            u_atten = getattr(u, "light_atten", default_atten)
+            u_perm = float(getattr(u, "permeability", default_perm))
+            u_wabsorb = float(getattr(u, "wave_absorb", default_wabsorb))
+            ar, ag, ab = float(u_atten[0]), float(u_atten[1]), float(u_atten[2])
+            for (tx, ty) in u.occupied_tiles():
+                if 0 <= ty < h and 0 <= tx < w:
+                    ys.append(ty)
+                    xs.append(tx)
+                    perm.append(u_perm)
+                    wabsorb.append(u_wabsorb)
+                    atten_r.append(ar)
+                    atten_g.append(ag)
+                    atten_b.append(ab)
+
+        ys_a = np.asarray(ys, dtype=np.int32)
+        xs_a = np.asarray(xs, dtype=np.int32)
+        perm_a = np.asarray(perm, dtype=np.float32)
+        wabsorb_a = np.asarray(wabsorb, dtype=np.float32)
+        atten_r_a = np.asarray(atten_r, dtype=np.float32)
+        atten_g_a = np.asarray(atten_g, dtype=np.float32)
+        atten_b_a = np.asarray(atten_b, dtype=np.float32)
+
+        # C++ reset + obstacles + min/max stamp loop (all IN-PLACE).
+        self._physics_engine.stamp_units(
+            self.permeability, self.wave_absorb, self.light_atten,
+            self.dyn_permeability, self.dyn_wave_absorb, self.dyn_light_atten,
+            self.obstacles,
+            ys_a, xs_a, perm_a, wabsorb_a, atten_r_a, atten_g_a, atten_b_a,
+        )
+
+        # Atmosphere refill (Python-only, UNCHANGED — gamemap.py contract §c).
+        # `freed` = walls that became free this tick (wall destroyed). Units are
+        # not in `obstacles`, so a moving/dying unit triggers no fill.
+        freed = prev_obstacles & ~self.obstacles
+        if freed.any():
+            for fy, fx in zip(*np.where(freed)):
+                if not self.is_vacuum[fy, fx]:
+                    self.atmosphere[fy, fx] = self._neighbor_mean(
+                        self.atmosphere, fy, fx)
+
+    def _stamp_units_python(self, units):
         """Rebuild ``obstacles`` = static walls (units are NO LONGER stamped
         here), and in the SAME pass rebuild the dynamic per-channel
         light-attenuation field ``dyn_light_atten`` and the dynamic gas/smoke

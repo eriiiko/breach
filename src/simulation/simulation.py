@@ -218,6 +218,10 @@ class Simulation:
         if self._bp is not None:
             # Always build a fresh runner so per-session params are clean.
             self.physics_runner = PhysicsRunner(self._bp)
+            # Wire the C++ PhysicsEngine into the gmap for the C++ stamp_units
+            # path (the runner owns the engine). A bare GameMap with no engine
+            # bound falls back to the Python reference path automatically.
+            self.gmap.bind_physics_engine(self.physics_runner.engine)
         else:
             self.physics_runner = None
 

@@ -387,3 +387,70 @@ void PhysicsEngine::step_water(
         before[i] = water_depth[i];                        // the copyto
     }
 }
+
+// stamp_units — the per-tick dynamic-field rebuild, lifted from the FIELD-REBUILD
+// half of GameMap.stamp_units (gamemap.py:485-589). PURE-STRUCTURE move: the ops
+// are exact (copies + a boolean compare + per-cell min/max), so there is NO float
+// arithmetic and it is 0-ULP by construction — /fp:precise is irrelevant here.
+//
+// The unit iteration / occupied_tiles() / `u.alive` filter / per-tile bounds
+// check / the getattr-or-default for each unit's perm/wabsorb/atten all stay in
+// Python (CPU actors own that), flattened into the per-row arrays passed in. This
+// reproduces the contract directions EXACTLY: permeability is MIN (never unseal a
+// door), wave_absorb is MAX (a body only adds damping), light_atten is per-channel
+// MAX (opacity only rises). The atmosphere-refill bit (gamemap.py:586-588) is NOT
+// here — it stays Python (Q1, locked). All writes are IN-PLACE (the engine re-
+// fetches field pointers each step; reassignment would dangle them).
+void PhysicsEngine::stamp_units(
+        const float* permeability, const float* wave_absorb,
+        const float* light_atten,
+        float* dyn_permeability, float* dyn_wave_absorb, float* dyn_light_atten,
+        bool* obstacles,
+        const int32_t* ys, const int32_t* xs,
+        const float* perm, const float* wabsorb,
+        const float* atten_r, const float* atten_g, const float* atten_b,
+        int n_stamp, int h, int w) const {
+
+    const int n = h * w;
+
+    // --- a. Reset to static baseline, IN-PLACE ----------------------------
+    // obstacles = (permeability <= 0.0): WALLS ONLY (units are NOT stamped into
+    // obstacles — they are soft bodies, gamemap.py:532). dyn_* are in-place
+    // copies of the static material baselines (gamemap.py:536/540/544). Done in
+    // one pass over the (h,w) fields; light_atten is interleaved (h,w,3).
+    for (int i = 0; i < n; ++i) {
+        obstacles[i]        = (permeability[i] <= 0.0f);   // walls only
+        dyn_permeability[i] = permeability[i];             // copy
+        dyn_wave_absorb[i]  = wave_absorb[i];              // copy
+    }
+    for (int i = 0; i < n * 3; ++i) {
+        dyn_light_atten[i]  = light_atten[i];              // copy (RGB)
+    }
+
+    // --- b. Stamp each living unit's footprint over the flat rows ---------
+    // One row per (living-unit, in-bounds footprint-tile) — Python already did
+    // the `u.alive` filter and the 0<=ty<h && 0<=tx<w bounds check, so every row
+    // here is a valid stamp. idx = ys*w + xs (row-major, matching numpy [ty,tx]).
+    for (int r = 0; r < n_stamp; ++r) {
+        const int idx = ys[r] * w + xs[r];
+        // MIN vs the STATIC permeability (gamemap.py:571-572): a body makes an
+        // open tile porous but must never RAISE a sealed tile's permeability (the
+        // door-stamp leak). Compare against permeability[idx], NOT the running
+        // dyn value — exactly as Python (`sp = self.permeability[ty, tx]`).
+        const float sp = permeability[idx];
+        const float up = perm[r];
+        dyn_permeability[idx] = (up < sp) ? up : sp;
+        // MAX so a unit only ADDS damping (gamemap.py:575-576).
+        const float cur = dyn_wave_absorb[idx];
+        const float uw  = wabsorb[r];
+        dyn_wave_absorb[idx] = (cur >= uw) ? cur : uw;
+        // Per-channel MAX: opacity can only increase (gamemap.py:578-581).
+        float* cell = dyn_light_atten + (size_t)idx * 3;
+        const float ar = atten_r[r];
+        const float ag = atten_g[r];
+        const float ab = atten_b[r];
+        cell[0] = (cell[0] >= ar) ? cell[0] : ar;
+        cell[1] = (cell[1] >= ag) ? cell[1] : ag;
+        cell[2] = (cell[2] >= ab) ? cell[2] : ab;
+    }
+}
