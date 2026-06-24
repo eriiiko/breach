@@ -693,6 +693,23 @@ occupancy.
 
 ## 9. OPEN QUESTIONS for Erik (decisions only he can make)
 
+> ### ✅ RESOLUTIONS — walked through with Erik and LOCKED (2026-06-24)
+>
+> All nine were discussed to a conclusion. The locked answers (these supersede the recommendations below):
+>
+> - **Q1 — Cross-GPU contract: CONFIRMED** (any-machine, cross-architecture). Erik has **3 NVIDIA generations** on hand — Turing (RTX 20xx), Ampere (RTX 30xx ×2), Ada (RTX 40xx) — so the cross-arch CI gate + Spike-0 run on his own hardware, no cloud.
+> - **Q2 — combat fence: integer HP/damage + harness coverage.** Decouple determinism from speed: HP/damage/kill-threshold → **plain integers**, stays **Python for now** (→ C++ when training starts); replace the blast `sqrt` with **squared-distance**; extend the harness digest to the **synced unit-state surface** (HP + hit/kill events). *Python float math here is likely already cross-machine-reproducible (scalar `+−×÷√`, no FMA/transcendentals) — verify empirically at the end; integer is robustness, not firefighting.* **DESIGN ADDENDUM:** the geometric `apply_blast_damage` is to be **REMOVED** — damage should derive from the **propagating pressure wave** (respects cover; grenade-in-a-corridor funnels). Deferred, NOT part of the CUDA work.
+> - **Q3 — d_atm / Technique #3: keep #1 (reciprocal) as the shipping baseline; #3 is viable.** The plan's "36 / 5.6×" was **STALE (pre-Patch-2)**. Re-derived against the current build: the power-of-2 target is **d_atm 200→186 (~7% change, ~invisible)**, and it is **resolution-robust** — `shift = round(log2(1+4·mu))` grows +2 bits per resolution doubling while d_atm stays ~186–192 (feel-preserving). #3 is a low-priority endgame, but Erik **leans toward building it for portfolio/learning value**. *(Correct the 36 → 186 number in §2/§3/§7.)*
+> - **Q4 — permeability: use #1 (reciprocal), DROP #2 (the bucket LUT).** The reciprocal handles discrete/continuous/binary permeability exactly + deterministically. The permeability **model stays OPEN** (triple today; continuous-leak-mission and geometric-holes-at-resolution both stay live future threads). Don't foreclose continuity for #2's ~10% shave. *(Drop the Technique-#2 sections.)*
+> - **Q5 — GPU widths: int16 (Q1.15) for the [0,1] fields** (smoke/gas/fire), int32 for the physical fields (pressure/wave/wind/water). Freeze the width in the format-version tag **now**; 16-bit kernels land with the GPU port; **zero** determinism cost.
+> - **Q6 — solver: Red-Black Gauss-Seidel** (residual/flux form + precomputed reciprocal). Already deterministic via 2-coloring, fast (~8 sweeps), no global reduction, robust in fixed-point. **Chebyshev-Jacobi DROPPED** (re-imports a global reduction via the runtime eigenvalue estimate + fixed-point-fragile).
+> - **Q7 — Spike-0: YES, two-beat, FIRST.** 0a = the `mean_wp`-style reduction (prove integer matches / float diverges across Erik's Turing/Ampere/Ada cards); 0b = a GS-reciprocal kernel on GPU. De-risks the load-bearing premise before the multi-week build; the rig becomes the permanent cross-arch CI gate.
+> - **Q8 — retire `mean_wp` via local edge-flux: YES (the target).** Integer rounded int64 mean as the S2a stopgap, then the **edge-flux reformulation** as a near-term S-step (same local-flux shape the conserved fields need anyway). Deletes the deepest hazard **and** its GPU sync barrier — same root cause, both wins.
+> - **Q9 — migration order: coupling-closed groups.** S0 → Spike-0 → **S1 water → S2 (atmosphere/wave/wind/smoke/gas as ONE group) → S3 fire → S4 cleanup**. The only order where each step's cross-GPU-determinism claim is honest (vs. easy-first's string of same-machine-only greens).
+>
+> *Resolutions captured in memory `project_fixed_point_qa_decisions.md`. Doc-surgery action items: fix d_atm 36→186 (§2/§3/§7), drop Technique-#2, note the `apply_blast_damage` removal, add the unit-state digest to the harness (§6.2).*
+
+
 1. **Determinism contract scope — confirm "any-machine, cross-GPU" is final** (D-C in the gs note). The
    locked decision says yes; this plan assumes it absolutely (it's why the cliffs §4.4, the Python fence
    §6.1, and the Spike 0 GPU test exist). Confirm so we never relitigate.
