@@ -61,6 +61,15 @@ from config import CFG  # noqa: E402
 from level_loader import LevelData  # noqa: E402
 from simulation import Simulation  # noqa: E402
 from simulation.gases import WHITE_SMOKE  # noqa: E402
+from water_q16 import q, deq  # noqa: E402  (S1: Q16.16 quantize/dequantize)
+
+# S1: water_depth is int32 Q16.16 (~1.5e-5 m granularity). The W5 boil is a
+# FLOAT BRIDGE (it dequantizes depth, boils in float, re-quantizes the removed
+# metres), so the per-tick depth carries one Q16.16 round-trip per tick. Depth
+# assertions are in metres (deq) with a tolerance widened to a few Q16.16 LSB
+# where the old float test used 1e-7. The STEAM puff is still float (it is read
+# from the gas field directly).
+Q_EPS = 1.0 / 65536.0   # one Q16.16 LSB in metres
 
 SEED = 42
 
@@ -130,8 +139,8 @@ def _boil_sim(depth: float = DEPTH):
     assert float(g.atmosphere[B]) > 0.5, "twin cell has no air (vacuous twin)"
     g.atmosphere[A] = 0.0          # THE vacuum hold (one paint, holds forever)
     if depth:
-        g.water_depth[A] = depth
-        g.water_depth[B] = depth
+        g.water_depth[A] = q(depth)   # S1: paint in Q16.16 metres
+        g.water_depth[B] = q(depth)
     sim.set_paused(False)
     return sim, g
 
@@ -151,14 +160,20 @@ def test_one_tick_vacuum_boil_depth_and_steam_gain():
 
     sim.step()                                    # ONE tick = 1/24 s
 
-    # Depth: one full-rate increment boiled off the vacuum cell.
-    d = float(g.water_depth[A])
-    assert abs(d - (DEPTH - INC)) < 1e-7, (
-        f"one-tick boil depth {d} != {DEPTH - INC}")
+    # Depth: one full-rate increment boiled off the vacuum cell. S1: the depth
+    # is Q16.16 and the boil round-trips through float once, so allow a few LSB
+    # of quantization slack (was 1e-7 on the pure-float build).
+    d = float(deq(g.water_depth[A]))
+    assert abs(d - (DEPTH - INC)) < 3 * Q_EPS, (
+        f"one-tick boil depth {d} != {DEPTH - INC} (tol {3*Q_EPS:.2e})")
     # Steam: the puff is steam_yield * boiled, in white_smoke and ONLY there.
+    # S1: boiled is the Q16.16-quantized full-rate amount (0.02/24 m rounds to
+    # the nearest LSB), so the steam carries steam_yield * (a few Q16.16 LSB) of
+    # slack vs the plan's exact float number (was 1e-6 on the float build).
     gain = float(g.gas[WHITE_SMOKE].sum(dtype=np.float64)) - total0
-    assert abs(gain - STEAM_YIELD * INC) < 1e-6, (
-        f"one-tick steam gain {gain} != {STEAM_YIELD * INC}")
+    assert abs(gain - STEAM_YIELD * INC) < STEAM_YIELD * 3 * Q_EPS, (
+        f"one-tick steam gain {gain} != {STEAM_YIELD * INC} "
+        f"(tol {STEAM_YIELD * 3 * Q_EPS:.2e})")
     for gi in range(g.gas.shape[0]):
         if gi != WHITE_SMOKE:
             assert not g.gas[gi].any(), (

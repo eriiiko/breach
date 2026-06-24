@@ -65,7 +65,7 @@ public:
     std::vector<std::pair<int, int>> step_tail(
         // ripple group
         float* ripple, float* ripple_v,
-        const float* water_depth, const float* wave_p,
+        const int32_t* water_depth, const float* wave_p,   // S1: water_depth Q16.16
         const bool* solid,
         // fire group
         float* fire_field, float* atmosphere, float* smoke_field, float* wall_hp,
@@ -173,12 +173,16 @@ public:
     //   tilt_x, tilt_y                : solver tilt (read)
     //   sim_time                      : tick length (seconds)
     //   ceiling_h..steam_yield        : the W3/W5 scalar params (Python doubles)
+    // S1: water_depth/flow_vx/flow_vy/floor_height/before are now int32 Q16.16
+    // (metres / m/s). atmosphere/gas/dyn_permeability stay FLOAT (the S2 group) —
+    // the W5 boil + W3 displacement are FLOAT BRIDGES that dequantize water_depth
+    // at the boundary (marked in the .cpp). The substep-count cliff is integer.
     void step_water(
-        float* water_depth, float* flow_vx, float* flow_vy,
-        const float* floor_height, float* atmosphere, const float* wave_p,
+        int32_t* water_depth, int32_t* flow_vx, int32_t* flow_vy,
+        const int32_t* floor_height, float* atmosphere, const float* wave_p,
         const bool* solid,
         float* gas,
-        float* before, float* dyn_permeability,
+        int32_t* before, float* dyn_permeability,
         int steam_idx, float tilt_x, float tilt_y,
         int h, int w, float sim_time,
         double ceiling_h, double flood_eps, double ratio_cap,

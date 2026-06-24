@@ -24,6 +24,7 @@ import math
 import numpy as np
 
 from config import CFG
+from simulation import water_fixed   # S1: water_depth Q16.16 quantize helpers
 
 
 # ---------------------------------------------------------------------------
@@ -543,8 +544,11 @@ class PhysicsRunner:
         # `before` exactly once when W3's displacement lands. KEPT PYTHON
         # (sparse, stateful) — the array-arithmetic that follows moved into
         # C++ in Patch 1 S4c (PhysicsEngine::step_water, /fp:precise).
+        # S1: water_depth is int32 Q16.16 — quantize the source level (metres)
+        # to Q16.16 before the max-hold so the field stays integer.
         for (y, x, lvl) in gmap.water_sources:
-            gmap.water_depth[y, x] = max(gmap.water_depth[y, x], lvl)
+            lvl_q = water_fixed.quantize_scalar(float(lvl))
+            gmap.water_depth[y, x] = max(int(gmap.water_depth[y, x]), lvl_q)
         # The water-layer ARRAY ARITHMETIC — moved into C++ in Patch 1 S4c
         # (PhysicsEngine::step_water, physics_engine.cpp, compiled /fp:precise).
         # The block that used to live here — the substep-count derivation + the

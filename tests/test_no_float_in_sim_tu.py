@@ -59,13 +59,25 @@ _FP_FAST_RE = re.compile(r"fp:fast")
 # the s0-prereq-gate branch (the code is still float — these are the numbers the
 # migration will drive to zero, TU by TU). The ratchet fails if any count rises
 # above its baseline here; LOWER the numbers as each solver goes integer.
+# S1 (water -> Q16.16, 2026-06-24) re-baselined water_solver.cpp + physics_engine
+# .cpp. The water TRANSPORT core is now integer (float lines 55 -> 32: the
+# remainder is the render-only step_ripple + the gated head-term FLOAT BRIDGE +
+# the constant-precompute signatures), but `double` ROSE 0 -> 23 because the
+# load-time constants (max_dt_q's correctly-rounded sqrt, the per-step g*dt /
+# damp*dt / dt-over-dx / tilt-position quantize) are computed ONCE in double then
+# quantized — the LOCKED S1 decision (IEEE double is bit-identical cross-machine
+# for these scalar/constant computations; no per-cell float). physics_engine.cpp
+# `float` rose 64 -> 68: the four W5/W3 dequantize FLOAT BRIDGES (atmosphere/gas/
+# dyn_permeability are still float until S2). These doubles/floats are at
+# load-time/boundary scope, NOT per-cell transport — when S2 lands the bridges
+# collapse to integer. The remaining counts shrink further as S2/S3 migrate.
 BASELINE = {
     "atmosphere_solver.cpp":  {"float": 68, "double": 0,  "fp:fast": 2},
     "smoke_dynamics.cpp":     {"float": 47, "double": 1,  "fp:fast": 1},
     "fire_simulation.cpp":    {"float": 29, "double": 0,  "fp:fast": 0},
-    "water_solver.cpp":       {"float": 55, "double": 0,  "fp:fast": 1},
+    "water_solver.cpp":       {"float": 32, "double": 23, "fp:fast": 1},
     "temperature_solver.cpp": {"float": 2,  "double": 1,  "fp:fast": 0},
-    "physics_engine.cpp":     {"float": 64, "double": 29, "fp:fast": 1},
+    "physics_engine.cpp":     {"float": 68, "double": 24, "fp:fast": 1},
 }
 
 

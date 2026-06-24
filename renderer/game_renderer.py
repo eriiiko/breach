@@ -322,8 +322,13 @@ class GameRenderer:
         # .ambient is the single source of truth, fed by the demo's ambient
         # sliders + config — so those sliders drive the water ambient as well.
         self.water_pass.set_ambient(self.lighting.ambient)
+        # S1: water_depth is int32 Q16.16 metres — DEQUANTIZE to float32 metres
+        # for the render pass (ripple/ripple_v stay float, render-only). This is
+        # the renderer-boundary dequantize (one source of truth: the int field).
+        from simulation import water_fixed
         self.water_pass.update(
-            gmap.water_depth, ripple=gmap.ripple, ripple_v=gmap.ripple_v)
+            water_fixed.dequantize_f32(gmap.water_depth),
+            ripple=gmap.ripple, ripple_v=gmap.ripple_v)
 
         self.lighting.set_use_normal(self.show_normal_map)
         self.last_frame_ms = (time.perf_counter() - t_start) * 1000

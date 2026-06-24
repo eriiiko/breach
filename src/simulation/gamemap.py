@@ -247,12 +247,19 @@ class GameMap:
         # heat sink (boil-off emits white_smoke; that consumer is the fire
         # side's lane). Written IN-PLACE by the solver (never reassigned) so
         # any C++ view of the buffer stays valid.
-        self.water_depth  = np.zeros((h, w), dtype=np.float32)
-        # Cell-centred pipe-model flow velocity (m/s) — PERSISTENT solver
+        # S1 (docs/s1_water_fixed_point_plan.md): the SYNCED water state is int32
+        # Q16.16 (metres, scale 2^16 == 65536) — the first fixed-point field
+        # migration. Integer transport is bit-identical cross-machine (the
+        # determinism the float path could not give). water_depth is CONSERVED
+        # (Σ bit-conserved in a sealed flood). Dequantize (/65536) only at the
+        # renderer + the float bridges (atmosphere/smoke, until S2). See
+        # WATER_FP_ONE on the C++ module; mirrored here as WATER_FP_ONE.
+        self.water_depth  = np.zeros((h, w), dtype=np.int32)
+        # Cell-centred pipe-model flow velocity (Q16.16 m/s) — PERSISTENT solver
         # state, not a per-tick scratch: the damped velocity kick integrates
         # across ticks (water keeps sloshing between calls).
-        self.flow_vx      = np.zeros((h, w), dtype=np.float32)
-        self.flow_vy      = np.zeros((h, w), dtype=np.float32)
+        self.flow_vx      = np.zeros((h, w), dtype=np.int32)
+        self.flow_vy      = np.zeros((h, w), dtype=np.int32)
         # W6a ripple — the VISUAL-ONLY surface wave (canon §6, plan W6a): a
         # damped kick-drift displacement (m) riding ON TOP of water_depth,
         # splash-fed by wave_p, clamped to k_amp*depth, zeroed on dry/solid.
@@ -261,10 +268,12 @@ class GameMap:
         # (ripple_v is its m/s velocity auxiliary), written IN-PLACE.
         self.ripple       = np.zeros((h, w), dtype=np.float32)
         self.ripple_v     = np.zeros((h, w), dtype=np.float32)
-        # OPTIONAL terrain height (m) under the water (canon §2.1/§3): raises
-        # the surface potential so water pools in low spots. Flat zero until
-        # a level paints it (the solver also accepts None == flat).
-        self.floor_height = np.zeros((h, w), dtype=np.float32)
+        # OPTIONAL terrain height under the water (canon §2.1/§3): raises the
+        # surface potential so water pools in low spots. S1: Q16.16 int32 metres
+        # (it is added to water_depth in the surface potential, so it shares the
+        # integer domain). Flat zero until a level paints it; a painter must
+        # quantize metres -> Q16.16 (water_quantize) before writing here.
+        self.floor_height = np.zeros((h, w), dtype=np.int32)
         # Ship tilt (radians, about the grid centre) — gameplay writes these;
         # the solver adds the tilt plane to the surface potential so water
         # slides low-side (the Titanic). Sane range |tilt| < ~30 deg.

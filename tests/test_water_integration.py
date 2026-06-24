@@ -44,6 +44,12 @@ from simulation.field_edit import (  # noqa: E402
 )
 from simulation.gamemap import GameMap  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
+from water_q16 import q as wq, deq  # noqa: E402  (S1; `q` is shadowed by EditQueue)
+
+# S1: water_depth/flow_vx/flow_vy are int32 Q16.16. Paint in metres via wq();
+# read totals/depths via deq(); FieldEdit amounts stay metres (the "water" policy
+# quantizes). Conservation: the integer transport conserves Σdepth to the LSB.
+Q_EPS = 1.0 / 65536.0
 
 SEED = 42
 
@@ -69,14 +75,15 @@ def _sealed_room_level(n: int = 9, tile_size_m: float = 0.333) -> LevelData:
 
 
 def _lumpy(h: int, w: int, base: float = 0.3, amp: float = 0.2) -> np.ndarray:
-    """Deterministic lumpy depth init (the W1 test-1 pattern — no RNG)."""
+    """Deterministic lumpy depth init, Q16.16 int32 (S1)."""
     rows = np.arange(h, dtype=np.float64)[:, None]
     cols = np.arange(w, dtype=np.float64)[None, :]
-    return (base + amp * np.sin(rows) * np.cos(cols)).astype(np.float32)
+    return wq(base + amp * np.sin(rows) * np.cos(cols))
 
 
 def _total(depth: np.ndarray) -> float:
-    return float(depth.sum(dtype=np.float64))
+    """Total water in METRES (dequantized) — exact integer sum / 65536."""
+    return float(deq(depth).sum(dtype=np.float64))
 
 
 class _RaisingWaterStub:
@@ -177,8 +184,8 @@ def test_source_spread_fills_sealed_room():
     # Tick 1: the hold lands (depth = max(depth, 0.5)); the substeps shed a
     # little outward but most of the column is still standing.
     sim.step()
-    assert float(g.water_depth[4, 4]) >= 0.4, (
-        f"source hold did not land: depth[4,4]={float(g.water_depth[4, 4])}")
+    assert float(deq(g.water_depth[4, 4])) >= 0.4, (
+        f"source hold did not land: depth[4,4]={float(deq(g.water_depth[4, 4]))}")
 
     totals = [_total(g.water_depth)]
     for _ in range(199):                     # ticks 2..200
@@ -188,7 +195,7 @@ def test_source_spread_fills_sealed_room():
     # By tick 200 the pool has reached >= 90% of the open tiles.
     open_tiles = (~g.solid) & (~g.is_vacuum)
     eps = float(sim.physics_runner.water.depth_eps)
-    wet_frac = float((g.water_depth[open_tiles] > eps).mean())
+    wet_frac = float((deq(g.water_depth[open_tiles]) > eps).mean())
     assert wet_frac >= 0.9, f"pool covers only {wet_frac * 100:.0f}% of open tiles"
 
     # Total water rose (the source fed the room) ...
@@ -242,9 +249,12 @@ def test_field_edit_add_remove_clamp_skip_solid():
 
     q.flush(g, rng)
 
-    assert abs(float(g.water_depth[4, 4]) - 0.2) < 1e-6, "ADD/REMOVE did not net"
-    assert float(g.water_depth[2, 2]) == 0.0, "over-REMOVE did not clamp at 0"
-    assert float(g.water_depth[0, 0]) == 0.0, "water written onto a solid tile"
+    # S1: amounts authored in metres, stored Q16.16 -> dequantize to check. The
+    # net (0.3-0.1=0.2) carries a couple Q16.16 LSB of round-trip slack.
+    assert abs(float(deq(g.water_depth[4, 4])) - 0.2) < 3 * Q_EPS, (
+        "ADD/REMOVE did not net")
+    assert int(g.water_depth[2, 2]) == 0, "over-REMOVE did not clamp at 0"
+    assert int(g.water_depth[0, 0]) == 0, "water written onto a solid tile"
     assert len(q) == 0, "flush did not clear the queue"
 
 
@@ -281,17 +291,20 @@ def test_runner_conserves_painted_water():
     paint = _lumpy(*g.water_depth.shape)
     g.water_depth[interior] = paint[interior]
     total0 = _total(g.water_depth)
-    std0 = float(g.water_depth.std())
+    std0 = float(deq(g.water_depth).std())
     assert total0 > 0.0
     sim.set_paused(False)
 
     for _ in range(100):
         sim.step()
 
-    assert np.isfinite(g.water_depth).all()
+    assert np.isfinite(deq(g.water_depth)).all()
     total1 = _total(g.water_depth)
-    assert abs(total1 - total0) / total0 < 1e-4, (
+    # S1: the integer pipe-model transport conserves Σdepth to the LSB in a
+    # sealed room (no boil here; the snap doesn't fire on the wet interior), so
+    # the drift is ~0 and the float 1e-4 rel bound is trivially met.
+    assert abs(total1 - total0) / max(total0, 1e-12) < 1e-4, (
         f"runner leaked water: {total0} -> {total1}")
     # non-vacuity: the lumpy blob actually flowed (it levels, so std drops).
-    assert abs(float(g.water_depth.std()) - std0) > 1e-4, (
+    assert abs(float(deq(g.water_depth).std()) - std0) > 1e-4, (
         "water never moved (vacuous conservation)")

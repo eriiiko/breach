@@ -42,6 +42,14 @@ static std::tuple<T*, int, int> get_3d(py::array_t<T>& arr) {
 PYBIND11_MODULE(breach_physics, m) {
     m.doc() = "Breach physics engine -- C++ accelerated simulation";
 
+    // S1: the water core is now int32 Q16.16 (metres / m/s, scale 2^16). Python
+    // (gamemap fields, tests, the feel-regression harness) reads this flag to
+    // allocate water_depth/flow_vx/flow_vy/floor_height/before as int32 and to
+    // dequantize for the renderer / float bridges.
+    m.attr("WATER_FIXEDPOINT") = true;
+    m.attr("WATER_FP_SHIFT") = 16;
+    m.attr("WATER_FP_ONE") = 65536;
+
     // --- AtmosphereSolver (IMEX: explicit wave + implicit diffusion) ---
     py::class_<AtmosphereSolver>(m, "AtmosphereSolver")
         .def(py::init<>())
@@ -404,14 +412,15 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("k_amp",     &WaterSolver::k_amp)
         .def_readwrite("k_splash",  &WaterSolver::k_splash)
         .def("max_dt", &WaterSolver::max_dt)
+        .def("max_dt_q", &WaterSolver::max_dt_q)   // S1: Q16.16 CFL constant
         .def("ripple_max_dt", &WaterSolver::ripple_max_dt)
         .def("step", [](const WaterSolver& self,
-                        py::array_t<float> water_depth,
-                        py::array_t<float> flow_vx,
-                        py::array_t<float> flow_vy,
-                        py::object floor_height,
-                        py::object atmosphere,
-                        py::object wave_p,
+                        py::array_t<int32_t> water_depth,   // S1: Q16.16 int32
+                        py::array_t<int32_t> flow_vx,       // S1: Q16.16 int32
+                        py::array_t<int32_t> flow_vy,       // S1: Q16.16 int32
+                        py::object floor_height,            // Q16.16 int32 (nullable)
+                        py::object atmosphere,              // float (FLOAT BRIDGE)
+                        py::object wave_p,                  // float (FLOAT BRIDGE)
                         py::array_t<bool> solid,
                         float dt, float tilt_x, float tilt_y) {
             auto [wd, h, w]    = get_2d(water_depth);
@@ -420,12 +429,12 @@ PYBIND11_MODULE(breach_physics, m) {
             auto [sol, h4, w4] = get_2d_const(solid);
             // Nullable fields (cast_source_directional precedent): None ->
             // nullptr, else cast to an array kept alive in this scope.
-            // floor_height None -> flat zero; atmosphere/wave_p None -> no
-            // head term (and with k_p == 0 they are never read at all).
-            const float* fl = nullptr;
-            py::array_t<float> fl_arr;
+            // floor_height None -> flat zero (Q16.16 int32); atmosphere/wave_p
+            // None -> no head term (and with k_p == 0 they are never read).
+            const int32_t* fl = nullptr;
+            py::array_t<int32_t> fl_arr;
             if (!floor_height.is_none()) {
-                fl_arr = floor_height.cast<py::array_t<float>>();
+                fl_arr = floor_height.cast<py::array_t<int32_t>>();
                 auto fa = fl_arr.unchecked<2>();
                 fl = fa.data(0, 0);
             }
@@ -456,7 +465,7 @@ PYBIND11_MODULE(breach_physics, m) {
         .def("step_ripple", [](const WaterSolver& self,
                                py::array_t<float> ripple,
                                py::array_t<float> ripple_v,
-                               py::array_t<float> water_depth,
+                               py::array_t<int32_t> water_depth,   // S1: Q16.16 int32
                                py::object wave_p,
                                py::array_t<bool> solid,
                                float dt) {
@@ -517,7 +526,7 @@ PYBIND11_MODULE(breach_physics, m) {
                              // ripple group
                              py::array_t<float> ripple,
                              py::array_t<float> ripple_v,
-                             py::array_t<float> water_depth,
+                             py::array_t<int32_t> water_depth,   // S1: Q16.16 int32
                              py::array_t<float> wave_p,
                              py::array_t<bool>  solid,
                              // fire group
@@ -657,16 +666,16 @@ PYBIND11_MODULE(breach_physics, m) {
         // NOT dormant): the lazy-init (before-seed, water.dx bind, steam_idx
         // resolve), the dormancy early-out, and the sparse source-holds loop.
         .def("step_water", [](const PhysicsEngine& self,
-                              py::array_t<float> water_depth,
-                              py::array_t<float> flow_vx,
-                              py::array_t<float> flow_vy,
-                              py::array_t<float> floor_height,
-                              py::array_t<float> atmosphere,
-                              py::array_t<float> wave_p,
+                              py::array_t<int32_t> water_depth,    // S1: Q16.16 int32
+                              py::array_t<int32_t> flow_vx,        // S1: Q16.16 int32
+                              py::array_t<int32_t> flow_vy,        // S1: Q16.16 int32
+                              py::array_t<int32_t> floor_height,   // S1: Q16.16 int32
+                              py::array_t<float> atmosphere,       // float (FLOAT BRIDGE)
+                              py::array_t<float> wave_p,           // float (FLOAT BRIDGE)
                               py::array_t<bool>  solid,
-                              py::array_t<float> gas,
-                              py::array_t<float> before,
-                              py::array_t<float> dyn_permeability,
+                              py::array_t<float> gas,              // float (FLOAT BRIDGE: steam)
+                              py::array_t<int32_t> before,         // S1: Q16.16 int32 snapshot
+                              py::array_t<float> dyn_permeability, // float (FLOAT BRIDGE: seal)
                               int steam_idx, float tilt_x, float tilt_y,
                               float sim_time,
                               double ceiling_h, double flood_eps,

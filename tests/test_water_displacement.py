@@ -51,6 +51,14 @@ from simulation.field_edit import (  # noqa: E402
     EditMode, FieldEdit, Region,
 )
 from simulation.gases import BLACK_SMOKE  # noqa: E402
+from water_q16 import q, deq  # noqa: E402  (S1: Q16.16 quantize/dequantize)
+
+# S1: water_depth/floor_height are int32 Q16.16. FieldEdit(field="water_depth",
+# amount=<metres>) stays authored in metres (the "water" policy quantizes); direct
+# reads of g.water_depth are Q16.16 counts -> dequantize. Depth tolerances widen
+# from the old float 1e-6 to a few Q16.16 LSB. The W3 atmosphere/dyn_permeability
+# math is a FLOAT BRIDGE (still float), so atmosphere ratios keep float tolerances.
+Q_EPS = 1.0 / 65536.0
 
 SEED = 42
 
@@ -142,8 +150,8 @@ def test_single_cell_dump_compresses_then_remove_restores():
                        coords=(cy, cx), amount=0.5))
     sim.step()
 
-    d = float(g.water_depth[cy, cx])
-    assert abs(d - 0.5) < 1e-6, f"sealed column lost water: depth={d}"
+    d = float(deq(g.water_depth[cy, cx]))
+    assert abs(d - 0.5) < 3 * Q_EPS, f"sealed column lost water: depth={d}"
     p1 = float(g.atmosphere[cy, cx])
     assert abs(p1 / p0 - expected) < 1e-6, (
         f"compression ratio {p1 / p0} != {expected}")
@@ -154,7 +162,7 @@ def test_single_cell_dump_compresses_then_remove_restores():
                        coords=(cy, cx), amount=0.5, mode=EditMode.REMOVE))
     sim.step()
 
-    assert float(g.water_depth[cy, cx]) == 0.0
+    assert int(g.water_depth[cy, cx]) == 0
     p2 = float(g.atmosphere[cy, cx])
     assert abs(p2 - p0) < 1e-6, f"pressure did not return: {p0} -> {p2}"
 
@@ -186,7 +194,7 @@ def test_ceiling_slam_ratio_capped_no_inf_nan():
                        coords=(cy, cx), amount=ceil_h))
     sim.step()
 
-    assert abs(float(g.water_depth[cy, cx]) - ceil_h) < 1e-6
+    assert abs(float(deq(g.water_depth[cy, cx])) - ceil_h) < 3 * Q_EPS
     p1 = float(g.atmosphere[cy, cx])
     assert abs(p1 / p0 - cap) < 1e-6, (
         f"slam ratio {p1 / p0} != ratio_cap {cap}")
@@ -236,9 +244,10 @@ def _corridor_sim(with_water: bool):
     sim = Simulation(level, seed=SEED, breach_physics=bp, enable_recorder=False)
     g = sim.gmap
     ceil_h = float(sim.physics_runner.water_ceiling_h)
-    g.floor_height[1, LINE_X] = -2.0 * ceil_h
+    g.floor_height[1, LINE_X] = q(-2.0 * ceil_h)   # S1: Q16.16 metres
     if with_water:
-        g.water_depth[1, LINE_X] = 2.0 * ceil_h   # stays >= ceiling_h - flood_eps
+        # stays >= ceiling_h - flood_eps. S1: Q16.16 metres.
+        g.water_depth[1, LINE_X] = q(2.0 * ceil_h)
     g.gas[BLACK_SMOKE][1, 1:LINE_X] = 10.0
     g.atmosphere[1, 1:LINE_X] = 1.3
     sim.set_paused(False)
@@ -262,7 +271,7 @@ def test_flooded_line_seals_corridor_gas_and_wind():
         assert float(g.wind_y[1, LINE_X]) == 0.0
 
     # The basin held the line at full depth -> flooded -> sealed all run.
-    assert float(g.water_depth[1, LINE_X]) >= (
+    assert float(deq(g.water_depth[1, LINE_X])) >= (
         float(runner.water_ceiling_h) - float(runner.water_flood_eps))
     assert float(g.dyn_permeability[1, LINE_X]) == 0.0
 
@@ -315,7 +324,7 @@ def test_wet_static_pool_atmosphere_bit_identical():
                          enable_recorder=False)
         g = sim.gmap
         interior = (~g.solid) & (~g.is_vacuum)
-        g.water_depth[interior] = 0.4      # flat pool on a flat floor: settled
+        g.water_depth[interior] = q(0.4)   # flat pool (Q16.16 metres, S1)
         if noop_water:
             sim.physics_runner._step_water = lambda gmap, sim_time: None
         sim.set_paused(False)

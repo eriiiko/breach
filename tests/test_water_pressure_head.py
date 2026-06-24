@@ -43,6 +43,13 @@ import breach_physics as bp  # noqa: E402
 from config import CFG  # noqa: E402
 from level_loader import LevelData  # noqa: E402
 from simulation import Simulation  # noqa: E402
+from water_q16 import q as wq, deq  # noqa: E402  (S1: Q16.16 quantize/dequantize)
+
+# S1: depth (int32 Q16.16) vs atmosphere/wave_p (float, the head-term FLOAT
+# BRIDGE). The k_p head term is computed in float and quantized into the integer
+# surface, so the uniform-pressure "no-op" holds to ~Q16.16 granularity, not bit-
+# exactly. Comparisons are dequantized to metres.
+Q_EPS = 1.0 / 65536.0
 
 SEED = 42
 DT = 0.016  # s — under BOTH CFL bounds (k_p=0 -> 33.6 ms; k_p=0.5 -> 18.0 ms)
@@ -62,6 +69,12 @@ def _solver(**overrides) -> "bp.WaterSolver":
 
 
 def _zeros(h: int, w: int) -> np.ndarray:
+    """Q16.16 int32 zeros (depth / velocity). atm/wave_p use _zeros_f below."""
+    return np.zeros((h, w), dtype=np.int32)
+
+
+def _zeros_f(h: int, w: int) -> np.ndarray:
+    """Float zeros for atmosphere / wave_p (the FLOAT BRIDGE fields)."""
     return np.zeros((h, w), dtype=np.float32)
 
 
@@ -70,14 +83,15 @@ def _open(h: int, w: int) -> np.ndarray:
 
 
 def _lumpy(h: int, w: int, base: float = 0.3, amp: float = 0.2) -> np.ndarray:
-    """Deterministic lumpy depth init (the W1 test-1 pattern — no RNG)."""
+    """Deterministic lumpy depth init, Q16.16 int32 (S1)."""
     rows = np.arange(h, dtype=np.float64)[:, None]
     cols = np.arange(w, dtype=np.float64)[None, :]
-    return (base + amp * np.sin(rows) * np.cos(cols)).astype(np.float32)
+    return wq(base + amp * np.sin(rows) * np.cos(cols))
 
 
 def _total(depth: np.ndarray) -> float:
-    return float(depth.sum(dtype=np.float64))
+    """Total water in METRES (dequantized) — exact integer sum / 65536."""
+    return float(deq(depth).sum(dtype=np.float64))
 
 
 def _sealed_room_level(n: int = 9, tile_size_m: float = 0.333) -> LevelData:
@@ -117,12 +131,16 @@ def test_uniform_pressure_approx_noop():
     so the velocity kicks differ in the last ulps (plan W1 test 7)."""
     h = w = 16
     atm = np.full((h, w), 1.0, dtype=np.float32)
-    wp = _zeros(h, w)  # uniform (zero) blast field
+    wp = _zeros_f(h, w)  # uniform (zero) blast field (FLOAT — head bridge)
 
     on = _run_lumpy_pool(0.5, atm, wp)
     off = _run_lumpy_pool(0.0, atm, wp)
 
-    assert np.allclose(on, off, atol=1e-5), (
+    # S1: compare in METRES; the head term is quantized into the integer surface,
+    # so the no-op holds to ~Q16.16 granularity accumulated over 100 steps
+    # (was atol 1e-5 on the float build; a few-LSB widening covers the integer
+    # round-trip without losing the assertion's bite).
+    assert np.allclose(deq(on), deq(off), atol=2e-4), (
         "uniform pressure changed the flow (a constant head must vanish "
         "under the gradient)")
     # non-vacuity: the lumpy pool really evolved over the 100 steps
@@ -143,46 +161,45 @@ def test_gaussian_bump_craters_centre_raises_ring_conserves_mass():
     bump = (2.0 * np.exp(-r2 / (2.0 * 2.0 ** 2))).astype(np.float32)
     atm = np.ones((h, w), dtype=np.float32)
     solid = _open(h, w)
-    init = np.full((h, w), 0.3, dtype=np.float32)  # settled flat pool
+    init = wq(np.full((h, w), 0.3))  # settled flat pool (Q16.16 metres)
     total0 = _total(init)
 
     def run(wp: np.ndarray) -> np.ndarray:
         depth = init.copy()
         vx, vy = _zeros(h, w), _zeros(h, w)
-        # depth_eps = 0: this test pins conservation at 1e-6 rel and the
-        # crater floor sweeps through eps-scale depths — the dry snap is a
-        # designed eps-scale sink that would eat the budget (the W1 test-9
-        # precedent: disable the snap when the test targets mass-exactness).
+        # depth_eps = 0: the crater floor sweeps eps-scale depths; the dry snap
+        # would be an eps-scale sink (the W1 test-9 precedent). With it off the
+        # integer transport conserves to the LSB.
         s = _solver(k_p=0.5, depth_eps=0.0)
         for _ in range(100):
             s.step(depth, vx, vy, None, atm, wp, solid, DT, 0.0, 0.0)
         return depth
 
     crater = run(bump)
-    ctrl = run(_zeros(h, w))
+    ctrl = run(_zeros_f(h, w))
+    crater_m = deq(crater)
+    ctrl_m = deq(ctrl)
 
-    # Total water conserved (float64; measured drift ~3e-8 rel).
-    assert np.isfinite(crater).all()
-    assert float(crater.min()) >= 0.0, "negative depth in the crater run"
+    # Total water conserved: S1 integer transport conserves to the LSB.
+    assert np.isfinite(crater_m).all()
+    assert float(crater_m.min()) >= 0.0, "negative depth in the crater run"
     assert abs(_total(crater) - total0) / total0 < 1e-6, (
         f"the bump leaked mass: {total0} -> {_total(crater)}")
 
-    # Centre depth drops vs the no-bump control (measured: 0.000 vs 0.300 —
-    # the sustained bump drains the crater floor completely).
-    assert float(crater[cy, cx]) < float(ctrl[cy, cx]) - 0.2, (
-        f"no crater: centre {float(crater[cy, cx])} vs "
-        f"control {float(ctrl[cy, cx])}")
+    # Centre depth drops vs the no-bump control.
+    assert float(crater_m[cy, cx]) < float(ctrl_m[cy, cx]) - 0.2, (
+        f"no crater: centre {float(crater_m[cy, cx])} vs "
+        f"control {float(ctrl_m[cy, cx])}")
 
-    # An outward ring forms: depth at some radius RISES above the control
-    # (measured max rise in the 3 <= r <= 8 band at 100 steps: ~0.044).
+    # An outward ring forms: depth at some radius RISES above the control.
     band = (r >= 3.0) & (r <= 8.0)
-    ring_rise = float((crater - ctrl)[band].max())
+    ring_rise = float((crater_m - ctrl_m)[band].max())
     assert ring_rise > 0.02, f"no displaced ring (max rise {ring_rise})"
 
-    # Non-vacuity of the control: a flat pool under uniform pressure is
-    # static (identical surface floats -> exactly zero gradient), so the
-    # crater/ring deltas above are pure head-term signal.
-    assert float(np.abs(ctrl - init).max()) < 1e-6, (
+    # Non-vacuity of the control: a flat pool under uniform pressure is static.
+    # S1: the quantized head term can perturb by ~a few LSB, so allow a small
+    # metre tolerance (was 1e-6 on the float build).
+    assert float(np.abs(ctrl_m - deq(init)).max()) < 2e-4, (
         "the no-bump control moved — the deltas are not pure bump signal")
 
 
@@ -201,7 +218,7 @@ def test_low_pressure_end_drags_corridor_water():
     grad = np.tile(np.linspace(1.0, 0.3, w, dtype=np.float32), (h, 1))
     uni = np.ones((h, w), dtype=np.float32)
     solid = _open(h, w)
-    init = np.full((h, w), 0.5, dtype=np.float32)
+    init = wq(np.full((h, w), 0.5))   # Q16.16 metres
     total0 = _total(init)
 
     def run(atm: np.ndarray) -> np.ndarray:
@@ -212,8 +229,8 @@ def test_low_pressure_end_drags_corridor_water():
             s.step(depth, vx, vy, None, atm, None, solid, DT, 0.0, 0.0)
         return depth
 
-    drag = run(grad)
-    ctrl = run(uni)
+    drag = deq(run(grad))
+    ctrl = deq(run(uni))
 
     xs = np.arange(w, dtype=np.float64)
 
@@ -227,20 +244,18 @@ def test_low_pressure_end_drags_corridor_water():
         f"water did not migrate toward low pressure: com {com_x(drag):.3f} "
         f"vs control {com_x(ctrl):.3f}")
 
-    # End columns: the low-pressure end is deeper, the high-pressure end
-    # drained (measured 0.660 / 0.344 vs the control's 0.500).
+    # End columns: the low-pressure end is deeper, the high-pressure end drained.
     assert float(drag[:, -3:].mean()) > float(ctrl[:, -3:].mean()) + 0.10
     assert float(drag[:, :3].mean()) < float(ctrl[:, :3].mean()) - 0.10
 
-    # Control non-vacuity: uniform pressure leaves the flat pool centred,
-    # so the shift above is pure gradient signal.
-    assert abs(com_x(ctrl) - com_x(init)) < 1e-3
+    # Control non-vacuity: uniform pressure leaves the flat pool centred.
+    assert abs(com_x(ctrl) - com_x(deq(init))) < 1e-3
 
-    # Mass conserved (float64; no cell nears the eps snap — measured
-    # min depth 0.333 at 300 steps, so the snap never fires).
+    # Mass conserved: S1 integer transport conserves to the LSB (the snap never
+    # fires — min depth ~0.33 at 300 steps).
     assert float(drag.min()) > 0.0
-    assert abs(_total(drag) - total0) / total0 < 1e-6, (
-        f"the gradient leaked mass: {total0} -> {_total(drag)}")
+    assert abs(deq(run(grad)).sum() - total0) / total0 < 1e-6, (
+        f"the gradient leaked mass")
 
 
 # ---------------------------------------------------------------------------
@@ -290,3 +305,11 @@ def test_shipped_config_binds_head_on_and_derives_three_substeps():
     assert wdt >= sim_time / 3.0   # 18.0 ms >= 13.9 ms -> n <= 3
     n = max(1, int(math.ceil(sim_time / wdt)))
     assert n == 3, f"derived substep count {n} != 3 at 24 tps"
+
+    # S1: the production substep count is now the INTEGER-CLIFF derivation
+    # (max_dt_q() + fixedpoint::ceil_div), bit-identical across peers. Pin that
+    # it agrees with the float n here (the cross-GPU determinism fix).
+    max_dt_q = int(s.max_dt_q())
+    sim_time_q = round(sim_time * 65536)            # quantize round-to-nearest
+    n_int = max(1, (sim_time_q + max_dt_q - 1) // max_dt_q)   # ceil_div
+    assert n_int == 3, f"integer substep count {n_int} != 3 (cliff conversion)"

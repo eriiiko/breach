@@ -36,7 +36,11 @@ sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
 import breach_physics as bp  # noqa: E402
 from level_loader import LevelData  # noqa: E402
 from simulation import Simulation  # noqa: E402
+from water_q16 import q, deq  # noqa: E402  (S1: Q16.16 quantize/dequantize)
 
+# S1: water_depth is int32 Q16.16. step_ripple now takes the int32 depth (it
+# dequantizes internally at the c2 = g*min(depth,h_cap) read). ripple/ripple_v/
+# wave_p stay FLOAT (render-only). _wet_box returns an int32 depth.
 SEED = 42
 DT = 1.0 / 24.0   # s — one game tick; ripple_max_dt() ≈ 106 ms >> this, so the
                   # runner's ONE-call-per-tick discipline is what we test at.
@@ -54,11 +58,12 @@ def _solver(**overrides) -> "bp.WaterSolver":
 
 
 def _wet_box(n: int, depth_m: float = 0.5):
-    """Solid border ring, uniformly wet interior: (solid, depth) arrays."""
+    """Solid border ring, uniformly wet interior: (solid, depth) arrays. depth
+    is int32 Q16.16 metres (S1)."""
     solid = np.zeros((n, n), dtype=bool)
     solid[0, :] = solid[-1, :] = solid[:, 0] = solid[:, -1] = True
-    depth = np.zeros((n, n), dtype=np.float32)
-    depth[1:-1, 1:-1] = depth_m
+    depth = np.zeros((n, n), dtype=np.int32)
+    depth[1:-1, 1:-1] = q(depth_m)
     return solid, depth
 
 
@@ -241,11 +246,13 @@ def test_amplitude_clamp_holds_and_engages():
     n = 16
     solid, depth = _wet_box(n, 0.0)
     for y in range(1, n - 1):               # 0.02 m .. 0.30 m, row-graded
-        depth[y, 1:-1] = 0.02 + 0.28 * (y - 1) / (n - 3)
+        depth[y, 1:-1] = q(0.02 + 0.28 * (y - 1) / (n - 3))
     wet = depth > 0
     ripple, ripple_v = _zeros(n), _zeros(n)
     s = _solver()
-    amp = np.float32(s.k_amp) * depth        # exact float32 mirror of the C++ bound
+    # S1: depth is Q16.16 — the C++ clamp uses the DEQUANTIZED metres, so mirror
+    # that: amp = k_amp * (depth/65536), in metres (matching the ripple units).
+    amp = (np.float32(s.k_amp) * deq(depth)).astype(np.float32)
     wave = np.full((n, n), 5.0, dtype=np.float32)   # a violent blast overhead
 
     engaged = False
@@ -285,7 +292,7 @@ def _ab_rollout(noop_ripple: bool):
     sim = Simulation(level, seed=SEED, breach_physics=bp, enable_recorder=False)
     g = sim.gmap
     interior = (~g.solid) & (~g.is_vacuum)
-    g.water_depth[interior] = 0.3            # painted pool (pre-existing water)
+    g.water_depth[interior] = q(0.3)         # painted pool (Q16.16 metres, S1)
     g.wave_p[5, 4:8] = 0.8                   # a blast ringing over the pool
     if noop_ripple:
         class _NoRippleEngine:

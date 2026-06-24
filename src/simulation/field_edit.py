@@ -52,6 +52,8 @@ from typing import Optional, Tuple
 
 import numpy as np
 
+from simulation import water_fixed   # S1: water_depth Q16.16 quantize helpers
+
 # Q16.16 fixed-point scale for the `heat` field — MUST match the C++
 # raycaster.h HEAT_SCALE (and materials.TEMP_SCALE). One unit of heat energy ==
 # HEAT_SCALE raw int32 counts. Mirrored here (not imported from C++) so the
@@ -191,7 +193,11 @@ FIELD_POLICY = {
     "wave_source": _FieldPolicy("float", None,       _skip_solid_or_vacuum),
     "fire":        _FieldPolicy("float", (0.0, 1.0), _skip_non_flammable),
     "heat":        _FieldPolicy("heat",  None,       None),
-    "water_depth": _FieldPolicy("float", (0.0, float("inf")), _skip_solid),
+    # S1: water_depth is int32 Q16.16 metres. The "water" dtype dequantizes the
+    # stored int to metres, combines in metres (with the metres clamp), then
+    # re-quantizes round-to-nearest — so field edits keep being authored in
+    # metres while the stored field stays integer/deterministic.
+    "water_depth": _FieldPolicy("water", (0.0, float("inf")), _skip_solid),
 }
 
 
@@ -331,6 +337,17 @@ def _combine_float(old: float, contribution: float, mode: EditMode,
     return new
 
 
+def _combine_water(old_q: int, contribution: float, mode: EditMode,
+                   clamp: Optional[Tuple[float, float]]) -> int:
+    """Q16.16 combine for the `water_depth` field (S1). The stored value is an
+    int32 in Q16.16 metres; dequantize to metres, combine in metres with the
+    metres clamp (the float path's exact semantics), re-quantize round-to-
+    nearest. Keeps edits authored in metres while the field stays integer."""
+    old_m = float(old_q) / water_fixed.FP_ONE_F
+    new_m = _combine_float(old_m, contribution, mode, clamp)
+    return water_fixed.quantize_scalar(new_m)
+
+
 def _combine_heat(old: int, contribution: float, mode: EditMode) -> int:
     """Q16.16 combine for the `heat` field. ADD only path uses the saturating
     integer add; REMOVE/MAX are defined for completeness (saturating subtract /
@@ -378,6 +395,7 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
     low = 1.0 - noise
 
     is_heat = (pol.dtype == "heat")
+    is_water = (pol.dtype == "water")
     ch = edit.channel
 
     for (r, c, weight) in _iter_region(edit.region, edit.coords,
@@ -395,6 +413,9 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
 
         if is_heat:
             arr[r, c] = _combine_heat(arr[r, c], contribution, edit.mode)
+        elif is_water:
+            arr[r, c] = _combine_water(int(arr[r, c]), contribution,
+                                       edit.mode, clamp)
         elif ch is None:
             arr[r, c] = _combine_float(float(arr[r, c]), contribution,
                                        edit.mode, clamp)

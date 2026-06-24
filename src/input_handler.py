@@ -283,8 +283,12 @@ class InputHandler:
             return
         if gmap.solid[fy, fx]:
             return
-        gmap.water_depth[fy, fx] = min(
-            float(gmap.water_depth[fy, fx]) + 0.2, 2.5)
+        # S1: water_depth is int32 Q16.16 metres. Dequantize, add 0.2 m, clamp at
+        # the 2.5 m ceiling, re-quantize.
+        from simulation import water_fixed
+        cur_m = float(gmap.water_depth[fy, fx]) / water_fixed.FP_ONE_F
+        gmap.water_depth[fy, fx] = water_fixed.quantize_scalar(
+            min(cur_m + 0.2, 2.5))
 
     # ------------------------------------------------------------------
     # Click handlers
