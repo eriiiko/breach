@@ -33,6 +33,8 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
+import hashlib
+
 import numpy as np
 
 import breach_physics as bp
@@ -41,6 +43,23 @@ from simulation import Simulation
 from simulation.unit import Unit
 
 SEED = 20260615
+
+# Reserved key under which each per-tick snapshot carries its synced-unit digest
+# (see _capture_unit_state). Chosen so it cannot collide with a gmap field name
+# in SIM_FIELDS, and so diff_trajectories can special-case it for human-readable
+# per-unit / per-event reporting instead of an opaque "hashes differ".
+UNIT_DIGEST_KEY = "__unit_state__"
+
+# The synced (lockstep-critical) unit fields the digest captures, per unit, in a
+# STABLE id-sorted order. These are the fields a desync would corrupt: position
+# (tile + float), HP, life status, faction, and the footprint offsets (a stamp
+# slip would change occupancy). RENDER-only / AI-scratch fields (facing, orders,
+# zombie_path, accumulators) are intentionally excluded — they are not part of
+# the synced determinism contract and may legitimately differ.
+SYNCED_UNIT_FIELDS = (
+    "tile_x", "tile_y", "x", "y", "current_hp",
+    "alive", "life_state", "faction", "offsets",
+)
 
 # Every field the physics writes — the sim state a structural refactor must
 # preserve bit-for-bit. `gas` is (N,h,w) and covers `smoke` (a view into
@@ -95,17 +114,158 @@ def _snapshot(gmap, fields):
             for name in fields if hasattr(gmap, name)}
 
 
-def capture_trajectory(make_sim=default_scenario_sim, n_steps=30, fields=SIM_FIELDS):
-    """Run ``make_sim()`` for ``n_steps``, returning a per-tick list of field-snapshot
-    dicts. Forces unpause each step so a phase/round boundary cannot silently halt
-    the trajectory (the round reset itself is deterministic)."""
+# ---------------------------------------------------------------------------
+# Synced UNIT-STATE digest
+# ---------------------------------------------------------------------------
+# The field harness above hashes only gmap arrays — it is BLIND to unit state.
+# But unit HP and life/death are lockstep-critical SYNCED state: two trajectories
+# can agree on every gmap cell yet disagree on who lives, who dies, and how much
+# HP each unit has (the exact leak combat HP/damage going integer must not open).
+# These helpers capture that state per tick alongside the field snapshot.
+
+
+def _unit_faction(u):
+    """Stable faction identifier. ``faction_id`` is the spec field; fall back to
+    ``team`` (its alias) so the digest works on bare Unit objects too."""
+    return int(getattr(u, "faction_id", getattr(u, "team", -1)))
+
+
+def _unit_record(u):
+    """A canonical, JSON-ish dict of one unit's synced state.
+
+    Floats are rounded into a fixed-point integer (1e-9 quantum) so the record
+    serializes byte-stably and the digest is reproducible across runs on the
+    same machine — without that, float repr() noise could perturb the hash.
+    """
+    def q(v):
+        # Quantize a float to a stable integer (avoids repr/format drift).
+        return int(round(float(v) * 1_000_000_000))
+
+    life = getattr(u, "life_state", None)
+    life_repr = getattr(life, "value", str(life))   # enum -> its .value string
+    return {
+        "id":         int(getattr(u, "id", -1)),
+        "tile_x":     int(u.tile_x),
+        "tile_y":     int(u.tile_y),
+        "x":          q(u.x),
+        "y":          q(u.y),
+        "current_hp": q(getattr(u, "current_hp", 0.0)),
+        "alive":      bool(u.alive),
+        "life_state": str(life_repr),
+        "faction":    _unit_faction(u),
+        "offsets":    [[int(dx), int(dy)] for (dx, dy) in getattr(u, "offsets", ())],
+    }
+
+
+def _event_record(ev):
+    """Canonical tuple for one synced tick event. We key off the class name +
+    its public scalar fields (unit_id, damage, source / killed_by). Only the
+    SYNCED combat events (UnitHitEvent / UnitKilledEvent) carry HP-relevant
+    state, but any event with a ``unit_id`` is recorded in emission order so a
+    divergent kill/hit stream is caught."""
+    kind = type(ev).__name__
+    return {
+        "kind":      kind,
+        "unit_id":   getattr(ev, "unit_id", None),
+        "damage":    getattr(ev, "damage", None),
+        "source":    getattr(ev, "source", None),
+        "killed_by": getattr(ev, "killed_by", None),
+    }
+
+
+# Only events that touch synced unit life/HP belong in the determinism digest.
+# (ShotFiredEvent / ExplosionEvent / Door|WallDestroyed are render/topology
+# signals; the topology ones already show up in the gmap fields.)
+_SYNCED_EVENT_TYPES = ("UnitHitEvent", "UnitKilledEvent")
+
+
+def _capture_unit_state(sim):
+    """Snapshot the synced unit state for the tick that just stepped.
+
+    Returns a dict with:
+      - ``units``  : per-unit records (living AND dead), sorted by unit id so the
+                     order never depends on list/dict iteration order.
+      - ``events`` : the synced unit events emitted THIS tick, in emission order
+                     (``sim.tick_events`` is cleared at the start of each step and
+                     appended to in order, so its order IS the emission order).
+      - ``hash``   : a stable hash over a canonical serialization of the above.
+    """
+    units = sorted(sim.units, key=lambda u: int(getattr(u, "id", -1)))
+    unit_records = [_unit_record(u) for u in units]
+    event_records = [
+        _event_record(ev) for ev in sim.tick_events
+        if type(ev).__name__ in _SYNCED_EVENT_TYPES
+    ]
+    payload = {"units": unit_records, "events": event_records}
+    blob = repr(payload).encode("utf-8")   # repr of nested int/str/bool == stable
+    digest = hashlib.sha256(blob).hexdigest()
+    return {"units": unit_records, "events": event_records, "hash": digest}
+
+
+def unit_digest_hash(snapshot_or_state):
+    """Convenience: pull the stable hash out of a tick snapshot (which stores the
+    unit state under UNIT_DIGEST_KEY) or out of a raw unit-state dict."""
+    if UNIT_DIGEST_KEY in snapshot_or_state:
+        return snapshot_or_state[UNIT_DIGEST_KEY]["hash"]
+    return snapshot_or_state["hash"]
+
+
+def capture_trajectory(make_sim=default_scenario_sim, n_steps=30, fields=SIM_FIELDS,
+                       capture_units=True):
+    """Run ``make_sim()`` for ``n_steps``, returning a per-tick list of snapshot
+    dicts. Each dict holds the gmap field arrays AND (when ``capture_units``) the
+    synced unit-state digest under UNIT_DIGEST_KEY. Forces unpause each step so a
+    phase/round boundary cannot silently halt the trajectory (the round reset
+    itself is deterministic)."""
     sim = make_sim()
     traj = []
     for _ in range(n_steps):
         sim.set_paused(False)
         sim.step()
-        traj.append(_snapshot(sim.gmap, fields))
+        snap = _snapshot(sim.gmap, fields)
+        if capture_units:
+            snap[UNIT_DIGEST_KEY] = _capture_unit_state(sim)
+        traj.append(snap)
     return traj
+
+
+def _diff_unit_state(t, ua, ub):
+    """Locate the first divergence in the synced unit state between two ticks.
+
+    Reports WHICH unit / WHICH field, or WHICH event, so a desync points at the
+    exact unit and quantity — not just "the unit hashes differ". Returns a list
+    of human-readable mismatch lines (empty == match)."""
+    if ua["hash"] == ub["hash"]:
+        return []                      # fast path: identical
+    out = []
+    # --- per-unit field comparison (records are already id-sorted) ---
+    ua_by_id = {r["id"]: r for r in ua["units"]}
+    ub_by_id = {r["id"]: r for r in ub["units"]}
+    for uid in sorted(set(ua_by_id) | set(ub_by_id)):
+        ra, rb = ua_by_id.get(uid), ub_by_id.get(uid)
+        if ra is None or rb is None:
+            out.append(f"tick {t}: unit id {uid} present in only one run")
+            continue
+        for fld in sorted(set(ra) | set(rb)):
+            if ra.get(fld) != rb.get(fld):
+                out.append(
+                    f"tick {t}: unit id {uid} field '{fld}' differs "
+                    f"(a={ra.get(fld)!r} b={rb.get(fld)!r})")
+    # --- event-stream comparison (emission order matters) ---
+    ea, eb = ua["events"], ub["events"]
+    if ea != eb:
+        if len(ea) != len(eb):
+            out.append(f"tick {t}: unit event count {len(ea)} != {len(eb)} "
+                       f"(a={ea!r} b={eb!r})")
+        else:
+            for i, (xa, xb) in enumerate(zip(ea, eb)):
+                if xa != xb:
+                    out.append(f"tick {t}: unit event #{i} differs "
+                               f"(a={xa!r} b={xb!r})")
+    if not out:   # hashes differed but no structured field did — surface it loudly
+        out.append(f"tick {t}: unit_digest hash differs ({ua['hash'][:12]} != "
+                   f"{ub['hash'][:12]}) but no field located — serialization drift?")
+    return out
 
 
 def diff_trajectories(a, b, tol=0.0):
@@ -113,7 +273,9 @@ def diff_trajectories(a, b, tol=0.0):
 
     ``tol == 0.0`` -> exact equality (the /fp:precise 0-ULP gate). ``tol > 0`` ->
     absolute tolerance (the fallback path). Each entry is a human-readable line
-    locating the worst-offending cell."""
+    locating the worst-offending cell — or, for the synced unit state, the exact
+    unit id + field or event that first diverges (so a kill/HP desync that leaves
+    every gmap cell identical still FAILS loudly)."""
     if len(a) != len(b):
         return [f"trajectory length {len(a)} != {len(b)}"]
     diffs = []
@@ -121,6 +283,9 @@ def diff_trajectories(a, b, tol=0.0):
         for k in sorted(set(sa) | set(sb)):
             if k not in sa or k not in sb:
                 diffs.append(f"tick {t}: field '{k}' present in only one run")
+                continue
+            if k == UNIT_DIGEST_KEY:
+                diffs.extend(_diff_unit_state(t, sa[k], sb[k]))
                 continue
             fa, fb = sa[k], sb[k]
             if fa.shape != fb.shape:
@@ -172,6 +337,7 @@ if __name__ == "__main__":
     a = capture_trajectory()
     b = capture_trajectory()
     assert_trajectories_match(a, b, tol=0.0)
-    nfields = len(a[-1])
-    print(f"OK: field-level A/B harness — {len(a)} ticks x {nfields} fields, "
-          f"per-cell 0-ULP self-match")
+    nfields = len(a[-1]) - (1 if UNIT_DIGEST_KEY in a[-1] else 0)
+    print(f"OK: field-level A/B harness — {len(a)} ticks x {nfields} fields "
+          f"+ synced unit digest, per-cell 0-ULP self-match "
+          f"(final unit hash {unit_digest_hash(a[-1])[:12]})")
