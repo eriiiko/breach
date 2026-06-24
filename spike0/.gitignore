@@ -5,6 +5,12 @@
 *.obj
 *.pdb
 
+# EXCEPTION: the portable, multi-arch + PTX-fallback, static-runtime binaries in
+# bin/ ARE committed so Erik can `git pull` and run them on Turing/Ampere/Ada
+# with only a driver (no CUDA toolkit). A few MB for a throwaway spike is fine.
+!bin/
+!bin/*.exe
+
 # Scratch build scripts used during development
 _build_test*.bat
 _arch_check.bat
@@ -15,3 +21,4 @@ out_sh.txt
 # Captured run logs (Erik pastes these into the README table by hand)
 *.log
 out_*.txt
+_runlog.txt

@@ -79,6 +79,29 @@ __host__ __device__ static inline float gen_value(uint32_t i) {
 
 // Quantize a float value to Q16.16 (int32). Deterministic rounding (round to
 // nearest, ties away from zero via +-0.5 then truncation toward zero).
+//
+// LOAD-BEARING EXACTNESS -- do NOT "simplify" any step into something that
+// rounds; the whole determinism claim rests on every operation here being
+// exact (no implementation-defined / arch-dependent rounding):
+//   * `(double)v`            : float -> double is EXACT (double's 52-bit mantissa
+//                              strictly contains float's 23-bit mantissa).
+//   * `* Q_SCALE` (= 2^16)   : multiplying a double by a power of two is an EXACT
+//                              exponent bump (no mantissa change) -- it cannot
+//                              round, on any arch. (This is why Q_SCALE MUST stay
+//                              a power of two; do not change it to a "nicer"
+//                              decimal.)
+//   * `+ 0.5` / `- 0.5`      : 0.5 is exactly representable; the add is exact for
+//                              every |scaled| < 2^52 (double has integer
+//                              precision below 2^52). Our |scaled| <= ~|v|*2^16,
+//                              and |v| < 2^15, so |scaled| < 2^31 << 2^52: exact.
+//   * `(int32_t)r`           : truncation toward zero of a double that is already
+//                              an exact integer-valued double -> EXACT, defined.
+// The generator (gen_value) caps |v| at frac*2^15 with frac in [0,1), i.e. just
+// UNDER 2^15 = 32768.0, which is the Q16.16 positive clip. It sits about
+// 0.0002% (one part in ~2^19) under that clip boundary, so the clamp branches
+// below are essentially never taken -- they exist only as a defensive guard.
+// Because every step is exact, to_q16_16 returns the SAME int32 bit pattern on
+// host and on every GPU arch; there is no FMA to contract and nothing to round.
 __host__ __device__ static inline int32_t to_q16_16(float v) {
     double scaled = (double)v * Q_SCALE;
     // round to nearest integer, deterministic
@@ -154,6 +177,44 @@ __global__ void k_int_atomic(const float* __restrict__ x, int n,
     // final 64-bit pattern is independent of order. (Our true sum fits well
     // within int64, so no wrap actually occurs.)
     atomicAdd(acc, (unsigned long long)local);
+}
+
+// (4) FMA-contraction demo. The SAME fixed-order sum-of-products
+//        acc = sum_k ( w_k * x_k )
+// computed two ways:
+//   (a) FUSED   : fmaf(w, x, acc)            -- one rounding (w*x+acc rounded once)
+//   (b) SEPARATE: t = __fmul_rn(w, x);       -- round the product, THEN
+//                 acc = __fadd_rn(acc, t)    -- round the add (two roundings)
+// Same math, same order; the ONLY difference is fused vs separate rounding.
+// On hardware with FMA (all our GPUs), the compiler/arch is free to contract
+// `a*b+c` into an fmaf -- or not -- and different arches/compilers/flags choose
+// differently. So the float result depends on a choice OUTSIDE the source's
+// control: float is NOT portable. Integer arithmetic has no such freedom (there
+// is exactly one int multiply and one int add, both exact-or-defined), so it
+// has nothing to contract and nothing to diverge on.
+//
+// We write BOTH results out as raw bits and let the host show they differ.
+__global__ void k_fma_demo(const float* __restrict__ x, int n,
+                           float* out_fused, float* out_separate) {
+    // single thread, fixed ascending order -> the order is identical for both;
+    // only the rounding structure differs.
+    float acc_fused = 0.0f;
+    float acc_sep   = 0.0f;
+    for (int i = 0; i < n; ++i) {
+        // a deterministic "weight" derived from the same generator, so the
+        // products have wide dynamic range and the rounding actually bites.
+        float w = gen_value((uint32_t)(i ^ 0x5A5A5A5Au));
+        float xi = x[i];
+        // (a) fused: single rounding of (w*xi + acc)
+        acc_fused = fmaf(w, xi, acc_fused);
+        // (b) separate: round the product, then round the add. The volatile
+        //     forces the intermediate to a real, separately-rounded float so the
+        //     compiler cannot fold this back into an fmaf behind our back.
+        volatile float prod = __fmul_rn(w, xi);
+        acc_sep = __fadd_rn(acc_sep, prod);
+    }
+    *out_fused    = acc_fused;
+    *out_separate = acc_sep;
 }
 
 // Fill the input array deterministically on the GPU.
@@ -281,6 +342,46 @@ int main(int argc, char** argv) {
                repeats, s0);
         printf("DIGEST 0a_integer raw_int64 = %lld\n", s0);
         cudaFree(d_acc);
+    }
+
+    // ---- method 4: FMA contraction (fused vs separate) --------------------
+    // The genuine cross-arch float hazard. SAME math, SAME fixed order; the only
+    // difference is whether (w*x + acc) is fused (one rounding) or separate (two
+    // roundings). The compiler/arch is free to pick either for `a*b+c`, so float
+    // is not portable. We show the two bit patterns DIFFER. (Integer has no fused
+    // multiply-add to choose -- there is nothing to contract -- so it cannot
+    // diverge this way: that is precisely why the migration uses integers.)
+    {
+        // single-threaded fixed-order sum-of-products over a modest slice
+        // (one thread, so keep it small enough to be instant).
+        int m = 1 << 16;   // 65536 fixed-order terms
+        float* d_fused = nullptr; float* d_sep = nullptr;
+        CUDA_CHECK(cudaMalloc(&d_fused, sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_sep,   sizeof(float)));
+        printf("\n# --- METHOD 4: FMA contraction (fused fmaf vs separate mul/add) ---\n");
+        printf("# fixed-order sum of %d products  acc += w_k * x_k\n", m);
+        k_fma_demo<<<1, 1>>>(d_x, m, d_fused, d_sep);
+        CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaDeviceSynchronize());
+        float hf, hs;
+        CUDA_CHECK(cudaMemcpy(&hf, d_fused, sizeof(float), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(&hs, d_sep,   sizeof(float), cudaMemcpyDeviceToHost));
+        char bf[16], bs[16];
+        hexbits_f32(hf, bf);
+        hexbits_f32(hs, bs);
+        uint32_t uf, us; memcpy(&uf, &hf, sizeof(uf)); memcpy(&us, &hs, sizeof(us));
+        printf("  fused    fmaf(w,x,acc)        bits=%s  approx=% .9e\n", bf, (double)hf);
+        printf("  separate __fmul_rn then __fadd_rn bits=%s  approx=% .9e\n", bs, (double)hs);
+        bool differ = (uf != us);
+        printf("RESULT method4 fma_contract : fused %s separate  (%s)\n",
+               differ ? "!=" : "==",
+               differ ? "DIFFER -- same math, fused-vs-separate -> different bits; "
+                        "arches/compilers choose differently => float not portable; "
+                        "integer has no such choice"
+                      : "IDENTICAL on this build (no contraction happened here -- "
+                        "still a hazard on other arches/flags)");
+        printf("DIGEST 0a_fma fused=%s separate=%s\n", bf, bs);
+        cudaFree(d_fused); cudaFree(d_sep);
     }
 
     cudaFree(d_x);
