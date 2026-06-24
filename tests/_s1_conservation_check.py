@@ -1,7 +1,7 @@
-"""S1 P1 (bit-determinism) + P2 (Σwater_depth conservation) standalone check.
+"""S1 P1 (bit-determinism) + P2 (Sum(water_depth) conservation) standalone check.
 
 P2 is the load-bearing requirement: in a SEALED flood (no boil, no clamp firing,
-no sources/sinks), the integer donor-cell transport must conserve Σwater_depth to
+no sources/sinks), the integer donor-cell transport must conserve Sum(water_depth) to
 the LAST BIT across many ticks — the int64 flux gather applies the SAME rounded
 per-face delta to both cells, so the >>16 narrow can never leak mass.
 """
@@ -58,14 +58,14 @@ def run(solid, depth0, n_ticks, dt=0.016, seed_tilt=(0.0, 0.0)):
 
 
 def main():
-    print("=== P2: Σwater_depth conservation (sealed flood) ===")
+    print("=== P2: Sum(water_depth) conservation (sealed flood) ===")
     solid, depth0 = make_scene()
     total0 = int(depth0.astype(np.int64).sum())
     depth, vx, vy, totals = run(solid, depth0, 1000)
     drift = [t - total0 for t in totals]
     max_drift = max(abs(x) for x in drift)
-    print(f"  initial Σ (Q16.16 counts) = {total0}")
-    print(f"  final   Σ                 = {totals[-1]}")
+    print(f"  initial Sum (Q16.16 counts) = {total0}")
+    print(f"  final   Sum                 = {totals[-1]}")
     print(f"  max |drift| over 1000 ticks = {max_drift} LSB counts "
           f"({max_drift / Q:.3e} m)")
     print(f"  min depth = {depth.min()} (>=0: {depth.min() >= 0}), "

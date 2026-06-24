@@ -4,6 +4,9 @@
 #include <algorithm>
 #include <vector>
 #include <cstdint>
+#if !defined(__SIZEOF_INT128__) && defined(_MSC_VER)
+#include <intrin.h>   // _mul128 for the one-truncation MSVC flux_to_dq path
+#endif
 
 using namespace fixedpoint;
 
@@ -94,6 +97,11 @@ void WaterSolver::step(q16* water_depth, q16* flow_vx, q16* flow_vy,
     // cx, cy and dx fold into a per-column / per-row Q16.16 tilt slope. We
     // precompute the per-tile tilt as tan_t * ((idx - c)*dx). The ((idx-c)*dx)
     // factor is a real-valued position in metres; quantize per index.
+    // CPU-ONLY DETERMINISM FLAG: the quantize((idx-c)*dx) products below run in
+    // DOUBLE inside the integer core — bit-identical on CPU x64/SSE2 + /fp:strict
+    // (no contraction), but a CPU-only assumption to revisit for the CUDA/GPU
+    // port, where FMA could fuse (idx-c)*dx and diverge by 1 ULP. Re-derive these
+    // in pure integer (or pin GPU FMA off) before the field goes GPU-resident.
     const double cx = 0.5 * (double)w;
     const double cy = 0.5 * (double)h;
 
@@ -205,13 +213,19 @@ void WaterSolver::step(q16* water_depth, q16* flow_vx, q16* flow_vy,
         __int128 p = (__int128)flux_wide * (__int128)dt_over_dx_q;
         return (q16)(p >> 32);
 #else
-        // MSVC path: flux_wide * dt_over_dx_q via the double-width helper. We
-        // reuse recip_mul's 128-bit shift by composing: narrow flux to Q16.16
-        // first (>>16, the conservative truncation), then mul_q16 by dt_over_dx_q
-        // (a second >>16). Two truncations vs one, but applied to the SINGLE
-        // gathered face value -> still conservative (same value both sides).
-        const q16 flux_q16 = (q16)(flux_wide >> 16);
-        return mul_q16(flux_q16, dt_over_dx_q);
+        // MSVC path (no __int128): ONE truncation, bit-identical to the
+        // __int128 path above. Form the full 128-bit signed product via _mul128,
+        // then arithmetic-shift it right by 32 using the EXACT same hi:lo combine
+        // fixedpoint::recip_mul already ships ((ulo>>SHIFT)|(hi<<(64-SHIFT))).
+        // The previous two-truncation form (flux>>16 then mul_q16) differed from
+        // the __int128 path by up to 1 count on ~5% of faces -> MSVC vs clang/gcc
+        // peer desync. This is now bit-exact (proven across a wide random sweep
+        // incl. negatives by tests/_s1_flux_truncation_check.py).
+        long long hi;
+        long long lo = _mul128((long long)flux_wide, (long long)dt_over_dx_q, &hi);
+        unsigned long long ulo = (unsigned long long)lo;
+        long long res = (long long)((ulo >> 32) | ((unsigned long long)hi << (64 - 32)));
+        return (q16)res;
 #endif
     };
 
@@ -225,9 +239,14 @@ void WaterSolver::step(q16* water_depth, q16* flow_vx, q16* flow_vy,
 
     // ---- per-cell OUTFLOW LIMITER (mass-exactness) ------------------------
     // A cell can be donor on up to 4 faces; worst-case its total OUTGOING dq
-    // exceeds its depth and the non-negative clamp below would CREATE mass. Per
-    // cell: out_sum = sum of OUTGOING dq magnitudes (in Q16.16 depth units now);
-    // if out_sum > depth, scale THAT CELL'S outgoing dq by depth/out_sum.
+    // exceeds its depth and the non-negative clamp below would CREATE mass. The
+    // limiter bounds each cell's total outflow to <= its depth, so max(depth,0)
+    // never injects mass (verified by the stress conservation test). This holds
+    // ONLY because the face-apply below scales on the MAGNITUDE (scale_mag,
+    // toward 0): scaling a NEGATIVE outgoing delta with mul_q16 (>>16, toward
+    // -inf) would GROW its magnitude by up to 1 count and reintroduce the leak.
+    // Per cell: out_sum = sum of OUTGOING dq magnitudes (in Q16.16 depth units
+    // now); if out_sum > depth, scale THAT CELL'S outgoing dq by depth/out_sum.
     //   scale = (depth << 16) / out_sum    (a deterministic integer divide; the
     //   constant dx/(dt) factor is already folded into dq, so only the dynamic
     //   depth/out_sum ratio remains — an exact integer divide, identical
@@ -253,14 +272,20 @@ void WaterSolver::step(q16* water_depth, q16* flow_vx, q16* flow_vy,
     }
     // Scale each face's dq by its DONOR cell's factor (FP_ONE when unlimited).
     // The SAME scaled dq is used for both cells in the apply -> conservation.
+    // scale_mag (NOT mul_q16) truncates on the MAGNITUDE (toward 0): for a
+    // negative outgoing delta mul_q16's `>>16` would round toward -inf and GROW
+    // the outflow magnitude by up to 1 count -> over-drain -> depth < 0 -> the
+    // max(depth,0) clamp would inject mass. scale_mag can only SHRINK |dq|, so a
+    // donor cell's total scaled outflow stays <= its depth and the clamp never
+    // injects (verified by the stress conservation test).
     for (int y = 0; y < h; ++y) {
         const int row = y * w;
         for (int x = 0; x < w; ++x) {
             const int i = row + x;
             if (x < w - 1 && dq_e[i] != 0)
-                dq_e[i] = mul_q16(dq_e[i], (dq_e[i] > 0) ? scale_q[i] : scale_q[i + 1]);
+                dq_e[i] = scale_mag(dq_e[i], (dq_e[i] > 0) ? scale_q[i] : scale_q[i + 1]);
             if (y < h - 1 && dq_s[i] != 0)
-                dq_s[i] = mul_q16(dq_s[i], (dq_s[i] > 0) ? scale_q[i] : scale_q[i + w]);
+                dq_s[i] = scale_mag(dq_s[i], (dq_s[i] > 0) ? scale_q[i] : scale_q[i + w]);
         }
     }
 

@@ -26,10 +26,13 @@
 //   3. Donor-cell upwind face fluxes from PRE-update depth (gather), zeroed at
 //      solid faces; per-cell OUTFLOW LIMITER (a cell can be donor on up to 4
 //      faces — scale ITS outgoing fluxes by depth*dx/(dt*out_sum) when
-//      out_sum*dt/dx > depth, so the non-negative clamp cannot create mass); the
-//      per-FACE depth-delta is gathered ONCE (a single Q16.16 value) and applied
-//      +dq to one cell, -dq to the neighbour, so the >>16 narrow conserves mass
-//      to the LSB (S1 P2).
+//      out_sum*dt/dx > depth, so the limiter bounds each cell's total outflow to
+//      <= its depth and the max(depth,0) clamp never injects mass — verified by
+//      the stress conservation test; the face-apply scales on the MAGNITUDE so a
+//      negative outgoing delta can only shrink, never over-drain); the per-FACE
+//      depth-delta is gathered ONCE (a single Q16.16 value) and applied +dq to
+//      one cell, -dq to the neighbour, so the >>16 narrow conserves mass to the
+//      LSB (S1 P2).
 //   4. depth = max(depth, 0); 0 on solid; snapped to 0 below depth_eps.
 //
 // Deterministic: integer transport (no float in the core), no RNG, gather-then-

@@ -161,6 +161,23 @@ inline q16 shr_round0(q16 x, int s) {
     return (x < 0) ? -((-x) >> s) : (x >> s);
 }
 
+// ---- magnitude-first Q16.16 scale (sign-preserving, shrink-only) -----------
+// Multiply a Q16.16 value `x` by a Q16.16 factor `scale` in [0, FP_ONE] while
+// truncating on the MAGNITUDE (toward 0), not toward -inf. mul_q16's `>>16`
+// rounds a NEGATIVE product toward -inf, which GROWS a negative value's
+// magnitude by up to 1 count. For an outflow limiter (scale <= 1.0) that would
+// let a scaled-down outgoing face delta get *larger* in magnitude — the exact
+// over-drain that breaks the "limiter bounds outflow to <= depth" guarantee.
+// Mirroring shr_round0's idiom, we scale |x| then re-apply the sign, so the
+// scaled magnitude can only SHRINK (== |x|*scale truncated toward 0). For
+// scale == FP_ONE (1.0) this is the identity. The same scaled value is then
+// applied +/- symmetrically to a face's two cells -> conservation is preserved.
+inline q16 scale_mag(q16 x, q16 scale) {
+    const int64_t mag = (int64_t)(x < 0 ? -x : x);
+    const q16 scaled  = (q16)((mag * (int64_t)scale) >> FP_SHIFT);  // toward 0
+    return (x < 0) ? -scaled : scaled;
+}
+
 // ---- fixed-point ceil-divide (the substep-count cliff) --------------------
 //
 // n = ceil(a_real / b_real), computed entirely in integer from the Q16.16
