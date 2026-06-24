@@ -59,6 +59,7 @@ UNIT_DIGEST_KEY = "__unit_state__"
 SYNCED_UNIT_FIELDS = (
     "tile_x", "tile_y", "x", "y", "current_hp",
     "alive", "life_state", "faction", "offsets",
+    "facing", "ap", "n_orders",
 )
 
 # Every field the physics writes — the sim state a structural refactor must
@@ -154,6 +155,13 @@ def _unit_record(u):
         "life_state": str(life_repr),
         "faction":    _unit_faction(u),
         "offsets":    [[int(dx), int(dy)] for (dx, dy) in getattr(u, "offsets", ())],
+        # Sim-derived synced state beyond the core: facing (drives LOS/shot
+        # direction), action points (gate synced actions), and the count of
+        # remaining orders (a divergence in order-consumption shows here). A
+        # full per-order serialization is a future extension if needed.
+        "facing":     q(getattr(u, "facing", 0.0)),
+        "ap":         [int(a) for a in getattr(u, "ap", ())],
+        "n_orders":   len(getattr(u, "orders", ())),
     }
 
 
