@@ -31,17 +31,32 @@ pybind11_add_module(breach_physics
     src/bindings.cpp
 )
 
-# Patch 1 S4: the per-tick orchestration glue (physics_engine.cpp) is compiled
-# /fp:precise, overriding the global /fp:fast above for JUST this TU. The glue
-# carries the float math that must match numpy's strict-IEEE rounding bit-for-bit
-# (the IMEX substep loop + the W3/W5 water accounting, ported in later S4 sub-
-# steps). S4a moves only pure solver CALLS (no new arithmetic), so /fp:precise is
-# 0-ULP-trivial here; setting it up now means the later glue inherits it. If a
-# future port traces a non-0-ULP A/B mismatch to FP reordering, escalate this one
-# file to /fp:strict.
+# S0 part 3 (fixed-point prereq gate) — fast-math kill on the SIM solver TUs.
+#
+# The fixed-point migration needs the float PRECOMPUTE passes that feed integer
+# state to be REPRODUCIBLE: no fast-math reordering, no inconsistent FMA
+# contraction. So every simulation solver TU is compiled /fp:strict, which on
+# MSVC disables BOTH expression reordering AND FMA contraction (stricter than the
+# /fp:precise physics_engine.cpp carried before — it is upgraded to /fp:strict
+# here for consistency). The render-only raycaster.cpp / wave_solver.cpp and the
+# pure-glue bindings.cpp are NOT sim state and keep the global /fp:fast for speed.
+#
+# These are PER-SOURCE COMPILE_OPTIONS, which CMake appends AFTER the global
+# /fp:fast from add_compile_options() above; MSVC honours the LAST /fp: switch on
+# the command line, so /fp:strict wins. (Verified via a verbose build: the sim
+# TUs compile with /fp:strict, /fp:fast is overridden.)
+#
+# This is a DELIBERATE behavior change (removing fast-math) — feel-gated, not
+# 0-ULP; the /fp:fast goldens were regenerated when this landed.
 if(MSVC)
-    set_source_files_properties(src/physics_engine.cpp
-        PROPERTIES COMPILE_OPTIONS "/fp:precise")
+    set_source_files_properties(
+        src/atmosphere_solver.cpp
+        src/smoke_dynamics.cpp
+        src/fire_simulation.cpp
+        src/water_solver.cpp
+        src/temperature_solver.cpp
+        src/physics_engine.cpp
+        PROPERTIES COMPILE_OPTIONS "/fp:strict")
 endif()
 
 target_include_directories(breach_physics PRIVATE src)
