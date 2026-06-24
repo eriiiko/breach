@@ -205,7 +205,7 @@ read a difference there as the proof); the FMA column shows fused ≠ separate.
 |---------|-----|------|---|---|---|---|---|
 | Work Desktop (DESKTOP-0E98HUV) | RTX 3070 | sm_86 (native) | **`-1514247643326`** | **`0xAB27B2370160FFF4`** (PASS) | VARIES run-to-run, 20/20 distinct | `0xCEF16263` ≠ `0xCEF16261` (differ, 2 ULP) | STABLE `0xCBB04814` |
 | _(Turing)_ | RTX 20xx | sm_75 | | | | | |
-| _(Ada)_ | RTX 40xx | sm_89 | | | | | |
+| Lenovo Laptop (erik_lenovo) | RTX 1000 Ada Generation Laptop | sm_89 (native) | **`-1514247643326`** | **`0xAB27B2370160FFF4`** (PASS) | VARIES run-to-run, 20/20 distinct | `0xCEF16263` ≠ `0xCEF16261` (differ, 2 ULP) | STABLE `0xCBB04814` |
 
 ### Expected conclusion
 
@@ -290,3 +290,34 @@ gpu==cpu) are bit-exact — the latter over a non-degenerate reciprocal and a
 field that is half-negative and non-saturated. The premise holds on this
 machine; **the two integer digests are the cross-arch witnesses** to fill on the
 Turing and Ada rows.
+
+## Validation on this machine (Ada RTX 1000, sm_89, driver 596.47) — 2026-06-24
+
+Lenovo Laptop `erik_lenovo` (LENOVO 21KV001RMX, Intel Core Ultra 7 155H, 31.5 GB,
+Windows 11 Pro build 10.0.26200.8655), GPU **NVIDIA RTX 1000 Ada Generation
+Laptop GPU** (6141 MiB, compute_cap **8.9**, driver **596.47**, CUDA driver 13.2).
+Full hardware in `hardware_log.md`.
+
+Run **from the committed portable `bin/*.exe` only** — no CUDA toolkit, no MSVC,
+no `vcvars` on this box (driver-only, native sm_89 SASS). Both spikes exit 0.
+
+```
+# Spike-0a
+RESULT method1 float_atomic : VARIES (jitter observed -- as expected) across 20 repeats  (20/20 distinct)
+RESULT method2 float_tree   : STABLE 0xCBB04814 (per-arch control)
+DIGEST 0a_integer raw_int64 = -1514247643326          # == Ampere, bit-identical
+DIGEST 0a_fma fused=0xCEF16263 separate=0xCEF16261     # fused != separate (differ)
+
+# Spike-0b
+# recip check   : gap = -1780   (non-degenerate)
+DIGEST 0b_integer cpu_hash = 0xAB27B2370160FFF4
+DIGEST 0b_integer gpu_hash = 0xAB27B2370160FFF4        # == Ampere, gpu==cpu (PASS)
+# field spread  : distinct=1444  pos=7875  neg=8001  zero=508  biggest_plateau=3.1%
+RESULT 0b : GPU-integer == CPU-integer  BIT-FOR-BIT  (PASS)
+```
+
+**Read:** the two integer digests (`-1514247643326` and `0xAB27B2370160FFF4`) are
+**bit-identical to the Ampere reference** — the cross-arch premise now holds on a
+**second** architecture (Ampere → Ada). The float controls behave as predicted:
+atomic jitters 20/20, fused≠separate, fixed tree stable. Only the **Turing**
+(RTX 2060, sm_75) row remains to complete the three-generation proof.
