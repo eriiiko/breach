@@ -22,6 +22,7 @@
 
 #include <cstdint>
 #include <vector>
+#include "fixed_point.h"   // S2a: q16 (Q16.16 int32) for the wave state
 
 class AtmosphereSolver {
 public:
@@ -65,9 +66,9 @@ public:
     // test drives). The engine's run_substeps splits these so the wave loops
     // at its CFL while the implicit diffusion solves ONCE per tick.
     void step(
-        float* wave_p,
-        float* wave_v,
-        float* wave_source,
+        q16* wave_p,            // S2a: Q16.16 int32
+        q16* wave_v,            // S2a: Q16.16 int32
+        q16* wave_source,       // S2a: Q16.16 int32
         float* atmosphere,
         float* wind_x,
         float* wind_y,
@@ -86,10 +87,10 @@ public:
     // Runs `n_wave` times at the wave CFL dt. Mutates wave_p/wave_v/wave_source
     // and accumulates the per-substep anomaly transfer onto atmosphere.
     void wave_substep(
-        float* wave_p,
-        float* wave_v,
-        float* wave_source,
-        float* atmosphere,
+        q16* wave_p,            // S2a: Q16.16 int32
+        q16* wave_v,            // S2a: Q16.16 int32
+        q16* wave_source,       // S2a: Q16.16 int32
+        float* atmosphere,      // float — FLOAT BRIDGE until S2c
         const bool* obstacles,
         const bool* is_wall,
         const bool* is_vacuum,
@@ -106,9 +107,9 @@ public:
     // Measures last_gs_residual after the sweeps, before the BC pass.
     void diffuse_solve(
         float* atmosphere,
-        float* wave_p,
-        float* wave_v,
-        float* wave_source,
+        q16* wave_p,            // S2a: Q16.16 int32 (read for wind via a FLOAT
+        q16* wave_v,            //      BRIDGE; zeroed/scaled in the sponge BC)
+        q16* wave_source,       // S2a: Q16.16 int32
         float* wind_x,
         float* wind_y,
         const bool* obstacles,
@@ -127,11 +128,17 @@ private:
     // field pointer, so __restrict restores the fresh-local no-alias property
     // /fp:fast needs for bit-identical codegen.
     //   lap_      — wave Laplacian; FULLY overwritten each step before read.
+    //               S2a: now Q16.16 int32 (the wave field is integer).
+    //   interior_mask_ — the mean_wp reduction mask (!obstacle && !wall &&
+    //               !vacuum); FULLY overwritten each step before the sum reads it.
     //   rhs_      — implicit-diffusion RHS; FULLY overwritten (copy of atmosphere)
     //               before read, inside the mu-gated block.
     //   vac_dist_ — sponge distance; default 255 IS read (cells that never reach
     //               0/1/2 stay 255), so it MUST be re-filled to 255 each step.
-    mutable std::vector<float>   lap_;
+    mutable std::vector<q16>     lap_;            // S2a: Q16.16
+    mutable std::vector<uint8_t> interior_mask_;  // S2a: mean_wp mask (0/1; bool*
+                                                  // via reinterpret_cast — vector
+                                                  // <bool> has no .data())
     mutable std::vector<float>   rhs_;
     mutable std::vector<uint8_t> vac_dist_;
 };

@@ -40,6 +40,7 @@ from config import CFG
 from level_loader import load as load_level
 from simulation.gamemap import GameMap
 from simulation.unit import Unit
+from simulation import wave_fixed   # S2a: wave fields are Q16.16 int32
 
 
 # Arena geometry (interior, away from the map edge so no sponge/vacuum reaches
@@ -94,8 +95,10 @@ def _new_solver():
 
 
 def _inject_pulse(g: GameMap):
-    """A localized wave_p beam aligned with the unit's row band."""
-    g.wave_p[PULSE_Y0:PULSE_Y1, BLAST_X] = 8.0
+    """A localized wave_p beam aligned with the unit's row band.
+
+    S2a: wave_p is Q16.16 int32 — quantize the real pulse magnitude (8.0)."""
+    g.wave_p[PULSE_Y0:PULSE_Y1, BLAST_X] = wave_fixed.quantize_scalar(8.0)
 
 
 def _run(g: GameMap, units):
@@ -114,7 +117,9 @@ def _run(g: GameMap, units):
             g.dyn_permeability, g.dyn_wave_absorb,
             dt,
         )
-        band = g.wave_p[PULSE_Y0:PULSE_Y1, SHADOW_X0:SHADOW_X1]
+        # S2a: wave_p is Q16.16 int32 — DEQUANTIZE to real units before the
+        # energy sum (an int32 square would overflow; energy must be real).
+        band = wave_fixed.dequantize(g.wave_p[PULSE_Y0:PULSE_Y1, SHADOW_X0:SHADOW_X1])
         acc += float(np.sum(band ** 2))
     return acc
 

@@ -33,6 +33,7 @@ from simulation.field_edit import (
     FieldEdit, EditMode, Region, Falloff, EditQueue,
     apply_field_edit, heat_quantize, heat_saturating_add, HEAT_SCALE,
 )
+from simulation import wave_fixed   # S2a: wave_source Q16.16 helpers
 
 
 # ---------------------------------------------------------------------------
@@ -44,7 +45,9 @@ class _GMapStub:
     def __init__(self, h=12, w=12):
         self.smoke = np.zeros((h, w), dtype=np.float32)
         self.atmosphere = np.zeros((h, w), dtype=np.float32)
-        self.wave_source = np.zeros((h, w), dtype=np.float32)
+        # S2a: wave_source is int32 Q16.16 (the "wave" field-edit dtype combines
+        # in real units, stores quantized) — mirror the real gmap dtype here.
+        self.wave_source = np.zeros((h, w), dtype=np.int32)
         self.fire = np.zeros((h, w), dtype=np.float32)
         self.heat = np.zeros((h, w), dtype=np.int32)
         # An (h, w, 3) channel field to exercise the channel path.
@@ -205,9 +208,10 @@ def test_wave_source_skips_vacuum_and_solid():
     g.solid[6, 5] = True
     apply_field_edit(g, FieldEdit("wave_source", Region.DISC, (6, 6, 3.0), 1.0,
                                   EditMode.ADD, Falloff.FLAT), _rng())
-    assert float(g.wave_source[6, 7]) == 0.0, "wave_source wrote a vacuum tile"
-    assert float(g.wave_source[6, 5]) == 0.0, "wave_source wrote a solid tile"
-    assert float(g.wave_source[6, 6]) == 1.0
+    # S2a: wave_source is Q16.16 int32 — dequantize for the value assertions.
+    assert int(g.wave_source[6, 7]) == 0, "wave_source wrote a vacuum tile"
+    assert int(g.wave_source[6, 5]) == 0, "wave_source wrote a solid tile"
+    assert float(g.wave_source[6, 6]) / wave_fixed.FP_ONE_F == 1.0
 
 
 # ---------------------------------------------------------------------------

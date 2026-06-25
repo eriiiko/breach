@@ -50,6 +50,15 @@ PYBIND11_MODULE(breach_physics, m) {
     m.attr("WATER_FP_SHIFT") = 16;
     m.attr("WATER_FP_ONE") = 65536;
 
+    // S2a: the explicit WAVE state (wave_p / wave_v / wave_source) is now int32
+    // Q16.16 (same 2^16 scale as water/heat). Python (gamemap fields, field
+    // edits, the recorder boundary, tests) reads this flag to allocate the wave
+    // fields as int32 and to quantize/dequantize at the boundaries. wave_v keeps
+    // Q16.16 (the Q-S2-2 measurement: peak |wave_v| ~2674 << 32768).
+    m.attr("WAVE_FIXEDPOINT") = true;
+    m.attr("WAVE_FP_SHIFT") = 16;
+    m.attr("WAVE_FP_ONE") = 65536;
+
     // --- AtmosphereSolver (IMEX: explicit wave + implicit diffusion) ---
     py::class_<AtmosphereSolver>(m, "AtmosphereSolver")
         .def(py::init<>())
@@ -71,9 +80,9 @@ PYBIND11_MODULE(breach_physics, m) {
         .def("gs_residual", &AtmosphereSolver::gs_residual)
         .def("max_dt", &AtmosphereSolver::max_dt)
         .def("step", [](const AtmosphereSolver& self,
-                        py::array_t<float> wave_p,
-                        py::array_t<float> wave_v,
-                        py::array_t<float> wave_source,
+                        py::array_t<int32_t> wave_p,        // S2a: Q16.16 int32
+                        py::array_t<int32_t> wave_v,        // S2a: Q16.16 int32
+                        py::array_t<int32_t> wave_source,   // S2a: Q16.16 int32
                         py::array_t<float> atmosphere,
                         py::array_t<float> wind_x,
                         py::array_t<float> wind_y,
@@ -527,7 +536,7 @@ PYBIND11_MODULE(breach_physics, m) {
                              py::array_t<float> ripple,
                              py::array_t<float> ripple_v,
                              py::array_t<int32_t> water_depth,   // S1: Q16.16 int32
-                             py::array_t<float> wave_p,
+                             py::array_t<int32_t> wave_p,        // S2a: Q16.16 int32
                              py::array_t<bool>  solid,
                              // fire group
                              py::array_t<float> fire,
@@ -599,9 +608,9 @@ PYBIND11_MODULE(breach_physics, m) {
         // n / dt_actual / dt_smoke precision matching (the integer cliff + the
         // double-until-the-solver-boundary contract) lives in C++ (run_substeps).
         .def("run_substeps", [](PhysicsEngine& self,
-                                py::array_t<float> wave_p,
-                                py::array_t<float> wave_v,
-                                py::array_t<float> wave_source,
+                                py::array_t<int32_t> wave_p,        // S2a: Q16.16 int32
+                                py::array_t<int32_t> wave_v,        // S2a: Q16.16 int32
+                                py::array_t<int32_t> wave_source,   // S2a: Q16.16 int32
                                 py::array_t<float> atmosphere,
                                 py::array_t<float> wind_x,
                                 py::array_t<float> wind_y,
@@ -671,7 +680,7 @@ PYBIND11_MODULE(breach_physics, m) {
                               py::array_t<int32_t> flow_vy,        // S1: Q16.16 int32
                               py::array_t<int32_t> floor_height,   // S1: Q16.16 int32
                               py::array_t<float> atmosphere,       // float (FLOAT BRIDGE)
-                              py::array_t<float> wave_p,           // float (FLOAT BRIDGE)
+                              py::array_t<int32_t> wave_p,         // S2a: Q16.16 int32
                               py::array_t<bool>  solid,
                               py::array_t<float> gas,              // float (FLOAT BRIDGE: steam)
                               py::array_t<int32_t> before,         // S1: Q16.16 int32 snapshot

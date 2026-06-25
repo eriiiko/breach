@@ -84,9 +84,17 @@ class GameMap:
         self.is_vacuum    = np.zeros((h, w), dtype=bool)
         self.flammable    = np.zeros((h, w), dtype=bool)
         self.atmosphere   = np.ones((h, w), dtype=np.float32)
-        self.wave_p       = np.zeros((h, w), dtype=np.float32)
-        self.wave_v       = np.zeros((h, w), dtype=np.float32)
-        self.wave_source  = np.zeros((h, w), dtype=np.float32)
+        # S2a: the explicit WAVE state is int32 Q16.16 (scale 2^16, shared with
+        # water/heat) — integer transport is bit-identical cross-machine (the
+        # determinism the float path lacked). wave_p (acoustic anomaly, signed),
+        # wave_v (velocity, signed), wave_source (injected energy, >= 0). The
+        # Q-S2-2 measurement pinned wave_v to Q16.16 (peak ~2674 << 32768). Field
+        # edits author wave_source in real units and quantize at the boundary
+        # (field_edit.py "wave" dtype); the renderer/recorder dequantize. See
+        # simulation.wave_fixed for the metres<->Q16.16 helpers.
+        self.wave_p       = np.zeros((h, w), dtype=np.int32)
+        self.wave_v       = np.zeros((h, w), dtype=np.int32)
+        self.wave_source  = np.zeros((h, w), dtype=np.int32)
         self.wind_x       = np.zeros((h, w), dtype=np.float32)
         self.wind_y       = np.zeros((h, w), dtype=np.float32)
         # Multi-gas density fields (engine/05 §6.2, M1): a dense (N, h, w) float32

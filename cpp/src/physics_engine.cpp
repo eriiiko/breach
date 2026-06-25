@@ -29,7 +29,8 @@
 std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // ripple group
         float* ripple, float* ripple_v,
-        const int32_t* water_depth, const float* wave_p,   // S1: water_depth Q16.16
+        const int32_t* water_depth, const int32_t* wave_p,   // S1: water_depth Q16.16
+                                                             // S2a: wave_p Q16.16
         const bool* solid,
         // fire group
         float* fire_field, float* atmosphere, float* smoke_field, float* wall_hp,
@@ -63,8 +64,15 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // step_ripple writes only ripple / ripple_v; water_depth / wave_p /
         // solid are read-only (the locked canon rule). Same args, same order
         // as the Python call: (ripple, ripple_v, water_depth, wave_p, solid, dt).
-        this->water.step_ripple(ripple, ripple_v, water_depth, wave_p, solid,
-                                h, w, sim_time);
+        // S2a FLOAT BRIDGE: wave_p is Q16.16 int32 now; the ripple splash source
+        // (k_splash*wave_p, a render-only feel dial) reads it as float — so
+        // DEQUANTIZE wave_p into the reused float scratch and pass THAT (the
+        // water TU stays float; the bridge collapses when ripple goes integer).
+        using namespace fixedpoint;
+        if (wave_p_f_.size() != (size_t)n) wave_p_f_.assign(n, 0.0f);
+        for (int i = 0; i < n; ++i) wave_p_f_[i] = dequantize_f(wave_p[i]);  // FLOAT BRIDGE
+        this->water.step_ripple(ripple, ripple_v, water_depth, wave_p_f_.data(),
+                                solid, h, w, sim_time);
     }
 
     // --- 2. Fire feedback step (PhysicsRunner: self.fire.step) ------------
@@ -109,7 +117,8 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
 // derivation and the dt_actual/dt_smoke double-until-the-boundary contract are
 // preserved exactly; only the loop STRUCTURE changed. See the body comment.
 void PhysicsEngine::run_substeps(
-        float* wave_p, float* wave_v, float* wave_source, float* atmosphere,
+        int32_t* wave_p, int32_t* wave_v, int32_t* wave_source,  // S2a: Q16.16
+        float* atmosphere,
         float* wind_x, float* wind_y,
         const bool* obstacles, const bool* solid, const bool* is_vacuum,
         const float* dyn_permeability, const float* dyn_wave_absorb,
@@ -267,7 +276,7 @@ void PhysicsEngine::run_substeps(
 // spot where the PRECISION (not just the value) had to be matched.
 void PhysicsEngine::step_water(
         int32_t* water_depth, int32_t* flow_vx, int32_t* flow_vy,
-        const int32_t* floor_height, float* atmosphere, const float* wave_p,
+        const int32_t* floor_height, float* atmosphere, const int32_t* wave_p,  // S2a: wave_p Q16.16
         const bool* solid,
         float* gas,
         int32_t* before, float* dyn_permeability,
@@ -279,6 +288,16 @@ void PhysicsEngine::step_water(
     using namespace fixedpoint;
     const int n_cells = h * w;
     const double Q = (double)FP_ONE;   // 65536 — dequantize divisor
+
+    // S2a FLOAT BRIDGE: wave_p is now Q16.16 int32; the water solver's head term
+    // (k_p*(atm+wave_p), GATED + already a float bridge) reads it as float. With
+    // k_p == 0 (the shipped default) wave_p is NEVER read, so this dequantize is a
+    // no-op pass-through; we still bridge it (DEQUANTIZE into the reused float
+    // scratch) so the water TU stays untouched. Collapses when the head bridge
+    // retires. (The substep loop below passes wave_p_f_.data() to water.step.)
+    if (wave_p_f_.size() != (size_t)n_cells) wave_p_f_.assign(n_cells, 0.0f);
+    for (int i = 0; i < n_cells; ++i) wave_p_f_[i] = dequantize_f(wave_p[i]);  // FLOAT BRIDGE
+    const float* wave_p_bridge = wave_p_f_.data();
 
     // --- Substep count (the INTEGER CLIFF, S1 §5) + the substep loop -------
     // S1: max_dt is a Q16.16 CONSTANT (water.max_dt_q()); the substep count is a
@@ -298,7 +317,7 @@ void PhysicsEngine::step_water(
         // gated head-term FLOAT BRIDGE lives inside step). this->water.dx and the
         // pipe params are already members on this->water (not re-passed).
         this->water.step(water_depth, flow_vx, flow_vy,
-                         floor_height, atmosphere, wave_p,
+                         floor_height, atmosphere, wave_p_bridge,   // S2a FLOAT BRIDGE
                          solid, h, w, wdt, tilt_x, tilt_y);
     }
 

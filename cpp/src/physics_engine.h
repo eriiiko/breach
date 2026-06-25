@@ -35,6 +35,14 @@ public:
     Raycaster         raycaster;
     WaterSolver       water;
 
+    // S2a FLOAT BRIDGE scratch: wave_p is now Q16.16 int32, but the water solver
+    // (S1, shipped) still reads wave_p as float in its head term + ripple splash
+    // — both already float bridges (k_p / k_splash). step_tail / step_water
+    // DEQUANTIZE wave_p into this reused float buffer and hand THAT to the water
+    // calls, so the water TU is untouched. Collapses to integer<-integer when the
+    // water head/ripple bridge is retired. Reused (no per-tick alloc; GPU-prep).
+    mutable std::vector<float> wave_p_f_;
+
     // --- Patch 1 S4a: the per-tick orchestration TAIL --------------------
     // Moves the three trailing PURE-SOLVER-CALL steps of PhysicsRunner.step
     // (everything AFTER the IMEX substep loop) into C++: the W6a ripple, the
@@ -65,7 +73,8 @@ public:
     std::vector<std::pair<int, int>> step_tail(
         // ripple group
         float* ripple, float* ripple_v,
-        const int32_t* water_depth, const float* wave_p,   // S1: water_depth Q16.16
+        const int32_t* water_depth, const int32_t* wave_p,   // S1: water_depth Q16.16
+                                                             // S2a: wave_p Q16.16
         const bool* solid,
         // fire group
         float* fire_field, float* atmosphere, float* smoke_field, float* wall_hp,
@@ -113,7 +122,8 @@ public:
     //   gas_diffusion               : float (N,)     — per-gas base diffusion
     //   sink_x, sink_y              : float (h, w) — smoke sink direction (Python-fetched)
     void run_substeps(
-        float* wave_p, float* wave_v, float* wave_source, float* atmosphere,
+        int32_t* wave_p, int32_t* wave_v, int32_t* wave_source,  // S2a: Q16.16
+        float* atmosphere,
         float* wind_x, float* wind_y,
         const bool* obstacles, const bool* solid, const bool* is_vacuum,
         const float* dyn_permeability, const float* dyn_wave_absorb,
@@ -179,7 +189,7 @@ public:
     // at the boundary (marked in the .cpp). The substep-count cliff is integer.
     void step_water(
         int32_t* water_depth, int32_t* flow_vx, int32_t* flow_vy,
-        const int32_t* floor_height, float* atmosphere, const float* wave_p,
+        const int32_t* floor_height, float* atmosphere, const int32_t* wave_p,  // S2a: wave_p Q16.16
         const bool* solid,
         float* gas,
         int32_t* before, float* dyn_permeability,

@@ -40,6 +40,7 @@ import numpy as np
 import breach_physics as bp
 from level_loader import LevelData
 from simulation import Simulation
+from simulation import wave_fixed   # S2a: wave_source Q16.16 quantize helper
 from simulation.unit import Unit
 
 SEED = 20260615
@@ -103,7 +104,10 @@ def default_scenario_sim() -> Simulation:
     g.fire[8, 9] = 0.5
     g.water_depth[10, 10] = 0.3      # water pipe model + W3 displacement + ripple
     g.water_depth[10, 11] = 0.3
-    g.wave_source[4, 4] = 8.0        # explicit wave kick + reflection off the hull
+    # S2a: wave_source is int32 Q16.16 — quantize the seed so the explicit wave
+    # actually kicks + reflects off the hull (a raw `= 8.0` would store 8 counts
+    # ~ 1.2e-4 real, i.e. no wave). Real magnitude 8 -> quantize -> 524288 counts.
+    g.wave_source[4, 4] = wave_fixed.quantize_scalar(8.0)
     sim.add_unit(Unit("M1", x=7, y=7, team=0))   # stamp_units footprint
     g.destroy_wall(8, 0)             # hull breach on the map edge -> vacuum (venting)
     sim.set_paused(False)
@@ -346,6 +350,16 @@ if __name__ == "__main__":
     b = capture_trajectory()
     assert_trajectories_match(a, b, tol=0.0)
     nfields = len(a[-1]) - (1 if UNIT_DIGEST_KEY in a[-1] else 0)
+    # S2a — make the integer WAVE determinism explicit: wave_p/wave_v/wave_source
+    # are now int32 Q16.16 (the synced wave state). Assert the dtype + bit-identity
+    # run-to-run (np.array_equal is exact on int32). This is the S2a P1 gate.
+    for f in ("wave_p", "wave_v", "wave_source"):
+        assert a[-1][f].dtype == np.int32, f"{f} should be int32 Q16.16 (S2a), got {a[-1][f].dtype}"
+        for t in range(len(a)):
+            assert np.array_equal(a[t][f], b[t][f]), f"{f} not bit-identical at tick {t} (S2a P1)"
+    nz = int((np.abs(a[-1]["wave_p"]) > 0).sum())
     print(f"OK: field-level A/B harness — {len(a)} ticks x {nfields} fields "
           f"+ synced unit digest, per-cell 0-ULP self-match "
           f"(final unit hash {unit_digest_hash(a[-1])[:12]})")
+    print(f"OK: S2a wave fields int32 Q16.16, bit-identical run-to-run "
+          f"(wave_p nonzero cells at final tick: {nz})")

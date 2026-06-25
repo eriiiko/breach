@@ -83,6 +83,12 @@ class PhysicsRecorder:
         i = self.index % self.capacity
         for name in self.fields:
             arr = getattr(gmap, name)
+            # S2a: wave_p / wave_v are now int32 Q16.16 — DEQUANTIZE to real
+            # units (/65536) at the recorder boundary so the float32 ring buffer
+            # (and the BLOWUP_THRESHOLD compare below) stays in meaningful units,
+            # not raw counts. Render/debug only — not part of the synced state.
+            if name in ("wave_p", "wave_v", "wave_source") and arr.dtype == np.int32:
+                arr = arr.astype(np.float64) / 65536.0
             self.buffers[name][i] = arr
         self.tick_ids[i] = tick
         self.tick_times[i] = real_time

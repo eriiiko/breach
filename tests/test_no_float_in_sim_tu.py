@@ -71,13 +71,36 @@ _FP_FAST_RE = re.compile(r"fp:fast")
 # dyn_permeability are still float until S2). These doubles/floats are at
 # load-time/boundary scope, NOT per-cell transport — when S2 lands the bridges
 # collapse to integer. The remaining counts shrink further as S2/S3 migrate.
+# S2a (wave -> Q16.16, 2026-06-25) re-baselined atmosphere_solver.cpp +
+# physics_engine.cpp. The explicit WAVE core (wave_substep + mean_wp) is now
+# integer: atmosphere_solver.cpp `float` fell 68 -> 57 (the wave kick/feed/absorb/
+# transfer + the sponge wave decays went integer; the remainder is the still-float
+# S2c body — the GS diffusion, the atmosphere sponge, the residual hook, the wind
+# term — plus the permeability/wave_absorb FLOAT BRIDGES on the per-face weights
+# and the atmosphere-transfer/wind dequantize bridges). `double` ROSE 0 -> 17: the
+# per-substep Q16.16 constant precompute (c_sq*dt, damp*dt, dt, transfer*dt,
+# feed_rate*dt, the absorb/sponge decays — computed ONCE in double then quantized,
+# the LOCKED S1 idiom: IEEE double is bit-identical cross-machine for scalar
+# constants, no per-cell float). `fp:fast` 2 -> 1 (a stale comment removed).
+# physics_engine.cpp `float` rose 68 -> 71: the wave_p dequantize FLOAT BRIDGE
+# (step_tail ripple + step_water head term read wave_p as float, both already
+# float bridges). All of these collapse to integer when S2c lands. The counts
+# shrink further as S2b/S2c migrate. (water_solver.cpp `double` is 22 now, < its
+# 23 baseline — a stale-low, non-failing; left for a water-side tidy.)
+# NOTE the atmosphere `float` 57 -> 62 vs the naive integer-only path: the
+# wave->atmosphere TRANSFER deposit is done in float at the bridge (dequantize the
+# integer anomaly, multiply by the real transfer*dt) ON PURPOSE — a TRUNCATING
+# integer mul_q16 deposit DC-leaks (every cell loses 1 LSB toward -inf -> a
+# systematic ~percent/tick sink into the conserved atmosphere). The float deposit
+# is unbiased + minimises divergence from the float build; it becomes a
+# round-to-nearest/conservative INTEGER deposit when atmosphere goes integer (S2c).
 BASELINE = {
-    "atmosphere_solver.cpp":  {"float": 68, "double": 0,  "fp:fast": 2},
+    "atmosphere_solver.cpp":  {"float": 62, "double": 17, "fp:fast": 1},
     "smoke_dynamics.cpp":     {"float": 47, "double": 1,  "fp:fast": 1},
     "fire_simulation.cpp":    {"float": 29, "double": 0,  "fp:fast": 0},
     "water_solver.cpp":       {"float": 32, "double": 23, "fp:fast": 1},
     "temperature_solver.cpp": {"float": 2,  "double": 1,  "fp:fast": 0},
-    "physics_engine.cpp":     {"float": 68, "double": 24, "fp:fast": 1},
+    "physics_engine.cpp":     {"float": 71, "double": 24, "fp:fast": 1},
 }
 
 

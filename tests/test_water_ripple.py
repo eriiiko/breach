@@ -293,7 +293,8 @@ def _ab_rollout(noop_ripple: bool):
     g = sim.gmap
     interior = (~g.solid) & (~g.is_vacuum)
     g.water_depth[interior] = q(0.3)         # painted pool (Q16.16 metres, S1)
-    g.wave_p[5, 4:8] = 0.8                   # a blast ringing over the pool
+    g.wave_p[5, 4:8] = q(0.8)                # a blast ringing over the pool
+                                             # (S2a: wave_p is Q16.16 int32 now)
     if noop_ripple:
         class _NoRippleEngine:
             """Forward everything to the real engine, but discard the ripple

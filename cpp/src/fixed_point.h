@@ -191,6 +191,45 @@ inline int32_t ceil_div(q16 a_q, q16 b_q) {
     return (int32_t)(((int64_t)a_q + b_q - 1) / b_q);
 }
 
+// ---- deterministic integer mean reduction (mean_wp, S2a) ------------------
+//
+// The wave->atmosphere transfer subtracts mean(wave_p) so the deposit is
+// DC-free (mass-neutral) — the atmosphere is the conserved field, and a biased
+// mean leaks a DC drift into EVERY cell (S2a P2 hazard, map §7.1 / plan §6.6).
+//
+// The reduction is split so the two determinism properties are each visible:
+//   * mean_sum(values, mask, n)  — an int64 sum over a boolean mask. INTEGER
+//     addition is associative + exact, so the sum is ORDER-FREE: identical on a
+//     CPU scalar loop, a SIMD lane-tree, or a CUDA warp shuffle (spike-0a proved
+//     this empirically vs the float atomicAdd that jittered). No `<<16`: the
+//     summands are ALREADY Q16.16, so their int64 sum is a Q16.16 quantity too.
+//   * mean_round(sum, count)     — sum / count, ROUND-TO-NEAREST, sign-SYMMETRIC
+//     (round-half-away-from-zero, the same convention as quantize()). The naive
+//     `sum/count` truncates toward 0 and biases the mean by -sign(sum) (a DC
+//     drift); we bias the dividend by +/- count/2 so + and - round identically:
+//       mean = (sum >= 0) ? (sum + count/2) / count : (sum - count/2) / count
+//     There is NO pre-shift — `sum` is Q16.16, `count` is a plain integer, so
+//     `sum / count` is the Q16.16 mean directly (this is the M3 sharp edge: it
+//     differs from the GS divide, which DOES pre-shift a Q16.16 by <<16 before
+//     dividing by a Q16.16 divisor). count must be > 0 (the caller guards
+//     count == 0 -> mean 0, no division).
+inline int64_t mean_sum(const q16* values, const bool* mask, int n) {
+    int64_t sum = 0;
+    for (int i = 0; i < n; ++i) {
+        if (mask[i]) sum += (int64_t)values[i];   // exact, order-free
+    }
+    return sum;
+}
+
+inline q16 mean_round(int64_t sum, int64_t count) {
+    if (count <= 0) return 0;
+    // round-half-away-from-zero, sign-symmetric (no sign(sum) DC bias).
+    const int64_t half = count / 2;
+    const int64_t m = (sum >= 0) ? (sum + half) / count
+                                 : (sum - half) / count;
+    return (q16)m;
+}
+
 // ---- tan(theta) via a low-degree odd polynomial ---------------------------
 //
 // The ship-tilt term needs tan(tilt_x), tan(tilt_y) ONCE per tick (scalar, not

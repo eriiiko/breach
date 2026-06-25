@@ -70,9 +70,13 @@ class _SealedBox:
         # GS for ANY face weights and cannot leak, so it would hide the bug.
         self.atmosphere = np.where(solid, 0.0, 1.0).astype(np.float32)
         self.atmosphere[5:8, 5:8] += 0.3
-        self.wave_p = np.zeros((H, W), np.float32)
-        self.wave_v = np.zeros((H, W), np.float32)
-        self.wave_source = np.zeros((H, W), np.float32)
+        # S2a: wave_p / wave_v / wave_source are int32 Q16.16. This conservation
+        # test seeds no wave (all zeros), so the dtype switch is the only change;
+        # the atmosphere stays float (the S2c FLOAT BRIDGE the wave transfer/wind
+        # cross). The wave fields stay at integer 0 throughout (no source).
+        self.wave_p = np.zeros((H, W), np.int32)
+        self.wave_v = np.zeros((H, W), np.int32)
+        self.wave_source = np.zeros((H, W), np.int32)
         self.wind_x = np.zeros((H, W), np.float32)
         self.wind_y = np.zeros((H, W), np.float32)
         self.absorb = np.zeros((H, W), np.float32)
