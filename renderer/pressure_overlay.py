@@ -57,7 +57,17 @@ class PressureOverlay:
 
     def update(self, gmap) -> None:
         """Compute and upload the pressure colour map for the current state."""
-        total = gmap.atmosphere + gmap.wave_p
+        # S2a/S2c render FLOAT BRIDGE: gmap.wave_p (S2a) AND gmap.atmosphere (S2c)
+        # are now int32 Q16.16 — DEQUANTIZE BOTH to their PRE-MIGRATION real scale
+        # before summing, so the pressure colour map (the explosion viz) reads the
+        # original float pressure the colour stops were tuned against. Without this
+        # the raw int32 counts (~65536× too large) saturate the top colour stop and
+        # paint the whole frame opaque (the bug: wrong explosion colours AND smoke
+        # hidden under a saturated overlay). Render-only; the int fields are the
+        # synced source of truth.
+        from simulation import atmosphere_fixed, wave_fixed
+        total = (atmosphere_fixed.dequantize_f32(gmap.atmosphere)
+                 + wave_fixed.dequantize_f32(gmap.wave_p))
         if self.pressure_scale > 0:
             p = 1.0 + (total - 1.0) * (10.0 / self.pressure_scale)
         else:

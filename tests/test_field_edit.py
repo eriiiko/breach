@@ -35,6 +35,7 @@ from simulation.field_edit import (
 )
 from simulation import wave_fixed   # S2a: wave_source Q16.16 helpers
 from simulation import gas_fixed     # S2b: smoke/gas Q16.16 helpers
+from simulation import atmosphere_fixed  # S2c: atmosphere Q16.16 helpers
 
 
 # ---------------------------------------------------------------------------
@@ -52,12 +53,24 @@ def _smoke_d(q):
     return float(q) / gas_fixed.FP_ONE_F
 
 
+# S2c: atmosphere is int32 Q16.16 — the "atmosphere" field-edit dtype combines in
+# real pressure, stores quantized. Helpers to author/read atmosphere in real units.
+def _atm_q(v):
+    return atmosphere_fixed.quantize_scalar(v)
+
+
+def _atm_d(q):
+    return float(q) / atmosphere_fixed.FP_ONE_F
+
+
 class _GMapStub:
     def __init__(self, h=12, w=12):
         # S2b: smoke is int32 Q16.16 (the "gas" field-edit dtype) — mirror the
         # real gmap dtype here.
         self.smoke = np.zeros((h, w), dtype=np.int32)
-        self.atmosphere = np.zeros((h, w), dtype=np.float32)
+        # S2c: atmosphere is int32 Q16.16 (the "atmosphere" field-edit dtype) —
+        # mirror the real gmap dtype here (use _atm_q to author, _atm_d to read).
+        self.atmosphere = np.zeros((h, w), dtype=np.int32)
         # S2a: wave_source is int32 Q16.16 (the "wave" field-edit dtype combines
         # in real units, stores quantized) — mirror the real gmap dtype here.
         self.wave_source = np.zeros((h, w), dtype=np.int32)
@@ -79,10 +92,10 @@ def _rng(seed=0):
 # ---------------------------------------------------------------------------
 def test_mode_add():
     g = _GMapStub()
-    g.atmosphere[5, 5] = 1.0
+    g.atmosphere[5, 5] = _atm_q(1.0)
     apply_field_edit(g, FieldEdit("atmosphere", Region.TILE, (5, 5), 0.25,
                                   EditMode.ADD), _rng())
-    assert abs(float(g.atmosphere[5, 5]) - 1.25) < 1e-6
+    assert abs(_atm_d(g.atmosphere[5, 5]) - 1.25) < 1e-4
 
 
 def test_mode_remove_clamps_to_floor():
@@ -113,8 +126,8 @@ def test_region_tile():
     g = _GMapStub()
     apply_field_edit(g, FieldEdit("atmosphere", Region.TILE, (3, 4), 1.0,
                                   EditMode.ADD), _rng())
-    assert float(g.atmosphere[3, 4]) == 1.0
-    assert float(g.atmosphere.sum()) == 1.0  # only that one tile
+    assert _atm_d(g.atmosphere[3, 4]) == 1.0
+    assert _atm_d(g.atmosphere.sum()) == 1.0  # only that one tile
 
 
 def test_region_disc_flat():
@@ -122,9 +135,9 @@ def test_region_disc_flat():
     apply_field_edit(g, FieldEdit("atmosphere", Region.DISC, (6, 6, 3.0), 1.0,
                                   EditMode.ADD, Falloff.FLAT), _rng())
     # Centre is filled; a tile just outside the radius is not.
-    assert float(g.atmosphere[6, 6]) == 1.0
-    assert float(g.atmosphere[6, 6 + 3]) == 0.0   # dist == 3 == radius -> excluded (strict <)
-    assert float(g.atmosphere[6, 6 + 2]) == 1.0   # dist 2 < 3 -> filled, FLAT weight 1
+    assert _atm_d(g.atmosphere[6, 6]) == 1.0
+    assert _atm_d(g.atmosphere[6, 6 + 3]) == 0.0   # dist == 3 == radius -> excluded (strict <)
+    assert _atm_d(g.atmosphere[6, 6 + 2]) == 1.0   # dist 2 < 3 -> filled, FLAT weight 1
 
 
 def test_region_rect():
@@ -132,10 +145,10 @@ def test_region_rect():
     apply_field_edit(g, FieldEdit("atmosphere", Region.RECT, (2, 3, 4, 6), 1.0,
                                   EditMode.ADD), _rng())
     # The inclusive box [2..4] x [3..6] = 3 rows x 4 cols = 12 tiles.
-    assert float(g.atmosphere.sum()) == 12.0
-    assert float(g.atmosphere[2, 3]) == 1.0
-    assert float(g.atmosphere[4, 6]) == 1.0
-    assert float(g.atmosphere[1, 3]) == 0.0  # outside
+    assert _atm_d(g.atmosphere.sum()) == 12.0
+    assert _atm_d(g.atmosphere[2, 3]) == 1.0
+    assert _atm_d(g.atmosphere[4, 6]) == 1.0
+    assert _atm_d(g.atmosphere[1, 3]) == 0.0  # outside
 
 
 def test_region_beam():
@@ -144,10 +157,10 @@ def test_region_beam():
     apply_field_edit(g, FieldEdit("atmosphere", Region.BEAM, (5, 1, 5, 9, 0.0),
                                   1.0, EditMode.ADD), _rng())
     row = g.atmosphere[5, 1:10]
-    assert np.all(row == 1.0), f"beam centre row not fully covered: {row}"
+    assert np.all(row == _atm_q(1.0)), f"beam centre row not fully covered: {row}"
     # Nothing off the beam line.
-    assert float(g.atmosphere[4, 5]) == 0.0
-    assert float(g.atmosphere[6, 5]) == 0.0
+    assert _atm_d(g.atmosphere[4, 5]) == 0.0
+    assert _atm_d(g.atmosphere[6, 5]) == 0.0
 
 
 def test_region_beam_width():
@@ -155,9 +168,9 @@ def test_region_beam_width():
     # Width 1 -> the centre row plus the adjacent rows (perp dist <= 1).
     apply_field_edit(g, FieldEdit("atmosphere", Region.BEAM, (5, 2, 5, 8, 1.0),
                                   1.0, EditMode.ADD, Falloff.FLAT), _rng())
-    assert float(g.atmosphere[5, 5]) == 1.0
-    assert float(g.atmosphere[4, 5]) == 1.0   # 1 tile off-axis, within width
-    assert float(g.atmosphere[6, 5]) == 1.0
+    assert _atm_d(g.atmosphere[5, 5]) == 1.0
+    assert _atm_d(g.atmosphere[4, 5]) == 1.0   # 1 tile off-axis, within width
+    assert _atm_d(g.atmosphere[6, 5]) == 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -169,9 +182,9 @@ def test_linear_falloff_weights():
     apply_field_edit(g, FieldEdit("atmosphere", Region.DISC, (cr, cc, radius),
                                   2.0, EditMode.ADD, Falloff.LINEAR), _rng())
     # weight = 1 - dist/radius; amount = 2.0.
-    assert abs(float(g.atmosphere[cr, cc]) - 2.0) < 1e-5         # dist 0 -> w 1
-    d2 = float(g.atmosphere[cr, cc + 2])                         # dist 2 -> w 0.5
-    assert abs(d2 - 2.0 * (1.0 - 2.0 / radius)) < 1e-5
+    assert abs(_atm_d(g.atmosphere[cr, cc]) - 2.0) < 1e-4         # dist 0 -> w 1
+    d2 = _atm_d(g.atmosphere[cr, cc + 2])                         # dist 2 -> w 0.5
+    assert abs(d2 - 2.0 * (1.0 - 2.0 / radius)) < 1e-4
 
 
 def test_clamp_ceiling():
@@ -441,23 +454,28 @@ def test_apply_explosion_atmosphere_equivalence():
     ref = _open_gmap()
     h, w = ref.material.shape
     atm0 = ref.atmosphere.copy()
+    # S2c: atmosphere is int32 Q16.16 — build the legacy reference in REAL units
+    # (dequantize the base, do the float deposit), then compare dequantized to the
+    # migrated int field at Q16.16 granularity (the FieldEdit deposit re-quantizes).
+    ref_atm = atmosphere_fixed.dequantize(ref.atmosphere)
     for dy in range(-radius, radius + 1):
         for dx in range(-radius, radius + 1):
             ny, nx = cy + dy, cx + dx
             if 0 <= ny < h and 0 <= nx < w:
                 dist = math.sqrt(dy * dy + dx * dx)
                 if dist <= radius and not ref.solid[ny, nx] and not ref.is_vacuum[ny, nx]:
-                    ref.atmosphere[ny, nx] += pressure * (1.0 - dist / radius)
+                    ref_atm[ny, nx] += pressure * (1.0 - dist / radius)
 
     got = _open_gmap()
     q = EditQueue()
     apply_explosion(got, q, cy, cx, radius, pressure, wall_damage)
     q.flush(got, np.random.default_rng(0))
 
-    assert np.allclose(ref.atmosphere, got.atmosphere, atol=1e-5), \
+    got_atm = atmosphere_fixed.dequantize(got.atmosphere)
+    assert np.allclose(ref_atm, got_atm, atol=1e-4), \
         "migrated apply_explosion atmosphere diverged from the legacy deposit"
     # Sanity: the atmosphere actually changed somewhere.
-    assert not np.allclose(got.atmosphere, atm0)
+    assert not np.array_equal(got.atmosphere, atm0)
 
 
 if __name__ == "__main__":

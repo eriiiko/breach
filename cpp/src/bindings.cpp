@@ -59,6 +59,20 @@ PYBIND11_MODULE(breach_physics, m) {
     m.attr("WAVE_FP_SHIFT") = 16;
     m.attr("WAVE_FP_ONE") = 65536;
 
+    // S2c: the atmosphere (bulk pressure) + wind (= -grad(atm+wave_p)) are now
+    // int32 Q16.16 (same 2^16 scale). This CLOSES the S2 group: the whole
+    // atmosphere/wave/wind/smoke/gas group is now cross-GPU deterministic (the
+    // only float bridge left is the downstream FIRE coupling, S3). Python
+    // (gamemap fields, field edits, the recorder/render dequantize, tests) reads
+    // these flags to allocate atmosphere/wind_x/wind_y as int32 and to
+    // quantize/dequantize at the boundaries.
+    m.attr("ATMOSPHERE_FIXEDPOINT") = true;
+    m.attr("ATMOSPHERE_FP_SHIFT") = 16;
+    m.attr("ATMOSPHERE_FP_ONE") = 65536;
+    m.attr("WIND_FIXEDPOINT") = true;
+    m.attr("WIND_FP_SHIFT") = 16;
+    m.attr("WIND_FP_ONE") = 65536;
+
     // --- AtmosphereSolver (IMEX: explicit wave + implicit diffusion) ---
     py::class_<AtmosphereSolver>(m, "AtmosphereSolver")
         .def(py::init<>())
@@ -83,9 +97,9 @@ PYBIND11_MODULE(breach_physics, m) {
                         py::array_t<int32_t> wave_p,        // S2a: Q16.16 int32
                         py::array_t<int32_t> wave_v,        // S2a: Q16.16 int32
                         py::array_t<int32_t> wave_source,   // S2a: Q16.16 int32
-                        py::array_t<float> atmosphere,
-                        py::array_t<float> wind_x,
-                        py::array_t<float> wind_y,
+                        py::array_t<int32_t> atmosphere,    // S2c: Q16.16 int32
+                        py::array_t<int32_t> wind_x,        // S2c: Q16.16 int32
+                        py::array_t<int32_t> wind_y,        // S2c: Q16.16 int32
                         py::array_t<bool>  obstacles,
                         py::array_t<bool>  is_wall,
                         py::array_t<bool>  is_vacuum,
@@ -124,8 +138,8 @@ PYBIND11_MODULE(breach_physics, m) {
         // moved to sink_hop() below. dt_scale is removed (smoke moves on real dt).
         .def("step", [](const SmokeDynamics& self,
                         py::array_t<int32_t> smoke,        // S2b: Q16.16 int32
-                        py::array_t<float> wind_x,
-                        py::array_t<float> wind_y,
+                        py::array_t<int32_t> wind_x,       // S2c: Q16.16 int32
+                        py::array_t<int32_t> wind_y,       // S2c: Q16.16 int32
                         py::array_t<bool>  obstacles,
                         py::array_t<bool>  is_wall,
                         py::array_t<bool>  is_vacuum,
@@ -540,12 +554,12 @@ PYBIND11_MODULE(breach_physics, m) {
                              py::array_t<bool>  solid,
                              // fire group
                              py::array_t<float> fire,
-                             py::array_t<float> atmosphere,
+                             py::array_t<int32_t> atmosphere,   // S2c: Q16.16 int32 (fire bridge inside)
                              py::array_t<int32_t> smoke,         // S2b: Q16.16 int32
                              py::array_t<float> wall_hp,
                              py::array_t<int32_t> temperature,
-                             py::array_t<float> wind_x,
-                             py::array_t<float> wind_y,
+                             py::array_t<int32_t> wind_x,        // S2c: Q16.16 int32 (fire bridge inside)
+                             py::array_t<int32_t> wind_y,        // S2c: Q16.16 int32
                              py::array_t<bool>  is_vacuum,
                              py::array_t<bool>  flammable,
                              // temperature group
@@ -611,9 +625,9 @@ PYBIND11_MODULE(breach_physics, m) {
                                 py::array_t<int32_t> wave_p,        // S2a: Q16.16 int32
                                 py::array_t<int32_t> wave_v,        // S2a: Q16.16 int32
                                 py::array_t<int32_t> wave_source,   // S2a: Q16.16 int32
-                                py::array_t<float> atmosphere,
-                                py::array_t<float> wind_x,
-                                py::array_t<float> wind_y,
+                                py::array_t<int32_t> atmosphere,    // S2c: Q16.16 int32
+                                py::array_t<int32_t> wind_x,        // S2c: Q16.16 int32
+                                py::array_t<int32_t> wind_y,        // S2c: Q16.16 int32
                                 py::array_t<bool>  obstacles,
                                 py::array_t<bool>  solid,
                                 py::array_t<bool>  is_vacuum,
@@ -679,7 +693,7 @@ PYBIND11_MODULE(breach_physics, m) {
                               py::array_t<int32_t> flow_vx,        // S1: Q16.16 int32
                               py::array_t<int32_t> flow_vy,        // S1: Q16.16 int32
                               py::array_t<int32_t> floor_height,   // S1: Q16.16 int32
-                              py::array_t<float> atmosphere,       // float (FLOAT BRIDGE)
+                              py::array_t<int32_t> atmosphere,     // S2c: Q16.16 int32 (W3/W5 int<->int)
                               py::array_t<int32_t> wave_p,         // S2a: Q16.16 int32
                               py::array_t<bool>  solid,
                               py::array_t<int32_t> gas,            // S2b: Q16.16 int32 (steam puff quantized)

@@ -13,10 +13,12 @@
 // deterministic on every machine, so it is behaviour, not desync; smoke decay is
 // the tuning knob. NO flux form, NO limiter, NO outflow clamp.
 //
-// FLOAT BRIDGE (until S2c): the `wind` is still produced by the float atmosphere
-// (S2c not yet integer), so step() reads float wind_x/wind_y and quantizes the
-// wind*dt_adv DISPLACEMENT to Q16.16 at the boundary. After S2c the wind is
-// integer and this bridge closes (the displacement is computed integer-only).
+// S2c: the `wind` is now Q16.16 int32 (= -grad(atm+wave_p), computed by the
+// atmosphere solver) — the wind FLOAT BRIDGE is COLLAPSED. step() reads int32
+// wind_x/wind_y: the advection displacement -wind·dt_adv is an integer multiply
+// (dt_adv folded once in double, then quantized) and the wind-coupled diffusion
+// |wind|² is an integer square (Q.32) dequantized once per cell to the positive
+// d_eff·dt scalar coefficient. No per-cell float on the wind path.
 
 #include <cstdint>
 #include <vector>
@@ -42,8 +44,8 @@ public:
     // wind field from the atmosphere solver.
     void step(
         int32_t* smoke,            // S2b: int32 Q16.16 density (was float)
-        const float* wind_x,       // precomputed: -d/dx(atmosphere + wave_p) — FLOAT BRIDGE until S2c
-        const float* wind_y,       // precomputed: -d/dy(atmosphere + wave_p) — FLOAT BRIDGE until S2c
+        const int32_t* wind_x,     // S2c: Q16.16 int32 = -d/dx(atmosphere + wave_p)
+        const int32_t* wind_y,     // S2c: Q16.16 int32 = -d/dy(atmosphere + wave_p)
         const bool* obstacles,
         const bool* is_wall,
         const bool* is_vacuum,

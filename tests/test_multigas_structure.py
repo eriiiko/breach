@@ -201,9 +201,11 @@ def test_poison_transports_through_per_gas_loop():
     assert g.smoke.sum() == 0, "smoke should be empty for this test"
 
     # Impose a strong, steady rightward wind (the atmosphere solver normally
-    # produces this; we set it directly to isolate gas transport).
-    g.wind_x[:] = 3.0
-    g.wind_y[:] = 0.0
+    # produces this; we set it directly to isolate gas transport). S2c: wind is
+    # int32 Q16.16 — quantize 3.0 real (a raw `= 3.0` would store 3 counts ~ 0).
+    from simulation import atmosphere_fixed
+    g.wind_x[:] = atmosphere_fixed.quantize_scalar(3.0)
+    g.wind_y[:] = 0
 
     def _com_x(field):
         tot = field.sum()

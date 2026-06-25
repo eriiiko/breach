@@ -114,16 +114,41 @@ _FP_FAST_RE = re.compile(r"fp:fast")
 #     gas planes + the W5 steam puff are int32 now, so fewer `float* gas` lines),
 #     `double` 24 -> 25 (the steam-puff quantize). The remaining bridges collapse
 #     when the fire/steam systems migrate.
+# S2c (atmosphere/wind -> Q16.16 + COLLAPSE every S2 float bridge, 2026-06-26)
+# re-baselined atmosphere_solver.cpp + smoke_dynamics.cpp + physics_engine.cpp.
+# This is the CLOSER of the S2 group — atmosphere + wind are now integer, so the
+# whole atmosphere/wave/wind/smoke/gas group is cross-GPU deterministic (only the
+# downstream FIRE bridge remains, S3).
+#   * atmosphere_solver.cpp `float` FELL 62 -> 32: the RB-GS diffusion, the wind
+#     gradient, the sponge/vac atmosphere scales, AND the wave->atmosphere transfer
+#     all went integer (the wind's wave_p dequantize bridge + the float transfer
+#     deposit are GONE). `double` ROSE 17 -> 30: the per-tick/per-substep Q16.16
+#     CONSTANT precompute folds (mu = d_atm*dt, eta + the three sponge factors, the
+#     residual-ratio readout) — computed ONCE in double then quantized, the LOCKED
+#     S1 idiom (IEEE double is bit-identical cross-machine for scalar constants; no
+#     per-cell float). The remaining `float` 32 is the still-float permeability
+#     per-face weight quantize (permeability is a structural cache, not yet
+#     migrated) + the const signatures + comments. `fp:fast` 1 is a stale comment.
+#   * smoke_dynamics.cpp `float` 25 -> 24, `double` 15 -> 13: the wind FLOAT BRIDGE
+#     collapsed (the advection displacement + the |wind|² diffusion read are integer
+#     now — wind is Q16.16); the remaining `double` is the dt_adv / d_eff*dt scalar
+#     folds + the permeability per-face quantize.
+#   * physics_engine.cpp `float` 66 -> 65, `double` 25 -> 31: the W5/W3 atmosphere
+#     reads/scales went int<->int (boil threshold compare, the P*V mul_q16), and the
+#     FIRE BRIDGE (the ONE float bridge S2 leaves open) dequantizes atmosphere/wind
+#     to float scratch for the float fire+temperature then re-quantizes the plume —
+#     a load/boundary double fold, not per-cell transport. The water-head bridge
+#     also dequantizes atmosphere now (k_p != 0). All collapse when fire migrates.
 # Per-TU baseline: number of LINES containing each token (see the header). The
 # ratchet fails if any count rises above its baseline; LOWER as each solver
-# migrates. (Counts below recorded 2026-06-25 on s2-atmosphere-fixedpoint.)
+# migrates. (Counts below recorded 2026-06-26 on s2-atmosphere-fixedpoint.)
 BASELINE = {
-    "atmosphere_solver.cpp":  {"float": 62, "double": 17, "fp:fast": 1},
-    "smoke_dynamics.cpp":     {"float": 25, "double": 15, "fp:fast": 0},
+    "atmosphere_solver.cpp":  {"float": 32, "double": 30, "fp:fast": 1},
+    "smoke_dynamics.cpp":     {"float": 24, "double": 13, "fp:fast": 0},
     "fire_simulation.cpp":    {"float": 31, "double": 2,  "fp:fast": 0},
     "water_solver.cpp":       {"float": 32, "double": 23, "fp:fast": 1},
     "temperature_solver.cpp": {"float": 2,  "double": 1,  "fp:fast": 0},
-    "physics_engine.cpp":     {"float": 66, "double": 25, "fp:fast": 1},
+    "physics_engine.cpp":     {"float": 65, "double": 31, "fp:fast": 1},
 }
 
 

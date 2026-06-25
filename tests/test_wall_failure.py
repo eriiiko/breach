@@ -104,15 +104,17 @@ def test_pops_under_overpressure():
         g.materials.burst_threshold[int(wid)] = 6.0
 
     walls_before = int(g.solid.sum())
-    # Pump the interior far above the (re-enabled) burst_threshold.
-    g.atmosphere[interior] = 50.0
-    peak_before = float(g.atmosphere.max())
+    # Pump the interior far above the (re-enabled) burst_threshold. S2c:
+    # atmosphere is int32 Q16.16 — quantize 50.0 real (raw `= 50.0` -> 50 counts).
+    from simulation import atmosphere_fixed
+    g.atmosphere[interior] = atmosphere_fixed.quantize_scalar(50.0)
+    peak_before = atmosphere_fixed.dequantize(g.atmosphere.max())
 
     for _ in range(N_STEPS):
         sim.step()
 
     walls_after = int(g.solid.sum())
-    peak_after = float(g.atmosphere.max())
+    peak_after = atmosphere_fixed.dequantize(g.atmosphere.max())
 
     assert walls_after < walls_before, (
         f"expected a wall to fail: before={walls_before} after={walls_after}")
@@ -135,7 +137,8 @@ def test_no_spurious_pops_at_normal_pressure():
     for wid in np.unique(g.material[g.solid]):
         g.materials.burst_threshold[int(wid)] = 6.0
 
-    g.atmosphere[interior] = 1.0  # normal interior pressure
+    from simulation import atmosphere_fixed
+    g.atmosphere[interior] = atmosphere_fixed.quantize_scalar(1.0)  # normal interior pressure
 
     wall_set_before = g.solid.copy()
 

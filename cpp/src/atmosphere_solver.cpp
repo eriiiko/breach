@@ -23,9 +23,9 @@ void AtmosphereSolver::step(
     q16* wave_p,            // S2a: Q16.16 int32
     q16* wave_v,            // S2a: Q16.16 int32
     q16* wave_source,       // S2a: Q16.16 int32
-    float* atmosphere,
-    float* wind_x,
-    float* wind_y,
+    q16* atmosphere,        // S2c: Q16.16 int32
+    q16* wind_x,            // S2c: Q16.16 int32
+    q16* wind_y,            // S2c: Q16.16 int32
     const bool* obstacles,
     const bool* is_wall,
     const bool* is_vacuum,
@@ -50,7 +50,7 @@ void AtmosphereSolver::wave_substep(
     q16* wave_p,            // S2a: Q16.16 int32 (acoustic anomaly, signed)
     q16* wave_v,            // S2a: Q16.16 int32 (wave velocity, signed)
     q16* wave_source,       // S2a: Q16.16 int32 (injected energy, >= 0)
-    float* atmosphere,      // float — FLOAT BRIDGE until S2c
+    q16* atmosphere,        // S2c: Q16.16 int32 (conservative ±-pair transfer)
     const bool* obstacles,
     const bool* is_wall,
     const bool* is_vacuum,
@@ -66,8 +66,10 @@ void AtmosphereSolver::wave_substep(
     // exception); but c_sq*lap reaches ~1.3e5 BEFORE *dt, so the velocity kick
     // carries c_sq*lap and -damping*wave_v in INT64 and applies *dt BEFORE the
     // narrow (the only safe order — map M5 / plan §6.5). permeability /
-    // wave_absorb / atmosphere stay FLOAT (atmosphere is the float bridge to
-    // S2c; permeability/wave_absorb are not yet in the integer migration).
+    // wave_absorb stay FLOAT (structural caches, not yet migrated — quantized
+    // per-face on read). S2c: atmosphere is now Q16.16 int32, so the wave->
+    // atmosphere transfer is a CONSERVATIVE INTEGER ±-pair (see §3 below), NOT
+    // the old one-sided float deposit — exactly mass-neutral to the LSB.
     const int n = h * w;
 
     // --- Per-substep Q16.16 scalar constants (folded ONCE in double, then
@@ -83,8 +85,11 @@ void AtmosphereSolver::wave_substep(
     const q16 c_sq_dt_q = quantize(c_sq_d * dt_d);   // (c_sq*dt) as Q16.16
     const q16 damp_dt_q = quantize((double)damping * dt_d);
     const q16 dt_q      = quantize(dt_d);            // dt as Q16.16 (pressure update)
-    // (the transfer deposit is done in float at the bridge — see §3 below; no
-    //  xfer_q here, deliberately: a truncating integer deposit would DC-leak.)
+    // S2c: the wave->atmosphere transfer is now an INTEGER ±-pair (§3). xfer_q =
+    // (transfer*dt) as Q16.16 — the per-cell deposit is round-to-nearest of
+    // anomaly*xfer_q, then the SAME int is subtracted from wave_p and added to
+    // atmosphere (exactly conservative — no truncating one-sided DC sink).
+    const q16 xfer_q = quantize((double)transfer * dt_d);
     // Source feed: feed = min(source*feed_rate*dt, source, max_source_per_step).
     const q16 feed_rate_dt_q  = quantize((double)feed_rate * dt_d);     // feed_rate*dt
     const q16 max_source_q    = quantize((double)max_source_per_step);  // per-step cap
@@ -201,30 +206,39 @@ void AtmosphereSolver::wave_substep(
     const int64_t sum = mean_sum(wave_p, mask, n);
     const q16 mean_wp = mean_round(sum, count);
 
-    // Transfer anomaly (wave_p - mean_wp) into atmosphere — FLOAT BRIDGE until
-    // S2c (atmosphere is still float). The INTEGER, order-free, sign-symmetric
-    // mean_wp is the determinism-critical part (it is the global reduction —
-    // identical on every peer). The deposit itself crosses into the FLOAT
-    // atmosphere, so we do it the SAME WAY the float build did: dequantize the
-    // integer anomaly and multiply by the real (transfer*dt) in float, then add.
+    // === S2c — the CONSERVATIVE INTEGER ±-pair transfer ======================
+    // Move energy wave_p -> atmosphere by the anomaly (wave_p - mean_wp): per
+    // interior cell, the transfer amount is gathered ONCE as a round-to-nearest
+    // Q16.16 product, then the SAME integer is SUBTRACTED from wave_p and ADDED
+    // to atmosphere. Because it is the identical int on both sides, (atmosphere +
+    // wave_p) is preserved EXACTLY to the LSB — this is the bridge collapse the
+    // whole S2 group exists for (P2 saturation). It REPLACES the S2a one-sided
+    // float deposit, whose mul_q16-style >>16 truncated toward -inf and leaked a
+    // systematic DC sink (~0.9%/200t — proven in the S2a review).
     //
-    // SUBTLE (the DC-leak guard, map §7.1 / plan §6.6): the per-cell anomaly
-    // deposit must NOT use mul_q16 here. mul_q16's `>>16` truncates toward -inf,
-    // so EVERY cell's deposit loses up to 1 LSB on the floor; summed over the
-    // ~hundreds of interior cells that is a SYSTEMATIC negative DC sink (~ -count
-    // counts/substep) into the conserved atmosphere — a percent-scale drain over
-    // a tick even when Sum(wave_p - mean_wp) == 0. The rounded MEAN is DC-free,
-    // but a TRUNCATING deposit re-introduces the bias. Doing the deposit in float
-    // (round-to-nearest at the FP add) keeps it unbiased AND minimises divergence
-    // from the float build across this bridge. When atmosphere goes integer (S2c)
-    // this deposit must use a round-to-nearest (or conservative ±-pair) integer
-    // multiply, NOT mul_q16's truncation — flagged here for S2c.
-    const double xfer_d = (double)transfer * (double)dt;   // (transfer*dt) real
-    const float  xfer_f = (float)xfer_d;
+    // The mean_wp keeps the deposit DC-free across the masked interior (Sum of
+    // the rounded anomaly ~ 0), so the atmosphere does not gain a uniform DC
+    // bias; the ±-pair makes whatever IS moved exactly conservative. Round-to-
+    // nearest (not mul_q16 truncation) on the scalar multiply anomaly*xfer_q so
+    // the per-cell deposit is unbiased (a truncating deposit re-introduces the
+    // -inf sink the float bridge was avoiding).
+    //
+    // NOTE on the wave_p -= d coupling: the float build did NOT drain wave_p (it
+    // relied on the zero-mean copy). Draining wave_p by exactly the deposited int
+    // is the PHYSICAL transfer (the wave loses the energy it gives the bulk) and
+    // is what makes the pair conservative; with transfer*dt small (~0.02/substep)
+    // it is a gentle bleed, feel-validated against the float baseline.
+    const int64_t HALF_Q = (int64_t)1 << (FP_SHIFT - 1);   // 0.5 ULP (round-nearest)
     for (int i = 0; i < n; ++i) {
         if (mask[i]) {
-            const float anom = dequantize_f(wave_p[i] - mean_wp);  // FLOAT BRIDGE
-            atmosphere[i] += anom * xfer_f;                        // unbiased FP add
+            const q16 anom = wave_p[i] - mean_wp;          // zero-mean (exact int)
+            // d = round_to_nearest(anom * xfer_q) in Q16.16. Sign-symmetric +/-
+            // 0.5 ULP so + and - deposits round identically (no DC bias).
+            const int64_t prod = (int64_t)anom * (int64_t)xfer_q;
+            const q16 d = (q16)((prod >= 0) ? ((prod + HALF_Q) >> FP_SHIFT)
+                                            : -(((-prod) + HALF_Q) >> FP_SHIFT));
+            atmosphere[i] += d;          // +flux into the conserved bulk
+            wave_p[i]     -= d;          // -flux out of the wave (the same int)
         }
     }
 }
@@ -236,12 +250,12 @@ void AtmosphereSolver::wave_substep(
 // unconditionally stable, so this is fine. The GS-residual hook measures the
 // solve quality AFTER the sweeps but BEFORE the BC pass.
 void AtmosphereSolver::diffuse_solve(
-    float* atmosphere,
-    q16* wave_p,            // S2a: Q16.16 int32 (read for wind via FLOAT BRIDGE)
+    q16* atmosphere,        // S2c: Q16.16 int32 (RB-GS, residual form, Dinv)
+    q16* wave_p,            // S2a: Q16.16 int32 (read for wind — now integer)
     q16* wave_v,            // S2a: Q16.16 int32 (zeroed/scaled in the sponge BC)
     q16* wave_source,       // S2a: Q16.16 int32
-    float* wind_x,
-    float* wind_y,
+    q16* wind_x,            // S2c: Q16.16 int32 (= -grad(atm+wave_p))
+    q16* wind_y,            // S2c: Q16.16 int32
     const bool* obstacles,
     const bool* is_wall,
     const bool* is_vacuum,
@@ -249,136 +263,182 @@ void AtmosphereSolver::diffuse_solve(
     int h, int w,
     float dt
 ) const {
-    // S2c is NOT migrated yet: the atmosphere diffusion (RB-GS) + wind stay
-    // FLOAT. S2a only made the WAVE fields integer, so diffuse_solve touches
-    // them at two seams: (1) the sponge/vacuum BC zeroes/scales wave_p/wave_v/
-    // wave_source (now integer ops — exact); (2) the wind reads wave_p as part of
-    // the total pressure (DEQUANTIZED — a FLOAT BRIDGE until S2c). Everything
-    // else here (the GS solve, the atmosphere sponge, the residual hook) is the
-    // unchanged float S2c body.
+    // === S2c — the atmosphere diffusion (RB-GS) + wind are now Q16.16 integer.
+    // This is the CLOSER of the S2 group: with atmosphere/wind integer there are
+    // NO float bridges left inside the group (only the downstream FIRE bridge in
+    // step_tail). The GS divide is replaced by the cached per-cell reciprocal
+    // Dinv and run in RESIDUAL/FLUX form (a quotient form has no fixed point
+    // under a truncating multiply at large μ·wsum — map §4); the wind reads the
+    // integer wave_p directly (no dequantize); the sponge/vac BCs scale the
+    // integer atmosphere with mul_q16 (a deliberate sink, by design).
     const int n = h * w;
-    const float mu = d_atm * dt;  // implicit diffusion coefficient
+    // μ = d_atm·dt as a Q16.16 scalar (folded once in double, then quantized —
+    // the S1 idiom). d_atm=50, dt≈1/24 -> μ≈2.08, comfortably in range.
+    const double mu_d = (double)d_atm * (double)dt;
+    const q16    mu_q = quantize(mu_d);                 // μ in Q16.16
+    const q16 MU_EPS_Q = 655;                           // ~0.01 in Q16.16 (μ>1e-8 gate)
+    const int64_t HALF_Q = (int64_t)1 << (FP_SHIFT - 1);  // 0.5 ULP (round-nearest)
 
-    // --- 4. Implicit diffusion on atmosphere (Gauss-Seidel) ---
-    // Solve: (I - mu * Δ) atm_new = atm_current
-    // i.e.: (1 + 4μ) atm[i,j] - μ(neighbors) = rhs[i,j]
-    // where rhs = current atmosphere values (the "u*" from IMEX).
-    //
-    // We iterate in-place: Gauss-Seidel naturally converges.
-    // Red-black ordering for better convergence.
-    if (mu > 1e-8f) {
-        // Store RHS (current atmosphere = u*). Reused scratch: the copy loop
-        // writes every rhs[i] before any read, so no re-init needed.
-        if (rhs_.size() != (size_t)n) rhs_.assign(n, 0.0f);
-        float* __restrict rhs = rhs_.data();
+    // --- 4. Implicit diffusion on atmosphere (Red-Black Gauss-Seidel, integer)
+    // Solve (I - μΔ) atm_new = atm_current in RESIDUAL form. Per updated cell:
+    //   r_i = Σ_face μ·w_face·(atm_n - atm_i)  −  (atm_i - rhs_i)
+    //   atm_i += mul( r_i, Dinv_i )            where Dinv_i = 1/(1 + μ·wsum_i)
+    // At the fixed point equal neighbours -> r_i = 0 -> the increment truncates
+    // to exactly 0 -> DRIFT-FREE (the quotient form leaks at μ·wsum≈large). The
+    // face flux is gathered ONCE as an int64 (mul_wide of the Q16.16 face weight
+    // μ·w and the Q16.16 difference), summed, narrowed once — the conservative
+    // S1 gather shape. The 2-color schedule (red reads only black) is order-
+    // independent by construction -> identical on any architecture.
+    if (mu_q > MU_EPS_Q) {
+        // Store RHS (current atmosphere = u*). Reused scratch (Q16.16 now).
+        if (rhs_.size() != (size_t)n) rhs_.assign(n, 0);
+        q16* __restrict rhs = rhs_.data();
         for (int i = 0; i < n; ++i) rhs[i] = atmosphere[i];
 
+        // --- Build/refresh the cached per-cell Dinv on CHANGED cells only -----
+        // Dinv_i = reciprocal_q16(quantize(1 + μ·wsum_real)), keyed on
+        // (μ_q | obstacles | is_wall | is_vacuum | the 4 face permeabilities).
+        // Most ticks nothing changes -> we rebuild NOTHING (the key matches and
+        // we `continue`). Permeability is the CONTINUOUS dyn field, so wsum is a
+        // genuine per-cell value (not just {0,½,1} sums) — a per-cell reciprocal
+        // is needed, exactly the locked Q-S2-3 design. The CPU reciprocal_q16 is
+        // PURE INTEGER (Newton) — the precompute keeps NO float (the locked
+        // CPU=double-reciprocal option (a) was superseded by the proven integer
+        // Newton helper, which is GPU-clean and bit-identical on every peer).
+        if (dinv_.size() != (size_t)n || !dinv_valid_) {
+            dinv_.assign(n, 0);
+            dinv_key_.assign(n, 0);
+            dinv_valid_ = true;
+            // Force a full rebuild: an impossible key so every cell mismatches.
+            for (int i = 0; i < n; ++i) dinv_key_[i] = (uint64_t)-1;
+        }
+        for (int y = 0; y < h; ++y) {
+            const int row = y * w;
+            for (int x = 0; x < w; ++x) {
+                const int i = row + x;
+                if (obstacles[i] || is_wall[i] || is_vacuum[i]) {
+                    // Excluded cell: no equation. Mark Dinv 0 + a sentinel key so
+                    // if it later becomes interior it rebuilds. (The GS skips it.)
+                    if (dinv_key_[i] != 0) { dinv_[i] = 0; dinv_key_[i] = 0; }
+                    continue;
+                }
+                // The 4 face permeabilities (quantized; a face into an excluded+
+                // zeroed neighbour is 0 — the conservation guard, see below).
+                const float perm_i = permeability[i];
+                auto face_q = [&](int nb, bool inb) -> q16 {
+                    if (!inb) return 0;
+                    if (obstacles[nb] || is_wall[nb]) return 0;   // Neumann/guard
+                    return quantize((double)std::min(perm_i, permeability[nb]));
+                };
+                const q16 wu = face_q((y-1)*w+x, y > 0);
+                const q16 wd = face_q((y+1)*w+x, y < h-1);
+                const q16 wl = face_q(row+x-1,   x > 0);
+                const q16 wr = face_q(row+x+1,   x < w-1);
+                // Key: a cheap 64-bit mix of μ_q, the masks (always 0 here since
+                // interior), and the 4 face weights. Any input change flips it.
+                uint64_t key = (uint64_t)(uint32_t)mu_q;
+                key = key * 1099511628211ull + (uint64_t)(uint32_t)wu;
+                key = key * 1099511628211ull + (uint64_t)(uint32_t)wd;
+                key = key * 1099511628211ull + (uint64_t)(uint32_t)wl;
+                key = key * 1099511628211ull + (uint64_t)(uint32_t)wr;
+                key |= 1;   // never 0 (0 is the excluded-cell sentinel)
+                if (key == dinv_key_[i]) continue;    // unchanged -> reuse cache
+                // wsum = wu+wd+wl+wr (Q16.16); denom = 1 + μ·wsum (Q16.16).
+                const q16 wsum = wu + wd + wl + wr;
+                const q16 mu_wsum = mul_q16(mu_q, wsum);
+                const q16 denom_q = FP_ONE + mu_wsum;          // >= FP_ONE
+                dinv_[i] = reciprocal_q16(denom_q);            // 1/(1+μ·wsum), Q16.16
+                dinv_key_[i] = key;
+            }
+        }
+
         for (int iter = 0; iter < gs_iters; ++iter) {
-            // Red-black Gauss-Seidel: two sweeps per iteration
             for (int color = 0; color < 2; ++color) {
                 for (int y = 0; y < h; ++y) {
                     const int row = y * w;
                     for (int x = 0; x < w; ++x) {
                         if (((x + y) & 1) != color) continue;
                         const int i = row + x;
+                        if (obstacles[i] || is_wall[i] || is_vacuum[i]) continue;
 
-                        // Skip obstacles/walls (Neumann: don't update)
-                        if (obstacles[i] || is_wall[i]) continue;
-                        // Skip vacuum (handled by relaxation BC below)
-                        if (is_vacuum[i]) continue;
-
-                        // Gather neighbors with face-permeability weighting.
-                        // face = min(perm[self], perm[neighbor]); the implicit
-                        // operator is (I - mu*Σ face*(atm_n - atm_i)). For
-                        // perm∈{0,1} this is bit-identical to the old Neumann
-                        // mirror: an open neighbor (face=1) contributes mu*atm_n
-                        // and 1 to the diagonal weight (== the old fixed 4mu with
-                        // mirrored blocked terms cancelling), a blocked neighbor
-                        // (face=0) contributes nothing — exactly the old reflect.
-                        // Vacuum is NOT blocked here (perm 1) — air diffuses
-                        // toward exposed breach vacuum, as before. (The sealed
-                        // border is vacuum+wall, perm 0, which IS blocked.)
-                        //
-                        // CONSERVATION GUARD: a neighbour the solve EXCLUDES
-                        // and hard-zeroes (wall/obstacle — skipped above,
-                        // zeroed in the BC pass below) must contribute 0 to
-                        // BOTH sums. Such a cell has no equation of its own,
-                        // so a nonzero face there is a one-sided flux into a
-                        // cell held at p=0 — a Dirichlet sink that DESTROYS
-                        // mass. (Trigger: unit footprints stamped
-                        // dyn_permeability=0.5 over solid DOOR tiles — doors
-                        // are passable to movement but solid to flow — and the
-                        // sealed ship drained at a few %/s.) Static walls
-                        // carry perm 0, so for perm ∈ {0,1} inputs min() is
-                        // already 0 and this guard changes nothing — the 3a
-                        // bit-identical guarantee holds. Vacuum is NOT
-                        // guarded: a breach face keeps its perm weight and
-                        // drains via the relaxation BC, as designed.
                         const float perm_i = permeability[i];
-                        auto face = [&](int nb) {
-                            return (obstacles[nb] || is_wall[nb])
-                                ? 0.0f
-                                : std::min(perm_i, permeability[nb]);
+                        // μ·w_face as a Q16.16 weight; a face into an excluded+
+                        // zeroed cell is 0 (the CONSERVATION GUARD — a one-sided
+                        // flux into a p=0 Dirichlet cell would destroy mass; the
+                        // S1/3a fix, here integer). Gather Σ μ·w·(atm_n − atm_i)
+                        // as an int64 (mul_wide), narrow once.
+                        const q16 ai = atmosphere[i];
+                        auto muw = [&](int nb, bool inb) -> q16 {
+                            if (!inb) return 0;
+                            if (obstacles[nb] || is_wall[nb]) return 0;
+                            const q16 fw = quantize((double)std::min(perm_i, permeability[nb]));
+                            return mul_q16(mu_q, fw);
                         };
-                        float w_up    = (y > 0)   ? face((y-1)*w+x) : 0.0f;
-                        float w_down  = (y < h-1) ? face((y+1)*w+x) : 0.0f;
-                        float w_left  = (x > 0)   ? face(row+x-1)   : 0.0f;
-                        float w_right = (x < w-1) ? face(row+x+1)   : 0.0f;
-
-                        float nb = w_up   * (y > 0   ? atmosphere[(y-1)*w+x] : 0.0f)
-                                 + w_down * (y < h-1 ? atmosphere[(y+1)*w+x] : 0.0f)
-                                 + w_left * (x > 0   ? atmosphere[row+x-1]   : 0.0f)
-                                 + w_right* (x < w-1 ? atmosphere[row+x+1]   : 0.0f);
-                        float wsum = w_up + w_down + w_left + w_right;
-
-                        atmosphere[i] = (rhs[i] + mu * nb) / (1.0f + mu * wsum);
+                        int64_t acc = 0;
+                        if (y > 0)   { const int nb=(y-1)*w+x; acc += mul_wide(muw(nb,true), atmosphere[nb]-ai); }
+                        if (y < h-1) { const int nb=(y+1)*w+x; acc += mul_wide(muw(nb,true), atmosphere[nb]-ai); }
+                        if (x > 0)   { const int nb=row+x-1;   acc += mul_wide(muw(nb,true), atmosphere[nb]-ai); }
+                        if (x < w-1) { const int nb=row+x+1;   acc += mul_wide(muw(nb,true), atmosphere[nb]-ai); }
+                        // residual = Σ μ·w·(atm_n−atm_i) − (atm_i − rhs_i)
+                        const q16 flux = narrow(acc);
+                        const q16 resi = flux - (ai - rhs[i]);
+                        // increment = resi·Dinv, ROUND-TO-NEAREST (not mul_q16's
+                        // toward-(-inf) truncation). A truncating increment biases
+                        // EVERY cell's relaxation by up to -1 LSB/sweep -> a
+                        // systematic DC sink during the diffusion transient (a
+                        // ~1.8% mass loss vs the float GS's ~0.002%). Round-to-
+                        // nearest removes the directional bias so the integer GS
+                        // conserves to ~float granularity, while the residual form
+                        // keeps a drift-free fixed point (resi small -> rounds to 0).
+                        const int64_t inc_wide = (int64_t)resi * (int64_t)dinv_[i];
+                        const q16 inc = (q16)((inc_wide >= 0)
+                            ? ((inc_wide + HALF_Q) >> FP_SHIFT)
+                            : -(((-inc_wide) + HALF_Q) >> FP_SHIFT));
+                        atmosphere[i] = ai + inc;
                     }
                 }
             }
         }
 
-        // --- Patch 2a: GS-residual hook (read-only; AFTER the sweeps, BEFORE
-        // the BC pass so the post-solve BC mutation can't contaminate it).
-        // Residual of the implicit operator (I - μΔ)atm - rhs, evaluated with
-        // the SAME face/neighbour gather the GS update used:
-        //   res_i = (1 + μ·wsum)·atm_i - μ·nb - rhs_i
-        // over the non-obstacle interior (the cells the solve actually updates;
-        // walls/obstacles/vacuum are excluded — they have no equation). Linf
-        // norm, normalized by max|atm| over the same cells. Diagnostic only —
-        // nothing reads it; the diffusion is unconditionally stable regardless.
-        // (At the big once-per-tick dt, μ is large; this measures whether
-        // gs_iters sweeps under-relax — a tuning signal, not a correctness gate.)
-        float res_max = 0.0f;
-        float atm_absmax = 0.0f;
+        // --- GS-residual hook (read-only; AFTER the sweeps, BEFORE the BC pass).
+        // Mirror the float residual in INTEGER (plan §4 — the convergence check is
+        // itself deterministic): res_i = (atm_i − rhs_i) − Σ μ·w·(atm_n − atm_i),
+        // the same operator the update drives to 0. Linf over the interior,
+        // normalized by max|atm|, dequantized to a float ratio for the Python
+        // readout. Diagnostic only — nothing in-sim reads it.
+        int64_t res_max_q = 0;
+        int64_t atm_absmax_q = 0;
         for (int y = 0; y < h; ++y) {
             const int row = y * w;
             for (int x = 0; x < w; ++x) {
                 const int i = row + x;
                 if (obstacles[i] || is_wall[i] || is_vacuum[i]) continue;
                 const float perm_i = permeability[i];
-                auto face = [&](int nb) {
-                    return (obstacles[nb] || is_wall[nb])
-                        ? 0.0f
-                        : std::min(perm_i, permeability[nb]);
+                const q16 ai = atmosphere[i];
+                auto muw = [&](int nb, bool inb) -> q16 {
+                    if (!inb) return 0;
+                    if (obstacles[nb] || is_wall[nb]) return 0;
+                    const q16 fw = quantize((double)std::min(perm_i, permeability[nb]));
+                    return mul_q16(mu_q, fw);
                 };
-                float w_up    = (y > 0)   ? face((y-1)*w+x) : 0.0f;
-                float w_down  = (y < h-1) ? face((y+1)*w+x) : 0.0f;
-                float w_left  = (x > 0)   ? face(row+x-1)   : 0.0f;
-                float w_right = (x < w-1) ? face(row+x+1)   : 0.0f;
-                float nb = w_up   * (y > 0   ? atmosphere[(y-1)*w+x] : 0.0f)
-                         + w_down * (y < h-1 ? atmosphere[(y+1)*w+x] : 0.0f)
-                         + w_left * (x > 0   ? atmosphere[row+x-1]   : 0.0f)
-                         + w_right* (x < w-1 ? atmosphere[row+x+1]   : 0.0f);
-                float wsum = w_up + w_down + w_left + w_right;
-                float res = (1.0f + mu * wsum) * atmosphere[i] - mu * nb - rhs[i];
-                res_max = std::max(res_max, std::fabs(res));
-                atm_absmax = std::max(atm_absmax, std::fabs(atmosphere[i]));
+                int64_t acc = 0;
+                if (y > 0)   { const int nb=(y-1)*w+x; acc += mul_wide(muw(nb,true), atmosphere[nb]-ai); }
+                if (y < h-1) { const int nb=(y+1)*w+x; acc += mul_wide(muw(nb,true), atmosphere[nb]-ai); }
+                if (x > 0)   { const int nb=row+x-1;   acc += mul_wide(muw(nb,true), atmosphere[nb]-ai); }
+                if (x < w-1) { const int nb=row+x+1;   acc += mul_wide(muw(nb,true), atmosphere[nb]-ai); }
+                const q16 flux = narrow(acc);
+                const q16 res = (ai - rhs[i]) - flux;
+                const int64_t ar = res < 0 ? -res : res;
+                if (ar > res_max_q) res_max_q = ar;
+                const int64_t aa = ai < 0 ? -ai : ai;
+                if (aa > atm_absmax_q) atm_absmax_q = aa;
             }
         }
-        last_gs_residual = (atm_absmax > 1e-12f) ? (res_max / atm_absmax) : res_max;
+        last_gs_residual = (atm_absmax_q > 0)
+            ? (float)((double)res_max_q / (double)atm_absmax_q)
+            : (float)((double)res_max_q / (double)FP_ONE);
     } else {
-        // No diffusion this step (μ ~ 0) — the operator is the identity, so the
-        // residual is exactly 0.
+        // No diffusion this step (μ ~ 0) — the operator is the identity.
         last_gs_residual = 0.0f;
     }
 
@@ -431,34 +491,40 @@ void AtmosphereSolver::diffuse_solve(
         }
     }
 
-    const float eta = std::min(breach_rate * dt, 1.0f);
+    const double eta_d = (double)std::min(breach_rate * dt, 1.0f);
 
-    // S2a: the sponge's wave-field decays are now Q16.16. wave_v is SIGNED and
-    // the factor is a shrink (<=1) -> scale_mag (magnitude-symmetric). wave_p /
-    // wave_v zeroings are exact integer 0; wave_source (>= 0) uses mul_q16. The
-    // scalar decay factors are folded once in double, then quantized (S1 idiom).
+    // S2c: the sponge/vacuum BCs are now fully Q16.16. The atmosphere relaxation
+    // factors (1−eta), (1−eta·0.5), (1−eta·0.25) are folded once in double and
+    // quantized; the atmosphere *= factor becomes mul_q16 (atmosphere is non-
+    // negative here, so the >>16 truncation is a magnitude shrink — this is a
+    // DELIBERATE SINK, air venting to space, NOT conserved by design, like the
+    // temperature cooling). wave fields: wave_v shrinks via scale_mag (signed);
+    // wave_p/wave_v zeroings + wave_source clamps are exact integer ops (S2a).
+    const q16 atm_vac_k_q   = quantize(1.0 - eta_d);          // vacuum: (1−eta)
+    const q16 atm_inner_k_q = quantize(1.0 - eta_d * 0.5);    // inner: (1−eta·0.5)
+    const q16 atm_outer_k_q = quantize(1.0 - eta_d * 0.25);   // outer: (1−eta·0.25)
     const q16 wv_inner_k_q = quantize(1.0 - (double)std::min(30.0f * dt, 1.0f));
     const q16 wv_outer_k_q = quantize(1.0 - (double)std::min(15.0f * dt, 1.0f));
     const q16 ws_half_q    = quantize(0.5);   // wave_source outer-sponge *0.5
 
     for (int i = 0; i < n; ++i) {
         if (vac_dist[i] == 0) {
-            // Vacuum: strong relaxation
-            atmosphere[i] *= (1.0f - eta);
+            // Vacuum: strong relaxation (deliberate sink)
+            atmosphere[i] = mul_q16(atmosphere[i], atm_vac_k_q);
             wave_p[i] = 0;
             wave_v[i] = 0;
         } else if (obstacles[i] || is_wall[i]) {
             wave_p[i] = 0;
             wave_v[i] = 0;
-            atmosphere[i] = 0.0f;
+            atmosphere[i] = 0;
         } else if (vac_dist[i] == 1) {
             // Inner sponge
-            atmosphere[i] *= (1.0f - eta * 0.5f);
+            atmosphere[i] = mul_q16(atmosphere[i], atm_inner_k_q);
             wave_v[i] = scale_mag(wave_v[i], wv_inner_k_q);
             wave_source[i] = 0;
         } else if (vac_dist[i] == 2) {
             // Outer sponge
-            atmosphere[i] *= (1.0f - eta * 0.25f);
+            atmosphere[i] = mul_q16(atmosphere[i], atm_outer_k_q);
             wave_v[i] = scale_mag(wave_v[i], wv_outer_k_q);
             wave_source[i] = mul_q16(wave_source[i], ws_half_q);
         }
@@ -471,43 +537,45 @@ void AtmosphereSolver::diffuse_solve(
             const int i = row + x;
 
             if (obstacles[i] || is_wall[i] || is_vacuum[i]) {
-                wind_x[i] = 0.0f;
-                wind_y[i] = 0.0f;
+                wind_x[i] = 0;
+                wind_y[i] = 0;
                 continue;
             }
 
-            // Total pressure for gradient = atmosphere (float) + wave_p.
-            // S2a: wave_p is Q16.16 int32 -> DEQUANTIZE it here (FLOAT BRIDGE
-            // until S2c, when atmosphere goes integer and this whole term is
-            // re-expressed in Q16.16). The dequantize is exact (/65536).
-            auto total = [&](int idx) {
-                return atmosphere[idx] + dequantize_f(wave_p[idx]);  // FLOAT BRIDGE
+            // Total pressure for the gradient = atmosphere + wave_p, both Q16.16
+            // int32 now (S2c) — the read of wave_p is INTEGER (no dequantize; the
+            // last wave_p FLOAT BRIDGE in the wind term is collapsed). total() is
+            // an exact integer sum.
+            auto total = [&](int idx) -> q16 {
+                return atmosphere[idx] + wave_p[idx];
             };
-            float p_here = total(i);
+            const q16 p_here = total(i);
             const float perm_i = permeability[i];
 
-            // Face-permeability gradient: p_side = p_here + face*(total(n) -
-            // p_here). For perm∈{0,1} this is bit-identical to the old mirror
-            // (face=0 → p_here, exactly the reflect; face=1 → total(n)).
-            // Indices clamp to self when out of bounds (face is 0 there, so
-            // the term vanishes — but the read must stay in bounds).
+            // Face-permeability gradient: p_side = p_here + face·(total(n)−p_here).
+            // face is the quantized min-permeability (a load-boundary cast of the
+            // still-float perm field — a perm bridge, NOT an atmosphere bridge).
+            // For perm∈{0,1} this is bit-identical to the old mirror (face=0 ->
+            // p_here reflect; face=FP_ONE -> total(n)). The face·Δ is mul_q16.
             int il = (x > 0)   ? row + x - 1 : i;
             int ir = (x < w-1) ? row + x + 1 : i;
             int iu = (y > 0)   ? (y-1)*w + x : i;
             int id = (y < h-1) ? (y+1)*w + x : i;
-            float f_left  = (x > 0)   ? std::min(perm_i, permeability[il]) : 0.0f;
-            float f_right = (x < w-1) ? std::min(perm_i, permeability[ir]) : 0.0f;
-            float f_up    = (y > 0)   ? std::min(perm_i, permeability[iu]) : 0.0f;
-            float f_down  = (y < h-1) ? std::min(perm_i, permeability[id]) : 0.0f;
+            const q16 f_left  = (x > 0)   ? quantize((double)std::min(perm_i, permeability[il])) : 0;
+            const q16 f_right = (x < w-1) ? quantize((double)std::min(perm_i, permeability[ir])) : 0;
+            const q16 f_up    = (y > 0)   ? quantize((double)std::min(perm_i, permeability[iu])) : 0;
+            const q16 f_down  = (y < h-1) ? quantize((double)std::min(perm_i, permeability[id])) : 0;
 
-            float p_left  = p_here + f_left  * (total(il) - p_here);
-            float p_right = p_here + f_right * (total(ir) - p_here);
-            float p_up    = p_here + f_up    * (total(iu) - p_here);
-            float p_down  = p_here + f_down  * (total(id) - p_here);
+            const q16 p_left  = p_here + mul_q16(f_left,  total(il) - p_here);
+            const q16 p_right = p_here + mul_q16(f_right, total(ir) - p_here);
+            const q16 p_up    = p_here + mul_q16(f_up,    total(iu) - p_here);
+            const q16 p_down  = p_here + mul_q16(f_down,  total(id) - p_here);
 
-            // Wind = -grad(p): air flows from high to low pressure
-            wind_x[i] = -(p_right - p_left) * 0.5f;
-            wind_y[i] = -(p_down  - p_up)   * 0.5f;
+            // Wind = -grad(p): air flows from high to low pressure. The ·0.5 is a
+            // shr_round0 (>>1, sign-symmetric — wind is signed). 2-term central
+            // diff, integer throughout.
+            wind_x[i] = -shr_round0(p_right - p_left, 1);
+            wind_y[i] = -shr_round0(p_down  - p_up,   1);
         }
     }
 

@@ -83,7 +83,18 @@ class GameMap:
         self.wall_hp      = np.zeros((h, w), dtype=np.float32)
         self.is_vacuum    = np.zeros((h, w), dtype=bool)
         self.flammable    = np.zeros((h, w), dtype=bool)
-        self.atmosphere   = np.ones((h, w), dtype=np.float32)
+        # S2c: the atmosphere (bulk pressure) is int32 Q16.16 (scale 2^16, shared
+        # with water/heat/wave/gas) — the CLOSER of the S2 group: with atmosphere
+        # + wind integer the whole atmosphere/wave/wind/smoke/gas group is
+        # cross-machine bit-identical (only the downstream FIRE coupling stays a
+        # float bridge, S3). 1.0 atm == FP_ONE (65536) counts. atmosphere is the
+        # CONSERVED field (the wave transfer is a conservative ±-pair); the
+        # vacuum/sponge + W3 compression are the deliberate-sink exceptions.
+        # simulation.atmosphere_fixed has the real<->Q16.16 helpers (field edits,
+        # render/recorder dequantize, the fire bridge). NEVER reassign (write
+        # ``atmosphere[:] = ...``) — the C++ solvers hold a pointer to this buffer.
+        from simulation import atmosphere_fixed as _atm_fx
+        self.atmosphere   = np.full((h, w), _atm_fx.FP_ONE, dtype=np.int32)
         # S2a: the explicit WAVE state is int32 Q16.16 (scale 2^16, shared with
         # water/heat) — integer transport is bit-identical cross-machine (the
         # determinism the float path lacked). wave_p (acoustic anomaly, signed),
@@ -95,8 +106,13 @@ class GameMap:
         self.wave_p       = np.zeros((h, w), dtype=np.int32)
         self.wave_v       = np.zeros((h, w), dtype=np.int32)
         self.wave_source  = np.zeros((h, w), dtype=np.int32)
-        self.wind_x       = np.zeros((h, w), dtype=np.float32)
-        self.wind_y       = np.zeros((h, w), dtype=np.float32)
+        # S2c: wind is int32 Q16.16 (= -grad(atmosphere + wave_p), same 2^16
+        # scale) — the smoke advection + the n_smoke CFL cliff read it integer,
+        # the renderer/fire bridge dequantize it (atmosphere_fixed helpers). A
+        # signed derived field (NOT conserved). Filled IN-PLACE by the C++
+        # diffuse_solve (never reassigned) so a C++ view stays valid.
+        self.wind_x       = np.zeros((h, w), dtype=np.int32)
+        self.wind_y       = np.zeros((h, w), dtype=np.int32)
         # Multi-gas density fields (engine/05 §6.2, M1): a dense (N, h, w) array,
         # one (h, w) slice per gas type (slice order == the GAS_* ids). S2b: now
         # int32 Q16.16 (scale 2^16, shared with water/heat/wave) — the smoke + 5
@@ -386,9 +402,14 @@ class GameMap:
         self.solid = self.permeability <= 0.0
 
         # Atmosphere: 1.0 in interior air, 0.0 at solid tiles and vacuum.
+        # S2c: int32 Q16.16 (1.0 atm == FP_ONE counts). _update_caches reassigns
+        # the cache fields (the engine re-fetches field pointers each step), and
+        # the running atmosphere is snapshotted/restored around this call below,
+        # so this fresh allocation only seeds tick 0 / a reset.
+        from simulation import atmosphere_fixed as _atm_fx
         self.atmosphere = np.where(
-            self.solid | self.is_vacuum, 0.0, 1.0
-        ).astype(np.float32)
+            self.solid | self.is_vacuum, 0, _atm_fx.FP_ONE
+        ).astype(np.int32)
 
         # Obstacles (the physics solid boundary) == solid tiles (permeability
         # == 0) until stamp_units paints unit footprints over it. Sourced from
@@ -952,7 +973,10 @@ class GameMap:
             :meth:`destroy_wall` on each (mirrors fire burn-through plumbing).
         """
         h, w = self._h, self._w
-        atm = self.atmosphere
+        # S2c: atmosphere is int32 Q16.16 — dequantize to REAL pressure here so
+        # the spread (hi-lo) compares against the real-unit burst_threshold `t`.
+        from simulation import atmosphere_fixed as _atm_fx
+        atm = _atm_fx.dequantize(self.atmosphere)
         solid = self.solid
         is_vacuum = self.is_vacuum
         thresh = self.materials.burst_threshold

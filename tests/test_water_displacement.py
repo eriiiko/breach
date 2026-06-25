@@ -252,7 +252,11 @@ def _corridor_sim(with_water: bool):
     # S2b: gas is int32 Q16.16 — seed the source side at FULL density (the old
     # `= 10.0` float was clamped to 1.0 by the solver anyway). FP_ONE counts.
     g.gas[BLACK_SMOKE][1, 1:LINE_X] = gas_fixed.SMOKE_MAX_Q
-    g.atmosphere[1, 1:LINE_X] = 1.3
+    # S2c: atmosphere is int32 Q16.16 — quantize the source-side overpressure that
+    # drives the wind (a raw `= 1.3` would store 1 count ~ 0 -> no gradient, no
+    # wind, and the dry-line control would never see gas cross).
+    from simulation import atmosphere_fixed
+    g.atmosphere[1, 1:LINE_X] = atmosphere_fixed.quantize_scalar(1.3)
     sim.set_paused(False)
     return sim, g
 

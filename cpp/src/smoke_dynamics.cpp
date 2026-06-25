@@ -186,8 +186,8 @@ static inline int32_t backtrace_sample_q(
 
 void SmokeDynamics::step(
     int32_t* smoke,
-    const float* wind_x,
-    const float* wind_y,
+    const int32_t* wind_x,     // S2c: Q16.16 int32
+    const int32_t* wind_y,     // S2c: Q16.16 int32
     const bool* obstacles,
     const bool* is_wall,
     const bool* is_vacuum,
@@ -238,12 +238,17 @@ void SmokeDynamics::step(
     }
 
     for (int i = 0; i < n; ++i) {
-        // FLOAT BRIDGE (until S2c): the wind is float; |wind|² and d_eff are
-        // computed in double, then the positive scalar coefficient d_eff*dt is
-        // quantized to Q16.16 and mul_q16'd onto the integer Laplacian. d_eff*dt
-        // is small (d_smoke~0.1, dt~1/24) so it sits comfortably in Q16.16.
-        const double wind_sq = (double)wind_x[i] * wind_x[i]
-                             + (double)wind_y[i] * wind_y[i];
+        // S2c: the wind is Q16.16 int32. |wind|² is an integer square (Q.32 via
+        // mul_wide), dequantized ONCE to a real wind_sq; d_eff and the positive
+        // scalar coefficient d_eff·dt are folded in double, then quantized to
+        // Q16.16 and mul_q16'd onto the integer Laplacian (d_smoke / scale / dt
+        // are config/scalars, not synced fields — the per-cell wind path is now
+        // integer-sourced, no float wind read). d_eff·dt is small (d_smoke~0.1,
+        // dt~1/24) so it sits comfortably in Q16.16.
+        const int64_t wind_sq_q32 = mul_wide(wind_x[i], wind_x[i])
+                                  + mul_wide(wind_y[i], wind_y[i]);
+        const double wind_sq = (double)wind_sq_q32
+                             / ((double)FP_ONE * (double)FP_ONE);   // Q.32 -> real
         const double d_eff = (double)d_smoke
                            * (1.0 + (double)wind_diffusion_scale * wind_sq);
         const int32_t coeff_q = quantize(d_eff * (double)actual_dt);
@@ -252,12 +257,15 @@ void SmokeDynamics::step(
 
     // --- Advection by precomputed wind field (integer semi-Lagrangian) ---
     // Patch 2b: WIND-ONLY (the breach sink-pull is the standalone sink_hop pass).
-    // The displacement is wind * dt_adv with dt_adv = advection_rate * actual_dt.
-    // FLOAT BRIDGE (until S2c): the wind is float, so the per-cell displacement
-    // -wind*dt_adv is computed in double and quantized to a Q16.16 displacement
-    // at the boundary (mirrors the prototype's bx_q/by_q quantize). After S2c the
-    // wind is integer and this becomes an integer multiply.
+    // The displacement is wind · dt_adv with dt_adv = advection_rate · actual_dt.
+    // S2c: the wind is Q16.16 int32, so the per-cell displacement -wind·dt_adv is
+    // a pure INTEGER multiply: dt_adv is a real scalar folded once in double then
+    // quantized (dt_adv_q), and bx_q = -mul_q16(wind_x_q, dt_adv_q). The wind
+    // FLOAT BRIDGE is COLLAPSED (no per-cell float wind read). advection_rate /
+    // actual_dt are config/scalars (not synced fields), so the single dt_adv_q
+    // quantize is fine; mul_q16 carries the product in int64 (no overflow).
     const double dt_adv = (double)advection_rate * (double)actual_dt;
+    const int32_t dt_adv_q = quantize(dt_adv);            // (advection_rate·dt) Q16.16
 
     // Double buffer: snapshot the post-diffusion int32 field; the back-trace reads
     // the snapshot, writes the advected result. Reused scratch (SWAP idiom).
@@ -269,11 +277,11 @@ void SmokeDynamics::step(
         for (int x = 0; x < w; ++x) {
             int i = y * w + x;
             if (obstacles[i] || is_wall[i] || is_vacuum[i]) continue;
-            // Wind pull-advection: sample upwind, p = cell - wind * dt_adv.
-            const double bx_f = -(double)wind_x[i] * dt_adv;
-            const double by_f = -(double)wind_y[i] * dt_adv;
-            const int32_t bx_q = quantize(bx_f);            // round-to-nearest boundary cast
-            const int32_t by_q = quantize(by_f);
+            // Wind pull-advection: sample upwind, p = cell - wind · dt_adv. The
+            // displacement is an INTEGER multiply now (wind is Q16.16): bx_q =
+            // -mul_q16(wind_x_q, dt_adv_q). No float wind read (bridge collapsed).
+            const int32_t bx_q = -mul_q16(wind_x[i], dt_adv_q);
+            const int32_t by_q = -mul_q16(wind_y[i], dt_adv_q);
             smoke[i] = backtrace_sample_q(src.data(), x, y, bx_q, by_q,
                                           obstacles, is_wall, is_vacuum,
                                           permeability, h, w);

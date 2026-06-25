@@ -89,8 +89,15 @@ def _step(s, smoke, wind_x, wind_y, obstacles, is_wall, is_vacuum, perm, dt):
     is the standalone ``sink_hop``), so ``step`` takes no sink field — these S1
     advection tests have no breach anyway, so this is exactly the plain
     semi-Lagrangian wind advection they assert.
+
+    S2c: wind is int32 Q16.16 — the tests author wind in REAL units (so the
+    expected-displacement maths stays readable), so QUANTIZE the wind arrays to
+    Q16.16 at the .step boundary here (the renderer/recorder do the inverse).
     """
-    s.step(smoke, wind_x, wind_y,
+    from simulation import atmosphere_fixed
+    wx_q = atmosphere_fixed.quantize(wind_x).astype(np.int32)
+    wy_q = atmosphere_fixed.quantize(wind_y).astype(np.int32)
+    s.step(smoke, wx_q, wy_q,
            obstacles, is_wall, is_vacuum, perm, dt)
 
 

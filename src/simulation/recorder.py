@@ -83,12 +83,16 @@ class PhysicsRecorder:
         i = self.index % self.capacity
         for name in self.fields:
             arr = getattr(gmap, name)
-            # S2a/S2b: wave_p / wave_v / smoke (and any gas plane) are now int32
-            # Q16.16 — DEQUANTIZE to real units (/65536) at the recorder boundary
-            # so the float32 ring buffer (and the BLOWUP_THRESHOLD compare below)
-            # stays in meaningful units, not raw counts. Render/debug only — not
-            # part of the synced state. (`smoke` is the BLACK_SMOKE int32 view.)
-            if name in ("wave_p", "wave_v", "wave_source", "smoke") and \
+            # S2a/S2b/S2c: wave_p / wave_v / wave_source / smoke (S2a/S2b) AND
+            # atmosphere / wind_x / wind_y (S2c) are now int32 Q16.16 — DEQUANTIZE
+            # to real units (/65536) at the recorder boundary so the float32 ring
+            # buffer (and the BLOWUP_THRESHOLD compare below) stays in meaningful
+            # units, not raw counts. Render/debug only — not part of the synced
+            # state. (`smoke` is the BLACK_SMOKE int32 view; all share the 2^16
+            # scale.) The dtype guard makes this a no-op for any field that stays
+            # float, so the same code is safe across the migration.
+            if name in ("wave_p", "wave_v", "wave_source", "smoke",
+                        "atmosphere", "wind_x", "wind_y") and \
                     arr.dtype == np.int32:
                 arr = arr.astype(np.float64) / 65536.0
             self.buffers[name][i] = arr

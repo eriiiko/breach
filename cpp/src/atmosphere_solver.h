@@ -55,6 +55,10 @@ public:
     // yet — pure instrumentation. Default 0 until the first diffuse_solve.
     // `mutable` so the const diffuse_solve()/step() can write it (it is pure
     // diagnostic state, not a solver output).
+    // S2c: the GS-residual is now computed in INTEGER (a Q16.16 ratio) so the
+    // convergence check is itself deterministic. last_gs_residual stays a float
+    // for the Python readout (it is a normalized ratio in [0,1]-ish), dequantized
+    // from the integer residual — pure diagnostic, nothing in-sim reads it.
     mutable float last_gs_residual = 0.0f;
     float gs_residual() const { return last_gs_residual; }
 
@@ -69,9 +73,9 @@ public:
         q16* wave_p,            // S2a: Q16.16 int32
         q16* wave_v,            // S2a: Q16.16 int32
         q16* wave_source,       // S2a: Q16.16 int32
-        float* atmosphere,
-        float* wind_x,
-        float* wind_y,
+        q16* atmosphere,        // S2c: Q16.16 int32
+        q16* wind_x,            // S2c: Q16.16 int32
+        q16* wind_y,            // S2c: Q16.16 int32
         const bool* obstacles,
         const bool* is_wall,
         const bool* is_vacuum,
@@ -90,7 +94,7 @@ public:
         q16* wave_p,            // S2a: Q16.16 int32
         q16* wave_v,            // S2a: Q16.16 int32
         q16* wave_source,       // S2a: Q16.16 int32
-        float* atmosphere,      // float — FLOAT BRIDGE until S2c
+        q16* atmosphere,        // S2c: Q16.16 int32 (conservative ±-pair transfer)
         const bool* obstacles,
         const bool* is_wall,
         const bool* is_vacuum,
@@ -106,12 +110,12 @@ public:
     // the vacuum/sponge BC pass, then wind = -grad(atmosphere + wave_p).
     // Measures last_gs_residual after the sweeps, before the BC pass.
     void diffuse_solve(
-        float* atmosphere,
-        q16* wave_p,            // S2a: Q16.16 int32 (read for wind via a FLOAT
-        q16* wave_v,            //      BRIDGE; zeroed/scaled in the sponge BC)
+        q16* atmosphere,        // S2c: Q16.16 int32 (RB-GS, residual form, Dinv)
+        q16* wave_p,            // S2a: Q16.16 int32 (read for wind — now integer)
+        q16* wave_v,            //      zeroed/scaled in the sponge BC
         q16* wave_source,       // S2a: Q16.16 int32
-        float* wind_x,
-        float* wind_y,
+        q16* wind_x,            // S2c: Q16.16 int32 (= -grad(atm+wave_p))
+        q16* wind_y,            // S2c: Q16.16 int32
         const bool* obstacles,
         const bool* is_wall,
         const bool* is_vacuum,
@@ -139,6 +143,21 @@ private:
     mutable std::vector<uint8_t> interior_mask_;  // S2a: mean_wp mask (0/1; bool*
                                                   // via reinterpret_cast — vector
                                                   // <bool> has no .data())
-    mutable std::vector<float>   rhs_;
+    mutable std::vector<q16>     rhs_;            // S2c: Q16.16 (the GS RHS = u*)
     mutable std::vector<uint8_t> vac_dist_;
+
+    // --- S2c: the cached per-cell Gauss-Seidel reciprocal Dinv ---------------
+    // Dinv[i] = reciprocal_q16(quantize(1 + mu*wsum_real)) in Q16.16. The divisor
+    // depends ONLY on (mu | obstacles | is_wall | is_vacuum | permeability) — none
+    // of which change between most ticks — so we cache Dinv and the per-cell KEY
+    // it was built from, and rebuild ONLY the cells whose key changed (most ticks
+    // rebuild NOTHING). The key is a cheap 64-bit hash of (mu_q, the three masks,
+    // the 4 face permeabilities) — a change in any input flips it. `dinv_valid_`
+    // guards the very first build (and a grid-size change). All mutable: the const
+    // diffuse_solve fills them as pure scratch (temperature_solver idiom).
+    //   dinv_      — Q16.16 per-cell reciprocal of (1 + mu*wsum); skipped cells 0.
+    //   dinv_key_  — the per-cell key Dinv was last built from (rebuild on change).
+    mutable std::vector<q16>      dinv_;
+    mutable std::vector<uint64_t> dinv_key_;
+    mutable bool                  dinv_valid_ = false;
 };

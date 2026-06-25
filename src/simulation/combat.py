@@ -324,7 +324,10 @@ def apply_temperature_ignition(gmap, o2_threshold, ignition_seed):
     # flammable wall tile's own cell is solid; its oxygen comes from adjacent air.
     h, w = temperature.shape
     air_side = ~gmap.solid                      # True on tiles that count toward O2
-    atm = gmap.atmosphere
+    # S2c: atmosphere is int32 Q16.16 — dequantize to REAL pressure so the O2
+    # proxy (mean atmosphere >= o2_threshold) matches the C++ fire O2 check.
+    from simulation import atmosphere_fixed as _atm_fx
+    atm = _atm_fx.dequantize_f32(gmap.atmosphere)
     sum_atm = np.zeros((h, w), dtype=np.float32)
     count = np.zeros((h, w), dtype=np.float32)
     # N, S, E, W (fixed order; sum is order-independent regardless).

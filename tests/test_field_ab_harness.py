@@ -58,8 +58,10 @@ def test_harness_catches_mean_preserving_perturbation():
     a = capture_trajectory(default_scenario_sim, N)
     b = copy.deepcopy(a)
     snap = b[N // 2]["atmosphere"]
-    snap[3, 3] += 1e-3      # +d here ...
-    snap[4, 4] -= 1e-3      # ... -d there -> whole-grid mean is unchanged
+    # S2c: atmosphere is int32 Q16.16 — perturb by integer COUNTS (a float 1e-3
+    # would truncate to 0 in the int field). +1/-1 count is mean-preserving.
+    snap[3, 3] += 1      # +d here ...
+    snap[4, 4] -= 1      # ... -d there -> whole-grid mean is unchanged
     # the legacy mean signature CANNOT see this:
     assert abs(float(b[N // 2]["atmosphere"].mean())
                - float(a[N // 2]["atmosphere"].mean())) < 1e-12, \
@@ -74,7 +76,10 @@ def test_tolerance_mode():
     (B) path if the /fp:precise 0-ULP gate is ever relaxed to a stated tolerance."""
     a = capture_trajectory(default_scenario_sim, N)
     b = copy.deepcopy(a)
-    b[1]["atmosphere"][5, 5] += 1e-6
+    # S2c: atmosphere is int32 — use a `ripple` cell (still float) to exercise the
+    # tolerance path on a sub-tolerance float delta (atmosphere counts are integer,
+    # so a 1e-6 delta there is not representable).
+    b[1]["ripple"][5, 5] += 1e-6
     assert not diff_trajectories(a, b, tol=1e-5), "tol=1e-5 should accept a 1e-6 delta"
     assert diff_trajectories(a, b, tol=1e-9), "tol=1e-9 should reject a 1e-6 delta"
 

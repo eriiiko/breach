@@ -32,14 +32,16 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         const int32_t* water_depth, const int32_t* wave_p,   // S1: water_depth Q16.16
                                                              // S2a: wave_p Q16.16
         const bool* solid,
-        // fire group
-        float* fire_field, float* atmosphere, int32_t* smoke_field, float* wall_hp,  // S2b: smoke Q16.16
-        const int32_t* temperature, const float* wind_x, const float* wind_y,
+        // fire group — S2c: atmosphere + wind are Q16.16 int32 (fire bridge below)
+        float* fire_field, int32_t* atmosphere, int32_t* smoke_field, float* wall_hp,  // S2b: smoke Q16.16; S2c: atm Q16.16
+        const int32_t* temperature, const int32_t* wind_x, const int32_t* wind_y,      // S2c: wind Q16.16
         const bool* is_vacuum, const bool* flammable,
         // temperature group
         int32_t* temperature_mut, const int32_t* heat,
         const int32_t* heat_inv_shift, const int32_t* face_shift,
         int h, int w, float sim_time) const {
+
+    using namespace fixedpoint;
 
     // --- 1. W6a ripple (PhysicsRunner._step_ripple) ----------------------
     // Reproduce the Python dormancy guard EXACTLY: skip step_ripple unless
@@ -83,11 +85,34 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     // `is_wall` IS `gmap.solid` (the Python passes gmap.solid as the is_wall
     // arg); `temperature` here is the const view (the previous-tick conduction
     // field the fire reads).
+    //
+    // S2c FIRE BRIDGE (the ONE float bridge S2 leaves open — downstream to S3):
+    // atmosphere + wind are Q16.16 int32, but the fire reads them as float AND
+    // mutates atmosphere (the own-tile plume). DEQUANTIZE atmosphere/wind into the
+    // reused float scratch, run the float fire (it reads + writes the float
+    // atmosphere), then RE-QUANTIZE the fire-mutated atmosphere back into the int32
+    // field (round-to-nearest). The temperature pass reads the SAME float
+    // atmosphere scratch (read-only). Collapses to integer<-integer when fire
+    // migrates (S3). The plume is a fire SOURCE (non-conserved by design), so the
+    // round-trip quantize is bit-safe (deterministic; no synced-field aliasing).
+    if (atm_f_.size()    != (size_t)n) atm_f_.assign(n, 0.0f);
+    if (wind_x_f_.size() != (size_t)n) wind_x_f_.assign(n, 0.0f);
+    if (wind_y_f_.size() != (size_t)n) wind_y_f_.assign(n, 0.0f);
+    for (int i = 0; i < n; ++i) {
+        atm_f_[i]    = dequantize_f(atmosphere[i]);   // FIRE BRIDGE (int32 -> float)
+        wind_x_f_[i] = dequantize_f(wind_x[i]);
+        wind_y_f_[i] = dequantize_f(wind_y[i]);
+    }
     std::vector<std::pair<int, int>> destroyed = this->fire.step(
-        fire_field, atmosphere, smoke_field, wall_hp,
-        temperature, wind_x, wind_y,
+        fire_field, atm_f_.data(), smoke_field, wall_hp,
+        temperature, wind_x_f_.data(), wind_y_f_.data(),
         solid, is_vacuum, flammable,
         h, w, sim_time);
+    // Re-quantize the fire-mutated atmosphere back into the int32 field. Fire only
+    // ADDS a small positive plume to its own burning tiles, so most cells are
+    // unchanged; round-to-nearest matches the dequantize on the unchanged cells
+    // (exact round-trip) and lands the plume increment unbiased.
+    for (int i = 0; i < n; ++i) atmosphere[i] = quantize((double)atm_f_[i]);
 
     // --- 3. Temperature pass (PhysicsRunner: self.temperature.step) ------
     // Arg order cross-checked against bindings.cpp TemperatureSolver.step and
@@ -98,9 +123,13 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     // (gmap.temperature in Python) — the binding extracts both a const and a
     // mutable pointer from the one numpy array. The fire read it above; the
     // temperature solver now updates it in place for next tick.
+    // S2c: temperature reads atmosphere as float (read-only, the space-facing
+    // threshold) — pass the SAME dequantized float scratch the fire used (it was
+    // re-quantized into the int32 field above, but the float view is still valid
+    // and read-only here). FIRE BRIDGE (collapses when temperature migrates).
     this->temperature.step(
         temperature_mut, heat, heat_inv_shift, face_shift,
-        solid, is_vacuum, atmosphere,
+        solid, is_vacuum, atm_f_.data(),
         h, w);
 
     return destroyed;
@@ -118,8 +147,8 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
 // preserved exactly; only the loop STRUCTURE changed. See the body comment.
 void PhysicsEngine::run_substeps(
         int32_t* wave_p, int32_t* wave_v, int32_t* wave_source,  // S2a: Q16.16
-        float* atmosphere,
-        float* wind_x, float* wind_y,
+        int32_t* atmosphere,                                     // S2c: Q16.16
+        int32_t* wind_x, int32_t* wind_y,                        // S2c: Q16.16
         const bool* obstacles, const bool* solid, const bool* is_vacuum,
         const float* dyn_permeability, const float* dyn_wave_absorb,
         int32_t* gas, const float* gas_diffusion, int n_gases,   // S2b: gas Q16.16
@@ -189,11 +218,23 @@ void PhysicsEngine::run_substeps(
     // is ≈1; it tightens only under a shockwave (the safety net against a
     // checkerboard). With dt_scale gone the smoke dt is already ~9× smaller, so
     // this is usually 1 — it only bites in extreme wind.
-    float max_wind_sq = 0.0f;
+    // S2c: wind is Q16.16 int32 now. The per-cell |wind|² is an INTEGER max
+    // reduction (plan §2.2 #2 — max is order-free for integers, unlike a sum):
+    // square each component as mul_wide (Q16.16·Q16.16 -> int64 Q.32), sum, keep
+    // the running int64 max. Then dequantize the Q.32 max ONCE to a real
+    // max_wind_sq (the n_smoke cliff arithmetic stays in double — it is a
+    // config-derived CFL bound, not synced field state; the cliff COUNT is what
+    // must be deterministic, and a single dequantize of the order-free integer
+    // max feeds it identically on every peer).
+    using namespace fixedpoint;
+    int64_t max_wind_sq_q32 = 0;     // Q.32 (Q16.16²)
     for (int i = 0; i < plane; ++i) {
-        const float ws = wind_x[i] * wind_x[i] + wind_y[i] * wind_y[i];
-        if (ws > max_wind_sq) max_wind_sq = ws;
+        const int64_t ws = mul_wide(wind_x[i], wind_x[i])
+                         + mul_wide(wind_y[i], wind_y[i]);
+        if (ws > max_wind_sq_q32) max_wind_sq_q32 = ws;
     }
+    const double max_wind_sq =
+        (double)max_wind_sq_q32 / ((double)FP_ONE * (double)FP_ONE);  // Q.32 -> real
     float d_smoke_max = 0.0f;
     for (int gi = 0; gi < n_gases; ++gi) {
         if (gas_diffusion[gi] > d_smoke_max) d_smoke_max = gas_diffusion[gi];
@@ -276,7 +317,7 @@ void PhysicsEngine::run_substeps(
 // spot where the PRECISION (not just the value) had to be matched.
 void PhysicsEngine::step_water(
         int32_t* water_depth, int32_t* flow_vx, int32_t* flow_vy,
-        const int32_t* floor_height, float* atmosphere, const int32_t* wave_p,  // S2a: wave_p Q16.16
+        const int32_t* floor_height, int32_t* atmosphere, const int32_t* wave_p,  // S2a: wave_p Q16.16; S2c: atm Q16.16
         const bool* solid,
         int32_t* gas,   // S2b: gas Q16.16
         int32_t* before, float* dyn_permeability,
@@ -289,15 +330,24 @@ void PhysicsEngine::step_water(
     const int n_cells = h * w;
     const double Q = (double)FP_ONE;   // 65536 — dequantize divisor
 
-    // S2a FLOAT BRIDGE: wave_p is now Q16.16 int32; the water solver's head term
-    // (k_p*(atm+wave_p), GATED + already a float bridge) reads it as float. With
-    // k_p == 0 (the shipped default) wave_p is NEVER read, so this dequantize is a
-    // no-op pass-through; we still bridge it (DEQUANTIZE into the reused float
-    // scratch) so the water TU stays untouched. Collapses when the head bridge
-    // retires. (The substep loop below passes wave_p_f_.data() to water.step.)
+    // WATER HEAD BRIDGE: the water solver's head term k_p·(atm+wave_p) reads
+    // atmosphere + wave_p as FLOAT (the gated head-term bridge inside water.step).
+    //   * wave_p (S2a): Q16.16 int32 — dequantize into the reused float scratch.
+    //   * atmosphere (S2c): NOW Q16.16 int32 — dequantize into the reused atm_f_
+    //     scratch so the water head reads the SAME real pressure as before. The
+    //     synced water-head read is thus integer-sourced (one dequantize at the
+    //     boundary); ripple's wave_p read stays a documented render-local
+    //     dequantize. With k_p != 0 (shipped 0.5) the head IS read every substep,
+    //     so both bridges are live. Collapses to integer<-integer when the head
+    //     term goes fully integer (a later water/atmosphere unification).
     if (wave_p_f_.size() != (size_t)n_cells) wave_p_f_.assign(n_cells, 0.0f);
-    for (int i = 0; i < n_cells; ++i) wave_p_f_[i] = dequantize_f(wave_p[i]);  // FLOAT BRIDGE
+    if (atm_f_.size()    != (size_t)n_cells) atm_f_.assign(n_cells, 0.0f);
+    for (int i = 0; i < n_cells; ++i) {
+        wave_p_f_[i] = dequantize_f(wave_p[i]);       // S2a head bridge
+        atm_f_[i]    = dequantize_f(atmosphere[i]);   // S2c head bridge
+    }
     const float* wave_p_bridge = wave_p_f_.data();
+    const float* atm_bridge    = atm_f_.data();
 
     // --- Substep count (the INTEGER CLIFF, S1 §5) + the substep loop -------
     // S1: max_dt is a Q16.16 CONSTANT (water.max_dt_q()); the substep count is a
@@ -317,23 +367,23 @@ void PhysicsEngine::step_water(
         // gated head-term FLOAT BRIDGE lives inside step). this->water.dx and the
         // pipe params are already members on this->water (not re-passed).
         this->water.step(water_depth, flow_vx, flow_vy,
-                         floor_height, atmosphere, wave_p_bridge,   // S2a FLOAT BRIDGE
+                         floor_height, atm_bridge, wave_p_bridge,   // head bridges
                          solid, h, w, wdt, tilt_x, tilt_y);
     }
 
-    // --- W5 flash-boil vacuum sink (plan W5) — FLOAT BRIDGE until S2 -------
-    // atmosphere + gas (steam) are still FLOAT (the S2 group). The boil math is
-    // a real-valued sink, so we DEQUANTIZE water_depth at the boundary, do the
-    // boil in float (as before), and re-quantize the depth removed back into the
-    // integer field. (When S2 makes atmosphere/gas integer this stays a real
-    // sink but the read/write become integer.)
+    // --- W5 flash-boil vacuum sink (plan W5) — S2c: int<->int -------------
+    // atmosphere + gas (steam) are now Q16.16 int32 (S2 group migrated). The boil
+    // is a pressure-keyed water->steam SINK: the threshold compare is integer
+    // (atmosphere < quantize(boil_p_thresh)), the depth removed and the steam
+    // credited are the SAME water->steam quantity, conserved across the boundary.
+    // Only depth->steam moves mass here; atmosphere is read-only (the gate).
     //   boiling = (atmosphere < boil_p_thresh) & (water_depth > 0)
     //   boiled  = where(boiling, min(depth_m, boil_rate*sim_time), 0)
-    //   depth_m -= boiled  (re-quantized);  gas[steam] += steam_yield*boiled
-    const float boil_p_thresh_f = (float)boil_p_thresh;
+    //   depth_m -= boiled;  gas[steam] += steam_yield*boiled
+    const q16 boil_p_thresh_q = quantize((double)boil_p_thresh);
     bool boiling_any = false;
     for (int i = 0; i < n_cells; ++i) {
-        if (atmosphere[i] < boil_p_thresh_f && water_depth[i] > 0) {
+        if (atmosphere[i] < boil_p_thresh_q && water_depth[i] > 0) {
             boiling_any = true;
             break;
         }
@@ -353,7 +403,7 @@ void PhysicsEngine::step_water(
             // removed from the integer depth; the steam puff is
             // steam_yield * dequantize(that), QUANTIZED back to Q16.16 and integer-
             // added into the (now int32) steam gas plane.
-            if (atmosphere[i] < boil_p_thresh_f && water_depth[i] > 0) {
+            if (atmosphere[i] < boil_p_thresh_q && water_depth[i] > 0) {
                 const q16 boiled_q = std::min(water_depth[i], boil_amount_q);
                 water_depth[i] -= boiled_q;                    // exact (>=0 by min)
                 const float boiled_m = (float)((double)boiled_q / Q);  // DEQUANTIZE
@@ -363,29 +413,32 @@ void PhysicsEngine::step_water(
         }
     }
 
-    // --- W3 volume displacement + flooded seal (plan W3, §5.1) — FLOAT BRIDGE
-    // atmosphere + dyn_permeability are FLOAT. before + water_depth are Q16.16;
-    // DEQUANTIZE both at the boundary, compute the isothermal P*V ratio in float
-    // (as before), scale the float atmosphere, seal the float dyn_permeability,
-    // then copy the integer water_depth into the integer before snapshot.
+    // --- W3 volume displacement + flooded seal (plan W3, §5.1) — S2c bridge --
+    // before + water_depth are Q16.16; dyn_permeability is float (a structural
+    // cache). The isothermal P*V ratio is a real-valued computation (dequantize
+    // before/water_depth, form free_before/free_after, the clipped ratio), but the
+    // ATMOSPHERE SCALE is now integer: atmosphere = mul_q16(atmosphere, quantize
+    // (ratio)). This is a P*V compression of the conserved bulk (a per-cell
+    // multiply, NOT conserved-by-design — like the sponge sink). The ratio
+    // computation stays float (it is a real ratio of free air columns, not a
+    // synced field); only the application to the int32 atmosphere is integer.
     //   free_before = max(ceiling_h - before_m, flood_eps)
     //   free_after  = max(ceiling_h - depth_m,  flood_eps)
     //   ratio = clip(free_before/free_after, 1/ratio_cap, ratio_cap)
-    //   atmosphere *= ratio; flooded(free_after<=flood_eps) -> dyn_perm = 0
+    //   atmosphere = mul_q16(atmosphere, quantize(ratio)); flooded -> dyn_perm = 0
     //   before = water_depth   (integer copy)
     const float ceiling_h_f = (float)ceiling_h;
     const float flood_eps_f = (float)flood_eps;
     const float clip_lo_f   = (float)(1.0 / ratio_cap);
     const float clip_hi_f   = (float)ratio_cap;
     for (int i = 0; i < n_cells; ++i) {
-        // FLOAT BRIDGE until S2: dequantize before/water_depth for the P*V math.
         const float before_m = (float)((double)before[i] / Q);       // DEQUANTIZE
         const float depth_m  = (float)((double)water_depth[i] / Q);   // DEQUANTIZE
         const float free_before = std::max(ceiling_h_f - before_m, flood_eps_f);
         const float free_after  = std::max(ceiling_h_f - depth_m,  flood_eps_f);
         float ratio = free_before / free_after;
         ratio = std::min(std::max(ratio, clip_lo_f), clip_hi_f);
-        atmosphere[i] *= ratio;                            // P*V const (float)
+        atmosphere[i] = mul_q16(atmosphere[i], quantize((double)ratio));  // P*V (int)
         if (free_after <= flood_eps_f) {
             dyn_permeability[i] = 0.0f;                     // flooded -> seal (float)
         }

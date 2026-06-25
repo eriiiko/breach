@@ -43,6 +43,18 @@ public:
     // water head/ripple bridge is retired. Reused (no per-tick alloc; GPU-prep).
     mutable std::vector<float> wave_p_f_;
 
+    // S2c FIRE BRIDGE scratch: atmosphere + wind are now Q16.16 int32, but the
+    // fire + temperature solvers (S3, not yet migrated) read them as float — and
+    // fire MUTATES atmosphere (its own-tile plume deposit). step_tail dequantizes
+    // atmosphere/wind into these reused float buffers, runs the float fire+temp,
+    // then RE-QUANTIZES the (fire-mutated) atmosphere back into the int32 field
+    // (round-to-nearest). This is the ONE float bridge S2 leaves open — downstream
+    // to fire — and it collapses to integer<-integer when the fire system migrates
+    // (S3). Reused (no per-tick alloc; GPU-prep).
+    mutable std::vector<float> atm_f_;
+    mutable std::vector<float> wind_x_f_;
+    mutable std::vector<float> wind_y_f_;
+
     // --- Patch 1 S4a: the per-tick orchestration TAIL --------------------
     // Moves the three trailing PURE-SOLVER-CALL steps of PhysicsRunner.step
     // (everything AFTER the IMEX substep loop) into C++: the W6a ripple, the
@@ -76,9 +88,12 @@ public:
         const int32_t* water_depth, const int32_t* wave_p,   // S1: water_depth Q16.16
                                                              // S2a: wave_p Q16.16
         const bool* solid,
-        // fire group
-        float* fire_field, float* atmosphere, int32_t* smoke_field, float* wall_hp,  // S2b: smoke Q16.16
-        const int32_t* temperature, const float* wind_x, const float* wind_y,
+        // fire group — S2c: atmosphere + wind are Q16.16 int32. The FIRE bridge
+        // (the only float bridge S2 leaves open, downstream to S3) is INSIDE
+        // step_tail: dequantize atmosphere/wind to float scratch, run the float
+        // fire+temperature, re-quantize the fire's atmosphere plume back to int32.
+        float* fire_field, int32_t* atmosphere, int32_t* smoke_field, float* wall_hp,  // S2b: smoke Q16.16; S2c: atm Q16.16
+        const int32_t* temperature, const int32_t* wind_x, const int32_t* wind_y,      // S2c: wind Q16.16
         const bool* is_vacuum, const bool* flammable,
         // temperature group
         int32_t* temperature_mut, const int32_t* heat,
@@ -123,8 +138,8 @@ public:
     //   sink_x, sink_y              : float (h, w) — smoke sink direction (Python-fetched)
     void run_substeps(
         int32_t* wave_p, int32_t* wave_v, int32_t* wave_source,  // S2a: Q16.16
-        float* atmosphere,
-        float* wind_x, float* wind_y,
+        int32_t* atmosphere,                                     // S2c: Q16.16
+        int32_t* wind_x, int32_t* wind_y,                        // S2c: Q16.16
         const bool* obstacles, const bool* solid, const bool* is_vacuum,
         const float* dyn_permeability, const float* dyn_wave_absorb,
         int32_t* gas, const float* gas_diffusion, int n_gases,   // S2b: gas Q16.16
@@ -189,9 +204,9 @@ public:
     // at the boundary (marked in the .cpp). The substep-count cliff is integer.
     void step_water(
         int32_t* water_depth, int32_t* flow_vx, int32_t* flow_vy,
-        const int32_t* floor_height, float* atmosphere, const int32_t* wave_p,  // S2a: wave_p Q16.16
+        const int32_t* floor_height, int32_t* atmosphere, const int32_t* wave_p,  // S2a: wave_p Q16.16; S2c: atm Q16.16
         const bool* solid,
-        int32_t* gas,   // S2b: gas Q16.16 (the W5 steam puff is a FLOAT BRIDGE: quantize the puff)
+        int32_t* gas,   // S2b: gas Q16.16 (W5 steam puff int<-int)
         int32_t* before, float* dyn_permeability,
         int steam_idx, float tilt_x, float tilt_y,
         int h, int w, float sim_time,

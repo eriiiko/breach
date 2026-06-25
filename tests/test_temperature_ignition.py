@@ -74,7 +74,11 @@ class _GMapStub:
         self.flammable = _TBL.flammable[m]
         self.solid = (_TBL.permeability[m] <= 0.0)
         # Air ring carries O2; solid tiles hold no atmosphere (== GameMap).
-        a = np.where(self.solid, 0.0, float(atm)).astype(np.float32)
+        # S2c: atmosphere is int32 Q16.16 — quantize the ring pressure so the
+        # combat O2 check (which dequantizes) reads the right real value.
+        from simulation import atmosphere_fixed
+        a = np.where(self.solid, 0,
+                     atmosphere_fixed.quantize_scalar(float(atm))).astype(np.int32)
         self.atmosphere = a
         self.temperature = np.zeros((3, 3), dtype=np.int32)
         self.fire = np.zeros((3, 3), dtype=np.float32)

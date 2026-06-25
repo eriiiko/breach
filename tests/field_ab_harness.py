@@ -390,3 +390,20 @@ if __name__ == "__main__":
     print(f"OK: S2b smoke+gas int32 Q16.16, bit-identical run-to-run "
           f"(gas nonzero cells final: {nzg}); deterministic non-conservation "
           f"mass peak={peak} final={final} kept={100.0*final/peak if peak else 0:.1f}%")
+    # S2c — the integer ATMOSPHERE (pressure) + WIND are now int32 Q16.16 (the
+    # synced atmosphere state) — the CLOSER of the S2 group. Assert dtype +
+    # bit-identity run-to-run (np.array_equal is exact on int32). This is the S2c
+    # P1 gate; the per-cell P2 conservation gate lives in
+    # tests/test_atmosphere_saturation.py (the run-past-wave-death saturation).
+    for f in ("atmosphere", "wind_x", "wind_y"):
+        assert a[-1][f].dtype == np.int32, \
+            f"{f} should be int32 Q16.16 (S2c), got {a[-1][f].dtype}"
+        for t in range(len(a)):
+            assert np.array_equal(a[t][f], b[t][f]), \
+                f"{f} not bit-identical at tick {t} (S2c P1)"
+    nza = int((a[-1]["atmosphere"] != 0).sum())
+    nzw = int((np.abs(a[-1]["wind_x"]) + np.abs(a[-1]["wind_y"]) > 0).sum())
+    print(f"OK: S2c atmosphere+wind int32 Q16.16, bit-identical run-to-run "
+          f"(atmosphere nonzero cells final: {nza}; wind nonzero cells: {nzw}) "
+          f"— the S2 group is now cross-GPU deterministic (only the FIRE bridge "
+          f"remains, S3)")
