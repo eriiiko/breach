@@ -54,6 +54,7 @@ import numpy as np
 
 from simulation import water_fixed   # S1: water_depth Q16.16 quantize helpers
 from simulation import wave_fixed     # S2a: wave_source Q16.16 quantize helpers
+from simulation import gas_fixed      # S2b: smoke/gas Q16.16 quantize helpers
 
 # Q16.16 fixed-point scale for the `heat` field — MUST match the C++
 # raycaster.h HEAT_SCALE (and materials.TEMP_SCALE). One unit of heat energy ==
@@ -189,7 +190,12 @@ class _FieldPolicy:
 
 
 FIELD_POLICY = {
-    "smoke":       _FieldPolicy("float", (0.0, 1.0), _skip_solid),
+    # S2b: smoke is int32 Q16.16. The "gas" dtype dequantizes the stored int to
+    # real density, combines (the float path's exact +=/-=/max semantics + the
+    # [0,1] clamp), then re-quantizes round-to-nearest — so smoke/gas edits (the
+    # explosion deposit + clear) keep being authored in real density while the
+    # stored field stays integer/deterministic (same idiom as "wave" / "water").
+    "smoke":       _FieldPolicy("gas",   (0.0, 1.0), _skip_solid),
     "atmosphere":  _FieldPolicy("float", None,       _skip_solid),
     # S2a: wave_source is int32 Q16.16. The "wave" dtype dequantizes the stored
     # int to real units, combines (the float path's exact +=/max semantics), then
@@ -365,6 +371,19 @@ def _combine_wave(old_q: int, contribution: float, mode: EditMode,
     return wave_fixed.quantize_scalar(new_v)
 
 
+def _combine_gas(old_q: int, contribution: float, mode: EditMode,
+                 clamp: Optional[Tuple[float, float]]) -> int:
+    """Q16.16 combine for the `smoke` / gas fields (S2b). The stored value is an
+    int32 in Q16.16 density; dequantize to real density, combine with the float
+    path's exact +=/-=/max semantics (and the [0,1] clamp), re-quantize round-to-
+    nearest. Keeps the explosion smoke deposit / clear authored in real density
+    while the field stays integer/deterministic (the same idiom as
+    `_combine_wave` / `_combine_water`)."""
+    old_v = float(old_q) / gas_fixed.FP_ONE_F
+    new_v = _combine_float(old_v, contribution, mode, clamp)
+    return gas_fixed.quantize_scalar(new_v)
+
+
 def _combine_heat(old: int, contribution: float, mode: EditMode) -> int:
     """Q16.16 combine for the `heat` field. ADD only path uses the saturating
     integer add; REMOVE/MAX are defined for completeness (saturating subtract /
@@ -414,6 +433,7 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
     is_heat = (pol.dtype == "heat")
     is_water = (pol.dtype == "water")
     is_wave = (pol.dtype == "wave")
+    is_gas = (pol.dtype == "gas")
     ch = edit.channel
 
     for (r, c, weight) in _iter_region(edit.region, edit.coords,
@@ -437,6 +457,9 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
         elif is_wave:
             arr[r, c] = _combine_wave(int(arr[r, c]), contribution,
                                       edit.mode, clamp)
+        elif is_gas:
+            arr[r, c] = _combine_gas(int(arr[r, c]), contribution,
+                                     edit.mode, clamp)
         elif ch is None:
             arr[r, c] = _combine_float(float(arr[r, c]), contribution,
                                        edit.mode, clamp)

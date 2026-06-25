@@ -161,6 +161,96 @@ inline q16 shr_round0(q16 x, int s) {
     return (x < 0) ? -((-x) >> s) : (x >> s);
 }
 
+// ---- per-cell integer reciprocal (Newton-Raphson, GPU-clean) --------------
+//
+// reciprocal_q16(denom_q) == round_toward_neg_inf(2^16 / denom_real) in Q16.16,
+// computed with PURE INTEGER arithmetic (no float, no divide on the hot path —
+// only the seed's power-of-2 shift and three Newton refinements). This is the
+// S2 per-cell divide primitive: a divisor that is BOTH runtime-derived AND
+// different per cell, so make_recip (double-at-load for one fixed divisor) does
+// not apply. Two call sites share it:
+//   * S2b — the integer-SL bilinear renorm 1/wsum (wsum in (0,1], a sealed-
+//     corner partial weight sum). This is the prototype's `_q_recip`
+//     (tools/s2_advection_demo/advection_demo.py) ported verbatim, then
+//     GENERALISED below to any positive Q16.16 denominator.
+//   * S2c — the Gauss-Seidel per-cell divisor Dinv = 1/(1 + mu*wsum) (denom > 1).
+//     S2c drops in here unchanged; this is why the seed handles denom > 1 too.
+//
+// THE METHOD — Newton-Raphson for 1/d:  r <- r*(2 - d*r), which doubles the
+// number of correct bits each step and converges quadratically for any seed in
+// (0, 2/d). We seed from a power-of-2 reciprocal keyed on the bit length of
+// denom_q (a rough 2^-floor(log2 d)), which is always within the convergence
+// basin, then iterate 3 times.
+//
+// SEED (the generalisation past the prototype). denom_q is Q16.16, so
+//   denom_real ~= 2^(bitlen - 16),  and  1/denom_real ~= 2^(16 - bitlen).
+// The Q16.16 reciprocal r = (1/denom_real) * 2^16 ~= 2^(32 - bitlen). So
+// shift = 32 - bitlen and r0 = 1 << shift when shift >= 0. For denom_real > 1
+// (bitlen > 32, e.g. the GS Dinv at denom ~= 9) shift goes NEGATIVE -> r0 is a
+// right shift, r0 = 1 >> (-shift), which floors to 0 for a small reciprocal; we
+// clamp the seed to >= 1 (one count) so the first Newton step still climbs. The
+// prototype only ever saw wsum <= 1 (shift >= 0, r0 >= 1); the >> branch + the
+// 1-count floor is the only addition, and it leaves the wsum<=1 path identical.
+//
+// ROUNDING (documented, load-bearing): every multiply is mul_q16 (the SAME >>16
+// truncation toward -inf as the rest of the kit), so the result is a *truncated*
+// Q16.16 reciprocal — reproducible bit-for-bit on every peer. It is NOT
+// correctly-rounded (a Newton fixed-iteration cannot be), but it is DETERMINISTIC
+// and converges to within ~1 ULP of 2^16/denom over the tested range. The
+// caller must clamp denom_q to a positive FLOOR before calling (a zero or
+// negative denom is undefined); reciprocal_q16 also self-guards denom_q <= 0
+// by returning 0 (the caller's wsum<floor / Dinv-skip guards make this dead).
+inline q16 reciprocal_q16(q16 denom_q) {
+    if (denom_q <= 0) return 0;          // caller clamps to a floor; self-guard
+    // Seed r0 ~= 2^(32 - bitlen(denom_q)), the power-of-2 reciprocal.
+    int bitlen = 0;
+    for (uint32_t v = (uint32_t)denom_q; v; v >>= 1) ++bitlen;   // bit_length
+    // A power-of-2 seed alone is up to 2x too small (worst case: denom_q just
+    // above a power of two), giving only ~1 correct bit -> 3 Newton iters land
+    // at ~8 bits (rel error ~4e-3, demonstrably too loose for a reusable helper
+    // whose accuracy feeds the GS Dinv's convergence). Refine the seed to the
+    // TOP TWO bits: within the binade denom_q = 2^(bitlen-1)*(1+f), f in [0,1);
+    // the 2nd bit (bit bitlen-2) splits the binade in half. A seed of
+    // 1.5 * 2^(32-bitlen) for the LOWER half (f<0.5) and 1.0 * 2^(32-bitlen) for
+    // the UPPER half (f>=0.5) halves the worst-case seed error to ~1.4x (~2 bits),
+    // and 4 Newton iterations (~2 bits doubling to 4,8,16,32) then clear the
+    // whole positive range to << 1 ULP. Pure integer + a single conditional —
+    // deterministic, GPU-clean.
+    const int shift = 32 - bitlen;
+    int64_t r;
+    if (shift >= 1) {
+        const int64_t base = (int64_t)1 << shift;            // 2^(32-bitlen)
+        // 2nd-highest bit set -> upper half of the binade (f>=0.5) -> seed ~1.0x;
+        // clear -> lower half -> seed ~1.5x (base + base/2).
+        const bool upper_half = (bitlen >= 2) &&
+            ((denom_q >> (bitlen - 2)) & 1);
+        r = upper_half ? base : (base + (base >> 1));
+    } else {
+        // denom_real > 1 (bitlen >= 32): the reciprocal is < 1 count at the
+        // power-of-2 seed; floor to 1 count and let Newton climb down/refine.
+        r = (shift >= 0) ? ((int64_t)1 << shift) : 1;
+        if (r < 1) r = 1;
+    }
+    const int64_t two_q = (int64_t)FP_ONE << 1;            // 2.0 in Q16.16
+    const int64_t HALF = (int64_t)1 << (FP_SHIFT - 1);     // 0.5 ULP rounding bias
+    for (int it = 0; it < 4; ++it) {     // 4 Newton iterations: r <- r*(2 - d*r)
+        // ROUND-TO-NEAREST narrow (+0.5 ULP before >>16) instead of truncate.
+        // Newton's `r*(2 - d*r)` converges to 1/d FROM BELOW under a truncating
+        // shift, so a plain >>16 leaves the result 1 ULP low at the exact points
+        // (e.g. reciprocal_q16(FP_ONE) = 65535, not 65536) — which would make the
+        // SL renorm at wsum==1.0 shave 1 ULP off EVERY cell every step (a uniform
+        // decay the float SL does not have, on top of the intended truncation
+        // decay). Round-to-nearest here lands the reciprocal on the true value at
+        // the exact points, so wsum==1.0 is a clean identity; the only remaining
+        // non-conservation is the deliberate sample-truncation decay. Both
+        // operands are positive, so +HALF then >>16 is symmetric + deterministic.
+        const int64_t dr  = ((int64_t)denom_q * r + HALF) >> FP_SHIFT;   // d*r (-> ~1.0)
+        const int64_t cor = (r * (two_q - dr) + HALF) >> FP_SHIFT;       // r*(2 - d*r)
+        r = cor;
+    }
+    return (q16)r;
+}
+
 // ---- magnitude-first Q16.16 scale (sign-preserving, shrink-only) -----------
 // Multiply a Q16.16 value `x` by a Q16.16 factor `scale` in [0, FP_ONE] while
 // truncating on the MAGNITUDE (toward 0), not toward -inf. mul_q16's `>>16`

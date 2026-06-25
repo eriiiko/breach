@@ -51,6 +51,7 @@ from simulation.field_edit import (  # noqa: E402
     EditMode, FieldEdit, Region,
 )
 from simulation.gases import BLACK_SMOKE  # noqa: E402
+from simulation import gas_fixed  # noqa: E402  (S2b: gas Q16.16)
 from water_q16 import q, deq  # noqa: E402  (S1: Q16.16 quantize/dequantize)
 
 # S1: water_depth/floor_height are int32 Q16.16. FieldEdit(field="water_depth",
@@ -248,14 +249,19 @@ def _corridor_sim(with_water: bool):
     if with_water:
         # stays >= ceiling_h - flood_eps. S1: Q16.16 metres.
         g.water_depth[1, LINE_X] = q(2.0 * ceil_h)
-    g.gas[BLACK_SMOKE][1, 1:LINE_X] = 10.0
+    # S2b: gas is int32 Q16.16 — seed the source side at FULL density (the old
+    # `= 10.0` float was clamped to 1.0 by the solver anyway). FP_ONE counts.
+    g.gas[BLACK_SMOKE][1, 1:LINE_X] = gas_fixed.SMOKE_MAX_Q
     g.atmosphere[1, 1:LINE_X] = 1.3
     sim.set_paused(False)
     return sim, g
 
 
 def _far_side_gas(g) -> float:
-    return float(g.gas[BLACK_SMOKE][1, LINE_X + 1:].sum(dtype=np.float64))
+    # S2b: gas is int32 Q16.16 — dequantize to real density so the float
+    # thresholds (< 1e-12 sealed / > 1e-12 crossed) stay meaningful.
+    return float(g.gas[BLACK_SMOKE][1, LINE_X + 1:].astype(np.float64).sum()) \
+        / gas_fixed.FP_ONE_F
 
 
 def test_flooded_line_seals_corridor_gas_and_wind():
@@ -278,8 +284,10 @@ def test_flooded_line_seals_corridor_gas_and_wind():
     # Gas stayed one-sided: the far side is (bit-)empty ...
     gas_far = _far_side_gas(g)
     assert gas_far < 1e-12, f"gas leaked past the flooded line: {gas_far}"
-    # ... and non-vacuously so: the source side still holds its gas.
-    gas_near = float(g.gas[BLACK_SMOKE][1, 1:LINE_X].sum(dtype=np.float64))
+    # ... and non-vacuously so: the source side still holds its gas. S2b:
+    # dequantize to real density (the source was seeded at full density).
+    gas_near = float(g.gas[BLACK_SMOKE][1, 1:LINE_X].astype(np.float64).sum()) \
+        / gas_fixed.FP_ONE_F
     assert gas_near > 1.0, "source-side gas vanished (vacuous one-sidedness)"
 
 

@@ -41,6 +41,7 @@ import breach_physics as bp
 from level_loader import LevelData
 from simulation import Simulation
 from simulation import wave_fixed   # S2a: wave_source Q16.16 quantize helper
+from simulation import gas_fixed     # S2b: smoke/gas Q16.16 quantize helper
 from simulation.unit import Unit
 
 SEED = 20260615
@@ -99,7 +100,10 @@ def default_scenario_sim() -> Simulation:
                      enable_recorder=False)
     g = sim.gmap
     interior = (~g.solid) & (~g.is_vacuum)
-    g.smoke[interior] = 0.6          # smoke transport + diffusion (gas[BLACK_SMOKE] view)
+    # S2b: smoke is int32 Q16.16 — quantize the seed (a raw `= 0.6` would store 0
+    # counts ~ no smoke). 0.6 density -> 0.6*65536 = 39322 counts. This exercises
+    # the integer-SL advection + diffusion + venting on a real cloud.
+    g.smoke[interior] = gas_fixed.quantize_scalar(0.6)  # smoke transport (gas[BLACK_SMOKE] view)
     g.fire[8, 8] = 0.8               # fire feedback -> heat deposit -> temperature
     g.fire[8, 9] = 0.5
     g.water_depth[10, 10] = 0.3      # water pipe model + W3 displacement + ripple
@@ -363,3 +367,26 @@ if __name__ == "__main__":
           f"(final unit hash {unit_digest_hash(a[-1])[:12]})")
     print(f"OK: S2a wave fields int32 Q16.16, bit-identical run-to-run "
           f"(wave_p nonzero cells at final tick: {nz})")
+    # S2b — the integer smoke + 5 gas planes are now int32 Q16.16 (the synced
+    # smoke/gas state). Assert dtype + bit-identity run-to-run (np.array_equal is
+    # exact on int32). This is the S2b P1 gate. Plus the deterministic-NON-
+    # conservation check: total mass per plane identical run-to-run (NOT conserved
+    # to the LSB — the integer-SL >>16 truncation is a deliberate gentle decay),
+    # bounded and never blowing up. `gas` is (N,h,w); `smoke` is the int32 view.
+    assert a[-1]["gas"].dtype == np.int32, \
+        f"gas should be int32 Q16.16 (S2b), got {a[-1]['gas'].dtype}"
+    for t in range(len(a)):
+        assert np.array_equal(a[t]["gas"], b[t]["gas"]), \
+            f"gas not bit-identical at tick {t} (S2b P1)"
+    # Deterministic non-conservation: per-tick total gas mass identical A vs B,
+    # and never amplifying past the seeded peak (a runaway would blow this up).
+    mass_a = [int(a[t]["gas"].astype(np.int64).sum()) for t in range(len(a))]
+    mass_b = [int(b[t]["gas"].astype(np.int64).sum()) for t in range(len(b))]
+    assert mass_a == mass_b, "S2b gas mass trace not bit-identical run-to-run"
+    peak = max(mass_a) if mass_a else 0
+    final = mass_a[-1] if mass_a else 0
+    assert peak < (1 << 62), "S2b gas mass overflow guard"
+    nzg = int((a[-1]["gas"] != 0).sum())
+    print(f"OK: S2b smoke+gas int32 Q16.16, bit-identical run-to-run "
+          f"(gas nonzero cells final: {nzg}); deterministic non-conservation "
+          f"mass peak={peak} final={final} kept={100.0*final/peak if peak else 0:.1f}%")

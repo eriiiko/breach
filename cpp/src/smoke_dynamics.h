@@ -1,7 +1,24 @@
 #pragma once
 // Smoke dynamics — diffusion + advection by precomputed wind field.
 // Wind is computed by the AtmosphereSolver (gradient of atmosphere + wave_p).
+//
+// S2b (fixed-point arc, docs/s2_fixed_point_plan.md §S2b): the smoke + 5 gas
+// planes are now int32 Q16.16 (scale 2^16, shared with water/heat). The advection
+// is the INTEGER semi-Lagrangian ("SLint") ported verbatim from the proven
+// prototype tools/s2_advection_demo/advection_demo.py (commit ceb601b, branch
+// s2-advection-demo): a sqrt-free DDA wall-clip march, an integer bilinear sample
+// (int64 corner-weight accumulate -> narrow), and the renorm 1/wsum via the
+// shared fixedpoint::reciprocal_q16 Newton reciprocal. NON-CONSERVATIVE by design
+// (the >>16 truncation is a gentle built-in decay) — accepted (Q-S2-1): it is
+// deterministic on every machine, so it is behaviour, not desync; smoke decay is
+// the tuning knob. NO flux form, NO limiter, NO outflow clamp.
+//
+// FLOAT BRIDGE (until S2c): the `wind` is still produced by the float atmosphere
+// (S2c not yet integer), so step() reads float wind_x/wind_y and quantizes the
+// wind*dt_adv DISPLACEMENT to Q16.16 at the boundary. After S2c the wind is
+// integer and this bridge closes (the displacement is computed integer-only).
 
+#include <cstdint>
 #include <vector>
 
 class SmokeDynamics {
@@ -24,9 +41,9 @@ public:
     // below, run K× by the engine). Single step of size dt on the precomputed
     // wind field from the atmosphere solver.
     void step(
-        float* smoke,
-        const float* wind_x,       // precomputed: -d/dx(atmosphere + wave_p)
-        const float* wind_y,       // precomputed: -d/dy(atmosphere + wave_p)
+        int32_t* smoke,            // S2b: int32 Q16.16 density (was float)
+        const float* wind_x,       // precomputed: -d/dx(atmosphere + wave_p) — FLOAT BRIDGE until S2c
+        const float* wind_y,       // precomputed: -d/dy(atmosphere + wave_p) — FLOAT BRIDGE until S2c
         const bool* obstacles,
         const bool* is_wall,
         const bool* is_vacuum,
@@ -47,7 +64,7 @@ public:
     // the sink field is all-zero everywhere, so this is the identity (sealed
     // rooms are untouched — matches the old fused behaviour with sink off).
     void sink_hop(
-        float* smoke,
+        int32_t* smoke,            // S2b: int32 Q16.16 density (was float)
         const float* sink_x,       // smoke-side sink direction toward nearest breach (unit-ish, 0 if none)
         const float* sink_y,
         const bool* obstacles,
@@ -59,14 +76,14 @@ public:
 
 private:
     // Reused per-step scratch (GPU-prep: no per-step alloc). `mutable` so the
-    // const step() can use them (temperature_solver idiom).
-    //   lap_ — diffusion Laplacian; FULLY overwritten each step before read,
-    //          read in a pure-FP loop -> accessed via `float* __restrict` (it
-    //          aliases no field pointer; restores fresh-local /fp:fast codegen).
-    //   src_ — pre-advection snapshot (was a COPY of smoke). It is read by the
-    //          BRANCHY advection loop that writes smoke; a member pointer there
-    //          shifts the float codegen, so it uses the SWAP idiom (stays a
-    //          genuine local, storage retained) and is re-copied from smoke.
-    mutable std::vector<float> lap_;
-    mutable std::vector<float> src_;
+    // const step() can use them (temperature_solver idiom). S2b: int32 Q16.16.
+    //   lap_ — diffusion Laplacian (the wind-coupled 4-neighbour stencil sum),
+    //          carried as an int64 face-gather narrowed once per cell -> stored
+    //          Q16.16; FULLY overwritten each step before read.
+    //   src_ — pre-advection snapshot (a COPY of the int32 smoke). Read by the
+    //          branchy back-trace loop that writes smoke; the SWAP idiom retains
+    //          its storage across steps (no per-step alloc) and it is re-copied
+    //          from smoke each step.
+    mutable std::vector<int32_t> lap_;
+    mutable std::vector<int32_t> src_;
 };

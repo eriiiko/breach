@@ -123,7 +123,7 @@ PYBIND11_MODULE(breach_physics, m) {
         // Patch 2b: step() is WIND-ONLY (no sink_x/sink_y) — the breach sink-pull
         // moved to sink_hop() below. dt_scale is removed (smoke moves on real dt).
         .def("step", [](const SmokeDynamics& self,
-                        py::array_t<float> smoke,
+                        py::array_t<int32_t> smoke,        // S2b: Q16.16 int32
                         py::array_t<float> wind_x,
                         py::array_t<float> wind_y,
                         py::array_t<bool>  obstacles,
@@ -146,7 +146,7 @@ PYBIND11_MODULE(breach_physics, m) {
         // Patch 2b: ONE 1-cell BFS-gradient breach pull (the decoupled sink). No
         // dt — each call is exactly one hop; the engine runs it K× per tick.
         .def("sink_hop", [](const SmokeDynamics& self,
-                            py::array_t<float> smoke,
+                            py::array_t<int32_t> smoke,    // S2b: Q16.16 int32
                             py::array_t<float> sink_x,
                             py::array_t<float> sink_y,
                             py::array_t<bool>  obstacles,
@@ -190,7 +190,7 @@ PYBIND11_MODULE(breach_physics, m) {
         .def("step", [](const FireSimulation& self,
                         py::array_t<float> fire,
                         py::array_t<float> atmosphere,
-                        py::array_t<float> smoke,
+                        py::array_t<int32_t> smoke,        // S2b: Q16.16 int32
                         py::array_t<float> wall_hp,
                         py::array_t<int32_t> temperature,
                         py::array_t<float> wind_x,
@@ -541,7 +541,7 @@ PYBIND11_MODULE(breach_physics, m) {
                              // fire group
                              py::array_t<float> fire,
                              py::array_t<float> atmosphere,
-                             py::array_t<float> smoke,
+                             py::array_t<int32_t> smoke,         // S2b: Q16.16 int32
                              py::array_t<float> wall_hp,
                              py::array_t<int32_t> temperature,
                              py::array_t<float> wind_x,
@@ -619,7 +619,7 @@ PYBIND11_MODULE(breach_physics, m) {
                                 py::array_t<bool>  is_vacuum,
                                 py::array_t<float> dyn_permeability,
                                 py::array_t<float> dyn_wave_absorb,
-                                py::array_t<float> gas,
+                                py::array_t<int32_t> gas,           // S2b: Q16.16 int32
                                 py::array_t<float> gas_diffusion,
                                 py::array_t<float> sink_x,
                                 py::array_t<float> sink_y,
@@ -638,7 +638,7 @@ PYBIND11_MODULE(breach_physics, m) {
             // gas: (N, h, w) contiguous — pass the base pointer + N; run_substeps
             // strides by plane (h*w) internally. h/w come from the 2D fields above.
             auto gv = gas.mutable_unchecked<3>();
-            float* gas_ptr = gv.mutable_data(0, 0, 0);
+            int32_t* gas_ptr = gv.mutable_data(0, 0, 0);        // S2b: Q16.16 int32
             const int n_gases = static_cast<int>(gv.shape(0));
             // gas_diffusion: (N,) float32 — the per-gas base-diffusion column.
             auto gd = gas_diffusion.unchecked<1>();
@@ -682,7 +682,7 @@ PYBIND11_MODULE(breach_physics, m) {
                               py::array_t<float> atmosphere,       // float (FLOAT BRIDGE)
                               py::array_t<int32_t> wave_p,         // S2a: Q16.16 int32
                               py::array_t<bool>  solid,
-                              py::array_t<float> gas,              // float (FLOAT BRIDGE: steam)
+                              py::array_t<int32_t> gas,            // S2b: Q16.16 int32 (steam puff quantized)
                               py::array_t<int32_t> before,         // S1: Q16.16 int32 snapshot
                               py::array_t<float> dyn_permeability, // float (FLOAT BRIDGE: seal)
                               int steam_idx, float tilt_x, float tilt_y,
@@ -702,7 +702,7 @@ PYBIND11_MODULE(breach_physics, m) {
             // gas: (N, h, w) contiguous — pass the base pointer; step_water strides
             // by plane (h*w) internally to reach the steam slice (steam_idx).
             auto gv = gas.mutable_unchecked<3>();
-            float* gas_ptr = gv.mutable_data(0, 0, 0);
+            int32_t* gas_ptr = gv.mutable_data(0, 0, 0);        // S2b: Q16.16 int32
             self.step_water(
                 wd, vx, vy, fl, atm, wp, sol,
                 gas_ptr, bef, perm,

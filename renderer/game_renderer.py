@@ -223,6 +223,12 @@ class GameRenderer:
         # _draw_effects_world.
         self._effects: list = []
 
+        # S2b render FLOAT BRIDGE scratch: gmap.gas is int32 Q16.16, but the C++
+        # raycaster gas optics are float — dequantize the (N,h,w) planes into this
+        # reused float32 buffer each frame the cast runs (allocated lazily on first
+        # use; resized if the grid shape changes).
+        self._gas_render_f = None
+
         self.lighting.set_ambient((0.18, 0.18, 0.22))
 
         # Unit sprites — loaded once, unloaded in shutdown().
@@ -251,8 +257,18 @@ class GameRenderer:
             # all gases density-weighted per channel (poison greens the beam,
             # black_smoke dims it, mixing falls out of the sum). `gmap.smoke` is
             # just the black_smoke slice of `gmap.gas`.
+            # S2b: gmap.gas is int32 Q16.16 — DEQUANTIZE the (N,h,w) array to
+            # float32 density for the render cast (the C++ raycaster's gas optics
+            # are float; render-only FLOAT BRIDGE, one source of truth = the int
+            # field). Reused scratch to avoid a per-frame alloc.
+            from simulation import gas_fixed
+            if (self._gas_render_f is None
+                    or self._gas_render_f.shape != gmap.gas.shape):
+                self._gas_render_f = np.empty(gmap.gas.shape, dtype=np.float32)
+            np.multiply(gmap.gas, 1.0 / gas_fixed.FP_ONE_F,
+                        out=self._gas_render_f, casting="unsafe")
             self.lighting.compute_light_field(
-                light_sources, gmap.gas,
+                light_sources, self._gas_render_f,
                 gmap.gases.absorption, gmap.gases.scatter_albedo,
                 gmap.dyn_light_atten,
                 heat=gmap.heat, smoke_glow=gmap.smoke_glow,
@@ -281,7 +297,13 @@ class GameRenderer:
         # energy the smoke scattered), NOT a surface-tint multiply — the old
         # light_modulation path is retired (ch.03 C16, ch.05 §God-rays).
         if self.show_smoke:
-            self.smoke_overlay.update(gmap.smoke)
+            # S2b: gmap.smoke is int32 Q16.16 (the BLACK_SMOKE view) — DEQUANTIZE
+            # to float32 density for the overlay (render-only FLOAT BRIDGE). The
+            # _gas_render_f scratch already holds the dequantized planes when the
+            # cast ran this frame; recompute the smoke slice cheaply regardless so
+            # the overlay is correct even when show_lighting is off.
+            from simulation import gas_fixed
+            self.smoke_overlay.update(gas_fixed.dequantize_f32(gmap.smoke))
             self.glow_overlay.update(gmap.smoke_glow)
         # Fire still gets the vacuum mask: combustion requires oxygen, so
         # fire physically cannot exist in vacuum. Keep this until the fire

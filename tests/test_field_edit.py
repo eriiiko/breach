@@ -34,6 +34,7 @@ from simulation.field_edit import (
     apply_field_edit, heat_quantize, heat_saturating_add, HEAT_SCALE,
 )
 from simulation import wave_fixed   # S2a: wave_source Q16.16 helpers
+from simulation import gas_fixed     # S2b: smoke/gas Q16.16 helpers
 
 
 # ---------------------------------------------------------------------------
@@ -41,9 +42,21 @@ from simulation import wave_fixed   # S2a: wave_source Q16.16 helpers
 # skip-policies read. apply_field_edit reads getattr(gmap, field) and the
 # skip-mask callables read gmap.solid / gmap.is_vacuum / gmap.flammable.
 # ---------------------------------------------------------------------------
+# S2b: smoke is int32 Q16.16 — the "gas" field-edit dtype combines in real
+# density, stores quantized. Helpers to author/read smoke in density units.
+def _smoke_q(v):
+    return gas_fixed.quantize_scalar(v)
+
+
+def _smoke_d(q):
+    return float(q) / gas_fixed.FP_ONE_F
+
+
 class _GMapStub:
     def __init__(self, h=12, w=12):
-        self.smoke = np.zeros((h, w), dtype=np.float32)
+        # S2b: smoke is int32 Q16.16 (the "gas" field-edit dtype) — mirror the
+        # real gmap dtype here.
+        self.smoke = np.zeros((h, w), dtype=np.int32)
         self.atmosphere = np.zeros((h, w), dtype=np.float32)
         # S2a: wave_source is int32 Q16.16 (the "wave" field-edit dtype combines
         # in real units, stores quantized) — mirror the real gmap dtype here.
@@ -74,11 +87,11 @@ def test_mode_add():
 
 def test_mode_remove_clamps_to_floor():
     g = _GMapStub()
-    g.smoke[5, 5] = 0.3
+    g.smoke[5, 5] = _smoke_q(0.3)
     # REMOVE a large amount -> clamped to the smoke policy floor (0).
     apply_field_edit(g, FieldEdit("smoke", Region.TILE, (5, 5), 10.0,
                                   EditMode.REMOVE, clamp=(0.0, 1.0)), _rng())
-    assert float(g.smoke[5, 5]) == 0.0
+    assert int(g.smoke[5, 5]) == 0
 
 
 def test_mode_max_never_lowers():
@@ -163,19 +176,19 @@ def test_linear_falloff_weights():
 
 def test_clamp_ceiling():
     g = _GMapStub()
-    g.smoke[5, 5] = 0.8
+    g.smoke[5, 5] = _smoke_q(0.8)
     apply_field_edit(g, FieldEdit("smoke", Region.TILE, (5, 5), 0.9,
                                   EditMode.ADD, clamp=(0.0, 1.0)), _rng())
-    assert abs(float(g.smoke[5, 5]) - 1.0) < 1e-6  # 0.8 + 0.9 -> clamped to 1
+    assert abs(_smoke_d(g.smoke[5, 5]) - 1.0) < 1e-4  # 0.8 + 0.9 -> clamped to 1
 
 
 def test_policy_default_clamp_applied():
     # A smoke edit with NO explicit clamp still gets the policy [0,1] ceiling.
     g = _GMapStub()
-    g.smoke[5, 5] = 0.8
+    g.smoke[5, 5] = _smoke_q(0.8)
     apply_field_edit(g, FieldEdit("smoke", Region.TILE, (5, 5), 5.0,
                                   EditMode.ADD), _rng())
-    assert abs(float(g.smoke[5, 5]) - 1.0) < 1e-6
+    assert abs(_smoke_d(g.smoke[5, 5]) - 1.0) < 1e-4
 
 
 # ---------------------------------------------------------------------------
@@ -187,8 +200,8 @@ def test_smoke_edit_skips_solid():
     apply_field_edit(g, FieldEdit("smoke", Region.DISC, (6, 6, 3.0), 1.0,
                                   EditMode.ADD, Falloff.FLAT, clamp=(0.0, 1.0)),
                      _rng())
-    assert float(g.smoke[6, 6]) == 0.0, "smoke wrote a solid tile"
-    assert float(g.smoke[6, 5]) == 1.0, "smoke did not write the open neighbour"
+    assert int(g.smoke[6, 6]) == 0, "smoke wrote a solid tile"
+    assert abs(_smoke_d(g.smoke[6, 5]) - 1.0) < 1e-4, "smoke did not write the open neighbour"
 
 
 def test_fire_edit_skips_non_flammable():
@@ -384,31 +397,37 @@ def test_add_explosion_smoke_equivalence():
     radius, noise, seed = 8, 0.85, 11
     cy, cx = 12, 12
 
-    # Reference: the exact legacy inline loop (row-major draw order).
-    ref = _open_gmap()
-    ref.smoke[:] = 0.0
+    # Reference: the exact legacy inline loop (row-major draw order), in float
+    # density, then QUANTIZED per-cell exactly as the "gas" field-edit combine
+    # does (S2b: smoke is int32 Q16.16). The combine accumulates in real density
+    # and re-quantizes each ADD, so the reference quantizes the running value at
+    # each step too (a single deposit per tile here, so one quantize at the end
+    # is equivalent).
+    ref_f = _open_gmap()
+    ref_f.smoke = np.zeros(ref_f.smoke.shape, dtype=np.float64)
     rng_ref = np.random.default_rng(seed)
     low = 1.0 - noise
-    h, w = ref.material.shape
+    h, w = ref_f.material.shape
     for ddy in range(-radius, radius + 1):
         for ddx in range(-radius, radius + 1):
             ny, nx = cy + ddy, cx + ddx
-            if 0 <= ny < h and 0 <= nx < w and not ref.solid[ny, nx]:
+            if 0 <= ny < h and 0 <= nx < w and not ref_f.solid[ny, nx]:
                 dist = math.sqrt(ddy ** 2 + ddx ** 2)
                 if dist < radius:
                     base = 0.8 * (1 - dist / radius)
                     mult = float(rng_ref.uniform(low, 1.0))
-                    ref.smoke[ny, nx] = min(1.0, ref.smoke[ny, nx] + base * mult)
+                    ref_f.smoke[ny, nx] = min(1.0, ref_f.smoke[ny, nx] + base * mult)
+    ref_q = gas_fixed.quantize(ref_f.smoke)
 
-    # Migrated path through the queue, same seed.
+    # Migrated path through the queue, same seed (int32 Q16.16 field).
     got = _open_gmap()
-    got.smoke[:] = 0.0
+    got.smoke[:] = 0
     q = EditQueue()
     add_explosion_smoke(got, q, cy, cx, radius, noise=noise)
     q.flush(got, np.random.default_rng(seed))
 
-    assert np.allclose(ref.smoke, got.smoke, atol=1e-6), \
-        "migrated add_explosion_smoke diverged from the legacy deposit"
+    assert np.array_equal(ref_q, got.smoke), \
+        "migrated add_explosion_smoke diverged from the legacy quantized deposit"
 
 
 def test_apply_explosion_atmosphere_equivalence():

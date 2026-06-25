@@ -260,7 +260,9 @@ class InputHandler:
         # A 3x3 patch at full density so it reads at typical zoom; clamp to bounds.
         y0, y1 = max(0, fy - 1), min(h, fy + 2)
         x0, x1 = max(0, fx - 1), min(w, fx + 2)
-        gmap.gas[self.selected_gas, y0:y1, x0:x1] = 1.0
+        # S2b: gmap.gas is int32 Q16.16 — write full density (1.0) as FP_ONE counts.
+        from simulation import gas_fixed
+        gmap.gas[self.selected_gas, y0:y1, x0:x1] = gas_fixed.SMOKE_MAX_Q
 
     def _debug_pour_water(self, sim, renderer):
         """DEBUG: pour 0.2 m of water on the tile under the mouse cursor.

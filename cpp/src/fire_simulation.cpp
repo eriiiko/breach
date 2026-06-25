@@ -1,6 +1,8 @@
 #include "fire_simulation.h"
+#include "fixed_point.h"
 #include <cmath>
 #include <algorithm>
+#include <cstdint>
 
 // Neighbor offsets: 4-connected (the open-neighbour pressure mean + smoke spread).
 static constexpr int D4[][2] = {{-1,0},{1,0},{0,-1},{0,1}};
@@ -23,7 +25,7 @@ static inline float smoothstep(float edge0, float edge1, float x) {
 std::vector<std::pair<int, int>> FireSimulation::step(
     float* fire,
     float* atmosphere,
-    float* smoke,
+    int32_t* smoke,            // S2b: Q16.16
     float* wall_hp,
     const int32_t* temperature,
     const float* wind_x,
@@ -113,14 +115,20 @@ std::vector<std::pair<int, int>> FireSimulation::step(
     }
 
     // --- Fire produces smoke in neighbouring air tiles (KEPT) ---
+    // S2b: smoke is Q16.16. The emission delta (smoke_emission*dt*I, a small
+    // positive float) is QUANTIZED to Q16.16 (round-to-nearest) and integer-added
+    // — order-free + deterministic. FLOAT BRIDGE: the rate stays float until the
+    // fire system itself migrates (the brief leaves the fire bridge open).
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             float I = fire[y * w + x];
             if (I <= 0.0f) continue;
+            const int32_t delta_q = fixedpoint::quantize((double)p.smoke_emission
+                                                         * (double)dt * (double)I);
             for (const auto& d : D4) {
                 int ny = y + d[0], nx = x + d[1];
                 if (in_bounds(ny, nx, h, w) && !is_wall[ny * w + nx]) {
-                    smoke[ny * w + nx] += p.smoke_emission * dt * I;
+                    smoke[ny * w + nx] += delta_q;     // Q16.16 integer add
                 }
             }
         }
@@ -140,9 +148,11 @@ std::vector<std::pair<int, int>> FireSimulation::step(
     }
 
     // --- Final clamp (fire and smoke only — atmosphere is unclamped) ---
+    // S2b: smoke clamps to [0, FP_ONE] (Q16.16 [0,1]); fire stays float.
     for (int i = 0; i < n; ++i) {
         fire[i] = std::clamp(fire[i], 0.0f, 1.0f);
-        smoke[i] = std::clamp(smoke[i], 0.0f, 1.0f);
+        if (smoke[i] < 0) smoke[i] = 0;
+        else if (smoke[i] > fixedpoint::FP_ONE) smoke[i] = fixedpoint::FP_ONE;
     }
 
     return destroyed;

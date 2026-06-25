@@ -35,6 +35,7 @@ from level_loader import LevelData
 from simulation import Simulation
 from simulation.physics import add_explosion_smoke
 from simulation.field_edit import EditQueue
+from simulation import gas_fixed   # S2b: smoke is int32 Q16.16
 
 SEED = 11
 
@@ -72,7 +73,7 @@ def _deposit(noise: float, radius: int = 8):
     """
     sim = _make_sim()
     g = sim.gmap
-    g.smoke[:] = 0.0
+    g.smoke[:] = 0
     rng = np.random.default_rng(SEED)
     h, w = g.material.shape
     cy, cx = h // 2, w // 2
@@ -82,7 +83,9 @@ def _deposit(noise: float, radius: int = 8):
     queue = EditQueue()
     add_explosion_smoke(g, queue, cy, cx, radius, noise=noise)
     queue.flush(g, rng)
-    smoke = g.smoke.copy()
+    # S2b: smoke is int32 Q16.16 — DEQUANTIZE to real density for the noise
+    # multiplier reconstruction (deposit/base) and the texture stats below.
+    smoke = gas_fixed.dequantize(g.smoke)
 
     # Reconstruct base per tile to recover the noise multiplier deposit/base.
     yy, xx = np.indices((h, w))
@@ -134,9 +137,11 @@ def test_higher_noise_more_texture():
 def test_zero_noise_is_flat():
     _flat_smoke, flat_mult = _deposit(noise=0.0)
     assert flat_mult.size > 0
-    # With noise=0 the multiplier is exactly 1 on every deposited tile — a flat
-    # blob with zero per-tile texture.
-    assert np.allclose(flat_mult, 1.0, atol=1e-6), (
+    # With noise=0 the multiplier is 1 on every deposited tile — a flat blob.
+    # S2b: smoke is Q16.16, so the dequantized deposit/base ratio carries a tiny
+    # quantization wobble (~1 LSB / base, < 1e-3 over the disc); the field is
+    # still FLAT (var ~ 1e-8), just not bit-exact 1.0 like the old float path.
+    assert np.allclose(flat_mult, 1.0, atol=2e-3), (
         f"noise=0 multiplier not flat: var={np.var(flat_mult):.2e}")
     # And it is strictly flatter than a noisy deposit.
     _noisy_smoke, noisy_mult = _deposit(noise=0.85)

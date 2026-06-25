@@ -77,7 +77,7 @@ public:
                                                              // S2a: wave_p Q16.16
         const bool* solid,
         // fire group
-        float* fire_field, float* atmosphere, float* smoke_field, float* wall_hp,
+        float* fire_field, float* atmosphere, int32_t* smoke_field, float* wall_hp,  // S2b: smoke Q16.16
         const int32_t* temperature, const float* wind_x, const float* wind_y,
         const bool* is_vacuum, const bool* flammable,
         // temperature group
@@ -127,7 +127,7 @@ public:
         float* wind_x, float* wind_y,
         const bool* obstacles, const bool* solid, const bool* is_vacuum,
         const float* dyn_permeability, const float* dyn_wave_absorb,
-        float* gas, const float* gas_diffusion, int n_gases,
+        int32_t* gas, const float* gas_diffusion, int n_gases,   // S2b: gas Q16.16
         const float* sink_x, const float* sink_y,
         int h, int w, float sim_time);
 
@@ -191,7 +191,7 @@ public:
         int32_t* water_depth, int32_t* flow_vx, int32_t* flow_vy,
         const int32_t* floor_height, float* atmosphere, const int32_t* wave_p,  // S2a: wave_p Q16.16
         const bool* solid,
-        float* gas,
+        int32_t* gas,   // S2b: gas Q16.16 (the W5 steam puff is a FLOAT BRIDGE: quantize the puff)
         int32_t* before, float* dyn_permeability,
         int steam_idx, float tilt_x, float tilt_y,
         int h, int w, float sim_time,

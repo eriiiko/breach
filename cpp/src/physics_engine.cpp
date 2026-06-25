@@ -33,7 +33,7 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
                                                              // S2a: wave_p Q16.16
         const bool* solid,
         // fire group
-        float* fire_field, float* atmosphere, float* smoke_field, float* wall_hp,
+        float* fire_field, float* atmosphere, int32_t* smoke_field, float* wall_hp,  // S2b: smoke Q16.16
         const int32_t* temperature, const float* wind_x, const float* wind_y,
         const bool* is_vacuum, const bool* flammable,
         // temperature group
@@ -122,7 +122,7 @@ void PhysicsEngine::run_substeps(
         float* wind_x, float* wind_y,
         const bool* obstacles, const bool* solid, const bool* is_vacuum,
         const float* dyn_permeability, const float* dyn_wave_absorb,
-        float* gas, const float* gas_diffusion, int n_gases,
+        int32_t* gas, const float* gas_diffusion, int n_gases,   // S2b: gas Q16.16
         const float* sink_x, const float* sink_y,
         int h, int w, float sim_time) {
 
@@ -216,10 +216,10 @@ void PhysicsEngine::run_substeps(
     // all-zero plane (numpy `.any()`); set d_smoke BEFORE each step (member-set).
     for (int s = 0; s < n_smoke; ++s) {
         for (int gi = 0; gi < n_gases; ++gi) {
-            float* gas_slice = gas + (size_t)gi * plane;
+            int32_t* gas_slice = gas + (size_t)gi * plane;     // S2b: Q16.16
             bool any = false;
             for (int i = 0; i < plane; ++i) {
-                if (gas_slice[i] != 0.0f) { any = true; break; }
+                if (gas_slice[i] != 0) { any = true; break; }   // integer .any()
             }
             if (!any) {
                 continue;  // empty slice — nothing to transport (matches `.any()`)
@@ -243,10 +243,10 @@ void PhysicsEngine::run_substeps(
     const int K = this->smoke.vent_hops;
     for (int k = 0; k < K; ++k) {
         for (int gi = 0; gi < n_gases; ++gi) {
-            float* gas_slice = gas + (size_t)gi * plane;
+            int32_t* gas_slice = gas + (size_t)gi * plane;     // S2b: Q16.16
             bool any = false;
             for (int i = 0; i < plane; ++i) {
-                if (gas_slice[i] != 0.0f) { any = true; break; }
+                if (gas_slice[i] != 0) { any = true; break; }   // integer .any()
             }
             if (!any) {
                 continue;
@@ -278,7 +278,7 @@ void PhysicsEngine::step_water(
         int32_t* water_depth, int32_t* flow_vx, int32_t* flow_vy,
         const int32_t* floor_height, float* atmosphere, const int32_t* wave_p,  // S2a: wave_p Q16.16
         const bool* solid,
-        float* gas,
+        int32_t* gas,   // S2b: gas Q16.16
         int32_t* before, float* dyn_permeability,
         int steam_idx, float tilt_x, float tilt_y,
         int h, int w, float sim_time,
@@ -344,18 +344,21 @@ void PhysicsEngine::step_water(
         // The full-rate boil-off as a Q16.16 count (the cap on what a cell sheds
         // this tick); quantize ONCE (round-to-nearest).
         const q16 boil_amount_q = quantize((double)boil_amount_f);
-        float* gas_slice = gas + (std::size_t)steam_idx * n_cells;
+        int32_t* gas_slice = gas + (std::size_t)steam_idx * n_cells;   // S2b: Q16.16
         for (int i = 0; i < n_cells; ++i) {
-            // FLOAT BRIDGE until S2: the boil is a real sink. We work in INTEGER
-            // depth so the depth removed and the steam credited are the SAME
-            // quantity (water->steam conserved across the bridge): the actual
-            // boiled counts are min(depth, full-rate cap), removed from the
-            // integer depth; the steam puff is steam_yield * dequantize(that).
+            // FLOAT BRIDGE until the fire/steam systems migrate: the boil is a real
+            // sink. We work in INTEGER depth so the depth removed and the steam
+            // credited are the SAME quantity (water->steam conserved across the
+            // bridge): the actual boiled counts are min(depth, full-rate cap),
+            // removed from the integer depth; the steam puff is
+            // steam_yield * dequantize(that), QUANTIZED back to Q16.16 and integer-
+            // added into the (now int32) steam gas plane.
             if (atmosphere[i] < boil_p_thresh_f && water_depth[i] > 0) {
                 const q16 boiled_q = std::min(water_depth[i], boil_amount_q);
                 water_depth[i] -= boiled_q;                    // exact (>=0 by min)
                 const float boiled_m = (float)((double)boiled_q / Q);  // DEQUANTIZE
-                gas_slice[i] += steam_yield_f * boiled_m;      // steam puff (float gas)
+                const q16 puff_q = quantize((double)(steam_yield_f * boiled_m));
+                gas_slice[i] += puff_q;                        // steam puff (Q16.16)
             }
         }
     }

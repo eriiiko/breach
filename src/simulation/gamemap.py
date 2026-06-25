@@ -97,14 +97,18 @@ class GameMap:
         self.wave_source  = np.zeros((h, w), dtype=np.int32)
         self.wind_x       = np.zeros((h, w), dtype=np.float32)
         self.wind_y       = np.zeros((h, w), dtype=np.float32)
-        # Multi-gas density fields (engine/05 §6.2, M1): a dense (N, h, w) float32
-        # array, one (h, w) slice per gas type (slice order == the GAS_* ids).
-        # ``gas`` is C-contiguous, so each ``gas[i]`` is itself a CONTIGUOUS
-        # (h, w) view — the smoke/raycaster C++ solvers hold a raw pointer to the
-        # buffer they are handed, and a contiguous slice's pointer stays valid
-        # for in-place writes (project gotcha: in-place vs reassignment). The
-        # per-gas transport loop (PhysicsRunner.step) steps each non-empty slice.
-        self.gas          = np.zeros((N_GASES, h, w), dtype=np.float32)
+        # Multi-gas density fields (engine/05 §6.2, M1): a dense (N, h, w) array,
+        # one (h, w) slice per gas type (slice order == the GAS_* ids). S2b: now
+        # int32 Q16.16 (scale 2^16, shared with water/heat/wave) — the smoke + 5
+        # gas planes are the integer-SL transport's synced state (deterministic,
+        # non-conservative; docs/s2_fixed_point_plan.md §S2b). ``gas`` is
+        # C-contiguous, so each ``gas[i]`` is itself a CONTIGUOUS (h, w) view —
+        # the smoke C++ solver holds a raw int32 pointer to the buffer it is
+        # handed, and a contiguous slice's pointer stays valid for in-place writes
+        # (project gotcha: in-place vs reassignment). The per-gas transport loop
+        # (PhysicsRunner.step) steps each non-empty slice. Boundary helpers in
+        # simulation.gas_fixed quantize/dequantize (field edits, render, recorder).
+        self.gas          = np.zeros((N_GASES, h, w), dtype=np.int32)
         # ``smoke`` is the canonical name for the BLACK_SMOKE slice (combustion
         # soot — what fire/explosions emit; its diffusion 0.10 matches today's
         # d_smoke=0.1). It is a VIEW into ``gas[BLACK_SMOKE]``: every reader and

@@ -71,7 +71,10 @@ public:
     //
     //   fire        : float (h, w) intensity in [0,1], mutated in place.
     //   atmosphere  : float (h, w), read (neighbour mean) + own-tile plume write.
-    //   smoke       : float (h, w), fire ADDS to it (kept).
+    //   smoke       : int32 (h, w) Q16.16 (S2b), fire ADDS to it (kept). The
+    //                 emission delta smoke_emission*dt*I (a small positive float)
+    //                 is quantized to Q16.16 and integer-added — order-free,
+    //                 deterministic. FLOAT BRIDGE: the emission RATE stays float.
     //   wall_hp     : float (h, w), burn-through depletes it (the fuel brake).
     //   temperature : int32 (h, w) Q16.16, READ-ONLY (the conduction-pass field).
     //   wind_x/wind_y : float (h, w), the SHARED wind field (= -grad p incl. waves).
@@ -81,7 +84,7 @@ public:
     std::vector<std::pair<int, int>> step(
         float* fire,
         float* atmosphere,
-        float* smoke,
+        int32_t* smoke,            // S2b: Q16.16 (fire emission quantized + added)
         float* wall_hp,
         const int32_t* temperature,
         const float* wind_x,

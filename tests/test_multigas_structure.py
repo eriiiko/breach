@@ -85,7 +85,7 @@ def test_gas_array_shape():
     h, w = g.smoke.shape
     assert g.gas.shape == (N_GASES, h, w), \
         f"gas array shape {g.gas.shape} != (N={N_GASES}, {h}, {w})"
-    assert g.gas.dtype == np.float32
+    assert g.gas.dtype == np.int32   # S2b: int32 Q16.16
     assert N_GASES == 5, f"expected 5 gases, got {N_GASES}"
 
 
@@ -98,17 +98,19 @@ def test_smoke_is_black_smoke_view():
     assert g.smoke.base is g.gas, "gmap.smoke is not a view into gmap.gas"
     assert np.shares_memory(g.smoke, g.gas[BLACK_SMOKE])
 
+    # S2b: gas is int32 Q16.16 — write raw counts (the view aliasing is what's
+    # under test, not the units, so plain integer counts are fine here).
     # Writing smoke is visible in the black_smoke slice.
-    g.smoke[3, 4] = 0.42
-    assert g.gas[BLACK_SMOKE][3, 4] == np.float32(0.42)
+    g.smoke[3, 4] = 42
+    assert g.gas[BLACK_SMOKE][3, 4] == 42
 
     # Writing the black_smoke slice is visible in smoke.
-    g.gas[BLACK_SMOKE][5, 6] = 0.77
-    assert g.smoke[5, 6] == np.float32(0.77)
+    g.gas[BLACK_SMOKE][5, 6] = 77
+    assert g.smoke[5, 6] == 77
 
     # Other gas slices are independent of smoke.
-    g.gas[POISON][3, 4] = 0.9
-    assert g.smoke[3, 4] == np.float32(0.42), "poison leaked into the smoke view"
+    g.gas[POISON][3, 4] = 90
+    assert g.smoke[3, 4] == 42, "poison leaked into the smoke view"
 
 
 # --------------------------------------------------------------------------
@@ -183,6 +185,8 @@ def test_poison_transports_through_per_gas_loop():
     stays empty (a cheap no-op). This proves the per-gas loop steps every slice,
     not just black_smoke.
     """
+    from simulation import gas_fixed
+
     g = _make_gmap()
     runner = PhysicsRunner(bp)
 
@@ -190,10 +194,11 @@ def test_poison_transports_through_per_gas_loop():
     assert interior.any()
 
     # Deposit a poison blob on the left of the interior; smoke stays empty.
-    g.gas[POISON][:] = 0.0
-    g.gas[POISON][6:10, 2:5] = 1.0
-    g.gas[POISON][~interior] = 0.0   # never inside walls
-    assert g.smoke.sum() == 0.0, "smoke should be empty for this test"
+    # S2b: gas is int32 Q16.16 — full density (1.0) == FP_ONE counts.
+    g.gas[POISON][:] = 0
+    g.gas[POISON][6:10, 2:5] = gas_fixed.SMOKE_MAX_Q
+    g.gas[POISON][~interior] = 0     # never inside walls
+    assert g.smoke.sum() == 0, "smoke should be empty for this test"
 
     # Impose a strong, steady rightward wind (the atmosphere solver normally
     # produces this; we set it directly to isolate gas transport).
@@ -229,9 +234,9 @@ def test_poison_transports_through_per_gas_loop():
     assert cx1 is not None, "poison vanished entirely"
     assert cx1 > cx0 + 1.0, f"poison did not advect right: {cx0:.2f} -> {cx1:.2f}"
     # Smoke (black_smoke) untouched — the empty slice was a no-op.
-    assert g.smoke.sum() == 0.0, "poison transport polluted the smoke slice"
-    # Diffusion happened: the blob is no longer a sharp 1.0 column everywhere.
-    assert g.gas[POISON].max() <= 1.0 + 1e-6
+    assert g.smoke.sum() == 0, "poison transport polluted the smoke slice"
+    # Diffusion happened: the blob is no longer a sharp full column everywhere.
+    assert g.gas[POISON].max() <= gas_fixed.SMOKE_MAX_Q
     assert total0 > 0.0
 
 
@@ -248,10 +253,12 @@ def test_black_smoke_matches_pre_refactor_reference():
     the SAME computation and must agree within float noise.
     """
     from config import CFG
+    from simulation import gas_fixed
 
     h = w = 24
     rng = np.random.default_rng(SEED)
-    deposit = rng.random((h, w)).astype(np.float32)
+    # S2b: smoke is int32 Q16.16 — quantize a random [0,1] deposit.
+    deposit = gas_fixed.quantize(rng.random((h, w)))
     # Open domain (isolate transport from BCs).
     obstacles = np.zeros((h, w), dtype=bool)
     is_wall = np.zeros((h, w), dtype=bool)
@@ -291,9 +298,11 @@ def test_black_smoke_matches_pre_refactor_reference():
         s_new.step(gas, wind_x, wind_y,
                    obstacles, is_wall, is_vacuum, perm, dt)
 
-    assert np.allclose(gas, ref, atol=1e-5), \
+    # S2b: both paths run the identical integer-SL with the same d_smoke (0.1 ==
+    # 0.10), so they are now BIT-IDENTICAL (was atol=1e-5 in the float build).
+    assert np.array_equal(gas, ref), \
         f"black_smoke diverged from the legacy single-field path: " \
-        f"max|diff|={np.abs(gas - ref).max():.2e}"
+        f"max|diff|={np.abs(gas - ref).max()}"
 
 
 # --------------------------------------------------------------------------
@@ -345,14 +354,19 @@ def test_recorder_and_headless_step():
 
 
 def test_renderer_overlay_reads_smoke():
-    """The render-side FieldOverlay path reads gmap.smoke (a 2-D float32 view)
-    just like a plain array — import + a pack on the live view must not error."""
+    """The render-side smoke path reads gmap.smoke (S2b: a 2-D int32 Q16.16 view)
+    and DEQUANTIZES it to float32 at the render boundary (game_renderer.py). The
+    overlay itself takes float32; the dequantize is the FLOAT BRIDGE."""
     from renderer.overlays import FieldOverlay  # import path must resolve
+    from simulation import gas_fixed
     g = _make_gmap()
-    g.smoke[4:8, 4:8] = 0.5
-    # The overlay reads a (h, w) float32 field; the black_smoke view qualifies.
-    assert g.smoke.ndim == 2 and g.smoke.dtype == np.float32
-    assert g.smoke[5, 5] == np.float32(0.5)
+    g.smoke[4:8, 4:8] = gas_fixed.quantize_scalar(0.5)
+    # The black_smoke view is a (h, w) int32 field; the renderer dequantizes it.
+    assert g.smoke.ndim == 2 and g.smoke.dtype == np.int32
+    assert g.smoke[5, 5] == gas_fixed.quantize_scalar(0.5)
+    smoke_f = gas_fixed.dequantize_f32(g.smoke)
+    assert smoke_f.dtype == np.float32
+    assert abs(float(smoke_f[5, 5]) - 0.5) < 1e-4
 
 
 if __name__ == "__main__":

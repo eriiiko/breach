@@ -94,13 +94,36 @@ _FP_FAST_RE = re.compile(r"fp:fast")
 # systematic ~percent/tick sink into the conserved atmosphere). The float deposit
 # is unbiased + minimises divergence from the float build; it becomes a
 # round-to-nearest/conservative INTEGER deposit when atmosphere goes integer (S2c).
+# S2b (smoke/gas -> Q16.16, 2026-06-25) re-baselined smoke_dynamics.cpp +
+# fire_simulation.cpp + physics_engine.cpp. The smoke/gas TRANSPORT core (the
+# integer-SL: DDA march + integer bilinear + reciprocal_q16 renorm + the integer
+# wind-coupled diffusion) is now integer:
+#   * smoke_dynamics.cpp `float` FELL 47 -> 25 and `fp:fast` 1 -> 0 (the whole
+#     advect/diffuse/clamp went integer Q16.16); `double` ROSE 1 -> 15 because the
+#     FLOAT BRIDGE constants are computed ONCE per cell in double then quantized:
+#     the wind*dt_adv displacement (-wind*dt_adv -> Q16.16) and the wind-coupled
+#     d_eff*dt diffusion coefficient (|wind|² is still float until S2c). The
+#     permeability per-face weight is also a float-bridge quantize. These are the
+#     wind/permeability FLOAT BRIDGES that collapse to integer when S2c lands.
+#   * fire_simulation.cpp `float` 29 -> 31 (the smoke param is int32 now, +a couple
+#     of comment lines), `double` 0 -> 2: the smoke EMISSION delta
+#     (smoke_emission*dt*I) is computed in double then quantized to a Q16.16 add
+#     (order-free, deterministic) — a FLOAT BRIDGE the brief leaves open (the fire
+#     system migrates later).
+#   * physics_engine.cpp `float` 71 -> 66 (the gas/steam float bridges shrank — the
+#     gas planes + the W5 steam puff are int32 now, so fewer `float* gas` lines),
+#     `double` 24 -> 25 (the steam-puff quantize). The remaining bridges collapse
+#     when the fire/steam systems migrate.
+# Per-TU baseline: number of LINES containing each token (see the header). The
+# ratchet fails if any count rises above its baseline; LOWER as each solver
+# migrates. (Counts below recorded 2026-06-25 on s2-atmosphere-fixedpoint.)
 BASELINE = {
     "atmosphere_solver.cpp":  {"float": 62, "double": 17, "fp:fast": 1},
-    "smoke_dynamics.cpp":     {"float": 47, "double": 1,  "fp:fast": 1},
-    "fire_simulation.cpp":    {"float": 29, "double": 0,  "fp:fast": 0},
+    "smoke_dynamics.cpp":     {"float": 25, "double": 15, "fp:fast": 0},
+    "fire_simulation.cpp":    {"float": 31, "double": 2,  "fp:fast": 0},
     "water_solver.cpp":       {"float": 32, "double": 23, "fp:fast": 1},
     "temperature_solver.cpp": {"float": 2,  "double": 1,  "fp:fast": 0},
-    "physics_engine.cpp":     {"float": 71, "double": 24, "fp:fast": 1},
+    "physics_engine.cpp":     {"float": 66, "double": 25, "fp:fast": 1},
 }
 
 

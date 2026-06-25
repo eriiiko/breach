@@ -42,6 +42,7 @@ import breach_physics as bp
 from level_loader import LevelData
 from simulation import Simulation
 from simulation.gamemap import GameMap
+from simulation import gas_fixed   # S2b: smoke is int32 Q16.16
 
 SEED = 7
 
@@ -96,8 +97,9 @@ def _make_sim():
 
 
 def _fill_smoke(g, interior, value=1.0):
-    g.smoke[:] = 0.0
-    g.smoke[interior] = value
+    # S2b: smoke is int32 Q16.16 — quantize the fill density.
+    g.smoke[:] = 0
+    g.smoke[interior] = gas_fixed.quantize_scalar(value)
 
 
 # --------------------------------------------------------------------------

@@ -31,6 +31,16 @@ sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
 
 import breach_physics as bp
 
+sys.path.insert(0, str(ROOT / "src"))
+from simulation import gas_fixed   # S2b: smoke is int32 Q16.16
+
+FP_ONE = gas_fixed.FP_ONE
+
+
+def _q(v):
+    """Quantize a density (scalar or array) to int32 Q16.16 (round-to-nearest)."""
+    return gas_fixed.quantize(v)
+
 
 # --------------------------------------------------------------------------
 # Helpers
@@ -97,8 +107,8 @@ def _center_of_mass(field):
 def test_constant_wind_translates_in_wind_direction():
     """A blob under constant rightward wind moves right (and only right)."""
     h, w = 24, 48
-    smoke = np.zeros((h, w), dtype=np.float32)
-    smoke[10:14, 8:12] = 1.0  # blob on the left
+    smoke = np.zeros((h, w), dtype=np.int32)   # S2b: Q16.16
+    smoke[10:14, 8:12] = FP_ONE  # blob on the left (full density)
 
     obstacles, is_wall, is_vacuum, perm = _open_domain(h, w)
     wind_x = np.full((h, w), 1.0, dtype=np.float32)  # rightward (+x)
@@ -123,8 +133,8 @@ def test_translation_speed_matches_wind_times_dt_adv():
     (we did not silently change the feel of the advection knobs).
     """
     h, w = 16, 64
-    smoke = np.zeros((h, w), dtype=np.float32)
-    smoke[6:10, 6:10] = 1.0
+    smoke = np.zeros((h, w), dtype=np.int32)   # S2b: Q16.16
+    smoke[6:10, 6:10] = FP_ONE
 
     obstacles, is_wall, is_vacuum, perm = _open_domain(h, w)
     wind_x = np.full((h, w), 2.0, dtype=np.float32)
@@ -155,7 +165,7 @@ def test_values_stay_in_range_and_finite():
     """Strong, swirling wind over many steps: stays in [0,1], no NaN/Inf."""
     h, w = 32, 32
     rng = np.random.default_rng(0)
-    smoke = rng.random((h, w), dtype=np.float32)
+    smoke = _q(rng.random((h, w)))   # S2b: Q16.16
 
     obstacles, is_wall, is_vacuum, perm = _open_domain(h, w)
     # A large rotational wind field — the regime where the old central
@@ -171,8 +181,8 @@ def test_values_stay_in_range_and_finite():
     for _ in range(200):
         _step(s, smoke, wind_x, wind_y, obstacles, is_wall, is_vacuum, perm, dt)
         assert np.all(np.isfinite(smoke)), "NaN/Inf appeared in smoke field"
-        assert smoke.min() >= 0.0 and smoke.max() <= 1.0, \
-            f"smoke escaped [0,1]: min={smoke.min()}, max={smoke.max()}"
+        assert smoke.min() >= 0 and smoke.max() <= FP_ONE, \
+            f"smoke escaped [0,FP_ONE]: min={smoke.min()}, max={smoke.max()}"
 
 
 # --------------------------------------------------------------------------
@@ -199,19 +209,19 @@ def test_closed_domain_no_mass_growth():
     obstacles, is_wall, is_vacuum, perm = _walled_box(h, w)
 
     # (a) Zero wind: the advection step must be the identity.
-    smoke = np.zeros((h, w), dtype=np.float32)
-    smoke[4:10, 4:10] = 0.8
+    smoke = np.zeros((h, w), dtype=np.int32)   # S2b: Q16.16
+    smoke[4:10, 4:10] = _q(0.8)
     base = smoke.copy()
     zero = np.zeros((h, w), dtype=np.float32)
     s0 = _make_solver(advection_rate=2.0, d_smoke=0.0)  # diffusion off
     for _ in range(50):
         _step(s0, smoke, zero, zero, obstacles, is_wall, is_vacuum, perm, 0.4)
-    assert np.allclose(smoke, base, atol=1e-6), \
+    assert np.array_equal(smoke, base), \
         "zero-wind advection changed the field (should be identity)"
 
     # (b) Gentle interior wind, small displacement, kept off the walls.
-    smoke = np.zeros((h, w), dtype=np.float32)
-    smoke[12:16, 8:12] = 0.8  # centred blob
+    smoke = np.zeros((h, w), dtype=np.int32)   # S2b: Q16.16
+    smoke[12:16, 8:12] = _q(0.8)  # centred blob
     wind_x = np.full((h, w), 0.2, dtype=np.float32)
     wind_y = np.zeros((h, w), dtype=np.float32)
     s = _make_solver(advection_rate=1.0, d_smoke=0.0)  # dt_adv = 0.3 -> ~0.06/step
@@ -230,7 +240,7 @@ def test_closed_domain_no_mass_growth():
         f"gentle interior advection lost too much mass: {total0:.4f} -> {total1:.4f}"
 
     # Smoke must never have leaked into the walls.
-    assert np.all(smoke[is_wall] == 0.0), "smoke leaked into wall cells"
+    assert np.all(smoke[is_wall] == 0), "smoke leaked into wall cells"
 
 
 def test_no_smoke_pulled_through_wall():
@@ -249,8 +259,8 @@ def test_no_smoke_pulled_through_wall():
     perm = np.ones((h, w), dtype=np.float32)
     perm[obstacles] = 0.0
 
-    smoke = np.zeros((h, w), dtype=np.float32)
-    smoke[:, wall_x + 1:] = 0.7  # all smoke strictly right of the wall
+    smoke = np.zeros((h, w), dtype=np.int32)   # S2b: Q16.16
+    smoke[:, wall_x + 1:] = _q(0.7)  # all smoke strictly right of the wall
 
     # Wind pointing LEFT everywhere — would drag smoke across the wall if the
     # bilinear sample ignored permeability.
@@ -265,7 +275,7 @@ def test_no_smoke_pulled_through_wall():
 
     # Left of the wall must remain (essentially) clear.
     left = smoke[:, :wall_x]
-    assert left.max() < 1e-4, \
+    assert left.max() < _q(1e-4), \
         f"smoke teleported through the wall: max left-of-wall = {left.max()}"
 
 
@@ -282,8 +292,8 @@ def test_single_cell_does_not_checkerboard():
     (checkerboard) energy and assert it stays tiny.
     """
     h, w = 40, 40
-    smoke = np.zeros((h, w), dtype=np.float32)
-    smoke[20, 20] = 1.0  # single off cell
+    smoke = np.zeros((h, w), dtype=np.int32)   # S2b: Q16.16
+    smoke[20, 20] = FP_ONE  # single off cell (full density)
 
     obstacles, is_wall, is_vacuum, perm = _open_domain(h, w)
     # Strong wind — the destabilising regime for the old scheme.
@@ -298,13 +308,14 @@ def test_single_cell_does_not_checkerboard():
 
     # Bounded, non-negative (semi-Lagrangian only averages existing values, so
     # it can never exceed the source range or go negative).
-    assert np.all(np.isfinite(smoke))
-    assert smoke.min() >= -1e-6, f"negative smoke (overshoot): {smoke.min()}"
-    assert smoke.max() <= 1.0 + 1e-6, f"smoke overshoot above source: {smoke.max()}"
+    assert smoke.min() >= 0, f"negative smoke (overshoot): {smoke.min()}"
+    assert smoke.max() <= FP_ONE, f"smoke overshoot above source: {smoke.max()}"
 
     # Checkerboard detector: convolve with the (+ - / - +) Nyquist stencil.
     # A checkerboard would put large energy here; a smooth advected blob
     # should leave the high-frequency mode tiny relative to the total.
+    # (Compute in float to avoid int overflow/sign issues in the stencil.)
+    smoke = smoke.astype(np.float64)
     cb = np.zeros_like(smoke)
     cb[1:-1, 1:-1] = (
         4.0 * smoke[1:-1, 1:-1]

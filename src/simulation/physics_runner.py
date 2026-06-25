@@ -217,6 +217,9 @@ class PhysicsRunner:
         self._fire_scratch_rgb = None
         self._fire_scratch_dx = None
         self._fire_scratch_dy = None
+        # S2b: dequantized-gas float scratch for the fire-light heat cast (the
+        # raycaster's gas optics are float; gmap.gas is int32 Q16.16). Lazy alloc.
+        self._fire_gas_f = None
 
         # WaterSolver (engine/07 §2, water plan W2): the pipe model that
         # advances gmap.water_depth. Params are bound through a METHOD (not
@@ -459,6 +462,19 @@ class PhysicsRunner:
             self._fire_scratch_dx.fill(0.0)
             self._fire_scratch_dy.fill(0.0)
 
+        # S2b: gmap.gas is int32 Q16.16. The C++ raycaster's gas optics are float,
+        # so DEQUANTIZE the (N,h,w) planes to a reused float32 scratch for this
+        # heat-only cast. Gases never attenuate the heat channel (only material
+        # heat_atten does), so the dequantized gas does not change the heat deposit
+        # — the only output that survives this cast — but the buffer must be float
+        # for the raycaster to read it correctly (render-irrelevant FLOAT BRIDGE).
+        from simulation import gas_fixed
+        if (self._fire_gas_f is None
+                or self._fire_gas_f.shape != gmap.gas.shape):
+            self._fire_gas_f = np.empty(gmap.gas.shape, dtype=np.float32)
+        np.multiply(gmap.gas, 1.0 / gas_fixed.FP_ONE_F,
+                    out=self._fire_gas_f, casting="unsafe")
+
         bp = self.bp
         two_pi = 2.0 * math.pi
         ray_count = self.fire_ray_count
@@ -491,8 +507,8 @@ class PhysicsRunner:
                 # per-gas tables. Gases NEVER attenuate the heat channel (only
                 # material heat_atten does), so the heat deposit — the only output
                 # that survives this cast (smoke_glow=None) — is bit-identical to
-                # the pre-multigas single-smoke call.
-                gmap.gas,
+                # the pre-multigas single-smoke call. S2b: dequantized float bridge.
+                self._fire_gas_f,
                 gmap.gases.absorption,
                 gmap.gases.scatter_albedo,
                 gmap.dyn_light_atten,

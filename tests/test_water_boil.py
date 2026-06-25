@@ -62,6 +62,12 @@ from level_loader import LevelData  # noqa: E402
 from simulation import Simulation  # noqa: E402
 from simulation.gases import WHITE_SMOKE  # noqa: E402
 from water_q16 import q, deq  # noqa: E402  (S1: Q16.16 quantize/dequantize)
+from simulation import gas_fixed  # noqa: E402  (S2b: gas Q16.16 dequantize)
+
+
+def _gas_mass(plane):
+    """Total real-density mass of a gas plane (S2b: int32 Q16.16 -> /65536)."""
+    return float(plane.astype(np.float64).sum()) / gas_fixed.FP_ONE_F
 
 # S1: water_depth is int32 Q16.16 (~1.5e-5 m granularity). The W5 boil is a
 # FLOAT BRIDGE (it dequantizes depth, boils in float, re-quantizes the removed
@@ -155,7 +161,7 @@ def test_one_tick_vacuum_boil_depth_and_steam_gain():
     # The steam GAIN is read as TOTAL white_smoke mass (float64 sum) — robust
     # against transport moving the puff between ticks (here transport is a
     # no-op anyway: sealed cell, zero wind, breach-less map -> zero sink).
-    total0 = float(g.gas[WHITE_SMOKE].sum(dtype=np.float64))
+    total0 = _gas_mass(g.gas[WHITE_SMOKE])    # S2b: dequantized real-density mass
     assert total0 == 0.0, "scene starts with stray white_smoke"
 
     sim.step()                                    # ONE tick = 1/24 s
@@ -167,13 +173,14 @@ def test_one_tick_vacuum_boil_depth_and_steam_gain():
     assert abs(d - (DEPTH - INC)) < 3 * Q_EPS, (
         f"one-tick boil depth {d} != {DEPTH - INC} (tol {3*Q_EPS:.2e})")
     # Steam: the puff is steam_yield * boiled, in white_smoke and ONLY there.
-    # S1: boiled is the Q16.16-quantized full-rate amount (0.02/24 m rounds to
-    # the nearest LSB), so the steam carries steam_yield * (a few Q16.16 LSB) of
-    # slack vs the plan's exact float number (was 1e-6 on the float build).
-    gain = float(g.gas[WHITE_SMOKE].sum(dtype=np.float64)) - total0
-    assert abs(gain - STEAM_YIELD * INC) < STEAM_YIELD * 3 * Q_EPS, (
+    # S1: boiled is the Q16.16-quantized full-rate amount. S2b: the steam puff
+    # ITSELF is now Q16.16 too (the gas plane is integer), so the gain carries a
+    # SECOND quantization (the puff quantize on top of the boil quantize) — widen
+    # the slack to a few gas LSB (~1.5e-5 each) on top of the boil LSB.
+    gain = _gas_mass(g.gas[WHITE_SMOKE]) - total0
+    assert abs(gain - STEAM_YIELD * INC) < STEAM_YIELD * 3 * Q_EPS + 3 * Q_EPS, (
         f"one-tick steam gain {gain} != {STEAM_YIELD * INC} "
-        f"(tol {STEAM_YIELD * 3 * Q_EPS:.2e})")
+        f"(tol {STEAM_YIELD * 3 * Q_EPS + 3 * Q_EPS:.2e})")
     for gi in range(g.gas.shape[0]):
         if gi != WHITE_SMOKE:
             assert not g.gas[gi].any(), (
@@ -202,7 +209,7 @@ def test_boils_dry_exact_zero_after_121_ticks():
     # Yield bookkeeping (the plan's numbers end-to-end): ALL the water left
     # as steam, total white_smoke == steam_yield * 0.1 = 0.4. Forgiving rel
     # tolerance: 121 float32 accumulations, conserved transport.
-    total = float(g.gas[WHITE_SMOKE].sum(dtype=np.float64))
+    total = _gas_mass(g.gas[WHITE_SMOKE])     # S2b: dequantized real-density mass
     assert abs(total - STEAM_YIELD * DEPTH) < 1e-3 * STEAM_YIELD * DEPTH, (
         f"steam total {total} != steam_yield*depth {STEAM_YIELD * DEPTH}")
 
@@ -220,7 +227,7 @@ def test_twin_tile_at_full_pressure_bit_exact_unchanged():
 
     # Control (the asserts bite): the vacuum twin DID boil in this same run.
     assert float(g.water_depth[A]) < float(depth_pre[A])
-    assert float(g.gas[WHITE_SMOKE].sum(dtype=np.float64)) > 0.0
+    assert _gas_mass(g.gas[WHITE_SMOKE]) > 0.0
 
     # The full-pressure twin: depth bit-exact, every gas slice bit-exact.
     assert g.water_depth[B] == depth_pre[B], (
