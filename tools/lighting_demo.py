@@ -55,6 +55,7 @@ from renderer.camera import Camera2D
 from renderer.game_renderer import RenderConfig
 from simulation import Simulation
 from simulation import gas_fixed
+from simulation import atmosphere_fixed
 from simulation.unit import Unit
 from simulation.physics import apply_explosion, add_explosion_smoke
 
@@ -855,7 +856,10 @@ def _draw_hud(renderer: GameRenderer, gmap, state: PanelState,
                 mat_val = int(gmap.material[cy, cx])
                 mat_name = {0: "air", 1: "hull", 3: "door"}.get(mat_val, f"mat{mat_val}")
             tile_line = f"tile ({cx}, {cy}) — {mat_name}"
-            total_p = float(gmap.atmosphere[cy, cx] + gmap.wave_p[cy, cx])
+            # atmosphere + wave_p are both int32 Q16.16 (S2a/S2c) — dequantize
+            # for the HUD readout (raw counts are ~65536x the real pressure).
+            total_p = atmosphere_fixed.dequantize(
+                gmap.atmosphere[cy, cx] + gmap.wave_p[cy, cx])
             pressure_line = f"pressure: {total_p:.3f}"
             smoke_line = f"smoke: {gas_fixed.dequantize(gmap.smoke[cy, cx]):.3f}"
         else:
