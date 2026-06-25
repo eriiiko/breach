@@ -1,18 +1,28 @@
 # S2 — Atmosphere / Wave / Wind / Smoke / Gas → integer (Q16.16) — plan
 
-**Status:** plan, awaiting Erik's OK (the §5 decisions, headlined by the smoke-advection switch).
+**Status:** plan. The §5 headline (Q-S2-1, smoke advection) is now **RESOLVED — SAVE semi-Lagrangian,
+integer-SL-everywhere** (see §5); the remaining §5 items are forward decisions awaiting Erik's OK.
 The **second field migration** of the fixed-point arc and **the last big coupling group before fire (S3)**.
 Built from `docs/s2_atmosphere_group_map.md` (the factual HEAD survey — every divide, transcendental,
 reduction, conservation property and cliff), `docs/s2_advection_research.md` (the smoke-advection
-recommendation), `docs/fixed_point_migration_plan.md` §9 (the locked resolutions), and the shipped S1
+recommendation — **note: its flux-form recommendation is now OVERRIDDEN, see §5/Q-S2-1**),
+`docs/fixed_point_migration_plan.md` §9 (the locked resolutions), the shipped S1
 toolkit `cpp/src/fixed_point.h` + `docs/s1_water_fixed_point_plan.md` (the conservative gather-once / ±-pair /
-shared-narrow template).
+shared-narrow template), and the **committed integer-SL prototype** (`ceb601b`, branch `s2-advection-demo`,
+`tools/s2_advection_demo/`) that empirically settled Q-S2-1.
 
-**Unlike S1, this group is HARD:** it has a global reduction (`mean_wp`), three genuine dynamic divides
-(`mean_wp`, the GS per-cell divisor, the smoke bilinear renorm), a per-cell transcendental (the back-trace
-`sqrt`), two runtime-derived integer cliffs (`n_wave`, `n_smoke`), and **five systems that couple inside one
-tick** so they must migrate **atomically**. The plan's headline move is to *delete* most of that hazard
-surface by **switching smoke/gas from semi-Lagrangian back-trace to conservative flux-form** (research §9).
+**Unlike S1, this group is HARD:** it has a global reduction (`mean_wp`), two genuine dynamic divides that
+remain (the GS per-cell divisor, the smoke bilinear renorm — both serviced by the *same* `reciprocal_q16`
+helper), two runtime-derived integer cliffs (`n_wave`, `n_smoke`), and **five systems that couple inside one
+tick** so they must migrate **atomically**. The plan's headline move is to **KEEP smoke/gas on
+semi-Lagrangian and take it integer everywhere** — one Q16.16 SL field drives both visual and gameplay, so
+there is no visual/gameplay drift. This was settled **empirically** (Q-S2-1, §5): the advection demo + the
+integer-SL prototype (`ceb601b`) proved a Q16.16 SL is **bit-deterministic, a visual twin of the float SL,
+and gently non-conservative** (the `>>16` truncation is a built-in mild decay), and Erik **accepted
+deterministic non-conservation** — it is identical on every machine, so it is *behaviour, not desync*, with
+**smoke decay as the tuning knob**. This **overrides** `s2_advection_research.md`'s flux-form recommendation.
+The back-trace `sqrt` is avoided by a **sqrt-free DDA march** (no transcendental); the bilinear renorm divide
+is folded into the shared `reciprocal_q16`.
 
 All HEAD line numbers re-verified 2026-06-24 against `atmosphere_solver.cpp` (`:108`, `:143-151`, `:154-159`,
 `:240-257`), `physics_engine.cpp` (`:183-198`), `smoke_dynamics.cpp` (`:52-277`). Re-verify before impl —
@@ -47,8 +57,8 @@ internally (via a temporary float-bridge ordering, §6.2), but they **land toget
 | **wave_v** | (h,w) f32 | **yes** | no | **OVERFLOW WATCH** — `c_sq·lap` exceeds ±32768 *before* ·dt (§3, S2a) | int32, **Q24.8 exception candidate** |
 | **wave_source** | (h,w) f32 | no | no | comfortable | int32 |
 | **wind_x / wind_y** | (h,w) f32 each | **yes** | no (derived) | 2-term central diff ×0.5; feeds smoke + the `max_wind_sq` cliff → must share smoke's read format | int32 |
-| **gas** — 5 planes (white_smoke, **black_smoke**, poison, teargas, fuel_gas) | (5,h,w) f32 | no | **YES (each plane)** | `[0,1]`-clamped tracers; Q16.16 res ≈1.5e-5 ≪ perceptual; no overflow in the flux `mul_wide` | **int16 (Q1.15) frozen, ship int32 on CPU** |
-| **smoke** | **view of gas[BLACK_SMOKE]** | no | YES | *same storage as a gas plane* — black_smoke IS plane 1 | int16 (Q1.15) |
+| **gas** — 5 planes (white_smoke, **black_smoke**, poison, teargas, fuel_gas) | (5,h,w) f32 | no | **NO — integer-SL, deterministic-but-non-conservative** (accepted; decay is the knob) | `[0,1]`-clamped tracers; Q16.16 res ≈1.5e-5 ≪ perceptual; no overflow in the SL bilinear `mul_wide` int64 accumulate | **int16 (Q1.15) frozen, ship int32 on CPU** |
+| **smoke** | **view of gas[BLACK_SMOKE]** | no | **NO (same — integer-SL non-conservative)** | *same storage as a gas plane* — black_smoke IS plane 1 | int16 (Q1.15) |
 
 `smoke` and "the 5 gas planes" are the **same storage** (`gamemap.py:109`); migrating gas migrates smoke.
 
@@ -82,16 +92,20 @@ fire coupling remains float until S3.
 ### 2.1 Reused verbatim from `fixed_point.h` (S1's shipped toolkit)
 
 - `quantize` / `dequantize` / `dequantize_f` (`:59-74`) — the load/render/cross-group boundary casts.
-- `mul_q16` (`:81`) + `mul_wide` (`:89`) + `narrow` (`:96`) — every Q16.16 multiply **and the conservative
+- `mul_q16` (`:81`) + `mul_wide` (`:89`) + `narrow` (`:96`) — every Q16.16 multiply, **the conservative
   flux gather** (gather wide, ± the same int64 to both cells, narrow once) for the wave Laplacian, the
-  atmosphere GS stencil, the smoke diffusion Laplacian, and the **new flux-form smoke advection**.
+  atmosphere GS stencil, and the smoke wind-diffusion Laplacian, **and the integer-SL bilinear sample**
+  (the 4 corner-weight products accumulated in int64, then narrowed — `ceb601b`).
 - `make_recip` / `recip_mul` (`:121-154`) — the *loop-invariant* divides (`dt_actual = sim_time/n`,
-  `dt_stable`, `mu = d_atm·dt`). **NOT** valid for per-cell runtime divisors (the GS `Dinv`, the renorm) —
-  `make_recip` is double-at-load for a single divisor.
+  `dt_stable`, `mu = d_atm·dt`). **NOT** valid for per-cell runtime divisors (the GS `Dinv`, the SL bilinear
+  renorm) — `make_recip` is double-at-load for a single divisor; those use the per-cell `reciprocal_q16`
+  (§2.2 #3).
 - `shr_round0` (`:160`) — symmetric decay for signed fields (the sponge `*0.5`/`*0.25`, the wind `*0.5`).
-- `scale_mag` (`:175`) — shrink-only signed scale: the wave absorb `×k` (k∈[0,1]), **and the smoke
-  monotone outflow limiter** (the bounded `smoke[i]/out_sum` clamp, reused from water verbatim).
-- `ceil_div` (`:189`) — **all three S2 cliffs** (n_wave, n_smoke, back-trace step-count if any survives).
+- `scale_mag` (`:175`) — shrink-only signed scale: the wave absorb `×k` (k∈[0,1]). (No smoke outflow
+  limiter — integer-SL is a back-trace gather, not a face-flux scheme, so there is no per-cell outflow sum to
+  clamp.)
+- `ceil_div` (`:189`) — the two S2 substep cliffs (n_wave, n_smoke). (The integer-SL DDA march is a
+  dominant-axis cell-by-cell loop with an integer cap, not a `ceil_div` cliff.)
 - (`tan_poly` `:216` — water-only, not needed by S2.)
 
 ### 2.2 NEW helpers S2 needs
@@ -107,10 +121,13 @@ fire coupling remains float until S3.
    integers** (trivially, unlike a sum); the per-cell square `wind_x²+wind_y²` needs int64. A named helper
    because it feeds the n_smoke cliff. (`d_smoke_max` is also a max but config-constant.)
 
-3. **Per-cell GS reciprocal `Dinv` for the RB-GS divisor** (§3 S2c, the centerpiece) — the divisor
-   `1 + μ·wsum` is **per-cell AND continuous** (Q4 kept permeability continuous, so `wsum` is not just
-   `{0,½,1}` sums — a per-cell reciprocal is genuinely needed each tick). `make_recip` cannot serve it
-   (it's double-at-load for one divisor). **This is an OPEN DESIGN CHOICE (Q-S2-3):**
+3. **Per-cell reciprocal `reciprocal_q16(denom)` — serves BOTH the GS `Dinv` AND the SL bilinear renorm.**
+   The GS divisor `1 + μ·wsum` is **per-cell AND continuous** (Q4 kept permeability continuous, so `wsum` is
+   not just `{0,½,1}` sums — a per-cell reciprocal is genuinely needed each tick); the integer-SL bilinear
+   needs the *same* primitive for `1/wsum` at sealed corners (clamp `wsum` to a floor first). One helper, two
+   call sites — the prototype (`ceb601b`) already uses the **3-step Newton reciprocal** (`r ← r·(2−wsum·r)`,
+   seeded from a power-of-2 reciprocal) for the SL renorm; that is exactly path (b) below. `make_recip`
+   cannot serve either (it's double-at-load for one divisor). **This is the locked design choice Q-S2-3:**
    - **(a) `/fp:strict` double reciprocal-then-quantize** — `Dinv[i] = quantize(1.0 / (1+μ·wsum_real))`,
      correctly-rounded double divide → deterministic *for a given divisor* (IEEE div is correctly rounded
      cross-vendor), then quantized. **Pro:** simplest, provably correct-rounded, cheap. **Con:** keeps a
@@ -126,18 +143,27 @@ fire coupling remains float until S3.
    The `Dinv` is rebuilt **only on changed cells** each tick, keyed on `(mu | obstacles | is_wall |
    is_vacuum | permeability)`; skipped cells `continue` (never `Dinv=0`).
 
-4. **Flux-form advection machinery (the divide-free limiter)** — pure integer `min`/`max`/`minmod` of two
-   one-sided Q16.16 differences (research §3 Route (a)). **No new divide, no transcendental.** Reuses
-   `mul_wide`/`narrow`/`scale_mag` for the flux gather + outflow clamp; the limited correction flux folds
-   into the face flux **before** the shared narrow so it cannot break conservation.
+4. **Integer-SL advection machinery (the back-trace gather)** — three pieces, all proven in `ceb601b`:
+   - **A sqrt-free DDA wall-clip march.** Back-trace the departure point in Q16.16, then step the **dominant
+     axis cell-by-cell** (Chebyshev-distance march) toward the source, **stopping before a sealed tile** —
+     so it can never tunnel a 1-cell wall, and it needs **no `sqrt`** for the march length (the transcendental
+     the float SL had at `smoke_dynamics.cpp:64` is gone).
+   - **An integer bilinear sample.** The 4 corner weights as Q16.16 products, accumulated in **int64**, then
+     narrowed (`mul_wide`/`narrow`). Sealed corners contribute 0.
+   - **The renorm `1/wsum` via `reciprocal_q16` (the shared §2.2 #3 helper)** — the prototype's 3-step Newton
+     reciprocal `r ← r·(2−wsum·r)`, `wsum` clamped to a floor; the **same routine as the GS `Dinv`**, reused.
+   Then a **pinned `>>16` truncation** (mirroring `mul_q16`), which is what makes the scheme *gently
+   non-conservative* (the truncation bleed = a built-in mild decay). No flux pair, no limiter.
 
-### 2.3 What we explicitly do NOT need (a consequence of going flux-form)
+### 2.3 What integer-SL needs vs does NOT need
 
-Per research §5: **no integer `sqrt` and no integer bilinear** — both were *semi-Lagrangian-only*
-(the back-trace march length `sqrt` at `smoke_dynamics.cpp:64` and the 4-corner bilinear `acc/wsum` at
-`:122`). The flux switch **deletes** them, along with the three back-trace rounding modes and the `1/steps`
-divide. (If Erik instead picks the keep-SL fallback in Q-S2-1, then integer sqrt + integer bilinear +
-the renorm divide all come *back* into scope — a major reason to switch.)
+Integer-SL **DOES use the SL bilinear** (the 4-corner integer sample + the `reciprocal_q16` renorm). It does
+**NOT** need an integer `sqrt` (the DDA march replaces the back-trace length `sqrt` at `smoke_dynamics.cpp:64`
+with sqrt-free dominant-axis stepping), and it does **NOT** need the **flux-limiter machinery** (donor-cell
+faces, the `min`/`max`/`minmod` limited correction flux, the outflow clamp) — those were the *flux-form*
+route we did not take. (This inverts the earlier draft, which said we did not need the bilinear *because*
+we were going flux-form; we kept SL, so the bilinear is in and the limiters are out.) The renorm divide is
+not deleted — it is folded into the one shared `reciprocal_q16`.
 
 ---
 
@@ -182,56 +208,60 @@ The explicit wave system (`wave_substep`, `atmosphere_solver.cpp:44-160`), run `
 rounded mean is the test's whole point — a biased mean is a DC leak into atmosphere). No `c_sq·lap` overflow
 in the blast stress scenario (assert the int64 intermediate + measured peak).
 
-### S2b — smoke + 5 gas (the flux-form switch — the biggest behaviour change of the arc)
+### S2b — smoke + 5 gas (integer semi-Lagrangian — KEEP the scheme, take it integer)
 
-Per `s2_advection_research.md` §9: **SWITCH from semi-Lagrangian back-trace to conservative flux-form,
-specifically donor-cell upwind + a divide-free two-slope MC/minmod limiter (Family 3c).** This is the
-recommended default; Q-S2-1 confirms it vs the keep-SL fallback. Authored as research §6's gated sequence:
+**Q-S2-1 RESOLVED (§5): KEEP semi-Lagrangian, integer-SL-everywhere.** One Q16.16 SL field drives both
+visual and gameplay → no visual/gameplay drift. The scheme is the *same* back-trace SL the float build runs
+today (`smoke_dynamics.cpp`), re-expressed in Q16.16 exactly as the **proven prototype** (`ceb601b`, branch
+`s2-advection-demo`, `tools/s2_advection_demo/`) — bit-deterministic, a visual twin of the float SL, and
+gently non-conservative (the `>>16` truncation is a built-in mild decay). This **overrides**
+`s2_advection_research.md`'s flux-form recommendation. There is **no donor-cell / no limiter / no outflow
+clamp** anywhere in S2b. Authored as a gated sequence:
 
 - **S2b-0 — representation:** quantize smoke + 5 gas planes to int32 Q16.16 (`[0,1]` tracers share the
-  water/heat scale); float dequantize for the renderer + the fire bridge.
-- **S2b-1 — bare donor-cell upwind flux (Family 3a):** port `water_solver.cpp`'s flux section verbatim —
-  `v_face = (wind[i]+wind[n])>>1` (`shr_round0`, signed), `donor = upwind smoke`, `flux = mul_wide(v_face,
-  donor)`, reuse water's **`flux_to_dq` shared-narrow** (the same lambda, **not re-derived** — the MSVC vs
-  clang/gcc 128-bit narrow is already pinned by `tests/_s1_flux_truncation_check.py`), the **`scale_mag`
-  outflow limiter** (`out_sum = Σ outgoing dq`; if `out_sum > smoke[i]` scale by `smoke[i]/out_sum` toward
-  0 — the bounded exact integer divide, the conservation clamp), and the `±` apply. A solid face carries no
-  flux (`!solid[i] && !solid[n]`) → **the wall-clip anti-tunnelling march disappears by construction.**
-  Smoke is *easier* than water (no own velocity field, no surface potential). **Gate P1 (`tol=0.0`) + P2
-  (sealed-room `Σ smoke` LSB-constant)** — the conservation+determinism milestone, independent of feel.
-- **S2b-2 — the divide-free MC/minmod limited correction flux (Family 3c):** add the limited anti-diffusive
-  face flux. The limiter is `min`/`max`/`minmod` of the two one-sided Q16.16 differences `(s_i−s_{i−1})` and
-  `(s_{i+1}−s_i)` — **pure integer, never forms the ratio `r`, no divide** (research §3 Route (a)). The
-  limited correction is **folded into the face flux BEFORE the shared narrow** → any limiter truncation
-  still cancels in the `±` pair → cannot break conservation. **`scale_mag`** is the monotone outflow
-  primitive for the correction. **Default limiter: MC** (smooth-smoke look); **minmod** the safe fallback
-  (Q-S2-1b). **Gate P1+P2 + the feel A/B** (SSIM on rendered frames vs the float SL golden — still reads as
-  crisp wisps).
-- **S2b-3 — wind-dependent diffusion → R2-CONS edge-flux + the n_smoke cliff:** the Pass-A wind-coupled
-  Laplacian (`smoke_dynamics.cpp:163-170`) migrates to the **edge-flux idiom** — `flux = mul(d_eff_face,
-  smoke[n]−smoke[i])` once, ± apply, shared narrow → **also LSB-conservative** (a bonus the current `+=
-  d_eff·dt·lap` truncated-Laplacian form does NOT give). `wind_sq` square in int64; `wind_diffusion_scale=50`
-  and `d_smoke` constants pinned in Q16.16. **The n_smoke cliff** (`physics_engine.cpp:183-198`, the HARD
-  cliff): `max_wind_sq` = the **NEW integer max reduction** over the Q16.16 wind field (order-free); square
-  in int64; `d_eff_max`, `dt_stable = 1/(4·d_eff_max)` (reciprocal), `ceil_div`. A 1-ULP slip here flips the
-  **substep count** → peers iterate differently → total desync (a naive within-substep digest misleads).
-  **Owed: the `d_smoke` / `wind_diffusion_scale` retune** — the donor-cell numerical diffusion overlaps
-  heavily with this wind-diffusion (research §4); retune both *down* to recover calm-air crispness (a retune
-  was already owed from the `dt_scale²` removal, `05_smoke.md`). Q-S2-4.
-- **S2b-4 — `sink_hop` → sink-velocity flux bias (the genuinely-new piece, research §5.1):** today
-  `sink_hop` (`smoke_dynamics.cpp:225-277`) is a semi-Lagrangian gather that pulls toward the BFS breach
-  direction (`sink_x/sink_y`) and **deliberately deletes mass** by sampling a 0 breach corner. **Reformulate
-  as an extra advective velocity** `= sink_strength·sink_dir` added into `v_face` for the **same
-  conservative flux gather**, run K× (`vent_hops=16`). The mass-deletion now happens *naturally* via the
-  flux into a zeroed vacuum cell (no separate mass-deleting pass). This is a **behavioural rewrite, not a
-  copy** — **in-scope (Q-S2-5)**, feel-gated A/B (does the room still vent at the right rate?).
-- **S2b-5 — batch the 5 gas planes** through the identical kernel (they reuse everything; smoke is plane 1).
+  water/heat scale). The field **persists as int32 across ticks** (the SL reads last tick's int field, never
+  a re-quantized float — see §6.1); float dequantize only for the renderer + the fire bridge.
+- **S2b-1 — the integer-SL back-trace (the core, ported from `ceb601b`):**
+  - **Back-trace** the departure point in Q16.16 from the quantized wind (`dt` is the loop-invariant
+    `recip_mul` constant).
+  - **The sqrt-free DDA wall-clip march** — step the **dominant axis cell-by-cell** (Chebyshev march)
+    toward the source and **stop before a sealed tile**, so it cannot tunnel a 1-cell wall and needs **no
+    `sqrt`** (this replaces the float back-trace length `sqrt` at `smoke_dynamics.cpp:64`).
+  - **The integer bilinear sample** — 4 corner-weight products in Q16.16, accumulated in **int64**, then
+    **narrowed**; sealed corners contribute 0.
+  - **The renorm `1/wsum` via `reciprocal_q16`** (the shared §2.2 #3 helper — the prototype's 3-step Newton
+    `r ← r·(2−wsum·r)`, seeded from a power-of-2 reciprocal, `wsum` clamped to a floor).
+  - **A pinned `>>16` truncation** (mirroring `mul_q16`) — this is the gentle non-conservation (truncation
+    bleed = mild decay).
+  **Gate P1 (`tol=0.0`, run twice → bit-identical int32 field, the prototype's hard determinism assert) +
+  the deterministic-non-conservation check (§4)** — total mass identical run-to-run, bounded/gently-decaying,
+  never blowing up. *Not* a P2 conserve-to-LSB gate (SL does not conserve — accepted).
+- **S2b-2 — `sink_hop` stays an SL-style integer breach-pull (NOT a flux bias):** `sink_hop`
+  (`smoke_dynamics.cpp:225-277`) remains the semi-Lagrangian gather that pulls toward the BFS breach
+  direction (`sink_x/sink_y`) and deletes mass by sampling a 0 breach corner — re-expressed in the *same*
+  integer-SL machinery above (DDA march + integer bilinear + renorm), run K× (`vent_hops=16`). It is **not**
+  reformulated as a sink-velocity flux bias (that was the flux-form route we did not take). Feel-gated A/B:
+  does the room still vent at the right rate?
+- **S2b-3 — wind-dependent diffusion (stays, integer) + the n_smoke cliff:** the Pass-A wind-coupled
+  Laplacian (`smoke_dynamics.cpp:163-170`) stays as the diffusion step, taken **integer** (`mul`/`mul_wide`,
+  `wind_sq` square in int64, `wind_diffusion_scale=50` and `d_smoke` pinned in Q16.16). **The n_smoke cliff**
+  (`physics_engine.cpp:183-198`, the HARD cliff): `max_wind_sq` = the **NEW integer max reduction** over the
+  Q16.16 wind field (order-free); square in int64; `d_eff_max`, `dt_stable = 1/(4·d_eff_max)` (reciprocal),
+  `ceil_div`. A 1-ULP slip here flips the **substep count** → peers iterate differently → total desync (a
+  naive within-substep digest misleads). **The advection-overlap retune is moot** (we kept SL, so there is no
+  donor-cell numerical diffusion overlapping the wind-diffusion — the diffusivity is unchanged). A separate
+  `dt_scale²`-removal retune from S1 may still be owed, tracked under Q-S2-4.
+- **S2b-4 — batch the 5 gas planes** through the identical SL kernel (they reuse everything; smoke is
+  plane 1). All 5 are integer-SL-advected — deterministic-but-non-conservative, accepted.
 
-**Gate S2b:** P1 `tol=0.0`; **P2 — each of the 5 gas planes' `Σ` LSB-constant in a sealed room** (flux-form
-makes smoke conservative for the *first time* — there is no conservation regression to protect, only a
-property to gain; add a stress test like S1's flood test); feel A/B on the rendered smoke (crisp wisps,
-right venting rate). The per-plane `.any()` (`physics_engine.cpp:208-242`) compares the **integer** field
-`!= 0`, never a float bridge.
+**Gate S2b:** P1 `tol=0.0` (run twice → bit-identical int32 field, per the prototype's checksum assert);
+**NOT a P2 conserve-to-LSB gate for smoke/gas** — instead the **deterministic-non-conservation check** (total
+mass per plane identical run-to-run, bounded and gently-decaying, never amplifying; the prototype showed ~50%
+of peak kept in calm, ~85% in a blast) **+ a feel-regression vs the float SL** (reuse the prototype's
+float-vs-int comparison — `scenario2_SLfloat_vs_SLint.png`: the filled, internally-structured look survives,
+only faint edge-speckle in the ×6 diff). The per-plane `.any()` (`physics_engine.cpp:208-242`) compares the
+**integer** field `!= 0`, never a float bridge. (Conservation-to-LSB is gated on **atmosphere** in S2a/S2c,
+NOT on smoke — see §4.)
 
 ### S2c — atmosphere diffusion (RB-GS) + wind
 
@@ -263,8 +293,8 @@ The implicit diffusion (`diffuse_solve`, `atmosphere_solver.cpp:168-426`), run �
 - **wind = −∇(atm+wave_p)** (`:413-420`): `total = atm + wave_p` (a 2-term sum; if wave_v/wave_p went Q24.8
   this is the cross-format read); `p_side = p_here + f·(total(n)−p_here)` via `mul_q16`; `wind_x =
   −(p_right−p_left)·0.5`, `wind_y = −(p_down−p_up)·0.5` via **`shr_round0`** (wind is signed). 2-term central
-  diff. **The smoke bilinear renorm divide is GONE** (the flux-form switch in S2b deleted it — this is one
-  of the §2.3 helpers we no longer need).
+  diff. **The smoke bilinear renorm divide stays** (integer-SL kept it) — but it is the *same*
+  `reciprocal_q16` helper as the GS `Dinv` (§2.2 #3), so it costs no new primitive.
 
 **Gate S2c:** P1 `tol=0.0`; **P2 — atmosphere bulk mass LSB-conserved** in a sealed region (the GS
 redistribution + transfer hold; the vacuum/sponge BC is the *intended* sink exception); **the GS-residual
@@ -275,81 +305,91 @@ residual). Feel: atmosphere settles right (no checkerboard, drains to vacuum at 
 
 ## 4. Gating (the acceptance contract)
 
-Mirrors S1 §6, with two S2-specific additions (conservation across more fields; GS convergence):
+Mirrors S1 §6, with S2-specific additions (per-field conservation — atmosphere conserves to the LSB, smoke
+does NOT; a deterministic-non-conservation check for smoke/gas; GS convergence):
 
 - **P1 — within-config bit-identity** (`tol=0.0`, run twice, bit-identical via the field A/B harness incl.
   the S0 unit-state digest) **AND cross-config self-consistency** (vary `tps` / `tile_size_m` — the integer
   path stays internally consistent). Each sub-step self-matches at `tol=0.0`.
-- **P2 — conservation, to the LSB:**
+- **P2 — conservation, to the LSB — but PER FIELD (smoke is NOT in P2):**
   - **atmosphere bulk mass** Σ constant in a sealed region (transfer + GS hold; vacuum/sponge is the
-    intended sink exception).
-  - **each of the 5 gas planes' Σ** constant in a sealed room — **flux-form makes smoke conservative for the
-    first time** (today's SL tolerates ≤10% loss, `test_smoke_semilagrangian.py:181`); no regression to
-    protect, a property to *gain*. **Add a smoke stress test like S1's flood test** (seal a room, settle
-    many ticks, assert `Σ` bit-constant; a separate test asserts venting deletes mass *only* through breach
-    faces).
+    intended sink exception). **This is where the conserve-to-LSB gate lives.**
   - the wave→atmosphere transfer **mass-neutral** (the rounded `mean_wp` — a biased mean is a DC leak).
+  - **NOT smoke / gas.** Integer-SL does **not** conserve (the `>>16` truncation is a deliberate gentle
+    decay) — this is **accepted** (deterministic on every machine → behaviour, not desync; smoke decay is the
+    tuning knob). So the 5 gas planes do **not** get a P2 conserve-to-LSB test. Instead they are gated on:
+- **Deterministic-non-conservation check (smoke / gas, replacing P2 for these fields):** total mass per plane
+  is **identical run-to-run** (the prototype's bit-identical-checksum assert), and **bounded / gently
+  decaying / never blowing up** (the prototype showed ~50% of peak kept in calm, ~85% in a blast — never
+  over-amplifying). Seal a room, settle many ticks, assert the per-tick mass trace is bit-identical between
+  two runs and monotone-ish downward, not divergent.
+- **Feel-regression vs the float SL (smoke / gas):** reuse the prototype's float-vs-int comparison
+  (`scenario2_SLfloat_vs_SLint.png`) — the filled, internally-structured SL look survives the integer
+  approximations (only faint edge-speckle in the ×6 diff). Erik's eye signs off; the `sink_hop` breach-pull
+  still vents at the right rate (A/B).
 - **GS-residual convergence check** (the separate "converges" claim, distinct from "deterministic"): mirror
   the `:274-301` residual hook in integer; assert the integer RB-GS's Linf residual is **within a stated
   factor of the float build's** on the stress scenarios (reuse the Patch-2 GS-residual hook). "Deterministic"
   and "converges" are tested separately — a drift-free-but-non-converging GS would pass P1 and fail this.
-- **Feel-regression:** smoke still reads as crisp wisps (S2b SSIM A/B vs the float SL golden); atmosphere
-  settles right; venting at the right rate (the `sink_hop` rewrite A/B). Erik's eye on each feel-gated step.
 - **Goldens regenerated + version-bumped in the same commit** (the integer trajectory ≠ the old float
-  exactly; smoke's golden changes the *most* — it's a scheme switch, not just a representation change).
+  exactly). Smoke stays on the *same SL scheme*, so its golden changes only at the representation level (the
+  integer approximations + the `>>16` decay), not from a scheme switch — the look is preserved (the prototype
+  proved it).
 - **Full suite green + both `--auto` exit 0.**
 
 ---
 
 ## 5. Open questions for Erik (the decisions)
 
-- **Q-S2-1 — THE HEADLINE: smoke/gas advection.** **SWITCH** smoke + the 5 gas planes from semi-Lagrangian
-  back-trace to **conservative flux-form (donor-cell + divide-free MC/minmod limiter, Family 3c)** —
-  *recommended* — vs **keep-SL-made-conservative** (the Lentine per-source-weight=1 prototype, research §9
-  alternative). The switch *deletes* the per-cell `sqrt`, three rounding modes, wall-clip march, and renorm
-  divide; keeping SL drags all of them (incl. integer sqrt + integer bilinear) into scope. **Recommend:
-  switch.**
-  - **Q-S2-1b — the limiter:** **MC (two-slope, divide-free)** default (smooth-smoke look) vs **minmod**
-    (safe fallback, slightly soft) vs **bare donor-cell** (zero-risk floor, ship in S2b-1, add limiter in
-    S2b-2). NOT superbee (stair-steps — wrong look), NOT van Leer (a per-cell divide for ~5% over MC).
-    **Recommend: MC, with bare-donor as the S2b-1 landing.**
-- **Q-S2-2 — wave_v format exception.** **Measure peak |wave_v| in a blast first.** If post-dt `wave_v`
-  stays inside ±32768 → keep **int32 Q16.16** with the **dt-before-narrow** int64 discipline at the kick
-  (`:108`). If it overflows → **Q24.8 for wave_v alone** (wave_p stays Q16.16, the kick converts at the
+- **Q-S2-1 — THE HEADLINE: smoke/gas advection. RESOLVED.** **SAVE semi-Lagrangian —
+  integer-SL-everywhere.** One Q16.16 SL field drives **both** visual and gameplay → no visual/gameplay
+  drift; deterministic; **non-conservative-but-deterministic, with smoke decay as the knob.** This was
+  decided **empirically** and **overrides** `s2_advection_research.md`'s flux-form recommendation: the
+  advection demo + the integer-SL prototype (`ceb601b`, branch `s2-advection-demo`, `tools/s2_advection_demo/`)
+  proved a Q16.16 SL is **(1) bit-deterministic** (run twice → bit-identical int32 field), **(2) a visual
+  twin of the float SL** (the filled, internally-structured look survives the integer approximations — only
+  faint edge-speckle in the ×6 diff, `scenario2_SLfloat_vs_SLint.png`), and **(3) gently non-conservative**
+  (the `>>16` truncation acts as a mild built-in decay — keeps ~50% of peak in calm, ~85% in a blast, never
+  over-amplifies). Erik **accepted deterministic non-conservation** — it is identical on every machine, so it
+  is *behaviour, not desync*. The empirical proof + Erik's feel won over the flux recommendation.
+  *(Q-S2-1b — the flux limiter choice — is removed; moot now that we keep SL.)*
+- **Q-S2-2 — wave_v format exception.** **MEASURE FIRST.** Measure peak |wave_v| in a blast. If post-dt
+  `wave_v` stays inside ±32768 → keep **int32 Q16.16** with the **dt-before-narrow** int64 discipline at the
+  kick (`:108`). If it overflows → **Q24.8 for wave_v alone** (wave_p stays Q16.16, the kick converts at the
   narrow). **Recommend: measure, default Q16.16, Q24.8 only if the measurement forces it.**
-- **Q-S2-3 — the GS `Dinv` reciprocal method.** **(a) `/fp:strict` double reciprocal-then-quantize**
-  (correctly-rounded, deterministic, simple, but keeps a float in the per-cell precompute → not GPU-pure)
-  vs **(b) fixed-iteration integer reciprocal** (Newton/FixPointCS, pure integer, GPU-clean, more code).
-  **Recommend: ship (a) on CPU now behind a `reciprocal_q16(denom)` signature so (b) drops in for the GPU
-  port; record the precompute-float as a CPU-only artifact in the format tag.**
-- **Q-S2-4 — the `d_smoke` / `wind_diffusion_scale` retune.** The donor-cell numerical diffusion overlaps
-  heavily with the wind-coupled Laplacian (research §4) → both owe a *downward* retune to recover calm-air
-  crispness (a retune was already owed from the `dt_scale²` removal). **This is owed**, scoped to S2b-3,
-  feel-gated. Confirm the retune is in-scope for S2 (vs a follow-up tuning pass).
-- **Q-S2-5 — confirm the `sink_hop` rewrite is in-scope.** The SL mass-deleting gather → a sink-velocity
-  flux bias into the conservative face flux (research §5.1) is a *behavioural rewrite*, not a port.
-  **Recommend: in-scope for S2b-4, feel-gated A/B.**
-- **Q-S2-6 — freeze the int16(Q1.15) gas width now.** The 5 `[0,1]` gas planes are recorded as int16(Q1.15)
-  in the format-version tag this session (ship int32 on CPU). Confirm the freeze so the CUDA buffers +
-  digest schema are designed once. **Recommend: freeze.**
-- **Q-S2-7 — `mean_wp` edge-flux retirement timing.** Ship the **rounded-mean stopgap** in S2a (correct +
-  deterministic), retire to the local edge-flux transfer as a **follow-up commit** (it changes the
-  transfer's spatial structure → feel-gated, not bit-compatible with the mean form). Confirm: stopgap now,
-  retire later (vs do the edge-flux transfer directly in S2a). **Recommend: stopgap now.**
+- **Q-S2-3 — the `reciprocal_q16` method. LOCKED.** **CPU: `/fp:strict` double reciprocal-then-quantize**
+  (`Dinv = quantize(1.0 / denom_real)`, correctly-rounded IEEE divide, deterministic for a given divisor,
+  then quantized). **GPU: integer-Newton** (the prototype's 3-step `r ← r·(2−wsum·r)`), behind the same
+  `reciprocal_q16(denom)` signature so it drops in without touching call sites. Record the precompute-float as
+  a CPU-only artifact in the format tag. The `Dinv` is rebuilt **only on changed cells** each tick, keyed on
+  `(mu | obstacles | is_wall | is_vacuum | permeability)`. (Same helper serves the SL bilinear renorm.)
+- **Q-S2-4 — the `d_smoke` retune.** The **advection-overlap reason is GONE** — we kept SL, so there is no
+  donor-cell numerical diffusion overlapping the wind-coupled Laplacian, and the diffusivity is unchanged. A
+  separate **`dt_scale²`-removal retune from S1** may still be owed on its own merits (`05_smoke.md`); that is
+  tracked here, but the advection-overlap retune is **moot**.
+- **Q-S2-5 — `sink_hop` stays SL.** `sink_hop` remains the SL-style integer breach-pull (DDA march + integer
+  bilinear + renorm, run K×), **not** reformulated as a sink-velocity flux bias. It is a port into the
+  integer-SL machinery, feel-gated A/B (right venting rate). In-scope for S2b-2.
+- **Q-S2-6 — freeze the int16(Q1.15) gas width now. FREEZE.** The 5 `[0,1]` gas planes are recorded as
+  int16(Q1.15) in the format-version tag this session (ship int32 on CPU) so the CUDA buffers + digest schema
+  are designed once.
+- **Q-S2-7 — `mean_wp` edge-flux retirement timing. LOCKED.** Ship the **integer-mean stopgap** in S2a
+  (correct + deterministic, the easier path), retire to the local edge-flux transfer as a **follow-up commit**
+  (it changes the transfer's spatial structure → feel-gated, not bit-compatible with the mean form).
 
 ---
 
 ## 6. Risks
 
-### 6.1 The flux-form switch is the biggest behaviour change of the whole arc
-S1 was a *representation* change (the float and integer trajectories differ only at the LSB). **S2b is a
-*scheme* change** — the smoke field will look measurably different from the float SL golden (the whole point:
-it now conserves). The **feel-regression gate matters most here** of anywhere in the arc. Mitigations: ship
-bare donor-cell first (S2b-1, conservation+determinism, no limiter) so the conservation milestone is
-de-risked independently of the look; add the MC limiter (S2b-2) under an SSIM A/B; the research argues the
-visual cost is partly pre-paid by the existing wind-diffusion and owned by the §6.1 render shader. If the MC
-look disappoints, minmod or (last resort) van Leer's per-cell divide are the escalation path — but do **not**
-fall back to the global mass-fixer (the `mean_wp`-class reduction the arc exists to kill).
+### 6.1 The int32 smoke field must PERSIST across ticks (the real S2b risk)
+We KEEP semi-Lagrangian, so the smoke **look is preserved** — there is no scheme switch and no feel
+regression on the look (the prototype proved the integer SL is a visual twin of the float SL). That risk is
+**gone**. The real residual risk is plumbing: for end-to-end determinism the **int32 smoke/gas field must
+persist across ticks** and be advected/diffused entirely in integer (the SL must read last tick's int field,
+not a re-quantized float) — or, if any float boundary remains during migration, it must be a **pinned
+float↔int boundary**. The S2 migration does this anyway (it's the whole point), and the advection step itself
+is **proven deterministic** (`ceb601b`, run-twice bit-identical assert). The non-conservation is **accepted**:
+deterministic on every machine, with the `>>16` decay as the tuning knob — behaviour, not desync.
 
 ### 6.2 The atomic 5-system landing is a single big step
 The group must land together (wind feeds smoke within a tick, §1.1). To gate sub-steps **incrementally
@@ -367,11 +407,14 @@ field value → peers iterate a different number of times → total desync that 
 test must assert on the **substep count itself**, not just the post-loop field. (`n_wave` is the easy cliff —
 config-constant.)
 
-### 6.4 The GS `Dinv` precompute float (if Q-S2-3 picks (a))
-The double-reciprocal-then-quantize keeps a float op in the per-cell precompute. It's deterministic on CPU
-(correctly-rounded IEEE div + pinned quantize), but the **GPU port must match the CPU quantization
-bit-for-bit** or the two builds diverge — the integer-Newton path (b) avoids this entirely. Designing the
-helper signature so (b) can replace (a) without touching call sites is the mitigation.
+### 6.4 The `reciprocal_q16` precompute float on CPU (Q-S2-3 is locked to CPU=(a), GPU=(b))
+The locked CPU path (double-reciprocal-then-quantize) keeps a float op in the per-cell precompute. It's
+deterministic on CPU (correctly-rounded IEEE div + pinned quantize), but the **GPU port (integer-Newton, the
+prototype's 3-step routine) must match the CPU quantization bit-for-bit** on the same divisors or the two
+builds diverge. The shared `reciprocal_q16(denom)` signature (one call site for both the GS `Dinv` and the SL
+bilinear renorm) is what lets (b) replace (a) without touching call sites — that's the mitigation. A
+cross-path equality test (CPU (a) vs GPU (b) on a sweep of divisors, to a stated reciprocal precision) is
+owed before the GPU port.
 
 ### 6.5 The wave_v overflow (S2a)
 `c_sq·lap` exceeds ±32768 before ·dt at `c_sq=4356`. If the int64-intermediate / dt-before-narrow discipline
@@ -386,6 +429,7 @@ dedicated "transfer is mass-neutral to the LSB" P2 test are the guard.
 ---
 
 *Companion docs: `docs/s2_atmosphere_group_map.md` (the HEAD survey), `docs/s2_advection_research.md` (the
-flux-form recommendation), `docs/fixed_point_migration_plan.md` §9 (locked resolutions),
-`docs/s1_water_fixed_point_plan.md` + `cpp/src/fixed_point.h` (the shipped template). All line numbers
-verified at HEAD 2026-06-24; re-verify before impl.*
+flux-form recommendation — **OVERRIDDEN by Q-S2-1; we keep integer-SL, decided empirically by the `ceb601b`
+prototype**), `docs/fixed_point_migration_plan.md` §9 (locked resolutions), `docs/s1_water_fixed_point_plan.md`
++ `cpp/src/fixed_point.h` (the shipped template), and the integer-SL prototype `tools/s2_advection_demo/`
+(`ceb601b`, branch `s2-advection-demo`). All line numbers verified at HEAD 2026-06-24; re-verify before impl.*
