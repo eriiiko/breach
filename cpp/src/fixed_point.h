@@ -198,10 +198,16 @@ inline q16 shr_round0(q16 x, int s) {
 // correctly-rounded (a Newton fixed-iteration cannot be), but it is DETERMINISTIC
 // and converges to within ~1 ULP of 2^16/denom over the tested range. The
 // caller must clamp denom_q to a positive FLOOR before calling (a zero or
-// negative denom is undefined); reciprocal_q16 also self-guards denom_q <= 0
-// by returning 0 (the caller's wsum<floor / Dinv-skip guards make this dead).
+// negative denom is undefined); reciprocal_q16 self-guards denom_q <= 0 by
+// returning 0, and floors denom_q to 3 for the {1,2} case (where the true
+// reciprocal 2^32/denom_q is >= 2^31 and would wrap to negative int32 garbage).
+// Both guards are DEAD on the real call sites (SL renorm: wsum >= WSUM_FLOOR_Q
+// = 256; GS Dinv: denom_q = 1 + mu*wsum in Q16.16 >= FP_ONE = 65536) — they
+// exist so the SHARED helper is honestly safe for any future caller, not relying
+// on every caller's floor being right.
 inline q16 reciprocal_q16(q16 denom_q) {
     if (denom_q <= 0) return 0;          // caller clamps to a floor; self-guard
+    if (denom_q < 3) denom_q = 3;        // {1,2}: 2^32/denom_q overflows int32 -> floor (dead path)
     // Seed r0 ~= 2^(32 - bitlen(denom_q)), the power-of-2 reciprocal.
     int bitlen = 0;
     for (uint32_t v = (uint32_t)denom_q; v; v >>= 1) ++bitlen;   // bit_length

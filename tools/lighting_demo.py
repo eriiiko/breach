@@ -54,6 +54,7 @@ from renderer import core as rcore
 from renderer.camera import Camera2D
 from renderer.game_renderer import RenderConfig
 from simulation import Simulation
+from simulation import gas_fixed
 from simulation.unit import Unit
 from simulation.physics import apply_explosion, add_explosion_smoke
 
@@ -691,7 +692,11 @@ def main() -> None:
                                 sim.gmap, sim.edit_queue, ty, tx, r,
                                 noise=state.get("explosion_smoke_noise"))
                             delta = sim.gmap.smoke - before
-                            # Rescale: new = before + delta * mult (clamped to 1.0)
+                            # Rescale: new = before + delta * mult (clamped to 1.0).
+                            # smoke is int32 Q16.16 (S2b) — rescale in REAL units
+                            # then requantize (round-half-away-from-zero, matching
+                            # the C++ boundary), so the float `smoke_mult` scaling
+                            # stays correct.
                             # IN-PLACE write: the C++ atmosphere / raycaster
                             # solvers hold a pointer to this specific numpy
                             # array. Replacing the array via `gmap.smoke = ...`
@@ -699,9 +704,12 @@ def main() -> None:
                             # raycaster ends up sampling garbage on subsequent
                             # frames — which manifests visually as the ship
                             # going transparent after the first grenade.
+                            new_real = np.clip(
+                                gas_fixed.dequantize(before)
+                                + gas_fixed.dequantize(delta) * smoke_mult,
+                                0.0, 1.0)
                             np.copyto(sim.gmap.smoke,
-                                      np.clip(before + delta * smoke_mult,
-                                              0.0, 1.0))
+                                      gas_fixed.quantize(new_real))
                         # Queue a visual flash so the renderer draws the ring.
                         renderer._effects.append({
                             "kind": "explosion",
@@ -849,7 +857,7 @@ def _draw_hud(renderer: GameRenderer, gmap, state: PanelState,
             tile_line = f"tile ({cx}, {cy}) — {mat_name}"
             total_p = float(gmap.atmosphere[cy, cx] + gmap.wave_p[cy, cx])
             pressure_line = f"pressure: {total_p:.3f}"
-            smoke_line = f"smoke: {float(gmap.smoke[cy, cx]):.3f}"
+            smoke_line = f"smoke: {gas_fixed.dequantize(gmap.smoke[cy, cx]):.3f}"
         else:
             tile_line = f"tile ({cx}, {cy}) — out of bounds"
             pressure_line = "pressure: —"

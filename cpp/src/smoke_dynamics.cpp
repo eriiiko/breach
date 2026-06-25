@@ -7,12 +7,20 @@
 
 // ============================================================================
 // S2b — INTEGER semi-Lagrangian smoke + gas (Q16.16), docs/s2_fixed_point_plan.md
-// §S2b. Ported from the proven prototype tools/s2_advection_demo/advection_demo.py
-// (the `SLint` scheme, commit ceb601b). Bit-deterministic, a visual twin of the
-// float SL, gently non-conservative (the >>16 truncation == a built-in mild
-// decay; accepted Q-S2-1 — deterministic, so behaviour not desync). NO flux form,
-// NO limiter, NO outflow clamp. The renorm 1/wsum is the shared
-// fixedpoint::reciprocal_q16 (the Newton reciprocal S2c reuses for the GS Dinv).
+// §S2b. Generalised from the proven prototype tools/s2_advection_demo/advection_demo.py
+// (the `SLint` scheme, commit ceb601b): the DDA wall-clip march + the integer
+// bilinear are a faithful port, but the renorm 1/wsum uses the shared
+// fixedpoint::reciprocal_q16, which is MORE accurate than the prototype's _q_recip
+// (4 Newton iters + a refined seed + round-to-nearest narrow, vs the prototype's
+// 3 iters + truncate — it fixes a ~1-ULP/step decay the prototype had at wsum==1).
+// So this kernel is a visual twin of the float SL AT LEAST as faithful as the
+// prototype's ~0.03%-mean A/B (that A/B used the looser prototype reciprocal; the
+// shipped renorm is strictly closer to true 1/wsum — re-confirm the visual sign-off
+// against THIS binary, not the prototype PNG). Bit-deterministic, gently
+// non-conservative (the >>16 sample truncation == a built-in mild decay; accepted
+// Q-S2-1 — deterministic, so behaviour not desync). NO flux form, NO limiter, NO
+// outflow clamp. The renorm reciprocal is the same Newton helper S2c reuses for
+// the GS Dinv.
 // ============================================================================
 
 using namespace fixedpoint;
@@ -189,6 +197,19 @@ void SmokeDynamics::step(
 ) const {
     const int n = h * w;
     const float actual_dt = dt;
+
+    // CFL-STABILITY CONTRACT (the CALLER's responsibility, not this kernel's):
+    // step() is a single forward-Euler diffusion+advection step at `dt`. The
+    // wind-coupled diffusion coefficient
+    //     d_eff*dt = d_smoke*(1 + wind_diffusion_scale*|wind|²)*dt
+    // must stay <= the explicit-diffusion stability limit (~0.25 for the
+    // 4-neighbour Laplacian) or the smoke AMPLIFIES. The blow-up is DETERMINISTIC
+    // (bit-identical run-to-run), so it is a behaviour bug, not a desync — but it
+    // is still a blow-up. PhysicsEngine guarantees stability by substepping:
+    // n_smoke = ceil(sim_time / (1/(4*d_eff_max))) and calls step() with the
+    // reduced per-substep dt. Any future caller that invokes step() directly with
+    // a full-tick dt at high wind gets exploding-but-deterministic smoke — honour
+    // the same n_smoke CFL floor.
 
     // --- Smoke diffusion (wind-dependent), integer Q16.16 ---
     // D_effective = d_smoke * (1 + wind_diffusion_scale * |wind|²); higher wind =
