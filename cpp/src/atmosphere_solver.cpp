@@ -223,11 +223,16 @@ void AtmosphereSolver::wave_substep(
     // the per-cell deposit is unbiased (a truncating deposit re-introduces the
     // -inf sink the float bridge was avoiding).
     //
-    // NOTE on the wave_p -= d coupling: the float build did NOT drain wave_p (it
-    // relied on the zero-mean copy). Draining wave_p by exactly the deposited int
-    // is the PHYSICAL transfer (the wave loses the energy it gives the bulk) and
-    // is what makes the pair conservative; with transfer*dt small (~0.02/substep)
-    // it is a gentle bleed, feel-validated against the float baseline.
+    // ONE-SIDED FORCING (the original design — restored, Erik's call): the wave
+    // DRIVES the bulk atmosphere but is NOT drained by this coupling. wave_p loses
+    // energy only through its own damping/absorb, exactly as the float build did.
+    // (An earlier S2c revision also did `wave_p -= d` to make the transfer
+    // conservative to the LSB — a tidy invariant, but a physics change the float
+    // build never had: it slowly drained the wave in a perfectly sealed box.
+    // Reverted by design. The atmosphere still conserves DC-free here because the
+    // deposit is round-to-nearest over the ZERO-MEAN anomaly, NOT because of any
+    // wave/atmosphere pairing — so this is a faithful integer port of the original
+    // forcing, not a numerics compromise.)
     const int64_t HALF_Q = (int64_t)1 << (FP_SHIFT - 1);   // 0.5 ULP (round-nearest)
     for (int i = 0; i < n; ++i) {
         if (mask[i]) {
@@ -237,8 +242,7 @@ void AtmosphereSolver::wave_substep(
             const int64_t prod = (int64_t)anom * (int64_t)xfer_q;
             const q16 d = (q16)((prod >= 0) ? ((prod + HALF_Q) >> FP_SHIFT)
                                             : -(((-prod) + HALF_Q) >> FP_SHIFT));
-            atmosphere[i] += d;          // +flux into the conserved bulk
-            wave_p[i]     -= d;          // -flux out of the wave (the same int)
+            atmosphere[i] += d;          // one-sided forcing: wave drives the bulk
         }
     }
 }
