@@ -11,6 +11,9 @@
 
 #include "physics_engine.h"
 #include "fixed_point.h"   // S1: Q16.16 toolkit (quantize, ceil_div, max_dt_q)
+#ifdef BREACH_HAS_CUDA
+#include "cuda_temperature.h"   // CUDA-S1: GPU temperature solver + backend flag
+#endif
 
 #include <algorithm>   // std::max, std::min
 #include <cstddef>     // std::size_t
@@ -117,10 +120,27 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     // vacuum-exposure threshold is now a Q16.16 integer compare inside the TU). The
     // atm_f_ dequantize bridge that stood here is GONE — step_tail has NO float
     // bridge left in the FIRE/TEMPERATURE path (the centrepiece-arc end-state).
-    this->temperature.step(
-        temperature_mut, heat, heat_inv_shift, face_shift,
-        solid, is_vacuum, atmosphere,
-        h, w);
+    // CUDA-S1: dispatch to the GPU temperature solver when the backend is
+    // switched on (bit-identical to the CPU path — same integer ops). The CPU
+    // solver remains the live fallback; with the flag off (default) this is the
+    // exact prior call. On a CPU-only build (no BREACH_HAS_CUDA) only the CPU
+    // path compiles.
+#ifdef BREACH_HAS_CUDA
+    if (breach_cuda::temperature_backend_is_cuda()) {
+        breach_cuda::temperature_step(
+            temperature_mut, heat, heat_inv_shift, face_shift,
+            solid, is_vacuum, atmosphere,
+            this->temperature.no_face, this->temperature.cool_shift,
+            this->temperature.cool_shift_vacuum,
+            this->temperature.o2_vacuum_thresh, h, w);
+    } else
+#endif
+    {
+        this->temperature.step(
+            temperature_mut, heat, heat_inv_shift, face_shift,
+            solid, is_vacuum, atmosphere,
+            h, w);
+    }
 
     return destroyed;
 }

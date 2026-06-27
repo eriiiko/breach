@@ -11,7 +11,8 @@
 #include "physics_engine.h"
 #include "fixed_point.h"   // Bedrock cliff-patch: expose smoke_cliff_count for unit test
 #ifdef BREACH_HAS_CUDA
-#include "cuda_hello.h"    // CUDA-S0: hello-world map kernel + device info
+#include "cuda_hello.h"        // CUDA-S0: hello-world map kernel + device info
+#include "cuda_temperature.h"  // CUDA-S1: GPU temperature solver + backend flag
 #endif
 
 namespace py = pybind11;
@@ -59,6 +60,42 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("in_"), py::arg("factor_q16"),
           "S0 hello-world: out[i] = mul_q16(in[i], factor_q16) computed on the "
           "GPU via the shared toolkit; bit-identical to the CPU mul_q16.");
+
+    // CUDA-S1: the GPU temperature solver. The backend flag switches
+    // PhysicsEngine::step_tail between the CPU and GPU temperature pass (the live
+    // CPU fallback stays). cuda_temperature_step runs the 3-pass solver IN PLACE
+    // on `temperature` for the isolated GPU-vs-CPU bit-identity gate.
+    m.def("set_temperature_backend",
+          [](bool use_cuda) { breach_cuda::set_temperature_backend_cuda(use_cuda); },
+          py::arg("use_cuda"),
+          "Switch PhysicsEngine's temperature pass to the GPU (True) or CPU (False).");
+    m.def("get_temperature_backend",
+          []() { return breach_cuda::temperature_backend_is_cuda(); },
+          "True if the temperature pass currently runs on the GPU.");
+    m.def("cuda_temperature_step",
+          [](py::array_t<int32_t> temperature, py::array_t<int32_t> heat,
+             py::array_t<int32_t> heat_inv_shift, py::array_t<int32_t> face_shift,
+             py::array_t<bool> solid, py::array_t<bool> is_vacuum,
+             py::array_t<int32_t> atmosphere, int no_face, int cool_shift,
+             int cool_shift_vacuum, float o2_vacuum_thresh) {
+              auto [temp, h, w]    = get_2d(temperature);
+              auto [hp, h2, w2]    = get_2d_const(heat);
+              auto [shift, h3, w3] = get_2d_const(heat_inv_shift);
+              auto [sol, h4, w4]   = get_2d_const(solid);
+              auto [vac, h5, w5]   = get_2d_const(is_vacuum);
+              auto [atm, h6, w6]   = get_2d_const(atmosphere);
+              auto fa = face_shift.unchecked<3>();
+              const int32_t* fs = fa.data(0, 0, 0);
+              breach_cuda::temperature_step(temp, hp, shift, fs, sol, vac, atm,
+                                            no_face, cool_shift, cool_shift_vacuum,
+                                            o2_vacuum_thresh, h, w);
+          },
+          py::arg("temperature"), py::arg("heat"), py::arg("heat_inv_shift"),
+          py::arg("face_shift"), py::arg("solid"), py::arg("is_vacuum"),
+          py::arg("atmosphere"), py::arg("no_face"), py::arg("cool_shift"),
+          py::arg("cool_shift_vacuum"), py::arg("o2_vacuum_thresh"),
+          "S1 isolated: run the GPU temperature solver in place on `temperature` "
+          "(bit-identical to TemperatureSolver.step).");
 #else
     m.attr("HAS_CUDA") = false;
 #endif

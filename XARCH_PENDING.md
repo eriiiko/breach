@@ -21,5 +21,6 @@ Capture a machine's digest with:
 | Kernel / step | Ampere (sm_86) | Ada (sm_89) | Turing (sm_75) | Notes |
 |---|---|---|---|---|
 | S0 toolchain + hello-world | ✅ bit-identical (mul_q16, 250k inputs × 9 factors) | ⬜ pending Lenovo | — | No physics kernel yet; proves the toolkit is device-clean + the plumbing. |
+| S1 temperature (convert/conduct/cool) | ✅ bit-identical (28 synthetic configs: saturation, negatives, NO_FACE, vacuum; + full-engine backend-switch over 30 ticks; golden reproduces) | ⬜ pending Lenovo | — | First real physics kernel. `tests/test_cuda_s1_temperature.py`. Ada beat = re-run that test on the Lenovo. |
 
-_(S1 temperature and later kernels append rows here as they merge Ampere-only.)_
+_(S2 raycaster and later kernels append rows here as they merge Ampere-only.)_
