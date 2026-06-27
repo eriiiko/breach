@@ -1,0 +1,44 @@
+# Canonical per-tick FIELD DIGEST spec — the FROZEN cross-GPU bit-identity
+# contract (CUDA-S0). This file is the human-readable, version-controlled mirror
+# of tests/field_digest.py's DIGEST_FIELDS. Two machines (Ampere / Ada / Turing)
+# only produce comparable digests if they agree on this exact spec.
+#
+# CHANGE PROCEDURE: if a field's dtype/shape/membership/order changes, bump
+# `version`, update `fields` here AND DIGEST_FIELDS in field_digest.py to match,
+# and regenerate every committed golden/digest in the SAME commit (plan §7.6
+# gate-7 — CI must reject a stale digest tag).
+
+version = 1
+hash = "blake2b-256"
+byte_order = "little"          # x86 + CUDA; big-endian dtypes are refused
+serialization = "per-field: ascii header 'name|dtype.str|shape' then C-order raw bytes"
+
+# The integer/bool SYNCED fields hashed into the digest, IN THIS ORDER.
+# `gas` is the 3D (n_gas, h, w) multi-gas stack (smoke is a view into it).
+fields = [
+    { name = "atmosphere",  dtype = "int32" },
+    { name = "wave_p",      dtype = "int32" },
+    { name = "wave_v",      dtype = "int32" },
+    { name = "wave_source", dtype = "int32" },
+    { name = "wind_x",      dtype = "int32" },
+    { name = "wind_y",      dtype = "int32" },
+    { name = "gas",         dtype = "int32" },
+    { name = "fire",        dtype = "int32" },
+    { name = "water_depth", dtype = "int32" },
+    { name = "flow_vx",     dtype = "int32" },
+    { name = "flow_vy",     dtype = "int32" },
+    { name = "heat",        dtype = "int32" },
+    { name = "temperature", dtype = "int32" },
+    { name = "wall_hp",     dtype = "int32" },
+    { name = "material",    dtype = "int8"  },
+    { name = "obstacles",   dtype = "bool"  },
+    { name = "is_vacuum",   dtype = "bool"  },
+]
+
+# Float sim fields deliberately EXCLUDED from the cross-GPU integer digest
+# (render/lighting-bound or a known residual float boundary; still covered
+# same-machine by field_ab_harness.diff_trajectories). The synced UNIT state
+# (HP/life/event stream) is folded in separately via field_digest.tick_digest.
+excluded_float_fields = [
+    "ripple", "ripple_v", "dyn_permeability", "dyn_wave_absorb", "dyn_light_atten",
+]
