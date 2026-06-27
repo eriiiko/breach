@@ -13,7 +13,6 @@
 #include "fixed_point.h"   // S1: Q16.16 toolkit (quantize, ceil_div, max_dt_q)
 
 #include <algorithm>   // std::max, std::min
-#include <cmath>       // std::ceil
 #include <cstddef>     // std::size_t
 
 // Patch 1 S4a — the per-tick TAIL, the three trailing pure-solver-call steps of
@@ -146,15 +145,26 @@ void PhysicsEngine::run_substeps(
         const float* sink_x, const float* sink_y,
         int h, int w, float sim_time) {
 
-    // --- The integer cliff: n = max(1, int(ceil(sim_time / dt))) ----------
-    // Python: dt = self.atmos.max_dt() is a float32 PROMOTED to a Python double;
-    // sim_time / dt is a DOUBLE division; ceil + int truncates. Match it byte for
-    // byte: promote max_dt() to double, do the division in double, ceil in double,
-    // truncate to int. A 1-ULP slip here flips n and desyncs the whole tick.
-    const double dt = (double)this->atmos.max_dt();
-    const int n = std::max(1, (int)std::ceil((double)sim_time / dt));
-    // dt_actual stays DOUBLE — Python keeps `dt_actual = sim_time / n` as a double
-    // and pybind narrows it to float32 only at the .step(...) call boundary.
+    // --- The integer cliff: n = max(1, ceil_div(sim_time_q, max_dt_q)) -----
+    // Bedrock cliff-patch (the FINAL double on the determinism-critical substep-
+    // count path). PREVIOUSLY this was a float64 cliff:
+    //     dt = (double)atmos.max_dt();  n = max(1,(int)ceil(sim_time/dt));
+    // a correctly-rounded IEEE division + ceil — so it was already cross-platform
+    // DETERMINISTIC (Lesson #1: +/-/ceil are correctly-rounded), NOT a live desync.
+    // We integerize it to complete the foundation: the future CUDA kernel computes
+    // n in INTEGER, matching the CPU exactly with no double anywhere. max_dt is a
+    // Q16.16 CONSTANT (atmos.max_dt_q(), a load-time double->quantize); the count
+    // is the deterministic integer ceil-divide n = ceil(sim_time / max_dt). Mirrors
+    // water's cliff (step_water below). Faithful to within an occasional +/-1
+    // substep at a rare edge (a quantization boundary) — verified by the count A/B.
+    using namespace fixedpoint;
+    const q16 max_dt_q   = this->atmos.max_dt_q();
+    const q16 sim_time_q = quantize((double)sim_time);
+    const int n = std::max(1, ceil_div(sim_time_q, max_dt_q));
+    // dt_actual stays the REAL substep length (= sim_time/n), kept in DOUBLE and
+    // narrowed to float32 only at the wave_substep(...) call boundary — EXACTLY as
+    // before, and exactly as water's wdt does. n is now integer-derived, but the
+    // per-substep dt that drives the wave physics is unchanged.
     const double dt_actual = (double)sim_time / n;
     // Patch 2b: dt_scale is GONE. Smoke advects/diffuses on the REAL tick length
     // (sim_time, sub-stepped n_smoke× below for the smoke-CFL floor). The visible
@@ -209,38 +219,47 @@ void PhysicsEngine::run_substeps(
     // is ≈1; it tightens only under a shockwave (the safety net against a
     // checkerboard). With dt_scale gone the smoke dt is already ~9× smaller, so
     // this is usually 1 — it only bites in extreme wind.
-    // S2c: wind is Q16.16 int32 now. The per-cell |wind|² is an INTEGER max
-    // reduction (plan §2.2 #2 — max is order-free for integers, unlike a sum):
-    // square each component as mul_wide (Q16.16·Q16.16 -> int64 Q.32), sum, keep
-    // the running int64 max. Then dequantize the Q.32 max ONCE to a real
-    // max_wind_sq (the n_smoke cliff arithmetic stays in double — it is a
-    // config-derived CFL bound, not synced field state; the cliff COUNT is what
-    // must be deterministic, and a single dequantize of the order-free integer
-    // max feeds it identically on every peer).
-    using namespace fixedpoint;
+    //
+    // Bedrock cliff-patch: the n_smoke COUNT is now computed entirely in INTEGER
+    // (was double dequantize + double d_eff/dt_stable + double ceil). The per-cell
+    // |wind|² INTEGER max reduction is UNCHANGED (plan §2.2 #2 — max is order-free
+    // for integers, unlike a sum: square each component as mul_wide (Q16.16·Q16.16
+    // -> int64 Q.32), sum, keep the running int64 max — bit-identical on a CPU
+    // scalar loop, a SIMD lane-tree, or a CUDA warp shuffle). Then, instead of
+    // dequantizing to a double and doing a float ceil (the last double on the
+    // count path), the config constants are quantized to Q16.16 once and the count
+    // is fixedpoint::smoke_cliff_count: an exact 128-bit rational then an integer
+    // ceil. n_smoke = ceil(4·sim_time·d_smoke_max·(1 + wds·max_wind_sq)). Faithful
+    // to the double formula within an occasional +/-1 substep at a rare edge.
     int64_t max_wind_sq_q32 = 0;     // Q.32 (Q16.16²)
     for (int i = 0; i < plane; ++i) {
         const int64_t ws = mul_wide(wind_x[i], wind_x[i])
                          + mul_wide(wind_y[i], wind_y[i]);
         if (ws > max_wind_sq_q32) max_wind_sq_q32 = ws;
     }
-    const double max_wind_sq =
-        (double)max_wind_sq_q32 / ((double)FP_ONE * (double)FP_ONE);  // Q.32 -> real
-    float d_smoke_max = 0.0f;
+    // Per-tick MAX over the gas diffusion table (the worst-case plane sets the CFL
+    // floor). The reduction stays in the config's native float (the table is read-
+    // only config); the SINGLE result is quantized to Q16.16 once — a boundary
+    // cast, the LOCKED S1 idiom — feeding the integer count identically on every
+    // peer (the int max + the one quantize are both deterministic).
+    float d_smoke_max_f = 0.0f;
     for (int gi = 0; gi < n_gases; ++gi) {
-        if (gas_diffusion[gi] > d_smoke_max) d_smoke_max = gas_diffusion[gi];
+        if (gas_diffusion[gi] > d_smoke_max_f) d_smoke_max_f = gas_diffusion[gi];
     }
-    const double d_eff_max =
-        (double)d_smoke_max *
-        (1.0 + (double)this->smoke.wind_diffusion_scale * (double)max_wind_sq);
-    int n_smoke = 1;
-    if (d_eff_max > 0.0) {
-        const double dt_stable = 1.0 / (4.0 * d_eff_max);   // dx²/(4·d_eff), dx=1
-        n_smoke = std::max(1, (int)std::ceil((double)sim_time / dt_stable));
-    }
+    // Quantize the cliff's config constants ONCE (round-to-nearest, load/boundary):
+    //   c4st_q   = 4·sim_time (Q16.16); dsmoke_q = d_smoke_max (Q16.16);
+    //   wds_q    = wind_diffusion_scale (Q16.16). Combined with the integer
+    //   max_wind_sq_q32 inside smoke_cliff_count via 128-bit intermediates.
+    const q16 c4st_q   = quantize(4.0 * (double)sim_time);
+    const q16 dsmoke_q = quantize((double)d_smoke_max_f);
+    const q16 wds_q    = quantize((double)this->smoke.wind_diffusion_scale);
+    const int n_smoke =
+        smoke_cliff_count(c4st_q, dsmoke_q, wds_q, max_wind_sq_q32);
     // The smoke dt: the full tick split n_smoke ways, so total advection over the
     // tick is sim_time·wind regardless of n_smoke (the wind is the once-computed
-    // quasi-static field). cast to float at the .step() boundary.
+    // quasi-static field). cast to float at the .step() boundary. n_smoke is now
+    // integer-derived; the per-substep dt that drives the smoke physics is the same
+    // sim_time/n_smoke real length as before.
     const float dt_smoke = (float)((double)sim_time / n_smoke);
 
     // Per-gas smoke transport (engine/05 §6.2, M1) — WIND-ONLY now (the breach

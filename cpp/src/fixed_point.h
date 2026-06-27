@@ -305,6 +305,142 @@ inline int32_t ceil_div(q16 a_q, q16 b_q) {
     return (int32_t)(((int64_t)a_q + b_q - 1) / b_q);
 }
 
+// ---- the SMOKE CFL substep-count cliff (Bedrock cliff-patch) ---------------
+//
+// n_smoke = ceil( 4 * sim_time * d_smoke_max * (1 + wind_diffusion_scale * |wind|^2_max) ),
+// the forward-Euler smoke-diffusion stability floor (physics_engine.cpp), made
+// INTEGER so the substep COUNT is bit-identical across machines/GPUs (the last
+// double on the determinism-critical substep-count path — completes Bedrock).
+//
+// Unlike ceil_div, the RESULT here is NOT a Q16.16 value — it is a plain COUNT
+// that can reach the thousands under a shockwave (the run measured ~3600 at a
+// strong blast). So we cannot stage it through a Q16.16 intermediate (which would
+// overflow the +/-32768 range). Instead we build one exact rational and take an
+// integer ceil:
+//
+//   R = 4*sim_time*d_smoke_max * (1 + wds*mws)
+//     = (c4st_q/2^16) * (dsmoke_q/2^16) * ( (2^48 + wds_q*mws_q32) / 2^48 )
+//     = base_q32 * wmult_q48 / 2^80,      base_q32 = c4st_q*dsmoke_q  (scale 2^32)
+//                                         wmult_q48 = 2^48 + wds_q*mws_q32 (scale 2^48)
+//   n_smoke = ceil(R) = (base_q32*wmult_q48 + 2^80 - 1) >> 80.
+//
+// INPUTS (all quantized at LOAD / once-per-tick boundaries — the LOCKED S1 idiom,
+// "a load-time double->quantize is free / correctly-rounded"; no per-cell float):
+//   c4st_q   = quantize(4*sim_time)          Q16.16   (sim_time is the tick length)
+//   dsmoke_q = quantize(d_smoke_max)         Q16.16   (per-tick MAX over the gas table)
+//   wds_q    = quantize(wind_diffusion_scale) Q16.16
+//   mws_q32  = the INTEGER Q.32 spatial-max of |wind|^2 over the grid (an int64
+//              order-free max reduction the engine already computes from the
+//              Q16.16 wind components via mul_wide — kept verbatim).
+//
+// OVERFLOW (why 128-bit). wds_q*mws_q32 overflows int64 even at modest wind
+// (peak |wind|~44 -> ~5.4e19 > 9.2e18 = int64 max), so wmult_q48 and the product
+// genuinely need 128 bits. At the format-max wind component (32767) the product
+// reaches ~112 bits — still inside UNSIGNED 128-bit (127 bits). Every quantity is
+// non-negative, so we use UNSIGNED 128-bit throughout (mirrors recip_mul's MSVC
+// _mul128 dual-path, but unsigned). The SAME two truncations (the >>80) on every
+// toolchain -> cross-toolchain bit-identity (S1 Lesson #4).
+//
+// SATURATION. A defensive cap (SMOKE_N_CAP) bounds an absurd-input n_smoke so the
+// substep loop can never be handed a runaway count (e.g. a corrupt/extreme wind):
+// it is DEAD in real play (the measured peak ~3600 << the cap) and matches the
+// honest shared-helper self-guard idiom (sqrt_q16/reciprocal_q16). The double
+// version had no cap, but the cap only changes behaviour at counts so large the
+// physics is already sub-stepped to a standstill either way.
+constexpr int32_t SMOKE_N_CAP = 1 << 20;   // 1,048,576: absurd-wind floor guard
+
+#if defined(__SIZEOF_INT128__)
+inline int32_t smoke_cliff_count(q16 c4st_q, q16 dsmoke_q, q16 wds_q,
+                                 int64_t mws_q32) {
+    if (c4st_q <= 0 || dsmoke_q <= 0) return 1;   // no diffusion / no tick -> 1 step
+    if (mws_q32 < 0) mws_q32 = 0;                  // |wind|^2 is non-negative
+    const unsigned __int128 base_q32 =
+        (unsigned __int128)(uint64_t)((int64_t)c4st_q * (int64_t)dsmoke_q);   // 2^32
+    const unsigned __int128 wmult_q48 =
+        ((unsigned __int128)1 << 48)
+        + (unsigned __int128)(uint64_t)((int64_t)wds_q * mws_q32);            // 2^48
+    const unsigned __int128 prod = base_q32 * wmult_q48;                       // 2^80
+    const unsigned __int128 one80 = (unsigned __int128)1 << 80;
+    unsigned __int128 n = (prod + (one80 - 1)) >> 80;                          // ceil
+    if (n < 1) n = 1;
+    if (n > (unsigned __int128)SMOKE_N_CAP) return SMOKE_N_CAP;
+    return (int32_t)n;
+}
+#elif defined(_MSC_VER)
+// (<intrin.h> is already included above for recip_mul's _mul128 path.)
+inline int32_t smoke_cliff_count(q16 c4st_q, q16 dsmoke_q, q16 wds_q,
+                                 int64_t mws_q32) {
+    if (c4st_q <= 0 || dsmoke_q <= 0) return 1;
+    if (mws_q32 < 0) mws_q32 = 0;
+    // base_q32 = c4st_q*dsmoke_q (< 2^36) and the wind term wds_q*mws_q32 each fit
+    // a 64-bit value? NO — wds_q*mws_q32 overflows 64 bits. Build wmult_q48 as a
+    // 128-bit {hi,lo} via _umul128, add 2^48 into the low word (carry into hi),
+    // then multiply by the 64-bit base_q32 (a 64x128 product) and >>80 the result.
+    const uint64_t base_q32 = (uint64_t)((int64_t)c4st_q * (int64_t)dsmoke_q); // < 2^36
+    // wind term = wds_q * mws_q32 as a 128-bit unsigned {wm_hi:wm_lo}.
+    uint64_t wm_hi;
+    uint64_t wm_lo = _umul128((uint64_t)(int64_t)wds_q,
+                              (uint64_t)mws_q32, &wm_hi);
+    // wmult_q48 = (wm_hi:wm_lo) + 2^48  (2^48 fits the low word; add with carry).
+    uint64_t wmult_lo = wm_lo + ((uint64_t)1 << 48);
+    uint64_t wmult_hi = wm_hi + (wmult_lo < wm_lo ? 1u : 0u);   // propagate carry
+    // prod = base_q32 * (wmult_hi:wmult_lo). base_q32 is < 2^36, so:
+    //   prod = base_q32*wmult_lo (128-bit) + (base_q32*wmult_hi << 64).
+    uint64_t p_hi;
+    uint64_t p_lo = _umul128(base_q32, wmult_lo, &p_hi);        // low 128 bits
+    p_hi += base_q32 * wmult_hi;                                // add the hi*2^64 part
+    // ceil(prod / 2^80): add (2^80 - 1) then >>80. 2^80 spans into the high word
+    // (bit 80 == bit 16 of p_hi). Add the rounding bias 2^80-1 = (low 80 bits all
+    // set): low 64 bits all set + bits 64..79 of the high word set.
+    //   bias_lo = 0xFFFFFFFFFFFFFFFF (2^64 - 1); bias_hi = 2^16 - 1 (bits 64..79).
+    const uint64_t add_lo = 0xFFFFFFFFFFFFFFFFULL;
+    const uint64_t add_hi = ((uint64_t)1 << 16) - 1;
+    uint64_t r_lo = p_lo + add_lo;
+    uint64_t carry = (r_lo < p_lo) ? 1u : 0u;
+    uint64_t r_hi = p_hi + add_hi + carry;
+    // >>80: drop the low 64 bits, then >>16 the high word.
+    uint64_t n = r_hi >> 16;
+    if (n < 1) n = 1;
+    if (n > (uint64_t)SMOKE_N_CAP) return SMOKE_N_CAP;
+    return (int32_t)n;
+}
+#else
+inline int32_t smoke_cliff_count(q16 c4st_q, q16 dsmoke_q, q16 wds_q,
+                                 int64_t mws_q32) {
+    // Portable INTEGER fallback (exotic toolchains with neither __int128 nor
+    // _umul128). 64-bit-only: split wmult_q48 = 2^48 + wds_q*mws_q32 into a
+    // staged product so no single multiply exceeds 64 bits. This loses the low
+    // bits of the wind term (a deterministic, monotone-up rounding) but stays
+    // integer + machine-reproducible; the __int128 / _umul128 paths above are the
+    // exact cross-machine contract on every real target.
+    if (c4st_q <= 0 || dsmoke_q <= 0) return 1;
+    if (mws_q32 < 0) mws_q32 = 0;
+    const uint64_t base_q32 = (uint64_t)((int64_t)c4st_q * (int64_t)dsmoke_q);
+    // n = ceil(base_q32 * wmult_q48 / 2^80). Compute base*one (the +1 part) and
+    // base*wind separately, each ceil'd up, then sum (an over-estimate by <=1,
+    // safe — more substeps is always CFL-stable):
+    //   part_const = ceil(base_q32 / 2^32)                       (the "1")
+    //   part_wind  = ceil(base_q32 * (wds_q>>shrink) * (mws_q32>>shrink2) / 2^80)
+    const uint64_t TWO32 = (uint64_t)1 << 32;
+    uint64_t part_const = (base_q32 + (TWO32 - 1)) >> 32;
+    // wind term scale 2^80: base_q32(2^32) * wds_q(2^16) * mws_q32(2^32) / 2^80.
+    // Reduce mws_q32 to Q.16 first (>>16, monotone-down) to keep products in 64b.
+    const uint64_t mws_q16 = (uint64_t)mws_q32 >> 16;            // scale 2^16
+    // base_q32 * wds_q  -> scale 2^48, may exceed 64b for huge base; base<2^36,
+    // wds_q<2^31 -> <2^67. Narrow base to 2^16 first (>>16): bd16 = base_q32>>16.
+    const uint64_t bd16 = base_q32 >> 16;                        // scale 2^16
+    // now bd16(2^16)*wds_q(2^16)*mws_q16(2^16) / 2^48 == wind term (scale 2^0).
+    // bd16<2^20, wds_q<2^31 -> <2^51; *mws_q16(<2^31) -> <2^82 — still overflow.
+    // Two-stage: m1 = ceil(bd16*wds_q / 2^16); then ceil(m1*mws_q16 / 2^32).
+    uint64_t m1 = (bd16 * (uint64_t)(int64_t)wds_q + ((uint64_t)1<<16) - 1) >> 16;
+    uint64_t part_wind = (m1 * mws_q16 + ((uint64_t)1<<32) - 1) >> 32;
+    uint64_t n = part_const + part_wind;
+    if (n < 1) n = 1;
+    if (n > (uint64_t)SMOKE_N_CAP) return SMOKE_N_CAP;
+    return (int32_t)n;
+}
+#endif
+
 // ---- deterministic integer mean reduction (mean_wp, S2a) ------------------
 //
 // The wave->atmosphere transfer subtracts mean(wave_p) so the deposit is

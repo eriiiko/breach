@@ -208,13 +208,27 @@ _FP_FAST_RE = re.compile(r"fp:fast")
 # render/glow boundary. A later patch that adds REAL per-cell float arithmetic to
 # either TU pushes the count above this floor and TRIPS the ratchet — that is the
 # gate. See MIGRATED_FLOOR_TUS below.
+# BEDROCK CLIFF-PATCH (integerize the atmosphere/wave + smoke substep cliffs, 2026-06-27)
+# re-baselined atmosphere_solver.cpp ONLY. The atmosphere/wave `n` and smoke `n_smoke`
+# substep COUNTS moved from `double`+std::ceil to integer `fixedpoint::ceil_div` (like
+# water already was). atmosphere_solver.cpp gains `max_dt_q()` — the wave-CFL bound as a
+# Q16.16 CONSTANT (computed ONCE in double, `0.5/c`, an exact IEEE divide -> bit-identical
+# cross-machine, then quantized: the LOCKED S1 "load-time const is free" idiom, NOT per-cell
+# float). `double` 30 -> 32 (the max_dt_q bake). physics_engine.cpp `float` 62 -> 64: the
+# n_smoke CFL now reads `d_smoke_max` from the config diffusion table in its native float
+# (a read-only config scalar, immediately quantized once) + the substep-length `dt_smoke`
+# boundary cast passed to .step() + the cliff comment lines; its cliff `double`s (the old
+# dequantize + d_eff/dt_stable + double ceil) are GONE (count fell, ≤ baseline, non-failing).
+# The COUNTS themselves are now INTEGER: n = ceil_div(sim_time_q, max_dt_q) and
+# n_smoke = fixedpoint::smoke_cliff_count(...) (128-bit-rational integer ceil). This
+# COMPLETES the integer foundation: no `double` remains in the determinism-critical path.
 BASELINE = {
-    "atmosphere_solver.cpp":  {"float": 32, "double": 30, "fp:fast": 1},
+    "atmosphere_solver.cpp":  {"float": 32, "double": 32, "fp:fast": 1},
     "smoke_dynamics.cpp":     {"float": 24, "double": 13, "fp:fast": 0},
     "fire_simulation.cpp":    {"float": 6,  "double": 19, "fp:fast": 0},
     "water_solver.cpp":       {"float": 32, "double": 22, "fp:fast": 1},
     "temperature_solver.cpp": {"float": 3,  "double": 2,  "fp:fast": 0},
-    "physics_engine.cpp":     {"float": 62, "double": 30, "fp:fast": 1},
+    "physics_engine.cpp":     {"float": 64, "double": 30, "fp:fast": 1},
 }
 
 # The TUs that have been MIGRATED to integer end-to-end (S3c). For these, the

@@ -46,6 +46,16 @@ public:
     // Compute the maximum stable dt (wave CFL only — diffusion is implicit).
     float max_dt() const;
 
+    // Bedrock cliff-patch: the SAME wave-CFL bound as a Q16.16 CONSTANT (seconds),
+    // for the INTEGER substep-count cliff (n_wave = ceil_div(sim_time_q, max_dt_q)).
+    // max_dt is config-derived (0.5/c) — a LOAD-TIME double computed once and
+    // quantized round-to-nearest (the LOCKED S1 idiom: a load-time double->quantize
+    // is correctly-rounded -> bit-identical cross-machine; no integer divide on the
+    // hot path). Mirrors WaterSolver::max_dt_q(). The float max_dt() stays (the
+    // Python CFL display / older callers read it); only the substep-count CLIFF
+    // uses this + fixedpoint::ceil_div, removing the last double from the count path.
+    q16 max_dt_q() const;
+
     // --- Patch 2a: GS-residual diagnostic (read-only) --------------------
     // Linf norm of the implicit-operator residual (I - μΔ)atm - rhs over the
     // non-obstacle interior, normalized by max|atm|, measured INSIDE

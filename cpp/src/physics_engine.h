@@ -116,14 +116,20 @@ public:
     // BIT-IDENTITY is the whole point — this reproduces Python's arithmetic
     // EXACTLY (the /fp:precise TU makes the FP strict-IEEE; we must match the
     // PRECISION + ORDER numpy's pybind boundary produced):
-    //   * `n` is an INTEGER CLIFF: n = max(1, (int)ceil((double)sim_time / dt))
-    //     where dt = (double)atmos.max_dt(). DOUBLE division — a 1-ULP slip flips
-    //     n and desyncs the whole tick.
+    //   * `n` (= n_wave) is an INTEGER CLIFF (Bedrock cliff-patch): n = max(1,
+    //     ceil_div(quantize(sim_time), atmos.max_dt_q())) — a pure INTEGER ceil-
+    //     divide against a Q16.16 CFL constant. Was n = max(1,(int)ceil(sim_time/
+    //     (double)atmos.max_dt())); the double ceil was already correctly-rounded
+    //     (cross-platform deterministic) but the integer form removes the last
+    //     double from the substep-count path so a CUDA kernel matches the CPU
+    //     exactly. n_smoke is likewise integer via fixedpoint::smoke_cliff_count.
     //   * `dt_actual` and `dt_smoke` stay DOUBLE until the solver-call boundary:
-    //     dt_actual = (double)sim_time / n; dt_smoke = dt_actual * (double)dt_scale.
+    //     dt_actual = (double)sim_time / n; dt_smoke = (double)sim_time / n_smoke.
     //     They are cast to float ONLY when passed to the solvers — matching
     //     pybind's double->float32 cast at the .step() call site (do NOT pre-
-    //     narrow; the order double-multiply-then-cast must match).
+    //     narrow; the order double-divide-then-cast must match). The COUNTS are
+    //     integer-derived; the per-substep REAL dt that drives the physics is the
+    //     same sim_time/count length as before.
     //   * Per-gas loop: gi over the N planes of `gas` ((N,h,w) contiguous, plane
     //     gi at gas + gi*h*w); SKIP an all-zero plane (reproduces numpy .any());
     //     set this->smoke.d_smoke = (float)gas_diffusion[gi] BEFORE each

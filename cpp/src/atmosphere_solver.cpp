@@ -14,6 +14,19 @@ float AtmosphereSolver::max_dt() const {
     return 0.5f / std::max(c, 1e-6f);
 }
 
+q16 AtmosphereSolver::max_dt_q() const {
+    // Bedrock cliff-patch: the wave-CFL bound as a Q16.16 CONSTANT for the integer
+    // substep-count cliff. Computed ONCE in DOUBLE (config-derived: 0.5/c, an exact
+    // IEEE divide -> bit-identical cross-machine) then quantized round-to-nearest.
+    // This is the SAME CFL value as max_dt() (which casts through float32); we
+    // compute the bound directly in double here (the LOCKED S1 "load-time const is
+    // free / correctly-rounded" idiom — the faithful integerization). NO integer
+    // divide on the hot path; the substep-count cliff uses THIS via ceil_div so
+    // n_wave is integer-deterministic (no float64 ceil that a 1-ULP slip desyncs).
+    const double mdt = 0.5 / std::max((double)c, 1e-6);
+    return quantize(mdt);
+}
+
 // Patch 2a: step() = wave_substep() then diffuse_solve(). Kept as the
 // single-substep convenience entry (and what the conservation test drives).
 // The engine's run_substeps splits these — the wave loops at its CFL while the

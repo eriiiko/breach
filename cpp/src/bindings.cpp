@@ -9,6 +9,7 @@
 #include "raycaster.h"
 #include "water_solver.h"
 #include "physics_engine.h"
+#include "fixed_point.h"   // Bedrock cliff-patch: expose smoke_cliff_count for unit test
 
 namespace py = pybind11;
 
@@ -49,6 +50,20 @@ PYBIND11_MODULE(breach_physics, m) {
     m.attr("WATER_FIXEDPOINT") = true;
     m.attr("WATER_FP_SHIFT") = 16;
     m.attr("WATER_FP_ONE") = 65536;
+
+    // Bedrock cliff-patch: expose the integer smoke-CFL substep-count helper so a
+    // unit test (tests/test_bedrock_cliff_counts.py) can verify the SHIPPED C++
+    // (the real 128-bit / _umul128 path) against the Python reference mirror — not
+    // just a re-implementation. Args are the quantized Q16.16 cliff constants +
+    // the Q.32 integer max|wind|^2 (exactly what run_substeps feeds the engine).
+    m.def("smoke_cliff_count",
+          [](int32_t c4st_q, int32_t dsmoke_q, int32_t wds_q, int64_t mws_q32) {
+              return fixedpoint::smoke_cliff_count(c4st_q, dsmoke_q, wds_q, mws_q32);
+          },
+          py::arg("c4st_q"), py::arg("dsmoke_q"), py::arg("wds_q"),
+          py::arg("mws_q32"),
+          "Bedrock: integer smoke-CFL substep count "
+          "n=ceil(4*sim_time*d_smoke_max*(1+wds*max_wind_sq)) from quantized inputs.");
 
     // S2a: the explicit WAVE state (wave_p / wave_v / wave_source) is now int32
     // Q16.16 (same 2^16 scale as water/heat). Python (gamemap fields, field
@@ -93,6 +108,7 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readonly("last_gs_residual",     &AtmosphereSolver::last_gs_residual)
         .def("gs_residual", &AtmosphereSolver::gs_residual)
         .def("max_dt", &AtmosphereSolver::max_dt)
+        .def("max_dt_q", &AtmosphereSolver::max_dt_q)   // Bedrock cliff-patch: Q16.16 CFL constant
         .def("step", [](const AtmosphereSolver& self,
                         py::array_t<int32_t> wave_p,        // S2a: Q16.16 int32
                         py::array_t<int32_t> wave_v,        // S2a: Q16.16 int32
