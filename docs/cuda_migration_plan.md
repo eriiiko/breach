@@ -1,6 +1,16 @@
 # Breach CUDA Migration Plan
 
-**Status: PLAN — synthesized from an autonomous 6-stream research run (2026-06-27). Awaiting Erik's review. NOT yet implemented.**
+**Status: PLAN — synthesized from an autonomous 6-stream research run (2026-06-27), then walked with Erik decision-by-decision. The 7 open questions + the substep-cliff item are now LOCKED (see "Decisions (locked 2026-06-27)" below and §8). NOT yet implemented.**
+
+> **Decisions (locked 2026-06-27).** Erik walked the plan's open questions one at a time; all are resolved. The headline structural consequences:
+> 1. **The substep-cliff integerization is a pre-CUDA BEDROCK PATCH, not "CUDA-S0."** It completes the integer foundation (water already proves the `ceil_div` pattern) and lands *before* the CUDA arc begins. The CUDA arc's first step is now the first **kernel** (temperature). The cliffs are double-but-correctly-rounded-deterministic *today* (not a live desync) but un-integerized — the patch finishes them. See §1.4 + §7.
+> 2. **Toolchain (Q1):** the **already-installed CUDA 12.4** + `-allow-unsupported-compiler` (VS2022 17.14 is newer than 12.4 officially lists; the flag is harmless for pure-integer kernels). Erik raised his DRIVER to **610.62** (lifts the CUDA ceiling) but we **stay on the 12.4 toolkit** — no toolkit download. Same setup on the Lenovo (Ada) later. See §4.
+> 3. **Clean cpp/build (Q2):** reset the poisoned VS18-2026 cmake cache onto VS2022 via a **targeted** reset (delete `CMakeCache.txt` + reconfigure — **not** a recursive `rm -rf`, respecting the deny-list); prune stale `C:/tmp` worktrees. See §4.0.
+> 4. **CuPy (Q3):** chosen, **installed, and working** (`cupy-cuda12x` 14.1.1 on `numpy` 2.4.6; full Breach suite **369 green**; numpy-2 is fine for Breach). Coexists with the future PyTorch (ML); CuPy↔PyTorch share GPU memory via `__cuda_array_interface__`. See §2.4.
+> 5. **Combat/gameplay field read (Q4):** **copy ALL fields GPU→CPU each tick** as the baseline (full gameplay access; ~50 µs at the 50×120 grid — effectively free; correctness/access first). The integer fields ARE deterministic gameplay state, so gameplay reads broadly. Then **OPTIMIZE per-system** — migrate a mature system's logic into a GPU kernel so it reads on-device, shrinking the per-tick copy over time. NOT a subset-download (transfer **latency** dominates, not bytes, so batching the whole small field beats fragmented per-element gather; gather is only for huge sparse grids — Breach isn't). See §2.2.
+> 6. **mean_wp (Q5):** port the deterministic **stopgap** (integer global reduction, deterministic via integer atomics) to GPU FIRST — a faithful bit-identical CPU→GPU translation (changing the physics mid-port would break the bit-identity gate). The **edge-flux retirement is a COMMITTED, TRACKED post-port milestone** with its own name (§7.7), not a footnote. See §1.3 + §7.
+> 7. **CUDA graphs (Q6):** one dedicated optimization pass AFTER all solvers are ported + bit-identical (not per-kernel). Pure speed, correctness-first. See §7.
+> 8. **Scope (Q7) — IMPORTANT CORRECTION:** the **RAYCASTER IS IN SCOPE.** It is fixed-point and its heat rays **inflict damage** (heat deposit → the integer `heat` field → `combat.apply_environmental_damage` → unit HP), so it is **deterministic gameplay physics, not render-cosmetic** — and the **most parallelizable kernel** (embarrassingly-parallel independent rays). It becomes an **early CUDA kernel** (after temperature de-risks the toolchain, because it carries a scatter-atomic wrinkle). Its gameplay-affecting integer output (`heat`, a scatter → integer `atomicAdd`) is gated on bit-identity; the purely-visual float outputs (`light_rgb`/`light_dir`/`smoke_glow`) stay float-OK (render-local). Only the **combat-HP kernels remain separate** (the Q2-fenced HP math → the future Q2-lift). The arc ends when the physics solvers **+ the raycaster** are on GPU + graph-optimized. See §0.2, §0.3, §3.8, §7.
 
 This is the direct sequel to the shipped fixed-point arc (`docs/fixed_point_migration_plan.md` +
 `docs/s1_water_fixed_point_plan.md` / `docs/s2_fixed_point_plan.md` / `docs/s3_fixed_point_plan.md`,
@@ -43,8 +53,12 @@ reproduction* on Erik's own Ampere (RTX 3070, sm_86) and the incoming Ada Lenovo
 
 This supersedes the GPU *sequencing* of the old `docs/cuda_integration_plan.md` (2026-03-25), which
 predates fixed-point and led with "diffusion + raycaster first" purely for throughput. Post-`bedrock`
-the gating axis is **determinism-provability**, so the order inverts (leaf stencils first, the
-reduction-coupled RB-GS diffuse last — §7). The old plan's GPU *mechanics* (memory hierarchy, kernel
+the gating axis is **determinism-provability**, so the order inverts for the *diffuse* solve: the
+reduction-coupled RB-GS-with-a-barrier — the hardest thing to prove bit-identical — moves to **last**
+(leaf stencils first — §7). The **raycaster still lands early** (Q7), but for the new reason, not the old
+one: it is now in-scope deterministic gameplay physics (heat → damage) and the *most parallelizable*
+kernel, so it follows the first stencil (temperature) once the plumbing is trusted — determinism +
+parallel-cleanliness, not raw throughput. The old plan's GPU *mechanics* (memory hierarchy, kernel
 patterns) remain valid background reading.
 
 ### 0.2 What ports to the GPU
@@ -59,7 +73,13 @@ The eight shipped solver translation units, all integer Q16.16, behind the `Phys
 - `temperature_solver` (conduction stencil)
 - `physics_engine` orchestration (host-side; issues the substep loops + the reductions)
 - `stamp_units` (per-tick dynamic-field rebuild from the unit footprints)
-- `raycaster` — **last, optional** (render-side; only the integer `heat` deposit is sim-affecting)
+- `raycaster` — **IN SCOPE, an EARLY kernel** (Q7 locked 2026-06-27). It is fixed-point and its heat rays
+  **inflict unit damage** (the integer `heat` deposit → `combat.apply_environmental_damage` → unit HP),
+  so it is **deterministic gameplay physics, not render-cosmetic** — and it is the **most parallelizable
+  kernel** (embarrassingly-parallel independent rays). The **heat deposit is a SCATTER** (multiple rays →
+  one cell → integer `atomicAdd`, deterministic); its gameplay-gated integer output (`heat`) is gated on
+  bit-identity. The purely-visual float outputs (`light_rgb`/`light_dir`/`smoke_glow`) stay float-OK
+  (render-local). See §3.8, §7.6.
 
 **NOT in scope — dead code:** `cpp/src/wave_solver.cpp` (`WaveSolver`) is an **orphaned float
 pressure-wave TU** — it is **not** in the `pybind11_add_module` source list (`cpp/CMakeLists.txt:23-32`
@@ -81,11 +101,14 @@ Two categories, exactly as the fixed-point arc fenced them:
    (`tests/test_s3c_unit_state_digest.py`) that hashes per-unit HP + the hit/kill event stream, so the
    fenced float HP is **watched end-to-end, fire→heat→kill**. (`apply_blast_damage` already quantizes its
    damage to `int`, `combat.py:130`.) The path is *Python*, *serial*, and *actor-shaped*; it stays on the
-   CPU for the first working port and reads a small **once-per-tick device→host subset** (§2.2). Porting
-   it into device kernels is the **future Q2-lift**, deliberately deferred — and is **out of this arc's
-   CUDA field-port scope.** When Q2 is lifted it will additionally need integerizing `dmg`/`current_hp`
-   *and* the digest-tightening the S3c review flagged (the 1e-9 HP quantum + the incomplete
-   `SYNCED_UNIT_FIELDS` set). It is not a residency prerequisite (§3.7, §7 S8).
+   CPU and reads the integer fields off device. **The baseline transfer is the full-field copy GPU→CPU
+   each tick (Q4 locked, §2.2)** — the integer fields ARE deterministic gameplay state, so gameplay reads
+   broadly and the whole small field set comes down each tick (~50 µs at the 50×120 grid — effectively
+   free; transfer **latency** dominates, not bytes). Migrating combat's *math* into device kernels is the
+   **future Q2-lift**, deliberately deferred — and is **out of this arc's CUDA field-port scope.** When Q2
+   is lifted it will additionally need integerizing `dmg`/`current_hp` *and* the digest-tightening the S3c
+   review flagged (the 1e-9 HP quantum + the incomplete `SYNCED_UNIT_FIELDS` set). It is not a residency
+   prerequisite (§3.7).
 2. **The render/cosmetic float.** `light_rgb`, `light_dir`, `smoke_glow`, `ripple`, `light_map`, and the
    `dyn_*` / `permeability` / `light_atten` solver-coefficient floats. These are **not** Q16.16, **not**
    lockstep state, and deliberately stay float (the fixed-point arc left them float on purpose). They
@@ -243,14 +266,20 @@ membership. **Sum → must be integer into a non-overflowing wide accumulator; a
 the synced path.** Where a sum result crosses a control-flow threshold, it must additionally satisfy
 §1.4.
 
-**The deeper recommendation (locked, fixed-point plan Q8): retire `mean_wp` entirely.** It is the only
-*sum*-reduction in the hot path, and it forces a grid-wide barrier mid-tick (wave→reduce→broadcast→
-subtract→diffuse) — the real GPU cost is the barrier, not the adds. The arc already ships the rounded
-int64 mean as the stopgap (`ac2cae8`); the target replaces it with a **local edge-flux transfer** —
-order-free, barrier-free, no DC-bias, conservative by construction. After that retirement the only
-hot-path reductions are `max`/`any` (trivially deterministic) + the cliff inputs (§1.4). **This is the
-single biggest GPU-determinism + performance win and it is already the planned target** — fold it into
-CUDA-S4 (§7).
+**The deeper recommendation (locked, fixed-point plan Q8): retire `mean_wp` entirely — but AFTER the
+port, not during it (Q5 locked 2026-06-27).** It is the only *sum*-reduction in the hot path, and it
+forces a grid-wide barrier mid-tick (wave→reduce→broadcast→subtract→diffuse) — the real GPU cost is the
+barrier, not the adds. The arc already ships the rounded int64 mean as the stopgap (`ac2cae8`); the
+target replaces it with a **local edge-flux transfer** — order-free, barrier-free, no DC-bias,
+conservative by construction. After that retirement the only hot-path reductions are `max`/`any`
+(trivially deterministic) + the cliff inputs (§1.4). **This is the single biggest GPU-determinism +
+performance win.** *Sequencing (Q5):* port the deterministic **stopgap** to GPU FIRST (a faithful
+bit-identical CPU→GPU translation — changing the physics mid-port would break the bit-identity gate; the
+stopgap is already shipped + golden, the integer global reduction is deterministic via integer atomics).
+The edge-flux retirement is then a **COMMITTED, TRACKED post-port milestone with its own name — the
+`mean_wp` edge-flux retirement (§7.7)** — landed once CUDA is up, where the CPU-shaped global-reduction
+sync-barrier is replaced by the GPU-native local edge-flux. **Not a footnote; an explicit named
+milestone.**
 
 ### 1.4 RULE C′ — The reduction-fed control-flow cliffs
 
@@ -278,12 +307,16 @@ substep). **The shipped state is mixed, not uniformly integerized — state it a
 integers; the device launches exactly `n` kernel iterations. No device `ceilf`, no device float CFL.**
 The harness must drive ≥1 config where each cliff exceeds 1 and assert the count matches cross-arch.
 
-**CUDA-S0 prerequisite — integerize the atmosphere/wave `n` and `n_smoke` cliffs like water.** See §7.4
-CUDA-S0: convert atmosphere/smoke `max_dt()`→Q16.16, `d_eff_max`/`dt_stable`→integer, and compute `n`
-via `fixedpoint::ceil_div`, regenerating the affected golden. Recommended *done*, not merely *gated
-open*: it completes the fixed-point arc (water already proves the pattern), removes the last
+**The BEDROCK PATCH (pre-CUDA, locked 2026-06-27) — integerize the atmosphere/wave `n` and `n_smoke`
+cliffs like water.** This is **not** "CUDA-S0"; it is a **pre-CUDA bedrock-completion patch that lands
+BEFORE the CUDA arc begins** (the CUDA arc's first step is then the first *kernel*, temperature — §7).
+Convert atmosphere/smoke `max_dt()`→Q16.16, `d_eff_max`/`dt_stable`→integer, and compute `n` via
+`fixedpoint::ceil_div` like water; regenerate the affected golden; Erik feel-check. It completes the
+fixed-point arc (water already proves the `ceil_div` pattern), removes the last
 double-but-only-correctly-rounded-deterministic cliffs from the synced control flow, and is the safest
-ground for the GPU launcher. A small bedrock-completion item for Erik.
+ground for the GPU launcher. **Accurate framing (do not overstate):** the cliffs are double-*but*
+correctly-rounded-deterministic *today* — not a live desync — just un-integerized; the patch finishes
+the integer foundation. CPU-only change; lands first (§7, "Bedrock patch — first & likely last").
 
 ### 1.5 RULE D — Red-Black Gauss-Seidel on GPU (race-free by construction)
 
@@ -359,32 +392,36 @@ Down = one snapshot per frame; render may read stale, the sim never does.** Ever
   fields once per *frame*, decoupled from the tick.
 
 Different cadences → different transfers. The **headless training path has no frame** — it runs only the
-per-tick clock and never produces the render colour buffers.
+per-tick clock and never produces the render colour buffers. **Baseline (Q4 locked, §2.2): the per-tick,
+sim-authoritative read copies the WHOLE synced integer field set down each tick** (~50 µs at Breach's
+grid — latency-bound, not byte-bound, so the whole-field batch beats a subset gather); the per-system
+on-device migration that shrinks it is the later optimization.
 
 ### 2.1 THE RESIDENCY TABLE
 
 "GPU-resident" = the device buffer is authoritative, allocated **once** at `GameMap.__init__`/`reset`,
 written **in-place** (never reassigned — the in-place discipline is now a *device-pointer-stability*
 requirement, and a **CUDA-graph-validity** requirement, §6). Cadence legend: `never` (lives/dies on
-GPU) · `snapshot` (once-per-frame device→host, render only) · `tick-subset` (small once-per-tick
-device→host the sim reads) · `delta-up` (host→device, tiny, event-driven) · `static` (uploaded once at
-load / structural edit).
+GPU) · `snapshot` (once-per-frame device→host, render only) · `tick-down` (the field is part of the
+per-tick full-field device→host copy the sim reads — Q4 baseline; the whole synced set comes down each
+tick, the `tick-down` rows just mark which fields gameplay actually consumes) · `delta-up` (host→device,
+tiny, event-driven) · `static` (uploaded once at load / structural edit).
 
 **Synced int32 Q16.16 fields — the bedrock state (GPU-resident, GPU-written):**
 
 | Field | dtype | On-device writer | Synced WHEN |
 |---|---|---|---|
-| `atmosphere` | i32 | wave/diffuse/fire-plume/W3 | `tick-subset` (combat O2/ignition) + `snapshot` (overlay) |
+| `atmosphere` | i32 | wave/diffuse/fire-plume/W3 | `tick-down` (combat O2/ignition) + `snapshot` (overlay) |
 | `wave_p` | i32 | wave_substep, diffuse | `snapshot` only |
 | `wave_v` | i32 | wave_substep | `never` (debug; recorder dumps on demand) |
 | `wave_source` | i32 | consumed by wave_substep | `delta-up` (FieldEdit explosion deposit) |
 | `wind_x`, `wind_y` | i32 | diffuse_solve | `never` (derived; dequantized on snapshot if shown) |
 | `gas` (N,h,w) | i32 | smoke.step, sink_hop, W5 steam | `snapshot` (dequantize all N) + `delta-up` (FieldEdit) |
 | `smoke` | view into `gas[BLACK_SMOKE]` | (via `gas`) | aliased sub-pointer (§4) |
-| `fire` | i32 | fire.step logistic | `tick-subset` (combat **writes** it back) + `snapshot` |
-| `temperature` | i32 | temperature.step | `tick-subset` (ignition + heat damage) + `snapshot` |
-| `heat` | i32 | fire-heat raycast `atomicAdd`; cleared end-of-tick | `tick-subset` (unit heat damage) |
-| `wall_hp` | i32 | fire.step depletion | `tick-subset` (burn-through → `destroy_wall`); `delta-up` on edit |
+| `fire` | i32 | fire.step logistic | `tick-down` (combat **writes** it back) + `snapshot` |
+| `temperature` | i32 | temperature.step | `tick-down` (ignition + heat damage) + `snapshot` |
+| `heat` | i32 | fire-heat raycast `atomicAdd`; cleared end-of-tick | `tick-down` (unit heat damage) |
+| `wall_hp` | i32 | fire.step depletion | `tick-down` (burn-through → `destroy_wall`); `delta-up` on edit |
 | `water_depth` | i32 | water.step, W5 boil | `snapshot` + `delta-up` (sources/FieldEdit); conserved |
 | `flow_vx`, `flow_vy` | i32 | water.step | `never` (persistent solver state) |
 | `floor_height` | i32 | none (read-only input) | `static` |
@@ -416,10 +453,13 @@ bandwidth. The `gas` (N,h,w) array is already plane-major — keep it.
 `water_sources` (sparse list), `sink_x`/`sink_y` (lazy host BFS, `delta-up` only on topology change),
 all entity/logic/RNG/tick/phase.
 
-**Residency summary.** At 240×480 the full synced field set is ~17 MB; at 1000×1000 ~150 MB. **VRAM is
-not the constraint.** The constraint is keeping per-tick host↔device traffic to *only* the tick-subset
-down + the deltas up — every `never` row is the win: the whole `run_substeps`/`step_water`/`step_tail`
-chain executes on resident buffers with no per-substep round-trip.
+**Residency summary.** At Breach's ship grid (≈50×120) the full synced field set is tiny — the whole-set
+per-tick download is **~50 µs (Q4 baseline)**; at 240×480 it is ~17 MB, at 1000×1000 ~150 MB. **VRAM is
+not the constraint, and at Breach's size the download bytes are not either** (transfer latency dominates —
+§2.2). The constraint that *does* matter is keeping per-tick host↔device traffic to the **one batched
+per-tick full-field copy down + the deltas up** — every `never` row keeps that copy small, and every
+`never` row means the whole `run_substeps`/`step_water`/`step_tail` chain executes on resident buffers
+with no per-substep round-trip. (Per-system on-device migration later shrinks even the per-tick copy.)
 
 ### 2.2 TRANSFER BOUNDARIES (four, all tiny or event-driven)
 
@@ -438,32 +478,31 @@ by the pack kernels. Staleness is allowed here (one tick old is fine). One stubb
 `light_map` is host-sampled to light unit sprites — fold into a small device unit-brightness kernel, or
 retire with the RGB migration.
 
-**(B) The Python game-logic read → a once-per-tick device→host SUBSET (not the whole field set).**
-`combat.py` runs on the host and reads current-tick values. It sits behind the **Q2 fence** (combat
-HP/damage math is deliberately Python-float for now, §0.3 item 1, watched by the S3c unit-state digest) —
-so the *transfer* below is in scope for this arc, but **migrating combat's math onto the device is the
-later Q2-lift, not a residency prerequisite and not a blocker that gates S1–S6.** Two options:
-- **(i) the destination (the future Q2-lift):** push `apply_environmental_damage` /
-  `apply_temperature_ignition` into device kernels — nothing downloads, combat reads device memory in a
-  kernel. Larger rewrite; couples to the combat-port stream; **also requires integerizing
-  `dmg`/`current_hp` + tightening the S3c digest** (lifting Q2). Out of the field-port scope; ships later
-  (§7 S8).
-- **(ii) the first working port (RECOMMENDED):** a once-per-tick device→host download of *exactly* the
-  subset combat reads — `heat`/`temperature`/`atmosphere`/`fire` (+ host-mirrored `solid`/`is_vacuum`).
-  Combat does host math (the Q2-fenced Python float); `fire` (the only field it *writes*) goes back up as
-  a `delta-up`. Small: 4×(h,w) i32 ≈ 1.8 MB @ 240×480 / 16 MB @ 1000×1000 — one batched
-  `cudaMemcpyAsync` from a pinned staging buffer.
+**(B) The Python game-logic read → COPY ALL FIELDS device→host EACH TICK (Q4 locked 2026-06-27).**
+`combat.py` (and any other host gameplay reader) runs on the host and reads current-tick values. It sits
+behind the **Q2 fence** (combat HP/damage math is deliberately Python-float for now, §0.3 item 1, watched
+by the S3c unit-state digest) — so the *transfer* below is in scope for this arc, but **migrating
+combat's math onto the device is the later Q2-lift, not a residency prerequisite.**
 
-  **Ship (ii); the move to (i) rides the Q2-lift, field-by-field:** `fire` write-back first (a simple
-  `max`, removing the only *up*-direction game-logic write), then ignition, then heat damage — each
-  shrinks the tick-subset download. Track as an explicit open item (§8 Q4). This is a residency/transfer
-  boundary the port must *honour* (the tick-subset download), **not** a determinism hole in the field
-  port — the field math is already integer + digested; combat's float HP is the separately-fenced,
-  separately-watched Q2 path.
+**The baseline (locked): download the WHOLE synced integer field set once per tick.** The integer fields
+ARE deterministic gameplay state (integer *because* they are in the lockstep loop), so gameplay reads
+them broadly — not a hand-picked subset. At Breach's grid (≈50×120) the full field set is **~50 µs/tick —
+basically free**; correctness/access first. One batched `cudaMemcpyAsync` from a pinned staging buffer
+brings them all down; `fire` (the one field combat *writes*) goes back up as a `delta-up`.
 
-  *Why a subset, not the snapshot:* the render snapshot (A) is stale-OK and frame-paced; the combat read
-  is current-tick and sim-authoritative — a separate, smaller, sim-paced transfer. Conflating them would
-  force the render cadence onto the sim and download fields combat never reads.
+**Why the whole field, not a gather of "the specific elements combat reads":** transfer **latency**
+dominates, not bytes. Batching the entire small field into one copy beats fragmented per-element /
+per-subset reads (each of which pays the launch+latency cost). A subset-gather is the wrong default — it
+is only worth it for **huge sparse grids**, which Breach is not. Pick access/correctness now; the bytes
+are not the constraint.
+
+**Then OPTIMIZE per-system (the destination):** migrate a *mature* system's logic into a GPU kernel so it
+reads on-device — `apply_environmental_damage` / `apply_temperature_ignition` move into device kernels,
+combat reads device memory in a kernel, and that system's fields no longer need to come down. Each such
+migration **shrinks the per-tick copy over time**. This is the future **Q2-lift** (it additionally
+integerizes `dmg`/`current_hp` + tightens the S3c digest) — out of the field-port scope, sequenced after
+the solvers + raycaster are resident. The full-field copy is the *correct, simple* baseline the port
+ships on; per-system on-device reads are the *optimization* layered on later.
 
 **(C) The recorder.** Disabled in headless training (no transfer). In debug, it needs 6 fields/tick
 (`wave_p`,`wave_v`,`atmosphere`,`smoke`,`fire`,`obstacles`); two are already in (B). **Recommend a
@@ -491,17 +530,21 @@ the 3070) while host↔device over **PCIe is ~16 GB/s (x16 Gen3)** — a **30–
 `never`.
 
 - **Pinned (page-locked) host memory** (`cudaHostAlloc`/`cudaMallocHost`) for every recurring transfer
-  (the tick-subset down, the delta-up, the recorder dump) — ">2× pageable" and avoids the driver's
-  pageable→pinned bounce. **Caveat:** pinned memory is a scarce OS resource — pin **only** the staging
-  buffers (a handful of (h,w) arrays), not whole-field mirrors.
-- **Batch small transfers** — the tick-subset is **one** `cudaMemcpyAsync` of a packed staging region
-  (2–4 fields concatenated), not 4 copies; the delta-up is **one** upload of the concatenated record
-  list.
-- **The per-tick PCIe budget** (proving "no per-substep round-trip"): Down (B) ~1.8 MB @ 240×480 /
-  16 MB @ 1000×1000; Up (D) ~KB. At 12 GB/s pinned, the 240×480 down is ~0.15 ms/tick; 1000×1000
-  ~1.3 ms/tick. A naïve port that downloaded all ~40 fields every substep would be ~100–400× this and
-  PCIe-bottleneck the sim. **That is the failure mode the residency table exists to prevent.**
-- **Async overlap:** issue the tick-subset on a non-default stream so it overlaps GPU work where the
+  (the per-tick full-field down, the delta-up, the recorder dump) — ">2× pageable" and avoids the
+  driver's pageable→pinned bounce. **Caveat:** pinned memory is a scarce OS resource — pin **only** the
+  staging buffers (the packed full-field staging region + a handful of (h,w) arrays), not redundant
+  per-field mirrors.
+- **Batch small transfers** — the per-tick down is **one** `cudaMemcpyAsync` of a packed staging region
+  (the whole synced field set concatenated), **not** N per-field copies; the delta-up is **one** upload
+  of the concatenated record list. The whole-field batch is *why* the Q4 baseline is latency-bound, not
+  byte-bound: one copy pays one latency, a per-element/per-subset gather pays many.
+- **The per-tick PCIe budget** (proving "no per-substep round-trip"): at Breach's grid the full-field
+  Down (B) is **~50 µs/tick** (Q4 baseline); for reference, ~1.8 MB @ 240×480 / 16 MB @ 1000×1000; Up (D)
+  ~KB. At 12 GB/s pinned, the 240×480 down is ~0.15 ms/tick; 1000×1000 ~1.3 ms/tick. A naïve port that
+  downloaded all fields every *substep* (not tick) would be ~100–400× this and PCIe-bottleneck the sim —
+  **that is the failure mode the residency table exists to prevent** (the Q4 baseline copies once per
+  *tick*, not per substep). The per-system on-device migration shrinks even the per-tick copy.
+- **Async overlap:** issue the per-tick down on a non-default stream so it overlaps GPU work where the
   dependency graph allows (the real overlap win is hiding the stale-tolerant render snapshot + recorder
   dump behind sim compute).
 - **Do NOT use Unified/Managed memory (`cudaMallocManaged`) for the synced fields** — it makes residency
@@ -523,14 +566,17 @@ whether it points at host or device memory.
 - Each `GameMap` field attribute becomes a **device-backed array object** owning a `cudaMalloc`'d buffer
   exposing `.device_ptr()` (the `get_2d` analogue, device-side — the C++ methods bind to it; the
   orchestration in `physics_engine.cpp` is unchanged in structure) and `.__array__()`/`.to_host()`
-  (triggers the boundary download — snapshot for render-only, tick-subset for combat-read — returning a
-  numpy view). **Existing host readers keep writing `gmap.fire`, `gmap.heat[cy,cx]`** — they
-  transparently hit `.to_host()`. That is "no caller changes" in practice.
-- **CuPy is the natural Python vehicle** — a `cupy.ndarray` *is* a device-backed array with `.data.ptr`
-  (the pybind device pointer), `__cuda_array_interface__` (zero-copy agreement with the C++ side), and
-  `cupy.asnumpy()` (the `.to_host()` download). Combat's tick-subset fields expose a **cached host
-  mirror refreshed by boundary (B)** rather than per-element device fetch (per-element device indexing
-  is catastrophically slow).
+  (triggers the boundary download — snapshot for render-only, the per-tick full-field copy for
+  combat/gameplay reads — returning a numpy view). **Existing host readers keep writing `gmap.fire`,
+  `gmap.heat[cy,cx]`** — they transparently hit `.to_host()`. That is "no caller changes" in practice.
+- **CuPy is the natural Python vehicle (Q3 locked — chosen, installed, working: `cupy-cuda12x` 14.1.1 on
+  `numpy` 2.4.6, full Breach suite 369 green).** A `cupy.ndarray` *is* a device-backed array with
+  `.data.ptr` (the pybind device pointer), `__cuda_array_interface__` (zero-copy agreement with the C++
+  side — and the same interface by which CuPy will share GPU memory with the future PyTorch/ML stack),
+  and `cupy.asnumpy()` (the `.to_host()` download). The gameplay fields are refreshed by the **per-tick
+  full-field copy (B)** into a host mirror rather than per-element device fetch (per-element device
+  indexing is catastrophically slow — the same latency argument that makes the whole-field batch the
+  right baseline).
 - **The `smoke = gas[BLACK_SMOKE]` aliasing survives** as a device sub-pointer `gas + BLACK_SMOKE*h*w`
   into the resident `gas` buffer — same as today's numpy slice-view; the "never reassign smoke"
   invariant becomes "never reassign the device sub-view." `gas` being C-contiguous means each plane is a
@@ -569,6 +615,7 @@ latency dominate, not algorithmic FLOPs** — plan accordingly (§6 CUDA graphs)
 | **temperature** `step` | heat→temp · **conduct (gather, double-buffered)** · cool | double-buffered gather → no race | none | **Low** | none — the clean first port (§3.6) |
 | **physics_engine** orchestration | host loop launching the substep chains | n/a | **max_wind_sq int `max`** → `n_smoke` cliff | n/a | CUDA graphs (§6) |
 | **physics_engine** `stamp_units` | reset-baseline · **stamp scatter** | min-perm/max-absorb/max-atten scatter → `atomicMin`/`atomicMax` (order-free) | none | Low | actor-shaped (keep host-built rows) |
+| **raycaster** `cast_source_directional` (IN SCOPE) | **per-ray DDA march** · **heat deposit (multi-ray→cell SCATTER)** · render-float deposits (`light_rgb`/`dir`/`smoke_glow`) | per-ray parallel; **heat scatter → integer `atomicAdd`** (saturating, order-free); render floats are own-cell `+=` (race-y but render-exempt) | none (heat is a scatter, not a reduction) | **HIGH** (DDA march, data-dependent trip) | the scatter + the **float-then-quantize** heat path (gate the integer `heat`; RULE-B the float, or integerize) (§3.8) |
 
 ### 3.1 water_solver — already in the shape CUDA wants
 
@@ -595,8 +642,9 @@ bandwidth-bound** (at ship grid sizes the field fits in L2).
 Linear kernel chain; the Laplacian (`K-lap`) is the canonical FD shared-memory kernel (load tile + 1-cell
 halo, `__syncthreads()`, read 4 neighbours from shared). The reduction (`mean_wp`) is the #1 determinism
 hazard — but it is hard *only in float*; the integer sum is deterministic by construction (§1.3). The
-transfer is one-sided forcing (own-cell write) → embarrassingly parallel. **The recommended target
-retires `mean_wp` for a local edge-flux** (§1.3) — fold into CUDA-S4.
+transfer is one-sided forcing (own-cell write) → embarrassingly parallel. **In S5 port the `mean_wp`
+STOPGAP faithfully (Q5)**; the local-edge-flux retirement that removes the reduction+barrier is the
+post-arc §7.7 milestone (§1.3), not part of the S5 port.
 
 ### 3.3 atmosphere `diffuse_solve` — the HARDEST solver
 
@@ -636,8 +684,9 @@ fire-kernel win (eliminates divergence *and* slashes launch cost). `sqrt_q16` (f
 branch-identical → zero divergence. **`recip_mul` is per-cell HERE too** — the fire logistic calls it 4×
 (`fire_simulation.cpp:124,128,155,206`), one of those on a **signed** difference (`:206`,
 `FP_ONE − recip_mul(atmosphere,…)`). This is the same host-128-bit-vs-device path that risk #1 / §3.1
-flag for water, so **S5 must carry the identical device-vs-host `recip_mul` bit-identity golden as S2 —
-explicitly including NEGATIVE/signed `(x, divisor)` inputs** (the fire saturation term and the water tilt
+flag for water, so **the fire step (S6) must carry the identical device-vs-host `recip_mul` bit-identity
+golden as the water step (S3) — explicitly including NEGATIVE/signed `(x, divisor)` inputs** (the fire
+saturation term and the water tilt
 `s_e − s_w` both feed signed values, where `__mul64hi` sign-handling differs from an unsigned high
 multiply — the most likely place a naïve device port silently diverges). **The smoke-emit is a genuine
 1→4 scatter race** (two adjacent fires write a shared neighbour) → **integer `atomicAdd`**
@@ -653,7 +702,7 @@ gather stencil, already double-buffered** — reads the frozen pre-conduction fi
 the `(tn−ti) >> face_shift` flux is shifted on the *difference* so equal neighbours give exactly 0 →
 drift-free; **ping-pong the buffers, skip the copy**), and cool (4-neighbour vacuum-exposure test —
 predicate the `break` as `exposed |= …`). **No reductions, no scatter, no conservation class.**
-Essentially a drop-in port — which is exactly why it is CUDA-S1 (§7).
+Essentially a drop-in port — which is exactly why it is the first kernel, S1 (§7).
 
 ### 3.7 physics_engine orchestration — host-driven, no kernels
 
@@ -666,90 +715,108 @@ arrays, a stamp kernel scatters them with `atomicMin`/`atomicMax`** (or, since s
 on CPU and upload the `dyn_*` fields — profile to decide; not on the hot field-solver path). Wrap the
 per-tick launch sequence in a CUDA graph (§6).
 
-### 3.8 raycaster — last, render-side only
+### 3.8 raycaster — IN SCOPE, an EARLY kernel (Q7 locked 2026-06-27)
 
-Embarrassingly parallel; only the integer `heat` deposit is sim-affecting (`atomicAdd`, already
-deterministic). The float `light_rgb`/`smoke_glow`/`light_dir` are render-only and may be one tick
-stale. Lowest throughput priority (runs once/frame, not per-substep); biggest *visual* win. Gate P1 on
-`heat` only (render floats exempt). Mitigate the DDA-march divergence by binning rays by direction so a
-warp marches coherent rays.
+**This is gameplay physics, not render-cosmetic.** The integer `heat` deposit is **sim-affecting and
+inflicts unit damage**: `combat.apply_environmental_damage` reads `gmap.heat` (`int(heat[ty,tx])` →
+`phi = peak_raw / HEAT_SCALE` → felt-temp → `dmg` → `u.current_hp -= dmg`, `combat.py:155-247`). So the
+raycaster's heat output is on the deterministic gameplay path and **must be bit-identity-gated.** It is
+also the **most parallelizable kernel** — rays are independent (embarrassingly parallel), the easiest GPU
+win — which is *why* it comes early (right after temperature de-risks the toolchain/plumbing, because it
+carries one wrinkle the leaf stencils don't: the scatter).
+
+**The kernel shape (read from `cpp/src/raycaster.cpp::march_ray_directional`):**
+- **The ray-march is per-ray parallel** — one thread per ray (`cast_source_directional` already loops
+  rays independently). DDA march, data-dependent trip count, `break` on aggregate cull / out-of-bounds /
+  `max_range`. Bin rays by direction so a warp marches coherent rays (the §6 item 4 divergence mitigation).
+- **The heat DEPOSIT is a SCATTER** (the one new concept vs temperature): multiple rays cross the same
+  cell and all `+=` into `heat[idx]` (`heat_saturating_add(&heat[idx], …)`, `raycaster.cpp:218-221`).
+  On GPU that is a **write race → use integer `atomicAdd`** (order-independent → deterministic; the
+  saturating clamp becomes an `atomicMin`-against-`INT32_MAX` or a CAS-loop saturating add). The header
+  itself anticipates this: *"Integer += is order-independent → deterministic … the property that lets
+  `heat` become an atomicAdd on CUDA later"* (`raycaster.h:18-21`).
+- **WRINKLE the leaf solvers don't have — the heat math is FLOAT-then-quantize, not pure integer.** Unlike
+  the Q16.16 field solvers, the march computes `heat_dep = heat_emit * heat_survival * dist_atten` in
+  **float**, then `heat_quantize()` rounds to Q16.16 and `heat_saturating_add` scatters the integer
+  (`raycaster.cpp:219-220`). The *deposited integer* is the gameplay-gated output; the float that produces
+  it is render-shaped per-machine math (the same same-machine-deterministic float class as the Q2-fenced
+  combat HP). **Implication for the bit-identity gate:** the integer `heat` field is what P1 gates, but it
+  is only bit-identical CPU↔GPU if the *quantize input* (`heat_dep`) reproduces — so the heat-channel
+  float path on device must obey RULE B (`--fmad=false`, no `expf` contraction; note the gas-optics
+  `std::exp` is light-only and does NOT touch heat, `raycaster.cpp:306-308`). Decide during S2
+  whether to (a) hold the heat float path to `--fmad=false`/no-fast-math and gate the resulting integer,
+  or (b) integerize `heat_dep` outright (cleaner, removes the last float on the heat gameplay path). Flag
+  for Erik at that step.
+- **Purely-visual float outputs stay float-OK (render-local):** `light_rgb`, `light_dx`/`light_dy`
+  (`light_dir`), `smoke_glow` are render-only, may be one tick stale, produced/consumed on-device via
+  CUDA-GL interop (§2.2 A), and are **exempt from P1** (gate `heat` only).
+
+Runs once/frame (not per-substep), so its throughput weight is lower than the per-substep solvers — but
+its *determinism* weight is full (it feeds unit HP), and it is the cleanest parallel win after the first
+stencil, so it lands **early** (§7.4 S2), not last.
 
 ---
 
 ## 4. BUILD / TOOLCHAIN (multi-machine Ampere + Ada, VS2022)
 
-### 4.0 What is on disk now (audited, not assumed)
+### 4.0 What is on disk now (audited) + the LOCKED toolchain (Q1/Q2, 2026-06-27)
 
 | Fact | Value |
 |---|---|
-| CUDA toolkit installed | **v12.4** (`nvcc` V12.4.131; the spike built with it) |
-| GPU / driver (desktop) | RTX 3070, **driver 560.94**, sm_86 |
-| VS2022 MSVC toolset | **14.44.35207** (MSVC 19.44) |
-| `cpp/build/` cache | **"Visual Studio 18 2026" preview, MSVC 14.50 — POISONED for CUDA** |
+| CUDA toolkit installed | **v12.4** (`nvcc` V12.4.131; the spike built with it) — **the locked toolkit (Q1)** |
+| GPU / driver (desktop) | RTX 3070, **driver 610.62** (raised by Erik — lifts the CUDA ceiling; toolkit stays 12.4), sm_86 |
+| VS2022 MSVC toolset | **VS2022 17.14** (MSVC newer than CUDA 12.4 officially lists) |
+| `cpp/build/` cache | **"Visual Studio 18 2026" preview, MSVC 14.50 — POISONED for CUDA** (reset, Q2) |
 | `cpp/build_vs2022/` cache | "Visual Studio 17 2022", x64 — proves VS2022 configures cleanly |
 | `.pyd` | `breach_physics.cp311-win_amd64.pyd` |
+| CuPy | `cupy-cuda12x` 14.1.1 on `numpy` 2.4.6, **installed + working** (Q3; suite 369 green) |
 
-**Critical finding #1 — the default build dir is poisoned.** `cpp/build/` is configured against the
-**"VS18 2026" preview** (MSVC 14.50), which CUDA does **not** support and which has caused build issues.
-NVIDIA only lists VS **2022 17.x / MSVC 193x** as a native host compiler. **Abandon `cpp/build/`;
-standardize the CUDA build dir on the VS2022 generator.** Delete the poisoned cache (or make a fresh
-`cpp/build_cuda/`) so nobody accidentally builds against VS18/MSVC 14.50.
+**The locked toolchain (Q1):** **CUDA 12.4 (already installed) + `-allow-unsupported-compiler`.** VS2022
+17.14 is newer than 12.4's `host_config.h` lists, tripping nvcc's `#error -- unsupported Microsoft Visual
+Studio version!`; the flag suppresses it, and for **pure-integer kernels** the "may cause incorrect
+run-time execution" caveat is harmless (the bit-identity gate catches any codegen difference). Erik raised
+the **driver to 610.62** (lifts the CUDA ceiling), but we **stay on the 12.4 toolkit** — no 12.6/12.8/12.9
+download. Same setup on the Lenovo (Ada) later. *(The earlier "update driver + install 12.9 vs 12.6 U2"
+framing is retired.)*
 
-### 4.1 The compatibility matrix
+**The poisoned build dir (Q2) — TARGETED reset, not `rm -rf`.** `cpp/build/` is configured against the
+**"VS18 2026" preview** (MSVC 14.50), which CUDA does **not** support. **Reset it onto VS2022 by deleting
+the single `CMakeCache.txt` (+ the `CMakeFiles/` config dir) and re-running `cmake … -G "Visual Studio 17
+2022"`** — a surgical reset that respects the deny-list (NOT a recursive force-delete of the tree). Also
+**prune the stale `C:/tmp` worktrees.** A fresh `cpp/build_cuda/` is the equivalent clean alternative.
+
+### 4.1 The compatibility matrix (resolved)
 
 **Architecture support — settled.** Every CUDA 12.x toolkit (12.4–12.9) compiles both `sm_86` (Ampere)
 and `sm_89` (Ada) — long-standing targets. A single fatbin with `sm_86` + `sm_89` SASS (+ one PTX for
 forward-compat) is the intended multi-machine deployment: **one `.pyd` runs on both machines.**
 
-**Driver ↔ toolkit — the binding constraint** (CUDA Toolkit Release Notes driver table):
+**The MSVC ceiling (the only wrinkle) — RESOLVED by the flag (Q1).** The installed VS2022 17.14 MSVC is
+newer than CUDA 12.4's `host_config.h` was validated against; nvcc hardcodes a max `_MSC_VER` and emits
+`#error -- unsupported Microsoft Visual Studio version!` for a newer `cl.exe`. **The locked resolution is
+`-allow-unsupported-compiler`** (suppresses the `#error`). NVIDIA's "may cause compilation failure or
+incorrect run-time execution" caveat is **harmless here for two reasons**: (1) every synced kernel is
+**pure integer** — two's-complement `+ − * >>` and integer atomics have PTX-defined, MSVC-independent
+semantics, so there is nothing for an "unsupported" host compiler to mis-codegen; and (2) the bit-identity
+gate (§1, §7) would catch any difference if there were. The driver is at **610.62** (lifts the ceiling),
+the toolkit stays **12.4** — no toolkit download, no driver-vs-toolkit table to navigate. *(The old
+two-path "12.9 vs 12.6 U2" analysis is retired; keep `-T version=14.40` pinning only in the back pocket if
+the flag ever misbehaves.)*
 
-| Toolkit | Min Windows driver | OK on 560.94 as-is? |
-|---|---|---|
-| 12.6 Update 2 | ≥ 560.94 | **YES (exact match)** |
-| 12.6 Update 3 | ≥ 561.17 | No |
-| 12.8 GA | ≥ 570.65 | No (needs driver update) |
-| 12.9 GA | ≥ 576.02 | No (needs driver update) |
+### 4.2 The setup checklist (everything already in place)
 
-So with the **current driver untouched, the newest native toolkit is CUDA 12.6 Update 2.**
-
-**Critical finding #2 — the MSVC ceiling vs the driver ceiling collide.** The installed MSVC **14.44
-(19.44)** is newer than CUDA 12.4 or 12.6 U2 was validated against; nvcc's `host_config.h` hardcodes a
-max `_MSC_VER` and emits `#error -- unsupported Microsoft Visual Studio version!` for a newer `cl.exe`.
-Two clean resolutions:
-
-- **Path 1 (RECOMMENDED): update the NVIDIA driver, install CUDA 12.9 (or 12.8).** A newer toolkit
-  natively knows MSVC 14.44 — no override flag, no `host_config.h` risk — and decouples from the 560.94
-  ceiling permanently. Erik is about to migrate to the Ada laptop and is learning CUDA (wants current
-  Nsight); the driver bump removes the whole headache. Requires driver ≥ 576.02 (12.9) or ≥ 570.65
-  (12.8).
-- **Path 2 (no driver change): CUDA 12.6 Update 2 + `-allow-unsupported-compiler`** (suppresses the
-  `#error`). NVIDIA states an unsupported host compiler "may cause compilation failure or incorrect run
-  time execution" — for a *determinism-critical* project that is a real if usually benign risk;
-  acceptable as a stopgap, not the long-term toolchain. **Safer variant:** pin an older MSVC 193x
-  toolset (14.40/14.41) via the VS Installer and select it with `-T version=14.40` — no override needed.
-
-**Recommendation: Path 1 with CUDA 12.9.** Path 2/12.6U2 is the fallback if the driver can't be updated
-now. (This is open question Q1, §8.)
-
-### 4.2 The EXACT download list
-
-**Path 1 (recommended):**
-1. **NVIDIA driver ≥ 576.02** (Game Ready or Studio) — GeForce Experience / nvidia.com/drivers → RTX
-   3070 (same line covers the Ada laptop later).
-2. **CUDA Toolkit 12.9** (local `.exe`, Windows x86_64) — developer.nvidia.com/cuda-downloads. **Uncheck
-   the bundled display driver** if older than what you just installed; Visual Studio Integration is
-   optional (CMake's `enable_language(CUDA)` doesn't need the MSBuild extension).
-3. **Nsight Compute + Nsight Systems + Nsight VSE** — bundled with the toolkit (no separate download).
-4. (Have) Visual Studio 2022 Community, MSVC 14.44 — keep.
-5. (Have) CMake ≥ 3.18 (your `cmake_minimum_required`; CUDA-architecture support landed in 3.18). CMake
+1. **NVIDIA driver — 610.62, already installed** (Erik raised it; lifts the CUDA ceiling). Same line
+   covers the Ada laptop later.
+2. **CUDA Toolkit 12.4 — already installed** (`nvcc` V12.4.131; the spike built with it). **No download.**
+   Build with `-allow-unsupported-compiler` (Q1).
+3. **Nsight Compute + Nsight Systems + Nsight VSE** — bundled with the installed 12.4 toolkit.
+4. (Have) Visual Studio 2022 17.14 — keep.
+5. (Have) CMake ≥ 3.18 (`cmake_minimum_required`; CUDA-architecture support landed in 3.18). CMake
    ≥ 3.24 gives `CMAKE_CUDA_ARCHITECTURES=native` — optional.
+6. (Have) **CuPy** `cupy-cuda12x` 14.1.1 on `numpy` 2.4.6 — installed + working (Q3; suite 369 green).
 
-**Path 2 (no driver update):** CUDA Toolkit **12.6 Update 2** (local `.exe`, from the 12.6 archive →
-Update 2; uncheck the bundled driver); Nsight bundled; build with `-allow-unsupported-compiler` **or**
-an older MSVC 193x toolset via `-T version=14.40`.
-
-**Lenovo laptop (Ada, in a few weeks):** identical list. Same toolkit, same driver line. The **same
-fatbin** runs because it carries `sm_89`; a rebuild there just regenerates the identical `.pyd`.
+**Lenovo laptop (Ada, in a few weeks):** identical setup — CUDA 12.4 + the flag, the same fatbin (it
+carries `sm_89`); a rebuild there just regenerates the identical `.pyd`.
 
 ### 4.3 CMake integration (against the real `cpp/CMakeLists.txt`)
 
@@ -787,11 +854,15 @@ build working alongside):
 5. **Host-compiler selection (the VS2022 requirement):**
    ```
    cmake -S cpp -B cpp/build_cuda -G "Visual Studio 17 2022" -A x64 \
-         -DCMAKE_CUDA_ARCHITECTURES="75;86;89"
+         -DCMAKE_CUDA_ARCHITECTURES="75;86;89" \
+         -DCMAKE_CUDA_FLAGS="-allow-unsupported-compiler"
    cmake --build cpp/build_cuda --config Release
    ```
-   (Path 2 only: add `-DCMAKE_CUDA_FLAGS="-allow-unsupported-compiler"` or `-T version=14.40`.) **Delete
-   the poisoned `cpp/build/` first.**
+   (`-allow-unsupported-compiler` is the locked Q1 flag — VS2022 17.14 is newer than CUDA 12.4 lists;
+   harmless for the pure-integer kernels. `-T version=14.40` pinning is the back-pocket alternative if the
+   flag ever misbehaves.) **Reset the poisoned `cpp/build/` first** (delete its `CMakeCache.txt` +
+   reconfigure on VS2022 — the targeted Q2 reset, not a recursive delete) — or build in a fresh
+   `cpp/build_cuda/`.
 6. **The `.pyd` name/location is unchanged** — the CUDA port is invisible to `physics_runner.py`
    (`PhysicsRunner(breach_physics)` still imports the same module).
 
@@ -943,14 +1014,34 @@ break the bit-identity you just shipped; gate every one.
 
 ---
 
-## 7. SEQUENCED SUB-STEPS (CUDA-S0 … S8)
+## 7. SEQUENCED SUB-STEPS (Bedrock patch → the CUDA kernels)
 
 Ordered by **algorithmic complexity × coupling** — leaf stencils first, the reduction-coupled RB-GS
-diffuse last — and pedagogically monotone (one new GPU concept per step). **Every step keeps the CPU
+diffuse last — and pedagogically monotone (one new GPU concept per step). **Every CUDA step keeps the CPU
 method as the live fallback** (the `PHYSICS_BACKEND_<solver>` switch) so a half-ported engine is just
 "some solvers on GPU, the rest on CPU," each gated. The game runs at every step.
 
-### 7.0 Immediate pre-S0 action — close the spike's cross-arch leg
+**The shape after the decision walk (locked 2026-06-27):** a **pre-CUDA Bedrock patch** (CPU-only,
+finishes the integer foundation) lands FIRST; then the CUDA arc begins with the first **kernel**
+(temperature), **not** a cliff patch. The raycaster is an **early** kernel (it has a scatter wrinkle, so
+it follows temperature once the plumbing is trusted). The diffuse RB-GS is last among the solvers. The
+`mean_wp` **stopgap** ports with atmosphere; the CUDA-graphs pass is one dedicated step at the end; and
+the `mean_wp` **edge-flux retirement** is an explicit post-arc milestone (§7.7).
+
+### 7.0a The BEDROCK PATCH (pre-CUDA, CPU-only) — first & likely last
+
+**Before any GPU kernel:** integerize the atmosphere/wave `n` and `n_smoke` substep-count cliffs like
+water already is (§1.4). Convert atmosphere/smoke `max_dt()`→Q16.16, `d_eff_max`/`dt_stable`→integer, and
+compute `n` via `fixedpoint::ceil_div`; **regenerate the affected golden; Erik feel-check.** This is
+**not** a CUDA step — it is the last piece of the fixed-point bedrock (water proves the `ceil_div`
+pattern; this brings atmosphere/wave/smoke to the same integer cliff). The cliffs are
+double-but-correctly-rounded-deterministic *today* (not a live desync), so this is *completion*, not a
+bug-fix — but doing it now means the GPU launcher inherits an already-integer cliff and there is no
+`double std::ceil` left in `physics_engine.cpp`'s synced control flow. **Gate:** regenerated golden green;
+no `double`-CFL cliff remains; Erik's feel-check passes. It lands once, before S-Temp, and is "first &
+likely last" of the bedrock work.
+
+### 7.0 Immediate pre-CUDA action — close the spike's cross-arch leg
 
 Spike-0 passed on Ampere but its cross-arch leg **never ran at runtime** (`_arch_check.bat` only
 *compiles* sm_75/sm_89). The `.cu` sources are missing from `spike0/` (only `.lib/.exp/.exe` and
@@ -1005,53 +1096,72 @@ per-cell divide, no conservation class, one pass), a leaf of the DAG (reads `hea
 It exercises the entire **plumbing** path (upload caches, launch a trivial stencil, download, digest,
 diff on two archs) with **zero algorithmic risk.** Leading with RB-GS instead would front-load the
 reduction+barrier concept before the plumbing is trustworthy — and Spike-0b already proved the RB-GS
-*arithmetic*. Lead with temperature; arrive at RB-GS late (S6).
+*arithmetic*. Lead with temperature; arrive at RB-GS late (S7).
 
 ### 7.4 The port order
 
+**Pre-CUDA:** the **Bedrock patch** (§7.0a, CPU-only — integerize the atmosphere/wave/smoke cliffs) lands
+first; then the spike cross-arch leg (§7.0). The CUDA steps below begin with the harness/toolchain, then
+the first *kernel* (temperature).
+
 | Step | Kernel(s) | New CUDA concept | Gate |
 |---|---|---|---|
-| **CUDA-S0** | *Toolchain + harness + bedrock-completion, no GPU physics.* Pin CUDA 12.9/VS2022; `enable_language(CUDA)`; multi-gencode 75/86/89; annotate `fixed_point.h` `__host__ __device__`; build the per-tick digest + X-ARCH runner; hello-world memcpy + trivial-map kernel digested on Ampere. **Plus the bedrock-completion item: integerize the atmosphere/wave `n` and `n_smoke` cliffs (§1.4)** — atmosphere/smoke `max_dt()`→Q16.16, `d_eff_max`/`dt_stable`→integer, `n` via `fixedpoint::ceil_div` like water; regenerate the affected golden. (CPU-only change; lands before any GPU kernel so the device launcher inherits an already-integer cliff.) | **host/device model, `cudaMemcpy`, the toolkit compiles for device, the harness/X-ARCH rig** | hello-world digest identical CPU/Ampere; toolkit `static_assert`s pass on device; **the regenerated golden is green and the cliff is `ceil_div` (no `double` `std::ceil` left in `physics_engine.cpp`)** |
-| **CUDA-S1** | **Temperature** (`step_tail` conduct/cool) | **first real stencil; shared-memory halo tiling; scratch-zeroing** | P1 Ampere; X-ARCH pending→Ada |
-| **CUDA-S2** | **Water** (`step_water`: substeps, flow vx/vy, conserved depth) — re-derive the tilt slope in integer first (§3.1) | **multi-substep loop in one launch (ping-pong, no CPU round-trip); per-cell conservation on GPU** | P1 + **P2 conservation** Ampere; X-ARCH |
-| **CUDA-S3** | **Smoke + 5 gas planes — semi-Lagrangian advection** (`run_substeps` gas loop) | **semi-Lagrangian gather, integer bilinear, the three rounding modes; int16 (Q1.15) packed [0,1] fields (the bandwidth win)** | P1 + P2 (per-plane mass) Ampere; X-ARCH |
-| **CUDA-S4** | **Wave + wind + `mean_wp`** (`run_substeps` wave/transfer) — and **retire `mean_wp` for the edge-flux** (§1.3) | **the hard concept: deterministic parallel reduction (int64 atomicAdd / warp tree) + the mid-tick grid barrier** | P1 (reduction-permutation + geometry sweep bites) Ampere; X-ARCH |
-| **CUDA-S5** | **Fire** (`step_tail` logistic) — work-list compaction, smoke-emit `atomicAdd`, burn-through compaction | **per-cell transcendental on device (`sqrt_q16`), divergent control flow, deterministic compaction** | P1 + the discrete extinguish/burn-through flip + **the device-vs-host `recip_mul` golden (per-cell 4× in the logistic, incl. NEGATIVE/signed inputs — §3.5)** Ampere; X-ARCH |
-| **CUDA-S6** | **Atmosphere diffusion — integer RB-GS** (`run_substeps` diffuse) | **two-color GS as paired kernel launches; per-cell reciprocal at scale; roofline/occupancy profiling (Nsight)** | P1 + GS L∞ residual within a factor of the float build Ampere; X-ARCH |
-| **CUDA-S7** | **`stamp_units` + persistent residency + CUDA graphs** — fields go GPU-resident (deltas up, snapshot down), CUDA-GL interop, graph capture | **GPU-resident state (the engine/02 seam); CUDA graphs (optimization, paid once, replayed)** | P1 unchanged (residency must not change a bit); end-to-end X-ARCH; perf measured |
-| **CUDA-S8** | *(later, optional)* **Raycaster** + the combat-kernel migration (§2.2 (i)) | warp divergence, texture memory, atomic compositing; combat math → device | P1 on `heat` only (render floats exempt) |
+| **Bedrock** *(pre-CUDA, CPU-only — §7.0a)* | Integerize the atmosphere/wave `n` + `n_smoke` substep cliffs (`max_dt()`→Q16.16, `d_eff_max`/`dt_stable`→integer, `n` via `ceil_div` like water). Regenerate golden; Erik feel-check. **No GPU.** | — (finishes the integer foundation) | regenerated golden green; **no `double std::ceil` cliff left in `physics_engine.cpp`**; feel-check passes |
+| **S0 — Toolchain + harness** | *No GPU physics.* CUDA 12.4 + `-allow-unsupported-compiler`/VS2022; `enable_language(CUDA)`; multi-gencode 75/86/89; annotate `fixed_point.h` `__host__ __device__`; build the per-tick digest + X-ARCH runner; hello-world memcpy + trivial-map kernel digested on Ampere. | **host/device model, `cudaMemcpy`, the toolkit compiles for device, the harness/X-ARCH rig** | hello-world digest identical CPU/Ampere; toolkit `static_assert`s pass on device |
+| **S1 — Temperature** (`step_tail` conduct/cool) — *the first kernel* | **first real stencil; shared-memory halo tiling; scratch-zeroing** | P1 Ampere; X-ARCH pending→Ada |
+| **S2 — Raycaster** (`cast_source_directional`) — *EARLY; the most parallel kernel, after temperature trusts the plumbing* (§3.8) | **per-ray parallelism + the SCATTER: multi-ray→cell heat deposit via integer `atomicAdd` (saturating); ray-direction binning for divergence; render floats via CUDA-GL interop** | P1 on the integer **`heat`** field only (render floats `light_rgb`/`dir`/`smoke_glow` exempt); **the heat float-then-quantize path held to `--fmad=false`/no-fast-math OR integerized** (§3.8); X-ARCH |
+| **S3 — Water** (`step_water`: substeps, flow vx/vy, conserved depth) — re-derive the tilt slope in integer first (§3.1) | **multi-substep loop in one launch (ping-pong, no CPU round-trip); per-cell conservation on GPU** | P1 + **P2 conservation** Ampere; X-ARCH |
+| **S4 — Smoke + 5 gas planes** — semi-Lagrangian advection (`run_substeps` gas loop) | **semi-Lagrangian gather, integer bilinear, the three rounding modes; int16 (Q1.15) packed [0,1] fields (the bandwidth win)** | P1 + P2 (per-plane mass) Ampere; X-ARCH |
+| **S5 — Wave + wind + `mean_wp` STOPGAP** (`run_substeps` wave/transfer) — **port the int64-mean stopgap faithfully (Q5); the edge-flux retirement is the post-arc §7.7 milestone, NOT here** | **the hard concept: deterministic parallel reduction (int64 atomicAdd / warp tree) + the mid-tick grid barrier** | P1 (reduction-permutation + geometry sweep bites); **digest == the shipped CPU stopgap bit-for-bit** Ampere; X-ARCH |
+| **S6 — Fire** (`step_tail` logistic) — work-list compaction, smoke-emit `atomicAdd`, burn-through compaction | **per-cell transcendental on device (`sqrt_q16`), divergent control flow, deterministic compaction** | P1 + the discrete extinguish/burn-through flip + **the device-vs-host `recip_mul` golden (per-cell 4× in the logistic, incl. NEGATIVE/signed inputs — §3.5)** Ampere; X-ARCH |
+| **S7 — Atmosphere diffusion — integer RB-GS** (`run_substeps` diffuse) | **two-color GS as paired kernel launches; per-cell reciprocal at scale; roofline/occupancy profiling (Nsight)** | P1 + GS L∞ residual within a factor of the float build Ampere; X-ARCH |
+| **S8 — `stamp_units` + persistent residency + CUDA graphs** — fields go GPU-resident (deltas up, per-tick full-field copy down), CUDA-GL interop, **graph capture (the single dedicated graphs pass, Q6)** | **GPU-resident state (the engine/02 seam); CUDA graphs (optimization, paid once, replayed — one pass after all solvers are bit-identical)** | P1 unchanged (residency + graph capture must not change a bit); end-to-end X-ARCH; perf measured |
+| **(Post-arc, optional) — combat-kernel migration** (the Q2-lift, §2.2) | combat math → device kernels; integerize `dmg`/`current_hp` + tighten the S3c digest | P1 + the tightened unit-state digest |
 
-**Why this order over the old plan's "diffusion first":** post-`bedrock` the gating axis is
-determinism-provability, and the diffuse solve is now the reduction-coupled RB-GS-with-a-barrier — the
-single hardest thing to prove bit-identical → it moves to **last (S6)**. The leaf stencils (temperature,
-water, advection) move first. The reduction (`mean_wp`) is isolated into its own step (S4) right after
-advection, because it is the one genuinely new *concept* and deserves a clean gate — exactly as Spike-0a
-isolated it.
+**The `mean_wp` edge-flux retirement is a separate named post-arc milestone — §7.7 — not a step in this
+table** (Q5: port the stopgap faithfully in S5, retire it after).
+
+**Why this order:** the gating axis is determinism-provability. The Bedrock patch finishes the integer
+cliff foundation off-GPU first. **Temperature is the first kernel** (a clean leaf stencil, the plumbing
+de-risk, zero algorithmic risk). **The raycaster is early (S2)** — it is the most parallelizable kernel
+(independent rays) and a gameplay-physics requirement (heat → damage), but it carries the one wrinkle
+temperature lacks (the heat *scatter* + the float-then-quantize heat path), so it follows temperature
+once the plumbing is trusted. The leaf solvers (water, advection) come next; the reduction (`mean_wp`
+stopgap) is isolated into its own step (S5) because it is the one genuinely new *concept* and deserves a
+clean gate; the diffuse RB-GS-with-a-barrier — the single hardest thing to prove bit-identical — is **last
+among the solvers (S7)**; residency + the **one** CUDA-graphs pass close the arc (S8).
 
 ### 7.5 The learning notes (one concept per step)
 
+- **Bedrock — finishing the integer cliffs.** Not a CUDA concept: `ceil_div` on Q16.16 for the
+  atmosphere/wave/smoke substep counts (water already shows the pattern); the payoff is an integer cliff
+  the GPU launcher inherits.
 - **S0 — the host/device model.** Kernels, `<<<grid,block>>>`, `cudaMemcpy` up/down, the integer kit
   compiles to device PTX unchanged (the payoff of writing it portable). The mental model + the harness
   rig, zero physics risk.
 - **S1 — the 2D stencil + shared-memory halo.** Temperature is the canonical "hello-world of GPU
   computing" (a 5-point stencil): thread-per-cell, halo-tiling, scratch-zeroing.
-- **S2 — multi-substep without a CPU round-trip.** Ping-ponging two buffers inside one launch so the CFL
+- **S2 — per-ray parallelism + the SCATTER (the raycaster).** Independent rays (the easiest parallel win)
+  but a new hazard: many rays write one cell → integer `atomicAdd` (order-free, deterministic). The
+  float-then-quantize heat path is the place to learn RULE B in anger (or integerize it). Render floats
+  ride CUDA-GL interop and are gate-exempt.
+- **S3 — multi-substep without a CPU round-trip.** Ping-ponging two buffers inside one launch so the CFL
   substeps never bounce to the CPU (the launch-overhead lesson by hand, before graphs).
-- **S3 — gather (semi-Lagrangian) + 16-bit packing.** Advection is a *gather* (read interpolated source)
+- **S4 — gather (semi-Lagrangian) + 16-bit packing.** Advection is a *gather* (read interpolated source)
   → GPU-friendly; the int16/Q1.15 bandwidth win on the [0,1] fields (the half-rate-int datapath makes
   bandwidth the lever).
-- **S4 — the reduction. THE hard concept.** Why a parallel sum is the deepest determinism hazard
+- **S5 — the reduction. THE hard concept.** Why a parallel sum is the deepest determinism hazard
   (spike-0a's float-atomic jitter is the lab demo) and why the *integer* int64 atomicAdd/shuffle-tree is
-  order-free; plus the grid-wide barrier.
-- **S5 — per-cell transcendental + divergent control flow.** `sqrt_q16` per cell on device; warp
+  order-free; plus the grid-wide barrier. Port the stopgap faithfully (the edge-flux retirement is §7.7).
+- **S6 — per-cell transcendental + divergent control flow.** `sqrt_q16` per cell on device; warp
   divergence (the logistic's branch / the work-list compaction); a deterministic compaction (the
   burn-through list — control-flow output, not a field).
-- **S6 — iterative solvers as paired kernel launches + profiling.** Red-black scheduling as two kernels
+- **S7 — iterative solvers as paired kernel launches + profiling.** Red-black scheduling as two kernels
   with a barrier; per-cell reciprocal at scale; the **roofline/Nsight** loop (compute- or
   memory-bound?); the *deterministic*-vs-*converges* distinction (two claims, two tests).
-- **S7 — GPU-resident state + CUDA graphs (the optimization).** The engine/02 deltas-up/snapshot-down
-  seam; CUDA graphs (capture the per-tick DAG once, replay with ~no launch overhead). Deliberately
-  **last** — you optimize a correct, resident pipeline, never a moving target.
+- **S8 — GPU-resident state + CUDA graphs (the optimization).** The engine/02 deltas-up/per-tick-copy-down
+  seam; CUDA graphs (capture the per-tick DAG once, replay with ~no launch overhead) as **one** dedicated
+  pass. Deliberately **last** — you optimize a correct, resident pipeline, never a moving target.
 
 ### 7.6 The per-step gating contract (every kernel, no exceptions)
 
@@ -1066,61 +1176,92 @@ reduction/GS steps additionally gate the **residual within a factor of the CPU b
 *deterministic* and *converges* are separate claims); **(8) one kernel per commit** (`git revert` rolls
 back exactly one solver's residency — no dual-path `#ifdef`).
 
+### 7.7 POST-PORT MILESTONE — retire `mean_wp` for the local edge-flux (Q5, committed + tracked)
+
+**This is an explicit named milestone, not a footnote** (Erik specifically asked it not be forgotten).
+Through S5 the GPU runs the **stopgap**: the deterministic int64 global-mean reduction of `wave_p`,
+ported bit-for-bit from the shipped CPU stopgap (`ac2cae8`). That global reduction is a **CPU-shaped
+sync-barrier pattern** — it forces a grid-wide barrier mid-tick (wave→reduce→broadcast→subtract→diffuse).
+**Once CUDA is up (after S5, ideally after the S8 residency/graphs pass), retire it for a local
+edge-flux transfer** — order-free, barrier-free, no DC-bias, conservative by construction, GPU-native (no
+reduction at all). This is the single biggest GPU-determinism + performance win remaining.
+
+- **Why after the port, not during (Q5):** the port's gate is *bit-identity* to the CPU oracle. Changing
+  the physics (reduction → edge-flux) **during** the port would break that gate — you could no longer tell
+  a porting bug from the intended physics change. So port the stopgap faithfully first (S5), prove the GPU
+  reproduces the CPU stopgap, **then** make the physics change as its own clearly-bounded step with its own
+  before/after golden.
+- **The deliverable:** the CPU edge-flux transfer (if not already shipped) + its GPU kernel, replacing the
+  `mean_wp` reduction in both backends, with a fresh golden (the field *changes* here — this is a
+  deliberate physics edit, regenerate and Erik-feel-check), and the mid-tick grid barrier removed from the
+  graph. Track it in `XARCH_PENDING.md`'s sibling list until both archs are green.
+
 ---
 
-## 8. OPEN QUESTIONS (decisions only Erik can make — each WITH a recommendation)
+## 8. DECISIONS (locked 2026-06-27 — formerly open questions)
 
-**Q1 — Toolchain path: driver-update + CUDA 12.9, or stay-on-560.94 + CUDA 12.6 U2 +
-`-allow-unsupported-compiler`?** The installed MSVC 14.44 is newer than either 12.4 or 12.6 U2 was
-validated against (`host_config.h` `#error`). *Recommendation:* **Path 1 — update the driver (≥576.02),
-install CUDA 12.9.** It natively knows MSVC 14.44 (no override flag, no risk of "incorrect run-time
-execution" on a determinism-critical project), gives current Nsight, and decouples from the 560.94
-ceiling before the Ada migration. Path 2 (12.6 U2 + override, or `-T version=14.40`) is the fallback if
-the driver can't be updated now. **Needs your call before anyone installs.**
+All seven questions below were walked with Erik and are RESOLVED; the structural consequences are folded
+into §0–§7 above. Retained here as the decision record.
 
-**Q2 — Delete the poisoned `cpp/build/` (VS18-2026 / MSVC 14.50 cache) and standardize the CUDA build
-dir on the VS2022 generator?** *Recommendation:* **yes** — CUDA does not support the VS18 2026 preview;
-keeping the cache invites an accidental build against it. Confirm you're OK deleting the dir (a fresh
-`cmake -B cpp/build_cuda -G "Visual Studio 17 2022"` reconfigure costs seconds).
+**Q1 — Toolchain path. RESOLVED: the already-installed CUDA 12.4 + `-allow-unsupported-compiler`; stay
+on the 12.4 toolkit (driver raised to 610.62, no toolkit download).** The earlier framing (driver-update
++ 12.9 vs 12.6 U2) is retired. VS2022 17.14 is newer than CUDA 12.4 officially lists, which trips nvcc's
+`host_config.h` `#error`; `-allow-unsupported-compiler` suppresses it, and for **pure-integer kernels**
+the "may cause incorrect run-time execution" caveat is harmless (the bit-identity gate would catch any
+codegen difference anyway). Erik updated his **driver to 610.62** (which *lifts* the CUDA ceiling) but we
+deliberately **stay on the installed 12.4 toolkit** — no 12.6/12.8/12.9 download. **Same setup on the
+Lenovo (Ada) later.** (Folded into §4.)
 
-**Q3 — Python device-array vehicle: CuPy, or a hand-rolled pybind device-buffer wrapper?**
-*Recommendation:* **CuPy** — a `cupy.ndarray` already gives `.data.ptr` (the pybind device pointer),
-`__cuda_array_interface__` (zero-copy agreement with the C++ side), and `cupy.asnumpy()` (the
-`.to_host()` download), so it implements the §2.4 device-backed-attribute contract for free. A
-hand-rolled wrapper is more control but re-implements all three. Adds a dependency — acceptable for an
-NVIDIA-only project. **Decide before S7 (residency), not before S1.**
+**Q2 — Clean `cpp/build`. RESOLVED: yes — TARGETED reset onto VS2022 (delete `CMakeCache.txt` +
+reconfigure), NOT a recursive `rm -rf`.** The VS18-2026/MSVC-14.50 cmake cache is poisoned for CUDA; reset
+it to the VS2022 generator by deleting the single `CMakeCache.txt` (+ the `CMakeFiles/` config) and
+re-running `cmake … -G "Visual Studio 17 2022"` — a surgical reset that **respects the deny-list** (no
+recursive force-delete). Also **prune the stale `C:/tmp` worktrees**. (Folded into §4.0.)
 
-**Q4 — Combat read: ship the once-per-tick subset download (option ii) now, or push combat math into
-device kernels (option i) up front?** *Recommendation:* **ship (ii) the subset download for the first
-working port, migrate to (i) field-by-field** (fire write-back → ignition → heat-damage), each shrinking
-the download. Combat sits behind the **Q2 fence** — its HP/damage math is deliberately Python-float and
-already watched by the S3c unit-state digest, so the *device-kernel migration* (option i) is the future
-**Q2-lift** (which then also integerizes `dmg`/`current_hp` + tightens the digest), **not** an open
-determinism blocker on the field port. The tick-subset *download* (ii) is the only combat-related
-residency obligation this arc carries; it is separable from the field port and shouldn't gate S1–S6. **A
-sequencing call, not a now-or-never.**
+**Q3 — Python device-array vehicle. RESOLVED: CuPy — chosen, INSTALLED, and WORKING.** `cupy-cuda12x`
+14.1.1 on `numpy` 2.4.6; the **full Breach suite is 369 green** with it installed (numpy-2 is fine for
+Breach). A `cupy.ndarray` gives `.data.ptr`, `__cuda_array_interface__`, and `cupy.asnumpy()` — the §2.4
+device-backed-attribute contract for free. The env **coexists with the future PyTorch (ML)** stack, and
+**CuPy↔PyTorch share GPU memory via `__cuda_array_interface__`** (zero-copy hand-off). (Folded into §2.4.)
 
-**Q5 — `mean_wp`: ship the rounded-int64-mean stopgap on GPU first, or land the edge-flux retirement
-directly in S4?** *Recommendation:* **land the edge-flux retirement directly in S4** if its CPU version
-is already shipped and golden (it removes the only hot-path sum *and* the mid-tick grid barrier — the
-biggest determinism+perf win); fall back to the stopgap-on-GPU only if the edge-flux CPU work isn't done
-when S4 arrives. **Depends on the CPU edge-flux status — confirm.** *(Distinct from the §1.4 cliff item:
-Q5 is the `mean_wp` hot-path **sum**; the §1.4/CUDA-S0 item is the atmosphere/wave `n` + `n_smoke`
-**substep-count cliff arithmetic** — both un-integerized today, but separate fixes. The S0 cliff
-integerization is a CPU-only bedrock-completion prereq; Q5 is a sequencing call inside S4.)*
+**Q4 — Combat/gameplay field read. RESOLVED: copy ALL fields GPU→CPU each tick as the baseline, then
+optimize per-system.** The integer fields ARE deterministic gameplay state, so gameplay reads broadly —
+the **whole synced field set comes down once per tick** (~50 µs at Breach's 50×120 grid — effectively
+free; correctness/access first). **NOT a subset-download:** transfer **latency** dominates, not bytes, so
+batching the whole small field beats a fragmented per-element/per-subset gather; the "gather the specific
+elements combat reads" idea is the wrong default (gather is only for huge sparse grids, which Breach is
+not). **The optimization is per-system:** migrate a mature system's logic into a GPU kernel so it reads
+on-device, shrinking the per-tick copy over time (the future Q2-lift for combat). (Folded into §2.0,
+§2.2, §0.3.)
 
-**Q6 — Persistent GPU residency + CUDA graphs (S7): land per-kernel as you go, or as one dedicated step
-after all solvers are ported?** *Recommendation:* **one dedicated step (S7), after S1–S6.** Per-kernel
-residency means repeatedly re-plumbing the host↔device boundary as the not-yet-ported solvers still need
-host arrays; graphs need a stable launch sequence. Keep S1–S6 on the simple "upload → launch → download,
-gated against CPU" model (slower but trivially correct), then make it resident + graph-captured once
-everything is on the GPU. **An architecture-sequencing call.**
+**Q5 — `mean_wp`. RESOLVED: port the deterministic STOPGAP (int64 global reduction) to GPU FIRST; the
+edge-flux retirement is a COMMITTED, TRACKED post-port milestone with its own name (§7.7).** Porting the
+stopgap bit-for-bit keeps the port a faithful CPU→GPU translation — a physics change *during* the port
+would break the bit-identity gate. The edge-flux retirement (global reduction → local edge-flux; a
+CPU-shaped sync-barrier pattern replaced by a GPU-native one) lands **after** CUDA is up, as the explicit
+§7.7 milestone (not a footnote — Erik asked it not be forgotten). *(Distinct from the Bedrock cliff item:
+Q5 is the `mean_wp` hot-path **sum**; the §1.4 Bedrock item is the atmosphere/wave `n` + `n_smoke`
+**substep-count cliff arithmetic**. The Bedrock cliff integerization is a CPU-only pre-CUDA patch; Q5 is
+a sequencing call — stopgap in S5, retirement in §7.7.)* (Folded into §1.3, §7.4 S5, §7.7.)
 
-**Q7 — Raycaster + the combat-kernel migration (S8): in scope for this arc, or a separate later arc?**
-*Recommendation:* **separate later arc.** The raycaster is render-side (only the integer `heat` deposit
-is sim-affecting, already deterministic), runs once/frame not per-substep (lowest throughput priority),
-and the combat-kernel migration is the determinism upgrade from Q4. Neither blocks the sim-field port.
-List them as S8 but treat the arc as "done" at S7. **A scope-boundary call.**
+**Q6 — Persistent GPU residency + CUDA graphs. RESOLVED: one dedicated optimization pass AFTER all
+solvers are ported + bit-identical (S8), not per-kernel.** Pure speed, correctness-first. Per-kernel
+residency would re-plumb the host↔device boundary repeatedly while not-yet-ported solvers still need host
+arrays, and graphs need a stable launch sequence. Keep the kernels on the simple "upload → launch →
+download, gated against CPU" model until everything is on the GPU, then make it resident + graph-captured
+once. (Folded into §6 item 6, §7.4 S8.)
+
+**Q7 — Scope. RESOLVED (IMPORTANT CORRECTION): the RAYCASTER IS IN SCOPE — an early CUDA kernel, not a
+later arc.** It is fixed-point and its heat rays **inflict damage** (the integer `heat` deposit →
+`combat.apply_environmental_damage` → unit HP, verified in `combat.py:155-247` / `raycaster.cpp:218-220`),
+so it is **deterministic gameplay physics, not render-cosmetic** — and the **most parallelizable kernel**
+(independent rays). The earlier "render-side, later arc" framing (old §0.3/§7) is **changed**: bring the
+raycaster in as an **early** kernel (S2, after temperature de-risks the toolchain, because the heat
+DEPOSIT is a **scatter** → integer `atomicAdd`, deterministic, plus a float-then-quantize wrinkle — §3.8).
+Gate the gameplay-affecting integer output (`heat`) on bit-identity; the purely-visual float outputs
+(`light_rgb`/`light_dir`/`smoke_glow`) stay float-OK (render-local, CUDA-GL interop, gate-exempt). **Only
+the combat-HP kernels remain separate** (the Q2-fenced HP math → the future Q2-lift). The arc ends when
+the physics solvers **+ the raycaster** are on GPU + graph-optimized. (Folded into §0.2, §0.3, §3.8, §7.)
 
 ---
 
@@ -1132,8 +1273,11 @@ List them as S8 but treat the arc as "done" at S7. **A scope-boundary call.**
 2. **`cudaMalloc` is not zeroed → read-before-write of a padded/halo lane reads device garbage** the CPU
    harness is blind to. *Gate:* every scratch/halo buffer fully written or `cudaMemset`-zeroed each tick;
    debug poison-sentinel + assert-no-survivor (a **new** failure class).
-3. **The toolchain wall** (MSVC 14.44 vs the toolkit's `host_config.h`) — a hard gate on the *whole*
-   arc; nothing compiles until Q1 is resolved. *Mitigation:* resolve Q1 in S0, before any kernel.
+3. **The toolchain wall** (VS2022 17.14 / MSVC newer than CUDA 12.4's `host_config.h` lists) — a hard
+   gate on the *whole* arc. **RESOLVED (Q1):** CUDA 12.4 + `-allow-unsupported-compiler` (harmless for
+   pure-integer kernels; the bit-identity gate catches any codegen difference); driver raised to 610.62,
+   toolkit stays 12.4. Residual watch: confirm the flag'd build is bit-identical to the CPU oracle at S0
+   (it will be — integer PTX is well-defined), before any kernel.
 4. **The `dt` and tilt-slope host-`double` bakes** — CPU-only-deterministic today; cross-machine lockstep
    needs them proven bit-identical across the peers' host compilers (likely — scalar `+−×÷`, no
    FMA/transcendental) or integerized. *Gate:* add to the cross-machine digest; integerize (the
@@ -1142,7 +1286,7 @@ List them as S8 but treat the arc as "done" at S7. **A scope-boundary call.**
    INT32 vs 32 FP32 cores/SM, so all-integer halves peak arithmetic throughput. It does **not** threaten
    bit-identity; it makes the int64-minimization (use the narrowest provably-safe intermediate), the
    no-divide reciprocal (shipped), the int16 [0,1] fields (locked), and shared-mem tiling load-bearing
-   for *speed*. The roofline checkpoint is S6.
+   for *speed*. The roofline checkpoint is the diffuse RB-GS step (S7).
 6. **CUDA-GL interop is a new correctness hazard** — the mapped-window mutual-exclusion rule ("accessing
    a mapped resource through OpenGL produces undefined results"). *Gate:* a tight RAII map/unmap wrapper
    so a stray raylib draw on a mapped texture can't fire.
@@ -1150,9 +1294,15 @@ List them as S8 but treat the arc as "done" at S7. **A scope-boundary call.**
    the two-launch form; digest-verify any grid-sync variant before adopting.
 8. **Geometry-dependent indexing bug** (RULE E). *Gate:* the block-count sweep in the harness.
 9. **CUDA-graph invalidation from a reassigned field pointer** — the in-place buffer discipline becomes a
-   graph-validity rule. *Gate:* `compute-sanitizer` + the P1 digest after graph capture (S7).
+   graph-validity rule. *Gate:* `compute-sanitizer` + the P1 digest after graph capture (S8).
 10. **Launch overhead bottleneck at ship grid sizes** (~100–300 launches/tick) — a *throughput* risk
-    addressed by CUDA graphs (S7), not a correctness risk.
+    addressed by CUDA graphs (S8), not a correctness risk.
+11. **The raycaster heat float-then-quantize path** (now in scope, S2) — the heat deposit is computed in
+    float (`heat_emit*heat_survival*dist_atten`) before the integer `heat_quantize`/scatter, unlike the
+    pure-integer field solvers. *Gate:* hold the heat float path to `--fmad=false`/no-fast-math (RULE B)
+    and gate the resulting integer `heat`, OR integerize `heat_dep` outright (cleaner — removes the last
+    float on the heat gameplay path). The scatter itself is safe (integer `atomicAdd`, order-free); the
+    risk is purely the float producing the quantized integer. Decide at S2.
 
 ---
 
