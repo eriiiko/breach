@@ -142,13 +142,26 @@ _FP_FAST_RE = re.compile(r"fp:fast")
 # Per-TU baseline: number of LINES containing each token (see the header). The
 # ratchet fails if any count rises above its baseline; LOWER as each solver
 # migrates. (Counts below recorded 2026-06-26 on s2-atmosphere-fixedpoint.)
+# S3a (fire FIELD -> Q16.16 + the Python ignition twin, 2026-06-27) re-baselined
+# physics_engine.cpp ONLY. fire is now int32 Q16.16, but the C++ FireSimulation
+# logistic stays FLOAT for this commit (S3a flips the representation + the Python
+# ignition O2 mean, not the C++ math). So step_tail gains a TEMPORARY internal
+# FIRE FIELD BRIDGE (the S2 internal-bridge discipline): dequantize the int32 fire
+# into the reused fire_f_ scratch, run the still-float fire.step on it, re-quantize
+# back. physics_engine.cpp `float` 65 -> 68 (the three bridge comment lines) and
+# `double` 31 -> 32 (the `quantize((double)fire_f_[i])` re-quantize fold — a
+# load/boundary double, not per-cell transport). fire_simulation.cpp is UNCHANGED
+# (still 31/2 — its logistic is float until S3b). Both bridge counts collapse in
+# S3b (the C++ logistic goes integer) / S3c (the bridge buffers + the atm/wind
+# bridges are deleted, and fire_simulation.cpp + temperature_solver.cpp join the
+# hard 0/0/0 gate per the plan §S3c CI ratchet).
 BASELINE = {
     "atmosphere_solver.cpp":  {"float": 32, "double": 30, "fp:fast": 1},
     "smoke_dynamics.cpp":     {"float": 24, "double": 13, "fp:fast": 0},
     "fire_simulation.cpp":    {"float": 31, "double": 2,  "fp:fast": 0},
     "water_solver.cpp":       {"float": 32, "double": 23, "fp:fast": 1},
     "temperature_solver.cpp": {"float": 2,  "double": 1,  "fp:fast": 0},
-    "physics_engine.cpp":     {"float": 65, "double": 31, "fp:fast": 1},
+    "physics_engine.cpp":     {"float": 68, "double": 32, "fp:fast": 1},
 }
 
 

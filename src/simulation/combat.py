@@ -318,38 +318,59 @@ def apply_temperature_ignition(gmap, o2_threshold, ignition_seed):
     if not bool(hot.any()):
         return  # nothing crossed its threshold this tick (the dormant case)
 
-    # --- O2 proxy: mean `atmosphere` over the air-side (non-solid) 4-neighbours,
-    # exactly the predicate the C++ fire O2 check uses. Vectorised: accumulate
-    # neighbour atmosphere and an air-side count per tile, then average. A
-    # flammable wall tile's own cell is solid; its oxygen comes from adjacent air.
+    # --- O2 proxy: mean `atmosphere` over the OPEN (non-wall, non-vacuum)
+    # 4-neighbours — the EXACT predicate the C++ fire O2 check uses
+    # (fire_simulation.cpp:72-82, mask `!is_wall && !is_vacuum`, with
+    # `is_wall == gmap.solid`). S3a makes this an INTEGER reduction on the int32
+    # Q16.16 atmosphere, bit-matching the integer mean the C++ fire adopts in S3b
+    # (fixed_point.h mean_sum/mean_round): an int64 neighbour-sum + a
+    # round-half-away-from-zero mean, then a Q16.16 threshold compare. The float
+    # dequantize that used to decide who ignites (the last Python float bridge on
+    # the fire-write path) is gone — Python int math is cross-machine-exact.
+    #
+    # WHY the mask now excludes vacuum: the C++ P gate excludes vacuum neighbours
+    # from BOTH sum and count; the pre-S3a Python mask (`~solid` only) INCLUDED
+    # them (atmosphere==0 on a vacuum tile, but the count still incremented),
+    # which lowered the mean below the C++ value. Excluding vacuum (matching the
+    # C++ mask) is what makes the two O2 predicates bit-identical — the
+    # design-note invariant (above, combat.py docstring): a tile must not ignite
+    # into a state the fire step would immediately suffocate.
     h, w = temperature.shape
-    air_side = ~gmap.solid                      # True on tiles that count toward O2
-    # S2c: atmosphere is int32 Q16.16 — dequantize to REAL pressure so the O2
-    # proxy (mean atmosphere >= o2_threshold) matches the C++ fire O2 check.
-    from simulation import atmosphere_fixed as _atm_fx
-    atm = _atm_fx.dequantize_f32(gmap.atmosphere)
-    sum_atm = np.zeros((h, w), dtype=np.float32)
-    count = np.zeros((h, w), dtype=np.float32)
-    # N, S, E, W (fixed order; sum is order-independent regardless).
+    open_nbr = (~gmap.solid) & (~gmap.is_vacuum)   # True == counts toward O2 (== C++)
+    atm_q = gmap.atmosphere.astype(np.int64)       # int32 Q16.16 -> int64 (exact, order-free)
+    sum_atm = np.zeros((h, w), dtype=np.int64)     # Q16.16 sum (int64, no overflow)
+    count = np.zeros((h, w), dtype=np.int64)       # neighbour count 0..4
+    # N, S, E, W (fixed order; integer sum is order-independent regardless).
     for dy, dx in ((-1, 0), (1, 0), (0, 1), (0, -1)):
         ys0, ys1 = max(0, -dy), h - max(0, dy)      # this-tile row span
         xs0, xs1 = max(0, -dx), w - max(0, dx)
-        nbr_atm = atm[ys0 + dy:ys1 + dy, xs0 + dx:xs1 + dx]
-        nbr_air = air_side[ys0 + dy:ys1 + dy, xs0 + dx:xs1 + dx]
-        sum_atm[ys0:ys1, xs0:xs1] += np.where(nbr_air, nbr_atm, 0.0)
-        count[ys0:ys1, xs0:xs1] += nbr_air
-    # Match the C++ guard `if (count < 1) count = 1` so a fully walled-in tile
-    # (no air neighbour) averages to 0 -> below threshold -> never ignites.
-    safe_count = np.where(count < 1.0, 1.0, count)
-    has_o2 = (sum_atm / safe_count) >= o2_threshold
+        nbr_atm = atm_q[ys0 + dy:ys1 + dy, xs0 + dx:xs1 + dx]
+        nbr_open = open_nbr[ys0 + dy:ys1 + dy, xs0 + dx:xs1 + dx]
+        sum_atm[ys0:ys1, xs0:xs1] += np.where(nbr_open, nbr_atm, np.int64(0))
+        count[ys0:ys1, xs0:xs1] += nbr_open.astype(np.int64)
+    # Round-half-away-from-zero mean == fixed_point.h::mean_round (sign-symmetric,
+    # no DC bias). `sum_atm` is non-negative (atmosphere >= 0), so the +half branch
+    # is the live one; the -half branch mirrors mean_round for completeness. A
+    # fully walled-in tile (count == 0) averages to 0 -> below threshold -> never
+    # ignites (the C++ `count > 0 ? sum/count : 0` guard, here via safe_count).
+    safe_count = np.where(count < 1, np.int64(1), count)
+    half = safe_count // 2
+    mean_atm = np.where(sum_atm >= 0,
+                        (sum_atm + half) // safe_count,
+                        (sum_atm - half) // safe_count)   # Q16.16 mean (int64)
+    # Threshold quantized ONCE into Q16.16 — a plain integer >= compare, no float.
+    from simulation import fire_fixed as _fire_fx
+    o2_threshold_q = _fire_fx.quantize_scalar(float(o2_threshold))
+    has_o2 = (count > 0) & (mean_atm >= o2_threshold_q)
 
     ignite = hot & has_o2
     if not bool(ignite.any()):
         return
-    # max(fire, ignition_seed) on the igniting tiles only — never lowers a bigger
-    # existing fire.
-    np.maximum(gmap.fire, np.where(ignite, np.float32(ignition_seed), gmap.fire),
-               out=gmap.fire)
+    # max(fire, ignition_seed) on the igniting tiles only — an INTEGER max (exact,
+    # order-free) that never lowers a bigger existing fire. ignition_seed quantizes
+    # once into Q16.16.
+    seed_q = np.int32(_fire_fx.quantize_scalar(float(ignition_seed)))
+    np.maximum(gmap.fire, np.where(ignite, seed_q, gmap.fire), out=gmap.fire)
 
 
 # ---------------------------------------------------------------------------

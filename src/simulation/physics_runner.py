@@ -441,10 +441,14 @@ class PhysicsRunner:
 
         Called at the START of :meth:`step`, BEFORE the TemperatureSolver.
         """
+        # S3a: gmap.fire is int32 Q16.16. The `> 0` burning mask is exact on the
+        # integer field (0 counts == unlit); the per-tile INTENSITY that feeds the
+        # heat-ray range/intensity params is dequantized to real [0,1] below (a
+        # LOCAL/cosmetic + heat-payload float boundary, float-OK).
         fire = gmap.fire
         # Fast out: nothing burning -> no deposit (heat stays whatever it was;
         # the sim clears it at end of tick). Mirrors the C++ early-exit.
-        burning = fire > 0.0
+        burning = fire > 0
         if not bool(burning.any()):
             return
 
@@ -481,8 +485,10 @@ class PhysicsRunner:
         # Build the source list in ROW-MAJOR order (deterministic). np.argwhere
         # yields (row, col) pairs in C order, i.e. row-major.
         ys, xs = np.nonzero(burning)
+        from simulation import fire_fixed
         for yy, xx in zip(ys.tolist(), xs.tolist()):
-            intensity_fire = float(fire[yy, xx])
+            # S3a: dequantize the Q16.16 intensity to real [0,1] for the ray params.
+            intensity_fire = float(fire[yy, xx]) / fire_fixed.FP_ONE_F
             src = bp.LightSource()
             # Cast from the tile CENTRE so the 8 rays leave symmetrically.
             src.x = float(xx) + 0.5

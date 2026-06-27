@@ -55,6 +55,17 @@ public:
     mutable std::vector<float> wind_x_f_;
     mutable std::vector<float> wind_y_f_;
 
+    // S3a FIRE FIELD BRIDGE scratch: `fire` is now Q16.16 int32 (the third/final
+    // field migration), but the C++ FireSimulation::step logistic is STILL FLOAT
+    // for one commit (S3a flips only the representation + the Python ignition
+    // twin; the C++ math goes integer in S3b). step_tail DEQUANTIZES fire into
+    // this reused float buffer, runs the float fire on it, then RE-QUANTIZES the
+    // mutated fire back into the int32 field (round-to-nearest). This is the
+    // temporary INTERNAL float bridge (the S2 internal-bridge discipline) that
+    // S3b deletes when the logistic itself becomes integer. Reused (no per-tick
+    // alloc; GPU-prep).
+    mutable std::vector<float> fire_f_;
+
     // --- Patch 1 S4a: the per-tick orchestration TAIL --------------------
     // Moves the three trailing PURE-SOLVER-CALL steps of PhysicsRunner.step
     // (everything AFTER the IMEX substep loop) into C++: the W6a ripple, the
@@ -75,7 +86,10 @@ public:
     //   water_depth                    : float (h, w) — read by ripple + guard
     //   wave_p                         : float (h, w) — ripple splash source (read)
     //   solid / is_wall                : bool  (h, w) — the solid mask
-    //   fire, atmosphere, smoke, wall_hp : float (h, w) — fire step (mutated)
+    //   fire                           : int32 (h, w) Q16.16 — S3a: dequantized to
+    //                                    float scratch for the still-float fire step,
+    //                                    re-quantized back (the temporary fire bridge)
+    //   atmosphere, smoke, wall_hp     : fire step inputs (mutated)
     //   temperature                    : int32 (h, w) Q16.16 — fire reads, temp writes
     //   wind_x, wind_y                 : float (h, w) — shared wind (read)
     //   is_vacuum, flammable           : bool  (h, w)
@@ -92,7 +106,7 @@ public:
         // (the only float bridge S2 leaves open, downstream to S3) is INSIDE
         // step_tail: dequantize atmosphere/wind to float scratch, run the float
         // fire+temperature, re-quantize the fire's atmosphere plume back to int32.
-        float* fire_field, int32_t* atmosphere, int32_t* smoke_field, float* wall_hp,  // S2b: smoke Q16.16; S2c: atm Q16.16
+        int32_t* fire_field, int32_t* atmosphere, int32_t* smoke_field, float* wall_hp,  // S3a: fire Q16.16; S2b: smoke Q16.16; S2c: atm Q16.16
         const int32_t* temperature, const int32_t* wind_x, const int32_t* wind_y,      // S2c: wind Q16.16
         const bool* is_vacuum, const bool* flammable,
         // temperature group

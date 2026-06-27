@@ -135,7 +135,14 @@ class GameMap:
         # reassign ``smoke`` (do ``smoke[:] = ...``) — a reassignment would break
         # the aliasing and orphan any C++ view of the slice.
         self.smoke        = self.gas[BLACK_SMOKE]
-        self.fire         = np.zeros((h, w), dtype=np.float32)
+        # Fire intensity I — int32 Q16.16 (S3a, the THIRD/final field migration).
+        # [0,1]-clamped tracer (0 == unlit, FP_ONE == fully ablaze). Boundary
+        # helpers in simulation.fire_fixed quantize/dequantize (debug seeds, the
+        # renderer/recorder, the C++ float bridge in physics_engine.step_tail —
+        # which keeps dequantizing fire for the still-float C++ logistic until
+        # S3b — and the heat-ray range/intensity params). The Python ignition
+        # twin (combat.apply_temperature_ignition) writes it as an integer max.
+        self.fire         = np.zeros((h, w), dtype=np.int32)
         self.obstacles    = np.zeros((h, w), dtype=bool)
         # Smoke sink-direction field (ch.05 smoke v2): a per-cell unit-ish
         # vector pointing, through air only, toward the NEAREST exposed-vacuum

@@ -42,6 +42,7 @@ from level_loader import LevelData
 from simulation import Simulation
 from simulation import wave_fixed   # S2a: wave_source Q16.16 quantize helper
 from simulation import gas_fixed     # S2b: smoke/gas Q16.16 quantize helper
+from simulation import fire_fixed    # S3a: fire Q16.16 quantize helper
 from simulation.unit import Unit
 
 SEED = 20260615
@@ -104,8 +105,12 @@ def default_scenario_sim() -> Simulation:
     # counts ~ no smoke). 0.6 density -> 0.6*65536 = 39322 counts. This exercises
     # the integer-SL advection + diffusion + venting on a real cloud.
     g.smoke[interior] = gas_fixed.quantize_scalar(0.6)  # smoke transport (gas[BLACK_SMOKE] view)
-    g.fire[8, 8] = 0.8               # fire feedback -> heat deposit -> temperature
-    g.fire[8, 9] = 0.5
+    # S3a: fire is int32 Q16.16 — quantize the seed (a raw `= 0.8` would store 0
+    # counts ~ no fire, leaving the fire feedback + its smoke emission DORMANT).
+    # 0.8 intensity -> 0.8*65536 = 52429 counts. This exercises the fire feedback
+    # -> heat deposit -> temperature path AND keeps a smoke plume alive.
+    g.fire[8, 8] = fire_fixed.quantize_scalar(0.8)  # fire feedback -> heat -> temperature
+    g.fire[8, 9] = fire_fixed.quantize_scalar(0.5)
     g.water_depth[10, 10] = 0.3      # water pipe model + W3 displacement + ripple
     g.water_depth[10, 11] = 0.3
     # S2a: wave_source is int32 Q16.16 — quantize the seed so the explicit wave
@@ -407,3 +412,19 @@ if __name__ == "__main__":
           f"(atmosphere nonzero cells final: {nza}; wind nonzero cells: {nzw}) "
           f"— the S2 group is now cross-GPU deterministic (only the FIRE bridge "
           f"remains, S3)")
+    # S3a — the integer FIRE field is now int32 Q16.16 (the synced fire intensity),
+    # the THIRD and FINAL field migration of the fixed-point arc. Assert dtype +
+    # bit-identity run-to-run (np.array_equal is exact on int32). This is the S3a
+    # P1 gate. NOTE: this commit flips ONLY the representation + the Python ignition
+    # twin — the C++ logistic still runs in float behind a temporary internal
+    # bridge, so the FEEL is unchanged (the math goes integer in S3b).
+    assert a[-1]["fire"].dtype == np.int32, \
+        f"fire should be int32 Q16.16 (S3a), got {a[-1]['fire'].dtype}"
+    for t in range(len(a)):
+        assert np.array_equal(a[t]["fire"], b[t]["fire"]), \
+            f"fire not bit-identical at tick {t} (S3a P1)"
+    nzf = int((a[-1]["fire"] != 0).sum())
+    print(f"OK: S3a fire int32 Q16.16, bit-identical run-to-run "
+          f"(fire nonzero cells final: {nzf}) — the ENTIRE sim field path "
+          f"(water + S2 group + fire) is now integer; the only float left in the "
+          f"synced path is the Q2-fenced Python combat HP math")

@@ -47,7 +47,13 @@ from simulation.materials import (  # noqa: E402
     MaterialTable, MAT_AIR, MAT_WOOD, MAT_HULL,
 )
 from simulation.gases import GasTable, N_GASES  # noqa: E402
+from simulation import fire_fixed  # noqa: E402  S3a: gmap.fire is int32 Q16.16
 from simulation.unit import Unit  # noqa: E402
+
+# S3a: gmap.fire is int32 Q16.16. Helpers for the real-Simulation tests that
+# seed the field at real intensity.
+FIRE_Q = fire_fixed.quantize_scalar
+FIRE_001_Q = fire_fixed.quantize_scalar(0.01)
 
 HEAT_SCALE = 65536          # Q16.16 (== TEMP_SCALE), shared heat/temperature domain
 _TBL = MaterialTable.from_config()
@@ -68,7 +74,8 @@ class _FireScene:
 
     def __init__(self, h, w):
         self.material = np.full((h, w), MAT_AIR, dtype=np.int8)
-        self.fire = np.zeros((h, w), dtype=np.float32)
+        # S3a: gmap.fire is int32 Q16.16 (cast_fire_heat dequantizes on read).
+        self.fire = np.zeros((h, w), dtype=np.int32)
         self.heat = np.zeros((h, w), dtype=np.int32)
         self._h, self._w = h, w
         # Multi-gas march inputs (engine/05 §6.2): an empty gas field + the canon
@@ -84,7 +91,7 @@ class _FireScene:
 
     def light(self, y, x, intensity):
         self.material[y, x] = MAT_WOOD       # fire only ever lives on flammable
-        self.fire[y, x] = float(intensity)
+        self.fire[y, x] = fire_fixed.quantize_scalar(float(intensity))  # S3a: Q16.16
 
     def _rebuild(self):
         m = self.material
@@ -178,7 +185,7 @@ def test_heat_lands_on_solid_not_lost_in_air_conversion():
     g.material[50, 15] = MAT_WOOD          # adjacent solid
     g._update_caches()
     sim.set_paused(False)
-    g.fire[50, 14] = 0.8
+    g.fire[50, 14] = FIRE_Q(0.8)
     sim.step()
     # Solid neighbour heated; an air tile next to the fire stays at 0 temperature.
     assert int(g.temperature[50, 15]) > 0, "adjacent solid did not heat"
@@ -202,12 +209,12 @@ def test_full_chain_heat_ignites_adjacent_wood():
     g._update_caches()
     sim.set_paused(False)
 
-    assert g.fire[50, 15] == 0.0
+    assert g.fire[50, 15] == 0
     ignited_tick = None
     for t in range(1, 120):
-        g.fire[50, 14] = 0.8               # hold the burner lit
+        g.fire[50, 14] = FIRE_Q(0.8)       # hold the burner lit
         sim.step()
-        if g.fire[50, 15] > 0.0:
+        if g.fire[50, 15] > 0:
             ignited_tick = t
             break
 
@@ -245,7 +252,7 @@ def test_unit_next_to_fire_loses_hp_and_zombie_takes_4x():
     sim.step()                             # first tick stamps the units
     marine.current_hp = zombie.current_hp = 1000.0
     hp0 = 1000.0
-    g.fire[fy, fx] = 0.8
+    g.fire[fy, fx] = FIRE_Q(0.8)
     sim.step()
 
     dmg_marine = hp0 - marine.current_hp
@@ -273,7 +280,7 @@ def test_unit_away_from_fire_unharmed():
     sim.set_paused(False)
     sim.step()
     far.current_hp = 1000.0
-    g.fire[50, 25] = 0.8
+    g.fire[50, 25] = FIRE_Q(0.8)
     sim.step()
     assert far.current_hp == 1000.0, "a distant unit took heat damage"
 
@@ -291,7 +298,7 @@ def test_determinism_bit_identical_temperature():
         g._update_caches()
         sim.set_paused(False)
         for _ in range(8):
-            g.fire[50, 14] = 0.8           # hold a steady source
+            g.fire[50, 14] = FIRE_Q(0.8)   # hold a steady source
             sim.step()
         return g.temperature.copy()
 
@@ -338,12 +345,12 @@ def test_lone_fire_does_not_firestorm_in_a_couple_ticks():
     n_wood = int((g.material == MAT_WOOD).sum())
     assert n_wood >= 20
     sim.set_paused(False)
-    g.fire[y0, x0] = 0.8
+    g.fire[y0, x0] = FIRE_Q(0.8)
     counts = []
     for _ in range(3):
-        g.fire[y0, x0] = max(float(g.fire[y0, x0]), 0.8)
+        g.fire[y0, x0] = max(int(g.fire[y0, x0]), FIRE_Q(0.8))
         sim.step()
-        counts.append(int((g.fire > 0.01).sum()))
+        counts.append(int((g.fire > FIRE_001_Q).sum()))
     # After a couple of ticks only a tiny fraction of the wall is alight — NOT a
     # map-wide firestorm. (Far below half the structure.)
     assert max(counts) < n_wood // 2, (
@@ -363,7 +370,7 @@ def test_fire_heat_is_wired_into_simulation_step():
     g._update_caches()
     sim.set_paused(False)
     assert int(g.temperature.max()) == 0
-    g.fire[50, 14] = 0.8
+    g.fire[50, 14] = FIRE_Q(0.8)
     sim.step()
     # A single plain step() raised temperature on the burning tile -> the fire
     # heat pass ran inside the tick, before the TemperatureSolver. (heat itself

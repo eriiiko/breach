@@ -32,8 +32,9 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         const int32_t* water_depth, const int32_t* wave_p,   // S1: water_depth Q16.16
                                                              // S2a: wave_p Q16.16
         const bool* solid,
-        // fire group — S2c: atmosphere + wind are Q16.16 int32 (fire bridge below)
-        float* fire_field, int32_t* atmosphere, int32_t* smoke_field, float* wall_hp,  // S2b: smoke Q16.16; S2c: atm Q16.16
+        // fire group — S3a: fire is Q16.16 int32 too; S2c: atmosphere + wind are
+        // Q16.16 int32 (the fire field + atm/wind bridges are below)
+        int32_t* fire_field, int32_t* atmosphere, int32_t* smoke_field, float* wall_hp,  // S3a: fire Q16.16; S2b: smoke Q16.16; S2c: atm Q16.16
         const int32_t* temperature, const int32_t* wind_x, const int32_t* wind_y,      // S2c: wind Q16.16
         const bool* is_vacuum, const bool* flammable,
         // temperature group
@@ -98,13 +99,15 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     if (atm_f_.size()    != (size_t)n) atm_f_.assign(n, 0.0f);
     if (wind_x_f_.size() != (size_t)n) wind_x_f_.assign(n, 0.0f);
     if (wind_y_f_.size() != (size_t)n) wind_y_f_.assign(n, 0.0f);
+    if (fire_f_.size()   != (size_t)n) fire_f_.assign(n, 0.0f);
     for (int i = 0; i < n; ++i) {
         atm_f_[i]    = dequantize_f(atmosphere[i]);   // FIRE BRIDGE (int32 -> float)
         wind_x_f_[i] = dequantize_f(wind_x[i]);
         wind_y_f_[i] = dequantize_f(wind_y[i]);
+        fire_f_[i]   = dequantize_f(fire_field[i]);   // S3a FIRE FIELD BRIDGE (int32 -> float)
     }
     std::vector<std::pair<int, int>> destroyed = this->fire.step(
-        fire_field, atm_f_.data(), smoke_field, wall_hp,
+        fire_f_.data(), atm_f_.data(), smoke_field, wall_hp,
         temperature, wind_x_f_.data(), wind_y_f_.data(),
         solid, is_vacuum, flammable,
         h, w, sim_time);
@@ -113,6 +116,13 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     // unchanged; round-to-nearest matches the dequantize on the unchanged cells
     // (exact round-trip) and lands the plume increment unbiased.
     for (int i = 0; i < n; ++i) atmosphere[i] = quantize((double)atm_f_[i]);
+    // S3a FIRE FIELD BRIDGE close: re-quantize the (float, mutated) fire back into
+    // the int32 Q16.16 field, round-to-nearest. The float fire clamps to [0,1], so
+    // every cell is in range; round-to-nearest matches the dequantize on unchanged
+    // cells (exact round-trip) and lands the logistic step unbiased. The C++
+    // logistic itself stays FLOAT this commit — S3b makes it integer and deletes
+    // this bridge (S3c then deletes the atm/wind bridges too).
+    for (int i = 0; i < n; ++i) fire_field[i] = quantize((double)fire_f_[i]);
 
     // --- 3. Temperature pass (PhysicsRunner: self.temperature.step) ------
     // Arg order cross-checked against bindings.cpp TemperatureSolver.step and

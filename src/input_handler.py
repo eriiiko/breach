@@ -238,7 +238,10 @@ class InputHandler:
         y0, y1 = max(0, fy - 1), min(h, fy + 2)
         x0, x1 = max(0, fx - 1), min(w, fx + 2)
         gmap.flammable[y0:y1, x0:x1] = True   # force-flammable for debug
-        gmap.fire[y0:y1, x0:x1] = 1.0          # full-intensity seed
+        # S3a: gmap.fire is int32 Q16.16 — quantize the full-intensity seed (a raw
+        # `= 1.0` would store 1 count ~ no fire).
+        from simulation import fire_fixed
+        gmap.fire[y0:y1, x0:x1] = fire_fixed.quantize_scalar(1.0)  # full-intensity seed
 
     def _debug_spawn_gas(self, sim, renderer):
         """DEBUG: spawn a blob of the selected gas at the tile under the cursor.

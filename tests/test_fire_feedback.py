@@ -46,6 +46,14 @@ from simulation.physics_runner import PhysicsRunner  # noqa: E402
 from simulation.materials import (  # noqa: E402
     MaterialTable, MAT_AIR, MAT_WOOD, MAT_HULL,
 )
+from simulation import fire_fixed  # noqa: E402  S3a: gmap.fire is int32 Q16.16
+
+# S3a: gmap.fire is int32 Q16.16. Helpers for the Simulation-based tests that
+# seed / read the field at real intensity (the FireSimulation.step stub tests
+# below keep their own float arrays — the C++ step signature is still float).
+FIRE_Q = fire_fixed.quantize_scalar          # real [0,1] -> Q16.16 int
+FIRE_DEQ = lambda q: float(q) / fire_fixed.FP_ONE_F   # noqa: E731  Q16.16 -> real
+FIRE_001_Q = fire_fixed.quantize_scalar(0.01)         # the >0.01 "lit" threshold
 
 TEMP_SCALE = 65536          # Q16.16 (== HEAT_SCALE), shared heat/temperature domain
 _TBL = MaterialTable.from_config()
@@ -305,15 +313,15 @@ def test_spread_is_radiation_only_no_cellular_stencil():
 
     adj_lit = False
     for _ in range(120):
-        g.fire[50, 14] = 0.8               # hold the burner
+        g.fire[50, 14] = FIRE_Q(0.8)       # hold the burner (S3a: Q16.16)
         sim.step()
-        if g.fire[50, 15] > 0.0:
+        if g.fire[50, 15] > 0:             # int compare on the Q16.16 field
             adj_lit = True
             break
     assert adj_lit, "adjacent wood never ignited via radiation"
     # The far tile, with no heat reaching it, stayed cold and unlit -> the old
     # gap-leaping cellular stencil is gone.
-    assert g.fire[50, 40] == 0.0, "a far flammable tile lit with no heat path"
+    assert g.fire[50, 40] == 0, "a far flammable tile lit with no heat path"
     assert int(g.temperature[50, 40]) == 0, "far tile heated with no heat path"
 
 
@@ -356,8 +364,9 @@ def test_conservative_default_does_not_firestorm_wood_room():
     sim.set_paused(False)
     counts = []
     for _ in range(5):
-        g.fire[y0, x0] = max(float(g.fire[y0, x0]), 0.8)   # hold the seed lit
+        # hold the seed lit (S3a: integer max on the Q16.16 field)
+        g.fire[y0, x0] = max(int(g.fire[y0, x0]), FIRE_Q(0.8))
         sim.step()
-        counts.append(int((g.fire > 0.01).sum()))
+        counts.append(int((g.fire > FIRE_001_Q).sum()))
     assert max(counts) < n_wood // 2, (
         f"a lone fire firestormed the wood room too fast: {counts} of {n_wood}")

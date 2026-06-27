@@ -46,6 +46,7 @@ from simulation.materials import (  # noqa: E402
     MAT_AIR, MAT_HULL, MAT_WOOD,
     MaterialTable,
 )
+from simulation import fire_fixed  # noqa: E402  S3a: gmap.fire is int32 Q16.16
 from simulation.unit import Unit  # noqa: E402
 
 # Q16.16 scale — must match the `temperature` field and the material table's
@@ -56,6 +57,9 @@ _TBL = MaterialTable.from_config()
 IGN_WOOD_Q16 = int(_TBL.ignition_temp_q16[MAT_WOOD])   # 300 * 65536
 IGN_SEED = float(getattr(CFG.physics.fire, "ignition_seed", 0.1))
 O2_THRESHOLD = float(getattr(CFG.physics.fire, "o2_threshold", 0.60))
+# S3a: gmap.fire is int32 Q16.16. The seed intensity quantizes once so the
+# `fire >= I_seed` / `fire == I_seed` assertions compare integer counts.
+IGN_SEED_Q = fire_fixed.quantize_scalar(IGN_SEED)
 
 
 class _GMapStub:
@@ -80,8 +84,14 @@ class _GMapStub:
         a = np.where(self.solid, 0,
                      atmosphere_fixed.quantize_scalar(float(atm))).astype(np.int32)
         self.atmosphere = a
+        # S3a: the O2 mask excludes vacuum neighbours (matching the C++ fire P
+        # gate). Here the "no O2" case is modelled as low-PRESSURE air (atm=0),
+        # not flagged vacuum — so is_vacuum is all-False and the air ring still
+        # counts (mean -> 0 -> below threshold), preserving the prior behaviour.
+        self.is_vacuum = np.zeros((3, 3), dtype=bool)
         self.temperature = np.zeros((3, 3), dtype=np.int32)
-        self.fire = np.zeros((3, 3), dtype=np.float32)
+        # S3a: gmap.fire is int32 Q16.16.
+        self.fire = np.zeros((3, 3), dtype=np.int32)
 
 
 def _ignite(gmap):
@@ -102,10 +112,10 @@ def test_flammable_hot_with_oxygen_ignites():
     # A flammable (wood) tile at exactly its threshold, with O2 -> fire >= I_seed.
     g = _GMapStub(MAT_WOOD, atm=1.0)
     g.temperature[1, 1] = IGN_WOOD_Q16
-    assert g.fire[1, 1] == 0.0
+    assert g.fire[1, 1] == 0
     _ignite(g)
-    assert g.fire[1, 1] >= IGN_SEED
-    assert abs(float(g.fire[1, 1]) - IGN_SEED) < 1e-6
+    assert g.fire[1, 1] >= IGN_SEED_Q
+    assert g.fire[1, 1] == IGN_SEED_Q
 
 
 def test_above_threshold_also_ignites():
@@ -113,7 +123,7 @@ def test_above_threshold_also_ignites():
     g = _GMapStub(MAT_WOOD, atm=1.0)
     g.temperature[1, 1] = IGN_WOOD_Q16 * 4
     _ignite(g)
-    assert g.fire[1, 1] >= IGN_SEED
+    assert g.fire[1, 1] >= IGN_SEED_Q
 
 
 def test_hot_without_oxygen_does_not_ignite():
@@ -163,20 +173,20 @@ def test_max_does_not_lower_existing_fire():
     # ignition uses max(fire, I_seed), never assign.
     g = _GMapStub(MAT_WOOD, atm=1.0)
     g.temperature[1, 1] = IGN_WOOD_Q16
-    big = 0.8
-    assert big > IGN_SEED
-    g.fire[1, 1] = big
+    big_q = fire_fixed.quantize_scalar(0.8)   # S3a: Q16.16
+    assert big_q > IGN_SEED_Q
+    g.fire[1, 1] = big_q
     _ignite(g)
-    assert g.fire[1, 1] == np.float32(big), "max() lowered a bigger existing fire"
+    assert g.fire[1, 1] == big_q, "max() lowered a bigger existing fire"
 
 
 def test_max_raises_smaller_existing_fire():
     # A flickering fire below I_seed is raised TO I_seed (max picks the seed).
     g = _GMapStub(MAT_WOOD, atm=1.0)
     g.temperature[1, 1] = IGN_WOOD_Q16
-    g.fire[1, 1] = IGN_SEED / 2.0
+    g.fire[1, 1] = fire_fixed.quantize_scalar(IGN_SEED / 2.0)   # S3a: Q16.16
     _ignite(g)
-    assert abs(float(g.fire[1, 1]) - IGN_SEED) < 1e-6
+    assert g.fire[1, 1] == IGN_SEED_Q
 
 
 def test_deterministic_same_inputs_bit_identical():

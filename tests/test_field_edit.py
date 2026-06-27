@@ -36,6 +36,7 @@ from simulation.field_edit import (
 from simulation import wave_fixed   # S2a: wave_source Q16.16 helpers
 from simulation import gas_fixed     # S2b: smoke/gas Q16.16 helpers
 from simulation import atmosphere_fixed  # S2c: atmosphere Q16.16 helpers
+from simulation import fire_fixed    # S3a: fire Q16.16 helpers
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +64,16 @@ def _atm_d(q):
     return float(q) / atmosphere_fixed.FP_ONE_F
 
 
+# S3a: fire is int32 Q16.16 — the "fire" field-edit dtype combines in real
+# intensity, stores quantized. Helpers to author/read fire in real [0,1] units.
+def _fire_q(v):
+    return fire_fixed.quantize_scalar(v)
+
+
+def _fire_d(q):
+    return float(q) / fire_fixed.FP_ONE_F
+
+
 class _GMapStub:
     def __init__(self, h=12, w=12):
         # S2b: smoke is int32 Q16.16 (the "gas" field-edit dtype) — mirror the
@@ -74,7 +85,9 @@ class _GMapStub:
         # S2a: wave_source is int32 Q16.16 (the "wave" field-edit dtype combines
         # in real units, stores quantized) — mirror the real gmap dtype here.
         self.wave_source = np.zeros((h, w), dtype=np.int32)
-        self.fire = np.zeros((h, w), dtype=np.float32)
+        # S3a: fire is int32 Q16.16 (the "fire" field-edit dtype combines in real
+        # intensity, stores quantized) — mirror the real gmap dtype here.
+        self.fire = np.zeros((h, w), dtype=np.int32)
         self.heat = np.zeros((h, w), dtype=np.int32)
         # An (h, w, 3) channel field to exercise the channel path.
         self.light_rgb = np.zeros((h, w, 3), dtype=np.float32)
@@ -109,14 +122,14 @@ def test_mode_remove_clamps_to_floor():
 
 def test_mode_max_never_lowers():
     g = _GMapStub()
-    g.fire[5, 5] = 0.7
+    g.fire[5, 5] = _fire_q(0.7)
     # MAX with a smaller value leaves it; with a larger value raises it.
     apply_field_edit(g, FieldEdit("fire", Region.TILE, (5, 5), 0.4,
                                   EditMode.MAX, clamp=(0.0, 1.0)), _rng())
-    assert abs(float(g.fire[5, 5]) - 0.7) < 1e-6
+    assert abs(_fire_d(g.fire[5, 5]) - 0.7) < 1e-4
     apply_field_edit(g, FieldEdit("fire", Region.TILE, (5, 5), 0.9,
                                   EditMode.MAX, clamp=(0.0, 1.0)), _rng())
-    assert abs(float(g.fire[5, 5]) - 0.9) < 1e-6
+    assert abs(_fire_d(g.fire[5, 5]) - 0.9) < 1e-4
 
 
 # ---------------------------------------------------------------------------
@@ -224,8 +237,8 @@ def test_fire_edit_skips_non_flammable():
     apply_field_edit(g, FieldEdit("fire", Region.DISC, (6, 6, 3.0), 1.0,
                                   EditMode.MAX, Falloff.FLAT, clamp=(0.0, 1.0)),
                      _rng())
-    assert float(g.fire[6, 6]) == 0.0, "fire wrote a non-flammable tile"
-    assert float(g.fire[6, 5]) == 1.0, "fire did not ignite the flammable neighbour"
+    assert int(g.fire[6, 6]) == 0, "fire wrote a non-flammable tile"
+    assert abs(_fire_d(g.fire[6, 5]) - 1.0) < 1e-4, "fire did not ignite the flammable neighbour"
 
 
 def test_wave_source_skips_vacuum_and_solid():
@@ -315,7 +328,7 @@ def test_queue_order_independence_max():
     q2 = EditQueue(); q2.enqueue(b); q2.enqueue(a); q2.flush(g2, _rng())
 
     assert np.array_equal(g1.fire, g2.fire), "MAX result depended on enqueue order"
-    assert abs(float(g1.fire[5, 5]) - 0.8) < 1e-6
+    assert abs(_fire_d(g1.fire[5, 5]) - 0.8) < 1e-4
 
 
 def test_queue_order_independence_clamped_add():

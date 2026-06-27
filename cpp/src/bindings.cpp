@@ -553,7 +553,7 @@ PYBIND11_MODULE(breach_physics, m) {
                              py::array_t<int32_t> wave_p,        // S2a: Q16.16 int32
                              py::array_t<bool>  solid,
                              // fire group
-                             py::array_t<float> fire,
+                             py::array_t<int32_t> fire,          // S3a: Q16.16 int32 (fire field bridge inside)
                              py::array_t<int32_t> atmosphere,   // S2c: Q16.16 int32 (fire bridge inside)
                              py::array_t<int32_t> smoke,         // S2b: Q16.16 int32
                              py::array_t<float> wall_hp,

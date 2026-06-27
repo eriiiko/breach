@@ -309,7 +309,11 @@ class GameRenderer:
         # fire physically cannot exist in vacuum. Keep this until the fire
         # sim is taught to extinguish at vacuum tiles directly.
         if self.show_fire:
-            fire_view = np.where(gmap.is_vacuum, 0.0, gmap.fire)
+            # S3a: gmap.fire is int32 Q16.16 — dequantize to real [0,1] for the
+            # overlay (render-only boundary).
+            from simulation import fire_fixed
+            fire_real = fire_fixed.dequantize_f32(gmap.fire)
+            fire_view = np.where(gmap.is_vacuum, 0.0, fire_real)
             self.fire_overlay.update(fire_view)
         # Pressure colormap: refresh the per-tile texture from the current
         # atmosphere + wave_p fields. Skipped when toggled off to save the

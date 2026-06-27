@@ -92,7 +92,7 @@ class PhysicsRecorder:
             # scale.) The dtype guard makes this a no-op for any field that stays
             # float, so the same code is safe across the migration.
             if name in ("wave_p", "wave_v", "wave_source", "smoke",
-                        "atmosphere", "wind_x", "wind_y") and \
+                        "atmosphere", "wind_x", "wind_y", "fire") and \
                     arr.dtype == np.int32:
                 arr = arr.astype(np.float64) / 65536.0
             self.buffers[name][i] = arr

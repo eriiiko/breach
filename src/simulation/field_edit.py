@@ -56,6 +56,7 @@ from simulation import water_fixed   # S1: water_depth Q16.16 quantize helpers
 from simulation import wave_fixed     # S2a: wave_source Q16.16 quantize helpers
 from simulation import gas_fixed      # S2b: smoke/gas Q16.16 quantize helpers
 from simulation import atmosphere_fixed  # S2c: atmosphere Q16.16 quantize helpers
+from simulation import fire_fixed      # S3a: fire Q16.16 quantize helpers
 
 # Q16.16 fixed-point scale for the `heat` field — MUST match the C++
 # raycaster.h HEAT_SCALE (and materials.TEMP_SCALE). One unit of heat energy ==
@@ -208,7 +209,12 @@ FIELD_POLICY = {
     # re-quantizes round-to-nearest — so wave-source edits (the explosion deposit)
     # keep being authored in real units while the stored field stays integer.
     "wave_source": _FieldPolicy("wave", None,        _skip_solid_or_vacuum),
-    "fire":        _FieldPolicy("float", (0.0, 1.0), _skip_non_flammable),
+    # S3a: fire is int32 Q16.16. The "fire" dtype dequantizes the stored int to
+    # real intensity, combines (the float path's exact +=/-=/max semantics + the
+    # [0,1] clamp), then re-quantizes round-to-nearest — so the explosion's
+    # `fire = max(...)` ignite deposit keeps being authored in real intensity
+    # while the stored field stays integer/deterministic (same idiom as "gas").
+    "fire":        _FieldPolicy("fire",  (0.0, 1.0), _skip_non_flammable),
     "heat":        _FieldPolicy("heat",  None,       None),
     # S1: water_depth is int32 Q16.16 metres. The "water" dtype dequantizes the
     # stored int to metres, combines in metres (with the metres clamp), then
@@ -402,6 +408,19 @@ def _combine_gas(old_q: int, contribution: float, mode: EditMode,
     return gas_fixed.quantize_scalar(new_v)
 
 
+def _combine_fire(old_q: int, contribution: float, mode: EditMode,
+                  clamp: Optional[Tuple[float, float]]) -> int:
+    """Q16.16 combine for the `fire` field (S3a). The stored value is an int32 in
+    Q16.16 intensity; dequantize to real [0,1] intensity, combine with the float
+    path's exact +=/-=/max semantics (and the [0,1] clamp), re-quantize round-to-
+    nearest. Keeps the explosion's `fire = max(...)` ignite deposit authored in
+    real intensity while the field stays integer/deterministic (the same idiom as
+    `_combine_gas`)."""
+    old_v = float(old_q) / fire_fixed.FP_ONE_F
+    new_v = _combine_float(old_v, contribution, mode, clamp)
+    return fire_fixed.quantize_scalar(new_v)
+
+
 def _combine_heat(old: int, contribution: float, mode: EditMode) -> int:
     """Q16.16 combine for the `heat` field. ADD only path uses the saturating
     integer add; REMOVE/MAX are defined for completeness (saturating subtract /
@@ -453,6 +472,7 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
     is_wave = (pol.dtype == "wave")
     is_gas = (pol.dtype == "gas")
     is_atmosphere = (pol.dtype == "atmosphere")
+    is_fire = (pol.dtype == "fire")
     ch = edit.channel
 
     for (r, c, weight) in _iter_region(edit.region, edit.coords,
@@ -482,6 +502,9 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
         elif is_atmosphere:
             arr[r, c] = _combine_atmosphere(int(arr[r, c]), contribution,
                                             edit.mode, clamp)
+        elif is_fire:
+            arr[r, c] = _combine_fire(int(arr[r, c]), contribution,
+                                      edit.mode, clamp)
         elif ch is None:
             arr[r, c] = _combine_float(float(arr[r, c]), contribution,
                                        edit.mode, clamp)
