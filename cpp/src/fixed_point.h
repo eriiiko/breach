@@ -97,6 +97,24 @@ inline q16 narrow(int64_t wide) {
     return (q16)(wide >> FP_SHIFT);
 }
 
+// ROUND-TO-NEAREST narrow (the UNBIASED-DEPOSIT sibling of narrow()): for a
+// non-negative wide product, +0.5 ULP then >>16 (round-half-up, symmetric for the
+// non-negative case). Use for SOURCE deposits (S2a/S2c lesson: a non-conserved
+// deposit wants round-to-nearest so a long run accumulates no DC truncation bias —
+// the cancelling-flux PAIRS keep the plain truncating narrow()). The caller asserts
+// `wide >= 0`; for a possibly-signed wide use narrow_round_signed.
+inline q16 narrow_round(int64_t wide) {
+    const int64_t HALF = (int64_t)1 << (FP_SHIFT - 1);   // 0.5 ULP
+    return (q16)((wide + HALF) >> FP_SHIFT);
+}
+
+// Sign-symmetric round-to-nearest narrow (round-half-away-from-zero) for a wide
+// product of EITHER sign — rounds |wide| then re-applies the sign, so + and - are
+// treated identically (no sign(wide) DC bias). The deposit analogue of shr_round0.
+inline q16 narrow_round_signed(int64_t wide) {
+    return (wide >= 0) ? narrow_round(wide) : (q16)(-narrow_round(-wide));
+}
+
 // ---- precomputed reciprocal (divide -> multiply) --------------------------
 //
 // A divide by a runtime-known-but-loop-invariant value becomes a reciprocal
@@ -324,6 +342,64 @@ inline q16 mean_round(int64_t sum, int64_t count) {
     const int64_t m = (sum >= 0) ? (sum + half) / count
                                  : (sum - half) / count;
     return (q16)m;
+}
+
+// ---- deterministic integer sqrt (the first per-cell transcendental, S3b) ---
+//
+// sqrt_q16(x_q32) == floor( sqrt(x_real) ) in Q16.16, where x_q32 is an int64
+// carrying a Q.32 value (a sum of mul_wide(q16,q16) products — i.e. the SQUARE
+// of a Q16.16 magnitude, scale 2^32). Used by fire for W = sqrt(wind_x²+wind_y²):
+//
+//     int64_t rad = mul_wide(wx, wx) + mul_wide(wy, wy);   // Q.32
+//     q16     W   = sqrt_q16(rad);                          // Q16.16
+//
+// WHY a plain isqrt of the Q.32 value yields the Q16.16 result directly: if the
+// real magnitude is m and wx,wy are Q16.16 (wx = m_x·2^16), then
+//   rad = (m_x·2^16)² + (m_y·2^16)² = (m_x²+m_y²)·2^32 = m²·2^32.
+//   isqrt(rad) = floor( sqrt(m²·2^32) ) = floor( m·2^16 )  == the Q16.16 of m.
+// So sqrt(2^32) = 2^16 folds the scale exactly — NO rescale needed.
+//
+// THE METHOD — a FIXED-ITERATION binary digit-recurrence isqrt of a 64-bit
+// unsigned radicand. Pure integer shifts/compares, BRANCH-IDENTICAL across all
+// lanes/architectures (the count is fixed at 32 iterations — one per result bit,
+// since isqrt of a 64-bit value has <= 32 bits). It returns floor(√), EXACT, with
+// NO rounding-mode ambiguity, NO LUT, NO polynomial, NO libm — the cleanest
+// possible transcendental, identical on CPU and any future __device__ port (the
+// master plan §5.3 same-integer-algorithm contract). Floor truncates W toward 0
+// by < 1 LSB (~1.5e-5) — a deterministic, perceptually-invisible bias on the
+// gentle, non-conserved wind-fan/strip tuning terms (S3b Open Q1: floor ratified).
+//
+// The radicand is non-negative by construction (a sum of squares). A negative
+// input (shouldn't happen) floors to 0 via the unsigned cast guard.
+inline q16 sqrt_q16(int64_t x_q32) {
+    if (x_q32 <= 0) return 0;
+    uint64_t x = (uint64_t)x_q32;
+    // Binary digit-by-digit isqrt: `bit` walks the highest power-of-4 <= x down
+    // to 1; `res` accumulates the result. 32 fixed iterations (bit from 1<<62 to
+    // 1<<0 in steps of 4 == 31 squared-digit positions; start at the top even bit
+    // so the loop is a constant 32 trips regardless of x — branch-identical).
+    uint64_t res = 0;
+    // Start `bit` at the highest even bit position (1 << 62). A FIXED 32-trip
+    // loop (the 32 even bit positions 62,60,...,0) — no data-dependent trip count.
+    uint64_t bit = (uint64_t)1 << 62;
+    for (int k = 0; k < 32; ++k) {
+        const uint64_t t = res + bit;
+        res >>= 1;
+        if (x >= t) {
+            x -= t;
+            res += bit;
+        }
+        bit >>= 2;
+    }
+    // SELF-GUARD (honest shared-helper safety, like reciprocal_q16's floor): the
+    // floor(√) of a Q.32 radicand >= 2^62 is >= 2^31, which would WRAP a signed
+    // int32 to negative garbage. Clamp to INT32_MAX. This is DEAD on the real fire
+    // call site (|wind| is gradient-scale O(1), spiking to maybe ~100 under a
+    // shockwave -> rad ~= 8.6e13 << 2^62, res ~= 6.5e6 << 2^31) — the master plan
+    // §8.1 overflow bound — but it keeps sqrt_q16 safe for any future caller and
+    // makes the value deterministic rather than UB at the extreme.
+    if (res > (uint64_t)0x7fffffff) return (q16)0x7fffffff;
+    return (q16)res;
 }
 
 // ---- tan(theta) via a low-degree odd polynomial ---------------------------

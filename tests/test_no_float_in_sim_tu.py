@@ -155,13 +155,31 @@ _FP_FAST_RE = re.compile(r"fp:fast")
 # S3b (the C++ logistic goes integer) / S3c (the bridge buffers + the atm/wind
 # bridges are deleted, and fire_simulation.cpp + temperature_solver.cpp join the
 # hard 0/0/0 gate per the plan §S3c CI ratchet).
+# S3b (the C++ fire LOGISTIC -> integer Q16.16 + sqrt_q16, 2026-06-27) re-baselined
+# fire_simulation.cpp + physics_engine.cpp. The fire logistic is now INTEGER
+# end-to-end (fire/wall_hp int32; it reads atmosphere/wind/temperature int32 and the
+# new sqrt_q16 floor-isqrt for W):
+#   * fire_simulation.cpp `float` FELL 31 -> 6 (only the `float dt` step-arg signature
+#     + the FireParams float members' comment lines remain; the whole logistic +
+#     gates + deposits went integer Q16.16). `double` ROSE 2 -> 18: the LOAD-TIME
+#     CONSTANT precompute — every config param/threshold/reciprocal is computed ONCE
+#     in double then quantized (quantize((double)p.x), make_recip((double)p.x)), the
+#     LOCKED S1 idiom (IEEE double is bit-identical cross-machine for scalar
+#     constants; NO per-cell float). fire_simulation.cpp is now a candidate for the
+#     hard 0/0/0 gate once the `float dt` arg is also retired (S3c per the plan).
+#   * physics_engine.cpp `float` 68 -> 66, `double` 32 -> 30: the S3a fire-field
+#     bridge + the S2c atm/wind float bridges that fed the fire are GONE (fire reads
+#     int32 directly). The ONLY float bridge left in step_tail is the temperature
+#     pass's atmosphere read (atm_f_, dequantized POST-plume) — S3c retires it when
+#     temperature goes integer, then fire_simulation.cpp + temperature_solver.cpp
+#     join the hard 0/0/0 gate (plan §S3c CI ratchet).
 BASELINE = {
     "atmosphere_solver.cpp":  {"float": 32, "double": 30, "fp:fast": 1},
     "smoke_dynamics.cpp":     {"float": 24, "double": 13, "fp:fast": 0},
-    "fire_simulation.cpp":    {"float": 31, "double": 2,  "fp:fast": 0},
+    "fire_simulation.cpp":    {"float": 6,  "double": 19, "fp:fast": 0},
     "water_solver.cpp":       {"float": 32, "double": 23, "fp:fast": 1},
     "temperature_solver.cpp": {"float": 2,  "double": 1,  "fp:fast": 0},
-    "physics_engine.cpp":     {"float": 68, "double": 32, "fp:fast": 1},
+    "physics_engine.cpp":     {"float": 65, "double": 30, "fp:fast": 1},
 }
 
 

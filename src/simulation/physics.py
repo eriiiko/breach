@@ -30,6 +30,7 @@ from simulation.gamemap import MAT_HULL, MAT_WOOD, MAT_DOOR
 from simulation.field_edit import (
     FieldEdit, EditMode, Region, Falloff,
 )
+from simulation import wall_fixed   # S3b: wall_hp Q16.16 quantize helpers
 
 # source_id namespace for explosion-issued edits (engine/13 stable-sort key).
 # Distinct ids keep an explosion's field families grouped + ordered in the flush
@@ -98,8 +99,11 @@ def apply_explosion(gmap, queue, fy, fx, radius, pressure, wall_damage):
                 if dist <= radius:
                     falloff = 1.0 - (dist / radius)
                     # --- Structural wall damage (immediate, NOT a FieldEdit) ---
+                    # S3b: wall_hp is int32 Q16.16 — quantize the (float) blast
+                    # decrement into the same Q16.16 domain before subtracting.
                     if gmap.material[ny, nx] in (MAT_HULL, MAT_WOOD, MAT_DOOR):
-                        gmap.wall_hp[ny, nx] -= wall_damage * falloff
+                        gmap.wall_hp[ny, nx] -= wall_fixed.quantize_scalar(
+                            float(wall_damage) * float(falloff))
                         if gmap.wall_hp[ny, nx] <= 0:
                             gmap.destroy_wall(ny, nx)
                     if not gmap.solid[ny, nx] and not gmap.is_vacuum[ny, nx]:

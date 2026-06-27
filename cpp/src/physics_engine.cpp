@@ -32,9 +32,12 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         const int32_t* water_depth, const int32_t* wave_p,   // S1: water_depth Q16.16
                                                              // S2a: wave_p Q16.16
         const bool* solid,
-        // fire group — S3a: fire is Q16.16 int32 too; S2c: atmosphere + wind are
-        // Q16.16 int32 (the fire field + atm/wind bridges are below)
-        int32_t* fire_field, int32_t* atmosphere, int32_t* smoke_field, float* wall_hp,  // S3a: fire Q16.16; S2b: smoke Q16.16; S2c: atm Q16.16
+        // fire group — S3b: fire + wall_hp are Q16.16 int32 too; S2c: atmosphere +
+        // wind are Q16.16 int32. Fire now reads ALL of these as INTEGER directly
+        // (the fire-field + atm/wind float bridges are GONE — S3b makes the logistic
+        // integer end-to-end). The temperature pass still reads atmosphere as float
+        // (S3c retires that last bridge), so atm_f_ is kept only for it.
+        int32_t* fire_field, int32_t* atmosphere, int32_t* smoke_field, int32_t* wall_hp,  // S3b: fire+wall_hp Q16.16; S2b: smoke Q16.16; S2c: atm Q16.16
         const int32_t* temperature, const int32_t* wind_x, const int32_t* wind_y,      // S2c: wind Q16.16
         const bool* is_vacuum, const bool* flammable,
         // temperature group
@@ -87,42 +90,23 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     // arg); `temperature` here is the const view (the previous-tick conduction
     // field the fire reads).
     //
-    // S2c FIRE BRIDGE (the ONE float bridge S2 leaves open — downstream to S3):
-    // atmosphere + wind are Q16.16 int32, but the fire reads them as float AND
-    // mutates atmosphere (the own-tile plume). DEQUANTIZE atmosphere/wind into the
-    // reused float scratch, run the float fire (it reads + writes the float
-    // atmosphere), then RE-QUANTIZE the fire-mutated atmosphere back into the int32
-    // field (round-to-nearest). The temperature pass reads the SAME float
-    // atmosphere scratch (read-only). Collapses to integer<-integer when fire
-    // migrates (S3). The plume is a fire SOURCE (non-conserved by design), so the
-    // round-trip quantize is bit-safe (deterministic; no synced-field aliasing).
-    if (atm_f_.size()    != (size_t)n) atm_f_.assign(n, 0.0f);
-    if (wind_x_f_.size() != (size_t)n) wind_x_f_.assign(n, 0.0f);
-    if (wind_y_f_.size() != (size_t)n) wind_y_f_.assign(n, 0.0f);
-    if (fire_f_.size()   != (size_t)n) fire_f_.assign(n, 0.0f);
-    for (int i = 0; i < n; ++i) {
-        atm_f_[i]    = dequantize_f(atmosphere[i]);   // FIRE BRIDGE (int32 -> float)
-        wind_x_f_[i] = dequantize_f(wind_x[i]);
-        wind_y_f_[i] = dequantize_f(wind_y[i]);
-        fire_f_[i]   = dequantize_f(fire_field[i]);   // S3a FIRE FIELD BRIDGE (int32 -> float)
-    }
+    // S3b: the fire logistic is now INTEGER end-to-end. Fire reads fire/atmosphere/
+    // wall_hp/wind directly as int32 Q16.16 and writes the int32 atmosphere plume in
+    // place — the S3a fire-field bridge and the S2c atm/wind float bridges that fed
+    // the fire are GONE. The ONLY remaining float bridge is for the TEMPERATURE pass
+    // below, which still reads atmosphere as float for its vacuum-exposure threshold
+    // (S3c retires that last consumer). Faithful ORDER: the old code ran the fire on
+    // a float atmosphere scratch (mutating in the plume), then the temperature pass
+    // read that SAME post-plume scratch. So run the integer fire FIRST (its plume
+    // mutates the int32 atmosphere), THEN dequantize the POST-plume int32 atmosphere
+    // into atm_f_ for the temperature pass — same post-plume read, now integer-sourced.
     std::vector<std::pair<int, int>> destroyed = this->fire.step(
-        fire_f_.data(), atm_f_.data(), smoke_field, wall_hp,
-        temperature, wind_x_f_.data(), wind_y_f_.data(),
+        fire_field, atmosphere, smoke_field, wall_hp,
+        temperature, wind_x, wind_y,
         solid, is_vacuum, flammable,
         h, w, sim_time);
-    // Re-quantize the fire-mutated atmosphere back into the int32 field. Fire only
-    // ADDS a small positive plume to its own burning tiles, so most cells are
-    // unchanged; round-to-nearest matches the dequantize on the unchanged cells
-    // (exact round-trip) and lands the plume increment unbiased.
-    for (int i = 0; i < n; ++i) atmosphere[i] = quantize((double)atm_f_[i]);
-    // S3a FIRE FIELD BRIDGE close: re-quantize the (float, mutated) fire back into
-    // the int32 Q16.16 field, round-to-nearest. The float fire clamps to [0,1], so
-    // every cell is in range; round-to-nearest matches the dequantize on unchanged
-    // cells (exact round-trip) and lands the logistic step unbiased. The C++
-    // logistic itself stays FLOAT this commit — S3b makes it integer and deletes
-    // this bridge (S3c then deletes the atm/wind bridges too).
-    for (int i = 0; i < n; ++i) fire_field[i] = quantize((double)fire_f_[i]);
+    if (atm_f_.size() != (size_t)n) atm_f_.assign(n, 0.0f);
+    for (int i = 0; i < n; ++i) atm_f_[i] = dequantize_f(atmosphere[i]);  // TEMP BRIDGE (post-plume int32 -> float)
 
     // --- 3. Temperature pass (PhysicsRunner: self.temperature.step) ------
     // Arg order cross-checked against bindings.cpp TemperatureSolver.step and
@@ -133,10 +117,11 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     // (gmap.temperature in Python) — the binding extracts both a const and a
     // mutable pointer from the one numpy array. The fire read it above; the
     // temperature solver now updates it in place for next tick.
-    // S2c: temperature reads atmosphere as float (read-only, the space-facing
-    // threshold) — pass the SAME dequantized float scratch the fire used (it was
-    // re-quantized into the int32 field above, but the float view is still valid
-    // and read-only here). FIRE BRIDGE (collapses when temperature migrates).
+    // temperature reads atmosphere as float (read-only, the space-facing vacuum-
+    // exposure threshold) — pass atm_f_, the POST-fire-plume int32 atmosphere
+    // dequantized just above (the fire's integer plume already mutated the int32
+    // field). This is the LAST float bridge in step_tail; S3c retires it when the
+    // temperature TU goes integer (its atmosphere arg -> const int32_t*).
     this->temperature.step(
         temperature_mut, heat, heat_inv_shift, face_shift,
         solid, is_vacuum, atm_f_.data(),

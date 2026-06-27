@@ -43,27 +43,18 @@ public:
     // water head/ripple bridge is retired. Reused (no per-tick alloc; GPU-prep).
     mutable std::vector<float> wave_p_f_;
 
-    // S2c FIRE BRIDGE scratch: atmosphere + wind are now Q16.16 int32, but the
-    // fire + temperature solvers (S3, not yet migrated) read them as float — and
-    // fire MUTATES atmosphere (its own-tile plume deposit). step_tail dequantizes
-    // atmosphere/wind into these reused float buffers, runs the float fire+temp,
-    // then RE-QUANTIZES the (fire-mutated) atmosphere back into the int32 field
-    // (round-to-nearest). This is the ONE float bridge S2 leaves open — downstream
-    // to fire — and it collapses to integer<-integer when the fire system migrates
-    // (S3). Reused (no per-tick alloc; GPU-prep).
+    // TEMPERATURE atmosphere bridge scratch: the temperature pass still reads
+    // atmosphere as float for its vacuum-exposure threshold. step_tail dequantizes
+    // the (POST-fire-plume) int32 atmosphere into atm_f_ and hands THAT to the
+    // temperature step (read-only). S3b made the fire integer (it reads atmosphere/
+    // wind directly now), so atm_f_ is the LAST float bridge here — S3c retires it
+    // when temperature goes integer. Reused (no per-tick alloc; GPU-prep).
     mutable std::vector<float> atm_f_;
+    // DEAD after S3b (the fire logistic went integer — wind/fire are read as int32
+    // directly, no float scratch). Kept declared for S3c to delete cleanly with the
+    // rest of the bridge; not written anywhere now.
     mutable std::vector<float> wind_x_f_;
     mutable std::vector<float> wind_y_f_;
-
-    // S3a FIRE FIELD BRIDGE scratch: `fire` is now Q16.16 int32 (the third/final
-    // field migration), but the C++ FireSimulation::step logistic is STILL FLOAT
-    // for one commit (S3a flips only the representation + the Python ignition
-    // twin; the C++ math goes integer in S3b). step_tail DEQUANTIZES fire into
-    // this reused float buffer, runs the float fire on it, then RE-QUANTIZES the
-    // mutated fire back into the int32 field (round-to-nearest). This is the
-    // temporary INTERNAL float bridge (the S2 internal-bridge discipline) that
-    // S3b deletes when the logistic itself becomes integer. Reused (no per-tick
-    // alloc; GPU-prep).
     mutable std::vector<float> fire_f_;
 
     // --- Patch 1 S4a: the per-tick orchestration TAIL --------------------
@@ -86,12 +77,11 @@ public:
     //   water_depth                    : float (h, w) — read by ripple + guard
     //   wave_p                         : float (h, w) — ripple splash source (read)
     //   solid / is_wall                : bool  (h, w) — the solid mask
-    //   fire                           : int32 (h, w) Q16.16 — S3a: dequantized to
-    //                                    float scratch for the still-float fire step,
-    //                                    re-quantized back (the temporary fire bridge)
-    //   atmosphere, smoke, wall_hp     : fire step inputs (mutated)
+    //   fire                           : int32 (h, w) Q16.16 — S3b: read+written by
+    //                                    the INTEGER logistic directly (no bridge)
+    //   atmosphere, smoke, wall_hp     : fire step inputs (mutated); all int32 Q16.16
     //   temperature                    : int32 (h, w) Q16.16 — fire reads, temp writes
-    //   wind_x, wind_y                 : float (h, w) — shared wind (read)
+    //   wind_x, wind_y                 : int32 (h, w) Q16.16 — shared wind (read)
     //   is_vacuum, flammable           : bool  (h, w)
     //   heat                           : int32 (h, w) Q16.16 — heat deposit (read)
     //   heat_inv_shift                 : int32 (h, w) — per-tile inverse mass shift
@@ -102,11 +92,12 @@ public:
         const int32_t* water_depth, const int32_t* wave_p,   // S1: water_depth Q16.16
                                                              // S2a: wave_p Q16.16
         const bool* solid,
-        // fire group — S2c: atmosphere + wind are Q16.16 int32. The FIRE bridge
-        // (the only float bridge S2 leaves open, downstream to S3) is INSIDE
-        // step_tail: dequantize atmosphere/wind to float scratch, run the float
-        // fire+temperature, re-quantize the fire's atmosphere plume back to int32.
-        int32_t* fire_field, int32_t* atmosphere, int32_t* smoke_field, float* wall_hp,  // S3a: fire Q16.16; S2b: smoke Q16.16; S2c: atm Q16.16
+        // fire group — S3b: fire + wall_hp are Q16.16 int32; S2c: atmosphere + wind
+        // are Q16.16 int32. The fire logistic is now INTEGER end-to-end (it reads all
+        // of these directly + writes the int32 atmosphere plume in place). The only
+        // float bridge left in step_tail is the TEMPERATURE pass's atmosphere read
+        // (dequantized into atm_f_ AFTER the fire plume) — S3c retires that.
+        int32_t* fire_field, int32_t* atmosphere, int32_t* smoke_field, int32_t* wall_hp,  // S3b: fire+wall_hp Q16.16; S2b: smoke Q16.16; S2c: atm Q16.16
         const int32_t* temperature, const int32_t* wind_x, const int32_t* wind_y,      // S2c: wind Q16.16
         const bool* is_vacuum, const bool* flammable,
         // temperature group

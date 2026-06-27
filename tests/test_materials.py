@@ -102,7 +102,9 @@ def test_caches_match_table():
     assert np.array_equal(g.solid, expected_wall), "solid regressed"
     assert np.array_equal(g.flammable, (m == MAT_WOOD)), "flammable regressed"
     assert np.array_equal(g.flammable, tbl.flammable[m]), "flammable != table"
-    assert np.array_equal(g.wall_hp, tbl.hp[m]), "wall_hp != table"
+    # S3b: wall_hp is int32 Q16.16 — dequantize before comparing to the float table.
+    from simulation import wall_fixed
+    assert np.array_equal(wall_fixed.dequantize(g.wall_hp), tbl.hp[m]), "wall_hp != table"
     assert np.array_equal(g.conductivity, tbl.conductivity[m]), "conductivity != table"
     # conductivity allocated + populated (metal hull spreads heat).
     assert g.conductivity.shape == m.shape
@@ -124,7 +126,8 @@ def test_on_tile_changed_patches_all_caches_after_destroy():
 
     # Pre-conditions: hull is solid, has hp + conductivity.
     assert g.solid[y, x]
-    assert g.wall_hp[y, x] == g.materials.hp[MAT_HULL]
+    from simulation import wall_fixed  # S3b: wall_hp is Q16.16
+    assert wall_fixed.dequantize(g.wall_hp[y, x]) == g.materials.hp[MAT_HULL]
     assert g.conductivity[y, x] == g.materials.conductivity[MAT_HULL]
 
     # Snapshot the rest of the grid to prove no O(grid) rebuild happened.
@@ -209,7 +212,8 @@ def test_furniture_projects_into_grid_caches():
     assert bool(g.flammable[y, x]) is True
     assert g.permeability[y, x] == np.float32(0.5)
     assert not g.solid[y, x], "partial permeability must NOT make it solid"
-    assert g.wall_hp[y, x] == 30
+    from simulation import wall_fixed  # S3b: wall_hp is Q16.16
+    assert wall_fixed.dequantize(g.wall_hp[y, x]) == 30
     assert g.conductivity[y, x] == 0.0
     # Movement: furniture is now ENTERABLE (mobility 400 > 0) — climbable at a
     # penalty, no longer a wall. The is_passable view is mobility > 0.
@@ -230,7 +234,8 @@ def test_on_tile_changed_direct_patch():
     g.material[y, x] = MAT_STEEL
     g.on_tile_changed(y, x)
     assert g.solid[y, x], "steel must be solid"
-    assert g.wall_hp[y, x] == g.materials.hp[MAT_STEEL]
+    from simulation import wall_fixed  # S3b: wall_hp is Q16.16
+    assert wall_fixed.dequantize(g.wall_hp[y, x]) == g.materials.hp[MAT_STEEL]
     assert g.conductivity[y, x] == g.materials.conductivity[MAT_STEEL]
     assert not g.flammable[y, x]
     print("OK: on_tile_changed_direct_patch")

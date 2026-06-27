@@ -412,19 +412,24 @@ if __name__ == "__main__":
           f"(atmosphere nonzero cells final: {nza}; wind nonzero cells: {nzw}) "
           f"— the S2 group is now cross-GPU deterministic (only the FIRE bridge "
           f"remains, S3)")
-    # S3a — the integer FIRE field is now int32 Q16.16 (the synced fire intensity),
-    # the THIRD and FINAL field migration of the fixed-point arc. Assert dtype +
-    # bit-identity run-to-run (np.array_equal is exact on int32). This is the S3a
-    # P1 gate. NOTE: this commit flips ONLY the representation + the Python ignition
-    # twin — the C++ logistic still runs in float behind a temporary internal
-    # bridge, so the FEEL is unchanged (the math goes integer in S3b).
+    # S3b — the integer FIRE field (int32 Q16.16) + the integer LOGISTIC. S3a flipped
+    # the representation; S3b makes the C++ FireSimulation::step logistic integer
+    # end-to-end (the first per-cell transcendental — W via sqrt_q16 — and the pinned
+    # Q16.48-style multiply chain), and flips wall_hp to int32 Q16.16 too. Assert the
+    # dtype + bit-identity run-to-run (np.array_equal is exact on int32). This is the
+    # S3b P1 gate; the discrete extinguish-flip + burn-through determinism is in
+    # tests/test_s3b_fire_determinism.py, the logistic feel-A/B in _s3b_firestorm_feel.py.
     assert a[-1]["fire"].dtype == np.int32, \
-        f"fire should be int32 Q16.16 (S3a), got {a[-1]['fire'].dtype}"
+        f"fire should be int32 Q16.16 (S3b), got {a[-1]['fire'].dtype}"
+    assert a[-1]["wall_hp"].dtype == np.int32, \
+        f"wall_hp should be int32 Q16.16 (S3b), got {a[-1]['wall_hp'].dtype}"
     for t in range(len(a)):
         assert np.array_equal(a[t]["fire"], b[t]["fire"]), \
-            f"fire not bit-identical at tick {t} (S3a P1)"
+            f"fire not bit-identical at tick {t} (S3b P1)"
+        assert np.array_equal(a[t]["wall_hp"], b[t]["wall_hp"]), \
+            f"wall_hp not bit-identical at tick {t} (S3b P1)"
     nzf = int((a[-1]["fire"] != 0).sum())
-    print(f"OK: S3a fire int32 Q16.16, bit-identical run-to-run "
-          f"(fire nonzero cells final: {nzf}) — the ENTIRE sim field path "
+    print(f"OK: S3b fire+wall_hp int32 Q16.16 + INTEGER logistic, bit-identical "
+          f"run-to-run (fire nonzero cells final: {nzf}) — the ENTIRE sim field path "
           f"(water + S2 group + fire) is now integer; the only float left in the "
           f"synced path is the Q2-fenced Python combat HP math")

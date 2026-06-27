@@ -6,7 +6,7 @@
 // temperature -> ignition (apply_temperature_ignition, wired in the sim). This
 // step is purely the per-tile life/death of an ALREADY-lit fire:
 //
-//   T     = temperature[i] / TEMP_SCALE            (the conduction-pass field)
+//   T     = temperature[i]                         (Q16.16; temp_scale == FP_ONE)
 //   F     = clamp01(wall_hp[i] / fuel_ref)         (fuel from remaining wall HP)
 //   P     = mean atmosphere over OPEN (non-solid, non-vacuum) 4-neighbours
 //   W     = sqrt(wind_x^2 + wind_y^2)              (the SHARED wind field)
@@ -23,8 +23,14 @@
 // The sustain read P is the NEIGHBOUR mean, so the fire reads incoming fresh air,
 // not its own bump.
 //
-// Determinism: float for now (single-machine; a later pass moves I to Q16.16).
-// Plume deposit is an own-index write -> order-independent.
+// Determinism (S3b): the whole logistic is INTEGER Q16.16 (fire/wall_hp int32,
+// atmosphere/wind/temperature int32). Cross-machine bit-identical: integer
+// +/-/*/>> are exact + associative, and the per-cell sqrt is a fixed-iteration
+// floor-isqrt (fixed_point.h::sqrt_q16, the arc's first per-cell transcendental).
+// The multiply tree order is PINNED (left-fold mul_q16); the plume + smoke-emission
+// + wall-burn deposits ROUND-TO-NEAREST (unbiased sources). The discrete outputs
+// (the I_min extinguish flip, the wall_hp<=0 burn-through list) are integer compares
+// -> bit-deterministic. Plume deposit is an own-index write -> order-independent.
 
 #include <vector>
 #include <utility>
@@ -69,26 +75,28 @@ public:
     // Returns vector of (y, x) coordinates where walls burned through.
     // Python must call destroy_wall() for each of these.
     //
-    //   fire        : float (h, w) intensity in [0,1], mutated in place.
-    //   atmosphere  : float (h, w), read (neighbour mean) + own-tile plume write.
+    //   fire        : int32 (h, w) Q16.16 intensity in [0,1], mutated in place (S3b).
+    //   atmosphere  : int32 (h, w) Q16.16 (S2c), read (neighbour mean) + own-tile
+    //                 plume write (round-to-nearest deposit).
     //   smoke       : int32 (h, w) Q16.16 (S2b), fire ADDS to it (kept). The
-    //                 emission delta smoke_emission*dt*I (a small positive float)
-    //                 is quantized to Q16.16 and integer-added — order-free,
-    //                 deterministic. FLOAT BRIDGE: the emission RATE stays float.
-    //   wall_hp     : float (h, w), burn-through depletes it (the fuel brake).
+    //                 emission delta smoke_emission*dt*I is round-to-nearest and
+    //                 integer-added — order-free, deterministic.
+    //   wall_hp     : int32 (h, w) Q16.16 (S3b), burn-through depletes it (the fuel
+    //                 brake); fractional depletion needs the Q16.16 fraction.
     //   temperature : int32 (h, w) Q16.16, READ-ONLY (the conduction-pass field).
-    //   wind_x/wind_y : float (h, w), the SHARED wind field (= -grad p incl. waves).
+    //   wind_x/wind_y : int32 (h, w) Q16.16 (S2c), the SHARED wind field (= -grad p
+    //                 incl. waves), READ-ONLY (the W = |wind| term, via sqrt_q16).
     //   is_wall     : bool (h, w) solid mask (a fire tile is itself solid).
     //   is_vacuum   : bool (h, w) vacuum mask (excluded from the P neighbour mean).
     //   flammable   : bool (h, w) fuel mask (fire only lives on fuel).
     std::vector<std::pair<int, int>> step(
-        float* fire,
-        float* atmosphere,
-        int32_t* smoke,            // S2b: Q16.16 (fire emission quantized + added)
-        float* wall_hp,
+        int32_t* fire,             // S3b: Q16.16 (was float)
+        int32_t* atmosphere,       // S2c: Q16.16 (fire reads + plume-writes)
+        int32_t* smoke,            // S2b: Q16.16 (fire emission round + added)
+        int32_t* wall_hp,          // S3b: Q16.16 (was float)
         const int32_t* temperature,
-        const float* wind_x,
-        const float* wind_y,
+        const int32_t* wind_x,     // S2c/S3b: Q16.16
+        const int32_t* wind_y,     // S2c/S3b: Q16.16
         const bool* is_wall,
         const bool* is_vacuum,
         const bool* flammable,

@@ -14,18 +14,22 @@ S3a makes the Python O2 mean an INTEGER reduction on the int32 Q16.16 atmosphere
 proves the two predicates agree across a sweep of atmosphere values, both for
 homogeneous and heterogeneous neighbours.
 
-THE ONE SUBTLETY (verified, documented, expected): the C++ ``P`` gate is STILL
-FLOAT this commit (S3a flips the representation + the Python twin; the C++
-logistic — including ``P`` — goes integer in S3b). The integer ``mean_round`` and
-the C++ float32 division agree EVERYWHERE except at an EXACT threshold tie, where
-the integer mean lands precisely on ``quantize(0.60)`` (so ``>=`` is True) while
-the float32 sum/division rounds the exact-0.60 mean a hair BELOW 0.60 (so ``>=``
-is False). At those ties the INTEGER gate is the correct, deterministic one — an
-exact-0.60 mean genuinely meets a ``>= 0.60`` threshold — and S3b makes the C++
-adopt the same integer ``mean_round``, eliminating the discrepancy bit-for-bit.
-So the test asserts: (a) agreement on every NON-tie case, and (b) every
-disagreement is an exact threshold tie (``integer mean == quantize(threshold)``)
-— never a real divergence.
+S3b CLOSES THE GAP (the headline this file now gates): the C++ ``P`` gate is NOW
+INTEGER too — fire_simulation.cpp adopted the same ``mean_round`` the Python twin
+uses. So the two agree EXACTLY (ZERO disagreements), INCLUDING negative-atmosphere
+neighbour configs — see ``test_py_twin_matches_cpp_integer_gate_exactly_incl_negative``.
+That required the negative-branch fix: C++ integer ``/`` truncates toward ZERO,
+Python ``//`` FLOORS (toward -inf), so a naive twin diverges on a transiently
+NEGATIVE neighbour sum (atmosphere CAN dip negative — wave forcing subtracts, no
+hard >=0 clamp); the twin now emulates trunc-toward-zero so both bit-match on ALL
+inputs.
+
+The HISTORICAL S3a tests below compare the Python integer gate to the OLD C++
+FLOAT gate (``cpp_float_o2_gate``) and document the tie-only gap S3b just closed:
+the integer ``mean_round`` and the old C++ float32 division agreed EVERYWHERE
+except at an EXACT threshold tie (integer mean == ``quantize(0.60)``, so ``>=`` is
+True; the float32 mean rounds a hair below). Those tests are kept as the record of
+why S3b's integer gate is the correct/deterministic one.
 
 Run:
     C:/Users/steen/anaconda3/python.exe -m pytest tests/test_fire_o2_invariant.py -q
@@ -72,18 +76,43 @@ def cpp_float_o2_gate(neigh_qs):
     return bool(P >= np.float32(O2_THRESHOLD))
 
 
+def cpp_mean_round(s, count):
+    """Faithful scalar replica of C++ fixed_point.h::mean_round — the gate the C++
+    fire P now uses (S3b). round-half-away-from-zero, sign-symmetric, with C++
+    integer `/` TRUNCATING TOWARD ZERO on both branches (NOT floor toward -inf)."""
+    s = int(s)
+    count = int(count)
+    if count <= 0:
+        return 0
+    half = count // 2
+    num = (s + half) if s >= 0 else (s - half)
+    # C++ integer division truncates toward zero.
+    return int(num / count) if num >= 0 else -((-num) // count)
+
+
 def py_int_o2_mean(neigh_qs):
-    """The S3a Python integer O2 mean: int64 neighbour-sum + mean_round
-    (round-half-away-from-zero), the EXACT reduction in apply_temperature_ignition
-    (and the one the C++ fire adopts in S3b)."""
+    """The Python integer O2 mean as apply_temperature_ignition computes it (S3b):
+    int64 neighbour-sum + the mean_round emulation WITH the negative-branch
+    trunc-toward-zero fix (review carry-forward #2) so it bit-matches the C++
+    mean_round on ALL inputs, including a transiently-negative neighbour sum."""
     s = np.int64(sum(int(q) for q in neigh_qs))
     count = np.int64(len(neigh_qs))
     half = count // 2
-    return int((s + half) // count if s >= 0 else (s - half) // count)
+    if s >= 0:
+        return int((s + half) // count)
+    neg_num = s - half
+    return int(-((-neg_num) // count))   # trunc toward zero (== C++ `/`)
 
 
 def py_int_o2_gate(neigh_qs):
     return py_int_o2_mean(neigh_qs) >= THR_Q
+
+
+def cpp_int_o2_gate(neigh_qs):
+    """The S3b C++ fire P gate: integer mean_round on the open-neighbour sum, then
+    a Q16.16 `>=` threshold compare (the predicate fire_simulation.cpp now runs)."""
+    s = sum(int(q) for q in neigh_qs)
+    return cpp_mean_round(s, len(neigh_qs)) >= THR_Q
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +162,65 @@ def test_o2_gate_heterogeneous_disagreements_are_exact_ties_only():
     assert n_disagree > 0, (
         "the heterogeneous sweep produced no threshold ties — it is not "
         "exercising the boundary where the gates could differ")
+
+
+# ---------------------------------------------------------------------------
+# (1b) S3b HEADLINE — the Python ignition twin and the C++ fire P gate now BOTH
+#      use the integer mean_round, so they agree EXACTLY (ZERO disagreements),
+#      INCLUDING negative-atmosphere neighbour configs. S3a left a tie-only gap
+#      (Python integer vs C++ FLOAT); S3b closes it to ZERO by making the C++ gate
+#      integer too, AND fixes the Python twin's negative-branch divide
+#      (trunc-toward-zero, NOT floor) so the two bit-match even on a transiently
+#      negative neighbour sum (atmosphere CAN dip negative — wave forcing subtracts).
+# ---------------------------------------------------------------------------
+def test_py_twin_matches_cpp_integer_gate_exactly_incl_negative():
+    """The S3b invariant the brief mandates: the Python twin's O2 mean and the C++
+    fire P gate (both integer mean_round) agree on the IDENTICAL boolean across a
+    sweep that includes NEGATIVE atmosphere — ZERO disagreements. This is the
+    negative-branch fix: C++ `/` truncates toward zero, Python `//` floors, so a
+    naive twin diverges on a negative neighbour sum; the fix makes both trunc-to-0."""
+    # A COMPACT value set spanning negative through positive atmosphere, hitting the
+    # sign boundary (where floor vs trunc diverge) and the 0.60 threshold. Kept small
+    # (combinatorial: repeat up to 4) but chosen to land on odd sums over count so
+    # the divide is NOT exact (the only regime where trunc != floor can bite), plus
+    # raw odd/even count combinations. ~22 values -> 22^4 ~ 234k combos at most.
+    raw_vals = [-0.30, -0.21, -0.13, -0.07, -0.03, -0.01, 0.0, 0.01, 0.03, 0.07,
+                0.17, 0.31, 0.49, 0.55, 0.59, 0.60, 0.61, 0.63, 0.70, 0.83, 1.0]
+    qs = [atmosphere_fixed.quantize_scalar(float(v)) for v in raw_vals]
+    # Add a few RAW odd-count integers near 0 so a negative sum that is NOT a clean
+    # multiple of count is exercised (the trunc-vs-floor divergence surface).
+    qs += [-3, -1, 1, 3, -65535, 65535, -1, -2]
+
+    # (a) the MEAN itself bit-matches (the reduction, before the threshold), so the
+    # property holds independent of the specific threshold.
+    n_mean_disagree = 0
+    n_gate_disagree = 0
+    n_neg_seen = 0
+    n_neg_inexact = 0
+    for count in (1, 2, 3, 4):
+        for combo in itertools.product(qs, repeat=count):
+            s = sum(int(q) for q in combo)
+            if s < 0:
+                n_neg_seen += 1
+                if s % count != 0:
+                    n_neg_inexact += 1   # the regime where trunc != floor
+            if py_int_o2_mean(combo) != cpp_mean_round(s, count):
+                n_mean_disagree += 1
+            if py_int_o2_gate(combo) != cpp_int_o2_gate(combo):
+                n_gate_disagree += 1
+    assert n_mean_disagree == 0, (
+        f"{n_mean_disagree} mean disagreements between the Python twin and the C++ "
+        f"mean_round — the negative-branch trunc-toward-zero fix is incomplete")
+    assert n_gate_disagree == 0, (
+        f"{n_gate_disagree} O2-gate disagreements between the Python ignition twin "
+        f"and the C++ fire P gate — must be ZERO after S3b (both integer mean_round)")
+    # The sweep MUST actually exercise negative sums that are NOT exact multiples of
+    # count (the regime where trunc-toward-zero and floor-toward-(-inf) DIVERGE — the
+    # whole point of the fix). A vacuous sweep would silently pass.
+    assert n_neg_seen > 0 and n_neg_inexact > 0, (
+        f"the sweep did not exercise the negative inexact-divide regime "
+        f"(neg_seen={n_neg_seen}, neg_inexact={n_neg_inexact}) — it is not testing "
+        f"the trunc-vs-floor divergence the negative-branch fix closes")
 
 
 # ---------------------------------------------------------------------------

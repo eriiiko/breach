@@ -51,14 +51,16 @@ def test_door_explosive_detonates_without_crash():
     # explosive order targeting a hull tile on the ring: Order(type, target_fx, target_fy, phase, ...)
     u.orders.append(Order(ORDER_EXPLOSIVE, 5, 2, 0, det_slot=DET_START_PHASE1))
 
-    hp_before = float(sim.gmap.wall_hp.sum())
+    # S3b: wall_hp is int32 Q16.16 — sum in int64 so a hull-dense map (HP*65536 per
+    # tile) can't overflow the default int32 accumulator before the compare.
+    hp_before = float(sim.gmap.wall_hp.astype(np.int64).sum())
 
     # THE REGRESSION: this raised before the fix.
     process_door_explosives(
         sim.gmap, sim.edit_queue, sim.units, DET_START_PHASE1, sim.rng)
     sim.edit_queue.flush(sim.gmap, sim.rng)
 
-    hp_after = float(sim.gmap.wall_hp.sum())
+    hp_after = float(sim.gmap.wall_hp.astype(np.int64).sum())
     assert hp_after < hp_before, (
         f"door explosive did not damage any wall: {hp_before} -> {hp_after}")
 

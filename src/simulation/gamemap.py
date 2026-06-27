@@ -80,7 +80,11 @@ class GameMap:
 
         # Field grids (allocate up front; populate from level + caches below)
         self.material     = np.zeros((h, w), dtype=np.int8)
-        self.wall_hp      = np.zeros((h, w), dtype=np.float32)
+        # wall_hp — int32 Q16.16 (S3b): structural HP, the fire's fuel source
+        # (F = clamp01(wall_hp/fuel_ref)). PHYSICAL >1 quantity, but the burn-through
+        # depletion (wall_damage*dt*I ≪ 1 HP/tick) needs the Q16.16 fraction. Boundary
+        # helpers in simulation.wall_fixed; populated from the table in _update_caches.
+        self.wall_hp      = np.zeros((h, w), dtype=np.int32)
         self.is_vacuum    = np.zeros((h, w), dtype=bool)
         self.flammable    = np.zeros((h, w), dtype=bool)
         # S2c: the atmosphere (bulk pressure) is int32 Q16.16 (scale 2^16, shared
@@ -385,7 +389,10 @@ class GameMap:
         # channel; built/patched through the same seam as light_atten.
         self.heat_atten = np.ascontiguousarray(tbl.heat_atten[m], dtype=np.float32)
         self.flammable = tbl.flammable[m]
-        self.wall_hp = tbl.hp[m].astype(np.float32, copy=True)
+        # wall_hp -> int32 Q16.16 (S3b): quantize the per-material HP table once at
+        # cache build (round-to-nearest; integer HP values are exact at Q16.16).
+        from simulation import wall_fixed as _wall_fx
+        self.wall_hp = _wall_fx.quantize(tbl.hp[m])
         self.conductivity = tbl.conductivity[m].astype(np.float32, copy=True)
         # Per-tile inverse-thermal-mass shift = log2(thermal_mass), parallel to
         # the conductivity cache (engine/06 §1.2). Drives the heat -> temperature
@@ -505,7 +512,9 @@ class GameMap:
         # breached wall's heat occlusion updates the instant the tile changes.
         self.heat_atten[fy, fx] = float(tbl.heat_atten[mat_id])
         self.flammable[fy, fx] = bool(tbl.flammable[mat_id])
-        self.wall_hp[fy, fx] = float(tbl.hp[mat_id])
+        # wall_hp -> int32 Q16.16 (S3b): quantize the new material's HP scalar.
+        from simulation import wall_fixed as _wall_fx
+        self.wall_hp[fy, fx] = _wall_fx.quantize_scalar(float(tbl.hp[mat_id]))
         self.conductivity[fy, fx] = float(tbl.conductivity[mat_id])
         # Inverse-thermal-mass shift cache — patched through the SAME seam as
         # conductivity so a breached wall's thermal coupling updates instantly.

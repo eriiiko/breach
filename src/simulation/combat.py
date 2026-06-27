@@ -349,15 +349,24 @@ def apply_temperature_ignition(gmap, o2_threshold, ignition_seed):
         sum_atm[ys0:ys1, xs0:xs1] += np.where(nbr_open, nbr_atm, np.int64(0))
         count[ys0:ys1, xs0:xs1] += nbr_open.astype(np.int64)
     # Round-half-away-from-zero mean == fixed_point.h::mean_round (sign-symmetric,
-    # no DC bias). `sum_atm` is non-negative (atmosphere >= 0), so the +half branch
-    # is the live one; the -half branch mirrors mean_round for completeness. A
-    # fully walled-in tile (count == 0) averages to 0 -> below threshold -> never
-    # ignites (the C++ `count > 0 ? sum/count : 0` guard, here via safe_count).
+    # no DC bias). A fully walled-in tile (count == 0) averages to 0 -> below
+    # threshold -> never ignites (the C++ `count > 0 ? sum/count : 0` guard, here
+    # via safe_count).
+    #
+    # NEGATIVE-BRANCH FIX (S3b, review carry-forward #2): the C++ mean_round divide
+    # TRUNCATES TOWARD ZERO (C++ integer `/`), NOT toward -inf. Python `//` FLOORS
+    # (toward -inf), so the two diverge on a NEGATIVE neighbour sum — and the
+    # atmosphere CAN dip transiently negative (wave forcing subtracts, no hard >=0
+    # clamp). To make the Python ignition twin and the C++ fire P gate bit-match on
+    # ALL inputs (not just non-negative ones — the S3a tie-only gap), emulate
+    # trunc-toward-zero on the negative branch: trunc(a/b) = -((-a)//b) for b>0.
     safe_count = np.where(count < 1, np.int64(1), count)
     half = safe_count // 2
+    pos_num = sum_atm + half           # >= 0 branch: (sum+half) trunc == floor
+    neg_num = sum_atm - half           # <  0 branch: trunc toward 0, NOT floor
     mean_atm = np.where(sum_atm >= 0,
-                        (sum_atm + half) // safe_count,
-                        (sum_atm - half) // safe_count)   # Q16.16 mean (int64)
+                        pos_num // safe_count,
+                        -((-neg_num) // safe_count))      # Q16.16 mean (int64), trunc-to-0
     # Threshold quantized ONCE into Q16.16 — a plain integer >= compare, no float.
     from simulation import fire_fixed as _fire_fx
     o2_threshold_q = _fire_fx.quantize_scalar(float(o2_threshold))

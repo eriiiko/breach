@@ -47,6 +47,8 @@ from simulation.materials import (  # noqa: E402
     MaterialTable, MAT_AIR, MAT_WOOD, MAT_HULL,
 )
 from simulation import fire_fixed  # noqa: E402  S3a: gmap.fire is int32 Q16.16
+from simulation import atmosphere_fixed  # noqa: E402  S2c: atmosphere/wind Q16.16
+from simulation import wall_fixed  # noqa: E402  S3b: wall_hp is int32 Q16.16
 
 # S3a: gmap.fire is int32 Q16.16. Helpers for the Simulation-based tests that
 # seed / read the field at real intensity (the FireSimulation.step stub tests
@@ -76,6 +78,10 @@ def _params_runner():
 # is exercised cleanly and deterministically.
 # ---------------------------------------------------------------------------
 class _FeedbackScene:
+    # S3b: the C++ FireSimulation.step is now INTEGER end-to-end. fire/atmosphere/
+    # wall_hp/wind are int32 Q16.16; the scene quantizes its real-valued inputs and
+    # reads the fire intensity back via dequantize. temperature/smoke were already
+    # int32. (atmosphere is the S2c Q16.16 domain, wall_hp the S3b one.)
     def __init__(self, *, I, T=0.0, wall_hp=60.0, atm=1.0, wind=0.0):
         m = np.full((3, 3), MAT_AIR, dtype=np.int8)
         m[1, 1] = MAT_WOOD
@@ -83,19 +89,21 @@ class _FeedbackScene:
         self.flammable = np.ascontiguousarray(_TBL.flammable[m])
         self.solid = np.ascontiguousarray(_TBL.permeability[m] <= 0.0)
         self.is_vacuum = np.zeros((3, 3), dtype=bool)
-        # Air ring carries the chosen pressure; the solid centre holds none.
+        # Air ring carries the chosen pressure; the solid centre holds none. (Q16.16)
         self.atmosphere = np.where(
-            self.solid, 0.0, float(atm)).astype(np.float32)
-        self.smoke = np.zeros((3, 3), dtype=np.float32)
-        self.wall_hp = np.zeros((3, 3), dtype=np.float32)
-        self.wall_hp[1, 1] = float(wall_hp)
+            self.solid, 0, atmosphere_fixed.quantize_scalar(float(atm))
+        ).astype(np.int32)
+        self.smoke = np.zeros((3, 3), dtype=np.int32)
+        self.wall_hp = np.zeros((3, 3), dtype=np.int32)
+        self.wall_hp[1, 1] = wall_fixed.quantize_scalar(float(wall_hp))
         self.temperature = np.zeros((3, 3), dtype=np.int32)
         self.temperature[1, 1] = int(round(float(T) * TEMP_SCALE))
-        self.fire = np.zeros((3, 3), dtype=np.float32)
-        self.fire[1, 1] = float(I)
-        # Uniform wind in +x (magnitude `wind`). The feedback only reads |wind|.
-        self.wind_x = np.full((3, 3), float(wind), dtype=np.float32)
-        self.wind_y = np.zeros((3, 3), dtype=np.float32)
+        self.fire = np.zeros((3, 3), dtype=np.int32)
+        self.fire[1, 1] = fire_fixed.quantize_scalar(float(I))
+        # Uniform wind in +x (magnitude `wind`). The feedback only reads |wind|. (Q16.16)
+        self.wind_x = np.full((3, 3), atmosphere_fixed.quantize_scalar(float(wind)),
+                              dtype=np.int32)
+        self.wind_y = np.zeros((3, 3), dtype=np.int32)
 
     def step(self, fire_sim, dt=DT):
         fire_sim.step(
@@ -104,7 +112,7 @@ class _FeedbackScene:
             self.solid, self.is_vacuum, self.flammable,
             dt,
         )
-        return float(self.fire[1, 1])
+        return float(self.fire[1, 1]) / fire_fixed.FP_ONE_F
 
 
 # ---------------------------------------------------------------------------
@@ -252,16 +260,17 @@ def test_plume_raises_own_atmosphere_wind_points_outward():
     flammable = np.ascontiguousarray(_TBL.flammable[material])
     solid = np.ascontiguousarray(_TBL.permeability[material] <= 0.0)
     is_vacuum = np.zeros((h, w), dtype=bool)
-    atmosphere = np.full((h, w), 1.0, dtype=np.float32)
-    smoke = np.zeros((h, w), dtype=np.float32)
-    wall_hp = np.zeros((h, w), dtype=np.float32)
-    wall_hp[2, 2] = 60.0
+    # S3b: all the fire-step fields are int32 Q16.16.
+    atmosphere = np.full((h, w), atmosphere_fixed.quantize_scalar(1.0), dtype=np.int32)
+    smoke = np.zeros((h, w), dtype=np.int32)
+    wall_hp = np.zeros((h, w), dtype=np.int32)
+    wall_hp[2, 2] = wall_fixed.quantize_scalar(60.0)
     temperature = np.zeros((h, w), dtype=np.int32)
     temperature[2, 2] = int(round(500.0 * TEMP_SCALE))
-    fire = np.zeros((h, w), dtype=np.float32)
-    fire[2, 2] = 0.8
-    wind_x = np.zeros((h, w), dtype=np.float32)
-    wind_y = np.zeros((h, w), dtype=np.float32)
+    fire = np.zeros((h, w), dtype=np.int32)
+    fire[2, 2] = fire_fixed.quantize_scalar(0.8)
+    wind_x = np.zeros((h, w), dtype=np.int32)
+    wind_y = np.zeros((h, w), dtype=np.int32)
 
     atm_before = float(atmosphere[2, 2])
     for _ in range(10):
