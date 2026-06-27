@@ -3,7 +3,8 @@
 // contract.
 
 #include "temperature_solver.h"
-#include "raycaster.h"   // HEAT_SCALE, heat_saturating_add (shared Q16.16 domain)
+#include "raycaster.h"     // HEAT_SCALE, heat_saturating_add (shared Q16.16 domain)
+#include "fixed_point.h"   // S3c: quantize() for the o2_vacuum_thresh integer compare
 
 // Direction order for the per-tile face_shift cache (MUST match the Python
 // bake in GameMap: index 0=N, 1=S, 2=E, 3=W).
@@ -24,7 +25,7 @@ void TemperatureSolver::step(
     const int32_t* face_shift,
     const bool* solid,
     const bool* is_vacuum,
-    const float* atmosphere,
+    const int32_t* atmosphere,   // S3c: Q16.16 int32 (was float — the last float input)
     int h, int w
 ) const {
     const int n = h * w;
@@ -99,7 +100,10 @@ void TemperatureSolver::step(
     //
     // Vacuum-exposure (§3.3): a solid tile sheds 4× faster if ANY in-bounds
     // 4-neighbour is space-facing — `is_vacuum[n]` OR `atmosphere[n] <
-    // o2_vacuum_thresh`. This reuses the SAME geometric N,S,E,W gather the
+    // o2_vacuum_thresh`. S3c: atmosphere is Q16.16 int32 now, so the threshold
+    // compare is a pure INTEGER compare against `quantize(o2_vacuum_thresh)` —
+    // this TU's LAST float input is gone (it is fully integer). This reuses the
+    // SAME geometric N,S,E,W gather the
     // conduction pass walks (the four neighbour cells are already in hand),
     // independent of the conduction face_shift (a wall facing vacuum has a
     // NO_FACE conduction face there, but is still exposed for cooling). Ties to
@@ -114,7 +118,10 @@ void TemperatureSolver::step(
     // exact, jitter-free resting state at ambient (NO "+1 if nonzero" nudge).
     // Since the shifted magnitude is always <= |T|, a single isolated tile
     // relaxes toward 0 and never crosses below ambient.
-    const float thresh = o2_vacuum_thresh;
+    // Quantize the o2_vacuum_thresh config dial ONCE per step (round-to-nearest,
+    // the load/boundary cast) — the exposure test is then a Q16.16 integer compare
+    // against the int32 atmosphere field. No per-cell float.
+    const int32_t thresh_q = fixedpoint::quantize((double)o2_vacuum_thresh);
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             const int i = y * w + x;
@@ -129,7 +136,7 @@ void TemperatureSolver::step(
                 const int nx = x + DX[d];
                 if (ny < 0 || ny >= h || nx < 0 || nx >= w) continue;
                 const int ni = ny * w + nx;
-                if (is_vacuum[ni] || atmosphere[ni] < thresh) {
+                if (is_vacuum[ni] || atmosphere[ni] < thresh_q) {  // Q16.16 int compare
                     exposed = true;
                     break;
                 }

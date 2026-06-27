@@ -108,10 +108,13 @@ def _grid(material_ids, *, vacuum=None, atmosphere=None, face=None):
         is_vacuum = np.zeros((1, w), dtype=bool)
     else:
         is_vacuum = np.asarray(vacuum, dtype=bool).reshape(1, w)
+    # S3c: atmosphere is int32 Q16.16 — real value * FP_ONE, round-to-nearest (the
+    # solver's threshold is now quantize(o2_vacuum_thresh), a pure integer compare).
     if atmosphere is None:
-        atm = np.ones((1, w), dtype=np.float32)
+        atm = np.full((1, w), 1 << 16, dtype=np.int32)   # 1.0 real == FP_ONE
     else:
-        atm = np.asarray(atmosphere, dtype=np.float32).reshape(1, w)
+        atm = np.rint(np.asarray(atmosphere, dtype=np.float64).reshape(1, w)
+                      * (1 << 16)).astype(np.int32)
     return (temperature,
             heat, shift, face,
             np.ascontiguousarray(solid),
@@ -265,7 +268,8 @@ def test_deterministic_bit_identical():
     base = rng.integers(-(1 << 22), 1 << 22, size=(h_, w), dtype=np.int64).astype(np.int32)
     # A random vacuum mask so both shifts are exercised.
     vmask = rng.integers(0, 2, size=(h_, w)).astype(bool)
-    atm = np.ascontiguousarray(np.ones((h_, w), dtype=np.float32))
+    # S3c: atmosphere int32 Q16.16 (full interior == FP_ONE counts).
+    atm = np.ascontiguousarray(np.full((h_, w), 1 << 16, dtype=np.int32))
     shift = np.ascontiguousarray(_TBL.heat_inv_shift[mats].astype(np.int32))
     solid = np.ascontiguousarray(_TBL.permeability[mats] <= 0.0)
     face = np.ascontiguousarray(np.full((h_, w, 4), NO_FACE, dtype=np.int32))

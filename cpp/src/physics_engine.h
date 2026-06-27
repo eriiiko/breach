@@ -43,19 +43,20 @@ public:
     // water head/ripple bridge is retired. Reused (no per-tick alloc; GPU-prep).
     mutable std::vector<float> wave_p_f_;
 
-    // TEMPERATURE atmosphere bridge scratch: the temperature pass still reads
-    // atmosphere as float for its vacuum-exposure threshold. step_tail dequantizes
-    // the (POST-fire-plume) int32 atmosphere into atm_f_ and hands THAT to the
-    // temperature step (read-only). S3b made the fire integer (it reads atmosphere/
-    // wind directly now), so atm_f_ is the LAST float bridge here — S3c retires it
-    // when temperature goes integer. Reused (no per-tick alloc; GPU-prep).
+    // WATER-HEAD atmosphere bridge scratch (S2c). The ONLY surviving consumer of
+    // atm_f_ after S3c: the water solver's head term k_p·(atm+wave_p) still reads
+    // `atmosphere` as float inside step_water (the gated head-term FLOAT BRIDGE).
+    // step_water dequantizes the int32 atmosphere into atm_f_ and hands THAT to
+    // water.step. This is a SEPARATE, documented water-head bridge (master plan /
+    // S1) — NOT the fire/temperature bridge S3c retired. It collapses to
+    // integer<-integer when the water head term goes fully integer (a later
+    // water/atmosphere unification), NOT in S3. Reused (no per-tick alloc; GPU-prep).
+    //
+    // S3c DELETED the temperature-pass atmosphere bridge (the fire/temperature path
+    // now reads int32 atmosphere directly — temperature's threshold is a Q16.16
+    // compare), AND the dead wind_x_f_/wind_y_f_/fire_f_ scratch (the fire logistic
+    // went integer in S3b — wind/fire are read as int32, no float scratch).
     mutable std::vector<float> atm_f_;
-    // DEAD after S3b (the fire logistic went integer — wind/fire are read as int32
-    // directly, no float scratch). Kept declared for S3c to delete cleanly with the
-    // rest of the bridge; not written anywhere now.
-    mutable std::vector<float> wind_x_f_;
-    mutable std::vector<float> wind_y_f_;
-    mutable std::vector<float> fire_f_;
 
     // --- Patch 1 S4a: the per-tick orchestration TAIL --------------------
     // Moves the three trailing PURE-SOLVER-CALL steps of PhysicsRunner.step

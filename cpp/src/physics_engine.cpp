@@ -35,8 +35,9 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // fire group — S3b: fire + wall_hp are Q16.16 int32 too; S2c: atmosphere +
         // wind are Q16.16 int32. Fire now reads ALL of these as INTEGER directly
         // (the fire-field + atm/wind float bridges are GONE — S3b makes the logistic
-        // integer end-to-end). The temperature pass still reads atmosphere as float
-        // (S3c retires that last bridge), so atm_f_ is kept only for it.
+        // integer end-to-end). S3c: the temperature pass reads the int32 atmosphere
+        // directly too (its threshold is a Q16.16 compare) — the LAST float bridge
+        // in the fire/temperature path is GONE. No atm_f_ scratch in step_tail.
         int32_t* fire_field, int32_t* atmosphere, int32_t* smoke_field, int32_t* wall_hp,  // S3b: fire+wall_hp Q16.16; S2b: smoke Q16.16; S2c: atm Q16.16
         const int32_t* temperature, const int32_t* wind_x, const int32_t* wind_y,      // S2c: wind Q16.16
         const bool* is_vacuum, const bool* flammable,
@@ -93,20 +94,16 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     // S3b: the fire logistic is now INTEGER end-to-end. Fire reads fire/atmosphere/
     // wall_hp/wind directly as int32 Q16.16 and writes the int32 atmosphere plume in
     // place — the S3a fire-field bridge and the S2c atm/wind float bridges that fed
-    // the fire are GONE. The ONLY remaining float bridge is for the TEMPERATURE pass
-    // below, which still reads atmosphere as float for its vacuum-exposure threshold
-    // (S3c retires that last consumer). Faithful ORDER: the old code ran the fire on
-    // a float atmosphere scratch (mutating in the plume), then the temperature pass
-    // read that SAME post-plume scratch. So run the integer fire FIRST (its plume
-    // mutates the int32 atmosphere), THEN dequantize the POST-plume int32 atmosphere
-    // into atm_f_ for the temperature pass — same post-plume read, now integer-sourced.
+    // the fire are GONE. S3c: the LAST float bridge in step_tail (the temperature
+    // pass's float-atmosphere read) is now GONE too — temperature reads the int32
+    // atmosphere directly. Faithful ORDER preserved: the fire runs FIRST (its plume
+    // mutates the int32 atmosphere in place), then the temperature pass reads that
+    // SAME post-plume atmosphere — now integer-sourced with NO dequantize scratch.
     std::vector<std::pair<int, int>> destroyed = this->fire.step(
         fire_field, atmosphere, smoke_field, wall_hp,
         temperature, wind_x, wind_y,
         solid, is_vacuum, flammable,
         h, w, sim_time);
-    if (atm_f_.size() != (size_t)n) atm_f_.assign(n, 0.0f);
-    for (int i = 0; i < n; ++i) atm_f_[i] = dequantize_f(atmosphere[i]);  // TEMP BRIDGE (post-plume int32 -> float)
 
     // --- 3. Temperature pass (PhysicsRunner: self.temperature.step) ------
     // Arg order cross-checked against bindings.cpp TemperatureSolver.step and
@@ -117,14 +114,13 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     // (gmap.temperature in Python) — the binding extracts both a const and a
     // mutable pointer from the one numpy array. The fire read it above; the
     // temperature solver now updates it in place for next tick.
-    // temperature reads atmosphere as float (read-only, the space-facing vacuum-
-    // exposure threshold) — pass atm_f_, the POST-fire-plume int32 atmosphere
-    // dequantized just above (the fire's integer plume already mutated the int32
-    // field). This is the LAST float bridge in step_tail; S3c retires it when the
-    // temperature TU goes integer (its atmosphere arg -> const int32_t*).
+    // S3c: temperature reads the POST-fire-plume int32 `atmosphere` DIRECTLY (its
+    // vacuum-exposure threshold is now a Q16.16 integer compare inside the TU). The
+    // atm_f_ dequantize bridge that stood here is GONE — step_tail has NO float
+    // bridge left in the FIRE/TEMPERATURE path (the centrepiece-arc end-state).
     this->temperature.step(
         temperature_mut, heat, heat_inv_shift, face_shift,
-        solid, is_vacuum, atm_f_.data(),
+        solid, is_vacuum, atmosphere,
         h, w);
 
     return destroyed;

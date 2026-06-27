@@ -262,7 +262,7 @@ PYBIND11_MODULE(breach_physics, m) {
                         py::array_t<int32_t> face_shift,
                         py::array_t<bool>    solid,
                         py::array_t<bool>    is_vacuum,
-                        py::array_t<float>   atmosphere) {
+                        py::array_t<int32_t> atmosphere) {   // S3c: Q16.16 int32 (was float)
             auto [temp, h, w]     = get_2d(temperature);
             auto [hp, h2, w2]     = get_2d_const(heat);
             auto [shift, h3, w3]  = get_2d_const(heat_inv_shift);

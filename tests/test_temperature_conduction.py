@@ -97,7 +97,8 @@ def _cooling_fields(shape):
     disabled in this module's _solver (shift 31), so the values are immaterial —
     but valid arrays must still be passed."""
     is_vacuum = np.ascontiguousarray(np.zeros(shape, dtype=bool))
-    atmosphere = np.ascontiguousarray(np.ones(shape, dtype=np.float32))
+    # S3c: atmosphere is int32 Q16.16 (1.0 real == FP_ONE == 65536 counts).
+    atmosphere = np.ascontiguousarray(np.full(shape, 1 << 16, dtype=np.int32))
     return is_vacuum, atmosphere
 
 

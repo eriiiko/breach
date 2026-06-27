@@ -18,7 +18,13 @@ RATCHET, not an enforced zero-gate:
   * It FAILS if a count goes UP (new float added to a TU that is supposed to be
     shrinking toward integer).
   * As each solver is migrated to integer, drop its baseline numbers toward 0;
-    when a TU reaches 0/0/0 this becomes a true "no float here" gate for that TU.
+    when a TU reaches its integer-end-to-end floor it becomes a HARD "no NEW float
+    here" gate for that TU. As of S3c, fire_simulation.cpp + temperature_solver.cpp
+    are MIGRATED (integer end-to-end) — their residual counts are the DOCUMENTED
+    EXCEPTIONS the plan allows (the `float dt` boundary cast, FireParams float
+    members, the load-time `quantize`/`make_recip` double precompute, render/glow),
+    pinned by test_migrated_tus_at_documented_floor (a real-float regression trips
+    it). The whole sim FIELD path is now integer after S3c.
 
 It is a GUARD MECHANISM, deliberately simple and robust — a whole-word line
 scan, NOT a C++ parser. It counts LINES that mention the token (a line with two
@@ -173,14 +179,53 @@ _FP_FAST_RE = re.compile(r"fp:fast")
 #     pass's atmosphere read (atm_f_, dequantized POST-plume) — S3c retires it when
 #     temperature goes integer, then fire_simulation.cpp + temperature_solver.cpp
 #     join the hard 0/0/0 gate (plan §S3c CI ratchet).
+# S3c (collapse the fire bridge — the CLOSER of S3, 2026-06-27) re-baselined
+# temperature_solver.cpp + physics_engine.cpp, and MIGRATED fire + temperature
+# into the ratchet at their DOCUMENTED-EXCEPTION FLOOR (plan §S3c, watch item #3).
+# After S3c there is NO float bridge left inside the sim FIELD path (water + S2
+# group + fire + temperature are all integer); only the Q2-fenced Python combat HP
+# math + render/cosmetic + the documented boundary casts remain.
+#   * temperature_solver.cpp `float` 2 -> 3, `double` 1 -> 2: the atmosphere arg
+#     went `float* -> const int32_t*` and the vacuum-exposure threshold is now a
+#     Q16.16 INTEGER compare (atmosphere[n] < quantize(o2_vacuum_thresh)). This TU
+#     is now FULLY INTEGER — every `float`/`double` line that remains is either a
+#     COMMENT ("was float", "double-buffered" prose) or the ONE documented boundary
+#     cast `quantize((double)o2_vacuum_thresh)` (a load/boundary scalar cast, the
+#     LOCKED S1 idiom — no per-cell float). The count rose only because S3c ADDED
+#     explanatory comments; there is no new arithmetic. This is its MIGRATED FLOOR.
+#   * physics_engine.cpp `float` 65 -> 62, `double` 30 -> 30: step_tail's atm_f_
+#     dequantize bridge for the temperature pass is GONE (temperature reads int32
+#     atmosphere directly), and the dead wind_x_f_/wind_y_f_/fire_f_ scratch decls
+#     were deleted. The surviving `float`/atm_f_ use is the SEPARATE, documented
+#     S2c WATER-HEAD bridge inside step_water (k_p·(atm+wave_p) reads atmosphere as
+#     float) — NOT a fire/temperature bridge; it retires with a later water unify.
+# MIGRATED-FLOOR TUs (plan §S3c CI ratchet): fire_simulation.cpp +
+# temperature_solver.cpp are now INTEGER end-to-end. Their residual float/double
+# counts are NOT a "still float" baseline — they are the DOCUMENTED EXCEPTIONS the
+# plan explicitly allows: the `float dt` step-arg boundary cast, the FireParams
+# float-member declarations/comments, the load-time `quantize((double)param)` /
+# `make_recip((double)param)` constant precompute (the LOCKED S1 idiom), and the
+# render/glow boundary. A later patch that adds REAL per-cell float arithmetic to
+# either TU pushes the count above this floor and TRIPS the ratchet — that is the
+# gate. See MIGRATED_FLOOR_TUS below.
 BASELINE = {
     "atmosphere_solver.cpp":  {"float": 32, "double": 30, "fp:fast": 1},
     "smoke_dynamics.cpp":     {"float": 24, "double": 13, "fp:fast": 0},
     "fire_simulation.cpp":    {"float": 6,  "double": 19, "fp:fast": 0},
-    "water_solver.cpp":       {"float": 32, "double": 23, "fp:fast": 1},
-    "temperature_solver.cpp": {"float": 2,  "double": 1,  "fp:fast": 0},
-    "physics_engine.cpp":     {"float": 65, "double": 30, "fp:fast": 1},
+    "water_solver.cpp":       {"float": 32, "double": 22, "fp:fast": 1},
+    "temperature_solver.cpp": {"float": 3,  "double": 2,  "fp:fast": 0},
+    "physics_engine.cpp":     {"float": 62, "double": 30, "fp:fast": 1},
 }
+
+# The TUs that have been MIGRATED to integer end-to-end (S3c). For these, the
+# ratchet is a HARD gate AT THE DOCUMENTED-EXCEPTION FLOOR: the recorded BASELINE
+# counts are not "remaining float to migrate" but the documented boundary casts +
+# comments the plan §S3c explicitly allows (the `float dt` arg, FireParams float
+# members, the load-time `quantize`/`make_recip` double precompute, render/glow).
+# A separate test (test_migrated_tus_at_documented_floor) asserts these stay at or
+# below their floor, so a later patch cannot smuggle a new float into migrated
+# fire/temperature without tripping CI.
+MIGRATED_FLOOR_TUS = ("fire_simulation.cpp", "temperature_solver.cpp")
 
 
 def _count_tokens(path: Path) -> dict:
@@ -233,6 +278,41 @@ def test_no_new_float_in_sim_tus():
     assert not regressions, (
         "no-float ratchet tripped (NEW float in a sim solver TU):\n  "
         + "\n  ".join(regressions))
+
+
+def test_migrated_tus_at_documented_floor():
+    """HARD GATE for the MIGRATED (integer end-to-end) TUs — fire + temperature.
+
+    Per plan §S3c, fire_simulation.cpp and temperature_solver.cpp are now integer
+    end-to-end. Their residual float/double counts are NOT a "still float" baseline
+    to drive down — they are the DOCUMENTED EXCEPTIONS the plan allows (the
+    `float dt` step-arg boundary cast, the FireParams float-member declarations, the
+    load-time `quantize((double)param)` / `make_recip((double)param)` constant
+    precompute — the LOCKED S1 idiom — plus comment lines + the render/glow
+    boundary). This test pins those TUs AT OR BELOW their recorded floor: a later
+    patch that adds REAL per-cell float arithmetic (a new `float` local, a fast-math
+    pragma, a float field read) pushes a count above the floor and FAILS here — the
+    point of making fire/temperature join the no-float check.
+
+    (This is distinct from test_no_new_float_in_sim_tus, which is a soft per-TU
+    ratchet across ALL sim TUs; this one is the SHARP, named gate for the two TUs
+    the plan declares migrated, so a regression is reported as a migration breach.)"""
+    breaches = []
+    for tu in MIGRATED_FLOOR_TUS:
+        cur = _count_tokens(CPP_SRC / tu)
+        floor = BASELINE[tu]
+        for tok in ("float", "double", "fp:fast"):
+            if cur[tok] > floor[tok]:
+                breaches.append(
+                    f"{tu}: '{tok}' rose to {cur[tok]} (documented floor {floor[tok]}) "
+                    f"— a NEW float crept into a MIGRATED (integer end-to-end) TU. "
+                    f"The only float allowed here is the documented `dt` boundary "
+                    f"cast / load-time quantize precompute / render boundary. If this "
+                    f"is genuinely one of those, justify and raise the floor; "
+                    f"otherwise it is a determinism regression — revert it.")
+    assert not breaches, (
+        "MIGRATED-TU float floor breached (plan §S3c — fire/temperature must stay "
+        "integer end-to-end):\n  " + "\n  ".join(breaches))
 
 
 def test_baseline_is_not_stale_low():

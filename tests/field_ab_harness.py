@@ -433,3 +433,20 @@ if __name__ == "__main__":
           f"run-to-run (fire nonzero cells final: {nzf}) — the ENTIRE sim field path "
           f"(water + S2 group + fire) is now integer; the only float left in the "
           f"synced path is the Q2-fenced Python combat HP math")
+    # S3c — the CLOSER of S3: the temperature pass's float-atmosphere bridge is GONE
+    # (its vacuum-exposure threshold is a Q16.16 integer compare now), so there is
+    # NO float bridge left in the sim FIELD path (water + S2 group + fire +
+    # temperature all integer). The fire->heat->damage->kill loop is now WATCHED
+    # end-to-end by the synced unit-state digest below (the Q2-fenced Python HP math
+    # stays float-Python but is digested, so any nondeterminism is caught). The
+    # per-tick unit digest is already part of every snapshot (UNIT_DIGEST_KEY);
+    # assert it is bit-identical run-to-run here too (the field gate's unit half).
+    for t in range(len(a)):
+        assert unit_digest_hash(a[t]) == unit_digest_hash(b[t]), \
+            f"synced unit-state digest not bit-identical at tick {t} (S3c)"
+    print(f"OK: S3c synced unit-state digest bit-identical run-to-run — the "
+          f"temperature float bridge is GONE; NO float bridge remains in the sim "
+          f"FIELD path (water + S2 group + fire + temperature all integer). The "
+          f"fire->heat->damage->kill loop is watched end-to-end (final unit hash "
+          f"{unit_digest_hash(a[-1])[:12]}); the only float left is the Q2-fenced "
+          f"Python combat HP [now digested] + render/cosmetic + the `dt` boundary.")

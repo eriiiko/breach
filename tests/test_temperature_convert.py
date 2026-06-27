@@ -74,7 +74,8 @@ def _grid(material_ids):
     solid = (_TBL.permeability[mats] <= 0.0)
     face_shift = np.full((1, w, 4), NO_FACE, dtype=np.int32)
     is_vacuum = np.zeros((1, w), dtype=bool)
-    atmosphere = np.ones((1, w), dtype=np.float32)
+    # S3c: atmosphere is int32 Q16.16 — 1.0 real == FP_ONE counts (full interior).
+    atmosphere = np.full((1, w), 1 << 16, dtype=np.int32)
     return (temperature, np.ascontiguousarray(heat),
             np.ascontiguousarray(shift), np.ascontiguousarray(face_shift),
             np.ascontiguousarray(solid), np.ascontiguousarray(is_vacuum),
@@ -174,7 +175,8 @@ def test_deterministic_same_inputs_bit_identical():
         heat = np.ascontiguousarray(heat)
         face_shift = np.full((1, w, 4), NO_FACE, dtype=np.int32)
         is_vacuum = np.ascontiguousarray(np.zeros((1, w), dtype=bool))
-        atmosphere = np.ascontiguousarray(np.ones((1, w), dtype=np.float32))
+        # S3c: atmosphere int32 Q16.16 (full interior).
+        atmosphere = np.ascontiguousarray(np.full((1, w), 1 << 16, dtype=np.int32))
         solver = _solver()
         _step(solver, temp, heat, shift, np.ascontiguousarray(face_shift),
               solid, is_vacuum, atmosphere)

@@ -44,7 +44,12 @@
 //   in-bounds 4-neighbour is vacuum (is_vacuum) OR has atmosphere < a quantized
 //   threshold — read from the SAME atmosphere/vacuum fields the rest of the
 //   physics uses (no new field/buffer), so a freshly-breached, now-space-facing
-//   wall sheds 4× faster through the existing seam. Runs on SOLID tiles only
+//   wall sheds 4× faster through the existing seam. S3c: `atmosphere` is now the
+//   int32 Q16.16 field (the LAST float input to this TU is gone — it is fully
+//   integer, matching its already-integer heat/temperature fields). The exposure
+//   test `atmosphere[n] < o2_vacuum_thresh` is a Q16.16 integer compare against
+//   `quantize(o2_vacuum_thresh)` (computed ONCE per step, the load/boundary cast).
+//   Runs on SOLID tiles only
 //   (air is already 0, so it is skipped and stays bit-exactly 0). The signed
 //   arithmetic right shift is pinned to round toward 0 symmetrically
 //   (`x<0 ? -((-x)>>s) : x>>s`) — deterministic, identical cross-machine. The
@@ -70,7 +75,12 @@ public:
     //   cool_shift        — interior Newtonian decay (T -= T >> cool_shift).
     //   cool_shift_vacuum — space-exposed decay (smaller shift -> faster).
     // o2_vacuum_thresh — atmosphere value below which a neighbour counts as
-    //   vacuum for the exposure test (in the same units as gmap.atmosphere).
+    //   vacuum for the exposure test (in the same REAL units as gmap.atmosphere,
+    //   i.e. the pre-quantize pressure). It is a config dial (bound from Python as
+    //   a real value); S3c quantizes it ONCE per step to a Q16.16 count and the
+    //   exposure test is then a pure integer compare on the int32 atmosphere field.
+    //   Kept as a float member because it is a config/boundary value, not synced
+    //   per-cell state (the documented boundary exception, like fire's `dt`).
     int   cool_shift = 5;
     int   cool_shift_vacuum = 3;
     float o2_vacuum_thresh = 0.3f;
@@ -106,8 +116,9 @@ public:
     //   is_vacuum   : bool, (h, w). The physics vacuum mask. A solid tile cools
     //                 at cool_shift_vacuum if ANY in-bounds 4-neighbour is vacuum
     //                 (§3.3). Same field the atmosphere/smoke solvers read.
-    //   atmosphere  : float, (h, w). The atmosphere field. A neighbour with
-    //                 atmosphere < o2_vacuum_thresh also counts as vacuum-exposed.
+    //   atmosphere  : int32 Q16.16, (h, w). The atmosphere field (S2c). A neighbour
+    //                 with atmosphere < quantize(o2_vacuum_thresh) also counts as
+    //                 vacuum-exposed — a pure integer compare (S3c: no float).
     void step(
         int32_t* temperature,
         const int32_t* heat,
@@ -115,7 +126,7 @@ public:
         const int32_t* face_shift,
         const bool* solid,
         const bool* is_vacuum,
-        const float* atmosphere,
+        const int32_t* atmosphere,
         int h, int w
     ) const;
 
