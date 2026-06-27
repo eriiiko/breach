@@ -10,6 +10,9 @@
 #include "water_solver.h"
 #include "physics_engine.h"
 #include "fixed_point.h"   // Bedrock cliff-patch: expose smoke_cliff_count for unit test
+#ifdef BREACH_HAS_CUDA
+#include "cuda_hello.h"    // CUDA-S0: hello-world map kernel + device info
+#endif
 
 namespace py = pybind11;
 
@@ -42,6 +45,23 @@ static std::tuple<T*, int, int> get_3d(py::array_t<T>& arr) {
 
 PYBIND11_MODULE(breach_physics, m) {
     m.doc() = "Breach physics engine -- C++ accelerated simulation";
+
+    // CUDA-S0: advertise whether this .pyd was built with the GPU backend, and
+    // expose the hello-world map kernel + device info. HAS_CUDA lets the
+    // bit-identity harness skip the GPU leg gracefully on a CPU-only build.
+#ifdef BREACH_HAS_CUDA
+    m.attr("HAS_CUDA") = true;
+    m.def("cuda_available", &breach_cuda::available,
+          "True if a CUDA device is present and usable.");
+    m.def("cuda_device_info", &breach_cuda::device_info,
+          "GPU name + compute capability + runtime/driver versions.");
+    m.def("cuda_map_mul_q16", &breach_cuda::map_mul_q16,
+          py::arg("in_"), py::arg("factor_q16"),
+          "S0 hello-world: out[i] = mul_q16(in[i], factor_q16) computed on the "
+          "GPU via the shared toolkit; bit-identical to the CPU mul_q16.");
+#else
+    m.attr("HAS_CUDA") = false;
+#endif
 
     // S1: the water core is now int32 Q16.16 (metres / m/s, scale 2^16). Python
     // (gamemap fields, tests, the feel-regression harness) reads this flag to

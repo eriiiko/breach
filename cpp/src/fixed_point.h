@@ -37,6 +37,22 @@
 
 #include <cstdint>
 
+// ---- host/device portability (CUDA-S0) -------------------------------------
+// FP_HD marks a helper callable from BOTH a CPU .cpp TU and a CUDA __device__
+// kernel. Under nvcc (__CUDACC__ is defined when compiling a .cu) it expands to
+// `__host__ __device__`; under a plain C++ host compiler (cl.exe on the .cpp
+// TUs, even in the CUDA build) it expands to NOTHING — so the CPU build is
+// byte-for-byte unchanged. Only the PURE-INTEGER helpers (plus the double
+// boundary casts) are FP_HD. recip_mul + smoke_cliff_count stay HOST-ONLY for
+// now: their 128-bit paths use MSVC _mul128/_umul128 host intrinsics, so the
+// device 128-bit path (__umul64hi / __mul64hi) lands with the fire/water kernels
+// that first need them (plan G3/G4, §3.5). Nothing FP_HD calls those two.
+#if defined(__CUDACC__)
+  #define FP_HD __host__ __device__
+#else
+  #define FP_HD
+#endif
+
 // Q16.16 type alias. A plain int32, scaled by 2^16. (Alias, not a wrapper class:
 // the solver loops want raw int arithmetic and the pybind boundary hands us
 // int32 buffers directly — a wrapper would fight both.)
@@ -49,6 +65,19 @@ constexpr int32_t FP_SHIFT = 16;
 constexpr int32_t FP_ONE   = 1 << FP_SHIFT;   // 65536
 constexpr int64_t FP_ONE64 = (int64_t)1 << FP_SHIFT;
 
+// Format invariants, compile-checked on BOTH host and device (the CUDA-S0 gate
+// "toolkit static_asserts pass on device"). These are not tunables — they ARE
+// the Q16.16 format — so baking them in is correct. The SAR check pins the
+// load-bearing assumption that `>>` on a negative signed int is ARITHMETIC
+// (round-toward -inf), which the whole truncation contract relies on and C++20
+// guarantees; if a toolchain ever broke it, this fails to compile rather than
+// silently desyncing.
+static_assert(FP_SHIFT == 16, "Q16.16 format invariant: shift is 16");
+static_assert(FP_ONE == 65536, "Q16.16 scale invariant: one unit == 65536 counts");
+static_assert(FP_ONE64 == 65536LL, "Q16.16 64-bit scale invariant");
+static_assert(sizeof(q16) == 4, "q16 must be a 32-bit integer");
+static_assert(((q16)-4 >> 1) == (q16)-2, "signed >> must be arithmetic (SAR)");
+
 // ---- quantize / dequantize (boundary casts) -------------------------------
 //
 // quantize: a real value -> Q16.16, ROUND TO NEAREST, computed in double so the
@@ -56,20 +85,20 @@ constexpr int64_t FP_ONE64 = (int64_t)1 << FP_SHIFT;
 // 31 we need). Round-half-away-from-zero via +/-0.5 (matches heat_quantize for
 // non-negative inputs; symmetric for negatives). NO clamping here — water depths
 // and velocities are far inside the +/-32768 range; the caller owns range safety.
-inline q16 quantize(double v) {
+FP_HD inline q16 quantize(double v) {
     double scaled = v * (double)FP_ONE;
     return (q16)(scaled >= 0.0 ? (scaled + 0.5) : (scaled - 0.5));
 }
 
 // dequantize: Q16.16 -> double real value (exact; the renderer + float bridges
 // read through this).
-inline double dequantize(q16 v) {
+FP_HD inline double dequantize(q16 v) {
     return (double)v / (double)FP_ONE;
 }
 
 // dequantize to float (the render/bridge boundary often wants float32 to match
 // the still-float atmosphere/smoke fields exactly).
-inline float dequantize_f(q16 v) {
+FP_HD inline float dequantize_f(q16 v) {
     return (float)((double)v / (double)FP_ONE);
 }
 
@@ -78,7 +107,7 @@ inline float dequantize_f(q16 v) {
 // mul_q16(a, b) == round_toward_neg_inf(a*b / 2^16), the Q16.16 product. The
 // int64 intermediate cannot overflow for any int32 inputs (|a*b| < 2^62). The
 // arithmetic >> 16 narrows back to Q16.16, TRUNCATING (see the rounding note).
-inline q16 mul_q16(q16 a, q16 b) {
+FP_HD inline q16 mul_q16(q16 a, q16 b) {
     return (q16)(((int64_t)a * (int64_t)b) >> FP_SHIFT);
 }
 
@@ -86,14 +115,14 @@ inline q16 mul_q16(q16 a, q16 b) {
 // gather (S1 §2 / P2): the face flux is gathered ONCE as this int64, applied
 // +/- to the two cells, and only narrowed at the divergence apply so the round
 // is shared. Keeping the wide value lets the divergence sum carry full precision.
-inline int64_t mul_wide(q16 a, q16 b) {
+FP_HD inline int64_t mul_wide(q16 a, q16 b) {
     return (int64_t)a * (int64_t)b;
 }
 
 // Narrow a wide int64 Q(32).(32)-ish product (an accumulated sum of mul_wide
 // terms, still carrying the 2^16 scale-squared) back to Q16.16 by >> 16. One
 // shared truncation point.
-inline q16 narrow(int64_t wide) {
+FP_HD inline q16 narrow(int64_t wide) {
     return (q16)(wide >> FP_SHIFT);
 }
 
@@ -103,7 +132,7 @@ inline q16 narrow(int64_t wide) {
 // deposit wants round-to-nearest so a long run accumulates no DC truncation bias —
 // the cancelling-flux PAIRS keep the plain truncating narrow()). The caller asserts
 // `wide >= 0`; for a possibly-signed wide use narrow_round_signed.
-inline q16 narrow_round(int64_t wide) {
+FP_HD inline q16 narrow_round(int64_t wide) {
     const int64_t HALF = (int64_t)1 << (FP_SHIFT - 1);   // 0.5 ULP
     return (q16)((wide + HALF) >> FP_SHIFT);
 }
@@ -111,7 +140,7 @@ inline q16 narrow_round(int64_t wide) {
 // Sign-symmetric round-to-nearest narrow (round-half-away-from-zero) for a wide
 // product of EITHER sign — rounds |wide| then re-applies the sign, so + and - are
 // treated identically (no sign(wide) DC bias). The deposit analogue of shr_round0.
-inline q16 narrow_round_signed(int64_t wide) {
+FP_HD inline q16 narrow_round_signed(int64_t wide) {
     return (wide >= 0) ? narrow_round(wide) : (q16)(-narrow_round(-wide));
 }
 
@@ -175,7 +204,7 @@ inline q16 recip_mul(q16 x_q16, int64_t recip) {
 // `x >> s` rounds toward -inf for negative x. For a symmetric divide-by-2^s
 // (so +x and -x lose magnitude equally) use this (temperature_solver's cooling
 // idiom). Deterministic, identical cross-machine.
-inline q16 shr_round0(q16 x, int s) {
+FP_HD inline q16 shr_round0(q16 x, int s) {
     return (x < 0) ? -((-x) >> s) : (x >> s);
 }
 
@@ -223,7 +252,7 @@ inline q16 shr_round0(q16 x, int s) {
 // = 256; GS Dinv: denom_q = 1 + mu*wsum in Q16.16 >= FP_ONE = 65536) — they
 // exist so the SHARED helper is honestly safe for any future caller, not relying
 // on every caller's floor being right.
-inline q16 reciprocal_q16(q16 denom_q) {
+FP_HD inline q16 reciprocal_q16(q16 denom_q) {
     if (denom_q <= 0) return 0;          // caller clamps to a floor; self-guard
     if (denom_q < 3) denom_q = 3;        // {1,2}: 2^32/denom_q overflows int32 -> floor (dead path)
     // Seed r0 ~= 2^(32 - bitlen(denom_q)), the power-of-2 reciprocal.
@@ -286,7 +315,7 @@ inline q16 reciprocal_q16(q16 denom_q) {
 // scaled magnitude can only SHRINK (== |x|*scale truncated toward 0). For
 // scale == FP_ONE (1.0) this is the identity. The same scaled value is then
 // applied +/- symmetrically to a face's two cells -> conservation is preserved.
-inline q16 scale_mag(q16 x, q16 scale) {
+FP_HD inline q16 scale_mag(q16 x, q16 scale) {
     const int64_t mag = (int64_t)(x < 0 ? -x : x);
     const q16 scaled  = (q16)((mag * (int64_t)scale) >> FP_SHIFT);  // toward 0
     return (x < 0) ? -scaled : scaled;
@@ -300,7 +329,7 @@ inline q16 scale_mag(q16 x, q16 scale) {
 // integer ceil is the cross-GPU fix. b_q must be > 0 (a CFL bound is positive).
 //   ceil(a/b) for positive a,b == (a + b - 1) / b   (integer divide).
 // We guard a < 0 (shouldn't happen — sim_time >= 0) by flooring to 0.
-inline int32_t ceil_div(q16 a_q, q16 b_q) {
+FP_HD inline int32_t ceil_div(q16 a_q, q16 b_q) {
     if (a_q <= 0) return 0;
     return (int32_t)(((int64_t)a_q + b_q - 1) / b_q);
 }
@@ -463,7 +492,7 @@ inline int32_t smoke_cliff_count(q16 c4st_q, q16 dsmoke_q, q16 wds_q,
 //     differs from the GS divide, which DOES pre-shift a Q16.16 by <<16 before
 //     dividing by a Q16.16 divisor). count must be > 0 (the caller guards
 //     count == 0 -> mean 0, no division).
-inline int64_t mean_sum(const q16* values, const bool* mask, int n) {
+FP_HD inline int64_t mean_sum(const q16* values, const bool* mask, int n) {
     int64_t sum = 0;
     for (int i = 0; i < n; ++i) {
         if (mask[i]) sum += (int64_t)values[i];   // exact, order-free
@@ -471,7 +500,7 @@ inline int64_t mean_sum(const q16* values, const bool* mask, int n) {
     return sum;
 }
 
-inline q16 mean_round(int64_t sum, int64_t count) {
+FP_HD inline q16 mean_round(int64_t sum, int64_t count) {
     if (count <= 0) return 0;
     // round-half-away-from-zero, sign-symmetric (no sign(sum) DC bias).
     const int64_t half = count / 2;
@@ -507,7 +536,7 @@ inline q16 mean_round(int64_t sum, int64_t count) {
 //
 // The radicand is non-negative by construction (a sum of squares). A negative
 // input (shouldn't happen) floors to 0 via the unsigned cast guard.
-inline q16 sqrt_q16(int64_t x_q32) {
+FP_HD inline q16 sqrt_q16(int64_t x_q32) {
     if (x_q32 <= 0) return 0;
     uint64_t x = (uint64_t)x_q32;
     // Binary digit-by-digit isqrt: `bit` walks the highest power-of-4 <= x down
@@ -560,7 +589,7 @@ inline q16 sqrt_q16(int64_t x_q32) {
 // Q16.16 value (deterministic). Done with mul_q16 throughout (truncating; the
 // scalar magnitude << conservation concerns — this term only tilts the surface
 // potential, it is not a conserved flux).
-inline q16 tan_poly(q16 t) {
+FP_HD inline q16 tan_poly(q16 t) {
     const q16 t2 = mul_q16(t, t);
     const q16 t3 = mul_q16(t2, t);
     const q16 t5 = mul_q16(t3, t2);

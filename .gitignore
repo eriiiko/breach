@@ -18,9 +18,14 @@ __pycache__/
 
 # C++ build artifacts
 cpp/build/
+cpp/build_cuda/
+cpp/build_vs2022/
 prototypes/raylib_cpp/build/
 *.exe
 *.obj
+
+# X-ARCH per-machine digest recordings (CUDA arc) — machine-specific artifacts
+tests/digest_*.txt
 
 # Large fluid sim recordings (>50MB GitHub limit)
 prototypes/fluid_pipe_only.gif
