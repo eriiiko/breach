@@ -13,6 +13,7 @@
 #include "fixed_point.h"   // S1: Q16.16 toolkit (quantize, ceil_div, max_dt_q)
 #ifdef BREACH_HAS_CUDA
 #include "cuda_temperature.h"   // CUDA-S1: GPU temperature solver + backend flag
+#include "cuda_water.h"         // CUDA-S3: GPU water solver + backend flag
 #endif
 
 #include <algorithm>   // std::max, std::min
@@ -395,10 +396,27 @@ void PhysicsEngine::step_water(
         // floor_height, atmosphere, wave_p, solid, h, w, dt, tilt_x, tilt_y).
         // water/velocity/floor are Q16.16; atmosphere/wave_p stay float (the
         // gated head-term FLOAT BRIDGE lives inside step). this->water.dx and the
-        // pipe params are already members on this->water (not re-passed).
-        this->water.step(water_depth, flow_vx, flow_vy,
-                         floor_height, atm_bridge, wave_p_bridge,   // head bridges
-                         solid, h, w, wdt, tilt_x, tilt_y);
+        // pipe params are already members on this->water (not re-passed to the
+        // CPU method). CUDA-S3: the GPU water_step is a FREE function, so the
+        // solver's scalar dials (g/damping/dx/k_p/v_max/depth_eps) are passed
+        // explicitly. Bit-identical to the CPU path (same integer ops); the CPU
+        // solver stays the live fallback (flag off by default). CPU-only builds
+        // (no BREACH_HAS_CUDA) compile only the CPU call.
+#ifdef BREACH_HAS_CUDA
+        if (breach_cuda::water_backend_is_cuda()) {
+            breach_cuda::water_step(
+                water_depth, flow_vx, flow_vy,
+                floor_height, atm_bridge, wave_p_bridge,   // head bridges
+                solid, h, w, wdt, tilt_x, tilt_y,
+                this->water.g, this->water.damping, this->water.dx,
+                this->water.k_p, this->water.v_max, this->water.depth_eps);
+        } else
+#endif
+        {
+            this->water.step(water_depth, flow_vx, flow_vy,
+                             floor_height, atm_bridge, wave_p_bridge,   // head bridges
+                             solid, h, w, wdt, tilt_x, tilt_y);
+        }
     }
 
     // --- W5 flash-boil vacuum sink (plan W5) — S2c: int<->int -------------

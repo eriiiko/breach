@@ -14,6 +14,7 @@
 #include "cuda_hello.h"        // CUDA-S0: hello-world map kernel + device info
 #include "cuda_temperature.h"  // CUDA-S1: GPU temperature solver + backend flag
 #include "cuda_raycaster.h"    // CUDA-S2: GPU directional raycaster (heat bit-identical)
+#include "cuda_water.h"        // CUDA-S3: GPU water solver + backend flag
 #endif
 
 namespace py = pybind11;
@@ -173,6 +174,68 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("heat_atten") = py::none(),
           "S2 isolated: cast one LightSource on the GPU into the pre-zeroed output "
           "fields; `heat` is bit-identical to Raycaster.cast_source_directional.");
+
+    // CUDA-S3: the GPU water solver. The backend flag switches PhysicsEngine::
+    // step_water's per-substep call between the CPU and GPU pipe-model solver
+    // (the live CPU fallback stays). cuda_water_step runs the 8-pass solver IN
+    // PLACE on water_depth/flow_vx/flow_vy for the isolated GPU-vs-CPU bit-
+    // identity gate. floor_height/atmosphere/wave_p are nullable (mirroring the
+    // live WaterSolver.step binding); the solver's scalar dials are passed
+    // explicitly since water_step is a free function.
+    m.def("set_water_backend",
+          [](bool use_cuda) { breach_cuda::set_water_backend_cuda(use_cuda); },
+          py::arg("use_cuda"),
+          "Switch PhysicsEngine's water pass to the GPU (True) or CPU (False).");
+    m.def("get_water_backend",
+          []() { return breach_cuda::water_backend_is_cuda(); },
+          "True if the water pass currently runs on the GPU.");
+    m.def("cuda_water_step",
+          [](py::array_t<int32_t> water_depth, py::array_t<int32_t> flow_vx,
+             py::array_t<int32_t> flow_vy, py::object floor_height,
+             py::object atmosphere, py::object wave_p, py::array_t<bool> solid,
+             float dt, float tilt_x, float tilt_y,
+             float g, float damping, float dx, float k_p, float v_max,
+             float depth_eps) {
+              auto [wd, h, w]    = get_2d(water_depth);
+              auto [vx, h2, w2]  = get_2d(flow_vx);
+              auto [vy, h3, w3]  = get_2d(flow_vy);
+              auto [sol, h4, w4] = get_2d_const(solid);
+              // Nullable fields (the live WaterSolver.step binding precedent):
+              // None -> nullptr, else cast to an array kept alive in this scope.
+              const int32_t* fl = nullptr;
+              py::array_t<int32_t> fl_arr;
+              if (!floor_height.is_none()) {
+                  fl_arr = floor_height.cast<py::array_t<int32_t>>();
+                  auto fa = fl_arr.unchecked<2>();
+                  fl = fa.data(0, 0);
+              }
+              const float* atm = nullptr;
+              py::array_t<float> atm_arr;
+              if (!atmosphere.is_none()) {
+                  atm_arr = atmosphere.cast<py::array_t<float>>();
+                  auto aa = atm_arr.unchecked<2>();
+                  atm = aa.data(0, 0);
+              }
+              const float* wp = nullptr;
+              py::array_t<float> wp_arr;
+              if (!wave_p.is_none()) {
+                  wp_arr = wave_p.cast<py::array_t<float>>();
+                  auto wa = wp_arr.unchecked<2>();
+                  wp = wa.data(0, 0);
+              }
+              breach_cuda::water_step(wd, vx, vy, fl, atm, wp, sol, h, w, dt,
+                                      tilt_x, tilt_y, g, damping, dx, k_p,
+                                      v_max, depth_eps);
+          },
+          py::arg("water_depth"), py::arg("flow_vx"), py::arg("flow_vy"),
+          py::arg("floor_height") = py::none(),
+          py::arg("atmosphere")   = py::none(),
+          py::arg("wave_p")       = py::none(),
+          py::arg("solid"), py::arg("dt"), py::arg("tilt_x"), py::arg("tilt_y"),
+          py::arg("g"), py::arg("damping"), py::arg("dx"), py::arg("k_p"),
+          py::arg("v_max"), py::arg("depth_eps"),
+          "S3 isolated: run the GPU water solver in place on water_depth/flow_vx/"
+          "flow_vy (bit-identical to WaterSolver.step).");
 #else
     m.attr("HAS_CUDA") = false;
 #endif
