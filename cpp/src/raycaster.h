@@ -73,7 +73,7 @@ public:
     //   1. Per-channel transmission (Beer-Lambert):
     //        tau_c   = smoke_absorption[c] * smoke_density * smoke_absorb_scale
     //        trans_c = exp(-tau_c)               // never reaches 0 -> beam survives deep smoke
-    //        remaining[c] *= trans_c
+    //        survival[c] *= trans_c              // (engine/08: occlusion decays SURVIVAL)
     //      smoke_absorb_scale is the global "beam reach" dial: LOW = long beam
     //      (flashlight travels far through smoke and still glows), HIGH = beam
     //      dies fast. Per-channel absorption is the (future) gas COLOUR.
@@ -149,17 +149,22 @@ public:
     //   light_dy[i]        = y component of the (unit) light direction at tile i
     //
     // light_rgb is interleaved (R,G,B per tile), shape (h, w, 3) in row-major.
-    // The per-channel deposit is the scalar deposit (distance falloff) times
-    // the source's color[c].
+    // PURE-DENSITY model (engine/08 §Falloff is density): each ray carries fixed
+    // energy = total_power / N (the cast divides by ray_count), and a per-channel
+    // SURVIVAL ∈[0,1] that starts at 1 and decays ONLY by occlusion. The deposit
+    // is energy·color[c]·survival[c] — there is NO per-ray distance falloff; the
+    // 1/r intensity law emerges from ray density (N cancels).
     //
     // Occlusion is PER-CHANNEL material attenuation (ch.03 §the march): the
     // per-tile `light_atten` input (h, w, 3, interleaved) is the material
-    // table's static attenuation. After depositing into a tile the ray
-    // attenuates each channel by (1 - mat_atten[c]) and (1 - smoke*absorb);
+    // table's static attenuation. After depositing into a tile each channel's
+    // survival is multiplied by (1 - mat_atten[c]) then the gas transmission;
     // opaque tiles ([1,1,1]) drive every channel to 0 == the old wall
     // hard-stop, glass ([0.1,..]) transmits dimmed, an unequal triple tints.
-    // There is NO binary wall stop and NO per-channel early-out — the ray
-    // terminates on the AGGREGATE remaining energy (CUDA-divergence rule).
+    // There is NO binary wall stop. Each channel STOPS DEPOSITING once its own
+    // survival drops below its cull floor (light_cull for RGB, heat_cull for
+    // heat); the ray marches to the AGGREGATE range — it continues while ANY
+    // channel survives (no per-channel early-out, CUDA-divergence rule).
     //
     // light_dx/light_dy are unit-normalized after all rays are cast (vector
     // magnitude, not by intensity — see expert review notes in
@@ -175,7 +180,7 @@ public:
     // across all gases (engine/05 §6.2 — "mixing falls out of the sum"):
     //
     //   transmission:  tau_c = smoke_absorb_scale * Σ_g ( gas[g][tile] * absorption[g][c] )
-    //                  trans_c = exp(-tau_c);  remaining[c] *= trans_c
+    //                  trans_c = exp(-tau_c);  survival[c] *= trans_c
     //   scatter/glow:  smoke_glow[c] += dep_c * Σ_g ( gas[g][tile] * scatter_albedo[g][c] )
     //
     // `smoke_absorb_scale` stays the global beam-reach dial. A single populated
@@ -190,7 +195,8 @@ public:
     //                4th ray channel (engine/06 §1): it carries its OWN scalar
     //                survival, attenuated per tile by `heat_atten` exactly as
     //                each RGB channel is attenuated by `light_atten[c]`. The
-    //                deposit is src.heat * heat_survival * falloff, quantized +
+    //                deposit is (src.heat/N) * heat_survival (NO distance
+    //                falloff), GATED on heat_survival > heat_cull, quantized +
     //                SATURATING-added — independent of the RGB survival, so a
     //                heat-shield (light-clear, heat-opaque) blocks heat while
     //                passing light, and smoked glass (light-opaque, heat-clear)
