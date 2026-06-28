@@ -234,13 +234,21 @@ _FP_FAST_RE = re.compile(r"fp:fast")
 # already casts onto this->smoke.d_smoke; the GPU branch just names it once more. The
 # whole dispatch is guarded by `#ifdef BREACH_HAS_CUDA` (the CPU-only build never sees
 # it) and the smoke path is bit-identical CPU vs GPU (tol 0, tests/cuda_s4a_check.py).
+#
+# CUDA-S4b: physics_engine.cpp `float` 65 -> 66. The GPU sink_hop dispatch added in the
+# K-hop sink loop passes the solver dial `this->smoke.sink_strength` (a float) to the
+# FREE-function breach_cuda::smoke_sink_hop — exactly the same shape as the S4a step
+# dispatch above (a free function takes the solver scalar explicitly). It is NOT new
+# per-cell sim float; it is the same config scalar the CPU branch already reads off
+# this->smoke. The dispatch is guarded by `#ifdef BREACH_HAS_CUDA` and the sink_hop is
+# bit-identical CPU vs GPU (tol 0, tests/cuda_s4b_check.py).
 BASELINE = {
     "atmosphere_solver.cpp":  {"float": 32, "double": 32, "fp:fast": 1},
     "smoke_dynamics.cpp":     {"float": 24, "double": 13, "fp:fast": 0},
     "fire_simulation.cpp":    {"float": 6,  "double": 19, "fp:fast": 0},
     "water_solver.cpp":       {"float": 32, "double": 22, "fp:fast": 1},
     "temperature_solver.cpp": {"float": 3,  "double": 2,  "fp:fast": 0},
-    "physics_engine.cpp":     {"float": 65, "double": 28, "fp:fast": 1},
+    "physics_engine.cpp":     {"float": 66, "double": 28, "fp:fast": 1},
 }
 
 # The TUs that have been MIGRATED to integer end-to-end (S3c). For these, the

@@ -302,7 +302,7 @@ void PhysicsEngine::run_substeps(
             // per-gas d_smoke + the wind_diffusion_scale / advection_rate dials
             // are passed explicitly. Bit-identical to the CPU step (same integer
             // ops); the CPU solver stays the live fallback (flag off by default).
-            // sink_hop ALWAYS stays on the CPU (S4b) — it runs below in BOTH paths.
+            // sink_hop is now ALSO GPU under the same flag (S4b) — runs below in BOTH paths.
             // PERF: per-call H2D/D2H of the plane + wind + masks (residency is S8).
             // CPU-only builds (no BREACH_HAS_CUDA) compile only the CPU call.
 #ifdef BREACH_HAS_CUDA
@@ -345,11 +345,29 @@ void PhysicsEngine::run_substeps(
             if (!any) {
                 continue;
             }
-            this->smoke.sink_hop(
-                gas_slice, sink_x, sink_y,
-                obstacles, solid, is_vacuum,
-                dyn_permeability,
-                h, w);
+            // CUDA-S4b: the GPU sink_hop is a FREE function; the solver's
+            // sink_strength dial is passed explicitly. Bit-identical to the CPU
+            // sink_hop (same integer back-trace + the same sink float bridge). The
+            // SAME smoke_backend_is_cuda() flag gates both step (S4a) and sink_hop
+            // (S4b), so set_smoke_backend(True) routes the whole smoke path to the
+            // GPU. PERF: per-call H2D/D2H of the plane, K× (residency is S8).
+            // CPU-only builds (no BREACH_HAS_CUDA) compile only the CPU call.
+#ifdef BREACH_HAS_CUDA
+            if (breach_cuda::smoke_backend_is_cuda()) {
+                breach_cuda::smoke_sink_hop(
+                    gas_slice, sink_x, sink_y,
+                    obstacles, solid, is_vacuum,
+                    dyn_permeability,
+                    h, w, this->smoke.sink_strength);
+            } else
+#endif
+            {
+                this->smoke.sink_hop(
+                    gas_slice, sink_x, sink_y,
+                    obstacles, solid, is_vacuum,
+                    dyn_permeability,
+                    h, w);
+            }
         }
     }
 }
