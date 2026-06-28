@@ -89,6 +89,17 @@ class PhysicsRunner:
         bp = breach_physics
         self.bp = bp
 
+        # CUDA-S2 LIVE: the fire->heat ray cast (cast_fire_heat) can run on the GPU
+        # when the raycaster backend flag is on (set via bp.set_raycaster_backend,
+        # flipped by tools/run_on_cuda). The flag only EXISTS on the CUDA build —
+        # the CPU build's bindings define no backend setters/getters — so cache a
+        # query that is a constant False on the CPU build. cast_fire_heat reads
+        # this per tick to pick the GPU `cuda_raycaster_cast` per-source path (heat
+        # bit-identical to the CPU cast) vs the default CPU cast_source_directional.
+        _get_ray_backend = getattr(bp, "get_raycaster_backend", None)
+        self._raycaster_on_cuda = (
+            _get_ray_backend if callable(_get_ray_backend) else (lambda: False))
+
         # PhysicsEngine (Patch 1 S3) owns the solver instances. The runner uses
         # its solvers (engine.<solver>) instead of constructing them itself —
         # same objects, same calls, bit-identical. engine.<solver> returns a
@@ -482,6 +493,19 @@ class PhysicsRunner:
         bp = self.bp
         two_pi = 2.0 * math.pi
         ray_count = self.fire_ray_count
+        # CUDA-S2 LIVE: pick the per-source cast backend ONCE for this tick (a pure
+        # flag read; constant False on the CPU build). When on, each source is cast
+        # with bp.cuda_raycaster_cast (build_ray_list -> the GPU march); else the
+        # CPU Raycaster.cast_source_directional. BOTH accumulate the source's heat
+        # into the SAME gmap.heat buffer (the GPU entry uploads the running heat,
+        # saturating-atomic-adds this source's deposit, downloads it back) — so the
+        # per-tick CLEAR (end of Simulation.step) + per-source ACCUMULATE semantics
+        # are identical, and `heat` is byte-for-byte the same as the CPU path
+        # (the S2 gate proved the march; this preserves it through the live wiring).
+        # The light_rgb/dir buffers also round-trip to the host each call (render-
+        # only / deterministic-exempt). Argument order is identical to the CPU call,
+        # with the raycaster prepended as the first positional.
+        use_cuda_ray = bool(self._raycaster_on_cuda())
         # Build the source list in ROW-MAJOR order (deterministic). np.argwhere
         # yields (row, col) pairs in C order, i.e. row-major.
         ys, xs = np.nonzero(burning)
@@ -504,24 +528,45 @@ class PhysicsRunner:
             src.heat = self.k_fire_heat * intensity_fire   # the sim payload
             src.jitter = 0.0                   # NO dither — heat is sim-affecting
             src.color = self.fire_color        # render-only tint (discarded here)
-            self.raycaster.cast_source_directional(
-                src,
-                self._fire_scratch_rgb,
-                self._fire_scratch_dx,
-                self._fire_scratch_dy,
-                # Multi-gas march (engine/05 §6.2): pass the full gas array +
-                # per-gas tables. Gases NEVER attenuate the heat channel (only
-                # material heat_atten does), so the heat deposit — the only output
-                # that survives this cast (smoke_glow=None) — is bit-identical to
-                # the pre-multigas single-smoke call. S2b: dequantized float bridge.
-                self._fire_gas_f,
-                gmap.gases.absorption,
-                gmap.gases.scatter_albedo,
-                gmap.dyn_light_atten,
-                gmap.heat,            # <- the only output that survives the cast
-                None,                 # smoke_glow: skipped (render-only, later)
-                gmap.heat_atten,      # K1 per-tile heat occlusion
-            )
+            if use_cuda_ray:
+                # GPU path (CUDA-S2 live): build_ray_list -> the device march,
+                # accumulating this source's heat into gmap.heat (saturating
+                # integer atomic) and the render channels into the scratch
+                # buffers, all round-tripped to the host. Same args + order as the
+                # CPU call below, with the raycaster as the first positional.
+                bp.cuda_raycaster_cast(
+                    self.raycaster,
+                    src,
+                    self._fire_scratch_rgb,
+                    self._fire_scratch_dx,
+                    self._fire_scratch_dy,
+                    self._fire_gas_f,
+                    gmap.gases.absorption,
+                    gmap.gases.scatter_albedo,
+                    gmap.dyn_light_atten,
+                    gmap.heat,            # <- the only synced output (heat)
+                    None,                 # smoke_glow: skipped (render-only, later)
+                    gmap.heat_atten,      # K1 per-tile heat occlusion
+                )
+            else:
+                self.raycaster.cast_source_directional(
+                    src,
+                    self._fire_scratch_rgb,
+                    self._fire_scratch_dx,
+                    self._fire_scratch_dy,
+                    # Multi-gas march (engine/05 §6.2): pass the full gas array +
+                    # per-gas tables. Gases NEVER attenuate the heat channel (only
+                    # material heat_atten does), so the heat deposit — the only output
+                    # that survives this cast (smoke_glow=None) — is bit-identical to
+                    # the pre-multigas single-smoke call. S2b: dequantized float bridge.
+                    self._fire_gas_f,
+                    gmap.gases.absorption,
+                    gmap.gases.scatter_albedo,
+                    gmap.dyn_light_atten,
+                    gmap.heat,            # <- the only output that survives the cast
+                    None,                 # smoke_glow: skipped (render-only, later)
+                    gmap.heat_atten,      # K1 per-tile heat occlusion
+                )
 
     # ------------------------------------------------------------------
     # Water layer (engine/07 §2, water plan W2)
