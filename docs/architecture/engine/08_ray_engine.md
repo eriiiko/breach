@@ -146,6 +146,16 @@ At each tile:
    gases — a per-channel Beer-Lambert transmission summed (density-weighted) over every gas
    sharing the tile (see [Smoke & Gases](smoke.md)), so mixed gases tint the survivor
    automatically. **Heat survival attenuates by `heat_atten` only** — gases do not block heat.
+   **Source-tile self-occlusion skip (load-bearing invariant):** on the *source tile*
+   (`distance == 0`, the first marched cell) heat is *deposited* but heat survival is **not**
+   attenuated. A heat emitter sits *inside* a solid — fire only ever burns on a flammable,
+   heat-opaque tile (`heat_atten ≈ 1`) — and a radiating surface emits *outward*, it does not
+   absorb its own emission. Without the skip, `heat_survival` would hit 0 on tile 0 and the
+   fire would deposit nothing past its own cell (no ignition-at-a-distance). Every downrange
+   tile attenuates normally, so a wall still blocks the fire's heat beyond it. This is inert
+   for air-sourced rays (their source `heat_atten == 0`). **The GPU kernel must replicate this
+   exactly** — a doc-/code-faithful port that attenuates heat on the source tile silently
+   breaks fire radiation, and the air-cast unit tests (which start in vacuum) would not catch it.
 5. **Deposit god-ray glow** — the energy the gases scatter back (their per-channel scatter
    budget, decoupled from absorption) goes into `smoke_glow`.
 6. **Step** to the next tile. Each channel **stops depositing once its own survival drops below
@@ -227,8 +237,18 @@ eventually). Three things guarantee it, and they compose with the survival model
    deterministic integer direction too — that lands with the combat/HP integerization, not here.)
 3. **No fast-math on the deposit path** (`--fmad=false`, no FMA contraction) — the deposit
    arithmetic (`energy · survival`, the `(1-atten)` decays) is correctly-rounded IEEE `+,-,*,/`,
-   which is bit-identical across MSVC `/fp:strict` and nvcc. The render channels (`light_rgb`,
-   `light_dir`, `smoke_glow`) are exempt — gate `heat` only.
+   which is bit-identical across MSVC `/fp:strict` and nvcc. The CPU `raycaster.cpp` is compiled
+   `/fp:strict` (it now produces `heat`, sim state — not the old render-only `/fp:fast`). The
+   render channels (`light_rgb`, `light_dir`, `smoke_glow`) are exempt — gate `heat` only.
+   **Pinned truncation path:** the final float→Q16.16 quantize (`heat_quantize`) runs in
+   **double precision** — promote `energy` to `double`, multiply by `HEAT_SCALE`, add `0.5`,
+   truncate toward zero (round-half-up), clamping at `INT32_MAX`. The GPU kernel **must** use the
+   identical double-precision round — *not* `rintf`/`__float2int_rn` (round-half-to-even) and
+   *not* a float multiply — or heat diverges at the LSB on boundary values (the "pin one
+   truncation path cross-toolchain" lesson). The saturating integer accumulate is order-free
+   (non-negative deltas under a monotone clamp), so the device may scatter `heat` with an integer
+   atomic — but it must be a **saturating** atomic (CAS-loop or add-then-clamp), since a plain
+   signed `atomicAdd` wraps and breaks the overflow guarantee.
 
 **Defaults** (tune by eye in `tools/lighting_demo.py`): `ε_rgb = 0.01`, `ε_heat = 0.01` (a
 channel stops when ~99% absorbed — only meaningful behind occluders, since survival decays only
@@ -368,16 +388,19 @@ lightning spec; it is not yet implemented.
 
 ## Implementation status
 
-> **⚠ Propagation-model redesign agreed 2026-06-28, not yet built.** The sections above (*The
-> march*, *Falloff is density*, *Determinism*) are the **target** model: pure-density `1/r`
-> falloff, per-ray energy `intensity/N`, per-channel survival termination, heat decoupled from the
-> RGB/`exp` path, host-precomputed directions. The **shipped** `raycaster.cpp` still runs the OLD
-> model — a per-ray `dist_atten = 1/(1+d²·0.01)` and a single aggregate-energy cull over all four
-> channels (so heat is currently coupled to the light/`exp` termination). Sequence to land the
-> target: (1) re-derive the **CPU** march to the new model + Erik feel-check (brightness/tuning
-> shifts; `intensity` becomes total power → sources re-tune); (2) **GPU** port + the heat
-> bit-identity gate. This is the **CUDA-S2** work item. The bullets below describe the shipped
-> (pre-redesign) code.
+> **⚙ Propagation-model redesign — CPU done on branch `cuda-s2-cpu-march`, feel-check + GPU port
+> pending (CUDA-S2).** The sections above (*The march*, *Falloff is density*, *Determinism*) are
+> now the **implemented** model on that branch: pure-density `1/r` falloff, per-ray energy
+> `intensity/N`, per-channel survival termination (`light_cull`/`heat_cull`), heat decoupled from
+> the RGB/`exp` path, `raycaster.cpp` on `/fp:strict`. The old per-ray `dist_atten = 1/(1+d²·0.01)`
+> and the single aggregate-energy cull are **gone**. Re-tunes that landed with it: a render
+> exposure `u_light_gain` (intensity is now total power, ~`ray_count`× dimmer field) and
+> `k_fire_heat` 200→1600 (×`fire_ray_count`, restoring ignition/kill after the `/N`). Remaining
+> sequence: (1) **Erik feel-check** of the brightness/falloff on the demo (then regenerate the
+> heat/xarch golden — it legitimately moved); (2) **GPU** port (one thread/ray, host-precomputed
+> directions, saturating integer `atomicAdd` heat, float-atomic render) + the heat bit-identity
+> gate. **`main` still ships the OLD model** until this branch merges. The bullets below are being
+> updated to the new model as parts land.
 
 **Built and shipping (Tier 1):**
 

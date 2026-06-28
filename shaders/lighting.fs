@@ -40,6 +40,13 @@ uniform int   u_use_normal;
 uniform float u_normal_y_sign;
 uniform int   u_srgb_decode;
 uniform float u_light_z;           // 0..1: 0 = grazing horizontal, 1 = straight down
+uniform float u_light_gain;        // render exposure: physical light power -> display
+                                   // brightness. The pure-density raycaster
+                                   // (engine/08) makes light_rgb a 1/r PHYSICAL
+                                   // field (intensity = total power), independent of
+                                   // ray count; this maps it to a pleasant display
+                                   // level. Separates physics (the 1/r falloff) from
+                                   // exposure (one master brightness dial).
                                    // (more grazing = stronger normal-map relief)
 uniform vec4  u_art_uv_rect;       // art-UV subrect drawn over the world RT
                                    // (xy = origin, zw = size) — the [art.align]
@@ -123,7 +130,7 @@ void main() {
 
     // Diffuse: albedo x incoming RGB (a red lamp lights surfaces red).
     // ndotl modulates the directional contribution; ambient is a flat floor.
-    vec3 lit = diffuse * (u_ambient + incoming_rgb * ndotl);
+    vec3 lit = diffuse * (u_ambient + incoming_rgb * u_light_gain * ndotl);
     // ACES filmic tone-map on the linear HDR value (ch.05 §Tone-mapping):
     // tames over-bright coloured light without per-channel clip / hue-shift.
     lit = aces_tonemap(lit);

@@ -9,6 +9,12 @@
 // Falloff types for light sources
 enum class Falloff : int { UNIFORM = 0, COSINE = 1, SHARP = 2 };
 
+// CUDA-S2 gate: the host-precomputed ray POD lives in cuda_raycaster.h (a plain
+// header, no CUDA symbols). Forward-declare it so build_ray_list can return a
+// vector of them without dragging the CUDA header into every CPU TU that
+// includes raycaster.h.
+namespace breach_cuda { struct RayHD; }
+
 // ---- Fixed-point heat format (ch.04 §Fixed-point format) ----
 //
 // `heat` is the only sim-affecting ray output. It is stored as a Q16.16
@@ -73,7 +79,7 @@ public:
     //   1. Per-channel transmission (Beer-Lambert):
     //        tau_c   = smoke_absorption[c] * smoke_density * smoke_absorb_scale
     //        trans_c = exp(-tau_c)               // never reaches 0 -> beam survives deep smoke
-    //        remaining[c] *= trans_c
+    //        survival[c] *= trans_c              // (engine/08: occlusion decays SURVIVAL)
     //      smoke_absorb_scale is the global "beam reach" dial: LOW = long beam
     //      (flashlight travels far through smoke and still glows), HIGH = beam
     //      dies fast. Per-channel absorption is the (future) gas COLOUR.
@@ -99,6 +105,25 @@ public:
     // Global beam-reach dial (STILL ACTIVE for the gas path): scales the summed
     // per-gas tau. LOW = long beam (flashlight travels far). Default 1.4.
     float smoke_absorb_scale = 1.4f;
+
+    // ---- Propagation-model cull thresholds (engine/08 §The march, §Falloff is
+    // density) — the per-channel SURVIVAL floors of the pure-density model ----
+    //
+    // A ray carries fixed per-channel energy and a survival ∈ [0,1] that decays
+    // ONLY by occlusion (never by distance — the 1/r falloff is ray DENSITY, not
+    // a per-ray multiplier). A channel keeps depositing while its own survival is
+    // above its threshold; the ray terminates when EVERY emitting channel is
+    // below its threshold (or max_range). Because survival decays only by
+    // occlusion, in open air it stays 1.0 and the ray runs to max_range — the
+    // cull only bites BEHIND occluders (≈99% absorbed at 0.01).
+    //   light_cull : ε_rgb — the RGB render channels' floor.
+    //   heat_cull  : ε_heat — the heat (gameplay/damage) channel's floor; its
+    //                own dial so a heat-shield/low-E-glass material can diverge
+    //                from light. Heat deposits gate on heat_survival > heat_cull,
+    //                which is what DECOUPLES heat from the float light path
+    //                (engine/08 §Determinism: heat is decoupled from light).
+    float light_cull = 0.01f;
+    float heat_cull  = 0.01f;
 
     int   coarse_cluster   = 3;    // cluster fire sources on this grid
 
@@ -130,17 +155,22 @@ public:
     //   light_dy[i]        = y component of the (unit) light direction at tile i
     //
     // light_rgb is interleaved (R,G,B per tile), shape (h, w, 3) in row-major.
-    // The per-channel deposit is the scalar deposit (distance falloff) times
-    // the source's color[c].
+    // PURE-DENSITY model (engine/08 §Falloff is density): each ray carries fixed
+    // energy = total_power / N (the cast divides by ray_count), and a per-channel
+    // SURVIVAL ∈[0,1] that starts at 1 and decays ONLY by occlusion. The deposit
+    // is energy·color[c]·survival[c] — there is NO per-ray distance falloff; the
+    // 1/r intensity law emerges from ray density (N cancels).
     //
     // Occlusion is PER-CHANNEL material attenuation (ch.03 §the march): the
     // per-tile `light_atten` input (h, w, 3, interleaved) is the material
-    // table's static attenuation. After depositing into a tile the ray
-    // attenuates each channel by (1 - mat_atten[c]) and (1 - smoke*absorb);
+    // table's static attenuation. After depositing into a tile each channel's
+    // survival is multiplied by (1 - mat_atten[c]) then the gas transmission;
     // opaque tiles ([1,1,1]) drive every channel to 0 == the old wall
     // hard-stop, glass ([0.1,..]) transmits dimmed, an unequal triple tints.
-    // There is NO binary wall stop and NO per-channel early-out — the ray
-    // terminates on the AGGREGATE remaining energy (CUDA-divergence rule).
+    // There is NO binary wall stop. Each channel STOPS DEPOSITING once its own
+    // survival drops below its cull floor (light_cull for RGB, heat_cull for
+    // heat); the ray marches to the AGGREGATE range — it continues while ANY
+    // channel survives (no per-channel early-out, CUDA-divergence rule).
     //
     // light_dx/light_dy are unit-normalized after all rays are cast (vector
     // magnitude, not by intensity — see expert review notes in
@@ -156,7 +186,7 @@ public:
     // across all gases (engine/05 §6.2 — "mixing falls out of the sum"):
     //
     //   transmission:  tau_c = smoke_absorb_scale * Σ_g ( gas[g][tile] * absorption[g][c] )
-    //                  trans_c = exp(-tau_c);  remaining[c] *= trans_c
+    //                  trans_c = exp(-tau_c);  survival[c] *= trans_c
     //   scatter/glow:  smoke_glow[c] += dep_c * Σ_g ( gas[g][tile] * scatter_albedo[g][c] )
     //
     // `smoke_absorb_scale` stays the global beam-reach dial. A single populated
@@ -171,7 +201,8 @@ public:
     //                4th ray channel (engine/06 §1): it carries its OWN scalar
     //                survival, attenuated per tile by `heat_atten` exactly as
     //                each RGB channel is attenuated by `light_atten[c]`. The
-    //                deposit is src.heat * heat_survival * falloff, quantized +
+    //                deposit is (src.heat/N) * heat_survival (NO distance
+    //                falloff), GATED on heat_survival > heat_cull, quantized +
     //                SATURATING-added — independent of the RGB survival, so a
     //                heat-shield (light-clear, heat-opaque) blocks heat while
     //                passing light, and smoked glass (light-opaque, heat-clear)
@@ -204,6 +235,21 @@ public:
         const float* heat_atten,    // per-tile heat atten (h,w) or nullptr
         int h, int w
     ) const;
+
+    // ---- CUDA-S2 gate: host ray-list builder (shared CPU/GPU angle math) ----
+    //
+    // Replicates cast_source_directional's per-ray loop EXACTLY — same
+    // get_ray_count(), the same (i+0.5)/N angle sweep, the same jitter RNG
+    // (mt19937 seeded (unsigned)(src.x*1000+src.y), uniform_real(-1,1)*jitter),
+    // the same falloff angular_atten, the same inv_n normalisation — and folds
+    // angle->(cos,sin), angular_atten, color and /N into each RayHD's
+    // (dx,dy,e_r,e_g,e_b,heat_emit). Rays with angular_atten<=0 are SKIPPED, just
+    // as the CPU cast skips them. Because this runs in THIS /fp:strict TU (the one
+    // that already owns the identical angle math in cast_source_directional), the
+    // GPU march's host-precomputed dx=cos(angle)/dy=sin(angle) are bit-identical
+    // to what the CPU march_ray_directional computes internally from `angle` —
+    // which is the contract that makes the DDA tile path (hence heat) match.
+    std::vector<breach_cuda::RayHD> build_ray_list(const LightSource& src) const;
 
     // Normalize direction vectors in place: (dx, dy) /= length(dx, dy).
     // Tiles with zero-length direction stay (0, 0).

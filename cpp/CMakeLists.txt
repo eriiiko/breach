@@ -64,7 +64,8 @@ set(BREACH_SOURCES
 if(BREACH_CUDA)
     list(APPEND BREACH_SOURCES
         src/cuda_hello.cu          # S0 hello-world kernel
-        src/cuda_temperature.cu)   # S1 temperature solver
+        src/cuda_temperature.cu    # S1 temperature solver
+        src/cuda_raycaster.cu)     # S2 raycaster march (heat bit-identical)
 endif()
 
 pybind11_add_module(breach_physics ${BREACH_SOURCES})
@@ -97,8 +98,18 @@ endif()
 # contraction. So every simulation solver TU is compiled /fp:strict, which on
 # MSVC disables BOTH expression reordering AND FMA contraction (stricter than the
 # /fp:precise physics_engine.cpp carried before — it is upgraded to /fp:strict
-# here for consistency). The render-only raycaster.cpp / wave_solver.cpp and the
-# pure-glue bindings.cpp are NOT sim state and keep the global /fp:fast for speed.
+# here for consistency). The wave_solver.cpp and the pure-glue bindings.cpp are
+# NOT sim state and keep the global /fp:fast for speed.
+#
+# raycaster.cpp WAS in that render-only /fp:fast set, but the pure-density
+# redesign (engine/08, CUDA-S2) makes its directional march deposit `heat` — a
+# Q16.16 SYNCED gameplay field (feeds temperature -> unit damage). For the CUDA
+# heat bit-identity gate (CPU reference must match the GPU's --fmad=false /fp:strict
+# device math) the CPU heat path needs the SAME determinism floor: no FMA
+# contraction, no reordering. So raycaster.cpp moves onto /fp:strict here. The
+# render channels (light_rgb/dir/smoke_glow) ride along — they are float and a
+# sub-ULP shift is cosmetically irrelevant (feel-gated). The CPU render-cast loses
+# some fast-math speed, but the raycaster's perf answer is the GPU port itself.
 #
 # These are PER-SOURCE COMPILE_OPTIONS, which CMake appends AFTER the global
 # /fp:fast from add_compile_options() above; MSVC honours the LAST /fp: switch on
@@ -115,6 +126,7 @@ if(MSVC)
         src/water_solver.cpp
         src/temperature_solver.cpp
         src/physics_engine.cpp
+        src/raycaster.cpp
         PROPERTIES COMPILE_OPTIONS "/fp:strict")
 endif()
 

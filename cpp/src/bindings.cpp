@@ -13,6 +13,7 @@
 #ifdef BREACH_HAS_CUDA
 #include "cuda_hello.h"        // CUDA-S0: hello-world map kernel + device info
 #include "cuda_temperature.h"  // CUDA-S1: GPU temperature solver + backend flag
+#include "cuda_raycaster.h"    // CUDA-S2: GPU directional raycaster (heat bit-identical)
 #endif
 
 namespace py = pybind11;
@@ -96,6 +97,82 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("cool_shift_vacuum"), py::arg("o2_vacuum_thresh"),
           "S1 isolated: run the GPU temperature solver in place on `temperature` "
           "(bit-identical to TemperatureSolver.step).");
+
+    // CUDA-S2: the GPU directional raycaster gate. Casts ONE LightSource on the
+    // GPU into the (pre-zeroed) output fields, replicating the CPU cast's per-ray
+    // loop via Raycaster::build_ray_list (the shared /fp:strict angle math) and
+    // dispatching to breach_cuda::raycaster_cast_directional. The HEAT output is
+    // bit-identical to Raycaster::cast_source_directional; the render channels
+    // (light_rgb/dir/smoke_glow) are deterministic-exempt. Mirrors the numpy
+    // field-unpacking of the CPU cast_source_directional binding exactly. Used by
+    // the S2 bit-identity gate — NOT a live game path (the live cast is the CPU
+    // method above; this isolated entry never touches it).
+    m.def("cuda_raycaster_cast",
+          [](const Raycaster& self,
+             const LightSource& src,
+             py::array_t<float> light_rgb,
+             py::array_t<float> light_dx,
+             py::array_t<float> light_dy,
+             py::array_t<float> gas,
+             py::array_t<float> gas_absorption,
+             py::array_t<float> gas_scatter,
+             py::array_t<float> light_atten,
+             py::object heat,
+             py::object smoke_glow,
+             py::object heat_atten) {
+              auto [lrgb, h, w]  = get_3d(light_rgb);
+              auto [ldx, h2, w2] = get_2d(light_dx);
+              auto [ldy, h3, w3] = get_2d(light_dy);
+              auto gv = gas.unchecked<3>();
+              const float* gas_field = gv.data(0, 0, 0);
+              const int n_gases = static_cast<int>(gv.shape(0));
+              auto ga = gas_absorption.unchecked<2>();
+              const float* gabs = ga.data(0, 0);
+              auto gs = gas_scatter.unchecked<2>();
+              const float* gsca = gs.data(0, 0);
+              auto a = light_atten.unchecked<3>();
+              const float* atten = a.data(0, 0, 0);
+              int32_t* heat_ptr = nullptr;
+              py::array_t<int32_t> heat_arr;
+              if (!heat.is_none()) {
+                  heat_arr = heat.cast<py::array_t<int32_t>>();
+                  auto ha = heat_arr.mutable_unchecked<2>();
+                  heat_ptr = ha.mutable_data(0, 0);
+              }
+              float* glow_ptr = nullptr;
+              py::array_t<float> glow_arr;
+              if (!smoke_glow.is_none()) {
+                  glow_arr = smoke_glow.cast<py::array_t<float>>();
+                  auto gga = glow_arr.mutable_unchecked<3>();
+                  glow_ptr = gga.mutable_data(0, 0, 0);
+              }
+              const float* hatten = nullptr;
+              py::array_t<float> heat_atten_arr;
+              if (!heat_atten.is_none()) {
+                  heat_atten_arr = heat_atten.cast<py::array_t<float>>();
+                  auto haa = heat_atten_arr.unchecked<2>();
+                  hatten = haa.data(0, 0);
+              }
+              // Build the ray list in the /fp:strict TU so the angle/energy/heat
+              // math (and dx=cos/dy=sin) is bit-identical to the CPU march.
+              std::vector<breach_cuda::RayHD> rays = self.build_ray_list(src);
+              breach_cuda::raycaster_cast_directional(
+                  rays.data(), static_cast<int>(rays.size()),
+                  lrgb, ldx, ldy, heat_ptr, glow_ptr,
+                  gas_field, gabs, gsca, n_gases,
+                  atten, hatten,
+                  self.smoke_absorb_scale, self.light_cull, self.heat_cull,
+                  h, w);
+          },
+          py::arg("raycaster"), py::arg("source"), py::arg("light_rgb"),
+          py::arg("light_dx"), py::arg("light_dy"),
+          py::arg("gas"), py::arg("gas_absorption"), py::arg("gas_scatter"),
+          py::arg("light_atten"),
+          py::arg("heat") = py::none(),
+          py::arg("smoke_glow") = py::none(),
+          py::arg("heat_atten") = py::none(),
+          "S2 isolated: cast one LightSource on the GPU into the pre-zeroed output "
+          "fields; `heat` is bit-identical to Raycaster.cast_source_directional.");
 #else
     m.attr("HAS_CUDA") = false;
 #endif
@@ -375,6 +452,11 @@ PYBIND11_MODULE(breach_physics, m) {
         .def(py::init<>())
         .def_readwrite("smoke_absorption", &Raycaster::smoke_absorption)
         .def_readwrite("smoke_absorb_scale", &Raycaster::smoke_absorb_scale)
+        // Pure-density propagation cull floors (engine/08 §The march): per-channel
+        // survival thresholds. `light_cull` = ε_rgb (render), `heat_cull` = ε_heat
+        // (gameplay/damage, its own dial so heat-shield materials can diverge).
+        .def_readwrite("light_cull", &Raycaster::light_cull)
+        .def_readwrite("heat_cull", &Raycaster::heat_cull)
         // Per-channel Beer-Lambert absorption (R,G,B) — exposed as a 3-tuple.
         .def_property("smoke_absorption_rgb",
             [](const Raycaster& r) {

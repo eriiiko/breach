@@ -72,6 +72,12 @@ DEFAULTS = {
     "ambient_g": 0.10,
     "ambient_b": 0.13,
     "light_z": 0.5,
+    # Render exposure (engine/08 §Falloff is density). The pure-density raycaster
+    # makes light_rgb a PHYSICAL 1/r field where `intensity` = total emitted power
+    # (N-independent) — ~ray_count× dimmer than the legacy per-ray-dist_atten
+    # field. This master dial maps physical power -> display brightness. Drag it
+    # FIRST after the redesign lands: physics tunes power, exposure tunes look.
+    "light_gain": 10.0,
     "normal_strength": 1.0,
     "use_normal": True,
     "srgb_decode": True,
@@ -147,6 +153,7 @@ def _state_to_toml_section(name: str, s: dict) -> str:
     lines = [f"[{name}]"]
     lines.append(f"ambient = [{s['ambient_r']:.4f}, {s['ambient_g']:.4f}, {s['ambient_b']:.4f}]")
     lines.append(f"light_z = {s['light_z']:.4f}")
+    lines.append(f"light_gain = {s['light_gain']:.4f}")
     lines.append(f"normal_strength = {s['normal_strength']:.4f}")
     lines.append(f"use_normal = {'true' if s['use_normal'] else 'false'}")
     lines.append(f"srgb_decode = {'true' if s['srgb_decode'] else 'false'}")
@@ -236,7 +243,7 @@ def _toml_dict_to_state(d: dict) -> dict:
     s = dict(DEFAULTS)
     if "ambient" in d:
         s["ambient_r"], s["ambient_g"], s["ambient_b"] = d["ambient"]
-    for k in ("light_z", "normal_strength", "use_normal", "srgb_decode", "pressure_scale"):
+    for k in ("light_z", "light_gain", "normal_strength", "use_normal", "srgb_decode", "pressure_scale"):
         if k in d:
             s[k] = d[k]
     if "flashlight" in d:
@@ -507,6 +514,7 @@ def main() -> None:
                                    state.get("ambient_g"),
                                    state.get("ambient_b")))
     renderer.lighting.set_light_z(state.get("light_z"))
+    renderer.lighting.set_light_gain(state.get("light_gain"))
     renderer.lighting.set_normal_strength(state.get("normal_strength"))
     renderer.lighting.set_use_normal(state.get("use_normal"))
     renderer.lighting.set_srgb_decode(state.get("srgb_decode"))
@@ -737,6 +745,7 @@ def main() -> None:
                                            state.get("ambient_g"),
                                            state.get("ambient_b")))
             renderer.lighting.set_light_z(state.get("light_z"))
+            renderer.lighting.set_light_gain(state.get("light_gain"))
             renderer.lighting.set_normal_strength(state.get("normal_strength"))
             renderer.lighting.set_use_normal(state.get("use_normal"))
             renderer.lighting.set_srgb_decode(state.get("srgb_decode"))
@@ -921,6 +930,7 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
 
     # -- §4.2 Lighting --
     y = _section_header("Lighting", x, y)
+    y = _slider(state, "light_gain", "Light gain", 0.0, 60.0, x, y)
     y = _slider(state, "light_z", "Light Z", 0.0, 1.5, x, y)
     y = _slider(state, "normal_strength", "Norm strength", 0.0, 2.0, x, y)
     y = _checkbox(state, "use_normal", "Use normal map", x, y)

@@ -117,7 +117,12 @@ def part2_integration() -> bool:
     from field_ab_harness import capture_trajectory, default_scenario_sim, diff_trajectories
     from field_digest import trajectory_digest
 
-    GOLDEN = "542931c7e1d7dd4c2a50923116eb0a3de14acc6d16d2abd8385930b937ee875b"
+    # Re-baselined 2026-06-28 (CUDA-S2): the raycaster pure-density redesign +
+    # raycaster.cpp -> /fp:strict + k_fire_heat 200->1600 changed the synced
+    # heat/temperature fields (the default A/B scenario seeds fire). Erik
+    # feel-check-blessed the new look. CPU<->GPU temperature stayed bit-identical
+    # throughout — only this CPU reference moved. (was 542931c7...e875b)
+    GOLDEN = "60bd331faccc0b08c11e1ccad3ca75fa6f2aa26232b0b04c1a070b6c65c86ba1"
 
     def make_hot():
         sim = default_scenario_sim()
