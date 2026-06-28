@@ -9,6 +9,12 @@
 // Falloff types for light sources
 enum class Falloff : int { UNIFORM = 0, COSINE = 1, SHARP = 2 };
 
+// CUDA-S2 gate: the host-precomputed ray POD lives in cuda_raycaster.h (a plain
+// header, no CUDA symbols). Forward-declare it so build_ray_list can return a
+// vector of them without dragging the CUDA header into every CPU TU that
+// includes raycaster.h.
+namespace breach_cuda { struct RayHD; }
+
 // ---- Fixed-point heat format (ch.04 §Fixed-point format) ----
 //
 // `heat` is the only sim-affecting ray output. It is stored as a Q16.16
@@ -229,6 +235,21 @@ public:
         const float* heat_atten,    // per-tile heat atten (h,w) or nullptr
         int h, int w
     ) const;
+
+    // ---- CUDA-S2 gate: host ray-list builder (shared CPU/GPU angle math) ----
+    //
+    // Replicates cast_source_directional's per-ray loop EXACTLY — same
+    // get_ray_count(), the same (i+0.5)/N angle sweep, the same jitter RNG
+    // (mt19937 seeded (unsigned)(src.x*1000+src.y), uniform_real(-1,1)*jitter),
+    // the same falloff angular_atten, the same inv_n normalisation — and folds
+    // angle->(cos,sin), angular_atten, color and /N into each RayHD's
+    // (dx,dy,e_r,e_g,e_b,heat_emit). Rays with angular_atten<=0 are SKIPPED, just
+    // as the CPU cast skips them. Because this runs in THIS /fp:strict TU (the one
+    // that already owns the identical angle math in cast_source_directional), the
+    // GPU march's host-precomputed dx=cos(angle)/dy=sin(angle) are bit-identical
+    // to what the CPU march_ray_directional computes internally from `angle` —
+    // which is the contract that makes the DDA tile path (hence heat) match.
+    std::vector<breach_cuda::RayHD> build_ray_list(const LightSource& src) const;
 
     // Normalize direction vectors in place: (dx, dy) /= length(dx, dy).
     // Tiles with zero-length direction stay (0, 0).
