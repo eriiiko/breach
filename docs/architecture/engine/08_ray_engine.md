@@ -130,22 +130,27 @@ no downstream threshold.
 
 ## The march
 
-A DDA tile walk from the source outward. At each tile:
+A DDA tile walk from the source outward. Each ray carries a **fixed energy budget**
+`intensity / N` (N = the source's ray count — see *Falloff is density*, below) and a per-channel
+**survival** ∈ [0,1] that starts at 1 and is reduced **only by occlusion** (never by distance).
+At each tile:
 
-1. **Deposit** the per-channel surviving energy, scaled by a distance falloff
-   `1 / (1 + d²·0.01)`, into `light_rgb`.
+1. **Deposit** each channel's `energy · color[c] · survival[c]` into `light_rgb`. There is **no
+   per-ray distance falloff** — the `1/r` intensity falloff emerges from ray *density* (below).
 2. **Accumulate direction** into `light_dir`, weighted by the aggregate deposited intensity
    and pointing *toward the source* (`-dx, -dy` of travel). It is normalized to a unit vector
    in a separate full-grid pass after all sources are cast (see below).
-3. **Deposit heat** (only if the source emits heat): `heat_quantize(dep_aggregate · src.heat)`,
-   saturating-added into `heat`.
-4. **Attenuate per channel** by the material's static attenuation, then by the live gases —
-   a per-channel Beer-Lambert transmission summed (density-weighted) over every gas sharing the
-   tile (see [Smoke & Gases](smoke.md)), so mixed gases tint the survivor automatically.
+3. **Deposit heat** — only if the source emits heat **and `heat_survival > ε_heat`**:
+   `heat_quantize(energy · src.heat · heat_survival)`, saturating-added into `heat`.
+4. **Attenuate survival per channel** by the material's static attenuation, then by the live
+   gases — a per-channel Beer-Lambert transmission summed (density-weighted) over every gas
+   sharing the tile (see [Smoke & Gases](smoke.md)), so mixed gases tint the survivor
+   automatically. **Heat survival attenuates by `heat_atten` only** — gases do not block heat.
 5. **Deposit god-ray glow** — the energy the gases scatter back (their per-channel scatter
    budget, decoupled from absorption) goes into `smoke_glow`.
-6. **Step** to the next tile; terminate when range is exceeded or aggregate energy drops below
-   a small epsilon.
+6. **Step** to the next tile. Each channel **stops depositing once its own survival drops below
+   its threshold** (`ε_rgb` for light, `ε_heat` for heat); the **ray** terminates when *every*
+   channel is below threshold (fully absorbed) or `max_range` is exceeded.
 
 ### Occlusion is attenuation, not `is_wall`
 
@@ -167,10 +172,69 @@ glass — glass is a wall you cannot walk through but light passes. Driving the 
 the attenuation field resolves that cleanly, and it subsumes the old `block_light` bool: an
 opaque tile is just attenuation `1.0`.
 
-The ray terminates on the **aggregate** remaining energy (max over channels), not per channel.
-A per-channel early-out would create warp divergence on the GPU; marching all three channels
-in lockstep to one aggregate range keeps the kernel uniform. The cost is small — an opaque
-tile zeroes all channels at once, so a wall still stops the ray the same step.
+The **ray** marches to the **aggregate** range — it continues while *any* channel is still above
+its threshold — so the march length is uniform across a warp (no per-channel early-out → no GPU
+divergence). The cost is small: an opaque tile zeroes every channel at once, so a wall stops the
+ray the same step. But each channel's **deposit** is gated by its own survival (step 3/6 above):
+heat deposits only while `heat_survival > ε_heat`, *independent* of where the RGB channels die.
+That gating is a per-thread branch on a value the thread already holds — it does not change the
+march length, so it adds no divergence. It is what **decouples the heat output from the light
+path**, the core of the determinism contract below.
+
+### Falloff is density, not per-ray distance (the propagation model)
+
+A ray is a physics abstraction that **carries constant energy** along its path — only occlusion
+removes energy, never distance. The `1/r` intensity falloff is *not* a per-ray multiplier; it
+emerges from **ray density**. A point source fans `N` rays over angular spread `Δ`. At distance
+`r` a unit cell subtends angle `≈ 1/r`, so it is crossed by `≈ N/(Δ·r)` rays. Give each ray the
+budget `energy = P/N` (P = the source's total emitted power) and the cell accumulates
+
+```
+  k(r) · (P/N) · survival  =  [N/(Δr)] · [P/N] · survival  =  P·survival / (Δ·r)
+```
+
+— the **N cancels**: brightness is independent of ray count (ray count is a *quality* knob, not a
+brightness knob) and falls as `1/r`, the faithful 2D law. Two equal-power sources with different
+ray counts deposit identically. This is why there is **no `dist_atten`** in the march: the old
+`1/(1+d²·0.01)` per-ray factor stacked a second falloff on top of the density falloff
+(`~1/r³` total — far too steep) and was a band-aid for the source-cell pile-up. Removing it makes
+the model both more physical *and* cheaper (one fewer per-tile op; the `1/N` folds into the ray's
+initial energy).
+
+The honest cost of pure density is **sampling noise** where rays separate past ~1 tile (the wide
+far field): a cell may catch 0, 1, or 2 rays → faint banding in the `1/r` field. It is fully
+*deterministic* (identical CPU/GPU — it does not touch the bit-identity gate), so it is a quality
+matter, tuned by ray count (the auto count keeps ~1-tile spacing out to `max_range`) and an
+optional blur. **`intensity` now means total emitted power** (N-independent), so sources re-tune
+once when this lands.
+
+### Determinism: heat is decoupled from light
+
+`heat` feeds unit damage, so its integer output must be bit-identical CPU↔GPU (and cross-machine,
+eventually). Three things guarantee it, and they compose with the survival model above:
+
+1. **Per-channel survival termination** (above) — heat deposits while `heat_survival > ε_heat`,
+   a heat-only quantity driven by `heat_atten` (material). It never depends on the RGB survival,
+   which carries the gas-optics `exp` (a transcendental that differs CPU↔GPU). So the
+   heat-touched tile *set* is independent of `exp`. This is also what makes a **heat-shield
+   material** (low-E glass: passes light, blocks heat — physically real) safe to add: the old
+   aggregate termination would have let the surviving light drag a heat tail past the shield,
+   desyncing; decoupled heat stops at the shield, deterministically.
+2. **Host-precomputed ray directions** — `dx, dy = cos θ, sin θ` are transcendentals too, and a
+   1-ULP difference flips a DDA step → a different tile path → different heat. So directions are
+   computed once on the host (per ray) and handed to the kernel; the device march is then pure
+   `+ / ÷ / compare` (deterministic). No `cos`/`sin` on the device. (Cross-*machine* heat needs a
+   deterministic integer direction too — that lands with the combat/HP integerization, not here.)
+3. **No fast-math on the deposit path** (`--fmad=false`, no FMA contraction) — the deposit
+   arithmetic (`energy · survival`, the `(1-atten)` decays) is correctly-rounded IEEE `+,-,*,/`,
+   which is bit-identical across MSVC `/fp:strict` and nvcc. The render channels (`light_rgb`,
+   `light_dir`, `smoke_glow`) are exempt — gate `heat` only.
+
+**Defaults** (tune by eye in `tools/lighting_demo.py`): `ε_rgb = 0.01`, `ε_heat = 0.01` (a
+channel stops when ~99% absorbed — only meaningful behind occluders, since survival decays only
+by occlusion), ray count = the existing auto formula (`≈ max_range · spread`, ~1-tile spacing at
+range). All three are `config.toml` dials on the `[graphics.lighting]` / raycaster path
+(no-recompile).
 
 ### God-rays via smoke_glow
 
@@ -271,14 +335,19 @@ determinism regression test.
 Every choice above is shaped to port to the GPU unchanged:
 
 - one thread per ray
+- **ray directions precomputed on the host** (`dx,dy = cos θ, sin θ` per ray) and uploaded — no
+  `cos`/`sin` on the device, so the DDA path is pure `+/÷/compare` and bit-identical (see
+  *Determinism* above)
 - read-only world (material table bound as a constant/texture, indexed by the int8 material id —
   no random-access stalls)
 - `atomicAdd` deposits — render channels via f32 atomics down-converted at pack time; **heat via
   integer atomics** (order-independent, the determinism guarantee)
+- **per-channel deposit gating, not per-channel ray-termination** — heat deposits while
+  `heat_survival > ε_heat` (decoupled from the RGB/`exp` path); the ray still marches the uniform
+  aggregate range, so the gate is a branch on a held value, not warp divergence
+- `--fmad=false`/no-fast-math on the deposit math; render channels exempt, **gate `heat` only**
 - no in-kernel forking or recursion; bounded ray length
 - entities sample buffers, never participate in the kernel
-- march all channels in lockstep to the aggregate range (no per-channel early-out → no warp
-  divergence)
 
 Per-tick ray-list construction (host list vs device launch grid) and near-source atomic
 contention are CUDA-phase tuning items, not contract changes.
@@ -298,6 +367,17 @@ and visual thickness. This has no newer design home and is recorded here as the 
 lightning spec; it is not yet implemented.
 
 ## Implementation status
+
+> **⚠ Propagation-model redesign agreed 2026-06-28, not yet built.** The sections above (*The
+> march*, *Falloff is density*, *Determinism*) are the **target** model: pure-density `1/r`
+> falloff, per-ray energy `intensity/N`, per-channel survival termination, heat decoupled from the
+> RGB/`exp` path, host-precomputed directions. The **shipped** `raycaster.cpp` still runs the OLD
+> model — a per-ray `dist_atten = 1/(1+d²·0.01)` and a single aggregate-energy cull over all four
+> channels (so heat is currently coupled to the light/`exp` termination). Sequence to land the
+> target: (1) re-derive the **CPU** march to the new model + Erik feel-check (brightness/tuning
+> shifts; `intensity` becomes total power → sources re-tune); (2) **GPU** port + the heat
+> bit-identity gate. This is the **CUDA-S2** work item. The bullets below describe the shipped
+> (pre-redesign) code.
 
 **Built and shipping (Tier 1):**
 
