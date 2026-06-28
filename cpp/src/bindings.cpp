@@ -17,6 +17,7 @@
 #include "cuda_water.h"        // CUDA-S3: GPU water solver + backend flag
 #include "cuda_smoke.h"        // CUDA-S4a: GPU smoke solver + backend flag
 #include "cuda_wave.h"         // CUDA-S5: GPU wave_substep + backend flag
+#include "cuda_fire.h"         // CUDA-S6: GPU fire solver + backend flag
 #endif
 
 namespace py = pybind11;
@@ -360,6 +361,71 @@ PYBIND11_MODULE(breach_physics, m) {
           "S5 isolated: run ONE GPU wave substep in place on wave_p/wave_v/"
           "wave_source/atmosphere (bit-identical to AtmosphereSolver.wave_substep, "
           "incl. the mean_wp int64 reduction + the anomaly transfer).");
+
+    // CUDA-S6: the GPU fire solver. The backend flag switches PhysicsEngine::
+    // step_tail's fire pass between the CPU FireSimulation::step and the GPU
+    // fire_step (the live CPU fallback stays). cuda_fire_step runs ONE GPU fire
+    // step IN PLACE on fire/atmosphere/smoke/wall_hp (the 4 mutated fields) and
+    // RETURNS the destroyed-walls list as a py::list of (y,x) tuples — mirroring
+    // the live FireSimulation.step binding. The solver's scalar FireParams dials
+    // are passed explicitly since fire_step is a free function.
+    m.def("set_fire_backend",
+          [](bool use_cuda) { breach_cuda::set_fire_backend_cuda(use_cuda); },
+          py::arg("use_cuda"),
+          "Switch PhysicsEngine's fire pass (FireSimulation.step) to the GPU "
+          "(True) or CPU (False).");
+    m.def("get_fire_backend",
+          []() { return breach_cuda::fire_backend_is_cuda(); },
+          "True if the fire pass currently runs on the GPU.");
+    m.def("cuda_fire_step",
+          [](py::array_t<int32_t> fire,         // Q16.16 int32 (intensity)
+             py::array_t<int32_t> atmosphere,   // Q16.16 int32 (plume deposit)
+             py::array_t<int32_t> smoke,        // Q16.16 int32 (emission scatter)
+             py::array_t<int32_t> wall_hp,      // Q16.16 int32 (burn-through)
+             py::array_t<int32_t> temperature,  // Q16.16 int32 (read-only)
+             py::array_t<int32_t> wind_x,       // Q16.16 int32 (read-only)
+             py::array_t<int32_t> wind_y,       // Q16.16 int32 (read-only)
+             py::array_t<bool>  is_wall,
+             py::array_t<bool>  is_vacuum,
+             py::array_t<bool>  flammable,
+             float dt, float k_grow, float k_die, float fire_T_ext,
+             float fire_T_span, float fuel_ref, float P_min, float P_full,
+             float I_min, float k_wind_fan, float k_wind_strip,
+             float fire_pressure_gain, float p_expand_ref, float smoke_emission,
+             float wall_damage, float temp_scale) -> py::list {
+              auto [f, h, w]     = get_2d(fire);
+              auto [atm, h2, w2] = get_2d(atmosphere);
+              auto [sm, h3, w3]  = get_2d(smoke);
+              auto [whp, h4, w4] = get_2d(wall_hp);
+              auto [temp, h5, w5] = get_2d_const(temperature);
+              auto [wx, h6, w6]  = get_2d_const(wind_x);
+              auto [wy, h7, w7]  = get_2d_const(wind_y);
+              auto [wl, h8, w8]  = get_2d_const(is_wall);
+              auto [vac, h9, w9] = get_2d_const(is_vacuum);
+              auto [fl, h10, w10] = get_2d_const(flammable);
+              auto destroyed = breach_cuda::fire_step(
+                  f, atm, sm, whp, temp, wx, wy, wl, vac, fl, h, w, dt,
+                  k_grow, k_die, fire_T_ext, fire_T_span, fuel_ref, P_min, P_full,
+                  I_min, k_wind_fan, k_wind_strip, fire_pressure_gain, p_expand_ref,
+                  smoke_emission, wall_damage, temp_scale);
+              py::list result;
+              for (const auto& [dy, dx] : destroyed) {
+                  result.append(py::make_tuple(dy, dx));
+              }
+              return result;
+          },
+          py::arg("fire"), py::arg("atmosphere"), py::arg("smoke"),
+          py::arg("wall_hp"), py::arg("temperature"), py::arg("wind_x"),
+          py::arg("wind_y"), py::arg("is_wall"), py::arg("is_vacuum"),
+          py::arg("flammable"), py::arg("dt"), py::arg("k_grow"), py::arg("k_die"),
+          py::arg("fire_T_ext"), py::arg("fire_T_span"), py::arg("fuel_ref"),
+          py::arg("P_min"), py::arg("P_full"), py::arg("I_min"),
+          py::arg("k_wind_fan"), py::arg("k_wind_strip"),
+          py::arg("fire_pressure_gain"), py::arg("p_expand_ref"),
+          py::arg("smoke_emission"), py::arg("wall_damage"), py::arg("temp_scale"),
+          "S6 isolated: run ONE GPU fire step in place on fire/atmosphere/smoke/"
+          "wall_hp (bit-identical to FireSimulation.step) and return the destroyed-"
+          "walls list of (y,x) tuples.");
 #else
     m.attr("HAS_CUDA") = false;
 #endif
