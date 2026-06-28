@@ -1,7 +1,7 @@
 // ============================================================================
-// CUDA-S4a smoke solver implementation — see cuda_smoke.h.
-// A bit-identical GPU port of SmokeDynamics::step (smoke_dynamics.cpp 187-302).
-// sink_hop (the breach pull) is NOT ported (that is S4b).
+// CUDA-S4a/S4b smoke solver implementation — see cuda_smoke.h.
+// A bit-identical GPU port of SmokeDynamics::step (smoke_dynamics.cpp 187-302)
+// and SmokeDynamics::sink_hop (the breach pull, smoke_dynamics.cpp 309-355 — S4b).
 //
 // Four kernels, one per pass of the CPU step(), launched as a barriered chain on
 // ONE gas plane:
@@ -258,6 +258,39 @@ __global__ void smoke_clamp(int32_t* __restrict__ smoke,
     }
 }
 
+// ---- S4b: sink_hop back-trace kernel (smoke_dynamics.cpp:325-343) ------------
+// ONE 1-cell BFS-gradient breach pull. Structurally identical to smoke_advect:
+// non-(obstacle|wall|vacuum) cells back-trace into `src` (the pre-hop snapshot);
+// other cells keep their snapshot value (the CPU `continue`). The ONLY change vs
+// advection is the displacement — the SINK float bridge:
+//   bx_q = quantize(sink_disp * (double)sink_x[i]),  by_q likewise.
+// sink_disp = min(sink_strength, 1.0) is precomputed ONCE on the HOST (a scalar)
+// and passed as a double arg; the per-cell sink_x float -> double -> ×double ->
+// quantize is character-identical to the CPU expression (--fmad=false keeps the
+// double product from contracting, same float-bridge guarantee as the wind path).
+// Everything downstream of (bx_q,by_q) is the SAME verified backtrace_sample_q_dev.
+__global__ void smoke_sink_hop(int32_t* __restrict__ smoke,
+                               const int32_t* __restrict__ src,
+                               const float* __restrict__ sink_x,
+                               const float* __restrict__ sink_y,
+                               const bool* __restrict__ obstacles,
+                               const bool* __restrict__ is_wall,
+                               const bool* __restrict__ is_vacuum,
+                               const float* __restrict__ perm,
+                               double sink_disp, int h, int w) {
+    const int n = h * w;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
+         i += gridDim.x * blockDim.x) {
+        if (obstacles[i] || is_wall[i] || is_vacuum[i]) continue;  // keep snapshot val
+        const int y = i / w;
+        const int x = i % w;
+        const int32_t bx_q = quantize(sink_disp * (double)sink_x[i]);
+        const int32_t by_q = quantize(sink_disp * (double)sink_y[i]);
+        smoke[i] = backtrace_sample_q_dev(src, x, y, bx_q, by_q,
+                                          obstacles, is_wall, is_vacuum, perm, h, w);
+    }
+}
+
 }  // namespace
 
 void smoke_step(
@@ -338,6 +371,78 @@ void smoke_step(
     cudaFree(d_wy);
     cudaFree(d_lap);
     cudaFree(d_src);
+    cudaFree(d_obs);
+    cudaFree(d_wall);
+    cudaFree(d_vac);
+    cudaFree(d_perm);
+}
+
+void smoke_sink_hop(
+    int32_t* smoke,
+    const float* sink_x, const float* sink_y,
+    const bool* obstacles, const bool* is_wall, const bool* is_vacuum,
+    const float* perm,
+    int h, int w, float sink_strength) {
+    const int n = h * w;
+    if (n <= 0) return;
+
+    // ---- Host scalar precompute (smoke_dynamics.cpp:335-336, VERBATIM, double):
+    //      sink_disp = min(sink_strength, 1.0). A scalar -> computed ONCE here and
+    //      passed to the kernel; the per-cell × sink_x/sink_y is the float bridge. -
+    double sink_disp = (double)sink_strength;
+    if (sink_disp > 1.0) sink_disp = 1.0;
+
+    // ---- Device buffers (the gas plane + sink_x/sink_y + masks + perm + src).
+    //      Per-call H2D/D2H of the plane (S4a pattern); residency is S8. ----------
+    const size_t nb    = (size_t)n * sizeof(int32_t);
+    const size_t nbool = (size_t)n * sizeof(bool);
+    const size_t nbf   = (size_t)n * sizeof(float);
+
+    int32_t *d_gas = nullptr, *d_src = nullptr;
+    float *d_skx = nullptr, *d_sky = nullptr, *d_perm = nullptr;
+    bool *d_obs = nullptr, *d_wall = nullptr, *d_vac = nullptr;
+
+    cuda_check(cudaMalloc(&d_gas, nb), "malloc smoke");
+    cuda_check(cudaMalloc(&d_src, nb), "malloc src");
+    cuda_check(cudaMalloc(&d_skx, nbf), "malloc sink_x");
+    cuda_check(cudaMalloc(&d_sky, nbf), "malloc sink_y");
+    cuda_check(cudaMalloc(&d_obs, nbool), "malloc obstacles");
+    cuda_check(cudaMalloc(&d_wall, nbool), "malloc is_wall");
+    cuda_check(cudaMalloc(&d_vac, nbool), "malloc is_vacuum");
+    cuda_check(cudaMalloc(&d_perm, nbf), "malloc permeability");
+
+    cuda_check(cudaMemcpy(d_gas, smoke, nb, cudaMemcpyHostToDevice), "H2D smoke");
+    cuda_check(cudaMemcpy(d_skx, sink_x, nbf, cudaMemcpyHostToDevice), "H2D sink_x");
+    cuda_check(cudaMemcpy(d_sky, sink_y, nbf, cudaMemcpyHostToDevice), "H2D sink_y");
+    cuda_check(cudaMemcpy(d_obs, obstacles, nbool, cudaMemcpyHostToDevice), "H2D obstacles");
+    cuda_check(cudaMemcpy(d_wall, is_wall, nbool, cudaMemcpyHostToDevice), "H2D is_wall");
+    cuda_check(cudaMemcpy(d_vac, is_vacuum, nbool, cudaMemcpyHostToDevice), "H2D is_vacuum");
+    cuda_check(cudaMemcpy(d_perm, perm, nbf, cudaMemcpyHostToDevice), "H2D permeability");
+
+    const int block = 256;
+    const int grid = (n + block - 1) / block;
+
+    // Snapshot the pre-hop smoke into d_src (the CPU's src.assign(smoke,...) BEFORE
+    // the back-trace loop). A device-to-device copy = the exact int32 snapshot the
+    // back-trace reads (the kernel writes d_gas while reading the frozen d_src).
+    cuda_check(cudaMemcpy(d_src, d_gas, nb, cudaMemcpyDeviceToDevice), "D2D src snapshot");
+    // The sink back-trace (in-place on d_gas; reads the frozen d_src).
+    smoke_sink_hop<<<grid, block>>>(d_gas, d_src, d_skx, d_sky,
+                                    d_obs, d_wall, d_vac, d_perm,
+                                    sink_disp, h, w);
+    cuda_check(cudaGetLastError(), "sink_hop launch");
+    // The SAME clamp + zero walls/vacuum pass as step (smoke_dynamics.cpp:345-352).
+    smoke_clamp<<<grid, block>>>(d_gas, d_wall, d_vac, n);
+    cuda_check(cudaGetLastError(), "clamp launch");
+
+    cuda_check(cudaDeviceSynchronize(), "sync");
+
+    cuda_check(cudaMemcpy(smoke, d_gas, nb, cudaMemcpyDeviceToHost), "D2H smoke");
+
+    cudaFree(d_gas);
+    cudaFree(d_src);
+    cudaFree(d_skx);
+    cudaFree(d_sky);
     cudaFree(d_obs);
     cudaFree(d_wall);
     cudaFree(d_vac);
