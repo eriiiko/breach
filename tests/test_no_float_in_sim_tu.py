@@ -242,13 +242,23 @@ _FP_FAST_RE = re.compile(r"fp:fast")
 # per-cell sim float; it is the same config scalar the CPU branch already reads off
 # this->smoke. The dispatch is guarded by `#ifdef BREACH_HAS_CUDA` and the sink_hop is
 # bit-identical CPU vs GPU (tol 0, tests/cuda_s4b_check.py).
+# CUDA-S5: physics_engine.cpp `float` 66 -> 67. The GPU wave dispatch added in the
+# n_wave loop passes `(float)dt_actual` to the FREE-function breach_cuda::
+# wave_substep_gpu (the same boundary `dt` cast the CPU branch already makes — the
+# new line carries the token). The solver dials it also forwards
+# (this->atmos.c / damping / absorb_strength / transfer / feed_rate /
+# max_source_per_step) are NOT new float — they are the same config scalars the CPU
+# wave_substep already reads off this->atmos, and they sit on lines without the bare
+# `float` token. It is NOT new per-cell sim float; the dispatch is guarded by
+# `#ifdef BREACH_HAS_CUDA` and the wave substep is bit-identical CPU vs GPU (tol 0,
+# tests/cuda_s5_check.py), incl. the mean_wp int64 reduction.
 BASELINE = {
     "atmosphere_solver.cpp":  {"float": 32, "double": 32, "fp:fast": 1},
     "smoke_dynamics.cpp":     {"float": 24, "double": 13, "fp:fast": 0},
     "fire_simulation.cpp":    {"float": 6,  "double": 19, "fp:fast": 0},
     "water_solver.cpp":       {"float": 32, "double": 22, "fp:fast": 1},
     "temperature_solver.cpp": {"float": 3,  "double": 2,  "fp:fast": 0},
-    "physics_engine.cpp":     {"float": 66, "double": 28, "fp:fast": 1},
+    "physics_engine.cpp":     {"float": 67, "double": 28, "fp:fast": 1},
 }
 
 # The TUs that have been MIGRATED to integer end-to-end (S3c). For these, the

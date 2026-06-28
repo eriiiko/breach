@@ -102,4 +102,37 @@ __device__ __forceinline__ q16 reciprocal_q16_dev(q16 denom_q) {
     return (q16)r;
 }
 
+// ---- scale_mag_dev — magnitude-first signed shrink (CUDA-S5) ----------------
+// A VERBATIM device port of fixedpoint::scale_mag (fixed_point.h:324): multiply a
+// Q16.16 value `x` by a Q16.16 factor `scale` in [0, FP_ONE] while truncating on
+// the MAGNITUDE (toward 0), NOT toward -inf. mul_q16's `>>16` rounds a NEGATIVE
+// product toward -inf, which GROWS a negative value's magnitude by up to 1 count;
+// the wave absorption (k <= 1.0) must only SHRINK, so we scale |x| then re-apply
+// the sign. For scale == FP_ONE this is the identity. The same single arithmetic
+// `(|x|*scale) >> FP_SHIFT` as the host -> bit-identical by construction.
+//
+// Reused by S7 (the GS/sponge outflow limiter). Shared here so it is not copy-
+// pasted per-.cu (the §3 spec's shared-helper rule).
+__device__ __forceinline__ q16 scale_mag_dev(q16 x, q16 scale) {
+    const int64_t mag = (int64_t)(x < 0 ? -x : x);
+    const q16 scaled  = (q16)((mag * (int64_t)scale) >> fixedpoint::FP_SHIFT);  // toward 0
+    return (x < 0) ? -scaled : scaled;
+}
+
+// ---- round_nearest_q_dev — sign-symmetric round-to-nearest narrow (CUDA-S5) --
+// A VERBATIM device port of the anomaly-transfer round in atmosphere_solver.cpp
+// (~256-257): given a wide Q.32 product `prod` (anomaly * xfer_q), narrow to
+// Q16.16 ROUND-HALF-AWAY-FROM-ZERO (sign-symmetric — + and - deposits round
+// identically so the transfer carries no DC bias). HALF_Q = 0.5 ULP. The exact
+// CPU form:
+//   (prod >= 0) ? ((prod + HALF_Q) >> FP_SHIFT)
+//               : -(((-prod) + HALF_Q) >> FP_SHIFT)
+// (identical to fixedpoint::narrow_round_signed; replicated literally here per the
+// §3 spec). Reused by S7's GS increment. Pure int64 -> bit-identical to the host.
+__device__ __forceinline__ q16 round_nearest_q_dev(int64_t prod) {
+    const int64_t HALF_Q = (int64_t)1 << (fixedpoint::FP_SHIFT - 1);   // 0.5 ULP
+    return (q16)((prod >= 0) ? ((prod + HALF_Q) >> fixedpoint::FP_SHIFT)
+                             : -(((-prod) + HALF_Q) >> fixedpoint::FP_SHIFT));
+}
+
 }  // namespace breach_cuda

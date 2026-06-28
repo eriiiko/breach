@@ -16,6 +16,7 @@
 #include "cuda_raycaster.h"    // CUDA-S2: GPU directional raycaster (heat bit-identical)
 #include "cuda_water.h"        // CUDA-S3: GPU water solver + backend flag
 #include "cuda_smoke.h"        // CUDA-S4a: GPU smoke solver + backend flag
+#include "cuda_wave.h"         // CUDA-S5: GPU wave_substep + backend flag
 #endif
 
 namespace py = pybind11;
@@ -306,6 +307,59 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("permeability"), py::arg("sink_strength"),
           "S4b isolated: run ONE GPU breach sink_hop in place on one gas plane "
           "(bit-identical to SmokeDynamics.sink_hop).");
+
+    // CUDA-S5: the GPU wave_substep. The backend flag switches PhysicsEngine::
+    // run_substeps's per-substep wave step between the CPU AtmosphereSolver::
+    // wave_substep and the GPU wave_substep_gpu (the live CPU fallback stays;
+    // diffuse_solve/GS stays CPU in BOTH paths — that is S7). cuda_wave_substep
+    // runs ONE GPU wave substep IN PLACE on wave_p/wave_v/wave_source/atmosphere
+    // for the isolated GPU-vs-CPU bit-identity gate. The solver's scalar dials
+    // (c / damping / absorb_strength / transfer / feed_rate / max_source_per_step)
+    // are passed explicitly since wave_substep_gpu is a free function — mirroring
+    // the live AtmosphereSolver.step binding's array args plus those scalars.
+    m.def("set_wave_backend",
+          [](bool use_cuda) { breach_cuda::set_wave_backend_cuda(use_cuda); },
+          py::arg("use_cuda"),
+          "Switch PhysicsEngine's wave pass (wave_substep) to the GPU (True) or "
+          "CPU (False). diffuse_solve stays CPU either way.");
+    m.def("get_wave_backend",
+          []() { return breach_cuda::wave_backend_is_cuda(); },
+          "True if the wave pass currently runs on the GPU.");
+    m.def("cuda_wave_substep",
+          [](py::array_t<int32_t> wave_p,       // Q16.16 int32 (acoustic anomaly)
+             py::array_t<int32_t> wave_v,       // Q16.16 int32 (wave velocity)
+             py::array_t<int32_t> wave_source,  // Q16.16 int32 (injected energy)
+             py::array_t<int32_t> atmosphere,   // Q16.16 int32 (anomaly transfer)
+             py::array_t<bool>  obstacles,
+             py::array_t<bool>  is_wall,
+             py::array_t<bool>  is_vacuum,
+             py::array_t<float> permeability,   // FLOAT per-face bridge
+             py::array_t<float> wave_absorb,    // FLOAT per-cell bridge
+             float dt, float c, float damping, float absorb_strength,
+             float transfer, float feed_rate, float max_source_per_step) {
+              auto [wp, h, w]    = get_2d(wave_p);
+              auto [wv, h2, w2]  = get_2d(wave_v);
+              auto [ws, h3, w3]  = get_2d(wave_source);
+              auto [atm, h4, w4] = get_2d(atmosphere);
+              auto [obs, h5, w5] = get_2d_const(obstacles);
+              auto [wl, h6, w6]  = get_2d_const(is_wall);
+              auto [vac, h7, w7] = get_2d_const(is_vacuum);
+              auto [perm, h8, w8] = get_2d_const(permeability);
+              auto [wabs, h9, w9] = get_2d_const(wave_absorb);
+              breach_cuda::wave_substep_gpu(
+                  wp, wv, ws, atm, obs, wl, vac, perm, wabs, h, w, dt,
+                  c, damping, absorb_strength, transfer, feed_rate,
+                  max_source_per_step);
+          },
+          py::arg("wave_p"), py::arg("wave_v"), py::arg("wave_source"),
+          py::arg("atmosphere"), py::arg("obstacles"), py::arg("is_wall"),
+          py::arg("is_vacuum"), py::arg("permeability"), py::arg("wave_absorb"),
+          py::arg("dt"), py::arg("c"), py::arg("damping"),
+          py::arg("absorb_strength"), py::arg("transfer"), py::arg("feed_rate"),
+          py::arg("max_source_per_step"),
+          "S5 isolated: run ONE GPU wave substep in place on wave_p/wave_v/"
+          "wave_source/atmosphere (bit-identical to AtmosphereSolver.wave_substep, "
+          "incl. the mean_wp int64 reduction + the anomaly transfer).");
 #else
     m.attr("HAS_CUDA") = false;
 #endif
@@ -407,6 +461,37 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("obstacles"), py::arg("is_wall"), py::arg("is_vacuum"),
            py::arg("permeability"),
            py::arg("wave_absorb"),
+           py::arg("dt"))
+        // CUDA-S5: the wave-only substep (NO diffuse_solve), exposed so the GPU
+        // bit-identity gate has a CLEAN CPU reference for wave_substep ALONE (step()
+        // also runs diffuse_solve, which mutates atmosphere/wave_v in the sponge BC
+        // and so is NOT a wave-only oracle). Same arg list as step() minus wind_x/
+        // wind_y (wave_substep writes neither).
+        .def("wave_substep", [](const AtmosphereSolver& self,
+                                py::array_t<int32_t> wave_p,      // Q16.16 int32
+                                py::array_t<int32_t> wave_v,      // Q16.16 int32
+                                py::array_t<int32_t> wave_source, // Q16.16 int32
+                                py::array_t<int32_t> atmosphere,  // Q16.16 int32
+                                py::array_t<bool>  obstacles,
+                                py::array_t<bool>  is_wall,
+                                py::array_t<bool>  is_vacuum,
+                                py::array_t<float> permeability,
+                                py::array_t<float> wave_absorb,
+                                float dt) {
+            auto [wp, h, w]   = get_2d(wave_p);
+            auto [wv, h2, w2] = get_2d(wave_v);
+            auto [ws, h3, w3] = get_2d(wave_source);
+            auto [atm, h4, w4] = get_2d(atmosphere);
+            auto [obs, h5, w5] = get_2d_const(obstacles);
+            auto [wl, h6, w6] = get_2d_const(is_wall);
+            auto [vac, h7, w7] = get_2d_const(is_vacuum);
+            auto [perm, h8, w8] = get_2d_const(permeability);
+            auto [wabs, h9, w9] = get_2d_const(wave_absorb);
+            self.wave_substep(wp, wv, ws, atm, obs, wl, vac, perm, wabs, h, w, dt);
+        }, py::arg("wave_p"), py::arg("wave_v"), py::arg("wave_source"),
+           py::arg("atmosphere"),
+           py::arg("obstacles"), py::arg("is_wall"), py::arg("is_vacuum"),
+           py::arg("permeability"), py::arg("wave_absorb"),
            py::arg("dt"));
 
     // --- SmokeDynamics (uses precomputed wind from AtmosphereSolver) ---
