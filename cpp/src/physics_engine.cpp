@@ -15,6 +15,7 @@
 #include "cuda_temperature.h"   // CUDA-S1: GPU temperature solver + backend flag
 #include "cuda_water.h"         // CUDA-S3: GPU water solver + backend flag
 #include "cuda_smoke.h"         // CUDA-S4a: GPU smoke solver + backend flag
+#include "cuda_wave.h"          // CUDA-S5: GPU wave_substep + backend flag
 #endif
 
 #include <algorithm>   // std::max, std::min
@@ -210,14 +211,35 @@ void PhysicsEngine::run_substeps(
     const int n_wave = n;
 
     // 1. Wave substeps at the wave CFL (dt_actual), n_wave times.
+    // CUDA-S5: the GPU wave_substep_gpu is a FREE function, so the solver's scalar
+    // dials (c / damping / absorb_strength / transfer / feed_rate /
+    // max_source_per_step) are passed explicitly. Bit-identical to the CPU
+    // wave_substep (same integer ops + the order-free int64 mean_wp reduction); the
+    // CPU solver stays the live fallback (flag off by default). diffuse_solve (the
+    // GS + wind) stays CPU in BOTH paths — that is S7. CPU-only builds (no
+    // BREACH_HAS_CUDA) compile only the CPU call.
     for (int s = 0; s < n_wave; ++s) {
-        this->atmos.wave_substep(
-            wave_p, wave_v, wave_source, atmosphere,
-            obstacles, solid, is_vacuum,
-            dyn_permeability,
-            dyn_wave_absorb,
-            h, w,
-            (float)dt_actual);
+#ifdef BREACH_HAS_CUDA
+        if (breach_cuda::wave_backend_is_cuda()) {
+            breach_cuda::wave_substep_gpu(
+                wave_p, wave_v, wave_source, atmosphere,
+                obstacles, solid, is_vacuum,
+                dyn_permeability, dyn_wave_absorb,
+                h, w, (float)dt_actual,
+                this->atmos.c, this->atmos.damping, this->atmos.absorb_strength,
+                this->atmos.transfer, this->atmos.feed_rate,
+                this->atmos.max_source_per_step);
+        } else
+#endif
+        {
+            this->atmos.wave_substep(
+                wave_p, wave_v, wave_source, atmosphere,
+                obstacles, solid, is_vacuum,
+                dyn_permeability,
+                dyn_wave_absorb,
+                h, w,
+                (float)dt_actual);
+        }
     }
 
     // 2. Implicit diffusion + BCs + wind, ONCE, at the FULL sim_time. The wind
