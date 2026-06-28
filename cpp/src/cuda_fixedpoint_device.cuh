@@ -135,6 +135,17 @@ __device__ __forceinline__ q16 round_nearest_q_dev(int64_t prod) {
                              : -(((-prod) + HALF_Q) >> fixedpoint::FP_SHIFT));
 }
 
+// ---- shr_round0_dev — sign-symmetric round-toward-0 shift (CUDA-S7) ---------
+// A VERBATIM device port of fixedpoint::shr_round0 (fixed_point.h:213-215): a
+// symmetric divide-by-2^s so +x and -x lose magnitude EQUALLY. `x >> s` rounds a
+// negative x toward -inf (growing magnitude by up to 1 count); shifting |x| then
+// re-applying the sign keeps + and - identical. Used by the S7 wind gradient
+// (the ·0.5 = >>1 on the SIGNED central difference). Pure integer shift/compare
+// -> bit-identical to the host by construction.
+__device__ __forceinline__ q16 shr_round0_dev(q16 x, int s) {
+    return (x < 0) ? -((-x) >> s) : (x >> s);
+}
+
 // ---- sqrt_q16_dev — deterministic integer floor-isqrt (CUDA-S6) -------------
 // A VERBATIM device port of fixedpoint::sqrt_q16 (fixed_point.h:545): the
 // fixed-iteration (32-trip) binary digit-recurrence floor-isqrt of a 64-bit
