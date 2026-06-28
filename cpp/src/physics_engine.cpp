@@ -17,6 +17,7 @@
 #include "cuda_smoke.h"         // CUDA-S4a: GPU smoke solver + backend flag
 #include "cuda_wave.h"          // CUDA-S5: GPU wave_substep + backend flag
 #include "cuda_fire.h"          // CUDA-S6: GPU fire solver + backend flag
+#include "cuda_atmosphere.h"    // CUDA-S7: GPU diffuse_solve + backend flag
 #endif
 
 #include <algorithm>   // std::max, std::min
@@ -272,13 +273,33 @@ void PhysicsEngine::run_substeps(
     // 2. Implicit diffusion + BCs + wind, ONCE, at the FULL sim_time. The wind
     // is written here for the smoke below. sim_time is the float passed from
     // Python; the diffuse_solve dt is that full tick length (NOT dt_actual).
-    this->atmos.diffuse_solve(
-        atmosphere, wave_p, wave_v, wave_source,
-        wind_x, wind_y,
-        obstacles, solid, is_vacuum,
-        dyn_permeability,
-        h, w,
-        sim_time);
+    //
+    // CUDA-S7: the GPU diffuse_solve_gpu is a FREE function, so the solver's scalar
+    // dials (d_atm / breach_rate / gs_iters) are passed explicitly. Bit-identical
+    // to the CPU diffuse_solve (same integer RB-GS + sponge + wind); the CPU solver
+    // stays the live fallback (flag off by default). last_gs_residual (a non-synced
+    // float diagnostic) is NOT recomputed on the GPU path — nothing reads it. The
+    // GPU build's CPU-only path (no BREACH_HAS_CUDA) compiles only the CPU call.
+#ifdef BREACH_HAS_CUDA
+    if (breach_cuda::atmos_backend_is_cuda()) {
+        breach_cuda::diffuse_solve_gpu(
+            atmosphere, wave_p, wave_v, wave_source,
+            wind_x, wind_y,
+            obstacles, solid, is_vacuum,
+            dyn_permeability,
+            h, w, sim_time,
+            this->atmos.d_atm, this->atmos.breach_rate, this->atmos.gs_iters);
+    } else
+#endif
+    {
+        this->atmos.diffuse_solve(
+            atmosphere, wave_p, wave_v, wave_source,
+            wind_x, wind_y,
+            obstacles, solid, is_vacuum,
+            dyn_permeability,
+            h, w,
+            sim_time);
+    }
 
     // 3. Smoke-CFL floor (Patch 2b). Smoke's explicit diffusion is forward-Euler,
     // so it is CFL-bound; the effective diffusion spikes under wind:

@@ -252,13 +252,23 @@ _FP_FAST_RE = re.compile(r"fp:fast")
 # `float` token. It is NOT new per-cell sim float; the dispatch is guarded by
 # `#ifdef BREACH_HAS_CUDA` and the wave substep is bit-identical CPU vs GPU (tol 0,
 # tests/cuda_s5_check.py), incl. the mean_wp int64 reduction.
+# CUDA-S7: physics_engine.cpp `float` 67 -> 68. The GPU diffuse_solve dispatch added
+# in step 2 of run_substeps carries ONE comment line bearing the `float` token (it
+# explains that last_gs_residual — a non-synced FLOAT diagnostic — is not recomputed
+# on the GPU path). The solver dials the dispatch forwards to the FREE-function
+# breach_cuda::diffuse_solve_gpu (this->atmos.d_atm / breach_rate / gs_iters) are NOT
+# new float — they are the same config scalars the CPU diffuse_solve already reads off
+# this->atmos, and they sit on lines without the bare `float` token. It is NOT new
+# per-cell sim float; the dispatch is guarded by `#ifdef BREACH_HAS_CUDA` and the
+# diffuse_solve (RB-GS + vacuum sponge + wind) is bit-identical CPU vs GPU (tol 0,
+# tests/cuda_s7_check.py — all SIX synced fields, incl. the drift-free GS check).
 BASELINE = {
     "atmosphere_solver.cpp":  {"float": 32, "double": 32, "fp:fast": 1},
     "smoke_dynamics.cpp":     {"float": 24, "double": 13, "fp:fast": 0},
     "fire_simulation.cpp":    {"float": 6,  "double": 19, "fp:fast": 0},
     "water_solver.cpp":       {"float": 32, "double": 22, "fp:fast": 1},
     "temperature_solver.cpp": {"float": 3,  "double": 2,  "fp:fast": 0},
-    "physics_engine.cpp":     {"float": 67, "double": 28, "fp:fast": 1},
+    "physics_engine.cpp":     {"float": 68, "double": 28, "fp:fast": 1},
 }
 
 # The TUs that have been MIGRATED to integer end-to-end (S3c). For these, the
