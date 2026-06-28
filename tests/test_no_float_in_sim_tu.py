@@ -224,13 +224,23 @@ _FP_FAST_RE = re.compile(r"fp:fast")
 # The COUNTS themselves are now INTEGER: n = ceil_div(sim_time_q, max_dt_q) and
 # n_smoke = fixedpoint::smoke_cliff_count(...) (128-bit-rational integer ceil). This
 # COMPLETES the integer foundation: no `double` remains in the determinism-critical path.
+#
+# CUDA-S4a: physics_engine.cpp `float` 64 -> 65. The GPU smoke dispatch added in the
+# gas loop passes the per-gas diffusion `(float)gas_diffusion[gi]` + the solver dials
+# `this->smoke.wind_diffusion_scale` / `advection_rate` to the FREE-function
+# breach_cuda::smoke_step (a free function takes the solver's scalar dials explicitly,
+# exactly as the S3 water dispatch passes this->water.g/damping/... to water_step).
+# This is NOT new per-cell sim float — it is the same config scalar the CPU branch
+# already casts onto this->smoke.d_smoke; the GPU branch just names it once more. The
+# whole dispatch is guarded by `#ifdef BREACH_HAS_CUDA` (the CPU-only build never sees
+# it) and the smoke path is bit-identical CPU vs GPU (tol 0, tests/cuda_s4a_check.py).
 BASELINE = {
     "atmosphere_solver.cpp":  {"float": 32, "double": 32, "fp:fast": 1},
     "smoke_dynamics.cpp":     {"float": 24, "double": 13, "fp:fast": 0},
     "fire_simulation.cpp":    {"float": 6,  "double": 19, "fp:fast": 0},
     "water_solver.cpp":       {"float": 32, "double": 22, "fp:fast": 1},
     "temperature_solver.cpp": {"float": 3,  "double": 2,  "fp:fast": 0},
-    "physics_engine.cpp":     {"float": 64, "double": 28, "fp:fast": 1},
+    "physics_engine.cpp":     {"float": 65, "double": 28, "fp:fast": 1},
 }
 
 # The TUs that have been MIGRATED to integer end-to-end (S3c). For these, the

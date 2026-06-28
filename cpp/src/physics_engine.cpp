@@ -14,6 +14,7 @@
 #ifdef BREACH_HAS_CUDA
 #include "cuda_temperature.h"   // CUDA-S1: GPU temperature solver + backend flag
 #include "cuda_water.h"         // CUDA-S3: GPU water solver + backend flag
+#include "cuda_smoke.h"         // CUDA-S4a: GPU smoke solver + backend flag
 #endif
 
 #include <algorithm>   // std::max, std::min
@@ -297,12 +298,33 @@ void PhysicsEngine::run_substeps(
                 continue;  // empty slice — nothing to transport (matches `.any()`)
             }
             this->smoke.d_smoke = (float)gas_diffusion[gi];
-            this->smoke.step(
-                gas_slice, wind_x, wind_y,
-                obstacles, solid, is_vacuum,
-                dyn_permeability,
-                h, w,
-                dt_smoke);
+            // CUDA-S4a: the GPU smoke_step is a FREE function, so the solver's
+            // per-gas d_smoke + the wind_diffusion_scale / advection_rate dials
+            // are passed explicitly. Bit-identical to the CPU step (same integer
+            // ops); the CPU solver stays the live fallback (flag off by default).
+            // sink_hop ALWAYS stays on the CPU (S4b) — it runs below in BOTH paths.
+            // PERF: per-call H2D/D2H of the plane + wind + masks (residency is S8).
+            // CPU-only builds (no BREACH_HAS_CUDA) compile only the CPU call.
+#ifdef BREACH_HAS_CUDA
+            if (breach_cuda::smoke_backend_is_cuda()) {
+                breach_cuda::smoke_step(
+                    gas_slice, wind_x, wind_y,
+                    obstacles, solid, is_vacuum,
+                    dyn_permeability,
+                    h, w, dt_smoke,
+                    (float)gas_diffusion[gi],
+                    this->smoke.wind_diffusion_scale,
+                    this->smoke.advection_rate);
+            } else
+#endif
+            {
+                this->smoke.step(
+                    gas_slice, wind_x, wind_y,
+                    obstacles, solid, is_vacuum,
+                    dyn_permeability,
+                    h, w,
+                    dt_smoke);
+            }
         }
     }
 

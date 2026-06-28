@@ -66,7 +66,8 @@ if(BREACH_CUDA)
         src/cuda_hello.cu          # S0 hello-world kernel
         src/cuda_temperature.cu    # S1 temperature solver
         src/cuda_raycaster.cu      # S2 raycaster march (heat bit-identical)
-        src/cuda_water.cu)         # S3 water solver (pipe model, bit-identical)
+        src/cuda_water.cu          # S3 water solver (pipe model, bit-identical)
+        src/cuda_smoke.cu)         # S4a smoke solver (diffusion + SL advection)
 endif()
 
 pybind11_add_module(breach_physics ${BREACH_SOURCES})
