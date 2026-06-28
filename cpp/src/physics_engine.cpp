@@ -16,6 +16,7 @@
 #include "cuda_water.h"         // CUDA-S3: GPU water solver + backend flag
 #include "cuda_smoke.h"         // CUDA-S4a: GPU smoke solver + backend flag
 #include "cuda_wave.h"          // CUDA-S5: GPU wave_substep + backend flag
+#include "cuda_fire.h"          // CUDA-S6: GPU fire solver + backend flag
 #endif
 
 #include <algorithm>   // std::max, std::min
@@ -104,11 +105,37 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     // atmosphere directly. Faithful ORDER preserved: the fire runs FIRST (its plume
     // mutates the int32 atmosphere in place), then the temperature pass reads that
     // SAME post-plume atmosphere — now integer-sourced with NO dequantize scratch.
-    std::vector<std::pair<int, int>> destroyed = this->fire.step(
-        fire_field, atmosphere, smoke_field, wall_hp,
-        temperature, wind_x, wind_y,
-        solid, is_vacuum, flammable,
-        h, w, sim_time);
+    // CUDA-S6: dispatch to the GPU fire solver when the backend is switched on
+    // (bit-identical to the CPU path — same integer ops; tol 0 on fire/atmosphere/
+    // smoke/wall_hp, set-equal destroyed). The GPU entry RETURNS the destroyed
+    // vector (unlike S1-S5, which only mutate fields), so this is an assigning
+    // dispatch. The CPU solver stays the live fallback; with the flag off (default)
+    // this is the exact prior call. On a CPU-only build (no BREACH_HAS_CUDA) only
+    // the CPU path compiles. The GPU free function takes the FireParams dials
+    // explicitly (it is not a method on the solver).
+    std::vector<std::pair<int, int>> destroyed;
+#ifdef BREACH_HAS_CUDA
+    if (breach_cuda::fire_backend_is_cuda()) {
+        const auto& fp_ = this->fire.params;
+        destroyed = breach_cuda::fire_step(
+            fire_field, atmosphere, smoke_field, wall_hp,
+            temperature, wind_x, wind_y,
+            solid, is_vacuum, flammable,
+            h, w, sim_time,
+            fp_.k_grow, fp_.k_die, fp_.fire_T_ext, fp_.fire_T_span,
+            fp_.fuel_ref, fp_.P_min, fp_.P_full, fp_.I_min,
+            fp_.k_wind_fan, fp_.k_wind_strip, fp_.fire_pressure_gain,
+            fp_.p_expand_ref, fp_.smoke_emission, fp_.wall_damage,
+            fp_.temp_scale);
+    } else
+#endif
+    {
+        destroyed = this->fire.step(
+            fire_field, atmosphere, smoke_field, wall_hp,
+            temperature, wind_x, wind_y,
+            solid, is_vacuum, flammable,
+            h, w, sim_time);
+    }
 
     // --- 3. Temperature pass (PhysicsRunner: self.temperature.step) ------
     // Arg order cross-checked against bindings.cpp TemperatureSolver.step and

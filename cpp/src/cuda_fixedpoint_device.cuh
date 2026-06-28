@@ -135,4 +135,37 @@ __device__ __forceinline__ q16 round_nearest_q_dev(int64_t prod) {
                              : -(((-prod) + HALF_Q) >> fixedpoint::FP_SHIFT));
 }
 
+// ---- sqrt_q16_dev — deterministic integer floor-isqrt (CUDA-S6) -------------
+// A VERBATIM device port of fixedpoint::sqrt_q16 (fixed_point.h:545): the
+// fixed-iteration (32-trip) binary digit-recurrence floor-isqrt of a 64-bit
+// unsigned radicand. The fire W = sqrt(wind_x²+wind_y²) term feeds it the Q.32
+// radicand `mul_wide(wx,wx)+mul_wide(wy,wy)` and gets the Q16.16 magnitude back
+// (sqrt(2^32) = 2^16 folds the scale exactly — see the host comment).
+//
+// EVERY step is identical to the host: the <= 0 floor-to-0 guard, the unsigned
+// cast, the constant 32-iteration loop (bit from 1<<62 down by >>2, res >>= 1
+// each trip, conditional subtract-and-set), and the INT32_MAX self-guard. Pure
+// integer shifts/compares — branch-IDENTICAL across all lanes/architectures, no
+// LUT/poly/libm/float, so it is bit-for-bit the CPU floor(√) by construction.
+// The 32-trip count is data-INDEPENDENT (no early break), so every thread/lane
+// executes the same straight-line integer recurrence regardless of x.
+__device__ __forceinline__ q16 sqrt_q16_dev(int64_t x_q32) {
+    if (x_q32 <= 0) return 0;
+    uint64_t x = (uint64_t)x_q32;
+    uint64_t res = 0;
+    uint64_t bit = (uint64_t)1 << 62;     // highest even bit position
+    for (int k = 0; k < 32; ++k) {        // FIXED 32-trip loop (one per result bit)
+        const uint64_t t = res + bit;
+        res >>= 1;
+        if (x >= t) {
+            x -= t;
+            res += bit;
+        }
+        bit >>= 2;
+    }
+    // SELF-GUARD (matches the host): a floor(√) >= 2^31 would wrap int32; clamp.
+    if (res > (uint64_t)0x7fffffff) return (q16)0x7fffffff;
+    return (q16)res;
+}
+
 }  // namespace breach_cuda
