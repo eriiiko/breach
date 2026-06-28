@@ -43,10 +43,13 @@
 // `__host__ __device__`; under a plain C++ host compiler (cl.exe on the .cpp
 // TUs, even in the CUDA build) it expands to NOTHING — so the CPU build is
 // byte-for-byte unchanged. Only the PURE-INTEGER helpers (plus the double
-// boundary casts) are FP_HD. recip_mul + smoke_cliff_count stay HOST-ONLY for
-// now: their 128-bit paths use MSVC _mul128/_umul128 host intrinsics, so the
-// device 128-bit path (__umul64hi / __mul64hi) lands with the fire/water kernels
-// that first need them (plan G3/G4, §3.5). Nothing FP_HD calls those two.
+// boundary casts) are FP_HD. recip_mul is now FP_HD too (CUDA-S3 water promoted
+// it — the water velocity kick's central-difference gradient calls it on the
+// device): under nvcc the __SIZEOF_INT128__ branch compiles for BOTH host and
+// device, and the MSVC _mul128 branch is host-only and never reached on device
+// (the sanctioned G3/G4 promotion). smoke_cliff_count stays HOST-ONLY for now:
+// its 128-bit path uses MSVC _umul128 host intrinsics and only the substep-count
+// cliff (a host-side derivation) needs it. Nothing FP_HD calls smoke_cliff_count.
 #if defined(__CUDACC__)
   #define FP_HD __host__ __device__
 #else
@@ -174,7 +177,7 @@ inline int64_t make_recip(double divisor_real) {
 // x_q16 (a Q16.16 value) divided by the real divisor whose reciprocal is recip.
 // Result is Q16.16. Uses a 128-bit intermediate so x*recip never overflows.
 #if defined(__SIZEOF_INT128__)
-inline q16 recip_mul(q16 x_q16, int64_t recip) {
+FP_HD inline q16 recip_mul(q16 x_q16, int64_t recip) {
     __int128 prod = (__int128)x_q16 * (__int128)recip;
     return (q16)(prod >> RECIP_SHIFT);
 }
@@ -182,7 +185,7 @@ inline q16 recip_mul(q16 x_q16, int64_t recip) {
 } // namespace fixedpoint
 #include <intrin.h>
 namespace fixedpoint {
-inline q16 recip_mul(q16 x_q16, int64_t recip) {
+FP_HD inline q16 recip_mul(q16 x_q16, int64_t recip) {
     // 128-bit signed product via _mul128, then shift right by RECIP_SHIFT.
     long long hi;
     long long lo = _mul128((long long)x_q16, (long long)recip, &hi);
@@ -193,7 +196,7 @@ inline q16 recip_mul(q16 x_q16, int64_t recip) {
     return (q16)res;
 }
 #else
-inline q16 recip_mul(q16 x_q16, int64_t recip) {
+FP_HD inline q16 recip_mul(q16 x_q16, int64_t recip) {
     // Portable fallback: double-precision multiply (deterministic for the
     // single-divisor constants we use; only hit on exotic toolchains).
     return (q16)(((__int128_t)x_q16 * recip) >> RECIP_SHIFT);
