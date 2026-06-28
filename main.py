@@ -35,6 +35,20 @@ from pathlib import Path
 # ``from simulation import X`` everywhere (no ``src.`` prefix). See
 # src/simulation/__init__.py for the convention.
 ROOT = Path(__file__).resolve().parent
+
+# GPU launch path (--cuda). breach_physics is imported at module load below, so
+# the CUDA build must be put on sys.path + its backends flipped BEFORE that
+# import. tools/run_on_cuda does exactly that and then calls main() — so when
+# --cuda is present and we have NOT yet been routed through the wrapper, we hand
+# off to it and never fall through to the CPU import. The default launch (no
+# --cuda) is byte-for-byte unchanged.
+if "--cuda" in sys.argv and "breach_physics" not in sys.modules:
+    sys.path.insert(0, str(ROOT / "tools"))
+    import run_on_cuda
+    run_on_cuda.setup_cuda_import()
+    import breach_physics as _bp_cuda
+    run_on_cuda.enable_all_backends(_bp_cuda)
+
 sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
@@ -59,11 +73,73 @@ except Exception:
     pass
 
 
+def _parse_res_factor() -> int:
+    """Read an optional ``--res N`` integer grid multiplier from argv.
+
+    N=1 (default) leaves the level untouched. N>1 asks for a denser physics
+    grid — see :func:`_upscale_level`. Returns the clamped integer factor.
+    """
+    if "--res" not in sys.argv:
+        return 1
+    i = sys.argv.index("--res")
+    try:
+        n = int(sys.argv[i + 1])
+    except (IndexError, ValueError):
+        raise SystemExit("--res requires an integer factor, e.g. --res 2")
+    if n < 1:
+        raise SystemExit(f"--res factor must be >= 1, got {n}")
+    return n
+
+
+def _upscale_level(level, factor: int):
+    """Nearest-neighbour upscale the physics grid by an integer ``factor``.
+
+    The grid resolution in Breach is the tilemap CSV shape (GameMap reads
+    ``level.tilemap.shape``), with no native scale knob — so this is the
+    simplest additive way for Erik to experiment with resolution: replicate
+    each tile ``factor``x``factor`` (more cells, same ship), shrink
+    ``tile_size_m`` by 1/factor so the PHYSICAL size is preserved, and scale
+    the spawn coords + footprints by ``factor`` so units land in the same
+    place. The optional height_path heightmap is per-PIXEL art (not grid-
+    sized) and is left as-is; the art-align px_per_tile recomputes from the
+    new grid shape inside the renderer (art_w / grid_w), so the art still
+    lines up. Materials are derived from the tilemap downstream, so upscaling
+    the raw tilemap is sufficient and correct.
+
+    Mutates and returns ``level`` (a dataclass instance).
+    """
+    if factor <= 1:
+        return level
+    import numpy as np
+    from level_loader import SpawnEntry
+
+    level.tilemap = np.repeat(
+        np.repeat(level.tilemap, factor, axis=0), factor, axis=1)
+    level.tile_size_m = float(level.tile_size_m) / float(factor)
+    level.spawns = [
+        SpawnEntry(name=s.name, team=s.team,
+                   x=s.x * factor, y=s.y * factor,
+                   footprint=max(1, s.footprint * factor))
+        for s in level.spawns
+    ]
+    # Drop any explicit art-align px_per_tile so the renderer recomputes it
+    # from the new (denser) grid shape — otherwise the art would stretch.
+    level.art_px_per_tile = None
+    level.art_align_explicit = False
+    return level
+
+
 def main():
     # 1. Load level + build the simulation.
     level_name = getattr(CFG.display, "level", "unhcr_vessel")
     print(f"Loading level: {level_name}")
     level = load_level(level_name)
+    res_factor = _parse_res_factor()
+    if res_factor > 1:
+        _upscale_level(level, res_factor)
+        print(f"  --res {res_factor}: grid upscaled "
+              f"{res_factor}x -> {level.width}x{level.height} tiles, "
+              f"tile size now {level.tile_size_m:.5f} m")
     print(f"  {level.name} — {level.width}x{level.height} tiles, "
           f"tile size {level.tile_size_m} m")
 
