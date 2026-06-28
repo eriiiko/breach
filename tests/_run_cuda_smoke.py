@@ -46,10 +46,14 @@ from simulation.unit import Unit
 from simulation.field_edit import FieldEdit, Region, EditMode, Falloff
 
 LEVEL = getattr(CFG.display, "level", "unhcr_vessel")
+# All 7 backends: the 6 field solvers + the raycaster (the live fire->heat cast,
+# CUDA-S2 live). With the raycaster ON, cast_fire_heat deposits `heat` on the GPU.
 SETTERS = ["set_temperature_backend", "set_water_backend", "set_smoke_backend",
-           "set_wave_backend", "set_fire_backend", "set_atmos_backend"]
+           "set_wave_backend", "set_fire_backend", "set_atmos_backend",
+           "set_raycaster_backend"]
 GETTERS = ["get_temperature_backend", "get_water_backend", "get_smoke_backend",
-           "get_wave_backend", "get_fire_backend", "get_atmos_backend"]
+           "get_wave_backend", "get_fire_backend", "get_atmos_backend",
+           "get_raycaster_backend"]
 
 
 def find_open_cell(gmap):

@@ -179,6 +179,27 @@ PYBIND11_MODULE(breach_physics, m) {
           "S2 isolated: cast one LightSource on the GPU into the pre-zeroed output "
           "fields; `heat` is bit-identical to Raycaster.cast_source_directional.");
 
+    // CUDA-S2 LIVE: the raycaster backend flag (mirrors set_temperature_backend).
+    // Unlike the 6 field solvers, the live fire->heat cast is NOT dispatched in
+    // PhysicsEngine::step — it runs in Python (PhysicsRunner.cast_fire_heat, the
+    // per-burning-tile source loop). So this flag is read THERE: when True, the
+    // runner casts each source with cuda_raycaster_cast (build_ray_list -> the GPU
+    // march) instead of Raycaster.cast_source_directional; both ACCUMULATE the
+    // per-source heat into the SAME gmap.heat buffer (saturating-add on the GPU
+    // side too) with the identical per-tick clear, so the synced `heat` output is
+    // byte-identical (the S2 gate already proved the GPU march's heat == CPU; this
+    // flag wires it into the live tick to make --cuda a full 7/7). The render
+    // channels (light_rgb/dir/smoke_glow) come back to the host each call for the
+    // renderer and are deterministic-exempt. CPU is the live default (flag off).
+    m.def("set_raycaster_backend",
+          [](bool use_cuda) { breach_cuda::set_raycaster_backend_cuda(use_cuda); },
+          py::arg("use_cuda"),
+          "Switch PhysicsRunner.cast_fire_heat's fire->heat ray cast to the GPU "
+          "(True) or CPU (False). HEAT is bit-identical; light is render-only.");
+    m.def("get_raycaster_backend",
+          []() { return breach_cuda::raycaster_backend_is_cuda(); },
+          "True if the live fire->heat ray cast currently runs on the GPU.");
+
     // CUDA-S3: the GPU water solver. The backend flag switches PhysicsEngine::
     // step_water's per-substep call between the CPU and GPU pipe-model solver
     // (the live CPU fallback stays). cuda_water_step runs the 8-pass solver IN

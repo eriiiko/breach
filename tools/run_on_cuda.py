@@ -20,11 +20,12 @@ Usage (the CUDA build must exist first — run ``cpp/build_cuda.bat``):
 
 Equivalent shortcut: ``python main.py --cuda`` (main.py routes --cuda here).
 
-NOTE — the raycaster (lighting / fire-heat) is the 7th solver. It is GPU-
-ported but only as an isolated bit-identity gate; it is NOT wired into the
-live dispatch, so it always runs on the CPU even here. The 6 field solvers
-(temperature, water, smoke, wave, fire, atmosphere) run on the GPU. See the
-report / engine docs.
+All 7 solvers run on the GPU: the 6 field solvers (temperature, water, smoke,
+wave, fire, atmosphere) dispatch inside PhysicsEngine::step, and the 7th — the
+raycaster (the fire->heat ray cast in PhysicsRunner.cast_fire_heat) — is now
+live-wired too (set_raycaster_backend, CUDA-S2 live). The cast's synced `heat`
+output is bit-identical CPU<->GPU (the S2 gate); the light channels it also
+produces are render-only / deterministic-exempt.
 """
 from __future__ import annotations
 
@@ -83,7 +84,10 @@ def setup_cuda_import() -> None:
     sys.path.insert(0, str(CUDA_BUILD_DIR))
 
 
-# The six live-dispatched GPU backends (raycaster is NOT live-wired — see docstring).
+# The seven live-dispatched GPU backends. The first six are the field solvers
+# (PhysicsEngine::step); the seventh — the raycaster (the fire->heat ray cast in
+# PhysicsRunner.cast_fire_heat) — is now live-wired (CUDA-S2 live) so --cuda is a
+# full 7/7. cast_fire_heat reads the raycaster flag per tick (heat bit-identical).
 _BACKEND_SETTERS = (
     "set_temperature_backend",
     "set_water_backend",
@@ -91,6 +95,7 @@ _BACKEND_SETTERS = (
     "set_wave_backend",
     "set_fire_backend",
     "set_atmos_backend",
+    "set_raycaster_backend",
 )
 
 
@@ -110,10 +115,9 @@ def enable_all_backends(bp) -> None:
         print(f"[run_on_cuda] (cuda_device_info unavailable: {e})")
     for name in _BACKEND_SETTERS:
         getattr(bp, name)(True)
-    print("[run_on_cuda] backends ON:",
+    print("[run_on_cuda] backends ON (7/7):",
           ", ".join(n.replace("set_", "").replace("_backend", "")
-                    for n in _BACKEND_SETTERS),
-          "(raycaster stays CPU - not live-wired)")
+                    for n in _BACKEND_SETTERS))
 
 
 def main() -> None:
