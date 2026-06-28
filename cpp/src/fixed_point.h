@@ -43,11 +43,14 @@
 // `__host__ __device__`; under a plain C++ host compiler (cl.exe on the .cpp
 // TUs, even in the CUDA build) it expands to NOTHING — so the CPU build is
 // byte-for-byte unchanged. Only the PURE-INTEGER helpers (plus the double
-// boundary casts) are FP_HD. recip_mul is now FP_HD too (CUDA-S3 water promoted
-// it — the water velocity kick's central-difference gradient calls it on the
-// device): under nvcc the __SIZEOF_INT128__ branch compiles for BOTH host and
-// device, and the MSVC _mul128 branch is host-only and never reached on device
-// (the sanctioned G3/G4 promotion). smoke_cliff_count stays HOST-ONLY for now:
+// boundary casts) are FP_HD. recip_mul is now FP_HD too (CUDA-S3). DEVICE CAVEAT:
+// under MSVC-host nvcc, __SIZEOF_INT128__ is NOT defined for device code, so a
+// device instantiation of recip_mul would resolve to the host-only _mul128 branch
+// and fail to compile if ODR-used on the device. So FP_HD here buys (a) host use
+// in .cu TUs and (b) device use ONLY on toolchains whose device pass has __int128
+// (clang/gcc-host nvcc) — it is currently UNUSED on device: CUDA kernels needing
+// this 128-bit reciprocal use the device-local mul128_shr_signed helper (see
+// cuda_water.cu recip_mul_dev). smoke_cliff_count stays HOST-ONLY for now:
 // its 128-bit path uses MSVC _umul128 host intrinsics and only the substep-count
 // cliff (a host-side derivation) needs it. Nothing FP_HD calls smoke_cliff_count.
 #if defined(__CUDACC__)
