@@ -88,6 +88,7 @@ class LightingPass:
         self._loc_normal_y_sign   = self._lookup("u_normal_y_sign")
         self._loc_srgb_decode     = self._lookup("u_srgb_decode")
         self._loc_light_z         = self._lookup("u_light_z")
+        self._loc_light_gain      = self._lookup("u_light_gain")
         self._loc_art_uv_rect     = self._lookup("u_art_uv_rect")
 
         # Cached state (for HUD display + bound checks)
@@ -105,6 +106,14 @@ class LightingPass:
         self.set_normal_y_sign(1.0)   # OpenGL convention; flip to -1 if needed
         self.set_srgb_decode(True)    # PNG diffuse art is sRGB
         self.set_light_z(self.light_z)
+        # Render exposure (engine/08 §Falloff is density). The pure-density march
+        # makes light_rgb a 1/r PHYSICAL field with intensity = total emitted
+        # power (N-independent), ~ray_count× dimmer than the old per-ray-dist_atten
+        # field. This gain maps physical power -> display brightness so sources are
+        # tuned by physics, exposure by one master dial. Default 1.0 (neutral);
+        # game_renderer / the demo override from config.
+        self.light_gain = 1.0
+        self.set_light_gain(self.light_gain)
         # u_art_uv_rect MUST be initialised: an unset vec4 uniform reads as
         # (0,0,0,0) and the shader's world_uv division would produce NaNs.
         self._set_art_uv_rect((0.0, 0.0, 1.0, 1.0))
@@ -166,6 +175,17 @@ class LightingPass:
         self.light_z = z
         val = rl.ffi.new("float[1]", [z])
         rl.set_shader_value(self.shader, self._loc_light_z, val,
+                            rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT)
+
+    def set_light_gain(self, gain: float):
+        """Render exposure: multiply the physical light field before tone-map.
+        The pure-density raycaster (engine/08) makes light_rgb ~ray_count× dimmer
+        than the legacy field (intensity is now total power, not summed per-ray),
+        so the default game exposure is >1. Physics tunes power; this tunes look."""
+        gain = max(0.0, float(gain))
+        self.light_gain = gain
+        val = rl.ffi.new("float[1]", [gain])
+        rl.set_shader_value(self.shader, self._loc_light_gain, val,
                             rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT)
 
     def set_art_align(self, offset_px, px_per_tile) -> None:

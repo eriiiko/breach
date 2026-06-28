@@ -127,7 +127,14 @@ wall_damage       = 0.4    # wall HP lost per second per unit intensity (KEPT �
 # mainly adds unit damage + a slow secondary heat-ignition; it does NOT firestorm
 # the map in a couple of ticks. Erik tunes this live. (`temperature` is ΔT in
 # game units above a 20° reference, not literal Celsius — a fire reads hot.)
-k_fire_heat          = 200.0  # heat energy per unit fire intensity, per ray, per tick
+# PURE-DENSITY RE-TUNE (engine/08 §Falloff is density, 2026-06-28): the raycaster
+# now divides each source's emitted power by its ray count (energy = power/N), so
+# `heat` here is the burning tile's TOTAL heat power, no longer a per-ray amount.
+# The old per-ray value (200) summed to ~8× at the source over the 8 fixed rays;
+# to preserve the same deposited energy (and ignition/kill behaviour) it is scaled
+# by fire_ray_count -> 1600. (Heat now radiates with a physical 1/r reach instead
+# of the old steep 1/(1+d²) — slightly longer reach is the intended improvement.)
+k_fire_heat          = 1600.0 # TOTAL heat energy per unit fire intensity, per tick (was 200/ray)
 fire_ray_count       = 8      # FIXED rays per burning tile (no auto-count, no RNG dither)
 range_base           = 2.0    # max_range = range_base + range_per_intensity * I  (tiles)
 range_per_intensity  = 3.0

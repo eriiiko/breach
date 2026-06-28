@@ -100,6 +100,25 @@ public:
     // per-gas tau. LOW = long beam (flashlight travels far). Default 1.4.
     float smoke_absorb_scale = 1.4f;
 
+    // ---- Propagation-model cull thresholds (engine/08 §The march, §Falloff is
+    // density) — the per-channel SURVIVAL floors of the pure-density model ----
+    //
+    // A ray carries fixed per-channel energy and a survival ∈ [0,1] that decays
+    // ONLY by occlusion (never by distance — the 1/r falloff is ray DENSITY, not
+    // a per-ray multiplier). A channel keeps depositing while its own survival is
+    // above its threshold; the ray terminates when EVERY emitting channel is
+    // below its threshold (or max_range). Because survival decays only by
+    // occlusion, in open air it stays 1.0 and the ray runs to max_range — the
+    // cull only bites BEHIND occluders (≈99% absorbed at 0.01).
+    //   light_cull : ε_rgb — the RGB render channels' floor.
+    //   heat_cull  : ε_heat — the heat (gameplay/damage) channel's floor; its
+    //                own dial so a heat-shield/low-E-glass material can diverge
+    //                from light. Heat deposits gate on heat_survival > heat_cull,
+    //                which is what DECOUPLES heat from the float light path
+    //                (engine/08 §Determinism: heat is decoupled from light).
+    float light_cull = 0.01f;
+    float heat_cull  = 0.01f;
+
     int   coarse_cluster   = 3;    // cluster fire sources on this grid
 
     // ---- Legacy API (intensity only) ----

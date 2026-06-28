@@ -149,51 +149,70 @@ void Raycaster::march_ray_directional(
 
     int x = static_cast<int>(sx);
     int y = static_cast<int>(sy);
-    // Per-channel remaining energy. The source tint is folded in here so the
-    // deposit is the per-channel survivor (matches the old scalar*color deposit
-    // on the source tile) and each colour attenuates independently downstream.
-    float remaining[3] = {
-        ray_intensity * color[0],
-        ray_intensity * color[1],
-        ray_intensity * color[2],
-    };
-    // Heat is the INDEPENDENT 4th ray channel (engine/06 §1). It carries its own
-    // scalar survival, starting at 1.0 at the source, attenuated per tile by
-    // `heat_atten` exactly as each RGB channel is attenuated by `light_atten[c]`.
-    // The heat DEPOSIT is src.heat * heat_survival * falloff — decoupled from the
-    // RGB survival above, so a heat-shield (light-clear, heat-opaque) blocks heat
-    // while passing light, and smoked glass does the converse. Only meaningful
-    // when this ray emits heat; for a pure light source (heat_emit == 0) it stays
-    // 1.0 and contributes nothing (heat_emit gates every deposit and the cull).
+    // Per-channel EMITTED energy: the ray's fixed per-channel budget. The source
+    // tint folds in here; `ray_intensity` is the per-ray energy P/N (the caller
+    // divides the source's total power by the ray count — see
+    // cast_source_directional). This is CONSTANT along the ray: occlusion acts
+    // through `survival` below, NEVER through distance. The 1/r intensity falloff
+    // emerges from ray DENSITY, not a per-ray multiplier (engine/08 §Falloff is
+    // density: a cell at range r is crossed by ~N/(Δr) rays, the N cancels).
+    const float e_r = ray_intensity * color[0];
+    const float e_g = ray_intensity * color[1];
+    const float e_b = ray_intensity * color[2];
+    const bool emits_r = e_r > 0.0f;
+    const bool emits_g = e_g > 0.0f;
+    const bool emits_b = e_b > 0.0f;
+    const bool emits_heat = (heat != nullptr) && (heat_emit > 0.0f);
+
+    // Per-channel SURVIVAL ∈ [0,1]: starts at 1.0, decays ONLY by occlusion
+    // (material atten + gas Beer-Lambert for RGB; `heat_atten` for heat). NEVER
+    // by distance. The deposit is energy·survival; survival is the whole falloff
+    // story besides density.
+    float survival[3] = {1.0f, 1.0f, 1.0f};
+    // Heat is the INDEPENDENT 4th ray channel (engine/06 §1). Its survival is
+    // attenuated per tile by `heat_atten` ONLY (gases never block heat), so it
+    // diverges from the RGB survivors — a heat-shield (light-clear, heat-opaque)
+    // blocks heat while passing light, smoked glass does the converse. The heat
+    // DEPOSIT gates on `heat_survival > heat_cull`, a material-only quantity with
+    // NO gas-optics `exp` in it — that gating is what DECOUPLES the heat-touched
+    // tile set from the float light path -> bit-identical CPU/GPU heat
+    // (engine/08 §Determinism: heat is decoupled from light).
     float heat_survival = 1.0f;
     float distance = 0.0f;
 
-    // Aggregate remaining-energy termination over ALL FOUR channels {R,G,B,heat}.
-    // Opaque-to-light tiles drive R,G,B to ~0; opaque-to-heat tiles drive the
-    // heat term to ~0; the ray ends only when EVERY channel is below cull, so it
-    // keeps marching while ANY of the four still carries energy (a heat-shield is
-    // light-transparent but heat-opaque -> the ray must continue carrying light
-    // past it, and vice-versa). The heat term is weighted by heat_emit so a pure
-    // light source (heat_emit == 0) is not kept alive by heat_survival == 1.0.
-    // No per-channel early-out: all four march in lockstep to the same aggregate
-    // range (CUDA-divergence rule, ch.03 §CUDA contract).
-    float heat_energy = heat_emit * heat_survival;
-    auto aggregate = [](const float r[3], float he) {
-        return std::max(std::max(r[0], std::max(r[1], r[2])), he);
+    // Per-channel SURVIVAL termination (engine/08 §The march, step 6). The ray
+    // marches while ANY emitting channel's own survival is above its own floor
+    // (`light_cull` for RGB, `heat_cull` for heat); it dies when EVERY emitting
+    // channel is below floor (fully absorbed) or max_range is exceeded. Survival
+    // decays only by occlusion, so in OPEN AIR every survival stays 1.0 and the
+    // ray runs to max_range (heat radiates across the whole room) — the cull only
+    // bites BEHIND occluders. The march length is the AGGREGATE (any-channel)
+    // range, uniform regardless of which channel dies first (no per-channel
+    // early-out -> no GPU warp divergence, ch.03 §CUDA contract); the per-channel
+    // DEPOSIT gating (heat below) is a branch on a value the thread already holds,
+    // so it adds no divergence. A pure light source (emits_heat == false) is not
+    // kept alive by heat_survival, and a pure heat source not by RGB.
+    auto ray_alive = [&]() {
+        if (emits_r && survival[0] > light_cull) return true;
+        if (emits_g && survival[1] > light_cull) return true;
+        if (emits_b && survival[2] > light_cull) return true;
+        if (emits_heat && heat_survival > heat_cull) return true;
+        return false;
     };
 
-    while (aggregate(remaining, heat_energy) > 0.01f) {
+    while (ray_alive()) {
         if (x < 0 || x >= w || y < 0 || y >= h) break;
 
-        float dist_atten = (distance > 0.0f)
-            ? 1.0f / (1.0f + distance * distance * 0.01f)
-            : 1.0f;
         int idx = y * w + x;
 
-        // Per-channel deposit: this channel's survivor times distance falloff.
-        float dep_r = remaining[0] * dist_atten;
-        float dep_g = remaining[1] * dist_atten;
-        float dep_b = remaining[2] * dist_atten;
+        // Per-channel deposit: this channel's fixed energy times its survival.
+        // There is NO distance falloff (engine/08 §Falloff is density) — the 1/r
+        // law is carried by how many rays cross the cell, not by shrinking each
+        // ray. The source-cell pile-up (all N rays start here) is the natural
+        // peak; brightness is ray-count-independent because energy = P/N.
+        float dep_r = e_r * survival[0];
+        float dep_g = e_g * survival[1];
+        float dep_b = e_b * survival[2];
         light_rgb[idx * 3 + 0] += dep_r;
         light_rgb[idx * 3 + 1] += dep_g;
         light_rgb[idx * 3 + 2] += dep_b;
@@ -206,30 +225,30 @@ void Raycaster::march_ray_directional(
         light_dx[idx] += dep_agg * (-dx);
         light_dy[idx] += dep_agg * (-dy);
 
-        // Heat deposit (ch.04 §Fixed-point format, engine/06 §1). Heat is the
-        // INDEPENDENT 4th channel: the deposit is the source's heat emission
-        // times THIS channel's own survivor (heat_survival) times the distance
-        // falloff — NOT the RGB aggregate (dep_agg). Decoupling is the whole
-        // point: heat_survival is attenuated below by `heat_atten`, the RGB
-        // survivors by `light_atten`, so the two can diverge (heat-shield /
-        // smoked glass). Quantized + SATURATING add (clamp at INT32_MAX, never
-        // wrap). The ordered scalar += keeps it deterministic (CUDA atomicAdd
-        // later).
-        if (heat != nullptr && heat_emit > 0.0f) {
-            float heat_dep = heat_emit * heat_survival * dist_atten;
+        // Heat deposit (ch.04 §Fixed-point format, engine/06 §1) — GATED on
+        // `heat_survival > heat_cull`. The deposit is the source's per-ray heat
+        // emission times THIS channel's own survivor — NO distance falloff, NOT
+        // the RGB aggregate. The gate (material-only survival, no `exp`) is the
+        // determinism contract: the heat-touched tile set never depends on the
+        // float light path, so a heat-shield stops heat exactly at the shield and
+        // GPU heat is bit-identical to CPU. Quantized + SATURATING add (clamp at
+        // INT32_MAX, never wrap); the ordered scalar += stays deterministic
+        // (becomes a CUDA integer atomicAdd later — order-free, exact).
+        if (emits_heat && heat_survival > heat_cull) {
+            float heat_dep = heat_emit * heat_survival;
             heat_saturating_add(&heat[idx], heat_quantize(heat_dep));
         }
 
         // Occlusion via per-channel attenuation (ch.03 §the march). Static
-        // material attenuation from the table; then the live smoke attenuation,
-        // both applied per channel. (1 - atten): opaque 1.0 -> 0, glass 0.1 ->
-        // 0.9 survives, asymmetric triples tint the survivor.
+        // material attenuation from the table decays each channel's survival.
+        // (1 - atten): opaque 1.0 -> 0, glass 0.1 -> 0.9 survives, asymmetric
+        // triples tint the survivor.
         float ma_r = light_atten[idx * 3 + 0];
         float ma_g = light_atten[idx * 3 + 1];
         float ma_b = light_atten[idx * 3 + 2];
-        remaining[0] *= (1.0f - ma_r);
-        remaining[1] *= (1.0f - ma_g);
-        remaining[2] *= (1.0f - ma_b);
+        survival[0] *= (1.0f - ma_r);
+        survival[1] *= (1.0f - ma_g);
+        survival[2] *= (1.0f - ma_b);
 
         // Heat survival attenuates by the per-tile `heat_atten` EXACTLY as each
         // RGB channel attenuates by its `light_atten[c]`: multiplicative
@@ -296,22 +315,19 @@ void Raycaster::march_ray_directional(
             }
             // (2) Per-channel transmission (Beer-Lambert, ch.05 §6.1 6a):
             //   trans_c = exp(-absorb_scale * tau_c)   // never reaches 0 -> beam survives
-            //   remaining[c] *= trans_c                // multiplicative tint, long reach
+            //   survival[c] *= trans_c                 // multiplicative tint, long reach
             // absorb_scale is the global beam-reach dial (LOW = far). Green poison
             // absorbs R+B and passes G -> the surviving beam (and the light behind)
-            // is greened; mixing falls out of the summed tau.
-            remaining[0] *= std::exp(-smoke_absorb_scale * tau_r);
-            remaining[1] *= std::exp(-smoke_absorb_scale * tau_g);
-            remaining[2] *= std::exp(-smoke_absorb_scale * tau_b);
+            // is greened; mixing falls out of the summed tau. This `exp` lives on
+            // the RGB survival ONLY — heat survival never sees it, which is exactly
+            // why the heat channel stays deterministic (engine/08 §Determinism).
+            survival[0] *= std::exp(-smoke_absorb_scale * tau_r);
+            survival[1] *= std::exp(-smoke_absorb_scale * tau_g);
+            survival[2] *= std::exp(-smoke_absorb_scale * tau_b);
             // NOTE: gases do NOT attenuate heat — only material `heat_atten`
             // blocks the heat channel. (Heat radiates through smoke; the
             // god-ray/transmission optics above are a light-only model.)
         }
-
-        // Refresh the heat-channel energy for the termination test below, now
-        // that this tile's `heat_atten` has been applied (the RGB survivors are
-        // read directly by the loop's aggregate()).
-        heat_energy = heat_emit * heat_survival;
 
         if (t_max_x < t_max_y) {
             x += step_x;
@@ -343,6 +359,12 @@ void Raycaster::cast_source_directional(
     int h, int w
 ) const {
     int ray_count = src.get_ray_count();
+    // Pure-density falloff (engine/08 §Falloff is density): each ray carries the
+    // source's TOTAL power / N, so a cell at range r — crossed by ~N/(Δr) rays —
+    // accumulates P·survival/(Δr) and the N cancels (brightness is independent of
+    // ray count; ray count is a QUALITY knob). `src.intensity` / `src.heat` now
+    // mean total emitted power; this `inv_n` folds the /N into each ray's budget.
+    float inv_n = 1.0f / static_cast<float>(ray_count);
     float half_spread = src.angle_spread * 0.5f;
     bool is_cone = src.angle_spread < 2.0f * PI - 0.01f;
 
@@ -377,10 +399,16 @@ void Raycaster::cast_source_directional(
             }
         }
 
-        float intensity = src.intensity * angular_atten;
-        if (intensity > 0.01f) {
-            march_ray_directional(src.x, src.y, angle, intensity, src.max_range,
-                      src.color, src.heat, light_rgb, light_dx, light_dy,
+        // Per-ray budgets = (total power / N) · angular_atten, for BOTH light
+        // and heat. The old `intensity > 0.01` guard was an absolute-energy cut
+        // that, now that each ray only carries P/N, would wrongly drop every ray
+        // of any many-ray source — gate on the angular weight instead: a SHARP
+        // cone zeroes rays outside the beam (skip), UNIFORM/COSINE always cast.
+        float ray_energy = src.intensity * angular_atten * inv_n;
+        float ray_heat   = src.heat * angular_atten * inv_n;
+        if (angular_atten > 0.0f) {
+            march_ray_directional(src.x, src.y, angle, ray_energy, src.max_range,
+                      src.color, ray_heat, light_rgb, light_dx, light_dy,
                       heat, smoke_glow, gas_field, gas_absorption, gas_scatter,
                       n_gases, light_atten, heat_atten, h, w);
         }

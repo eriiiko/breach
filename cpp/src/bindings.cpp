@@ -375,6 +375,11 @@ PYBIND11_MODULE(breach_physics, m) {
         .def(py::init<>())
         .def_readwrite("smoke_absorption", &Raycaster::smoke_absorption)
         .def_readwrite("smoke_absorb_scale", &Raycaster::smoke_absorb_scale)
+        // Pure-density propagation cull floors (engine/08 §The march): per-channel
+        // survival thresholds. `light_cull` = ε_rgb (render), `heat_cull` = ε_heat
+        // (gameplay/damage, its own dial so heat-shield materials can diverge).
+        .def_readwrite("light_cull", &Raycaster::light_cull)
+        .def_readwrite("heat_cull", &Raycaster::heat_cull)
         // Per-channel Beer-Lambert absorption (R,G,B) — exposed as a 3-tuple.
         .def_property("smoke_absorption_rgb",
             [](const Raycaster& r) {
