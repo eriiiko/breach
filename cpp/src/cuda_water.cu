@@ -6,6 +6,8 @@
 #include "cuda_water.h"
 #include "fixed_point.h"   // q16, quantize, mul_q16, mul_wide, recip_mul,
                            // scale_mag, make_recip, tan_poly, FP_ONE, FP_SHIFT
+#include "cuda_fixedpoint_device.cuh"  // shared device 128-bit + reciprocal kit
+                                       // (mul128_shr_signed, recip_mul_dev) — S4 §0
 
 #include <cuda_runtime.h>
 
@@ -29,28 +31,12 @@ inline void cuda_check(cudaError_t e, const char* what) {
     }
 }
 
-// ---- device 128-bit signed product, arithmetic-shifted right ---------------
-// IMPORTANT DETERMINISM NOTE (verified at build): nvcc on Windows with the MSVC
-// host compiler does NOT define __int128 (nor __SIZEOF_INT128__) for DEVICE code
-// — it is a gcc/clang extension absent from the MSVC-targeting device pass. So
-// the spec's "verify nvcc takes the __int128 branch" check FAILS here, and we
-// take the sanctioned fallback: a device-local 128-bit helper built from CUDA's
-// __mul64hi intrinsic (the signed high 64 bits of a 64x64 product). This is
-// EXACTLY the hi:lo combine the host fixed_point.h MSVC paths (_mul128 in
-// recip_mul / flux_to_dq) already use — so it is bit-identical to the CPU by
-// construction (the same single arithmetic >>S of the full 128-bit product).
-//
-// mul128_shr_signed(a, b, S) == (int64_t)( (a*b) >> S ), 0 < S < 64, where a*b
-// is the full SIGNED 128-bit product. lo = low 64 bits (mod 2^64), hi = signed
-// high 64 bits (__mul64hi). The arithmetic 128-bit >>S re-combines them the same
-// way the MSVC host code does: ((uint64_t)lo >> S) | ((uint64_t)hi << (64 - S)).
-__device__ __forceinline__ int64_t mul128_shr_signed(int64_t a, int64_t b, int S) {
-    const long long hi = __mul64hi((long long)a, (long long)b);   // signed hi 64
-    const unsigned long long lo = (unsigned long long)((long long)a * (long long)b);
-    const long long res = (long long)((lo >> S) |
-                                      ((unsigned long long)hi << (64 - S)));
-    return (int64_t)res;
-}
+// The signed 128-bit product-shift `mul128_shr_signed` and the make_recip
+// reciprocal multiply `recip_mul_dev` now live in the SHARED device header
+// cuda_fixedpoint_device.cuh (CUDA-S4 §0) so the smoke + atmosphere ports reuse
+// them instead of copy-pasting. They are bit-identical to the host _mul128 paths
+// by construction (the __mul64hi hi:lo combine). Below they are used unqualified
+// (both are in namespace breach_cuda, this TU's namespace).
 
 // flux_to_dq — the CPU lambda (water_solver.cpp:208-230) as a __device__ helper.
 // flux_wide (Q32.32) * dt_over_dx_q (Q16.16), >> 32 leaves Q16.16. The 128-bit
@@ -61,14 +47,9 @@ __device__ __forceinline__ q16 flux_to_dq_dev(int64_t flux_wide, q16 dt_over_dx_
     return (q16)mul128_shr_signed(flux_wide, (int64_t)dt_over_dx_q, 32);
 }
 
-// recip_mul — the central-difference gradient's reciprocal multiply, as a
-// __device__ helper (RECIP_SHIFT == 32). The header fixedpoint::recip_mul is
-// FP_HD, but under MSVC-host nvcc its device instantiation would resolve to the
-// _MSC_VER `_mul128` branch (a HOST-ONLY intrinsic) — so we call this local one
-// on the device instead, bit-identical to the host _mul128 path.
-__device__ __forceinline__ q16 recip_mul_dev(q16 x_q16, int64_t recip) {
-    return (q16)mul128_shr_signed((int64_t)x_q16, recip, RECIP_SHIFT);
-}
+// recip_mul_dev (the central-difference gradient's reciprocal multiply) now
+// lives in cuda_fixedpoint_device.cuh (shared with smoke/atmosphere). Used below
+// unqualified (namespace breach_cuda).
 
 // ---- K1: surface potential (§1, Q16.16 metres) -----------------------------
 // surface[i] = floor_at(i) + tilt_col + tilt_row + depth[i] (+ head bridge if on).

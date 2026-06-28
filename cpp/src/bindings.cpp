@@ -15,6 +15,7 @@
 #include "cuda_temperature.h"  // CUDA-S1: GPU temperature solver + backend flag
 #include "cuda_raycaster.h"    // CUDA-S2: GPU directional raycaster (heat bit-identical)
 #include "cuda_water.h"        // CUDA-S3: GPU water solver + backend flag
+#include "cuda_smoke.h"        // CUDA-S4a: GPU smoke solver + backend flag
 #endif
 
 namespace py = pybind11;
@@ -236,6 +237,49 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("v_max"), py::arg("depth_eps"),
           "S3 isolated: run the GPU water solver in place on water_depth/flow_vx/"
           "flow_vy (bit-identical to WaterSolver.step).");
+
+    // CUDA-S4a: the GPU smoke solver. The backend flag switches PhysicsEngine::
+    // run_substeps's per-gas smoke transport between the CPU SmokeDynamics::step
+    // and the GPU smoke_step (the live CPU fallback stays; sink_hop ALWAYS stays
+    // on the CPU — that is S4b). cuda_smoke_step runs the 4-pass solver IN PLACE
+    // on `smoke` (one gas plane) for the isolated GPU-vs-CPU bit-identity gate.
+    // The solver's scalar dials (d_smoke / wind_diffusion_scale / advection_rate)
+    // are passed explicitly since smoke_step is a free function — mirroring the
+    // live SmokeDynamics.step binding's array args plus those three scalars.
+    m.def("set_smoke_backend",
+          [](bool use_cuda) { breach_cuda::set_smoke_backend_cuda(use_cuda); },
+          py::arg("use_cuda"),
+          "Switch PhysicsEngine's smoke pass to the GPU (True) or CPU (False). "
+          "sink_hop always runs on the CPU.");
+    m.def("get_smoke_backend",
+          []() { return breach_cuda::smoke_backend_is_cuda(); },
+          "True if the smoke pass currently runs on the GPU.");
+    m.def("cuda_smoke_step",
+          [](py::array_t<int32_t> smoke,        // Q16.16 int32 (one gas plane)
+             py::array_t<int32_t> wind_x,       // Q16.16 int32
+             py::array_t<int32_t> wind_y,       // Q16.16 int32
+             py::array_t<bool>  obstacles,
+             py::array_t<bool>  is_wall,
+             py::array_t<bool>  is_vacuum,
+             py::array_t<float> permeability,
+             float dt, float d_smoke,
+             float wind_diffusion_scale, float advection_rate) {
+              auto [sm, h, w]    = get_2d(smoke);
+              auto [wx, h2, w2]  = get_2d_const(wind_x);
+              auto [wy, h3, w3]  = get_2d_const(wind_y);
+              auto [obs, h4, w4] = get_2d_const(obstacles);
+              auto [wl, h5, w5]  = get_2d_const(is_wall);
+              auto [vac, h6, w6] = get_2d_const(is_vacuum);
+              auto [perm, h7, w7] = get_2d_const(permeability);
+              breach_cuda::smoke_step(sm, wx, wy, obs, wl, vac, perm, h, w, dt,
+                                      d_smoke, wind_diffusion_scale, advection_rate);
+          },
+          py::arg("smoke"), py::arg("wind_x"), py::arg("wind_y"),
+          py::arg("obstacles"), py::arg("is_wall"), py::arg("is_vacuum"),
+          py::arg("permeability"), py::arg("dt"), py::arg("d_smoke"),
+          py::arg("wind_diffusion_scale"), py::arg("advection_rate"),
+          "S4a isolated: run the GPU smoke solver in place on one gas plane "
+          "(bit-identical to SmokeDynamics.step).");
 #else
     m.attr("HAS_CUDA") = false;
 #endif
