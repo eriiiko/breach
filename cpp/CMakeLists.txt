@@ -64,7 +64,8 @@ set(BREACH_SOURCES
 if(BREACH_CUDA)
     list(APPEND BREACH_SOURCES
         src/cuda_hello.cu          # S0 hello-world kernel
-        src/cuda_temperature.cu)   # S1 temperature solver
+        src/cuda_temperature.cu    # S1 temperature solver
+        src/cuda_raycaster.cu)     # S2 raycaster march (heat bit-identical)
 endif()
 
 pybind11_add_module(breach_physics ${BREACH_SOURCES})
