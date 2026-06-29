@@ -25,8 +25,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CUDA_BUILD_DIR = ROOT / "cpp" / "build_cuda"
-# The cp311 interpreter that owns the .pyd + has CuPy (NOT a stray 3.x on PATH).
-CUDA_PYTHON = Path(r"C:\Users\steen\anaconda3\python.exe")
+# The interpreter that owns the .pyd — it MUST match the .pyd's cpXXX ABI. The
+# default is the Work Desktop's anaconda 3.11 (cp311); override with the env var
+# BREACH_CUDA_PYTHON on any machine whose CUDA build was produced by a different
+# interpreter (e.g. the Lenovo/Ada, where the `data` miniconda env is cp312). The
+# X-ARCH digest runner reuses this same interpreter.
+CUDA_PYTHON = Path(os.environ.get(
+    "BREACH_CUDA_PYTHON", r"C:\Users\steen\anaconda3\python.exe"))
 
 
 def cuda_pyd() -> Path | None:
