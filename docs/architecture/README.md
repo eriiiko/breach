@@ -83,6 +83,7 @@ Legend: ✅ implemented · ⚠️ partial (foundation built, advanced parts desi
 | 11 | [Electricity / lightning](engine/11_electricity.md) | 📝 |
 | 12 | [Config & hot-reload](engine/12_config_and_hot_reload.md) | ✅ |
 | 13 | [FieldEdit (write primitive)](engine/13_field_edit.md) | ⚠️ (queue + applier + explosion/smoke migration built; wall_hp/destruction-sweep + laser/gas consumers designed) |
+| 14 | [Determinism & the number-ingress rule](engine/14_determinism_and_number_ingress.md) | ⚠️ (the LAW + four doors + L1 lint + L3 digest/attestation shipped — `cuda-breached` proven Ampere↔Ada; L2 int-backed unit attrs + deterministic stat sampler owed to the units redesign) |
 
 ### Mechanics — game logic on the engine
 | # | Chapter | Status |
