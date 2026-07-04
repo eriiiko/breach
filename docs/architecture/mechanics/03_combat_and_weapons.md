@@ -31,6 +31,11 @@ fixture, not just as a game.
 | Direct (bullets, melee) | ray-march / adjacency against unit list | serial CPU loop; cone offsets from seeded RNG | written straight to `unit.current_hp` |
 | Via-physics (explosions, beams, fire) | deposit into pressure / heat / wall-hp fields | integer field math; field then sampled serially | derived from the field, applied in unit logic |
 
+What happens after a hit — damage types, mitigation (flat armor then
+multiplier), the packet pipeline, statuses/CC and death rules — is specified
+in [Damage, health & conditions](06_damage_health_and_conditions.md); this
+chapter owns *how attacks find their targets* and the weapons themselves.
+
 The boundary between them is the rule that **kinetic damage travels on the
 projectile/entity path, and thermal/energy damage travels through the fields.**
 A bullet is an instantaneous ray that finds a unit and subtracts HP. A beam,
