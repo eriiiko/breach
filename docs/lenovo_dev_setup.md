@@ -76,3 +76,42 @@ optional env-parity nicety, not a determinism requirement.)
   game rules, unit-position representation) — Claude leads, decisions together.
 - Next week (fresh tokens): the EOS literature research + rung-A/B prototype
   (roadmap Phase 1).
+
+## 8. Confirm-run RESULT — 2026-07-04 (Ada Lenovo, `erik_lenovo`)
+
+Ran §5 on the Lenovo after the Q2-lift, CPU **rebuilt** first (fresh `.pyd`), then
+also the §5-optional full re-attestation (CUDA rebuilt too). Toolchain: MSVC 14.44,
+CUDA 12.9, miniconda `data` py3.12.
+
+**Outcome: RED — but hugely narrowed, and precisely localized.**
+
+- `tests/_xarch_perfield_digest.py` → aggregate `08cc4dff…` ≠ golden `453829a6…`.
+- **First (and only) divergence: `__unit_hp__` at tick 0.**
+  - Lenovo: `299deeac…`  vs  Ampere baseline: `097a9ba4…`
+  - Facing / pos / life-events and ALL 17 gmap fields (incl. `heat`, `temperature`)
+    are **identical** cross-machine at tick 0 — so the Q2-lift **trig/raycaster fix
+    worked**: the divergence went from the *whole trajectory* (June 29) to *one
+    sub-field*.
+- Full suite: **380 passed, 8 failed, 4 skipped.** The 8 fails are exactly the CUDA
+  golden-gated trajectory tests (s1, s2b, s3, s4a, s4b, s5, s6, s7) — each fails ONLY
+  on the aggregate golden (which `unit_hp` poisons); their on-machine `GPU==CPU`
+  halves are bit-identical. `test_fixed_trig` ✅ and `test_unit_heat_damage` ✅ pass.
+
+**Diagnosis (strong inference, to confirm):** the tick-0 HP change comes from
+`combat.apply_environmental_damage`, whose chain (`phi = peak_raw/HEAT_SCALE` →
+linear `*`/`+`/`-` → `quantize_hp_delta` snap) is **pure IEEE float64 with an integer
+input** — bit-identical across x86 machines and Python versions. So the arithmetic
+cannot be the cause; the diverging input must be **`peak_raw` — the max *live* `heat`
+on the unit's footprint, sampled before the end-of-tick heat clear.** The captured
+`heat` field is post-clear (~zeros), so it can't expose this. **Prime suspect:
+residual float in the CPU raycaster's `heat` deposit differing across MSVC versions**
+(cross-machine raycaster-heat identity was never proven — S2b only proves GPU==CPU
+on one box).
+
+**Next step (proposed):** add the *pre-clear* `heat` (and per-unit `peak_raw`) to the
+per-field dump, diff cross-machine to confirm the raycaster-heat hypothesis, then
+integerize the offending deposit step. Then re-run §5 → expect all-green → tag
+`cuda-breached`.
+
+_(Portability note: this run used `BREACH_CUDA_PYTHON=<data py>` + `CUDA_PATH=…\v12.9`
+for the CUDA gates, per the `cuda_harness.py` env override.)_
