@@ -45,9 +45,13 @@ the raycaster's cos/sin), and the golden re-baselined `60bd331f…` → `453829a
 **2026-07-04 SECOND fix (after this run found the spawn-stat hole — §8/§8b): the
 spawn-stat pin** replaced `rng.multivariate_normal` (LAPACK — cross-machine
 nondeterministic) with Q16.16-quantized species means; golden re-baselined again
-`453829a6…` → `ae1164ca…`. This run is the cross-machine proof:
+`453829a6…` → `ae1164ca…`. **2026-07-05 (combat P3): the status/condition system
+landed — the synced unit record grew the status list (`__unit_status__` sub-hash,
+mechanics/06 §4); golden re-baselined `ae1164ca…` → `6d690fda…`. No field
+trajectory moved (pure record-shape growth; nothing applies statuses in the
+scenario).** This run is the cross-machine proof:
 
-1. `git pull`  (HEAD must be at/after `4b2d0d7`).
+1. `git pull`  (HEAD must be at/after the P3 statuses merge).
 2. **REBUILD the CPU build — do not skip.** The lift changed C++ (`fixed_point.h`,
    `raycaster.cpp`, `bindings.cpp`); a stale `.pyd` reproduces the OLD golden = a
    false RED. Rebuild the same way as during the attestation:
@@ -56,15 +60,16 @@ nondeterministic) with Q16.16-quantized species means; golden re-baselined again
    MSVC 14.44 + the miniconda `data` py3.12 interpreter).
 3. Run: `<lenovo-py> tests/_xarch_perfield_digest.py`
    → it auto-diffs vs the committed Ampere baseline (`tests/_xarch_perfield_ampere.txt`).
-   - **ALL GREEN** (aggregate digest == `ae1164ca163b4bf49a86694ba78ea5319f86cfff46301c6aa59190207e6c1a12`,
+   - **ALL GREEN** (aggregate digest == `6d690fda8259b392be9029082013623fbef0fc0322ed3089107d5db220e1b441`,
      no diverging (field, tick)) ⇒ **cross-machine determinism PROVEN** — tell Claude,
      who tags `cuda-breached` and pushes it. Done, for good.
    - Any diverger ⇒ the tool now names the exact unit sub-field (hp / facing / pos /
-     life+events) — send that line; it localizes the culprit precisely.
+     life+events / statuses) — send that line; it localizes the culprit precisely.
 4. *(Optional but gold-standard, while you're there)*: rebuild CUDA
    (`cmd /c "cpp\build_cuda_lenovo.bat"`) and run the full suite
    (`<lenovo-py> -m pytest tests/ --ignore=tests/test_main_smoke.py
-   --ignore=tests/test_renderer_smoke.py`) — 392 expected green, incl. all CUDA gates
+   --ignore=tests/test_renderer_smoke.py`) — 484 expected green (392 + the P1/P2/P3
+   combat-wiring tests), incl. all CUDA gates
    vs the new golden ⇒ the COMPLETE Beat-B re-attestation on Ada in one go.
 
 ## 6. Python-version note

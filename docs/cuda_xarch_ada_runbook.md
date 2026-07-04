@@ -20,17 +20,19 @@ Every gate so far ran on **one** GPU — the Ampere 3070. Cross-architecture det
 / `-prec-sqrt` / `-ftz=false` — all architecture-invariant) **but not yet empirically
 shown on Ada.** This runbook shows it.
 
-**The CPU integer golden is `ae1164ca163b4bf49a86694ba78ea5319f86cfff46301c6aa59190207e6c1a12`**
+**The CPU integer golden is `6d690fda8259b392be9029082013623fbef0fc0322ed3089107d5db220e1b441`**
 (field_digest spec v1, 30-step canonical A/B scenario; lineage `542931c7…` → S2
-re-baseline `60bd331f…` → Q2-lift `453829a6…` → **spawn-stat pin `ae1164ca…`**,
+re-baseline `60bd331f…` → Q2-lift `453829a6…` → spawn-stat pin `ae1164ca…`,
 2026-07-04: spawn stats moved off `rng.multivariate_normal` (LAPACK — the Ada tick-0
 `__unit_hp__` divergence, lenovo_dev_setup.md §8b) onto Q16.16-quantized species
-means). On Ampere, the GPU path reproduces
+means → **P3 statuses `6d690fda…`**, 2026-07-05: the synced unit record grows the
+status/condition list (the `__unit_status__` sub-hash); no field trajectory moved).
+On Ampere, the GPU path reproduces
 it. **The attestation succeeds iff the GPU path reproduces this same golden on Ada.**
 
 **The bar, concretely:** the per-solver CUDA gates (`tests/test_cuda_s*.py`) each run the
 engine with that solver's GPU backend ON for 30 ticks and assert (a) GPU == CPU bit-for-bit
-and (b) the CPU path reproduces `ae1164ca…`. **If all the gates go green on the Ada box,
+and (b) the CPU path reproduces `6d690fda…`. **If all the gates go green on the Ada box,
 cross-arch determinism is proven** (Ada-GPU == CPU-golden == Ampere-GPU). Running the gates
 on Ada *is* the attestation.
 
@@ -109,7 +111,7 @@ untouched — the game keeps running on CPU regardless.
    (Or just run the whole suite: `… -m pytest tests/ --ignore=tests/test_main_smoke.py
    --ignore=tests/test_renderer_smoke.py`.) Each gate's PART 1 proves Ada-CPU == Ada-GPU on
    rich synthetic inputs; PART 2 runs the engine with that backend ON for 30 ticks and
-   reproduces the golden `ae1164ca…`.
+   reproduces the golden `6d690fda…`.
    - **ALL GREEN on Ada ⇒ ATTESTED.** Every GPU kernel is bit-identical Ada-GPU == CPU-golden
      == Ampere-GPU. Cross-architecture determinism is empirically confirmed.
    - **ANY GATE RED ⇒ a real cross-arch determinism bug** (some op is NOT arch-invariant —
@@ -125,7 +127,7 @@ untouched — the game keeps running on CPU regardless.
      enable all 7 backends when `PHYSICS_BACKEND=cuda` (call `bp.set_temperature_backend(True)`,
      `set_water_backend`, `set_smoke_backend`, `set_wave_backend`, `set_fire_backend`,
      `set_atmos_backend` — confirm the exact names in `bindings.cpp`), run it against the CUDA
-     `.pyd`, and confirm the printed digest == `ae1164ca…`; or (b) just rely on the per-solver
+     `.pyd`, and confirm the printed digest == `6d690fda…`; or (b) just rely on the per-solver
      gates above, which already flip the backends and check the golden. Run with `--write` to
      drop `tests/digest_<host>_cuda_gpu.txt` for the record.
 
@@ -174,6 +176,6 @@ git pull                                   # get S1–S7
 # edit a copy of cpp/build_cuda.bat for the Lenovo (VS path, miniconda, CUDA_PATH)
 <lenovo-build-cuda>.bat                     # -> cpp/build_cuda/...pyd, BUILD_EXIT=0
 C:/Users/steen/miniconda3/python.exe -m pytest tests/test_cuda_s*.py -v
-#   ALL GREEN -> Ada attested (GPU == CPU golden ae1164ca). Record + push.
+#   ALL GREEN -> Ada attested (GPU == CPU golden 6d690fda). Record + push.
 #   ANY RED   -> real cross-arch bug. Localize the field/tick/op. Surface to Erik.
 ```

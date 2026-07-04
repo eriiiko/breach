@@ -207,7 +207,7 @@ gate.
 
 ---
 
-## Implementation status (2026-07-04 — designed, wiring next)
+## Implementation status (2026-07-05 — statuses live, triggers next)
 
 | Piece | Status |
 |---|---|
@@ -215,9 +215,9 @@ gate.
 | Q16.16-snapped HP deltas everywhere | ✅ shipped (Q2-lift) |
 | DamagePacket pipeline + types + mitigation | ✅ shipped (P2, 2026-07-05 — `simulation/damage.py`; all four sites routed, neutral defaults bit-identical, digest unchanged. Float64-amount form: the integer `amount_q16` packets + per-phase batching are later patches) |
 | zombie ×4 → resist_mult[HEAT] dissolution | ✅ shipped (P2 — `species.ZOMBIE_MITIGATION`; the config key remains only as two heat tests' expected-ratio constant) |
-| Status/condition system + behavior flags | 📝 designed — wiring patch |
-| KNOCKED_DOWN via blast impulse (+ push row) | 📝 designed — the HUMAN-TEST fun one |
-| LifeState simplification (retire unused DOWNED value) | 📝 with the status patch |
-| Digest extension (`__unit_status__`) + golden re-baseline | 📝 with the status patch |
+| Status/condition system + behavior flags | ✅ shipped (P3, 2026-07-05 — `simulation/status.py`: kind registry rows + refresh/stack/max stacking + `composed_flags`; ticked at step 2b, the top of the unit-simulation section (ch. 05 §4 phase 3); DoTs emit through `apply_packet` (zombie BURNING = 4× a marine's, proven bitwise). Duration contract: N ticks of suppression AND N emissions (lazy sweep). Consumers wired: movement pauses on `can_move` (path-offset shift), fire orders + auto-fire and zombie melee gate on `can_act`, zombie walk on `can_move`. `can_aim` has no consumer yet — wires with the aim/exposure pass. NOTHING applies statuses in-game yet — triggers are P4+ |
+| KNOCKED_DOWN via blast impulse (+ push row) | 📝 designed — the HUMAN-TEST fun one (P4) |
+| LifeState simplification (retire unused DOWNED value) | ✅ shipped (P3 — `ALIVE | DEAD` only) |
+| Digest extension (`__unit_status__`) + golden re-baseline | ✅ shipped (P3 — the synced unit record carries `serialize_statuses`; golden `ae1164ca…` → `6d690fda…`, no field trajectory moved; Lenovo re-attestation owed) |
 | Attack resolver: exposure-vs-cover roll + crit roll (flank/behind arcs) | 📝 designed; numbers + wiring ride the weapons wave (item 5) — needs cover material data |
 | Standard-values config + playground | 📝 the closing wiring patch |

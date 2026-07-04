@@ -25,6 +25,7 @@ import math
 from config import CFG
 from simulation.damage import KINETIC, DamagePacket, apply_packet
 from simulation.movement import FootprintSamples, default_speed
+from simulation.status import composed_flags
 
 try:
     from pathfinding import astar
@@ -95,6 +96,15 @@ def update_zombies_tick(gmap, units, tick):
         if not z.zombie_activated:
             continue
 
+        # Status gate (mechanics/06 §4): the composed flags decide what this
+        # zombie may DO this tick — can_act gates the melee bite, can_move
+        # gates the walk below. Activation/perception (passes 1-2) is
+        # deliberately ungated: a paralyzed zombie still notices you.
+        # Dead paths until P4+ wires status triggers.
+        flags = composed_flags(z)
+        if not flags.can_move and not flags.can_act:
+            continue
+
         # Nearest living player by Euclidean distance.
         nearest = None
         nearest_dist = float('inf')
@@ -111,10 +121,13 @@ def update_zombies_tick(gmap, units, tick):
         if not nearest:
             continue
 
-        # Melee attack if adjacent (footprint + 1 tiles threshold).
+        # Melee attack if adjacent (footprint + 1 tiles threshold). An
+        # adjacent zombie that cannot act (stunned/paralyzed/knocked down)
+        # stands and waits — its melee cooldown does NOT reset (nothing is
+        # spent by suppression).
         if nearest_dist <= z.footprint + 1:
             cooldown = CFG.zombie.attack_cooldown_ticks
-            if tick - z.last_melee_tick >= cooldown:
+            if flags.can_act and tick - z.last_melee_tick >= cooldown:
                 z.last_melee_tick = tick
                 # KINETIC packet through the pipeline (mechanics/06 §2):
                 # neutral mitigation passes the int melee_damage through
@@ -132,6 +145,11 @@ def update_zombies_tick(gmap, units, tick):
             continue
 
         # Movement: one tile every (terrain-scaled) speed_ticks_per_tile ticks.
+        # Status gate: an immobilized zombie's stride clock PAUSES (the
+        # accumulator does not advance while suppressed — cadence resumes
+        # where it left off, mirroring the marine path-offset shift).
+        if not flags.can_move:
+            continue
         # Terrain cadence (mobility design §4.1): the §4 area-average mobility
         # over the zombie's CURRENT footprint scales its base cadence into the
         # ticks this step costs — a zombie clambering through furniture is 2.5x

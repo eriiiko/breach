@@ -222,5 +222,5 @@ and by construction every number crossing it passes a door.
 | The named EXCHANGE-READ slot (rows consolidated, table-order execution) | 📝 later patch (P4-era) — note: today blast runs at *detonation sites* (grenade fuse-out, door explosives), heat at post-physics step 9c; consolidation must reconcile that split |
 | wave_p→impulse push row | 📝 likely first new row |
 | water/gas/O2/fire rows + breathes/resistance profile fields | 📝 designed, pend combat chapter for damage-type spec |
-| Statuses (DoT/HoT/buffs) + resistances | 📝 requirement locked; spec = combat chapter (agenda item 4) |
+| Statuses (DoT/HoT/buffs) + resistances | ✅ core shipped (resist tables P2; status system + the top-of-phase-3 tick slot P3, 2026-07-05 — `simulation/status.py`, digest `__unit_status__`). The coupling-row TRIGGERS (fire→burning, gas→poison, O2/water→suffocation, wave_p→knockdown) still 📝 with their rows |
 | On-GPU reduction kernel | 📝 S8-residency era, behind the same interface |

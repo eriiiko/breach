@@ -47,6 +47,7 @@ from simulation.orders import (
 )
 from simulation import unit_fixed
 from simulation.physics import apply_explosion, add_explosion_smoke
+from simulation.status import composed_flags
 # The two shipped coupling responses live in simulation.exchange now
 # (mechanics/05 coupling table, P1). Re-imported for compatibility — legacy
 # imports (`from simulation.combat import apply_environmental_damage, ...`)
@@ -276,6 +277,14 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None):
 
     for u in units:
         if u.team != 0 or not u.alive:
+            continue
+
+        # Status gate (mechanics/06 §4): a unit whose composed can_act is
+        # suppressed (stunned / paralyzed / knocked down) executes NO attack
+        # this tick — neither its fire order nor Move & Attack auto-fire.
+        # The order itself stays queued (suppression delays, never cancels).
+        # Dead path until P4+ wires status triggers.
+        if not composed_flags(u).can_act:
             continue
 
         fire_order = u.get_fire_order_in_phase(phase)
