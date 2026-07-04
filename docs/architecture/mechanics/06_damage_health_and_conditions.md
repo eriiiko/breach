@@ -213,8 +213,8 @@ gate.
 |---|---|
 | Two-layer combat doctrine + rifle/melee/blast/heat damage | ✅ shipped (ch. 03 + combat.py) |
 | Q16.16-snapped HP deltas everywhere | ✅ shipped (Q2-lift) |
-| DamagePacket pipeline + types + mitigation | 📝 designed — wiring patch |
-| zombie ×4 → resist_mult[HEAT] dissolution | 📝 with the pipeline patch |
+| DamagePacket pipeline + types + mitigation | ✅ shipped (P2, 2026-07-05 — `simulation/damage.py`; all four sites routed, neutral defaults bit-identical, digest unchanged. Float64-amount form: the integer `amount_q16` packets + per-phase batching are later patches) |
+| zombie ×4 → resist_mult[HEAT] dissolution | ✅ shipped (P2 — `species.ZOMBIE_MITIGATION`; the config key remains only as two heat tests' expected-ratio constant) |
 | Status/condition system + behavior flags | 📝 designed — wiring patch |
 | KNOCKED_DOWN via blast impulse (+ push row) | 📝 designed — the HUMAN-TEST fun one |
 | LifeState simplification (retire unused DOWNED value) | 📝 with the status patch |

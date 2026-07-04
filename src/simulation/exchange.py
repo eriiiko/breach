@@ -33,6 +33,14 @@ named EXCHANGE-READ slot that iterates this table in table order (mechanics/05
 §4, pipeline phase 2) is a later patch; nothing here reorders or merges the
 shipped call sites.
 
+P2 note (also behaviour-preserving, 2026-07-05): both responses now hand
+their pre-mitigation amounts to the mechanics/06 DamagePacket pipeline
+(:mod:`simulation.damage`), which owns mitigation -> Q2-lift quantize -> hp
+-> hit/kill events. With the shipped tables every path is bit-identical to
+the inline chains this replaced (the zombie heat ×4 moved into
+``species.ZOMBIE_MITIGATION``); call positions, signatures, and the
+bare-name import pattern (liveheat instrumentation) are unchanged.
+
 Conventions (shared by every reduction):
 
 - ``field`` is a 2-D numpy int array indexed ``field[ty, tx]`` (row-major,
@@ -53,8 +61,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
 from config import CFG
-from simulation import unit_fixed
-from simulation.events import UnitHitEvent, UnitKilledEvent
+from simulation.damage import BLAST, HEAT, DamagePacket, apply_packet
 
 
 # ---------------------------------------------------------------------------
@@ -234,8 +241,15 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
         over    = T_felt - temperature_max                        # damage band
         if over <= 0: no heat damage this tick
         dmg     = environmental_damage_rate * (1 + heat_overtemp_scale*over) * dt_tick
-        if u.is_zombie: dmg *= zombie.fire_damage_multiplier      # the shipped 4.0
-        u.current_hp -= dmg
+        apply_packet(u, DamagePacket(dmg, HEAT), ...)             # mechanics/06 §2
+
+    The packet pipeline mitigates with the unit's resist table at the exact
+    pre-quantize position the old ``if u.is_zombie: dmg *= zombie.fire_
+    damage_multiplier`` branch occupied — that special case is DISSOLVED into
+    ``resist_mult[HEAT] = 4.0`` on ``species.ZOMBIE_MITIGATION`` (an exact
+    binary scale at the same float-chain position → bit-identical), and a
+    marine's neutral table is an IEEE-exact no-op. The sim no longer reads
+    ``CFG.zombie.fire_damage_multiplier``.
 
     ``dt_tick = 1 / ticks_per_second`` makes the real DPS tick-rate independent.
     ``temperature_max`` and ``environmental_damage_rate`` come from the unit's
@@ -260,7 +274,6 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
     overtemp_k   = float(cmb.heat_overtemp_scale)
     temp_max_cfg = float(cmb.temperature_max)
     env_rate_cfg = float(cmb.environmental_damage_rate)
-    zombie_mult  = float(CFG.zombie.fire_damage_multiplier)
 
     dt_tick = 1.0 / float(ticks_per_second)
 
@@ -294,24 +307,17 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
             continue  # within the tolerance band: survivable, no damage
 
         dmg = env_rate * (1.0 + overtemp_k * over) * dt_tick
-        if u.is_zombie:
-            dmg *= zombie_mult
 
-        # Q2-lift: snap the delta to the Q16.16 grid before it touches HP —
-        # every applied delta becomes an exact multiple of 1/65536 (change
-        # <= 7.6e-6 HP per application; belt-and-suspenders, the float chain
-        # above is already IEEE-stable). The event carries the APPLIED value.
-        dmg = unit_fixed.quantize_hp_delta(dmg)
-        u.current_hp -= dmg
-        if events is not None:
-            uid = getattr(u, "id", -1)
-            events.append(UnitHitEvent(unit_id=uid, damage=dmg,
-                                       source="heat"))
-        if u.current_hp <= 0:
-            u.alive = False
-            if events is not None:
-                uid = getattr(u, "id", -1)
-                events.append(UnitKilledEvent(unit_id=uid, killed_by="heat"))
+        # The DamagePacket pipeline (mechanics/06 §2) owns everything after
+        # the pre-mitigation amount: mitigation applies the unit's resist
+        # table at the EXACT pre-quantize position the old zombie ×4 branch
+        # sat (the zombie's resist_mult[HEAT] = 4.0 — an exact binary scale —
+        # reproduces it bit-for-bit; a marine's neutral table is an
+        # IEEE-exact no-op), then Q2-lift quantize -> hp -> the same
+        # hit/kill events as before (source "heat"; heat deaths never set
+        # killed_by_zombie — only melee converts).
+        apply_packet(u, DamagePacket(amount=dmg, dtype=HEAT, source_id=None),
+                     events, source="heat")
 
 
 # ---------------------------------------------------------------------------
@@ -340,21 +346,16 @@ def apply_blast_damage(units, fx, fy, radius, max_damage, events=None):
             falloff = 1.0 - (dist / radius)
             damage = int(max_damage * falloff)
             if damage >= CFG.combat.blast_damage_threshold:
-                # Q2-lift: snap the applied delta to the Q16.16 grid
-                # (belt-and-suspenders; exact pass-through for this int
-                # damage). The event carries the APPLIED value.
-                damage = unit_fixed.quantize_hp_delta(damage)
-                u.current_hp -= damage
-                if events is not None:
-                    uid = getattr(u, "id", -1)
-                    events.append(UnitHitEvent(unit_id=uid, damage=damage,
-                                                source="explosion"))
-                if u.current_hp <= 0:
-                    u.alive = False
-                    if events is not None:
-                        uid = getattr(u, "id", -1)
-                        events.append(UnitKilledEvent(unit_id=uid,
-                                                       killed_by="explosion"))
+                # BLAST packet through the pipeline (mechanics/06 §2). The
+                # geometric pre-mitigation amount + the chip-damage threshold
+                # stay site-side; neutral mitigation passes the int amount
+                # through exactly, then the same Q2-lift quantize -> hp ->
+                # hit/kill events as before (source "explosion"; blast
+                # deaths never set killed_by_zombie — only melee converts).
+                apply_packet(u,
+                             DamagePacket(amount=damage, dtype=BLAST,
+                                          source_id=None),
+                             events, source="explosion")
 
 
 # ---------------------------------------------------------------------------

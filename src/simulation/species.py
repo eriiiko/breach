@@ -19,6 +19,9 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from simulation.damage import (
+    HEAT, MitigationProfile, NEUTRAL_MITIGATION, build_mitigation,
+)
 from simulation.environment import EnvironmentProfile, HUMAN_ENVIRONMENT
 from simulation.inventory import InventoryProfile
 
@@ -69,6 +72,10 @@ class SpeciesDef:
     default_offsets:     tuple              # tuple[tuple[int, int], ...]
     environment:         EnvironmentProfile = field(default_factory=lambda: HUMAN_ENVIRONMENT)
     inventory_profile:   InventoryProfile   = field(default_factory=InventoryProfile)
+    # Mitigation tables (mechanics/06 §3) — flat armor[dtype] + resist_mult
+    # [dtype], door-2 data. Default = neutral (armor 0, resist 1.0). A future
+    # robot species ships resist_mult[POISON] = 0 here — profile data, no code.
+    mitigation:          MitigationProfile  = field(default_factory=lambda: NEUTRAL_MITIGATION)
     can_become_zombie:   bool = True
     nn_intelligence_tier: int = 0           # data-only; NN tier logic deferred
 
@@ -171,9 +178,28 @@ HUMAN = SpeciesDef(
     stat_dist=_human_stat_distribution(),
     default_offsets=_default_3x3_offsets(),
     environment=HUMAN_ENVIRONMENT,
+    mitigation=NEUTRAL_MITIGATION,   # unarmored, unresisting baseline
     can_become_zombie=True,
     nn_intelligence_tier=2,
 )
+
+# ---------------------------------------------------------------------------
+# The ZOMBIE mitigation profile (mechanics/06 §2 "proof of shape").
+# ---------------------------------------------------------------------------
+# Zombie-ness is runtime STATE on the human species (the one-species
+# foundation decision above), so this is the STATE'S profile overlay rather
+# than a species field: damage.mitigation_for selects it on ``unit.is_zombie``
+# at damage time — exactly the predicate the dissolved special case used, so
+# construction with team=1, end-of-round conversion, and direct flag flips
+# all behave as before. resist_mult[HEAT] = 4.0 REPLACES the old
+# ``if u.is_zombie: dmg *= CFG.zombie.fire_damage_multiplier`` branch in the
+# heat response (a vulnerability is just a resistance above 1); 4.0 is an
+# exact binary scale, so the swap is bit-identical. The config key
+# ``[zombie] fire_damage_multiplier`` remains ONLY as the expected-ratio
+# constant two heat tests read — the sim no longer reads it. All other slots
+# neutral: bullets keep their site-side ``bullet_damage_multiplier`` math
+# (an int-truncating pre-mitigation amount rule, not a resistance).
+ZOMBIE_MITIGATION = build_mitigation(resist_mult={HEAT: 4.0})
 
 # Registry: all known species indexed by SpeciesId string.
 SPECIES_REGISTRY: dict[str, SpeciesDef] = {HUMAN.id: HUMAN}
@@ -187,5 +213,5 @@ def get_species(species_id: SpeciesId) -> SpeciesDef:
 __all__ = [
     "SpeciesId", "N_GENERATED_STATS", "GENERATED_STAT_NAMES",
     "StatDistribution", "SpeciesDef",
-    "HUMAN", "SPECIES_REGISTRY", "get_species",
+    "HUMAN", "ZOMBIE_MITIGATION", "SPECIES_REGISTRY", "get_species",
 ]
