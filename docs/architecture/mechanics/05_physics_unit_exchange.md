@@ -218,7 +218,8 @@ and by construction every number crossing it passes a door.
 | Unit occupancy stamp (write path 1) | ✅ shipped (C++) |
 | FieldEdit as the sole deposit path (write path 2) | ✅ shipped |
 | EnvironmentProfile hook (temperature_max / env_rate) | ✅ embryo shipped |
-| The formal coupling TABLE + reduction vocabulary + named READ slot | 📝 designed (this chapter) — first refactor gathers the two shipped rows into it |
+| The formal coupling TABLE + reduction vocabulary | ✅ shipped (P1 refactor, 2026-07-05): `src/simulation/exchange.py` — `REDUCTIONS` (center/max/mean/sum/grad, integer-exact) + `COUPLING_TABLE` with the two shipped rows registered (responses moved verbatim; behaviour-preserving, digest unchanged). Rows still execute at their legacy tick positions |
+| The named EXCHANGE-READ slot (rows consolidated, table-order execution) | 📝 later patch (P4-era) — note: today blast runs at *detonation sites* (grenade fuse-out, door explosives), heat at post-physics step 9c; consolidation must reconcile that split |
 | wave_p→impulse push row | 📝 likely first new row |
 | water/gas/O2/fire rows + breathes/resistance profile fields | 📝 designed, pend combat chapter for damage-type spec |
 | Statuses (DoT/HoT/buffs) + resistances | 📝 requirement locked; spec = combat chapter (agenda item 4) |

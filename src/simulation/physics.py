@@ -65,8 +65,8 @@ def apply_explosion(gmap, queue, fy, fx, radius, pressure, wall_damage):
     queue (before the solvers), in deterministic stable-sorted order. ``queue``
     is the sim's :class:`EditQueue`.
 
-    No unit damage here — call :func:`simulation.combat.apply_blast_damage`
-    separately.
+    No unit damage here — call :func:`simulation.exchange.apply_blast_damage`
+    (the mechanics/05 blast coupling row) separately.
     """
     h, w = gmap.material.shape
 
