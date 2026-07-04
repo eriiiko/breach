@@ -158,3 +158,19 @@ Stat VARIATION returns with the units/stats redesign as a deterministic sampler
 for libm transcendentals / BLAS-LAPACK / RNG distribution methods / unseeded RNGs;
 `ingress-exempt:` pragma for audited exceptions (see materials.py). **§5 is live
 again: re-run it → all-green vs `ae1164ca…` ⇒ tag `cuda-breached`.**
+
+## 9. §5 RE-CONFIRM RESULT — 2026-07-04, later same day (Ada Lenovo) — ALL GREEN ✅
+
+Pulled the spawn-stat pin (`bb52368`), rebuilt CPU + CUDA (both reported nothing to
+recompile — the pin is pure-Python, C++ was already current from the §8 run), then
+re-ran §5 in full:
+
+- `tests/_xarch_perfield_digest.py` → aggregate digest **`ae1164ca163b4bf49a86694ba78ea5319f86cfff46301c6aa59190207e6c1a12`**
+  — matches the new golden exactly.
+- Cross-machine diff vs the committed Ampere baseline: **`IDENTICAL (no divergence over 30 ticks)`.**
+- Full suite (`pytest tests/ --ignore=tests/test_main_smoke.py --ignore=tests/test_renderer_smoke.py`):
+  **392 passed, 4 skipped, 0 failed** — every CUDA gate included, all vs the new golden.
+
+**Cross-machine determinism is PROVEN on Ada.** Tagged `cuda-breached` and pushed.
+The X-ARCH Beat-B chase (spike0 → the June 29 Ada finding → Q2-lift trig kit →
+spawn-stat pin) is closed.
