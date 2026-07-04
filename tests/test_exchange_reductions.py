@@ -249,3 +249,39 @@ def test_no_reduction_raises_on_wild_footprints():
     for name, fn in REDUCTIONS.items():
         fn(f, wild)   # must not raise
         fn(f, [])     # must not raise
+
+
+# ---------------------------------------------------------------------------
+# The coupling table — the two shipped rows, registered (mechanics/05 §1)
+# ---------------------------------------------------------------------------
+def test_coupling_table_registers_the_two_shipped_rows_in_order():
+    """P1 registration: heat then wave_p (the chapter's row order — the P0
+    'couplings in table order' execution order once the named READ slot
+    lands). Rows are plain frozen data."""
+    from simulation.exchange import COUPLING_TABLE
+    assert isinstance(COUPLING_TABLE, tuple)
+    assert [row.field for row in COUPLING_TABLE] == ["heat", "wave_p"]
+    assert all(isinstance(row, CouplingRow) for row in COUPLING_TABLE)
+
+
+def test_coupling_table_reductions_name_the_vocabulary():
+    """A row's reduction is a vocabulary name (or None for a shipped response
+    that predates the field read — the blast row's documented state)."""
+    from simulation.exchange import COUPLING_TABLE
+    heat_row, blast_row = COUPLING_TABLE
+    assert heat_row.reduction == "max" and heat_row.reduction in REDUCTIONS
+    assert blast_row.reduction is None
+    assert blast_row.note      # the predates-the-field-read status is written
+
+
+def test_coupling_table_responses_are_the_shipped_implementations():
+    """Behaviour preservation at the identity level: the registered response
+    callables ARE the shipped functions, and the combat.py compatibility
+    re-exports resolve to the very same objects (legacy imports unchanged)."""
+    from simulation import combat, exchange
+    heat_row, blast_row = exchange.COUPLING_TABLE
+    assert heat_row.response is exchange.apply_environmental_damage
+    assert blast_row.response is exchange.apply_blast_damage
+    assert combat.apply_environmental_damage is exchange.apply_environmental_damage
+    assert combat.apply_blast_damage is exchange.apply_blast_damage
+    assert combat.HEAT_SCALE == exchange.HEAT_SCALE == 65536
