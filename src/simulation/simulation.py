@@ -80,7 +80,9 @@ from simulation.combat import (
 # (tests/_xarch_liveheat_dump.py — the case-2 divergence instrument).
 # Execution positions are UNCHANGED (heat at step 9c, blast at the grenade
 # fuse-out below); the consolidated named EXCHANGE-READ slot is a later patch.
-from simulation.exchange import apply_blast_damage, apply_environmental_damage
+from simulation.exchange import (
+    apply_blast_damage, apply_environmental_damage, apply_wave_push,
+)
 from simulation.events import (
     DoorDestroyedEvent, ExplosionEvent, WallDestroyedEvent,
 )
@@ -718,6 +720,23 @@ class Simulation:
                 self.units, self.gmap, self._tps,
                 events=self.tick_events,
             )
+
+        # 9c2. Wave impulse push + KNOCKED_DOWN (mechanics/05 §1 wave_p|grad
+        # row; mechanics/06 §4 trigger — exchange.COUPLING_TABLE[2]). The
+        # first coupling row born INTO the table (P4). Reads the post-physics
+        # wave_p at each living unit's footprint: dv = k_push*(-grad)/mass —
+        # the nudge displaces unit.x/y (wall-clamped) and dv above
+        # threshold*stability lays the unit KNOCKED_DOWN (prone, no move/act,
+        # refresh-stacked get-up timer). WITHIN-TICK EXCHANGE ORDER
+        # (documented contract): heat damage (9c) FIRST, then the push — a
+        # unit the heat row kills this tick is a corpse and is not displaced.
+        # Runs BEFORE the recorder snapshot (it captures post-push positions)
+        # and before the end-of-tick heat clear (irrelevant to wave_p, kept
+        # for the fixed order). The moved position reaches the physics next
+        # tick through the step-6 re-stamp. A status applied here starts
+        # suppressing next tick (the step-2b P3 trigger-position semantics).
+        if self.physics_runner is not None:
+            apply_wave_push(self.units, self.gmap, self._tps)
 
         # 9d. Ignition from temperature (engine/06 §4, proposal §6 step 4b). The
         # READ side of the temperature substrate: the C++ TemperatureSolver

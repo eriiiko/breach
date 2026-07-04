@@ -33,6 +33,11 @@ named EXCHANGE-READ slot that iterates this table in table order (mechanics/05
 §4, pipeline phase 2) is a later patch; nothing here reorders or merges the
 shipped call sites.
 
+P4 (2026-07-05) adds the first NEW row — :func:`apply_wave_push`, the
+``wave_p | grad`` impulse push + KNOCKED_DOWN trigger — invoked post-physics
+at ``Simulation.step`` 9c2, directly after the heat row (the documented
+within-tick exchange order: heat damage, then push).
+
 P2 note (also behaviour-preserving, 2026-07-05): both responses now hand
 their pre-mitigation amounts to the mechanics/06 DamagePacket pipeline
 (:mod:`simulation.damage`), which owns mitigation -> Q2-lift quantize -> hp
@@ -62,6 +67,8 @@ from typing import Callable, Optional, Sequence
 
 from config import CFG
 from simulation.damage import BLAST, HEAT, DamagePacket, apply_packet
+from simulation.species import ZOMBIE_STABILITY
+from simulation.status import KNOCKED_DOWN, apply_status
 
 
 # ---------------------------------------------------------------------------
@@ -359,6 +366,162 @@ def apply_blast_damage(units, fx, fy, radius, max_damage, events=None):
 
 
 # ---------------------------------------------------------------------------
+# Wave impulse push + KNOCKED_DOWN trigger — the `wave_p | grad` coupling row
+# (mechanics/05 §1; the knockdown spec is mechanics/06 §4). NEW in P4.
+# ---------------------------------------------------------------------------
+def _stability_for(unit) -> float:
+    """Resolve the unit's knockdown ``stability`` (mechanics/06 §4).
+
+    Zombie-ness is runtime STATE on the human species, so the zombie's value
+    is a state overlay selected here (``species.ZOMBIE_STABILITY``) — the
+    exact ``mitigation_for`` pattern. Everyone else reads the species
+    :class:`EnvironmentProfile` pointer stamped on the unit at construction
+    (``unit.environment.stability``, default 1.0); bare stub units fall back
+    to the human baseline 1.0.
+    """
+    if getattr(unit, "is_zombie", False):
+        return ZOMBIE_STABILITY
+    env = getattr(unit, "environment", None)
+    return float(getattr(env, "stability", 1.0))
+
+
+def apply_wave_push(units, gmap, ticks_per_second):
+    """The wave_p impulse-push row, BOTH outputs (mechanics/05 §1): the
+    per-tick displacement nudge AND the KNOCKED_DOWN trigger (mechanics/06
+    §4). Runs post-physics at ``Simulation.step`` 9c2, immediately AFTER the
+    heat row (the documented within-tick exchange order: heat damage first,
+    then push — a unit the heat row kills this tick is a corpse and is not
+    displaced).
+
+    Per LIVING unit, in stored order (deterministic; each unit's response
+    reads only the field + its own state, so the result is order-free — the
+    serial loop mirrors :func:`apply_environmental_damage`):
+
+        (gx, gy) = reduce_grad(wave_p, occupied_tiles)     # Q16.16, uphill
+        dvx = k_push * (-gx / 65536) / mass                # tiles/s
+        dvy = k_push * (-gy / 65536) / mass
+        KNOCKED_DOWN if dvx^2 + dvy^2 >= (threshold * stability)^2
+        dx = clamp(dvx * dt, +-push_max_tile_per_tick)     # dt = 1/tps
+        dy = clamp(dvy * dt, +-push_max_tile_per_tick)
+        unit.x += dx ; unit.y += dy                        # wall-clamped
+
+    Design notes (the P4 decisions, in one place):
+
+    - **Reduction = the vocabulary's ``reduce_grad``** (footprint edge-line
+      mean difference), NOT an inline per-tile Σ∇p. Why: it samples ONLY the
+      unit's own footprint tiles, so a unit hugging a wall picks up no
+      spurious force from solid cells (wave_p is 0 inside walls — an
+      out-of-body stencil would fabricate wall-ward suction); and it is the
+      shipped, integer-exact vocabulary entry the chapter row names. With
+      the one shipped footprint (3x3, every unit) the chapter's
+      area-scaling Σ form differs from this by a constant that ``k_push``
+      absorbs; when footprint sizes diversify, the big-light-units-fly
+      area scaling returns as an explicit footprint-area factor here.
+    - **v1 is stateless**: no persistent velocity on the unit — an
+      instantaneous per-tick nudge while the wave overlaps the footprint.
+      Measured consequence (calibration 2026-07-05, config.toml [exchange]):
+      a passing acoustic pulse pushes on its front and pulls on its tail
+      (linear acoustics — the net impulse at a fixed point largely
+      cancels), so the visible motion is a sharp BUFFET (peak hop 0.3-0.5
+      tile, partial spring-back, net drift +-0.2 tile), not a sustained
+      1-tile carry. The knockdown is the star output; a sustained blast-wind
+      throw would read the atmosphere dome — a separate row, Erik's call.
+    - **Knockdown compares SQUARES** — ``dvx*dvx + dvy*dvy`` against
+      ``(threshold*stability)**2`` computed as a product — no sqrt needed
+      (cheaper, and one fewer op to audit; the chain stays pure ``+ - x /``
+      door 3 on door-2 constants and the door-1 integer gradient).
+    - **Knockdown uses the UNCAPPED, UNCLAMPED dv** — the physical velocity
+      change. The displacement cap and the wall clamp are motion sanity
+      rails; a unit slammed against a wall by a blast still goes down.
+    - **Trigger timing** (status.py P3 semantics): 9c2 sits AFTER this
+      tick's status pass (step 2b), so a knockdown applied here starts
+      suppressing movement/actions NEXT tick and lasts the full
+      ``knockdown_getup_ticks`` from there — the wave visibly bowls the
+      unit over on the spot, and re-knocks REFRESH the timer (P3 stacking).
+    - **Wall clamp, per axis, x then y (fixed order → slide along walls)**:
+      each axis's move is accepted only if the DESTINATION footprint stays
+      in-bounds and enters no solid tile it does not already stand on (the
+      already-standing carve-out covers walk-through door tiles, which are
+      solid to gas but legally occupied). A blocked axis drops its
+      displacement (the unit pins against the wall); the other axis still
+      slides. The y test runs at the already-accepted x, so the final
+      combined footprint is always explicitly checked. Units do NOT block
+      each other (v1: bodies are not walls — overlap is already possible
+      via pathfinding; ``gmap.solid`` is the only barrier).
+    - **Determinism**: gradient is door-1 integer; ``/65536`` is an exact
+      power-of-two scale; k_push / mass / dt / threshold / stability are
+      door-2 constants; the chain is pure ``+ - x /`` float64 (door 3) into
+      today's float positions (the Q16.16 position migration is a later
+      arc). ``gx == gy == 0`` (quiet field / off-grid footprint) is an
+      integer-exact early-out: the pass is a bit-identical no-op when no
+      wave is up — which keeps every wave-free trajectory's digest
+      untouched.
+    """
+    cfg = CFG.exchange
+    k_push = float(cfg.k_push)
+    cap = float(cfg.push_max_tile_per_tick)
+    threshold = float(cfg.knockdown_dv_threshold)
+    getup_ticks = int(cfg.knockdown_getup_ticks)
+    dt_tick = 1.0 / float(ticks_per_second)
+
+    wave_p = gmap.wave_p
+    solid = gmap.solid
+    h, w = solid.shape
+
+    for u in units:
+        if not u.alive:
+            continue
+        tiles = u.occupied_tiles()
+        gx, gy = reduce_grad(wave_p, tiles)
+        if gx == 0 and gy == 0:
+            continue    # integer-exact no-op: quiet field or clipped footprint
+
+        mass = float(u.mass)
+        dvx = k_push * (-gx / 65536.0) / mass    # tiles/s (door 3)
+        dvy = k_push * (-gy / 65536.0) / mass
+
+        # Output 2 first in text order, but independent of the nudge: the
+        # KNOCKED_DOWN trigger on the raw physical dv (squares — no sqrt).
+        dv2 = dvx * dvx + dvy * dvy
+        thr = threshold * _stability_for(u)
+        if dv2 >= thr * thr:
+            apply_status(u, KNOCKED_DOWN, magnitude=0,
+                         duration_ticks=getup_ticks, source_id=None)
+
+        # Output 1: the displacement nudge — capped, then wall-clamped.
+        dx = dvx * dt_tick
+        dy = dvy * dt_tick
+        if dx > cap:
+            dx = cap
+        elif dx < -cap:
+            dx = -cap
+        if dy > cap:
+            dy = cap
+        elif dy < -cap:
+            dy = -cap
+
+        cur = set(tiles)
+
+        def _free(nx: float, ny: float) -> bool:
+            ax, ay = int(nx), int(ny)
+            for (dxo, dyo) in u.offsets:
+                tx, ty = ax + dxo, ay + dyo
+                if not (0 <= tx < w and 0 <= ty < h):
+                    return False
+                if solid[ty, tx] and (tx, ty) not in cur:
+                    return False
+            return True
+
+        # x first, then y at the accepted x — fixed order, slides along walls.
+        nx = u.x + dx
+        if dx != 0.0 and _free(nx, u.y):
+            u.x = nx
+        ny = u.y + dy
+        if dy != 0.0 and _free(u.x, ny):
+            u.y = ny
+
+
+# ---------------------------------------------------------------------------
 # The coupling-table structure (mechanics/05 §1) — plain data, no framework.
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
@@ -416,8 +579,21 @@ COUPLING_TABLE: tuple[CouplingRow, ...] = (
             "falloff from the detonation point) instead of sampling wave_p, "
             "and runs at DETONATION SITES (grenade fuse-out in "
             "Simulation._update_projectiles; combat.process_door_explosives), "
-            "not at a fixed tick slot. The chapter row's true wave_p footprint "
-            "read arrives with the impulse-push work."
+            "not at a fixed tick slot. The impulse-push row below is the "
+            "chapter's first true wave_p footprint read."
+        ),
+    ),
+    CouplingRow(
+        field="wave_p",
+        reduction="grad",
+        response=apply_wave_push,
+        note=(
+            "Impulse push + KNOCKED_DOWN trigger (mechanics/05 §1 / 06 §4) — "
+            "the first row born INTO the table (P4): dv = k_push*(-grad)/mass "
+            "per tick, displacement wall-clamped, knockdown on dv^2 vs "
+            "(threshold*stability)^2. Runs post-physics at Simulation.step "
+            "9c2, directly after the heat row (documented within-tick order: "
+            "heat damage, then push)."
         ),
     ),
 )
@@ -428,5 +604,5 @@ __all__ = [
     "REDUCTIONS",
     "reduce_center", "reduce_grad", "reduce_max", "reduce_mean", "reduce_sum",
     "CouplingRow", "COUPLING_TABLE",
-    "apply_blast_damage", "apply_environmental_damage",
+    "apply_blast_damage", "apply_environmental_damage", "apply_wave_push",
 ]

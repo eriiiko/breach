@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from simulation import unit_fixed
 from simulation.damage import (
     HEAT, MitigationProfile, NEUTRAL_MITIGATION, build_mitigation,
 )
@@ -201,6 +202,16 @@ HUMAN = SpeciesDef(
 # (an int-truncating pre-mitigation amount rule, not a resistance).
 ZOMBIE_MITIGATION = build_mitigation(resist_mult={HEAT: 4.0})
 
+# Zombie knockdown stability (mechanics/06 §4) — the same state-overlay
+# pattern as ZOMBIE_MITIGATION: zombie-ness is runtime state on the human
+# species, so the zombie's `stability` is selected on ``unit.is_zombie`` at
+# exchange time (exchange._stability_for) instead of living on a species
+# EnvironmentProfile. 0.9 = shamblers topple a little easier than a braced
+# marine (effective knockdown threshold = knockdown_dv_threshold * 0.9).
+# STANDARD VALUE for Erik to tune (mechanics/06 §8) — snapped onto the
+# Q16.16 grid at definition (door 2; 0.9 is not dyadic).
+ZOMBIE_STABILITY = unit_fixed.dequantize_scalar(unit_fixed.quantize_scalar(0.9))
+
 # Registry: all known species indexed by SpeciesId string.
 SPECIES_REGISTRY: dict[str, SpeciesDef] = {HUMAN.id: HUMAN}
 
@@ -213,5 +224,6 @@ def get_species(species_id: SpeciesId) -> SpeciesDef:
 __all__ = [
     "SpeciesId", "N_GENERATED_STATS", "GENERATED_STAT_NAMES",
     "StatDistribution", "SpeciesDef",
-    "HUMAN", "ZOMBIE_MITIGATION", "SPECIES_REGISTRY", "get_species",
+    "HUMAN", "ZOMBIE_MITIGATION", "ZOMBIE_STABILITY",
+    "SPECIES_REGISTRY", "get_species",
 ]

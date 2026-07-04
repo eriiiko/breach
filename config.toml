@@ -609,6 +609,39 @@ heat_overtemp_scale = 0.05       # damage ramp above the band (k_over), small +v
 temperature_max = 60.0           # global fallback band ceiling if a unit has no EnvironmentProfile
 environmental_damage_rate = 1.0  # global fallback env-damage rate (per unit/sec) if no profile
 
+# --- The physics<->unit exchange layer (mechanics/05) ------------------------
+# Constants for the coupling-table rows that are not weapon numbers. First
+# resident: the wave_p impulse-push row + its KNOCKED_DOWN trigger
+# (mechanics/05 §1 / 06 §4; simulation/exchange.apply_wave_push, invoked at
+# Simulation.step 9c2 — after heat damage, before the recorder snapshot).
+#
+#   (gx, gy) = reduce_grad(wave_p, footprint)          # Q16.16 counts, uphill
+#   dv       = k_push * (-g / 65536) / unit.mass       # tiles/s, per tick
+#   dx       = clamp(dv * dt_tick, +-push_max_tile_per_tick)   # the nudge
+#   knocked  = dvx^2 + dvy^2 >= (knockdown_dv_threshold * stability)^2
+#
+# ALL FOUR ARE STANDARD-VALUE PLACEHOLDERS FOR ERIK'S TUNING (mechanics/06
+# §8). Calibrated 2026-07-05 against a grenade (radius 5, pressure 10.0,
+# unit_damage 60, mass-80 marine, 24 tps, 48x48 open room):
+#   - meaningful blast DAMAGE reaches ~4.6 tiles (geometric falloff vs the
+#     blast_damage_threshold);
+#   - with k_push=400 / threshold=6.0 the KNOCKDOWN ring reaches ~9-10 tiles
+#     (peak per-tick |dv| tiles/s by distance: d=4: 11.3, d=6: 9.1, d=7: 8.0,
+#     d=8: 6.4, d=9: 7.0, d=10: 5.8, d=12: 5.7, d=14: 4.5, d=16: 3.3) —
+#     i.e. knockdown_radius ~= 2x damage_radius, the mechanics/06 §4
+#     "knocks marines sprawling without killing them" signature;
+#   - the visible motion is a BUFFET: peak single-tick hop 0.3-0.5 tile with
+#     a partial spring-back as the pulse's tail passes (linear acoustics:
+#     a passing wave's net impulse largely cancels — measured net drift
+#     +-0.2 tile, max forward excursion ~0.2-0.4 tile at k_push=400). A
+#     SUSTAINED 1-tile-class throw would need the atmosphere-dome (blast
+#     wind) term — a separate coupling row, Erik's design call, not in v1.
+[exchange]
+k_push = 400.0                   # impulse gain: dv = k_push * grad / mass (tiles/s per unit gradient)
+push_max_tile_per_tick = 0.5     # sanity cap on the per-tick displacement (tiles)
+knockdown_dv_threshold = 6.0     # |dv| (tiles/s) at stability 1.0 that triggers KNOCKED_DOWN
+knockdown_getup_seconds = 1.5    # prone time; config.py derives knockdown_getup_ticks (36 @ 24 tps)
+
 [recorder]
 # Physics ring-buffer length in seconds. config.py derives the integer slot
 # capacity via round(replay_seconds * ticks_per_second). 100 s -> 1200 @ 12 tps.

@@ -101,6 +101,13 @@ class GameConfig:
             self.weapons.rifle.burst_interval_seconds, tps
         )
 
+        # KNOCKED_DOWN get-up time (mechanics/06 §4): authored in seconds,
+        # consumed as an integer tick duration (ingress door 1 — status
+        # durations are integer ticks). 1.5 s -> 36 ticks @ 24 tps.
+        self.exchange.knockdown_getup_ticks = ticks_from_seconds(
+            self.exchange.knockdown_getup_seconds, tps
+        )
+
         self.recorder.capacity = round(self.recorder.replay_seconds * tps)
 
     def reload(self):
