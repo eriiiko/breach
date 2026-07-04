@@ -122,7 +122,11 @@ def part2_integration() -> bool:
     # heat/temperature fields (the default A/B scenario seeds fire). Erik
     # feel-check-blessed the new look. CPU<->GPU temperature stayed bit-identical
     # throughout — only this CPU reference moved. (was 542931c7...e875b)
-    GOLDEN = "60bd331faccc0b08c11e1ccad3ca75fa6f2aa26232b0b04c1a070b6c65c86ba1"
+    # Re-baselined 2026-07-04 (Q2-lift): pure-integer trig kit wired into the
+    # raycaster ray dirs/cone cos + unit facing + Q16.16-snapped HP deltas —
+    # the trajectory legitimately moved by quantization-scale deltas.
+    # (was 60bd331faccc0b08c11e1ccad3ca75fa6f2aa26232b0b04c1a070b6c65c86ba1)
+    GOLDEN = "453829a67a38d79e0befd01d591cb19bdeb19f49d9234fb4d27a5083d126501a"
 
     def make_hot():
         sim = default_scenario_sim()

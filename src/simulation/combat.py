@@ -39,6 +39,7 @@ from simulation.events import (
 from simulation.orders import (
     ORDER_GRENADE, ORDER_EXPLOSIVE, ORDER_FIRE, ORDER_MOVE_ATTACK,
 )
+from simulation import unit_fixed
 from simulation.physics import apply_explosion, add_explosion_smoke
 
 
@@ -129,6 +130,10 @@ def apply_blast_damage(units, fx, fy, radius, max_damage, events=None):
             falloff = 1.0 - (dist / radius)
             damage = int(max_damage * falloff)
             if damage >= CFG.combat.blast_damage_threshold:
+                # Q2-lift: snap the applied delta to the Q16.16 grid
+                # (belt-and-suspenders; exact pass-through for this int
+                # damage). The event carries the APPLIED value.
+                damage = unit_fixed.quantize_hp_delta(damage)
                 u.current_hp -= damage
                 if events is not None:
                     uid = getattr(u, "id", -1)
@@ -235,6 +240,11 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
         if u.is_zombie:
             dmg *= zombie_mult
 
+        # Q2-lift: snap the delta to the Q16.16 grid before it touches HP —
+        # every applied delta becomes an exact multiple of 1/65536 (change
+        # <= 7.6e-6 HP per application; belt-and-suspenders, the float chain
+        # above is already IEEE-stable). The event carries the APPLIED value.
+        dmg = unit_fixed.quantize_hp_delta(dmg)
         u.current_hp -= dmg
         if events is not None:
             uid = getattr(u, "id", -1)
@@ -489,18 +499,30 @@ def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
     cone = math.radians(CFG.weapons.rifle.cone_half_angle_degrees)
     n_bullets = CFG.weapons.rifle.bullets_per_burst
     dmg = CFG.weapons.rifle.damage_per_bullet
-    base_angle = math.atan2(fy2 - fy1, fx2 - fx1)
+    # Q2-lift: the bullet march decides hits -> current_hp -> kills, i.e. it
+    # FEEDS SYNCED STATE — so its trig must be the deterministic integer kit,
+    # not libm (math.atan2/cos/sin differ at the last ULP across CRT/Python
+    # versions; a ULP can flip a grazing hit cross-machine). math.radians and
+    # rng.uniform stay: pure IEEE arithmetic + the seeded Generator's fixed
+    # bit-stream, already cross-machine exact.
+    base_angle = unit_fixed.atan2_rad(fy2 - fy1, fx2 - fx1)
     h, w = gmap.material.shape
 
     shooter_id = getattr(shooter, "id", -1)
 
     for _ in range(n_bullets):
         angle = base_angle + float(rng.uniform(-cone, cone))
+        # Per-bullet step vector through the kit (angle is constant per
+        # bullet — hoisted out of the march loop, bit-identical to
+        # re-evaluating inside it). Steps are exact n/65536 doubles; the
+        # rx/ry accumulation is plain float + (IEEE-exact, deterministic).
+        step_x = unit_fixed.cos_rad(angle)
+        step_y = unit_fixed.sin_rad(angle)
         rx, ry = float(fx1), float(fy1)
         hit_unit = None
         for _step in range(int(CFG.weapons.rifle.range_tiles)):
-            rx += math.cos(angle)
-            ry += math.sin(angle)
+            rx += step_x
+            ry += step_y
             ix, iy = int(rx), int(ry)
 
             if 0 <= iy < h and 0 <= ix < w:
@@ -523,6 +545,9 @@ def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
             actual_dmg = dmg
             if hit_unit.team == 1:  # zombie
                 actual_dmg = int(dmg * CFG.zombie.bullet_damage_multiplier)
+            # Q2-lift: snap to the Q16.16 grid (exact for these int damages;
+            # belt-and-suspenders). The event carries the APPLIED value.
+            actual_dmg = unit_fixed.quantize_hp_delta(actual_dmg)
             hit_unit.current_hp -= actual_dmg
             if events is not None:
                 hit_id = getattr(hit_unit, "id", -1)

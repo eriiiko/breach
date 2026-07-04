@@ -216,7 +216,11 @@ def part2_integration() -> bool:
     from field_digest import trajectory_digest
 
     # The committed default-scenario golden (CUDA-S2 re-baseline, 2026-06-28).
-    GOLDEN = "60bd331faccc0b08c11e1ccad3ca75fa6f2aa26232b0b04c1a070b6c65c86ba1"
+    # Re-baselined 2026-07-04 (Q2-lift): pure-integer trig kit wired into the
+    # raycaster ray dirs/cone cos + unit facing + Q16.16-snapped HP deltas —
+    # the trajectory legitimately moved by quantization-scale deltas.
+    # (was 60bd331faccc0b08c11e1ccad3ca75fa6f2aa26232b0b04c1a070b6c65c86ba1)
+    GOLDEN = "453829a67a38d79e0befd01d591cb19bdeb19f49d9234fb4d27a5083d126501a"
 
     # The default scenario opens a hull breach (destroy_wall(8,0)) and runs with
     # smoke_sink_strength=2.0 + smoke_vent_hops=16, so sink_hop ACTIVELY pulls

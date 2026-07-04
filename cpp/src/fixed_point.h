@@ -604,4 +604,221 @@ FP_HD inline q16 tan_poly(q16 t) {
     return t + term3 + term5;
 }
 
+// ============================================================================
+// The deterministic trig kit (Q2-LIFT): atan2_q16 / sin_q16 / cos_q16
+// ============================================================================
+//
+// WHY (docs/q2_lift_spec.md): libm transcendentals (std::atan2/sin/cos,
+// math.atan2) differ at the last ULP across CRT/Python versions, and the synced
+// trajectory quantizes their results — a 1-ULP slip becomes a whole-count flip
+// and a cross-machine desync (the X-ARCH Ada finding). These three helpers are
+// PURE INTEGER between the q16 input(s) and the q16 output: int32/int64
+// add/sub/mul/shift/divide/modulo only — no float, no double, no libm, no
+// intrinsics, no __int128 — so the result is bit-identical on every conforming
+// toolchain and on a CUDA device (FP_HD; nothing here trips the MSVC-host-nvcc
+// __int128 caveat at the top of this file). Accuracy is gated by
+// tests/test_fixed_trig.py: a >=1M-sample sweep vs double libm, bound PINNED at
+// 9.0e-6 (measured sup 7.70e-6 rad atan2 / 7.68e-6 sin / 7.68e-6 cos — all at
+// the unavoidable Q16.16 output-quantization floor of 0.5/65536 ~= 7.63e-6).
+//
+// INTERNAL PRECISION — Q.30 (int64). Every intermediate (the range-reduced
+// argument, the polynomial Horner, the quadrant fixups) carries 30 fractional
+// bits, and there is exactly ONE narrowing to Q16.16 at the very end. That is
+// what keeps the total error at the output-quantization floor: each internal
+// truncation costs <= 2^-30 (~9.3e-10), invisible next to the final 2^-17.
+//
+// ROUNDING DISCIPLINE (documented per the house contract, one choice each):
+//   * Lift q16 -> Q.30: `<< 14` on the int64 — EXACT, no rounding.
+//   * Internal Horner narrows: arithmetic `>> 30` (SAR, truncate toward -inf) —
+//     the SAME idiom as mul_q16; error < 2^-30 per step, ~6 steps, negligible.
+//   * The atan2 ratio divide: t30 = (mn<<30 + (mx>>1)) / mx — ONE rounded
+//     integer divide; the +floor(mx/2) bias makes it round-to-nearest up to
+//     the floor'd half (|t30 - mn*2^30/mx| < 1 count of 2^-30). Exact at
+//     mn == mx (t30 == 2^30) and at mn == 0 (t30 == 0).
+//   * Wrap + quadrant reduction (sin/cos): integer `%` / `/` by the checked-in
+//     Q.30 constants — exact integer ops; the constants themselves carry the
+//     only error (<= 0.5*2^-30 rad per wrap, see CONSTANTS).
+//   * The single final Q.30 -> Q16.16 narrow: (v + 2^13) >> 14 on the
+//     MAGNITUDE, i.e. ROUND-HALF-AWAY-FROM-ZERO — quantize()'s convention, so
+//     the narrow is sign-symmetric. <= 0.5*2^-16 — the dominant error term.
+//   * Signs are stripped FIRST and re-applied to the final q16, so the
+//     symmetries are EXACT BY CONSTRUCTION (not approximate):
+//       sin_q16(-a) == -sin_q16(a),  cos_q16(-a) == cos_q16(a),
+//       atan2_q16(-y, x) == -atan2_q16(y, x)  (y != 0).
+//
+// CONSTANTS (the locked "load-time constant" idiom, but CHECKED IN as integer
+// literals so every build of every machine compiles the identical bits; the
+// derivation is round-to-nearest of the double value, shown per constant).
+// At Q.30 the three pi constants happen to be EXACTLY consistent
+// (PI == 2*(PI/2), 2PI == 4*(PI/2)) — the static_asserts below PIN that; the
+// quadrant decomposition (k = a30 / PI_2_Q30 followed by % arithmetic) relies
+// on it (at Q16.16 they would NOT be consistent: round(pi*2^16) = 205887 but
+// 2*round(pi/2*2^16) = 205888 — one reason the kit works at Q.30 internally).
+constexpr int64_t PI_2_Q30   = 1686629713LL;   // round(pi/2 * 2^30) (pi/2*2^30 = 1686629713.065...)
+constexpr int64_t PI_Q30     = 3373259426LL;   // round(pi   * 2^30) (pi*2^30   = 3373259426.131...)
+constexpr int64_t TWO_PI_Q30 = 6746518852LL;   // round(2pi  * 2^30) (2pi*2^30  = 6746518852.261...)
+static_assert(PI_Q30 == 2 * PI_2_Q30,     "Q.30 pi consistency: pi == 2*(pi/2)");
+static_assert(TWO_PI_Q30 == 4 * PI_2_Q30, "Q.30 pi consistency: 2pi == 4*(pi/2)");
+// The final narrow of PI_Q30 must land on the Q16.16 pi (the atan2(0, x<0)
+// result): (3373259426 + 8192) >> 14 == 205887 == round(pi * 2^16).
+static_assert(((PI_Q30 + (1 << 13)) >> 14) == 205887,
+              "Q.30 -> Q16.16 narrow of pi must equal quantize(pi)");
+
+// POLYNOMIALS — Chebyshev-fitted (near-minimax) coefficients, Q.30, checked in
+// as integer literals (generated once offline vs numpy float64; the C++ never
+// recomputes them). Degrees chosen so the poly error sits far below the final
+// narrow: measured against libm over the full pipelines below.
+//   atan:  atan(t) = t * A(t^2),  t in [0,1]   — degree 7 in s (15 in t)
+//   sin :  sin(r)  = r * S(r^2),  r in [0,pi/2] — degree 4 in s (9 in t)
+//   cos :  cos(r)  =     C(r^2),  r in [0,pi/2] — degree 4 in s (8 in t)
+constexpr int64_t ATAN_C0_Q30 = 1073741697LL;  // ~= 1.0        (A(0) = atan'(0))
+constexpr int64_t ATAN_C1_Q30 = -357897613LL;  // ~= -1/3
+constexpr int64_t ATAN_C2_Q30 =  214393620LL;  // ~= +1/5
+constexpr int64_t ATAN_C3_Q30 = -150359183LL;  // ~= -1/7 (minimax-shifted)
+constexpr int64_t ATAN_C4_Q30 =  105966136LL;
+constexpr int64_t ATAN_C5_Q30 =  -63167966LL;
+constexpr int64_t ATAN_C6_Q30 =   25534137LL;
+constexpr int64_t ATAN_C7_Q30 =   -4896039LL;
+constexpr int64_t SIN_C0_Q30  = 1073741819LL;  // ~= 1.0        (sin(r)/r at 0)
+constexpr int64_t SIN_C1_Q30  = -178956877LL;  // ~= -1/6
+constexpr int64_t SIN_C2_Q30  =    8947544LL;  // ~= +1/120
+constexpr int64_t SIN_C3_Q30  =    -212698LL;  // ~= -1/5040
+constexpr int64_t SIN_C4_Q30  =       2797LL;  // ~= +1/362880
+constexpr int64_t COS_C0_Q30  = 1073741774LL;  // ~= 1.0
+constexpr int64_t COS_C1_Q30  = -536869890LL;  // ~= -1/2
+constexpr int64_t COS_C2_Q30  =   44735921LL;  // ~= +1/24
+constexpr int64_t COS_C3_Q30  =   -1487522LL;  // ~= -1/720
+constexpr int64_t COS_C4_Q30  =      24860LL;  // ~= +1/40320
+// OVERFLOW PROOF for the unrolled Horners below: every accumulator is verified
+// (offline scan over the full argument range) to stay < 2^30 in magnitude, and
+// the multiplier (s30 <= (pi/2)^2 * 2^30 < 2^31.31) keeps every int64 product
+// < 2^61.4 — comfortably inside int64. The atan argument s30 <= 2^30 exactly.
+
+// (internal) the single Q.30 -> Q16.16 narrowing boundary: round-half-away-
+// from-zero (quantize()'s convention), sign-symmetric so the exact odd/even
+// symmetries above survive the narrow. |v30| stays < 2^32 here, so +2^13
+// cannot overflow.
+FP_HD inline q16 q30_to_q16_round(int64_t v30) {
+    return (v30 >= 0) ? (q16)((v30 + (1 << 13)) >> 14)
+                      : (q16)(-(((-v30) + (1 << 13)) >> 14));
+}
+
+// (internal) sin magnitude core on the wrapped NON-NEGATIVE Q.30 angle.
+// Reduces a30u (any non-negative int64 Q.30 radians) into [0, 2pi) by integer
+// `%`, decomposes into quadrant k = a30u / (pi/2) in {0,1,2,3} (exact because
+// TWO_PI_Q30 == 4*PI_2_Q30, pinned above) + remainder r in [0, PI_2_Q30), and
+// evaluates the k-parity polynomial:  k even -> sin(r) = r*S(r^2),
+// k odd -> cos(r) = C(r^2);  k >= 2 negates (sin(x+pi) = -sin(x)).
+// cos_p can dip a hair NEGATIVE at r ~ pi/2 (a minimax poly does not
+// interpolate the endpoint zero); the sign-symmetric narrow sends that tiny
+// negative to 0, never to -1 count of wrong sign inflation.
+FP_HD inline q16 sin_core_q30(int64_t a30u) {
+    a30u %= TWO_PI_Q30;                       // exact wrap into [0, 2pi)
+    const int64_t k   = a30u / PI_2_Q30;      // quadrant 0..3 (exact, see assert)
+    const int64_t r30 = a30u - k * PI_2_Q30;  // [0, PI_2_Q30)
+    const int64_t s30 = (r30 * r30) >> 30;    // r^2, Q.30 (SAR truncate)
+    int64_t m30;
+    if (k & 1) {                              // cos(r) = C(s), even Horner
+        int64_t acc = COS_C4_Q30;
+        acc = COS_C3_Q30 + ((acc * s30) >> 30);
+        acc = COS_C2_Q30 + ((acc * s30) >> 30);
+        acc = COS_C1_Q30 + ((acc * s30) >> 30);
+        acc = COS_C0_Q30 + ((acc * s30) >> 30);
+        m30 = acc;
+    } else {                                  // sin(r) = r * S(s), odd Horner
+        int64_t acc = SIN_C4_Q30;
+        acc = SIN_C3_Q30 + ((acc * s30) >> 30);
+        acc = SIN_C2_Q30 + ((acc * s30) >> 30);
+        acc = SIN_C1_Q30 + ((acc * s30) >> 30);
+        acc = SIN_C0_Q30 + ((acc * s30) >> 30);
+        m30 = (r30 * acc) >> 30;
+    }
+    const q16 q = q30_to_q16_round(m30);
+    return (k >= 2) ? (q16)-q : q;
+}
+
+// sin_q16(a) == round-to-nearest-Q16.16 of sin(a / 2^16 radians), PURE INTEGER.
+//
+// INPUT RANGE: any int32 is DEFINED and deterministic (the `%` wrap is total).
+// The 9.0e-6 accuracy pin is stated for |a| <= 2*(2pi), i.e. |a| <= ~823550
+// counts (+-4pi rad) — one wrap each side, covering every caller today (unit
+// facing in (-pi, pi], raycaster ray angles in [0, 2pi+jitter), combat bullet
+// angles in (-pi-cone, pi+cone)). Beyond that the constant's 0.26-count-per-
+// wrap defect accumulates gracefully (~2.4e-10 rad per wrap — still ~1.3e-6 rad
+// at 5000 wraps), it just is not part of the pinned contract.
+// OUTPUT RANGE: [-FP_ONE, +FP_ONE] — verified over the full dense sweep; the
+// poly never overshoots past the narrow's half-count.
+// SYMMETRY: sin_q16(-a) == -sin_q16(a) EXACTLY (sign stripped first,
+// re-applied to the final q16; INT32_MIN is safe — |a| taken on the int64).
+FP_HD inline q16 sin_q16(q16 a) {
+    const int64_t a64 = (int64_t)a;
+    const int64_t au = (a64 < 0) ? -a64 : a64;
+    const q16 q = sin_core_q30(au << 14);     // exact lift to Q.30
+    return (a64 < 0) ? (q16)-q : q;
+}
+
+// cos_q16(a) == round-to-nearest-Q16.16 of cos(a / 2^16 radians), PURE INTEGER.
+// cos(a) = sin(|a| + pi/2) — ONE shared core (the documented choice; no second
+// phase-shifted coefficient set), the +PI_2_Q30 added EXACTLY at Q.30. Even
+// symmetry cos_q16(-a) == cos_q16(a) is exact by construction (|a| first).
+// Same range/accuracy contract as sin_q16. cos_q16(0) == FP_ONE exactly;
+// cos_q16(quantize(pi/2)) == 0 exactly (the quadrant remainder lands on the
+// 4783-count Q.30 residue of the Q16.16 pi/2, whose cos rounds to 0).
+FP_HD inline q16 cos_q16(q16 a) {
+    const int64_t a64 = (int64_t)a;
+    const int64_t au = (a64 < 0) ? -a64 : a64;
+    return sin_core_q30((au << 14) + PI_2_Q30);
+}
+
+// atan2_q16(y, x) == round-to-nearest-Q16.16 of atan2(y/2^16, x/2^16) radians,
+// PURE INTEGER. Inputs are the Q16.16 numerator/denominator (any int32 pair —
+// only the RATIO and the signs matter, so the caller may quantize raw floats
+// of any common scale); INT32_MIN is safe (|.| on the int64).
+//
+// ALGORITHM (all Q.30 until the single final narrow):
+//   1. octant fold: t = min(|y|,|x|) / max(|y|,|x|) in [0,1] via the ONE
+//      rounded integer divide (rounding documented above);
+//   2. a = atan(t) = t * A(t^2) (unrolled Horner, coefficients above);
+//   3. if |y| > |x|:  a = pi/2 - a          (atan(1/t) identity);
+//   4. if x < 0:      a = pi - a            (quadrant fixup; a stays >= 0);
+//   5. narrow to Q16.16 (round-half-away-from-zero), then apply sign(y).
+//
+// EDGE CASES (pinned, tested):
+//   atan2_q16(0, 0)      == 0        (DEFINED as 0, like the spec asks)
+//   atan2_q16(0, x>0)    == 0            exactly
+//   atan2_q16(0, x<0)    == +205887      (= quantize(pi); the (-pi, pi] closed end)
+//   atan2_q16(y>0, 0)    == +102944      (= quantize(pi/2))
+//   atan2_q16(y<0, 0)    == -102944
+//   atan2_q16(y, y>0)    ~= quantize(pi/4) (poly-accurate, e.g. (3,4) lands on
+//                            round(atan2(3,4)*2^16) == 42172 exactly)
+// RANGE: [-205887, +205887] counts. -205887 occurs only for y < 0 within half
+// an output count of the -pi cut (double atan2 likewise returns -pi there);
+// y == 0, x < 0 gives +205887, matching math.atan2(0.0, -1.0) == +pi.
+FP_HD inline q16 atan2_q16(q16 y, q16 x) {
+    if (y == 0 && x == 0) return 0;           // pinned: the undefined point -> 0
+    const int64_t y64 = (int64_t)y, x64 = (int64_t)x;
+    const int64_t ay = (y64 < 0) ? -y64 : y64;
+    const int64_t ax = (x64 < 0) ? -x64 : x64;
+    const bool swap = ay > ax;                // |y|/|x| > 1 -> fold via pi/2 - a
+    const int64_t mn = swap ? ax : ay;
+    const int64_t mx = swap ? ay : ax;        // mx >= 1 (both-zero handled above)
+    // The ONE rounded divide: t30 = round-ish(mn * 2^30 / mx), in [0, 2^30].
+    // mn <= mx < 2^32 so mn<<30 < 2^62 — no int64 overflow.
+    const int64_t t30 = ((mn << 30) + (mx >> 1)) / mx;
+    const int64_t s30 = (t30 * t30) >> 30;    // t^2, Q.30 (<= 2^30)
+    int64_t acc = ATAN_C7_Q30;                // A(s), unrolled Horner
+    acc = ATAN_C6_Q30 + ((acc * s30) >> 30);
+    acc = ATAN_C5_Q30 + ((acc * s30) >> 30);
+    acc = ATAN_C4_Q30 + ((acc * s30) >> 30);
+    acc = ATAN_C3_Q30 + ((acc * s30) >> 30);
+    acc = ATAN_C2_Q30 + ((acc * s30) >> 30);
+    acc = ATAN_C1_Q30 + ((acc * s30) >> 30);
+    acc = ATAN_C0_Q30 + ((acc * s30) >> 30);
+    int64_t a30 = (t30 * acc) >> 30;          // atan(t) in [0, ~pi/4], Q.30
+    if (swap)   a30 = PI_2_Q30 - a30;         // octant unfold
+    if (x64 < 0) a30 = PI_Q30 - a30;          // quadrant fixup (a30 stays >= 0)
+    const q16 r = q30_to_q16_round(a30);
+    return (y64 < 0) ? (q16)-r : r;
+}
+
 } // namespace fixedpoint

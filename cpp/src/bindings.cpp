@@ -527,6 +527,30 @@ PYBIND11_MODULE(breach_physics, m) {
           "Bedrock: integer smoke-CFL substep count "
           "n=ceil(4*sim_time*d_smoke_max*(1+wds*max_wind_sq)) from quantized inputs.");
 
+    // Q2-LIFT: the deterministic trig kit (fixed_point.h). Pure integer q16 ->
+    // q16 — the cross-machine-safe replacement for the libm transcendentals in
+    // the SYNCED unit state (facing atan2, combat bullet cos/sin) and the
+    // raycaster ray dirs. Python quantizes its float radians at the boundary,
+    // calls these, and dequantizes back (exact n/65536 doubles). Exposed in
+    // BOTH the CPU and CUDA builds (plain defs, no #ifdef) so every backend's
+    // Python layer computes the identical bits. Accuracy is gated by
+    // tests/test_fixed_trig.py (pinned <= 9.0e-6 vs double libm).
+    m.def("atan2_q16",
+          [](int32_t y, int32_t x) { return fixedpoint::atan2_q16(y, x); },
+          py::arg("y"), py::arg("x"),
+          "Q2-LIFT: pure-integer atan2 on Q16.16 (radians out, Q16.16; range "
+          "[-205887, +205887] == [-quantize(pi), +quantize(pi)]).");
+    m.def("sin_q16",
+          [](int32_t a) { return fixedpoint::sin_q16(a); },
+          py::arg("a"),
+          "Q2-LIFT: pure-integer sin on Q16.16 radians (output Q16.16 in "
+          "[-65536, 65536]; accuracy pinned for |a| <= 4*pi, any int32 defined).");
+    m.def("cos_q16",
+          [](int32_t a) { return fixedpoint::cos_q16(a); },
+          py::arg("a"),
+          "Q2-LIFT: pure-integer cos on Q16.16 radians (output Q16.16 in "
+          "[-65536, 65536]; accuracy pinned for |a| <= 4*pi, any int32 defined).");
+
     // S2a: the explicit WAVE state (wave_p / wave_v / wave_source) is now int32
     // Q16.16 (same 2^16 scale as water/heat). Python (gamemap fields, field
     // edits, the recorder boundary, tests) reads this flag to allocate the wave

@@ -41,6 +41,7 @@ import breach_physics as bp  # noqa: E402
 from config import CFG  # noqa: E402
 from level_loader import load as load_level  # noqa: E402
 from simulation import Simulation  # noqa: E402
+from simulation import unit_fixed  # noqa: E402
 from simulation.combat import apply_environmental_damage, HEAT_SCALE  # noqa: E402
 from simulation.events import UnitHitEvent, UnitKilledEvent  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
@@ -56,9 +57,9 @@ class _HeatStub:
         self.heat = np.zeros((h, w), dtype=np.int32)
 
 
-def _expected_marine_dmg(phi, tps):
+def _expected_marine_dmg_raw(phi, tps):
     """Reproduce the §4.2 model for a default-human marine (temperature_max=60,
-    environmental_damage_rate=1.0), returning the per-tick HP loss."""
+    environmental_damage_rate=1.0): the RAW (pre-snap) per-tick HP loss."""
     cmb = CFG.combat
     phi_abs = phi * float(cmb.unit_absorption) * (1.0 - float(cmb.unit_reflectivity))
     t_felt = float(cmb.heat_ambient_ref) + float(cmb.heat_flux_to_temp) * phi_abs
@@ -66,6 +67,13 @@ def _expected_marine_dmg(phi, tps):
     if over <= 0.0:
         return 0.0
     return 1.0 * (1.0 + float(cmb.heat_overtemp_scale) * over) * (1.0 / tps)
+
+
+def _expected_marine_dmg(phi, tps):
+    """The APPLIED per-tick HP loss: the §4.2 model snapped to the Q16.16 grid
+    (Q2-lift — combat.py quantizes every damage delta before it touches HP;
+    change vs the raw model <= 1/131072 ~= 7.6e-6, the documented contract)."""
+    return unit_fixed.quantize_hp_delta(_expected_marine_dmg_raw(phi, tps))
 
 
 def _place(unit, x, y):
@@ -141,8 +149,19 @@ def test_zombie_takes_fire_multiplier_more():
     marine_dmg = base_hp - m.current_hp
     zombie_dmg = base_hp - z.current_hp
     assert marine_dmg > 0.0
+    # Exact applied deltas (Q2-lift): each snapped to the Q16.16 grid AFTER
+    # the zombie multiplier, mirroring combat.py's operation order — sharp.
+    raw = _expected_marine_dmg_raw(phi, 24)
+    mult = float(CFG.zombie.fire_damage_multiplier)
+    assert abs(marine_dmg - unit_fixed.quantize_hp_delta(raw)) < 1e-9
+    assert abs(zombie_dmg - unit_fixed.quantize_hp_delta(raw * mult)) < 1e-9
     ratio = zombie_dmg / marine_dmg
-    assert abs(ratio - float(CFG.zombie.fire_damage_multiplier)) < 1e-6
+    # The two INDEPENDENT Q16.16 snaps (Q2-lift) perturb the exact multiplier
+    # ratio by up to (|dz| + mult*|dm|)/marine ~= (1+mult)*(0.5/65536)/marine
+    # — derive the tolerance from the actual magnitudes (x1.5 margin) instead
+    # of a magic number, so a config change keeps the bound honest.
+    snap = 0.5 / 65536.0
+    assert abs(ratio - mult) < 1.5 * (1.0 + mult) * snap / marine_dmg
     # Report-quality numbers (visible with `pytest -s`).
     print(f"\n[marine vs zombie @ phi=50, 24tps] marine={marine_dmg:.6f} "
           f"zombie={zombie_dmg:.6f} ratio={ratio:.3f}")
@@ -167,9 +186,10 @@ def test_damage_scales_with_overtemperature():
     # 10x the flux -> well MORE than 10x the damage, because the (1 + k_over*over)
     # ramp grows with over-temperature on top of the linear flux term.
     assert strong_dmg > 10.0 * weak_dmg
-    # And matches the closed-form model exactly.
-    assert abs(weak_dmg - _expected_marine_dmg(20.0, 24)) < 1e-6
-    assert abs(strong_dmg - _expected_marine_dmg(200.0, 24)) < 1e-6
+    # And matches the closed-form model exactly (the Q16.16-snapped applied
+    # delta — Q2-lift; _expected_marine_dmg snaps like combat.py does).
+    assert abs(weak_dmg - _expected_marine_dmg(20.0, 24)) < 1e-9
+    assert abs(strong_dmg - _expected_marine_dmg(200.0, 24)) < 1e-9
 
 
 def test_heat_death_sets_source_and_no_conversion():
@@ -212,11 +232,18 @@ def test_tick_rate_independent_dps():
     apply_environmental_damage([m24], stub24, ticks_per_second=24)
     dmg24 = base_hp - m24.current_hp
 
+    # Each applied delta matches its snapped model exactly (sharp).
+    assert abs(dmg12 - _expected_marine_dmg(phi, 12)) < 1e-9
+    assert abs(dmg24 - _expected_marine_dmg(phi, 24)) < 1e-9
     dps12 = dmg12 * 12
     dps24 = dmg24 * 24
-    assert abs(dps12 - dps24) < 1e-6
-    # 24-tps per-tick hit is half the 12-tps per-tick hit.
-    assert abs(dmg12 - 2.0 * dmg24) < 1e-9
+    # Q2-lift: the RAW model is exactly tick-rate independent (x/12 == 2*(x/24)
+    # in IEEE), but the two deltas snap to the Q16.16 grid INDEPENDENTLY, so
+    # the per-second rates may differ by up to (12+24)*0.5/65536 ~= 2.7e-4 —
+    # the documented quantization tolerance, imperceptible at DPS ~450.
+    assert abs(dps12 - dps24) < 3e-4
+    # 24-tps per-tick hit is half the 12-tps per-tick hit, to within one snap.
+    assert abs(dmg12 - 2.0 * dmg24) <= (1.0 / 65536) + 1e-9
     print(f"\n[tick-rate independence @ phi=50] "
           f"dmg/tick 12tps={dmg12:.6f} 24tps={dmg24:.6f} | "
           f"DPS 12tps={dps12:.4f} 24tps={dps24:.4f}")

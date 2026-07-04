@@ -23,6 +23,7 @@ from __future__ import annotations
 import math
 
 from config import CFG
+from simulation import unit_fixed
 from simulation.movement import FootprintSamples, default_speed
 
 try:
@@ -115,7 +116,11 @@ def update_zombies_tick(gmap, units, tick):
             cooldown = CFG.zombie.attack_cooldown_ticks
             if tick - z.last_melee_tick >= cooldown:
                 z.last_melee_tick = tick
-                nearest.current_hp -= CFG.zombie.melee_damage
+                # Q2-lift: snap the applied delta to the Q16.16 grid (exact
+                # pass-through for an integer melee_damage config value;
+                # belt-and-suspenders like the combat.py damage sites).
+                nearest.current_hp -= unit_fixed.quantize_hp_delta(
+                    CFG.zombie.melee_damage)
                 if nearest.current_hp <= 0:
                     nearest.alive = False
                     nearest.killed_by_zombie = True

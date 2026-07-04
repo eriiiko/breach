@@ -48,6 +48,7 @@ from enum import Enum
 import numpy as np
 
 from config import CFG
+from simulation import unit_fixed
 from simulation.generation import sample_unit_attributes
 from simulation.inventory import Inventory
 from simulation.orders import (
@@ -275,7 +276,18 @@ class Unit:
         dy = target_y - self.y
         if dx == 0 and dy == 0:
             return
-        self.facing = math.atan2(-dy, dx)
+        # Q2-lift: facing is SYNCED state, and math.atan2 is libm — CRT/Python
+        # versions differ at the last ULP, which the lockstep digest amplifies
+        # into a cross-machine hash flip (the X-ARCH Ada finding). Route
+        # through the pure-integer kit: quantize the deltas at the boundary,
+        # integer atan2, dequantize back — an exact n/65536 double, identical
+        # everywhere. Shift vs libm <= ~1.5e-5 rad (imperceptible;
+        # pre-approved, no feel-check). Downstream consumers (facing_compass,
+        # renderer, flashlight cone) are unchanged — they still see a float
+        # radian. Deltas that BOTH quantize to zero (|d| < 1/131072 tiles)
+        # yield facing 0.0 — deterministic, and unreachable from real
+        # movement steps (>= ~1e-2 tiles).
+        self.facing = unit_fixed.atan2_rad(-dy, dx)
 
     def facing_compass(self) -> str:
         """Convert self.facing (radians) to 8-compass string.

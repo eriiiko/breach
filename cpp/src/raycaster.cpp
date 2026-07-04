@@ -1,10 +1,35 @@
 #include "raycaster.h"
 #include "cuda_raycaster.h"   // CUDA-S2 gate: RayHD POD (plain header, no CUDA symbols)
+#include "fixed_point.h"      // Q2-LIFT: the deterministic trig kit (sin/cos_q16)
 #include <algorithm>
 #include <cstring>
 #include <random>
 
 static constexpr float PI = 3.14159265358979f;
+
+// ---- Q2-LIFT: deterministic ray trig --------------------------------------
+// std::cos/std::sin are CRT transcendentals: /fp:strict pins the float
+// ARITHMETIC in this TU but NOT the libm library code, which may change at
+// the last ULP across compiler/CRT versions — the last latent cross-machine
+// hazard on the heat path (ray dirs decide which tiles the DDA visits, and
+// heat is a SYNCED int32 field). Route every angle through the pure-integer
+// kit instead: quantize the float angle to Q16.16 radians (round-to-nearest,
+// the locked boundary idiom — double math, deterministic under /fp:strict),
+// integer cos/sin, dequantize to float. The result is an exact n/65536
+// float, bit-identical on every machine; direction shift vs libm <= ~1.5e-5
+// (the kit's pinned 9e-6 bound + the input quantization) — pre-approved, no
+// feel-check (docs/q2_lift_spec.md Patch 3). Angles here are within one wrap
+// (|a| < 2pi + jitter), inside the kit's pinned |a| <= 4pi accuracy range.
+// dx can now be EXACTLY 0.0f at the quantized axes — the existing
+// `|dx| > 1e-8 ? 1/dx : 1e8` DDA guards already handle that.
+// build_ray_list (the GPU's dir source) and the CPU march share these same
+// helpers, so both backends walk identical DDA tiles (the S2/S2b contract).
+static inline float det_cos(float angle) {
+    return fixedpoint::dequantize_f(fixedpoint::cos_q16(fixedpoint::quantize(angle)));
+}
+static inline float det_sin(float angle) {
+    return fixedpoint::dequantize_f(fixedpoint::sin_q16(fixedpoint::quantize(angle)));
+}
 
 void Raycaster::march_ray(
     float sx, float sy, float angle,
@@ -14,8 +39,8 @@ void Raycaster::march_ray(
     const bool* is_wall,
     int h, int w
 ) const {
-    float dx = std::cos(angle);
-    float dy = std::sin(angle);
+    float dx = det_cos(angle);   // Q2-LIFT: integer-kit trig (see det_cos above)
+    float dy = det_sin(angle);
 
     int step_x = (dx >= 0) ? 1 : -1;
     int step_y = (dy >= 0) ? 1 : -1;
@@ -96,7 +121,8 @@ void Raycaster::cast_source(
 
             switch (src.falloff) {
                 case Falloff::COSINE:
-                    angular_atten = std::cos(std::min(norm, 1.0f) * PI * 0.5f);
+                    // Q2-LIFT: integer-kit cos (arg in [0, pi/2] — in range).
+                    angular_atten = det_cos(std::min(norm, 1.0f) * PI * 0.5f);
                     break;
                 case Falloff::SHARP:
                     angular_atten = (norm < 0.9f) ? 1.0f : 0.0f;
@@ -137,8 +163,8 @@ void Raycaster::march_ray_directional(
     // Stride of one gas slice in the (n_gases, h, w) contiguous array: each
     // gas[g] starts at gas_field + g*plane and is itself a (h, w) plane.
     const int plane = h * w;
-    float dx = std::cos(angle);
-    float dy = std::sin(angle);
+    float dx = det_cos(angle);   // Q2-LIFT: integer-kit trig (see det_cos above)
+    float dy = det_sin(angle);
 
     int step_x = (dx >= 0) ? 1 : -1;
     int step_y = (dy >= 0) ? 1 : -1;
@@ -389,7 +415,8 @@ void Raycaster::cast_source_directional(
 
             switch (src.falloff) {
                 case Falloff::COSINE:
-                    angular_atten = std::cos(std::min(norm, 1.0f) * PI * 0.5f);
+                    // Q2-LIFT: integer-kit cos (arg in [0, pi/2] — in range).
+                    angular_atten = det_cos(std::min(norm, 1.0f) * PI * 0.5f);
                     break;
                 case Falloff::SHARP:
                     angular_atten = (norm < 0.9f) ? 1.0f : 0.0f;
@@ -502,9 +529,10 @@ void Raycaster::update_from_fire(
 //
 // dx=cos(angle)/dy=sin(angle) are computed HERE in this /fp:strict TU, the same
 // place cast_source_directional computes `angle`; march_ray_directional recomputes
-// dx/dy from the identical `angle` with the same std::cos/std::sin — so the GPU
-// (which reads these precomputed dx/dy) walks bit-identical DDA tiles -> heat
-// matches CPU byte-for-byte.
+// dx/dy from the identical `angle` with the same det_cos/det_sin (Q2-LIFT: the
+// pure-integer kit — identical bits in ANY TU on ANY machine, stronger than the
+// old shared-libm argument) — so the GPU (which reads these precomputed dx/dy)
+// walks bit-identical DDA tiles -> heat matches CPU byte-for-byte.
 std::vector<breach_cuda::RayHD> Raycaster::build_ray_list(const LightSource& src) const {
     std::vector<breach_cuda::RayHD> rays;
 
@@ -535,7 +563,8 @@ std::vector<breach_cuda::RayHD> Raycaster::build_ray_list(const LightSource& src
 
             switch (src.falloff) {
                 case Falloff::COSINE:
-                    angular_atten = std::cos(std::min(norm, 1.0f) * PI * 0.5f);
+                    // Q2-LIFT: integer-kit cos (arg in [0, pi/2] — in range).
+                    angular_atten = det_cos(std::min(norm, 1.0f) * PI * 0.5f);
                     break;
                 case Falloff::SHARP:
                     angular_atten = (norm < 0.9f) ? 1.0f : 0.0f;
@@ -552,8 +581,8 @@ std::vector<breach_cuda::RayHD> Raycaster::build_ray_list(const LightSource& src
             breach_cuda::RayHD ray;
             ray.sx = src.x;
             ray.sy = src.y;
-            ray.dx = std::cos(angle);
-            ray.dy = std::sin(angle);
+            ray.dx = det_cos(angle);   // Q2-LIFT: same kit as the CPU march ->
+            ray.dy = det_sin(angle);   // GPU and CPU consume IDENTICAL dirs
             ray.e_r = ray_energy * src.color[0];
             ray.e_g = ray_energy * src.color[1];
             ray.e_b = ray_energy * src.color[2];
