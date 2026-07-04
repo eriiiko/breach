@@ -38,18 +38,31 @@ distilling needed — it's a curated `MEMORY.md` index + one-fact files.
 ```
 (The CUDA gates `tests/test_cuda_s*.py` need the CUDA build; they skip cleanly without it.)
 
-## 5. Determinism state — FYI (resolved 2026-06-29)
-The **physics engine is fully cross-machine deterministic** — every field is integer
-Q16.16, proven bit-identical cross-compiler (MSVC 14.50≡14.44) AND cross-arch (your Ada
-run: GPU≡CPU). The ONLY cross-machine wobble is the **Q2-fenced combat HP/facing float**
-in `src/simulation/combat.py` (Python 3.11↔3.12 round it a hair differently → the
-unit-state digest flips). That's the determinism boundary we drew on purpose, and it's
-the next thing we fix (the **Q2-lift**). Optional 1-command confirm any time:
-```
-<lenovo-py> tests/_xarch_perfield_digest.py
-```
-→ it auto-diffs vs the Ampere baseline and prints the first diverging (field, tick) —
-should be the **unit-state** hash, every physics field matching. Send me that line.
+## 5. THE cuda-breached CONFIRM RUN (Q2-lift landed 2026-07-04 — do this)
+The **Q2-lift is merged** (`4b2d0d7`): a pure-integer trig kit replaced every libm
+transcendental in the synced path (unit facing, combat bullet trig, HP-delta snapping,
+the raycaster's cos/sin), and the golden re-baselined `60bd331f…` → `453829a6…`.
+py3.11-vs-3.12 should now be IRRELEVANT. This run is the cross-machine proof:
+
+1. `git pull`  (HEAD must be at/after `4b2d0d7`).
+2. **REBUILD the CPU build — do not skip.** The lift changed C++ (`fixed_point.h`,
+   `raycaster.cpp`, `bindings.cpp`); a stale `.pyd` reproduces the OLD golden = a
+   false RED. Rebuild the same way as during the attestation:
+   `cmake --build cpp/build --config Release`
+   (if the cache fights you, reconfigure the same recipe as before: VS BuildTools
+   MSVC 14.44 + the miniconda `data` py3.12 interpreter).
+3. Run: `<lenovo-py> tests/_xarch_perfield_digest.py`
+   → it auto-diffs vs the committed Ampere baseline (`tests/_xarch_perfield_ampere.txt`).
+   - **ALL GREEN** (aggregate digest == `453829a67a38d79e0befd01d591cb19bdeb19f49d9234fb4d27a5083d126501a`,
+     no diverging (field, tick)) ⇒ **cross-machine determinism PROVEN** — tell Claude,
+     who tags `cuda-breached` and pushes it. Done, for good.
+   - Any diverger ⇒ the tool now names the exact unit sub-field (hp / facing / pos /
+     life+events) — send that line; it localizes the culprit precisely.
+4. *(Optional but gold-standard, while you're there)*: rebuild CUDA
+   (`cmd /c "cpp\build_cuda_lenovo.bat"`) and run the full suite
+   (`<lenovo-py> -m pytest tests/ --ignore=tests/test_main_smoke.py
+   --ignore=tests/test_renderer_smoke.py`) — 392 expected green, incl. all CUDA gates
+   vs the new golden ⇒ the COMPLETE Beat-B re-attestation on Ada in one go.
 
 ## 6. Python-version note
 The Lenovo is py3.12; the desktop golden is py3.11. **After the Q2-lift this won't
@@ -57,8 +70,9 @@ matter** (the last cross-interpreter float is gone). You do NOT need to match ve
 for the engine — the physics is version-independent. (Bumping the desktop to 3.12 is an
 optional env-parity nicety, not a determinism requirement.)
 
-## 7. Next work (the plan)
-- **Q2-lift** (integerize combat HP/facing) → cross-machine fully green → tag
-  `cuda-breached`. We do it via the same delegate→gate→review→merge flow as the solver
-  ports; I'll bring a plan + the decisions before building.
-- Then your roadmap (ML; and the explosion/black-body as a parallel beauty track).
+## 7. Next work (the plan — see docs/roadmap_2026-07.md)
+- ~~Q2-lift~~ DONE (`4b2d0d7`) — §5 above is the remaining confirm → tag `cuda-breached`.
+- Next arc: the **game-design discussion** (units, weapons, damage/health, combat,
+  game rules, unit-position representation) — Claude leads, decisions together.
+- Next week (fresh tokens): the EOS literature research + rung-A/B prototype
+  (roadmap Phase 1).
