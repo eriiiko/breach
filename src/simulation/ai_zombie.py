@@ -23,7 +23,7 @@ from __future__ import annotations
 import math
 
 from config import CFG
-from simulation import unit_fixed
+from simulation.damage import KINETIC, DamagePacket, apply_packet
 from simulation.movement import FootprintSamples, default_speed
 
 try:
@@ -116,14 +116,19 @@ def update_zombies_tick(gmap, units, tick):
             cooldown = CFG.zombie.attack_cooldown_ticks
             if tick - z.last_melee_tick >= cooldown:
                 z.last_melee_tick = tick
-                # Q2-lift: snap the applied delta to the Q16.16 grid (exact
-                # pass-through for an integer melee_damage config value;
-                # belt-and-suspenders like the combat.py damage sites).
-                nearest.current_hp -= unit_fixed.quantize_hp_delta(
-                    CFG.zombie.melee_damage)
-                if nearest.current_hp <= 0:
-                    nearest.alive = False
-                    nearest.killed_by_zombie = True
+                # KINETIC packet through the pipeline (mechanics/06 §2):
+                # neutral mitigation passes the int melee_damage through
+                # exactly, then the same Q2-lift quantize -> hp chain as
+                # before. This site has NO events list (update_zombies_tick
+                # never had one) so nothing is emitted — and the kill keeps
+                # melee's unique conversion semantics (killed_by_zombie=True;
+                # the ONLY converting death, mechanics/06 §6).
+                apply_packet(nearest,
+                             DamagePacket(amount=CFG.zombie.melee_damage,
+                                          dtype=KINETIC,
+                                          source_id=getattr(z, "id", -1)),
+                             events=None, source="melee",
+                             mark_killed_by_zombie=True)
             continue
 
         # Movement: one tile every (terrain-scaled) speed_ticks_per_tile ticks.

@@ -376,3 +376,118 @@ def test_heat_site_end_to_end_bit_identity_marine_and_zombie():
         assert [e.source for e in events] == ["heat", "heat"]
         assert _bits(events[0].damage) == _bits(old_marine)
         assert _bits(events[1].damage) == _bits(old_zombie)
+
+
+# ---------------------------------------------------------------------------
+# Site routing (P2c): the other three sites reproduce their pre-P2 chains
+# ---------------------------------------------------------------------------
+def test_blast_site_end_to_end_bit_identity_and_threshold():
+    """apply_blast_damage through the pipeline == the pre-P2 inline chain:
+    same int falloff damage, same chip-damage threshold gate (below it: no
+    hp change, NO event), same applied values and event stream."""
+    import math
+    from simulation.exchange import apply_blast_damage
+
+    radius, max_damage = 6, 60
+    center = Unit("C", x=10, y=10, team=0)     # at the blast point
+    edge = Unit("E", x=13, y=15, team=0)       # dist sqrt(34)~5.83 -> dmg 1 < threshold 5
+    center.id, edge.id = 1, 2
+    center.current_hp = edge.current_hp = 1e9
+    events = []
+    fx, fy = center.center_tile_x(), center.center_tile_y()
+    apply_blast_damage([center, edge], fx, fy, radius, max_damage,
+                       events=events)
+
+    # Pre-P2 chain, replicated: int(max_damage * (1 - dist/radius)),
+    # threshold-gated, quantized (exact on ints).
+    def old_damage(u):
+        dist = math.sqrt((u.center_tile_x() - fx) ** 2 +
+                         (u.center_tile_y() - fy) ** 2)
+        if dist > radius:
+            return None
+        dmg = int(max_damage * (1.0 - dist / radius))
+        return dmg if dmg >= CFG.combat.blast_damage_threshold else None
+
+    exp_center = old_damage(center)
+    assert exp_center == max_damage        # dist 0 -> full damage
+    assert old_damage(edge) is None        # gated out by the threshold
+    assert _bits(1e9 - center.current_hp) == \
+        _bits(unit_fixed.quantize_hp_delta(exp_center))
+    assert edge.current_hp == 1e9          # untouched, exactly
+    assert [(type(e), e.unit_id, e.source) for e in events] == \
+        [(UnitHitEvent, 1, "explosion")]
+    assert _bits(events[0].damage) == _bits(float(exp_center))
+
+
+def test_bullet_site_end_to_end_bit_identity():
+    """fire_burst through the pipeline == the pre-P2 inline chain: marine
+    bullets on a zombie apply quantize(int(dmg * bullet_damage_multiplier))
+    each, with the same 'bullet' hit events carrying the applied value."""
+    import numpy as np
+    from simulation.combat import fire_burst
+
+    class _GmapStub:
+        def __init__(self, h, w):
+            self.material = np.zeros((h, w), dtype=np.int32)
+            self.solid = np.zeros((h, w), dtype=bool)
+
+    gmap = _GmapStub(40, 40)
+    shooter = Unit("M1", x=5, y=10, team=0)
+    target = Unit("Z1", x=12, y=9, team=1)     # dead ahead, inside range
+    shooter.id, target.id = 1, 2
+    target.current_hp = 1e9
+    shots, events = [], []
+    fire_burst(gmap, [shooter, target], shooter,
+               shooter.center_tile_x(), shooter.center_tile_y(),
+               target.center_tile_x(), target.center_tile_y(),
+               tick=0, shots=shots, real_time=0.0,
+               rng=np.random.default_rng(7), events=events)
+
+    hits = [e for e in events if isinstance(e, UnitHitEvent)]
+    assert hits, "test setup must produce at least one hit"
+    # Pre-P2 chain: per-bullet applied delta on a zombie target.
+    old_per_bullet = unit_fixed.quantize_hp_delta(
+        int(CFG.weapons.rifle.damage_per_bullet
+            * CFG.zombie.bullet_damage_multiplier))
+    for e in hits:
+        assert (e.unit_id, e.source) == (2, "bullet")
+        assert _bits(e.damage) == _bits(old_per_bullet)
+    # hp moved by exactly the same repeated-subtract sequence as before.
+    expected_hp = 1e9
+    for _ in hits:
+        expected_hp -= old_per_bullet
+    assert _bits(target.current_hp) == _bits(expected_hp)
+
+
+def test_melee_site_end_to_end_bit_identity_and_conversion():
+    """update_zombies_tick's melee through the pipeline == the pre-P2 chain:
+    quantize(melee_damage) off the marine's hp, no events anywhere, and a
+    melee kill (and ONLY a melee kill) sets killed_by_zombie."""
+    import numpy as np
+    from simulation.ai_zombie import update_zombies_tick
+
+    class _GmapStub:
+        def __init__(self, h, w):
+            self.material = np.zeros((h, w), dtype=np.int32)
+
+        def has_los(self, y0, x0, y1, x1):
+            return True
+
+    gmap = _GmapStub(40, 40)
+
+    # Non-lethal hit: exact delta, flag untouched.
+    marine = Unit("M1", x=10, y=10, team=0)
+    zombie = Unit("Z1", x=13, y=10, team=1)    # adjacent (footprint + 1)
+    marine.current_hp = 1e9
+    update_zombies_tick(gmap, [marine, zombie], tick=100)
+    assert _bits(1e9 - marine.current_hp) == \
+        _bits(unit_fixed.quantize_hp_delta(CFG.zombie.melee_damage))
+    assert marine.alive and marine.killed_by_zombie is False
+
+    # Lethal hit: alive False + killed_by_zombie True (the converting death).
+    marine2 = Unit("M2", x=10, y=10, team=0)
+    zombie2 = Unit("Z2", x=13, y=10, team=1)
+    marine2.current_hp = 1.0
+    update_zombies_tick(gmap, [marine2, zombie2], tick=100)
+    assert not marine2.alive
+    assert marine2.killed_by_zombie is True

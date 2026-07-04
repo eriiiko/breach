@@ -40,9 +40,8 @@ import math
 import numpy as np
 
 from config import CFG
-from simulation.events import (
-    ShotFiredEvent, ExplosionEvent, UnitHitEvent, UnitKilledEvent,
-)
+from simulation.damage import KINETIC, DamagePacket, apply_packet
+from simulation.events import ShotFiredEvent, ExplosionEvent
 from simulation.orders import (
     ORDER_GRENADE, ORDER_EXPLOSIVE, ORDER_FIRE, ORDER_MOVE_ATTACK,
 )
@@ -407,21 +406,20 @@ def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
         if hit_unit:
             actual_dmg = dmg
             if hit_unit.team == 1:  # zombie
+                # SITE-SIDE pre-mitigation amount rule, deliberately NOT a
+                # resistance: the int() truncation (and its position before
+                # the packet) is part of the shipped numbers; the zombie's
+                # KINETIC resist stays neutral (mechanics/06 — only the heat
+                # ×4 dissolved into the mitigation tables).
                 actual_dmg = int(dmg * CFG.zombie.bullet_damage_multiplier)
-            # Q2-lift: snap to the Q16.16 grid (exact for these int damages;
-            # belt-and-suspenders). The event carries the APPLIED value.
-            actual_dmg = unit_fixed.quantize_hp_delta(actual_dmg)
-            hit_unit.current_hp -= actual_dmg
-            if events is not None:
-                hit_id = getattr(hit_unit, "id", -1)
-                events.append(UnitHitEvent(unit_id=hit_id, damage=actual_dmg,
-                                            source="bullet"))
-            if hit_unit.current_hp <= 0:
-                hit_unit.alive = False
-                if events is not None:
-                    hit_id = getattr(hit_unit, "id", -1)
-                    events.append(UnitKilledEvent(unit_id=hit_id,
-                                                   killed_by="bullet"))
+            # KINETIC packet through the pipeline (mechanics/06 §2): neutral
+            # mitigation passes the int amount through exactly, then the same
+            # Q2-lift quantize -> hp -> hit/kill events as before (source
+            # "bullet"; bullet deaths never convert).
+            apply_packet(hit_unit,
+                         DamagePacket(amount=actual_dmg, dtype=KINETIC,
+                                      source_id=shooter_id),
+                         events, source="bullet")
 
         shots.append(Shot(fx1, fy1, rx, ry, real_time))
         if events is not None:

@@ -33,6 +33,14 @@ named EXCHANGE-READ slot that iterates this table in table order (mechanics/05
 §4, pipeline phase 2) is a later patch; nothing here reorders or merges the
 shipped call sites.
 
+P2 note (also behaviour-preserving, 2026-07-05): both responses now hand
+their pre-mitigation amounts to the mechanics/06 DamagePacket pipeline
+(:mod:`simulation.damage`), which owns mitigation -> Q2-lift quantize -> hp
+-> hit/kill events. With the shipped tables every path is bit-identical to
+the inline chains this replaced (the zombie heat ×4 moved into
+``species.ZOMBIE_MITIGATION``); call positions, signatures, and the
+bare-name import pattern (liveheat instrumentation) are unchanged.
+
 Conventions (shared by every reduction):
 
 - ``field`` is a 2-D numpy int array indexed ``field[ty, tx]`` (row-major,
@@ -53,9 +61,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
 from config import CFG
-from simulation import unit_fixed
 from simulation.damage import BLAST, HEAT, DamagePacket, apply_packet
-from simulation.events import UnitHitEvent, UnitKilledEvent
 
 
 # ---------------------------------------------------------------------------
@@ -340,21 +346,16 @@ def apply_blast_damage(units, fx, fy, radius, max_damage, events=None):
             falloff = 1.0 - (dist / radius)
             damage = int(max_damage * falloff)
             if damage >= CFG.combat.blast_damage_threshold:
-                # Q2-lift: snap the applied delta to the Q16.16 grid
-                # (belt-and-suspenders; exact pass-through for this int
-                # damage). The event carries the APPLIED value.
-                damage = unit_fixed.quantize_hp_delta(damage)
-                u.current_hp -= damage
-                if events is not None:
-                    uid = getattr(u, "id", -1)
-                    events.append(UnitHitEvent(unit_id=uid, damage=damage,
-                                                source="explosion"))
-                if u.current_hp <= 0:
-                    u.alive = False
-                    if events is not None:
-                        uid = getattr(u, "id", -1)
-                        events.append(UnitKilledEvent(unit_id=uid,
-                                                       killed_by="explosion"))
+                # BLAST packet through the pipeline (mechanics/06 §2). The
+                # geometric pre-mitigation amount + the chip-damage threshold
+                # stay site-side; neutral mitigation passes the int amount
+                # through exactly, then the same Q2-lift quantize -> hp ->
+                # hit/kill events as before (source "explosion"; blast
+                # deaths never set killed_by_zombie — only melee converts).
+                apply_packet(u,
+                             DamagePacket(amount=damage, dtype=BLAST,
+                                          source_id=None),
+                             events, source="explosion")
 
 
 # ---------------------------------------------------------------------------
