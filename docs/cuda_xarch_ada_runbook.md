@@ -20,13 +20,15 @@ Every gate so far ran on **one** GPU — the Ampere 3070. Cross-architecture det
 / `-prec-sqrt` / `-ftz=false` — all architecture-invariant) **but not yet empirically
 shown on Ada.** This runbook shows it.
 
-**The CPU integer golden is `60bd331faccc0b08c11e1ccad3ca75fa6f2aa26232b0b04c1a070b6c65c86ba1`**
-(field_digest spec v1, 30-step canonical A/B scenario). On Ampere, the GPU path reproduces
+**The CPU integer golden is `453829a67a38d79e0befd01d591cb19bdeb19f49d9234fb4d27a5083d126501a`**
+(field_digest spec v1, 30-step canonical A/B scenario; re-baselined 2026-07-04 by the
+Q2-lift — integer trig kit into the ray dirs + unit facing + Q16.16-snapped HP deltas —
+from the pre-lift `60bd331f…`). On Ampere, the GPU path reproduces
 it. **The attestation succeeds iff the GPU path reproduces this same golden on Ada.**
 
 **The bar, concretely:** the per-solver CUDA gates (`tests/test_cuda_s*.py`) each run the
 engine with that solver's GPU backend ON for 30 ticks and assert (a) GPU == CPU bit-for-bit
-and (b) the CPU path reproduces `60bd331f…`. **If all the gates go green on the Ada box,
+and (b) the CPU path reproduces `453829a6…`. **If all the gates go green on the Ada box,
 cross-arch determinism is proven** (Ada-GPU == CPU-golden == Ampere-GPU). Running the gates
 on Ada *is* the attestation.
 
@@ -105,7 +107,7 @@ untouched — the game keeps running on CPU regardless.
    (Or just run the whole suite: `… -m pytest tests/ --ignore=tests/test_main_smoke.py
    --ignore=tests/test_renderer_smoke.py`.) Each gate's PART 1 proves Ada-CPU == Ada-GPU on
    rich synthetic inputs; PART 2 runs the engine with that backend ON for 30 ticks and
-   reproduces the golden `60bd331f…`.
+   reproduces the golden `453829a6…`.
    - **ALL GREEN on Ada ⇒ ATTESTED.** Every GPU kernel is bit-identical Ada-GPU == CPU-golden
      == Ampere-GPU. Cross-architecture determinism is empirically confirmed.
    - **ANY GATE RED ⇒ a real cross-arch determinism bug** (some op is NOT arch-invariant —
@@ -121,7 +123,7 @@ untouched — the game keeps running on CPU regardless.
      enable all 7 backends when `PHYSICS_BACKEND=cuda` (call `bp.set_temperature_backend(True)`,
      `set_water_backend`, `set_smoke_backend`, `set_wave_backend`, `set_fire_backend`,
      `set_atmos_backend` — confirm the exact names in `bindings.cpp`), run it against the CUDA
-     `.pyd`, and confirm the printed digest == `60bd331f…`; or (b) just rely on the per-solver
+     `.pyd`, and confirm the printed digest == `453829a6…`; or (b) just rely on the per-solver
      gates above, which already flip the backends and check the golden. Run with `--write` to
      drop `tests/digest_<host>_cuda_gpu.txt` for the record.
 
@@ -170,6 +172,6 @@ git pull                                   # get S1–S7
 # edit a copy of cpp/build_cuda.bat for the Lenovo (VS path, miniconda, CUDA_PATH)
 <lenovo-build-cuda>.bat                     # -> cpp/build_cuda/...pyd, BUILD_EXIT=0
 C:/Users/steen/miniconda3/python.exe -m pytest tests/test_cuda_s*.py -v
-#   ALL GREEN -> Ada attested (GPU == CPU golden 60bd331f). Record + push.
+#   ALL GREEN -> Ada attested (GPU == CPU golden 453829a6). Record + push.
 #   ANY RED   -> real cross-arch bug. Localize the field/tick/op. Surface to Erik.
 ```

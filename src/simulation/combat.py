@@ -130,6 +130,10 @@ def apply_blast_damage(units, fx, fy, radius, max_damage, events=None):
             falloff = 1.0 - (dist / radius)
             damage = int(max_damage * falloff)
             if damage >= CFG.combat.blast_damage_threshold:
+                # Q2-lift: snap the applied delta to the Q16.16 grid
+                # (belt-and-suspenders; exact pass-through for this int
+                # damage). The event carries the APPLIED value.
+                damage = unit_fixed.quantize_hp_delta(damage)
                 u.current_hp -= damage
                 if events is not None:
                     uid = getattr(u, "id", -1)
@@ -236,6 +240,11 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
         if u.is_zombie:
             dmg *= zombie_mult
 
+        # Q2-lift: snap the delta to the Q16.16 grid before it touches HP —
+        # every applied delta becomes an exact multiple of 1/65536 (change
+        # <= 7.6e-6 HP per application; belt-and-suspenders, the float chain
+        # above is already IEEE-stable). The event carries the APPLIED value.
+        dmg = unit_fixed.quantize_hp_delta(dmg)
         u.current_hp -= dmg
         if events is not None:
             uid = getattr(u, "id", -1)
@@ -536,6 +545,9 @@ def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
             actual_dmg = dmg
             if hit_unit.team == 1:  # zombie
                 actual_dmg = int(dmg * CFG.zombie.bullet_damage_multiplier)
+            # Q2-lift: snap to the Q16.16 grid (exact for these int damages;
+            # belt-and-suspenders). The event carries the APPLIED value.
+            actual_dmg = unit_fixed.quantize_hp_delta(actual_dmg)
             hit_unit.current_hp -= actual_dmg
             if events is not None:
                 hit_id = getattr(hit_unit, "id", -1)

@@ -1,8 +1,15 @@
 # Q2-LIFT — the last determinism patch (→ `cuda-breached`)
 
-**Status:** in progress (branch `q2-lift`). Erik green-lit 2026-07-04; NO feel-check
-(all deltas are quantization-scale, ~1/65536 — imperceptible; Erik pre-approved the
-raycaster trig swap explicitly).
+**Status:** EXECUTED on branch `q2-lift` (3 staged commits, 2026-07-04). Erik green-lit
+2026-07-04; NO feel-check (all deltas are quantization-scale, ~1/65536 — imperceptible;
+Erik pre-approved the raycaster trig swap explicitly). The ONE re-baseline moved the
+golden `60bd331f…` → `453829a67a38d79e0befd01d591cb19bdeb19f49d9234fb4d27a5083d126501a`.
+Remaining: the Lenovo cross-machine confirm (roadmap 0.2, Erik) → then `cuda-breached`.
+Note one sequencing adjustment vs the plan below: the HP-delta quantization landed with
+Patch 3 (not Patch 2), because the A/B scenario's env damage is ACTIVE — quantizing HP
+moves the golden, and the tree stays green at every commit only if that lands together
+with the single re-baseline. Facing + bullet-trig + the tool split (digest-neutral,
+verified) landed as Patch 2 as planned.
 
 **Goal:** remove the last cross-machine nondeterminism from the synced trajectory —
 the Q2-fenced Python-float unit state. The prime culprit is `facing = math.atan2(...)`

@@ -30,8 +30,8 @@ Each line is::
 
 in a FIXED (tick, field) order, so two files line up for a plain ``diff``. The
 script also prints, to stdout:
-  - the host + the aggregate 30-tick trajectory digest (compare to 60bd331f… on
-    Ampere as a sanity check that the build is the clean golden), and
+  - the host + the aggregate 30-tick trajectory digest (compare to 453829a6… on
+    Ampere — the Q2-lift golden — as a sanity check that the build is clean), and
   - if a SECOND file from another host is present in tests/, the first diverging
     (field, tick) between this run and that file (a built-in cross-machine diff).
 
@@ -66,7 +66,7 @@ N_STEPS = 30
 # A stable, machine-independent label for the synced unit-state hash so it sorts
 # and diffs alongside the gmap fields (it is not in DIGEST_FIELDS).
 UNIT_FIELD_LABEL = "__unit_state__"
-GOLDEN_AGGREGATE = "60bd331faccc0b08c11e1ccad3ca75fa6f2aa26232b0b04c1a070b6c65c86ba1"
+GOLDEN_AGGREGATE = "453829a67a38d79e0befd01d591cb19bdeb19f49d9234fb4d27a5083d126501a"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs
@@ -179,7 +179,7 @@ def main() -> int:
     print(f"per-field lines     = {len(lines)}  ({N_STEPS} ticks x "
           f"{len(DIGEST_FIELDS) + len(UNIT_SUBFIELD_LABELS) + 1} fields)")
     print(f"aggregate digest    = {agg}")
-    print(f"matches 60bd331f    = {agg == GOLDEN_AGGREGATE}  "
+    print(f"matches 453829a6    = {agg == GOLDEN_AGGREGATE}  "
           f"(Ampere clean-build sanity)")
 
     # Built-in cross-machine diff: if any OTHER host's perfield file is present,

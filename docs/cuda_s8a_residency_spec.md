@@ -93,7 +93,7 @@ the per-call path. Default OFF (the game + suite unchanged). Wire it in `physics
 - `tests/cuda_s8a_check.py` (mirror the prior gates) — **PART 1**: a full-engine A/B over **30
   ticks** on the canonical seeded scenario, residency ON vs the CPU path, asserting the per-tick
   trajectory of ALL synced fields is bit-identical (`diff_trajectories` tol 0), AND the
-  residency path reproduces the golden `60bd331faccc0b08c11e1ccad3ca75fa6f2aa26232b0b04c1a070b6c65c86ba1`.
+  residency path reproduces the golden `453829a67a38d79e0befd01d591cb19bdeb19f49d9234fb4d27a5083d126501a`.
   (Residency == per-call GPU == CPU, transitively.) **PART 2 (the payoff)**: a benchmark — time
   N ticks residency vs CPU at a couple of grid sizes; print the speedup and confirm the per-call
   malloc/transfer tax is gone (residency should beat the per-call GPU clearly, and beat CPU at
