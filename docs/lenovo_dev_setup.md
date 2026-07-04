@@ -42,7 +42,10 @@ distilling needed — it's a curated `MEMORY.md` index + one-fact files.
 The **Q2-lift is merged** (`4b2d0d7`): a pure-integer trig kit replaced every libm
 transcendental in the synced path (unit facing, combat bullet trig, HP-delta snapping,
 the raycaster's cos/sin), and the golden re-baselined `60bd331f…` → `453829a6…`.
-py3.11-vs-3.12 should now be IRRELEVANT. This run is the cross-machine proof:
+**2026-07-04 SECOND fix (after this run found the spawn-stat hole — §8/§8b): the
+spawn-stat pin** replaced `rng.multivariate_normal` (LAPACK — cross-machine
+nondeterministic) with Q16.16-quantized species means; golden re-baselined again
+`453829a6…` → `ae1164ca…`. This run is the cross-machine proof:
 
 1. `git pull`  (HEAD must be at/after `4b2d0d7`).
 2. **REBUILD the CPU build — do not skip.** The lift changed C++ (`fixed_point.h`,
@@ -53,7 +56,7 @@ py3.11-vs-3.12 should now be IRRELEVANT. This run is the cross-machine proof:
    MSVC 14.44 + the miniconda `data` py3.12 interpreter).
 3. Run: `<lenovo-py> tests/_xarch_perfield_digest.py`
    → it auto-diffs vs the committed Ampere baseline (`tests/_xarch_perfield_ampere.txt`).
-   - **ALL GREEN** (aggregate digest == `453829a67a38d79e0befd01d591cb19bdeb19f49d9234fb4d27a5083d126501a`,
+   - **ALL GREEN** (aggregate digest == `ae1164ca163b4bf49a86694ba78ea5319f86cfff46301c6aa59190207e6c1a12`,
      no diverging (field, tick)) ⇒ **cross-machine determinism PROVEN** — tell Claude,
      who tags `cuda-breached` and pushes it. Done, for good.
    - Any diverger ⇒ the tool now names the exact unit sub-field (hp / facing / pos /
@@ -144,8 +147,14 @@ So: different CPU (kernel dispatch) and/or BLAS build ⇒ different spawn stats 
 tick 0, with every field + facing/pos identical. Matches every observation, including
 GPU==CPU green on both boxes and the June compiler exoneration.
 
-**Fix: pending Erik's call** (2026-07-04 discussion) — the stats/spawn layer is a draft
-slated for the units/combat redesign; candidate minimal pin = spawn at quantized species
-means (no sampling in the synced path) + one golden re-baseline, with the deterministic
-sampler designed properly as part of the redesign under the new **number-ingress rule**.
-The §5 confirm run stays the closer: pin → re-baseline → Lenovo all-green → tag.
+**FIXED same day — the spawn-stat pin (Erik green-lit):** spawn attributes are now the
+species MEANS, Q16.16-quantized at the boundary (ingress door 2) — `generation.py`'s
+`predefined_unit_attributes`; NO RNG in the spawn path (the unseeded fallback in
+`unit.py` is gone too). Spawn hp = exactly 100.0. Golden re-baselined `453829a6…` →
+`ae1164ca…` (only `__unit_hp__` moved, from tick 0 — every field trajectory identical).
+Stat VARIATION returns with the units/stats redesign as a deterministic sampler
+(integer stream → pure-algebraic transform → Q16.16 snap). Also landed: the
+**number-ingress lint** (`tests/test_ingress_lint.py`) — AST-scans `src/simulation/`
+for libm transcendentals / BLAS-LAPACK / RNG distribution methods / unseeded RNGs;
+`ingress-exempt:` pragma for audited exceptions (see materials.py). **§5 is live
+again: re-run it → all-green vs `ae1164ca…` ⇒ tag `cuda-breached`.**

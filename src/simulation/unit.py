@@ -45,11 +45,10 @@ from __future__ import annotations
 import math
 from enum import Enum
 
-import numpy as np
 
 from config import CFG
 from simulation import unit_fixed
-from simulation.generation import sample_unit_attributes
+from simulation.generation import predefined_unit_attributes
 from simulation.inventory import Inventory
 from simulation.orders import (
     ORDER_MOVE_ATTACK, ORDER_FIRE, MOVE_ORDER_TYPES,
@@ -133,16 +132,13 @@ class Unit:
         self.species_id = species_id
         species = get_species(species_id)
 
-        # Sample the stat vector from the species distribution. Use a fresh
-        # default-seeded RNG so Unit() can be constructed standalone in tests
-        # without booting a Simulation. Simulation.add_unit may optionally
-        # re-sample with the sim's seeded RNG for deterministic spawns — see
-        # the architectural note in docs/patch_unit_class_foundation.md §6.
-        # Agent decision: no re-sampling in add_unit for this pass (simpler
-        # diff, and combat balance doesn't yet depend on seed-stable stats).
-        _rng = np.random.default_rng()
+        # Deterministic predefined attributes (ingress door 2 — quantized
+        # species means; see generation.py). No RNG at construction: the old
+        # unseeded default_rng + MVN draw here was OS-entropy on top of a
+        # BLAS/LAPACK transform — both ingress violations. Simulation.add_unit
+        # assigns the same predefined values again (harmless, identical).
         self.base_stats, self.mass, self.base_speed = \
-            sample_unit_attributes(species, _rng)
+            predefined_unit_attributes(species)
 
         # Per-unit footprint offset list copied from the species default.
         # A 3×3 human uses the species default offsets; any other footprint

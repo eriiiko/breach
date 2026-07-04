@@ -1,8 +1,9 @@
 """Tests for the Unit class foundation pass.
 
 Covers:
-- BaseStats fields exist and are sampleable from human species
-- sample_unit_attributes clamps within bounds for 100 seeded draws
+- BaseStats fields exist and are constructible from human species
+- predefined_unit_attributes is deterministic, Q16.16-grid-aligned, clamped
+  (the draft MVN sampler was ingress-banned 2026-07-04 — lenovo_dev_setup §8b)
 - Unit("test", 5, 5) constructs cleanly with all new fields populated
 - occupied_tiles() returns 9 tiles for a default human (3x3 footprint)
 - occupied_tiles() returns 16 for footprint=4
@@ -27,7 +28,7 @@ sys.path.insert(0, str(ROOT / "src"))
 import numpy as np
 import pytest
 
-from simulation.generation import sample_unit_attributes
+from simulation.generation import predefined_unit_attributes
 from simulation.species import HUMAN, get_species, GENERATED_STAT_NAMES, N_GENERATED_STATS
 from simulation.stats import (
     BaseStats, StatId,
@@ -60,47 +61,68 @@ def test_base_stats_fields():
     assert bs.will_orientation == 0.0
 
 
-def test_sample_unit_attributes_returns_correct_types():
-    """sample_unit_attributes returns (BaseStats, float, float)."""
-    rng = np.random.default_rng(0)
-    base, mass, base_speed = sample_unit_attributes(HUMAN, rng)
+def _stat_vec(base, mass, base_speed):
+    return [
+        base.strength, base.agility, base.endurance, base.vitality,
+        base.intelligence, base.will_strength,
+        base.imagination, base.will_orientation,
+        mass, base_speed,
+    ]
+
+
+def test_predefined_unit_attributes_returns_correct_types():
+    """predefined_unit_attributes returns (BaseStats, float, float) — no RNG."""
+    base, mass, base_speed = predefined_unit_attributes(HUMAN)
     assert isinstance(base, BaseStats)
     assert isinstance(mass, float)
     assert isinstance(base_speed, float)
 
 
-def test_sample_unit_attributes_within_clamps_100_draws():
-    """100 seeded draws all land within [clamp_min, clamp_max]."""
+def test_predefined_unit_attributes_deterministic():
+    """Two calls are bit-identical — spawn stats are synced state and must be
+    reproducible cross-machine (ingress rule; the MVN draft was not)."""
+    a = _stat_vec(*predefined_unit_attributes(HUMAN))
+    b = _stat_vec(*predefined_unit_attributes(HUMAN))
+    assert a == b
+
+
+def test_predefined_unit_attributes_on_q16_grid():
+    """Every stat is an exact multiple of 1/65536 (ingress door 2: config
+    constants quantize onto the Q16.16 grid at the boundary)."""
+    vec = _stat_vec(*predefined_unit_attributes(HUMAN))
+    for name, v in zip(GENERATED_STAT_NAMES, vec):
+        assert v * 65536 == int(v * 65536), (
+            f"stat '{name}' = {v!r} is not on the Q16.16 grid"
+        )
+
+
+def test_predefined_unit_attributes_within_clamps():
+    """The predefined vector lands within [clamp_min, clamp_max]."""
     sd = HUMAN.stat_dist
-    rng = np.random.default_rng(42)
-
-    for _ in range(100):
-        base, mass, base_speed = sample_unit_attributes(HUMAN, rng)
-        vec = [
-            base.strength, base.agility, base.endurance, base.vitality,
-            base.intelligence, base.will_strength,
-            base.imagination, base.will_orientation,
-            mass, base_speed,
-        ]
-        for i, (v, lo, hi) in enumerate(
-            zip(vec, sd.clamp_min.tolist(), sd.clamp_max.tolist())
-        ):
-            name = GENERATED_STAT_NAMES[i]
-            assert lo <= v <= hi, (
-                f"stat '{name}' out of clamp: {v:.3f} not in [{lo}, {hi}]"
-            )
+    vec = _stat_vec(*predefined_unit_attributes(HUMAN))
+    for i, (v, lo, hi) in enumerate(
+        zip(vec, sd.clamp_min.tolist(), sd.clamp_max.tolist())
+    ):
+        name = GENERATED_STAT_NAMES[i]
+        assert lo <= v <= hi, (
+            f"stat '{name}' out of clamp: {v:.3f} not in [{lo}, {hi}]"
+        )
 
 
-def test_human_vitality_mean_near_100():
-    """Mean vitality across 1000 draws should be approximately 100."""
-    rng = np.random.default_rng(123)
-    vitalities = [
-        sample_unit_attributes(HUMAN, rng)[0].vitality
-        for _ in range(1000)
-    ]
-    mean_v = float(np.mean(vitalities))
-    # Allow generous tolerance (clamping slightly shifts the mean).
-    assert 90 <= mean_v <= 110, f"mean vitality = {mean_v:.2f}, expected near 100"
+def test_human_vitality_exactly_100():
+    """Predefined vitality == the species mean == CFG.marine.hp baseline,
+    exactly (100.0 is dyadic — the Q16.16 snap is an identity on it)."""
+    base, _, _ = predefined_unit_attributes(HUMAN)
+    assert base.vitality == 100.0
+
+
+def test_predefined_overrides_applied_and_snapped():
+    """Named-character overrides land, Q16.16-snapped (door 2)."""
+    base, mass, _ = predefined_unit_attributes(
+        HUMAN, overrides={"vitality": 87.3, "mass": 90.0})
+    assert base.vitality == round(87.3 * 65536) / 65536
+    assert base.vitality != 87.3          # 87.3 is not dyadic — snap moved it
+    assert mass == 90.0
 
 
 # ---------------------------------------------------------------------------

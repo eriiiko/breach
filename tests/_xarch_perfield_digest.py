@@ -66,7 +66,7 @@ N_STEPS = 30
 # A stable, machine-independent label for the synced unit-state hash so it sorts
 # and diffs alongside the gmap fields (it is not in DIGEST_FIELDS).
 UNIT_FIELD_LABEL = "__unit_state__"
-GOLDEN_AGGREGATE = "453829a67a38d79e0befd01d591cb19bdeb19f49d9234fb4d27a5083d126501a"
+GOLDEN_AGGREGATE = "ae1164ca163b4bf49a86694ba78ea5319f86cfff46301c6aa59190207e6c1a12"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs

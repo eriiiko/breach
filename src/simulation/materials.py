@@ -257,6 +257,11 @@ class MaterialTable:
                 self_shift[a] = no_face
             else:
                 self_shift[a] = _clamp_shift(
+                    # ingress-exempt: config-time table build; log2 is exact on
+                    # the power-of-two kappa ratios in config, and the rounded
+                    # INTEGER shift is empirically cross-machine stable (Ada
+                    # 2026-07 per-field run). TODO(stats-redesign): replace
+                    # with an integer log2 (bit_length) to close the door.
                     shift_at_ref - math.log2(ka / kappa_ref)
                 )
         self.self_shift = self_shift
@@ -271,6 +276,8 @@ class MaterialTable:
                     face[a, b] = no_face        # kappa==0 either side -> no face
                     continue
                 hm = 2.0 * ka * kb / (ka + kb)  # harmonic mean (one float div)
+                # ingress-exempt: same config-time integer-shift build as
+                # self_shift above (see TODO there).
                 face[a, b] = _clamp_shift(-math.log2(hm / kappa_ref))
         self.face_shift_table = face
 

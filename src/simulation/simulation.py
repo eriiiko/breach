@@ -65,7 +65,7 @@ import numpy as np
 
 from config import CFG
 from simulation.ai_zombie import update_zombies_tick, convert_marines_to_zombies
-from simulation.generation import sample_unit_attributes
+from simulation.generation import predefined_unit_attributes
 from simulation.species import get_species
 from simulation.combat import (
     apply_blast_damage, apply_environmental_damage, apply_temperature_ignition,
@@ -257,9 +257,12 @@ class Simulation:
             unit.x = float(x)
             unit.y = float(y)
 
-        # Re-sample with the sim's seeded RNG for deterministic rollouts.
+        # Deterministic predefined attributes (ingress door 2 — quantized
+        # species means; see generation.py). The sim RNG no longer touches
+        # spawn stats: the draft MVN sampler was BLAS/LAPACK-backed and
+        # cross-machine nondeterministic (docs/lenovo_dev_setup.md §8b).
         species = get_species(getattr(unit, "species_id", "human"))
-        base_stats, mass, base_speed = sample_unit_attributes(species, self.rng)
+        base_stats, mass, base_speed = predefined_unit_attributes(species)
         unit.base_stats = base_stats
         unit.mass = mass
         unit.base_speed = base_speed

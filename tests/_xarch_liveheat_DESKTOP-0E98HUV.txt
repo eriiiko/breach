@@ -50,7 +50,7 @@ tick=0	cell	12	6	10485800
 tick=0	cell	12	7	10485800
 tick=0	cell	12	9	10485800
 tick=0	cell	12	10	10485800
-tick=0	unit	id=0	footprint=[(7, 7), (7, 8), (7, 9), (8, 7), (8, 8), (8, 9), (9, 7), (9, 8), (9, 9)]	peak_raw=96993600	hp_before=0x1.750ed3a6c7124p+6	hp_after=0x1.29be8ba6c7124p+6	alive=True
+tick=0	unit	id=0	footprint=[(7, 7), (7, 8), (7, 9), (8, 7), (8, 8), (8, 9), (9, 7), (9, 8), (9, 9)]	peak_raw=96993600	hp_before=0x1.9000000000000p+6	hp_after=0x1.44afb80000000p+6	alive=True
 tick=1	live_heat_hash=d6db69cc2d69b346afc579795139db1c	nonzero=50	heat_atten=08decde7932e19f5c72bc4d1cfc3a50f	dyn_light_atten=fe9b9da4a7aedd21fe129d367b227c65	solid=2210792a62ad8bc095e248ff90623dbd
 tick=1	cell	4	6	10485800
 tick=1	cell	4	7	10485800
@@ -102,7 +102,7 @@ tick=1	cell	12	6	10485800
 tick=1	cell	12	7	10485800
 tick=1	cell	12	9	10485800
 tick=1	cell	12	10	10485800
-tick=1	unit	id=0	footprint=[(7, 7), (7, 8), (7, 9), (8, 7), (8, 8), (8, 9), (9, 7), (9, 8), (9, 9)]	peak_raw=96993600	hp_before=0x1.29be8ba6c7124p+6	hp_after=0x1.bcdc874d8e248p+5	alive=True
+tick=1	unit	id=0	footprint=[(7, 7), (7, 8), (7, 9), (8, 7), (8, 8), (8, 9), (9, 7), (9, 8), (9, 9)]	peak_raw=96993600	hp_before=0x1.44afb80000000p+6	hp_after=0x1.f2bee00000000p+5	alive=True
 tick=2	live_heat_hash=d6db69cc2d69b346afc579795139db1c	nonzero=50	heat_atten=08decde7932e19f5c72bc4d1cfc3a50f	dyn_light_atten=fe9b9da4a7aedd21fe129d367b227c65	solid=2210792a62ad8bc095e248ff90623dbd
 tick=2	cell	4	6	10485800
 tick=2	cell	4	7	10485800
@@ -154,7 +154,7 @@ tick=2	cell	12	6	10485800
 tick=2	cell	12	7	10485800
 tick=2	cell	12	9	10485800
 tick=2	cell	12	10	10485800
-tick=2	unit	id=0	footprint=[(7, 7), (7, 8), (7, 9), (8, 7), (8, 8), (8, 9), (9, 7), (9, 8), (9, 9)]	peak_raw=96993600	hp_before=0x1.bcdc874d8e248p+5	hp_after=0x1.263bf74d8e248p+5	alive=True
+tick=2	unit	id=0	footprint=[(7, 7), (7, 8), (7, 9), (8, 7), (8, 8), (8, 9), (9, 7), (9, 8), (9, 9)]	peak_raw=96993600	hp_before=0x1.f2bee00000000p+5	hp_after=0x1.5c1e500000000p+5	alive=True
 tick=3	live_heat_hash=d6db69cc2d69b346afc579795139db1c	nonzero=50	heat_atten=08decde7932e19f5c72bc4d1cfc3a50f	dyn_light_atten=fe9b9da4a7aedd21fe129d367b227c65	solid=2210792a62ad8bc095e248ff90623dbd
 tick=3	cell	4	6	10485800
 tick=3	cell	4	7	10485800
@@ -206,7 +206,7 @@ tick=3	cell	12	6	10485800
 tick=3	cell	12	7	10485800
 tick=3	cell	12	9	10485800
 tick=3	cell	12	10	10485800
-tick=3	unit	id=0	footprint=[(7, 7), (7, 8), (7, 9), (8, 7), (8, 8), (8, 9), (9, 7), (9, 8), (9, 9)]	peak_raw=96993600	hp_before=0x1.263bf74d8e248p+5	hp_after=0x1.1f36ce9b1c490p+4	alive=True
+tick=3	unit	id=0	footprint=[(7, 7), (7, 8), (7, 9), (8, 7), (8, 8), (8, 9), (9, 7), (9, 8), (9, 9)]	peak_raw=96993600	hp_before=0x1.5c1e500000000p+5	hp_after=0x1.8afb800000000p+4	alive=True
 tick=4	live_heat_hash=d6db69cc2d69b346afc579795139db1c	nonzero=50	heat_atten=08decde7932e19f5c72bc4d1cfc3a50f	dyn_light_atten=fe9b9da4a7aedd21fe129d367b227c65	solid=2210792a62ad8bc095e248ff90623dbd
 tick=4	cell	4	6	10485800
 tick=4	cell	4	7	10485800
@@ -258,8 +258,8 @@ tick=4	cell	12	6	10485800
 tick=4	cell	12	7	10485800
 tick=4	cell	12	9	10485800
 tick=4	cell	12	10	10485800
-tick=4	unit	id=0	footprint=[(7, 7), (7, 8), (7, 9), (8, 7), (8, 8), (8, 9), (9, 7), (9, 8), (9, 9)]	peak_raw=96993600	hp_before=0x1.1f36ce9b1c490p+4	hp_after=-0x1.c14a2c9c76e00p-1	alive=False
-tick=5	live_heat_hash=d6db69cc2d69b346afc579795139db1c	nonzero=50	heat_atten=08decde7932e19f5c72bc4d1cfc3a50f	dyn_light_atten=6551b8e2dd07741a3a2f937828b03ee5	solid=2210792a62ad8bc095e248ff90623dbd
+tick=4	unit	id=0	footprint=[(7, 7), (7, 8), (7, 9), (8, 7), (8, 8), (8, 9), (9, 7), (9, 8), (9, 9)]	peak_raw=96993600	hp_before=0x1.8afb800000000p+4	hp_after=0x1.76e9800000000p+2	alive=True
+tick=5	live_heat_hash=d6db69cc2d69b346afc579795139db1c	nonzero=50	heat_atten=08decde7932e19f5c72bc4d1cfc3a50f	dyn_light_atten=fe9b9da4a7aedd21fe129d367b227c65	solid=2210792a62ad8bc095e248ff90623dbd
 tick=5	cell	4	6	10485800
 tick=5	cell	4	7	10485800
 tick=5	cell	4	9	10485800
@@ -310,6 +310,7 @@ tick=5	cell	12	6	10485800
 tick=5	cell	12	7	10485800
 tick=5	cell	12	9	10485800
 tick=5	cell	12	10	10485800
+tick=5	unit	id=0	footprint=[(7, 7), (7, 8), (7, 9), (8, 7), (8, 8), (8, 9), (9, 7), (9, 8), (9, 9)]	peak_raw=96993600	hp_before=0x1.76e9800000000p+2	hp_after=-0x1.9f0d800000000p+3	alive=False
 tick=6	live_heat_hash=d6db69cc2d69b346afc579795139db1c	nonzero=50	heat_atten=08decde7932e19f5c72bc4d1cfc3a50f	dyn_light_atten=6551b8e2dd07741a3a2f937828b03ee5	solid=2210792a62ad8bc095e248ff90623dbd
 tick=6	cell	4	6	10485800
 tick=6	cell	4	7	10485800

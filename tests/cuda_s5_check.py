@@ -296,7 +296,13 @@ def part2_integration() -> bool:
     # raycaster ray dirs/cone cos + unit facing + Q16.16-snapped HP deltas —
     # the trajectory legitimately moved by quantization-scale deltas.
     # (was 60bd331faccc0b08c11e1ccad3ca75fa6f2aa26232b0b04c1a070b6c65c86ba1)
-    GOLDEN = "453829a67a38d79e0befd01d591cb19bdeb19f49d9234fb4d27a5083d126501a"
+    # Re-baselined 2026-07-04 (spawn-stat pin): unit spawn stats switched from
+    # rng.multivariate_normal (LAPACK/BLAS -- CPU-dispatch-dependent, caused the
+    # Ada tick-0 __unit_hp__ cross-machine divergence, lenovo_dev_setup.md 8b)
+    # to Q16.16-quantized species MEANS (ingress door 2): spawn hp now exactly
+    # 100.0. Only __unit_hp__ moved, from tick 0; all field trajectories identical.
+    # (was 453829a67a38d79e0befd01d591cb19bdeb19f49d9234fb4d27a5083d126501a)
+    GOLDEN = "ae1164ca163b4bf49a86694ba78ea5319f86cfff46301c6aa59190207e6c1a12"
 
     def make_shockwave():
         sim = default_scenario_sim()
