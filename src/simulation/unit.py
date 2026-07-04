@@ -61,13 +61,18 @@ from simulation.species import get_species
 # ---------------------------------------------------------------------------
 
 class LifeState(Enum):
-    """Authoritative life status (spec §12).
+    """Authoritative life status — the LIFE axis of the two-axis model
+    (mechanics/06 §1): is the body functional? ``ALIVE | DEAD``, minimal on
+    purpose. Everything else temporarily true of a unit (knockdown, stun,
+    burning, ...) is a CONDITION — a :mod:`simulation.status` StatusEffect —
+    never a life state. The draft ``DOWNED`` value is retired by that design
+    (P3, 2026-07-05): knockdown was never a *life* state; a ``DYING``/
+    bleedout life-state remains expressible later if a ruleset wants it.
 
     Placed in unit.py (not a separate module) because it is used
     exclusively by Unit and its close consumers (combat, conversion).
     """
     ALIVE  = "alive"
-    DOWNED = "downed"
     DEAD   = "dead"
 
 
@@ -169,6 +174,14 @@ class Unit:
 
         # Inventory stub (real item system deferred; has_grenade/explosive stay).
         self.inventory = Inventory()
+
+        # Status/condition list (mechanics/06 §4) — the CONDITIONS axis of the
+        # two-axis model: StatusEffect instances (simulation.status), SYNCED
+        # state hashed by the lockstep digest (__unit_status__). Ticked in
+        # unit-id / list order (P0) at the top of the unit-simulation section
+        # of Simulation.step(); unit logic consults status.composed_flags(),
+        # never this list directly.
+        self.statuses: list = []
 
         # Hidden Hartmann fields — data only; behaviour deferred (spec §13).
         self.awakened: bool = False
