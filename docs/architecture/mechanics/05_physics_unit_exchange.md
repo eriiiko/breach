@@ -46,7 +46,7 @@ point):**
 |---|---|---|---|
 | `heat` | max | radiant flux → T_felt band → damage | ✅ shipped (`combat.apply_environmental_damage`) |
 | `wave_p` | footprint sample | blast overpressure → damage | ✅ shipped (`apply_blast_damage`) |
-| `wave_p` | grad | **impulse push** (decompression shove, shockwave knockback) | 📝 likely first new row |
+| `wave_p` | grad | **impulse push**: `J = Σ_footprint(−∇p)·dt`, `Δv = J/mass` — the footprint sum scales with body area, so big-light units fly and small-heavy stand (density behavior from two existing stats); also the KNOCKED_DOWN trigger (ch. 06) | 📝 likely first new row |
 | `water_depth` | center | movement speed multiplier; **suffocation for non-water-breathers** | 📝 |
 | `gas[poison]` | mean | dose accumulation → poison status | 📝 |
 | `atmosphere` | mean | O2 partial → suffocation timer (skipped for units that don't breathe) | 📝 |

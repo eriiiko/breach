@@ -92,7 +92,7 @@ Unit logic consults the *composed* flags, never individual statuses.
 
 | Status | Kind | Effect |
 |---|---|---|
-| `KNOCKED_DOWN` | CC | prone; no move/act for `remaining_ticks` (the get-up time), then auto-clears. **Triggers:** blast impulse ≥ threshold (the wave_p push row, exchange §1); future: sprint collisions (pends movement design), ice falls (pends materials) — they just apply the same status |
+| `KNOCKED_DOWN` | CC | prone; no move/act for `remaining_ticks` (the get-up time), then auto-clears. **Trigger:** blast `Δv = J/mass ≥ threshold × stability[profile]` (the wave_p push row, exchange §1 — mass is a live stat; the footprint-summed impulse gives the area/density effect; `stability` is the one non-physical knob, door-2 profile data: a low four-legged robot resists toppling). Future triggers: sprint collisions (pends movement design), ice falls (pends materials) — they just apply the same status |
 | `IMMOBILIZED` / `STUNNED` / `PARALYZED` | CC | flag variants of the same machinery (no move / no act / neither) — kinds are config rows, adding one is O(row) |
 | `BURNING` | DoT | emits HEAT packets per tick; later also a FieldEdit smoke/heat emitter (a burning unit *is* a fire) |
 | `POISONED` | DoT | dose-driven POISON packets |
@@ -104,32 +104,65 @@ Unit logic consults the *composed* flags, never individual statuses.
 reduced by poison resistance, burning by heat resistance. Composition falls
 out; it is never coded per-status.
 
-**Knockdown physics note:** because `KNOCKED_DOWN` triggers on *impulse*
-(∇p-derived) while lethality comes from *overpressure damage*, the knockdown
-radius of an explosion is naturally **larger** than the lethal radius — the
-outer blast zone knocks marines sprawling without killing them. No tuning
-hack required; it falls out of the physics, which is exactly the no-barrier
-principle paying out again.
+**Knockdown physics note:** because `KNOCKED_DOWN` triggers on *velocity
+change* (`Δv = J/mass`, ∇p-derived) while lethality comes from *overpressure
+damage*, the knockdown radius of an explosion is naturally **larger** than
+the lethal radius — the outer blast zone knocks marines sprawling without
+killing them. No tuning hack required; it falls out of the physics, which is
+exactly the no-barrier principle paying out again. Division of labor, stated
+once: **the resistance table mitigates damage only; force response is
+Newtonian (mass × footprint); knockdown susceptibility is `stability` in the
+profile.** Three separate knobs, none overloaded.
 
-## 5. Attack resolution (pre-pipeline) — the RPG seam
+## 5. Attack resolution (pre-pipeline) — exposure, cover, crits
 
 Whether a packet is emitted at all is the *attack resolution* layer, in front
-of the pipeline:
+of the pipeline. Breach uses a **hybrid** (DECIDED 2026-07-04, amending the
+earlier pure-no-rolls position the same day it was proposed — the
+attack-resolver seam absorbed the change with zero structural rework):
 
-- **Ranged: physical hits, no evasion rolls (DECIDED).** "Armor class" means
-  mitigation only; whether you are hit is physics — the bullet ray actually
-  enters your hitbox; misses come from the spread cone, range, cover, and
-  bodies in the way. Already how the shipped rifle works.
-- **Melee v1: adjacency auto-hit** (the shipped zombie melee), flat config
-  damage → a KINETIC packet.
-- **The seam:** attack resolution is a **game-layer policy**
-  (engine-vs-game split): a future RPG ruleset may install a resolver with
-  to-hit and crit rolls — all draws from the seeded stream (door 4), so it
-  stays deterministic and replayable. The engine keeps the socket; Breach v1
-  doesn't use it.
+> **Physics decides what is possible; probability models what 2D cannot
+> see.**
+
+- **The physical layer stays absolute.** Walls block bullets, period. The
+  spread cone, range, and bodies in the way are geometry; LOS is the ray. No
+  roll ever hits what physics rules out. "Armor class" still means
+  mitigation only (§3) — there is no dodge stat.
+- **The exposure roll (cover).** A top-down 2D ray *overstates* exposure: it
+  cannot see a marine crouched behind a waist-high crate, because the game
+  has no third dimension to duck in. The percentage-to-hit is the
+  **compensation for the missing dimension**. When a bullet ray reaches a
+  target benefiting from cover, it connects with probability
+  `exposure% = f(cover value along the incoming arc, target stance/
+  conditions)` — prone (`KNOCKED_DOWN`) and future crouch states plug in
+  here. A shot that fails the exposure roll is **absorbed by the cover
+  tile**: it deposits its wall damage there — physics keeps its due, missed
+  shots chew the crate down until it stops *being* cover.
+- **Cover is directional; flanking is geometric.** A cover tile protects
+  only against arcs it faces (material/level data — the mission-1 furniture
+  layers are the content). Attacking from an uncovered arc = **flanked** =
+  full exposure. No flanking flag — it falls out of the shooter→target ray
+  direction vs the cover adjacency, deterministic geometry.
+- **The crit roll.** On a connecting hit:
+  `crit% = f(weapon base, attack arc vs target facing — flank bonus, behind
+  bonus; attacker stats later)`. `facing` is synced Q16.16 state (the
+  Q2-lift), so arcs are deterministic. A crit multiplies the packet amount
+  (Q16.16 multiplier; armor-bypass tags possible later).
+- **Melee v1: adjacency auto-hit** (the shipped zombie melee) → a KINETIC
+  packet. The same resolver hosts melee to-hit/crit when melee gets its
+  design pass — or a future RPG ruleset entirely (the engine/game split:
+  same socket, different policy).
+- **Determinism.** Every roll draws door-4 from the sim's seeded stream, in
+  P0 order; all percentages/multipliers are door-2 config. An entire
+  firefight — covers, flanks, crits — replays bit-for-bit from
+  `(seed, orders)`.
 - **Damage rolls: deliberately UNDECIDED.** The pipeline takes whatever
   amount the source computes; a source that wants variance draws door-4.
   Per-weapon freedom, no global rule needed now.
+
+The exposure/crit *numbers* (base percentages, arc widths, cover values per
+material, weapon accuracy) are weapon-framework content — specced in the
+item-5 pass, wired with the weapons wave.
 
 ## 6. Death, overkill, corpses
 
@@ -177,5 +210,5 @@ gate.
 | KNOCKED_DOWN via blast impulse (+ push row) | 📝 designed — the HUMAN-TEST fun one |
 | LifeState simplification (retire unused DOWNED value) | 📝 with the status patch |
 | Digest extension (`__unit_status__`) + golden re-baseline | 📝 with the status patch |
-| Attack-resolver seam (RPG to-hit/crit socket) | 📝 socket only; no Breach consumer |
+| Attack resolver: exposure-vs-cover roll + crit roll (flank/behind arcs) | 📝 designed; numbers + wiring ride the weapons wave (item 5) — needs cover material data |
 | Standard-values config + playground | 📝 the closing wiring patch |
