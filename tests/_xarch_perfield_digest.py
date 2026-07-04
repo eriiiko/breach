@@ -5,7 +5,9 @@ Purpose
 The aggregate 30-tick trajectory digest (``xarch_digest.py`` -> one hash) tells us
 two machines DISAGREE, but not WHERE. This script breaks that one hash open: it
 emits a hash for EVERY (field, tick) pair over the canonical A/B scenario, plus
-the synced unit-state hash per tick. Run the IDENTICAL script on two machines and
+the synced unit-state hash per tick — split (Q2-lift) into per-attribute
+sub-hashes (__unit_hp__ / __unit_facing__ / __unit_pos__ / __unit_life_events__)
+so a unit-state divergence NAMES the sub-field, not just "the unit hash". Run the IDENTICAL script on two machines and
 ``diff`` the two output files — the FIRST line that differs names the exact
 (field, tick) where the trajectories first diverge, which names the responsible
 solver (e.g. ``water_depth`` -> WaterSolver, ``atmosphere`` -> AtmosphereSolver).
@@ -66,6 +68,17 @@ N_STEPS = 30
 UNIT_FIELD_LABEL = "__unit_state__"
 GOLDEN_AGGREGATE = "60bd331faccc0b08c11e1ccad3ca75fa6f2aa26232b0b04c1a070b6c65c86ba1"
 
+# Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
+# hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs
+# pos vs life/events) instead of the opaque "__unit_state__ differs" that the
+# Ada Beat-B run left us localizing by hand. Order is FIXED (these four, then
+# the aggregate) so files diff line-by-line. Payloads reuse the id-sorted unit
+# records the harness already captures (field_ab_harness._unit_record: floats
+# pre-quantized at 1e-9 -> byte-stable repr).
+UNIT_SUBFIELD_LABELS = (
+    "__unit_hp__", "__unit_facing__", "__unit_pos__", "__unit_life_events__",
+)
+
 
 def _perfield_hash(name: str, arr: np.ndarray) -> str:
     """blake2b-256 over ONE field's spec bytes (name|dtype|shape + raw bytes).
@@ -76,9 +89,37 @@ def _perfield_hash(name: str, arr: np.ndarray) -> str:
     return h.hexdigest()
 
 
+def _unit_subfield_payloads(ustate: dict) -> dict[str, object]:
+    """Split one tick's unit-state dict (harness format: id-sorted records +
+    emission-ordered synced events) into the four named sub-payloads."""
+    units = ustate.get("units", [])
+    return {
+        "__unit_hp__":     [(r["id"], r["current_hp"]) for r in units],
+        "__unit_facing__": [(r["id"], r["facing"]) for r in units],
+        "__unit_pos__":    [(r["id"], r["tile_x"], r["tile_y"], r["x"], r["y"])
+                            for r in units],
+        "__unit_life_events__": {
+            "life":   [(r["id"], r["alive"], r["life_state"]) for r in units],
+            "events": ustate.get("events", []),
+        },
+    }
+
+
+def _unit_subfield_hash(label: str, payload) -> str:
+    """blake2b-256 over one unit sub-attribute payload (label-pinned, repr of
+    nested int/str/bool/tuples == byte-stable, same idiom as the harness)."""
+    h = hashlib.blake2b(digest_size=32)
+    h.update(f"PERUNIT_V{DIGEST_SPEC_VERSION}\n".encode("ascii"))
+    h.update(label.encode("ascii"))
+    h.update(b"|")
+    h.update(repr(payload).encode("utf-8"))
+    return h.hexdigest()
+
+
 def build_perfield_lines(traj) -> list[str]:
     """One '<tick>\\t<field>\\t<hash>' line per (tick, field), in FIXED order
-    (tick ascending; fields in DIGEST_FIELDS order, then the unit-state hash)."""
+    (tick ascending; fields in DIGEST_FIELDS order, then the four unit
+    sub-attribute hashes, then the aggregate unit-state hash)."""
     lines: list[str] = []
     for t, snap in enumerate(traj):
         for name, _dtype in DIGEST_FIELDS:
@@ -87,8 +128,16 @@ def build_perfield_lines(traj) -> list[str]:
                 continue
             lines.append(f"{t}\t{name}\t{_perfield_hash(name, snap[name])}")
         # Synced unit state (HP/life/event stream) rides alongside the fields so a
-        # combat/kill desync that leaves every gmap cell identical still localizes.
-        uhash = snap.get(UNIT_DIGEST_KEY, {}).get("hash", "NO_UNIT_STATE")
+        # combat/kill desync that leaves every gmap cell identical still localizes
+        # — split per attribute so the diff NAMES the culprit sub-field.
+        ustate = snap.get(UNIT_DIGEST_KEY, {})
+        payloads = _unit_subfield_payloads(ustate)
+        for label in UNIT_SUBFIELD_LABELS:
+            if ustate:
+                lines.append(f"{t}\t{label}\t{_unit_subfield_hash(label, payloads[label])}")
+            else:
+                lines.append(f"{t}\t{label}\tNO_UNIT_STATE")
+        uhash = ustate.get("hash", "NO_UNIT_STATE")
         lines.append(f"{t}\t{UNIT_FIELD_LABEL}\t{uhash}")
     return lines
 
@@ -128,7 +177,7 @@ def main() -> int:
     print(f"pyd                 = {pyd}")
     print(f"wrote               = {out}")
     print(f"per-field lines     = {len(lines)}  ({N_STEPS} ticks x "
-          f"{len(DIGEST_FIELDS)+1} fields)")
+          f"{len(DIGEST_FIELDS) + len(UNIT_SUBFIELD_LABELS) + 1} fields)")
     print(f"aggregate digest    = {agg}")
     print(f"matches 60bd331f    = {agg == GOLDEN_AGGREGATE}  "
           f"(Ampere clean-build sanity)")
