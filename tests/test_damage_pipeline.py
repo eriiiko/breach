@@ -265,3 +265,114 @@ def test_apply_packet_uses_unit_id_when_present():
     events = []
     apply_packet(m, DamagePacket(1.0, HEAT, None), events, source="heat")
     assert events[0].unit_id == 42
+
+
+# ---------------------------------------------------------------------------
+# Species tables + the zombie ×4 dissolution (mechanics/06 §2 proof of shape)
+# ---------------------------------------------------------------------------
+def test_species_carry_mitigation_tables_and_units_point_at_them():
+    """SpeciesDef gained door-2 mitigation tables; a unit carries its
+    species' table pointer (mirroring unit.environment)."""
+    from simulation.species import HUMAN, ZOMBIE_MITIGATION
+    assert isinstance(HUMAN.mitigation, MitigationProfile)
+    assert tuple(HUMAN.mitigation.armor) == (0.0,) * N_DAMAGE_TYPES
+    assert tuple(HUMAN.mitigation.resist_mult) == (1.0,) * N_DAMAGE_TYPES
+    m = Unit("M1", x=5, y=5, team=0)
+    assert m.mitigation is HUMAN.mitigation
+    # The zombie overlay: HEAT ×4, everything else neutral (bullets keep
+    # their site-side bullet_damage_multiplier amount rule).
+    assert ZOMBIE_MITIGATION.resist_mult[HEAT] == 4.0
+    for dtype in range(N_DAMAGE_TYPES):
+        assert ZOMBIE_MITIGATION.armor[dtype] == 0.0
+        if dtype != HEAT:
+            assert ZOMBIE_MITIGATION.resist_mult[dtype] == 1.0
+
+
+def test_zombie_state_resolves_to_zombie_table():
+    """mitigation_for keys on unit.is_zombie AT DAMAGE TIME — the exact
+    predicate the dissolved branch used: construction with team=1, AND a
+    later flag flip (end-of-round conversion), both resolve to the zombie
+    table."""
+    from simulation.species import ZOMBIE_MITIGATION
+    z = Unit("Z1", x=5, y=5, team=1)
+    assert mitigation_for(z) is ZOMBIE_MITIGATION
+    # Conversion shape: a marine flipped to zombie state mid-life.
+    m = Unit("M1", x=5, y=5, team=0)
+    assert mitigation_for(m) is not ZOMBIE_MITIGATION
+    m.is_zombie = True
+    assert mitigation_for(m) is ZOMBIE_MITIGATION
+
+
+def test_zombie_heat_times_four_matches_old_formula_bitwise():
+    """The dissolution gate: mitigate(x, HEAT, zombie) == x * 4.0 == the old
+    ``dmg *= CFG.zombie.fire_damage_multiplier`` to the BIT across the sweep
+    (×4.0 is an exact binary scale at the same pre-quantize position), and
+    identical again after the quantize boundary."""
+    z = Unit("Z1", x=5, y=5, team=1)
+    prof = mitigation_for(z)
+    old_mult = float(CFG.zombie.fire_damage_multiplier)   # the retired read
+    assert old_mult == 4.0   # the config key is now ONLY the tests' constant
+    for x in AMOUNT_SWEEP:
+        new = mitigate(x, HEAT, prof)
+        old = x * old_mult
+        assert _bits(new) == _bits(old), f"zombie HEAT moved for {x!r}"
+        assert _bits(unit_fixed.quantize_hp_delta(new)) == \
+               _bits(unit_fixed.quantize_hp_delta(old))
+
+
+def test_zombie_non_heat_types_stay_neutral_bitwise():
+    """A zombie's KINETIC/BLAST mitigation is a bitwise no-op — the bullet
+    and blast sites must not move when routed through the pipeline."""
+    z = Unit("Z1", x=5, y=5, team=1)
+    prof = mitigation_for(z)
+    for dtype in (KINETIC, BLAST):
+        for x in AMOUNT_SWEEP:
+            assert _bits(mitigate(x, dtype, prof)) == _bits(x)
+
+
+def test_heat_site_end_to_end_bit_identity_marine_and_zombie():
+    """The routed heat response reproduces the pre-P2 inline chain exactly:
+    for a phi sweep, marine hp delta == quantize(raw) and zombie hp delta ==
+    quantize(raw * 4.0) to the BIT, with identical events."""
+    import numpy as np
+    from simulation.exchange import HEAT_SCALE, apply_environmental_damage
+
+    class _HeatStub:
+        def __init__(self, h, w):
+            self.heat = np.zeros((h, w), dtype=np.int32)
+
+    cmb = CFG.combat
+    for phi in (12.0, 50.0, 73.25, 200.0):
+        stub = _HeatStub(40, 40)
+        m = Unit("M1", x=10, y=10, team=0)
+        z = Unit("Z1", x=20, y=20, team=1)
+        m.current_hp = z.current_hp = 1e9
+        raw_counts = int(round(phi * HEAT_SCALE))
+        for u in (m, z):
+            for (tx, ty) in u.occupied_tiles():
+                stub.heat[ty, tx] = raw_counts
+        events = []
+        apply_environmental_damage([m, z], stub, ticks_per_second=24,
+                                   events=events)
+
+        # The pre-P2 inline chain, replicated verbatim.
+        phi_f = raw_counts / HEAT_SCALE
+        phi_abs = phi_f * float(cmb.unit_absorption) * \
+            (1.0 - float(cmb.unit_reflectivity))
+        t_felt = float(cmb.heat_ambient_ref) + \
+            float(cmb.heat_flux_to_temp) * phi_abs
+        over = t_felt - 60.0   # HUMAN_ENVIRONMENT temperature_max
+        assert over > 0.0
+        raw = 1.0 * (1.0 + float(cmb.heat_overtemp_scale) * over) * (1.0 / 24)
+        old_marine = unit_fixed.quantize_hp_delta(raw)
+        old_zombie = unit_fixed.quantize_hp_delta(
+            raw * float(CFG.zombie.fire_damage_multiplier))
+
+        assert _bits(1e9 - m.current_hp) == _bits(old_marine)
+        assert _bits(1e9 - z.current_hp) == _bits(old_zombie)
+        # Event stream: same order (unit list order), same sources, same
+        # APPLIED values — what the lockstep digest hashes.
+        assert [type(e) for e in events] == [UnitHitEvent, UnitHitEvent]
+        assert [e.source for e in events] == ["heat", "heat"]
+        assert _bits(events[0].damage) == _bits(old_marine)
+        assert _bits(events[1].damage) == _bits(old_zombie)

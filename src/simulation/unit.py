@@ -161,6 +161,12 @@ class Unit:
         # Environment profile pointer (species baseline; modifiers deferred).
         self.environment = species.environment
 
+        # Mitigation tables pointer (mechanics/06 §3 — species baseline;
+        # equipment/status composition deferred). Zombie-state units resolve
+        # to species.ZOMBIE_MITIGATION at damage time instead
+        # (damage.mitigation_for) — zombie-ness is state, not a species.
+        self.mitigation = species.mitigation
+
         # Inventory stub (real item system deferred; has_grenade/explosive stay).
         self.inventory = Inventory()
 

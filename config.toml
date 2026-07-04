@@ -540,6 +540,12 @@ melee_damage = 60
 trigger_radius = 48
 propagation_radius = 15
 bullet_damage_multiplier = 0.25
+# fire_damage_multiplier is DISSOLVED into the zombie's mitigation table
+# (species.ZOMBIE_MITIGATION: resist_mult[HEAT] = 4.0 — mechanics/06 §2) and
+# the sim no longer reads it. The key remains ONLY because two heat tests
+# (test_unit_heat_damage / test_fire_heat_source) read it as the expected
+# zombie/marine damage-ratio constant; editing it here changes NOTHING
+# in-game — change species.ZOMBIE_MITIGATION instead.
 fire_damage_multiplier = 4.0
 attack_cooldown_seconds = 1.0      # 1.0 s -> 12 ticks @ 12 tps
 
@@ -585,7 +591,9 @@ shot_tracer_duration = 0.4
 #   T_felt  = heat_ambient_ref + heat_flux_to_temp * Phi_abs  # radiation -> felt temp
 #   over    = T_felt - temperature_max                        # damage band (per-unit profile)
 #   dmg     = environmental_damage_rate * (1 + heat_overtemp_scale * over) * dt_tick
-#   if zombie: dmg *= zombie.fire_damage_multiplier
+#   -> DamagePacket(dmg, HEAT) through the mechanics/06 pipeline: the zombie
+#      x4 is resist_mult[HEAT] on species.ZOMBIE_MITIGATION (same position,
+#      pre-quantize), a marine's neutral table is an exact no-op.
 #
 # Defaults are tuned so a unit in a strong beam cooks while a warm room is
 # survivable (temperature_max defaults to 60 in EnvironmentProfile):
