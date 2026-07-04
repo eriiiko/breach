@@ -4,11 +4,18 @@ Lifted from ``game.py``:
 
 - :class:`Projectile`        (game.py:1195-1233)
 - :class:`Shot`              (game.py:1239-1244)
-- :func:`apply_blast_damage` (game.py:1981-1996 — was ``Game._apply_blast_damage``)
 - :func:`process_shooting`   (game.py:1749-1791 — was ``Game._process_shooting``)
 - :func:`auto_fire`          (game.py:1793-1818 — was ``Game._auto_fire``)
 - :func:`fire_burst`         (game.py:1820-1865 — was ``Game._fire_burst``)
 - :func:`process_door_explosives`  (game.py:1641-1658)
+
+The two shipped physics->unit coupling responses that used to live here —
+``apply_blast_damage`` (game.py:1981-1996, was ``Game._apply_blast_damage``)
+and ``apply_environmental_damage`` (+ its ``HEAT_SCALE``) — moved VERBATIM
+to :mod:`simulation.exchange`, the coupling-table module (mechanics/05, P1
+refactor). They are re-imported below for compatibility (tests and legacy
+imports resolve unchanged), and :func:`process_door_explosives` still calls
+``apply_blast_damage`` at its detonation sites exactly as before.
 
 All shooting / burst / LOS code mutates the unit list and emits ``Shot``
 tracer events into a caller-owned list. The pure physics-event entry
@@ -41,6 +48,14 @@ from simulation.orders import (
 )
 from simulation import unit_fixed
 from simulation.physics import apply_explosion, add_explosion_smoke
+# The two shipped coupling responses live in simulation.exchange now
+# (mechanics/05 coupling table, P1). Re-imported for compatibility — legacy
+# imports (`from simulation.combat import apply_environmental_damage, ...`)
+# keep resolving, and process_door_explosives calls apply_blast_damage
+# unchanged.
+from simulation.exchange import (                                # noqa: F401
+    HEAT_SCALE, apply_blast_damage, apply_environmental_damage,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -103,158 +118,6 @@ class Shot:
         self.fx2, self.fy2 = fx2, fy2
         self.time = time
         self.duration = CFG.combat.shot_tracer_duration
-
-
-# ---------------------------------------------------------------------------
-# Blast damage to units
-# ---------------------------------------------------------------------------
-def apply_blast_damage(units, fx, fy, radius, max_damage, events=None):
-    """Damage every unit within ``radius`` of (fx, fy), with linear falloff.
-
-    Units below ``CFG.combat.blast_damage_threshold`` damage take none
-    (prevents chip damage at the edge of distant blasts). Marks the
-    unit dead if HP <= 0. Does NOT set ``killed_by_zombie`` — explosion
-    deaths don't convert.
-
-    If ``events`` is a list, append a :class:`UnitHitEvent` per hit and a
-    :class:`UnitKilledEvent` per kill so the renderer can spawn matching
-    visual effects.
-    """
-    for u in units:
-        if not u.alive:
-            continue
-        uc_fx = u.center_tile_x()
-        uc_fy = u.center_tile_y()
-        dist = math.sqrt((uc_fx - fx) ** 2 + (uc_fy - fy) ** 2)
-        if dist <= radius:
-            falloff = 1.0 - (dist / radius)
-            damage = int(max_damage * falloff)
-            if damage >= CFG.combat.blast_damage_threshold:
-                # Q2-lift: snap the applied delta to the Q16.16 grid
-                # (belt-and-suspenders; exact pass-through for this int
-                # damage). The event carries the APPLIED value.
-                damage = unit_fixed.quantize_hp_delta(damage)
-                u.current_hp -= damage
-                if events is not None:
-                    uid = getattr(u, "id", -1)
-                    events.append(UnitHitEvent(unit_id=uid, damage=damage,
-                                                source="explosion"))
-                if u.current_hp <= 0:
-                    u.alive = False
-                    if events is not None:
-                        uid = getattr(u, "id", -1)
-                        events.append(UnitKilledEvent(unit_id=uid,
-                                                       killed_by="explosion"))
-
-
-# ---------------------------------------------------------------------------
-# Environmental (radiant heat) damage to units — engine/06 §4, proposal §4.2
-# ---------------------------------------------------------------------------
-# Q16.16 scale shared with the `heat`/`temperature` fields (cpp/src/raycaster.h
-# HEAT_SCALE). One unit of heat energy == HEAT_SCALE raw int counts in the
-# buffer; Phi divides back out to the energy-unit domain the [combat] consts and
-# the felt-temp model are authored in.
-HEAT_SCALE = 65536
-
-
-def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
-    """Apply per-tick radiant heat damage to every LIVING unit (proposal §4.2).
-
-    A unit is a full ray-blocker (stamped before the ray pass), so rays
-    terminate on its leading tiles and ``gmap.heat`` already holds the
-    correctly occluded, distance-attenuated **incident radiant flux** at the
-    unit's footprint. We therefore sample the buffer directly — no new
-    occlusion — and never write back into it (the kernel never writes the unit;
-    the unit only reads). ``Phi_rad``-only: the optional contact term is
-    deferred (Erik #6).
-
-    Per living unit, in stored order (deterministic serial apply, mirroring
-    :func:`apply_blast_damage`):
-
-        Phi     = max(heat over occupied_tiles) / HEAT_SCALE      # incident flux
-        Phi_abs = Phi * unit_absorption * (1 - unit_reflectivity)
-        T_felt  = heat_ambient_ref + heat_flux_to_temp * Phi_abs
-        over    = T_felt - temperature_max                        # damage band
-        if over <= 0: no heat damage this tick
-        dmg     = environmental_damage_rate * (1 + heat_overtemp_scale*over) * dt_tick
-        if u.is_zombie: dmg *= zombie.fire_damage_multiplier      # the shipped 4.0
-        u.current_hp -= dmg
-
-    ``dt_tick = 1 / ticks_per_second`` makes the real DPS tick-rate independent.
-    ``temperature_max`` and ``environmental_damage_rate`` come from the unit's
-    :class:`EnvironmentProfile` when present, falling back to the global
-    ``[combat]`` config values otherwise.
-
-    Heat deaths set ``source="heat"`` on the hit / killed events and do **NOT**
-    set ``killed_by_zombie`` — like blast and bullet deaths, only melee
-    converts (a burned corpse converting would be wrong).
-
-    Must run AFTER the ray pass fills ``heat`` and BEFORE the end-of-tick heat
-    clear (its existence is precisely what makes clearing ``heat`` correct).
-    """
-    h, w = gmap.heat.shape
-    heat = gmap.heat
-    cmb = CFG.combat
-
-    absorption   = float(cmb.unit_absorption)
-    reflectivity = float(cmb.unit_reflectivity)
-    flux_to_temp = float(cmb.heat_flux_to_temp)
-    ambient_ref  = float(cmb.heat_ambient_ref)
-    overtemp_k   = float(cmb.heat_overtemp_scale)
-    temp_max_cfg = float(cmb.temperature_max)
-    env_rate_cfg = float(cmb.environmental_damage_rate)
-    zombie_mult  = float(CFG.zombie.fire_damage_multiplier)
-
-    dt_tick = 1.0 / float(ticks_per_second)
-
-    for u in units:
-        if not u.alive:
-            continue
-
-        # max-over-footprint incident flux (the hottest tile on the body is the
-        # exposure that matters; shadowed tiles read ~0, max picks the burning
-        # side). In-bounds guard for safety against off-grid footprints.
-        peak_raw = 0
-        for (tx, ty) in u.occupied_tiles():
-            if 0 <= ty < h and 0 <= tx < w:
-                v = int(heat[ty, tx])
-                if v > peak_raw:
-                    peak_raw = v
-        if peak_raw <= 0:
-            continue  # cold tile: no radiant flux, no heat damage
-
-        phi = peak_raw / HEAT_SCALE
-        phi_abs = phi * absorption * (1.0 - reflectivity)
-
-        # Per-unit EnvironmentProfile band / rate, else the global fallback.
-        env = getattr(u, "environment", None)
-        temp_max = float(getattr(env, "temperature_max", temp_max_cfg))
-        env_rate = float(getattr(env, "environmental_damage_rate", env_rate_cfg))
-
-        t_felt = ambient_ref + flux_to_temp * phi_abs
-        over = t_felt - temp_max
-        if over <= 0.0:
-            continue  # within the tolerance band: survivable, no damage
-
-        dmg = env_rate * (1.0 + overtemp_k * over) * dt_tick
-        if u.is_zombie:
-            dmg *= zombie_mult
-
-        # Q2-lift: snap the delta to the Q16.16 grid before it touches HP —
-        # every applied delta becomes an exact multiple of 1/65536 (change
-        # <= 7.6e-6 HP per application; belt-and-suspenders, the float chain
-        # above is already IEEE-stable). The event carries the APPLIED value.
-        dmg = unit_fixed.quantize_hp_delta(dmg)
-        u.current_hp -= dmg
-        if events is not None:
-            uid = getattr(u, "id", -1)
-            events.append(UnitHitEvent(unit_id=uid, damage=dmg,
-                                       source="heat"))
-        if u.current_hp <= 0:
-            u.alive = False
-            if events is not None:
-                uid = getattr(u, "id", -1)
-                events.append(UnitKilledEvent(unit_id=uid, killed_by="heat"))
 
 
 # ---------------------------------------------------------------------------

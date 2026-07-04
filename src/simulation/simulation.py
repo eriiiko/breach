@@ -68,10 +68,19 @@ from simulation.ai_zombie import update_zombies_tick, convert_marines_to_zombies
 from simulation.generation import predefined_unit_attributes
 from simulation.species import get_species
 from simulation.combat import (
-    apply_blast_damage, apply_environmental_damage, apply_temperature_ignition,
+    apply_temperature_ignition,
     process_door_explosives, process_shooting,
     Projectile, Shot,
 )
+# The two shipped physics->unit couplings — rows in the mechanics/05 coupling
+# table — are invoked through the exchange module (P1 refactor). Imported as
+# BARE NAMES (not module-qualified calls) deliberately: the call sites read
+# this module's own binding, which keeps instrumentation that rebinds
+# simulation.simulation.apply_environmental_damage working
+# (tests/_xarch_liveheat_dump.py — the case-2 divergence instrument).
+# Execution positions are UNCHANGED (heat at step 9c, blast at the grenade
+# fuse-out below); the consolidated named EXCHANGE-READ slot is a later patch.
+from simulation.exchange import apply_blast_damage, apply_environmental_damage
 from simulation.events import (
     DoorDestroyedEvent, ExplosionEvent, WallDestroyedEvent,
 )
@@ -683,6 +692,8 @@ class Simulation:
         # recorder snapshot (so the snapshot captures post-damage HP) and BEFORE
         # the end-of-tick heat clear below — its existence is precisely what
         # makes wiping `heat` correct (a reader finally consumes it).
+        # This is the `heat | max` coupling row (mechanics/05 §1;
+        # exchange.COUPLING_TABLE[0]) at its legacy pipeline position.
         if self.physics_runner is not None:
             apply_environmental_damage(
                 self.units, self.gmap, self._tps,
@@ -780,6 +791,9 @@ class Simulation:
                         CFG.weapons.grenade.pressure,
                         CFG.weapons.grenade.wall_damage,
                     )
+                    # The wave_p blast coupling row (mechanics/05 §1;
+                    # exchange.COUPLING_TABLE[1]) — detonation-site
+                    # invocation, geometric falloff (predates the field read).
                     apply_blast_damage(
                         self.units, fx, fy, radius,
                         CFG.weapons.grenade.unit_damage,

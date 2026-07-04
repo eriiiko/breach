@@ -1,0 +1,431 @@
+"""The physics↔unit exchange layer — the coupling table (mechanics/05).
+
+Erik's founding principle (mechanics/05, verbatim): "there simply shouldn't
+be any barrier between gameplay and the physics" — operationally, **the unit
+must be able to read every field**. This module is that principle's ONE home:
+every physics→unit coupling — shockwave damage, heat damage, water slowing,
+gas poisoning, O2, pushes — is a **row in a table**::
+
+    (field, reduction over footprint, response(sample, unit.profile) -> outputs)
+
+not a plumbing project. Adding a coupling is O(one row).
+
+Contents:
+
+- **The reduction vocabulary** (mechanics/05 §1): ``center | max | mean |
+  sum | grad`` — small pure functions over a unit's footprint tiles on an
+  int32 Q16.16 field. All integer-exact (ingress door 1): Python ints carry
+  the sums (no overflow), and the single ``mean`` divide is the
+  round-half-away-from-zero twin of ``fixed_point.h::mean_round``
+  (sign-symmetric, no DC bias).
+- **The coupling-table structure**: :class:`CouplingRow` + the ordered
+  ``COUPLING_TABLE`` registering the shipped rows. Plain data + functions —
+  no framework.
+- **The shipped response implementations** (moved verbatim from
+  ``combat.py``): ``apply_environmental_damage`` (the ``heat | max`` row) and
+  ``apply_blast_damage`` (the ``wave_p`` blast row).
+
+P1 scope note (behaviour-preserving refactor, 2026-07-05): the table is the
+formal registry; **execution still happens at the rows' legacy tick
+positions** (heat damage post-physics in ``Simulation.step`` 9c; blast damage
+at detonation sites — grenade fuse-out and door explosives). The consolidated
+named EXCHANGE-READ slot that iterates this table in table order (mechanics/05
+§4, pipeline phase 2) is a later patch; nothing here reorders or merges the
+shipped call sites.
+
+Conventions (shared by every reduction):
+
+- ``field`` is a 2-D numpy int array indexed ``field[ty, tx]`` (row-major,
+  y-down) — the GameMap layout.
+- ``tiles`` is a sequence of ``(tx, ty)`` tile coordinates — exactly what
+  :meth:`Unit.occupied_tiles` returns.
+- Off-grid tiles are skipped by an in-bounds guard (mirroring
+  ``apply_environmental_damage``'s footprint loop); a footprint with **no**
+  in-bounds tile reduces to the zero element (0, or ``(0, 0)`` for ``grad``).
+- Every result is a plain Python int (exact, unbounded) in the field's own
+  Q16.16 domain — determinism ingress door 1 (engine/14 §3).
+"""
+from __future__ import annotations
+
+import math
+
+from dataclasses import dataclass
+from typing import Callable, Optional, Sequence
+
+from config import CFG
+from simulation import unit_fixed
+from simulation.events import UnitHitEvent, UnitKilledEvent
+
+
+# ---------------------------------------------------------------------------
+# The reduction vocabulary (mechanics/05 §1) — v1: center | max | mean | sum
+# | grad. Small pure functions, integer-exact, over footprint tiles.
+# ---------------------------------------------------------------------------
+
+def _mean_round(total: int, count: int) -> int:
+    """``total / count`` rounded half away from zero — the Python twin of
+    ``cpp/src/fixed_point.h::mean_round`` (sign-symmetric, so a mean never
+    picks up a ``-sign(total)`` DC bias the way a plain truncating divide
+    would). ``count <= 0`` returns 0 (the caller's empty-footprint fallback),
+    matching the C++ ``count <= 0 -> 0`` guard.
+    """
+    if count <= 0:
+        return 0
+    half = count // 2
+    if total >= 0:
+        return (total + half) // count
+    # C++ does (total - half) / count with TRUNC-toward-zero division; Python
+    # // floors, so emulate trunc on the negative branch: trunc(a/b) == -((-a)//b).
+    return -((-total + half) // count)
+
+
+def reduce_center(field, tiles: Sequence[tuple[int, int]]) -> int:
+    """Sample the field at the footprint's centre tile.
+
+    The centre is the bounding-box middle of ALL tiles (geometry — including
+    any off-grid ones), per axis ``(lo + hi + 1) // 2``: for a square
+    ``footprint × footprint`` body anchored at ``a`` this is exactly
+    ``a + footprint // 2``, i.e. it agrees with ``Unit.center_tile_x/y()``
+    for every footprint size (odd or even). Order-independent in ``tiles``.
+    Returns 0 if ``tiles`` is empty or the centre tile itself is off-grid.
+    """
+    if not tiles:
+        return 0
+    x_lo = min(tx for (tx, _ty) in tiles)
+    x_hi = max(tx for (tx, _ty) in tiles)
+    y_lo = min(ty for (_tx, ty) in tiles)
+    y_hi = max(ty for (_tx, ty) in tiles)
+    cx = (x_lo + x_hi + 1) // 2
+    cy = (y_lo + y_hi + 1) // 2
+    h, w = field.shape
+    if 0 <= cy < h and 0 <= cx < w:
+        return int(field[cy, cx])
+    return 0
+
+
+def reduce_max(field, tiles: Sequence[tuple[int, int]]) -> int:
+    """True maximum over the in-bounds footprint tiles (may be negative on a
+    signed field). Returns 0 when no tile is in bounds — the same "off-grid
+    footprint reads cold" fallback the shipped heat row uses.
+    """
+    h, w = field.shape
+    best: Optional[int] = None
+    for (tx, ty) in tiles:
+        if 0 <= ty < h and 0 <= tx < w:
+            v = int(field[ty, tx])
+            if best is None or v > best:
+                best = v
+    return 0 if best is None else best
+
+
+def reduce_mean(field, tiles: Sequence[tuple[int, int]]) -> int:
+    """Integer mean over the in-bounds footprint tiles: one exact integer sum
+    + ONE round-half-away-from-zero divide (mechanics/05 §1; the
+    ``mean_round`` convention). Off-grid tiles are excluded from both the sum
+    AND the count. Returns 0 when no tile is in bounds.
+    """
+    h, w = field.shape
+    total = 0
+    count = 0
+    for (tx, ty) in tiles:
+        if 0 <= ty < h and 0 <= tx < w:
+            total += int(field[ty, tx])   # Python int: exact, order-free
+            count += 1
+    return _mean_round(total, count)
+
+
+def reduce_sum(field, tiles: Sequence[tuple[int, int]]) -> int:
+    """Exact integer sum over the in-bounds footprint tiles (Python int —
+    no int32 overflow; integer addition commutes, so the result is
+    order-free). Returns 0 when no tile is in bounds.
+    """
+    h, w = field.shape
+    total = 0
+    for (tx, ty) in tiles:
+        if 0 <= ty < h and 0 <= tx < w:
+            total += int(field[ty, tx])
+    return total
+
+
+def reduce_grad(field, tiles: Sequence[tuple[int, int]]) -> tuple[int, int]:
+    """Footprint gradient ``(gx, gy)`` — the v1 "footprint differences" form
+    (mechanics/05 §1): per axis, the difference of the two extreme edge-line
+    integer means over the in-bounds tiles::
+
+        gx = mean(field on tiles with tx == x_hi) - mean(... tx == x_lo)
+        gy = mean(field on tiles with ty == y_hi) - mean(... ty == y_lo)
+
+    (each mean = one :func:`_mean_round` divide). Positive toward increasing
+    tx / ty (y-down), i.e. it points UPHILL like ∇p — the future impulse-push
+    row (mechanics/05 §1) consumes ``-grad``. The result is the raw field
+    difference ACROSS the footprint extremes (span ``x_hi - x_lo`` tiles),
+    deliberately NOT normalised per tile — v1 keeps the divides to one per
+    axis and lets the consuming response own its scale constant.
+
+    An axis with fewer than two distinct in-bounds lines (single tile, fully
+    clipped, or empty footprint) contributes 0.
+    """
+    h, w = field.shape
+    in_bounds: list[tuple[int, int, int]] = []
+    for (tx, ty) in tiles:
+        if 0 <= ty < h and 0 <= tx < w:
+            in_bounds.append((tx, ty, int(field[ty, tx])))
+    if not in_bounds:
+        return (0, 0)
+
+    def _edge_mean(axis_value: int, axis_index: int) -> int:
+        total = 0
+        count = 0
+        for entry in in_bounds:
+            if entry[axis_index] == axis_value:
+                total += entry[2]
+                count += 1
+        return _mean_round(total, count)
+
+    x_lo = min(e[0] for e in in_bounds)
+    x_hi = max(e[0] for e in in_bounds)
+    y_lo = min(e[1] for e in in_bounds)
+    y_hi = max(e[1] for e in in_bounds)
+
+    gx = _edge_mean(x_hi, 0) - _edge_mean(x_lo, 0) if x_hi > x_lo else 0
+    gy = _edge_mean(y_hi, 1) - _edge_mean(y_lo, 1) if y_hi > y_lo else 0
+    return (gx, gy)
+
+
+#: The v1 vocabulary by design name (mechanics/05 §1). A CouplingRow's
+#: ``reduction`` column names an entry here (or None — see the row notes).
+REDUCTIONS: dict[str, Callable] = {
+    "center": reduce_center,
+    "max":    reduce_max,
+    "mean":   reduce_mean,
+    "sum":    reduce_sum,
+    "grad":   reduce_grad,
+}
+
+
+# ---------------------------------------------------------------------------
+# Environmental (radiant heat) damage to units — engine/06 §4, proposal §4.2
+# — the `heat | max` coupling row. Moved VERBATIM from combat.py (P1).
+# ---------------------------------------------------------------------------
+# Q16.16 scale shared with the `heat`/`temperature` fields (cpp/src/raycaster.h
+# HEAT_SCALE). One unit of heat energy == HEAT_SCALE raw int counts in the
+# buffer; Phi divides back out to the energy-unit domain the [combat] consts and
+# the felt-temp model are authored in.
+HEAT_SCALE = 65536
+
+
+def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
+    """Apply per-tick radiant heat damage to every LIVING unit (proposal §4.2).
+
+    A unit is a full ray-blocker (stamped before the ray pass), so rays
+    terminate on its leading tiles and ``gmap.heat`` already holds the
+    correctly occluded, distance-attenuated **incident radiant flux** at the
+    unit's footprint. We therefore sample the buffer directly — no new
+    occlusion — and never write back into it (the kernel never writes the unit;
+    the unit only reads). ``Phi_rad``-only: the optional contact term is
+    deferred (Erik #6).
+
+    Per living unit, in stored order (deterministic serial apply, mirroring
+    :func:`apply_blast_damage`):
+
+        Phi     = max(heat over occupied_tiles) / HEAT_SCALE      # incident flux
+        Phi_abs = Phi * unit_absorption * (1 - unit_reflectivity)
+        T_felt  = heat_ambient_ref + heat_flux_to_temp * Phi_abs
+        over    = T_felt - temperature_max                        # damage band
+        if over <= 0: no heat damage this tick
+        dmg     = environmental_damage_rate * (1 + heat_overtemp_scale*over) * dt_tick
+        if u.is_zombie: dmg *= zombie.fire_damage_multiplier      # the shipped 4.0
+        u.current_hp -= dmg
+
+    ``dt_tick = 1 / ticks_per_second`` makes the real DPS tick-rate independent.
+    ``temperature_max`` and ``environmental_damage_rate`` come from the unit's
+    :class:`EnvironmentProfile` when present, falling back to the global
+    ``[combat]`` config values otherwise.
+
+    Heat deaths set ``source="heat"`` on the hit / killed events and do **NOT**
+    set ``killed_by_zombie`` — like blast and bullet deaths, only melee
+    converts (a burned corpse converting would be wrong).
+
+    Must run AFTER the ray pass fills ``heat`` and BEFORE the end-of-tick heat
+    clear (its existence is precisely what makes clearing ``heat`` correct).
+    """
+    h, w = gmap.heat.shape
+    heat = gmap.heat
+    cmb = CFG.combat
+
+    absorption   = float(cmb.unit_absorption)
+    reflectivity = float(cmb.unit_reflectivity)
+    flux_to_temp = float(cmb.heat_flux_to_temp)
+    ambient_ref  = float(cmb.heat_ambient_ref)
+    overtemp_k   = float(cmb.heat_overtemp_scale)
+    temp_max_cfg = float(cmb.temperature_max)
+    env_rate_cfg = float(cmb.environmental_damage_rate)
+    zombie_mult  = float(CFG.zombie.fire_damage_multiplier)
+
+    dt_tick = 1.0 / float(ticks_per_second)
+
+    for u in units:
+        if not u.alive:
+            continue
+
+        # max-over-footprint incident flux (the hottest tile on the body is the
+        # exposure that matters; shadowed tiles read ~0, max picks the burning
+        # side). In-bounds guard for safety against off-grid footprints.
+        peak_raw = 0
+        for (tx, ty) in u.occupied_tiles():
+            if 0 <= ty < h and 0 <= tx < w:
+                v = int(heat[ty, tx])
+                if v > peak_raw:
+                    peak_raw = v
+        if peak_raw <= 0:
+            continue  # cold tile: no radiant flux, no heat damage
+
+        phi = peak_raw / HEAT_SCALE
+        phi_abs = phi * absorption * (1.0 - reflectivity)
+
+        # Per-unit EnvironmentProfile band / rate, else the global fallback.
+        env = getattr(u, "environment", None)
+        temp_max = float(getattr(env, "temperature_max", temp_max_cfg))
+        env_rate = float(getattr(env, "environmental_damage_rate", env_rate_cfg))
+
+        t_felt = ambient_ref + flux_to_temp * phi_abs
+        over = t_felt - temp_max
+        if over <= 0.0:
+            continue  # within the tolerance band: survivable, no damage
+
+        dmg = env_rate * (1.0 + overtemp_k * over) * dt_tick
+        if u.is_zombie:
+            dmg *= zombie_mult
+
+        # Q2-lift: snap the delta to the Q16.16 grid before it touches HP —
+        # every applied delta becomes an exact multiple of 1/65536 (change
+        # <= 7.6e-6 HP per application; belt-and-suspenders, the float chain
+        # above is already IEEE-stable). The event carries the APPLIED value.
+        dmg = unit_fixed.quantize_hp_delta(dmg)
+        u.current_hp -= dmg
+        if events is not None:
+            uid = getattr(u, "id", -1)
+            events.append(UnitHitEvent(unit_id=uid, damage=dmg,
+                                       source="heat"))
+        if u.current_hp <= 0:
+            u.alive = False
+            if events is not None:
+                uid = getattr(u, "id", -1)
+                events.append(UnitKilledEvent(unit_id=uid, killed_by="heat"))
+
+
+# ---------------------------------------------------------------------------
+# Blast damage to units — the `wave_p` blast coupling row. Moved VERBATIM
+# from combat.py (P1).
+# ---------------------------------------------------------------------------
+def apply_blast_damage(units, fx, fy, radius, max_damage, events=None):
+    """Damage every unit within ``radius`` of (fx, fy), with linear falloff.
+
+    Units below ``CFG.combat.blast_damage_threshold`` damage take none
+    (prevents chip damage at the edge of distant blasts). Marks the
+    unit dead if HP <= 0. Does NOT set ``killed_by_zombie`` — explosion
+    deaths don't convert.
+
+    If ``events`` is a list, append a :class:`UnitHitEvent` per hit and a
+    :class:`UnitKilledEvent` per kill so the renderer can spawn matching
+    visual effects.
+    """
+    for u in units:
+        if not u.alive:
+            continue
+        uc_fx = u.center_tile_x()
+        uc_fy = u.center_tile_y()
+        dist = math.sqrt((uc_fx - fx) ** 2 + (uc_fy - fy) ** 2)
+        if dist <= radius:
+            falloff = 1.0 - (dist / radius)
+            damage = int(max_damage * falloff)
+            if damage >= CFG.combat.blast_damage_threshold:
+                # Q2-lift: snap the applied delta to the Q16.16 grid
+                # (belt-and-suspenders; exact pass-through for this int
+                # damage). The event carries the APPLIED value.
+                damage = unit_fixed.quantize_hp_delta(damage)
+                u.current_hp -= damage
+                if events is not None:
+                    uid = getattr(u, "id", -1)
+                    events.append(UnitHitEvent(unit_id=uid, damage=damage,
+                                                source="explosion"))
+                if u.current_hp <= 0:
+                    u.alive = False
+                    if events is not None:
+                        uid = getattr(u, "id", -1)
+                        events.append(UnitKilledEvent(unit_id=uid,
+                                                       killed_by="explosion"))
+
+
+# ---------------------------------------------------------------------------
+# The coupling-table structure (mechanics/05 §1) — plain data, no framework.
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class CouplingRow:
+    """One physics→unit coupling: a row in the mechanics/05 table.
+
+    Attributes
+    ----------
+    field : str
+        GameMap field name the row reads (``heat``, ``wave_p``, ...).
+    reduction : str or None
+        Name into :data:`REDUCTIONS` — the footprint reduction the row's
+        physical read uses. ``None`` marks a shipped response that predates
+        the field read and does its own sampling (see the row's ``note``).
+    response : callable
+        The response implementation. P1: the shipped functions, invoked at
+        their legacy tick positions with their legacy signatures; the
+        uniform ``response(sample, unit.profile)`` shape arrives with the
+        named EXCHANGE-READ slot (a later patch).
+    note : str
+        Honest wiring status — what the row does TODAY vs the chapter row.
+    """
+    field: str
+    reduction: Optional[str]
+    response: Callable
+    note: str = ""
+
+
+#: THE COUPLING TABLE (mechanics/05 §1) — ordered; it GROWS, one row per new
+#: coupling (impulse push, water, gas, O2, fire, ... — see the chapter).
+#: Table order is the chapter's row order and becomes the P0 execution order
+#: ("couplings in table order") once the named EXCHANGE-READ slot lands
+#: (P4-era); in P1 the registered rows still run at their legacy tick
+#: positions (module docstring above).
+COUPLING_TABLE: tuple[CouplingRow, ...] = (
+    CouplingRow(
+        field="heat",
+        reduction="max",
+        response=apply_environmental_damage,
+        note=(
+            "Radiant flux -> T_felt band -> damage (engine/06 §4). The shipped "
+            "response computes its max-over-footprint inline (identical to "
+            "REDUCTIONS['max'] on the non-negative heat field) and runs "
+            "post-physics at Simulation.step 9c, before the end-of-tick heat "
+            "clear."
+        ),
+    ),
+    CouplingRow(
+        field="wave_p",
+        reduction=None,
+        response=apply_blast_damage,
+        note=(
+            "Blast overpressure -> damage. The shipped response PREDATES the "
+            "field read: it derives overpressure geometrically (linear radius "
+            "falloff from the detonation point) instead of sampling wave_p, "
+            "and runs at DETONATION SITES (grenade fuse-out in "
+            "Simulation._update_projectiles; combat.process_door_explosives), "
+            "not at a fixed tick slot. The chapter row's true wave_p footprint "
+            "read arrives with the impulse-push work."
+        ),
+    ),
+)
+
+
+__all__ = [
+    "HEAT_SCALE",
+    "REDUCTIONS",
+    "reduce_center", "reduce_grad", "reduce_max", "reduce_mean", "reduce_sum",
+    "CouplingRow", "COUPLING_TABLE",
+    "apply_blast_damage", "apply_environmental_damage",
+]
