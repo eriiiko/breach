@@ -92,6 +92,7 @@ Legend: ✅ implemented · ⚠️ partial (foundation built, advanced parts desi
 | 02 | [AI & line-of-sight](mechanics/02_ai_and_los.md) | ⚠️ |
 | 03 | [Combat & weapons](mechanics/03_combat_and_weapons.md) | ⚠️ |
 | 04 | [Turn system & control](mechanics/04_turn_and_control.md) | ⚠️ |
+| 05 | [Physics↔unit exchange](mechanics/05_physics_unit_exchange.md) | ⚠️ (heat/blast rows + stamp + FieldEdit shipped; formal coupling table + reductions + ordering principles designed; push/water/gas/O2 rows + statuses owed via combat chapter) |
 
 ### Graphics — the look layer (chapters by topic, not numbered; see [graphics/README.md](graphics/README.md))
 | Chapter | Status |
