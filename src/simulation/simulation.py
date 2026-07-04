@@ -95,6 +95,7 @@ from simulation.physics import apply_explosion, add_explosion_smoke
 from simulation.physics_runner import PhysicsRunner
 from simulation.field_edit import EditQueue, FieldEdit
 from simulation.recorder import PhysicsRecorder
+from simulation.status import composed_flags, tick_statuses
 
 try:
     from pathfinding import astar
@@ -592,9 +593,11 @@ class Simulation:
         pause (they never call set_paused).
 
         Tick ordering — load-bearing! Matches the legacy
-        ``Game._process_tick`` (game.py:1696-1747):
+        ``Game._process_tick`` (game.py:1696-1747), with the status pass
+        (2b) added at the top of the unit-simulation section (P3):
           1. Clear tick_events (this tick is a fresh slate)
           2. Update projectiles (advance position, detonate)
+          2b. Tick unit statuses (durations count down; DoT/HoT emit)
           3. Update player movement (read precomputed path)
           4. Process shooting (auto-fire on move, fire orders)
           5. Zombie AI
@@ -626,6 +629,22 @@ class Simulation:
 
         # 2. Update projectiles.
         self._update_projectiles()
+
+        # 2b. Tick unit statuses/conditions (mechanics/06 §4) — the TOP of
+        # the unit-simulation section, per the ch. 05 §4 pipeline (phase 3:
+        # "statuses tick; AI/orders; attacks resolve; movement"). Anchored
+        # AFTER projectiles — an in-flight grenade is a world object whose
+        # fuse-out is an ARRIVAL (ch. 05 P3 travel time), not a unit action —
+        # and BEFORE every unit decision this tick, so movement / shooting /
+        # zombie AI all see post-status composed flags and post-DoT hp (a
+        # unit killed by its burning at the tick top neither moves nor acts
+        # this tick). Consequence for triggers (P4): a status applied at or
+        # before this point (projectile blast, exchange-read couplings)
+        # suppresses for duration_ticks INCLUDING this tick; one applied
+        # later in the tick (shooting, melee) starts next tick. DoT/HoT
+        # packets flow through damage.apply_packet into tick_events —
+        # synced, digest-hashed, in emission order.
+        tick_statuses(self.units, events=self.tick_events)
 
         # 3. Update player movement.
         self._update_player_movement()
@@ -805,9 +824,22 @@ class Simulation:
                         pos=(fx, fy), radius=radius, kind="grenade"))
 
     def _update_player_movement(self) -> None:
-        """Step each player unit along its precomputed path."""
+        """Step each player unit along its precomputed path.
+
+        Status gate (mechanics/06 §4): a unit whose composed ``can_move`` is
+        suppressed (knocked down / immobilized / paralyzed) holds position
+        and its precomputed path PAUSES — ``path_tick_offset`` shifts by one
+        so the path is not consumed while down; on release the unit resumes
+        at the next un-walked path index (no catch-up teleport; the round
+        may end before the tail is walked — being knocked down costs the
+        distance). With no statuses this is a dead path, bit-identical to
+        pre-P3 behavior.
+        """
         for u in self.units:
             if not u.alive or u.team != 0:
+                continue
+            if not composed_flags(u).can_move:
+                u.path_tick_offset += 1
                 continue
             path_idx = self.tick - u.path_tick_offset
             if 0 <= path_idx < len(u.move_path):

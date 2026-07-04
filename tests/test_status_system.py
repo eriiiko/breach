@@ -145,11 +145,12 @@ def test_stacking_stack_instances_coexist_and_expire_independently():
     apply_status(u, POISONED, magnitude=2.0, duration_ticks=3, source_id=2)
     assert len(u.statuses) == 2, "stack appends a NEW instance"
     hp0 = u.current_hp
-    tick_statuses([u])          # both emit; the 1-tick dose expires
+    tick_statuses([u])          # both emit; the 1-tick dose hits 0
     assert u.current_hp == hp0 - 3.0
-    assert len(u.statuses) == 1 and u.statuses[0].source_id == 2
-    tick_statuses([u])          # the survivor keeps ticking alone
+    assert [st.remaining_ticks for st in u.statuses] == [0, 2]
+    tick_statuses([u])          # dose-1 swept; the survivor ticks alone
     assert u.current_hp == hp0 - 5.0
+    assert len(u.statuses) == 1 and u.statuses[0].source_id == 2
 
 
 def test_stacking_max_keeps_strongest_magnitude_and_longest_timer():
@@ -171,13 +172,22 @@ def test_stacking_max_keeps_strongest_magnitude_and_longest_timer():
 # ---------------------------------------------------------------------------
 # tick_statuses — expiry, order, emission
 # ---------------------------------------------------------------------------
-def test_expiry_duration_n_means_n_tick_passes():
+def test_expiry_duration_n_suppresses_exactly_n_ticks_lazy_sweep():
+    """The duration contract: N = exactly N ticks of suppression. The pass
+    runs BEFORE each tick's flag consumers, so expiry is LAZY — the status
+    hits 0 and keeps suppressing that tick; the NEXT pass sweeps it."""
     u = _marine()
     apply_status(u, STUNNED, magnitude=0.0, duration_ticks=2)
-    tick_statuses([u])
+    tick_statuses([u])          # tick 1: 2 -> 1 (suppressed tick #1)
     assert len(u.statuses) == 1 and u.statuses[0].remaining_ticks == 1
-    tick_statuses([u])
-    assert u.statuses == [], "expired at 0 — removed"
+    assert composed_flags(u).can_act is False
+    tick_statuses([u])          # tick 2: 1 -> 0 (suppressed tick #2, the last)
+    assert len(u.statuses) == 1 and u.statuses[0].remaining_ticks == 0
+    assert composed_flags(u).can_act is False, \
+        "duration 2 means TWO suppressed ticks — 0-count still holds this one"
+    tick_statuses([u])          # tick 3: swept at the top — released
+    assert u.statuses == []
+    assert composed_flags(u).can_act is True
     tick_statuses([u])          # empty list is a clean no-op
     assert u.statuses == []
 
@@ -186,7 +196,8 @@ def test_expiry_compacts_in_place_held_reference_stays_valid():
     u = _marine()
     apply_status(u, STUNNED, magnitude=0.0, duration_ticks=1)
     held = u.statuses
-    tick_statuses([u])
+    tick_statuses([u])          # 1 -> 0 (its one suppressed tick)
+    tick_statuses([u])          # swept
     assert held is u.statuses and held == []
 
 
@@ -233,6 +244,7 @@ def test_zero_magnitude_dot_emits_no_events_but_still_expires():
     events = []
     tick_statuses([u], events=events)
     tick_statuses([u], events=events)
+    tick_statuses([u], events=events)   # the lazy sweep
     assert events == [] and u.statuses == []
 
 
@@ -335,7 +347,9 @@ def test_composed_flags_restore_when_statuses_expire():
     u = _marine()
     apply_status(u, PARALYZED, magnitude=0.0, duration_ticks=1)
     assert composed_flags(u) == ComposedFlags(False, False, False, False)
-    tick_statuses([u])
+    tick_statuses([u])          # its ONE suppressed tick (0-count, lazy)
+    assert composed_flags(u) == ComposedFlags(False, False, False, False)
+    tick_statuses([u])          # swept — released
     assert composed_flags(u) == ComposedFlags(True, True, True, False)
 
 
@@ -360,6 +374,169 @@ def test_serialize_statuses_canonical_ints_in_list_order():
     ]
     assert all(isinstance(v, int) for row in rec for v in row)
     assert serialize_statuses(SimpleNamespace()) == []
+
+
+# ---------------------------------------------------------------------------
+# Flag consumption END-TO-END on a tiny sim (P3 stage 2 — the wired gates:
+# movement / shooting / zombie AI read composed_flags through real step()s).
+# No trigger applies statuses in-game yet (P4+), so tests apply directly and
+# observe the suppression — proving the dead paths are wired correctly.
+# ---------------------------------------------------------------------------
+def _tiny_sim(seed=20260705):
+    """A 16x16 hull-walled room, interior air, NO physics module (the unit-
+    simulation section runs fully without it) — same synthetic-level idiom as
+    field_ab_harness._scenario_level."""
+    import numpy as np
+    from level_loader import LevelData
+    from simulation import Simulation
+
+    h = w = 16
+    tm = np.ones((h, w), dtype=np.int32)
+    tm[1:15, 1:15] = 4
+    level = LevelData(name="status_e2e", version="1", path=Path("."),
+                      tilemap=tm, tile_size_m=1.0, diffuse_path=Path("."))
+    sim = Simulation(level, seed=seed, breach_physics=None,
+                     enable_recorder=False)
+    return sim
+
+
+def _step(sim, n=1):
+    for _ in range(n):
+        sim.set_paused(False)
+        sim.step()
+
+
+def test_e2e_can_move_suppression_pauses_marine_path_then_resumes():
+    """can_move == False: the marine holds position and its precomputed path
+    PAUSES (offset shift) — on release it resumes at the next un-walked
+    index, not a catch-up teleport."""
+    sim = _tiny_sim()
+    u = Unit("M1", x=2, y=2, team=0)
+    sim.add_unit(u)
+    u.move_path = [(3.0, 2.0), (4.0, 2.0), (5.0, 2.0)]
+    u.path_tick_offset = 0
+    apply_status(u, KNOCKED_DOWN, magnitude=0.0, duration_ticks=2)
+
+    _step(sim)                          # tick 0: suppressed tick #1
+    assert (u.x, u.y) == (2.0, 2.0)
+    _step(sim)                          # tick 1: 0-count lazy — tick #2
+    assert (u.x, u.y) == (2.0, 2.0)
+    assert u.path_tick_offset == 2, "the path paused, was not consumed"
+    _step(sim)                          # tick 2: swept — resumes at path[0]
+    assert (u.x, u.y) == (3.0, 2.0), "resumed at the FIRST un-walked index"
+    _step(sim)
+    assert (u.x, u.y) == (4.0, 2.0)
+
+
+def test_e2e_control_marine_walks_without_statuses():
+    """The dead-path guarantee's control: no statuses -> pre-P3 movement."""
+    sim = _tiny_sim()
+    u = Unit("M1", x=2, y=2, team=0)
+    sim.add_unit(u)
+    u.move_path = [(3.0, 2.0), (4.0, 2.0)]
+    u.path_tick_offset = 0
+    _step(sim)
+    assert (u.x, u.y) == (3.0, 2.0)
+    _step(sim)
+    assert (u.x, u.y) == (4.0, 2.0)
+
+
+def test_e2e_can_act_suppression_blocks_marine_fire_order():
+    """can_act == False: the fire order is NOT executed while stunned; the
+    order stays queued and executes once the stun releases."""
+    from simulation.orders import ORDER_FIRE, Order
+
+    def build():
+        sim = _tiny_sim()
+        m = Unit("M1", x=2, y=6, team=0)
+        z = Unit("Z1", x=10, y=6, team=1)
+        sim.add_unit(m)
+        sim.add_unit(z)
+        ok = sim.apply_action(m.id, Order(ORDER_FIRE, z.tile_x, z.tile_y,
+                                          phase=0))
+        assert ok, "fire order must validate (AP + inventory)"
+        return sim, m
+
+    # Control: the order fires on the very first tick.
+    sim, m = build()
+    _step(sim)
+    assert m.last_fire_tick == 0, "control marine fires immediately"
+
+    # Stunned: no attack while suppressed; fires on the release tick.
+    sim, m = build()
+    apply_status(m, STUNNED, magnitude=0.0, duration_ticks=2)
+    _step(sim, 2)                       # ticks 0-1: both suppressed
+    assert m.last_fire_tick == -999, "stunned marine executed no attack"
+    _step(sim)                          # tick 2: swept — order still queued
+    assert m.last_fire_tick == 2, "suppression delays, never cancels"
+
+
+def test_e2e_can_act_suppression_blocks_zombie_melee():
+    """can_act == False on the zombie: no bite while paralyzed; the marine
+    takes the (config) melee damage only in the control run."""
+    def build():
+        sim = _tiny_sim()
+        m = Unit("M1", x=5, y=5, team=0)
+        z = Unit("Z1", x=7, y=5, team=1)    # centers 2 apart -> adjacent
+        sim.add_unit(m)
+        sim.add_unit(z)
+        return sim, m, z
+
+    sim, m, z = build()
+    _step(sim)
+    assert m.current_hp == 100.0 - CFG.zombie.melee_damage, \
+        "control zombie bites on tick 0"
+
+    sim, m, z = build()
+    apply_status(z, PARALYZED, magnitude=0.0, duration_ticks=3)
+    _step(sim, 3)
+    assert m.current_hp == 100.0, "paralyzed zombie never bit"
+
+
+def test_e2e_can_move_suppression_freezes_zombie_walk():
+    """can_move == False on the zombie: it stands (stride clock paused)
+    while the control zombie closes distance over the same ticks."""
+    def build(immobilize):
+        sim = _tiny_sim()
+        m = Unit("M1", x=2, y=5, team=0)
+        z = Unit("Z1", x=11, y=5, team=1)   # far, but LOS + trigger radius
+        sim.add_unit(m)
+        sim.add_unit(z)
+        if immobilize:
+            apply_status(z, IMMOBILIZED, magnitude=0.0, duration_ticks=25)
+        return sim, z, (z.x, z.y)
+
+    sim, z, start = build(immobilize=False)
+    _step(sim, 20)
+    assert (z.x, z.y) != start, \
+        "control zombie must walk (validates pathfinding is live)"
+
+    sim, z, start = build(immobilize=True)
+    _step(sim, 20)
+    assert (z.x, z.y) == start, "immobilized zombie never moved"
+    assert z.zombie_activated, "perception is deliberately ungated"
+
+
+def test_e2e_dot_drains_through_real_steps_and_events():
+    """The tick slot is LIVE: a BURNING applied directly drains hp through
+    real Simulation.step()s, and the hit events land in sim.tick_events
+    (synced, in emission order) on each burning tick."""
+    sim = _tiny_sim()
+    u = Unit("M1", x=2, y=2, team=0)
+    sim.add_unit(u)
+    apply_status(u, BURNING, magnitude=1.5, duration_ticks=3, source_id=None)
+    hp = [u.current_hp]
+    burn_events = 0
+    for _ in range(5):
+        _step(sim)
+        burn_events += sum(1 for e in sim.tick_events
+                           if isinstance(e, UnitHitEvent)
+                           and e.source == "burning")
+        hp.append(u.current_hp)
+    assert hp == [100.0, 98.5, 97.0, 95.5, 95.5, 95.5], \
+        "exactly duration=3 emissions of 1.5, through real steps"
+    assert burn_events == 3
+    assert u.statuses == [], "expired + swept inside the loop"
 
 
 def test_two_identical_runs_identical_status_lists_and_hp():

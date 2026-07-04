@@ -24,23 +24,31 @@ state, digest-hashed (the ``__unit_status__`` sub-hash):
 The tick contract (:func:`tick_statuses` — called at the TOP of the
 unit-simulation section of ``Simulation.step``, ch. 05 §4 phase 3):
 
-1. Dead units are skipped whole — statuses FREEZE on a corpse (no decrement,
-   no emission; kept for forensics/looting rules later).
-2. Per status, in list order: (a) a DoT/HoT kind emits ONE
+1. Dead units are skipped whole — statuses FREEZE on a corpse (no sweep, no
+   decrement, no emission; kept for forensics/looting rules later).
+2. Per living unit: (a) statuses that reached ``remaining_ticks <= 0`` on
+   the PREVIOUS pass are swept (lazy expiry — see below); then per surviving
+   status, in list order: (b) a DoT/HoT kind emits ONE
    :class:`~simulation.damage.DamagePacket` of ``magnitude`` per tick through
    :func:`simulation.damage.apply_packet` — so mitigation composes for free
    (a zombie's BURNING ticks at ``resist_mult[HEAT] = 4.0``x a marine's,
    never coded per-status); HEAL-typed kinds (REGEN) emit the NEGATIVE
-   amount (heal is negative-direction damage, unresisted in v1). A unit
+   amount (heal is negative-direction damage, unresisted in v1); a unit
    killed mid-list by an earlier status stops receiving emissions the same
-   pass. (b) ``remaining_ticks`` decrements. (c) At ``<= 0`` the status
-   expires (removed after the unit's list is processed, in place).
-3. Duration semantics for triggers: a status applied with duration ``N``
-   BEFORE this tick's status pass / flag consumers (the projectile-blast and
-   exchange-read positions P4's triggers use) suppresses for ``N``
-   consecutive ticks INCLUDING the application tick, and a DoT emits exactly
-   ``N`` packets. A trigger firing AFTER the pass (shooting, zombie melee)
-   starts the same contract on the NEXT tick.
+   pass; (c) ``remaining_ticks`` decrements.
+3. **Expiry is LAZY on purpose** — a status that hits 0 stays in the list
+   (still suppressing its flags) until the top of the NEXT pass. Because the
+   pass runs BEFORE this tick's flag consumers (movement / shooting / AI),
+   eager removal would make a duration-``N`` CC suppress only ``N-1``
+   consumer checks while its DoT twin emits ``N`` packets. Lazy expiry makes
+   the contract uniform: **duration ``N`` = exactly ``N`` packets emitted
+   AND exactly ``N`` ticks of flag suppression** after the application
+   point (plus, for a trigger firing mid-tick after the pass, the remainder
+   of the application tick for consumers downstream of the trigger). The
+   spec's "no move/act for ``remaining_ticks``" (mechanics/06 §4,
+   KNOCKED_DOWN's get-up time) is exactly this. The 0-count entry is
+   visible in the end-of-tick digest for its final tick — deterministic,
+   and honest about when the flags actually released.
 
 Flag composition (:func:`composed_flags`): each kind's row declares the
 behavior booleans it suppresses (``can_move`` / ``can_act`` / ``can_aim`` —
@@ -259,8 +267,8 @@ def apply_status(unit, kind: int, magnitude: float, duration_ticks: int,
 # The per-tick pass (ch. 05 §4 — top of tick phase 3, P0 order)
 # ---------------------------------------------------------------------------
 def tick_statuses(units, events=None) -> None:
-    """One status tick for every unit — durations count down, expired
-    statuses drop, DoT/HoT kinds emit DamagePackets through the §2 pipeline.
+    """One status tick for every unit — expired statuses sweep, DoT/HoT
+    kinds emit DamagePackets through the §2 pipeline, durations count down.
 
     P0 order: units in id order (explicitly sorted — never list order),
     each unit's status list in list order. Dead units are skipped whole
@@ -268,11 +276,13 @@ def tick_statuses(units, events=None) -> None:
     (hit/kill events emitted by ``apply_packet`` land there, in emission
     order — synced, digest-hashed); ``None`` emits nothing.
 
-    DoT deaths never convert (``mark_killed_by_zombie`` stays False —
-    zombie conversion is melee-kill-only, mechanics/06 §6). Zero-magnitude
-    DoTs emit nothing (no zero-damage event spam). Expiry compacts the
-    list IN PLACE so any held reference to ``unit.statuses`` stays valid
-    (the in-place-write discipline).
+    Expiry is LAZY (sweep-then-tick — the module docstring's duration
+    contract: N ticks of suppression AND N emissions, exactly). DoT deaths
+    never convert (``mark_killed_by_zombie`` stays False — zombie conversion
+    is melee-kill-only, mechanics/06 §6). Zero-magnitude DoTs emit nothing
+    (no zero-damage event spam). The sweep compacts the list IN PLACE so any
+    held reference to ``unit.statuses`` stays valid (the in-place-write
+    discipline).
     """
     for u in sorted(units, key=lambda u: int(getattr(u, "id", -1))):
         if not u.alive:
@@ -280,6 +290,9 @@ def tick_statuses(units, events=None) -> None:
         statuses = getattr(u, "statuses", None)
         if not statuses:
             continue
+        # (a) Sweep what the previous pass zeroed — flags released now.
+        statuses[:] = [st for st in statuses if st.remaining_ticks > 0]
+        # (b) + (c) Emit, then count down, in list order.
         for st in statuses:
             row = STATUS_REGISTRY[st.kind]
             if row.dtype is not None and st.magnitude_q16 != 0 and u.alive:
@@ -292,7 +305,6 @@ def tick_statuses(units, events=None) -> None:
                                  source_id=st.source_id),
                     events, source=row.name)
             st.remaining_ticks -= 1
-        statuses[:] = [st for st in statuses if st.remaining_ticks > 0]
 
 
 # ---------------------------------------------------------------------------
