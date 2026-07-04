@@ -148,6 +148,15 @@ attack-resolver seam absorbed the change with zero structural rework):
   bonus; attacker stats later)`. `facing` is synced Q16.16 state (the
   Q2-lift), so arcs are deterministic. A crit multiplies the packet amount
   (Q16.16 multiplier; armor-bypass tags possible later).
+  **Facing is universal, arcs are data (DECIDED 2026-07-05):** every unit
+  HAS a facing (movement gives one naturally; the digest hashes it); whether
+  it *matters* is per-species profile data — a radially symmetric species
+  (slime blob) sets vision arc to 2π and back/flank arc widths to zero: no
+  behind to stab, no flank to catch, zero special-case code. (Turn rate —
+  instant vs rate-limited rotation — is parked for the movement pass.)
+  Likewise `stability` (§4) lives on the species profile
+  (`unit.environment`), not the Unit class; per-individual stability can
+  graduate into the sampled stat vector with the stats redesign if wanted.
 - **Melee v1: adjacency auto-hit** (the shipped zombie melee) → a KINETIC
   packet. The same resolver hosts melee to-hit/crit when melee gets its
   design pass — or a future RPG ruleset entirely (the engine/game split:
