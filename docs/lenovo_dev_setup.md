@@ -115,3 +115,37 @@ integerize the offending deposit step. Then re-run §5 → expect all-green → 
 
 _(Portability note: this run used `BREACH_CUDA_PYTHON=<data py>` + `CUDA_PATH=…\v12.9`
 for the CUDA gates, per the `cuda_harness.py` env override.)_
+
+## 8b. ROOT CAUSE FOUND — same day (desktop, 2026-07-04). NOT the raycaster.
+
+§8's raycaster-heat hypothesis is **dead** — the C++ side is fully exonerated. The
+culprit is **unit SPAWN-STAT SAMPLING**: `generation.sample_unit_attributes` draws the
+10-dim stat vector with `rng.multivariate_normal` (numpy → **LAPACK SVD** of the species
+covariance), and `simulation.py` sets `unit.current_hp = float(base_stats.vitality)` —
+so tick-0 HP is **BLAS/LAPACK-derived synced state**. The RNG *stream* (seeded PCG64)
+is cross-machine exact; the *transform* of that stream is not:
+
+1. **Exact repro**: a standalone `default_rng(20260615).multivariate_normal(mean, cov)`
+   with the human species params reproduces the in-sim tick-0 `hp_before` **bit-for-bit**
+   (`0x1.750ed3a6c7124p+6` ≈ 93.26 — the spawn draw is the sim's first RNG use, and no
+   damage touches HP before the tick-0 env-damage call). Tool:
+   `tests/_xarch_liveheat_dump.py` (live pre-clear heat + per-unit peak_raw + hp in hex).
+2. **numpy 2.4.6 vs 1.26.4, same CPU**: bit-identical — version alone didn't flip it here.
+3. **`OPENBLAS_CORETYPE=NEHALEM` (forcing a different CPU-dispatched BLAS kernel)**:
+   **7 of 10 components change — some by whole σ-fractions** (mass 96.2 → 63.7!), two
+   components swap places. The species covariance has repeated variances + 6 correlation
+   terms → (near-)degenerate singular subspaces → different LAPACK kernels legitimately
+   pick different bases → **O(σ) differences, not ULP noise**. (In this particular flip
+   vitality happened to hold — its σ=15 direction is the unique dominant one — but on the
+   Ada box's CPU/BLAS the hp record diverged, so its draw moved there.)
+
+So: different CPU (kernel dispatch) and/or BLAS build ⇒ different spawn stats ⇒
+`__unit_hp__` (and silently mass/base_speed — invisible for a static unit) diverge at
+tick 0, with every field + facing/pos identical. Matches every observation, including
+GPU==CPU green on both boxes and the June compiler exoneration.
+
+**Fix: pending Erik's call** (2026-07-04 discussion) — the stats/spawn layer is a draft
+slated for the units/combat redesign; candidate minimal pin = spawn at quantized species
+means (no sampling in the synced path) + one golden re-baseline, with the deterministic
+sampler designed properly as part of the redesign under the new **number-ingress rule**.
+The §5 confirm run stays the closer: pin → re-baseline → Lenovo all-green → tag.
