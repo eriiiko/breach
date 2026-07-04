@@ -22,6 +22,9 @@ import numpy as np
 import pyray as rl
 
 from config import CFG
+# The composed behavior flags (mechanics/06 §4) — pure read of unit statuses;
+# drives the minimal prone visual (P4: knocked-down units render sideways).
+from simulation.status import composed_flags
 
 from . import core
 from .camera import Camera2D
@@ -507,7 +510,8 @@ class GameRenderer:
                       label=getattr(m, "name", ""),
                       footprint_tiles=getattr(m, "footprint", 3),
                       sprite=sprite,
-                      light_intensity=light_at(m))
+                      light_intensity=light_at(m),
+                      is_prone=composed_flags(m).is_prone)
         for z in zombies:
             if not getattr(z, "alive", True):
                 continue
@@ -515,7 +519,8 @@ class GameRenderer:
             draw_unit(z.x, z.y, wpt, (200, 50, 50, 255),
                       footprint_tiles=getattr(z, "footprint", 3),
                       sprite=sprite,
-                      light_intensity=light_at(z))
+                      light_intensity=light_at(z),
+                      is_prone=composed_flags(z).is_prone)
 
     # Single hue (cyan) for both phases; the currently-planning phase is
     # drawn bright, the other phase dimmer. Same colour communicates

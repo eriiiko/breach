@@ -472,7 +472,8 @@ def draw_unit(x_tile: float, y_tile: float, world_px_per_tile: float,
               color, label: str = "", radius_tiles: float = 1.5,
               footprint_tiles: int = 3,
               sprite: Optional[rl.Texture] = None,
-              light_intensity: float = 1.0) -> None:
+              light_intensity: float = 1.0,
+              is_prone: bool = False) -> None:
     """Draw a unit on its footprint, in world-pixel coordinates.
 
     x_tile, y_tile = top-left of the unit's footprint in world-tile coords.
@@ -484,6 +485,12 @@ def draw_unit(x_tile: float, y_tile: float, world_px_per_tile: float,
     light_intensity = scalar 0..1+ (clamped) used to tint the sprite. 1.0 = full
              brightness; 0.0 = black silhouette. Lets the unit respond to the
              room's lighting without needing a per-sprite normal map yet.
+    is_prone = the unit's composed ``is_prone`` behavior flag (mechanics/06 §4,
+             KNOCKED_DOWN et al). Minimal v1 visual (P4): the sprite is drawn
+             rotated 90° about its footprint centre — lying on its side — so
+             who is knocked down reads at a glance; the circle fallback
+             flattens into an ellipse. Render-only; the hitbox/stamp/exposure
+             implications of prone are separate later wiring.
     """
     x_wpx = tile_to_world_px(x_tile, world_px_per_tile)
     y_wpx = tile_to_world_px(y_tile, world_px_per_tile)
@@ -495,15 +502,32 @@ def draw_unit(x_tile: float, y_tile: float, world_px_per_tile: float,
         c = int(L * 255)
         tint = rl.Color(c, c, c, 255)
         src = rl.Rectangle(0.0, 0.0, float(sprite.width), float(sprite.height))
-        dst = rl.Rectangle(x_wpx, y_wpx, size_wpx, size_wpx)
-        rl.draw_texture_pro(sprite, src, dst, rl.Vector2(0.0, 0.0), 0.0, tint)
+        if is_prone:
+            # Rotate about the footprint centre: draw_texture_pro spins the
+            # dest rect around `origin`, which is expressed in dest space
+            # relative to (dst.x, dst.y) — so anchor dst at the centre point
+            # and set origin to the half-size. Same footprint, lying sideways.
+            half_wpx = size_wpx * 0.5
+            dst = rl.Rectangle(x_wpx + half_wpx, y_wpx + half_wpx,
+                               size_wpx, size_wpx)
+            rl.draw_texture_pro(sprite, src, dst,
+                                rl.Vector2(half_wpx, half_wpx), 90.0, tint)
+        else:
+            dst = rl.Rectangle(x_wpx, y_wpx, size_wpx, size_wpx)
+            rl.draw_texture_pro(sprite, src, dst, rl.Vector2(0.0, 0.0), 0.0,
+                                tint)
     else:
         # Circle fallback — also used when sprite failed to load.
         half = footprint_tiles * 0.5
         cx_wpx = x_wpx + half * world_px_per_tile
         cy_wpx = y_wpx + half * world_px_per_tile
         r_wpx  = radius_tiles * world_px_per_tile
-        rl.draw_circle(int(cx_wpx), int(cy_wpx), r_wpx, rl.Color(*color))
+        if is_prone:
+            # Flattened ellipse — the lying-down silhouette of the circle.
+            rl.draw_ellipse(int(cx_wpx), int(cy_wpx),
+                            r_wpx, r_wpx * 0.45, rl.Color(*color))
+        else:
+            rl.draw_circle(int(cx_wpx), int(cy_wpx), r_wpx, rl.Color(*color))
 
     if label:
         r_wpx = radius_tiles * world_px_per_tile
