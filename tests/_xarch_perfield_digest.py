@@ -5,8 +5,9 @@ Purpose
 The aggregate 30-tick trajectory digest (``xarch_digest.py`` -> one hash) tells us
 two machines DISAGREE, but not WHERE. This script breaks that one hash open: it
 emits a hash for EVERY (field, tick) pair over the canonical A/B scenario, plus
-the synced unit-state hash per tick — split (Q2-lift) into per-attribute
-sub-hashes (__unit_hp__ / __unit_facing__ / __unit_pos__ / __unit_life_events__)
+the synced unit-state hash per tick — split (Q2-lift; +statuses P3) into
+per-attribute sub-hashes (__unit_hp__ / __unit_facing__ / __unit_pos__ /
+__unit_life_events__ / __unit_status__)
 so a unit-state divergence NAMES the sub-field, not just "the unit hash". Run the IDENTICAL script on two machines and
 ``diff`` the two output files — the FIRST line that differs names the exact
 (field, tick) where the trajectories first diverge, which names the responsible
@@ -30,8 +31,8 @@ Each line is::
 
 in a FIXED (tick, field) order, so two files line up for a plain ``diff``. The
 script also prints, to stdout:
-  - the host + the aggregate 30-tick trajectory digest (compare to 453829a6… on
-    Ampere — the Q2-lift golden — as a sanity check that the build is clean), and
+  - the host + the aggregate 30-tick trajectory digest (compare to 6d690fda… on
+    Ampere — the P3-statuses golden — as a sanity check that the build is clean), and
   - if a SECOND file from another host is present in tests/, the first diverging
     (field, tick) between this run and that file (a built-in cross-machine diff).
 
@@ -66,17 +67,24 @@ N_STEPS = 30
 # A stable, machine-independent label for the synced unit-state hash so it sorts
 # and diffs alongside the gmap fields (it is not in DIGEST_FIELDS).
 UNIT_FIELD_LABEL = "__unit_state__"
-GOLDEN_AGGREGATE = "ae1164ca163b4bf49a86694ba78ea5319f86cfff46301c6aa59190207e6c1a12"
+# Re-baselined 2026-07-05 (P3 statuses): the synced unit record grows the
+# status list (__unit_status__ sub-hash); no field trajectory moved.
+# (was ae1164ca163b4bf49a86694ba78ea5319f86cfff46301c6aa59190207e6c1a12)
+GOLDEN_AGGREGATE = "6d690fda8259b392be9029082013623fbef0fc0322ed3089107d5db220e1b441"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs
-# pos vs life/events) instead of the opaque "__unit_state__ differs" that the
-# Ada Beat-B run left us localizing by hand. Order is FIXED (these four, then
-# the aggregate) so files diff line-by-line. Payloads reuse the id-sorted unit
-# records the harness already captures (field_ab_harness._unit_record: floats
-# pre-quantized at 1e-9 -> byte-stable repr).
+# pos vs life/events vs statuses) instead of the opaque "__unit_state__ differs"
+# that the Ada Beat-B run left us localizing by hand. Order is FIXED (these
+# five, then the aggregate) so files diff line-by-line. Payloads reuse the
+# id-sorted unit records the harness already captures
+# (field_ab_harness._unit_record: floats pre-quantized at 1e-9 -> byte-stable
+# repr). __unit_status__ appended by P3 (2026-07-05): the status/condition
+# list (mechanics/06 §4) is synced state — [[kind, magnitude_q16,
+# remaining_ticks, source_id], ...] per unit, in list order, all ints.
 UNIT_SUBFIELD_LABELS = (
     "__unit_hp__", "__unit_facing__", "__unit_pos__", "__unit_life_events__",
+    "__unit_status__",
 )
 
 
@@ -102,6 +110,7 @@ def _unit_subfield_payloads(ustate: dict) -> dict[str, object]:
             "life":   [(r["id"], r["alive"], r["life_state"]) for r in units],
             "events": ustate.get("events", []),
         },
+        "__unit_status__": [(r["id"], r["statuses"]) for r in units],
     }
 
 
@@ -179,7 +188,7 @@ def main() -> int:
     print(f"per-field lines     = {len(lines)}  ({N_STEPS} ticks x "
           f"{len(DIGEST_FIELDS) + len(UNIT_SUBFIELD_LABELS) + 1} fields)")
     print(f"aggregate digest    = {agg}")
-    print(f"matches 453829a6    = {agg == GOLDEN_AGGREGATE}  "
+    print(f"matches 6d690fda    = {agg == GOLDEN_AGGREGATE}  "
           f"(Ampere clean-build sanity)")
 
     # Built-in cross-machine diff: if any OTHER host's perfield file is present,

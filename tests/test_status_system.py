@@ -539,6 +539,50 @@ def test_e2e_dot_drains_through_real_steps_and_events():
     assert u.statuses == [], "expired + swept inside the loop"
 
 
+# ---------------------------------------------------------------------------
+# Digest inclusion (P3 stage 3): statuses are SYNCED state — the unit record
+# carries them and the unit-state hash is sensitive to them.
+# ---------------------------------------------------------------------------
+def test_unit_record_carries_canonical_status_serialization():
+    from field_ab_harness import _unit_record
+
+    u = _marine()
+    u.id = 0
+    assert _unit_record(u)["statuses"] == []
+    apply_status(u, BURNING, magnitude=1.5, duration_ticks=4, source_id=2)
+    apply_status(u, KNOCKED_DOWN, magnitude=0.0, duration_ticks=2)
+    rec = _unit_record(u)
+    assert rec["statuses"] == serialize_statuses(u) == [
+        [BURNING, 98304, 4, 2],
+        [KNOCKED_DOWN, 0, 2, -1],
+    ]
+
+
+def test_unit_state_hash_sensitive_to_statuses():
+    """A status changes the synced unit hash the moment it is applied, tracks
+    its count-down, and — for a pure CC that touches nothing else — the hash
+    RESTORES exactly once the status expires and sweeps (the record is back
+    to statuses=[], all other fields untouched)."""
+    from field_ab_harness import _capture_unit_state
+
+    def h(u):
+        return _capture_unit_state(
+            SimpleNamespace(units=[u], tick_events=[]))["hash"]
+
+    u = _marine()
+    u.id = 0
+    h0 = h(u)
+    apply_status(u, IMMOBILIZED, magnitude=0.0, duration_ticks=1)
+    h1 = h(u)
+    assert h1 != h0, "applying a status must move the unit hash"
+    tick_statuses([u])                  # 1 -> 0 (still present, lazy)
+    h2 = h(u)
+    assert h2 not in (h0, h1), "the count-down itself is hashed state"
+    tick_statuses([u])                  # swept
+    h3 = h(u)
+    assert h3 == h0, "pure-CC expiry restores the record exactly"
+
+
 def test_two_identical_runs_identical_status_lists_and_hp():
     """Determinism: the same applications on the same ticks produce identical
     serialized status lists AND hp traces, tick for tick."""

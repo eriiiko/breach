@@ -43,6 +43,7 @@ from simulation import Simulation
 from simulation import wave_fixed   # S2a: wave_source Q16.16 quantize helper
 from simulation import gas_fixed     # S2b: smoke/gas Q16.16 quantize helper
 from simulation import fire_fixed    # S3a: fire Q16.16 quantize helper
+from simulation.status import serialize_statuses  # P3: __unit_status__ payload
 from simulation.unit import Unit
 
 SEED = 20260615
@@ -56,13 +57,16 @@ UNIT_DIGEST_KEY = "__unit_state__"
 # The synced (lockstep-critical) unit fields the digest captures, per unit, in a
 # STABLE id-sorted order. These are the fields a desync would corrupt: position
 # (tile + float), HP, life status, faction, and the footprint offsets (a stamp
-# slip would change occupancy). RENDER-only / AI-scratch fields (facing, orders,
-# zombie_path, accumulators) are intentionally excluded — they are not part of
-# the synced determinism contract and may legitimately differ.
+# slip would change occupancy). P3 adds the status/condition list (mechanics/06
+# §4 — durations, magnitudes, and the flags they suppress are synced state; a
+# status desync would silently fork movement/attack suppression and DoT damage).
+# RENDER-only / AI-scratch fields (orders' contents, zombie_path, accumulators)
+# are intentionally excluded — they are not part of the synced determinism
+# contract and may legitimately differ.
 SYNCED_UNIT_FIELDS = (
     "tile_x", "tile_y", "x", "y", "current_hp",
     "alive", "life_state", "faction", "offsets",
-    "facing", "ap", "n_orders",
+    "facing", "ap", "n_orders", "statuses",
 )
 
 # Every field the physics writes — the sim state a structural refactor must
@@ -175,6 +179,13 @@ def _unit_record(u):
         "facing":     q(getattr(u, "facing", 0.0)),
         "ap":         [int(a) for a in getattr(u, "ap", ())],
         "n_orders":   len(getattr(u, "orders", ())),
+        # P3: the status/condition list (mechanics/06 §4) — canonical
+        # serialization owned by simulation.status: [[kind, magnitude_q16,
+        # remaining_ticks, source_id], ...] in LIST order (the P0 sync
+        # order), all plain ints. Statuses suppress movement/attacks and
+        # emit DoT packets, so a status desync IS an hp/position desync
+        # waiting one tick downstream — hashed at the source instead.
+        "statuses":   serialize_statuses(u),
     }
 
 

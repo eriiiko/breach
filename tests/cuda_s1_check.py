@@ -132,7 +132,10 @@ def part2_integration() -> bool:
     # to Q16.16-quantized species MEANS (ingress door 2): spawn hp now exactly
     # 100.0. Only __unit_hp__ moved, from tick 0; all field trajectories identical.
     # (was 453829a67a38d79e0befd01d591cb19bdeb19f49d9234fb4d27a5083d126501a)
-    GOLDEN = "ae1164ca163b4bf49a86694ba78ea5319f86cfff46301c6aa59190207e6c1a12"
+    # Re-baselined 2026-07-05 (P3 statuses): the synced unit record grows the
+    # status list (__unit_status__ sub-hash); no field trajectory moved.
+    # (was ae1164ca163b4bf49a86694ba78ea5319f86cfff46301c6aa59190207e6c1a12)
+    GOLDEN = "6d690fda8259b392be9029082013623fbef0fc0322ed3089107d5db220e1b441"
 
     def make_hot():
         sim = default_scenario_sim()
