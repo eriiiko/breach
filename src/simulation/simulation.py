@@ -690,9 +690,12 @@ class Simulation:
         # 4. Process shooting. W2: dispatches each shooter's weapon row by
         # archetype (projectile burst / hitscan beam); rounds that outrange
         # their per-tick speed land on self.bullets (advanced in slot 2).
+        # W3: the edit queue rides along so payload rounds (GL-6) can
+        # deposit their detonation; the mag/reload economy gates triggers.
         process_shooting(self.gmap, self.units, self.tick,
                          self.shots, self.real_time, self.rng,
-                         events=self.tick_events, bullets=self.bullets)
+                         events=self.tick_events, bullets=self.bullets,
+                         queue=self.edit_queue)
 
         # 5. Zombie AI.
         update_zombies_tick(self.gmap, self.units, self.tick)
@@ -883,12 +886,15 @@ class Simulation:
         # W2: advance in-flight kinetic rounds (the unified march). Each
         # marches this tick's integer step budget; hits/chew/exposure resolve
         # inside advance() (same rng, fixed spawn order). Survivors stay.
+        # W3: the edit queue rides along — an in-flight payload round (the
+        # GL-6 40 mm) detonates at its stop through the payload executor.
         if self.bullets:
             survivors = []
             for b in self.bullets:
                 if b.advance(self.gmap, self.units, self.shots,
                              self.real_time, self.rng,
-                             events=self.tick_events):
+                             events=self.tick_events,
+                             queue=self.edit_queue):
                     survivors.append(b)
             self.bullets = survivors
 
@@ -934,6 +940,16 @@ class Simulation:
             u.clear_orders()
             u.move_path = []
             u.last_fire_tick = -999
+            # W3 ammo economy: the round boundary tops everyone off (the
+            # WEGO planning pause is a between-rounds breather — v1 rule,
+            # Erik's dial later). Also REQUIRED for correctness: the tick
+            # counter rewinds to 0 below, so a carried reload_done_tick
+            # from late in the round would stall the unit deep into the
+            # next one (the exact hazard last_fire_tick = -999 solves).
+            # None = full mag (the lazy first-trigger bind, combat.mag_gate);
+            # untracked (mag_size 0) units never read either field.
+            u.current_mag = None
+            u.reload_done_tick = -1
 
         # Reset obstacles so dead bodies don't keep blocking physics. IN-PLACE
         # (not reassignment) so any bound view of the buffer stays valid — the

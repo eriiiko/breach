@@ -218,8 +218,16 @@ class BulletInFlight:
         self.remaining_steps = int(weapon.range_tiles)
         self.speed_q16 = int(ammo.speed_q16)
         self.budget_q16 = 0             # fractional-tile carry (Q16.16)
+        # W3 (mechanics/03 §4): the round's payload row — "" = plain kinetic
+        # (every small-arm), else resolved ONCE at spawn through the shared
+        # tables. A payload round (the GL-6 40 mm) detonates at its stop and
+        # applies NO direct-hit packet — the blast does the work.
+        self.payload = None
+        if getattr(ammo, "payload", ""):
+            self.payload = weapon_tables().payloads.by_name[ammo.payload]
 
-    def advance(self, gmap, units, shots, real_time, rng, events=None):
+    def advance(self, gmap, units, shots, real_time, rng, events=None,
+                queue=None):
         """March one tick's budget. Returns True while still in flight.
 
         Emits one tracer ``Shot`` (+ ``ShotFiredEvent``) for the segment
@@ -228,6 +236,13 @@ class BulletInFlight:
         shipped fire_burst march body verbatim (Q2-lift invariants: kit
         steps, ``int()`` tiling, stop order) with the W2 seams added at the
         stop sites only.
+
+        W3: ``queue`` is the sim's :class:`EditQueue` — required only when
+        the round carries a payload (the GL-6 40 mm): the payload executes
+        at the round's STOP tile (first solid / first unit footprint /
+        cover absorption / max range or grid exit) through
+        :func:`simulation.payloads.execute_payload`. Payload rounds apply
+        NO direct-hit packet — the blast does the work.
         """
         h, w = gmap.material.shape
         seg_x, seg_y = self.rx, self.ry          # tracer segment start
@@ -285,7 +300,7 @@ class BulletInFlight:
 
         self.remaining_steps -= n_steps
 
-        if hit_unit is not None:
+        if hit_unit is not None and self.payload is None:
             actual_dmg = int(self.ammo.damage)
             if hit_unit.team == 1:  # zombie
                 # SITE-SIDE pre-mitigation amount rule, deliberately NOT a
@@ -324,7 +339,32 @@ class BulletInFlight:
                     to_tile=(self.rx, self.ry),
                     hit_target_id=hit_id,
                 ))
-        return (not stopped) and hit_unit is None and self.remaining_steps > 0
+
+        still_flying = ((not stopped) and hit_unit is None
+                        and self.remaining_steps > 0)
+
+        # W3 (mechanics/03 §2/§4): a payload round DETONATES AT ITS STOP —
+        # first solid (the round stops ON the wall tile, so the blast
+        # centres there like a door charge on a door), first unit footprint
+        # (the entry tile), cover absorption (the round physically stopped
+        # short), or max range / grid exit (the round's final tile; off-grid
+        # falls back to the last in-bounds tile crossed). Runs AFTER the
+        # tracer append, so a detonation tick's event order is fixed:
+        # [ShotFired, blast UnitHit/UnitKilled..., Explosion].
+        if self.payload is not None and not still_flying:
+            if queue is None:
+                raise ValueError(
+                    f"ammo.{self.ammo.name} carries payload "
+                    f"{self.payload.name!r} but advance() got no EditQueue "
+                    f"— pass queue= (the sim's edit_queue) so the "
+                    f"detonation can deposit")
+            det_y, det_x = int(self.ry), int(self.rx)
+            if not (0 <= det_y < h and 0 <= det_x < w):
+                det_y, det_x = self.prev_iy, self.prev_ix
+            execute_payload(gmap, queue, units, det_y, det_x, self.payload,
+                            rng, events=events, kind="shell")
+
+        return still_flying
 
 
 # ---------------------------------------------------------------------------
@@ -463,10 +503,56 @@ def apply_temperature_ignition(gmap, o2_threshold, ignition_seed):
 
 
 # ---------------------------------------------------------------------------
+# Ammo economy (mechanics/03 §4 mag_size / reload_seconds — W3)
+# ---------------------------------------------------------------------------
+def mag_gate(u, weapon, tick):
+    """The per-TRIGGER magazine gate (W3 ammo economy). True = the trigger
+    may fire this tick; False = the unit is mid-reload (the stall).
+
+    ``mag_size <= 0`` = ammo untracked — an immediate True with ZERO state
+    touched (the k5/pistol tier and every pre-W3 weapon: shipped scenarios
+    never see the new fields, so the golden digest cannot move). For tracked
+    weapons: a unit inside its reload window (``tick < reload_done_tick``)
+    is stalled; otherwise an empty (or never-bound: ``current_mag is None``
+    — the lazy first-trigger bind) magazine refills to ``mag_size`` here,
+    i.e. the auto-reload COMPLETES at the first trigger attempt past the
+    stall. Pure integer state + compares (door 1) on door-2 row constants;
+    no RNG. Deterministic mirror of the rof cadence gate it sits beside.
+
+    Mag state (``current_mag`` / ``reload_done_tick``) lives ON THE UNIT and
+    is deliberately NOT in the synced digest surface
+    (field_ab_harness.SYNCED_UNIT_FIELDS) — matching the ``last_fire_tick``
+    precedent: combat-cadence state is a deterministic derivation of synced
+    inputs (orders + tick), not hashed directly; a divergence would surface
+    one tick downstream in the hashed hp/event stream.
+    """
+    if weapon.mag_size <= 0:
+        return True                        # untracked — exactly pre-W3
+    if tick < getattr(u, "reload_done_tick", -1):
+        return False                       # mid-reload: the stall
+    if getattr(u, "current_mag", None) is None or u.current_mag <= 0:
+        u.current_mag = int(weapon.mag_size)   # first bind / reload complete
+    return True
+
+
+def mag_spend(u, weapon, tick):
+    """Spend one round per TRIGGER (a shotgun's 8 pellets = one trigger =
+    one round). Emptying the magazine starts the auto-reload NOW:
+    ``reload_done_tick = tick + reload_ticks`` — so the stall between the
+    last shot and the next is exactly ``reload_seconds`` (no manual reload
+    order in v1). No-op for untracked weapons."""
+    if weapon.mag_size <= 0:
+        return
+    u.current_mag -= 1
+    if u.current_mag <= 0:
+        u.reload_done_tick = tick + int(weapon.reload_ticks)
+
+
+# ---------------------------------------------------------------------------
 # Shooting (fire orders + auto-fire) — W2: per-unit weapon, archetype dispatch
 # ---------------------------------------------------------------------------
 def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
-                     bullets=None):
+                     bullets=None, queue=None):
     """Run one tick of shooting for every player unit with a fire order
     (or auto-fire during Move & Attack).
 
@@ -489,7 +575,8 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
     small-arm resolves same-tick; tests exercising flight pass a list). If
     ``events`` is a list, :class:`ShotFiredEvent` / :class:`LaserFiredEvent`
     / :class:`UnitHitEvent` / :class:`UnitKilledEvent` are appended for the
-    renderer to consume.
+    renderer to consume. ``queue`` (W3) is the sim's :class:`EditQueue` —
+    payload rounds (the GL-6 40 mm) deposit their detonation through it.
     """
     tpp = CFG.clock.ticks_per_phase
     phase = tick // tpp
@@ -503,7 +590,8 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
         # suppressed (stunned / paralyzed / knocked down) executes NO attack
         # this tick — neither its fire order nor Move & Attack auto-fire.
         # The order itself stays queued (suppression delays, never cancels).
-        if not composed_flags(u).can_act:
+        flags = composed_flags(u)
+        if not flags.can_act:
             continue
 
         # W2: the unit's weapon row ("" = no ranged weapon — zombie melee
@@ -519,12 +607,18 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
             for o in u.orders:
                 if o.order_type == ORDER_MOVE_ATTACK and o.phase == phase:
                     auto_fire(gmap, units, u, tick, shots, real_time, rng,
-                              events=events, bullets=bullets, weapon=weapon)
+                              events=events, bullets=bullets, weapon=weapon,
+                              queue=queue)
                     break
             continue
 
         # Burst cadence gate.
         if tick - u.last_fire_tick < weapon.rof_interval_ticks:
+            continue
+
+        # W3 ammo economy: the magazine gate (reload stall / refill).
+        # mag_size == 0 (every pre-W3 weapon) touches nothing — dead path.
+        if not mag_gate(u, weapon, tick):
             continue
 
         target_fx = fire_order.target_fx
@@ -541,15 +635,23 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
         if not gmap.has_los(uc_fy, uc_fx, target_fy, target_fx):
             continue
 
-        # Explicit stationary fire order = AIMED (spread_deg).
+        # Explicit stationary fire order = AIMED (spread_deg) — unless the
+        # unit's composed can_aim is suppressed (teargas BLINDED, STUNNED,
+        # PARALYZED — mechanics/06 §4): then even an aimed order fires the
+        # SNAP cone. The owed P3 can_aim consumer (W3): ONE clean gate at
+        # cone selection; with no statuses it is a dead path (FLAGS_DEFAULT
+        # has can_aim True), bit-identical to pre-W3.
+        spread = weapon.spread_deg if flags.can_aim else weapon.spread_snap_deg
         _dispatch_trigger(gmap, units, u, uc_fx, uc_fy, target_fx, target_fy,
                           tick, shots, real_time, rng, events, bullets,
-                          weapon, weapon.spread_deg)
+                          weapon, spread, queue)
+        mag_spend(u, weapon, tick)
         u.last_fire_tick = tick
 
 
 def _dispatch_trigger(gmap, units, u, fx1, fy1, fx2, fy2, tick, shots,
-                      real_time, rng, events, bullets, weapon, spread_deg):
+                      real_time, rng, events, bullets, weapon, spread_deg,
+                      queue=None):
     """Route one trigger pull to its delivery archetype (mechanics/03 §1).
     The archetype set is CLOSED; only the ranged marchers dispatch here."""
     if weapon.archetype == "hitscan":
@@ -559,18 +661,19 @@ def _dispatch_trigger(gmap, units, u, fx1, fy1, fx2, fy2, tick, shots,
     else:  # "projectile" — the default marcher (validated set, mechanics/03)
         fire_burst(gmap, units, u, fx1, fy1, fx2, fy2,
                    tick, shots, real_time, rng, events=events,
-                   weapon=weapon, spread_deg=spread_deg, bullets=bullets)
+                   weapon=weapon, spread_deg=spread_deg, bullets=bullets,
+                   queue=queue)
 
 
 def auto_fire(gmap, units, u, tick, shots, real_time, rng, events=None,
-              bullets=None, weapon=None):
+              bullets=None, weapon=None, queue=None):
     """Find the nearest visible enemy within weapon range and fire — SNAP
     cone (``spread_snap_deg``): Move & Attack is fire-on-the-move
     (mechanics/03 §3 mode rule).
 
     Lifted from ``game.py:_auto_fire``; W2 takes the shooter's resolved
     weapon row (or resolves ``unit.weapon_id`` when called directly).
-    Skipped if still within the burst cooldown.
+    Skipped if still within the burst cooldown — or mid-reload (W3).
     """
     if weapon is None:
         weapon_id = getattr(u, "weapon_id", "")
@@ -578,6 +681,9 @@ def auto_fire(gmap, units, u, tick, shots, real_time, rng, events=None,
             return
         weapon = weapon_tables().weapons.by_name[weapon_id]
     if tick - u.last_fire_tick < weapon.rof_interval_ticks:
+        return
+    # W3 ammo economy — same gate as the fire-order path (dead for mag 0).
+    if not mag_gate(u, weapon, tick):
         return
 
     uc_fx = u.center_tile_x()
@@ -601,13 +707,15 @@ def auto_fire(gmap, units, u, tick, shots, real_time, rng, events=None,
                           best_enemy.center_tile_x(),
                           best_enemy.center_tile_y(),
                           tick, shots, real_time, rng, events, bullets,
-                          weapon, weapon.spread_snap_deg)
+                          weapon, weapon.spread_snap_deg, queue)
+        mag_spend(u, weapon, tick)
         u.last_fire_tick = tick
 
 
 def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
                tick, shots, real_time, rng, events=None, *,
-               weapon=None, ammo=None, spread_deg=None, bullets=None):
+               weapon=None, ammo=None, spread_deg=None, bullets=None,
+               queue=None):
     """Fire a burst of PROJECTILE rounds from (fx1, fy1) toward (fx2, fy2).
 
     Lifted from ``game.py:_fire_burst``; W2 generalizes the march to the
@@ -665,7 +773,7 @@ def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
         b = BulletInFlight(shooter, shooter_id, weapon, ammo,
                            fx1, fy1, angle, step_x, step_y)
         still_flying = b.advance(gmap, units, shots, real_time, rng,
-                                 events=events)
+                                 events=events, queue=queue)
         if still_flying and bullets is not None:
             bullets.append(b)
 
