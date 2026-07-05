@@ -99,10 +99,10 @@ Legend: ✅ implemented · ⚠️ partial (foundation built, advanced parts desi
 |---|---------|--------|
 | 01 | [Units & entities](mechanics/01_units_and_entities.md) | ⚠️ (mobility speed_fn seam shipped; footprint variants/cadence owed) |
 | 02 | [AI & line-of-sight](mechanics/02_ai_and_los.md) | ⚠️ |
-| 03 | [Weapons & combat resolution](mechanics/03_combat_and_weapons.md) | ⚠️ (framework designed 2026-07-05: 6 delivery archetypes + weapon/ammo/payload tables + the accuracy trinity; draft rifle/grenade/charge shipping; W1–W6 wiring wave in flight) |
+| 03 | [Weapons & combat resolution](mechanics/03_combat_and_weapons.md) | ⚠️ (framework designed 2026-07-05: 6 delivery archetypes + tables + the accuracy trinity; **W1 tables + W2 shipped** — unified march (speed as data), aim/snap cones, exposure-vs-cover + crit-vs-facing live, first HITSCAN (Lance-3: skewer, integer gas attenuation, wall chew); golden unchanged both patches; W3–W6 in flight; beam glow-as-light deferred) |
 | 04 | [Turn system & control](mechanics/04_turn_and_control.md) | ⚠️ |
 | 05 | [Physics↔unit exchange](mechanics/05_physics_unit_exchange.md) | ⚠️ (heat/blast rows + stamp + FieldEdit shipped; formal coupling table + reductions + ordering principles designed; push/water/gas/O2 rows + statuses owed via combat chapter) |
-| 06 | [Damage, health & conditions](mechanics/06_damage_health_and_conditions.md) | 📝 (designed 2026-07-04: packet pipeline, flat-then-mult mitigation, life/condition split, status system w/ behavior flags, Δv=J/mass knockdown, exposure-vs-cover + crit/flank resolver; wiring patches next — heat/blast/melee/HP-snap already shipped) |
+| 06 | [Damage, health & conditions](mechanics/06_damage_health_and_conditions.md) | ⚠️ (packet pipeline + mitigation + status system + knockdown SHIPPED (P2–P5); **§5 attack resolver shipped with standard values (weapons W2)** — exposure-vs-cover + crit-vs-facing live, all rolls lazy; owed: L2 int-backed unit attrs, deterministic stat sampler, Erik's feel passes) |
 
 ### Graphics — the look layer (chapters by topic, not numbered; see [graphics/README.md](graphics/README.md))
 | Chapter | Status |

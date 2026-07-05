@@ -311,7 +311,7 @@ KINETIC packets through the mechanics/06 pipeline.
 | Patch | Contents | Gate |
 |---|---|---|
 | **W1** | weapon/ammo/payload tables + loaders; re-home rifle→`k5_carbine`, grenade→`hand_grenade`+`frag_standard`, charge→`breach_charge`+`breach_focus`; `unit.weapon_id` | ✅ **SHIPPED** `2abf7dc` (2026-07-05): 521 green, golden `07c3f370…` byte-identical |
-| **W2** | unified march (speed as data, in-flight persistence); spread aim/snap; §3 exposure/cover (+`cover_exposure` materials column) + crit/facing resolver; **Lance-3 laser** (skewer, wall-chew, integer gas attenuation, glow event) | golden moves → re-baseline w/ proofs; suite green |
+| **W2** | unified march (speed as data, in-flight persistence); spread aim/snap; §3 exposure/cover (+`cover_exposure` materials column) + crit/facing resolver; **Lance-3 laser** (skewer, wall-chew, integer gas attenuation, beam event) | ✅ **SHIPPED** `bbfb26a` (2026-07-05): 559 green (+55 W2 tests), golden `07c3f370…` **UNCHANGED** — the canonical scenario fires no weapon and every W2 roll is lazy, so stream and fields never move (findings below). Beam **glow-as-light deferred** to the explosion-light pass (`LaserFiredEvent` ships; the raycaster hookup lands with transient light sources) |
 | **W3** | payload executor generalizing the explosion triple; gas payloads (smoke/tear/poison) + coupling rows (teargas→aim status, poison→DoT); GL-6 + 40 mm ammo; C4; ammo economy (mags/reload/selection) | golden moves → re-baseline; suite green |
 | **W4** | SPRAY: Dragon-7 + Miasma Vent (aimed sustained FieldEdit cones) | **HUMAN-TEST** — Erik feel-checks before merge |
 | **W5** | MELEE: knife + arc baton through the resolver; STUNNED wiring | suite green |
@@ -334,6 +334,34 @@ KINETIC packets through the mechanics/06 pipeline.
 - Weapons tables are **construction-bound** (rebuilt per `Simulation`
   reset/restart, not Ctrl+R) — matching materials/gases, engine/12 §5.
 
+**W2 findings of record** (carry into later patches):
+
+- **The golden did NOT move at W2** — §5's "the golden digest moves at W2"
+  prediction was wrong in the good direction: the canonical A/B scenario
+  contains no firing, and the lazy-roll rule keeps every new consumer
+  (exposure, crit) off the RNG stream unless cover/crit genuinely engage.
+  Chew only moves `wall_hp` where bullets actually stop. Verified before and
+  after the wave: aggregate `07c3f370…` bit-identical. W3's gas payloads
+  will be the first genuinely golden-moving patch *if* the scenario gains a
+  detonation — same rule: re-baseline only with per-field proofs.
+- **`destroy_wall` gate widened** (`solid` → `material != MAT_AIR`) so
+  bullet chew can break a crate — cover that stops being cover. Audit
+  finding riding along: the C++ fire burn-through list is `is_wall`-gated,
+  so **fire never destroys furniture tiles today** (it depletes their
+  `wall_hp`/fuel but the tile survives at 0) — a seam for the fire system
+  to claim when burning furniture should collapse.
+- **Facing already existed** (Q2-lift: kit `atan2` in `face_towards`,
+  hashed as `__unit_facing__`); W2 only added the fire-time update (facing
+  = aim bearing, before spread). Digest surface unchanged.
+- **HITSCAN ignores cover in v1** (deliberate, with the no-crit rule):
+  skewer + attenuation is its identity — a beam cannot be "absorbed by a
+  crate" without breaking the pass-through contract. Revisit only if soft
+  cover should attenuate beams (then as a material *attenuation* column,
+  not an exposure roll).
+- **Ammo resolution is first-family-match** (`ammo_for_weapon`) until the
+  W3 economy wires real selection — one standard round per family holds
+  until then.
+
 **Not built / explicitly owed:** everything in §7; heat-damage tuning vs the
 armory numbers; the exposure/crit numbers are standard values pending Erik's
-playground pass.
+playground pass; beam glow-as-light (the explosion-light pass).
