@@ -1,334 +1,309 @@
-# Combat & Weapons
+# Weapons & Combat Resolution
 
-**Depends on:** [Units & Entities](01_units_and_entities.md), [Ray Engine](../engine/08_ray_engine.md)
+**Depends on:** [Units & Entities](01_units_and_entities.md),
+[Physics↔unit exchange](05_physics_unit_exchange.md),
+[Damage, health & conditions](06_damage_health_and_conditions.md),
+[Ray Engine](../engine/08_ray_engine.md), [Smoke & gases](../engine/05_smoke.md),
+[Temperature & fire](../engine/06_temperature_and_fire.md),
+[FieldEdit](../engine/13_field_edit.md),
+[Determinism & number ingress](../engine/14_determinism_and_number_ingress.md)
 
-Combat in Breach is two cooperating layers. The first is **direct combat** —
-bullets, melee, line-of-sight — which is fast, serial, and resolved per tick
-against the unit list. The second is **combat-via-physics**: weapons that do not
-hit a unit so much as alter the world the unit stands in. A grenade does not
-"deal area damage"; it deposits pressure, heat, and wall damage into the
-atmosphere and structural fields, and whatever those fields then do to the units
-is the damage. This split is deliberate. It keeps the things that must be cheap
-and exact (a bullet hitting a target) on a simple deterministic path, and routes
-everything spatial and emergent (blasts, fire, beams) through the same shared
-physics that already runs every tick.
+*Framework designed 2026-07-05 (agenda item 5, all core decisions blessed by Erik).
+This chapter subsumes the earlier draft (rifle/grenade/door-charge + the energy-beam
+design); everything still true from that draft is folded in below.*
 
-All combat lives behind the deterministic `Simulation` facade. Nothing here
-reaches into raw fields ad hoc: weapons mutate the world only through a small set
-of physics entry points (`apply_explosion`, `add_explosion_smoke`) and read it
-only through `gmap.<field>` and `gmap.has_los`. Every source of randomness — the
-bullet cone, explosion-smoke texture — is drawn from the simulation's single
-seeded `numpy.random.Generator`, so an entire firefight replays bit-for-bit from
-its seed. This is what makes combat usable as training data and as a regression
-fixture, not just as a game.
+A weapon in Breach is **a row of data, not a system**. The code knows a small,
+closed set of *delivery archetypes* — the physically distinct ways an attack can
+reach its destination — and every concrete weapon, ammunition type, and warhead
+is configuration bound to one of them. Adding the fourteenth rifle, the third
+plasma caster, or a tear-gas shell for the launcher touches `config.toml` and
+nothing else. That is the whole design; the rest of this chapter is the
+consequences.
 
 ---
 
-## The two combat layers
+## 1. The invariant: six archetypes, two terminals
 
-| Layer | Mechanism | Determinism source | Damage path |
-|---|---|---|---|
-| Direct (bullets, melee) | ray-march / adjacency against unit list | serial CPU loop; cone offsets from seeded RNG | written straight to `unit.current_hp` |
-| Via-physics (explosions, beams, fire) | deposit into pressure / heat / wall-hp fields | integer field math; field then sampled serially | derived from the field, applied in unit logic |
+Every attack, whatever its delivery, terminates in exactly two places:
 
-What happens after a hit — damage types, mitigation (flat armor then
-multiplier), the packet pipeline, statuses/CC and death rules — is specified
-in [Damage, health & conditions](06_damage_health_and_conditions.md); this
-chapter owns *how attacks find their targets* and the weapons themselves.
+1. **Units** — one or more `DamagePacket`s through the mechanics/06 pipeline
+   (mitigation → quantized HP → events), plus statuses applied at the delivery
+   site (a baton applies STUNNED where it connects; packets themselves stay
+   damage-only).
+2. **The world** — a **payload** executed through FieldEdit / the physics entry
+   points: pressure, wall damage, gas emission, ignition, heat.
 
-The boundary between them is the rule that **kinetic damage travels on the
-projectile/entity path, and thermal/energy damage travels through the fields.**
-A bullet is an instantaneous ray that finds a unit and subtracts HP. A beam,
-explosion, or fire never writes a unit inside a kernel — it changes the world,
-and the change is sampled afterward by serial, deterministic unit logic. This is
-the same principle the ray engine enforces (the deposit-only lighting kernel
-never writes units; units sample the buffers after the pass).
+Weapons never invent a third path. Anything that reaches a unit goes through
+mitigation; anything that reaches the world goes through the same choke-point
+writes as every other system (engine/13, engine/14). This is what keeps combat
+inside the determinism law and what makes "new weapon = new config row" true.
 
----
+The six delivery archetypes (code — this set is closed until a genuinely new
+physics of delivery appears):
 
-## Direct combat
-
-### The rifle
-
-The rifle is the baseline weapon every marine carries. It fires in **bursts**:
-five bullets per burst, with a short cadence gate (`burst_interval_ticks`)
-between bursts so a unit can't empty into a target every tick.
-
-Each bullet is an independent ray. Its angle is the shooter→target bearing plus a
-random offset sampled uniformly from the weapon's cone half-angle (3°). The ray
-marches tile-by-tile out to the weapon's range, stopping at the first wall or the
-first unit it enters:
-
-```
-base_angle = atan2(target - shooter)
-for each of bullets_per_burst:
-    angle = base_angle + rng.uniform(-cone, +cone)   # the determinism site
-    march from shooter along angle, up to range_tiles:
-        if tile is_wall:            stop (miss into wall)
-        if tile inside a unit box:  stop, that unit is hit
-    if hit: apply damage; append a Shot tracer
-    else:   append a Shot tracer to the stop point anyway
-```
-
-The per-bullet cone is the single nondeterministic decision in rifle fire, which
-is exactly why it draws from the simulation RNG rather than process-global
-`random`. Every bullet — hit or miss — emits a `Shot` tracer (a purely visual,
-caller-owned effect, not gameplay state) and a `ShotFiredEvent` for the renderer
-to animate, plus `UnitHitEvent` / `UnitKilledEvent` on a hit.
-
-**Damage scaling.** A bullet does flat damage to marines. Against zombies it is
-scaled by `zombie.bullet_damage_multiplier` (0.25) — small-arms fire is poor at
-stopping them, which is the core combat tension of the game. (Fire, by contrast,
-is devastating to zombies via `fire_damage_multiplier`; that coupling lives in
-the fire system, but it is why explosives and incendiary tactics matter more than
-trigger discipline.)
-
-**Targeting modes.** A unit fires either because it has an explicit fire order
-for the current phase, or because it is executing a Move & Attack order, in which
-case it **auto-fires** at the nearest visible enemy within range each burst
-interval. Both go through the same range check, line-of-sight check, and burst.
-
-### Line of sight
-
-Targeting is gated by `gmap.has_los(observer, target)` — a ray from the shooter
-center to the target that stops at the first wall. Today this is a Bresenham
-walk over `is_wall`; it is deliberately exposed as an **interface** rather than
-inlined, so the backing implementation can be upgraded (and so "can this unit
-see heat through smoke?" becomes the same query against the heat channel —
-infravision — without touching call sites). A shot is only attempted when both
-the range check and the LoS check pass.
-
-### Melee
-
-Melee is the zombies' weapon. A zombie that is adjacent to a marine (within
-`footprint + 1` tiles) attacks on a cooldown (`attack_cooldown_ticks`), dealing
-`melee_damage`. The critical side effect is the kill flag: a marine killed by
-melee is marked `killed_by_zombie`, and at end-of-round every such marine
-**converts** into a zombie, keeping its inventory (so a converted marine that
-still carries a grenade can cook it off later). Explosion and bullet deaths do
-**not** set this flag — only melee converts. This is what turns a single
-breached room into a cascade.
-
----
-
-## Combat via physics: explosions
-
-An explosion is the archetype of the via-physics layer. Grenades and door
-charges both detonate through one shared entry point, `apply_explosion`, which
-makes a single coordinated edit to several fields at once — pressure, walls,
-fire, smoke — because a real blast does all of these together and they must stay
-consistent.
-
-For every tile within the radius (with linear distance falloff):
-
-| Effect | Field touched | Behavior |
+| Archetype | Behavior | Covers |
 |---|---|---|
-| Structural damage | `wall_hp` | `-= wall_damage × falloff`; tile destroyed via `destroy_wall` at HP 0 |
-| Shockwave | `wave_source` | pressure deposited through a smoothed **3×3 kernel** (weights 4/2/1, normalized /16) so the wave equation gets a clean, non-spiky source |
-| Sustained wind | `atmosphere` | direct pressure boost — the lingering gradient that drives smoke and venting |
-| Smoke clearing | `smoke` | zeroed in the inner 40 % of the radius (the blast punches a hole in the cloud) |
-| Ignition | `fire` | flammable tiles inside 70 % of the radius ignited at `0.5 × falloff` |
+| **HITSCAN** | marches its full range in one tick; can **skewer** several units and chew walls along the path | lasers |
+| **PROJECTILE** | a marching entity with finite speed, swept segment per tick, stops on first wall/unit | bullets, plasma bolts, launcher rounds, shotgun pellets (×N per trigger) |
+| **LOBBED** | projectile that ignores unit collision; detonates its payload on fuse expiry / arrival | hand grenades (the shipped `Projectile`) |
+| **PLACED** | attached to a tile; detonates on schedule or trigger | door charge (shipped), C4 satchel |
+| **SPRAY** | sustained cone of *field writes* over N ticks; no projectile entity at all | flamethrower, poison projector |
+| **MELEE** | adjacency + the §3 to-hit/crit resolver | knife, arc baton |
 
-The 3×3 smoothing on the shockwave source, and a per-tick `max_source_per_step`
-rate limiter in the atmosphere solver, exist because a raw point deposit of a
-large pressure spike makes the wave solver ring or destabilize. Smearing the
-source across a small kernel keeps the IMEX pressure step well-behaved while
-still producing a sharp, expanding shock.
-
-Notably, `apply_explosion` writes **no unit damage**. Damage to units is a
-separate, explicit call (`apply_blast_damage`) — the kinetic part of a blast,
-kept on the serial unit path. It damages every live unit within the radius with
-linear falloff, but only if the result clears `blast_damage_threshold` (5),
-which suppresses meaningless chip damage at the edge of distant blasts. Blast
-kills do not set `killed_by_zombie`. A third call, `add_explosion_smoke`, lays
-down the textured smoke cloud (per-tile noise drawn from the RNG).
-
-### Grenades
-
-A grenade is a thrown **projectile** with a fuse. When execution begins, queued
-grenade orders materialize as in-flight `Projectile` objects that travel in a
-straight line from thrower to target at `travel_speed`, detonating when the tick
-reaches `thrown_tick + fuse × ticks_per_second`. The fuse is player-set (0–10 s,
-default ~1 s), which is what lets a marine cook a grenade to airburst it among
-moving zombies or bank it to detonate next phase. At detonation the projectile
-fires the standard explosion triple — `apply_explosion`, `apply_blast_damage`,
-`add_explosion_smoke` — and emits an `ExplosionEvent`. Undetonated long-fuse
-grenades carry across the round boundary.
-
-Issuing a grenade order costs AP and decrements the unit's `has_grenade` count;
-canceling the order refunds both. This is the seed of the planned ammunition
-model (below) — grenades are already a consumable, counted resource, not an
-infinite ability.
-
-### Door explosives
-
-A breaching charge is a **scheduled** explosion rather than a projectile. It
-detonates at a fixed slot in the round — start of Phase 1, between phases, or end
-of Phase 2 — letting players sequence a breach with the movements around it. It
-has a small radius but very high `wall_damage` (500): it is a tool for opening
-walls and doors, not for killing. Only player-issued charges detonate (zombies
-don't breach).
-
-### Combat-via-physics consequences
-
-Because explosions act through the atmosphere and structural fields rather than a
-bespoke AoE function, several behaviors fall out for free:
-
-- **Self-breach by overpressure** *(designed)* — a sealed room that takes enough
-  blast pressure should fail its own walls, venting explosively. The mechanism
-  (wall failure driven by the pressure/heat field) is the same one walls already
-  use; the threshold coupling is not yet wired.
-- **Vacuum disarms blasts** — a grenade near an existing breach is far less
-  lethal: with the atmosphere already venting to vacuum, there is little gas to
-  carry a shockwave. The pressure field produces this automatically; it is not
-  special-cased.
-- **Fire as the real anti-zombie weapon** — blast ignition plus the high fire
-  multiplier means the lasting threat to massed zombies is the fire an explosion
-  leaves behind, not the blast itself.
+The old draft's boundary rule survives as the spine: **kinetic damage travels on
+the projectile/entity path; thermal/energy/chemical damage travels through the
+fields.** A bullet finds a unit and applies a packet. A flamethrower never
+touches a unit at all — it heats the world, and the existing heat coupling row
+(mechanics/05) does the damage. SPRAY weapons are therefore almost free: the
+Dragon-7 is *zero new damage code*, just aimed field writes.
 
 ---
 
-## Energy weapons (designed)
+## 2. Everything is a march
 
-Energy weapons are the next weapon class, and their design is settled even though
-they are not yet built. The key decision is **how** a beam relates to the ray
-engine: a beam is *not* handled inside the lighting/heat raycaster.
+**Speed is data: tiles per tick.** All ranged delivery is one shared
+tile-marcher; archetypes differ only in how far they march per tick and what
+they do at tiles along the way.
 
-A beam runs as a **serial weapon pre-phase**, once per shot, before the
-deposit-only lighting pass. A single ray is marched along the shot vector and
-resolves everything the beam does to the world:
+- A **laser** marches its full range in one tick — physically instant, because
+  photons are. No initiative table says so; physics does (the travel-time
+  arbiter, mechanics/05 §4 P3).
+- A **rifle round** at ~150 tiles/tick crosses any compartment in the tick it
+  is fired — indistinguishable from hitscan at ship scales, but honest: at
+  extreme range or against a fast mover, the round is genuinely in flight.
+- A **plasma bolt** at 2–4 tiles/tick is a slow, glowing, dodgeable projectile
+  — and a transient light source for the ray engine.
+- A **launcher round** at ~2.5 tiles/tick (the shipped grenade `travel_speed`)
+  arcs visibly across a room.
 
-1. **Skewer units.** Unlike a bullet, a beam does not stop at the first unit —
-   it passes through, depositing energy damage on every unit along its path. (A
-   beam should be able to line up and kill several enemies in a corridor.)
-2. **Breach walls.** Where the beam crosses solid material it deposits heat and
-   wall damage; a sustained beam burns through.
-3. **Mutate the map + heat field.** Wall destruction and heat deposits are
-   applied here, in the pre-phase, as serial edits.
+A projectile that does not resolve within its tick persists as an in-flight
+entity and continues next tick (the shipped grenade `Projectile` generalizes).
+In-flight projectiles advance in **tick slot 2** (before movement), preserving
+the causal pipeline ordering.
 
-Those edits then upload to the (eventual) GPU, and the lighting/heat raycaster
-runs afterward on the frozen, already-updated map. This keeps the lighting kernel
-simple and read-only — units stay full light-blockers for shadows, with no need
-for per-channel unit attenuation inside the kernel — and puts all world-mutating
-weapon logic in its own serial pass that matches the standard
-*resolve-actions → update-map → simulate* loop.
-
-The beam's **glow is just light.** It is emitted as an ordinary (transient) light
-source and deposited by the normal lighting pass; the weapon ray itself carries
-only damage and heat. The DDA march is a **shared primitive** with two distinct
-consumers: lighting (deposit, read-only) and weapons (mutate, pre-pass). They
-share the marcher and nothing else.
-
-A reference profile from the weapon-profile design: a roughly 8° cyan beam,
-~13 m range, depositing both light intensity and heat (`heat ≈ 2.0`) along its
-length, with a sharp near-uniform cone and a hard cutoff. A **muzzle flash** is a
-companion profile — a brief, wide, warm omnidirectional flash spawned for one or
-two frames at the firing point, picked up by the lighting pass as a normal
-short-lived source.
+**Collision.** PROJECTILE marches tile-by-tile (the shipped bullet march):
+first solid tile or first unit footprint stops it. LOBBED ignores units,
+detonating at target/fuse. HITSCAN passes *through* units (skewer — each takes
+a packet, attenuated §5) and decrements wall HP where it crosses solids.
+Grenade bounce off walls stays out of v1 (straight line to target, the shipped
+behavior); noted in §8.
 
 ---
 
-## Further weapon types (designed)
+## 3. The accuracy trinity
 
-| Weapon | Model | Reuses |
+Three different questions, three mechanisms, no overlap. The principle
+(mechanics/06 §5): **physics decides what is possible; probability models what
+2D cannot see.**
+
+**Spread answers distance.** Every shot's direction = aim bearing + an angular
+offset drawn uniformly from the weapon's cone (`rng.uniform(-θ, +θ)` — door 4,
+the shipped rifle pattern; trig through the deterministic kit). The bullet then
+*physically flies*. Hit probability against a target of width `w` at distance
+`d` is geometry, not a table: ≈ `min(1, w / (2·d·tanθ))`. One number per weapon
+creates the close/mid/long classes: a 6° PDW is a coin flip at ~10 tiles, a
+1.5° carbine at ~38, a 0.25° marksman rifle at ~230 — it simply does not miss
+indoors. Missed shots are not deleted: they fly on and hit whatever is there —
+walls (chewing them, §5), cover, or the second zombie in the file. Two spread
+values per weapon in v1: `spread_deg` (aimed fire) and `spread_snap_deg`
+(snap/auto-fire, movement); a continuous aim-time ramp is deferred (§8).
+
+**The exposure roll answers cover.** A top-down ray overstates exposure — it
+cannot see a crouched marine behind a crate. When the march would enter a
+target's footprint having just crossed a tile whose material carries
+`cover_exposure < 1.0` on that approach arc, the shot connects with probability
+`cover_exposure` (× stance modifiers, later). **A shot that fails the roll is
+absorbed by the cover tile** — its wall damage is deposited there, so
+suppressive fire chews the crate until it stops *being* cover. Cover is
+directional and flanking is geometric: attack from an arc the cover does not
+protect and there is no roll at all. `cover_exposure` is a new **materials
+table column** (default 1.0 = no concealment; crates/furniture ~0.5–0.6);
+solid walls need no value — they stop the march physically.
+
+**The crit roll answers facing.** On a connecting hit:
+`crit% = weapon.crit_chance × arc multiplier` — ×1 front, ×2 flank, ×4 behind
+(standard values). Arcs are computed from the target's synced facing with kit
+trig; a crit multiplies the packet amount by `weapon.crit_mult` before
+mitigation. Facing is universal but **arcs are data** (species profile): a
+slime blob sets its vision arc to 2π and its flank/behind widths to zero — no
+back to stab, zero special-case code. Melee runs through this same resolver
+(the knife's `crit_chance` is high and its behind-arc work is the assassin
+fantasy) — which is precisely the seam that lets this engine host an RPG later.
+
+All three rolls consume the simulation's single seeded generator in fixed
+order, so an entire firefight — covers, flanks, crits — replays bit-for-bit
+from its seed.
+
+---
+
+## 4. The three tables
+
+Data model (config.toml; loaded into id-indexed tables mirroring
+`MaterialTable`/`GasTable`):
+
+**`[weapons.<name>]`** — the delivery instrument.
+
+| Column | Meaning |
+|---|---|
+| `archetype` | one of the six (§1) |
+| `ammo_family` | what it feeds on (`"none"` for melee) |
+| `spread_deg`, `spread_snap_deg` | the §3 cones |
+| `range_tiles` | hard cap (energy/drag; the march length) |
+| `shots_per_trigger` | burst/pellet count per fire action |
+| `rof_interval_seconds` | cadence gate between triggers |
+| `mag_size`, `reload_seconds` | ammo economy (0 = not tracked, until W3 wires it) |
+| `ap_cost` | order cost (turn system) |
+| `crit_chance`, `crit_mult` | the §3 crit base |
+| `mass_kg` | handling/encumbrance (future), melee impulse (now) |
+| `loudness` | **reserved, no consumer yet** — emitted sound level 0..1 for the stealth layer (sound-hunting zombies, suppressed weapons). Data lands now so the armory is authored once. |
+
+**`[ammo.<name>]`** — the round. `family` (must match the weapon's),
+`damage`, `dtype` (mechanics/06 type), `ap` (armor pierce),
+`speed_tiles_per_tick`, and optionally `payload` (a payload row ref, for
+explosive/gas rounds). Swappable ammo is the point: AP rifle rounds, incendiary
+shells, and late-game exotics are new rows here — the progression hook.
+
+**`[payloads.<name>]`** — what happens at the destination (executed via
+FieldEdit / the physics entry points): `radius`, `pressure` (wave source),
+`wall_damage`, `unit_damage` (BLAST packets with falloff),
+`gas_species` + `gas_amount` + `gas_radius` (emission into the engine/05 gas
+slices), `ignite_radius` + `ignite_intensity`, `clear_smoke`. **Hand-grenade
+ammo rows and 40 mm launcher rounds point at the same payload rows** — one
+definition of "frag", "smoke", "tear", "poison", delivered by hand or by tube.
+The shipped `apply_explosion` triple becomes the payload *executor*, with the
+current grenade = `payloads.frag_standard` and the door charge =
+`payloads.breach_focus`, byte-for-byte.
+
+---
+
+## 5. Archetype details & determinism notes
+
+- **HITSCAN (laser).** The old draft's beam design, kept whole: a serial weapon
+  pass, before the lighting raycaster, marching the shot vector once. It
+  skewers every unit on the line (ENERGY packet each), deposits heat + wall
+  damage where it crosses solids (a sustained beam burns through), and its glow
+  is *just light* — a transient source the normal lighting pass picks up, plus
+  a muzzle-flash companion profile. **Blessed v1 feature: gas attenuates the
+  beam.** Per tile the beam's energy is multiplied by
+  `max(0, ONE − Σ absorb_g·density_g)` in Q16.16 — the same Beer-Lambert the
+  renderer uses, but in integer per-tile multiplicative form: no `exp`, no
+  transcendentals, door-1 arithmetic on the int32 gas field. Smoke grenades
+  are thereby laser countermeasures, and no code knows it. Lasers are *quiet*
+  (`loudness` ~0.1): the stealth-tech identity, countered by the cheapest
+  grenade in the game.
+- **PROJECTILE.** The shipped bullet march + per-shot spread, generalized:
+  per-tick march length = `speed_tiles_per_tick`, in-flight persistence beyond
+  it. Shotguns are `shots_per_trigger = 8` pellets on one trigger — **damage
+  falloff emerges from pellet spread geometry**, no falloff table. Plasma
+  bolts carry a small heat payload (splash + ignition) and a glow profile.
+- **LOBBED / PLACED.** The shipped grenade and door charge, re-homed onto
+  weapon+ammo+payload rows. C4 = PLACED with a demolition payload (radius ~8,
+  wall damage ~800 — "bigger bombs") and a trigger mode (timer or the shipped
+  det-slot schedule); only player-issued charges detonate.
+- **SPRAY.** N ticks of aimed cone field-writes (FieldEdit): the flamethrower
+  deposits heat (the engine/06 temperature path handles ignition — the
+  `apply_temperature_ignition` seam is already live) + emits `fuel_gas` for the
+  future per-gas combustion (engine/05 M3); units burn via the *existing* heat
+  coupling row — zero new damage code. The poison projector emits the `poison`
+  species through the identical code path — the alien's breath weapon is a
+  config row. A SPRAY trigger in WEGO = a fire order sustained for
+  `burst_seconds` of ticks.
+- **MELEE.** Adjacency + the §3 resolver (to-hit vs exposure is trivially 1.0
+  without cover; crit arcs do the work). Packets as usual; statuses at the
+  site (arc baton → STUNNED); a shove impulse reusing the P4 `Δv = J/mass`
+  push machinery is a natural v1.5. Zombie melee stays on its shipped
+  `ai_zombie` path for now; migrating NPC attacks onto weapon rows is future
+  work (§8) — the framework is team-agnostic by construction.
+
+**Doors mapping (engine/14).** Weapon/ammo/payload numbers: door 2 (quantized
+once where they feed synced state). Spread/exposure/crit rolls: door 4 (raw
+stream: `uniform`/`integers` — affine on the bit-stream, no distribution
+methods). All angles through the Q2-lift kit (`atan2/sin/cos_q16`). Beam
+attenuation: door-1 integer arithmetic. New RNG consumers change replay
+streams: **the golden digest moves at W2 and W3** — expected, re-baselined
+with zero-field-movement proofs exactly like P3/P4.
+
+---
+
+## 6. The armory (standard values — Erik's tuning dials, not balance)
+
+| Weapon | Class | Archetype | Family | Spread (aim/snap) | Trigger | Damage | Speed t/t | Loud |
+|---|---|---|---|---|---|---|---|---|
+| P12 "Whisper" | sidearm, suppressed | PROJECTILE | 9mm | 2.5°/5° | 1 @ 0.25 s | 12 KIN | 120 | 0.15 |
+| MP-11 PDW | SMG, close | PROJECTILE | 9mm | 6°/9° | 4 @ 0.4 s | 7 KIN | 120 | 0.7 |
+| K5 Carbine | assault rifle | PROJECTILE | rifle_556 | 3°/6° | 5 @ 0.5 s | 10 KIN | 150 | 0.8 |
+| LR-50 | marksman/AM rifle | PROJECTILE | rifle_50 | 0.25°/2° | 1 @ 1.5 s | 90 KIN, AP 10 | 250 | 1.0 |
+| Jackhammer-8 | shotgun | PROJECTILE | shell_12g | 8°/10° | 8 pellets @ 0.8 s | 6 KIN ×8 | 100 | 1.0 |
+| Lance-3 | laser rifle | HITSCAN | cell_laser | 0.1° | 1 @ 0.5 s | 25 ENERGY (skewer) | ∞ | 0.1 |
+| Lance-5 "Longlight" | heavy laser | HITSCAN | cell_laser | 0.05° | 1 @ 1.0 s | 55 ENERGY (skewer) | ∞ | 0.1 |
+| Sunspot | plasma caster | PROJECTILE | cell_plasma | 1.5° | 1 @ 0.9 s | 40 HEAT + splash | 3 | 0.5 |
+| Helios | heavy plasma | PROJECTILE | cell_plasma | 2° | 1 @ 1.4 s | 70 HEAT + splash | 2.5 | 0.6 |
+| Dragon-7 | flamethrower | SPRAY | fuel_tank | 30° cone, range 8 | 1.5 s burst | heat writes | — | 0.6 |
+| Miasma Vent | poison projector | SPRAY | toxin_tank | 25° cone, range 7 | 1.5 s burst | poison gas | — | 0.4 |
+| Hand grenade | thrown | LOBBED | hand_grenade | — | fuse 0–10 s | payload | 2.5 | payload |
+| GL-6 Revolver | grenade launcher | PROJECTILE | 40mm | 3° | 1 @ 1.2 s | payload | 2.5 | 0.9 |
+| Breach charge | demolition | PLACED | demo_charge | — | det slot | `breach_focus` | — | 1.0 |
+| C4 satchel | demolition | PLACED | demo_charge | — | timer/remote | `demolition_c4` | — | 1.0 |
+| Combat knife | melee | MELEE | none | — | 1 @ 0.6 s | 35 KIN, crit 15 % | — | 0.05 |
+| Arc baton | melee | MELEE | none | — | 1 @ 0.8 s | 10 ENERGY + STUNNED 1.5 s | — | 0.2 |
+
+Payload rows: `frag_standard` (the shipped grenade: radius 5, pressure 10,
+wall 200, unit 60), `breach_focus` (the shipped charge: 3/5.0/500/60),
+`demolition_c4` (8/25.0/800/150), `smoke_screen` (white_smoke), `tear_burst`
+(teargas), `poison_cloud` (poison), `incendiary_splash` (ignite ring). The
+40 mm ammo rows (`40mm_frag/_smoke/_tear/_poison`) reference these same rows.
+Ammo-family sharing is deliberate where realistic: the P12 and MP-11 both eat
+9mm.
+
+Gas grenade *effects* ride the coupling table (mechanics/05), not the payload:
+`teargas` density → an aim-suppressing status (the owed `can_aim` consumer —
+teargas blinds), `poison` density → POISON DoT packets. The payload only puts
+gas in the air; what gas does to lungs is the exchange layer's job, same as
+heat.
+
+---
+
+## 7. Reserved & deferred (with intent)
+
+- **ACID — reserved damage type, deferred with a love letter.** Alien-blood
+  acid fits this game unusually well: a payload/SPRAY chemical that damages
+  *floors* (material erosion), opening multi-z consequences — acid melts the
+  deck, water pours down, fire below meets fuel above. Wants multi-level maps
+  + a floor-HP analog first. `ACID` joins `ELECTRIC`/`PSY` on the mechanics/06
+  reserved list now so no table needs renumbering later.
+- **Grenade bounce** (straight-line v1, shipped behavior), **aim-time ramp**
+  (two spread values v1), **suppression as a mechanic** (loudness + morale,
+  far future), **NPC weapons on weapon rows** (zombie melee migrates when a
+  second NPC weapon exists — the Miasma-armed alien is the natural trigger),
+  **full inventory/encumbrance** (`mass_kg` waits for it), **electrical arc**
+  (the old draft's conductor-seeking bolt — rides the engine/11 electricity
+  chapter).
+- **Ammo economy details**: v1 wires mags/reload/selection (W3); weight of
+  carried ammo, scavenging, and the late-game exotic-ammo progression ride the
+  mission/economy layer (agenda 6).
+
+---
+
+## 8. Implementation status
+
+**Shipped (pre-framework draft):** rifle burst (cone, kit trig, march,
+`has_los` gate, auto-fire, zombie `bullet_damage_multiplier` site rule),
+grenades (`Projectile` + fuse + AP/count economy), door charges (det slots),
+the explosion triple (`apply_explosion` / `apply_blast_damage` /
+`add_explosion_smoke`), melee-by-zombie + conversion, event/tracer plumbing,
+KINETIC packets through the mechanics/06 pipeline.
+
+**Designed here, wired by the W-wave (plan of record, 2026-07-05):**
+
+| Patch | Contents | Gate |
 |---|---|---|
-| Flamethrower | a **directed fuel field** — a scalar gas emitted in a cone that ignites on contact with oxygen | smoke's diffusion + advection; the existing fire/oxygen combustion rule |
-| Teargas | the same fuel-field pattern, with a non-combustion effect (damage/slow) instead of ignition | 100 % of the diffusion + advection pipeline |
-| Shotgun | a short-range, wide-cone variant of the bullet path | the rifle's cone-march, retuned |
-| Electrical arc | event-triggered bolt that seeks the nearest conductor and arcs to it | a transient muzzle-flash-style light at the origin; future water-conduction AoE |
+| **W1** | weapon/ammo/payload tables + loaders; re-home rifle→`k5_carbine`, grenade→`hand_grenade`+`frag_standard`, charge→`breach_charge`+`breach_focus`; `unit.weapon_id` | suite green + **golden UNCHANGED** (pure re-home) |
+| **W2** | unified march (speed as data, in-flight persistence); spread aim/snap; §3 exposure/cover (+`cover_exposure` materials column) + crit/facing resolver; **Lance-3 laser** (skewer, wall-chew, integer gas attenuation, glow event) | golden moves → re-baseline w/ proofs; suite green |
+| **W3** | payload executor generalizing the explosion triple; gas payloads (smoke/tear/poison) + coupling rows (teargas→aim status, poison→DoT); GL-6 + 40 mm ammo; C4; ammo economy (mags/reload/selection) | golden moves → re-baseline; suite green |
+| **W4** | SPRAY: Dragon-7 + Miasma Vent (aimed sustained FieldEdit cones) | **HUMAN-TEST** — Erik feel-checks before merge |
+| **W5** | MELEE: knife + arc baton through the resolver; STUNNED wiring | suite green |
+| **W6** | armory playground room + weapon-cycle debug key + full standard-values audit | **HUMAN-TEST** — Erik's tuning session |
 
-The flamethrower and teargas are the clearest payoff of combat-via-physics:
-modeling a flamethrower as a gas that flows, pools in corners, gets sucked
-through breaches, and starves in vacuum requires **zero special-case weapon
-code** — it is the smoke transport pipeline running on a second scalar field that
-happens to burn. A flamethrower through a doorway fills the room because the fluid
-solver fills the room. New weapons of this family are new fields and emission
-rules, not new systems.
-
----
-
-## Determinism and the facade boundary
-
-Combat is driven from the `Simulation` step, which calls the combat module's
-entry points in a fixed order each tick: scheduled door explosives at their
-slots, projectile advancement and detonation, then per-unit shooting. The
-combat module owns `Projectile`, `Shot`, the shooting/LoS logic, and
-`apply_blast_damage`; the pure field-mutating `apply_explosion` /
-`add_explosion_smoke` stay in the physics namespace and are *called into* at
-detonation sites. Combat never touches a physics field directly.
-
-Two RNG sites — the bullet cone and explosion-smoke texture — both consume the
-simulation's single seeded generator, so a recorded firefight reproduces
-exactly. Visual artifacts (tracers, explosion events, hit/kill events) are
-emitted to caller-owned lists and event streams; they are outputs for the
-renderer, never inputs to the simulation, so a headless training run produces
-identical world state whether or not anyone is drawing it.
-
----
-
-## Implementation status
-
-Audited against `src/simulation/combat.py`, `src/simulation/physics.py`,
-`src/simulation/simulation.py`, `src/simulation/ai_zombie.py`,
-`src/simulation/unit.py`, and `config.toml`.
-
-**Built and shipped:**
-
-- **Rifle** — burst fire, per-bullet cone from the seeded RNG, tile-march with
-  wall/unit stop, range + `has_los` gating, auto-fire in Move & Attack, zombie
-  `bullet_damage_multiplier`. (`combat.py: fire_burst / process_shooting /
-  auto_fire`.)
-- **Line of sight** — `gmap.has_los` (Bresenham over `is_wall`) is the v1
-  backing; exposed as an interface but not yet upgraded (no PVS/hierarchical, no
-  heat-channel infravision implemented).
-- **Melee + conversion** — zombie adjacency attack on cooldown, `killed_by_zombie`
-  flag, end-of-round `convert_marines_to_zombies`. (`ai_zombie.py`.)
-- **Explosions** — `apply_explosion` (wall HP + destruction, 3×3 smoothed
-  `wave_source` deposit, atmosphere boost, smoke clearing, flammable ignition),
-  `apply_blast_damage` (falloff + `blast_damage_threshold`), `add_explosion_smoke`.
-- **Grenades** — `Projectile` with player-set fuse and straight-line travel,
-  detonation in `_update_projectiles`, AP + `has_grenade` cost/refund, carry-over
-  of long-fuse grenades.
-- **Door explosives** — scheduled-slot detonation, player-only, high wall damage.
-- **Determinism plumbing** — RNG threaded through `fire_burst` and
-  `add_explosion_smoke`; event emission (`ShotFiredEvent`, `ExplosionEvent`,
-  `UnitHitEvent`, `UnitKilledEvent`) wired for the renderer.
-
-**Designed, not built:**
-
-- **Energy weapons** — the serial weapon pre-phase, beam skewering, beam-driven
-  wall breaching, heat deposit, and beam-glow-as-light source are fully specified
-  but unimplemented. No energy-weapon order type, profile, or pre-phase hook
-  exists in the code. (The reference `energy_weapon`/`muzzle_flash` profiles live
-  only in the superseded radiation-temperature plan.)
-- **Flamethrower / teargas** — the directed-fuel-field model is specified; no fuel
-  field, emission rule, or combustion coupling is implemented. Depends on the
-  smoke transport + fire/oxygen systems being reused.
-- **Shotgun** — listed as a needed Mission 1 weapon; no code.
-- **Electrical arcs** — design (recursive-midpoint visual, conductor seeking,
-  water AoE hook) exists only in the superseded plan; nothing built.
-
-**Gaps and rough edges:**
-
-- **Heat damage to units is not implemented.** The via-physics design says units
-  sample the heat buffer at their footprint and take damage in serial unit logic.
-  No such sampling exists yet — current unit damage is only bullet, melee, and
-  blast. Once the ray/heat engine's GameMap-owned `heat` buffer is fully in the
-  sim step, this is the missing link that makes beams and fire actually hurt
-  units through the field.
-- **Overpressure self-breach is not wired.** Walls are destroyed by explicit
-  `wall_damage`, not by the pressure field crossing a failure threshold. The
-  intended emergent venting behavior does not yet happen.
-- **Grenades do not bounce.** Projectiles travel in a straight line to the target
-  and ignore walls in flight; throwing into a wall is not modeled as a bounce.
-- **Ammunition is a stub.** `has_grenade` / `has_explosive` are integer counts on
-  `Unit`; rifle ammo is unlimited. The `Inventory` class is a placeholder
-  (`current_load` returns 0, no item list). A real ammo-as-inventory system is
-  designed but unbuilt.
-- **`apply_blast_damage` uses `getattr(u, "id", -1)`** defensively, implying unit
-  IDs are not guaranteed present on every code path — a small consistency wart in
-  the event-emission layer.
-- **Config drift** — several explosion constants (atmosphere-boost factor 0.3,
-  smoke-clear radius 0.4, ignition radius 0.7, ignition intensity 0.5) remain
-  inline magic numbers in `apply_explosion` rather than living under
-  `[weapons.*]` in `config.toml`.
+**Not built / explicitly owed:** everything in §7; heat-damage tuning vs the
+armory numbers; the exposure/crit numbers are standard values pending Erik's
+playground pass.
