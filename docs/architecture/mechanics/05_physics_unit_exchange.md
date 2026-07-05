@@ -46,7 +46,7 @@ point):**
 |---|---|---|---|
 | `heat` | max | radiant flux → T_felt band → damage | ✅ shipped (`combat.apply_environmental_damage`) |
 | `wave_p` | footprint sample | blast overpressure → damage | ✅ shipped (`apply_blast_damage`) |
-| `wave_p` | grad | **impulse push**: `J = Σ_footprint(−∇p)·dt`, `Δv = J/mass` — the footprint sum scales with body area, so big-light units fly and small-heavy stand (density behavior from two existing stats); also the KNOCKED_DOWN trigger (ch. 06) | 📝 likely first new row |
+| `wave_p` | grad | **impulse push**: `J = Σ_footprint(−∇p)·dt`, `Δv = J/mass` — the footprint sum scales with body area, so big-light units fly and small-heavy stand (density behavior from two existing stats); also the KNOCKED_DOWN trigger (ch. 06) | ✅ shipped (P4 — v1 uses `reduce_grad` (edge-line means, own-tiles-only: no wall-cell suction); the area-scaling Σ form returns as an explicit footprint-area factor when footprint sizes diversify) |
 | `water_depth` | center | movement speed multiplier; **suffocation for non-water-breathers** | 📝 |
 | `gas[poison]` | mean | dose accumulation → poison status | 📝 |
 | `atmosphere` | mean | O2 partial → suffocation timer (skipped for units that don't breathe) | 📝 |
@@ -220,7 +220,7 @@ and by construction every number crossing it passes a door.
 | EnvironmentProfile hook (temperature_max / env_rate) | ✅ embryo shipped |
 | The formal coupling TABLE + reduction vocabulary | ✅ shipped (P1 refactor, 2026-07-05): `src/simulation/exchange.py` — `REDUCTIONS` (center/max/mean/sum/grad, integer-exact) + `COUPLING_TABLE` with the two shipped rows registered (responses moved verbatim; behaviour-preserving, digest unchanged). Rows still execute at their legacy tick positions |
 | The named EXCHANGE-READ slot (rows consolidated, table-order execution) | 📝 later patch (P4-era) — note: today blast runs at *detonation sites* (grenade fuse-out, door explosives), heat at post-physics step 9c; consolidation must reconcile that split |
-| wave_p→impulse push row | 📝 likely first new row |
+| wave_p→impulse push row | ✅ shipped (P4, 2026-07-05 — `exchange.apply_wave_push`, both outputs: the reduce_grad footprint read → `Δv = k_push·(−∇p)/mass` per tick (v1 stateless nudge, per-axis wall clamp + displacement cap) AND the KNOCKED_DOWN trigger (squares-compared vs `threshold × stability`). Runs at step 9c2, after the heat row (documented within-tick order: heat, then push). Calibration finding: a passing acoustic pulse's net impulse largely cancels (front push ≈ tail pull) — the visible motion is a 0.3–0.5-tile buffet; a sustained blast-wind throw would read the atmosphere dome (a possible LATER row, Erik's call). Standard values in `[exchange]`, config.toml — awaiting Erik's feel gate |
 | water/gas/O2/fire rows + breathes/resistance profile fields | 📝 designed, pend combat chapter for damage-type spec |
 | Statuses (DoT/HoT/buffs) + resistances | ✅ core shipped (resist tables P2; status system + the top-of-phase-3 tick slot P3, 2026-07-05 — `simulation/status.py`, digest `__unit_status__`). The coupling-row TRIGGERS (fire→burning, gas→poison, O2/water→suffocation, wave_p→knockdown) still 📝 with their rows |
 | On-GPU reduction kernel | 📝 S8-residency era, behind the same interface |

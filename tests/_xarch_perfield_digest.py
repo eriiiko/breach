@@ -31,8 +31,8 @@ Each line is::
 
 in a FIXED (tick, field) order, so two files line up for a plain ``diff``. The
 script also prints, to stdout:
-  - the host + the aggregate 30-tick trajectory digest (compare to 6d690fda… on
-    Ampere — the P3-statuses golden — as a sanity check that the build is clean), and
+  - the host + the aggregate 30-tick trajectory digest (compare to 07c3f370… on
+    Ampere — the P4-wave-push golden — as a sanity check that the build is clean), and
   - if a SECOND file from another host is present in tests/, the first diverging
     (field, tick) between this run and that file (a built-in cross-machine diff).
 
@@ -70,7 +70,14 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # Re-baselined 2026-07-05 (P3 statuses): the synced unit record grows the
 # status list (__unit_status__ sub-hash); no field trajectory moved.
 # (was ae1164ca163b4bf49a86694ba78ea5319f86cfff46301c6aa59190207e6c1a12)
-GOLDEN_AGGREGATE = "6d690fda8259b392be9029082013623fbef0fc0322ed3089107d5db220e1b441"
+# Re-baselined 2026-07-05 (P4 wave-push): shockwaves displace units + trigger
+# KNOCKED_DOWN (exchange.apply_wave_push, step 9c2). The A/B wave pulse
+# sub-tile-nudges the marine (~0.04 tiles before its heat death), so only
+# __unit_pos__ moved; no tile crossing -> the occupancy stamp and ALL field
+# trajectories are byte-identical (and the pulse's dv ~2.3 is below the
+# knockdown threshold 6.0 -> __unit_status__ unmoved too).
+# (was 6d690fda8259b392be9029082013623fbef0fc0322ed3089107d5db220e1b441)
+GOLDEN_AGGREGATE = "07c3f37043c62cb47ec1abfef1a59d47c5f7a9c313490b38ecd2ddc543d1833d"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs
@@ -188,7 +195,7 @@ def main() -> int:
     print(f"per-field lines     = {len(lines)}  ({N_STEPS} ticks x "
           f"{len(DIGEST_FIELDS) + len(UNIT_SUBFIELD_LABELS) + 1} fields)")
     print(f"aggregate digest    = {agg}")
-    print(f"matches 6d690fda    = {agg == GOLDEN_AGGREGATE}  "
+    print(f"matches 07c3f370    = {agg == GOLDEN_AGGREGATE}  "
           f"(Ampere clean-build sanity)")
 
     # Built-in cross-machine diff: if any OTHER host's perfield file is present,

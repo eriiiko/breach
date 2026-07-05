@@ -179,7 +179,10 @@ gate; cross-machine attestation re-runs the digest on other hardware
 (`docs/cuda_xarch_ada_runbook.md`). Golden lineage is append-only provenance:
 `542931c7…` → `60bd331f…` (S2 re-tune) → `453829a6…` (Q2-lift) → `ae1164ca…`
 (spawn pin) → `6d690fda…` (P3 statuses — the unit record grew the
-`__unit_status__` list, no field trajectory moved; current). L3 catches
+`__unit_status__` list, no field trajectory moved) → `07c3f370…` (P4
+wave-push — shockwaves displace units + trigger KNOCKED_DOWN; the A/B pulse
+sub-tile-nudges the marine, so only `__unit_pos__` moved: no tile crossing,
+stamp + every field trajectory byte-identical; current). L3 catches
 whatever L1/L2 cannot see — including C++ regressions and the unknown
 unknowns. It is the layer that caught everything in §8.
 

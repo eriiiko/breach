@@ -183,7 +183,14 @@ def part2_integration() -> bool:
     # Re-baselined 2026-07-05 (P3 statuses): the synced unit record grows the
     # status list (__unit_status__ sub-hash); no field trajectory moved.
     # (was ae1164ca163b4bf49a86694ba78ea5319f86cfff46301c6aa59190207e6c1a12)
-    GOLDEN = "6d690fda8259b392be9029082013623fbef0fc0322ed3089107d5db220e1b441"
+    # Re-baselined 2026-07-05 (P4 wave-push): shockwaves displace units +
+    # trigger KNOCKED_DOWN (exchange.apply_wave_push, step 9c2). The A/B wave
+    # pulse sub-tile-nudges the marine (~0.04 tiles before its heat death),
+    # so only __unit_pos__ moved; no tile crossing -> the occupancy stamp and
+    # ALL field trajectories are byte-identical (and the pulse's dv ~2.3 is
+    # below the knockdown threshold 6.0 -> __unit_status__ unmoved too).
+    # (was 6d690fda8259b392be9029082013623fbef0fc0322ed3089107d5db220e1b441)
+    GOLDEN = "07c3f37043c62cb47ec1abfef1a59d47c5f7a9c313490b38ecd2ddc543d1833d"
 
     def make_smoky():
         sim = default_scenario_sim()
