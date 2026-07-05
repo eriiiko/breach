@@ -220,4 +220,4 @@ gate.
 | LifeState simplification (retire unused DOWNED value) | ✅ shipped (P3 — `ALIVE | DEAD` only) |
 | Digest extension (`__unit_status__`) + golden re-baseline | ✅ shipped (P3 — the synced unit record carries `serialize_statuses`; golden `ae1164ca…` → `6d690fda…`, no field trajectory moved; Lenovo re-attestation owed) |
 | Attack resolver: exposure-vs-cover roll + crit roll (flank/behind arcs) | 📝 designed; numbers + wiring ride the weapons wave (item 5) — needs cover material data |
-| Standard-values config + playground | 📝 the closing wiring patch |
+| Standard-values config + playground | ✅ shipped (P5, 2026-07-05 — every wave value config-visible with feel comments + interesting ranges (`[exchange]`, `[zombie] fire_damage_multiplier`/`stability`); `levels/playground` (one room per system: arena/grenade range, wood fire room, glass gallery, sealed pressure room, steel bunker, pool basin, glass zombie pen, breach bay) + `main.py --level playground` + the experiment guide `docs/playground_guide.md`. Behaviour-preserving: golden unchanged. Erik's feel-tuning is the open loop) |
