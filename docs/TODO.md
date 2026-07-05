@@ -6,6 +6,14 @@
 
 ## Pending — small (background, queue up next session)
 
+- **Fire never destroys furniture (audit rider, weapons W2, 2026-07-05)** —
+  the C++ fire's burn-through list is `is_wall`-gated, so a burning crate
+  depletes its fuel (`wall_hp`) but the tile itself survives as a husk;
+  meanwhile bullet chew (W2 widened `destroy_wall` to `material != MAT_AIR`)
+  CAN break crates. Inconsistent on purpose for now — fix belongs to the
+  fire system (engine/06): let burn-out destroy/convert furniture-class
+  tiles too (burn-to-wreck material conversion is the nicer answer).
+
 - **Scorch marks** — grenades and fire should leave permanent visual
   marks on the floor/walls where they hit. Persistent darkening, soot,
   burn patterns. **Design now in `graphics_lighting_design.md` §7
