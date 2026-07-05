@@ -47,6 +47,7 @@ from simulation.exchange import (  # noqa: E402
 from simulation.species import ZOMBIE_STABILITY  # noqa: E402
 from simulation.status import KNOCKED_DOWN, composed_flags, tick_statuses  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
+from simulation.weapons import get_tables as weapon_tables  # noqa: E402
 
 Q16 = 65536
 TPS = float(CFG.clock.ticks_per_second)
@@ -323,10 +324,14 @@ def _grenade_sim(unit_center_dist: int, n_ticks: int = 40, seed: int = 777):
     trace = []
     for t in range(n_ticks):
         if t == 1:
+            # W1 re-home: the grenade blast numbers live on the frag_standard
+            # payload row (same 5 / 10.0 / 200 literals as the old
+            # CFG.weapons.grenade.* keys).
+            frag = weapon_tables().payload_for_ammo("grenade_frag")
             apply_explosion(sim.gmap, sim.edit_queue, cy, cx,
-                            CFG.weapons.grenade.blast_radius,
-                            CFG.weapons.grenade.pressure,
-                            CFG.weapons.grenade.wall_damage)
+                            frag.radius,
+                            frag.pressure,
+                            frag.wall_damage)
         sim.set_paused(False)
         sim.step()
         ever_down = ever_down or any(
@@ -367,8 +372,9 @@ def test_knockdown_ring_wider_than_damage_ring():
     Margins at the calibrated values: dv(7) ~ 8.0 vs threshold 6.0 (+33%),
     dv(16) ~ 3.3 (-45%) — robust to tuning drift, loud on regression."""
     # --- damage radius: geometric, no sim needed --------------------------
-    radius = CFG.weapons.grenade.blast_radius
-    max_damage = CFG.weapons.grenade.unit_damage
+    frag = weapon_tables().payload_for_ammo("grenade_frag")
+    radius = frag.radius
+    max_damage = frag.unit_damage
     fy = fx = 100.0                     # abstract plane, no walls involved
     probes = []
     for d in range(1, 2 * radius + 1):

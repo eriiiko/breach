@@ -38,7 +38,7 @@ restart to take effect.
 from __future__ import annotations
 
 from config import ticks_from_seconds
-from simulation.damage import BLAST, ENERGY, HEAT, KINETIC, POISON
+from simulation.damage import DAMAGE_TYPE_NAMES
 
 
 # ---------------------------------------------------------------------------
@@ -50,15 +50,11 @@ WEAPON_ARCHETYPES = frozenset(
     {"hitscan", "projectile", "lobbed", "placed", "spray", "melee"}
 )
 
-# Ammo dtype names -> the mechanics/06 damage-type ids (simulation.damage).
-# Validated at load so a typo'd dtype is loud at startup, not silent until W2.
-DTYPE_BY_NAME = {
-    "kinetic": KINETIC,
-    "blast": BLAST,
-    "heat": HEAT,
-    "energy": ENERGY,
-    "poison": POISON,
-}
+# Ammo dtype names -> the mechanics/06 damage-type ids, derived from the
+# damage module's registry (single source of truth, includes the reserved
+# types). Validated at load so a typo'd dtype is loud at startup, not silent
+# until W2 consumes it.
+DTYPE_BY_NAME = {name: dtype_id for dtype_id, name in DAMAGE_TYPE_NAMES.items()}
 
 
 # ---------------------------------------------------------------------------

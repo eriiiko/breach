@@ -97,9 +97,9 @@ class GameConfig:
             self.zombie.attack_cooldown_seconds, tps
         )
 
-        self.weapons.rifle.burst_interval_ticks = ticks_from_seconds(
-            self.weapons.rifle.burst_interval_seconds, tps
-        )
+        # Weapon cadence (the old weapons.rifle.burst_interval_ticks) is now
+        # derived per-row by simulation.weapons.WeaponTable
+        # (rof_interval_seconds -> rof_interval_ticks, same helper).
 
         # KNOCKED_DOWN get-up time (mechanics/06 §4): authored in seconds,
         # consumed as an integer tick duration (ingress door 1 — status

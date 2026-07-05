@@ -98,6 +98,10 @@ from simulation.physics_runner import PhysicsRunner
 from simulation.field_edit import EditQueue, FieldEdit
 from simulation.recorder import PhysicsRecorder
 from simulation.status import composed_flags, tick_statuses
+# Weapon/ammo/payload data tables (mechanics/03 §4, W1): the facade owns a
+# bundle, rebuilt fresh at every construction/reset (the GameMap material/gas
+# table pattern) so it always reflects the current CFG.
+from simulation.weapons import rebuild_tables as rebuild_weapon_tables
 
 try:
     from pathfinding import astar
@@ -200,6 +204,12 @@ class Simulation:
         self.gmap = GameMap(self.level)
         self.rng = np.random.default_rng(seed)
         self._seed = seed
+
+        # Weapon/ammo/payload tables (mechanics/03 §4, W1) — rebuilt from the
+        # live CFG at every reset, exactly like GameMap rebuilds the material/
+        # gas tables above. Config-static data; Ctrl+R alone does NOT rebuild
+        # (engine/12 §5 — the construction-bound precedent).
+        self.weapons_tables = rebuild_weapon_tables()
 
         self.units: List = []
         self.projectiles: List = []
@@ -338,32 +348,39 @@ class Simulation:
             self._compute_player_paths()
             return True
 
-        elif ot == ORDER_GRENADE:
-            if u.get_ap(phase) < CFG.weapons.grenade.ap_cost:
+        # Order AP costs come off the weapon rows (mechanics/03 §4, W1
+        # re-home — same literal costs the old CFG.weapons.* keys held).
+        weapon_rows = self.weapons_tables.weapons.by_name
+
+        if ot == ORDER_GRENADE:
+            ap_cost = weapon_rows["hand_grenade"].ap_cost
+            if u.get_ap(phase) < ap_cost:
                 return False
             if u.has_grenade <= 0:
                 return False
-            order.ap_cost = CFG.weapons.grenade.ap_cost
+            order.ap_cost = ap_cost
             u.orders.append(order)
             u.spend_ap(phase, order.ap_cost)
             u.has_grenade -= 1
             return True
 
         elif ot == ORDER_EXPLOSIVE:
-            if u.get_ap(phase) < CFG.weapons.door_explosive.ap_cost:
+            ap_cost = weapon_rows["breach_charge"].ap_cost
+            if u.get_ap(phase) < ap_cost:
                 return False
             if u.has_explosive <= 0:
                 return False
-            order.ap_cost = CFG.weapons.door_explosive.ap_cost
+            order.ap_cost = ap_cost
             u.orders.append(order)
             u.spend_ap(phase, order.ap_cost)
             u.has_explosive -= 1
             return True
 
         elif ot == ORDER_FIRE:
-            if u.get_ap(phase) < CFG.weapons.rifle.ap_cost:
+            ap_cost = weapon_rows["k5_carbine"].ap_cost
+            if u.get_ap(phase) < ap_cost:
                 return False
-            order.ap_cost = CFG.weapons.rifle.ap_cost
+            order.ap_cost = ap_cost
             u.orders.append(order)
             u.spend_ap(phase, order.ap_cost)
             return True
@@ -823,18 +840,24 @@ class Simulation:
                 if proj.proj_type == ORDER_GRENADE:
                     fx = int(proj.target_fx)
                     fy = int(proj.target_fy)
-                    radius = CFG.weapons.grenade.blast_radius
+                    # W1 re-home: the grenade's blast numbers live on the
+                    # frag_standard payload row (hand_grenade -> grenade_frag
+                    # -> payloads.frag_standard) — same literals as the old
+                    # CFG.weapons.grenade.*. The payload EXECUTOR generalizing
+                    # this triple is W3; here we only read the row.
+                    frag = self.weapons_tables.payload_for_ammo("grenade_frag")
+                    radius = frag.radius
                     apply_explosion(
                         self.gmap, self.edit_queue, fy, fx, radius,
-                        CFG.weapons.grenade.pressure,
-                        CFG.weapons.grenade.wall_damage,
+                        frag.pressure,
+                        frag.wall_damage,
                     )
                     # The wave_p blast coupling row (mechanics/05 §1;
                     # exchange.COUPLING_TABLE[1]) — detonation-site
                     # invocation, geometric falloff (predates the field read).
                     apply_blast_damage(
                         self.units, fx, fy, radius,
-                        CFG.weapons.grenade.unit_damage,
+                        frag.unit_damage,
                         events=self.tick_events,
                     )
                     add_explosion_smoke(

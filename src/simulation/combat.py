@@ -56,6 +56,10 @@ from simulation.status import composed_flags
 from simulation.exchange import (                                # noqa: F401
     HEAT_SCALE, apply_blast_damage, apply_environmental_damage,
 )
+# The weapon/ammo/payload data tables (mechanics/03 §4, W1). The three shipped
+# weapons are re-homed onto rows — same numbers, looked up by literal name at
+# the sites that used to read CFG.weapons.rifle/.grenade/.door_explosive.
+from simulation.weapons import get_tables as weapon_tables
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +81,12 @@ class Projectile:
         self.fuse_seconds = fuse_seconds
         self.thrown_tick = thrown_tick
         self.detonated = False
-        self.travel_speed = CFG.weapons.grenade.travel_speed
+        # Tiles-per-SECOND, from the grenade round's row (W1 re-home: the old
+        # CFG.weapons.grenade.travel_speed = 30.0, same float — the
+        # update_position() arithmetic below is bit-identical). The round's
+        # speed_tiles_per_tick twin is the W2 unified-march data-of-record.
+        self.travel_speed = weapon_tables().ammo.by_name[
+            "grenade_frag"].travel_speed_tiles_per_second
 
     def get_detonate_tick(self):
         """Tick at which this projectile detonates."""
@@ -273,7 +282,10 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None):
     """
     tpp = CFG.clock.ticks_per_phase
     phase = tick // tpp
-    burst_interval = CFG.weapons.rifle.burst_interval_ticks
+    # The marines' service rifle row (W1 re-home — same numbers as the old
+    # CFG.weapons.rifle.*; per-unit weapon_id lookup activates in W2).
+    k5 = weapon_tables().weapons.by_name["k5_carbine"]
+    burst_interval = k5.rof_interval_ticks
 
     for u in units:
         if u.team != 0 or not u.alive:
@@ -308,7 +320,7 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None):
 
         # Range check.
         dist = math.sqrt((uc_fx - target_fx) ** 2 + (uc_fy - target_fy) ** 2)
-        if dist > CFG.weapons.rifle.range_tiles:
+        if dist > k5.range_tiles:
             continue
 
         # LOS check.
@@ -326,7 +338,8 @@ def auto_fire(gmap, units, u, tick, shots, real_time, rng, events=None):
     Lifted from ``game.py:_auto_fire``. Skipped if still within the burst
     cooldown.
     """
-    burst_interval = CFG.weapons.rifle.burst_interval_ticks
+    k5 = weapon_tables().weapons.by_name["k5_carbine"]
+    burst_interval = k5.rof_interval_ticks
     if tick - u.last_fire_tick < burst_interval:
         return
 
@@ -341,7 +354,7 @@ def auto_fire(gmap, units, u, tick, shots, real_time, rng, events=None):
         ec_fx = e.center_tile_x()
         ec_fy = e.center_tile_y()
         dist = math.sqrt((uc_fx - ec_fx) ** 2 + (uc_fy - ec_fy) ** 2)
-        if dist <= CFG.weapons.rifle.range_tiles and dist < best_dist:
+        if dist <= k5.range_tiles and dist < best_dist:
             if gmap.has_los(uc_fy, uc_fx, ec_fy, ec_fx):
                 best_dist = dist
                 best_enemy = e
@@ -367,9 +380,16 @@ def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
     appended, plus :class:`UnitHitEvent` / :class:`UnitKilledEvent` on
     a hit.
     """
-    cone = math.radians(CFG.weapons.rifle.cone_half_angle_degrees)
-    n_bullets = CFG.weapons.rifle.bullets_per_burst
-    dmg = CFG.weapons.rifle.damage_per_bullet
+    # W1 re-home: cone/burst/range from the k5_carbine weapon row, damage from
+    # its round (rifle_556_standard) — the same literal numbers the old
+    # CFG.weapons.rifle.* keys held, so every computed quantity below
+    # (radians, counts, packet amounts) is bit-identical.
+    tables = weapon_tables()
+    k5 = tables.weapons.by_name["k5_carbine"]
+    round_556 = tables.ammo.by_name["rifle_556_standard"]
+    cone = math.radians(k5.spread_deg)
+    n_bullets = k5.shots_per_trigger
+    dmg = round_556.damage
     # Q2-lift: the bullet march decides hits -> current_hp -> kills, i.e. it
     # FEEDS SYNCED STATE — so its trig must be the deterministic integer kit,
     # not libm (math.atan2/cos/sin differ at the last ULP across CRT/Python
@@ -391,7 +411,7 @@ def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
         step_y = unit_fixed.sin_rad(angle)
         rx, ry = float(fx1), float(fy1)
         hit_unit = None
-        for _step in range(int(CFG.weapons.rifle.range_tiles)):
+        for _step in range(int(k5.range_tiles)):
             rx += step_x
             ry += step_y
             ix, iy = int(rx), int(ry)
@@ -454,10 +474,16 @@ def process_door_explosives(gmap, queue, units, slot, rng, events=None):
     noise; ``events`` (optional) collects :class:`ExplosionEvent` and
     unit hit / kill events for the renderer.
     """
-    radius   = CFG.weapons.door_explosive.blast_radius
-    pressure = CFG.weapons.door_explosive.pressure
-    wall_dmg = CFG.weapons.door_explosive.wall_damage
-    unit_dmg = CFG.weapons.door_explosive.unit_damage
+    # W1 re-home: the door charge's blast numbers live on the breach_focus
+    # payload row, resolved through its round (breach_charge -> demo_breach ->
+    # payloads.breach_focus) — same literals as the old
+    # CFG.weapons.door_explosive.*. The payload EXECUTOR (generalizing the
+    # apply_explosion triple below) is W3; here we only read the row.
+    payload  = weapon_tables().payload_for_ammo("demo_breach")
+    radius   = payload.radius
+    pressure = payload.pressure
+    wall_dmg = payload.wall_damage
+    unit_dmg = payload.unit_damage
 
     for u in units:
         if u.team != 0:

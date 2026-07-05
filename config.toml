@@ -506,31 +506,94 @@ wave_absorb = 0.5    # soft stuff soaks blasts
 blast_resist = 0.0
 burst_threshold = 2.0   # overpressure can topple/burst furniture (door-equal; TUNING DIAL)
 
-[weapons.rifle]
-damage_per_bullet = 10
-bullets_per_burst = 5
-cone_half_angle_degrees = 3.0
-range_tiles = 90
-ap_cost = 1
-burst_interval_seconds = 0.16666667   # 1/6 s -> 2 ticks @ 12 tps
+# =============================================================================
+# Weapons framework (mechanics/03 §4) — three data tables loaded by
+# simulation.weapons: [weapons.*] the delivery instrument, [ammo.*] the round,
+# [payloads.*] what happens at the destination. W1 re-home: the old
+# [weapons.rifle]/[weapons.grenade]/[weapons.door_explosive] sections live on
+# as rows here with the SAME NUMBERS — zero behavior change; the unified
+# march / spread split / crits / payload executor / ammo economy are W2/W3.
+# Unlisted columns take the loader defaults (spread 0, shots 1, rof 0, mag 0,
+# crit_chance 0, crit_mult 2.0, mass 0, loudness 0, payload columns 0/empty).
+# =============================================================================
 
-[weapons.grenade]
-blast_radius = 5
-pressure = 10.0
+[weapons.k5_carbine]                  # assault rifle — the shipped rifle, re-homed
+archetype = "projectile"
+ammo_family = "rifle_556"
+spread_deg = 3.0                      # aimed cone half-angle (was cone_half_angle_degrees)
+spread_snap_deg = 3.0                 # == spread_deg in W1; the snap/aim split activates in W2
+range_tiles = 90
+shots_per_trigger = 5                 # was bullets_per_burst
+rof_interval_seconds = 0.16666667     # 1/6 s (was burst_interval_seconds) -> 4 ticks @ 24 tps
+mag_size = 0                          # 0 = ammo not tracked until W3 wires the economy
+reload_seconds = 0.0
+ap_cost = 1
+crit_chance = 0.0                     # crits activate in W2
+crit_mult = 2.0
+mass_kg = 3.4
+loudness = 0.8                        # reserved, no consumer yet (stealth layer)
+
+[weapons.hand_grenade]                # thrown — the shipped grenade, re-homed
+archetype = "lobbed"
+ammo_family = "hand_grenade"
+ap_cost = 1
+max_throw_range = 30
 fuse_min_seconds = 0.0
 fuse_max_seconds = 10.0
 fuse_default_seconds = 1.0
-ap_cost = 1
-max_throw_range = 30
-unit_damage = 60
-wall_damage = 200
-travel_speed = 30.0
+mass_kg = 0.4
+loudness = 0.0                        # the payload is what's loud
 
-[weapons.door_explosive]
-blast_radius = 3
+[weapons.breach_charge]               # demolition — the shipped door charge, re-homed
+archetype = "placed"
+ammo_family = "demo_charge"
+ap_cost = 1
+mass_kg = 1.0
+loudness = 1.0
+
+[ammo.rifle_556_standard]
+family = "rifle_556"
+damage = 10                           # was damage_per_bullet
+dtype = "kinetic"
+ap = 0
+speed_tiles_per_tick = 150.0          # data only in W1 — the march resolves instantly (as today) until W2
+
+[ammo.grenade_frag]
+family = "hand_grenade"
+damage = 0                            # the payload does the damage
+dtype = "blast"
+ap = 0
+# Travel speed: the shipped Projectile consumes tiles-per-SECOND (the old
+# travel_speed = 30.0), so travel_speed_tiles_per_second stays the consumed
+# field — update_position() arithmetic is bit-identical. speed_tiles_per_tick
+# is the W2 unified-march data-of-record, derived at the ACTUAL clock
+# (24 tps): 30 / 24 = 1.25 exactly. (The mechanics/03 §6 armory table's
+# "2.5 t/t" was authored against the legacy 12 tps clock.)
+speed_tiles_per_tick = 1.25
+travel_speed_tiles_per_second = 30.0
+payload = "frag_standard"
+
+[ammo.demo_breach]
+family = "demo_charge"
+dtype = "blast"
+payload = "breach_focus"
+
+[payloads.frag_standard]              # the shipped grenade blast, byte-for-byte
+radius = 5                            # was blast_radius
+pressure = 10.0
+wall_damage = 200
+unit_damage = 60
+gas_species = ""
+gas_amount = 0.0
+gas_radius = 0
+ignite_radius = 0.0
+ignite_intensity = 0.0
+clear_smoke = true                    # what apply_explosion already does implicitly (executor = W3)
+
+[payloads.breach_focus]               # the shipped door charge, byte-for-byte
+radius = 3
 pressure = 5.0
 wall_damage = 500
-ap_cost = 1
 unit_damage = 60
 
 [zombie]
