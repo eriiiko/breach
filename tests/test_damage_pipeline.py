@@ -279,12 +279,16 @@ def test_species_carry_mitigation_tables_and_units_point_at_them():
     assert tuple(HUMAN.mitigation.resist_mult) == (1.0,) * N_DAMAGE_TYPES
     m = Unit("M1", x=5, y=5, team=0)
     assert m.mitigation is HUMAN.mitigation
-    # The zombie overlay: HEAT ×4, everything else neutral (bullets keep
-    # their site-side bullet_damage_multiplier amount rule).
+    # The zombie overlay: HEAT ×4 (vulnerability), POISON ×0 (immunity —
+    # W3: they don't breathe; poison is not the anti-horde answer, fire is),
+    # everything else neutral (bullets keep their site-side
+    # bullet_damage_multiplier amount rule).
+    from simulation.damage import POISON
     assert ZOMBIE_MITIGATION.resist_mult[HEAT] == 4.0
+    assert ZOMBIE_MITIGATION.resist_mult[POISON] == 0.0
     for dtype in range(N_DAMAGE_TYPES):
         assert ZOMBIE_MITIGATION.armor[dtype] == 0.0
-        if dtype != HEAT:
+        if dtype not in (HEAT, POISON):
             assert ZOMBIE_MITIGATION.resist_mult[dtype] == 1.0
 
 

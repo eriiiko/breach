@@ -22,7 +22,7 @@ import numpy as np
 from config import CFG
 from simulation import unit_fixed
 from simulation.damage import (
-    HEAT, MitigationProfile, NEUTRAL_MITIGATION, build_mitigation,
+    HEAT, POISON, MitigationProfile, NEUTRAL_MITIGATION, build_mitigation,
 )
 from simulation.environment import EnvironmentProfile, HUMAN_ENVIRONMENT
 from simulation.inventory import InventoryProfile
@@ -209,6 +209,16 @@ HUMAN = SpeciesDef(
 # rule, not a resistance).
 ZOMBIE_MITIGATION = build_mitigation(resist_mult={
     HEAT: float(getattr(CFG.zombie, "fire_damage_multiplier", 4.0)),
+    # STANDARD VALUE (mechanics/06 §8, W3): zombie POISON immunity — they
+    # don't breathe, so gas dose does nothing (resist 0 = immune; the
+    # mechanics/06 §3 "robot" pattern). DESIGN-LOAD-BEARING: poison must
+    # not become the anti-horde cheese — fire is the answer (the ×4 above).
+    # The marine baseline stays 1.0 (NEUTRAL_MITIGATION). The poison
+    # coupling row (exchange.apply_poison_dose) additionally skips
+    # resist-0 units entirely (lazy emission — no 0-damage event spam on
+    # a horde standing in gas). Not config-sourced: immunity is a species
+    # FACT, not a dial — flip it here if a breathing horde variant ships.
+    POISON: 0.0,
 })
 
 # Zombie knockdown stability (mechanics/06 §4) — the same state-overlay

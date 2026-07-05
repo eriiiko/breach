@@ -66,9 +66,15 @@ from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
 from config import CFG
-from simulation.damage import BLAST, HEAT, DamagePacket, apply_packet
+from simulation import gas_fixed
+from simulation.damage import (
+    BLAST, HEAT, POISON, DamagePacket, apply_packet, mitigation_for,
+)
+# Gas SLICE ids (engine/05 §6.2) — aliased so they can't be confused with the
+# damage-type constants above (gases.POISON = slice 2; damage.POISON = dtype 4).
+from simulation.gases import POISON as GAS_POISON, TEARGAS as GAS_TEARGAS
 from simulation.species import ZOMBIE_STABILITY
-from simulation.status import KNOCKED_DOWN, apply_status
+from simulation.status import BLINDED, KNOCKED_DOWN, apply_status
 
 
 # ---------------------------------------------------------------------------
@@ -524,6 +530,98 @@ def apply_wave_push(units, gmap, ticks_per_second):
 
 
 # ---------------------------------------------------------------------------
+# Gas coupling rows (mechanics/05 §1) — the owed `gas[teargas]` / `gas[poison]`
+# rows, born INTO the table by weapons W3. Both mirror the heat row's shape:
+# footprint reduction (max — the densest gas tile on the body is the exposure
+# that matters, exactly the heat row's hottest-tile argument) -> a Q16.16
+# integer threshold (config [exchange], quantized once per pass — door 2) ->
+# the response. LAZY BY CONSTRUCTION: an all-zero plane early-outs on one
+# integer .any(); a unit below threshold costs one integer reduction; the
+# rows draw NO randomness ever — so every gas-free trajectory (the canonical
+# golden included) is bit-identical to pre-W3.
+# ---------------------------------------------------------------------------
+def apply_teargas_blind(units, gmap):
+    """The ``gas[teargas]`` coupling row (mechanics/05 §1, W3): footprint-max
+    teargas density above ``teargas_blind_density`` applies BLINDED
+    (``can_aim`` suppressed -> aimed fire collapses to the snap cone — the
+    process_shooting cone-selection gate) for ``teargas_blind_ticks``,
+    REFRESH-stacked: every qualifying tick re-ups the timer, so the blind
+    outlasts leaving the cloud by the configured duration.
+
+    Runs post-physics at ``Simulation.step`` 9c3 (after heat + push — the
+    documented within-tick exchange order), per LIVING unit in stored order
+    (order-free anyway: each response reads only the field + its own state).
+    Pure door-1 integer reduction + compare on a door-2 threshold; no RNG.
+    A status applied here starts suppressing NEXT tick (the step-2b P3
+    trigger-position semantics — this tick's shooting already ran at step 4).
+    """
+    slice_ = gmap.gas[GAS_TEARGAS]
+    if not bool(slice_.any()):
+        return                              # dormant plane: no teargas anywhere
+    cfg = CFG.exchange
+    thresh_q = gas_fixed.quantize_scalar(float(cfg.teargas_blind_density))
+    duration = int(cfg.teargas_blind_ticks)
+    for u in units:
+        if not u.alive:
+            continue
+        density_q = reduce_max(slice_, u.occupied_tiles())
+        if density_q < thresh_q:
+            continue
+        apply_status(u, BLINDED, magnitude=0,
+                     duration_ticks=duration, source_id=None)
+
+
+def apply_poison_dose(units, gmap, ticks_per_second, events=None):
+    """The ``gas[poison]`` coupling row (mechanics/05 §1, W3): footprint-max
+    poison density at or above ``poison_min_density`` emits ONE POISON
+    :class:`DamagePacket` per tick through the mechanics/06 pipeline.
+
+    The per-tick amount KEEPS THE HEAT ROW'S IDIOM exactly — a door-3
+    float64 chain on the door-1 field read and door-2 constants, quantized
+    once at the HP boundary::
+
+        density = density_q / 65536                    # exact 2^-16 dequantize
+        amount  = poison_dps * density * (1 / tps)     # pure IEEE * (door 3)
+        applied = dequantize(quantize(mitigated))      # apply_packet's
+                                                       # quantize_hp_delta:
+                                                       # round-half-away onto
+                                                       # the Q16.16 grid
+
+    so the applied delta is the integer-rounded (half away from zero)
+    Q16.16 count of ``resist_mult[POISON] × poison_dps × density / tps`` —
+    e.g. a marine (resist 1.0) in full density at 24 tps takes exactly
+    0.25 HP/tick (16384 counts), 6 HP/s.
+
+    LAZY EMISSION for the immune: a unit whose ``resist_mult[POISON]`` is
+    exactly 0 (the zombie — they don't breathe; the future robot) draws NO
+    packet at all, mirroring the lazy-roll rule: a packet that cannot matter
+    is not emitted, so a horde standing in gas emits no 0-damage event spam
+    (and takes 0 damage — poison is not the anti-horde answer; fire is).
+    Resistances BETWEEN 0 and 1 still flow through the pipeline normally.
+    Source string ``"poison_gas"``; gas deaths never convert (only melee).
+    """
+    slice_ = gmap.gas[GAS_POISON]
+    if not bool(slice_.any()):
+        return                              # dormant plane: no poison anywhere
+    cfg = CFG.exchange
+    thresh_q = gas_fixed.quantize_scalar(float(cfg.poison_min_density))
+    dps = float(cfg.poison_dps)
+    dt_tick = 1.0 / float(ticks_per_second)
+    for u in units:
+        if not u.alive:
+            continue
+        density_q = reduce_max(slice_, u.occupied_tiles())
+        if density_q < thresh_q:
+            continue
+        if mitigation_for(u).resist_mult[POISON] == 0.0:
+            continue                        # immune: no packet, no event (lazy)
+        amount = dps * (density_q / 65536.0) * dt_tick
+        apply_packet(u,
+                     DamagePacket(amount=amount, dtype=POISON, source_id=None),
+                     events, source="poison_gas")
+
+
+# ---------------------------------------------------------------------------
 # The coupling-table structure (mechanics/05 §1) — plain data, no framework.
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
@@ -598,6 +696,32 @@ COUPLING_TABLE: tuple[CouplingRow, ...] = (
             "heat damage, then push)."
         ),
     ),
+    CouplingRow(
+        field="gas[teargas]",
+        reduction="max",
+        response=apply_teargas_blind,
+        note=(
+            "Teargas -> BLINDED (mechanics/05 §1, W3): footprint-max density "
+            "vs the Q16.16 teargas_blind_density threshold -> refresh-stacked "
+            "BLINDED (can_aim off -> snap-cone fire, the owed P3 consumer). "
+            "Runs post-physics at Simulation.step 9c3, after the push row "
+            "(within-tick exchange order: heat, push, teargas, poison). "
+            "Lazy: all-zero plane early-outs; no RNG."
+        ),
+    ),
+    CouplingRow(
+        field="gas[poison]",
+        reduction="max",
+        response=apply_poison_dose,
+        note=(
+            "Poison -> POISON DoT packets (mechanics/05 §1, W3): footprint-"
+            "max density vs poison_min_density -> one packet/tick of "
+            "poison_dps x density / tps through the mechanics/06 pipeline "
+            "(zombie resist_mult[POISON]=0 -> immune, lazily skipped). Runs "
+            "at Simulation.step 9c3 directly after the teargas row. Lazy: "
+            "all-zero plane early-outs; no RNG."
+        ),
+    ),
 )
 
 
@@ -607,4 +731,5 @@ __all__ = [
     "reduce_center", "reduce_grad", "reduce_max", "reduce_mean", "reduce_sum",
     "CouplingRow", "COUPLING_TABLE",
     "apply_blast_damage", "apply_environmental_damage", "apply_wave_push",
+    "apply_teargas_blind", "apply_poison_dose",
 ]

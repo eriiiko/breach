@@ -407,8 +407,9 @@ def test_knockdown_ring_wider_than_damage_ring():
 def test_push_row_registered_in_coupling_table():
     rows = [(r.field, r.reduction, r.response) for r in COUPLING_TABLE]
     assert ("wave_p", "grad", apply_wave_push) in rows
-    # table order: heat, blast, push (the chapter's row order — P0)
-    assert rows[-1][2] is apply_wave_push
+    # table order: heat, blast, push, then the W3 gas rows (the chapter's
+    # row order — P0; the table GROWS, that is the point)
+    assert rows[2][2] is apply_wave_push
 
 
 if __name__ == "__main__":

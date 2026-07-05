@@ -81,7 +81,8 @@ from simulation.combat import (
 # Execution positions are UNCHANGED (heat at step 9c, blast at the grenade
 # fuse-out below); the consolidated named EXCHANGE-READ slot is a later patch.
 from simulation.exchange import (  # noqa: F401 (apply_blast_damage: legacy re-export — the executor calls it now)
-    apply_blast_damage, apply_environmental_damage, apply_wave_push,
+    apply_blast_damage, apply_environmental_damage, apply_poison_dose,
+    apply_teargas_blind, apply_wave_push,
 )
 from simulation.events import (  # noqa: F401 (ExplosionEvent: legacy re-export — emitted by the executor now)
     DoorDestroyedEvent, ExplosionEvent, WallDestroyedEvent,
@@ -778,6 +779,21 @@ class Simulation:
         # suppressing next tick (the step-2b P3 trigger-position semantics).
         if self.physics_runner is not None:
             apply_wave_push(self.units, self.gmap, self._tps)
+
+        # 9c3. Gas coupling rows (mechanics/05 §1 gas[teargas] / gas[poison]
+        # — exchange.COUPLING_TABLE[3..4], W3). Read the post-physics gas
+        # planes at each living unit's footprint: teargas above threshold
+        # applies BLINDED (snap-cone fire from next tick — the step-2b
+        # trigger-position semantics); poison above threshold emits one
+        # POISON packet per tick through the mechanics/06 pipeline (zombies
+        # immune). WITHIN-TICK EXCHANGE ORDER (documented contract): heat
+        # (9c), push (9c2), teargas, poison. Lazy: an all-zero plane is one
+        # integer .any() and out — every gas-free trajectory (the canonical
+        # golden included) is bit-identical to pre-W3. No RNG.
+        if self.physics_runner is not None:
+            apply_teargas_blind(self.units, self.gmap)
+            apply_poison_dose(self.units, self.gmap, self._tps,
+                              events=self.tick_events)
 
         # 9d. Ignition from temperature (engine/06 §4, proposal §6 step 4b). The
         # READ side of the temperature substrate: the C++ TemperatureSolver
