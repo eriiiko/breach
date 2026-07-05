@@ -84,8 +84,9 @@ BURNING      = 4   # DoT: HEAT packets per tick (fire coupling row — later)
 POISONED     = 5   # DoT: POISON packets per tick (gas dose row — later)
 SUFFOCATING  = 6   # DoT: ASPHYX packets per tick (O2/water rows — later)
 REGEN        = 7   # HoT: HEAL packets per tick (heal/stabilize mechanism)
+BLINDED      = 8   # CC: no aim (teargas coupling row — W3; snap-cone fire)
 
-N_STATUS_KINDS = 8
+N_STATUS_KINDS = 9
 
 # Stacking rules (mechanics/06 §4): what a re-application of the SAME kind
 # does. Genuine tie rules are explicit data, not code accidents (ch. 05 P4).
@@ -140,6 +141,13 @@ STATUS_REGISTRY: tuple[StatusKindDef, ...] = (
     StatusKindDef(POISONED,     "poisoned",     STACK_STACK, dtype=POISON),
     StatusKindDef(SUFFOCATING,  "suffocating",  STACK_REFRESH, dtype=ASPHYX),
     StatusKindDef(REGEN,        "regen",        STACK_REFRESH, dtype=HEAL),
+    # BLINDED (W3, the teargas coupling row — mechanics/05 §1): can_aim
+    # suppressed, everything else intact — an aimed fire order collapses to
+    # the SNAP cone (the process_shooting cone-selection gate, the owed P3
+    # can_aim consumer). REFRESH: standing in the cloud re-ups the timer
+    # every qualifying tick; it outlasts leaving by [exchange]
+    # teargas_blind_seconds. Pure CC — no packet emission.
+    StatusKindDef(BLINDED,      "blinded",      STACK_REFRESH, can_aim=False),
 )
 
 assert all(row.kind == i for i, row in enumerate(STATUS_REGISTRY)), \
@@ -333,7 +341,8 @@ def serialize_statuses(unit) -> list:
 
 __all__ = [
     "KNOCKED_DOWN", "IMMOBILIZED", "STUNNED", "PARALYZED",
-    "BURNING", "POISONED", "SUFFOCATING", "REGEN", "N_STATUS_KINDS",
+    "BURNING", "POISONED", "SUFFOCATING", "REGEN", "BLINDED",
+    "N_STATUS_KINDS",
     "STACK_REFRESH", "STACK_STACK", "STACK_MAX",
     "StatusKindDef", "STATUS_REGISTRY", "StatusEffect",
     "ComposedFlags", "FLAGS_DEFAULT", "composed_flags",

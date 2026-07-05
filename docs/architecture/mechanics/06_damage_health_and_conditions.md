@@ -60,7 +60,11 @@ DamagePacket(amount_q16, dtype, source_id)
 **Proof of shape:** the shipped `zombie.fire_damage_multiplier = 4.0` special
 case dissolves into `resist_mult[HEAT] = 4.0` in the zombie species profile —
 a vulnerability is just a resistance above 1. No special-case code survives
-the migration.
+the migration. Its immunity twin shipped with weapons W3:
+`resist_mult[POISON] = 0.0` on the zombie overlay — they don't breathe, and
+poison must not become the anti-horde cheese (fire is the answer). A
+resist-0 unit draws **no DoT packet at all** from the poison coupling row
+(lazy emission — no 0-damage event spam on a horde standing in gas).
 
 ## 3. Mitigation: flat armor, then multiplier (DECIDED)
 
@@ -94,6 +98,7 @@ Unit logic consults the *composed* flags, never individual statuses.
 |---|---|---|
 | `KNOCKED_DOWN` | CC | prone; no move/act for `remaining_ticks` (the get-up time), then auto-clears. **Trigger:** blast `Δv = J/mass ≥ threshold × stability[profile]` (the wave_p push row, exchange §1 — mass is a live stat; the footprint-summed impulse gives the area/density effect; `stability` is the one non-physical knob, door-2 profile data: a low four-legged robot resists toppling). Future triggers: sprint collisions (pends movement design), ice falls (pends materials) — they just apply the same status |
 | `IMMOBILIZED` / `STUNNED` / `PARALYZED` | CC | flag variants of the same machinery (no move / no act / neither) — kinds are config rows, adding one is O(row) |
+| `BLINDED` | CC | `can_aim` off, everything else intact — an aimed fire order collapses to the **snap cone** (the cone-selection gate in `process_shooting`, the can_aim consumer). **Trigger:** the teargas coupling row (footprint-max density ≥ `teargas_blind_density`), refresh-stacked per qualifying tick — shipped weapons W3. Adding the kind was exactly O(row), as designed |
 | `BURNING` | DoT | emits HEAT packets per tick; later also a FieldEdit smoke/heat emitter (a burning unit *is* a fire) |
 | `POISONED` | DoT | dose-driven POISON packets |
 | `SUFFOCATING` | DoT | grace timer, then ASPHYX packets (driven by the O2/water coupling rows) |
@@ -215,7 +220,7 @@ gate.
 | Q16.16-snapped HP deltas everywhere | ✅ shipped (Q2-lift) |
 | DamagePacket pipeline + types + mitigation | ✅ shipped (P2, 2026-07-05 — `simulation/damage.py`; all four sites routed, neutral defaults bit-identical, digest unchanged. Float64-amount form: the integer `amount_q16` packets + per-phase batching are later patches) |
 | zombie ×4 → resist_mult[HEAT] dissolution | ✅ shipped (P2 — `species.ZOMBIE_MITIGATION`; since P5 the profile SOURCES its value from `[zombie] fire_damage_multiplier` at species-table import (restart-bound standard value), and the two heat tests read the same key as the expected ratio — sim + tests move together) |
-| Status/condition system + behavior flags | ✅ shipped (P3, 2026-07-05 — `simulation/status.py`: kind registry rows + refresh/stack/max stacking + `composed_flags`; ticked at step 2b, the top of the unit-simulation section (ch. 05 §4 phase 3); DoTs emit through `apply_packet` (zombie BURNING = 4× a marine's, proven bitwise). Duration contract: N ticks of suppression AND N emissions (lazy sweep). Consumers wired: movement pauses on `can_move` (path-offset shift), fire orders + auto-fire and zombie melee gate on `can_act`, zombie walk on `can_move`. `can_aim` has no consumer yet — wires with the aim/exposure pass. NOTHING applies statuses in-game yet — triggers are P4+ |
+| Status/condition system + behavior flags | ✅ shipped (P3, 2026-07-05 — `simulation/status.py`: kind registry rows + refresh/stack/max stacking + `composed_flags`; ticked at step 2b, the top of the unit-simulation section (ch. 05 §4 phase 3); DoTs emit through `apply_packet` (zombie BURNING = 4× a marine's, proven bitwise). Duration contract: N ticks of suppression AND N emissions (lazy sweep). Consumers wired: movement pauses on `can_move` (path-offset shift), fire orders + auto-fire and zombie melee gate on `can_act`, zombie walk on `can_move`. **Weapons W3 added `BLINDED` (kind 8) + the `can_aim` consumer** (aimed fire → snap cone at the `process_shooting` cone selection) **+ the first in-game applier**: the teargas coupling row (exchange 9c3); zombie POISON immunity (`resist_mult[POISON] = 0`) joined the mitigation overlay |
 | KNOCKED_DOWN via blast impulse (+ push row) | ✅ built (P4, 2026-07-05 — `exchange.apply_wave_push` at step 9c2: trigger `dv² ≥ (threshold × stability)²`, refresh-stacked getup timer; `stability` on EnvironmentProfile (1.0) + the `species.ZOMBIE_STABILITY` overlay (0.9); minimal prone visual (sprite rotated 90°). The §4 physics note is now a REGRESSION TEST: measured knockdown ring ~9–10 tiles vs ~4.6-tile meaningful-damage ring (≈2×) for a grenade — `tests/test_wave_push.py`. **HUMAN-TEST pending: Erik's feel check gates the merge** |
 | LifeState simplification (retire unused DOWNED value) | ✅ shipped (P3 — `ALIVE | DEAD` only) |
 | Digest extension (`__unit_status__`) + golden re-baseline | ✅ shipped (P3 — the synced unit record carries `serialize_statuses`; golden `ae1164ca…` → `6d690fda…`, no field trajectory moved; Lenovo re-attestation owed) |

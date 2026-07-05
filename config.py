@@ -108,6 +108,12 @@ class GameConfig:
             self.exchange.knockdown_getup_seconds, tps
         )
 
+        # BLINDED duration (mechanics/06 §4, the W3 teargas coupling row):
+        # same seconds -> integer-ticks derivation. 1.0 s -> 24 ticks @ 24 tps.
+        self.exchange.teargas_blind_ticks = ticks_from_seconds(
+            self.exchange.teargas_blind_seconds, tps
+        )
+
         self.recorder.capacity = round(self.recorder.replay_seconds * tps)
 
     def reload(self):

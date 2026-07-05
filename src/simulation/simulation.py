@@ -80,10 +80,11 @@ from simulation.combat import (
 # (tests/_xarch_liveheat_dump.py — the case-2 divergence instrument).
 # Execution positions are UNCHANGED (heat at step 9c, blast at the grenade
 # fuse-out below); the consolidated named EXCHANGE-READ slot is a later patch.
-from simulation.exchange import (
-    apply_blast_damage, apply_environmental_damage, apply_wave_push,
+from simulation.exchange import (  # noqa: F401 (apply_blast_damage: legacy re-export — the executor calls it now)
+    apply_blast_damage, apply_environmental_damage, apply_poison_dose,
+    apply_teargas_blind, apply_wave_push,
 )
-from simulation.events import (
+from simulation.events import (  # noqa: F401 (ExplosionEvent: legacy re-export — emitted by the executor now)
     DoorDestroyedEvent, ExplosionEvent, WallDestroyedEvent,
 )
 from simulation.gamemap import GameMap, MAT_DOOR
@@ -93,7 +94,13 @@ from simulation.orders import (
     ORDER_GRENADE, ORDER_EXPLOSIVE, ORDER_FIRE, ORDER_MOVE_ATTACK,
     ORDER_MOVE_COVER, ORDER_SPRINT, MOVE_ORDER_TYPES,
 )
-from simulation.physics import apply_explosion, add_explosion_smoke
+from simulation.physics import apply_explosion, add_explosion_smoke  # noqa: F401 (legacy re-export)
+# The payload EXECUTOR (mechanics/03 §4, W3): the grenade fuse-out below
+# executes its round's payload row through this. Imported as a BARE NAME
+# deliberately (the apply_environmental_damage pattern above): the call site
+# reads this module's own binding, so replica tests can rebind
+# simulation.simulation.execute_payload to the pre-W3 inline triple.
+from simulation.payloads import execute_payload
 from simulation.physics_runner import PhysicsRunner
 from simulation.field_edit import EditQueue, FieldEdit
 from simulation.recorder import PhysicsRecorder
@@ -684,9 +691,12 @@ class Simulation:
         # 4. Process shooting. W2: dispatches each shooter's weapon row by
         # archetype (projectile burst / hitscan beam); rounds that outrange
         # their per-tick speed land on self.bullets (advanced in slot 2).
+        # W3: the edit queue rides along so payload rounds (GL-6) can
+        # deposit their detonation; the mag/reload economy gates triggers.
         process_shooting(self.gmap, self.units, self.tick,
                          self.shots, self.real_time, self.rng,
-                         events=self.tick_events, bullets=self.bullets)
+                         events=self.tick_events, bullets=self.bullets,
+                         queue=self.edit_queue)
 
         # 5. Zombie AI.
         update_zombies_tick(self.gmap, self.units, self.tick)
@@ -769,6 +779,21 @@ class Simulation:
         # suppressing next tick (the step-2b P3 trigger-position semantics).
         if self.physics_runner is not None:
             apply_wave_push(self.units, self.gmap, self._tps)
+
+        # 9c3. Gas coupling rows (mechanics/05 §1 gas[teargas] / gas[poison]
+        # — exchange.COUPLING_TABLE[3..4], W3). Read the post-physics gas
+        # planes at each living unit's footprint: teargas above threshold
+        # applies BLINDED (snap-cone fire from next tick — the step-2b
+        # trigger-position semantics); poison above threshold emits one
+        # POISON packet per tick through the mechanics/06 pipeline (zombies
+        # immune). WITHIN-TICK EXCHANGE ORDER (documented contract): heat
+        # (9c), push (9c2), teargas, poison. Lazy: an all-zero plane is one
+        # integer .any() and out — every gas-free trajectory (the canonical
+        # golden included) is bit-identical to pre-W3. No RNG.
+        if self.physics_runner is not None:
+            apply_teargas_blind(self.units, self.gmap)
+            apply_poison_dose(self.units, self.gmap, self._tps,
+                              events=self.tick_events)
 
         # 9d. Ignition from temperature (engine/06 §4, proposal §6 step 4b). The
         # READ side of the temperature substrate: the C++ TemperatureSolver
@@ -858,40 +883,34 @@ class Simulation:
                 if proj.proj_type == ORDER_GRENADE:
                     fx = int(proj.target_fx)
                     fy = int(proj.target_fy)
-                    # W1 re-home: the grenade's blast numbers live on the
-                    # frag_standard payload row (hand_grenade -> grenade_frag
-                    # -> payloads.frag_standard) — same literals as the old
-                    # CFG.weapons.grenade.*. The payload EXECUTOR generalizing
-                    # this triple is W3; here we only read the row.
-                    frag = self.weapons_tables.payload_for_ammo("grenade_frag")
-                    radius = frag.radius
-                    apply_explosion(
-                        self.gmap, self.edit_queue, fy, fx, radius,
-                        frag.pressure,
-                        frag.wall_damage,
-                    )
-                    # The wave_p blast coupling row (mechanics/05 §1;
-                    # exchange.COUPLING_TABLE[1]) — detonation-site
-                    # invocation, geometric falloff (predates the field read).
-                    apply_blast_damage(
-                        self.units, fx, fy, radius,
-                        frag.unit_damage,
-                        events=self.tick_events,
-                    )
-                    add_explosion_smoke(
-                        self.gmap, self.edit_queue, fy, fx, radius)
-                    self.tick_events.append(ExplosionEvent(
-                        pos=(fx, fy), radius=radius, kind="grenade"))
+                    # W3: the LOBBED detonation goes through the payload
+                    # EXECUTOR via the projectile's round (hand_grenade ->
+                    # proj.ammo_name -> its payload row). The default
+                    # grenade_frag -> payloads.frag_standard sequence is
+                    # byte-identical to the pre-W3 inline triple (the
+                    # replica gate); gas grenades ride the same call with
+                    # their rows. Blast damage (the wave_p coupling row,
+                    # exchange.COUPLING_TABLE[1]) stays a detonation-site
+                    # invocation inside the executor.
+                    payload = self.weapons_tables.payload_for_ammo(
+                        proj.ammo_name)
+                    execute_payload(
+                        self.gmap, self.edit_queue, self.units, fy, fx,
+                        payload, self.rng, events=self.tick_events,
+                        kind="grenade")
 
         # W2: advance in-flight kinetic rounds (the unified march). Each
         # marches this tick's integer step budget; hits/chew/exposure resolve
         # inside advance() (same rng, fixed spawn order). Survivors stay.
+        # W3: the edit queue rides along — an in-flight payload round (the
+        # GL-6 40 mm) detonates at its stop through the payload executor.
         if self.bullets:
             survivors = []
             for b in self.bullets:
                 if b.advance(self.gmap, self.units, self.shots,
                              self.real_time, self.rng,
-                             events=self.tick_events):
+                             events=self.tick_events,
+                             queue=self.edit_queue):
                     survivors.append(b)
             self.bullets = survivors
 
@@ -937,6 +956,16 @@ class Simulation:
             u.clear_orders()
             u.move_path = []
             u.last_fire_tick = -999
+            # W3 ammo economy: the round boundary tops everyone off (the
+            # WEGO planning pause is a between-rounds breather — v1 rule,
+            # Erik's dial later). Also REQUIRED for correctness: the tick
+            # counter rewinds to 0 below, so a carried reload_done_tick
+            # from late in the round would stall the unit deep into the
+            # next one (the exact hazard last_fire_tick = -999 solves).
+            # None = full mag (the lazy first-trigger bind, combat.mag_gate);
+            # untracked (mag_size 0) units never read either field.
+            u.current_mag = None
+            u.reload_done_tick = -1
 
         # Reset obstacles so dead bodies don't keep blocking physics. IN-PLACE
         # (not reassignment) so any bound view of the buffer stays valid — the
@@ -983,6 +1012,11 @@ class Simulation:
                         o.target_fy + 0.5,
                         fuse_seconds=o.grenade_fuse,
                         thrown_tick=phase_start_tick,
+                        # W3: the order's round (None = the shipped
+                        # grenade_frag — the UI path unchanged; smoke/tear/
+                        # poison grenades name theirs; loadout UI = W6).
+                        ammo_name=(getattr(o, "ammo_name", None)
+                                   or "grenade_frag"),
                     )
                     self.projectiles.append(proj)
 

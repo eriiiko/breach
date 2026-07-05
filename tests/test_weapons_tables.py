@@ -91,7 +91,11 @@ def test_frag_standard_equals_the_old_grenade_blast():
     assert frag.pressure == 10.0
     assert frag.wall_damage == 200
     assert frag.unit_damage == 60
+    # W3 smoke boolean split (the W1 finding of record): BOTH true — the
+    # inner clear (data-of-record, inside apply_explosion in v1) AND the
+    # live add_explosion_smoke gate.
     assert frag.clear_smoke is True
+    assert frag.emit_blast_smoke is True
     assert frag.gas_species == "" and frag.gas_amount == 0.0
     # ...and the grenade round resolves to it.
     assert t.payload_for_ammo("grenade_frag") is frag
@@ -108,7 +112,11 @@ def test_breach_focus_equals_the_old_door_explosive():
     assert breach.gas_species == "" and breach.gas_amount == 0.0
     assert breach.gas_radius == 0
     assert breach.ignite_radius == 0.0 and breach.ignite_intensity == 0.0
-    assert breach.clear_smoke is False
+    # W3 smoke boolean split (the W1 finding of record): the door charge
+    # carries BOTH booleans true, or it silently loses its smoke the day the
+    # executor takes over (mechanics/03 §8 — this was the whole warning).
+    assert breach.clear_smoke is True
+    assert breach.emit_blast_smoke is True
     assert t.payload_for_ammo("demo_breach") is breach
 
 

@@ -226,6 +226,20 @@ class Unit:
         self.last_fire_tick = -999
         self.fire_target = None
 
+        # W3 ammo economy (mechanics/03 §4 mag_size/reload_seconds) — only
+        # weapons with mag_size > 0 ever touch these (the GL-6 tier; the k5
+        # keeps mag_size 0 = untracked = exactly pre-W3 behavior, so shipped
+        # scenarios never move this state). current_mag: None = full mag,
+        # lazily bound to the weapon row's mag_size at the first trigger
+        # (combat.mag_gate — survives weapon_id swaps in tests);
+        # reload_done_tick: the auto-reload stall's end tick (started when
+        # the mag empties, combat.mag_spend). Deterministic derivations of
+        # synced inputs (orders + tick), deliberately NOT in the synced
+        # digest surface — the last_fire_tick precedent
+        # (field_ab_harness.SYNCED_UNIT_FIELDS).
+        self.current_mag = None
+        self.reload_done_tick = -1
+
         # Zombie AI state.
         self.zombie_activated       = False
         self.zombie_path            = []

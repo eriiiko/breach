@@ -584,6 +584,29 @@ crit_mult = 2.0
 mass_kg = 4.1
 loudness = 0.1                        # quiet — the stealth-tech identity (reserved, no consumer)
 
+[weapons.gl6_revolver]                # grenade launcher (mechanics/03 §6) — the FIRST
+archetype = "projectile"              # payload-carrying PROJECTILE + the FIRST tracked mag (W3)
+ammo_family = "40mm"
+spread_deg = 3.0
+spread_snap_deg = 5.0
+range_tiles = 40
+shots_per_trigger = 1
+rof_interval_seconds = 1.2            # 1 @ 1.2 s -> 29 ticks @ 24 tps
+mag_size = 6                          # 6-round cylinder — the W3 economy's proving weapon
+reload_seconds = 3.0                  # auto-reload stall when empty -> 72 ticks @ 24 tps
+ap_cost = 1
+crit_chance = 0.0                     # the payload does the work; no direct-hit packet
+crit_mult = 2.0
+mass_kg = 5.5
+loudness = 0.9                        # reserved, no consumer yet (stealth layer)
+
+[weapons.c4_satchel]                  # demolition — PLACED, same det-slot flow as the
+archetype = "placed"                  # breach charge, ammo demo_c4 (selection UI = W6)
+ammo_family = "demo_charge"
+ap_cost = 1
+mass_kg = 2.0
+loudness = 1.0
+
 [ammo.rifle_556_standard]
 family = "rifle_556"
 damage = 10                           # was damage_per_bullet
@@ -624,6 +647,90 @@ family = "demo_charge"
 dtype = "blast"
 payload = "breach_focus"
 
+[ammo.demo_c4]                        # C4 satchel round — same PLACED det-slot flow,
+family = "demo_charge"                # bigger warhead (selection UI = W6; tests issue it)
+dtype = "blast"
+payload = "demolition_c4"
+
+# --- W3 gas hand-grenades: same LOBBED delivery as grenade_frag (identical
+# speed fields -> identical Projectile arithmetic), different payload row.
+[ammo.grenade_smoke]
+family = "hand_grenade"
+damage = 0
+dtype = "blast"
+ap = 0
+speed_tiles_per_tick = 1.25
+travel_speed_tiles_per_second = 30.0
+payload = "smoke_screen"
+
+[ammo.grenade_tear]
+family = "hand_grenade"
+damage = 0
+dtype = "blast"
+ap = 0
+speed_tiles_per_tick = 1.25
+travel_speed_tiles_per_second = 30.0
+payload = "tear_burst"
+
+[ammo.grenade_poison]
+family = "hand_grenade"
+damage = 0
+dtype = "blast"
+ap = 0
+speed_tiles_per_tick = 1.25
+travel_speed_tiles_per_second = 30.0
+payload = "poison_cloud"
+
+# --- W3 40 mm launcher rounds (mechanics/03 §4/§6): payload refs point at THE
+# SAME payload rows as the hand grenades — one definition of frag/smoke/tear/
+# poison, two deliveries (hand or tube; row-object identity is a test gate).
+# damage = 0: a 40 mm round carries NO direct-hit packet — it detonates at its
+# stop (first solid, first unit footprint, or max range) and the blast does
+# the work. wall_damage = 0: the payload's wall_damage is the breacher, not
+# bullet chew. 1.25 t/t = 30 tiles/s (the grenade's flight speed).
+[ammo.40mm_frag]
+family = "40mm"
+damage = 0
+dtype = "blast"
+ap = 0
+speed_tiles_per_tick = 1.25
+wall_damage = 0
+payload = "frag_standard"
+
+[ammo.40mm_smoke]
+family = "40mm"
+damage = 0
+dtype = "blast"
+ap = 0
+speed_tiles_per_tick = 1.25
+wall_damage = 0
+payload = "smoke_screen"
+
+[ammo.40mm_tear]
+family = "40mm"
+damage = 0
+dtype = "blast"
+ap = 0
+speed_tiles_per_tick = 1.25
+wall_damage = 0
+payload = "tear_burst"
+
+[ammo.40mm_poison]
+family = "40mm"
+damage = 0
+dtype = "blast"
+ap = 0
+speed_tiles_per_tick = 1.25
+wall_damage = 0
+payload = "poison_cloud"
+
+# The W1-finding smoke boolean SPLIT (mechanics/03 §8, wired W3): clear_smoke
+# documents apply_explosion's built-in inner-radius (40%) smoke clearing — v1
+# keeps that clear INSIDE apply_explosion, so the column is data-of-record,
+# wired live when FieldEdit takes over the explosion internals.
+# emit_blast_smoke is LIVE: the payload executor (simulation.payloads) gates
+# add_explosion_smoke (the noisy textured cloud) on it. BOTH must be true on
+# frag_standard AND breach_focus or the door charge silently loses its smoke.
 [payloads.frag_standard]              # the shipped grenade blast, byte-for-byte
 radius = 5                            # was blast_radius
 pressure = 10.0
@@ -634,13 +741,49 @@ gas_amount = 0.0
 gas_radius = 0
 ignite_radius = 0.0
 ignite_intensity = 0.0
-clear_smoke = true                    # what apply_explosion already does implicitly (executor = W3)
+clear_smoke = true                    # data-of-record: the inner clear lives in apply_explosion (v1)
+emit_blast_smoke = true               # LIVE: the executor's add_explosion_smoke gate (W3)
 
 [payloads.breach_focus]               # the shipped door charge, byte-for-byte
 radius = 3
 pressure = 5.0
 wall_damage = 500
 unit_damage = 60
+clear_smoke = true                    # data-of-record (see frag_standard)
+emit_blast_smoke = true               # LIVE: the door charge keeps its smoke (W1 finding)
+
+# --- W3 payload rows (mechanics/03 §6) — STANDARD VALUES for Erik's tuning --
+# Gas payloads put gas IN THE AIR (a deterministic radial deposit into the
+# engine/05 §6.2 gas slice, no RNG); what the gas DOES to lungs/eyes rides the
+# mechanics/05 coupling table ([exchange] below), same as heat. gas_amount
+# above 1.0 saturates the cloud core to full density (the [0,1] slice clamp)
+# and feathers the edge.
+[payloads.smoke_screen]               # the laser countermeasure / concealment cloud
+gas_species = "white_smoke"
+gas_amount = 1.5                      # saturates the core out to ~1/3 radius; interesting range 0.5..2.0
+gas_radius = 4
+
+[payloads.tear_burst]                 # area denial: teargas -> BLINDED (snap-cone fire)
+gas_species = "teargas"
+gas_amount = 1.0
+gas_radius = 3
+
+[payloads.poison_cloud]               # lethal cloud: poison -> POISON DoT (zombies immune)
+gas_species = "poison"
+gas_amount = 1.0
+gas_radius = 3
+
+[payloads.incendiary_splash]          # ignition ring: fire = max(fire, intensity*falloff)
+ignite_radius = 2.5                   # tiles; flammable tiles only (fire policy skip-mask)
+ignite_intensity = 0.5                # seed intensity at the centre; never lowers a bigger fire
+
+[payloads.demolition_c4]              # "bigger bombs" (mechanics/03 §5): C4 satchel warhead
+radius = 8
+pressure = 25.0
+wall_damage = 800
+unit_damage = 150
+clear_smoke = true
+emit_blast_smoke = true
 
 [zombie]
 hp = 400
@@ -797,6 +940,32 @@ knockdown_dv_threshold = 6.0     # |dv| (tiles/s) at stability 1.0 that triggers
 # the crowd-control payoff window after a good grenade. Interesting range
 # 0.5 (a stumble) .. 4.0 (a real opening). Re-knocks refresh the timer.
 knockdown_getup_seconds = 1.5    # prone time; config.py derives knockdown_getup_ticks (36 @ 24 tps)
+
+# --- The W3 gas coupling rows (mechanics/05 §1: gas[teargas] / gas[poison]) --
+# Both rows read the unit footprint with the heat row's reduction (max — the
+# densest gas tile on the body is the exposure that matters), threshold-gated
+# (Q16.16 integer compare, quantized once per pass), NO RNG. ALL FOUR ARE
+# STANDARD-VALUE PLACEHOLDERS FOR ERIK'S TUNING (mechanics/06 §8).
+# teargas_blind_density — footprint-max teargas density above which a unit is
+# BLINDED (can_aim suppressed -> fires with the SNAP cone even on aimed
+# orders). Feel: LOWER = the cloud edge already stings. Interesting range
+# ~0.05 (wisps blind) .. 0.5 (only the thick core).
+teargas_blind_density = 0.15
+# teargas_blind_seconds — BLINDED duration per qualifying tick (refresh-
+# stacked: standing in the cloud re-ups it every tick; it outlasts leaving
+# the cloud by this much). Interesting range 0.5 (blink it away) .. 3.0
+# (staggering out half-blind).
+teargas_blind_seconds = 1.0
+# poison_min_density — footprint-max poison density below which no dose
+# accumulates (the cloud's harmless fringe). Interesting range 0.02 .. 0.2.
+poison_min_density = 0.05
+# poison_dps — POISON damage per second at FULL density (1.0); the per-tick
+# packet scales linearly with the footprint-max density (dps * density / tps
+# through the mechanics/06 pipeline -> marine resist 1.0, zombie resist 0.0:
+# they don't breathe — and poison must NOT become the anti-horde cheese;
+# fire is the answer). Interesting range ~2 (a lingering hazard) .. 20
+# (a death sentence to stand in).
+poison_dps = 6.0
 
 [recorder]
 # Physics ring-buffer length in seconds. config.py derives the integer slot

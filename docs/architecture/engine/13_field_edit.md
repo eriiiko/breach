@@ -218,7 +218,7 @@ the port.
   `_combine` (float and Q16.16 `heat` branch); `heat_quantize` /
   `heat_saturating_add` mirroring the C++ helpers.
 - `FIELD_POLICY` for the live fields (`smoke`, `atmosphere`, `wave_source`,
-  `fire`, `heat`, `water_depth`).
+  `fire`, `heat`, `water_depth`, and — weapons W3 — `gas`).
 - `EditQueue` with the stable-sorted, single-RNG-consumer flush; one flush point
   in `Simulation.step()` before the solvers; `sim.edit(...)` enqueue API.
 - Migration of `apply_explosion` and `add_explosion_smoke` (behaviour-preserving;
@@ -226,15 +226,21 @@ the port.
   covers each mode, each region, LINEAR falloff, clamp, per-field skip-mask, the
   heat Q16.16 saturating branch, queue order-independence (the stable sort), the
   seeded-noise determinism, and before/after migration equivalence.
+- **The gas emitter (weapons W3, 2026-07-05):** `field="gas"` targets the
+  `(N, h, w)` multi-gas array with `channel = <gas slice id>`
+  (`gmap.gases.name_to_id`), resolved to the contiguous `(h, w)` int32 view at
+  apply time; same `"gas"` combine + `[0, 1]` clamp + solid skip as the
+  `smoke` (BLACK_SMOKE) view. First consumer:
+  `simulation.payloads.emit_gas` — the gas-payload DISC deposit
+  (deliberately `noise = 0`: a deterministic radial cloud, no RNG;
+  tests/test_payloads.py pins the per-tile Q16.16 exactness).
 
 **Designed, not built:**
 
 - `wall_hp` damage via a `REMOVE` FieldEdit + the post-flush `<= 0` destruction
   sweep (lands with the fire phase — §5).
-- The laser / gas emitters that motivated the primitive (BEAM burn-off, poison
-  DISC) — built on `FieldEdit` from day one when they land. The gas *fields* now
-  exist (`gmap.gas`, incl. poison); the per-gas `FIELD_POLICY` rows and the
-  emitters that write them are still pending.
+- The laser emitters (BEAM burn-off) — built on `FieldEdit` when they land.
+  (The gas emitter LANDED with weapons W3, above.)
 - `SET` (lerp-to-value) and `MIN` modes; additional falloffs (`SHARP`, `GAUSS`)
   — added when a consumer needs them.
 - Fire's smoke emission and the §3-plume `atmosphere` deposit re-expressed as

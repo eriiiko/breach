@@ -41,8 +41,10 @@ and ``heat`` always goes through the fixed-point branch.
 
 DEFERRED (designed, not built here): ``wall_hp`` damage as a REMOVE FieldEdit
 plus the post-flush ``<= 0`` destruction sweep (lands with the fire phase); the
-planned laser / gas emitters; the ``SET`` and ``MIN`` modes (added when a
-consumer needs them). See the canon chapter.
+planned laser emitters; the ``SET`` and ``MIN`` modes (added when a consumer
+needs them). See the canon chapter. (The gas emitter LANDED with weapons W3:
+``field="gas"`` + ``channel=<slice id>`` targets one plane of the (N, h, w)
+multi-gas array — simulation.payloads.emit_gas is the consumer.)
 """
 from __future__ import annotations
 
@@ -198,6 +200,14 @@ FIELD_POLICY = {
     # explosion deposit + clear) keep being authored in real density while the
     # stored field stays integer/deterministic (same idiom as "wave" / "water").
     "smoke":       _FieldPolicy("gas",   (0.0, 1.0), _skip_solid),
+    # W3 (mechanics/03 §4 gas payloads): the full multi-gas array (engine/05
+    # §6.2). ``gmap.gas`` is (N, h, w) int32 Q16.16 — one slice per gas type;
+    # a "gas" edit names its slice via ``FieldEdit.channel`` (the GAS_* id /
+    # ``gmap.gases.name_to_id``), resolved to a contiguous (h, w) view at
+    # apply time. Same combine + policy as "smoke" (which IS the BLACK_SMOKE
+    # slice): solid skip-mask, [0, 1] saturation clamp, quantize-once at the
+    # write boundary.
+    "gas":         _FieldPolicy("gas",   (0.0, 1.0), _skip_solid),
     # S2c: atmosphere is int32 Q16.16. The "atmosphere" dtype dequantizes the
     # stored int to real pressure, combines (the float path's exact +=/-=/max
     # semantics), then re-quantizes round-to-nearest — so atmosphere edits (the
@@ -457,6 +467,19 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
     """
     pol = _policy(edit.field)
     arr = getattr(gmap, edit.field)
+    ch = edit.channel
+    if pol.dtype == "gas" and arr.ndim == 3:
+        # The (N, h, w) multi-gas array (W3): ``channel`` names the SLICE
+        # (gas id — engine/05 §6.2), not an RGB channel. Resolve it to the
+        # contiguous (h, w) int32 view once, then the edit proceeds exactly
+        # like a scalar gas field ("smoke" is the same array's BLACK_SMOKE
+        # slice). A gas edit without a channel is a caller bug — loud.
+        if ch is None:
+            raise ValueError(
+                "FieldEdit: a 'gas' edit must set channel=<gas id> "
+                "(the (N, h, w) slice index — gmap.gases.name_to_id)")
+        arr = arr[int(ch)]
+        ch = None
     shape = (arr.shape[0], arr.shape[1])
 
     skip_mask = pol.skip(gmap) if pol.skip is not None else None
@@ -473,7 +496,8 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
     is_gas = (pol.dtype == "gas")
     is_atmosphere = (pol.dtype == "atmosphere")
     is_fire = (pol.dtype == "fire")
-    ch = edit.channel
+    # ``ch`` was resolved above: None for scalar fields (incl. a gas SLICE,
+    # already sliced out), 0/1/2 for the RGB channel of an (h, w, 3) field.
 
     for (r, c, weight) in _iter_region(edit.region, edit.coords,
                                        edit.falloff, shape):
