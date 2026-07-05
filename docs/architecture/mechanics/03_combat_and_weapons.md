@@ -68,13 +68,21 @@ they do at tiles along the way.
 - A **laser** marches its full range in one tick — physically instant, because
   photons are. No initiative table says so; physics does (the travel-time
   arbiter, mechanics/05 §4 P3).
-- A **rifle round** at ~150 tiles/tick crosses any compartment in the tick it
+- A **rifle round** at ~96 tiles/tick crosses any compartment in the tick it
   is fired — indistinguishable from hitscan at ship scales, but honest: at
   extreme range or against a fast mover, the round is genuinely in flight.
-- A **plasma bolt** at 2–4 tiles/tick is a slow, glowing, dodgeable projectile
+  Bullet speeds are authored ≥ the weapon's `range_tiles`, so small-arms fire
+  resolves same-tick; the in-flight machinery is exercised by the slow
+  archetypes.
+- A **plasma bolt** at 1–2 tiles/tick is a slow, glowing, dodgeable projectile
   — and a transient light source for the ray engine.
-- A **launcher round** at ~2.5 tiles/tick (the shipped grenade `travel_speed`)
-  arcs visibly across a room.
+- A **launcher round** at 1.25 tiles/tick (the shipped grenade `travel_speed`,
+  30 tiles/s) arcs visibly across a room.
+
+*(All per-tick speeds in this chapter are authored against the actual clock —
+**24 ticks/second** — a W1 finding: the first draft assumed 12 tps and its
+speed column was ×2 too high. `speed_tiles_per_tick × 24` is the tiles/second
+of record.)*
 
 A projectile that does not resolve within its tick persists as an in-flight
 entity and continues next tick (the shipped grenade `Projectile` generalizes).
@@ -132,7 +140,12 @@ fantasy) — which is precisely the seam that lets this engine host an RPG later
 
 All three rolls consume the simulation's single seeded generator in fixed
 order, so an entire firefight — covers, flanks, crits — replays bit-for-bit
-from its seed.
+from its seed. **Rolls are drawn lazily**: a roll that cannot matter is not
+drawn at all (no cover on the approach → no exposure draw; `crit_chance = 0`
+→ no crit draw). Draw count then depends only on synced state, so replay and
+cross-machine identity hold, and a weapon with the feature dialed to zero
+leaves the RNG stream — and therefore the golden digest — untouched (the
+dormant-seam pattern, engine/06 ignition precedent).
 
 ---
 
@@ -229,19 +242,19 @@ with zero-field-movement proofs exactly like P3/P4.
 
 | Weapon | Class | Archetype | Family | Spread (aim/snap) | Trigger | Damage | Speed t/t | Loud |
 |---|---|---|---|---|---|---|---|---|
-| P12 "Whisper" | sidearm, suppressed | PROJECTILE | 9mm | 2.5°/5° | 1 @ 0.25 s | 12 KIN | 120 | 0.15 |
-| MP-11 PDW | SMG, close | PROJECTILE | 9mm | 6°/9° | 4 @ 0.4 s | 7 KIN | 120 | 0.7 |
-| K5 Carbine | assault rifle | PROJECTILE | rifle_556 | 3°/6° | 5 @ 0.5 s | 10 KIN | 150 | 0.8 |
-| LR-50 | marksman/AM rifle | PROJECTILE | rifle_50 | 0.25°/2° | 1 @ 1.5 s | 90 KIN, AP 10 | 250 | 1.0 |
-| Jackhammer-8 | shotgun | PROJECTILE | shell_12g | 8°/10° | 8 pellets @ 0.8 s | 6 KIN ×8 | 100 | 1.0 |
+| P12 "Whisper" | sidearm, suppressed | PROJECTILE | 9mm | 2.5°/5° | 1 @ 0.25 s | 12 KIN | 60 | 0.15 |
+| MP-11 PDW | SMG, close | PROJECTILE | 9mm | 6°/9° | 4 @ 0.4 s | 7 KIN | 60 | 0.7 |
+| K5 Carbine | assault rifle | PROJECTILE | rifle_556 | 3°/6° | 5 @ 0.5 s | 10 KIN | 96 | 0.8 |
+| LR-50 | marksman/AM rifle | PROJECTILE | rifle_50 | 0.25°/2° | 1 @ 1.5 s | 90 KIN, AP 10 | 128 | 1.0 |
+| Jackhammer-8 | shotgun | PROJECTILE | shell_12g | 8°/10° | 8 pellets @ 0.8 s | 6 KIN ×8 | 50 | 1.0 |
 | Lance-3 | laser rifle | HITSCAN | cell_laser | 0.1° | 1 @ 0.5 s | 25 ENERGY (skewer) | ∞ | 0.1 |
 | Lance-5 "Longlight" | heavy laser | HITSCAN | cell_laser | 0.05° | 1 @ 1.0 s | 55 ENERGY (skewer) | ∞ | 0.1 |
-| Sunspot | plasma caster | PROJECTILE | cell_plasma | 1.5° | 1 @ 0.9 s | 40 HEAT + splash | 3 | 0.5 |
-| Helios | heavy plasma | PROJECTILE | cell_plasma | 2° | 1 @ 1.4 s | 70 HEAT + splash | 2.5 | 0.6 |
+| Sunspot | plasma caster | PROJECTILE | cell_plasma | 1.5° | 1 @ 0.9 s | 40 HEAT + splash | 1.5 | 0.5 |
+| Helios | heavy plasma | PROJECTILE | cell_plasma | 2° | 1 @ 1.4 s | 70 HEAT + splash | 1.25 | 0.6 |
 | Dragon-7 | flamethrower | SPRAY | fuel_tank | 30° cone, range 8 | 1.5 s burst | heat writes | — | 0.6 |
 | Miasma Vent | poison projector | SPRAY | toxin_tank | 25° cone, range 7 | 1.5 s burst | poison gas | — | 0.4 |
-| Hand grenade | thrown | LOBBED | hand_grenade | — | fuse 0–10 s | payload | 2.5 | payload |
-| GL-6 Revolver | grenade launcher | PROJECTILE | 40mm | 3° | 1 @ 1.2 s | payload | 2.5 | 0.9 |
+| Hand grenade | thrown | LOBBED | hand_grenade | — | fuse 0–10 s | payload | 1.25 | payload |
+| GL-6 Revolver | grenade launcher | PROJECTILE | 40mm | 3° | 1 @ 1.2 s | payload | 1.25 | 0.9 |
 | Breach charge | demolition | PLACED | demo_charge | — | det slot | `breach_focus` | — | 1.0 |
 | C4 satchel | demolition | PLACED | demo_charge | — | timer/remote | `demolition_c4` | — | 1.0 |
 | Combat knife | melee | MELEE | none | — | 1 @ 0.6 s | 35 KIN, crit 15 % | — | 0.05 |
@@ -297,12 +310,29 @@ KINETIC packets through the mechanics/06 pipeline.
 
 | Patch | Contents | Gate |
 |---|---|---|
-| **W1** | weapon/ammo/payload tables + loaders; re-home rifle→`k5_carbine`, grenade→`hand_grenade`+`frag_standard`, charge→`breach_charge`+`breach_focus`; `unit.weapon_id` | suite green + **golden UNCHANGED** (pure re-home) |
+| **W1** | weapon/ammo/payload tables + loaders; re-home rifle→`k5_carbine`, grenade→`hand_grenade`+`frag_standard`, charge→`breach_charge`+`breach_focus`; `unit.weapon_id` | ✅ **SHIPPED** `2abf7dc` (2026-07-05): 521 green, golden `07c3f370…` byte-identical |
 | **W2** | unified march (speed as data, in-flight persistence); spread aim/snap; §3 exposure/cover (+`cover_exposure` materials column) + crit/facing resolver; **Lance-3 laser** (skewer, wall-chew, integer gas attenuation, glow event) | golden moves → re-baseline w/ proofs; suite green |
 | **W3** | payload executor generalizing the explosion triple; gas payloads (smoke/tear/poison) + coupling rows (teargas→aim status, poison→DoT); GL-6 + 40 mm ammo; C4; ammo economy (mags/reload/selection) | golden moves → re-baseline; suite green |
 | **W4** | SPRAY: Dragon-7 + Miasma Vent (aimed sustained FieldEdit cones) | **HUMAN-TEST** — Erik feel-checks before merge |
 | **W5** | MELEE: knife + arc baton through the resolver; STUNNED wiring | suite green |
 | **W6** | armory playground room + weapon-cycle debug key + full standard-values audit | **HUMAN-TEST** — Erik's tuning session |
+
+**W1 findings of record** (carry into later patches):
+
+- **The clock is 24 tps** — this chapter's speed numbers were corrected
+  accordingly (§2 note). `speed_tiles_per_tick × 24 = tiles/second`; the
+  grenade row locks `1.25 × 24 == 30.0` (the shipped `travel_speed`) in a test.
+- **W3 must split the smoke booleans**: today the door charge *and* the
+  grenade both clear smoke (inner blast hole, inside `apply_explosion`) *and*
+  emit the textured cloud (`add_explosion_smoke`). The payload executor needs
+  `clear_smoke` + `emit_blast_smoke` as separate columns, both `true` on
+  `frag_standard` *and* `breach_focus`, or the door charge silently loses its
+  smoke on the day the executor takes over.
+- `max_throw_range` had **no consumer** in the shipped code (dead config) —
+  carried onto `hand_grenade` as data-of-record; a real throw-range check can
+  wire in W3/W6.
+- Weapons tables are **construction-bound** (rebuilt per `Simulation`
+  reset/restart, not Ctrl+R) — matching materials/gases, engine/12 §5.
 
 **Not built / explicitly owed:** everything in §7; heat-damage tuning vs the
 armory numbers; the exposure/crit numbers are standard values pending Erik's

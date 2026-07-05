@@ -556,7 +556,10 @@ family = "rifle_556"
 damage = 10                           # was damage_per_bullet
 dtype = "kinetic"
 ap = 0
-speed_tiles_per_tick = 150.0          # data only in W1 — the march resolves instantly (as today) until W2
+# 96 t/t @ 24 tps = 2304 tiles/s — authored >= range_tiles (90) so small-arms
+# fire resolves same-tick (mechanics/03 §2); corrected from the 12-tps draft's
+# 150. Data only in W1 — the march consumes it from W2.
+speed_tiles_per_tick = 96.0
 
 [ammo.grenade_frag]
 family = "hand_grenade"
