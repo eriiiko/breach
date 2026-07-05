@@ -46,7 +46,11 @@ class EnvironmentProfile:
     # the resistance table mitigates damage only — mechanics/06 §4 division
     # of labor). Door-2 data: authored values must sit on the Q16.16 grid
     # (1.0 is exact; non-dyadic values snap at definition — see
-    # species.ZOMBIE_STABILITY for the pattern).
+    # species.ZOMBIE_STABILITY, which sources its value from
+    # ``[zombie] stability`` in config.toml, for the pattern). The 1.0 here
+    # is the human BASELINE the threshold is calibrated against — tune the
+    # threshold (``[exchange] knockdown_dv_threshold``) or the per-species
+    # overlays, not this anchor.
     stability: float = 1.0
 
     submersion: SubmersionRule = SubmersionRule.DROWNS

@@ -255,8 +255,10 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
     damage_multiplier`` branch occupied — that special case is DISSOLVED into
     ``resist_mult[HEAT] = 4.0`` on ``species.ZOMBIE_MITIGATION`` (an exact
     binary scale at the same float-chain position → bit-identical), and a
-    marine's neutral table is an IEEE-exact no-op. The sim no longer reads
-    ``CFG.zombie.fire_damage_multiplier``.
+    marine's neutral table is an IEEE-exact no-op. The tick path no longer
+    reads ``CFG.zombie.fire_damage_multiplier``; since P5 the species table
+    sources its value from that key ONCE at import (restart-bound standard
+    value — see species.py / config.toml).
 
     ``dt_tick = 1 / ticks_per_second`` makes the real DPS tick-rate independent.
     ``temperature_max`` and ``environmental_damage_rate`` come from the unit's

@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from config import CFG
 from simulation import unit_fixed
 from simulation.damage import (
     HEAT, MitigationProfile, NEUTRAL_MITIGATION, build_mitigation,
@@ -192,15 +193,23 @@ HUMAN = SpeciesDef(
 # than a species field: damage.mitigation_for selects it on ``unit.is_zombie``
 # at damage time — exactly the predicate the dissolved special case used, so
 # construction with team=1, end-of-round conversion, and direct flag flips
-# all behave as before. resist_mult[HEAT] = 4.0 REPLACES the old
+# all behave as before. resist_mult[HEAT] REPLACES the old
 # ``if u.is_zombie: dmg *= CFG.zombie.fire_damage_multiplier`` branch in the
-# heat response (a vulnerability is just a resistance above 1); 4.0 is an
-# exact binary scale, so the swap is bit-identical. The config key
-# ``[zombie] fire_damage_multiplier`` remains ONLY as the expected-ratio
-# constant two heat tests read — the sim no longer reads it. All other slots
-# neutral: bullets keep their site-side ``bullet_damage_multiplier`` math
-# (an int-truncating pre-mitigation amount rule, not a resistance).
-ZOMBIE_MITIGATION = build_mitigation(resist_mult={HEAT: 4.0})
+# heat response (a vulnerability is just a resistance above 1); the shipped
+# 4.0 is an exact binary scale, so the swap was bit-identical.
+#
+# STANDARD VALUE (mechanics/06 §8): since P5 the value is SOURCED from
+# ``[zombie] fire_damage_multiplier`` in config.toml (feel comment + range
+# there), read ONCE here at module import and Q16.16-snapped by
+# build_mitigation (door 2) -> RESTART to apply a config edit, not Ctrl+R
+# (this constant + the profile pointers on live units don't re-bind). The
+# heat tests read the same key as the expected damage ratio, so sim + tests
+# move together. All other slots neutral: bullets keep their site-side
+# ``bullet_damage_multiplier`` math (an int-truncating pre-mitigation amount
+# rule, not a resistance).
+ZOMBIE_MITIGATION = build_mitigation(resist_mult={
+    HEAT: float(getattr(CFG.zombie, "fire_damage_multiplier", 4.0)),
+})
 
 # Zombie knockdown stability (mechanics/06 §4) — the same state-overlay
 # pattern as ZOMBIE_MITIGATION: zombie-ness is runtime state on the human
@@ -208,9 +217,12 @@ ZOMBIE_MITIGATION = build_mitigation(resist_mult={HEAT: 4.0})
 # exchange time (exchange._stability_for) instead of living on a species
 # EnvironmentProfile. 0.9 = shamblers topple a little easier than a braced
 # marine (effective knockdown threshold = knockdown_dv_threshold * 0.9).
-# STANDARD VALUE for Erik to tune (mechanics/06 §8) — snapped onto the
-# Q16.16 grid at definition (door 2; 0.9 is not dyadic).
-ZOMBIE_STABILITY = unit_fixed.dequantize_scalar(unit_fixed.quantize_scalar(0.9))
+# STANDARD VALUE for Erik to tune (mechanics/06 §8) — since P5 SOURCED from
+# ``[zombie] stability`` in config.toml (feel comment + range there), read
+# ONCE at module import, snapped onto the Q16.16 grid at definition (door 2;
+# 0.9 is not dyadic) -> RESTART to apply, not Ctrl+R.
+ZOMBIE_STABILITY = unit_fixed.dequantize_scalar(unit_fixed.quantize_scalar(
+    float(getattr(CFG.zombie, "stability", 0.9))))
 
 # Registry: all known species indexed by SpeciesId string.
 SPECIES_REGISTRY: dict[str, SpeciesDef] = {HUMAN.id: HUMAN}

@@ -123,6 +123,11 @@ def build_mitigation(armor: Optional[dict] = None,
 
 #: The neutral profile — mitigation is an IEEE-exact no-op through it.
 #: Fallback for units that carry no profile (bare stubs in tests).
+#: NOT a tuning knob: armor 0 / resist 1.0 is the structural identity the
+#: bit-identity contract of P2 rests on (a marine's damage must equal the
+#: pre-pipeline inline chain). The tunable STANDARD VALUES live in the
+#: per-species tables (species.py, sourced from config.toml — e.g.
+#: ``[zombie] fire_damage_multiplier``); tune THERE, never here.
 NEUTRAL_MITIGATION = build_mitigation()
 
 
