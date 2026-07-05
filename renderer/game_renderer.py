@@ -598,6 +598,22 @@ class GameRenderer:
                 col = rl.Color(255, 240, 160, int(220 * alpha_norm))
                 rl.draw_line_ex(rl.Vector2(x1, y1), rl.Vector2(x2, y2),
                                 1.5, col)
+            elif kind == "beam":
+                # W2 laser (LaserFiredEvent): a distinct beam — crimson core
+                # with a thin white-hot centreline, thicker than a tracer.
+                # Glow-as-light-source is deferred to the explosion-light
+                # pass (mechanics/03 §8); this is just the line.
+                a, b = fx["from"], fx["to"]
+                x1 = tile_to_world_px(a[0], wpt)
+                y1 = tile_to_world_px(a[1], wpt)
+                x2 = tile_to_world_px(b[0], wpt)
+                y2 = tile_to_world_px(b[1], wpt)
+                outer = rl.Color(255, 40, 40, int(200 * alpha_norm))
+                core = rl.Color(255, 220, 220, int(240 * alpha_norm))
+                rl.draw_line_ex(rl.Vector2(x1, y1), rl.Vector2(x2, y2),
+                                3.0, outer)
+                rl.draw_line_ex(rl.Vector2(x1, y1), rl.Vector2(x2, y2),
+                                1.0, core)
             elif kind == "explosion":
                 pos = fx["pos"]
                 radius = fx["radius"]
@@ -634,7 +650,7 @@ class GameRenderer:
         """
         # Lazy import — keeps renderer importable without the simulation pkg.
         from simulation.events import (
-            ShotFiredEvent, ExplosionEvent, UnitHitEvent,
+            ShotFiredEvent, LaserFiredEvent, ExplosionEvent, UnitHitEvent,
         )
         for ev in events:
             if isinstance(ev, ShotFiredEvent):
@@ -644,6 +660,14 @@ class GameRenderer:
                     "to": ev.to_tile,
                     "t": 0.0,
                     "life": 0.18,    # ~5 frames @ 30 FPS
+                })
+            elif isinstance(ev, LaserFiredEvent):
+                self._effects.append({
+                    "kind": "beam",
+                    "from": ev.from_tile,
+                    "to": ev.to_tile,
+                    "t": 0.0,
+                    "life": 0.22,    # a touch longer than a tracer
                 })
             elif isinstance(ev, ExplosionEvent):
                 self._effects.append({
