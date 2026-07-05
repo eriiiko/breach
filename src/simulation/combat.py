@@ -14,14 +14,15 @@ The two shipped physics->unit coupling responses that used to live here —
 and ``apply_environmental_damage`` (+ its ``HEAT_SCALE``) — moved VERBATIM
 to :mod:`simulation.exchange`, the coupling-table module (mechanics/05, P1
 refactor). They are re-imported below for compatibility (tests and legacy
-imports resolve unchanged), and :func:`process_door_explosives` still calls
-``apply_blast_damage`` at its detonation sites exactly as before.
+imports resolve unchanged).
 
 All shooting / burst / LOS code mutates the unit list and emits ``Shot``
-tracer events into a caller-owned list. The pure physics-event entry
-points (``apply_explosion``, ``add_explosion_smoke``) live in
-:mod:`simulation.physics`; combat just calls into them at detonation
-sites.
+tracer events into a caller-owned list. Detonations (the door-explosive
+det slots here, the grenade fuse-out in simulation.py, a 40 mm round's
+stop) go through the payload EXECUTOR
+(:func:`simulation.payloads.execute_payload`, weapons W3) — which itself
+sequences the physics entry points (``apply_explosion``,
+``add_explosion_smoke``) byte-identically to the pre-W3 inline sites.
 
 Determinism — Phase 2:
     ``fire_burst`` and the explosion-smoke helper accept a
