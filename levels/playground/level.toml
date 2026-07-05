@@ -1,0 +1,94 @@
+# PLAYGROUND — the standard-values sandbox (mechanics/06 §8, patch P5).
+#
+# One room per system the combat wave shipped: open arena + grenade range
+# (wave push / knockdown), wood room + furniture (fire fuel + heat damage),
+# glass gallery (fragile box), sealed room (overpressure play), steel bunker
+# (the tough room), pool basin (U-key water), zombie pen (glass box, no door
+# — grenade it open), breach bay (blow the marked south hull to space).
+#
+# Layout + derived art come from tools/gen_playground_level.py — tweak the
+# constants there and re-run it to reshape the map. Play guide with launch
+# instructions + experiments: docs/playground_guide.md.
+#
+# Launch:  C:/Users/steen/anaconda3/python.exe main.py --level playground
+# (or set [display] level = "playground" in config.toml)
+
+version = "2"
+name = "Playground"
+
+# v2 codes ARE canon material ids (src/simulation/materials.py):
+#   0=air, 1=hull, 2=wood, 3=door, 4=steel, 5=glass, 6=furniture, 9=SPACE
+tilemap = "tilemap.csv"
+
+# Same physical scale as the ship.
+tile_size_m = 0.333
+
+# Flat colour-coded, room-labelled map (generated; render-only). No normal /
+# emissive / background layers — the loader treats them all as optional.
+diffuse = "diffuse.png"
+
+# ---------------------------------------------------------------------------
+# Spawns. team 0 = marine (player), team 1 = zombie. (x, y) = physics-tile
+# top-left of the 3x3 footprint.
+#
+# The marine squad stands SW in the open arena: breach bay + pool are a few
+# steps away, the room column a screen east. The zombies are INSIDE the glass
+# pen (SE) — glass is solid, so it blocks their LOS trigger and their pathing:
+# they stay dormant until a pane is popped (and at ~70 tiles they are far
+# outside trigger_radius 48 anyway — tests/test_playground_level.py guards
+# this distance so a layout tweak can't silently start the brawl at tick 0).
+# ---------------------------------------------------------------------------
+
+[[spawn]]
+name = "Alpha"
+team = 0
+x = 8
+y = 42
+
+[[spawn]]
+name = "Bravo"
+team = 0
+x = 13
+y = 42
+
+[[spawn]]
+name = "Cobra"
+team = 0
+x = 8
+y = 48
+
+[[spawn]]
+name = "Delta"
+team = 0
+x = 13
+y = 48
+
+[[spawn]]
+name = "Zomb1"
+team = 1
+x = 84
+y = 52
+
+[[spawn]]
+name = "Zomb2"
+team = 1
+x = 90
+y = 52
+
+[[spawn]]
+name = "Zomb3"
+team = 1
+x = 84
+y = 58
+
+[[spawn]]
+name = "Zomb4"
+team = 1
+x = 90
+y = 58
+
+[[spawn]]
+name = "Zomb5"
+team = 1
+x = 87
+y = 62

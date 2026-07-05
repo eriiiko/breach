@@ -23,6 +23,7 @@ and ``sim.tick_events`` each frame — it never writes back into the sim.
 
 Run:
     C:/Users/steen/anaconda3/python.exe main.py
+    C:/Users/steen/anaconda3/python.exe main.py --level playground   # sandbox
 """
 from __future__ import annotations
 
@@ -71,6 +72,31 @@ try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
     pass
+
+
+def _parse_level_override():
+    """Read an optional ``--level NAME`` per-launch override from argv (P5).
+
+    The game's standing level selection stays ``[display] level`` in
+    config.toml (engine/12 §4); this flag only overrides ONE launch so the
+    playground / a test map can be opened without editing config:
+
+        C:/Users/steen/anaconda3/python.exe main.py --level playground
+
+    Returns the folder name, or None when the flag is absent.
+    """
+    if "--level" not in sys.argv:
+        return None
+    i = sys.argv.index("--level")
+    try:
+        name = sys.argv[i + 1]
+    except IndexError:
+        raise SystemExit(
+            "--level requires a level folder name, e.g. --level playground")
+    if name.startswith("--"):
+        raise SystemExit(
+            f"--level requires a level folder name, got {name!r}")
+    return name
 
 
 def _parse_res_factor() -> int:
@@ -130,8 +156,10 @@ def _upscale_level(level, factor: int):
 
 
 def main():
-    # 1. Load level + build the simulation.
-    level_name = getattr(CFG.display, "level", "unhcr_vessel")
+    # 1. Load level + build the simulation. --level overrides config for
+    # one launch (playground / test maps); default = [display] level.
+    level_name = (_parse_level_override()
+                  or getattr(CFG.display, "level", "unhcr_vessel"))
     print(f"Loading level: {level_name}")
     level = load_level(level_name)
     res_factor = _parse_res_factor()
@@ -216,8 +244,12 @@ def main():
     input_handler = InputHandler()
 
     # Static emergency lights — always-on, scattered through the ship.
+    # Positions are authored for the 50x120 vessel; on a smaller level
+    # (e.g. --level playground, 100x70) the off-grid ones are skipped.
     static_lights = []
     for (lx, ly) in [(25, 10), (25, 30), (25, 55), (25, 88), (25, 110)]:
+        if not (0 <= lx < level.width and 0 <= ly < level.height):
+            continue
         src = bp.LightSource()
         src.x, src.y = float(lx), float(ly)
         src.max_range = 18
