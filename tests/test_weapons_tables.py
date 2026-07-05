@@ -222,3 +222,87 @@ def test_unit_weapon_id():
     zombie = Unit("Z1", x=8, y=8, team=1)
     assert marine.weapon_id == "k5_carbine"
     assert zombie.weapon_id == ""
+
+
+# ---------------------------------------------------------------------------
+# W2 data-of-record: the Lance-3 row, the new columns, the derivations
+# ---------------------------------------------------------------------------
+def test_lance_3_row_equals_the_armory():
+    """mechanics/03 §6: hitscan, cell_laser, 0.1°/0.1°, range 60, 1 @ 0.5 s,
+    crit 0 (HITSCAN does not crit in v1), mass 4.1, loudness 0.1."""
+    t = get_tables()
+    lance = t.weapons.by_name["lance_3"]
+    cell = t.ammo.by_name["cell_laser_standard"]
+    assert lance.archetype == "hitscan"
+    assert lance.ammo_family == "cell_laser" == cell.family
+    assert lance.spread_deg == 0.1 and lance.spread_snap_deg == 0.1
+    assert lance.range_tiles == 60
+    assert lance.shots_per_trigger == 1
+    assert lance.rof_interval_seconds == 0.5
+    assert lance.rof_interval_ticks == ticks_from_seconds(
+        0.5, CFG.clock.ticks_per_second)
+    assert lance.crit_chance == 0.0
+    assert lance.mass_kg == 4.1
+    assert lance.loudness == 0.1
+    assert cell.damage == 25
+    assert cell.dtype == "energy"
+    assert cell.ap == 0
+    assert cell.wall_damage == 15
+    assert t.ammo_for_weapon(lance) is cell
+
+
+def test_w2_march_columns_on_the_rifle_round():
+    """wall_damage (bullet chew) + speed_q16 (the door-2 quantized march
+    budget: 96.0 -> exactly 96 << 16)."""
+    r556 = get_tables().ammo.by_name["rifle_556_standard"]
+    assert r556.wall_damage == 2
+    assert r556.speed_q16 == 96 * 65536
+    # The march's same-tick guarantee: speed >= range (mechanics/03 §2).
+    k5 = get_tables().weapons.by_name["k5_carbine"]
+    assert r556.speed_tiles_per_tick >= k5.range_tiles
+
+
+def test_ammo_for_weapon_resolution():
+    t = get_tables()
+    assert t.ammo_for_weapon("k5_carbine").name == "rifle_556_standard"
+    assert t.ammo_for_weapon("lance_3").name == "cell_laser_standard"
+    with pytest.raises(KeyError, match="none"):
+        # A melee row feeds on nothing.
+        melee = WeaponsTables(
+            {"knife": {"archetype": "melee", "ammo_family": "none"}}, {}, {},
+            24)
+        melee.ammo_for_weapon("knife")
+
+
+def test_cover_exposure_materials_column():
+    """Every row authored explicitly: 1.0 everywhere except the
+    furniture-class soft cover (0.55, float32-cast once at load)."""
+    import numpy as np
+    from simulation.materials import MaterialTable
+    t = MaterialTable.from_config()
+    by_name = dict(zip(t.names, t.cover_exposure.tolist()))
+    assert by_name["furniture"] == float(np.float32(0.55))
+    for name in ("air", "hull", "wood", "door", "steel", "glass"):
+        assert by_name[name] == 1.0
+
+
+def test_beam_absorb_q16_derivation_twin():
+    """The gases-table beam coefficient == quantize(mean of the RGB
+    absorption triple), per gas — the documented derivation of record."""
+    from simulation import unit_fixed
+    from simulation.gases import GasTable
+    g = GasTable.from_config()
+    for i in range(g.n):
+        mean = (float(g.absorption[i, 0]) + float(g.absorption[i, 1])
+                + float(g.absorption[i, 2])) / 3.0
+        assert g.beam_absorb_q16[i] == unit_fixed.quantize_scalar(mean)
+
+
+def test_crit_arc_multipliers_config():
+    assert CFG.combat.crit_front_mult == 1.0
+    assert CFG.combat.crit_flank_mult == 2.0
+    assert CFG.combat.crit_behind_mult == 4.0
+    # Arc widths are species-profile data (mechanics/06 §5).
+    from simulation.environment import HUMAN_ENVIRONMENT
+    assert HUMAN_ENVIRONMENT.front_arc_deg == 120.0
+    assert HUMAN_ENVIRONMENT.behind_arc_deg == 90.0
