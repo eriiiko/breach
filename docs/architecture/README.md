@@ -32,6 +32,15 @@ These principles govern every design decision. They are non-negotiable.
   system at a time.
 - **Neural-network-compatible.** No decision forecloses training an NN agent: grid state maps to
   CNN feature planes, and clean serialization + headless simulation serve that goal.
+- **One conductor, no inline systems** (adopted 2026-07-05 — the god-file policy).
+  `simulation.py` owns the tick ORDER — its numbered step sequence is the canonical tick
+  documentation and the home of the ordering principles (mechanics/05 §4). System LOGIC lives
+  one-module-per-system in `src/simulation/`, mirroring one-chapter-per-system here. A new
+  system adds a call line + an ordering comment to the conductor, never a logic block; a patch
+  that must touch a legacy inline block (movement, projectiles) extracts it in the same patch,
+  behavior-preserving and golden-gated. `simulation.py`'s line count never grows across a
+  wave. The remaining big splits ride their scheduled forcing events: the engine/game-layer
+  design session and the pre-ML C++ port — no ground-up rewrite.
 
 ---
 
