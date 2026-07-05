@@ -53,6 +53,26 @@ class ShotFiredEvent:
 
 
 @dataclass
+class LaserFiredEvent:
+    """A hitscan beam was fired (mechanics/03 §5, W2 — the Lance family).
+
+    Emitted by :func:`simulation.combat.fire_beam` once per trigger. The
+    renderer draws a distinct beam line (brighter, redder, thicker than a
+    bullet tracer). ``kind`` names the beam flavour for future variants
+    (heavy laser, cutting beam). Render-only — NOT part of the synced event
+    digest (the damage it caused rides UnitHitEvent as usual).
+
+    The beam-as-light-source hookup (its glow feeding the raycaster as a
+    transient source) is explicitly DEFERRED to the explosion-light pass
+    (mechanics/03 §8 status note).
+    """
+    unit_id: int                    # the shooter's unit id
+    from_tile: tuple                # (fx, fy) — beam origin
+    to_tile: tuple                  # (fx, fy) — where the beam terminated
+    kind: str = "laser"
+
+
+@dataclass
 class ExplosionEvent:
     """A pressure / fire event that should produce a flash + screen shake.
 
@@ -99,6 +119,7 @@ class WallDestroyedEvent:
 
 __all__ = [
     "ShotFiredEvent",
+    "LaserFiredEvent",
     "ExplosionEvent",
     "UnitHitEvent",
     "UnitKilledEvent",

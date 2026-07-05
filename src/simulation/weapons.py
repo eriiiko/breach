@@ -116,11 +116,18 @@ class AmmoDef:
     march's data-of-record; ``travel_speed_tiles_per_second`` is the shipped
     ``Projectile`` consumer's unit (kept so ``update_position()`` arithmetic
     stays bit-identical in W1 — see the ``grenade_frag`` config row).
+
+    W2 columns: ``wall_damage`` — bullet chew (mechanics/03 §3): wall HP
+    deposited where the round stops on a solid tile / where a cover tile
+    absorbs it (and the beam's bite at its stopping solid). ``speed_q16`` is
+    DERIVED — ``speed_tiles_per_tick`` quantized ONCE onto the Q16.16 grid at
+    table build (ingress door 2); the march's per-tick step budget is pure
+    integer arithmetic on it (``combat.BulletInFlight``).
     """
 
     def __init__(self, name, family, dtype, damage=0, ap=0,
                  speed_tiles_per_tick=0.0, travel_speed_tiles_per_second=0.0,
-                 payload=""):
+                 payload="", wall_damage=0):
         self.name = name
         self.family = family                    # must match a weapon's ammo_family
         self.dtype = dtype                      # mechanics/06 type name string
@@ -130,6 +137,8 @@ class AmmoDef:
         self.speed_tiles_per_tick = speed_tiles_per_tick
         self.travel_speed_tiles_per_second = travel_speed_tiles_per_second
         self.payload = payload                  # "" = none
+        self.wall_damage = wall_damage          # bullet chew (W2, mechanics/03 §3)
+        self.speed_q16 = 0                      # derived by AmmoTable (door 2)
 
     def __repr__(self):
         return (f"AmmoDef({self.name!r}, family={self.family!r}, "
@@ -254,6 +263,9 @@ class AmmoTable:
     (dtype validated against the mechanics/06 names); the rest default."""
 
     def __init__(self, ammo_cfg):
+        # Lazy import (pure-Python quantize twin, no compiled module) — keeps
+        # weapons.py import-light for asset tools.
+        from simulation import unit_fixed
         self.by_name: dict[str, AmmoDef] = {}
         for name, row in _iter_rows(ammo_cfg):
             dtype = str(_get_field(row, "ammo", name, "dtype"))
@@ -261,7 +273,7 @@ class AmmoTable:
                 raise ValueError(
                     f"ammo.{name}.dtype {dtype!r} is not a mechanics/06 "
                     f"damage type {sorted(DTYPE_BY_NAME)}")
-            self.by_name[name] = AmmoDef(
+            a = AmmoDef(
                 name=name,
                 family=str(_get_field(row, "ammo", name, "family")),
                 dtype=dtype,
@@ -272,7 +284,14 @@ class AmmoTable:
                 travel_speed_tiles_per_second=_get_field(
                     row, "ammo", name, "travel_speed_tiles_per_second", 0.0),
                 payload=str(_get_field(row, "ammo", name, "payload", "")),
+                wall_damage=_get_field(row, "ammo", name, "wall_damage", 0),
             )
+            # speed_q16: the authored tiles-per-tick quantized ONCE onto the
+            # Q16.16 grid (ingress door 2) — the unified march's integer
+            # step-budget source (W2). 96.0 -> 6291456 exactly.
+            a.speed_q16 = unit_fixed.quantize_scalar(
+                float(a.speed_tiles_per_tick))
+            self.by_name[name] = a
         self.names = list(self.by_name)
 
 
@@ -356,6 +375,27 @@ class WeaponsTables:
         if not a.payload:
             raise KeyError(f"ammo.{ammo_name} carries no payload ref")
         return self.payloads.by_name[a.payload]
+
+    def ammo_for_weapon(self, weapon):
+        """Resolve the round a weapon fires (W2 dispatch): the FIRST ammo row
+        in table (config) order whose ``family`` matches the weapon's
+        ``ammo_family``. Deterministic — dicts preserve insertion order, and
+        the cross-ref validation guarantees at least one row exists. Real
+        per-unit ammo SELECTION (AP rounds, incendiary shells) is the W3
+        economy; until then every family has one standard round and this is
+        it. Accepts a :class:`WeaponDef` or a weapon name. Loud KeyError for
+        ``ammo_family == "none"`` (melee feeds on nothing)."""
+        if isinstance(weapon, str):
+            weapon = self.weapons.by_name[weapon]
+        if weapon.ammo_family == "none":
+            raise KeyError(
+                f"weapons.{weapon.name} has ammo_family='none' — no round to "
+                f"resolve (melee)")
+        for a in self.ammo.by_name.values():
+            if a.family == weapon.ammo_family:
+                return a
+        raise KeyError(   # unreachable after _validate_cross_refs; stay loud
+            f"no [ammo.*] row with family={weapon.ammo_family!r}")
 
     @classmethod
     def from_config(cls, cfg=None):

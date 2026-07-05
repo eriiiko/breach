@@ -108,6 +108,27 @@ class GasTable:
         # gain, decoupled from absorption).
         self.scatter_albedo = self._load_rgb(rows, "scatter_albedo")
 
+        # beam_absorb_q16: per-gas Q16.16 BEAM-absorption coefficient for the
+        # HITSCAN laser (mechanics/03 §5, W2). DERIVATION OF RECORD, computed
+        # ONCE at table build: the arithmetic MEAN of the gas's RGB absorption
+        # triple — (r + g + b) / 3 in float64 (pure + and one correctly-rounded
+        # divide on load-time constants: ingress door 3) — then quantized onto
+        # the Q16.16 grid with the standard round-half-away-from-zero twin
+        # (door 2). A laser has one energy channel, not three; the mean is the
+        # panchromatic collapse of the same per-channel Beer-Lambert data the
+        # renderer uses, so a gas that blocks light blocks beams to the same
+        # degree. The beam consumes these in PURE INTEGER arithmetic (door 1):
+        # per tile crossed, energy *= max(0, ONE - sum_g(absorb_q * density_q
+        # >> 16)) >> 16 — no exp, no transcendentals (combat.fire_beam).
+        # Plain Python ints (a tuple) so the march never touches numpy scalars.
+        from simulation import unit_fixed as _ufx
+        self.beam_absorb_q16 = tuple(
+            _ufx.quantize_scalar(
+                (float(self.absorption[i, 0]) + float(self.absorption[i, 1])
+                 + float(self.absorption[i, 2])) / 3.0)
+            for i in range(self.n)
+        )
+
         # effect: per-gas gameplay tag string (read unit-side in mechanics; the
         # solver only transports the field). Stored as a plain list by id.
         self.effect = [

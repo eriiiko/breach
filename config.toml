@@ -398,6 +398,13 @@ height_floor = 0.3
 #   permeability  OPTIONAL gas/smoke flow coefficient (0 sealed, 1 open air,
 #                 partial = porous). Omitted -> derived: sealed where the
 #                 material occludes light, open otherwise (legacy solid set).
+#   cover_exposure  exposure-vs-cover probability (mechanics/03 §3, 06 §5; W2).
+#                 1.0 = no concealment (a shot entering a unit footprint from
+#                 this tile never rolls); < 1.0 = soft cover: the shot connects
+#                 with this probability, else it is ABSORBED by the tile
+#                 (deposits its wall damage there — suppressive fire chews the
+#                 crate until it stops being cover). Solid walls keep 1.0 —
+#                 they stop the march physically, no roll needed.
 # Optics/acoustic/thermal columns are STORED but not yet consumed (CPU
 # foundation); values are illustrative and tuned later in the demos.
 
@@ -414,6 +421,7 @@ wave_reflect = 0.0
 wave_absorb = 0.0
 blast_resist = 0.0
 burst_threshold = 0.0
+cover_exposure = 1.0
 
 [materials.hull]
 hp = 300
@@ -428,6 +436,7 @@ wave_reflect = 0.9
 wave_absorb = 0.1
 blast_resist = 0.0
 burst_threshold = 0.0  # 0 = never; the hull breaches via damage/explosions, not over-pressure
+cover_exposure = 1.0   # solid wall: stops the march physically, no roll
 
 [materials.wood]
 hp = 60
@@ -442,6 +451,7 @@ wave_reflect = 0.5
 wave_absorb = 0.4
 blast_resist = 0.0
 burst_threshold = 2.0
+cover_exposure = 1.0   # solid wall: stops the march physically, no roll
 
 [materials.door]
 hp = 40
@@ -460,6 +470,7 @@ wave_reflect = 0.5
 wave_absorb = 0.4
 blast_resist = 0.0
 burst_threshold = 2.0
+cover_exposure = 1.0   # solid wall: stops the march physically, no roll
 
 [materials.steel]
 hp = 200
@@ -474,6 +485,7 @@ wave_reflect = 0.9
 wave_absorb = 0.1
 blast_resist = 0.8
 burst_threshold = 10.0
+cover_exposure = 1.0   # solid wall: stops the march physically, no roll
 
 [materials.glass]
 hp = 15
@@ -488,6 +500,7 @@ wave_reflect = 0.3
 wave_absorb = 0.1
 blast_resist = 0.0
 burst_threshold = 1.0
+cover_exposure = 1.0   # solid pane: stops the march physically (until it shatters)
 
 # Furniture: crates/shelving/bunks (editor proposal Q2 — dedicated material
 # row: lower hp, partial permeability so smoke drifts past crates, flammable).
@@ -505,6 +518,10 @@ wave_reflect = 0.2
 wave_absorb = 0.5    # soft stuff soaks blasts
 blast_resist = 0.0
 burst_threshold = 2.0   # overpressure can topple/burst furniture (door-equal; TUNING DIAL)
+cover_exposure = 0.55   # soft cover (mechanics/03 §3): a shot crossing a crate into a
+                        # unit connects with p=0.55, else the crate eats it (wall chew).
+                        # STANDARD VALUE — Erik's dial; interesting range ~0.3 (bunker
+                        # furniture) .. 0.8 (thin concealment)
 
 # =============================================================================
 # Weapons framework (mechanics/03 §4) — three data tables loaded by
@@ -551,6 +568,22 @@ ap_cost = 1
 mass_kg = 1.0
 loudness = 1.0
 
+[weapons.lance_3]                     # laser rifle — the FIRST HITSCAN (W2, mechanics/03 §5/§6)
+archetype = "hitscan"
+ammo_family = "cell_laser"
+spread_deg = 0.1                      # near-perfect collimation (the armory row)
+spread_snap_deg = 0.1
+range_tiles = 60
+shots_per_trigger = 1
+rof_interval_seconds = 0.5            # 1 @ 0.5 s -> 12 ticks @ 24 tps
+mag_size = 0                          # cell economy wires in W3
+reload_seconds = 0.0
+ap_cost = 1
+crit_chance = 0.0                     # HITSCAN does not crit in v1 (skewer+attenuation is its identity)
+crit_mult = 2.0
+mass_kg = 4.1
+loudness = 0.1                        # quiet — the stealth-tech identity (reserved, no consumer)
+
 [ammo.rifle_556_standard]
 family = "rifle_556"
 damage = 10                           # was damage_per_bullet
@@ -558,8 +591,18 @@ dtype = "kinetic"
 ap = 0
 # 96 t/t @ 24 tps = 2304 tiles/s — authored >= range_tiles (90) so small-arms
 # fire resolves same-tick (mechanics/03 §2); corrected from the 12-tps draft's
-# 150. Data only in W1 — the march consumes it from W2.
+# 150. Consumed by the W2 unified march (quantized once to Q16.16 at load).
 speed_tiles_per_tick = 96.0
+# Bullet chew (mechanics/03 §3, W2): wall HP deposited where a bullet stops on
+# a solid tile, and into a cover tile that absorbs a failed exposure roll.
+wall_damage = 2
+
+[ammo.cell_laser_standard]            # the Lance family's cell (W2)
+family = "cell_laser"
+damage = 25                           # beam ENERGY at the muzzle (Q16.16 at fire time)
+dtype = "energy"
+ap = 0
+wall_damage = 15                      # a beam bites the stopping solid harder than a slug
 
 [ammo.grenade_frag]
 family = "hand_grenade"
@@ -661,6 +704,18 @@ blast_damage_threshold = 5
 unit_absorption = 0.85
 unit_reflectivity = 0.10
 shot_tracer_duration = 0.4
+
+# --- Crit arc multipliers (mechanics/06 §5, W2) ------------------------------
+# On a connecting projectile hit: crit% = weapon.crit_chance x arc multiplier,
+# classified from the shot's incoming direction vs the TARGET's synced facing
+# (arc widths are species-profile data: EnvironmentProfile.front/behind_arc_deg).
+# STANDARD VALUES (mechanics/06 §5: x1 front, x2 flank, x4 behind — Erik's
+# dials). All shipped weapons carry crit_chance = 0, so no roll is ever drawn
+# in-game yet (the lazy-roll rule); a crit multiplies the packet amount by
+# weapon.crit_mult before mitigation.
+crit_front_mult = 1.0
+crit_flank_mult = 2.0
+crit_behind_mult = 4.0
 
 # --- Unit heat damage (engine/06 §4, proposal §4.2) -----------------------
 # A LIVING unit sampled at its footprint takes radiant heat damage from the
