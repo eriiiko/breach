@@ -180,12 +180,16 @@ shells, and late-game exotics are new rows here — the progression hook.
 FieldEdit / the physics entry points): `radius`, `pressure` (wave source),
 `wall_damage`, `unit_damage` (BLAST packets with falloff),
 `gas_species` + `gas_amount` + `gas_radius` (emission into the engine/05 gas
-slices), `ignite_radius` + `ignite_intensity`, `clear_smoke`. **Hand-grenade
-ammo rows and 40 mm launcher rounds point at the same payload rows** — one
-definition of "frag", "smoke", "tear", "poison", delivered by hand or by tube.
-The shipped `apply_explosion` triple becomes the payload *executor*, with the
-current grenade = `payloads.frag_standard` and the door charge =
-`payloads.breach_focus`, byte-for-byte.
+slices), `ignite_radius` + `ignite_intensity`, and the smoke boolean SPLIT
+(the W1 finding): `clear_smoke` (data-of-record — the inner-radius clear
+lives inside `apply_explosion` in v1) + `emit_blast_smoke` (live — gates the
+textured cloud). **Hand-grenade ammo rows and 40 mm launcher rounds point at
+the same payload rows** — one definition of "frag", "smoke", "tear",
+"poison", delivered by hand or by tube (row-object identity is a W3 test
+gate). The shipped `apply_explosion` triple became the payload *executor*
+(`simulation.payloads.execute_payload`, W3), with the grenade =
+`payloads.frag_standard` and the door charge = `payloads.breach_focus`,
+byte-for-byte (replica-proven).
 
 ---
 
@@ -269,10 +273,10 @@ Ammo-family sharing is deliberate where realistic: the P12 and MP-11 both eat
 9mm.
 
 Gas grenade *effects* ride the coupling table (mechanics/05), not the payload:
-`teargas` density → an aim-suppressing status (the owed `can_aim` consumer —
-teargas blinds), `poison` density → POISON DoT packets. The payload only puts
-gas in the air; what gas does to lungs is the exchange layer's job, same as
-heat.
+`teargas` density → `BLINDED` (the `can_aim` consumer, shipped W3 — teargas
+blinds: aimed fire collapses to the snap cone), `poison` density → POISON DoT
+packets (zombies immune — they don't breathe). The payload only puts gas in
+the air; what gas does to lungs is the exchange layer's job, same as heat.
 
 ---
 
@@ -312,7 +316,7 @@ KINETIC packets through the mechanics/06 pipeline.
 |---|---|---|
 | **W1** | weapon/ammo/payload tables + loaders; re-home rifle→`k5_carbine`, grenade→`hand_grenade`+`frag_standard`, charge→`breach_charge`+`breach_focus`; `unit.weapon_id` | ✅ **SHIPPED** `2abf7dc` (2026-07-05): 521 green, golden `07c3f370…` byte-identical |
 | **W2** | unified march (speed as data, in-flight persistence); spread aim/snap; §3 exposure/cover (+`cover_exposure` materials column) + crit/facing resolver; **Lance-3 laser** (skewer, wall-chew, integer gas attenuation, beam event) | ✅ **SHIPPED** `bbfb26a` (2026-07-05): 559 green (+55 W2 tests), golden `07c3f370…` **UNCHANGED** — the canonical scenario fires no weapon and every W2 roll is lazy, so stream and fields never move (findings below). Beam **glow-as-light deferred** to the explosion-light pass (`LaserFiredEvent` ships; the raycaster hookup lands with transient light sources) |
-| **W3** | payload executor generalizing the explosion triple; gas payloads (smoke/tear/poison) + coupling rows (teargas→aim status, poison→DoT); GL-6 + 40 mm ammo; C4; ammo economy (mags/reload/selection) | golden moves → re-baseline; suite green |
+| **W3** | payload executor generalizing the explosion triple; gas payloads (smoke/tear/poison) + coupling rows (teargas→aim status, poison→DoT); GL-6 + 40 mm ammo; C4; ammo economy (mags/reload) | ✅ **SHIPPED** (2026-07-05): 587 green (+28 W3 tests), golden `07c3f370…` **UNCHANGED** — W3 adds **no RNG consumers anywhere** (the gas deposit is deliberately noise-free, the coupling rows are threshold-deterministic and take no generator, launcher/C4 reuse existing draw sites) and every new path is dormant in the canonical scenario. Byte-identity replica gates: frag+breach detonations AND a full scripted shipped-weapons round vs the verbatim pre-W3 site body (fields + events + RNG end-state). Findings below |
 | **W4** | SPRAY: Dragon-7 + Miasma Vent (aimed sustained FieldEdit cones) | **HUMAN-TEST** — Erik feel-checks before merge |
 | **W5** | MELEE: knife + arc baton through the resolver; STUNNED wiring | suite green |
 | **W6** | armory playground room + weapon-cycle debug key + full standard-values audit | **HUMAN-TEST** — Erik's tuning session |
@@ -362,6 +366,49 @@ KINETIC packets through the mechanics/06 pipeline.
   W3 economy wires real selection — one standard round per family holds
   until then.
 
+**W3 findings of record** (carry into later patches):
+
+- **The golden did NOT move at W3 either** — §5's prediction fell the good
+  way twice: W3 was engineered to add **zero RNG consumers** (gas deposits
+  are deterministic no-noise discs; the coupling rows take no generator;
+  the GL-6/C4 reuse existing draw sites), so with the canonical scenario
+  throwing no gas the stream and every field trajectory are untouched.
+  Verified: aggregate `07c3f370…` bit-identical before/after.
+- **Gas transport verification (engine/05 §6.2, checked in code):** the C++
+  `run_substeps` per-gas loop steps **ALL N slices** every tick (each
+  non-empty plane on the shared wind with its own `[gases.*]` diffusion;
+  empty planes skip via an exact integer `.any()`), so smoke_screen /
+  tear_burst / poison_cloud clouds genuinely advect + diffuse — **no
+  transport gap**. (Per-gas `decay` remains loaded-not-applied, as
+  documented there.)
+- **The can_aim consumer landed** (the owed P3 seam): composed `can_aim`
+  False (teargas `BLINDED`, STUNNED, PARALYZED) collapses an aimed fire
+  order to `spread_snap_deg` — one gate at cone selection in
+  `process_shooting`.
+- **Detonation semantics of record:** a payload PROJECTILE (40 mm) applies
+  **no direct-hit packet** (`damage = 0`; the blast does the work) and
+  detonates at its stop tile — first solid (the blast centres ON the wall
+  tile, like a charge on a door), footprint entry, cover absorption, or
+  max-range airburst. Event kind `"shell"`.
+- **Mag state lives on the unit** (`current_mag` / `reload_done_tick`),
+  deliberately **outside the synced digest surface** — matching the
+  `last_fire_tick` precedent (combat-cadence state is a deterministic
+  derivation of synced inputs, not hashed; a divergence surfaces one tick
+  later in the hashed hp/event stream). The **round boundary tops
+  magazines off** (v1 rule + the tick-rewind correctness twin of
+  `last_fire_tick = -999`). Decrement is per TRIGGER; the auto-reload
+  stall starts when the mag empties; no manual reload order in v1.
+- **Immune units draw no DoT packet** (poison row, lazy-emission rule): a
+  `resist_mult[POISON] == 0` unit (zombies — they don't breathe) is
+  skipped entirely — no 0-damage `UnitHitEvent` spam on a horde standing
+  in gas. Resistances strictly between 0 and 1 still compose through the
+  pipeline.
+- **Manual reload / per-type grenade loadout UI = W6** (`has_grenade` /
+  `has_explosive` stay the single count pools; orders carry `ammo_name`,
+  `None` = the shipped defaults).
+
 **Not built / explicitly owed:** everything in §7; heat-damage tuning vs the
 armory numbers; the exposure/crit numbers are standard values pending Erik's
-playground pass; beam glow-as-light (the explosion-light pass).
+playground pass; beam glow-as-light (the explosion-light pass); ammo
+SELECTION UI (W6 — W3 wired mags/reload; per-unit round choice pends the
+loadout pass).
