@@ -213,6 +213,13 @@ class Simulation:
 
         self.units: List = []
         self.projectiles: List = []
+        # In-flight kinetic rounds (W2 unified march, mechanics/03 §2):
+        # BulletInFlight entities for rounds whose range outruns their
+        # per-tick speed. Every shipped small-arm resolves same-tick (speed
+        # authored >= range), so this list is EMPTY in-game until slow
+        # archetypes (plasma) ship — the machinery is exercised by tests.
+        # Advanced in tick slot 2 (after grenades, before movement).
+        self.bullets: List = []
         self.shots: List = []          # legacy tracer list; renderer reads it
         self.tick_events: List = []    # cleared each step()
 
@@ -377,7 +384,13 @@ class Simulation:
             return True
 
         elif ot == ORDER_FIRE:
-            ap_cost = weapon_rows["k5_carbine"].ap_cost
+            # W2: the cost comes off the UNIT'S weapon row (the k5 for every
+            # shipped marine — same literal 1); a unit with no ranged weapon
+            # ("" — zombies never reach here anyway) can't take fire orders.
+            weapon_id = getattr(u, "weapon_id", "")
+            if not weapon_id:
+                return False
+            ap_cost = weapon_rows[weapon_id].ap_cost
             if u.get_ap(phase) < ap_cost:
                 return False
             order.ap_cost = ap_cost
@@ -668,10 +681,12 @@ class Simulation:
         # 3. Update player movement.
         self._update_player_movement()
 
-        # 4. Process shooting.
+        # 4. Process shooting. W2: dispatches each shooter's weapon row by
+        # archetype (projectile burst / hitscan beam); rounds that outrange
+        # their per-tick speed land on self.bullets (advanced in slot 2).
         process_shooting(self.gmap, self.units, self.tick,
                          self.shots, self.real_time, self.rng,
-                         events=self.tick_events)
+                         events=self.tick_events, bullets=self.bullets)
 
         # 5. Zombie AI.
         update_zombies_tick(self.gmap, self.units, self.tick)
@@ -830,7 +845,10 @@ class Simulation:
     # Tick-step helpers
     # ------------------------------------------------------------------
     def _update_projectiles(self) -> None:
-        """Tick all projectiles. Detonate any whose fuse has run out."""
+        """Tick all projectiles: grenades first (the shipped slot semantics,
+        unchanged), then in-flight kinetic rounds (W2 unified march — tick
+        slot 2, BEFORE movement, preserving the causal pipeline ordering of
+        mechanics/03 §2). Fixed traversal order = spawn order, both lists."""
         for proj in self.projectiles:
             if proj.detonated:
                 continue
@@ -864,6 +882,18 @@ class Simulation:
                         self.gmap, self.edit_queue, fy, fx, radius)
                     self.tick_events.append(ExplosionEvent(
                         pos=(fx, fy), radius=radius, kind="grenade"))
+
+        # W2: advance in-flight kinetic rounds (the unified march). Each
+        # marches this tick's integer step budget; hits/chew/exposure resolve
+        # inside advance() (same rng, fixed spawn order). Survivors stay.
+        if self.bullets:
+            survivors = []
+            for b in self.bullets:
+                if b.advance(self.gmap, self.units, self.shots,
+                             self.real_time, self.rng,
+                             events=self.tick_events):
+                    survivors.append(b)
+            self.bullets = survivors
 
     def _update_player_movement(self) -> None:
         """Step each player unit along its precomputed path.
@@ -915,6 +945,9 @@ class Simulation:
         self.gmap.obstacles[:] = self.gmap.solid
         # Keep un-detonated projectiles (long-fuse grenades carry over).
         self.projectiles = [p for p in self.projectiles if not p.detonated]
+        # In-flight kinetic rounds carry over too (W2): they are physical
+        # objects mid-air, tick-counter-free (per-call budget), so the round
+        # rewind cannot skew them. Empty for every shipped weapon.
         # Rewind for the next round.
         self.tick = 0
         self.phase = 0

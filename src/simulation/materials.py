@@ -203,6 +203,22 @@ class MaterialTable:
             burst.append(float(val) if val is not None else 0.0)
         self.burst_threshold = np.array(burst, dtype=np.float32)
 
+        # cover_exposure: the exposure-vs-cover probability (mechanics/03 §3,
+        # mechanics/06 §5 — the W2 attack resolver). 1.0 = no concealment (the
+        # lazy-roll rule: a shot approaching through this tile draws NOTHING);
+        # < 1.0 = soft cover — a marching shot entering a unit footprint from
+        # this tile connects with probability cover_exposure, else it is
+        # absorbed by the tile (wall-damage chew). OPTIONAL column defaulting
+        # to 1.0 so dict-built test tables stay valid; config.toml authors it
+        # EXPLICITLY on every row. Consumed as a load-time float32 constant
+        # compared against a door-4 uniform draw (an exact compare — the cast
+        # here is the once-at-load ingress step; see attack_resolver).
+        cover = []
+        for row, name in zip(rows, self.names):
+            val = self._get_field_opt(row, "cover_exposure")
+            cover.append(float(val) if val is not None else 1.0)
+        self.cover_exposure = np.array(cover, dtype=np.float32)
+
     # -- conduction face-shift tables (engine/06 §2.4–§2.5) --------------
     def _build_conduction_tables(self, thermal_cfg):
         """Build ``self_shift[N]`` and ``face_shift_table[N][N]`` from the

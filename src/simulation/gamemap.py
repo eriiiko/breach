@@ -1043,14 +1043,21 @@ class GameMap:
         mean of ``atmosphere`` so we don't open with an artificial vacuum
         pulse. Edge hull tiles become vacuum and rely on relaxation BCs
         to drain smoothly.
+
+        W2 (mechanics/03 §3): the gate is ``material != MAT_AIR`` — any
+        destructible MATERIAL tile converts, solid walls (the shipped set,
+        unchanged behaviour) AND non-solid destructibles like furniture:
+        bullet chew must be able to break a crate so it stops *being* cover.
+        No shipped caller ever reached here with a non-solid tile (the C++
+        fire burn-through list is is_wall-gated; find_burst_walls scans
+        walls; explosions gate on wall materials), so the widened gate only
+        activates for the new W2 chew path.
         """
         h, w = self._h, self._w
         if not (0 <= fy < h and 0 <= fx < w):
             return
         was_hull = (self.material[fy, fx] == MAT_HULL)
-        # A wall is anything the solid mask marks (hull/wood/door today,
-        # plus steel/glass when placed) — replaces the hardcoded id list.
-        if self.solid[fy, fx]:
+        if self.material[fy, fx] != MAT_AIR:
             self.material[fy, fx] = MAT_AIR
             # Topology changed → the smoke sink-direction field is stale; the
             # next ``sink_fields()`` read rebuilds it (cheap, breaches are rare).

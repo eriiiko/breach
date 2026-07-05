@@ -53,6 +53,21 @@ class EnvironmentProfile:
     # overlays, not this anchor.
     stability: float = 1.0
 
+    # --- Attack arcs (mechanics/06 §5 — the crit-vs-facing resolver, W2) ---
+    # Facing is universal, ARCS ARE DATA: every unit has a synced facing;
+    # whether flank/behind exist is species-profile data. ``front_arc_deg``
+    # is the full width of the front cone centred on facing (x1 crit);
+    # ``behind_arc_deg`` the full width of the rear cone centred on
+    # facing + pi (x4); everything between is flank (x2) — multipliers in
+    # ``[combat] crit_*_mult``. Standard values 120/90 for the human profile
+    # (marine AND zombie — zombie-ness is state on the human species). A
+    # radially symmetric species (slime blob) ships 360/0: no behind to
+    # stab, no flank to catch, zero special-case code. Consumed via
+    # ``math.radians`` (pure IEEE affine) + exact float compares in
+    # attack_resolver.arc_multiplier — no trig, cross-machine exact.
+    front_arc_deg:  float = 120.0
+    behind_arc_deg: float = 90.0
+
     submersion: SubmersionRule = SubmersionRule.DROWNS
 
     # Damage per tick while outside any tolerance — data only;
