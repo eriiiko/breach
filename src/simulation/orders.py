@@ -57,17 +57,23 @@ class Order:
     - ``grenade_fuse`` (seconds) — set when ``order_type == ORDER_GRENADE``.
     - ``det_slot`` (one of ``DET_START_PHASE1`` / ``DET_BETWEEN_PHASES`` /
       ``DET_END_PHASE2``) — set when ``order_type == ORDER_EXPLOSIVE``.
+    - ``ammo_name`` (W3) — which ``[ammo.*]`` row the order delivers, for the
+      LOBBED / PLACED archetypes: ``None`` = the shipped defaults
+      (``"grenade_frag"`` for grenades, ``"demo_breach"`` for explosives —
+      the UI path is unchanged; per-type loadout selection is W6). Tests
+      exercise smoke/tear/poison grenades and C4 by naming the round here.
 
     ``ap_cost`` defaults to 1; movement orders get it patched to 0 by
     the placement code, since walking doesn't cost AP in v1.
     """
 
     def __init__(self, order_type, target_fx, target_fy, phase,
-                 grenade_fuse=None, det_slot=None):
+                 grenade_fuse=None, det_slot=None, ammo_name=None):
         self.order_type = order_type
         self.target_fx = target_fx
         self.target_fy = target_fy
         self.phase = phase                  # 0 = Phase 1, 1 = Phase 2
         self.grenade_fuse = grenade_fuse    # seconds; grenades only
         self.det_slot = det_slot            # slot ID; door explosives only
+        self.ammo_name = ammo_name          # W3: LOBBED/PLACED round (None = default)
         self.ap_cost = 1                    # caller may overwrite

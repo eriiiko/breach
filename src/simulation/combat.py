@@ -49,7 +49,12 @@ from simulation.orders import (
     ORDER_GRENADE, ORDER_EXPLOSIVE, ORDER_FIRE, ORDER_MOVE_ATTACK,
 )
 from simulation import unit_fixed
-from simulation.physics import apply_explosion, add_explosion_smoke
+# Physics event entry points: re-exported for legacy imports; the detonation
+# sites themselves now go through the payload executor (W3). Bare-name import
+# of execute_payload on purpose — instrumentation/replica tests rebind
+# simulation.combat.execute_payload (the apply_environmental_damage pattern).
+from simulation.physics import apply_explosion, add_explosion_smoke  # noqa: F401
+from simulation.payloads import execute_payload
 from simulation.status import composed_flags
 # The two shipped coupling responses live in simulation.exchange now
 # (mechanics/05 coupling table, P1). Re-imported for compatibility — legacy
@@ -69,11 +74,18 @@ from simulation.weapons import get_tables as weapon_tables
 # Projectile: in-flight grenade
 # ---------------------------------------------------------------------------
 class Projectile:
-    """In-flight grenade. Travels in a straight line from start to target;
-    detonates when ``current_tick >= get_detonate_tick()``."""
+    """In-flight grenade (LOBBED — ignores unit collision). Travels in a
+    straight line from start to target; detonates when
+    ``current_tick >= get_detonate_tick()``.
+
+    W3: carries its ROUND (``ammo_name`` — a ``[ammo.*]`` row of family
+    ``hand_grenade``); the detonation site resolves the round's payload row
+    through the executor. The default is the shipped ``grenade_frag`` (same
+    ``travel_speed_tiles_per_second`` on every gas round, so the
+    ``update_position()`` arithmetic is unchanged for all of them)."""
 
     def __init__(self, proj_type, start_fx, start_fy, target_fx, target_fy,
-                 fuse_seconds, thrown_tick):
+                 fuse_seconds, thrown_tick, ammo_name="grenade_frag"):
         self.proj_type = proj_type
         self.fx = float(start_fx)
         self.fy = float(start_fy)
@@ -84,12 +96,13 @@ class Projectile:
         self.fuse_seconds = fuse_seconds
         self.thrown_tick = thrown_tick
         self.detonated = False
-        # Tiles-per-SECOND, from the grenade round's row (W1 re-home: the old
+        self.ammo_name = ammo_name
+        # Tiles-per-SECOND, from the round's row (W1 re-home: the old
         # CFG.weapons.grenade.travel_speed = 30.0, same float — the
         # update_position() arithmetic below is bit-identical). The round's
         # speed_tiles_per_tick twin is the W2 unified-march data-of-record.
         self.travel_speed = weapon_tables().ammo.by_name[
-            "grenade_frag"].travel_speed_tiles_per_second
+            ammo_name].travel_speed_tiles_per_second
 
     def get_detonate_tick(self):
         """Tick at which this projectile detonates."""
@@ -798,32 +811,26 @@ def process_door_explosives(gmap, queue, units, slot, rng, events=None):
 
     Lifted from ``game.py:_process_door_explosives``. Called three times
     per round (start P1, between phases, end P2). Skips zombies — only
-    player-issued orders detonate. ``rng`` flows into
-    :func:`simulation.physics.add_explosion_smoke` for the per-tile
-    noise; ``events`` (optional) collects :class:`ExplosionEvent` and
-    unit hit / kill events for the renderer.
-    """
-    # W1 re-home: the door charge's blast numbers live on the breach_focus
-    # payload row, resolved through its round (breach_charge -> demo_breach ->
-    # payloads.breach_focus) — same literals as the old
-    # CFG.weapons.door_explosive.*. The payload EXECUTOR (generalizing the
-    # apply_explosion triple below) is W3; here we only read the row.
-    payload  = weapon_tables().payload_for_ammo("demo_breach")
-    radius   = payload.radius
-    pressure = payload.pressure
-    wall_dmg = payload.wall_damage
-    unit_dmg = payload.unit_damage
+    player-issued orders detonate. ``rng`` rides through to the executor
+    (the smoke noise itself is drawn at the queue flush); ``events``
+    (optional) collects :class:`ExplosionEvent` and unit hit / kill events
+    for the renderer.
 
+    W3: the PLACED charge is executed through the payload EXECUTOR
+    (:func:`simulation.payloads.execute_payload`) via its ROUND: the order's
+    ``ammo_name`` (default ``demo_breach`` -> ``payloads.breach_focus`` —
+    byte-identical to the pre-W3 inline triple, the replica gate) or
+    ``demo_c4`` -> ``payloads.demolition_c4`` (the C4 satchel — same order
+    flow, bigger warhead; selection UI is W6, tests name the round).
+    """
+    tables = weapon_tables()
     for u in units:
         if u.team != 0:
             continue
         for o in u.orders:
             if o.order_type == ORDER_EXPLOSIVE and o.det_slot == slot:
                 fy, fx = o.target_fy, o.target_fx
-                apply_explosion(gmap, queue, fy, fx, radius, pressure, wall_dmg)
-                apply_blast_damage(units, fx, fy, radius, unit_dmg,
-                                   events=events)
-                add_explosion_smoke(gmap, queue, fy, fx, radius)
-                if events is not None:
-                    events.append(ExplosionEvent(
-                        pos=(fx, fy), radius=radius, kind="door_explosive"))
+                payload = tables.payload_for_ammo(
+                    getattr(o, "ammo_name", None) or "demo_breach")
+                execute_payload(gmap, queue, units, fy, fx, payload, rng,
+                                events=events, kind="door_explosive")

@@ -90,8 +90,9 @@ class WeaponDef:
         self.shots_per_trigger = shots_per_trigger   # burst / pellet count
         self.rof_interval_seconds = rof_interval_seconds  # cadence gate
         self.rof_interval_ticks = 0             # derived by WeaponTable
-        self.mag_size = mag_size                # 0 = ammo not tracked (W3)
+        self.mag_size = mag_size                # 0 = ammo untracked (exactly pre-W3)
         self.reload_seconds = reload_seconds
+        self.reload_ticks = 0                   # derived by WeaponTable (W3 economy)
         self.ap_cost = ap_cost                  # order cost (turn system)
         self.crit_chance = crit_chance          # §3 crit base (activates W2)
         self.crit_mult = crit_mult
@@ -147,14 +148,22 @@ class AmmoDef:
 
 class PayloadDef:
     """One ``[payloads.<name>]`` row — what happens at the destination
-    (mechanics/03 §4). Executed via FieldEdit / the physics entry points; in
-    W1 these columns are data-of-record only (the shipped ``apply_explosion``
-    triple keeps running verbatim — the payload *executor* generalizes it in
-    W3)."""
+    (mechanics/03 §4). Executed by the payload EXECUTOR
+    (:func:`simulation.payloads.execute_payload`, W3) via FieldEdit / the
+    physics entry points.
+
+    The W1-finding smoke boolean SPLIT (mechanics/03 §8): ``clear_smoke``
+    documents ``apply_explosion``'s built-in inner-radius smoke clearing —
+    v1 keeps that clear INSIDE ``apply_explosion``, so the column is
+    data-of-record, wired live when FieldEdit takes over the explosion
+    internals; ``emit_blast_smoke`` is LIVE and gates the
+    ``add_explosion_smoke`` textured cloud. Both must be true on
+    ``frag_standard`` AND ``breach_focus``."""
 
     def __init__(self, name, radius=0, pressure=0.0, wall_damage=0,
                  unit_damage=0, gas_species="", gas_amount=0.0, gas_radius=0,
-                 ignite_radius=0.0, ignite_intensity=0.0, clear_smoke=False):
+                 ignite_radius=0.0, ignite_intensity=0.0, clear_smoke=False,
+                 emit_blast_smoke=False):
         self.name = name
         self.radius = radius                    # blast radius (tiles)
         self.pressure = pressure                # wave source magnitude
@@ -165,7 +174,8 @@ class PayloadDef:
         self.gas_radius = gas_radius
         self.ignite_radius = ignite_radius
         self.ignite_intensity = ignite_intensity
-        self.clear_smoke = clear_smoke
+        self.clear_smoke = clear_smoke          # data-of-record (v1: inside apply_explosion)
+        self.emit_blast_smoke = emit_blast_smoke  # LIVE: gates add_explosion_smoke (W3)
 
     def __repr__(self):
         return (f"PayloadDef({self.name!r}, radius={self.radius!r}, "
@@ -254,6 +264,13 @@ class WeaponTable:
                     w.rof_interval_seconds, ticks_per_second)
             else:
                 w.rof_interval_ticks = 0
+            # Reload stall (W3 ammo economy): same seconds -> integer-ticks
+            # derivation (door 1). Only consulted when mag_size > 0.
+            if w.reload_seconds > 0:
+                w.reload_ticks = ticks_from_seconds(
+                    w.reload_seconds, ticks_per_second)
+            else:
+                w.reload_ticks = 0
             self.by_name[name] = w
         self.names = list(self.by_name)
 
@@ -297,26 +314,38 @@ class AmmoTable:
 
 class PayloadTable:
     """``[payloads.*]`` rows keyed by name. Every column defaults (a payload
-    row lists only what it does — 'rest zero/empty')."""
+    row lists only what it does — 'rest zero/empty'). A nonempty
+    ``gas_species`` is validated against the canonical gas-name set
+    (simulation.gases.GAS_NAMES — the ``gmap.gas`` slice vocabulary) so a
+    typo'd species is loud at startup, not at the first detonation."""
 
     def __init__(self, payloads_cfg):
+        # Lazy import (module constants only, mirrors AmmoTable's unit_fixed).
+        from simulation.gases import GAS_NAMES
+        valid_gases = set(GAS_NAMES.values())
         self.by_name: dict[str, PayloadDef] = {}
         for name, row in _iter_rows(payloads_cfg):
             def col(c, default, _row=row, _name=name):
                 return _get_field(_row, "payloads", _name, c, default)
 
+            gas_species = str(col("gas_species", ""))
+            if gas_species and gas_species not in valid_gases:
+                raise ValueError(
+                    f"payloads.{name}.gas_species {gas_species!r} is not a "
+                    f"known gas (engine/05 §6.2): {sorted(valid_gases)}")
             self.by_name[name] = PayloadDef(
                 name=name,
                 radius=col("radius", 0),
                 pressure=col("pressure", 0.0),
                 wall_damage=col("wall_damage", 0),
                 unit_damage=col("unit_damage", 0),
-                gas_species=str(col("gas_species", "")),
+                gas_species=gas_species,
                 gas_amount=col("gas_amount", 0.0),
                 gas_radius=col("gas_radius", 0),
                 ignite_radius=col("ignite_radius", 0.0),
                 ignite_intensity=col("ignite_intensity", 0.0),
                 clear_smoke=bool(col("clear_smoke", False)),
+                emit_blast_smoke=bool(col("emit_blast_smoke", False)),
             )
         self.names = list(self.by_name)
 

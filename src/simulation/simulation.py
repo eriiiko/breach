@@ -80,10 +80,10 @@ from simulation.combat import (
 # (tests/_xarch_liveheat_dump.py — the case-2 divergence instrument).
 # Execution positions are UNCHANGED (heat at step 9c, blast at the grenade
 # fuse-out below); the consolidated named EXCHANGE-READ slot is a later patch.
-from simulation.exchange import (
+from simulation.exchange import (  # noqa: F401 (apply_blast_damage: legacy re-export — the executor calls it now)
     apply_blast_damage, apply_environmental_damage, apply_wave_push,
 )
-from simulation.events import (
+from simulation.events import (  # noqa: F401 (ExplosionEvent: legacy re-export — emitted by the executor now)
     DoorDestroyedEvent, ExplosionEvent, WallDestroyedEvent,
 )
 from simulation.gamemap import GameMap, MAT_DOOR
@@ -93,7 +93,13 @@ from simulation.orders import (
     ORDER_GRENADE, ORDER_EXPLOSIVE, ORDER_FIRE, ORDER_MOVE_ATTACK,
     ORDER_MOVE_COVER, ORDER_SPRINT, MOVE_ORDER_TYPES,
 )
-from simulation.physics import apply_explosion, add_explosion_smoke
+from simulation.physics import apply_explosion, add_explosion_smoke  # noqa: F401 (legacy re-export)
+# The payload EXECUTOR (mechanics/03 §4, W3): the grenade fuse-out below
+# executes its round's payload row through this. Imported as a BARE NAME
+# deliberately (the apply_environmental_damage pattern above): the call site
+# reads this module's own binding, so replica tests can rebind
+# simulation.simulation.execute_payload to the pre-W3 inline triple.
+from simulation.payloads import execute_payload
 from simulation.physics_runner import PhysicsRunner
 from simulation.field_edit import EditQueue, FieldEdit
 from simulation.recorder import PhysicsRecorder
@@ -858,30 +864,21 @@ class Simulation:
                 if proj.proj_type == ORDER_GRENADE:
                     fx = int(proj.target_fx)
                     fy = int(proj.target_fy)
-                    # W1 re-home: the grenade's blast numbers live on the
-                    # frag_standard payload row (hand_grenade -> grenade_frag
-                    # -> payloads.frag_standard) — same literals as the old
-                    # CFG.weapons.grenade.*. The payload EXECUTOR generalizing
-                    # this triple is W3; here we only read the row.
-                    frag = self.weapons_tables.payload_for_ammo("grenade_frag")
-                    radius = frag.radius
-                    apply_explosion(
-                        self.gmap, self.edit_queue, fy, fx, radius,
-                        frag.pressure,
-                        frag.wall_damage,
-                    )
-                    # The wave_p blast coupling row (mechanics/05 §1;
-                    # exchange.COUPLING_TABLE[1]) — detonation-site
-                    # invocation, geometric falloff (predates the field read).
-                    apply_blast_damage(
-                        self.units, fx, fy, radius,
-                        frag.unit_damage,
-                        events=self.tick_events,
-                    )
-                    add_explosion_smoke(
-                        self.gmap, self.edit_queue, fy, fx, radius)
-                    self.tick_events.append(ExplosionEvent(
-                        pos=(fx, fy), radius=radius, kind="grenade"))
+                    # W3: the LOBBED detonation goes through the payload
+                    # EXECUTOR via the projectile's round (hand_grenade ->
+                    # proj.ammo_name -> its payload row). The default
+                    # grenade_frag -> payloads.frag_standard sequence is
+                    # byte-identical to the pre-W3 inline triple (the
+                    # replica gate); gas grenades ride the same call with
+                    # their rows. Blast damage (the wave_p coupling row,
+                    # exchange.COUPLING_TABLE[1]) stays a detonation-site
+                    # invocation inside the executor.
+                    payload = self.weapons_tables.payload_for_ammo(
+                        proj.ammo_name)
+                    execute_payload(
+                        self.gmap, self.edit_queue, self.units, fy, fx,
+                        payload, self.rng, events=self.tick_events,
+                        kind="grenade")
 
         # W2: advance in-flight kinetic rounds (the unified march). Each
         # marches this tick's integer step budget; hits/chew/exposure resolve
@@ -983,6 +980,11 @@ class Simulation:
                         o.target_fy + 0.5,
                         fuse_seconds=o.grenade_fuse,
                         thrown_tick=phase_start_tick,
+                        # W3: the order's round (None = the shipped
+                        # grenade_frag — the UI path unchanged; smoke/tear/
+                        # poison grenades name theirs; loadout UI = W6).
+                        ammo_name=(getattr(o, "ammo_name", None)
+                                   or "grenade_frag"),
                     )
                     self.projectiles.append(proj)
 
