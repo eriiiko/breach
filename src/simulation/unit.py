@@ -214,6 +214,14 @@ class Unit:
         self.has_grenade   = 0 if self.is_zombie else CFG.marine.grenades
         self.has_explosive = 0 if self.is_zombie else CFG.marine.explosives
 
+        # Weapon binding (mechanics/03 §4, W1): which [weapons.*] row this
+        # unit fires. Marines carry the K5 carbine; zombie melee stays on its
+        # ai_zombie path (NPC weapons migrate onto rows later, mechanics/03
+        # §7). Config-static in W1, so deliberately NOT in the synced digest
+        # (field_ab_harness.SYNCED_UNIT_FIELDS) — it joins when loadouts can
+        # change at runtime (W3+).
+        self.weapon_id = "" if self.is_zombie else "k5_carbine"
+
         # Combat state (used by marines mainly; harmless on zombies).
         self.last_fire_tick = -999
         self.fire_target = None

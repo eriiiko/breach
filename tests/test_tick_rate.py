@@ -30,6 +30,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from config import CFG, ticks_from_seconds
+from simulation.weapons import get_tables as weapon_tables
 
 
 # Per-second source values authored in config.toml (kept here so the test is
@@ -56,7 +57,10 @@ def test_live_config_is_consistent_with_helper():
     assert CFG.movement.marine_sprint_ticks_per_tile == ticks_from_seconds(MARINE_SPRINT_S, tps)
     assert CFG.zombie.ticks_per_tile == ticks_from_seconds(ZOMBIE_S, tps)
     assert CFG.zombie.attack_cooldown_ticks == ticks_from_seconds(ATTACK_COOLDOWN_S, tps)
-    assert CFG.weapons.rifle.burst_interval_ticks == ticks_from_seconds(RIFLE_BURST_S, tps)
+    # W1 re-home: the rifle cadence now derives on the k5_carbine weapon row
+    # (rof_interval_seconds -> rof_interval_ticks), same helper, same result.
+    k5 = weapon_tables().weapons.by_name["k5_carbine"]
+    assert k5.rof_interval_ticks == ticks_from_seconds(RIFLE_BURST_S, tps)
     assert CFG.recorder.capacity == round(REPLAY_S * tps)
 
 

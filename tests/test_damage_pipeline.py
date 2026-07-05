@@ -445,9 +445,12 @@ def test_bullet_site_end_to_end_bit_identity():
 
     hits = [e for e in events if isinstance(e, UnitHitEvent)]
     assert hits, "test setup must produce at least one hit"
-    # Pre-P2 chain: per-bullet applied delta on a zombie target.
+    # Pre-P2 chain: per-bullet applied delta on a zombie target. (W1 re-home:
+    # the per-bullet damage lives on the rifle's ammo row now — same 10.)
+    from simulation.weapons import get_tables
+    per_bullet_damage = get_tables().ammo.by_name["rifle_556_standard"].damage
     old_per_bullet = unit_fixed.quantize_hp_delta(
-        int(CFG.weapons.rifle.damage_per_bullet
+        int(per_bullet_damage
             * CFG.zombie.bullet_damage_multiplier))
     for e in hits:
         assert (e.unit_id, e.source) == (2, "bullet")

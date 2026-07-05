@@ -45,6 +45,7 @@ import pyray as rl
 
 from config import CFG
 from simulation.gases import GAS_NAMES, N_GASES
+from simulation.weapons import get_tables as weapon_tables
 from simulation.orders import (
     DET_START_PHASE1,
     ORDER_MOVE_ATTACK, ORDER_MOVE_COVER, ORDER_SPRINT,
@@ -63,7 +64,10 @@ class InputHandler:
         # to Phase 1; Tab toggles only the selected unit's entry. So
         # switching between marines preserves where you left off.
         self.per_unit_phase: dict[int, int] = {}
-        self.grenade_fuse = CFG.weapons.grenade.fuse_default_seconds
+        # Fuse knobs come off the hand_grenade weapon row (mechanics/03 W1
+        # re-home — same numbers the old CFG.weapons.grenade.* keys held).
+        self.grenade_fuse = weapon_tables().weapons.by_name[
+            "hand_grenade"].fuse_default_seconds
         self.det_slot = DET_START_PHASE1
         # DEBUG multi-gas spawn (engine/05 §6.2, M2): which gas the J key drops
         # under the cursor. K cycles white_smoke -> black_smoke -> poison ->
@@ -200,9 +204,11 @@ class InputHandler:
             wheel = rl.get_mouse_wheel_move()
             if wheel != 0:
                 if self.current_mode == ORDER_GRENADE:
+                    hand_grenade = weapon_tables().weapons.by_name[
+                        "hand_grenade"]
                     self.grenade_fuse = max(
-                        CFG.weapons.grenade.fuse_min_seconds,
-                        min(CFG.weapons.grenade.fuse_max_seconds,
+                        hand_grenade.fuse_min_seconds,
+                        min(hand_grenade.fuse_max_seconds,
                             self.grenade_fuse + wheel * 0.5))
                 elif self.current_mode == ORDER_EXPLOSIVE:
                     self.det_slot = int((self.det_slot
