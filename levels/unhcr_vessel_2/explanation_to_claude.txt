@@ -1,0 +1,52 @@
+Hello Claude, i hope you are doing well. I've gone to bed when you read this probably.
+This is the new version of the unhcr_vessel
+for now i just called the folder unhcr_vesse_2
+but i intend in the end that this will be the only one - unless we design a new one later on
+
+anyway- let me explain the files- the 3 ship png's are new, they should follow the exact same geometry as the first, but i think wew perhaps cropped the first one - these aren't in any case cropped, so they might need to become cropped to fit the tilemap.csv
+
+the tilemap.csv is an exact copy from the other folder - it has the numbers used by the prototype level generator code - which is not consistent with our material numbering, which is canon. I'd like to make the csv used by the engine respect our canon numberings - it's too confusing if the same number map to two different things-
+
+the level.toml is also copied from the unhcr_vessel folder, i dont know what's in it exactyl, or if we need to edit any ofit
+
+what's not yet done here is normal maps
+
+background.png is also the same, and should be used the same way
+
+
+the "upgrade" with this version is
+A) the pictures are now all dim lit - so i think our added lights will look better, not they are teh only light sources - the previous level had some baked in shadows - or more at least, i guess these does too, but at a minimum
+
+B) The ship comes with and without interior design or what shall icall it, filled with boxes and furniture, and one version without (bare)
+it also comes with one destroyed version, perhaps we can render them all?
+fire could burn away furniture and stuff like that
+grenades could start to draw the destroyed version, if walls are destroyed at least.
+
+doors - they were removed in all versions - im not sure how to animate them - i feel like the best thing we can do now, that's easy, well, i'd love to hear your view, but otehrwise we could just draw them as black doors or somehign? Black pixels, that do open and close at the very least.
+Sliding dorrs? any ideas? Or just on and off? 
+
+im not sure how they should open, perhaps by proximity, if player or zombie moves near them they will open, otherwise they will be closed (which will block LoS)
+
+I do intend to fix normal maps to these asap but i'm too tired to do it tonight.
+
+
+I would like the screens to glow even if it's dark - i know one method of doing it using photshop, but i wonder if tehre are better easier ways to do it programatically?
+
+perhaps that could be a feature in our level editor- mask out pixels that shall always keep their brightness?=
+
+Or do we simply put some lights on those tiles?
+
+these images come from chatGPT image generation - it's a shame they are so low resolution, but i think it's te best i can get
+
+but, isnt there good tools to upscale? you know, the feeling im after is that the marins clear room for room, we dont want to show the whole spaceship at once, showing how small it really is... i want this feeling that you are on  a ship, and u dont even know when it's gonna end.
+
+
+i guess if we upsacel it's best to do first ,before generating normal maps
+
+and iu wonder, i hae some tool for making normal maps- but do you think there are better machine learning approaches? The result i got first tiome was OK- but it wasnt too good to be honest. i think u need to base it of real 3d data for it to really shine - or perhaps ML approaches can start to reach similar results too. Happy to hear your thoughts.
+
+thank you so much for today, looking forward to hear your answers to these questions- you can write them here if u like or put them in chat.
+
+Please take care!
+
+//Erik

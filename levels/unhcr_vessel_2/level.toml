@@ -1,0 +1,98 @@
+# Level metadata for the UNHCR Vessel (v2 art: layered, uncropped, upscaled).
+# Source-of-truth tilemap defines walls; all other assets are visual.
+
+version = "2"
+name = "UNHCR Vessel"
+
+# Tilemap (required): physics tile grid, CSV with int values per cell.
+# v2 codes ARE canon material ids (src/simulation/materials.py):
+#   0=air, 1=hull, 2=wood, 3=door, 4=steel, 5=glass, 9=SPACE (air + vacuum)
+tilemap = "tilemap.csv"
+
+# Physical scale
+tile_size_m = 0.333    # 1/3 meter per tile
+
+# Multi-floor support (v2 — reserved schema)
+floor_id = 0
+# teleporters = [
+#     { from = [tile_x, tile_y], to_level = "next_level", to_tile = [x, y] }
+# ]
+
+# ---------------------------------------------------------------------------
+# Layered art (level format v2 §1.2). Layers are uncropped; the grid mapping
+# lives in [art.align] (§1.3), not in destructive PNG crops.
+# ---------------------------------------------------------------------------
+[art]
+background = "background.png"     # screen-fixed backdrop (stars) behind vacuum
+
+[art.bare]                        # the empty ship — rendered now (F2)
+diffuse = "upscaled/ship_w_furniture_reg_4x_ultrasharp.png"  # interim: furnished shown until F3 layering
+normal  = "upscaled/ship_w_furniture_reg_normal_large.png"   # (bare art returns when F3 composes per-tile)
+# Per-pixel floor heightmap (greyscale relief) for the DISPLAYED layer. The
+# water pass uses it to ATTENUATE the water alpha (alpha-only — not depth/tint):
+# raised furniture/debris poke above the surface and the water laps around them.
+height  = "upscaled/ship_w_furniture_reg_height_large.png"   # matches the furniture diffuse (3900x6456)
+
+[art.furniture]                   # overlay state — stored now, composed in F3
+diffuse = "upscaled/ship_w_furniture_reg_4x_ultrasharp.png"
+normal  = "upscaled/ship_w_furniture_reg_normal_large.png"
+
+[art.destroyed]                   # overlay state — stored now, composed in F3
+diffuse = "upscaled/ship_destroyed_reg_4x_ultrasharp.png"
+normal  = "upscaled/ship_destroyed_reg_normal_large.png"
+
+[art.align]
+# analytic candidate — fine-tune with tools/align_level_art.py
+# (values are in the 4x upscaled art's pixel space; px_per_tile is per-axis
+# [x, y] because the art's proportions differ from the tilemap per axis)
+offset_px = [1.0, -38.4]
+px_per_tile = [77.40, 54.44]
+
+# Unit spawns. team 0 = marine (player), team 1 = zombie.
+# (x, y) is the physics-tile position (top-left of the unit's footprint).
+# Coords read directly from the F6 HUD (physics-tile grid).
+# When the unit-variant system lands, size + subtype fields will appear here.
+
+[[spawn]]
+name = "Alpha"
+team = 0
+x = 24
+y = 90
+
+[[spawn]]
+name = "Bravo"
+team = 0
+x = 24
+y = 94
+
+[[spawn]]
+name = "Cobra"
+team = 0
+x = 24
+y = 98
+
+# TODO once unit-variant system lands: make this one a size-3 (ogryn) human
+# in the is_zombie state. See docs/unit_variants_design_brainstorm.md.
+[[spawn]]
+name = "Zomb1"
+team = 1
+x = 34
+y = 78
+
+[[spawn]]
+name = "Zomb2"
+team = 1
+x = 24
+y = 77
+
+[[spawn]]
+name = "Zomb3"
+team = 1
+x = 19
+y = 78
+
+[[spawn]]
+name = "Zomb4"
+team = 1
+x = 25
+y = 16
