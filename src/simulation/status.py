@@ -119,7 +119,14 @@ class StatusKindDef:
 
 
 # The v1 roster (mechanics/06 §4) — rows in kind order; magnitudes/durations
-# arrive from the applying trigger (door-2 config), never from these rows.
+# arrive from the applying TRIGGER (door-2 config), never from these rows —
+# the rows carry only structure (flags, stacking, damage type), so there are
+# deliberately NO standard-value numbers to tune here (P5 audit). Where the
+# trigger numbers live: KNOCKED_DOWN reads ``[exchange]``
+# knockdown_dv_threshold / knockdown_getup_seconds (config.toml — the one
+# shipped trigger); BURNING / POISONED / SUFFOCATING durations + per-tick
+# magnitudes land in config WITH their coupling rows (fire / gas / O2-water —
+# designed, next wave); REGEN's with the first heal item/ability.
 STATUS_REGISTRY: tuple[StatusKindDef, ...] = (
     StatusKindDef(KNOCKED_DOWN, "knocked_down", STACK_REFRESH,
                   can_move=False, can_act=False, is_prone=True),

@@ -540,13 +540,28 @@ melee_damage = 60
 trigger_radius = 48
 propagation_radius = 15
 bullet_damage_multiplier = 0.25
-# fire_damage_multiplier is DISSOLVED into the zombie's mitigation table
-# (species.ZOMBIE_MITIGATION: resist_mult[HEAT] = 4.0 — mechanics/06 §2) and
-# the sim no longer reads it. The key remains ONLY because two heat tests
-# (test_unit_heat_damage / test_fire_heat_source) read it as the expected
-# zombie/marine damage-ratio constant; editing it here changes NOTHING
-# in-game — change species.ZOMBIE_MITIGATION instead.
+# fire_damage_multiplier: the zombie's HEAT vulnerability — since P5 this key
+# IS the live source of resist_mult[HEAT] on the zombie mitigation table
+# (species.ZOMBIE_MITIGATION, mechanics/06 §2: "a vulnerability is just a
+# resistance above 1"). 4.0 = a zombie takes 4x a marine's heat/burn damage
+# (feel: fire is THE zombie answer; lower it and flamethrowers stop being a
+# crowd solution). STANDARD VALUE placeholder for Erik's tuning (mechanics/06
+# §8). Interesting range: 1.0 (no vulnerability) .. 8.0 (tinder). Read ONCE at
+# species-table import -> RESTART to apply, not Ctrl+R (the PhysicsRunner
+# construction-bind precedent, engine/12 §5). The two heat tests
+# (test_unit_heat_damage / test_fire_heat_source) read the same key as the
+# expected zombie/marine damage ratio, so sim + tests move together.
 fire_damage_multiplier = 4.0
+# stability: knockdown susceptibility (mechanics/06 §4) — a blast knocks a
+# unit down when its per-tick |dv| >= knockdown_dv_threshold * stability, so
+# LOWER = topples easier. 0.9 = shamblers go down slightly easier than a
+# braced marine (feel: the outer blast ring bowls the horde over while the
+# marines stagger). The ONE non-physical knockdown knob (mass/footprint are
+# Newtonian; resist tables mitigate damage only). STANDARD VALUE placeholder
+# (mechanics/06 §8). Interesting range: ~0.5 (bowling pins) .. 1.5 (rooted).
+# Q16.16-snapped at species-table import (door 2) -> RESTART to apply, not
+# Ctrl+R. The marine baseline (1.0) lives on EnvironmentProfile.stability.
+stability = 0.9
 attack_cooldown_seconds = 1.0      # 1.0 s -> 12 ticks @ 12 tps
 
 [marine]
@@ -636,10 +651,30 @@ environmental_damage_rate = 1.0  # global fallback env-damage rate (per unit/sec
 #     +-0.2 tile, max forward excursion ~0.2-0.4 tile at k_push=400). A
 #     SUSTAINED 1-tile-class throw would need the atmosphere-dome (blast
 #     wind) term — a separate coupling row, Erik's design call, not in v1.
+#
+# HOT-RELOAD: all four apply LIVE via Ctrl+R — apply_wave_push reads
+# CFG.exchange every tick, and config.py re-derives knockdown_getup_ticks
+# from the seconds on every reload. Edit -> Ctrl+R -> re-throw, no restart.
 [exchange]
+# k_push — how hard shockwaves shove bodies. Feel: at 400 a grenade buffets
+# marines 0.3-0.5 tile; the same dial scales the knockdown dv, so raising it
+# WIDENS the knockdown ring too. Interesting range ~100 (a nudge you barely
+# see) .. 2000 (ragdoll cannon: everything near a blast hits the cap and
+# goes down).
 k_push = 400.0                   # impulse gain: dv = k_push * grad / mass (tiles/s per unit gradient)
+# push_max_tile_per_tick — motion sanity rail, NOT the knockdown gate (the
+# trigger uses the uncapped dv). Feel: the max per-tick hop a violent
+# gradient can produce. Interesting range 0.1 (stiff) .. 1.0 (teleporty at
+# point blank); above ~1 a hop can visually skip a tile.
 push_max_tile_per_tick = 0.5     # sanity cap on the per-tick displacement (tiles)
+# knockdown_dv_threshold — the topple gate at stability 1.0. Feel: LOWER =
+# blasts floor people farther out (at 6.0 a grenade's knockdown ring is
+# ~9-10 tiles, ~2x its damage ring). Interesting range ~3 (twitchy — any
+# passing wave floors you) .. 12 (stoic — only point-blank blasts topple).
 knockdown_dv_threshold = 6.0     # |dv| (tiles/s) at stability 1.0 that triggers KNOCKED_DOWN
+# knockdown_getup_seconds — prone time (no move/act, sprite sideways). Feel:
+# the crowd-control payoff window after a good grenade. Interesting range
+# 0.5 (a stumble) .. 4.0 (a real opening). Re-knocks refresh the timer.
 knockdown_getup_seconds = 1.5    # prone time; config.py derives knockdown_getup_ticks (36 @ 24 tps)
 
 [recorder]
