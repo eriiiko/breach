@@ -37,9 +37,9 @@ from simulation import unit_fixed  # noqa: E402
 from simulation.damage import ASPHYX, HEAL, HEAT, POISON  # noqa: E402
 from simulation.events import UnitHitEvent, UnitKilledEvent  # noqa: E402
 from simulation.status import (  # noqa: E402
-    BURNING, IMMOBILIZED, KNOCKED_DOWN, N_STATUS_KINDS, PARALYZED, POISONED,
-    REGEN, STACK_MAX, STACK_REFRESH, STACK_STACK, STATUS_REGISTRY, STUNNED,
-    SUFFOCATING, ComposedFlags, apply_status, composed_flags,
+    BLINDED, BURNING, IMMOBILIZED, KNOCKED_DOWN, N_STATUS_KINDS, PARALYZED,
+    POISONED, REGEN, STACK_MAX, STACK_REFRESH, STACK_STACK, STATUS_REGISTRY,
+    STUNNED, SUFFOCATING, ComposedFlags, apply_status, composed_flags,
     serialize_statuses, tick_statuses,
 )
 from simulation.unit import LifeState, Unit  # noqa: E402
@@ -58,7 +58,7 @@ def _zombie(name="Z", x=6, y=6):
 # ---------------------------------------------------------------------------
 def test_registry_kinds_distinct_table_ordered_and_complete():
     kinds = (KNOCKED_DOWN, IMMOBILIZED, STUNNED, PARALYZED,
-             BURNING, POISONED, SUFFOCATING, REGEN)
+             BURNING, POISONED, SUFFOCATING, REGEN, BLINDED)
     assert len(set(kinds)) == len(kinds) == N_STATUS_KINDS
     assert sorted(kinds) == list(range(N_STATUS_KINDS))
     assert len(STATUS_REGISTRY) == N_STATUS_KINDS
