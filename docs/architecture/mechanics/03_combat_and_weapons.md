@@ -260,12 +260,47 @@ byte-for-byte (replica-proven).
   - **Determinism:** the spray draws NO randomness anywhere — cone, aim,
     and falloff are kit/integer arithmetic, so a spray-free trajectory is
     bit-identical to pre-W4 (the dormancy replica gate).
-- **MELEE.** Adjacency + the §3 resolver (to-hit vs exposure is trivially 1.0
-  without cover; crit arcs do the work). Packets as usual; statuses at the
-  site (arc baton → STUNNED); a shove impulse reusing the P4 `Δv = J/mass`
-  push machinery is a natural v1.5. Zombie melee stays on its shipped
-  `ai_zombie` path for now; migrating NPC attacks onto weapon rows is future
-  work (§8) — the framework is team-agnostic by construction.
+- **MELEE** *(built by W5 — this bullet is the implementation of record).*
+  Adjacency + the §3 resolver (`combat.py`: `melee_adjacent` /
+  `melee_strike`, the melee branch of the `process_shooting` dispatch).
+  The resolver collapses exactly as designed: **to-hit is trivially 1.0**
+  — a strike happens at touching footprints, so there is no intervening
+  tile to be cover and no march to absorb; the exposure roll does not
+  EXIST on this path (never drawn — the lazy-roll rule, not an
+  always-passing roll). The crit-vs-facing roll does the interesting work
+  (the knife's 0.15 × the behind-arc ×4 = the assassin fantasy), drawn
+  lazily through the same `attack_resolver` seams as bullets — a crit-0
+  melee weapon (the baton) consumes ZERO randomness while swinging.
+  - **The adjacency predicate (of record):** two units are melee-adjacent
+    iff some occupied tile of one is within **Chebyshev distance 1** of
+    some occupied tile of the other — 8-connected footprint contact: edge
+    contact AND diagonal corner contact count, overlap counts trivially.
+    Exact for any footprint shape (pairwise `occupied_tiles()`, not a
+    bounding box). Deliberately NO `has_los` term: touching footprints
+    have no tile between them to occlude (so diagonal corner contact
+    across a wall corner CAN stab — accepted v1). Pure integer door-1
+    arithmetic, paid per trigger attempt only.
+  - **Trigger flow:** the fire order names a TILE (the shipped shape);
+    the target is the first living enemy in stored unit order occupying
+    it. Adjacency replaces the ranged range/LOS gates; the spread cone is
+    meaningless on a blade (no cone draw, ever). A connecting strike
+    charges the rof cadence (and the mag machinery — a no-op at the rows'
+    mag 0); a **whiff charges nothing** and retries next tick while the
+    order stands. Facing snaps to the strike bearing (the fire_burst
+    rule). Auto-fire SKIPS melee (v1: an explicit order names the target
+    tile; stab-on-contact Move & Attack is a §8 revisit).
+  - **Packets stay damage-only; statuses at the delivery site:** the
+    strike applies its `DamagePacket` (`melee_damage`/`melee_dtype` —
+    weapon-row columns, melee feeds on no ammo) through the pipeline,
+    then applies the row's `status_kind` (arc baton → STUNNED 1.5 s)
+    SEPARATELY via `apply_status` — the W3 teargas→BLINDED pattern; the
+    packet type has no status field to smuggle CC through. A killing
+    blow applies no status (corpses don't get stunned). No zombie
+    `bullet_damage_multiplier` — that is the BULLET site rule.
+  - A shove impulse reusing the P4 `Δv = J/mass` push machinery is a
+    natural v1.5. Zombie melee stays on its shipped `ai_zombie` path
+    (regression-locked); migrating NPC attacks onto weapon rows is future
+    work (§8) — the framework is team-agnostic by construction.
 
 **Doors mapping (engine/14).** Weapon/ammo/payload numbers: door 2 (quantized
 once where they feed synced state). Spread/exposure/crit rolls: door 4 (raw
@@ -352,8 +387,8 @@ KINETIC packets through the mechanics/06 pipeline.
 | **W1** | weapon/ammo/payload tables + loaders; re-home rifle→`k5_carbine`, grenade→`hand_grenade`+`frag_standard`, charge→`breach_charge`+`breach_focus`; `unit.weapon_id` | ✅ **SHIPPED** `2abf7dc` (2026-07-05): 521 green, golden `07c3f370…` byte-identical |
 | **W2** | unified march (speed as data, in-flight persistence); spread aim/snap; §3 exposure/cover (+`cover_exposure` materials column) + crit/facing resolver; **Lance-3 laser** (skewer, wall-chew, integer gas attenuation, beam event) | ✅ **SHIPPED** `bbfb26a` (2026-07-05): 559 green (+55 W2 tests), golden `07c3f370…` **UNCHANGED** — the canonical scenario fires no weapon and every W2 roll is lazy, so stream and fields never move (findings below). Beam **glow-as-light deferred** to the explosion-light pass (`LaserFiredEvent` ships; the raycaster hookup lands with transient light sources) |
 | **W3** | payload executor generalizing the explosion triple; gas payloads (smoke/tear/poison) + coupling rows (teargas→aim status, poison→DoT); GL-6 + 40 mm ammo; C4; ammo economy (mags/reload) | ✅ **SHIPPED** (2026-07-05): 587 green (+28 W3 tests), golden `07c3f370…` **UNCHANGED** — W3 adds **no RNG consumers anywhere** (the gas deposit is deliberately noise-free, the coupling rows are threshold-deterministic and take no generator, launcher/C4 reuse existing draw sites) and every new path is dormant in the canonical scenario. Byte-identity replica gates: frag+breach detonations AND a full scripted shipped-weapons round vs the verbatim pre-W3 site body (fields + events + RNG end-state). Findings below |
-| **W4** | SPRAY: Dragon-7 + Miasma Vent (aimed sustained FieldEdit cones) | ⏳ **BUILT on branch `weapons-w4-spray`, awaiting Erik's feel-check** (2026-07-07): 588 green (+15 W4 tests), golden `07c3f370…` **UNCHANGED** (W4 draws zero RNG by construction — kit/integer cone, deterministic falloff); Erik's loop: `[marine] weapon = "dragon_7"` → restart → `main.py --level playground` → hose a room. Findings below |
-| **W5** | MELEE: knife + arc baton through the resolver; STUNNED wiring | suite green |
+| **W4** | SPRAY: Dragon-7 + Miasma Vent (aimed sustained FieldEdit cones) | ✅ **SHIPPED** (merged `5594650`, 2026-07-07): 588 green (+15 W4 tests), golden `07c3f370…` **UNCHANGED** (W4 draws zero RNG by construction — kit/integer cone, deterministic falloff). Findings below |
+| **W5** | MELEE: knife + arc baton through the resolver; STUNNED wiring | ✅ **BUILT on branch `weapons-w5-melee`** (2026-07-07): 606 green (+17 W5 tests), golden `07c3f370…` **UNCHANGED** (the fifth patch running: melee is a dead branch in a melee-free scenario and a crit-0 melee weapon draws nothing even while swinging). Findings below |
 | **W6** | armory playground room + weapon-cycle debug key + full standard-values audit | **HUMAN-TEST** — Erik's tuning session |
 
 **W1 findings of record** (carry into later patches):
@@ -442,8 +477,7 @@ KINETIC packets through the mechanics/06 pipeline.
   `has_explosive` stay the single count pools; orders carry `ammo_name`,
   `None` = the shipped defaults).
 
-**W4 findings of record** (BUILT, awaiting Erik's feel-check — carry into
-later patches):
+**W4 findings of record** (carry into later patches):
 
 - **The golden did not move at W4 either** — the fourth patch running: W4
   is RNG-free BY CONSTRUCTION (no spread on a cone weapon; membership,
@@ -480,6 +514,43 @@ later patches):
   reads the CONSEQUENCES (ignition, fire glow, gas overlays, the T debug
   overlay). A flame-jet visual is a natural W6/renderer item if Erik wants
   the hose itself visible.
+
+**W5 findings of record** (carry into later patches):
+
+- **The golden did not move at W5 either** — the fifth patch running, and
+  the strongest form yet: not only is melee dormant in a melee-free
+  scenario (a dead archetype branch; the dormancy replica pins
+  bit-identity against a sentinel-patched pre-W5 dispatch), but a crit-0
+  melee weapon draws NOTHING even while actively swinging (the e2e
+  chain-stun test runs a whole fight on an untouched RNG stream). The
+  only melee RNG consumer is the knife's lazy crit draw — exactly one
+  door-4 uniform per connecting strike.
+- **The adjacency predicate is Chebyshev-1 footprint contact** (§5, of
+  record): 8-connected, diagonal corners count, exact for any footprint
+  via pairwise `occupied_tiles()`. It deliberately differs from the
+  zombie bite's shipped center-distance rule (`footprint + 1` Euclidean)
+  — two predicates, two paths, both pinned; they unify if/when zombie
+  melee migrates onto weapon rows (§7).
+- **Melee damage lives on the weapon row** (`melee_damage` /
+  `melee_dtype` + the `status_kind`/`status_seconds` delivery-site
+  columns): melee feeds on no ammo (`ammo_family = "none"`), so the
+  packet numbers had nowhere else to live. Load-time validation is loud:
+  a melee row must author damage + dtype; a status needs a positive
+  duration; names resolve against the mechanics/06 registries.
+- **No `bullet_damage_multiplier` on melee** — the site rule stays a
+  bullet-path artifact (mechanics/06): the knife hits a zombie for its
+  plain mitigated 35, pinned in the gate. Erik's tuning session (W6) is
+  where knife-vs-horde balance gets its pass.
+- **A killing blow applies no status** — corpses don't get stunned:
+  statuses freeze on corpses (mechanics/06 §4), so a corpse status would
+  be dead weight in the `__unit_status__` digest surface forever.
+- **Chain-stun is real** (e2e-pinned): the tick order (statuses →
+  shooting → zombie AI) means a baton strike stuns an adjacent zombie
+  BEFORE its bite that same tick, and the 19-tick cadence re-stuns
+  inside every 36-tick window — one marine with a stick can hold one
+  zombie indefinitely (and takes 10 hp/strike off it). Whether that is a
+  feature or a tuning problem is Erik's W6 call (`status_seconds` vs
+  `rof_interval_seconds` is the dial).
 
 **Not built / explicitly owed:** everything in §7; heat-damage tuning vs the
 armory numbers; the exposure/crit numbers are standard values pending Erik's

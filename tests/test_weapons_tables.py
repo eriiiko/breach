@@ -197,7 +197,11 @@ def test_weapon_family_without_ammo_rejected():
 
 
 def test_ammo_family_none_needs_no_ammo():
-    t = _build({"knife": {"archetype": "melee", "ammo_family": "none"}}, {}, {})
+    # W5: the melee archetype is LIVE — a melee row must now author its
+    # strike packet (melee_damage/melee_dtype), loud at load otherwise.
+    t = _build({"knife": {"archetype": "melee", "ammo_family": "none",
+                          "melee_damage": 35, "melee_dtype": "kinetic"}},
+               {}, {})
     assert t.weapons.by_name["knife"].ammo_family == "none"
 
 
@@ -275,10 +279,12 @@ def test_ammo_for_weapon_resolution():
     assert t.ammo_for_weapon("k5_carbine").name == "rifle_556_standard"
     assert t.ammo_for_weapon("lance_3").name == "cell_laser_standard"
     with pytest.raises(KeyError, match="none"):
-        # A melee row feeds on nothing.
+        # A melee row feeds on nothing (W5: live melee rows author their
+        # strike packet — the load-time validation).
         melee = WeaponsTables(
-            {"knife": {"archetype": "melee", "ammo_family": "none"}}, {}, {},
-            24)
+            {"knife": {"archetype": "melee", "ammo_family": "none",
+                       "melee_damage": 35, "melee_dtype": "kinetic"}},
+            {}, {}, 24)
         melee.ammo_for_weapon("knife")
 
 

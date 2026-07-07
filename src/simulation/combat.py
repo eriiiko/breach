@@ -58,7 +58,7 @@ from simulation import unit_fixed
 # simulation.combat.execute_payload (the apply_environmental_damage pattern).
 from simulation.physics import apply_explosion, add_explosion_smoke  # noqa: F401
 from simulation.payloads import execute_payload
-from simulation.status import composed_flags
+from simulation.status import apply_status, composed_flags
 # The two shipped coupling responses live in simulation.exchange now
 # (mechanics/05 coupling table, P1). Re-imported for compatibility — legacy
 # imports (`from simulation.combat import apply_environmental_damage, ...`)
@@ -564,8 +564,9 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
     ARCHETYPE — ``projectile`` → :func:`fire_burst`, ``hitscan`` →
     :func:`fire_beam`, ``spray`` → :func:`start_spray_burst` (W4 — the
     burst's per-tick deposits ride :func:`process_sprays` in the same
-    shooting slot; other archetypes have no trigger path here:
-    LOBBED/PLACED ride their order flows, MELEE is W5). The
+    shooting slot), ``melee`` → :func:`melee_strike` (W5 — adjacency
+    replaces the range/LOS gates; the remaining archetypes have no
+    trigger path here: LOBBED/PLACED ride their order flows). The
     deterministic SPREAD MODE RULE (mechanics/03 §3): an explicit stationary
     fire order aims — ``spread_deg``; Move & Attack auto-fire snaps —
     ``spread_snap_deg``. No per-unit aim state.
@@ -640,6 +641,22 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
 
         target_fx = fire_order.target_fx
         target_fy = fire_order.target_fy
+
+        # MELEE branch of the archetype dispatch (W5, mechanics/03 §5):
+        # ADJACENCY REPLACES the range/LOS gates below (touching footprints
+        # have no tile between them — the center-distance range check and
+        # the ray test are the RANGED marchers' geometry) and the spread
+        # cone is meaningless on a blade — no cone draw, ever. A connecting
+        # strike charges the rof cadence (and the mag machinery — a no-op
+        # at mag_size 0, both shipped rows); a whiff charges NOTHING and
+        # retries next tick while the order stands.
+        if weapon.archetype == "melee":
+            if melee_strike(units, u, target_fx, target_fy, rng, events,
+                            weapon):
+                mag_spend(u, weapon, tick)
+                u.last_fire_tick = tick
+            continue
+
         uc_fx = u.center_tile_x()
         uc_fy = u.center_tile_y()
 
@@ -709,7 +726,11 @@ def auto_fire(gmap, units, u, tick, shots, real_time, rng, events=None,
     # is an explicit stationary commitment, not fire-on-the-move. Bail
     # BEFORE any state is touched (cadence read, mag bind) so a spray-armed
     # unit on Move & Attack is bit-identical to one with no trigger at all.
-    if weapon.archetype == "spray":
+    # MELEE joins the skip (W5 v1 rule): a strike takes an explicit order
+    # naming the target tile — auto-fire's nearest-visible-enemy pick plus
+    # _dispatch_trigger's marcher shape don't describe a blade; revisit if
+    # Move & Attack should stab-on-contact (mechanics/03 §8).
+    if weapon.archetype in ("spray", "melee"):
         return
     if tick - u.last_fire_tick < weapon.rof_interval_ticks:
         return
@@ -1170,6 +1191,133 @@ def process_sprays(gmap, units, queue):
         if u.spray_ticks_left <= 0:
             u.spray_order = None
             u.spray_target = None
+
+
+# ---------------------------------------------------------------------------
+# MELEE (mechanics/03 §1/§5, W5): adjacency + the §3 resolver. The knife and
+# the arc baton — the last live archetype branch of the closed set.
+#
+# The resolver collapses for melee exactly as the chapter says: TO-HIT IS
+# TRIVIALLY 1.0 — a strike happens at touching footprints, so there is no
+# intervening tile to be cover and no march to absorb; the exposure roll
+# does not exist on this path (NOT "always passes": it is NEVER DRAWN — the
+# lazy-roll rule). What remains is the crit-vs-facing roll (the knife's
+# assassin fantasy: crit_chance 0.15 x the behind-arc x4) — the SAME
+# attack_resolver seams the bullet march uses, drawn LAZILY (crit_chance 0,
+# the baton, draws nothing).
+#
+# Statuses are applied AT THE DELIVERY SITE (the §1 two-terminals wording:
+# "a baton applies STUNNED where it connects; packets themselves stay
+# damage-only"): melee_strike applies the packet through apply_packet and
+# THEN applies the weapon row's status_kind separately through
+# simulation.status.apply_status — the W3 TEARGAS->BLINDED pattern (the
+# coupling row applies BLINDED at the exposure site; the DamagePacket type
+# has no status field to smuggle one through). A strike that KILLS applies
+# no status — corpses don't get stunned (statuses freeze on corpses,
+# mechanics/06 §4, so a corpse status would be dead digest weight).
+#
+# Zombie melee is NOT this path: ai_zombie.py keeps its shipped bite
+# (center-distance threshold + CFG.zombie.melee_damage + the converting
+# kill) untouched; migrating NPC attacks onto weapon rows is future work
+# (mechanics/03 §7).
+# ---------------------------------------------------------------------------
+def melee_adjacent(attacker, target):
+    """THE ADJACENCY PREDICATE (of record, W5): two units are melee-adjacent
+    iff SOME occupied tile of one is within CHEBYSHEV DISTANCE 1 of SOME
+    occupied tile of the other — 8-connected footprint contact: edge contact
+    AND diagonal corner contact both count, and overlapping footprints
+    (distance 0) count trivially.
+
+    Exact for ANY footprint shape (it walks ``occupied_tiles()`` pairwise —
+    the spec §6 occupancy interface — not a bounding box), so a future
+    non-square rig gets the right answer for free; for today's square
+    footprints it equals "the two anchor rectangles, one dilated by 1,
+    intersect". Cost is bounded by the footprints (3x3 vs 3x3 = 81 integer
+    compares) and only paid per trigger attempt, never per tick.
+
+    Pure integer arithmetic on synced tile state (door 1); consumes nothing.
+    Deliberately NO ``has_los`` term: touching footprints have no tile
+    between them to occlude (diagonal corner contact across a wall corner
+    therefore CAN stab — accepted v1, documented in mechanics/03 §5).
+    """
+    a_tiles = attacker.occupied_tiles()
+    for (tx, ty) in target.occupied_tiles():
+        for (ax, ay) in a_tiles:
+            if -1 <= ax - tx <= 1 and -1 <= ay - ty <= 1:
+                return True
+    return False
+
+
+def melee_strike(units, attacker, target_fx, target_fy, rng, events, weapon):
+    """Resolve one melee trigger pull (mechanics/03 §5, W5). Returns True if
+    a strike CONNECTED (the caller then charges the rof cadence); False = a
+    whiff — no target at the order tile / not adjacent — which costs
+    nothing and is retried next tick while the order stands.
+
+    Target resolution: the FIRST living enemy in stored unit order whose
+    footprint occupies the order's target tile (``int()`` tiling, the march
+    convention) — deterministic, and the order names a TILE, not a unit
+    (the shipped fire-order shape; a moved target whiffs honestly).
+
+    The resolved strike, in fixed order (all inputs synced, engine/14):
+
+    1. facing snaps to the strike bearing (the fire_burst rule — kit atan2,
+       unit y-up convention), from attacker centre to TARGET centre;
+    2. amount = ``weapon.melee_damage`` (door-2 row int). No zombie
+       ``bullet_damage_multiplier`` — that is the BULLET site rule
+       (mechanics/06: a shipped-numbers artifact of the rifle path, not a
+       resistance; melee packets take plain mitigation);
+    3. the crit roll (LAZY: only if ``crit_chance > 0``): arc multiplier
+       off the target's synced facing vs the strike angle (screen
+       convention — the BulletInFlight.advance shape), one door-4 uniform,
+       amount scales by ``crit_mult`` in exact ints on success;
+    4. the packet through the pipeline (``apply_packet``, source="melee";
+       ``mark_killed_by_zombie`` stays False — player melee kills never
+       convert, conversion is the ZOMBIE bite's semantics);
+    5. the delivery-site status (``weapon.status_kind``, if any) on a
+       target still alive: ``apply_status`` with the row's derived
+       ``status_ticks`` (magnitude 0 — pure CC; the packet already carried
+       the damage). Applied AFTER the packet so "the baton stuns where it
+       connects" and a killing blow stuns no corpse.
+    """
+    tx, ty = int(target_fx), int(target_fy)
+    target = None
+    for e in units:
+        if e is attacker or not e.alive or e.team == attacker.team:
+            continue
+        if e.occupies((tx, ty)):
+            target = e
+            break
+    if target is None:
+        return False
+    if not melee_adjacent(attacker, target):
+        return False
+
+    fx1, fy1 = attacker.center_tile_x(), attacker.center_tile_y()
+    fx2, fy2 = target.center_tile_x(), target.center_tile_y()
+    # Facing = strike bearing (kit trig, unit y-up convention — the
+    # fire_burst rule); the strike angle itself stays in SCREEN convention
+    # for the arc classifier (the march-angle contract of arc_multiplier).
+    attacker.facing = unit_fixed.atan2_rad(-(fy2 - fy1), fx2 - fx1)
+    angle = unit_fixed.atan2_rad(fy2 - fy1, fx2 - fx1)
+
+    amount = int(weapon.melee_damage)
+    crit_chance = float(weapon.crit_chance)
+    if crit_chance > 0.0:
+        mult = attack_resolver.arc_multiplier(angle, target)
+        if attack_resolver.roll_crit(crit_chance, mult, rng):
+            amount = attack_resolver.scale_half_away(amount, weapon.crit_mult)
+
+    apply_packet(target,
+                 DamagePacket(amount=amount, dtype=weapon.melee_dtype_id,
+                              source_id=getattr(attacker, "id", -1)),
+                 events, source="melee")
+
+    if weapon.status_kind_id is not None and target.alive:
+        apply_status(target, weapon.status_kind_id, magnitude=0,
+                     duration_ticks=weapon.status_ticks,
+                     source_id=getattr(attacker, "id", -1))
+    return True
 
 
 # ---------------------------------------------------------------------------
