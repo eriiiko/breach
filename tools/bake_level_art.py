@@ -481,13 +481,15 @@ def _upsert_block(out: list, nl: str, header: str, assignments) -> None:
 
 
 def write_bake_blocks(toml_path, *, tileset_rel: str, px_per_tile: int,
-                      seed: int) -> Path:
+                      seed: int, write_bak: bool = True):
     """Rewrite the [art.bare] + [art.align] + [bake] blocks of ``toml_path``.
 
     Every other byte of the file is preserved; the original bytes go to
-    ``<toml_path>.bak`` first (one .bak per call). [art.align] is written in
-    save_align's canonical formatting (offset 1 decimal, px_per_tile as the
-    2-decimal per-axis pair). Returns the .bak path.
+    ``<toml_path>.bak`` first (one .bak per call — pass ``write_bak=False``
+    when a caller such as the map editor's SAVE already owns the session's
+    .bak). [art.align] is written in save_align's canonical formatting
+    (offset 1 decimal, px_per_tile as the 2-decimal per-axis pair). Returns
+    the .bak path, or None when ``write_bak`` is False.
     """
     toml_path = Path(toml_path)
     original = toml_path.read_bytes()
@@ -510,8 +512,10 @@ def write_bake_blocks(toml_path, *, tileset_rel: str, px_per_tile: int,
         ("seed", f"seed = {int(seed)}"),
     ])
 
-    bak = Path(str(toml_path) + ".bak")
-    bak.write_bytes(original)
+    bak = None
+    if write_bak:
+        bak = Path(str(toml_path) + ".bak")
+        bak.write_bytes(original)
     toml_path.write_bytes("".join(out).encode("utf-8"))
     return bak
 
@@ -520,13 +524,16 @@ def write_bake_blocks(toml_path, *, tileset_rel: str, px_per_tile: int,
 # Level bake — the CLI / procgen entry point
 # ---------------------------------------------------------------------------
 
-def bake_level(level_dir, tileset=None, px_per_tile=None, seed=None) -> dict:
+def bake_level(level_dir, tileset=None, px_per_tile=None, seed=None, *,
+               write_bak: bool = True) -> dict:
     """Full bake of one level folder + level.toml writeback.
 
     ``None`` parameters fall back to the level's existing ``[bake]`` values,
     then to the chapter defaults (greybox, 64 px/tile, seed 0) — a bare
-    ``bake_level(dir)`` re-bakes a tiled level exactly as recorded. Returns a
-    summary dict (paths + the resolved bake parameters).
+    ``bake_level(dir)`` re-bakes a tiled level exactly as recorded.
+    ``write_bak`` is passed through to :func:`write_bake_blocks` (the map
+    editor's SAVE keeps its own once-per-session .bak). Returns a summary
+    dict (paths + the resolved bake parameters).
     """
     level_dir = Path(level_dir)
     toml_path = level_dir / "level.toml"
@@ -578,7 +585,8 @@ def bake_level(level_dir, tileset=None, px_per_tile=None, seed=None) -> dict:
     except ValueError:
         tileset_rel = Path(tileset_arg).as_posix()
     toml_bak = write_bake_blocks(toml_path, tileset_rel=tileset_rel,
-                                 px_per_tile=px, seed=seed)
+                                 px_per_tile=px, seed=seed,
+                                 write_bak=write_bak)
     return {
         "diffuse": diffuse_path,
         "normal": normal_path,
