@@ -512,10 +512,23 @@ track**, not a replacement for that line — but it should *lean on the physics*
    optional**. Confirm you accept ONE extra advected float field with the **iron rule that it never feeds
    gameplay** (so the no-air-temperature foundation stays intact). (a)-alone gives fireball-on/off, no cooling
    plume.
+   **→ STATUS 2026-07-05: deliberately deferred** pending the EOS research pass (`docs/eos_research_brief.md`,
+   roadmap Phase 1). If the ideal-gas reframe (§0) is adopted, (b) is moot — the real gas `T` carries the warmth
+   and feeds the same LUT. (b) remains the fallback spine if the EOS is deferred or rejected.
 
 2. **Soot re-emits LIGHT yes (free; realises "explosions as light sources"); re-emits HEAT no in v1** (avoids a
    runaway feedback loop on the determinism-critical heat channel). Agree to defer soot-reheats-soot behind the
    heat bit-identity gate.
+   **→ DECIDED 2026-07-05 (Erik — independently re-derived twice, then confirmed):** heat is a strict one-way
+   channel. Gas/soot **absorbs** heat (into its glow state) and **never re-radiates** it; heat ray-sources remain
+   combustion/weapon events only. A third independent rationale joined the two above: the **ray budget** — heat
+   only acts through rays, so every-hot-tile-as-heat-source would cost O(plume area) ray casts vs O(burning
+   tiles) with absorb-only. Light is unaffected because it is two-tier: per-tile in-march glow is ray-free
+   (the whole plume glows for ~3 MADs/tile), and only the brightest-K tiles are promoted to actual ray-casting
+   `LightSource`s. Honesty note: real soot *does* re-radiate (Kirchhoff — firestorm preheating); we deliberately
+   drop that effect since fire spread already has its own radiation mechanism and re-radiation would double-dip.
+   The escape hatch (fixed-point proxy gated behind the heat bit-identity test, now proven via `cuda-breached`)
+   stands if it is ever wanted.
 
 3. **The expansion→pressure tap** (burning/detonating tile injects positive `wave_p`/atmosphere → the fireball
    self-pushes/billows). It is the difference between "glows in place" and "pops outward", and it has precedent
