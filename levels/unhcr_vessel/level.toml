@@ -75,3 +75,44 @@ name = "Zomb4"
 team = 1
 x = 25
 y = 16
+
+# ---------------------------------------------------------------------------
+# Emergency lighting (P4): the five red ship lamps formerly hardcoded in
+# main.py — positions verbatim from that block. Render-only [[light]]
+# entities (engine/15 §2.2); color 0-255 ints = (1.0, 0.1, 0.05) * 255.
+# ---------------------------------------------------------------------------
+
+[[light]]
+pos = [25, 10]
+color = [255, 26, 13]
+intensity = 0.9
+range = 18.0
+kind = "static"
+
+[[light]]
+pos = [25, 30]
+color = [255, 26, 13]
+intensity = 0.9
+range = 18.0
+kind = "static"
+
+[[light]]
+pos = [25, 55]
+color = [255, 26, 13]
+intensity = 0.9
+range = 18.0
+kind = "static"
+
+[[light]]
+pos = [25, 88]
+color = [255, 26, 13]
+intensity = 0.9
+range = 18.0
+kind = "static"
+
+[[light]]
+pos = [25, 110]
+color = [255, 26, 13]
+intensity = 0.9
+range = 18.0
+kind = "static"

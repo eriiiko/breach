@@ -27,7 +27,7 @@ Controls (HUD shows the active mode's line):
 
   Any mode:
     TAB / Shift+TAB      - cycle mode PAINT -> ROOM -> CORRIDOR -> DOOR ->
-                           SPAWN; F1..F5 jump straight to a mode
+                           SPAWN -> LIGHT; F1..F6 jump straight to a mode
     0-8, 9               - select material (palette GENERATED from
                            MATERIAL_NAMES at launch — key = material id;
                            9 = SPACE; ids past 8 are eyedropper-only)
@@ -36,11 +36,13 @@ Controls (HUD shows the active mode's line):
     G                    - toggle grid lines
     Mouse wheel          - zoom (around cursor)
     Middle-drag / WASD   - pan (arrows pan too)
-    Ctrl+Z               - undo (tile ring everywhere; SPAWN mode pops the
-                           spawn ring instead — separate rings, see below)
-    Ctrl+S               - SAVE: tilemap.csv + [[spawn]] writeback +
-                           [art]/[bake] blocks (all .bak once per session)
-                           + full bake at the recorded px_per_tile
+    Ctrl+Z               - undo (tile ring everywhere; SPAWN / LIGHT modes
+                           pop their own rings instead — separate rings,
+                           see below)
+    Ctrl+S               - SAVE: tilemap.csv + [[spawn]] + [[light]]
+                           writeback + [art]/[bake] blocks (all .bak once
+                           per session) + full bake at the recorded
+                           px_per_tile
     Esc                  - quit (pressed twice if there are unsaved edits)
 
   PAINT:
@@ -64,22 +66,40 @@ Controls (HUD shows the active mode's line):
                            marker; RMB deletes; T toggles the team of the
                            hovered marker (or, off-marker, the placement
                            team); markers draw as team-coloured circles
+  LIGHT:  LMB            - place a [[light]] (tile-center snapped) or drag
+                           an existing marker; RMB deletes; B toggles
+                           static <-> beacon (hovered marker, else the
+                           placement kind); C / Shift+C cycles the colour
+                           preset (hovered, else placement); on the hovered
+                           light, R range, E intensity, and — beacons only —
+                           P period, X beam width, H phase (Shift = down).
+                           Markers: colour dot + range ring; beacons sweep
+                           a beam wedge on the EDITOR's clock (the editor
+                           is not the sim — in-game the angle is a pure
+                           function of the sim tick, src/level_lights.py)
 
 Undo rings (reported design call): tile mutations (PAINT/ROOM/CORRIDOR/DOOR)
-share ONE UndoRing of grid snapshots; spawn edits live in their own ring —
-Ctrl+Z pops the spawn ring only while in SPAWN mode. Mixing both into one
-ring would make Ctrl+Z in PAINT silently rewind spawn work (and vice versa).
+share ONE UndoRing of grid snapshots; spawn and light edits live in their
+own rings — Ctrl+Z pops the spawn/light ring only while in that mode. Mixing
+them into one ring would make Ctrl+Z in PAINT silently rewind spawn/light
+work (and vice versa).
 
-Spawn writeback (reported design call): the `[[spawn]]` array-of-tables is a
-MANAGED BLOCK — on save every existing [[spawn]] table is removed and the
-editor's list is written back at the position of the first one (or EOF),
-name/team/x/y/footprint per entry. Every byte OUTSIDE the spawn tables is
-preserved (comments inside individual spawn tables are not). level.toml gets
-ONE .bak per session, carrying the pre-session bytes.
+Spawn/light writeback (reported design call): the `[[spawn]]` and `[[light]]`
+arrays-of-tables are MANAGED BLOCKS — on save every existing table is removed
+and the editor's list is written back at the position of the first one (or
+EOF). Every byte OUTSIDE the managed tables is preserved (comments inside
+individual tables are not). level.toml gets ONE .bak per session, carrying
+the pre-session bytes (the spawn writeback owns it; the light writeback runs
+after it with write_bak=False).
+
+Scope limitation on record (P4): the editor refuses levels without a [bake]
+block, so the vessel/playground lamp [[light]] entries are loader-consumed
+but hand-edited — LIGHT mode authors tiled-path levels only.
 """
 from __future__ import annotations
 
 import argparse
+import math
 import re
 import shutil
 import sys
@@ -98,7 +118,8 @@ import pyray as rl
 from pyray import ffi
 
 import level_loader
-from level_loader import SPACE_CODE, SpawnEntry
+from level_loader import SPACE_CODE, LightEntry, SpawnEntry
+from level_lights import beacon_angle
 from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_HULL,
                                   MATERIAL_NAMES)
 from bake_level_art import (BIT_E, BIT_N, BIT_S, BIT_W, DEFAULT_PX_PER_TILE,
@@ -112,7 +133,7 @@ from level_edit_common import (BRUSH_MAX, BRUSH_MIN, UNDO_CAPACITY, UndoRing,
 # Constants
 # ---------------------------------------------------------------------------
 
-MODES = ("PAINT", "ROOM", "CORRIDOR", "DOOR", "SPAWN")
+MODES = ("PAINT", "ROOM", "CORRIDOR", "DOOR", "SPAWN", "LIGHT")
 DEFAULT_CORRIDOR_WIDTH = 3
 CORRIDOR_MIN, CORRIDOR_MAX = 1, 9
 SCAFFOLD_MIN = 5                 # SPACE border + hull ring + 1 interior tile
@@ -121,6 +142,34 @@ DEFAULT_FOOTPRINT = 3            # SpawnEntry default (level_loader)
 TEAM_MARINE, TEAM_ZOMBIE = 0, 1  # SpawnEntry.team: 0 = marine, 1 = zombie
 TEAM_NAMES = {TEAM_MARINE: "marine", TEAM_ZOMBIE: "zombie"}
 TEAM_COLORS = {TEAM_MARINE: (90, 190, 255), TEAM_ZOMBIE: (225, 70, 60)}
+
+# ---- LIGHT mode (P4 §2.4) --------------------------------------------------
+# Keys from P3's reported free set (L, B, C, P, R, X, Y, H, E): B = kind
+# toggle (pinned by the design doc), C = colour preset, R = range,
+# E = intensity, P = period, X = beam width, H = phase; Shift+key nudges
+# down. NOT Shift+wheel (wheel zoom is unconditional above); +/- stay
+# CORRIDOR-scoped.
+LIGHT_PICK_RADIUS = 1.0          # tiles — marker hit-test radius
+LIGHT_RANGE_STEP, LIGHT_RANGE_MIN, LIGHT_RANGE_MAX = 1.0, 1.0, 60.0
+LIGHT_INTENSITY_STEP, LIGHT_INTENSITY_MIN, LIGHT_INTENSITY_MAX = 0.1, 0.1, 5.0
+LIGHT_PERIOD_STEP, LIGHT_PERIOD_MIN, LIGHT_PERIOD_MAX = 0.25, 0.25, 30.0
+LIGHT_BEAM_STEP, LIGHT_BEAM_MIN, LIGHT_BEAM_MAX = 5.0, 5.0, 360.0
+LIGHT_PHASE_STEP = 0.125         # turns; wraps mod 1 (pair = 0.0 / 0.5)
+EDITOR_TICK_DT = 1.0 / 60.0      # editor preview clock (60 fps target) —
+                                 # the editor is NOT the sim (P4 §2.4)
+
+# Colour presets cycle on C — 0-255 int triples (the toml schema's units).
+# First preset = the ported main.py emergency lamp ((1.0, 0.1, 0.05) * 255);
+# "red"/"blue" make the chapter's cop-car beacon pair.
+LIGHT_COLOR_PRESETS = (
+    ("emergency red", (255, 26, 13)),
+    ("warm white", (255, 214, 170)),
+    ("cool white", (255, 255, 242)),
+    ("amber", (255, 160, 40)),
+    ("red", (255, 40, 40)),
+    ("blue", (64, 96, 255)),
+    ("green", (60, 255, 120)),
+)
 
 # The +1-tile re-bake margin (engine/15 §4 / P2 edge16 contract): a stroke
 # flips the edge masks of its NEIGHBOURS, so the preview re-bake rect must
@@ -432,31 +481,34 @@ def format_spawn_lines(spawns, nl: str = "\n") -> list:
 
 
 _SPAWN_HEADER_RE = re.compile(r"^\s*\[\[\s*spawn\s*\]\]\s*(#.*)?$")
+_LIGHT_HEADER_RE = re.compile(r"^\s*\[\[\s*light\s*\]\]\s*(#.*)?$")
 _TABLE_HEADER_RE = re.compile(r"^\s*\[")          # any table / array-of-tables
 
 
-def write_spawns(toml_path, spawns, write_bak: bool = True):
-    """Rewrite the ``[[spawn]]`` array-of-tables of ``toml_path`` as ONE
-    managed block (the reported P3 design call).
+def _write_managed_block(toml_path, header_re, format_lines,
+                         write_bak: bool = True):
+    """Rewrite ONE managed array-of-tables of ``toml_path`` (the reported
+    P3 design call, generalized for [[spawn]] and [[light]] in P4).
 
-    Every existing [[spawn]] table (header line through the line before the
-    next table header) is removed and the editor's list is inserted at the
-    position of the FIRST one — or appended at EOF when the file had none.
-    Every byte OUTSIDE the spawn tables is preserved exactly (newline style
-    included); comments INSIDE individual spawn tables are managed away.
-    When ``write_bak`` is True the original bytes go to ``<name>.bak``
-    first (the editor passes True once per session). Returns the .bak path,
-    or None when not written."""
+    Every existing table matching ``header_re`` (header line through the
+    line before the next table header) is removed and
+    ``format_lines(nl)``'s block is inserted at the position of the FIRST
+    one — or appended at EOF when the file had none. Every byte OUTSIDE the
+    managed tables is preserved exactly (newline style included); comments
+    INSIDE individual managed tables are managed away. When ``write_bak``
+    is True the original bytes go to ``<name>.bak`` first (the editor
+    passes True once per session, on the FIRST writeback of the save).
+    Returns the .bak path, or None when not written."""
     toml_path = Path(toml_path)
     original = toml_path.read_bytes()
     text = original.decode("utf-8")
     out = text.splitlines(keepends=True)
     nl = "\r\n" if "\r\n" in text else "\n"   # match the file's newline style
 
-    spans = []                                # existing [[spawn]] tables
+    spans = []                                # existing managed tables
     i = 0
     while i < len(out):
-        if _SPAWN_HEADER_RE.match(out[i]):
+        if header_re.match(out[i]):
             j = next((k for k in range(i + 1, len(out))
                       if _TABLE_HEADER_RE.match(out[k])), len(out))
             spans.append((i, j))
@@ -467,7 +519,7 @@ def write_spawns(toml_path, spawns, write_bak: bool = True):
     for a, b in reversed(spans):
         del out[a:b]
 
-    block = format_spawn_lines(spawns, nl)
+    block = format_lines(nl)
     if insert_at is None:
         if block:
             if out and not out[-1].endswith(("\n", "\r")):
@@ -484,6 +536,96 @@ def write_spawns(toml_path, spawns, write_bak: bool = True):
         bak.write_bytes(original)
     toml_path.write_bytes("".join(out).encode("utf-8"))
     return bak
+
+
+def write_spawns(toml_path, spawns, write_bak: bool = True):
+    """Rewrite the ``[[spawn]]`` array-of-tables as ONE managed block —
+    see :func:`_write_managed_block` for the byte-preservation and .bak
+    contract. Returns the .bak path, or None when not written."""
+    return _write_managed_block(
+        toml_path, _SPAWN_HEADER_RE,
+        lambda nl: format_spawn_lines(spawns, nl), write_bak)
+
+
+# ---------------------------------------------------------------------------
+# Pure helpers — LIGHT entries + level.toml writeback (P4 §2.4)
+# ---------------------------------------------------------------------------
+
+def light_at(lights, ftx: float, fty: float,
+             radius: float = LIGHT_PICK_RADIUS):
+    """Index of the topmost light whose center lies within ``radius`` tiles
+    of the fractional tile point (ftx, fty), or None (spawn_at's pattern —
+    lights are points, so the hit-test is a disc, not a footprint)."""
+    r2 = float(radius) * float(radius)
+    for i in range(len(lights) - 1, -1, -1):
+        l = lights[i]
+        if (l.x - ftx) ** 2 + (l.y - fty) ** 2 <= r2:
+            return i
+    return None
+
+
+def color_255(color) -> tuple:
+    """Normalized 0-1 color -> the 0-255 int triple the toml schema wants
+    (level_loader divides by 255 at parse; round-trips int-sourced values
+    exactly)."""
+    return tuple(min(255, max(0, int(round(float(c) * 255.0))))
+                 for c in color)
+
+
+def light_color_name(color) -> str:
+    """Preset name for a normalized color, or the rgb triple when it is
+    not a preset (hand-authored toml values)."""
+    ints = color_255(color)
+    for name, c in LIGHT_COLOR_PRESETS:
+        if c == ints:
+            return name
+    return f"rgb{ints}"
+
+
+def next_light_color(color, step: int = 1) -> tuple:
+    """The next/previous LIGHT_COLOR_PRESETS entry after ``color``
+    (normalized 0-1), matching by 0-255 int triple; colors outside the
+    preset list restart at the first preset."""
+    ints = color_255(color)
+    presets = [c for _, c in LIGHT_COLOR_PRESETS]
+    try:
+        idx = (presets.index(ints) + int(step)) % len(presets)
+    except ValueError:
+        idx = 0
+    return tuple(v / 255.0 for v in presets[idx])
+
+
+def format_light_lines(lights, nl: str = "\n") -> list:
+    """The managed [[light]] block as ``nl``-terminated lines — schema per
+    level_loader.LightEntry / engine/15 §2.2 (color back to 0-255 ints;
+    period_s/beam_deg/phase written for beacons only — static lights take
+    the loader defaults)."""
+    lines = []
+    for i, l in enumerate(lights):
+        if i:
+            lines.append(nl)
+        r, g, b = color_255(l.color)
+        lines.append(f"[[light]]{nl}")
+        lines.append(f"pos = [{_fmt_coord(l.x)}, {_fmt_coord(l.y)}]{nl}")
+        lines.append(f"color = [{r}, {g}, {b}]{nl}")
+        lines.append(f"intensity = {_fmt_coord(l.intensity)}{nl}")
+        lines.append(f"range = {_fmt_coord(l.range)}{nl}")
+        lines.append(f'kind = "{l.kind}"{nl}')
+        if l.kind == "beacon":
+            lines.append(f"period_s = {_fmt_coord(l.period_s)}{nl}")
+            lines.append(f"beam_deg = {_fmt_coord(l.beam_deg)}{nl}")
+            lines.append(f"phase = {_fmt_coord(l.phase)}{nl}")
+    return lines
+
+
+def write_lights(toml_path, lights, write_bak: bool = True):
+    """Rewrite the ``[[light]]`` array-of-tables as ONE managed block —
+    the write_spawns mechanism verbatim (P4 §2.4). On Ctrl+S it runs AFTER
+    write_spawns with write_bak=False, sharing the once-per-session .bak
+    (pre-session bytes). Returns the .bak path, or None when not written."""
+    return _write_managed_block(
+        toml_path, _LIGHT_HEADER_RE,
+        lambda nl: format_light_lines(lights, nl), write_bak)
 
 
 class SpawnRing:
@@ -534,6 +676,8 @@ MODE_HINTS = {
             "hover shows green/red)",
     "SPAWN": "LMB place/drag  RMB delete  T team toggle "
              "(hovered marker, else placement team)",
+    "LIGHT": "LMB place/drag  RMB delete  B kind  C color  R range  "
+             "E intens  P period  X beam  H phase (Shift = down)",
 }
 
 
@@ -611,11 +755,16 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
     corridor_w = DEFAULT_CORRIDOR_WIDTH
     spawn_team = TEAM_MARINE
     spawns = [replace(s) for s in lvl.spawns]
+    lights = [replace(l) for l in lvl.lights]
+    light_kind = "static"                       # B off-marker toggles this
+    light_color = tuple(v / 255.0 for v in LIGHT_COLOR_PRESETS[0][1])
 
     undo = UndoRing()
     spawn_undo = SpawnRing()
+    light_undo = SpawnRing()      # copy-generic (dataclass snapshots)
     dirty_tiles = False
     dirty_spawns = False
+    dirty_lights = False
     csv_bak_written = False
     toml_bak_written = False
 
@@ -629,6 +778,7 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
     room_start = None          # ROOM drag corner (tile)
     corr_start = None          # CORRIDOR drag start (tile)
     spawn_drag = None          # (index, pre-drag list copy, (orig x, orig y))
+    light_drag = None          # (index, pre-drag list copy, (orig x, orig y))
 
     view_baked = True          # V
     show_normal = False        # N (baked view only)
@@ -675,11 +825,11 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
     def cancel_transients() -> None:
         """Drop drag/stroke state on a mode switch; a stroke interrupted
         mid-drag still gets its dirty rect re-baked."""
-        nonlocal room_start, corr_start, spawn_drag
+        nonlocal room_start, corr_start, spawn_drag, light_drag
         nonlocal stroke_active, stroke_pending, stroke_dirty, last_paint_tile
         if stroke_dirty is not None:
             rebake_cells(*stroke_dirty)
-        room_start = corr_start = spawn_drag = None
+        room_start = corr_start = spawn_drag = light_drag = None
         stroke_active, stroke_pending, stroke_dirty = False, None, None
         last_paint_tile = None
 
@@ -701,7 +851,7 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
         mouse = rl.get_mouse_position()
         over_hud = mouse.y <= HUD_H
         mode = MODES[mode_idx]
-        dirty_any = dirty_tiles or dirty_spawns
+        dirty_any = dirty_tiles or dirty_spawns or dirty_lights
 
         # ---- global: quit / mode / view ----------------------------------
         if rl.is_key_pressed(K.KEY_ESCAPE):
@@ -981,6 +1131,108 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                 dirty_spawns = True
                 flash, flash_frames = f"deleted spawn {gone.name}", 120
 
+        # ---- LIGHT (P4 §2.4 — the SPAWN interaction template) --------------
+        elif mode == "LIGHT":
+            hover = light_at(lights, ftx, fty)
+            if rl.is_key_pressed(K.KEY_B):        # static <-> beacon
+                if hover is not None:
+                    new_kind = ("beacon" if lights[hover].kind == "static"
+                                else "static")
+                    light_undo.push(lights)
+                    lights[hover] = replace(lights[hover], kind=new_kind)
+                    dirty_lights = True
+                    flash, flash_frames = f"light -> {new_kind}", 120
+                else:
+                    light_kind = ("beacon" if light_kind == "static"
+                                  else "static")
+                    flash, flash_frames = f"placing {light_kind} lights", 120
+            if rl.is_key_pressed(K.KEY_C):        # colour preset cycle
+                step = -1 if shift else 1
+                if hover is not None:
+                    nc = next_light_color(lights[hover].color, step)
+                    light_undo.push(lights)
+                    lights[hover] = replace(lights[hover], color=nc)
+                    dirty_lights = True
+                    flash, flash_frames = (
+                        f"light color: {light_color_name(nc)}", 120)
+                else:
+                    light_color = next_light_color(light_color, step)
+                    flash, flash_frames = (
+                        f"placing {light_color_name(light_color)} lights",
+                        120)
+            # Parameter nudges — key = up, Shift+key = down, HOVERED light
+            # only (P period / X beam / H phase are beacon parameters).
+            for key, attr, step, lo, hi, beacon_only in (
+                    (K.KEY_R, "range", LIGHT_RANGE_STEP,
+                     LIGHT_RANGE_MIN, LIGHT_RANGE_MAX, False),
+                    (K.KEY_E, "intensity", LIGHT_INTENSITY_STEP,
+                     LIGHT_INTENSITY_MIN, LIGHT_INTENSITY_MAX, False),
+                    (K.KEY_P, "period_s", LIGHT_PERIOD_STEP,
+                     LIGHT_PERIOD_MIN, LIGHT_PERIOD_MAX, True),
+                    (K.KEY_X, "beam_deg", LIGHT_BEAM_STEP,
+                     LIGHT_BEAM_MIN, LIGHT_BEAM_MAX, True)):
+                if not rl.is_key_pressed(key):
+                    continue
+                if hover is None:
+                    flash, flash_frames = (
+                        f"hover a light to change {attr}", 120)
+                elif beacon_only and lights[hover].kind != "beacon":
+                    flash, flash_frames = (
+                        f"{attr} is a beacon parameter (B toggles kind)", 120)
+                else:
+                    v = getattr(lights[hover], attr) + (-step if shift
+                                                        else step)
+                    v = min(hi, max(lo, v))
+                    light_undo.push(lights)
+                    lights[hover] = replace(lights[hover], **{attr: v})
+                    dirty_lights = True
+                    flash, flash_frames = f"{attr} = {v:g}", 120
+            if rl.is_key_pressed(K.KEY_H):        # phase wraps mod 1 turn
+                if hover is None:
+                    flash, flash_frames = "hover a light to change phase", 120
+                elif lights[hover].kind != "beacon":
+                    flash, flash_frames = (
+                        "phase is a beacon parameter (B toggles kind)", 120)
+                else:
+                    v = (lights[hover].phase
+                         + (-LIGHT_PHASE_STEP if shift
+                            else LIGHT_PHASE_STEP)) % 1.0
+                    light_undo.push(lights)
+                    lights[hover] = replace(lights[hover], phase=v)
+                    dirty_lights = True
+                    flash, flash_frames = f"phase = {v:g} turns", 120
+            if lmb_click and not over_hud:
+                if hover is not None:
+                    light_drag = (hover, [replace(l) for l in lights],
+                                  (lights[hover].x, lights[hover].y))
+                elif cursor_in:
+                    light_undo.push(lights)
+                    # Tile-center snap (engine/15 §2.2: centers at .5).
+                    lx, ly = cur_tx + 0.5, cur_ty + 0.5
+                    lights.append(LightEntry(x=lx, y=ly, color=light_color,
+                                             kind=light_kind))
+                    dirty_lights = True
+                    flash, flash_frames = (
+                        f"{light_kind} light at ({lx:g}, {ly:g}) "
+                        f"[{light_color_name(light_color)}]", 120)
+            if light_drag is not None and lmb:
+                di, _, _ = light_drag
+                if cursor_in:
+                    lights[di] = replace(lights[di],
+                                         x=cur_tx + 0.5, y=cur_ty + 0.5)
+            if light_drag is not None and lmb_up:
+                di, pre, orig = light_drag
+                light_drag = None
+                if (lights[di].x, lights[di].y) != orig:
+                    light_undo.push(pre)      # pre-drag snapshot
+                    dirty_lights = True
+            if rmb_click and not over_hud and hover is not None:
+                light_undo.push(lights)
+                gone = lights.pop(hover)
+                dirty_lights = True
+                flash, flash_frames = (
+                    f"deleted light at ({gone.x:g}, {gone.y:g})", 120)
+
         # ---- undo / save ------------------------------------------------------
         if ctrl and rl.is_key_pressed(K.KEY_Z):
             if mode == "SPAWN":
@@ -993,6 +1245,16 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                     dirty_spawns = True
                     flash, flash_frames = (
                         f"undo spawns ({len(spawn_undo)} left)", 120)
+            elif mode == "LIGHT":
+                light_drag = None          # a live drag index would go stale
+                snap = light_undo.pop()
+                if snap is None:
+                    flash, flash_frames = "nothing to undo (lights)", 120
+                else:
+                    lights[:] = snap
+                    dirty_lights = True
+                    flash, flash_frames = (
+                        f"undo lights ({len(light_undo)} left)", 120)
             elif stroke_active:
                 flash, flash_frames = "release the mouse before undo", 120
             else:
@@ -1009,20 +1271,23 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
 
         if ctrl and rl.is_key_pressed(K.KEY_S):
             # Order matters for the .bak contract: the spawn writeback runs
-            # FIRST with the session's one .bak (pre-session bytes), then
-            # bake_level rewrites the [art]/[bake] blocks with write_bak
-            # False so it cannot clobber that .bak.
+            # FIRST with the session's one .bak (pre-session bytes), the
+            # light writeback follows with write_bak=False (SHARING that
+            # .bak — P4 §2.4), then bake_level rewrites the [art]/[bake]
+            # blocks, also write_bak=False, so nothing can clobber it.
             save_tilemap_csv(csv_path, grid, write_bak=not csv_bak_written)
             csv_bak_written = True
             write_spawns(toml_path, spawns, write_bak=not toml_bak_written)
             first = not toml_bak_written
             toml_bak_written = True
+            write_lights(toml_path, lights, write_bak=False)
             summary = bake_level(level_dir, tileset=tileset_arg,
                                  px_per_tile=bake_ppt, seed=bake_seed,
                                  write_bak=False)
-            dirty_tiles = dirty_spawns = False
+            dirty_tiles = dirty_spawns = dirty_lights = False
             flash, flash_frames = (
-                f"SAVED tilemap.csv + {len(spawns)} spawns + bake blocks + "
+                f"SAVED tilemap.csv + {len(spawns)} spawns + "
+                f"{len(lights)} lights + bake blocks + "
                 f"full bake @ {summary['px_per_tile']} px/tile"
                 f"{' (.bak written)' if first else ''}", 240)
 
@@ -1136,6 +1401,31 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                              int(sx - rl.measure_text(str(s.name), 14) / 2),
                              int(sy - r - 16), 14, rl.WHITE)
 
+        # Light markers (every mode — level content): colour dot + range
+        # ring; beacons sweep a beam wedge animated on the EDITOR's clock
+        # (the editor is not the sim — in-game the angle is a pure function
+        # of the sim tick; same beacon_angle math either way).
+        light_hover = light_at(lights, ftx, fty) if mode == "LIGHT" else None
+        for i, l in enumerate(lights):
+            sx, sy = to_screen(l.x * preview_ppt, l.y * preview_ppt)
+            c = color_255(l.color)
+            ring = float(l.range) * preview_ppt * zoom
+            dot = max(4.0, 0.45 * preview_ppt * zoom)
+            if l.kind == "beacon":
+                ang = math.degrees(
+                    beacon_angle(frames, EDITOR_TICK_DT,
+                                 l.period_s, l.phase) % math.tau)
+                half = float(l.beam_deg) / 2.0
+                rl.draw_circle_sector(
+                    rl.Vector2(sx, sy), ring, ang - half, ang + half, 24,
+                    rl.Color(c[0], c[1], c[2], 60))
+            rl.draw_circle_v(rl.Vector2(sx, sy), dot,
+                             rl.Color(c[0], c[1], c[2], 220))
+            rl.draw_circle_lines(int(sx), int(sy), ring,
+                                 rl.Color(c[0], c[1], c[2], 90))
+            if i == light_hover:
+                rl.draw_circle_lines(int(sx), int(sy), dot + 3.0, rl.WHITE)
+
         # ---- HUD ------------------------------------------------------------
         rl.draw_rectangle(0, 0, win_w, HUD_H, rl.Color(*COL_HUD_BG))
         preview_note = ("" if preview_ppt == bake_ppt
@@ -1156,6 +1446,10 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
         elif mode == "SPAWN":
             extra = (f"  placing {TEAM_NAMES[spawn_team]} (T)  "
                      f"{len(spawns)} spawns")
+        elif mode == "LIGHT":
+            extra = (f"  placing {light_kind} / "
+                     f"{light_color_name(light_color)} (B/C)  "
+                     f"{len(lights)} lights")
         rl.draw_text(f"[{mode}]", 8, 28, 24, rl.Color(*COL_TEXT_HOT))
         mode_x = 8 + rl.measure_text(f"[{mode}]", 24) + 12
         rl.draw_text(f"material: {palette[selected_id][0]}{extra}",
@@ -1180,7 +1474,7 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
 
         rl.draw_text(MODE_HINTS[mode], 8, 76, 14, rl.Color(*COL_TEXT_DIM))
         rl.draw_text(
-            "TAB/F1-F5 mode | 0-6,9 material | V view N normals G grid | "
+            "TAB/F1-F6 mode | 0-6,9 material | V view N normals G grid | "
             "wheel zoom MMB/WASD pan | Ctrl+Z undo Ctrl+S save | Esc quit",
             8, 90, 12, rl.Color(*COL_TEXT_DIM))
         if flash_frames > 0:
@@ -1215,7 +1509,8 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
     rl.close_window()
     print(f"map_editor: {frames} frames; mode={MODES[mode_idx]} "
           f"unsaved_tiles={dirty_tiles} unsaved_spawns={dirty_spawns} "
-          f"spawns={len(spawns)}")
+          f"unsaved_lights={dirty_lights} "
+          f"spawns={len(spawns)} lights={len(lights)}")
     if auto:
         if shot_path is not None and shot_path.is_file():
             print(f"auto screenshot: {shot_path}")
@@ -1230,9 +1525,9 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
 def build_arg_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         description="Tiled-path map editor (engine/15 §5): paint materials, "
-                    "stamp rooms/corridors/doors, place spawns, live baked "
-                    "preview. 'new <name> --size WxH' scaffolds a level "
-                    "first.")
+                    "stamp rooms/corridors/doors, place spawns + lights, "
+                    "live baked preview. 'new <name> --size WxH' scaffolds "
+                    "a level first.")
     ap.add_argument("level",
                     help="level folder name under levels/ — or the literal "
                          "'new' followed by the name to create")

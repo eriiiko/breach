@@ -92,3 +92,31 @@ name = "Zomb5"
 team = 1
 x = 87
 y = 62
+
+# ---------------------------------------------------------------------------
+# Emergency lighting (P4): the three main.py-hardcoded ship lamps that fell
+# INSIDE this 100x70 grid (y = 10/30/55; the y = 88/110 pair was always
+# skipped off-grid here) — positions verbatim. Render-only [[light]]
+# entities (engine/15 §2.2); color 0-255 ints = (1.0, 0.1, 0.05) * 255.
+# ---------------------------------------------------------------------------
+
+[[light]]
+pos = [25, 10]
+color = [255, 26, 13]
+intensity = 0.9
+range = 18.0
+kind = "static"
+
+[[light]]
+pos = [25, 30]
+color = [255, 26, 13]
+intensity = 0.9
+range = 18.0
+kind = "static"
+
+[[light]]
+pos = [25, 55]
+color = [255, 26, 13]
+intensity = 0.9
+range = 18.0
+kind = "static"
