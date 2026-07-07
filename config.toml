@@ -650,6 +650,48 @@ crit_mult = 2.0
 mass_kg = 6.0
 loudness = 0.4                        # a hiss, not a roar (reserved column)
 
+[weapons.combat_knife]                # melee — the assassin's tool (W5)
+archetype = "melee"
+ammo_family = "none"                  # melee feeds on nothing (mechanics/03 §4)
+rof_interval_seconds = 0.6            # armory "1 @ 0.6 s" -> 14 ticks @ 24 tps
+ap_cost = 1
+# The knife's identity is the crit-vs-facing resolver (mechanics/03 §3):
+# 0.15 base x arc multiplier (x1 front / x2 flank / x4 behind) -> a strike
+# from BEHIND crits at 60% for 70 damage — one silent near-kill on an
+# unaware human (hp 100). STANDARD VALUE, Erik's dial: interesting range
+# crit_chance 0.05 (utility blade) .. 0.30 (monomolecular edge).
+crit_chance = 0.15
+crit_mult = 2.0
+# melee_damage/melee_dtype = the strike packet (weapon-row columns — no ammo
+# row to carry them). 35 KIN: two body hits or one behind-arc crit + one to
+# drop a marine-class target. STANDARD VALUE: 20 (shiv) .. 50 (power blade).
+melee_damage = 35
+melee_dtype = "kinetic"
+mass_kg = 0.3
+loudness = 0.05                       # near-silent — the stealth identity
+                                      # (reserved column, no consumer yet)
+
+[weapons.arc_baton]                   # melee — the crowd-control stick (W5)
+archetype = "melee"
+ammo_family = "none"
+rof_interval_seconds = 0.8            # armory "1 @ 0.8 s" -> 19 ticks @ 24 tps
+ap_cost = 1
+crit_chance = 0.0                     # no crit path — the baton's work is the stun
+crit_mult = 2.0
+# 10 ENERGY: a compliance jolt, not a lethal hit (10 strikes to drop a
+# marine on damage alone). STANDARD VALUE: 5 (taser tickle) .. 25 (riot rod).
+melee_damage = 10
+melee_dtype = "energy"
+# The delivery-site status (mechanics/03 §1 two-terminals: statuses at the
+# site, packets stay damage-only): STUNNED where it connects — can_act +
+# can_aim suppressed (a stunned zombie can't bite, mechanics/06 §4).
+# 1.5 s -> 36 ticks @ 24 tps; refresh-stacked (chain-stunning re-ups the
+# timer). STANDARD VALUE: 0.5 (a flinch) .. 3.0 (a dropped guard).
+status_kind = "stunned"
+status_seconds = 1.5
+mass_kg = 1.1
+loudness = 0.2                        # a crack of arc discharge (reserved)
+
 [ammo.rifle_556_standard]
 family = "rifle_556"
 damage = 10                           # was damage_per_bullet
