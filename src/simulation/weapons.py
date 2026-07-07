@@ -81,7 +81,9 @@ class WeaponDef:
                  mass_kg=0.0, loudness=0.0,
                  max_throw_range=0, fuse_min_seconds=0.0,
                  fuse_max_seconds=0.0, fuse_default_seconds=0.0,
-                 cone_half_angle_degrees=0.0, burst_seconds=0.0):
+                 cone_half_angle_degrees=0.0, burst_seconds=0.0,
+                 melee_damage=0, melee_dtype="",
+                 status_kind="", status_seconds=0.0):
         self.name = name
         self.archetype = archetype              # one of WEAPON_ARCHETYPES
         self.ammo_family = ammo_family          # "none" = feeds on nothing (melee)
@@ -115,6 +117,24 @@ class WeaponDef:
         self.cone_half_angle_degrees = cone_half_angle_degrees
         self.burst_seconds = burst_seconds
         self.burst_ticks = 0                    # derived by WeaponTable (W4)
+        # MELEE extras (mechanics/03 §5, W5). Melee feeds on nothing
+        # (ammo_family "none"), so the strike's packet numbers live ON THE
+        # WEAPON ROW: melee_damage + melee_dtype are the DamagePacket
+        # amount/type (the ammo damage/dtype twins). status_kind /
+        # status_seconds are the DELIVERY-SITE status application (the §1
+        # two-terminals wording: "a baton applies STUNNED where it connects;
+        # packets themselves stay damage-only") — "" = the weapon applies no
+        # status (the knife). status_ticks / the id twins are derived by
+        # WeaponTable (seconds -> integer ticks, door 1; names -> registry
+        # ids, loud on typos). Non-melee rows leave all four at their
+        # 0/"" defaults — dead data.
+        self.melee_damage = melee_damage        # packet amount (int, door 2)
+        self.melee_dtype = melee_dtype          # mechanics/06 type name string
+        self.melee_dtype_id = None              # derived by WeaponTable (W5)
+        self.status_kind = status_kind          # "" = no status applied
+        self.status_kind_id = None              # derived by WeaponTable (W5)
+        self.status_seconds = status_seconds
+        self.status_ticks = 0                   # derived by WeaponTable (W5)
 
     def __repr__(self):
         return (f"WeaponDef({self.name!r}, archetype={self.archetype!r}, "
@@ -282,6 +302,10 @@ class WeaponTable:
                 fuse_default_seconds=col("fuse_default_seconds", 0.0),
                 cone_half_angle_degrees=col("cone_half_angle_degrees", 0.0),
                 burst_seconds=col("burst_seconds", 0.0),
+                melee_damage=col("melee_damage", 0),
+                melee_dtype=str(col("melee_dtype", "")),
+                status_kind=str(col("status_kind", "")),
+                status_seconds=col("status_seconds", 0.0),
             )
             # SPRAY rows (W4) must author a real cone: a spray with no
             # half-angle / burst / range would deposit nothing (or forever)
@@ -316,6 +340,42 @@ class WeaponTable:
                     w.burst_seconds, ticks_per_second)
             else:
                 w.burst_ticks = 0
+            # MELEE rows (W5): the strike packet lives on the weapon row
+            # (melee feeds on nothing), so a melee row without damage/dtype
+            # is a config bug — loud at load, not silent at the strike.
+            if w.melee_dtype and w.melee_dtype not in DTYPE_BY_NAME:
+                raise ValueError(
+                    f"weapons.{name}.melee_dtype {w.melee_dtype!r} is not a "
+                    f"mechanics/06 damage type {sorted(DTYPE_BY_NAME)}")
+            if w.melee_dtype:
+                w.melee_dtype_id = DTYPE_BY_NAME[w.melee_dtype]
+            if archetype == "melee":
+                if not (w.melee_damage > 0 and w.melee_dtype):
+                    raise ValueError(
+                        f"weapons.{name}: archetype 'melee' requires "
+                        f"melee_damage > 0 and a melee_dtype (got "
+                        f"{w.melee_damage!r} / {w.melee_dtype!r})")
+            # Delivery-site status columns (W5): the name resolves against
+            # the mechanics/06 §4 registry (lazy import, the AmmoTable
+            # unit_fixed precedent) and the duration derives to integer
+            # ticks (door 1 — the reload_ticks twin). A status with no
+            # positive duration is a config bug, loud at load.
+            if w.status_kind:
+                from simulation.status import STATUS_REGISTRY
+                kinds_by_name = {row.name: row.kind for row in STATUS_REGISTRY}
+                if w.status_kind not in kinds_by_name:
+                    raise ValueError(
+                        f"weapons.{name}.status_kind {w.status_kind!r} is "
+                        f"not a mechanics/06 §4 status kind "
+                        f"{sorted(kinds_by_name)}")
+                if not w.status_seconds > 0:
+                    raise ValueError(
+                        f"weapons.{name}: status_kind {w.status_kind!r} "
+                        f"requires status_seconds > 0 (got "
+                        f"{w.status_seconds!r})")
+                w.status_kind_id = kinds_by_name[w.status_kind]
+                w.status_ticks = ticks_from_seconds(
+                    w.status_seconds, ticks_per_second)
             self.by_name[name] = w
         self.names = list(self.by_name)
 
