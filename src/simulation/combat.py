@@ -46,8 +46,10 @@ from simulation import wall_fixed
 from simulation.damage import KINETIC, DamagePacket, apply_packet
 from simulation.events import LaserFiredEvent, ShotFiredEvent, ExplosionEvent
 from simulation.gases import N_GASES
+from simulation.field_edit import EditMode, FieldEdit, Region
 from simulation.orders import (
     ORDER_GRENADE, ORDER_EXPLOSIVE, ORDER_FIRE, ORDER_MOVE_ATTACK,
+    MOVE_ORDER_TYPES,
 )
 from simulation import unit_fixed
 # Physics event entry points: re-exported for legacy imports; the detonation
@@ -560,8 +562,10 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
     Lifted from ``game.py:_process_shooting``; W2 resolves each shooter's
     weapon via ``unit.weapon_id`` → the WeaponTable row and DISPATCHES BY
     ARCHETYPE — ``projectile`` → :func:`fire_burst`, ``hitscan`` →
-    :func:`fire_beam` (other archetypes have no trigger path here yet:
-    LOBBED/PLACED ride their order flows, SPRAY is W4, MELEE W5). The
+    :func:`fire_beam`, ``spray`` → :func:`start_spray_burst` (W4 — the
+    burst's per-tick deposits ride :func:`process_sprays` in the same
+    shooting slot; other archetypes have no trigger path here:
+    LOBBED/PLACED ride their order flows, MELEE is W5). The
     deterministic SPREAD MODE RULE (mechanics/03 §3): an explicit stationary
     fire order aims — ``spread_deg``; Move & Attack auto-fire snaps —
     ``spread_snap_deg``. No per-unit aim state.
@@ -613,6 +617,18 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
                     break
             continue
 
+        # SPRAY (W4, mechanics/03 §5) — the trigger-side gates. A burst in
+        # progress owns the trigger (deposits ride process_sprays; no state
+        # is touched here until it ends). The STATIONARY RULE (v1, of
+        # record): a spray fire order arms only while the unit has no
+        # movement order in the same phase — the sprayer stands still.
+        if weapon.archetype == "spray":
+            if getattr(u, "spray_ticks_left", 0) > 0:
+                continue
+            if any(o.phase == phase and o.order_type in MOVE_ORDER_TYPES
+                   for o in u.orders):
+                continue
+
         # Burst cadence gate.
         if tick - u.last_fire_tick < weapon.rof_interval_ticks:
             continue
@@ -643,9 +659,17 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
         # cone selection; with no statuses it is a dead path (FLAGS_DEFAULT
         # has can_aim True), bit-identical to pre-W3.
         spread = weapon.spread_deg if flags.can_aim else weapon.spread_snap_deg
-        _dispatch_trigger(gmap, units, u, uc_fx, uc_fy, target_fx, target_fy,
-                          tick, shots, real_time, rng, events, bullets,
-                          weapon, spread, queue)
+        if weapon.archetype == "spray":
+            # SPRAY branch of the archetype dispatch (W4): arm the burst —
+            # the deposits themselves ride process_sprays in this same
+            # shooting slot. Handled here rather than in _dispatch_trigger
+            # because the burst captures the ORDER (interruption consumes
+            # it). Spread is meaningless on a cone weapon — no draw, ever.
+            start_spray_burst(u, weapon, fire_order, tick)
+        else:
+            _dispatch_trigger(gmap, units, u, uc_fx, uc_fy,
+                              target_fx, target_fy, tick, shots, real_time,
+                              rng, events, bullets, weapon, spread, queue)
         mag_spend(u, weapon, tick)
         u.last_fire_tick = tick
 
@@ -681,6 +705,12 @@ def auto_fire(gmap, units, u, tick, shots, real_time, rng, events=None,
         if not weapon_id:
             return
         weapon = weapon_tables().weapons.by_name[weapon_id]
+    # SPRAY weapons never auto-fire (W4 v1 rule, mechanics/03 §5): a spray
+    # is an explicit stationary commitment, not fire-on-the-move. Bail
+    # BEFORE any state is touched (cadence read, mag bind) so a spray-armed
+    # unit on Move & Attack is bit-identical to one with no trigger at all.
+    if weapon.archetype == "spray":
+        return
     if tick - u.last_fire_tick < weapon.rof_interval_ticks:
         return
     # W3 ammo economy — same gate as the fire-order path (dead for mag 0).
@@ -910,6 +940,236 @@ def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
                 from_tile=(fx1, fy1),
                 to_tile=(rx, ry),
             ))
+
+
+# ---------------------------------------------------------------------------
+# SPRAY (mechanics/03 §1/§5, W4): a sustained cone of FIELD WRITES — no
+# projectile entity, no unit code. The two-terminals invariant, hard: this
+# section writes ONLY world fields (heat / gas) through the FieldEdit queue.
+# Units standing in the flames/cloud are damaged by the EXISTING exchange
+# rows — heat | max (apply_environmental_damage, step 9c) and gas[poison]
+# (apply_poison_dose, step 9c3) — ZERO new damage code, and a test asserts
+# no W4 path touches unit HP.
+#
+# v1 burst model (the stationary rule, documented of record):
+#   - a burst starts ONLY from an EXPLICIT fire order while the unit has no
+#     movement order in the same phase (the sprayer stands still — a braced
+#     hose, not a fire-on-the-move weapon);
+#   - Move & Attack auto-fire SKIPS spray weapons entirely;
+#   - one trigger = one burst = weapon.burst_ticks consecutive ticks of cone
+#     deposits (1.5 s -> 36 @ 24 tps), deposited in the shooting slot;
+#   - a standing fire order re-triggers the next burst as soon as the last
+#     one ends (continuous hosing) until the mag runs dry — mag_size counts
+#     BURSTS (W3 machinery: mag_gate / mag_spend per trigger);
+#   - interruption: composed can_act going False (stun / knockdown /
+#     paralysis) stops the burst THAT tick, the fire order is CONSUMED, and
+#     the burst does not resume when the status clears.
+#
+# Determinism (engine/14): NO RNG anywhere. Aim bearing + cone cosine
+# through the deterministic kit (unit_fixed — door 1); cone membership is
+# PURE INTEGER (squared Q16.16 compare, below); falloff is an exact IEEE
+# divide by an integer distance (door 3), quantized ONCE at the FieldEdit
+# combine (door 2); traversal is fixed row-major.
+# ---------------------------------------------------------------------------
+# source_id namespace for spray-issued edits (engine/13 stable-sort key):
+# physics.py owns 1 (_SRC_EXPLOSION) and 2 (_SRC_EXPLOSION_SMOKE),
+# payloads.py 3 (gas) and 4 (ignite); the spray continues the sequence.
+_SRC_SPRAY_HEAT = 5
+_SRC_SPRAY_GAS = 6
+
+
+def spray_cone_tiles(gmap, ay, ax, target_fx, target_fy, range_tiles,
+                     cone_half_angle_degrees, exclude=()):
+    """Yield ``(y, x, falloff_div)`` for every tile of an aimed spray cone,
+    in FIXED ROW-MAJOR order (mechanics/03 §5, W4).
+
+    Apex = the shooter's centre tile ``(ay, ax)`` (integers). Membership is
+    INTEGER-SAFE — no per-tile atan2, no per-tile float compare:
+
+        tile_dir = (dx, dy) = (x - ax, y - ay)            # plain ints
+        aim_q    = (cos_q, sin_q) of the kit aim bearing  # Q16.16 ints
+        dot_q    = dx*cos_q + dy*sin_q                    # Q16.16 int, exact
+        member  <=>  dot_q >= 0  AND
+                     dot_q^2 >= (dx^2 + dy^2) * c_q^2     # Q32.32 int compare
+
+    which is ``dot(tile_dir, aim_dir) >= |tile_dir| * cos(half_angle)`` with
+    both sides squared (valid for the non-negative branch; half-angles are
+    < 90°, so the ``dot_q >= 0`` gate loses nothing). ``c_q`` is the cone
+    cosine through the deterministic kit (``cos_rad`` of the half-angle —
+    the exact n/65536 value, computed once per call; door 1). The aim
+    bearing is the kit ``atan2`` from apex to the order target.
+
+    Range: ``dx^2 + dy^2 <= range_tiles^2`` (integer). The apex tile itself
+    (``dx == dy == 0``) is never a member. ``exclude`` is a set of
+    ``(tx, ty)`` tiles skipped ON TOP of membership — the caller passes the
+    shooter's own footprint (the NOZZLE RULE: the jet projects beyond the
+    operator's body, so the sprayer never hoses itself; without it the
+    3x3 footprint's ring tiles sit at distance 1 inside every cone).
+
+    Occlusion: a member tile is yielded only if ``gmap.has_los(ay, ax, y,
+    x)`` — flames do not pour through walls. The Bresenham check returns
+    True for a SOLID target tile with a clear path (it tests the tiles
+    CROSSED, not the endpoint), so the flame lands ON a wall face — which
+    is exactly how the wood wall receives its heat — but never beyond it.
+
+    ``falloff_div`` is the integer falloff divisor — the documented
+    1/distance form: ``max(1, isqrt(dx^2 + dy^2))`` (``math.isqrt`` — exact
+    integer floor square root, door 1). The caller authors each deposit as
+    ``amount / falloff_div`` (one correctly-rounded IEEE divide, door 3).
+    """
+    h, w = gmap.material.shape
+    ay = int(ay)
+    ax = int(ax)
+    r = int(range_tiles)
+    r_sq = r * r
+
+    # Aim bearing + unit vector through the kit; the exact n/65536 doubles
+    # scale to Q16.16 ints losslessly (quantize of an exact n/65536 is n).
+    angle = unit_fixed.atan2_rad(float(target_fy) - ay, float(target_fx) - ax)
+    cos_q = unit_fixed.quantize_scalar(unit_fixed.cos_rad(angle))
+    sin_q = unit_fixed.quantize_scalar(unit_fixed.sin_rad(angle))
+    # Cone cosine through the kit (math.radians is pure arithmetic; the cos
+    # itself is the deterministic fixed-point kit — no libm on this path).
+    c_q = unit_fixed.quantize_scalar(
+        unit_fixed.cos_rad(math.radians(float(cone_half_angle_degrees))))
+    c_sq = c_q * c_q                                   # Q32.32, exact int
+
+    for y in range(max(0, ay - r), min(h - 1, ay + r) + 1):
+        dy = y - ay
+        for x in range(max(0, ax - r), min(w - 1, ax + r) + 1):
+            dx = x - ax
+            dist_sq = dx * dx + dy * dy
+            if dist_sq == 0 or dist_sq > r_sq:
+                continue                               # apex / out of range
+            if (x, y) in exclude:
+                continue                               # the nozzle rule
+            dot_q = dx * cos_q + dy * sin_q            # Q16.16 int, exact
+            if dot_q < 0:
+                continue                               # behind the shooter
+            if dot_q * dot_q < dist_sq * c_sq:
+                continue                               # outside the cone
+            if not gmap.has_los(ay, ax, y, x):
+                continue                               # occluded — no pour
+            yield y, x, max(1, math.isqrt(dist_sq))
+
+
+def deposit_spray_cone(gmap, queue, shooter, weapon, ammo,
+                       target_fx, target_fy):
+    """Enqueue ONE tick of a spray burst's cone deposits (mechanics/03 §5).
+
+    Per member tile (fixed row-major order from :func:`spray_cone_tiles`),
+    falloff-scaled by the documented 1/distance divisor:
+
+    - ``ammo.heat_deposit > 0`` (the Dragon-7's fuel round): a TILE ADD
+      FieldEdit into the ``heat`` field — the engine/06 ingress buffer the
+      C++ TemperatureSolver converts (heat -> temperature -> ignition) and
+      the heat|max exchange row samples for unit damage. Quantized ONCE at
+      the FieldEdit heat combine (Q16.16 saturating add); heat lands on
+      walls too (no skip-mask) — that is how wood catches.
+    - ``ammo.gas_species`` nonempty: a TILE ADD FieldEdit into that gas
+      slice (the W3 ``field="gas"`` + ``channel`` path — resolved BY NAME
+      via ``gmap.gases.name_to_id``, the emit_gas rule), [0, 1] clamp +
+      solid skip-mask from the gas policy. Fuel haze for the Dragon-7,
+      the poison cloud itself for the Miasma Vent.
+
+    NO RNG, no unit reads, no unit writes. The queue flush (step 6b)
+    applies everything before the physics solvers run, so this tick's
+    flame heat converts to temperature THIS tick.
+    """
+    heat = float(ammo.heat_deposit)
+    gas_amount = float(ammo.gas_amount)
+    gas_id = None
+    if ammo.gas_species:
+        gas_id = int(gmap.gases.name_to_id[ammo.gas_species])
+    own = set(shooter.occupied_tiles())
+    for y, x, div in spray_cone_tiles(
+            gmap, shooter.center_tile_y(), shooter.center_tile_x(),
+            target_fx, target_fy, weapon.range_tiles,
+            weapon.cone_half_angle_degrees, exclude=own):
+        if heat > 0.0:
+            queue.enqueue(FieldEdit(
+                field="heat", region=Region.TILE, coords=(y, x),
+                amount=heat / div, mode=EditMode.ADD,
+                source_id=_SRC_SPRAY_HEAT,
+            ))
+        if gas_id is not None and gas_amount > 0.0:
+            queue.enqueue(FieldEdit(
+                field="gas", region=Region.TILE, coords=(y, x),
+                amount=gas_amount / div, mode=EditMode.ADD,
+                clamp=(0.0, 1.0), channel=gas_id,
+                source_id=_SRC_SPRAY_GAS,
+            ))
+
+
+def start_spray_burst(u, weapon, fire_order, tick):
+    """Arm a spray burst on ``u`` (the trigger side of the SPRAY archetype).
+
+    Called from :func:`process_shooting` once every gate has passed
+    (cadence, mag, range, LOS, the stationary rule). The burst state lives
+    ON THE UNIT (``spray_ticks_left`` / ``spray_target`` / ``spray_order``)
+    and is deliberately NOT in the synced digest surface — the
+    ``last_fire_tick`` / mag-state precedent: a deterministic derivation of
+    synced inputs (orders + tick) whose divergence would surface in the
+    hashed field/hp stream one tick later. Facing snaps to the aim bearing
+    (the fire_burst rule — kit trig, unit y-up convention).
+    """
+    u.spray_ticks_left = int(weapon.burst_ticks)
+    u.spray_target = (float(fire_order.target_fx), float(fire_order.target_fy))
+    u.spray_order = fire_order
+    u.facing = unit_fixed.atan2_rad(
+        -(float(fire_order.target_fy) - u.center_tile_y()),
+        float(fire_order.target_fx) - u.center_tile_x())
+
+
+def process_sprays(gmap, units, queue):
+    """One tick of every active spray burst — the W4 deposit pass, invoked
+    from the conductor in the SHOOTING SLOT (directly after
+    :func:`process_shooting`; call line only in simulation.py).
+
+    Fixed stored-unit order (the apply_environmental_damage convention —
+    order-free anyway: each burst writes through the stable-sorted edit
+    queue). Per unit with ``spray_ticks_left > 0``:
+
+    - dead: the burst dies with the unit (state cleared, nothing deposited);
+    - composed ``can_act`` False (mechanics/06 §4): INTERRUPTION — the
+      burst stops THIS tick (no deposit), the originating fire order is
+      CONSUMED (removed from the queue), no resume when the status clears;
+    - otherwise: deposit one cone tick (:func:`deposit_spray_cone`) toward
+      the burst's captured target and count the burst down. The weapon/ammo
+      rows are re-resolved from ``unit.weapon_id`` each tick (config-static
+      within a run — same rows every tick).
+
+    Draws NO randomness (the queue's noise machinery is unused — spray
+    edits carry ``noise = 0``), so a spray-free trajectory is bit-identical
+    to pre-W4 (the dormancy gate).
+    """
+    tables = weapon_tables()
+    for u in units:
+        ticks_left = getattr(u, "spray_ticks_left", 0)
+        if ticks_left <= 0:
+            continue
+        if not u.alive:
+            u.spray_ticks_left = 0
+            u.spray_order = None
+            u.spray_target = None
+            continue
+        if not composed_flags(u).can_act:
+            # Interruption: stop NOW, consume the order, never resume.
+            order = getattr(u, "spray_order", None)
+            if order is not None and order in u.orders:
+                u.orders.remove(order)
+            u.spray_ticks_left = 0
+            u.spray_order = None
+            u.spray_target = None
+            continue
+        weapon = tables.weapons.by_name[u.weapon_id]
+        ammo = tables.ammo_for_weapon(weapon)
+        tx, ty = u.spray_target
+        deposit_spray_cone(gmap, queue, u, weapon, ammo, tx, ty)
+        u.spray_ticks_left = ticks_left - 1
+        if u.spray_ticks_left <= 0:
+            u.spray_order = None
+            u.spray_target = None
 
 
 # ---------------------------------------------------------------------------

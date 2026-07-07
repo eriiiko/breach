@@ -69,7 +69,7 @@ from simulation.generation import predefined_unit_attributes
 from simulation.species import get_species
 from simulation.combat import (
     apply_temperature_ignition,
-    process_door_explosives, process_shooting,
+    process_door_explosives, process_shooting, process_sprays,
     Projectile, Shot,
 )
 # The two shipped physics->unit couplings — rows in the mechanics/05 coupling
@@ -698,6 +698,14 @@ class Simulation:
                          events=self.tick_events, bullets=self.bullets,
                          queue=self.edit_queue)
 
+        # 4b. SPRAY deposits (mechanics/03 §5, W4) — the shooting slot's
+        # second half: every active spray burst enqueues its aimed heat/gas
+        # cone into the edit queue (flushed at 6b with everything else, so
+        # this tick's flame heat converts to temperature THIS tick). Writes
+        # fields only (two-terminals invariant); draws no RNG; dormant (one
+        # attribute read per unit) when no spray weapon is in play.
+        process_sprays(self.gmap, self.units, self.edit_queue)
+
         # 5. Zombie AI.
         update_zombies_tick(self.gmap, self.units, self.tick)
 
@@ -966,6 +974,13 @@ class Simulation:
             # untracked (mag_size 0) units never read either field.
             u.current_mag = None
             u.reload_done_tick = -1
+            # W4: a spray burst does not survive the round boundary — the
+            # orders it would ride are cleared above, and burst state is a
+            # within-round derivation (the mag-state rule). Cleared here so
+            # a rewound tick counter can never replay a stale burst.
+            u.spray_ticks_left = 0
+            u.spray_target = None
+            u.spray_order = None
 
         # Reset obstacles so dead bodies don't keep blocking physics. IN-PLACE
         # (not reassignment) so any bound view of the buffer stays valid — the
