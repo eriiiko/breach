@@ -217,14 +217,49 @@ byte-for-byte (replica-proven).
   weapon+ammo+payload rows. C4 = PLACED with a demolition payload (radius ~8,
   wall damage ~800 — "bigger bombs") and a trigger mode (timer or the shipped
   det-slot schedule); only player-issued charges detonate.
-- **SPRAY.** N ticks of aimed cone field-writes (FieldEdit): the flamethrower
-  deposits heat (the engine/06 temperature path handles ignition — the
-  `apply_temperature_ignition` seam is already live) + emits `fuel_gas` for the
-  future per-gas combustion (engine/05 M3); units burn via the *existing* heat
-  coupling row — zero new damage code. The poison projector emits the `poison`
-  species through the identical code path — the alien's breath weapon is a
-  config row. A SPRAY trigger in WEGO = a fire order sustained for
-  `burst_seconds` of ticks.
+- **SPRAY** *(built by W4 — this bullet is the implementation of record).*
+  N ticks of aimed cone field-writes (FieldEdit TILE edits, `combat.py`:
+  `spray_cone_tiles` / `deposit_spray_cone` / `process_sprays`): the
+  flamethrower deposits heat into the `heat` ingress buffer (the engine/06
+  path: C++ TemperatureSolver convert → `temperature` → the live
+  `apply_temperature_ignition` seam) + emits `fuel_gas` for the future
+  per-gas combustion (engine/05 M3); units burn via the *existing* heat
+  coupling row — zero new damage code, tested as an invariant. The poison
+  projector emits the `poison` species through the identical code path —
+  damage via the W3 `gas[poison]` row (no blindness: poison ≠ teargas) —
+  and the alien's breath weapon is a config row.
+  - **Cone-angle convention (of record):** the §6 armory quotes the FULL
+    cone ("30° cone"); config authors `cone_half_angle_degrees` — the
+    membership test's natural quantity — so the Dragon-7 row carries 15.0.
+  - **Membership is pure integer** (door 1): a tile is in the cone iff
+    `dot_q ≥ 0 ∧ dot_q² ≥ (dx²+dy²)·c_q²`, where `dot_q = dx·cos_q +
+    dy·sin_q` on the kit aim bearing's Q16.16 unit vector and `c_q` is the
+    kit cosine of the half-angle — the squared form of `dot(tile_dir,
+    aim_dir) ≥ |tile_dir|·cos(θ½)`. No per-tile atan2, no float compare;
+    fixed row-major traversal; the apex is never a member. The **nozzle
+    rule**: the shooter's own footprint tiles are excluded (the jet
+    projects beyond the operator — a flamer never cooks itself).
+  - **Occlusion:** a cone tile receives deposits only if
+    `gmap.has_los(shooter, tile)` — flames do not pour through walls. The
+    Bresenham test passes a solid *endpoint* with a clear path, so the
+    flame lands ON a wall face (how wood catches) but never beyond it.
+  - **Falloff (documented form):** deposit = column ÷ `max(1,
+    isqrt(dx²+dy²))` — a simple integer 1/distance falloff; one
+    correctly-rounded IEEE divide (door 3), quantized ONCE per tile at the
+    FieldEdit combine (door 2). Heat lands on solids (no skip-mask — walls
+    catch); gas respects the solid skip + [0, 1] clamp of the gas policy.
+  - **The WEGO trigger (v1 rules of record):** one trigger = one BURST =
+    `burst_seconds` of consecutive deposit ticks (1.5 s → 36 @ 24 tps),
+    deposited in the shooting slot (conductor step 4b). Spray fires only
+    on an EXPLICIT fire order with no movement order in the same phase —
+    **the sprayer stands still**; Move & Attack auto-fire SKIPS spray
+    weapons. A standing order chains bursts back-to-back; `mag_size`
+    counts BURSTS (Dragon-7: 4 per tank, 4 s swap — the W3 machinery
+    unchanged). **Interruption:** composed `can_act` False stops the burst
+    that tick, the fire order is consumed, no resume.
+  - **Determinism:** the spray draws NO randomness anywhere — cone, aim,
+    and falloff are kit/integer arithmetic, so a spray-free trajectory is
+    bit-identical to pre-W4 (the dormancy replica gate).
 - **MELEE.** Adjacency + the §3 resolver (to-hit vs exposure is trivially 1.0
   without cover; crit arcs do the work). Packets as usual; statuses at the
   site (arc baton → STUNNED); a shove impulse reusing the P4 `Δv = J/mass`
@@ -317,7 +352,7 @@ KINETIC packets through the mechanics/06 pipeline.
 | **W1** | weapon/ammo/payload tables + loaders; re-home rifle→`k5_carbine`, grenade→`hand_grenade`+`frag_standard`, charge→`breach_charge`+`breach_focus`; `unit.weapon_id` | ✅ **SHIPPED** `2abf7dc` (2026-07-05): 521 green, golden `07c3f370…` byte-identical |
 | **W2** | unified march (speed as data, in-flight persistence); spread aim/snap; §3 exposure/cover (+`cover_exposure` materials column) + crit/facing resolver; **Lance-3 laser** (skewer, wall-chew, integer gas attenuation, beam event) | ✅ **SHIPPED** `bbfb26a` (2026-07-05): 559 green (+55 W2 tests), golden `07c3f370…` **UNCHANGED** — the canonical scenario fires no weapon and every W2 roll is lazy, so stream and fields never move (findings below). Beam **glow-as-light deferred** to the explosion-light pass (`LaserFiredEvent` ships; the raycaster hookup lands with transient light sources) |
 | **W3** | payload executor generalizing the explosion triple; gas payloads (smoke/tear/poison) + coupling rows (teargas→aim status, poison→DoT); GL-6 + 40 mm ammo; C4; ammo economy (mags/reload) | ✅ **SHIPPED** (2026-07-05): 587 green (+28 W3 tests), golden `07c3f370…` **UNCHANGED** — W3 adds **no RNG consumers anywhere** (the gas deposit is deliberately noise-free, the coupling rows are threshold-deterministic and take no generator, launcher/C4 reuse existing draw sites) and every new path is dormant in the canonical scenario. Byte-identity replica gates: frag+breach detonations AND a full scripted shipped-weapons round vs the verbatim pre-W3 site body (fields + events + RNG end-state). Findings below |
-| **W4** | SPRAY: Dragon-7 + Miasma Vent (aimed sustained FieldEdit cones) | **HUMAN-TEST** — Erik feel-checks before merge |
+| **W4** | SPRAY: Dragon-7 + Miasma Vent (aimed sustained FieldEdit cones) | ⏳ **BUILT on branch `weapons-w4-spray`, awaiting Erik's feel-check** (2026-07-07): 588 green (+15 W4 tests), golden `07c3f370…` **UNCHANGED** (W4 draws zero RNG by construction — kit/integer cone, deterministic falloff); Erik's loop: `[marine] weapon = "dragon_7"` → restart → `main.py --level playground` → hose a room. Findings below |
 | **W5** | MELEE: knife + arc baton through the resolver; STUNNED wiring | suite green |
 | **W6** | armory playground room + weapon-cycle debug key + full standard-values audit | **HUMAN-TEST** — Erik's tuning session |
 
@@ -407,8 +442,47 @@ KINETIC packets through the mechanics/06 pipeline.
   `has_explosive` stay the single count pools; orders carry `ammo_name`,
   `None` = the shipped defaults).
 
+**W4 findings of record** (BUILT, awaiting Erik's feel-check — carry into
+later patches):
+
+- **The golden did not move at W4 either** — the fourth patch running: W4
+  is RNG-free BY CONSTRUCTION (no spread on a cone weapon; membership,
+  aim, and falloff are kit/integer arithmetic; the FieldEdits carry
+  ``noise = 0``), so even a *firing* flamethrower leaves the RNG stream
+  untouched. Verified: aggregate `07c3f370…` bit-identical, plus a
+  full-sim dormancy replica (spray pass no-opped vs live).
+- **The heat lands in `gmap.heat`** — the same Q16.16 ingress buffer the
+  fire heat-rays and the laser feed: FieldEdit `field="heat"` TILE ADDs,
+  flushed at conductor 6b BEFORE physics, so the C++ TemperatureSolver
+  converts this tick's flame into `temperature` this same tick and
+  `apply_temperature_ignition` (9d) reads it. Both existing consumers come
+  free: ignition AND the heat|max unit-damage row (9c) — the two-terminals
+  invariant holds with zero new damage code (tested).
+- **`heat_deposit = 400` derivation** (in the config row, of record): wood
+  (`thermal_mass` 8 → convert `D/8`, `COOL_SHIFT` 5 → ×31/32 per tick)
+  under a sustained falloff-scaled deposit reaches `T_∞ ≈ 3.875·D`; wood's
+  300 threshold falls at ~7 / ~15 / ~27 ticks for dist 1 / 2 / 3 —
+  measured live at exactly 15 and 27. Beyond ~5 tiles the direct jet alone
+  stays sub-ignition; the fires it starts cascade outward by their own
+  radiation (`k_fire_heat`).
+- **The nozzle rule** (new, forced by geometry): the shooter's 3×3
+  footprint overlaps every cone's distance-1 ring, so without excluding
+  the shooter's own tiles the heat|max row would cook the operator. The
+  cone therefore skips the shooter's footprint — documented in §5.
+- **The marine's weapon went data-driven** (`[marine] weapon`, consumed at
+  Unit construction — W1's code literal deleted). Construction-bound like
+  the tables: config edit → RESTART; Ctrl+R re-arms nothing (engine/12 §5).
+- **Spray burst state lives on the unit** (`spray_ticks_left` /
+  `spray_target` / `spray_order`), outside the synced digest surface — the
+  mag-state precedent; cleared at the round boundary (the tick-rewind
+  hazard twin of `last_fire_tick = -999`).
+- **No spray visual yet**: the burst emits no tracer/event — the feel-check
+  reads the CONSEQUENCES (ignition, fire glow, gas overlays, the T debug
+  overlay). A flame-jet visual is a natural W6/renderer item if Erik wants
+  the hose itself visible.
+
 **Not built / explicitly owed:** everything in §7; heat-damage tuning vs the
 armory numbers; the exposure/crit numbers are standard values pending Erik's
-playground pass; beam glow-as-light (the explosion-light pass); ammo
-SELECTION UI (W6 — W3 wired mags/reload; per-unit round choice pends the
-loadout pass).
+playground pass; beam glow-as-light (the explosion-light pass); a spray-jet
+visual cue (see the W4 findings); ammo SELECTION UI (W6 — W3 wired
+mags/reload; per-unit round choice pends the loadout pass).
