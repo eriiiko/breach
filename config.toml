@@ -607,6 +607,49 @@ ap_cost = 1
 mass_kg = 2.0
 loudness = 1.0
 
+# --- W4 SPRAY rows (mechanics/03 §5/§6): sustained cone of FIELD WRITES ------
+# CONE-ANGLE CONVENTION OF RECORD: the armory table (§6) quotes the FULL cone
+# ("30° cone"); config authors the HALF-angle — the membership test's natural
+# quantity (bearing-off-axis <= half angle) — so Dragon-7's 30° cone is
+# cone_half_angle_degrees = 15.0. One trigger = one BURST = burst_seconds of
+# per-tick cone deposits (1.5 s -> 36 ticks @ 24 tps); mag_size counts BURSTS
+# (W3 machinery). v1 rules: explicit stationary fire orders only (no move
+# order in the same phase), auto-fire skips sprays, interruption (can_act
+# False) consumes the order. Spread fields 0: a cone weapon draws no spread —
+# and no RNG at all (the W4 determinism gate).
+
+[weapons.dragon_7]                    # flamethrower — the FIRST SPRAY (W4)
+archetype = "spray"
+ammo_family = "fuel_tank"
+cone_half_angle_degrees = 15.0        # armory "30° cone" = the FULL angle
+range_tiles = 8
+burst_seconds = 1.5                   # -> 36 deposit ticks @ 24 tps
+spread_deg = 0.0
+spread_snap_deg = 0.0
+mag_size = 4                          # 4 BURSTS per tank (bursts, not rounds)
+reload_seconds = 4.0                  # tank swap stall -> 96 ticks @ 24 tps
+ap_cost = 1
+crit_chance = 0.0                     # sprays never touch units — no crit path
+crit_mult = 2.0
+mass_kg = 8.0
+loudness = 0.6                        # reserved, no consumer yet (stealth layer)
+
+[weapons.miasma_vent]                 # poison projector — SPRAY (W4)
+archetype = "spray"
+ammo_family = "toxin_tank"
+cone_half_angle_degrees = 12.5        # armory "25° cone" = the FULL angle
+range_tiles = 7
+burst_seconds = 1.5
+spread_deg = 0.0
+spread_snap_deg = 0.0
+mag_size = 4
+reload_seconds = 4.0
+ap_cost = 1
+crit_chance = 0.0
+crit_mult = 2.0
+mass_kg = 6.0
+loudness = 0.4                        # a hiss, not a roar (reserved column)
+
 [ammo.rifle_556_standard]
 family = "rifle_556"
 damage = 10                           # was damage_per_bullet
@@ -724,6 +767,59 @@ speed_tiles_per_tick = 1.25
 wall_damage = 0
 payload = "poison_cloud"
 
+# --- W4 SPRAY rounds (mechanics/03 §5): per-tick cone deposits. damage = 0 —
+# a spray NEVER touches a unit directly (two-terminals invariant): the
+# Dragon-7 heats the WORLD and the existing heat|max exchange row does the
+# unit damage; the Miasma Vent gasses the world and the gas[poison] row does.
+# Per member tile the deposit is column / max(1, isqrt(dx^2+dy^2)) — the
+# documented integer 1/distance falloff — quantized once at the FieldEdit
+# write boundary.
+[ammo.fuel_standard]
+family = "fuel_tank"
+damage = 0                            # sprays apply no packets, ever
+dtype = "heat"                        # bookkeeping only (no packet path)
+ap = 0
+# heat_deposit — flame heat energy per tick at distance 1 (falloff /dist).
+# STANDARD VALUE, derived from the engine/06 convert path (Erik's dial):
+#   convert:  temperature += heat >> log2(thermal_mass); wood mass 8 -> D/8
+#   cooling:  T -= T >> COOL_SHIFT(5) per tick        -> ~1/32 loss (interior)
+#   so at a sustained per-tile deposit D:  T(n+1) = (T(n) + D/8) * 31/32
+#   -> steady state T_inf = 31*D/8 ~= 3.875*D,  T(n) = T_inf*(1-(31/32)^n)
+#   with heat_deposit = 400 the jet crosses wood's ignition_temp = 300 at:
+#     dist 1 (D=400, T_inf 1550): ~7 ticks  (~0.3 s)
+#     dist 2 (D=200, T_inf  775): ~15 ticks (~0.65 s)
+#     dist 3 (D=133, T_inf  517): ~27 ticks (~1.1 s — inside the 36-tick burst)
+#     dist 4-5: 2.0-4.5 s of sustained hosing (a second burst); beyond ~5 the
+#     direct jet alone stays under 300 — the fires it started radiate
+#     (k_fire_heat) and the ignition front cascades outward on its own.
+#   (Wood conduction kappa 0.15 bleeds a negligible face term; doors /
+#   furniture ignite at 280 — slightly sooner.) Interesting range: ~200
+#   (close-work torch: ~1 s ignition at dist 1-2 only) .. 800 (instant wall
+#   of fire out to mid-cone).
+heat_deposit = 400.0
+# fuel_gas haze rides the same cone (engine/05 §6.2 slice; flammable = the
+# future per-gas combustion hook, M3). Small on purpose — an ignition-hazard
+# accent, not the damage mechanism. 0.15/tick at dist 1, falloff /dist.
+gas_species = "fuel_gas"
+gas_amount = 0.15
+
+[ammo.toxin_standard]
+family = "toxin_tank"
+damage = 0
+dtype = "poison"                      # bookkeeping only (no packet path)
+ap = 0
+# Sustained poison emission — bigger than the grenade cloud's one-shot
+# deposit (poison_cloud: 1.0 once) because it accrues EVERY tick of a
+# 36-tick burst against transport/diffusion: 0.35/tick at dist 1 paints the
+# near cone to lethal density (the [0,1] clamp saturates) in ~3-4 ticks and
+# HOLDS it there while the vent is open. Damage rides the W3 gas[poison]
+# exchange row (poison_dps x density; zombies immune — they don't breathe);
+# NO blindness: poison is not teargas (no can_aim coupling on this species).
+# STANDARD VALUE — interesting range 0.1 (a creeping haze) .. 1.0 (an
+# instant wall of chlorine).
+gas_species = "poison"
+gas_amount = 0.35
+
 # The W1-finding smoke boolean SPLIT (mechanics/03 §8, wired W3): clear_smoke
 # documents apply_explosion's built-in inner-radius (40%) smoke clearing — v1
 # keeps that clear INSIDE apply_explosion, so the column is data-of-record,
@@ -820,6 +916,13 @@ attack_cooldown_seconds = 1.0      # 1.0 s -> 12 ticks @ 12 tps
 hp = 100
 grenades = 2
 explosives = 2
+# weapon — the marine's default [weapons.*] row (W4: data-driven, replaces
+# W1's code literal; consumed at Unit construction). ERIK'S FEEL-CHECK LOOP:
+# set to "dragon_7" (or "miasma_vent"), RESTART the game (units + weapon
+# tables are construction-bound — Ctrl+R alone re-reads config but re-arms
+# nothing, engine/12 §5), launch `main.py --level playground`, issue fire
+# orders, watch rooms burn.
+weapon = "k5_carbine"
 
 [rendering]
 # Resolution of the world composite RT in pixels per tile — the sharpness
