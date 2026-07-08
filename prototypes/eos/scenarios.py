@@ -131,6 +131,7 @@ def build_s2(width: int, height: int, seed: int = 0) -> tuple[State, list[tuple]
 def build_s3(width: int, height: int, seed: int = 0) -> tuple[State, list[tuple]]:
     """Smoke-filled compartment next to a pre-seeded vacuum strip (space);
     a hull breach opens a hole between them. Expect sustained outrush."""
+    rng = np.random.default_rng(seed)
     state = State(width, height)
     state.solid[:, :] = True
 
@@ -138,7 +139,14 @@ def build_s3(width: int, height: int, seed: int = 0) -> tuple[State, list[tuple]
     x0 = MARGIN
     x1 = width - MARGIN - 4   # compartment's east wall, room for the vacuum strip
     state.solid[y0:y1, x0:x1] = False
-    state.smoke[y0:y1, x0:x1] = 0.8
+    # Non-uniform, lumpy fill (S4/S5's helper) -- a flat fill (the previous
+    # 0.8-everywhere) shows nothing being pulled toward the breach; amplitude
+    # kept well under smoke_ref=1.0 so the lumps stay visible instead of
+    # clipping to a flat white rectangle.
+    state.smoke = _lumpy_smoke(state.shape, (y0, y1, x0, x1), rng, n_blobs=9,
+                                amp_range=(0.35, 0.8), radius_frac=(0.07, 0.14))
+    state.smoke[state.solid] = 0.0
+    np.clip(state.smoke, 0.0, 1.2, out=state.smoke)
 
     vx0, vx1 = x1 + 2, width - MARGIN
     state.solid[y0:y1, vx0:vx1] = False
@@ -146,6 +154,23 @@ def build_s3(width: int, height: int, seed: int = 0) -> tuple[State, list[tuple]
 
     breach_x, breach_y = x1, (y0 + y1) // 2
     schedule = [("breach", 15, (breach_x, breach_y))]
+    # Sustained outrush: this scaffold's solvers have no real N/T pressure-
+    # gradient body force that would drive flow toward the vacuum on their
+    # own -- rung A/B's div_target is purely thermal/water-displacement-
+    # sourced (scheme_rung_b.py's docstring: "purely reactive... no SOURCE
+    # term at all"), and the control scheme has no EOS coupling whatsoever.
+    # Left alone, a breach with no detonate/ignite event next to it produces
+    # exactly zero velocity forever (verified: rhs stays 0, so the pressure/
+    # Helmholtz solve's zero fixed point never breaks). So the decompression
+    # suction is staged explicitly, event by event, the same solver-agnostic
+    # way detonate/ignite stage their kick (module docstring). Strength
+    # tapers geometrically tick to tick, standing in for the compartment's
+    # pressure bleeding down as it empties -- research brief §8 S3: "expect
+    # sustained outrush, fire starvation as N drains, honest venting."
+    schedule += [
+        ("vent_jet", t, (breach_x, breach_y), 3.5 * (0.82 ** i))
+        for i, t in enumerate(range(17, 83, 5))
+    ]
     return state, schedule
 
 
@@ -252,7 +277,7 @@ def _apply_detonate(state: State, x: int, y: int, strength: float) -> None:
     state.vy += strength * 2.0 * falloff * uy
 
 
-def _apply_breach(state: State, x: int, y: int, radius: int = 1) -> None:
+def _apply_breach(state: State, x: int, y: int, radius: int = 2) -> None:
     """Hull breach: knock a hole at (x, y), exposing whatever the scenario
     already placed on the other side (usually a pre-seeded vacuum strip).
     The hole itself is also marked vacuum so it reads instantly."""
@@ -260,6 +285,23 @@ def _apply_breach(state: State, x: int, y: int, radius: int = 1) -> None:
     x0, x1 = max(x - radius, 0), x + radius + 1
     state.solid[y0:y1, x0:x1] = False
     state.vacuum[y0:y1, x0:x1] = True
+
+
+def _apply_vent_jet(state: State, x: int, y: int, strength: float) -> None:
+    """Ongoing decompression suction toward a breach at (x, y): a velocity
+    kick with radial falloff, pointing INWARD -- the sign-flip of
+    `_apply_detonate`'s outward kick -- so open-air gas across the
+    compartment accelerates toward the hole instead of away from a blast.
+    `build_s3` schedules a handful of these, decaying, after its breach
+    event; see that schedule's comment for why a scripted series stands in
+    for what a real pressure-gradient body force would do unassisted."""
+    radius = 0.86 * max(state.width, state.height)
+    falloff, dxr, dyr, r = _radial_falloff(state.shape, x, y, radius)
+    falloff = np.where(state.open_air, falloff, 0.0).astype(np.float32)
+    ux = np.where(r > 1e-3, -dxr / np.maximum(r, 1e-3), 0.0)
+    uy = np.where(r > 1e-3, -dyr / np.maximum(r, 1e-3), 0.0)
+    state.vx += strength * falloff * ux
+    state.vy += strength * falloff * uy
 
 
 def _apply_ignite(state: State, x: int, y: int, strength: float = 1.0) -> None:
@@ -305,6 +347,9 @@ def apply_event(state: State, event: tuple) -> str:
     elif kind == "breach":
         _, _tick, (x, y) = event
         _apply_breach(state, x, y)
+    elif kind == "vent_jet":
+        _, _tick, (x, y), strength = event
+        _apply_vent_jet(state, x, y, strength)
     elif kind == "ignite":
         _, _tick, (x, y), *rest = event
         _apply_ignite(state, x, y, rest[0] if rest else 1.0)
