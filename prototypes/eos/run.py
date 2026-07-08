@@ -20,6 +20,9 @@ import numpy as np
 from state import State
 from scenarios import SCENARIOS, apply_event
 from solver import PlaceholderSolver
+from scheme_control import ControlSolver
+from scheme_rung_a import RungASolver
+from scheme_rung_b import RungBSolver
 from shallow_water import ShallowWaterDriver
 from render import render_frame, make_gif
 from timing import TickTimer
@@ -28,9 +31,9 @@ DT = 0.083   # seconds; ~83 ms / 12 Hz engine tick (docs/eos_research_brief.md Â
 
 SCHEMES = {
     "placeholder": PlaceholderSolver,
-    # "rungA": RungASolver,      <- P1 adds this
-    # "rungB": RungBSolver,      <- P2 adds this
-    # "control": ControlSolver,  <- P-ctrl adds this
+    "control": ControlSolver,
+    "rungA": RungASolver,
+    "rungB": RungBSolver,
 }
 
 
