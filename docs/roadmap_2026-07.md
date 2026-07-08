@@ -49,7 +49,15 @@ and integer/fixed-point portability of each. Output: a compared recommendation.
 → **Brief authored 2026-07-05: `docs/eos_research_brief.md`** — constraints, weighted
 criteria, the worked hot-core CFL example, prototype scenario spec, and the black-body
 session's decisions folded in (heat one-way/absorb-only; two-tier light; determinism
-scope per §0.9). Execute on fresh tokens (Opus + deep-research), then walk 1.2 → 1.3.
+scope per §0.9).
+→ **DONE 2026-07-08: `docs/eos_research_report.md`** — deep-research harness run (2 claims
+adversarially confirmed, 0 refuted; verification cut short by rate limits, synthesis
+completed in-thread by Opus with confidence labels). Bottom line: the acoustic-CFL fear is
+retired (three precedented escapes). **Rung A → Feldman–O'Brien prescribed-divergence
+incompressible (Bifrost ships it; keep wave_p separate); Rung B → Kwatra semi-implicit
+(reuses the RB-GS Poisson kernel; may unify atmosphere+wave_p).** The whole A-vs-B call
+reduces to ONE unmeasured thing — does rung-B baroclinic curl visibly beat rung-A
+expansion at ≤256²? — which is precisely what 1.2 must settle by eye.
 
 **1.2 In-engine-shaped Python prototype** *(Claude builds, Erik judges by eye)*
 Rung A ("Darcy-EOS refit": conservative N-flux + derived P=C·N·T + advected gas T,
