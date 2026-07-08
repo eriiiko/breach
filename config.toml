@@ -1215,8 +1215,12 @@ emit_blast_smoke = true
 # ignite ring below guarantees the visible fire pop regardless).
 [payloads.plasma_splash_small]        # Sunspot
 radius = 2                            # modest wall damage + a small pressure pop
+# wall_damage 25 — a SCORCH, not a breacher: wood walls carry hp 60, so a
+# Sunspot bolt chips the partition it wants to IGNITE rather than blowing
+# it away before the fire takes (3 bolts to break wood, and by then it
+# burns). STANDARD VALUE: 10 (cosmetic) .. 60 (one-bolts a wood wall).
 pressure = 1.5
-wall_damage = 60                      # scorches a crate, dents a door; no breacher
+wall_damage = 25
 heat_amount = 3200.0                  # centre jump 400 (wood ignites instantly)
 heat_radius = 2.0
 ignite_radius = 1.5                   # the guaranteed fire pop (flammables only)
@@ -1227,7 +1231,10 @@ emit_blast_smoke = false              # its smoke comes from what it BURNS
 [payloads.plasma_splash_large]        # Helios
 radius = 3
 pressure = 2.5
-wall_damage = 120                     # STANDARD VALUE: 60 (scorch) .. 300 (breacher-lite)
+# wall_damage 45 — heavier scorch (2 Helios bolts break a wood wall; steel
+# shrugs). STANDARD VALUE: 25 (the Sunspot) .. 120 (breacher-lite — but
+# then the bolt destroys the very wall it just set alight, see above).
+wall_damage = 45
 heat_amount = 5600.0                  # centre jump 700 — ignites past half-radius
 heat_radius = 3.0
 ignite_radius = 2.5
