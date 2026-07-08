@@ -691,6 +691,12 @@ loudness = 0.05                       # near-silent — the stealth identity
 [weapons.arc_baton]                   # melee — the crowd-control stick (W5)
 archetype = "melee"
 ammo_family = "none"
+# CHAIN-STUN (W5 finding of record, mechanics/03 §8 — ERIK'S CALL; numbers
+# deliberately untouched at W6): the 19-tick strike cadence re-stuns inside
+# every 36-tick stun window (statuses tick before shooting, shooting before
+# zombie AI), so one marine with a baton holds one zombie indefinitely
+# (10 hp/strike). THE DIAL PAIR is right here: rof_interval_seconds (next
+# line) vs status_seconds (below) — cadence > duration breaks the chain.
 rof_interval_seconds = 0.8            # armory "1 @ 0.8 s" -> 19 ticks @ 24 tps
 ap_cost = 1
 crit_chance = 0.0                     # no crit path — the baton's work is the stun

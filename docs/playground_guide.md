@@ -31,6 +31,7 @@ C:/Users/steen/anaconda3/python.exe main.py --level playground
 | **U / O** | DEBUG pour 0.2 m water / toggle water overlay |
 | **P / Shift+P** | DEBUG tilt the ship ±2° |
 | **T** | temperature overlay (black-body ramp) |
+| **N** | **DEBUG cycle the selected marine's weapon** through the whole armory (W6 — YOUR tuning key). The panel shows the equipped row; grenades/charges stay on G/B (they are order modes, not trigger weapons). Swapping arrives with a fresh magazine and kills any burst in progress. |
 
 ## The map
 
@@ -123,11 +124,60 @@ O2→SUFFOCATING are table rows with designed responses — triggers land
 with the next coupling wave. Water↔fire interaction belongs to the water
 arc (its own session).
 
+## 9. The W6 armory session (the grand tuning pass)
+
+The whole mechanics/03 §6 table is data now, ranges are PHYSICAL METERS
+(playground tiles are 0.333 m — a 10 m flamethrower reaches 30 tiles), and
+**N** walks a selected marine through every triggerable row. The loop:
+
+1. Select a marine → tap **N** until the panel shows the row you want →
+   `F` + click → `Space`. Repeat down the list; every weapon fires through
+   the same order flow.
+2. **Dragon-7** (the rescue of the W4 feel-check): hose the wood room —
+   the jet is VISIBLE now (a flickering flame fan + its own light), 10 m of
+   reach, and wood catches through most of the cone inside a burst.
+   **Dragon-9 heavy** doubles the reach (20 m) and the deposit. Dials:
+   `[weapons.dragon_7] range_m`, `[ammo.fuel_standard] heat_deposit`
+   (derivation comment shows the reach arithmetic — deposit and range are
+   ONE dial pair).
+3. **Miasma Vent**: the same hose in sickly green (fainter on purpose);
+   poison drains marines, zombies shrug (they don't breathe).
+4. **Sunspot / Helios plasma**: fire across the arena — a slow glowing
+   bolt you can WATCH fly (1.5 / 1.25 tiles per tick), then a splash that
+   scorches walls, ignites wood, and cooks bystanders through the heat
+   row. The direct hit is HEAT: try it on the pen's zombies (×4 heat
+   vulnerability) vs a crate wall.
+5. **The gun rack**: P12 Whisper (one quiet precise shot — `loudness` is
+   its identity, consumer pending), MP-11 (4-round sprays, coin-flip past
+   ~10 m), K5, LR-50 (one shot, 90 damage, chews cover fast), Jackhammer-8
+   (8 pellets — watch the spread eat damage with distance: geometry, no
+   falloff table), Lance-3 / Lance-5 (instant beams; smoke is their
+   counter — `J` a cloud into the line of fire), knife/baton up close.
+6. **Chain-stun check** (the W5 finding, YOUR call): baton a penned zombie
+   — the 19-tick cadence re-stuns inside every 36-tick stun window, so one
+   marine holds one zombie forever. The dials sit side by side:
+   `[weapons.arc_baton] rof_interval_seconds` vs `status_seconds`.
+   Numbers deliberately untouched at W6.
+7. **Incendiaries**: `G` still throws frag by default; the incendiary
+   rounds (`grenade_incendiary` / `40mm_incendiary`) are authored and
+   test-covered — the per-type grenade loadout UI is still owed, so feel
+   them via the GL-6 in a test or wait for the loadout pass.
+
+**The weapon dials live in `[weapons.*]` / `[ammo.*]` / `[payloads.*]` —
+ALL RESTART-BOUND** (tables rebuild at Simulation construction; Ctrl+R
+re-reads config but re-arms nothing — engine/12 §5, the W1 finding; the
+guide's old "read at fire time" note predates W1). Edit → relaunch →
+`N` back to the row → fire. Every row carries a STANDARD-VALUE comment
+with its interesting range.
+
 ## Where the knobs live
 
 - **Live on Ctrl+R**: `[exchange]` (push + knockdown), `[combat]` (heat
-  band + blast threshold), `[weapons.*]` (read at fire/detonation time).
-- **Restart-bound**: `[zombie]` (species tables bind at import),
+  band + blast threshold).
+- **Restart-bound**: `[weapons.*]` / `[ammo.*]` / `[payloads.*]` (tables
+  rebuild at Simulation construction — the W1 finding; the pre-W1 "read at
+  fire/detonation time" behavior is gone), `[marine] weapon` (bound at
+  unit construction), `[zombie]` (species tables bind at import),
   `[physics.*]` (solvers bind at construction — engine/12 §5),
   `[materials.*]` (table binds at map build).
 - Regenerate the map after layout tweaks:
