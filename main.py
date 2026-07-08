@@ -227,6 +227,8 @@ def main():
           f"K cycles the gas (white->black->poison->teargas->fuel)")
     print(f"  DEBUG: U pours water (0.2 m) under the cursor | "
           f"O toggles water overlay | P / Shift+P tilts the ship +/-2 deg")
+    print(f"  DEBUG: N cycles the selected unit's weapon through the armory "
+          f"(W6 — the tuning key)")
 
     fit_w_zoom = map_px_w / max(level.width, 1)
     initial_zoom = max(20.0, min(64.0, fit_w_zoom))
@@ -305,6 +307,21 @@ def main():
                 src.angle_spread = 6.283
                 # Flashlight — cool white (profile: flashlight).
                 src.color = (1.0, 1.0, 0.95)
+                src.jitter = 0.0
+                sources.append(src)
+
+            # W6 transient emitters: flame/miasma jets + plasma bolts. The
+            # renderer derives light specs from its own live effect queue
+            # (SprayJetEvent / ProjectileGlowEvent visuals) — render-side
+            # only, one frame behind the sim tick, never written back.
+            for spec in renderer.transient_light_specs():
+                src = bp.LightSource()
+                src.x = float(spec["x"])
+                src.y = float(spec["y"])
+                src.max_range = int(spec["max_range"])
+                src.intensity = float(spec["intensity"])
+                src.angle_spread = 6.283
+                src.color = spec["color"]
                 src.jitter = 0.0
                 sources.append(src)
 
