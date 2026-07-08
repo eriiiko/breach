@@ -50,6 +50,12 @@ WEAPON_ARCHETYPES = frozenset(
     {"hitscan", "projectile", "lobbed", "placed", "spray", "melee"}
 )
 
+# The archetypes a FIRE order can trigger (process_shooting's dispatch).
+# LOBBED / PLACED ride their own order flows (grenade / explosive modes) and
+# never take a trigger pull — the playground weapon-cycle debug key cycles
+# through THIS set only, so a debug-armed unit can always actually fire.
+FIRE_ORDER_ARCHETYPES = frozenset({"hitscan", "projectile", "spray", "melee"})
+
 # Ammo dtype names -> the mechanics/06 damage-type ids, derived from the
 # damage module's registry (single source of truth, includes the reserved
 # types). Validated at load so a typo'd dtype is loud at startup, not silent
@@ -83,13 +89,32 @@ class WeaponDef:
                  fuse_max_seconds=0.0, fuse_default_seconds=0.0,
                  cone_half_angle_degrees=0.0, burst_seconds=0.0,
                  melee_damage=0, melee_dtype="",
-                 status_kind="", status_seconds=0.0):
+                 status_kind="", status_seconds=0.0,
+                 range_m=0.0, default_ammo=""):
         self.name = name
         self.archetype = archetype              # one of WEAPON_ARCHETYPES
         self.ammo_family = ammo_family          # "none" = feeds on nothing (melee)
         self.spread_deg = spread_deg            # aimed-fire cone half-angle
         self.spread_snap_deg = spread_snap_deg  # snap/auto-fire cone (W2 split)
-        self.range_tiles = range_tiles          # hard march-length cap
+        # RANGE (W6 — meter-based ranges, Erik's design decision 2026-07-07).
+        # The AUTHORED column is range_m — a physical reach in METERS, so a
+        # weapon's range no longer depends on the level's grid resolution.
+        # range_tiles is DERIVED at table build from the level's tile size
+        # (WeaponTable, tile_size_m):
+        #
+        #     range_tiles = max(1, int(range_m / tile_size_m + 0.5))
+        #
+        # — one correctly-rounded IEEE divide (door 3) + round-half-up to an
+        # int, computed ONCE at load (door 2, the quantize-once rule); every
+        # consumer (the march length, the fire-order range gate, the spray
+        # cone) keeps reading the integer range_tiles exactly as before.
+        # CONVENTION OF RECORD: the pinned test worlds are 1.0 m/tile, so
+        # range_m there IS the old tile count (k5: 90 tiles -> 90.0 m); the
+        # playground (0.333 m/tile) now derives 3x the tiles for the same
+        # physical reach. Direct construction with range_tiles (the dict-table
+        # test path) stays valid: range_m = 0 leaves range_tiles as passed.
+        self.range_m = range_m                  # authored physical reach (m)
+        self.range_tiles = range_tiles          # hard march-length cap (derived)
         self.shots_per_trigger = shots_per_trigger   # burst / pellet count
         self.rof_interval_seconds = rof_interval_seconds  # cadence gate
         self.rof_interval_ticks = 0             # derived by WeaponTable
@@ -101,6 +126,14 @@ class WeaponDef:
         self.crit_mult = crit_mult
         self.mass_kg = mass_kg                  # handling / melee impulse (future)
         self.loudness = loudness                # reserved — stealth layer, no consumer
+        # default_ammo (W6): the STATIC round-selection seam — "" = the
+        # shipped first-family-match (ammo_for_weapon, the W2 rule); a row
+        # name = THIS weapon's standard round. Lets two weapons share an
+        # ammo family honestly (the P12 and MP-11 both eat 9mm but load
+        # different rounds; the Lance-5 draws the heavy cell). Validated at
+        # cross-ref time (row exists + family matches). Per-UNIT ammo
+        # SELECTION (the loadout UI) stays future work (mechanics/03 §7).
+        self.default_ammo = default_ammo        # "" = first-family-match
         # LOBBED extras (the shipped grenade UI knobs):
         self.max_throw_range = max_throw_range
         self.fuse_min_seconds = fuse_min_seconds
@@ -169,7 +202,8 @@ class AmmoDef:
     def __init__(self, name, family, dtype, damage=0, ap=0,
                  speed_tiles_per_tick=0.0, travel_speed_tiles_per_second=0.0,
                  payload="", wall_damage=0,
-                 heat_deposit=0.0, gas_species="", gas_amount=0.0):
+                 heat_deposit=0.0, gas_species="", gas_amount=0.0,
+                 glow=""):
         self.name = name
         self.family = family                    # must match a weapon's ammo_family
         self.dtype = dtype                      # mechanics/06 type name string
@@ -185,6 +219,15 @@ class AmmoDef:
         self.heat_deposit = heat_deposit        # flame heat/tick at d=0 (0 = none)
         self.gas_species = gas_species          # "" = no gas emission
         self.gas_amount = gas_amount            # gas density/tick at d=0
+        # glow (W6, RENDER-ONLY): a nonempty profile name makes the round's
+        # in-flight march emit one ProjectileGlowEvent per tick (the
+        # LaserFiredEvent precedent — the renderer draws a glowing bolt +
+        # a transient light; the sim never reads this column back). The
+        # plasma casters author "plasma". Pure data — event emission is a
+        # pure function of already-synced state, and the determinism digest
+        # hashes only UnitHit/UnitKilled events (field_ab_harness
+        # _SYNCED_EVENT_TYPES), so a glowing round moves no digest.
+        self.glow = glow
 
     def __repr__(self):
         return (f"AmmoDef({self.name!r}, family={self.family!r}, "
@@ -208,7 +251,7 @@ class PayloadDef:
     def __init__(self, name, radius=0, pressure=0.0, wall_damage=0,
                  unit_damage=0, gas_species="", gas_amount=0.0, gas_radius=0,
                  ignite_radius=0.0, ignite_intensity=0.0, clear_smoke=False,
-                 emit_blast_smoke=False):
+                 emit_blast_smoke=False, heat_amount=0.0, heat_radius=0.0):
         self.name = name
         self.radius = radius                    # blast radius (tiles)
         self.pressure = pressure                # wave source magnitude
@@ -221,6 +264,15 @@ class PayloadDef:
         self.ignite_intensity = ignite_intensity
         self.clear_smoke = clear_smoke          # data-of-record (v1: inside apply_explosion)
         self.emit_blast_smoke = emit_blast_smoke  # LIVE: gates add_explosion_smoke (W3)
+        # Heat splash (W6 — the plasma payload): a one-shot DISC ADD of
+        # ``heat_amount`` heat units (linear falloff to ``heat_radius``)
+        # into the engine/06 ``heat`` ingress buffer at the detonation tile
+        # (payloads.deposit_heat). The C++ TemperatureSolver converts it to
+        # temperature the same tick, so the splash IGNITES through physics
+        # (and cooks units via the existing heat|max row) — the SPRAY
+        # two-terminals discipline applied to a detonation. 0 = none.
+        self.heat_amount = heat_amount
+        self.heat_radius = heat_radius
 
     def __repr__(self):
         return (f"PayloadDef({self.name!r}, radius={self.radius!r}, "
@@ -265,9 +317,22 @@ class WeaponTable:
     """``[weapons.*]`` rows keyed by name. Validates every archetype against
     the closed :data:`WEAPON_ARCHETYPES` set and derives
     ``rof_interval_ticks`` from ``rof_interval_seconds`` at the given tick
-    rate (the old ``burst_interval_ticks`` derivation, moved onto the row)."""
+    rate (the old ``burst_interval_ticks`` derivation, moved onto the row).
 
-    def __init__(self, weapons_cfg, ticks_per_second):
+    W6 (meter-based ranges): ``tile_size_m`` is the LEVEL's physical tile
+    size (``gmap.tile_size_m`` — the Simulation passes it at construction;
+    the bare default 1.0 is the pinned-test-world convention, where meters
+    and tiles coincide). A row authoring ``range_m`` derives its integer
+    ``range_tiles`` HERE, once, at table build — the quantize-once rule
+    (engine/14 door 2): ``max(1, int(range_m / tile_size_m + 0.5))``, one
+    correctly-rounded IEEE divide (door 3) + round-half-up. Authoring BOTH
+    ``range_m`` and ``range_tiles`` on one row is ambiguous and loud."""
+
+    def __init__(self, weapons_cfg, ticks_per_second, tile_size_m=1.0):
+        self.tile_size_m = float(tile_size_m)
+        if not self.tile_size_m > 0:
+            raise ValueError(
+                f"WeaponTable: tile_size_m must be > 0 (got {tile_size_m!r})")
         self.by_name: dict[str, WeaponDef] = {}
         for name, row in _iter_rows(weapons_cfg):
             archetype = str(_get_field(row, "weapons", name, "archetype"))
@@ -306,7 +371,24 @@ class WeaponTable:
                 melee_dtype=str(col("melee_dtype", "")),
                 status_kind=str(col("status_kind", "")),
                 status_seconds=col("status_seconds", 0.0),
+                range_m=col("range_m", 0.0),
+                default_ammo=str(col("default_ammo", "")),
             )
+            # METER-BASED RANGE (W6, Erik's 2026-07-07 decision): range_m is
+            # the authored physical reach; range_tiles derives ONCE here at
+            # the level's tile size (quantize-once, door 2; the divide is
+            # door 3; round-half-up). Rows may still author range_tiles
+            # directly (the dict-table test path) — never both.
+            if w.range_m and w.range_m > 0:
+                if w.range_tiles:
+                    raise ValueError(
+                        f"weapons.{name}: authors BOTH range_m "
+                        f"({w.range_m!r}) and range_tiles "
+                        f"({w.range_tiles!r}) — ambiguous; author range_m "
+                        f"(the W6 meter convention) and let the table "
+                        f"derive the tiles")
+                derived = int(float(w.range_m) / self.tile_size_m + 0.5)
+                w.range_tiles = derived if derived > 1 else 1
             # SPRAY rows (W4) must author a real cone: a spray with no
             # half-angle / burst / range would deposit nothing (or forever)
             # — a config bug, loud at load rather than silent at the trigger.
@@ -316,7 +398,7 @@ class WeaponTable:
                     raise ValueError(
                         f"weapons.{name}: archetype 'spray' requires "
                         f"cone_half_angle_degrees > 0, burst_seconds > 0 and "
-                        f"range_tiles > 0 (got "
+                        f"a range (range_m or range_tiles) > 0 (got "
                         f"{w.cone_half_angle_degrees!r} / "
                         f"{w.burst_seconds!r} / {w.range_tiles!r})")
             # Cadence: 0 s = no gate = 0 ticks. Non-zero goes through the same
@@ -419,6 +501,7 @@ class AmmoTable:
                 heat_deposit=_get_field(row, "ammo", name, "heat_deposit", 0.0),
                 gas_species=gas_species,
                 gas_amount=_get_field(row, "ammo", name, "gas_amount", 0.0),
+                glow=str(_get_field(row, "ammo", name, "glow", "")),
             )
             # speed_q16: the authored tiles-per-tick quantized ONCE onto the
             # Q16.16 grid (ingress door 2) — the unified march's integer
@@ -463,6 +546,8 @@ class PayloadTable:
                 ignite_intensity=col("ignite_intensity", 0.0),
                 clear_smoke=bool(col("clear_smoke", False)),
                 emit_blast_smoke=bool(col("emit_blast_smoke", False)),
+                heat_amount=col("heat_amount", 0.0),
+                heat_radius=col("heat_radius", 0.0),
             )
         self.names = list(self.by_name)
 
@@ -483,8 +568,11 @@ class WeaponsTables:
     alone does not rebuild (engine/12 §5, the material-table precedent).
     """
 
-    def __init__(self, weapons_cfg, ammo_cfg, payloads_cfg, ticks_per_second):
-        self.weapons = WeaponTable(weapons_cfg, ticks_per_second)
+    def __init__(self, weapons_cfg, ammo_cfg, payloads_cfg, ticks_per_second,
+                 tile_size_m=1.0):
+        self.tile_size_m = float(tile_size_m)   # the W6 meter-range binding
+        self.weapons = WeaponTable(weapons_cfg, ticks_per_second,
+                                   tile_size_m=tile_size_m)
         self.ammo = AmmoTable(ammo_cfg)
         self.payloads = PayloadTable(payloads_cfg)
         self._validate_cross_refs()
@@ -513,6 +601,18 @@ class WeaponsTables:
                     f"ammo rows (no [ammo.*] row with family="
                     f"{w.ammo_family!r}); use ammo_family=\"none\" for "
                     f"weapons that feed on nothing")
+            # default_ammo (W6): must resolve, and must feed the weapon.
+            if w.default_ammo:
+                a = self.ammo.by_name.get(w.default_ammo)
+                if a is None:
+                    raise ValueError(
+                        f"weapons.{w.name}.default_ammo {w.default_ammo!r} "
+                        f"does not resolve: no [ammo.{w.default_ammo}] row")
+                if a.family != w.ammo_family:
+                    raise ValueError(
+                        f"weapons.{w.name}.default_ammo {w.default_ammo!r} "
+                        f"is family {a.family!r} but the weapon eats "
+                        f"{w.ammo_family!r}")
 
     def payload_for_ammo(self, ammo_name):
         """Resolve an ammo row's payload ref to its :class:`PayloadDef`.
@@ -523,20 +623,23 @@ class WeaponsTables:
         return self.payloads.by_name[a.payload]
 
     def ammo_for_weapon(self, weapon):
-        """Resolve the round a weapon fires (W2 dispatch): the FIRST ammo row
-        in table (config) order whose ``family`` matches the weapon's
-        ``ammo_family``. Deterministic — dicts preserve insertion order, and
-        the cross-ref validation guarantees at least one row exists. Real
-        per-unit ammo SELECTION (AP rounds, incendiary shells) is the W3
-        economy; until then every family has one standard round and this is
-        it. Accepts a :class:`WeaponDef` or a weapon name. Loud KeyError for
-        ``ammo_family == "none"`` (melee feeds on nothing)."""
+        """Resolve the round a weapon fires (W2 dispatch): the weapon's
+        ``default_ammo`` row when authored (W6 — the static round-selection
+        seam, validated at cross-ref time), else the FIRST ammo row in table
+        (config) order whose ``family`` matches the weapon's ``ammo_family``
+        (the shipped W2 rule — deterministic: dicts preserve insertion
+        order, and the cross-ref validation guarantees at least one row
+        exists). Per-UNIT ammo SELECTION (AP rounds mid-mission) stays
+        future work. Accepts a :class:`WeaponDef` or a weapon name. Loud
+        KeyError for ``ammo_family == "none"`` (melee feeds on nothing)."""
         if isinstance(weapon, str):
             weapon = self.weapons.by_name[weapon]
         if weapon.ammo_family == "none":
             raise KeyError(
                 f"weapons.{weapon.name} has ammo_family='none' — no round to "
                 f"resolve (melee)")
+        if weapon.default_ammo:
+            return self.ammo.by_name[weapon.default_ammo]
         for a in self.ammo.by_name.values():
             if a.family == weapon.ammo_family:
                 return a
@@ -544,15 +647,17 @@ class WeaponsTables:
             f"no [ammo.*] row with family={weapon.ammo_family!r}")
 
     @classmethod
-    def from_config(cls, cfg=None):
+    def from_config(cls, cfg=None, tile_size_m=1.0):
         """Build all three from the global :data:`config.CFG` (or a provided
         config object with ``.weapons`` / ``.ammo`` / ``.payloads`` /
-        ``.clock.ticks_per_second``)."""
+        ``.clock.ticks_per_second``). ``tile_size_m`` is the level's tile
+        size for the W6 meter->tile range derivation; the 1.0 default is the
+        pinned-test-world convention (meters == tiles)."""
         if cfg is None:
             from config import CFG
             cfg = CFG
         return cls(cfg.weapons, cfg.ammo, cfg.payloads,
-                   cfg.clock.ticks_per_second)
+                   cfg.clock.ticks_per_second, tile_size_m=tile_size_m)
 
 
 # ---------------------------------------------------------------------------
@@ -567,23 +672,29 @@ _TABLES: WeaponsTables | None = None
 
 
 def get_tables() -> WeaponsTables:
-    """The shared tables, built lazily from CFG on first use."""
+    """The shared tables, built lazily from CFG on first use (at the 1.0
+    m/tile default binding — the pinned-test-world convention). A live
+    Simulation rebuilds them at construction with ITS level's tile size
+    (:func:`rebuild_tables`), so in-game consumers always see the meter
+    ranges derived for the loaded level."""
     global _TABLES
     if _TABLES is None:
         _TABLES = WeaponsTables.from_config()
     return _TABLES
 
 
-def rebuild_tables() -> WeaponsTables:
+def rebuild_tables(tile_size_m=1.0) -> WeaponsTables:
     """Rebuild the shared tables from the live CFG (call after CFG.reload()
-    / at Simulation construction). Returns the fresh bundle."""
+    / at Simulation construction). ``tile_size_m`` = the loaded level's tile
+    size (W6 meter ranges — the Simulation passes ``gmap.tile_size_m``).
+    Returns the fresh bundle."""
     global _TABLES
-    _TABLES = WeaponsTables.from_config()
+    _TABLES = WeaponsTables.from_config(tile_size_m=tile_size_m)
     return _TABLES
 
 
 __all__ = [
-    "WEAPON_ARCHETYPES", "DTYPE_BY_NAME",
+    "WEAPON_ARCHETYPES", "FIRE_ORDER_ARCHETYPES", "DTYPE_BY_NAME",
     "WeaponDef", "AmmoDef", "PayloadDef",
     "WeaponTable", "AmmoTable", "PayloadTable", "WeaponsTables",
     "get_tables", "rebuild_tables",

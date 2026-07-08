@@ -185,14 +185,15 @@ def test_occlusion_wall_stops_the_pour_but_takes_the_flame():
 # 3. Falloff pinned — exact Q16.16 deposits, nozzle rule, solid handling
 # ---------------------------------------------------------------------------
 def test_falloff_pinned_exact_deposits_and_nozzle_rule():
-    """Dragon-7 (heat 400, fuel_gas 0.15) fired due east by a marine whose
-    centre is (10, 10): per member tile the deposit is column / max(1,
-    isqrt(dist^2)), quantized ONCE at the FieldEdit combine. Pinned:
+    """Dragon-7 (heat 2400 — the W6 rescale riding the 10 m range;
+    fuel_gas 0.15) fired due east by a marine whose centre is (10, 10):
+    per member tile the deposit is column / max(1, isqrt(dist^2)),
+    quantized ONCE at the FieldEdit combine. Pinned:
 
-        (10, 12)  dist 2 -> heat 400/2 = 200   -> 200 * 65536 = 13107200
-        (10, 13)  dist 3 -> heat 400/3         -> round(8738133.33) = 8738133
-        (10, 14)  dist 4 -> heat 100           -> 6553600
-        (11, 14)  isqrt(17) = 4 -> heat 100    -> 6553600
+        (10, 12)  dist 2 -> heat 2400/2 = 1200 -> 1200 * 65536 = 78643200
+        (10, 13)  dist 3 -> heat 2400/3 = 800  -> 800 * 65536  = 52428800
+        (10, 14)  dist 4 -> heat 600           -> 39321600
+        (11, 14)  isqrt(17) = 4 -> heat 600    -> 39321600
         gas (10, 12): quantize(0.15/2 = 0.075) -> 4915
 
     The shooter's own 3x3 footprint (nozzle rule) takes NOTHING — the
@@ -207,10 +208,10 @@ def test_falloff_pinned_exact_deposits_and_nozzle_rule():
     deposit_spray_cone(gmap, queue, u, weapon, ammo, 18.0, 10.0)
     queue.flush(gmap, rng)
 
-    assert int(gmap.heat[10, 12]) == 13107200
-    assert int(gmap.heat[10, 13]) == 8738133
-    assert int(gmap.heat[10, 14]) == 6553600
-    assert int(gmap.heat[11, 14]) == 6553600
+    assert int(gmap.heat[10, 12]) == 78643200
+    assert int(gmap.heat[10, 13]) == 52428800
+    assert int(gmap.heat[10, 14]) == 39321600
+    assert int(gmap.heat[11, 14]) == 39321600
     assert int(gmap.gas[FUEL_GAS][10, 12]) == gas_fixed.quantize_scalar(0.075)
     # Nozzle rule: the shooter's own footprint tiles take no deposit.
     for (tx, ty) in u.occupied_tiles():
@@ -218,8 +219,8 @@ def test_falloff_pinned_exact_deposits_and_nozzle_rule():
         assert int(gmap.gas[FUEL_GAS][ty, tx]) == 0
     # No RNG, ever (spray edits carry noise = 0).
     assert rng.bit_generator.state == state0
-    # Pin the quantize-once arithmetic itself.
-    assert heat_quantize(400.0 / 3.0) == 8738133
+    # Pin the quantize-once arithmetic itself (2400/3 = 800 exactly).
+    assert heat_quantize(2400.0 / 3.0) == 52428800
 
 
 def test_heat_lands_on_solid_wood_but_gas_does_not():
@@ -231,7 +232,7 @@ def test_heat_lands_on_solid_wood_but_gas_does_not():
     weapon, ammo = _dragon()
     deposit_spray_cone(gmap, queue, u, weapon, ammo, 18.0, 10.0)
     queue.flush(gmap, np.random.default_rng(SEED))
-    assert int(gmap.heat[10, 13]) == 8738133          # flame ON the face
+    assert int(gmap.heat[10, 13]) == 52428800         # flame ON the face
     assert int(gmap.gas[FUEL_GAS][10, 13]) == 0       # solid skip-mask
     assert int(gmap.gas[FUEL_GAS][10, 12]) > 0        # open tile in front
 
@@ -240,12 +241,14 @@ def test_heat_lands_on_solid_wood_but_gas_does_not():
 # 4. Ignition end-to-end (CPU backend): heat -> temperature -> fire
 # ---------------------------------------------------------------------------
 def test_dragon_ignites_wood_within_the_derived_tick_count():
-    """The config derivation of record (ammo.fuel_standard): at dist 2 the
-    wood tile crosses ignition_temp 300 at ~15 ticks, dist 3 at ~27 —
-    both inside one 36-tick burst, i.e. 'clearly ignites wood-class
-    flammables within ~1 s of spraying'. Whole-engine path: FieldEdit heat
-    -> C++ TemperatureSolver convert -> apply_temperature_ignition."""
-    for dist, tick_lo, tick_hi in ((2, 5, 24), (3, 12, 36)):
+    """The config derivation of record (ammo.fuel_standard, the W6 2400
+    rescale): at dist 2 the wood tile crosses ignition_temp 300 at ~2
+    ticks (T_inf 4650), dist 3 at ~3 (T_inf 3100), dist 8 — near the old
+    full range — at ~9 (T_inf 1162): the whole near cone catches
+    near-instantly and the reach tracks the new 10 m range. Whole-engine
+    path: FieldEdit heat -> C++ TemperatureSolver convert ->
+    apply_temperature_ignition."""
+    for dist, tick_lo, tick_hi in ((2, 0, 8), (3, 1, 10), (8, 4, 20)):
         wood_x = 6 + dist
         sim = Simulation(_level(edits=[(10, wood_x, 2)]), seed=SEED,
                          breach_physics=bp, enable_recorder=False)

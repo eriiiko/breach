@@ -532,6 +532,18 @@ cover_exposure = 0.55   # soft cover (mechanics/03 §3): a shot crossing a crate
 # march / spread split / crits / payload executor / ammo economy are W2/W3.
 # Unlisted columns take the loader defaults (spread 0, shots 1, rof 0, mag 0,
 # crit_chance 0, crit_mult 2.0, mass 0, loudness 0, payload columns 0/empty).
+#
+# METER-BASED RANGES (W6, Erik's design decision 2026-07-07): weapon reach is
+# authored as range_m — PHYSICAL METERS — and converts to the integer tile
+# range at Simulation construction using the loaded level's tile_size_m:
+#     range_tiles = max(1, int(range_m / tile_size_m + 0.5))    # round-half-up
+# quantized ONCE at table build (engine/14 door 2; the divide is door 3), so a
+# weapon reaches the same physical distance on any grid resolution. The pinned
+# test worlds are 1.0 m/tile (meters == tiles: every pre-W6 tile count below
+# became the same number in meters — bit-identical effective ranges); the
+# playground (0.333 m/tile) derives 3x the tiles for the same physical reach.
+# The ONE deliberate exception: dragon_7 rescaled to 10 m (Erik's call — the
+# W4 value, 8 tiles, was authored pre-meters and read as 2.7 m in-playground).
 # =============================================================================
 
 [weapons.k5_carbine]                  # assault rifle — the shipped rifle, re-homed
@@ -539,7 +551,7 @@ archetype = "projectile"
 ammo_family = "rifle_556"
 spread_deg = 3.0                      # aimed cone half-angle (was cone_half_angle_degrees)
 spread_snap_deg = 3.0                 # == spread_deg in W1; the snap/aim split activates in W2
-range_tiles = 90
+range_m = 90.0                        # was range_tiles = 90 @ the 1.0 m/tile test worlds (W6 meters)
 shots_per_trigger = 5                 # was bullets_per_burst
 rof_interval_seconds = 0.16666667     # 1/6 s (was burst_interval_seconds) -> 4 ticks @ 24 tps
 mag_size = 0                          # 0 = ammo not tracked until W3 wires the economy
@@ -573,7 +585,7 @@ archetype = "hitscan"
 ammo_family = "cell_laser"
 spread_deg = 0.1                      # near-perfect collimation (the armory row)
 spread_snap_deg = 0.1
-range_tiles = 60
+range_m = 60.0                        # was range_tiles = 60 (W6 meters)
 shots_per_trigger = 1
 rof_interval_seconds = 0.5            # 1 @ 0.5 s -> 12 ticks @ 24 tps
 mag_size = 0                          # cell economy wires in W3
@@ -589,7 +601,7 @@ archetype = "projectile"              # payload-carrying PROJECTILE + the FIRST 
 ammo_family = "40mm"
 spread_deg = 3.0
 spread_snap_deg = 5.0
-range_tiles = 40
+range_m = 40.0                        # was range_tiles = 40 (W6 meters)
 shots_per_trigger = 1
 rof_interval_seconds = 1.2            # 1 @ 1.2 s -> 29 ticks @ 24 tps
 mag_size = 6                          # 6-round cylinder — the W3 economy's proving weapon
@@ -622,7 +634,12 @@ loudness = 1.0
 archetype = "spray"
 ammo_family = "fuel_tank"
 cone_half_angle_degrees = 15.0        # armory "30° cone" = the FULL angle
-range_tiles = 8
+# range_m — THE W6 RESCALE (Erik's logged intent): 10 m standard. The W4 row
+# authored 8 TILES pre-meters, which read as a 2.7 m sputter on the 0.333
+# m/tile playground — the feel-check's "invisible flamethrower" in numbers.
+# 10 m -> 30 tiles in the playground, 10 tiles in the 1.0 m/tile test worlds.
+# heat_deposit scales with it — see [ammo.fuel_standard] for the derivation.
+range_m = 10.0
 burst_seconds = 1.5                   # -> 36 deposit ticks @ 24 tps
 spread_deg = 0.0
 spread_snap_deg = 0.0
@@ -638,7 +655,7 @@ loudness = 0.6                        # reserved, no consumer yet (stealth layer
 archetype = "spray"
 ammo_family = "toxin_tank"
 cone_half_angle_degrees = 12.5        # armory "25° cone" = the FULL angle
-range_tiles = 7
+range_m = 7.0                         # was range_tiles = 7 (W6 meters — 21 tiles in-playground)
 burst_seconds = 1.5
 spread_deg = 0.0
 spread_snap_deg = 0.0
@@ -822,23 +839,30 @@ damage = 0                            # sprays apply no packets, ever
 dtype = "heat"                        # bookkeeping only (no packet path)
 ap = 0
 # heat_deposit — flame heat energy per tick at distance 1 (falloff /dist).
-# STANDARD VALUE, derived from the engine/06 convert path (Erik's dial):
+# STANDARD VALUE, derived from the engine/06 convert path (Erik's dial).
+# W6 RESCALE (rides the dragon_7 range_m = 10 rescale — same derivation
+# discipline as W4's 400, new target):
 #   convert:  temperature += heat >> log2(thermal_mass); wood mass 8 -> D/8
 #   cooling:  T -= T >> COOL_SHIFT(5) per tick        -> ~1/32 loss (interior)
 #   so at a sustained per-tile deposit D:  T(n+1) = (T(n) + D/8) * 31/32
 #   -> steady state T_inf = 31*D/8 ~= 3.875*D,  T(n) = T_inf*(1-(31/32)^n)
-#   with heat_deposit = 400 the jet crosses wood's ignition_temp = 300 at:
-#     dist 1 (D=400, T_inf 1550): ~7 ticks  (~0.3 s)
-#     dist 2 (D=200, T_inf  775): ~15 ticks (~0.65 s)
-#     dist 3 (D=133, T_inf  517): ~27 ticks (~1.1 s — inside the 36-tick burst)
-#     dist 4-5: 2.0-4.5 s of sustained hosing (a second burst); beyond ~5 the
-#     direct jet alone stays under 300 — the fires it started radiate
-#     (k_fire_heat) and the ignition front cascades outward on its own.
-#   (Wood conduction kappa 0.15 bleeds a negligible face term; doors /
-#   furniture ignite at 280 — slightly sooner.) Interesting range: ~200
-#   (close-work torch: ~1 s ignition at dist 1-2 only) .. 800 (instant wall
-#   of fire out to mid-cone).
-heat_deposit = 400.0
+# TARGET: ignition reach must TRACK the new 10 m range on the playground grid
+# (0.333 m/tile -> range_tiles 30). The falloff divisor is the integer TILE
+# distance d, so sustained-jet ignition needs T_inf(d) = 3.875 * D/d >= 300
+# (wood), i.e. D >= 77.4 * d; the far edge d = 30 needs D >= 2323 ->
+# heat_deposit = 2400 (the round standard value; full-cone reach ~31 tiles).
+# Time-to-ignite from T(n): within ONE 36-tick burst (1.5 s) the jet crosses
+# 300 out to d ~ 21 (T_inf >= 440); within ~1 s (24 ticks) out to d ~ 16
+# (5.5 m) — "most of the cone within ~1 s", the near half instantly:
+#     d 2  (D 1200, T_inf 4650): ~2 ticks     d 8  (D 300, T_inf 1162): ~9
+#     d 16 (D 150,  T_inf  581): ~24          d 21 (D 114, T_inf  443): ~36
+#   beyond d ~ 21 the direct jet needs a second burst — and in practice the
+#   fires it started radiate (k_fire_heat) and cascade the front outward.
+# NOTE the derivation is grid-anchored: d is TILES, so on the 1.0 m/tile test
+# worlds (range_tiles 10) the same 2400 ignites the WHOLE cone near-instantly
+# — pinned there as the ignition-reach gate. Interesting range: ~800 (torch:
+# reach ~10 tiles) .. 4800 (the dragon_9_heavy value — reach ~62 tiles).
+heat_deposit = 2400.0
 # fuel_gas haze rides the same cone (engine/05 §6.2 slice; flammable = the
 # future per-gas combustion hook, M3). Small on purpose — an ignition-hazard
 # accent, not the damage mechanism. 0.15/tick at dist 1, falloff /dist.
