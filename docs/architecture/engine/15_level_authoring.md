@@ -117,7 +117,7 @@ state, deterministic, no renderer special-case. *Seam to verify at patch start:*
 engine's current directional-cone support; if Tier-1 casts omnidirectionally, the beacon patch
 adds the cone mask there (it belongs in ch. 08 anyway — fire-as-light already wants it).
 
-### 2.3 `[water]` — initial water state
+### 2.3 `[water]` — initial water state *(amended by P5, 2026-07-08)*
 
 Aquariums, flooded compartments, coolant pools. An aquarium is *nothing special*: a
 glass-enclosed region whose tiles start with water depth — the water system (ch. 07) does the
@@ -125,12 +125,20 @@ rest, including draining through the hole you shoot in the glass.
 
 ```toml
 [water]
-depth_map = "water_init.png"   # grayscale, tilemap-resolution; 0 = dry
-max_depth_m = 1.0              # depth at pixel value 255
+depth_map = "water_init.npy"   # int32 Q16.16 metres, shape == tilemap (H, W); 0 = dry
 ```
 
-*Seam to verify at patch start:* the WaterSolver's seeding interface (initial-depth array vs
-incremental FieldEdit adds).
+The file IS the field. The original 8-bit PNG + `max_depth_m` carrier was dropped in the P5
+design gate (critique record, `docs/patch_levels_p5_water.md`): the auto-scaling 8-bit
+quantization made edits **non-local** — deepening one pool re-quantized every other pool's
+golden-pinned integers — and PNG *decoding* would have added the runtime imaging dependency
+`level_loader.py` deliberately avoids. The `.npy` round-trips by identity (the editor writes
+Q16.16 ints via `water_fixed.quantize`; the loader `np.load`s them verbatim, hard-validating
+shape/dtype/sign; `GameMap.__init__` seeds `water_depth` masked to `(~solid) & (~is_vacuum)` —
+the solver zeroes depth on solid, a mass sink). Trade-off on record: not hand-paintable in an
+image editor — the map editor's WATER mode (§5) is the author; FieldEdit remains the runtime
+write path. A level without a `[water]` key loads bit-identically to before the key existed
+(water dormancy).
 
 ## 3. Tilesets
 
@@ -194,14 +202,14 @@ Standalone pyray tool (same stack as the game and the align tool), **new-level-f
   non-wall placement).
 - **LIGHT** — place/move/delete `[[light]]` entities; static vs beacon toggle; parameter
   nudge keys; rendered live in the preview.
-- **WATER** — bucket-fill an enclosed region to a depth → writes `water_init.png`. (Paint a
-  glass box, fill it: that's an aquarium.)
+- **WATER** — bucket-fill an enclosed region to a depth → writes `water_init.npy` (§2.3).
+  (Paint a glass box, fill it: that's an aquarium.)
 - **SPAWN** — place/move/delete `[[spawn]]` entries (team, name) — a combat testbed needs
   marines and zombies without hand-editing TOML.
 - **Live baked preview** — strokes trigger region re-bakes (§4) so you see the textured,
   normal-mapped result as you paint, not colored rectangles.
 - **SAVE** — Ctrl+S: `tilemap.csv`, `level.toml` (lights/water/spawns/bake blocks),
-  `water_init.png`, full bake. `.bak` convention throughout.
+  `water_init.npy`, full bake. `.bak` convention throughout.
 
 Editor v1 explicitly does **not** do: entity kinds beyond lights/spawns, decals, multi-floor,
 texture editing, in-game editing (see §6).

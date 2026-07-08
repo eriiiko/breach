@@ -159,6 +159,15 @@ def _upscale_level(level, factor: int):
         replace(l, x=l.x * factor, y=l.y * factor, range=l.range * factor)
         for l in level.lights
     ]
+    # [water] initial state scales like the tilemap (P5): the loader pinned
+    # depth_map.shape == tilemap.shape, so the seed MUST follow the grid or
+    # GameMap's masked seed write would shape-mismatch. Replicating the
+    # per-tile depth (metres of standing water) preserves the physical
+    # volume exactly: Σdepth·dx² is invariant (factor² more cells, dx²
+    # smaller by factor²).
+    if level.water_depth_q is not None:
+        level.water_depth_q = np.repeat(
+            np.repeat(level.water_depth_q, factor, axis=0), factor, axis=1)
     # Drop any explicit art-align px_per_tile so the renderer recomputes it
     # from the new (denser) grid shape — otherwise the art would stretch.
     level.art_px_per_tile = None

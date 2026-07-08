@@ -27,7 +27,8 @@ Controls (HUD shows the active mode's line):
 
   Any mode:
     TAB / Shift+TAB      - cycle mode PAINT -> ROOM -> CORRIDOR -> DOOR ->
-                           SPAWN -> LIGHT; F1..F6 jump straight to a mode
+                           SPAWN -> LIGHT -> WATER; F1..F7 jump straight
+                           to a mode
     0-8, 9               - select material (palette GENERATED from
                            MATERIAL_NAMES at launch — key = material id;
                            9 = SPACE; ids past 8 are eyedropper-only)
@@ -36,13 +37,13 @@ Controls (HUD shows the active mode's line):
     G                    - toggle grid lines
     Mouse wheel          - zoom (around cursor)
     Middle-drag / WASD   - pan (arrows pan too)
-    Ctrl+Z               - undo (tile ring everywhere; SPAWN / LIGHT modes
-                           pop their own rings instead — separate rings,
-                           see below)
-    Ctrl+S               - SAVE: tilemap.csv + [[spawn]] + [[light]]
-                           writeback + [art]/[bake] blocks (all .bak once
-                           per session) + full bake at the recorded
-                           px_per_tile
+    Ctrl+Z               - undo (tile ring everywhere; SPAWN / LIGHT /
+                           WATER modes pop their own rings instead —
+                           separate rings, see below)
+    Ctrl+S               - SAVE: tilemap.csv + [[spawn]] + [[light]] +
+                           [water]/water_init.npy writeback + [art]/[bake]
+                           blocks (all .bak once per session) + full bake
+                           at the recorded px_per_tile
     Esc                  - quit (pressed twice if there are unsaved edits)
 
   PAINT:
@@ -77,24 +78,45 @@ Controls (HUD shows the active mode's line):
                            a beam wedge on the EDITOR's clock (the editor
                            is not the sim — in-game the angle is a pure
                            function of the sim tick, src/level_lights.py)
+  WATER:  LMB            - bucket-fill the enclosed region under the cursor
+                           to the current depth (default 1.0 m, -/= steps
+                           0.1 m); RMB fills the region to dry. The fill is
+                           4-connected over tiles that are neither
+                           solid-for-water (sim-exact: material
+                           permeability <= 0, the mass-sink boundary —
+                           NEVER the tileset wall groups) nor SPACE
+                           (vacuum bounds a fill exactly like glass);
+                           starting on SPACE or a solid is refused. Depth
+                           quantizes to int32 Q16.16 at fill time
+                           (water_fixed.quantize); wet tiles draw as a blue
+                           overlay, alpha by depth. Depths > 1.5 m get the
+                           deep-tank hint (drains may flash-boil — by
+                           design). Paint a glass box, fill it: that is an
+                           aquarium.
 
 Undo rings (reported design call): tile mutations (PAINT/ROOM/CORRIDOR/DOOR)
-share ONE UndoRing of grid snapshots; spawn and light edits live in their
-own rings — Ctrl+Z pops the spawn/light ring only while in that mode. Mixing
-them into one ring would make Ctrl+Z in PAINT silently rewind spawn/light
-work (and vice versa).
+share ONE UndoRing of grid snapshots; spawn, light and water edits live in
+their own rings — Ctrl+Z pops the spawn/light/water ring only while in that
+mode. Mixing them into one ring would make Ctrl+Z in PAINT silently rewind
+spawn/light/water work (and vice versa).
 
-Spawn/light writeback (reported design call): the `[[spawn]]` and `[[light]]`
-arrays-of-tables are MANAGED BLOCKS — on save every existing table is removed
-and the editor's list is written back at the position of the first one (or
-EOF). Every byte OUTSIDE the managed tables is preserved (comments inside
-individual tables are not). level.toml gets ONE .bak per session, carrying
-the pre-session bytes (the spawn writeback owns it; the light writeback runs
-after it with write_bak=False).
+Spawn/light/water writeback (reported design call): the `[[spawn]]` and
+`[[light]]` arrays-of-tables and the `[water]` table are MANAGED BLOCKS — on
+save every existing table is removed and the editor's state is written back
+at the position of the first one (or EOF). Every byte OUTSIDE the managed
+tables is preserved (comments inside individual tables are not). level.toml
+gets ONE .bak per session, carrying the pre-session bytes (the spawn
+writeback owns it; the light and water writebacks run after it with
+write_bak=False). water_init.npy carries its OWN once-per-session .bak
+(pre-session bytes, only when the file predates the session). On save the
+water grid is masked against the CURRENT materials (zeroed on solid/SPACE,
+count reported) — a wall painted over a pool never saves hidden depth.
 
 Scope limitation on record (P4): the editor refuses levels without a [bake]
 block, so the vessel/playground lamp [[light]] entries are loader-consumed
-but hand-edited — LIGHT mode authors tiled-path levels only.
+but hand-edited — LIGHT mode authors tiled-path levels only. WATER mode
+inherits the same scope (tiled-path levels only); painted levels take a
+hand-authored water_init.npy.
 """
 from __future__ import annotations
 
@@ -120,8 +142,9 @@ from pyray import ffi
 import level_loader
 from level_loader import SPACE_CODE, LightEntry, SpawnEntry
 from level_lights import beacon_angle
+from simulation import water_fixed
 from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_HULL,
-                                  MATERIAL_NAMES)
+                                  MATERIAL_NAMES, MaterialTable)
 from bake_level_art import (BIT_E, BIT_N, BIT_S, BIT_W, DEFAULT_PX_PER_TILE,
                             DEFAULT_TILESET, bake_full, bake_level,
                             bake_region, edge16_mask, load_tileset)
@@ -133,7 +156,7 @@ from level_edit_common import (BRUSH_MAX, BRUSH_MIN, UNDO_CAPACITY, UndoRing,
 # Constants
 # ---------------------------------------------------------------------------
 
-MODES = ("PAINT", "ROOM", "CORRIDOR", "DOOR", "SPAWN", "LIGHT")
+MODES = ("PAINT", "ROOM", "CORRIDOR", "DOOR", "SPAWN", "LIGHT", "WATER")
 DEFAULT_CORRIDOR_WIDTH = 3
 CORRIDOR_MIN, CORRIDOR_MAX = 1, 9
 SCAFFOLD_MIN = 5                 # SPACE border + hull ring + 1 interior tile
@@ -170,6 +193,23 @@ LIGHT_COLOR_PRESETS = (
     ("blue", (64, 96, 255)),
     ("green", (60, 255, 120)),
 )
+
+# ---- WATER mode (P5 §2.4) ---------------------------------------------------
+# Bucket-fill an enclosed region to a depth (metres) -> the level's initial
+# water field, saved as `water_init.npy` (int32 Q16.16, shape == tilemap) +
+# a managed [water] block in level.toml. Depth is quantized AT FILL TIME via
+# water_fixed.quantize (the single Python rounding source), UI in metres.
+# -/= step the depth (CORRIDOR's +/- are corridor-scoped, so they are free
+# here). Depths past WATER_DEEP_HINT_M get the deep-tank status hint: a
+# breached deep column dumps a lot of mass fast and drains may flash-boil
+# against low pressure — by design (P5 doc §3 drain asymmetry).
+WATER_FILENAME = "water_init.npy"
+WATER_DEPTH_DEFAULT_M = 1.0
+WATER_DEPTH_STEP_M = 0.1
+WATER_DEPTH_MIN_M = 0.1
+WATER_DEPTH_MAX_M = 3.0
+WATER_DEEP_HINT_M = 1.5
+WATER_OVERLAY_RGB = (60, 140, 255)   # editor overlay tint (not the renderer)
 
 # The +1-tile re-bake margin (engine/15 §4 / P2 edge16 contract): a stroke
 # flips the edge masks of its NEIGHBOURS, so the preview re-bake rect must
@@ -628,6 +668,137 @@ def write_lights(toml_path, lights, write_bak: bool = True):
         lambda nl: format_light_lines(lights, nl), write_bak)
 
 
+# ---------------------------------------------------------------------------
+# Pure helpers — WATER fill + water_init.npy / [water] writeback (P5 §2.4)
+# ---------------------------------------------------------------------------
+
+_WATER_HEADER_RE = re.compile(r"^\s*\[\s*water\s*\]\s*(#.*)?$")
+
+
+def water_solid_codes(cfg=None) -> frozenset:
+    """Material ids that are solid-for-water — THE seam of P5 critique M1:
+    sim-exact, ``MaterialTable.from_config().permeability <= 0.0``, which is
+    exactly how gamemap.py derives ``solid`` (the solver's mass-sink
+    boundary). NEVER the tileset manifest's ``wall_family_codes`` — that is
+    art-connectivity data, equal today by coincidence; a future
+    opaque-but-permeable grill would silently diverge the fill boundary
+    from the solver's. SPACE_CODE (9) is NOT a material id and is never in
+    this set — callers handle it explicitly (see :func:`water_open_mask`)
+    before any fancy-indexing of the table."""
+    tbl = MaterialTable.from_config(cfg)
+    return frozenset(int(i) for i in range(tbl.n)
+                     if float(tbl.permeability[i]) <= 0.0)
+
+
+def water_open_mask(grid: np.ndarray, solid_codes) -> np.ndarray:
+    """(H, W) bool: tiles water may occupy — NOT solid-for-water AND NOT
+    SPACE (P5 critique M2: vacuum bounds a fill exactly like glass does —
+    a breached room floods up to the breach, never into space). Membership
+    via np.isin against the id set, so SPACE_CODE never indexes the
+    material table."""
+    g = np.asarray(grid)
+    solid = np.isin(g, np.asarray(sorted(solid_codes), dtype=g.dtype))
+    return (~solid) & (g != SPACE_CODE)
+
+
+def water_fill_region(grid: np.ndarray, tx: int, ty: int, solid_codes):
+    """The 4-connected fillable region containing tile (tx, ty).
+
+    Returns ``(set of (tx, ty), why)`` — or ``(None, why)`` when the fill
+    must be refused: start outside the grid, on SPACE (P5 §2.4: water
+    cannot be authored in vacuum — FieldEdit is the deliberate runtime
+    path), or on a solid-for-water tile (the solver zeroes depth there).
+    4-neighbour connectivity: diagonal gaps do NOT leak water, matching the
+    pipe model's 4-face fluxes."""
+    g = np.asarray(grid)
+    h, w = g.shape
+    tx, ty = int(tx), int(ty)
+    if not (0 <= tx < w and 0 <= ty < h):
+        return None, "outside the grid"
+    v = int(g[ty, tx])
+    if v == SPACE_CODE:
+        return None, ("started on SPACE — water cannot stand in vacuum "
+                      "(it flash-boils; author breach inflow via FieldEdit)")
+    if v in solid_codes:
+        name = MATERIAL_NAMES.get(v, f"id {v}")
+        return None, f"started on solid {name} — water needs an open tile"
+    open_ = water_open_mask(g, solid_codes)
+    from collections import deque
+    region = {(tx, ty)}
+    q = deque(region)
+    while q:
+        cx, cy = q.popleft()
+        for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
+            nx, ny = cx + dx, cy + dy
+            if (0 <= nx < w and 0 <= ny < h and open_[ny, nx]
+                    and (nx, ny) not in region):
+                region.add((nx, ny))
+                q.append((nx, ny))
+    return region, "ok"
+
+
+def mask_water_to_open(depth_q: np.ndarray, grid: np.ndarray,
+                       solid_codes):
+    """Zero water depth on every tile water may not occupy (solid-for-water
+    / SPACE) — the SAVE-time wall-over-pool guard (P5 critique M3: a wall
+    painted over a pool after the fill would otherwise save depth the
+    solver immediately destroys as a silent mass sink). Returns
+    ``(masked int32 copy, cleared cell count)``; the loader's warn stays as
+    the hand-authoring backstop."""
+    open_ = water_open_mask(grid, solid_codes)
+    d = np.asarray(depth_q)
+    masked = np.where(open_, d, 0).astype(np.int32)
+    cleared = int(np.count_nonzero(d[~open_]))
+    return masked, cleared
+
+
+def format_water_lines(depth_map_rel: str = WATER_FILENAME,
+                       nl: str = "\n") -> list:
+    """The managed [water] block as ``nl``-terminated lines — schema per
+    engine/15 §2.3 (P5): one table, one key, the .npy carrier."""
+    return [f"[water]{nl}", f'depth_map = "{depth_map_rel}"{nl}']
+
+
+def write_water(level_dir, depth_q: np.ndarray, *,
+                toml_bak: bool = False, npy_bak: bool = True):
+    """SAVE-time [water] writeback (P5 §2.4): ``water_init.npy`` (int32
+    Q16.16, the file IS the field) + the managed ``[water]`` table in
+    level.toml via :func:`_write_managed_block` (a plain table is a
+    one-table managed block — same span logic as [[spawn]]/[[light]]).
+
+    An all-dry grid REMOVES the block and deletes the stale .npy: a level
+    without water carries no [water] key at all (the dormancy pin — the
+    loader returns None and the runtime tick stays bit-identical to before
+    the water system existed).
+
+    .bak contract: the .npy gets its OWN once-per-session pre-session .bak
+    (``npy_bak`` True on the session's first save, and only if the file
+    predates the session); the level.toml rewrite shares the session's one
+    toml .bak, so on Ctrl+S it runs after write_spawns/write_lights with
+    ``toml_bak=False``. The caller passes ``depth_q`` ALREADY masked
+    (:func:`mask_water_to_open`). Returns ``(npy_bak_path | None,
+    toml_bak_path | None, has_water)``."""
+    level_dir = Path(level_dir)
+    toml_path = level_dir / "level.toml"
+    npy_path = level_dir / WATER_FILENAME
+    d = np.ascontiguousarray(np.asarray(depth_q, dtype=np.int32))
+    has_water = bool(d.any())
+    nbak = None
+    if npy_bak and npy_path.is_file():
+        nbak = Path(str(npy_path) + ".bak")
+        nbak.write_bytes(npy_path.read_bytes())
+    if has_water:
+        np.save(npy_path, d)
+    elif npy_path.is_file():
+        npy_path.unlink()
+    tbak = _write_managed_block(
+        toml_path, _WATER_HEADER_RE,
+        lambda nl: format_water_lines(WATER_FILENAME, nl) if has_water
+        else [],
+        toml_bak)
+    return nbak, tbak, has_water
+
+
 class SpawnRing:
     """UndoRing's little sibling for the spawn list: a fixed-capacity LIFO
     ring of independent SpawnEntry-list snapshots (dataclass copies)."""
@@ -678,6 +849,8 @@ MODE_HINTS = {
              "(hovered marker, else placement team)",
     "LIGHT": "LMB place/drag  RMB delete  B kind  C color  R range  "
              "E intens  P period  X beam  H phase (Shift = down)",
+    "WATER": "LMB fill enclosed region to depth  RMB fill-to-dry  "
+             "-/= depth 0.1 m steps (hover shows green/red)",
 }
 
 
@@ -759,14 +932,31 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
     light_kind = "static"                       # B off-marker toggles this
     light_color = tuple(v / 255.0 for v in LIGHT_COLOR_PRESETS[0][1])
 
+    # WATER state (P5 §2.4): a parallel int32 Q16.16 depth grid — loaded
+    # from the level's [water] seed when present, else all-dry. Depth is
+    # quantized at fill time (water_fixed.quantize); the UI shows metres.
+    # The solid-for-water id set is sim-exact (permeability <= 0, the M1
+    # seam) and read from config ONCE per session.
+    water_q = (np.array(lvl.water_depth_q, dtype=np.int32, copy=True)
+               if lvl.water_depth_q is not None
+               else np.zeros(grid.shape, dtype=np.int32))
+    water_depth_m = WATER_DEPTH_DEFAULT_M
+    water_solid = water_solid_codes()
+
     undo = UndoRing()
     spawn_undo = SpawnRing()
     light_undo = SpawnRing()      # copy-generic (dataclass snapshots)
+    # Third mode-scoped ring (P5 critique M4, the SpawnRing precedent):
+    # the water state is a grid, so the ring IS an UndoRing instance —
+    # numpy snapshots, LIFO, capacity-bounded. Popped only in WATER mode.
+    water_undo = UndoRing()
     dirty_tiles = False
     dirty_spawns = False
     dirty_lights = False
+    dirty_water = False
     csv_bak_written = False
     toml_bak_written = False
+    water_bak_written = False     # water_init.npy's OWN once-per-session .bak
 
     # PAINT stroke state (align-tool pattern).
     stroke_active = False
@@ -851,7 +1041,8 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
         mouse = rl.get_mouse_position()
         over_hud = mouse.y <= HUD_H
         mode = MODES[mode_idx]
-        dirty_any = dirty_tiles or dirty_spawns or dirty_lights
+        dirty_any = (dirty_tiles or dirty_spawns or dirty_lights
+                     or dirty_water)
 
         # ---- global: quit / mode / view ----------------------------------
         if rl.is_key_pressed(K.KEY_ESCAPE):
@@ -1233,6 +1424,47 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                 flash, flash_frames = (
                     f"deleted light at ({gone.x:g}, {gone.y:g})", 120)
 
+        # ---- WATER (P5 §2.4 — bucket-fill to depth) -------------------------
+        elif mode == "WATER":
+            if _pressed(K.KEY_KP_ADD) or _pressed(K.KEY_EQUAL):
+                water_depth_m = min(WATER_DEPTH_MAX_M,
+                                    round(water_depth_m
+                                          + WATER_DEPTH_STEP_M, 1))
+            if _pressed(K.KEY_KP_SUBTRACT) or _pressed(K.KEY_MINUS):
+                water_depth_m = max(WATER_DEPTH_MIN_M,
+                                    round(water_depth_m
+                                          - WATER_DEPTH_STEP_M, 1))
+            if (lmb_click or rmb_click) and not over_hud:
+                region, why = water_fill_region(grid, cur_tx, cur_ty,
+                                                water_solid)
+                if region is None:
+                    flash, flash_frames = f"no fill: {why}", 180
+                else:
+                    # Quantize AT FILL TIME (P5 §2.4): the stored state is
+                    # int32 Q16.16; RMB is fill-to-dry (target 0).
+                    target = (0 if rmb_click
+                              else int(water_fixed.quantize(water_depth_m)))
+                    if all(int(water_q[ty_, tx_]) == target
+                           for tx_, ty_ in region):
+                        flash, flash_frames = (
+                            "region already dry" if rmb_click else
+                            f"region already at {water_depth_m:.1f} m", 120)
+                    else:
+                        water_undo.push(water_q)
+                        for tx_, ty_ in region:
+                            water_q[ty_, tx_] = target
+                        dirty_water = True
+                        if rmb_click:
+                            flash, flash_frames = (
+                                f"drained {len(region)} tiles", 120)
+                        else:
+                            msg = (f"filled {len(region)} tiles to "
+                                   f"{water_depth_m:.1f} m")
+                            if water_depth_m > WATER_DEEP_HINT_M:
+                                msg += ("  — deep tank: drains may "
+                                        "flash-boil (by design)")
+                            flash, flash_frames = msg, 180
+
         # ---- undo / save ------------------------------------------------------
         if ctrl and rl.is_key_pressed(K.KEY_Z):
             if mode == "SPAWN":
@@ -1255,6 +1487,15 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                     dirty_lights = True
                     flash, flash_frames = (
                         f"undo lights ({len(light_undo)} left)", 120)
+            elif mode == "WATER":
+                snap = water_undo.pop()
+                if snap is None:
+                    flash, flash_frames = "nothing to undo (water)", 120
+                else:
+                    water_q[...] = snap    # in-place (the live grid persists)
+                    dirty_water = True
+                    flash, flash_frames = (
+                        f"undo water ({len(water_undo)} left)", 120)
             elif stroke_active:
                 flash, flash_frames = "release the mouse before undo", 120
             else:
@@ -1273,21 +1514,39 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             # Order matters for the .bak contract: the spawn writeback runs
             # FIRST with the session's one .bak (pre-session bytes), the
             # light writeback follows with write_bak=False (SHARING that
-            # .bak — P4 §2.4), then bake_level rewrites the [art]/[bake]
-            # blocks, also write_bak=False, so nothing can clobber it.
+            # .bak — P4 §2.4), the water writeback third (also sharing it;
+            # water_init.npy carries its OWN once-per-session .bak — P5
+            # §2.4), then bake_level rewrites the [art]/[bake] blocks, also
+            # write_bak=False, so nothing can clobber it.
             save_tilemap_csv(csv_path, grid, write_bak=not csv_bak_written)
             csv_bak_written = True
             write_spawns(toml_path, spawns, write_bak=not toml_bak_written)
             first = not toml_bak_written
             toml_bak_written = True
             write_lights(toml_path, lights, write_bak=False)
+            # Wall-over-pool guard (P5 critique M3): mask the water grid
+            # against the CURRENT material grid before writing — a wall or
+            # SPACE painted over a pool after the fill zeroes those cells
+            # (the solver would destroy them anyway, silently). The editor
+            # state follows the save so the overlay matches the file.
+            masked_water, cleared = mask_water_to_open(water_q, grid,
+                                                       water_solid)
+            water_q[...] = masked_water
+            _, _, has_water = write_water(
+                level_dir, water_q, toml_bak=False,
+                npy_bak=not water_bak_written)
+            water_bak_written = True
             summary = bake_level(level_dir, tileset=tileset_arg,
                                  px_per_tile=bake_ppt, seed=bake_seed,
                                  write_bak=False)
-            dirty_tiles = dirty_spawns = dirty_lights = False
+            dirty_tiles = dirty_spawns = dirty_lights = dirty_water = False
+            wet = int(np.count_nonzero(water_q))
             flash, flash_frames = (
                 f"SAVED tilemap.csv + {len(spawns)} spawns + "
-                f"{len(lights)} lights + bake blocks + "
+                f"{len(lights)} lights + "
+                f"{f'{wet} water tiles' if has_water else 'no water'}"
+                f"{f' ({cleared} cleared under walls/space)' if cleared else ''}"
+                f" + bake blocks + "
                 f"full bake @ {summary['px_per_tile']} px/tile"
                 f"{' (.bak written)' if first else ''}", 240)
 
@@ -1381,6 +1640,32 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             s0 = to_screen(cur_tx * preview_ppt, cur_ty * preview_ppt)
             rl.draw_rectangle_lines_ex(
                 rl.Rectangle(s0[0], s0[1], tw, th), 2.0, rl.Color(*col))
+        elif mode == "WATER" and not over_hud and cursor_in:
+            # Cheap start-tile validity only (green/red, the DOOR pattern) —
+            # never a per-frame BFS; the real region resolves on click.
+            v = int(grid[cur_ty, cur_tx])
+            ok = (v != SPACE_CODE) and (v not in water_solid)
+            col = COL_OK if ok else COL_BAD
+            s0 = to_screen(cur_tx * preview_ppt, cur_ty * preview_ppt)
+            rl.draw_rectangle_lines_ex(
+                rl.Rectangle(s0[0], s0[1], tw, th), 2.0, rl.Color(*col))
+
+        # Water overlay (every mode — level content): translucent blue per
+        # wet tile, alpha scaled by depth (editor view only; in-game the
+        # WaterPass renders the field).
+        sub_w = water_q[ty0:ty1, tx0:tx1]
+        wys, wxs = np.nonzero(sub_w)
+        wr, wg, wb = WATER_OVERLAY_RGB
+        for tx_, ty_, dq in zip((wxs + tx0).tolist(), (wys + ty0).tolist(),
+                                sub_w[wys, wxs].tolist()):
+            sx, sy = to_screen(tx_ * preview_ppt, ty_ * preview_ppt)
+            if sx + tw < 0 or sy + th < 0 or sx > win_w or sy > win_h:
+                continue
+            depth_m = dq / water_fixed.FP_ONE_F
+            alpha = int(min(190.0, 60.0 + depth_m * 65.0))
+            rl.draw_rectangle(int(sx), int(sy),
+                              max(1, int(tw)), max(1, int(th)),
+                              rl.Color(wr, wg, wb, alpha))
 
         # Spawn markers (every mode — they are level content).
         hover_idx = spawn_at(spawns, ftx, fty) if mode == "SPAWN" else None
@@ -1450,6 +1735,11 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             extra = (f"  placing {light_kind} / "
                      f"{light_color_name(light_color)} (B/C)  "
                      f"{len(lights)} lights")
+        elif mode == "WATER":
+            extra = (f"  depth {water_depth_m:.1f} m (-/=)  "
+                     f"{int(np.count_nonzero(water_q))} wet tiles")
+            if water_depth_m > WATER_DEEP_HINT_M:
+                extra += "  deep tank: drains may flash-boil (by design)"
         rl.draw_text(f"[{mode}]", 8, 28, 24, rl.Color(*COL_TEXT_HOT))
         mode_x = 8 + rl.measure_text(f"[{mode}]", 24) + 12
         rl.draw_text(f"material: {palette[selected_id][0]}{extra}",
@@ -1474,7 +1764,7 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
 
         rl.draw_text(MODE_HINTS[mode], 8, 76, 14, rl.Color(*COL_TEXT_DIM))
         rl.draw_text(
-            "TAB/F1-F6 mode | 0-6,9 material | V view N normals G grid | "
+            "TAB/F1-F7 mode | 0-6,9 material | V view N normals G grid | "
             "wheel zoom MMB/WASD pan | Ctrl+Z undo Ctrl+S save | Esc quit",
             8, 90, 12, rl.Color(*COL_TEXT_DIM))
         if flash_frames > 0:
@@ -1509,8 +1799,9 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
     rl.close_window()
     print(f"map_editor: {frames} frames; mode={MODES[mode_idx]} "
           f"unsaved_tiles={dirty_tiles} unsaved_spawns={dirty_spawns} "
-          f"unsaved_lights={dirty_lights} "
-          f"spawns={len(spawns)} lights={len(lights)}")
+          f"unsaved_lights={dirty_lights} unsaved_water={dirty_water} "
+          f"spawns={len(spawns)} lights={len(lights)} "
+          f"water_tiles={int(np.count_nonzero(water_q))}")
     if auto:
         if shot_path is not None and shot_path.is_file():
             print(f"auto screenshot: {shot_path}")
@@ -1526,8 +1817,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         description="Tiled-path map editor (engine/15 §5): paint materials, "
                     "stamp rooms/corridors/doors, place spawns + lights, "
-                    "live baked preview. 'new <name> --size WxH' scaffolds "
-                    "a level first.")
+                    "fill water, live baked preview. 'new <name> --size WxH' "
+                    "scaffolds a level first.")
     ap.add_argument("level",
                     help="level folder name under levels/ — or the literal "
                          "'new' followed by the name to create")

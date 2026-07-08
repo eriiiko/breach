@@ -352,6 +352,38 @@ class GameMap:
 
         self._update_caches()
 
+        # --- [water] initial state seed (engine/15 §2.3, P5) --------------
+        # The seed lives HERE in __init__, right after _update_caches — and
+        # NEVER inside _update_caches itself, despite the atmosphere t=0
+        # precedent living there: _update_caches re-runs on config hot-reload
+        # (reload_material_table), and a literal mirror of that precedent
+        # would RE-FLOOD A DRAINED TANK on Ctrl+R. __init__ runs exactly once
+        # per map; Simulation.reset() builds a fresh GameMap, so the seed
+        # reapplies there by construction (and the runner's
+        # _water_depth_before snapshot re-arms with it — level-seeded water
+        # is "pre-existing", no tick-1 compression spike).
+        #
+        # Mask: only interior air gets water — the solver zeroes depth on
+        # solid every step (a mass sink) and vacuum flash-boils it, so a
+        # seed there would silently destroy mass. The editor masks at save;
+        # this warn is the hand-authored-file backstop (count once, in-place
+        # write, water_depth is never reassigned).
+        water_seed_q = getattr(level_data, "water_depth_q", None)
+        if water_seed_q is not None:
+            seed = np.asarray(water_seed_q)
+            mask = (~self.solid) & (~self.is_vacuum)
+            self.water_depth[mask] = seed[mask]
+            dropped = int(np.count_nonzero(seed[~mask]))
+            if dropped:
+                import warnings
+                warnings.warn(
+                    f"[water] depth_map for level "
+                    f"'{getattr(level_data, 'name', '?')}': {dropped} "
+                    f"cell(s) carry depth on solid/vacuum tiles — ignored "
+                    f"(the solver zeroes depth on solid; the editor masks "
+                    f"at save, so this file was likely hand-edited)",
+                    RuntimeWarning, stacklevel=2)
+
     # ------------------------------------------------------------------
     # Cache rebuild
     # ------------------------------------------------------------------

@@ -202,6 +202,59 @@ def _parse_light_entry(entry, index: int, toml_path) -> LightEntry:
     )
 
 
+def _parse_water_table(raw: dict, base: Path, toml_path,
+                       tilemap: np.ndarray):
+    """Parse the optional ``[water]`` table (engine/15 §2.3, P5).
+
+    Returns the initial-depth grid as int32 Q16.16 metres — the file IS the
+    field (P5 design §2.1): a ``.npy`` loaded via ``np.load`` (zero new
+    deps, exact round-trip by identity, no runtime imaging dependency —
+    the 8-bit PNG + max_depth_m carrier was dropped on record: auto-scaled
+    re-quantization made edits non-local). Returns None when the level has
+    no ``[water]`` key — water dormancy. Validation is hard (ValueError,
+    path-bearing messages): shape must equal the tilemap's, dtype must be
+    int32, depths must be non-negative.
+    """
+    if "water" not in raw:
+        return None                   # no [water] key at all — dormancy
+    water_tbl = raw["water"]
+    if not isinstance(water_tbl, dict):
+        raise ValueError(
+            f"[water] in {toml_path} must be a table "
+            f"(got {type(water_tbl).__name__}) — spell it [water], "
+            f"not [[water]]")
+    # A DECLARED [water] table is a statement of intent: missing/empty
+    # depth_map is a hard error, never silently dry.
+    depth_rel = water_tbl.get("depth_map")
+    if not depth_rel:
+        raise ValueError(
+            f"[water] in {toml_path} missing required 'depth_map' field "
+            f"(an .npy path, int32 Q16.16 metres, shape == tilemap)")
+    depth_path = base / depth_rel
+    if not depth_path.is_file():
+        raise ValueError(
+            f"[water] depth_map declared but file missing: {depth_path}")
+    try:
+        depth_q = np.load(depth_path, allow_pickle=False)
+    except (OSError, ValueError) as e:
+        raise ValueError(
+            f"[water] depth_map is not a readable .npy array: "
+            f"{depth_path}: {e}")
+    if depth_q.dtype != np.int32:
+        raise ValueError(
+            f"[water] depth_map must be dtype int32 (Q16.16 metres), "
+            f"got {depth_q.dtype}: {depth_path}")
+    if depth_q.shape != tilemap.shape:
+        raise ValueError(
+            f"[water] depth_map shape {depth_q.shape} != tilemap shape "
+            f"{tilemap.shape}: {depth_path}")
+    if int(depth_q.min()) < 0:
+        raise ValueError(
+            f"[water] depth_map contains negative depths "
+            f"(min = {int(depth_q.min())} raw Q16.16): {depth_path}")
+    return depth_q
+
+
 @dataclass
 class LevelData:
     name: str
@@ -254,6 +307,15 @@ class LevelData:
     art_offset_px: tuple = (0.0, 0.0)
     art_px_per_tile: Optional[tuple] = None
     art_align_explicit: bool = False
+    # [water] initial state (engine/15 §2.3, P5): the starting water field,
+    # int32 Q16.16 metres, shape == tilemap — or None when the level carries
+    # no [water] key (water dormancy: a dry level is bit-identical to before
+    # the key existed). GameMap.__init__ seeds gmap.water_depth from it,
+    # masked to (~solid) & (~is_vacuum) (the solver zeroes depth on solid —
+    # a mass sink — so seeding those tiles would silently destroy water).
+    # Lives in the defaulted tail: synthetic LevelData(...) in tests keeps
+    # constructing unchanged.
+    water_depth_q: Optional[np.ndarray] = None
 
     @property
     def height(self) -> int:
@@ -440,6 +502,9 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
     lights = [_parse_light_entry(entry, i, toml_path)
               for i, entry in enumerate(lights_raw)]
 
+    # ---- [water] initial state (engine/15 §2.3, P5) ----------------------
+    water_depth_q = _parse_water_table(raw, base, toml_path, tilemap)
+
     return LevelData(
         name=name,
         version=version,
@@ -467,6 +532,7 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
         art_offset_px=art_offset_px,
         art_px_per_tile=art_px_per_tile,
         art_align_explicit=art_align_explicit,
+        water_depth_q=water_depth_q,
     )
 
 
@@ -546,6 +612,9 @@ if __name__ == "__main__":
     print(f"  Floor:   {lvl.floor_id}")
     print(f"  Lights:  {sum(1 for l in lvl.lights if l.kind == 'static')} static"
           f" + {sum(1 for l in lvl.lights if l.kind == 'beacon')} beacon")
+    print(f"  Water:   "
+          f"{int((lvl.water_depth_q > 0).sum()) if lvl.water_depth_q is not None else 0}"
+          f" wet tiles{'' if lvl.water_depth_q is not None else ' (no [water] key)'}")
     print(f"  Tile values: {sorted(np.unique(lvl.tilemap).tolist())}")
     mat, vac = materials_from_tilemap(lvl.tilemap, lvl.version)
     print(f"  Materials: hull={int((mat==1).sum())} door={int((mat==3).sum())} air={int((mat==0).sum())} vacuum={int(vac.sum())}")
