@@ -4,6 +4,19 @@
 
 ---
 
+## Waiting on Erik (human-gated)
+
+- **W6 armory tuning session (weapons-wave finale, added 2026-07-08)** — branch
+  `weapons-w6-armory` (head `39b0077`) is built, gated (626 green, golden
+  `07c3f370…` unchanged) and pushed, but NOT merged: the human-test gate is
+  Erik's grand tuning session. Launch the playground from a `weapons-w6-armory`
+  checkout, cycle the armory with **N** (panel confirms the row), and turn the
+  dials — full walkthrough in `docs/playground_guide.md` §9 (on the branch).
+  Flagged calls: the chain-stun pair (`rof_interval_seconds` vs `status_seconds`
+  on `[weapons.arc_baton]`), the plasma-vs-zombie resist wash (bullet ×0.25 then
+  HEAT ×4 ≈ no-op), and flamethrower feel at the new 10 m / 20 m meter-based
+  ranges. After the blessing: merge W6, then the wave-close ritual.
+
 ## Pending — small (background, queue up next session)
 
 - **Fire never destroys furniture (audit rider, weapons W2, 2026-07-05)** —
