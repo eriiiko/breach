@@ -49,9 +49,11 @@ from simulation.physics import apply_explosion, add_explosion_smoke
 # source_id namespace for payload-issued edits (engine/13 stable-sort key).
 # physics.py owns 1 (_SRC_EXPLOSION) and 2 (_SRC_EXPLOSION_SMOKE); the W3
 # payload effects continue the sequence so each emitter's edits stay grouped
-# and ordered in the flush independently of any other emitter.
+# and ordered in the flush independently of any other emitter. combat.py's
+# spray owns 5 (heat) and 6 (gas); the W6 plasma heat splash continues at 7.
 _SRC_PAYLOAD_GAS = 3
 _SRC_PAYLOAD_IGNITE = 4
+_SRC_PAYLOAD_HEAT = 7
 
 
 def emit_gas(gmap, queue, fy, fx, gas_species, gas_amount, gas_radius):
@@ -107,6 +109,26 @@ def ignite_ring(gmap, queue, fy, fx, ignite_radius, ignite_intensity):
     ))
 
 
+def deposit_heat(gmap, queue, fy, fx, heat_amount, heat_radius):
+    """Enqueue a one-shot heat splash into the engine/06 ``heat`` ingress
+    buffer (mechanics/03 §4 heat payload columns — W6, the plasma splash).
+
+    ONE deterministic DISC ADD FieldEdit: per tile,
+    ``heat += heat_amount × (1 − dist/heat_radius)`` — the emit_gas shape on
+    the ``heat`` field. NO RNG. The heat policy has no skip-mask (heat lands
+    on solids — that is how a plasma bolt chars the wall it hit) and the
+    combine quantizes ONCE at the write boundary (Q16.16 saturating add,
+    door 2). The C++ TemperatureSolver converts the splash to temperature
+    the SAME tick (the flush runs before physics), so ignition and the
+    heat|max unit-damage row both come free — the SPRAY two-terminals
+    discipline (zero new damage code) applied to a detonation."""
+    queue.enqueue(FieldEdit(
+        field="heat", region=Region.DISC, coords=(fy, fx, float(heat_radius)),
+        amount=float(heat_amount), mode=EditMode.ADD, falloff=Falloff.LINEAR,
+        source_id=_SRC_PAYLOAD_HEAT,
+    ))
+
+
 def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
                     kind="explosion"):
     """Execute one ``[payloads.*]`` row at tile (fy, fx) — the single owner
@@ -128,6 +150,9 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
        its per-tile noise is drawn at the queue flush, not here).
     4. ``emit_gas``            — when ``gas_species`` is nonempty (W3).
     5. ``ignite_ring``         — when ``ignite_radius > 0`` (W3).
+    5b. ``deposit_heat``       — when ``heat_amount > 0`` (W6, the plasma
+        splash: a one-shot DISC heat deposit; converts to temperature the
+        same tick).
     6. ``ExplosionEvent(pos=(fx, fy), radius=radius, kind=kind)`` — always
        (the detonation happened whatever the payload mix; the renderer
        ignores unknown kinds by design).
@@ -151,9 +176,12 @@ def execute_payload(gmap, queue, units, fy, fx, payload, rng, events=None,
     if payload.ignite_radius > 0:
         ignite_ring(gmap, queue, fy, fx, payload.ignite_radius,
                     payload.ignite_intensity)
+    if getattr(payload, "heat_amount", 0.0) > 0:
+        deposit_heat(gmap, queue, fy, fx, payload.heat_amount,
+                     payload.heat_radius)
     if events is not None:
         events.append(ExplosionEvent(pos=(fx, fy), radius=payload.radius,
                                      kind=kind))
 
 
-__all__ = ["execute_payload", "emit_gas", "ignite_ring"]
+__all__ = ["execute_payload", "emit_gas", "ignite_ring", "deposit_heat"]

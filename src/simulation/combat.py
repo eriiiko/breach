@@ -44,7 +44,10 @@ from config import CFG
 from simulation import attack_resolver
 from simulation import wall_fixed
 from simulation.damage import KINETIC, DamagePacket, apply_packet
-from simulation.events import LaserFiredEvent, ShotFiredEvent, ExplosionEvent
+from simulation.events import (
+    LaserFiredEvent, ProjectileGlowEvent, ShotFiredEvent, SprayJetEvent,
+    ExplosionEvent,
+)
 from simulation.gases import N_GASES
 from simulation.field_edit import EditMode, FieldEdit, Region
 from simulation.orders import (
@@ -303,7 +306,13 @@ class BulletInFlight:
 
         self.remaining_steps -= n_steps
 
-        if hit_unit is not None and self.payload is None:
+        # Direct-hit packet — gated on the ROUND'S authored damage (W6):
+        # every kinetic small-arm authors damage > 0 and no payload (the
+        # shipped branch, bit-identical); the 40 mm authors damage = 0 (the
+        # W3 rule — the blast does the work, no packet); a PLASMA bolt
+        # authors BOTH (damage 40 HEAT + a splash payload — the armory §6
+        # row), so it hits like a slug AND detonates at its stop below.
+        if hit_unit is not None and int(self.ammo.damage) > 0:
             actual_dmg = int(self.ammo.damage)
             if hit_unit.team == 1:  # zombie
                 # SITE-SIDE pre-mitigation amount rule, deliberately NOT a
@@ -342,6 +351,13 @@ class BulletInFlight:
                     to_tile=(self.rx, self.ry),
                     hit_target_id=hit_id,
                 ))
+                # W6 glow rounds (ammo.glow — the plasma bolt): one
+                # RENDER-ONLY position ping per advanced tick, the
+                # LaserFiredEvent precedent for slow projectiles. Not part
+                # of the synced digest (only UnitHit/UnitKilled hash).
+                if getattr(self.ammo, "glow", ""):
+                    events.append(ProjectileGlowEvent(
+                        pos=(self.rx, self.ry), kind=self.ammo.glow))
 
         still_flying = ((not stopped) and hit_unit is None
                         and self.remaining_steps > 0)
@@ -1142,10 +1158,20 @@ def start_spray_burst(u, weapon, fire_order, tick):
         float(fire_order.target_fx) - u.center_tile_x())
 
 
-def process_sprays(gmap, units, queue):
+def process_sprays(gmap, units, queue, events=None):
     """One tick of every active spray burst — the W4 deposit pass, invoked
     from the conductor in the SHOOTING SLOT (directly after
     :func:`process_shooting`; call line only in simulation.py).
+
+    ``events`` (W6 — the flame-jet visual): when a list is passed (the
+    sim's ``tick_events``), every tick that actually DEPOSITS also appends
+    one RENDER-ONLY :class:`SprayJetEvent` carrying the aimed cone
+    (apex / target / range / half-angle / kind), the LaserFiredEvent
+    precedent — a pure function of already-synced state. The parameter
+    carries NO generator and the jet event can touch no unit: the
+    two-terminals invariant is unchanged (the runtime no-HP proof in
+    tests/test_spray_weapons.py still stands; only UnitHit/UnitKilled
+    are digest-hashed, so the jet moves no digest).
 
     Fixed stored-unit order (the apply_environmental_damage convention —
     order-free anyway: each burst writes through the stable-sorted edit
@@ -1187,6 +1213,19 @@ def process_sprays(gmap, units, queue):
         ammo = tables.ammo_for_weapon(weapon)
         tx, ty = u.spray_target
         deposit_spray_cone(gmap, queue, u, weapon, ammo, tx, ty)
+        if events is not None:
+            # W6: the jet visual — one event per DEPOSITING tick (an
+            # interrupted / dead / finished burst emits nothing). "flame"
+            # for heat-carrying rounds (the Dragon family), "miasma" for
+            # gas-only sprays (the fainter, sickly renderer variant).
+            events.append(SprayJetEvent(
+                unit_id=getattr(u, "id", -1),
+                from_tile=(u.center_tile_x(), u.center_tile_y()),
+                to_tile=(float(tx), float(ty)),
+                range_tiles=int(weapon.range_tiles),
+                cone_half_angle_degrees=float(weapon.cone_half_angle_degrees),
+                kind=("flame" if float(ammo.heat_deposit) > 0 else "miasma"),
+            ))
         u.spray_ticks_left = ticks_left - 1
         if u.spray_ticks_left <= 0:
             u.spray_order = None

@@ -759,7 +759,10 @@ class Simulation:
         # this tick's flame heat converts to temperature THIS tick). Writes
         # fields only (two-terminals invariant); draws no RNG; dormant (one
         # attribute read per unit) when no spray weapon is in play.
-        process_sprays(self.gmap, self.units, self.edit_queue)
+        # W6: tick_events rides along for the RENDER-ONLY SprayJetEvent
+        # (the flame-jet visual) — not digest-hashed, pure synced-state fn.
+        process_sprays(self.gmap, self.units, self.edit_queue,
+                       events=self.tick_events)
 
         # 5. Zombie AI.
         update_zombies_tick(self.gmap, self.units, self.tick)

@@ -272,14 +272,18 @@ def test_dragon_ignites_wood_within_the_derived_tick_count():
 # 5. Two-terminals: no W4 code touches unit HP; the heat row does the work
 # ---------------------------------------------------------------------------
 def test_spray_code_never_touches_unit_hp_structural_and_runtime():
-    """Structural: the spray machinery takes no generator and no event list
-    — it CANNOT emit packets. Runtime: a full Dragon-7 burst over a victim
+    """Structural: the spray machinery takes no generator — it cannot draw.
+    (W6 amendment of the W4 pin: process_sprays DOES now take an ``events``
+    list, but only to append the RENDER-ONLY SprayJetEvent — the flame-jet
+    visual; the runtime proof below shows a full burst still emits no
+    packet and moves no HP, and deposit_spray_cone itself still takes
+    neither rng nor events.) Runtime: a full Dragon-7 burst over a victim
     with NO physics attached (the exchange rows never run) leaves every HP
     bit-identical, even though the cone deposited heat all over the
     victim's tiles."""
     assert "rng" not in inspect.signature(process_sprays).parameters
-    assert "events" not in inspect.signature(process_sprays).parameters
     assert "rng" not in inspect.signature(deposit_spray_cone).parameters
+    assert "events" not in inspect.signature(deposit_spray_cone).parameters
 
     sim = Simulation(_level(), seed=SEED, breach_physics=None,
                      enable_recorder=False)
@@ -290,13 +294,22 @@ def test_spray_code_never_touches_unit_hp_structural_and_runtime():
     hp_s, hp_v = s.current_hp, victim.current_hp
     assert sim.apply_action(sid, Order(
         ORDER_FIRE, target_fx=12, target_fy=10, phase=0))
-    _step(sim, 40)                                    # a full burst and more
+    seen_kinds = set()
+    for _ in range(40):                               # a full burst and more
+        _step(sim)
+        for e in sim.tick_events:
+            seen_kinds.add(type(e).__name__)
     # Deposits DID land on the victim's tiles (no physics -> no heat clear).
     assert any(int(sim.gmap.heat[ty, tx]) > 0
                for (tx, ty) in victim.occupied_tiles())
     # ... and nobody's HP moved: the spray wrote fields, nothing else.
     assert s.current_hp == hp_s
     assert victim.current_hp == hp_v
+    # The only event a burst emits is the render-only jet — no UnitHit,
+    # no UnitKilled (the two-terminals invariant, W6 form).
+    assert "SprayJetEvent" in seen_kinds
+    assert "UnitHitEvent" not in seen_kinds
+    assert "UnitKilledEvent" not in seen_kinds
 
 
 def test_marine_in_flames_loses_hp_via_the_existing_heat_row():
