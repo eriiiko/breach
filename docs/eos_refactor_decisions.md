@@ -37,14 +37,25 @@
    → `×k_p` → requantize. No reason for float (k_p is a fractional coeff → a `mul_q16` by a quantized
    k_p). **Fold into the refactor** (the head term is rewritten to read the derived integer P anyway).
    No urgency (already deterministic via the quantize-pin), but do it — pure integer > pinned bridge.
-7. **Temperature: shared conduction, separate energy rules per medium** (SHAPE locked; DETAILS open,
-   see OPEN-A). Conduction unifies for free (it's `conductivity`-keyed, no solid/air branch — give air
-   conductivity and it conducts via the existing mechanism). Gas `T` needs its *own* energy rules
-   (advect + compression work + radiation), NOT the solid path's bit-shift-convert (needs a real
-   divide for dynamic N heat-capacity) or its decay-to-ambient (gas energy must conserve, not decay).
-   Keep the working solid `temperature`; add gas `T`; couple at interfaces via conduction + the
-   one-way `heat` radiation channel. *(Bonus: the old `temperature_design_proposal.md` §5 rejected an
-   air-temperature field as "one consumer, not worth it" — the EOS dissolves that; gas T co-derives P.)*
+7. **Temperature = ONE unified field, masked per-medium passes** *(OPEN-A LOCKED 2026-07-09)*. A single
+   Q16.16-Kelvin `temperature` array covers gas + solid cells. Implementation:
+   - **gas rules** (semi-Lagrangian advect + compression-work `−P∇·u` + combustion/radiation sources,
+     NO decay-to-ambient) run on the **open-air mask**;
+   - **solid rules** (existing convert/conduct-owned-below/cool) run on the **solid mask**;
+   - **conduction is ONE whole-grid pass** (the existing `conductivity`-keyed stencil) — give air a small
+     nonzero conductivity and it does air↔air, solid↔solid, AND the solid↔air interface exchange
+     automatically. *That interface exchange is the primary energy sink for sealed rooms — free here,
+     explicit code in a two-field design; that + Dalton keeping gas-T single is why one field won.*
+   - **Energy exits physically** now (not the old phantom decay-to-0 + per-tick heat-clear): (1) hot gas
+     **vents to vacuum** (N,T advect out a breach), (2) **conducts into the ship's thermal mass** (then
+     hull cells radiate to space via the reinterpreted `cool_shift_vacuum`), interior solids conduct to
+     the adjacent gas instead of decaying to a fake ambient.
+   - **Kelvin locked** (fits Q16.16: fire ≤ ~9000 K « 32767; 1/65536 K precision). No rescale.
+   - Numerical work item: gas heat deposit → `ΔT = ΔE/(N·c_v)` is a **÷ by dynamic per-tile N** — a
+     per-tile per-tick fixed-point reciprocal (the *proven* spike0b GS-reciprocal class), not the solid's
+     free bit-shift.
+   *(Bonus, still true: `temperature_design_proposal.md` §5 rejected an air-temp field as "one consumer,
+   not worth it" — the EOS dissolves that; gas T co-derives P.)*
 8. **Everything involved is ALREADY Q16.16 fixed-point** (gas, atmosphere, wave, heat, temperature,
    water, fire). The refactor **rearranges** fixed-point fields (N+T→P), it does not convert
    float→fixed. Big de-risk. (A few float bridges remain at boundaries — item 6 is one; purify where
@@ -55,21 +66,31 @@
    implementation) with the determinism/bit-identity gates. **Nothing is built until the doc survives
    critique.**
 
-## OPEN — to decide next (needs Erik's loop-time)
+## Peripheral decisions locked (2026-07-09)
 
-- **A. Temperature medium-split DETAILS** — the exact gas-`T` energy discretization (the divide for
-  dynamic-N heat capacity; the compression-work term; interface conduction/radiation coupling). Walk
-  carefully.
-- **B. What `N` actually is + multi-gas / chemistry — a DEDICATED design session** (Erik's request).
-  Investigate: per-gas molar mass + gas constants, individual species tracking, emergent chemistry
-  (two gases mix → explode, etc.). **Claude's complexity read:** the multi-gas *core largely FALLS
-  OUT* of existing foundations (gas is already `(N_gases,h,w)` Q16.16; Dalton `P = C·T·ΣN_i` is a sum;
-  molar mass is a new table column) — a *design* task, not research. Chemistry = a cheap emergent
-  tier (threshold reactions on per-gas density + T — falls out) + a deep realistic-kinetics tier
-  (a lit search *if* we want that — decide within the session). Sub-question: does bulk air become an
-  explicit N-species, or stay implicit? **Parked post-birthday.**
-- **C. Remaining `§D` items** in the interaction map not yet locked (P-materialization contract
-  details; whether to add an artificial acoustic-damping-for-feel term; etc.).
+- **2.5D z-levels DEFERRED** — `128×128×Z` (Z=2–4) is the natural next phase after the flat-2D EOS
+  lands (or never — "we'll see"). It's the clean home for z-buoyancy AND it retires the permeability
+  fudge (furniture solid at low z, open above → smoke pours over). Out of scope for the first patch.
+- **Molar mass DROPPED (for now)** — with no z-layer there's no buoyancy for it to drive, and per
+  Avogadro every gas contributes equally per particle to pressure. Returns only *with* 2.5D.
+- **Multi-gas = Dalton sum + threshold chemistry** — `P = C·T·Σ N_i` over the existing `(N_i,h,w)`
+  Q16.16 gas fields; chemistry (e.g. two gases mix → react) from per-gas density + T thresholds.
+  **No lit search** (game-adequate falls out; only realistic multi-species diffusion / combustion
+  kinetics would warrant one — not now).
+- **Units:** must **block/absorb shockwaves** (teammate shielding — a kept gameplay requirement → units
+  are partial obstacles/absorbers in the P solver, the wave-absorb mechanic carries over); must **NOT
+  block water** (kept — Erik's call); **gas-permeability is droppable** (the smoke-seeps-past fudge, no
+  longer needed).
+
+## OPEN — to decide next
+
+- **B (partially resolved).** Still open: the exact **chemistry reaction rules** (which species react,
+  yields, thresholds) — a small design pass, no lit search; and whether **bulk air becomes an explicit
+  N-species** or stays implicit (needed because today's gas fields are trace tracers — the bulk
+  nitrogen/oxygen air isn't a species yet, but `N` in `P=C·N·T` must include it). *This is the one real
+  open sub-question in OPEN-B.*
+- **C. Remaining `§D` items** in the interaction map (P-materialization contract details; whether to add
+  an artificial acoustic-damping-for-feel term; recalibrating `k_push`/`k_p`; etc.).
 
 ## Resume plan (next session)
 
