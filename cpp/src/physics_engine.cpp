@@ -142,7 +142,7 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     // Arg order cross-checked against bindings.cpp TemperatureSolver.step and
     // the Python call site:
     //   temperature(mut), heat, heat_inv_shift, face_shift, solid, is_vacuum,
-    //   atmosphere.
+    //   atmosphere, wind_x, wind_y, h, w, dt.
     // `temperature_mut` is the SAME array as the fire's const `temperature`
     // (gmap.temperature in Python) — the binding extracts both a const and a
     // mutable pointer from the one numpy array. The fire read it above; the
@@ -151,11 +151,18 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     // vacuum-exposure threshold is now a Q16.16 integer compare inside the TU). The
     // atm_f_ dequantize bridge that stood here is GONE — step_tail has NO float
     // bridge left in the FIRE/TEMPERATURE path (the centrepiece-arc end-state).
+    // EOS refactor P2 (docs/eos_refactor_design.md §4, §8 patch P2): the solver
+    // now ALSO takes wind_x/wind_y + sim_time (already in scope here — the SAME
+    // wind/dt the fire call above used) for its gas-T semi-Lagrangian pre-pass.
     // CUDA-S1: dispatch to the GPU temperature solver when the backend is
     // switched on (bit-identical to the CPU path — same integer ops). The CPU
     // solver remains the live fallback; with the flag off (default) this is the
     // exact prior call. On a CPU-only build (no BREACH_HAS_CUDA) only the CPU
-    // path compiles.
+    // path compiles. P2 NOTE: the GPU kernel (cuda_temperature.cu) is UNTOUCHED
+    // by this patch (no CUDA in scope — non-goal) and still only implements the
+    // solid convert/conduct/cool passes; the gas-T rules are CPU-only until a
+    // later P6 GPU port. `temperature_backend_is_cuda()` defaults false, so this
+    // is dormant on every build that doesn't explicitly opt in.
 #ifdef BREACH_HAS_CUDA
     if (breach_cuda::temperature_backend_is_cuda()) {
         breach_cuda::temperature_step(
@@ -170,7 +177,8 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         this->temperature.step(
             temperature_mut, heat, heat_inv_shift, face_shift,
             solid, is_vacuum, atmosphere,
-            h, w);
+            wind_x, wind_y,
+            h, w, sim_time);
     }
 
     return destroyed;
