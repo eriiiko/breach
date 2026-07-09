@@ -367,7 +367,8 @@ class PhysicsRunner:
             gmap.wind_x, gmap.wind_y,
             gmap.obstacles, gmap.solid, gmap.is_vacuum,
             gmap.dyn_permeability, gmap.dyn_wave_absorb,
-            gmap.gas, gmap.gases.diffusion, sink_x, sink_y, sim_time,
+            gmap.gas, gmap.gases.diffusion, gmap.gases.conservative,
+            sink_x, sink_y, sim_time,
         )
 
         # Per-tick orchestration TAIL — moved into C++ in Patch 1 S4a

@@ -25,6 +25,7 @@
 #include "temperature_solver.h"
 #include "raycaster.h"
 #include "water_solver.h"
+#include "bulk_transport.h"   // EOS refactor P1: bulk O2/N2 donor-cell flux
 
 class PhysicsEngine {
 public:
@@ -148,6 +149,19 @@ public:
     //   gas                         : float (N, h, w) — the per-gas density planes
     //   gas_diffusion               : float (N,)     — per-gas base diffusion
     //   sink_x, sink_y              : float (h, w) — smoke sink direction (Python-fetched)
+    //
+    // --- EOS refactor P1 (docs/eos_refactor_design.md §2.2) --------------
+    // `gas_conservative` (N,) flags the BULK species (O2 / inert_N2,
+    // simulation/gases.py) — the two planes that move by donor-cell
+    // conservative flux (bulk_transport.cpp) instead of the semi-Lagrangian
+    // per-gas loop below. run_substeps calls bulk_flux_transport ONCE per
+    // tick, immediately after diffuse_solve computes the fresh wind (step 2)
+    // and BEFORE the smoke SL loop (step 3) — riding the SAME once-computed
+    // wind, purely additive (no solver change). The existing per-gas SL loop
+    // (smoke.step / sink_hop, steps 3-4) SKIPS any plane flagged conservative,
+    // so the two transport schemes never both touch the same plane; every
+    // legacy (non-bulk) plane's SL transport is untouched (conservative[gi]
+    // is false there), so this is 0-ULP for the 5 legacy species.
     void run_substeps(
         int32_t* wave_p, int32_t* wave_v, int32_t* wave_source,  // S2a: Q16.16
         int32_t* atmosphere,                                     // S2c: Q16.16
@@ -155,6 +169,7 @@ public:
         const bool* obstacles, const bool* solid, const bool* is_vacuum,
         const float* dyn_permeability, const float* dyn_wave_absorb,
         int32_t* gas, const float* gas_diffusion, int n_gases,   // S2b: gas Q16.16
+        const bool* gas_conservative,                             // EOS P1
         const float* sink_x, const float* sink_y,
         int h, int w, float sim_time);
 

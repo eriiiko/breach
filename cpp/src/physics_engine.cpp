@@ -193,6 +193,7 @@ void PhysicsEngine::run_substeps(
         const bool* obstacles, const bool* solid, const bool* is_vacuum,
         const float* dyn_permeability, const float* dyn_wave_absorb,
         int32_t* gas, const float* gas_diffusion, int n_gases,   // S2b: gas Q16.16
+        const bool* gas_conservative,                             // EOS P1
         const float* sink_x, const float* sink_y,
         int h, int w, float sim_time) {
 
@@ -301,6 +302,23 @@ void PhysicsEngine::run_substeps(
             sim_time);
     }
 
+    // 2b. EOS refactor P1 (docs/eos_refactor_design.md §2.2) — bulk O2/N2
+    // donor-cell conservative flux transport, ONCE per tick, riding the wind
+    // diffuse_solve just wrote above (fresh this tick) — AFTER the atmosphere
+    // solve, BEFORE fire (fire runs later, in step_tail). Purely additive: it
+    // touches only the two planes flagged `gas_conservative`; every legacy
+    // (trace) plane is untouched here (and the smoke SL loop below skips the
+    // bulk planes in turn — see its per-gas loop). CPU only (P1 scope; the
+    // CUDA port is P6). dx == 1 tile; dt == the full sim_time (no CFL
+    // substepping here — the per-cell outflow limiter keeps N >= 0 regardless
+    // of CFL, exactly like WaterSolver's donor-cell block).
+    bulk_flux_transport(
+        gas, gas_conservative, n_gases,
+        wind_x, wind_y,
+        solid, is_vacuum,
+        dyn_permeability,
+        h, w, sim_time);
+
     // 3. Smoke-CFL floor (Patch 2b). Smoke's explicit diffusion is forward-Euler,
     // so it is CFL-bound; the effective diffusion spikes under wind:
     //   d_eff = d_smoke·(1 + wind_diffusion_scale·|wind|²).
@@ -357,8 +375,15 @@ void PhysicsEngine::run_substeps(
     // Per-gas smoke transport (engine/05 §6.2, M1) — WIND-ONLY now (the breach
     // sink is the separate K-hop loop below). n_smoke× the per-gas loop; skip an
     // all-zero plane (numpy `.any()`); set d_smoke BEFORE each step (member-set).
+    // EOS refactor P1: SKIP any plane flagged `gas_conservative` — the bulk
+    // O2/N2 pair already moved above via bulk_flux_transport (step 2b) and
+    // must NOT also ride this non-conservative semi-Lagrangian loop (which
+    // would transport them a second time AND clamp them to the smoke [0,1] ceiling,
+    // destroying an O2-tank spike). Every legacy (trace) plane has
+    // `gas_conservative[gi] == false`, so this loop is unchanged for them.
     for (int s = 0; s < n_smoke; ++s) {
         for (int gi = 0; gi < n_gases; ++gi) {
+            if (gas_conservative[gi]) continue;                 // EOS P1
             int32_t* gas_slice = gas + (size_t)gi * plane;     // S2b: Q16.16
             bool any = false;
             for (int i = 0; i < plane; ++i) {
@@ -404,9 +429,13 @@ void PhysicsEngine::run_substeps(
     // the sink was fused into the back-trace). With no breach sink_x/sink_y are
     // all-zero, so each hop is the identity — sealed rooms are untouched. The
     // per-gas `.any()` skip avoids hopping an empty plane.
+    // EOS refactor P1: SKIP the bulk O2/N2 planes here too — the breach sink
+    // is a non-conservative back-trace pull; the bulk pair's mass only ever
+    // leaves the system through bulk_flux_transport's vacuum zeroing (§2.2).
     const int K = this->smoke.vent_hops;
     for (int k = 0; k < K; ++k) {
         for (int gi = 0; gi < n_gases; ++gi) {
+            if (gas_conservative[gi]) continue;                 // EOS P1
             int32_t* gas_slice = gas + (size_t)gi * plane;     // S2b: Q16.16
             bool any = false;
             for (int i = 0; i < plane; ++i) {
