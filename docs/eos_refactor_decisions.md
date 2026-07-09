@@ -84,11 +84,16 @@
 
 ## OPEN — to decide next
 
-- **B (partially resolved).** Still open: the exact **chemistry reaction rules** (which species react,
-  yields, thresholds) — a small design pass, no lit search; and whether **bulk air becomes an explicit
-  N-species** or stays implicit (needed because today's gas fields are trace tracers — the bulk
-  nitrogen/oxygen air isn't a species yet, but `N` in `P=C·N·T` must include it). *This is the one real
-  open sub-question in OPEN-B.*
+- **B — "what is N" largely RESOLVED (2026-07-09, Erik keen).** The bulk air becomes **two explicit
+  species: O2 + inert-N2**, with the traces (smoke/poison/…) on top, and `N = Σ(all species)` (Dalton,
+  `P = C·T·N`). **O2 is tracked as its own gas** — Claude's feasibility call: **very doable and cheap**
+  (just another slice in the existing `(N_species,h,w)` Q16.16 gas array; rides the proven per-gas
+  fixed-point transport; ≈ +1 bulk field vs today's single `atmosphere`). It's the `O2-gates-on-N`
+  decision made real, and it makes a pile of gameplay **emergent, not scripted**: fire self-extinguishes
+  as it eats local O2; breach → O2 vents → fire dies; **O2-tank rupture → O2-rich pocket → fireball**;
+  inert/CO2 flood smothers fire + suffocates; units suffocate in low-O2. Strongly endorsed.
+  Still open (N-session, no lit search): **combustion stoichiometry** (O2 consumed → smoke/heat yield)
+  + suffocation tuning — balancing, not feasibility.
 - **C. Remaining `§D` items** in the interaction map (P-materialization contract details; whether to add
   an artificial acoustic-damping-for-feel term; recalibrating `k_push`/`k_p`; etc.).
 
