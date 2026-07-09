@@ -1,597 +1,411 @@
-# EOS refactor — design document (rung B, compressible ideal gas)
+# EOS refactor — design document **v2** (rung B, compressible ideal gas)
 
-> **Status:** DRAFT for design-gate review (adversarial critique, then Erik). Not canon,
-> not a build order. Companions (read before this, they hold the locked decisions this
-> doc turns into an architecture): `docs/eos_refactor_decisions.md` (LOCKED 1–9 +
-> peripheral decisions), `docs/eos_refactor_interaction_map.md` (code-grounded
-> read/write inventory, §D risk list), `docs/eos_research_report.md` §4 (Kwatra
-> pseudocode + CFL story). Working reference: `prototypes/eos/scheme_rung_b.py` +
-> `eos_core.py` on branch `eos-prototype` (float numpy spike, self-verified stable
-> at 128²; this doc treats it as an implementation reference, not a spec).
+> **Status:** v2 DRAFT for round-2 critique, then Erik. Supersedes v1 in place; the round-1
+> critique lives at `docs/eos_refactor_design_critique.md`. Companions:
+> `eos_refactor_decisions.md` (LOCKED decisions incl. the three v2 calls below),
+> `eos_refactor_interaction_map.md`, `eos_research_report.md` §4. The float prototype
+> (`prototypes/eos/scheme_rung_b.py`, branch `eos-prototype`) is demoted to a **shape
+> reference only** — v2 deliberately does *not* carry its numerics forward (see §3).
 >
-> **Per the design-gate practice (decision 9): nothing is built until this doc
-> survives critique.** No engine code changes in this pass.
+> **Nothing is built until this doc survives critique** (decision 9).
+
+## v1 → v2 changelog (what changed, and which finding each change kills)
+
+| Change | Kills |
+|---|---|
+| **Solver reformulated to true Kwatra pressure-evolution** — the Helmholtz RHS carries the advected absolute pressure `p* = C·N·T`, not a divergence-only correction. Venting, thermal expansion, and water push become *native*; the `div_target` heuristic and its tuned gains (`K_EXPAND`, `W_DISPLACE_GAIN=60`) are **deleted**. | **B1** (native venting), D6 partly, retires two hacks |
+| **One velocity.** `wind_x/wind_y` become views of the solver's `(vx,vy)`; smoke and fire-fan advect on the *same* velocity that transports O2. No more cosmetic-vs-physical split. | **B1-sub** (smoke vents while O2 stays) |
+| **Bulk O2/N2 transport = donor-cell conservative flux** (the shipped water-solver pattern, Q16.16 + outflow limiter, CUDA precedent `cuda_water.cu`). Global mass-renormalization is **deleted** from the design. Flux form *is* the continuity equation — dilation included. | **B2** (missing `−N∇·u`), **D1** (sealed-room leak, unfittable divide, cadence ambiguity), renorm div-by-zero minor |
+| **Fixed-point spec for the pressure solve**: all Helmholtz coefficient/diagonal/neighbor-sum arithmetic in **wide int64 (Q16.16-scaled)** intermediates, narrowed only at the final per-cell quotient; a **solver-local `N_floor`** independent of gameplay; an **overflow/saturation stress sweep** in the gate. | **B3**, **B4** |
+| **Patch graph re-derived** — every patch leaves the game runnable + testable; `wave_p` retirement and its consumer migration happen **in the same patch**; `atmosphere` survives as a zero-copy alias of `P`; unified temperature lands *before* the solver that needs gas-T. | **B5**, **B6** |
+| **Cost honesty**: p99/max (not mean) acceptance gates; explicit sweep-count re-derivation at the patch-3 gate; per-species cost model; combined-system bake-off gate as its own HUMAN-TEST patch. | **B7**, **D8** |
+| **Combustion products are conservative**: the non-soot fraction of consumed O2 is credited to `inert_N2` ("burnt products"). Sealed-room baseline pressure no longer fake-drains. | **D2** |
+| Compression-work term **substepped** with advection + the `T` floor **named as an accounted sink** (debug telemetry counter). | **D3** |
+| Unit shockwave-shielding placed concretely: **per-cell velocity damping in the correction step** (`u *= 1 − absorb·dt`, from `dyn_wave_absorb`). | **D4** |
+| Substep count via the proven **integer-ceil discipline** (`smoke_cliff_count` class); `max|u|` via `sqrt_q16`/`sqrt_q16_dev`. | **D5** |
+| Ripple splash reads the **per-tick pressure transient `|P − P_prev|`** (P_prev is a kept copy of last tick's materialized P). | **D6** |
+| **GPU backends for touched systems pinned to CPU** for the migration window (patches 3–5). | **D7** |
+| Patch-6 CUDA surface **fully enumerated** (incl. the new velocity-advection and bulk-flux kernels; `cuda_wave.cu`/`cuda_atmosphere.cu` retirement). | **D9** |
+| Per-sub-kernel bit-identity checkpoints in the solver patch (not one end-of-tick digest). | minor |
+| Floors: combustion's `N_total` divisor floored independently of `o2_thresh`; burst-walls furniture-`N` note; no-shock-capturing fidelity limit named. | minors |
 
 ---
 
 ## 1. Goal & scope
 
-**Adopt rung B** — a genuine compressible ideal gas — as Breach's pressure model,
-replacing the current two-field `atmosphere + wave_p` IMEX scheme.
+**Adopt rung B** — a genuine compressible ideal gas — replacing the two-field
+`atmosphere + wave_p` IMEX scheme. Two primary fields carry the physics:
 
-Two primary fields carry the physics; everything else is derived or downstream:
+- **`T`** — gas temperature, Q16.16 Kelvin, **one unified field** across gas + solid
+  (decision 7 / A1).
+- **`N_i`** — per-species particle density, Q16.16, the existing `(N_species, h, w)`
+  array grown by two **bulk** species (O2, inert_N2).
 
-- **Gas temperature `T`** (Q16.16 Kelvin, unified across gas and solid — decision 7).
-- **Particle density `N`** (Q16.16, per-species, `(N_species, h, w)` — decision "B" /
-  OPEN-B resolution).
+Pressure is derived: **`P = C · N_total · T`**, materialized **once per tick** into a
+stored Q16.16 field before any consumer reads (decision 5). Downstream consumers read
+`P`; upstream writers feed `N` or `T` — "feeding pressure" ceases to exist as a concept.
 
-Pressure is **derived, not stored-as-primary**: `P = C · N_total · T` (Dalton sum over
-species), materialized once per tick into a stored field (decision 5). Downstream
-consumers (wind, water head, burst walls, unit push) **read** derived `P`; upstream
-writers (explosions, fire, water displacement, breach venting) **feed** `N` or `T`,
-never `P` directly (interaction map §B: "feeding pressure stops existing").
+**Fixed-point discipline:** every touched field is already Q16.16 (decision 8). This
+refactor *rearranges* fixed-point state; the only float bridges it meets, it **removes**
+(water head, the `atm_f_`/`wave_p_f_` mirrors). A patch reaching for a new float
+intermediate is a red flag.
 
-**Fixed-point discipline:** everything involved is *already* Q16.16 (decision 8) —
-`atmosphere`, `wave_p`/`wave_v`, `gas` (all 5 species), `heat`, `temperature`, `water_depth`,
-water's `flow_vx/vy`. This refactor **rearranges** existing fixed-point fields into a new
-equation structure; it does not introduce float→fixed conversion anywhere. That is the
-single biggest de-risking fact about this refactor and it should be treated as a hard
-constraint on every patch below: if a patch is reaching for a float intermediate that
-isn't one of the three already-known bridges (§7), that's a red flag, not a shortcut.
+**Out of scope** (unchanged from v1): 2.5D z-layers; molar-mass buoyancy (returns with
+z); realistic combustion kinetics / species diffusion (no lit search — structure now,
+constants by eye); through-wall wave transmission; the fire-intensity logistic's shape
+(only its O2 *input* changes).
 
-### Explicitly OUT of scope
-
-- **2.5D z-layers.** Deferred (decisions, "peripheral"). The flat-2D EOS lands first,
-  or the ship never grows z at all ("we'll see"). Z is the natural home for
-  molar-mass buoyancy and retires today's permeability fudge (furniture solid-low/open-high)
-  — but neither is needed to ship rung B flat.
-- **Molar-mass buoyancy.** Deferred *with* z (no z-layer ⇒ no buoyancy axis for it to
-  drive; per Avogadro every gas contributes equally per particle to pressure at fixed
-  T, so a single flat layer has nothing for molar mass to differentiate).
-- **Species-realistic combustion kinetics / diffusion.** Decision: "no lit search" —
-  game-adequate stoichiometry (§5) is deliberately under-researched; only a switch to
-  *realistic* multi-species kinetics would warrant literature work, and that is not this
-  patch's goal.
-- **Through-wall wave transmission** (engine/04 §5, "4b" — already deferred pre-EOS,
-  unaffected by this refactor either way).
-- **Rewriting the fire intensity feedback logistic** (engine/06 §5, stage 1). It keeps
-  its shape; only its `o2` term's *input* changes (mean `atmosphere` → mean `N_O2`, §5).
+**Fidelity limit, named:** fixed-sweep GS on the Helmholtz operator smooths
+discontinuities — blasts are soft compression waves, not Rankine–Hugoniot shocks, by
+construction. That is the intended game aesthetic, not an accident.
 
 ---
 
 ## 2. Field architecture
 
-### 2.1 Species set
+### 2.1 Species
 
-Extend the existing `gmap.gas` dense `(N_species, h, w)` Q16.16 array
-(`src/simulation/gases.py`, currently `N_GASES = 5`: `white_smoke, black_smoke, poison,
-teargas, fuel_gas`) with **two new bulk species**, prepended or appended as new
-contiguous ids (exact id placement is a patch-1 detail, not architectural):
-
-| Species | Role | Conservative? | Notes |
+| Species | Class | Transport | Conserved? |
 |---|---|---|---|
-| **O2** | bulk breathable oxygen | Yes (transport-conserved) | combustion sink (§5), suffocation gate |
-| **inert_N2** | bulk inert filler | Yes (transport-conserved) | today's "the rest of the atmosphere"; smothers fire, dilutes O2 |
-| `white_smoke`, `black_smoke`, `poison`, `teargas`, `fuel_gas` | existing traces | No (decay-permitted, per `gases.py`'s loaded-but-unapplied `decay` column) | unchanged role; ride on top of the bulk as before |
+| **O2** | bulk | **donor-cell flux** (§2.2) | exactly (transport); consumed only by combustion |
+| **inert_N2** | bulk | **donor-cell flux** | exactly; receives combustion's "burnt products" (§5) |
+| `white_smoke, black_smoke, poison, teargas, fuel_gas` | trace | semi-Lagrangian (as today) | no (decay-permitted, unchanged) |
 
-This is the OPEN-B resolution from the decisions log: O2 is "just another slice in the
-existing `(N_species,h,w)` Q16.16 gas array" — ≈ +1 bulk field over today's single
-`atmosphere` scalar (N2 is the second). No new array shape class, no new dtype, no new
-transport kernel class — the per-gas semi-Lagrangian advection Breach already runs
-per-slice (`PhysicsRunner.step`'s per-gas loop) is the transport primitive for O2/N2 too,
-with one change: **O2 and N2 must not decay** (§2.2 — decision 2 in the interaction map:
-"Gas as *conserved* N is a real fight, not a coefficient").
+`N_total = Σ N_i` (Dalton). Traces contribute their (small) real mass; their
+non-conservation is an already-blessed simplification — the bulk pair carries ~99 % of
+`N_total`, so `P` integrity rests on the conserved species.
 
-`N_total = Σ_i N_i` over **all seven** species (Dalton — decision "Multi-gas = Dalton sum
-+ threshold chemistry"). `P = C · N_total · T`. The existing five traces continue to
-contribute to `N_total` (they are real gas mass, just non-conservative in bookkeeping) —
-this is a deliberate simplification already blessed by the Dalton decision, not a new one.
+**Initialization / calibration (patch 1):** split today's ambient (`atmosphere = 1.0`)
+as `N_O2 = 0.21·N_amb`, `N_N2 = 0.79·N_amb`, and choose `C` such that
+`quantize(C · N_amb · T_amb) == quantize(1.0)` — ambient `P` preserves today's scale
+**exactly at the Q16.16 level** (assert within 1 count), so every downstream consumer
+tuned against "1.0 = 1 atm" keeps its calibration at rest.
 
-### 2.2 The conservation fight (interaction map §D-2, made concrete)
+### 2.2 Bulk transport: donor-cell conservative flux (v2 call #1 — LOCKED)
 
-Today's smoke advection is **deliberately non-conservative**: the semi-Lagrangian sampler
-loses mass to interpolation truncation every step ("accepted Q-S2-1"). That's fine for a
-visual tracer; it is **not** fine for O2/N2, because:
+The two bulk species move by **first-order upwind donor-cell flux** on the solver
+velocity `u`:
 
-- Sealed-room suffocation math depends on `N_O2` actually going down only when something
-  consumes it (combustion) or it's transported out (a breach), not from silent numerical
-  leakage.
-- `P = C·N_total·T` must track real physical pressure, so `N_total`'s bulk component
-  (O2+N2) needs the same conservation guarantee the rung-B research report assumes
-  (`§4`'s conservative-advection framing, `N_i, N·u, N·E`).
+```
+for each face (i → j), face permeability-gated as today:
+    flux = u_face · N_donor · dt / dx        # donor = the upwind cell
+    N_i -= flux ; N_j += flux                # exact integer transfer, one writer per face pass
+```
 
-**Resolution for this design:** the bulk species (O2, N2) get a **mass-corrected**
-semi-Lagrangian step — advect, then rescale the post-advection field by
-`(Σ N_before / Σ N_after)` over the open-air mask each tick (a global renormalization,
-not per-cell — cheap, one reduction + one scalar multiply, and it is exactly what a
-fixed-sweep-count discipline wants: no adaptive correction, one deterministic pass).
-This is *not* full finite-volume conservative transport (the report's `N·u, N·E`
-triple) — it is the cheapest fix that makes the *conserved-in-aggregate* property hold,
-which is what suffocation/fire-starvation/breach-venting gameplay actually needs. The
-prototype (`eos_core.py`, `scheme_rung_b.py`) does **not** implement even this — it
-advects a single scalar `N` as a plain semi-Lagrangian tracer with no renormalization.
-Flagged explicitly as **Open question 1** (§10): whether global renormalization is
-sufficient or whether local flux-form conservation is needed for gameplay to read right
-(a big sealed room breached at one corner should show O2 draining asymmetrically, which
-global renormalization cannot represent — see §10).
+with the **per-cell outflow limiter** pattern lifted verbatim from
+`water_solver.cpp` (scale down a cell's total outflow so it never exports more than it
+holds — the same conservation-critical block that keeps `water_depth ≥ 0` honest).
 
-### 2.3 What's deleted / merged
+Why this over global renormalization (v1 §2.2): flux form **is** the continuity
+equation — `∂N/∂t + ∇·(Nu) = 0` — so *convergence raises local density* (the B2 dilation
+physics) automatically; conservation is **local and exact in integer arithmetic** (every
+subtraction has a matching addition), so **a sealed room is airtight by construction**
+— no cross-room leakage artifact, no grid-wide divide, no cadence ambiguity, no
+`Σ→0` edge case. In-house precedent end-to-end: the pattern, its Q16.16 arithmetic, its
+limiter, and its **CUDA port** (`cuda_water.cu`) all ship today.
 
-- **`wave_p` merges into unified `P`.** It existed only as a numerical workaround — the
-  IMEX split ran implicit-diffusion (bulk `atmosphere`) and explicit-wave (`wave_p`) on
-  two fields because those two PDEs fight on one field (engine/04 §4). Rung B's
-  semi-implicit split produces **both** bulk equilibration and acoustic waves from the
-  *same* `(N, T)` → `P` derivation (decision 2). The transient-buffet vs sustained-dome
-  behavioral distinction that `apply_wave_push` and water's head term rely on survives
-  as **the single field's time evolution** (a blast front passes through P as a fast
-  transient, the post-blast dome lingers as P's slow relaxation) — not as two separate
-  fields.
-- **`wave_v`, `wave_source`** are subsumed into the Kwatra solver's own state (§3) —
-  there is no separate explicit-wave velocity/staging buffer; momentum `(vx, vy)` and the
-  Helmholtz pressure correction replace them.
-- **`sink_hop` deleted** (decision 3). Breach venting emerges natively from `−∇P` toward
-  a true-vacuum (`N=0`) cell — the geometric BFS hack existed only because the old
-  scheme's wind died as pressure equalized (engine/04 §4's "lingering-haze" discussion).
-  Under rung B a breach sustains a real density gradient until the room actually empties.
-  Also **generalize breach→vacuum beyond today's edge-hull-only rule** (interaction map
-  §B, "the EOS would generalize it") — any destroyed wall exposing `is_vacuum=True` vents
-  natively, not just edge-hull tiles.
-- **Dead `wave_solver.{cpp,h}` deleted** — already-verified dead code (no caller, no
-  binding), superseded by `AtmosphereSolver` even before this refactor (interaction map §0).
-- **`atmosphere` is reinterpreted, not deleted.** Today's `gmap.atmosphere` (Q16.16,
-  1.0 = standard atm) becomes the **bulk density read** — either it *is* `N_total` under
-  a fixed `C`, or it is retired in favor of reading `N_total`/`P` directly through the
-  same accessor name for compatibility. This is a naming/API decision for patch 1, not
-  an architectural fork — flagged as **Open question 2** (§10).
+Traces stay semi-Lagrangian (visual tracers; their decay is a feature).
+
+### 2.3 Deleted / merged / aliased
+
+- **`wave_p`, `wave_v`, `wave_source` retired** — subsumed by the solver state
+  (`u`, `P`). Their consumers migrate **in the same patch** (§8, patch 3): unit push →
+  `grad(P)`; ripple splash → `|P − P_prev|`; recorder field list updated;
+  `test_wave_absorption` reworked against the new absorption placement (§6).
+  FieldEdit's `wave_source` policy remaps to an **energy deposit** (a `T` spike via
+  §4.3's reciprocal) — explosions inject energy, not phantom acoustic staging.
+- **`atmosphere` becomes a zero-copy alias of `P`.** With §2.1's calibration, `P` lives
+  on the same "1.0 = 1 atm" Q16.16 scale, so `gmap.atmosphere` *is* the stored `P`
+  buffer under its old name. Every legacy reader (renderer, field-edit tooling,
+  recorder, `atmosphere_fixed` helpers, temperature's vacuum-cool compare, fire's O2
+  gate until patch 4) keeps working unmodified through the whole migration. Formal
+  rename/deprecation happens in cleanup (patch 7), not before.
+- **`wind_x`/`wind_y` become views of the solver's `(vx, vy)`.** One velocity: what
+  pushes smoke is what carries O2. (Consumers: smoke advection, fire wind-fan/strip —
+  read the same arrays as before, now solver-owned.)
+- **`sink_hop` + its BFS machinery deleted** (decision 3) — venting is native (§3).
+  Breach→vacuum **generalized** beyond edge-hull (any destroyed tile exposing vacuum).
+- **Dead `wave_solver.{cpp,h}` deleted.**
 
 ---
 
-## 3. The compressible solver (Kwatra semi-implicit)
+## 3. The compressible solver — true Kwatra pressure evolution
 
-One solver, one primary state per tick, matching the research report §4 and the working
-prototype (`scheme_rung_b.py`).
+### 3.1 The v1→v2 correction (why this is the load-bearing change)
 
-### 3.1 Tick order
+The prototype (and v1 §3.2) solved a **pressure-correction/projection** system: RHS
+`= dt·c²·(div u* − div_target)` — it responds only to *existing motion* plus a bolted-on
+source heuristic. Round-1 critique B1 proved the consequence: a quiescent breached room
+produces exactly zero flow ("native venting" was not delivered).
+
+True Kwatra solves the **pressure evolution equation** implicitly. Discretized (their
+eq. 15-17 shape, adapted to our fields):
 
 ```
-0. P materialized from LAST tick's (N, T) — see §3.4 (scheduling contract).
-1. EXPLICIT advection substeps, at the |u|-CFL (not |u|+c):
-     for n = ceil(dt_tick / dt_adv) substeps, dt_adv = CFL_ADV·dx/(max|u|+eps):
-       advect (vx, vy) on themselves (self-advection, §3.3)
-       advect each N_i (bulk: renorm-corrected; traces: as today, decaying)
-       advect T
-       zero (vx,vy,N) on solid; T -> ambient on solid
-2. Prescribed div_target source (thermal expansion + water displacement) —
-   folded into the acoustic solve's RHS so a resting gas with no existing
-   momentum still starts moving (§3.2).
-3. IMPLICIT acoustic solve: fixed-sweep Red-Black Gauss-Seidel Helmholtz/Poisson
-   for pressure correction p'  (REUSE the existing RB-GS kernel class).
-4. Velocity correction: (vx,vy) -= dt·grad(p')/N ; zero outside open-air.
-5. Compression-work temperature update: T -= (gamma-1)·T·div(u*)·dt  (adiabatic).
-6. P = C · N_total · T  — materialized ONCE, stored, BEFORE any consumer (§3.4).
-7. Combustion pass reads this tick's P/N/T (§5).
-8. Downstream consumers run (§6): wind, water head, burst walls, unit push, fire O2 gate.
+p*    = C · N_total · T                     # advected-state ABSOLUTE pressure (post step-1)
+solve (I − dt²·∇·( c²/ρ̂ )∇) P_new  =  p* − dt·ρ̂c²·div(u*)      # fixed-sweep RB-GS
+u    -= dt · grad(P_new) / ρ̂                # momentum kick from the ABSOLUTE field
 ```
 
-Advection is substepped at the `|u|`-only CFL (Kwatra's entire point — decoupling from
-the acoustic speed `c`); the implicit Helmholtz solve is **one fixed-sweep pass per
-tick**, not per substep (it does not need to track the fast advective motion, only the
-slow-relative-to-advection acoustic response) — this matches the prototype's
-`self.last_substeps` accounting (advection-only) and its separately-fixed
-`PRESSURE_SWEEPS = 40`.
+where `ρ̂` is the mass density from `N` under a **solver-local floor** (§3.4) and `c` is
+the capped sound-speed dial. The identity term keeps the operator **strictly diagonally
+dominant** (round-1 "sound" column) — fixed-sweep convergence stays guaranteed.
 
-### 3.2 The div_target source (a finding from the prototype, carried forward)
+What the absolute-`p*` RHS buys, with no source heuristics at all:
 
-The prototype's module docstring documents an empirically-found gap: a **purely
-reactive** Helmholtz RHS (`dt·c_max²·div(u*)`, responding only to existing velocity
-divergence) produces **zero** motion for a resting gas with no initial kick — e.g. hot
-gas sitting still post-blast, or water compressing air from rest. The fix folds rung A's
-own prescribed-divergence recipe (thermal-expansion term `K_EXPAND·(T−T_ambient)/T_ambient`
-+ water-displacement term `W_DISPLACE_GAIN·d(free_height)/dt`) into the RHS as
-`div_target`, so `rhs = dt·c_max²·(div(u*) − div_target)`. This is carried into the
-design as the acoustic solve's **source term**, not an optional extra — without it,
-combustion heat and water displacement (§5, §6) would have no mechanism to actually
-pressurize anything. Reusing rung A's already-tuned constants (rather than inventing new
-ones) is explicitly the prototype's choice and this doc adopts it as the patch-1 starting
-point (subject to the TBD retuning list, §9).
+- **Breach**: vacuum cell holds `P = 0` (Dirichlet); the room's `p*` is ~1 atm; the
+  solve produces a steep `P_new` gradient at the hole; step-3 kicks `u` outward; flux
+  transport (§2.2) carries N out; as `N → 0`, `p* → 0` and the flow **stops by itself**.
+  Venting is the equation, not a mechanism. *(Gate: the quiescent-cold-breach E2E, §8 P3.)*
+- **Explosion/fire**: `T` spike ⇒ `p*` spike ⇒ outward kick ⇒ expansion ⇒ §4's
+  compression-work cools the parcel — the fireball arc, natively.
+- **Water rise (W3)**: water shrinks the free column ⇒ `N` (per free volume) rises ⇒
+  `p*` rises ⇒ air pushed — no ×60 gain.
 
-### 3.3 Momentum representation — a carried simplification, flagged
+`div_target`, `K_EXPAND`, `W_DISPLACE_GAIN` are **gone**. The buffet-vs-dome distinction
+consumers rely on is P's own time evolution: the acoustic transient rides `P_new`'s fast
+relaxation; the standing dome is its slow component. *(§6 verifies the `apply_wave_push`
+fast path: `∇P ≡ 0` over any uniform region regardless of baseline — integer-exact.)*
 
-The prototype advects **velocity** `(vx, vy)` as a self-advected field (semi-Lagrangian
-on itself), not the conservative triple `(N_i, N·u, N·E)` the research report's
-pseudocode sketches. Rationale (from the prototype's own docstring, endorsed here):
-dividing momentum by `N` to recover velocity is least stable exactly where the flow is
-most dynamic (breach fronts, near-vacuum `N`) — advecting velocity directly sidesteps
-that division. This is a real physics simplification (it is not literally conservative
-momentum transport) carried forward as the patch-1 default; flagged as **Open question 3**
-(§10) — whether it holds up under Breach's abuse cases (multi-grenade stacks, O2-tank
-rupture fireballs) or needs the full conservative form later.
+### 3.2 Tick order
 
-### 3.4 Materialization contract (decision 5, resolved into a concrete rule)
+```
+0. P_prev := P (kept copy — ripple transient + debug)     [P was materialized last tick]
+1. ADVECTION SUBSTEPS — n = ceil_int(dt / dt_adv), integer-ceil discipline
+   (smoke_cliff_count class); dt_adv = CFL_ADV·dx / (max|u| + eps), max|u| via
+   sqrt_q16 over vx²+vy² (int64 sums); n capped at N_SUB_MAX (cap value: patch-3 gate).
+   per substep (dt_s = dt/n):
+     a. u  ← semi-Lagrangian self-advection            (§3.3 simplification, flagged)
+     b. T  ← semi-Lagrangian advection (gas mask)
+     c. traces ← per-slice SL (unchanged, decay-permitted)
+     d. bulk N_O2, N_N2 ← donor-cell flux on u          (§2.2 — conservative)
+     e. T -= (γ−1)·T·div(u)·dt_s   (compression work, SUBSTEPPED — D3;
+        per-substep |(γ−1)·div(u)·dt_s| bounded by the advection CFL itself;
+        T floored at T_MIN — every floor hit increments a debug "energy-floor" counter:
+        the named 4th sink, visible in the sealed-room energy gate)
+     f. zero u,N on solid; masks as today
+2. p* := C · N_total · T            (wide mul, §3.4)
+3. HELMHOLTZ SOLVE (once per tick, fixed sweeps, RB-GS, red-black — §3.4 numerics):
+     BCs: Neumann mirror at solid; Dirichlet P=0 at vacuum
+4. u -= dt·grad(P_new)/ρ̂
+   u *= (1 − absorb·dt)  per cell   (unit/material shockwave absorption — D4; reads
+                                     dyn_wave_absorb exactly as the old wave kick did)
+   zero u outside open-air
+5. P := P_new  — materialized ONCE, stored (aliased as `atmosphere`), BEFORE any consumer
+6. combustion pass (§5, patch 4+) — reads settled P/N/T, feeds next tick
+7. consumers (§6): smoke/fire advection on u(=wind), water head, burst walls, unit push
+```
 
-`P` is computed **once per tick**, immediately after step 6 above (post velocity-correction
-and temperature update, using *this* tick's final `N, T`), and **stored** in a field (not
-recomputed per-consumer). Every consumer in step 8 reads that one stored `P` — this is
-what makes wind, water head, burst-wall scan, and unit push all see an *identical* P
-within a tick (interaction map §D-5), and what keeps a CUDA port clean (one kernel writes
-`P`, every other kernel only reads it, no consumer racing a partial update).
+### 3.3 Momentum representation — carried simplification, now with a stress gate
 
-Reused kernel: the Helmholtz solve is the **same RB-GS pattern** already proven
-bit-identical cross-machine for the atmosphere diffusion pass (`atmosphere_solver.cpp`'s
-`gs_iters`-sweep red-black loop, the "spike0b/S7 class") and for water's ripple/flow
-solve. It is generalized with a variable coefficient `c_max²/N` and an added identity
-term (report §4, prototype's `_solve_helmholtz`) — structurally the same fixed-sweep,
-red-black, Neumann-mirror-at-solid, Dirichlet-zero-at-vacuum kernel Breach already ships,
-not a new numerical method.
+Velocity self-advection (not conservative `N·u`) is carried from the prototype for the
+same stability reason (no divide-by-small-N at breach fronts). It remains a **named
+physics simplification**, and patch 3's gate now includes the specific stress probes
+round-1 asked for: multi-grenade stacks, O2-tank-rupture fireball, and an
+interacting-blast (Woodward–Colella-flavored) scenario. If it visibly misbehaves there,
+the fallback is conservative momentum *with the same wide-intermediate discipline* —
+a scoped pivot, not a redesign.
+
+### 3.4 Fixed-point numerics (B3/B4 — the load-bearing spec)
+
+The Helmholtz face coefficient is `k_f = dt²·c²/ρ̂_f`. With `N → N_floor` this is
+**unrepresentable in Q16.16** (round-1 measured ~450× over ceiling at the prototype's
+constants). The v2 rules:
+
+1. **Wide arithmetic end-to-end in the solve.** `k_f`, the diagonal
+   `d = 1 + Σ k_f`, the neighbor sum `Σ k_f·P_nb`, and the RHS are all computed and
+   held in **int64 at Q16.16 scale** (the `mul_wide`/`narrow` idiom in
+   `fixed_point.h`). Narrowing to int32 happens **exactly once** per cell per sweep — at
+   the final quotient `P_new = wide_num / d` (via a widened `reciprocal`/long-division
+   path, NOT the q16-input `reciprocal_q16`, whose validated input range this divisor
+   exceeds — round-1 finding honored).
+2. **Solver-local density floor** `ρ̂ = max(ρ, RHO_FLOOR_SOLVER)`, chosen so
+   `max k_f = dt²c²/RHO_FLOOR_SOLVER` (plus the ×4 face sum, plus the max representable
+   `P` in the neighbor products) fits int64 with ≥ 8 bits of headroom — the concrete
+   inequality with numbers is patch 3's **design-gate deliverable #1**. This floor is
+   solver-internal only: gameplay N (suffocation, combustion) reads the *real* unfloored
+   field.
+3. **The gate must include an overflow stress sweep** (B4): drive `N` to floor across a
+   breach/blast scenario and **assert no intermediate exceeds its container** —
+   explicitly *in addition to* accuracy-vs-double-reference, because an overflow is
+   bit-identical on both platforms and invisible to the digest gate.
+4. **Sweep count re-derived, not inherited.** The prototype's `PRESSURE_SWEEPS = 40` vs
+   the shipped kernel's `gs_iters = 8` is a 5× cost gap (B7). Patch 3's gate measures
+   convergence-vs-sweeps on the real Q16.16 operator across the stress scenarios and
+   pins the count as a **solver constant** (fixed forever after — never adaptive), with
+   the p99 tick-cost target (§8 P3) as the binding constraint.
+5. Substep count + `max|u|`: integer-ceil + `sqrt_q16` (D5), per §3.2.
+6. **Per-sub-kernel digest checkpoints** in patch 3: advection, bulk flux, `p*`
+   materialization, Helmholtz, velocity correction, compression-work — six digests, not
+   one end-of-tick hash (a compensating-error pair must not be able to hide).
 
 ---
 
 ## 4. Unified temperature field
 
-Per decision 7 (OPEN-A LOCKED 2026-07-09): **one** Q16.16-Kelvin `temperature` array
-spans gas *and* solid cells, replacing today's split between the solid-only
-`temperature` field and the phantom "air has no temperature" design (engine/06 §1).
+Unchanged from v1 in architecture (decision 7 / A1: one Q16.16-Kelvin array; gas rules
+on the open-air mask — advect + compression-work + sources, **no decay**; solid rules on
+the solid mask — the shipped convert/conduct/cool pipeline untouched; **conduction is
+one whole-grid pass** keyed on `conductivity`, with air given a small nonzero value —
+the free solid↔gas interface, the sealed-room energy sink).
 
-### 4.1 Masked passes, one field
+v2 refinements:
 
-- **Gas rules** (open-air mask): semi-Lagrangian advect (§3.1 step 1) + compression-work
-  `−P∇·u` (§3.1 step 5) + combustion/radiation sources (§5) — **no decay-to-ambient**.
-  Gas energy conserves/advects/expands; it does not exponentially relax to a fake
-  ambient the way solids do (interaction map §C: "cooling is physically WRONG for gas").
-- **Solid rules** (solid mask): the existing convert (heat→temperature via
-  `log2(thermal_mass)` bit-shift) → conduct (`face_shift` stencil) → cool
-  (`cool_shift`/`cool_shift_vacuum`) pipeline, **unchanged** — `temperature_solver.cpp`'s
-  current three-stage pass keeps its bit-shift arithmetic exactly as shipped
-  (interaction map §C: "keep the working solid path as-is").
-- **Conduction is ONE whole-grid pass**, unchanged in *mechanism*: the existing
-  `conductivity`-keyed stencil (`temperature_solver.cpp`, no solid/air branch today) has
-  **no solid/air branch to begin with** — it is keyed purely on the per-tile
-  `conductivity` cache. Giving air a small nonzero `conductivity` value (today: `0.0`,
-  engine/06 §2 table) makes the *same* stencil do air↔air, solid↔solid, **and** the
-  solid↔air interface exchange, all for free. This interface exchange is called out in
-  the decisions log as "the primary energy sink for sealed rooms — free here, explicit
-  code in a two-field design" — it is the single biggest reason the unified-field
-  decision won over keeping gas T separate.
-
-### 4.2 Energy exits physically
-
-Today's solid-only pipeline decays toward a phantom `ambient = 0` every tick (a
-non-physical sink) and clears `heat` each tick (a one-way per-tick deposit, not an
-accumulator). Under the unified field, energy must exit through **real** channels:
-
-1. **Vent to vacuum** — hot `(N, T)` advects out through a breach exactly like every
-   other field (§3.1 step 1); no separate mechanism.
-2. **Conduct into the ship's thermal mass** — gas cells adjacent to solid conduct through
-   the same whole-grid pass (§4.1); interior solids no longer decay to a fake ambient,
-   they conduct to the adjacent gas.
-3. **Hull radiates to space** — hull cells (already `is_vacuum`-adjacent via the exposed
-   mask) use the existing `cool_shift_vacuum` path (`temperature_solver.cpp`, distinct
-   from the interior `cool_shift`) as the terminal radiative sink. This is a
-   **reinterpretation** of an existing mechanism (vacuum-exposed solids already cool
-   faster via `cool_shift_vacuum`), not a new one.
-
-The old "decay to ambient=0 + per-tick heat-clear" model is retired for gas; `heat`
-itself (the ray-deposit buffer) keeps its existing per-tick-clear-after-both-readers
-contract (engine/06 §"Resolved" notes) since that's a deposit buffer, not a state field —
-unaffected by this refactor.
-
-### 4.3 The GS-reciprocal class (a new numerical primitive, not a new class of risk)
-
-The solid conversion pass is a free bit-shift because `thermal_mass` is a **fixed
-power-of-two constant per material**. Gas "mass" under rung B is `N` — **dynamic,
-per-tile, per-tick**. The gas heat deposit `ΔT = ΔE / (N·c_v)` is therefore a genuine
-divide by a runtime value, which cannot be a compile-time shift. This is explicitly
-flagged in the decisions log as needing "a per-tile per-tick fixed-point reciprocal (the
-*proven* spike0b GS-reciprocal class), not the solid's free bit-shift" — i.e., this is
-not a new numerical risk, it is an instance of a technique Breach already has proven
-(the same reciprocal-multiply pattern water's solver already uses for `dt/dx` and
-`2·dx` denominators, `water_solver.cpp`'s `make_recip`/`recip_mul`). Patch-level work
-item, not open research.
+- **Compression work is substepped** (§3.2 step e) — D3's stability bound honored by
+  construction (per-substep `div·dt_s` is CFL-bounded).
+- **The `T_MIN` floor is a named, counted energy sink** (debug telemetry), and the
+  patch-2 sealed-room energy-balance E2E asserts the counter stays at zero in
+  non-abusive scenarios.
+- Energy exits (unchanged): vent to vacuum (advect/flux out), conduct into structure,
+  hull radiates via `cool_shift_vacuum` (reinterpreted as radiate-to-space). Interior
+  solids conduct to gas; the phantom ambient-decay is retired for gas and interior
+  solids alike.
+- The gas heat deposit `ΔT = ΔE/(N_total·c_v)`: per-tile reciprocal, **with
+  `N_total` floored by the combustion/deposit floor `N_FLOOR_HEAT`** — independent of
+  the tunable `o2_thresh` (round-1 minor), and distinct from §3.4's solver floor.
+- `heat` (the ray-deposit buffer) keeps its per-tick-clear contract — unaffected.
 
 ---
 
-## 5. Combustion on real O2
+## 5. Combustion on real O2 — conservative products (v2 call #2 — LOCKED)
 
-A **combustion pass**, its own class/function, run at a defined tick phase **after** the
-field core (§3.1 step 7 — after `P` is materialized, so combustion reads a settled tick's
-state, and its heat/O2-consumption feeds *next* tick's field update rather than racing
-this tick's).
-
-**Per candidate tile** (flammable material or `fire`-intensity > 0, per today's
-`FireSimulation` — the ignition/spread *scaffolding* in engine/06 §5 is unchanged, only
-its O2 *input* changes):
+Structure per v1 (own pass, once per tick, after P materialization — cadence matches
+today's `FireSimulation` and stays the lowest-risk choice; revisit only if the fireball
+feel demands sub-tick burn), with the mass-bookkeeping fix:
 
 ```
-read:  N_O2[tile]  (local oxygen density, NOT atmosphere/P proxy)
-       fuel         (wall_hp-derived, as today's F = clamp01(wall_hp/fuel_ref))
-       T[tile]
-
-if N_O2 > o2_thresh AND T >= ignition_temp AND fuel > 0:
-    consume:  N_O2   -= burn_rate · dt        (integer decrement, saturating at 0)
-    yield:    N_black_smoke += burn_rate · soot_yield · dt
-              T            += burn_rate · H_fuel / (c_v · N_total) · dt   (heat deposit,
-                                                                            §4.3's reciprocal)
+if N_O2 > o2_thresh_burn AND T ≥ ignition_temp AND fuel > 0:
+    burn        = burn_rate · dt                          (clamped by available N_O2)
+    N_O2       -= burn                                    (integer, saturating ≥ 0)
+    N_smoke    += burn · soot_yield                       (visible product, decay-permitted)
+    N_N2       += burn · (1 − soot_yield)                 (burnt products → inert bulk;
+                                                           N_total CONSERVED — D2)
+    T          += burn · H_fuel / (c_v · max(N_total, N_FLOOR_HEAT))   (§4.3 reciprocal)
 ```
 
-This **replaces** the current O2 gate, which reads mean `atmosphere` over open neighbours
-as a pressure-as-oxygen proxy (engine/06 §5 stage 1's `P` / `o2 = smoothstep(P_min,
-P_full, P)` term, fed by `apply_temperature_ignition`'s atmosphere-threshold gate). Under
-rung B, `N_O2` is a **real** species density (§2.1) — the gate becomes a genuine oxygen
-read, not a proxy (interaction map §D-4, "a genuine density read — combustion should gate
-on N, not P").
+A sealed room that burns now behaves physically: pressure **rises** with T during the
+fire, relaxes as heat conducts away, and the baseline never fake-drains from
+bookkeeping. O2 depletion still starves the fire (the intended effect), and the O2→N2
+conversion means "burnt air" is exactly that — unbreathable but pressure-bearing.
 
-**Rates are TBD/tunable** (§9) — this design fixes the *structure* (consume O2 → yield
-heat + soot, gated by threshold-O2 ∧ ignition-T ∧ fuel-present), not the constants,
-matching the research report's Q3 answer ("mine the structure, tune the numbers by eye")
-and the decisions log's explicit deferral ("combustion stoichiometry ... still open,
-no lit search").
-
-### Emergent payoffs this structure is designed to produce (not scripted)
-
-- **Fire self-starves** as it eats local O2 — a sealed room's fire dims as `N_O2` drops,
-  independent of fuel remaining.
-- **Breach vents O2 → fire dies** — the same `−∇P`/`−∇N` outrush that vents pressure
-  (§2.3) also drains the local O2 supply a fire needs; venting a room starves any fire in it.
-- **O2-tank rupture → fireball** — a ruptured O2 tank is a local `N_O2` spike; any ignition
-  source in that pocket burns hot and fast because the O2 gate is wide open, exactly the
-  "one level up" payoff the rung-B adoption decision cites as its headline reason
-  (decisions log item 1).
-- **Inert flood smothers + suffocates** — dumping inert_N2 into a room dilutes local
-  `N_O2` below `o2_thresh` for both combustion (extinguishes fire) and unit environmental
-  tolerance (suffocates units) — one mechanism, two consumers.
+Emergent payoffs (unchanged, now actually delivered by §3's native physics):
+self-starving fires, breach-kills-fire, **O2-tank rupture → fireball** (a local `N_O2`
+spike — patch-1 range check that a tank's spike fits Q16.16 headroom), inert-flood
+smothering. Suffocation reads real `N_O2` (unit-side mechanics arc, enabled here, wired
+later). `o2_thresh_burn` and `o2_thresh_breathe` are **separate constants** (§9).
 
 ---
 
 ## 6. Downstream consumers on derived P
 
-Per the interaction map §A ("the bulk of downstream rides a derived P unchanged — the
-low-risk half of your dream holds"):
-
-| Consumer | Change required | Detail |
+| Consumer | Change | v2 note |
 |---|---|---|
-| **wind** `= −∇P` | Scheduling only | Reads the once-materialized `P` (§3.4); no formula change beyond `P` now being `C·N_total·T` instead of `atmosphere+wave_p`. |
-| **water pressure-head** (W4, `water_solver.cpp`) | **Purify the float bridge** (decision 6) | Today: dequantize `atmosphere+wave_p` → float → `×k_p` → requantize (`water_solver.cpp` lines ~112–137, explicitly commented "FLOAT BRIDGE until S2"). Rewrite to read the derived **integer** `P` directly: `k_p` becomes a quantized Q16.16 coefficient, the head term becomes a `mul_q16(kp_q, P[i])` — pure integer, no dequantize/requantize round-trip. `water_solver.cpp` needs no *structural* change (it already isolates the head term behind the `head_on`/`kp_f` gate) — only the read source and the arithmetic mode. |
-| **find_burst_walls** | None (formula-transparent) | Already reads a pressure spread vs `burst_threshold` — reads the derived `P` differential exactly as it read `atmosphere`'s. |
-| **apply_wave_push** (units) | **Rewrite to read `grad(P)`** + recalibrate `k_push` | Today reads `grad(wave_p)` specifically (the transient field) via `reduce_grad(gmap.wave_p, tiles)` in `exchange.py`. Under the merge (§2.3), there is no separate transient field — `apply_wave_push` reads `grad(P)` on the unified field, and its buffet-vs-dome character now comes from *P's own time evolution* (a blast is a fast transient in P, the dome is P's slow relaxation) rather than from reading a dedicated zero-mean field. **`k_push` needs recalibration** (§9) — the transient P gradient right after a blast will differ in magnitude/shape from today's dedicated `wave_p` gradient. |
-| **O2-gates-fire** | Reads real `N_O2` | See §5 — replaces the `atmosphere`-as-O2-proxy read entirely. |
-| **temperature cooling (vacuum-exposure)** | None | Already a read-only compare against a pressure-like field; works unchanged on derived `P`. |
+| wind / smoke advection / fire fan | **none** (reads `wind` = view of solver `u`) | one-velocity unification (§2.3) |
+| water pressure-head (W4) | read integer `P` via `mul_q16(kp_q, P)` — float bridge **removed** | `k_p` recalibration in §9; `water_solver.cpp` structure untouched |
+| ripple splash (W6a) | reads **`|P − P_prev|`** (per-tick transient) instead of raw `wave_p` | D6: no standing-baseline splash; P_prev kept per §3.2 step 0 |
+| `find_burst_walls` | none (reads `P` spread via the `atmosphere` alias) | furniture note: furniture tiles are open-air for gas ⇒ they carry real `N`, so "solid contributes 0" only applies to true solids — one assert in the patch-3 gate |
+| `apply_wave_push` (units) | reads `grad(P)`; `k_push` recalibrated (§9) | the zero-mean fast path survives: `∇P ≡ 0` over uniform P, integer-exact, baseline-independent — verified by a dedicated test, not assumed |
+| unit shockwave shielding | **placed**: per-cell `u`-damping in §3.2 step 4, driven by `dyn_wave_absorb` | same coefficient field, same feel intent; `test_wave_absorption` reworked to assert through-body attenuation of a passing P transient |
+| fire O2 gate + `apply_temperature_ignition` | reads `N_O2` (patch 4) | until patch 4 they read the `atmosphere` alias — behavior unchanged through the migration window |
+| temperature vacuum-cool compare | none (alias) | |
+| FieldEdit `atmosphere`/`wave_source` policies | remap to **N/T deposits** (explosion = energy) in patch 3 | payload `pressure` param becomes an energy scale; one table edit + doc |
+| recorder | field list updated in patch 3 (`wave_p` → `P`; add `N_O2`) | blowup trigger re-keyed on `|P − P_prev|` max |
 
-**Units remain partial obstacles/absorbers to the pressure wave** (teammate shielding —
-kept per the peripheral decisions: `dyn_wave_absorb`'s per-material + per-unit absorption,
-engine/04 §2.7 "4a", carries forward unchanged in spirit — units still damp the acoustic
-component of `P`'s Helmholtz solve, same mechanism, generalized to the new solver's
-coefficient field). **Units stay transparent to water** (kept — Erik's call, peripheral
-decisions) — no change to water's solid mask.
+Units: partial obstacles/absorbers to pressure (kept, via the damping placement);
+transparent to water (kept).
 
 ---
 
 ## 7. Determinism / fixed-point plan
 
-- **All new/changed fields are Q16.16**, matching every existing field this refactor
-  touches (`N` per species, `T`, `P`, `vx/vy` if kept as a persistent field rather than
-  solver-local). No float intermediate is introduced that isn't one of the three
-  **already-known, already-scoped** bridges:
-  1. Water's head-term float bridge (§6) — **purified by this refactor**, not carried
-     forward.
-  2. `atm_f_`/`wave_p_f_` float mirrors (interaction map §D-7) — rebuilt every tick today
-     for water's still-float head term; **retired** once §6's purification lands (their
-     sole consumer goes away).
-  3. Any genuinely render-only channel (light, smoke_glow) — untouched by this refactor,
-     stays float per the existing float/fixed split (engine/06 §3's stated principle).
-- **Fixed GS sweep counts everywhere** — never a convergence tolerance. This is already
-  Breach's rule for the atmosphere RB-GS pass (`gs_iters`, a solver-side constant, not
-  config-adaptive) and the prototype's `PRESSURE_SWEEPS = 40`; the Helmholtz solve
-  inherits it unchanged. (Research report risk #4 / Q10: "the one real trap is adaptive
-  iteration counts" — a hard rule, not a judgment call, per tick.)
-- **The per-tile reciprocal** (§4.3) is the one genuinely new fixed-point primitive this
-  refactor needs, and it is a **known, proven class** (water's `make_recip`/`recip_mul`),
-  not new territory.
-- **CPU + CUDA in lockstep** (decision 9). Wave and diffusion already have bit-identical
-  GPU mirrors (`cuda_wave.cu`, `cuda_atmosphere.cu`, plus `cuda_temperature.cu`,
-  `cuda_water.cu`, `cuda_smoke.cu`, `cuda_fire.cu` for the other touched systems). **Every
-  new or changed kernel in this refactor is a double implementation**, gated by the
-  existing field-digest / xarch bit-identity harness (the same harness that resolved the
-  `cuda-breached` finding). This is explicitly called out as a *larger migration surface
-  than the docs implied* before the interaction-map pass (interaction map §D-6) — the
-  patch decomposition (§8) treats CPU-then-CUDA-port as separate gated steps per solver
-  component, not a single combined patch, precisely because of this.
-- **The species mass-renormalization** (§2.2) is itself a determinism-sensitive step: it
-  must be a single deterministic reduction (sum over the grid) + one scalar multiply pass,
-  computed in a fixed order (or as an associative/commutative integer sum, which addition
-  over Q16.16 int32 is) — flagged so the patch that implements it treats the reduction's
-  determinism with the same care as the existing `heat` buffer's saturating-add discipline
-  (engine/06 §3).
+- All fields Q16.16; the solve's internals wide-int64 per §3.4 (a *representation*
+  discipline, not a new format class).
+- **No global reductions remain in the sim path** (renorm deleted) except `max|u|` —
+  an order-free integer max. Donor-cell flux is per-face integer transfers (exact,
+  associative-free by construction: sequential per-face pass on CPU; on GPU, the
+  red-black / face-coloring pattern `cuda_water.cu` already uses).
+- Fixed GS sweep counts (never adaptive); fixed substep cap; integer-ceil counts;
+  `sqrt_q16` everywhere a magnitude is needed.
+- **CPU + CUDA lockstep** (decision 9): every new/changed kernel double-implemented and
+  digest-gated. **GPU backends for atmosphere/wave/smoke/temperature pinned to CPU from
+  patch 3 until their patch-6 port lands** (D7) — the stale kernels must be
+  unreachable, not just unused.
+- Per-sub-kernel digests in patch 3 (§3.4.6).
+- Float bridges: water-head bridge and the `atm_f_`/`wave_p_f_` mirrors **removed** (their
+  sole consumer is migrated in patch 3); render-only channels stay float as ever.
 
 ---
 
-## 8. Patch decomposition
+## 8. Patch decomposition (re-derived — every patch leaves the game runnable)
 
-A build sequence sized for the autonomous-patch-workflow (plan once, execute per-patch
-with design-gates on the risky steps). Each patch is CPU-only unless stated; CUDA ports
-are pulled into their own gated patches per §7's "larger migration surface" flag, not
-bundled into the CPU patch that introduces the kernel.
+Ordering fixes B5/B6: temperature lands **before** the solver needs it; `wave_p`
+retirement and its reader migration are **atomic** in one patch; `atmosphere` is
+alias-preserved throughout, so no patch strands a legacy reader.
 
-1. **Field-core infra.** Add `O2`, `inert_N2` species ids to `gases.py`
-   (`N_GASES` 5→7); wire the mass-renormalization step (§2.2) into the existing per-gas
-   transport loop, gated so it applies *only* to the two bulk species (traces keep
-   today's decay-permitted behaviour, unchanged). No solver-behavior change yet — this
-   patch is purely additive plumbing + a config/material-table row for O2/N2 initial
-   densities. **Gate:** existing gas transport tests unaffected (bit-identical on the
-   5 legacy species); new species round-trip through save/load and field-edit tooling.
+1. **P1 — species + conservative transport (additive).** O2/N2 ids (`N_GASES` 5→7);
+   donor-cell flux transport for the bulk pair **riding today's wind field** (no solver
+   change — purely additive; nothing consumes the new species yet); §2.1 calibration
+   (ambient P preserved to ≤1 count; O2-tank spike range check). *Gate:* legacy 5
+   species bit-identical; sealed-room bulk conservation **exact** over 1000 ticks;
+   save/load + field-edit round-trip.
+2. **P2 — unified temperature (additive).** Gas-T on the unified field (advect on
+   today's wind; conduction unified via air conductivity; radiation deposits via the
+   §4.3 reciprocal; no compression work yet — that term belongs to the new solver's
+   `div u`). Old solver untouched; ignition still on the legacy path. *Gate:*
+   sealed-room energy-balance E2E (conduct→hull-radiate, floor-counter = 0); existing
+   temperature tests green (solid path unchanged).
+3. **P3 — the compressible solver + atomic consumer migration.** *Design-gate first*
+   (§3.4 deliverables: overflow inequality with numbers, sweep count, substep cap).
+   Then: true-Kwatra solve replaces `wave_substep`+`diffuse_solve`; compression work
+   moves into the substep loop; `u` becomes the one velocity (wind views);
+   `atmosphere` re-pointed as the P alias; **in the same patch**: `apply_wave_push` →
+   `grad(P)`, water head → integer P (bridge removed), ripple → `|P−P_prev|`, FieldEdit
+   remap, recorder update, absorption placement + `test_wave_absorption` rework,
+   `sink_hop` + `wave_solver.*` deleted, breach→vacuum generalized, GPU backends pinned.
+   *Gates:* 6 sub-kernel digests; overflow stress sweep; the quiescent-cold-breach
+   native-venting E2E; §3.3 stress probes; behavioral-parity bakes for push/head;
+   **p99 ms/tick ≤ 25 % of the 83 ms budget at 160² on the dev desktop** (hard number,
+   worst scenario, not mean).
+4. **P4 — combustion on real O2.** §5 wholesale (conservative products, floors,
+   both thresholds); ignition + fire O2 gate re-pointed to `N_O2`. *Gate:* the four
+   emergent payoffs as E2E scenarios (mechanism visible; constants still TBD).
+5. **P5 — combined-system bake-off (HUMAN-TEST).** S1–S5 (+ the venting scenario)
+   baked on the assembled stack vs the pre-refactor engine; cost table (p99);
+   **Erik's eyes are the gate.** First feel-tuning pass of §9 happens here.
+6. **P6 — CUDA ports**, one gated sub-patch per kernel, full surface: Helmholtz solve;
+   velocity self-advection; T advection + compression work; bulk donor-cell flux
+   (precedent `cuda_water.cu`); unified conduction (extend `cuda_temperature.cu`);
+   combustion pass; **retire** `cuda_wave.cu`/`cuda_atmosphere.cu`; unpin backends.
+   *Gate:* bit-identical digests per kernel (the `cuda-breached` harness), non-negotiable.
+7. **P7 — cleanup + canon.** Formal `atmosphere`→`P` deprecation decision; float-mirror
+   removal confirmation; stale-doc fixes (interaction map §0's six spots); fold the
+   as-built design into engine/04 + 06 chapters and archive the brainstorms (the
+   post-EOS consolidation commitment).
 
-2. **Compressible P solve (CPU).** Port the prototype's Kwatra split (§3.1–3.3) from
-   `scheme_rung_b.py`'s float32 numpy into the C++ solver, in Q16.16, reusing the RB-GS
-   kernel pattern (§3.4). This is the **highest-risk patch** — float→fixed-point port of
-   a Helmholtz solve with a variable `c_max²/N` coefficient and per-cell reciprocals.
-   **Gate: design-gate on the fixed-point derivation before implementation** (the
-   float32-precision notes in the prototype's `_solve_helmholtz` docstring — the
-   solid-face coefficient mirroring trick to avoid catastrophic cancellation — need to be
-   re-derived for integer arithmetic, not assumed to carry over). Replaces
-   `AtmosphereSolver`'s wave+diffusion steps; `wave_p`/`wave_v`/`wave_source` retired
-   (§2.3). Delete dead `wave_solver.{cpp,h}` in this patch (housekeeping already flagged,
-   zero-risk).
-
-3. **Unified temperature field.** Extend `temperature` to the open-air mask with gas
-   rules (§4.1), wire the whole-grid conduction pass to a nonzero air `conductivity`,
-   retire the ambient-decay-to-0 for gas cells, wire `cool_shift_vacuum` as the hull
-   radiative sink (§4.2). Implement the GS-reciprocal gas heat deposit (§4.3). **Gate:**
-   sealed-room energy balance sanity check (a heated sealed room should conduct into
-   walls and hull-radiate, not vanish or persist forever) — an E2E scenario, not just a
-   unit test, per Erik's bug-fix-starts-with-E2E-repro standard.
-
-4. **Combustion / O2 consumer.** New combustion pass (§5) reading `N_O2` instead of the
-   `atmosphere`-as-proxy gate; rewire `apply_temperature_ignition`'s O2 test and
-   `FireSimulation`'s `o2 = smoothstep(...)` term (engine/06 §5 stage 1) to read `N_O2`.
-   **Gate:** the four emergent payoffs (§5) demonstrated in isolated scenarios
-   (self-starving fire, breach-kills-fire, O2-rupture-fireball, inert-flood-suffocation)
-   — a feel-check, tunable-constants-still-TBD (§9), but the *mechanism* must visibly work.
-
-5. **Downstream-consumer migration.** `water_solver.cpp` head-term purification (§6,
-   integer `mul_q16(kp_q, P)`); `apply_wave_push` rewired to `grad(P)` with `k_push`
-   recalibration parked as a tuning pass (§9); `find_burst_walls` and wind need no code
-   change beyond reading the new `P`'s storage location. **Gate:** water-head and
-   unit-push behavioral parity check against pre-refactor gifs/replays where feasible
-   (same spirit as the Phase-1.2 A/B/control bake-off), since these are the two consumers
-   with a real formula change.
-
-6. **CUDA ports.** One gated sub-patch per touched kernel (Helmholtz solve, unified
-   temperature conduction, combustion pass if it's grid-parallel), each validated against
-   the CPU path via the field-digest / xarch bit-identity harness before being considered
-   done — mirroring how wave/diffusion's CUDA mirrors were proven (`cuda-breached`
-   resolution). **Gate: bit-identical CPU/GPU digests**, non-negotiable per decision 9.
-
-7. **Cleanup.** Remove the retired float bridges (`atm_f_`/`wave_p_f_` mirrors, §7);
-   remove `sink_hop` and its BFS rebuild machinery (§2.3); fix the six stale doc spots
-   flagged in the interaction map §0; fold this design doc's *as-built* shape back into
-   the living `docs/architecture/engine/04_atmosphere_and_pressure.md` and
-   `06_temperature_and_fire.md` chapters (per the post-EOS doc-consolidation plan already
-   noted for this arc). **Gate:** none functional — a docs/cleanup patch, but sequenced
-   last deliberately so the "as-built" write-up reflects what actually shipped, not what
-   was planned.
-
-Patches 2 and 3 are independent of each other in principle (P-solve vs temperature) but
-patch 4 (combustion) depends on both being in place (it reads `N_O2` from patch 1/2 and
-`T`/ignition from patch 3), and patch 5 depends on patch 2 (P must exist to migrate
-consumers onto it). Patches 2 and 3 could run concurrently on separate worktrees per
-Erik's standard multi-agent practice if desired; combustion and cleanup cannot.
+Dependencies: P1, P2 independent (parallel worktrees fine). P3 needs both. P4 needs P3.
+P5 needs P4. P6 per-kernel after the corresponding CPU code stabilizes (≥ P3). P7 last.
 
 ---
 
-## 9. TBD / tuning list (feel-gated, post-build)
+## 9. TBD / tuning (feel-gated; first pass at P5)
 
-Explicitly deferred to after-build tuning, not pre-build research (per the decisions
-log's "no lit search" calls and the research report's "mine the structure, tune the
-numbers by eye" verdict):
+`c_max` (sound-speed dial — trades Helmholtz conditioning, *not* substep count);
+`k_push` + knockdown thresholds (vs the new transient-∇P scale); `k_p` (water head);
+air conductivity ("small": big enough that the interface sink fires, small enough that
+air doesn't become the rejected heat-advecting field); `cool_shift_vacuum` rate under
+the real energy path; combustion `burn_rate / H_fuel / soot_yield / o2_thresh_burn`;
+`o2_thresh_breathe` (separate); `CFL_ADV` + `N_SUB_MAX`; sweep count (pinned at the P3
+gate, then frozen). **Gone from this list vs v1:** `K_EXPAND`, `W_DISPLACE_GAIN` (deleted
+with `div_target`).
 
-- **Combustion stoichiometry** — `burn_rate`, `o2_thresh`, `H_fuel` (heat yield),
-  `soot_yield` (§5). Structure is fixed; numbers are Erik's feel-pass.
-- **`k_push` recalibration** (§6) — the unified `P`'s transient-gradient magnitude near a
-  blast will not match today's dedicated `wave_p` gradient scale; needs a fresh
-  calibration pass against the existing knockdown-threshold tuning (`config.toml`
-  `[exchange]`, calibrated 2026-07-05).
-- **`k_p` recalibration** (§6) — water's pressure-head coefficient, same reasoning: the
-  derived `P`'s scale/dynamics differ from `atmosphere+wave_p`'s.
-- **Conductivity of air** — engine/06 §2's material table currently ships air at `0.0`
-  (a hard insulator by design); the unified-field decision requires a **small nonzero**
-  value, and "small" is a feel constant, not a derived one (too high and it behaves like
-  the old air-temperature-advects-everything rejection the decisions log explicitly
-  avoided; too low and the solid↔air interface exchange the decision banks on doesn't
-  actually fire).
-- **Cooling / radiation rates** — `cool_shift_vacuum` is reused (§4.2), but its rate was
-  tuned for the old solid-only phantom-ambient model; the unified field's real
-  conduct-then-radiate energy path may want a different rate.
-- **`c_max`** — the prototype's tunable sound-speed dial (research report Q1: "yes,
-  unambiguously" a dial). Prototype default 120 m/s; Breach's actual grid-feel constant
-  is unset. Interacts with the Helmholtz solve's conditioning at the fixed sweep count
-  (§3.4's docstring note: `c_max` trades sharpness, not substep count) — a genuine
-  feel/performance tuning axis, not a physics constant.
-- **`o2_thresh` for unit suffocation** vs. **`o2_thresh` for combustion** — the decisions
-  log flags "suffocation tuning" as a separate open balancing question from combustion's
-  own threshold; they may want different values (a unit can tolerate thinner air than a
-  flame needs) — worth an explicit tuning pass rather than assuming one constant serves both.
+## 10. Remaining open items (honest residue)
 
----
-
-## 10. Open questions & risks for Erik's review
-
-Things this doc could not fully resolve on paper — flagged for the adversarial critique
-and Erik, not silently decided:
-
-1. **Is global mass-renormalization (§2.2) enough, or does gameplay need local
-   conservative flux transport?** The cheap fix (rescale the whole open-air mask by one
-   global ratio each tick) guarantees *aggregate* O2/N2 conservation but cannot represent
-   *where* the loss/gain physically happened — a room breached at one corner should show
-   O2 draining from that corner outward, and a global renormalization applied
-   grid-wide could paper over local artifacts (e.g., numerical diffusion inventing O2 in
-   a sealed side-room while the breached room's corner is where mass "should" have left
-   from). The prototype doesn't even implement the cheap fix yet (it advects `N` as a
-   plain non-conservative tracer). **This needs a decision before patch 1**, because it
-   changes the per-gas transport loop's contract for exactly two species.
-
-2. **Does `atmosphere` survive as a name/API, or is it fully retired in favor of
-   `N_total`/`P`?** (§2.3.) A naming decision with real blast radius — every existing
-   `gmap.atmosphere` read site (field-edit tooling, renderer, recorder, the
-   `atmosphere_fixed` boundary helpers) needs to either keep working against a
-   reinterpreted field or get migrated. Not resolved here; needs an inventory pass before
-   patch 1 locks the field-core shape.
-
-3. **Is velocity self-advection (§3.3) good enough, or does it need to become real
-   conservative momentum `(N·u)`?** The prototype's own docstring flags this as a
-   deliberate simplification chosen for stability at breach fronts, not as a
-   physically-validated equivalence. It has only been exercised at 128² in the
-   float-numpy spike across 5 scenarios (S1–S5) — it has not been stress-tested against
-   Breach's actual abuse cases (multi-grenade stacks, an O2-tank rupture fireball, a
-   Woodward–Colella-style interacting-blast scenario the Kwatra paper itself uses as a
-   stability benchmark, research report §6 Q4). Recommend treating this as a specific
-   thing the patch-2 gate's testing should probe, not assume from the paper's general
-   stability claims.
-
-4. **Float32→Q16.16 port risk on the Helmholtz solve is real and not fully paper-derivable.**
-   The prototype's `_solve_helmholtz` docstring documents a *float32-specific*
-   catastrophic-cancellation trap (the solid-face coefficient mirroring trick) that was
-   found empirically, not derived first. Porting to fixed-point removes float rounding
-   error but introduces integer-specific failure modes of its own (reciprocal precision
-   at extreme `c_max²/N_floor` ratios, overflow margins on `beta·coef` products at
-   Q16.16's range). This doc flags patch 2 as needing its own focused fixed-point
-   derivation pass (§8, patch 2's gate) — it is explicitly **not** claiming the
-   prototype's numerics carry over unchanged, only that the *algorithm shape* does.
-
-5. **The `wave_p`-merge changes `apply_wave_push`'s statistical character, not just its
-   scale.** Today `apply_wave_push` reads a *zero-mean* field by construction (`wave_p`'s
-   design invariant) — `reduce_grad`'s footprint-edge-line-mean-difference trick and the
-   "integer-exact no-op when `gx==gy==0`" fast path (engine's exchange.py docstring) both
-   lean on that zero-mean property to make "quiet field" cheap and exact to detect. Under
-   the merge, `P` is *not* zero-mean (it carries the standing atmospheric baseline). The
-   gradient itself (`∇P`) is still well-defined and still zero in a uniform-pressure
-   region, so the no-op fast path likely survives unchanged — but this should be
-   explicitly re-verified against the merged field's actual behavior, not assumed by
-   analogy, since it's exactly the kind of invariant a merge silently breaks.
-
-6. **Combustion pass tick-ordering vs. multi-substep advection.** §3.1 places combustion
-   *after* the full advection+acoustic tick (step 7, reading the settled `P`). But
-   advection itself runs `n` substeps (up to 64, prototype's `MAX_SUBSTEPS`) inside one
-   tick. Is once-per-tick combustion (matching today's `FireSimulation`, which already
-   runs once per tick at full `sim_time` on the settled atmosphere, engine/06 §"Built") the
-   right cadence, or should a fast-burning O2-rich pocket (the fireball emergent payoff,
-   §5) see intermediate substep states? This doc assumes once-per-tick (matching current
-   fire's cadence, lowest risk) but flags it as a real behavioral choice, not an
-   obviously-forced one.
-
-7. **No coarse-grid visual evidence yet for the *combined* system.** The research
-   report's central gap (§9, "no ≤256² 2D real-time evidence exists") was about rung B's
-   curl/mushroom-cap visual payoff in isolation; the Phase-1.2 bake-off (which produced
-   the `prototypes/eos/out/*.gif` artifacts on the `eos-prototype` branch) tested the bare
-   solver, not this doc's *full* stack (unified temperature + real O2 combustion + the
-   downstream-consumer rewrites). The visual/feel payoff of the *complete* system as
-   designed here is still unmeasured — the patch gates (§8) are the plan to close that
-   gap incrementally, but it's worth naming explicitly that this design doc is a paper
-   exercise on top of a partial (solver-only) prototype, not a validated full-stack spike.
-
-8. **`inert_N2` initial density and total-N budget.** Today's single `atmosphere` scalar
-   (1.0 = standard atm) has no species breakdown. Splitting it into O2 + N2 (§2.1) needs
-   a real-world-inspired but game-tuned initial ratio (~21%/78% is the obvious real-air
-   anchor, but Breach's `P = C·N_total·T` calibration constant `C` and the fire-ignition
-   thresholds were tuned against the old single-scalar `atmosphere` — the split needs to
-   preserve today's *ambient pressure and fire-ignition feel* at initialization, which is
-   a calibration step, not just "use real air's ratio." Not resolved here; flagged for
-   patch 1.
+1. **Velocity self-advection under abuse** — carried simplification; P3's stress probes
+   are the decision point; conservative-momentum fallback scoped (§3.3).
+2. **Sweep count / cost** — unknowable on paper for the Q16.16 operator; P3's gate
+   measures and pins it against the hard p99 target.
+3. **Feel of the merged transient** (buffet-vs-dome from one field's evolution) —
+   physically sound, but the *game feel* of knockback/ripple under the new P dynamics is
+   exactly what P5's HUMAN-TEST exists to judge.
+4. **Combustion cadence** — once-per-tick chosen (matches today); flagged for revisit
+   only if P5's fireball feel wants sub-tick burning.

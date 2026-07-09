@@ -82,6 +82,23 @@
   block water** (kept — Erik's call); **gas-permeability is droppable** (the smoke-seeps-past fudge, no
   longer needed).
 
+## v2 design calls (LOCKED 2026-07-09, Erik nodded all three — Fable session)
+
+10. **True-Kwatra pressure evolution** — the Helmholtz RHS carries the advected absolute
+    pressure `p* = C·N·T` (not a divergence-only correction). Native venting/expansion/
+    water-push fall out; `div_target`, `K_EXPAND`, `W_DISPLACE_GAIN` deleted. The float
+    prototype demotes to a shape reference (its projection-form numerics do NOT carry over).
+    Root cause of round-1 blocker B1: the prototype implemented a projection scheme, not Kwatra.
+11. **Bulk O2/N2 transport = donor-cell conservative flux** (the shipped water-solver
+    pattern + outflow limiter, CUDA precedent `cuda_water.cu`). Global mass-renormalization
+    deleted. Flux form IS continuity ⇒ dilation (B2) included; sealed rooms airtight by
+    construction (D1 dead).
+12. **Combustion products conserve N_total** — non-soot fraction of consumed O2 credited to
+    `inert_N2` ("burnt products"). Sealed-room pressure never fake-drains (D2 dead).
+
+Design doc v2: `docs/eos_refactor_design.md` (supersedes v1 in place; v1→v2 changelog at top
+maps every round-1 blocker/decision to its fix). Round-1 critique: `..._design_critique.md`.
+
 ## OPEN — to decide next
 
 - **B — "what is N" largely RESOLVED (2026-07-09, Erik keen).** The bulk air becomes **two explicit
