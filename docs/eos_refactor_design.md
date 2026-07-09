@@ -29,6 +29,45 @@
 | Per-sub-kernel bit-identity checkpoints in the solver patch (not one end-of-tick digest). | minor |
 | Floors: combustion's `N_total` divisor floored independently of `o2_thresh`; burst-walls furniture-`N` note; no-shock-capturing fidelity limit named. | minors |
 
+### v2.1 — round-2 fixes (same day; round-2 verdicts: 14/16 round-1 findings FIXED, 2 partial → closed below)
+
+- **Occupancy-transition mass rule (round-2 physics BLOCKER):** a cell leaving the open-air
+  mask (flooding water, closing door, spawned wall) **evacuates its `N` conservatively** into
+  open neighbors via the same donor-cell/limiter machinery — never the zero branch (§2.2).
+  Zeroing is for vacuum drain only. This is *also* the real W3 wiring: water displacement
+  **is** that evacuation (§3.1) — no field multiply at all.
+- **Writer migration completed (round-2 determinism BLOCKER):** the three direct
+  `atmosphere` writers are now explicit P3 tasks — W3's `atmosphere *= ratio`
+  (`physics_engine.cpp:599`) → replaced by the evacuation rule; fire's plume
+  `atmosphere[i] += gain` → a minimal plume→T shim **in P3** (the "pop" never goes inert);
+  `destroy_wall`'s neighbor-mean refill → seeds the new open tile's `N` by neighbor-mean
+  (same anti-vacuum-pulse intent, now on the real state). FieldEdit `atmosphere` policy →
+  bulk-`N` deposit (21/79 split); `wave_source` policy → `T` energy deposit (§6).
+- **Trace decay returns mass to `inert_N2`** (round-2: D2 was only *partially* fixed —
+  decaying soot re-opened the slow pressure drain). Decay = settling/oxidation into inert
+  bulk; `N_total` now conserved through the *full* burn-decay cycle (§5).
+- **Permeability also scales the Helmholtz face coefficient `k_f`** — a throttled face
+  throttles pressure coupling coherently with species flux (no knockback through a shut
+  door that visibly blocks smoke) (§3.4).
+- **`ρ̂ := N_total`** stated (unit particle mass — consistent with molar mass dropped);
+  the changelog's "N_floor" and `RHO_FLOOR_SOLVER` are the same constant (§3.1).
+- **The wide divide is amortized:** the Helmholtz diagonal `d` is constant across sweeps
+  within a tick ⇒ its wide reciprocal is precomputed **once per cell per tick**, reused
+  every sweep — the per-cell divide cost worry collapses (§3.4).
+- **`CFL_ADV ≤ 0.5` pinned as a constraint** (not free TBD) ⇒ the compression-work bound
+  `(γ−1)·2·CFL_ADV ≤ 0.4 < 1` is guaranteed, closing D3's caveat (§3.2).
+- **P3 design-gate deliverable #0: a napkin cost model** reconciling the 85%-of-budget
+  worst-case baseline with the p99 ≤ 25% target *before* build; **deliverable #4: verify
+  the operator's ρ̂ placement line-by-line against Kwatra eq. 15–17** (self-adjointness /
+  diagonal dominance) (§3.4, §8).
+- Minors: `cuda_water.cu`'s determinism pattern correctly named (**precompute-then-gather**,
+  not face-coloring) (§7); furniture gates donor-cell flux via the same face permeability as
+  today's diffusion and carries real `N` (§6); named fidelity note — bulk `N` (donor-cell)
+  and `T` (semi-Lagrangian) use different schemes and can decorrelate at sharp fronts (§1);
+  `dyn_wave_absorb` now also locally damps the smoke-carrying wind (named for the P5
+  feel-check, §10); empty-sealed-room acoustic ringing is damped only by numerical
+  diffusion/RB-GS smoothing — acceptable, noted (§10).
+
 ---
 
 ## 1. Goal & scope
@@ -55,9 +94,12 @@ z); realistic combustion kinetics / species diffusion (no lit search — structu
 constants by eye); through-wall wave transmission; the fire-intensity logistic's shape
 (only its O2 *input* changes).
 
-**Fidelity limit, named:** fixed-sweep GS on the Helmholtz operator smooths
+**Fidelity limits, named:** fixed-sweep GS on the Helmholtz operator smooths
 discontinuities — blasts are soft compression waves, not Rankine–Hugoniot shocks, by
-construction. That is the intended game aesthetic, not an accident.
+construction. And bulk `N` (donor-cell) vs `T` (semi-Lagrangian) use different advection
+schemes, so the two can mildly decorrelate at sharp fronts (a fireball edge), feeding
+`p*` a slightly inconsistent state there. Both are intended game-scale aesthetics, not
+accidents.
 
 ---
 
@@ -104,7 +146,21 @@ subtraction has a matching addition), so **a sealed room is airtight by construc
 `Σ→0` edge case. In-house precedent end-to-end: the pattern, its Q16.16 arithmetic, its
 limiter, and its **CUDA port** (`cuda_water.cu`) all ship today.
 
-Traces stay semi-Lagrangian (visual tracers; their decay is a feature).
+Traces stay semi-Lagrangian (visual tracers; their decay is a feature — and their decayed
+mass is credited to `inert_N2`, §5, so the Dalton sum stays whole).
+
+**Occupancy-transition rule (v2.1, load-bearing):** when a cell leaves the open-air mask —
+water floods it, a door closes onto it, a wall is spawned — its `N_i` is **evacuated
+conservatively** into adjacent open cells via the same donor-cell/limiter machinery
+*before* the cell is masked; it is never zeroed. (Zeroing remains correct only for vacuum
+cells, where mass genuinely leaves the system.) This rule *is* the water-displacement
+mechanism: rising water pushes its cell's air into the neighbors, `N` rises there,
+`p* = C·N·T` rises, and the push falls out of §3 — no field multiply, no gain constant.
+Conversely a cell *joining* open-air (`destroy_wall`) is seeded by neighbor-mean `N`
+(the same anti-vacuum-pulse smoothing the old code applied to `atmosphere`).
+
+**Furniture:** open-air for gas (carries real `N`); its partial permeability gates
+donor-cell face flux exactly as it gates today's diffusion stencil.
 
 ### 2.3 Deleted / merged / aliased
 
@@ -147,8 +203,11 @@ solve (I − dt²·∇·( c²/ρ̂ )∇) P_new  =  p* − dt·ρ̂c²·div(u*)  
 u    -= dt · grad(P_new) / ρ̂                # momentum kick from the ABSOLUTE field
 ```
 
-where `ρ̂` is the mass density from `N` under a **solver-local floor** (§3.4) and `c` is
-the capped sound-speed dial. The identity term keeps the operator **strictly diagonally
+where **`ρ̂ := N_total`** (unit particle mass — the one consistent choice given molar mass
+is deliberately dropped; a future implementer must NOT invent a real molecular-mass
+conversion here while `P = C·N·T` ignores it) under a **solver-local floor**
+`N_FLOOR_SOLVER` (§3.4 — the changelog's "N_floor" and "RHO_FLOOR_SOLVER" are this one
+constant), and `c` is the capped sound-speed dial. The identity term keeps the operator **strictly diagonally
 dominant** (round-1 "sound" column) — fixed-sweep convergence stays guaranteed.
 
 What the absolute-`p*` RHS buys, with no source heuristics at all:
@@ -159,8 +218,10 @@ What the absolute-`p*` RHS buys, with no source heuristics at all:
   Venting is the equation, not a mechanism. *(Gate: the quiescent-cold-breach E2E, §8 P3.)*
 - **Explosion/fire**: `T` spike ⇒ `p*` spike ⇒ outward kick ⇒ expansion ⇒ §4's
   compression-work cools the parcel — the fireball arc, natively.
-- **Water rise (W3)**: water shrinks the free column ⇒ `N` (per free volume) rises ⇒
-  `p*` rises ⇒ air pushed — no ×60 gain.
+- **Water rise (W3)**: a flooding cell **evacuates its air conservatively** into its
+  neighbors (§2.2's occupancy-transition rule) ⇒ their `N` rises ⇒ `p*` rises ⇒ air
+  pushed — no ×60 gain, no field multiply, and no mass ever deleted at the waterline.
+  (Replaces `physics_engine.cpp:599`'s `atmosphere *= ratio` — an explicit P3 task.)
 
 `div_target`, `K_EXPAND`, `W_DISPLACE_GAIN` are **gone**. The buffet-vs-dome distinction
 consumers rely on is P's own time evolution: the acoustic transient rides `P_new`'s fast
@@ -183,7 +244,9 @@ fast path: `∇P ≡ 0` over any uniform region regardless of baseline — integ
         per-substep |(γ−1)·div(u)·dt_s| bounded by the advection CFL itself;
         T floored at T_MIN — every floor hit increments a debug "energy-floor" counter:
         the named 4th sink, visible in the sealed-room energy gate)
-     f. zero u,N on solid; masks as today
+     f. zero u on solid; N follows the occupancy-transition rule (§2.2 — evacuate,
+        never delete); masks as today. CFL_ADV ≤ 0.5 (pinned constraint, not TBD):
+        guarantees the step-e bound (γ−1)·2·CFL_ADV ≤ 0.4 < 1 by construction.
 2. p* := C · N_total · T            (wide mul, §3.4)
 3. HELMHOLTZ SOLVE (once per tick, fixed sweeps, RB-GS, red-black — §3.4 numerics):
      BCs: Neumann mirror at solid; Dirichlet P=0 at vacuum
@@ -216,9 +279,15 @@ constants). The v2 rules:
    `d = 1 + Σ k_f`, the neighbor sum `Σ k_f·P_nb`, and the RHS are all computed and
    held in **int64 at Q16.16 scale** (the `mul_wide`/`narrow` idiom in
    `fixed_point.h`). Narrowing to int32 happens **exactly once** per cell per sweep — at
-   the final quotient `P_new = wide_num / d` (via a widened `reciprocal`/long-division
-   path, NOT the q16-input `reciprocal_q16`, whose validated input range this divisor
-   exceeds — round-1 finding honored).
+   the final quotient `P_new = wide_num / d` (NOT via the q16-input `reciprocal_q16`,
+   whose validated input range this divisor exceeds — round-1 finding honored).
+   **Cost amortization (v2.1):** `d = 1 + Σ k_f` is constant across sweeps within a tick,
+   so its widened reciprocal is precomputed **once per cell per tick** and reused every
+   sweep — the per-cell wide divide is paid once, not `sweeps×`.
+   **Permeability scales `k_f` (v2.1):** each face's Helmholtz coefficient is multiplied
+   by the same face permeability that gates species flux — pressure coupling and mass
+   exchange throttle *coherently* (no full-strength knockback through a shut-but-leaky
+   door that visibly blocks smoke).
 2. **Solver-local density floor** `ρ̂ = max(ρ, RHO_FLOOR_SOLVER)`, chosen so
    `max k_f = dt²c²/RHO_FLOOR_SOLVER` (plus the ×4 face sum, plus the max representable
    `P` in the neighbor products) fits int64 with ≥ 8 bits of headroom — the concrete
@@ -283,9 +352,15 @@ if N_O2 > o2_thresh_burn AND T ≥ ignition_temp AND fuel > 0:
     T          += burn · H_fuel / (c_v · max(N_total, N_FLOOR_HEAT))   (§4.3 reciprocal)
 ```
 
+**Trace decay routes to `inert_N2` (v2.1):** when any trace species decays (soot settling,
+teargas dispersing), its lost mass is credited to `inert_N2` in the same cell — decay is
+settling/oxidation into inert bulk, not deletion. With this, `N_total` is conserved through
+the **full** burn-then-decay cycle, closing round-2's "soot decays and the pressure drains
+anyway" residual of D2.
+
 A sealed room that burns now behaves physically: pressure **rises** with T during the
 fire, relaxes as heat conducts away, and the baseline never fake-drains from
-bookkeeping. O2 depletion still starves the fire (the intended effect), and the O2→N2
+bookkeeping — not at burn time, and not later as the smoke settles. O2 depletion still starves the fire (the intended effect), and the O2→N2
 conversion means "burnt air" is exactly that — unbreathable but pressure-bearing.
 
 Emergent payoffs (unchanged, now actually delivered by §3's native physics):
@@ -323,7 +398,9 @@ transparent to water (kept).
 - **No global reductions remain in the sim path** (renorm deleted) except `max|u|` —
   an order-free integer max. Donor-cell flux is per-face integer transfers (exact,
   associative-free by construction: sequential per-face pass on CPU; on GPU, the
-  red-black / face-coloring pattern `cuda_water.cu` already uses).
+  **precompute-then-gather** pattern `cuda_water.cu` actually uses — one kernel writes
+  per-face flux buffers, a second applies them; round-2 corrected the earlier
+  "face-coloring" mislabel).
 - Fixed GS sweep counts (never adaptive); fixed substep cap; integer-ceil counts;
   `sqrt_q16` everywhere a magnitude is needed.
 - **CPU + CUDA lockstep** (decision 9): every new/changed kernel double-implemented and
@@ -354,18 +431,29 @@ alias-preserved throughout, so no patch strands a legacy reader.
    `div u`). Old solver untouched; ignition still on the legacy path. *Gate:*
    sealed-room energy-balance E2E (conduct→hull-radiate, floor-counter = 0); existing
    temperature tests green (solid path unchanged).
-3. **P3 — the compressible solver + atomic consumer migration.** *Design-gate first*
-   (§3.4 deliverables: overflow inequality with numbers, sweep count, substep cap).
+3. **P3 — the compressible solver + atomic consumer AND writer migration.** *Design-gate
+   first* — deliverables: **#0 a napkin cost model** reconciling the measured
+   85 %-of-budget worst-case baseline with the p99 ≤ 25 % target (sweep count, amortized
+   divide, per-species flux cost — if the model can't close the gap, renegotiate the gate
+   or the knobs BEFORE building); #1 the overflow inequality with numbers; #2 sweep
+   count; #3 substep cap; **#4 line-by-line verification of the operator's ρ̂ placement
+   against Kwatra eq. 15–17** (self-adjointness / diagonal dominance — round-2 asked, and
+   the fixed-sweep convergence guarantee leans on it).
    Then: true-Kwatra solve replaces `wave_substep`+`diffuse_solve`; compression work
    moves into the substep loop; `u` becomes the one velocity (wind views);
-   `atmosphere` re-pointed as the P alias; **in the same patch**: `apply_wave_push` →
-   `grad(P)`, water head → integer P (bridge removed), ripple → `|P−P_prev|`, FieldEdit
-   remap, recorder update, absorption placement + `test_wave_absorption` rework,
-   `sink_hop` + `wave_solver.*` deleted, breach→vacuum generalized, GPU backends pinned.
+   `atmosphere` re-pointed as the P alias; **readers, in the same patch**:
+   `apply_wave_push` → `grad(P)`, water head → integer P (bridge removed), ripple →
+   `|P−P_prev|`, recorder update, absorption placement + `test_wave_absorption` rework;
+   **writers, in the same patch (v2.1 — round-2 blocker)**: W3 displacement →
+   the §2.2 evacuation rule (replaces `physics_engine.cpp:599`), fire plume → a minimal
+   plume→T shim (the "pop" never goes inert during P3→P4), `destroy_wall` refill →
+   neighbor-mean `N` seeding, FieldEdit `atmosphere`→N-deposit / `wave_source`→T-deposit;
+   plus `sink_hop` + `wave_solver.*` deleted, breach→vacuum generalized, GPU backends pinned.
    *Gates:* 6 sub-kernel digests; overflow stress sweep; the quiescent-cold-breach
-   native-venting E2E; §3.3 stress probes; behavioral-parity bakes for push/head;
-   **p99 ms/tick ≤ 25 % of the 83 ms budget at 160² on the dev desktop** (hard number,
-   worst scenario, not mean).
+   native-venting E2E; **a water-rise displacement E2E** (mass conserved at the waterline,
+   push visible — the v2.1 occupancy rule under test); §3.3 stress probes;
+   behavioral-parity bakes for push/head; **p99 ms/tick ≤ 25 % of the 83 ms budget at
+   160² on the dev desktop** (hard number, worst scenario, not mean).
 4. **P4 — combustion on real O2.** §5 wholesale (conservative products, floors,
    both thresholds); ignition + fire O2 gate re-pointed to `N_O2`. *Gate:* the four
    emergent payoffs as E2E scenarios (mechanism visible; constants still TBD).
@@ -406,6 +494,10 @@ with `div_target`).
    measures and pins it against the hard p99 target.
 3. **Feel of the merged transient** (buffet-vs-dome from one field's evolution) —
    physically sound, but the *game feel* of knockback/ripple under the new P dynamics is
-   exactly what P5's HUMAN-TEST exists to judge.
+   exactly what P5's HUMAN-TEST exists to judge. Two named mechanisms for that checklist
+   (round-2): `dyn_wave_absorb` now also locally damps the smoke-carrying wind around
+   units (an emergent "bodies slow the breeze" effect — plausibly nice, possibly a
+   smoke-hugging artifact); and an empty sealed room's acoustic ringing is damped only by
+   numerical diffusion + RB-GS smoothing (likely fine; listen for it).
 4. **Combustion cadence** — once-per-tick chosen (matches today); flagged for revisit
    only if P5's fireball feel wants sub-tick burning.

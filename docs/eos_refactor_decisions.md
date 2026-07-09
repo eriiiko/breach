@@ -94,7 +94,17 @@
     deleted. Flux form IS continuity ⇒ dilation (B2) included; sealed rooms airtight by
     construction (D1 dead).
 12. **Combustion products conserve N_total** — non-soot fraction of consumed O2 credited to
-    `inert_N2` ("burnt products"). Sealed-room pressure never fake-drains (D2 dead).
+    `inert_N2` ("burnt products"), **and (v2.1) trace decay likewise returns its mass to
+    `inert_N2`** — conservation holds through the full burn-then-decay cycle. Sealed-room
+    pressure never fake-drains (D2 fully dead).
+
+**Round-2 critique verdict (2026-07-09, two targeted critics):** 14/16 round-1 findings
+FIXED outright, 2 PARTIALLY — both closed by the same-day **v2.1** pass (occupancy-transition
+mass rule; complete WRITER migration in P3 incl. W3→evacuation, plume→T shim, destroy_wall
+N-seeding; decay→N2; permeability scales k_f; ρ̂:=N_total; amortized wide divide;
+CFL_ADV≤0.5; napkin-cost-model + Kwatra-verification as P3 design-gate deliverables).
+**The design doc (v2.1) has survived critique. Build may proceed per the §8 patch graph —
+P1 and P2 are additive and parallel-safe; P3 requires its own design-gate first.**
 
 Design doc v2: `docs/eos_refactor_design.md` (supersedes v1 in place; v1→v2 changelog at top
 maps every round-1 blocker/decision to its fix). Round-1 critique: `..._design_critique.md`.
