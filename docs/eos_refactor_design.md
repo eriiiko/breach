@@ -199,9 +199,25 @@ eq. 15-17 shape, adapted to our fields):
 
 ```
 p*    = C · N_total · T                     # advected-state ABSOLUTE pressure (post step-1)
-solve (I − dt²·∇·( c²/ρ̂ )∇) P_new  =  p* − dt·ρ̂c²·div(u*)      # fixed-sweep RB-GS
-u    -= dt · grad(P_new) / ρ̂                # momentum kick from the ABSOLUTE field
+solve [I − (N c²)_cell·dt²·∇·( (1/N̂_face)·∇ )] P_new
+        =  p* − (N c²)_cell·dt·div(û*)      # Kwatra eq.(14), fixed-sweep RB-GS
+u    -= dt · grad(P_new) / N̂_face           # momentum kick, face-density form (eq.13)
 ```
+
+**Operator placement — VERIFIED against the paper (P3 design-gate deliverable #4,
+2026-07-10, from `docs/papers/ADA492343.pdf` eq. 9–15):** `(ρc²) ≡ (N·c²)` is an
+**outer, per-CELL multiplier evaluated pre-solve** on both sides; `1/N̂` sits **inside**
+the divergence-gradient sandwich, **per-FACE**, with `N̂_face = (N_i + N_j)/2` from the
+*post-advection* densities, floored by `N_FLOOR_SOLVER`. (v2's earlier `∇·((c²/ρ̂)∇)`
+form — density folded inside, no outer factor — was equivalent only for uniform density,
+i.e. wrong at breach fronts; corrected here per round-2's verification demand.)
+Diagonal dominance survives: diag = `1 + (Nc²)_i·dt²/dx²·Σ_f(perm_f/N̂_f)` strictly
+exceeds the off-diagonal sum by the identity term ⇒ the fixed-sweep GS guarantee is
+intact. **Named deviation from the paper:** Kwatra advects pressure itself (`p_a`); we
+derive `p* = C·N_adv·T_adv` from the advected state — a consistent O(dt) choice that
+guarantees P can never drift from (N, T); the paper itself notes the method is
+EOS-agnostic. (Energy: the paper updates E conservatively; we carry T with the explicit
+compression-work term — the §3.3-class named simplification.)
 
 where **`ρ̂ := N_total`** (unit particle mass — the one consistent choice given molar mass
 is deliberately dropped; a future implementer must NOT invent a real molecular-mass
@@ -233,8 +249,11 @@ fast path: `∇P ≡ 0` over any uniform region regardless of baseline — integ
 ```
 0. P_prev := P (kept copy — ripple transient + debug)     [P was materialized last tick]
 1. ADVECTION SUBSTEPS — n = ceil_int(dt / dt_adv), integer-ceil discipline
-   (smoke_cliff_count class); dt_adv = CFL_ADV·dx / (max|u| + eps), max|u| via
-   sqrt_q16 over vx²+vy² (int64 sums); n capped at N_SUB_MAX (cap value: patch-3 gate).
+   (smoke_cliff_count class); dt_adv = CFL_ADV·dx / (u_est + eps) with
+   **u_est = max|u| + (max|∇P|/N̂)·dt** — the paper's own velocity estimate (its §3:
+   `max|u|` alone under-substeps a quiescent field about to be kicked, e.g. the Sod tube
+   or OUR cold-breach tick-0). max|u| via sqrt_q16 over vx²+vy² (int64 sums); the ∇P term
+   from last tick's stored P (integer ops only); n capped at N_SUB_MAX (cap: patch-3 gate).
    per substep (dt_s = dt/n):
      a. u  ← semi-Lagrangian self-advection            (§3.3 simplification, flagged)
      b. T  ← semi-Lagrangian advection (gas mask)
@@ -288,6 +307,10 @@ constants). The v2 rules:
    by the same face permeability that gates species flux — pressure coupling and mass
    exchange throttle *coherently* (no full-strength knockback through a shut-but-leaky
    door that visibly blocks smoke).
+   **Budget recomputed for the verified operator (2026-07-10):** worst face coefficient
+   `k_f = (N_cell·c²·dt²/dx²)/N̂_f ≈ 894·N_cell/N̂_f` — even an O2-tank cell (200× ambient)
+   venting against the 10⁻³ floor peaks the wide products at ~2.4×10¹⁵, ≈12 bits under
+   int64. `N_FLOOR_SOLVER = 10⁻³` stands.
 2. **Solver-local density floor** `ρ̂ = max(ρ, RHO_FLOOR_SOLVER)`, chosen so
    `max k_f = dt²c²/RHO_FLOOR_SOLVER` (plus the ×4 face sum, plus the max representable
    `P` in the neighbor products) fits int64 with ≥ 8 bits of headroom — the concrete
@@ -432,13 +455,24 @@ alias-preserved throughout, so no patch strands a legacy reader.
    sealed-room energy-balance E2E (conduct→hull-radiate, floor-counter = 0); existing
    temperature tests green (solid path unchanged).
 3. **P3 — the compressible solver + atomic consumer AND writer migration.** *Design-gate
-   first* — deliverables: **#0 a napkin cost model** reconciling the measured
-   85 %-of-budget worst-case baseline with the p99 ≤ 25 % target (sweep count, amortized
-   divide, per-species flux cost — if the model can't close the gap, renegotiate the gate
-   or the knobs BEFORE building); #1 the overflow inequality with numbers; #2 sweep
-   count; #3 substep cap; **#4 line-by-line verification of the operator's ρ̂ placement
-   against Kwatra eq. 15–17** (self-adjointness / diagonal dominance — round-2 asked, and
-   the fixed-sweep convergence guarantee leans on it).
+   status (2026-07-10, Erik + Fable):* **#0 DONE** — napkin model: the old wave core's
+   ~50 explicit substeps/tick (~150 field passes) are REPLACED by ~2-3 substeps (~20-30
+   passes) + one S-sweep solve (3·S pass-equivalents) ⇒ at S=8-16 the new solver is
+   ~2-3× CHEAPER than what it deletes; the 85%-of-budget scare was numpy overhead ×
+   ungained constants. Verdict: the 25% gate is plausibly passed with headroom,
+   contingent on the two microbenchmarks below. **#1 DONE** — overflow inequality closed
+   with numbers (§3.4; N_FLOOR 10⁻³, ≈12 bits int64 headroom incl. the tank-spike case).
+   **#4 DONE** — operator verified against the paper (§3.1: outer per-cell (Nc²), inner
+   per-face 1/N̂; one placement CORRECTION applied + the CFL velocity-estimate
+   augmentation adopted; paper archived at `docs/papers/ADA492343.pdf`). **#2 and #3
+   remain** — the first two commits of P3 itself: microbenchmark (a) per-sweep cost of
+   the existing RB-GS at 160² (pins S + confirms #0), (b) real substep counts under
+   blast/breach with the augmented estimate (pins N_SUB_MAX).
+   **Citation requirement (Erik, 2026-07-10): the solver file carries a header comment
+   crediting the technique's authors** — N. Kwatra, J. Su, J.T. Grétarsson, R. Fedkiw,
+   "A Method for Avoiding the Acoustic Time Step Restriction in Compressible Flow", J.
+   Comput. Phys. 228 (2009) 4146–4161 — and every future file implementing a published
+   technique does likewise (project convention).
    Then: true-Kwatra solve replaces `wave_substep`+`diffuse_solve`; compression work
    moves into the substep loop; `u` becomes the one velocity (wind views);
    `atmosphere` re-pointed as the P alias; **readers, in the same patch**:
