@@ -109,7 +109,37 @@ P1 and P2 are additive and parallel-safe; P3 requires its own design-gate first.
 Design doc v2: `docs/eos_refactor_design.md` (supersedes v1 in place; v1→v2 changelog at top
 maps every round-1 blocker/decision to its fix). Round-1 critique: `..._design_critique.md`.
 
+13. **Perf gate stays p99 ≤ 25% of the tick (20.75 ms @160², CPU reference path) — but
+    renegotiation is EXPLICITLY on the table if needed** (Erik, 2026-07-10). Two graceful
+    fallback levers exist before any physics compromise: raising the gate percentage, and
+    the ambient-c dial (`K`). Note: GPU improves this in two stages — P6 kernel ports
+    (modest at small grids; transfer-bound) and S8 residency/CUDA-graphs (the real
+    multiplier, deliberately scheduled before big training runs). The gate's rationale
+    (shared GPU w/ render+NN, training throughput ∝ 1/tick-cost, bigger-map headroom)
+    survives both stages.
+
+14. **P3 as-built amendments BLESSED (Erik, 2026-07-10):** variational/Galerkin MG
+    transfers (the spec's re-discretized pick was measurably divergent — deviation
+    adopted wholesale); `trace_mass_scale=0.02` (traces are opacity, not molar density);
+    engine-owned trace advection in physical units (`advection_rate` config dead);
+    **N_SUB_MAX re-pinned to 8** + targeted substep micro-opt (Erik chose this over gate
+    renegotiation). Key clarifications recorded: N conservation is EXACT (zero drift,
+    LSB-level, forever); the 0.0066 atm figure is a stationary solver band on the
+    per-tick-DERIVED P, not accumulating error; perf numbers are the C++ engine, not
+    Python.
+
 ## OPEN — to decide next
+
+- **GPU END-STATE ALIGNMENT REVIEW — after P3 lands, BEFORE P6 starts** (Erik, 2026-07-10:
+  "the C++/CPU step is intermediate; step back and check alignment with the end goal").
+  Audit every P3-introduced primitive against GPU residency (S8) + batched RL training:
+  MG hierarchy coarse-tail strategy (truncation depth; CUDA-graphs launch collapse;
+  batching-across-envs makes coarse levels large again), smoother choice (RB-GS vs a
+  Chebyshev–Jacobi swap — the most GPU-native variant, contained change), wide-int64 ops
+  on device, transfer stencils, per-cell reciprocals. Context: the V-cycle's only real GPU
+  awkwardness is the serialized tiny-level launch tail (~0.5 ms/tick naive, ~nil under
+  CUDA graphs; batched training cures it structurally); CPU path is PERMANENT as the
+  bit-identity reference, not throwaway.
 
 - **B — "what is N" largely RESOLVED (2026-07-09, Erik keen).** The bulk air becomes **two explicit
   species: O2 + inert-N2**, with the traces (smoke/poison/…) on top, and `N = Σ(all species)` (Dalton,

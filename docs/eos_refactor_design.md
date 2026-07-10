@@ -438,6 +438,29 @@ Q16.16** near floors and spikes. The rules:
    **§3.4's earlier "diagonal dominance ⇒ fixed-sweep guarantee" is retracted as an
    overclaim** (asymptotic convergence ≠ 8-sweep convergence at game coupling — the
    conflation P3's measurements exposed).
+
+   **v2.3 — AS-BUILT amendments (P3's MG measurement gate, blessed by Erik 2026-07-10;
+   full data `docs/eos_p3_gate_measurements.md`):**
+   - **Transfers are VARIATIONAL/GALERKIN, not the re-discretized/bilinear pick above** —
+     that pick was MEASURABLY DIVERGENT on deep pyramids (error ×7/cycle at a breach;
+     round-3's Galerkin instinct vindicated by data). As built: the row divided by its
+     diagonal factor gives an SPD mass+face-Laplacian form; masses/conductances/residuals
+     SUM under coarsening and prolongation is the exact transpose — coarse corrections
+     are energy-norm projections and CANNOT amplify at any depth. Straddler coarse cells
+     fold their regular-child→vacuum conductances into the diagonal (the Galerkin
+     Dirichlet anchor — omitting it reproduces the amplification).
+   - **Frozen schedule: V(2,2)×C=2, full pyramid, coarsest-level 32 sweeps, WARM-STARTED
+     from the previous tick's P** (deterministic — P_prev is state; bought ~2 cycles).
+     Measured convergence ×0.55/cycle at real coupling; 300-tick durability: water
+     worst-dev 0.0066 atm, vent overshoot 0.0005 atm.
+   - **`trace_mass_scale = 0.02`**: traces are [0,1] OPACITY tracers, not molar
+     densities — unweighted Dalton made a 0.6-opacity teargas cloud a +60% pressure bomb.
+     Traces contribute to N_total through this scale.
+   - **Trace advection is engine-owned `u·dt/dx`** (physical units); the legacy
+     `advection_rate=900` config is dead; `wind_diffusion_scale` disabled pending P5 feel.
+   - **N_SUB_MAX re-pinned 16 → 8** (measured equally stable; the cost driver is
+     SUSTAINED sonic venting pinning the cap for the whole post-breach regime, not rare
+     spikes) + a targeted micro-opt pass on the substep inner loop, gate re-measured.
 4b. **Widen the GS flux-narrow (D-C, trivial):** `narrow(Σ mul_wide(face_k, ΔP))` wrapped
    int32 past ~23 atm neighbor differences — keep the accumulator wide until the final
    per-cell store.
