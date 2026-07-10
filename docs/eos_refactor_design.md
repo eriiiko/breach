@@ -495,7 +495,63 @@ v2 refinements:
   the tunable `o2_thresh` (round-1 minor), and distinct from §3.4's solver floor.
 - `heat` (the ray-deposit buffer) keeps its per-tick-clear contract — unaffected.
 
----
+### v2.4 as-built amendment — thermal/velocity rails (PROVISIONAL, Erik review at P5)
+
+*(branch `eos-p3fix-thermal-ceiling`, 2026-07-10/11 — the decisions.md #16 "thermal
+spike" investigation. Same class as the blessed T_MIN/work-clamp rails, NOT a solver
+redesign; every rail is counted telemetry, never silent.)*
+
+**Corrected diagnosis of the flagged spike** (root-caused by per-term instrumentation,
+not the flagged hypothesis): the P3 plume→T shim was a MINOR term (<1% of the measured
+peak — though its self-limiter WAS structurally dead: it gated on `atmosphere[i]` at
+its own solid tile, which the solver force-zeroes; fixed, now gates on T against
+`T_FLAME_MAX≈2000`). The measured drivers are (a) **Pass-1's `ΔT=ΔE/(N·c_v)`
+reciprocal** dividing the fire's radiant deposit by a collapsing local N — the hot
+zone's own pressure evacuates its gas, so the same deposit heats the thinning remainder
+ever harder — coupled with (b) **step 4c's multiplicative compression work**, whose
+±T_WORK_CLAMP rail bounds the per-tick RATE but never the VALUE (compounds ~1.5×/tick
+at the rail). Two int32 WRAP bugs rode on top (T past the Q16.16 ceiling; `u` past
+int64 in the kick's magnitude test) — both fixed with saturating arithmetic
+independent of any rail.
+
+The rails:
+
+- **`T_MAX_PHYS`** (config `[physics.thermal]`, default 16000 K-relative ≈ 2× the
+  design's stated 9000 K extreme): a counted saturating clamp at every T write path —
+  EOS step 4c, thermal Pass 1 (both branches), combustion's deposit (each with its own
+  hit counter), plus FieldEdit's T deposit (Python authored-edit path — clamped,
+  uncounted). Physically honest story: a near-vacuum
+  cell's T is thermodynamically ill-defined; real gas would equilibrate the spike away
+  instantly — the cap stands in for that missing fast equilibration. Bounds the
+  runaway regardless of driving term. (Conduction needs no rail — convex combination;
+  cooling only shrinks; SL advection is interpolation.)
+- **`U_MAX`** (config `[physics.eos]`, default 1000 m/s): defense-in-depth velocity
+  rail — the step-4 store clamp caps |u| at `min(c_LOCAL, U_MAX)`, counted; plus an
+  overflow guard (±2^30 raw component pre-clamp) so the magnitude test's `u²` sum can
+  never overflow int64 again (the measured chaotic-wind wrap).
+- **`N_FLOOR_HEAT` checked, kept at 0.05**: the single-tick criterion
+  `N_floor ≥ heat_tick_max/(T_MAX_PHYS·c_v)` holds at 0.05 for the measured worst
+  deposit (~330/tick ⇒ 6,600 K < 16,000); the stacked-firestorm case is bounded by
+  the counted T_MAX_PHYS rail (its job). A trial raise to 0.2 perturbed marginal
+  ignition timings suite-wide for no correctness gain.
+
+**Measured outcome (B4/B7/B6 re-baked, game-faithful loop — heat cleared per tick):**
+the intended story, rails untouched (all counters 0): B4 T_fire rises to ~1240 (flame
+scale), fire self-starves t≈39, temps decay, no pin/wrap, winds ≤ 5 m/s; B7 peak
+excursion 11.9 kK decays to 5.1 kK, no pin; B6 smooth post-peak. In the
+pr.step-only harness (heat never cleared — `tools/eos_p5_bake.py` and the P4 E2E
+loops), stale heat re-radiates every tick and T pins at the rail — a HARNESS
+fidelity artifact, flagged.
+
+**OPEN consequence for Erik's P5 pass (the reason this block is provisional):** with T
+bounded, fire scenarios lose the chaotic near-ceiling dynamics several shipped E2E
+calibrations silently depended on — a fire's heat (measured ~330 units/tick/cell at
+`k_fire_heat=9`) drives adjacent air to the rail in ~10 ticks, whose pressure
+evacuates local O2 *thermally* in EVERY scenario, erasing the O2-differentiation
+payoffs (vented≈sealed, flooded≈control) and the flamethrower's dist-3 ignition
+(pre-rail timing t=40 was chaos-fragile: a 1e-5 dial perturbation moved it to t=60,
+peak T 32,759 = the format ceiling). The fire heat scale / ignition `o2_threshold`
+calibration against BOUNDED gas physics is a P5 design call — see the branch report.
 
 ## 5. Combustion on real O2 — conservative products (v2 call #2 — LOCKED)
 
