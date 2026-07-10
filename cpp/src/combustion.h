@@ -1,6 +1,7 @@
 #pragma once
 // CombustionSolver — burns fuel against REAL local O2 (EOS refactor P4,
-// docs/eos_refactor_design.md §5, decisions log #12).
+// docs/eos_refactor_design.md §5, decisions log #12; v2.5 P5.1 stoichiometric
+// fuel consumption, decisions log #17).
 //
 // S. Feldman, J.F. O'Brien, O. Arikan, "Animating Suspended Particle
 // Explosions", SIGGRAPH 2003 — the heat + product-yield + ignition-threshold
@@ -24,7 +25,9 @@
 // associative-symmetric across neighbours sharing a burning wall — same
 // idiom as FireSimulation's own per-neighbour smoke-emission deposit).
 //
-// Per candidate tile i — flammable AND fuelled (wall_hp[i] > 0) AND
+// Per candidate tile i — flammable AND fuelled (wall_hp[i] > FUEL_FLOOR ==
+// 1 Q16.16 LSB — v2.5: a fully-charred tile's ember is OUT: no O2 draw, no
+// heat deposit, or the perpetual-ember hole just re-opens one LSB lower) AND
 // (fire[i] > 0 OR temperature[i] >= ignition_temp_q16[i]) [a cheap row-major
 // PREFILTER only; the real gate below is checked unconditionally, so this
 // widening never changes the result] AND ignition_temp_q16[i] > 0 (the
@@ -47,9 +50,22 @@
 //               same bulk-pair proxy the engine already uses for that
 //               deposit, floored INDEPENDENTLY of every other floor.)
 //
-// wall_hp is READ-ONLY here (the fuel gate) — combustion does NOT deplete
-// it; FireSimulation's own wall_damage stays the sole fuel-consumption
-// brake, so the two passes never double-spend the same fuel store.
+// v2.5 (P5.1 stoichiometric fuel consumption — docs/eos_refactor_design.md
+// §5 v2.5 amendment, decisions log #17): wall_hp is now MUTABLE — per
+// neighbour burn the SOURCE tile pays
+//     fuel_cost = narrow_round(mul_wide(fuel_per_o2_q, burn))
+// (round-to-nearest — the same unbiased-sink idiom fire_simulation.cpp's
+// wall-damage depletion uses), subtracted from wall_hp[i] and FLOORED AT
+// 1 Q16.16 LSB after EACH of the up-to-4 neighbour subtractions (N,S,W,E
+// order — deterministic). This is the EMBER-scale consumption that closes
+// v2.4's fuel-free-smolder flag; FireSimulation's wall_damage pass remains
+// the FLAME-scale (I>0) consumption. THE 1-LSB RULE (Erik, 2026-07-11):
+// this pass NEVER destroys a tile and NEVER emits destroyed-tile events —
+// structural destruction stays exclusively FireSimulation's I>0 path. A
+// long-smoldered wall survives as charred tissue paper at exactly 1 LSB:
+// easy prey for almost any other damage source (and for a real flame,
+// whose damage pass CAN take it to 0). The ember state itself is EMERGENT
+// (fire I == 0, T >= ignition_temp, wall_hp > FUEL_FLOOR) — no new state.
 //
 // o2_thresh_breathe is a SEPARATE constant, defined but NOT consumed here —
 // unit suffocation is a LATER mechanics arc (design §5: "enabled here,
@@ -76,6 +92,20 @@ public:
     float H_fuel           = 4.0f;   // heat yield (T-scale) per unit N_O2 burned
     float soot_yield       = 0.3f;   // fraction of consumed O2 -> black_smoke
                                       // (remainder -> inert_N2, decisions #12)
+    float fuel_per_o2      = 0.7f;   // v2.5 (P5.1): wall_hp consumed per unit
+                                      // N_O2 burned (wood stoichiometry burns
+                                      // ~0.7 mass-units of fuel per unit O2).
+                                      // THE ember-lifetime dial (design §9):
+                                      // smaller -> embers glow for minutes
+                                      // awaiting oxygen; larger -> they char
+                                      // out fast. Quantized once per step like
+                                      // every other per-step scalar.
+
+    // v2.5 (P5.1): the fuel floor, in RAW Q16.16 counts (1 == one LSB).
+    // Doubles as (a) the no-fuel gate threshold (wall_hp <= FUEL_FLOOR ->
+    // the ember is out) and (b) the clamp this pass's depletion can never
+    // cross. Compile-time constant — Erik's 1-LSB rule, not a dial.
+    static constexpr int32_t FUEL_FLOOR = 1;
 
     // Unit-side suffocation mechanics (LATER arc, design §5): the minimum
     // local N_O2 a unit needs to breathe. Defined at the right layer;
@@ -96,7 +126,10 @@ public:
     // gas                : (n_gases, h, w) Q16.16 density planes, mutated
     // o2_idx/inert_n2_idx/black_smoke_idx : gas ids (simulation/gases.py)
     // temperature        : (h, w) Q16.16, mutated (the heat deposit)
-    // wall_hp            : (h, w) Q16.16, READ-ONLY (the fuel gate)
+    // wall_hp            : (h, w) Q16.16, MUTATED (v2.5 P5.1: the fuel gate
+    //                      AND the ember-scale fuel store — depleted
+    //                      fuel_per_o2-proportionally, floored at FUEL_FLOOR,
+    //                      never destroyed by this pass)
     // fire               : (h, w) Q16.16, READ-ONLY (candidate prefilter)
     // flammable/solid/is_vacuum : (h, w) bool masks
     // ignition_temp_q16  : (h, w) Q16.16, per-tile material threshold — the
@@ -108,7 +141,7 @@ public:
         int32_t* gas, int n_gases,
         int o2_idx, int inert_n2_idx, int black_smoke_idx,
         int32_t* temperature,
-        const int32_t* wall_hp,
+        int32_t* wall_hp,
         const int32_t* fire,
         const bool* flammable,
         const bool* solid,

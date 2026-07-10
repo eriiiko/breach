@@ -1121,6 +1121,7 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("o2_thresh_burn",    &CombustionSolver::o2_thresh_burn)
         .def_readwrite("H_fuel",            &CombustionSolver::H_fuel)
         .def_readwrite("soot_yield",        &CombustionSolver::soot_yield)
+        .def_readwrite("fuel_per_o2",       &CombustionSolver::fuel_per_o2)   // v2.5 P5.1
         .def_readwrite("o2_thresh_breathe", &CombustionSolver::o2_thresh_breathe)
         .def_readwrite("T_MAX_PHYS",        &CombustionSolver::T_MAX_PHYS)     // v2.4 rail
         .def_readonly("heat_floor_hits",    &CombustionSolver::heat_floor_hits)
@@ -1129,7 +1130,9 @@ PYBIND11_MODULE(breach_physics, m) {
                         py::array_t<int32_t> gas,             // (n_gases,h,w) Q16.16
                         int o2_idx, int inert_n2_idx, int black_smoke_idx,
                         py::array_t<int32_t> temperature,     // Q16.16, mutated
-                        py::array_t<int32_t> wall_hp,         // Q16.16, read-only
+                        py::array_t<int32_t> wall_hp,         // Q16.16, MUTATED (v2.5
+                                                              // P5.1: ember-scale fuel
+                                                              // depletion, 1-LSB floor)
                         py::array_t<int32_t> fire,            // Q16.16, read-only
                         py::array_t<bool> flammable,
                         py::array_t<bool> solid,
@@ -1142,7 +1145,7 @@ PYBIND11_MODULE(breach_physics, m) {
             const int h = static_cast<int>(gv.shape(1));
             const int w = static_cast<int>(gv.shape(2));
             auto [temp, h2, w2] = get_2d(temperature);
-            auto [whp, h3, w3]  = get_2d_const(wall_hp);
+            auto [whp, h3, w3]  = get_2d(wall_hp);   // v2.5 P5.1: mutable
             auto [f, h4, w4]    = get_2d_const(fire);
             auto [fl, h5, w5]   = get_2d_const(flammable);
             auto [sol, h6, w6]  = get_2d_const(solid);

@@ -337,7 +337,28 @@ def test_e2e_1_sealed_room_fire_self_starves():
       coherent (a sealed oven) but it is NOT this test's story; a 15x15 room
       has the gas thermal mass for the burn to actually END (fire dies
       t~=89, P peaks t~=97, then genuinely declines). The fuel-free-smolder
-      regime itself is FLAGGED for Erik's P5 pass (design doc §4 v2.4)."""
+      regime itself is FLAGGED for Erik's P5 pass (design doc §4 v2.4).
+
+    v2.5 re-pins (P5.1 stoichiometric fuel consumption — design §5 v2.5
+    amendment, decisions #17; behavioral BY DESIGN):
+    - The flame phase lengthens (t~=89 -> t~=426): the ember-scale fuel
+      drain weakens F, a weaker flame draws its O2 down more slowly, and
+      the marginal flame rides the low-O2 regime longer before a starve dip
+      crosses I_min. Horizon re-pinned 220 -> 520 (perturbation-checked:
+      the t=426 death is bit-stable under the v2.4 1e-5 dial-perturbation
+      probe).
+    - The 'pressure settles off its peak' assertion is RETIRED FOR SEALED
+      ROOMS: v2.5's designed ember (I=0, T>=ignition, fuel-metered) keeps
+      burning O2 and depositing heat after flame death — hot gas conducts
+      the wood back over ignition_temp, so a sealed room is now a SEALED
+      OVEN whose pressure keeps rising until its O2 (or fuel) exhausts,
+      thousands of ticks out (measured: still climbing at t=2400). That is
+      canon now (decisions #17: an ember only goes out at hp <= 1 LSB or
+      no O2), so this test instead asserts the post-flame climb happens for
+      the RIGHT, FUEL-PAID reason: the tile carries the ember signature
+      (T >= ignition) and its wall_hp actually paid for the O2 burned. The
+      full flame->ember->re-ignite->char-out->quiet lifecycle is gated in
+      tests/test_eos_p5_1_stoich.py."""
     gmap = _sealed_room(hh=15, wood_at=(7, 7))
     pr = _runner()
     pr.fire.params.smoke_emission = 0.0   # isolate combustion+decay (docstring)
@@ -349,7 +370,7 @@ def test_e2e_1_sealed_room_fire_self_starves():
     assert ambient_p > 0.9, "the neighbour tile should start near 1 atm"
 
     fire_hist, p_hist, mass_hist = [], [], []
-    for _ in range(220):
+    for _ in range(520):   # v2.5 re-pin (was 220): the flame lives to t~=426
         _step_tick(pr, gmap)   # game-faithful tick (v2.4 harness-fidelity fix)
         fire_hist.append(float(gmap.fire[7, 7]) / 65536.0)
         p_hist.append(float(gmap.atmosphere[6, 7]) / 65536.0)
@@ -359,7 +380,9 @@ def test_e2e_1_sealed_room_fire_self_starves():
     # little.
     assert fire_hist[-1] == 0.0, (
         f"fire never fully extinguished (final intensity {fire_hist[-1]})")
-    # ... with fuel remaining (self-STARVING, not burn-through).
+    # ... with fuel remaining (self-STARVING, not burn-through). v2.5: the
+    # ember drain is real but small on this horizon (~4 HP of 60) — the >90%
+    # bound still holds and still proves starve-not-burn-through.
     wall_hp_final = float(gmap.wall_hp[7, 7]) / 65536.0
     assert wall_hp_final > 0.9 * wall_hp0, (
         f"the wall burned through instead of starving "
@@ -371,22 +394,35 @@ def test_e2e_1_sealed_room_fire_self_starves():
     assert max(mass_hist) <= total0, (
         f"O2+N2 exceeded its starting total "
         f"(max {max(mass_hist)} > start {total0}) — mass fabricated")
-    # Pressure rise-then-settle: a real peak above ambient, and the final
-    # value has come back down off that peak.
+    # A real pressure rise above ambient during the burn (kept from v2.4).
     p_peak = max(p_hist)
     assert p_peak > ambient_p * 1.05, (
         f"no visible pressure rise during the burn (peak {p_peak:.3f} vs "
         f"ambient {ambient_p:.3f})")
-    assert p_hist[-1] < p_peak, (
-        f"pressure never settled off its peak ({p_hist[-1]:.3f} vs "
-        f"peak {p_peak:.3f})")
+    # v2.5 (replaces the retired settle assertion — see docstring): the
+    # post-flame pressure climb is the DESIGNED, FUEL-METERED ember, not a
+    # leak or fabrication (the mass bound above already excludes the
+    # latter): the wood tile still reads ember-hot and its wall_hp PAID
+    # for the post-flame O2 it keeps burning.
+    assert int(gmap.temperature[7, 7]) >= IGN_WOOD_Q16, (
+        "post-flame regime lost the ember signature (tile T fell below "
+        "ignition inside the horizon — expected a live sealed-oven ember)")
+    assert wall_hp_final < wall_hp0, (
+        "ember drew O2 without paying fuel — the v2.5 stoichiometric drain "
+        "is not engaging")
 
 
 def test_e2e_2_breach_vents_o2_and_kills_fire():
     """(2) A breach that vents the room's air puts out an established fire
     FASTER than the same fire left sealed — venting removes O2 wholesale
-    (not just local combustion depletion)."""
-    def _ticks_to_die(vent, max_ticks=250):
+    (not just local combustion depletion).
+
+    v2.5 re-pin (P5.1, design §5 v2.5 / decisions #17): the sealed control
+    now dies t=265 (was 172) — the ember-scale fuel drain weakens F and the
+    weaker flame starves its room more slowly (behavioral by design, trio
+    re-measured at the P5.1 gate: sealed 265 / vented 48 / flooded 39).
+    max_ticks 250 -> 400."""
+    def _ticks_to_die(vent, max_ticks=400):
         gmap = _sealed_room(hh=9, wood_at=(4, 4),
                             extra_vacuum=[(0, 4)] if vent else None)
         pr = _runner()
@@ -442,8 +478,12 @@ def test_e2e_3_o2_rich_pocket_intensifies_burn():
 def test_e2e_4_inert_flood_smothers_fire():
     """(4) Flooding the fire's neighbourhood with inert N2 (displacing O2)
     smothers it faster than leaving it alone — the inert/CO2-flood-smothers
-    payoff (design §5, decisions.md item B)."""
-    def _ticks_to_die(flood, max_ticks=200):
+    payoff (design §5, decisions.md item B).
+
+    v2.5 re-pin (P5.1, design §5 v2.5 / decisions #17): the unflooded
+    control now dies t=265 (was 172) — see test_e2e_2's re-pin note.
+    max_ticks 200 -> 400."""
+    def _ticks_to_die(flood, max_ticks=400):
         gmap = _sealed_room(hh=9, wood_at=(4, 4))
         pr = _runner()
         _ignite(gmap, (4, 4), intensity=0.6, temp_mult=1.5)
@@ -497,10 +537,17 @@ def test_two_run_determinism():
 # ---------------------------------------------------------------------------
 # v2.4 — perturbation robustness of the payoff orderings
 # ---------------------------------------------------------------------------
-def _payoff_timings(perturb_absorb=None, max_ticks=300):
+def _payoff_timings(perturb_absorb=None, max_ticks=400):
     """Ticks-to-extinguish for the sealed / vented / flooded arms of the
     e2e-1/2/4 scenario family (game-faithful loop), optionally with one EOS
-    dial perturbed. Returns (sealed, vented, flooded)."""
+    dial perturbed. Returns (sealed, vented, flooded).
+
+    v2.5 (P5.1, design §5 v2.5 / decisions #17): trio re-measured at the
+    P5.1 gate — sealed 265 / vented 48 / flooded 39 (was 172 / 49 / 39).
+    Behavioral by design (the ember-scale fuel drain weakens F; the weaker
+    sealed flame starves its room more slowly); ordering preserved and still
+    bit-stable under the 1e-5 dial perturbation below. max_ticks 300 -> 400
+    for the longer sealed arm."""
     def _ticks(vent=False, flood=False):
         gmap = _sealed_room(hh=9, wood_at=(4, 4),
                             extra_vacuum=[(0, 4)] if vent else None)

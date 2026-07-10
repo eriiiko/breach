@@ -306,6 +306,12 @@ class PhysicsRunner:
             "o2_thresh_burn", self.combustion.o2_thresh_burn)
         self.combustion.H_fuel = _cp("H_fuel", self.combustion.H_fuel)
         self.combustion.soot_yield = _cp("soot_yield", self.combustion.soot_yield)
+        # v2.5 (P5.1 stoichiometric fuel consumption, design §5 v2.5 /
+        # decisions #17): wall_hp consumed per unit N_O2 burned — THE
+        # ember-lifetime dial. Quantized once per step in C++ like the
+        # other per-step scalars.
+        self.combustion.fuel_per_o2 = _cp(
+            "fuel_per_o2", self.combustion.fuel_per_o2)
         self.combustion.o2_thresh_breathe = _cp(
             "o2_thresh_breathe", self.combustion.o2_thresh_breathe)
         # v2.4 rail: the SAME [physics.thermal].T_MAX_PHYS constant as the
