@@ -52,6 +52,11 @@ tools/resynth-tiles/
 tools/seamless-tile-inpainting/
 tools/texturelab/
 
+# EOS P5 bake-off output (GIFs/plots/raw traces are large + local-only;
+# the harness script and the composed index.html are tracked).
+tools/eos_p5_out/*
+!tools/eos_p5_out/index.html
+
 # OS files
 Thumbs.db
 .DS_Store
