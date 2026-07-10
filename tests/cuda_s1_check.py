@@ -150,7 +150,17 @@ def part2_integration() -> bool:
     # black_smoke's decay both move the trajectory. Combustion itself (item 1)
     # does NOT touch this scenario (no flammable/wood material in the level).
     # (was 493645d34b01d7ad55e5f0e6ae7254e94989dc1b6dce5c1b7ee5e53acaff3e63)
-    GOLDEN = "7eeb41d431a79ba01cbafef37416188bbf1ecb2a194d92af5f4ede279c9f2758"
+    # Re-baselined 2026-07-10 (eos-p3fix-thermal-ceiling, design v2.4):
+    # the plume shim's T_FLAME_MAX self-limiter fix, the saturating T/u
+    # writes, the T_MAX_PHYS/U_MAX rails, the absorption-proportional gas
+    # radiant deposit (Pass 1), and the O2-gate hot-zone-equilibrium
+    # rescale (P_min/P_full/o2_threshold) all touch the default scenario
+    # (it seeds fire + smoke): the fire tiles' heat->T->wind->O2 chain
+    # moves the trajectory. ONE re-baseline for the whole branch (the
+    # gate-h rule). DIGEST_SPEC_VERSION unchanged (values moved; no field
+    # added/removed/retyped).
+    # (was 7eeb41d431a79ba01cbafef37416188bbf1ecb2a194d92af5f4ede279c9f2758)
+    GOLDEN = "98d3dd7eaf3d574d6e562513cd95f3b5ac077b7c69b1d0b024db931261735473"
 
     def make_hot():
         sim = default_scenario_sim()
