@@ -272,6 +272,32 @@ class PhysicsRunner:
             getattr(eos_cfg, "absorb_strength", self.eos.absorb_strength))
         self.eos.T_MIN           = _ep("T_MIN", self.eos.T_MIN)
 
+        # CombustionSolver (EOS refactor P4, docs/eos_refactor_design.md §5):
+        # burns fuel against the REAL local O2, once per tick, right after
+        # the EOS solver materializes P/N/T. Bound from [physics.combustion];
+        # defaults on the C++ struct already match, config only overrides
+        # where a key is present (the eos-block precedent above).
+        self.combustion = self.engine.combustion
+        comb_cfg = getattr(CFG.physics, "combustion", None)
+
+        def _cp(key, default):
+            return float(getattr(comb_cfg, key, default))
+
+        self.combustion.burn_rate = _cp("burn_rate", self.combustion.burn_rate)
+        self.combustion.o2_thresh_burn = _cp(
+            "o2_thresh_burn", self.combustion.o2_thresh_burn)
+        self.combustion.H_fuel = _cp("H_fuel", self.combustion.H_fuel)
+        self.combustion.soot_yield = _cp("soot_yield", self.combustion.soot_yield)
+        self.combustion.o2_thresh_breathe = _cp(
+            "o2_thresh_breathe", self.combustion.o2_thresh_breathe)
+
+        # Gas-id lazy resolve (the `_steam_idx` precedent, _step_water below):
+        # resolved BY NAME from the map's gas table on the first step() call
+        # (gases.py is the single source of truth — never hardcode an index).
+        self._o2_idx = None
+        self._inert_n2_idx = None
+        self._black_smoke_idx = None
+
         # WaterSolver (engine/07 §2, water plan W2): the pipe model that
         # advances gmap.water_depth. Params are bound through a METHOD (not
         # inline here) so a future config-reload hook can re-call it; all
@@ -401,6 +427,10 @@ class PhysicsRunner:
         # WaterSolver.dx's bind in _step_water — the design's c_max/overflow
         # budget are both derived at this physical dx, not a config guess).
         self.eos.dx = float(gmap.tile_size_m)
+        if self._o2_idx is None:
+            self._o2_idx = int(gmap.gases.name_to_id["o2"])
+            self._inert_n2_idx = int(gmap.gases.name_to_id["inert_n2"])
+            self._black_smoke_idx = int(gmap.gases.name_to_id["black_smoke"])
         self.engine.run_substeps(
             gmap.wave_p, gmap.atmosphere,
             gmap.wind_x, gmap.wind_y,
@@ -408,7 +438,26 @@ class PhysicsRunner:
             gmap.obstacles, gmap.solid, gmap.is_vacuum,
             gmap.dyn_permeability, gmap.dyn_wave_absorb,
             gmap.gas, gmap.gases.diffusion, gmap.gases.conservative,
+            gmap.gases.decay, self._inert_n2_idx,
             sim_time,
+        )
+
+        # EOS refactor P4 (design §5, §3.2 "step 6: combustion pass ... reads
+        # settled P/N/T, feeds next tick"): burns fuel against the REAL local
+        # O2, right after the EOS solver materializes P/N/T (run_substeps,
+        # above) and BEFORE this tick's consumers (step_tail's fire O2 gate
+        # + the ignition O2 gate, below) read O2 — so a room that just burned
+        # reads its OWN depletion this same tick (no artificial 1-tick lag).
+        # Its N/T mutations never re-enter this tick's already-completed
+        # Helmholtz solve; they feed NEXT tick's p* = C*N_total*T instead.
+        ignition_temp_q16 = gmap.materials.ignition_temp_q16[gmap.material].astype(
+            np.int32)
+        self.combustion.step(
+            gmap.gas, self._o2_idx, self._inert_n2_idx, self._black_smoke_idx,
+            gmap.temperature, gmap.wall_hp, gmap.fire,
+            gmap.flammable, gmap.solid, gmap.is_vacuum,
+            ignition_temp_q16,
+            sim_time, self.temperature.c_v, self.temperature.n_floor_heat,
         )
 
         # Per-tick orchestration TAIL — moved into C++ in Patch 1 S4a
@@ -445,7 +494,7 @@ class PhysicsRunner:
             gmap.temperature, gmap.wind_x, gmap.wind_y,
             gmap.is_vacuum, gmap.flammable,
             gmap.heat, gmap.heat_inv_shift, gmap.face_shift,
-            gmap.gas, gmap.gases.conservative,
+            gmap.gas, gmap.gases.conservative, self._o2_idx,
             sim_time,
         )
 

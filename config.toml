@@ -80,9 +80,12 @@ n_floor_heat      = 0.05    # floor on the per-tile N divisor (read from `atmosp
 # ignites via `fire = max(fire, ignition_seed)`. This is a SECOND ignition path
 # that runs alongside the existing cellular fire spread (it does not replace it).
 # Dormant in-game until fire/beams emit heat (temperature is ~0 with no sources).
+# EOS refactor P4 (docs/eos_refactor_design.md §6): o2_threshold now reads the
+# REAL N_O2 scale, not the old atmosphere/P (~1.0 ambient) scale — see the
+# o2_threshold/P_min/P_full recalibration note in the fire feedback block below.
 [physics.fire]
 ignition_seed = 0.1   # seed fire intensity a temperature-ignited tile gets (I_seed)
-o2_threshold  = 0.60  # min air-side-neighbour atmosphere to ignite (mirrors the fire's o2_threshold)
+o2_threshold  = 0.12  # min air-side-neighbour REAL N_O2 to ignite (mirrors the fire's P_min)
 
 # --- Signed-logistic fire FEEDBACK (fire_design_proposal §2/§3/§5) ------------
 # Cellular spread is DELETED: spread is now radiation -> heat -> temperature ->
@@ -90,25 +93,35 @@ o2_threshold  = 0.60  # min air-side-neighbour atmosphere to ignite (mirrors the
 # life/death of an already-lit tile. Per burning tile of intensity I in [0,1]:
 #   T     = temperature[i] / TEMP_SCALE              (game units; ignition_temp=300 wood)
 #   F     = clamp01(wall_hp[i] / fuel_ref)           (fuel from remaining wall HP)
-#   P     = mean atmosphere over open (non-solid,non-vacuum) 4-neighbours  (O2 proxy)
+#   O2    = mean REAL gas[o2] over open (non-solid,non-vacuum) 4-neighbours
+#           (EOS refactor P4 — was the atmosphere/P proxy; design §6, item 3)
 #   W     = |wind| from the SHARED wind field (= -grad p, incl. shockwaves)
 #   hot   = clamp01((T - fire_T_ext) / fire_T_span)
-#   o2    = smoothstep(P_min, P_full, P)             (pressure IS oxygen — no O2 field)
+#   o2    = smoothstep(P_min, P_full, O2)            (the REAL local O2 gate)
 #   avail = F * o2
 #   grow  = k_grow * avail * hot * I*(1-I) * (1 + k_wind_fan*W)   (logistic, wind-fanned)
 #   die   = k_die*(1 - avail*hot)*I + k_wind_strip*W*(1-I)*I      (decay + wind blow-out)
 #   I    += dt*(grow - die);  clamp01;  if I < I_min -> 0 (snap-extinguish)
-# Plume: atmosphere[i] += max(fire_pressure_gain*I*(1 - atmosphere[i]/p_expand_ref)*dt, 0)
-#   -> own-tile overpressure -> wind points OUTWARD -> smoke pushed away (not pulled in).
+# Plume: temperature[i] += the plume->T shim deposit (fire_pressure_gain-scaled,
+#   self-limiting on `atmosphere[i]/p_expand_ref` — unchanged by P4, still reads
+#   REAL pressure, not O2) -> p* rises -> wind points OUTWARD -> smoke pushed away.
 # A sealed-room fire over-pressurises -> may pop a weak wall (find_burst_walls) -> vents
-# -> P falls -> starves. Emergent. Erik tunes all of these live.
+# -> P falls -> starves; ALSO now (P4) the room's REAL O2 depletes as it burns ->
+# o2 -> 0 -> starves even in a wall that never bursts. Both emergent. Erik tunes
+# all of these live.
 k_grow            = 4.0    # logistic growth gain (1/s)
 k_die             = 2.0    # decay rate when starved/cold (1/s)
 fire_T_ext        = 350.0  # extinction temperature (~ignition_temp + 50; below it, fire dies)
 fire_T_span       = 150.0  # width of the `hot` ramp above fire_T_ext
 fuel_ref          = 60.0   # wall_hp normaliser: F = clamp01(wall_hp/fuel_ref)
-P_min             = 0.60   # pressure below which the O2 proxy is 0 (decompression extinguishes)
-P_full            = 1.00   # interior pressure where the O2 proxy is full
+# EOS refactor P4 RECALIBRATION (design §6): P_min/P_full used to be read against
+# `atmosphere` (P), where ambient == 1.0. They now read REAL gas[o2], where
+# ambient == ~0.21 (the P1 calibration: 0.21*N_amb O2 / 0.79*N_amb inert_N2, P1
+# §2.1). Rescaled to preserve the OLD 60%-of-ambient cutoff fraction:
+# P_min = 0.60*0.21, P_full = 0.21 (ambient IS "full" O2). Sane starting points,
+# feel-tuned at P5 like the pre-P4 values were.
+P_min             = 0.126  # local N_O2 below which the O2 proxy is 0 (O2 starves the fire)
+P_full            = 0.21   # local N_O2 (== ambient) at which the O2 proxy is full
 I_min             = 0.02   # snap-to-zero extinguish floor
 k_wind_fan        = 0.5    # (1 + k_wind_fan*W) fans growth into a firestorm. NEEDS TUNING vs the live wind scale (a shockwave is a large transient spike).
 k_wind_strip      = 0.5    # W*(1-I)*I blows out small/marginal fires (the realistic crossover). NEEDS TUNING vs the live wind scale.
@@ -270,6 +283,24 @@ N_FLOOR_SOLVER = 0.001                # solver-internal N floor (gameplay N unfl
 adiabatic_index = 1.4                 # ideal-gas adiabatic index (compression work); TUNING DIAL
 absorb_strength = 8.0                 # dyn_wave_absorb scale in the velocity-correction damping
 T_MIN = -289.0                        # floor on the ambient-relative T field (T_abs >= ~1 K)
+
+# EOS refactor P4 — combustion on real O2 (docs/eos_refactor_design.md §5,
+# decisions log #12). Own pass, once per tick, after the EOS solver
+# materializes P/N/T: burns fuel (flammable + wall_hp>0) against the local
+# N_O2 mean, converting consumed O2 into black_smoke (soot_yield) + inert_N2
+# (the remainder — N_total is CONSERVED, never a fake pressure drain) and
+# depositing heat via the §4.3 reciprocal (shares c_v/n_floor_heat with
+# [physics.thermal] above — ONE combustion/deposit floor in the system).
+# Sane defaults; feel-tuned at P5 like every other fire/thermal dial.
+[physics.combustion]
+burn_rate         = 1.0    # N_O2 consumed per second, per open-neighbour burn site
+o2_thresh_burn    = 0.03   # min local N_O2 to sustain combustion (below fire's
+                            # P_min=0.126 so the VISIBLE flame dies first)
+H_fuel            = 4.0    # heat yield (T-scale ΔT) per unit N_O2 burned
+soot_yield        = 0.3    # fraction of consumed O2 -> black_smoke (rest -> inert_N2)
+# Unit-side suffocation mechanics (LATER arc, design §5): defined here so the
+# constant lives at the right layer; nothing reads it yet.
+o2_thresh_breathe = 0.08   # min local N_O2 a unit needs to breathe (NOT wired yet)
 
 [gases.white_smoke]            # water vapour / steam
 absorption     = [0.10, 0.10, 0.10]   # flat, low — Mie scattering is spectrally neutral
