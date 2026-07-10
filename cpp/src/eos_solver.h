@@ -144,6 +144,16 @@ public:
     mutable uint64_t digest_velocity    = 0;
     mutable uint64_t digest_compression = 0;
 
+    // --- DEBUG probe (temporary instrumentation, eos-p3fix-thermal-ceiling
+    // investigation, decisions.md #16): per-tick T checkpoints at ONE traced
+    // cell, root-causing which step-1-vs-4c term drives the thermal ceiling.
+    // dbg_probe_idx = -1 disables (one branch/tick, no other cost). Values
+    // are RAW Q16.16 counts (a Kelvin-delta == raw/65536.0).
+    int dbg_probe_idx = -1;
+    mutable int32_t dbg_T_pre_advect       = 0;   // T at step-1 entry
+    mutable int32_t dbg_T_post_advect      = 0;   // T after the SL substep loop
+    mutable int32_t dbg_T_post_compression = 0;   // T after step 4c
+
     void step(
         int32_t* atmosphere,
         int32_t* p_prev,

@@ -232,6 +232,9 @@ void EOSSolver::step(
     // ---- step 0: P_prev := P ---------------------------------------------
     for (int i = 0; i < n; ++i) p_prev[i] = atmosphere[i];
 
+    // DEBUG probe (temporary): T at step-1 entry.
+    if (dbg_probe_idx >= 0 && dbg_probe_idx < n) dbg_T_pre_advect = temperature[dbg_probe_idx];
+
     // ---- per-tick scalar constants (double-fold once, then quantize) ------
     const q16 n_floor_q  = quantize((double)N_FLOOR_SOLVER);
     const q16 t_amb_q    = quantize((double)T_AMB_K);
@@ -422,6 +425,9 @@ void EOSSolver::step(
             if (solid[i]) { wind_x[i] = 0; wind_y[i] = 0; }
         }
     }
+
+    // DEBUG probe (temporary): T after the step-1 SL substep loop.
+    if (dbg_probe_idx >= 0 && dbg_probe_idx < n) dbg_T_post_advect = temperature[dbg_probe_idx];
 
     // div(u*) from the final substep's velocity — the Helmholtz RHS term.
     for (int y = 0; y < h; ++y) {
@@ -926,13 +932,29 @@ void EOSSolver::step(
                 if (k > work_clamp_q)       { k = work_clamp_q;  ++work_clamp_hits; }
                 else if (k < -work_clamp_q) { k = -work_clamp_q; ++work_clamp_hits; }
                 const q16 dT = mul_q16(k, temperature[i]);
-                q16 t_new = temperature[i] - dT;
+                // eos-p3fix-thermal-ceiling: this term is MULTIPLICATIVE in
+                // the current T (t_new = T*(1-k)) — the ±T_WORK_CLAMP rail
+                // above only bounds the per-tick RATE, not the resulting
+                // VALUE, so a persistent negative-divergence driver (a real
+                // local compression pocket) compounds it geometrically
+                // (measured: ~1.5x/tick at the clamp rail, reaching the
+                // Q16.16 ceiling in ~8-9 ticks from a modest seed). The plain
+                // subtract below used to silently WRAP once that compounding
+                // exceeded int32 range — a hard correctness bug independent
+                // of whatever seeds the compounding. Saturating add fixes
+                // the wrap unconditionally; it does NOT by itself cap the
+                // compounding (a genuine blast/fireball SHOULD be able to
+                // ride up to the format ceiling and pin — see the plume
+                // shim's T_FLAME_MAX for the fire-specific physical cap).
+                q16 t_new = sat_add_q16(temperature[i], (q16)(-(int64_t)dT));
                 if (t_new < t_min_q) { t_new = t_min_q; ++energy_floor_hits; }
                 temperature[i] = t_new;
             }
         }
     }
     digest_compression = digest_of(temperature, n, 0);
+    // DEBUG probe (temporary): T after step 4c (compression work).
+    if (dbg_probe_idx >= 0 && dbg_probe_idx < n) dbg_T_post_compression = temperature[dbg_probe_idx];
 
     // ======================================================================
     // 5. P := P_new — materialized ONCE (the `atmosphere` alias).

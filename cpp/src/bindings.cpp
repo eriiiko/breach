@@ -1099,7 +1099,12 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readonly("digest_pstar",       &EOSSolver::digest_pstar)
         .def_readonly("digest_helmholtz",   &EOSSolver::digest_helmholtz)
         .def_readonly("digest_velocity",    &EOSSolver::digest_velocity)
-        .def_readonly("digest_compression", &EOSSolver::digest_compression);
+        .def_readonly("digest_compression", &EOSSolver::digest_compression)
+        // DEBUG probe (temporary, eos-p3fix-thermal-ceiling investigation).
+        .def_readwrite("dbg_probe_idx",          &EOSSolver::dbg_probe_idx)
+        .def_readonly("dbg_T_pre_advect",        &EOSSolver::dbg_T_pre_advect)
+        .def_readonly("dbg_T_post_advect",       &EOSSolver::dbg_T_post_advect)
+        .def_readonly("dbg_T_post_compression",  &EOSSolver::dbg_T_post_compression);
 
     // --- CombustionSolver (EOS refactor P4 — combustion on real O2, design
     //     §5). Own pass, run once per tick AFTER eos.step materializes P. ---
