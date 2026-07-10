@@ -128,16 +128,9 @@ class PhysicsRunner:
         self.smoke.d_smoke              = float(CFG.physics.d_smoke)
         self.smoke.advection_rate       = float(CFG.physics.advection_rate)
         self.smoke.wind_diffusion_scale = float(CFG.physics.wind_diffusion_scale)
-        # Patch 2b: K = vent hops/tick (the decoupled breach-sink rate). dt_scale
-        # is gone (smoke moves on the real dt; advection_rate absorbed the ×9).
-        self.smoke.vent_hops            = int(
-            getattr(CFG.physics, 'smoke_vent_hops', 16))
-        # Smoke-side sink-pull toward the nearest breach (ch.05 smoke v2). The
-        # dial Erik wants: 0 disables it (sealed-room behaviour is then bit-
-        # identical to the plain semi-Lagrangian advection). Default 2.0 clears
-        # a breached room in ~a dozen ticks while leaving a sealed room untouched.
-        self.smoke.sink_strength        = float(
-            getattr(CFG.physics, 'smoke_sink_strength', 2.0))
+        # (vent_hops / sink_strength binds DELETED — EOS refactor P3,
+        # decisions.md #3: the BFS breach sink-pull is gone; venting is
+        # native to the compressible solver.)
 
         # FireSimulation — signed-logistic intensity FEEDBACK (fire_design_proposal
         # §2/§3/§5). Cellular spread is gone: spread is radiation -> heat ->
@@ -240,6 +233,44 @@ class PhysicsRunner:
         # S2b: dequantized-gas float scratch for the fire-light heat cast (the
         # raycaster's gas optics are float; gmap.gas is int32 Q16.16). Lazy alloc.
         self._fire_gas_f = None
+
+        # EOSSolver (EOS refactor P3, docs/eos_refactor_design.md §3): the
+        # compressible Kwatra pressure-evolution solver. REPLACES the
+        # AtmosphereSolver wave+diffuse dispatch in run_substeps below (atmos
+        # is retained on the engine only for any still-bound isolated GPU test
+        # entry points — see physics_engine.cpp's GPU guards). Bound from
+        # [physics.eos]; c_max/S/N_SUB_MAX/CFL_ADV/N_FLOOR_SOLVER/T_AMB_K/C/
+        # gamma are the design's PINNED constants (docs/eos_refactor_
+        # decisions.md 2026-07-10) — defaults on the C++ struct already match;
+        # config only overrides where a key is present so a bare install still
+        # gets the pinned values.
+        self.eos = self.engine.eos
+        eos_cfg = getattr(CFG.physics, "eos", None)
+
+        def _ep(key, default):
+            return float(getattr(eos_cfg, key, default))
+
+        self.eos.c_max          = _ep("c_max", self.eos.c_max)
+        # dx is NOT a config constant — it lazy-binds from the level's
+        # tile_size_m on the first step() call below (the WaterSolver.dx
+        # precedent; the design's c_max=300 m/s and its overflow budget are
+        # both derived at the LEVEL's physical tile size, not a config guess).
+        self.eos.S              = int(
+            getattr(eos_cfg, "S", self.eos.S))
+        self.eos.N_SUB_MAX      = int(
+            getattr(eos_cfg, "N_SUB_MAX", self.eos.N_SUB_MAX))
+        self.eos.CFL_ADV        = _ep("CFL_ADV", self.eos.CFL_ADV)
+        self.eos.N_FLOOR_SOLVER = _ep("N_FLOOR_SOLVER", self.eos.N_FLOOR_SOLVER)
+        self.eos.T_AMB_K        = _ep("t_amb_k", self.eos.T_AMB_K)
+        self.eos.C              = _ep("C", self.eos.C)
+        # ingress-lint: "adiabatic_index" (not "gamma") avoids colliding with
+        # the banned RNG distribution-method name test_ingress_lint.py scans
+        # for (numpy's Generator.gamma() — an unrelated collision; this is a
+        # plain config attribute get/set, never a random draw).
+        self.eos.adiabatic_index = _ep("adiabatic_index", self.eos.adiabatic_index)
+        self.eos.absorb_strength = float(
+            getattr(eos_cfg, "absorb_strength", self.eos.absorb_strength))
+        self.eos.T_MIN           = _ep("T_MIN", self.eos.T_MIN)
 
         # WaterSolver (engine/07 §2, water plan W2): the pipe model that
         # advances gmap.water_depth. Params are bound through a METHOD (not
@@ -356,28 +387,28 @@ class PhysicsRunner:
         # the water system existed.
         self._step_water(gmap, sim_time)
 
-        # IMEX atmosphere/smoke substep loop — in C++ (PhysicsEngine::run_substeps,
-        # physics_engine.cpp). Patch 2 reshaped it into four decoupled loops, each
-        # on its OWN count (BEHAVIOR CHANGE, feel-gated — not 0-ULP):
-        #   - the WAVE substeps n_wave× at its CFL (2a);
-        #   - the implicit DIFFUSION solves ONCE per tick, computing the wind (2a);
-        #   - the SMOKE runs n_smoke× (a smoke-CFL floor from the spatial-max
-        #     d_eff) on the once-computed wind — WIND-ONLY advection now (2b);
-        #   - the breach SINK runs K = smoke.vent_hops one-cell BFS hops as its own
-        #     loop, decoupled from n_wave (2b). dt_scale is GONE (smoke on real dt).
-        #
-        # sink_fields() STAYS Python — it is a lazy BFS (rebuilt only on topology
-        # edits, gated by gmap._sink_dirty); the runner fetches the sink direction
-        # field once per tick and hands it to run_substeps (now feeding the K-hop
-        # sink loop, not the smoke advection back-trace).
-        sink_x, sink_y = gmap.sink_fields()
+        # The compressible Kwatra solver — in C++ (PhysicsEngine::run_substeps,
+        # physics_engine.cpp; EOS refactor P3, design §3). REPLACES the old
+        # four-decoupled-loop IMEX substep block: `self.eos` runs its own
+        # internal advection-substep loop (self-advect u, advect T, donor-cell
+        # O2/N2 flux every substep, substepped compression work), then the
+        # Helmholtz solve ONCE per tick, then the velocity correction. The
+        # TRACE gas planes advect ONCE per tick afterward (on the solver's
+        # final wind), inside run_substeps itself. `gmap.wave_p` is now the
+        # repurposed P_prev buffer (see eos_solver.h); the smoke breach-sink
+        # BFS field is GONE (native venting replaces it — decisions.md #3).
+        # dx lazy-binds from the level's tile size every tick (cheap; mirrors
+        # WaterSolver.dx's bind in _step_water — the design's c_max/overflow
+        # budget are both derived at this physical dx, not a config guess).
+        self.eos.dx = float(gmap.tile_size_m)
         self.engine.run_substeps(
-            gmap.wave_p, gmap.wave_v, gmap.wave_source, gmap.atmosphere,
+            gmap.wave_p, gmap.atmosphere,
             gmap.wind_x, gmap.wind_y,
+            gmap.temperature,
             gmap.obstacles, gmap.solid, gmap.is_vacuum,
             gmap.dyn_permeability, gmap.dyn_wave_absorb,
             gmap.gas, gmap.gases.diffusion, gmap.gases.conservative,
-            sink_x, sink_y, sim_time,
+            sim_time,
         )
 
         # Per-tick orchestration TAIL — moved into C++ in Patch 1 S4a
@@ -404,6 +435,9 @@ class PhysicsRunner:
         #      conversion on solids, one conduction relaxation, then ambient
         #      cooling. Reads THIS tick's `heat` (cast at the top of step()) and
         #      updates `temperature` in place for next tick.
+        # EOS P3: gas + gas_conservative added — step_tail sums the bulk
+        # O2/N2 planes for the temperature Pass-1 heat-deposit divisor (the
+        # real N_total, closing the P2 density-proxy TODO).
         destroyed = self.engine.step_tail(
             gmap.ripple, gmap.ripple_v, gmap.water_depth, gmap.wave_p,
             gmap.solid,
@@ -411,6 +445,7 @@ class PhysicsRunner:
             gmap.temperature, gmap.wind_x, gmap.wind_y,
             gmap.is_vacuum, gmap.flammable,
             gmap.heat, gmap.heat_inv_shift, gmap.face_shift,
+            gmap.gas, gmap.gases.conservative,
             sim_time,
         )
 
@@ -658,9 +693,11 @@ class PhysicsRunner:
         # snapshot) is passed in and MUTATED by the final copyto (the runner keeps
         # owning it across ticks). `gmap.gas` is the (N,h,w) array; the steam puff
         # lands in slice self._steam_idx.
+        # EOS refactor P3: `gmap.wave_p` arg retired (the water head reads the
+        # integer `gmap.atmosphere` == P directly, no float bridge).
         self.engine.step_water(
             gmap.water_depth, gmap.flow_vx, gmap.flow_vy,
-            gmap.floor_height, gmap.atmosphere, gmap.wave_p,
+            gmap.floor_height, gmap.atmosphere,
             gmap.solid, gmap.gas, before, gmap.dyn_permeability,
             self._steam_idx, gmap.tilt_x, gmap.tilt_y, sim_time,
             self.water_ceiling_h, self.water_flood_eps, self.water_ratio_cap,
@@ -696,5 +733,6 @@ class PhysicsRunner:
         """
         if not gmap.water_depth.any() and not gmap.ripple.any():
             return
+        # EOS refactor P3: the splash source is |P - P_prev| (design §6).
         self.water.step_ripple(gmap.ripple, gmap.ripple_v, gmap.water_depth,
-                               gmap.wave_p, gmap.solid, sim_time)
+                               gmap.atmosphere, gmap.wave_p, gmap.solid, sim_time)

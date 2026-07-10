@@ -77,9 +77,13 @@ def _total(depth: np.ndarray) -> float:
 
 
 def _run(s, steps, depth, vx, vy, solid, dt=DT,
-         floor=None, atm=None, wp=None, tilt=(0.0, 0.0)):
+         floor=None, atm=None, tilt=(0.0, 0.0)):
+    # EOS refactor P3 (design §6 "water head"): the FLOAT BRIDGE (separate
+    # atmosphere+wave_p float args) is retired — `atm` is now the single
+    # INTEGER derived pressure P (Q16.16 int32), read via mul_q16(k_p, P)
+    # directly inside the solver. No `wp` arg.
     for _ in range(steps):
-        s.step(depth, vx, vy, floor, atm, wp, solid, dt, tilt[0], tilt[1])
+        s.step(depth, vx, vy, floor, atm, solid, dt, tilt[0], tilt[1])
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +180,7 @@ def test_containment_interior_wall():
     s = _solver()
 
     for _ in range(500):
-        s.step(depth, vx, vy, None, None, None, solid, DT, 0.0, 0.0)
+        s.step(depth, vx, vy, None, None, solid, DT, 0.0, 0.0)
         assert float(np.abs(depth[:, 9:]).max()) == 0.0, (
             "water leaked into the sealed empty chamber")
         assert float(np.abs(depth[solid]).max()) == 0.0, "depth on solid"
@@ -230,7 +234,7 @@ def test_stability_hammer_checkerboard():
     std0 = float(deq(depth).std())
 
     for _ in range(500):
-        s.step(depth, vx, vy, None, None, None, solid, dt, 0.0, 0.0)
+        s.step(depth, vx, vy, None, None, solid, dt, 0.0, 0.0)
         depth_m = deq(depth)
         assert np.isfinite(depth_m).all(), "depth went non-finite"
         assert float(depth_m.min()) >= 0.0, "negative depth"
@@ -245,62 +249,63 @@ def test_stability_hammer_checkerboard():
 # ---------------------------------------------------------------------------
 # 6. Null fields — None is the same run as explicit zero arrays
 # ---------------------------------------------------------------------------
-def _run_copy(k_p, floor, atm, wp, steps=100, tilt=(0.02, -0.01)):
+def _run_copy(k_p, floor, atm, steps=100, tilt=(0.02, -0.01)):
     h = w = 16
     depth = _lumpy(h, w)
     vx, vy = _zeros(h, w), _zeros(h, w)
     s = _solver(k_p=k_p)
     _run(s, steps, depth, vx, vy, _open(h, w),
-         floor=floor, atm=atm, wp=wp, tilt=tilt)
+         floor=floor, atm=atm, tilt=tilt)
     return depth, vx, vy
 
 
 def test_null_fields_equal_explicit_zeros():
     h = w = 16
-    z_int = _zeros(h, w)                              # Q16.16 floor zeros
-    z_flt = np.zeros((h, w), dtype=np.float32)        # float atm/wave_p zeros
+    z_int = _zeros(h, w)                              # Q16.16 zeros (both floor + atm)
 
     # floor_height: None == flat zero (bit-identical)
-    a = _run_copy(0.0, None, None, None)
-    b = _run_copy(0.0, z_int, None, None)
+    a = _run_copy(0.0, None, None)
+    b = _run_copy(0.0, z_int, None)
     for fa, fb in zip(a, b):
         assert np.array_equal(fa, fb), "floor_height=None != explicit zeros"
 
-    # atmosphere/wave_p: None == zeros, with the head term ON (k_p != 0).
-    # NOTE (S1): the head term is a FLOAT BRIDGE — atmosphere/wave_p are float;
-    # with None the C++ substitutes 0.0f, identical to explicit float zeros.
-    c = _run_copy(0.5, None, None, None)
-    d = _run_copy(0.5, None, z_flt, z_flt)
+    # EOS refactor P3: atmosphere is now the single INTEGER P field (the
+    # separate wave_p float bridge is retired) — None == explicit Q16.16
+    # zeros, bit-identical (the C++ gate substitutes 0 for a null pointer).
+    c = _run_copy(0.5, None, None)
+    d = _run_copy(0.5, None, z_int)
     for fc, fd in zip(c, d):
-        assert np.array_equal(fc, fd), "atmosphere/wave_p=None != zeros"
+        assert np.array_equal(fc, fd), "atmosphere=None != zeros"
 
     # non-vacuity: the runs actually evolved the field
     assert not np.array_equal(a[0], _lumpy(h, w)), "vacuous comparison"
 
 
 # ---------------------------------------------------------------------------
-# 7. Head gating — k_p == 0 never reads the pressure fields
+# 7. Head gating — k_p == 0 never reads the pressure field
 # ---------------------------------------------------------------------------
 def test_head_gating():
     h = w = 16
     rows = np.arange(h, dtype=np.float64)[:, None]
     cols = np.arange(w, dtype=np.float64)[None, :]
-    wild = (1e4 * np.sin(3.0 * rows) * np.cos(2.0 * cols)).astype(np.float32)
-    assert np.isfinite(wild).all()
+    wild = q(1e4 * np.sin(3.0 * rows) * np.cos(2.0 * cols))
+    assert np.all(np.isfinite(wild))
 
-    # (a) k_p=0 + wild-but-finite wave_p is BIT-IDENTICAL to wave_p=None
-    #     (the C++ gate makes this exact).
-    a = _run_copy(0.0, None, None, None)
-    b = _run_copy(0.0, None, None, wild)
+    # (a) k_p=0 + wild-but-finite atmosphere (P) is BIT-IDENTICAL to
+    #     atmosphere=None (the C++ gate makes this exact).
+    a = _run_copy(0.0, None, None)
+    b = _run_copy(0.0, None, wild)
     for fa, fb in zip(a, b):
-        assert np.array_equal(fa, fb), "k_p=0 still read wave_p (gate broken)"
+        assert np.array_equal(fa, fb), "k_p=0 still read atmosphere (gate broken)"
 
     # (b) k_p=0.5 + spatially-UNIFORM pressure ~ k_p=0 to atol=1e-5 over 100
-    #     steps (NOT bit-exact: float (a+c)-(b+c) != a-b).
-    u_atm = np.full((h, w), 0.8, dtype=np.float32)
-    u_wp = np.full((h, w), 0.2, dtype=np.float32)
-    e = _run_copy(0.5, None, u_atm, u_wp, steps=100)
-    f = _run_copy(0.0, None, None, None, steps=100)
+    #     steps (NOT bit-exact: integer (a+c)-(b+c) rounding vs a-b).
+    # EOS refactor P3: the old atm(0.8)+wp(0.2) SPLIT is now one combined
+    # P=1.0 field (the design's merged-field precedent — one pressure, not
+    # a bulk/acoustic pair).
+    u_p = np.full((h, w), q(1.0), dtype=np.int32)
+    e = _run_copy(0.5, None, u_p, steps=100)
+    f = _run_copy(0.0, None, None, steps=100)
     assert np.allclose(e[0], f[0], atol=1e-5), (
         "uniform pressure changed the flow (constant head must vanish "
         "under the gradient)")
@@ -321,13 +326,16 @@ def test_determinism_bit_identical():
         solid[10:14, 10:12] = True       # interior obstacle
         depth[solid] = 0
         floor = q(np.tile(0.005 * np.arange(w, dtype=np.float64), (h, 1)))
-        atm = np.full((h, w), 1.0, dtype=np.float32)
-        atm[:, : w // 2] = 0.6           # non-uniform head
-        wp = (0.1 * np.sin(np.arange(h * w, dtype=np.float64))
-              .reshape(h, w)).astype(np.float32)
+        # EOS refactor P3: one combined integer P field (design §6) replaces
+        # the old atm(non-uniform)+wp(sine ripple) float pair — same shape
+        # of non-uniform-plus-ripple scenario, now a single Q16.16 source.
+        atm_base = np.full((h, w), 1.0, dtype=np.float64)
+        atm_base[:, : w // 2] = 0.6           # non-uniform head
+        ripple = 0.1 * np.sin(np.arange(h * w, dtype=np.float64)).reshape(h, w)
+        atm = q(atm_base + ripple)
         s = _solver(k_p=0.5)
         _run(s, 200, depth, vx, vy, solid,
-             floor=floor, atm=atm, wp=wp, tilt=(0.05, 0.03))
+             floor=floor, atm=atm, tilt=(0.05, 0.03))
         return depth, vx, vy
 
     a = run()
@@ -365,7 +373,7 @@ def test_outflow_limiter_conservation():
     total0 = _total(depth)
 
     for _ in range(200):
-        s.step(depth, vx, vy, None, None, None, solid, dt, 0.0, 0.0)
+        s.step(depth, vx, vy, None, None, solid, dt, 0.0, 0.0)
         assert int(depth.min()) >= 0, "negative depth"
 
     assert np.isfinite(deq(depth)).all()

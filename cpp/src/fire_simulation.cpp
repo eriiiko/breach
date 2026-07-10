@@ -43,10 +43,10 @@ static inline q16 smoothstep_q(q16 edge0, q16 edge1, q16 x,
 
 std::vector<std::pair<int, int>> FireSimulation::step(
     q16* fire,                    // S3b: Q16.16 int32 (was float)
-    q16* atmosphere,              // S2c: Q16.16 int32 (fire reads + plume-writes)
+    const q16* atmosphere,        // S2c: Q16.16 int32 == P (EOS P3: read-only)
     int32_t* smoke,               // S2b: Q16.16
     q16* wall_hp,                 // S3b: Q16.16 int32 (was float)
-    const int32_t* temperature,   // Q16.16 (read-only)
+    q16* temperature,             // EOS P3: mutable (plume->T shim)
     const q16* wind_x,            // S2c/S3b: Q16.16 int32 (read-only)
     const q16* wind_y,            // S2c/S3b: Q16.16 int32 (read-only)
     const bool* is_wall,
@@ -191,13 +191,23 @@ std::vector<std::pair<int, int>> FireSimulation::step(
         fire[i] = I_next;
     }
 
-    // --- Own-tile plume pressure DEPOSIT (fire_design_proposal §3) ---
-    // Each burning tile adds a small SELF-LIMITING overpressure to its OWN index
-    // (order-independent write), so wind = -grad p points OUTWARD -> the plume/smoke
-    // is pushed AWAY. This is a fire SOURCE (non-conserved by design), so a plain
-    // round-trip is bit-safe; ROUND-TO-NEAREST the deposit (S2a/S2c unbiased-deposit
-    // lesson) so a long firestorm does not accumulate a truncation DC bias.
+    // --- Own-tile plume ENERGY DEPOSIT (EOS refactor P3 — the minimal
+    //     plume->T shim, design §8 patch P3 writer row) -------------------
+    // REPLACES the old own-tile `atmosphere += gain` overpressure write:
+    // P is solver-owned now (materialized once/tick by eos_solver), so a
+    // direct write here would be silently clobbered next tick — "the pop
+    // never goes inert" means the plume must feed the EOS instead (T -> p*
+    // -> the Helmholtz solve -> outward u, natively). Same self-limiting
+    // `gain` scalar as before (still reads the CURRENT `atmosphere` == P as
+    // its own-tile saturation gate, so a already-overpressured tile's plume
+    // still tapers), but the deposit target is `temperature`, scaled by
+    // `temp_gain_scale` (a TUNING DIAL, not a real ΔE/(N*c_v) energy budget
+    // — the named minimal-shim simplification). ROUND-TO-NEAREST (S2a/S2c
+    // unbiased-deposit lesson) so a long firestorm does not accumulate a
+    // truncation DC bias.
     //   gain = fire_pressure_gain * I * (1 - atmosphere[i]/p_expand_ref) * dt
+    //   dT   = gain * temp_gain_scale
+    const q16 temp_gain_scale_q = fp::quantize((double)p.temp_gain_scale);
     for (int i = 0; i < n; ++i) {
         const q16 I = fire[i];
         if (I <= 0) continue;
@@ -211,7 +221,10 @@ std::vector<std::pair<int, int>> FireSimulation::step(
         // final * dt with ROUND-TO-NEAREST (deposit). g may be negative (sat<0), so
         // use the sign-symmetric round-half narrow (shared kit helper).
         const q16 gain = fp::narrow_round_signed(fp::mul_wide(g, dt_q));
-        if (gain > 0) atmosphere[i] += gain;       // guarded gain > 0 (matches float)
+        if (gain > 0) {
+            const q16 dT = fp::narrow_round_signed(fp::mul_wide(gain, temp_gain_scale_q));
+            temperature[i] += dT;
+        }
     }
 
     // --- Fire produces smoke in neighbouring air tiles (KEPT) ---

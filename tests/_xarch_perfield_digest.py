@@ -31,7 +31,7 @@ Each line is::
 
 in a FIXED (tick, field) order, so two files line up for a plain ``diff``. The
 script also prints, to stdout:
-  - the host + the aggregate 30-tick trajectory digest (compare to 07c3f370… on
+  - the host + the aggregate 30-tick trajectory digest (compare to the committed golden on
     Ampere — the P4-wave-push golden — as a sanity check that the build is clean), and
   - if a SECOND file from another host is present in tests/, the first diverging
     (field, tick) between this run and that file (a built-in cross-machine diff).
@@ -77,7 +77,13 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # trajectories are byte-identical (and the pulse's dv ~2.3 is below the
 # knockdown threshold 6.0 -> __unit_status__ unmoved too).
 # (was 6d690fda8259b392be9029082013623fbef0fc0322ed3089107d5db220e1b441)
-GOLDEN_AGGREGATE = "2bab9702e098b30a2aeb290e9aeb19301c9de4379f64443966ea9f3074a91b7a"
+# EOS refactor P3 (2026-07-10): whole-physics replacement (the compressible
+# gamma*p* multigrid solver supersedes wave+diffusion) — goldens moved ONCE,
+# by design, at the end of the patch (the P1+P2 merge discipline). Previous:
+# 2bab9702 (P1+P2), 07c3f370 (pre-EOS), f7b8becd (P3 at the pre-re-pin
+# N_SUB_MAX=16 — superseded same-day by the blessed 16->8 re-pin, decisions
+# log #14, which legitimately moves trajectories).
+GOLDEN_AGGREGATE = "493645d34b01d7ad55e5f0e6ae7254e94989dc1b6dce5c1b7ee5e53acaff3e63"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs
@@ -195,7 +201,7 @@ def main() -> int:
     print(f"per-field lines     = {len(lines)}  ({N_STEPS} ticks x "
           f"{len(DIGEST_FIELDS) + len(UNIT_SUBFIELD_LABELS) + 1} fields)")
     print(f"aggregate digest    = {agg}")
-    print(f"matches 07c3f370    = {agg == GOLDEN_AGGREGATE}  "
+    print(f"matches golden      = {agg == GOLDEN_AGGREGATE}  "
           f"(Ampere clean-build sanity)")
 
     # Built-in cross-machine diff: if any OTHER host's perfield file is present,

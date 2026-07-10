@@ -39,19 +39,50 @@ void bulk_flux_transport(
         const bool* solid, const bool* is_vacuum,
         const float* dyn_permeability,
         int h, int w, float dt) {
+    // Legacy entry (pybind/P1-test path): hoist the per-face coefficient
+    // exactly as the caller-cached fast path does, then forward. The
+    // arithmetic per face is byte-identical to the original inline form
+    // (same min/quantize/mul_q16 chain, evaluated once instead of per
+    // plane) — see bulk_flux_transport_cached's header comment.
     const int n = h * w;
-    // dt as Q16.16 (dx == 1 tile, the smoke/wind convention — see
-    // smoke_dynamics.cpp's wind-only advection, which likewise has no
-    // separate dx divide).
     const q16 dt_q = quantize((double)dt);
+    std::vector<q16> coeffE(n, 0), coeffS(n, 0);
+    for (int y = 0; y < h; ++y) {
+        const int row = y * w;
+        for (int x = 0; x < w; ++x) {
+            const int i = row + x;
+            if (solid[i]) continue;
+            if (x < w - 1 && !solid[i + 1]) {
+                const float face_f = std::min(dyn_permeability[i], dyn_permeability[i + 1]);
+                if (face_f > 0.0f)
+                    coeffE[i] = mul_q16(quantize((double)face_f), dt_q);
+            }
+            if (y < h - 1 && !solid[i + w]) {
+                const float face_f = std::min(dyn_permeability[i], dyn_permeability[i + w]);
+                if (face_f > 0.0f)
+                    coeffS[i] = mul_q16(quantize((double)face_f), dt_q);
+            }
+        }
+    }
+    bulk_flux_transport_cached(gas, gas_conservative, n_gases,
+                               wind_x, wind_y, solid, is_vacuum,
+                               coeffE.data(), coeffS.data(), h, w);
+}
 
-    // Per-face scratch, allocated once per call and reused across the
-    // (typically two) conservative planes below. P1 is CPU-only and not the
-    // hot path (the sub-tick substep loops it does NOT ride), so a plain
-    // local std::vector — no cross-call retained scratch — keeps this
-    // function simple and self-contained; the GPU-prep no-per-tick-alloc
-    // discipline is a P6 concern.
-    std::vector<q16> dq_e(n), dq_s(n), scale_q(n);
+void bulk_flux_transport_cached(
+        int32_t* gas, const bool* gas_conservative, int n_gases,
+        const int32_t* wind_x, const int32_t* wind_y,
+        const bool* solid, const bool* is_vacuum,
+        const int32_t* coeffE, const int32_t* coeffS,
+        int h, int w) {
+    const int n = h * w;
+
+    // Reused scratch (EOS P3 micro-opt: this entry rides the substep loop —
+    // up to N_SUB_MAX calls/tick — so the three per-call vector allocations
+    // of the P1-era entry are hoisted into thread_local storage; contents
+    // are fully re-initialized below, so the reuse is arithmetic-neutral).
+    static thread_local std::vector<q16> dq_e, dq_s, scale_q;
+    if ((int)dq_e.size() != n) { dq_e.assign(n, 0); dq_s.assign(n, 0); scale_q.assign(n, FP_ONE); }
 
     for (int gi = 0; gi < n_gases; ++gi) {
         if (!gas_conservative[gi]) continue;
@@ -67,43 +98,26 @@ void bulk_flux_transport(
         std::fill(scale_q.begin(), scale_q.end(), FP_ONE);
 
         // ---- 1. donor-cell upwind face fluxes (pre-update N, gather-once) ----
-        // Face permeability gates flux exactly like the smoke/atmosphere
-        // stencils (face = min(perm_self, perm_neighbor)). ALSO explicitly
-        // require `!solid[]` on both sides — the same CONSERVATION GUARD
-        // atmosphere_solver.cpp's GS documents ("a face into an excluded+
-        // zeroed cell is 0 ... a one-sided flux into a p=0 Dirichlet cell
-        // would destroy mass"): a solid tile's STATIC permeability is 0, but
-        // the LIVE `dyn_permeability` this function reads is a per-tick
-        // derived field (stamp_units) — trusting it alone to always be 0 on
-        // solid would silently reopen the mass-destroying leak the S1/3a fix
-        // closed elsewhere if a future caller ever passes it un-stamped.
-        // Belt-and-suspenders costs nothing here (solid is already loaded).
+        // Same conservation-guard structure as the legacy entry (solid gate +
+        // permeability gate), with the face coefficient PRECOMPUTED: a sealed
+        // or solid face carries coeff 0, which produces the same zero dq the
+        // legacy `face_f > 0` branch-skip did (flux_to_dq(x, 0) == 0).
         for (int y = 0; y < h; ++y) {
             const int row = y * w;
             for (int x = 0; x < w; ++x) {
                 const int i = row + x;
                 if (solid[i]) continue;
-                if (x < w - 1 && !solid[i + 1]) {
-                    const float face_f = std::min(dyn_permeability[i], dyn_permeability[i + 1]);
-                    if (face_f > 0.0f) {
-                        const q16 face_q = quantize((double)face_f);
-                        const q16 v_face = (q16)(((int64_t)wind_x[i] + wind_x[i + 1]) >> 1);
-                        const q16 donor = (v_face > 0) ? N[i] : N[i + 1];
-                        const int64_t flux_wide = mul_wide(v_face, donor);   // Q32.32
-                        const q16 coeff_q = mul_q16(face_q, dt_q);
-                        dq_e[i] = flux_to_dq(flux_wide, coeff_q);
-                    }
+                if (x < w - 1 && coeffE[i] != 0) {
+                    const q16 v_face = (q16)(((int64_t)wind_x[i] + wind_x[i + 1]) >> 1);
+                    const q16 donor = (v_face > 0) ? N[i] : N[i + 1];
+                    const int64_t flux_wide = mul_wide(v_face, donor);   // Q32.32
+                    dq_e[i] = flux_to_dq(flux_wide, coeffE[i]);
                 }
-                if (y < h - 1 && !solid[i + w]) {
-                    const float face_f = std::min(dyn_permeability[i], dyn_permeability[i + w]);
-                    if (face_f > 0.0f) {
-                        const q16 face_q = quantize((double)face_f);
-                        const q16 v_face = (q16)(((int64_t)wind_y[i] + wind_y[i + w]) >> 1);
-                        const q16 donor = (v_face > 0) ? N[i] : N[i + w];
-                        const int64_t flux_wide = mul_wide(v_face, donor);
-                        const q16 coeff_q = mul_q16(face_q, dt_q);
-                        dq_s[i] = flux_to_dq(flux_wide, coeff_q);
-                    }
+                if (y < h - 1 && coeffS[i] != 0) {
+                    const q16 v_face = (q16)(((int64_t)wind_y[i] + wind_y[i + w]) >> 1);
+                    const q16 donor = (v_face > 0) ? N[i] : N[i + w];
+                    const int64_t flux_wide = mul_wide(v_face, donor);
+                    dq_s[i] = flux_to_dq(flux_wide, coeffS[i]);
                 }
             }
         }

@@ -45,3 +45,26 @@ void bulk_flux_transport(
     const float* dyn_permeability,
     int h, int w,
     float dt);
+
+// EOS P3 micro-opt (BIT-IDENTITY-PRESERVING): the per-face coefficient
+// coeff_q = mul_q16(quantize(min(perm_i, perm_j)), quantize(dt)) is constant
+// across a tick's substeps (perm and dt_s do not change within a tick), yet
+// the legacy entry recomputed it per face per plane per substep (float min +
+// quantize x2 planes x n_sub). This entry takes the two PRECOMPUTED per-face
+// coefficient arrays (east face of i -> coeffE[i]; south face -> coeffS[i];
+// 0 == sealed face — quantize-to-0 and the face_f<=0 gate collapse to the
+// same zero flux the legacy path produced) and reuses internal scratch
+// across calls. Arithmetic per face is IDENTICAL to the legacy entry — the
+// caller hoists the loop-invariant computation, nothing more. The legacy
+// entry remains for the pybind/P1-test path and now forwards here.
+void bulk_flux_transport_cached(
+    int32_t* gas,
+    const bool* gas_conservative,
+    int n_gases,
+    const int32_t* wind_x,
+    const int32_t* wind_y,
+    const bool* solid,
+    const bool* is_vacuum,
+    const int32_t* coeffE,
+    const int32_t* coeffS,
+    int h, int w);

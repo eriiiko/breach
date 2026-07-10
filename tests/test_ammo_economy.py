@@ -128,7 +128,9 @@ def test_gl6_detonates_on_the_stopping_wall():
     # A border tile 3 up the wall: falloff 1 - 3/5 = 0.4 -> quantize(80).
     assert int(gmap.wall_hp[12, 23]) == q300 - wall_fixed.quantize_scalar(80.0)
     # The blast deposited a wave (the disc skips solids; interior cells got it).
-    assert gmap.wave_source.any()
+    # EOS P3 (design §6): the explosion's "wave_source" FieldEdit now lands
+    # as a `temperature` energy deposit — wave_source is retired.
+    assert gmap.temperature.any()
 
 
 def test_gl6_detonates_on_unit_footprint_no_direct_hit_packet():
@@ -183,7 +185,8 @@ def test_gl6_airbursts_at_max_range():
     assert len(ex) == 1 and ex[0].kind == "shell"
     assert ex[0].pos == (43, 9)                     # 3 + range 40, exact steps
     queue.flush(gmap, rng)
-    assert gmap.wave_source.any()                   # the airburst deposited
+    # EOS P3 (design §6): the airburst's energy deposit lands in `temperature`.
+    assert gmap.temperature.any()                   # the airburst deposited
 
 
 # ---------------------------------------------------------------------------

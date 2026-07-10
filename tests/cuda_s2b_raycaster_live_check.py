@@ -67,7 +67,7 @@ INT32_MAX = (1 << 31) - 1
 # ALL field trajectories are byte-identical (and the pulse's dv ~2.3 is
 # below the knockdown threshold 6.0 -> __unit_status__ unmoved too).
 # (was 6d690fda8259b392be9029082013623fbef0fc0322ed3089107d5db220e1b441)
-GOLDEN = "2bab9702e098b30a2aeb290e9aeb19301c9de4379f64443966ea9f3074a91b7a"
+GOLDEN = "493645d34b01d7ad55e5f0e6ae7254e94989dc1b6dce5c1b7ee5e53acaff3e63"
 
 
 # ----------------------------------------------------------------------------

@@ -283,8 +283,7 @@ def test_black_smoke_matches_pre_refactor_reference():
     is_wall = np.zeros((h, w), dtype=bool)
     is_vacuum = np.zeros((h, w), dtype=bool)
     perm = np.ones((h, w), dtype=np.float32)
-    sink_x = np.zeros((h, w), dtype=np.float32)
-    sink_y = np.zeros((h, w), dtype=np.float32)
+    # (sink_x/sink_y stubs deleted — EOS P3: the sink machinery is gone.)
     wind_x = np.full((h, w), 0.4, dtype=np.float32)
     wind_y = np.full((h, w), -0.25, dtype=np.float32)
 
@@ -292,7 +291,7 @@ def test_black_smoke_matches_pre_refactor_reference():
         s = bp.SmokeDynamics()
         s.advection_rate = float(CFG.physics.advection_rate)
         s.wind_diffusion_scale = float(CFG.physics.wind_diffusion_scale)
-        s.sink_strength = float(CFG.physics.smoke_sink_strength)
+        # (sink_strength bind deleted — EOS P3: the sink machinery is gone.)
         return s
 
     dt = 0.02

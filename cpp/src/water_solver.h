@@ -87,13 +87,16 @@ struct WaterSolver {
     // The integer transport step. The synced fields are Q16.16 int32:
     //   water_depth : metres, CONSERVED.
     //   flow_vx/vy  : m/s, persistent velocity.
-    // floor_height is also Q16.16 metres (quantized at load). atmosphere/wave_p
-    // stay FLOAT (the S2 group) — read only through the gated head-term FLOAT
-    // BRIDGE. tilt_x/tilt_y are real radians (the tan poly runs internally).
+    // floor_height is also Q16.16 metres (quantized at load). EOS refactor P3
+    // (design §6 "water head" row): the head term reads the INTEGER derived
+    // pressure `atmosphere` (== P) directly via mul_q16(kp_q, P) — the FLOAT
+    // BRIDGE (dequantize-atmosphere-and-wave_p-to-float) is RETIRED; `wave_p`
+    // is no longer read here at all (it is repurposed as P_prev, read only by
+    // the ripple splash below, not the head). tilt_x/tilt_y are real radians
+    // (the tan poly runs internally).
     void step(q16* water_depth, q16* flow_vx, q16* flow_vy,
               const q16* floor_height,            // nullable -> flat zero (Q16.16 m)
-              const float* atmosphere,            // nullable -> no head term (FLOAT BRIDGE)
-              const float* wave_p,                // nullable -> no head term (FLOAT BRIDGE)
+              const q16* atmosphere,               // nullable -> no head term (Q16.16 P)
               const bool*  solid,                 // STATIC walls (gmap.solid) — units do NOT block water
               int h, int w, float dt,
               float tilt_x, float tilt_y) const;  // radians about grid centre; clamped internally
@@ -111,18 +114,21 @@ struct WaterSolver {
     // depth coupling (c2 = g*min(depth, h_cap)) reads water_depth DEQUANTIZED
     // (Q16.16 int32 -> float /65536) at that read — the only place the float
     // ripple touches the integer depth. Per call:
-    //   1. splash source: ripple_v += k_splash*wave_p where depth > 0
-    //      (wave_p nullable -> no splash, never read — W1's discipline)
+    //   1. splash source: ripple_v += k_splash*dequantize(|P - P_prev|) where
+    //      depth > 0 (EOS refactor P3, design §6 "ripple splash": the
+    //      per-tick pressure TRANSIENT, not the retired wave_p anomaly;
+    //      `atmosphere`/`p_prev` nullable -> no splash, never read)
     //   2. kick:  ripple_v += dt*(c2*lap(ripple) - gamma_r*ripple_v),
     //      c2 = g*min(dequantize(depth), h_cap); laplacian from PRE-update
     //      ripple (gather-then-apply); Neumann mirror at solid/out-of-bounds
     //   3. drift: ripple += dt*ripple_v; THEN clamp |ripple| <= k_amp*depth
     //   4. ripple = ripple_v = 0 where depth == 0 or solid
-    // Reads water_depth (Q16.16) / wave_p / solid as CONST. Deterministic but
-    // NOT synced (float, render-only).
+    // Reads water_depth (Q16.16) / atmosphere / p_prev / solid as CONST.
+    // Deterministic but NOT synced (float, render-only).
     void step_ripple(float* ripple, float* ripple_v,
                      const q16*  water_depth,       // Q16.16 m (dequantized on read)
-                     const float* wave_p,           // nullable -> no splash source
+                     const q16*  atmosphere,        // nullable -> no splash source (P)
+                     const q16*  p_prev,            // nullable -> no splash source (P_prev)
                      const bool*  solid,
                      int h, int w, float dt) const;
 

@@ -300,26 +300,36 @@ def test_sealed_room_bulk_conservation_e2e_1000_ticks():
     interior = (~g.solid) & (~g.is_vacuum)
     assert not g.is_vacuum.any(), "test scene must be a truly sealed room (no vacuum)"
 
-    # Seed a pressure bump so diffuse_solve produces real wind from tick 1.
+    # EOS refactor P3: `atmosphere` (== P) is solver-materialized every tick
+    # from N/T alone (p* = C*N_total*T_abs) — bumping it directly no longer
+    # seeds real wind (it is just this tick's P_prev, overwritten by the
+    # solve). Bump `temperature` instead (a localized hot patch), which
+    # raises p* there and drives a genuine outward flow from tick 1.
     ys, xs = np.where(interior)
     cy, cx = int(np.median(ys)), int(np.median(xs))
     bump = (np.abs(ys - cy) < 3) & (np.abs(xs - cx) < 3)
-    g.atmosphere[ys[bump], xs[bump]] += atmosphere_fixed.quantize_scalar(0.6)
+    g.temperature[ys[bump], xs[bump]] += atmosphere_fixed.quantize_scalar(200.0)
 
     total0 = _isum2(g.gas[O2], g.gas[INERT_N2])
     sim_time = 1.0 / float(CFG.clock.ticks_per_second)
 
     max_abs_drift = 0
     wind_seen = False
+    # EOS refactor P3: run_substeps' signature changed (wave_v/wave_source/
+    # sink_x/sink_y retired; wave_p repurposed as p_prev; temperature added).
+    # This is still THE P1 GATE, now driven through the real P3 solver path —
+    # bulk_flux_transport's per-face gather-then-apply conservation proof is
+    # unchanged by being CALLED once per eos substep instead of once per tick.
+    runner.eos.dx = float(g.tile_size_m)
     for t in range(1000):
-        sink_x, sink_y = g.sink_fields()
         runner.engine.run_substeps(
-            g.wave_p, g.wave_v, g.wave_source, g.atmosphere,
+            g.wave_p, g.atmosphere,
             g.wind_x, g.wind_y,
+            g.temperature,
             g.obstacles, g.solid, g.is_vacuum,
             g.dyn_permeability, g.dyn_wave_absorb,
             g.gas, g.gases.diffusion, g.gases.conservative,
-            sink_x, sink_y, sim_time,
+            sim_time,
         )
         if not wind_seen and (np.abs(g.wind_x).sum() + np.abs(g.wind_y).sum()) > 0:
             wind_seen = True

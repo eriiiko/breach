@@ -301,55 +301,5 @@ void SmokeDynamics::step(
     src.swap(src_);                                          // retain storage
 }
 
-// Patch 2b: the decoupled breach sink-pull — ONE 1-cell BFS-gradient hop, now in
-// the SAME integer-SL machinery (Q-S2-5: stays SL, a port not a flux bias). The
-// back-trace velocity is the sink direction ONLY, capped at one cell. The engine
-// runs it K× per tick. With no breach the sink field is all-zero -> bx=by=0 ->
-// backtrace_sample_q is the identity (sealed rooms untouched).
-void SmokeDynamics::sink_hop(
-    int32_t* smoke,
-    const float* sink_x,
-    const float* sink_y,
-    const bool* obstacles,
-    const bool* is_wall,
-    const bool* is_vacuum,
-    const float* permeability,
-    int h, int w
-) const {
-    const int n = h * w;
-
-    std::vector<int32_t> src;
-    src.swap(src_);
-    src.assign(smoke, smoke + n);
-
-    for (int y = 0; y < h; ++y) {
-        for (int x = 0; x < w; ++x) {
-            int i = y * w + x;
-            if (obstacles[i] || is_wall[i] || is_vacuum[i]) continue;
-
-            // The sink is a DRAIN: back-trace TOWARD the breach the sink vector
-            // points at, inheriting the down-gradient emptiness (the breach corner
-            // samples 0). Displacement = sink_strength cells along the unit sink
-            // vector, CAPPED at one cell. FLOAT BRIDGE: sink_x/sink_y + sink_strength
-            // are float; the displacement is computed in double and quantized.
-            double sink_disp = (double)sink_strength;
-            if (sink_disp > 1.0) sink_disp = 1.0;
-            const int32_t bx_q = quantize(sink_disp * (double)sink_x[i]);
-            const int32_t by_q = quantize(sink_disp * (double)sink_y[i]);
-            smoke[i] = backtrace_sample_q(src.data(), x, y, bx_q, by_q,
-                                          obstacles, is_wall, is_vacuum,
-                                          permeability, h, w);
-        }
-    }
-
-    for (int i = 0; i < n; ++i) {
-        if (is_wall[i] || is_vacuum[i]) {
-            smoke[i] = 0;
-        } else {
-            if (smoke[i] < 0) smoke[i] = 0;
-            else if (smoke[i] > SMOKE_MAX_Q) smoke[i] = SMOKE_MAX_Q;
-        }
-    }
-
-    src.swap(src_);
-}
+// (SmokeDynamics::sink_hop DELETED — EOS refactor P3, decisions.md #3:
+// native venting replaces the BFS breach sink-pull.)

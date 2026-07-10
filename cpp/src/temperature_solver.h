@@ -214,6 +214,8 @@ public:
         const bool* solid,
         const bool* is_vacuum,
         const int32_t* atmosphere,
+        const int32_t* n_bulk,   // EOS P3: real bulk N_total (nullable ->
+                                  // atmosphere density-proxy fallback)
         const int32_t* wind_x,
         const int32_t* wind_y,
         int h, int w,

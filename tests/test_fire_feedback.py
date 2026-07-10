@@ -272,21 +272,28 @@ def test_plume_raises_own_atmosphere_wind_points_outward():
     wind_x = np.zeros((h, w), dtype=np.int32)
     wind_y = np.zeros((h, w), dtype=np.int32)
 
-    atm_before = float(atmosphere[2, 2])
+    # EOS P3 (design §8 P3 writer row): the plume is a plume->T energy shim
+    # now — the atmosphere (P) is solver-owned, so the fire deposits heat
+    # into `temperature` instead; the EOS turns that into outward pressure.
+    t_before = float(temperature[2, 2])
     for _ in range(10):
         fs.step(fire, atmosphere, smoke, wall_hp, temperature,
                 wind_x, wind_y, solid, is_vacuum, flammable, DT)
-    atm_after = float(atmosphere[2, 2])
-    assert atm_after > atm_before, (
-        f"plume must RAISE the fire's own atmosphere "
-        f"({atm_before} -> {atm_after}), so smoke is pushed out")
-    # wind = -grad(p): on the air tile just to the +x side of the fire, the
-    # pressure DECREASES outward (centre is the local max), so -d(atm)/dx > 0 ->
-    # wind points AWAY from the fire (outward). Sample the right neighbour.
-    grad_x = atmosphere[2, 3] - atmosphere[2, 2]    # < 0 (centre is the peak)
-    wind_x_right = -grad_x                            # > 0 -> points away (+x)
-    assert wind_x_right > 0.0, (
-        "wind next to the fire must point OUTWARD (smoke pushed away, not pulled in)")
+    t_after = float(temperature[2, 2])
+    assert t_after > t_before, (
+        f"plume must RAISE the fire's own temperature "
+        f"({t_before} -> {t_after}), so p* rises and smoke is pushed out")
+    # EOS P3: the outward wind is now produced by the SOLVER from the T
+    # spike (T up -> p* = C*N*T_abs up -> the Helmholtz solve -> outward
+    # kick), not by a direct atmosphere bump this fire-only unit test could
+    # observe. The property this test can still pin at this level: the
+    # plume's energy lands on the fire's OWN tile (the p* gradient's source
+    # shape), i.e. T(center) stays the local max over its air neighbours.
+    # The wind direction itself is covered by the solver's hot-cell gate
+    # (docs/eos_p3_gate_measurements.md — clean outward transient).
+    assert temperature[2, 2] > temperature[2, 3], (
+        "the plume deposit must keep the fire tile the local T max "
+        "(the p* source shape that pushes smoke OUTWARD through the solver)")
 
 
 def test_plume_does_not_subtract_atmosphere_near_fire():
@@ -331,7 +338,10 @@ def test_spread_is_radiation_only_no_cellular_stencil():
     # The far tile, with no heat reaching it, stayed cold and unlit -> the old
     # gap-leaping cellular stencil is gone.
     assert g.fire[50, 40] == 0, "a far flammable tile lit with no heat path"
-    assert int(g.temperature[50, 40]) == 0, "far tile heated with no heat path"
+    # EOS P3: the compressible solver's grid-wide gas-T advection/compression
+    # work leaves sub-milli-Kelvin numerical residue everywhere; assert "no
+    # MEANINGFUL heating" (|T| < 1 K) instead of an exact zero.
+    assert abs(int(g.temperature[50, 40])) < 65536, "far tile heated with no heat path"
 
 
 # ---------------------------------------------------------------------------
