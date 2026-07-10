@@ -21,16 +21,45 @@ Two tiers of gate, per the patch instructions:
    scope — assertions here are deliberately qualitative/generous, not tight
    numeric pins, matching "mechanism visible" in the patch instructions).
 
-A NOTED, OUT-OF-SCOPE finding (not a P4 bug): a strongly-seeded fire in a
-small sealed room can drive the unified `temperature` field to within a few
-hundred counts of the Q16.16 ceiling BEFORE this patch existed (reproduced
-here with combustion fully disabled, H_fuel=burn_rate=0 — see
-`test_thermal_spike_is_pre_existing_not_a_p4_regression`). It is the P3
-fire-plume->T shim's `temp_gain_scale` (a named P5 TUNING DIAL,
-fire_simulation.h) interacting with the EOS solver's own compression-work
-feedback, not a P4 combustion-heat runaway (H_fuel scaling barely moves the
-observed peak). Flagged for Erik's P5 feel pass; explicitly not fixed here
-(non-goal: "no solver changes").
+A NOTED, OUT-OF-SCOPE-FOR-P4 finding (not a P4 bug): a strongly-seeded fire
+in a small sealed room can drive the unified `temperature` field to the
+Q16.16 ceiling BEFORE this patch existed (reproduced here with combustion
+fully disabled, H_fuel=burn_rate=0 — see
+`test_thermal_spike_is_pre_existing_not_a_p4_regression`). H_fuel scaling
+barely moves the observed peak (not a P4 combustion-heat runaway).
+
+**eos-p3fix-thermal-ceiling investigation (branch `eos-p3fix-thermal-
+ceiling`, updates this note):** the plume->T shim's self-limiter WAS
+confirmed broken — `sat = 1 - atmosphere[i]/p_expand_ref` reads P at the
+plume's OWN tile, which the EOS solver force-zeroes for every SOLID cell
+(a fire tile is solid), so `sat` never actually engaged. FIXED: the shim
+now gates on T against a `T_FLAME_MAX` physical ceiling
+(fire_simulation.h) instead, and every temperature write on the shim's and
+the compression-work's paths (fixed_point.h `sat_add_q16`) is now
+SATURATING — the "occasionally wraps negative" half of the original bug
+report is gone (verified: `temperature` never goes negative-garbage in
+this scenario post-fix).
+HOWEVER — root-cause instrumentation (per-tick T budget at the fire tile
+and its open-air neighbours) showed the shim was NEVER the dominant
+driver of the climb (disabling it changes peak_disabled by <1%): the
+measured driver is a coupling between TemperatureSolver's Pass-1
+`ΔT=ΔE/(N·c_v)` heat-deposit reciprocal (temperature_solver.cpp) and
+EOSSolver's step-4c compression-work term (eos_solver.cpp) — as the local
+pressure spike this pair creates evacuates a cell's bulk N via donor-cell
+flux, the SAME (or accumulating) heat deposit divides by an ever-smaller
+N, and compression work's `T *= (1 - k)` update (rate-clamped at
+±T_WORK_CLAMP, never value-clamped) then compounds that geometrically
+(~1.5x/tick at the clamp rail) — reaching the Q16.16 ceiling within
+single-digit ticks REGARDLESS of the shim. `temperature` now correctly
+SATURATES there instead of wrapping, but still visibly "climbs to and
+pins near the ceiling" in this extreme scenario — the deeper fix (an
+absolute, not just rate, safety rail on compression work, without
+clipping legitimate high-energy blast physics) is a solver-stability
+design call, NOT made unilaterally here; flagged for Erik. A related,
+separate finding: `wind_x`/`wind_y` were ALSO observed reaching magnitudes
+far past the solver's own `c_LOCAL` cap in this same extreme scenario
+(velocity wrap/overflow), independent of whether `temperature` wraps —
+not investigated further here (out of scope), flagged for its own pass.
 
 Run:
     C:/Users/steen/miniconda3/envs/data/python.exe -m pytest tests/test_eos_p4_combustion.py -q
@@ -209,26 +238,37 @@ def test_trace_decay_credits_inert_n2_exactly():
 
 
 def test_thermal_spike_is_pre_existing_not_a_p4_regression():
-    """Documents the out-of-scope finding (module docstring): a strongly-
-    seeded fire in a small sealed room drives `temperature` near the Q16.16
-    ceiling with combustion FULLY DISABLED (H_fuel=burn_rate=0) — i.e. it
-    predates this patch (the P3 plume->T shim x EOS compression-work
-    coupling). Asserts only that P4 does not make it WORSE: the disabled-
-    combustion peak and the default-combustion peak are within the same
-    order of magnitude (H_fuel's effect on this particular runaway is
-    provably small, not the driver)."""
-    def _peak_T(H_fuel, burn_rate):
+    """Documents the out-of-scope-for-P4 finding (module docstring): a
+    strongly-seeded fire in a small sealed room still drives `temperature`
+    to the Q16.16 ceiling with combustion FULLY DISABLED (H_fuel=
+    burn_rate=0) — i.e. it predates this patch. Asserts P4 does not make it
+    WORSE (H_fuel's effect on this runaway is provably small, not the
+    driver) -- UNCHANGED by the eos-p3fix-thermal-ceiling investigation
+    (root-cause: TemperatureSolver Pass-1's heat/N reciprocal x EOSSolver's
+    step-4c compression work, confirmed independent of the fire-plume->T
+    shim by disabling it — see the module docstring for the full writeup).
+
+    eos-p3fix-thermal-ceiling ALSO adds a regression guard for the half of
+    the original bug report that IS now fixed: `temperature` must never go
+    below a sane floor (the WRAP — "occasionally wraps negative" in the
+    original report). The climb-to-ceiling itself remains open (T still
+    reaches the format ceiling in this extreme scenario), so this test
+    intentionally does NOT assert a tight peak bound — only that reaching
+    the ceiling now SATURATES instead of wrapping through it."""
+    def _run(H_fuel, burn_rate):
         gmap = _sealed_room(hh=9, wood_at=(4, 4))
         pr = _runner(H_fuel=H_fuel, burn_rate=burn_rate)
         _ignite(gmap, (4, 4), intensity=0.8, temp_mult=3.0)
         peak = 0.0
+        trough = 0.0
         for _ in range(60):
             pr.step(gmap, SEED_TICK_DT)
             peak = max(peak, float(np.abs(gmap.temperature).max()) / 65536.0)
-        return peak
+            trough = min(trough, float(gmap.temperature.min()) / 65536.0)
+        return peak, trough
 
-    peak_disabled = _peak_T(0.0, 0.0)
-    peak_default = _peak_T(4.0, 1.0)   # the shipped defaults
+    peak_disabled, trough_disabled = _run(0.0, 0.0)
+    peak_default, trough_default = _run(4.0, 1.0)   # the shipped defaults
     assert peak_disabled > 5000.0, (
         "expected the PRE-EXISTING (combustion-independent) thermal spike "
         f"to reproduce (peak={peak_disabled}); if this no longer reproduces "
@@ -237,6 +277,16 @@ def test_thermal_spike_is_pre_existing_not_a_p4_regression():
     assert peak_default < peak_disabled * 3.0 + 5000.0, (
         f"P4 combustion made the pre-existing spike MUCH worse "
         f"(disabled={peak_disabled}, default={peak_default}) — investigate")
+    # eos-p3fix-thermal-ceiling: no wraparound garbage (the fixed half of
+    # the bug). T_MIN is -289 (EOSSolver default); a generous floor below
+    # that (any legitimate T_MIN-floored cooling stays well above -1000)
+    # catches a reintroduced wrap without being a tight numeric pin.
+    assert trough_disabled > -1000.0, (
+        f"temperature went implausibly negative (trough={trough_disabled}) "
+        "-- looks like the int32 WRAP has regressed (disabled-combustion run)")
+    assert trough_default > -1000.0, (
+        f"temperature went implausibly negative (trough={trough_default}) "
+        "-- looks like the int32 WRAP has regressed (default-combustion run)")
 
 
 # ---------------------------------------------------------------------------
