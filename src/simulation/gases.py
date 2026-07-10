@@ -7,7 +7,7 @@ exactly like a material — one ``[gases.<name>]`` row in ``config.toml`` + one 
 here. Properties are stored as per-id numpy arrays so a future per-tile lookup
 (``table.absorption[gas_id]``) is a single fancy-index.
 
-The five gases (engine/05 §6.2):
+The five TRACE gases (engine/05 §6.2):
 
     white_smoke, black_smoke, poison, teargas, fuel_gas
 
@@ -15,12 +15,23 @@ The five gases (engine/05 §6.2):
 (0.10) matches today's ``physics.d_smoke`` (0.1), so the existing generic smoke
 field maps onto the ``black_smoke`` slice with **no behaviour change** (M1).
 
+EOS refactor P1 (docs/eos_refactor_design.md §1/§2, decisions log #11) appends
+two **bulk** species, ``o2`` and ``inert_n2`` — ALWAYS appended, never
+prepended/reordered (existing views like ``gmap.smoke = gas[BLACK_SMOKE]`` are
+index-bound). These are the ``conservative`` pair: instead of the trace planes'
+semi-Lagrangian transport, they move by donor-cell CONSERVATIVE flux
+(``cpp/src/bulk_transport.cpp``), and carry NO optics (invisible bulk air —
+``absorption``/``scatter_albedo`` all-zero, ``glow`` 0), NO decay, are not
+flammable, and set no gameplay ``effect`` tag.
+
 M1 scope: this table is **loaded** (data only). The per-channel ``absorption`` /
 ``scatter_albedo`` are summed density-weighted across coexisting gases in the
 raycaster at M2; ``flammable`` / ``emits_when_hot`` / ``effect`` are read by fire
 and mechanics at M2/M3. ``decay`` is loaded but **not yet applied** in transport
 (the M1 C++ smoke solver has no decay term; applying it would break behaviour
-preservation — see :mod:`simulation.physics_runner`).
+preservation — see :mod:`simulation.physics_runner`). ``conservative`` (P1) is
+read by :class:`simulation.physics_runner.PhysicsRunner` to route the bulk pair
+to the donor-cell transport instead of the per-gas semi-Lagrangian loop.
 """
 from __future__ import annotations
 
@@ -37,6 +48,11 @@ BLACK_SMOKE = 1
 POISON = 2
 TEARGAS = 3
 FUEL_GAS = 4
+# EOS refactor P1 (§1/§2): the bulk pair, APPENDED — never renumber the five
+# ids above (they are index-bound: gmap.smoke = gas[BLACK_SMOKE], the field
+# digest's `gas` shape/order, etc.).
+O2 = 5
+INERT_N2 = 6
 
 # Config-key <-> id mapping. The key is the ``[gases.<name>]`` table name.
 # Listed in id order; ``GasTable`` validates contiguity.
@@ -46,19 +62,33 @@ GAS_NAMES = {
     POISON: "poison",
     TEARGAS: "teargas",
     FUEL_GAS: "fuel_gas",
+    O2: "o2",
+    INERT_N2: "inert_n2",
 }
 
-# Number of gas types (the N of the (N, h, w) gas array).
+# Number of gas types (the N of the (N, h, w) gas array). 5 trace + 2 bulk (P1).
 N_GASES = len(GAS_NAMES)
+
+# EOS refactor P1: the trace-gas id range is [0, N_TRACE_GASES) — the 5 M1
+# gases (white_smoke .. fuel_gas), always the low contiguous block since the
+# bulk pair is APPENDED, never inserted. Callers that want "every gas EXCEPT
+# the one under test, but NOT the always-present ambient O2/N2 bulk pair"
+# (weapon/payload slice-isolation tests are the main consumer) iterate
+# ``range(N_TRACE_GASES)`` instead of ``range(N_GASES)``.
+N_TRACE_GASES = O2
 
 # Scalar columns: name -> numpy dtype. ``absorption`` / ``scatter_albedo`` are
 # handled separately because they are per-channel RGB triples, not scalars.
+# ``conservative`` (P1): true only for the bulk pair (o2 / inert_n2) — read by
+# PhysicsRunner to route that plane to the donor-cell flux transport instead
+# of the per-gas semi-Lagrangian loop the trace gases still ride.
 _SCALAR_COLUMNS = {
     "diffusion": np.float32,
     "decay": np.float32,
     "glow": np.float32,
     "flammable": bool,
     "emits_when_hot": bool,
+    "conservative": bool,
 }
 
 
@@ -182,5 +212,6 @@ class GasTable:
 
 __all__ = [
     "WHITE_SMOKE", "BLACK_SMOKE", "POISON", "TEARGAS", "FUEL_GAS",
-    "GAS_NAMES", "N_GASES", "GasTable",
+    "O2", "INERT_N2",
+    "GAS_NAMES", "N_GASES", "N_TRACE_GASES", "GasTable",
 ]

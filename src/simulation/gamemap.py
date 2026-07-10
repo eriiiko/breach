@@ -49,6 +49,8 @@ from simulation.gases import (  # noqa: F401  (re-exported)
     POISON,
     TEARGAS,
     FUEL_GAS,
+    O2,
+    INERT_N2,
 )
 
 
@@ -425,6 +427,22 @@ class GameMap:
             self.solid | self.is_vacuum, 0, _atm_fx.FP_ONE
         ).astype(np.int32)
 
+        # EOS refactor P1 (docs/eos_refactor_design.md §2.1): ambient bulk-gas
+        # split. The two CONSERVATIVE species (O2 / inert_N2) seed the SAME
+        # open-air mask atmosphere just used, split 21/79 by mole fraction
+        # (Earth-normal air) — 0.21*FP_ONE + 0.79*FP_ONE happens to round back
+        # to EXACTLY FP_ONE (13763 + 51773 == 65536), so N_O2+N_N2 at ambient
+        # reproduces today's atmosphere==1.0 scale to the LSB (the calibration
+        # tests/test_eos_p1_calibration.py pins). 0 on solid/vacuum, exactly
+        # like atmosphere. IN-PLACE write (self.gas is never reassigned — a
+        # C++ view of the buffer must stay valid); reload_material_table
+        # snapshots + restores the running gas array around this call so a
+        # hot-reload does not stomp live O2/N2 state.
+        from simulation import gas_fixed as _gas_fx
+        open_air = ~(self.solid | self.is_vacuum)
+        self.gas[O2][:] = np.where(open_air, _gas_fx.quantize_scalar(0.21), 0)
+        self.gas[INERT_N2][:] = np.where(open_air, _gas_fx.quantize_scalar(0.79), 0)
+
         # Obstacles (the physics solid boundary) == solid tiles (permeability
         # == 0) until stamp_units paints unit footprints over it. Sourced from
         # permeability, not the occlusion flag, so flow and optics can diverge.
@@ -544,12 +562,20 @@ class GameMap:
         # diffusion/decay/flags next tick. Does NOT touch the ``gas`` array.
         self.gases = GasTable.from_config(CFG)
         # Rebuild only the table-derived caches; keep atmosphere/obstacles as
-        # the running sim left them by snapshotting and restoring them.
+        # the running sim left them by snapshotting and restoring them. EOS
+        # P1: _update_caches() now ALSO re-seeds ambient O2/N2 in-place
+        # (self.gas is never reassigned, so a plain "snapshot the reference"
+        # trick like atmosphere's would be a no-op — the mutation already
+        # landed in the SAME buffer). Snapshot a COPY of the whole gas array
+        # and copy it back in-place after, so a hot-reload does not stomp the
+        # running O2/N2 (or any trace gas) state.
         atmosphere = self.atmosphere
         obstacles = self.obstacles
+        gas_snapshot = self.gas.copy()
         self._update_caches()
         self.atmosphere = atmosphere
         self.obstacles = obstacles
+        self.gas[:] = gas_snapshot
 
     # ------------------------------------------------------------------
     # Per-tick rebuild: units act as walls for all physics
@@ -840,6 +866,17 @@ class GameMap:
                 count += 1
         return total / count if count > 0 else 0.0
 
+    def _seed_bulk_gas_neighbor_mean(self, fy, fx):
+        """Seed ``gas[O2]``/``gas[INERT_N2]`` at a newly-opened tile (EOS
+        refactor P1, docs/eos_refactor_design.md §2.2's minimal occupancy-
+        transition slice) — mirrors the ``atmosphere`` neighbor-mean refill
+        right next to every call site of this method in :meth:`destroy_wall`,
+        same anti-vacuum-pulse intent, now on the bulk species too. The FULL
+        evacuation rule (flooding/door-close) is P3's; this is only the
+        cell-JOINS-open-air half (§2.2's last sentence)."""
+        self.gas[O2][fy, fx] = self._neighbor_mean(self.gas[O2], fy, fx)
+        self.gas[INERT_N2][fy, fx] = self._neighbor_mean(self.gas[INERT_N2], fy, fx)
+
     # ------------------------------------------------------------------
     # Smoke sink-direction field — toward the nearest breach (ch.05 smoke v2)
     # ------------------------------------------------------------------
@@ -1074,11 +1111,14 @@ class GameMap:
                     # Don't hard-zero — let relaxation BC drain smoothly.
                     self.atmosphere[fy, fx] = self._neighbor_mean(
                         self.atmosphere, fy, fx)
+                    self._seed_bulk_gas_neighbor_mean(fy, fx)
                 else:
                     # Interior hull: fill with neighbor mean.
                     self.atmosphere[fy, fx] = self._neighbor_mean(
                         self.atmosphere, fy, fx)
+                    self._seed_bulk_gas_neighbor_mean(fy, fx)
             else:
                 # Interior wall: fill with neighbor mean.
                 self.atmosphere[fy, fx] = self._neighbor_mean(
                     self.atmosphere, fy, fx)
+                self._seed_bulk_gas_neighbor_mean(fy, fx)

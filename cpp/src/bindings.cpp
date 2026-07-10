@@ -9,6 +9,7 @@
 #include "raycaster.h"
 #include "water_solver.h"
 #include "physics_engine.h"
+#include "bulk_transport.h"  // EOS refactor P1: expose bulk_flux_transport for direct unit test
 #include "fixed_point.h"   // Bedrock cliff-patch: expose smoke_cliff_count for unit test
 #ifdef BREACH_HAS_CUDA
 #include "cuda_hello.h"        // CUDA-S0: hello-world map kernel + device info
@@ -526,6 +527,41 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("mws_q32"),
           "Bedrock: integer smoke-CFL substep count "
           "n=ceil(4*sim_time*d_smoke_max*(1+wds*max_wind_sq)) from quantized inputs.");
+
+    // EOS refactor P1 (docs/eos_refactor_design.md §2.2): expose
+    // bulk_flux_transport directly (not just via PhysicsEngine::run_substeps)
+    // so tests can drive it with a hand-crafted wind field / permeability
+    // scene, mirroring the WaterSolver stress-conservation test pattern
+    // (tests/test_water_conservation_stress.py) for the donor-cell transport
+    // this function ports. `gas` is (n_gases, h, w) contiguous, Q16.16,
+    // mutated in place.
+    m.def("bulk_flux_transport",
+          [](py::array_t<int32_t> gas, py::array_t<bool> gas_conservative,
+             py::array_t<int32_t> wind_x, py::array_t<int32_t> wind_y,
+             py::array_t<bool> solid, py::array_t<bool> is_vacuum,
+             py::array_t<float> dyn_permeability, float dt) {
+              auto gv = gas.mutable_unchecked<3>();
+              int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
+              const int n_gases = static_cast<int>(gv.shape(0));
+              const int h = static_cast<int>(gv.shape(1));
+              const int w = static_cast<int>(gv.shape(2));
+              auto gc = gas_conservative.unchecked<1>();
+              const bool* gcons = gc.data(0);
+              auto [wx, h2, w2] = get_2d_const(wind_x);
+              auto [wy, h3, w3] = get_2d_const(wind_y);
+              auto [sol, h4, w4] = get_2d_const(solid);
+              auto [vac, h5, w5] = get_2d_const(is_vacuum);
+              auto [perm, h6, w6] = get_2d_const(dyn_permeability);
+              bulk_flux_transport(
+                  gas_ptr, gcons, n_gases,
+                  wx, wy, sol, vac, perm,
+                  h, w, dt);
+          }, py::arg("gas"), py::arg("gas_conservative"),
+             py::arg("wind_x"), py::arg("wind_y"),
+             py::arg("solid"), py::arg("is_vacuum"),
+             py::arg("dyn_permeability"), py::arg("dt"),
+          "EOS P1: donor-cell conservative flux transport of every "
+          "`gas_conservative`-flagged plane, once, on the given wind field.");
 
     // Q2-LIFT: the deterministic trig kit (fixed_point.h). Pure integer q16 ->
     // q16 — the cross-machine-safe replacement for the libm transcendentals in
@@ -1206,6 +1242,7 @@ PYBIND11_MODULE(breach_physics, m) {
                                 py::array_t<float> dyn_wave_absorb,
                                 py::array_t<int32_t> gas,           // S2b: Q16.16 int32
                                 py::array_t<float> gas_diffusion,
+                                py::array_t<bool> gas_conservative, // EOS P1
                                 py::array_t<float> sink_x,
                                 py::array_t<float> sink_y,
                                 float sim_time) {
@@ -1228,19 +1265,23 @@ PYBIND11_MODULE(breach_physics, m) {
             // gas_diffusion: (N,) float32 — the per-gas base-diffusion column.
             auto gd = gas_diffusion.unchecked<1>();
             const float* gdiff = gd.data(0);
+            // gas_conservative: (N,) bool — EOS P1's bulk-species flag
+            // (simulation.gases.GasTable.conservative), true only for O2/inert_N2.
+            auto gc = gas_conservative.unchecked<1>();
+            const bool* gcons = gc.data(0);
             auto [skx, h12, w12] = get_2d_const(sink_x);
             auto [sky, h13, w13] = get_2d_const(sink_y);
             self.run_substeps(
                 wp, wv, ws, atm, wx, wy,
                 obs, sol, vac, perm, wabs,
-                gas_ptr, gdiff, n_gases,
+                gas_ptr, gdiff, n_gases, gcons,
                 skx, sky,
                 h, w, sim_time);
         }, py::arg("wave_p"), py::arg("wave_v"), py::arg("wave_source"),
            py::arg("atmosphere"), py::arg("wind_x"), py::arg("wind_y"),
            py::arg("obstacles"), py::arg("solid"), py::arg("is_vacuum"),
            py::arg("dyn_permeability"), py::arg("dyn_wave_absorb"),
-           py::arg("gas"), py::arg("gas_diffusion"),
+           py::arg("gas"), py::arg("gas_diffusion"), py::arg("gas_conservative"),
            py::arg("sink_x"), py::arg("sink_y"),
            py::arg("sim_time"))
         // --- Patch 1 S4c: the water-layer array arithmetic ------------------

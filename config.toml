@@ -220,10 +220,29 @@ smoke_render_gamma = 1.5                  # default mild, visible contrast bump 
 #   flammable      ignites where density > threshold (fuel_gas only) — read M3.
 #   emits_when_hot black-body emission driven by the heat buffer — read M2/M3.
 #   effect         per-gas gameplay tag, read unit-side in mechanics (not here).
+#   conservative   EOS refactor P1 (docs/eos_refactor_design.md §2.1/§2.2):
+#                  true ONLY for the bulk pair (o2 / inert_n2) below — routes
+#                  that plane to donor-cell CONSERVATIVE flux transport
+#                  (bulk_transport.cpp) instead of this per-gas semi-Lagrangian
+#                  loop. False for every trace gas (unchanged behaviour).
 #
 # black_smoke is combustion soot — what fire and explosions emit. Its diffusion
 # (0.10) matches today's d_smoke (0.1), so mapping the EXISTING generic smoke to
 # the black_smoke slice is behaviour-preserving (engine/05 §6.2; M1).
+
+# EOS refactor P1 calibration constants (docs/eos_refactor_design.md §2.1).
+# Pressure is derived as P = C * N_total * T (Kelvin) once the compressible
+# solver lands (P3); nothing physically consumes these yet (P1 is additive-
+# only) — this is the calibration WITNESS pinned by
+# tests/test_eos_p1_calibration.py: quantize(C * N_amb * T_amb_k) must equal
+# quantize(1.0) (today's ambient atmosphere==1.0 scale) within 1 count, so
+# every downstream consumer already tuned against "1.0 == 1 atm" keeps its
+# calibration at rest when the solver switches over. N_amb == 1.0 (the
+# ambient ``o2``+``inert_n2`` split below sums back to exactly 1.0 in Q16.16 —
+# 0.21*65536 + 0.79*65536 rounds to 13763+51773 == 65536). C = 1/t_amb_k.
+[physics.eos]
+t_amb_k = 290.0                       # ambient gas temperature, Kelvin (§2.1's "290.0K-form")
+C = 0.0034482758620689655             # 1/t_amb_k — chosen so C*N_amb*T_amb_k reproduces 1.0
 
 [gases.white_smoke]            # water vapour / steam
 absorption     = [0.10, 0.10, 0.10]   # flat, low — Mie scattering is spectrally neutral
@@ -234,6 +253,7 @@ glow           = 0.0                  # no self-glow (but scatters local light b
 flammable      = false
 emits_when_hot = false
 effect         = "vision_block"       # pure concealment; clears on decompression
+conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
 
 [gases.black_smoke]            # combustion soot (== today's generic smoke)
 absorption     = [0.88, 0.90, 0.93]   # near-neutral, slight blue tilt: thin soot reads warm/brown
@@ -244,6 +264,7 @@ glow           = 0.0                  # cold soot does NOT glow; hot soot via em
 flammable      = false                # the soot itself is spent fuel
 emits_when_hot = true                 # black-body emission driven by heat buffer (M2/M3)
 effect         = "vision_block_heavy" # near-opaque concealment at density
+conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
 
 [gases.poison]                 # chlorine (Cl2), yellow-green
 absorption     = [0.45, 0.10, 0.80]   # B absorbed hardest, R moderate, G passes -> yellow-green tint
@@ -254,6 +275,7 @@ glow           = 0.0
 flammable      = false
 emits_when_hot = false
 effect         = "damage_over_time"   # lethal cloud; saturates to iconic green at mid-high density
+conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
 
 [gases.teargas]                # CS aerosol, pale near-white (ambiguous vs steam)
 absorption     = [0.12, 0.16, 0.30]   # low overall, B ~2x R -> faint warm/yellow only in thick plumes
@@ -264,6 +286,7 @@ glow           = 0.0
 flammable      = false
 emits_when_hot = false
 effect         = "area_denial"        # forces units out of the area; non-lethal
+conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
 
 [gases.fuel_gas]               # combustible vapour, faint, FLAMMABLE
 absorption     = [0.08, 0.10, 0.16]   # very faint, slight blue tilt — nearly invisible haze
@@ -274,6 +297,38 @@ glow           = 0.0
 flammable      = true                 # IGNITES -> spawns heat + black_smoke; the only flammable gas
 emits_when_hot = true                 # while burning it glows via the black-body curve
 effect         = "ignition_hazard"    # invisible-ish until lit; then a fireball
+conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
+
+# EOS refactor P1 — the two BULK species (docs/eos_refactor_design.md §1/§2.1).
+# Together they ARE "air": ambient splits 21/79 (O2/inert_N2 by mole fraction,
+# gamemap._update_caches / destroy_wall). conservative=true routes both to
+# donor-cell CONSERVATIVE flux transport (bulk_transport.cpp) instead of this
+# table's per-gas semi-Lagrangian loop. Per the P1 spec: ZERO decay, ALL
+# optics zero (invisible bulk — must not tint light or change any visual),
+# not flammable, no gameplay effect tag. diffusion=0.0 is inert here (the
+# conservative pair never reaches the semi-Lagrangian diffusion step) but
+# still must be a number — a config-schema requirement, not a behavior knob.
+[gases.o2]                     # molecular oxygen — bulk air, breathable half
+absorption     = [0.0, 0.0, 0.0]
+scatter_albedo = [0.0, 0.0, 0.0]
+diffusion      = 0.0                  # unused — conservative transport bypasses the SL loop
+decay          = 0.0                  # bulk air does not decay
+glow           = 0.0
+flammable      = false
+emits_when_hot = false
+effect         = ""                   # no gameplay tag (unit-side suffocation reads N directly, later)
+conservative   = true                 # EOS P1: donor-cell flux transport, not semi-Lagrangian
+
+[gases.inert_n2]                # nitrogen + "burnt products" — bulk air, inert half
+absorption     = [0.0, 0.0, 0.0]
+scatter_albedo = [0.0, 0.0, 0.0]
+diffusion      = 0.0                  # unused — conservative transport bypasses the SL loop
+decay          = 0.0                  # bulk air does not decay
+glow           = 0.0
+flammable      = false
+emits_when_hot = false
+effect         = ""                   # no gameplay tag
+conservative   = true                 # EOS P1: donor-cell flux transport, not semi-Lagrangian
 
 [display]
 panel_width = 250

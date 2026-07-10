@@ -60,7 +60,7 @@ import breach_physics as bp  # noqa: E402
 from config import CFG  # noqa: E402
 from level_loader import LevelData  # noqa: E402
 from simulation import Simulation  # noqa: E402
-from simulation.gases import WHITE_SMOKE  # noqa: E402
+from simulation.gases import N_TRACE_GASES, WHITE_SMOKE  # noqa: E402
 from water_q16 import q, deq  # noqa: E402  (S1: Q16.16 quantize/dequantize)
 from simulation import gas_fixed  # noqa: E402  (S2b: gas Q16.16 dequantize)
 
@@ -181,7 +181,9 @@ def test_one_tick_vacuum_boil_depth_and_steam_gain():
     assert abs(gain - STEAM_YIELD * INC) < STEAM_YIELD * 3 * Q_EPS + 3 * Q_EPS, (
         f"one-tick steam gain {gain} != {STEAM_YIELD * INC} "
         f"(tol {STEAM_YIELD * 3 * Q_EPS + 3 * Q_EPS:.2e})")
-    for gi in range(g.gas.shape[0]):
+    # Trace slices only (0..N_TRACE_GASES-1) — the bulk O2/inert_N2 pair (EOS
+    # refactor P1) always carries ambient air, unrelated to the steam puff.
+    for gi in range(N_TRACE_GASES):
         if gi != WHITE_SMOKE:
             assert not g.gas[gi].any(), (
                 f"boil leaked into gas slice {gi} (steam is white_smoke only)")
@@ -243,14 +245,18 @@ def test_twin_tile_at_full_pressure_bit_exact_unchanged():
 def test_dormancy_no_water_no_gas_writes():
     # Pressure side of the boil mask ARMED (cell A held below boil_p_thresh)
     # but NO water anywhere: the only reason no steam appears is the absence
-    # of water. With every gas slice zero the transport loop .any()-skips
-    # them all, so ANY gas change must be a spurious W5 write (e.g. the
-    # minimum(where=...)-garbage trap the plan calls out).
+    # of water. With every TRACE gas slice zero the transport loop .any()-skips
+    # them all, so ANY trace-gas change must be a spurious W5 write (e.g. the
+    # minimum(where=...)-garbage trap the plan calls out). The bulk O2/inert_N2
+    # pair (EOS refactor P1) is NOT zero — both cells are fully wall-sealed on
+    # all 4 sides (see _boil_sim's assert), so their conservative transport is
+    # a structural no-op regardless; the SECOND assertion below (whole-array
+    # equality across the 3 ticks) is what actually pins "no writes at all".
     sim, g = _boil_sim(depth=0.0)
     assert float(g.atmosphere[A]) < sim.physics_runner.water_boil_p_thresh
     assert not g.water_depth.any()
     gas_pre = g.gas.copy()
-    assert not gas_pre.any()
+    assert not gas_pre[:N_TRACE_GASES].any()
 
     for _ in range(3):
         sim.step()

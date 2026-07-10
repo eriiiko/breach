@@ -56,7 +56,7 @@ from simulation.combat import (  # noqa: E402
 from simulation.events import UnitHitEvent  # noqa: E402
 from simulation.field_edit import EditQueue, heat_quantize  # noqa: E402
 from simulation.gamemap import GameMap  # noqa: E402
-from simulation.gases import FUEL_GAS, N_GASES, POISON as GAS_POISON  # noqa: E402
+from simulation.gases import FUEL_GAS, N_TRACE_GASES, POISON as GAS_POISON  # noqa: E402
 from simulation.orders import (  # noqa: E402
     ORDER_FIRE, ORDER_MOVE_ATTACK, Order,
 )
@@ -346,9 +346,10 @@ def test_miasma_sustained_poison_drains_a_marine():
     assert sim.gmap.gas[GAS_POISON].any()
     assert victim.current_hp < hp_v
     assert poison_hits and all(h.unit_id == victim.id for h in poison_hits)
-    # Poison ONLY: no heat deposit, no fire, no other gas slice touched.
+    # Poison ONLY: no heat deposit, no fire, no other TRACE gas slice touched
+    # (the bulk O2/inert_N2 pair, EOS refactor P1, always carries ambient air).
     assert not sim.gmap.fire.any()
-    for g in range(N_GASES):
+    for g in range(N_TRACE_GASES):
         if g != GAS_POISON:
             assert not sim.gmap.gas[g].any(), f"slice {g} moved on a vent"
     # No blindness (no status at all) — poison is not teargas.
