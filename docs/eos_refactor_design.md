@@ -264,10 +264,14 @@ fast path: `∇P ≡ 0` over any uniform region regardless of baseline — integ
      b. T  ← semi-Lagrangian advection (gas mask)
      c. (traces do NOT substep — see below)
      d. bulk N_O2, N_N2 ← donor-cell flux on u          (§2.2 — conservative)
-     e. T -= (γ−1)·T·div(u)·dt_s   (compression work, SUBSTEPPED — D3;
-        per-substep |(γ−1)·div(u)·dt_s| bounded by the advection CFL itself;
-        T floored at T_MIN — every floor hit increments a debug "energy-floor" counter:
-        the named 4th sink, visible in the sealed-room energy gate)
+     e. (COMPRESSION WORK DOES NOT HAPPEN HERE — corrected 2026-07-10, see step 4c.
+        v2.1 had it in this loop, which DOUBLE-COUNTS the compression physics: the
+        advected T would already carry this tick's compression response into p*,
+        while the Helmholtz RHS's −(Nc²)·dt·div(û*) term carries the SAME physics
+        into the solve — an ≈(2γ−1)-vs-γ over-response per tick ⇒ a growing pressure
+        oscillation INDEPENDENT of sweep count. Found by P3's gate; root-caused on
+        paper. In the paper, p_a is PURELY advected and eq.(3)'s energy update runs
+        post-solve on the corrected state.)
      f. zero u on solid; N follows the occupancy-transition rule (§2.2 — evacuate,
         never delete); masks as today. CFL_ADV ≤ 0.5 (pinned constraint, not TBD):
         guarantees the step-e bound (γ−1)·2·CFL_ADV ≤ 0.4 < 1 by construction.
@@ -281,6 +285,14 @@ fast path: `∇P ≡ 0` over any uniform region regardless of baseline — integ
 4b. traces ← per-slice SL, ONCE per tick on the final velocity (microbench amendment
     2026-07-10: they are visual, non-conservative, and run once/tick today — substepping
     them multiplies 5 field passes × n for zero gameplay effect)
+4c. **compression work, ONCE per tick, POST-correction (the paper's eq.(3) analog,
+    T-carrier form):** T -= (γ−1)·T·div(u_new)·dt, using the CORRECTED velocity — the
+    energy bookkeeping consistent with the flow the solve actually produced. It feeds
+    NEXT tick's p*, never this tick's solve (no double count, no phase lag). T floored
+    at T_MIN with the debug energy-floor counter (the named 4th sink). Stability: the
+    per-tick |(γ−1)·div(u_new)·dt| can exceed the old substepped bound — clamp the
+    factor to [T_WORK_CLAMP_LO, hi] (e.g. ±0.5) as a safety rail, counter-tracked like
+    the floor.
 5. P := P_new  — materialized ONCE, stored (aliased as `atmosphere`), BEFORE any consumer
 6. combustion pass (§5, patch 4+) — reads settled P/N/T, feeds next tick
 7. consumers (§6): smoke/fire advection on u(=wind), water head, burst walls, unit push
