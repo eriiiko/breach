@@ -857,6 +857,28 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_property("o2_vacuum_thresh",
             &TemperatureSolver::get_o2_vacuum_thresh,
             &TemperatureSolver::set_o2_vacuum_thresh)
+        // --- P2 gas-T dials (docs/eos_refactor_design.md §4.3, §9) ---------
+        .def_property("gas_advection_rate",
+            &TemperatureSolver::get_gas_advection_rate,
+            &TemperatureSolver::set_gas_advection_rate)
+        .def_property("c_v",
+            &TemperatureSolver::get_c_v,
+            &TemperatureSolver::set_c_v)
+        .def_property("n_floor_heat",
+            &TemperatureSolver::get_n_floor_heat,
+            &TemperatureSolver::set_n_floor_heat)
+        // P2: wind_x/wind_y/dt are OPTIONAL (default None/0.0) so the shipped
+        // direct-binding call sites (tests/test_temperature_*.py,
+        // tests/cuda_s1_check.py — all pre-P2, 7 positional args) keep working
+        // UNCHANGED: with wind omitted the gas-T advection pre-pass (Pass 0) is
+        // a clean no-op (see temperature_solver.cpp step()'s dt<=0/null guard),
+        // so those callers exercise exactly the solid convert/conduct/cool path
+        // (PLUS the new gas radiation deposit of Pass 1, which is NOT gated by
+        // wind/dt — a designed P2 behaviour change on any open-air cell with a
+        // nonzero `heat` deposit; see the P2 gate report for the tests this
+        // moves). PhysicsEngine::step_tail (physics_engine.cpp) always calls the
+        // real C++ TemperatureSolver::step with real wind/dt — this optional
+        // path only exists for the standalone Python binding.
         .def("step", [](const TemperatureSolver& self,
                         py::array_t<int32_t> temperature,
                         py::array_t<int32_t> heat,
@@ -864,7 +886,10 @@ PYBIND11_MODULE(breach_physics, m) {
                         py::array_t<int32_t> face_shift,
                         py::array_t<bool>    solid,
                         py::array_t<bool>    is_vacuum,
-                        py::array_t<int32_t> atmosphere) {   // S3c: Q16.16 int32 (was float)
+                        py::array_t<int32_t> atmosphere,   // S3c: Q16.16 int32 (was float)
+                        py::object wind_x_obj,
+                        py::object wind_y_obj,
+                        float dt) {
             auto [temp, h, w]     = get_2d(temperature);
             auto [hp, h2, w2]     = get_2d_const(heat);
             auto [shift, h3, w3]  = get_2d_const(heat_inv_shift);
@@ -874,10 +899,27 @@ PYBIND11_MODULE(breach_physics, m) {
             // face_shift is (h, w, 4) int32 — fixed dir order N,S,E,W.
             auto fa = face_shift.unchecked<3>();
             const int32_t* fs = fa.data(0, 0, 0);
-            self.step(temp, hp, shift, fs, sol, vac, atm, h, w);
+            // P2: wind_x/wind_y are optional numpy arrays; None -> nullptr, and
+            // step() self-guards dt<=0/null into a no-op advection pass. Keep the
+            // extracted py::array_t alive in this scope (wx_arr/wy_arr) so the
+            // pointers stay valid through the self.step() call below.
+            const int32_t* wx = nullptr;
+            const int32_t* wy = nullptr;
+            py::array_t<int32_t> wx_arr, wy_arr;
+            if (!wind_x_obj.is_none() && !wind_y_obj.is_none()) {
+                wx_arr = wind_x_obj.cast<py::array_t<int32_t>>();
+                wy_arr = wind_y_obj.cast<py::array_t<int32_t>>();
+                auto [wxp, hx, wxw] = get_2d_const(wx_arr);
+                auto [wyp, hy, wyw] = get_2d_const(wy_arr);
+                wx = wxp;
+                wy = wyp;
+            }
+            self.step(temp, hp, shift, fs, sol, vac, atm, wx, wy, h, w, dt);
         }, py::arg("temperature"), py::arg("heat"),
            py::arg("heat_inv_shift"), py::arg("face_shift"),
-           py::arg("solid"), py::arg("is_vacuum"), py::arg("atmosphere"));
+           py::arg("solid"), py::arg("is_vacuum"), py::arg("atmosphere"),
+           py::arg("wind_x") = py::none(), py::arg("wind_y") = py::none(),
+           py::arg("dt") = 0.0f);
 
     // --- Raycaster ---
     py::class_<LightSource>(m, "LightSource")

@@ -191,6 +191,15 @@ class PhysicsRunner:
             getattr(thermal, "COOL_SHIFT_VACUUM", 3))
         self.temperature.o2_vacuum_thresh = float(
             getattr(thermal, "o2_vacuum_thresh", 0.3))
+        # EOS refactor P2 (docs/eos_refactor_design.md §4, §9): gas-T dials —
+        # the wind->displacement rate for the semi-Lagrangian gas advection
+        # pre-pass, the gas heat-capacity constant for the ΔT=ΔE/(N·c_v)
+        # radiation deposit, and its independent N-divisor floor.
+        self.temperature.gas_advection_rate = float(
+            getattr(thermal, "gas_advection_rate", 900.0))
+        self.temperature.c_v = float(getattr(thermal, "c_v", 1.0))
+        self.temperature.n_floor_heat = float(
+            getattr(thermal, "n_floor_heat", 0.05))
 
         # --- K2: sim-side fire heat ray source (proposal §1) ------------------
         # Fire is a DETERMINISTIC heat source cast IN THE SIM (not the renderer).

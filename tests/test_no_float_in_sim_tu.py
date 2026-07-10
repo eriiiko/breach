@@ -262,12 +262,30 @@ _FP_FAST_RE = re.compile(r"fp:fast")
 # per-cell sim float; the dispatch is guarded by `#ifdef BREACH_HAS_CUDA` and the
 # diffuse_solve (RB-GS + vacuum sponge + wind) is bit-identical CPU vs GPU (tol 0,
 # tests/cuda_s7_check.py — all SIX synced fields, incl. the drift-free GS check).
+# EOS refactor P2 (docs/eos_refactor_design.md §4, §8 patch P2): temperature_
+# solver.cpp `float` 3 -> 4, `double` 2 -> 5. The unified-temperature gas-T
+# rules add exactly the documented-exception categories this TU's floor
+# already allows, same shape as fire's existing `float dt` arg:
+#   float 3->4: ONE new line, the `float dt` step() arg (tick's elapsed
+#     seconds) — the SAME boundary-cast category fire_simulation.cpp's `dt`
+#     already carries (this TU simply gains its own now that gas-T advection
+#     needs a tick length).
+#   double 2->5: THREE new lines, all ONCE-PER-STEP scalar boundary casts
+#     feeding the LOCKED S1 quantize/make_recip idiom (never per-cell):
+#     `dt_adv = gas_advection_rate*dt` (the advection displacement scale,
+#     mirrors SmokeDynamics' own dt_adv precompute), `c_v_safe`/`(double)c_v`
+#     (feeds make_recip(c_v) once per step), and `n_floor_q =
+#     quantize((double)n_floor_heat)` — the exact same shape as this file's
+#     pre-existing `thresh_q = fixedpoint::quantize((double)o2_vacuum_thresh)`
+#     line (already in the pre-P2 baseline). No per-cell float/double was
+#     added; the gas-T hot loops (advection backtrace, radiation deposit) are
+#     pure Q16.16 integer throughout (reciprocal_q16, mul_q16, recip_mul).
 BASELINE = {
     "atmosphere_solver.cpp":  {"float": 32, "double": 32, "fp:fast": 1},
     "smoke_dynamics.cpp":     {"float": 24, "double": 13, "fp:fast": 0},
     "fire_simulation.cpp":    {"float": 6,  "double": 19, "fp:fast": 0},
     "water_solver.cpp":       {"float": 32, "double": 22, "fp:fast": 1},
-    "temperature_solver.cpp": {"float": 3,  "double": 2,  "fp:fast": 0},
+    "temperature_solver.cpp": {"float": 4,  "double": 5,  "fp:fast": 0},
     "physics_engine.cpp":     {"float": 68, "double": 28, "fp:fast": 1},
 }
 
