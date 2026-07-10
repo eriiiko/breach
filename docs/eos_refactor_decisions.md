@@ -118,6 +118,16 @@ maps every round-1 blocker/decision to its fix). Round-1 critique: `..._design_c
     (shared GPU w/ render+NN, training throughput ∝ 1/tick-cost, bigger-map headroom)
     survives both stages.
 
+14. **P3 as-built amendments BLESSED (Erik, 2026-07-10):** variational/Galerkin MG
+    transfers (the spec's re-discretized pick was measurably divergent — deviation
+    adopted wholesale); `trace_mass_scale=0.02` (traces are opacity, not molar density);
+    engine-owned trace advection in physical units (`advection_rate` config dead);
+    **N_SUB_MAX re-pinned to 8** + targeted substep micro-opt (Erik chose this over gate
+    renegotiation). Key clarifications recorded: N conservation is EXACT (zero drift,
+    LSB-level, forever); the 0.0066 atm figure is a stationary solver band on the
+    per-tick-DERIVED P, not accumulating error; perf numbers are the C++ engine, not
+    Python.
+
 ## OPEN — to decide next
 
 - **GPU END-STATE ALIGNMENT REVIEW — after P3 lands, BEFORE P6 starts** (Erik, 2026-07-10:
