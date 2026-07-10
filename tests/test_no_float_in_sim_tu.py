@@ -280,10 +280,16 @@ _FP_FAST_RE = re.compile(r"fp:fast")
 #     line (already in the pre-P2 baseline). No per-cell float/double was
 #     added; the gas-T hot loops (advection backtrace, radiation deposit) are
 #     pure Q16.16 integer throughout (reciprocal_q16, mul_q16, recip_mul).
+# EOS refactor P3 (docs/eos_refactor_design.md §8 patch P3, fire plume->T
+# shim): fire_simulation.cpp `double` 19 -> 20. ONE new line,
+# `temp_gain_scale_q = fp::quantize((double)p.temp_gain_scale)` — a
+# ONCE-PER-STEP scalar boundary cast feeding the LOCKED S1 quantize idiom
+# (never per-cell), the exact same documented-exception category as every
+# other `*_q = fp::quantize((double)p.*)` line already in this TU's baseline.
 BASELINE = {
     "atmosphere_solver.cpp":  {"float": 32, "double": 32, "fp:fast": 1},
     "smoke_dynamics.cpp":     {"float": 24, "double": 13, "fp:fast": 0},
-    "fire_simulation.cpp":    {"float": 6,  "double": 19, "fp:fast": 0},
+    "fire_simulation.cpp":    {"float": 6,  "double": 20, "fp:fast": 0},
     "water_solver.cpp":       {"float": 32, "double": 22, "fp:fast": 1},
     "temperature_solver.cpp": {"float": 4,  "double": 5,  "fp:fast": 0},
     "physics_engine.cpp":     {"float": 68, "double": 28, "fp:fast": 1},

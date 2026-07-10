@@ -256,6 +256,20 @@ smoke_render_gamma = 1.5                  # default mild, visible contrast bump 
 [physics.eos]
 t_amb_k = 290.0                       # ambient gas temperature, Kelvin (§2.1's "290.0K-form")
 C = 0.0034482758620689655             # 1/t_amb_k — chosen so C*N_amb*T_amb_k reproduces 1.0
+# --- P3 pinned solver constants (docs/eos_refactor_decisions.md 2026-07-10) ---
+# c_max/S/N_SUB_MAX/CFL_ADV/N_FLOOR_SOLVER are FROZEN once gated (never
+# adaptive) — see cpp/src/eos_solver.h for the load-bearing derivation of
+# each. gamma/absorb_strength/T_MIN are secondary dials (compression-work
+# adiabatic index, D4 shockwave damping scale, and the T floor) not
+# explicitly pinned by the decisions log; defaults mirror the C++ struct.
+c_max = 300.0                         # m/s capped sound speed (Erik's call — retires wave_c=66)
+S = 8                                 # Helmholtz RB-GS sweep count (gate may pin up to 16)
+N_SUB_MAX = 16                        # advection substep cap (accuracy, not stability)
+CFL_ADV = 0.5                         # advection CFL number
+N_FLOOR_SOLVER = 0.001                # solver-internal N floor (gameplay N unfloored)
+adiabatic_index = 1.4                 # ideal-gas adiabatic index (compression work); TUNING DIAL
+absorb_strength = 8.0                 # dyn_wave_absorb scale in the velocity-correction damping
+T_MIN = -289.0                        # floor on the ambient-relative T field (T_abs >= ~1 K)
 
 [gases.white_smoke]            # water vapour / steam
 absorption     = [0.10, 0.10, 0.10]   # flat, low — Mie scattering is spectrally neutral

@@ -86,6 +86,17 @@ def _sealed_room_level(n: int = 12, tile_size_m: float = 0.333) -> LevelData:
     )
 
 
+def _splash_source(n: int, value: float):
+    """EOS refactor P3 (design §6): step_ripple's splash source is now
+    |P - P_prev| (two int32 Q16.16 fields), not a single signed float `wave_p`
+    array. Every splash amount in this file is POSITIVE, so `atmosphere =
+    quantize(value)` everywhere with `p_prev` all-zero reproduces the OLD
+    `k_splash*wave_p` contribution exactly (|v - 0| == v for v >= 0)."""
+    atm = np.full((n, n), q(value), dtype=np.int32)
+    p_prev = np.zeros((n, n), dtype=np.int32)
+    return atm, p_prev
+
+
 def _splash_rollout(ticks: int = 24, n: int = 33):
     """Single-tile wave_p impulse at the centre of a deep wet box, then free
     ringing: the shared scenario for the front + far-field tests. Returns
@@ -96,13 +107,14 @@ def _splash_rollout(ticks: int = 24, n: int = 33):
     ripple, ripple_v = _zeros(n), _zeros(n)
     s = _solver()
     c = n // 2
-    wave = _zeros(n)
-    wave[c, c] = 1.0
-    s.step_ripple(ripple, ripple_v, depth, wave, solid, DT)   # the splash tick
+    atm = np.zeros((n, n), dtype=np.int32)
+    atm[c, c] = q(1.0)
+    p_prev = np.zeros((n, n), dtype=np.int32)
+    s.step_ripple(ripple, ripple_v, depth, atm, p_prev, solid, DT)   # the splash tick
     splash_amp = float(np.abs(ripple).max())
     assert splash_amp > 0.0, "splash never landed (vacuous scenario)"
     for _ in range(ticks - 1):
-        s.step_ripple(ripple, ripple_v, depth, None, solid, DT)
+        s.step_ripple(ripple, ripple_v, depth, None, None, solid, DT)
     t = ticks * DT
     yy, xx = np.mgrid[0:n, 0:n]
     dist = np.hypot(yy - float(c), xx - float(c))
@@ -145,7 +157,7 @@ def test_energy_decays_in_still_pool():
     assert e_prev > 0.0, "initial bump carries no energy (vacuous)"
     r0 = ripple.copy()
     for k in range(100):
-        s.step_ripple(ripple, ripple_v, depth, None, solid, DT)
+        s.step_ripple(ripple, ripple_v, depth, None, None, solid, DT)
         e_now = energy()
         assert e_now < e_prev, (
             f"energy did not strictly decrease at step {k}: "
@@ -171,12 +183,14 @@ def test_ripple_exactly_zero_on_dry_and_solid():
     dead = (~wet)                           # dry OR solid — the exact-zero set
     ripple, ripple_v = _zeros(n), _zeros(n)
     s = _solver()
-    wave = np.full((n, n), 0.5, dtype=np.float32)   # splash lands on wet only
+    atm, p_prev = _splash_source(n, 0.5)   # splash lands on wet only
 
     rippled = False
     for k in range(50):
-        s.step_ripple(ripple, ripple_v, depth, wave if k == 0 else None,
-                      solid, DT)
+        if k == 0:
+            s.step_ripple(ripple, ripple_v, depth, atm, p_prev, solid, DT)
+        else:
+            s.step_ripple(ripple, ripple_v, depth, None, None, solid, DT)
         assert not ripple[dead].any(), f"ripple leaked onto dry/solid at step {k}"
         assert not ripple_v[dead].any(), f"ripple_v leaked onto dry/solid at step {k}"
         rippled = rippled or bool(ripple[wet].any())
@@ -253,12 +267,14 @@ def test_amplitude_clamp_holds_and_engages():
     # S1: depth is Q16.16 — the C++ clamp uses the DEQUANTIZED metres, so mirror
     # that: amp = k_amp * (depth/65536), in metres (matching the ripple units).
     amp = (np.float32(s.k_amp) * deq(depth)).astype(np.float32)
-    wave = np.full((n, n), 5.0, dtype=np.float32)   # a violent blast overhead
+    atm, p_prev = _splash_source(n, 5.0)   # a violent blast overhead
 
     engaged = False
     for k in range(50):
-        s.step_ripple(ripple, ripple_v, depth, wave if k < 5 else None,
-                      solid, DT)
+        if k < 5:
+            s.step_ripple(ripple, ripple_v, depth, atm, p_prev, solid, DT)
+        else:
+            s.step_ripple(ripple, ripple_v, depth, None, None, solid, DT)
         assert np.all(np.abs(ripple) <= amp), (
             f"|ripple| exceeded k_amp*depth at step {k}: "
             f"max excess {float((np.abs(ripple) - amp).max()):.3e}")
@@ -275,9 +291,13 @@ _TRANSPORT_FIELDS = ("water_depth", "flow_vx", "flow_vy", "atmosphere",
 
 
 def _ab_rollout(noop_ripple: bool):
-    """Sealed room with a painted pool and a wave_p bump (the splash source —
-    with k_p = 0.5 it also shoves the water, so transport is genuinely
-    active).
+    """Sealed room with a painted pool and a P bump (the splash source — EOS
+    refactor P3: step_ripple now reads |P - P_prev|, so a direct pressure
+    bump on `gmap.atmosphere` BEFORE the first tick creates the same kind of
+    same-tick transient the old direct `wave_p` write did: eos_solver's own
+    step 0 captures the bump as `p_prev` before solving a fresh P, so the
+    first tick's |P - P_prev| is large. With k_p = 0.5 it also shoves the
+    water, so transport is genuinely active.
 
     Ripple no-op swap point (Patch 1 S4a): the ripple call moved INTO
     ``PhysicsEngine::step_tail`` (C++) alongside the fire/temperature steps, so
@@ -293,8 +313,9 @@ def _ab_rollout(noop_ripple: bool):
     g = sim.gmap
     interior = (~g.solid) & (~g.is_vacuum)
     g.water_depth[interior] = q(0.3)         # painted pool (Q16.16 metres, S1)
-    g.wave_p[5, 4:8] = q(0.8)                # a blast ringing over the pool
-                                             # (S2a: wave_p is Q16.16 int32 now)
+    g.atmosphere[5, 4:8] += q(0.8)           # a blast ringing over the pool
+                                             # (EOS P3: P bump -> a same-tick
+                                             #  |P - P_prev| splash transient)
     if noop_ripple:
         class _NoRippleEngine:
             """Forward everything to the real engine, but discard the ripple

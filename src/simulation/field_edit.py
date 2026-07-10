@@ -399,10 +399,67 @@ def _combine_atmosphere(old_q: int, contribution: float, mode: EditMode,
     int32 in Q16.16 pressure; dequantize to real pressure, combine with the float
     path's exact +=/-=/max semantics (and any clamp), re-quantize round-to-
     nearest. Keeps the explosion pressure boost authored in real units while the
-    field stays integer/deterministic (the same idiom as `_combine_wave`)."""
+    field stays integer/deterministic (the same idiom as `_combine_wave`).
+
+    RETAINED for any legacy direct caller, but no longer used by
+    `apply_field_edit`'s "atmosphere" policy (EOS refactor P3 — see
+    `_combine_atmosphere_to_N` below): P is solver-owned now (materialized
+    once/tick by eos_solver), so writing it directly here would be silently
+    clobbered next tick."""
     old_v = float(old_q) / atmosphere_fixed.FP_ONE_F
     new_v = _combine_float(old_v, contribution, mode, clamp)
     return atmosphere_fixed.quantize_scalar(new_v)
+
+
+# EOS refactor P3 (design §6 "FieldEdit atmosphere/wave_source policies"):
+# ambient composition split (P1 §2.1) — 21% O2, 79% inert_N2, matching the
+# calibration that makes N_amb == 1.0 == P_amb at ambient (config
+# [physics.eos] C = 1/t_amb_k). An "atmosphere" edit's `amount`/`contribution`
+# keeps the SAME real-number scale the old direct-P edit used (both are
+# calibrated to the same N_amb==P_amb==1.0 point), so shipped config values
+# land in a similar ballpark without a forced re-tune — an explicit
+# k_push/k_p-style tuning pass is a LATER patch (P3 reports deltas, does not
+# secretly retune, per the design's own instruction).
+_O2_FRACTION = 0.21
+_N2_FRACTION = 0.79
+
+
+def _combine_atmosphere_to_N(old_o2_q: int, old_n2_q: int, contribution: float,
+                             mode: EditMode,
+                             clamp: Optional[Tuple[float, float]]) -> Tuple[int, int]:
+    """EOS refactor P3: the `atmosphere` FieldEdit policy's new target — a
+    bulk-N deposit split 21/79 across `gas[O2]`/`gas[INERT_N2]` (design §6),
+    REPLACING the direct P write `_combine_atmosphere` performed. `contribution`
+    is split by the ambient fraction BEFORE combining, and any clamp is
+    likewise fraction-scaled so a `(0, 2.0)` atmosphere clamp still bounds the
+    TOTAL N the same way a total-pressure clamp would have."""
+    old_o2 = float(old_o2_q) / gas_fixed.FP_ONE_F
+    old_n2 = float(old_n2_q) / gas_fixed.FP_ONE_F
+    o2_clamp = None
+    n2_clamp = None
+    if clamp is not None:
+        lo, hi = clamp
+        o2_clamp = (lo * _O2_FRACTION, hi * _O2_FRACTION)
+        n2_clamp = (lo * _N2_FRACTION, hi * _N2_FRACTION)
+    new_o2 = _combine_float(old_o2, contribution * _O2_FRACTION, mode, o2_clamp)
+    new_n2 = _combine_float(old_n2, contribution * _N2_FRACTION, mode, n2_clamp)
+    return gas_fixed.quantize_scalar(new_o2), gas_fixed.quantize_scalar(new_n2)
+
+
+def _combine_temperature(old_q: int, contribution: float, mode: EditMode,
+                         clamp: Optional[Tuple[float, float]]) -> int:
+    """EOS refactor P3: the `wave_source` FieldEdit policy's new target —
+    a `temperature` energy deposit (design §6: "wave_source -> T energy
+    deposit"; explosions inject energy, not phantom acoustic staging).
+    `temperature` shares the Q16.16 scale with `heat` (TEMP_SCALE ==
+    HEAT_SCALE == 65536, materials.py); dequantize, combine with the float
+    path's exact +=/-=/max semantics, re-quantize round-to-nearest (the same
+    idiom as every other `_combine_*` helper). `contribution` keeps the SAME
+    real-number scale the old `wave_source` edit used — a Kelvin re-tune of
+    explosion `amount`s is a LATER pass, not done here."""
+    old_v = float(old_q) / HEAT_SCALE
+    new_v = _combine_float(old_v, contribution, mode, clamp)
+    return int(new_v * HEAT_SCALE + (0.5 if new_v >= 0 else -0.5))
 
 
 def _combine_gas(old_q: int, contribution: float, mode: EditMode,
@@ -466,7 +523,19 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
     else the field-policy default.
     """
     pol = _policy(edit.field)
-    arr = getattr(gmap, edit.field)
+    # EOS refactor P3 (design §6): "atmosphere" and "wave_source" edits no
+    # longer target their namesake array — P is solver-owned (a direct write
+    # would be clobbered next tick) and wave_source is retired. Resolve the
+    # REAL target array(s) here; the per-tile loop below special-cases both.
+    o2_arr = n2_arr = None
+    if edit.field == "atmosphere":
+        o2_arr = gmap.gas[gmap.gases.name_to_id["o2"]]
+        n2_arr = gmap.gas[gmap.gases.name_to_id["inert_n2"]]
+        arr = o2_arr   # only used for `.shape` below; the loop writes o2/n2 directly
+    elif edit.field == "wave_source":
+        arr = gmap.temperature
+    else:
+        arr = getattr(gmap, edit.field)
     ch = edit.channel
     if pol.dtype == "gas" and arr.ndim == 3:
         # The (N, h, w) multi-gas array (W3): ``channel`` names the SLICE
@@ -518,14 +587,22 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
             arr[r, c] = _combine_water(int(arr[r, c]), contribution,
                                        edit.mode, clamp)
         elif is_wave:
-            arr[r, c] = _combine_wave(int(arr[r, c]), contribution,
-                                      edit.mode, clamp)
+            # EOS refactor P3: `arr` is `gmap.temperature` here (resolved
+            # above) — the energy-deposit target, not the retired wave_source
+            # array.
+            arr[r, c] = _combine_temperature(int(arr[r, c]), contribution,
+                                             edit.mode, clamp)
         elif is_gas:
             arr[r, c] = _combine_gas(int(arr[r, c]), contribution,
                                      edit.mode, clamp)
         elif is_atmosphere:
-            arr[r, c] = _combine_atmosphere(int(arr[r, c]), contribution,
-                                            edit.mode, clamp)
+            # EOS refactor P3: bulk-N deposit split 21/79 across O2/inert_N2
+            # (o2_arr/n2_arr resolved above), not a direct P write.
+            new_o2, new_n2 = _combine_atmosphere_to_N(
+                int(o2_arr[r, c]), int(n2_arr[r, c]), contribution,
+                edit.mode, clamp)
+            o2_arr[r, c] = new_o2
+            n2_arr[r, c] = new_n2
         elif is_fire:
             arr[r, c] = _combine_fire(int(arr[r, c]), contribution,
                                       edit.mode, clamp)

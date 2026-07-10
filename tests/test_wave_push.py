@@ -1,9 +1,9 @@
-"""The wave_p impulse-push row + KNOCKED_DOWN trigger (P4) — the gate.
+"""The atmosphere impulse-push row + KNOCKED_DOWN trigger (P4) — the gate.
 
-Covers mechanics/05 §1 (the ``wave_p | grad`` coupling row, both outputs) and
+Covers mechanics/05 §1 (the ``atmosphere | grad`` coupling row, both outputs) and
 mechanics/06 §4 (the knockdown trigger + stability):
 
-  - the nudge: a synthetic wave_p gradient displaces a unit by the EXACT
+  - the nudge: a synthetic atmosphere gradient displaces a unit by the EXACT
     door-3 amount (k_push * (-grad/65536) / mass * dt), and the quiet-field
     path is a bit-identical no-op (dormancy — wave-free trajectories keep
     their digest);
@@ -59,23 +59,23 @@ GETUP = int(CFG.exchange.knockdown_getup_ticks)
 
 
 # ---------------------------------------------------------------------------
-# Direct-function fixtures: a stub gmap (wave_p + solid) and helper fields
+# Direct-function fixtures: a stub gmap (atmosphere + solid) and helper fields
 # ---------------------------------------------------------------------------
 def _gmap(h=16, w=16):
-    """Minimal exchange-facing gmap stub: an int32 Q16.16 wave_p plane and a
+    """Minimal exchange-facing gmap stub: an int32 Q16.16 atmosphere plane and a
     solid mask with a hull border (like every shipped level)."""
     solid = np.zeros((h, w), dtype=bool)
     solid[0, :] = solid[-1, :] = solid[:, 0] = solid[:, -1] = True
-    return SimpleNamespace(wave_p=np.zeros((h, w), dtype=np.int32),
+    return SimpleNamespace(atmosphere=np.zeros((h, w), dtype=np.int32),
                            solid=solid)
 
 
 def _linear_x_field(gmap, slope_counts: int):
-    """wave_p[y, x] = slope_counts * x — a uniform +x gradient: reduce_grad
+    """atmosphere[y, x] = slope_counts * x — a uniform +x gradient: reduce_grad
     over any full 3x3 footprint is exactly (2 * slope_counts, 0)."""
-    h, w = gmap.wave_p.shape
+    h, w = gmap.atmosphere.shape
     xs = np.arange(w, dtype=np.int64) * int(slope_counts)
-    gmap.wave_p[:] = np.broadcast_to(xs, (h, w)).astype(np.int32)
+    gmap.atmosphere[:] = np.broadcast_to(xs, (h, w)).astype(np.int32)
 
 
 def _marine(x=6.0, y=6.0):
@@ -114,7 +114,7 @@ def test_gradient_pushes_exact_amount():
 
 
 def test_quiet_field_is_bitwise_noop():
-    """Dormancy: zero wave_p leaves position bitwise untouched and applies
+    """Dormancy: zero atmosphere leaves position bitwise untouched and applies
     nothing — wave-free trajectories keep their digest (the P4 wiring
     contract for every existing non-wave test/scenario)."""
     g = _gmap()
@@ -174,13 +174,13 @@ def test_wall_clamp_blocks_axis_and_slides_along():
     keep the y slide. Use a cap-exceeding gradient so the attempted x move
     crosses into the border column."""
     g = _gmap(h=16, w=16)
-    h, w = g.wave_p.shape
-    # wave_p = big * (x + y): gradient pushes toward -x/-y; use negative slope
+    h, w = g.atmosphere.shape
+    # atmosphere = big * (x + y): gradient pushes toward -x/-y; use negative slope
     # to push +x/+y instead.
     xs = np.arange(w, dtype=np.int64)
     ys = np.arange(h, dtype=np.int64)
     plane = -(xs[None, :] + ys[:, None]) * 600000
-    g.wave_p[:] = plane.astype(np.int32)
+    g.atmosphere[:] = plane.astype(np.int32)
 
     u = _marine(x=11.6, y=6.0)          # footprint x 11..13; wall col at 15
     apply_wave_push([u], g, TPS)
@@ -207,7 +207,7 @@ def test_corner_pin_blocks_both_axes():
     g = _gmap(h=16, w=16)
     xs = np.arange(16, dtype=np.int64)
     plane = -(xs[None, :] + xs[:, None]) * 600000
-    g.wave_p[:] = plane.astype(np.int32)
+    g.atmosphere[:] = plane.astype(np.int32)
     u = _marine(x=12.6, y=12.6)         # next +cap crosses into anchor 13
     apply_wave_push([u], g, TPS)
     assert (u.x, u.y) == (12.6, 12.6)   # pinned in the corner: nothing moves

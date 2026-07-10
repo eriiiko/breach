@@ -91,7 +91,7 @@ public:
     // gamma: ideal-gas adiabatic index for the compression-work term
     // T -= (gamma-1)*T*div(u)*dt_s. 1.4 == diatomic (O2/N2 air) — a
     // reasonable engineering default; TUNING DIAL (not measured/gated here).
-    float gamma = 1.4f;
+    float adiabatic_index = 1.4f;
     // absorb_strength: global scale on the per-cell dyn_wave_absorb damping
     // applied to u in the correction step (D4 — unit/material shockwave
     // shielding). Mirrors AtmosphereSolver::absorb_strength.

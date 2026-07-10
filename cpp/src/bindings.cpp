@@ -1086,7 +1086,7 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("N_FLOOR_SOLVER",    &EOSSolver::N_FLOOR_SOLVER)
         .def_readwrite("T_AMB_K",           &EOSSolver::T_AMB_K)
         .def_readwrite("C",                 &EOSSolver::C)
-        .def_readwrite("gamma",             &EOSSolver::gamma)
+        .def_readwrite("adiabatic_index",   &EOSSolver::adiabatic_index)
         .def_readwrite("absorb_strength",   &EOSSolver::absorb_strength)
         .def_readwrite("T_MIN",             &EOSSolver::T_MIN)
         .def_readonly("energy_floor_hits",  &EOSSolver::energy_floor_hits)

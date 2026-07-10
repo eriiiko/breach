@@ -189,7 +189,7 @@ void EOSSolver::step(
     const q16 t_amb_q    = quantize((double)T_AMB_K);
     const q16 t_min_q    = quantize((double)T_MIN);
     const q16 c_q        = quantize((double)C);
-    const q16 gamma_m1_q = quantize((double)gamma - 1.0);
+    const q16 adiabatic_m1_q = quantize((double)adiabatic_index - 1.0);
     const double dt_d    = (double)dt;
     const double dx_d    = std::max((double)dx, 1e-6);
     const q16 inv_2dx_q  = quantize(1.0 / (2.0 * dx_d));       // central-diff scale
@@ -325,7 +325,7 @@ void EOSSolver::step(
             // (gamma-1)*div(u)*dt_s, then *T, all Q16.16 (PINNED left-fold,
             // the fire_simulation.cpp idiom): CFL_ADV<=0.5 pins
             // |(gamma-1)*div(u)*dt_s| <= (gamma-1)*2*CFL_ADV <= 0.4 < 1 (D3).
-            q16 k = mul_q16(gamma_m1_q, div_u_[i]);
+            q16 k = mul_q16(adiabatic_m1_q, div_u_[i]);
             k = mul_q16(k, dt_s_q);
             const q16 dT = mul_q16(k, temperature[i]);
             q16 t_new = temperature[i] - dT;
@@ -489,6 +489,27 @@ void EOSSolver::step(
                 const q16 k = (a < FP_ONE) ? (q16)(FP_ONE - a) : 0;
                 wind_x[i] = scale_mag(wind_x[i], k);
                 wind_y[i] = scale_mag(wind_y[i], k);
+            }
+
+            // PHYSICAL CLAMP: |u| <= c_max (design §3.2's own CFL section:
+            // "outflow speed is physically bounded by the sound speed" — the
+            // pressure-kick above is unconditional and can produce an
+            // arbitrarily large step at a near-N_FLOOR_SOLVER cell (1/N_hat
+            // is unbounded as N->floor); without this clamp that single
+            // large |u| feeds next tick's advection/divergence/p*, which
+            // feeds an even larger kick — an unbounded feedback blow-up
+            // observed in E2E testing (a water-displacement scenario runs
+            // away within ~3 ticks without this clamp). Scale-to-cap rather
+            // than component-wise clamp so direction is preserved.
+            const int64_t umag_rad = mul_wide(wind_x[i], wind_x[i])
+                                   + mul_wide(wind_y[i], wind_y[i]);
+            const q16 umag = sqrt_q16(umag_rad);
+            if (umag > c_max_q) {
+                const q16 scale = reciprocal_q16(umag);        // 1/|u|, Q16.16
+                const q16 unit_x = mul_q16(wind_x[i], scale);   // u/|u|
+                const q16 unit_y = mul_q16(wind_y[i], scale);
+                wind_x[i] = mul_q16(unit_x, c_max_q);
+                wind_y[i] = mul_q16(unit_y, c_max_q);
             }
         }
     }
