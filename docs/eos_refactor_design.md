@@ -219,16 +219,33 @@ ever needed). Solver complexity unchanged — the operator already carried a per
 coefficient; it now reads the `p*` array instead of a constant. Overflow budget re-derived
 at the MG gate (the face-coefficient product is preserved — P3's measurement).
 
-**Operator placement — VERIFIED against the paper (P3 design-gate deliverable #4,
-2026-07-10, from `docs/papers/ADA492343.pdf` eq. 9–15):** `(ρc²) ≡ (N·c²)` is an
-**outer, per-CELL multiplier evaluated pre-solve** on both sides; `1/N̂` sits **inside**
-the divergence-gradient sandwich, **per-FACE**, with `N̂_face = (N_i + N_j)/2` from the
-*post-advection* densities, floored by `N_FLOOR_SOLVER`. (v2's earlier `∇·((c²/ρ̂)∇)`
-form — density folded inside, no outer factor — was equivalent only for uniform density,
-i.e. wrong at breach fronts; corrected here per round-2's verification demand.)
-Diagonal dominance survives: diag = `1 + (Nc²)_i·dt²/dx²·Σ_f(perm_f/N̂_f)` strictly
-exceeds the off-diagonal sum by the identity term ⇒ the fixed-sweep GS guarantee is
-intact. **Named deviation from the paper:** Kwatra advects pressure itself (`p_a`); we
+**Operator placement — VERIFIED against the paper (deliverable #4, 2026-07-10, from
+`docs/papers/ADA492343.pdf` eq. 9–15), restated in v2.2 units:** the paper's `ρc²` is an
+**outer, per-CELL multiplier evaluated pre-solve** on both sides — in v2.2 form that
+multiplier is **`(γ·p*)_cell`** (the exact identity ρc² = γP; γ = 1.4, compile-time
+constant). `1/N̂` sits **inside** the divergence-gradient sandwich, **per-FACE**, with
+`N̂_face = (N_i + N_j)/2` from the *post-advection* densities, floored by `N_FLOOR_SOLVER`.
+(v2's `∇·((c²/ρ̂)∇)` form — density inside, no outer factor — was uniform-density-only;
+corrected per round-2. The v2.2 unit fix replaces the outer `N·c²` with `γ·p*` —
+**every formula in this doc now uses the γ·p* form; any surviving `N·c²` is an error.**)
+
+**Three properties, stated explicitly (round-3 critique demanded them, they were implicit):**
+1. **The per-tick system is LINEAR.** `p*` is computed once (step 2), and the outer
+   coefficient `(γ·p*)_cell` is FROZEN at that advected value through the whole solve —
+   it is data, never a function of the unknown `P_new`.
+2. **Near-vacuum degeneracy is the correct physics, for free:** as `p*_i → 0` both the
+   outer coefficient and the RHS vanish → the row collapses to `diag = 1, RHS = 0 ⇒
+   P_new = 0` — the intended Dirichlet behavior emerges. Correspondingly,
+   `N_FLOOR_SOLVER` applies ONLY to the face `1/N̂` divide (where zero is dangerous),
+   NEVER to the outer multiplier (where zero is the desired physics).
+3. **Why D-A cannot fix D-B (inline, since it's the crux):** the pressure↔velocity
+   round-trip coupling is `(γ·p*)·K = p*·(c_amb²·…) ≈ p*·c²` at ambient — D-A only
+   *relocates* the c² factor (operator → momentum constant); the product that sets the
+   solve's difficulty is unchanged. Hence two independent fixes.
+Diagonal dominance still holds row-wise (diag = `1 + (γp*)_i·K·dt²/dx²·Σ_f(perm_f/N̂_f)` >
+off-diagonal sum, by the identity term) — but per the P3 measurements this guarantees
+only ASYMPTOTIC convergence, NOT small-fixed-schedule convergence; that is the multigrid
+section's problem (§3.2 step 3), no longer claimed solved by dominance alone. **Named deviation from the paper:** Kwatra advects pressure itself (`p_a`); we
 derive `p* = C·N_adv·T_adv` from the advected state — a consistent O(dt) choice that
 guarantees P can never drift from (N, T); the paper itself notes the method is
 EOS-agnostic. (Energy: the paper updates E conservatively; we carry T with the explicit
@@ -265,11 +282,15 @@ fast path: `∇P ≡ 0` over any uniform region regardless of baseline — integ
 0. P_prev := P (kept copy — ripple transient + debug)     [P was materialized last tick]
 1. ADVECTION SUBSTEPS — n = ceil_int(dt / dt_adv), integer-ceil discipline
    (smoke_cliff_count class); dt_adv = CFL_ADV·dx / (u_est + eps) with
-   **u_est = max|u| + (max|∇P|/N̂)·dt** — the paper's own velocity estimate (its §3:
+   **u_est = max|u| + (max K·|∇P|/N̂)·dt** — the paper's own velocity estimate (its §3:
    `max|u|` alone under-substeps a quiescent field about to be kicked, e.g. the Sod tube
-   or OUR cold-breach tick-0). max|u| via sqrt_q16 over vx²+vy² (int64 sums); the ∇P term
-   from last tick's stored P (integer ops only); **u_est capped at c_max** (outflow speed
-   is physically bounded by the sound speed); **N_SUB_MAX = 16** (microbench 2026-07-10:
+   or OUR cold-breach tick-0); note the **K** (v2.2 — the ∇P term converts pressure to
+   acceleration through the same unit bridge as the momentum kick). max|u| via sqrt_q16
+   over vx²+vy² (int64 sums); the ∇P term from last tick's stored P (integer ops only);
+   **u_est capped at c_LOCAL = c_amb·sqrt(T_max_abs/T_AMB)** (v2.2: c is state-derived —
+   a 9000 K core's sound speed is ~5.5× ambient; a stale ambient cap would re-create the
+   under-substep failure this term exists to prevent; T_max_abs = per-tick max over
+   open-air, one sqrt_q16); **N_SUB_MAX = 16** (microbench 2026-07-10:
    the stress tail reached n=159, but our substeps exist for ACCURACY not stability — SL
    is unconditionally stable and the donor-cell limiter rate-caps gracefully — so a low
    cap costs only slight front-resolution on a blast's wildest 1-2 ticks, invisible at
@@ -308,7 +329,10 @@ fast path: `∇P ≡ 0` over any uniform region regardless of baseline — integ
      coarse mask degrades convergence RATE near complex geometry, never correctness.
      Schedule (V(2,2), level count L, cycle count C) pinned at the MG design-gate,
      frozen thereafter.
-4. u -= dt·grad(P_new)/ρ̂
+4. u -= dt·K·grad(P_new)/N̂_face      (v2.2: K is MANDATORY — without it this line IS the
+   64,000× unit bug. K = c_amb²/γ ≈ 64,286: does NOT fit a plain Q16.16 value — stored
+   as a WIDE int64 Q16.16-scaled constant; the whole kick chain runs int64
+   (K·ΔP → /N̂ → ·dt), clamps |u| ≤ c_LOCAL, and narrows to q16 velocity ONCE at store)
    u *= (1 − absorb·dt)  per cell   (unit/material shockwave absorption — D4; reads
                                      dyn_wave_absorb exactly as the old wave kick did)
    zero u outside open-air
@@ -340,9 +364,9 @@ a scoped pivot, not a redesign.
 
 ### 3.4 Fixed-point numerics (B3/B4 — the load-bearing spec)
 
-The Helmholtz face coefficient is `k_f = dt²·c²/ρ̂_f`. With `N → N_floor` this is
-**unrepresentable in Q16.16** (round-1 measured ~450× over ceiling at the prototype's
-constants). The v2 rules:
+The face coefficient (v2.2 form) is `k_f = (γ·p*)_cell·K·dt²/(dx²·N̂_f)` — ambient value
+≈ 5,580 (the pre-v2.2 product, preserved by construction). It is **unrepresentable in
+Q16.16** near floors and spikes. The rules:
 
 1. **Wide arithmetic end-to-end in the solve.** `k_f`, the diagonal
    `d = 1 + Σ k_f`, the neighbor sum `Σ k_f·P_nb`, and the RHS are all computed and
@@ -368,6 +392,14 @@ constants). The v2 rules:
    (the face mean is at least half the spike). The floor only governs faces where BOTH
    neighbors are near-vacuum — where P is also near zero. The budget closes at c=300
    with wide margin.
+   **v2.2 JOINT-CASE CAVEAT (round-3 critique — deliverable #1 RE-OPENED, closes at the
+   MG gate):** the bound above was for `N` alone. Under γ·p*, a **joint** spike —
+   O2-tank `N≈200×` AND fireball `T≈9000 K` — gives `p* ≈ 6,200` (fits Q16.16, ~5×
+   headroom) but `k_f ≈ 3.5×10⁵` (int64-only) and worst products `k_raw·P_raw ≈ 9×10¹⁸ —
+   AT the int64 edge.** The MG gate must re-derive the full inequality under γ·p*·K with
+   explicit operation ORDERING (e.g. divide by N̂ before multiplying by P_nb) and/or
+   coefficient caps, per level. `K = c_amb²/γ ≈ 64,286` itself is a **wide int64
+   constant** (does not fit q16 — see §3.2 step 4).
 2. **Solver-local density floor** `ρ̂ = max(ρ, RHO_FLOOR_SOLVER)`, chosen so
    `max k_f = dt²c²/RHO_FLOOR_SOLVER` (plus the ×4 face sum, plus the max representable
    `P` in the neighbor products) fits int64 with ≥ 8 bits of headroom — the concrete
@@ -379,14 +411,33 @@ constants). The v2 rules:
    explicitly *in addition to* accuracy-vs-double-reference, because an overflow is
    bit-identical on both platforms and invisible to the digest gate.
 4. **(v2.2 — supersedes the fixed-S plan, which P3's gate killed):** the solver is a
-   fixed-schedule multigrid V-cycle (§3.2 step 3). The **MG design-gate** pins: the
-   coarse-mask coarsening rule (how walls/vacuum appear at 80²/40²/…), level count L,
-   sweeps per level (start V(2,2)), cycle count C (start 2), the re-derived overflow
-   budget under the γ·p* coefficients, and the measured cost (~1.8 ms/cycle expected at
-   160²; budget ≈ the failed S=8 plan). All frozen constants after the gate — never
-   adaptive. **§3.4's earlier "diagonal dominance ⇒ fixed-sweep guarantee" is retracted
-   as an overclaim** (it guaranteed asymptotic convergence, not 8-sweep convergence at
-   game coupling ~10³ — the conflation P3's measurements exposed).
+   fixed-schedule multigrid V-cycle (§3.2 step 3). **The MG design-gate is a MEASUREMENT
+   gate, hardened per round-3 critique** (this project has now twice been burned by
+   "asymptotically convergent ≠ convergent in the fixed schedule"):
+   - **Convergence is MEASURED at the real coupling (~10³, variable-coefficient, masked
+     domain, fixed-point), not assumed from textbook Poisson folklore.** V(2,2)×C=2 is
+     the STARTING guess; the gate escalates (V(3,3), W-cycles, more cycles) until the
+     venting + water E2Es are durably stable, then freezes the schedule at measured cost.
+   - **Coarse operators: RE-DISCRETIZED with HARMONIC face-coefficient averaging** (the
+     `face_shift` idiom this codebase already trusts; robust to coefficient jumps).
+     Galerkin RAP is rejected: sparse-matrix assembly is alien to the integer-stencil
+     codebase. If measured convergence near walls/doorways is inadequate, THAT is the
+     trigger to revisit — measured, not assumed.
+   - **Coarse Dirichlet (vacuum) rule, explicit:** a coarse cell is Dirichlet iff ALL its
+     children are vacuum; straddlers remain regular cells (their fine-informed face
+     coefficients carry the boundary's effect). Gated by a **dedicated
+     breach-adjacent-to-coarse-boundary test** — the exact geometry of the original
+     blow-up — NOT by an appeal to asymptotic MG theory (fine-grid-defines-truth is
+     asymptotic; at fixed C it must be measured).
+   - **Transfer operators: fixed integer stencils with a NAMED rounding rule**
+     (full-weighting restriction via fixed `>>` shifts; bilinear prolongation with one
+     stated round direction), identical CPU/CUDA — determinism is per-op specified, not
+     asserted.
+   - **Per-LEVEL overflow budgets** — coarsened coefficients aggregate; each level gets
+     its own §3.4-style headroom derivation (incl. the v2.2 joint-case above).
+   **§3.4's earlier "diagonal dominance ⇒ fixed-sweep guarantee" is retracted as an
+   overclaim** (asymptotic convergence ≠ 8-sweep convergence at game coupling — the
+   conflation P3's measurements exposed).
 4b. **Widen the GS flux-narrow (D-C, trivial):** `narrow(Σ mul_wide(face_k, ΔP))` wrapped
    int32 past ~23 atm neighbor differences — keep the accumulator wide until the final
    per-cell store.
@@ -575,7 +626,12 @@ P5 needs P4. P6 per-kernel after the corresponding CPU code stabilizes (≥ P3).
 
 ## 9. TBD / tuning (feel-gated; first pass at P5)
 
-`c_max` — **SET: 300 m/s (Erik, 2026-07-10).** The shipped `wave_c=66` was never a design
+`γ = 1.4` — adiabatic index, compile-time constant (the ideal-gas identity ρc²=γP).
+`K = c_amb²/γ ≈ 64,286` — the ONE unit-bridge constant (v2.2), **wide int64 storage**
+(exceeds q16's value range); THE ambient-sound-speed dial: scales ambient c uniformly,
+c's T-dependence rides on top. Erik's graceful-degradation fallback lives here (ambient-c
+anywhere in the 66→300 continuum is one constant).
+`c_amb` — **SET: 300 m/s at ambient (Erik, 2026-07-10).** The shipped `wave_c=66` was never a design
 choice, only a performance compromise; under Kwatra `c` costs no substeps (empirically
 proven), so the compromise is retired. Honest baseline correction: the OLD engine at the
 *desired* c=300 needs ~50 wave substeps ≈ 12 ms — the new solve at S=8 (2.9 ms) is ~4×
