@@ -253,11 +253,16 @@ fast path: `∇P ≡ 0` over any uniform region regardless of baseline — integ
    **u_est = max|u| + (max|∇P|/N̂)·dt** — the paper's own velocity estimate (its §3:
    `max|u|` alone under-substeps a quiescent field about to be kicked, e.g. the Sod tube
    or OUR cold-breach tick-0). max|u| via sqrt_q16 over vx²+vy² (int64 sums); the ∇P term
-   from last tick's stored P (integer ops only); n capped at N_SUB_MAX (cap: patch-3 gate).
+   from last tick's stored P (integer ops only); **u_est capped at c_max** (outflow speed
+   is physically bounded by the sound speed); **N_SUB_MAX = 16** (microbench 2026-07-10:
+   the stress tail reached n=159, but our substeps exist for ACCURACY not stability — SL
+   is unconditionally stable and the donor-cell limiter rate-caps gracefully — so a low
+   cap costs only slight front-resolution on a blast's wildest 1-2 ticks, invisible at
+   1/3 m tiles, instead of a designed frame stall).
    per substep (dt_s = dt/n):
      a. u  ← semi-Lagrangian self-advection            (§3.3 simplification, flagged)
      b. T  ← semi-Lagrangian advection (gas mask)
-     c. traces ← per-slice SL (unchanged, decay-permitted)
+     c. (traces do NOT substep — see below)
      d. bulk N_O2, N_N2 ← donor-cell flux on u          (§2.2 — conservative)
      e. T -= (γ−1)·T·div(u)·dt_s   (compression work, SUBSTEPPED — D3;
         per-substep |(γ−1)·div(u)·dt_s| bounded by the advection CFL itself;
@@ -273,6 +278,9 @@ fast path: `∇P ≡ 0` over any uniform region regardless of baseline — integ
    u *= (1 − absorb·dt)  per cell   (unit/material shockwave absorption — D4; reads
                                      dyn_wave_absorb exactly as the old wave kick did)
    zero u outside open-air
+4b. traces ← per-slice SL, ONCE per tick on the final velocity (microbench amendment
+    2026-07-10: they are visual, non-conservative, and run once/tick today — substepping
+    them multiplies 5 field passes × n for zero gameplay effect)
 5. P := P_new  — materialized ONCE, stored (aliased as `atmosphere`), BEFORE any consumer
 6. combustion pass (§5, patch 4+) — reads settled P/N/T, feeds next tick
 7. consumers (§6): smoke/fire advection on u(=wind), water head, burst walls, unit push
@@ -311,6 +319,13 @@ constants). The v2 rules:
    `k_f = (N_cell·c²·dt²/dx²)/N̂_f ≈ 894·N_cell/N̂_f` — even an O2-tank cell (200× ambient)
    venting against the 10⁻³ floor peaks the wide products at ~2.4×10¹⁵, ≈12 bits under
    int64. `N_FLOOR_SOLVER = 10⁻³` stands.
+   **Sharper bound (c=300 update, same day):** because `N̂_face` is the arithmetic mean of
+   its two cells, `N_cell/N̂_face ≤ 2` ALWAYS — so `k_f ≤ 2·c²·dt²/dx²` regardless of any
+   density configuration (`≈ 11,180` at c=300, inside Q16.16's value range), and the
+   "tank-spike cell against a floored face" pathological case is structurally impossible
+   (the face mean is at least half the spike). The floor only governs faces where BOTH
+   neighbors are near-vacuum — where P is also near zero. The budget closes at c=300
+   with wide margin.
 2. **Solver-local density floor** `ρ̂ = max(ρ, RHO_FLOOR_SOLVER)`, chosen so
    `max k_f = dt²c²/RHO_FLOOR_SOLVER` (plus the ×4 face sum, plus the max representable
    `P` in the neighbor products) fits int64 with ≥ 8 bits of headroom — the concrete
@@ -511,7 +526,13 @@ P5 needs P4. P6 per-kernel after the corresponding CPU code stabilizes (≥ P3).
 
 ## 9. TBD / tuning (feel-gated; first pass at P5)
 
-`c_max` (sound-speed dial — trades Helmholtz conditioning, *not* substep count);
+`c_max` — **SET: 300 m/s (Erik, 2026-07-10).** The shipped `wave_c=66` was never a design
+choice, only a performance compromise; under Kwatra `c` costs no substeps (empirically
+proven), so the compromise is retired. Honest baseline correction: the OLD engine at the
+*desired* c=300 needs ~50 wave substeps ≈ 12 ms — the new solve at S=8 (2.9 ms) is ~4×
+cheaper *for the physics Erik actually wanted*, and even S=16 (5.7 ms) is 2× cheaper.
+**S: start 8; the P3 gate measures Helmholtz convergence at c=300 and may pin up to 16**
+(budget-supported vs the honest baseline), frozen thereafter;
 `k_push` + knockdown thresholds (vs the new transient-∇P scale); `k_p` (water head);
 air conductivity ("small": big enough that the interface sink fires, small enough that
 air doesn't become the rejected heat-advecting field); `cool_shift_vacuum` rate under
