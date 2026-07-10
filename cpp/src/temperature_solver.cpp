@@ -211,6 +211,14 @@ void TemperatureSolver::step(
         const double c_v_safe = (c_v > 0.0f) ? (double)c_v : 1.0;
         const int64_t recip_cv = make_recip(c_v_safe);            // 1/c_v, once per step
         const int32_t n_floor_q = quantize((double)n_floor_heat); // independent floor (§4.3)
+        // v2.4 T_MAX_PHYS rail (temperature_solver.h; full rationale in
+        // eos_solver.h): Pass 1 is a DEPOSIT path — clamp at the physical
+        // ceiling (counted) so an N-starved reciprocal or a stacked
+        // firestorm can never write past it. Both branches (solid shift,
+        // gas reciprocal). Passes 2/3 need no rail: conduction is a convex
+        // combination (discrete maximum principle — it cannot create a new
+        // max) and cooling only shrinks |T|.
+        const int32_t t_max_phys_q = quantize((double)T_MAX_PHYS);
 
         for (int i = 0; i < n; ++i) {
             int32_t deposit = heat[i];
@@ -219,20 +227,56 @@ void TemperatureSolver::step(
                 int shift = heat_inv_shift[i];    // log2(thermal_mass), >= 0
                 int32_t gain = deposit >> shift;  // Q16.16 / 2^shift, still Q16.16
                 heat_saturating_add(&temperature[i], gain);
+                if (temperature[i] > t_max_phys_q) {
+                    temperature[i] = t_max_phys_q; ++t_max_phys_hits;
+                }
             } else if (!is_vacuum[i]) {
                 // EOS P3 (TODO closed): the divisor is the REAL bulk-species
                 // N_total (O2+N2, passed by the engine) — the P2 atmosphere
                 // density-proxy remains only as the nullable back-compat
                 // fallback for the direct Python binding.
-                int32_t N_q = n_bulk ? n_bulk[i] : atmosphere[i];
+                //
+                // v2.4 ABSORPTION-PROPORTIONAL radiant deposit (optically-thin
+                // form; PROVISIONAL, Erik review at P5 — design doc §4 v2.4).
+                // The old formula deposited the FULL ray energy into the cell
+                // no matter how thin its gas — as a hot zone's own pressure
+                // evacuated its N, the same deposit divided by an ever-smaller
+                // N and the reciprocal ran away (the measured decisions.md #16
+                // driver). Physically, a gas ABSORBS radiation in proportion
+                // to its density (this project's own engine/05 optics model,
+                // applied to the heat channel):
+                //     E_abs = deposit · min(N, N_AMB)/N_AMB
+                //     ΔT    = E_abs / (max(N, N_FLOOR_HEAT) · c_v)
+                // Consequences: for N_FLOOR_HEAT ≤ N ≤ N_AMB this collapses to
+                // ΔT = deposit/(N_AMB·c_v) — BOUNDED regardless of N-collapse;
+                // below the floor it decays linearly to 0 (a near-vacuum cell
+                // absorbs almost nothing — the physical truth the old formula
+                // violated); at/above ambient it reduces EXACTLY to the old
+                // chain (e_abs == deposit, bit-identical — zero feel change in
+                // normal air). N_AMB == FP_ONE by construction (§2.1 P1
+                // calibration: ambient N_total quantizes to exactly 1.0), so
+                // min(N, N_AMB)/N_AMB is just min(N, FP_ONE) — no new divide,
+                // no new dial.
+                int32_t N_raw = n_bulk ? n_bulk[i] : atmosphere[i];
+                if (N_raw < 0) N_raw = 0;                 // no negative density
+                const int32_t e_abs = (N_raw >= FP_ONE)
+                    ? deposit                              // ambient+: exact old path
+                    : mul_q16(deposit, (q16)N_raw);        // thin gas: ∝ density
+                int32_t N_q = N_raw;
                 if (N_q < n_floor_q) N_q = n_floor_q;    // floor independent of anything else (N_FLOOR_HEAT)
                 const int32_t recip_N_q = reciprocal_q16(N_q);        // 1/N, per-tile Newton recip
-                const int32_t e_over_n  = mul_q16(deposit, recip_N_q); // ΔE/N, Q16.16
-                const int32_t dT = recip_mul(e_over_n, recip_cv);     // (ΔE/N)/c_v, Q16.16
+                const int32_t e_over_n  = mul_q16(e_abs, recip_N_q);  // E_abs/N, Q16.16
+                const int32_t dT = recip_mul(e_over_n, recip_cv);     // (E_abs/N)/c_v, Q16.16
                 heat_saturating_add(&temperature[i], dT);
+                if (temperature[i] > t_max_phys_q) {
+                    temperature[i] = t_max_phys_q; ++t_max_phys_hits;
+                }
             }
         }
     }
+
+    // DEBUG probe (temporary): T after Pass 1 (heat -> temperature convert).
+    if (dbg_probe_idx >= 0 && dbg_probe_idx < n) dbg_T_post_heat = temperature[dbg_probe_idx];
 
     // ---- Pass 2: conduction relaxation (proposal §2.2) ----
     // Gather stencil, double-buffered so the whole pass reads the FROZEN
@@ -279,6 +323,8 @@ void TemperatureSolver::step(
     // Swap temp_new -> temperature (write the new field back in place; the
     // caller's buffer is the persistent one, scratch_ is reused next tick).
     for (int i = 0; i < n; ++i) temperature[i] = temp_new[i];
+    // DEBUG probe (temporary): T after Pass 2 (conduction).
+    if (dbg_probe_idx >= 0 && dbg_probe_idx < n) dbg_T_post_conduction = temperature[dbg_probe_idx];
 
     // ---- Pass 3: ambient cooling (proposal §3) ----
     // The LAST thermal pass (§3.5): runs AFTER conduction so this tick's fresh
@@ -339,6 +385,9 @@ void TemperatureSolver::step(
             temperature[i] = t - loss;
         }
     }
+
+    // DEBUG probe (temporary): T after Pass 3 (ambient cooling).
+    if (dbg_probe_idx >= 0 && dbg_probe_idx < n) dbg_T_post_cooling = temperature[dbg_probe_idx];
 
     // STEP D (unit damage, §4) will add a further pass here, reading the
     // post-cool temperature field.

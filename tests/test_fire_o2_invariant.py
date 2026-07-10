@@ -149,9 +149,13 @@ def test_o2_gate_heterogeneous_disagreements_are_exact_ties_only():
     integer mean_round and the C++ float32 division CAN differ. Assert that every
     disagreement is an EXACT threshold tie (integer mean == quantize(threshold)),
     never a real divergence — i.e. the integer gate is the correct/deterministic
-    one and S3b's C++ mean_round will bit-match it. EOS refactor P4: the sweep is
-    rescaled to bracket the NEW ~0.12 threshold (was ~0.60)."""
-    vals = np.linspace(0.02, 0.22, 41)        # densely straddles the new threshold
+    one and S3b's C++ mean_round will bit-match it. EOS refactor P4: the sweep
+    was rescaled to bracket the then-new ~0.12 threshold (was ~0.60).
+    v2.4 re-pin (eos-p3fix-thermal-ceiling): o2_threshold moved 0.12 -> 0.01
+    (the hot-zone-equilibrium rescale, config.toml [physics.fire]); the sweep
+    rescales with it — same density, same 0.2x-to-2.2x threshold bracket,
+    still containing the exact threshold value so ties occur."""
+    vals = np.linspace(0.002, 0.022, 41)      # densely straddles the new threshold
     qs = [atmosphere_fixed.quantize_scalar(float(v)) for v in vals]
     n_disagree = 0
     n_disagree_not_tie = 0

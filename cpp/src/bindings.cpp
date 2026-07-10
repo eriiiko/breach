@@ -778,11 +778,15 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("smoke_emission", &FireParams::smoke_emission)
         .def_readwrite("wall_damage",    &FireParams::wall_damage)
         .def_readwrite("temp_scale",     &FireParams::temp_scale)
-        .def_readwrite("temp_gain_scale", &FireParams::temp_gain_scale);   // EOS P3
+        .def_readwrite("temp_gain_scale", &FireParams::temp_gain_scale)   // EOS P3
+        .def_readwrite("T_FLAME_MAX",    &FireParams::T_FLAME_MAX);       // eos-p3fix-thermal-ceiling
 
     py::class_<FireSimulation>(m, "FireSimulation")
         .def(py::init<>())
         .def_readwrite("params", &FireSimulation::params)
+        // DEBUG probe (temporary, eos-p3fix-thermal-ceiling investigation).
+        .def_readwrite("dbg_probe_idx", &FireSimulation::dbg_probe_idx)
+        .def_readonly("dbg_plume_dT",   &FireSimulation::dbg_plume_dT)
         .def("step", [](const FireSimulation& self,
                         py::array_t<int32_t> fire,         // S3b: Q16.16 int32
                         py::array_t<int32_t> atmosphere,   // S2c: Q16.16 int32
@@ -824,6 +828,11 @@ PYBIND11_MODULE(breach_physics, m) {
     //     + ambient cooling §3; engine/06 §1–§3) ---
     py::class_<TemperatureSolver>(m, "TemperatureSolver")
         .def(py::init<>())
+        // DEBUG probe (temporary, eos-p3fix-thermal-ceiling investigation).
+        .def_readwrite("dbg_probe_idx",         &TemperatureSolver::dbg_probe_idx)
+        .def_readonly("dbg_T_post_heat",        &TemperatureSolver::dbg_T_post_heat)
+        .def_readonly("dbg_T_post_conduction",  &TemperatureSolver::dbg_T_post_conduction)
+        .def_readonly("dbg_T_post_cooling",     &TemperatureSolver::dbg_T_post_cooling)
         // NO_FACE sentinel (face_shift == this -> skip the face). Bound from
         // config [physics.thermal].NO_FACE so Python and C++ never disagree.
         .def_property("no_face",
@@ -849,6 +858,9 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_property("n_floor_heat",
             &TemperatureSolver::get_n_floor_heat,
             &TemperatureSolver::set_n_floor_heat)
+        // v2.4 T_MAX_PHYS rail + counter (temperature_solver.h).
+        .def_readwrite("T_MAX_PHYS",        &TemperatureSolver::T_MAX_PHYS)
+        .def_readonly("t_max_phys_hits",    &TemperatureSolver::t_max_phys_hits)
         // P2: wind_x/wind_y/dt are OPTIONAL (default None/0.0) so the shipped
         // direct-binding call sites (tests/test_temperature_*.py,
         // tests/cuda_s1_check.py — all pre-P2, 7 positional args) keep working
@@ -1081,16 +1093,25 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("absorb_strength",   &EOSSolver::absorb_strength)
         .def_readwrite("T_MIN",             &EOSSolver::T_MIN)
         .def_readwrite("T_WORK_CLAMP",      &EOSSolver::T_WORK_CLAMP)
+        .def_readwrite("T_MAX_PHYS",        &EOSSolver::T_MAX_PHYS)     // v2.4 rail
+        .def_readwrite("U_MAX",             &EOSSolver::U_MAX)          // v2.4 rail
         .def_readwrite("trace_mass_scale",  &EOSSolver::trace_mass_scale)
         .def_readonly("energy_floor_hits",  &EOSSolver::energy_floor_hits)
         .def_readonly("u_clamp_hits",       &EOSSolver::u_clamp_hits)
         .def_readonly("work_clamp_hits",    &EOSSolver::work_clamp_hits)
+        .def_readonly("t_max_phys_hits",    &EOSSolver::t_max_phys_hits) // v2.4
+        .def_readonly("u_max_hits",         &EOSSolver::u_max_hits)      // v2.4
         .def_readonly("digest_advect",      &EOSSolver::digest_advect)
         .def_readonly("digest_bulk_flux",   &EOSSolver::digest_bulk_flux)
         .def_readonly("digest_pstar",       &EOSSolver::digest_pstar)
         .def_readonly("digest_helmholtz",   &EOSSolver::digest_helmholtz)
         .def_readonly("digest_velocity",    &EOSSolver::digest_velocity)
-        .def_readonly("digest_compression", &EOSSolver::digest_compression);
+        .def_readonly("digest_compression", &EOSSolver::digest_compression)
+        // DEBUG probe (temporary, eos-p3fix-thermal-ceiling investigation).
+        .def_readwrite("dbg_probe_idx",          &EOSSolver::dbg_probe_idx)
+        .def_readonly("dbg_T_pre_advect",        &EOSSolver::dbg_T_pre_advect)
+        .def_readonly("dbg_T_post_advect",       &EOSSolver::dbg_T_post_advect)
+        .def_readonly("dbg_T_post_compression",  &EOSSolver::dbg_T_post_compression);
 
     // --- CombustionSolver (EOS refactor P4 — combustion on real O2, design
     //     §5). Own pass, run once per tick AFTER eos.step materializes P. ---
@@ -1101,7 +1122,9 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("H_fuel",            &CombustionSolver::H_fuel)
         .def_readwrite("soot_yield",        &CombustionSolver::soot_yield)
         .def_readwrite("o2_thresh_breathe", &CombustionSolver::o2_thresh_breathe)
+        .def_readwrite("T_MAX_PHYS",        &CombustionSolver::T_MAX_PHYS)     // v2.4 rail
         .def_readonly("heat_floor_hits",    &CombustionSolver::heat_floor_hits)
+        .def_readonly("t_max_phys_hits",    &CombustionSolver::t_max_phys_hits) // v2.4
         .def("step", [](const CombustionSolver& self,
                         py::array_t<int32_t> gas,             // (n_gases,h,w) Q16.16
                         int o2_idx, int inert_n2_idx, int black_smoke_idx,

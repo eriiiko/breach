@@ -149,16 +149,26 @@ def test_accumulates_over_two_ticks():
     assert temp[0, 0] == 2 * per_tick, "two ticks must accumulate"
 
 
-def test_saturating_add_pins_at_int32_max():
-    # Pre-load temperature near the ceiling; a further deposit must clamp at
-    # INT32_MAX, never wrap negative.
+def test_saturating_add_pins_at_t_max_phys():
+    # Pre-load temperature near the ceiling; a further deposit must pin, never
+    # wrap negative. v2.4 (eos-p3fix-thermal-ceiling): the pin is now the
+    # COUNTED physical rail T_MAX_PHYS (default 16000 K-rel; see
+    # temperature_solver.h / eos_solver.h), applied on top of the pre-existing
+    # INT32_MAX saturating add — the never-wrap intent of this test is
+    # unchanged, the ceiling it pins at moved from the format limit to the
+    # physical rail (and the engagement is telemetry-counted, not silent).
     temp, heat, shift, face_shift, solid, vac, atm = _grid([MAT_WOOD])
     temp[0, 0] = INT32_MAX - 10
     heat[0, 0] = 1000 * HEAT_SCALE        # deposit >> 3 is far more than 10
     solver = _solver()
+    hits0 = solver.t_max_phys_hits
     _step(solver, temp, heat, shift, face_shift, solid, vac, atm)
-    assert temp[0, 0] == INT32_MAX, f"saturating add did not pin: {temp[0, 0]}"
+    t_max_phys_q = int(round(solver.T_MAX_PHYS * HEAT_SCALE))
+    assert temp[0, 0] == t_max_phys_q, (
+        f"deposit did not pin at the T_MAX_PHYS rail: {temp[0, 0]} != {t_max_phys_q}")
     assert temp[0, 0] >= 0, "must never wrap negative"
+    assert solver.t_max_phys_hits > hits0, (
+        "the T_MAX_PHYS rail engaged without counting (telemetry contract)")
 
 
 def test_deterministic_same_inputs_bit_identical():

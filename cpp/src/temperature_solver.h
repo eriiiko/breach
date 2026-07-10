@@ -145,12 +145,34 @@ public:
     //   ΔT = ΔE/(N·c_v) (§4.3). A load-time-constant divisor -> reciprocal via
     //   make_recip/recip_mul (the water_solver.cpp idiom), computed ONCE per
     //   step (not per cell). TUNING DIAL.
-    // n_floor_heat — floor on the per-tile N divisor (read from `atmosphere`,
-    //   the P2 density proxy) for the SAME deposit divide, INDEPENDENT of any
-    //   other floor in the system (design §4.3 / decisions.md item 7).
+    // n_floor_heat — floor on the per-tile N divisor (the real bulk N_total
+    //   since P3; `atmosphere` only on the nullable back-compat path) for the
+    //   SAME deposit divide, INDEPENDENT of any other floor in the system
+    //   (design §4.3 / decisions.md item 7).
+    //   CHECKED against the v2.4 criterion (eos-p3fix-thermal-ceiling) and
+    //   KEPT at 0.05: one tick's Pass-1 deposit into a near-vacuum cell
+    //   must not exceed T_MAX_PHYS by itself —
+    //       N_floor >= heat_tick_max / (T_MAX_PHYS * c_v)
+    //   Measured heat_tick (B4-class repro, single adjacent I=0.8 fire):
+    //   ~330/tick at the hottest neighbour => worst single-tick deposit at
+    //   the floor is 330/0.05 = 6,600 < T_MAX_PHYS = 16,000 (c_v = 1) — the
+    //   criterion HOLDS at 0.05; the floor is not mis-set. A stacked
+    //   firestorm ring (~8x, ~2,600/tick => 52,000 at the floor) CAN exceed
+    //   the ceiling in one tick — that case is bounded by the counted
+    //   T_MAX_PHYS clamp (visible in telemetry), which is the rail's job.
+    //   A trial raise to 0.2 (covering the stacked case at the floor) was
+    //   measured to perturb marginal ignition timings suite-wide for no
+    //   correctness gain — the floor stays a deposit-scale dial, not a rail.
     float gas_advection_rate = 900.0f;
     float c_v = 1.0f;
     float n_floor_heat = 0.05f;
+    // T_MAX_PHYS (v2.4 as-built amendment, PROVISIONAL pending Erik's P5
+    // review): the counted physical-maximum T rail — Pass 1's deposit clamps
+    // at this ceiling (own counter below). One constant shared across
+    // EOSSolver/TemperatureSolver/CombustionSolver, wired from
+    // [physics.thermal] by physics_runner. Full rationale: eos_solver.h.
+    float T_MAX_PHYS = 16000.0f;
+    mutable int64_t t_max_phys_hits = 0;   // Pass-1 rail engagements
 
     void  set_gas_advection_rate(float v) { gas_advection_rate = v; }
     float get_gas_advection_rate() const { return gas_advection_rate; }
@@ -221,6 +243,15 @@ public:
         int h, int w,
         float dt
     ) const;
+
+    // --- DEBUG probe (temporary instrumentation, eos-p3fix-thermal-ceiling
+    // investigation, decisions.md #16): T at ONE traced cell after Pass 2
+    // (conduction) and after Pass 3 (ambient cooling). dbg_probe_idx = -1
+    // disables (one branch/pass, no other cost). Raw Q16.16 counts.
+    int dbg_probe_idx = -1;
+    mutable int32_t dbg_T_post_heat       = 0;   // after Pass 1 (heat->T convert)
+    mutable int32_t dbg_T_post_conduction = 0;
+    mutable int32_t dbg_T_post_cooling    = 0;
 
 private:
     // Double-buffer scratch for the conduction gather (temp -> temp_new). Owned

@@ -21,16 +21,45 @@ Two tiers of gate, per the patch instructions:
    scope — assertions here are deliberately qualitative/generous, not tight
    numeric pins, matching "mechanism visible" in the patch instructions).
 
-A NOTED, OUT-OF-SCOPE finding (not a P4 bug): a strongly-seeded fire in a
-small sealed room can drive the unified `temperature` field to within a few
-hundred counts of the Q16.16 ceiling BEFORE this patch existed (reproduced
-here with combustion fully disabled, H_fuel=burn_rate=0 — see
-`test_thermal_spike_is_pre_existing_not_a_p4_regression`). It is the P3
-fire-plume->T shim's `temp_gain_scale` (a named P5 TUNING DIAL,
-fire_simulation.h) interacting with the EOS solver's own compression-work
-feedback, not a P4 combustion-heat runaway (H_fuel scaling barely moves the
-observed peak). Flagged for Erik's P5 feel pass; explicitly not fixed here
-(non-goal: "no solver changes").
+A NOTED, OUT-OF-SCOPE-FOR-P4 finding (not a P4 bug): a strongly-seeded fire
+in a small sealed room can drive the unified `temperature` field to the
+Q16.16 ceiling BEFORE this patch existed (reproduced here with combustion
+fully disabled, H_fuel=burn_rate=0 — see
+`test_thermal_spike_is_pre_existing_not_a_p4_regression`). H_fuel scaling
+barely moves the observed peak (not a P4 combustion-heat runaway).
+
+**eos-p3fix-thermal-ceiling investigation (branch `eos-p3fix-thermal-
+ceiling`, updates this note):** the plume->T shim's self-limiter WAS
+confirmed broken — `sat = 1 - atmosphere[i]/p_expand_ref` reads P at the
+plume's OWN tile, which the EOS solver force-zeroes for every SOLID cell
+(a fire tile is solid), so `sat` never actually engaged. FIXED: the shim
+now gates on T against a `T_FLAME_MAX` physical ceiling
+(fire_simulation.h) instead, and every temperature write on the shim's and
+the compression-work's paths (fixed_point.h `sat_add_q16`) is now
+SATURATING — the "occasionally wraps negative" half of the original bug
+report is gone (verified: `temperature` never goes negative-garbage in
+this scenario post-fix).
+HOWEVER — root-cause instrumentation (per-tick T budget at the fire tile
+and its open-air neighbours) showed the shim was NEVER the dominant
+driver of the climb (disabling it changes peak_disabled by <1%): the
+measured driver is a coupling between TemperatureSolver's Pass-1
+`ΔT=ΔE/(N·c_v)` heat-deposit reciprocal (temperature_solver.cpp) and
+EOSSolver's step-4c compression-work term (eos_solver.cpp) — as the local
+pressure spike this pair creates evacuates a cell's bulk N via donor-cell
+flux, the SAME (or accumulating) heat deposit divides by an ever-smaller
+N, and compression work's `T *= (1 - k)` update (rate-clamped at
+±T_WORK_CLAMP, never value-clamped) then compounds that geometrically
+(~1.5x/tick at the clamp rail) — reaching the Q16.16 ceiling within
+single-digit ticks REGARDLESS of the shim. `temperature` now correctly
+SATURATES there instead of wrapping, but still visibly "climbs to and
+pins near the ceiling" in this extreme scenario — the deeper fix (an
+absolute, not just rate, safety rail on compression work, without
+clipping legitimate high-energy blast physics) is a solver-stability
+design call, NOT made unilaterally here; flagged for Erik. A related,
+separate finding: `wind_x`/`wind_y` were ALSO observed reaching magnitudes
+far past the solver's own `c_LOCAL` cap in this same extreme scenario
+(velocity wrap/overflow), independent of whether `temperature` wraps —
+not investigated further here (out of scope), flagged for its own pass.
 
 Run:
     C:/Users/steen/miniconda3/envs/data/python.exe -m pytest tests/test_eos_p4_combustion.py -q
@@ -88,6 +117,22 @@ def _runner(**combustion_overrides):
     for k, v in combustion_overrides.items():
         setattr(pr.combustion, k, v)
     return pr
+
+
+def _step_tick(pr, gmap, dt=None):
+    """One GAME-FAITHFUL tick: PhysicsRunner.step + the per-tick `heat` clear.
+
+    v2.4 harness-fidelity fix (eos-p3fix-thermal-ceiling): `heat` is a
+    per-tick deposit buffer whose clear deliberately lives at the END of
+    Simulation.step (after every heat consumer — simulation.py). A bare
+    pr.step loop never clears it, so every past tick's fire re-radiates
+    FOREVER (a dead fire keeps heating; measured: T pins at the T_MAX_PHYS
+    rail and the flood-differentiation ordering inverts under the stale-heat
+    artifact). These E2Es assert GAME behavior, so they must step the way
+    the game does."""
+    burned = pr.step(gmap, SEED_TICK_DT if dt is None else dt)
+    gmap.heat.fill(0)
+    return burned
 
 
 def _ignite(gmap, at, intensity=0.6, temp_mult=1.5):
@@ -209,26 +254,37 @@ def test_trace_decay_credits_inert_n2_exactly():
 
 
 def test_thermal_spike_is_pre_existing_not_a_p4_regression():
-    """Documents the out-of-scope finding (module docstring): a strongly-
-    seeded fire in a small sealed room drives `temperature` near the Q16.16
-    ceiling with combustion FULLY DISABLED (H_fuel=burn_rate=0) — i.e. it
-    predates this patch (the P3 plume->T shim x EOS compression-work
-    coupling). Asserts only that P4 does not make it WORSE: the disabled-
-    combustion peak and the default-combustion peak are within the same
-    order of magnitude (H_fuel's effect on this particular runaway is
-    provably small, not the driver)."""
-    def _peak_T(H_fuel, burn_rate):
+    """Documents the out-of-scope-for-P4 finding (module docstring): a
+    strongly-seeded fire in a small sealed room still drives `temperature`
+    to the Q16.16 ceiling with combustion FULLY DISABLED (H_fuel=
+    burn_rate=0) — i.e. it predates this patch. Asserts P4 does not make it
+    WORSE (H_fuel's effect on this runaway is provably small, not the
+    driver) -- UNCHANGED by the eos-p3fix-thermal-ceiling investigation
+    (root-cause: TemperatureSolver Pass-1's heat/N reciprocal x EOSSolver's
+    step-4c compression work, confirmed independent of the fire-plume->T
+    shim by disabling it — see the module docstring for the full writeup).
+
+    eos-p3fix-thermal-ceiling ALSO adds a regression guard for the half of
+    the original bug report that IS now fixed: `temperature` must never go
+    below a sane floor (the WRAP — "occasionally wraps negative" in the
+    original report). The climb-to-ceiling itself remains open (T still
+    reaches the format ceiling in this extreme scenario), so this test
+    intentionally does NOT assert a tight peak bound — only that reaching
+    the ceiling now SATURATES instead of wrapping through it."""
+    def _run(H_fuel, burn_rate):
         gmap = _sealed_room(hh=9, wood_at=(4, 4))
         pr = _runner(H_fuel=H_fuel, burn_rate=burn_rate)
         _ignite(gmap, (4, 4), intensity=0.8, temp_mult=3.0)
         peak = 0.0
+        trough = 0.0
         for _ in range(60):
-            pr.step(gmap, SEED_TICK_DT)
+            _step_tick(pr, gmap)   # game-faithful tick (v2.4 harness-fidelity fix)
             peak = max(peak, float(np.abs(gmap.temperature).max()) / 65536.0)
-        return peak
+            trough = min(trough, float(gmap.temperature.min()) / 65536.0)
+        return peak, trough
 
-    peak_disabled = _peak_T(0.0, 0.0)
-    peak_default = _peak_T(4.0, 1.0)   # the shipped defaults
+    peak_disabled, trough_disabled = _run(0.0, 0.0)
+    peak_default, trough_default = _run(4.0, 1.0)   # the shipped defaults
     assert peak_disabled > 5000.0, (
         "expected the PRE-EXISTING (combustion-independent) thermal spike "
         f"to reproduce (peak={peak_disabled}); if this no longer reproduces "
@@ -237,6 +293,16 @@ def test_thermal_spike_is_pre_existing_not_a_p4_regression():
     assert peak_default < peak_disabled * 3.0 + 5000.0, (
         f"P4 combustion made the pre-existing spike MUCH worse "
         f"(disabled={peak_disabled}, default={peak_default}) — investigate")
+    # eos-p3fix-thermal-ceiling: no wraparound garbage (the fixed half of
+    # the bug). T_MIN is -289 (EOSSolver default); a generous floor below
+    # that (any legitimate T_MIN-floored cooling stays well above -1000)
+    # catches a reintroduced wrap without being a tight numeric pin.
+    assert trough_disabled > -1000.0, (
+        f"temperature went implausibly negative (trough={trough_disabled}) "
+        "-- looks like the int32 WRAP has regressed (disabled-combustion run)")
+    assert trough_default > -1000.0, (
+        f"temperature went implausibly negative (trough={trough_default}) "
+        "-- looks like the int32 WRAP has regressed (default-combustion run)")
 
 
 # ---------------------------------------------------------------------------
@@ -248,21 +314,45 @@ def test_e2e_1_sealed_room_fire_self_starves():
     combustion+decay mass triple (O2+N2+black_smoke) never exceeds its
     starting value (no fake mass creation); room pressure rises above
     ambient during the burn and comes back down off its peak by the end
-    (rise-then-settle, not a monotonic runaway)."""
-    gmap = _sealed_room(hh=9, wood_at=(4, 4))
-    pr = _runner()
-    _ignite(gmap, (4, 4), intensity=0.6, temp_mult=1.5)
+    (rise-then-settle, not a monotonic runaway).
 
-    wall_hp0 = float(gmap.wall_hp[4, 4]) / 65536.0
+    v2.4 re-pins (eos-p3fix-thermal-ceiling):
+    - FireSimulation's OWN smoke emission (`smoke[nbr] += emission*dt*I` — a
+      pre-existing, already-blessed NON-CONSERVATIVE source, unrelated to
+      combustion) is disabled for this test: emitted-from-nothing black_smoke
+      decays into inert_N2 via the decisions #12 v2.1 credit, so a
+      longer-lived fire drifts the O2+N2 pair ABOVE its start through that
+      unrelated channel and the exact `<= total0` bound (this test's actual
+      conservation claim about the COMBUSTION+DECAY transactions) would
+      false-positive. Zeroing the emission isolates the claim exactly the
+      way tier 1 does.
+    - Room 9x9 -> 15x15: under the hot-zone-equilibrium O2 gates
+      (config.toml [physics.fire], v2.4 second rescale) the 9x9 box reaches
+      a SELF-SUSTAINING SMOLDER — its whole gas mass ends up hot enough
+      (thousands of K) to conduct the wood tile back above ignition_temp
+      forever, and CombustionSolver (which by P4 design consumes NO wall_hp
+      — "wall_damage stays the sole fuel-consumption brake", combustion.h)
+      then burns O2 fuel-free for thousands of ticks, so pressure never
+      comes off its peak within any test horizon. That regime is physically
+      coherent (a sealed oven) but it is NOT this test's story; a 15x15 room
+      has the gas thermal mass for the burn to actually END (fire dies
+      t~=89, P peaks t~=97, then genuinely declines). The fuel-free-smolder
+      regime itself is FLAGGED for Erik's P5 pass (design doc §4 v2.4)."""
+    gmap = _sealed_room(hh=15, wood_at=(7, 7))
+    pr = _runner()
+    pr.fire.params.smoke_emission = 0.0   # isolate combustion+decay (docstring)
+    _ignite(gmap, (7, 7), intensity=0.6, temp_mult=1.5)
+
+    wall_hp0 = float(gmap.wall_hp[7, 7]) / 65536.0
     total0 = _o2n2_total(gmap)
-    ambient_p = float(gmap.atmosphere[3, 4]) / 65536.0
+    ambient_p = float(gmap.atmosphere[6, 7]) / 65536.0
     assert ambient_p > 0.9, "the neighbour tile should start near 1 atm"
 
     fire_hist, p_hist, mass_hist = [], [], []
     for _ in range(220):
-        pr.step(gmap, SEED_TICK_DT)
-        fire_hist.append(float(gmap.fire[4, 4]) / 65536.0)
-        p_hist.append(float(gmap.atmosphere[3, 4]) / 65536.0)
+        _step_tick(pr, gmap)   # game-faithful tick (v2.4 harness-fidelity fix)
+        fire_hist.append(float(gmap.fire[7, 7]) / 65536.0)
+        p_hist.append(float(gmap.atmosphere[6, 7]) / 65536.0)
         mass_hist.append(_o2n2_total(gmap))
 
     # The mechanism: fire actually dies (self-starves), not just decays a
@@ -270,7 +360,7 @@ def test_e2e_1_sealed_room_fire_self_starves():
     assert fire_hist[-1] == 0.0, (
         f"fire never fully extinguished (final intensity {fire_hist[-1]})")
     # ... with fuel remaining (self-STARVING, not burn-through).
-    wall_hp_final = float(gmap.wall_hp[4, 4]) / 65536.0
+    wall_hp_final = float(gmap.wall_hp[7, 7]) / 65536.0
     assert wall_hp_final > 0.9 * wall_hp0, (
         f"the wall burned through instead of starving "
         f"(wall_hp {wall_hp0:.2f} -> {wall_hp_final:.2f})")
@@ -307,7 +397,7 @@ def test_e2e_2_breach_vents_o2_and_kills_fire():
             gmap.dyn_permeability[0, 4] = 1.0
             gmap.material[0, 4] = MAT_AIR
         for t in range(max_ticks):
-            pr.step(gmap, SEED_TICK_DT)
+            _step_tick(pr, gmap)   # game-faithful tick (v2.4 harness-fidelity fix)
             if float(gmap.fire[4, 4]) == 0.0:
                 return t
         return None
@@ -338,7 +428,7 @@ def test_e2e_3_o2_rich_pocket_intensifies_burn():
         _ignite(gmap, (4, 4), intensity=0.3, temp_mult=1.05)
         peak = 0.0
         for _ in range(15):
-            pr.step(gmap, SEED_TICK_DT)
+            _step_tick(pr, gmap)   # game-faithful tick (v2.4 harness-fidelity fix)
             peak = max(peak, float(gmap.fire[4, 4]) / 65536.0)
         return peak
 
@@ -363,7 +453,7 @@ def test_e2e_4_inert_flood_smothers_fire():
                 gmap.gas[O2][y, x] = 0
                 gmap.gas[INERT_N2][y, x] = gas_fixed.quantize_scalar(4.0)
         for t in range(max_ticks):
-            pr.step(gmap, SEED_TICK_DT)
+            _step_tick(pr, gmap)   # game-faithful tick (v2.4 harness-fidelity fix)
             if float(gmap.fire[4, 4]) == 0.0:
                 return t
         return None
@@ -402,6 +492,65 @@ def test_two_run_determinism():
     d1 = _digest_after(80)
     d2 = _digest_after(80)
     assert d1 == d2, f"two identical runs diverged: {d1} != {d2}"
+
+
+# ---------------------------------------------------------------------------
+# v2.4 — perturbation robustness of the payoff orderings
+# ---------------------------------------------------------------------------
+def _payoff_timings(perturb_absorb=None, max_ticks=300):
+    """Ticks-to-extinguish for the sealed / vented / flooded arms of the
+    e2e-1/2/4 scenario family (game-faithful loop), optionally with one EOS
+    dial perturbed. Returns (sealed, vented, flooded)."""
+    def _ticks(vent=False, flood=False):
+        gmap = _sealed_room(hh=9, wood_at=(4, 4),
+                            extra_vacuum=[(0, 4)] if vent else None)
+        pr = _runner()
+        if perturb_absorb is not None:
+            pr.eos.absorb_strength = perturb_absorb
+        _ignite(gmap, (4, 4), intensity=0.6, temp_mult=1.5)
+        if vent:
+            gmap.solid[0, 4] = False
+            gmap.dyn_permeability[0, 4] = 1.0
+            gmap.material[0, 4] = MAT_AIR
+        if flood:
+            for (dy, dx) in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                y, x = 4 + dy, 4 + dx
+                gmap.gas[O2][y, x] = 0
+                gmap.gas[INERT_N2][y, x] = gas_fixed.quantize_scalar(4.0)
+        for t in range(max_ticks):
+            _step_tick(pr, gmap)
+            if float(gmap.fire[4, 4]) == 0.0:
+                return t
+        return None
+
+    return _ticks(), _ticks(vent=True), _ticks(flood=True)
+
+
+def test_payoff_orderings_perturbation_robust():
+    """v2.4 (eos-p3fix-thermal-ceiling): the O2-differentiation payoffs must
+    be REAL physics, not chaos artifacts. The investigation measured that the
+    pre-v2.4 timings rode the chaotic near-format-ceiling regime (a 1e-5
+    relative perturbation of ONE dial moved the flamethrower's dist-3
+    ignition from t=40 to t=60). This test turns that finding into a gate:
+    perturb `absorb_strength` by 1e-5 RELATIVE and assert (a) the payoff
+    orderings survive (flooded < vented < sealed — flood suffocates at once,
+    venting drains the room, sealed takes longest), and (b) every timing
+    stays within a small window of its baseline (a chaotic regime moves
+    timings by tens of ticks; a physical one barely at all)."""
+    base = _payoff_timings()
+    pert = _payoff_timings(perturb_absorb=8.0 * (1.0 + 1e-5))
+
+    for name, (s, v, f) in (("baseline", base), ("perturbed", pert)):
+        assert None not in (s, v, f), f"{name}: an arm never extinguished {s, v, f}"
+        assert f < v < s, (
+            f"{name}: payoff ordering broken (flooded={f}, vented={v}, "
+            f"sealed={s}) — expected flooded < vented < sealed")
+    for arm, b, p in zip(("sealed", "vented", "flooded"), base, pert):
+        window = max(3, int(0.10 * b))   # ±10% (min 3 ticks) — chaos moved
+                                          # timings ~50% at the same epsilon
+        assert abs(p - b) <= window, (
+            f"{arm}: timing chaos-fragile under a 1e-5 dial perturbation "
+            f"(baseline {b}, perturbed {p}, window ±{window})")
 
 
 if __name__ == "__main__":

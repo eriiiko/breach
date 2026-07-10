@@ -232,10 +232,15 @@ void EOSSolver::step(
     // ---- step 0: P_prev := P ---------------------------------------------
     for (int i = 0; i < n; ++i) p_prev[i] = atmosphere[i];
 
+    // DEBUG probe (temporary): T at step-1 entry.
+    if (dbg_probe_idx >= 0 && dbg_probe_idx < n) dbg_T_pre_advect = temperature[dbg_probe_idx];
+
     // ---- per-tick scalar constants (double-fold once, then quantize) ------
     const q16 n_floor_q  = quantize((double)N_FLOOR_SOLVER);
     const q16 t_amb_q    = quantize((double)T_AMB_K);
     const q16 t_min_q    = quantize((double)T_MIN);
+    const q16 t_max_phys_q = quantize((double)T_MAX_PHYS);   // v2.4 rail (see eos_solver.h)
+    const q16 u_max_q      = quantize((double)U_MAX);        // v2.4 rail
     const q16 c_q        = quantize((double)C);
     const double gamma_d = (double)adiabatic_index;
     const q16 gamma_q    = quantize(gamma_d);
@@ -422,6 +427,9 @@ void EOSSolver::step(
             if (solid[i]) { wind_x[i] = 0; wind_y[i] = 0; }
         }
     }
+
+    // DEBUG probe (temporary): T after the step-1 SL substep loop.
+    if (dbg_probe_idx >= 0 && dbg_probe_idx < n) dbg_T_post_advect = temperature[dbg_probe_idx];
 
     // div(u*) from the final substep's velocity — the Helmholtz RHS term.
     for (int y = 0; y < h; ++y) {
@@ -879,23 +887,46 @@ void EOSSolver::step(
                 uy = (uy < 0) ? -my : my;
             }
 
-            // |u| ≤ c_LOCAL (state-derived cap; scale-to-cap preserves
-            // direction; expected RARE post-D-A — counter-tracked; the
-            // cheap Chebyshev pre-test avoids a sqrt per cell).
+            // |u| ≤ u_cap = min(c_LOCAL, U_MAX) (state-derived cap + the v2.4
+            // defense-in-depth rail; scale-to-cap preserves direction;
+            // counter-tracked; the cheap Chebyshev pre-test avoids a sqrt
+            // per cell).
+            const q16 u_cap_q = (c_local_q < u_max_q) ? c_local_q : u_max_q;
+            const bool cap_is_umax = (u_max_q < c_local_q);
+            // OVERFLOW GUARD (eos-p3fix-thermal-ceiling — the measured
+            // runaway-wind wrap): pre-clamp each component to ±2^30 raw
+            // (16384 m/s — unphysical; purely a range guard). Pre-fix, a
+            // blast-scale kick against a floored N̂ could leave |ux| ~9e15
+            // raw: ux*ux OVERFLOWED int64, `rad` was garbage, sqrt_q16 saw
+            // garbage (its int32 result can itself wrap for rad > ~2^61.9),
+            // the clamp never engaged, and the final (int32_t) narrow at
+            // store WRAPPED — the chaotic ±30k winds measured in the B4/B7
+            // investigation, INDEPENDENT of the temperature wrap. With the
+            // guard, rad ≤ 2·2^60 < int64 max, sqrt_q16's result ≤ ~1.5e9
+            // (fits int32), so the magnitude clamp below always engages on
+            // anything above u_cap and the narrow is safe by construction.
+            // Behavior-neutral for every legitimate velocity (all caps are
+            // orders of magnitude below the guard).
+            const int64_t RAD_SAFE = (int64_t)1 << 30;
+            if      (ux >  RAD_SAFE) ux =  RAD_SAFE;
+            else if (ux < -RAD_SAFE) ux = -RAD_SAFE;
+            if      (uy >  RAD_SAFE) uy =  RAD_SAFE;
+            else if (uy < -RAD_SAFE) uy = -RAD_SAFE;
             const int64_t ax = ux < 0 ? -ux : ux;
             const int64_t ay = uy < 0 ? -uy : uy;
-            if ((ax > (int64_t)c_local_q) || (ay > (int64_t)c_local_q)) {
-                const int64_t rad = ux * ux + uy * uy;
+            if ((ax > (int64_t)u_cap_q) || (ay > (int64_t)u_cap_q)) {
+                const int64_t rad = ux * ux + uy * uy;   // int64-safe (guard above)
                 const q16 umag = sqrt_q16(rad);
-                if (umag > c_local_q) {
+                if (umag > u_cap_q) {
                     ++u_clamp_hits;
+                    if (cap_is_umax) ++u_max_hits;
                     const q16 scale = reciprocal_q16(umag);
-                    ux = mul128_shr(mul128_shr(ux, (int64_t)scale, 16), (int64_t)c_local_q, 16);
-                    uy = mul128_shr(mul128_shr(uy, (int64_t)scale, 16), (int64_t)c_local_q, 16);
+                    ux = mul128_shr(mul128_shr(ux, (int64_t)scale, 16), (int64_t)u_cap_q, 16);
+                    uy = mul128_shr(mul128_shr(uy, (int64_t)scale, 16), (int64_t)u_cap_q, 16);
                 }
             }
-            wind_x[i] = (int32_t)ux;   // the ONE narrow at store
-            wind_y[i] = (int32_t)uy;
+            wind_x[i] = (int32_t)ux;   // the ONE narrow at store — safe: |u| is
+            wind_y[i] = (int32_t)uy;   // ≤ max(√2·u_cap, RAD_SAFE) ≪ int32 range
         }
     }
     digest_velocity = digest_of(wind_x, n, digest_of(wind_y, n, 0));
@@ -926,13 +957,30 @@ void EOSSolver::step(
                 if (k > work_clamp_q)       { k = work_clamp_q;  ++work_clamp_hits; }
                 else if (k < -work_clamp_q) { k = -work_clamp_q; ++work_clamp_hits; }
                 const q16 dT = mul_q16(k, temperature[i]);
-                q16 t_new = temperature[i] - dT;
+                // eos-p3fix-thermal-ceiling: this term is MULTIPLICATIVE in
+                // the current T (t_new = T*(1-k)) — the ±T_WORK_CLAMP rail
+                // above only bounds the per-tick RATE, not the resulting
+                // VALUE, so a persistent negative-divergence driver (a real
+                // local compression pocket) compounds it geometrically
+                // (measured: ~1.5x/tick at the clamp rail, reaching the
+                // Q16.16 ceiling in ~8-9 ticks from a modest seed). The plain
+                // subtract below used to silently WRAP once that compounding
+                // exceeded int32 range — a hard correctness bug independent
+                // of whatever seeds the compounding. Saturating add fixes
+                // the wrap unconditionally; the v2.4 T_MAX_PHYS rail (see
+                // eos_solver.h) then bounds the compounding's VALUE at the
+                // physical ceiling — counted, so a scenario that leans on it
+                // is visible in telemetry, never silent.
+                q16 t_new = sat_add_q16(temperature[i], (q16)(-(int64_t)dT));
                 if (t_new < t_min_q) { t_new = t_min_q; ++energy_floor_hits; }
+                else if (t_new > t_max_phys_q) { t_new = t_max_phys_q; ++t_max_phys_hits; }
                 temperature[i] = t_new;
             }
         }
     }
     digest_compression = digest_of(temperature, n, 0);
+    // DEBUG probe (temporary): T after step 4c (compression work).
+    if (dbg_probe_idx >= 0 && dbg_probe_idx < n) dbg_T_post_compression = temperature[dbg_probe_idx];
 
     // ======================================================================
     // 5. P := P_new — materialized ONCE (the `atmosphere` alias).

@@ -286,12 +286,27 @@ _FP_FAST_RE = re.compile(r"fp:fast")
 # ONCE-PER-STEP scalar boundary cast feeding the LOCKED S1 quantize idiom
 # (never per-cell), the exact same documented-exception category as every
 # other `*_q = fp::quantize((double)p.*)` line already in this TU's baseline.
+# eos-p3fix-thermal-ceiling (decisions.md #16): fire_simulation.cpp
+# `double` 20 -> 21. The plume shim's self-limiter was fixed to gate on T
+# instead of the structurally-dead P/p_expand_ref read (see
+# FireParams::T_FLAME_MAX). `recip_p_expand = fp::make_recip((double)
+# p.p_expand_ref)` (the retired gate's ONE load-time reciprocal) is
+# replaced by TWO once-per-step boundary casts of the new config constant:
+# `recip_T_flame_max = fp::make_recip((double)p.T_FLAME_MAX)` (the smooth
+# taper) and `t_flame_max_q = fp::quantize((double)p.T_FLAME_MAX)` (the
+# belt-and-suspenders hard headroom cap) — net +1 `double`, same
+# once-per-step scalar-boundary-cast idiom, no per-cell float/double added.
+# eos-p3fix v2.4 rails: temperature_solver.cpp `double` 5 -> 6. ONE new
+# line, `t_max_phys_q = quantize((double)T_MAX_PHYS)` — the counted
+# physical-maximum rail's once-per-step scalar boundary cast (the exact
+# same documented-exception category as this TU's existing
+# `quantize((double)n_floor_heat)` line). No per-cell float/double added.
 BASELINE = {
     "atmosphere_solver.cpp":  {"float": 32, "double": 32, "fp:fast": 1},
     "smoke_dynamics.cpp":     {"float": 24, "double": 13, "fp:fast": 0},
-    "fire_simulation.cpp":    {"float": 6,  "double": 20, "fp:fast": 0},
+    "fire_simulation.cpp":    {"float": 6,  "double": 21, "fp:fast": 0},
     "water_solver.cpp":       {"float": 32, "double": 22, "fp:fast": 1},
-    "temperature_solver.cpp": {"float": 4,  "double": 5,  "fp:fast": 0},
+    "temperature_solver.cpp": {"float": 4,  "double": 6,  "fp:fast": 0},
     "physics_engine.cpp":     {"float": 68, "double": 28, "fp:fast": 1},
 }
 

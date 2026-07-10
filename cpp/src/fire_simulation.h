@@ -58,17 +58,40 @@ struct FireParams {
 
     // --- plume pressure deposit (fire_design_proposal §3) ---
     float fire_pressure_gain = 0.15f; // own-tile overpressure gain (1/s)
-    float p_expand_ref       = 1.30f; // self-limiting saturation ceiling
+    // p_expand_ref: RETIRED as the plume's saturation gate (eos-p3fix-
+    // thermal-ceiling — see T_FLAME_MAX below); kept only so old configs/
+    // bindings that still set it do not hard-error. No longer read by step().
+    float p_expand_ref       = 1.30f;
     // EOS refactor P3 (design §8 patch P3 writer row: "fire plume -> a
     // minimal plume->T shim"): the plume no longer writes `atmosphere`
     // directly (P is solver-owned now, materialized once/tick — a writer
     // fighting that would be overwritten next tick anyway). Instead the
-    // SAME self-limiting `gain` scalar (fire_pressure_gain*I*sat*dt) becomes
-    // a small ΔT energy deposit: temperature += gain * temp_gain_scale. This
-    // is the MINIMAL shim named in the design (not a real ΔE/(N*c_v) energy
-    // budget) — "the pop never goes inert" during the P3->P4 window; a
-    // TUNING DIAL, feel-gated at P5 like the old fire_pressure_gain was.
+    // gain scalar (fire_pressure_gain*I*sat*dt) becomes a small ΔT energy
+    // deposit: temperature += gain * temp_gain_scale. This is the MINIMAL
+    // shim named in the design (not a real ΔE/(N*c_v) energy budget) —
+    // "the pop never goes inert" during the P3->P4 window; a TUNING DIAL,
+    // feel-gated at P5 like the old fire_pressure_gain was.
     float temp_gain_scale    = 50.0f;
+    // T_FLAME_MAX (eos-p3fix-thermal-ceiling, decisions.md #16): the plume's
+    // self-limiting ceiling, in the SAME ΔT-above-ambient Q16.16 convention
+    // as `temperature` (T_AMB_K lives on EOSSolver — see eos_solver.h). The
+    // pre-refactor plume was self-limiting via
+    // `sat = 1 - atmosphere[i]/p_expand_ref` — atmosphere WAS the field the
+    // plume drove directly, on its OWN (solid) tile, so that gate tracked
+    // its own cumulative deposit correctly. Post-P3, `atmosphere` (== P) is
+    // materialized by the EOS solver, which forces P = 0 at every SOLID
+    // cell (eos_solver.cpp: "vacuum Dirichlet + solid zero") — a fire tile
+    // IS solid (fire_simulation.cpp's own O2-neighbour-mean comment: "its
+    // own tile holds no gas"), so `atmosphere[i]` at the plume's own tile is
+    // permanently 0 and `sat` is permanently ~1.0: the self-limiter never
+    // engaged (a structural unit/placement mismatch, not a tuning miss —
+    // measured: the deposit rode fire intensity unclamped every tick).
+    // Fix: gate on the ACTUAL quantity being deposited (T, not P), against a
+    // physical ceiling — real wood/typical flames run ~2000-2300 K absolute;
+    // T_FLAME_MAX defaults to 2000 (K above T_AMB_K). Same smooth taper
+    // shape as the old gate (`sat = clamp01(1 - x/ref)`) for continuity of
+    // feel, just measured against T instead of P.
+    float T_FLAME_MAX        = 2000.0f;
 
     // --- kept behaviours ---
     float smoke_emission = 0.8f;   // smoke produced per second per unit intensity
@@ -125,4 +148,11 @@ public:
         int h, int w,
         float dt
     ) const;
+
+    // --- DEBUG probe (temporary instrumentation, eos-p3fix-thermal-ceiling
+    // investigation, decisions.md #16): the plume->T shim's deposit at ONE
+    // traced cell this call. dbg_probe_idx = -1 disables (one branch/tile,
+    // no other cost). Raw Q16.16 counts.
+    int dbg_probe_idx = -1;
+    mutable int32_t dbg_plume_dT = 0;
 };

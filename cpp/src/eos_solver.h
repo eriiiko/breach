@@ -112,6 +112,32 @@ public:
     float absorb_strength = 8.0f;
     float T_MIN = -289.0f;
     float T_WORK_CLAMP = 0.5f;
+    // T_MAX_PHYS (v2.4 as-built amendment, PROVISIONAL pending Erik's P5
+    // review — eos-p3fix-thermal-ceiling, decisions.md #16): a COUNTED
+    // physical-maximum rail on the T FIELD itself, applied as a saturating
+    // clamp at every T write path (here: step 4c; also TemperatureSolver
+    // Pass 1 and CombustionSolver's deposit — each path with its own hit
+    // counter, the T_MIN-floor/work-clamp counter idiom). Default 16000
+    // (K above ambient) ≈ 2× the design's stated 9000 K extreme — it
+    // cannot clip legitimate physics. WHY: the measured B4/B7 runaway is
+    // (a) step 4c's multiplicative T·(1−k) update — the ±T_WORK_CLAMP rail
+    // bounds the per-tick RATE, never the VALUE, so a persistent
+    // compression pocket compounds ~1.5×/tick to the format ceiling —
+    // coupled with (b) Pass-1's ΔT=ΔE/(N·c_v) reciprocal dividing the heat
+    // deposit by a collapsing near-vacuum N. The physically honest story:
+    // a near-vacuum cell's temperature is thermodynamically ill-defined,
+    // and real gas would equilibrate such a spike away almost instantly —
+    // the cap stands in for that missing fast equilibration. Bounds the
+    // runaway regardless of driving term (compression, the reciprocal,
+    // anything future).
+    float T_MAX_PHYS = 16000.0f;
+    // U_MAX (v2.4, PROVISIONAL — same review): defense-in-depth velocity
+    // rail; the step-4 store clamp caps |u| at min(c_LOCAL, U_MAX).
+    // 1000 m/s is far above any legitimate game wind (ambient c = 300;
+    // even a T_MAX_PHYS-hot core's c_LOCAL is only ~2250) — it exists so
+    // no future T-side change can push stored velocities back into the
+    // int64/narrow overflow regime (see step 4's overflow guard).
+    float U_MAX = 1000.0f;
     // trace_mass_scale (P3 integration constant, FLAGGED for Erik): the
     // Dalton sum N_total = Σ N_i must weight the TRACE planes by the molar
     // mass of a full-opacity cloud relative to ambient — the trace fields
@@ -133,8 +159,11 @@ public:
 
     // --- debug telemetry -----------------------------------------------
     mutable int64_t energy_floor_hits = 0;
-    mutable int64_t u_clamp_hits = 0;      // |u| clamped to c_LOCAL
+    mutable int64_t u_clamp_hits = 0;      // |u| clamped (c_LOCAL or U_MAX)
     mutable int64_t work_clamp_hits = 0;   // step-4c factor rail engagements
+    mutable int64_t t_max_phys_hits = 0;   // step-4c T_MAX_PHYS rail (v2.4)
+    mutable int64_t u_max_hits = 0;        // clamps where U_MAX (not c_LOCAL)
+                                           // was the binding cap (v2.4)
 
     // --- six sub-kernel digest checkpoints (§3.4.6) ---------------------
     mutable uint64_t digest_advect      = 0;
@@ -143,6 +172,16 @@ public:
     mutable uint64_t digest_helmholtz   = 0;   // post-solve P (MG or flat)
     mutable uint64_t digest_velocity    = 0;
     mutable uint64_t digest_compression = 0;
+
+    // --- DEBUG probe (temporary instrumentation, eos-p3fix-thermal-ceiling
+    // investigation, decisions.md #16): per-tick T checkpoints at ONE traced
+    // cell, root-causing which step-1-vs-4c term drives the thermal ceiling.
+    // dbg_probe_idx = -1 disables (one branch/tick, no other cost). Values
+    // are RAW Q16.16 counts (a Kelvin-delta == raw/65536.0).
+    int dbg_probe_idx = -1;
+    mutable int32_t dbg_T_pre_advect       = 0;   // T at step-1 entry
+    mutable int32_t dbg_T_post_advect      = 0;   // T after the SL substep loop
+    mutable int32_t dbg_T_post_compression = 0;   // T after step 4c
 
     void step(
         int32_t* atmosphere,

@@ -67,6 +67,15 @@ from simulation import fire_fixed      # S3a: fire Q16.16 quantize helpers
 HEAT_SCALE = 65536
 _INT32_MAX = np.iinfo(np.int32).max
 
+# T_MAX_PHYS (v2.4 as-built amendment, PROVISIONAL — Erik review at P5):
+# the counted physical-maximum rail on the temperature field (see
+# cpp/src/eos_solver.h for the full rationale). Mirrored here (not read from
+# config) for the same self-contained/headless reason as HEAT_SCALE — the
+# FieldEdit temperature deposit (`wave_source` -> T energy, design §6) is a
+# T WRITE PATH and must respect the same ceiling as the C++ solvers. MUST
+# match [physics.thermal].T_MAX_PHYS.
+T_MAX_PHYS = 16000.0
+
 
 # ---------------------------------------------------------------------------
 # Q16.16 helpers — Python mirrors of cpp/src/raycaster.h heat_quantize /
@@ -456,9 +465,16 @@ def _combine_temperature(old_q: int, contribution: float, mode: EditMode,
     path's exact +=/-=/max semantics, re-quantize round-to-nearest (the same
     idiom as every other `_combine_*` helper). `contribution` keeps the SAME
     real-number scale the old `wave_source` edit used — a Kelvin re-tune of
-    explosion `amount`s is a LATER pass, not done here."""
+    explosion `amount`s is a LATER pass, not done here.
+
+    v2.4 (eos-p3fix-thermal-ceiling): the result additionally caps at
+    T_MAX_PHYS — this is a T write path, and an authored explosion deposit
+    past the physical ceiling would silently break the field-wide invariant
+    every C++ solver rail maintains (module constant above)."""
     old_v = float(old_q) / HEAT_SCALE
     new_v = _combine_float(old_v, contribution, mode, clamp)
+    if new_v > T_MAX_PHYS:
+        new_v = T_MAX_PHYS
     return int(new_v * HEAT_SCALE + (0.5 if new_v >= 0 else -0.5))
 
 

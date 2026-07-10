@@ -495,7 +495,81 @@ v2 refinements:
   the tunable `o2_thresh` (round-1 minor), and distinct from §3.4's solver floor.
 - `heat` (the ray-deposit buffer) keeps its per-tick-clear contract — unaffected.
 
----
+### v2.4 as-built amendment — thermal/velocity rails (PROVISIONAL, Erik review at P5)
+
+*(branch `eos-p3fix-thermal-ceiling`, 2026-07-10/11 — the decisions.md #16 "thermal
+spike" investigation. Same class as the blessed T_MIN/work-clamp rails, NOT a solver
+redesign; every rail is counted telemetry, never silent.)*
+
+**Corrected diagnosis of the flagged spike** (root-caused by per-term instrumentation,
+not the flagged hypothesis): the P3 plume→T shim was a MINOR term (<1% of the measured
+peak — though its self-limiter WAS structurally dead: it gated on `atmosphere[i]` at
+its own solid tile, which the solver force-zeroes; fixed, now gates on T against
+`T_FLAME_MAX≈2000`). The measured drivers are (a) **Pass-1's `ΔT=ΔE/(N·c_v)`
+reciprocal** dividing the fire's radiant deposit by a collapsing local N — the hot
+zone's own pressure evacuates its gas, so the same deposit heats the thinning remainder
+ever harder — coupled with (b) **step 4c's multiplicative compression work**, whose
+±T_WORK_CLAMP rail bounds the per-tick RATE but never the VALUE (compounds ~1.5×/tick
+at the rail). Two int32 WRAP bugs rode on top (T past the Q16.16 ceiling; `u` past
+int64 in the kick's magnitude test) — both fixed with saturating arithmetic
+independent of any rail.
+
+The rails:
+
+- **`T_MAX_PHYS`** (config `[physics.thermal]`, default 16000 K-relative ≈ 2× the
+  design's stated 9000 K extreme): a counted saturating clamp at every T write path —
+  EOS step 4c, thermal Pass 1 (both branches), combustion's deposit (each with its own
+  hit counter), plus FieldEdit's T deposit (Python authored-edit path — clamped,
+  uncounted). Physically honest story: a near-vacuum
+  cell's T is thermodynamically ill-defined; real gas would equilibrate the spike away
+  instantly — the cap stands in for that missing fast equilibration. Bounds the
+  runaway regardless of driving term. (Conduction needs no rail — convex combination;
+  cooling only shrinks; SL advection is interpolation.)
+- **`U_MAX`** (config `[physics.eos]`, default 1000 m/s): defense-in-depth velocity
+  rail — the step-4 store clamp caps |u| at `min(c_LOCAL, U_MAX)`, counted; plus an
+  overflow guard (±2^30 raw component pre-clamp) so the magnitude test's `u²` sum can
+  never overflow int64 again (the measured chaotic-wind wrap).
+- **`N_FLOOR_HEAT` checked, kept at 0.05**: the single-tick criterion
+  `N_floor ≥ heat_tick_max/(T_MAX_PHYS·c_v)` holds at 0.05 for the measured worst
+  deposit (~330/tick ⇒ 6,600 K < 16,000); the stacked-firestorm case is bounded by
+  the counted T_MAX_PHYS rail (its job). A trial raise to 0.2 perturbed marginal
+  ignition timings suite-wide for no correctness gain.
+
+**Measured outcome (B4/B7/B6 re-baked, game-faithful loop — heat cleared per tick):**
+the intended story, rails untouched (all counters 0): B4 T_fire rises to ~1240 (flame
+scale), fire self-starves t≈39, temps decay, no pin/wrap, winds ≤ 5 m/s; B7 peak
+excursion 11.9 kK decays to 5.1 kK, no pin; B6 smooth post-peak. In the
+pr.step-only harness (heat never cleared — `tools/eos_p5_bake.py` and the P4 E2E
+loops), stale heat re-radiates every tick and T pins at the rail — a HARNESS
+fidelity artifact, flagged.
+
+**The O2-gate second rescale (adopted with this block):** with T bounded, fire
+scenarios lose the chaotic near-ceiling dynamics several shipped E2E calibrations
+silently depended on — a fire's heat (measured ~330 units/tick/cell at
+`k_fire_heat=9`) drives adjacent air to a few kK, whose pressure evacuates local O2
+*thermally* in every scenario (at ideal-gas pressure equilibrium
+`N_local ≈ N_amb·T_amb_abs/T_air_abs`; the P4-era gates at 0.12/0.126 implicitly
+assumed near-ambient density at the flame edge — an atmosphere-proxy-era assumption
+`P=C·N·T` revokes; real fires keep their flame edge oxygenated by buoyant
+entrainment, which this 2D no-gravity model lacks, so the gate scale compensates).
+Adopted (PROVISIONAL/Erik-P5): `P_min 0.126→0.01`, `P_full 0.21→0.03`, ignition
+`o2_threshold 0.12→0.01` — the second half of the exact rescale P4 already performed
+on these constants (1.0-scale → 0.21-scale → hot-zone-equilibrium scale). Measured:
+restores STRONG O2 differentiation (sealed 172 / vented 49 / flooded 39 ticks in the
+e2e trio) and the original ignition budgets (flamethrower dist-3 t=28) through
+genuine oxygen physics, perturbation-stable — a 1e-5 dial perturbation no longer
+moves timings (gated by `test_payoff_orderings_perturbation_robust`).
+
+**Remaining P5 flags:** (1) a sealed room whose whole gas mass ends up at flame-scale
+temperatures enters a *fuel-free smolder*: hot gas conducts the wood back above
+`ignition_temp` indefinitely and `CombustionSolver` — which by P4 design consumes no
+`wall_hp` ("wall_damage stays the sole fuel-consumption brake", combustion.h) — burns
+O2 without consuming fuel for thousands of ticks (physically a sealed oven, but
+fuel-free; surfaced by the e2e_1 re-pin, test_eos_p4_combustion.py). (2) The
+pr.step-only bake harness (`tools/eos_p5_bake.py`, eos-p5-bake branch) lacks the game
+loop's per-tick `heat` clear — one-line fidelity fix at merge time. (3)
+`k_fire_heat`'s scale (gas near a wood fire reaches a few kK) is untouched — Erik's
+feel dial.
 
 ## 5. Combustion on real O2 — conservative products (v2 call #2 — LOCKED)
 

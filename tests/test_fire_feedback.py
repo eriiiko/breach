@@ -164,11 +164,14 @@ def test_no_fuel_fire_decays_to_zero():
 
 def test_low_o2_fire_decays_to_zero():
     # Hot + fuelled + FULL pressure but LOW REAL O2 (EOS refactor P4, design
-    # §6 item 3: the O2 gate now reads a separate n_o2 field — 0.02 <
-    # P_min 0.126 -> o2=0 -> avail=0): oxygen starvation extinguishes the
+    # §6 item 3: the O2 gate now reads a separate n_o2 field — the seed sits
+    # below P_min so o2=0 -> avail=0): oxygen starvation extinguishes the
     # fire even though the room's overall pressure (atm) is nominal.
+    # v2.4 re-pin (eos-p3fix-thermal-ceiling): P_min moved 0.126 -> 0.01 (the
+    # hot-zone-equilibrium rescale, config.toml [physics.fire]); the low-O2
+    # seed moves 0.02 -> 0.005 to stay below the gate it exercises.
     fs = _params_runner()
-    sc = _FeedbackScene(I=0.5, T=500.0, wall_hp=60.0, atm=1.0, o2=0.02, wind=0.0)
+    sc = _FeedbackScene(I=0.5, T=500.0, wall_hp=60.0, atm=1.0, o2=0.005, wind=0.0)
     last = 0.5
     for _ in range(200):
         last = sc.step(fs)
