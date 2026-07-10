@@ -858,6 +858,9 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_property("n_floor_heat",
             &TemperatureSolver::get_n_floor_heat,
             &TemperatureSolver::set_n_floor_heat)
+        // v2.4 T_MAX_PHYS rail + counter (temperature_solver.h).
+        .def_readwrite("T_MAX_PHYS",        &TemperatureSolver::T_MAX_PHYS)
+        .def_readonly("t_max_phys_hits",    &TemperatureSolver::t_max_phys_hits)
         // P2: wind_x/wind_y/dt are OPTIONAL (default None/0.0) so the shipped
         // direct-binding call sites (tests/test_temperature_*.py,
         // tests/cuda_s1_check.py — all pre-P2, 7 positional args) keep working
@@ -1090,10 +1093,14 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("absorb_strength",   &EOSSolver::absorb_strength)
         .def_readwrite("T_MIN",             &EOSSolver::T_MIN)
         .def_readwrite("T_WORK_CLAMP",      &EOSSolver::T_WORK_CLAMP)
+        .def_readwrite("T_MAX_PHYS",        &EOSSolver::T_MAX_PHYS)     // v2.4 rail
+        .def_readwrite("U_MAX",             &EOSSolver::U_MAX)          // v2.4 rail
         .def_readwrite("trace_mass_scale",  &EOSSolver::trace_mass_scale)
         .def_readonly("energy_floor_hits",  &EOSSolver::energy_floor_hits)
         .def_readonly("u_clamp_hits",       &EOSSolver::u_clamp_hits)
         .def_readonly("work_clamp_hits",    &EOSSolver::work_clamp_hits)
+        .def_readonly("t_max_phys_hits",    &EOSSolver::t_max_phys_hits) // v2.4
+        .def_readonly("u_max_hits",         &EOSSolver::u_max_hits)      // v2.4
         .def_readonly("digest_advect",      &EOSSolver::digest_advect)
         .def_readonly("digest_bulk_flux",   &EOSSolver::digest_bulk_flux)
         .def_readonly("digest_pstar",       &EOSSolver::digest_pstar)
@@ -1115,7 +1122,9 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("H_fuel",            &CombustionSolver::H_fuel)
         .def_readwrite("soot_yield",        &CombustionSolver::soot_yield)
         .def_readwrite("o2_thresh_breathe", &CombustionSolver::o2_thresh_breathe)
+        .def_readwrite("T_MAX_PHYS",        &CombustionSolver::T_MAX_PHYS)     // v2.4 rail
         .def_readonly("heat_floor_hits",    &CombustionSolver::heat_floor_hits)
+        .def_readonly("t_max_phys_hits",    &CombustionSolver::t_max_phys_hits) // v2.4
         .def("step", [](const CombustionSolver& self,
                         py::array_t<int32_t> gas,             // (n_gases,h,w) Q16.16
                         int o2_idx, int inert_n2_idx, int black_smoke_idx,

@@ -70,9 +70,27 @@ gas_advection_rate = 900.0  # gas-T wind->displacement scale; SAME convention/va
 c_v               = 1.0     # gas heat capacity for the radiation deposit
                              # ΔT = ΔE/(N·c_v) (§4.3). 1.0 = neutral scale (ΔT≈ΔE at
                              # ambient N=1.0); no real-gas anchor yet (P3 territory).
-n_floor_heat      = 0.05    # floor on the per-tile N divisor (read from `atmosphere`,
-                             # the P2 density proxy) for the SAME deposit divide —
-                             # INDEPENDENT of o2_vacuum_thresh / any other floor.
+n_floor_heat      = 0.05    # floor on the per-tile N divisor (the real bulk N_total
+                             # since P3) for the SAME deposit divide — INDEPENDENT of
+                             # o2_vacuum_thresh / any other floor.
+                             # CHECKED against the v2.4 single-tick criterion and KEPT
+                             # (eos-p3fix-thermal-ceiling):
+                             #   n_floor_heat >= heat_tick_max / (T_MAX_PHYS * c_v)
+                             # measured heat_tick ~330 (one adjacent I=0.8 fire) =>
+                             # worst one-tick deposit at the floor = 6,600 K <
+                             # T_MAX_PHYS = 16,000 — holds at 0.05. A stacked firestorm
+                             # ring (~8x) can exceed the ceiling in one tick; that case
+                             # is bounded by the counted T_MAX_PHYS rail (its job). A
+                             # trial raise to 0.2 measurably perturbed marginal
+                             # ignition timings suite-wide for no correctness gain.
+T_MAX_PHYS        = 16000.0 # v2.4 counted physical-maximum rail on the temperature
+                             # FIELD (K above ambient), ~2x the design's stated 9000 K
+                             # extreme — clamps every T deposit/write path (EOS step 4c,
+                             # thermal Pass 1, combustion), each with a hit counter.
+                             # Stands in for the fast equilibration a real near-vacuum
+                             # gas would have (its T is thermodynamically ill-defined).
+                             # Full rationale: cpp/src/eos_solver.h. PROVISIONAL,
+                             # Erik review at P5.
 
 # Fire / ignition-from-temperature (engine/06 §4, proposal §6 step 4b). The READ
 # side of the temperature substrate: a flammable tile whose `temperature` (set by
@@ -283,6 +301,13 @@ N_FLOOR_SOLVER = 0.001                # solver-internal N floor (gameplay N unfl
 adiabatic_index = 1.4                 # ideal-gas adiabatic index (compression work); TUNING DIAL
 absorb_strength = 8.0                 # dyn_wave_absorb scale in the velocity-correction damping
 T_MIN = -289.0                        # floor on the ambient-relative T field (T_abs >= ~1 K)
+U_MAX = 1000.0                        # v2.4 defense-in-depth velocity rail (m/s): the step-4
+                                      # store clamp caps |u| at min(c_LOCAL, U_MAX); counted.
+                                      # Far above any legit game wind (ambient c=300); exists
+                                      # so no T-side change can push stored velocities into
+                                      # the int64/narrow overflow regime again (see
+                                      # eos_solver.cpp step 4's overflow guard). PROVISIONAL,
+                                      # Erik review at P5.
 
 # EOS refactor P4 — combustion on real O2 (docs/eos_refactor_design.md §5,
 # decisions log #12). Own pass, once per tick, after the EOS solver

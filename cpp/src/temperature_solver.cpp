@@ -211,6 +211,14 @@ void TemperatureSolver::step(
         const double c_v_safe = (c_v > 0.0f) ? (double)c_v : 1.0;
         const int64_t recip_cv = make_recip(c_v_safe);            // 1/c_v, once per step
         const int32_t n_floor_q = quantize((double)n_floor_heat); // independent floor (§4.3)
+        // v2.4 T_MAX_PHYS rail (temperature_solver.h; full rationale in
+        // eos_solver.h): Pass 1 is a DEPOSIT path — clamp at the physical
+        // ceiling (counted) so an N-starved reciprocal or a stacked
+        // firestorm can never write past it. Both branches (solid shift,
+        // gas reciprocal). Passes 2/3 need no rail: conduction is a convex
+        // combination (discrete maximum principle — it cannot create a new
+        // max) and cooling only shrinks |T|.
+        const int32_t t_max_phys_q = quantize((double)T_MAX_PHYS);
 
         for (int i = 0; i < n; ++i) {
             int32_t deposit = heat[i];
@@ -219,6 +227,9 @@ void TemperatureSolver::step(
                 int shift = heat_inv_shift[i];    // log2(thermal_mass), >= 0
                 int32_t gain = deposit >> shift;  // Q16.16 / 2^shift, still Q16.16
                 heat_saturating_add(&temperature[i], gain);
+                if (temperature[i] > t_max_phys_q) {
+                    temperature[i] = t_max_phys_q; ++t_max_phys_hits;
+                }
             } else if (!is_vacuum[i]) {
                 // EOS P3 (TODO closed): the divisor is the REAL bulk-species
                 // N_total (O2+N2, passed by the engine) — the P2 atmosphere
@@ -230,6 +241,9 @@ void TemperatureSolver::step(
                 const int32_t e_over_n  = mul_q16(deposit, recip_N_q); // ΔE/N, Q16.16
                 const int32_t dT = recip_mul(e_over_n, recip_cv);     // (ΔE/N)/c_v, Q16.16
                 heat_saturating_add(&temperature[i], dT);
+                if (temperature[i] > t_max_phys_q) {
+                    temperature[i] = t_max_phys_q; ++t_max_phys_hits;
+                }
             }
         }
     }

@@ -82,8 +82,16 @@ public:
     // nothing reads it yet.
     float o2_thresh_breathe = 0.08f;
 
+    // T_MAX_PHYS (v2.4 as-built amendment, PROVISIONAL pending Erik's P5
+    // review): the counted physical-maximum T rail — this pass's heat
+    // deposit clamps at the ceiling (counter below). One constant shared
+    // across EOSSolver/TemperatureSolver/CombustionSolver, wired from
+    // [physics.thermal] by physics_runner. Full rationale: eos_solver.h.
+    float T_MAX_PHYS = 16000.0f;
+
     // --- debug telemetry (mirrors eos_solver.h's counter idiom) -----------
     mutable int64_t heat_floor_hits = 0;   // n_floor_heat engagements
+    mutable int64_t t_max_phys_hits = 0;   // T_MAX_PHYS rail engagements (v2.4)
 
     // gas                : (n_gases, h, w) Q16.16 density planes, mutated
     // o2_idx/inert_n2_idx/black_smoke_idx : gas ids (simulation/gases.py)

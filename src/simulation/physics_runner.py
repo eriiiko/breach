@@ -195,8 +195,17 @@ class PhysicsRunner:
         self.temperature.gas_advection_rate = float(
             getattr(thermal, "gas_advection_rate", 900.0))
         self.temperature.c_v = float(getattr(thermal, "c_v", 1.0))
+        # n_floor_heat CHECKED against the v2.4 single-tick criterion and
+        # KEPT at 0.05 (eos-p3fix-thermal-ceiling — derivation in
+        # temperature_solver.h/config.toml; the stacked-firestorm case is
+        # bounded by the counted T_MAX_PHYS rail, not the floor).
         self.temperature.n_floor_heat = float(
             getattr(thermal, "n_floor_heat", 0.05))
+        # T_MAX_PHYS (v2.4, PROVISIONAL — Erik review at P5): ONE constant,
+        # wired to every solver that deposits/writes T (rationale:
+        # cpp/src/eos_solver.h; config: [physics.thermal]).
+        self._t_max_phys = float(getattr(thermal, "T_MAX_PHYS", 16000.0))
+        self.temperature.T_MAX_PHYS = self._t_max_phys
 
         # --- K2: sim-side fire heat ray source (proposal §1) ------------------
         # Fire is a DETERMINISTIC heat source cast IN THE SIM (not the renderer).
@@ -275,6 +284,11 @@ class PhysicsRunner:
         self.eos.absorb_strength = float(
             getattr(eos_cfg, "absorb_strength", self.eos.absorb_strength))
         self.eos.T_MIN           = _ep("T_MIN", self.eos.T_MIN)
+        # v2.4 rails (PROVISIONAL — Erik review at P5): T_MAX_PHYS shares
+        # [physics.thermal]'s one constant (wired above); U_MAX is the
+        # solver's own [physics.eos] dial.
+        self.eos.T_MAX_PHYS      = self._t_max_phys
+        self.eos.U_MAX           = _ep("U_MAX", self.eos.U_MAX)
 
         # CombustionSolver (EOS refactor P4, docs/eos_refactor_design.md §5):
         # burns fuel against the REAL local O2, once per tick, right after
@@ -294,6 +308,9 @@ class PhysicsRunner:
         self.combustion.soot_yield = _cp("soot_yield", self.combustion.soot_yield)
         self.combustion.o2_thresh_breathe = _cp(
             "o2_thresh_breathe", self.combustion.o2_thresh_breathe)
+        # v2.4 rail: the SAME [physics.thermal].T_MAX_PHYS constant as the
+        # thermal + EOS solvers (one ceiling in the system).
+        self.combustion.T_MAX_PHYS = self._t_max_phys
 
         # Gas-id lazy resolve (the `_steam_idx` precedent, _step_water below):
         # resolved BY NAME from the map's gas table on the first step() call

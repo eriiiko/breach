@@ -50,6 +50,8 @@ void CombustionSolver::step(
     const double c_v_safe  = (c_v > 0.0f) ? (double)c_v : 1.0;
     const int64_t recip_cv = make_recip(c_v_safe);              // 1/c_v, once per step
     const q16 n_floor_q    = quantize((double)n_floor_heat);
+    // v2.4 T_MAX_PHYS rail (combustion.h; full rationale in eos_solver.h).
+    const q16 t_max_phys_q = quantize((double)T_MAX_PHYS);
 
     if (burn_cap_q <= 0) return;   // nothing burns this tick (dt~0 or burn_rate 0)
 
@@ -103,6 +105,9 @@ void CombustionSolver::step(
                 const q16 e_over_n = mul_q16(deposit, recip_n);     // .../N
                 const q16 dT       = recip_mul(e_over_n, recip_cv); // .../c_v
                 heat_saturating_add(&temperature[j], dT);
+                if (temperature[j] > t_max_phys_q) {                // v2.4 rail
+                    temperature[j] = t_max_phys_q; ++t_max_phys_hits;
+                }
             }
         }
     }
