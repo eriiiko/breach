@@ -346,7 +346,7 @@ def part2_integration() -> bool:
     # ALL field trajectories are byte-identical (and the pulse's dv ~2.3 is
     # below the knockdown threshold 6.0 -> __unit_status__ unmoved too).
     # (was 6d690fda8259b392be9029082013623fbef0fc0322ed3089107d5db220e1b441)
-    GOLDEN = "2bab9702e098b30a2aeb290e9aeb19301c9de4379f64443966ea9f3074a91b7a"
+    GOLDEN = "f7b8becdf2574f5b129f8aaddfc41043fde0061af3e01ab590558f321f44610e"
 
     N_TICKS = 30
     bp.set_fire_backend(False)

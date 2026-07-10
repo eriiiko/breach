@@ -1078,6 +1078,7 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("absorb_strength",   &EOSSolver::absorb_strength)
         .def_readwrite("T_MIN",             &EOSSolver::T_MIN)
         .def_readwrite("T_WORK_CLAMP",      &EOSSolver::T_WORK_CLAMP)
+        .def_readwrite("trace_mass_scale",  &EOSSolver::trace_mass_scale)
         .def_readonly("energy_floor_hits",  &EOSSolver::energy_floor_hits)
         .def_readonly("u_clamp_hits",       &EOSSolver::u_clamp_hits)
         .def_readonly("work_clamp_hits",    &EOSSolver::work_clamp_hits)

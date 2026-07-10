@@ -351,10 +351,19 @@ void EOSSolver::step(
         const q16 mag = sqrt_q16(rad);
         if (mag > max_u) max_u = mag;
     }
-    for (int i = 0; i < n; ++i) {
-        int64_t sum = 0;
-        for (int gi = 0; gi < n_gases; ++gi) sum += (int64_t)gas[(size_t)gi * n + i];
-        n_total_[i] = (int32_t)sum;
+    // Dalton sum with the trace-mass calibration (see eos_solver.h): bulk
+    // planes at full weight, trace planes scaled by trace_mass_scale.
+    {
+        const q16 tms_q = quantize((double)trace_mass_scale);
+        for (int i = 0; i < n; ++i) n_total_[i] = 0;
+        for (int gi = 0; gi < n_gases; ++gi) {
+            const int32_t* plane = gas + (size_t)gi * n;
+            if (gas_conservative[gi]) {
+                for (int i = 0; i < n; ++i) n_total_[i] += plane[i];
+            } else {
+                for (int i = 0; i < n; ++i) n_total_[i] += mul_q16(tms_q, plane[i]);
+            }
+        }
     }
     int64_t max_du_raw = 0;   // max K·|∇P|·dt/N̂ over the grid (int64 raw)
     for (int y = 0; y < h; ++y) {
@@ -460,10 +469,19 @@ void EOSSolver::step(
     // ======================================================================
     // 2. p* := C · N_total · (T + T_AMB_K)      (post-substep N, wide mul)
     // ======================================================================
-    for (int i = 0; i < n; ++i) {
-        int64_t sum = 0;
-        for (int gi = 0; gi < n_gases; ++gi) sum += (int64_t)gas[(size_t)gi * n + i];
-        n_total_[i] = (int32_t)sum;
+    // Dalton sum with the trace-mass calibration (see eos_solver.h): bulk
+    // planes at full weight, trace planes scaled by trace_mass_scale.
+    {
+        const q16 tms_q = quantize((double)trace_mass_scale);
+        for (int i = 0; i < n; ++i) n_total_[i] = 0;
+        for (int gi = 0; gi < n_gases; ++gi) {
+            const int32_t* plane = gas + (size_t)gi * n;
+            if (gas_conservative[gi]) {
+                for (int i = 0; i < n; ++i) n_total_[i] += plane[i];
+            } else {
+                for (int i = 0; i < n; ++i) n_total_[i] += mul_q16(tms_q, plane[i]);
+            }
+        }
     }
     for (int i = 0; i < n; ++i) {
         if (solid[i] || is_vacuum[i]) { pstar_[i] = 0; continue; }

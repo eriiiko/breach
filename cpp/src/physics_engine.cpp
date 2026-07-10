@@ -249,6 +249,17 @@ void PhysicsEngine::run_substeps(
         }
         if (!any) continue;
         this->smoke.d_smoke = (float)gas_diffusion[gi];
+        // EOS P3 UNIT CONVERSION (engine-owned, FLAGGED): the solver's u is
+        // real m/s; SmokeDynamics' SL displacement is wind*(advection_rate*
+        // dt) in TILES — the physical rate is exactly 1/dx (u*dt/dx tiles).
+        // The config advection_rate (900, calibrated against the OLD
+        // -grad(P)-in-q16 wind scale) is DEAD at P3 — left un-read here;
+        // feel re-tuning is P5's pass. wind_diffusion_scale is likewise
+        // old-wind-unit-calibrated (50 * |8 m/s|^2 would explode the
+        // forward-Euler diffusion now that the CFL substep floor is gone) —
+        // disabled pending P5 recalibration.
+        this->smoke.advection_rate = 1.0f / std::max(this->eos.dx, 1e-3f);
+        this->smoke.wind_diffusion_scale = 0.0f;
 #ifdef BREACH_HAS_CUDA
         // GPU-guard (EOS P3, D7): the once-per-tick trace advection here
         // REPLACES the old n_smoke-substepped GPU dispatch (smoke_step);

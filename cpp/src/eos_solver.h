@@ -108,6 +108,15 @@ public:
     float absorb_strength = 8.0f;
     float T_MIN = -289.0f;
     float T_WORK_CLAMP = 0.5f;
+    // trace_mass_scale (P3 integration constant, FLAGGED for Erik): the
+    // Dalton sum N_total = Σ N_i must weight the TRACE planes by the molar
+    // mass of a full-opacity cloud relative to ambient — the trace fields
+    // are [0,1] OPACITY tracers, not molar densities, and an unweighted sum
+    // makes a 0.6-opacity teargas cloud a +60% pressure bomb that blasts
+    // itself apart in one tick (measured). 0.02 == "a fully opaque cloud
+    // carries 2% of ambient molar density" — keeps the design §2.1 premise
+    // ("the bulk pair carries ~99% of N_total") true by calibration.
+    float trace_mass_scale = 0.02f;
 
     // --- MEASUREMENT-ONLY diagnostic (MG gate; never a ship path) --------
     // debug_pstar_from_prev = true replaces step 2's p* = C*N*T_abs with

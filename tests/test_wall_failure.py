@@ -104,10 +104,15 @@ def test_pops_under_overpressure():
         g.materials.burst_threshold[int(wid)] = 6.0
 
     walls_before = int(g.solid.sum())
-    # Pump the interior far above the (re-enabled) burst_threshold. S2c:
-    # atmosphere is int32 Q16.16 — quantize 50.0 real (raw `= 50.0` -> 50 counts).
+    # Pump the interior far above the (re-enabled) burst_threshold. EOS P3:
+    # `atmosphere` (P) is solver-materialized from (N,T) every tick — a
+    # direct P write would be overwritten. Create the overpressure through
+    # the REAL state: scale the bulk O2/N2 up 50x (p* = C*N*T -> P = 50).
     from simulation import atmosphere_fixed
-    g.atmosphere[interior] = atmosphere_fixed.quantize_scalar(50.0)
+    from simulation.gases import O2, INERT_N2
+    g.gas[O2][interior] = g.gas[O2][interior] * 50
+    g.gas[INERT_N2][interior] = g.gas[INERT_N2][interior] * 50
+    g.atmosphere[interior] = atmosphere_fixed.quantize_scalar(50.0)  # P_prev seed (solver refreshes)
     peak_before = atmosphere_fixed.dequantize(g.atmosphere.max())
 
     for _ in range(N_STEPS):

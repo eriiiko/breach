@@ -117,3 +117,92 @@ the c=300 pin], or accepting a large S with its cost [contradicts the perf
 budget]). The venting/water E2Es, S-pinning, stress probes, perf bench,
 behavioral-parity bakes, and the golden re-baseline are all downstream of
 that decision and were NOT forced.
+
+
+---
+
+# ADDENDUM — v2.2 (D-A + D-B + D-C) build and the MG measurement gate
+> 2026-07-10, same branch, after the design v2.2/v2.2-final merge.
+
+## A. D-A verified
+The γ·p* coefficient + wide-K kick + state-derived c_LOCAL eliminated the
+3-tick unit-driven divergence in every scenario (venting included, any S).
+
+## B. D-B: the MG gate's own findings (two corrections beyond the spec)
+1. **The spec'd nonsymmetric operator + averaged coarse ops + bilinear
+   prolongation is DIVERGENT on deep pyramids** (measured: error ×7/cycle at
+   a breach; more cycles = worse — an amplifying, non-variational coarse
+   correction). Adopted: symmetric (mass + face-Laplacian) row form ×
+   exactly-variational PC-Galerkin transfers (masses/conductances/residuals
+   SUM; PC-injection prolongation). FLAGGED spec deviation.
+2. **Galerkin Dirichlet anchor:** straddler coarse cells must fold their
+   regular-child→vacuum face conductances into the coarse DIAGONAL; without
+   it the vent case amplifies at any cycle count. With it, the dedicated
+   breach-adjacent-to-coarse-boundary test shows NO odd-vs-even alignment
+   degradation (0.229 vs 0.237 atm one-tick error @C=2).
+3. Single-tick convergence (16² vent, vs a C=64 deep reference):
+   C=1: 0.44 → C=2: 0.24 → C=4: 0.084 atm (~×0.55/cycle).
+4. **Warm start from the previous tick's solved P** buys ~2 cycles: the
+   durably-stable schedule drops from V(2,2)×C=4 (cold start; C=3 was
+   UNSTABLE at 19.9 atm worst-dev) to **V(2,2)×C=2 — FROZEN**, full pyramid
+   (mg_min_dim=1; the room-bulk/DC mode is solved exactly at 1×1),
+   coarsest = 32 sweeps. 300-tick durability at the frozen schedule:
+   water worst-dev 0.0066 atm; vent overshoot 0.0005; u_clamp 0 (sealed) /
+   ~3-per-tick breach-adjacent (physical choked flow); V(1,1) and C=1
+   measured too marginal.
+
+## C. Two further unit-calibration seams (found by the suite, fixed, FLAGGED)
+1. **trace_mass_scale = 0.02** (new [physics.eos]-class constant): traces
+   are [0,1] OPACITY tracers, not molar densities — an unweighted Dalton sum
+   made a 0.6-teargas cloud a +60% pressure bomb that blast-scattered itself
+   in one tick (measured). 0.02 keeps §2.1's "bulk carries ~99%" premise
+   true by calibration. NEEDS Erik's sign-off as a design amendment.
+2. **Trace advection unit conversion** (engine-owned): the SL displacement is
+   now u[m/s]·dt/dx tiles — the config advection_rate (900, old-wind-scale)
+   is DEAD at P3 (a raw 900 gave 326-tile/tick displacements and ×5 mass
+   duplication); wind_diffusion_scale (50, old-wind-units²) is DISABLED
+   pending P5 recalibration (it would explode the un-substepped forward-Euler
+   diffusion at m/s wind scales).
+
+## D. Perf gate (M1 160², 300 ticks, real Simulation.step, frozen schedule)
+| config                     | p50   | p99   | max   | gate ≤20.75 |
+|----------------------------|-------|-------|-------|-------------|
+| N_SUB_MAX=16 (pinned)      | 25.0  | 33.4  | 36.1  | FAIL |
+| N_SUB_MAX=8                | 15.8  | 24.8  | 32.1  | FAIL |
+| N_SUB_MAX=4                | 13.1  | 22.0  | 24.9  | FAIL (6% over) |
+
+Substep caps 8 and 4 are MEASURED as stable as 16 (both E2Es, 300 ticks:
+worst-dev 0.010/0.0006 at cap 4). The cost driver is SUSTAINED sonic venting
+(u = c at the breach ⇒ the u_est cliff pins n_sub at the cap for the whole
+post-breach regime — not the "wildest 1-2 blast ticks" the cap was priced
+for). Already done: fused 3-field SL march (one DDA+bilinear serves vx/vy/T;
+41.6→24.6 ms venting median), zero-displacement + all-open-corner fast
+paths. The remaining gap needs an N_SUB_MAX re-pin (Erik's constant) and/or
+~2× micro-optimization of the substep+solve inner loops — REPORTED, not
+silently retuned. Solver-only split at 160² venting: substeps(16) ≈ 16.5 ms,
+MG C=2 ≈ 3.2 ms, fixed overhead ≈ 4 ms.
+
+## E. Remaining gates at the frozen config — all PASS
+- Digest determinism: two identical 40-tick runs, all six digests
+  bit-identical every tick.
+- Hot-cell thermal: peak amp 0.017 atm, clean decay, zero clamp/floor hits.
+- 9-grenade stack (48²): held 120 ticks, peak tick 18.5 ms; the sealed room
+  ends over-pressured (~2.1 atm max) from the deposited bulk N — physical.
+- O2-tank rupture (200×N + 2000 K): held, final dev 0.024 atm, 7 work-clamp
+  hits, no overflow.
+- Full suite: 619 passed / 5 skipped (2 = the P5 k_push-recalibration skips,
+  attributed) / 10 cuda-deselected. Golden re-baselined ONCE at patch end:
+  aggregate 2bab9702 → f7b8becd (perfield baseline regenerated + 8 check
+  scripts + the perfield tool updated in the same commit).
+
+## F. Behavior deltas for the merge review (feel/tuning class, P5)
+- apply_wave_push: grad(P) transients no longer reach the old knockdown
+  radii at shipped k_push (no knockdown at d=7; the two calibration tests
+  are skip-attributed pending P5).
+- Pressure steps now drive PHYSICAL wind speeds (a 0.1-atm step ≈
+  hurricane-scale; sonic at a breach). Old scenes that painted sustained
+  pressure imbalances get violent (correct) responses.
+- A sealed burning room ends over-pressured (bulk-N deposits are conserved
+  mass now) — the fire/explosion pressure economy is real.
+- Fire wind-coupling dials (k_wind_fan/strip) read m/s magnitudes now —
+  P5 recalibration listed.

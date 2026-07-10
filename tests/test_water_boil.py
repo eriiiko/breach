@@ -143,7 +143,17 @@ def _boil_sim(depth: float = DEPTH):
             "each column must be wall-sealed on all four sides")
     assert not g.is_vacuum.any(), "the hold must not rely on breach semantics"
     assert float(g.atmosphere[B]) > 0.5, "twin cell has no air (vacuous twin)"
-    g.atmosphere[A] = 0.0          # THE vacuum hold (one paint, holds forever)
+    # EOS P3: `atmosphere` (P) is solver-materialized from (N,T) every tick —
+    # the old one-paint P hold would be overwritten on tick 1. The equivalent
+    # hold on the REAL state: zero the bulk O2/N2 at A (one paint). A is a
+    # wall-sealed 1-cell pocket, so no bulk flux ever refills it and
+    # p* = C*N*T stays ~0 there for the whole run (the near-vacuum row
+    # degeneracy pins P_A to p*_A each solve). The P_prev seed below is
+    # cosmetic (the solver refreshes it).
+    from simulation.gases import O2 as _O2, INERT_N2 as _N2
+    g.gas[_O2][A] = 0
+    g.gas[_N2][A] = 0
+    g.atmosphere[A] = 0.0          # P_prev seed only (solver-owned now)
     if depth:
         g.water_depth[A] = q(depth)   # S1: paint in Q16.16 metres
         g.water_depth[B] = q(depth)
@@ -187,8 +197,13 @@ def test_one_tick_vacuum_boil_depth_and_steam_gain():
         if gi != WHITE_SMOKE:
             assert not g.gas[gi].any(), (
                 f"boil leaked into gas slice {gi} (steam is white_smoke only)")
-    # The vacuum hold held (and the cell keeps boiling next tick).
-    assert float(g.atmosphere[A]) == 0.0
+    # The vacuum hold held (and the cell keeps boiling next tick). EOS P3:
+    # the steam puff itself now carries trace MASS (trace_mass_scale), so
+    # P_A is epsilon-positive rather than exactly 0 — the boil gate only
+    # needs it below boil_p_thresh.
+    from simulation import atmosphere_fixed as _afx
+    assert float(g.atmosphere[A]) < _afx.quantize_scalar(
+        sim.physics_runner.water_boil_p_thresh)
 
 
 # ---------------------------------------------------------------------------
