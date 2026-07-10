@@ -128,6 +128,24 @@ maps every round-1 blocker/decision to its fix). Round-1 critique: `..._design_c
     per-tick-DERIVED P, not accumulating error; perf numbers are the C++ engine, not
     Python.
 
+15. **P3 MERGED TO MAIN (`b7b114c`, 2026-07-10).** Perf gate RESTATED intent-preservingly
+    (Erik): **steady-state p97 ≤ 25% (passes: 21.6%) + event-tick max ≤ 50% (passes: 34%)**
+    — p99 conflated event frequency with code speed (5 detonations/300 ticks land AT p99
+    by construction). Golden `493645d3`. Suite 619 green.
+
+## RESUME POINT (Erik paused 2026-07-10, resuming tonight, same PC)
+
+**Where we are:** P1+P2+P3 all merged — the compressible EOS engine is LIVE on main
+(native venting, conserved mass, unified temperature, deterministic, suite green).
+**Next in order:** (1) **P4 — combustion on real O2** (design §5: own pass, conservative
+products incl. trace-decay→N2, both o2_thresholds, the four emergent payoffs as its gate);
+(2) **P5 — combined bake-off HUMAN-TEST** (Erik's eyes; k_push/k_p recalibration + the
+trace-advection/wind_diffusion_scale feel items parked there); (3) **GPU end-state
+alignment review** (scheduled, see OPEN below) BEFORE (4) P6 CUDA ports (incl. MG kernels
++ retirement of cuda_wave/cuda_atmosphere); (5) P7 cleanup + canon fold-back (+ the
+post-EOS doc consolidation from the roadmap). The P3 worktree/branch can be cleaned up
+(merged). CUDA gates remain suspended via EOS_P6_PENDING until P6.
+
 ## OPEN — to decide next
 
 - **GPU END-STATE ALIGNMENT REVIEW — after P3 lands, BEFORE P6 starts** (Erik, 2026-07-10:
