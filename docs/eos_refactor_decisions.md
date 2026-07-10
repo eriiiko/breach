@@ -120,6 +120,17 @@ maps every round-1 blocker/decision to its fix). Round-1 critique: `..._design_c
 
 ## OPEN — to decide next
 
+- **GPU END-STATE ALIGNMENT REVIEW — after P3 lands, BEFORE P6 starts** (Erik, 2026-07-10:
+  "the C++/CPU step is intermediate; step back and check alignment with the end goal").
+  Audit every P3-introduced primitive against GPU residency (S8) + batched RL training:
+  MG hierarchy coarse-tail strategy (truncation depth; CUDA-graphs launch collapse;
+  batching-across-envs makes coarse levels large again), smoother choice (RB-GS vs a
+  Chebyshev–Jacobi swap — the most GPU-native variant, contained change), wide-int64 ops
+  on device, transfer stencils, per-cell reciprocals. Context: the V-cycle's only real GPU
+  awkwardness is the serialized tiny-level launch tail (~0.5 ms/tick naive, ~nil under
+  CUDA graphs; batched training cures it structurally); CPU path is PERMANENT as the
+  bit-identity reference, not throwaway.
+
 - **B — "what is N" largely RESOLVED (2026-07-09, Erik keen).** The bulk air becomes **two explicit
   species: O2 + inert-N2**, with the traces (smoke/poison/…) on top, and `N = Σ(all species)` (Dalton,
   `P = C·T·N`). **O2 is tracked as its own gas** — Claude's feasibility call: **very doable and cheap**
