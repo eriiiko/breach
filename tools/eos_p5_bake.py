@@ -259,14 +259,18 @@ def spec_b4_sealed_fire():
                "T_fire": lambda g: float(g.temperature[80, 80]) / Q16},
         caption=("Fire in a sealed room, no vent. Intended story: new engine's real O2 "
                   "depletion self-starves the fire; old engine's atmosphere-as-O2-proxy "
-                  "never runs out, fire burns on. ACTUAL FINDING (new engine): T_fire "
-                  "pins at/near the Q16.16 ceiling (~32760 K, occasionally wrapping "
-                  "negative) for nearly the whole 260-tick run and never settles -- this "
-                  "is the SAME flagged plume-T-shim x compression-work coupling as B7 "
-                  "(decisions.md #16), not confined to B7's extreme seeding. O2+N2 mass "
-                  "stays conserved (~0.997 of start) so it is NOT a leak -- it is the "
-                  "solver pinned hot, producing wild local P/fire flicker instead of a "
-                  "clean rise-then-settle. Erik should see this before judging B4's feel."),
+                  "never runs out, fire burns on. UPDATED FINDING (new engine, post "
+                  "v2.4 thermal-ceiling fix + this harness's heat-clear fidelity fix, "
+                  "design doc §4 v2.4): the old ceiling-pin was a harness artifact, not "
+                  "a physics one -- with heat cleared per tick like the real game loop, "
+                  "T_fire rises smoothly to ~1.2-1.6 kK (nowhere near the 16000 K "
+                  "T_MAX_PHYS rail; 0 rail hits) and fire_I self-starves to near-zero by "
+                  "t~=39 as O2 depletes, exactly as intended. It then flickers/partially "
+                  "reignites through the rest of the run -- this is the SEPARATE, already-"
+                  "flagged 'fuel-free smolder': hot gas conducts the wood back above "
+                  "ignition_temp and CombustionSolver burns O2 without consuming wall_hp "
+                  "fuel (design doc §4 v2.4, 'Remaining P5 flags' #1). Erik should see "
+                  "this smolder-flicker before judging B4's feel."),
     )
 
 
@@ -717,6 +721,36 @@ def _render_index_html(rows, cost_rows, agg, determinism, dials):
         for (n, loc, desc) in dials
     )
 
+    # --- provisional-items banner (v2.4 as-built amendment, design doc §4 —
+    # everything landed on this rebuild that Erik has not yet blessed) -------
+    provisional = [
+        ("T_MAX_PHYS / U_MAX counted rails",
+         "cpp/src/eos_solver.h / eos_solver.cpp (config.toml [physics.thermal] T_MAX_PHYS=16000, [physics.eos] U_MAX=1000)",
+         "Defense-in-depth backstops on temperature (step 4c, thermal Pass 1, combustion deposit) and velocity "
+         "(step-4 store clamp). t_max_phys_hits and u_max_hits (the rail-specific counters, checked "
+         "post-hoc across all 7 scenarios on this bake) read 0 everywhere -- pure backstops, never engaged. "
+         "(The general |u|<=c_LOCAL clamp counter, a separate normal-physics stat, does fire in B3 as expected.)"),
+        ("Absorption-proportional radiant deposit",
+         "cpp/src/temperature_solver.cpp (~L239-274, v2.4 ABSORPTION-PROPORTIONAL comment block)",
+         "Gas absorbs the fire's radiant heat deposit in proportion to its own density (optically-thin form, "
+         "this project's own engine/05 optics model applied to the heat channel) instead of the full ray energy "
+         "regardless of how thin the gas is — bit-identical to the old path at/above ambient density."),
+        ("O2-gate hot-zone rescale",
+         "config.toml [physics.combustion] P_min/P_full (0.126/0.21 -> 0.01/0.03), ignition o2_threshold (0.12 -> 0.01)",
+         "Second half of the P4 O2-proxy-to-real-N_O2 rescale, needed because a fire's own thermal expansion "
+         "evacuates local O2 density even at the flame edge. Restores strong O2 differentiation "
+         "(sealed 172 / vented 49 / flooded 39 ticks, e2e trio), perturbation-stable."),
+        ("T_FLAME_MAX shim limiter",
+         "cpp/src/fire_simulation.h/.cpp (T_FLAME_MAX=2000.0f default)",
+         "Fire's own plume-heating self-limiter, now correctly gated on T (was structurally dead, gating on "
+         "atmosphere at the fire's own solid tile, which the solver force-zeroes) — tapers the deposit to "
+         "nothing as the plume approaches T_FLAME_MAX."),
+    ]
+    provisional_rows = "\n".join(
+        f"<tr><td>{esc(n)}</td><td><code>{esc(loc)}</code></td><td>{esc(desc)}</td></tr>"
+        for (n, loc, desc) in provisional
+    )
+
     return f"""<!doctype html>
 <html><head><meta charset="utf-8">
 <title>EOS P5 bake-off — old vs new engine</title>
@@ -733,9 +767,25 @@ table {{ border-collapse: collapse; margin: 0.5rem 0 1.5rem; font-size: 0.85rem;
 td, th {{ border: 1px solid #444; padding: 0.3rem 0.6rem; text-align: right; }}
 td:first-child, td:nth-child(2), th:first-child, th:nth-child(2) {{ text-align: left; }}
 code {{ color: #9cf; }}
+.provisional {{ border: 1px solid #a86; background: #2a2117; padding: 0.9rem 1.1rem; border-radius: 6px;
+                 margin-bottom: 1.5rem; }}
+.provisional h2 {{ margin-top: 0; color: #e8b96a; }}
+.provisional table {{ margin-bottom: 0; }}
 </style></head>
 <body>
 <h1>EOS refactor — P5 combined-system bake-off</h1>
+
+<div class="provisional">
+<h2>Provisional items for Erik's review</h2>
+<p class="caption">Landed on this rebuild (v2.4 as-built amendment, design doc §4), not yet Erik-blessed.
+None of these are physics changes to this bake harness itself — they are engine-side commits this bake
+observes. See design doc §4 v2.4 for the full derivation.</p>
+<table>
+<tr><th>item</th><th>where it lives</th><th>what it does</th></tr>
+{provisional_rows}
+</table>
+</div>
+
 <p>Pre-refactor engine (commit b17e150) vs NEW engine (main, P1-P4 merged), same synthetic
 160&sup2; scenarios, real C++ engine both sides (no numpy prototype). Erik's eyes are the
 gate — nothing here has been tuned.</p>
