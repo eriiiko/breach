@@ -133,6 +133,17 @@ maps every round-1 blocker/decision to its fix). Round-1 critique: `..._design_c
     — p99 conflated event frequency with code speed (5 detonations/300 ticks land AT p99
     by construction). Golden `493645d3`. Suite 619 green.
 
+16. **P4 MERGED (`396323d`, 2026-07-10 evening, auto-merge-on-green — no HUMAN-TEST marker
+    on P4).** Combustion on real O2: four emergent payoffs green as E2Es; conservation
+    bit-exact through burn+decay; trace `decay` column finally APPLIED (mass→inert_N2);
+    fire/ignition O2 gates read `gas[O2]` (thresholds rescaled to the 0.21-ambient scale);
+    Feldman/O'Brien/Arikan credited in `combustion.cpp`. Suite 627 green, golden
+    `7eeb41d4`, perf p97 17.17 ms ✓. Constants are `[physics.combustion]` dials for P5.
+    **Flagged for P5's feel pass:** a strongly-seeded sealed-room fire can drive T near
+    the Q16.16 ceiling — PRE-EXISTING P3 coupling (plume→T shim × compression work),
+    reproduced with combustion off; documented in
+    `test_thermal_spike_is_pre_existing_not_a_p4_regression`.
+
 ## RESUME POINT (Erik paused 2026-07-10, resuming tonight, same PC)
 
 **Where we are:** P1+P2+P3 all merged — the compressible EOS engine is LIVE on main
