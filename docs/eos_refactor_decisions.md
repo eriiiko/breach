@@ -109,6 +109,15 @@ P1 and P2 are additive and parallel-safe; P3 requires its own design-gate first.
 Design doc v2: `docs/eos_refactor_design.md` (supersedes v1 in place; v1→v2 changelog at top
 maps every round-1 blocker/decision to its fix). Round-1 critique: `..._design_critique.md`.
 
+13. **Perf gate stays p99 ≤ 25% of the tick (20.75 ms @160², CPU reference path) — but
+    renegotiation is EXPLICITLY on the table if needed** (Erik, 2026-07-10). Two graceful
+    fallback levers exist before any physics compromise: raising the gate percentage, and
+    the ambient-c dial (`K`). Note: GPU improves this in two stages — P6 kernel ports
+    (modest at small grids; transfer-bound) and S8 residency/CUDA-graphs (the real
+    multiplier, deliberately scheduled before big training runs). The gate's rationale
+    (shared GPU w/ render+NN, training throughput ∝ 1/tick-cost, bigger-map headroom)
+    survives both stages.
+
 ## OPEN — to decide next
 
 - **B — "what is N" largely RESOLVED (2026-07-09, Erik keen).** The bulk air becomes **two explicit
