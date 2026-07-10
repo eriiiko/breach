@@ -199,10 +199,25 @@ eq. 15-17 shape, adapted to our fields):
 
 ```
 p*    = C · N_total · T                     # advected-state ABSOLUTE pressure (post step-1)
-solve [I − (N c²)_cell·dt²·∇·( (1/N̂_face)·∇ )] P_new
-        =  p* − (N c²)_cell·dt·div(û*)      # Kwatra eq.(14), fixed-sweep RB-GS
-u    -= dt · grad(P_new) / N̂_face           # momentum kick, face-density form (eq.13)
+solve [I − (γ·p*)_cell·dt²·K·∇·( (1/N̂_face)·∇ )] P_new
+        =  p* − (γ·p*)_cell·dt·div(û*)      # Kwatra eq.(14) with ρc² = γp (exact ideal-gas
+                                            #   identity — the paper's own EOS-generality);
+                                            #   solved by FIXED-SCHEDULE MULTIGRID (v2.2)
+u    -= dt · K · grad(P_new) / N̂_face       # momentum kick; K = the ONE unit-bridge constant
 ```
+
+**v2.2 (D-A, adopted by Erik 2026-07-10): the coefficient is `γ·p*`, not `N·c²`.** P3's gate
+measured the transplant's `N(game-units)·c²(SI)` coefficient at ~64,000× the pressure
+field's scale — a unit/impedance inconsistency that saturated the field at ANY sweep count.
+The exact identity `ρc² = γP` eliminates the mixed-unit coefficient entirely: `γ·p*` is in
+P's own units by construction. One unit-bridge constant **`K`** survives, in the momentum
+update only, **calibrated once so that ambient sound speed `c = √(γP·K/ρ̂)` equals 300 m/s
+at (P=1, N=1)**. Consequences: **`c` is now state-derived — `c ∝ √T`** (hot blast cores get
+proportionally faster, sharper acoustics; physically correct), and Erik's dial survives as
+`K` (scales ambient c uniformly; the 66→300 range is a graceful-degradation continuum if
+ever needed). Solver complexity unchanged — the operator already carried a per-cell
+coefficient; it now reads the `p*` array instead of a constant. Overflow budget re-derived
+at the MG gate (the face-coefficient product is preserved — P3's measurement).
 
 **Operator placement — VERIFIED against the paper (P3 design-gate deliverable #4,
 2026-07-10, from `docs/papers/ADA492343.pdf` eq. 9–15):** `(ρc²) ≡ (N·c²)` is an
@@ -276,8 +291,23 @@ fast path: `∇P ≡ 0` over any uniform region regardless of baseline — integ
         never delete); masks as today. CFL_ADV ≤ 0.5 (pinned constraint, not TBD):
         guarantees the step-e bound (γ−1)·2·CFL_ADV ≤ 0.4 < 1 by construction.
 2. p* := C · N_total · T            (wide mul, §3.4)
-3. HELMHOLTZ SOLVE (once per tick, fixed sweeps, RB-GS, red-black — §3.4 numerics):
+3. PRESSURE SOLVE (once per tick) — **FIXED-SCHEDULE MULTIGRID V-CYCLES** (v2.2, D-B,
+   adopted by Erik 2026-07-10), RB-GS as the smoother at every level:
      BCs: Neumann mirror at solid; Dirichlet P=0 at vacuum
+     WHY (P3's gate measurement): the implicit solve must propagate influence
+     c·dt/dx ≈ 75 tiles per tick at ambient c=300, but point-GS moves information
+     ~1-2 cells/sweep — the room-scale solution is STRUCTURALLY unreachable at small
+     fixed S; the un-solved residual behaves like the explicit scheme we escaped
+     (CFL≈37 ⇒ the measured ×700/tick blow-up), and S≈128 (46 ms) is unaffordable.
+     Multigrid solves on a grid pyramid (160²→80²→…→~10²) — coarse levels carry
+     influence across the whole ship in one cycle, ~4/3 the fine-level cost,
+     ~10×-error-reduction per V-cycle independent of grid size.
+     DETERMINISM: fixed cycle count × fixed sweeps/level × fixed integer transfer
+     stencils = a fixed integer-op sequence, exactly as reproducible as fixed-S GS.
+     TRUTH LIVES ON THE FINE GRID: coarse levels are accelerators only — an imperfect
+     coarse mask degrades convergence RATE near complex geometry, never correctness.
+     Schedule (V(2,2), level count L, cycle count C) pinned at the MG design-gate,
+     frozen thereafter.
 4. u -= dt·grad(P_new)/ρ̂
    u *= (1 − absorb·dt)  per cell   (unit/material shockwave absorption — D4; reads
                                      dyn_wave_absorb exactly as the old wave kick did)
@@ -348,11 +378,18 @@ constants). The v2 rules:
    breach/blast scenario and **assert no intermediate exceeds its container** —
    explicitly *in addition to* accuracy-vs-double-reference, because an overflow is
    bit-identical on both platforms and invisible to the digest gate.
-4. **Sweep count re-derived, not inherited.** The prototype's `PRESSURE_SWEEPS = 40` vs
-   the shipped kernel's `gs_iters = 8` is a 5× cost gap (B7). Patch 3's gate measures
-   convergence-vs-sweeps on the real Q16.16 operator across the stress scenarios and
-   pins the count as a **solver constant** (fixed forever after — never adaptive), with
-   the p99 tick-cost target (§8 P3) as the binding constraint.
+4. **(v2.2 — supersedes the fixed-S plan, which P3's gate killed):** the solver is a
+   fixed-schedule multigrid V-cycle (§3.2 step 3). The **MG design-gate** pins: the
+   coarse-mask coarsening rule (how walls/vacuum appear at 80²/40²/…), level count L,
+   sweeps per level (start V(2,2)), cycle count C (start 2), the re-derived overflow
+   budget under the γ·p* coefficients, and the measured cost (~1.8 ms/cycle expected at
+   160²; budget ≈ the failed S=8 plan). All frozen constants after the gate — never
+   adaptive. **§3.4's earlier "diagonal dominance ⇒ fixed-sweep guarantee" is retracted
+   as an overclaim** (it guaranteed asymptotic convergence, not 8-sweep convergence at
+   game coupling ~10³ — the conflation P3's measurements exposed).
+4b. **Widen the GS flux-narrow (D-C, trivial):** `narrow(Σ mul_wide(face_k, ΔP))` wrapped
+   int32 past ~23 atm neighbor differences — keep the accumulator wide until the final
+   per-cell store.
 5. Substep count + `max|u|`: integer-ceil + `sqrt_q16` (D5), per §3.2.
 6. **Per-sub-kernel digest checkpoints** in patch 3: advection, bulk flux, `p*`
    materialization, Helmholtz, velocity correction, compression-work — six digests, not
