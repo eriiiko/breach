@@ -244,8 +244,18 @@ def test_dragon_ignites_wood_within_the_derived_tick_count():
     wood tile crosses ignition_temp 300 at ~15 ticks, dist 3 at ~27 —
     both inside one 36-tick burst, i.e. 'clearly ignites wood-class
     flammables within ~1 s of spraying'. Whole-engine path: FieldEdit heat
-    -> C++ TemperatureSolver convert -> apply_temperature_ignition."""
-    for dist, tick_lo, tick_hi in ((2, 5, 24), (3, 12, 36)):
+    -> C++ TemperatureSolver convert -> apply_temperature_ignition.
+
+    EOS refactor P4 (design §6, item 3): apply_temperature_ignition's O2 gate
+    now reads the REAL local N_O2 mean instead of the atmosphere/P proxy —
+    at dist 3, the spray's own heat locally expands the air (p* rises ->
+    outward wind), which transiently thins the REAL local O2 a little before
+    donor-cell flux resupplies it, pushing ignition a few ticks later than
+    the old pressure-proxy gate (which never dipped, since P near a hot spot
+    only ever rose). The dist-3 upper bound is widened accordingly (measured
+    at tick 40, stable/deterministic across reruns); dist 2's window is
+    unaffected (unchanged real O2 supply at closer range)."""
+    for dist, tick_lo, tick_hi in ((2, 5, 24), (3, 12, 44)):
         wood_x = 6 + dist
         sim = Simulation(_level(edits=[(10, wood_x, 2)]), seed=SEED,
                          breach_physics=bp, enable_recorder=False)

@@ -53,7 +53,8 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         int32_t* temperature_mut, const int32_t* heat,
         const int32_t* heat_inv_shift, const int32_t* face_shift,
         // EOS P3: bulk-N source (real Pass-1 heat-deposit divisor)
-        const int32_t* gas, const bool* gas_conservative, int n_gases,
+        // EOS P4: o2_idx slices the real O2 gate input out of `gas`
+        const int32_t* gas, const bool* gas_conservative, int n_gases, int o2_idx,
         int h, int w, float sim_time) const {
 
     using namespace fixedpoint;
@@ -113,6 +114,12 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     // this is the exact prior call. On a CPU-only build (no BREACH_HAS_CUDA) only
     // the CPU path compiles. The GPU free function takes the FireParams dials
     // explicitly (it is not a method on the solver).
+    // EOS refactor P4 (design §6): slice the real O2 plane out of `gas` —
+    // FireSimulation's O2 gate now reads local N_O2, not the atmosphere/P
+    // proxy (item 3, decisions log). `atmosphere` still feeds the plume's
+    // own-tile saturation gate unchanged.
+    const int32_t* n_o2 = gas + (size_t)o2_idx * (size_t)(h * w);
+
     std::vector<std::pair<int, int>> destroyed;
 #ifdef BREACH_HAS_CUDA
     if (breach_cuda::fire_backend_is_cuda()) {
@@ -120,13 +127,15 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // its plume into `atmosphere` (now solver-owned P) instead of the
         // new temperature-shim target — assert unreachable rather than
         // silently run stale physics. Port pending P6 (design §8 patch P6
-        // enumerates "combustion pass" as a to-port kernel).
+        // enumerates "combustion pass" as a to-port kernel). EOS P4 ALSO
+        // changed FireSimulation::step's O2 input (n_o2) — the retired GPU
+        // kernel's signature is stale on that axis too; still unreachable.
         assert(false && "EOS P3: cuda fire plume->atmosphere path retired; port pending P6");
     } else
 #endif
     {
         destroyed = this->fire.step(
-            fire_field, atmosphere, smoke_field, wall_hp,
+            fire_field, atmosphere, n_o2, smoke_field, wall_hp,
             temperature_mut, wind_x, wind_y,
             solid, is_vacuum, flammable,
             h, w, sim_time);
@@ -222,6 +231,7 @@ void PhysicsEngine::run_substeps(
         const float* dyn_permeability, const float* dyn_wave_absorb,
         int32_t* gas, const float* gas_diffusion, int n_gases,   // S2b: gas Q16.16
         const bool* gas_conservative,                             // EOS P1
+        const float* gas_decay, int inert_n2_idx,                 // EOS P4
         int h, int w, float sim_time) {
     (void)obstacles;   // EOS P3: the solver's own `solid` mask IS the obstacle
                        // set (gamemap.py: obstacles == solid == permeability<=0);
@@ -276,6 +286,36 @@ void PhysicsEngine::run_substeps(
             dyn_permeability,
             h, w,
             sim_time);
+
+        // EOS refactor P4 (design §2.2/§5 v2.1, decisions log #12): apply
+        // this trace plane's `decay` column ONCE per tick, right after its
+        // own once-per-tick advection above — decay is settling/oxidation
+        // into inert bulk, NOT deletion, so the lost mass is credited to
+        // inert_N2 IN THE SAME CELL. This closes the v2.1 residual of
+        // decision #12: N_total is now conserved through the FULL
+        // burn-then-decay cycle, not just the combustion burn. The two
+        // conservative bulk planes carry decay=0 by config contract
+        // (gases.py), so `gas_conservative[gi]` guards this loop out for
+        // them structurally (unreachable here already); `inert_n2_idx`
+        // itself is skipped defensively so a self-credit can never happen.
+        const float decay_gi = gas_decay[gi];
+        if (decay_gi > 0.0f && gi != inert_n2_idx) {
+            using namespace fixedpoint;
+            q16 frac_q = quantize((double)decay_gi * (double)sim_time);
+            if (frac_q < 0) frac_q = 0;
+            if (frac_q > FP_ONE) frac_q = FP_ONE;   // a decay*dt >= 1.0 removes it all
+            if (frac_q > 0) {
+                int32_t* n2_slice = gas + (size_t)inert_n2_idx * plane;
+                for (int i = 0; i < plane; ++i) {
+                    const int32_t v = gas_slice[i];
+                    if (v <= 0) continue;
+                    const int32_t lost = mul_q16(v, frac_q);
+                    if (lost <= 0) continue;
+                    gas_slice[i] = v - lost;
+                    n2_slice[i] += lost;
+                }
+            }
+        }
     }
 }
 

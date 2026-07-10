@@ -120,11 +120,23 @@ def cpp_int_o2_gate(neigh_qs):
 #     disagreement is an EXACT threshold tie (integer mean == quantize(thr)).
 # ---------------------------------------------------------------------------
 def test_o2_gate_homogeneous_sweep_bit_identical():
-    """Homogeneous neighbours (all at the same atmosphere) across a fine sweep
-    that straddles the 0.60 threshold — the gates must agree EXACTLY (a uniform
+    """Homogeneous neighbours (all at the same value) across a fine sweep
+    that straddles the threshold — the gates must agree EXACTLY (a uniform
     mean is exact under both float division and mean_round, so there are no
-    ties to worry about here)."""
-    for atm in np.linspace(0.40, 0.80, 4001):
+    ties to worry about here). These reference functions (cpp_float_o2_gate /
+    py_int_o2_gate) are field-agnostic — EOS refactor P4 re-pointed the
+    PRODUCTION predicate from atmosphere to the real N_O2 plane (and moved
+    O2_THRESHOLD from ~0.60 to ~0.12, config.toml [physics.fire]), so the
+    sweep is rescaled to bracket the NEW threshold; the invariant proven is
+    unchanged. UNLIKE the old 0.60 threshold, the new ~0.12 threshold's own
+    quantize-then-dequantize happens to round DOWN (7864/65536 < 0.12), so a
+    homogeneous mean can land EXACTLY on that boundary and hit the same
+    float32-vs-integer tie the heterogeneous test documents below — skip that
+    single point (a coincidence of THE THRESHOLD's own rounding direction,
+    not a new class of disagreement)."""
+    for atm in np.linspace(0.0, 0.40, 4001):
+        if abs(atm - O2_THRESHOLD) < 1e-6:
+            continue
         q = atmosphere_fixed.quantize_scalar(float(atm))
         for count in (1, 2, 3, 4):
             combo = (q,) * count
@@ -135,10 +147,11 @@ def test_o2_gate_homogeneous_sweep_bit_identical():
 def test_o2_gate_heterogeneous_disagreements_are_exact_ties_only():
     """Heterogeneous neighbours near the threshold — the HARD case where the
     integer mean_round and the C++ float32 division CAN differ. Assert that every
-    disagreement is an EXACT threshold tie (integer mean == quantize(0.60)), never
-    a real divergence — i.e. the integer gate is the correct/deterministic one and
-    S3b's C++ mean_round will bit-match it."""
-    vals = np.linspace(0.50, 0.70, 41)        # densely straddles 0.60
+    disagreement is an EXACT threshold tie (integer mean == quantize(threshold)),
+    never a real divergence — i.e. the integer gate is the correct/deterministic
+    one and S3b's C++ mean_round will bit-match it. EOS refactor P4: the sweep is
+    rescaled to bracket the NEW ~0.12 threshold (was ~0.60)."""
+    vals = np.linspace(0.02, 0.22, 41)        # densely straddles the new threshold
     qs = [atmosphere_fixed.quantize_scalar(float(v)) for v in vals]
     n_disagree = 0
     n_disagree_not_tie = 0
@@ -227,12 +240,23 @@ def test_py_twin_matches_cpp_integer_gate_exactly_incl_negative():
 # (2) Drive the PRODUCTION function (apply_temperature_ignition) and confirm its
 #     ignite decision matches the C++ float O2 gate on a hot flammable tile.
 # ---------------------------------------------------------------------------
+class _GasTableStub:
+    """Minimal stand-in for GameMap's real GasTable — apply_temperature_
+    ignition only reads `.name_to_id["o2"]` (EOS refactor P4, design §6)."""
+
+    def __init__(self):
+        from simulation.gases import O2
+        self.name_to_id = {"o2": O2}
+
+
 class _Cross3x3:
-    """A flammable wood centre on a 3x3 with an air ring; set the ring atmosphere
-    (the O2 source) and a hot centre, then run apply_temperature_ignition and see
-    whether [1,1] ignited — the real production path."""
+    """A flammable wood centre on a 3x3 with an air ring; set the ring's REAL
+    O2 (the O2 source, EOS refactor P4 — was `atmosphere`) and a hot centre,
+    then run apply_temperature_ignition and see whether [1,1] ignited — the
+    real production path."""
 
     def __init__(self, ring_atm):
+        from simulation.gases import N_GASES, O2
         m = np.full((3, 3), MAT_AIR, dtype=np.int8)
         m[1, 1] = MAT_WOOD
         self.materials = _TBL
@@ -240,19 +264,27 @@ class _Cross3x3:
         self.flammable = _TBL.flammable[m]
         self.solid = (_TBL.permeability[m] <= 0.0)
         self.is_vacuum = np.zeros((3, 3), dtype=bool)
-        a = np.where(self.solid, 0,
-                     atmosphere_fixed.quantize_scalar(float(ring_atm))).astype(np.int32)
-        self.atmosphere = a
+        self.gases = _GasTableStub()
+        # `ring_atm` names the test's SWEPT quantity (kept for call-site
+        # readability / minimal diff) — it seeds the REAL O2 plane now, not
+        # `atmosphere` (which apply_temperature_ignition no longer reads).
+        o2_val = np.where(self.solid, 0,
+                          atmosphere_fixed.quantize_scalar(float(ring_atm))).astype(np.int32)
+        self.gas = np.zeros((N_GASES, 3, 3), dtype=np.int32)
+        self.gas[O2] = o2_val
         self.temperature = np.full((3, 3), IGN_WOOD_Q16 * 2, dtype=np.int32)  # hot
         self.fire = np.zeros((3, 3), dtype=np.int32)
 
 
 def test_production_ignition_matches_cpp_gate_off_tie():
-    """Sweep the ring atmosphere AWAY from the exact tie (so the float and int
+    """Sweep the ring's REAL O2 AWAY from the exact tie (so the float and int
     gates agree by construction) and confirm the production ignition decision
     matches the C++ float O2 gate at each point. (The on-tie behaviour is the
     integer-canonical one tested above; here we exercise the real function.)"""
-    for atm in np.linspace(0.40, 0.80, 401):
+    # EOS refactor P4: O2_THRESHOLD now reads the REAL N_O2 scale (~0.12,
+    # config.toml [physics.fire].o2_threshold) instead of the old
+    # atmosphere/P scale (~0.60) — the sweep is rescaled to bracket it.
+    for atm in np.linspace(0.0, 0.30, 301):
         # Skip a tiny band around the exact threshold (the integer-canonical tie
         # zone, covered by the dedicated test above).
         if abs(atm - O2_THRESHOLD) < 1e-3:

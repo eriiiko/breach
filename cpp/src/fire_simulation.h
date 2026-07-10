@@ -8,10 +8,12 @@
 //
 //   T     = temperature[i]                         (Q16.16; temp_scale == FP_ONE)
 //   F     = clamp01(wall_hp[i] / fuel_ref)         (fuel from remaining wall HP)
-//   P     = mean atmosphere over OPEN (non-solid, non-vacuum) 4-neighbours
+//   O2    = mean n_o2 over OPEN (non-solid, non-vacuum) 4-neighbours
 //   W     = sqrt(wind_x^2 + wind_y^2)              (the SHARED wind field)
 //   hot   = clamp01((T - T_ext) / T_span)
-//   o2    = smoothstep(P_min, P_full, P)           (pressure IS the O2 proxy)
+//   o2    = smoothstep(P_min, P_full, O2)          (EOS refactor P4: the REAL
+//                                                   local N_O2 mean, NOT the
+//                                                   atmosphere/P proxy)
 //   avail = F * o2
 //   grow  = k_grow * avail * hot * I * (1-I) * (1 + k_wind_fan * W)
 //   die   = k_die * (1 - avail*hot) * I  +  k_wind_strip * W * (1-I) * I
@@ -87,8 +89,14 @@ public:
     //
     //   fire        : int32 (h, w) Q16.16 intensity in [0,1], mutated in place (S3b).
     //   atmosphere  : int32 (h, w) Q16.16 (S2c) == P (EOS P3), READ-ONLY (the
-    //                 neighbour-mean O2 gate). The plume no longer writes it
-    //                 — see `temperature` below.
+    //                 plume's own-tile saturation gate ONLY, since EOS P4 —
+    //                 see `n_o2` below for the O2 gate). The plume no longer
+    //                 writes it — see `temperature` below.
+    //   n_o2        : int32 (h, w) Q16.16 (EOS refactor P4, design §6): the
+    //                 REAL bulk O2 density plane (gmap.gas[O2]), READ-ONLY —
+    //                 the neighbour-mean O2 gate's input, REPLACING the old
+    //                 atmosphere/P proxy. Solid cells hold 0 (no gas), matching
+    //                 `atmosphere`'s pre-P4 convention there.
     //   smoke       : int32 (h, w) Q16.16 (S2b), fire ADDS to it (kept). The
     //                 emission delta smoke_emission*dt*I is round-to-nearest and
     //                 integer-added — order-free, deterministic.
@@ -100,11 +108,12 @@ public:
     //   wind_x/wind_y : int32 (h, w) Q16.16 (S2c), the SHARED wind field (= -grad p
     //                 incl. waves), READ-ONLY (the W = |wind| term, via sqrt_q16).
     //   is_wall     : bool (h, w) solid mask (a fire tile is itself solid).
-    //   is_vacuum   : bool (h, w) vacuum mask (excluded from the P neighbour mean).
+    //   is_vacuum   : bool (h, w) vacuum mask (excluded from the O2 neighbour mean).
     //   flammable   : bool (h, w) fuel mask (fire only lives on fuel).
     std::vector<std::pair<int, int>> step(
         int32_t* fire,             // S3b: Q16.16 (was float)
-        const int32_t* atmosphere, // S2c: Q16.16 == P (EOS P3: READ-ONLY now)
+        const int32_t* atmosphere, // S2c: Q16.16 == P (EOS P3: READ-ONLY, plume only)
+        const int32_t* n_o2,       // EOS P4: Q16.16 real O2 density (the O2 gate)
         int32_t* smoke,            // S2b: Q16.16 (fire emission round + added)
         int32_t* wall_hp,          // S3b: Q16.16 (was float)
         int32_t* temperature,      // EOS P3: mutable (plume->T shim write)

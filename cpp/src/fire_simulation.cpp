@@ -43,7 +43,8 @@ static inline q16 smoothstep_q(q16 edge0, q16 edge1, q16 x,
 
 std::vector<std::pair<int, int>> FireSimulation::step(
     q16* fire,                    // S3b: Q16.16 int32 (was float)
-    const q16* atmosphere,        // S2c: Q16.16 int32 == P (EOS P3: read-only)
+    const q16* atmosphere,        // S2c: Q16.16 int32 == P (EOS P3: read-only, plume only)
+    const q16* n_o2,               // EOS P4: Q16.16 int32 real O2 density (the O2 gate)
     int32_t* smoke,               // S2b: Q16.16
     q16* wall_hp,                 // S3b: Q16.16 int32 (was float)
     q16* temperature,             // EOS P3: mutable (plume->T shim)
@@ -127,22 +128,26 @@ std::vector<std::pair<int, int>> FireSimulation::step(
         // reciprocal of fuel_ref, then clamp01.
         const q16 F = clamp01_q(fp::recip_mul(wall_hp[i], recip_fuel_ref));
 
-        // P: mean atmosphere over OPEN (non-solid, non-vacuum) 4-neighbours — the
-        // fire reads INCOMING fresh air (its own plume bump is excluded). int64 sum
-        // + mean_round (round-half-away-from-zero) — the EXACT predicate the Python
-        // ignition twin shares (closes the S3a exact-0.60-tie gap, review item #1).
-        // No open neighbour -> count 0 -> P = 0 (mean_round guard).
-        int64_t sum_atm = 0;
+        // O2: mean n_o2 over OPEN (non-solid, non-vacuum) 4-neighbours — the
+        // fire reads INCOMING fresh air (its own tile holds no gas — it is
+        // solid). int64 sum + mean_round (round-half-away-from-zero) — the
+        // EXACT predicate the Python ignition twin shares (closes the S3a
+        // exact-tie gap, review item #1). EOS refactor P4 (design §6): reads
+        // the REAL bulk O2 density plane, NOT the atmosphere/P proxy — the
+        // decompression-extinguishes-fire mechanism is now genuine oxygen
+        // depletion, not a pressure stand-in. No open neighbour -> count 0 ->
+        // O2 = 0 (mean_round guard).
+        int64_t sum_o2 = 0;
         int64_t count = 0;
         for (const auto& d : D4) {
             int ny = y + d[0], nx = x + d[1];
             int ni = ny * w + nx;
             if (in_bounds(ny, nx, h, w) && !is_wall[ni] && !is_vacuum[ni]) {
-                sum_atm += (int64_t)atmosphere[ni];   // exact, order-free
+                sum_o2 += (int64_t)n_o2[ni];   // exact, order-free
                 count += 1;
             }
         }
-        const q16 P = fp::mean_round(sum_atm, count);
+        const q16 P = fp::mean_round(sum_o2, count);
 
         // W: wind magnitude from the SHARED wind field (= -grad p incl. waves, so a
         // grenade shockwave is a transient spike -> firestorm / blow-out). The int64

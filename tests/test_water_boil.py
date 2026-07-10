@@ -224,11 +224,26 @@ def test_boils_dry_exact_zero_after_121_ticks():
         f"depth after 121 ticks is {g.water_depth[A]!r}, not exactly 0.0")
 
     # Yield bookkeeping (the plan's numbers end-to-end): ALL the water left
-    # as steam, total white_smoke == steam_yield * 0.1 = 0.4. Forgiving rel
-    # tolerance: 121 float32 accumulations, conserved transport.
+    # as steam, total white_smoke starts at steam_yield * 0.1 = 0.4 as it is
+    # puffed in across the 121 ticks. EOS refactor P4 (design §2.2/§5 v2.1,
+    # decisions.md #12): the per-gas trace `decay` column is now APPLIED
+    # (white_smoke decay=0.020/s, config.toml [gases.white_smoke] — "loaded
+    # but never applied" pre-P4), crediting the lost mass to inert_N2 each
+    # tick, so the puffed-in steam settles/condenses as it accumulates —
+    # the measured total is ~4-5% below the undecayed 0.4 over this run
+    # (steam puffed early has more ticks to decay than steam puffed late).
+    # Widened from the pre-P4 0.1% float-rounding tolerance to comfortably
+    # cover the REAL, expected decay loss (not a regression — it is EXACTLY
+    # decision #12 v2.1's "burnt/settled products go to inert_N2" behaviour).
     total = _gas_mass(g.gas[WHITE_SMOKE])     # S2b: dequantized real-density mass
-    assert abs(total - STEAM_YIELD * DEPTH) < 1e-3 * STEAM_YIELD * DEPTH, (
-        f"steam total {total} != steam_yield*depth {STEAM_YIELD * DEPTH}")
+    assert 0.0 < total < STEAM_YIELD * DEPTH, (
+        f"steam total {total} should be positive and BELOW the undecayed "
+        f"steam_yield*depth {STEAM_YIELD * DEPTH} (decay only ever removes "
+        f"mass from this plane)")
+    assert abs(total - STEAM_YIELD * DEPTH) < 0.10 * STEAM_YIELD * DEPTH, (
+        f"steam total {total} strayed too far from steam_yield*depth "
+        f"{STEAM_YIELD * DEPTH} for the known white_smoke decay rate "
+        f"(0.020/s over ~121 ticks) — investigate")
 
 
 # ---------------------------------------------------------------------------

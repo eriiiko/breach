@@ -397,9 +397,10 @@ def apply_temperature_ignition(gmap, o2_threshold, ignition_seed):
       ``q16 == 0``); gating on ``gmap.flammable`` is what stops a red-hot hull or
       glass tile (also threshold 0) from ever catching. Only fuel ignites.
     - **O2 check reuses the existing fire semantics.** The C++ ``FireSimulation``
-      kills a burning tile when the mean ``atmosphere`` of its 4-connected
-      AIR-SIDE (non-solid) neighbours drops below ``o2_threshold``; ignition uses
-      the SAME predicate (same threshold, same neighbourhood) so a tile cannot be
+      kills a burning tile when the mean REAL ``gas[O2]`` of its 4-connected
+      AIR-SIDE (non-solid) neighbours drops below ``o2_threshold`` (EOS refactor
+      P4 — was the ``atmosphere``/P proxy); ignition uses the SAME predicate
+      (same threshold, same neighbourhood, same field) so a tile cannot be
       ignited into a state the fire step would immediately suffocate. A flammable
       tile is itself solid (wood/door), so its O2 comes from the adjacent air.
     - **``max``, not assign.** ``fire = max(fire, ignition_seed)`` never lowers an
@@ -415,11 +416,13 @@ def apply_temperature_ignition(gmap, o2_threshold, ignition_seed):
     ----------
     gmap
         The :class:`GameMap`. Reads ``temperature`` (Q16.16), ``material``,
-        ``flammable``, ``solid``, ``atmosphere`` and the material table's
-        ``ignition_temp_q16``; writes ``fire`` in place.
+        ``flammable``, ``solid``, ``is_vacuum``, ``gas`` (the real O2 plane,
+        EOS refactor P4) and the material table's ``ignition_temp_q16``;
+        writes ``fire`` in place.
     o2_threshold : float
-        Minimum air-side-neighbour atmosphere for ignition (reuse the fire's
-        ``o2_threshold``, 0.60).
+        Minimum air-side-neighbour REAL N_O2 for ignition (reuse the fire's
+        ``o2_threshold`` — EOS refactor P4 recalibrated it against the new
+        N_O2 scale, ambient ~0.21; see config.toml [physics.fire]).
     ignition_seed : float
         Seed intensity a freshly-ignited tile gets (``I_seed`` ~ 0.1).
 
@@ -441,35 +444,37 @@ def apply_temperature_ignition(gmap, o2_threshold, ignition_seed):
     if not bool(hot.any()):
         return  # nothing crossed its threshold this tick (the dormant case)
 
-    # --- O2 proxy: mean `atmosphere` over the OPEN (non-wall, non-vacuum)
+    # --- O2 proxy: mean REAL `gas[O2]` over the OPEN (non-wall, non-vacuum)
     # 4-neighbours — the EXACT predicate the C++ fire O2 check uses
-    # (fire_simulation.cpp:72-82, mask `!is_wall && !is_vacuum`, with
-    # `is_wall == gmap.solid`). S3a makes this an INTEGER reduction on the int32
-    # Q16.16 atmosphere, bit-matching the integer mean the C++ fire adopts in S3b
+    # (fire_simulation.cpp, mask `!is_wall && !is_vacuum`, with
+    # `is_wall == gmap.solid`). EOS refactor P4 (design §6, item 3): this used
+    # to read `atmosphere` (P, a pressure proxy) — it now reads the REAL bulk
+    # O2 density plane (gmap.gas[O2]), the SAME re-pointing FireSimulation's
+    # own O2 gate got in C++, so a tile still cannot ignite into a state the
+    # fire step would immediately suffocate (the design invariant, unchanged —
+    # only the underlying field did). S3a made this an INTEGER reduction on the
+    # int32 Q16.16 field, bit-matching the integer mean the C++ fire adopts
     # (fixed_point.h mean_sum/mean_round): an int64 neighbour-sum + a
-    # round-half-away-from-zero mean, then a Q16.16 threshold compare. The float
-    # dequantize that used to decide who ignites (the last Python float bridge on
-    # the fire-write path) is gone — Python int math is cross-machine-exact.
+    # round-half-away-from-zero mean, then a Q16.16 threshold compare.
     #
-    # WHY the mask now excludes vacuum: the C++ P gate excludes vacuum neighbours
-    # from BOTH sum and count; the pre-S3a Python mask (`~solid` only) INCLUDED
-    # them (atmosphere==0 on a vacuum tile, but the count still incremented),
-    # which lowered the mean below the C++ value. Excluding vacuum (matching the
-    # C++ mask) is what makes the two O2 predicates bit-identical — the
-    # design-note invariant (above, combat.py docstring): a tile must not ignite
-    # into a state the fire step would immediately suffocate.
+    # WHY the mask excludes vacuum: the C++ O2 gate excludes vacuum neighbours
+    # from BOTH sum and count; including them would lower the mean below the
+    # C++ value (a vacuum tile holds no gas, but the count would still
+    # increment). Excluding vacuum (matching the C++ mask) is what makes the
+    # two O2 predicates bit-identical.
     h, w = temperature.shape
     open_nbr = (~gmap.solid) & (~gmap.is_vacuum)   # True == counts toward O2 (== C++)
-    atm_q = gmap.atmosphere.astype(np.int64)       # int32 Q16.16 -> int64 (exact, order-free)
-    sum_atm = np.zeros((h, w), dtype=np.int64)     # Q16.16 sum (int64, no overflow)
+    o2_idx = gmap.gases.name_to_id["o2"]
+    o2_q = gmap.gas[o2_idx].astype(np.int64)       # int32 Q16.16 -> int64 (exact, order-free)
+    sum_o2 = np.zeros((h, w), dtype=np.int64)      # Q16.16 sum (int64, no overflow)
     count = np.zeros((h, w), dtype=np.int64)       # neighbour count 0..4
     # N, S, E, W (fixed order; integer sum is order-independent regardless).
     for dy, dx in ((-1, 0), (1, 0), (0, 1), (0, -1)):
         ys0, ys1 = max(0, -dy), h - max(0, dy)      # this-tile row span
         xs0, xs1 = max(0, -dx), w - max(0, dx)
-        nbr_atm = atm_q[ys0 + dy:ys1 + dy, xs0 + dx:xs1 + dx]
+        nbr_o2 = o2_q[ys0 + dy:ys1 + dy, xs0 + dx:xs1 + dx]
         nbr_open = open_nbr[ys0 + dy:ys1 + dy, xs0 + dx:xs1 + dx]
-        sum_atm[ys0:ys1, xs0:xs1] += np.where(nbr_open, nbr_atm, np.int64(0))
+        sum_o2[ys0:ys1, xs0:xs1] += np.where(nbr_open, nbr_o2, np.int64(0))
         count[ys0:ys1, xs0:xs1] += nbr_open.astype(np.int64)
     # Round-half-away-from-zero mean == fixed_point.h::mean_round (sign-symmetric,
     # no DC bias). A fully walled-in tile (count == 0) averages to 0 -> below
@@ -478,22 +483,24 @@ def apply_temperature_ignition(gmap, o2_threshold, ignition_seed):
     #
     # NEGATIVE-BRANCH FIX (S3b, review carry-forward #2): the C++ mean_round divide
     # TRUNCATES TOWARD ZERO (C++ integer `/`), NOT toward -inf. Python `//` FLOORS
-    # (toward -inf), so the two diverge on a NEGATIVE neighbour sum — and the
-    # atmosphere CAN dip transiently negative (wave forcing subtracts, no hard >=0
-    # clamp). To make the Python ignition twin and the C++ fire P gate bit-match on
-    # ALL inputs (not just non-negative ones — the S3a tie-only gap), emulate
-    # trunc-toward-zero on the negative branch: trunc(a/b) = -((-a)//b) for b>0.
+    # (toward -inf), so the two diverge on a NEGATIVE neighbour sum. EOS refactor
+    # P4: `gas[O2]` is a transported bulk density, clamped >= 0 by construction
+    # (bulk_transport.cpp's final clamp) — it can never actually go negative the
+    # way the old `atmosphere` proxy could (wave forcing had no hard floor) — but
+    # the shared trunc-toward-zero emulation is KEPT so this stays bit-identical
+    # to the C++ mean_round on ANY input, not just the ones this field happens to
+    # produce today: trunc(a/b) = -((-a)//b) for b>0.
     safe_count = np.where(count < 1, np.int64(1), count)
     half = safe_count // 2
-    pos_num = sum_atm + half           # >= 0 branch: (sum+half) trunc == floor
-    neg_num = sum_atm - half           # <  0 branch: trunc toward 0, NOT floor
-    mean_atm = np.where(sum_atm >= 0,
-                        pos_num // safe_count,
-                        -((-neg_num) // safe_count))      # Q16.16 mean (int64), trunc-to-0
+    pos_num = sum_o2 + half            # >= 0 branch: (sum+half) trunc == floor
+    neg_num = sum_o2 - half            # <  0 branch: trunc toward 0, NOT floor
+    mean_o2 = np.where(sum_o2 >= 0,
+                       pos_num // safe_count,
+                       -((-neg_num) // safe_count))       # Q16.16 mean (int64), trunc-to-0
     # Threshold quantized ONCE into Q16.16 — a plain integer >= compare, no float.
     from simulation import fire_fixed as _fire_fx
     o2_threshold_q = _fire_fx.quantize_scalar(float(o2_threshold))
-    has_o2 = (count > 0) & (mean_atm >= o2_threshold_q)
+    has_o2 = (count > 0) & (mean_o2 >= o2_threshold_q)
 
     ignite = hot & has_o2
     if not bool(ignite.any()):
