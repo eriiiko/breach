@@ -543,15 +543,33 @@ pr.step-only harness (heat never cleared — `tools/eos_p5_bake.py` and the P4 E
 loops), stale heat re-radiates every tick and T pins at the rail — a HARNESS
 fidelity artifact, flagged.
 
-**OPEN consequence for Erik's P5 pass (the reason this block is provisional):** with T
-bounded, fire scenarios lose the chaotic near-ceiling dynamics several shipped E2E
-calibrations silently depended on — a fire's heat (measured ~330 units/tick/cell at
-`k_fire_heat=9`) drives adjacent air to the rail in ~10 ticks, whose pressure
-evacuates local O2 *thermally* in EVERY scenario, erasing the O2-differentiation
-payoffs (vented≈sealed, flooded≈control) and the flamethrower's dist-3 ignition
-(pre-rail timing t=40 was chaos-fragile: a 1e-5 dial perturbation moved it to t=60,
-peak T 32,759 = the format ceiling). The fire heat scale / ignition `o2_threshold`
-calibration against BOUNDED gas physics is a P5 design call — see the branch report.
+**The O2-gate second rescale (adopted with this block):** with T bounded, fire
+scenarios lose the chaotic near-ceiling dynamics several shipped E2E calibrations
+silently depended on — a fire's heat (measured ~330 units/tick/cell at
+`k_fire_heat=9`) drives adjacent air to a few kK, whose pressure evacuates local O2
+*thermally* in every scenario (at ideal-gas pressure equilibrium
+`N_local ≈ N_amb·T_amb_abs/T_air_abs`; the P4-era gates at 0.12/0.126 implicitly
+assumed near-ambient density at the flame edge — an atmosphere-proxy-era assumption
+`P=C·N·T` revokes; real fires keep their flame edge oxygenated by buoyant
+entrainment, which this 2D no-gravity model lacks, so the gate scale compensates).
+Adopted (PROVISIONAL/Erik-P5): `P_min 0.126→0.01`, `P_full 0.21→0.03`, ignition
+`o2_threshold 0.12→0.01` — the second half of the exact rescale P4 already performed
+on these constants (1.0-scale → 0.21-scale → hot-zone-equilibrium scale). Measured:
+restores STRONG O2 differentiation (sealed 172 / vented 49 / flooded 39 ticks in the
+e2e trio) and the original ignition budgets (flamethrower dist-3 t=28) through
+genuine oxygen physics, perturbation-stable — a 1e-5 dial perturbation no longer
+moves timings (gated by `test_payoff_orderings_perturbation_robust`).
+
+**Remaining P5 flags:** (1) a sealed room whose whole gas mass ends up at flame-scale
+temperatures enters a *fuel-free smolder*: hot gas conducts the wood back above
+`ignition_temp` indefinitely and `CombustionSolver` — which by P4 design consumes no
+`wall_hp` ("wall_damage stays the sole fuel-consumption brake", combustion.h) — burns
+O2 without consuming fuel for thousands of ticks (physically a sealed oven, but
+fuel-free; surfaced by the e2e_1 re-pin, test_eos_p4_combustion.py). (2) The
+pr.step-only bake harness (`tools/eos_p5_bake.py`, eos-p5-bake branch) lacks the game
+loop's per-tick `heat` clear — one-line fidelity fix at merge time. (3)
+`k_fire_heat`'s scale (gas near a wood fire reaches a few kK) is untouched — Erik's
+feel dial.
 
 ## 5. Combustion on real O2 — conservative products (v2 call #2 — LOCKED)
 

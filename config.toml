@@ -103,7 +103,9 @@ T_MAX_PHYS        = 16000.0 # v2.4 counted physical-maximum rail on the temperat
 # o2_threshold/P_min/P_full recalibration note in the fire feedback block below.
 [physics.fire]
 ignition_seed = 0.1   # seed fire intensity a temperature-ignited tile gets (I_seed)
-o2_threshold  = 0.12  # min air-side-neighbour REAL N_O2 to ignite (mirrors the fire's P_min)
+o2_threshold  = 0.01  # min air-side-neighbour REAL N_O2 to ignite (mirrors the fire's
+                       # P_min — see the v2.4 hot-zone-equilibrium recalibration note at
+                       # P_min/P_full below; was 0.12 on the near-ambient-density assumption)
 
 # --- Signed-logistic fire FEEDBACK (fire_design_proposal §2/§3/§5) ------------
 # Cellular spread is DELETED: spread is now radiation -> heat -> temperature ->
@@ -135,11 +137,25 @@ fuel_ref          = 60.0   # wall_hp normaliser: F = clamp01(wall_hp/fuel_ref)
 # EOS refactor P4 RECALIBRATION (design §6): P_min/P_full used to be read against
 # `atmosphere` (P), where ambient == 1.0. They now read REAL gas[o2], where
 # ambient == ~0.21 (the P1 calibration: 0.21*N_amb O2 / 0.79*N_amb inert_N2, P1
-# §2.1). Rescaled to preserve the OLD 60%-of-ambient cutoff fraction:
-# P_min = 0.60*0.21, P_full = 0.21 (ambient IS "full" O2). Sane starting points,
-# feel-tuned at P5 like the pre-P4 values were.
-P_min             = 0.126  # local N_O2 below which the O2 proxy is 0 (O2 starves the fire)
-P_full            = 0.21   # local N_O2 (== ambient) at which the O2 proxy is full
+# §2.1). P4's first rescale preserved the OLD 60%-of-ambient cutoff fraction
+# (P_min = 0.60*0.21 = 0.126, P_full = 0.21).
+# v2.4 SECOND RESCALE (eos-p3fix-thermal-ceiling; PROVISIONAL, Erik review at
+# P5): onto the HOT-ZONE-EQUILIBRIUM scale. Derivation: at ideal-gas pressure
+# equilibrium (P = C*N*T), the gas density beside a flame is
+#     N_local ~= N_amb * T_amb_abs / T_air_abs
+# so air at flame-zone temperatures (measured ~3-4 kK-rel with the v2.4
+# absorption-proportional deposit) holds N ~= 0.07-0.09, i.e. N_O2 ~= 0.015-
+# 0.02 — the 0.126 gate implicitly assumed NEAR-AMBIENT density at the flame
+# edge, an atmosphere-proxy-era assumption P = C*N*T revokes. (Real fires keep
+# their flame edge oxygenated by buoyant entrainment — fresh air drawn in at
+# the base; this 2D no-gravity model has no buoyancy, so the gate scale
+# compensates.) Measured sweep (branch report): 0.01/0.03 restores STRONG
+# O2-differentiation (sealed 172 / vented 49 / flooded 39 ticks) and the
+# original ignition budgets (dragon dist-3 t=28) through genuine oxygen
+# physics; 0.02/0.05 differentiates weakly (44/42/39); 0.005/0.02 never
+# starves a sealed fire.
+P_min             = 0.01   # local N_O2 below which the O2 proxy is 0 (O2 starves the fire)
+P_full            = 0.03   # local N_O2 at which the O2 proxy saturates full
 I_min             = 0.02   # snap-to-zero extinguish floor
 k_wind_fan        = 0.5    # (1 + k_wind_fan*W) fans growth into a firestorm. NEEDS TUNING vs the live wind scale (a shockwave is a large transient spike).
 k_wind_strip      = 0.5    # W*(1-I)*I blows out small/marginal fires (the realistic crossover). NEEDS TUNING vs the live wind scale.
