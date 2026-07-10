@@ -312,7 +312,15 @@ def part2_integration() -> bool:
     # ALL field trajectories are byte-identical (and the pulse's dv ~2.3 is
     # below the knockdown threshold 6.0 -> __unit_status__ unmoved too).
     # (was 6d690fda8259b392be9029082013623fbef0fc0322ed3089107d5db220e1b441)
-    GOLDEN = "493645d34b01d7ad55e5f0e6ae7254e94989dc1b6dce5c1b7ee5e53acaff3e63"
+    # Re-baselined 2026-07-10 (EOS refactor P4 — combustion on real O2): the O2 gate
+    # re-point (FireSimulation + apply_temperature_ignition now read gas[O2],
+    # not atmosphere/P — item 3) and the newly-applied trace decay->inert_N2
+    # credit (item 2, decisions.md #12 v2.1) both touch the default scenario
+    # (it seeds fire + smoke): fire[8,8]/[8,9]'s O2-gated intensity and
+    # black_smoke's decay both move the trajectory. Combustion itself (item 1)
+    # does NOT touch this scenario (no flammable/wood material in the level).
+    # (was 493645d34b01d7ad55e5f0e6ae7254e94989dc1b6dce5c1b7ee5e53acaff3e63)
+    GOLDEN = "7eeb41d431a79ba01cbafef37416188bbf1ecb2a194d92af5f4ede279c9f2758"
 
     def make_shockwave():
         sim = default_scenario_sim()
