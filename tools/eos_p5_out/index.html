@@ -1,0 +1,104 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<title>EOS P5 bake-off — old vs new engine</title>
+<style>
+body { font-family: system-ui, sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem;
+        background: #111; color: #eee; }
+h1 { font-size: 1.4rem; } h2 { font-size: 1.05rem; margin-bottom: 0.2rem; }
+.layout { font-weight: normal; color: #999; font-size: 0.8rem; }
+.caption { color: #bbb; font-size: 0.9rem; max-width: 800px; }
+.gif { max-width: 100%; border: 1px solid #444; image-rendering: pixelated; }
+.trace-plot { display: block; margin-top: 0.3rem; max-width: 100%; background: #fff; }
+section.scenario { margin-bottom: 2.5rem; border-bottom: 1px solid #333; padding-bottom: 1.5rem; }
+table { border-collapse: collapse; margin: 0.5rem 0 1.5rem; font-size: 0.85rem; }
+td, th { border: 1px solid #444; padding: 0.3rem 0.6rem; text-align: right; }
+td:first-child, td:nth-child(2), th:first-child, th:nth-child(2) { text-align: left; }
+code { color: #9cf; }
+</style></head>
+<body>
+<h1>EOS refactor — P5 combined-system bake-off</h1>
+<p>Pre-refactor engine (commit b17e150) vs NEW engine (main, P1-P4 merged), same synthetic
+160&sup2; scenarios, real C++ engine both sides (no numpy prototype). Erik's eyes are the
+gate — nothing here has been tuned.</p>
+
+<h2>Determinism spot-check (new engine, two-run digest)</h2>
+<p>scenario=B3_breach_vacuum_vent, ticks=150: <b>MATCH (deterministic)</b></p>
+
+<h2>Cost table (ms/tick)</h2>
+<table>
+<tr><th>engine</th><th>scenario</th><th>p50</th><th>p97</th><th>max</th><th>n_ticks</th></tr>
+<tr><td>new</td><td>B1_corridor_blast</td><td>7.858</td><td>9.519</td><td>10.235</td><td>120</td></tr>
+<tr><td>new</td><td>B2_room_door_jet</td><td>7.137</td><td>9.291</td><td>10.236</td><td>120</td></tr>
+<tr><td>new</td><td>B3_breach_vacuum_vent</td><td>7.974</td><td>9.144</td><td>10.900</td><td>150</td></tr>
+<tr><td>new</td><td>B4_sealed_room_fire</td><td>8.160</td><td>9.844</td><td>10.958</td><td>260</td></tr>
+<tr><td>new</td><td>B5_water_displaces_smoke</td><td>4.153</td><td>4.809</td><td>5.855</td><td>220</td></tr>
+<tr><td>new</td><td>B6_o2_pocket_flare</td><td>7.874</td><td>9.269</td><td>9.549</td><td>90</td></tr>
+<tr><td>new</td><td>B7_thermal_spike_repro</td><td>7.517</td><td>8.691</td><td>9.282</td><td>100</td></tr>
+<tr><td>old</td><td>B1_corridor_blast</td><td>5.579</td><td>6.614</td><td>7.633</td><td>120</td></tr>
+<tr><td>old</td><td>B2_room_door_jet</td><td>6.333</td><td>7.682</td><td>8.438</td><td>120</td></tr>
+<tr><td>old</td><td>B3_breach_vacuum_vent</td><td>2.595</td><td>5.080</td><td>15.649</td><td>150</td></tr>
+<tr><td>old</td><td>B4_sealed_room_fire</td><td>3.833</td><td>4.789</td><td>9.977</td><td>260</td></tr>
+<tr><td>old</td><td>B5_water_displaces_smoke</td><td>4.785</td><td>5.779</td><td>7.464</td><td>220</td></tr>
+<tr><td colspan=2><b>old — ALL SCENARIOS COMBINED</b></td><td>4.713</td><td>6.869</td><td>15.649</td><td>870</td></tr>
+<tr><td colspan=2><b>new — ALL SCENARIOS COMBINED</b></td><td>7.773</td><td>9.356</td><td>10.958</td><td>1060</td></tr>
+</table>
+
+<h2>&sect;9 tuning dials (LISTED, not touched here — Erik's feel pass)</h2>
+<table>
+<tr><th>dial</th><th>where</th><th>what it does</th></tr>
+<tr><td>gamma / K / c_amb</td><td><code>[physics.eos]</code></td><td>adiabatic index (1.4, compile-time), the one unit-bridge constant K = c_amb^2/gamma, ambient sound speed (SET 300 m/s)</td></tr>
+<tr><td>k_push + knockdown thresholds</td><td><code>[exchange] k_push=400.0</code></td><td>unit shockwave impulse, vs the new transient grad(P) scale</td></tr>
+<tr><td>k_p (water head)</td><td><code>[physics.water] k_p=0.5</code></td><td>water pressure-head coefficient, recalibrated for integer P</td></tr>
+<tr><td>air conductivity</td><td><code>[materials.air] conductivity</code></td><td>small-but-nonzero: big enough the solid&lt;-&gt;gas interface sink fires, small enough air doesn't become the heat-advecting field</td></tr>
+<tr><td>combustion constants</td><td><code>[physics.combustion]</code></td><td>burn_rate=1.0, H_fuel=4.0, soot_yield=0.3, o2_thresh_burn=0.03, o2_thresh_breathe=0.08 (unwired)</td></tr>
+<tr><td>cool_shift_vacuum</td><td><code>[physics.thermal] COOL_SHIFT_VACUUM=3</code></td><td>hull radiate-to-space rate under the real energy path</td></tr>
+<tr><td>CFL_ADV / N_SUB_MAX</td><td><code>[physics.eos]</code></td><td>CFL_ADV=0.5 (pinned constraint), N_SUB_MAX=8 (re-pinned from 16 at the P3 gate)</td></tr>
+<tr><td>dyn_wave_absorb / absorb_strength</td><td><code>[physics.eos] absorb_strength=8.0</code></td><td>unit/material shockwave absorption; now also locally damps smoke-carrying wind near units (named P5 feel item)</td></tr>
+<tr><td>trace_mass_scale / trace advection</td><td><code>engine-owned, [physics] advection_rate now dead</code></td><td>trace_mass_scale=0.02 (opacity not molar density); wind_diffusion_scale disabled pending this P5 feel pass</td></tr>
+</table>
+
+<h2>Scenarios</h2>
+
+        <section class="scenario">
+          <h2>B1_corridor_blast <span class="layout">(old | new)</span></h2>
+          <p class="caption">A blast in a long sealed corridor: watch the compression front travel and reflect off the far end. New engine = real acoustic wave off one P field; old engine = wave_p buffet over the atmosphere dome.</p>
+          <img src="B1_corridor_blast.gif" class="gif">
+          <img src="B1_corridor_blast_trace.png" class="trace-plot">
+        </section>
+        <section class="scenario">
+          <h2>B2_room_door_jet <span class="layout">(old | new)</span></h2>
+          <p class="caption">Blast in room A jets through a single-tile door into room B — look for a focused jet vs. the old engine's smeared/omnidirectional leak.</p>
+          <img src="B2_room_door_jet.gif" class="gif">
+          <img src="B2_room_door_jet_trace.png" class="trace-plot">
+        </section>
+        <section class="scenario">
+          <h2>B3_breach_vacuum_vent <span class="layout">(old | new)</span></h2>
+          <p class="caption">THE sink_hop-vs-native comparison: a smoky sealed room breached to true vacuum. Old engine vents via the geometric sink_hop BFS hack; new engine vents natively off -grad(P) toward N=0. Watch how the outflow shapes.</p>
+          <img src="B3_breach_vacuum_vent.gif" class="gif">
+          <img src="B3_breach_vacuum_vent_trace.png" class="trace-plot">
+        </section>
+        <section class="scenario">
+          <h2>B4_sealed_room_fire <span class="layout">(old | new)</span></h2>
+          <p class="caption">Fire in a sealed room, no vent. Intended story: new engine's real O2 depletion self-starves the fire; old engine's atmosphere-as-O2-proxy never runs out, fire burns on. ACTUAL FINDING (new engine): T_fire pins at/near the Q16.16 ceiling (~32760 K, occasionally wrapping negative) for nearly the whole 260-tick run and never settles -- this is the SAME flagged plume-T-shim x compression-work coupling as B7 (decisions.md #16), not confined to B7's extreme seeding. O2+N2 mass stays conserved (~0.997 of start) so it is NOT a leak -- it is the solver pinned hot, producing wild local P/fire flicker instead of a clean rise-then-settle. Erik should see this before judging B4's feel.</p>
+          <img src="B4_sealed_room_fire.gif" class="gif">
+          <img src="B4_sealed_room_fire_trace.png" class="trace-plot">
+        </section>
+        <section class="scenario">
+          <h2>B5_water_displaces_smoke <span class="layout">(old | new)</span></h2>
+          <p class="caption">A water source held in one corner floods the room; rising water evacuates its cell's air into neighbours (new engine: the v2.1 occupancy-transition rule, no field multiply) pushing smoke ahead of the waterline. Old engine: the legacy atmosphere*=ratio W3 term.</p>
+          <img src="B5_water_displaces_smoke.gif" class="gif">
+          <img src="B5_water_displaces_smoke_trace.png" class="trace-plot">
+        </section>
+        <section class="scenario">
+          <h2>B6_o2_pocket_flare <span class="layout">(new only)</span></h2>
+          <p class="caption">New engine only (needs real N_O2): left room = ambient ignition (control), right room = an O2-tank-rupture spike at the same ignition — the O2-rich pocket should flare visibly hotter/brighter.</p>
+          <img src="B6_o2_pocket_flare.gif" class="gif">
+          <img src="B6_o2_pocket_flare_trace.png" class="trace-plot">
+        </section>
+        <section class="scenario">
+          <h2>B7_thermal_spike_repro <span class="layout">(new only)</span></h2>
+          <p class="caption">New engine only, FLAGGED (decisions.md #16): a strongly-seeded fire in a small sealed room drives `temperature` near the Q16.16 ceiling — pre-existing P3 plume-&gt;T-shim x compression-work coupling, reproduced here with the exact test_eos_p4_combustion.py recipe. Erik needs to SEE what this looks like, not just the number.</p>
+          <img src="B7_thermal_spike_repro.gif" class="gif">
+          <img src="B7_thermal_spike_repro_trace.png" class="trace-plot">
+        </section>
+</body></html>
