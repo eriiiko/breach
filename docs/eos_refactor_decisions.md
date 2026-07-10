@@ -144,6 +144,32 @@ maps every round-1 blocker/decision to its fix). Round-1 critique: `..._design_c
     reproduced with combustion off; documented in
     `test_thermal_spike_is_pre_existing_not_a_p4_regression`.
 
+17. **P5 HUMAN-TEST PASSED — v2.4 stack BLESSED, P5.1 launched (Erik, 2026-07-11).**
+    Erik reviewed the final re-bake (`tools/eos_p5_out/index.html`, main @ `f646056`)
+    and **blessed all four provisional v2.4 items as shipped**: the T_MAX_PHYS/U_MAX
+    counted rails, the absorption-∝-density radiant deposit, the O2-gate hot-zone
+    rescale (0.01/0.03/0.01), and the T_FLAME_MAX≈2000 shim limiter. His verdict on the
+    bake itself: B3's native breach-vent is the arc's money shot, everything green.
+    Two outcomes from his review:
+    - **P5.1 — stoichiometric fuel consumption** (design §5 v2.5 amendment): combustion
+      consumes `wall_hp` at ember scale (`fuel_per_o2` dial, default 0.7), **clamped at
+      1 LSB — smolder never destroys** (Erik: charred walls survive as "easy prey for
+      almost anything else — more emergent cool stuff"); the no-fuel gate moves to
+      `hp ≤ 1 LSB` so charred embers extinguish. Completes Erik's original fire-lifecycle
+      vision (die → ember → wind re-ignites → burn out); the ember state is EMERGENT
+      (I=0 ∧ T≥ign ∧ hp>floor), no new state machine. Trio timings will move by design;
+      golden re-baselines once.
+    - **B2's undamped Helmholtz ring flagged** (Erik's eye: rooms shouldn't oscillate
+      forever). Diagnosis: real two-room Helmholtz mode (measured 15-tick period,
+      rock-steady, from the B2 trace), unphysically undamped because the momentum update
+      has no viscosity/drag and walls are rigid. Remedy identified but NOT launched: a
+      `k_drag` per-tick velocity decay dial (`u *= 1−k_drag`, one deterministic Q16.16
+      multiply, ~0.02–0.05) — queued as a §9 feel-pass item (it's the §D "artificial
+      acoustic damping for feel" item, now with a measured motivation).
+    - Related vision note for later arcs: temperature→blackbody-glow rendering is now
+      UNBLOCKED by the unified-T substrate (the parked smoke/blackbody planning-day
+      topic); glow would visually mark re-ignition sites since ignition ≡ fuel∧O2∧T.
+
 ## RESUME POINT (Erik paused 2026-07-10, resuming tonight, same PC)
 
 **Where we are:** P1+P2+P3 all merged — the compressible EOS engine is LIVE on main

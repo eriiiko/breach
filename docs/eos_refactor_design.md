@@ -495,7 +495,7 @@ v2 refinements:
   the tunable `o2_thresh` (round-1 minor), and distinct from §3.4's solver floor.
 - `heat` (the ray-deposit buffer) keeps its per-tick-clear contract — unaffected.
 
-### v2.4 as-built amendment — thermal/velocity rails (PROVISIONAL, Erik review at P5)
+### v2.4 as-built amendment — thermal/velocity rails (BLESSED by Erik at the P5 review, 2026-07-11)
 
 *(branch `eos-p3fix-thermal-ceiling`, 2026-07-10/11 — the decisions.md #16 "thermal
 spike" investigation. Same class as the blessed T_MIN/work-clamp rails, NOT a solver
@@ -552,7 +552,7 @@ silently depended on — a fire's heat (measured ~330 units/tick/cell at
 assumed near-ambient density at the flame edge — an atmosphere-proxy-era assumption
 `P=C·N·T` revokes; real fires keep their flame edge oxygenated by buoyant
 entrainment, which this 2D no-gravity model lacks, so the gate scale compensates).
-Adopted (PROVISIONAL/Erik-P5): `P_min 0.126→0.01`, `P_full 0.21→0.03`, ignition
+Adopted (BLESSED by Erik at the P5 review, 2026-07-11): `P_min 0.126→0.01`, `P_full 0.21→0.03`, ignition
 `o2_threshold 0.12→0.01` — the second half of the exact rescale P4 already performed
 on these constants (1.0-scale → 0.21-scale → hot-zone-equilibrium scale). Measured:
 restores STRONG O2 differentiation (sealed 172 / vented 49 / flooded 39 ticks in the
@@ -570,6 +570,12 @@ pr.step-only bake harness (`tools/eos_p5_bake.py`, eos-p5-bake branch) lacks the
 loop's per-tick `heat` clear — one-line fidelity fix at merge time. (3)
 `k_fire_heat`'s scale (gas near a wood fire reaches a few kK) is untouched — Erik's
 feel dial.
+
+**P5 flag status (2026-07-11, Erik's review):** (1) resolved by the **v2.5 amendment**
+(§5 — P5.1 stoichiometric fuel consumption, Erik's clamp-at-1-LSB rule); (2) landed on
+main (`cae2d13` + `f646056`); (3) remains Erik's §9 feel dial. The v2.4 rails, the
+absorption-∝-density deposit, the O2-gate rescale, and the T_FLAME_MAX shim were all
+**blessed as shipped** (decisions log #17).
 
 ## 5. Combustion on real O2 — conservative products (v2 call #2 — LOCKED)
 
@@ -603,6 +609,51 @@ self-starving fires, breach-kills-fire, **O2-tank rupture → fireball** (a loca
 spike — patch-1 range check that a tank's spike fits Q16.16 headroom), inert-flood
 smothering. Suffocation reads real `N_O2` (unit-side mechanics arc, enabled here, wired
 later). `o2_thresh_burn` and `o2_thresh_breathe` are **separate constants** (§9).
+
+### v2.5 amendment — P5.1 stoichiometric fuel consumption (Erik, 2026-07-11)
+
+Closes v2.4's P5 flag #1 (the fuel-free smolder) and completes the fire lifecycle Erik
+originally wanted: fires die (starved or blown out) → hot tiles ember → wind-borne O2
+re-ignites them → they burn out or starve again. **No new state**: the ember is emergent
+from the existing fields — `(fire I = 0, T ≥ ignition_temp, wall_hp > floor)`.
+
+The §5 pseudo-code above already gates on `fuel > 0`, but the as-built P4
+`CombustionSolver` takes `wall_hp` **const** — it reads the gate and never draws down
+the store, so an I=0 smolder burns O2 and radiates heat from fuel it never consumes
+(a perpetual ember). `FireSimulation`'s `wall_damage` pass remains the FLAME-scale
+consumption (I>0, unchanged); combustion gains the EMBER-scale consumption:
+
+- `CombustionSolver` takes `wall_hp` **mutable**; per neighbour burn the source tile pays
+  `fuel_cost = narrow_round(mul_wide(fuel_per_o2_q, burn))` — round-to-nearest, the same
+  unbiased-sink idiom `fire_simulation.cpp`'s wall-damage depletion already uses.
+- **Clamp at 1 LSB — smolder NEVER destroys (Erik's call, 2026-07-11):** this pass floors
+  `wall_hp` at 1 (one Q16.16 LSB) and structural destruction remains exclusively
+  `FireSimulation`'s I>0 path. Emergent rule, by design: a long-smoldered wall survives
+  as charred tissue paper at 1 LSB — easy prey for almost any other damage source
+  (and for a real flame, whose damage pass CAN still take it to 0 and destroy it).
+- **The no-fuel gate moves from `wall_hp ≤ 0` to `wall_hp ≤ FUEL_FLOOR (= 1 LSB)`**
+  (combustion.cpp line-62 class): a fully-charred tile's ember goes OUT — no O2 draw, no
+  heat deposit — instead of burning its final LSB forever (which would just re-open the
+  perpetual-ember hole one LSB lower). Its T then decays via the normal conduction/
+  cooling paths, and it can never re-ignite (F ≈ 0 starves any flame the ignition check
+  might light).
+- **`fuel_per_o2`** — new `[physics.combustion]` dial (§9), Q16.16 at load time,
+  default **0.7** (wood stoichiometry burns ≈0.7 mass-units of fuel per unit of O2).
+  Physically honest default, but in play it is THE ember-lifetime dial: smaller → embers
+  glow for minutes awaiting oxygen; larger → they char out fast.
+
+Expected B4 story after this patch: burn → O2-starve (t≈39) → smolder flicker →
+**char-out → quiet** (today's flicker persists indefinitely; timing depends on
+`fuel_per_o2`). The O2-differentiation trio timings (172/49/39) WILL move — behavioral
+by design, re-measured + perturbation-gated at the patch gate, golden re-baselined ONCE.
+
+*Gates (P5.1):* unit tests — fuel decrement exact/deterministic, the 1-LSB floor never
+crossed by this pass, no destruction ever originates from combustion; a **lifecycle E2E**
+— ignite → O2-starve → ember persists (T ≥ ignition, I = 0, fuel draining) → O2 inflow
+re-ignites a proper flame (I > 0, FLAME-scale consumption resumes) → sealed again →
+char-out at the floor, ember extinguishes, wall stands at 1 LSB and one hit destroys it;
+O2-differentiation trio re-measured + `test_payoff_orderings_perturbation_robust` green;
+suite green; golden re-baseline once with rationale.
 
 ---
 
@@ -706,6 +757,9 @@ alias-preserved throughout, so no patch strands a legacy reader.
 5. **P5 — combined-system bake-off (HUMAN-TEST).** S1–S5 (+ the venting scenario)
    baked on the assembled stack vs the pre-refactor engine; cost table (p99);
    **Erik's eyes are the gate.** First feel-tuning pass of §9 happens here.
+   **P5.1 — stoichiometric fuel consumption** (v2.5 amendment, from Erik's P5 review
+   2026-07-11): combustion consumes `wall_hp` at ember scale, 1-LSB floor, `fuel_per_o2`
+   dial. *Gate:* the v2.5 gate block (lifecycle E2E + trio re-measure + golden once).
 6. **P6 — CUDA ports**, one gated sub-patch per kernel, full surface: Helmholtz solve;
    velocity self-advection; T advection + compression work; bulk donor-cell flux
    (precedent `cuda_water.cu`); unified conduction (extend `cuda_temperature.cu`);
@@ -738,7 +792,8 @@ cheaper *for the physics Erik actually wanted*, and even S=16 (5.7 ms) is 2× ch
 `k_push` + knockdown thresholds (vs the new transient-∇P scale); `k_p` (water head);
 air conductivity ("small": big enough that the interface sink fires, small enough that
 air doesn't become the rejected heat-advecting field); `cool_shift_vacuum` rate under
-the real energy path; combustion `burn_rate / H_fuel / soot_yield / o2_thresh_burn`;
+the real energy path; combustion `burn_rate / H_fuel / soot_yield / o2_thresh_burn / fuel_per_o2` (v2.5 —
+the ember-lifetime dial, default 0.7);
 `o2_thresh_breathe` (separate); `CFL_ADV` + `N_SUB_MAX`; sweep count (pinned at the P3
 gate, then frozen). **Gone from this list vs v1:** `K_EXPAND`, `W_DISPLACE_GAIN` (deleted
 with `div_target`).
