@@ -122,17 +122,18 @@ def test_solid_conversion_equals_heat_shifted():
     assert temp[0, 1] < temp[0, 0]
 
 
-def test_air_tile_stays_exactly_zero():
-    # An air (non-solid) tile is skipped by the conversion: even with a huge heat
-    # deposit, its temperature stays bit-exactly 0.
+def test_air_tile_receives_radiation_deposit():
+    # EOS P2 (unified temperature, design §4): air is no longer skipped by the
+    # conversion — an open-air tile with a heat deposit receives gas temperature
+    # via dT = dE/(N*c_v) (the per-tile reciprocal). The OLD doctrine ("air holds
+    # no temperature") was retired by locked decision 7; golden re-blessed at the
+    # P1+P2 merge, 2026-07-10.
     temp, heat, shift, face_shift, solid, vac, atm = _grid([MAT_AIR])
     assert not solid[0, 0], "sanity: air must be non-solid"
-    # Air's shift is 0 (>>0), so if it were wrongly converted the full deposit
-    # would land. Use the int32 ceiling to make any leak unmistakable.
     heat[0, 0] = INT32_MAX
     solver = _solver()
     _step(solver, temp, heat, shift, face_shift, solid, vac, atm)
-    assert temp[0, 0] == 0, f"air tile gained temperature: {temp[0, 0]}"
+    assert temp[0, 0] > 0, f"air tile did not receive the gas deposit: {temp[0, 0]}"
 
 
 def test_accumulates_over_two_ticks():

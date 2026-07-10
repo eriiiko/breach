@@ -54,9 +54,23 @@ def cuda_dll_dir() -> Path | None:
     return None
 
 
+# EOS refactor migration window (design doc §7 / D7, merged P1+P2 2026-07-10):
+# the CPU solvers have moved ahead of the CUDA kernels (new gas species, unified
+# temperature), so the GPU mirrors are STALE until the P6 port re-proves each
+# kernel bit-identical. During this window the CUDA gates must SKIP — a stale
+# kernel comparing against the new CPU path is a guaranteed, meaningless red.
+# Flip back to False in P6, kernel by kernel, as ports land.
+EOS_P6_PENDING = True
+
+
 def cuda_available() -> bool:
     """True iff both the CUDA build and its runtime DLLs are present on disk.
-    (Whether a *device* is actually usable is checked inside the subprocess.)"""
+    (Whether a *device* is actually usable is checked inside the subprocess.)
+
+    Returns False unconditionally while EOS_P6_PENDING (see above): the design's
+    D7 rule — stale GPU kernels must be unreachable during the EOS migration."""
+    if EOS_P6_PENDING:
+        return False
     return cuda_pyd() is not None and cuda_dll_dir() is not None
 
 

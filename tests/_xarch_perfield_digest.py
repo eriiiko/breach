@@ -77,7 +77,7 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # trajectories are byte-identical (and the pulse's dv ~2.3 is below the
 # knockdown threshold 6.0 -> __unit_status__ unmoved too).
 # (was 6d690fda8259b392be9029082013623fbef0fc0322ed3089107d5db220e1b441)
-GOLDEN_AGGREGATE = "07c3f37043c62cb47ec1abfef1a59d47c5f7a9c313490b38ecd2ddc543d1833d"
+GOLDEN_AGGREGATE = "2bab9702e098b30a2aeb290e9aeb19301c9de4379f64443966ea9f3074a91b7a"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs

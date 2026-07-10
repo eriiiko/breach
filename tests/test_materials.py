@@ -141,11 +141,13 @@ def test_on_tile_changed_patches_all_caches_after_destroy():
     assert not g.solid[y, x]
     assert not g.flammable[y, x]
     assert g.wall_hp[y, x] == 0
-    assert g.conductivity[y, x] == 0.0
+    # EOS P2: air carries a small nonzero conductivity (unified temperature,
+    # design §4) — assert against the table, not a hardcoded 0.0.
+    assert g.conductivity[y, x] == g.materials.conductivity[MAT_AIR]
 
     # Every OTHER tile is untouched (incremental patch, not a rebuild).
     wall_before[y, x] = False
-    cond_before[y, x] = 0.0
+    cond_before[y, x] = g.materials.conductivity[MAT_AIR]   # EOS P2: air conducts
     assert np.array_equal(g.solid, wall_before), "solid touched other tiles"
     assert np.array_equal(g.conductivity, cond_before), "conductivity touched others"
     print("OK: on_tile_changed_patches_all_caches_after_destroy")

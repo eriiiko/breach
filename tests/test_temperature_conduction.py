@@ -168,19 +168,23 @@ def test_metal_spreads_faster_than_wood():
     assert hull[0, 2] < wood[0, 2], "metal centre should cool faster than wood"
 
 
-def test_air_tiles_stay_bit_exactly_zero():
-    # A hull tile flanked by AIR. The hull may hold heat, but the air tiles have
-    # every face NO_FACE (kappa==0) -> they never gain a single count.
+def test_air_conducts_with_solids():
+    # EOS P2 (unified temperature, design §4): air now has a small nonzero
+    # conductivity, so the hull<->air interface is a REAL face — the sealed-room
+    # energy sink the unified-field decision banks on. The OLD doctrine (air
+    # faces are NO_FACE; a hull flanked by air is a no-op) was retired by locked
+    # decision 7; golden re-blessed at the P1+P2 merge, 2026-07-10.
     mats = np.array([[MAT_AIR, MAT_HULL, MAT_AIR]], dtype=np.int8)
     shift, face, solid = _build_caches(mats)
     temp = np.zeros((1, 3), dtype=np.int32)
     temp[0, 1] = 1 << 24          # hot hull, air on both sides
+    before_total = int(temp.sum())
     _run(temp, shift, face, solid, 50)
-    assert temp[0, 0] == 0, f"air gained temperature: {temp[0, 0]}"
-    assert temp[0, 2] == 0, f"air gained temperature: {temp[0, 2]}"
-    # The hull, isolated by air faces (all NO_FACE), conducts to nothing -> it
-    # is itself unchanged (Σr == 0).
-    assert temp[0, 1] == (1 << 24), "isolated hull should be a no-op"
+    assert temp[0, 0] > 0, "air did not receive interface conduction"
+    assert temp[0, 2] > 0, "air did not receive interface conduction"
+    assert temp[0, 1] < (1 << 24), "hull did not lose heat to the air"
+    # Conduction's shift truncation can only LOSE counts, never invent them.
+    assert int(temp.sum()) <= before_total, "conduction invented energy"
 
 
 def test_equal_neighbours_zero_change():

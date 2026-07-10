@@ -187,9 +187,11 @@ def test_heat_lands_on_solid_not_lost_in_air_conversion():
     sim.set_paused(False)
     g.fire[50, 14] = FIRE_Q(0.8)
     sim.step()
-    # Solid neighbour heated; an air tile next to the fire stays at 0 temperature.
+    # Solid neighbour heated. EOS P2 (design §4): the air tile next to the fire
+    # now ALSO holds gas temperature (radiation deposit via dT = dE/(N*c_v)) —
+    # the old "air must stay 0" doctrine was retired by locked decision 7.
     assert int(g.temperature[50, 15]) > 0, "adjacent solid did not heat"
-    assert int(g.temperature[49, 14]) == 0, "air tile holds temperature (it must not)"
+    assert int(g.temperature[49, 14]) > 0, "air received no gas temperature (P2 deposit missing)"
 
 
 # ---------------------------------------------------------------------------
