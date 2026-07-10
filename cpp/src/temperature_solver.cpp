@@ -235,11 +235,38 @@ void TemperatureSolver::step(
                 // N_total (O2+N2, passed by the engine) — the P2 atmosphere
                 // density-proxy remains only as the nullable back-compat
                 // fallback for the direct Python binding.
-                int32_t N_q = n_bulk ? n_bulk[i] : atmosphere[i];
+                //
+                // v2.4 ABSORPTION-PROPORTIONAL radiant deposit (optically-thin
+                // form; PROVISIONAL, Erik review at P5 — design doc §4 v2.4).
+                // The old formula deposited the FULL ray energy into the cell
+                // no matter how thin its gas — as a hot zone's own pressure
+                // evacuated its N, the same deposit divided by an ever-smaller
+                // N and the reciprocal ran away (the measured decisions.md #16
+                // driver). Physically, a gas ABSORBS radiation in proportion
+                // to its density (this project's own engine/05 optics model,
+                // applied to the heat channel):
+                //     E_abs = deposit · min(N, N_AMB)/N_AMB
+                //     ΔT    = E_abs / (max(N, N_FLOOR_HEAT) · c_v)
+                // Consequences: for N_FLOOR_HEAT ≤ N ≤ N_AMB this collapses to
+                // ΔT = deposit/(N_AMB·c_v) — BOUNDED regardless of N-collapse;
+                // below the floor it decays linearly to 0 (a near-vacuum cell
+                // absorbs almost nothing — the physical truth the old formula
+                // violated); at/above ambient it reduces EXACTLY to the old
+                // chain (e_abs == deposit, bit-identical — zero feel change in
+                // normal air). N_AMB == FP_ONE by construction (§2.1 P1
+                // calibration: ambient N_total quantizes to exactly 1.0), so
+                // min(N, N_AMB)/N_AMB is just min(N, FP_ONE) — no new divide,
+                // no new dial.
+                int32_t N_raw = n_bulk ? n_bulk[i] : atmosphere[i];
+                if (N_raw < 0) N_raw = 0;                 // no negative density
+                const int32_t e_abs = (N_raw >= FP_ONE)
+                    ? deposit                              // ambient+: exact old path
+                    : mul_q16(deposit, (q16)N_raw);        // thin gas: ∝ density
+                int32_t N_q = N_raw;
                 if (N_q < n_floor_q) N_q = n_floor_q;    // floor independent of anything else (N_FLOOR_HEAT)
                 const int32_t recip_N_q = reciprocal_q16(N_q);        // 1/N, per-tile Newton recip
-                const int32_t e_over_n  = mul_q16(deposit, recip_N_q); // ΔE/N, Q16.16
-                const int32_t dT = recip_mul(e_over_n, recip_cv);     // (ΔE/N)/c_v, Q16.16
+                const int32_t e_over_n  = mul_q16(e_abs, recip_N_q);  // E_abs/N, Q16.16
+                const int32_t dT = recip_mul(e_over_n, recip_cv);     // (E_abs/N)/c_v, Q16.16
                 heat_saturating_add(&temperature[i], dT);
                 if (temperature[i] > t_max_phys_q) {
                     temperature[i] = t_max_phys_q; ++t_max_phys_hits;
