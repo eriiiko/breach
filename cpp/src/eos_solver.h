@@ -96,7 +96,11 @@ public:
     int   mg_min_dim = 1;          // coarsen the pyramid all the way (the DC /
                                    // room-bulk mode is solved EXACTLY at 1×1)
     // -----------------------------------------------------------------------
-    int   N_SUB_MAX = 16;
+    // N_SUB_MAX — RE-PINNED 16 -> 8 (Erik, 2026-07-10, decisions log #14):
+    // measured exactly as stable as 16 on both E2Es (300 ticks, worst-dev
+    // 0.010/0.0006), and the sustained-sonic-venting regime pins n_sub at
+    // the cap for the whole post-breach phase, so the cap IS the perf dial.
+    int   N_SUB_MAX = 8;
     float CFL_ADV = 0.5f;
     // N_FLOOR_SOLVER: applies ONLY to the face 1/N̂ divide (design §3.1
     // property 2 — never to the outer γ·p* coefficient, whose vanishing at
@@ -185,4 +189,7 @@ private:
     mutable std::vector<int32_t> vx_src_, vy_src_, t_src_;
     mutable std::vector<int32_t> pstar_;
     mutable std::vector<int32_t> div_u_;
+    // per-tick caches for the substep loop (micro-opt, bit-identity-neutral):
+    mutable std::vector<uint8_t> cmask_;              // sealed/breach/live table
+    mutable std::vector<int32_t> coeffE_, coeffS_;    // donor-cell face coeffs
 };

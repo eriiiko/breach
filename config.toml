@@ -264,7 +264,7 @@ C = 0.0034482758620689655             # 1/t_amb_k — chosen so C*N_amb*T_amb_k 
 # explicitly pinned by the decisions log; defaults mirror the C++ struct.
 c_max = 300.0                         # m/s capped sound speed (Erik's call — retires wave_c=66)
 S = 8                                 # Helmholtz RB-GS sweep count (gate may pin up to 16)
-N_SUB_MAX = 16                        # advection substep cap (accuracy, not stability)
+N_SUB_MAX = 8                         # advection substep cap (accuracy, not stability; re-pinned 16->8, Erik 2026-07-10, decisions #14)
 CFL_ADV = 0.5                         # advection CFL number
 N_FLOOR_SOLVER = 0.001                # solver-internal N floor (gameplay N unfloored)
 adiabatic_index = 1.4                 # ideal-gas adiabatic index (compression work); TUNING DIAL

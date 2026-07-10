@@ -52,92 +52,8 @@ inline int mirror_idx(int self_i, int ny, int nx, int h, int w, const bool* soli
     return ni;
 }
 
-// ---- semi-Lagrangian backtrace + bilinear sample --------------------------
-// Same SHAPE as smoke_dynamics.cpp's backtrace_sample_q (the proven SLint
-// scheme), with the eos_solver's single solid/is_vacuum mask pair.
-int32_t eos_backtrace_sample_q(
-        const int32_t* src, int x, int y, int32_t bx_q, int32_t by_q,
-        const bool* solid, const bool* is_vacuum,
-        const float* perm, int h, int w) {
-    int64_t px_q = ((int64_t)x << FP_SHIFT) + bx_q;
-    int64_t py_q = ((int64_t)y << FP_SHIFT) + by_q;
-
-    const int32_t abx = bx_q >= 0 ? bx_q : -bx_q;
-    const int32_t aby = by_q >= 0 ? by_q : -by_q;
-    const int32_t amax = abx >= aby ? abx : aby;
-    int n_steps = amax >> FP_SHIFT;
-    if (amax & (FP_ONE - 1)) n_steps += 1;
-
-    auto solid_wall_at = [&](int ty, int tx) -> bool {
-        if (ty < 0 || ty >= h || tx < 0 || tx >= w) return true;
-        const int i = ty * w + tx;
-        const bool breach = is_vacuum[i] && !solid[i];
-        if (breach) return false;
-        return solid[i] || is_vacuum[i] || perm[i] <= 0.0f;
-    };
-
-    if (n_steps > 0) {
-        auto floordiv = [](int32_t a, int b) -> int32_t {
-            return (a >= 0) ? (a / b) : -(((-(int64_t)a) + b - 1) / b);
-        };
-        const int32_t sx_q = floordiv(bx_q, n_steps);
-        const int32_t sy_q = floordiv(by_q, n_steps);
-        int64_t cx_q = (int64_t)x << FP_SHIFT;
-        int64_t cy_q = (int64_t)y << FP_SHIFT;
-        for (int s = 0; s < n_steps; ++s) {
-            const int64_t nxp_q = cx_q + sx_q;
-            const int64_t nyp_q = cy_q + sy_q;
-            const int ti = (int)((nxp_q + (FP_ONE >> 1)) >> FP_SHIFT);
-            const int tj = (int)((nyp_q + (FP_ONE >> 1)) >> FP_SHIFT);
-            if (solid_wall_at(tj, ti)) break;
-            cx_q = nxp_q;
-            cy_q = nyp_q;
-            if (tj >= 0 && tj < h && ti >= 0 && ti < w && is_vacuum[tj * w + ti]) break;
-        }
-        px_q = cx_q;
-        py_q = cy_q;
-    }
-
-    const int64_t hi_x = (int64_t)(w - 1) << FP_SHIFT;
-    const int64_t hi_y = (int64_t)(h - 1) << FP_SHIFT;
-    if (px_q < 0) px_q = 0; else if (px_q > hi_x) px_q = hi_x;
-    if (py_q < 0) py_q = 0; else if (py_q > hi_y) py_q = hi_y;
-
-    const int x0 = (int)(px_q >> FP_SHIFT);
-    const int y0 = (int)(py_q >> FP_SHIFT);
-    const int x1 = (x0 + 1 <= w - 1) ? x0 + 1 : w - 1;
-    const int y1 = (y0 + 1 <= h - 1) ? y0 + 1 : h - 1;
-    const int32_t fx_q = (int32_t)(px_q - ((int64_t)x0 << FP_SHIFT));
-    const int32_t fy_q = (int32_t)(py_q - ((int64_t)y0 << FP_SHIFT));
-    const int32_t ifx_q = FP_ONE - fx_q;
-    const int32_t ify_q = FP_ONE - fy_q;
-    const int32_t w00 = mul_q16(ifx_q, ify_q);
-    const int32_t w10 = mul_q16(fx_q,  ify_q);
-    const int32_t w01 = mul_q16(ifx_q, fy_q);
-    const int32_t w11 = mul_q16(fx_q,  fy_q);
-    const int cyx[4][2] = { {y0, x0}, {y0, x1}, {y1, x0}, {y1, x1} };
-    const int32_t cw[4] = { w00, w10, w01, w11 };
-
-    int64_t acc = 0;
-    int32_t wsum_q = 0;
-    for (int k = 0; k < 4; ++k) {
-        const int cy_ = cyx[k][0];
-        const int cx_ = cyx[k][1];
-        const int j = cy_ * w + cx_;
-        if (solid[j] || perm[j] <= 0.0f) continue;
-        const int32_t val_q = is_vacuum[j] ? 0 : src[j];
-        acc += mul_wide(cw[k], val_q);
-        wsum_q += cw[k];
-    }
-    const int32_t WSUM_EPS_Q = FP_ONE >> 14;
-    if (wsum_q <= WSUM_EPS_Q) return src[y * w + x];
-    const int32_t WSUM_FLOOR_Q = FP_ONE >> 8;
-    const int32_t wsum_clamped = (wsum_q < WSUM_FLOOR_Q) ? WSUM_FLOOR_Q : wsum_q;
-    const int32_t recip_q = reciprocal_q16(wsum_clamped);
-    const int32_t acc_q = narrow(acc);
-    return mul_q16(acc_q, recip_q);
-}
-
+// (the single-field eos_backtrace_sample_q was deleted — the FUSED
+// 3-field version below replaced its every call site.)
 
 // ---- FUSED 3-field backtrace (perf: the substep loop is the tick's cost
 // whale at 160² — one DDA march + one bilinear weight set is shared by all
@@ -149,11 +65,16 @@ int32_t eos_backtrace_sample_q(
 // below the already-accepted sample-truncation decay. Both paths are
 // deterministic (documented behavior, not rounding drift).
 struct FusedSample { int32_t vx, vy, t; };
+// cmask (built ONCE per tick from solid/is_vacuum/perm — all constant within
+// a tick; a pure table-lookup re-expression of the original float/bool
+// predicate chain, BIT-IDENTITY-PRESERVING):
+//   0 = sealed  (solid || perm <= 0)              — wall to the march, dead corner
+//   1 = breach  (vacuum, open)                    — march target, zero-valued corner
+//   2 = live    (open air)                        — regular corner
 FusedSample eos_backtrace_sample3_q(
         const int32_t* src_vx, const int32_t* src_vy, const int32_t* src_t,
         int x, int y, int32_t bx_q, int32_t by_q,
-        const bool* solid, const bool* is_vacuum,
-        const float* perm, int h, int w) {
+        const uint8_t* cmask, int h, int w) {
     const int i0 = y * w + x;
     if (bx_q == 0 && by_q == 0) {
         return { src_vx[i0], src_vy[i0], src_t[i0] };
@@ -167,12 +88,16 @@ FusedSample eos_backtrace_sample3_q(
     int n_steps = amax >> FP_SHIFT;
     if (amax & (FP_ONE - 1)) n_steps += 1;
 
+    // Original predicate: wall == OOB || solid || perm<=0 || (vacuum-sealed);
+    // a vacuum && open cell is a BREACH (not a wall). Table form: wall <=>
+    // OOB || cmask == 0 for the sealed set, breach <=> cmask == 1 — the
+    // vacuum&&solid / vacuum&&perm<=0 combinations land in cmask 0 exactly
+    // as the original chain classified them.
     auto solid_wall_at = [&](int ty, int tx) -> bool {
         if (ty < 0 || ty >= h || tx < 0 || tx >= w) return true;
         const int i = ty * w + tx;
-        const bool breach = is_vacuum[i] && !solid[i];
-        if (breach) return false;
-        return solid[i] || is_vacuum[i] || perm[i] <= 0.0f;
+        if (cmask[i] == 1) return false;   // breach: march may enter
+        return cmask[i] == 0 || false;     // sealed: wall
     };
 
     if (n_steps > 0) {
@@ -191,7 +116,10 @@ FusedSample eos_backtrace_sample3_q(
             if (solid_wall_at(tj, ti)) break;
             cx_q = nxp_q;
             cy_q = nyp_q;
-            if (tj >= 0 && tj < h && ti >= 0 && ti < w && is_vacuum[tj * w + ti]) break;
+            // original: stop after stepping ONTO a vacuum tile. Any vacuum
+            // tile the march can be standing on here is a BREACH (sealed
+            // vacuum forms are walls and broke above) == cmask 1.
+            if (tj >= 0 && tj < h && ti >= 0 && ti < w && cmask[tj * w + ti] == 1) break;
         }
         px_q = cx_q;
         py_q = cy_q;
@@ -221,8 +149,9 @@ FusedSample eos_backtrace_sample3_q(
     int32_t wsum_q = 0;
     for (int k = 0; k < 4; ++k) {
         const int j = cyx[k][0] * w + cyx[k][1];
-        if (solid[j] || perm[j] <= 0.0f) continue;
-        if (is_vacuum[j]) { wsum_q += cw[k]; continue; }   // corner value 0
+        const uint8_t m = cmask[j];
+        if (m == 0) continue;                              // sealed corner
+        if (m == 1) { wsum_q += cw[k]; continue; }         // breach: value 0
         ax += mul_wide(cw[k], src_vx[j]);
         ay += mul_wide(cw[k], src_vy[j]);
         at += mul_wide(cw[k], src_t[j]);
@@ -296,6 +225,9 @@ void EOSSolver::step(
     if ((int)t_src_.size()   != n) t_src_.assign(n, 0);
     if ((int)pstar_.size()   != n) pstar_.assign(n, 0);
     if ((int)div_u_.size()   != n) div_u_.assign(n, 0);
+    if ((int)cmask_.size()   != n) cmask_.assign(n, 0);
+    if ((int)coeffE_.size()  != n) coeffE_.assign(n, 0);
+    if ((int)coeffS_.size()  != n) coeffS_.assign(n, 0);
 
     // ---- step 0: P_prev := P ---------------------------------------------
     for (int i = 0; i < n; ++i) p_prev[i] = atmosphere[i];
@@ -335,6 +267,7 @@ void EOSSolver::step(
         if (t_abs > t_max_abs_raw) t_max_abs_raw = t_abs;
     }
     const q16 c_amb_q = quantize((double)c_max);
+    const q16 absorb_dt_q = quantize((double)absorb_strength * dt_d);
     const int32_t ratio_q = (int32_t)((t_max_abs_raw << 16) / (int64_t)t_amb_q);
     const q16 sqrt_ratio = sqrt_q16((int64_t)ratio_q << 16);   // Q.32 radicand
     q16 c_local_q = mul_q16(c_amb_q, sqrt_ratio);
@@ -345,12 +278,15 @@ void EOSSolver::step(
     //    u_est = max|u| + max(K·|∇P|/N̂)·dt, capped at c_LOCAL (§3.2 v2.2 —
     //    the ∇P term goes through the SAME unit bridge K as the kick).
     // ======================================================================
-    q16 max_u = 0;
+    // max|u| — micro-opt (BIT-IDENTITY-PRESERVING): sqrt_q16 is monotone
+    // non-decreasing, so max_i sqrt(rad_i) == sqrt(max_i rad_i) — ONE
+    // 32-iteration isqrt instead of 25k of them per tick.
+    int64_t max_rad = 0;
     for (int i = 0; i < n; ++i) {
         const int64_t rad = mul_wide(wind_x[i], wind_x[i]) + mul_wide(wind_y[i], wind_y[i]);
-        const q16 mag = sqrt_q16(rad);
-        if (mag > max_u) max_u = mag;
+        if (rad > max_rad) max_rad = rad;
     }
+    const q16 max_u = sqrt_q16(max_rad);
     // Dalton sum with the trace-mass calibration (see eos_solver.h): bulk
     // planes at full weight, trace planes scaled by trace_mass_scale.
     {
@@ -384,6 +320,8 @@ void EOSSolver::step(
             const int64_t agx = gx < 0 ? -gx : gx;
             const int64_t agy = gy < 0 ? -gy : gy;
             const int64_t gmag = agx > agy ? agx : agy;   // Chebyshev bound (cheap)
+            if (gmag == 0) continue;   // micro-opt: du would be exactly 0 —
+                                       // cannot raise the max (bit-identical)
             q16 nhat = n_total_[i];
             if (nhat < n_floor_q) nhat = n_floor_q;
             const q16 inv_n = reciprocal_q16(nhat);
@@ -401,6 +339,38 @@ void EOSSolver::step(
         (q16)std::min<int64_t>(numer_wide, (int64_t)INT32_MAX), cfl_dx_q));
     if (n_sub > N_SUB_MAX) n_sub = N_SUB_MAX;
     const double dt_s_d = dt_d / (double)n_sub;
+
+    // ---- per-tick caches for the substep loop (micro-opt, all
+    // BIT-IDENTITY-PRESERVING: solid/is_vacuum/dyn_permeability and dt_s are
+    // constant within the tick; these tables re-express the same per-use
+    // computations, evaluated once) --------------------------------------
+    // corner/march mask for the fused SL sample:
+    for (int i = 0; i < n; ++i) {
+        if (solid[i] || dyn_permeability[i] <= 0.0f) cmask_[i] = 0;
+        else if (is_vacuum[i]) cmask_[i] = 1;
+        else cmask_[i] = 2;
+    }
+    // donor-cell face coefficients (min-perm quantize x dt_s — the exact
+    // legacy bulk_flux_transport per-face chain, hoisted):
+    {
+        const q16 dts_q_c = quantize(dt_s_d);
+        for (int i = 0; i < n; ++i) { coeffE_[i] = 0; coeffS_[i] = 0; }
+        for (int y = 0; y < h; ++y) {
+            const int row = y * w;
+            for (int x = 0; x < w; ++x) {
+                const int i = row + x;
+                if (solid[i]) continue;
+                if (x < w - 1 && !solid[i + 1]) {
+                    const float ff = std::min(dyn_permeability[i], dyn_permeability[i + 1]);
+                    if (ff > 0.0f) coeffE_[i] = mul_q16(quantize((double)ff), dts_q_c);
+                }
+                if (y < h - 1 && !solid[i + w]) {
+                    const float ff = std::min(dyn_permeability[i], dyn_permeability[i + w]);
+                    if (ff > 0.0f) coeffS_[i] = mul_q16(quantize((double)ff), dts_q_c);
+                }
+            }
+        }
+    }
 
     for (int s = 0; s < n_sub; ++s) {
         const float dt_s = (float)dt_s_d;
@@ -425,7 +395,7 @@ void EOSSolver::step(
                 const FusedSample fs = eos_backtrace_sample3_q(
                     vx_src_.data(), vy_src_.data(), t_src_.data(),
                     x, y, bx_q, by_q,
-                    solid, is_vacuum, dyn_permeability, h, w);
+                    cmask_.data(), h, w);
                 wind_x[i] = fs.vx;
                 wind_y[i] = fs.vy;
                 temperature[i] = is_vacuum[i] ? 0 : fs.t;
@@ -434,9 +404,12 @@ void EOSSolver::step(
         if (s == n_sub - 1) digest_advect = digest_of(wind_x, n, digest_of(wind_y, n, digest_of(temperature, n, 0)));
 
         // -- d. bulk O2/N2 <- donor-cell conservative flux on u ------------
-        bulk_flux_transport(gas, gas_conservative, n_gases,
-                            wind_x, wind_y, solid, is_vacuum,
-                            dyn_permeability, h, w, dt_s);
+        // (cached-coefficient entry — the per-face min/quantize/mul chain is
+        // hoisted to the per-tick cache above; arithmetic identical)
+        bulk_flux_transport_cached(gas, gas_conservative, n_gases,
+                                   wind_x, wind_y, solid, is_vacuum,
+                                   coeffE_.data(), coeffS_.data(), h, w);
+        (void)dt_s;
         if (s == n_sub - 1) {
             uint64_t bfd = 0;
             for (int gi = 0; gi < n_gases; ++gi)
@@ -881,19 +854,23 @@ void EOSSolver::step(
             const int id = mirror_idx(i, y + 1, x, h, w, solid);
             const int64_t gx = mul128_shr((int64_t)(Pn[ir] - Pn[il]), (int64_t)inv_2dx_q, 16);
             const int64_t gy = mul128_shr((int64_t)(Pn[id] - Pn[iu]), (int64_t)inv_2dx_q, 16);
-            q16 nhat = n_total_[i];
-            if (nhat < n_floor_q) nhat = n_floor_q;
-            const q16 inv_n = reciprocal_q16(nhat);
-            // du = (K·dt)·∇P·(1/N̂) — staged 128-bit, the documented order.
-            const int64_t dux = mul128_shr(mul128_shr(Kdt_raw, gx, 16), (int64_t)inv_n, 16);
-            const int64_t duy = mul128_shr(mul128_shr(Kdt_raw, gy, 16), (int64_t)inv_n, 16);
-            int64_t ux = (int64_t)wind_x[i] - dux;
-            int64_t uy = (int64_t)wind_y[i] - duy;
+            int64_t ux = (int64_t)wind_x[i];
+            int64_t uy = (int64_t)wind_y[i];
+            if (gx != 0 || gy != 0) {   // micro-opt: du == 0 exactly at zero
+                                        // gradient — skip the reciprocal
+                                        // chain (bit-identical)
+                q16 nhat = n_total_[i];
+                if (nhat < n_floor_q) nhat = n_floor_q;
+                const q16 inv_n = reciprocal_q16(nhat);
+                // du = (K·dt)·∇P·(1/N̂) — staged 128-bit, the documented order.
+                ux -= mul128_shr(mul128_shr(Kdt_raw, gx, 16), (int64_t)inv_n, 16);
+                uy -= mul128_shr(mul128_shr(Kdt_raw, gy, 16), (int64_t)inv_n, 16);
+            }
 
             // absorption damping u *= (1 − absorb·dt) (D4) — on the wide
             // value, magnitude-first (sign-symmetric shrink, scale_mag's idiom).
-            const q16 a = mul_q16(quantize((double)dyn_wave_absorb[i]),
-                                  quantize((double)absorb_strength * dt_d));
+            // (absorb_dt_q hoisted — a per-tick constant, was quantized per cell)
+            const q16 a = mul_q16(quantize((double)dyn_wave_absorb[i]), absorb_dt_q);
             if (a > 0) {
                 const q16 kk = (a < FP_ONE) ? (q16)(FP_ONE - a) : 0;
                 const int64_t mx = mul128_shr(ux < 0 ? -ux : ux, (int64_t)kk, 16);

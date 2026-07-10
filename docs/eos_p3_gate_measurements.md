@@ -206,3 +206,55 @@ MG C=2 ≈ 3.2 ms, fixed overhead ≈ 4 ms.
   mass now) — the fire/explosion pressure economy is real.
 - Fire wind-coupling dials (k_wind_fan/strip) read m/s magnitudes now —
   P5 recalibration listed.
+
+
+---
+
+# FINAL LAP — cap re-pin (16→8, blessed), bit-identical micro-opts, final perf
+> 2026-07-10, decisions log #14 executed.
+
+## Micro-opt pass (ALL verified BIT-IDENTITY-PRESERVING at fixed cap:
+## the six-digest trajectory over 40-tick water+vent runs is byte-identical
+## before/after, plus the standing two-run determinism check passes)
+- max|u|: one isqrt of the max radicand (monotone ⇒ max∘sqrt = sqrt∘max).
+- CFL ∇P pass and the momentum kick skip the per-cell Newton reciprocal at
+  exactly-zero gradient (du ≡ 0 there).
+- Donor-cell face coefficients (min-perm quantize × dt_s — constant within a
+  tick) hoisted to a per-tick cache; `bulk_flux_transport_cached` entry added
+  (same per-face arithmetic, evaluated once instead of per plane × substep),
+  with reused thread_local scratch; the legacy entry forwards through the
+  same hoist (pybind/P1-test path unchanged in behavior).
+- The SL sample's corner/march predicates re-expressed as a per-tick
+  sealed/breach/live byte table (same classification the original
+  float/bool chain produced).
+- absorb·dt quantize hoisted out of the per-cell kick loop.
+- The dead single-field backtrace sampler deleted (the fused version had
+  replaced every call site).
+
+## Final perf (M1 160², 300 ticks, real Simulation.step, shipped defaults:
+## N_SUB_MAX=8, MG V(2,2)×C=2 warm-started)
+p50 = 15.0 ms   p99 = 22.5–24.0 ms (run-to-run OS noise band)   max = 28.3 ms
+**GATE (p99 ≤ 20.75): FAIL — but with a sharp shape:** p97 = 17.97 ms PASSES;
+the p99 tail is exactly the five explosion-DETONATION ticks (22.4–26.0 ms
+each: the FieldEdit disc flush + the blast's first solver response +
+n_sub spiking to the cap). Steady-state (quiet, venting, water, smoke) all
+sit ≤ ~18 ms. Per the stop-band instruction this is REPORTED for Erik's
+renegotiation lever (decisions #13 names two graceful levers), not pushed
+further here. Candidate next steps if the gate must hold as-written:
+amortize the event-tick response (the detonation tick is also the baseline's
+own worst tick), or the ambient-c/K dial.
+
+## Final E2E durability at the SHIPPED configuration (300 ticks)
+- water: worst-dev 0.0058 atm, N exactly conserved (196.0), zero
+  u-clamp/work-clamp/floor hits.
+- vent: worst overshoot 0.0004 atm, N drains 196→2.9 and flow stops;
+  u_clamp 186 (breach-adjacent choked flow, <1/tick avg), work_clamp 12,384
+  (the venting expansion-cooling rail at breach cells — expected), floors 0.
+- Two-run six-digest determinism: PASS.
+
+## Final golden
+Aggregate `493645d3…` (the 16→8 re-pin legitimately moved trajectories from
+the same-day `f7b8becd`; history annotated in the perfield tool). Committed
+perfield baseline regenerated + reproducibility re-run matches; the 8
+cuda_s*_check scripts + the perfield tool updated in the same commit.
+Suite: 619 passed / 5 skipped / 10 cuda-deselected — GREEN.
