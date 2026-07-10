@@ -52,6 +52,8 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // temperature group
         int32_t* temperature_mut, const int32_t* heat,
         const int32_t* heat_inv_shift, const int32_t* face_shift,
+        // EOS P3: bulk-N source (real Pass-1 heat-deposit divisor)
+        const int32_t* gas, const bool* gas_conservative, int n_gases,
         int h, int w, float sim_time) const {
 
     using namespace fixedpoint;
@@ -179,9 +181,21 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     } else
 #endif
     {
+        // EOS P3: sum the conservative bulk planes (O2+N2) into the reused
+        // scratch — the REAL N divisor for Pass 1's ΔT = ΔE/(N·c_v) deposit
+        // (closes the P2 `// P3:` density-proxy TODO; floored inside the
+        // solver by its own N_FLOOR_HEAT).
+        if (n_bulk_.size() != (size_t)n) n_bulk_.assign(n, 0);
+        std::fill(n_bulk_.begin(), n_bulk_.end(), 0);
+        for (int gi = 0; gi < n_gases; ++gi) {
+            if (!gas_conservative[gi]) continue;
+            const int32_t* plane = gas + (size_t)gi * n;
+            for (int i = 0; i < n; ++i) n_bulk_[i] += plane[i];
+        }
         this->temperature.step(
             temperature_mut, heat, heat_inv_shift, face_shift,
             solid, is_vacuum, atmosphere,
+            n_bulk_.data(),
             nullptr, nullptr,
             h, w, sim_time);
     }

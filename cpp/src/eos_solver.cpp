@@ -303,40 +303,35 @@ void EOSSolver::step(
             digest_bulk_flux = bfd;
         }
 
-        // -- e. compression work: T -= (gamma-1)*T*div(u)*dt_s ---------------
-        // div(u)_i = (u_x[i+1]-u_x[i-1])/(2dx) + (u_y[i+w]-u_y[i-w])/(2dx),
-        // Neumann-mirrored at solid.
-        for (int y = 0; y < h; ++y) {
-            const int row = y * w;
-            for (int x = 0; x < w; ++x) {
-                const int i = row + x;
-                if (solid[i] || is_vacuum[i]) { div_u_[i] = 0; continue; }
-                const int il = mirror_idx(i, y, x - 1, h, w, solid);
-                const int ir = mirror_idx(i, y, x + 1, h, w, solid);
-                const int iu = mirror_idx(i, y - 1, x, h, w, solid);
-                const int id = mirror_idx(i, y + 1, x, h, w, solid);
-                const q16 dux = mul_q16(wind_x[ir] - wind_x[il], inv_2dx_q);
-                const q16 duy = mul_q16(wind_y[id] - wind_y[iu], inv_2dx_q);
-                div_u_[i] = dux + duy;
-            }
-        }
-        for (int i = 0; i < n; ++i) {
-            if (solid[i] || is_vacuum[i]) continue;
-            // (gamma-1)*div(u)*dt_s, then *T, all Q16.16 (PINNED left-fold,
-            // the fire_simulation.cpp idiom): CFL_ADV<=0.5 pins
-            // |(gamma-1)*div(u)*dt_s| <= (gamma-1)*2*CFL_ADV <= 0.4 < 1 (D3).
-            q16 k = mul_q16(adiabatic_m1_q, div_u_[i]);
-            k = mul_q16(k, dt_s_q);
-            const q16 dT = mul_q16(k, temperature[i]);
-            q16 t_new = temperature[i] - dT;
-            if (t_new < t_min_q) { t_new = t_min_q; ++energy_floor_hits; }
-            temperature[i] = t_new;
-        }
-        if (s == n_sub - 1) digest_compression = digest_of(temperature, n, 0);
+        // -- e. (COMPRESSION WORK DOES NOT HAPPEN HERE — design §3.2 corrected
+        // 2026-07-10, root-caused from THIS patch's gate failure: applying it
+        // pre-solve DOUBLE-COUNTS the compression physics — the advected T
+        // would carry this tick's compression response into p* while the
+        // Helmholtz RHS's −(Nc²)·dt·div(û*) term carries the SAME physics
+        // into the solve, an ≈(2γ−1)-vs-γ over-response per tick ⇒ a growing
+        // pressure oscillation INDEPENDENT of sweep count. T advects PURELY
+        // here; the work term moved to step 4c, post-correction, once/tick.)
 
         // -- f. zero u on solid (N's clamp already ran inside (d)) -----------
         for (int i = 0; i < n; ++i) {
             if (solid[i]) { wind_x[i] = 0; wind_y[i] = 0; }
+        }
+    }
+
+    // div(u*) from the FINAL substep's (post-advection) velocity — feeds the
+    // Helmholtz RHS below. Central diff (2dx), Neumann-mirrored at solid.
+    for (int y = 0; y < h; ++y) {
+        const int row = y * w;
+        for (int x = 0; x < w; ++x) {
+            const int i = row + x;
+            if (solid[i] || is_vacuum[i]) { div_u_[i] = 0; continue; }
+            const int il = mirror_idx(i, y, x - 1, h, w, solid);
+            const int ir = mirror_idx(i, y, x + 1, h, w, solid);
+            const int iu = mirror_idx(i, y - 1, x, h, w, solid);
+            const int id = mirror_idx(i, y + 1, x, h, w, solid);
+            const q16 dux = mul_q16(wind_x[ir] - wind_x[il], inv_2dx_q);
+            const q16 duy = mul_q16(wind_y[id] - wind_y[iu], inv_2dx_q);
+            div_u_[i] = dux + duy;
         }
     }
 
@@ -492,19 +487,17 @@ void EOSSolver::step(
             }
 
             // PHYSICAL CLAMP: |u| <= c_max (design §3.2's own CFL section:
-            // "outflow speed is physically bounded by the sound speed" — the
-            // pressure-kick above is unconditional and can produce an
-            // arbitrarily large step at a near-N_FLOOR_SOLVER cell (1/N_hat
-            // is unbounded as N->floor); without this clamp that single
-            // large |u| feeds next tick's advection/divergence/p*, which
-            // feeds an even larger kick — an unbounded feedback blow-up
-            // observed in E2E testing (a water-displacement scenario runs
-            // away within ~3 ticks without this clamp). Scale-to-cap rather
-            // than component-wise clamp so direction is preserved.
+            // "outflow speed is physically bounded by the sound speed").
+            // With the step-4c compression-work fix (no more double-count)
+            // this is a RARELY-hit safety net, not a load-bearing stabilizer
+            // — u_clamp_hits tracks engagements; the venting gate reports
+            // the hit rate. Scale-to-cap (direction-preserving), not a
+            // component-wise clamp.
             const int64_t umag_rad = mul_wide(wind_x[i], wind_x[i])
                                    + mul_wide(wind_y[i], wind_y[i]);
             const q16 umag = sqrt_q16(umag_rad);
             if (umag > c_max_q) {
+                ++u_clamp_hits;
                 const q16 scale = reciprocal_q16(umag);        // 1/|u|, Q16.16
                 const q16 unit_x = mul_q16(wind_x[i], scale);   // u/|u|
                 const q16 unit_y = mul_q16(wind_y[i], scale);
@@ -514,6 +507,44 @@ void EOSSolver::step(
         }
     }
     digest_velocity = digest_of(wind_x, n, digest_of(wind_y, n, 0));
+
+    // ======================================================================
+    // 4c. COMPRESSION WORK — once per tick, POST-correction (design §3.2
+    //     step 4c, corrected 2026-07-10; the paper's eq.(3) analog in
+    //     T-carrier form). Uses div of the CORRECTED velocity so the energy
+    //     bookkeeping matches the flow the solve actually produced; feeds
+    //     NEXT tick's p*, never this tick's solve (no double count).
+    //     factor = (γ−1)·div(u_new)·dt, clamped to ±T_WORK_CLAMP (the
+    //     once-per-tick term has no substep CFL bound — an explicit rail,
+    //     counter-tracked); T floored at T_MIN (the named 4th energy sink).
+    // ======================================================================
+    {
+        const q16 work_clamp_q = quantize((double)T_WORK_CLAMP);
+        for (int y = 0; y < h; ++y) {
+            const int row = y * w;
+            for (int x = 0; x < w; ++x) {
+                const int i = row + x;
+                if (solid[i] || is_vacuum[i]) continue;
+                const int il = mirror_idx(i, y, x - 1, h, w, solid);
+                const int ir = mirror_idx(i, y, x + 1, h, w, solid);
+                const int iu = mirror_idx(i, y - 1, x, h, w, solid);
+                const int id = mirror_idx(i, y + 1, x, h, w, solid);
+                const q16 dux = mul_q16(wind_x[ir] - wind_x[il], inv_2dx_q);
+                const q16 duy = mul_q16(wind_y[id] - wind_y[iu], inv_2dx_q);
+                const q16 div_new = dux + duy;
+                // factor = (γ−1)·div(u_new)·dt (PINNED left-fold), clamped.
+                q16 k = mul_q16(adiabatic_m1_q, div_new);
+                k = mul_q16(k, dt_q);
+                if (k > work_clamp_q)       { k = work_clamp_q;  ++work_clamp_hits; }
+                else if (k < -work_clamp_q) { k = -work_clamp_q; ++work_clamp_hits; }
+                const q16 dT = mul_q16(k, temperature[i]);
+                q16 t_new = temperature[i] - dT;
+                if (t_new < t_min_q) { t_new = t_min_q; ++energy_floor_hits; }
+                temperature[i] = t_new;
+            }
+        }
+    }
+    digest_compression = digest_of(temperature, n, 0);
 
     // ======================================================================
     // 5. P := P_new — materialized ONCE, stored (the `atmosphere` alias).

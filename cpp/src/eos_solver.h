@@ -26,12 +26,13 @@
 //      unconditionally stable and the donor-cell limiter rate-caps
 //      gracefully):
 //        a. u  <- semi-Lagrangian self-advection
-//        b. T  <- semi-Lagrangian advection (open-air mask)
+//        b. T  <- semi-Lagrangian advection (open-air mask) — PURELY advected
+//           (design §3.2 corrected 2026-07-10: compression work here would
+//           double-count against the Helmholtz RHS's div(û*) term — the
+//           P3-gate-discovered oscillation; the work term is step 4c now)
 //        c. (traces do NOT substep here — advected once/tick by the caller,
 //           PhysicsEngine::run_substeps, on the final u)
 //        d. bulk O2/N2 <- donor-cell conservative flux on u (bulk_transport.h)
-//        e. T -= (gamma-1)*T*div(u)*dt_s   (compression work, T-floored,
-//           every floor hit increments `energy_floor_hits`)
 //        f. zero u on solid; N floored/zeroed at solid+vacuum by (d)'s own
 //           clamp (bulk_transport.cpp) — the OCCUPANCY-TRANSITION evacuation
 //           rule (§2.2, cell LEAVING open-air) is a WRITER concern (W3 water
@@ -41,7 +42,12 @@
 //      §3.4): Neumann mirror at solid, Dirichlet P=0 at vacuum, face
 //      coefficients permeability-scaled.
 //   4. u -= dt*grad(P_new)/N_hat; u *= (1 - absorb*dt) (dyn_wave_absorb);
-//      zero u outside open-air.
+//      |u| clamped to c_max (physical bound, counter-tracked); zero u
+//      outside open-air.
+//   4c. compression work, ONCE per tick, POST-correction (the paper's eq.(3)
+//      analog, T-carrier form): T -= (γ−1)·T·div(u_new)·dt on the CORRECTED
+//      velocity — feeds NEXT tick's p*, never this tick's solve. T_MIN
+//      floor + T_WORK_CLAMP rail, both counter-tracked.
 //   5. P := P_new, stored ONCE (the `atmosphere` alias).
 //
 // Six sub-kernel digest checkpoints (§3.4.6) let the P3 gate assert
@@ -99,9 +105,20 @@ public:
     // T_MIN: floor on the RELATIVE T field (T_abs >= ~1 K). Every floor hit
     // increments `energy_floor_hits` (the named 4th energy sink, D3).
     float T_MIN = -289.0f;
+    // T_WORK_CLAMP: safety rail on the ONCE-PER-TICK compression-work factor
+    // (γ−1)·div(u_new)·dt (design §3.2 step 4c, corrected 2026-07-10 — the
+    // old per-substep CFL bound no longer applies to the once-per-tick
+    // form). Each clamp engagement increments `work_clamp_hits`.
+    float T_WORK_CLAMP = 0.5f;
 
     // --- debug telemetry -----------------------------------------------
     mutable int64_t energy_floor_hits = 0;
+    // u_clamp_hits: cells whose post-correction |u| exceeded c_max and were
+    // scaled back (a physical safety net — RARE once the compression-work
+    // double-count fix landed; the venting gate reports its hit rate).
+    mutable int64_t u_clamp_hits = 0;
+    // work_clamp_hits: step-4c work-factor clamp engagements (see T_WORK_CLAMP).
+    mutable int64_t work_clamp_hits = 0;
 
     // --- six sub-kernel digest checkpoints (§3.4.6) ---------------------
     // A cheap FNV-1a-style running hash over the named buffer's post-stage
@@ -111,7 +128,7 @@ public:
     mutable uint64_t digest_pstar       = 0;   // after step 2 (p* materialization)
     mutable uint64_t digest_helmholtz   = 0;   // after step 3 (the RB-GS solve)
     mutable uint64_t digest_velocity    = 0;   // after step 4 (velocity correct)
-    mutable uint64_t digest_compression = 0;   // after 1e, LAST substep (compression work)
+    mutable uint64_t digest_compression = 0;   // after step 4c (post-correction compression work)
 
     // One full Kwatra tick, per §3.2 above.
     //

@@ -128,16 +128,9 @@ class PhysicsRunner:
         self.smoke.d_smoke              = float(CFG.physics.d_smoke)
         self.smoke.advection_rate       = float(CFG.physics.advection_rate)
         self.smoke.wind_diffusion_scale = float(CFG.physics.wind_diffusion_scale)
-        # Patch 2b: K = vent hops/tick (the decoupled breach-sink rate). dt_scale
-        # is gone (smoke moves on the real dt; advection_rate absorbed the ×9).
-        self.smoke.vent_hops            = int(
-            getattr(CFG.physics, 'smoke_vent_hops', 16))
-        # Smoke-side sink-pull toward the nearest breach (ch.05 smoke v2). The
-        # dial Erik wants: 0 disables it (sealed-room behaviour is then bit-
-        # identical to the plain semi-Lagrangian advection). Default 2.0 clears
-        # a breached room in ~a dozen ticks while leaving a sealed room untouched.
-        self.smoke.sink_strength        = float(
-            getattr(CFG.physics, 'smoke_sink_strength', 2.0))
+        # (vent_hops / sink_strength binds DELETED — EOS refactor P3,
+        # decisions.md #3: the BFS breach sink-pull is gone; venting is
+        # native to the compressible solver.)
 
         # FireSimulation — signed-logistic intensity FEEDBACK (fire_design_proposal
         # §2/§3/§5). Cellular spread is gone: spread is radiation -> heat ->
@@ -442,6 +435,9 @@ class PhysicsRunner:
         #      conversion on solids, one conduction relaxation, then ambient
         #      cooling. Reads THIS tick's `heat` (cast at the top of step()) and
         #      updates `temperature` in place for next tick.
+        # EOS P3: gas + gas_conservative added — step_tail sums the bulk
+        # O2/N2 planes for the temperature Pass-1 heat-deposit divisor (the
+        # real N_total, closing the P2 density-proxy TODO).
         destroyed = self.engine.step_tail(
             gmap.ripple, gmap.ripple_v, gmap.water_depth, gmap.wave_p,
             gmap.solid,
@@ -449,6 +445,7 @@ class PhysicsRunner:
             gmap.temperature, gmap.wind_x, gmap.wind_y,
             gmap.is_vacuum, gmap.flammable,
             gmap.heat, gmap.heat_inv_shift, gmap.face_shift,
+            gmap.gas, gmap.gases.conservative,
             sim_time,
         )
 

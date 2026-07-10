@@ -132,7 +132,10 @@ void TemperatureSolver::step(
     const bool* solid,
     const bool* is_vacuum,
     const int32_t* atmosphere,   // S3c: Q16.16 int32 (was float — the last float input)
-                                  // P2: ALSO the density proxy N for the gas deposit
+    const int32_t* n_bulk,       // EOS P3: real bulk N_total (O2+N2 sum, Q16.16);
+                                  // nullable — falls back to the P2 atmosphere
+                                  // density-proxy (the direct-binding back-compat
+                                  // path; the engine always passes the real sum)
     const int32_t* wind_x,       // P2: Q16.16 int32, may be null (Pass 0 skipped)
     const int32_t* wind_y,       // P2: Q16.16 int32, may be null (Pass 0 skipped)
     int h, int w,
@@ -217,10 +220,12 @@ void TemperatureSolver::step(
                 int32_t gain = deposit >> shift;  // Q16.16 / 2^shift, still Q16.16
                 heat_saturating_add(&temperature[i], gain);
             } else if (!is_vacuum[i]) {
-                // P3: this atmosphere[i] read is the P2 density-proxy shim —
-                // swap for the real bulk-species N_total once P1/P3 land.
-                int32_t N_q = atmosphere[i];
-                if (N_q < n_floor_q) N_q = n_floor_q;    // floor independent of anything else
+                // EOS P3 (TODO closed): the divisor is the REAL bulk-species
+                // N_total (O2+N2, passed by the engine) — the P2 atmosphere
+                // density-proxy remains only as the nullable back-compat
+                // fallback for the direct Python binding.
+                int32_t N_q = n_bulk ? n_bulk[i] : atmosphere[i];
+                if (N_q < n_floor_q) N_q = n_floor_q;    // floor independent of anything else (N_FLOOR_HEAT)
                 const int32_t recip_N_q = reciprocal_q16(N_q);        // 1/N, per-tile Newton recip
                 const int32_t e_over_n  = mul_q16(deposit, recip_N_q); // ΔE/N, Q16.16
                 const int32_t dT = recip_mul(e_over_n, recip_cv);     // (ΔE/N)/c_v, Q16.16

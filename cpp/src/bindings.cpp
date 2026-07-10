@@ -735,10 +735,8 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("d_smoke",               &SmokeDynamics::d_smoke)
         .def_readwrite("advection_rate",         &SmokeDynamics::advection_rate)
         .def_readwrite("wind_diffusion_scale",   &SmokeDynamics::wind_diffusion_scale)
-        .def_readwrite("sink_strength",          &SmokeDynamics::sink_strength)
-        .def_readwrite("vent_hops",              &SmokeDynamics::vent_hops)
-        // Patch 2b: step() is WIND-ONLY (no sink_x/sink_y) — the breach sink-pull
-        // moved to sink_hop() below. dt_scale is removed (smoke moves on real dt).
+        // (sink_strength / vent_hops / sink_hop DELETED — EOS refactor P3,
+        // decisions.md #3: native venting replaces the BFS sink-pull.)
         .def("step", [](const SmokeDynamics& self,
                         py::array_t<int32_t> smoke,        // S2b: Q16.16 int32
                         py::array_t<int32_t> wind_x,       // S2c: Q16.16 int32
@@ -759,28 +757,7 @@ PYBIND11_MODULE(breach_physics, m) {
         }, py::arg("smoke"), py::arg("wind_x"), py::arg("wind_y"),
            py::arg("obstacles"), py::arg("is_wall"), py::arg("is_vacuum"),
            py::arg("permeability"),
-           py::arg("dt"))
-        // Patch 2b: ONE 1-cell BFS-gradient breach pull (the decoupled sink). No
-        // dt — each call is exactly one hop; the engine runs it K× per tick.
-        .def("sink_hop", [](const SmokeDynamics& self,
-                            py::array_t<int32_t> smoke,    // S2b: Q16.16 int32
-                            py::array_t<float> sink_x,
-                            py::array_t<float> sink_y,
-                            py::array_t<bool>  obstacles,
-                            py::array_t<bool>  is_wall,
-                            py::array_t<bool>  is_vacuum,
-                            py::array_t<float> permeability) {
-            auto [sm, h, w] = get_2d(smoke);
-            auto [skx, h2, w2] = get_2d_const(sink_x);
-            auto [sky, h3, w3] = get_2d_const(sink_y);
-            auto [obs, h4, w4] = get_2d_const(obstacles);
-            auto [wl, h5, w5] = get_2d_const(is_wall);
-            auto [vac, h6, w6] = get_2d_const(is_vacuum);
-            auto [perm, h7, w7] = get_2d_const(permeability);
-            self.sink_hop(sm, skx, sky, obs, wl, vac, perm, h, w);
-        }, py::arg("smoke"), py::arg("sink_x"), py::arg("sink_y"),
-           py::arg("obstacles"), py::arg("is_wall"), py::arg("is_vacuum"),
-           py::arg("permeability"));
+           py::arg("dt"));
 
     // --- FireSimulation (signed-logistic feedback; fire_design_proposal §2/§3) ---
     py::class_<FireParams>(m, "FireParams")
@@ -916,7 +893,10 @@ PYBIND11_MODULE(breach_physics, m) {
                 wx = wxp;
                 wy = wyp;
             }
-            self.step(temp, hp, shift, fs, sol, vac, atm, wx, wy, h, w, dt);
+            // EOS P3: the direct binding passes n_bulk = nullptr — the solver
+            // falls back to the atmosphere density-proxy (back-compat path);
+            // the engine's step_tail always passes the real O2+N2 sum.
+            self.step(temp, hp, shift, fs, sol, vac, atm, nullptr, wx, wy, h, w, dt);
         }, py::arg("temperature"), py::arg("heat"),
            py::arg("heat_inv_shift"), py::arg("face_shift"),
            py::arg("solid"), py::arg("is_vacuum"), py::arg("atmosphere"),
@@ -1089,7 +1069,10 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("adiabatic_index",   &EOSSolver::adiabatic_index)
         .def_readwrite("absorb_strength",   &EOSSolver::absorb_strength)
         .def_readwrite("T_MIN",             &EOSSolver::T_MIN)
+        .def_readwrite("T_WORK_CLAMP",      &EOSSolver::T_WORK_CLAMP)
         .def_readonly("energy_floor_hits",  &EOSSolver::energy_floor_hits)
+        .def_readonly("u_clamp_hits",       &EOSSolver::u_clamp_hits)
+        .def_readonly("work_clamp_hits",    &EOSSolver::work_clamp_hits)
         .def_readonly("digest_advect",      &EOSSolver::digest_advect)
         .def_readonly("digest_bulk_flux",   &EOSSolver::digest_bulk_flux)
         .def_readonly("digest_pstar",       &EOSSolver::digest_pstar)
@@ -1251,6 +1234,9 @@ PYBIND11_MODULE(breach_physics, m) {
                              py::array_t<int32_t> heat,
                              py::array_t<int32_t> heat_inv_shift,
                              py::array_t<int32_t> face_shift,
+                             // EOS P3: bulk-N source (Pass-1 heat divisor)
+                             py::array_t<int32_t> gas,
+                             py::array_t<bool> gas_conservative,
                              float sim_time) -> py::list {
             // ripple group
             auto [rip, h, w]    = get_2d(ripple);
@@ -1277,11 +1263,19 @@ PYBIND11_MODULE(breach_physics, m) {
             // face_shift is (h, w, 4) int32 — mirror the TemperatureSolver binding.
             auto fa = face_shift.unchecked<3>();
             const int32_t* fs = fa.data(0, 0, 0);
+            // EOS P3: (N,h,w) gas + the conservative flags — step_tail sums
+            // the bulk planes for the temperature Pass-1 N divisor.
+            auto gv = gas.unchecked<3>();
+            const int32_t* gas_ptr = gv.data(0, 0, 0);
+            const int n_gases = static_cast<int>(gv.shape(0));
+            auto gc = gas_conservative.unchecked<1>();
+            const bool* gcons = gc.data(0);
 
             auto destroyed = self.step_tail(
                 rip, ripv, wd, wp, sol,
                 f, atm, sm, whp, temp, wx, wy, vac, fl,
                 temp, hp, shift, fs,
+                gas_ptr, gcons, n_gases,
                 h, w, sim_time);
             py::list result;
             for (const auto& [dy, dx] : destroyed) {
@@ -1295,6 +1289,7 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("wind_x"), py::arg("wind_y"),
            py::arg("is_vacuum"), py::arg("flammable"),
            py::arg("heat"), py::arg("heat_inv_shift"), py::arg("face_shift"),
+           py::arg("gas"), py::arg("gas_conservative"),
            py::arg("sim_time"))
         // --- Patch 1 S4b: the IMEX atmosphere/smoke substep loop ------------
         // run_substeps moves the per-tick IMEX substep block of PhysicsRunner.step

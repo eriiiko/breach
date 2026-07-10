@@ -67,6 +67,10 @@ public:
     // went integer in S3b — wind/fire are read as int32, no float scratch).
     mutable std::vector<float> atm_f_;
 
+    // EOS P3: reused scratch for the bulk-N sum (O2+N2) step_tail hands to
+    // TemperatureSolver::step as the real Pass-1 heat-deposit divisor.
+    mutable std::vector<int32_t> n_bulk_;
+
     // --- Patch 1 S4a: the per-tick orchestration TAIL --------------------
     // Moves the three trailing PURE-SOLVER-CALL steps of PhysicsRunner.step
     // (everything AFTER the IMEX substep loop) into C++: the W6a ripple, the
@@ -96,23 +100,28 @@ public:
     //   heat                           : int32 (h, w) Q16.16 — heat deposit (read)
     //   heat_inv_shift                 : int32 (h, w) — per-tile inverse mass shift
     //   face_shift                     : int32 (h, w, 4) — conduction face shifts
+    // EOS refactor P3: `wave_p` is the repurposed P_prev (ripple splash reads
+    // |P - P_prev|); `gas`/`gas_conservative`/`n_gases` are NEW — step_tail
+    // sums the conservative bulk planes (O2+N2) into a reused scratch and
+    // hands it to TemperatureSolver::step as the REAL N divisor for the
+    // Pass-1 heat deposit (closing the P2 `// P3:` density-proxy TODO).
     std::vector<std::pair<int, int>> step_tail(
         // ripple group
         float* ripple, float* ripple_v,
-        const int32_t* water_depth, const int32_t* wave_p,   // S1: water_depth Q16.16
-                                                             // S2a: wave_p Q16.16
+        const int32_t* water_depth, const int32_t* p_prev,   // S1: water_depth Q16.16
+                                                             // EOS P3: p_prev (was wave_p)
         const bool* solid,
-        // fire group — S3b: fire + wall_hp are Q16.16 int32; S2c: atmosphere + wind
-        // are Q16.16 int32. The fire logistic is now INTEGER end-to-end (it reads all
-        // of these directly + writes the int32 atmosphere plume in place). The only
-        // float bridge left in step_tail is the TEMPERATURE pass's atmosphere read
-        // (dequantized into atm_f_ AFTER the fire plume) — S3c retires that.
+        // fire group — S3b: fire + wall_hp are Q16.16 int32; S2c: atmosphere +
+        // wind are Q16.16 int32. EOS P3: atmosphere (== P) is READ-ONLY to the
+        // fire now (the plume writes temperature instead).
         int32_t* fire_field, int32_t* atmosphere, int32_t* smoke_field, int32_t* wall_hp,  // S3b: fire+wall_hp Q16.16; S2b: smoke Q16.16; S2c: atm Q16.16
         const int32_t* temperature, const int32_t* wind_x, const int32_t* wind_y,      // S2c: wind Q16.16
         const bool* is_vacuum, const bool* flammable,
         // temperature group
         int32_t* temperature_mut, const int32_t* heat,
         const int32_t* heat_inv_shift, const int32_t* face_shift,
+        // EOS P3: bulk-N source for the Pass-1 heat-deposit divisor
+        const int32_t* gas, const bool* gas_conservative, int n_gases,
         int h, int w, float sim_time) const;
 
     // --- Patch 1 S4b: the IMEX atmosphere/smoke substep loop -------------
