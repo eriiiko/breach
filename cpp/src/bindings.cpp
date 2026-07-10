@@ -8,6 +8,7 @@
 #include "temperature_solver.h"
 #include "raycaster.h"
 #include "water_solver.h"
+#include "eos_solver.h"
 #include "physics_engine.h"
 #include "bulk_transport.h"  // EOS refactor P1: expose bulk_flux_transport for direct unit test
 #include "fixed_point.h"   // Bedrock cliff-patch: expose smoke_cliff_count for unit test
@@ -798,7 +799,8 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("p_expand_ref",   &FireParams::p_expand_ref)
         .def_readwrite("smoke_emission", &FireParams::smoke_emission)
         .def_readwrite("wall_damage",    &FireParams::wall_damage)
-        .def_readwrite("temp_scale",     &FireParams::temp_scale);
+        .def_readwrite("temp_scale",     &FireParams::temp_scale)
+        .def_readwrite("temp_gain_scale", &FireParams::temp_gain_scale);   // EOS P3
 
     py::class_<FireSimulation>(m, "FireSimulation")
         .def(py::init<>())
@@ -816,10 +818,10 @@ PYBIND11_MODULE(breach_physics, m) {
                         py::array_t<bool>  flammable,
                         float dt) -> py::list {
             auto [f, h, w] = get_2d(fire);
-            auto [atm, h2, w2] = get_2d(atmosphere);
+            auto [atm, h2, w2] = get_2d_const(atmosphere);   // EOS P3: read-only (== P)
             auto [sm, h3, w3] = get_2d(smoke);
             auto [whp, h4, w4] = get_2d(wall_hp);
-            auto [temp, h5, w5] = get_2d_const(temperature);
+            auto [temp, h5, w5] = get_2d(temperature);       // EOS P3: mutable (plume->T shim)
             auto [wx, h6, w6] = get_2d_const(wind_x);
             auto [wy, h7, w7] = get_2d_const(wind_y);
             auto [wl, h8, w8] = get_2d_const(is_wall);
@@ -1068,6 +1070,33 @@ PYBIND11_MODULE(breach_physics, m) {
             Raycaster::normalize_directions(ldx, ldy, h, w);
         }, py::arg("light_dx"), py::arg("light_dy"));
 
+    // --- EOSSolver (EOS refactor P3 — the compressible Kwatra solver) --------
+    // Tunables bound from [physics.eos] config (physics_runner.py); step() is
+    // NOT bound standalone (PhysicsEngine.run_substeps is the only call site —
+    // it owns the p_prev/gas/temperature threading). Exposed so Python can set
+    // c_max/S/dx/etc AND read the six digest checkpoints + energy_floor_hits
+    // for the P3 determinism/telemetry gates.
+    py::class_<EOSSolver>(m, "EOSSolver")
+        .def(py::init<>())
+        .def_readwrite("c_max",             &EOSSolver::c_max)
+        .def_readwrite("dx",                &EOSSolver::dx)
+        .def_readwrite("S",                 &EOSSolver::S)
+        .def_readwrite("N_SUB_MAX",         &EOSSolver::N_SUB_MAX)
+        .def_readwrite("CFL_ADV",           &EOSSolver::CFL_ADV)
+        .def_readwrite("N_FLOOR_SOLVER",    &EOSSolver::N_FLOOR_SOLVER)
+        .def_readwrite("T_AMB_K",           &EOSSolver::T_AMB_K)
+        .def_readwrite("C",                 &EOSSolver::C)
+        .def_readwrite("gamma",             &EOSSolver::gamma)
+        .def_readwrite("absorb_strength",   &EOSSolver::absorb_strength)
+        .def_readwrite("T_MIN",             &EOSSolver::T_MIN)
+        .def_readonly("energy_floor_hits",  &EOSSolver::energy_floor_hits)
+        .def_readonly("digest_advect",      &EOSSolver::digest_advect)
+        .def_readonly("digest_bulk_flux",   &EOSSolver::digest_bulk_flux)
+        .def_readonly("digest_pstar",       &EOSSolver::digest_pstar)
+        .def_readonly("digest_helmholtz",   &EOSSolver::digest_helmholtz)
+        .def_readonly("digest_velocity",    &EOSSolver::digest_velocity)
+        .def_readonly("digest_compression", &EOSSolver::digest_compression);
+
     // --- WaterSolver (pipe model: damped velocity + donor-cell upwind flux;
     //     engine/07 §2, water_implementation_plan Step W1) ---
     py::class_<WaterSolver>(m, "WaterSolver")
@@ -1091,8 +1120,7 @@ PYBIND11_MODULE(breach_physics, m) {
                         py::array_t<int32_t> flow_vx,       // S1: Q16.16 int32
                         py::array_t<int32_t> flow_vy,       // S1: Q16.16 int32
                         py::object floor_height,            // Q16.16 int32 (nullable)
-                        py::object atmosphere,              // float (FLOAT BRIDGE)
-                        py::object wave_p,                  // float (FLOAT BRIDGE)
+                        py::object atmosphere,              // EOS P3: Q16.16 int32 == P (nullable)
                         py::array_t<bool> solid,
                         float dt, float tilt_x, float tilt_y) {
             auto [wd, h, w]    = get_2d(water_depth);
@@ -1101,8 +1129,10 @@ PYBIND11_MODULE(breach_physics, m) {
             auto [sol, h4, w4] = get_2d_const(solid);
             // Nullable fields (cast_source_directional precedent): None ->
             // nullptr, else cast to an array kept alive in this scope.
-            // floor_height None -> flat zero (Q16.16 int32); atmosphere/wave_p
-            // None -> no head term (and with k_p == 0 they are never read).
+            // floor_height None -> flat zero (Q16.16 int32); atmosphere None
+            // -> no head term (and with k_p == 0 it is never read). EOS P3:
+            // the wave_p head-term FLOAT BRIDGE arg is RETIRED (see file
+            // header) — atmosphere is now the integer P read directly.
             const int32_t* fl = nullptr;
             py::array_t<int32_t> fl_arr;
             if (!floor_height.is_none()) {
@@ -1110,51 +1140,54 @@ PYBIND11_MODULE(breach_physics, m) {
                 auto fa = fl_arr.unchecked<2>();
                 fl = fa.data(0, 0);
             }
-            const float* atm = nullptr;
-            py::array_t<float> atm_arr;
+            const int32_t* atm = nullptr;
+            py::array_t<int32_t> atm_arr;
             if (!atmosphere.is_none()) {
-                atm_arr = atmosphere.cast<py::array_t<float>>();
+                atm_arr = atmosphere.cast<py::array_t<int32_t>>();
                 auto aa = atm_arr.unchecked<2>();
                 atm = aa.data(0, 0);
             }
-            const float* wp = nullptr;
-            py::array_t<float> wp_arr;
-            if (!wave_p.is_none()) {
-                wp_arr = wave_p.cast<py::array_t<float>>();
-                auto wa = wp_arr.unchecked<2>();
-                wp = wa.data(0, 0);
-            }
-            self.step(wd, vx, vy, fl, atm, wp, sol, h, w, dt, tilt_x, tilt_y);
+            self.step(wd, vx, vy, fl, atm, sol, h, w, dt, tilt_x, tilt_y);
         }, py::arg("water_depth"), py::arg("flow_vx"), py::arg("flow_vy"),
            py::arg("floor_height") = py::none(),
            py::arg("atmosphere")   = py::none(),
-           py::arg("wave_p")       = py::none(),
            py::arg("solid"), py::arg("dt"),
            py::arg("tilt_x"), py::arg("tilt_y"))
         // W6a ripple: the VISUAL-ONLY surface wave (canon §6). water_depth /
-        // wave_p / solid are read-only — the ripple never feeds back into
-        // transport. wave_p nullable (None -> no splash source, never read).
+        // atmosphere / p_prev / solid are read-only — the ripple never feeds
+        // back into transport. EOS P3: the splash source is the per-tick
+        // pressure transient |P - P_prev| (design §6); both nullable (None
+        // -> no splash source, never read).
         .def("step_ripple", [](const WaterSolver& self,
                                py::array_t<float> ripple,
                                py::array_t<float> ripple_v,
                                py::array_t<int32_t> water_depth,   // S1: Q16.16 int32
-                               py::object wave_p,
+                               py::object atmosphere,
+                               py::object p_prev,
                                py::array_t<bool> solid,
                                float dt) {
             auto [r, h, w]     = get_2d(ripple);
             auto [rv, h2, w2]  = get_2d(ripple_v);
             auto [wd, h3, w3]  = get_2d_const(water_depth);
             auto [sol, h4, w4] = get_2d_const(solid);
-            const float* wp = nullptr;
-            py::array_t<float> wp_arr;
-            if (!wave_p.is_none()) {
-                wp_arr = wave_p.cast<py::array_t<float>>();
-                auto wa = wp_arr.unchecked<2>();
-                wp = wa.data(0, 0);
+            const int32_t* atm = nullptr;
+            py::array_t<int32_t> atm_arr;
+            if (!atmosphere.is_none()) {
+                atm_arr = atmosphere.cast<py::array_t<int32_t>>();
+                auto aa = atm_arr.unchecked<2>();
+                atm = aa.data(0, 0);
             }
-            self.step_ripple(r, rv, wd, wp, sol, h, w, dt);
+            const int32_t* pp = nullptr;
+            py::array_t<int32_t> pp_arr;
+            if (!p_prev.is_none()) {
+                pp_arr = p_prev.cast<py::array_t<int32_t>>();
+                auto pa = pp_arr.unchecked<2>();
+                pp = pa.data(0, 0);
+            }
+            self.step_ripple(r, rv, wd, atm, pp, sol, h, w, dt);
         }, py::arg("ripple"), py::arg("ripple_v"), py::arg("water_depth"),
-           py::arg("wave_p") = py::none(),
+           py::arg("atmosphere") = py::none(),
+           py::arg("p_prev") = py::none(),
            py::arg("solid"), py::arg("dt"));
 
     // --- PhysicsEngine (Patch 1 S3) — owns the solver instances ---------------
@@ -1183,6 +1216,9 @@ PYBIND11_MODULE(breach_physics, m) {
             py::return_value_policy::reference_internal)
         .def_property_readonly("water",
             [](PhysicsEngine& e) -> WaterSolver& { return e.water; },
+            py::return_value_policy::reference_internal)
+        .def_property_readonly("eos",
+            [](PhysicsEngine& e) -> EOSSolver& { return e.eos; },
             py::return_value_policy::reference_internal)
         // --- Patch 1 S4a: the per-tick TAIL ---------------------------------
         // step_tail moves the three trailing pure-solver-call steps of
@@ -1270,13 +1306,15 @@ PYBIND11_MODULE(breach_physics, m) {
         // `solid` is passed once and used as both the atmos/smoke `is_wall`. The
         // n / dt_actual / dt_smoke precision matching (the integer cliff + the
         // double-until-the-solver-boundary contract) lives in C++ (run_substeps).
+        // EOS refactor P3: `wave_p` is repurposed as p_prev; `wave_v`/
+        // `wave_source`/`sink_x`/`sink_y` are RETIRED (no longer accepted —
+        // sink_hop's BFS loop is deleted); `temperature` is a new required arg.
         .def("run_substeps", [](PhysicsEngine& self,
-                                py::array_t<int32_t> wave_p,        // S2a: Q16.16 int32
-                                py::array_t<int32_t> wave_v,        // S2a: Q16.16 int32
-                                py::array_t<int32_t> wave_source,   // S2a: Q16.16 int32
+                                py::array_t<int32_t> p_prev,        // was wave_p
                                 py::array_t<int32_t> atmosphere,    // S2c: Q16.16 int32
                                 py::array_t<int32_t> wind_x,        // S2c: Q16.16 int32
                                 py::array_t<int32_t> wind_y,        // S2c: Q16.16 int32
+                                py::array_t<int32_t> temperature,   // EOS P3
                                 py::array_t<bool>  obstacles,
                                 py::array_t<bool>  solid,
                                 py::array_t<bool>  is_vacuum,
@@ -1285,15 +1323,12 @@ PYBIND11_MODULE(breach_physics, m) {
                                 py::array_t<int32_t> gas,           // S2b: Q16.16 int32
                                 py::array_t<float> gas_diffusion,
                                 py::array_t<bool> gas_conservative, // EOS P1
-                                py::array_t<float> sink_x,
-                                py::array_t<float> sink_y,
                                 float sim_time) {
-            auto [wp, h, w]    = get_2d(wave_p);
-            auto [wv, h2, w2]  = get_2d(wave_v);
-            auto [ws, h3, w3]  = get_2d(wave_source);
+            auto [pp, h, w]    = get_2d(p_prev);
             auto [atm, h4, w4] = get_2d(atmosphere);
             auto [wx, h5, w5]  = get_2d(wind_x);
             auto [wy, h6, w6]  = get_2d(wind_y);
+            auto [temp, h6b, w6b] = get_2d(temperature);
             auto [obs, h7, w7] = get_2d_const(obstacles);
             auto [sol, h8, w8] = get_2d_const(solid);
             auto [vac, h9, w9] = get_2d_const(is_vacuum);
@@ -1311,20 +1346,17 @@ PYBIND11_MODULE(breach_physics, m) {
             // (simulation.gases.GasTable.conservative), true only for O2/inert_N2.
             auto gc = gas_conservative.unchecked<1>();
             const bool* gcons = gc.data(0);
-            auto [skx, h12, w12] = get_2d_const(sink_x);
-            auto [sky, h13, w13] = get_2d_const(sink_y);
             self.run_substeps(
-                wp, wv, ws, atm, wx, wy,
+                pp, atm, wx, wy, temp,
                 obs, sol, vac, perm, wabs,
                 gas_ptr, gdiff, n_gases, gcons,
-                skx, sky,
                 h, w, sim_time);
-        }, py::arg("wave_p"), py::arg("wave_v"), py::arg("wave_source"),
+        }, py::arg("p_prev"),
            py::arg("atmosphere"), py::arg("wind_x"), py::arg("wind_y"),
+           py::arg("temperature"),
            py::arg("obstacles"), py::arg("solid"), py::arg("is_vacuum"),
            py::arg("dyn_permeability"), py::arg("dyn_wave_absorb"),
            py::arg("gas"), py::arg("gas_diffusion"), py::arg("gas_conservative"),
-           py::arg("sink_x"), py::arg("sink_y"),
            py::arg("sim_time"))
         // --- Patch 1 S4c: the water-layer array arithmetic ------------------
         // step_water moves the array-op body of PhysicsRunner._step_water into
@@ -1342,15 +1374,19 @@ PYBIND11_MODULE(breach_physics, m) {
         // KEPT IN PYTHON (the runner does these, then calls step_water only when
         // NOT dormant): the lazy-init (before-seed, water.dx bind, steam_idx
         // resolve), the dormancy early-out, and the sparse source-holds loop.
+        // EOS refactor P3: `wave_p` arg RETIRED (the head bridge is gone —
+        // `atmosphere` is read directly as the integer P); `n_gases` is
+        // derived from `gas`'s shape and threaded to step_water for the W3
+        // occupancy-transition evacuation loop (every gas plane, not just
+        // the W5 steam slice).
         .def("step_water", [](const PhysicsEngine& self,
                               py::array_t<int32_t> water_depth,    // S1: Q16.16 int32
                               py::array_t<int32_t> flow_vx,        // S1: Q16.16 int32
                               py::array_t<int32_t> flow_vy,        // S1: Q16.16 int32
                               py::array_t<int32_t> floor_height,   // S1: Q16.16 int32
-                              py::array_t<int32_t> atmosphere,     // S2c: Q16.16 int32 (W3/W5 int<->int)
-                              py::array_t<int32_t> wave_p,         // S2a: Q16.16 int32
+                              py::array_t<int32_t> atmosphere,     // S2c: Q16.16 int32 == P
                               py::array_t<bool>  solid,
-                              py::array_t<int32_t> gas,            // S2b: Q16.16 int32 (steam puff quantized)
+                              py::array_t<int32_t> gas,            // S2b: Q16.16 int32
                               py::array_t<int32_t> before,         // S1: Q16.16 int32 snapshot
                               py::array_t<float> dyn_permeability, // float (FLOAT BRIDGE: seal)
                               int steam_idx, float tilt_x, float tilt_y,
@@ -1363,23 +1399,23 @@ PYBIND11_MODULE(breach_physics, m) {
             auto [vy, h3, w3]  = get_2d(flow_vy);
             auto [fl, h4, w4]  = get_2d_const(floor_height);
             auto [atm, h5, w5] = get_2d(atmosphere);
-            auto [wp, h6, w6]  = get_2d_const(wave_p);
             auto [sol, h7, w7] = get_2d_const(solid);
             auto [bef, h8, w8] = get_2d(before);
             auto [perm, h9, w9] = get_2d(dyn_permeability);
-            // gas: (N, h, w) contiguous — pass the base pointer; step_water strides
-            // by plane (h*w) internally to reach the steam slice (steam_idx).
+            // gas: (N, h, w) contiguous — pass the base pointer + N; step_water
+            // strides by plane (h*w) internally (steam_idx AND the W3 evac loop).
             auto gv = gas.mutable_unchecked<3>();
             int32_t* gas_ptr = gv.mutable_data(0, 0, 0);        // S2b: Q16.16 int32
+            const int n_gases = static_cast<int>(gv.shape(0));
             self.step_water(
-                wd, vx, vy, fl, atm, wp, sol,
-                gas_ptr, bef, perm,
+                wd, vx, vy, fl, atm, sol,
+                gas_ptr, n_gases, bef, perm,
                 steam_idx, tilt_x, tilt_y,
                 h, w, sim_time,
                 ceiling_h, flood_eps, ratio_cap,
                 boil_rate, boil_p_thresh, steam_yield);
         }, py::arg("water_depth"), py::arg("flow_vx"), py::arg("flow_vy"),
-           py::arg("floor_height"), py::arg("atmosphere"), py::arg("wave_p"),
+           py::arg("floor_height"), py::arg("atmosphere"),
            py::arg("solid"), py::arg("gas"), py::arg("before"),
            py::arg("dyn_permeability"), py::arg("steam_idx"),
            py::arg("tilt_x"), py::arg("tilt_y"), py::arg("sim_time"),

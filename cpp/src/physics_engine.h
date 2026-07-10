@@ -26,15 +26,23 @@
 #include "raycaster.h"
 #include "water_solver.h"
 #include "bulk_transport.h"   // EOS refactor P1: bulk O2/N2 donor-cell flux
+#include "eos_solver.h"       // EOS refactor P3: the compressible Kwatra solver
 
 class PhysicsEngine {
 public:
+    // AtmosphereSolver is RETAINED on the engine (its wave_substep/
+    // diffuse_solve are no longer called from run_substeps — `eos` replaces
+    // them, EOS refactor P3) so any still-bound Python params / the isolated
+    // GPU test bindings keep resolving; the CPU/GPU wave+diffuse dispatch
+    // paths it fronted are asserted unreachable in run_substeps below (D7 +
+    // the P3 GPU-guard task).
     AtmosphereSolver  atmos;
     SmokeDynamics     smoke;
     FireSimulation    fire;
     TemperatureSolver temperature;
     Raycaster         raycaster;
     WaterSolver       water;
+    EOSSolver         eos;   // EOS refactor P3
 
     // S2a FLOAT BRIDGE scratch: wave_p is now Q16.16 int32, but the water solver
     // (S1, shipped) still reads wave_p as float in its head term + ripple splash
@@ -162,15 +170,40 @@ public:
     // so the two transport schemes never both touch the same plane; every
     // legacy (non-bulk) plane's SL transport is untouched (conservative[gi]
     // is false there), so this is 0-ULP for the 5 legacy species.
+    // --- EOS refactor P3 (docs/eos_refactor_design.md §3, §8 patch P3) ---
+    // The Kwatra solver (`this->eos`) REPLACES AtmosphereSolver::wave_substep
+    // + ::diffuse_solve, and its own advection substep loop REPLACES the old
+    // n_smoke-substepped semi-Lagrangian loop for the two CONSERVATIVE gas
+    // planes (bulk O2/N2 now move ONCE PER EOS SUBSTEP, inside eos.step, via
+    // bulk_flux_transport — not once per tick as P1 shipped it). The 5 TRACE
+    // planes still ride the per-gas SmokeDynamics::step, but now ONCE per
+    // tick (design §3.2 step 4b: "traces advect ONCE per tick on the final
+    // velocity") on the solver's post-correction `wind_x`/`wind_y` — the
+    // n_smoke CFL-floor substep loop AND the decoupled sink_hop BFS loop are
+    // BOTH DELETED (sink_hop + its BFS machinery, decisions.md #3; native
+    // venting replaces it). `wave_p` is REPURPOSED as `P_prev` (the design's
+    // own "keep the old name, change the meaning" pattern, already applied
+    // to `atmosphere`->P — see eos_solver.h); `wave_v`/`wave_source` are
+    // RETIRED (no longer read/written here — see gamemap.py for the arrays'
+    // fate). `temperature` is a NEW required arg (T, ambient-relative Kelvin).
+    //
+    //   p_prev              : Q16.16 (h,w) — the repurposed `wave_p` buffer.
+    //   atmosphere           : Q16.16 (h,w) — P (read prior tick's value
+    //                          implicitly via p_prev; WRITTEN once, step 5).
+    //   wind_x/wind_y        : Q16.16 (h,w) — u (self-advected + corrected).
+    //   temperature           : Q16.16 (h,w) — T (advected + compression-worked).
+    //   gas                   : Q16.16 (n_gases,h,w) — the two conservative
+    //                          planes are donor-cell transported EVERY
+    //                          eos substep; traces advect once, below.
     void run_substeps(
-        int32_t* wave_p, int32_t* wave_v, int32_t* wave_source,  // S2a: Q16.16
+        int32_t* p_prev,                                          // was wave_p
         int32_t* atmosphere,                                     // S2c: Q16.16
         int32_t* wind_x, int32_t* wind_y,                        // S2c: Q16.16
+        int32_t* temperature,                                    // EOS P3
         const bool* obstacles, const bool* solid, const bool* is_vacuum,
         const float* dyn_permeability, const float* dyn_wave_absorb,
         int32_t* gas, const float* gas_diffusion, int n_gases,   // S2b: gas Q16.16
         const bool* gas_conservative,                             // EOS P1
-        const float* sink_x, const float* sink_y,
         int h, int w, float sim_time);
 
     // --- Patch 1 S4c: the water-layer ARRAY ARITHMETIC -------------------
@@ -229,11 +262,15 @@ public:
     // (metres / m/s). atmosphere/gas/dyn_permeability stay FLOAT (the S2 group) —
     // the W5 boil + W3 displacement are FLOAT BRIDGES that dequantize water_depth
     // at the boundary (marked in the .cpp). The substep-count cliff is integer.
+    // EOS refactor P3: `wave_p` param retired (the water head reads the
+    // integer `atmosphere` == P directly, no float bridge); `n_gases` added
+    // (the W3 occupancy-transition evacuation loop touches every gas plane,
+    // not just the W5 steam slice).
     void step_water(
         int32_t* water_depth, int32_t* flow_vx, int32_t* flow_vy,
-        const int32_t* floor_height, int32_t* atmosphere, const int32_t* wave_p,  // S2a: wave_p Q16.16; S2c: atm Q16.16
+        const int32_t* floor_height, int32_t* atmosphere,   // S2c: atm Q16.16 == P
         const bool* solid,
-        int32_t* gas,   // S2b: gas Q16.16 (W5 steam puff int<-int)
+        int32_t* gas, int n_gases,   // S2b: gas Q16.16 (W5 steam puff + W3 evacuation)
         int32_t* before, float* dyn_permeability,
         int steam_idx, float tilt_x, float tilt_y,
         int h, int w, float sim_time,

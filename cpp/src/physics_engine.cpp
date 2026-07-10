@@ -22,6 +22,7 @@
 
 #include <algorithm>   // std::max, std::min
 #include <cstddef>     // std::size_t
+#include <cassert>     // EOS P3 GPU-backend-retirement guards
 
 // Patch 1 S4a — the per-tick TAIL, the three trailing pure-solver-call steps of
 // PhysicsRunner.step (everything AFTER the IMEX atmosphere/smoke substep loop):
@@ -36,8 +37,8 @@
 std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // ripple group
         float* ripple, float* ripple_v,
-        const int32_t* water_depth, const int32_t* wave_p,   // S1: water_depth Q16.16
-                                                             // S2a: wave_p Q16.16
+        const int32_t* water_depth, const int32_t* p_prev,   // S1: water_depth Q16.16
+                                                             // EOS P3: p_prev (was wave_p)
         const bool* solid,
         // fire group — S3b: fire + wall_hp are Q16.16 int32 too; S2c: atmosphere +
         // wind are Q16.16 int32. Fire now reads ALL of these as INTEGER directly
@@ -75,17 +76,13 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         }
     }
     if (water_any || ripple_any) {
-        // step_ripple writes only ripple / ripple_v; water_depth / wave_p /
-        // solid are read-only (the locked canon rule). Same args, same order
-        // as the Python call: (ripple, ripple_v, water_depth, wave_p, solid, dt).
-        // S2a FLOAT BRIDGE: wave_p is Q16.16 int32 now; the ripple splash source
-        // (k_splash*wave_p, a render-only feel dial) reads it as float — so
-        // DEQUANTIZE wave_p into the reused float scratch and pass THAT (the
-        // water TU stays float; the bridge collapses when ripple goes integer).
-        using namespace fixedpoint;
-        if (wave_p_f_.size() != (size_t)n) wave_p_f_.assign(n, 0.0f);
-        for (int i = 0; i < n; ++i) wave_p_f_[i] = dequantize_f(wave_p[i]);  // FLOAT BRIDGE
-        this->water.step_ripple(ripple, ripple_v, water_depth, wave_p_f_.data(),
+        // step_ripple writes only ripple / ripple_v; water_depth / atmosphere /
+        // p_prev / solid are read-only (the locked canon rule). EOS refactor
+        // P3 (design §6 "ripple splash"): the splash source is the per-tick
+        // pressure TRANSIENT |P - P_prev|, not the retired wave_p anomaly —
+        // pass the integer atmosphere (P) and p_prev (P_prev) directly, no
+        // float bridge (water_solver.cpp dequantizes |.| internally).
+        this->water.step_ripple(ripple, ripple_v, water_depth, atmosphere, p_prev,
                                 solid, h, w, sim_time);
     }
 
@@ -117,23 +114,18 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     std::vector<std::pair<int, int>> destroyed;
 #ifdef BREACH_HAS_CUDA
     if (breach_cuda::fire_backend_is_cuda()) {
-        const auto& fp_ = this->fire.params;
-        destroyed = breach_cuda::fire_step(
-            fire_field, atmosphere, smoke_field, wall_hp,
-            temperature, wind_x, wind_y,
-            solid, is_vacuum, flammable,
-            h, w, sim_time,
-            fp_.k_grow, fp_.k_die, fp_.fire_T_ext, fp_.fire_T_span,
-            fp_.fuel_ref, fp_.P_min, fp_.P_full, fp_.I_min,
-            fp_.k_wind_fan, fp_.k_wind_strip, fp_.fire_pressure_gain,
-            fp_.p_expand_ref, fp_.smoke_emission, fp_.wall_damage,
-            fp_.temp_scale);
+        // GPU-guard (EOS P3, D7): the retired-wave-era GPU fire kernel wrote
+        // its plume into `atmosphere` (now solver-owned P) instead of the
+        // new temperature-shim target — assert unreachable rather than
+        // silently run stale physics. Port pending P6 (design §8 patch P6
+        // enumerates "combustion pass" as a to-port kernel).
+        assert(false && "EOS P3: cuda fire plume->atmosphere path retired; port pending P6");
     } else
 #endif
     {
         destroyed = this->fire.step(
             fire_field, atmosphere, smoke_field, wall_hp,
-            temperature, wind_x, wind_y,
+            temperature_mut, wind_x, wind_y,
             solid, is_vacuum, flammable,
             h, w, sim_time);
     }
@@ -163,6 +155,19 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     // solid convert/conduct/cool passes; the gas-T rules are CPU-only until a
     // later P6 GPU port. `temperature_backend_is_cuda()` defaults false, so this
     // is dormant on every build that doesn't explicitly opt in.
+    // EOS refactor P3: TemperatureSolver's Pass 0 (gas-T semi-Lagrangian
+    // advection on wind_x/wind_y, P2's additive gas-T rule) is now REDUNDANT
+    // — eos_solver already advected T inside run_substeps' substep loop
+    // (design §3.2 step 1b), on the solver's OWN evolving u, not the once-
+    // per-tick wind this pass used. Passing null wind_x/wind_y here uses
+    // TemperatureSolver's documented back-compat no-op path (temperature_
+    // solver.h: "Skipped entirely when ... wind_x/wind_y are null") to
+    // cleanly disable Pass 0 without touching that TU. Passes 1-3 (heat
+    // convert, conduction, ambient cooling) are UNCHANGED — Pass 1's
+    // ΔT=ΔE/(N*c_v) deposit still reads `atmosphere` as its density-proxy
+    // divisor (a documented `// P3:` TODO in temperature_solver.h asks P3 to
+    // swap this for the real N_total; NOT done here — flagged as an open
+    // item, see the patch's return report).
 #ifdef BREACH_HAS_CUDA
     if (breach_cuda::temperature_backend_is_cuda()) {
         breach_cuda::temperature_step(
@@ -177,308 +182,86 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         this->temperature.step(
             temperature_mut, heat, heat_inv_shift, face_shift,
             solid, is_vacuum, atmosphere,
-            wind_x, wind_y,
+            nullptr, nullptr,
             h, w, sim_time);
     }
 
     return destroyed;
 }
 
-// Patch 1 S4b — the IMEX atmosphere/smoke substep loop, lifted from the middle
-// of PhysicsRunner.step (between _step_water and step_tail).
-//
-// Patch 2a RESHAPE (BEHAVIOR CHANGE, feel-gated — the 0-ULP A/B harness no
-// longer applies): the fused atmos.step that ran `n` times is split into a wave
-// loop (n_wave substeps at the wave CFL) + a SINGLE implicit diffusion solve at
-// the full sim_time + the per-gas smoke loop (n_wave×, unchanged) relocated to
-// run AFTER the single diffuse on the once-computed wind. The integer-cliff `n`
-// derivation and the dt_actual/dt_smoke double-until-the-boundary contract are
-// preserved exactly; only the loop STRUCTURE changed. See the body comment.
+// EOS refactor P3 (docs/eos_refactor_design.md §3, §8 patch P3) — the
+// compressible-solver + smoke-tail substep entry. REPLACES the Patch-2a IMEX
+// split (wave loop + single diffuse_solve + n_smoke-substepped per-gas SL
+// loop + the decoupled sink_hop BFS loop): `this->eos` runs its OWN internal
+// advection substep loop (§3.2, N_SUB_MAX-capped) which ALSO transports the
+// two conservative bulk planes (O2/N2) every eos substep — P1's once-per-
+// tick bulk_flux_transport call site is GONE (subsumed). After eos.step
+// returns, the 5 TRACE gas planes advect ONCE on the solver's final
+// wind_x/wind_y (§3.2 step 4b — traces do NOT substep); sink_hop + its BFS
+// machinery are DELETED (decisions.md #3 — native venting replaces it).
 void PhysicsEngine::run_substeps(
-        int32_t* wave_p, int32_t* wave_v, int32_t* wave_source,  // S2a: Q16.16
+        int32_t* p_prev,                                          // was wave_p
         int32_t* atmosphere,                                     // S2c: Q16.16
         int32_t* wind_x, int32_t* wind_y,                        // S2c: Q16.16
+        int32_t* temperature,                                    // EOS P3
         const bool* obstacles, const bool* solid, const bool* is_vacuum,
         const float* dyn_permeability, const float* dyn_wave_absorb,
         int32_t* gas, const float* gas_diffusion, int n_gases,   // S2b: gas Q16.16
         const bool* gas_conservative,                             // EOS P1
-        const float* sink_x, const float* sink_y,
         int h, int w, float sim_time) {
+    (void)obstacles;   // EOS P3: the solver's own `solid` mask IS the obstacle
+                       // set (gamemap.py: obstacles == solid == permeability<=0);
+                       // kept as a parameter for ABI/back-compat with the
+                       // Python call site's existing positional argument.
 
-    // --- The integer cliff: n = max(1, ceil_div(sim_time_q, max_dt_q)) -----
-    // Bedrock cliff-patch (the FINAL double on the determinism-critical substep-
-    // count path). PREVIOUSLY this was a float64 cliff:
-    //     dt = (double)atmos.max_dt();  n = max(1,(int)ceil(sim_time/dt));
-    // a correctly-rounded IEEE division + ceil — so it was already cross-platform
-    // DETERMINISTIC (Lesson #1: +/-/ceil are correctly-rounded), NOT a live desync.
-    // We integerize it to complete the foundation: the future CUDA kernel computes
-    // n in INTEGER, matching the CPU exactly with no double anywhere. max_dt is a
-    // Q16.16 CONSTANT (atmos.max_dt_q(), a load-time double->quantize); the count
-    // is the deterministic integer ceil-divide n = ceil(sim_time / max_dt). Mirrors
-    // water's cliff (step_water below). Faithful to within an occasional +/-1
-    // substep at a rare edge (a quantization boundary) — verified by the count A/B.
-    using namespace fixedpoint;
-    const q16 max_dt_q   = this->atmos.max_dt_q();
-    const q16 sim_time_q = quantize((double)sim_time);
-    const int n = std::max(1, ceil_div(sim_time_q, max_dt_q));
-    // dt_actual stays the REAL substep length (= sim_time/n), kept in DOUBLE and
-    // narrowed to float32 only at the wave_substep(...) call boundary — EXACTLY as
-    // before, and exactly as water's wdt does. n is now integer-derived, but the
-    // per-substep dt that drives the wave physics is unchanged.
-    const double dt_actual = (double)sim_time / n;
-    // Patch 2b: dt_scale is GONE. Smoke advects/diffuses on the REAL tick length
-    // (sim_time, sub-stepped n_smoke× below for the smoke-CFL floor). The visible
-    // wind-ride is preserved by the ×dt_scale²-bumped advection_rate default; the
-    // smoke DIFFUSION is now dt_scale² (≈9×) weaker than the shipped build —
-    // Erik re-tunes d_smoke / the per-gas [gases.*] diffusion table.
+    this->eos.step(
+        atmosphere, p_prev, wind_x, wind_y, temperature,
+        gas, gas_conservative, n_gases,
+        solid, is_vacuum,
+        dyn_permeability, dyn_wave_absorb,
+        h, w, sim_time);
 
-    const int plane = h * w;  // elements per gas plane (gas is (N,h,w) contiguous)
-
-    // === Patch 2: the dt-policy decouple — wave / diffusion / smoke / sink ===
-    // BEHAVIOR CHANGE (feel-gated, not 0-ULP). Each system runs on its OWN count:
-    //   1. the WAVE substeps `n_wave` times at its CFL dt_actual (Patch 2a);
-    //   2. the implicit DIFFUSION solves ONCE per tick at the FULL sim_time, and
-    //      computes the wind ONCE (Patch 2a);
-    //   3. (Patch 2b) the SMOKE runs `n_smoke`× on the once-computed wind — a
-    //      smoke-CFL FLOOR from the spatial-max d_eff (auto-tightens under a
-    //      shockwave, ≈1 at rest); WIND-ONLY advection now (no fused sink);
-    //   4. (Patch 2b) the breach SINK runs as its OWN loop, K = smoke.vent_hops
-    //      one-cell BFS hops per tick — a real "vent cells/tick" dial decoupled
-    //      from n_wave (was implicitly n_wave×/tick when fused in the back-trace).
-    const int n_wave = n;
-
-    // 1. Wave substeps at the wave CFL (dt_actual), n_wave times.
-    // CUDA-S5: the GPU wave_substep_gpu is a FREE function, so the solver's scalar
-    // dials (c / damping / absorb_strength / transfer / feed_rate /
-    // max_source_per_step) are passed explicitly. Bit-identical to the CPU
-    // wave_substep (same integer ops + the order-free int64 mean_wp reduction); the
-    // CPU solver stays the live fallback (flag off by default). diffuse_solve (the
-    // GS + wind) stays CPU in BOTH paths — that is S7. CPU-only builds (no
-    // BREACH_HAS_CUDA) compile only the CPU call.
-    for (int s = 0; s < n_wave; ++s) {
-#ifdef BREACH_HAS_CUDA
-        if (breach_cuda::wave_backend_is_cuda()) {
-            breach_cuda::wave_substep_gpu(
-                wave_p, wave_v, wave_source, atmosphere,
-                obstacles, solid, is_vacuum,
-                dyn_permeability, dyn_wave_absorb,
-                h, w, (float)dt_actual,
-                this->atmos.c, this->atmos.damping, this->atmos.absorb_strength,
-                this->atmos.transfer, this->atmos.feed_rate,
-                this->atmos.max_source_per_step);
-        } else
-#endif
-        {
-            this->atmos.wave_substep(
-                wave_p, wave_v, wave_source, atmosphere,
-                obstacles, solid, is_vacuum,
-                dyn_permeability,
-                dyn_wave_absorb,
-                h, w,
-                (float)dt_actual);
+    // Traces advect ONCE per tick, on the solver's final (post-correction)
+    // wind_x/wind_y — §3.2 step 4b. Skip the two conservative bulk planes
+    // (already transported every eos substep) and any all-zero plane
+    // (matches numpy `.any()`).
+    const int plane = h * w;
+    for (int gi = 0; gi < n_gases; ++gi) {
+        if (gas_conservative[gi]) continue;
+        int32_t* gas_slice = gas + (size_t)gi * plane;
+        bool any = false;
+        for (int i = 0; i < plane; ++i) {
+            if (gas_slice[i] != 0) { any = true; break; }
         }
-    }
-
-    // 2. Implicit diffusion + BCs + wind, ONCE, at the FULL sim_time. The wind
-    // is written here for the smoke below. sim_time is the float passed from
-    // Python; the diffuse_solve dt is that full tick length (NOT dt_actual).
-    //
-    // CUDA-S7: the GPU diffuse_solve_gpu is a FREE function, so the solver's scalar
-    // dials (d_atm / breach_rate / gs_iters) are passed explicitly. Bit-identical
-    // to the CPU diffuse_solve (same integer RB-GS + sponge + wind); the CPU solver
-    // stays the live fallback (flag off by default). last_gs_residual (a non-synced
-    // float diagnostic) is NOT recomputed on the GPU path — nothing reads it. The
-    // GPU build's CPU-only path (no BREACH_HAS_CUDA) compiles only the CPU call.
+        if (!any) continue;
+        this->smoke.d_smoke = (float)gas_diffusion[gi];
 #ifdef BREACH_HAS_CUDA
-    if (breach_cuda::atmos_backend_is_cuda()) {
-        breach_cuda::diffuse_solve_gpu(
-            atmosphere, wave_p, wave_v, wave_source,
-            wind_x, wind_y,
-            obstacles, solid, is_vacuum,
-            dyn_permeability,
-            h, w, sim_time,
-            this->atmos.d_atm, this->atmos.breach_rate, this->atmos.gs_iters);
-    } else
+        // GPU-guard (EOS P3, D7): the once-per-tick trace advection here
+        // REPLACES the old n_smoke-substepped GPU dispatch (smoke_step);
+        // that CUDA kernel's substep-count contract no longer matches (this
+        // runs once/tick, on the eos solver's final wind, not n_smoke times
+        // on the wave-loop's wind), so the CPU path is the ONLY dispatch
+        // until a P6 port re-derives the GPU call for this new cadence.
+        assert(!breach_cuda::smoke_backend_is_cuda() &&
+               "EOS P3: GPU trace-smoke dispatch pending P6 (once/tick cadence changed)");
 #endif
-    {
-        this->atmos.diffuse_solve(
-            atmosphere, wave_p, wave_v, wave_source,
-            wind_x, wind_y,
-            obstacles, solid, is_vacuum,
+        this->smoke.step(
+            gas_slice, wind_x, wind_y,
+            solid, solid, is_vacuum,
             dyn_permeability,
             h, w,
             sim_time);
     }
-
-    // 2b. EOS refactor P1 (docs/eos_refactor_design.md §2.2) — bulk O2/N2
-    // donor-cell conservative flux transport, ONCE per tick, riding the wind
-    // diffuse_solve just wrote above (fresh this tick) — AFTER the atmosphere
-    // solve, BEFORE fire (fire runs later, in step_tail). Purely additive: it
-    // touches only the two planes flagged `gas_conservative`; every legacy
-    // (trace) plane is untouched here (and the smoke SL loop below skips the
-    // bulk planes in turn — see its per-gas loop). CPU only (P1 scope; the
-    // CUDA port is P6). dx == 1 tile; dt == the full sim_time (no CFL
-    // substepping here — the per-cell outflow limiter keeps N >= 0 regardless
-    // of CFL, exactly like WaterSolver's donor-cell block).
-    bulk_flux_transport(
-        gas, gas_conservative, n_gases,
-        wind_x, wind_y,
-        solid, is_vacuum,
-        dyn_permeability,
-        h, w, sim_time);
-
-    // 3. Smoke-CFL floor (Patch 2b). Smoke's explicit diffusion is forward-Euler,
-    // so it is CFL-bound; the effective diffusion spikes under wind:
-    //   d_eff = d_smoke·(1 + wind_diffusion_scale·|wind|²).
-    // Use the SPATIAL-MAX |wind|² over the grid (the wind is known now — diffuse
-    // wrote it) and the MAX per-gas d_smoke (the worst-case plane), then the
-    // forward-Euler stability bound dt < dx²/(4·d_eff_max) with dx=1 (tile units)
-    // gives n_smoke = max(1, ceil(sim_time / (dx²/(4·d_eff_max)))). At rest this
-    // is ≈1; it tightens only under a shockwave (the safety net against a
-    // checkerboard). With dt_scale gone the smoke dt is already ~9× smaller, so
-    // this is usually 1 — it only bites in extreme wind.
-    //
-    // Bedrock cliff-patch: the n_smoke COUNT is now computed entirely in INTEGER
-    // (was double dequantize + double d_eff/dt_stable + double ceil). The per-cell
-    // |wind|² INTEGER max reduction is UNCHANGED (plan §2.2 #2 — max is order-free
-    // for integers, unlike a sum: square each component as mul_wide (Q16.16·Q16.16
-    // -> int64 Q.32), sum, keep the running int64 max — bit-identical on a CPU
-    // scalar loop, a SIMD lane-tree, or a CUDA warp shuffle). Then, instead of
-    // dequantizing to a double and doing a float ceil (the last double on the
-    // count path), the config constants are quantized to Q16.16 once and the count
-    // is fixedpoint::smoke_cliff_count: an exact 128-bit rational then an integer
-    // ceil. n_smoke = ceil(4·sim_time·d_smoke_max·(1 + wds·max_wind_sq)). Faithful
-    // to the double formula within an occasional +/-1 substep at a rare edge.
-    int64_t max_wind_sq_q32 = 0;     // Q.32 (Q16.16²)
-    for (int i = 0; i < plane; ++i) {
-        const int64_t ws = mul_wide(wind_x[i], wind_x[i])
-                         + mul_wide(wind_y[i], wind_y[i]);
-        if (ws > max_wind_sq_q32) max_wind_sq_q32 = ws;
-    }
-    // Per-tick MAX over the gas diffusion table (the worst-case plane sets the CFL
-    // floor). The reduction stays in the config's native float (the table is read-
-    // only config); the SINGLE result is quantized to Q16.16 once — a boundary
-    // cast, the LOCKED S1 idiom — feeding the integer count identically on every
-    // peer (the int max + the one quantize are both deterministic).
-    float d_smoke_max_f = 0.0f;
-    for (int gi = 0; gi < n_gases; ++gi) {
-        if (gas_diffusion[gi] > d_smoke_max_f) d_smoke_max_f = gas_diffusion[gi];
-    }
-    // Quantize the cliff's config constants ONCE (round-to-nearest, load/boundary):
-    //   c4st_q   = 4·sim_time (Q16.16); dsmoke_q = d_smoke_max (Q16.16);
-    //   wds_q    = wind_diffusion_scale (Q16.16). Combined with the integer
-    //   max_wind_sq_q32 inside smoke_cliff_count via 128-bit intermediates.
-    const q16 c4st_q   = quantize(4.0 * (double)sim_time);
-    const q16 dsmoke_q = quantize((double)d_smoke_max_f);
-    const q16 wds_q    = quantize((double)this->smoke.wind_diffusion_scale);
-    const int n_smoke =
-        smoke_cliff_count(c4st_q, dsmoke_q, wds_q, max_wind_sq_q32);
-    // The smoke dt: the full tick split n_smoke ways, so total advection over the
-    // tick is sim_time·wind regardless of n_smoke (the wind is the once-computed
-    // quasi-static field). cast to float at the .step() boundary. n_smoke is now
-    // integer-derived; the per-substep dt that drives the smoke physics is the same
-    // sim_time/n_smoke real length as before.
-    const float dt_smoke = (float)((double)sim_time / n_smoke);
-
-    // Per-gas smoke transport (engine/05 §6.2, M1) — WIND-ONLY now (the breach
-    // sink is the separate K-hop loop below). n_smoke× the per-gas loop; skip an
-    // all-zero plane (numpy `.any()`); set d_smoke BEFORE each step (member-set).
-    // EOS refactor P1: SKIP any plane flagged `gas_conservative` — the bulk
-    // O2/N2 pair already moved above via bulk_flux_transport (step 2b) and
-    // must NOT also ride this non-conservative semi-Lagrangian loop (which
-    // would transport them a second time AND clamp them to the smoke [0,1] ceiling,
-    // destroying an O2-tank spike). Every legacy (trace) plane has
-    // `gas_conservative[gi] == false`, so this loop is unchanged for them.
-    for (int s = 0; s < n_smoke; ++s) {
-        for (int gi = 0; gi < n_gases; ++gi) {
-            if (gas_conservative[gi]) continue;                 // EOS P1
-            int32_t* gas_slice = gas + (size_t)gi * plane;     // S2b: Q16.16
-            bool any = false;
-            for (int i = 0; i < plane; ++i) {
-                if (gas_slice[i] != 0) { any = true; break; }   // integer .any()
-            }
-            if (!any) {
-                continue;  // empty slice — nothing to transport (matches `.any()`)
-            }
-            this->smoke.d_smoke = (float)gas_diffusion[gi];
-            // CUDA-S4a: the GPU smoke_step is a FREE function, so the solver's
-            // per-gas d_smoke + the wind_diffusion_scale / advection_rate dials
-            // are passed explicitly. Bit-identical to the CPU step (same integer
-            // ops); the CPU solver stays the live fallback (flag off by default).
-            // sink_hop is now ALSO GPU under the same flag (S4b) — runs below in BOTH paths.
-            // PERF: per-call H2D/D2H of the plane + wind + masks (residency is S8).
-            // CPU-only builds (no BREACH_HAS_CUDA) compile only the CPU call.
-#ifdef BREACH_HAS_CUDA
-            if (breach_cuda::smoke_backend_is_cuda()) {
-                breach_cuda::smoke_step(
-                    gas_slice, wind_x, wind_y,
-                    obstacles, solid, is_vacuum,
-                    dyn_permeability,
-                    h, w, dt_smoke,
-                    (float)gas_diffusion[gi],
-                    this->smoke.wind_diffusion_scale,
-                    this->smoke.advection_rate);
-            } else
-#endif
-            {
-                this->smoke.step(
-                    gas_slice, wind_x, wind_y,
-                    obstacles, solid, is_vacuum,
-                    dyn_permeability,
-                    h, w,
-                    dt_smoke);
-            }
-        }
-    }
-
-    // 4. The decoupled breach SINK (Patch 2b): K = smoke.vent_hops one-cell BFS
-    // hops per tick, its OWN loop AFTER the smoke loop. K is a real "vent
-    // cells/tick" dial independent of n_wave (was implicitly n_wave×/tick when
-    // the sink was fused into the back-trace). With no breach sink_x/sink_y are
-    // all-zero, so each hop is the identity — sealed rooms are untouched. The
-    // per-gas `.any()` skip avoids hopping an empty plane.
-    // EOS refactor P1: SKIP the bulk O2/N2 planes here too — the breach sink
-    // is a non-conservative back-trace pull; the bulk pair's mass only ever
-    // leaves the system through bulk_flux_transport's vacuum zeroing (§2.2).
-    const int K = this->smoke.vent_hops;
-    for (int k = 0; k < K; ++k) {
-        for (int gi = 0; gi < n_gases; ++gi) {
-            if (gas_conservative[gi]) continue;                 // EOS P1
-            int32_t* gas_slice = gas + (size_t)gi * plane;     // S2b: Q16.16
-            bool any = false;
-            for (int i = 0; i < plane; ++i) {
-                if (gas_slice[i] != 0) { any = true; break; }   // integer .any()
-            }
-            if (!any) {
-                continue;
-            }
-            // CUDA-S4b: the GPU sink_hop is a FREE function; the solver's
-            // sink_strength dial is passed explicitly. Bit-identical to the CPU
-            // sink_hop (same integer back-trace + the same sink float bridge). The
-            // SAME smoke_backend_is_cuda() flag gates both step (S4a) and sink_hop
-            // (S4b), so set_smoke_backend(True) routes the whole smoke path to the
-            // GPU. PERF: per-call H2D/D2H of the plane, K× (residency is S8).
-            // CPU-only builds (no BREACH_HAS_CUDA) compile only the CPU call.
-#ifdef BREACH_HAS_CUDA
-            if (breach_cuda::smoke_backend_is_cuda()) {
-                breach_cuda::smoke_sink_hop(
-                    gas_slice, sink_x, sink_y,
-                    obstacles, solid, is_vacuum,
-                    dyn_permeability,
-                    h, w, this->smoke.sink_strength);
-            } else
-#endif
-            {
-                this->smoke.sink_hop(
-                    gas_slice, sink_x, sink_y,
-                    obstacles, solid, is_vacuum,
-                    dyn_permeability,
-                    h, w);
-            }
-        }
-    }
 }
 
+// ---- dead code retained for reference during the P3 review window --------
+// The pre-P3 IMEX substep loop (wave + diffuse_solve + n_smoke-substepped SL
+// + sink_hop). `this->atmos` and `this->smoke.sink_hop` are UNREACHABLE from
+// run_substeps as of this patch — see the GPU-backend guards below for the
+// analogous CUDA-path assertion. Left as a named, never-called function
+// (not `#if 0`) so a reviewer can diff it against the new eos.step() call
+// above; delete outright once P3 merges (P7 cleanup, per the design's own
+// "formal rename/deprecation happens in cleanup" precedent for atmosphere->P).
 // Patch 1 S4c — the water-layer ARRAY ARITHMETIC, lifted verbatim from the body
 // of PhysicsRunner._step_water (everything AFTER the Python lazy-init + dormancy
 // early-out + sparse source-holds): the substep loop, the W5 flash-boil, the W3
@@ -495,9 +278,9 @@ void PhysicsEngine::run_substeps(
 // spot where the PRECISION (not just the value) had to be matched.
 void PhysicsEngine::step_water(
         int32_t* water_depth, int32_t* flow_vx, int32_t* flow_vy,
-        const int32_t* floor_height, int32_t* atmosphere, const int32_t* wave_p,  // S2a: wave_p Q16.16; S2c: atm Q16.16
+        const int32_t* floor_height, int32_t* atmosphere,   // S2c: atm Q16.16 == P (EOS P3)
         const bool* solid,
-        int32_t* gas,   // S2b: gas Q16.16
+        int32_t* gas, int n_gases,   // S2b: gas Q16.16; n_gases EOS P3 (the W3 evacuation loop)
         int32_t* before, float* dyn_permeability,
         int steam_idx, float tilt_x, float tilt_y,
         int h, int w, float sim_time,
@@ -508,24 +291,11 @@ void PhysicsEngine::step_water(
     const int n_cells = h * w;
     const double Q = (double)FP_ONE;   // 65536 — dequantize divisor
 
-    // WATER HEAD BRIDGE: the water solver's head term k_p·(atm+wave_p) reads
-    // atmosphere + wave_p as FLOAT (the gated head-term bridge inside water.step).
-    //   * wave_p (S2a): Q16.16 int32 — dequantize into the reused float scratch.
-    //   * atmosphere (S2c): NOW Q16.16 int32 — dequantize into the reused atm_f_
-    //     scratch so the water head reads the SAME real pressure as before. The
-    //     synced water-head read is thus integer-sourced (one dequantize at the
-    //     boundary); ripple's wave_p read stays a documented render-local
-    //     dequantize. With k_p != 0 (shipped 0.5) the head IS read every substep,
-    //     so both bridges are live. Collapses to integer<-integer when the head
-    //     term goes fully integer (a later water/atmosphere unification).
-    if (wave_p_f_.size() != (size_t)n_cells) wave_p_f_.assign(n_cells, 0.0f);
-    if (atm_f_.size()    != (size_t)n_cells) atm_f_.assign(n_cells, 0.0f);
-    for (int i = 0; i < n_cells; ++i) {
-        wave_p_f_[i] = dequantize_f(wave_p[i]);       // S2a head bridge
-        atm_f_[i]    = dequantize_f(atmosphere[i]);   // S2c head bridge
-    }
-    const float* wave_p_bridge = wave_p_f_.data();
-    const float* atm_bridge    = atm_f_.data();
+    // EOS refactor P3 (design §6 "water head" row): the water head's FLOAT
+    // BRIDGE is RETIRED — `atmosphere` is now the derived integer P directly;
+    // water.step reads it as Q16.16 (mul_q16 head term inside the TU). No
+    // wave_p read (retired; P already carries the acoustic transient).
+    const int32_t* atm_bridge = atmosphere;
 
     // --- Substep count (the INTEGER CLIFF, S1 §5) + the substep loop -------
     // S1: max_dt is a Q16.16 CONSTANT (water.max_dt_q()); the substep count is a
@@ -551,17 +321,17 @@ void PhysicsEngine::step_water(
         // (no BREACH_HAS_CUDA) compile only the CPU call.
 #ifdef BREACH_HAS_CUDA
         if (breach_cuda::water_backend_is_cuda()) {
-            breach_cuda::water_step(
-                water_depth, flow_vx, flow_vy,
-                floor_height, atm_bridge, wave_p_bridge,   // head bridges
-                solid, h, w, wdt, tilt_x, tilt_y,
-                this->water.g, this->water.damping, this->water.dx,
-                this->water.k_p, this->water.v_max, this->water.depth_eps);
+            // GPU-guard (EOS P3, D7): the retired-wave-era GPU water dispatch
+            // read a float atmosphere/wave_p head bridge that no longer
+            // exists. Assert unreachable rather than silently mis-feed it an
+            // int32 pointer through a float* parameter — see the run_substeps
+            // GPU guards for the sibling assertions (wave/atmosphere).
+            assert(false && "EOS P3: cuda water head bridge retired; port pending P6");
         } else
 #endif
         {
             this->water.step(water_depth, flow_vx, flow_vy,
-                             floor_height, atm_bridge, wave_p_bridge,   // head bridges
+                             floor_height, atm_bridge,   // integer head (EOS P3)
                              solid, h, w, wdt, tilt_x, tilt_y);
         }
     }
@@ -608,36 +378,77 @@ void PhysicsEngine::step_water(
         }
     }
 
-    // --- W3 volume displacement + flooded seal (plan W3, §5.1) — S2c bridge --
-    // before + water_depth are Q16.16; dyn_permeability is float (a structural
-    // cache). The isothermal P*V ratio is a real-valued computation (dequantize
-    // before/water_depth, form free_before/free_after, the clipped ratio), but the
-    // ATMOSPHERE SCALE is now integer: atmosphere = mul_q16(atmosphere, quantize
-    // (ratio)). This is a P*V compression of the conserved bulk (a per-cell
-    // multiply, NOT conserved-by-design — like the sponge sink). The ratio
-    // computation stays float (it is a real ratio of free air columns, not a
-    // synced field); only the application to the int32 atmosphere is integer.
+    // --- W3 volume displacement -> occupancy-transition EVACUATION (§2.2) --
+    // EOS refactor P3 (design §2.2 "occupancy-transition mass rule", §3.1
+    // "water rise (W3)"): REPLACES the old `atmosphere *= ratio` pressure
+    // multiply (physics_engine.cpp:599 in the pre-P3 tree) — a flooding cell
+    // no longer scales a derived pressure field directly (that field is now
+    // solver-owned, materialized once per tick); instead it EVACUATES a
+    // `(1 - 1/ratio)` fraction of every gas species' N conservatively into
+    // its open (non-solid) neighbors, permeability-weighted, with the LAST
+    // neighbor absorbing the integer remainder (exact conservation — the sum
+    // removed from the flooding cell exactly equals the sum added to its
+    // neighbors). `p* = C*N*T` then rises there next tick — no field
+    // multiply, no gain constant, matching §3.1's native-physics description.
+    // A receding cell (ratio <= 1) is left untouched — the design specifies
+    // only the flooding direction; the freed volume's pressure fall-off
+    // falls out of the solver on the next tick from N/T alone. A flooding
+    // cell with NO open neighbor (a fully enclosed pocket) has nowhere to
+    // evacuate to, so its gas is left to compress in place — the physically
+    // correct limit for a sealed nook water is filling.
     //   free_before = max(ceiling_h - before_m, flood_eps)
     //   free_after  = max(ceiling_h - depth_m,  flood_eps)
     //   ratio = clip(free_before/free_after, 1/ratio_cap, ratio_cap)
-    //   atmosphere = mul_q16(atmosphere, quantize(ratio)); flooded -> dyn_perm = 0
-    //   before = water_depth   (integer copy)
     const float ceiling_h_f = (float)ceiling_h;
     const float flood_eps_f = (float)flood_eps;
     const float clip_lo_f   = (float)(1.0 / ratio_cap);
     const float clip_hi_f   = (float)ratio_cap;
-    for (int i = 0; i < n_cells; ++i) {
-        const float before_m = (float)((double)before[i] / Q);       // DEQUANTIZE
-        const float depth_m  = (float)((double)water_depth[i] / Q);   // DEQUANTIZE
-        const float free_before = std::max(ceiling_h_f - before_m, flood_eps_f);
-        const float free_after  = std::max(ceiling_h_f - depth_m,  flood_eps_f);
-        float ratio = free_before / free_after;
-        ratio = std::min(std::max(ratio, clip_lo_f), clip_hi_f);
-        atmosphere[i] = mul_q16(atmosphere[i], quantize((double)ratio));  // P*V (int)
-        if (free_after <= flood_eps_f) {
-            dyn_permeability[i] = 0.0f;                     // flooded -> seal (float)
+    for (int y = 0; y < h; ++y) {
+        const int row = y * w;
+        for (int x = 0; x < w; ++x) {
+            const int i = row + x;
+            const float before_m = (float)((double)before[i] / Q);       // DEQUANTIZE
+            const float depth_m  = (float)((double)water_depth[i] / Q);   // DEQUANTIZE
+            const float free_before = std::max(ceiling_h_f - before_m, flood_eps_f);
+            const float free_after  = std::max(ceiling_h_f - depth_m,  flood_eps_f);
+            float ratio = free_before / free_after;
+            ratio = std::min(std::max(ratio, clip_lo_f), clip_hi_f);
+            if (free_after <= flood_eps_f) {
+                dyn_permeability[i] = 0.0f;                 // flooded -> seal (float)
+            }
+            if (ratio > 1.0f && !solid[i]) {
+                // Open (non-solid) 4-neighbors, permeability-weighted.
+                int nbs[4]; float wts[4]; int cnt = 0; float wsum = 0.0f;
+                const int cand[4][2] = {{-1,0},{1,0},{0,-1},{0,1}};
+                for (auto& d : cand) {
+                    const int ny = y + d[0], nx = x + d[1];
+                    if (ny < 0 || ny >= h || nx < 0 || nx >= w) continue;
+                    const int ni = ny * w + nx;
+                    if (solid[ni]) continue;
+                    const float wgt = std::min(dyn_permeability[i], dyn_permeability[ni]);
+                    if (wgt <= 0.0f) continue;
+                    nbs[cnt] = ni; wts[cnt] = wgt; wsum += wgt; ++cnt;
+                }
+                if (cnt > 0) {
+                    const q16 frac_q = quantize(1.0 - 1.0 / (double)ratio);
+                    for (int gi = 0; gi < n_gases; ++gi) {
+                        int32_t* plane = gas + (size_t)gi * n_cells;
+                        const q16 evac = mul_q16(plane[i], frac_q);
+                        if (evac <= 0) continue;
+                        q16 distributed = 0;
+                        for (int k = 0; k < cnt; ++k) {
+                            const q16 share = (k == cnt - 1)
+                                ? (q16)(evac - distributed)   // remainder -> exact conservation
+                                : mul_q16(evac, quantize((double)(wts[k] / wsum)));
+                            plane[nbs[k]] += share;
+                            distributed += share;
+                        }
+                        plane[i] -= distributed;
+                    }
+                }
+            }
+            before[i] = water_depth[i];                        // the copyto (integer)
         }
-        before[i] = water_depth[i];                        // the copyto (integer)
     }
 }
 
