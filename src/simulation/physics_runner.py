@@ -157,6 +157,10 @@ class PhysicsRunner:
         self.fire.params.k_wind_strip   = _fp("k_wind_strip", FIRE_K_WIND_STRIP)
         self.fire.params.fire_pressure_gain = _fp(
             "fire_pressure_gain", FIRE_PRESSURE_GAIN)
+        # p_expand_ref: RETIRED as the plume's self-limiting gate
+        # (eos-p3fix-thermal-ceiling — see FireParams::T_FLAME_MAX,
+        # fire_simulation.h). Left wired so old configs don't hard-error;
+        # the C++ side no longer reads it.
         self.fire.params.p_expand_ref   = _fp("p_expand_ref", FIRE_P_EXPAND_REF)
         self.fire.params.smoke_emission = _fp("smoke_emission", FIRE_SMOKE_EMISSION)
         self.fire.params.wall_damage    = _fp("wall_damage", FIRE_WALL_DAMAGE)

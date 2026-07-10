@@ -102,7 +102,10 @@ std::vector<std::pair<int, int>> FireSimulation::step(
     const double  P_span          = (double)p.P_full - (double)p.P_min;       // smoothstep span
     const bool    P_degenerate    = (P_span <= 0.0);
     const int64_t recip_P_span    = P_degenerate ? 0 : fp::make_recip(P_span);
-    const int64_t recip_p_expand  = fp::make_recip((double)p.p_expand_ref);   // plume saturation
+    // eos-p3fix-thermal-ceiling: the plume's self-limiter now gates on T
+    // (see FireParams::T_FLAME_MAX doc) instead of the structurally-dead
+    // atmosphere/p_expand_ref gate (retired, see FireParams::p_expand_ref).
+    const int64_t recip_T_flame_max = fp::make_recip((double)p.T_FLAME_MAX);
 
     // --- Per-tile signed-logistic FEEDBACK (fire_design_proposal §2 + §5) ---
     // Spread is gone (radiation -> heat -> temperature -> ignition handles it);
@@ -197,38 +200,64 @@ std::vector<std::pair<int, int>> FireSimulation::step(
     }
 
     // --- Own-tile plume ENERGY DEPOSIT (EOS refactor P3 — the minimal
-    //     plume->T shim, design §8 patch P3 writer row) -------------------
+    //     plume->T shim, design §8 patch P3 writer row; self-limiter fixed
+    //     eos-p3fix-thermal-ceiling, decisions.md #16) --------------------
     // REPLACES the old own-tile `atmosphere += gain` overpressure write:
     // P is solver-owned now (materialized once/tick by eos_solver), so a
     // direct write here would be silently clobbered next tick — "the pop
     // never goes inert" means the plume must feed the EOS instead (T -> p*
-    // -> the Helmholtz solve -> outward u, natively). Same self-limiting
-    // `gain` scalar as before (still reads the CURRENT `atmosphere` == P as
-    // its own-tile saturation gate, so a already-overpressured tile's plume
-    // still tapers), but the deposit target is `temperature`, scaled by
-    // `temp_gain_scale` (a TUNING DIAL, not a real ΔE/(N*c_v) energy budget
-    // — the named minimal-shim simplification). ROUND-TO-NEAREST (S2a/S2c
-    // unbiased-deposit lesson) so a long firestorm does not accumulate a
-    // truncation DC bias.
-    //   gain = fire_pressure_gain * I * (1 - atmosphere[i]/p_expand_ref) * dt
+    // -> the Helmholtz solve -> outward u, natively).
+    //
+    // Self-limiter: T-based, not P-based (see FireParams::T_FLAME_MAX for
+    // the full root-cause writeup — the P-based gate read `atmosphere[i]`
+    // at the plume's OWN tile, which the EOS solver force-zeroes for every
+    // SOLID cell, so the old gate never actually engaged). Same SMOOTH
+    // taper shape as the retired gate (`sat = clamp01(1 - x/ref)`), now
+    // measured against the thing actually being deposited:
+    //   sat  = clamp01(1 - temperature[i]/T_FLAME_MAX)
+    //   gain = fire_pressure_gain * I * sat * dt
     //   dT   = gain * temp_gain_scale
+    // `sat` -> 0 as T[i] -> T_FLAME_MAX, so the deposit tapers to nothing at
+    // the physical ceiling instead of riding fire intensity unbounded.
+    // ROUND-TO-NEAREST (S2a/S2c unbiased-deposit lesson) so a long firestorm
+    // does not accumulate a truncation DC bias. The final write is a
+    // SATURATING add (fixed_point.h `sat_add_q16`) — independent of the
+    // limiter, wrapping past the int32 ceiling is a correctness bug on its
+    // own (a stacked-source pathological case could still clear T_FLAME_MAX
+    // in one deposit before the NEXT tick's sat gate catches it).
     const q16 temp_gain_scale_q = fp::quantize((double)p.temp_gain_scale);
+    const q16 t_flame_max_q = fp::quantize((double)p.T_FLAME_MAX);
+    if (dbg_probe_idx >= 0 && dbg_probe_idx < n) dbg_plume_dT = 0;   // DEBUG probe (temporary)
     for (int i = 0; i < n; ++i) {
         const q16 I = fire[i];
         if (I <= 0) continue;
-        // (1 - atmosphere/p_expand_ref): recip_mul then 1 - that. Signed (can be
-        // negative if atmosphere > p_expand_ref) -> gain may be negative -> guarded.
-        const q16 sat = (q16)fp::FP_ONE - fp::recip_mul(atmosphere[i], recip_p_expand);
+        // (1 - T[i]/T_FLAME_MAX), clamped to [0,1] (clamp01_q, top of file):
+        // T[i] can be negative (below ambient) or already above T_FLAME_MAX
+        // (a stacked heat source, e.g. combustion/explosion) -- either way
+        // the gate must not amplify gain past 1x or go negative (the old
+        // gate's "guarded, gain may be negative" footgun this replaces).
+        const q16 sat = clamp01_q((q16)fp::FP_ONE -
+                                   fp::recip_mul(temperature[i], recip_T_flame_max));
         // gain = gain_q * I * sat * dt. PINNED left-fold; round-to-nearest the final
         // narrow (the deposit). Carry one wide product at the end for the round.
         q16 g = fp::mul_q16(gain_q, I);            // gain_q * I
-        g = fp::mul_q16(g, sat);                   // * (1 - atm/p_expand)
-        // final * dt with ROUND-TO-NEAREST (deposit). g may be negative (sat<0), so
-        // use the sign-symmetric round-half narrow (shared kit helper).
+        g = fp::mul_q16(g, sat);                   // * (1 - T/T_FLAME_MAX)
+        // final * dt with ROUND-TO-NEAREST (deposit); g >= 0 now (sat clamped
+        // >= 0), so this is always a non-negative deposit.
         const q16 gain = fp::narrow_round_signed(fp::mul_wide(g, dt_q));
         if (gain > 0) {
-            const q16 dT = fp::narrow_round_signed(fp::mul_wide(gain, temp_gain_scale_q));
-            temperature[i] += dT;
+            q16 dT = fp::narrow_round_signed(fp::mul_wide(gain, temp_gain_scale_q));
+            // Belt-and-suspenders hard cap: never deposit PAST T_FLAME_MAX
+            // in one tick even if the smooth taper above under-clamps at
+            // extreme dt/gain products (the "min(deposit, headroom)" form
+            // the investigation named as the alternative shape).
+            const q16 headroom = (temperature[i] < t_flame_max_q)
+                ? (q16)(t_flame_max_q - temperature[i]) : 0;
+            if (dT > headroom) dT = headroom;
+            if (dT > 0) {
+                temperature[i] = fp::sat_add_q16(temperature[i], dT);
+                if (i == dbg_probe_idx) dbg_plume_dT = dT;   // DEBUG probe (temporary)
+            }
         }
     }
 

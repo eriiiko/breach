@@ -778,11 +778,15 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("smoke_emission", &FireParams::smoke_emission)
         .def_readwrite("wall_damage",    &FireParams::wall_damage)
         .def_readwrite("temp_scale",     &FireParams::temp_scale)
-        .def_readwrite("temp_gain_scale", &FireParams::temp_gain_scale);   // EOS P3
+        .def_readwrite("temp_gain_scale", &FireParams::temp_gain_scale)   // EOS P3
+        .def_readwrite("T_FLAME_MAX",    &FireParams::T_FLAME_MAX);       // eos-p3fix-thermal-ceiling
 
     py::class_<FireSimulation>(m, "FireSimulation")
         .def(py::init<>())
         .def_readwrite("params", &FireSimulation::params)
+        // DEBUG probe (temporary, eos-p3fix-thermal-ceiling investigation).
+        .def_readwrite("dbg_probe_idx", &FireSimulation::dbg_probe_idx)
+        .def_readonly("dbg_plume_dT",   &FireSimulation::dbg_plume_dT)
         .def("step", [](const FireSimulation& self,
                         py::array_t<int32_t> fire,         // S3b: Q16.16 int32
                         py::array_t<int32_t> atmosphere,   // S2c: Q16.16 int32
