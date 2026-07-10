@@ -460,6 +460,10 @@ def run_scenario(eng, spec, seed_dt=1.0 / 24):
         burned = pr.step(gmap, seed_dt)
         for (y, x) in burned:
             gmap.destroy_wall(y, x)
+        gmap.heat.fill(0)   # game-loop fidelity: Simulation.step clears the per-tick
+                            # heat deposit after its readers (v2.4 fix-branch finding —
+                            # without this, stale heat re-radiates every tick and T
+                            # pins at the rail, a harness artifact not a physics one)
         tick_ms.append((time.perf_counter() - t0) * 1000.0)
         if t % spec["frame_stride"] == 0:
             frames.append(render_frame(gmap, crop, px))
@@ -525,6 +529,7 @@ def cmd_determinism(args):
             burned = pr.step(gmap, 1.0 / 24)
             for (y, x) in burned:
                 gmap.destroy_wall(y, x)
+            gmap.heat.fill(0)   # game-loop fidelity (see main loop note)
             for arr in (gmap.gas, gmap.temperature, gmap.fire, gmap.wall_hp,
                         gmap.atmosphere, gmap.wind_x, gmap.wind_y):
                 h.update(np.ascontiguousarray(arr).tobytes())
