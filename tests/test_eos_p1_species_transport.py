@@ -320,7 +320,13 @@ def test_sealed_room_bulk_conservation_e2e_1000_ticks():
     # This is still THE P1 GATE, now driven through the real P3 solver path —
     # bulk_flux_transport's per-face gather-then-apply conservation proof is
     # unchanged by being CALLED once per eos substep instead of once per tick.
+    # EOS refactor P4: run_substeps gained gas_decay + inert_n2_idx (the
+    # trace decay->inert_N2 credit, decisions.md #12 v2.1) — both O2 and
+    # inert_N2 carry decay=0.0 by config contract (gases.py), so this is a
+    # 0-ULP addition for THIS test's bulk-only conservation proof; passed
+    # through for signature parity with the real call site.
     runner.eos.dx = float(g.tile_size_m)
+    inert_n2_idx = int(g.gases.name_to_id["inert_n2"])
     for t in range(1000):
         runner.engine.run_substeps(
             g.wave_p, g.atmosphere,
@@ -329,6 +335,7 @@ def test_sealed_room_bulk_conservation_e2e_1000_ticks():
             g.obstacles, g.solid, g.is_vacuum,
             g.dyn_permeability, g.dyn_wave_absorb,
             g.gas, g.gases.diffusion, g.gases.conservative,
+            g.gases.decay, inert_n2_idx,
             sim_time,
         )
         if not wind_seen and (np.abs(g.wind_x).sum() + np.abs(g.wind_y).sum()) > 0:

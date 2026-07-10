@@ -6,10 +6,11 @@ This file pins the new per-tile life/death of an already-lit fire:
 
   T     = temperature[i] / TEMP_SCALE            (the conduction-pass field)
   F     = clamp01(wall_hp[i] / fuel_ref)         (fuel from remaining wall HP)
-  P     = mean atmosphere over open (non-solid,non-vacuum) 4-neighbours  (O2 proxy)
+  O2    = mean REAL n_o2 over open (non-solid,non-vacuum) 4-neighbours
+          (EOS refactor P4 — was the atmosphere/P proxy; design §6 item 3)
   W     = |wind| from the shared wind field
   hot   = clamp01((T - fire_T_ext) / fire_T_span)
-  o2    = smoothstep(P_min, P_full, P)           (pressure IS oxygen)
+  o2    = smoothstep(P_min, P_full, O2)          (the REAL local O2 gate)
   avail = F * o2
   grow  = k_grow * avail * hot * I*(1-I) * (1 + k_wind_fan*W)
   die   = k_die*(1 - avail*hot)*I + k_wind_strip*W*(1-I)*I
@@ -82,7 +83,13 @@ class _FeedbackScene:
     # wall_hp/wind are int32 Q16.16; the scene quantizes its real-valued inputs and
     # reads the fire intensity back via dequantize. temperature/smoke were already
     # int32. (atmosphere is the S2c Q16.16 domain, wall_hp the S3b one.)
-    def __init__(self, *, I, T=0.0, wall_hp=60.0, atm=1.0, wind=0.0):
+    #
+    # EOS refactor P4 (design §6, item 3): the O2 GATE now reads a SEPARATE
+    # `n_o2` plane, not `atmosphere` (which still drives the UNRELATED plume
+    # saturation term). `o2` defaults to the SAME value as `atm` so every
+    # existing atm-only caller keeps testing "non-limiting O2" exactly as
+    # before; a test exercising the O2-starvation path overrides `o2` directly.
+    def __init__(self, *, I, T=0.0, wall_hp=60.0, atm=1.0, o2=None, wind=0.0):
         m = np.full((3, 3), MAT_AIR, dtype=np.int8)
         m[1, 1] = MAT_WOOD
         self.material = m
@@ -92,6 +99,10 @@ class _FeedbackScene:
         # Air ring carries the chosen pressure; the solid centre holds none. (Q16.16)
         self.atmosphere = np.where(
             self.solid, 0, atmosphere_fixed.quantize_scalar(float(atm))
+        ).astype(np.int32)
+        o2_val = atm if o2 is None else o2
+        self.n_o2 = np.where(
+            self.solid, 0, atmosphere_fixed.quantize_scalar(float(o2_val))
         ).astype(np.int32)
         self.smoke = np.zeros((3, 3), dtype=np.int32)
         self.wall_hp = np.zeros((3, 3), dtype=np.int32)
@@ -107,7 +118,7 @@ class _FeedbackScene:
 
     def step(self, fire_sim, dt=DT):
         fire_sim.step(
-            self.fire, self.atmosphere, self.smoke, self.wall_hp,
+            self.fire, self.atmosphere, self.n_o2, self.smoke, self.wall_hp,
             self.temperature, self.wind_x, self.wind_y,
             self.solid, self.is_vacuum, self.flammable,
             dt,
@@ -151,17 +162,19 @@ def test_no_fuel_fire_decays_to_zero():
     assert last == 0.0, f"a fire with no fuel must die, stuck at {last}"
 
 
-def test_low_pressure_fire_decays_to_zero():
-    # Hot + fuelled but LOW pressure (atm 0.3 < P_min 0.6 -> o2=0 -> avail=0):
-    # decompression extinguishes the fire.
+def test_low_o2_fire_decays_to_zero():
+    # Hot + fuelled + FULL pressure but LOW REAL O2 (EOS refactor P4, design
+    # §6 item 3: the O2 gate now reads a separate n_o2 field — 0.02 <
+    # P_min 0.126 -> o2=0 -> avail=0): oxygen starvation extinguishes the
+    # fire even though the room's overall pressure (atm) is nominal.
     fs = _params_runner()
-    sc = _FeedbackScene(I=0.5, T=500.0, wall_hp=60.0, atm=0.3, wind=0.0)
+    sc = _FeedbackScene(I=0.5, T=500.0, wall_hp=60.0, atm=1.0, o2=0.02, wind=0.0)
     last = 0.5
     for _ in range(200):
         last = sc.step(fs)
         if last == 0.0:
             break
-    assert last == 0.0, f"a low-pressure fire must die, stuck at {last}"
+    assert last == 0.0, f"a low-O2 fire must die, stuck at {last}"
 
 
 def test_vented_room_extinguishes():
@@ -262,6 +275,9 @@ def test_plume_raises_own_atmosphere_wind_points_outward():
     is_vacuum = np.zeros((h, w), dtype=bool)
     # S3b: all the fire-step fields are int32 Q16.16.
     atmosphere = np.full((h, w), atmosphere_fixed.quantize_scalar(1.0), dtype=np.int32)
+    # EOS refactor P4: n_o2 is the O2 gate's own input, non-limiting here
+    # (this test is about the plume->T shim, unrelated to O2).
+    n_o2 = np.full((h, w), atmosphere_fixed.quantize_scalar(1.0), dtype=np.int32)
     smoke = np.zeros((h, w), dtype=np.int32)
     wall_hp = np.zeros((h, w), dtype=np.int32)
     wall_hp[2, 2] = wall_fixed.quantize_scalar(60.0)
@@ -277,7 +293,7 @@ def test_plume_raises_own_atmosphere_wind_points_outward():
     # into `temperature` instead; the EOS turns that into outward pressure.
     t_before = float(temperature[2, 2])
     for _ in range(10):
-        fs.step(fire, atmosphere, smoke, wall_hp, temperature,
+        fs.step(fire, atmosphere, n_o2, smoke, wall_hp, temperature,
                 wind_x, wind_y, solid, is_vacuum, flammable, DT)
     t_after = float(temperature[2, 2])
     assert t_after > t_before, (
