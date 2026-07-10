@@ -154,6 +154,11 @@ fuel_ref          = 60.0   # wall_hp normaliser: F = clamp01(wall_hp/fuel_ref)
 # original ignition budgets (dragon dist-3 t=28) through genuine oxygen
 # physics; 0.02/0.05 differentiates weakly (44/42/39); 0.005/0.02 never
 # starves a sealed fire.
+# v2.5 re-measure (P5.1 stoichiometric fuel, design §5 v2.5 / decisions #17):
+# the trio is now sealed 265 / vented 48 / flooded 39 — the ember-scale fuel
+# drain weakens F and a weaker sealed flame starves its room more slowly.
+# Ordering preserved, still bit-stable under the 1e-5 dial perturbation gate
+# (test_payoff_orderings_perturbation_robust).
 P_min             = 0.01   # local N_O2 below which the O2 proxy is 0 (O2 starves the fire)
 P_full            = 0.03   # local N_O2 at which the O2 proxy saturates full
 I_min             = 0.02   # snap-to-zero extinguish floor
@@ -339,6 +344,14 @@ o2_thresh_burn    = 0.03   # min local N_O2 to sustain combustion (below fire's
                             # P_min=0.126 so the VISIBLE flame dies first)
 H_fuel            = 4.0    # heat yield (T-scale ΔT) per unit N_O2 burned
 soot_yield        = 0.3    # fraction of consumed O2 -> black_smoke (rest -> inert_N2)
+# v2.5 — P5.1 stoichiometric fuel consumption (docs/eos_refactor_design.md §5
+# v2.5 amendment, decisions #17): the SOURCE tile pays wall_hp for every unit
+# of N_O2 its neighbours burn, floored at 1 Q16.16 LSB (smolder NEVER destroys
+# — structural destruction stays FireSimulation's I>0 wall_damage path). Wood
+# stoichiometry burns ~0.7 mass-units of fuel per unit O2 — physically honest
+# default, but in play THE ember-lifetime dial: smaller -> embers glow for
+# minutes awaiting oxygen; larger -> they char out fast.
+fuel_per_o2       = 0.7
 # Unit-side suffocation mechanics (LATER arc, design §5): defined here so the
 # constant lives at the right layer; nothing reads it yet.
 o2_thresh_breathe = 0.08   # min local N_O2 a unit needs to breathe (NOT wired yet)

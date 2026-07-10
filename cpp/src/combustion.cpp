@@ -22,7 +22,7 @@ void CombustionSolver::step(
         int32_t* gas, int n_gases,
         int o2_idx, int inert_n2_idx, int black_smoke_idx,
         int32_t* temperature,
-        const int32_t* wall_hp,
+        int32_t* wall_hp,
         const int32_t* fire,
         const bool* flammable,
         const bool* solid,
@@ -47,6 +47,9 @@ void CombustionSolver::step(
     const q16 o2_thresh_q  = quantize((double)o2_thresh_burn);
     const q16 soot_yield_q = quantize((double)soot_yield);
     const q16 H_fuel_q     = quantize((double)H_fuel);
+    // v2.5 (P5.1): wall_hp consumed per unit N_O2 burned — the ember-scale
+    // stoichiometric fuel cost (design §5 v2.5 amendment, decisions #17).
+    const q16 fuel_per_o2_q = quantize((double)fuel_per_o2);
     const double c_v_safe  = (c_v > 0.0f) ? (double)c_v : 1.0;
     const int64_t recip_cv = make_recip(c_v_safe);              // 1/c_v, once per step
     const q16 n_floor_q    = quantize((double)n_floor_heat);
@@ -59,7 +62,11 @@ void CombustionSolver::step(
         const int row = y * w;
         for (int x = 0; x < w; ++x) {
             const int i = row + x;
-            if (!flammable[i] || wall_hp[i] <= 0) continue;   // no fuel
+            // v2.5 (P5.1): the no-fuel gate is wall_hp <= FUEL_FLOOR (1 LSB),
+            // not <= 0 — a fully-charred tile's ember is OUT (no O2 draw, no
+            // heat deposit); burning its final LSB forever would just re-open
+            // the perpetual-ember hole one LSB lower (design §5 v2.5).
+            if (!flammable[i] || wall_hp[i] <= FUEL_FLOOR) continue;   // no fuel
 
             const q16 ign_q = ignition_temp_q16[i];
             // Cheap row-major PREFILTER (design task: "today's FireSimulation
@@ -85,6 +92,21 @@ void CombustionSolver::step(
                 if (burn <= 0) continue;
 
                 O2[j] = (int32_t)(o2_j - burn);
+
+                // v2.5 (P5.1 stoichiometric fuel consumption, decisions #17):
+                // the SOURCE tile pays for this neighbour's burn —
+                // fuel_cost = round(fuel_per_o2 * burn), round-to-nearest (the
+                // SAME unbiased-sink idiom as fire_simulation.cpp's wall_damage
+                // depletion), FLOORED at FUEL_FLOOR after EACH of the up-to-4
+                // neighbour subtractions (N,S,W,E order — deterministic).
+                // THE 1-LSB RULE: this pass never takes wall_hp below 1 count,
+                // never destroys a tile, never emits destroyed-tile events —
+                // structural destruction stays exclusively FireSimulation's
+                // I>0 wall_damage path.
+                const q16 fuel_cost = narrow_round(mul_wide(fuel_per_o2_q, burn));
+                wall_hp[i] -= fuel_cost;
+                if (wall_hp[i] < FUEL_FLOOR) wall_hp[i] = FUEL_FLOOR;
+
                 // Exact split: soot + (burn-soot) == burn, so N_total (Dalton)
                 // is conserved to the LSB regardless of the soot_yield rounding
                 // (decisions.md #12 — "the non-soot fraction ... credited to
