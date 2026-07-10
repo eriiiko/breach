@@ -9,6 +9,7 @@
 #include "raycaster.h"
 #include "water_solver.h"
 #include "eos_solver.h"
+#include "combustion.h"
 #include "physics_engine.h"
 #include "bulk_transport.h"  // EOS refactor P1: expose bulk_flux_transport for direct unit test
 #include "fixed_point.h"   // Bedrock cliff-patch: expose smoke_cliff_count for unit test
@@ -785,6 +786,7 @@ PYBIND11_MODULE(breach_physics, m) {
         .def("step", [](const FireSimulation& self,
                         py::array_t<int32_t> fire,         // S3b: Q16.16 int32
                         py::array_t<int32_t> atmosphere,   // S2c: Q16.16 int32
+                        py::array_t<int32_t> n_o2,         // EOS P4: Q16.16 int32
                         py::array_t<int32_t> smoke,        // S2b: Q16.16 int32
                         py::array_t<int32_t> wall_hp,      // S3b: Q16.16 int32
                         py::array_t<int32_t> temperature,
@@ -796,6 +798,7 @@ PYBIND11_MODULE(breach_physics, m) {
                         float dt) -> py::list {
             auto [f, h, w] = get_2d(fire);
             auto [atm, h2, w2] = get_2d_const(atmosphere);   // EOS P3: read-only (== P)
+            auto [o2, h2b, w2b] = get_2d_const(n_o2);        // EOS P4: read-only (the O2 gate)
             auto [sm, h3, w3] = get_2d(smoke);
             auto [whp, h4, w4] = get_2d(wall_hp);
             auto [temp, h5, w5] = get_2d(temperature);       // EOS P3: mutable (plume->T shim)
@@ -804,14 +807,14 @@ PYBIND11_MODULE(breach_physics, m) {
             auto [wl, h8, w8] = get_2d_const(is_wall);
             auto [vac, h9, w9] = get_2d_const(is_vacuum);
             auto [fl, h10, w10] = get_2d_const(flammable);
-            auto destroyed = self.step(f, atm, sm, whp, temp, wx, wy,
+            auto destroyed = self.step(f, atm, o2, sm, whp, temp, wx, wy,
                                        wl, vac, fl, h, w, dt);
             py::list result;
             for (const auto& [dy, dx] : destroyed) {
                 result.append(py::make_tuple(dy, dx));
             }
             return result;
-        }, py::arg("fire"), py::arg("atmosphere"), py::arg("smoke"),
+        }, py::arg("fire"), py::arg("atmosphere"), py::arg("n_o2"), py::arg("smoke"),
            py::arg("wall_hp"), py::arg("temperature"),
            py::arg("wind_x"), py::arg("wind_y"),
            py::arg("is_wall"), py::arg("is_vacuum"), py::arg("flammable"),
@@ -1089,6 +1092,47 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readonly("digest_velocity",    &EOSSolver::digest_velocity)
         .def_readonly("digest_compression", &EOSSolver::digest_compression);
 
+    // --- CombustionSolver (EOS refactor P4 — combustion on real O2, design
+    //     §5). Own pass, run once per tick AFTER eos.step materializes P. ---
+    py::class_<CombustionSolver>(m, "CombustionSolver")
+        .def(py::init<>())
+        .def_readwrite("burn_rate",         &CombustionSolver::burn_rate)
+        .def_readwrite("o2_thresh_burn",    &CombustionSolver::o2_thresh_burn)
+        .def_readwrite("H_fuel",            &CombustionSolver::H_fuel)
+        .def_readwrite("soot_yield",        &CombustionSolver::soot_yield)
+        .def_readwrite("o2_thresh_breathe", &CombustionSolver::o2_thresh_breathe)
+        .def_readonly("heat_floor_hits",    &CombustionSolver::heat_floor_hits)
+        .def("step", [](const CombustionSolver& self,
+                        py::array_t<int32_t> gas,             // (n_gases,h,w) Q16.16
+                        int o2_idx, int inert_n2_idx, int black_smoke_idx,
+                        py::array_t<int32_t> temperature,     // Q16.16, mutated
+                        py::array_t<int32_t> wall_hp,         // Q16.16, read-only
+                        py::array_t<int32_t> fire,            // Q16.16, read-only
+                        py::array_t<bool> flammable,
+                        py::array_t<bool> solid,
+                        py::array_t<bool> is_vacuum,
+                        py::array_t<int32_t> ignition_temp_q16,   // Q16.16, read-only
+                        float dt, float c_v, float n_floor_heat) {
+            auto gv = gas.mutable_unchecked<3>();
+            int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
+            const int n_gases = static_cast<int>(gv.shape(0));
+            const int h = static_cast<int>(gv.shape(1));
+            const int w = static_cast<int>(gv.shape(2));
+            auto [temp, h2, w2] = get_2d(temperature);
+            auto [whp, h3, w3]  = get_2d_const(wall_hp);
+            auto [f, h4, w4]    = get_2d_const(fire);
+            auto [fl, h5, w5]   = get_2d_const(flammable);
+            auto [sol, h6, w6]  = get_2d_const(solid);
+            auto [vac, h7, w7]  = get_2d_const(is_vacuum);
+            auto [ign, h8, w8]  = get_2d_const(ignition_temp_q16);
+            self.step(gas_ptr, n_gases, o2_idx, inert_n2_idx, black_smoke_idx,
+                     temp, whp, f, fl, sol, vac, ign, h, w, dt, c_v, n_floor_heat);
+        }, py::arg("gas"), py::arg("o2_idx"), py::arg("inert_n2_idx"),
+           py::arg("black_smoke_idx"), py::arg("temperature"), py::arg("wall_hp"),
+           py::arg("fire"), py::arg("flammable"), py::arg("solid"),
+           py::arg("is_vacuum"), py::arg("ignition_temp_q16"),
+           py::arg("dt"), py::arg("c_v"), py::arg("n_floor_heat"));
+
     // --- WaterSolver (pipe model: damped velocity + donor-cell upwind flux;
     //     engine/07 §2, water_implementation_plan Step W1) ---
     py::class_<WaterSolver>(m, "WaterSolver")
@@ -1212,6 +1256,9 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_property_readonly("eos",
             [](PhysicsEngine& e) -> EOSSolver& { return e.eos; },
             py::return_value_policy::reference_internal)
+        .def_property_readonly("combustion",
+            [](PhysicsEngine& e) -> CombustionSolver& { return e.combustion; },
+            py::return_value_policy::reference_internal)
         // --- Patch 1 S4a: the per-tick TAIL ---------------------------------
         // step_tail moves the three trailing pure-solver-call steps of
         // PhysicsRunner.step (ripple, fire, temperature — after the IMEX substep
@@ -1246,6 +1293,7 @@ PYBIND11_MODULE(breach_physics, m) {
                              // EOS P3: bulk-N source (Pass-1 heat divisor)
                              py::array_t<int32_t> gas,
                              py::array_t<bool> gas_conservative,
+                             int o2_idx,                         // EOS P4
                              float sim_time) -> py::list {
             // ripple group
             auto [rip, h, w]    = get_2d(ripple);
@@ -1284,7 +1332,7 @@ PYBIND11_MODULE(breach_physics, m) {
                 rip, ripv, wd, wp, sol,
                 f, atm, sm, whp, temp, wx, wy, vac, fl,
                 temp, hp, shift, fs,
-                gas_ptr, gcons, n_gases,
+                gas_ptr, gcons, n_gases, o2_idx,
                 h, w, sim_time);
             py::list result;
             for (const auto& [dy, dx] : destroyed) {
@@ -1298,7 +1346,7 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("wind_x"), py::arg("wind_y"),
            py::arg("is_vacuum"), py::arg("flammable"),
            py::arg("heat"), py::arg("heat_inv_shift"), py::arg("face_shift"),
-           py::arg("gas"), py::arg("gas_conservative"),
+           py::arg("gas"), py::arg("gas_conservative"), py::arg("o2_idx"),
            py::arg("sim_time"))
         // --- Patch 1 S4b: the IMEX atmosphere/smoke substep loop ------------
         // run_substeps moves the per-tick IMEX substep block of PhysicsRunner.step
@@ -1327,6 +1375,8 @@ PYBIND11_MODULE(breach_physics, m) {
                                 py::array_t<int32_t> gas,           // S2b: Q16.16 int32
                                 py::array_t<float> gas_diffusion,
                                 py::array_t<bool> gas_conservative, // EOS P1
+                                py::array_t<float> gas_decay,       // EOS P4
+                                int inert_n2_idx,                   // EOS P4
                                 float sim_time) {
             auto [pp, h, w]    = get_2d(p_prev);
             auto [atm, h4, w4] = get_2d(atmosphere);
@@ -1350,10 +1400,16 @@ PYBIND11_MODULE(breach_physics, m) {
             // (simulation.gases.GasTable.conservative), true only for O2/inert_N2.
             auto gc = gas_conservative.unchecked<1>();
             const bool* gcons = gc.data(0);
+            // gas_decay: (N,) float32 — EOS P4's per-gas trace decay column
+            // (simulation.gases.GasTable.decay), applied once per tick after
+            // each trace plane's own advection, credited to inert_n2_idx.
+            auto gdc = gas_decay.unchecked<1>();
+            const float* gdecay = gdc.data(0);
             self.run_substeps(
                 pp, atm, wx, wy, temp,
                 obs, sol, vac, perm, wabs,
                 gas_ptr, gdiff, n_gases, gcons,
+                gdecay, inert_n2_idx,
                 h, w, sim_time);
         }, py::arg("p_prev"),
            py::arg("atmosphere"), py::arg("wind_x"), py::arg("wind_y"),
@@ -1361,6 +1417,7 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("obstacles"), py::arg("solid"), py::arg("is_vacuum"),
            py::arg("dyn_permeability"), py::arg("dyn_wave_absorb"),
            py::arg("gas"), py::arg("gas_diffusion"), py::arg("gas_conservative"),
+           py::arg("gas_decay"), py::arg("inert_n2_idx"),
            py::arg("sim_time"))
         // --- Patch 1 S4c: the water-layer array arithmetic ------------------
         // step_water moves the array-op body of PhysicsRunner._step_water into

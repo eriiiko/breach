@@ -60,6 +60,7 @@ set(BREACH_SOURCES
     src/water_solver.cpp
     src/bulk_transport.cpp
     src/eos_solver.cpp
+    src/combustion.cpp
     src/physics_engine.cpp
     src/bindings.cpp
 )
@@ -133,6 +134,7 @@ if(MSVC)
         src/water_solver.cpp
         src/bulk_transport.cpp
         src/eos_solver.cpp
+        src/combustion.cpp
         src/temperature_solver.cpp
         src/physics_engine.cpp
         src/raycaster.cpp

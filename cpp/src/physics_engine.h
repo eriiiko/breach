@@ -27,6 +27,7 @@
 #include "water_solver.h"
 #include "bulk_transport.h"   // EOS refactor P1: bulk O2/N2 donor-cell flux
 #include "eos_solver.h"       // EOS refactor P3: the compressible Kwatra solver
+#include "combustion.h"       // EOS refactor P4: combustion on real O2
 
 class PhysicsEngine {
 public:
@@ -43,6 +44,7 @@ public:
     Raycaster         raycaster;
     WaterSolver       water;
     EOSSolver         eos;   // EOS refactor P3
+    CombustionSolver  combustion;   // EOS refactor P4
 
     // S2a FLOAT BRIDGE scratch: wave_p is now Q16.16 int32, but the water solver
     // (S1, shipped) still reads wave_p as float in its head term + ripple splash
@@ -105,6 +107,9 @@ public:
     // sums the conservative bulk planes (O2+N2) into a reused scratch and
     // hands it to TemperatureSolver::step as the REAL N divisor for the
     // Pass-1 heat deposit (closing the P2 `// P3:` density-proxy TODO).
+    // EOS refactor P4 (design §6): `o2_idx` is NEW — step_tail slices the O2
+    // plane out of `gas` and hands it to FireSimulation::step as the real
+    // O2-gate input (n_o2), replacing the atmosphere/P proxy.
     std::vector<std::pair<int, int>> step_tail(
         // ripple group
         float* ripple, float* ripple_v,
@@ -120,8 +125,9 @@ public:
         // temperature group
         int32_t* temperature_mut, const int32_t* heat,
         const int32_t* heat_inv_shift, const int32_t* face_shift,
-        // EOS P3: bulk-N source for the Pass-1 heat-deposit divisor
-        const int32_t* gas, const bool* gas_conservative, int n_gases,
+        // EOS P3: bulk-N source for the Pass-1 heat-deposit divisor.
+        // EOS P4: o2_idx slices the real O2 gate input out of `gas`.
+        const int32_t* gas, const bool* gas_conservative, int n_gases, int o2_idx,
         int h, int w, float sim_time) const;
 
     // --- Patch 1 S4b: the IMEX atmosphere/smoke substep loop -------------
@@ -204,6 +210,17 @@ public:
     //   gas                   : Q16.16 (n_gases,h,w) — the two conservative
     //                          planes are donor-cell transported EVERY
     //                          eos substep; traces advect once, below.
+    //
+    // EOS refactor P4 (design §2.2/§5 v2.1, decisions log #12): `gas_decay`
+    // (n_gases,) is NEW — the per-gas trace `decay` column (simulation/
+    // gases.py, "loaded but never applied" until now), applied ONCE per tick
+    // right after each trace plane's own once-per-tick advection below, with
+    // the decayed mass credited to `inert_n2_idx`'s plane IN THE SAME CELL
+    // ("decay is settling/oxidation into inert bulk, not deletion" — closes
+    // the v2.1 residual of decision #12: N_total conserved through the FULL
+    // burn-then-decay cycle, not just the burn). `inert_n2_idx` names which
+    // gas plane receives the credited mass (0 for the two conservative bulk
+    // planes themselves — they carry decay=0 by config contract, gases.py).
     void run_substeps(
         int32_t* p_prev,                                          // was wave_p
         int32_t* atmosphere,                                     // S2c: Q16.16
@@ -213,6 +230,7 @@ public:
         const float* dyn_permeability, const float* dyn_wave_absorb,
         int32_t* gas, const float* gas_diffusion, int n_gases,   // S2b: gas Q16.16
         const bool* gas_conservative,                             // EOS P1
+        const float* gas_decay, int inert_n2_idx,                 // EOS P4
         int h, int w, float sim_time);
 
     // --- Patch 1 S4c: the water-layer ARRAY ARITHMETIC -------------------
