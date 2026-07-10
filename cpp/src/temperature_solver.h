@@ -222,6 +222,15 @@ public:
         float dt
     ) const;
 
+    // --- DEBUG probe (temporary instrumentation, eos-p3fix-thermal-ceiling
+    // investigation, decisions.md #16): T at ONE traced cell after Pass 2
+    // (conduction) and after Pass 3 (ambient cooling). dbg_probe_idx = -1
+    // disables (one branch/pass, no other cost). Raw Q16.16 counts.
+    int dbg_probe_idx = -1;
+    mutable int32_t dbg_T_post_heat       = 0;   // after Pass 1 (heat->T convert)
+    mutable int32_t dbg_T_post_conduction = 0;
+    mutable int32_t dbg_T_post_cooling    = 0;
+
 private:
     // Double-buffer scratch for the conduction gather (temp -> temp_new). Owned
     // by the solver, resized on demand; reused across ticks (no per-tick alloc).

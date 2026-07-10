@@ -824,6 +824,11 @@ PYBIND11_MODULE(breach_physics, m) {
     //     + ambient cooling §3; engine/06 §1–§3) ---
     py::class_<TemperatureSolver>(m, "TemperatureSolver")
         .def(py::init<>())
+        // DEBUG probe (temporary, eos-p3fix-thermal-ceiling investigation).
+        .def_readwrite("dbg_probe_idx",         &TemperatureSolver::dbg_probe_idx)
+        .def_readonly("dbg_T_post_heat",        &TemperatureSolver::dbg_T_post_heat)
+        .def_readonly("dbg_T_post_conduction",  &TemperatureSolver::dbg_T_post_conduction)
+        .def_readonly("dbg_T_post_cooling",     &TemperatureSolver::dbg_T_post_cooling)
         // NO_FACE sentinel (face_shift == this -> skip the face). Bound from
         // config [physics.thermal].NO_FACE so Python and C++ never disagree.
         .def_property("no_face",

@@ -234,6 +234,9 @@ void TemperatureSolver::step(
         }
     }
 
+    // DEBUG probe (temporary): T after Pass 1 (heat -> temperature convert).
+    if (dbg_probe_idx >= 0 && dbg_probe_idx < n) dbg_T_post_heat = temperature[dbg_probe_idx];
+
     // ---- Pass 2: conduction relaxation (proposal §2.2) ----
     // Gather stencil, double-buffered so the whole pass reads the FROZEN
     // pre-conduction field and writes a fresh one (order-independent, no
@@ -279,6 +282,8 @@ void TemperatureSolver::step(
     // Swap temp_new -> temperature (write the new field back in place; the
     // caller's buffer is the persistent one, scratch_ is reused next tick).
     for (int i = 0; i < n; ++i) temperature[i] = temp_new[i];
+    // DEBUG probe (temporary): T after Pass 2 (conduction).
+    if (dbg_probe_idx >= 0 && dbg_probe_idx < n) dbg_T_post_conduction = temperature[dbg_probe_idx];
 
     // ---- Pass 3: ambient cooling (proposal §3) ----
     // The LAST thermal pass (§3.5): runs AFTER conduction so this tick's fresh
@@ -339,6 +344,9 @@ void TemperatureSolver::step(
             temperature[i] = t - loss;
         }
     }
+
+    // DEBUG probe (temporary): T after Pass 3 (ambient cooling).
+    if (dbg_probe_idx >= 0 && dbg_probe_idx < n) dbg_T_post_cooling = temperature[dbg_probe_idx];
 
     // STEP D (unit damage, §4) will add a further pass here, reading the
     // post-cool temperature field.
