@@ -55,10 +55,13 @@ LEVEL = getattr(CFG.display, "level", "unhcr_vessel")
 # With the raycaster ON, cast_fire_heat deposits `heat` on the GPU.
 # EOS P6.0: wave/atmos backends retired (kernels deleted with their solvers).
 # EOS P6.1: + bulk_flux (flag-only until the P6.5 engine dispatch wires it).
+# EOS P6.4: + kick_compression (same flag-only contract).
 SETTERS = ["set_temperature_backend", "set_water_backend", "set_smoke_backend",
-           "set_fire_backend", "set_raycaster_backend", "set_bulk_flux_backend"]
+           "set_fire_backend", "set_raycaster_backend", "set_bulk_flux_backend",
+           "set_kick_compression_backend"]
 GETTERS = ["get_temperature_backend", "get_water_backend", "get_smoke_backend",
-           "get_fire_backend", "get_raycaster_backend", "get_bulk_flux_backend"]
+           "get_fire_backend", "get_raycaster_backend", "get_bulk_flux_backend",
+           "get_kick_compression_backend"]
 
 
 def find_open_cell(gmap):

@@ -95,9 +95,14 @@ def cuda_dll_dir() -> Path | None:
 # P6.1 (eos-p6-1-bulk-flux): "bulk_flux" REMOVED — cuda_bulk_transport.cu
 # re-proven bit-identical (tests/cuda_bulk_flux_check.py — isolated all-branch
 # A/B + closed-loop breach-venting/blast trajectory, per-plane byte-compare).
+# P6.4 (eos-p6-4-kick): "kick_compression" REMOVED — cuda_kick_compression.cu
+# (the step-4 momentum kick + step-4c compression work) re-proved bit-identical
+# via the P6.4 gate (tests/cuda_kick_check.py: isolated synthetic A/B with
+# every rail forced — U_MAX, c_LOCAL, T_MAX_PHYS, T_MIN floor, work clamp,
+# RAD_SAFE guard — plus a long blast+venting per-tick digest_velocity/
+# digest_compression trajectory vs the CPU solver, rail COUNTERS bit-matched).
 EOS_P6_PENDING_KERNELS = {
     "mg_solve",
-    "kick_compression",
     "eos_step",
     "conduction",
     "trace_smoke",

@@ -22,6 +22,7 @@
 #include "cuda_fire.h"         // CUDA-S6: GPU fire solver + backend flag
 #include "cuda_sl_advection.h" // EOS P6.2: fused 3-field SL advection + backend flag
 #include "cuda_bulk_transport.h"  // EOS P6.1: GPU bulk donor-cell flux + backend flag
+#include "cuda_kick_compression.h"  // EOS P6.4: GPU kick + compression work + backend flag
 // CUDA-S5 cuda_wave.h / CUDA-S7 cuda_atmosphere.h RETIRED in EOS P6.0 — the
 // wave+diffuse solvers they mirrored were replaced by the compressible EOS
 // solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
@@ -496,6 +497,70 @@ PYBIND11_MODULE(breach_physics, m) {
           "P6.1 isolated: GPU donor-cell conservative flux transport of every "
           "`gas_conservative`-flagged plane, once, on the given wind field "
           "(bit-identical to bulk_flux_transport).");
+
+    // EOS P6.4: the GPU momentum kick + compression work (EOSSolver::step's
+    // post-solve tail, steps 4 + 4c). cuda_eos_kick_compression runs both
+    // passes IN PLACE on wind_x/wind_y/temperature and returns the digests +
+    // per-call rail counters (== eos_kick_compression_ref for the same
+    // inputs). Used by the P6.4 bit-identity gate — NOT a live game path; the
+    // engine dispatch flip is P6.5 (the backend flag below exists for that
+    // wiring).
+    m.def("set_kick_compression_backend",
+          [](bool use_cuda) { breach_cuda::set_kick_compression_backend_cuda(use_cuda); },
+          py::arg("use_cuda"),
+          "Switch the EOS kick+compression tail to the GPU (True) or CPU "
+          "(False). No dispatch site consumes this until P6.5 wires eos.step's "
+          "GPU path.");
+    m.def("get_kick_compression_backend",
+          []() { return breach_cuda::kick_compression_backend_is_cuda(); },
+          "True if the EOS kick+compression tail is flagged for the GPU.");
+    m.def("cuda_eos_kick_compression",
+          [](py::array_t<int32_t> wind_x, py::array_t<int32_t> wind_y,
+             py::array_t<int32_t> temperature, py::array_t<int32_t> p_new,
+             py::array_t<int32_t> gas, py::array_t<bool> gas_conservative,
+             py::array_t<bool> solid, py::array_t<bool> is_vacuum,
+             py::array_t<float> dyn_wave_absorb,
+             float dt, int32_t c_local_q,
+             float c_max, float dx, float adiabatic_index,
+             float absorb_strength, float n_floor_solver, float t_min,
+             float t_work_clamp, float t_max_phys, float u_max,
+             float trace_mass_scale) -> py::tuple {
+              auto [wx, h, w]    = get_2d(wind_x);
+              auto [wy, h2, w2]  = get_2d(wind_y);
+              auto [t, h3, w3]   = get_2d(temperature);
+              auto [pn, h4, w4]  = get_2d_const(p_new);
+              auto gv = gas.unchecked<3>();
+              const int32_t* gas_ptr = gv.data(0, 0, 0);
+              const int n_gases = static_cast<int>(gv.shape(0));
+              auto gc = gas_conservative.unchecked<1>();
+              const bool* gcons = gc.data(0);
+              auto [sol, h5, w5] = get_2d_const(solid);
+              auto [vac, h6, w6] = get_2d_const(is_vacuum);
+              auto [ab, h7, w7]  = get_2d_const(dyn_wave_absorb);
+              uint64_t dig_vel = 0, dig_comp = 0;
+              int64_t cnts[5] = {0, 0, 0, 0, 0};
+              breach_cuda::eos_kick_compression(
+                  wx, wy, t, pn, gas_ptr, gcons, n_gases, sol, vac, ab,
+                  h, w, dt, c_local_q,
+                  c_max, dx, adiabatic_index, absorb_strength,
+                  n_floor_solver, t_min, t_work_clamp, t_max_phys, u_max,
+                  trace_mass_scale, &dig_vel, &dig_comp, cnts);
+              return py::make_tuple(dig_vel, dig_comp, cnts[0], cnts[1],
+                                    cnts[2], cnts[3], cnts[4]);
+          },
+          py::arg("wind_x"), py::arg("wind_y"), py::arg("temperature"),
+          py::arg("p_new"), py::arg("gas"), py::arg("gas_conservative"),
+          py::arg("solid"), py::arg("is_vacuum"), py::arg("dyn_wave_absorb"),
+          py::arg("dt"), py::arg("c_local_q"),
+          py::arg("c_max"), py::arg("dx"), py::arg("adiabatic_index"),
+          py::arg("absorb_strength"), py::arg("n_floor_solver"),
+          py::arg("t_min"), py::arg("t_work_clamp"), py::arg("t_max_phys"),
+          py::arg("u_max"), py::arg("trace_mass_scale"),
+          "P6.4 isolated: run the GPU kick + compression-work tail in place on "
+          "wind_x/wind_y/temperature; returns (digest_velocity, "
+          "digest_compression, u_clamp_hits, u_max_hits, work_clamp_hits, "
+          "energy_floor_hits, t_max_phys_hits) for this call — bit-identical "
+          "to eos_kick_compression_ref.");
 #else
     m.attr("HAS_CUDA") = false;
 #endif
@@ -1107,7 +1172,12 @@ PYBIND11_MODULE(breach_physics, m) {
         // EOS P6.2: the substep count the last step() ran (gate telemetry —
         // lets the per-kernel digest gates replay the isolated advection on
         // the exact schedule the solver derived).
-        .def_readonly("dbg_last_n_sub",          &EOSSolver::dbg_last_n_sub);
+        .def_readonly("dbg_last_n_sub",          &EOSSolver::dbg_last_n_sub)
+        // EOS P6.4: the c_LOCAL velocity cap the last step() derived (q16 raw;
+        // gate telemetry — lets the P6.4 digest gate feed the isolated
+        // kick+compression replay the exact per-tick cap, which is computed
+        // from the PRE-advection T scan the replay cannot see).
+        .def_readonly("dbg_last_c_local_q",      &EOSSolver::dbg_last_c_local_q);
 
     // EOS P6.2: the standalone CPU reference for the fused SL-advection
     // substep chain (eos_solver.cpp eos_sl_advect_reference — the SAME
@@ -1137,6 +1207,66 @@ PYBIND11_MODULE(breach_physics, m) {
           "P6.2 CPU reference: replay EOSSolver::step's SL-advection substep "
           "chain in place on wind_x/wind_y/temperature; returns the chained "
           "FNV digest (== EOSSolver.digest_advect for the same inputs).");
+
+    // EOS P6.4: the standalone CPU reference for the momentum kick +
+    // compression work (eos_solver.cpp eos_kick_compression_reference — the
+    // step-4/4c loops copied line for line, same file-local helpers). Runs
+    // IN PLACE on wind_x/wind_y/temperature and returns (digest_velocity,
+    // digest_compression, u_clamp_hits, u_max_hits, work_clamp_hits,
+    // energy_floor_hits, t_max_phys_hits) — the digests == EOSSolver's own
+    // when fed the reconstructed step-4-entry state (post-advection u/T via
+    // eos_sl_advect_ref + dbg_last_n_sub, post-tick atmosphere as p_new, the
+    // post-tick gas planes, dbg_last_c_local_q); the counters are per-call
+    // (the solver's members are cumulative — gates compare per-tick deltas).
+    // Test entry only (both CPU and CUDA builds) — the live path is
+    // EOSSolver::step inside PhysicsEngine::run_substeps.
+    m.def("eos_kick_compression_ref",
+          [](py::array_t<int32_t> wind_x, py::array_t<int32_t> wind_y,
+             py::array_t<int32_t> temperature, py::array_t<int32_t> p_new,
+             py::array_t<int32_t> gas, py::array_t<bool> gas_conservative,
+             py::array_t<bool> solid, py::array_t<bool> is_vacuum,
+             py::array_t<float> dyn_wave_absorb,
+             float dt, int32_t c_local_q,
+             float c_max, float dx, float adiabatic_index,
+             float absorb_strength, float n_floor_solver, float t_min,
+             float t_work_clamp, float t_max_phys, float u_max,
+             float trace_mass_scale) -> py::tuple {
+              auto [wx, h, w]    = get_2d(wind_x);
+              auto [wy, h2, w2]  = get_2d(wind_y);
+              auto [t, h3, w3]   = get_2d(temperature);
+              auto [pn, h4, w4]  = get_2d_const(p_new);
+              auto gv = gas.unchecked<3>();
+              const int32_t* gas_ptr = gv.data(0, 0, 0);
+              const int n_gases = static_cast<int>(gv.shape(0));
+              auto gc = gas_conservative.unchecked<1>();
+              const bool* gcons = gc.data(0);
+              auto [sol, h5, w5] = get_2d_const(solid);
+              auto [vac, h6, w6] = get_2d_const(is_vacuum);
+              auto [ab, h7, w7]  = get_2d_const(dyn_wave_absorb);
+              uint64_t dig_vel = 0, dig_comp = 0;
+              int64_t cnts[5] = {0, 0, 0, 0, 0};
+              eos_kick_compression_reference(
+                  wx, wy, t, pn, gas_ptr, gcons, n_gases, sol, vac, ab,
+                  h, w, dt, c_local_q,
+                  c_max, dx, adiabatic_index, absorb_strength,
+                  n_floor_solver, t_min, t_work_clamp, t_max_phys, u_max,
+                  trace_mass_scale, &dig_vel, &dig_comp, cnts);
+              return py::make_tuple(dig_vel, dig_comp, cnts[0], cnts[1],
+                                    cnts[2], cnts[3], cnts[4]);
+          },
+          py::arg("wind_x"), py::arg("wind_y"), py::arg("temperature"),
+          py::arg("p_new"), py::arg("gas"), py::arg("gas_conservative"),
+          py::arg("solid"), py::arg("is_vacuum"), py::arg("dyn_wave_absorb"),
+          py::arg("dt"), py::arg("c_local_q"),
+          py::arg("c_max"), py::arg("dx"), py::arg("adiabatic_index"),
+          py::arg("absorb_strength"), py::arg("n_floor_solver"),
+          py::arg("t_min"), py::arg("t_work_clamp"), py::arg("t_max_phys"),
+          py::arg("u_max"), py::arg("trace_mass_scale"),
+          "P6.4 CPU reference: replay EOSSolver::step's kick + compression-"
+          "work tail in place on wind_x/wind_y/temperature; returns "
+          "(digest_velocity, digest_compression, u_clamp_hits, u_max_hits, "
+          "work_clamp_hits, energy_floor_hits, t_max_phys_hits) for this "
+          "call.");
 
     // --- CombustionSolver (EOS refactor P4 — combustion on real O2, design
     //     §5). Own pass, run once per tick AFTER eos.step materializes P. ---
