@@ -180,32 +180,42 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     // divisor (a documented `// P3:` TODO in temperature_solver.h asks P3 to
     // swap this for the real N_total; NOT done here — flagged as an open
     // item, see the patch's return report).
+    // EOS P3: sum the conservative bulk planes (O2+N2) into the reused scratch
+    // — the REAL N divisor for Pass 1's ΔT = ΔE/(N·c_v) deposit (closes the P2
+    // `// P3:` density-proxy TODO; floored inside the solver by its own
+    // N_FLOOR_HEAT). Built once here so BOTH the CPU and the GPU (P6.6) paths
+    // read the identical divisor.
+    if (n_bulk_.size() != (size_t)n) n_bulk_.assign(n, 0);
+    std::fill(n_bulk_.begin(), n_bulk_.end(), 0);
+    for (int gi = 0; gi < n_gases; ++gi) {
+        if (!gas_conservative[gi]) continue;
+        const int32_t* plane = gas + (size_t)gi * n;
+        for (int i = 0; i < n; ++i) n_bulk_[i] += plane[i];
+    }
 #ifdef BREACH_HAS_CUDA
     if (breach_cuda::temperature_backend_is_cuda()) {
-        // GPU-guard (EOS P6.1, review §5 residue / P6.0 deferral — the fire/
-        // smoke asserts' sibling): the stale S1 GPU kernel predates the EOS
-        // unified-temperature signature — it has no `n_bulk` (the real
-        // O2+N2 divisor for Pass 1's ΔT = ΔE/(N·c_v) deposit, added P3) and
-        // none of the P2 gas-T rules — so dispatching it would silently run
-        // stale physics. Assert unreachable instead of calling it; the D7
-        // migration-window rule ("stale kernels unreachable, not just
-        // unused") now holds by construction, not by flag discipline. Port
-        // pending P6.6 (extend cuda_temperature.cu with the n_bulk input).
-        assert(false && "EOS P6: cuda temperature_step signature stale (no n_bulk); port pending P6.6");
+        // CUDA-P6.6: dispatch the unified temperature pass to the GPU (bit-
+        // identical to the CPU solver — same integer ops; gated by
+        // tests/cuda_conduction_check.py). The CPU solver stays the live
+        // fallback; with the flag off (default) this is the exact prior call.
+        // wind is NULL here — like the CPU path, Pass 0 advection is disabled
+        // (eos.step already advected T on its own evolving u; §3.2 step 1b).
+        // The dials come straight off the solver so config drives both backends;
+        // the per-call rail-hit count folds into the solver's own counter so
+        // t_max_phys_hits telemetry is identical whichever backend ran.
+        this->temperature.t_max_phys_hits += breach_cuda::temperature_step(
+            temperature_mut, heat, heat_inv_shift, face_shift,
+            solid, is_vacuum, atmosphere, n_bulk_.data(),
+            nullptr, nullptr,
+            this->temperature.no_face, this->temperature.cool_shift,
+            this->temperature.cool_shift_vacuum,
+            this->temperature.o2_vacuum_thresh,
+            this->temperature.c_v, this->temperature.n_floor_heat,
+            this->temperature.gas_advection_rate, this->temperature.T_MAX_PHYS,
+            h, w, sim_time);
     } else
 #endif
     {
-        // EOS P3: sum the conservative bulk planes (O2+N2) into the reused
-        // scratch — the REAL N divisor for Pass 1's ΔT = ΔE/(N·c_v) deposit
-        // (closes the P2 `// P3:` density-proxy TODO; floored inside the
-        // solver by its own N_FLOOR_HEAT).
-        if (n_bulk_.size() != (size_t)n) n_bulk_.assign(n, 0);
-        std::fill(n_bulk_.begin(), n_bulk_.end(), 0);
-        for (int gi = 0; gi < n_gases; ++gi) {
-            if (!gas_conservative[gi]) continue;
-            const int32_t* plane = gas + (size_t)gi * n;
-            for (int i = 0; i < n; ++i) n_bulk_[i] += plane[i];
-        }
         this->temperature.step(
             temperature_mut, heat, heat_inv_shift, face_shift,
             solid, is_vacuum, atmosphere,
