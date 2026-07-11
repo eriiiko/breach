@@ -73,7 +73,8 @@ if(BREACH_CUDA)
         src/cuda_smoke.cu          # S4a smoke solver (diffusion + SL advection)
         src/cuda_fire.cu           # S6 fire solver (logistic + plume + smoke scatter + burn)
         src/cuda_sl_advection.cu   # EOS P6.2 fused 3-field SL advection (u self + gas T)
-        src/cuda_bulk_transport.cu) # EOS P6.1 bulk donor-cell flux (water K3-K8 pattern)
+        src/cuda_bulk_transport.cu # EOS P6.1 bulk donor-cell flux (water K3-K8 pattern)
+        src/cuda_mg_solve.cu)      # EOS P6.3 multigrid pressure solve (RB-GS + fused tail)
     # S5 cuda_wave.cu / S7 cuda_atmosphere.cu RETIRED in EOS P6.0 — their CPU
     # solvers (wave_substep / diffuse_solve) were replaced by the compressible
     # EOS solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).

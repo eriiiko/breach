@@ -106,6 +106,9 @@ _BACKEND_SETTERS = (
     # re-proven, but the engine dispatch lands in P6.5 (kernel-gate only until
     # then); flipping it here is a forward-compatible no-op.
     "set_bulk_flux_backend",
+    # EOS P6.3: multigrid pressure solve — same status (re-proven kernels,
+    # flag-only until the P6.5 engine dispatch); forward-compatible no-op.
+    "set_mg_solve_backend",
 )
 
 

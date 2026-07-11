@@ -22,6 +22,7 @@
 #include "cuda_fire.h"         // CUDA-S6: GPU fire solver + backend flag
 #include "cuda_sl_advection.h" // EOS P6.2: fused 3-field SL advection + backend flag
 #include "cuda_bulk_transport.h"  // EOS P6.1: GPU bulk donor-cell flux + backend flag
+#include "cuda_mg_solve.h"     // EOS P6.3: GPU multigrid pressure solve + backend flag
 // CUDA-S5 cuda_wave.h / CUDA-S7 cuda_atmosphere.h RETIRED in EOS P6.0 — the
 // wave+diffuse solvers they mirrored were replaced by the compressible EOS
 // solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
@@ -496,6 +497,76 @@ PYBIND11_MODULE(breach_physics, m) {
           "P6.1 isolated: GPU donor-cell conservative flux transport of every "
           "`gas_conservative`-flagged plane, once, on the given wind field "
           "(bit-identical to bulk_flux_transport).");
+
+    // EOS P6.3: the GPU multigrid Helmholtz pressure solve (cuda_mg_solve.cu
+    // — per-color RB-GS launches on fine levels, gather-form restriction/
+    // prolongation, the FUSED COARSE-TAIL kernel for the ≤1024-cell levels;
+    // bit-identical to EOSSolver::mg_run_solve_cpu). KERNEL-GATE ONLY for
+    // now: the backend flag exists so P6.5 can wire the eos_solver dispatch,
+    // but nothing dispatches on it yet (docs/eos_p6_gpu_alignment_review.md
+    // §4, P6.3 row). cuda_eos_mg_solve mirrors eos_mg_solve_ref (below,
+    // unconditional) argument-for-argument: the per-tick hierarchy is built
+    // HOST-side through the SAME EOSSolver::mg_build_levels the CPU path
+    // calls (review §2.7 — build placement is digest-neutral pre-residency;
+    // the build is per-tick because level-0 m derives from p* and gE/gS fold
+    // the per-tick 1/N̂), then the ENTIRE iteration runs on the device.
+    m.def("set_mg_solve_backend",
+          [](bool use_cuda) { breach_cuda::set_mg_solve_backend_cuda(use_cuda); },
+          py::arg("use_cuda"),
+          "Switch the EOS multigrid pressure solve to the GPU (True) or CPU "
+          "(False). No dispatch site consumes this until P6.5 wires eos.step's "
+          "GPU path.");
+    m.def("get_mg_solve_backend",
+          []() { return breach_cuda::mg_solve_backend_is_cuda(); },
+          "True if the EOS multigrid pressure solve is flagged for the GPU.");
+    m.def("cuda_eos_mg_solve",
+          [](const EOSSolver& solver,
+             py::array_t<int32_t> pstar, py::array_t<int32_t> div_u,
+             py::array_t<int32_t> n_total, py::array_t<int32_t> p_prev,
+             py::array_t<bool> solid, py::array_t<bool> is_vacuum,
+             py::array_t<float> dyn_permeability,
+             float dt, py::array_t<int32_t> p_out) -> py::tuple {
+              auto [ps, h, w]    = get_2d_const(pstar);
+              auto [dv, h2, w2]  = get_2d_const(div_u);
+              auto [nt, h3, w3]  = get_2d_const(n_total);
+              auto [pp, h4, w4]  = get_2d_const(p_prev);
+              auto [sol, h5, w5] = get_2d_const(solid);
+              auto [vac, h6, w6] = get_2d_const(is_vacuum);
+              auto [pm, h7, w7]  = get_2d_const(dyn_permeability);
+              auto [po, h8, w8]  = get_2d(p_out);
+              const int n_levels = solver.mg_build_levels(
+                  ps, dv, nt, pp, sol, vac, pm, h, w, dt);
+              if (n_levels <= 0)
+                  return py::make_tuple((uint64_t)0, 0, 0);
+              const auto& L = solver.mg_levels();
+              std::vector<breach_cuda::MGLevelHostView> views(n_levels);
+              for (int lv = 0; lv < n_levels; ++lv) {
+                  views[lv].h = L[lv].h;
+                  views[lv].w = L[lv].w;
+                  views[lv].excl  = L[lv].excl.data();
+                  views[lv].m     = L[lv].m.data();
+                  views[lv].gE    = L[lv].gE.data();
+                  views[lv].gS    = L[lv].gS.data();
+                  views[lv].recip = L[lv].recip.data();
+                  views[lv].b     = L[lv].b.data();
+                  views[lv].P     = L[lv].P.data();
+              }
+              int la = 0, ln = 0;
+              const uint64_t dig = breach_cuda::eos_mg_vcycle(
+                  views.data(), n_levels, solver.use_multigrid,
+                  solver.mg_cycles, solver.mg_nu1, solver.mg_nu2,
+                  solver.mg_coarsest_sweeps, solver.S, po, &la, &ln);
+              return py::make_tuple(dig, la, ln);
+          },
+          py::arg("solver"), py::arg("pstar"), py::arg("div_u"),
+          py::arg("n_total"), py::arg("p_prev"),
+          py::arg("solid"), py::arg("is_vacuum"), py::arg("dyn_permeability"),
+          py::arg("dt"), py::arg("p_out"),
+          "P6.3 isolated: run the multigrid pressure solve with the hierarchy "
+          "built host-side (the SAME mg_build_levels the CPU calls) and the "
+          "ENTIRE V-cycle iteration on the GPU; writes the solved P into "
+          "p_out and returns (digest, launches_actual, launches_naive) — the "
+          "digest is bit-identical to eos_mg_solve_ref / digest_helmholtz.");
 #else
     m.attr("HAS_CUDA") = false;
 #endif
@@ -1107,7 +1178,24 @@ PYBIND11_MODULE(breach_physics, m) {
         // EOS P6.2: the substep count the last step() ran (gate telemetry —
         // lets the per-kernel digest gates replay the isolated advection on
         // the exact schedule the solver derived).
-        .def_readonly("dbg_last_n_sub",          &EOSSolver::dbg_last_n_sub);
+        .def_readonly("dbg_last_n_sub",          &EOSSolver::dbg_last_n_sub)
+        // EOS P6.3 gate telemetry: 1-D int32 copies of the last step()'s
+        // solve-input caches (pstar, div_u, n_total — nothing after the
+        // solve writes them; reshape to (h, w) in Python). Together with the
+        // engine-visible p_prev these reconstruct the EXACT inputs the
+        // pressure solve consumed, so the digest gate can replay it
+        // isolated (eos_mg_solve_ref / cuda_eos_mg_solve).
+        .def("dbg_mg_inputs", [](const EOSSolver& s) {
+            auto mk = [](const std::vector<int32_t>& v) {
+                py::array_t<int32_t> a((py::ssize_t)v.size());
+                std::copy(v.begin(), v.end(), a.mutable_data());
+                return a;
+            };
+            return py::make_tuple(mk(s.dbg_pstar_cache()),
+                                  mk(s.dbg_div_u_cache()),
+                                  mk(s.dbg_n_total_cache()));
+        }, "P6.3: (pstar, div_u, n_total) flat int32 copies as consumed by "
+           "the last step()'s pressure solve.");
 
     // EOS P6.2: the standalone CPU reference for the fused SL-advection
     // substep chain (eos_solver.cpp eos_sl_advect_reference — the SAME
@@ -1137,6 +1225,42 @@ PYBIND11_MODULE(breach_physics, m) {
           "P6.2 CPU reference: replay EOSSolver::step's SL-advection substep "
           "chain in place on wind_x/wind_y/temperature; returns the chained "
           "FNV digest (== EOSSolver.digest_advect for the same inputs).");
+
+    // EOS P6.3: the standalone CPU reference for the multigrid pressure
+    // solve (eos_solver.cpp eos_mg_solve_reference — drives the SAME
+    // mg_build_levels + mg_run_solve_cpu the live step() calls). Writes the
+    // solved P into p_out and returns the FNV digest, ==
+    // EOSSolver.digest_helmholtz when fed the solve inputs of a real tick
+    // (dbg_mg_inputs + the engine's p_prev). Takes the solver instance for
+    // the config surface (dx/c_max/gamma/N_FLOOR_SOLVER + the frozen MG
+    // schedule). Test entry only (both CPU and CUDA builds) — the live path
+    // remains EOSSolver::step inside PhysicsEngine::run_substeps.
+    m.def("eos_mg_solve_ref",
+          [](const EOSSolver& solver,
+             py::array_t<int32_t> pstar, py::array_t<int32_t> div_u,
+             py::array_t<int32_t> n_total, py::array_t<int32_t> p_prev,
+             py::array_t<bool> solid, py::array_t<bool> is_vacuum,
+             py::array_t<float> dyn_permeability,
+             float dt, py::array_t<int32_t> p_out) -> uint64_t {
+              auto [ps, h, w]    = get_2d_const(pstar);
+              auto [dv, h2, w2]  = get_2d_const(div_u);
+              auto [nt, h3, w3]  = get_2d_const(n_total);
+              auto [pp, h4, w4]  = get_2d_const(p_prev);
+              auto [sol, h5, w5] = get_2d_const(solid);
+              auto [vac, h6, w6] = get_2d_const(is_vacuum);
+              auto [pm, h7, w7]  = get_2d_const(dyn_permeability);
+              auto [po, h8, w8]  = get_2d(p_out);
+              return eos_mg_solve_reference(solver, ps, dv, nt, pp,
+                                            sol, vac, pm, h, w, dt, po);
+          },
+          py::arg("solver"), py::arg("pstar"), py::arg("div_u"),
+          py::arg("n_total"), py::arg("p_prev"),
+          py::arg("solid"), py::arg("is_vacuum"), py::arg("dyn_permeability"),
+          py::arg("dt"), py::arg("p_out"),
+          "P6.3 CPU reference: replay EOSSolver::step's pressure solve on "
+          "given solve inputs; writes the solved P into p_out and returns "
+          "the FNV digest (== EOSSolver.digest_helmholtz for the same "
+          "inputs).");
 
     // --- CombustionSolver (EOS refactor P4 — combustion on real O2, design
     //     §5). Own pass, run once per tick AFTER eos.step materializes P. ---
