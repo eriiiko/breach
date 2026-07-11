@@ -3,14 +3,45 @@
 #include "raycaster.h"   // heat_saturating_add (shared Q16.16 domain)
 #include <algorithm>
 #include <cstdint>
+#include <vector>
 
 using namespace fixedpoint;
+
+// ============================================================================
+// EOS P6.9 (docs/eos_p6_9_combustion_design.md) — the row-major SCATTER pass
+// is REFORMULATED into two order-free GATHER passes so combustion is direction-
+// free and bit-identical CPU<->GPU (P6.9b ports this exact algorithm to CUDA).
+//
+// This is a BEHAVIORAL change (design §5, blessed by Erik 2026-07-11): the four
+// deltas alpha-delta. alpha: ignition reads a pass-entry temperature SNAPSHOT,
+// so a source can no longer heat AND ignite a furniture neighbour in the same
+// tick (removes the down-right ignition cascade). beta: contested O2 splits
+// proportionally (here uniformly — demand is burn_cap for every claimant)
+// instead of first-come-first-served, with the fuel payment redistributed to
+// match (removes the up-left O2-competition bias). gamma: a contested air cell
+// now fully DRAINS its O2 (the old scatter left a sub-threshold sliver per
+// source). delta: a multi-source air cell deposits ONE aggregate heat term
+// against the post-total-burn N_total (the old scatter deposited per source
+// against a running N that fell with each sub-burn). All four are systematic
+// (new >= old), bounded, and consequences of making the pass order-free — see
+// design §5 for the golden-rebaseline rationale.
+//
+// S. Feldman, J.F. O'Brien, O. Arikan, "Animating Suspended Particle
+// Explosions", SIGGRAPH 2003 — the heat + product-yield + ignition-threshold
+// source-term structure this pass follows (constants game-tuned, not lit-derived).
+// ============================================================================
 
 namespace {
 
 // 4-connected open-neighbour faces (N, S, W, E) — the SAME idiom
 // FireSimulation's own O2/smoke passes use.
 static constexpr int D4[][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
+
+// Opposite-face index within D4 (N<->S, W<->E). Pass B, walking OUT from a
+// source cell i in direction d to an air neighbour j, reads the allocation air
+// cell j made toward i — which j filed under j's OWN outbound direction toward
+// i, namely D4_OPP[d].
+static constexpr int D4_OPP[4] = {1, 0, 3, 2};
 
 static inline bool in_bounds(int y, int x, int h, int w) {
     return y >= 0 && y < h && x >= 0 && x < w;
@@ -35,6 +66,7 @@ void CombustionSolver::step(
     if (o2_idx < 0 || o2_idx >= n_gases) return;
     if (inert_n2_idx < 0 || inert_n2_idx >= n_gases) return;
     if (black_smoke_idx < 0 || black_smoke_idx >= n_gases) return;
+    (void)fire;   // P6.9: fire[] was only an outcome-neutral prefilter — dropped.
 
     const int n = h * w;
     int32_t* O2   = gas + (size_t)o2_idx * n;
@@ -58,79 +90,173 @@ void CombustionSolver::step(
 
     if (burn_cap_q <= 0) return;   // nothing burns this tick (dt~0 or burn_rate 0)
 
+    // --- Snapshot (design §3, the explicit freeze) --------------------------
+    // temperature is read by the ignition GATE (Tsnap[i] >= ign[i]) AND written
+    // by the heat DEPOSIT (temperature[j] += dT) — a genuine cross-cell read-
+    // after-write that only an explicit pass-entry copy breaks. Reading Tsnap in
+    // the gate is exactly delta alpha: a source cannot heat a neighbour and
+    // ignite it the SAME tick. (O2[j] and wall_hp[i] are frozen IMPLICITLY by
+    // the gather structure — design §3 — so they need no copy.)
+    std::vector<q16> Tsnap(temperature, temperature + n);
+
+    // --- Per-face allocation buffers (design §3 plumbing (a)) ---------------
+    // alloc_face[d*n + j] = the O2 that air cell j allocates to the flammable
+    // source in direction D4[d] of j. Pass A (single writer per air cell) fills
+    // it; Pass B gathers each source's <=4 incoming faces. The cuda_water
+    // dq_e/dq_s precedent — direction-keyed, single-writer, no recompute in B
+    // (design §3 rejects recompute-in-B: it would fork the split logic and risk
+    // O2-drained-at-j vs fuel-paid-by-i silently desynchronizing).
+    std::vector<q16> alloc_face((size_t)4 * n, 0);
+
+    // ======================================================================
+    // Pass A — air cells. Single writer of O2[j], SOOT[j], N2[j],
+    // temperature[j], and the four face buffers at index j.
+    // ======================================================================
+    for (int y = 0; y < h; ++y) {
+        const int row = y * w;
+        for (int x = 0; x < w; ++x) {
+            const int j = row + x;
+            // Burn happens only in an OPEN-air cell (the flame front in the air
+            // pocket next to the fuel). A flammable tile is itself solid and
+            // holds no gas (bulk_transport: a solid cell has N == 0).
+            if (solid[j] || is_vacuum[j]) continue;
+
+            // Pass-entry O2 at THIS cell (Pass A is its sole writer; read-before-
+            // write => every claimant sees pass-entry O2 — deltas beta/gamma).
+            const q16 o2j = O2[j];
+            if (o2j <= o2_thresh_q) continue;   // starved: no claimant can burn here
+
+            // Gather the <=4 flammable claimant sources of this air cell.
+            int cl_dir[4];   // D4 index of the claimant (face key for alloc_face)
+            int cl_src[4];   // global cell index of the claimant source
+            int n_cl = 0;
+            for (int d = 0; d < 4; ++d) {
+                const int iy = y + D4[d][0], ix = x + D4[d][1];
+                if (!in_bounds(iy, ix, h, w)) continue;
+                const int i = iy * w + ix;
+                // Claim gate (design §3 step 1). fire[i] is intentionally NOT
+                // read: in the old scatter it was only a PREFILTER widening that
+                // never changed the outcome (the ign/T gate below is the real
+                // one), so the reformulation drops it with no behavioral effect.
+                if (!flammable[i]) continue;
+                if (wall_hp[i] <= FUEL_FLOOR) continue;   // no fuel (P5.1 ember out)
+                const q16 ign_i = ignition_temp_q16[i];
+                if (ign_i <= 0) continue;                 // material can't ignite
+                if (Tsnap[i] < ign_i) continue;           // below ignition (snapshot!)
+                cl_dir[n_cl] = d;
+                cl_src[n_cl] = i;
+                ++n_cl;
+            }
+            if (n_cl == 0) continue;
+
+            // --- Allocate O2[j] across the claimants (design §3 step 2) ------
+            // demand_i = burn_cap for every claimant (uniform). D = n_cl*burn_cap.
+            int64_t alloc[4];
+            const int64_t D = (int64_t)n_cl * (int64_t)burn_cap_q;
+            int64_t burn_j;
+            if (D <= (int64_t)o2j) {
+                // No contention: every claimant gets full demand; a sub-threshold
+                // O2 sliver may remain (identical to the old uncontended burn).
+                for (int k = 0; k < n_cl; ++k) alloc[k] = burn_cap_q;
+                burn_j = D;
+            } else {
+                // Contention: EXACT INTEGER proportional split (plain int64 `/`
+                // and `%` — NOT float, NOT reciprocal_q16: integer divide has a
+                // single portable answer and keeps sum(alloc) == O2[j] exactly;
+                // reciprocal_q16 is ~1 ULP inexact and would break conservation).
+                // Q16.16 scale cancels (the split is a dimensionless ratio).
+                int64_t keys[4];
+                int64_t sum_alloc = 0;
+                for (int k = 0; k < n_cl; ++k) {
+                    const int64_t num = (int64_t)o2j * (int64_t)burn_cap_q;  // < 2^43
+                    alloc[k] = num / D;      // floor, exact integer divide
+                    keys[k]  = num % D;      // integer remainder = tiebreak key
+                    sum_alloc += alloc[k];
+                }
+                // R leftover LSBs (provably in [0, n_cl) subset of [0,4)) go to
+                // the R claimants with the largest key; ties -> lowest source
+                // index. (demand is uniform so all keys tie => the leftovers land
+                // on the lowest-index faces — the fixed sub-LSB bias design §1
+                // accepts; the isotropy test §6 tolerates it at <=3 LSB.)
+                int64_t R = (int64_t)o2j - sum_alloc;
+                bool chosen[4] = {false, false, false, false};
+                for (int r = 0; r < (int)R; ++r) {
+                    int best = -1;
+                    for (int k = 0; k < n_cl; ++k) {
+                        if (chosen[k]) continue;
+                        if (best < 0 ||
+                            keys[k] > keys[best] ||
+                            (keys[k] == keys[best] && cl_src[k] < cl_src[best])) {
+                            best = k;
+                        }
+                    }
+                    chosen[best] = true;
+                    alloc[best] += 1;
+                }
+                burn_j = (int64_t)o2j;   // contested cells fully drain (delta gamma)
+            }
+
+            // --- Single-writer gas + heat writes at cell j (design §3 step 3) -
+            O2[j] = (q16)((int64_t)o2j - burn_j);
+            // Exact Dalton split (unchanged): soot + (burn-soot) == burn, so
+            // N_total is conserved to the LSB regardless of soot rounding (#12).
+            const q16 soot = narrow_round(mul_wide((q16)burn_j, soot_yield_q));
+            SOOT[j] += soot;
+            N2[j]   += (q16)(burn_j - (int64_t)soot);
+
+            // ONE aggregate heat deposit against the POST-burn N_total (delta
+            // delta) — same idiom/dials as TemperatureSolver's Pass-1 radiative
+            // deposit; a per-source replay would reintroduce an order-dependent
+            // denominator and defeat isotropy. Rail counters are now PER-CELL
+            // (design §3): no test may assert their absolute value.
+            q16 n_total_j = (q16)((int64_t)O2[j] + (int64_t)N2[j]);
+            if (n_total_j < n_floor_q) { n_total_j = n_floor_q; ++heat_floor_hits; }
+            const q16 recip_n  = reciprocal_q16(n_total_j);
+            const q16 deposit  = mul_q16((q16)burn_j, H_fuel_q);   // burn*H_fuel
+            const q16 e_over_n = mul_q16(deposit, recip_n);        // .../N
+            const q16 dT       = recip_mul(e_over_n, recip_cv);    // .../c_v
+            heat_saturating_add(&temperature[j], dT);
+            if (temperature[j] > t_max_phys_q) {                   // v2.4 rail
+                temperature[j] = t_max_phys_q; ++t_max_phys_hits;
+            }
+
+            // Record each claimant's allocation on the face buffer so Pass B can
+            // charge the SOURCE for the O2 it drew from this air cell.
+            for (int k = 0; k < n_cl; ++k) {
+                alloc_face[(size_t)cl_dir[k] * n + j] = (q16)alloc[k];
+            }
+        }
+    }
+
+    // ======================================================================
+    // Pass B — source cells. Single writer of wall_hp[i]. Each flammable source
+    // sums its <=4 incoming face allocations and pays the stoichiometric fuel
+    // cost ONCE for the total, floored ONCE at FUEL_FLOOR (design §3, "total-
+    // then-floor-once", critique B). This never takes wall_hp below 1 LSB
+    // (the "smolder never destroys" invariant — decisions #17): the floor is
+    // re-applied after the single subtraction, so wall_hp[i] >= FUEL_FLOOR
+    // always. Structural destruction stays exclusively FireSimulation's I>0 path.
+    // ======================================================================
     for (int y = 0; y < h; ++y) {
         const int row = y * w;
         for (int x = 0; x < w; ++x) {
             const int i = row + x;
-            // v2.5 (P5.1): the no-fuel gate is wall_hp <= FUEL_FLOOR (1 LSB),
-            // not <= 0 — a fully-charred tile's ember is OUT (no O2 draw, no
-            // heat deposit); burning its final LSB forever would just re-open
-            // the perpetual-ember hole one LSB lower (design §5 v2.5).
-            if (!flammable[i] || wall_hp[i] <= FUEL_FLOOR) continue;   // no fuel
-
-            const q16 ign_q = ignition_temp_q16[i];
-            // Cheap row-major PREFILTER (design task: "today's FireSimulation
-            // candidates: fire-intensity > 0 or ignition-eligible flammables")
-            // — a pure widening; the REAL gate (ign_q>0 && T>=ign_q) below is
-            // checked unconditionally, so this never changes the outcome, it
-            // only documents that already-burning tiles are always considered.
-            const bool prefilter = (fire[i] > 0) ||
-                                   (ign_q > 0 && temperature[i] >= ign_q);
-            if (!prefilter) continue;
-            if (ign_q <= 0 || temperature[i] < ign_q) continue;   // design §5 gate
-
-            for (const auto& d : D4) {
-                const int ny = y + d[0], nx = x + d[1];
-                if (!in_bounds(ny, nx, h, w)) continue;
-                const int j = ny * w + nx;
-                if (solid[j] || is_vacuum[j]) continue;   // open-air burn site only
-
-                const q16 o2_j = O2[j];
-                if (o2_j <= o2_thresh_q) continue;         // starved — no burn here
-
-                const q16 burn = std::min(burn_cap_q, o2_j);   // saturating (integer)
-                if (burn <= 0) continue;
-
-                O2[j] = (int32_t)(o2_j - burn);
-
-                // v2.5 (P5.1 stoichiometric fuel consumption, decisions #17):
-                // the SOURCE tile pays for this neighbour's burn —
-                // fuel_cost = round(fuel_per_o2 * burn), round-to-nearest (the
-                // SAME unbiased-sink idiom as fire_simulation.cpp's wall_damage
-                // depletion), FLOORED at FUEL_FLOOR after EACH of the up-to-4
-                // neighbour subtractions (N,S,W,E order — deterministic).
-                // THE 1-LSB RULE: this pass never takes wall_hp below 1 count,
-                // never destroys a tile, never emits destroyed-tile events —
-                // structural destruction stays exclusively FireSimulation's
-                // I>0 wall_damage path.
-                const q16 fuel_cost = narrow_round(mul_wide(fuel_per_o2_q, burn));
-                wall_hp[i] -= fuel_cost;
-                if (wall_hp[i] < FUEL_FLOOR) wall_hp[i] = FUEL_FLOOR;
-
-                // Exact split: soot + (burn-soot) == burn, so N_total (Dalton)
-                // is conserved to the LSB regardless of the soot_yield rounding
-                // (decisions.md #12 — "the non-soot fraction ... credited to
-                // inert_N2").
-                const q16 soot = narrow_round(mul_wide(burn, soot_yield_q));
-                const q16 n2_gain = (q16)(burn - soot);
-                SOOT[j] += soot;
-                N2[j]   += n2_gain;
-
-                // §4.3 heat-deposit reciprocal — SAME idiom/dials as
-                // TemperatureSolver's Pass-1 radiative deposit. N_total here
-                // is the POST-burn bulk-pair sum at the SAME neighbour cell
-                // (the engine's established N proxy for this deposit class).
-                q16 n_total_j = (q16)((int64_t)O2[j] + (int64_t)N2[j]);
-                if (n_total_j < n_floor_q) { n_total_j = n_floor_q; ++heat_floor_hits; }
-                const q16 recip_n  = reciprocal_q16(n_total_j);
-                const q16 deposit  = mul_q16(burn, H_fuel_q);       // burn*H_fuel
-                const q16 e_over_n = mul_q16(deposit, recip_n);     // .../N
-                const q16 dT       = recip_mul(e_over_n, recip_cv); // .../c_v
-                heat_saturating_add(&temperature[j], dT);
-                if (temperature[j] > t_max_phys_q) {                // v2.4 rail
-                    temperature[j] = t_max_phys_q; ++t_max_phys_hits;
-                }
+            if (!flammable[i]) continue;
+            int64_t burn_i = 0;
+            for (int d = 0; d < 4; ++d) {
+                const int jy = y + D4[d][0], jx = x + D4[d][1];
+                if (!in_bounds(jy, jx, h, w)) continue;
+                const int j = jy * w + jx;
+                // The air neighbour j filed its allocation toward THIS source
+                // under j's outbound direction to i, which is D4_OPP[d].
+                burn_i += (int64_t)alloc_face[(size_t)D4_OPP[d] * n + j];
             }
+            if (burn_i == 0) continue;   // this source drew no O2 this tick
+            // round-to-nearest — the same unbiased-sink idiom fire_simulation's
+            // wall_damage depletion uses.
+            const q16 fuel_cost = narrow_round(mul_wide(fuel_per_o2_q, (q16)burn_i));
+            wall_hp[i] -= fuel_cost;
+            if (wall_hp[i] < FUEL_FLOOR) wall_hp[i] = FUEL_FLOOR;
         }
     }
 }

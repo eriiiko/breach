@@ -18,61 +18,78 @@
 // A flammable tile is itself SOLID (wood/door — FireSimulation's own
 // convention: fire only ever lives on flammable WALLS) and therefore holds
 // no gas of its own (bulk_transport.cpp: a solid cell always holds N == 0).
-// So, exactly like FireSimulation's own O2 gate, combustion reads/writes the
+// So, exactly like FireSimulation's own O2 gate, combustion burns in the
 // tile's OPEN 4-neighbours' O2/N2/black_smoke — each open neighbour is an
 // independent burn site (the flame front sitting in the air pocket next to
-// the fuel), processed in fixed row-major order (deterministic; NOT
-// associative-symmetric across neighbours sharing a burning wall — same
-// idiom as FireSimulation's own per-neighbour smoke-emission deposit).
+// the fuel).
 //
-// Per candidate tile i — flammable AND fuelled (wall_hp[i] > FUEL_FLOOR ==
-// 1 Q16.16 LSB — v2.5: a fully-charred tile's ember is OUT: no O2 draw, no
-// heat deposit, or the perpetual-ember hole just re-opens one LSB lower) AND
-// (fire[i] > 0 OR temperature[i] >= ignition_temp_q16[i]) [a cheap row-major
-// PREFILTER only; the real gate below is checked unconditionally, so this
-// widening never changes the result] AND ignition_temp_q16[i] > 0 (the
-// material can ignite at all) AND temperature[i] >= ignition_temp_q16[i]:
+// v2.6 (EOS P6.9 — docs/eos_p6_9_combustion_design.md, blessed by Erik
+// 2026-07-11): the pass is REFORMULATED from the old row-major SCATTER into
+// TWO order-free GATHER passes so it is DIRECTION-FREE and bit-identical
+// CPU<->GPU (P6.9b ports this exact algorithm to CUDA, closing P6). The
+// reformulation carries FOUR blessed behavioral deltas (design §5) — see
+// combustion.cpp's header for alpha/beta/gamma/delta and the golden-rebaseline
+// rationale. Structure:
 //
-//   for each OPEN (non-solid, non-vacuum) 4-neighbour j:
-//     if N_O2[j] > o2_thresh_burn:
-//       burn = min(burn_rate*dt, N_O2[j])              (Q16.16, saturating)
-//       N_O2[j]          -= burn
-//       soot              = round(burn * soot_yield)
-//       N_black_smoke[j] += soot
-//       N_inert_N2[j]    += burn - soot                 (N_total EXACTLY
-//                                                        conserved — #12)
-//       T[j] += burn * H_fuel / (c_v * max(N_total[j], n_floor_heat))
-//              (the design §4.3 heat-deposit reciprocal — the SAME c_v /
-//               n_floor_heat dial as TemperatureSolver's Pass-1 radiative
-//               deposit, so there is exactly ONE "combustion/deposit floor"
-//               in the system, per design §4. N_total[j] here is the
-//               POST-burn O2[j]+N2[j] sum at the SAME neighbour cell — the
-//               same bulk-pair proxy the engine already uses for that
-//               deposit, floored INDEPENDENTLY of every other floor.)
+//   snapshot Tsnap = copy(temperature)   (freezes the ignition gate: a source
+//                                          cannot heat AND ignite a neighbour
+//                                          in the same tick — delta alpha)
+//
+//   Pass A — for each OPEN-air cell j (single writer of O2/SOOT/N2/T[j]):
+//     gather its <=4 flammable claimant sources i (claim iff flammable[i],
+//       wall_hp[i] > FUEL_FLOOR, ign[i] > 0, Tsnap[i] >= ign[i], and pass-entry
+//       O2[j] > o2_thresh_burn); demand_i = burn_rate*dt (uniform).
+//     D = sum(demand_i). If D <= O2[j]: alloc_i = demand_i (no contention).
+//       Else EXACT-INTEGER proportional split (plain int64 /,% — NOT float, NOT
+//       reciprocal_q16; conservation-exact), leftover LSBs to largest-key
+//       claimants, ties -> lowest source index, and O2[j] fully DRAINS
+//       (delta gamma).
+//     burn_j = sum(alloc_i);  O2[j] -= burn_j;  SOOT[j] += round(burn_j*soot_
+//       yield);  N2[j] += burn_j - soot  (N_total EXACTLY conserved — #12);
+//       ONE aggregate deposit T[j] += burn_j*H_fuel/(c_v*max(N_total[j],
+//       n_floor_heat)) against the POST-burn N_total (delta delta), T_MAX_PHYS
+//       clamp + PER-CELL counter. Each alloc_i is filed on a per-face buffer.
+//
+//   Pass B — for each flammable source i (single writer of wall_hp[i]): sum the
+//     <=4 incoming face allocations burn_i, pay wall_hp[i] -= round(fuel_per_o2
+//     * burn_i), floored ONCE at FUEL_FLOOR (total-then-floor-once).
+//
+// The heat-deposit reciprocal uses the SAME c_v / n_floor_heat dial as
+// TemperatureSolver's Pass-1 radiative deposit (design §4.3), so there is
+// exactly ONE "combustion/deposit floor" in the system.
 //
 // v2.5 (P5.1 stoichiometric fuel consumption — docs/eos_refactor_design.md
-// §5 v2.5 amendment, decisions log #17): wall_hp is now MUTABLE — per
-// neighbour burn the SOURCE tile pays
-//     fuel_cost = narrow_round(mul_wide(fuel_per_o2_q, burn))
-// (round-to-nearest — the same unbiased-sink idiom fire_simulation.cpp's
-// wall-damage depletion uses), subtracted from wall_hp[i] and FLOORED AT
-// 1 Q16.16 LSB after EACH of the up-to-4 neighbour subtractions (N,S,W,E
-// order — deterministic). This is the EMBER-scale consumption that closes
-// v2.4's fuel-free-smolder flag; FireSimulation's wall_damage pass remains
-// the FLAME-scale (I>0) consumption. THE 1-LSB RULE (Erik, 2026-07-11):
-// this pass NEVER destroys a tile and NEVER emits destroyed-tile events —
-// structural destruction stays exclusively FireSimulation's I>0 path. A
-// long-smoldered wall survives as charred tissue paper at exactly 1 LSB:
-// easy prey for almost any other damage source (and for a real flame,
-// whose damage pass CAN take it to 0). The ember state itself is EMERGENT
-// (fire I == 0, T >= ignition_temp, wall_hp > FUEL_FLOOR) — no new state.
+// §5 v2.5 amendment, decisions log #17): wall_hp is MUTABLE — the SOURCE tile
+// pays fuel_cost = narrow_round(mul_wide(fuel_per_o2_q, burn_i)) (round-to-
+// nearest, the same unbiased-sink idiom fire_simulation.cpp's wall-damage
+// depletion uses), floored at 1 Q16.16 LSB. P6.9 moves this from a per-
+// neighbour floor to a total-then-floor-once in Pass B (design §3, critique
+// B): both engage the floor iff the total does, so the "smolder never
+// destroys" 1-LSB invariant is preserved, and they differ only by <=3 LSB
+// away from the floor (inside the golden re-baseline). This is the EMBER-scale
+// consumption that closes v2.4's fuel-free-smolder flag; FireSimulation's
+// wall_damage pass remains the FLAME-scale (I>0) consumption. THE 1-LSB RULE
+// (Erik, 2026-07-11): this pass NEVER destroys a tile and NEVER emits
+// destroyed-tile events — structural destruction stays exclusively
+// FireSimulation's I>0 path. A long-smoldered wall survives as charred tissue
+// paper at exactly 1 LSB: easy prey for almost any other damage source (and
+// for a real flame, whose damage pass CAN take it to 0). The ember state
+// itself is EMERGENT (fire I == 0, T >= ignition_temp, wall_hp > FUEL_FLOOR)
+// — no new state.
+//
+// `fire` is now UNUSED (kept in the signature for ABI stability): the old
+// scatter read it only as an outcome-neutral row-major prefilter (the real
+// gate is ign > 0 && Tsnap >= ign), so the gather drops it with no behavioral
+// effect.
 //
 // o2_thresh_breathe is a SEPARATE constant, defined but NOT consumed here —
 // unit suffocation is a LATER mechanics arc (design §5: "enabled here,
 // wired later" — a deliberate non-goal boundary, not an oversight).
 //
-// GPU: pinned to CPU for this migration window (D7) — no CUDA kernel exists
-// yet; the P6 patch enumerates "combustion pass" among its to-port kernels.
+// GPU: still CPU-only after P6.9a (this patch). P6.9b adds cuda_combustion.cu
+// mirroring the two gathers + face buffers + barrier chain, proves bit-
+// identity vs this CPU reference, and unpins "combustion" from
+// EOS_P6_PENDING_KERNELS — closing the P6 arc.
 
 #include <cstdint>
 
@@ -120,6 +137,9 @@ public:
     float T_MAX_PHYS = 16000.0f;
 
     // --- debug telemetry (mirrors eos_solver.h's counter idiom) -----------
+    // P6.9: these now count PER-CELL (one aggregate deposit per air cell), not
+    // per-source-per-neighbour as the old scatter did — their ABSOLUTE value
+    // moved and no test may assert it (design §3).
     mutable int64_t heat_floor_hits = 0;   // n_floor_heat engagements
     mutable int64_t t_max_phys_hits = 0;   // T_MAX_PHYS rail engagements (v2.4)
 
@@ -130,7 +150,8 @@ public:
     //                      AND the ember-scale fuel store — depleted
     //                      fuel_per_o2-proportionally, floored at FUEL_FLOOR,
     //                      never destroyed by this pass)
-    // fire               : (h, w) Q16.16, READ-ONLY (candidate prefilter)
+    // fire               : (h, w) Q16.16, UNUSED since P6.9 (was a candidate
+    //                      prefilter; kept for ABI stability — see header note)
     // flammable/solid/is_vacuum : (h, w) bool masks
     // ignition_temp_q16  : (h, w) Q16.16, per-tile material threshold — the
     //                      SAME table apply_temperature_ignition uses
