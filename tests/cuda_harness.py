@@ -59,17 +59,70 @@ def cuda_dll_dir() -> Path | None:
 # temperature), so the GPU mirrors are STALE until the P6 port re-proves each
 # kernel bit-identical. During this window the CUDA gates must SKIP — a stale
 # kernel comparing against the new CPU path is a guaranteed, meaningless red.
-# Flip back to False in P6, kernel by kernel, as ports land.
-EOS_P6_PENDING = True
+#
+# P6.0 (docs/eos_p6_gpu_alignment_review.md §2.1): the old single global bool
+# `EOS_P6_PENDING = True` had no partial-unpinning mechanism, so it is now a
+# pending SET with one string key per P6 sub-patch surface (the review's §4
+# sub-patch table). THE CONTRACT for P6.1+: each sub-patch, once its kernel is
+# re-proven bit-identical (per-kernel A/B digest + cross-machine per-field
+# digest), removes EXACTLY its own key from this set — nothing else. When the
+# set is empty (P6.9 landed), this machinery is deleted outright.
+#
+# key              unpinned by  surface
+# ---------------  -----------  ------------------------------------------------
+# bulk_flux        P6.1         donor-cell bulk flux (water K3–K8 pattern)
+# sl_advection     P6.2         fused 3-field SL advection + cmask + zero-solid
+# mg_solve         P6.3         MG pressure solve (smoother/transfers/fused tail)
+# kick_compression P6.4         momentum kick + absorption + clamp; compression work
+# eos_step         P6.5         EOS orchestration: full eos.step per-call dispatch
+# conduction       P6.6         unified conduction + T Pass 1/Pass 3
+# trace_smoke      P6.7         trace-smoke re-port at once-per-tick cadence
+# fire             P6.8         fire re-derivation (plume→T shim + n_o2 signature)
+# combustion       P6.9         combustion face-buffer split (gated on §3.1 CPU change)
+#
+# (The retired wave/atmosphere kernels have no key: P6.0 DELETED cuda_wave.cu /
+# cuda_atmosphere.cu and their gates instead of unpinning them.)
+EOS_P6_PENDING_KERNELS = {
+    "bulk_flux",
+    "sl_advection",
+    "mg_solve",
+    "kick_compression",
+    "eos_step",
+    "conduction",
+    "trace_smoke",
+    "fire",
+    "combustion",
+}
+
+# The full P6 key universe (NEVER shrinks — used to reject typo'd kernel names,
+# which would otherwise silently read as "already unpinned").
+_P6_KERNEL_KEYS = frozenset(EOS_P6_PENDING_KERNELS)
 
 
-def cuda_available() -> bool:
+def cuda_available(kernel: str | None = None) -> bool:
     """True iff both the CUDA build and its runtime DLLs are present on disk.
     (Whether a *device* is actually usable is checked inside the subprocess.)
 
-    Returns False unconditionally while EOS_P6_PENDING (see above): the design's
-    D7 rule — stale GPU kernels must be unreachable during the EOS migration."""
-    if EOS_P6_PENDING:
+    D7 rule (design doc §7; docs/eos_p6_gpu_alignment_review.md §2.1) — stale
+    GPU kernels must be UNREACHABLE during the EOS migration window:
+
+    * ``cuda_available()`` (no argument) — the whole-suite pin, exactly the old
+      ``EOS_P6_PENDING`` bool semantics: returns False while ANY key is still
+      in ``EOS_P6_PENDING_KERNELS``. Pre-P6 gates (the cuda_s* checks and any
+      all-backends-on integration) stay skipped until the ENTIRE P6 arc is done,
+      because they exercise the full stale surface.
+    * ``cuda_available(kernel=<key>)`` — the per-kernel gate for P6 sub-patch
+      tests: True iff the hardware is present AND that key has been removed
+      from the pending set (i.e. its port re-proved bit-identical). Unknown
+      keys raise ValueError so a typo cannot silently unpin anything."""
+    if kernel is not None and kernel not in _P6_KERNEL_KEYS:
+        raise ValueError(
+            f"unknown P6 kernel key {kernel!r}; valid keys: "
+            f"{sorted(_P6_KERNEL_KEYS)}")
+    if kernel is None:
+        if EOS_P6_PENDING_KERNELS:
+            return False
+    elif kernel in EOS_P6_PENDING_KERNELS:
         return False
     return cuda_pyd() is not None and cuda_dll_dir() is not None
 
