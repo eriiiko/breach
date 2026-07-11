@@ -45,6 +45,40 @@ __device__ __forceinline__ int64_t mul128_shr_signed(int64_t a, int64_t b, int S
     return (int64_t)res;
 }
 
+// ---- flux_to_dq_dev — the donor-cell flux truncation (hoisted P6.1) ---------
+// The CPU flux_to_dq (water_solver.cpp:208-230 / bulk_transport.cpp) as a
+// __device__ helper: flux_wide (Q32.32, a mul_wide(v_face, N_donor)) times a
+// Q16.16 coefficient, >> 32 leaves Q16.16, via a 128-bit intermediate. The
+// coefficient is water's single constant dt_over_dx_q OR bulk transport's
+// runtime PER-FACE coeff (face_permeability * dt_s) — same single truncation
+// either way. The mul128_shr_signed combine is the SAME as the CPU MSVC
+// _mul128 path (proven bit-identical by tests/_s1_flux_truncation_check.cpp).
+// Hoisted here from cuda_water.cu (where it was file-local) so the P6.1 bulk
+// flux port reuses it instead of copy-pasting
+// (docs/eos_p6_gpu_alignment_review.md §1.10).
+__device__ __forceinline__ q16 flux_to_dq_dev(int64_t flux_wide, q16 coeff_q) {
+    return (q16)mul128_shr_signed(flux_wide, (int64_t)coeff_q, 32);
+}
+
+// ---- heat_saturating_add_dev — plain (non-atomic) saturating add ------------
+// A VERBATIM device port of heat_saturating_add (raycaster.h:43-51): add a
+// Q16.16 delta into a Q16.16 accumulator, clamped at INT32_MAX, never wrap;
+// delta <= 0 is a no-op. For SINGLE-WRITER kernels only (one thread owns the
+// cell — the temperature Pass 1 / future P6.6 conduction and P6.9 combustion
+// deposits); the scatter-with-contention variant stays the CAS-atomic
+// heat_atomic_sat_add in cuda_raycaster.cu. cuda_temperature.cu:37-50 inlines
+// this same arithmetic today; this shared mirror exists so later ports stop
+// re-inlining it (docs/eos_p6_gpu_alignment_review.md §1.10, P6 work item).
+// Pure int32 compare/add — bit-identical to the host by construction.
+__device__ __forceinline__ void heat_saturating_add_dev(int32_t* cell, int32_t delta) {
+    if (delta <= 0) return;
+    if (*cell > (int32_t)0x7fffffff - delta) {
+        *cell = (int32_t)0x7fffffff;
+    } else {
+        *cell += delta;
+    }
+}
+
 // ---- recip_mul (the make_recip reciprocal multiply) ------------------------
 // x_q16 (Q16.16) divided by the real divisor whose Q.RECIP_SHIFT reciprocal is
 // `recip`. Result Q16.16. The header fixedpoint::recip_mul is FP_HD, but its

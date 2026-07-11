@@ -181,12 +181,16 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     // item, see the patch's return report).
 #ifdef BREACH_HAS_CUDA
     if (breach_cuda::temperature_backend_is_cuda()) {
-        breach_cuda::temperature_step(
-            temperature_mut, heat, heat_inv_shift, face_shift,
-            solid, is_vacuum, atmosphere,
-            this->temperature.no_face, this->temperature.cool_shift,
-            this->temperature.cool_shift_vacuum,
-            this->temperature.o2_vacuum_thresh, h, w);
+        // GPU-guard (EOS P6.1, review §5 residue / P6.0 deferral — the fire/
+        // smoke asserts' sibling): the stale S1 GPU kernel predates the EOS
+        // unified-temperature signature — it has no `n_bulk` (the real
+        // O2+N2 divisor for Pass 1's ΔT = ΔE/(N·c_v) deposit, added P3) and
+        // none of the P2 gas-T rules — so dispatching it would silently run
+        // stale physics. Assert unreachable instead of calling it; the D7
+        // migration-window rule ("stale kernels unreachable, not just
+        // unused") now holds by construction, not by flag discipline. Port
+        // pending P6.6 (extend cuda_temperature.cu with the n_bulk input).
+        assert(false && "EOS P6: cuda temperature_step signature stale (no n_bulk); port pending P6.6");
     } else
 #endif
     {

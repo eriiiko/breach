@@ -102,6 +102,10 @@ _BACKEND_SETTERS = (
     "set_smoke_backend",
     "set_fire_backend",
     "set_raycaster_backend",
+    # EOS P6.1: bulk donor-cell flux — the flag exists and its kernels are
+    # re-proven, but the engine dispatch lands in P6.5 (kernel-gate only until
+    # then); flipping it here is a forward-compatible no-op.
+    "set_bulk_flux_backend",
 )
 
 

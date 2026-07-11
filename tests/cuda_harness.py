@@ -92,8 +92,10 @@ def cuda_dll_dir() -> Path | None:
 # advection (cuda_sl_advection.cu) re-proved bit-identical via the P6.2 gate
 # (tests/cuda_p62_check.py: isolated synthetic A/B + full blast+venting
 # per-tick digest_advect trajectory vs the CPU solver).
+# P6.1 (eos-p6-1-bulk-flux): "bulk_flux" REMOVED — cuda_bulk_transport.cu
+# re-proven bit-identical (tests/cuda_bulk_flux_check.py — isolated all-branch
+# A/B + closed-loop breach-venting/blast trajectory, per-plane byte-compare).
 EOS_P6_PENDING_KERNELS = {
-    "bulk_flux",
     "mg_solve",
     "kick_compression",
     "eos_step",
@@ -104,10 +106,11 @@ EOS_P6_PENDING_KERNELS = {
 }
 
 # The full P6 key universe (NEVER shrinks — used to reject typo'd kernel names,
-# which would otherwise silently read as "already unpinned"). P6.2 fix: this
-# must be the EXPLICIT universe, not frozenset(EOS_P6_PENDING_KERNELS) — the
-# derived form silently shrank with the pending set, so the FIRST key removal
-# would have turned every unpinned kernel's own gate into a ValueError.
+# which would otherwise silently read as "already unpinned"). Spelled out as an
+# EXPLICIT literal, not frozenset(EOS_P6_PENDING_KERNELS) — the derived form
+# silently shrank with the pending set, so the FIRST key removal would have
+# turned every unpinned kernel's own gate into a ValueError. (Both P6.1 and
+# P6.2 hit and fixed this same latent P6.0 bug independently.)
 _P6_KERNEL_KEYS = frozenset({
     "bulk_flux",
     "sl_advection",
