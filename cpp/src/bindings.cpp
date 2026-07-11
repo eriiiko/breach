@@ -25,6 +25,7 @@
 #include "cuda_kick_compression.h"  // EOS P6.4: GPU kick + compression work + backend flag
 #include "cuda_mg_solve.h"     // EOS P6.3: GPU multigrid pressure solve + backend flag
 #include "cuda_eos_step.h"     // EOS P6.5: chained full-eos.step dispatch predicate
+#include "cuda_combustion.h"   // EOS P6.9b: GPU two-gather combustion + backend flag
 // CUDA-S5 cuda_wave.h / CUDA-S7 cuda_atmosphere.h RETIRED in EOS P6.0 — the
 // wave+diffuse solvers they mirrored were replaced by the compressible EOS
 // solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
@@ -447,6 +448,67 @@ PYBIND11_MODULE(breach_physics, m) {
           "plume->T shim) in place on fire/smoke/wall_hp/temperature "
           "(bit-identical to FireSimulation.step) and return the destroyed-walls "
           "list of (y,x) tuples.");
+
+    // EOS P6.9b: the GPU combustion solver (the two-gather reformulation —
+    // docs/eos_p6_9_combustion_design.md). The backend flag switches
+    // PhysicsRunner's combustion pass between the CPU CombustionSolver::step and
+    // the GPU combustion_step (live CPU fallback stays; flag-off == exact prior
+    // CPU call). cuda_combustion_step runs ONE GPU combustion step IN PLACE on
+    // the three mutated gas planes + temperature + wall_hp (bit-identical to
+    // CombustionSolver::step) and returns the two per-call rail counts
+    // (heat_floor_hits, t_max_phys_hits) as a tuple so the gate can compare them
+    // against the CPU solver's member-counter deltas. The scalar config dials
+    // are passed explicitly since combustion_step is a free function.
+    m.def("set_combustion_backend",
+          [](bool use_cuda) { breach_cuda::set_combustion_backend_cuda(use_cuda); },
+          py::arg("use_cuda"),
+          "Switch PhysicsRunner's combustion pass (CombustionSolver.step) to the "
+          "GPU (True) or CPU (False).");
+    m.def("get_combustion_backend",
+          []() { return breach_cuda::combustion_backend_is_cuda(); },
+          "True if the combustion pass currently runs on the GPU.");
+    m.def("cuda_combustion_step",
+          [](py::array_t<int32_t> gas,             // (n_gases,h,w) Q16.16, MUTATED
+             int o2_idx, int inert_n2_idx, int black_smoke_idx,
+             py::array_t<int32_t> temperature,     // Q16.16, MUTATED (heat deposit)
+             py::array_t<int32_t> wall_hp,         // Q16.16, MUTATED (fuel payment)
+             py::array_t<bool> flammable,
+             py::array_t<bool> solid,
+             py::array_t<bool> is_vacuum,
+             py::array_t<int32_t> ignition_temp_q16,  // Q16.16, read-only
+             float dt, float c_v, float n_floor_heat,
+             float burn_rate, float o2_thresh_burn, float H_fuel,
+             float soot_yield, float fuel_per_o2, float T_MAX_PHYS) -> py::tuple {
+              auto gv = gas.mutable_unchecked<3>();
+              int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
+              const int n_gases = static_cast<int>(gv.shape(0));
+              const int h = static_cast<int>(gv.shape(1));
+              const int w = static_cast<int>(gv.shape(2));
+              auto [temp, h2, w2] = get_2d(temperature);
+              auto [whp, h3, w3]  = get_2d(wall_hp);
+              auto [fl, h4, w4]   = get_2d_const(flammable);
+              auto [sol, h5, w5]  = get_2d_const(solid);
+              auto [vac, h6, w6]  = get_2d_const(is_vacuum);
+              auto [ign, h7, w7]  = get_2d_const(ignition_temp_q16);
+              int64_t heat_floor_hits = 0, t_max_phys_hits = 0;
+              breach_cuda::combustion_step(
+                  gas_ptr, n_gases, o2_idx, inert_n2_idx, black_smoke_idx,
+                  temp, whp, fl, sol, vac, ign, h, w, dt, c_v, n_floor_heat,
+                  burn_rate, o2_thresh_burn, H_fuel, soot_yield, fuel_per_o2,
+                  T_MAX_PHYS, &heat_floor_hits, &t_max_phys_hits);
+              return py::make_tuple(heat_floor_hits, t_max_phys_hits);
+          },
+          py::arg("gas"), py::arg("o2_idx"), py::arg("inert_n2_idx"),
+          py::arg("black_smoke_idx"), py::arg("temperature"), py::arg("wall_hp"),
+          py::arg("flammable"), py::arg("solid"), py::arg("is_vacuum"),
+          py::arg("ignition_temp_q16"), py::arg("dt"), py::arg("c_v"),
+          py::arg("n_floor_heat"), py::arg("burn_rate"), py::arg("o2_thresh_burn"),
+          py::arg("H_fuel"), py::arg("soot_yield"), py::arg("fuel_per_o2"),
+          py::arg("T_MAX_PHYS"),
+          "P6.9b isolated: run ONE GPU combustion step (the two-gather "
+          "reformulation) in place on the three gas planes + temperature + "
+          "wall_hp (bit-identical to CombustionSolver.step) and return the "
+          "(heat_floor_hits, t_max_phys_hits) per-call rail counts.");
 
     // CUDA-S7 (set_atmos_backend / get_atmos_backend / cuda_diffuse_solve)
     // RETIRED in EOS P6.0: the diffuse_solve solver it mirrored was deleted in
