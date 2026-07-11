@@ -19,9 +19,10 @@
 #include "cuda_raycaster.h"    // CUDA-S2: GPU directional raycaster (heat bit-identical)
 #include "cuda_water.h"        // CUDA-S3: GPU water solver + backend flag
 #include "cuda_smoke.h"        // CUDA-S4a: GPU smoke solver + backend flag
-#include "cuda_wave.h"         // CUDA-S5: GPU wave_substep + backend flag
 #include "cuda_fire.h"         // CUDA-S6: GPU fire solver + backend flag
-#include "cuda_atmosphere.h"   // CUDA-S7: GPU diffuse_solve + backend flag
+// CUDA-S5 cuda_wave.h / CUDA-S7 cuda_atmosphere.h RETIRED in EOS P6.0 — the
+// wave+diffuse solvers they mirrored were replaced by the compressible EOS
+// solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
 #endif
 
 namespace py = pybind11;
@@ -334,58 +335,10 @@ PYBIND11_MODULE(breach_physics, m) {
           "S4b isolated: run ONE GPU breach sink_hop in place on one gas plane "
           "(bit-identical to SmokeDynamics.sink_hop).");
 
-    // CUDA-S5: the GPU wave_substep. The backend flag switches PhysicsEngine::
-    // run_substeps's per-substep wave step between the CPU AtmosphereSolver::
-    // wave_substep and the GPU wave_substep_gpu (the live CPU fallback stays;
-    // diffuse_solve/GS stays CPU in BOTH paths — that is S7). cuda_wave_substep
-    // runs ONE GPU wave substep IN PLACE on wave_p/wave_v/wave_source/atmosphere
-    // for the isolated GPU-vs-CPU bit-identity gate. The solver's scalar dials
-    // (c / damping / absorb_strength / transfer / feed_rate / max_source_per_step)
-    // are passed explicitly since wave_substep_gpu is a free function — mirroring
-    // the live AtmosphereSolver.step binding's array args plus those scalars.
-    m.def("set_wave_backend",
-          [](bool use_cuda) { breach_cuda::set_wave_backend_cuda(use_cuda); },
-          py::arg("use_cuda"),
-          "Switch PhysicsEngine's wave pass (wave_substep) to the GPU (True) or "
-          "CPU (False). diffuse_solve stays CPU either way.");
-    m.def("get_wave_backend",
-          []() { return breach_cuda::wave_backend_is_cuda(); },
-          "True if the wave pass currently runs on the GPU.");
-    m.def("cuda_wave_substep",
-          [](py::array_t<int32_t> wave_p,       // Q16.16 int32 (acoustic anomaly)
-             py::array_t<int32_t> wave_v,       // Q16.16 int32 (wave velocity)
-             py::array_t<int32_t> wave_source,  // Q16.16 int32 (injected energy)
-             py::array_t<int32_t> atmosphere,   // Q16.16 int32 (anomaly transfer)
-             py::array_t<bool>  obstacles,
-             py::array_t<bool>  is_wall,
-             py::array_t<bool>  is_vacuum,
-             py::array_t<float> permeability,   // FLOAT per-face bridge
-             py::array_t<float> wave_absorb,    // FLOAT per-cell bridge
-             float dt, float c, float damping, float absorb_strength,
-             float transfer, float feed_rate, float max_source_per_step) {
-              auto [wp, h, w]    = get_2d(wave_p);
-              auto [wv, h2, w2]  = get_2d(wave_v);
-              auto [ws, h3, w3]  = get_2d(wave_source);
-              auto [atm, h4, w4] = get_2d(atmosphere);
-              auto [obs, h5, w5] = get_2d_const(obstacles);
-              auto [wl, h6, w6]  = get_2d_const(is_wall);
-              auto [vac, h7, w7] = get_2d_const(is_vacuum);
-              auto [perm, h8, w8] = get_2d_const(permeability);
-              auto [wabs, h9, w9] = get_2d_const(wave_absorb);
-              breach_cuda::wave_substep_gpu(
-                  wp, wv, ws, atm, obs, wl, vac, perm, wabs, h, w, dt,
-                  c, damping, absorb_strength, transfer, feed_rate,
-                  max_source_per_step);
-          },
-          py::arg("wave_p"), py::arg("wave_v"), py::arg("wave_source"),
-          py::arg("atmosphere"), py::arg("obstacles"), py::arg("is_wall"),
-          py::arg("is_vacuum"), py::arg("permeability"), py::arg("wave_absorb"),
-          py::arg("dt"), py::arg("c"), py::arg("damping"),
-          py::arg("absorb_strength"), py::arg("transfer"), py::arg("feed_rate"),
-          py::arg("max_source_per_step"),
-          "S5 isolated: run ONE GPU wave substep in place on wave_p/wave_v/"
-          "wave_source/atmosphere (bit-identical to AtmosphereSolver.wave_substep, "
-          "incl. the mean_wp int64 reduction + the anomaly transfer).");
+    // CUDA-S5 (set_wave_backend / get_wave_backend / cuda_wave_substep) RETIRED
+    // in EOS P6.0: the wave_substep solver it mirrored was deleted in P3 (the
+    // compressible EOS solve replaced wave+diffuse), so the kernel had no live
+    // dispatch and no non-stale caller (docs/eos_p6_gpu_alignment_review.md §1.11).
 
     // CUDA-S6: the GPU fire solver. The backend flag switches PhysicsEngine::
     // step_tail's fire pass between the CPU FireSimulation::step and the GPU
@@ -452,58 +405,11 @@ PYBIND11_MODULE(breach_physics, m) {
           "wall_hp (bit-identical to FireSimulation.step) and return the destroyed-"
           "walls list of (y,x) tuples.");
 
-    // CUDA-S7: the GPU diffuse_solve (the implicit RB-GS atmosphere diffusion +
-    // vacuum sponge + wind gradient — the LAST + hardest solver). The backend flag
-    // switches PhysicsEngine::run_substeps's diffuse_solve between the CPU
-    // AtmosphereSolver::diffuse_solve and the GPU diffuse_solve_gpu (the live CPU
-    // fallback stays). cuda_diffuse_solve runs ONE GPU diffuse_solve IN PLACE on the
-    // 6 mutated fields (atmosphere/wave_p/wave_v/wave_source/wind_x/wind_y) for the
-    // isolated GPU-vs-CPU bit-identity gate. The solver's scalar dials (d_atm /
-    // breach_rate / gs_iters) are passed explicitly since diffuse_solve_gpu is a
-    // free function — mirroring the live AtmosphereSolver.diffuse_solve binding's
-    // array args plus those scalars.
-    m.def("set_atmos_backend",
-          [](bool use_cuda) { breach_cuda::set_atmos_backend_cuda(use_cuda); },
-          py::arg("use_cuda"),
-          "Switch PhysicsEngine's diffuse_solve (RB-GS + sponge + wind) to the GPU "
-          "(True) or CPU (False).");
-    m.def("get_atmos_backend",
-          []() { return breach_cuda::atmos_backend_is_cuda(); },
-          "True if diffuse_solve currently runs on the GPU.");
-    m.def("cuda_diffuse_solve",
-          [](py::array_t<int32_t> atmosphere,   // Q16.16 int32 (RB-GS + sponge)
-             py::array_t<int32_t> wave_p,       // Q16.16 int32 (zeroed in sponge; wind)
-             py::array_t<int32_t> wave_v,       // Q16.16 int32 (scaled/zeroed in sponge)
-             py::array_t<int32_t> wave_source,  // Q16.16 int32 (clamped in sponge)
-             py::array_t<int32_t> wind_x,       // Q16.16 int32 (out)
-             py::array_t<int32_t> wind_y,       // Q16.16 int32 (out)
-             py::array_t<bool>  obstacles,
-             py::array_t<bool>  is_wall,
-             py::array_t<bool>  is_vacuum,
-             py::array_t<float> permeability,   // FLOAT per-face bridge
-             float dt, float d_atm, float breach_rate, int gs_iters) {
-              auto [atm, h, w]   = get_2d(atmosphere);
-              auto [wp, h2, w2]  = get_2d(wave_p);
-              auto [wv, h3, w3]  = get_2d(wave_v);
-              auto [ws, h4, w4]  = get_2d(wave_source);
-              auto [wx, h5, w5]  = get_2d(wind_x);
-              auto [wy, h6, w6]  = get_2d(wind_y);
-              auto [obs, h7, w7] = get_2d_const(obstacles);
-              auto [wl, h8, w8]  = get_2d_const(is_wall);
-              auto [vac, h9, w9] = get_2d_const(is_vacuum);
-              auto [perm, h10, w10] = get_2d_const(permeability);
-              breach_cuda::diffuse_solve_gpu(
-                  atm, wp, wv, ws, wx, wy, obs, wl, vac, perm, h, w, dt,
-                  d_atm, breach_rate, gs_iters);
-          },
-          py::arg("atmosphere"), py::arg("wave_p"), py::arg("wave_v"),
-          py::arg("wave_source"), py::arg("wind_x"), py::arg("wind_y"),
-          py::arg("obstacles"), py::arg("is_wall"), py::arg("is_vacuum"),
-          py::arg("permeability"), py::arg("dt"), py::arg("d_atm"),
-          py::arg("breach_rate"), py::arg("gs_iters"),
-          "S7 isolated: run ONE GPU diffuse_solve in place on atmosphere/wave_p/"
-          "wave_v/wave_source/wind_x/wind_y (bit-identical to "
-          "AtmosphereSolver.diffuse_solve — the RB-GS + vacuum sponge + wind).");
+    // CUDA-S7 (set_atmos_backend / get_atmos_backend / cuda_diffuse_solve)
+    // RETIRED in EOS P6.0: the diffuse_solve solver it mirrored was deleted in
+    // P3 (the compressible EOS solve replaced wave+diffuse), so the kernel had
+    // no live dispatch and no non-stale caller
+    // (docs/eos_p6_gpu_alignment_review.md §1.11).
 #else
     m.attr("HAS_CUDA") = false;
 #endif

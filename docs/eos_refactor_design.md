@@ -765,6 +765,11 @@ alias-preserved throughout, so no patch strands a legacy reader.
    (precedent `cuda_water.cu`); unified conduction (extend `cuda_temperature.cu`);
    combustion pass; **retire** `cuda_wave.cu`/`cuda_atmosphere.cu`; unpin backends.
    *Gate:* bit-identical digests per kernel (the `cuda-breached` harness), non-negotiable.
+   *P6.0 LANDED:* per-kernel unpinning mechanism (`cuda_harness.EOS_P6_PENDING_KERNELS`
+   pending set + `cuda_available(kernel=...)`, one key per sub-patch) and the
+   `cuda_wave.cu`/`cuda_atmosphere.cu` retirement (files + bindings + CMake + s5/s7
+   gates deleted, caller-free verified) — per `docs/eos_p6_gpu_alignment_review.md`
+   §2.1 / §1.11 / §4.
 7. **P7 — cleanup + canon.** Formal `atmosphere`→`P` deprecation decision; float-mirror
    removal confirmation; stale-doc fixes (interaction map §0's six spots); fold the
    as-built design into engine/04 + 06 chapters and archive the brainstorms (the
