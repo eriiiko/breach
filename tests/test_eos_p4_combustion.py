@@ -421,7 +421,14 @@ def test_e2e_2_breach_vents_o2_and_kills_fire():
     now dies t=265 (was 172) — the ember-scale fuel drain weakens F and the
     weaker flame starves its room more slowly (behavioral by design, trio
     re-measured at the P5.1 gate: sealed 265 / vented 48 / flooded 39).
-    max_ticks 250 -> 400."""
+    max_ticks 250 -> 400.
+
+    P6.9a re-measure (EOS P6.9, docs/eos_p6_9_combustion_design.md §5): the
+    two-gather reformulation's deltas gamma (contested cells fully drain O2)
+    and delta (multi-source cells deposit aggregate heat) nudge the sealed
+    self-starve to t=261 (was 265); vented/flooded unchanged (48 / 39). Trio
+    now sealed 261 / vented 48 / flooded 39. Ordering + the perturbation gate
+    stay green. This test only asserts vented < sealed, so it is unaffected."""
     def _ticks_to_die(vent, max_ticks=400):
         gmap = _sealed_room(hh=9, wood_at=(4, 4),
                             extra_vacuum=[(0, 4)] if vent else None)
@@ -482,7 +489,11 @@ def test_e2e_4_inert_flood_smothers_fire():
 
     v2.5 re-pin (P5.1, design §5 v2.5 / decisions #17): the unflooded
     control now dies t=265 (was 172) — see test_e2e_2's re-pin note.
-    max_ticks 200 -> 400."""
+    max_ticks 200 -> 400.
+
+    P6.9a re-measure (design §5): the reformulation moves the unflooded
+    control to t=261 (deltas gamma/delta); flooded unchanged at 39. This test
+    asserts only flooded < control, so it is unaffected."""
     def _ticks_to_die(flood, max_ticks=400):
         gmap = _sealed_room(hh=9, wood_at=(4, 4))
         pr = _runner()
@@ -547,7 +558,17 @@ def _payoff_timings(perturb_absorb=None, max_ticks=400):
     Behavioral by design (the ember-scale fuel drain weakens F; the weaker
     sealed flame starves its room more slowly); ordering preserved and still
     bit-stable under the 1e-5 dial perturbation below. max_ticks 300 -> 400
-    for the longer sealed arm."""
+    for the longer sealed arm.
+
+    P6.9a re-measure (EOS P6.9, docs/eos_p6_9_combustion_design.md §5): the
+    two-gather reformulation re-pins the trio to sealed 261 / vented 48 /
+    flooded 39 (was 265 / 48 / 39). Only the sealed arm moved (-4 ticks):
+    deltas gamma (contested air cells fully drain their O2) and delta (multi-
+    source air cells deposit ONE aggregate heat term against the post-burn
+    N_total, running marginally hotter) shift the self-starve point; the
+    vented/flooded arms die too fast, and with too few multi-source contested
+    cells, for the deltas to register. Ordering (flooded < vented < sealed)
+    preserved and still bit-stable under the perturbation probe."""
     def _ticks(vent=False, flood=False):
         gmap = _sealed_room(hh=9, wood_at=(4, 4),
                             extra_vacuum=[(0, 4)] if vent else None)
