@@ -19,6 +19,15 @@ the engine already names twice**:
 - **`FieldEdit` is the canonical write primitive** — "many systems write many
   fields through one operator."
 
+> **EOS refactor (2026-07) — as-built.** The §3 policy table below predates the EOS refactor
+> and is stale in two ways: (1) `atmosphere` is now the Q16.16 derived pressure `P` (a zero-copy
+> alias, *not* float), and pressure *deposits* remap to **N/T feeds** — an explosion's `pressure`
+> payload becomes an energy/gas-mass scale, since nothing "injects pressure" any more (ch.04
+> as-built); (2) `wave_source` (with `wave_p`) is **retired** — the row is dead. The per-gas
+> `FIELD_POLICY` rows (O₂/N₂/traces) are the live write surface now. A full rewrite of the §3
+> table to the EOS field set is a flagged follow-up; treat ch.04's as-built as authoritative for
+> the field model in the meantime.
+
 Home: `src/simulation/field_edit.py`.
 
 
