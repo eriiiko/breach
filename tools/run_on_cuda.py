@@ -102,16 +102,16 @@ _BACKEND_SETTERS = (
     "set_smoke_backend",
     "set_fire_backend",
     "set_raycaster_backend",
-    # EOS P6.1: bulk donor-cell flux — the flag exists and its kernels are
-    # re-proven, but the engine dispatch lands in P6.5 (kernel-gate only until
-    # then); flipping it here is a forward-compatible no-op.
-    "set_bulk_flux_backend",
-    # EOS P6.4: kick + compression work — same contract (kernel-gate only;
-    # flag is a forward-compatible no-op until the P6.5 engine dispatch).
-    "set_kick_compression_backend",
-    # EOS P6.3: multigrid pressure solve — same status (re-proven kernels,
-    # flag-only until the P6.5 engine dispatch); forward-compatible no-op.
-    "set_mg_solve_backend",
+    # EOS P6.5: the four EOS kernel-surface flags below are now LIVE-DISPATCHED
+    # — PhysicsEngine::run_substeps routes the whole eos.step tick to the
+    # chained GPU orchestration (cuda_eos_step.cu) when ALL FOUR are on
+    # (get_eos_step_backend reports the ANDed predicate). P6.2/P6.3 left
+    # sl_advection/mg_solve out of this list while they were kernel-gate-only;
+    # P6.5 makes all six EOS-era setters consistent.
+    "set_bulk_flux_backend",         # EOS P6.1
+    "set_sl_advection_backend",      # EOS P6.2
+    "set_mg_solve_backend",          # EOS P6.3
+    "set_kick_compression_backend",  # EOS P6.4
 )
 
 

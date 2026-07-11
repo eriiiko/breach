@@ -54,13 +54,17 @@ LEVEL = getattr(CFG.display, "level", "unhcr_vessel")
 # The 4 field solvers + the raycaster (the live fire->heat cast, CUDA-S2 live).
 # With the raycaster ON, cast_fire_heat deposits `heat` on the GPU.
 # EOS P6.0: wave/atmos backends retired (kernels deleted with their solvers).
-# EOS P6.1: + bulk_flux (flag-only until the P6.5 engine dispatch wires it).
-# EOS P6.4: + kick_compression (same flag-only contract).
+# EOS P6.5: the four EOS kernel-surface flags (bulk_flux, sl_advection,
+# mg_solve, kick_compression) are now LIVE-DISPATCHED — with all four on,
+# run_substeps routes the whole eos.step tick to the chained GPU orchestration
+# (cuda_eos_step.cu). All six EOS-era setters are in the all-on set.
 SETTERS = ["set_temperature_backend", "set_water_backend", "set_smoke_backend",
            "set_fire_backend", "set_raycaster_backend", "set_bulk_flux_backend",
+           "set_sl_advection_backend", "set_mg_solve_backend",
            "set_kick_compression_backend"]
 GETTERS = ["get_temperature_backend", "get_water_backend", "get_smoke_backend",
            "get_fire_backend", "get_raycaster_backend", "get_bulk_flux_backend",
+           "get_sl_advection_backend", "get_mg_solve_backend",
            "get_kick_compression_backend"]
 
 

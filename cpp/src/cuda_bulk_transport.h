@@ -86,7 +86,30 @@ void bulk_flux_transport(
     int h, int w,
     float dt);
 
-// Backend selection (P6.1 gate; live dispatch lands in P6.5). Defaults false
+// ---- EOS P6.5: device-pointer launcher for the chained eos.step dispatch ---
+// One full B1..B5 chain for ONE conservative plane on caller-owned DEVICE
+// buffers (the P6.5 orchestrator keeps u/T/gas device-resident across the
+// substep loop and interleaves this with the SL-advection kernel exactly as
+// the CPU substep loop interleaves the passes). Defined in
+// cuda_bulk_transport.cu — the SAME anonymous-namespace kernels as the
+// isolated entry, ONE transcription, identical launch geometry.
+// d_dq_e/d_dq_s/d_scale are h*w int32 device scratch (fully written by
+// B1/B2 before any read — no init needed). NOTE the all-zero-plane skip is
+// the CALLER'S choice: the P6.5 chain runs every conservative plane
+// unconditionally — arithmetically a no-op on an all-zero plane (review
+// §1.3: zero fluxes, scale FP_ONE, unchanged N, clamp re-writes zeros).
+void bulk_flux_plane_device(
+    int32_t* d_N,
+    const int32_t* d_wind_x, const int32_t* d_wind_y,
+    const bool* d_solid, const bool* d_is_vacuum,
+    const int32_t* d_coeffE, const int32_t* d_coeffS,
+    int32_t* d_dq_e, int32_t* d_dq_s, int32_t* d_scale,
+    int h, int w);
+
+// Backend selection (P6.1 gate). EOS P6.5: now CONSUMED by the engine
+// dispatch — PhysicsEngine::run_substeps routes eos.step to the GPU
+// orchestration when this AND the other three EOS-kernel flags are on
+// (breach_cuda::eos_step_backend_is_cuda(), cuda_eos_step.h). Defaults false
 // so the game + suite run the CPU path unchanged until explicitly switched.
 bool bulk_flux_backend_is_cuda();
 void set_bulk_flux_backend_cuda(bool on);

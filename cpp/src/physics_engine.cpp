@@ -16,6 +16,7 @@
 #include "cuda_water.h"         // CUDA-S3: GPU water solver + backend flag
 #include "cuda_smoke.h"         // CUDA-S4a: GPU smoke solver + backend flag
 #include "cuda_fire.h"          // CUDA-S6: GPU fire solver + backend flag
+#include "cuda_eos_step.h"      // EOS P6.5: chained eos.step GPU dispatch
 // CUDA-S5 cuda_wave.h / CUDA-S7 cuda_atmosphere.h RETIRED in EOS P6.0 (their
 // CPU solvers were replaced by the EOS solve in P3; nothing here called them).
 #endif
@@ -242,12 +243,35 @@ void PhysicsEngine::run_substeps(
                        // kept as a parameter for ABI/back-compat with the
                        // Python call site's existing positional argument.
 
-    this->eos.step(
-        atmosphere, p_prev, wind_x, wind_y, temperature,
-        gas, gas_conservative, n_gases,
-        solid, is_vacuum,
-        dyn_permeability, dyn_wave_absorb,
-        h, w, sim_time);
+    // EOS P6.5 ("the big flip", docs/eos_p6_gpu_alignment_review.md §4):
+    // dispatch the WHOLE eos.step tick to the chained GPU orchestration
+    // (cuda_eos_step.cu — P6.2 advection + P6.1 bulk flux device-resident
+    // through the substep loop, P6.3 solve, P6.4 kick+compression) when
+    // EVERY one of the four EOS kernel-surface flags is on (the review is
+    // silent on a master flag, so the per-kernel flags are ANDed — a partial
+    // set keeps the CPU path). Bit-identical to eos.step (same digests, same
+    // rail counters — gated by tests/cuda_eos_step_check.py); with any flag
+    // off (the default) this is the exact prior call. The existing
+    // water/smoke/fire dispatch idiom, applied to the EOS orchestration.
+#ifdef BREACH_HAS_CUDA
+    if (breach_cuda::eos_step_backend_is_cuda()) {
+        breach_cuda::eos_step_cuda(
+            this->eos,
+            atmosphere, p_prev, wind_x, wind_y, temperature,
+            gas, gas_conservative, n_gases,
+            solid, is_vacuum,
+            dyn_permeability, dyn_wave_absorb,
+            h, w, sim_time);
+    } else
+#endif
+    {
+        this->eos.step(
+            atmosphere, p_prev, wind_x, wind_y, temperature,
+            gas, gas_conservative, n_gases,
+            solid, is_vacuum,
+            dyn_permeability, dyn_wave_absorb,
+            h, w, sim_time);
+    }
 
     // Traces advect ONCE per tick, on the solver's final (post-correction)
     // wind_x/wind_y — §3.2 step 4b. Skip the two conservative bulk planes

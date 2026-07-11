@@ -314,6 +314,35 @@ uint64_t eos_sl_advect(
            digest_of_host(temperature, n, 0)));
 }
 
+// ---- EOS P6.5: device-pointer launchers (header rationale) ------------------
+// Same anonymous-namespace kernels as the isolated entry above — ONE
+// transcription — launched with the identical block/grid shape on caller-owned
+// device buffers, so the P6.5 orchestrator can chain them with the bulk-flux
+// kernels while u/T/gas stay device-resident across the whole substep loop.
+void sl_cmask_build_device(const bool* d_solid, const bool* d_vacuum,
+                           const float* d_perm, uint8_t* d_cmask, int n) {
+    const int block = 256;
+    const int grid = (n + block - 1) / block;
+    sl_cmask_build<<<grid, block>>>(d_solid, d_vacuum, d_perm, d_cmask, n);
+    cuda_check(cudaGetLastError(), "cmask launch (P6.5 chained)");
+}
+
+void sl_advect3_device(int32_t* d_wind_x, int32_t* d_wind_y,
+                       int32_t* d_temperature,
+                       const int32_t* d_src_vx, const int32_t* d_src_vy,
+                       const int32_t* d_src_t,
+                       const bool* d_solid, const bool* d_vacuum,
+                       const uint8_t* d_cmask,
+                       int32_t dt_s_q, int h, int w) {
+    const int n = h * w;
+    const int block = 256;
+    const int grid = (n + block - 1) / block;
+    sl_advect3<<<grid, block>>>(d_wind_x, d_wind_y, d_temperature,
+                                d_src_vx, d_src_vy, d_src_t,
+                                d_solid, d_vacuum, d_cmask, dt_s_q, h, w);
+    cuda_check(cudaGetLastError(), "advect launch (P6.5 chained)");
+}
+
 namespace {
 bool g_sl_advection_backend_cuda = false;
 }
