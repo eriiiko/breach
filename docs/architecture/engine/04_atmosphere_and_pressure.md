@@ -4,6 +4,54 @@
 
 ---
 
+> ## EOS refactor (2026-07) — as-built
+>
+> **This chapter below documents the pre-EOS two-field model (`atmosphere` + `wave_p`,
+> IMEX). That model has been replaced.** The refactor shipped end-to-end (P1–P6, closed on
+> `main`); read the rest of the chapter for the design *rationale* still in force (implicit
+> stability, sealed-vs-breach masks, permeability, wind-as-interface), but treat the specific
+> two-field mechanics as superseded by the following. Canon design lives in
+> `docs/eos_refactor_design.md` (v2) and `docs/eos_refactor_decisions.md` (locked decisions);
+> the GPU end-state in `docs/eos_p6_gpu_alignment_review.md`.
+>
+> **What actually ships now:**
+>
+> - **One derived pressure, not two fields.** Pressure is a *genuine compressible ideal gas*:
+>   `P = C · N_total · T`, evolved by a **Kwatra semi-implicit solver** (a red-black Gauss–Seidel
+>   / multigrid Helmholtz solve — the same stability story the chapter argues for, now on one
+>   field). Bulk equilibration *and* acoustic fronts fall out of that single pressure; the old
+>   `atmosphere`/`wave_p` split existed **only** as a numerical workaround for running implicit
+>   diffusion and an explicit wave on one field, and is obsolete.
+> - **`atmosphere` is now a zero-copy ALIAS of the derived `P`.** `P` is **materialized once
+>   per tick** — right after the `(N, T)` update and *before any consumer* — into a stored
+>   Q16.16 field; every reader (wind, water head, `find_burst_walls`, unit push) sees that one
+>   consistent `P`. Nothing "feeds pressure" any more: every old writer became a **heat/energy
+>   feed (T)** or a **gas-mass feed (N)**, and `P` follows from physics.
+> - **`wave_p` / `wave_v` / `wave_source` are RETIRED as acoustic fields.** `gmap.wave_p` is
+>   repurposed as the **`P_prev` store** (last tick's materialized `P`); the per-tick pressure
+>   *transient* `|P − P_prev|` is what drives the ripple splash and the blow-up trigger. The
+>   transient-buffet-vs-sustained-dome distinction consumers relied on now survives as the single
+>   field's **time evolution** (the front passes, the dome lingers) — more physical, not bolted on.
+>   (`physics_runner.py` documents `gmap.wave_p` as "the repurposed P_prev buffer".)
+> - **Two bulk species + traces.** The bulk air is two explicit, *conserved* gases —
+>   **O₂ + inert-N₂** — transported by **donor-cell conservative flux** (the water-solver pattern),
+>   with the traces (smoke / poison / …) riding on top. `N_total = Σ species` (Dalton),
+>   `P = C · T · N_total`. Mass is exact (LSB-level, no silent decay); sealed rooms are airtight
+>   by construction.
+> - **Wind = −∇P** off the single materialized field (computed before consumers read it).
+> - **Native breach venting.** Venting emerges from real `−∇P` toward a true-vacuum (`N = 0`)
+>   cell; the geometric `sink_hop` *atmosphere* hack is gone and breach→vacuum generalises beyond
+>   the old edge-hull-only rule.
+> - **Consumers repointed:** `apply_wave_push` reads `grad(P)` (`k_push` recalibrated);
+>   `find_burst_walls` reads the `P` spread through the `atmosphere` alias; the water pressure-head
+>   reads the derived **integer** `P` (the old float bridge removed); combustion/ignition O₂ gates
+>   read real `N_O2` (see ch.06). The over-pressure relief valve, sealed/breach masks, and
+>   permeability model (§2.3, §2.7) all carry over unchanged.
+> - **Ported bit-identical to CUDA (P6).** The whole tick — pressure materialization, Helmholtz
+>   solve, species flux, compression-work, combustion — runs on the GPU exactly matching the CPU
+>   reference (`cuda_eos_step`, `cuda_mg_solve`); the CPU path is permanent as the bit-identity
+>   reference.
+
 ## 1. What this system is
 
 Breach's atmosphere is the air that fills the ship: a scalar pressure field over the

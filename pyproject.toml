@@ -1,0 +1,12 @@
+# Project tooling config. This file intentionally carries no [build-system] /
+# packaging metadata — Breach is run in-place, not pip-installed. It exists so
+# that a bare `pytest` from the repo root collects ONLY the real test suite.
+#
+# Without `testpaths`, pytest's default collection walks the whole tree and picks
+# up files whose names match `*_test.py` (pytest's fallback pattern) — e.g.
+# `prototypes/archive/raylib_test.py`, which used to open a raylib window and hang
+# the render loop on collection. Pinning collection to `tests/` prevents that; the
+# prototype is additionally guarded behind `if __name__ == "__main__"`.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
