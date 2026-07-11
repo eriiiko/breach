@@ -88,11 +88,17 @@ PYBIND11_MODULE(breach_physics, m) {
           []() { return breach_cuda::temperature_backend_is_cuda(); },
           "True if the temperature pass currently runs on the GPU.");
     m.def("cuda_temperature_step",
+          // Arg order: all REQUIRED args first, then the defaulted ones last
+          // (pybind11 forbids a required arg after a defaulted one).
           [](py::array_t<int32_t> temperature, py::array_t<int32_t> heat,
              py::array_t<int32_t> heat_inv_shift, py::array_t<int32_t> face_shift,
              py::array_t<bool> solid, py::array_t<bool> is_vacuum,
-             py::array_t<int32_t> atmosphere, int no_face, int cool_shift,
-             int cool_shift_vacuum, float o2_vacuum_thresh) {
+             py::array_t<int32_t> atmosphere,
+             int no_face, int cool_shift, int cool_shift_vacuum,
+             float o2_vacuum_thresh, float c_v, float n_floor_heat,
+             float gas_advection_rate, float t_max_phys,
+             py::object n_bulk_obj, py::object wind_x_obj, py::object wind_y_obj,
+             float dt) -> int64_t {
               auto [temp, h, w]    = get_2d(temperature);
               auto [hp, h2, w2]    = get_2d_const(heat);
               auto [shift, h3, w3] = get_2d_const(heat_inv_shift);
@@ -101,16 +107,42 @@ PYBIND11_MODULE(breach_physics, m) {
               auto [atm, h6, w6]   = get_2d_const(atmosphere);
               auto fa = face_shift.unchecked<3>();
               const int32_t* fs = fa.data(0, 0, 0);
-              breach_cuda::temperature_step(temp, hp, shift, fs, sol, vac, atm,
-                                            no_face, cool_shift, cool_shift_vacuum,
-                                            o2_vacuum_thresh, h, w);
+              // Optional n_bulk / wind_x / wind_y — None -> nullptr (the solver
+              // then falls back to the atmosphere N proxy / skips Pass 0 advect).
+              // Keep the extracted arrays alive in this scope.
+              const int32_t* nb = nullptr;
+              const int32_t* wx = nullptr;
+              const int32_t* wy = nullptr;
+              py::array_t<int32_t> nb_arr, wx_arr, wy_arr;
+              if (!n_bulk_obj.is_none()) {
+                  nb_arr = n_bulk_obj.cast<py::array_t<int32_t>>();
+                  auto [nbp, hn, wn] = get_2d_const(nb_arr);
+                  nb = nbp;
+              }
+              if (!wind_x_obj.is_none() && !wind_y_obj.is_none()) {
+                  wx_arr = wind_x_obj.cast<py::array_t<int32_t>>();
+                  wy_arr = wind_y_obj.cast<py::array_t<int32_t>>();
+                  auto [wxp, hx, wxw] = get_2d_const(wx_arr);
+                  auto [wyp, hy, wyw] = get_2d_const(wy_arr);
+                  wx = wxp;
+                  wy = wyp;
+              }
+              return breach_cuda::temperature_step(
+                  temp, hp, shift, fs, sol, vac, atm, nb, wx, wy,
+                  no_face, cool_shift, cool_shift_vacuum, o2_vacuum_thresh,
+                  c_v, n_floor_heat, gas_advection_rate, t_max_phys, h, w, dt);
           },
           py::arg("temperature"), py::arg("heat"), py::arg("heat_inv_shift"),
           py::arg("face_shift"), py::arg("solid"), py::arg("is_vacuum"),
-          py::arg("atmosphere"), py::arg("no_face"), py::arg("cool_shift"),
-          py::arg("cool_shift_vacuum"), py::arg("o2_vacuum_thresh"),
-          "S1 isolated: run the GPU temperature solver in place on `temperature` "
-          "(bit-identical to TemperatureSolver.step).");
+          py::arg("atmosphere"),
+          py::arg("no_face"), py::arg("cool_shift"), py::arg("cool_shift_vacuum"),
+          py::arg("o2_vacuum_thresh"), py::arg("c_v"), py::arg("n_floor_heat"),
+          py::arg("gas_advection_rate"), py::arg("t_max_phys"),
+          py::arg("n_bulk") = py::none(), py::arg("wind_x") = py::none(),
+          py::arg("wind_y") = py::none(), py::arg("dt") = 0.0f,
+          "P6.6 isolated: run the GPU unified temperature solver in place on "
+          "`temperature` (bit-identical to TemperatureSolver.step); returns the "
+          "T_MAX_PHYS rail-hit count for this call.");
 
     // CUDA-S2: the GPU directional raycaster gate. Casts ONE LightSource on the
     // GPU into the (pre-zeroed) output fields, replicating the CPU cast's per-ray
@@ -1030,7 +1062,8 @@ PYBIND11_MODULE(breach_physics, m) {
                         py::array_t<int32_t> atmosphere,   // S3c: Q16.16 int32 (was float)
                         py::object wind_x_obj,
                         py::object wind_y_obj,
-                        float dt) {
+                        float dt,
+                        py::object n_bulk_obj) {
             auto [temp, h, w]     = get_2d(temperature);
             auto [hp, h2, w2]     = get_2d_const(heat);
             auto [shift, h3, w3]  = get_2d_const(heat_inv_shift);
@@ -1055,15 +1088,25 @@ PYBIND11_MODULE(breach_physics, m) {
                 wx = wxp;
                 wy = wyp;
             }
-            // EOS P3: the direct binding passes n_bulk = nullptr — the solver
-            // falls back to the atmosphere density-proxy (back-compat path);
-            // the engine's step_tail always passes the real O2+N2 sum.
-            self.step(temp, hp, shift, fs, sol, vac, atm, nullptr, wx, wy, h, w, dt);
+            // EOS P3/P6.6: n_bulk is OPTIONAL (default None). None -> nullptr, so
+            // the solver falls back to the atmosphere density-proxy (the shipped
+            // back-compat path — all pre-P6.6 direct callers keep that behaviour).
+            // The P6.6 GPU bit-identity gate passes the real O2+N2 sum here so the
+            // CPU reference and the GPU kernel divide by the SAME N (the engine's
+            // step_tail always passes the real sum too).
+            const int32_t* nb = nullptr;
+            py::array_t<int32_t> nb_arr;
+            if (!n_bulk_obj.is_none()) {
+                nb_arr = n_bulk_obj.cast<py::array_t<int32_t>>();
+                auto [nbp, hn, wn] = get_2d_const(nb_arr);
+                nb = nbp;
+            }
+            self.step(temp, hp, shift, fs, sol, vac, atm, nb, wx, wy, h, w, dt);
         }, py::arg("temperature"), py::arg("heat"),
            py::arg("heat_inv_shift"), py::arg("face_shift"),
            py::arg("solid"), py::arg("is_vacuum"), py::arg("atmosphere"),
            py::arg("wind_x") = py::none(), py::arg("wind_y") = py::none(),
-           py::arg("dt") = 0.0f);
+           py::arg("dt") = 0.0f, py::arg("n_bulk") = py::none());
 
     // --- Raycaster ---
     py::class_<LightSource>(m, "LightSource")

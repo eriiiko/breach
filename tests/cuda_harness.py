@@ -114,8 +114,15 @@ def cuda_dll_dir() -> Path | None:
 # gate (tests/cuda_eos_step_check.py: 120-tick breach+blast REAL-engine
 # trajectory, CPU run vs GPU run — every EOS field, all six digests, all five
 # rail counters per tick, dispatch-fired telemetry, CPU golden untouched).
+# P6.6 (eos-p6-6-conduction): "conduction" REMOVED — the unified temperature
+# pass (cuda_temperature.cu extended: Pass 0 zero-vacuum + SL advection, Pass 1
+# solid/gas radiant deposit with the v2.4 absorption-∝-density form + n_bulk
+# divisor + T_MAX_PHYS rail, Pass 2 conduction, Pass 3 cooling) re-proved
+# bit-identical via the P6.6 gate (tests/cuda_conduction_check.py: isolated
+# all-branch/edge A/B with the T_MAX_PHYS rail forced + a 120-tick
+# hot-core-vs-cold-hull thin-gas trajectory, per-tick byte-compare on
+# `temperature` AND the rail counter vs the CPU TemperatureSolver).
 EOS_P6_PENDING_KERNELS = {
-    "conduction",
     "trace_smoke",
     "fire",
     "combustion",
