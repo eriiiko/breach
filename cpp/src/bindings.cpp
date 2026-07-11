@@ -362,10 +362,11 @@ PYBIND11_MODULE(breach_physics, m) {
           "True if the fire pass currently runs on the GPU.");
     m.def("cuda_fire_step",
           [](py::array_t<int32_t> fire,         // Q16.16 int32 (intensity)
-             py::array_t<int32_t> atmosphere,   // Q16.16 int32 (plume deposit)
+             py::array_t<int32_t> atmosphere,   // Q16.16 int32 (read-only, vestigial)
+             py::array_t<int32_t> n_o2,         // Q16.16 int32 (read-only, O2 gate)
              py::array_t<int32_t> smoke,        // Q16.16 int32 (emission scatter)
              py::array_t<int32_t> wall_hp,      // Q16.16 int32 (burn-through)
-             py::array_t<int32_t> temperature,  // Q16.16 int32 (read-only)
+             py::array_t<int32_t> temperature,  // Q16.16 int32 (in/out: plume->T)
              py::array_t<int32_t> wind_x,       // Q16.16 int32 (read-only)
              py::array_t<int32_t> wind_y,       // Q16.16 int32 (read-only)
              py::array_t<bool>  is_wall,
@@ -374,41 +375,46 @@ PYBIND11_MODULE(breach_physics, m) {
              float dt, float k_grow, float k_die, float fire_T_ext,
              float fire_T_span, float fuel_ref, float P_min, float P_full,
              float I_min, float k_wind_fan, float k_wind_strip,
-             float fire_pressure_gain, float p_expand_ref, float smoke_emission,
-             float wall_damage, float temp_scale) -> py::list {
+             float fire_pressure_gain, float smoke_emission,
+             float wall_damage, float temp_scale, float temp_gain_scale,
+             float T_FLAME_MAX) -> py::list {
               auto [f, h, w]     = get_2d(fire);
-              auto [atm, h2, w2] = get_2d(atmosphere);
+              auto [atm, h2, w2] = get_2d_const(atmosphere);
+              auto [o2, h2b, w2b] = get_2d_const(n_o2);
               auto [sm, h3, w3]  = get_2d(smoke);
               auto [whp, h4, w4] = get_2d(wall_hp);
-              auto [temp, h5, w5] = get_2d_const(temperature);
+              auto [temp, h5, w5] = get_2d(temperature);   // in/out (plume->T shim)
               auto [wx, h6, w6]  = get_2d_const(wind_x);
               auto [wy, h7, w7]  = get_2d_const(wind_y);
               auto [wl, h8, w8]  = get_2d_const(is_wall);
               auto [vac, h9, w9] = get_2d_const(is_vacuum);
               auto [fl, h10, w10] = get_2d_const(flammable);
               auto destroyed = breach_cuda::fire_step(
-                  f, atm, sm, whp, temp, wx, wy, wl, vac, fl, h, w, dt,
+                  f, atm, o2, sm, whp, temp, wx, wy, wl, vac, fl, h, w, dt,
                   k_grow, k_die, fire_T_ext, fire_T_span, fuel_ref, P_min, P_full,
-                  I_min, k_wind_fan, k_wind_strip, fire_pressure_gain, p_expand_ref,
-                  smoke_emission, wall_damage, temp_scale);
+                  I_min, k_wind_fan, k_wind_strip, fire_pressure_gain,
+                  smoke_emission, wall_damage, temp_scale, temp_gain_scale,
+                  T_FLAME_MAX);
               py::list result;
               for (const auto& [dy, dx] : destroyed) {
                   result.append(py::make_tuple(dy, dx));
               }
               return result;
           },
-          py::arg("fire"), py::arg("atmosphere"), py::arg("smoke"),
+          py::arg("fire"), py::arg("atmosphere"), py::arg("n_o2"), py::arg("smoke"),
           py::arg("wall_hp"), py::arg("temperature"), py::arg("wind_x"),
           py::arg("wind_y"), py::arg("is_wall"), py::arg("is_vacuum"),
           py::arg("flammable"), py::arg("dt"), py::arg("k_grow"), py::arg("k_die"),
           py::arg("fire_T_ext"), py::arg("fire_T_span"), py::arg("fuel_ref"),
           py::arg("P_min"), py::arg("P_full"), py::arg("I_min"),
           py::arg("k_wind_fan"), py::arg("k_wind_strip"),
-          py::arg("fire_pressure_gain"), py::arg("p_expand_ref"),
+          py::arg("fire_pressure_gain"),
           py::arg("smoke_emission"), py::arg("wall_damage"), py::arg("temp_scale"),
-          "S6 isolated: run ONE GPU fire step in place on fire/atmosphere/smoke/"
-          "wall_hp (bit-identical to FireSimulation.step) and return the destroyed-"
-          "walls list of (y,x) tuples.");
+          py::arg("temp_gain_scale"), py::arg("T_FLAME_MAX"),
+          "P6.8 isolated: run ONE GPU fire step (re-derived — n_o2 O2 gate + "
+          "plume->T shim) in place on fire/smoke/wall_hp/temperature "
+          "(bit-identical to FireSimulation.step) and return the destroyed-walls "
+          "list of (y,x) tuples.");
 
     // CUDA-S7 (set_atmos_backend / get_atmos_backend / cuda_diffuse_solve)
     // RETIRED in EOS P6.0: the diffuse_solve solver it mirrored was deleted in
