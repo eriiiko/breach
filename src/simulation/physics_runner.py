@@ -100,6 +100,15 @@ class PhysicsRunner:
         self._raycaster_on_cuda = (
             _get_ray_backend if callable(_get_ray_backend) else (lambda: False))
 
+        # EOS P6.9b: the combustion pass can run on the GPU when the combustion
+        # backend flag is on (bp.set_combustion_backend). Same idiom as the
+        # raycaster flag — the setter/getter only EXIST on the CUDA build, so
+        # cache a query that is a constant False on the CPU build. Flag-off
+        # (default) is the EXACT prior CPU CombustionSolver.step call.
+        _get_comb_backend = getattr(bp, "get_combustion_backend", None)
+        self._combustion_on_cuda = (
+            _get_comb_backend if callable(_get_comb_backend) else (lambda: False))
+
         # PhysicsEngine (Patch 1 S3) owns the solver instances. The runner uses
         # its solvers (engine.<solver>) instead of constructing them itself —
         # same objects, same calls, bit-identical. engine.<solver> returns a
@@ -479,13 +488,30 @@ class PhysicsRunner:
         # Helmholtz solve; they feed NEXT tick's p* = C*N_total*T instead.
         ignition_temp_q16 = gmap.materials.ignition_temp_q16[gmap.material].astype(
             np.int32)
-        self.combustion.step(
-            gmap.gas, self._o2_idx, self._inert_n2_idx, self._black_smoke_idx,
-            gmap.temperature, gmap.wall_hp, gmap.fire,
-            gmap.flammable, gmap.solid, gmap.is_vacuum,
-            ignition_temp_q16,
-            sim_time, self.temperature.c_v, self.temperature.n_floor_heat,
-        )
+        if self._combustion_on_cuda():
+            # EOS P6.9b GPU dispatch (strictly additive; bit-identical to the CPU
+            # CombustionSolver.step — tests/cuda_combustion_check.py, key
+            # "combustion"). `fire` is dropped (the reformulation no longer reads
+            # it). The rail counts are returned but not fed back into the C++
+            # solver's telemetry members (debug-only; no test asserts them).
+            self.bp.cuda_combustion_step(
+                gmap.gas, self._o2_idx, self._inert_n2_idx, self._black_smoke_idx,
+                gmap.temperature, gmap.wall_hp,
+                gmap.flammable, gmap.solid, gmap.is_vacuum,
+                ignition_temp_q16,
+                sim_time, self.temperature.c_v, self.temperature.n_floor_heat,
+                self.combustion.burn_rate, self.combustion.o2_thresh_burn,
+                self.combustion.H_fuel, self.combustion.soot_yield,
+                self.combustion.fuel_per_o2, self.combustion.T_MAX_PHYS,
+            )
+        else:
+            self.combustion.step(
+                gmap.gas, self._o2_idx, self._inert_n2_idx, self._black_smoke_idx,
+                gmap.temperature, gmap.wall_hp, gmap.fire,
+                gmap.flammable, gmap.solid, gmap.is_vacuum,
+                ignition_temp_q16,
+                sim_time, self.temperature.c_v, self.temperature.n_floor_heat,
+            )
 
         # Per-tick orchestration TAIL — moved into C++ in Patch 1 S4a
         # (PhysicsEngine::step_tail, physics_engine.cpp, compiled /fp:precise).
