@@ -165,6 +165,14 @@ public:
     mutable int64_t u_max_hits = 0;        // clamps where U_MAX (not c_LOCAL)
                                            // was the binding cap (v2.4)
 
+    // --- P6.2 telemetry: the substep count the last step() actually ran ---
+    // (design §3.2 step 1's n = ceil(dt/dt_adv), N_SUB_MAX-capped). Exposed so
+    // the P6 per-kernel digest gates can reconstruct the substep-loop inputs
+    // (n_sub is derived from max|u|/∇P/T state that only the solver sees) and
+    // replay the isolated kernel on the SAME schedule. Pure telemetry — no
+    // arithmetic reads it.
+    mutable int dbg_last_n_sub = 0;
+
     // --- six sub-kernel digest checkpoints (§3.4.6) ---------------------
     mutable uint64_t digest_advect      = 0;
     mutable uint64_t digest_bulk_flux   = 0;
@@ -232,3 +240,25 @@ private:
     mutable std::vector<uint8_t> cmask_;              // sealed/breach/live table
     mutable std::vector<int32_t> coeffE_, coeffS_;    // donor-cell face coeffs
 };
+
+// ---------------------------------------------------------------------------
+// EOS P6.2 — standalone CPU reference for the fused SL-advection substep loop
+// (docs/eos_p6_gpu_alignment_review.md §4 row P6.2). Replays EXACTLY the
+// step-1a/1b/1f chain of EOSSolver::step for a GIVEN substep count: the
+// per-tick cmask build, then n_sub x [src snapshot -> fused 3-field backtrace
+// (vx, vy, T) -> zero-u-on-solid / T:=0-on-vacuum], IN PLACE on
+// wind_x/wind_y/temperature. Calls the SAME file-local eos_backtrace_sample3_q
+// the real solver uses (one routine, zero drift), and returns the SAME chained
+// FNV digest step() stores in digest_advect at its last substep — so a gate
+// that reconstructs step-1-entry state + n_sub can assert
+// eos_sl_advect_reference(...) == solver.digest_advect, then hold the GPU port
+// to the identical bytes. The interleaved bulk flux (step 1d, P6.1) neither
+// reads nor writes u/T, so replaying the advection substeps back-to-back is
+// arithmetically identical to the real interleaved loop. Test entry only —
+// the live path remains EOSSolver::step.
+// ---------------------------------------------------------------------------
+uint64_t eos_sl_advect_reference(
+    int32_t* wind_x, int32_t* wind_y, int32_t* temperature,
+    const bool* solid, const bool* is_vacuum,
+    const float* dyn_permeability,
+    int h, int w, float dt, int n_sub);

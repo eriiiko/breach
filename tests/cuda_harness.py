@@ -30,8 +30,14 @@ CUDA_BUILD_DIR = ROOT / "cpp" / "build_cuda"
 # BREACH_CUDA_PYTHON on any machine whose CUDA build was produced by a different
 # interpreter (e.g. the Lenovo/Ada, where the `data` miniconda env is cp312). The
 # X-ARCH digest runner reuses this same interpreter.
-CUDA_PYTHON = Path(os.environ.get(
-    "BREACH_CUDA_PYTHON", r"C:\Users\steen\anaconda3\python.exe"))
+# P6.2: when the anaconda default does not exist on this machine (the Lenovo has
+# only miniconda), fall back to the Lenovo `data` env (cp312 — matches its
+# build_cuda_lenovo.bat build) so the now-ACTIVE per-kernel gates run without a
+# per-shell env var. BREACH_CUDA_PYTHON still overrides everything.
+_CUDA_PYTHON_DEFAULT = r"C:\Users\steen\anaconda3\python.exe"
+if not Path(_CUDA_PYTHON_DEFAULT).exists():
+    _CUDA_PYTHON_DEFAULT = r"C:\Users\steen\miniconda3\envs\data\python.exe"
+CUDA_PYTHON = Path(os.environ.get("BREACH_CUDA_PYTHON", _CUDA_PYTHON_DEFAULT))
 
 
 def cuda_pyd() -> Path | None:
@@ -82,9 +88,12 @@ def cuda_dll_dir() -> Path | None:
 #
 # (The retired wave/atmosphere kernels have no key: P6.0 DELETED cuda_wave.cu /
 # cuda_atmosphere.cu and their gates instead of unpinning them.)
+# P6.2 (eos-p6-2-sl-advection): "sl_advection" REMOVED — the fused 3-field SL
+# advection (cuda_sl_advection.cu) re-proved bit-identical via the P6.2 gate
+# (tests/cuda_p62_check.py: isolated synthetic A/B + full blast+venting
+# per-tick digest_advect trajectory vs the CPU solver).
 EOS_P6_PENDING_KERNELS = {
     "bulk_flux",
-    "sl_advection",
     "mg_solve",
     "kick_compression",
     "eos_step",
@@ -95,8 +104,21 @@ EOS_P6_PENDING_KERNELS = {
 }
 
 # The full P6 key universe (NEVER shrinks — used to reject typo'd kernel names,
-# which would otherwise silently read as "already unpinned").
-_P6_KERNEL_KEYS = frozenset(EOS_P6_PENDING_KERNELS)
+# which would otherwise silently read as "already unpinned"). P6.2 fix: this
+# must be the EXPLICIT universe, not frozenset(EOS_P6_PENDING_KERNELS) — the
+# derived form silently shrank with the pending set, so the FIRST key removal
+# would have turned every unpinned kernel's own gate into a ValueError.
+_P6_KERNEL_KEYS = frozenset({
+    "bulk_flux",
+    "sl_advection",
+    "mg_solve",
+    "kick_compression",
+    "eos_step",
+    "conduction",
+    "trace_smoke",
+    "fire",
+    "combustion",
+})
 
 
 def cuda_available(kernel: str | None = None) -> bool:

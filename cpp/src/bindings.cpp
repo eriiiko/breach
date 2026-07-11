@@ -20,6 +20,7 @@
 #include "cuda_water.h"        // CUDA-S3: GPU water solver + backend flag
 #include "cuda_smoke.h"        // CUDA-S4a: GPU smoke solver + backend flag
 #include "cuda_fire.h"         // CUDA-S6: GPU fire solver + backend flag
+#include "cuda_sl_advection.h" // EOS P6.2: fused 3-field SL advection + backend flag
 // CUDA-S5 cuda_wave.h / CUDA-S7 cuda_atmosphere.h RETIRED in EOS P6.0 — the
 // wave+diffuse solvers they mirrored were replaced by the compressible EOS
 // solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
@@ -410,6 +411,43 @@ PYBIND11_MODULE(breach_physics, m) {
     // P3 (the compressible EOS solve replaced wave+diffuse), so the kernel had
     // no live dispatch and no non-stale caller
     // (docs/eos_p6_gpu_alignment_review.md §1.11).
+
+    // EOS P6.2: the GPU fused 3-field SL advection (velocity self-advection +
+    // gas-T advection — EOSSolver::step's substep-loop steps 1a/1b/1f).
+    // cuda_eos_sl_advect runs the FULL substep-loop advection chain for one
+    // tick IN PLACE on wind_x/wind_y/temperature and returns the chained FNV
+    // digest (== EOSSolver.digest_advect for the same inputs/schedule). Used
+    // by the P6.2 bit-identity gate — NOT a live game path; the engine
+    // dispatch flip is P6.5 (the backend flag below exists for that wiring).
+    m.def("set_sl_advection_backend",
+          [](bool use_cuda) { breach_cuda::set_sl_advection_backend_cuda(use_cuda); },
+          py::arg("use_cuda"),
+          "Switch the EOS SL-advection pass to the GPU (True) or CPU (False). "
+          "No dispatch site consumes this until P6.5 wires eos.step's GPU path.");
+    m.def("get_sl_advection_backend",
+          []() { return breach_cuda::sl_advection_backend_is_cuda(); },
+          "True if the EOS SL-advection pass is flagged for the GPU.");
+    m.def("cuda_eos_sl_advect",
+          [](py::array_t<int32_t> wind_x, py::array_t<int32_t> wind_y,
+             py::array_t<int32_t> temperature,
+             py::array_t<bool> solid, py::array_t<bool> is_vacuum,
+             py::array_t<float> dyn_permeability,
+             float dt, int n_sub) -> uint64_t {
+              auto [wx, h, w]    = get_2d(wind_x);
+              auto [wy, h2, w2]  = get_2d(wind_y);
+              auto [t, h3, w3]   = get_2d(temperature);
+              auto [sol, h4, w4] = get_2d_const(solid);
+              auto [vac, h5, w5] = get_2d_const(is_vacuum);
+              auto [pm, h6, w6]  = get_2d_const(dyn_permeability);
+              return breach_cuda::eos_sl_advect(wx, wy, t, sol, vac, pm,
+                                                h, w, dt, n_sub);
+          },
+          py::arg("wind_x"), py::arg("wind_y"), py::arg("temperature"),
+          py::arg("solid"), py::arg("is_vacuum"), py::arg("dyn_permeability"),
+          py::arg("dt"), py::arg("n_sub"),
+          "P6.2 isolated: run the GPU fused SL-advection substep chain in place "
+          "on wind_x/wind_y/temperature (bit-identical to eos_sl_advect_ref) and "
+          "return the chained FNV digest (== EOSSolver.digest_advect).");
 #else
     m.attr("HAS_CUDA") = false;
 #endif
@@ -1017,7 +1055,40 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("dbg_probe_idx",          &EOSSolver::dbg_probe_idx)
         .def_readonly("dbg_T_pre_advect",        &EOSSolver::dbg_T_pre_advect)
         .def_readonly("dbg_T_post_advect",       &EOSSolver::dbg_T_post_advect)
-        .def_readonly("dbg_T_post_compression",  &EOSSolver::dbg_T_post_compression);
+        .def_readonly("dbg_T_post_compression",  &EOSSolver::dbg_T_post_compression)
+        // EOS P6.2: the substep count the last step() ran (gate telemetry —
+        // lets the per-kernel digest gates replay the isolated advection on
+        // the exact schedule the solver derived).
+        .def_readonly("dbg_last_n_sub",          &EOSSolver::dbg_last_n_sub);
+
+    // EOS P6.2: the standalone CPU reference for the fused SL-advection
+    // substep chain (eos_solver.cpp eos_sl_advect_reference — the SAME
+    // file-local backtrace routine EOSSolver::step calls). Runs IN PLACE on
+    // wind_x/wind_y/temperature and returns the chained FNV digest, ==
+    // EOSSolver.digest_advect when fed step-1-entry state + dbg_last_n_sub.
+    // Test entry only (both CPU and CUDA builds) — the live path is
+    // EOSSolver::step inside PhysicsEngine::run_substeps.
+    m.def("eos_sl_advect_ref",
+          [](py::array_t<int32_t> wind_x, py::array_t<int32_t> wind_y,
+             py::array_t<int32_t> temperature,
+             py::array_t<bool> solid, py::array_t<bool> is_vacuum,
+             py::array_t<float> dyn_permeability,
+             float dt, int n_sub) -> uint64_t {
+              auto [wx, h, w]    = get_2d(wind_x);
+              auto [wy, h2, w2]  = get_2d(wind_y);
+              auto [t, h3, w3]   = get_2d(temperature);
+              auto [sol, h4, w4] = get_2d_const(solid);
+              auto [vac, h5, w5] = get_2d_const(is_vacuum);
+              auto [pm, h6, w6]  = get_2d_const(dyn_permeability);
+              return eos_sl_advect_reference(wx, wy, t, sol, vac, pm,
+                                             h, w, dt, n_sub);
+          },
+          py::arg("wind_x"), py::arg("wind_y"), py::arg("temperature"),
+          py::arg("solid"), py::arg("is_vacuum"), py::arg("dyn_permeability"),
+          py::arg("dt"), py::arg("n_sub"),
+          "P6.2 CPU reference: replay EOSSolver::step's SL-advection substep "
+          "chain in place on wind_x/wind_y/temperature; returns the chained "
+          "FNV digest (== EOSSolver.digest_advect for the same inputs).");
 
     // --- CombustionSolver (EOS refactor P4 — combustion on real O2, design
     //     §5). Own pass, run once per tick AFTER eos.step materializes P. ---

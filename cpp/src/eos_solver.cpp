@@ -343,6 +343,7 @@ void EOSSolver::step(
     int n_sub = std::max(1, ceil_div(
         (q16)std::min<int64_t>(numer_wide, (int64_t)INT32_MAX), cfl_dx_q));
     if (n_sub > N_SUB_MAX) n_sub = N_SUB_MAX;
+    dbg_last_n_sub = n_sub;   // P6.2 telemetry (gate input reconstruction)
     const double dt_s_d = dt_d / (double)n_sub;
 
     // ---- per-tick caches for the substep loop (micro-opt, all
@@ -986,4 +987,67 @@ void EOSSolver::step(
     // 5. P := P_new — materialized ONCE (the `atmosphere` alias).
     // ======================================================================
     for (int i = 0; i < n; ++i) atmosphere[i] = L0.P[i];
+}
+
+// ===========================================================================
+// EOS P6.2 — standalone CPU reference for the fused SL-advection substep loop
+// (declared in eos_solver.h; rationale there). A VERBATIM replay of step()'s
+// step-1a/1b/1f chain for a GIVEN n_sub:
+//   * cmask build     — the same solid/perm<=0 -> 0, vacuum -> 1, live -> 2
+//                       table step() builds once per tick;
+//   * per substep     — src snapshot of (vx, vy, T), then the per-cell fused
+//                       backtrace via the SAME file-local
+//                       eos_backtrace_sample3_q (one routine, zero drift),
+//                       solid cells zero u / keep T, vacuum destinations
+//                       force T := 0;
+//   * dt_s_q          — quantize((double)dt / (double)n_sub), exactly the
+//                       dt_d/dt_s_d fold step() performs.
+// The step-1f "zero u on solid" pass is subsumed: the advection pass itself
+// zeroes solid cells' u, and nothing between (bulk flux writes only gas
+// planes) re-touches u — replicated here by construction.
+// Returns the chained FNV digest over (T, then wy, then wx) — byte-for-byte
+// the digest_advect expression at step()'s last substep.
+// ===========================================================================
+uint64_t eos_sl_advect_reference(
+        int32_t* wind_x, int32_t* wind_y, int32_t* temperature,
+        const bool* solid, const bool* is_vacuum,
+        const float* dyn_permeability,
+        int h, int w, float dt, int n_sub) {
+    const int n = h * w;
+    if (n <= 0 || dt <= 0.0f || n_sub < 1) return 0;
+
+    // cmask (verbatim: step()'s per-tick corner/march table).
+    std::vector<uint8_t> cmask(n, 0);
+    for (int i = 0; i < n; ++i) {
+        if (solid[i] || dyn_permeability[i] <= 0.0f) cmask[i] = 0;
+        else if (is_vacuum[i]) cmask[i] = 1;
+        else cmask[i] = 2;
+    }
+
+    std::vector<int32_t> vx_src(n), vy_src(n), t_src(n);
+    const double dt_s_d = (double)dt / (double)n_sub;   // == step()'s dt_d/n_sub
+    for (int s = 0; s < n_sub; ++s) {
+        const q16 dt_s_q = quantize(dt_s_d);
+        for (int i = 0; i < n; ++i) {
+            vx_src[i] = wind_x[i];
+            vy_src[i] = wind_y[i];
+            t_src[i]  = temperature[i];
+        }
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const int i = y * w + x;
+                if (solid[i]) { wind_x[i] = 0; wind_y[i] = 0; continue; }
+                const int32_t bx_q = -mul_q16(vx_src[i], dt_s_q);
+                const int32_t by_q = -mul_q16(vy_src[i], dt_s_q);
+                const FusedSample fs = eos_backtrace_sample3_q(
+                    vx_src.data(), vy_src.data(), t_src.data(),
+                    x, y, bx_q, by_q,
+                    cmask.data(), h, w);
+                wind_x[i] = fs.vx;
+                wind_y[i] = fs.vy;
+                temperature[i] = is_vacuum[i] ? 0 : fs.t;
+            }
+        }
+    }
+    return digest_of(wind_x, n, digest_of(wind_y, n, digest_of(temperature, n, 0)));
 }

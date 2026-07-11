@@ -71,7 +71,8 @@ if(BREACH_CUDA)
         src/cuda_raycaster.cu      # S2 raycaster march (heat bit-identical)
         src/cuda_water.cu          # S3 water solver (pipe model, bit-identical)
         src/cuda_smoke.cu          # S4a smoke solver (diffusion + SL advection)
-        src/cuda_fire.cu)          # S6 fire solver (logistic + plume + smoke scatter + burn)
+        src/cuda_fire.cu           # S6 fire solver (logistic + plume + smoke scatter + burn)
+        src/cuda_sl_advection.cu)  # EOS P6.2 fused 3-field SL advection (u self + gas T)
     # S5 cuda_wave.cu / S7 cuda_atmosphere.cu RETIRED in EOS P6.0 — their CPU
     # solvers (wave_substep / diffuse_solve) were replaced by the compressible
     # EOS solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
