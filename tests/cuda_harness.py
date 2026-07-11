@@ -101,8 +101,12 @@ def cuda_dll_dir() -> Path | None:
 # every rail forced — U_MAX, c_LOCAL, T_MAX_PHYS, T_MIN floor, work clamp,
 # RAD_SAFE guard — plus a long blast+venting per-tick digest_velocity/
 # digest_compression trajectory vs the CPU solver, rail COUNTERS bit-matched).
+# P6.3 (eos-p6-3-mg-solve): "mg_solve" REMOVED — the multigrid pressure solve
+# (cuda_mg_solve.cu: per-color RB-GS, gather transfers, fused coarse tail)
+# re-proved bit-identical via the P6.3 gate (tests/cuda_mg_solve_check.py:
+# isolated synthetic/edge/overflow-stress A/B + full breach-to-vacuum+blast
+# per-tick digest_helmholtz trajectory vs the CPU solver).
 EOS_P6_PENDING_KERNELS = {
-    "mg_solve",
     "eos_step",
     "conduction",
     "trace_smoke",

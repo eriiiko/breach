@@ -243,7 +243,6 @@ void EOSSolver::step(
     const q16 u_max_q      = quantize((double)U_MAX);        // v2.4 rail
     const q16 c_q        = quantize((double)C);
     const double gamma_d = (double)adiabatic_index;
-    const q16 gamma_q    = quantize(gamma_d);
     const q16 gamma_m1_q = quantize(gamma_d - 1.0);
     const double dt_d    = (double)dt;
     const q16 dt_q       = quantize(dt_d);
@@ -253,11 +252,6 @@ void EOSSolver::step(
     // does not fit q16's ±32768 value range — design §3.2 step 4).
     const double K_d = (double)c_max * (double)c_max / gamma_d;
     const int64_t K_raw = (int64_t)(K_d * 65536.0 + 0.5);
-    // K·dt²/dx² — the operator's geometric factor (real ≈1,006 at bench
-    // dt/dx; ×(γp*≈1.4 ambient) reproduces the pre-v2.2 coupling ≈1,409 —
-    // the round-trip product D-A preserves by construction).
-    const int64_t Kdt2dx2_raw =
-        (int64_t)(K_d * dt_d * dt_d / (dx_d * dx_d) * 65536.0 + 0.5);
     // K·dt (momentum-kick stage 1, real ≈2,680 at the bench dt).
     const int64_t Kdt_raw = mul128_shr(K_raw, (int64_t)dt_q, 16);
 
@@ -492,360 +486,17 @@ void EOSSolver::step(
     //    diag → 1, rhs → 0 ⇒ P → 0 — the §3.1-property-2 degeneracy, free.
     // ======================================================================
 
-    // --- level count (fixed by grid size — deterministic) ------------------
-    int n_levels = 1;
-    {
-        int lh = h, lw = w;
-        while (std::min(lh, lw) > mg_min_dim && n_levels < 9) {
-            lh = (lh + 1) >> 1;
-            lw = (lw + 1) >> 1;
-            ++n_levels;
-        }
-    }
-    if (!use_multigrid) n_levels = 1;
-    if ((int)levels_.size() < n_levels) levels_.resize(n_levels);
-
-    // --- build level 0 from the fine fields (v2.2-final SYMMETRIC form) ----
-    // Row i of the analytic operator, divided by aK_i = (γ·p*_i)·K·dt²/dx²:
-    //   m_i·P_i + Σ_f g_f·(P_i − P_nb) = m_i·rhs_i,   m_i = 1/aK_i
-    // Same solution, SPD system (mass + symmetric face Laplacian) — the form
-    // the variational multigrid below cannot amplify. Near-vacuum rows have
-    // aK→0 ⇒ m→huge (clamped) ⇒ P pinned to rhs (→0): §3.1 property 2 in
-    // mass form. WORK SCALE: row products are held at "F8" precision —
-    // (coeff_raw·field_raw)>>8, eight fractional bits finer than Q16.16 —
-    // so the weak ambient mass anchor (m ≈ 1/1409) still registers sub-count
-    // residuals (a plain >>16 truncated them to zero — an invisible-DC-error
-    // floor of ~0.02 atm the gate measured as drift).
-    {
-        MGLevel& L = levels_[0];
-        L.h = h; L.w = w;
-        L.excl.assign(n, 0);
-        L.m.assign(n, 0);
-        L.gE.assign(n, 0);
-        L.gS.assign(n, 0);
-        L.recip.assign(n, 0);
-        L.P.assign(n, 0);
-        L.b.assign(n, 0);
-        L.res.assign(n, 0);
-        for (int i = 0; i < n; ++i) {
-            if (solid[i]) L.excl[i] = 2;
-            else if (is_vacuum[i]) L.excl[i] = 1;
-        }
-        // Mass clamp: [1, 2^38] raw. The cap keeps the 128-bit mass-term
-        // product (m·ΔP)>>8 inside int64 (2^38·2^31/2^8 = 2^61) while still
-        // dominating any conductance by >2^20 — a capped-mass row pins P to
-        // rhs within ~1e-6 relative. The floor keeps a joint-spike row
-        // (aK huge ⇒ m underflows) present in the system at all.
-        const int64_t M_CAP = ((int64_t)1) << 38;
-        for (int i = 0; i < n; ++i) {
-            if (L.excl[i] != 0) continue;
-            const int64_t gp_raw = mul128_shr((int64_t)gamma_q, (int64_t)pstar_[i], 16);
-            int64_t aK = mul128_shr(gp_raw, Kdt2dx2_raw, 16);
-            if (aK < 1) aK = 1;
-            int64_t m = (((int64_t)1) << 32) / aK;   // 1/aK at Q16.16 raw
-            if (m < 1) m = 1;
-            if (m > M_CAP) m = M_CAP;
-            L.m[i] = m;
-            // rhs_i = p* − (γ·p*)·dt·div(û*) (int64 raw); b = m·rhs @F8.
-            const int64_t gp_dt = mul128_shr(gp_raw, (int64_t)dt_q, 16);
-            const int64_t rhs_raw = (int64_t)pstar_[i]
-                                  - mul128_shr(gp_dt, (int64_t)div_u_[i], 16);
-            L.b[i] = mul128_shr(m, rhs_raw, 8);
-            // Warm start from the PREVIOUS tick's solved P (`p_prev` — copied
-            // from `atmosphere` at step 0): it already carries the room-scale
-            // acoustic structure the smoother is slowest to build, worth ~one
-            // V-cycle of error (measured at the MG gate; p* was the earlier,
-            // weaker choice).
-            L.P[i] = p_prev[i];
-        }
-        // Face conductances g = perm/N̂ (the 1/N̂ divide folded BEFORE any
-        // multiply by P — the documented joint-case order; arithmetic-N̂ IS
-        // the harmonic mean of the two cells' 1/N conductivities).
-        // N_FLOOR_SOLVER applies HERE ONLY (never to m — §3.1 property 2).
-        for (int y = 0; y < h; ++y) {
-            const int row = y * w;
-            for (int x = 0; x < w; ++x) {
-                const int i = row + x;
-                if (x < w - 1) {
-                    const int j = i + 1;
-                    if (L.excl[i] != 2 && L.excl[j] != 2) {
-                        const float pf = std::min(dyn_permeability[i], dyn_permeability[j]);
-                        if (pf > 0.0f) {
-                            q16 nhat = (q16)(((int64_t)n_total_[i] + n_total_[j]) >> 1);
-                            if (nhat < n_floor_q) nhat = n_floor_q;
-                            L.gE[i] = mul_q16(quantize((double)pf), reciprocal_q16(nhat));
-                        }
-                    }
-                }
-                if (y < h - 1) {
-                    const int j = i + w;
-                    if (L.excl[i] != 2 && L.excl[j] != 2) {
-                        const float pf = std::min(dyn_permeability[i], dyn_permeability[j]);
-                        if (pf > 0.0f) {
-                            q16 nhat = (q16)(((int64_t)n_total_[i] + n_total_[j]) >> 1);
-                            if (nhat < n_floor_q) nhat = n_floor_q;
-                            L.gS[i] = mul_q16(quantize((double)pf), reciprocal_q16(nhat));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // --- build coarse levels: exactly-variational PC Galerkin --------------
-    // Masses SUM (aggregate cell mass), face conductances SUM across the
-    // (≤2) fine faces crossing each coarse interface (interior fine faces
-    // cancel — this IS PᵀAP for piecewise-constant transfers, so the coarse
-    // correction is an energy-norm projection: structurally convergent at
-    // any depth). Coarse Dirichlet rule (v2.2, explicit): vacuum iff ALL
-    // children vacuum; all-non-regular -> excluded; any regular -> regular.
-    for (int lv = 1; lv < n_levels; ++lv) {
-        const MGLevel& F = levels_[lv - 1];
-        MGLevel& Cl = levels_[lv];
-        Cl.h = (F.h + 1) >> 1;
-        Cl.w = (F.w + 1) >> 1;
-        const int cn = Cl.h * Cl.w;
-        Cl.excl.assign(cn, 0);
-        Cl.m.assign(cn, 0);
-        Cl.gE.assign(cn, 0);
-        Cl.gS.assign(cn, 0);
-        Cl.recip.assign(cn, 0);
-        Cl.P.assign(cn, 0);
-        Cl.b.assign(cn, 0);
-        Cl.res.assign(cn, 0);
-        const int64_t M_CAP_L = ((int64_t)1) << 44;   // level cap (sums grow ×4/level)
-        for (int Y = 0; Y < Cl.h; ++Y) {
-            for (int X = 0; X < Cl.w; ++X) {
-                const int A = Y * Cl.w + X;
-                int n_child = 0, n_vac = 0, n_sol = 0;
-                int64_t m_sum = 0;
-                for (int dy = 0; dy < 2; ++dy) {
-                    for (int dxx = 0; dxx < 2; ++dxx) {
-                        const int fy = 2 * Y + dy, fx = 2 * X + dxx;
-                        if (fy >= F.h || fx >= F.w) continue;
-                        const int fi = fy * F.w + fx;
-                        ++n_child;
-                        if (F.excl[fi] == 1) ++n_vac;
-                        else if (F.excl[fi] == 2) ++n_sol;
-                        else m_sum += F.m[fi];
-                    }
-                }
-                if (n_vac == n_child) Cl.excl[A] = 1;
-                else if (n_vac + n_sol == n_child) Cl.excl[A] = 2;
-                else {
-                    Cl.excl[A] = 0;
-                    // GALERKIN DIRICHLET ANCHOR (found by the gate's own
-                    // breach test — the first PC-Galerkin cut dropped it and
-                    // MEASURABLY amplified ×7/cycle at the breach): every
-                    // fine face from a REGULAR child to a DIRICHLET fine
-                    // cell couples that child to the fixed value 0 — in
-                    // PᵀAP it lands on the coarse DIAGONAL. It acts exactly
-                    // like extra mass with zero rhs, and on coarse levels b
-                    // comes purely from restriction, so folding it into m
-                    // is the exact Galerkin term (no new field needed).
-                    int64_t anchor = 0;
-                    for (int dy = 0; dy < 2; ++dy) {
-                        for (int dxx = 0; dxx < 2; ++dxx) {
-                            const int fy = 2 * Y + dy, fx = 2 * X + dxx;
-                            if (fy >= F.h || fx >= F.w) continue;
-                            const int fi = fy * F.w + fx;
-                            if (F.excl[fi] != 0) continue;
-                            if (fx + 1 < F.w && F.excl[fi + 1] == 1)   anchor += F.gE[fi];
-                            if (fx > 0 && F.excl[fi - 1] == 1)         anchor += F.gE[fi - 1];
-                            if (fy + 1 < F.h && F.excl[fi + F.w] == 1) anchor += F.gS[fi];
-                            if (fy > 0 && F.excl[fi - F.w] == 1)       anchor += F.gS[fi - F.w];
-                        }
-                    }
-                    Cl.m[A] = std::min(m_sum + anchor, M_CAP_L);
-                }
-            }
-        }
-        for (int Y = 0; Y < Cl.h; ++Y) {
-            for (int X = 0; X < Cl.w; ++X) {
-                const int A = Y * Cl.w + X;
-                if (X < Cl.w - 1) {
-                    // Coarse face = SUM of crossing fine faces whose BOTH
-                    // endpoints are regular (a regular->Dirichlet crossing
-                    // face is the anchor term above, NOT inter-cell coupling).
-                    int64_t gsum = 0;
-                    const int fx = 2 * X + 1;   // fine face fx -> fx+1
-                    for (int dy = 0; dy < 2; ++dy) {
-                        const int fy = 2 * Y + dy;
-                        if (fy >= F.h || fx + 1 >= F.w) continue;
-                        const int fi = fy * F.w + fx;
-                        if (F.excl[fi] == 0 && F.excl[fi + 1] == 0)
-                            gsum += F.gE[fi];
-                    }
-                    Cl.gE[A] = gsum;            // SUM (variational), not average
-                }
-                if (Y < Cl.h - 1) {
-                    int64_t gsum = 0;
-                    const int fy = 2 * Y + 1;
-                    for (int dxx = 0; dxx < 2; ++dxx) {
-                        const int fx = 2 * X + dxx;
-                        if (fx >= F.w || fy + 1 >= F.h) continue;
-                        const int fi = fy * F.w + fx;
-                        if (F.excl[fi] == 0 && F.excl[fi + F.w] == 0)
-                            gsum += F.gS[fi];
-                    }
-                    Cl.gS[A] = gsum;
-                }
-            }
-        }
-    }
-
-    // --- per-level diagonal reciprocals (ONE wide divide/cell/tick/level) --
-    for (int lv = 0; lv < n_levels; ++lv) {
-        MGLevel& L = levels_[lv];
-        const int lh = L.h, lw = L.w;
-        for (int y = 0; y < lh; ++y) {
-            const int row = y * lw;
-            for (int x = 0; x < lw; ++x) {
-                const int i = row + x;
-                if (L.excl[i] != 0) { L.recip[i] = 0; continue; }
-                int64_t d_raw = L.m[i];
-                if (x < lw - 1 && L.excl[i + 1] != 2) d_raw += L.gE[i];
-                if (x > 0 && L.excl[i - 1] != 2)      d_raw += L.gE[i - 1];
-                if (y < lh - 1 && L.excl[i + lw] != 2) d_raw += L.gS[i];
-                if (y > 0 && L.excl[i - lw] != 2)      d_raw += L.gS[i - lw];
-                if (d_raw < 1) d_raw = 1;
-                L.recip[i] = (((int64_t)1) << 48) / d_raw;   // Q.32 reciprocal
-            }
-        }
-    }
-
-    // --- the RB-GS smoother (SPD form, residual form, WIDE flux — D-C) -----
-    // inc(P counts) = r8·(2^48/d) >> 40  ==  (r8·2^8)/d.
-    auto smooth = [&](MGLevel& L, int sweeps) {
-        const int lh = L.h, lw = L.w;
-        for (int it = 0; it < sweeps; ++it) {
-            for (int color = 0; color < 2; ++color) {
-                for (int y = 0; y < lh; ++y) {
-                    const int row = y * lw;
-                    for (int x = 0; x < lw; ++x) {
-                        if (((x + y) & 1) != color) continue;
-                        const int i = row + x;
-                        if (L.excl[i] != 0) continue;
-                        const int32_t pi = L.P[i];
-                        // (A·P)@F8 = m·P + Σ g·(P_i − P_nb), each product >>8.
-                        int64_t ap = mul128_shr(L.m[i], (int64_t)pi, 8);
-                        if (x < lw - 1 && L.excl[i + 1] != 2) {
-                            const int32_t pn = (L.excl[i + 1] == 1) ? 0 : L.P[i + 1];
-                            ap += mul128_shr(L.gE[i], (int64_t)(pi - pn), 8);
-                        }
-                        if (x > 0 && L.excl[i - 1] != 2) {
-                            const int32_t pn = (L.excl[i - 1] == 1) ? 0 : L.P[i - 1];
-                            ap += mul128_shr(L.gE[i - 1], (int64_t)(pi - pn), 8);
-                        }
-                        if (y < lh - 1 && L.excl[i + lw] != 2) {
-                            const int32_t pn = (L.excl[i + lw] == 1) ? 0 : L.P[i + lw];
-                            ap += mul128_shr(L.gS[i], (int64_t)(pi - pn), 8);
-                        }
-                        if (y > 0 && L.excl[i - lw] != 2) {
-                            const int32_t pn = (L.excl[i - lw] == 1) ? 0 : L.P[i - lw];
-                            ap += mul128_shr(L.gS[i - lw], (int64_t)(pi - pn), 8);
-                        }
-                        const int64_t r8 = L.b[i] - ap;
-                        const int64_t inc = mul128_shr(r8, L.recip[i], 40);
-                        L.P[i] = (int32_t)((int64_t)pi + inc);
-                    }
-                }
-            }
-        }
-    };
-
-    // --- residual r@F8 = b − A·P (into L.res) -------------------------------
-    auto residual = [&](MGLevel& L) {
-        const int lh = L.h, lw = L.w;
-        for (int y = 0; y < lh; ++y) {
-            const int row = y * lw;
-            for (int x = 0; x < lw; ++x) {
-                const int i = row + x;
-                if (L.excl[i] != 0) { L.res[i] = 0; continue; }
-                const int32_t pi = L.P[i];
-                int64_t ap = mul128_shr(L.m[i], (int64_t)pi, 8);
-                if (x < lw - 1 && L.excl[i + 1] != 2) {
-                    const int32_t pn = (L.excl[i + 1] == 1) ? 0 : L.P[i + 1];
-                    ap += mul128_shr(L.gE[i], (int64_t)(pi - pn), 8);
-                }
-                if (x > 0 && L.excl[i - 1] != 2) {
-                    const int32_t pn = (L.excl[i - 1] == 1) ? 0 : L.P[i - 1];
-                    ap += mul128_shr(L.gE[i - 1], (int64_t)(pi - pn), 8);
-                }
-                if (y < lh - 1 && L.excl[i + lw] != 2) {
-                    const int32_t pn = (L.excl[i + lw] == 1) ? 0 : L.P[i + lw];
-                    ap += mul128_shr(L.gS[i], (int64_t)(pi - pn), 8);
-                }
-                if (y > 0 && L.excl[i - lw] != 2) {
-                    const int32_t pn = (L.excl[i - lw] == 1) ? 0 : L.P[i - lw];
-                    ap += mul128_shr(L.gS[i - lw], (int64_t)(pi - pn), 8);
-                }
-                L.res[i] = L.b[i] - ap;
-            }
-        }
-    };
-
-    // --- restriction: residual SUM over children (the PC transpose) --------
-    auto restrict_res = [&](const MGLevel& F, MGLevel& Cl) {
-        for (int Y = 0; Y < Cl.h; ++Y) {
-            for (int X = 0; X < Cl.w; ++X) {
-                const int A = Y * Cl.w + X;
-                Cl.P[A] = 0;                     // corrections start at 0
-                if (Cl.excl[A] != 0) { Cl.b[A] = 0; continue; }
-                int64_t rsum = 0;
-                for (int dy = 0; dy < 2; ++dy) {
-                    for (int dxx = 0; dxx < 2; ++dxx) {
-                        const int fy = 2 * Y + dy, fx = 2 * X + dxx;
-                        if (fy >= F.h || fx >= F.w) continue;
-                        const int fi = fy * F.w + fx;
-                        if (F.excl[fi] == 0) rsum += F.res[fi];
-                    }
-                }
-                Cl.b[A] = rsum;                  // SUM — variational (PᵀAP pair)
-            }
-        }
-    };
-
-    // --- prolongation: piecewise-constant injection (the exact transpose) --
-    // (The spec's named bilinear prolongation paired NON-variationally with
-    // the re-discretized coarse operator — the deep pyramid MEASURABLY
-    // amplified (more cycles = worse). PC injection + SUM restriction is the
-    // exact PᵀAP pair; the schedule freeze documents this deviation.)
-    auto prolong_correct = [&](MGLevel& F, const MGLevel& Cl) {
-        for (int fy = 0; fy < F.h; ++fy) {
-            for (int fx = 0; fx < F.w; ++fx) {
-                const int fi = fy * F.w + fx;
-                if (F.excl[fi] != 0) continue;
-                const int A = (fy >> 1) * Cl.w + (fx >> 1);
-                if (Cl.excl[A] != 0) continue;
-                F.P[fi] = (int32_t)((int64_t)F.P[fi] + (int64_t)Cl.P[A]);
-            }
-        }
-    };
-
-    // --- the fixed-schedule V-cycle -----------------------------------------
-    if (use_multigrid && n_levels > 1) {
-        for (int cyc = 0; cyc < mg_cycles; ++cyc) {
-            for (int lv = 0; lv < n_levels - 1; ++lv) {
-                smooth(levels_[lv], mg_nu1);
-                residual(levels_[lv]);
-                restrict_res(levels_[lv], levels_[lv + 1]);
-            }
-            smooth(levels_[n_levels - 1], mg_coarsest_sweeps);
-            for (int lv = n_levels - 2; lv >= 0; --lv) {
-                prolong_correct(levels_[lv], levels_[lv + 1]);
-                smooth(levels_[lv], mg_nu2);
-            }
-        }
-    } else {
-        smooth(levels_[0], S);   // flat A/B reference path
-    }
-
+    // EOS P6.3: the solve body lives in mg_build_levels + mg_run_solve_cpu
+    // (PURE CODE MOTION — identical arithmetic, identical order; the header
+    // has the split rationale) so the CUDA port's host-side hierarchy build
+    // and the standalone eos_mg_solve_reference drive the SAME routines as
+    // this live path.
+    const int n_levels = mg_build_levels(pstar_.data(), div_u_.data(),
+                                         n_total_.data(), p_prev,
+                                         solid, is_vacuum, dyn_permeability,
+                                         h, w, dt);
+    mg_run_solve_cpu(n_levels);
     MGLevel& L0 = levels_[0];
-    for (int i = 0; i < n; ++i) {
-        if (L0.excl[i] != 0) L0.P[i] = 0;    // vacuum Dirichlet + solid zero
-    }
-    digest_helmholtz = digest_of(L0.P.data(), n, 0);
 
     // ======================================================================
     // 4. u -= dt·K·grad(P)/N̂ (v2.2: K MANDATORY — omitting it IS the
@@ -988,6 +639,405 @@ void EOSSolver::step(
     // 5. P := P_new — materialized ONCE (the `atmosphere` alias).
     // ======================================================================
     for (int i = 0; i < n; ++i) atmosphere[i] = L0.P[i];
+}
+
+// ===========================================================================
+// EOS P6.3 — the pressure solve's two internal stages, moved VERBATIM out of
+// step() (pure code motion). The ONLY textual deltas vs the pre-P6.3 inline
+// body: (a) the solve inputs arrive as parameters instead of the member
+// caches — the live call passes exactly pstar_/div_u_/n_total_.data() and the
+// engine's p_prev — and (b) the per-tick scalar folds consumed here
+// (n_floor_q, gamma_q, dt_q, Kdt2dx2_raw) are re-derived from the SAME double
+// expressions step() folds, in this same /fp:strict TU — identical bits by
+// determinism of quantize/IEEE double. Split rationale in the header: the
+// CUDA binding calls mg_build_levels then hands mg_levels() to the device
+// V-cycle (cuda_mg_solve.cu); eos_mg_solve_reference calls both.
+// ===========================================================================
+
+int EOSSolver::mg_build_levels(
+        const int32_t* pstar, const int32_t* div_u, const int32_t* n_total,
+        const int32_t* p_prev,
+        const bool* solid, const bool* is_vacuum,
+        const float* dyn_permeability,
+        int h, int w, float dt) const {
+    const int n = h * w;
+    if (n <= 0 || dt <= 0.0f) return 0;
+
+    // Per-tick scalar folds (identical expressions to step()'s hoists).
+    const q16 n_floor_q  = quantize((double)N_FLOOR_SOLVER);
+    const double gamma_d = (double)adiabatic_index;
+    const q16 gamma_q    = quantize(gamma_d);
+    const double dt_d    = (double)dt;
+    const q16 dt_q       = quantize(dt_d);
+    const double dx_d    = std::max((double)dx, 1e-6);
+    const double K_d = (double)c_max * (double)c_max / gamma_d;
+    // K·dt²/dx² — the operator's geometric factor (real ≈1,006 at bench
+    // dt/dx; ×(γp*≈1.4 ambient) reproduces the pre-v2.2 coupling ≈1,409 —
+    // the round-trip product D-A preserves by construction).
+    const int64_t Kdt2dx2_raw =
+        (int64_t)(K_d * dt_d * dt_d / (dx_d * dx_d) * 65536.0 + 0.5);
+
+    // --- level count (fixed by grid size — deterministic) ------------------
+    int n_levels = 1;
+    {
+        int lh = h, lw = w;
+        while (std::min(lh, lw) > mg_min_dim && n_levels < 9) {
+            lh = (lh + 1) >> 1;
+            lw = (lw + 1) >> 1;
+            ++n_levels;
+        }
+    }
+    if (!use_multigrid) n_levels = 1;
+    if ((int)levels_.size() < n_levels) levels_.resize(n_levels);
+
+    // --- build level 0 from the fine fields (v2.2-final SYMMETRIC form) ----
+    // Row i of the analytic operator, divided by aK_i = (γ·p*_i)·K·dt²/dx²:
+    //   m_i·P_i + Σ_f g_f·(P_i − P_nb) = m_i·rhs_i,   m_i = 1/aK_i
+    // Same solution, SPD system (mass + symmetric face Laplacian) — the form
+    // the variational multigrid below cannot amplify. Near-vacuum rows have
+    // aK→0 ⇒ m→huge (clamped) ⇒ P pinned to rhs (→0): §3.1 property 2 in
+    // mass form. WORK SCALE: row products are held at "F8" precision —
+    // (coeff_raw·field_raw)>>8, eight fractional bits finer than Q16.16 —
+    // so the weak ambient mass anchor (m ≈ 1/1409) still registers sub-count
+    // residuals (a plain >>16 truncated them to zero — an invisible-DC-error
+    // floor of ~0.02 atm the gate measured as drift).
+    {
+        MGLevel& L = levels_[0];
+        L.h = h; L.w = w;
+        L.excl.assign(n, 0);
+        L.m.assign(n, 0);
+        L.gE.assign(n, 0);
+        L.gS.assign(n, 0);
+        L.recip.assign(n, 0);
+        L.P.assign(n, 0);
+        L.b.assign(n, 0);
+        L.res.assign(n, 0);
+        for (int i = 0; i < n; ++i) {
+            if (solid[i]) L.excl[i] = 2;
+            else if (is_vacuum[i]) L.excl[i] = 1;
+        }
+        // Mass clamp: [1, 2^38] raw. The cap keeps the 128-bit mass-term
+        // product (m·ΔP)>>8 inside int64 (2^38·2^31/2^8 = 2^61) while still
+        // dominating any conductance by >2^20 — a capped-mass row pins P to
+        // rhs within ~1e-6 relative. The floor keeps a joint-spike row
+        // (aK huge ⇒ m underflows) present in the system at all.
+        const int64_t M_CAP = ((int64_t)1) << 38;
+        for (int i = 0; i < n; ++i) {
+            if (L.excl[i] != 0) continue;
+            const int64_t gp_raw = mul128_shr((int64_t)gamma_q, (int64_t)pstar[i], 16);
+            int64_t aK = mul128_shr(gp_raw, Kdt2dx2_raw, 16);
+            if (aK < 1) aK = 1;
+            int64_t m = (((int64_t)1) << 32) / aK;   // 1/aK at Q16.16 raw
+            if (m < 1) m = 1;
+            if (m > M_CAP) m = M_CAP;
+            L.m[i] = m;
+            // rhs_i = p* − (γ·p*)·dt·div(û*) (int64 raw); b = m·rhs @F8.
+            const int64_t gp_dt = mul128_shr(gp_raw, (int64_t)dt_q, 16);
+            const int64_t rhs_raw = (int64_t)pstar[i]
+                                  - mul128_shr(gp_dt, (int64_t)div_u[i], 16);
+            L.b[i] = mul128_shr(m, rhs_raw, 8);
+            // Warm start from the PREVIOUS tick's solved P (`p_prev` — copied
+            // from `atmosphere` at step 0): it already carries the room-scale
+            // acoustic structure the smoother is slowest to build, worth ~one
+            // V-cycle of error (measured at the MG gate; p* was the earlier,
+            // weaker choice).
+            L.P[i] = p_prev[i];
+        }
+        // Face conductances g = perm/N̂ (the 1/N̂ divide folded BEFORE any
+        // multiply by P — the documented joint-case order; arithmetic-N̂ IS
+        // the harmonic mean of the two cells' 1/N conductivities).
+        // N_FLOOR_SOLVER applies HERE ONLY (never to m — §3.1 property 2).
+        for (int y = 0; y < h; ++y) {
+            const int row = y * w;
+            for (int x = 0; x < w; ++x) {
+                const int i = row + x;
+                if (x < w - 1) {
+                    const int j = i + 1;
+                    if (L.excl[i] != 2 && L.excl[j] != 2) {
+                        const float pf = std::min(dyn_permeability[i], dyn_permeability[j]);
+                        if (pf > 0.0f) {
+                            q16 nhat = (q16)(((int64_t)n_total[i] + n_total[j]) >> 1);
+                            if (nhat < n_floor_q) nhat = n_floor_q;
+                            L.gE[i] = mul_q16(quantize((double)pf), reciprocal_q16(nhat));
+                        }
+                    }
+                }
+                if (y < h - 1) {
+                    const int j = i + w;
+                    if (L.excl[i] != 2 && L.excl[j] != 2) {
+                        const float pf = std::min(dyn_permeability[i], dyn_permeability[j]);
+                        if (pf > 0.0f) {
+                            q16 nhat = (q16)(((int64_t)n_total[i] + n_total[j]) >> 1);
+                            if (nhat < n_floor_q) nhat = n_floor_q;
+                            L.gS[i] = mul_q16(quantize((double)pf), reciprocal_q16(nhat));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- build coarse levels: exactly-variational PC Galerkin --------------
+    // Masses SUM (aggregate cell mass), face conductances SUM across the
+    // (≤2) fine faces crossing each coarse interface (interior fine faces
+    // cancel — this IS PᵀAP for piecewise-constant transfers, so the coarse
+    // correction is an energy-norm projection: structurally convergent at
+    // any depth). Coarse Dirichlet rule (v2.2, explicit): vacuum iff ALL
+    // children vacuum; all-non-regular -> excluded; any regular -> regular.
+    for (int lv = 1; lv < n_levels; ++lv) {
+        const MGLevel& F = levels_[lv - 1];
+        MGLevel& Cl = levels_[lv];
+        Cl.h = (F.h + 1) >> 1;
+        Cl.w = (F.w + 1) >> 1;
+        const int cn = Cl.h * Cl.w;
+        Cl.excl.assign(cn, 0);
+        Cl.m.assign(cn, 0);
+        Cl.gE.assign(cn, 0);
+        Cl.gS.assign(cn, 0);
+        Cl.recip.assign(cn, 0);
+        Cl.P.assign(cn, 0);
+        Cl.b.assign(cn, 0);
+        Cl.res.assign(cn, 0);
+        const int64_t M_CAP_L = ((int64_t)1) << 44;   // level cap (sums grow ×4/level)
+        for (int Y = 0; Y < Cl.h; ++Y) {
+            for (int X = 0; X < Cl.w; ++X) {
+                const int A = Y * Cl.w + X;
+                int n_child = 0, n_vac = 0, n_sol = 0;
+                int64_t m_sum = 0;
+                for (int dy = 0; dy < 2; ++dy) {
+                    for (int dxx = 0; dxx < 2; ++dxx) {
+                        const int fy = 2 * Y + dy, fx = 2 * X + dxx;
+                        if (fy >= F.h || fx >= F.w) continue;
+                        const int fi = fy * F.w + fx;
+                        ++n_child;
+                        if (F.excl[fi] == 1) ++n_vac;
+                        else if (F.excl[fi] == 2) ++n_sol;
+                        else m_sum += F.m[fi];
+                    }
+                }
+                if (n_vac == n_child) Cl.excl[A] = 1;
+                else if (n_vac + n_sol == n_child) Cl.excl[A] = 2;
+                else {
+                    Cl.excl[A] = 0;
+                    // GALERKIN DIRICHLET ANCHOR (found by the gate's own
+                    // breach test — the first PC-Galerkin cut dropped it and
+                    // MEASURABLY amplified ×7/cycle at the breach): every
+                    // fine face from a REGULAR child to a DIRICHLET fine
+                    // cell couples that child to the fixed value 0 — in
+                    // PᵀAP it lands on the coarse DIAGONAL. It acts exactly
+                    // like extra mass with zero rhs, and on coarse levels b
+                    // comes purely from restriction, so folding it into m
+                    // is the exact Galerkin term (no new field needed).
+                    int64_t anchor = 0;
+                    for (int dy = 0; dy < 2; ++dy) {
+                        for (int dxx = 0; dxx < 2; ++dxx) {
+                            const int fy = 2 * Y + dy, fx = 2 * X + dxx;
+                            if (fy >= F.h || fx >= F.w) continue;
+                            const int fi = fy * F.w + fx;
+                            if (F.excl[fi] != 0) continue;
+                            if (fx + 1 < F.w && F.excl[fi + 1] == 1)   anchor += F.gE[fi];
+                            if (fx > 0 && F.excl[fi - 1] == 1)         anchor += F.gE[fi - 1];
+                            if (fy + 1 < F.h && F.excl[fi + F.w] == 1) anchor += F.gS[fi];
+                            if (fy > 0 && F.excl[fi - F.w] == 1)       anchor += F.gS[fi - F.w];
+                        }
+                    }
+                    Cl.m[A] = std::min(m_sum + anchor, M_CAP_L);
+                }
+            }
+        }
+        for (int Y = 0; Y < Cl.h; ++Y) {
+            for (int X = 0; X < Cl.w; ++X) {
+                const int A = Y * Cl.w + X;
+                if (X < Cl.w - 1) {
+                    // Coarse face = SUM of crossing fine faces whose BOTH
+                    // endpoints are regular (a regular->Dirichlet crossing
+                    // face is the anchor term above, NOT inter-cell coupling).
+                    int64_t gsum = 0;
+                    const int fx = 2 * X + 1;   // fine face fx -> fx+1
+                    for (int dy = 0; dy < 2; ++dy) {
+                        const int fy = 2 * Y + dy;
+                        if (fy >= F.h || fx + 1 >= F.w) continue;
+                        const int fi = fy * F.w + fx;
+                        if (F.excl[fi] == 0 && F.excl[fi + 1] == 0)
+                            gsum += F.gE[fi];
+                    }
+                    Cl.gE[A] = gsum;            // SUM (variational), not average
+                }
+                if (Y < Cl.h - 1) {
+                    int64_t gsum = 0;
+                    const int fy = 2 * Y + 1;
+                    for (int dxx = 0; dxx < 2; ++dxx) {
+                        const int fx = 2 * X + dxx;
+                        if (fx >= F.w || fy + 1 >= F.h) continue;
+                        const int fi = fy * F.w + fx;
+                        if (F.excl[fi] == 0 && F.excl[fi + F.w] == 0)
+                            gsum += F.gS[fi];
+                    }
+                    Cl.gS[A] = gsum;
+                }
+            }
+        }
+    }
+
+    // --- per-level diagonal reciprocals (ONE wide divide/cell/tick/level) --
+    for (int lv = 0; lv < n_levels; ++lv) {
+        MGLevel& L = levels_[lv];
+        const int lh = L.h, lw = L.w;
+        for (int y = 0; y < lh; ++y) {
+            const int row = y * lw;
+            for (int x = 0; x < lw; ++x) {
+                const int i = row + x;
+                if (L.excl[i] != 0) { L.recip[i] = 0; continue; }
+                int64_t d_raw = L.m[i];
+                if (x < lw - 1 && L.excl[i + 1] != 2) d_raw += L.gE[i];
+                if (x > 0 && L.excl[i - 1] != 2)      d_raw += L.gE[i - 1];
+                if (y < lh - 1 && L.excl[i + lw] != 2) d_raw += L.gS[i];
+                if (y > 0 && L.excl[i - lw] != 2)      d_raw += L.gS[i - lw];
+                if (d_raw < 1) d_raw = 1;
+                L.recip[i] = (((int64_t)1) << 48) / d_raw;   // Q.32 reciprocal
+            }
+        }
+    }
+
+    return n_levels;
+}
+
+void EOSSolver::mg_run_solve_cpu(int n_levels) const {
+    if (n_levels <= 0) return;
+    const int n = levels_[0].h * levels_[0].w;   // (was step()'s local n)
+
+    // --- the RB-GS smoother (SPD form, residual form, WIDE flux — D-C) -----
+    // inc(P counts) = r8·(2^48/d) >> 40  ==  (r8·2^8)/d.
+    auto smooth = [&](MGLevel& L, int sweeps) {
+        const int lh = L.h, lw = L.w;
+        for (int it = 0; it < sweeps; ++it) {
+            for (int color = 0; color < 2; ++color) {
+                for (int y = 0; y < lh; ++y) {
+                    const int row = y * lw;
+                    for (int x = 0; x < lw; ++x) {
+                        if (((x + y) & 1) != color) continue;
+                        const int i = row + x;
+                        if (L.excl[i] != 0) continue;
+                        const int32_t pi = L.P[i];
+                        // (A·P)@F8 = m·P + Σ g·(P_i − P_nb), each product >>8.
+                        int64_t ap = mul128_shr(L.m[i], (int64_t)pi, 8);
+                        if (x < lw - 1 && L.excl[i + 1] != 2) {
+                            const int32_t pn = (L.excl[i + 1] == 1) ? 0 : L.P[i + 1];
+                            ap += mul128_shr(L.gE[i], (int64_t)(pi - pn), 8);
+                        }
+                        if (x > 0 && L.excl[i - 1] != 2) {
+                            const int32_t pn = (L.excl[i - 1] == 1) ? 0 : L.P[i - 1];
+                            ap += mul128_shr(L.gE[i - 1], (int64_t)(pi - pn), 8);
+                        }
+                        if (y < lh - 1 && L.excl[i + lw] != 2) {
+                            const int32_t pn = (L.excl[i + lw] == 1) ? 0 : L.P[i + lw];
+                            ap += mul128_shr(L.gS[i], (int64_t)(pi - pn), 8);
+                        }
+                        if (y > 0 && L.excl[i - lw] != 2) {
+                            const int32_t pn = (L.excl[i - lw] == 1) ? 0 : L.P[i - lw];
+                            ap += mul128_shr(L.gS[i - lw], (int64_t)(pi - pn), 8);
+                        }
+                        const int64_t r8 = L.b[i] - ap;
+                        const int64_t inc = mul128_shr(r8, L.recip[i], 40);
+                        L.P[i] = (int32_t)((int64_t)pi + inc);
+                    }
+                }
+            }
+        }
+    };
+
+    // --- residual r@F8 = b − A·P (into L.res) -------------------------------
+    auto residual = [&](MGLevel& L) {
+        const int lh = L.h, lw = L.w;
+        for (int y = 0; y < lh; ++y) {
+            const int row = y * lw;
+            for (int x = 0; x < lw; ++x) {
+                const int i = row + x;
+                if (L.excl[i] != 0) { L.res[i] = 0; continue; }
+                const int32_t pi = L.P[i];
+                int64_t ap = mul128_shr(L.m[i], (int64_t)pi, 8);
+                if (x < lw - 1 && L.excl[i + 1] != 2) {
+                    const int32_t pn = (L.excl[i + 1] == 1) ? 0 : L.P[i + 1];
+                    ap += mul128_shr(L.gE[i], (int64_t)(pi - pn), 8);
+                }
+                if (x > 0 && L.excl[i - 1] != 2) {
+                    const int32_t pn = (L.excl[i - 1] == 1) ? 0 : L.P[i - 1];
+                    ap += mul128_shr(L.gE[i - 1], (int64_t)(pi - pn), 8);
+                }
+                if (y < lh - 1 && L.excl[i + lw] != 2) {
+                    const int32_t pn = (L.excl[i + lw] == 1) ? 0 : L.P[i + lw];
+                    ap += mul128_shr(L.gS[i], (int64_t)(pi - pn), 8);
+                }
+                if (y > 0 && L.excl[i - lw] != 2) {
+                    const int32_t pn = (L.excl[i - lw] == 1) ? 0 : L.P[i - lw];
+                    ap += mul128_shr(L.gS[i - lw], (int64_t)(pi - pn), 8);
+                }
+                L.res[i] = L.b[i] - ap;
+            }
+        }
+    };
+
+    // --- restriction: residual SUM over children (the PC transpose) --------
+    auto restrict_res = [&](const MGLevel& F, MGLevel& Cl) {
+        for (int Y = 0; Y < Cl.h; ++Y) {
+            for (int X = 0; X < Cl.w; ++X) {
+                const int A = Y * Cl.w + X;
+                Cl.P[A] = 0;                     // corrections start at 0
+                if (Cl.excl[A] != 0) { Cl.b[A] = 0; continue; }
+                int64_t rsum = 0;
+                for (int dy = 0; dy < 2; ++dy) {
+                    for (int dxx = 0; dxx < 2; ++dxx) {
+                        const int fy = 2 * Y + dy, fx = 2 * X + dxx;
+                        if (fy >= F.h || fx >= F.w) continue;
+                        const int fi = fy * F.w + fx;
+                        if (F.excl[fi] == 0) rsum += F.res[fi];
+                    }
+                }
+                Cl.b[A] = rsum;                  // SUM — variational (PᵀAP pair)
+            }
+        }
+    };
+
+    // --- prolongation: piecewise-constant injection (the exact transpose) --
+    // (The spec's named bilinear prolongation paired NON-variationally with
+    // the re-discretized coarse operator — the deep pyramid MEASURABLY
+    // amplified (more cycles = worse). PC injection + SUM restriction is the
+    // exact PᵀAP pair; the schedule freeze documents this deviation.)
+    auto prolong_correct = [&](MGLevel& F, const MGLevel& Cl) {
+        for (int fy = 0; fy < F.h; ++fy) {
+            for (int fx = 0; fx < F.w; ++fx) {
+                const int fi = fy * F.w + fx;
+                if (F.excl[fi] != 0) continue;
+                const int A = (fy >> 1) * Cl.w + (fx >> 1);
+                if (Cl.excl[A] != 0) continue;
+                F.P[fi] = (int32_t)((int64_t)F.P[fi] + (int64_t)Cl.P[A]);
+            }
+        }
+    };
+
+    // --- the fixed-schedule V-cycle -----------------------------------------
+    if (use_multigrid && n_levels > 1) {
+        for (int cyc = 0; cyc < mg_cycles; ++cyc) {
+            for (int lv = 0; lv < n_levels - 1; ++lv) {
+                smooth(levels_[lv], mg_nu1);
+                residual(levels_[lv]);
+                restrict_res(levels_[lv], levels_[lv + 1]);
+            }
+            smooth(levels_[n_levels - 1], mg_coarsest_sweeps);
+            for (int lv = n_levels - 2; lv >= 0; --lv) {
+                prolong_correct(levels_[lv], levels_[lv + 1]);
+                smooth(levels_[lv], mg_nu2);
+            }
+        }
+    } else {
+        smooth(levels_[0], S);   // flat A/B reference path
+    }
+
+    MGLevel& L0 = levels_[0];
+    for (int i = 0; i < n; ++i) {
+        if (L0.excl[i] != 0) L0.P[i] = 0;    // vacuum Dirichlet + solid zero
+    }
+    digest_helmholtz = digest_of(L0.P.data(), n, 0);
 }
 
 // ===========================================================================
@@ -1216,4 +1266,36 @@ void eos_kick_compression_reference(
     counters_out[2] = work_clamp_hits;
     counters_out[3] = energy_floor_hits;
     counters_out[4] = t_max_phys_hits;
+}
+
+// ===========================================================================
+// EOS P6.3 — standalone CPU reference for the multigrid pressure solve
+// (declared in eos_solver.h; rationale there). Drives the SAME two internal
+// routines step() calls — mg_build_levels (per-tick hierarchy: level-0
+// m/gE/gS/b/excl + P_prev warm start, PC-Galerkin coarse operators, Q.32
+// diagonal reciprocals) and mg_run_solve_cpu (the frozen V(nu1,nu2)xC
+// schedule or the flat RB-GS path, the vacuum-Dirichlet/solid zero, and the
+// digest_helmholtz FNV) — on caller-supplied solve inputs. Writes the solved
+// level-0 P (== step 5's atmosphere materialization == the step-4 kick's Pn
+// input) into p_out and returns the digest, byte-for-byte the value step()
+// stores in digest_helmholtz for identical inputs. Test entry only — the
+// live path remains EOSSolver::step.
+// ===========================================================================
+uint64_t eos_mg_solve_reference(
+        const EOSSolver& solver,
+        const int32_t* pstar, const int32_t* div_u, const int32_t* n_total,
+        const int32_t* p_prev,
+        const bool* solid, const bool* is_vacuum,
+        const float* dyn_permeability,
+        int h, int w, float dt,
+        int32_t* p_out) {
+    const int n = h * w;
+    if (n <= 0 || dt <= 0.0f) return 0;
+    const int n_levels = solver.mg_build_levels(
+        pstar, div_u, n_total, p_prev,
+        solid, is_vacuum, dyn_permeability, h, w, dt);
+    solver.mg_run_solve_cpu(n_levels);
+    const EOSSolver::MGLevel& L0 = solver.mg_levels()[0];
+    for (int i = 0; i < n; ++i) p_out[i] = L0.P[i];
+    return solver.digest_helmholtz;
 }

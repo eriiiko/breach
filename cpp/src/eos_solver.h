@@ -210,8 +210,9 @@ public:
         const float* dyn_permeability, const float* dyn_wave_absorb,
         int h, int w, float dt) const;
 
-private:
     // ---- one multigrid level (v2.2 D-B) ---------------------------------
+    // (EOS P6.3: struct made public — unchanged fields — so the CUDA binding
+    // can view the host-built hierarchy; levels_ itself stays private.)
     // All coefficient fields rebuilt every tick (p*/N/perm change per tick).
     // excl: 0 = regular equation cell; 1 = Dirichlet (vacuum, P pinned 0);
     //       2 = excluded (solid — no equation; faces into it carry g = 0,
@@ -238,6 +239,53 @@ private:
         std::vector<int64_t> b;       // RHS m·rhs at the F8 work scale ((raw·raw)>>8)
         std::vector<int64_t> res;     // residual scratch (F8 scale)
     };
+
+    // ---- EOS P6.3: the pressure solve, split into its two internal stages
+    // (PURE CODE MOTION out of step() — identical arithmetic, identical
+    // order; step() now calls these two back-to-back). The split exists so
+    // (1) the CUDA binding can run the SAME host-side per-tick hierarchy
+    // build and hand the built levels to the device V-cycle, and (2) the
+    // standalone CPU replay entry (mg_solve_reference below) can drive the
+    // SAME internal routines the live path uses — zero drift by construction.
+    //
+    // mg_build_levels: level count (fixed by grid size), the level-0 build
+    // (m/gE/gS/b/excl + the P_prev warm start), the exactly-variational PC
+    // Galerkin coarse hierarchy, and the per-level Q.32 diagonal reciprocals.
+    // PER-TICK by necessity: level-0 m derives from p* and gE/gS fold the
+    // per-tick 1/N̂, and every coarse operator is a Galerkin sum of those —
+    // so the whole pyramid follows the tick cadence (review §2.7). The
+    // per-tick scalar folds (n_floor_q, gamma_q, dt_q, Kdt2dx2_raw) are
+    // recomputed here from the SAME double expressions step() used to hoist
+    // (/fp:strict TU — identical bits). Returns n_levels; 0 on degenerate
+    // input (n <= 0 or dt <= 0), in which case levels_ is untouched.
+    int mg_build_levels(
+        const int32_t* pstar, const int32_t* div_u, const int32_t* n_total,
+        const int32_t* p_prev,
+        const bool* solid, const bool* is_vacuum,
+        const float* dyn_permeability,
+        int h, int w, float dt) const;
+
+    // mg_run_solve_cpu: the fixed-schedule V-cycles (or the flat RB-GS
+    // reference path), the vacuum-Dirichlet/solid zero on level 0, and the
+    // digest_helmholtz checkpoint. Operates on the levels_ mg_build_levels
+    // just built. No-op for n_levels <= 0.
+    void mg_run_solve_cpu(int n_levels) const;
+
+    // Read-only view of the built hierarchy (the CUDA binding flattens this
+    // into device uploads; level-0 P is the warm start / solved P).
+    const std::vector<MGLevel>& mg_levels() const { return levels_; }
+
+    // EOS P6.3 gate telemetry — read-only views of the per-tick solve-input
+    // caches AS LEFT by the last step() (nothing after the solve writes
+    // them): pstar_/div_u_ are the step-2/RHS fields, n_total_ is the
+    // step-2 (post-substep) Dalton sum the face conductances folded. The
+    // digest gate reads these after a real engine tick to reconstruct the
+    // EXACT solve inputs (p_prev is already engine-visible). Pure telemetry.
+    const std::vector<int32_t>& dbg_pstar_cache()   const { return pstar_; }
+    const std::vector<int32_t>& dbg_div_u_cache()   const { return div_u_; }
+    const std::vector<int32_t>& dbg_n_total_cache() const { return n_total_; }
+
+private:
     mutable std::vector<MGLevel> levels_;
 
     // Reused per-tick scratch (house pattern: no per-tick alloc).
@@ -312,3 +360,30 @@ void eos_kick_compression_reference(
     float t_max_phys, float u_max, float trace_mass_scale,
     uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
     int64_t* counters_out /* [5] */);
+
+// ---------------------------------------------------------------------------
+// EOS P6.3 — standalone CPU reference for the multigrid pressure solve
+// (docs/eos_p6_gpu_alignment_review.md §4 row P6.3; the eos_sl_advect_reference
+// pattern). Replays EXACTLY step 3 of EOSSolver::step for GIVEN solve inputs by
+// calling the SAME two internal routines the live path calls
+// (solver.mg_build_levels + solver.mg_run_solve_cpu — one code path, zero
+// drift): per-tick hierarchy build (level 0 from pstar/div_u/n_total/p_prev +
+// masks/perm, PC-Galerkin coarse levels, Q.32 diagonal reciprocals), the
+// frozen V(nu1,nu2)xC schedule (or flat RB-GS when solver.use_multigrid is
+// false), the vacuum-Dirichlet/solid zero, and the digest_helmholtz FNV over
+// the solved level-0 P. Writes the solved P (== step 5's atmosphere
+// materialization == the step-4 kick's Pn input) into p_out (h*w int32) and
+// returns the digest — so a gate that reconstructs the solve inputs from a
+// real tick can assert  reference == EOSSolver.digest_helmholtz, then hold
+// the GPU V-cycle to the identical bytes. Takes the solver instance for the
+// config surface (dx/c_max/gamma/N_FLOOR_SOLVER + the frozen MG schedule).
+// Test entry only — the live path remains EOSSolver::step.
+// ---------------------------------------------------------------------------
+uint64_t eos_mg_solve_reference(
+    const EOSSolver& solver,
+    const int32_t* pstar, const int32_t* div_u, const int32_t* n_total,
+    const int32_t* p_prev,
+    const bool* solid, const bool* is_vacuum,
+    const float* dyn_permeability,
+    int h, int w, float dt,
+    int32_t* p_out);

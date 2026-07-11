@@ -109,6 +109,9 @@ _BACKEND_SETTERS = (
     # EOS P6.4: kick + compression work — same contract (kernel-gate only;
     # flag is a forward-compatible no-op until the P6.5 engine dispatch).
     "set_kick_compression_backend",
+    # EOS P6.3: multigrid pressure solve — same status (re-proven kernels,
+    # flag-only until the P6.5 engine dispatch); forward-compatible no-op.
+    "set_mg_solve_backend",
 )
 
 
