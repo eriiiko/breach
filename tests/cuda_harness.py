@@ -83,7 +83,9 @@ def cuda_dll_dir() -> Path | None:
 # (The retired wave/atmosphere kernels have no key: P6.0 DELETED cuda_wave.cu /
 # cuda_atmosphere.cu and their gates instead of unpinning them.)
 EOS_P6_PENDING_KERNELS = {
-    "bulk_flux",
+    # "bulk_flux" REMOVED by P6.1 (2026-07-11): cuda_bulk_transport.cu re-proven
+    # bit-identical (tests/cuda_bulk_flux_check.py — isolated all-branch A/B +
+    # closed-loop breach-venting/blast trajectory, per-plane byte-compare).
     "sl_advection",
     "mg_solve",
     "kick_compression",
@@ -95,8 +97,21 @@ EOS_P6_PENDING_KERNELS = {
 }
 
 # The full P6 key universe (NEVER shrinks — used to reject typo'd kernel names,
-# which would otherwise silently read as "already unpinned").
-_P6_KERNEL_KEYS = frozenset(EOS_P6_PENDING_KERNELS)
+# which would otherwise silently read as "already unpinned"). Spelled out as a
+# literal (P6.1) rather than snapshotting EOS_P6_PENDING_KERNELS, so removing a
+# key from the pending set above does NOT drop it from the universe — an
+# unpinned kernel's gate keeps passing `cuda_available(kernel=...)` validation.
+_P6_KERNEL_KEYS = frozenset({
+    "bulk_flux",
+    "sl_advection",
+    "mg_solve",
+    "kick_compression",
+    "eos_step",
+    "conduction",
+    "trace_smoke",
+    "fire",
+    "combustion",
+})
 
 
 def cuda_available(kernel: str | None = None) -> bool:

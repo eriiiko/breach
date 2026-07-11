@@ -20,6 +20,7 @@
 #include "cuda_water.h"        // CUDA-S3: GPU water solver + backend flag
 #include "cuda_smoke.h"        // CUDA-S4a: GPU smoke solver + backend flag
 #include "cuda_fire.h"         // CUDA-S6: GPU fire solver + backend flag
+#include "cuda_bulk_transport.h"  // EOS P6.1: GPU bulk donor-cell flux + backend flag
 // CUDA-S5 cuda_wave.h / CUDA-S7 cuda_atmosphere.h RETIRED in EOS P6.0 — the
 // wave+diffuse solvers they mirrored were replaced by the compressible EOS
 // solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
@@ -410,6 +411,53 @@ PYBIND11_MODULE(breach_physics, m) {
     // P3 (the compressible EOS solve replaced wave+diffuse), so the kernel had
     // no live dispatch and no non-stale caller
     // (docs/eos_p6_gpu_alignment_review.md §1.11).
+
+    // EOS P6.1: the GPU bulk donor-cell flux (cuda_bulk_transport.cu — the
+    // water K3-K8 precompute-then-gather pattern with per-face coefficients,
+    // bit-identical to bulk_flux_transport_cached). KERNEL-GATE ONLY for now:
+    // the backend flag exists so P6.5 can wire the eos_solver dispatch, but
+    // nothing dispatches on it yet (docs/eos_p6_gpu_alignment_review.md §4,
+    // P6.1 row). cuda_bulk_flux_transport mirrors the CPU bulk_flux_transport
+    // binding (below, unconditional) argument-for-argument (legacy signature — the host-side
+    // coefficient hoist runs verbatim inside the .cu) so the digest gate can
+    // drive both entries with identical inputs.
+    m.def("set_bulk_flux_backend",
+          [](bool use_cuda) { breach_cuda::set_bulk_flux_backend_cuda(use_cuda); },
+          py::arg("use_cuda"),
+          "Switch the bulk donor-cell flux to the GPU (True) or CPU (False). "
+          "P6.1: flag only — the engine dispatch lands in P6.5.");
+    m.def("get_bulk_flux_backend",
+          []() { return breach_cuda::bulk_flux_backend_is_cuda(); },
+          "True if the bulk donor-cell flux backend is set to GPU (P6.1: flag "
+          "only until the P6.5 engine dispatch).");
+    m.def("cuda_bulk_flux_transport",
+          [](py::array_t<int32_t> gas, py::array_t<bool> gas_conservative,
+             py::array_t<int32_t> wind_x, py::array_t<int32_t> wind_y,
+             py::array_t<bool> solid, py::array_t<bool> is_vacuum,
+             py::array_t<float> dyn_permeability, float dt) {
+              auto gv = gas.mutable_unchecked<3>();
+              int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
+              const int n_gases = static_cast<int>(gv.shape(0));
+              const int h = static_cast<int>(gv.shape(1));
+              const int w = static_cast<int>(gv.shape(2));
+              auto gc = gas_conservative.unchecked<1>();
+              const bool* gcons = gc.data(0);
+              auto [wx, h2, w2] = get_2d_const(wind_x);
+              auto [wy, h3, w3] = get_2d_const(wind_y);
+              auto [sol, h4, w4] = get_2d_const(solid);
+              auto [vac, h5, w5] = get_2d_const(is_vacuum);
+              auto [perm, h6, w6] = get_2d_const(dyn_permeability);
+              breach_cuda::bulk_flux_transport(
+                  gas_ptr, gcons, n_gases,
+                  wx, wy, sol, vac, perm,
+                  h, w, dt);
+          }, py::arg("gas"), py::arg("gas_conservative"),
+             py::arg("wind_x"), py::arg("wind_y"),
+             py::arg("solid"), py::arg("is_vacuum"),
+             py::arg("dyn_permeability"), py::arg("dt"),
+          "P6.1 isolated: GPU donor-cell conservative flux transport of every "
+          "`gas_conservative`-flagged plane, once, on the given wind field "
+          "(bit-identical to bulk_flux_transport).");
 #else
     m.attr("HAS_CUDA") = false;
 #endif

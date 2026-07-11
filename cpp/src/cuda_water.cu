@@ -38,14 +38,11 @@ inline void cuda_check(cudaError_t e, const char* what) {
 // by construction (the __mul64hi hi:lo combine). Below they are used unqualified
 // (both are in namespace breach_cuda, this TU's namespace).
 
-// flux_to_dq — the CPU lambda (water_solver.cpp:208-230) as a __device__ helper.
-// flux_wide (Q32.32) * dt_over_dx_q (Q16.16), >> 32 leaves Q16.16. The 128-bit
-// intermediate (via mul128_shr_signed) is the SAME single truncation the CPU
-// MSVC _mul128 path produces (proven bit-identical by
-// tests/_s1_flux_truncation_check.cpp).
-__device__ __forceinline__ q16 flux_to_dq_dev(int64_t flux_wide, q16 dt_over_dx_q) {
-    return (q16)mul128_shr_signed(flux_wide, (int64_t)dt_over_dx_q, 32);
-}
+// flux_to_dq_dev — the CPU lambda (water_solver.cpp:208-230) as a __device__
+// helper — HOISTED to cuda_fixedpoint_device.cuh in EOS P6.1 (the alignment
+// review's §1.10 work item) so the bulk donor-cell flux port shares it. Used
+// below unqualified (namespace breach_cuda), passing the single constant
+// dt_over_dx_q as the coefficient.
 
 // recip_mul_dev (the central-difference gradient's reciprocal multiply) now
 // lives in cuda_fixedpoint_device.cuh (shared with smoke/atmosphere). Used below
