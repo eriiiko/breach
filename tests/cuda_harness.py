@@ -60,136 +60,30 @@ def cuda_dll_dir() -> Path | None:
     return None
 
 
-# EOS refactor migration window (design doc §7 / D7, merged P1+P2 2026-07-10):
-# the CPU solvers have moved ahead of the CUDA kernels (new gas species, unified
-# temperature), so the GPU mirrors are STALE until the P6 port re-proves each
-# kernel bit-identical. During this window the CUDA gates must SKIP — a stale
-# kernel comparing against the new CPU path is a guaranteed, meaningless red.
-#
-# P6.0 (docs/eos_p6_gpu_alignment_review.md §2.1): the old single global bool
-# `EOS_P6_PENDING = True` had no partial-unpinning mechanism, so it is now a
-# pending SET with one string key per P6 sub-patch surface (the review's §4
-# sub-patch table). THE CONTRACT for P6.1+: each sub-patch, once its kernel is
-# re-proven bit-identical (per-kernel A/B digest + cross-machine per-field
-# digest), removes EXACTLY its own key from this set — nothing else. When the
-# set is empty (P6.9 landed), this machinery is deleted outright.
-#
-# key              unpinned by  surface
-# ---------------  -----------  ------------------------------------------------
-# bulk_flux        P6.1         donor-cell bulk flux (water K3–K8 pattern)
-# sl_advection     P6.2         fused 3-field SL advection + cmask + zero-solid
-# mg_solve         P6.3         MG pressure solve (smoother/transfers/fused tail)
-# kick_compression P6.4         momentum kick + absorption + clamp; compression work
-# eos_step         P6.5         EOS orchestration: full eos.step per-call dispatch
-# conduction       P6.6         unified conduction + T Pass 1/Pass 3
-# trace_smoke      P6.7         trace-smoke re-port at once-per-tick cadence
-# fire             P6.8         fire re-derivation (plume→T shim + n_o2 signature)
-# combustion       P6.9         combustion face-buffer split (gated on §3.1 CPU change)
-#
-# (The retired wave/atmosphere kernels have no key: P6.0 DELETED cuda_wave.cu /
-# cuda_atmosphere.cu and their gates instead of unpinning them.)
-# P6.2 (eos-p6-2-sl-advection): "sl_advection" REMOVED — the fused 3-field SL
-# advection (cuda_sl_advection.cu) re-proved bit-identical via the P6.2 gate
-# (tests/cuda_p62_check.py: isolated synthetic A/B + full blast+venting
-# per-tick digest_advect trajectory vs the CPU solver).
-# P6.1 (eos-p6-1-bulk-flux): "bulk_flux" REMOVED — cuda_bulk_transport.cu
-# re-proven bit-identical (tests/cuda_bulk_flux_check.py — isolated all-branch
-# A/B + closed-loop breach-venting/blast trajectory, per-plane byte-compare).
-# P6.4 (eos-p6-4-kick): "kick_compression" REMOVED — cuda_kick_compression.cu
-# (the step-4 momentum kick + step-4c compression work) re-proved bit-identical
-# via the P6.4 gate (tests/cuda_kick_check.py: isolated synthetic A/B with
-# every rail forced — U_MAX, c_LOCAL, T_MAX_PHYS, T_MIN floor, work clamp,
-# RAD_SAFE guard — plus a long blast+venting per-tick digest_velocity/
-# digest_compression trajectory vs the CPU solver, rail COUNTERS bit-matched).
-# P6.3 (eos-p6-3-mg-solve): "mg_solve" REMOVED — the multigrid pressure solve
-# (cuda_mg_solve.cu: per-color RB-GS, gather transfers, fused coarse tail)
-# re-proved bit-identical via the P6.3 gate (tests/cuda_mg_solve_check.py:
-# isolated synthetic/edge/overflow-stress A/B + full breach-to-vacuum+blast
-# per-tick digest_helmholtz trajectory vs the CPU solver).
-# P6.8 (eos-p6-8-fire): "fire" REMOVED — the re-derived fire kernel
-# (cuda_fire.cu: the O2 gate now reads the real n_o2 plane; the own-tile plume
-# deposit is the plume->T shim with the T_FLAME_MAX self-limiter) re-proved
-# bit-identical via the P6.8 gate (tests/cuda_fire_check.py: isolated synthetic/
-# edge A/B — no-O2, full-O2, T_FLAME_MAX-forcing, wind fan/strip, burn-through,
-# 1xN/Nx1, all-solid/all-vacuum — plus a hard O2-rich-room ignition trajectory
-# with plume heating, O2-depletion self-starving, and wall burn-through, per-tick
-# byte-identity on fire/temperature/smoke/wall_hp + destroyed set vs the CPU).
-# P6.5 (eos-p6-5-integration): "eos_step" REMOVED — the CHAINED full-eos.step
-# engine dispatch (cuda_eos_step.cu: device-resident substep loop interleaving
-# the P6.2 advection + P6.1 bulk-flux kernels, the P6.3 solve, the P6.4
-# kick+compression, step-5 P materialization; run_substeps dispatches when all
-# four EOS kernel-surface flags are on) re-proved bit-identical via the P6.5
-# gate (tests/cuda_eos_step_check.py: 120-tick breach+blast REAL-engine
-# trajectory, CPU run vs GPU run — every EOS field, all six digests, all five
-# rail counters per tick, dispatch-fired telemetry, CPU golden untouched).
-# P6.7 (eos-p6-7-trace-smoke): "trace_smoke" REMOVED — the once-per-tick trace
-# advection GPU dispatch (run_substeps now calls cuda_smoke.cu's smoke_step, the
-# verbatim S4a device mirror, when set_smoke_backend is on; the P3 cadence assert
-# at physics_engine.cpp is resolved). The kernel arithmetic is unchanged from S4a
-# (only the dispatch cadence moved: once/tick on the solver's final corrected
-# wind), re-proved bit-identical via the P6.7 gate (tests/cuda_trace_smoke_check.py:
-# isolated all-branch synthetic A/B incl. degenerate/all-solid/all-vacuum/near-
-# empty planes + a 120-tick blast+venting multi-room REAL-engine trajectory, CPU
-# smoke backend vs GPU smoke backend, per-tick byte-compare on the trace planes;
-# P4 decay->inert_N2 stays CPU in both, CPU golden untouched).
-# P6.6 (eos-p6-6-conduction): "conduction" REMOVED — the unified temperature
-# pass (cuda_temperature.cu extended: Pass 0 zero-vacuum + SL advection, Pass 1
-# solid/gas radiant deposit with the v2.4 absorption-∝-density form + n_bulk
-# divisor + T_MAX_PHYS rail, Pass 2 conduction, Pass 3 cooling) re-proved
-# bit-identical via the P6.6 gate (tests/cuda_conduction_check.py: isolated
-# all-branch/edge A/B with the T_MAX_PHYS rail forced + a 120-tick
-# hot-core-vs-cold-hull thin-gas trajectory, per-tick byte-compare on
-# `temperature` AND the rail counter vs the CPU TemperatureSolver).
-EOS_P6_PENDING_KERNELS = {
-    # Only combustion remains pinned — it needs the §3.1 gate-snapshot CPU
-    # change (Erik's DECIDED path) before its P6.9 face-buffer-split port.
-    "combustion",
-}
-
-# The full P6 key universe (NEVER shrinks — used to reject typo'd kernel names,
-# which would otherwise silently read as "already unpinned"). Spelled out as an
-# EXPLICIT literal, not frozenset(EOS_P6_PENDING_KERNELS) — the derived form
-# silently shrank with the pending set, so the FIRST key removal would have
-# turned every unpinned kernel's own gate into a ValueError. (Both P6.1 and
-# P6.2 hit and fixed this same latent P6.0 bug independently.)
-_P6_KERNEL_KEYS = frozenset({
-    "bulk_flux",
-    "sl_advection",
-    "mg_solve",
-    "kick_compression",
-    "eos_step",
-    "conduction",
-    "trace_smoke",
-    "fire",
-    "combustion",
-})
-
-
+# EOS P6 GPU migration — COMPLETE (closed 2026-07-11, branch eos-p6-close).
+# During the migration the CPU solvers ran ahead of the CUDA kernels, so the GPU
+# gates were pinned to SKIP via a pending SET (EOS_P6_PENDING_KERNELS) with one
+# key per P6 sub-patch surface (docs/eos_p6_gpu_alignment_review.md §2.1). The
+# contract: each sub-patch removed EXACTLY its own key once its kernel was
+# re-proved bit-identical (per-kernel A/B digest + cross-machine per-field
+# digest). combustion — the LAST key — landed as P6.9b, emptying the set and
+# closing the arc (design doc §7). Per that contract ("when the set is empty this
+# machinery is deleted outright"), the pending set AND the _P6_KERNEL_KEYS
+# typo-guard are now GONE: with every kernel ported, cuda_available() is a plain
+# "is the GPU build present?" check for both the whole-suite cuda_s* gates and
+# the per-kernel P6 gates.
 def cuda_available(kernel: str | None = None) -> bool:
     """True iff both the CUDA build and its runtime DLLs are present on disk.
     (Whether a *device* is actually usable is checked inside the subprocess.)
 
-    D7 rule (design doc §7; docs/eos_p6_gpu_alignment_review.md §2.1) — stale
-    GPU kernels must be UNREACHABLE during the EOS migration window:
-
-    * ``cuda_available()`` (no argument) — the whole-suite pin, exactly the old
-      ``EOS_P6_PENDING`` bool semantics: returns False while ANY key is still
-      in ``EOS_P6_PENDING_KERNELS``. Pre-P6 gates (the cuda_s* checks and any
-      all-backends-on integration) stay skipped until the ENTIRE P6 arc is done,
-      because they exercise the full stale surface.
-    * ``cuda_available(kernel=<key>)`` — the per-kernel gate for P6 sub-patch
-      tests: True iff the hardware is present AND that key has been removed
-      from the pending set (i.e. its port re-proved bit-identical). Unknown
-      keys raise ValueError so a typo cannot silently unpin anything."""
-    if kernel is not None and kernel not in _P6_KERNEL_KEYS:
-        raise ValueError(
-            f"unknown P6 kernel key {kernel!r}; valid keys: "
-            f"{sorted(_P6_KERNEL_KEYS)}")
-    if kernel is None:
-        if EOS_P6_PENDING_KERNELS:
-            return False
-    elif kernel in EOS_P6_PENDING_KERNELS:
-        return False
+    The EOS P6 GPU migration is COMPLETE — every kernel is ported and each has a
+    passing bit-identity gate — so this is now a simple presence check used by
+    ALL gates. The optional ``kernel`` arg is a vestige of the migration's
+    pending-set pin (the per-kernel P6 gates call ``cuda_available(kernel="...")``);
+    it is accepted-and-IGNORED so those call sites need no edit now that no kernel
+    can be pending. The old per-key typo-guard (ValueError on an unknown key) is
+    retired with the pending set: with nothing pinnable, an unknown key can no
+    longer silently unpin anything, so there is nothing to guard."""
     return cuda_pyd() is not None and cuda_dll_dir() is not None
 
 
