@@ -95,8 +95,12 @@ def cuda_dll_dir() -> Path | None:
 # P6.1 (eos-p6-1-bulk-flux): "bulk_flux" REMOVED — cuda_bulk_transport.cu
 # re-proven bit-identical (tests/cuda_bulk_flux_check.py — isolated all-branch
 # A/B + closed-loop breach-venting/blast trajectory, per-plane byte-compare).
+# P6.3 (eos-p6-3-mg-solve): "mg_solve" REMOVED — the multigrid pressure solve
+# (cuda_mg_solve.cu: per-color RB-GS, gather transfers, fused coarse tail)
+# re-proved bit-identical via the P6.3 gate (tests/cuda_mg_solve_check.py:
+# isolated synthetic/edge/overflow-stress A/B + full breach-to-vacuum+blast
+# per-tick digest_helmholtz trajectory vs the CPU solver).
 EOS_P6_PENDING_KERNELS = {
-    "mg_solve",
     "kick_compression",
     "eos_step",
     "conduction",
