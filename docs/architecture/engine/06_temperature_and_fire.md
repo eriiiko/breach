@@ -25,6 +25,48 @@ and fire feeds the loop as a heat-ray source. The remaining gaps are tuning
 (unit heat-damage band) and cross-machine bit-exactness validation. The
 **Implementation status** section at the end is explicit about what shipped.
 
+> ## EOS refactor (2026-07) — as-built
+>
+> **The EOS refactor changed two load-bearing claims in this chapter: (1) temperature is now
+> ONE unified field over gas *and* solids — no longer "solids only"; and (2) combustion gates
+> on real oxygen `N_O2`, not on `atmosphere`-as-an-O₂-proxy.** The rest of the chapter (the
+> heat→temperature→ignition→wall-failure chain, fire as a ray source, the signed-logistic fire
+> feedback) stands; the two items below supersede the "air has no temperature" foundation (§1)
+> and the "`P` IS oxygen" fire gate (§5 stage 1). Canon: `docs/eos_refactor_decisions.md`
+> (decision 7 = unified temperature; decision 4 + `OPEN-B` = O₂-on-N); combustion design at
+> `docs/eos_p6_9_combustion_design.md`.
+>
+> - **Unified temperature field (decision 7).** A single Q16.16-**Kelvin** `temperature` array
+>   now covers gas *and* solid cells, run as **masked per-medium passes**: gas cells get
+>   semi-Lagrangian advection + compression-work (`−P∇·u`) + combustion/radiation sources and
+>   **no decay-to-ambient**; solid cells keep the existing convert / conduct / cool rules;
+>   **conduction is ONE whole-grid `conductivity`-keyed pass** — air is given a small nonzero
+>   conductivity, so air↔air, solid↔solid, **and** the solid↔air interface exchange all happen
+>   through the *existing* stencil. That interface exchange is the primary energy sink for a
+>   sealed room. Energy now exits *physically* (hot gas vents through a breach; conducts into
+>   the ship's thermal mass; hull cells radiate to space) instead of the old phantom
+>   decay-to-0 + per-tick heat-clear. Gas heat deposit is `ΔT = ΔE/(N·c_v)` — a per-tile divide
+>   by the dynamic `N` (a fixed-point reciprocal), not the solid path's free bit-shift.
+> - **Combustion on real O₂ (decisions 4/12, P4 + P5.1).** Fire and `apply_temperature_ignition`
+>   read the real **`gas[O2]`** density (thresholds rescaled to the 0.21-ambient scale), not the
+>   `atmosphere` O₂-proxy. Combustion is its **own once-per-tick pass**, **isotropic
+>   proportional-oxygen** (the old directional bias was removed, not ported), and **conserves
+>   `N_total`**: the non-soot fraction of consumed O₂ is credited to `inert_N2`, and trace decay
+>   likewise returns mass to `inert_N2` — so a sealed-room fire never fake-drains pressure. P5.1
+>   adds **stoichiometric fuel burn**: combustion eats `wall_hp` at ember scale, **clamped at
+>   1 LSB so a smolder never destroys** (charred walls survive), and the extinguish gate moves to
+>   `hp ≤ 1 LSB`. The die→ember→re-ignite→burn-out lifecycle is now **emergent**
+>   (`I=0 ∧ T≥ign ∧ hp>floor`), no state machine. Feldman/O'Brien/Arikan credited in
+>   `combustion.cpp`.
+> - **Emergent payoffs now real, not scripted:** fire self-extinguishes as it eats local O₂; a
+>   breach vents O₂ and the fire dies; an O₂-tank rupture makes a fireball; inert flood smothers
+>   fire and suffocates units.
+> - **Ported bit-identical to CUDA (P6.9b):** combustion runs on-device via a two-gather mirror
+>   with an exact-integer split, digest-gated against the CPU reference.
+> - **Unblocked forward:** temperature→black-body-glow rendering now has its substrate (the
+>   unified `T`); glow would visually mark re-ignition sites (`ignition ≡ fuel ∧ O₂ ∧ T`). Not
+>   built — see `docs/blackbody_smoke_and_rendering_brainstorm.md`.
+
 
 ## 1. Where heat comes from, where temperature lives
 
