@@ -15,9 +15,9 @@
 #include "cuda_temperature.h"   // CUDA-S1: GPU temperature solver + backend flag
 #include "cuda_water.h"         // CUDA-S3: GPU water solver + backend flag
 #include "cuda_smoke.h"         // CUDA-S4a: GPU smoke solver + backend flag
-#include "cuda_wave.h"          // CUDA-S5: GPU wave_substep + backend flag
 #include "cuda_fire.h"          // CUDA-S6: GPU fire solver + backend flag
-#include "cuda_atmosphere.h"    // CUDA-S7: GPU diffuse_solve + backend flag
+// CUDA-S5 cuda_wave.h / CUDA-S7 cuda_atmosphere.h RETIRED in EOS P6.0 (their
+// CPU solvers were replaced by the EOS solve in P3; nothing here called them).
 #endif
 
 #include <algorithm>   // std::max, std::min
