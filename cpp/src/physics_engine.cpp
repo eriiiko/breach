@@ -299,21 +299,40 @@ void PhysicsEngine::run_substeps(
         this->smoke.advection_rate = 1.0f / std::max(this->eos.dx, 1e-3f);
         this->smoke.wind_diffusion_scale = 0.0f;
 #ifdef BREACH_HAS_CUDA
-        // GPU-guard (EOS P3, D7): the once-per-tick trace advection here
-        // REPLACES the old n_smoke-substepped GPU dispatch (smoke_step);
-        // that CUDA kernel's substep-count contract no longer matches (this
-        // runs once/tick, on the eos solver's final wind, not n_smoke times
-        // on the wave-loop's wind), so the CPU path is the ONLY dispatch
-        // until a P6 port re-derives the GPU call for this new cadence.
-        assert(!breach_cuda::smoke_backend_is_cuda() &&
-               "EOS P3: GPU trace-smoke dispatch pending P6 (once/tick cadence changed)");
+        // EOS P6.7 (docs/eos_p6_gpu_alignment_review.md §4, P6.7 row): RESOLVE
+        // the P3 once-per-tick cadence assert by wiring the real GPU dispatch.
+        // The trace CADENCE changed in the EOS refactor (traces advect ONCE per
+        // tick on the solver's final corrected wind, not n_smoke-substepped on
+        // the old wave loop's wind), but SmokeDynamics::step's per-pass
+        // arithmetic is UNCHANGED — so cuda_smoke.cu's smoke_step (the verbatim
+        // S4a device mirror: diffusion Laplacian -> post-diffusion src snapshot
+        // -> SL back-trace -> clamp/zero) is bit-identical at the new cadence;
+        // only the DISPATCH SITE moved. This is the existing water/smoke/fire/
+        // eos dispatch idiom: with the flag OFF (default) it is the EXACT prior
+        // CPU call (the live CPU path stays byte-identical); with it ON,
+        // smoke_step runs this same single once-per-tick step on the GPU. The
+        // subsequent P4 decay->inert_N2 credit below stays on the CPU in BOTH
+        // paths (it is not part of the advection pass — strictly additive).
+        // Gated by tests/cuda_trace_smoke_check.py (key "trace_smoke").
+        if (breach_cuda::smoke_backend_is_cuda()) {
+            breach_cuda::smoke_step(
+                gas_slice, wind_x, wind_y,
+                solid, solid, is_vacuum,
+                dyn_permeability,
+                h, w, sim_time,
+                this->smoke.d_smoke,
+                this->smoke.wind_diffusion_scale,
+                this->smoke.advection_rate);
+        } else
 #endif
-        this->smoke.step(
-            gas_slice, wind_x, wind_y,
-            solid, solid, is_vacuum,
-            dyn_permeability,
-            h, w,
-            sim_time);
+        {
+            this->smoke.step(
+                gas_slice, wind_x, wind_y,
+                solid, solid, is_vacuum,
+                dyn_permeability,
+                h, w,
+                sim_time);
+        }
 
         // EOS refactor P4 (design §2.2/§5 v2.1, decisions log #12): apply
         // this trace plane's `decay` column ONCE per tick, right after its
