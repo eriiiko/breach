@@ -106,6 +106,14 @@ def cuda_dll_dir() -> Path | None:
 # re-proved bit-identical via the P6.3 gate (tests/cuda_mg_solve_check.py:
 # isolated synthetic/edge/overflow-stress A/B + full breach-to-vacuum+blast
 # per-tick digest_helmholtz trajectory vs the CPU solver).
+# P6.8 (eos-p6-8-fire): "fire" REMOVED — the re-derived fire kernel
+# (cuda_fire.cu: the O2 gate now reads the real n_o2 plane; the own-tile plume
+# deposit is the plume->T shim with the T_FLAME_MAX self-limiter) re-proved
+# bit-identical via the P6.8 gate (tests/cuda_fire_check.py: isolated synthetic/
+# edge A/B — no-O2, full-O2, T_FLAME_MAX-forcing, wind fan/strip, burn-through,
+# 1xN/Nx1, all-solid/all-vacuum — plus a hard O2-rich-room ignition trajectory
+# with plume heating, O2-depletion self-starving, and wall burn-through, per-tick
+# byte-identity on fire/temperature/smoke/wall_hp + destroyed set vs the CPU).
 # P6.5 (eos-p6-5-integration): "eos_step" REMOVED — the CHAINED full-eos.step
 # engine dispatch (cuda_eos_step.cu: device-resident substep loop interleaving
 # the P6.2 advection + P6.1 bulk-flux kernels, the P6.3 solve, the P6.4
@@ -133,7 +141,8 @@ def cuda_dll_dir() -> Path | None:
 # hot-core-vs-cold-hull thin-gas trajectory, per-tick byte-compare on
 # `temperature` AND the rail counter vs the CPU TemperatureSolver).
 EOS_P6_PENDING_KERNELS = {
-    "fire",
+    # Only combustion remains pinned — it needs the §3.1 gate-snapshot CPU
+    # change (Erik's DECIDED path) before its P6.9 face-buffer-split port.
     "combustion",
 }
 

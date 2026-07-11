@@ -124,14 +124,29 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     std::vector<std::pair<int, int>> destroyed;
 #ifdef BREACH_HAS_CUDA
     if (breach_cuda::fire_backend_is_cuda()) {
-        // GPU-guard (EOS P3, D7): the retired-wave-era GPU fire kernel wrote
-        // its plume into `atmosphere` (now solver-owned P) instead of the
-        // new temperature-shim target — assert unreachable rather than
-        // silently run stale physics. Port pending P6 (design §8 patch P6
-        // enumerates "combustion pass" as a to-port kernel). EOS P4 ALSO
-        // changed FireSimulation::step's O2 input (n_o2) — the retired GPU
-        // kernel's signature is stale on that axis too; still unreachable.
-        assert(false && "EOS P3: cuda fire plume->atmosphere path retired; port pending P6");
+        // EOS P6.8: the re-derived GPU fire kernel (cuda_fire.cu) — O2 gate on
+        // the real `n_o2` plane + the plume->T shim (T_FLAME_MAX self-limiter),
+        // bit-identical to the CPU FireSimulation::step (tol 0 on fire/smoke/
+        // wall_hp/temperature; set-equal destroyed). This RESOLVES the stale
+        // fire-plume assert by wiring the real dispatch. `atmosphere` is passed
+        // for signature parity but is vestigial (unread); `temperature_mut` is
+        // the plume->T target; the FireParams dials are passed explicitly since
+        // fire_step is a free function. With the flag off (default) the CPU
+        // branch below is the exact prior call.
+        destroyed = breach_cuda::fire_step(
+            fire_field, atmosphere, n_o2, smoke_field, wall_hp,
+            temperature_mut, wind_x, wind_y,
+            solid, is_vacuum, flammable,
+            h, w, sim_time,
+            this->fire.params.k_grow, this->fire.params.k_die,
+            this->fire.params.fire_T_ext, this->fire.params.fire_T_span,
+            this->fire.params.fuel_ref, this->fire.params.P_min,
+            this->fire.params.P_full, this->fire.params.I_min,
+            this->fire.params.k_wind_fan, this->fire.params.k_wind_strip,
+            this->fire.params.fire_pressure_gain,
+            this->fire.params.smoke_emission, this->fire.params.wall_damage,
+            this->fire.params.temp_scale, this->fire.params.temp_gain_scale,
+            this->fire.params.T_FLAME_MAX);
     } else
 #endif
     {
