@@ -106,8 +106,15 @@ def cuda_dll_dir() -> Path | None:
 # re-proved bit-identical via the P6.3 gate (tests/cuda_mg_solve_check.py:
 # isolated synthetic/edge/overflow-stress A/B + full breach-to-vacuum+blast
 # per-tick digest_helmholtz trajectory vs the CPU solver).
+# P6.5 (eos-p6-5-integration): "eos_step" REMOVED — the CHAINED full-eos.step
+# engine dispatch (cuda_eos_step.cu: device-resident substep loop interleaving
+# the P6.2 advection + P6.1 bulk-flux kernels, the P6.3 solve, the P6.4
+# kick+compression, step-5 P materialization; run_substeps dispatches when all
+# four EOS kernel-surface flags are on) re-proved bit-identical via the P6.5
+# gate (tests/cuda_eos_step_check.py: 120-tick breach+blast REAL-engine
+# trajectory, CPU run vs GPU run — every EOS field, all six digests, all five
+# rail counters per tick, dispatch-fired telemetry, CPU golden untouched).
 EOS_P6_PENDING_KERNELS = {
-    "eos_step",
     "conduction",
     "trace_smoke",
     "fire",
