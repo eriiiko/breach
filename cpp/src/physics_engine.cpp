@@ -447,23 +447,28 @@ void PhysicsEngine::step_water(
     const float wdt = (float)((double)sim_time / n);
     for (int s = 0; s < n; ++s) {
         // Arg order matches WaterSolver::step: (water_depth, flow_vx, flow_vy,
-        // floor_height, atmosphere, wave_p, solid, h, w, dt, tilt_x, tilt_y).
-        // water/velocity/floor are Q16.16; atmosphere/wave_p stay float (the
-        // gated head-term FLOAT BRIDGE lives inside step). this->water.dx and the
-        // pipe params are already members on this->water (not re-passed to the
-        // CPU method). CUDA-S3: the GPU water_step is a FREE function, so the
+        // floor_height, atmosphere, solid, h, w, dt, tilt_x, tilt_y).
+        // water/velocity/floor are Q16.16; atmosphere is the derived integer P
+        // (EOS P3 — the head term is a pure-integer mul_q16(k_p, P) inside step;
+        // the old float wave_p bridge is retired). this->water.dx and the pipe
+        // params are already members on this->water (not re-passed to the CPU
+        // method). CUDA-S3: the GPU water_step is a FREE function, so the
         // solver's scalar dials (g/damping/dx/k_p/v_max/depth_eps) are passed
         // explicitly. Bit-identical to the CPU path (same integer ops); the CPU
         // solver stays the live fallback (flag off by default). CPU-only builds
         // (no BREACH_HAS_CUDA) compile only the CPU call.
 #ifdef BREACH_HAS_CUDA
         if (breach_cuda::water_backend_is_cuda()) {
-            // GPU-guard (EOS P3, D7): the retired-wave-era GPU water dispatch
-            // read a float atmosphere/wave_p head bridge that no longer
-            // exists. Assert unreachable rather than silently mis-feed it an
-            // int32 pointer through a float* parameter — see the run_substeps
-            // GPU guards for the sibling assertions (wave/atmosphere).
-            assert(false && "EOS P3: cuda water head bridge retired; port pending P6");
+            // EOS P6 (water det-fix): the GPU head term now reconciled with the
+            // P3 integer P (docs/water_cuda_head_determinism_fix.md) — atm_bridge
+            // is the same int32 P plane the CPU reads, so the GPU path is
+            // bit-identical (proven by the S3 head-on gate).
+            breach_cuda::water_step(water_depth, flow_vx, flow_vy,
+                                    floor_height, atm_bridge, solid,
+                                    h, w, wdt, tilt_x, tilt_y,
+                                    this->water.g, this->water.damping,
+                                    this->water.dx, this->water.k_p,
+                                    this->water.v_max, this->water.depth_eps);
         } else
 #endif
         {

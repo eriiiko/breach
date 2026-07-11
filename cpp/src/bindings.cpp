@@ -246,9 +246,10 @@ PYBIND11_MODULE(breach_physics, m) {
     // step_water's per-substep call between the CPU and GPU pipe-model solver
     // (the live CPU fallback stays). cuda_water_step runs the 8-pass solver IN
     // PLACE on water_depth/flow_vx/flow_vy for the isolated GPU-vs-CPU bit-
-    // identity gate. floor_height/atmosphere/wave_p are nullable (mirroring the
-    // live WaterSolver.step binding); the solver's scalar dials are passed
-    // explicitly since water_step is a free function.
+    // identity gate. floor_height/atmosphere are nullable (mirroring the live
+    // WaterSolver.step binding — EOS P3: atmosphere is the integer P, wave_p
+    // retired); the solver's scalar dials are passed explicitly since
+    // water_step is a free function.
     m.def("set_water_backend",
           [](bool use_cuda) { breach_cuda::set_water_backend_cuda(use_cuda); },
           py::arg("use_cuda"),
@@ -259,7 +260,7 @@ PYBIND11_MODULE(breach_physics, m) {
     m.def("cuda_water_step",
           [](py::array_t<int32_t> water_depth, py::array_t<int32_t> flow_vx,
              py::array_t<int32_t> flow_vy, py::object floor_height,
-             py::object atmosphere, py::object wave_p, py::array_t<bool> solid,
+             py::object atmosphere, py::array_t<bool> solid,
              float dt, float tilt_x, float tilt_y,
              float g, float damping, float dx, float k_p, float v_max,
              float depth_eps) {
@@ -276,28 +277,23 @@ PYBIND11_MODULE(breach_physics, m) {
                   auto fa = fl_arr.unchecked<2>();
                   fl = fa.data(0, 0);
               }
-              const float* atm = nullptr;
-              py::array_t<float> atm_arr;
+              // EOS P3: `atmosphere` is the derived integer pressure P (Q16.16),
+              // read via the pure-integer head term; the float wave_p bridge is
+              // retired (matches WaterSolver.step).
+              const int32_t* atm = nullptr;
+              py::array_t<int32_t> atm_arr;
               if (!atmosphere.is_none()) {
-                  atm_arr = atmosphere.cast<py::array_t<float>>();
+                  atm_arr = atmosphere.cast<py::array_t<int32_t>>();
                   auto aa = atm_arr.unchecked<2>();
                   atm = aa.data(0, 0);
               }
-              const float* wp = nullptr;
-              py::array_t<float> wp_arr;
-              if (!wave_p.is_none()) {
-                  wp_arr = wave_p.cast<py::array_t<float>>();
-                  auto wa = wp_arr.unchecked<2>();
-                  wp = wa.data(0, 0);
-              }
-              breach_cuda::water_step(wd, vx, vy, fl, atm, wp, sol, h, w, dt,
+              breach_cuda::water_step(wd, vx, vy, fl, atm, sol, h, w, dt,
                                       tilt_x, tilt_y, g, damping, dx, k_p,
                                       v_max, depth_eps);
           },
           py::arg("water_depth"), py::arg("flow_vx"), py::arg("flow_vy"),
           py::arg("floor_height") = py::none(),
           py::arg("atmosphere")   = py::none(),
-          py::arg("wave_p")       = py::none(),
           py::arg("solid"), py::arg("dt"), py::arg("tilt_x"), py::arg("tilt_y"),
           py::arg("g"), py::arg("damping"), py::arg("dx"), py::arg("k_p"),
           py::arg("v_max"), py::arg("depth_eps"),
