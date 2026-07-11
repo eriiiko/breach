@@ -106,6 +106,9 @@ _BACKEND_SETTERS = (
     # re-proven, but the engine dispatch lands in P6.5 (kernel-gate only until
     # then); flipping it here is a forward-compatible no-op.
     "set_bulk_flux_backend",
+    # EOS P6.4: kick + compression work — same contract (kernel-gate only;
+    # flag is a forward-compatible no-op until the P6.5 engine dispatch).
+    "set_kick_compression_backend",
 )
 
 

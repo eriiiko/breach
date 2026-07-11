@@ -173,6 +173,15 @@ public:
     // arithmetic reads it.
     mutable int dbg_last_n_sub = 0;
 
+    // --- P6.4 telemetry: the c_LOCAL velocity cap the last step() derived ---
+    // (q16 raw). c_LOCAL = c_amb·sqrt(T_max_abs/T_AMB) is computed from the
+    // PRE-advection temperature scan (§3.2 v2.2), so an isolated replay of the
+    // step-4 kick cannot re-derive it from post-tick state. Exposed (the
+    // dbg_last_n_sub idiom) so the P6.4 digest gate can feed the isolated
+    // kick+compression replay the exact per-tick cap. Pure telemetry — no
+    // arithmetic reads it.
+    mutable int32_t dbg_last_c_local_q = 0;
+
     // --- six sub-kernel digest checkpoints (§3.4.6) ---------------------
     mutable uint64_t digest_advect      = 0;
     mutable uint64_t digest_bulk_flux   = 0;
@@ -262,3 +271,44 @@ uint64_t eos_sl_advect_reference(
     const bool* solid, const bool* is_vacuum,
     const float* dyn_permeability,
     int h, int w, float dt, int n_sub);
+
+// ---------------------------------------------------------------------------
+// EOS P6.4 — standalone CPU reference for the post-solve tail: the step-4
+// momentum kick (u -= dt·K·grad(P_new)/N̂ → absorption damping → the
+// min(c_LOCAL, U_MAX) counted magnitude clamp, with the ±2^30 component
+// pre-clamp overflow guard) AND the step-4c compression work
+// (T -= (γ−1)·T·div(u_new)·dt with the ±T_WORK_CLAMP rail, T_MIN floor and
+// T_MAX_PHYS ceiling, all counter-tracked) — docs/eos_p6_gpu_alignment_review.md
+// §4 row P6.4. Replays EXACTLY EOSSolver::step's chain on the given step-4-entry
+// state, IN PLACE on wind_x/wind_y/temperature:
+//   * p_new           — the solved pressure plane the kick differentiates
+//                       (== L0.P after the vacuum/solid zeroing == the post-tick
+//                       `atmosphere`, which step 5 copies verbatim);
+//   * gas planes      — the step-2 Dalton sum N_total (bulk planes at full
+//                       weight, trace planes × trace_mass_scale) is recomputed
+//                       here verbatim: it is the kick's 1/N̂ input;
+//   * c_local_q       — the per-tick state-derived cap the solver computed
+//                       PRE-advection (EOSSolver::dbg_last_c_local_q);
+//   * scalar params   — the EOSSolver config members, folded to q16/int64
+//                       through the IDENTICAL double expressions step() uses.
+// Outputs: the SAME chained FNV digests step() stores in digest_velocity /
+// digest_compression, plus the five rail counters FOR THIS CALL in
+// counters_out[5] = { u_clamp_hits, u_max_hits, work_clamp_hits,
+// energy_floor_hits, t_max_phys_hits } (the solver's members are cumulative;
+// a gate compares per-tick deltas). Counter semantics are the solver's own:
+// ONE increment per engaging CELL (the |u| clamp is a magnitude event, not
+// per-component; the 4c rails are an exclusive if/else-if chain). Test entry
+// only — the live path remains EOSSolver::step.
+// ---------------------------------------------------------------------------
+void eos_kick_compression_reference(
+    int32_t* wind_x, int32_t* wind_y, int32_t* temperature,   // in/out
+    const int32_t* p_new,                                     // solved P (q16)
+    const int32_t* gas, const bool* gas_conservative, int n_gases,
+    const bool* solid, const bool* is_vacuum,
+    const float* dyn_wave_absorb,
+    int h, int w, float dt, int32_t c_local_q,
+    float c_max, float dx, float adiabatic_index, float absorb_strength,
+    float n_floor_solver, float t_min, float t_work_clamp,
+    float t_max_phys, float u_max, float trace_mass_scale,
+    uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
+    int64_t* counters_out /* [5] */);

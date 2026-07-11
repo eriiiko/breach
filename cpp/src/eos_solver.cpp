@@ -277,6 +277,7 @@ void EOSSolver::step(
     const q16 sqrt_ratio = sqrt_q16((int64_t)ratio_q << 16);   // Q.32 radicand
     q16 c_local_q = mul_q16(c_amb_q, sqrt_ratio);
     if (c_local_q < c_amb_q) c_local_q = c_amb_q;   // never below ambient
+    dbg_last_c_local_q = c_local_q;   // P6.4 telemetry (gate input reconstruction)
 
     // ======================================================================
     // 1. ADVECTION SUBSTEPS — n = ceil(dt/dt_adv), N_SUB_MAX-capped.
@@ -1050,4 +1051,169 @@ uint64_t eos_sl_advect_reference(
         }
     }
     return digest_of(wind_x, n, digest_of(wind_y, n, digest_of(temperature, n, 0)));
+}
+
+// ===========================================================================
+// EOS P6.4 — standalone CPU reference for the step-4 kick + step-4c
+// compression work (declared in eos_solver.h; rationale there). A VERBATIM
+// replay of step()'s post-solve tail on a GIVEN step-4-entry state:
+//   * scalar folds    — the IDENTICAL double expressions step() performs
+//                       (K_raw/Kdt_raw, inv_2dx_q, absorb_dt_q, the rail
+//                       quantizes), from the same config values;
+//   * Dalton sum      — step 2's n_total_ loop verbatim (bulk planes at full
+//                       weight, trace planes × trace_mass_scale) — the kick's
+//                       1/N̂ input is REBUILT, not approximated;
+//   * step 4          — gradient/kick/absorption/rail chain copied line for
+//                       line from step() (same int64 staging, same clamp
+//                       order, same per-CELL counter semantics);
+//   * step 4c         — the compression-work loop copied line for line.
+// c_local_q comes in as a parameter (dbg_last_c_local_q telemetry): it is
+// derived from the PRE-advection T scan that an isolated tail replay cannot
+// see. Counters are returned per-call; digests are byte-for-byte step()'s
+// digest_velocity / digest_compression expressions. Test entry only — the
+// live path remains EOSSolver::step.
+// ===========================================================================
+void eos_kick_compression_reference(
+        int32_t* wind_x, int32_t* wind_y, int32_t* temperature,
+        const int32_t* p_new,
+        const int32_t* gas, const bool* gas_conservative, int n_gases,
+        const bool* solid, const bool* is_vacuum,
+        const float* dyn_wave_absorb,
+        int h, int w, float dt, int32_t c_local_q,
+        float c_max, float dx, float adiabatic_index, float absorb_strength,
+        float n_floor_solver, float t_min, float t_work_clamp,
+        float t_max_phys, float u_max, float trace_mass_scale,
+        uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
+        int64_t* counters_out /* [5] */) {
+    const int n = h * w;
+    for (int c = 0; c < 5; ++c) counters_out[c] = 0;
+    *digest_velocity_out = 0;
+    *digest_compression_out = 0;
+    if (n <= 0 || dt <= 0.0f) return;
+
+    // ---- per-tick scalar constants (step()'s folds, verbatim) -------------
+    const q16 n_floor_q    = quantize((double)n_floor_solver);
+    const q16 t_min_q      = quantize((double)t_min);
+    const q16 t_max_phys_q = quantize((double)t_max_phys);
+    const q16 u_max_q      = quantize((double)u_max);
+    const double gamma_d   = (double)adiabatic_index;
+    const q16 gamma_m1_q   = quantize(gamma_d - 1.0);
+    const double dt_d      = (double)dt;
+    const q16 dt_q         = quantize(dt_d);
+    const double dx_d      = std::max((double)dx, 1e-6);
+    const q16 inv_2dx_q    = quantize(1.0 / (2.0 * dx_d));
+    const double K_d = (double)c_max * (double)c_max / gamma_d;
+    const int64_t K_raw = (int64_t)(K_d * 65536.0 + 0.5);
+    const int64_t Kdt_raw = mul128_shr(K_raw, (int64_t)dt_q, 16);
+    const q16 absorb_dt_q = quantize((double)absorb_strength * dt_d);
+
+    // ---- step 2's Dalton sum (verbatim — the kick's N̂ input) --------------
+    std::vector<int32_t> n_total(n, 0);
+    {
+        const q16 tms_q = quantize((double)trace_mass_scale);
+        for (int gi = 0; gi < n_gases; ++gi) {
+            const int32_t* plane = gas + (size_t)gi * n;
+            if (gas_conservative[gi]) {
+                for (int i = 0; i < n; ++i) n_total[i] += plane[i];
+            } else {
+                for (int i = 0; i < n; ++i) n_total[i] += mul_q16(tms_q, plane[i]);
+            }
+        }
+    }
+
+    int64_t u_clamp_hits = 0, u_max_hits = 0, work_clamp_hits = 0,
+            energy_floor_hits = 0, t_max_phys_hits = 0;
+
+    // ---- step 4: the momentum kick (step()'s loop, verbatim) --------------
+    const int32_t* Pn = p_new;
+    for (int y = 0; y < h; ++y) {
+        const int row = y * w;
+        for (int x = 0; x < w; ++x) {
+            const int i = row + x;
+            if (solid[i] || is_vacuum[i]) { wind_x[i] = 0; wind_y[i] = 0; continue; }
+            const int il = mirror_idx(i, y, x - 1, h, w, solid);
+            const int ir = mirror_idx(i, y, x + 1, h, w, solid);
+            const int iu = mirror_idx(i, y - 1, x, h, w, solid);
+            const int id = mirror_idx(i, y + 1, x, h, w, solid);
+            const int64_t gx = mul128_shr((int64_t)(Pn[ir] - Pn[il]), (int64_t)inv_2dx_q, 16);
+            const int64_t gy = mul128_shr((int64_t)(Pn[id] - Pn[iu]), (int64_t)inv_2dx_q, 16);
+            int64_t ux = (int64_t)wind_x[i];
+            int64_t uy = (int64_t)wind_y[i];
+            if (gx != 0 || gy != 0) {
+                q16 nhat = n_total[i];
+                if (nhat < n_floor_q) nhat = n_floor_q;
+                const q16 inv_n = reciprocal_q16(nhat);
+                ux -= mul128_shr(mul128_shr(Kdt_raw, gx, 16), (int64_t)inv_n, 16);
+                uy -= mul128_shr(mul128_shr(Kdt_raw, gy, 16), (int64_t)inv_n, 16);
+            }
+
+            const q16 a = mul_q16(quantize((double)dyn_wave_absorb[i]), absorb_dt_q);
+            if (a > 0) {
+                const q16 kk = (a < FP_ONE) ? (q16)(FP_ONE - a) : 0;
+                const int64_t mx = mul128_shr(ux < 0 ? -ux : ux, (int64_t)kk, 16);
+                const int64_t my = mul128_shr(uy < 0 ? -uy : uy, (int64_t)kk, 16);
+                ux = (ux < 0) ? -mx : mx;
+                uy = (uy < 0) ? -my : my;
+            }
+
+            const q16 u_cap_q = (c_local_q < u_max_q) ? c_local_q : u_max_q;
+            const bool cap_is_umax = (u_max_q < c_local_q);
+            const int64_t RAD_SAFE = (int64_t)1 << 30;
+            if      (ux >  RAD_SAFE) ux =  RAD_SAFE;
+            else if (ux < -RAD_SAFE) ux = -RAD_SAFE;
+            if      (uy >  RAD_SAFE) uy =  RAD_SAFE;
+            else if (uy < -RAD_SAFE) uy = -RAD_SAFE;
+            const int64_t ax = ux < 0 ? -ux : ux;
+            const int64_t ay = uy < 0 ? -uy : uy;
+            if ((ax > (int64_t)u_cap_q) || (ay > (int64_t)u_cap_q)) {
+                const int64_t rad = ux * ux + uy * uy;
+                const q16 umag = sqrt_q16(rad);
+                if (umag > u_cap_q) {
+                    ++u_clamp_hits;
+                    if (cap_is_umax) ++u_max_hits;
+                    const q16 scale = reciprocal_q16(umag);
+                    ux = mul128_shr(mul128_shr(ux, (int64_t)scale, 16), (int64_t)u_cap_q, 16);
+                    uy = mul128_shr(mul128_shr(uy, (int64_t)scale, 16), (int64_t)u_cap_q, 16);
+                }
+            }
+            wind_x[i] = (int32_t)ux;
+            wind_y[i] = (int32_t)uy;
+        }
+    }
+    *digest_velocity_out = digest_of(wind_x, n, digest_of(wind_y, n, 0));
+
+    // ---- step 4c: compression work (step()'s loop, verbatim) --------------
+    {
+        const q16 work_clamp_q = quantize((double)t_work_clamp);
+        for (int y = 0; y < h; ++y) {
+            const int row = y * w;
+            for (int x = 0; x < w; ++x) {
+                const int i = row + x;
+                if (solid[i] || is_vacuum[i]) continue;
+                const int il = mirror_idx(i, y, x - 1, h, w, solid);
+                const int ir = mirror_idx(i, y, x + 1, h, w, solid);
+                const int iu = mirror_idx(i, y - 1, x, h, w, solid);
+                const int id = mirror_idx(i, y + 1, x, h, w, solid);
+                const q16 dux = mul_q16(wind_x[ir] - wind_x[il], inv_2dx_q);
+                const q16 duy = mul_q16(wind_y[id] - wind_y[iu], inv_2dx_q);
+                const q16 div_new = dux + duy;
+                q16 k = mul_q16(gamma_m1_q, div_new);
+                k = mul_q16(k, dt_q);
+                if (k > work_clamp_q)       { k = work_clamp_q;  ++work_clamp_hits; }
+                else if (k < -work_clamp_q) { k = -work_clamp_q; ++work_clamp_hits; }
+                const q16 dT = mul_q16(k, temperature[i]);
+                q16 t_new = sat_add_q16(temperature[i], (q16)(-(int64_t)dT));
+                if (t_new < t_min_q) { t_new = t_min_q; ++energy_floor_hits; }
+                else if (t_new > t_max_phys_q) { t_new = t_max_phys_q; ++t_max_phys_hits; }
+                temperature[i] = t_new;
+            }
+        }
+    }
+    *digest_compression_out = digest_of(temperature, n, 0);
+
+    counters_out[0] = u_clamp_hits;
+    counters_out[1] = u_max_hits;
+    counters_out[2] = work_clamp_hits;
+    counters_out[3] = energy_floor_hits;
+    counters_out[4] = t_max_phys_hits;
 }
