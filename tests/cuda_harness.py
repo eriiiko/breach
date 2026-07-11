@@ -114,9 +114,18 @@ def cuda_dll_dir() -> Path | None:
 # gate (tests/cuda_eos_step_check.py: 120-tick breach+blast REAL-engine
 # trajectory, CPU run vs GPU run — every EOS field, all six digests, all five
 # rail counters per tick, dispatch-fired telemetry, CPU golden untouched).
+# P6.7 (eos-p6-7-trace-smoke): "trace_smoke" REMOVED — the once-per-tick trace
+# advection GPU dispatch (run_substeps now calls cuda_smoke.cu's smoke_step, the
+# verbatim S4a device mirror, when set_smoke_backend is on; the P3 cadence assert
+# at physics_engine.cpp is resolved). The kernel arithmetic is unchanged from S4a
+# (only the dispatch cadence moved: once/tick on the solver's final corrected
+# wind), re-proved bit-identical via the P6.7 gate (tests/cuda_trace_smoke_check.py:
+# isolated all-branch synthetic A/B incl. degenerate/all-solid/all-vacuum/near-
+# empty planes + a 120-tick blast+venting multi-room REAL-engine trajectory, CPU
+# smoke backend vs GPU smoke backend, per-tick byte-compare on the trace planes;
+# P4 decay->inert_N2 stays CPU in both, CPU golden untouched).
 EOS_P6_PENDING_KERNELS = {
     "conduction",
-    "trace_smoke",
     "fire",
     "combustion",
 }
