@@ -24,6 +24,7 @@
 #include "cuda_bulk_transport.h"  // EOS P6.1: GPU bulk donor-cell flux + backend flag
 #include "cuda_kick_compression.h"  // EOS P6.4: GPU kick + compression work + backend flag
 #include "cuda_mg_solve.h"     // EOS P6.3: GPU multigrid pressure solve + backend flag
+#include "cuda_eos_step.h"     // EOS P6.5: chained full-eos.step dispatch predicate
 // CUDA-S5 cuda_wave.h / CUDA-S7 cuda_atmosphere.h RETIRED in EOS P6.0 — the
 // wave+diffuse solvers they mirrored were replaced by the compressible EOS
 // solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
@@ -632,6 +633,24 @@ PYBIND11_MODULE(breach_physics, m) {
           "ENTIRE V-cycle iteration on the GPU; writes the solved P into "
           "p_out and returns (digest, launches_actual, launches_naive) — the "
           "digest is bit-identical to eos_mg_solve_ref / digest_helmholtz.");
+
+    // EOS P6.5: the chained full-eos.step engine dispatch (cuda_eos_step.cu).
+    // PhysicsEngine::run_substeps now routes eos.step to the GPU orchestration
+    // when EVERY one of the four EOS kernel-surface flags is on (sl_advection
+    // && bulk_flux && mg_solve && kick_compression — the review is silent on a
+    // master flag, so they are ANDed; there is deliberately NO separate
+    // setter). get_eos_step_backend exposes the dispatch predicate;
+    // eos_step_cuda_calls counts the ticks that actually ran the GPU chain,
+    // so the P6.5 gate can prove the dispatch FIRED (a silently-CPU "GPU run"
+    // would make a bit-identity gate vacuous).
+    m.def("get_eos_step_backend",
+          []() { return breach_cuda::eos_step_backend_is_cuda(); },
+          "True iff run_substeps will dispatch eos.step to the GPU chain "
+          "(all four EOS kernel-surface backend flags are on).");
+    m.def("eos_step_cuda_calls",
+          []() { return breach_cuda::eos_step_cuda_calls(); },
+          "How many engine ticks have run the chained GPU eos.step path "
+          "(P6.5 dispatch-fired telemetry).");
 #else
     m.attr("HAS_CUDA") = false;
 #endif

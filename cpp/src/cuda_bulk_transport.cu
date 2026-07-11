@@ -297,6 +297,34 @@ void bulk_flux_transport(
                                coeffE.data(), coeffS.data(), h, w);
 }
 
+// ---- EOS P6.5: device-pointer launcher (header rationale) -------------------
+// The SAME five anonymous-namespace kernels as the per-call loop above — ONE
+// transcription — for one conservative plane on caller-owned device buffers.
+// Launch order B1..B5 on the default stream: each kernel boundary is the
+// CPU's loop boundary, exactly as in the isolated entry.
+void bulk_flux_plane_device(
+        int32_t* d_N,
+        const int32_t* d_wind_x, const int32_t* d_wind_y,
+        const bool* d_solid, const bool* d_is_vacuum,
+        const int32_t* d_coeffE, const int32_t* d_coeffS,
+        int32_t* d_dq_e, int32_t* d_dq_s, int32_t* d_scale,
+        int h, int w) {
+    const int n = h * w;
+    const int block = 256;
+    const int grid = (n + block - 1) / block;
+    bulk_flux_dq<<<grid, block>>>(d_N, d_wind_x, d_wind_y, d_solid,
+                                  d_coeffE, d_coeffS, d_dq_e, d_dq_s, h, w);
+    cuda_check(cudaGetLastError(), "flux_dq launch (P6.5 chained)");
+    bulk_scale<<<grid, block>>>(d_dq_e, d_dq_s, d_N, d_scale, h, w);
+    cuda_check(cudaGetLastError(), "scale launch (P6.5 chained)");
+    bulk_scale_apply<<<grid, block>>>(d_dq_e, d_dq_s, d_scale, h, w);
+    cuda_check(cudaGetLastError(), "scale-apply launch (P6.5 chained)");
+    bulk_diverge<<<grid, block>>>(d_N, d_dq_e, d_dq_s, h, w);
+    cuda_check(cudaGetLastError(), "diverge launch (P6.5 chained)");
+    bulk_clamp<<<grid, block>>>(d_N, d_solid, d_is_vacuum, n);
+    cuda_check(cudaGetLastError(), "clamp launch (P6.5 chained)");
+}
+
 namespace {
 bool g_bulk_flux_backend_cuda = false;
 }

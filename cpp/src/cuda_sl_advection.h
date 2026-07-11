@@ -51,11 +51,37 @@ uint64_t eos_sl_advect(
     const float* dyn_permeability, // FLOAT (h,w) — cmask build only (<= 0 test)
     int h, int w, float dt, int n_sub);
 
-// Backend selection (P6.2 gate wiring, the surviving-backend idiom). NOTE:
-// no engine dispatch site consumes this yet — EOS orchestration dispatch is
-// P6.5 ("the big flip", review §4); until then the flag exists so the gate /
-// tooling surface matches the other kernels and P6.5 has a switch to wire.
-// Defaults false.
+// ---- EOS P6.5: device-pointer launchers for the chained eos.step dispatch --
+// The P6.5 orchestrator (cuda_eos_step.cu) keeps u/T/gas DEVICE-RESIDENT
+// across the whole substep loop, so it needs to launch the SAME two kernels
+// the isolated entry above launches — on buffers it already owns on the
+// device. These wrappers are defined in cuda_sl_advection.cu (same TU as the
+// kernels — exactly ONE transcription of each kernel exists) and launch with
+// the identical block/grid shape the isolated entry uses. All pointers are
+// DEVICE pointers. Bit-identity: same kernels, same launch geometry; only the
+// buffer residency differs (a transfer-boundary choice, not arithmetic).
+
+// K0 — the per-tick cmask build (sealed/breach/live table), once per tick.
+void sl_cmask_build_device(const bool* d_solid, const bool* d_vacuum,
+                           const float* d_perm, uint8_t* d_cmask, int n);
+
+// K1 — ONE fused advection substep: reads the frozen (src_vx, src_vy, src_t)
+// snapshot, writes wind/temperature in place (solid u zeroed, vacuum T := 0).
+// The caller owns the pre-substep D2D snapshot (the CPU's vx_src_/vy_src_/
+// t_src_ copies) and the substep loop.
+void sl_advect3_device(int32_t* d_wind_x, int32_t* d_wind_y,
+                       int32_t* d_temperature,
+                       const int32_t* d_src_vx, const int32_t* d_src_vy,
+                       const int32_t* d_src_t,
+                       const bool* d_solid, const bool* d_vacuum,
+                       const uint8_t* d_cmask,
+                       int32_t dt_s_q, int h, int w);
+
+// Backend selection (P6.2 gate wiring, the surviving-backend idiom). EOS
+// P6.5: now CONSUMED by the engine dispatch — PhysicsEngine::run_substeps
+// routes eos.step to the GPU orchestration when this AND the other three
+// EOS-kernel flags are on (breach_cuda::eos_step_backend_is_cuda(),
+// cuda_eos_step.h). Defaults false.
 bool sl_advection_backend_is_cuda();
 void set_sl_advection_backend_cuda(bool on);
 

@@ -268,12 +268,13 @@ def part1b_multitick_live() -> bool:
 # ----------------------------------------------------------------------------
 # EOS P6.0: wave/atmos backends retired (cuda_wave.cu / cuda_atmosphere.cu
 # deleted with their CPU solvers); the all-on set is now 5.
-# EOS P6.1: + set_bulk_flux_backend (flag-only until the P6.5 engine dispatch
-# wires it into eos_solver — flipping it is a no-op in the engine until then,
-# but the all-on set must include it the day P6.5 lands).
-# EOS P6.4: + set_kick_compression_backend (same flag-only contract).
+# EOS P6.5: the four EOS kernel-surface flags (bulk_flux, sl_advection,
+# mg_solve, kick_compression) are now LIVE-DISPATCHED — with all four on,
+# run_substeps routes the whole eos.step tick to the chained GPU orchestration
+# (cuda_eos_step.cu). All six EOS-era setters are in the all-on set.
 _SETTERS = ("set_temperature_backend", "set_water_backend", "set_smoke_backend",
             "set_fire_backend", "set_raycaster_backend", "set_bulk_flux_backend",
+            "set_sl_advection_backend", "set_mg_solve_backend",
             "set_kick_compression_backend")
 
 
