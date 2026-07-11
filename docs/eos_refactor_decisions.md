@@ -2,7 +2,8 @@
 
 > **Status:** living decisions record for the pressure-model refactor — adopt **rung B**
 > (genuine compressible ideal gas, `P = C·N·T`). Companions: `eos_research_report.md` (the
-> A/B/CFL evidence), `eos_refactor_interaction_map.md` (code-grounded interaction inventory).
+> A/B/CFL evidence), `docs/archive/eos_refactor_interaction_map.md` (code-grounded interaction
+> inventory; archived P7 — design-prep, absorbed by the design doc + the as-built chapter folds).
 > Decisions taken 2026-07-08 → 07-09 (Erik + Claude).
 >
 > **RESUME PROTOCOL (Erik's request):** next session, *quickly re-confirm the LOCKED decisions

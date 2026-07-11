@@ -1,9 +1,11 @@
 # EOS refactor — design document **v2** (rung B, compressible ideal gas)
 
 > **Status:** v2 DRAFT for round-2 critique, then Erik. Supersedes v1 in place; the round-1
-> critique lives at `docs/eos_refactor_design_critique.md`. Companions:
+> critique lives at `docs/archive/eos_refactor_design_critique.md` (archived P7 — folded into v2).
+> Companions:
 > `eos_refactor_decisions.md` (LOCKED decisions incl. the three v2 calls below),
-> `eos_refactor_interaction_map.md`, `eos_research_report.md` §4. The float prototype
+> `docs/archive/eos_refactor_interaction_map.md` (archived P7 — design-prep, absorbed here),
+> `eos_research_report.md` §4. The float prototype
 > (`prototypes/eos/scheme_rung_b.py`, branch `eos-prototype`) is demoted to a **shape
 > reference only** — v2 deliberately does *not* carry its numerics forward (see §3).
 >
