@@ -85,6 +85,13 @@ from level_loader import (SPACE_CODE, load as load_level,
 from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_FURNITURE, MAT_GLASS,
                                   MAT_HULL, MAT_STEEL, MAT_WOOD,
                                   MATERIAL_NAMES)
+# The pure paint plumbing is shared with tools/map_editor.py (engine/15 §0).
+# Re-exported here so tests/test_level_editor_tool.py (and any older caller)
+# keeps importing them from this module unchanged.
+from level_edit_common import (BRUSH_MAX, BRUSH_MIN, UNDO_CAPACITY,  # noqa: F401
+                               UndoRing, art_px_to_tile, brush_rect,
+                               build_palette, line_tiles, paint_tiles,
+                               save_tilemap_csv)
 
 
 # ---------------------------------------------------------------------------
@@ -163,130 +170,21 @@ def save_align(toml_path, offset_px, px_per_tile) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# MATERIAL PAINT — palette, inverse transform, brush, CSV save, undo ring
-# (pure module-level helpers: imported by tests/test_level_editor_tool.py)
+# MATERIAL PAINT — palette + view constants. The pure paint helpers
+# (art_px_to_tile / brush_rect / paint_tiles / line_tiles / save_tilemap_csv /
+# UndoRing) live in tools/level_edit_common.py, shared with the map editor,
+# and are re-exported above for tests/test_level_editor_tool.py.
 # ---------------------------------------------------------------------------
 
 # Editor palette over the canon v2 CSV vocabulary (level format v2 §1.1:
 # codes ARE material ids, plus SPACE_CODE). id -> (display name, overlay RGB);
-# AIR has no fill (None) — it is the absence of an overlay.
-PALETTE = {
-    MAT_AIR:    (MATERIAL_NAMES[MAT_AIR].upper(), None),
-    MAT_HULL:   (MATERIAL_NAMES[MAT_HULL].upper(), (220, 60, 50)),     # red
-    MAT_WOOD:   (MATERIAL_NAMES[MAT_WOOD].upper(), (240, 150, 40)),    # orange
-    MAT_DOOR:   (MATERIAL_NAMES[MAT_DOOR].upper(), (240, 220, 60)),    # yellow
-    MAT_STEEL:  (MATERIAL_NAMES[MAT_STEEL].upper(), (70, 130, 180)),   # steel blue
-    MAT_GLASS:  (MATERIAL_NAMES[MAT_GLASS].upper(), (80, 220, 230)),   # cyan
-    MAT_FURNITURE: (MATERIAL_NAMES[MAT_FURNITURE].upper(), (160, 110, 60)),  # warm brown (crates)
-    SPACE_CODE: ("SPACE", (40, 70, 200)),                              # deep blue
-}
-PALETTE_ORDER = (MAT_AIR, MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_STEEL,
-                 MAT_GLASS, MAT_FURNITURE, SPACE_CODE)
+# AIR has no fill (None) — it is the absence of an overlay. Generated from
+# MATERIAL_NAMES (§1 rule: no tool-local vocabulary).
+PALETTE = build_palette()
+PALETTE_ORDER = tuple(sorted(MATERIAL_NAMES)) + (SPACE_CODE,)
 OVERLAY_ALPHA = 102            # ~40% — live per-material fill (WYSIWYG paint)
 OVERLAY_COLORS = {pid: (c[0], c[1], c[2], OVERLAY_ALPHA)
                   for pid, (_, c) in PALETTE.items() if c is not None}
-BRUSH_MIN, BRUSH_MAX = 1, 9
-UNDO_CAPACITY = 100
-
-
-def art_px_to_tile(ax, ay, offset_px, px_per_tile) -> tuple:
-    """Inverse of :func:`level_loader.tile_to_art_px`: art pixel ->
-    FRACTIONAL tile coordinates (floor() them for the containing tile index).
-    ``px_per_tile`` is a scalar or an (x, y) pair, exactly like the forward
-    transform."""
-    if isinstance(px_per_tile, (list, tuple)):
-        ppt_x, ppt_y = float(px_per_tile[0]), float(px_per_tile[1])
-    else:
-        ppt_x = ppt_y = float(px_per_tile)
-    return ((float(ax) - float(offset_px[0])) / ppt_x,
-            (float(ay) - float(offset_px[1])) / ppt_y)
-
-
-def brush_rect(tx: int, ty: int, brush: int,
-               grid_w: int, grid_h: int):
-    """Inclusive cell rect (x0, y0, x1, y1) of a square brush of side
-    ``brush`` centered on tile (tx, ty), clipped to the grid. Even sides
-    extend the extra cell right/down of center. Returns None when the center
-    tile is outside the grid — the brush paints nothing from out there."""
-    if not (0 <= tx < grid_w and 0 <= ty < grid_h):
-        return None
-    lo = (int(brush) - 1) // 2
-    hi = int(brush) // 2
-    return (max(0, tx - lo), max(0, ty - lo),
-            min(grid_w - 1, tx + hi), min(grid_h - 1, ty + hi))
-
-
-def paint_tiles(grid: np.ndarray, tx: int, ty: int, mat_id: int,
-                brush: int = 1) -> int:
-    """Paint ``mat_id`` into ``grid`` IN PLACE with a square brush centered
-    on tile (tx, ty) (clipped to the grid; no-op when the center is outside).
-    Returns the number of cells whose value actually changed."""
-    h, w = grid.shape
-    r = brush_rect(int(tx), int(ty), brush, w, h)
-    if r is None:
-        return 0
-    x0, y0, x1, y1 = r
-    region = grid[y0:y1 + 1, x0:x1 + 1]
-    changed = int(np.count_nonzero(region != mat_id))
-    if changed:
-        region[...] = mat_id
-    return changed
-
-
-def line_tiles(x0: int, y0: int, x1: int, y1: int) -> list:
-    """Integer tile positions along the segment (x0,y0)->(x1,y1), inclusive.
-    A mouse drag is painted once per frame; walking this line between the
-    previous and current cursor tile keeps fast strokes connected instead of
-    leaving gaps where the cursor skipped tiles."""
-    steps = max(abs(int(x1) - int(x0)), abs(int(y1) - int(y0)))
-    if steps == 0:
-        return [(int(x0), int(y0))]
-    return [(round(x0 + (x1 - x0) * i / steps),
-             round(y0 + (y1 - y0) * i / steps)) for i in range(steps + 1)]
-
-
-def save_tilemap_csv(csv_path, grid: np.ndarray, write_bak: bool = True):
-    """Rewrite ``csv_path`` from ``grid`` (canon int codes), preserving the
-    file's newline convention (CRLF vs LF) and the single trailing newline —
-    the same write style as tools/migrate_tilemap_v2.py. When ``write_bak``
-    is True the original bytes go to ``<name>.bak`` first (the interactive
-    tool passes True exactly once per session, so the .bak keeps the
-    pre-session state). Returns the .bak path, or None when not written."""
-    csv_path = Path(csv_path)
-    original = csv_path.read_bytes()
-    newline = "\r\n" if b"\r\n" in original else "\n"
-    text = newline.join(
-        ",".join(str(int(v)) for v in row) for row in np.asarray(grid).tolist()
-    ) + newline
-    bak = None
-    if write_bak:
-        bak = csv_path.with_name(csv_path.name + ".bak")
-        bak.write_bytes(original)
-    csv_path.write_bytes(text.encode("ascii"))
-    return bak
-
-
-class UndoRing:
-    """Fixed-capacity LIFO ring of tilemap snapshots — one per paint stroke.
-
-    ``push`` stores an independent copy; when the ring is full the OLDEST
-    snapshot falls off. ``pop`` returns the most recent snapshot (newest
-    first) or None when empty."""
-
-    def __init__(self, capacity: int = UNDO_CAPACITY):
-        self.capacity = int(capacity)
-        self._snaps: list = []
-
-    def __len__(self) -> int:
-        return len(self._snaps)
-
-    def push(self, grid: np.ndarray) -> None:
-        self._snaps.append(np.array(grid, copy=True))
-        if len(self._snaps) > self.capacity:
-            self._snaps.pop(0)
-
-    def pop(self):
-        return self._snaps.pop() if self._snaps else None
 
 
 # ---------------------------------------------------------------------------
