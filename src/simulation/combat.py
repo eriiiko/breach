@@ -46,8 +46,10 @@ from simulation import wall_fixed
 from simulation.damage import KINETIC, DamagePacket, apply_packet
 from simulation.events import LaserFiredEvent, ShotFiredEvent, ExplosionEvent
 from simulation.gases import N_GASES
+from simulation.field_edit import EditMode, FieldEdit, Region
 from simulation.orders import (
     ORDER_GRENADE, ORDER_EXPLOSIVE, ORDER_FIRE, ORDER_MOVE_ATTACK,
+    MOVE_ORDER_TYPES,
 )
 from simulation import unit_fixed
 # Physics event entry points: re-exported for legacy imports; the detonation
@@ -56,7 +58,7 @@ from simulation import unit_fixed
 # simulation.combat.execute_payload (the apply_environmental_damage pattern).
 from simulation.physics import apply_explosion, add_explosion_smoke  # noqa: F401
 from simulation.payloads import execute_payload
-from simulation.status import composed_flags
+from simulation.status import apply_status, composed_flags
 # The two shipped coupling responses live in simulation.exchange now
 # (mechanics/05 coupling table, P1). Re-imported for compatibility — legacy
 # imports (`from simulation.combat import apply_environmental_damage, ...`)
@@ -395,9 +397,10 @@ def apply_temperature_ignition(gmap, o2_threshold, ignition_seed):
       ``q16 == 0``); gating on ``gmap.flammable`` is what stops a red-hot hull or
       glass tile (also threshold 0) from ever catching. Only fuel ignites.
     - **O2 check reuses the existing fire semantics.** The C++ ``FireSimulation``
-      kills a burning tile when the mean ``atmosphere`` of its 4-connected
-      AIR-SIDE (non-solid) neighbours drops below ``o2_threshold``; ignition uses
-      the SAME predicate (same threshold, same neighbourhood) so a tile cannot be
+      kills a burning tile when the mean REAL ``gas[O2]`` of its 4-connected
+      AIR-SIDE (non-solid) neighbours drops below ``o2_threshold`` (EOS refactor
+      P4 — was the ``atmosphere``/P proxy); ignition uses the SAME predicate
+      (same threshold, same neighbourhood, same field) so a tile cannot be
       ignited into a state the fire step would immediately suffocate. A flammable
       tile is itself solid (wood/door), so its O2 comes from the adjacent air.
     - **``max``, not assign.** ``fire = max(fire, ignition_seed)`` never lowers an
@@ -413,11 +416,13 @@ def apply_temperature_ignition(gmap, o2_threshold, ignition_seed):
     ----------
     gmap
         The :class:`GameMap`. Reads ``temperature`` (Q16.16), ``material``,
-        ``flammable``, ``solid``, ``atmosphere`` and the material table's
-        ``ignition_temp_q16``; writes ``fire`` in place.
+        ``flammable``, ``solid``, ``is_vacuum``, ``gas`` (the real O2 plane,
+        EOS refactor P4) and the material table's ``ignition_temp_q16``;
+        writes ``fire`` in place.
     o2_threshold : float
-        Minimum air-side-neighbour atmosphere for ignition (reuse the fire's
-        ``o2_threshold``, 0.60).
+        Minimum air-side-neighbour REAL N_O2 for ignition (reuse the fire's
+        ``o2_threshold`` — EOS refactor P4 recalibrated it against the new
+        N_O2 scale, ambient ~0.21; see config.toml [physics.fire]).
     ignition_seed : float
         Seed intensity a freshly-ignited tile gets (``I_seed`` ~ 0.1).
 
@@ -439,35 +444,37 @@ def apply_temperature_ignition(gmap, o2_threshold, ignition_seed):
     if not bool(hot.any()):
         return  # nothing crossed its threshold this tick (the dormant case)
 
-    # --- O2 proxy: mean `atmosphere` over the OPEN (non-wall, non-vacuum)
+    # --- O2 proxy: mean REAL `gas[O2]` over the OPEN (non-wall, non-vacuum)
     # 4-neighbours — the EXACT predicate the C++ fire O2 check uses
-    # (fire_simulation.cpp:72-82, mask `!is_wall && !is_vacuum`, with
-    # `is_wall == gmap.solid`). S3a makes this an INTEGER reduction on the int32
-    # Q16.16 atmosphere, bit-matching the integer mean the C++ fire adopts in S3b
+    # (fire_simulation.cpp, mask `!is_wall && !is_vacuum`, with
+    # `is_wall == gmap.solid`). EOS refactor P4 (design §6, item 3): this used
+    # to read `atmosphere` (P, a pressure proxy) — it now reads the REAL bulk
+    # O2 density plane (gmap.gas[O2]), the SAME re-pointing FireSimulation's
+    # own O2 gate got in C++, so a tile still cannot ignite into a state the
+    # fire step would immediately suffocate (the design invariant, unchanged —
+    # only the underlying field did). S3a made this an INTEGER reduction on the
+    # int32 Q16.16 field, bit-matching the integer mean the C++ fire adopts
     # (fixed_point.h mean_sum/mean_round): an int64 neighbour-sum + a
-    # round-half-away-from-zero mean, then a Q16.16 threshold compare. The float
-    # dequantize that used to decide who ignites (the last Python float bridge on
-    # the fire-write path) is gone — Python int math is cross-machine-exact.
+    # round-half-away-from-zero mean, then a Q16.16 threshold compare.
     #
-    # WHY the mask now excludes vacuum: the C++ P gate excludes vacuum neighbours
-    # from BOTH sum and count; the pre-S3a Python mask (`~solid` only) INCLUDED
-    # them (atmosphere==0 on a vacuum tile, but the count still incremented),
-    # which lowered the mean below the C++ value. Excluding vacuum (matching the
-    # C++ mask) is what makes the two O2 predicates bit-identical — the
-    # design-note invariant (above, combat.py docstring): a tile must not ignite
-    # into a state the fire step would immediately suffocate.
+    # WHY the mask excludes vacuum: the C++ O2 gate excludes vacuum neighbours
+    # from BOTH sum and count; including them would lower the mean below the
+    # C++ value (a vacuum tile holds no gas, but the count would still
+    # increment). Excluding vacuum (matching the C++ mask) is what makes the
+    # two O2 predicates bit-identical.
     h, w = temperature.shape
     open_nbr = (~gmap.solid) & (~gmap.is_vacuum)   # True == counts toward O2 (== C++)
-    atm_q = gmap.atmosphere.astype(np.int64)       # int32 Q16.16 -> int64 (exact, order-free)
-    sum_atm = np.zeros((h, w), dtype=np.int64)     # Q16.16 sum (int64, no overflow)
+    o2_idx = gmap.gases.name_to_id["o2"]
+    o2_q = gmap.gas[o2_idx].astype(np.int64)       # int32 Q16.16 -> int64 (exact, order-free)
+    sum_o2 = np.zeros((h, w), dtype=np.int64)      # Q16.16 sum (int64, no overflow)
     count = np.zeros((h, w), dtype=np.int64)       # neighbour count 0..4
     # N, S, E, W (fixed order; integer sum is order-independent regardless).
     for dy, dx in ((-1, 0), (1, 0), (0, 1), (0, -1)):
         ys0, ys1 = max(0, -dy), h - max(0, dy)      # this-tile row span
         xs0, xs1 = max(0, -dx), w - max(0, dx)
-        nbr_atm = atm_q[ys0 + dy:ys1 + dy, xs0 + dx:xs1 + dx]
+        nbr_o2 = o2_q[ys0 + dy:ys1 + dy, xs0 + dx:xs1 + dx]
         nbr_open = open_nbr[ys0 + dy:ys1 + dy, xs0 + dx:xs1 + dx]
-        sum_atm[ys0:ys1, xs0:xs1] += np.where(nbr_open, nbr_atm, np.int64(0))
+        sum_o2[ys0:ys1, xs0:xs1] += np.where(nbr_open, nbr_o2, np.int64(0))
         count[ys0:ys1, xs0:xs1] += nbr_open.astype(np.int64)
     # Round-half-away-from-zero mean == fixed_point.h::mean_round (sign-symmetric,
     # no DC bias). A fully walled-in tile (count == 0) averages to 0 -> below
@@ -476,22 +483,24 @@ def apply_temperature_ignition(gmap, o2_threshold, ignition_seed):
     #
     # NEGATIVE-BRANCH FIX (S3b, review carry-forward #2): the C++ mean_round divide
     # TRUNCATES TOWARD ZERO (C++ integer `/`), NOT toward -inf. Python `//` FLOORS
-    # (toward -inf), so the two diverge on a NEGATIVE neighbour sum — and the
-    # atmosphere CAN dip transiently negative (wave forcing subtracts, no hard >=0
-    # clamp). To make the Python ignition twin and the C++ fire P gate bit-match on
-    # ALL inputs (not just non-negative ones — the S3a tie-only gap), emulate
-    # trunc-toward-zero on the negative branch: trunc(a/b) = -((-a)//b) for b>0.
+    # (toward -inf), so the two diverge on a NEGATIVE neighbour sum. EOS refactor
+    # P4: `gas[O2]` is a transported bulk density, clamped >= 0 by construction
+    # (bulk_transport.cpp's final clamp) — it can never actually go negative the
+    # way the old `atmosphere` proxy could (wave forcing had no hard floor) — but
+    # the shared trunc-toward-zero emulation is KEPT so this stays bit-identical
+    # to the C++ mean_round on ANY input, not just the ones this field happens to
+    # produce today: trunc(a/b) = -((-a)//b) for b>0.
     safe_count = np.where(count < 1, np.int64(1), count)
     half = safe_count // 2
-    pos_num = sum_atm + half           # >= 0 branch: (sum+half) trunc == floor
-    neg_num = sum_atm - half           # <  0 branch: trunc toward 0, NOT floor
-    mean_atm = np.where(sum_atm >= 0,
-                        pos_num // safe_count,
-                        -((-neg_num) // safe_count))      # Q16.16 mean (int64), trunc-to-0
+    pos_num = sum_o2 + half            # >= 0 branch: (sum+half) trunc == floor
+    neg_num = sum_o2 - half            # <  0 branch: trunc toward 0, NOT floor
+    mean_o2 = np.where(sum_o2 >= 0,
+                       pos_num // safe_count,
+                       -((-neg_num) // safe_count))       # Q16.16 mean (int64), trunc-to-0
     # Threshold quantized ONCE into Q16.16 — a plain integer >= compare, no float.
     from simulation import fire_fixed as _fire_fx
     o2_threshold_q = _fire_fx.quantize_scalar(float(o2_threshold))
-    has_o2 = (count > 0) & (mean_atm >= o2_threshold_q)
+    has_o2 = (count > 0) & (mean_o2 >= o2_threshold_q)
 
     ignite = hot & has_o2
     if not bool(ignite.any()):
@@ -560,8 +569,11 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
     Lifted from ``game.py:_process_shooting``; W2 resolves each shooter's
     weapon via ``unit.weapon_id`` → the WeaponTable row and DISPATCHES BY
     ARCHETYPE — ``projectile`` → :func:`fire_burst`, ``hitscan`` →
-    :func:`fire_beam` (other archetypes have no trigger path here yet:
-    LOBBED/PLACED ride their order flows, SPRAY is W4, MELEE W5). The
+    :func:`fire_beam`, ``spray`` → :func:`start_spray_burst` (W4 — the
+    burst's per-tick deposits ride :func:`process_sprays` in the same
+    shooting slot), ``melee`` → :func:`melee_strike` (W5 — adjacency
+    replaces the range/LOS gates; the remaining archetypes have no
+    trigger path here: LOBBED/PLACED ride their order flows). The
     deterministic SPREAD MODE RULE (mechanics/03 §3): an explicit stationary
     fire order aims — ``spread_deg``; Move & Attack auto-fire snaps —
     ``spread_snap_deg``. No per-unit aim state.
@@ -613,6 +625,18 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
                     break
             continue
 
+        # SPRAY (W4, mechanics/03 §5) — the trigger-side gates. A burst in
+        # progress owns the trigger (deposits ride process_sprays; no state
+        # is touched here until it ends). The STATIONARY RULE (v1, of
+        # record): a spray fire order arms only while the unit has no
+        # movement order in the same phase — the sprayer stands still.
+        if weapon.archetype == "spray":
+            if getattr(u, "spray_ticks_left", 0) > 0:
+                continue
+            if any(o.phase == phase and o.order_type in MOVE_ORDER_TYPES
+                   for o in u.orders):
+                continue
+
         # Burst cadence gate.
         if tick - u.last_fire_tick < weapon.rof_interval_ticks:
             continue
@@ -624,6 +648,22 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
 
         target_fx = fire_order.target_fx
         target_fy = fire_order.target_fy
+
+        # MELEE branch of the archetype dispatch (W5, mechanics/03 §5):
+        # ADJACENCY REPLACES the range/LOS gates below (touching footprints
+        # have no tile between them — the center-distance range check and
+        # the ray test are the RANGED marchers' geometry) and the spread
+        # cone is meaningless on a blade — no cone draw, ever. A connecting
+        # strike charges the rof cadence (and the mag machinery — a no-op
+        # at mag_size 0, both shipped rows); a whiff charges NOTHING and
+        # retries next tick while the order stands.
+        if weapon.archetype == "melee":
+            if melee_strike(units, u, target_fx, target_fy, rng, events,
+                            weapon):
+                mag_spend(u, weapon, tick)
+                u.last_fire_tick = tick
+            continue
+
         uc_fx = u.center_tile_x()
         uc_fy = u.center_tile_y()
 
@@ -643,9 +683,17 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
         # cone selection; with no statuses it is a dead path (FLAGS_DEFAULT
         # has can_aim True), bit-identical to pre-W3.
         spread = weapon.spread_deg if flags.can_aim else weapon.spread_snap_deg
-        _dispatch_trigger(gmap, units, u, uc_fx, uc_fy, target_fx, target_fy,
-                          tick, shots, real_time, rng, events, bullets,
-                          weapon, spread, queue)
+        if weapon.archetype == "spray":
+            # SPRAY branch of the archetype dispatch (W4): arm the burst —
+            # the deposits themselves ride process_sprays in this same
+            # shooting slot. Handled here rather than in _dispatch_trigger
+            # because the burst captures the ORDER (interruption consumes
+            # it). Spread is meaningless on a cone weapon — no draw, ever.
+            start_spray_burst(u, weapon, fire_order, tick)
+        else:
+            _dispatch_trigger(gmap, units, u, uc_fx, uc_fy,
+                              target_fx, target_fy, tick, shots, real_time,
+                              rng, events, bullets, weapon, spread, queue)
         mag_spend(u, weapon, tick)
         u.last_fire_tick = tick
 
@@ -681,6 +729,16 @@ def auto_fire(gmap, units, u, tick, shots, real_time, rng, events=None,
         if not weapon_id:
             return
         weapon = weapon_tables().weapons.by_name[weapon_id]
+    # SPRAY weapons never auto-fire (W4 v1 rule, mechanics/03 §5): a spray
+    # is an explicit stationary commitment, not fire-on-the-move. Bail
+    # BEFORE any state is touched (cadence read, mag bind) so a spray-armed
+    # unit on Move & Attack is bit-identical to one with no trigger at all.
+    # MELEE joins the skip (W5 v1 rule): a strike takes an explicit order
+    # naming the target tile — auto-fire's nearest-visible-enemy pick plus
+    # _dispatch_trigger's marcher shape don't describe a blade; revisit if
+    # Move & Attack should stab-on-contact (mechanics/03 §8).
+    if weapon.archetype in ("spray", "melee"):
+        return
     if tick - u.last_fire_tick < weapon.rof_interval_ticks:
         return
     # W3 ammo economy — same gate as the fire-order path (dead for mag 0).
@@ -910,6 +968,363 @@ def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
                 from_tile=(fx1, fy1),
                 to_tile=(rx, ry),
             ))
+
+
+# ---------------------------------------------------------------------------
+# SPRAY (mechanics/03 §1/§5, W4): a sustained cone of FIELD WRITES — no
+# projectile entity, no unit code. The two-terminals invariant, hard: this
+# section writes ONLY world fields (heat / gas) through the FieldEdit queue.
+# Units standing in the flames/cloud are damaged by the EXISTING exchange
+# rows — heat | max (apply_environmental_damage, step 9c) and gas[poison]
+# (apply_poison_dose, step 9c3) — ZERO new damage code, and a test asserts
+# no W4 path touches unit HP.
+#
+# v1 burst model (the stationary rule, documented of record):
+#   - a burst starts ONLY from an EXPLICIT fire order while the unit has no
+#     movement order in the same phase (the sprayer stands still — a braced
+#     hose, not a fire-on-the-move weapon);
+#   - Move & Attack auto-fire SKIPS spray weapons entirely;
+#   - one trigger = one burst = weapon.burst_ticks consecutive ticks of cone
+#     deposits (1.5 s -> 36 @ 24 tps), deposited in the shooting slot;
+#   - a standing fire order re-triggers the next burst as soon as the last
+#     one ends (continuous hosing) until the mag runs dry — mag_size counts
+#     BURSTS (W3 machinery: mag_gate / mag_spend per trigger);
+#   - interruption: composed can_act going False (stun / knockdown /
+#     paralysis) stops the burst THAT tick, the fire order is CONSUMED, and
+#     the burst does not resume when the status clears.
+#
+# Determinism (engine/14): NO RNG anywhere. Aim bearing + cone cosine
+# through the deterministic kit (unit_fixed — door 1); cone membership is
+# PURE INTEGER (squared Q16.16 compare, below); falloff is an exact IEEE
+# divide by an integer distance (door 3), quantized ONCE at the FieldEdit
+# combine (door 2); traversal is fixed row-major.
+# ---------------------------------------------------------------------------
+# source_id namespace for spray-issued edits (engine/13 stable-sort key):
+# physics.py owns 1 (_SRC_EXPLOSION) and 2 (_SRC_EXPLOSION_SMOKE),
+# payloads.py 3 (gas) and 4 (ignite); the spray continues the sequence.
+_SRC_SPRAY_HEAT = 5
+_SRC_SPRAY_GAS = 6
+
+
+def spray_cone_tiles(gmap, ay, ax, target_fx, target_fy, range_tiles,
+                     cone_half_angle_degrees, exclude=()):
+    """Yield ``(y, x, falloff_div)`` for every tile of an aimed spray cone,
+    in FIXED ROW-MAJOR order (mechanics/03 §5, W4).
+
+    Apex = the shooter's centre tile ``(ay, ax)`` (integers). Membership is
+    INTEGER-SAFE — no per-tile atan2, no per-tile float compare:
+
+        tile_dir = (dx, dy) = (x - ax, y - ay)            # plain ints
+        aim_q    = (cos_q, sin_q) of the kit aim bearing  # Q16.16 ints
+        dot_q    = dx*cos_q + dy*sin_q                    # Q16.16 int, exact
+        member  <=>  dot_q >= 0  AND
+                     dot_q^2 >= (dx^2 + dy^2) * c_q^2     # Q32.32 int compare
+
+    which is ``dot(tile_dir, aim_dir) >= |tile_dir| * cos(half_angle)`` with
+    both sides squared (valid for the non-negative branch; half-angles are
+    < 90°, so the ``dot_q >= 0`` gate loses nothing). ``c_q`` is the cone
+    cosine through the deterministic kit (``cos_rad`` of the half-angle —
+    the exact n/65536 value, computed once per call; door 1). The aim
+    bearing is the kit ``atan2`` from apex to the order target.
+
+    Range: ``dx^2 + dy^2 <= range_tiles^2`` (integer). The apex tile itself
+    (``dx == dy == 0``) is never a member. ``exclude`` is a set of
+    ``(tx, ty)`` tiles skipped ON TOP of membership — the caller passes the
+    shooter's own footprint (the NOZZLE RULE: the jet projects beyond the
+    operator's body, so the sprayer never hoses itself; without it the
+    3x3 footprint's ring tiles sit at distance 1 inside every cone).
+
+    Occlusion: a member tile is yielded only if ``gmap.has_los(ay, ax, y,
+    x)`` — flames do not pour through walls. The Bresenham check returns
+    True for a SOLID target tile with a clear path (it tests the tiles
+    CROSSED, not the endpoint), so the flame lands ON a wall face — which
+    is exactly how the wood wall receives its heat — but never beyond it.
+
+    ``falloff_div`` is the integer falloff divisor — the documented
+    1/distance form: ``max(1, isqrt(dx^2 + dy^2))`` (``math.isqrt`` — exact
+    integer floor square root, door 1). The caller authors each deposit as
+    ``amount / falloff_div`` (one correctly-rounded IEEE divide, door 3).
+    """
+    h, w = gmap.material.shape
+    ay = int(ay)
+    ax = int(ax)
+    r = int(range_tiles)
+    r_sq = r * r
+
+    # Aim bearing + unit vector through the kit; the exact n/65536 doubles
+    # scale to Q16.16 ints losslessly (quantize of an exact n/65536 is n).
+    angle = unit_fixed.atan2_rad(float(target_fy) - ay, float(target_fx) - ax)
+    cos_q = unit_fixed.quantize_scalar(unit_fixed.cos_rad(angle))
+    sin_q = unit_fixed.quantize_scalar(unit_fixed.sin_rad(angle))
+    # Cone cosine through the kit (math.radians is pure arithmetic; the cos
+    # itself is the deterministic fixed-point kit — no libm on this path).
+    c_q = unit_fixed.quantize_scalar(
+        unit_fixed.cos_rad(math.radians(float(cone_half_angle_degrees))))
+    c_sq = c_q * c_q                                   # Q32.32, exact int
+
+    for y in range(max(0, ay - r), min(h - 1, ay + r) + 1):
+        dy = y - ay
+        for x in range(max(0, ax - r), min(w - 1, ax + r) + 1):
+            dx = x - ax
+            dist_sq = dx * dx + dy * dy
+            if dist_sq == 0 or dist_sq > r_sq:
+                continue                               # apex / out of range
+            if (x, y) in exclude:
+                continue                               # the nozzle rule
+            dot_q = dx * cos_q + dy * sin_q            # Q16.16 int, exact
+            if dot_q < 0:
+                continue                               # behind the shooter
+            if dot_q * dot_q < dist_sq * c_sq:
+                continue                               # outside the cone
+            if not gmap.has_los(ay, ax, y, x):
+                continue                               # occluded — no pour
+            yield y, x, max(1, math.isqrt(dist_sq))
+
+
+def deposit_spray_cone(gmap, queue, shooter, weapon, ammo,
+                       target_fx, target_fy):
+    """Enqueue ONE tick of a spray burst's cone deposits (mechanics/03 §5).
+
+    Per member tile (fixed row-major order from :func:`spray_cone_tiles`),
+    falloff-scaled by the documented 1/distance divisor:
+
+    - ``ammo.heat_deposit > 0`` (the Dragon-7's fuel round): a TILE ADD
+      FieldEdit into the ``heat`` field — the engine/06 ingress buffer the
+      C++ TemperatureSolver converts (heat -> temperature -> ignition) and
+      the heat|max exchange row samples for unit damage. Quantized ONCE at
+      the FieldEdit heat combine (Q16.16 saturating add); heat lands on
+      walls too (no skip-mask) — that is how wood catches.
+    - ``ammo.gas_species`` nonempty: a TILE ADD FieldEdit into that gas
+      slice (the W3 ``field="gas"`` + ``channel`` path — resolved BY NAME
+      via ``gmap.gases.name_to_id``, the emit_gas rule), [0, 1] clamp +
+      solid skip-mask from the gas policy. Fuel haze for the Dragon-7,
+      the poison cloud itself for the Miasma Vent.
+
+    NO RNG, no unit reads, no unit writes. The queue flush (step 6b)
+    applies everything before the physics solvers run, so this tick's
+    flame heat converts to temperature THIS tick.
+    """
+    heat = float(ammo.heat_deposit)
+    gas_amount = float(ammo.gas_amount)
+    gas_id = None
+    if ammo.gas_species:
+        gas_id = int(gmap.gases.name_to_id[ammo.gas_species])
+    own = set(shooter.occupied_tiles())
+    for y, x, div in spray_cone_tiles(
+            gmap, shooter.center_tile_y(), shooter.center_tile_x(),
+            target_fx, target_fy, weapon.range_tiles,
+            weapon.cone_half_angle_degrees, exclude=own):
+        if heat > 0.0:
+            queue.enqueue(FieldEdit(
+                field="heat", region=Region.TILE, coords=(y, x),
+                amount=heat / div, mode=EditMode.ADD,
+                source_id=_SRC_SPRAY_HEAT,
+            ))
+        if gas_id is not None and gas_amount > 0.0:
+            queue.enqueue(FieldEdit(
+                field="gas", region=Region.TILE, coords=(y, x),
+                amount=gas_amount / div, mode=EditMode.ADD,
+                clamp=(0.0, 1.0), channel=gas_id,
+                source_id=_SRC_SPRAY_GAS,
+            ))
+
+
+def start_spray_burst(u, weapon, fire_order, tick):
+    """Arm a spray burst on ``u`` (the trigger side of the SPRAY archetype).
+
+    Called from :func:`process_shooting` once every gate has passed
+    (cadence, mag, range, LOS, the stationary rule). The burst state lives
+    ON THE UNIT (``spray_ticks_left`` / ``spray_target`` / ``spray_order``)
+    and is deliberately NOT in the synced digest surface — the
+    ``last_fire_tick`` / mag-state precedent: a deterministic derivation of
+    synced inputs (orders + tick) whose divergence would surface in the
+    hashed field/hp stream one tick later. Facing snaps to the aim bearing
+    (the fire_burst rule — kit trig, unit y-up convention).
+    """
+    u.spray_ticks_left = int(weapon.burst_ticks)
+    u.spray_target = (float(fire_order.target_fx), float(fire_order.target_fy))
+    u.spray_order = fire_order
+    u.facing = unit_fixed.atan2_rad(
+        -(float(fire_order.target_fy) - u.center_tile_y()),
+        float(fire_order.target_fx) - u.center_tile_x())
+
+
+def process_sprays(gmap, units, queue):
+    """One tick of every active spray burst — the W4 deposit pass, invoked
+    from the conductor in the SHOOTING SLOT (directly after
+    :func:`process_shooting`; call line only in simulation.py).
+
+    Fixed stored-unit order (the apply_environmental_damage convention —
+    order-free anyway: each burst writes through the stable-sorted edit
+    queue). Per unit with ``spray_ticks_left > 0``:
+
+    - dead: the burst dies with the unit (state cleared, nothing deposited);
+    - composed ``can_act`` False (mechanics/06 §4): INTERRUPTION — the
+      burst stops THIS tick (no deposit), the originating fire order is
+      CONSUMED (removed from the queue), no resume when the status clears;
+    - otherwise: deposit one cone tick (:func:`deposit_spray_cone`) toward
+      the burst's captured target and count the burst down. The weapon/ammo
+      rows are re-resolved from ``unit.weapon_id`` each tick (config-static
+      within a run — same rows every tick).
+
+    Draws NO randomness (the queue's noise machinery is unused — spray
+    edits carry ``noise = 0``), so a spray-free trajectory is bit-identical
+    to pre-W4 (the dormancy gate).
+    """
+    tables = weapon_tables()
+    for u in units:
+        ticks_left = getattr(u, "spray_ticks_left", 0)
+        if ticks_left <= 0:
+            continue
+        if not u.alive:
+            u.spray_ticks_left = 0
+            u.spray_order = None
+            u.spray_target = None
+            continue
+        if not composed_flags(u).can_act:
+            # Interruption: stop NOW, consume the order, never resume.
+            order = getattr(u, "spray_order", None)
+            if order is not None and order in u.orders:
+                u.orders.remove(order)
+            u.spray_ticks_left = 0
+            u.spray_order = None
+            u.spray_target = None
+            continue
+        weapon = tables.weapons.by_name[u.weapon_id]
+        ammo = tables.ammo_for_weapon(weapon)
+        tx, ty = u.spray_target
+        deposit_spray_cone(gmap, queue, u, weapon, ammo, tx, ty)
+        u.spray_ticks_left = ticks_left - 1
+        if u.spray_ticks_left <= 0:
+            u.spray_order = None
+            u.spray_target = None
+
+
+# ---------------------------------------------------------------------------
+# MELEE (mechanics/03 §1/§5, W5): adjacency + the §3 resolver. The knife and
+# the arc baton — the last live archetype branch of the closed set.
+#
+# The resolver collapses for melee exactly as the chapter says: TO-HIT IS
+# TRIVIALLY 1.0 — a strike happens at touching footprints, so there is no
+# intervening tile to be cover and no march to absorb; the exposure roll
+# does not exist on this path (NOT "always passes": it is NEVER DRAWN — the
+# lazy-roll rule). What remains is the crit-vs-facing roll (the knife's
+# assassin fantasy: crit_chance 0.15 x the behind-arc x4) — the SAME
+# attack_resolver seams the bullet march uses, drawn LAZILY (crit_chance 0,
+# the baton, draws nothing).
+#
+# Statuses are applied AT THE DELIVERY SITE (the §1 two-terminals wording:
+# "a baton applies STUNNED where it connects; packets themselves stay
+# damage-only"): melee_strike applies the packet through apply_packet and
+# THEN applies the weapon row's status_kind separately through
+# simulation.status.apply_status — the W3 TEARGAS->BLINDED pattern (the
+# coupling row applies BLINDED at the exposure site; the DamagePacket type
+# has no status field to smuggle one through). A strike that KILLS applies
+# no status — corpses don't get stunned (statuses freeze on corpses,
+# mechanics/06 §4, so a corpse status would be dead digest weight).
+#
+# Zombie melee is NOT this path: ai_zombie.py keeps its shipped bite
+# (center-distance threshold + CFG.zombie.melee_damage + the converting
+# kill) untouched; migrating NPC attacks onto weapon rows is future work
+# (mechanics/03 §7).
+# ---------------------------------------------------------------------------
+def melee_adjacent(attacker, target):
+    """THE ADJACENCY PREDICATE (of record, W5): two units are melee-adjacent
+    iff SOME occupied tile of one is within CHEBYSHEV DISTANCE 1 of SOME
+    occupied tile of the other — 8-connected footprint contact: edge contact
+    AND diagonal corner contact both count, and overlapping footprints
+    (distance 0) count trivially.
+
+    Exact for ANY footprint shape (it walks ``occupied_tiles()`` pairwise —
+    the spec §6 occupancy interface — not a bounding box), so a future
+    non-square rig gets the right answer for free; for today's square
+    footprints it equals "the two anchor rectangles, one dilated by 1,
+    intersect". Cost is bounded by the footprints (3x3 vs 3x3 = 81 integer
+    compares) and only paid per trigger attempt, never per tick.
+
+    Pure integer arithmetic on synced tile state (door 1); consumes nothing.
+    Deliberately NO ``has_los`` term: touching footprints have no tile
+    between them to occlude (diagonal corner contact across a wall corner
+    therefore CAN stab — accepted v1, documented in mechanics/03 §5).
+    """
+    a_tiles = attacker.occupied_tiles()
+    for (tx, ty) in target.occupied_tiles():
+        for (ax, ay) in a_tiles:
+            if -1 <= ax - tx <= 1 and -1 <= ay - ty <= 1:
+                return True
+    return False
+
+
+def melee_strike(units, attacker, target_fx, target_fy, rng, events, weapon):
+    """Resolve one melee trigger pull (mechanics/03 §5, W5). Returns True if
+    a strike CONNECTED (the caller then charges the rof cadence); False = a
+    whiff — no target at the order tile / not adjacent — which costs
+    nothing and is retried next tick while the order stands.
+
+    Target resolution: the FIRST living enemy in stored unit order whose
+    footprint occupies the order's target tile (``int()`` tiling, the march
+    convention) — deterministic, and the order names a TILE, not a unit
+    (the shipped fire-order shape; a moved target whiffs honestly).
+
+    The resolved strike, in fixed order (all inputs synced, engine/14):
+
+    1. facing snaps to the strike bearing (the fire_burst rule — kit atan2,
+       unit y-up convention), from attacker centre to TARGET centre;
+    2. amount = ``weapon.melee_damage`` (door-2 row int). No zombie
+       ``bullet_damage_multiplier`` — that is the BULLET site rule
+       (mechanics/06: a shipped-numbers artifact of the rifle path, not a
+       resistance; melee packets take plain mitigation);
+    3. the crit roll (LAZY: only if ``crit_chance > 0``): arc multiplier
+       off the target's synced facing vs the strike angle (screen
+       convention — the BulletInFlight.advance shape), one door-4 uniform,
+       amount scales by ``crit_mult`` in exact ints on success;
+    4. the packet through the pipeline (``apply_packet``, source="melee";
+       ``mark_killed_by_zombie`` stays False — player melee kills never
+       convert, conversion is the ZOMBIE bite's semantics);
+    5. the delivery-site status (``weapon.status_kind``, if any) on a
+       target still alive: ``apply_status`` with the row's derived
+       ``status_ticks`` (magnitude 0 — pure CC; the packet already carried
+       the damage). Applied AFTER the packet so "the baton stuns where it
+       connects" and a killing blow stuns no corpse.
+    """
+    tx, ty = int(target_fx), int(target_fy)
+    target = None
+    for e in units:
+        if e is attacker or not e.alive or e.team == attacker.team:
+            continue
+        if e.occupies((tx, ty)):
+            target = e
+            break
+    if target is None:
+        return False
+    if not melee_adjacent(attacker, target):
+        return False
+
+    fx1, fy1 = attacker.center_tile_x(), attacker.center_tile_y()
+    fx2, fy2 = target.center_tile_x(), target.center_tile_y()
+    # Facing = strike bearing (kit trig, unit y-up convention — the
+    # fire_burst rule); the strike angle itself stays in SCREEN convention
+    # for the arc classifier (the march-angle contract of arc_multiplier).
+    attacker.facing = unit_fixed.atan2_rad(-(fy2 - fy1), fx2 - fx1)
+    angle = unit_fixed.atan2_rad(fy2 - fy1, fx2 - fx1)
+
+    amount = int(weapon.melee_damage)
+    crit_chance = float(weapon.crit_chance)
+    if crit_chance > 0.0:
+        mult = attack_resolver.arc_multiplier(angle, target)
+        if attack_resolver.roll_crit(crit_chance, mult, rng):
+            amount = attack_resolver.scale_half_away(amount, weapon.crit_mult)
+
+    apply_packet(target,
+                 DamagePacket(amount=amount, dtype=weapon.melee_dtype_id,
+                              source_id=getattr(attacker, "id", -1)),
+                 events, source="melee")
+
+    if weapon.status_kind_id is not None and target.alive:
+        apply_status(target, weapon.status_kind_id, magnitude=0,
+                     duration_ticks=weapon.status_ticks,
+                     source_id=getattr(attacker, "id", -1))
+    return True
 
 
 # ---------------------------------------------------------------------------

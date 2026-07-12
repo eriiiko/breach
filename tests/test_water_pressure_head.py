@@ -112,14 +112,14 @@ def _sealed_room_level(n: int = 9, tile_size_m: float = 0.333) -> LevelData:
 # ---------------------------------------------------------------------------
 # 1. Uniform pressure ~ no-op: a constant head vanishes under the gradient
 # ---------------------------------------------------------------------------
-def _run_lumpy_pool(k_p: float, atm, wp, steps: int = 100) -> np.ndarray:
+def _run_lumpy_pool(k_p: float, atm, steps: int = 100) -> np.ndarray:
     h = w = 16
     depth = _lumpy(h, w)
     vx, vy = _zeros(h, w), _zeros(h, w)
     solid = _open(h, w)
     s = _solver(k_p=k_p)
     for _ in range(steps):
-        s.step(depth, vx, vy, None, atm, wp, solid, DT, 0.0, 0.0)
+        s.step(depth, vx, vy, None, atm, solid, DT, 0.0, 0.0)
     return depth
 
 
@@ -127,14 +127,16 @@ def test_uniform_pressure_approx_noop():
     """Same lumpy pool, two runs over 100 steps: uniform atmosphere == 1.0
     with k_p = 0.5 vs k_p = 0.0 (which gates the SAME arrays out bit-exactly,
     W1 test 7a). allclose to atol 1e-5, NOT bit-exact — the head adds the
-    constant k_p*1.0 to every cell's surface and float (a+c)-(b+c) != a-b,
-    so the velocity kicks differ in the last ulps (plan W1 test 7)."""
+    constant k_p*1.0 to every cell's surface and integer (a+c)-(b+c) != a-b
+    at the rounding boundary, so the velocity kicks differ in the last ulps
+    (plan W1 test 7). EOS refactor P3 (design §6 "water head"): `atm` is now
+    the single INTEGER derived pressure P (Q16.16 int32) — the old
+    atm(1.0)+wp(0.0) float pair collapses to one P=1.0 field (no wave_p arg)."""
     h = w = 16
-    atm = np.full((h, w), 1.0, dtype=np.float32)
-    wp = _zeros_f(h, w)  # uniform (zero) blast field (FLOAT — head bridge)
+    atm = np.full((h, w), wq(1.0), dtype=np.int32)
 
-    on = _run_lumpy_pool(0.5, atm, wp)
-    off = _run_lumpy_pool(0.0, atm, wp)
+    on = _run_lumpy_pool(0.5, atm)
+    off = _run_lumpy_pool(0.0, atm)
 
     # S1: compare in METRES; the head term is quantized into the integer surface,
     # so the no-op holds to ~Q16.16 granularity accumulated over 100 steps
@@ -158,13 +160,12 @@ def test_gaussian_bump_craters_centre_raises_ring_conserves_mass():
     r = np.sqrt(r2)
     # Peak 2.0 pressure units, sigma = 2 tiles — a sustained grenade-scale
     # bump (held constant across the steps; the solver is called directly).
-    bump = (2.0 * np.exp(-r2 / (2.0 * 2.0 ** 2))).astype(np.float32)
-    atm = np.ones((h, w), dtype=np.float32)
+    bump = (2.0 * np.exp(-r2 / (2.0 * 2.0 ** 2))).astype(np.float64)
     solid = _open(h, w)
     init = wq(np.full((h, w), 0.3))  # settled flat pool (Q16.16 metres)
     total0 = _total(init)
 
-    def run(wp: np.ndarray) -> np.ndarray:
+    def run(atm: np.ndarray) -> np.ndarray:
         depth = init.copy()
         vx, vy = _zeros(h, w), _zeros(h, w)
         # depth_eps = 0: the crater floor sweeps eps-scale depths; the dry snap
@@ -172,11 +173,14 @@ def test_gaussian_bump_craters_centre_raises_ring_conserves_mass():
         # integer transport conserves to the LSB.
         s = _solver(k_p=0.5, depth_eps=0.0)
         for _ in range(100):
-            s.step(depth, vx, vy, None, atm, wp, solid, DT, 0.0, 0.0)
+            s.step(depth, vx, vy, None, atm, solid, DT, 0.0, 0.0)
         return depth
 
-    crater = run(bump)
-    ctrl = run(_zeros_f(h, w))
+    # EOS refactor P3 (design §6 "water head"): `atm` is now the single
+    # INTEGER derived pressure P — the old ambient-1.0 atm + Gaussian wave_p
+    # bump collapses to one P = 1.0 + bump field (no wave_p arg).
+    crater = run(wq(1.0 + bump))
+    ctrl = run(wq(np.ones((h, w), dtype=np.float64)))
     crater_m = deq(crater)
     ctrl_m = deq(ctrl)
 
@@ -215,8 +219,8 @@ def test_low_pressure_end_drags_corridor_water():
     at 300 steps (4.8 s) the measured centre-of-mass shift is +1.79 tiles
     (equilibrium ~ +1.9) and the end columns sit at 0.66 / 0.34 vs 0.50."""
     h, w = 5, 31
-    grad = np.tile(np.linspace(1.0, 0.3, w, dtype=np.float32), (h, 1))
-    uni = np.ones((h, w), dtype=np.float32)
+    grad = wq(np.tile(np.linspace(1.0, 0.3, w, dtype=np.float64), (h, 1)))
+    uni = wq(np.ones((h, w), dtype=np.float64))
     solid = _open(h, w)
     init = wq(np.full((h, w), 0.5))   # Q16.16 metres
     total0 = _total(init)
@@ -226,7 +230,7 @@ def test_low_pressure_end_drags_corridor_water():
         vx, vy = _zeros(h, w), _zeros(h, w)
         s = _solver(k_p=0.5)
         for _ in range(300):
-            s.step(depth, vx, vy, None, atm, None, solid, DT, 0.0, 0.0)
+            s.step(depth, vx, vy, None, atm, solid, DT, 0.0, 0.0)
         return depth
 
     drag = deq(run(grad))

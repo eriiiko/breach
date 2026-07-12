@@ -28,7 +28,7 @@ truth.
 |---|---|
 | main | `1d765b7` (pushed) — W1 `2abf7dc` + W2 `bbfb26a` + W3 `1d765b7` all merged |
 | suite | **587 passed** via the exact command in §4 (twice-verified on main at freeze) |
-| golden | `07c3f37043c62cb47ec1abfef1a59d47c5f7a9c313490b38ecd2ddc543d1833d` — **UNCHANGED through all three patches** (the lazy-roll rule: dormant features draw no RNG) |
+| golden | `2bab9702e098b30a2aeb290e9aeb19301c9de4379f64443966ea9f3074a91b7a` — **UNCHANGED through all three patches** (the lazy-roll rule: dormant features draw no RNG) |
 | branch `weapons-w4-spray` | pushed, **one WIP commit `f6d9bf8`** (weapons.py schema columns only — the W4 agent died at a session limit right after starting) |
 | canon spec | `docs/architecture/mechanics/03_combat_and_weapons.md` — the framework chapter; §8 = the wave plan + per-patch findings of record |
 

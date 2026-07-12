@@ -58,6 +58,9 @@ set(BREACH_SOURCES
     src/temperature_solver.cpp
     src/raycaster.cpp
     src/water_solver.cpp
+    src/bulk_transport.cpp
+    src/eos_solver.cpp
+    src/combustion.cpp
     src/physics_engine.cpp
     src/bindings.cpp
 )
@@ -68,9 +71,16 @@ if(BREACH_CUDA)
         src/cuda_raycaster.cu      # S2 raycaster march (heat bit-identical)
         src/cuda_water.cu          # S3 water solver (pipe model, bit-identical)
         src/cuda_smoke.cu          # S4a smoke solver (diffusion + SL advection)
-        src/cuda_wave.cu           # S5 wave_substep (explicit damped wave + mean_wp)
         src/cuda_fire.cu           # S6 fire solver (logistic + plume + smoke scatter + burn)
-        src/cuda_atmosphere.cu)    # S7 diffuse_solve (RB-GS + vacuum sponge + wind)
+        src/cuda_sl_advection.cu   # EOS P6.2 fused 3-field SL advection (u self + gas T)
+        src/cuda_bulk_transport.cu # EOS P6.1 bulk donor-cell flux (water K3-K8 pattern)
+        src/cuda_kick_compression.cu # EOS P6.4 momentum kick + compression work (counted rails)
+        src/cuda_mg_solve.cu       # EOS P6.3 multigrid pressure solve (RB-GS + fused tail)
+        src/cuda_eos_step.cu       # EOS P6.5 chained full-eos.step dispatch (the big flip)
+        src/cuda_combustion.cu)    # EOS P6.9b two-gather combustion (closes P6)
+    # S5 cuda_wave.cu / S7 cuda_atmosphere.cu RETIRED in EOS P6.0 — their CPU
+    # solvers (wave_substep / diffuse_solve) were replaced by the compressible
+    # EOS solve in P3 (docs/eos_p6_gpu_alignment_review.md §1.11).
 endif()
 
 pybind11_add_module(breach_physics ${BREACH_SOURCES})
@@ -129,6 +139,9 @@ if(MSVC)
         src/smoke_dynamics.cpp
         src/fire_simulation.cpp
         src/water_solver.cpp
+        src/bulk_transport.cpp
+        src/eos_solver.cpp
+        src/combustion.cpp
         src/temperature_solver.cpp
         src/physics_engine.cpp
         src/raycaster.cpp

@@ -14,12 +14,14 @@
 //
 // The transport core is pure-integer Q16.16; the only non-trivially-integer
 // pieces are (1) the host-side scalar precompute, replicated in double exactly
-// as the CPU does (so make_recip stays host-only); (2) the per-tile tilt
+// as the CPU does (so make_recip stays host-only); and (2) the per-tile tilt
 // `quantize(((double)x - cx) * dx)` which runs in double ON the device, made
-// bit-identical by --fmad=false (no FMA contraction); and (3) the head FLOAT
-// BRIDGE (k_p != 0) reading the host-dequantized atmosphere/wave_p in float.
-// recip_mul + flux_to_dq use a 128-bit intermediate (nvcc takes the __int128
-// branch); scale_mag (NOT mul_q16) does the per-face outflow scaling.
+// bit-identical by --fmad=false (no FMA contraction). The head term (k_p != 0)
+// is a PURE INTEGER mul_q16(kp_q, P) on the derived integer pressure `atmosphere`
+// (EOS refactor P3 — the old FLOAT BRIDGE + phantom wave_p are RETIRED; see
+// docs/water_cuda_head_determinism_fix.md). recip_mul + flux_to_dq use a 128-bit
+// intermediate (nvcc takes the __int128 branch); scale_mag (NOT mul_q16) does the
+// per-face outflow scaling.
 //
 // Plain C++ declaration header (no CUDA types) so the .cpp TUs (bindings.cpp,
 // physics_engine.cpp, compiled by cl.exe even in the CUDA build) can include
@@ -33,15 +35,17 @@ namespace breach_cuda {
 // method on the solver), the solver's scalar dials (g, damping, dx, k_p,
 // v_max, depth_eps) are passed explicitly alongside dt + tilt_x/tilt_y + h/w.
 // The Q16.16 fields are int32_t (matching cuda_temperature.h's convention so
-// the .cpp TUs need no fixed_point include). atmosphere / wave_p are the FLOAT
-// head bridge (nullable -> no head term); floor_height nullable -> flat zero.
+// the .cpp TUs need no fixed_point include). EOS refactor P3: `atmosphere` is
+// the derived integer pressure P (Q16.16), read ONLY when k_p != 0 via the
+// pure-integer head term mul_q16(quantize(k_p), P); nullable -> no head term.
+// The retired float `wave_p` bridge arg is GONE (P already carries it).
+// floor_height nullable -> flat zero.
 void water_step(
     int32_t* water_depth,        // Q16.16 (h,w) — in/out, CONSERVED
     int32_t* flow_vx,            // Q16.16 (h,w) — in/out, persistent velocity
     int32_t* flow_vy,            // Q16.16 (h,w) — in/out, persistent velocity
     const int32_t* floor_height, // Q16.16 (h,w) — nullable -> flat zero
-    const float* atmosphere,     // FLOAT (h,w) — head bridge, nullable
-    const float* wave_p,         // FLOAT (h,w) — head bridge, nullable
+    const int32_t* atmosphere,   // Q16.16 (h,w) — derived pressure P, nullable -> no head
     const bool* solid,           // (h,w) static walls
     int h, int w, float dt,
     float tilt_x, float tilt_y,  // radians about grid centre (clamped on host)

@@ -1,0 +1,304 @@
+"""EOS P6.2 — fused 3-field SL advection bit-identity check (runs inside the
+GPU subprocess).
+
+Three gates:
+
+  PART 1 — ISOLATED (synthetic, all branches): rich random inputs that hit
+  every branch of the fused backtrace — zero-displacement fast path, sub-cell
+  fractional displacements, multi-cell BOTH-SIGN backtraces (the DDA wall-clip
+  march + the NEGATIVE-displacement floor-divide), sealed/breach/live cmask
+  corners (incl. vacuum-sealed combinations), the all-live-corner renorm skip,
+  a forced WSUM-near-floor Newton renorm, negative and extreme T values,
+  n_sub in {1, 2, 3, 8}, degenerate 1xN / Nx1 grids. Run BOTH the GPU chain
+  (bp.cuda_eos_sl_advect) and the CPU reference (bp.eos_sl_advect_ref — the
+  SAME file-local backtrace routine EOSSolver::step calls) on identical copies
+  and assert byte-for-byte equality on all three fields + digest equality.
+
+  PART 2 — TRAJECTORY (the review's §4 P6.2 digest gate): a blast + venting
+  scenario (hot core + O2 overpressure in a hull-ringed room breached to
+  vacuum) driven through the REAL engine path (PhysicsEngine.run_substeps →
+  EOSSolver::step) for 80 ticks on the CPU. Per tick: snapshot the
+  step-1-entry (wind, T) state, run the real tick, then replay the isolated
+  advection on the snapshot with the solver's own schedule (dbg_last_n_sub)
+  through BOTH the CPU reference and the GPU chain, asserting
+      ref_digest == EOSSolver.digest_advect == gpu_digest
+  and byte-equality of the post-advect fields — a full per-tick digest
+  trajectory, CPU vs GPU, over the whole run. The scenario is asserted to
+  actually drive advection hard (n_sub pins at N_SUB_MAX, multi-tile
+  displacements). Replaying the advection substeps back-to-back is exact:
+  the interleaved bulk flux (step 1d) neither reads nor writes u/T.
+
+  PART 3 — the CUDA build's CPU path still reproduces the committed
+  default-scenario golden (the s4a-check idiom; proves the P6.2 additions
+  changed no CPU trajectory).
+
+Prints ``P62_RESULT: PASS``/``FAIL`` and exits 0/1.
+"""
+from __future__ import annotations
+
+import sys
+
+import numpy as np
+
+# Import the CUDA build FIRST so it is the cached `breach_physics` before
+# anything else (field_ab_harness inserts cpp/build/Release) imports it.
+import breach_physics as bp
+
+FP_ONE = 65536
+
+
+def _quantize(x):
+    """Round-to-nearest Q16.16 (matches fixedpoint::quantize)."""
+    x = np.asarray(x, dtype=np.float64)
+    return np.int32(np.where(x >= 0, np.floor(x * FP_ONE + 0.5),
+                             np.ceil(x * FP_ONE - 0.5)))
+
+
+def _make_inputs(rng, h, w, wind_mag, t_mag, force_floor_wsum):
+    """Synthetic (u, T, masks, perm) exercising every backtrace branch."""
+    n = h * w
+    wx = _quantize(((rng.random(n) * 2.0 - 1.0) * wind_mag)).reshape(h, w)
+    wy = _quantize(((rng.random(n) * 2.0 - 1.0) * wind_mag)).reshape(h, w)
+    # exact zeros so the zero-displacement fast path is hit alongside marches
+    zero_mask = rng.random((h, w)) < 0.15
+    wx[zero_mask] = 0
+    wy[zero_mask] = 0
+
+    # T is a ΔT above ambient: include NEGATIVE values (down to the -289 K
+    # floor regime) and hot-core extremes.
+    t = ((rng.random(n) * 2.0 - 1.0) * t_mag)
+    t[rng.random(n) < 0.10] = -289.0
+    t[rng.random(n) < 0.05] = 9000.0
+    temperature = _quantize(t).reshape(h, w)
+
+    solid = (rng.random(n) < 0.10).reshape(h, w)
+    is_vacuum = (rng.random(n) < 0.08).reshape(h, w)
+
+    perm = rng.random(n).astype(np.float32)
+    perm[rng.random(n) < 0.12] = 0.0      # sealed faces (cmask 0, even open)
+    perm[rng.random(n) < 0.30] = 1.0
+    perm = perm.reshape(h, w)
+
+    if force_floor_wsum and h >= 5 and w >= 5:
+        # A live cell with a tiny fractional backtrace into a 2x2 corner block
+        # where 3 of 4 corners are sealed -> WSUM lands near WSUM_FLOOR_Q and
+        # the Newton-reciprocal renorm fires.
+        cy, cx = h // 2, w // 2
+        solid[cy, cx] = False
+        is_vacuum[cy, cx] = False
+        perm[cy, cx] = 1.0
+        wx[cy, cx] = _quantize(np.array(0.02))   # +x -> back-trace -x
+        wy[cy, cx] = _quantize(np.array(0.02))
+        temperature[cy, cx] = _quantize(np.array(120.0))
+        for (sy, sx) in ((cy - 1, cx - 1), (cy - 1, cx), (cy, cx - 1)):
+            solid[sy, sx] = True
+
+    return {
+        "wind_x": np.ascontiguousarray(wx.astype(np.int32)),
+        "wind_y": np.ascontiguousarray(wy.astype(np.int32)),
+        "temperature": np.ascontiguousarray(temperature.astype(np.int32)),
+        "solid": np.ascontiguousarray(solid),
+        "is_vacuum": np.ascontiguousarray(is_vacuum),
+        "perm": np.ascontiguousarray(perm.astype(np.float32)),
+    }
+
+
+def _run_pair(inp, dt, n_sub):
+    """Run CPU reference + GPU chain on identical copies; return everything."""
+    f_ref = {k: inp[k].copy() for k in ("wind_x", "wind_y", "temperature")}
+    dig_ref = bp.eos_sl_advect_ref(
+        f_ref["wind_x"], f_ref["wind_y"], f_ref["temperature"],
+        inp["solid"], inp["is_vacuum"], inp["perm"], dt, n_sub)
+    f_gpu = {k: inp[k].copy() for k in ("wind_x", "wind_y", "temperature")}
+    dig_gpu = bp.cuda_eos_sl_advect(
+        f_gpu["wind_x"], f_gpu["wind_y"], f_gpu["temperature"],
+        inp["solid"], inp["is_vacuum"], inp["perm"], dt, n_sub)
+    return f_ref, dig_ref, f_gpu, dig_gpu
+
+
+def part1_isolated() -> bool:
+    print("PART 1 — isolated GPU vs CPU reference (synthetic, all branches):")
+    ok = True
+    rng = np.random.default_rng(20260711)
+    # (h, w, dt, wind_mag [m/s-class], t_mag, n_sub, force_floor_wsum)
+    configs = [
+        (16, 16, 0.5,  0.0,   300.0, 1, False),   # zero wind (identity fast path)
+        (16, 16, 0.5,  0.6,   300.0, 1, False),   # sub-cell fractional
+        (16, 16, 0.5,  0.6,   300.0, 3, True),    # substepped + floor-wsum renorm
+        (24, 32, 1.0,  3.0,   900.0, 2, True),    # multi-cell both-sign marches
+        (31, 17, 0.75, 5.0,  2000.0, 8, True),    # odd dims, deep march, full cap
+        (40, 40, 2.0,  4.0,  6000.0, 1, False),   # very deep march (8 tiles)
+        (12, 20, 1.0,  1.5,   300.0, 8, True),
+        (1, 50, 1.0,  2.0,   300.0, 2, False),    # degenerate 1-row
+        (50, 1, 1.0,  2.0,   300.0, 2, False),    # degenerate 1-col
+        (8, 8, 0.5,  1.0,   300.0, 3, True),
+    ]
+    n_cfg = 0
+    for (h, w, dt, wmag, tmag, n_sub, floor_w) in configs:
+        for seed_bump in range(5):
+            n_cfg += 1
+            inp = _make_inputs(rng, h, w, wmag, tmag, floor_w)
+            f_ref, dig_ref, f_gpu, dig_gpu = _run_pair(inp, dt, n_sub)
+            for k in ("wind_x", "wind_y", "temperature"):
+                if not np.array_equal(f_ref[k], f_gpu[k]):
+                    ok = False
+                    mism = int(np.count_nonzero(f_ref[k] != f_gpu[k]))
+                    idx = int(np.argmax(f_ref[k] != f_gpu[k]))
+                    print(f"  {h}x{w} dt={dt} wmag={wmag} n_sub={n_sub}: "
+                          f"{k} {mism} MISMATCH (first @ {idx}: "
+                          f"cpu={f_ref[k].flat[idx]} gpu={f_gpu[k].flat[idx]})")
+            if dig_ref != dig_gpu:
+                ok = False
+                print(f"  {h}x{w} dt={dt} n_sub={n_sub}: digest mismatch "
+                      f"(ref={dig_ref:#018x} gpu={dig_gpu:#018x})")
+    if ok:
+        print(f"  all {n_cfg} configs bit-identical on (wind_x, wind_y, T), "
+              f"digests equal (incl. negative-displacement DDA marches, "
+              f"sealed/breach corners, WSUM-near-floor renorm, n_sub up to 8, "
+              f"degenerate 1xN/Nx1).")
+    return ok
+
+
+def part2_trajectory() -> bool:
+    print("PART 2 — blast + venting trajectory (real engine, per-tick digest):")
+    from pathlib import Path
+
+    from config import CFG
+    from level_loader import LevelData
+    from simulation import atmosphere_fixed
+    from simulation.gamemap import GameMap
+    from simulation.gases import O2
+    from simulation.physics_runner import PhysicsRunner
+
+    H = W = 48
+    # v1 tilemap vocabulary: 0 = outer space (vacuum), 1 = hull wall,
+    # 4 = interior air. A vacuum band, a hull ring, interior air, and a
+    # 4-tile breach carved through the east hull — sustained venting.
+    tm = np.zeros((H, W), dtype=np.int32)
+    tm[2:46, 2:46] = 1
+    tm[3:45, 3:45] = 4
+    tm[22:26, 45] = 4          # the breach: hull ring opened to the vacuum band
+    level = LevelData(name="eos_p62_blast_vent", version="1", path=Path("."),
+                      tilemap=tm, tile_size_m=1.0 / 3.0,   # ship tile scale
+                      diffuse_path=Path("."))
+    g = GameMap(level)
+    g.stamp_units([])
+    assert g.is_vacuum.any(), "scenario must have vacuum to vent into"
+
+    # THE BLAST: a hot core (raises p* hard -> outward shock through the room)
+    # + an O2 overpressure pocket (density spike venting toward the breach).
+    q = atmosphere_fixed.quantize_scalar
+    g.temperature[10:16, 10:16] += q(5000.0)
+    g.gas[O2, 11:14, 11:14] += q(4.0)
+
+    runner = PhysicsRunner(bp)
+    runner.eos.dx = float(g.tile_size_m)
+    eos = runner.engine.eos
+    inert_n2_idx = int(g.gases.name_to_id["inert_n2"])
+    dt = 1.0 / float(CFG.clock.ticks_per_second)
+
+    n_ticks = 80
+    max_n_sub = 0
+    max_u_counts = 0
+    bad = 0
+    for tick in range(n_ticks):
+        # Snapshot the eos.step step-1-entry state (run_substeps calls
+        # eos.step FIRST; step 0 copies P only — u/T enter advection as-is).
+        wx0 = np.ascontiguousarray(g.wind_x.copy())
+        wy0 = np.ascontiguousarray(g.wind_y.copy())
+        t0 = np.ascontiguousarray(g.temperature.copy())
+
+        runner.engine.run_substeps(
+            g.wave_p, g.atmosphere,
+            g.wind_x, g.wind_y,
+            g.temperature,
+            g.obstacles, g.solid, g.is_vacuum,
+            g.dyn_permeability, g.dyn_wave_absorb,
+            g.gas, g.gases.diffusion, g.gases.conservative,
+            g.gases.decay, inert_n2_idx,
+            dt,
+        )
+        n_sub = int(eos.dbg_last_n_sub)
+        dig_cpu = int(eos.digest_advect)
+        max_n_sub = max(max_n_sub, n_sub)
+        max_u_counts = max(max_u_counts,
+                           int(np.abs(wx0).max()), int(np.abs(wy0).max()))
+
+        inp = {"wind_x": wx0, "wind_y": wy0, "temperature": t0,
+               "solid": g.solid, "is_vacuum": g.is_vacuum,
+               "perm": g.dyn_permeability}
+        f_ref, dig_ref, f_gpu, dig_gpu = _run_pair(inp, dt, n_sub)
+
+        # The CPU reference must reproduce the REAL solver's digest_advect —
+        # proves both the input reconstruction and the reference itself.
+        if dig_ref != dig_cpu:
+            bad += 1
+            print(f"  tick {tick}: CPU ref != solver digest_advect "
+                  f"(ref={dig_ref:#018x} solver={dig_cpu:#018x} n_sub={n_sub})")
+        # The GPU chain must be bit-identical to the reference (and hence to
+        # the solver's own advection bytes).
+        if dig_gpu != dig_ref:
+            bad += 1
+            print(f"  tick {tick}: GPU != CPU digest "
+                  f"(gpu={dig_gpu:#018x} ref={dig_ref:#018x} n_sub={n_sub})")
+        for k in ("wind_x", "wind_y", "temperature"):
+            if not np.array_equal(f_ref[k], f_gpu[k]):
+                bad += 1
+                mism = int(np.count_nonzero(f_ref[k] != f_gpu[k]))
+                print(f"  tick {tick}: {k} {mism} byte mismatch(es)")
+        if bad >= 10:
+            print("  aborting after 10 divergences")
+            break
+
+    ok = (bad == 0)
+    # The scenario must actually drive advection HARD — a quiescent trajectory
+    # would make this gate vacuous.
+    if max_n_sub < int(eos.N_SUB_MAX):
+        ok = False
+        print(f"  scenario too tame: max n_sub {max_n_sub} never hit "
+              f"N_SUB_MAX={int(eos.N_SUB_MAX)}")
+    if max_u_counts < 30 * FP_ONE:
+        ok = False
+        print(f"  scenario too tame: peak |u| {max_u_counts / FP_ONE:.1f} m/s "
+              f"< 30 m/s")
+    if ok:
+        print(f"  {n_ticks} ticks bit-identical (per-tick digest_advect == CPU "
+              f"ref == GPU; peak |u| = {max_u_counts / FP_ONE:.1f} m/s, "
+              f"n_sub pinned at {max_n_sub}).")
+    return ok
+
+
+def part3_golden() -> bool:
+    print("PART 3 — CUDA build's CPU path vs the committed golden:")
+    from field_ab_harness import capture_trajectory
+    from field_digest import trajectory_digest
+
+    # The committed default-scenario golden (see cuda_s4a_check.py history;
+    # last re-baselined 2026-07-10, eos-p3fix-thermal-ceiling).
+    GOLDEN = "98d3dd7eaf3d574d6e562513cd95f3b5ac077b7c69b1d0b024db931261735473"
+    base = capture_trajectory(n_steps=30)
+    dig = trajectory_digest(base)
+    if dig != GOLDEN:
+        print(f"  GOLDEN MISMATCH: {dig[:16]}... != {GOLDEN[:16]}...")
+        return False
+    print(f"  CUDA build CPU path reproduces the golden ({dig[:12]}...).")
+    return True
+
+
+def main() -> int:
+    if not getattr(bp, "HAS_CUDA", False) or not bp.cuda_available():
+        print("P62_RESULT: FAIL (no CUDA build / device)")
+        return 1
+    print("device:", bp.cuda_device_info())
+    p1 = part1_isolated()
+    p2 = part2_trajectory()
+    p3 = part3_golden()
+    if p1 and p2 and p3:
+        print("P62_RESULT: PASS")
+        return 0
+    print("P62_RESULT: FAIL")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

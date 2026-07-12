@@ -60,7 +60,7 @@ import breach_physics as bp  # noqa: E402
 from config import CFG  # noqa: E402
 from level_loader import LevelData  # noqa: E402
 from simulation import Simulation  # noqa: E402
-from simulation.gases import WHITE_SMOKE  # noqa: E402
+from simulation.gases import N_TRACE_GASES, WHITE_SMOKE  # noqa: E402
 from water_q16 import q, deq  # noqa: E402  (S1: Q16.16 quantize/dequantize)
 from simulation import gas_fixed  # noqa: E402  (S2b: gas Q16.16 dequantize)
 
@@ -143,7 +143,17 @@ def _boil_sim(depth: float = DEPTH):
             "each column must be wall-sealed on all four sides")
     assert not g.is_vacuum.any(), "the hold must not rely on breach semantics"
     assert float(g.atmosphere[B]) > 0.5, "twin cell has no air (vacuous twin)"
-    g.atmosphere[A] = 0.0          # THE vacuum hold (one paint, holds forever)
+    # EOS P3: `atmosphere` (P) is solver-materialized from (N,T) every tick —
+    # the old one-paint P hold would be overwritten on tick 1. The equivalent
+    # hold on the REAL state: zero the bulk O2/N2 at A (one paint). A is a
+    # wall-sealed 1-cell pocket, so no bulk flux ever refills it and
+    # p* = C*N*T stays ~0 there for the whole run (the near-vacuum row
+    # degeneracy pins P_A to p*_A each solve). The P_prev seed below is
+    # cosmetic (the solver refreshes it).
+    from simulation.gases import O2 as _O2, INERT_N2 as _N2
+    g.gas[_O2][A] = 0
+    g.gas[_N2][A] = 0
+    g.atmosphere[A] = 0.0          # P_prev seed only (solver-owned now)
     if depth:
         g.water_depth[A] = q(depth)   # S1: paint in Q16.16 metres
         g.water_depth[B] = q(depth)
@@ -181,12 +191,19 @@ def test_one_tick_vacuum_boil_depth_and_steam_gain():
     assert abs(gain - STEAM_YIELD * INC) < STEAM_YIELD * 3 * Q_EPS + 3 * Q_EPS, (
         f"one-tick steam gain {gain} != {STEAM_YIELD * INC} "
         f"(tol {STEAM_YIELD * 3 * Q_EPS + 3 * Q_EPS:.2e})")
-    for gi in range(g.gas.shape[0]):
+    # Trace slices only (0..N_TRACE_GASES-1) — the bulk O2/inert_N2 pair (EOS
+    # refactor P1) always carries ambient air, unrelated to the steam puff.
+    for gi in range(N_TRACE_GASES):
         if gi != WHITE_SMOKE:
             assert not g.gas[gi].any(), (
                 f"boil leaked into gas slice {gi} (steam is white_smoke only)")
-    # The vacuum hold held (and the cell keeps boiling next tick).
-    assert float(g.atmosphere[A]) == 0.0
+    # The vacuum hold held (and the cell keeps boiling next tick). EOS P3:
+    # the steam puff itself now carries trace MASS (trace_mass_scale), so
+    # P_A is epsilon-positive rather than exactly 0 — the boil gate only
+    # needs it below boil_p_thresh.
+    from simulation import atmosphere_fixed as _afx
+    assert float(g.atmosphere[A]) < _afx.quantize_scalar(
+        sim.physics_runner.water_boil_p_thresh)
 
 
 # ---------------------------------------------------------------------------
@@ -207,11 +224,26 @@ def test_boils_dry_exact_zero_after_121_ticks():
         f"depth after 121 ticks is {g.water_depth[A]!r}, not exactly 0.0")
 
     # Yield bookkeeping (the plan's numbers end-to-end): ALL the water left
-    # as steam, total white_smoke == steam_yield * 0.1 = 0.4. Forgiving rel
-    # tolerance: 121 float32 accumulations, conserved transport.
+    # as steam, total white_smoke starts at steam_yield * 0.1 = 0.4 as it is
+    # puffed in across the 121 ticks. EOS refactor P4 (design §2.2/§5 v2.1,
+    # decisions.md #12): the per-gas trace `decay` column is now APPLIED
+    # (white_smoke decay=0.020/s, config.toml [gases.white_smoke] — "loaded
+    # but never applied" pre-P4), crediting the lost mass to inert_N2 each
+    # tick, so the puffed-in steam settles/condenses as it accumulates —
+    # the measured total is ~4-5% below the undecayed 0.4 over this run
+    # (steam puffed early has more ticks to decay than steam puffed late).
+    # Widened from the pre-P4 0.1% float-rounding tolerance to comfortably
+    # cover the REAL, expected decay loss (not a regression — it is EXACTLY
+    # decision #12 v2.1's "burnt/settled products go to inert_N2" behaviour).
     total = _gas_mass(g.gas[WHITE_SMOKE])     # S2b: dequantized real-density mass
-    assert abs(total - STEAM_YIELD * DEPTH) < 1e-3 * STEAM_YIELD * DEPTH, (
-        f"steam total {total} != steam_yield*depth {STEAM_YIELD * DEPTH}")
+    assert 0.0 < total < STEAM_YIELD * DEPTH, (
+        f"steam total {total} should be positive and BELOW the undecayed "
+        f"steam_yield*depth {STEAM_YIELD * DEPTH} (decay only ever removes "
+        f"mass from this plane)")
+    assert abs(total - STEAM_YIELD * DEPTH) < 0.10 * STEAM_YIELD * DEPTH, (
+        f"steam total {total} strayed too far from steam_yield*depth "
+        f"{STEAM_YIELD * DEPTH} for the known white_smoke decay rate "
+        f"(0.020/s over ~121 ticks) — investigate")
 
 
 # ---------------------------------------------------------------------------
@@ -243,14 +275,18 @@ def test_twin_tile_at_full_pressure_bit_exact_unchanged():
 def test_dormancy_no_water_no_gas_writes():
     # Pressure side of the boil mask ARMED (cell A held below boil_p_thresh)
     # but NO water anywhere: the only reason no steam appears is the absence
-    # of water. With every gas slice zero the transport loop .any()-skips
-    # them all, so ANY gas change must be a spurious W5 write (e.g. the
-    # minimum(where=...)-garbage trap the plan calls out).
+    # of water. With every TRACE gas slice zero the transport loop .any()-skips
+    # them all, so ANY trace-gas change must be a spurious W5 write (e.g. the
+    # minimum(where=...)-garbage trap the plan calls out). The bulk O2/inert_N2
+    # pair (EOS refactor P1) is NOT zero — both cells are fully wall-sealed on
+    # all 4 sides (see _boil_sim's assert), so their conservative transport is
+    # a structural no-op regardless; the SECOND assertion below (whole-array
+    # equality across the 3 ticks) is what actually pins "no writes at all".
     sim, g = _boil_sim(depth=0.0)
     assert float(g.atmosphere[A]) < sim.physics_runner.water_boil_p_thresh
     assert not g.water_depth.any()
     gas_pre = g.gas.copy()
-    assert not gas_pre.any()
+    assert not gas_pre[:N_TRACE_GASES].any()
 
     for _ in range(3):
         sim.step()

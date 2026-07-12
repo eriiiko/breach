@@ -49,6 +49,8 @@ from simulation.gases import (  # noqa: F401  (re-exported)
     POISON,
     TEARGAS,
     FUEL_GAS,
+    O2,
+    INERT_N2,
 )
 
 
@@ -148,19 +150,10 @@ class GameMap:
         # twin (combat.apply_temperature_ignition) writes it as an integer max.
         self.fire         = np.zeros((h, w), dtype=np.int32)
         self.obstacles    = np.zeros((h, w), dtype=bool)
-        # Smoke sink-direction field (ch.05 smoke v2): a per-cell unit-ish
-        # vector pointing, through air only, toward the NEAREST exposed-vacuum
-        # breach; (0, 0) where there is no path to a breach (and everywhere when
-        # the map is unbreached). The smoke solver adds ``sink_strength`` times
-        # this to its advecting velocity, so smoke is gently pulled out of a
-        # breached room even after the interior wind has died (the lingering-haze
-        # fix). Built lazily from a BFS over air cells whenever topology changes;
-        # ``_sink_dirty`` marks it stale. Allocated once, filled IN-PLACE by
-        # :meth:`_rebuild_sink_field` (never reassigned → any C++ view stays
-        # valid). Read through :meth:`sink_fields`.
-        self.sink_x       = np.zeros((h, w), dtype=np.float32)
-        self.sink_y       = np.zeros((h, w), dtype=np.float32)
-        self._sink_dirty  = True
+        # (The smoke sink-direction field — sink_x/sink_y/_sink_dirty + the
+        # BFS rebuild — is DELETED, EOS refactor P3 / decisions.md #3: venting
+        # is native to the compressible solver; smoke rides the real venting
+        # wind out of a breach instead of a scripted BFS pull.)
         # Scalar light field (legacy: fire raycaster output + render unit/smoke
         # tinting). Kept alongside light_rgb during the RGB migration.
         self.light_map    = np.zeros((h, w), dtype=np.float32)
@@ -457,6 +450,22 @@ class GameMap:
             self.solid | self.is_vacuum, 0, _atm_fx.FP_ONE
         ).astype(np.int32)
 
+        # EOS refactor P1 (docs/eos_refactor_design.md §2.1): ambient bulk-gas
+        # split. The two CONSERVATIVE species (O2 / inert_N2) seed the SAME
+        # open-air mask atmosphere just used, split 21/79 by mole fraction
+        # (Earth-normal air) — 0.21*FP_ONE + 0.79*FP_ONE happens to round back
+        # to EXACTLY FP_ONE (13763 + 51773 == 65536), so N_O2+N_N2 at ambient
+        # reproduces today's atmosphere==1.0 scale to the LSB (the calibration
+        # tests/test_eos_p1_calibration.py pins). 0 on solid/vacuum, exactly
+        # like atmosphere. IN-PLACE write (self.gas is never reassigned — a
+        # C++ view of the buffer must stay valid); reload_material_table
+        # snapshots + restores the running gas array around this call so a
+        # hot-reload does not stomp live O2/N2 state.
+        from simulation import gas_fixed as _gas_fx
+        open_air = ~(self.solid | self.is_vacuum)
+        self.gas[O2][:] = np.where(open_air, _gas_fx.quantize_scalar(0.21), 0)
+        self.gas[INERT_N2][:] = np.where(open_air, _gas_fx.quantize_scalar(0.79), 0)
+
         # Obstacles (the physics solid boundary) == solid tiles (permeability
         # == 0) until stamp_units paints unit footprints over it. Sourced from
         # permeability, not the occlusion flag, so flow and optics can diverge.
@@ -576,12 +585,20 @@ class GameMap:
         # diffusion/decay/flags next tick. Does NOT touch the ``gas`` array.
         self.gases = GasTable.from_config(CFG)
         # Rebuild only the table-derived caches; keep atmosphere/obstacles as
-        # the running sim left them by snapshotting and restoring them.
+        # the running sim left them by snapshotting and restoring them. EOS
+        # P1: _update_caches() now ALSO re-seeds ambient O2/N2 in-place
+        # (self.gas is never reassigned, so a plain "snapshot the reference"
+        # trick like atmosphere's would be a no-op — the mutation already
+        # landed in the SAME buffer). Snapshot a COPY of the whole gas array
+        # and copy it back in-place after, so a hot-reload does not stomp the
+        # running O2/N2 (or any trace gas) state.
         atmosphere = self.atmosphere
         obstacles = self.obstacles
+        gas_snapshot = self.gas.copy()
         self._update_caches()
         self.atmosphere = atmosphere
         self.obstacles = obstacles
+        self.gas[:] = gas_snapshot
 
     # ------------------------------------------------------------------
     # Per-tick rebuild: units act as walls for all physics
@@ -872,121 +889,19 @@ class GameMap:
                 count += 1
         return total / count if count > 0 else 0.0
 
-    # ------------------------------------------------------------------
-    # Smoke sink-direction field — toward the nearest breach (ch.05 smoke v2)
-    # ------------------------------------------------------------------
-    def sink_fields(self):
-        """Return the (``sink_x``, ``sink_y``) sink-direction arrays, rebuilding
-        them first if the map topology has changed since the last build.
+    def _seed_bulk_gas_neighbor_mean(self, fy, fx):
+        """Seed ``gas[O2]``/``gas[INERT_N2]`` at a newly-opened tile (EOS
+        refactor P1, docs/eos_refactor_design.md §2.2's minimal occupancy-
+        transition slice) — mirrors the ``atmosphere`` neighbor-mean refill
+        right next to every call site of this method in :meth:`destroy_wall`,
+        same anti-vacuum-pulse intent, now on the bulk species too. The FULL
+        evacuation rule (flooding/door-close) is P3's; this is only the
+        cell-JOINS-open-air half (§2.2's last sentence)."""
+        self.gas[O2][fy, fx] = self._neighbor_mean(self.gas[O2], fy, fx)
+        self.gas[INERT_N2][fy, fx] = self._neighbor_mean(self.gas[INERT_N2], fy, fx)
 
-        This is the read seam the physics runner uses each tick. The rebuild is
-        lazy and gated by ``_sink_dirty`` (set at init and wherever ``solid`` /
-        ``is_vacuum`` change), so the O(h·w) BFS runs only on the rare ticks a
-        wall is destroyed, not every tick.
-        """
-        if self._sink_dirty:
-            self._rebuild_sink_field()
-        return self.sink_x, self.sink_y
-
-    def _rebuild_sink_field(self):
-        """Rebuild the smoke sink-direction field by a BFS over air cells.
-
-        The field is a per-cell unit-ish vector pointing toward the nearest
-        exposed-vacuum breach, propagated **through air only** (never through a
-        solid / impermeable tile). It is what biases smoke advection toward a
-        breach so a vented room actually clears (ch.05 smoke v2).
-
-        Algorithm:
-
-        1. An **air** cell is non-solid and non-vacuum (``~solid & ~is_vacuum``).
-        2. **Sources** are air cells 4-adjacent to an exposed-vacuum tile (a
-           breach: ``is_vacuum`` that is not solid). These start the BFS at
-           distance 0.
-        3. 4-connected BFS over air cells assigns each a hop-distance to the
-           nearest breach. The BFS never steps onto a solid / impermeable /
-           vacuum tile, so the distance respects walls — a sealed neighbouring
-           room is unreachable and stays at "no path".
-        4. Each reached air cell's **direction** = unit vector toward the
-           in-bounds air neighbour with the SMALLEST distance (descending the
-           distance field, i.e. the next hop along a shortest path to a breach).
-        5. Cells with no path to a breach — and the whole field when the map has
-           no breach at all — are (0, 0). Safe by construction: no breach ⇒ no
-           pull ⇒ a sealed room is bit-identical to the no-sink solver.
-
-        Written IN-PLACE into ``self.sink_x`` / ``self.sink_y`` (never
-        reassigned), then clears ``_sink_dirty``.
-        """
-        from collections import deque
-
-        h, w = self._h, self._w
-        self.sink_x[:] = 0.0
-        self.sink_y[:] = 0.0
-        self._sink_dirty = False
-
-        solid = self.solid
-        is_vacuum = self.is_vacuum
-        # Air = traversable by gas/smoke: not a wall, not vacuum.
-        air = (~solid) & (~is_vacuum)
-
-        INF = np.iinfo(np.int32).max
-        dist = np.full((h, w), INF, dtype=np.int32)
-        dirs = ((-1, 0), (1, 0), (0, -1), (0, 1))
-
-        # Sources: air cells adjacent to an EXPOSED-VACUUM tile (a breach is a
-        # vacuum tile that is NOT solid; an intact hull is vacuum AND solid).
-        breach = is_vacuum & (~solid)
-        q = deque()
-        ys, xs = np.where(air)
-        for y, x in zip(ys.tolist(), xs.tolist()):
-            for dy, dx in dirs:
-                ny, nx = y + dy, x + dx
-                if 0 <= ny < h and 0 <= nx < w and breach[ny, nx]:
-                    dist[y, x] = 0
-                    q.append((y, x))
-                    break
-
-        if not q:
-            # No breach reachable from any air cell → field stays all-zero.
-            return
-
-        # BFS through air only.
-        while q:
-            y, x = q.popleft()
-            d = dist[y, x]
-            for dy, dx in dirs:
-                ny, nx = y + dy, x + dx
-                if (0 <= ny < h and 0 <= nx < w and air[ny, nx]
-                        and dist[ny, nx] == INF):
-                    dist[ny, nx] = d + 1
-                    q.append((ny, nx))
-
-        # Direction = toward the in-bounds air neighbour of smallest distance
-        # (the next hop down the shortest path to a breach), then normalised.
-        reached_ys, reached_xs = np.where((dist < INF) & air)
-        for y, x in zip(reached_ys.tolist(), reached_xs.tolist()):
-            best_d = dist[y, x]
-            best_dy = best_dx = 0
-            for dy, dx in dirs:
-                ny, nx = y + dy, x + dx
-                if (0 <= ny < h and 0 <= nx < w and air[ny, nx]
-                        and dist[ny, nx] < best_d):
-                    best_d = dist[ny, nx]
-                    best_dy, best_dx = dy, dx
-            # A breach-adjacent source (best_d == its own 0) still has a smaller
-            # neighbour only if one exists; otherwise it points at the breach via
-            # the vacuum step it can't descend to — fall back to the breach dir.
-            if best_dy == 0 and best_dx == 0:
-                # No air neighbour is strictly closer (this is a source cell, or
-                # a local min). Point directly at the adjacent breach tile.
-                for dy, dx in dirs:
-                    ny, nx = y + dy, x + dx
-                    if 0 <= ny < h and 0 <= nx < w and breach[ny, nx]:
-                        best_dy, best_dx = dy, dx
-                        break
-            # (best_dy, best_dx) is one of the 4 unit steps → already unit length
-            # for cardinals; store as float (sink_x is +x = column, sink_y = row).
-            self.sink_x[y, x] = float(best_dx)
-            self.sink_y[y, x] = float(best_dy)
+    # (sink_fields / _rebuild_sink_field DELETED — EOS refactor P3,
+    # decisions.md #3: native venting replaces the BFS smoke sink-pull.)
 
     # ------------------------------------------------------------------
     # Over-pressure wall failure — the emergent pressure-relief valve (ch.04 §5)
@@ -1091,26 +1006,31 @@ class GameMap:
         was_hull = (self.material[fy, fx] == MAT_HULL)
         if self.material[fy, fx] != MAT_AIR:
             self.material[fy, fx] = MAT_AIR
-            # Topology changed → the smoke sink-direction field is stale; the
-            # next ``sink_fields()`` read rebuilds it (cheap, breaches are rare).
-            self._sink_dirty = True
+            # (sink-field staleness mark DELETED — EOS P3: no BFS sink field.)
             # Patch ALL table-derived caches for this tile through the single
             # incremental seam (solid, flammable, wall_hp, conductivity) —
             # no inline cache fixups, no O(grid) rebuild.
             self.on_tile_changed(fy, fx)
-            if was_hull:
-                if (fy < 1 or fy >= h - 1
-                        or fx < 1 or fx >= w - 1):
-                    # True hull breach — wall tile is on the map edge.
-                    self.is_vacuum[fy, fx] = True
-                    # Don't hard-zero — let relaxation BC drain smoothly.
-                    self.atmosphere[fy, fx] = self._neighbor_mean(
-                        self.atmosphere, fy, fx)
-                else:
-                    # Interior hull: fill with neighbor mean.
-                    self.atmosphere[fy, fx] = self._neighbor_mean(
-                        self.atmosphere, fy, fx)
-            else:
-                # Interior wall: fill with neighbor mean.
-                self.atmosphere[fy, fx] = self._neighbor_mean(
-                    self.atmosphere, fy, fx)
+            # EOS refactor P3 (design §2.3): breach→vacuum GENERALIZED beyond
+            # the edge-hull-only rule — ANY destroyed tile becomes vacuum if
+            # it EXPOSES vacuum (any 4-neighbour is already vacuum: chained
+            # breaches, a hole blown next to space), plus the original
+            # edge-hull case. A destroyed tile NOT exposing vacuum joins
+            # open-air with a neighbor-mean seed (anti-vacuum-pulse, as ever).
+            on_edge_hull = was_hull and (
+                fy < 1 or fy >= h - 1 or fx < 1 or fx >= w - 1)
+            # "Exposing vacuum" == a 4-neighbour that is EXPOSED vacuum
+            # (vacuum AND not solid — an intact hull tile is vacuum AND solid
+            # and does NOT count; see _rebuild-era `breach` predicate).
+            exposes_vacuum = any(
+                0 <= fy + dy < h and 0 <= fx + dx < w
+                and self.is_vacuum[fy + dy, fx + dx]
+                and not self.solid[fy + dy, fx + dx]
+                for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)))
+            if on_edge_hull or exposes_vacuum:
+                # True breach — the tile joins vacuum; the solver's Dirichlet
+                # P=0 + donor-cell venting drain it natively (no hard zero).
+                self.is_vacuum[fy, fx] = True
+            self.atmosphere[fy, fx] = self._neighbor_mean(
+                self.atmosphere, fy, fx)
+            self._seed_bulk_gas_neighbor_mean(fy, fx)

@@ -46,6 +46,18 @@ Targeted survey: compressible/EOS schemes for a 2D game grid (Kwatra stable
 compressible, Feldman–O'Brien suspended-particle explosions, thermal LBM, Euler +
 artificial viscosity, divergence-control for fire), stability/CFL at game tick rates,
 and integer/fixed-point portability of each. Output: a compared recommendation.
+→ **Brief authored 2026-07-05: `docs/eos_research_brief.md`** — constraints, weighted
+criteria, the worked hot-core CFL example, prototype scenario spec, and the black-body
+session's decisions folded in (heat one-way/absorb-only; two-tier light; determinism
+scope per §0.9).
+→ **DONE 2026-07-08: `docs/eos_research_report.md`** — deep-research harness run (2 claims
+adversarially confirmed, 0 refuted; verification cut short by rate limits, synthesis
+completed in-thread by Opus with confidence labels). Bottom line: the acoustic-CFL fear is
+retired (three precedented escapes). **Rung A → Feldman–O'Brien prescribed-divergence
+incompressible (Bifrost ships it; keep wave_p separate); Rung B → Kwatra semi-implicit
+(reuses the RB-GS Poisson kernel; may unify atmosphere+wave_p).** The whole A-vs-B call
+reduces to ONE unmeasured thing — does rung-B baroclinic curl visibly beat rung-A
+expansion at ≤256²? — which is precisely what 1.2 must settle by eye.
 
 **1.2 In-engine-shaped Python prototype** *(Claude builds, Erik judges by eye)*
 Rung A ("Darcy-EOS refit": conservative N-flux + derived P=C·N·T + advected gas T,
@@ -56,7 +68,13 @@ same" intuition; rung B is what the gorgeous explosion-spike gif ran.
 
 **1.3 DECISION (Erik):** adopt rung A / rung B / defer. If adopted: it is a proper
 arc (spec → patches → gates → CUDA re-port → new goldens) and **must land before
-serious NN training** (train once on final physics). Determinism note: the EOS needs
+serious NN training** (train once on final physics).
+→ **Immediately AFTER the 1.3 decision — doc consolidation pass (Erik, 2026-07-05):**
+fold the chosen path into real living architecture chapters (engine/04 + 05 + 08
+updates, per the design-docs-are-canon rule) and archive/prune the brainstorms
+(`blackbody_smoke_and_rendering_brainstorm.md`, `eos_research_brief.md` + its report,
+`determinism_without_fixedpoint_research.md` → `docs/reference/`). Deliberately NOT
+before: brainstorms stay live until the fork is chosen. Determinism note: the EOS needs
 ~zero new transcendentals — the toolkit already covers it (conservative flux, integer
 SL advection, mul, sqrt-CFL). Cross-machine determinism is a HARD requirement
 (multiplayer + distributed training + portfolio), so an authoritative EOS gets the

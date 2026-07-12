@@ -86,7 +86,10 @@ def test_gas_array_shape():
     assert g.gas.shape == (N_GASES, h, w), \
         f"gas array shape {g.gas.shape} != (N={N_GASES}, {h}, {w})"
     assert g.gas.dtype == np.int32   # S2b: int32 Q16.16
-    assert N_GASES == 5, f"expected 5 gases, got {N_GASES}"
+    # EOS refactor P1 (docs/eos_refactor_design.md §1): N_GASES grew 5 -> 7
+    # (o2, inert_n2 APPENDED at ids 5/6 — see tests/test_eos_p1_species_transport.py
+    # for the full bulk-pair contract). The 5 M1 trace gases below are untouched.
+    assert N_GASES == 7, f"expected 5 trace + 2 bulk = 7 gases, got {N_GASES}"
 
 
 # --------------------------------------------------------------------------
@@ -117,9 +120,14 @@ def test_smoke_is_black_smoke_view():
 # 3. GasTable exposes the 5 gases with the §6.2 values
 # --------------------------------------------------------------------------
 def test_gas_table_values():
+    """The 5 M1 TRACE gases' §6.2 values, unchanged by the P1 append (EOS
+    refactor P1 grew the table to 7 rows total — o2/inert_n2 at ids 5/6 — see
+    tests/test_eos_p1_species_transport.py::test_bulk_pair_table_contract for
+    their contract)."""
     tbl = GasTable.from_config()
-    assert tbl.n == 5
-    assert tbl.names == ["white_smoke", "black_smoke", "poison", "teargas", "fuel_gas"]
+    assert tbl.n == 7
+    assert tbl.names[:5] == ["white_smoke", "black_smoke", "poison", "teargas", "fuel_gas"]
+    assert tbl.names[5:] == ["o2", "inert_n2"]
     assert tbl.name_to_id["black_smoke"] == BLACK_SMOKE
 
     # Absorption triples (§6.2).
@@ -134,18 +142,19 @@ def test_gas_table_values():
     assert np.allclose(tbl.scatter_albedo[BLACK_SMOKE], [0.04, 0.04, 0.04])
     assert np.allclose(tbl.scatter_albedo[TEARGAS],     [0.88, 0.90, 0.92])
 
-    # Per-gas diffusion + decay (§6.2).
-    assert np.allclose(tbl.diffusion, [0.18, 0.10, 0.12, 0.15, 0.22])
-    assert np.allclose(tbl.decay,     [0.020, 0.008, 0.004, 0.010, 0.006])
+    # Per-gas diffusion + decay (§6.2) — the first 5 (trace) rows.
+    assert np.allclose(tbl.diffusion[:5], [0.18, 0.10, 0.12, 0.15, 0.22])
+    assert np.allclose(tbl.decay[:5],     [0.020, 0.008, 0.004, 0.010, 0.006])
 
     # black_smoke diffusion == today's d_smoke (the behaviour-preservation anchor).
     from config import CFG
     assert abs(float(tbl.diffusion[BLACK_SMOKE]) - float(CFG.physics.d_smoke)) < 1e-6
 
-    # Flags: only fuel_gas is flammable; black_smoke + fuel_gas emit when hot.
-    assert list(tbl.flammable.astype(bool)) == [False, False, False, False, True]
-    assert list(tbl.emits_when_hot.astype(bool)) == [True if i in (BLACK_SMOKE, FUEL_GAS) else False
-                                                      for i in range(5)]
+    # Flags: only fuel_gas is flammable; black_smoke + fuel_gas emit when hot
+    # (among the 5 trace gases — o2/inert_n2 are never flammable/hot-emitting).
+    assert list(tbl.flammable[:5].astype(bool)) == [False, False, False, False, True]
+    assert list(tbl.emits_when_hot[:5].astype(bool)) == [True if i in (BLACK_SMOKE, FUEL_GAS) else False
+                                                          for i in range(5)]
     # Effects (gameplay tags, read unit-side in mechanics).
     assert tbl.effect[POISON] == "damage_over_time"
     assert tbl.effect[TEARGAS] == "area_denial"
@@ -153,7 +162,14 @@ def test_gas_table_values():
 
 
 def test_gas_table_from_dict():
-    """GasTable accepts a plain dict-of-dicts (the test-config path)."""
+    """GasTable accepts a plain dict-of-dicts (the test-config path).
+
+    GasTable always iterates the module-level GAS_NAMES (EOS P1: 7 ids, not
+    5), so a from-scratch table must supply a row for every id — including
+    the bulk pair's ``conservative`` column, now required on every row.
+    """
+    names = ["white_smoke", "black_smoke", "poison", "teargas", "fuel_gas",
+             "o2", "inert_n2"]
     rows = {
         name: {
             "absorption": [0.1, 0.2, 0.3],
@@ -164,14 +180,15 @@ def test_gas_table_from_dict():
             "flammable": (name == "fuel_gas"),
             "emits_when_hot": False,
             "effect": "x",
+            "conservative": name in ("o2", "inert_n2"),
         }
-        for i, name in enumerate(
-            ["white_smoke", "black_smoke", "poison", "teargas", "fuel_gas"])
+        for i, name in enumerate(names)
     }
     tbl = GasTable(rows)
-    assert tbl.n == 5
-    assert np.allclose(tbl.diffusion, [0.1, 0.2, 0.3, 0.4, 0.5])
+    assert tbl.n == 7
+    assert np.allclose(tbl.diffusion, [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7])
     assert bool(tbl.flammable[FUEL_GAS]) is True
+    assert list(tbl.conservative.astype(bool)) == [False, False, False, False, False, True, True]
 
 
 # --------------------------------------------------------------------------
@@ -266,8 +283,7 @@ def test_black_smoke_matches_pre_refactor_reference():
     is_wall = np.zeros((h, w), dtype=bool)
     is_vacuum = np.zeros((h, w), dtype=bool)
     perm = np.ones((h, w), dtype=np.float32)
-    sink_x = np.zeros((h, w), dtype=np.float32)
-    sink_y = np.zeros((h, w), dtype=np.float32)
+    # (sink_x/sink_y stubs deleted — EOS P3: the sink machinery is gone.)
     wind_x = np.full((h, w), 0.4, dtype=np.float32)
     wind_y = np.full((h, w), -0.25, dtype=np.float32)
 
@@ -275,7 +291,7 @@ def test_black_smoke_matches_pre_refactor_reference():
         s = bp.SmokeDynamics()
         s.advection_rate = float(CFG.physics.advection_rate)
         s.wind_diffusion_scale = float(CFG.physics.wind_diffusion_scale)
-        s.sink_strength = float(CFG.physics.smoke_sink_strength)
+        # (sink_strength bind deleted — EOS P3: the sink machinery is gone.)
         return s
 
     dt = 0.02

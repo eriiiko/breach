@@ -80,7 +80,10 @@ class WeaponDef:
                  crit_chance=0.0, crit_mult=2.0,
                  mass_kg=0.0, loudness=0.0,
                  max_throw_range=0, fuse_min_seconds=0.0,
-                 fuse_max_seconds=0.0, fuse_default_seconds=0.0):
+                 fuse_max_seconds=0.0, fuse_default_seconds=0.0,
+                 cone_half_angle_degrees=0.0, burst_seconds=0.0,
+                 melee_damage=0, melee_dtype="",
+                 status_kind="", status_seconds=0.0):
         self.name = name
         self.archetype = archetype              # one of WEAPON_ARCHETYPES
         self.ammo_family = ammo_family          # "none" = feeds on nothing (melee)
@@ -103,6 +106,35 @@ class WeaponDef:
         self.fuse_min_seconds = fuse_min_seconds
         self.fuse_max_seconds = fuse_max_seconds
         self.fuse_default_seconds = fuse_default_seconds
+        # SPRAY extras (mechanics/03 §5, W4). CONVENTION OF RECORD: the
+        # armory table (§6) quotes the FULL cone angle ("30° cone"); config
+        # authors the HALF-angle (the membership test's natural quantity —
+        # bearing-off-axis <= half angle), so Dragon-7's 30° cone is
+        # cone_half_angle_degrees = 15.0. burst_ticks is derived by
+        # WeaponTable (seconds -> integer ticks, door 1 — the reload_ticks
+        # twin): one trigger = one burst = burst_ticks consecutive ticks of
+        # cone deposits.
+        self.cone_half_angle_degrees = cone_half_angle_degrees
+        self.burst_seconds = burst_seconds
+        self.burst_ticks = 0                    # derived by WeaponTable (W4)
+        # MELEE extras (mechanics/03 §5, W5). Melee feeds on nothing
+        # (ammo_family "none"), so the strike's packet numbers live ON THE
+        # WEAPON ROW: melee_damage + melee_dtype are the DamagePacket
+        # amount/type (the ammo damage/dtype twins). status_kind /
+        # status_seconds are the DELIVERY-SITE status application (the §1
+        # two-terminals wording: "a baton applies STUNNED where it connects;
+        # packets themselves stay damage-only") — "" = the weapon applies no
+        # status (the knife). status_ticks / the id twins are derived by
+        # WeaponTable (seconds -> integer ticks, door 1; names -> registry
+        # ids, loud on typos). Non-melee rows leave all four at their
+        # 0/"" defaults — dead data.
+        self.melee_damage = melee_damage        # packet amount (int, door 2)
+        self.melee_dtype = melee_dtype          # mechanics/06 type name string
+        self.melee_dtype_id = None              # derived by WeaponTable (W5)
+        self.status_kind = status_kind          # "" = no status applied
+        self.status_kind_id = None              # derived by WeaponTable (W5)
+        self.status_seconds = status_seconds
+        self.status_ticks = 0                   # derived by WeaponTable (W5)
 
     def __repr__(self):
         return (f"WeaponDef({self.name!r}, archetype={self.archetype!r}, "
@@ -124,11 +156,20 @@ class AmmoDef:
     DERIVED — ``speed_tiles_per_tick`` quantized ONCE onto the Q16.16 grid at
     table build (ingress door 2); the march's per-tick step budget is pure
     integer arithmetic on it (``combat.BulletInFlight``).
+
+    W4 columns (SPRAY rounds, mechanics/03 §5): ``heat_deposit`` — flame
+    heat energy per tick at zero distance (the cone scales it by the linear
+    falloff and it quantizes ONCE per tile at the FieldEdit heat combine);
+    ``gas_species`` + ``gas_amount`` — the per-tick gas emission into the
+    engine/05 §6.2 slice (falloff-scaled the same way; resolved BY NAME at
+    deposit time via ``gmap.gases.name_to_id``, the emit_gas rule).
+    Non-spray rounds leave all three at their 0/"" defaults — dead data.
     """
 
     def __init__(self, name, family, dtype, damage=0, ap=0,
                  speed_tiles_per_tick=0.0, travel_speed_tiles_per_second=0.0,
-                 payload="", wall_damage=0):
+                 payload="", wall_damage=0,
+                 heat_deposit=0.0, gas_species="", gas_amount=0.0):
         self.name = name
         self.family = family                    # must match a weapon's ammo_family
         self.dtype = dtype                      # mechanics/06 type name string
@@ -140,6 +181,10 @@ class AmmoDef:
         self.payload = payload                  # "" = none
         self.wall_damage = wall_damage          # bullet chew (W2, mechanics/03 §3)
         self.speed_q16 = 0                      # derived by AmmoTable (door 2)
+        # SPRAY deposit columns (W4, mechanics/03 §5):
+        self.heat_deposit = heat_deposit        # flame heat/tick at d=0 (0 = none)
+        self.gas_species = gas_species          # "" = no gas emission
+        self.gas_amount = gas_amount            # gas density/tick at d=0
 
     def __repr__(self):
         return (f"AmmoDef({self.name!r}, family={self.family!r}, "
@@ -255,7 +300,25 @@ class WeaponTable:
                 fuse_min_seconds=col("fuse_min_seconds", 0.0),
                 fuse_max_seconds=col("fuse_max_seconds", 0.0),
                 fuse_default_seconds=col("fuse_default_seconds", 0.0),
+                cone_half_angle_degrees=col("cone_half_angle_degrees", 0.0),
+                burst_seconds=col("burst_seconds", 0.0),
+                melee_damage=col("melee_damage", 0),
+                melee_dtype=str(col("melee_dtype", "")),
+                status_kind=str(col("status_kind", "")),
+                status_seconds=col("status_seconds", 0.0),
             )
+            # SPRAY rows (W4) must author a real cone: a spray with no
+            # half-angle / burst / range would deposit nothing (or forever)
+            # — a config bug, loud at load rather than silent at the trigger.
+            if archetype == "spray":
+                if not (w.cone_half_angle_degrees > 0
+                        and w.burst_seconds > 0 and w.range_tiles > 0):
+                    raise ValueError(
+                        f"weapons.{name}: archetype 'spray' requires "
+                        f"cone_half_angle_degrees > 0, burst_seconds > 0 and "
+                        f"range_tiles > 0 (got "
+                        f"{w.cone_half_angle_degrees!r} / "
+                        f"{w.burst_seconds!r} / {w.range_tiles!r})")
             # Cadence: 0 s = no gate = 0 ticks. Non-zero goes through the same
             # max(1, round(s * tps)) the old burst_interval_ticks key used, so
             # the k5's 0.16666667 s derives to the identical integer (4 @ 24).
@@ -271,6 +334,48 @@ class WeaponTable:
                     w.reload_seconds, ticks_per_second)
             else:
                 w.reload_ticks = 0
+            # SPRAY burst length (W4): same derivation. 1.5 s -> 36 @ 24 tps.
+            if w.burst_seconds > 0:
+                w.burst_ticks = ticks_from_seconds(
+                    w.burst_seconds, ticks_per_second)
+            else:
+                w.burst_ticks = 0
+            # MELEE rows (W5): the strike packet lives on the weapon row
+            # (melee feeds on nothing), so a melee row without damage/dtype
+            # is a config bug — loud at load, not silent at the strike.
+            if w.melee_dtype and w.melee_dtype not in DTYPE_BY_NAME:
+                raise ValueError(
+                    f"weapons.{name}.melee_dtype {w.melee_dtype!r} is not a "
+                    f"mechanics/06 damage type {sorted(DTYPE_BY_NAME)}")
+            if w.melee_dtype:
+                w.melee_dtype_id = DTYPE_BY_NAME[w.melee_dtype]
+            if archetype == "melee":
+                if not (w.melee_damage > 0 and w.melee_dtype):
+                    raise ValueError(
+                        f"weapons.{name}: archetype 'melee' requires "
+                        f"melee_damage > 0 and a melee_dtype (got "
+                        f"{w.melee_damage!r} / {w.melee_dtype!r})")
+            # Delivery-site status columns (W5): the name resolves against
+            # the mechanics/06 §4 registry (lazy import, the AmmoTable
+            # unit_fixed precedent) and the duration derives to integer
+            # ticks (door 1 — the reload_ticks twin). A status with no
+            # positive duration is a config bug, loud at load.
+            if w.status_kind:
+                from simulation.status import STATUS_REGISTRY
+                kinds_by_name = {row.name: row.kind for row in STATUS_REGISTRY}
+                if w.status_kind not in kinds_by_name:
+                    raise ValueError(
+                        f"weapons.{name}.status_kind {w.status_kind!r} is "
+                        f"not a mechanics/06 §4 status kind "
+                        f"{sorted(kinds_by_name)}")
+                if not w.status_seconds > 0:
+                    raise ValueError(
+                        f"weapons.{name}: status_kind {w.status_kind!r} "
+                        f"requires status_seconds > 0 (got "
+                        f"{w.status_seconds!r})")
+                w.status_kind_id = kinds_by_name[w.status_kind]
+                w.status_ticks = ticks_from_seconds(
+                    w.status_seconds, ticks_per_second)
             self.by_name[name] = w
         self.names = list(self.by_name)
 
@@ -280,9 +385,11 @@ class AmmoTable:
     (dtype validated against the mechanics/06 names); the rest default."""
 
     def __init__(self, ammo_cfg):
-        # Lazy import (pure-Python quantize twin, no compiled module) — keeps
-        # weapons.py import-light for asset tools.
+        # Lazy imports (pure-Python quantize twin + gas name vocabulary, no
+        # compiled module) — keeps weapons.py import-light for asset tools.
         from simulation import unit_fixed
+        from simulation.gases import GAS_NAMES
+        valid_gases = set(GAS_NAMES.values())
         self.by_name: dict[str, AmmoDef] = {}
         for name, row in _iter_rows(ammo_cfg):
             dtype = str(_get_field(row, "ammo", name, "dtype"))
@@ -290,6 +397,13 @@ class AmmoTable:
                 raise ValueError(
                     f"ammo.{name}.dtype {dtype!r} is not a mechanics/06 "
                     f"damage type {sorted(DTYPE_BY_NAME)}")
+            gas_species = str(_get_field(row, "ammo", name, "gas_species", ""))
+            if gas_species and gas_species not in valid_gases:
+                # The PayloadTable rule (W3), applied to the W4 spray column:
+                # a typo'd species is loud at startup, not at the first burst.
+                raise ValueError(
+                    f"ammo.{name}.gas_species {gas_species!r} is not a "
+                    f"known gas (engine/05 §6.2): {sorted(valid_gases)}")
             a = AmmoDef(
                 name=name,
                 family=str(_get_field(row, "ammo", name, "family")),
@@ -302,6 +416,9 @@ class AmmoTable:
                     row, "ammo", name, "travel_speed_tiles_per_second", 0.0),
                 payload=str(_get_field(row, "ammo", name, "payload", "")),
                 wall_damage=_get_field(row, "ammo", name, "wall_damage", 0),
+                heat_deposit=_get_field(row, "ammo", name, "heat_deposit", 0.0),
+                gas_species=gas_species,
+                gas_amount=_get_field(row, "ammo", name, "gas_amount", 0.0),
             )
             # speed_q16: the authored tiles-per-tick quantized ONCE onto the
             # Q16.16 grid (ingress door 2) — the unified march's integer

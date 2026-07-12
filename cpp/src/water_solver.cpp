@@ -40,8 +40,7 @@ float WaterSolver::ripple_max_dt() const {
 
 void WaterSolver::step(q16* water_depth, q16* flow_vx, q16* flow_vy,
                        const q16* floor_height,
-                       const float* atmosphere,
-                       const float* wave_p,
+                       const q16* atmosphere,
                        const bool*  solid,
                        int h, int w, float dt,
                        float tilt_x, float tilt_y) const {
@@ -109,12 +108,14 @@ void WaterSolver::step(q16* water_depth, q16* flow_vx, q16* flow_vy,
     surface.swap(surface_);
     surface.resize(n);
 
-    // Head-term gate: with k_p == 0 the pressure fields are NEVER read (exact,
-    // identical to passing none). With k_p != 0 the head term is a FLOAT BRIDGE
-    // (atmosphere/wave_p are still float in S1) — computed in float and quantized
-    // into the Q16.16 surface. Marked below.
+    // Head-term gate: with k_p == 0 the pressure field is NEVER read (exact,
+    // identical to passing none). EOS refactor P3 (design §6 "water head"):
+    // the FLOAT BRIDGE is RETIRED — `atmosphere` is now the derived integer P
+    // (Q16.16), so the head term is a pure integer mul_q16(kp_q, P), added
+    // directly into the integer surface. No wave_p read (P already carries
+    // both the acoustic transient and the bulk dome — one merged field).
     const bool head_on = (k_p != 0.0f);
-    const float kp_f = k_p;
+    const q16 kp_q = quantize((double)k_p);
 
     for (int y = 0; y < h; ++y) {
         const int row = y * w;
@@ -125,15 +126,9 @@ void WaterSolver::step(q16* water_depth, q16* flow_vx, q16* flow_vy,
             const q16 tilt_col = mul_q16(tan_tx, quantize(((double)x - cx) * dx_d));
             q16 s = floor_at(i) + tilt_col + tilt_row + water_depth[i];
             if (head_on) {
-                // FLOAT BRIDGE until S2: atmosphere/wave_p are still float fields.
-                // Read them in float, form the head term k_p*(atm+wave_p) in
-                // float, quantize to Q16.16, add into the integer surface. (When
-                // S2 makes atmosphere/wave_p integer this bridge becomes a pure
-                // integer add.) atm_p/wp_p substituted to 0 if null (gated).
-                const float atm_v = atmosphere ? atmosphere[i] : 0.0f;
-                const float wp_v  = wave_p ? wave_p[i] : 0.0f;
-                const float head_f = kp_f * (atm_v + wp_v);
-                s += quantize((double)head_f);
+                // Pure integer head term: k_p * P (atmosphere IS P, EOS P3).
+                const q16 atm_v = atmosphere ? atmosphere[i] : 0;
+                s += mul_q16(kp_q, atm_v);
             }
             surface[i] = s;
         }
@@ -328,21 +323,29 @@ void WaterSolver::step(q16* water_depth, q16* flow_vx, q16* flow_vy,
 
 void WaterSolver::step_ripple(float* ripple, float* ripple_v,
                               const q16*  water_depth,
-                              const float* wave_p,
+                              const q16*  atmosphere,
+                              const q16*  p_prev,
                               const bool*  solid,
                               int h, int w, float dt) const {
-    // RENDER-ONLY: stays FLOAT. The only contact with the integer depth is the
-    // DEQUANTIZE at the c2 = g*min(depth, h_cap) read and at the wet/dry gate.
+    // RENDER-ONLY: stays FLOAT. The only contact with the integer depth/
+    // pressure is the DEQUANTIZE at the c2 read, the wet/dry gate, and the
+    // splash source below.
     const int n = h * w;
     const float inv_dx2 = 1.0f / (dx * dx);
     const float Q = (float)FP_ONE;   // 65536 — dequantize divisor
 
-    // --- 1. splash source FIRST: a wave_p blast over wet tiles kicks the
-    //        surface. wave_p nullable -> no splash. Wet tiles only.
-    if (wave_p) {
+    // --- 1. splash source FIRST: the per-tick pressure TRANSIENT |P-P_prev|
+    //        over wet tiles kicks the surface (EOS refactor P3, design §6
+    //        "ripple splash" — D6: no standing-baseline splash, since a
+    //        steady dome has P == P_prev and contributes 0). Nullable ->
+    //        no splash. Wet tiles only.
+    if (atmosphere && p_prev) {
         for (int i = 0; i < n; ++i) {
-            // DEQUANTIZE depth for the wet test (depth > 0 <=> int depth > 0).
-            if (water_depth[i] > 0) ripple_v[i] += k_splash * wave_p[i];
+            if (water_depth[i] > 0) {
+                const int32_t d = atmosphere[i] - p_prev[i];
+                const float transient = (float)(d < 0 ? -d : d) / Q;   // DEQUANTIZE |.|
+                ripple_v[i] += k_splash * transient;
+            }
         }
     }
 

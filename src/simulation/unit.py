@@ -214,13 +214,17 @@ class Unit:
         self.has_grenade   = 0 if self.is_zombie else CFG.marine.grenades
         self.has_explosive = 0 if self.is_zombie else CFG.marine.explosives
 
-        # Weapon binding (mechanics/03 §4, W1): which [weapons.*] row this
-        # unit fires. Marines carry the K5 carbine; zombie melee stays on its
-        # ai_zombie path (NPC weapons migrate onto rows later, mechanics/03
-        # §7). Config-static in W1, so deliberately NOT in the synced digest
-        # (field_ab_harness.SYNCED_UNIT_FIELDS) — it joins when loadouts can
-        # change at runtime (W3+).
-        self.weapon_id = "" if self.is_zombie else "k5_carbine"
+        # Weapon binding (mechanics/03 §4, W1; data-driven W4): which
+        # [weapons.*] row this unit fires. The marine default comes from
+        # config `[marine] weapon` (W4 — Erik's feel-check dial: set it to
+        # "dragon_7", RESTART the game, hose a room; construction-bound like
+        # the weapon tables, Ctrl+R alone does not re-arm existing units).
+        # Zombie melee stays on its ai_zombie path (NPC weapons migrate onto
+        # rows later, mechanics/03 §7). Config-static, so deliberately NOT
+        # in the synced digest (field_ab_harness.SYNCED_UNIT_FIELDS) — it
+        # joins when loadouts can change at runtime.
+        self.weapon_id = "" if self.is_zombie else str(
+            getattr(CFG.marine, "weapon", "k5_carbine"))
 
         # Combat state (used by marines mainly; harmless on zombies).
         self.last_fire_tick = -999
@@ -239,6 +243,17 @@ class Unit:
         # (field_ab_harness.SYNCED_UNIT_FIELDS).
         self.current_mag = None
         self.reload_done_tick = -1
+
+        # W4 SPRAY burst state (mechanics/03 §5): armed by
+        # combat.start_spray_burst on a spray trigger; counted down by
+        # combat.process_sprays (one cone-deposit tick per count).
+        # spray_order holds the originating fire order so an interruption
+        # (composed can_act False) can CONSUME it. Like the mag state above:
+        # a deterministic derivation of synced inputs, deliberately NOT in
+        # the synced digest surface; cleared at the round boundary.
+        self.spray_ticks_left = 0
+        self.spray_target = None
+        self.spray_order = None
 
         # Zombie AI state.
         self.zombie_activated       = False

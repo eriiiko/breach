@@ -20,7 +20,7 @@ Every gate so far ran on **one** GPU — the Ampere 3070. Cross-architecture det
 / `-prec-sqrt` / `-ftz=false` — all architecture-invariant) **but not yet empirically
 shown on Ada.** This runbook shows it.
 
-**The CPU integer golden is `07c3f37043c62cb47ec1abfef1a59d47c5f7a9c313490b38ecd2ddc543d1833d`**
+**The CPU integer golden is `2bab9702e098b30a2aeb290e9aeb19301c9de4379f64443966ea9f3074a91b7a`**
 (field_digest spec v1, 30-step canonical A/B scenario; lineage `542931c7…` → S2
 re-baseline `60bd331f…` → Q2-lift `453829a6…` → spawn-stat pin `ae1164ca…`,
 2026-07-04: spawn stats moved off `rng.multivariate_normal` (LAPACK — the Ada tick-0

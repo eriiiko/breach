@@ -121,7 +121,7 @@ def test_stress_conservation_exact_zero_lsb():
     min_depth_seen = 0
     drifts = []
     for _ in range(n_ticks):
-        s.step(depth, vx, vy, None, None, None, solid, dt, tilt[0], tilt[1])
+        s.step(depth, vx, vy, None, None, solid, dt, tilt[0], tilt[1])
         min_depth_seen = min(min_depth_seen, int(depth.min()))
         drifts.append(_isum(depth) - total0)
 
@@ -159,7 +159,7 @@ def test_stress_limiter_actually_fires():
     # substantial churn as a proxy that the limiter/clamp path is active.
     before = depth.copy()
     for _ in range(5):
-        s.step(depth, vx, vy, None, None, None, solid, dt, tilt[0], tilt[1])
+        s.step(depth, vx, vy, None, None, solid, dt, tilt[0], tilt[1])
     changed = int((depth != before).sum())
     interior = (depth.shape[0] - 2) * (depth.shape[1] - 2)
     assert changed > interior // 2, (
@@ -180,7 +180,7 @@ def test_stress_conservation_many_seeds():
         total0 = _isum(depth)
         min_d = 0
         for _ in range(200):
-            s.step(depth, vx, vy, None, None, None, solid, dt, tilt[0], tilt[1])
+            s.step(depth, vx, vy, None, None, solid, dt, tilt[0], tilt[1])
             min_d = min(min_d, int(depth.min()))
         assert _isum(depth) == total0, (
             f"seed {seed} tilt {tilt}: mass drifted "

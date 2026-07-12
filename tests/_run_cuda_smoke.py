@@ -7,9 +7,14 @@ re-execs itself there via tests/cuda_harness.run_cuda_script (which prepends the
 DLL-dir + sys.path bootstrap, so `import breach_physics` resolves to the CUDA
 build in cpp/build_cuda).
 
+EOS P6.0: the wave/atmosphere backends are RETIRED (cuda_wave.cu /
+cuda_atmosphere.cu deleted — their CPU solvers were replaced by the EOS solve
+in P3), and the remaining kernels are STALE until their P6 ports re-prove them
+(tests/cuda_harness.py EOS_P6_PENDING_KERNELS pins the gates meanwhile).
+
 What it asserts:
-  (a) no crash building + stepping a real Simulation 30 ticks with all 6 live GPU
-      backends on (temperature/water/smoke/wave/fire/atmosphere);
+  (a) no crash building + stepping a real Simulation 30 ticks with the live GPU
+      backends on (temperature/water/smoke/fire);
   (b) the backends actually report CUDA (get_*_backend() True) + cuda_available();
   (c) fields EVOLVE (smoke/fire/temperature/atmosphere/water not frozen) once we
       deposit a fire + smoke + water + overpressure source;
@@ -46,14 +51,21 @@ from simulation.unit import Unit
 from simulation.field_edit import FieldEdit, Region, EditMode, Falloff
 
 LEVEL = getattr(CFG.display, "level", "unhcr_vessel")
-# All 7 backends: the 6 field solvers + the raycaster (the live fire->heat cast,
-# CUDA-S2 live). With the raycaster ON, cast_fire_heat deposits `heat` on the GPU.
+# The 4 field solvers + the raycaster (the live fire->heat cast, CUDA-S2 live).
+# With the raycaster ON, cast_fire_heat deposits `heat` on the GPU.
+# EOS P6.0: wave/atmos backends retired (kernels deleted with their solvers).
+# EOS P6.5: the four EOS kernel-surface flags (bulk_flux, sl_advection,
+# mg_solve, kick_compression) are now LIVE-DISPATCHED — with all four on,
+# run_substeps routes the whole eos.step tick to the chained GPU orchestration
+# (cuda_eos_step.cu). All six EOS-era setters are in the all-on set.
 SETTERS = ["set_temperature_backend", "set_water_backend", "set_smoke_backend",
-           "set_wave_backend", "set_fire_backend", "set_atmos_backend",
-           "set_raycaster_backend"]
+           "set_fire_backend", "set_raycaster_backend", "set_bulk_flux_backend",
+           "set_sl_advection_backend", "set_mg_solve_backend",
+           "set_kick_compression_backend"]
 GETTERS = ["get_temperature_backend", "get_water_backend", "get_smoke_backend",
-           "get_wave_backend", "get_fire_backend", "get_atmos_backend",
-           "get_raycaster_backend"]
+           "get_fire_backend", "get_raycaster_backend", "get_bulk_flux_backend",
+           "get_sl_advection_backend", "get_mg_solve_backend",
+           "get_kick_compression_backend"]
 
 
 def find_open_cell(gmap):
@@ -175,7 +187,7 @@ for k in gpu_final:
         agree[k] = "rel-maxdiff %.3e" % rel
 print("GPU_VS_CPU", agree)
 
-# PASS gate: all 6 GPU backends report CUDA, the CPU reference reports OFF, the
+# PASS gate: all GPU backends report CUDA, the CPU reference reports OFF, the
 # fields actually evolved (>=3 moving tick1->final), every field's kernel drove
 # it off zero at some point (all 5 nonzero), and GPU == CPU on every field.
 all_agree = all(v in ("bit-identical",) for v in agree.values())

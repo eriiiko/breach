@@ -48,7 +48,7 @@ from simulation.exchange import apply_blast_damage  # noqa: E402
 from simulation.field_edit import EditQueue  # noqa: E402
 from simulation.gamemap import GameMap  # noqa: E402
 from simulation.gases import (  # noqa: E402
-    BLACK_SMOKE, N_GASES, POISON as GAS_POISON, TEARGAS as GAS_TEARGAS,
+    BLACK_SMOKE, N_TRACE_GASES, POISON as GAS_POISON, TEARGAS as GAS_TEARGAS,
     WHITE_SMOKE,
 )
 from simulation.orders import (  # noqa: E402
@@ -296,8 +296,9 @@ def test_gas_deposit_exact_q16_falloff_clamp_skip_and_slice():
     assert int(ws[10, 13]) == 0
     # Outside the strict disc (d=4 exactly on-axis): untouched.
     assert int(ws[10, 15]) == 0 and int(ws[14, 11]) == 0
-    # Slice targeting: every OTHER gas plane is untouched.
-    for g in range(N_GASES):
+    # Slice targeting: every OTHER TRACE gas plane is untouched (the bulk
+    # O2/inert_N2 pair, EOS refactor P1, always carries ambient air).
+    for g in range(N_TRACE_GASES):
         if g != WHITE_SMOKE:
             assert not gmap.gas[g].any(), f"slice {g} moved on a white_smoke deposit"
 
@@ -338,7 +339,7 @@ def test_gas_payload_species_route_to_their_slices():
                         kind="grenade")
         queue.flush(gmap, rng)
         assert gmap.gas[slice_id].any()
-        for g in range(N_GASES):
+        for g in range(N_TRACE_GASES):
             if g != slice_id:
                 assert not gmap.gas[g].any()
         # A pure-gas payload deposits NO explosion side effects.

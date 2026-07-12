@@ -20,12 +20,15 @@ Usage (the CUDA build must exist first — run ``cpp/build_cuda.bat``):
 
 Equivalent shortcut: ``python main.py --cuda`` (main.py routes --cuda here).
 
-All 7 solvers run on the GPU: the 6 field solvers (temperature, water, smoke,
-wave, fire, atmosphere) dispatch inside PhysicsEngine::step, and the 7th — the
-raycaster (the fire->heat ray cast in PhysicsRunner.cast_fire_heat) — is now
-live-wired too (set_raycaster_backend, CUDA-S2 live). The cast's synced `heat`
-output is bit-identical CPU<->GPU (the S2 gate); the light channels it also
-produces are render-only / deterministic-exempt.
+The GPU surface: 4 field solvers (temperature, water, smoke, fire) dispatch
+inside PhysicsEngine::step, plus the raycaster (the fire->heat ray cast in
+PhysicsRunner.cast_fire_heat; set_raycaster_backend, CUDA-S2 live). The cast's
+synced `heat` output is bit-identical CPU<->GPU (the S2 gate); the light
+channels it also produces are render-only / deterministic-exempt.
+EOS P6.0: the wave/atmosphere backends are RETIRED (their CPU solvers were
+replaced by the compressible EOS solve in P3), and the remaining kernels are
+STALE until their P6 ports land — see tests/cuda_harness.py
+EOS_P6_PENDING_KERNELS. This tool is unusable during that window.
 """
 from __future__ import annotations
 
@@ -84,18 +87,31 @@ def setup_cuda_import() -> None:
     sys.path.insert(0, str(CUDA_BUILD_DIR))
 
 
-# The seven live-dispatched GPU backends. The first six are the field solvers
-# (PhysicsEngine::step); the seventh — the raycaster (the fire->heat ray cast in
-# PhysicsRunner.cast_fire_heat) — is now live-wired (CUDA-S2 live) so --cuda is a
-# full 7/7. cast_fire_heat reads the raycaster flag per tick (heat bit-identical).
+# The live-dispatched GPU backends. The first four are field solvers
+# (PhysicsEngine::step); the fifth — the raycaster (the fire->heat ray cast in
+# PhysicsRunner.cast_fire_heat) — is live-wired (CUDA-S2 live). cast_fire_heat
+# reads the raycaster flag per tick (heat bit-identical).
+# EOS P6.0: set_wave_backend / set_atmos_backend RETIRED (cuda_wave.cu /
+# cuda_atmosphere.cu deleted — their CPU solvers were replaced by the EOS solve
+# in P3; docs/eos_p6_gpu_alignment_review.md §1.11). NOTE the remaining kernels
+# are STALE during the EOS migration window (harness EOS_P6_PENDING_KERNELS);
+# this tool is unusable until the P6 ports re-prove them.
 _BACKEND_SETTERS = (
     "set_temperature_backend",
     "set_water_backend",
     "set_smoke_backend",
-    "set_wave_backend",
     "set_fire_backend",
-    "set_atmos_backend",
     "set_raycaster_backend",
+    # EOS P6.5: the four EOS kernel-surface flags below are now LIVE-DISPATCHED
+    # — PhysicsEngine::run_substeps routes the whole eos.step tick to the
+    # chained GPU orchestration (cuda_eos_step.cu) when ALL FOUR are on
+    # (get_eos_step_backend reports the ANDed predicate). P6.2/P6.3 left
+    # sl_advection/mg_solve out of this list while they were kernel-gate-only;
+    # P6.5 makes all six EOS-era setters consistent.
+    "set_bulk_flux_backend",         # EOS P6.1
+    "set_sl_advection_backend",      # EOS P6.2
+    "set_mg_solve_backend",          # EOS P6.3
+    "set_kick_compression_backend",  # EOS P6.4
 )
 
 
@@ -115,7 +131,7 @@ def enable_all_backends(bp) -> None:
         print(f"[run_on_cuda] (cuda_device_info unavailable: {e})")
     for name in _BACKEND_SETTERS:
         getattr(bp, name)(True)
-    print("[run_on_cuda] backends ON (7/7):",
+    print(f"[run_on_cuda] backends ON ({len(_BACKEND_SETTERS)}/{len(_BACKEND_SETTERS)}):",
           ", ".join(n.replace("set_", "").replace("_backend", "")
                     for n in _BACKEND_SETTERS))
 

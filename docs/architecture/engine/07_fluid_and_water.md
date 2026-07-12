@@ -35,6 +35,35 @@ ship green (277 tests). Built from this chapter via the two-round-reviewed
 `docs/water_implementation_plan.md`. §8 audits exactly what shipped and what remains
 (conduction, oil, ice, gameplay reads, the optics research pass).
 
+> ## EOS refactor (2026-07) — as-built
+>
+> **The water↔atmosphere couplings (§5.1) now read/write the compressible EOS pressure, not the
+> old two-field `atmosphere + wave_p`.** The solver itself (pipe model, upwind flux, tilt, ripple)
+> is untouched — the couplings just point at the new field. Canon: `docs/eos_refactor_design.md`
+> (§ writer/reader migration), `docs/eos_refactor_decisions.md` (decision 6 = purify the head
+> bridge), and `docs/water_cuda_head_determinism_fix.md` (the CUDA head-term determinism fix).
+>
+> - **Pressure head reads the derived *integer* `P`.** The `surface += k_p·(atmosphere + wave_p)`
+>   term becomes `surface += k_p·P` off the once-per-tick materialized `P = C·N·T` (accessed via
+>   the `atmosphere` alias). The old dequantize→float→`×k_p`→requantize bridge
+>   (`atm_f_`/`wave_p_f_`) is **removed** — the head is now a pure `mul_q16` by a quantized `k_p`.
+>   `k_p` is recalibrated to the new pressure scale (the shipped `k_p = 0.5` was tuned to the old
+>   `wave_p` scale). This is the change `water_cuda_head_determinism_fix.md` made cross-GPU
+>   deterministic.
+> - **Volume displacement is a gas-mass (`N`) feed, not a pressure multiply.** The W3
+>   `atmosphere *= free_h_before/free_h_after` becomes a redistribution of conserved `N` — less
+>   free air column ⇒ higher `N` density ⇒ `P = C·N·T` rises. Same emergent behaviour (flooding
+>   spikes pressure, listing shoves smoke to port), now mass-correct rather than a phantom
+>   pressure scale.
+> - **Ripple splash reads the pressure transient `|P − P_prev|`** (the per-tick change of the
+>   materialized `P`, stored in the repurposed `wave_p`/`P_prev` buffer) instead of raw `wave_p`,
+>   so a standing pressure baseline no longer splashes — only genuine blasts/transients do.
+> - **Flash-boil steam** already deposits into `gas[white_smoke]`; under EOS that is simply one of
+>   the trace species riding the bulk O₂/N₂ transport (ch.04 / ch.05).
+> - **CUDA (P6):** the water solver and its head term run on-device bit-identically to the CPU
+>   reference (the head-term integer reconciliation is recorded in
+>   `docs/water_cuda_head_determinism_fix.md`).
+
 ---
 
 ## 2. The model — pipe + damped velocity

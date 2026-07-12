@@ -1,6 +1,11 @@
 """
 Raylib test: top-down explosion with particles and shockwave ring.
 Click anywhere to trigger an explosion.
+
+Run directly (`python raylib_test.py`) to open the window. The render loop is
+guarded behind `if __name__ == "__main__"` so importing this module — e.g. when
+pytest collects it because the filename matches `*_test.py` — does NOT open a
+window or spin the render loop.
 """
 import pyray as rl
 import random
@@ -88,76 +93,82 @@ def draw_floor():
             rl.draw_rectangle(tx, ty, TILE_SIZE, TILE_SIZE, rl.Color(shade, shade, shade + 5, 255))
 
 # --- Main ---
-rl.init_window(W, H, "Breach - Raylib Explosion Test")
-rl.set_target_fps(60)
+def main():
+    global particles, shockwaves
+    rl.init_window(W, H, "Breach - Raylib Explosion Test")
+    rl.set_target_fps(60)
 
-while not rl.window_should_close():
-    dt = rl.get_frame_time()
+    while not rl.window_should_close():
+        dt = rl.get_frame_time()
 
-    # Click to explode
-    if rl.is_mouse_button_pressed(rl.MouseButton.MOUSE_BUTTON_LEFT):
-        mx, my = rl.get_mouse_x(), rl.get_mouse_y()
-        spawn_explosion(mx, my)
+        # Click to explode
+        if rl.is_mouse_button_pressed(rl.MouseButton.MOUSE_BUTTON_LEFT):
+            mx, my = rl.get_mouse_x(), rl.get_mouse_y()
+            spawn_explosion(mx, my)
 
-    # Update particles
-    alive = []
-    for p in particles:
-        p.life -= dt
-        if p.life <= 0:
-            continue
-        p.x += p.vx * dt
-        p.y += p.vy * dt
-        # Slow down
-        p.vx *= 0.97
-        p.vy *= 0.97
-        alive.append(p)
-    particles = alive
+        # Update particles
+        alive = []
+        for p in particles:
+            p.life -= dt
+            if p.life <= 0:
+                continue
+            p.x += p.vx * dt
+            p.y += p.vy * dt
+            # Slow down
+            p.vx *= 0.97
+            p.vy *= 0.97
+            alive.append(p)
+        particles = alive
 
-    # Update shockwaves
-    alive_sw = []
-    for sw in shockwaves:
-        sw.life -= dt
-        if sw.life <= 0:
-            continue
-        t = 1.0 - sw.life / sw.max_life
-        sw.radius = t * sw.max_radius
-        alive_sw.append(sw)
-    shockwaves = alive_sw
+        # Update shockwaves
+        alive_sw = []
+        for sw in shockwaves:
+            sw.life -= dt
+            if sw.life <= 0:
+                continue
+            t = 1.0 - sw.life / sw.max_life
+            sw.radius = t * sw.max_radius
+            alive_sw.append(sw)
+        shockwaves = alive_sw
 
-    # Draw
-    rl.begin_drawing()
-    rl.clear_background(rl.Color(20, 20, 25, 255))
-    draw_floor()
+        # Draw
+        rl.begin_drawing()
+        rl.clear_background(rl.Color(20, 20, 25, 255))
+        draw_floor()
 
-    # Draw shockwave rings
-    for sw in shockwaves:
-        alpha = int(255 * (sw.life / sw.max_life) * 0.6)
-        thickness = max(1, 3 * (sw.life / sw.max_life))
-        rl.draw_ring(
-            rl.Vector2(sw.x, sw.y),
-            sw.radius - thickness, sw.radius + thickness,
-            0, 360, 64,
-            rl.Color(200, 220, 255, alpha)
-        )
+        # Draw shockwave rings
+        for sw in shockwaves:
+            alpha = int(255 * (sw.life / sw.max_life) * 0.6)
+            thickness = max(1, 3 * (sw.life / sw.max_life))
+            rl.draw_ring(
+                rl.Vector2(sw.x, sw.y),
+                sw.radius - thickness, sw.radius + thickness,
+                0, 360, 64,
+                rl.Color(200, 220, 255, alpha)
+            )
 
-    # Draw particles (additive-ish: draw brightest last)
-    for p in particles:
-        t = p.life / p.max_life
-        alpha = int(255 * t)
-        size = p.size * (0.5 + 0.5 * t)
-        rl.draw_circle(int(p.x), int(p.y), size,
-                       rl.Color(p.r, p.g, p.b, alpha))
+        # Draw particles (additive-ish: draw brightest last)
+        for p in particles:
+            t = p.life / p.max_life
+            alpha = int(255 * t)
+            size = p.size * (0.5 + 0.5 * t)
+            rl.draw_circle(int(p.x), int(p.y), size,
+                           rl.Color(p.r, p.g, p.b, alpha))
 
-    # Flash at explosion center (brief white flash)
-    for sw in shockwaves:
-        if sw.life > sw.max_life * 0.7:
-            flash_t = (sw.life - sw.max_life * 0.7) / (sw.max_life * 0.3)
-            flash_alpha = int(200 * flash_t)
-            rl.draw_circle(int(sw.x), int(sw.y), 30 * flash_t,
-                           rl.Color(255, 255, 220, flash_alpha))
+        # Flash at explosion center (brief white flash)
+        for sw in shockwaves:
+            if sw.life > sw.max_life * 0.7:
+                flash_t = (sw.life - sw.max_life * 0.7) / (sw.max_life * 0.3)
+                flash_alpha = int(200 * flash_t)
+                rl.draw_circle(int(sw.x), int(sw.y), 30 * flash_t,
+                               rl.Color(255, 255, 220, flash_alpha))
 
-    rl.draw_text("Click to explode!", 10, 10, 20, rl.Color(200, 200, 200, 255))
-    rl.draw_fps(W - 100, 10)
-    rl.end_drawing()
+        rl.draw_text("Click to explode!", 10, 10, 20, rl.Color(200, 200, 200, 255))
+        rl.draw_fps(W - 100, 10)
+        rl.end_drawing()
 
-rl.close_window()
+    rl.close_window()
+
+
+if __name__ == "__main__":
+    main()
