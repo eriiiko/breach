@@ -165,10 +165,16 @@ class PhysicsRecorder:
         # Store as: unit_fx[tick, unit_idx], unit_fy, unit_hp, unit_alive
         if unit_snaps[0] is not None:
             n_units = len(unit_snaps[0])
+            # record() stores the unit position under keys 'x'/'y' (the Q16.16
+            # fixed-point coords u.x/u.y); the on-disk schema names them
+            # unit_fx/unit_fy. Read the keys record() actually wrote — the old
+            # 'fx'/'fy' keys never existed, so every blowup/F8 dump crashed with
+            # KeyError: 'fx' (reproduced on test_level: air-vs-vacuum venting
+            # trips the blowup dump at tick 70).
             data['unit_fx'] = np.array(
-                [[u['fx'] for u in snap] for snap in unit_snaps], dtype=np.int32)
+                [[u['x'] for u in snap] for snap in unit_snaps], dtype=np.int32)
             data['unit_fy'] = np.array(
-                [[u['fy'] for u in snap] for snap in unit_snaps], dtype=np.int32)
+                [[u['y'] for u in snap] for snap in unit_snaps], dtype=np.int32)
             data['unit_hp'] = np.array(
                 [[u['hp'] for u in snap] for snap in unit_snaps], dtype=np.int32)
             data['unit_alive'] = np.array(
