@@ -1,0 +1,120 @@
+# created by tools/map_editor.py (engine/15 §5 NEW)
+version = "2"
+name = "test_level"
+
+# v2 codes ARE canon material ids (src/simulation/materials.py)
+tilemap = "tilemap.csv"
+
+tile_size_m = 0.333
+
+[art.bare]
+diffuse = "baked_diffuse.png"
+normal = "baked_normal.png"
+
+[art.align]
+offset_px = [0.0, 0.0]
+px_per_tile = [64.00, 64.00]
+
+[bake]
+tileset = "art/tilesets/greybox"
+px_per_tile = 64
+seed = 0
+
+[[spawn]]
+name = "marine_1"
+team = 0
+x = 15.0
+y = 233.0
+footprint = 3
+
+[[spawn]]
+name = "marine_2"
+team = 0
+x = 15.0
+y = 226.0
+footprint = 3
+
+[[spawn]]
+name = "marine_3"
+team = 0
+x = 14.0
+y = 218.0
+footprint = 3
+
+[[spawn]]
+name = "marine_4"
+team = 0
+x = 14.0
+y = 210.0
+footprint = 3
+
+[[light]]
+pos = [110.5, 240.5]
+color = [255, 160, 40]
+intensity = 3.0000000000000018
+range = 12.0
+kind = "beacon"
+period_s = 2.0
+beam_deg = 30.0
+phase = 0.0
+
+[[light]]
+pos = [110.5, 253.5]
+color = [255, 160, 40]
+intensity = 3.0000000000000018
+range = 12.0
+kind = "beacon"
+period_s = 2.0
+beam_deg = 30.0
+phase = 0.0
+
+[[light]]
+pos = [89.5, 248.5]
+color = [255, 160, 40]
+intensity = 2.000000000000001
+range = 12.0
+kind = "beacon"
+period_s = 2.0
+beam_deg = 30.0
+phase = 0.0
+
+[[light]]
+pos = [89.5, 252.5]
+color = [255, 160, 40]
+intensity = 2.000000000000001
+range = 12.0
+kind = "beacon"
+period_s = 2.0
+beam_deg = 30.0
+phase = 0.0
+
+[[light]]
+pos = [77.5, 250.5]
+color = [255, 40, 40]
+intensity = 2.5000000000000013
+range = 10.0
+kind = "static"
+
+[[light]]
+pos = [75.5, 225.5]
+color = [255, 160, 40]
+intensity = 5.0
+range = 46.0
+kind = "static"
+
+[[light]]
+pos = [76.5, 153.5]
+color = [255, 214, 170]
+intensity = 1.7000000000000006
+range = 21.0
+kind = "static"
+
+[[light]]
+pos = [17.5, 184.5]
+color = [60, 255, 120]
+intensity = 2.5000000000000013
+range = 12.0
+kind = "static"
+
+[water]
+depth_map = "water_init.npy"
