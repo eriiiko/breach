@@ -1,6 +1,25 @@
-# X-ARCH pending — verify the EOS engine is bit-identical on the Ampere desktop
+# X-ARCH RESOLVED — the EOS engine is bit-identical on the Ampere desktop
 
-> **STATUS: PENDING.** For **Claude Code on the Home Desktop** (NVIDIA RTX 3070,
+> **STATUS: RESOLVED 2026-07-14** (Home Desktop, NVIDIA RTX 3070, Ampere sm_86,
+> machine `DESKTOP-0E98HUV`). Both steps PASS clean:
+> - **Step 1 (CPU cross-arch):** per-field digest = aggregate
+>   `98d3dd7eaf3d574d6e562513cd95f3b5ac077b7c69b1d0b024db931261735473`,
+>   **zero divergence** vs the committed Ada baseline across all 690 (tick, field)
+>   pairs → post-EOS CPU sim bit-identical Ada↔Ampere.
+> - **Step 2 (CUDA gates on Ampere):** full suite **784 passed, 2 skipped, 0
+>   failed** on the 3070; every `cuda_*` gate asserts `digest(CUDA) == digest(CPU)`
+>   in-process at `tol=0.0`.
+>
+> Transitively proven: **Ampere-GPU == Ampere-CPU == Ada-CPU == Ada-GPU**.
+> Cross-GPU bit-identity holds across GPU generations after the EOS update — the
+> RL-training determinism foundation is confirmed. Toolchain: CUDA 12.4, driver
+> 610.62, anaconda py3.11.
+>
+> _Original PENDING runbook preserved below for the record._
+
+---
+
+> **[HISTORICAL] STATUS: PENDING.** For **Claude Code on the Home Desktop** (NVIDIA RTX 3070,
 > Ampere sm_86, machine `DESKTOP-0E98HUV`). Written on the Lenovo/Ada 2026-07-12
 > and pushed to `main`. Erik: on the home PC, `git pull`, then point Claude Code
 > at this file and say "run the X-ARCH sweep."
