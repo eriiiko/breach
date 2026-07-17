@@ -1843,6 +1843,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> None:
+    # The Windows console defaults to a legacy codepage (cp850/cp1252), which
+    # garbles the UTF-8 em-dashes in our messages (mojibake). Reconfigure the
+    # streams; errors="replace" keeps output flowing even on a console that
+    # can't render a glyph.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
     ap = build_arg_parser()
     args = ap.parse_args(argv)
 

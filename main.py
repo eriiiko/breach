@@ -200,15 +200,17 @@ def main():
     # Hazards are interactive now — I ignite, J gas, U pour water,
     # explosives breach — and will be level-defined later.
 
-    # ----- Spawn units from level.toml [[spawn]] entries.
+    # ----- Spawn units from level.toml [[spawn]] entries. Zero spawns is
+    # legal: a unit-free physics-tuning sandbox (camera starts at 0,0;
+    # marines()/zombies() handle empty rosters).
     if not level.spawns:
-        raise RuntimeError(
-            f"Level '{level.name}' has no [[spawn]] entries — nothing to play."
-        )
+        print(f"  NOTE: level '{level.name}' has no [[spawn]] entries — "
+              f"running as a unit-free physics sandbox")
     for s in level.spawns:
         sim.add_unit(Unit(s.name, x=s.x, y=s.y, team=s.team,
                           footprint=s.footprint))
-    print(f"  Spawned {len(level.spawns)} units from level.toml")
+    if level.spawns:
+        print(f"  Spawned {len(level.spawns)} units from level.toml")
 
     # 2. Render config — borderless windowed at monitor resolution.
     from renderer.camera import Camera2D
