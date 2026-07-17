@@ -1,0 +1,202 @@
+===== S1 control =====
+scenario=S1  scheme=control  grid=128x128  ticks=120  dt=0.083
+  tick    2: event detonate
+  tick   45: event open_door
+wrote C:\Users\steen\projects\breach\prototypes\eos\out\S1_control.gif  (120 frames)
+----------------------------------------------------------------
+timing  scenario=S1  scheme=control  grid=128x128
+  ticks          : 120
+  ms/tick   min  : 8.719
+  ms/tick   mean : 9.849
+  ms/tick   max  : 19.353
+  substeps/tick  : 1.00
+----------------------------------------------------------------
+RESULT_OK S1 control
+===== S2 control =====
+scenario=S2  scheme=control  grid=128x128  ticks=120  dt=0.083
+  tick    2: event detonate
+  tick   30: event open_door
+wrote C:\Users\steen\projects\breach\prototypes\eos\out\S2_control.gif  (120 frames)
+----------------------------------------------------------------
+timing  scenario=S2  scheme=control  grid=128x128
+  ticks          : 120
+  ms/tick   min  : 8.703
+  ms/tick   mean : 9.928
+  ms/tick   max  : 15.041
+  substeps/tick  : 1.00
+----------------------------------------------------------------
+RESULT_OK S2 control
+===== S3 control =====
+scenario=S3  scheme=control  grid=128x128  ticks=120  dt=0.083
+  tick   15: event breach
+wrote C:\Users\steen\projects\breach\prototypes\eos\out\S3_control.gif  (120 frames)
+----------------------------------------------------------------
+timing  scenario=S3  scheme=control  grid=128x128
+  ticks          : 120
+  ms/tick   min  : 8.682
+  ms/tick   mean : 9.471
+  ms/tick   max  : 13.557
+  substeps/tick  : 1.00
+----------------------------------------------------------------
+RESULT_OK S3 control
+===== S4 control =====
+scenario=S4  scheme=control  grid=128x128  ticks=120  dt=0.083
+  tick   10: event ignite
+wrote C:\Users\steen\projects\breach\prototypes\eos\out\S4_control.gif  (120 frames)
+----------------------------------------------------------------
+timing  scenario=S4  scheme=control  grid=128x128
+  ticks          : 120
+  ms/tick   min  : 8.486
+  ms/tick   mean : 9.653
+  ms/tick   max  : 12.159
+  substeps/tick  : 1.00
+----------------------------------------------------------------
+RESULT_OK S4 control
+===== S5 control =====
+scenario=S5  scheme=control  grid=128x128  ticks=120  dt=0.083
+  tick   15: event release_water
+wrote C:\Users\steen\projects\breach\prototypes\eos\out\S5_control.gif  (120 frames)
+----------------------------------------------------------------
+timing  scenario=S5  scheme=control  grid=128x128
+  ticks          : 120
+  ms/tick   min  : 9.368
+  ms/tick   mean : 10.634
+  ms/tick   max  : 14.957
+  substeps/tick  : 1.00
+----------------------------------------------------------------
+RESULT_OK S5 control
+===== S1 rungA =====
+scenario=S1  scheme=rungA  grid=128x128  ticks=120  dt=0.083
+  tick    2: event detonate
+  tick   45: event open_door
+wrote C:\Users\steen\projects\breach\prototypes\eos\out\S1_rungA.gif  (120 frames)
+----------------------------------------------------------------
+timing  scenario=S1  scheme=rungA  grid=128x128
+  ticks          : 120
+  ms/tick   min  : 8.932
+  ms/tick   mean : 10.149
+  ms/tick   max  : 12.445
+  substeps/tick  : 1.00
+----------------------------------------------------------------
+RESULT_OK S1 rungA
+===== S2 rungA =====
+scenario=S2  scheme=rungA  grid=128x128  ticks=120  dt=0.083
+  tick    2: event detonate
+  tick   30: event open_door
+wrote C:\Users\steen\projects\breach\prototypes\eos\out\S2_rungA.gif  (120 frames)
+----------------------------------------------------------------
+timing  scenario=S2  scheme=rungA  grid=128x128
+  ticks          : 120
+  ms/tick   min  : 9.000
+  ms/tick   mean : 10.524
+  ms/tick   max  : 13.944
+  substeps/tick  : 1.00
+----------------------------------------------------------------
+RESULT_OK S2 rungA
+===== S3 rungA =====
+scenario=S3  scheme=rungA  grid=128x128  ticks=120  dt=0.083
+  tick   15: event breach
+wrote C:\Users\steen\projects\breach\prototypes\eos\out\S3_rungA.gif  (120 frames)
+----------------------------------------------------------------
+timing  scenario=S3  scheme=rungA  grid=128x128
+  ticks          : 120
+  ms/tick   min  : 8.576
+  ms/tick   mean : 9.754
+  ms/tick   max  : 12.867
+  substeps/tick  : 1.00
+----------------------------------------------------------------
+RESULT_OK S3 rungA
+===== S4 rungA =====
+scenario=S4  scheme=rungA  grid=128x128  ticks=120  dt=0.083
+  tick   10: event ignite
+wrote C:\Users\steen\projects\breach\prototypes\eos\out\S4_rungA.gif  (120 frames)
+----------------------------------------------------------------
+timing  scenario=S4  scheme=rungA  grid=128x128
+  ticks          : 120
+  ms/tick   min  : 8.815
+  ms/tick   mean : 10.349
+  ms/tick   max  : 13.158
+  substeps/tick  : 1.00
+----------------------------------------------------------------
+RESULT_OK S4 rungA
+===== S5 rungA =====
+scenario=S5  scheme=rungA  grid=128x128  ticks=120  dt=0.083
+  tick   15: event release_water
+wrote C:\Users\steen\projects\breach\prototypes\eos\out\S5_rungA.gif  (120 frames)
+----------------------------------------------------------------
+timing  scenario=S5  scheme=rungA  grid=128x128
+  ticks          : 120
+  ms/tick   min  : 9.400
+  ms/tick   mean : 10.915
+  ms/tick   max  : 17.419
+  substeps/tick  : 1.00
+----------------------------------------------------------------
+RESULT_OK S5 rungA
+===== S1 rungB =====
+scenario=S1  scheme=rungB  grid=128x128  ticks=120  dt=0.083
+  tick    2: event detonate
+  tick   45: event open_door
+wrote C:\Users\steen\projects\breach\prototypes\eos\out\S1_rungB.gif  (120 frames)
+----------------------------------------------------------------
+timing  scenario=S1  scheme=rungB  grid=128x128
+  ticks          : 120
+  ms/tick   min  : 10.860
+  ms/tick   mean : 12.513
+  ms/tick   max  : 24.662
+  substeps/tick  : 1.03
+----------------------------------------------------------------
+RESULT_OK S1 rungB
+===== S2 rungB =====
+scenario=S2  scheme=rungB  grid=128x128  ticks=120  dt=0.083
+  tick    2: event detonate
+  tick   30: event open_door
+wrote C:\Users\steen\projects\breach\prototypes\eos\out\S2_rungB.gif  (120 frames)
+----------------------------------------------------------------
+timing  scenario=S2  scheme=rungB  grid=128x128
+  ticks          : 120
+  ms/tick   min  : 10.687
+  ms/tick   mean : 12.792
+  ms/tick   max  : 23.939
+  substeps/tick  : 1.02
+----------------------------------------------------------------
+RESULT_OK S2 rungB
+===== S3 rungB =====
+scenario=S3  scheme=rungB  grid=128x128  ticks=120  dt=0.083
+  tick   15: event breach
+wrote C:\Users\steen\projects\breach\prototypes\eos\out\S3_rungB.gif  (120 frames)
+----------------------------------------------------------------
+timing  scenario=S3  scheme=rungB  grid=128x128
+  ticks          : 120
+  ms/tick   min  : 10.841
+  ms/tick   mean : 12.518
+  ms/tick   max  : 18.716
+  substeps/tick  : 1.00
+----------------------------------------------------------------
+RESULT_OK S3 rungB
+===== S4 rungB =====
+scenario=S4  scheme=rungB  grid=128x128  ticks=120  dt=0.083
+  tick   10: event ignite
+wrote C:\Users\steen\projects\breach\prototypes\eos\out\S4_rungB.gif  (120 frames)
+----------------------------------------------------------------
+timing  scenario=S4  scheme=rungB  grid=128x128
+  ticks          : 120
+  ms/tick   min  : 10.849
+  ms/tick   mean : 12.251
+  ms/tick   max  : 22.113
+  substeps/tick  : 1.01
+----------------------------------------------------------------
+RESULT_OK S4 rungB
+===== S5 rungB =====
+scenario=S5  scheme=rungB  grid=128x128  ticks=120  dt=0.083
+  tick   15: event release_water
+wrote C:\Users\steen\projects\breach\prototypes\eos\out\S5_rungB.gif  (120 frames)
+----------------------------------------------------------------
+timing  scenario=S5  scheme=rungB  grid=128x128
+  ticks          : 120
+  ms/tick   min  : 11.910
+  ms/tick   mean : 15.329
+  ms/tick   max  : 71.274
+  substeps/tick  : 1.91
+----------------------------------------------------------------
+RESULT_OK S5 rungB
+BAKE_DONE 20:57:54
