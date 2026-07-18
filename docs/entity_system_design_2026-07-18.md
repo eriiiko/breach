@@ -114,6 +114,28 @@ complementary mechanisms, both authoring-layer (runtime dataflow unchanged):
    the authoring API. We were going to need it; mission authorship gets it
    for free.
 
+## 3d. Interactions & the cost-policy split (DECIDED, Erik 2026-07-18)
+
+Context (project-level, bigger than this arc): Erik wants to **postpone the
+unit-control decision as long as possible** — the current two-phase WEGO
+scheme may later give way to direct action control (one marine, gamepad),
+with cooldowns or nothing instead of AP. So the entity system must not bake
+AP in. The split:
+
+- **Entities declare INTERACTIONS, never costs.** A class declares what can
+  be done to it (`press`, `operate` — firing inputs, or opening a small
+  console menu; menu UI is game-side) and its physical preconditions
+  (adjacency, the entity being alive). No AP, no cooldown, no
+  faction-permission in the schema.
+- **A game-mode COST POLICY decides who may interact and what it costs.**
+  Today's policy: phased rules — adjacent unit, AP price from a policy table
+  in config, zombies/critters can't operate. A future action-mode policy:
+  cooldowns, or free. Swapping control schemes swaps the policy; every
+  entity, level, and wire survives untouched. (Also ML-clean: agent action
+  space = intents; the cost model is a training-environment knob.)
+- "Who operates" is policy too — the non-zombie/critter rule lives in the
+  policy table, not on the door.
+
 ## 4. Signals & logic — the Factorio model, and why it fits us perfectly
 
 Factorio's circuit network is the right reference for a reason deeper than
@@ -224,7 +246,8 @@ Fields: `rate` (atm/s), `target_high` (default 1.0), `target_low` (default
 0.0). Signals: `pressure` (own tile), `at_target` (bool). Inputs:
 `pressurize`, `depressurize`, `off`.
 
-**The airlock — the system's showcase.** Two doors + pump + terminal +
+**The airlock — the system's showcase (COMMITTED deliverable — Erik
+2026-07-18: "definitely let's build and deliver the airlock_controller").** Two doors + pump + terminal +
 interlock. The sequencing ("close both → pump → open far door") is a small
 state machine — buildable from latches in pure dataflow (the Factorio-purist
 way), but the clean answer is the three-layer split doing its job: write an
@@ -281,9 +304,19 @@ an entity with signals like `hp`, `alive`, `faction`).
   fields; §4 filter node; §6b pump actuator + airlock_controller pattern;
   prefabs flagged as editor-v2.
 
+**Round 4/5 (2026-07-18):**
+- Prefab set extends over the journey; **airlock_controller is a committed
+  deliverable** of the arc (§6b).
+- **AP cost / who-operates: RESOLVED by abstraction** (§3d) — entities
+  declare interactions; a swappable game-mode cost policy owns cost +
+  permission. Standing project context: Erik postpones the unit-control
+  decision (phased WEGO may become direct action control later); nothing in
+  this arc may bake AP in.
+- **Entity icons: DECIDED** — flat-vector SVG style (the mockup's octopus
+  style): hand-authored SVG sources per class in `art/entities/icons/`,
+  Claude authors them during build, rasterized to PNG for pyray at
+  bake/build time. Doubles as palette icon + placeholder in-game sprite.
+
 **Open:**
-1. Editor doc round-2 leftovers: door AP cost + operating classes; entity
-   icon pipeline (placeholder chips?). Park for critique unless Erik has
-   opinions sooner.
-2. Mockup layout — Erik deferred judgment (2026-07-18); revisit once the
-   entity discussion settles.
+1. Mockup layout — Erik deferred judgment (2026-07-18); revisit once the
+   entity discussion settles (or fold into critique).
