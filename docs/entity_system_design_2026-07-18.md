@@ -67,6 +67,53 @@ category = "sensors"
 pressure   = "q16"              # the tile's P, Q16.16 — integer, always
 ```
 
+## 3b. L0 architecture — the schema lives in CODE (proposal, round 3)
+
+Erik's instinct (2026-07-18): an abstract base class, concrete entity kinds
+implemented one at a time, "loaded into the editor somehow." Proposal:
+
+- **Python `Entity` abstract base class**; each kind (Door, Button,
+  SensorMotion, DeciderNode...) is a subclass that *declaratively* states its
+  schema — fields (name, type, default, constraints), signals, inputs — as
+  class-level declarations, plus its L0 behavior (what `toggle` does, how the
+  sensor measures). Registering the subclass (a decorator) adds it to the
+  runtime registry.
+- **The editor's registry is EXPORTED from code**, not hand-written: the
+  editor imports the entity module (or a generated `entity_registry.json`)
+  at launch — palette and inspectors always match the code, typos die at
+  import time, and "I prepare entities in Python first" is literal: write
+  the class, the editor sees it next launch. One source of truth.
+- **`entities.toml` becomes the TUNING overlay, not the definition** — the
+  weapons/materials pattern: code defines behavior + schema, TOML overrides
+  class default *numbers* (hot-reloadable dials). No schema in TOML.
+- C++/CUDA note: none needed. Dozens of entities, one integer logic pass per
+  tick — CPU Python is ample; port later only if profiling ever says so.
+  (Terminology: Python calls it an ABC; C++ an abstract base class; C#/Java
+  an "interface" — same idea everywhere: a contract subclasses must fill.)
+
+## 3c. Wiring at scale — tags + the authoring API (proposal, round 3)
+
+Erik: "one button wired to 100 doors — I'd want to write a script, not drag
+100 wires. This sets the limit for how cool levels we can build." Two
+complementary mechanisms, both authoring-layer (runtime dataflow unchanged):
+
+1. **Tags (groups) are first-class.** Every instance has `tags = ["..."]`;
+   a wire target is an instance ref OR a tag — `targets = ["tag:lockdown"]`
+   fires the input on every member. Resolved at runtime (destroyed members
+   just go dead), readable in the TOML, and the editor authors it by
+   multi-select → assign tag → one wire. Precedent: Source's targetname
+   wildcards (one output → "door_*") — proven at exactly our scale.
+2. **The authoring API — levels as a Python library.** `level_lib`: load a
+   level, create/query/modify entities, wires, tilemap, save (the baker is
+   already procgen-callable — this extends that door). "Write a script for
+   it" becomes the OFFICIAL second authoring path beside the editor: author-
+   time Python emitting plain data — the no-runtime-scripting decision (§8)
+   is untouched, determinism never sees the script.
+   **The ML tie-in makes this load-bearing:** training wants thousands of
+   level variants (randomized pens, chip positions, breach sites). That IS
+   the authoring API. We were going to need it; mission authorship gets it
+   for free.
+
 ## 4. Signals & logic — the Factorio model, and why it fits us perfectly
 
 Factorio's circuit network is the right reference for a reason deeper than
@@ -136,9 +183,18 @@ to do invisible.") A destroyed node's signals read 0 and its inputs go dead
 
 All read existing fields at the sensor's tile(s), integer, one per tick:
 `pressure` (P), `temperature` (T), `o2`, `smoke`, `water_depth`, `fire`,
-`presence` (any unit / faction-filtered unit inside a zone or radius),
-`door.is_open`, `hp_below(x)` on any entity, `chip.carried_by(faction)`,
-`clock` (tick fn). What else does the Contested Chip ship need?
+`presence` (see below), `door.is_open`, `hp_below(x)` on any entity,
+`chip.carried_by(faction)`, `clock` (tick fn). What else does the Contested
+Chip ship need?
+
+**`sensor_motion` (unit sensor — Erik 2026-07-18 yes):** emits count of
+units inside its range. Fields: `radius` (length_m), `faction_filter`
+(any | one faction | hostiles-of), `min_footprint` (length_m — small
+critters slip under it), `needs_los` (bool: line-of-sight sensor vs
+through-wall proximity plate). Motion-triggered lights = `sensor_motion →
+light.on` — and the emergent texture is free: zombies trip corridor lights
+and betray themselves; a skitter-sized vent-crawler doesn't; cutting power
+to the sensor (destroying it) darkens the trap.
 
 ## 7. Runtime sketch (L0)
 
@@ -173,8 +229,18 @@ an entity with signals like `hp`, `alive`, `faction`).
 - Logic is physical by default, `intangible` per node as needed (§5).
 - Meters-first (editor doc §4) — confirmed.
 
+**Round 3 proposals (2026-07-18, awaiting Erik):**
+- §3b schema-in-code: Entity ABC with declarative schema, editor registry
+  exported from code, entities.toml demoted to tuning overlay.
+- §3c wiring at scale: first-class tags (wire → tag) + the `level_lib`
+  authoring API (official scripted-authoring path; doubles as the ML
+  level-variant generator).
+- §6 `sensor_motion` with radius/faction/footprint/LOS fields.
+
 **Open:**
-1. **Sensor wishlist** (§6) — what's missing for the Contested Chip ship?
+1. **Sensor wishlist** (§6) — anything beyond the catalog + sensor_motion?
 2. Editor doc round-2 leftovers: door AP cost + operating classes; entity
    icon pipeline (placeholder chips?). Park for critique unless Erik has
    opinions sooner.
+3. Mockup layout — Erik deferred judgment (2026-07-18); revisit once the
+   entity discussion settles.
