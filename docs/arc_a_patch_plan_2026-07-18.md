@@ -53,3 +53,11 @@ Dependency spine: A1→A2→A3→A4→A5→A6→A7. A8/A9 need only A3.
 - Cross-arc contract: the S8a spec rewrite (between Arc A and Arc B) must
   include the sensor-gather contract (entity doc §7) — noted here so arc
   close-out reminds the ledger.
+
+## Accepted gaps (documented per workflow, revisit at arc close)
+
+- **A2:** the baker's `[art]`/`[bake]` writeback (`bake_level_art.
+  write_bake_blocks`) is NOT yet a level_lib client — still its own
+  non-atomic writer. Entity doc §3c says "all clients, period"; fold it in
+  as a small rider in Arc C (editor arc) or at arc close. Ctrl+S re-records
+  the handle's mtime+hash after baking, so staleness tracking stays honest.
