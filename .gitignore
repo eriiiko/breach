@@ -57,6 +57,10 @@ tools/texturelab/
 tools/eos_p5_out/*
 !tools/eos_p5_out/index.html
 
+# Entity registry fallback snapshot — regenerated on every successful launch
+# (entity design §3b); a committed copy would go stale.
+entity_registry.json
+
 # OS files
 Thumbs.db
 .DS_Store

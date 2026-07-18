@@ -296,6 +296,18 @@ def main():
         print(f"  Lights: {len(static_lights)} static + "
               f"{len(beacon_lights)} beacon from level.toml")
 
+    # Entity registry (entity design §3b): apply the dev tuning overlay
+    # (hard-errors on schema-in-TOML mistakes, like a bad config.toml), then
+    # rewrite the editor's last-good fallback — a successful launch is the
+    # freshness guarantee. Only the file write is soft-failed: a locked file
+    # must not kill a play session.
+    from simulation.entities import apply_tuning_overlay, export_registry_json
+    apply_tuning_overlay()
+    try:
+        export_registry_json()
+    except OSError as exc:
+        print(f"  WARNING: entity_registry.json export failed: {exc}")
+
     # 3. Main loop.
     last_time = time.perf_counter()
     tick_accum = 0.0

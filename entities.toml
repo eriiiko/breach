@@ -1,0 +1,19 @@
+# entities.toml — entity tuning-NUMBER overlay (entity design §2 L1 / §3b).
+#
+# Schema lives in code (src/simulation/entities/): classes, fields, signals,
+# inputs are Python class declarations. This file may ONLY override numeric
+# field defaults of registered classes — "No schema in TOML". A key naming a
+# class or field that does not exist is a hard error at load; non-number
+# values are rejected.
+#
+# DEV-ONLY affordance (design §2 hot-reload constraint): in any lockstep
+# session or ML rollout the registry content-hash is part of match setup,
+# like the seed. Changing a number here that alters behavior is a deliberate
+# golden re-baseline event — document it as such.
+#
+# Format, e.g.:
+#
+#   [light]
+#   intensity = 1.5    # brighter default lamps
+#
+# No overrides are active; code defaults apply.
