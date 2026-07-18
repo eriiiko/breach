@@ -100,17 +100,19 @@ their own rings — Ctrl+Z pops the spawn/light/water ring only while in that
 mode. Mixing them into one ring would make Ctrl+Z in PAINT silently rewind
 spawn/light/water work (and vice versa).
 
-Spawn/light/water writeback (reported design call): the `[[spawn]]` and
-`[[light]]` arrays-of-tables and the `[water]` table are MANAGED BLOCKS — on
-save every existing table is removed and the editor's state is written back
-at the position of the first one (or EOF). Every byte OUTSIDE the managed
-tables is preserved (comments inside individual tables are not). level.toml
-gets ONE .bak per session, carrying the pre-session bytes (the spawn
-writeback owns it; the light and water writebacks run after it with
-write_bak=False). water_init.npy carries its OWN once-per-session .bak
-(pre-session bytes, only when the file predates the session). On save the
-water grid is masked against the CURRENT materials (zeroed on solid/SPACE,
-count reported) — a wall painted over a pool never saves hidden depth.
+Spawn/light/water writeback (reported design call, absorbed into level_lib
+in Arc A2 — entity doc §3c: level_lib is THE single writer and this editor
+is a client): the `[[spawn]]` and `[[light]]` arrays-of-tables and the
+`[water]` table are MANAGED BLOCKS — on save every existing table is removed
+and the editor's state is written back at the position of the first one (or
+EOF), all three families in ONE atomic temp+rename write (a crash mid-save
+cannot tear level.toml). Every byte OUTSIDE the managed tables is preserved
+(comments inside individual tables are not). level.toml gets ONE .bak per
+session, carrying the pre-session bytes. water_init.npy carries its OWN
+once-per-session .bak (pre-session bytes, only when the file predates the
+session). On save the water grid is masked against the CURRENT materials
+(zeroed on solid/SPACE, count reported) — a wall painted over a pool never
+saves hidden depth.
 
 Scope limitation on record (P4): the editor refuses levels without a [bake]
 block, so the vessel/playground lamp [[light]] entries are loader-consumed
@@ -139,7 +141,14 @@ import numpy as np
 import pyray as rl
 from pyray import ffi
 
+import level_lib
 import level_loader
+# The write surface moved to level_lib in Arc A2 (entity doc §3c: ONE writer
+# implementation, ever); these names stay importable from map_editor for the
+# pre-A2 callers/tests.
+from level_lib import (WATER_FILENAME, color_255, format_light_lines,  # noqa: F401
+                       format_spawn_lines, format_water_lines, write_lights,
+                       write_spawns, write_water)
 from level_loader import SPACE_CODE, LightEntry, SpawnEntry
 from level_lights import beacon_angle
 from simulation import water_fixed
@@ -203,7 +212,7 @@ LIGHT_COLOR_PRESETS = (
 # here). Depths past WATER_DEEP_HINT_M get the deep-tank status hint: a
 # breached deep column dumps a lot of mass fast and drains may flash-boil
 # against low pressure — by design (P5 doc §3 drain asymmetry).
-WATER_FILENAME = "water_init.npy"
+# WATER_FILENAME (the .npy carrier name) lives in level_lib with the writer.
 WATER_DEPTH_DEFAULT_M = 1.0
 WATER_DEPTH_STEP_M = 0.1
 WATER_DEPTH_MIN_M = 0.1
@@ -472,7 +481,7 @@ def choose_preview_ppt(ts_px: int, want: int, grid_w: int, grid_h: int,
 
 
 # ---------------------------------------------------------------------------
-# Pure helpers — SPAWN entries + level.toml writeback
+# Pure helpers — SPAWN entries (level.toml writeback lives in level_lib)
 # ---------------------------------------------------------------------------
 
 def spawn_at(spawns, ftx: float, fty: float):
@@ -496,99 +505,8 @@ def unique_spawn_name(spawns, team: int) -> str:
     return f"{base}_{n}"
 
 
-def _fmt_coord(v) -> str:
-    """Float formatting for spawn x/y: repr(float) is the shortest exact
-    round-trip form (3.0 -> '3.0', 10.666667 stays 10.666667)."""
-    return repr(float(v))
-
-
-def format_spawn_lines(spawns, nl: str = "\n") -> list:
-    """The managed [[spawn]] block as a list of ``nl``-terminated lines —
-    one table per entry (name/team/x/y/footprint), blank line between
-    entries. Schema per level_loader.SpawnEntry."""
-    lines = []
-    for i, s in enumerate(spawns):
-        if i:
-            lines.append(nl)
-        name = str(s.name).replace("\\", "\\\\").replace('"', '\\"')
-        lines.append(f"[[spawn]]{nl}")
-        lines.append(f'name = "{name}"{nl}')
-        lines.append(f"team = {int(s.team)}{nl}")
-        lines.append(f"x = {_fmt_coord(s.x)}{nl}")
-        lines.append(f"y = {_fmt_coord(s.y)}{nl}")
-        lines.append(f"footprint = {int(s.footprint)}{nl}")
-    return lines
-
-
-_SPAWN_HEADER_RE = re.compile(r"^\s*\[\[\s*spawn\s*\]\]\s*(#.*)?$")
-_LIGHT_HEADER_RE = re.compile(r"^\s*\[\[\s*light\s*\]\]\s*(#.*)?$")
-_TABLE_HEADER_RE = re.compile(r"^\s*\[")          # any table / array-of-tables
-
-
-def _write_managed_block(toml_path, header_re, format_lines,
-                         write_bak: bool = True):
-    """Rewrite ONE managed array-of-tables of ``toml_path`` (the reported
-    P3 design call, generalized for [[spawn]] and [[light]] in P4).
-
-    Every existing table matching ``header_re`` (header line through the
-    line before the next table header) is removed and
-    ``format_lines(nl)``'s block is inserted at the position of the FIRST
-    one — or appended at EOF when the file had none. Every byte OUTSIDE the
-    managed tables is preserved exactly (newline style included); comments
-    INSIDE individual managed tables are managed away. When ``write_bak``
-    is True the original bytes go to ``<name>.bak`` first (the editor
-    passes True once per session, on the FIRST writeback of the save).
-    Returns the .bak path, or None when not written."""
-    toml_path = Path(toml_path)
-    original = toml_path.read_bytes()
-    text = original.decode("utf-8")
-    out = text.splitlines(keepends=True)
-    nl = "\r\n" if "\r\n" in text else "\n"   # match the file's newline style
-
-    spans = []                                # existing managed tables
-    i = 0
-    while i < len(out):
-        if header_re.match(out[i]):
-            j = next((k for k in range(i + 1, len(out))
-                      if _TABLE_HEADER_RE.match(out[k])), len(out))
-            spans.append((i, j))
-            i = j
-        else:
-            i += 1
-    insert_at = spans[0][0] if spans else None
-    for a, b in reversed(spans):
-        del out[a:b]
-
-    block = format_lines(nl)
-    if insert_at is None:
-        if block:
-            if out and not out[-1].endswith(("\n", "\r")):
-                out[-1] += nl
-            out += [nl] + block
-    else:
-        if block and insert_at < len(out) and out[insert_at].strip():
-            block = block + [nl]     # keep a blank line before the next table
-        out[insert_at:insert_at] = block
-
-    bak = None
-    if write_bak:
-        bak = Path(str(toml_path) + ".bak")
-        bak.write_bytes(original)
-    toml_path.write_bytes("".join(out).encode("utf-8"))
-    return bak
-
-
-def write_spawns(toml_path, spawns, write_bak: bool = True):
-    """Rewrite the ``[[spawn]]`` array-of-tables as ONE managed block —
-    see :func:`_write_managed_block` for the byte-preservation and .bak
-    contract. Returns the .bak path, or None when not written."""
-    return _write_managed_block(
-        toml_path, _SPAWN_HEADER_RE,
-        lambda nl: format_spawn_lines(spawns, nl), write_bak)
-
-
 # ---------------------------------------------------------------------------
-# Pure helpers — LIGHT entries + level.toml writeback (P4 §2.4)
+# Pure helpers — LIGHT entries (level.toml writeback lives in level_lib)
 # ---------------------------------------------------------------------------
 
 def light_at(lights, ftx: float, fty: float,
@@ -602,14 +520,6 @@ def light_at(lights, ftx: float, fty: float,
         if (l.x - ftx) ** 2 + (l.y - fty) ** 2 <= r2:
             return i
     return None
-
-
-def color_255(color) -> tuple:
-    """Normalized 0-1 color -> the 0-255 int triple the toml schema wants
-    (level_loader divides by 255 at parse; round-trips int-sourced values
-    exactly)."""
-    return tuple(min(255, max(0, int(round(float(c) * 255.0))))
-                 for c in color)
 
 
 def light_color_name(color) -> str:
@@ -635,45 +545,9 @@ def next_light_color(color, step: int = 1) -> tuple:
     return tuple(v / 255.0 for v in presets[idx])
 
 
-def format_light_lines(lights, nl: str = "\n") -> list:
-    """The managed [[light]] block as ``nl``-terminated lines — schema per
-    level_loader.LightEntry / engine/15 §2.2 (color back to 0-255 ints;
-    period_s/beam_deg/phase written for beacons only — static lights take
-    the loader defaults)."""
-    lines = []
-    for i, l in enumerate(lights):
-        if i:
-            lines.append(nl)
-        r, g, b = color_255(l.color)
-        lines.append(f"[[light]]{nl}")
-        lines.append(f"pos = [{_fmt_coord(l.x)}, {_fmt_coord(l.y)}]{nl}")
-        lines.append(f"color = [{r}, {g}, {b}]{nl}")
-        lines.append(f"intensity = {_fmt_coord(l.intensity)}{nl}")
-        lines.append(f"range = {_fmt_coord(l.range)}{nl}")
-        lines.append(f'kind = "{l.kind}"{nl}')
-        if l.kind == "beacon":
-            lines.append(f"period_s = {_fmt_coord(l.period_s)}{nl}")
-            lines.append(f"beam_deg = {_fmt_coord(l.beam_deg)}{nl}")
-            lines.append(f"phase = {_fmt_coord(l.phase)}{nl}")
-    return lines
-
-
-def write_lights(toml_path, lights, write_bak: bool = True):
-    """Rewrite the ``[[light]]`` array-of-tables as ONE managed block —
-    the write_spawns mechanism verbatim (P4 §2.4). On Ctrl+S it runs AFTER
-    write_spawns with write_bak=False, sharing the once-per-session .bak
-    (pre-session bytes). Returns the .bak path, or None when not written."""
-    return _write_managed_block(
-        toml_path, _LIGHT_HEADER_RE,
-        lambda nl: format_light_lines(lights, nl), write_bak)
-
-
 # ---------------------------------------------------------------------------
-# Pure helpers — WATER fill + water_init.npy / [water] writeback (P5 §2.4)
+# Pure helpers — WATER fill (water_init.npy/[water] writeback in level_lib)
 # ---------------------------------------------------------------------------
-
-_WATER_HEADER_RE = re.compile(r"^\s*\[\s*water\s*\]\s*(#.*)?$")
-
 
 def water_solid_codes(cfg=None) -> frozenset:
     """Material ids that are solid-for-water — THE seam of P5 critique M1:
@@ -750,53 +624,6 @@ def mask_water_to_open(depth_q: np.ndarray, grid: np.ndarray,
     masked = np.where(open_, d, 0).astype(np.int32)
     cleared = int(np.count_nonzero(d[~open_]))
     return masked, cleared
-
-
-def format_water_lines(depth_map_rel: str = WATER_FILENAME,
-                       nl: str = "\n") -> list:
-    """The managed [water] block as ``nl``-terminated lines — schema per
-    engine/15 §2.3 (P5): one table, one key, the .npy carrier."""
-    return [f"[water]{nl}", f'depth_map = "{depth_map_rel}"{nl}']
-
-
-def write_water(level_dir, depth_q: np.ndarray, *,
-                toml_bak: bool = False, npy_bak: bool = True):
-    """SAVE-time [water] writeback (P5 §2.4): ``water_init.npy`` (int32
-    Q16.16, the file IS the field) + the managed ``[water]`` table in
-    level.toml via :func:`_write_managed_block` (a plain table is a
-    one-table managed block — same span logic as [[spawn]]/[[light]]).
-
-    An all-dry grid REMOVES the block and deletes the stale .npy: a level
-    without water carries no [water] key at all (the dormancy pin — the
-    loader returns None and the runtime tick stays bit-identical to before
-    the water system existed).
-
-    .bak contract: the .npy gets its OWN once-per-session pre-session .bak
-    (``npy_bak`` True on the session's first save, and only if the file
-    predates the session); the level.toml rewrite shares the session's one
-    toml .bak, so on Ctrl+S it runs after write_spawns/write_lights with
-    ``toml_bak=False``. The caller passes ``depth_q`` ALREADY masked
-    (:func:`mask_water_to_open`). Returns ``(npy_bak_path | None,
-    toml_bak_path | None, has_water)``."""
-    level_dir = Path(level_dir)
-    toml_path = level_dir / "level.toml"
-    npy_path = level_dir / WATER_FILENAME
-    d = np.ascontiguousarray(np.asarray(depth_q, dtype=np.int32))
-    has_water = bool(d.any())
-    nbak = None
-    if npy_bak and npy_path.is_file():
-        nbak = Path(str(npy_path) + ".bak")
-        nbak.write_bytes(npy_path.read_bytes())
-    if has_water:
-        np.save(npy_path, d)
-    elif npy_path.is_file():
-        npy_path.unlink()
-    tbak = _write_managed_block(
-        toml_path, _WATER_HEADER_RE,
-        lambda nl: format_water_lines(WATER_FILENAME, nl) if has_water
-        else [],
-        toml_bak)
-    return nbak, tbak, has_water
 
 
 class SpawnRing:
@@ -881,7 +708,8 @@ def _texture_from_rgba(rgba: np.ndarray):
 
 def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                seed_override=None, auto: bool = False) -> None:
-    lvl = level_loader.load(str(level_name))
+    handle = level_lib.open_level(str(level_name))
+    lvl = handle.data
     if lvl.version != "2":
         raise SystemExit(
             f"map_editor speaks level format v2 only; {level_name} is "
@@ -895,7 +723,6 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             f"the tiled path")
 
     level_dir = lvl.path
-    toml_path = level_dir / "level.toml"
     csv_path = level_dir / str(lvl.raw_toml["tilemap"])
     grid = np.array(lvl.tilemap, dtype=np.int32, copy=True)
     level_loader.materials_from_tilemap(grid, lvl.version)  # validate codes
@@ -1511,19 +1338,17 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                     flash, flash_frames = f"undo ({len(undo)} left)", 120
 
         if ctrl and rl.is_key_pressed(K.KEY_S):
-            # Order matters for the .bak contract: the spawn writeback runs
-            # FIRST with the session's one .bak (pre-session bytes), the
-            # light writeback follows with write_bak=False (SHARING that
-            # .bak — P4 §2.4), the water writeback third (also sharing it;
-            # water_init.npy carries its OWN once-per-session .bak — P5
-            # §2.4), then bake_level rewrites the [art]/[bake] blocks, also
-            # write_bak=False, so nothing can clobber it.
+            # level.toml writeback goes through level_lib (entity doc §3c:
+            # THE single writer): spawn + light + water managed blocks land
+            # as ONE atomic temp+rename write, sharing the session's one
+            # toml .bak (pre-session bytes). water_init.npy is written
+            # first (its OWN once-per-session .bak — P5 §2.4) so a written
+            # [water] block never points at a missing file; bake_level then
+            # rewrites the [art]/[bake] blocks with write_bak=False, so
+            # nothing can clobber the .bak.
             save_tilemap_csv(csv_path, grid, write_bak=not csv_bak_written)
             csv_bak_written = True
-            write_spawns(toml_path, spawns, write_bak=not toml_bak_written)
             first = not toml_bak_written
-            toml_bak_written = True
-            write_lights(toml_path, lights, write_bak=False)
             # Wall-over-pool guard (P5 critique M3): mask the water grid
             # against the CURRENT material grid before writing — a wall or
             # SPACE painted over a pool after the fill zeroes those cells
@@ -1532,13 +1357,19 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             masked_water, cleared = mask_water_to_open(water_q, grid,
                                                        water_solid)
             water_q[...] = masked_water
-            _, _, has_water = write_water(
-                level_dir, water_q, toml_bak=False,
-                npy_bak=not water_bak_written)
+            _, has_water = level_lib.write_water_npy(
+                level_dir, water_q, npy_bak=not water_bak_written)
             water_bak_written = True
+            handle.save({
+                "spawn": lambda nl: format_spawn_lines(spawns, nl),
+                "light": lambda nl: format_light_lines(lights, nl),
+                "water": level_lib.water_block_format(has_water),
+            }, write_bak=first)
+            toml_bak_written = True
             summary = bake_level(level_dir, tileset=tileset_arg,
                                  px_per_tile=bake_ppt, seed=bake_seed,
                                  write_bak=False)
+            handle.record_disk_state()   # bake rewrote [art]/[bake] blocks
             dirty_tiles = dirty_spawns = dirty_lights = dirty_water = False
             wet = int(np.count_nonzero(water_q))
             flash, flash_frames = (
