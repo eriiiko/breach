@@ -283,16 +283,21 @@ the current materials and open air, and only differ where a partial coefficient 
   `[physics] burst_enabled`. An interior wall becomes air, a hull-edge wall becomes exposed vacuum → it
   then vents. Over-pressured clusters self-breach in a chain until the gradient relaxes.
   - **Opt-in per material.** `burst_threshold <= 0` means *never* (the default, and `air`). You set a
-    positive threshold only on the walls you *want* collapsible. The spread counts a *solid* or
-    sealed-vacuum neighbour as 0, so the differential is an **absolute** pressure (normal air ≈ 1.0); a
-    threshold therefore sits above 1.0 plus the over-pressure you want it to tolerate.
+    positive threshold only on the walls you *want* collapsible.
+  - **The spread is a true differential** (fixed 2026-07-17). A *solid* neighbour is not a side at all —
+    it is skipped, not counted as 0 — and an *exposed-vacuum* neighbour is a real side holding 0. So a
+    wall between two equal-pressure rooms holds regardless of how high both climb (the old rule counted
+    the along-wall solid neighbours as 0 and burst it at absolute pressure), an interior wall bursts on
+    `|P_A − P_B|`, and a hull membrane against space bursts on `P_room − 0`. A threshold is therefore a
+    plain differential (interior walls of a normal ship hold ~0).
   - **The hull never pressure-collapses.** This valve was designed for *collapsible interior walls*, not
     the hull — the hull breaches from damage/explosions, so it ships at `burst_threshold = 0`. Weak
     bulkheads (wood/glass) carry low thresholds; steel is high.
-  - **Thick walls are fine.** Walls hold normal pressure (`atmosphere` initialises to 1.0 everywhere, so
-    destroying one fills via neighbour-mean, never a vacuum punch). A thick wall's *inner* tile has only
-    solid neighbours → spread 0 → never bursts; only the air-facing tile bursts, exposing the next layer
-    the next tick. It erodes one layer at a time from the pressurised face — intended.
+  - **Only 1-tile-deep membranes can burst** (2026-07-17, replaces the old layer-by-layer erosion). A
+    tile of a ≥2-thick slab has at most one open side → spread 0 → holds ANY differential. Thickness-as-
+    strength for free, no baked thickness field: thick walls yield only to damage/explosions — though a
+    blast that thins a slab to one layer re-arms the valve there. Deliberate (Erik, 2026-07-17: "only
+    1-deep bursts simplifies lots").
   This is *why we keep* the wave→atmosphere deposit (§2.3–2.4): building pressure is physically correct,
   so the answer is an emergent relief valve, not removing the deposit (which would make blasts feel
   weak). Reuses `destroy_wall` + neighbour-mean; no new field.

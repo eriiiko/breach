@@ -912,12 +912,19 @@ class GameMap:
 
         A sealed room that keeps absorbing grenades builds pressure without
         limit; this is the emergent relief valve (ch.04 §5). For each wall tile,
-        the differential it holds is the **spread across its opposing sides**:
+        the differential it holds is the **spread across its open sides**:
         ``max(neighbour atmosphere) - min(neighbour atmosphere)`` over its
-        in-bounds 4-neighbours, where a *solid or sealed-vacuum* neighbour
-        contributes 0 (so a hull between a pressurised room and outside-vacuum
+        in-bounds 4-neighbours, where a *solid* neighbour is not a side at all
+        (it is more wall — skipped) and an *exposed-vacuum* neighbour is a real
+        side holding 0 (so a hull between a pressurised room and outside-vacuum
         sees ``p_room - 0``). A wall between two equal-pressure rooms has ~0
-        spread and never pops — correct.
+        spread and never pops, even along a straight run whose along-wall
+        neighbours are solid.
+
+        Consequence: only 1-tile-deep wall membranes can burst. A tile of a
+        >=2-thick slab has at most one open side, so its spread is 0 — thick
+        walls hold ANY differential and breach via damage/explosions instead.
+        (Deliberate: thickness-as-strength for free, no baked thickness field.)
 
         A material with ``burst_threshold <= 0`` is treated as never-bursting
         (air, or any material omitting the column).
@@ -957,13 +964,14 @@ class GameMap:
                 ny, nx = fy + dy, fx + dx
                 if not (0 <= ny < h and 0 <= nx < w):
                     continue
-                # A solid neighbour (wall, incl. sealed-hull which is also
-                # solid) or an exposed-vacuum breach holds no air → 0; an
-                # air tile contributes its atmosphere.
-                if solid[ny, nx] or is_vacuum[ny, nx]:
-                    p = 0.0
-                else:
-                    p = float(atm[ny, nx])
+                # A solid neighbour is not a side — it's more wall; skipping
+                # it (rather than counting 0) is what makes the spread a true
+                # differential: equal pressure on both open sides -> 0, and a
+                # tile with fewer than two open/vacuum sides can never burst.
+                if solid[ny, nx]:
+                    continue
+                # An exposed-vacuum breach is a real side holding no air.
+                p = 0.0 if is_vacuum[ny, nx] else float(atm[ny, nx])
                 lo = p if lo is None or p < lo else lo
                 hi = p if hi is None or p > hi else hi
             if lo is None:
