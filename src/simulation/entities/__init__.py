@@ -28,4 +28,10 @@ from simulation.entities.registry import (  # noqa: F401
     clear_tuning_overlay, effective_defaults, export_registry_json,
     registry_content_hash, registry_payload,
 )
+from simulation.entities.serialize import (  # noqa: F401
+    ENTITY_DIGEST_KEY, ENTITY_SECT_PREAMBLE, SIGNAL_SECT_PREAMBLE,
+    SYNCED_FIELD_KINDS, entity_carrier, entity_records, entity_section_bytes,
+    require_entity_carrier, serialize_entity_state, serialize_signal_state,
+    signal_section_bytes,
+)
 from simulation.entities import light as _light  # noqa: F401  (registers the exemplar)

@@ -43,6 +43,9 @@ from simulation import Simulation
 from simulation import wave_fixed   # S2a: wave_source Q16.16 quantize helper
 from simulation import gas_fixed     # S2b: smoke/gas Q16.16 quantize helper
 from simulation import fire_fixed    # S3a: fire Q16.16 quantize helper
+from simulation.entities.serialize import (  # A4: entity presence carrier
+    ENTITY_DIGEST_KEY, entity_carrier, require_entity_carrier,
+)
 from simulation.status import serialize_statuses  # P3: __unit_status__ payload
 from simulation.unit import Unit
 
@@ -242,13 +245,27 @@ def unit_digest_hash(snapshot_or_state):
     return snapshot_or_state["hash"]
 
 
+def _sim_entities(sim):
+    """The sim's runtime entity list (A4). Arc A: the level's parsed
+    ``EntityInstance`` objects — the serializer's degenerate load-constant
+    form; Arc B rebinds this to the sim's live entity list when one exists
+    (``sim.entities`` wins over ``sim.level.entities`` by construction)."""
+    ents = getattr(sim, "entities", None)
+    if ents is not None:
+        return ents
+    return getattr(getattr(sim, "level", None), "entities", None) or []
+
+
 def capture_trajectory(make_sim=default_scenario_sim, n_steps=30, fields=SIM_FIELDS,
                        capture_units=True):
     """Run ``make_sim()`` for ``n_steps``, returning a per-tick list of snapshot
     dicts. Each dict holds the gmap field arrays AND (when ``capture_units``) the
-    synced unit-state digest under UNIT_DIGEST_KEY. Forces unpause each step so a
-    phase/round boundary cannot silently halt the trajectory (the round reset
-    itself is deterministic)."""
+    synced unit-state digest under UNIT_DIGEST_KEY, AND (A4) the strict entity
+    presence carrier under ENTITY_DIGEST_KEY — ALWAYS written, ``n_entities ==
+    0`` for an entity-free level, so ``tick_digest`` can gate the entity fold
+    and an entity-present run can never hash entity-free silently. Forces
+    unpause each step so a phase/round boundary cannot silently halt the
+    trajectory (the round reset itself is deterministic)."""
     sim = make_sim()
     traj = []
     for _ in range(n_steps):
@@ -257,6 +274,9 @@ def capture_trajectory(make_sim=default_scenario_sim, n_steps=30, fields=SIM_FIE
         snap = _snapshot(sim.gmap, fields)
         if capture_units:
             snap[UNIT_DIGEST_KEY] = _capture_unit_state(sim)
+        ents = _sim_entities(sim)
+        snap[ENTITY_DIGEST_KEY] = entity_carrier(ents)
+        require_entity_carrier(ents, snap)   # the A4 strict presence rule
         traj.append(snap)
     return traj
 
@@ -300,6 +320,38 @@ def _diff_unit_state(t, ua, ub):
     return out
 
 
+def _diff_entity_state(t, ea, eb):
+    """Locate the first divergence between two entity presence carriers (A4).
+
+    Reports WHICH entity record (ordinal|id|class, parsed from the record's
+    ASCII header) or WHICH carrier facet differs — the per-instance analogue
+    of the per-cell field locator. Returns human-readable mismatch lines
+    (empty == match)."""
+    if ea == eb:
+        return []                      # fast path: identical
+    out = []
+    if ea["n_entities"] != eb["n_entities"]:
+        out.append(f"tick {t}: __entity__ n_entities "
+                   f"{ea['n_entities']} != {eb['n_entities']}")
+    if ea.get("registry_hash") != eb.get("registry_hash"):
+        out.append(f"tick {t}: __entity__ registry_content_hash differs "
+                   f"({str(ea.get('registry_hash'))[:12]} != "
+                   f"{str(eb.get('registry_hash'))[:12]}) — entity digests "
+                   f"are only comparable at equal registry hash")
+    for i, (ra, rb) in enumerate(zip(ea.get("records", ()),
+                                     eb.get("records", ()))):
+        if ra != rb:
+            head = ra.split(b"\n", 1)[0].decode("ascii", "replace")
+            out.append(f"tick {t}: __entity__ record #{i} ({head}) differs")
+    if ea.get("signals") != eb.get("signals"):
+        out.append(f"tick {t}: __signals__ differ "
+                   f"(a={ea.get('signals')!r} b={eb.get('signals')!r})")
+    if not out:   # carriers differed but nothing located — surface it loudly
+        out.append(f"tick {t}: __entity__ carriers differ but no record "
+                   f"located — serialization drift?")
+    return out
+
+
 def diff_trajectories(a, b, tol=0.0):
     """Per-field per-cell mismatches between two trajectories (empty list == match).
 
@@ -318,6 +370,9 @@ def diff_trajectories(a, b, tol=0.0):
                 continue
             if k == UNIT_DIGEST_KEY:
                 diffs.extend(_diff_unit_state(t, sa[k], sb[k]))
+                continue
+            if k == ENTITY_DIGEST_KEY:
+                diffs.extend(_diff_entity_state(t, sa[k], sb[k]))
                 continue
             fa, fb = sa[k], sb[k]
             if fa.shape != fb.shape:
@@ -369,7 +424,8 @@ if __name__ == "__main__":
     a = capture_trajectory()
     b = capture_trajectory()
     assert_trajectories_match(a, b, tol=0.0)
-    nfields = len(a[-1]) - (1 if UNIT_DIGEST_KEY in a[-1] else 0)
+    nfields = len(a[-1]) - sum(
+        k in a[-1] for k in (UNIT_DIGEST_KEY, ENTITY_DIGEST_KEY))
     # S2a — make the integer WAVE determinism explicit: wave_p/wave_v/wave_source
     # are now int32 Q16.16 (the synced wave state). Assert the dtype + bit-identity
     # run-to-run (np.array_equal is exact on int32). This is the S2a P1 gate.

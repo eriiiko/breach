@@ -42,6 +42,7 @@ def main() -> int:
     import breach_physics as bp
     from field_ab_harness import capture_trajectory
     from field_digest import trajectory_digest, DIGEST_SPEC_VERSION
+    from simulation.entities.serialize import ENTITY_DIGEST_KEY
 
     backend = os.environ.get("PHYSICS_BACKEND", "cpu")
     arch = "gpu" if getattr(bp, "HAS_CUDA", False) else "cpu"
@@ -51,6 +52,13 @@ def main() -> int:
     digest = trajectory_digest(traj)
 
     line = f"{host}\t{backend}\t{arch}\tspec_v{DIGEST_SPEC_VERSION}\tsteps={args.steps}\t{digest}"
+    # A4: entity-present artifacts record section presence + the registry
+    # content-hash, so a cross-machine mismatch is attributable in one diff
+    # (impl note critique 3+4). Entity-free runs leave the line unchanged.
+    carrier = traj[-1].get(ENTITY_DIGEST_KEY) if traj else None
+    if carrier is not None and carrier["n_entities"] > 0:
+        line += (f"\tents={carrier['n_entities']},esect_v1,"
+                 f"reg={carrier['registry_hash'][:12]}")
     print(line)
     if args.write:
         out = ROOT / "tests" / f"digest_{host}_{backend}_{arch}.txt"
