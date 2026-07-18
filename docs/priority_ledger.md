@@ -52,8 +52,17 @@ physics. Big training runs wait for the S8 optimize-hard pass.
 ## Side tracks (not blocking the stack)
 - **Procedural skeletal animation** — marines first (render-only), then the
   menagerie; post physics-v1. `procedural_animation_brainstorm.md`.
-- **Map editor maturity** — boundary-condition setting in the level format +
-  editor UI (ties to stack item 1); AI tilesets (levels-w1 P6).
+- **Entity system + editor v3** — DESIGNED + critiqued 2026-07-18
+  (`entity_system_design_2026-07-18.md` canon model +
+  `level_editor_v3_design_2026-07-18.md` view; 48-finding adversarial
+  critique folded; awaiting Erik's final read → LOCK). Build order (Erik):
+  **Arc A** (entity foundation: registry-in-code, [[entity]]+ids, doors v0
+  + EOS evacuation prerequisite, zones/air/boundary format, level_lib) may
+  start on Erik's word → **physics close-out (stack #1, S8a spec must
+  include the sensor-gather contract)** → **Arc B** (SignalBus dataflow
+  logic, sensors, pump, automatic airlock) → **Arc C** (editor UX panes,
+  wand, wiring, play-from-editor, icons). AI tilesets (levels-w1 P6) still
+  parked behind it.
 - **Sound-ML** — parked (`sound_ml_research_brief.md`), junior to the EOS arc.
 - Beauty tracks: black-body emitter, smoke visuals, scorch/blood painting.
 
