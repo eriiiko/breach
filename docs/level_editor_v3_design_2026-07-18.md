@@ -99,9 +99,20 @@ score_value = { type = "int", default = 1 }
 ```
 
 Field types v3 needs: `int`, `float`, `bool`, `string`, `enum`, `faction`,
-`tile_ref` (a coordinate), `entity_ref` (link to another instance — pens
-reference their gate). Constraints (`min`/`max`/`options`) drive inspector
-widgets and load-time validation.
+`length_m` (see below), `tile_ref` (a coordinate), `entity_ref` (link to
+another instance), `entity_ref_list` (wiring targets, §5c). Constraints
+(`min`/`max`/`options`) drive inspector widgets and load-time validation.
+
+**Units of measure (Erik 2026-07-18): author-facing lengths are METERS,
+tiles are derived.** The engine supports many resolutions (`tile_size_m` per
+level, `--res N` replication); the base authoring resolution is 1 m = 3×3
+tiles (a marine is 1 m — 3×3). Every physical size in the registry — door
+width, light range, footprints — is a `length_m`, converted at load:
+`tiles = round(length_m / tile_size_m)` (quantize-at-the-boundary, per the
+number-ingress rule). This is already the engine's direction: W6 weapon
+ranges are meter-based, and the P4 `--res` deviation that scales light range
+with resolution is exactly "physical reach is preserved" — meters-first makes
+it the rule instead of a case-by-case fix.
 
 **Instances in level.toml:**
 
@@ -157,21 +168,55 @@ owns its tile span**, not a paint material.
 
 - **Placement:** the DOOR tool upgrades from "paint `MAT_DOOR` tiles" to
   "place a door entity on a wall run": click a wall, the span snaps into the
-  run, default width 3, drag to widen; width < 3 refused (nothing can fit
-  through it).
-- **Fields:** `state` (open | closed), `locked` (bool), material (inherits
-  door hp / burst threshold — a closed door is exactly the "door you're
-  hiding behind" in the wall-burst rule).
+  run, default width **1.0 m** (3 tiles at base res), drag to resize.
+- **Width is NOT hard-enforced** (Erik 2026-07-18: aliens might have smaller
+  doors). The validator *warns* per-footprint instead: "0.67 m door — marines
+  (1 m) cannot pass; critter_skitter (0.33 m) can." Narrow doors become
+  tactical texture (vent runs only small things traverse), not an error.
+- **Fields:** `state` (open | closed), `locked` (bool), `direct_operate`
+  (bool, default true — operable by an adjacent unit; false = remote-only,
+  §5c), material (inherits door hp / burst threshold — a closed door is
+  exactly the "door you're hiding behind" in the wall-burst rule).
 - **Semantics:** CLOSED = its tiles are sealed wall (solid, light-occluding,
   impermeable). OPEN = air (passable, transparent, permeable). One state
   flip = one deterministic multi-tile field edit — the same per-tile cache
-  rebuild plumbing `destroy_wall` uses today. No animation in v0.
+  rebuild plumbing `destroy_wall` uses today. No animation in v0. The entity
+  is authoritative; its `MAT_DOOR` tiles in the grid are derived at save.
 - **Transitions v0:** authored initial state; an adjacent hands-having unit
-  spends an AP action to toggle (zombies and critters can't); destroying the
-  door removes it. A **pen** is therefore pure matter: walls + a closed door
-  + critters — released by a unit opening it (plan) or by blowing the door
+  spends an AP "use" action to toggle (zombies and critters can't); a wired
+  signal toggles it remotely (§5c); destroying the door removes it. A **pen**
+  is therefore pure matter: walls + a closed door + critters — released by a
+  unit opening it (plan), a wired console (plan, remote), or blowing the door
   (damage). Sliding animation, auto-open, faction key-locks: doors-v1 later,
   same entity, no format change.
+
+## 5c. Buttons & wiring — signals v0 (Erik 2026-07-18, scope under discussion)
+
+Erik wants mechanisms: a cockpit button that opens doors elsewhere and turns
+lights on; one trigger firing many effects (open airlock AND start the
+warning blinkers). This is the classic **entity I/O** pattern — Source
+engine's outputs→inputs wiring (the tech behind every airlock and elevator
+in Half-Life), which is NOT the same thing as WC3-style trigger *scripting*:
+
+> **Wires carry no logic.** A wire is `(source entity, event) → (target
+> entity, input)`. No conditions, no variables, no delays in v0. Anything
+> smarter is the deferred trigger-editor arc (§10).
+
+- **Inputs are class-defined** (registry): door exposes `open/close/toggle`;
+  light exposes `on/off/blink`. Any future class opts in by declaring inputs.
+- **`button` entity class** (category: mechanisms): placed on a wall/console
+  tile; `targets = entity_ref_list`; a unit's AP "use" action presses it →
+  every target's wired input fires. One-to-many is the list; many-to-one is
+  free (two buttons targeting one door).
+- **Determinism:** presses are unit actions (already tick-ordered); fan-out
+  applies in wire-list order within the tick. Pure data, replay-exact.
+- **Blink** rides the beacon machinery (light output as a pure function of
+  sim tick — already replay-exact).
+- **Editor:** a wire overlay (drawn links between source and targets), and
+  the inspector's target list is click-to-pick-on-canvas.
+- **Scope split:** format + editor wire tool in this arc; game-side signal
+  routing lands with P4 (doors v0) since doors + lights are the only v3
+  input-havers.
 
 ## 6. Objectives + factions — the game-side contract (architectural prep)
 
@@ -297,12 +342,27 @@ sim · decal/texture painting · campaign/meta structure.
 4. **Spawn model**: both — individually placed units AND breach-site roster
    spawning.
 
+**Round 2, 2026-07-18 (discussion open — not yet locked):**
+5. **Meters-first**: all author-facing lengths in `length_m`, tiles derived
+   at load (§4). Proposed as decided (it matches W6 + the --res direction);
+   Erik to confirm.
+6. **Door min-width**: no hard enforcement — per-footprint validator warnings
+   (§5b). Alien doors and critter-only vents allowed.
+7. **Wiring / signals v0** (§5c): dumb entity I/O (button → door/light
+   inputs, one-to-many), no logic. Scope boundary + pros/cons discussed in
+   chat 2026-07-18; Erik to confirm the scope.
+8. **Doors are placed entities** (not painted tiles) — required by wiring:
+   a wire needs a target with identity; a paint smear has none.
+
 **Still open (small):**
 - Door toggle details for v0: AP cost, which unit classes can operate doors
   (current: any non-zombie/critter), locked-door interaction. Settle at
   critique or first playtest.
 - Registry sprite/icon pipeline: hand-drawn per class vs auto-generated
   placeholder chips. Lean: placeholder chips v3, art later.
+- Migration of existing painted `MAT_DOOR` tiles in shipped levels: one-shot
+  tool groups contiguous door tiles into door entities, or legacy tiles stay
+  dumb always-closed walls. Lean: migration tool at P0.
 
 ## 12. Research sources
 
