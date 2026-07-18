@@ -87,6 +87,7 @@ from simulation.exchange import (  # noqa: F401 (apply_blast_damage: legacy re-e
 from simulation.events import (  # noqa: F401 (ExplosionEvent: legacy re-export — emitted by the executor now)
     DoorDestroyedEvent, ExplosionEvent, WallDestroyedEvent,
 )
+from simulation.entities.serialize import entity_carrier
 from simulation.gamemap import GameMap, MAT_DOOR
 from simulation.movement import FootprintSamples, default_speed
 from simulation.orders import (
@@ -135,6 +136,13 @@ class SimState:
     tick: int
     phase: int
     paused: bool
+    # A4: the strict entity presence carrier (simulation.entities.serialize.
+    # entity_carrier) — ALWAYS written by get_state, n_entities == 0 for an
+    # entity-free level. Carries the serialized ENTITY_SECT_V1 payload (not
+    # just a hash) + the registry content-hash, so a state consumer can
+    # locate an entity divergence per instance. Defaulted for any legacy
+    # direct SimState(...) construction.
+    entity_state: dict = None
 
 
 def _ticks_per_tile(order_type):
@@ -552,6 +560,7 @@ class Simulation:
             tick=self.tick,
             phase=self.phase,
             paused=self.paused,
+            entity_state=entity_carrier(self.level.entities),
         )
 
     def orders_for_phase(self, phase) -> dict:
@@ -825,9 +834,11 @@ class Simulation:
             o2_threshold = float(getattr(fire_cfg, "o2_threshold", 0.60))
             apply_temperature_ignition(self.gmap, o2_threshold, ignition_seed)
 
-        # Recorder snapshot.
+        # Recorder snapshot. A4: the entity list rides along (presence-gated
+        # inside the recorder — an entity-free level's .npz is byte-identical).
         if self.recorder is not None:
-            self.recorder.record(self.gmap, self.tick, self.real_time, self.units)
+            self.recorder.record(self.gmap, self.tick, self.real_time,
+                                 self.units, entities=self.level.entities)
 
         # Clear the per-tick `heat` deposit — END OF TICK, AFTER every heat
         # consumer (engine/06 §1.3/§6 step 7). `heat` is a per-tick deposit

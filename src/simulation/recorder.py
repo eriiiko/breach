@@ -19,6 +19,16 @@ coordinating: the on-disk format is what offline tools depend on.
         unit_alive                (bool)
     Per-dump scalars:
         unit_names (str array, length n_units, taken from the first snapshot)
+    A4 (ADDITIVE, presence-gated — an entity-free level's .npz is
+    byte-identical to the frozen schema above):
+        entity_state         (bytes array, ``capacity``,) per-tick
+                             ENTITY_SECT_V1 payload from THE one serializer
+                             (``simulation.entities.serialize.
+                             serialize_entity_state`` — the same bytes the
+                             tick digest hashes, so an offline tool can
+                             locate an entity divergence per instance)
+        entity_registry_hash (0-d str) registry_content_hash() — entity
+                             digests are only comparable at equal hash
 
 Filename: ``debug_{reason}_{YYYYMMDD_HHMMSS}.npz``. ``reason`` is one of
 ``"manual"`` (F8 dump) or ``"blowup"`` (auto-trigger when
@@ -29,6 +39,9 @@ from __future__ import annotations
 from datetime import datetime
 
 import numpy as np
+
+from simulation.entities.registry import registry_content_hash
+from simulation.entities.serialize import serialize_entity_state
 
 
 class PhysicsRecorder:
@@ -76,6 +89,11 @@ class PhysicsRecorder:
         # Unit state per tick: list of dicts, ring buffer style
         self.unit_snapshots = [None] * capacity
 
+        # A4: per-tick serialized entity state (ENTITY_SECT_V1 bytes), ring
+        # buffer style. Stays all-None for an entity-free level, so dump()
+        # emits no entity keys and the .npz is byte-identical to pre-A4.
+        self.entity_snapshots = [None] * capacity
+
         print(f"[recorder] Ring buffer: {capacity} slots, fields={self.fields}, "
               f"~{self._mem_mb():.0f} MB")
 
@@ -86,8 +104,15 @@ class PhysicsRecorder:
         total += self.tick_ids.nbytes + self.tick_times.nbytes
         return total / (1024 * 1024)
 
-    def record(self, gmap, tick, real_time, units):
-        """Snapshot current state into ring buffer."""
+    def record(self, gmap, tick, real_time, units, entities=None):
+        """Snapshot current state into ring buffer.
+
+        ``entities`` (A4, additive): the sim's runtime entity list — Arc A
+        passes the level's parsed ``EntityInstance`` objects. Serialized
+        per tick through THE one canonical serializer under the presence
+        rule (None/empty records nothing, keeping entity-free dumps
+        byte-identical).
+        """
         i = self.index % self.capacity
         for name in self.fields:
             # EOS P3: `gas_o2` names the O2 slice of the (N,h,w) gas array.
@@ -119,6 +144,12 @@ class PhysicsRecorder:
              'hp': u.current_hp, 'alive': u.alive}
             for u in units
         ]
+
+        # A4: entity state snapshot — the same ENTITY_SECT_V1 bytes the tick
+        # digest hashes (one serializer). Presence-gated: None when the
+        # level carries no entities.
+        self.entity_snapshots[i] = (
+            serialize_entity_state(entities) if entities else None)
 
         self.index += 1
         self.count += 1
@@ -181,6 +212,19 @@ class PhysicsRecorder:
                 [[u['alive'] for u in snap] for snap in unit_snaps],
                 dtype=np.bool_)
             data['unit_names'] = np.array([u['name'] for u in unit_snaps[0]])
+
+        # A4: entity payload — ADDITIVE and presence-gated, so an
+        # entity-free level's dump carries exactly the frozen key set (and
+        # byte-identical content) it did before A4. Serialized payloads end
+        # with the '\n' record/preamble terminator, so the S-dtype's
+        # trailing-NUL stripping can never truncate them.
+        ent_snaps = [self.entity_snapshots[i]
+                     for i in (range(n) if isinstance(slc, slice) else slc)]
+        if any(s is not None for s in ent_snaps):
+            data['entity_state'] = np.array(
+                [s if s is not None else b"" for s in ent_snaps],
+                dtype=np.bytes_)
+            data['entity_registry_hash'] = np.array(registry_content_hash())
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"debug_{reason}_{timestamp}.npz"

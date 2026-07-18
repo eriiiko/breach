@@ -38,11 +38,20 @@ patch enforces them; this module only states them.
 from __future__ import annotations
 
 import abc
+import re
 from dataclasses import dataclass
 
 
 class EntitySchemaError(ValueError):
     """A class declaration violates the schema rules (raised at register)."""
+
+
+# Digest-token charset (A4): class / field / signal names become ASCII tokens
+# between '|' delimiters in the hashed ENTITY_SECT_V1 / SIGNAL_SECT_V1 byte
+# streams (simulation.entities.serialize). Guarding them to [A-Za-z0-9_]+ at
+# REGISTRATION keeps that serialization injective with no escaping (A4 impl
+# note, critique 10).
+DIGEST_NAME_RE = re.compile(r"[A-Za-z0-9_]+\Z")
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +162,19 @@ class Entity(abc.ABC):
     # grid. Per-instance override is the A3 loader's business.
     INTANGIBLE: bool = False
 
+    @classmethod
+    def runtime_digest_rows(cls, entity) -> tuple:
+        """Per-class RUNTIME-STATE digest rows: ``(name, int)`` pairs.
+
+        The ENTITY_SECT_V1 runtime-row block (A4 impl note): empty in
+        Arc A. A6 door state and Arc B EMA accumulators / controller phase /
+        edge-detector prevs land here as runtime rows defined per class —
+        NOT as schema FIELDS (they are not authorable) — under the section
+        version, with zero mechanism surgery (critique 6). Names must be
+        ``[A-Za-z0-9_]+`` and must not collide with the free ``alive`` row.
+        """
+        return ()
+
 
 # ---------------------------------------------------------------------------
 # Registration
@@ -235,6 +257,10 @@ def _validate_class(cls: type) -> None:
     if not (isinstance(cls, type) and issubclass(cls, Entity)):
         raise EntitySchemaError(
             f"@register target '{name}' must subclass Entity")
+    if not DIGEST_NAME_RE.fullmatch(name):
+        raise EntitySchemaError(
+            f"entity class name {name!r} outside [A-Za-z0-9_]+ — class "
+            f"names are digest-section tokens (ENTITY_SECT_V1, A4)")
 
     reserved = {f.name for f in INSTANCE_FIELDS}
     seen: set[str] = set()
@@ -243,6 +269,11 @@ def _validate_class(cls: type) -> None:
             raise EntitySchemaError(
                 f"entity class '{name}': FIELDS entries must be Field, "
                 f"got {f!r}")
+        if not (isinstance(f.name, str) and DIGEST_NAME_RE.fullmatch(f.name)):
+            raise EntitySchemaError(
+                f"entity class '{name}': field name {f.name!r} outside "
+                f"[A-Za-z0-9_]+ — field names are digest-section tokens "
+                f"(ENTITY_SECT_V1, A4)")
         if f.kind not in ALL_KINDS:
             raise EntitySchemaError(
                 f"entity class '{name}' field '{f.name}': unknown kind "
@@ -263,6 +294,11 @@ def _validate_class(cls: type) -> None:
             raise EntitySchemaError(
                 f"entity class '{name}': SIGNALS entries must be Signal, "
                 f"got {s!r}")
+        if not (isinstance(s.name, str) and DIGEST_NAME_RE.fullmatch(s.name)):
+            raise EntitySchemaError(
+                f"entity class '{name}': signal name {s.name!r} outside "
+                f"[A-Za-z0-9_]+ — signal names are digest-section tokens "
+                f"(SIGNAL_SECT_V1, A4)")
         if s.name == ALIVE_SIGNAL.name:
             raise EntitySchemaError(
                 f"entity class '{name}': 'alive' is the free machinery "
