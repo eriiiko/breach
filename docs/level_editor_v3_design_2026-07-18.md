@@ -1,382 +1,176 @@
-# Level Editor v3 — design (DRAFT, in design phase)
+# Level Editor v3 — design v2 (post-critique)
 
-**Status: DESIGN PHASE — not approved for build.** We iterate on this doc until
-Erik explicitly says we're happy and ready to build. Then: adversarial critique →
-patch plan locked → build.
+**Status: CRITIQUE FOLDED (2026-07-18, late).** The joint critique (48
+findings across three critics) is resolved across this doc and
+`entity_system_design_2026-07-18.md` (the MODEL; this doc is the authoring
+VIEW). Where the two overlap, **the entity doc is canonical** — this doc
+specifies the editor: workflows, tools, UI, file mechanics, quantization.
+**Next: Erik's final read → LOCK → build per entity doc §10 (arc plan).**
 
-Companions: `notes_2026-07-17_level_editor_wishlist.md` (raw capture this doc
-absorbs) · engine/15 (shipped editor v1/format v2 canon) ·
-`notes_2026-07-17_topics_backlog.md` Topic 4 (boundary conditions).
+Historical note: v1 of this doc carried its own registry/wiring/patch-plan
+sections; those moved to the entity doc after the Factorio pivot. Superseded
+text is deleted, not banner'd — git has the archaeology.
 
 ---
 
 ## 1. Goal — and the level that defines "done"
 
-The editor determines the ceiling on level complexity, and therefore on mission
-design and on how rich the ML training distribution can be. v3's goal is not
-"more tools"; it is: **Erik can author the first ML-track mission level,
-end-to-end, without hand-editing TOML.**
+Unchanged: **Erik authors the Contested Chip level end-to-end without
+hand-editing TOML.** The acceptance level (two teams, two breach sites, the
+chip + extraction zones, pens with critters, aquarium + octopus, zombie
+crew, doors/sensors/airlock) — full description in v1 of this doc (git) and
+mission notes. De_dust analogy stands. With the arc split, the level is
+*authorable* at the end of Arc C and *fully runnable* at the end of Arc B.
 
-### The acceptance level: "Contested Chip" (Erik, 2026-07-17)
+## 2. Lessons from the great editors (unchanged)
 
-A large derelict ship carrying a **data chip**. Two opposing teams board
-simultaneously at **two different breach sites**; the objective is contested —
-secure the chip and carry it to your own **extraction point**. Aboard:
+Hammer's FGD → registry-driven UI · LDtk → typed fields build the inspector
+· UnrealEd → preview through the real engine · WC3 → power = exposed data
+(triggers deferred) · TrenchBroom → direct manipulation + undo everything ·
+Mario Maker → instant edit/play flip. Sources in v1 (git).
 
-- **Animal pens** holding critters of varying aggression; pens can open by plan
-  or by damage (chaos injection).
-- An **aquarium with an octopus** (stretch — rides the procedural-animation
-  track, the editor just needs to place it).
-- The ship's original crew, now **zombies** — a third faction hostile to both
-  teams and the wildlife.
-- **Infection rule:** any unit (soldier or animal) killed BY a zombie rises as
-  a zombie. Killed by anything else stays dead.
+## 3. Design pillars (amended by critique)
 
-The de_dust analogy: two spawns, authored geometry, lights, doors, one
-objective, competitive symmetry-of-opportunity (not necessarily of layout).
-When this level can be built in the editor and played (by humans or agents),
-v3 is done.
+1. **The registry is the editor — and the registry is CODE** (entity §3b):
+   palettes, panes, inspectors generate from the imported entity module;
+   graceful fallback to last-good `entity_registry.json` + red banner when
+   the import breaks.
+2. Instances are class + overrides, addressed by **mandatory ids** (entity
+   §3a).
+3. See it to design it: live baked preview + entity sprites + play-from-
+   editor (§8).
+4. The editor writes data; the game implements behavior. **`level_lib` is
+   the single data layer** (entity §3c) — the editor is its client; the
+   bespoke writeback paths are ported onto it and deleted.
+5. Keyboard-first survives the panes.
+6. **Undo is a single transaction log** of compound operations (grid delta +
+   entity delta per user action) — replacing the per-domain rings. Every
+   operation class joins it in the patch that introduces it: placement,
+   moves, paints, zone paints, wires, tags, inspector field edits.
 
-## 2. What the great editors teach us
+## 4. Units of measure — the exact quantization rule (critique-hardened)
 
-Surveyed 2026-07-18 (sources in §12). The ones that earned lasting praise, and
-the transferable lesson from each:
+Author-facing lengths are meters; tiles are derived. The rule, made exact:
 
-| Editor | Why it was loved | The lesson for us |
-|---|---|---|
-| **Valve Hammer / Worldcraft** (Half-Life, CS — de_dust itself) | The **FGD entity system**: game ships a declarative file defining entity *classes* + typed key-values; editor renders palettes & property sheets from it. Game and editor never drift. | Erik's "OOP level making" is exactly FGD. Our `entities.toml` = the FGD. Editor UI is *generated from the registry*, never hand-coded per entity type. |
-| **LDtk** (Dead Cells' designer; the best modern 2D take) | Entity definitions with **typed custom fields** (ints, enums, paths, entity-refs) + constraints; **auto-tiling rules**; aggressive UX polish. | Typed fields with defaults/ranges in the registry → the inspector pane builds itself. Our autotile baker already follows its spirit. |
-| **UnrealEd** | Rendered the level **with the game engine itself** — WYSIWYG was exact, iteration real-time. | We already share pyray + the baker with the game; keep hard-committing to "the preview IS the game's view". |
-| **Warcraft III World Editor** | Data + **trigger** editing accessible to non-programmers → DotA. | The power ceiling comes from *exposing game data*, not editor features. (Triggers themselves: explicitly NOT v3 — noted in §10 as the far-future ceiling-raiser.) |
-| **TrenchBroom** (modern Quake) | Praised for one thing: **direct manipulation + undo everything** — vs the Radiant clones' mode-heavy UX. | Every new tool must join the existing undo ring from day one; selection/move/delete must feel physical. |
-| **Super Mario Maker** | The **instant play/edit flip** (and publish-gated-on-completion). | One-key play-from-editor (§8) is v3's killer feature for a physics game: paint air, press play, watch it vent. |
+- Resolution is stored as **integer `tiles_per_m`** (base = 3), not the
+  float `tile_size_m` (the shipped `0.333` ≠ ⅓ bug: 3 × 0.333 = 0.999 m
+  made the 1 m-door-vs-1 m-marine comparison flip by conversion direction).
+  Migration: existing `tile_size_m = 0.333` levels load as exactly
+  `tiles_per_m = 3`; the loader keeps accepting `tile_size_m` for other
+  values, converting through Fraction.
+- **`tiles = floor(length_m · tiles_per_m + ½)`** evaluated in exact
+  arithmetic (Fraction or scaled ints) — round-half-up, never Python's
+  banker's `round`, never a float division whose 15th digit decides a tie.
+- **Quantize once at base resolution, then replicate**: `--res N` scales
+  already-quantized tile values by the integer factor (matching
+  `_upscale_level`'s existing semantics for spawns/footprints/lights).
+  Door spans, sensor radii, and area discs all follow this order — never
+  re-derived from meters at the scaled resolution (the two orders disagree:
+  round(0.5 m · 6) = 3 ≠ round(0.5 m · 3) · 2 = 4).
+- Registry `length_m` fields display meters; the inspector shows the
+  snapped tile result (same pattern as the filter node's snapped τ).
 
-## 3. Design pillars
+## 5. Zones — matter-first, now with the binding specced
 
-1. **The registry is the editor.** One `entities.toml` defines every placeable
-   class; palettes, panes, inspectors, and writebacks derive from it. Adding an
-   entity class = data edit, zero editor code (Hammer/LDtk lesson; extends the
-   engine/15 §1 "no tool carries its own vocabulary" rule from materials to
-   entities).
-2. **Instances are class + overrides.** A placed entity stores its class id +
-   only the fields that differ from class defaults (small diffs, readable TOML,
-   retunable classes ripple into every level).
-3. **See it to design it.** Live baked preview stays; entities render as their
-   in-game look where cheap (lights already do), sprite/icon otherwise;
-   one-key play-from-editor closes the loop.
-4. **The editor writes data, the game implements behavior.** Pens, infection,
-   objectives are *game* systems; the editor only places/configures them. v3
-   ships the format + UI for all of §1's level, even where the game system
-   lands in a later patch (chip logic yes; octopus no).
-5. **Keyboard-first survives the panes.** Current hotkey modes stay; panes are
-   for discovery, properties, and browsing — not a mouse-only rewrite.
+Two zone classes only (breach_site, extraction_zone), painted masks in
+`zones.npy` — unchanged. Critique additions:
 
-## 4. The entity registry — `entities.toml`
+- **Binding:** each zone is an `[[entity]]` instance (id, class, faction,
+  fields) carrying `zone_id` = its integer paint id. The npy grid holds
+  paint ids; the instance holds everything else. Validators: every painted
+  id has exactly one instance; every zone instance has ≥ 1 painted tile
+  (warn); duplicate `zone_id` is a load error.
+- Deleting a zone instance prompts to clear its paint; orphaned paint ids
+  are a validator warning, not a crash. Painting id A over id B just
+  shrinks B (warn at 0 tiles).
+- Zone paints are transactions in the undo log (§3.6).
+- `zones.npy` joins `_upscale_level` replication (like water) — `--res`
+  must not shape-mismatch or drop zones.
+- **Breach-site roster (format home, critique):** breach_site instances
+  carry `roster = [[unit_type, count], ...]` where `unit_type` is the
+  *unit-system* vocabulary (units are not registry entities — entity §3e);
+  spawn positions randomize inside the zone from the level seed (the ML
+  variation hook).
 
-New repo-level file (beside `config.toml`, hot-reloadable same way), read by
-game AND editor:
+## 6. Doors, sensors, logic — see the entity doc
 
-```toml
-[entity.marine]                      # class id
-category = "units"                   # palette pane grouping
-sprite   = "art/entities/marine.png" # editor icon / in-game sprite hook
-[entity.marine.fields]               # typed fields -> inspector rows
-team     = { type = "faction", default = "team_a" }
-name     = { type = "string",  default = "" }
-footprint= { type = "int",     default = 3, min = 1, max = 6 }
+Canonical fields, semantics, tick behavior: entity doc §§4–7. Editor-side
+obligations only:
 
-[entity.critter_snapper]
-category = "creatures"
-[entity.critter_snapper.fields]
-aggression = { type = "enum", options = ["docile", "territorial", "feral"],
-               default = "territorial" }
-infectable = { type = "bool", default = true }
+- **DOOR tool:** places a door entity on a wall run (snap, default 1.0 m,
+  drag to resize; width warnings per footprint, no hard minimum). The
+  entity is authoritative; its `MAT_DOOR` tiles are written to the grid
+  **immediately on placement** (not at save) so the live preview and
+  physics-adjacent validators see them; the compound op is one undo
+  transaction.
+- **Sensor placement** sets the body tile and the `sample_tile` offset
+  (rendered as a small arrow); the editor refuses a solid sample tile at
+  placement (it may become solid later in play — that's physics).
+- **Legacy migration is explicit, never a save side effect:** opening an
+  old level with `[[spawn]]`/`[[light]]`/painted doors keeps them as-is;
+  the loader hard-errors on *mixed* legacy+new forms in one file; the
+  one-shot migration tool (Arc A) converts a level in place (including
+  grouping painted MAT_DOOR runs into door entities) with a `.bak`.
+  Ctrl+S on an unmigrated level saves in its legacy form.
+- Managed-block writeback (via level_lib): multi-family replace is atomic
+  (write temp + rename), so a crash mid-save can't leave both forms.
 
-[entity.data_chip]
-category = "objectives"
-[entity.data_chip.fields]
-score_value = { type = "int", default = 1 }
-```
+## 7. Painting power (unchanged from v1)
 
-Field types v3 needs: `int`, `float`, `bool`, `string`, `enum`, `faction`,
-`length_m` (see below), `tile_ref` (a coordinate), `entity_ref` (link to
-another instance), `entity_ref_list` (wiring targets, §5c). Constraints
-(`min`/`max`/`options`) drive inspector widgets and load-time validation.
+Magic wand (enclosure fill + same-code select) for materials, AIR, vacuum,
+zones · `air_init.npy` with the hull-leak validator (fill escaping to the
+border = leaky room, warn don't paint) · `boundary = "space" | "ambient"`
+level field set in the level-properties pane.
 
-**Units of measure (Erik 2026-07-18): author-facing lengths are METERS,
-tiles are derived.** The engine supports many resolutions (`tile_size_m` per
-level, `--res N` replication); the base authoring resolution is 1 m = 3×3
-tiles (a marine is 1 m — 3×3). Every physical size in the registry — door
-width, light range, footprints — is a `length_m`, converted at load:
-`tiles = round(length_m / tile_size_m)` (quantize-at-the-boundary, per the
-number-ingress rule). This is already the engine's direction: W6 weapon
-ranges are meter-based, and the P4 `--res` deviation that scales light range
-with resolution is exactly "physical reach is preserved" — meters-first makes
-it the rule instead of a case-by-case fix.
+## 8. The UI — panes + the critique's UX specs
 
-**Instances in level.toml:**
+Layout as mocked (top bar / tool rail / canvas / tabbed palette / inspector
+/ status bar), with these now-explicit specs:
 
-```toml
-[[entity]]
-class = "critter_snapper"
-x = 41
-y = 17
-aggression = "feral"        # override; docile stays class-default elsewhere
-```
+- **Multi-select is load-bearing** (tags need it): box select + shift-click
+  add + select-by-class; "assign tag to selection"; **clump copy/paste**
+  preserving internal wires (re-id on paste, external wires dropped) — the
+  poor man's prefab, enough for several airlocks.
+- **Wire tool: two-click** (click source, navigate freely — pan/zoom stay
+  live — click target, Esc cancels). Never a drag gesture. The LOGIC
+  overlay defaults to wires touching the current selection with a show-all
+  toggle; wires to `tag:` targets render to a tag badge, not fanned to
+  every member.
+- **Bulk placement** (30 zombies): official answer is a `level_lib` snippet
+  (scatter helpers ship with it); the editor offers only place-one.
+- **PLAY (F5), fully specced:** saves everything (tilemap, entities, zones,
+  air/water npy) to `levels/_editor_scratch/<name>/` (gitignored), reusing
+  the existing baked PNGs when the grid is clean (no full re-bake per F5);
+  launches `[sys.executable, "main.py", "--level", "_editor_scratch/<name>"]`
+  (never bare `python` — the documented machine footgun); the scratch
+  folder is deleted on subprocess exit and editor quit. Loader accepts the
+  `_editor_scratch/` path form.
+- **Icons:** SVG sources in `art/entities/icons/` + **committed PNGs**
+  rasterized by `tools/rasterize_icons.py` (its rasterizer dependency is
+  dev-only, needed only when icons change; a test asserts PNG freshness).
+  A class without an icon renders a generated color chip + class initial —
+  permanent fallback, never an error.
+- Status bar: mode · cursor tile · validator summary · unsaved dot ·
+  registry-import banner slot (entity §3b).
 
-**Legacy tables.** `[[spawn]]` and `[[light]]` become *aliases*: the loader
-maps them into the same runtime instance model (`spawn` → class per team,
-`light`/beacon → light classes). Existing levels load unchanged; the editor
-WRITES the new form; a one-shot migration tool converts old levels at leisure.
-`[water]` stays as-is (it's a field seed, not an entity — same for air, §7).
+## 9. Patch plan — moved
 
-## 5. Zones — the intent layer (REVISED after Erik's 2026-07-18 challenge)
+The build plan is the entity doc §10 arc split (Arc A foundation → physics
+close-out → Arc B logic → Arc C editor UX), decided by Erik at critique.
+This doc's obligations land as: format/loader/migration/level_lib in Arc A;
+wire tool + LOGIC overlay alongside Arc B; everything in §8 in Arc C.
 
-Erik's challenge: this engine is emergent — a pen is just a walled-off area,
-an aquarium is just glass + water — so do we need zones at all? The challenge
-is correct, and answering it produced the arc's sharpest design rule:
+## 10. Explicitly not v3 (unchanged)
 
-> **If it can be matter, make it matter. A zone exists only for authored
-> *intent* that no arrangement of matter can express — i.e. where a RULE
-> anchors to the map.**
+Multi-floor · trigger scripting · AI tilesets (levels-w1 P6) · sliding-door
+animation arc · in-editor embedded sim · decals · campaign structure · full
+prefab library (clump copy/paste ships instead).
 
-Applying the rule to the original zone list:
+## 11. Decisions log
 
-- ~~`animal_pen`~~ — **dropped.** Walls + a closed door + critters placed
-  inside. Fully emergent; the "release" mechanic belongs to the door (§5b).
-- ~~aquarium~~ — **dropped** (was never proposed as a zone, but confirming:
-  glass box + water fill, shipped since P5).
-- **`breach_site` (faction)** — stays. *Where a team boards* is mission
-  intent; no matter can express it. Bonus: it's the ML-variation hook —
-  spawning anywhere inside the zone gives different initial conditions every
-  round, which the training distribution wants.
-- **`extraction_zone` (faction)** — stays. "Carrier standing here wins" is a
-  rule anchor; the matter is silent about where extraction is.
-
-v3 ships exactly **two zone classes, both mission intent**. That resolves
-storage trivially: one id-grid (`zones.npy`, the water_init pattern) —
-overlap is meaningless for 2–4 disjoint intent regions per level. Revisit
-per-zone masks only if a future zone kind genuinely overlaps (patrol areas,
-sound zones — none in v3). Zones paint with the same wand/brush as materials.
-
-## 5b. Doors v0 — simple entity doors from the get-go (Erik 2026-07-18)
-
-Erik wants a door from the start — not the sliding-slab arc, just
-**open/closed**. And a load-bearing detail: a marine is 3×3 tiles, so any
-door a unit passes is ≥3 tiles wide — **a door is a multi-tile entity that
-owns its tile span**, not a paint material.
-
-- **Placement:** the DOOR tool upgrades from "paint `MAT_DOOR` tiles" to
-  "place a door entity on a wall run": click a wall, the span snaps into the
-  run, default width **1.0 m** (3 tiles at base res), drag to resize.
-- **Width is NOT hard-enforced** (Erik 2026-07-18: aliens might have smaller
-  doors). The validator *warns* per-footprint instead: "0.67 m door — marines
-  (1 m) cannot pass; critter_skitter (0.33 m) can." Narrow doors become
-  tactical texture (vent runs only small things traverse), not an error.
-- **Fields:** `state` (open | closed), `locked` (bool), `direct_operate`
-  (bool, default true — operable by an adjacent unit; false = remote-only,
-  §5c), material (inherits door hp / burst threshold — a closed door is
-  exactly the "door you're hiding behind" in the wall-burst rule).
-- **Semantics:** CLOSED = its tiles are sealed wall (solid, light-occluding,
-  impermeable). OPEN = air (passable, transparent, permeable). One state
-  flip = one deterministic multi-tile field edit — the same per-tile cache
-  rebuild plumbing `destroy_wall` uses today. No animation in v0. The entity
-  is authoritative; its `MAT_DOOR` tiles in the grid are derived at save.
-- **Transitions v0:** authored initial state; an adjacent hands-having unit
-  spends an AP "use" action to toggle (zombies and critters can't); a wired
-  signal toggles it remotely (§5c); destroying the door removes it. A **pen**
-  is therefore pure matter: walls + a closed door + critters — released by a
-  unit opening it (plan), a wired console (plan, remote), or blowing the door
-  (damage). Sliding animation, auto-open, faction key-locks: doors-v1 later,
-  same entity, no format change.
-
-## 5c. Buttons & wiring — signals v0 (SUPERSEDED 2026-07-18, same day)
-
-> **Superseded by `entity_system_design_2026-07-18.md` §4** — Erik pushed
-> past dumb wiring to Factorio-style dataflow logic (sensors + deciders +
-> gates, one-tick-delay evaluation). The v0 below survives as the trivial
-> subset (a button wired straight to a door is a wire with no logic nodes).
-> The arc is now TWO joint design docs (entity model + editor view), one
-> critique over both. Original v0 text kept for the record:
-
-Erik wants mechanisms: a cockpit button that opens doors elsewhere and turns
-lights on; one trigger firing many effects (open airlock AND start the
-warning blinkers). This is the classic **entity I/O** pattern — Source
-engine's outputs→inputs wiring (the tech behind every airlock and elevator
-in Half-Life), which is NOT the same thing as WC3-style trigger *scripting*:
-
-> **Wires carry no logic.** A wire is `(source entity, event) → (target
-> entity, input)`. No conditions, no variables, no delays in v0. Anything
-> smarter is the deferred trigger-editor arc (§10).
-
-- **Inputs are class-defined** (registry): door exposes `open/close/toggle`;
-  light exposes `on/off/blink`. Any future class opts in by declaring inputs.
-- **`button` entity class** (category: mechanisms): placed on a wall/console
-  tile; `targets = entity_ref_list`; a unit's AP "use" action presses it →
-  every target's wired input fires. One-to-many is the list; many-to-one is
-  free (two buttons targeting one door).
-- **Determinism:** presses are unit actions (already tick-ordered); fan-out
-  applies in wire-list order within the tick. Pure data, replay-exact.
-- **Blink** rides the beacon machinery (light output as a pure function of
-  sim tick — already replay-exact).
-- **Editor:** a wire overlay (drawn links between source and targets), and
-  the inspector's target list is click-to-pick-on-canvas.
-- **Scope split:** format + editor wire tool in this arc; game-side signal
-  routing lands with P4 (doors v0) since doors + lights are the only v3
-  input-havers.
-
-## 6. Objectives + factions — the game-side contract (architectural prep)
-
-**Re-homed (Erik 2026-07-18): the RULES below live in priority-ledger stack
-item 2 (weapons/units/roster), NOT this arc.** This arc ships only the
-*format*: the `data_chip`/zone classes, the `faction` field type, the
-`infectable` flag — so the Contested Chip level can be fully AUTHORED now and
-becomes fully *playable* when stack 2 lands the rules. For the record, the
-game-side contract those patches implement:
-
-- **Objective v1 — carry & extract:** `data_chip` spawns at its tile; walking
-  over it picks it up; carrier death drops it; a carrier inside their faction's
-  `extraction_zone` scores/wins. Deliberately minimal — it is also exactly the
-  ML reward function for the first training mission (`get_reward` hook,
-  TODO.md AI-scaffolding item).
-- **Factions as data:** a `[factions]` table (in entities.toml) with a
-  hostility matrix — `team_a`, `team_b`, `zombies`, `wildlife` — replacing the
-  `team != team` check (already a TODO deferral). Erik hasn't themed the
-  factions yet; names are data, so theming can wait indefinitely.
-- **Infection:** `infectable` flag (registry) + kill attribution: a kill whose
-  attacker faction is `zombies` converts the victim (soldier or animal) to a
-  zombie unit at death position. Rides the faction patch.
-
-## 7. Field-seed painting: AIR (and the wand)
-
-From the 2026-07-12 agreement + 2026-07-17 wishlist, unchanged in substance:
-
-- **AIR paint** — `air_init.npy` mask mirroring `water_init.npy`; default
-  vacuum, ambient gas N seeded inside the mask; floor-visual decoupled from
-  atmosphere. Vacuum decks, O₂ pockets, pre-pressurized rooms.
-- **Magic wand / enclosure fill** — two flavors: *enclosure fill* (flood from
-  seed, bounded by solid — the WATER-mode primitive, generalized to any brush
-  payload: material, air, vacuum, zone id) and *same-code select* (contiguous
-  same-material region → repaint). The **hull-leak validator** falls out free:
-  an air-fill that reaches the map border = leaky room → warn, don't paint.
-- **Boundary conditions** — per-map `boundary = "space" | "ambient"` level.toml
-  field (the AMBIENT border-ring tile from the backlog Topic 4 survey), set in
-  a level-properties pane. Format lands here; the physics lands with the
-  BC/residency work in stack item 1.
-
-## 8. The UI — panes (see mockup)
-
-Mockup artifact accompanies this doc. Layout:
-
-```
-+------------------------------------------------------------------+
-| top bar: level name | boundary | bake | PLAY (F5) | save        |
-+---+---------------------------------------------------+----------+
-| t |                                                   | PALETTE  |
-| o |                                                   | [Tiles]  |
-| o |                CANVAS                             | [Units]  |
-| l |         (live baked preview,                      | [Creat.] |
-|   |          entities as sprites/icons,               | [Lights] |
-| r |          zone tint overlays)                      | [Zones]  |
-| a |                                                   | [Object.]|
-| i |                                                   +----------+
-| l |                                                   |INSPECTOR |
-|   |                                                   | class:   |
-|   |                                                   |  fields  |
-|   |                                                   |  (typed) |
-+---+---------------------------------------------------+----------+
-| status: mode | tile under cursor | validators | unsaved changes  |
-+------------------------------------------------------------------+
-```
-
-- **Tool rail (left):** select/move · paint · wand/fill · room · corridor ·
-  door · place-entity · zone-paint. (Current hotkeys preserved; the rail
-  displays the active mode.)
-- **Palette (right, tabbed):** one tab per registry `category` — Erik's
-  "different panes for different types". Tabs are DATA (categories found in
-  entities.toml + the material table), not code.
-- **Inspector (right, below):** selected instance's fields, widgets from field
-  types; overridden fields highlighted vs class default; "reset to class".
-- **PLAY (F5):** launches the game on the working level (saved to a temp copy)
-  as a subprocess — v1 of play-from-editor is *cheap* (main.py already takes a
-  level); embedded in-editor sim is a later upgrade, unlocked by the shared
-  pyray stack, not blocked by anything in v3.
-
-## 9. Patch plan (draft — locked only after critique)
-
-Fewest patches that each land green and playable:
-
-- **P0 — registry + format** (no UI): entities.toml loader, `[[entity]]` +
-  legacy aliasing, zones storage, `air_init.npy` seeding, `boundary` field,
-  validation. Tests: load/save round-trip, legacy levels byte-identical.
-- **P1 — editor shell**: panes layout (top bar, rail, palette, inspector,
-  status), registry-driven palette/inspector, generic place/select/move/delete
-  in the undo ring. Existing modes keep working underneath.
-- **P2 — painting power**: wand/enclosure fill (materials + zones + AIR),
-  hull-leak validator, zone tint overlays.
-- **P3 — play-from-editor** (F5 subprocess) + level-properties pane (boundary,
-  name) + polish pass on the acceptance level's authoring flow.
-- **P4 — doors v0 behavior** (game-side, the ONE game patch riding this arc —
-  Erik wants doors from the get-go): the open/closed state flip as a
-  deterministic field edit, the AP toggle action, pens work. Digest-gated +
-  HUMAN-TEST.
-- *(moved out)* objective carry&extract + factions + infection → stack item 2
-  (Erik 2026-07-18); this arc only ships their format.
-
-Gates: P0 mechanical (digest-style tests). P1–P3 are editor UX → Erik drives
-them hands-on (HUMAN-TEST equivalents). P4 is feel-adjacent game logic → full
-HUMAN-TEST gate.
-
-## 10. Explicitly NOT v3 (ceiling-raisers, format-safe to defer)
-
-Multi-floor/decks · trigger/event scripting (the WC3 ceiling-raiser — needs
-its own design arc when missions demand it) · AI-styled tilesets (levels-w1
-P6, still owed) · doors-v1 sliding-slab state machine (own arc; pens v3 can
-gate on a breakable `MAT_DOOR`/glass tile until then) · in-editor embedded
-sim · decal/texture painting · campaign/meta structure.
-
-## 11. Decisions log + open questions
-
-**Decided 2026-07-18 (Erik):**
-1. **Zones**: exist only where a rule anchors to the map ("matter first"
-   principle, §5) — v3 ships breach_site + extraction_zone only; id-grid
-   storage. Pens and aquaria are matter, not zones.
-2. **Doors**: simple open/closed **entity** doors ship in this arc (§5b);
-   multi-tile spans (min width 3 = marine footprint); sliding doors stay a
-   later arc.
-3. **Objective/factions/infection rules** → stack item 2; this arc ships
-   their format only.
-4. **Spawn model**: both — individually placed units AND breach-site roster
-   spawning.
-
-**Round 2, 2026-07-18 (decided same day):**
-5. **Meters-first** — CONFIRMED (Erik): all author-facing lengths in
-   `length_m`, tiles derived at load (§4).
-6. **Door min-width**: no hard enforcement — per-footprint validator warnings
-   (§5b). Alien doors and critter-only vents allowed.
-7. **Wiring** — superseded upward: full dataflow logic per
-   `entity_system_design_2026-07-18.md` (Factorio model, physical-by-default
-   nodes). The editor gains a **LOGIC overlay view** (wire rendering, node
-   inspection, click-to-wire) — spec detail at critique.
-8. **Doors are placed entities** (not painted tiles) — required by wiring:
-   a wire (and now a sensor) needs a target with identity.
-
-**Still open (small):**
-- Door toggle details for v0: AP cost, which unit classes can operate doors
-  (current: any non-zombie/critter), locked-door interaction. Settle at
-  critique or first playtest.
-- Registry sprite/icon pipeline: hand-drawn per class vs auto-generated
-  placeholder chips. Lean: placeholder chips v3, art later.
-- Migration of existing painted `MAT_DOOR` tiles in shipped levels: one-shot
-  tool groups contiguous door tiles into door entities, or legacy tiles stay
-  dumb always-closed walls. Lean: migration tool at P0.
-
-## 12. Research sources
-
-- [PC Gamer — Unreal's free editor as the true game-changer](https://www.pcgamer.com/gaming-industry/game-development/1998s-unreal-was-a-big-deal-but-its-free-editing-tool-was-the-true-game-changerand-the-origin-of-countless-careers/)
-- [Tim Sweeney retrospective on UnrealEd (Game Developer)](https://www.gamedeveloper.com/design/classic-tools-retrospective-tim-sweeney-on-the-first-version-of-the-unreal-editor)
-- [Valve Hammer Editor (Valve Developer Community)](https://developer.valvesoftware.com/wiki/User:Cvoxalury/Valve_Hammer_Editor)
-- [Warcraft III World Editor (Warcraft Wiki)](https://warcraft.wiki.gg/wiki/World_Editor)
-- [TrenchBroom](https://trenchbroom.github.io/)
-- [LDtk](https://ldtk.io/) · [LDtk entity docs](https://ldtk.io/docs/general/editor-components/entities/)
-- [The Level Design Book — tools appendix](https://book.leveldesignbook.com/appendix/tools)
+Rounds 1–2 (2026-07-18): matter-first zones · entity doors, width warnings
+not errors · rules re-homed to stack 2 · both spawn models · meters-first
+(exact rule now in §4) · doors-as-entities.
+Critique round (2026-07-18): everything in this revision + the four Erik
+rulings recorded in entity doc §9 (arc split; fail-deadly + alive idiom;
+v1 signal-only; units out).
