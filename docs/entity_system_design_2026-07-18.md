@@ -143,6 +143,14 @@ system is shaped by that. It is *dataflow*, not script:
 - **Decider:** `out = (a ⋚ b) ? 1 : 0` where a = a signal, b = signal or
   constant; ops `> < >= <= == !=`.
 - **Gates:** AND / OR / NOT (sugar over deciders, but worth first-class UI).
+- **Filter:** `out = EMA(in, τ)` — exponential moving average with time
+  constant τ (seconds). Integer/Q16.16, shift-based alpha, deterministic.
+  A NODE, not a sensor variant (Erik 2026-07-18): any signal can be
+  smoothed, which is more composable than baking smoothing into sensors.
+  The canonical use — **auto-closing blast doors that ignore grenades**:
+  `filter(sensor_pressure.area_mean, τ=3s) < 0.8 → close tag:blast_doors`.
+  A grenade's under-pressure transient lasts under a second and barely
+  moves a 3 s EMA; a real hull breach drags it down and latches the doors.
 - **Sinks:** every entity's declared inputs. An input fires on a rising edge
   or while-held — per-input flag in the registry (`open` = while-high,
   `toggle` = rising-edge; prevents 24 toggles/second).
@@ -187,6 +195,11 @@ All read existing fields at the sensor's tile(s), integer, one per tick:
 `chip.carried_by(faction)`, `clock` (tick fn). What else does the Contested
 Chip ship need?
 
+**Spatial mean:** field sensors (pressure/temperature/O₂/...) take an
+optional `area` (length_m radius): emit the mean over the disc instead of
+one tile. Integer mean over a precomputed tile set — cheap, deterministic.
+Pairs with the filter node (§4) for the breach-door pattern.
+
 **`sensor_motion` (unit sensor — Erik 2026-07-18 yes):** emits count of
 units inside its range. Fields: `radius` (length_m), `faction_filter`
 (any | one faction | hostiles-of), `min_footprint` (length_m — small
@@ -195,6 +208,37 @@ through-wall proximity plate). Motion-triggered lights = `sensor_motion →
 light.on` — and the emergent texture is free: zombies trip corridor lights
 and betray themselves; a skitter-sized vent-crawler doesn't; cutting power
 to the sensor (destroying it) darkens the trap.
+
+## 6b. Actuators — entities that push the physics (Erik 2026-07-18)
+
+Sensors read fields; **actuators write them** — through the FieldEdit
+plumbing, so determinism and the number-ingress rule hold automatically.
+Day-1 actuator (Erik's ask):
+
+**`pump`** — pressurizes/depressurizes its enclosure. L0 behavior: each
+active tick, move bulk gas N at its tile toward the target — inject standard
+O₂/N₂ mix from an infinite ship reserve (tanks are a v2 field), or extract
+(dump overboard). The EOS conserves mass; a pump is a deliberate
+source/sink, exactly like explosion deposits and breach venting today.
+Fields: `rate` (atm/s), `target_high` (default 1.0), `target_low` (default
+0.0). Signals: `pressure` (own tile), `at_target` (bool). Inputs:
+`pressurize`, `depressurize`, `off`.
+
+**The airlock — the system's showcase.** Two doors + pump + terminal +
+interlock. The sequencing ("close both → pump → open far door") is a small
+state machine — buildable from latches in pure dataflow (the Factorio-purist
+way), but the clean answer is the three-layer split doing its job: write an
+**`airlock_controller`** entity class at L0 (a ~40-line Python state
+machine: inputs `cycle_in`/`cycle_out`; drives its wired doors + pump;
+signal `busy`), and every airlock in every level is then terminal →
+controller → (doors, pump) wiring. This is the archetype of §8's rule —
+"anything truly computational becomes a node class in code" — and a natural
+first L0 class for Erik to write.
+
+Future actuators, format-safe, not v1: heater, water valve, gravity/engine
+systems. **Prefabs/blueprints** (stamp a saved multi-entity assembly — THE
+airlock — into a level, Factorio-blueprint style) are the natural v2 editor
+feature this example begs for; noted in the editor doc §10.
 
 ## 7. Runtime sketch (L0)
 
@@ -229,18 +273,17 @@ an entity with signals like `hp`, `alive`, `faction`).
 - Logic is physical by default, `intangible` per node as needed (§5).
 - Meters-first (editor doc §4) — confirmed.
 
-**Round 3 proposals (2026-07-18, awaiting Erik):**
-- §3b schema-in-code: Entity ABC with declarative schema, editor registry
-  exported from code, entities.toml demoted to tuning overlay.
-- §3c wiring at scale: first-class tags (wire → tag) + the `level_lib`
-  authoring API (official scripted-authoring path; doubles as the ML
-  level-variant generator).
-- §6 `sensor_motion` with radius/faction/footprint/LOS fields.
+**Round 3 (2026-07-18):**
+- §3b schema-in-code — **ACCEPTED** (Erik: "I love the python idea").
+- §3c tags + authoring API — proposed, no objection; treat as accepted
+  unless Erik flags it.
+- §6 sensor catalog closed for v1 (Erik: nothing more to add) + area-mean
+  fields; §4 filter node; §6b pump actuator + airlock_controller pattern;
+  prefabs flagged as editor-v2.
 
 **Open:**
-1. **Sensor wishlist** (§6) — anything beyond the catalog + sensor_motion?
-2. Editor doc round-2 leftovers: door AP cost + operating classes; entity
+1. Editor doc round-2 leftovers: door AP cost + operating classes; entity
    icon pipeline (placeholder chips?). Park for critique unless Erik has
    opinions sooner.
-3. Mockup layout — Erik deferred judgment (2026-07-18); revisit once the
+2. Mockup layout — Erik deferred judgment (2026-07-18); revisit once the
    entity discussion settles.
