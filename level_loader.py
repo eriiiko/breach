@@ -26,8 +26,10 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import sys
 import tomllib
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -40,6 +42,14 @@ import numpy as np
 _SRC_DIR = Path(__file__).resolve().parent / "src"
 if _SRC_DIR.is_dir() and str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
+
+# [[entity]] validation (A3): the registry IS the validator (entity design
+# §3b). The entities package is import-light (stdlib-only, CI-tested), so
+# this pulls in no compiled physics and never simulation.simulation.
+from simulation.entities import (  # noqa: E402
+    KIND_ENTITY_REF, REGISTRY as ENTITY_REGISTRY, effective_defaults,
+    field_value_error,
+)
 
 
 SUPPORTED_VERSIONS = {"1", "2"}
@@ -202,6 +212,159 @@ def _parse_light_entry(entry, index: int, toml_path) -> LightEntry:
     )
 
 
+_ENTITY_ID_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_\-]*\Z")
+
+# Instance-level keys every [[entity]] table carries besides its schema
+# fields: the id/tags instance facts (schema.INSTANCE_FIELDS) + the class
+# binding itself.
+_ENTITY_META_KEYS = ("id", "class", "tags")
+
+
+@dataclass
+class EntityInstance:
+    """One ``[[entity]]`` instance declared in level.toml (design §3a, A3).
+
+    Parsed data ONLY in Arc A — nothing steps entities yet (the dormancy
+    guarantee; the runtime slot is Arc B's, digests are A4's). ``fields``
+    holds the EFFECTIVE values: authored keys over the registry defaults
+    (entities.toml overlay applied), stored as authored — length_m fields
+    are NOT quantized here; the canonical tile rule is the consumer's load
+    step (editor design §4) and no consumer needs tiles yet.
+    ``authored_keys`` records which schema fields the file actually spelled
+    out (file order), so level_lib's writer round-trips byte-stably without
+    ever materializing defaults into the file.
+    """
+    id: str
+    class_name: str     # the toml `class` key ("class" is a Python keyword)
+    ordinal: int        # runtime ordinal id — FILE ORDER at load (§3a)
+    tags: tuple = ()
+    fields: dict = field(default_factory=dict)
+    authored_keys: tuple = ()
+
+
+def _light_entry_from_entity(inst: EntityInstance) -> LightEntry:
+    """``[[entity]]`` light instance -> the SAME LightEntry a ``[[light]]``
+    block yields (the legacy-alias equivalence contract, editor design §6):
+    one downstream render path either way, asserted field-for-field in
+    tests/test_entity_format.py."""
+    f = inst.fields
+    return LightEntry(
+        x=float(f["x"]), y=float(f["y"]),
+        color=tuple(v / 255.0 for v in f["color"]),
+        intensity=float(f["intensity"]),
+        range=float(f["range"]),
+        kind=str(f["kind"]),
+        period_s=float(f["period_s"]),
+        beam_deg=float(f["beam_deg"]),
+        phase=float(f["phase"]),
+    )
+
+
+def _parse_entities(raw: dict, toml_path, spawns: list) -> list:
+    """Parse + validate the ``[[entity]]`` array (design §3a/§3b/§3e, A3).
+
+    The registry IS the validator (§3b): unknown class, unknown field, kind
+    or bounds mismatch, missing required field, duplicate or malformed id —
+    all hard ValueErrors naming the entry. Ids are assigned runtime ordinals
+    in FILE ORDER (§3a). Refs (KIND_ENTITY_REF fields) are checked across
+    the whole file AFTER parsing: a ref naming a missing id WARNS (an
+    authoring error, not fatal — a destroyed entity at runtime is not an
+    error either); a ref naming a ``[[spawn]]`` unit HARD-ERRORS (units are
+    not entities until the stack-2 convergence, §3e).
+    """
+    entities_raw = raw.get("entity", [])
+    if not isinstance(entities_raw, list):
+        raise ValueError(
+            f"[[entity]] in {toml_path} must be an array of tables "
+            f"(got {type(entities_raw).__name__}) — spell it [[entity]], "
+            f"not [entity]")
+
+    entities: list = []
+    seen: dict = {}                    # id -> entry index (duplicate check)
+    for i, entry in enumerate(entities_raw):
+
+        def err(msg: str) -> ValueError:
+            return ValueError(
+                f"Invalid [[entity]] entry #{i} in {toml_path}: {msg}")
+
+        if not isinstance(entry, dict):
+            raise err(f"expected a table, got {type(entry).__name__}.")
+
+        eid = entry.get("id")
+        if not (isinstance(eid, str) and _ENTITY_ID_RE.fullmatch(eid)):
+            raise err(
+                f"'id' must be a slug (letters/digits/_/-, e.g. 'door_3'), "
+                f"got {eid!r}. Every instance carries a mandatory unique "
+                f"id (entity design §3a).")
+        if eid in seen:
+            raise err(
+                f"duplicate id '{eid}' (first declared by entry "
+                f"#{seen[eid]}) — ids are mandatory and UNIQUE; all "
+                f"references address ids (entity design §3a).")
+
+        cls_name = entry.get("class")
+        if not isinstance(cls_name, str) or cls_name not in ENTITY_REGISTRY:
+            raise err(
+                f"unknown entity class {cls_name!r} — the registry is the "
+                f"validator (entity design §3b); registered classes: "
+                f"{sorted(ENTITY_REGISTRY)}.")
+
+        tags = entry.get("tags", [])
+        if not (isinstance(tags, list)
+                and all(isinstance(t, str) for t in tags)):
+            raise err(f"'tags' must be an array of strings (entity design "
+                      f"§3c), got {tags!r}.")
+
+        schema_fields = {f.name: f for f in ENTITY_REGISTRY[cls_name].FIELDS}
+        values = effective_defaults(cls_name)
+        authored = tuple(k for k in entry if k not in _ENTITY_META_KEYS)
+        for key in authored:
+            if key not in schema_fields:
+                raise err(
+                    f"unknown field '{key}' for class '{cls_name}' — the "
+                    f"registry schema is the validator (entity design "
+                    f"§3b); declared fields: {sorted(schema_fields)}.")
+            v = entry[key]
+            verr = field_value_error(schema_fields[key], v)
+            if verr:
+                raise err(f"'{key}' = {v!r} {verr}.")
+            values[key] = v     # stored as authored (length_m NOT quantized)
+        missing = sorted(k for k, v in values.items() if v is None)
+        if missing:
+            raise err(f"missing required field(s) {missing} for class "
+                      f"'{cls_name}' (no default exists).")
+
+        seen[eid] = i
+        entities.append(EntityInstance(
+            id=eid, class_name=cls_name, ordinal=i, tags=tuple(tags),
+            fields=values, authored_keys=authored))
+
+    # Refs are checked across the WHOLE file, once every id is known.
+    ids = set(seen)
+    unit_names = {str(s.name) for s in spawns}
+    for inst in entities:
+        for f in ENTITY_REGISTRY[inst.class_name].FIELDS:
+            if f.kind != KIND_ENTITY_REF:
+                continue
+            target = inst.fields.get(f.name)
+            if not target:
+                continue               # empty string = unwired ref
+            if target in unit_names:
+                raise ValueError(
+                    f"[[entity]] '{inst.id}' field '{f.name}' in "
+                    f"{toml_path} references '{target}', a [[spawn]] unit "
+                    f"— units are NOT entities (entity design §3e): no "
+                    f"wire, tag or ref may address a unit until the "
+                    f"stack-2 convergence.")
+            if target not in ids:
+                warnings.warn(
+                    f"[[entity]] '{inst.id}' field '{f.name}' in "
+                    f"{toml_path} is a dangling ref: no instance has id "
+                    f"'{target}' (authoring error, not fatal — entity "
+                    f"design §3a).")
+    return entities
+
+
 def _parse_water_table(raw: dict, base: Path, toml_path,
                        tilemap: np.ndarray):
     """Parse the optional ``[water]`` table (engine/15 §2.3, P5).
@@ -316,6 +479,14 @@ class LevelData:
     # Lives in the defaulted tail: synthetic LevelData(...) in tests keeps
     # constructing unchanged.
     water_depth_q: Optional[np.ndarray] = None
+    # ---- [[entity]] instances (entity design §3a, A3) --------------------
+    # Parsed data ONLY in Arc A: nothing steps them (the dormancy
+    # guarantee; digests are A4's). File order IS runtime ordinal order —
+    # ids are assigned in file order at load and every runtime sweep
+    # iterates in id order (§3a). Entity light instances ALSO land in
+    # `lights` above as equivalent LightEntry values (the [[light]]
+    # legacy-alias contract; mixed forms hard-error at load).
+    entities: list = field(default_factory=list)  # list[EntityInstance]
 
     @property
     def height(self) -> int:
@@ -502,6 +673,21 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
     lights = [_parse_light_entry(entry, i, toml_path)
               for i, entry in enumerate(lights_raw)]
 
+    # ---- [[entity]] instances (entity design §3a/§3b/§3e, A3) ------------
+    entities = _parse_entities(raw, toml_path, spawns)
+    entity_lights = [e for e in entities if e.class_name == "light"]
+    if lights_raw and entity_lights:
+        raise ValueError(
+            f"{toml_path} mixes legacy [[light]] blocks with [[entity]] "
+            f"light instances — a level carries ONE form, never both "
+            f"(level editor v3 design §6). Legacy [[light]] stays valid "
+            f"as-is; migration is explicit, never a save side effect: "
+            f"convert the whole level at once with the one-shot migration "
+            f"tool (tools/migrate_level_entities.py, Arc A patch A7).")
+    # The alias contract: entity lights feed the SAME downstream render
+    # path as [[light]] blocks — one LightEntry list either way.
+    lights += [_light_entry_from_entity(e) for e in entity_lights]
+
     # ---- [water] initial state (engine/15 §2.3, P5) ----------------------
     water_depth_q = _parse_water_table(raw, base, toml_path, tilemap)
 
@@ -533,6 +719,7 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
         art_px_per_tile=art_px_per_tile,
         art_align_explicit=art_align_explicit,
         water_depth_q=water_depth_q,
+        entities=entities,
     )
 
 

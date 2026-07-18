@@ -188,10 +188,10 @@ def test_unknown_family_refused_file_untouched(tmp_path):
     d = _mini_level(tmp_path)
     toml = d / "level.toml"
     before = toml.read_bytes()
-    with pytest.raises(ValueError, match="entity"):
-        write_managed_blocks(toml, {"entity": lambda nl: []})
+    with pytest.raises(ValueError, match="ghost"):
+        write_managed_blocks(toml, {"ghost": lambda nl: []})
     assert toml.read_bytes() == before
-    assert "entity" not in MANAGED_FAMILIES   # A3 adds it — not yet
+    assert "entity" in MANAGED_FAMILIES   # A3 added it, as one registry entry
 
 
 def test_editor_save_shape_round_trips_through_loader(tmp_path):
