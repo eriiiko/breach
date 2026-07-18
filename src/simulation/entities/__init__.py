@@ -19,9 +19,9 @@ from __future__ import annotations
 from simulation.entities.schema import (  # noqa: F401
     ALIVE_SIGNAL, ALL_KINDS, Entity, EntitySchemaError, Field, INPUT_EDGE,
     INPUT_HELD, INSTANCE_FIELDS, InputDecl, KIND_BOOL, KIND_COLOR_RGB,
-    KIND_ENUM, KIND_FLOAT_RENDER, KIND_INT, KIND_LENGTH_M, KIND_Q16,
-    KIND_STR, KIND_STR_LIST, NUMERIC_KINDS, REGISTRY, Signal, all_signals,
-    register,
+    KIND_ENTITY_REF, KIND_ENUM, KIND_FLOAT_RENDER, KIND_INT, KIND_LENGTH_M,
+    KIND_Q16, KIND_STR, KIND_STR_LIST, NUMERIC_KINDS, REGISTRY, Signal,
+    all_signals, field_value_error, register,
 )
 from simulation.entities.registry import (  # noqa: F401
     ENTITIES_TOML, EntityTomlError, REGISTRY_JSON, apply_tuning_overlay,

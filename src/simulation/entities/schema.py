@@ -23,6 +23,12 @@ Field kinds carry the determinism story at the declaration level:
 - ``KIND_FLOAT_RENDER`` values are render-local floats that NEVER enter
   synced state (same class as ``light_rgb`` — see LightEntry's contract in
   level_loader.py).
+- ``KIND_ENTITY_REF`` values are strings naming another ``[[entity]]``
+  instance id (design §3a: references address ids, never positions). The
+  A3 loader WARNS on a ref naming a missing id (authoring error, not fatal
+  — a destroyed entity at runtime is not an error either) and HARD-ERRORS
+  on a ref naming a ``[[spawn]]`` unit: units are not entities until the
+  stack-2 convergence (design §3e). Empty string = unwired.
 
 Instance-level facts (design §3a/§3c) are schema too: every ``[[entity]]``
 instance carries a mandatory unique ``id`` and a ``tags`` list. They are
@@ -51,9 +57,11 @@ KIND_ENUM = "enum"                  # str constrained to `choices`
 KIND_FLOAT_RENDER = "float_render"  # render-local float; never synced
 KIND_COLOR_RGB = "color_rgb"        # (r, g, b) 0-255 ints; render-local
 KIND_STR_LIST = "str_list"          # list of strings (tags)
+KIND_ENTITY_REF = "entity_ref"      # str naming another [[entity]] instance id
 
 ALL_KINDS = (KIND_INT, KIND_Q16, KIND_LENGTH_M, KIND_BOOL, KIND_STR,
-             KIND_ENUM, KIND_FLOAT_RENDER, KIND_COLOR_RGB, KIND_STR_LIST)
+             KIND_ENUM, KIND_FLOAT_RENDER, KIND_COLOR_RGB, KIND_STR_LIST,
+             KIND_ENTITY_REF)
 
 # Kinds the entities.toml tuning overlay may override — NUMBERS only.
 NUMERIC_KINDS = (KIND_INT, KIND_Q16, KIND_LENGTH_M, KIND_FLOAT_RENDER)
@@ -158,54 +166,68 @@ def _is_number(v) -> bool:
     return isinstance(v, _NUMBER_TYPES) and not isinstance(v, bool)
 
 
-def _check_default(cls_name: str, f: Field) -> None:
-    """Type-check one field's default against its declared kind."""
-    d = f.default
-    if d is None:
-        return  # required field — no default to check
+def field_value_error(f: Field, value) -> str | None:
+    """Why ``value`` is invalid for ``f``'s declared kind and bounds — or
+    None when it is valid.
+
+    ONE rule for both ends of the pipeline: class defaults at register time
+    (:func:`_check_default`) and authored ``[[entity]]`` values at load (the
+    A3 loader in level_loader.py) are judged by exactly this function, so
+    the registry stays THE validator (design §3b).
+    """
     err = None
     if f.kind in (KIND_INT, KIND_Q16):
-        if not (isinstance(d, int) and not isinstance(d, bool)):
+        if not (isinstance(value, int) and not isinstance(value, bool)):
             err = ("must be a plain int (Q16.16 / integer domain — floats "
                    "never enter synced state)")
     elif f.kind in (KIND_LENGTH_M, KIND_FLOAT_RENDER):
-        if not _is_number(d):
+        if not _is_number(value):
             err = "must be a number"
     elif f.kind == KIND_BOOL:
-        if not isinstance(d, bool):
+        if not isinstance(value, bool):
             err = "must be a bool"
     elif f.kind == KIND_STR:
-        if not isinstance(d, str):
+        if not isinstance(value, str):
             err = "must be a string"
+    elif f.kind == KIND_ENTITY_REF:
+        if not isinstance(value, str):
+            err = "must be a string naming an [[entity]] instance id"
     elif f.kind == KIND_ENUM:
         if not f.choices:
             err = "enum field needs a non-empty `choices` tuple"
-        elif d not in f.choices:
+        elif value not in f.choices:
             err = f"must be one of {f.choices!r}"
     elif f.kind == KIND_COLOR_RGB:
-        ok = (isinstance(d, (tuple, list)) and len(d) == 3
+        ok = (isinstance(value, (tuple, list)) and len(value) == 3
               and all(isinstance(c, int) and not isinstance(c, bool)
-                      and 0 <= c <= 255 for c in d))
+                      and 0 <= c <= 255 for c in value))
         if not ok:
             err = "must be an (r, g, b) triple of 0-255 ints"
     elif f.kind == KIND_STR_LIST:
-        ok = (isinstance(d, (tuple, list))
-              and all(isinstance(s, str) for s in d))
+        ok = (isinstance(value, (tuple, list))
+              and all(isinstance(s, str) for s in value))
         if not ok:
             err = "must be a list of strings"
     else:
         err = f"unknown kind {f.kind!r} (valid: {ALL_KINDS})"
     if err:
+        return err
+    if f.minimum is not None and _is_number(value) and value < f.minimum:
+        return f"below minimum {f.minimum!r}"
+    if f.maximum is not None and _is_number(value) and value > f.maximum:
+        return f"above maximum {f.maximum!r}"
+    return None
+
+
+def _check_default(cls_name: str, f: Field) -> None:
+    """Type-check one field's default against its declared kind."""
+    if f.default is None:
+        return  # required field — no default to check
+    err = field_value_error(f, f.default)
+    if err:
         raise EntitySchemaError(
-            f"entity class '{cls_name}' field '{f.name}': default {d!r} {err}")
-    if f.minimum is not None and _is_number(d) and d < f.minimum:
-        raise EntitySchemaError(
-            f"entity class '{cls_name}' field '{f.name}': default {d!r} "
-            f"below minimum {f.minimum!r}")
-    if f.maximum is not None and _is_number(d) and d > f.maximum:
-        raise EntitySchemaError(
-            f"entity class '{cls_name}' field '{f.name}': default {d!r} "
-            f"above maximum {f.maximum!r}")
+            f"entity class '{cls_name}' field '{f.name}': default "
+            f"{f.default!r} {err}")
 
 
 def _validate_class(cls: type) -> None:

@@ -7,9 +7,9 @@ delegates to :mod:`level_loader` (whose public ``load()``/``LevelData``
 keep working for every existing caller); the write side owns managed-block
 writeback for ``level.toml``.
 
-Managed families (``MANAGED_FAMILIES``): ``[[spawn]]``, ``[[light]]`` and
-``[water]`` today; Arc A3 adds ``[[entity]]`` as one more registry entry —
-the writer is family-generic. On save every existing table of a replaced
+Managed families (``MANAGED_FAMILIES``): ``[[spawn]]``, ``[[light]]``,
+``[water]`` and — since A3 — ``[[entity]]``; the writer is family-generic.
+On save every existing table of a replaced
 family is removed and the new block is written at the position of the first
 one (or appended at EOF); every byte OUTSIDE the managed tables — comments,
 [art]/[bake] blocks, hand formatting, newline style — is preserved exactly.
@@ -69,11 +69,13 @@ class ManagedFamily:
         return re.compile(r"^\s*\[\s*" + self.name + r"\s*\]\s*(#.*)?$")
 
 
-# A3 adds "entity" here — one registry entry, no writer change.
 MANAGED_FAMILIES = {
     "spawn": ManagedFamily("spawn", array=True),
     "light": ManagedFamily("light", array=True),
     "water": ManagedFamily("water", array=False),
+    # A3 ([[entity]] format): one registry entry, zero writer changes —
+    # exactly the promise the family-generic writer was built on.
+    "entity": ManagedFamily("entity", array=True),
 }
 
 
@@ -141,6 +143,47 @@ def format_water_lines(depth_map_rel: str = WATER_FILENAME,
     """The managed [water] block as ``nl``-terminated lines — schema per
     engine/15 §2.3 (P5): one table, one key, the .npy carrier."""
     return [f"[water]{nl}", f'depth_map = "{depth_map_rel}"{nl}']
+
+
+def _fmt_value(v) -> str:
+    """Generic TOML value formatting for entity fields: bools lowercase,
+    strings escaped + quoted, ints plain, floats via repr (the shortest
+    exact round-trip form), lists/tuples recursively."""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, str):
+        esc = v.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{esc}"'
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
+        return repr(v)
+    if isinstance(v, (list, tuple)):
+        return "[" + ", ".join(_fmt_value(x) for x in v) + "]"
+    raise ValueError(f"unsupported [[entity]] field value {v!r}")
+
+
+def format_entity_lines(entities, nl: str = "\n") -> list:
+    """The managed [[entity]] block as ``nl``-terminated lines — schema per
+    level_loader.EntityInstance (A3, entity design §3a).
+
+    Canonical form: ``id``, ``class``, ``tags`` (omitted when empty), then
+    the AUTHORED schema fields in authored order — defaults are never
+    materialized into the file, so load -> format round-trips byte-stably.
+    The writer emits the list as given: file order is id-assignment order
+    (design §3a), preserved end to end."""
+    lines = []
+    for i, e in enumerate(entities):
+        if i:
+            lines.append(nl)
+        lines.append(f"[[entity]]{nl}")
+        lines.append(f"id = {_fmt_value(e.id)}{nl}")
+        lines.append(f"class = {_fmt_value(e.class_name)}{nl}")
+        if e.tags:
+            lines.append(f"tags = {_fmt_value(list(e.tags))}{nl}")
+        for key in e.authored_keys:
+            lines.append(f"{key} = {_fmt_value(e.fields[key])}{nl}")
+    return lines
 
 
 # ---------------------------------------------------------------------------
