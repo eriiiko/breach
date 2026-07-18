@@ -349,17 +349,17 @@ sim · decal/texture painting · campaign/meta structure.
 4. **Spawn model**: both — individually placed units AND breach-site roster
    spawning.
 
-**Round 2, 2026-07-18 (discussion open — not yet locked):**
-5. **Meters-first**: all author-facing lengths in `length_m`, tiles derived
-   at load (§4). Proposed as decided (it matches W6 + the --res direction);
-   Erik to confirm.
+**Round 2, 2026-07-18 (decided same day):**
+5. **Meters-first** — CONFIRMED (Erik): all author-facing lengths in
+   `length_m`, tiles derived at load (§4).
 6. **Door min-width**: no hard enforcement — per-footprint validator warnings
    (§5b). Alien doors and critter-only vents allowed.
-7. **Wiring / signals v0** (§5c): dumb entity I/O (button → door/light
-   inputs, one-to-many), no logic. Scope boundary + pros/cons discussed in
-   chat 2026-07-18; Erik to confirm the scope.
+7. **Wiring** — superseded upward: full dataflow logic per
+   `entity_system_design_2026-07-18.md` (Factorio model, physical-by-default
+   nodes). The editor gains a **LOGIC overlay view** (wire rendering, node
+   inspection, click-to-wire) — spec detail at critique.
 8. **Doors are placed entities** (not painted tiles) — required by wiring:
-   a wire needs a target with identity; a paint smear has none.
+   a wire (and now a sensor) needs a target with identity.
 
 **Still open (small):**
 - Door toggle details for v0: AP cost, which unit classes can operate doors

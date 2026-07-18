@@ -116,23 +116,21 @@ The chip objective itself is expressible: `chip.in_zone(extract_A) →
 win(team_a)` — the objective rule (stack 2) can BE a dataflow node, which
 unifies mission logic and wiring into one system.
 
-## 5. Are logic nodes physical? (OPEN — Erik)
+## 5. Logic is physical — with an invisible escape hatch (DECIDED, Erik 2026-07-18)
 
 Factorio's combinators are physical, placeable, **destructible** objects.
-For Breach this is a real design fork:
+Breach follows: **logic nodes are physical by default** — sensors, consoles,
+relays, deciders are in-world entities with tiles, hp, and materiality.
+Blowing the bridge console severs door control; a fire in the relay room
+disables the pen locks. Emergent sabotage — matter-first applied to logic.
 
-- **Physical (my lean):** sensors, relays, and logic nodes are in-world
-  entities with tiles, hp, and materiality. Consequences: blowing the bridge
-  console severs door control (emergent sabotage!); a fire that burns the
-  relay room disables the pen locks; ship-as-body horror. Fits matter-first
-  and the emergence philosophy exactly. Cost: levels need plausible places
-  for logic to live; a stray grenade can break a mission's machinery (is
-  that a bug or the whole point?).
-- **Invisible (abstract):** logic lives in the level data, indestructible,
-  like WC3 triggers. Simpler to author, never breaks a mission — but it's
-  the only major system in Breach the physics couldn't touch.
-- **Middle:** wires/logic invisible, but *sensors and buttons* (the
-  endpoints) physical and destructible.
+**The escape hatch:** physicality is a property, not an architecture. A node
+class (or single instance) can set `intangible = true` — no tiles, no hp,
+untouchable by physics — for mission logic that must not break (win
+detection, ML reward taps). Physical is the superset; invisible is the
+degenerate case; per-node choice is free. (Erik: "physical with the ability
+to do invisible.") A destroyed node's signals read 0 and its inputs go dead
+— honest wire semantics, no special cases.
 
 ## 6. Sensor catalog (draft — Erik's wishlist wanted)
 
@@ -165,10 +163,18 @@ an entity with signals like `hp`, `alive`, `faction`).
   (Factorio's channels), displays/speakers:** v2+, format-safe.
 - **AI/behavior trees for creatures:** separate design (beastiary/unit AI).
 
-## 9. Open questions
+## 9. Decisions log + open questions
 
-1. **Physicality of logic** (§5) — physical / invisible / middle?
-2. **Sensor wishlist** (§6) — what's missing for the Contested Chip ship?
-3. Meters-first (editor doc §4) — confirmed?
-4. Editor doc round-2 leftovers: door AP cost + operating classes; entity
-   icon pipeline (placeholder chips?).
+**Decided 2026-07-18 (Erik):**
+- Restructure: entity model + editor view designed jointly, one critique
+  over both, build order after both approved.
+- Logic = dataflow (Factorio model, §4); no embedded scripting language.
+- Programming split = three layers (§2); Erik prepares entities at L0/L1.
+- Logic is physical by default, `intangible` per node as needed (§5).
+- Meters-first (editor doc §4) — confirmed.
+
+**Open:**
+1. **Sensor wishlist** (§6) — what's missing for the Contested Chip ship?
+2. Editor doc round-2 leftovers: door AP cost + operating classes; entity
+   icon pipeline (placeholder chips?). Park for critique unless Erik has
+   opinions sooner.
