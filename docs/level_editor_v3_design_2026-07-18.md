@@ -190,7 +190,14 @@ owns its tile span**, not a paint material.
   (damage). Sliding animation, auto-open, faction key-locks: doors-v1 later,
   same entity, no format change.
 
-## 5c. Buttons & wiring — signals v0 (Erik 2026-07-18, scope under discussion)
+## 5c. Buttons & wiring — signals v0 (SUPERSEDED 2026-07-18, same day)
+
+> **Superseded by `entity_system_design_2026-07-18.md` §4** — Erik pushed
+> past dumb wiring to Factorio-style dataflow logic (sensors + deciders +
+> gates, one-tick-delay evaluation). The v0 below survives as the trivial
+> subset (a button wired straight to a door is a wire with no logic nodes).
+> The arc is now TWO joint design docs (entity model + editor view), one
+> critique over both. Original v0 text kept for the record:
 
 Erik wants mechanisms: a cockpit button that opens doors elsewhere and turns
 lights on; one trigger firing many effects (open airlock AND start the
