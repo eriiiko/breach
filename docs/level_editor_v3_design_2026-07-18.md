@@ -1,11 +1,9 @@
-# Level Editor v3 — design v2 (post-critique)
+# Level Editor v3 — design v2 (LOCKED)
 
-**Status: CRITIQUE FOLDED (2026-07-18, late).** The joint critique (48
-findings across three critics) is resolved across this doc and
-`entity_system_design_2026-07-18.md` (the MODEL; this doc is the authoring
-VIEW). Where the two overlap, **the entity doc is canonical** — this doc
-specifies the editor: workflows, tools, UI, file mechanics, quantization.
-**Next: Erik's final read → LOCK → build per entity doc §10 (arc plan).**
+**Status: LOCKED 2026-07-18** — Erik's final read approved; critique folded.
+`entity_system_design_2026-07-18.md` is the canonical MODEL; this doc is the
+authoring VIEW: workflows, tools, UI, file mechanics, quantization.
+**Build per entity doc §10 (arc plan); Arc A is cleared to start.**
 
 Historical note: v1 of this doc carried its own registry/wiring/patch-plan
 sections; those moved to the entity doc after the Factorio pivot. Superseded

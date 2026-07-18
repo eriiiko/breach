@@ -1,12 +1,11 @@
-# Entity system — design v2 (post-critique)
+# Entity system — design v2 (LOCKED)
 
-**Status: CRITIQUE FOLDED (2026-07-18, late).** Three adversarial critics
-(determinism/engine, workflow/UX, architecture/scope) returned 48 findings —
-8 blockers, ~25 majors — all resolved in this revision; Erik ruled on the four
-open forks (arc split, dead-sensor semantics, ORDER_USE deferral, units-out).
-Companion: `level_editor_v3_design_2026-07-18.md` (the editor VIEW over this
-MODEL; its §3/§4/§5b defer to this doc). **Next step: Erik's final read →
-LOCK → build per the arc plan (§10).**
+**Status: LOCKED 2026-07-18** — Erik's final read approved ("everything is
+perfect"); critique folded (48 findings, 3 critics); the units-design-now
+question resolved as NO (§3e note). Companion:
+`level_editor_v3_design_2026-07-18.md` (the editor VIEW; locked same day).
+**Build per the arc plan (§10); Arc A is cleared to start.** Changes from
+here require reopening the design — note it in §9 if so.
 
 ---
 
@@ -105,6 +104,14 @@ control-scheme decision. Consequences:
 
 No `[entity.marine]`. Units spawn via the permanent `[[spawn]]` syntax or
 breach-site rosters (editor doc §5), constructed as `Unit` exactly as today.
+**Units design pass now? NO (Claude's call, delegated by Erik 2026-07-18,
+at lock time).** Substantial unit design already exists
+(`breach_unit_class_design.md` + the landed unit-class-foundation patch);
+its open items (modifier system, environment damage, faction matrix,
+variants) belong to stack-2 — which is also when convergence happens. This
+seam contract is the only interface Arcs A–C need; a units pass now would go
+stale before it builds. Design just-in-time, at stack-2.
+
 **Convergence contract (written now, executed at stack-2):** entity ids and
 unit ids will share one id space (one counter, one namespace) so wires and
 sensors can later address units; unit signals (`hp`, `alive`, `faction`)
@@ -133,12 +140,16 @@ Critique hardening:
   filter state carries k guard bits and rounds-to-nearest before the shift
   (kills the truncation offset that could park a value permanently below
   threshold). The editor displays the *snapped effective τ*, meters-style.
-- **`alive` and fail-deadly (Erik's ruling):** every entity emits a free
-  `alive` signal (1 while functional). A destroyed entity's signals read 0
-  and inputs go dead — which makes a bare `p < 0.8 → close` wire
-  **fail-deadly** (sensor dies → doors slam). That is the *author's choice*:
-  the fail-safe idiom is `alive AND (p < 0.8)`, documented as the standard
-  pattern. Sensor sabotage stays a real tactic, deliberately.
+- **`alive`, fail-deadly AND fail-safe — both, per wire (Erik confirmed):**
+  every entity emits a free `alive` signal (1 while functional). A destroyed
+  entity's signals read 0 and inputs go dead — so a bare `p < 0.8 → close`
+  wire is **fail-deadly** (sensor dies → doors slam), and gating on alive
+  makes the same wire **fail-safe** (sensor dies → condition can never
+  fire). Both exist side by side in one level; the author picks per wire.
+  Ergonomics: deciders carry an optional `require_alive = true` flag —
+  sugar for AND-ing the source's `alive` — so fail-safe is a checkbox in
+  the editor, not a hand-built gate. Sensor sabotage stays a real tactic,
+  deliberately, exactly where the author allows it.
 - **L0 node classes touch the world through the SignalBus ONLY.** The base
   class hands them prev-tick signal reads and next-tick emits — never entity
   references — so a controller's list position can never become observable
@@ -280,6 +291,10 @@ interaction/cost split · SVG icons.
 physics close-out before Arc B** · **dead sensors fail-deadly with the
 `alive` idiom** · **v1 signal-only, ORDER_USE deferred to the control-scheme
 decision** · **units out of the registry, convergence contract written**.
+2026-07-18, LOCK: Erik approved both docs ("everything is perfect") ·
+fail-safe AND fail-deadly coexist per wire, `require_alive` decider flag
+added (§4) · units design pass deferred to stack-2 (Claude's delegated
+call, §3e) · wall-burst-differential blessed and merged same session.
 Plus all critic-resolution decisions recorded inline above (close-beats-open,
 occupied-blocks-close, structural door sweep, slot 9e, sample tiles, pump
 N-feed, τ snap, id scheme, S8a gather, dormancy guarantee).

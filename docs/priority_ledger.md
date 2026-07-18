@@ -21,8 +21,8 @@ Created 2026-07-17 from Erik's stated stack; Erik owns the ordering.
   space-map goldens untouched. Spec before/alongside the residency patch
   (same kernels). Details: `notes_2026-07-17_topics_backlog.md` Topic 4.
 - Riders (chat-sized, slot when convenient):
-  - **Wall-burst differential fix** — skip solid neighbours in
-    `find_burst_walls`; thickness emerges free (notes 2026-07-17 Topic 2).
+  - ~~Wall-burst differential fix~~ **DONE 2026-07-18** — merged to main
+    (true differential; only 1-deep membranes burst; Erik blessed).
   - **Dust-stirring shockwaves** — dusty-ground flag + wave_p threshold →
     smoke injection (notes 2026-07-17 Topic 1).
   - Post-EOS doc consolidation (roadmap §1.3 rider).
@@ -52,10 +52,10 @@ physics. Big training runs wait for the S8 optimize-hard pass.
 ## Side tracks (not blocking the stack)
 - **Procedural skeletal animation** — marines first (render-only), then the
   menagerie; post physics-v1. `procedural_animation_brainstorm.md`.
-- **Entity system + editor v3** — DESIGNED + critiqued 2026-07-18
+- **Entity system + editor v3** — **DESIGN LOCKED 2026-07-18**
   (`entity_system_design_2026-07-18.md` canon model +
   `level_editor_v3_design_2026-07-18.md` view; 48-finding adversarial
-  critique folded; awaiting Erik's final read → LOCK). Build order (Erik):
+  critique folded; Erik approved). Build order (Erik):
   **Arc A** (entity foundation: registry-in-code, [[entity]]+ids, doors v0
   + EOS evacuation prerequisite, zones/air/boundary format, level_lib) may
   start on Erik's word → **physics close-out (stack #1, S8a spec must
