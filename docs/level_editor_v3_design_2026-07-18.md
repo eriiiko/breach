@@ -119,30 +119,68 @@ maps them into the same runtime instance model (`spawn` → class per team,
 WRITES the new form; a one-shot migration tool converts old levels at leisure.
 `[water]` stays as-is (it's a field seed, not an entity — same for air, §7).
 
-## 5. Zones — region entities
+## 5. Zones — the intent layer (REVISED after Erik's 2026-07-18 challenge)
 
-Some things are areas, not points. A **zone** is an entity whose "position" is
-a painted tile mask (stored like `water_init.npy`: one small `zones.npy` id
-grid, or per-zone RLE in level.toml — decide at critique). Zone classes v3
-ships:
+Erik's challenge: this engine is emergent — a pen is just a walled-off area,
+an aquarium is just glass + water — so do we need zones at all? The challenge
+is correct, and answering it produced the arc's sharpest design rule:
 
-- `breach_site` (faction field) — where a team boards; spawn-cluster anchor.
-  ("Two opposing teams from two different breach sites" = two of these.)
-- `extraction_zone` (faction field) — carry the chip here to win.
-- `animal_pen` (fields: `gate = entity_ref` to its door, `auto_open_on_damage
-  = bool`) — the pen region groups its creatures; the gate opening (by plan or
-  damage) releases them.
-- Future, format-ready but no v3 UI: trigger regions, patrol areas, ambient
-  sound zones.
+> **If it can be matter, make it matter. A zone exists only for authored
+> *intent* that no arrangement of matter can express — i.e. where a RULE
+> anchors to the map.**
 
-Zones paint with the same brush/wand tools as materials — one interaction
-model everywhere.
+Applying the rule to the original zone list:
+
+- ~~`animal_pen`~~ — **dropped.** Walls + a closed door + critters placed
+  inside. Fully emergent; the "release" mechanic belongs to the door (§5b).
+- ~~aquarium~~ — **dropped** (was never proposed as a zone, but confirming:
+  glass box + water fill, shipped since P5).
+- **`breach_site` (faction)** — stays. *Where a team boards* is mission
+  intent; no matter can express it. Bonus: it's the ML-variation hook —
+  spawning anywhere inside the zone gives different initial conditions every
+  round, which the training distribution wants.
+- **`extraction_zone` (faction)** — stays. "Carrier standing here wins" is a
+  rule anchor; the matter is silent about where extraction is.
+
+v3 ships exactly **two zone classes, both mission intent**. That resolves
+storage trivially: one id-grid (`zones.npy`, the water_init pattern) —
+overlap is meaningless for 2–4 disjoint intent regions per level. Revisit
+per-zone masks only if a future zone kind genuinely overlaps (patrol areas,
+sound zones — none in v3). Zones paint with the same wand/brush as materials.
+
+## 5b. Doors v0 — simple entity doors from the get-go (Erik 2026-07-18)
+
+Erik wants a door from the start — not the sliding-slab arc, just
+**open/closed**. And a load-bearing detail: a marine is 3×3 tiles, so any
+door a unit passes is ≥3 tiles wide — **a door is a multi-tile entity that
+owns its tile span**, not a paint material.
+
+- **Placement:** the DOOR tool upgrades from "paint `MAT_DOOR` tiles" to
+  "place a door entity on a wall run": click a wall, the span snaps into the
+  run, default width 3, drag to widen; width < 3 refused (nothing can fit
+  through it).
+- **Fields:** `state` (open | closed), `locked` (bool), material (inherits
+  door hp / burst threshold — a closed door is exactly the "door you're
+  hiding behind" in the wall-burst rule).
+- **Semantics:** CLOSED = its tiles are sealed wall (solid, light-occluding,
+  impermeable). OPEN = air (passable, transparent, permeable). One state
+  flip = one deterministic multi-tile field edit — the same per-tile cache
+  rebuild plumbing `destroy_wall` uses today. No animation in v0.
+- **Transitions v0:** authored initial state; an adjacent hands-having unit
+  spends an AP action to toggle (zombies and critters can't); destroying the
+  door removes it. A **pen** is therefore pure matter: walls + a closed door
+  + critters — released by a unit opening it (plan) or by blowing the door
+  (damage). Sliding animation, auto-open, faction key-locks: doors-v1 later,
+  same entity, no format change.
 
 ## 6. Objectives + factions — the game-side contract (architectural prep)
 
-The editor places these; the *rules* are two small game patches that can land
-independently (sequenced against the priority ledger — physics close-out still
-owns stack position 1):
+**Re-homed (Erik 2026-07-18): the RULES below live in priority-ledger stack
+item 2 (weapons/units/roster), NOT this arc.** This arc ships only the
+*format*: the `data_chip`/zone classes, the `faction` field type, the
+`infectable` flag — so the Contested Chip level can be fully AUTHORED now and
+becomes fully *playable* when stack 2 lands the rules. For the record, the
+game-side contract those patches implement:
 
 - **Objective v1 — carry & extract:** `data_chip` spawns at its tile; walking
   over it picks it up; carrier death drops it; a carrier inside their faction's
@@ -226,9 +264,12 @@ Fewest patches that each land green and playable:
   hull-leak validator, zone tint overlays.
 - **P3 — play-from-editor** (F5 subprocess) + level-properties pane (boundary,
   name) + polish pass on the acceptance level's authoring flow.
-- **P4 (game-side, separately gated): objective carry&extract + factions +
-  infection** — the Contested Chip level becomes *playable*, and the ML reward
-  hook exists.
+- **P4 — doors v0 behavior** (game-side, the ONE game patch riding this arc —
+  Erik wants doors from the get-go): the open/closed state flip as a
+  deterministic field edit, the AP toggle action, pens work. Digest-gated +
+  HUMAN-TEST.
+- *(moved out)* objective carry&extract + factions + infection → stack item 2
+  (Erik 2026-07-18); this arc only ships their format.
 
 Gates: P0 mechanical (digest-style tests). P1–P3 are editor UX → Erik drives
 them hands-on (HUMAN-TEST equivalents). P4 is feel-adjacent game logic → full
@@ -242,21 +283,26 @@ P6, still owed) · doors-v1 sliding-slab state machine (own arc; pens v3 can
 gate on a breakable `MAT_DOOR`/glass tile until then) · in-editor embedded
 sim · decal/texture painting · campaign/meta structure.
 
-## 11. Open questions (Erik input wanted before we lock)
+## 11. Decisions log + open questions
 
-1. **Zone storage**: one `zones.npy` id-grid (simple, one zone per tile) vs
-   per-zone masks (overlapping zones possible). Overlap seems unneeded for v3
-   — id-grid unless you object.
-2. **Pen gates before doors-v1**: OK that a pen's "gate" is v3 = a breakable
-   tile (glass/door material), with the real sliding-door state machine
-   arriving in the doors arc?
-3. **P4 sequencing**: objective/faction/infection are game patches riding an
-   *editor* arc — comfortable, or do you want them re-homed under stack item 2
-   (weapons/units/roster) and the editor arc kept pure-editor?
-4. **Spawn model**: keep individual `[[spawn]]`-style placed units AND add
-   breach-site zones (zone spawns its faction's roster at play start)? Or
-   zones only for mission levels? (I lean: both — placed units for testbeds,
-   zones for missions.)
+**Decided 2026-07-18 (Erik):**
+1. **Zones**: exist only where a rule anchors to the map ("matter first"
+   principle, §5) — v3 ships breach_site + extraction_zone only; id-grid
+   storage. Pens and aquaria are matter, not zones.
+2. **Doors**: simple open/closed **entity** doors ship in this arc (§5b);
+   multi-tile spans (min width 3 = marine footprint); sliding doors stay a
+   later arc.
+3. **Objective/factions/infection rules** → stack item 2; this arc ships
+   their format only.
+4. **Spawn model**: both — individually placed units AND breach-site roster
+   spawning.
+
+**Still open (small):**
+- Door toggle details for v0: AP cost, which unit classes can operate doors
+  (current: any non-zombie/critter), locked-door interaction. Settle at
+  critique or first playtest.
+- Registry sprite/icon pipeline: hand-drawn per class vs auto-generated
+  placeholder chips. Lean: placeholder chips v3, art later.
 
 ## 12. Research sources
 
