@@ -101,6 +101,12 @@ class GameMap:
         # helpers in simulation.wall_fixed; populated from the table in _update_caches.
         self.wall_hp      = np.zeros((h, w), dtype=np.int32)
         self.is_vacuum    = np.zeros((h, w), dtype=bool)
+        # Planetside reservoir ring (BC build, boundary_conditions_spec §1). On
+        # ambient maps the SPACE-code tiles route here instead of is_vacuum (a
+        # wholesale reinterpretation — no is_vacuum on a planetside map); on
+        # space maps this stays all-False and every branch keying on it is
+        # dormant. B3 pins these tiles to P_amb and clamps their gas to N_amb.
+        self.is_ambient   = np.zeros((h, w), dtype=bool)
         self.flammable    = np.zeros((h, w), dtype=bool)
         # S2c: the atmosphere (bulk pressure) is int32 Q16.16 (scale 2^16, shared
         # with water/heat/wave/gas) — the CLOSER of the S2 group: with atmosphere
@@ -354,7 +360,21 @@ class GameMap:
         # format-version dependent — v1 generator codes vs v2 canon ids).
         mat, vac = materials_from_tilemap(level_data.tilemap, level_data.version)
         self.material[:] = mat
-        self.is_vacuum[vac] = True
+        # Boundary mode (BC build, boundary_conditions_spec §1). On a planetside
+        # map the SPACE-code tiles ARE the ambient reservoir ring — route them
+        # WHOLESALE to is_ambient and leave is_vacuum empty (interior SPACE tiles
+        # become legal "sky shafts" open to the atmosphere). Space maps take the
+        # today's-behavior branch, byte-identical (dormancy by branch, not by
+        # arithmetic identity).
+        self._boundary = getattr(level_data, "boundary", "space")
+        self._ambient = getattr(level_data, "ambient", None)
+        if self._boundary == "ambient":
+            self.is_ambient[vac] = True
+            if self._ambient is None:      # hand-built LevelData: Earth defaults
+                from simulation.ambient import derive_ambient
+                self._ambient = derive_ambient()
+        else:
+            self.is_vacuum[vac] = True
 
         # --- A6 door-entity load stamp (a6 doors design §4.1) -------------
         # BETWEEN the tilemap fill and _update_caches, per the entity-doc §7
@@ -369,9 +389,19 @@ class GameMap:
         if any(e.class_name == "door"
                for e in (getattr(level_data, "entities", None) or [])):
             from simulation.door_system import stamp_door_tiles
-            stamp_door_tiles(self.material, self.is_vacuum, level_data)
+            # is_ambient joins the vacuum check: a door on the reservoir ring
+            # is an authoring error exactly like a door on the hull ring.
+            stamp_door_tiles(self.material, self.is_vacuum, level_data,
+                             is_ambient=self.is_ambient)
 
         self._update_caches()
+
+        # --- ambient sponge grid (BC build, boundary_conditions_spec §3) ---
+        # Static per-tile absorber-mass grid, built ONCE from the final (already
+        # upscaled) grid so `--res` keeps the physical band depth. Inert data in
+        # this patch — B3's σ-sponge on the level-0 Helmholtz diagonal consumes
+        # it. All-zero on space maps / when sponge_width == 0.
+        self._build_sponge_grid(level_data)
 
         # --- [water] initial state seed (engine/15 §2.3, P5) --------------
         # The seed lives HERE in __init__, right after _update_caches — and
@@ -392,7 +422,9 @@ class GameMap:
         water_seed_q = getattr(level_data, "water_depth_q", None)
         if water_seed_q is not None:
             seed = np.asarray(water_seed_q)
-            mask = (~self.solid) & (~self.is_vacuum)
+            # The ambient ring is a water sink like the vacuum ring (BC spec
+            # decision 3: no water BC — oceans are authored reservoirs).
+            mask = (~self.solid) & (~self.is_vacuum) & (~self.is_ambient)
             self.water_depth[mask] = seed[mask]
             dropped = int(np.count_nonzero(seed[~mask]))
             if dropped:
@@ -413,15 +445,15 @@ class GameMap:
         # Ctrl+R can never stomp — or re-apply — the seed mid-run.
         #
         # THE PINNED TILE RULE: the override applies to OPEN-AIR tiles only
-        # (~solid & ~is_vacuum). Values on SOLID tiles are IGNORED — the
-        # atmosphere on solid is identically 0 (a boundary, not a gas
-        # state; _update_caches pins it) — and values on SPACE (is_vacuum)
-        # tiles are IGNORED too: the vacuum ring IS the boundary condition
-        # (a seed there would be silently destroyed by the sponge; changing
-        # ring behavior belongs to the boundary-conditions project,
-        # ledger #1). Silent by design, unlike water's warning: a full-
-        # coverage grid (np.full(shape, FP_ONE)) is the natural authoring
-        # output and no conserved mass is lost by not applying it there.
+        # (~solid & ~is_vacuum & ~is_ambient). Values on SOLID tiles are
+        # IGNORED — the atmosphere on solid is identically 0 (a boundary, not
+        # a gas state; _update_caches pins it). Values on SPACE tiles are
+        # IGNORED too, whichever boundary owns them: the vacuum ring IS the
+        # boundary condition on space maps, and on planetside maps the
+        # reservoir ring (is_ambient) wins over any author override (BC build;
+        # the ring is clamped to N_amb every substep by B3). Silent by design,
+        # unlike water's warning: a full-coverage grid (np.full(shape, FP_ONE))
+        # is the natural authoring output and no conserved mass is lost there.
         #
         # The seed writes atmosphere = P_override AND splits the two
         # conservative bulk species to N_total == P (O2 21% half-up-rounded,
@@ -437,13 +469,80 @@ class GameMap:
         air_seed_q = getattr(level_data, "air_init_q", None)
         if air_seed_q is not None:
             from simulation import gas_fixed as _gas_fx
-            open_air = (~self.solid) & (~self.is_vacuum)
+            # The override applies to interior open air only — solid, vacuum AND
+            # the ambient ring are excluded (ring rules win: the reservoir is
+            # not author-overridable). On ambient maps the override's O2 split
+            # follows the level's o2_frac; on space maps it stays 0.21.
+            open_air = (~self.solid) & (~self.is_vacuum) & (~self.is_ambient)
             p = np.asarray(air_seed_q)[open_air].astype(np.int64)
-            o2_frac_q = _gas_fx.quantize_scalar(0.21)   # 13763 (P1 calib)
+            o2_frac = self._ambient.o2_frac if self._ambient is not None else 0.21
+            o2_frac_q = _gas_fx.quantize_scalar(o2_frac)   # 13763 at 0.21 (P1 calib)
             o2 = (p * o2_frac_q + (1 << 15)) >> 16      # round-half-up
             self.atmosphere[open_air] = p.astype(np.int32)
             self.gas[O2][open_air] = o2.astype(np.int32)
             self.gas[INERT_N2][open_air] = (p - o2).astype(np.int32)
+
+    # ------------------------------------------------------------------
+    # Ambient sponge grid (BC build, boundary_conditions_spec_2026-07-19 §3)
+    # ------------------------------------------------------------------
+    def _build_sponge_grid(self, level_data):
+        """Static per-tile absorber-mass grid for the planetside sponge band.
+
+        A pressure-sponge mass σ(d) that B3 adds to the level-0 Helmholtz row
+        diagonal to absorb outgoing acoustic fronts (spec §3 rung 1). Built ONCE
+        here from the FINAL (already-upscaled) grid, so ``--res`` preserves the
+        physical band depth: the authored ``sponge_width`` is in BASE tiles, so
+        the effective band W scales by the accumulated ``res_factor`` (the
+        door-span precedent). Profile is the integer quadratic ramp
+        ``σ(d) = σ_max·(W−d)²//W²`` over the 4-neighbour geodesic distance d from
+        the ring through open air (``~solid``). Deterministic (multi-source BFS
+        distance is order-free; only d is used, never which ring tile).
+
+        Always allocated (int32 Q16.16, `sponge_sigma`); all-zero on space maps,
+        ring-free maps, or ``sponge_width == 0`` (the hard-ring escape hatch).
+        Inert data in this patch — nothing consumes it until B3.
+        """
+        h, w = self.material.shape
+        self.sponge_sigma = np.zeros((h, w), dtype=np.int32)
+        amb = self._ambient
+        if amb is None or not self.is_ambient.any():
+            return
+        res_factor = int(getattr(level_data, "res_factor", 1) or 1)
+        W = int(amb.sponge_width) * res_factor
+        sigma_max = int(amb.sponge_strength)
+        if W <= 0 or sigma_max <= 0:
+            return
+        # Multi-source 4-neighbour BFS: distance (in tiles) from the nearest ring
+        # tile, propagated through open air only (walls block, so a sealed room
+        # behind the ring is never damped — its σ stays 0). Ring tiles are d=0
+        # (pinned anyway); the band is interior air at 1 ≤ d < W.
+        from collections import deque
+        INF = np.iinfo(np.int32).max
+        dist = np.full((h, w), INF, dtype=np.int32)
+        passable = ~self.solid
+        dq = deque()
+        ring_ys, ring_xs = np.nonzero(self.is_ambient)
+        for fy, fx in zip(ring_ys.tolist(), ring_xs.tolist()):
+            dist[fy, fx] = 0
+            dq.append((fy, fx))
+        while dq:
+            fy, fx = dq.popleft()
+            d1 = dist[fy, fx] + 1
+            if d1 >= W:
+                continue          # nothing beyond the band needs a distance
+            for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                ny, nx = fy + dy, fx + dx
+                if (0 <= ny < h and 0 <= nx < w
+                        and passable[ny, nx] and d1 < dist[ny, nx]):
+                    dist[ny, nx] = d1
+                    dq.append((ny, nx))
+        # Quadratic ramp on the band interior (exclude the ring tiles themselves,
+        # d == 0: they are Dirichlet-pinned, so a sponge mass there is moot).
+        band = (dist >= 1) & (dist < W)
+        d = dist[band].astype(np.int64)
+        wq = np.int64(W)
+        sigma = (np.int64(sigma_max) * (wq - d) * (wq - d)) // (wq * wq)
+        self.sponge_sigma[band] = sigma.astype(np.int32)
 
     # ------------------------------------------------------------------
     # Cache rebuild
@@ -508,31 +607,44 @@ class GameMap:
         # physics/light/smoke/vision boundary source. Always boolean-typed.
         self.solid = self.permeability <= 0.0
 
-        # Atmosphere: 1.0 in interior air, 0.0 at solid tiles and vacuum.
-        # S2c: int32 Q16.16 (1.0 atm == FP_ONE counts). _update_caches reassigns
-        # the cache fields (the engine re-fetches field pointers each step), and
-        # the running atmosphere is snapshotted/restored around this call below,
-        # so this fresh allocation only seeds tick 0 / a reset.
+        # Atmosphere: interior air + (on ambient maps) the reservoir ring seed
+        # to the ambient fill; 0.0 at solid tiles and vacuum. On space maps the
+        # fill is FP_ONE and is_ambient is empty, so this is byte-identical to
+        # before. On ambient maps the fill is the effective pin (65540 raw at
+        # defaults — the sim's own p*(N_amb, 0)), so the interior materializes
+        # flat against the ring pin (spec §1). S2c: int32 Q16.16. _update_caches
+        # reassigns the cache fields (the engine re-fetches field pointers each
+        # step), and the running atmosphere is snapshotted/restored around this
+        # call below, so this fresh allocation only seeds tick 0 / a reset.
         from simulation import atmosphere_fixed as _atm_fx
+        from simulation import gas_fixed as _gas_fx
+        if self._ambient is not None:
+            fill_p = self._ambient.pin_q
+            o2_fill, n2_fill = self._ambient.n_o2_q, self._ambient.n_n2_q
+        else:
+            fill_p = _atm_fx.FP_ONE
+            o2_fill = _gas_fx.quantize_scalar(0.21)
+            n2_fill = _gas_fx.quantize_scalar(0.79)
         self.atmosphere = np.where(
-            self.solid | self.is_vacuum, 0, _atm_fx.FP_ONE
+            self.solid | self.is_vacuum, 0, fill_p
         ).astype(np.int32)
 
         # EOS refactor P1 (docs/eos_refactor_design.md §2.1): ambient bulk-gas
         # split. The two CONSERVATIVE species (O2 / inert_N2) seed the SAME
-        # open-air mask atmosphere just used, split 21/79 by mole fraction
-        # (Earth-normal air) — 0.21*FP_ONE + 0.79*FP_ONE happens to round back
-        # to EXACTLY FP_ONE (13763 + 51773 == 65536), so N_O2+N_N2 at ambient
-        # reproduces today's atmosphere==1.0 scale to the LSB (the calibration
-        # tests/test_eos_p1_calibration.py pins). 0 on solid/vacuum, exactly
-        # like atmosphere. IN-PLACE write (self.gas is never reassigned — a
-        # C++ view of the buffer must stay valid); reload_material_table
+        # open-air mask atmosphere just used. On space maps the split is 21/79
+        # by mole fraction (Earth-normal) — 0.21*FP_ONE + 0.79*FP_ONE rounds
+        # back to EXACTLY FP_ONE (13763 + 51773 == 65536), reproducing today's
+        # atmosphere==1.0 scale to the LSB (tests/test_eos_p1_calibration.py).
+        # On ambient maps the split is the level's N-primary N_amb (o2_fill /
+        # n2_fill), summing to N_total = quantize(p_amb), so p*(N_amb, 0) ==
+        # the effective pin used for atmosphere just above. 0 on solid/vacuum,
+        # exactly like atmosphere. IN-PLACE write (self.gas is never reassigned
+        # — a C++ view of the buffer must stay valid); reload_material_table
         # snapshots + restores the running gas array around this call so a
         # hot-reload does not stomp live O2/N2 state.
-        from simulation import gas_fixed as _gas_fx
         open_air = ~(self.solid | self.is_vacuum)
-        self.gas[O2][:] = np.where(open_air, _gas_fx.quantize_scalar(0.21), 0)
-        self.gas[INERT_N2][:] = np.where(open_air, _gas_fx.quantize_scalar(0.79), 0)
+        self.gas[O2][:] = np.where(open_air, o2_fill, 0)
+        self.gas[INERT_N2][:] = np.where(open_air, n2_fill, 0)
 
         # Obstacles (the physics solid boundary) == solid tiles (permeability
         # == 0) until stamp_units paints unit footprints over it. Sourced from

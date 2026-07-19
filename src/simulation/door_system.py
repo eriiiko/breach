@@ -69,7 +69,7 @@ def door_spans(level_data) -> list:
     return out
 
 
-def stamp_door_tiles(material, is_vacuum, level_data) -> None:
+def stamp_door_tiles(material, is_vacuum, level_data, is_ambient=None) -> None:
     """Load-order stamp (design §4.1) — mutates ``material`` IN PLACE.
 
     Called by ``GameMap.__init__`` between the tilemap fill and
@@ -77,8 +77,15 @@ def stamp_door_tiles(material, is_vacuum, level_data) -> None:
     path-named ValueErrors) then stamp MAT_DOOR_CLOSED (closed) or MAT_AIR
     (open). Field seeding then runs against the POST-stamp solidity, so
     conservation at t=0 is trivially exact (no seal call — no gas exists).
+
+    ``is_ambient`` (BC build) joins the ring check: a door on the planetside
+    reservoir ring is an authoring error exactly like a door on the hull
+    (vacuum) ring. Optional/defaulted so any 3-arg caller stays valid.
     """
     h, w = material.shape
+    if is_ambient is None:
+        import numpy as _np
+        is_ambient = _np.zeros_like(is_vacuum)
     seen: dict = {}                       # tile -> door id (overlap check)
     lvl = getattr(level_data, "name", "?")
     for inst, span in door_spans(level_data):
@@ -94,10 +101,11 @@ def stamp_door_tiles(material, is_vacuum, level_data) -> None:
                     f"{ctx}: span tile ({fy}, {fx}) overlaps door entity "
                     f"'{seen[t]}' — door spans must be disjoint (a6 design "
                     f"§4.2)")
-            if is_vacuum[fy, fx]:
+            if is_vacuum[fy, fx] or is_ambient[fy, fx]:
+                ring = "vacuum" if is_vacuum[fy, fx] else "ambient"
                 raise ValueError(
-                    f"{ctx}: span tile ({fy}, {fx}) is vacuum — a door on "
-                    f"the hull ring is an authoring error (a6 design §4.2)")
+                    f"{ctx}: span tile ({fy}, {fx}) is {ring} — a door on "
+                    f"the boundary ring is an authoring error (a6 design §4.2)")
             if int(material[fy, fx]) not in _SPAN_OK_MATERIALS:
                 raise ValueError(
                     f"{ctx}: span tile ({fy}, {fx}) has CSV material "

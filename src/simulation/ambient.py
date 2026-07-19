@@ -1,0 +1,113 @@
+"""Ambient boundary derived constants (BC build — boundary_conditions_spec_2026-07-19 §1).
+
+Planetside maps (`boundary = "ambient"`) hold an infinite ambient reservoir at the
+border ring. The physics needs three integer quantities derived from the authored
+dials, and BOTH the loader (which logs them) and `GameMap` (which seeds t=0 and, in
+B3, pins the ring) must agree to the LSB — so the derivation lives here, once.
+
+**N-primary (critique 2026-07-19).** The EOS materializes pressure every tick as
+``p* = C · N_total · (T + T_AMB_K)`` through TRUNCATING q16 multiplies
+(`eos_solver.cpp:463-476`). Every reachable ``p*`` is therefore a multiple of
+``round(T_AMB_K)`` raw counts (~290), so ``quantize(1.0 atm) == 65536`` has *no*
+integer ``N_total`` preimage: "derive N from a target P" is ill-posed for ~289/290
+of dial values. We go the well-posed direction instead:
+
+  * ``N_total := quantize(p_amb)`` — the N planes are primary;
+  * split into O2 / inert-N2 by ``o2_frac`` (round-half-up + exact complement, the
+    same idiom as the air_init seed, `gamemap.py:442-446`);
+  * the **effective pin** ``P_amb := p*(N_total, ΔT=0)`` — the sim's own chain applied
+    to the ambient N, so the ring pin and the interior materialized pressure agree.
+
+At the Earth-normal defaults (p_amb=1.0, o2_frac=0.21) this yields N_total=65536,
+O2=13763, N2=51773, and an effective pin of **65540 raw (1.000061 atm)** — NOT 65536.
+That 4-count offset is the quantization lattice, not an error; it is what keeps a
+sealed planetside room's interior trajectory flat (spec §6 gate 1).
+
+Pure integer, no libm, deterministic cross-machine.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from simulation import gas_fixed as _gas_fx
+
+FP_ONE = _gas_fx.FP_ONE                  # 65536
+
+# Pinned EOS constants (docs/eos_refactor_decisions.md 2026-07-10; config.toml
+# [physics.eos] only echoes these frozen struct defaults). Callers that have the
+# live config pass its values so the pin matches runtime under any override.
+DEFAULT_C = 1.0 / 290.0
+DEFAULT_T_AMB_K = 290.0
+
+# Dial defaults + validation bounds (spec §4).
+DEFAULT_P_AMB = 1.0
+DEFAULT_O2_FRAC = 0.21
+DEFAULT_SPONGE_WIDTH = 8
+# σ_max placeholder — a pressure-sponge mass on the level-0 Helmholtz diagonal
+# (spec §3). PINNED BY B3 CALIBRATION against the ≤2% reflection gate; this value
+# is a build-time placeholder only (nothing consumes it until B3).
+DEFAULT_SPONGE_STRENGTH = 32 * FP_ONE
+DEFAULT_SPONGE_U_DAMP = 0                 # rung-2 mop-up, dormant by default
+# σ_max may exceed FP_ONE: the ambient row mass is ~1/1409 real and face
+# conductances ~1 real, so a useful sponge extends the Dirichlet ring inward and
+# needs σ ≫ FP_ONE (the int64 row mass, M_CAP 2³⁸, keeps this overflow-safe). An
+# FP_ONE cap would reject the gate-calibrated value (spec §4, v2.1 fix).
+SPONGE_STRENGTH_MAX = 256 * FP_ONE
+SPONGE_U_DAMP_MAX = FP_ONE                # k_max < 1.0 (a ≥1 multiply flips u sign)
+
+
+def _mul_q16(a: int, b: int) -> int:
+    """Replicate ``fixedpoint::mul_q16``: (int64) a*b >> 16, arithmetic shift
+    toward -inf. All ambient quantities are non-negative, so Python ``>>`` on the
+    exact product matches the C++ arithmetic shift bit-for-bit."""
+    return (int(a) * int(b)) >> 16
+
+
+def effective_pin(n_total_q: int,
+                  c: float = DEFAULT_C,
+                  t_amb_k: float = DEFAULT_T_AMB_K) -> int:
+    """``p*(N_total, ΔT=0)`` through the sim's own truncating chain
+    (`eos_solver.cpp:469-475`). Returns the raw Q16.16 pin the physics uses."""
+    c_q = _gas_fx.quantize_scalar(c)
+    t_amb_q = _gas_fx.quantize_scalar(t_amb_k)      # t_abs at ΔT (temperature) == 0
+    cn = _mul_q16(c_q, int(n_total_q))
+    p = _mul_q16(cn, t_amb_q)
+    return 0 if p < 0 else p                          # the EOS floor (pstar < 0 -> 0)
+
+
+@dataclass(frozen=True)
+class AmbientConfig:
+    """The parsed + derived planetside boundary constants. ``None`` on space maps."""
+    p_amb: float                 # authored target pressure (atm)
+    o2_frac: float               # authored O2 mole fraction
+    sponge_width: int            # absorber band depth, BASE tiles (0 == hard ring)
+    sponge_strength: int         # σ_max, raw Q16 (pinned by B3 calibration)
+    sponge_u_damp: int           # k_max, raw Q16 (rung-2 mop-up; 0 == dormant)
+    n_o2_q: int                  # ambient O2 plane value, raw Q16
+    n_n2_q: int                  # ambient inert-N2 plane value, raw Q16
+    pin_q: int                   # effective P_amb the physics pins/materializes, raw Q16
+
+    @property
+    def n_total_q(self) -> int:
+        return self.n_o2_q + self.n_n2_q
+
+
+def derive_ambient(p_amb: float = DEFAULT_P_AMB,
+                   o2_frac: float = DEFAULT_O2_FRAC,
+                   sponge_width: int = DEFAULT_SPONGE_WIDTH,
+                   sponge_strength: int = DEFAULT_SPONGE_STRENGTH,
+                   sponge_u_damp: int = DEFAULT_SPONGE_U_DAMP,
+                   c: float = DEFAULT_C,
+                   t_amb_k: float = DEFAULT_T_AMB_K) -> AmbientConfig:
+    """Build an :class:`AmbientConfig` from the authored dials (N-primary)."""
+    n_total = int(_gas_fx.quantize_scalar(p_amb))
+    o2_frac_q = int(_gas_fx.quantize_scalar(o2_frac))
+    o2 = (n_total * o2_frac_q + (1 << 15)) >> 16        # round-half-up (seed idiom)
+    n2 = n_total - o2                                     # exact complement, no LSB leak
+    pin = effective_pin(n_total, c, t_amb_k)
+    return AmbientConfig(
+        p_amb=float(p_amb), o2_frac=float(o2_frac),
+        sponge_width=int(sponge_width), sponge_strength=int(sponge_strength),
+        sponge_u_damp=int(sponge_u_damp),
+        n_o2_q=int(o2), n_n2_q=int(n2), pin_q=int(pin),
+    )

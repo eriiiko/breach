@@ -14,9 +14,13 @@ Pins the A9 format hooks:
   bit-identical to no grid). THE PINNED TILE RULE: values on solid or SPACE
   (is_vacuum) tiles are IGNORED, silently.
 - ``boundary``: top-level level.toml string, "space" (default) | "ambient",
-  unknown = hard error naming both; NO behavior change for either value in
-  Arc A; a top-level scalar, so the managed-block writer round-trips it
-  byte-stably.
+  unknown = hard error naming both; a top-level scalar, so the managed-block
+  writer round-trips it byte-stably. As of the BC build (section (g)) the
+  value drives real load behavior: "ambient" routes the SPACE tiles to the
+  reservoir ring (GameMap.is_ambient, wholesale — is_vacuum stays empty),
+  seeds the interior to the N-primary ambient dials (effective pin 65540 raw
+  at defaults), and builds the static sponge grid. Space maps stay
+  byte-identical (dormancy by branch).
 - level_lib carrier ``write_air_init_npy``: byte-stable round-trip; deletes
   ONLY on None/empty (an all-zero or all-ambient grid STAYS a file — for
   air there is no content value meaning "no override").
@@ -394,7 +398,11 @@ def test_boundary_defaults_to_space(tmp_path):
 @pytest.mark.parametrize("value", ["space", "ambient"])
 def test_boundary_explicit_values_parse(tmp_path, value):
     prefix = PREFIX[:-1] + f'boundary = "{value}"\n\n'
-    lvl = _load_silent(_mini_level(tmp_path, prefix=prefix))
+    # A SPACE ring is valid for both modes (vacuum ring / reservoir ring), so
+    # the ambient case does not trip the ring-dormant warning.
+    tm = np.full((ROOM, ROOM), 9, dtype=np.int32)
+    tm[1:-1, 1:-1] = 0
+    lvl = _load_silent(_mini_level(tmp_path, prefix=prefix, tilemap=tm))
     assert lvl.boundary == value
 
 
@@ -409,7 +417,10 @@ def test_boundary_round_trips_byte_stable_through_managed_save(tmp_path):
     """boundary is a top-level scalar OUTSIDE every managed family — the
     managed-block writer must preserve it byte-for-byte through a real
     family rewrite (and through a no-op save)."""
-    d = _mini_level(tmp_path, body=ENTITY_LIGHT, prefix=BOUNDARY_PREFIX)
+    tm = np.full((ROOM, ROOM), 9, dtype=np.int32)   # SPACE ring: a real ambient map
+    tm[1:-1, 1:-1] = 0
+    d = _mini_level(tmp_path, body=ENTITY_LIGHT, prefix=BOUNDARY_PREFIX,
+                    tilemap=tm)
     toml = d / "level.toml"
     before = toml.read_bytes()
     handle = open_level(str(d))
@@ -427,7 +438,9 @@ def test_boundary_round_trips_byte_stable_through_managed_save(tmp_path):
 
 def test_upscale_replicates_air_grid(tmp_path):
     from main import _upscale_level             # heavy import: test-local
-    d = _mini_level(tmp_path, prefix=BOUNDARY_PREFIX)
+    tm = np.full((ROOM, ROOM), 9, dtype=np.int32)   # SPACE ring: a real ambient map
+    tm[1:-1, 1:-1] = 0
+    d = _mini_level(tmp_path, prefix=BOUNDARY_PREFIX, tilemap=tm)
     g = _full(FP_ONE)
     g[3, 4] = OVER_P
     _air(d, g)
@@ -446,6 +459,204 @@ def test_upscale_without_air_stays_dormant(tmp_path):
     _upscale_level(lvl, 2)
     assert lvl.air_init_q is None
     assert lvl.boundary == "space"
+
+
+# ---------------------------------------------------------------------------
+# (g) AMBIENT boundary — the BC build: dials, wholesale routing, dial-aware
+#     seeding, sponge grid, door-on-ring rejection, space-map dormancy.
+#     (boundary_conditions_spec_2026-07-19; spec §1/§3/§4)
+# ---------------------------------------------------------------------------
+
+from simulation import ambient as _amb                        # noqa: E402
+
+PIN_DEFAULT = 65540                 # p*(quantize(1.0), ΔT=0) — NOT 65536 (the lattice)
+
+
+def _ambient_tilemap(n: int = ROOM, interior: int = 0) -> np.ndarray:
+    """A planetside room: SPACE (9) border ring, interior air — the ring
+    becomes is_ambient wholesale on an ambient map."""
+    tm = np.full((n, n), 9, dtype=np.int32)         # SPACE ring
+    tm[1:-1, 1:-1] = interior
+    return tm
+
+
+def _ambient_level(tmp_path, *, body: str = "", name: str = "amb",
+                   tilemap: np.ndarray = None) -> Path:
+    prefix = PREFIX[:-1] + 'boundary = "ambient"\n\n'
+    if tilemap is None:
+        tilemap = _ambient_tilemap()
+    return _mini_level(tmp_path, body=body, name=name, prefix=prefix,
+                       tilemap=tilemap)
+
+
+# ---- dials: defaults, explicit, the effective pin -------------------------
+
+def test_ambient_absent_table_gets_earth_defaults(tmp_path):
+    lvl = _load_silent(_ambient_level(tmp_path))
+    a = lvl.ambient
+    assert a is not None
+    assert a.p_amb == 1.0 and a.o2_frac == 0.21
+    assert a.sponge_width == _amb.DEFAULT_SPONGE_WIDTH
+    assert a.pin_q == PIN_DEFAULT              # 65540, the lattice image of 1.0 atm
+    assert a.n_o2_q == 13763 and a.n_n2_q == 51773
+    assert a.n_total_q == FP_ONE               # N is primary, sums to quantize(p_amb)
+
+
+def test_space_map_has_no_ambient_config(tmp_path):
+    assert _load_silent(_mini_level(tmp_path)).ambient is None
+
+
+def test_ambient_explicit_dials_parse_and_derive(tmp_path):
+    body = "[ambient]\np_amb = 0.6\no2_frac = 0.3\n\n"
+    a = _load_silent(_ambient_level(tmp_path, body=body)).ambient
+    assert a.p_amb == 0.6 and a.o2_frac == 0.3
+    # N-primary: N_total = quantize(0.6); split by 0.3; pin via the sim chain.
+    n_total = _amb._gas_fx.quantize_scalar(0.6)
+    assert a.n_total_q == n_total
+    assert a.pin_q == _amb.effective_pin(n_total)
+
+
+def test_ambient_sponge_dials_parse(tmp_path):
+    body = ("[ambient]\nsponge_width = 4\n"
+            "sponge_strength = 131072\nsponge_u_damp = 100\n\n")
+    a = _load_silent(_ambient_level(tmp_path, body=body)).ambient
+    assert a.sponge_width == 4
+    assert a.sponge_strength == 131072 and a.sponge_u_damp == 100
+
+
+# ---- validation matrix ----------------------------------------------------
+
+def test_ambient_table_on_space_map_hard_error(tmp_path):
+    # boundary defaults to space; an [ambient] table is then meaningless.
+    d = _mini_level(tmp_path, body="[ambient]\np_amb = 1.0\n\n")
+    with pytest.raises(ValueError, match="boundary.*not.*ambient|only meaningful"):
+        _load(d)
+
+
+@pytest.mark.parametrize("body,msg", [
+    ('[ambient]\np_amb = 0.0\n\n', "p_amb must be > 0"),
+    ('[ambient]\np_amb = -1.0\n\n', "p_amb must be > 0"),
+    ('[ambient]\no2_frac = 1.5\n\n', r"o2_frac must be in \[0, 1\]"),
+    ('[ambient]\no2_frac = -0.1\n\n', r"o2_frac must be in \[0, 1\]"),
+    ('[ambient]\nsponge_width = -1\n\n', "sponge_width must be a non-negative"),
+    ('[ambient]\nsponge_strength = -5\n\n', "sponge_strength must be"),
+    ('[ambient]\nsponge_strength = 99999999\n\n', "sponge_strength must be"),
+    ('[ambient]\nsponge_u_damp = 65536\n\n', "sponge_u_damp must be"),
+    ('[ambient]\nsponge_u_damp = -1\n\n', "sponge_u_damp must be"),
+    ('[ambient]\nbogus = 1\n\n', "unknown key"),
+])
+def test_ambient_validation_hard_errors(tmp_path, body, msg):
+    with pytest.raises(ValueError, match=msg):
+        _load(_ambient_level(tmp_path, body=body))
+
+
+def test_ambient_ringless_map_warns(tmp_path):
+    # boundary=ambient but no SPACE tiles → sealed box, ring-dormant.
+    tm = np.ones((ROOM, ROOM), dtype=np.int32)
+    tm[1:-1, 1:-1] = 0                          # hull ring, no SPACE
+    with pytest.warns(UserWarning, match="no SPACE.*ring|sealed box"):
+        _load(_ambient_level(tmp_path, tilemap=tm))
+
+
+def test_ambient_wide_sponge_warns(tmp_path):
+    body = "[ambient]\nsponge_width = 999\n\n"
+    with pytest.warns(UserWarning, match="spans the whole map"):
+        _load(_ambient_level(tmp_path, body=body))
+
+
+# ---- wholesale routing + dial-aware seeding -------------------------------
+
+def test_ambient_space_tiles_route_to_is_ambient_wholesale(tmp_path):
+    g = GameMap(_load_silent(_ambient_level(tmp_path)))
+    ring = (_ambient_tilemap() == 9)
+    assert np.array_equal(g.is_ambient, ring)   # SPACE → is_ambient
+    assert not g.is_vacuum.any()                # NO vacuum on a planetside map
+
+
+def test_ambient_interior_seeds_to_effective_pin(tmp_path):
+    """The whole non-solid field (interior air + ring) seeds to the effective
+    pin / N_amb split, so the interior materializes flat against the ring."""
+    g = GameMap(_load_silent(_ambient_level(tmp_path)))
+    non_solid = ~g.solid
+    assert np.all(g.atmosphere[non_solid] == PIN_DEFAULT)
+    assert np.all(g.atmosphere[g.solid] == 0)
+    assert np.all(g.gas[O2][non_solid] == 13763)
+    assert np.all(g.gas[INERT_N2][non_solid] == 51773)
+    # N_total sums to quantize(p_amb) exactly (N-primary, no LSB leak).
+    tot = g.gas[O2][non_solid].astype(np.int64) + g.gas[INERT_N2][non_solid]
+    assert np.all(tot == FP_ONE)
+
+
+def test_ambient_nondefault_dials_seed_consistently(tmp_path):
+    body = "[ambient]\np_amb = 0.6\no2_frac = 0.3\n\n"
+    lvl = _load_silent(_ambient_level(tmp_path, body=body))
+    g = GameMap(lvl)
+    a = lvl.ambient
+    non_solid = ~g.solid
+    assert np.all(g.atmosphere[non_solid] == a.pin_q)
+    assert np.all(g.gas[O2][non_solid] == a.n_o2_q)
+    assert np.all(g.gas[INERT_N2][non_solid] == a.n_n2_q)
+
+
+# ---- sponge grid (hand-computed BFS ramp) ---------------------------------
+
+def test_sponge_grid_quadratic_ramp_hand_computed(tmp_path):
+    """8x8 SPACE-ring room, W=3, σ_max=90: interior tiles at BFS distance d
+    from the ring get σ = 90*(3-d)²//9. d=1 → 40, d=2 → 10, d≥3 → 0."""
+    body = "[ambient]\nsponge_width = 3\nsponge_strength = 90\n\n"
+    tm = _ambient_tilemap(8)
+    g = GameMap(_load_silent(_ambient_level(tmp_path, tilemap=tm, body=body)))
+    s = g.sponge_sigma
+    # Corner interior (1,1): 4-neighbour distance to nearest ring tile == 1.
+    assert s[1, 1] == 90 * (3 - 1) ** 2 // 9          # 40
+    assert s[1, 2] == 40 and s[2, 1] == 40
+    # (2,2): distance 2 from the ring.
+    assert s[2, 2] == 90 * (3 - 2) ** 2 // 9          # 10
+    # Deep centre (3,3)+: distance ≥ 3 → outside the band → 0.
+    assert s[3, 3] == 0 and s[4, 4] == 0
+    # Ring tiles themselves are d=0, excluded from the band (pinned).
+    assert s[0, 0] == 0
+    assert s.dtype == np.int32
+
+
+def test_sponge_grid_zero_when_width_zero(tmp_path):
+    body = "[ambient]\nsponge_width = 0\n\n"     # hard-ring escape hatch
+    g = GameMap(_load_silent(_ambient_level(tmp_path, body=body)))
+    assert not g.sponge_sigma.any()
+
+
+def test_sponge_grid_scales_with_res_factor(tmp_path):
+    from main import _upscale_level             # heavy import: test-local
+    body = "[ambient]\nsponge_width = 2\nsponge_strength = 65536\n\n"
+    lvl = _load_silent(_ambient_level(tmp_path, tilemap=_ambient_tilemap(8),
+                                      body=body))
+    _upscale_level(lvl, 2)                       # W_eff = 2 * 2 = 4 tiles
+    g = GameMap(lvl)
+    # At res 2 the physical band is 2 base tiles == 4 fine tiles deep: a tile
+    # 3 fine-tiles in (base depth 1.5) is still inside the band (d=3 < W=4).
+    assert g.sponge_sigma[3, 3] > 0
+    assert not g.is_vacuum.any()
+
+
+# ---- door-on-ring rejection + space-map dormancy --------------------------
+
+def test_door_on_ambient_ring_is_authoring_error(tmp_path):
+    door = ('[[entity]]\nid = "d1"\nclass = "door"\n'
+            'x = 0.0\ny = 1.0\nw = 1\nh = 1\n\n')     # span on the ring col 0
+    with pytest.raises(ValueError, match="ambient|boundary ring"):
+        GameMap(_load_silent(_ambient_level(tmp_path, body=door)))
+
+
+def test_space_map_seeding_is_byte_identical_dormancy(tmp_path):
+    """Dormancy by branch: a space map's masks + seeds + sponge grid are
+    exactly today's — is_ambient empty, sponge all-zero, seeds at FP_ONE."""
+    g = GameMap(_load_silent(_mini_level(tmp_path)))
+    assert not g.is_ambient.any()
+    assert not g.sponge_sigma.any()
+    open_air = (~g.solid) & (~g.is_vacuum)
+    assert np.all(g.atmosphere[open_air] == FP_ONE)
+    assert np.all(g.gas[O2][open_air] == AMBIENT_O2_Q)
+    assert np.all(g.gas[INERT_N2][open_air] == AMBIENT_N2_Q)
 
 
 if __name__ == "__main__":

@@ -465,15 +465,22 @@ def _parse_zones_grid(base: Path, tilemap: np.ndarray):
 # (editor design §7); A9 is the format + load side only.
 AIR_INIT_FILENAME = "air_init.npy"
 
-# The `boundary` top-level level.toml field — v1 value set. "space" is
-# today's behavior (the vacuum ring) and the default when the key is absent;
-# "ambient" is parsed, validated and stored on LevelData but changes NO
-# behavior in Arc A: the AMBIENT border-ring mode (MG pins P=P_amb, species
-# reservoir) belongs to the boundary-conditions physics project (priority
-# ledger #1). This field is that project's format hook.
+# The `boundary` top-level level.toml field. "space" is today's behavior (the
+# vacuum ring) and the default when the key is absent; "ambient" is planetside
+# (boundary_conditions_spec_2026-07-19). As of the BC build the value drives
+# real behavior downstream: "ambient" routes the SPACE-code tiles to the
+# reservoir ring mask (GameMap.is_ambient), seeds the interior to the ambient
+# dials, and (B3) pins the ring to P_amb. An optional [ambient] table
+# (parsed here) carries the dials; absent table == Earth-normal defaults.
 BOUNDARY_SPACE = "space"
 BOUNDARY_AMBIENT = "ambient"
 BOUNDARY_MODES = (BOUNDARY_SPACE, BOUNDARY_AMBIENT)
+
+# [ambient] validation surface (spec §4). FP_ONE is the Q16.16 unit; kept local
+# so the loader stays import-light. σ_max may exceed FP_ONE (see ambient.py).
+_FP_ONE = 1 << 16
+_AMBIENT_KEYS = frozenset(
+    {"p_amb", "o2_frac", "sponge_width", "sponge_strength", "sponge_u_damp"})
 
 
 def _parse_air_init_grid(base: Path, tilemap: np.ndarray):
@@ -516,21 +523,114 @@ def _parse_air_init_grid(base: Path, tilemap: np.ndarray):
 
 
 def _parse_boundary(raw: dict, toml_path) -> str:
-    """Parse the top-level ``boundary`` field (A9 format hook).
+    """Parse the top-level ``boundary`` field.
 
-    Absent key == "space" (today's behavior). Any value outside
-    :data:`BOUNDARY_MODES` is a hard error naming the two options. NO
-    behavior differs between the two values in Arc A (see the
-    BOUNDARY_MODES comment)."""
+    Absent key == "space" (today's vacuum ring). Any value outside
+    :data:`BOUNDARY_MODES` is a hard error naming the two options.
+    "ambient" (planetside) drives real behavior downstream (BC build) —
+    the dials ride in the optional [ambient] table (:func:`_parse_ambient`)."""
     boundary = raw.get("boundary", BOUNDARY_SPACE)
     if boundary not in BOUNDARY_MODES:
         raise ValueError(
             f"Unknown 'boundary' value {boundary!r} in {toml_path}: the "
-            f"two options are \"{BOUNDARY_SPACE}\" (today's vacuum ring, "
-            f"the default when absent) and \"{BOUNDARY_AMBIENT}\" "
-            f"(planetside — parsed and stored now; ring behavior lands "
-            f"with the boundary-conditions physics project, ledger #1).")
+            f"two options are \"{BOUNDARY_SPACE}\" (the vacuum ring, the "
+            f"default when absent) and \"{BOUNDARY_AMBIENT}\" (planetside).")
     return str(boundary)
+
+
+def _parse_ambient(raw: dict, toml_path, boundary: str, tilemap: np.ndarray):
+    """Parse + validate the optional ``[ambient]`` table (spec §4).
+
+    Returns an :class:`~simulation.ambient.AmbientConfig` on planetside maps
+    (``boundary == "ambient"``) — with Earth-normal defaults when the table is
+    absent — and ``None`` on space maps. A present ``[ambient]`` on a space map
+    is a hard error (the dials would be silently inert). Validation is hard,
+    path-bearing (loader house style): unknown keys rejected; ``p_amb > 0``;
+    ``o2_frac ∈ [0, 1]``; ``sponge_width`` a non-negative int (warn when it
+    spans the whole map); ``sponge_strength ∈ [0, 256·FP_ONE]`` (an FP_ONE cap
+    would reject the gate-calibrated σ — ambient.py); ``sponge_u_damp ∈
+    [0, FP_ONE)``. An ambient map with no SPACE-code ring warns (legal but
+    ring-dormant). The effective pin is derived N-primary through the sim's own
+    p* chain (65540 raw at defaults) and echoed in the __main__ load summary."""
+    tbl = raw.get("ambient")
+    if boundary != BOUNDARY_AMBIENT:
+        if tbl is not None:
+            raise ValueError(
+                f"[ambient] table present but boundary={boundary!r} (not "
+                f"\"{BOUNDARY_AMBIENT}\") in {toml_path}: the ambient dials "
+                f"are only meaningful on a planetside map — set "
+                f"boundary = \"ambient\" or drop the [ambient] table.")
+        return None
+    if tbl is None:
+        tbl = {}
+    if not isinstance(tbl, dict):
+        raise ValueError(
+            f"[ambient] in {toml_path} must be a table "
+            f"(got {type(tbl).__name__}) — spell it [ambient].")
+    unknown = sorted(set(tbl) - _AMBIENT_KEYS)
+    if unknown:
+        raise ValueError(
+            f"[ambient] in {toml_path} has unknown key(s) {unknown}; "
+            f"valid keys are {sorted(_AMBIENT_KEYS)}.")
+
+    from simulation import ambient as _amb
+
+    p_amb = float(tbl.get("p_amb", _amb.DEFAULT_P_AMB))
+    if not (p_amb > 0.0):
+        raise ValueError(
+            f"[ambient] p_amb must be > 0 atm (got {p_amb}) in {toml_path}.")
+    o2_frac = float(tbl.get("o2_frac", _amb.DEFAULT_O2_FRAC))
+    if not (0.0 <= o2_frac <= 1.0):
+        raise ValueError(
+            f"[ambient] o2_frac must be in [0, 1] (got {o2_frac}) in "
+            f"{toml_path}.")
+    sponge_width = tbl.get("sponge_width", _amb.DEFAULT_SPONGE_WIDTH)
+    if not isinstance(sponge_width, int) or sponge_width < 0:
+        raise ValueError(
+            f"[ambient] sponge_width must be a non-negative integer number "
+            f"of tiles (got {sponge_width!r}) in {toml_path}.")
+    if sponge_width >= min(tilemap.shape):
+        warnings.warn(
+            f"[ambient] sponge_width {sponge_width} spans the whole map "
+            f"(min dimension {min(tilemap.shape)}) in {toml_path}: the "
+            f"absorber band will cover the entire interior — almost "
+            f"certainly an authoring error.")
+    sponge_strength = tbl.get("sponge_strength", _amb.DEFAULT_SPONGE_STRENGTH)
+    if (not isinstance(sponge_strength, int)
+            or not (0 <= sponge_strength <= _amb.SPONGE_STRENGTH_MAX)):
+        raise ValueError(
+            f"[ambient] sponge_strength must be an integer raw-Q16 value in "
+            f"[0, {_amb.SPONGE_STRENGTH_MAX}] (got {sponge_strength!r}) in "
+            f"{toml_path}.")
+    sponge_u_damp = tbl.get("sponge_u_damp", _amb.DEFAULT_SPONGE_U_DAMP)
+    if (not isinstance(sponge_u_damp, int)
+            or not (0 <= sponge_u_damp < _amb.SPONGE_U_DAMP_MAX)):
+        raise ValueError(
+            f"[ambient] sponge_u_damp must be an integer raw-Q16 value in "
+            f"[0, {_amb.SPONGE_U_DAMP_MAX}) (got {sponge_u_damp!r}) in "
+            f"{toml_path}.")
+    if not bool((tilemap == SPACE_CODE).any()):
+        warnings.warn(
+            f"boundary = \"ambient\" but the tilemap has no SPACE ({SPACE_CODE}) "
+            f"ring tiles in {toml_path}: the level is a sealed box — the "
+            f"ambient reservoir/sponge will be dormant (no ring to act on).")
+
+    # Match the runtime C / T_AMB_K so the pin equals what the engine
+    # materializes (physics_runner binds these from the same config).
+    c, t_amb_k = _amb.DEFAULT_C, _amb.DEFAULT_T_AMB_K
+    try:
+        from config import CFG
+        eos_cfg = getattr(getattr(CFG, "physics", None), "eos", None)
+        if eos_cfg is not None:
+            c = float(getattr(eos_cfg, "C", c))
+            t_amb_k = float(getattr(eos_cfg, "t_amb_k", t_amb_k))
+    except Exception:                     # config optional at load time
+        pass
+
+    return _amb.derive_ambient(
+        p_amb=p_amb, o2_frac=o2_frac, sponge_width=sponge_width,
+        sponge_strength=sponge_strength, sponge_u_damp=sponge_u_damp,
+        c=c, t_amb_k=t_amb_k)
 
 
 def _validate_zone_binding(zone_grid, entities, toml_path) -> None:
@@ -658,12 +758,18 @@ class LevelData:
     # open-air tiles; values on solid or SPACE tiles are IGNORED (the
     # pinned solid-tile rule — see the seed block's docstring/comment).
     air_init_q: Optional[np.ndarray] = None
-    # ---- boundary mode (A9 format hook; ledger #1 owns semantics) --------
-    # "space" (default — today's vacuum ring) | "ambient" (planetside).
-    # Parsed + validated + stored ONLY in Arc A: the AMBIENT border ring
-    # is the boundary-conditions physics project's. A top-level scalar
-    # key, so level_lib's managed-block writer round-trips it untouched.
+    # ---- boundary mode (A9 hook; BC build gives it semantics) ------------
+    # "space" (default — the vacuum ring) | "ambient" (planetside). A
+    # top-level scalar key, so level_lib's managed-block writer round-trips
+    # it untouched. On ambient maps GameMap routes the SPACE tiles to the
+    # reservoir ring (is_ambient) and seeds the interior to `ambient`.
     boundary: str = BOUNDARY_SPACE
+    # ---- ambient dials (BC build; boundary_conditions_spec_2026-07-19) ---
+    # AmbientConfig on planetside maps (Earth-normal defaults when [ambient]
+    # is absent), None on space maps. Carries the derived N-primary split +
+    # the effective pin (65540 raw at defaults) that GameMap seeds and B3
+    # pins. Defaulted tail: synthetic LevelData(...) in tests stays valid.
+    ambient: Optional["object"] = None
     # ---- --res base-resolution recovery (A6, S1 — a6 doors design §3) ----
     # `_upscale_level` (main.py) divides tile_size_m by the factor BEFORE
     # GameMap ever sees the level, which would leave meters-first entity
@@ -883,9 +989,10 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
     zone_grid = _parse_zones_grid(base, tilemap)
     _validate_zone_binding(zone_grid, entities, toml_path)
 
-    # ---- air_init.npy + boundary (entity design §10, A9) -----------------
+    # ---- air_init.npy + boundary + ambient dials (A9 + BC build) ---------
     air_init_q = _parse_air_init_grid(base, tilemap)
     boundary = _parse_boundary(raw, toml_path)
+    ambient = _parse_ambient(raw, toml_path, boundary, tilemap)
 
     return LevelData(
         name=name,
@@ -919,6 +1026,7 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
         zone_grid=zone_grid,
         air_init_q=air_init_q,
         boundary=boundary,
+        ambient=ambient,
     )
 
 
@@ -1004,6 +1112,13 @@ if __name__ == "__main__":
     print(f"  Air:     "
           f"{'override grid' if lvl.air_init_q is not None else 'ambient (no air_init.npy)'}"
           f"  boundary={lvl.boundary}")
+    if lvl.ambient is not None:
+        a = lvl.ambient
+        print(f"  Ambient: p_amb={a.p_amb} atm o2_frac={a.o2_frac} -> "
+              f"pin={a.pin_q} raw ({a.pin_q / 65536:.6f} atm), "
+              f"N=(O2 {a.n_o2_q}, N2 {a.n_n2_q}); "
+              f"sponge width={a.sponge_width} strength={a.sponge_strength} "
+              f"u_damp={a.sponge_u_damp}")
     print(f"  Tile values: {sorted(np.unique(lvl.tilemap).tolist())}")
     mat, vac = materials_from_tilemap(lvl.tilemap, lvl.version)
     print(f"  Materials: hull={int((mat==1).sum())} door={int((mat==3).sum())} air={int((mat==0).sum())} vacuum={int(vac.sum())}")
