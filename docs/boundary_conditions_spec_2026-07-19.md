@@ -125,8 +125,10 @@ reference, do NOT edit the dead file.
 > the residual substantially (e.g. 66%→21%) where σ made it worse. This matches the PML
 > truth: you absorb by removing momentum energy (damp u), not by pinning P harder. So the
 > real ladder is **rung 0 (pin only) → u-damping band**; the σ-pressure sponge is a dead
-> dial kept only for the record. **OPEN DECISION (Erik, feel-adjacent):** whether to wire
-> the u-damping band at all — see the note below and §0.5. NOT yet built.
+> dial kept only for the record. **DECISION (Erik, 2026-07-19): build the u-damping
+> absorber FULLY now** — robust reflection harness + wire the velocity-damping band +
+> calibrate k_max to a numeric target — BEFORE B4, so B4 locksteps the complete physics in
+> one pass (quality over dev-cost; the correct path, not the lean one). This is B3c.
 
 Acoustic fronts cross ~37.5 tiles/tick via the implicit solve (c·dt/dx; matches the ambient
 Helmholtz k≈1409). The as-built ladder:
@@ -139,13 +141,15 @@ Helmholtz k≈1409). The as-built ladder:
 - **Rung 1 — σ(d) pressure sponge: DEAD (measured to reflect).** Wired + dormant (σ_max=0).
   Kept in-code (ambient-gated, space byte-identical) so the finding is reproducible; do NOT
   spend more on it.
-- **Rung-2-now-the-real-absorber — u-damping band (NOT wired; open decision):** magnitude-
+- **The real absorber — u-damping band (B3c, BUILDING per Erik's decision):** magnitude-
   first Q16 multiply on the band velocity (the truncating-mul sign convention — a naive
   signed multiply leaves a stuck −1-count floor), placed after the existing absorb chain in
-  step 4 (`eos_solver.cpp:531-541`) + its CUDA twin. Needs its own band grid (the B2 BFS
-  distance grid is reusable) AND a **robust reflection-gate harness** (B3's was too noisy to
-  calibrate against — build that first). Deferred pending Erik's call on whether the echo is
-  worth absorbing at all.
+  step 4 (`eos_solver.cpp:531-541`) + its CUDA twin (B4). Reuses the B2 BFS distance grid
+  for the band; `sponge_u_damp` (k_max) is the live dial. Requires FIRST a **robust
+  reflection harness** (big-map reference run, ring pushed ≥ c·dt·T_window away; metric =
+  max over an interior probe REGION and the window of |P_test − P_ref| / max|P_ref − P_amb|
+  — immune to the phase/sign/corner aliasing that made B3's scratch metric read 2–24%).
+  Then calibrate k_max until gate 3 passes at the best achievable margin; pin the default.
 - **Grid facts (still valid):** the B2 `sponge_sigma` grid is computed in `GameMap.__init__`
   from the FINAL post-upscale grid, W scaled by res_factor, int32 Q16, quantized once at
   load. A u-damping band would reuse the same BFS distance infrastructure. Staleness
