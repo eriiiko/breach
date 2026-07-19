@@ -20,8 +20,8 @@ from simulation.entities.schema import (  # noqa: F401
     ALIVE_SIGNAL, ALL_KINDS, Entity, EntitySchemaError, Field, INPUT_EDGE,
     INPUT_HELD, INSTANCE_FIELDS, InputDecl, KIND_BOOL, KIND_COLOR_RGB,
     KIND_ENTITY_REF, KIND_ENUM, KIND_FLOAT_RENDER, KIND_INT, KIND_LENGTH_M,
-    KIND_Q16, KIND_STR, KIND_STR_LIST, NUMERIC_KINDS, REGISTRY, Signal,
-    all_signals, field_value_error, register,
+    KIND_Q16, KIND_ROSTER, KIND_STR, KIND_STR_LIST, NUMERIC_KINDS, REGISTRY,
+    Signal, all_signals, field_value_error, register,
 )
 from simulation.entities.registry import (  # noqa: F401
     ENTITIES_TOML, EntityTomlError, REGISTRY_JSON, apply_tuning_overlay,
@@ -35,3 +35,4 @@ from simulation.entities.serialize import (  # noqa: F401
     signal_section_bytes,
 )
 from simulation.entities import light as _light  # noqa: F401  (registers the exemplar)
+from simulation.entities import zones as _zones  # noqa: F401  (registers breach_site/extraction_zone, A8)

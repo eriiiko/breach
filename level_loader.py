@@ -418,6 +418,159 @@ def _parse_water_table(raw: dict, base: Path, toml_path,
     return depth_q
 
 
+# ---- zones (editor design §5, A8) ----------------------------------------
+# The painted zone mask: uint8 paint ids, 0 = unpainted, discovered by
+# PRESENCE next to level.toml (no toml table exists for zones — the file IS
+# the mask; contrast [water], whose depth_map key predates the pattern).
+ZONES_FILENAME = "zones.npy"
+
+# The two zone classes, ever (editor design §5). One paint-id namespace
+# across both: a breach_site and an extraction_zone may not share a zone_id.
+ZONE_CLASSES = ("breach_site", "extraction_zone")
+
+
+def _parse_zones_grid(base: Path, tilemap: np.ndarray):
+    """Load the optional ``zones.npy`` paint grid (editor design §5, A8).
+
+    Returns the uint8 paint-id grid, or None when the file is absent — zone
+    dormancy (an un-zoned level is bit-identical to before zones existed).
+    Validation is hard (ValueError, path-bearing messages): dtype must be
+    uint8 (paint ids are 1..255, 0 = unpainted — the id namespace is pinned
+    by the schema's zone_id bounds), shape must equal the tilemap's.
+    """
+    zones_path = base / ZONES_FILENAME
+    if not zones_path.is_file():
+        return None                   # no zones.npy at all — dormancy
+    try:
+        zone_grid = np.load(zones_path, allow_pickle=False)
+    except (OSError, ValueError) as e:
+        raise ValueError(
+            f"zones.npy is not a readable .npy array: {zones_path}: {e}")
+    if zone_grid.dtype != np.uint8:
+        raise ValueError(
+            f"zones.npy must be dtype uint8 (paint ids 1..255, "
+            f"0 = unpainted), got {zone_grid.dtype}: {zones_path}")
+    if zone_grid.shape != tilemap.shape:
+        raise ValueError(
+            f"zones.npy shape {zone_grid.shape} != tilemap shape "
+            f"{tilemap.shape}: {zones_path}")
+    return zone_grid
+
+
+# ---- air_init.npy + boundary (entity design §10, A9) ----------------------
+# The optional atmosphere-override grid: int32 Q16.16 atm (1.0 atm == 65536
+# counts, the S2c scale), discovered by PRESENCE next to level.toml exactly
+# like zones.npy (the file IS the field; no toml key — [water]'s depth_map
+# key predates the pattern). Editor wand PAINTING of this file is Arc C's
+# (editor design §7); A9 is the format + load side only.
+AIR_INIT_FILENAME = "air_init.npy"
+
+# The `boundary` top-level level.toml field — v1 value set. "space" is
+# today's behavior (the vacuum ring) and the default when the key is absent;
+# "ambient" is parsed, validated and stored on LevelData but changes NO
+# behavior in Arc A: the AMBIENT border-ring mode (MG pins P=P_amb, species
+# reservoir) belongs to the boundary-conditions physics project (priority
+# ledger #1). This field is that project's format hook.
+BOUNDARY_SPACE = "space"
+BOUNDARY_AMBIENT = "ambient"
+BOUNDARY_MODES = (BOUNDARY_SPACE, BOUNDARY_AMBIENT)
+
+
+def _parse_air_init_grid(base: Path, tilemap: np.ndarray):
+    """Load the optional ``air_init.npy`` atmosphere override (A9).
+
+    Returns the int32 Q16.16 atmosphere grid (1.0 atm == 65536 counts,
+    shape == tilemap), or None when the file is absent — air dormancy: the
+    engine then derives today's ambient seeding (FP_ONE in open air, 0 on
+    solid/SPACE) exactly as before the feature existed. NOTE the dormancy
+    boundary is file ABSENCE, not grid content: an all-zero grid is a real
+    authored state (a fully depressurized start) and an all-ambient grid is
+    a real pinned state — neither means "derive as today".
+
+    Validation is hard (ValueError, path-bearing messages): dtype must be
+    int32 (Q16.16 atm), shape must equal the tilemap's, values must be
+    non-negative. The solid/SPACE-tile rule (values there are IGNORED) is
+    the seed consumer's — see GameMap.__init__.
+    """
+    air_path = base / AIR_INIT_FILENAME
+    if not air_path.is_file():
+        return None                   # no air_init.npy at all — dormancy
+    try:
+        air_q = np.load(air_path, allow_pickle=False)
+    except (OSError, ValueError) as e:
+        raise ValueError(
+            f"air_init.npy is not a readable .npy array: {air_path}: {e}")
+    if air_q.dtype != np.int32:
+        raise ValueError(
+            f"air_init.npy must be dtype int32 (Q16.16 atm, 1.0 atm == "
+            f"65536 counts), got {air_q.dtype}: {air_path}")
+    if air_q.shape != tilemap.shape:
+        raise ValueError(
+            f"air_init.npy shape {air_q.shape} != tilemap shape "
+            f"{tilemap.shape}: {air_path}")
+    if int(air_q.min(initial=0)) < 0:
+        raise ValueError(
+            f"air_init.npy contains negative pressures "
+            f"(min = {int(air_q.min())} raw Q16.16): {air_path}")
+    return air_q
+
+
+def _parse_boundary(raw: dict, toml_path) -> str:
+    """Parse the top-level ``boundary`` field (A9 format hook).
+
+    Absent key == "space" (today's behavior). Any value outside
+    :data:`BOUNDARY_MODES` is a hard error naming the two options. NO
+    behavior differs between the two values in Arc A (see the
+    BOUNDARY_MODES comment)."""
+    boundary = raw.get("boundary", BOUNDARY_SPACE)
+    if boundary not in BOUNDARY_MODES:
+        raise ValueError(
+            f"Unknown 'boundary' value {boundary!r} in {toml_path}: the "
+            f"two options are \"{BOUNDARY_SPACE}\" (today's vacuum ring, "
+            f"the default when absent) and \"{BOUNDARY_AMBIENT}\" "
+            f"(planetside — parsed and stored now; ring behavior lands "
+            f"with the boundary-conditions physics project, ledger #1).")
+    return str(boundary)
+
+
+def _validate_zone_binding(zone_grid, entities, toml_path) -> None:
+    """The zone binding validators (editor design §5, A8).
+
+    The npy grid holds paint ids; the ``[[entity]]`` instance holds
+    everything else. Every painted id must have exactly ONE zone instance:
+    a duplicate ``zone_id`` claim is a HARD load error; an orphaned paint id
+    (painted, no instance) and a zero-tile instance (claimed, never painted
+    — including when zones.npy is absent entirely) are ``warnings.warn``
+    authoring warnings, not crashes (the A3 dangling-ref precedent).
+    """
+    claims: dict = {}                 # zone_id -> instance (file order)
+    for inst in entities:
+        if inst.class_name not in ZONE_CLASSES:
+            continue
+        zid = int(inst.fields["zone_id"])
+        if zid in claims:
+            raise ValueError(
+                f"[[entity]] '{inst.id}' in {toml_path} claims zone_id "
+                f"{zid}, already claimed by '{claims[zid].id}' — every "
+                f"painted id has exactly ONE zone instance (level editor "
+                f"v3 design §5); duplicate zone_id is a load error. The "
+                f"paint-id namespace is one space across both zone classes.")
+        claims[zid] = inst
+    painted = (set(int(v) for v in np.unique(zone_grid)) - {0}
+               if zone_grid is not None else set())
+    for zid in sorted(painted - set(claims)):
+        warnings.warn(
+            f"zones.npy beside {toml_path} paints zone id {zid} but no "
+            f"zone instance claims it — orphaned paint (a validator "
+            f"warning, not a crash: level editor v3 design §5).")
+    for zid, inst in claims.items():
+        if zid not in painted:
+            warnings.warn(
+                f"[[entity]] '{inst.id}' in {toml_path} claims zone_id "
+                f"{zid} but zones.npy paints no tile with it (0 painted "
+                f"tiles — authoring warning, level editor v3 design §5).")
+
+
 @dataclass
 class LevelData:
     name: str
@@ -487,6 +640,30 @@ class LevelData:
     # `lights` above as equivalent LightEntry values (the [[light]]
     # legacy-alias contract; mixed forms hard-error at load).
     entities: list = field(default_factory=list)  # list[EntityInstance]
+    # ---- zones.npy paint grid (editor design §5, A8) ---------------------
+    # uint8 paint ids, shape == tilemap, 0 = unpainted — or None when the
+    # level folder carries no zones.npy (zone dormancy: an un-zoned level
+    # is bit-identical to before zones existed). Discovered by file
+    # PRESENCE, never a toml key. Binding: each nonzero painted id belongs
+    # to exactly one zone [[entity]] instance via its zone_id field
+    # (validators above). Parsed data only in Arc A — spawn realization
+    # from breach-site rosters is stack-2's.
+    zone_grid: Optional[np.ndarray] = None
+    # ---- air_init.npy atmosphere override (entity design §10, A9) --------
+    # int32 Q16.16 atm (1.0 atm == 65536 counts), shape == tilemap — or
+    # None when the level folder carries no air_init.npy (air dormancy:
+    # the engine derives today's ambient seeding exactly). Discovered by
+    # file PRESENCE, never a toml key (the zones.npy pattern).
+    # GameMap.__init__ seeds atmosphere + the O2/N2 species from it on
+    # open-air tiles; values on solid or SPACE tiles are IGNORED (the
+    # pinned solid-tile rule — see the seed block's docstring/comment).
+    air_init_q: Optional[np.ndarray] = None
+    # ---- boundary mode (A9 format hook; ledger #1 owns semantics) --------
+    # "space" (default — today's vacuum ring) | "ambient" (planetside).
+    # Parsed + validated + stored ONLY in Arc A: the AMBIENT border ring
+    # is the boundary-conditions physics project's. A top-level scalar
+    # key, so level_lib's managed-block writer round-trips it untouched.
+    boundary: str = BOUNDARY_SPACE
 
     @property
     def height(self) -> int:
@@ -691,6 +868,14 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
     # ---- [water] initial state (engine/15 §2.3, P5) ----------------------
     water_depth_q = _parse_water_table(raw, base, toml_path, tilemap)
 
+    # ---- zones.npy paint grid + binding (editor design §5, A8) -----------
+    zone_grid = _parse_zones_grid(base, tilemap)
+    _validate_zone_binding(zone_grid, entities, toml_path)
+
+    # ---- air_init.npy + boundary (entity design §10, A9) -----------------
+    air_init_q = _parse_air_init_grid(base, tilemap)
+    boundary = _parse_boundary(raw, toml_path)
+
     return LevelData(
         name=name,
         version=version,
@@ -720,6 +905,9 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
         art_align_explicit=art_align_explicit,
         water_depth_q=water_depth_q,
         entities=entities,
+        zone_grid=zone_grid,
+        air_init_q=air_init_q,
+        boundary=boundary,
     )
 
 
@@ -802,6 +990,9 @@ if __name__ == "__main__":
     print(f"  Water:   "
           f"{int((lvl.water_depth_q > 0).sum()) if lvl.water_depth_q is not None else 0}"
           f" wet tiles{'' if lvl.water_depth_q is not None else ' (no [water] key)'}")
+    print(f"  Air:     "
+          f"{'override grid' if lvl.air_init_q is not None else 'ambient (no air_init.npy)'}"
+          f"  boundary={lvl.boundary}")
     print(f"  Tile values: {sorted(np.unique(lvl.tilemap).tolist())}")
     mat, vac = materials_from_tilemap(lvl.tilemap, lvl.version)
     print(f"  Materials: hull={int((mat==1).sum())} door={int((mat==3).sum())} air={int((mat==0).sum())} vacuum={int(vac.sum())}")
