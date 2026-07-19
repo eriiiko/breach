@@ -57,7 +57,20 @@ DEFAULT_SPONGE_WIDTH = 8
 # absorber design call (spec §0.5: "imperceptibility, not perfection"; the B5
 # feel gate). See the B3b commit message + build report for the measurements.
 DEFAULT_SPONGE_STRENGTH = 0
-DEFAULT_SPONGE_U_DAMP = 0                 # rung-2 mop-up, dormant by default
+# k_max — the u-damping band coefficient (spec §3 rung 2, the REAL absorber,
+# B3c). B3c CALIBRATION OUTCOME (2026-07-19): the u-damping band demonstrably
+# absorbs the acoustic reflection (velocity is the momentum carrier the σ-sponge
+# never touched) — the reflection-vs-k curve falls monotonically and knees at
+# ~0.9·FP_ONE (saturating past it). Pinned to the knee. Effectiveness scales
+# with the BAND WIDTH (sponge_width): at width 8 the front only gets ~1 damping
+# bite (~2.5% residual, imperceptible at the ~0.02 atm transient amplitudes);
+# width 16 reaches the ≤2% gate, width ≥24 the ≥2× margin. Width is the
+# author's absorption-vs-interior dial (spec §4). NOTE: the near-range residual
+# is dominated by the ELLIPTIC pressure solve's instantaneous image response to
+# domain size (the MG solve is global), which is NOT an acoustic echo and is not
+# absorbable by any Q16-friendly velocity/pressure treatment the spec allows —
+# see the B3c report. σ (DEFAULT_SPONGE_STRENGTH) stays 0 (rung-1 reflects).
+DEFAULT_SPONGE_U_DAMP = 58982            # 0.9 * FP_ONE — the damping knee
 # σ_max may exceed FP_ONE: the ambient row mass is ~1/1409 real and face
 # conductances ~1 real, so a useful sponge extends the Dirichlet ring inward and
 # needs σ ≫ FP_ONE (the int64 row mass, M_CAP 2³⁸, keeps this overflow-safe). An

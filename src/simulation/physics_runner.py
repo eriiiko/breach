@@ -491,6 +491,7 @@ class PhysicsRunner:
             gmap.gases.decay, self._inert_n2_idx,
             sim_time,
             is_ambient=amb[0], n_amb=amb[1], p_amb=amb[2], sponge_sigma=amb[3],
+            sponge_udamp=amb[4],
         )
 
         # EOS refactor P4 (design §5, §3.2 "step 6: combustion pass ... reads
@@ -585,20 +586,21 @@ class PhysicsRunner:
     # BC: planetside AMBIENT ring args (boundary_conditions_spec_2026-07-19)
     # ------------------------------------------------------------------
     def _ambient_args(self, gmap):
-        """Return ``(is_ambient, n_amb, p_amb, sponge_sigma)`` for the C++ path.
+        """Return ``(is_ambient, n_amb, p_amb, sponge_sigma, sponge_udamp)``.
 
         On a space map (no ambient config, or no ring tiles) returns
-        ``(None, None, 0, None)`` — every C++ ambient branch is gated on a
+        ``(None, None, 0, None, None)`` — every C++ ambient branch is gated on a
         non-null pointer, so the tick is byte-identical to before BC existed
         (dormancy BY BRANCH, spec §5). On an ambient map returns the live ring
         mask, the per-plane N_amb clamp vector, the effective pin P_amb (the
-        shift trick's shift), and the σ-sponge grid (B3b consumes it; all-zero
-        until calibrated). The N_amb vector is the N-primary split
-        (``simulation.ambient``): O2 -> n_o2_q, inert_N2 -> n_n2_q, 0 elsewhere.
+        shift trick's shift), the σ-sponge grid (B3b σ, ships at 0), and the
+        u-damping band grid (B3c rung 2 — the real absorber, applied in the
+        kick). The N_amb vector is the N-primary split (``simulation.ambient``):
+        O2 -> n_o2_q, inert_N2 -> n_n2_q, 0 elsewhere.
         """
         amb = getattr(gmap, "_ambient", None)
         if amb is None or not gmap.is_ambient.any():
-            return (None, None, 0, None)
+            return (None, None, 0, None, None)
         n_gases = gmap.gas.shape[0]
         if (self._ambient_n_amb is None
                 or self._ambient_n_amb.shape[0] != n_gases):
@@ -607,7 +609,7 @@ class PhysicsRunner:
             n_amb[self._inert_n2_idx] = int(amb.n_n2_q)
             self._ambient_n_amb = n_amb
         return (gmap.is_ambient, self._ambient_n_amb,
-                int(amb.pin_q), gmap.sponge_sigma)
+                int(amb.pin_q), gmap.sponge_sigma, gmap.sponge_udamp)
 
     # ------------------------------------------------------------------
     # K2: sim-side fire heat ray pass

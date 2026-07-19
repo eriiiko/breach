@@ -207,7 +207,9 @@ public:
     //   is_ambient    : (h,w) ring mask (nullptr = space map)
     //   n_amb         : (n_gases,) per-plane ambient N for the ring clamp
     //   p_amb         : effective pin P_amb (raw q16) — the shift trick's shift
-    //   sponge_sigma  : (h,w) level-0 diagonal sponge mass (B3b; nullptr = off)
+    //   sponge_sigma  : (h,w) level-0 diagonal sponge mass (B3b σ; nullptr = off)
+    //   sponge_udamp  : (h,w) k(d) velocity-damping band coefficient, Q16 in
+    //                   [0,FP_ONE) (B3c rung 2, the real absorber; nullptr = off)
     void step(
         int32_t* atmosphere,
         int32_t* p_prev,
@@ -220,7 +222,8 @@ public:
         const bool* is_ambient = nullptr,
         const int32_t* n_amb = nullptr,
         int32_t p_amb = 0,
-        const int32_t* sponge_sigma = nullptr) const;
+        const int32_t* sponge_sigma = nullptr,
+        const int32_t* sponge_udamp = nullptr) const;
 
     // BC (spec §5): the boundary_flux rail — per-conservative-plane int64 sum of
     // the ring mass exchange, accumulated at the reset site per substep. NOT

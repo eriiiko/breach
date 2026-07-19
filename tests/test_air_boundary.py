@@ -746,5 +746,57 @@ def test_ambient_gate2_rush_in_recovers_and_rails_bounded():
     assert np.all(g.atmosphere[g.is_ambient] == pin)
 
 
+# ---------------------------------------------------------------------------
+# (i) AMBIENT reflection gate — the B3c u-damping absorber (spec §3 rung 2 +
+#     §6 gate 3). Uses the committed big-map-reference harness
+#     (tests/_ambient_reflection.py): the reflection off the near ring, isolated
+#     against a reference run whose ring is pushed beyond the acoustic horizon.
+#     Asserts the u-damping band (a) demonstrably ABSORBS (reflection falls vs
+#     the pin-only ring) and (b) meets the ≤2% gate at a representative band.
+#     Skipped without breach_physics (drives the live EOSSolver kick).
+# ---------------------------------------------------------------------------
+@pytest.mark.skipif(bp is None, reason="needs the compiled breach_physics")
+def test_ambient_gate3_udamp_band_absorbs_reflection():
+    """GATE 3 (spec §6): the u-damping band is the real absorber (B3c). At an
+    echo-sensitive geometry (a blast 50 tiles from the ring, a width-16 band),
+    the shipped k_max cuts the reflection metric well below the pin-only ring
+    AND under the ≤2% gate. The near-range residual is dominated by the elliptic
+    pressure solve's instantaneous domain-size response (not an acoustic echo,
+    not absorbable) — see the B3c report; this gate is placed where the acoustic
+    reflection, the part the band CAN absorb, is the dominant component."""
+    import _ambient_reflection as refl  # sibling helper (pytest prepend mode)
+    from simulation.ambient import DEFAULT_SPONGE_U_DAMP
+    geo = dict(sponge_width=16, test_half=50, ref_half=230, window=6, probe_r=3)
+    pin_only, _, _ = refl.reflection_ratio(bp, k_max=0, **geo)
+    absorbed, _, _ = refl.reflection_ratio(bp, k_max=DEFAULT_SPONGE_U_DAMP, **geo)
+    # (a) the band demonstrably absorbs (velocity damping cuts the acoustic
+    #     reflection the σ pressure-sponge could not touch).
+    assert absorbed < 0.75 * pin_only, (
+        f"u-damping did not absorb: pin-only={pin_only:.4f} "
+        f"with-band={absorbed:.4f}")
+    # (b) the ≤2% reflection gate is met at a representative absorber band.
+    assert absorbed <= 0.02, f"reflection {absorbed*100:.2f}% exceeds the 2% gate"
+
+
+@pytest.mark.skipif(bp is None, reason="needs the compiled breach_physics")
+def test_ambient_udamp_grid_matches_sigma_band_geometry():
+    """The k(d) velocity grid and the σ mass grid share the SAME BFS band
+    (spec §3): where σ is populated (explicit strength), k is populated too, on
+    the same tiles, with the same taper direction (strong near the ring)."""
+    from simulation.ambient import derive_ambient
+    from simulation.gamemap import GameMap
+    tm = np.full((30, 30), 9, dtype=np.int32)
+    tm[0, :] = tm[-1, :] = tm[:, 0] = tm[:, -1] = 0
+    cfg = derive_ambient(sponge_width=6, sponge_strength=90, sponge_u_damp=40000)
+    g = GameMap(level_loader.LevelData(
+        name="k", version="1", path=Path("."), tilemap=tm, tile_size_m=1.0 / 3.0,
+        diffuse_path=Path("."), boundary="ambient", ambient=cfg))
+    assert g.sponge_udamp.shape == g.sponge_sigma.shape
+    band = g.sponge_udamp > 0
+    assert band.any()
+    assert np.array_equal(band, g.sponge_sigma > 0)   # same BFS band tiles
+    assert int(g.sponge_udamp.max()) <= 40000         # never exceeds k_max
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

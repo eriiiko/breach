@@ -486,31 +486,39 @@ class GameMap:
     # Ambient sponge grid (BC build, boundary_conditions_spec_2026-07-19 §3)
     # ------------------------------------------------------------------
     def _build_sponge_grid(self, level_data):
-        """Static per-tile absorber-mass grid for the planetside sponge band.
+        """Static per-tile absorber grids for the planetside sponge band.
 
-        A pressure-sponge mass σ(d) that B3 adds to the level-0 Helmholtz row
-        diagonal to absorb outgoing acoustic fronts (spec §3 rung 1). Built ONCE
-        here from the FINAL (already-upscaled) grid, so ``--res`` preserves the
-        physical band depth: the authored ``sponge_width`` is in BASE tiles, so
-        the effective band W scales by the accumulated ``res_factor`` (the
-        door-span precedent). Profile is the integer quadratic ramp
-        ``σ(d) = σ_max·(W−d)²//W²`` over the 4-neighbour geodesic distance d from
-        the ring through open air (``~solid``). Deterministic (multi-source BFS
-        distance is order-free; only d is used, never which ring tile).
+        Two coefficient grids share ONE 4-neighbour BFS distance ``d`` from the
+        ring through open air, both an integer quadratic ramp ``c(d) =
+        c_max·(W−d)²//W²`` over the band ``1 ≤ d < W`` (deterministic — BFS
+        distance is order-free; only d is used, never which ring tile):
 
-        Always allocated (int32 Q16.16, `sponge_sigma`); all-zero on space maps,
-        ring-free maps, or ``sponge_width == 0`` (the hard-ring escape hatch).
-        Inert data in this patch — nothing consumes it until B3.
+        - ``sponge_sigma`` — the σ pressure-sponge mass (spec §3 rung 1). B3b
+          measured this REFLECTS (a soft Dirichlet), so its dial ships at 0; the
+          grid stays wired for experimentation.
+        - ``sponge_udamp`` — the k(d) VELOCITY-damping coefficient (spec §3 rung
+          2, the real absorber, B3c). Q16 damping fraction in [0, FP_ONE); the
+          kick multiplies the band's |u| by (1 − k(d)) magnitude-first, so
+          outgoing momentum is dissipated in the band instead of reflecting off
+          the hard ring.
+
+        Built ONCE from the FINAL (already-upscaled) grid, so ``--res`` preserves
+        the physical band depth: ``sponge_width`` is in BASE tiles, the effective
+        W scales by ``res_factor`` (the door-span precedent). Both grids all-zero
+        on space maps, ring-free maps, ``sponge_width == 0`` (hard-ring escape),
+        or when the corresponding c_max is 0.
         """
         h, w = self.material.shape
         self.sponge_sigma = np.zeros((h, w), dtype=np.int32)
+        self.sponge_udamp = np.zeros((h, w), dtype=np.int32)
         amb = self._ambient
         if amb is None or not self.is_ambient.any():
             return
         res_factor = int(getattr(level_data, "res_factor", 1) or 1)
         W = int(amb.sponge_width) * res_factor
         sigma_max = int(amb.sponge_strength)
-        if W <= 0 or sigma_max <= 0:
+        kmax = int(amb.sponge_u_damp)
+        if W <= 0 or (sigma_max <= 0 and kmax <= 0):
             return
         # Multi-source 4-neighbour BFS: distance (in tiles) from the nearest ring
         # tile, propagated through open air only (walls block, so a sealed room
@@ -537,12 +545,21 @@ class GameMap:
                     dist[ny, nx] = d1
                     dq.append((ny, nx))
         # Quadratic ramp on the band interior (exclude the ring tiles themselves,
-        # d == 0: they are Dirichlet-pinned, so a sponge mass there is moot).
+        # d == 0: they are Dirichlet-pinned, so a band coefficient there is moot).
+        # Both grids share the ramp numerator (W−d)²; strong near the ring, ~0 at
+        # the inner band edge — the taper that lets a front enter without a
+        # reflecting impedance jump and be dissipated as it nears the boundary.
         band = (dist >= 1) & (dist < W)
         d = dist[band].astype(np.int64)
         wq = np.int64(W)
-        sigma = (np.int64(sigma_max) * (wq - d) * (wq - d)) // (wq * wq)
-        self.sponge_sigma[band] = sigma.astype(np.int32)
+        ramp = (wq - d) * (wq - d)          # quadratic taper numerator
+        denom = wq * wq
+        if sigma_max > 0:
+            self.sponge_sigma[band] = (
+                (np.int64(sigma_max) * ramp) // denom).astype(np.int32)
+        if kmax > 0:
+            self.sponge_udamp[band] = (
+                (np.int64(kmax) * ramp) // denom).astype(np.int32)
 
     # ------------------------------------------------------------------
     # Cache rebuild

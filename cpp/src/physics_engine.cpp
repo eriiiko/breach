@@ -266,7 +266,7 @@ void PhysicsEngine::run_substeps(
         const float* gas_decay, int inert_n2_idx,                 // EOS P4
         int h, int w, float sim_time,
         const bool* is_ambient, const int32_t* n_amb, int32_t p_amb,
-        const int32_t* sponge_sigma) {                            // BC
+        const int32_t* sponge_sigma, const int32_t* sponge_udamp) {  // BC
     (void)obstacles;   // EOS P3: the solver's own `solid` mask IS the obstacle
                        // set (gamemap.py: obstacles == solid == permeability<=0);
                        // kept as a parameter for ABI/back-compat with the
@@ -300,7 +300,7 @@ void PhysicsEngine::run_substeps(
             solid, is_vacuum,
             dyn_permeability, dyn_wave_absorb,
             h, w, sim_time,
-            is_ambient, n_amb, p_amb, sponge_sigma);   // BC: ambient ring
+            is_ambient, n_amb, p_amb, sponge_sigma, sponge_udamp);   // BC
     }
 
     // Traces advect ONCE per tick, on the solver's final (post-correction)

@@ -240,7 +240,8 @@ public:
         const bool* is_ambient = nullptr,
         const int32_t* n_amb = nullptr,
         int32_t p_amb = 0,
-        const int32_t* sponge_sigma = nullptr);
+        const int32_t* sponge_sigma = nullptr,
+        const int32_t* sponge_udamp = nullptr);
 
     // --- Patch 1 S4c: the water-layer ARRAY ARITHMETIC -------------------
     // Moves the array-op core of PhysicsRunner._step_water into C++ — the part

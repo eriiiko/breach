@@ -216,7 +216,7 @@ void EOSSolver::step(
         const float* dyn_permeability, const float* dyn_wave_absorb,
         int h, int w, float dt,
         const bool* is_ambient, const int32_t* n_amb, int32_t p_amb,
-        const int32_t* sponge_sigma) const {
+        const int32_t* sponge_sigma, const int32_t* sponge_udamp) const {
 
     const int n = h * w;
     if (n <= 0 || dt <= 0.0f) return;
@@ -573,6 +573,27 @@ void EOSSolver::step(
                 const int64_t my = mul128_shr(uy < 0 ? -uy : uy, (int64_t)kk, 16);
                 ux = (ux < 0) ? -mx : mx;
                 uy = (uy < 0) ? -my : my;
+            }
+
+            // BC (spec §3 rung 2, B3c): the u-DAMPING BAND — the real absorber.
+            // A second magnitude-first shrink u *= (1 − k(d)) using the static
+            // band coefficient k(d) (Q16, tapered k_max at the ring to 0 at the
+            // inner band edge), placed immediately after the absorb chain. This
+            // dissipates the outgoing MOMENTUM inside the band so it does not
+            // reach the hard Dirichlet ring and reflect (the σ pressure-sponge
+            // could not — it never touched u). MAGNITUDE-FIRST is mandatory: a
+            // naive signed truncating multiply leaves a stuck −1-count floor
+            // (fixed_point.h sign convention). Gated on ambient mode -> space
+            // maps byte-identical (dormancy BY BRANCH); no-op where k(d)==0.
+            if (ambient_mode && sponge_udamp) {
+                const int32_t kd = sponge_udamp[i];
+                if (kd > 0) {
+                    const q16 kk2 = (kd < FP_ONE) ? (q16)(FP_ONE - kd) : 0;
+                    const int64_t mx = mul128_shr(ux < 0 ? -ux : ux, (int64_t)kk2, 16);
+                    const int64_t my = mul128_shr(uy < 0 ? -uy : uy, (int64_t)kk2, 16);
+                    ux = (ux < 0) ? -mx : mx;
+                    uy = (uy < 0) ? -my : my;
+                }
             }
 
             // |u| ≤ u_cap = min(c_LOCAL, U_MAX) (state-derived cap + the v2.4

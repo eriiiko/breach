@@ -1834,7 +1834,8 @@ PYBIND11_MODULE(breach_physics, m) {
                                 py::object is_ambient,
                                 py::object n_amb,
                                 int32_t p_amb,
-                                py::object sponge_sigma) {
+                                py::object sponge_sigma,
+                                py::object sponge_udamp) {
             auto [pp, h, w]    = get_2d(p_prev);
             auto [atm, h4, w4] = get_2d(atmosphere);
             auto [wx, h5, w5]  = get_2d(wind_x);
@@ -1885,13 +1886,20 @@ PYBIND11_MODULE(breach_physics, m) {
                 auto sp = sponge_arr.unchecked<2>();
                 sponge = sp.data(0, 0);
             }
+            const int32_t* udamp = nullptr;
+            py::array_t<int32_t> udamp_arr;
+            if (!sponge_udamp.is_none()) {
+                udamp_arr = sponge_udamp.cast<py::array_t<int32_t>>();
+                auto up = udamp_arr.unchecked<2>();
+                udamp = up.data(0, 0);
+            }
             self.run_substeps(
                 pp, atm, wx, wy, temp,
                 obs, sol, vac, perm, wabs,
                 gas_ptr, gdiff, n_gases, gcons,
                 gdecay, inert_n2_idx,
                 h, w, sim_time,
-                amb, namb, p_amb, sponge);
+                amb, namb, p_amb, sponge, udamp);
         }, py::arg("p_prev"),
            py::arg("atmosphere"), py::arg("wind_x"), py::arg("wind_y"),
            py::arg("temperature"),
@@ -1904,7 +1912,8 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("is_ambient") = py::none(),
            py::arg("n_amb") = py::none(),
            py::arg("p_amb") = 0,
-           py::arg("sponge_sigma") = py::none())
+           py::arg("sponge_sigma") = py::none(),
+           py::arg("sponge_udamp") = py::none())
         // --- Patch 1 S4c: the water-layer array arithmetic ------------------
         // step_water moves the array-op body of PhysicsRunner._step_water into
         // C++ (substep loop + W5 flash-boil + W3 displacement/seal + the final
