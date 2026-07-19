@@ -45,6 +45,7 @@ import level_loader
 
 WATER_FILENAME = "water_init.npy"
 ZONES_FILENAME = level_loader.ZONES_FILENAME    # "zones.npy" — one source
+AIR_INIT_FILENAME = level_loader.AIR_INIT_FILENAME  # "air_init.npy" (A9)
 
 _TABLE_HEADER_RE = re.compile(r"^\s*\[")          # any table / array-of-tables
 
@@ -362,6 +363,57 @@ def write_zones_npy(level_dir, zone_grid, *, npy_bak: bool = True):
     elif npy_path.is_file():
         npy_path.unlink()
     return nbak, has_zones
+
+
+def write_air_init_npy(level_dir, air_q, *, npy_bak: bool = True):
+    """Write (or, on ``None``/empty, delete) ``air_init.npy`` — int32
+    Q16.16 atm, the file IS the field (A9; the zones.npy presence pattern,
+    no toml key).
+
+    THE DELETE RULE differs deliberately from water/zones: their grids have
+    a content value that MEANS "nothing here" (all-dry / all-unpainted ==
+    absent file), so an all-default grid deletes. For air there is NO such
+    value — absence means "derive ambient as today", while 0 is a real
+    authored state (a depressurized start) and FP_ONE is a real pinned
+    ambient — so an explicit grid ALWAYS stays a file (even all-zero, even
+    all-ambient) and only ``air_q=None`` (or an empty array) removes the
+    override. The .npy carries its OWN once-per-session pre-session .bak
+    (``npy_bak`` True on the session's first save), mirroring
+    :func:`write_water_npy`. Returns ``(npy_bak_path | None, has_air)``.
+
+    The caller may pass any integer-dtype grid; values are range-checked to
+    non-negative int32 (the loader's pinned on-disk dtype + its negative-
+    pressure hard error) and stored as int32.
+    """
+    level_dir = Path(level_dir)
+    npy_path = level_dir / AIR_INIT_FILENAME
+    if air_q is None or np.asarray(air_q).size == 0:
+        nbak = None
+        if npy_bak and npy_path.is_file():
+            nbak = Path(str(npy_path) + ".bak")
+            nbak.write_bytes(npy_path.read_bytes())
+        if npy_path.is_file():
+            npy_path.unlink()
+        return nbak, False
+    a = np.asarray(air_q)
+    if not np.issubdtype(a.dtype, np.integer):
+        raise ValueError(
+            f"air grid must be integer Q16.16 atm counts (stored int32), "
+            f"got dtype {a.dtype}")
+    if int(a.min()) < 0:
+        raise ValueError(
+            f"air grid contains negative pressures (min = {int(a.min())} "
+            f"raw Q16.16) — the loader hard-errors on them")
+    if int(a.max()) > np.iinfo(np.int32).max:
+        raise ValueError(
+            f"air grid values must fit int32 Q16.16, got max {int(a.max())}")
+    a = np.ascontiguousarray(a.astype(np.int32))
+    nbak = None
+    if npy_bak and npy_path.is_file():
+        nbak = Path(str(npy_path) + ".bak")
+        nbak.write_bytes(npy_path.read_bytes())
+    np.save(npy_path, a)
+    return nbak, True
 
 
 def water_block_format(has_water: bool):
