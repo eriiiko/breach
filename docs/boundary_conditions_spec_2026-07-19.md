@@ -21,10 +21,16 @@ infinite ambient reservoir. Pragmatic simplest implementation; determinism is ir
    for water exactly as SPACE ring tiles do today. Recorded as a decision, not a gap.
 4. **Wind-in-from-boundary is NOT a boundary mode** — it's a source term (FieldEdit /
    level source), a separate future feature. Out of scope here.
-5. **Sponge band ships in v1 as a dial** (see §3) — Erik's wish is *perfect* absorption;
-   a pinned ring alone partially reflects (sign-flipped, weakened echo), the sponge is
-   the standard cheap fix and the cheat IS the proper technique. Default expected ON
-   for planetside; Erik's eyes at the feel bake confirm.
+5. **Sponge band ships in v1, ON by default for ambient maps** (see §3). Erik restated
+   the goal 2026-07-19 — not literally perfect absorption, but *imperceptible*
+   reflection — and delegated the BC choice. DECIDED (Claude, 2026-07-19, Erik's
+   delegation): pinned ring + quadratic sponge, with a NUMERIC imperceptibility gate
+   (§6 gate 3: reflected peak ≤ 2% of incident). Rationale for rejecting
+   characteristic/radiation BCs (the textbook alternative): they need wave-direction
+   decomposition, are fragile in corners, and pull non-Q16 math toward the sim path;
+   the sponge is the robust production workhorse (PML lineage), all static Q16
+   multiplies, graceful failure mode (faint echo, never instability). Erik's bake
+   confirms FEEL only — the numbers are chosen by the gate, not by eye.
 
 ## 1. The mechanism (symmetric to SPACE, all local per-tile edits)
 
@@ -76,21 +82,26 @@ reported before kernels are touched. `destroy_wall`'s edge-hull/`was_hull` rule 
 
 - At load, for ambient levels, compute a static per-tile damping coefficient grid:
   integer BFS distance `d` from the nearest ring tile through open air; for `d < W`,
-  coefficient `k(d) = k_sponge · (W − d)/W`, quantized once to Q16. Static per level —
-  it joins the load-time caches (and later the S8a resident-set statics).
+  **quadratic ramp** `k(d) = k_max · ((W − d)/W)²` (an abrupt damping onset itself
+  reflects; the quadratic ramp is the standard fix), quantized once to Q16. Static
+  per level — it joins the load-time caches (and later the S8a resident-set statics).
 - Per tick, inside the EOS step where velocity updates: `u *= (FP_ONE − k(d))` — one
   Q16 multiply per sponge-band cell, both axes. **v1 damps u only** (that's the wave
-  absorber); N/T relaxation toward ambient is a fallback dial if the bake shows
-  drift/ringing the u-damping doesn't kill.
-- Dials: `sponge_width` (0 == hard ring), `k_sponge`. Determinism-clean by
-  construction (static integer coefficients, pure Q16 muls, no libm).
+  absorber); N/T relaxation toward ambient is a fallback dial, OFF by default — this
+  keeps the non-conservative footprint exactly one writer (the ring reset), so the
+  `boundary_flux` rail stays a one-subtraction audit.
+- **Defaults (decided): `sponge_width = 8`, ON for ambient maps** (0 == hard ring,
+  kept as an escape hatch). **`k_max` is CALIBRATED at build, not guessed:** tune it
+  until §6 gate 3 passes with ≥2× margin, then pin that value as the shipped default
+  in config. Determinism-clean by construction (static integer coefficients, pure
+  Q16 muls, no libm).
 
 ## 4. Level format (backward compatible)
 
 - `boundary = "ambient"` (A9 field, semantics now live).
 - Optional `[ambient]` table: `p_amb` (atm, default 1.0), `o2_frac` (default 0.21),
-  `sponge_width` (tiles, default TBD at bake — spec placeholder 6), `k_sponge`
-  (default TBD at bake). Absent table = all defaults. `[ambient]` present with
+  `sponge_width` (tiles, default 8; 0 == hard ring), `k_sponge` (default = the
+  build-calibrated k_max, §3). Absent table = all defaults. `[ambient]` present with
   `boundary = "space"` is a hard error (path-bearing message, loader style).
 - All values quantized once at ingress. `air_init.npy` composes as today (authored
   interior override; ring rules win at ring tiles).
@@ -118,8 +129,12 @@ launch-core extraction).
   1. Sealed planetside room holds equilibrium (interior trajectory flat).
   2. Breach to ambient → air rushes IN, room recovers toward P_amb (the inverse of
      the space money-shot vent).
-  3. Wave absorption: detonation echo amplitude at a probe tile, sponge ON vs OFF —
-     ON must cut the reflected amplitude below a pinned threshold.
+  3. Wave absorption — **the imperceptibility gate (the definition of "can't notice
+     the reflection")**: detonation near map center; probe tile between source and
+     ring; the reflected front's peak `|P − P_prev|` at the probe must be
+     **≤ 2% of the incident front's peak** with the shipped defaults (sponge-OFF run
+     recorded alongside as the reference echo). k_max is calibrated against this
+     gate at ≥2× margin (§3).
   4. O2 replenishment: sustained fire near the ring keeps burning.
   5. Rail: `boundary_flux` matches the interior mass delta exactly (LSB-level) —
      conservation holds once the ring exchange is counted.
@@ -134,8 +149,10 @@ launch-core extraction).
 - No solve-structure change; per-tile edits in existing kernels only. If the STEP-A
   audit or the MG pin generalization balloons, STOP and report (the survey says it
   won't — trust but verify).
-- Feel-adjacent: the sponge default + k values are a HUMAN-TEST item (Erik plays a
-  planetside fixture). Mechanical parts (audit, pin, reset, rail) are digest-gated.
+- Feel-adjacent: the planetside HUMAN-TEST gate is a FEEL confirmation (Erik plays a
+  planetside fixture with the gate-calibrated defaults) — the numbers themselves are
+  chosen by §6 gate 3, not by eye. Mechanical parts (audit, pin, reset, rail) are
+  digest-gated.
 - Out of scope: per-edge modes, boundary trace species (toxic atmospheres — future
   `[ambient]` extension), water BC (ocean-reservoir cheat), wind-in (source term),
   rain/weather, render treatment of the ring (render-layer, deterministic-exempt).
