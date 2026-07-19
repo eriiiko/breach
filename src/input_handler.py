@@ -31,6 +31,9 @@ Key bindings (decisions locked this morning):
 - J → DEBUG spawn the selected gas under the cursor
 - K → DEBUG cycle the selected gas (white→black→poison→teargas→fuel)
 - U → DEBUG pour 0.2 m of water on the tile under the cursor
+- O → DEBUG toggle the door entity under the cursor (A6 doors v0 — flips
+  the synced want_open latch; the KEY is dev-only, ruling 5. The
+  renderer's water-optics toggle moved O → V to free this key.)
 - P / Shift+P → DEBUG tilt the ship: tilt_x +2/-2 degrees (clamped to +/-20)
 
 F5 is NOT remapped here — it's still the renderer's normal-map toggle
@@ -133,6 +136,15 @@ class InputHandler:
         # Mirrors the I-ignite / J-gas path.
         if rl.is_key_pressed(K.KEY_U):
             self._debug_pour_water(sim, renderer)
+
+        # O: DEBUG toggle the door entity under the cursor (A6 doors v0,
+        # a6 doors design §10 / Erik's ruling 5). The KEY and its plumbing
+        # are dev/render-layer (same citizenship as I-ignite); the
+        # want_open latch it flips IS synced entity state — the slot-9e
+        # sweep works toward it (blocked closes retry each tick). The
+        # renderer's water-optics toggle moved O -> V to free this key.
+        if rl.is_key_pressed(K.KEY_O):
+            self._debug_toggle_door(sim, renderer)
 
         # P / Shift+P: DEBUG tilt the ship about x (water W2b — feel the
         # Titanic slide): +2 degrees per press, -2 with Shift, clamped to
@@ -300,6 +312,31 @@ class InputHandler:
         cur_m = float(gmap.water_depth[fy, fx]) / water_fixed.FP_ONE_F
         gmap.water_depth[fy, fx] = water_fixed.quantize_scalar(
             min(cur_m + 0.2, 2.5))
+
+    def _debug_toggle_door(self, sim, renderer):
+        """DEBUG: flip the want_open latch of the door under the cursor.
+
+        A6 doors v0 (design §10, ruling 5): dev-only key, synced latch.
+        ``mouse_to_tile()`` returns (x, y) — ``door_at`` takes (fy, fx),
+        so the SAME (col,row)->(row,col) flip every debug key applies is
+        applied here (the N9 pin). Destroyed door or no door: print only.
+        """
+        tile = renderer.mouse_to_tile()
+        if tile is None:
+            return
+        fx, fy = tile
+        door = sim.door_at(fy, fx)
+        if door is None:
+            print(f"[debug] no door at tile ({fx}, {fy})")
+            return
+        if not door.alive:
+            print(f"[debug] door '{door.id}' at ({fx}, {fy}) is destroyed "
+                  f"— inputs are dead")
+            return
+        door.want_open = not door.want_open
+        print(f"[debug] door '{door.id}' want_open -> "
+              f"{int(door.want_open)} (state={door.state}; the 9e sweep "
+              f"applies/retries next unpaused tick)")
 
     # ------------------------------------------------------------------
     # Click handlers

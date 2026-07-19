@@ -142,6 +142,17 @@ def _upscale_level(level, factor: int):
     from dataclasses import replace
     from level_loader import SpawnEntry
 
+    # A6 / S1 (a6 doors design §3): record the base-resolution recovery
+    # BEFORE mutating — meters-first entity consumers (door span
+    # quantization) must see the PRE-scale tile size and replicate their
+    # derived tile sets by the accumulated integer factor; a float
+    # recompute (tile_size_m * factor) is only IEEE-exact for power-of-two
+    # factors, so the base is CARRIED, never recomputed. Authored
+    # [[entity]] fields are NOT mutated (they stay the authored record).
+    if level.tile_size_m_base is None:
+        level.tile_size_m_base = float(level.tile_size_m)
+    level.res_factor = int(level.res_factor) * factor
+
     level.tilemap = np.repeat(
         np.repeat(level.tilemap, factor, axis=0), factor, axis=1)
     level.tile_size_m = float(level.tile_size_m) / float(factor)
@@ -269,7 +280,9 @@ def main():
     print(f"  DEBUG: J spawns the selected gas under the cursor | "
           f"K cycles the gas (white->black->poison->teargas->fuel)")
     print(f"  DEBUG: U pours water (0.2 m) under the cursor | "
-          f"O toggles water overlay | P / Shift+P tilts the ship +/-2 deg")
+          f"V toggles water overlay | P / Shift+P tilts the ship +/-2 deg")
+    print(f"  DEBUG: O toggles the door under the cursor (A6 doors v0 — "
+          f"dev-only latch)")
 
     fit_w_zoom = map_px_w / max(level.width, 1)
     initial_zoom = max(20.0, min(64.0, fit_w_zoom))
@@ -396,6 +409,7 @@ def main():
                 orders_phase1=sim.orders_for_phase(0),
                 orders_phase2=sim.orders_for_phase(1),
                 current_phase=input_handler.planning_phase,
+                doors=sim._doors,   # A6 dev door draw (render-read only)
             )
             renderer.draw_background_to_screen()
             renderer.blit_world_to_screen()

@@ -33,6 +33,12 @@ MAT_DOOR = 3
 MAT_STEEL = 4
 MAT_GLASS = 5
 MAT_FURNITURE = 6
+# A6 (docs/a6_doors_v0_impl_2026-07-19.md §1): the ENTITY door's CLOSED
+# stamp — the [materials.door] column values with mobility = 0, so a closed
+# entity door blocks movement/LOS/flow/burst/burn through the exact seams
+# walls already use. MAT_DOOR itself is untouched: it stays the LEGACY
+# painted door (walkable-but-flow-solid) until the A7 migration.
+MAT_DOOR_CLOSED = 7
 
 # Config-key <-> id mapping. The key is the ``[materials.<name>]`` table name.
 # Listed in id order; ``MaterialTable`` validates contiguity.
@@ -44,6 +50,7 @@ MATERIAL_NAMES = {
     MAT_STEEL: "steel",
     MAT_GLASS: "glass",
     MAT_FURNITURE: "furniture",
+    MAT_DOOR_CLOSED: "door_closed",
 }
 
 # Scalar columns: name -> numpy dtype. ``light_atten`` is handled separately

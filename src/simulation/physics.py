@@ -26,7 +26,14 @@ from __future__ import annotations
 import math
 
 from config import CFG
-from simulation.gamemap import MAT_HULL, MAT_WOOD, MAT_DOOR
+from simulation.gamemap import MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_DOOR_CLOSED
+
+# Materials the blast's structural wall damage applies to (A6 critique B1:
+# MAT_DOOR_CLOSED joins, or closed entity doors are blast-proof and the
+# breach charge no-ops on them). Steel/glass/furniture being excluded is a
+# PRE-EXISTING wart of this tuple — flagged for arc close, deliberately NOT
+# changed here (a6 doors design §1).
+_BLAST_WALL_MATERIALS = (MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_DOOR_CLOSED)
 from simulation.field_edit import (
     FieldEdit, EditMode, Region, Falloff,
 )
@@ -101,7 +108,7 @@ def apply_explosion(gmap, queue, fy, fx, radius, pressure, wall_damage):
                     # --- Structural wall damage (immediate, NOT a FieldEdit) ---
                     # S3b: wall_hp is int32 Q16.16 — quantize the (float) blast
                     # decrement into the same Q16.16 domain before subtracting.
-                    if gmap.material[ny, nx] in (MAT_HULL, MAT_WOOD, MAT_DOOR):
+                    if gmap.material[ny, nx] in _BLAST_WALL_MATERIALS:
                         gmap.wall_hp[ny, nx] -= wall_fixed.quantize_scalar(
                             float(wall_damage) * float(falloff))
                         if gmap.wall_hp[ny, nx] <= 0:

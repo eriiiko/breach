@@ -99,10 +99,11 @@ def test_v2_accepts_furniture():
         vac, np.array([[False, False], [False, True]]))
 
 
-@pytest.mark.parametrize("bad", [7, 8, 42, -1])
+@pytest.mark.parametrize("bad", [8, 42, -1])
 def test_v2_unknown_code_raises(bad):
     """v2 tolerates ONLY material-table ids + SPACE_CODE — fail loud.
-    (6 left this list when FURNITURE became a real material row.)"""
+    (6 left this list when FURNITURE became a real material row; 7 left
+    when DOOR_CLOSED became one — A6 doors v0.)"""
     tm = np.array([[0, bad]], dtype=np.int32)
     with pytest.raises(ValueError, match="unknown codes"):
         materials_from_tilemap(tm, "2")

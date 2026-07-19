@@ -159,7 +159,8 @@ class GameRenderer:
         # water fields. All four knobs bind from [display] with getattr
         # defaults (the W2b water_display_max precedent) and are RENDER-ONLY +
         # RESTART-BOUND: read once here; Ctrl+R re-reads config.toml but never
-        # re-binds the renderer's overlays. Off by default; toggled with O.
+        # re-binds the renderer's overlays. Off by default; toggled with V
+        # (moved from O in A6 — O is the dev door-toggle key).
         # RENDER-ONLY — never mutates any field.
         disp = getattr(CFG, "display", None)
         self.water_overlay = WaterFieldOverlay(
@@ -380,7 +381,8 @@ class GameRenderer:
                       projectiles: Sequence = (),
                       orders_phase1: Optional[dict] = None,
                       orders_phase2: Optional[dict] = None,
-                      current_phase: int = 0) -> None:
+                      current_phase: int = 0,
+                      doors: Sequence = ()) -> None:
         """Draw every world-space layer into the world RT.
 
         Order: lit ship (diffuse + normal + light), smoke, fire, units,
@@ -451,7 +453,7 @@ class GameRenderer:
         # reads over the water; the lit ship beneath is the floor sample). It
         # binds the lighting pass's light textures + the level diffuse and
         # draws premultiplied; the shader emits alpha 0 on dry tiles so this is
-        # a no-op with no standing water (dormant-safe). Off-by-toggle (O).
+        # a no-op with no standing water (dormant-safe). Off-by-toggle (V).
         if self.show_water and self.textures.diffuse:
             self.water_pass.draw(
                 self.textures.diffuse,
@@ -459,6 +461,14 @@ class GameRenderer:
                 world_px_w=self.world.world_px_w,
                 world_px_h=self.world.world_px_h,
                 anim_t=time.perf_counter() - self._anim_t0)
+
+        # 2b. A6 dev door draw (a6 doors design §14, N4 honest-minimal):
+        # closed door tiles get a flat amber fill, open spans a thin
+        # outline (something to aim the O key at), destroyed doors
+        # nothing. Render-read only — `doors` is the sim's DoorRuntime
+        # list (span/state/alive); no overlay system, no field writes.
+        if doors:
+            self._draw_doors_world(doors)
 
         # 3. Units, waypoints, projectiles, effects, grid — drawn in world-pixel space
         if orders_phase1 or orders_phase2:
@@ -473,6 +483,33 @@ class GameRenderer:
             self._draw_grid_world()
 
         self.world.end()
+
+    # A6 dev door colors (render-only; the tileset's amber door reads).
+    _DOOR_CLOSED_FILL = (208, 168, 62, 210)     # amber panel
+    _DOOR_OPEN_OUTLINE = (208, 168, 62, 160)    # thin frame on the air gap
+
+    def _draw_doors_world(self, doors: Sequence) -> None:
+        """Flat per-tile fill (closed) / outline (open) for entity doors —
+        the a6 design §14 honest-minimal draw. ``doors`` items expose
+        ``span`` ((fy, fx) tiles), ``state`` (0 closed / 1 open / 2
+        destroyed) and ``alive``; destroyed doors draw nothing (the wreck
+        is just breached air)."""
+        wpt = self.world.world_px_per_tile
+        for d in doors:
+            if not getattr(d, "alive", True):
+                continue
+            closed = int(getattr(d, "state", 0)) == 0
+            for (fy, fx) in d.span:
+                x = int(fx * wpt)
+                y = int(fy * wpt)
+                side = int(wpt) if wpt >= 1 else 1
+                if closed:
+                    rl.draw_rectangle(x, y, side, side,
+                                      rl.Color(*self._DOOR_CLOSED_FILL))
+                else:
+                    rl.draw_rectangle_lines(
+                        x, y, side, side,
+                        rl.Color(*self._DOOR_OPEN_OUTLINE))
 
     def _draw_overlay_to_world(self, field_tex: rl.Texture) -> None:
         """Stretch a physics-resolution texture across the full world RT."""
@@ -865,10 +902,13 @@ class GameRenderer:
         # T: debug temperature overlay (black-body ramp over gmap.temperature).
         if rl.is_key_pressed(rl.KeyboardKey.KEY_T):
             self.show_temperature = not self.show_temperature
-        # O: toggle the water optics pass (GLSL Fresnel/GGX/refraction). The
+        # V: toggle the water optics pass (GLSL Fresnel/GGX/refraction). The
         # pass is dormant-safe (alpha 0 on dry tiles); toggling only matters
         # once water is on the floor — disable to A/B against the bare floor.
-        if rl.is_key_pressed(rl.KeyboardKey.KEY_O):
+        # (Moved O -> V in A6: O is the dev door-toggle key, ruling 5 —
+        # a dual binding would flip the water rendering on every door
+        # toggle. See input_handler.py.)
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_V):
             self.show_water = not self.show_water
         if rl.is_key_pressed(rl.KeyboardKey.KEY_B):
             self.lighting.toggle_bilinear()
@@ -951,14 +991,15 @@ class GameRenderer:
             cx, cy = int(mouse_f[0]), int(mouse_f[1])
             H, W = gmap.solid.shape
             if 0 <= cx < W and 0 <= cy < H:
+                # A6 (design §14.1): names come from the canon table, so
+                # door_closed (and every material) reads correctly — the
+                # old hardcoded 3-entry dict mislabeled all solids "hull".
+                from simulation.materials import MATERIAL_NAMES
+                mat_val = int(gmap.material[cy, cx])
                 if gmap.is_vacuum[cy, cx]:
                     mat = "vacuum"
-                elif gmap.solid[cy, cx]:
-                    mat = "hull"
                 else:
-                    mat_val = int(gmap.material[cy, cx])
-                    mat = {0: "air", 1: "hull", 3: "door"}.get(
-                        mat_val, f"mat{mat_val}")
+                    mat = MATERIAL_NAMES.get(mat_val, f"mat{mat_val}")
                 blocked = bool(gmap.solid[cy, cx] or gmap.is_vacuum[cy, cx])
                 tag = "BLOCKED" if blocked else "walkable"
                 text = f"tile ({cx}, {cy}) — {mat} — {tag}"

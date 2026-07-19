@@ -87,8 +87,9 @@ from simulation.exchange import (  # noqa: F401 (apply_blast_damage: legacy re-e
 from simulation.events import (  # noqa: F401 (ExplosionEvent: legacy re-export — emitted by the executor now)
     DoorDestroyedEvent, ExplosionEvent, WallDestroyedEvent,
 )
+from simulation.door_system import build_runtime_entities, sweep_doors
 from simulation.entities.serialize import entity_carrier
-from simulation.gamemap import GameMap, MAT_DOOR
+from simulation.gamemap import GameMap, MAT_DOOR, MAT_DOOR_CLOSED
 from simulation.movement import FootprintSamples, default_speed
 from simulation.orders import (
     DET_START_PHASE1, DET_BETWEEN_PHASES, DET_END_PHASE2,
@@ -219,6 +220,18 @@ class Simulation:
         self.gmap = GameMap(self.level)
         self.rng = np.random.default_rng(seed)
         self._seed = seed
+
+        # A6 (a6 doors design §6.1): the sim's RUNTIME entity list — the
+        # level's parsed instances with door entries replaced by fresh
+        # DoorRuntime wrappers (ordinal order preserved), rebuilt on every
+        # construct/reset so the shared LevelData never carries runtime
+        # state. BOTH capture sites (get_state's carrier + the recorder
+        # snapshot) read THIS list, so door state/want_open/hp rows ride
+        # the one serializer automatically. `_doors` is the ordinal-order
+        # doors sublist; door-free levels build an identical list to
+        # `level.entities` and the 9e sweep is a single attribute check.
+        self.entities, self._doors = build_runtime_entities(
+            self.level, self.gmap)
 
         # Weapon/ammo/payload tables (mechanics/03 §4, W1) — rebuilt from the
         # live CFG at every reset, exactly like GameMap rebuilds the material/
@@ -560,8 +573,18 @@ class Simulation:
             tick=self.tick,
             phase=self.phase,
             paused=self.paused,
-            entity_state=entity_carrier(self.level.entities),
+            entity_state=entity_carrier(self.entities),
         )
+
+    def door_at(self, fy: int, fx: int):
+        """The DoorRuntime whose runtime span contains tile ``(fy, fx)``,
+        or None. Unique by the load-time disjoint-span rule (a6 doors
+        design §4.2); ordinal-order scan; matches OPEN doors' spans too —
+        the span is geometry, not material. Used by the dev O-key (§10)."""
+        for d in self._doors:
+            if d.contains(fy, fx):
+                return d
+        return None
 
     def orders_for_phase(self, phase) -> dict:
         """Per-unit waypoint lists for the renderer's overlay.
@@ -737,12 +760,14 @@ class Simulation:
         if self.physics_runner is not None:
             destroyed = self.physics_runner.step(self.gmap, sim_time_per_tick)
 
-        # 9. Process fire burn-through walls.
+        # 9. Process fire burn-through walls. A6: the door-event split keys
+        # on BOTH door materials — legacy painted MAT_DOOR and the entity
+        # door's MAT_DOOR_CLOSED (a6 doors design §1).
         for (yy, xx) in destroyed:
             mat = int(self.gmap.material[yy, xx]) if (0 <= yy < self.gmap.material.shape[0]
                                                       and 0 <= xx < self.gmap.material.shape[1]) else -1
             self.gmap.destroy_wall(yy, xx)
-            if mat == MAT_DOOR:
+            if mat in (MAT_DOOR, MAT_DOOR_CLOSED):
                 self.tick_events.append(DoorDestroyedEvent(pos=(yy, xx)))
             else:
                 self.tick_events.append(WallDestroyedEvent(pos=(yy, xx)))
@@ -758,7 +783,7 @@ class Simulation:
             for (yy, xx) in self.gmap.find_burst_walls(max_pops=cap):
                 mat = int(self.gmap.material[yy, xx])
                 self.gmap.destroy_wall(yy, xx)
-                if mat == MAT_DOOR:
+                if mat in (MAT_DOOR, MAT_DOOR_CLOSED):
                     self.tick_events.append(DoorDestroyedEvent(pos=(yy, xx)))
                 else:
                     self.tick_events.append(WallDestroyedEvent(pos=(yy, xx)))
@@ -834,11 +859,24 @@ class Simulation:
             o2_threshold = float(getattr(fire_cfg, "o2_threshold", 0.60))
             apply_temperature_ignition(self.gmap, o2_threshold, ignition_seed)
 
+        # 9e. Entities — structural door sweep (v1: doors only; sensors/
+        # logic arrive with Arc B's SignalBus). Per door in ordinal order:
+        # reconcile external destruction (whole-door rule), then apply the
+        # synced want_open latch (blocked closes retry next tick). BEFORE
+        # the recorder snapshot, so recorder/digest see entity state
+        # consistent with this tick's flips (a6 doors design §5.1). NOT
+        # gated on physics_runner — flips are pure gamemap edits and tests
+        # run sim-without-physics; effects reach the solvers next tick via
+        # the step-6 restamp. Door-free levels: one attribute check.
+        if self._doors:
+            sweep_doors(self)
+
         # Recorder snapshot. A4: the entity list rides along (presence-gated
         # inside the recorder — an entity-free level's .npz is byte-identical).
+        # A6: the SIM's runtime list (door rows live), not level.entities.
         if self.recorder is not None:
             self.recorder.record(self.gmap, self.tick, self.real_time,
-                                 self.units, entities=self.level.entities)
+                                 self.units, entities=self.entities)
 
         # Clear the per-tick `heat` deposit — END OF TICK, AFTER every heat
         # consumer (engine/06 §1.3/§6 step 7). `heat` is a per-tick deposit
@@ -954,6 +992,21 @@ class Simulation:
             path_idx = self.tick - u.path_tick_offset
             if 0 <= path_idx < len(u.move_path):
                 px, py = u.move_path[path_idx]
+                # A6 path-hold (a6 doors design §9): precomputed WEGO paths
+                # are the one consumer that does not re-query the mobility
+                # table, so re-check the next position's footprint block
+                # against the LIVE grid — a door that closed across the
+                # plan holds the unit here, burning the tick exactly like
+                # the status gate (no catch-up teleport; the round may end
+                # before the tail is walked). int() truncation anchors the
+                # block the same way tile_x/tile_y anchor the unit's own
+                # footprint; plan-time A* used this same predicate, and
+                # nothing else ever makes a tile LESS passable mid-round,
+                # so door-free trajectories are bit-identical.
+                if not self.gmap.is_passable_block(int(py), int(px),
+                                                   u.footprint):
+                    u.path_tick_offset += 1
+                    continue
                 u.face_towards(px, py)
                 u.x = px
                 u.y = py
