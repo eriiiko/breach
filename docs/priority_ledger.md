@@ -17,13 +17,14 @@ Created 2026-07-17 from Erik's stated stack; Erik owns the ordering.
   sensor-gather contract §5a — Arc B gated on it — and the structural
   dirty-set rider §5b; two-rung H2D plan; old pre-EOS spec superseded with
   banner). Awaiting Erik's review, then build per §4.
-- **Boundary conditions** (space vs planetside, per-map) — surveyed SMALL
-  (2026-07-17): an AMBIENT border-ring tile symmetric to the existing SPACE
-  ring (MG pins P=P_amb instead of 0; species reservoir; optional sponge
-  band). Existing space-map goldens untouched. **Sequencing DECIDED
-  (Erik, 2026-07-19): BC lands BEFORE the residency build** so residency
-  freezes final kernel content (S8a spec §5c). Spec it next session.
-  Details: `notes_2026-07-17_topics_backlog.md` Topic 4.
+- **Boundary conditions** (space vs planetside, per-map) — spec WRITTEN
+  2026-07-19: `boundary_conditions_spec_2026-07-19.md` (AMBIENT ring reuses
+  the SPACE tile code reinterpreted by the A9 `boundary` field; MG pin
+  carries P_amb; species reservoir reset; sponge band ships as v1 dial —
+  Erik wants *perfect* absorption; `boundary_flux` counted rail; no water
+  BC — ocean = indestructible-reservoir cheat, decided). **Lands BEFORE the
+  residency build** (Erik, 2026-07-19; S8a spec §5c). Awaiting Erik's
+  review. Survey: `notes_2026-07-17_topics_backlog.md` Topic 4.
 - Riders (chat-sized, slot when convenient):
   - ~~Wall-burst differential fix~~ **DONE 2026-07-18** — merged to main
     (true differential; only 1-deep membranes burst; Erik blessed).
