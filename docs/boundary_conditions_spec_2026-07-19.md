@@ -55,10 +55,18 @@ ambient reservoir). Pragmatic simplest; determinism iron; no solve-structure cha
   branch runs BEFORE the A6 door stamp; door-span validation widens to
   `is_vacuum | is_ambient` (a door on the ring stays an authoring error).
 - **P — the shift trick:** solve the Helmholtz system in **P′ = P − P_amb**. Subtract
-  P_amb inside the shared host-side `mg_build_levels` (rhs + warm start; used by BOTH CPU
-  and CUDA paths — verified `cuda_eos_step.cu:412`), add P_amb back at the step-5 store on
-  both paths. The zero-Dirichlet MG (smoother, residual, coarse Galerkin anchor, V-cycle
-  kernels) stays **byte-identical** — legal precisely because ambient maps have no P=0 pins.
+  P_amb inside the shared host-side `mg_build_levels` (rhs `eos_solver.cpp:736-738` + warm
+  start `:744`; used by BOTH CPU and CUDA paths — verified `cuda_eos_step.cu:411-413`),
+  add P_amb back at the step-5 store on both paths (`eos_solver.cpp:641` /
+  `cuda_eos_step.cu:469`) — **masked to `!solid`** (solids leave the solve at P′=0 and
+  must stay 0 absolute; ring excl cells WANT the add — v2.1 fix). The zero-Dirichlet MG
+  (smoother, residual, coarse Galerkin anchor, V-cycle kernels) stays **byte-identical** —
+  legal precisely because ambient maps have no P=0 pins. The shift is **branch-gated on
+  ambient mode** (no unconditional "−0" on space maps — §5 dormancy-by-branch). Verified
+  shift-safe: the kick reads only P-differences (shift-invariant, exact in integers);
+  p_prev stores unshifted P and is re-shifted fresh each tick; P′ &lt; 0 is fine (all solve
+  arithmetic signed; headroom ~2⁴⁶ vs 2⁶¹ budget); the near-vacuum degeneracy pins
+  P′≈−P_amb ≡ P≈0, today's answer.
 - **N — sink becomes clamp, per substep:** in the existing bulk-transport clamp pass
   (`bulk_transport.cpp:182-188` / `cuda_bulk_transport.cu:163-173`):
   `else if (is_ambient[i]) N[i] = N_amb[plane]` (conservative planes) — the reservoir,
@@ -114,7 +122,12 @@ per transit — v1's PML story doesn't hold here). The ladder:
   Enters before `mg_build_levels`, so Galerkin folds it to coarse levels automatically;
   all-integer; unconditionally stable; acts within the tick the wave arrives.
   Profile: `σ(d) = σ_max·(W−d)²//W²` (integer, no float pow), 4-neighbour BFS distance
-  from ring through open air (`~solid` predicate), W default 8.
+  from ring through open air (`~solid` predicate), W default 8. **Scale note (v2.1):**
+  the ambient row mass is ~1/1409 real and face conductances ~1 real each — a useful σ
+  is plausibly ≫ FP_ONE (extends the Dirichlet ring inward with a taper); int64 row mass
+  (M_CAP 2³⁸) makes σ up to hundreds of FP_ONE overflow-safe. Insertion: after the
+  `L.b` build (b uses the un-σ'd m — the spec equation), before the Galerkin coarse
+  build and the recip build, so both fold σ automatically.
 - **Rung 2 — u-mop-up (only if gate still fails):** magnitude-first Q16 multiply (the
   truncating-mul sign convention — naive signed multiply leaves a stuck −1-count floor),
   placed immediately after the existing absorb chain in step 4 (`eos_solver.cpp:531-541`)
@@ -134,9 +147,10 @@ per transit — v1's PML story doesn't hold here). The ladder:
 - Optional `[ambient]` table — validation per loader style (unknown keys rejected,
   path-bearing errors): `p_amb` float atm, **> 0** (default 1.0; effective pin logged);
   `o2_frac` **∈ [0,1]** (default 0.21); `sponge_width` **int ≥ 0** tiles (default 8;
-  0 == hard ring; warn when ≥ min map dimension); `sponge_strength` (σ_max, Q16-bound
-  **[0, FP_ONE)**; default = calibrated constant); `sponge_u_damp` (k_max, same bounds,
-  default 0 = rung-2 dormant). `[ambient]` with `boundary="space"` → hard error.
+  0 == hard ring; warn when ≥ min map dimension); `sponge_strength` (σ_max, Q16 raw, bound
+  **[0, 256·FP_ONE]** — v2.1 fix: an FP_ONE bound caps the per-row pull at ~20% and would
+  reject the gate-calibrated value; default = calibrated constant); `sponge_u_damp`
+  (k_max, **[0, FP_ONE)**, default 0 = rung-2 dormant). `[ambient]` with `boundary="space"` → hard error.
   Ambient map with zero SPACE-code tiles → WARN (legal, ring-dormant sealed box).
 - All values quantized once at ingress. NO ambient-T dial (§0.2).
 - Same-patch prose updates: `level_loader.py:468-473,485-493,529-532`,
@@ -197,7 +211,16 @@ table), same-tick lockstep, before S8a freezes kernels.
 - **B3 — CPU physics** (subagent; digest-gated, auto-merge on green): shift trick, clamp
   reset, u/T widenings, joins-ambient twins, burst-differential read, rail, rung-0 echo
   measurement → σ-sponge if needed → calibration; E2E gates 1–5; existing digest suite
-  byte-untouched.
+  byte-untouched. **Build-riders (v2.1 verification):** (i) shift + add-back masked
+  `!solid`, branch-gated on ambient mode; (ii) the CPU all-zero-plane skip
+  (`bulk_transport.cpp:91-94`) skips the clamp — equivalence with the reset rests on the
+  loader seeding ring N_amb; ASSERT it (or hoist the reset above the skip; CUDA has no
+  skip); (iii) rail signature ripple crosses three bulk-transport entries (both
+  `bulk_flux_transport_cached` definitions + the legacy wrapper) — device counter is
+  int64 atomicAdd (two's-complement signed, precedent `cuda_combustion.cu:157`);
+  (iv) documented inherited wrinkle, no fix: ring-adjacent fire deposits one tick of
+  trace residue on the ring (fire runs post-smoke-zero), folded into next tick's Dalton
+  sums — the same idiom exists at vacuum breaches on space maps today.
 - **B4 — CUDA lockstep** (subagent; bit-identity-gated, auto-merge on green): the CUDA
   twins per the audit table; lockstep gate; fixture golden.
 - **B5 — HUMAN-TEST** (Erik): planetside fixture + minimal ambient render tint
