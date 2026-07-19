@@ -1,170 +1,225 @@
 # Boundary conditions — planetside AMBIENT ring (2026-07-19)
 
-**Status:** DRAFT for Erik's review (physics close-out, priority ledger stack #1).
-**Sequencing:** lands **BEFORE** the S8a residency build (Erik, 2026-07-19 — residency
-freezes final kernel content; `cuda_s8a_residency_spec_2026-07-19.md` §5c).
-**Sources:** Topic 4 survey (`notes_2026-07-17_topics_backlog.md`), A9 format hook
-(`level_loader.py:468-533`), Erik's decisions this session (below).
+**Status:** v2 DRAFT (same-day critique fold) — physics close-out, priority ledger #1.
+**Sequencing:** lands **BEFORE** the S8a residency build (`cuda_s8a_residency_spec_2026-07-19.md` §5c).
+**Sources:** Topic 4 survey (`notes_2026-07-17_topics_backlog.md`), A9 hook (`level_loader.py:468-533`),
+Erik's decisions (§0), STEP-A audit (`bc_step_a_audit_2026-07-19.md`), three-lens adversarial
+critique (determinism/lockstep, physics/EOS, scope/regression — same session).
 
-**Goal:** simulate planetside levels as well as space. Planetside: outgoing pressure
-waves are absorbed at the map edge (as if the atmosphere continued forever), and air
-exchanges freely across the boundary — particles exit and enter; the outside is an
-infinite ambient reservoir. Pragmatic simplest implementation; determinism is iron.
+> **v1 → v2 changelog (critique outcomes, all resolved on paper):**
+> 1. Value-carrying pin REPLACED by the **shift trick** (solve P′ = P − P_amb) — the coarse
+>    Galerkin anchor is only exact for pin value 0; the shift keeps the entire MG byte-identical.
+> 2. Ring reset moved from "per tick" to **per-substep at the exact vacuum-idiom sites** —
+>    the vacuum twin acts per substep; a per-tick reset lets ≤8 substeps drain the reservoir
+>    and permits CPU/CUDA landing it in different places.
+> 3. **AMBIENT ≡ vacuum for u and T** (ΔT form; ring T ≡ global T_AMB_K, NO T dial) — the
+>    u/T side is literally the existing vacuum code; only N and P carry new values.
+> 4. EOS identity direction pinned: **N planes are primary**; the effective pin is the sim's
+>    own p\* chain applied to (N_amb, ΔT=0). At defaults that is 65540 raw (1.000061 atm),
+>    NOT 65536 — no integer N hits 1.0 atm exactly (p\* lattice is multiples of 290 raw).
+> 5. u-damping sponge DEMOTED: acoustics travel ~37.5 tiles/tick through the implicit solve —
+>    an 8-tile u-band gets ≤1 bite at a front. Absorber ladder (§3): measure pin-only echo
+>    first → **σ(d) pressure-sponge mass in the level-0 solve rows** → u-mop-up last.
+> 6. Reflection gate re-protocol'd: big-map reference run, region metric (single probe is
+>    aliased/sign-blind/corner-confounded).
+> 7. Wholesale SPACE→AMBIENT reinterpretation (no interior-tile error; "sky shafts" legal).
+> 8. Interior t=0 seeding becomes dial-aware; sponge grid computed post-upscale; joins-ambient
+>    twin rules for destroy_wall/unseal; [ambient] validation table; rail = int64 per-substep
+>    per-plane; assorted audit-driven mask widenings (§2).
 
-## 0. Decisions locked (Erik, 2026-07-19)
+**Goal:** planetside levels as well as space. Waves leaving the play area are absorbed to
+imperceptibility (≤2% reflected, §6 gate 3); air exchanges freely at the boundary (infinite
+ambient reservoir). Pragmatic simplest; determinism iron; no solve-structure change.
 
-1. **Whole-map single boundary type** — the A9 `boundary` field (`"space" | "ambient"`).
-   No per-edge modes; exotic cases are solved with level-design cheats.
-2. **Ambient dials per level** — pressure/composition configurable, defaults Earth-like.
-3. **No water boundary condition.** Ocean levels are built as a big indestructible
-   reservoir filled at author time (the sanctioned cheat). AMBIENT ring tiles behave
-   for water exactly as SPACE ring tiles do today. Recorded as a decision, not a gap.
-4. **Wind-in-from-boundary is NOT a boundary mode** — it's a source term (FieldEdit /
-   level source), a separate future feature. Out of scope here.
-5. **Sponge band ships in v1, ON by default for ambient maps** (see §3). Erik restated
-   the goal 2026-07-19 — not literally perfect absorption, but *imperceptible*
-   reflection — and delegated the BC choice. DECIDED (Claude, 2026-07-19, Erik's
-   delegation): pinned ring + quadratic sponge, with a NUMERIC imperceptibility gate
-   (§6 gate 3: reflected peak ≤ 2% of incident). Rationale for rejecting
-   characteristic/radiation BCs (the textbook alternative): they need wave-direction
-   decomposition, are fragile in corners, and pull non-Q16 math toward the sim path;
-   the sponge is the robust production workhorse (PML lineage), all static Q16
-   multiplies, graceful failure mode (faint echo, never instability). Erik's bake
-   confirms FEEL only — the numbers are chosen by the gate, not by eye.
+## 0. Decisions locked (Erik, 2026-07-19 + delegation)
 
-## 1. The mechanism (symmetric to SPACE, all local per-tile edits)
+1. **Whole-map single boundary type** via the A9 `boundary` field. Exotic cases = level cheats.
+2. **Ambient dials per level**; defaults Earth-like. NO ambient-T dial (v2 §1 — ring T ≡
+   T_AMB_K is what lets every `T:=0` vacuum idiom generalize verbatim; a cold-planet dial
+   would break them all at once — future project if ever wanted).
+3. **No water BC.** Oceans = indestructible authored reservoir. Ring = space-ring for water
+   (one seed-mask widening; the water solver never reads is_vacuum at runtime — verified).
+4. **Wind-in ≠ boundary mode** — source term, separate feature.
+5. **Absorption target is imperceptibility, not perfection** (Erik). Mechanism decided by
+   Claude under delegation: §3 ladder, gate-calibrated. Characteristic/radiation BCs remain
+   rejected (direction decomposition, corner fragility, non-Q16 pull).
 
-Today: the literal grid edge is closed/reflective (`mirror_idx`, eos_solver.cpp + CUDA
-mirror); "space" behavior comes from LEVEL DATA — the border ring of SPACE tiles →
-`is_vacuum`, which the MG solve pins as Dirichlet P=0 and bulk transport treats as a
-mass sink.
+## 1. The mechanism (v2 — the structural principle)
 
-AMBIENT is the twin:
+**AMBIENT ≡ vacuum for u and T; N: sink→clamp; P: pin via shift.** All local per-tile edits.
 
-- **Ring representation:** reuse the SPACE tile code. At load, when
-  `boundary == "ambient"`, the tilemap's ring tiles populate a new **`is_ambient`**
-  bool mask instead of `is_vacuum` (one branch in `GameMap.__init__` after
-  `materials_from_tilemap`). One level = one interpretation; no new tile vocabulary,
-  no editor change.
-- **MG solve:** generalize the exclusion-pin to carry a value — SPACE pins P=0,
-  AMBIENT pins **P=P_amb** (one Q16 constant, plumbed like the existing pin).
-- **Bulk transport:** each tick, after the flux/advection updates and before P
-  materialization, **reset `gas[O2]`/`gas[INERT_N2]` at ring tiles to the ambient
-  composition** — the infinite reservoir, both directions (outflow swallowed, inflow
-  supplied). Traces reset to 0 (absorbed).
-- **Temperature:** ring `temperature` reset to ambient (0 ΔT) — the outside is an
-  infinite heat bath too.
-- **Consistency rule (important):** the pinned P_amb and the reset (N_amb, T_amb) MUST
-  satisfy the EOS identity `P_amb == C · N_total_amb · T_abs_amb` exactly in Q16.16 —
-  quantize ONCE at level load (engine/14 ingress rules) and derive one from the other
-  (dial is `p_amb` + `o2_frac`; N planes derived). Otherwise materialization and the
-  pin fight, minting a standing artificial gradient at the ring.
-- **Velocity at ring:** mirror whatever the solver does at `is_vacuum` tiles today
-  (STEP-A audit item), with ambient values.
+- **Ring representation:** `boundary == "ambient"` routes the tilemap's SPACE-code mask
+  WHOLESALE to a new `is_ambient` bool mask (`gamemap.py:357` branch); `is_vacuum` is
+  all-false on ambient maps. Interior SPACE tiles are legal = interior ambient columns
+  ("sky shafts" — vents to the open air; kin of the Arc B pump, §8). Order: the ambient
+  branch runs BEFORE the A6 door stamp; door-span validation widens to
+  `is_vacuum | is_ambient` (a door on the ring stays an authoring error).
+- **P — the shift trick:** solve the Helmholtz system in **P′ = P − P_amb**. Subtract
+  P_amb inside the shared host-side `mg_build_levels` (rhs + warm start; used by BOTH CPU
+  and CUDA paths — verified `cuda_eos_step.cu:412`), add P_amb back at the step-5 store on
+  both paths. The zero-Dirichlet MG (smoother, residual, coarse Galerkin anchor, V-cycle
+  kernels) stays **byte-identical** — legal precisely because ambient maps have no P=0 pins.
+- **N — sink becomes clamp, per substep:** in the existing bulk-transport clamp pass
+  (`bulk_transport.cpp:182-188` / `cuda_bulk_transport.cu:163-173`):
+  `else if (is_ambient[i]) N[i] = N_amb[plane]` (conservative planes) — the reservoir,
+  refilled every substep (a per-tick reset lets ≤8 substeps drain it — v2 change 2).
+  Traces: ambient joins the existing zero at the smoke-SL vacuum sites (absorbed).
+- **T — the vacuum code verbatim:** widen `is_vacuum → is_vacuum | is_ambient` at the SL
+  write ternary (`eos_solver.cpp:402` + CUDA twin), the step-4c compression-work skip, the
+  temperature-solver pre-pass wipe (`temperature_solver.cpp:159-161`), and the step-4
+  velocity zero (`eos_solver.cpp:511,1183`, `cuda_kick_compression.cu:119,205`) + SL cmask
+  barrier. ΔT=0 IS ambient; ring u ≡ 0 (still boundary; the pin drives interior flow).
+- **Dial derivation (N-primary, v2 change 4):** loader computes
+  `N_total_amb := quantize(p_amb)`; O2 split by the existing round-half-up + complement
+  pattern (`gamemap.py:442-446`); **effective pin `P_amb := p*(N_amb, ΔT=0)` through the
+  sim's own truncating mul chain**, logged at load (65540 raw at defaults). The `p_amb`
+  dial is the author's target; the effective pin is what the physics uses everywhere
+  (shift, burst differential, init).
+- **t=0 seeding (dial-aware — v1 blocker fix):** on ambient maps the interior open-air
+  default seed is (P_amb, N_amb split), NOT the hardwired FP_ONE/21% (`gamemap.py:518,533`);
+  `air_init` O2-split uses `o2_frac`; ring tiles init at P_amb/N_amb (warm start + tick-0
+  CFL scan read them). air_init override mask excludes the ring (`is_vacuum|is_ambient`
+  widening at `gamemap.py:418,440` — ring rules win).
+- **Structural edits (joins-ambient twins):** on ambient maps `destroy_wall`'s
+  edge-hull/exposes rule and `unseal_tiles`' join rule set/join `is_ambient` (never
+  `is_vacuum`) — a breached edge hull opens to sky, not to space.
+- **Consequential naturals (accepted as correct planetside physics):** fire/combustion O2
+  reads already include ring tiles (not vacuum → they hold N_amb — fires near the boundary
+  breathe); ring-adjacent solids lose the vacuum 0 K fast-cool path (they now see a T_amb
+  bath); `find_burst_walls` reads an ambient side as P_amb, not 0 (a wall with ambient on
+  both sides does not burst); destroy_wall neighbor-mean refill counts ring neighbors
+  (they hold real values). Space maps: all unchanged.
 
-## 2. The `is_vacuum` consumer audit (the real STEP A)
+## 2. The audit (STEP A — DONE, `bc_step_a_audit_2026-07-19.md`)
 
-Every `is_vacuum` read in sim code gets classified and, where needed, extended:
+Repo-wide (loader + GameMap init + sim + C++ + CUDA — not just kernels). Verdict: with §1's
+structure, the edit surface is ~12–16 mechanical mask-widenings + the new writers
+(clamp/reset, shift, σ-sponge, rail) + loader work. No solve-structure change. The audit
+table is the build's checklist; every touched TU is listed there. The retired pre-EOS
+`atmosphere_solver.cpp` contains a working BFS+ramp sponge (`:480-542`) — use as algorithm
+reference, do NOT edit the dead file.
 
-- **(a) "no gas here" physics reads** (e.g. fire's open-neighbour O2 count, seeding
-  skips) → stay vacuum-only; ring tiles HOLD real gas (reset each tick) and should
-  participate naturally where gas values are read.
-- **(b) "off-map / no-entry" reads** (movement, spawn, targeting, unseal edge rules,
-  FieldEdit skip masks) → become `is_vacuum | is_ambient` (units don't walk off-world).
-- **(c) boundary-pin reads** (MG exclusion-pin, sink behavior) → become mode-valued
-  (0 vs P_amb / sink vs reservoir).
+## 3. The absorber ladder (v2 — measure first, escalate to the gate)
 
-The audit table (file:line → class → change) is a REQUIRED deliverable of the build,
-reported before kernels are touched. `destroy_wall`'s edge-hull/`was_hull` rule and
-`unseal_tiles`' vacuum-join rule are audit items, not pre-decided here.
+Acoustic fronts cross ~37.5 tiles/tick via the implicit solve (c·dt/dx; matches the ambient
+Helmholtz k≈1409). A u-damping band is therefore NOT the primary absorber (≤1 application
+per transit — v1's PML story doesn't hold here). The ladder:
 
-## 3. The sponge band (the absorber)
-
-- At load, for ambient levels, compute a static per-tile damping coefficient grid:
-  integer BFS distance `d` from the nearest ring tile through open air; for `d < W`,
-  **quadratic ramp** `k(d) = k_max · ((W − d)/W)²` (an abrupt damping onset itself
-  reflects; the quadratic ramp is the standard fix), quantized once to Q16. Static
-  per level — it joins the load-time caches (and later the S8a resident-set statics).
-- Per tick, inside the EOS step where velocity updates: `u *= (FP_ONE − k(d))` — one
-  Q16 multiply per sponge-band cell, both axes. **v1 damps u only** (that's the wave
-  absorber); N/T relaxation toward ambient is a fallback dial, OFF by default — this
-  keeps the non-conservative footprint exactly one writer (the ring reset), so the
-  `boundary_flux` rail stays a one-subtraction audit.
-- **Defaults (decided): `sponge_width = 8`, ON for ambient maps** (0 == hard ring,
-  kept as an escape hatch). **`k_max` is CALIBRATED at build, not guessed:** tune it
-  until §6 gate 3 passes with ≥2× margin, then pin that value as the shipped default
-  in config. Determinism-clean by construction (static integer coefficients, pure
-  Q16 muls, no libm).
+- **Rung 0 — pin + ring alone.** The P_amb Dirichlet ring + mass-swallowing reservoir is
+  itself an absorber. Build it, run §6 gate 3's protocol. If ≤2% with 2× margin: DONE,
+  sponge stays a dormant dial.
+- **Rung 1 — σ(d) pressure sponge (the expected lander):** static sponge mass added to the
+  **level-0 Helmholtz row diagonal** at band cells: `(m+σ)·P′ + Σg(P′−P′_nb) = m·rhs′`
+  (under the shift the σ·P_amb RHS term vanishes — σ pulls P′ toward 0 ≡ ambient).
+  Enters before `mg_build_levels`, so Galerkin folds it to coarse levels automatically;
+  all-integer; unconditionally stable; acts within the tick the wave arrives.
+  Profile: `σ(d) = σ_max·(W−d)²//W²` (integer, no float pow), 4-neighbour BFS distance
+  from ring through open air (`~solid` predicate), W default 8.
+- **Rung 2 — u-mop-up (only if gate still fails):** magnitude-first Q16 multiply (the
+  truncating-mul sign convention — naive signed multiply leaves a stuck −1-count floor),
+  placed immediately after the existing absorb chain in step 4 (`eos_solver.cpp:531-541`)
+  and its CUDA twin, per tick.
+- **Grid facts:** sponge grid computed in `GameMap.__init__` from the FINAL post-upscale
+  grid, with W scaled by the res factor (`tile_size_m_base` precedent, `main.py:145-154`);
+  passed to C++ as an int32 Q16 plane quantized ONCE at load. Staleness accepted:
+  destroy_wall near the ring can open un-sponged air (k=0 holes) — documented gap, revisit
+  only if the bake shows it.
+- **Calibration:** σ_max (and k_max if rung 2 lands) tuned until gate 3 passes at ≥2×
+  margin, then pinned as config constants (placeholder constants ship in the loader patch;
+  pinned values land with the physics patch — resolves the v1 circularity).
 
 ## 4. Level format (backward compatible)
 
 - `boundary = "ambient"` (A9 field, semantics now live).
-- Optional `[ambient]` table: `p_amb` (atm, default 1.0), `o2_frac` (default 0.21),
-  `sponge_width` (tiles, default 8; 0 == hard ring), `k_sponge` (default = the
-  build-calibrated k_max, §3). Absent table = all defaults. `[ambient]` present with
-  `boundary = "space"` is a hard error (path-bearing message, loader style).
-- All values quantized once at ingress. `air_init.npy` composes as today (authored
-  interior override; ring rules win at ring tiles).
+- Optional `[ambient]` table — validation per loader style (unknown keys rejected,
+  path-bearing errors): `p_amb` float atm, **> 0** (default 1.0; effective pin logged);
+  `o2_frac` **∈ [0,1]** (default 0.21); `sponge_width` **int ≥ 0** tiles (default 8;
+  0 == hard ring; warn when ≥ min map dimension); `sponge_strength` (σ_max, Q16-bound
+  **[0, FP_ONE)**; default = calibrated constant); `sponge_u_damp` (k_max, same bounds,
+  default 0 = rung-2 dormant). `[ambient]` with `boundary="space"` → hard error.
+  Ambient map with zero SPACE-code tiles → WARN (legal, ring-dormant sealed box).
+- All values quantized once at ingress. NO ambient-T dial (§0.2).
+- Same-patch prose updates: `level_loader.py:468-473,485-493,529-532`,
+  `gamemap.py:415-424`, `tests/test_air_boundary.py:16` (all currently assert
+  "changes NO behavior" / SPACE≡vacuum).
 
 ## 5. Conservation bookkeeping (open system, by design)
 
-The ring deliberately breaks global mass/energy conservation — the map is open.
-- Existing exact-conservation guarantees are untouched on all existing maps (no
-  AMBIENT tiles exist in them; the new branches never execute — **zero re-baseline**).
-- New AMBIENT-map tests assert INTERIOR behavior, never global mass.
-- **Counted rail (P5 spirit):** `boundary_flux` — per-tick net N added/removed by the
-  ring reset, accumulated per run and exposed like the existing rail counters. The
-  exchange is watched, not invisible.
-- Free emergent corollary (document in canon at fold): O2 replenishes at the ring —
-  outdoor fires near the boundary don't suffocate.
+- Principle (Erik + Claude, 2026-07-19): **conservation proofs attach to WRITERS, not
+  settings.** The ring reset is the one new non-conservative writer; the rail audits it.
+- **`boundary_flux` rail:** int64, **per-plane**, accumulated at the reset sites **per
+  substep** as Σ(N_pre-reset − N_amb); device path uses atomicAdd (integer sums are
+  order-exact — unlike the FNV digests, reduction order is a non-issue). NOT folded into
+  tick_digest (the absence-transparent precedent, `tests/field_digest_spec.toml:47-50` —
+  zero re-baseline).
+- **Gate-5 identity (restated):** on a fire-free, trace-free fixture,
+  `Δ(total map N, conservative planes) == −Σ boundary_flux` at LSB level. (Combustion is
+  a second N-writer; trace decay credits inert_N2 — both excluded by fixture, not by
+  hand-waving. Pre-existing negative-N mint at `bulk_transport.cpp:185-187` is out of
+  scope; the fixture avoids it.)
+- Existing maps: no AMBIENT tiles → branches dormant → existing conservation guarantees
+  and goldens untouched. **Dormancy is BY BRANCH, not by arithmetic identity** (no
+  unconditional k=0 multiplies on the space path), asserted by running the standard digest
+  suite in CI on the BC branch.
 
 ## 6. CUDA lockstep + gates
 
-BC lands on BOTH paths in one patch (CPU reference + CUDA kernels:
-`cuda_mg_solve` pin branch, bulk-transport reset, trace absorb, sponge multiply —
-same-tick lockstep, the P6 pattern; this precedes S8a so kernels are final before
-launch-core extraction).
+BC lands on BOTH paths in one physics patch (CPU + the CUDA twins named in the audit
+table), same-tick lockstep, before S8a freezes kernels.
 
-- **E2E gates (new AMBIENT fixture level):**
-  1. Sealed planetside room holds equilibrium (interior trajectory flat).
-  2. Breach to ambient → air rushes IN, room recovers toward P_amb (the inverse of
-     the space money-shot vent).
-  3. Wave absorption — **the imperceptibility gate (the definition of "can't notice
-     the reflection")**: detonation near map center; probe tile between source and
-     ring; the reflected front's peak `|P − P_prev|` at the probe must be
-     **≤ 2% of the incident front's peak** with the shipped defaults (sponge-OFF run
-     recorded alongside as the reference echo). k_max is calibrated against this
-     gate at ≥2× margin (§3).
-  4. O2 replenishment: sustained fire near the ring keeps burning.
-  5. Rail: `boundary_flux` matches the interior mass delta exactly (LSB-level) —
-     conservation holds once the ring exchange is counted.
-- **Lockstep gate:** CPU vs CUDA A/B trajectory on the AMBIENT fixture, all synced
-  fields byte-identical (tol 0), per the `cuda_*_check` pattern; new golden committed
-  for the fixture. Existing space goldens must come out untouched (assert in CI by
-  running the standard digest suite).
+- **E2E gates (new AMBIENT fixture level, built fresh — no .bak strays):**
+  1. Sealed planetside room holds equilibrium — **run at defaults AND at non-default
+     dials** (p_amb=0.6, o2_frac=0.3) to prove dial-aware seeding.
+  2. Breach to ambient → air rushes IN, room recovers toward P_amb; **record and bound
+     per-tick rail-hit deltas** (u_clamp / work_clamp / t_max_phys) — the convergent-fill
+     front is the documented compression-pocket regime; rails must bound it, and the
+     breach-mouth T behavior is a named bake watch-item.
+  3. **Reflection gate (v2 protocol):** same detonation, two runs — test map vs a big-map
+     reference (ring pushed ≥ c·dt·T_window away). Metric: max over an interior probe
+     REGION and window of |P_test − P_ref|, normalized by max|P_ref − P_amb|; **≤ 2%**
+     with the shipped rung (≥2× margin at calibration). Single-probe |P−P_prev| is
+     aliased/sign-blind — reference-run comparison only.
+  4. O2 replenishment: sustained fire near the ring keeps burning (fire fixture, separate
+     from gate 5's).
+  5. Rail identity per §5 (fire/trace-free fixture).
+- **Lockstep gate:** CPU vs CUDA A/B on the AMBIENT fixture, all synced fields
+  byte-identical (tol 0), `cuda_*_check` pattern; new fixture golden committed. Existing
+  space goldens byte-untouched (standard digest suite on the branch).
 - Full suite green: `pytest tests -q` (conda env `data`).
 
-## 7. Scope discipline
+## 7. Build plan (autonomous-patch-workflow; branch `bc-ambient-ring`)
 
-- No solve-structure change; per-tile edits in existing kernels only. If the STEP-A
-  audit or the MG pin generalization balloons, STOP and report (the survey says it
-  won't — trust but verify).
-- Feel-adjacent: the planetside HUMAN-TEST gate is a FEEL confirmation (Erik plays a
-  planetside fixture with the gate-calibrated defaults) — the numbers themselves are
-  chosen by §6 gate 3, not by eye. Mechanical parts (audit, pin, reset, rail) are
-  digest-gated.
-- Out of scope: per-edge modes, boundary trace species (toxic atmospheres — future
-  `[ambient]` extension), water BC (ocean-reservoir cheat), wind-in (source term),
-  rain/weather, render treatment of the ring (render-layer, deterministic-exempt).
+- **B1 — STEP-A audit: DONE** (this session; `bc_step_a_audit_2026-07-19.md`).
+- **B2 — format + load** (subagent; digest-gated, auto-merge on green): §4 parsing +
+  validation, `is_ambient` mask + wholesale reinterpretation + door-stamp ordering,
+  dial-aware seeding, sponge grid (post-upscale), placeholder config constants, prose
+  updates, loader tests. Zero sim-behavior change (masks exist, nothing reads them yet).
+- **B3 — CPU physics** (subagent; digest-gated, auto-merge on green): shift trick, clamp
+  reset, u/T widenings, joins-ambient twins, burst-differential read, rail, rung-0 echo
+  measurement → σ-sponge if needed → calibration; E2E gates 1–5; existing digest suite
+  byte-untouched.
+- **B4 — CUDA lockstep** (subagent; bit-identity-gated, auto-merge on green): the CUDA
+  twins per the audit table; lockstep gate; fixture golden.
+- **B5 — HUMAN-TEST** (Erik): planetside fixture + minimal ambient render tint
+  (render-layer, determinism-exempt — the ring must not render as starfield for a feel
+  test); Erik plays: breach rush-in feel, echo check by ear/eye, breach-mouth T
+  watch-item. No planetside-shipping level merges before this.
+- Patch boundaries checkpoint to memory; surprises surface rather than plough ahead.
 
 ## 8. Relation to the Arc B pump (concept unity — Erik, 2026-07-19)
 
-The ring reset and the Arc B pump N-feed are the SAME concept at two extremes:
-the ring is a degenerate pump (unconditional, infinite-rate N-clamp to a setpoint,
-static, level-authored, in-kernel); the pump is the dynamic sibling (rate-limited,
-signal-driven, entity-owned, placeable — a life-support vent is a wireable,
-destroyable piece of ambient reservoir, and is how a SPACE map gets free particle
-exchange without an ambient boundary). BC deliberately ships the in-kernel form
-(lands pre-Arc-B, pre-residency; ring tiles as entities would be pure overhead for
-identical physics). Arc B should build the pump knowing this kinship — same
-setpoint/composition vocabulary, same `boundary_flux`-style counted rail.
+The ring reset and the Arc B pump N-feed are the SAME concept at two extremes: the ring is
+a degenerate pump (unconditional, per-substep clamp to a setpoint, static, in-kernel); the
+pump is the dynamic sibling (rate-limited, signal-driven, entity-owned). A life-support
+vent is a wireable, destroyable piece of ambient reservoir — and an interior ambient "sky
+shaft" (§1) is the static version, now legal by construction. Arc B builds the pump
+knowing this kinship — same setpoint/composition vocabulary, same counted-rail pattern.
+
+## 9. Scope discipline
+
+- No solve-structure change (the shift + σ-diagonal are row-data changes, not new solves).
+  If any step balloons past the audit's estimate, STOP and report.
+- Feel-adjacent: B5 is the feel gate; numbers come from gate 3, not eyes. Mechanical parts
+  are digest-gated.
+- Out of scope: per-edge modes, ambient-T dial, boundary trace species, water BC, wind-in,
+  rain/weather, sponge-grid staleness repair, full render treatment beyond the B5 tint.
