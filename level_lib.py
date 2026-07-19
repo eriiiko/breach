@@ -416,6 +416,42 @@ def write_air_init_npy(level_dir, air_q, *, npy_bak: bool = True):
     return nbak, True
 
 
+def write_tilemap_csv(level_dir, grid, *, tilemap_rel: str = "tilemap.csv",
+                      csv_bak: bool = True):
+    """Write a level's tilemap CSV atomically — the migration tool's grid
+    writer (A7; entity doc §3c: one writer implementation, ever).
+
+    Canonical form: plain ints, comma-separated, one row per line, trailing
+    newline; the existing file's newline style (LF/CRLF) is preserved.
+    Every committed level is already byte-identical to this canonical form
+    (callers that need that guarantee — e.g. the migration tool's
+    only-cell-diffs contract — verify it BEFORE calling). The write goes
+    through the same-directory temp + ``os.replace`` path as level.toml.
+    When ``csv_bak`` is True and the file exists, the original bytes go to
+    ``<name>.bak`` first. Returns the .bak path, or None.
+    """
+    level_dir = Path(level_dir)
+    csv_path = level_dir / tilemap_rel
+    g = np.asarray(grid)
+    if g.ndim != 2:
+        raise ValueError(f"tilemap grid must be 2D, got shape {g.shape}")
+    if not np.issubdtype(g.dtype, np.integer):
+        raise ValueError(f"tilemap grid must be integer codes, got {g.dtype}")
+    newline = "\n"
+    bak = None
+    if csv_path.is_file():
+        original = csv_path.read_bytes()
+        if b"\r\n" in original:
+            newline = "\r\n"
+        if csv_bak:
+            bak = Path(str(csv_path) + ".bak")
+            bak.write_bytes(original)
+    text = newline.join(
+        ",".join(str(int(v)) for v in row) for row in g.tolist()) + newline
+    _atomic_write_bytes(csv_path, text.encode("ascii"))
+    return bak
+
+
 def water_block_format(has_water: bool):
     """The [water] family's ``format_lines`` callable for
     :func:`write_managed_blocks`: the one-key .npy carrier table when the
