@@ -238,8 +238,14 @@ slot. Pinned:
 - **Mass conservation prerequisite:** the EOS evacuation rule (design §2.2,
   the door-close half that was never built) ships BEFORE doors v0, with a
   test cycling a door in a sealed room asserting exact N conservation.
-  Closing a door *evacuates* its tiles' gas to neighbors; opening uses the
-  existing joins-open-air rule. **Water rule v1:** a door refuses to close
+  Closing a door *evacuates* its tiles' gas to neighbors; ~~opening uses the
+  existing joins-open-air rule~~ *[ERRATA 2026-07-19, ruling 4 — see a5 doc
+  §1 (`archive/a5_evacuation_impl_2026-07-18.md`): as built, door flips use
+  the conservative `seal_tiles`/`unseal_tiles` pair — the open direction
+  withdraws its seed from the donor neighbors, equalizing over donors plus
+  the opened tile (the k+1 divisor), so cycling is exactly N-conserving.
+  Only DESTRUCTION (`destroy_wall`) keeps the minting joins-open-air rule —
+  bounded and un-cyclable]*. **Water rule v1:** a door refuses to close
   over `water_depth > 0` (same blocked semantics as units — simple,
   deterministic; displacement is future work).
 - **Occupancy rule (decision):** a door close is **blocked while any living
@@ -298,6 +304,24 @@ call, §3e) · wall-burst-differential blessed and merged same session.
 Plus all critic-resolution decisions recorded inline above (close-beats-open,
 occupied-blocks-close, structural door sweep, slot 9e, sample tiles, pump
 N-feed, τ snap, id scheme, S8a gather, dormancy guarantee).
+2026-07-19, Arc A close-out (as built; A1–A9 merged, Erik blessed):
+**ruling 4** — door flips use the conservative `seal_tiles`/`unseal_tiles`
+pair (exact N; open seed equalizes over donors + tile, k+1 divisor);
+destruction keeps the minting rule (Erik's rubble model canon: debris
+displaces volume, pressure constant); close-T = solid-neighbor mean, air-T
+fallback · **ruling 5** — the door toggle is a synced `want_open` latch
+(retry-until-clear); the O key stays dev-only · **`MAT_DOOR_CLOSED` (id 7)
+forked** — closed entity doors are fully solid; painted `MAT_DOOR` stays
+the legacy walkable hybrid · **whole-door-dies** — partial external
+destruction kills the assembly, no stub panels · **door HP is a per-tile
+runtime vector** (fold on open, restamp on close — no heal, no smear) ·
+**A7 finding: the sanctioned re-baseline was EMPTY of committed artifacts**
+(every golden derives from synthetic content; only `test_level`'s
+uncommitted digest identity flipped — `archive/
+a7_rebaseline_rationale_2026-07-19.md`) · **units still out** — the §3e
+stack-2 convergence contract is unchanged. Canon fold:
+`architecture/engine/16_entity_system.md`; arc docs archived under
+`docs/archive/`.
 
 ## 10. The arc plan (replaces editor doc §9)
 

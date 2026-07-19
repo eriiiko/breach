@@ -97,7 +97,10 @@ obligations only:
 
 - **DOOR tool:** places a door entity on a wall run (snap, default 1.0 m,
   drag to resize; width warnings per footprint, no hard minimum). The
-  entity is authoritative; its `MAT_DOOR` tiles are written to the grid
+  entity is authoritative; its ~~`MAT_DOOR`~~ door-material tiles *[ERRATA
+  2026-07-19, A6 — closed doors stamp `MAT_DOOR_CLOSED` (id 7, fully
+  solid); painted `MAT_DOOR` remains the legacy walkable hybrid; see
+  `archive/a6_doors_v0_impl_2026-07-19.md` §1]* are written to the grid
   **immediately on placement** (not at save) so the live preview and
   physics-adjacent validators see them; the compound op is one undo
   transaction.

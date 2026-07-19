@@ -160,6 +160,13 @@ mechanism: rising water pushes its cell's air into the neighbors, `N` rises ther
 `p* = C·N·T` rises, and the push falls out of §3 — no field multiply, no gain constant.
 Conversely a cell *joining* open-air (`destroy_wall`) is seeded by neighbor-mean `N`
 (the same anti-vacuum-pulse smoothing the old code applied to `atmosphere`).
+*[ERRATA 2026-07-19, ruling 4 — the minting neighbor-mean seed is the rule for
+DESTRUCTION only (`destroy_wall`: breach, burn-through, burst, bullet chew —
+bounded, un-cyclable). Door flips instead use the conservative
+`seal_tiles`/`unseal_tiles` pair: the open direction WITHDRAWS its seed from
+the donor neighbors, equalizing over donors plus the opened tile (k+1
+divisor), so door cycling is exactly N-conserving. See a5 doc §1
+(`archive/a5_evacuation_impl_2026-07-18.md`).]*
 
 **Furniture:** open-air for gas (carries real `N`); its partial permeability gates
 donor-cell face flux exactly as it gates today's diffusion stencil.

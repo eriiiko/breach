@@ -19,6 +19,28 @@
 
 ## Pending — small (background, queue up next session)
 
+- **Blast-tuple wart (Arc A rider, A6, 2026-07-19)** — `apply_explosion`'s
+  structural wall damage gates on the hardcoded tuple at `physics.py:104`
+  (now `MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_DOOR_CLOSED`) instead of the
+  material table; steel/glass/furniture are excluded from blast wall damage
+  (pre-existing, kin to the fire-vs-furniture item below). Widening it is
+  feel-adjacent (HUMAN-TEST) — decide at physics close-out (priority ledger
+  stack #1).
+
+- **Baker writeback onto level_lib (Arc A rider, A2 accepted gap,
+  2026-07-19)** — `bake_level_art.write_bake_blocks` is still its own
+  non-atomic `[art]`/`[bake]` writer; entity design §3c says level_lib is
+  THE data layer, all clients. Fold it in at Arc C (editor arc). Ctrl+S
+  re-records mtime+hash after baking, so staleness tracking stays honest
+  meanwhile.
+
+- **Legacy-level entity migration (Arc A ruling 2 remainder, 2026-07-19)** —
+  only `test_level` was migrated (A7). `bake_demo` waits until its committed
+  baked art rebakes (a 3→7 tilemap rewrite would desync tilemap ↔ baked
+  PNGs); `unhcr_vessel`/`unhcr_vessel_2`/`playground` migrate at Erik's
+  choosing, likely Arc C. Each later migration is a new digest event with
+  its own rationale (`docs/archive/a7_rebaseline_rationale_2026-07-19.md`).
+
 - **Fire never destroys furniture (audit rider, weapons W2, 2026-07-05)** —
   the C++ fire's burn-through list is `is_wall`-gated, so a burning crate
   depletes its fuel (`wall_hp`) but the tile itself survives as a husk;

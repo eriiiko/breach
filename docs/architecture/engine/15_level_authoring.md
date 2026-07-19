@@ -68,8 +68,11 @@ playable, lit, textured level — the intended path for generated RL-training ma
   `specular`/`height`) + optional `emissive_mask`.
 - **`[art.align]`** — `offset_px` + `px_per_tile` (scalar or `[x, y]`): the single
   non-destructive transform (`tile_to_art_px`) through which renderer and editors sample art.
-- Doors are `MAT_DOOR` tiles (wall-like material). The doors-v1 state machine (sliding slabs,
-  proposal §3) is **not yet built**; see §6 upgrade paths.
+- Doors: *painted* `MAT_DOOR` tiles are the LEGACY form (walkable, flow-solid hybrid). As of
+  Arc A (2026-07-19) doors are **entities** (ch. 16): `[[entity]]` door instances whose closed
+  state stamps `MAT_DOOR_CLOSED` (id 7, fully solid). Legacy painted doors keep their behavior
+  until a level is explicitly migrated (`tools/migrate_level_entities.py`; mixed forms in one
+  file hard-error).
 
 ## 2. Format v2.1 — three additive extensions
 
@@ -216,9 +219,10 @@ texture editing, in-game editing (see §6).
 
 ## 6. Upgrade paths (nothing below is blocked by v1 decisions)
 
-- **Doors v1** (sliding slabs + open/close state machine, old proposal §3/F6): tiled levels
-  store doors as `MAT_DOOR` tiles exactly like painted levels, so when door objects land they
-  apply to both paths for free. The editor gains open/closed initial-state then.
+- **Doors v1** — LANDED as entity doors (Arc A, 2026-07-19; ch. 16): door entities with
+  open/closed state, `MAT_DOOR_CLOSED` stamps, seal/unseal gas conservation. The editor's DOOR
+  tool learns entities in Arc C; until then this editor's one-click `MAT_DOOR` placement
+  authors the legacy hybrid form.
 - **In-game edit mode**: the old proposal's target. The standalone editor's pure helpers are
   the part that migrates; deferred until doors/entities settle the sim-side seams.
 - **47-case blob autotiling, 45° pieces, styled AI tilesets, per-room floor themes**: tileset
