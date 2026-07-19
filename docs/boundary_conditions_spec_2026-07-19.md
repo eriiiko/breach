@@ -1,6 +1,11 @@
 # Boundary conditions — planetside AMBIENT ring (2026-07-19)
 
-**Status:** v2 DRAFT (same-day critique fold) — physics close-out, priority ledger #1.
+**Status:** v2.2 — physics close-out, priority ledger #1. B2 (format/load) + B3a/B3b (CPU
+physics) LANDED green on `bc-ambient-ring`; the shift + per-substep reset + pin work
+(gate 1 flat interior at defaults AND non-default dials; gate 2 rush-in — both pass). **B3
+inverted the §3 absorber ladder** (σ-pressure sponge reflects, ships OFF; u-damping is the
+real absorber, not wired — OPEN feel decision, §3). Remaining: absorber decision → B4 CUDA
+lockstep → B5 human feel-test.
 **Sequencing:** lands **BEFORE** the S8a residency build (`cuda_s8a_residency_spec_2026-07-19.md` §5c).
 **Sources:** Topic 4 survey (`notes_2026-07-17_topics_backlog.md`), A9 hook (`level_loader.py:468-533`),
 Erik's decisions (§0), STEP-A audit (`bc_step_a_audit_2026-07-19.md`), three-lens adversarial
@@ -40,9 +45,11 @@ ambient reservoir). Pragmatic simplest; determinism iron; no solve-structure cha
 3. **No water BC.** Oceans = indestructible authored reservoir. Ring = space-ring for water
    (one seed-mask widening; the water solver never reads is_vacuum at runtime — verified).
 4. **Wind-in ≠ boundary mode** — source term, separate feature.
-5. **Absorption target is imperceptibility, not perfection** (Erik). Mechanism decided by
-   Claude under delegation: §3 ladder, gate-calibrated. Characteristic/radiation BCs remain
-   rejected (direction decomposition, corner fragility, non-Q16 pull).
+5. **Absorption target is imperceptibility, not perfection** (Erik). Mechanism was delegated
+   to Claude — but B3 measurement (v2.2, §3) inverted the designed ladder: the σ-pressure
+   sponge reflects; velocity damping is the real absorber, and is NOT yet wired. Whether to
+   wire it at all is an OPEN feel-adjacent decision for Erik (the ~0.02 atm residual may be
+   imperceptible → a B5 call). Characteristic/radiation BCs remain rejected.
 
 ## 1. The mechanism (v2 — the structural principle)
 
@@ -107,39 +114,43 @@ table is the build's checklist; every touched TU is listed there. The retired pr
 `atmosphere_solver.cpp` contains a working BFS+ramp sponge (`:480-542`) — use as algorithm
 reference, do NOT edit the dead file.
 
-## 3. The absorber ladder (v2 — measure first, escalate to the gate)
+## 3. The absorber ladder — INVERTED by B3 measurement (v2.2, 2026-07-19)
+
+> **B3 finding (empirical, `9d7d244`): the ladder below was backwards.** The σ-pressure
+> sponge (old rung 1) **reflects, and reflects MORE as σ_max rises** — physically a soft
+> Dirichlet pin is a pressure-release boundary, and adding diagonal mass just hardens it.
+> Rung-1 was WIRED (consumption in `mg_build_levels`, ambient-gated, space-dormant) then
+> **calibrated to σ_max = 0** (ships OFF; `DEFAULT_SPONGE_STRENGTH = 0`). The **velocity
+> damping** (old rung 2, demoted to "mop-up") is the actual absorber — a scratch probe cut
+> the residual substantially (e.g. 66%→21%) where σ made it worse. This matches the PML
+> truth: you absorb by removing momentum energy (damp u), not by pinning P harder. So the
+> real ladder is **rung 0 (pin only) → u-damping band**; the σ-pressure sponge is a dead
+> dial kept only for the record. **OPEN DECISION (Erik, feel-adjacent):** whether to wire
+> the u-damping band at all — see the note below and §0.5. NOT yet built.
 
 Acoustic fronts cross ~37.5 tiles/tick via the implicit solve (c·dt/dx; matches the ambient
-Helmholtz k≈1409). A u-damping band is therefore NOT the primary absorber (≤1 application
-per transit — v1's PML story doesn't hold here). The ladder:
+Helmholtz k≈1409). The as-built ladder:
 
-- **Rung 0 — pin + ring alone.** The P_amb Dirichlet ring + mass-swallowing reservoir is
-  itself an absorber. Build it, run §6 gate 3's protocol. If ≤2% with 2× margin: DONE,
-  sponge stays a dormant dial.
-- **Rung 1 — σ(d) pressure sponge (the expected lander):** static sponge mass added to the
-  **level-0 Helmholtz row diagonal** at band cells: `(m+σ)·P′ + Σg(P′−P′_nb) = m·rhs′`
-  (under the shift the σ·P_amb RHS term vanishes — σ pulls P′ toward 0 ≡ ambient).
-  Enters before `mg_build_levels`, so Galerkin folds it to coarse levels automatically;
-  all-integer; unconditionally stable; acts within the tick the wave arrives.
-  Profile: `σ(d) = σ_max·(W−d)²//W²` (integer, no float pow), 4-neighbour BFS distance
-  from ring through open air (`~solid` predicate), W default 8. **Scale note (v2.1):**
-  the ambient row mass is ~1/1409 real and face conductances ~1 real each — a useful σ
-  is plausibly ≫ FP_ONE (extends the Dirichlet ring inward with a taper); int64 row mass
-  (M_CAP 2³⁸) makes σ up to hundreds of FP_ONE overflow-safe. Insertion: after the
-  `L.b` build (b uses the un-σ'd m — the spec equation), before the Galerkin coarse
-  build and the recip build, so both fold σ automatically.
-- **Rung 2 — u-mop-up (only if gate still fails):** magnitude-first Q16 multiply (the
-  truncating-mul sign convention — naive signed multiply leaves a stuck −1-count floor),
-  placed immediately after the existing absorb chain in step 4 (`eos_solver.cpp:531-541`)
-  and its CUDA twin, per tick.
-- **Grid facts:** sponge grid computed in `GameMap.__init__` from the FINAL post-upscale
-  grid, with W scaled by the res factor (`tile_size_m_base` precedent, `main.py:145-154`);
-  passed to C++ as an int32 Q16 plane quantized ONCE at load. Staleness accepted:
-  destroy_wall near the ring can open un-sponged air (k=0 holes) — documented gap, revisit
-  only if the bake shows it.
-- **Calibration:** σ_max (and k_max if rung 2 lands) tuned until gate 3 passes at ≥2×
-  margin, then pinned as config constants (placeholder constants ship in the loader patch;
-  pinned values land with the physics patch — resolves the v1 circularity).
+- **Rung 0 — pin + ring alone (SHIPPED).** The P_amb Dirichlet ring + mass-swallowing
+  reservoir. Measured rung-0 residual is clearly non-zero but the B3 harness was
+  timing/geometry-aliased (2–24% across geometries — NOT a trustworthy ≤2% verdict). The
+  transient amplitudes are small (~0.02 atm), so whether the residual is even perceptible
+  is likely a **B5 feel question** (§0.5 imperceptibility, not perfection), not a hard gate.
+- **Rung 1 — σ(d) pressure sponge: DEAD (measured to reflect).** Wired + dormant (σ_max=0).
+  Kept in-code (ambient-gated, space byte-identical) so the finding is reproducible; do NOT
+  spend more on it.
+- **Rung-2-now-the-real-absorber — u-damping band (NOT wired; open decision):** magnitude-
+  first Q16 multiply on the band velocity (the truncating-mul sign convention — a naive
+  signed multiply leaves a stuck −1-count floor), placed after the existing absorb chain in
+  step 4 (`eos_solver.cpp:531-541`) + its CUDA twin. Needs its own band grid (the B2 BFS
+  distance grid is reusable) AND a **robust reflection-gate harness** (B3's was too noisy to
+  calibrate against — build that first). Deferred pending Erik's call on whether the echo is
+  worth absorbing at all.
+- **Grid facts (still valid):** the B2 `sponge_sigma` grid is computed in `GameMap.__init__`
+  from the FINAL post-upscale grid, W scaled by res_factor, int32 Q16, quantized once at
+  load. A u-damping band would reuse the same BFS distance infrastructure. Staleness
+  accepted: destroy_wall near the ring can open un-sponged air — documented gap.
+- **Calibration:** deferred with the u-damping decision; requires the robust harness first.
 
 ## 4. Level format (backward compatible)
 
