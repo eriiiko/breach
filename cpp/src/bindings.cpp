@@ -1355,6 +1355,15 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readonly("work_clamp_hits",    &EOSSolver::work_clamp_hits)
         .def_readonly("t_max_phys_hits",    &EOSSolver::t_max_phys_hits) // v2.4
         .def_readonly("u_max_hits",         &EOSSolver::u_max_hits)      // v2.4
+        // BC (spec §5): the boundary_flux rail — per-conservative-plane int64
+        // Σ(N_pre_reset − N_amb). Returned as a Python list (empty on space
+        // maps). NOT folded into any digest (absence-transparent, zero golden
+        // re-baseline).
+        .def("boundary_flux", [](const EOSSolver& s) {
+            py::list out;
+            for (int64_t v : s.boundary_flux()) out.append(v);
+            return out;
+        })
         .def_readonly("digest_advect",      &EOSSolver::digest_advect)
         .def_readonly("digest_bulk_flux",   &EOSSolver::digest_bulk_flux)
         .def_readonly("digest_pstar",       &EOSSolver::digest_pstar)
@@ -1725,7 +1734,8 @@ PYBIND11_MODULE(breach_physics, m) {
                              py::array_t<int32_t> gas,
                              py::array_t<bool> gas_conservative,
                              int o2_idx,                         // EOS P4
-                             float sim_time) -> py::list {
+                             float sim_time,
+                             py::object is_ambient) -> py::list {   // BC
             // ripple group
             auto [rip, h, w]    = get_2d(ripple);
             auto [ripv, h2, w2] = get_2d(ripple_v);
@@ -1758,13 +1768,21 @@ PYBIND11_MODULE(breach_physics, m) {
             const int n_gases = static_cast<int>(gv.shape(0));
             auto gc = gas_conservative.unchecked<1>();
             const bool* gcons = gc.data(0);
+            // BC nullable is_ambient (None on space maps -> nullptr).
+            const bool* amb = nullptr;
+            py::array_t<bool> amb_arr;
+            if (!is_ambient.is_none()) {
+                amb_arr = is_ambient.cast<py::array_t<bool>>();
+                auto aa = amb_arr.unchecked<2>();
+                amb = aa.data(0, 0);
+            }
 
             auto destroyed = self.step_tail(
                 rip, ripv, wd, wp, sol,
                 f, atm, sm, whp, temp, wx, wy, vac, fl,
                 temp, hp, shift, fs,
                 gas_ptr, gcons, n_gases, o2_idx,
-                h, w, sim_time);
+                h, w, sim_time, amb);
             py::list result;
             for (const auto& [dy, dx] : destroyed) {
                 result.append(py::make_tuple(dy, dx));
@@ -1778,7 +1796,8 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("is_vacuum"), py::arg("flammable"),
            py::arg("heat"), py::arg("heat_inv_shift"), py::arg("face_shift"),
            py::arg("gas"), py::arg("gas_conservative"), py::arg("o2_idx"),
-           py::arg("sim_time"))
+           py::arg("sim_time"),
+           py::arg("is_ambient") = py::none())   // BC (default None = space map)
         // --- Patch 1 S4b: the IMEX atmosphere/smoke substep loop ------------
         // run_substeps moves the per-tick IMEX substep block of PhysicsRunner.step
         // (between _step_water and step_tail) into C++. Pointer extraction mirrors
@@ -1808,7 +1827,14 @@ PYBIND11_MODULE(breach_physics, m) {
                                 py::array_t<bool> gas_conservative, // EOS P1
                                 py::array_t<float> gas_decay,       // EOS P4
                                 int inert_n2_idx,                   // EOS P4
-                                float sim_time) {
+                                float sim_time,
+                                // BC (boundary_conditions_spec_2026-07-19): the
+                                // planetside AMBIENT ring. All None on space maps
+                                // -> nullptr -> byte-identical (dormancy by branch).
+                                py::object is_ambient,
+                                py::object n_amb,
+                                int32_t p_amb,
+                                py::object sponge_sigma) {
             auto [pp, h, w]    = get_2d(p_prev);
             auto [atm, h4, w4] = get_2d(atmosphere);
             auto [wx, h5, w5]  = get_2d(wind_x);
@@ -1836,12 +1862,36 @@ PYBIND11_MODULE(breach_physics, m) {
             // each trace plane's own advection, credited to inert_n2_idx.
             auto gdc = gas_decay.unchecked<1>();
             const float* gdecay = gdc.data(0);
+            // BC nullable extraction (the WaterSolver.step precedent, above):
+            // None -> nullptr; else cast to an array kept alive in this scope.
+            const bool* amb = nullptr;
+            py::array_t<bool> amb_arr;
+            if (!is_ambient.is_none()) {
+                amb_arr = is_ambient.cast<py::array_t<bool>>();
+                auto aa = amb_arr.unchecked<2>();
+                amb = aa.data(0, 0);
+            }
+            const int32_t* namb = nullptr;
+            py::array_t<int32_t> namb_arr;
+            if (!n_amb.is_none()) {
+                namb_arr = n_amb.cast<py::array_t<int32_t>>();
+                auto na = namb_arr.unchecked<1>();
+                namb = na.data(0);
+            }
+            const int32_t* sponge = nullptr;
+            py::array_t<int32_t> sponge_arr;
+            if (!sponge_sigma.is_none()) {
+                sponge_arr = sponge_sigma.cast<py::array_t<int32_t>>();
+                auto sp = sponge_arr.unchecked<2>();
+                sponge = sp.data(0, 0);
+            }
             self.run_substeps(
                 pp, atm, wx, wy, temp,
                 obs, sol, vac, perm, wabs,
                 gas_ptr, gdiff, n_gases, gcons,
                 gdecay, inert_n2_idx,
-                h, w, sim_time);
+                h, w, sim_time,
+                amb, namb, p_amb, sponge);
         }, py::arg("p_prev"),
            py::arg("atmosphere"), py::arg("wind_x"), py::arg("wind_y"),
            py::arg("temperature"),
@@ -1849,7 +1899,12 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("dyn_permeability"), py::arg("dyn_wave_absorb"),
            py::arg("gas"), py::arg("gas_diffusion"), py::arg("gas_conservative"),
            py::arg("gas_decay"), py::arg("inert_n2_idx"),
-           py::arg("sim_time"))
+           py::arg("sim_time"),
+           // BC: default None/0 -> the pre-BC call site (space maps) is unchanged.
+           py::arg("is_ambient") = py::none(),
+           py::arg("n_amb") = py::none(),
+           py::arg("p_amb") = 0,
+           py::arg("sponge_sigma") = py::none())
         // --- Patch 1 S4c: the water-layer array arithmetic ------------------
         // step_water moves the array-op body of PhysicsRunner._step_water into
         // C++ (substep loop + W5 flash-boil + W3 displacement/seal + the final

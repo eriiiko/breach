@@ -241,7 +241,12 @@ public:
         const int32_t* wind_x,
         const int32_t* wind_y,
         int h, int w,
-        float dt
+        float dt,
+        // BC (boundary_conditions_spec_2026-07-19 §1, audit (b)): the ambient
+        // ring is wiped to ΔT=0 in the Pass-0 pre-pass, the vacuum-breach idiom
+        // verbatim (heat radiates to the T_amb sky). Default nullptr keeps the
+        // space path AND the direct-binding test path byte-identical.
+        const bool* is_ambient = nullptr
     ) const;
 
     // --- DEBUG probe (temporary instrumentation, eos-p3fix-thermal-ceiling

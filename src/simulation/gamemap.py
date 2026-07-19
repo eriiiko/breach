@@ -1129,6 +1129,15 @@ class GameMap:
         atm = _atm_fx.dequantize(self.atmosphere)
         solid = self.solid
         is_vacuum = self.is_vacuum
+        # BC (boundary_conditions_spec_2026-07-19 §1, audit (c)): an ambient-side
+        # neighbour is a real side holding the effective pin P_amb (not 0 like a
+        # vacuum side, and not its possibly-stale materialized `atm` value — a
+        # just-breached ring tile is seeded by neighbour-mean, not yet re-pinned).
+        # So a wall with ambient on BOTH sides holds ~0 spread and never bursts.
+        # On a space map is_ambient is empty -> the vacuum/atm branch is unchanged.
+        is_ambient = self.is_ambient
+        p_amb_real = (float(self._ambient.pin_q) / _atm_fx.FP_ONE
+                      if self._ambient is not None else 0.0)
         thresh = self.materials.burst_threshold
 
         failing = []  # (differential, fy, fx)
@@ -1150,8 +1159,14 @@ class GameMap:
                 # tile with fewer than two open/vacuum sides can never burst.
                 if solid[ny, nx]:
                     continue
-                # An exposed-vacuum breach is a real side holding no air.
-                p = 0.0 if is_vacuum[ny, nx] else float(atm[ny, nx])
+                # An exposed-vacuum breach is a real side holding no air; an
+                # ambient breach is a real side holding the effective pin P_amb.
+                if is_vacuum[ny, nx]:
+                    p = 0.0
+                elif is_ambient[ny, nx]:
+                    p = p_amb_real
+                else:
+                    p = float(atm[ny, nx])
                 lo = p if lo is None or p < lo else lo
                 hi = p if hi is None or p > hi else hi
             if lo is None:
@@ -1207,18 +1222,27 @@ class GameMap:
             # open-air with a neighbor-mean seed (anti-vacuum-pulse, as ever).
             on_edge_hull = was_hull and (
                 fy < 1 or fy >= h - 1 or fx < 1 or fx >= w - 1)
-            # "Exposing vacuum" == a 4-neighbour that is EXPOSED vacuum
-            # (vacuum AND not solid — an intact hull tile is vacuum AND solid
-            # and does NOT count; see _rebuild-era `breach` predicate).
-            exposes_vacuum = any(
+            # BC (boundary_conditions_spec_2026-07-19 §1, joins-AMBIENT twin): on
+            # a planetside map a breached edge hull opens to SKY, not to space —
+            # the exposes rule reads and joins `is_ambient`, not `is_vacuum` (the
+            # two masks are mutually exclusive; a space map's is_ambient is empty
+            # and this is the exact prior behaviour). `breach_mask` is the map's
+            # single boundary mask.
+            breach_mask = (self.is_ambient if self._boundary == "ambient"
+                           else self.is_vacuum)
+            # "Exposing the boundary" == a 4-neighbour that is the EXPOSED
+            # boundary (vacuum/ambient AND not solid — an intact hull tile is
+            # vacuum AND solid and does NOT count; see the `breach` predicate).
+            exposes = any(
                 0 <= fy + dy < h and 0 <= fx + dx < w
-                and self.is_vacuum[fy + dy, fx + dx]
+                and breach_mask[fy + dy, fx + dx]
                 and not self.solid[fy + dy, fx + dx]
                 for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)))
-            if on_edge_hull or exposes_vacuum:
-                # True breach — the tile joins vacuum; the solver's Dirichlet
-                # P=0 + donor-cell venting drain it natively (no hard zero).
-                self.is_vacuum[fy, fx] = True
+            if on_edge_hull or exposes:
+                # True breach — the tile joins the boundary reservoir; the
+                # solver's Dirichlet pin (P=0 vacuum / P=P_amb ambient) + donor-
+                # cell venting drain/fill it natively (no hard zero).
+                breach_mask[fy, fx] = True
             self.atmosphere[fy, fx] = self._neighbor_mean(
                 self.atmosphere, fy, fx)
             self._seed_bulk_gas_neighbor_mean(fy, fx)
@@ -1502,19 +1526,24 @@ class GameMap:
             self.material[fy, fx] = MAT_AIR
             self.on_tile_changed(fy, fx)
 
-            # Vacuum join (destroy_wall's exposes_vacuum predicate, minus
-            # its unconditional mint): LIVE solid mask — chains down-span.
-            joins_vacuum = bool(self.is_vacuum[fy, fx])
-            if not joins_vacuum:
+            # Boundary join (destroy_wall's exposes predicate, minus its
+            # unconditional mint): LIVE solid mask — chains down-span. BC
+            # (joins-AMBIENT twin): on a planetside map the tile joins the
+            # ambient SKY reservoir (is_ambient), not space (is_vacuum). A space
+            # map's is_ambient is empty, so this is the exact prior behaviour.
+            breach_mask = (self.is_ambient if self._boundary == "ambient"
+                           else self.is_vacuum)
+            joins_boundary = bool(breach_mask[fy, fx])
+            if not joins_boundary:
                 for dy, dx in self._FACE_DIRS:
                     ny, nx = fy + dy, fx + dx
                     if (0 <= ny < h and 0 <= nx < w
-                            and self.is_vacuum[ny, nx]
+                            and breach_mask[ny, nx]
                             and not self.solid[ny, nx]):
-                        joins_vacuum = True
+                        joins_boundary = True
                         break
-            if joins_vacuum:
-                self.is_vacuum[fy, fx] = True
+            if joins_boundary:
+                breach_mask[fy, fx] = True
                 continue
 
             donors = []

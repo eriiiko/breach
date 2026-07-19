@@ -57,6 +57,15 @@ void bulk_flux_transport(
 // across calls. Arithmetic per face is IDENTICAL to the legacy entry — the
 // caller hoists the loop-invariant computation, nothing more. The legacy
 // entry remains for the pybind/P1-test path and now forwards here.
+// BC (boundary_conditions_spec_2026-07-19 §1 "N — sink becomes clamp, per
+// substep"): the three trailing params add the planetside AMBIENT ring reset.
+// ALL default nullptr -> the legacy/space path is byte-identical (dormancy BY
+// BRANCH, spec §5): every ambient branch is gated on is_ambient != nullptr.
+//   is_ambient    : (h, w) — the ambient reservoir mask (nullptr = space map)
+//   n_amb         : (n_gases,) — the per-plane ambient N value the ring clamps
+//                   to (conservative planes only; 0 elsewhere). nullptr = space.
+//   boundary_flux : (n_gases,) int64 rail — accumulates Σ(N_pre_reset − N_amb)
+//                   per conservative plane, per substep (§5). nullptr = no rail.
 void bulk_flux_transport_cached(
     int32_t* gas,
     const bool* gas_conservative,
@@ -67,4 +76,7 @@ void bulk_flux_transport_cached(
     const bool* is_vacuum,
     const int32_t* coeffE,
     const int32_t* coeffS,
-    int h, int w);
+    int h, int w,
+    const bool* is_ambient = nullptr,
+    const int32_t* n_amb = nullptr,
+    int64_t* boundary_flux = nullptr);

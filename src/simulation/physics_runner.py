@@ -333,6 +333,10 @@ class PhysicsRunner:
         self._o2_idx = None
         self._inert_n2_idx = None
         self._black_smoke_idx = None
+        # BC: cached (n_gases,) int32 N_amb vector for the ambient ring clamp —
+        # built once per map on the first ambient step() (the config is static;
+        # rebuilt if the map/gas count changes). None until built / on space maps.
+        self._ambient_n_amb = None
 
         # WaterSolver (engine/07 §2, water plan W2): the pipe model that
         # advances gmap.water_depth. Params are bound through a METHOD (not
@@ -467,6 +471,16 @@ class PhysicsRunner:
             self._o2_idx = int(gmap.gases.name_to_id["o2"])
             self._inert_n2_idx = int(gmap.gases.name_to_id["inert_n2"])
             self._black_smoke_idx = int(gmap.gases.name_to_id["black_smoke"])
+
+        # BC (boundary_conditions_spec_2026-07-19): the planetside AMBIENT ring.
+        # On a space map every ambient arg is None -> the C++ path is
+        # byte-identical (dormancy BY BRANCH, spec §5). On an ambient map, thread
+        # the ring mask, the effective pin P_amb (the shift), the per-plane N_amb
+        # (the ring clamp), and the σ-sponge grid (B3b). n_amb is a (n_gases,)
+        # int32 vector — zero except the two conservative bulk planes, which the
+        # bulk-transport reset clamps to the level's N-primary split. Cached: the
+        # config is static per map (self._ambient_n_amb keyed off gas count).
+        amb = self._ambient_args(gmap)
         self.engine.run_substeps(
             gmap.wave_p, gmap.atmosphere,
             gmap.wind_x, gmap.wind_y,
@@ -476,6 +490,7 @@ class PhysicsRunner:
             gmap.gas, gmap.gases.diffusion, gmap.gases.conservative,
             gmap.gases.decay, self._inert_n2_idx,
             sim_time,
+            is_ambient=amb[0], n_amb=amb[1], p_amb=amb[2], sponge_sigma=amb[3],
         )
 
         # EOS refactor P4 (design §5, §3.2 "step 6: combustion pass ... reads
@@ -549,6 +564,9 @@ class PhysicsRunner:
             gmap.heat, gmap.heat_inv_shift, gmap.face_shift,
             gmap.gas, gmap.gases.conservative, self._o2_idx,
             sim_time,
+            # BC: the ambient ring is wiped to ΔT=0 in the temperature pre-pass
+            # (the vacuum-breach idiom); None on space maps = byte-identical.
+            is_ambient=amb[0],
         )
 
         # NOTE: the per-tick `heat` clear does NOT live here. `heat` has a
@@ -562,6 +580,34 @@ class PhysicsRunner:
         # conversion was the only consumer; STEP D moves it out.)
 
         return destroyed
+
+    # ------------------------------------------------------------------
+    # BC: planetside AMBIENT ring args (boundary_conditions_spec_2026-07-19)
+    # ------------------------------------------------------------------
+    def _ambient_args(self, gmap):
+        """Return ``(is_ambient, n_amb, p_amb, sponge_sigma)`` for the C++ path.
+
+        On a space map (no ambient config, or no ring tiles) returns
+        ``(None, None, 0, None)`` — every C++ ambient branch is gated on a
+        non-null pointer, so the tick is byte-identical to before BC existed
+        (dormancy BY BRANCH, spec §5). On an ambient map returns the live ring
+        mask, the per-plane N_amb clamp vector, the effective pin P_amb (the
+        shift trick's shift), and the σ-sponge grid (B3b consumes it; all-zero
+        until calibrated). The N_amb vector is the N-primary split
+        (``simulation.ambient``): O2 -> n_o2_q, inert_N2 -> n_n2_q, 0 elsewhere.
+        """
+        amb = getattr(gmap, "_ambient", None)
+        if amb is None or not gmap.is_ambient.any():
+            return (None, None, 0, None)
+        n_gases = gmap.gas.shape[0]
+        if (self._ambient_n_amb is None
+                or self._ambient_n_amb.shape[0] != n_gases):
+            n_amb = np.zeros(n_gases, dtype=np.int32)
+            n_amb[self._o2_idx] = int(amb.n_o2_q)
+            n_amb[self._inert_n2_idx] = int(amb.n_n2_q)
+            self._ambient_n_amb = n_amb
+        return (gmap.is_ambient, self._ambient_n_amb,
+                int(amb.pin_q), gmap.sponge_sigma)
 
     # ------------------------------------------------------------------
     # K2: sim-side fire heat ray pass

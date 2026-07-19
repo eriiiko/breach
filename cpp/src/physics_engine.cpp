@@ -56,7 +56,8 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // EOS P3: bulk-N source (real Pass-1 heat-deposit divisor)
         // EOS P4: o2_idx slices the real O2 gate input out of `gas`
         const int32_t* gas, const bool* gas_conservative, int n_gases, int o2_idx,
-        int h, int w, float sim_time) const {
+        int h, int w, float sim_time,
+        const bool* is_ambient) const {   // BC: ambient ring for the T pre-pass
 
     using namespace fixedpoint;
 
@@ -236,7 +237,8 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             solid, is_vacuum, atmosphere,
             n_bulk_.data(),
             nullptr, nullptr,
-            h, w, sim_time);
+            h, w, sim_time,
+            is_ambient);   // BC: ring wiped to ΔT=0 (Pass-0), vacuum idiom
     }
 
     return destroyed;
@@ -262,7 +264,9 @@ void PhysicsEngine::run_substeps(
         int32_t* gas, const float* gas_diffusion, int n_gases,   // S2b: gas Q16.16
         const bool* gas_conservative,                             // EOS P1
         const float* gas_decay, int inert_n2_idx,                 // EOS P4
-        int h, int w, float sim_time) {
+        int h, int w, float sim_time,
+        const bool* is_ambient, const int32_t* n_amb, int32_t p_amb,
+        const int32_t* sponge_sigma) {                            // BC
     (void)obstacles;   // EOS P3: the solver's own `solid` mask IS the obstacle
                        // set (gamemap.py: obstacles == solid == permeability<=0);
                        // kept as a parameter for ABI/back-compat with the
@@ -295,7 +299,8 @@ void PhysicsEngine::run_substeps(
             gas, gas_conservative, n_gases,
             solid, is_vacuum,
             dyn_permeability, dyn_wave_absorb,
-            h, w, sim_time);
+            h, w, sim_time,
+            is_ambient, n_amb, p_amb, sponge_sigma);   // BC: ambient ring
     }
 
     // Traces advect ONCE per tick, on the solver's final (post-correction)

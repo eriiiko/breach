@@ -128,7 +128,10 @@ public:
         // EOS P3: bulk-N source for the Pass-1 heat-deposit divisor.
         // EOS P4: o2_idx slices the real O2 gate input out of `gas`.
         const int32_t* gas, const bool* gas_conservative, int n_gases, int o2_idx,
-        int h, int w, float sim_time) const;
+        int h, int w, float sim_time,
+        // BC: ambient ring mask forwarded to TemperatureSolver::step's Pass-0
+        // wipe (nullptr on space maps = byte-identical).
+        const bool* is_ambient = nullptr) const;
 
     // --- Patch 1 S4b: the IMEX atmosphere/smoke substep loop -------------
     // Moves the per-tick IMEX substep block out of PhysicsRunner.step (Python)
@@ -231,7 +234,13 @@ public:
         int32_t* gas, const float* gas_diffusion, int n_gases,   // S2b: gas Q16.16
         const bool* gas_conservative,                             // EOS P1
         const float* gas_decay, int inert_n2_idx,                 // EOS P4
-        int h, int w, float sim_time);
+        int h, int w, float sim_time,
+        // BC (boundary_conditions_spec_2026-07-19): planetside AMBIENT ring —
+        // forwarded to eos.step (nullptr/0 on space maps = byte-identical).
+        const bool* is_ambient = nullptr,
+        const int32_t* n_amb = nullptr,
+        int32_t p_amb = 0,
+        const int32_t* sponge_sigma = nullptr);
 
     // --- Patch 1 S4c: the water-layer ARRAY ARITHMETIC -------------------
     // Moves the array-op core of PhysicsRunner._step_water into C++ — the part
