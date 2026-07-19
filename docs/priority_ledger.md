@@ -12,34 +12,32 @@ Created 2026-07-17 from Erik's stated stack; Erik owns the ordering.
 
 ### 1. Physics engine v1 — close it out  ← NEXT (Arc A done; this unblocks Arc B)
 - **EOS residency patch** — the last rung-B step: stop streaming all fields
-  GPU→CPU each tick (S8a). Finishes the EOS arc. ⚠ `cuda_s8a_residency_spec.md`
-  is pre-EOS (lists retired fields incl. wave_p) — rewrite the spec first.
-  **The rewrite MUST include (cross-arc contracts, 2026-07-19):**
-  (a) the **sensor-gather contract** (entity design doc §7) — sensor sample
-  sites are static per level; one compact gather-kernel D2H per tick, never
-  per-tick full-field streaming — Arc B is gated on this; and
-  (b) the **structural dirty-set rider** (a5 doc §9,
-  `archive/a5_evacuation_impl_2026-07-18.md`) — once fields are GPU-resident,
-  `destroy_wall`/`seal_tiles`/`unseal_tiles` must push their touched-tile set
-  (on_tile_changed caches + gas ×7, atmosphere, wave_p, wind, flow, ripple,
-  is_vacuum) to the device before the next kernel reads.
-- **Boundary conditions** (space vs planetside, per-map) — next physics
-  project, "pretty much a must," and surveyed SMALL (2026-07-17): an
-  AMBIENT border-ring tile symmetric to the existing SPACE ring (MG pins
-  P=P_amb instead of 0; species reservoir; optional sponge band). Existing
-  space-map goldens untouched. Spec before/alongside the residency patch
-  (same kernels). Details: `notes_2026-07-17_topics_backlog.md` Topic 4.
+  GPU→CPU each tick (S8a). Finishes the EOS arc. Spec REWRITTEN 2026-07-19:
+  `cuda_s8a_residency_spec_2026-07-19.md` (post-EOS; carries the
+  sensor-gather contract §5a — Arc B gated on it — and the structural
+  dirty-set rider §5b; two-rung H2D plan; old pre-EOS spec superseded with
+  banner). Awaiting Erik's review, then build per §4.
+- **Boundary conditions** (space vs planetside, per-map) — surveyed SMALL
+  (2026-07-17): an AMBIENT border-ring tile symmetric to the existing SPACE
+  ring (MG pins P=P_amb instead of 0; species reservoir; optional sponge
+  band). Existing space-map goldens untouched. **Sequencing DECIDED
+  (Erik, 2026-07-19): BC lands BEFORE the residency build** so residency
+  freezes final kernel content (S8a spec §5c). Spec it next session.
+  Details: `notes_2026-07-17_topics_backlog.md` Topic 4.
 - Riders (chat-sized, slot when convenient):
   - ~~Wall-burst differential fix~~ **DONE 2026-07-18** — merged to main
     (true differential; only 1-deep membranes burst; Erik blessed).
   - **Dust-stirring shockwaves** — dusty-ground flag + wave_p threshold →
     smoke injection (notes 2026-07-17 Topic 1).
   - Post-EOS doc consolidation (roadmap §1.3 rider).
-  - **`physics.py:104` blast-tuple wart (from Arc A/A6, decide here):**
-    `apply_explosion`'s structural damage gates on a hardcoded tuple —
-    A6 added `MAT_DOOR_CLOSED`, but steel/glass/furniture remain excluded
-    from blast wall damage (pre-existing). Widening it is feel-adjacent
-    (HUMAN-TEST); decide at physics close-out.
+  - **`physics.py:104` blast-tuple wart — DECIDED 2026-07-19 (direction):**
+    do NOT widen the tuple; replace it with a per-material
+    **blast-pressure-threshold column in the material table** — damage only
+    when local blast amplitude ≥ threshold (many small waves harmless, one
+    big one bites; Erik's steel-resilience intent). Defaults reproduce
+    today's behavior (excluded materials ≈ ∞ threshold → digest-safe);
+    enables two glass types (brittle vs space-rated) as table rows.
+    Implementation + tuning = chat-sized HUMAN-TEST rider AFTER residency.
 
 ### 2. Weapons, units, classes, a small enemy roster
 - Weapons wave finale: W6 armory tuning session (Erik, human-gated — see

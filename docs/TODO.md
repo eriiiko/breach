@@ -19,13 +19,17 @@
 
 ## Pending — small (background, queue up next session)
 
-- **Blast-tuple wart (Arc A rider, A6, 2026-07-19)** — `apply_explosion`'s
-  structural wall damage gates on the hardcoded tuple at `physics.py:104`
-  (now `MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_DOOR_CLOSED`) instead of the
-  material table; steel/glass/furniture are excluded from blast wall damage
-  (pre-existing, kin to the fire-vs-furniture item below). Widening it is
-  feel-adjacent (HUMAN-TEST) — decide at physics close-out (priority ledger
-  stack #1).
+- **Blast-tuple wart (Arc A rider, A6, 2026-07-19) — direction DECIDED
+  2026-07-19 at physics close-out:** `apply_explosion`'s structural wall
+  damage gates on the hardcoded tuple at `physics.py:104`
+  (`MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_DOOR_CLOSED`) instead of the material
+  table. Fix: NOT tuple-widening — a per-material **blast-pressure-threshold
+  column** in the material table (damage only when local blast amplitude ≥
+  threshold; Erik's intent: steel shrugs off many small waves, one big one
+  can bite; also enables brittle vs space-rated glass as two rows). Defaults
+  reproduce current behavior (excluded materials ≈ ∞ threshold —
+  digest-safe). Implement + tune as a chat-sized HUMAN-TEST rider AFTER the
+  residency patch (priority ledger stack #1).
 
 - **Baker writeback onto level_lib (Arc A rider, A2 accepted gap,
   2026-07-19)** — `bake_level_art.write_bake_blocks` is still its own
