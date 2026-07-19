@@ -706,6 +706,26 @@ cover_exposure = 0.55   # soft cover (mechanics/03 §3): a shot crossing a crate
                         # STANDARD VALUE — Erik's dial; interesting range ~0.3 (bunker
                         # furniture) .. 0.8 (thin concealment)
 
+[materials.door_closed]
+# A6 (docs/a6_doors_v0_impl_2026-07-19.md §1): the ENTITY door's CLOSED
+# stamp — [materials.door] values with mobility = 0 (fully solid to movement
+# AND flow). permeability deliberately OMITTED so it derives 0 from the
+# occluding light_atten, exactly like door. MAT_DOOR stays the legacy
+# painted door (walkable-but-flow-solid) until the A7 migration.
+hp = 40
+flammable = false
+mobility = 0
+light_atten = [1.0, 1.0, 1.0]
+heat_atten = 1.0
+conductivity = 0.3
+thermal_mass = 8     # wood-like door: heats fast (heat >> 3)
+ignition_temp = 280.0
+wave_reflect = 0.5
+wave_absorb = 0.4
+blast_resist = 0.0
+burst_threshold = 2.0
+cover_exposure = 1.0   # solid wall: stops the march physically, no roll
+
 # =============================================================================
 # Weapons framework (mechanics/03 §4) — three data tables loaded by
 # simulation.weapons: [weapons.*] the delivery instrument, [ammo.*] the round,

@@ -664,6 +664,17 @@ class LevelData:
     # is the boundary-conditions physics project's. A top-level scalar
     # key, so level_lib's managed-block writer round-trips it untouched.
     boundary: str = BOUNDARY_SPACE
+    # ---- --res base-resolution recovery (A6, S1 — a6 doors design §3) ----
+    # `_upscale_level` (main.py) divides tile_size_m by the factor BEFORE
+    # GameMap ever sees the level, which would leave meters-first entity
+    # consumers (door span quantization) a non-integral tiles-per-meter.
+    # It therefore records the accumulated integer replication factor and
+    # the PRE-scale tile size here, BEFORE mutating. Runtime fields only —
+    # never authored in level.toml, never written back. tile_size_m_base
+    # None == "unscaled: use tile_size_m". Entity consumers quantize at
+    # base resolution and replicate their tile sets by res_factor.
+    res_factor: int = 1
+    tile_size_m_base: Optional[float] = None
 
     @property
     def height(self) -> int:

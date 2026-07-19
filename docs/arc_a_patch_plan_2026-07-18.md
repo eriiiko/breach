@@ -36,6 +36,11 @@ working tree).
    tile-per-tick opening (entity-level, primitive unchanged) or rebuild to
    (d) delete+mint (documented fallback in a5 doc). Canon errata (§7 L241 +
    eos §2.2) due at arc close.
+5. **(2026-07-19) Door toggle = synced `want_open` latch** (critique S5 /
+   gate question #0): the O-key stays dev-only, but the latch it flips is
+   synced entity state — retry-until-clear close semantics, mirroring Arc
+   B's while-held input. This is the sanctioned reading of ruling 1
+   ("not synced state" bound the key/plumbing, not the entity latch).
 
 ## Patch list
 

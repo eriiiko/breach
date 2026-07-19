@@ -36,3 +36,4 @@ from simulation.entities.serialize import (  # noqa: F401
 )
 from simulation.entities import light as _light  # noqa: F401  (registers the exemplar)
 from simulation.entities import zones as _zones  # noqa: F401  (registers breach_site/extraction_zone, A8)
+from simulation.entities import door as _door    # noqa: F401  (registers the door class, A6)

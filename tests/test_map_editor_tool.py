@@ -45,9 +45,9 @@ sys.path.insert(0, str(ROOT / "tools"))
 import level_loader  # noqa: E402
 from level_loader import (SPACE_CODE, SpawnEntry,  # noqa: E402
                           materials_from_tilemap)
-from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_FURNITURE,  # noqa: E402
-                                  MAT_GLASS, MAT_HULL, MAT_STEEL, MAT_WOOD,
-                                  MATERIAL_NAMES)
+from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_DOOR_CLOSED,  # noqa: E402
+                                  MAT_FURNITURE, MAT_GLASS, MAT_HULL,
+                                  MAT_STEEL, MAT_WOOD, MATERIAL_NAMES)
 from make_tileset import build_tileset  # noqa: E402
 from bake_level_art import (bake_full, bake_region,  # noqa: E402
                             load_tileset)
@@ -384,7 +384,11 @@ def test_choose_preview_ppt_divisor_and_texture_cap():
 # ---------------------------------------------------------------------------
 
 def test_wall_family_codes_from_manifest(ts16):
-    assert wall_family_codes(ts16) == WALL_CODES
+    # wall_family_codes unions EVERY manifest group: greybox's [groups] wall
+    # family plus door_closed's own single-member wall-mode group (A6 — a
+    # closed entity door IS "a wall stands here" for room/corridor/door-run
+    # geometry; the greybox recipe auto-covers new materials).
+    assert wall_family_codes(ts16) == WALL_CODES | {MAT_DOOR_CLOSED}
 
 
 # ---------------------------------------------------------------------------

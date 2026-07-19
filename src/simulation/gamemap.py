@@ -36,6 +36,7 @@ from simulation.materials import (  # noqa: F401  (re-exported)
     MAT_STEEL,
     MAT_GLASS,
     MAT_FURNITURE,
+    MAT_DOOR_CLOSED,
     MaterialTable,
 )
 
@@ -354,6 +355,21 @@ class GameMap:
         mat, vac = materials_from_tilemap(level_data.tilemap, level_data.version)
         self.material[:] = mat
         self.is_vacuum[vac] = True
+
+        # --- A6 door-entity load stamp (a6 doors design §4.1) -------------
+        # BETWEEN the tilemap fill and _update_caches, per the entity-doc §7
+        # load-order rule: each door entity's runtime span is stamped
+        # MAT_DOOR_CLOSED (authored closed) or MAT_AIR (authored open) so
+        # the atmosphere/gas/water seeding below runs against the POST-stamp
+        # solidity — authored-open ≡ authored-air is FIELD-identity by
+        # construction, and conservation at t=0 is trivially exact (no gas
+        # exists yet, so no seal_tiles call). Validation (§4.2 — bounds,
+        # vacuum, CSV material, overlapping spans) hard-errors here. Zero
+        # doors → zero work (dormancy is structural).
+        if any(e.class_name == "door"
+               for e in (getattr(level_data, "entities", None) or [])):
+            from simulation.door_system import stamp_door_tiles
+            stamp_door_tiles(self.material, self.is_vacuum, level_data)
 
         self._update_caches()
 

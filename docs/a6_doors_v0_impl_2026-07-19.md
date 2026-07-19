@@ -1,9 +1,25 @@
-# A6 impl design — Doors v0 (v1, pre-critique, 2026-07-19)
+# A6 impl design — Doors v0 (v2, critique folded, 2026-07-19)
 
 Arc A patch A6 (plan: `arc_a_patch_plan_2026-07-18.md`, A6 row). Design-gated:
-this doc faces independent adversarial critique before any code is written.
-Gate: digest green + **HUMAN-TEST (Erik)**; lands in tranche 2 with A7
+v1 went through independent adversarial critique and **survived with fixes**
+— 1 blocker (B1, the blast-gate tuple), 5 should-fixes (S1–S5), 10 notes
+(N1–N10), all folded below. The `MAT_DOOR_CLOSED` fork (§1) is ACCEPTED with
+B1. Gate: digest green + **HUMAN-TEST (Erik)**; lands in tranche 2 with A7
 (ruling 3 — no auto-merge).
+
+v2 fold summary: B1 blast tuple + §13.13 regression (§1); S1 `--res`
+base-resolution recovery (§3); S2 boundary-tick lag ACCEPTED + timing test
+(§8, §13.14); S3 event contract restated slots-9/9b/9e-only (§8); S4 one
+pinned hp_i↔tile order (§7); S5 = Erik's ruling 5 (§10, §16); N1 sweep-order
+claim corrected (§5.2); N2 zombie citation fixed (§9); N3 observables-only
+burst test (§13.12); N4 render scope honest-minimal (§14); N5 editor-palette
+gap stated (§1, §15.13); N6 recorder-byte-identity scoped (§13.9); N7 vacuum
+cycle test + gap line (§13.15, §15.14); N8 = the three added tests; N9
+`mouse_to_tile()` (x,y) flip pinned (§10); N10 `Fraction(str(length_m))` +
+explicit `length_m > 0` check (§3). One v2-discovered fix beyond the
+critique: the **O key is already bound** — `renderer/game_renderer.py:871`
+toggles the water-optics pass on KEY_O. Ruling 5 names the O-key for doors,
+so the water-optics toggle moves to **V** (render-layer dev toggle; §10).
 
 Scope: the `door` entity class; load-time tile derivation; the slot-9e
 structural sweep (door half ONLY — no SignalBus, no sensors, no logic until
@@ -83,8 +99,28 @@ riders (`a5_evacuation_impl_2026-07-18.md`), rulings 1 and 4
 - **`find_burst_walls`** is table-driven per material
   (`gamemap.py:921-1004`, threshold read :964-970); `[materials.door]`
   `burst_threshold = 2.0` (`config.toml:655`).
-- `_upscale_level` (`main.py:122-175`) scales tilemap/spawns/lights/water;
-  it does not yet touch `[[entity]]` data — §4.3.
+- **Blast wall damage is NOT table-driven (B1)**: `apply_explosion` gates
+  its structural HP decrement on the hardcoded tuple
+  `(MAT_HULL, MAT_WOOD, MAT_DOOR)` (`src/simulation/physics.py:104`) —
+  without a fix, `MAT_DOOR_CLOSED` tiles are blast-proof and the breach
+  charge no-ops on a closed entity door (§1).
+- **Zombie door-awareness is the per-step re-check (N2)**: before each
+  committed zombie step, `update_zombies_tick` re-checks
+  `is_passable_block` on the next path tile and drops the stale path when
+  blocked (`src/simulation/ai_zombie.py:181-192`) — a door closing in a
+  zombie's face stops it the same tick's step, independent of the repath
+  cadence.
+- **`mouse_to_tile()` returns `(x, y)` (col, row)**
+  (`renderer/game_renderer.py:923-929`) — every debug key unpacks
+  `fx, fy = tile` (`input_handler.py:238`, `_debug_ignite`'s flip). The O
+  key must apply the same flip before calling `door_at(fy, fx)` (N9, §10).
+- **KEY_O is TAKEN** (v2 finding): `renderer/game_renderer.py:871` binds O
+  to the water-optics pass toggle (main.py's help text agrees). §10 moves
+  that render toggle to V so ruling 5's O-key is clean.
+- `_upscale_level` (`main.py:122-196`) scales tilemap/spawns/lights/water/
+  zones/air, and **divides `tile_size_m` by the factor BEFORE `GameMap`
+  ever sees the level** (`main.py:147`) — the S1 trap §3 must survive. It
+  does not yet touch `[[entity]]` data.
 
 ---
 
@@ -141,6 +177,17 @@ config key `[materials.door_closed]`), the entity door's CLOSED stamp:
   `mat in (MAT_DOOR, MAT_DOOR_CLOSED)` so an entity door tile destroyed by
   burst/burn-through still emits `DoorDestroyedEvent`
   (`src/simulation/events.py:109`).
+- **B1 (BLOCKER, folded): the blast gate joins the tuple.**
+  `apply_explosion`'s structural wall damage is gated on the hardcoded
+  tuple `(MAT_HULL, MAT_WOOD, MAT_DOOR)` (`physics.py:104`) — NOT
+  table-driven like burst/burn-through. `MAT_DOOR_CLOSED` is added to that
+  tuple, or closed entity doors are blast-proof and the breach charge —
+  the one door-opening tool the HUMAN-TEST plan leans on — no-ops.
+  Regression test §13.13: a blast destroys a closed entity door.
+  **Flagged for arc close, do NOT change now:** steel/glass/furniture
+  being excluded from blast wall damage is a pre-existing wart of that
+  tuple; widening it is a feel-adjacent behavior change outside A6's
+  scope.
 - `find_burst_walls` needs nothing: threshold comes from the table
   (`gamemap.py:964-970`). A closed entity door across > 2.0 atm bursts next
   tick exactly like a painted door (the A5 §8/S2 row).
@@ -150,10 +197,19 @@ config key `[materials.door_closed]`), the entity door's CLOSED stamp:
   (an unopenable door-looking wall). v1: allowed-but-meaningless under a
   span (the entity overrides it, §5.2); a validator warning elsewhere is
   Arc C's business (accepted gap §15.9).
-- Renderer: the human-test level needs the closed material visible — extend
-  the debug material-name map (`renderer/game_renderer.py:960`) and give
-  `MAT_DOOR_CLOSED` the door's fallback color; open spans get a dev outline
-  overlay (§14 render obligations). Render-layer, exempt from determinism.
+- **`door_closed` auto-appears in every editor palette (N5, stated):**
+  the map/level editors and the greybox tileset derive their palettes from
+  `MATERIAL_NAMES` at call time (`tools/level_edit_common.py:66-73`,
+  `tools/make_tileset.py:344`, with the no-recipe fallback color), so the
+  new id shows up as a paintable material immediately. Benign, accepted
+  gap (§15.13): painting it by hand is exactly the §15.9
+  legal-but-inert pseudo-door; the DOOR tool teaching the editors about
+  door *entities* is Arc C.
+- Renderer: honest-minimal scope per N4 — the F6 debug HUD's material name
+  comes from `MATERIAL_NAMES` (replacing the stale hardcoded 3-entry dict
+  at `renderer/game_renderer.py:960`), and door spans get a simple
+  per-tile fill/outline drawn in `compose_world` (§14). No new overlay
+  system. Render-layer, exempt from determinism.
 - Editor-doc §6's "its `MAT_DOOR` tiles are written to the grid" was written
   before this split; at canon fold it reads "the door material stamp —
   `MAT_DOOR_CLOSED` as of A6" (errata list, §16). The editor itself is
@@ -175,7 +231,7 @@ quantization uses `fractions.Fraction`, so the import-light CI test
 | `x` | `KIND_INT` | *required* (None) | ≥ 0 | yes (int) |
 | `y` | `KIND_INT` | *required* (None) | ≥ 0 | yes (int) |
 | `orientation` | `KIND_ENUM` | `"h"` | choices `("h", "v")` | yes (choice index) |
-| `length_m` | `KIND_LENGTH_M` | `1.0` | minimum > 0 | **no** (authoring-bound) |
+| `length_m` | `KIND_LENGTH_M` | `1.0` | > 0 (explicit check, N10) | **no** (authoring-bound) |
 | `initial_state` | `KIND_ENUM` | `"closed"` | choices `("closed", "open")` | yes (choice index) |
 
 - **`x`, `y` are the anchor TILE (base resolution), integer** — not
@@ -198,6 +254,11 @@ quantization uses `fractions.Fraction`, so the import-light CI test
   partition, `serialize.py:22-26`): its synced consequence is the material
   grid, already hashed. `x/y/orientation/initial_state` ARE hashed as
   declared synced kinds — they are integer/enum authoring constants.
+- **`length_m > 0` is an explicit derivation-time check (N10):** schema
+  `minimum` bounds are inclusive (`schema.py:257`), so a declared minimum
+  cannot express "strictly positive". The schema declares `minimum = 0.0`
+  (rejects negatives at load) and the §3 quantizer hard-errors on
+  `length_m <= 0` with the entity id in the message.
 - Per the A3 loader (`level_loader.py:318-335`) all five validate through
   `field_value_error` (`schema.py:191-241`); `x/y` required-ness comes from
   `default=None` exactly like the instance `id`.
@@ -246,6 +307,11 @@ surgery (A4 impl note critique 6; `serialize.py:28-30`).
 One pure function in `entities/door.py` (stdlib `Fraction` only), THE span
 rule for loader, sweep, editor (Arc C), and migration tool (A7):
 
+- `length_m` ingresses as **`Fraction(str(length_m))`** (N10, pinned): the
+  decimal the author typed, never the binary float's full expansion —
+  `Fraction(str(0.5)) = 1/2` exactly, and the round-half-up below then has
+  no float in it at all. `length_m <= 0` hard-errors here (the §2b
+  explicit check).
 - `n_base = floor(length_m * tiles_per_m + 1/2)` in exact `Fraction`
   arithmetic — round-half-up, never banker's `round` (editor doc §4
   :59-61); clamped to ≥ 1.
@@ -254,7 +320,8 @@ rule for loader, sweep, editor (Arc C), and migration tool (A7):
   (span tiles in gamemap `(fy, fx)` order).
 - `tiles_per_m` comes from the level exactly: the shipped
   `tile_size_m = 0.333` maps to **exactly 3** (the editor-doc §4 migration
-  rule :53-58); any other value converts through
+  rule :53-58, matched as `Fraction(str(tile_size_m)) == 333/1000`); any
+  other value converts through
   `Fraction(1) / Fraction(str(tile_size_m))` and must be integral or the
   level hard-errors for door purposes (a non-integer tiles-per-meter level
   has no defined door quantization; none exists in the tree). The
@@ -270,12 +337,29 @@ rule for loader, sweep, editor (Arc C), and migration tool (A7):
 `(fy, fx)` becomes the `N×N` block at `(N·fy … N·fy+N-1, N·fx … N·fx+N-1)`.
 A base 1×3 door at `--res 2` is a 2×6 tile rectangle — identical to what
 the same door painted in the CSV would become. Never re-derived from meters
-at the scaled resolution. Mechanically: `_upscale_level` gains
-`level.res_factor = factor` (new `LevelData` field, default 1,
-`level_loader.py:422+`); authored entity fields are NOT mutated (they stay
-the authored record); every consumer derives base span then replicates by
-`res_factor`. The whole replicated rectangle is ONE `seal_tiles` span
-(A5 §3.3: a multi-tile door closes as one call).
+at the scaled resolution.
+
+**S1 (folded): base-resolution recovery is pinned, because `--res` breaks
+the naive read.** `_upscale_level` divides `tile_size_m` by the factor
+BEFORE `GameMap` exists (`main.py:147`), so a door consumer reading the
+live `tile_size_m` at `--res 2` would see `0.1665` —
+`Fraction(str(0.1665))` gives a non-integral `tiles_per_m` and the level
+hard-errors. Chosen fix (of the two the critique offered — recompute
+`tile_size_m * res_factor`, or carry the base — the CARRY, because a
+float recompute is only IEEE-exact for power-of-two factors):
+`LevelData` gains TWO defaulted fields —
+
+- `res_factor: int = 1` — the accumulated integer replication factor;
+- `tile_size_m_base: float | None = None` — the PRE-scale tile size;
+  `None` means "unscaled: use `tile_size_m`".
+
+`_upscale_level` sets `tile_size_m_base = tile_size_m` (the pre-division
+value, captured BEFORE the mutation) and multiplies `res_factor` by the
+factor, then divides `tile_size_m` as today. Every door consumer
+quantizes against `tile_size_m_base or tile_size_m` and replicates the
+base span by `res_factor`. Authored entity fields are NOT mutated (they
+stay the authored record). The whole replicated rectangle is ONE
+`seal_tiles` span (A5 §3.3: a multi-tile door closes as one call).
 
 ---
 
@@ -347,8 +431,13 @@ sim-without-physics.
 The entity-doc sentence "the sweep collects flip intents and applies them
 in entity-id order" is realized as ONE ordinal-order pass with inline
 application: the intents ARE the per-door latches (read-only collection),
-spans are disjoint (§4.2), and application order is the iteration order —
-equivalent to collect-then-apply, and simpler. Per door:
+spans are disjoint (§4.2), and application order is the iteration order.
+**N1 (folded): no "equivalent to collect-then-apply" claim** — flips are
+applied sequentially in ordinal order; overlapping spans are
+load-rejected; adjacent spans still interact *through gas* (an earlier
+door's evacuation changes what a later door's seal/unseal sees) — the
+behavior is simply deterministic BY ordinal order, which is all the
+entity doc requires. Per door:
 
 1. **Reconcile external destruction first** (§8). If it fires, the door is
    dead; skip step 2 forever.
@@ -447,6 +536,13 @@ Blocked-ness is not extra state: "close desired but blocked" is exactly
 **Rule:** the entity carries **one Q16.16 HP value per runtime span tile**
 (`hp_0 … hp_{k-1}`, row-major span order), NOT a scalar.
 
+**S4 (folded): ONE pinned hp_i↔tile order, everywhere.** The door's
+runtime span list IS the replicated tile set (§3) sorted row-major —
+`sorted()` on `(fy, fx)` tuples — and `hp_i` indexes THAT list in every
+consumer: the fold on open, the restamp on close, the zeroing on
+destruction, and the `hp_*` digest rows. No consumer ever re-derives or
+re-sorts its own tile order.
+
 - **On close** (after `seal_tiles`): `gmap.wall_hp[t_i] = hp_i` for every
   span tile — overwriting the fresh table value `on_tile_changed` wrote
   inside the seal (`gamemap.py:548+`, the re-quantize the A5 S3 gap
@@ -495,9 +591,33 @@ no longer `MAT_DOOR_CLOSED` was externally destroyed (`destroy_wall` set it
 `MAT_AIR`, `gamemap.py:1027-1028`; nothing else can touch a solid tile's
 material — FieldEdits never write material, and overlapping door spans are
 load-rejected §4.2). Observation beats event-consumption: it is immune to
-event-ordering/citizenship questions, and slots 8-9b all run before 9e, so
-reconciliation happens the SAME tick, before the recorder snapshot — the
-desync window is zero recorded ticks.
+event-ordering/citizenship questions.
+
+**S2 (folded): the one-boundary-tick lag is ACCEPTED, and the v1 "zero
+recorded desync ticks" claim was FALSE for slot 8.** Within-tick
+destruction (slot 9 burn-through, slot 9b burst, the tick-0 start-P1
+explosive volley at `simulation.py:665-670`) all run before 9e, so those
+reconcile the same tick, before the recorder snapshot. But the
+BETWEEN-PHASES and END-OF-ROUND door-explosive volleys run at the tick
+BOTTOM (`simulation.py:868-886`) — after 9e AND after the recorder
+snapshot — and destroy walls synchronously. A closed door destroyed there
+is reconciled by 9e on the NEXT tick: exactly ONE recorded boundary tick
+exists whose entity rows still say CLOSED over minted-air tiles. Accepted,
+not fixed: the lag is deterministic (same tick, same order, every
+machine — no cross-machine divergence, digests agree on the lagged state
+itself), and re-running reconciliation after the boundary volleys would
+mean a second sweep site with its own ordering contract for one cosmetic
+tick. Pinned by the §13.14 timing test.
+
+**S3 (folded): the event contract, restated.** `DoorDestroyedEvent` is
+GUARANTEED only from slots 9, 9b, and 9e (each `destroy_wall` call at
+those sites emits per tile, with the §1 material-check extension). Other
+`destroy_wall` callers — `apply_explosion`'s blast damage, W2 bullet
+chew — emit nothing for door tiles today and A6 does NOT touch that
+combat code; a blast-destroyed door tile surfaces as the 9e
+assembly-completion events next sweep. The event stays render/telemetry
+only; no sim logic consumes it (the entity observes the grid). Arc B may
+add an entity-level `door_destroyed` signal; not v1.
 
 **Decision: partial destruction destroys the whole door.** On detecting ≥1
 destroyed span tile:
@@ -525,12 +645,9 @@ subject to the 9b `burst_max_per_tick` cap (:757) — the cap protects
 against mistuned thresholds nuking the ship; assembly-completion of an
 already-dying door is not that.
 
-**Event contract (v1, pinned):** `DoorDestroyedEvent` fires once per
-destroyed door TILE, emitted by whichever code calls `destroy_wall` —
-slots 9/9b for the directly-hit tile (with the §1 material-check extension)
-and the 9e sweep for assembly-completion tiles. The event stays
-render/telemetry-only; no sim logic consumes it (the entity observes the
-grid). Arc B may add an entity-level `door_destroyed` signal; not v1.
+**Event granularity:** once per destroyed door TILE — slots 9/9b for the
+directly-hit tile, the 9e sweep for assembly-completion tiles (the S3
+contract above).
 
 Degenerate case: 1-tile door destroyed → step 2 is empty; just the state
 flip. If the door was OPEN, its tiles are air — `destroy_wall` never
@@ -561,41 +678,56 @@ holds the unit at its current position, on-grid. When the door reopens
 un-walked index — no re-path in v1 (WEGO: the plan is the plan; gap
 §15.3).
 
-Zombies need nothing: `update_zombies_tick` re-paths against the live
-grid each tick (slot 5, `simulation.py:718-719`), and the closed material
-blocks their A* through the same table (§1). Test §13.7 covers the
-marine case end-to-end.
+Zombies need nothing (N2, citation fixed): the load-bearing mechanism is
+the **per-step `is_passable_block` re-check** — before committing each
+zombie step, `update_zombies_tick` re-checks the next path tile against
+the live grid and drops the stale path when blocked
+(`ai_zombie.py:181-192`), so a door closing in a zombie's face stops it
+at that step regardless of the every-5-steps repath cadence; the closed
+material blocks the subsequent re-path's A* through the same table (§1).
+Test §13.7 covers the marine case end-to-end.
 
 ---
 
 ## 10. Debug toggle hotkey (ruling 1, refined)
 
-**Key: `O`** (mnemonic "operate"; free — I/J/K/U/P/F8/etc. are taken,
-`input_handler.py:99-224`). Dev-only, living beside the other DEBUG keys in
-`src/input_handler.py` (the I/J/U block :108-135), NEVER in any shipped
-control scheme — same citizenship as "I = ignite". Flow, mirroring
-`_debug_ignite` (:228-246): `tile = renderer.mouse_to_tile()`
-(`renderer/game_renderer.py:923`); `sim.door_at(fy, fx)` — a new sim
-helper returning the door whose runtime span contains the tile (unique by
-§4.2, ordinal-order scan; matches OPEN doors' spans too — the span is
+**Key: `O`** (mnemonic "operate" — the key ruling 5 names). Dev-only,
+living beside the other DEBUG keys in `src/input_handler.py` (the I/J/U
+block :108-135), NEVER in any shipped control scheme — same citizenship as
+"I = ignite". **v2 fix: KEY_O was NOT free** — v1 checked only
+`input_handler.py`, but the renderer binds O to the water-optics pass
+toggle (`game_renderer.py:871`; main.py's help text). A dual binding would
+flip the water rendering on every door toggle — directly poisoning the
+§14.6 water-pool judgment — so the water-optics toggle moves to **`V`**
+(free in both layers; render-layer dev toggle, zero sim surface;
+main.py's help line updates to match). Precedent: config-reload moved to
+Ctrl+R for exactly this class of collision (`input_handler.py:35-38`).
+
+Flow, mirroring `_debug_ignite` (:228-246): `tile =
+renderer.mouse_to_tile()` (`renderer/game_renderer.py:923`) — **N9
+(folded): `mouse_to_tile()` returns `(x, y)` (col, row)**, so the handler
+unpacks `fx, fy = tile` and calls `sim.door_at(fy, fx)` with the SAME
+flip every other debug key applies — then `door_at` (a new sim helper)
+returns the door whose runtime span contains the `(fy, fx)` tile (unique
+by §4.2, ordinal-order scan; matches OPEN doors' spans too — the span is
 geometry, not material); if found and alive:
 `door.want_open = not door.want_open`, plus a `[debug]` console print.
 Destroyed door or no door: print and do nothing.
 
-**Ruling-1 refinement (stated for the critique):** the ruling's "NOT synced
-state" is honored as *the KEY and its plumbing are dev/render-layer* — the
-binding, the cursor hit test, the injection point all live outside the sim
-and outside any control scheme. But the latch the key flips MUST be synced
-state: it drives structural flips, and unsynced flip drivers would fork
-digests between machines by construction. This is precisely the existing
-debug-key contract — I/J/U already write `fire`/`gas`/`water_depth`
-(synced, hashed fields) directly (`input_handler.py:228-303`): a dev input
-is an external state injection between ticks; the trajectory that follows
-is deterministic given the injection. Determinism/digest gates are
-untouched in exactly the sense that matters: no key press → bit-identical
-trajectory; lockstep/replay sessions have no such key. The latch rides the
-digest so any injected toggle is VISIBLE in it — which is what makes the
-human-test trajectory attestable at all.
+**Ruling 5 (S5 resolved by Erik, 2026-07-19 — the sanctioned reading of
+ruling 1):** the O-key stays dev-only, but the latch it flips IS synced
+entity state (`want_open`, hashed as a runtime row §2c) with
+retry-until-clear close semantics mirroring Arc B's while-held input.
+Ruling 1's "NOT synced state" bound the KEY and its plumbing — binding,
+cursor hit test, injection point, all render/dev-layer — never the entity
+latch (`arc_a_patch_plan_2026-07-18.md:39-43`). This is the existing
+debug-key contract: I/J/U already write `fire`/`gas`/`water_depth`
+(synced, hashed fields) directly (`input_handler.py:228-303`); a dev
+input is an external state injection between ticks, and the trajectory
+that follows is deterministic given the injection. No key press →
+bit-identical trajectory; lockstep/replay sessions have no such key. The
+latch rides the digest so any injected toggle is VISIBLE in it — which is
+what makes the human-test trajectory attestable at all.
 
 ---
 
@@ -677,18 +809,45 @@ idiom) with `[[entity]]` door instances; sim built with
    `hp_*` rows and change across a flip; `get_state().entity_state` carrier
    matches the digest's section bytes (one serializer).
 9. **Dormancy**: full existing suite green, zero golden edits; a light-only
-   level's records byte-identical to pre-A6.
+   level's **per-tick record bytes** byte-identical to pre-A6. N6 scope
+   pin: the byte-identity claim covers the recorder's per-tick
+   entity/record bytes and every entity-free artifact —
+   `registry_content_hash()` itself CHANGES by design when the `door`
+   class registers (it folds the registry payload), which surfaces only
+   in entity-PRESENT artifacts; that is match-setup provenance, not a
+   dormancy break.
 10. **Determinism**: identical toggle-script on two fresh sims →
     bit-identical synced arrays + digests every tick.
 11. **HP ledger**: damage one tile of a closed 2-tile door
     (`wall_hp` write), cycle open-close → damaged tile restamped damaged,
     other tile full (no heal, no smear — the §7 rule).
-12. **External destruction / whole-door**: two rooms > 2.0 atm apart,
-    close the 2-tile door across the differential → next tick 9b pops the
-    worst tile, 9e same tick completes: both tiles air, 2×
-    `DoorDestroyedEvent` that tick, `alive=0`, `state=2`, `hp_*=0`; a
-    later toggle does nothing; digest rows stable thereafter. Also the
-    burn-through variant if cheap (slot-9 path, same contract).
+12. **External destruction / whole-door — observables only (N3)**: two
+    rooms > 2.0 atm apart, close the 2-tile door across the differential
+    → within a tick the door dies. Asserted: all span tiles air, 2×
+    `DoorDestroyedEvent` in that tick's events, `alive=0`, `state=2`,
+    `hp_*=0`; a later toggle does nothing; digest rows stable thereafter.
+    NOT asserted: which tile 9b popped vs which 9e completed — for a
+    symmetric membrane the 9b victim choice is an implementation detail
+    (sort order among equal differentials), and pinning the mechanism
+    split would make the test brittle against find_burst_walls internals.
+13. **B1 regression — blast destroys a closed door**: `apply_explosion`
+    with door-killing `wall_damage` centered on a closed entity door →
+    the door tile(s) destroyed (material air), and the next sweep
+    completes the whole-door rule with 9e events. Guards the
+    `physics.py:104` tuple forever.
+14. **S2 timing — the boundary-tick lag, pinned**: a closed entity door
+    destroyed by an end-of-phase-boundary explosive volley (slot 8 at the
+    tick bottom, `simulation.py:868-886`) leaves ONE recorded tick whose
+    entity rows still read CLOSED over minted-air tiles; the NEXT tick's
+    9e reconciles (`alive=0`, `state=2`, assembly-completion events).
+    Asserts both halves: the lag exists (documented behavior, not a bug)
+    and it is exactly one tick.
+15. **N7 — vacuum-adjacent door cycle**: a door span adjacent to exposed
+    vacuum; open → the span joins vacuum permanently (`is_vacuum` set, no
+    seed — A5 §5.2); re-close → `seal_tiles` succeeds gas-free and the
+    tiles become the sealed-hull state (`solid ∧ is_vacuum` — a hull
+    patch); re-open → joins vacuum again. Grid totals exact throughout;
+    states/latch behave; nothing mints.
 
 ---
 
@@ -700,10 +859,23 @@ golden level. Content: two pressurizable rooms joined by a 3-tile door
 door mid-path for the path-hold walk; a marine squad spawn; a shallow
 water pool by one door (U-key tops it up); flat art (dev-quality).
 
-Render obligations (dev-quality, render-layer): `MAT_DOOR_CLOSED` drawn as
-a door (fallback color + the debug name map `renderer/game_renderer.py:960`);
-OPEN door spans get a thin outline overlay so there is something to aim the
-cursor at; hovered-door highlight for the O key.
+Render obligations (N4, rescoped honest-minimal — dev-quality,
+render-layer; the v1 wording overreached: `game_renderer.py:960` is the F6
+*text HUD*'s hardcoded name dict, and there is NO per-tile material draw at
+runtime — the ship is baked art). A6 ships exactly two small things, no
+overlay system:
+
+1. **F6 debug HUD name**: the hardcoded `{0: "air", 1: "hull", 3: "door"}`
+   dict is replaced by a `MATERIAL_NAMES` lookup, so the cursor readout
+   says `door_closed` (and every other material) correctly.
+2. **A simple per-tile door draw in `compose_world`**: the sim hands the
+   renderer its door list (span, state, alive — render-read only); closed
+   door tiles get a flat amber fill, open door spans a thin outline (so
+   there is something to aim the O key at), destroyed doors nothing.
+   Drawn in world-pixel space beside the existing unit/grid draws.
+
+The v1 "hovered-door highlight" is DROPPED (scope, N4) — the outline plus
+the HUD readout locate the target well enough for a dev key.
 
 Checklist (each is a feel judgment, not a pass/fail):
 
@@ -759,6 +931,18 @@ Checklist (each is a feel judgment, not a pass/fail):
     control-scheme arc).
 12. **`hp_*` rows lag live `wall_hp` between folds** (§7) — exact at every
     boundary where they are load-bearing; both are hashed.
+13. **`door_closed` is hand-paintable in every editor palette** (N5, §1) —
+    `MATERIAL_NAMES`-derived palettes pick it up automatically; painting
+    it outside a door span is the §15.9 pseudo-door. Arc C's DOOR tool +
+    validator own the cleanup.
+14. **Vacuum-adjacent doors convert to hull patches** (N7, §13.15) — a
+    door opened next to exposed vacuum joins vacuum permanently; closing
+    it again yields the sealed-hull state, not a working doorway.
+    Physically coherent (the doorway vented to space; the panel now seals
+    the hull); a level authoring a door beside a planned breach site gets
+    this behavior by design.
+15. **One boundary-tick entity/grid lag on phase-boundary explosive
+    destruction** (S2, §8, §13.14) — deterministic, reconciled next tick.
 
 ---
 
@@ -773,8 +957,10 @@ Checklist (each is a feel judgment, not a pass/fail):
   section (§4.3).
 - A5 doc §2 "For doors v0 this will be `MAT_DOOR`" → superseded by
   `MAT_DOOR_CLOSED` (§1; A5 doc is append-only, amendment recorded here).
-- Ruling 1 wording — "NOT synced state" refined per §10 (key dev-layer;
-  latch synced), for the record at fold time.
+- Ruling 1 wording — RESOLVED by Erik as **ruling 5**
+  (`arc_a_patch_plan_2026-07-18.md:39-43`, 2026-07-19): the O-key stays
+  dev-only; the `want_open` latch it flips is synced entity state. §10
+  cites the ruling; nothing left to errata beyond noting it at fold.
 
 ## 17. A5 §11 rider resolution (required checklist)
 
@@ -786,7 +972,10 @@ Checklist (each is a feel judgment, not a pass/fail):
 
 ---
 
-*A6 design v1 (pre-critique). Author: Claude (Arc A design agent),
-2026-07-19. Load-bearing sections: §1 (MAT_DOOR_CLOSED), §5-§8 (sweep,
-latch, HP, destruction), §4 (load order), §10 (ruling-1 refinement).
-Implementation code: none (design gate).*
+*A6 design v2 — critique folded (B1 blast tuple; S1 `--res` base
+recovery; S2 boundary-tick lag accepted; S3 event contract; S4 hp order
+pin; S5 = ruling 5; N1-N10 corrections; the v2-discovered O/V key
+collision fix). Author: Claude (Arc A design + implementation agent),
+2026-07-19. Load-bearing sections: §1 (MAT_DOOR_CLOSED + B1), §3 (S1
+recovery), §5-§8 (sweep, latch, HP, destruction), §4 (load order), §10
+(ruling 5). Implementation follows this doc exactly.*
