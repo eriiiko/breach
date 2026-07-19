@@ -139,3 +139,15 @@ launch-core extraction).
 - Out of scope: per-edge modes, boundary trace species (toxic atmospheres — future
   `[ambient]` extension), water BC (ocean-reservoir cheat), wind-in (source term),
   rain/weather, render treatment of the ring (render-layer, deterministic-exempt).
+
+## 8. Relation to the Arc B pump (concept unity — Erik, 2026-07-19)
+
+The ring reset and the Arc B pump N-feed are the SAME concept at two extremes:
+the ring is a degenerate pump (unconditional, infinite-rate N-clamp to a setpoint,
+static, level-authored, in-kernel); the pump is the dynamic sibling (rate-limited,
+signal-driven, entity-owned, placeable — a life-support vent is a wireable,
+destroyable piece of ambient reservoir, and is how a SPACE map gets free particle
+exchange without an ambient boundary). BC deliberately ships the in-kernel form
+(lands pre-Arc-B, pre-residency; ring tiles as entities would be pure overhead for
+identical physics). Arc B should build the pump knowing this kinship — same
+setpoint/composition vocabulary, same `boundary_flux`-style counted rail.
