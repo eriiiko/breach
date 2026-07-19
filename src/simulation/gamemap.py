@@ -1208,9 +1208,13 @@ class GameMap:
         non-span 4-neighbors — remainder to the first receivers in N,S,E,W
         order — with pure Python-int arithmetic, so grid-total N per slice
         is unchanged to the LSB. Solver-owned fields on the sealed tile are
-        set to their solid steady state; ``temperature`` is deliberately
-        kept (a hot gas tile becomes a hot door), ``is_vacuum`` is never
-        written (sealing a breach yields the sealed-hull state). The whole
+        set to their solid steady state; ``temperature`` becomes the integer
+        mean of the tile's PRE-call solid 4-neighbors' temperatures — the
+        door panel belongs to the wall assembly it slides from, so no
+        instant "hot door" from post-grenade air — falling back to keeping
+        the local air T only when the tile has no pre-existing solid
+        neighbor (Erik's ruling 4, 2026-07-19; design §4a). ``is_vacuum``
+        is never written (sealing a breach yields the sealed-hull state). The whole
         span seals as ONE simultaneous edit (a 2-tile door closing is one
         call). Atomic: validates everything, then mutates; raises
         ``SealBlocked`` (water, sealed pocket) / ``ValueError`` (caller
@@ -1224,6 +1228,28 @@ class GameMap:
         if err is not None:
             raise err
         mid = int(material_id)
+
+        # Close-T (Erik ruling 4, 2026-07-19; design §4a): each sealed tile's
+        # temperature becomes the integer mean (floor) of its PRE-call solid
+        # 4-neighbors' temperatures, summed in the pinned N,S,E,W order — the
+        # door panel takes the temperature of the pre-existing wall assembly
+        # it slides from (no instant "hot door" from post-grenade air;
+        # conduction heats the panel honestly over subsequent ticks). Span
+        # members never donate: their just-assigned close-T would be
+        # circular, so "solid" means solid BEFORE this call — which is why
+        # the means are computed HERE, before any mutation (this also keeps
+        # the mutation pass below raise-free and span-order-independent).
+        # A tile with no pre-existing solid neighbor keeps its air T.
+        h, w = self._h, self._w
+        close_t = {}
+        for fy, fx in span:
+            wall_ts = []
+            for dy, dx in self._FACE_DIRS:
+                ny, nx = fy + dy, fx + dx
+                if 0 <= ny < h and 0 <= nx < w and self.solid[ny, nx]:
+                    wall_ts.append(int(self.temperature[ny, nx]))
+            if wall_ts:
+                close_t[(fy, fx)] = sum(wall_ts) // len(wall_ts)
 
         # ATOMICITY PIN (design §3.2): atomicity rests on this mutation pass
         # being RAISE-FREE BY CONSTRUCTION — every precondition was validated
@@ -1258,6 +1284,10 @@ class GameMap:
             self.flow_vy[fy, fx] = 0
             self.ripple[fy, fx] = 0.0
             self.ripple_v[fy, fx] = 0.0
+
+            # Close-T write (computed pre-mutation above — design §4a).
+            if t in close_t:
+                self.temperature[fy, fx] = close_t[t]
 
     def unseal_tiles(self, tiles):
         """Open a span of solid tiles to ``MAT_AIR``, seeding each from its

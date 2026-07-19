@@ -1,5 +1,11 @@
 # A5 impl design — EOS evacuation rule: `seal_tiles` / `unseal_tiles` (v2, critique folded, 2026-07-18)
 
+> **AMENDED 2026-07-19 (Erik's ruling — arc plan ruling 4):** on close, the
+> sealed tile's `temperature` becomes the integer mean of its PRE-call solid
+> neighbors' temperatures (air-T fallback when none). See §4a; §3.2's
+> untouched-fields list and the §6/§8 tables carry the matching edits. All
+> other sections, including `unseal_tiles`' temperature behavior, unchanged.
+
 Arc A patch A5 (plan: `arc_a_patch_plan_2026-07-18.md`, A5 row). Design-gated:
 v1 went through the adversarial pass (conservation + determinism lenses) and
 **survived with fixes** — 1 blocker (B1, the unseal seed divisor), 4
@@ -242,6 +248,12 @@ self.wave_p[fy, fx]     = 0                 # P_prev store (recorder.py:58–59)
 self.wind_x[fy, fx] = 0; self.wind_y[fy, fx] = 0    # u: zero-on-solid (eos_solver.cpp:421–423)
 self.flow_vx[fy, fx] = 0; self.flow_vy[fy, fx] = 0  # water solver zeroes on solid
 self.ripple[fy, fx] = 0.0; self.ripple_v[fy, fx] = 0.0  # zeroed on dry/solid (gamemap.py:296–301)
+
+# close-T (AMENDED 2026-07-19, Erik ruling 4 — §4a): wall-assembly mean.
+# wall_ts computed BEFORE the mutation pass from PRE-call solidity:
+#   wall_ts(t) = [int(temperature[n]) for n in N,S,E,W if in-bounds and solid-BEFORE-this-call]
+if wall_ts(t):                              # else: keep local air T (fallback)
+    self.temperature[fy, fx] = sum(wall_ts(t)) // len(wall_ts(t))   # floor
 ```
 
 **Atomicity pin (critique N4):** atomicity rests on the mutation pass being
@@ -264,7 +276,9 @@ physics; equal-split is the simplest rule with an exact remainder story.
 conservation discipline* — every subtraction has a matching addition — not as
 literally invoking the C++ flux kernel from a Python structural edit.)
 
-**Fields deliberately NOT touched:** `temperature` (§4), `fire` (§10 gap:
+**Fields deliberately NOT touched:** ~~`temperature` (§4)~~ — *amended
+2026-07-19: seal now WRITES `temperature` per §4a (solid-neighbor mean,
+air-T fallback); unseal still leaves it untouched* — `fire` (§10 gap:
 a burning tile becomes a burning door — coherent, walls burn via the
 burn-through machinery), `is_vacuum` (§5.2), `heat` (per-tick deposit buffer,
 cleared each tick), `wall_hp`/`flammable`/caches (owned by
@@ -283,6 +297,40 @@ is ONE `seal_tiles` call (A6 contract), not two.
 ---
 
 ## 4. Energy stance — argued, and deliberately not conserved in v1
+
+### §4a. AMENDED 2026-07-19 (Erik's ruling — arc plan ruling 4): close-T = solid-neighbor mean
+
+The v2 stance "the sealed tile keeps its `T`" is **superseded for the SEAL
+direction only**. On `seal_tiles`, each sealed tile's `temperature` is set
+to the **integer mean (floor division) of its solid 4-neighbors'
+temperatures** — the same N,S,E,W face set as receivers (`_FACE_DIRS`),
+solid members only, summed in that pinned order — falling back to keeping
+the local air `T` only when the tile has **no** solid neighbor.
+
+**Pinned neighbor set: PRE-call solidity.** "Solid" means solid *before*
+this `seal_tiles` call — pre-existing walls only; span members being sealed
+in the same call **never donate** (their contribution would be their own
+just-assigned close-T — circular). One-sentence justification: **the door
+panel takes the temperature of the pre-existing wall assembly it slides
+from.** Rationale for the rule itself: no instant "hot door" from
+post-grenade 1000 K air parked in the doorway — conduction then heats the
+panel honestly over subsequent ticks. Doors are `flammable = false` today
+(`config.toml [materials.door]`), so no ignition change is observable yet;
+this pins the semantics for the day that flips.
+
+Mechanics: the per-tile means are computed **before** the mutation pass
+(pure int reads), so the pass stays raise-free (the §3.2 N4 atomicity pin)
+and span-order-independent. Floor division; deterministic order is
+irrelevant for a mean but summation is pinned N,S,E,W anyway. Conservation
+is untouched — `T` is not a conserved field and the write does not affect
+any `N` movement.
+
+Everything below stands as v2's argued stance: the energy ledger is still
+deliberately not conserved (this write is one-shot and non-conserved, same
+class as the v2 keep-T), and **`unseal_tiles`' temperature behavior is
+UNCHANGED** — the opened tile's solid `T` becomes the gas `T`.
+
+### §4b. Original v2 stance (superseded on close-T by §4a)
 
 Moving `N` without moving thermal energy is not energy-conserving: the
 evacuated gas arrives at each receiver and thereafter counts at the
@@ -427,7 +475,7 @@ recorder snapshot (which runs at end-of-tick, after slot 9e; `recorder.py:63`
 | `wave_p` (=P_prev) | 0 | overwritten from P at tick top (eos design §3.2 step 0) | 0 |
 | `wind_x/y` (=u) | 0 | `eos_solver.cpp:421–423` step-1f + `:511` post-kick | 0 |
 | `flow_vx/vy`, `ripple/ripple_v` | 0 | water solver zero-on-solid/dry (`gamemap.py:296–301`) | 0 |
-| `temperature` | live (solid rules) | conduct/cool pipeline | untouched (§4) |
+| `temperature` | live (solid rules) | conduct/cool pipeline | solid-neighbor mean, air-T fallback — amended 2026-07-19 (§4a) |
 | `water_depth` | 0 | precondition (§3.1.4) — solver would zero it (mass sink) | — (guarded) |
 
 Unseal sets `atmosphere[t]` to the **integer** neighbor mean
@@ -552,6 +600,9 @@ Round-trip invariants (open→close→open, any number of cycles):
 | Receiver int32 overflow | `OverflowError` pre-mutation (loud, atomic; unreachable at shipped densities); `can_seal_tiles` returns False for it (S4) | §3.1.7 |
 | Unit standing on the tile | **not the primitive's concern** — occupancy is A6 caller policy | §2 |
 | Fire on the sealed tile | carried over (burning door); v1 gap | §10 |
+| Close-T, tile has pre-existing solid neighbor(s) | door takes `Σ // count` of their `T` (N,S,E,W order, floor) — amended 2026-07-19 | §4a |
+| Close-T, NO solid neighbor (free-standing seal) | keeps local air `T` (fallback) — amended 2026-07-19 | §4a |
+| Close-T, span seal | span members never donate; each tile means over pre-existing walls only | §4a |
 | Cycled door regains full `wall_hp` | accepted A5 gap (S3); A6 door entity owns HP as runtime state | §5.1, §10.11, §11 |
 
 ---
@@ -601,7 +652,9 @@ sensor-gather contract note already standing in the arc plan
 
 ## 10. Accepted gaps v1 (simplest honest design; revisit at arc close)
 
-1. **Energy not conserved at seal/unseal** (§4): `T` untouched; error
+1. **Energy not conserved at seal/unseal** (§4; close-T amended 2026-07-19
+   per §4a — seal writes the solid-neighbor mean, still non-conserving):
+   unseal `T` untouched; error
    `Σ ΔN_j·c_v·(T_j − T_s)`, ≈0 in isothermal rooms, one-shot per flip.
    Upgrade path documented (N-weighted T mixing, wide int64).
 2. **Instant isothermal compression** (§4): teleported mass raises next

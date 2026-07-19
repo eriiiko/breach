@@ -91,6 +91,7 @@ def _snapshot(g):
         "atmosphere": g.atmosphere.copy(), "wave_p": g.wave_p.copy(),
         "solid": g.solid.copy(), "is_vacuum": g.is_vacuum.copy(),
         "water_depth": g.water_depth.copy(), "wall_hp": g.wall_hp.copy(),
+        "temperature": g.temperature.copy(),
     }
 
 
@@ -541,6 +542,106 @@ def test_inspan_vacuum_join_does_not_chain_up_span():
     assert bool(g.is_vacuum[7, 6])
     assert all(int(g.gas[i][7, 6]) == 0 for i in range(N_GASES))
     assert _slice_totals(g) == totals0          # joins never mint or destroy
+
+
+# ---------------------------------------------------------------------------
+# Close-T amendment (Erik ruling 4, 2026-07-19; design §4a): on close, the
+# door takes the wall assembly's temperature, not the displaced air's
+# ---------------------------------------------------------------------------
+def _wall_line_with_doorway(g, x=6, doorway_ys=(6,)):
+    """A vertical wall at column ``x`` spanning the interior, with open
+    doorway tiles at the given rows."""
+    for y in range(1, 11):
+        if y not in doorway_ys:
+            _make_solid(g, y, x)
+
+
+def test_close_t_hot_room_takes_wall_mean_not_air():
+    g = _make_gmap()
+    _wall_line_with_doorway(g, x=6, doorway_ys=(6,))
+    t_hot = atmosphere_fixed.quantize_scalar(1000.0)   # post-grenade air
+    t_n = atmosphere_fixed.quantize_scalar(293.0)
+    t_s = atmosphere_fixed.quantize_scalar(311.0)
+    g.temperature[6, 6] = t_hot
+    g.temperature[5, 6] = t_n                          # N wall
+    g.temperature[7, 6] = t_s                          # S wall
+    totals0 = _slice_totals(g)
+
+    g.seal_tiles([(6, 6)], MAT_DOOR)
+    # Wall-assembly mean (floor), NOT the displaced air's T: no instant
+    # hot door from 1000 K doorway air.
+    assert int(g.temperature[6, 6]) == (int(t_n) + int(t_s)) // 2
+    assert int(g.temperature[6, 6]) != int(t_hot)
+    # Wall donors are read-only: the mean is taken, nothing is moved.
+    assert int(g.temperature[5, 6]) == int(t_n)
+    assert int(g.temperature[7, 6]) == int(t_s)
+    # The T write carries no conservation weight — N totals exact.
+    assert _slice_totals(g) == totals0
+
+    # unseal_tiles' temperature behavior is UNCHANGED (design §4a): the
+    # opened tile's solid T becomes the gas T — unseal writes nothing.
+    door_t = int(g.temperature[6, 6])
+    g.unseal_tiles([(6, 6)])
+    assert int(g.temperature[6, 6]) == door_t
+
+
+def test_close_t_floor_division_three_walls():
+    g = _make_gmap()
+    # Three solid neighbors (N, S, W) around (6, 6); E stays the receiver.
+    for (y, x) in ((5, 6), (7, 6), (6, 5)):
+        _make_solid(g, y, x)
+    g.temperature[5, 6] = 7
+    g.temperature[7, 6] = 8
+    g.temperature[6, 5] = 10
+    g.seal_tiles([(6, 6)], MAT_DOOR)
+    # Integer mean = floor division: (7 + 8 + 10) // 3 = 8 (not 8.33...).
+    assert int(g.temperature[6, 6]) == 8
+
+
+def test_close_t_no_solid_neighbor_keeps_air_t():
+    g = _make_gmap()
+    t_hot = atmosphere_fixed.quantize_scalar(1000.0)
+    g.temperature[6, 6] = t_hot                 # free-standing seal: all 4
+    g.seal_tiles([(6, 6)], MAT_DOOR)            # neighbors are open air
+    assert int(g.temperature[6, 6]) == int(t_hot)   # fallback: T stays
+
+
+def test_close_t_span_members_never_donate():
+    g = _make_gmap()
+    # Wall at x=6 with a 2-tile doorway (5,6)+(6,6). Pre-existing solid
+    # neighbors: (4,6) for the first span tile, (7,6) for the second — the
+    # adjacent span member is NOT solid before the call and never donates.
+    _wall_line_with_doorway(g, x=6, doorway_ys=(5, 6))
+    t_a = atmosphere_fixed.quantize_scalar(280.0)
+    t_b = atmosphere_fixed.quantize_scalar(400.0)
+    t_hot = atmosphere_fixed.quantize_scalar(900.0)
+    g.temperature[4, 6] = t_a
+    g.temperature[7, 6] = t_b
+    g.temperature[5, 6] = t_hot
+    g.temperature[6, 6] = t_hot
+
+    g.seal_tiles([(5, 6), (6, 6)], MAT_DOOR)
+    # Each tile means over ITS pre-existing walls only (a single donor
+    # each) — no mixing through the other span member, no air T.
+    assert int(g.temperature[5, 6]) == int(t_a)
+    assert int(g.temperature[6, 6]) == int(t_b)
+
+
+def test_close_t_determinism_two_maps():
+    def build_and_seal(g):
+        _wall_line_with_doorway(g, x=6, doorway_ys=(5, 6))
+        g.temperature[4, 6] = 1_000_001
+        g.temperature[7, 6] = 2_000_003
+        g.temperature[5, 6] = 65_536_000
+        g.temperature[6, 6] = 65_536_000
+        g.seal_tiles([(5, 6), (6, 6)], MAT_DOOR)
+    a, b = _make_gmap(), _make_gmap()
+    build_and_seal(a)
+    build_and_seal(b)
+    assert np.array_equal(a.temperature, b.temperature)
+    for name, arr in _snapshot(a).items():
+        assert np.array_equal(arr, _snapshot(b)[name]), (
+            f"close-T determinism: field '{name}' diverged")
 
 
 if __name__ == "__main__":
