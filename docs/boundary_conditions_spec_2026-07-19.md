@@ -1,11 +1,12 @@
 # Boundary conditions — planetside AMBIENT ring (2026-07-19)
 
-**Status:** v2.2 — physics close-out, priority ledger #1. B2 (format/load) + B3a/B3b (CPU
-physics) LANDED green on `bc-ambient-ring`; the shift + per-substep reset + pin work
-(gate 1 flat interior at defaults AND non-default dials; gate 2 rush-in — both pass). **B3
-inverted the §3 absorber ladder** (σ-pressure sponge reflects, ships OFF; u-damping is the
-real absorber, not wired — OPEN feel decision, §3). Remaining: absorber decision → B4 CUDA
-lockstep → B5 human feel-test.
+**Status:** v2.4 — physics close-out, priority ledger #1. **CPU physics COMPLETE + green on
+`bc-ambient-ring`:** B2 (format/load `607125d`) + B3a/B3b (`59bd7a5`/`9d7d244`) + B3c absorber
+(`a1418f9`). Shift, per-substep reset, pin (gate 1 flat interior at defaults AND non-default;
+gate 2 rush-in), and the u-damping band absorber (k_max=0.9·FP_ONE pinned; σ dead) all pass;
+979 passed/19 skipped CPU-only; space goldens byte-untouched. §3 records the elliptic-image
+finding (part of the residual is un-absorbable finite-domain venting, a B5 feel matter).
+**Remaining: B4 CUDA lockstep → B5 human feel-test.** Nothing on main until B4 green + B5.
 **Sequencing:** lands **BEFORE** the S8a residency build (`cuda_s8a_residency_spec_2026-07-19.md` §5c).
 **Sources:** Topic 4 survey (`notes_2026-07-17_topics_backlog.md`), A9 hook (`level_loader.py:468-533`),
 Erik's decisions (§0), STEP-A audit (`bc_step_a_audit_2026-07-19.md`), three-lens adversarial
@@ -141,15 +142,25 @@ Helmholtz k≈1409). The as-built ladder:
 - **Rung 1 — σ(d) pressure sponge: DEAD (measured to reflect).** Wired + dormant (σ_max=0).
   Kept in-code (ambient-gated, space byte-identical) so the finding is reproducible; do NOT
   spend more on it.
-- **The real absorber — u-damping band (B3c, BUILDING per Erik's decision):** magnitude-
-  first Q16 multiply on the band velocity (the truncating-mul sign convention — a naive
-  signed multiply leaves a stuck −1-count floor), placed after the existing absorb chain in
-  step 4 (`eos_solver.cpp:531-541`) + its CUDA twin (B4). Reuses the B2 BFS distance grid
-  for the band; `sponge_u_damp` (k_max) is the live dial. Requires FIRST a **robust
-  reflection harness** (big-map reference run, ring pushed ≥ c·dt·T_window away; metric =
-  max over an interior probe REGION and the window of |P_test − P_ref| / max|P_ref − P_amb|
-  — immune to the phase/sign/corner aliasing that made B3's scratch metric read 2–24%).
-  Then calibrate k_max until gate 3 passes at the best achievable margin; pin the default.
+- **The real absorber — u-damping band (B3c, LANDED `a1418f9`):** magnitude-first Q16
+  multiply `|u| *= (1−k(d))` on both axes in the step-4 kick after the absorb chain
+  (`eos_solver.cpp:531-541`); `k(d)=k_max·(W−d)²//W²` from the same BFS band as `sponge_sigma`
+  (new `gmap.sponge_udamp` grid); ambient-gated, space byte-identical. Robust harness
+  `tests/_ambient_reflection.py` (big-map reference; region×window metric) fixed B3b's
+  aliasing. **Calibration: reflection falls MONOTONICALLY with k, knees at ~0.9·FP_ONE** —
+  pinned `DEFAULT_SPONGE_U_DAMP = 58982` (0.9). Effectiveness scales with band WIDTH (bites
+  per transit): width 8 (default) saturates ~2.5% at close range; width 16 makes ≤2%; width
+  24+ gives ≥2× margin. Width stays the author's absorption-vs-interior-space dial (default 8).
+  σ stays 0 (dead).
+- **The elliptic-image finding (B3c, important):** the big-map-reference "reflection" number
+  conflates TWO things — (a) the acoustic echo, which the band genuinely absorbs (late-window
+  reflected transient cut ~42–65%), and (b) the elliptic MG solve's **instantaneous image
+  response to domain size**: the pressure solve couples the whole domain each tick, so a near
+  ring changes the interior pressure at *tick 0*. (b) is correct finite-domain venting, NOT a
+  bounced wave — the band cannot and should not touch it, and removing it would need exactly
+  the radiation/characteristic BC we rejected. So a single ≤2% number is DC-dominated at close
+  range; the committed gate is placed where the acoustic part dominates. At ~0.02 atm
+  transients the residual is a **B5 feel question** (§0.5), not a hard numeric failure.
 - **Grid facts (still valid):** the B2 `sponge_sigma` grid is computed in `GameMap.__init__`
   from the FINAL post-upscale grid, W scaled by res_factor, int32 Q16, quantized once at
   load. A u-damping band would reuse the same BFS distance infrastructure. Staleness
