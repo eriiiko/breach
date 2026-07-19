@@ -20,7 +20,7 @@ stays 1 globally, critique 3):
     out-of-range raises loudly) + ``"\\n"``. Synced kinds: int, q16, bool
     (0/1), enum (declared-choice index), entity_ref (target ordinal; -1 for
     unwired "" AND dangling — both resolve to nothing at runtime).
-    EXCLUDED: float_render, str, color_rgb, str_list, AND length_m
+    EXCLUDED: float_render, str, color_rgb, str_list, roster, AND length_m
     (critique blocker 1) — length_m is authoring-bound, stored unquantized;
     its synced consequence is quantized tile state already hashed via
     material/obstacles/wall_hp. No digest-time quantization, ever.

@@ -389,6 +389,46 @@ class GameMap:
                     f"at save, so this file was likely hand-edited)",
                     RuntimeWarning, stacklevel=2)
 
+        # --- air_init.npy atmosphere seed (entity design §10, A9) ---------
+        # Same placement rationale as the water seed above: __init__ runs
+        # exactly ONCE per map (reset() builds a fresh GameMap, so the seed
+        # reapplies by construction), and reload_material_table snapshots +
+        # restores the running atmosphere/gas around _update_caches, so a
+        # Ctrl+R can never stomp — or re-apply — the seed mid-run.
+        #
+        # THE PINNED TILE RULE: the override applies to OPEN-AIR tiles only
+        # (~solid & ~is_vacuum). Values on SOLID tiles are IGNORED — the
+        # atmosphere on solid is identically 0 (a boundary, not a gas
+        # state; _update_caches pins it) — and values on SPACE (is_vacuum)
+        # tiles are IGNORED too: the vacuum ring IS the boundary condition
+        # (a seed there would be silently destroyed by the sponge; changing
+        # ring behavior belongs to the boundary-conditions project,
+        # ledger #1). Silent by design, unlike water's warning: a full-
+        # coverage grid (np.full(shape, FP_ONE)) is the natural authoring
+        # output and no conserved mass is lost by not applying it there.
+        #
+        # The seed writes atmosphere = P_override AND splits the two
+        # conservative bulk species to N_total == P (O2 21% half-up-rounded,
+        # inert_N2 the exact remainder). This is what makes the seed REAL
+        # under the EOS: pressure is re-derived every tick as
+        # p* = C·N_total·T_abs (eos_solver.h §2), so an atmosphere-only
+        # seed would evaporate on tick 1. At ambient temperature (T = 0
+        # counts) N_total == P sustains the override; at P == FP_ONE the
+        # split reproduces the P1 calibration EXACTLY (13763 / 51773 —
+        # tests/test_eos_p1_calibration.py), so an explicit all-ambient
+        # grid is bit-identical to no grid at all. Pure integer math
+        # (int64 intermediate), deterministic cross-machine.
+        air_seed_q = getattr(level_data, "air_init_q", None)
+        if air_seed_q is not None:
+            from simulation import gas_fixed as _gas_fx
+            open_air = (~self.solid) & (~self.is_vacuum)
+            p = np.asarray(air_seed_q)[open_air].astype(np.int64)
+            o2_frac_q = _gas_fx.quantize_scalar(0.21)   # 13763 (P1 calib)
+            o2 = (p * o2_frac_q + (1 << 15)) >> 16      # round-half-up
+            self.atmosphere[open_air] = p.astype(np.int32)
+            self.gas[O2][open_air] = o2.astype(np.int32)
+            self.gas[INERT_N2][open_air] = (p - o2).astype(np.int32)
+
     # ------------------------------------------------------------------
     # Cache rebuild
     # ------------------------------------------------------------------
