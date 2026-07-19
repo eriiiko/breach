@@ -1,6 +1,6 @@
 # Damage, Health & Conditions
 
-**Depends on:** [Units & entities](01_units_and_entities.md),
+**Depends on:** [Units](01_units.md),
 [Combat & weapons](03_combat_and_weapons.md),
 [Physics↔unit exchange](05_physics_unit_exchange.md),
 [Determinism & the number-ingress rule](../engine/14_determinism_and_number_ingress.md).

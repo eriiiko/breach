@@ -3,7 +3,7 @@
 **Depends on:** [State & ownership](../engine/02_state_and_ownership.md),
 [FieldEdit (write primitive)](../engine/13_field_edit.md),
 [Determinism & the number-ingress rule](../engine/14_determinism_and_number_ingress.md),
-[Units & entities](01_units_and_entities.md).
+[Units](01_units.md).
 **Forward refs:** [Combat & weapons](03_combat_and_weapons.md) (damage types,
 resistances, statuses get their full spec there).
 

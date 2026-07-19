@@ -25,7 +25,8 @@ sections join), 15 (level authoring — the format `[[entity]]` extends).
 One model for everything placeable that isn't paintable matter: doors, sensors, logic
 nodes, pumps, lights, the data chip — instances of registry classes, connected by signals
 (Arc B). Logic is dataflow over integer signals, never a scripting language. **Units are
-NOT entities in v1** — they keep `[[spawn]]`; the convergence contract (one shared id
+NOT entities in v1** — they keep `[[spawn]]` and their own data model
+([mechanics/01 Units](../mechanics/01_units.md)); the convergence contract (one shared id
 space, unit signals, digest merge) executes at stack-2, and until then the loader rejects
 any wire/tag/sensor referencing a unit.
 

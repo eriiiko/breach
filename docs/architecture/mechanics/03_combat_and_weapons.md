@@ -1,6 +1,6 @@
 # Weapons & Combat Resolution
 
-**Depends on:** [Units & Entities](01_units_and_entities.md),
+**Depends on:** [Units](01_units.md),
 [Physics↔unit exchange](05_physics_unit_exchange.md),
 [Damage, health & conditions](06_damage_health_and_conditions.md),
 [Ray Engine](../engine/08_ray_engine.md), [Smoke & gases](../engine/05_smoke.md),

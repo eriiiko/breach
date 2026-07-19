@@ -1,6 +1,6 @@
 # AI & Line-of-Sight
 
-**Depends on:** [Units & Entities](01_units_and_entities.md), [Grid & Coordinates](../engine/01_grid_and_coordinates.md), [Ray Engine](../engine/08_ray_engine.md)
+**Depends on:** [Units](01_units.md), [Grid & Coordinates](../engine/01_grid_and_coordinates.md), [Ray Engine](../engine/08_ray_engine.md)
 
 Two systems meet in this chapter. **Line-of-sight** answers a single boolean question — can point A see point B through the world? — and is consumed by everything that needs to know whether one tile is visible from another: enemy AI deciding whether it has spotted the squad, marines deciding whether they can shoot a target, and (designed, not yet wired) the renderer deciding which enemies to draw. **AI** is the decision layer that turns world state into unit intent. Today that layer is exactly one behaviour — the zombie — but it is structured so that "which brain runs" is a property of the unit, not a branch buried in the simulation loop.
 

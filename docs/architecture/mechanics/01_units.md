@@ -1,8 +1,16 @@
-# Units & Entities
+# Units
 
 **Depends on:** [State & Ownership](../engine/02_state_and_ownership.md), [Material System](../engine/03_material_system.md).
 
-A **unit** is a mobile entity in the world — a marine, a zombie, and in time any
+> **Naming note (2026-07-19):** units are deliberately **NOT entities** in the
+> [entity-system](../engine/16_entity_system.md) sense — no registry class, no
+> signals, no `[[entity]]` block; they spawn via the permanent `[[spawn]]`
+> syntax. The two systems converge at stack-2 (one shared id space, unit
+> signals `hp`/`alive`/`faction`, digest merge) per the convergence contract
+> in the entity design §3e. This chapter was renamed from "Units & Entities"
+> when the entity system claimed the word.
+
+A **unit** is a mobile actor in the world — a marine, a zombie, and in time any
 creature, robot, or worm the game grows to need. Units are the only things in
 Breach that act with intent. Everything else (walls, gas, fire, light) is field
 data on the grid; units are objects that read those fields, move through them,
