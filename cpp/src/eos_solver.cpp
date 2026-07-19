@@ -715,7 +715,6 @@ int EOSSolver::mg_build_levels(
     if (n <= 0 || dt <= 0.0f) return 0;
     // BC: dormancy BY BRANCH — every ambient edit below is gated on this flag.
     const bool ambient_mode = (is_ambient != nullptr);
-    (void)sponge_sigma;   // B3b consumes this (σ-sponge on the level-0 diagonal)
 
     // Per-tick scalar folds (identical expressions to step()'s hoists).
     const q16 n_floor_q  = quantize((double)N_FLOOR_SOLVER);
@@ -842,6 +841,26 @@ int EOSSolver::mg_build_levels(
                         }
                     }
                 }
+            }
+        }
+        // BC (spec §3 rung 1, B3b): the σ-SPONGE. Add the static per-cell
+        // sponge mass to the level-0 row diagonal at band cells — AFTER the L.b
+        // build (b used the un-σ'd m, the spec equation) and BEFORE the Galerkin
+        // coarse build + recip build below, so BOTH fold σ automatically. Under
+        // the shift the σ·P_amb rhs term vanishes: σ pulls P′ → 0 ≡ ambient,
+        // extending the Dirichlet ring inward with a taper (an unconditionally
+        // stable absorber that acts within the tick the wave arrives). Ring
+        // cells are excl==1 (Dirichlet), so σ is moot there anyway; the B2 grid
+        // is 0 at d==0. int64 row mass (M_CAP 2^38) keeps σ ≫ FP_ONE overflow-
+        // safe. All-zero grid (width 0 / strength 0) -> no-op (rung 0 dormant).
+        if (ambient_mode && sponge_sigma) {
+            for (int i = 0; i < n; ++i) {
+                if (L.excl[i] != 0) continue;
+                const int32_t s = sponge_sigma[i];
+                if (s <= 0) continue;
+                int64_t ms = L.m[i] + (int64_t)s;
+                if (ms > M_CAP) ms = M_CAP;
+                L.m[i] = ms;
             }
         }
     }

@@ -43,10 +43,20 @@ DEFAULT_T_AMB_K = 290.0
 DEFAULT_P_AMB = 1.0
 DEFAULT_O2_FRAC = 0.21
 DEFAULT_SPONGE_WIDTH = 8
-# σ_max placeholder — a pressure-sponge mass on the level-0 Helmholtz diagonal
-# (spec §3). PINNED BY B3 CALIBRATION against the ≤2% reflection gate; this value
-# is a build-time placeholder only (nothing consumes it until B3).
-DEFAULT_SPONGE_STRENGTH = 32 * FP_ONE
+# σ_max — a pressure-sponge mass on the level-0 Helmholtz diagonal (spec §3
+# rung 1). B3 CALIBRATION OUTCOME (2026-07-19): the σ-pressure-sponge does NOT
+# absorb — it pins P′ toward ambient (a soft Dirichlet), which REFLECTS acoustic
+# fronts rather than absorbing them (a pressure-release BC is a perfect
+# reflector; measurement across ring distances showed reflection monotonically
+# equal-or-WORSE as σ_max rises). The momentum carrier `u` sails through the
+# band to the hard ring and bounces. So the calibrated default is 0 (the dial
+# is wired + live for experimentation, but ships OFF — pin-only is the better-
+# measured behavior). The promising absorber is rung 2 (velocity damping in the
+# band, the `sponge_u_damp`/k_max dial), which measurement showed DOES cut
+# reflection — but wiring + a robust reflection gate is an open item for Erik's
+# absorber design call (spec §0.5: "imperceptibility, not perfection"; the B5
+# feel gate). See the B3b commit message + build report for the measurements.
+DEFAULT_SPONGE_STRENGTH = 0
 DEFAULT_SPONGE_U_DAMP = 0                 # rung-2 mop-up, dormant by default
 # σ_max may exceed FP_ONE: the ambient row mass is ~1/1409 real and face
 # conductances ~1 real, so a useful sponge extends the Dirichlet ring inward and

@@ -659,5 +659,92 @@ def test_space_map_seeding_is_byte_identical_dormancy(tmp_path):
     assert np.all(g.gas[INERT_N2][open_air] == AMBIENT_N2_Q)
 
 
+# ---------------------------------------------------------------------------
+# (h) AMBIENT physics gates — the B3 build (boundary_conditions_spec §6).
+#     Gate 1 (a flat planetside interior holds equilibrium — the payoff of the
+#     N-primary pin) and Gate 2 (breach to ambient -> air rushes IN, rails
+#     bounded, the boundary_flux rail records the exchange). These exercise the
+#     LIVE C++ ambient path (EOSSolver::step shift/reset/widenings + the rail),
+#     so they are skipped on a build without breach_physics.
+# ---------------------------------------------------------------------------
+DT_TICK = 1.0 / 24.0
+
+
+def _ambient_gmap(H, W, ambient_cfg=None):
+    """A planetside map: 1-cell SPACE ring border (v1 code 0) around an open-air
+    interior (code 9). Hand-built LevelData — no level folder (the physics path
+    only needs the tilemap + boundary + dials)."""
+    tm = np.full((H, W), 9, dtype=np.int32)
+    tm[0, :] = tm[-1, :] = tm[:, 0] = tm[:, -1] = 0
+    ld = level_loader.LevelData(
+        name="amb_gate", version="1", path=Path("."), tilemap=tm,
+        tile_size_m=1.0 / 3.0, diffuse_path=Path("."),
+        boundary="ambient", ambient=ambient_cfg)
+    return GameMap(ld)
+
+
+@pytest.mark.skipif(bp is None, reason="needs the compiled breach_physics")
+@pytest.mark.parametrize("dials", [
+    None,                                   # Earth defaults (pin 65540)
+    dict(p_amb=0.6, o2_frac=0.3),           # non-default dials (pin 39150)
+])
+def test_ambient_gate1_flat_interior_holds(dials):
+    """GATE 1 (spec §6): a flat planetside interior holds equilibrium exactly —
+    the payoff of the N-primary pin. The interior trajectory must be FLAT at
+    defaults AND at non-default dials (proving the dial-aware seed + the shift
+    materialize P_amb consistently)."""
+    from simulation.ambient import derive_ambient
+    from simulation.physics_runner import PhysicsRunner
+    cfg = derive_ambient(**dials) if dials else derive_ambient()
+    g = _ambient_gmap(28, 28, cfg)
+    runner = PhysicsRunner(bp)
+    interior = (~g.solid) & (~g.is_ambient)
+    p0 = g.atmosphere[interior].copy()
+    worst = 0
+    for _ in range(60):
+        runner.step(g, DT_TICK)
+        worst = max(worst, int(np.abs(
+            g.atmosphere[interior].astype(np.int64) - p0).max()))
+    # Exactly flat (the pin is the sim's own p*(N_amb, 0); ≤1 LSB tolerance).
+    assert worst <= 1, f"interior drifted {worst} raw at dials={dials}"
+    # And the ring materializes exactly the effective pin every tick.
+    assert np.all(g.atmosphere[g.is_ambient] == cfg.pin_q)
+
+
+@pytest.mark.skipif(bp is None, reason="needs the compiled breach_physics")
+def test_ambient_gate2_rush_in_recovers_and_rails_bounded():
+    """GATE 2 (spec §6): a depressurized interior open to the ambient ring
+    refills toward P_amb (the reservoir supplies mass), the boundary_flux rail
+    records the exchange (negative == mass INTO the domain), and the physical
+    rails stay bounded through the convergent-fill front (t_max_phys never
+    engages — no thermal runaway)."""
+    from simulation.physics_runner import PhysicsRunner
+    g = _ambient_gmap(40, 40)
+    runner = PhysicsRunner(bp)
+    o2, n2 = g.gases.name_to_id["o2"], g.gases.name_to_id["inert_n2"]
+    interior = (~g.solid) & (~g.is_ambient)
+    pin = g._ambient.pin_q
+    # Vent the interior to ~10% of ambient (N-primary, so P falls out of N/T).
+    g.atmosphere[interior] = int(pin * 0.1)
+    g.gas[o2][interior] = int(g._ambient.n_o2_q * 0.1)
+    g.gas[n2][interior] = int(g._ambient.n_n2_q * 0.1)
+    start = float(g.atmosphere[interior].mean())
+    for _ in range(80):
+        runner.step(g, DT_TICK)
+    recovered = float(g.atmosphere[interior].mean())
+    # Air rushed IN: the interior recovered most of the way to P_amb.
+    assert recovered > 0.9 * pin, (
+        f"interior only recovered to {recovered:.0f} / {pin} "
+        f"(started {start:.0f})")
+    # The rail recorded the boundary exchange, negative for a net inflow.
+    rail = runner.eos.boundary_flux()
+    assert len(rail) == g.gas.shape[0]
+    assert rail[o2] < 0 and rail[n2] < 0, f"expected inflow rail, got {rail}"
+    # No thermal runaway through the compression-pocket fill front.
+    assert runner.eos.t_max_phys_hits == 0
+    # The ring stayed pinned throughout.
+    assert np.all(g.atmosphere[g.is_ambient] == pin)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
