@@ -44,6 +44,7 @@ import numpy as np
 import level_loader
 
 WATER_FILENAME = "water_init.npy"
+ZONES_FILENAME = level_loader.ZONES_FILENAME    # "zones.npy" — one source
 
 _TABLE_HEADER_RE = re.compile(r"^\s*\[")          # any table / array-of-tables
 
@@ -323,6 +324,44 @@ def write_water_npy(level_dir, depth_q: np.ndarray, *,
     elif npy_path.is_file():
         npy_path.unlink()
     return nbak, has_water
+
+
+def write_zones_npy(level_dir, zone_grid, *, npy_bak: bool = True):
+    """Write (or, unpainted-everywhere, delete) ``zones.npy`` — uint8 paint
+    ids, the file IS the mask (editor design §5, A8: water's .npy-carrier
+    pattern MINUS the toml key — the loader discovers zones.npy by presence,
+    so no managed [zones] family exists and none is written). All-zero grid
+    = no zones: the file is deleted, matching the loader's absent-file
+    dormancy. The .npy carries its OWN once-per-session pre-session .bak
+    (``npy_bak`` True on the session's first save), mirroring
+    :func:`write_water_npy`. Returns ``(npy_bak_path | None, has_zones)``.
+
+    The caller may pass any integer-dtype grid; values are range-checked to
+    0..255 (paint ids are 1..255, 0 = unpainted — the schema's zone_id
+    bounds) and stored as uint8, the loader's pinned on-disk dtype.
+    """
+    level_dir = Path(level_dir)
+    npy_path = level_dir / ZONES_FILENAME
+    g = np.asarray(zone_grid)
+    if not np.issubdtype(g.dtype, np.integer):
+        raise ValueError(
+            f"zone grid must be integer paint ids (stored uint8), got "
+            f"dtype {g.dtype}")
+    if g.size and (int(g.min()) < 0 or int(g.max()) > 255):
+        raise ValueError(
+            f"zone paint ids must fit uint8 (0..255, 0 = unpainted), got "
+            f"range [{int(g.min())}, {int(g.max())}]")
+    g = np.ascontiguousarray(g.astype(np.uint8))
+    has_zones = bool(g.any())
+    nbak = None
+    if npy_bak and npy_path.is_file():
+        nbak = Path(str(npy_path) + ".bak")
+        nbak.write_bytes(npy_path.read_bytes())
+    if has_zones:
+        np.save(npy_path, g)
+    elif npy_path.is_file():
+        npy_path.unlink()
+    return nbak, has_zones
 
 
 def water_block_format(has_water: bool):

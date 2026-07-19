@@ -418,6 +418,83 @@ def _parse_water_table(raw: dict, base: Path, toml_path,
     return depth_q
 
 
+# ---- zones (editor design §5, A8) ----------------------------------------
+# The painted zone mask: uint8 paint ids, 0 = unpainted, discovered by
+# PRESENCE next to level.toml (no toml table exists for zones — the file IS
+# the mask; contrast [water], whose depth_map key predates the pattern).
+ZONES_FILENAME = "zones.npy"
+
+# The two zone classes, ever (editor design §5). One paint-id namespace
+# across both: a breach_site and an extraction_zone may not share a zone_id.
+ZONE_CLASSES = ("breach_site", "extraction_zone")
+
+
+def _parse_zones_grid(base: Path, tilemap: np.ndarray):
+    """Load the optional ``zones.npy`` paint grid (editor design §5, A8).
+
+    Returns the uint8 paint-id grid, or None when the file is absent — zone
+    dormancy (an un-zoned level is bit-identical to before zones existed).
+    Validation is hard (ValueError, path-bearing messages): dtype must be
+    uint8 (paint ids are 1..255, 0 = unpainted — the id namespace is pinned
+    by the schema's zone_id bounds), shape must equal the tilemap's.
+    """
+    zones_path = base / ZONES_FILENAME
+    if not zones_path.is_file():
+        return None                   # no zones.npy at all — dormancy
+    try:
+        zone_grid = np.load(zones_path, allow_pickle=False)
+    except (OSError, ValueError) as e:
+        raise ValueError(
+            f"zones.npy is not a readable .npy array: {zones_path}: {e}")
+    if zone_grid.dtype != np.uint8:
+        raise ValueError(
+            f"zones.npy must be dtype uint8 (paint ids 1..255, "
+            f"0 = unpainted), got {zone_grid.dtype}: {zones_path}")
+    if zone_grid.shape != tilemap.shape:
+        raise ValueError(
+            f"zones.npy shape {zone_grid.shape} != tilemap shape "
+            f"{tilemap.shape}: {zones_path}")
+    return zone_grid
+
+
+def _validate_zone_binding(zone_grid, entities, toml_path) -> None:
+    """The zone binding validators (editor design §5, A8).
+
+    The npy grid holds paint ids; the ``[[entity]]`` instance holds
+    everything else. Every painted id must have exactly ONE zone instance:
+    a duplicate ``zone_id`` claim is a HARD load error; an orphaned paint id
+    (painted, no instance) and a zero-tile instance (claimed, never painted
+    — including when zones.npy is absent entirely) are ``warnings.warn``
+    authoring warnings, not crashes (the A3 dangling-ref precedent).
+    """
+    claims: dict = {}                 # zone_id -> instance (file order)
+    for inst in entities:
+        if inst.class_name not in ZONE_CLASSES:
+            continue
+        zid = int(inst.fields["zone_id"])
+        if zid in claims:
+            raise ValueError(
+                f"[[entity]] '{inst.id}' in {toml_path} claims zone_id "
+                f"{zid}, already claimed by '{claims[zid].id}' — every "
+                f"painted id has exactly ONE zone instance (level editor "
+                f"v3 design §5); duplicate zone_id is a load error. The "
+                f"paint-id namespace is one space across both zone classes.")
+        claims[zid] = inst
+    painted = (set(int(v) for v in np.unique(zone_grid)) - {0}
+               if zone_grid is not None else set())
+    for zid in sorted(painted - set(claims)):
+        warnings.warn(
+            f"zones.npy beside {toml_path} paints zone id {zid} but no "
+            f"zone instance claims it — orphaned paint (a validator "
+            f"warning, not a crash: level editor v3 design §5).")
+    for zid, inst in claims.items():
+        if zid not in painted:
+            warnings.warn(
+                f"[[entity]] '{inst.id}' in {toml_path} claims zone_id "
+                f"{zid} but zones.npy paints no tile with it (0 painted "
+                f"tiles — authoring warning, level editor v3 design §5).")
+
+
 @dataclass
 class LevelData:
     name: str
@@ -487,6 +564,15 @@ class LevelData:
     # `lights` above as equivalent LightEntry values (the [[light]]
     # legacy-alias contract; mixed forms hard-error at load).
     entities: list = field(default_factory=list)  # list[EntityInstance]
+    # ---- zones.npy paint grid (editor design §5, A8) ---------------------
+    # uint8 paint ids, shape == tilemap, 0 = unpainted — or None when the
+    # level folder carries no zones.npy (zone dormancy: an un-zoned level
+    # is bit-identical to before zones existed). Discovered by file
+    # PRESENCE, never a toml key. Binding: each nonzero painted id belongs
+    # to exactly one zone [[entity]] instance via its zone_id field
+    # (validators above). Parsed data only in Arc A — spawn realization
+    # from breach-site rosters is stack-2's.
+    zone_grid: Optional[np.ndarray] = None
 
     @property
     def height(self) -> int:
@@ -691,6 +777,10 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
     # ---- [water] initial state (engine/15 §2.3, P5) ----------------------
     water_depth_q = _parse_water_table(raw, base, toml_path, tilemap)
 
+    # ---- zones.npy paint grid + binding (editor design §5, A8) -----------
+    zone_grid = _parse_zones_grid(base, tilemap)
+    _validate_zone_binding(zone_grid, entities, toml_path)
+
     return LevelData(
         name=name,
         version=version,
@@ -720,6 +810,7 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
         art_align_explicit=art_align_explicit,
         water_depth_q=water_depth_q,
         entities=entities,
+        zone_grid=zone_grid,
     )
 
 

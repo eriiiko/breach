@@ -168,6 +168,15 @@ def _upscale_level(level, factor: int):
     if level.water_depth_q is not None:
         level.water_depth_q = np.repeat(
             np.repeat(level.water_depth_q, factor, axis=0), factor, axis=1)
+    # zones.npy paint grid scales like the tilemap (editor design §5, A8):
+    # the loader pinned zones.npy.shape == tilemap.shape, so the mask must
+    # follow the grid or a --res run would shape-mismatch (or silently drop
+    # zones). Nearest-neighbour replication keeps every painted id covering
+    # the same PHYSICAL area — same zones, factor² more member tiles; the
+    # zone [[entity]] instances (zone_id bindings, rosters) are untouched.
+    if level.zone_grid is not None:
+        level.zone_grid = np.repeat(
+            np.repeat(level.zone_grid, factor, axis=0), factor, axis=1)
     # Drop any explicit art-align px_per_tile so the renderer recomputes it
     # from the new (denser) grid shape — otherwise the art would stretch.
     level.art_px_per_tile = None

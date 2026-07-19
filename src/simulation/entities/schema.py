@@ -67,10 +67,17 @@ KIND_FLOAT_RENDER = "float_render"  # render-local float; never synced
 KIND_COLOR_RGB = "color_rgb"        # (r, g, b) 0-255 ints; render-local
 KIND_STR_LIST = "str_list"          # list of strings (tags)
 KIND_ENTITY_REF = "entity_ref"      # str naming another [[entity]] instance id
+# Breach-site roster (editor design §5, A8): [[unit_type, count], ...] pairs.
+# unit_type is UNIT-system vocabulary — units are NOT entities (design §3e),
+# so it is never registry-validated beyond being a non-empty string. Spawn
+# realization is stack-2's; in Arc A a roster is authored data only. Like
+# str_list it is NOT a synced kind (serialize.SYNCED_FIELD_KINDS): its synced
+# consequence is the spawned units, hashed as unit state when they exist.
+KIND_ROSTER = "roster"              # list of [unit_type(str), count(int>=1)]
 
 ALL_KINDS = (KIND_INT, KIND_Q16, KIND_LENGTH_M, KIND_BOOL, KIND_STR,
              KIND_ENUM, KIND_FLOAT_RENDER, KIND_COLOR_RGB, KIND_STR_LIST,
-             KIND_ENTITY_REF)
+             KIND_ENTITY_REF, KIND_ROSTER)
 
 # Kinds the entities.toml tuning overlay may override — NUMBERS only.
 NUMERIC_KINDS = (KIND_INT, KIND_Q16, KIND_LENGTH_M, KIND_FLOAT_RENDER)
@@ -230,6 +237,19 @@ def field_value_error(f: Field, value) -> str | None:
               and all(isinstance(s, str) for s in value))
         if not ok:
             err = "must be a list of strings"
+    elif f.kind == KIND_ROSTER:
+        def _roster_pair_ok(p) -> bool:
+            return (isinstance(p, (tuple, list)) and len(p) == 2
+                    and isinstance(p[0], str) and p[0] != ""
+                    and isinstance(p[1], int) and not isinstance(p[1], bool)
+                    and p[1] >= 1)
+        ok = (isinstance(value, (tuple, list))
+              and all(_roster_pair_ok(p) for p in value))
+        if not ok:
+            err = ("must be a roster: [[unit_type, count], ...] — unit_type "
+                   "a non-empty string (UNIT-system vocabulary, never "
+                   "registry-validated: units are not entities, design §3e), "
+                   "count an int >= 1")
     else:
         err = f"unknown kind {f.kind!r} (valid: {ALL_KINDS})"
     if err:
