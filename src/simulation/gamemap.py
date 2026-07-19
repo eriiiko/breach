@@ -54,6 +54,18 @@ from simulation.gases import (  # noqa: F401  (re-exported)
 )
 
 
+class SealBlocked(ValueError):
+    """A seal precondition failed on live state. State is untouched (atomic).
+
+    Raised by :meth:`GameMap.seal_tiles` for the state-dependent refusals —
+    standing water on the span, a gas-holding sealed pocket — the cases a
+    caller resolves in play (drain, vent), not by fixing code. Caller bugs
+    (bounds, duplicates, already-solid, non-solid material) raise plain
+    ``ValueError`` instead. Subclasses ``ValueError`` so a coarse caller can
+    catch both. Design: docs/a5_evacuation_impl_2026-07-18.md §2.
+    """
+
+
 class GameMap:
     """2D grid map at fine-tile resolution, sized from the loaded level."""
 
@@ -1042,3 +1054,341 @@ class GameMap:
             self.atmosphere[fy, fx] = self._neighbor_mean(
                 self.atmosphere, fy, fx)
             self._seed_bulk_gas_neighbor_mean(fy, fx)
+
+    # ------------------------------------------------------------------
+    # EOS evacuation rule — seal / unseal (A5)
+    #
+    # The door-close half of the eos_refactor_design.md §2.2 occupancy-
+    # transition rule (only the destroy direction existed before): a tile
+    # leaving the open-air mask has its gas EVACUATED conservatively into
+    # adjacent open cells before any solver pass sees the new mask — the
+    # bulk-flux solver defensively zeroes N on solid every pass, so a seal
+    # without evacuation silently deletes mass. The symmetric open half
+    # (`unseal_tiles`) withdraws its seed from the donors instead of minting
+    # (destroy_wall's neighbor-mean seed stays the rule for DESTRUCTION
+    # events only). Both primitives are pure-integer, order-pinned, and
+    # atomic. No sim path calls them yet (doors wire in at A6) — dormancy is
+    # structural. Full design + critique fold:
+    # docs/a5_evacuation_impl_2026-07-18.md (v2).
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _normalize_span(tiles):
+        """Normalize an iterable of ``(fy, fx)`` into the pinned ROW-MAJOR
+        sorted span (list of int tuples). Duplicate tiles are a caller bug →
+        ``ValueError``. The caller's ordering can never matter (determinism:
+        design §9)."""
+        span = [(int(fy), int(fx)) for fy, fx in tiles]
+        if len(set(span)) != len(span):
+            raise ValueError(f"seal/unseal span contains duplicate tiles: {span}")
+        span.sort()
+        return span
+
+    def _seal_receivers(self, fy, fx, span_set):
+        """Open 4-neighbors of ``(fy, fx)`` eligible to receive evacuated gas,
+        in the pinned N,S,E,W order (``_FACE_DIRS``). Span members are
+        excluded — the span seals simultaneously, so receivers are defined
+        against the POST-span solidity (design §3.1.5). Exposed-vacuum
+        neighbors qualify: a breach is an open side; the share pushed there
+        vents on the next flux pass through the sanctioned vacuum sink."""
+        h, w = self._h, self._w
+        out = []
+        for dy, dx in self._FACE_DIRS:
+            ny, nx = fy + dy, fx + dx
+            if (0 <= ny < h and 0 <= nx < w
+                    and not self.solid[ny, nx]
+                    and (ny, nx) not in span_set):
+                out.append((ny, nx))
+        return out
+
+    def _seal_blockers(self, span, material_id=None):
+        """Shared validation for :meth:`seal_tiles` / :meth:`can_seal_tiles`.
+
+        Runs the design §3.1 checks in their pinned order over the row-major
+        span and returns ``(error, receivers)`` — ``error`` is the exception
+        instance :meth:`seal_tiles` would raise (``None`` if the seal would
+        succeed), ``receivers`` maps each span tile to its receiver list.
+        ``material_id`` is checked only when given (``can_seal_tiles`` has no
+        material argument — validity of the id is the caller's own argument,
+        not state). NO mutation.
+        """
+        h, w = self._h, self._w
+        # 1. bounds — strict (a primitive caller passing OOB is a bug;
+        #    destroy_wall's silent OOB return is event-driven leniency).
+        for fy, fx in span:
+            if not (0 <= fy < h and 0 <= fx < w):
+                return ValueError(
+                    f"seal_tiles: tile ({fy}, {fx}) out of bounds"), None
+        # 2. already solid — catches double-close bugs.
+        for fy, fx in span:
+            if self.solid[fy, fx]:
+                return ValueError(
+                    f"seal_tiles: tile ({fy}, {fx}) is already solid"), None
+        # 3. material must be solid (permeability <= 0): sealing to a
+        #    non-solid material is incoherent (tile stays open to flow while
+        #    its gas was evacuated).
+        if material_id is not None:
+            mid = int(material_id)
+            if not (0 <= mid < len(self.materials.permeability)):
+                return ValueError(
+                    f"seal_tiles: unknown material id {mid}"), None
+            if float(self.materials.permeability[mid]) > 0.0:
+                return ValueError(
+                    f"seal_tiles: material id {mid} is not solid "
+                    f"(permeability > 0)"), None
+        # 4. water rule v1 — hard invariant guard at the primitive: the
+        #    water solver zeroes depth on solid, so sealing over standing
+        #    water is silent conserved-mass deletion. Span tiles only; a
+        #    flooded RECEIVER is fine (gas parks under the water column,
+        #    conserved — design §8).
+        for fy, fx in span:
+            if int(self.water_depth[fy, fx]) != 0:
+                return SealBlocked(
+                    f"seal_tiles: tile ({fy}, {fx}) holds standing water "
+                    f"(drain before sealing)"), None
+        # 5+6. receivers + sealed-pocket rule: a gas-holding tile with no
+        #    receiver must be REFUSED, never zeroed (§2.2 canon: "it is
+        #    never zeroed"). A gas-free tile seals fine with no receivers.
+        span_set = set(span)
+        receivers = {}
+        for t in span:
+            rs = self._seal_receivers(t[0], t[1], span_set)
+            receivers[t] = rs
+            if not rs and any(int(self.gas[g][t]) != 0 for g in range(N_GASES)):
+                return SealBlocked(
+                    f"seal_tiles: tile {t} holds gas but has no open "
+                    f"receiver (sealed pocket — refusing to delete mass)"
+                ), None
+        # 7. overflow pre-check — loud, pre-mutation. N is a conserved
+        #    field: a saturating store would SILENTLY break conservation,
+        #    so a receiver that could exceed int32 must raise instead.
+        #    Generous over-bound (assumes each receiver takes every adjacent
+        #    span tile's whole load); unreachable at shipped densities.
+        rec_order = []
+        rec_donors = {}
+        for t in span:
+            for r in receivers[t]:
+                if r not in rec_donors:
+                    rec_donors[r] = []
+                    rec_order.append(r)
+                rec_donors[r].append(t)
+        limit = 2 ** 31
+        for g in range(N_GASES):
+            for r in rec_order:
+                bound = int(self.gas[g][r]) + sum(
+                    int(self.gas[g][t]) for t in rec_donors[r])
+                if bound >= limit:
+                    return OverflowError(
+                        f"seal_tiles: receiver {r} would overflow int32 on "
+                        f"gas slice {g} (bound {bound})"), None
+        return None, receivers
+
+    def can_seal_tiles(self, tiles):
+        """Policy query: True iff :meth:`seal_tiles` on ``tiles`` would
+        succeed for a VALID solid ``material_id`` (material validity is the
+        caller's own argument, not state — it is not re-checked here).
+
+        Covers bounds / already-solid / water / receiver availability AND
+        the int32 overflow pre-check, so True really means the seal
+        completes. Does NOT check unit occupancy — that is caller policy
+        (the A6 door composes ``occupancy_clear(span) and
+        can_seal_tiles(span)``). Duplicate span tiles still raise
+        ``ValueError`` (a caller bug, not a polite refusal). Pure query, no
+        mutation. Design: docs/a5_evacuation_impl_2026-07-18.md §2.
+        """
+        span = self._normalize_span(tiles)
+        err, _ = self._seal_blockers(span)
+        return err is None
+
+    def seal_tiles(self, tiles, material_id):
+        """Seal a span of open tiles to ``material_id`` (a solid material),
+        evacuating their gas conservatively to open neighbors.
+
+        The door-close half of the §2.2 occupancy-transition rule: each
+        tile's gas (all ``N_GASES`` slices) is split equally over its open
+        non-span 4-neighbors — remainder to the first receivers in N,S,E,W
+        order — with pure Python-int arithmetic, so grid-total N per slice
+        is unchanged to the LSB. Solver-owned fields on the sealed tile are
+        set to their solid steady state; ``temperature`` becomes the integer
+        mean of the tile's PRE-call solid 4-neighbors' temperatures — the
+        door panel belongs to the wall assembly it slides from, so no
+        instant "hot door" from post-grenade air — falling back to keeping
+        the local air T only when the tile has no pre-existing solid
+        neighbor (Erik's ruling 4, 2026-07-19; design §4a). ``is_vacuum``
+        is never written (sealing a breach yields the sealed-hull state). The whole
+        span seals as ONE simultaneous edit (a 2-tile door closing is one
+        call). Atomic: validates everything, then mutates; raises
+        ``SealBlocked`` (water, sealed pocket) / ``ValueError`` (caller
+        bugs) / ``OverflowError`` (loud conservation guard) with no partial
+        mutation. Structural, not a FieldEdit: effects reach the solvers
+        next tick via the step-6 restamp, exactly like ``destroy_wall``.
+        Design: docs/a5_evacuation_impl_2026-07-18.md §3.
+        """
+        span = self._normalize_span(tiles)
+        err, receivers = self._seal_blockers(span, material_id)
+        if err is not None:
+            raise err
+        mid = int(material_id)
+
+        # Close-T (Erik ruling 4, 2026-07-19; design §4a): each sealed tile's
+        # temperature becomes the integer mean (floor) of its PRE-call solid
+        # 4-neighbors' temperatures, summed in the pinned N,S,E,W order — the
+        # door panel takes the temperature of the pre-existing wall assembly
+        # it slides from (no instant "hot door" from post-grenade air;
+        # conduction heats the panel honestly over subsequent ticks). Span
+        # members never donate: their just-assigned close-T would be
+        # circular, so "solid" means solid BEFORE this call — which is why
+        # the means are computed HERE, before any mutation (this also keeps
+        # the mutation pass below raise-free and span-order-independent).
+        # A tile with no pre-existing solid neighbor keeps its air T.
+        h, w = self._h, self._w
+        close_t = {}
+        for fy, fx in span:
+            wall_ts = []
+            for dy, dx in self._FACE_DIRS:
+                ny, nx = fy + dy, fx + dx
+                if 0 <= ny < h and 0 <= nx < w and self.solid[ny, nx]:
+                    wall_ts.append(int(self.temperature[ny, nx]))
+            if wall_ts:
+                close_t[(fy, fx)] = sum(wall_ts) // len(wall_ts)
+
+        # ATOMICITY PIN (design §3.2): atomicity rests on this mutation pass
+        # being RAISE-FREE BY CONSTRUCTION — every precondition was validated
+        # above and the pass is pure int loads/stores + on_tile_changed table
+        # lookups — NOT on any transaction/rollback machinery. Extensions to
+        # this pass must stay raise-free or add real rollback.
+        for t in span:
+            fy, fx = t
+            rs = receivers[t]
+            k = len(rs)
+            for g in range(N_GASES):
+                n = int(self.gas[g][fy, fx])
+                if n == 0:
+                    continue
+                q, r = divmod(n, k)
+                for j, (ny, nx) in enumerate(rs):
+                    share = q + (1 if j < r else 0)
+                    if share:
+                        self.gas[g][ny, nx] = int(self.gas[g][ny, nx]) + share
+                self.gas[g][fy, fx] = 0
+
+            self.material[fy, fx] = mid
+            self.on_tile_changed(fy, fx)
+
+            # Solid steady-state values for the solver-owned fields (design
+            # §6 table) — no "haunted door" values for the recorder snapshot.
+            self.atmosphere[fy, fx] = 0
+            self.wave_p[fy, fx] = 0
+            self.wind_x[fy, fx] = 0
+            self.wind_y[fy, fx] = 0
+            self.flow_vx[fy, fx] = 0
+            self.flow_vy[fy, fx] = 0
+            self.ripple[fy, fx] = 0.0
+            self.ripple_v[fy, fx] = 0.0
+
+            # Close-T write (computed pre-mutation above — design §4a).
+            if t in close_t:
+                self.temperature[fy, fx] = close_t[t]
+
+    def unseal_tiles(self, tiles):
+        """Open a span of solid tiles to ``MAT_AIR``, seeding each from its
+        open neighbors CONSERVATIVELY (withdrawn, not minted).
+
+        The joins-open-air rule's shape with an exact conservation story:
+        each opened tile is seeded at ``sum(donors) // (k + 1)`` — the
+        opened tile joins the donor set as an EQUAL member, so the
+        neighborhood relaxes toward its local uniform value (the correct
+        anti-vacuum-pulse statement for a withdrawn seed; a single donor is
+        halved, never drained to 0). The seed is withdrawn balanced-then-
+        greedy from the donors (pinned N,S,E,W order), so grid-total N per
+        slice is unchanged to the LSB. Donors come from the PRE-call open
+        mask only (a 2-tile door's second tile never seeds from the first's
+        fresh gas). A tile that is, or borders, exposed vacuum joins vacuum
+        instead — ``is_vacuum`` set, NO seed (zeroing is correct only for
+        vacuum); this predicate reads the LIVE solid mask, so the join
+        chains down the row-major span order (pinned, deliberate). Unlike
+        ``destroy_wall``, which mint-seeds unconditionally, opening never
+        creates gas. Atomic like ``seal_tiles`` (``ValueError`` on caller
+        bugs, no partial mutation).
+        Design: docs/a5_evacuation_impl_2026-07-18.md §7.
+        """
+        span = self._normalize_span(tiles)
+        h, w = self._h, self._w
+        for fy, fx in span:
+            if not (0 <= fy < h and 0 <= fx < w):
+                raise ValueError(
+                    f"unseal_tiles: tile ({fy}, {fx}) out of bounds")
+        for fy, fx in span:
+            if not self.solid[fy, fx]:
+                raise ValueError(
+                    f"unseal_tiles: tile ({fy}, {fx}) is not solid")
+        span_set = set(span)
+        # Donor snapshot: pre-existing open air only (design §7). numpy's
+        # ``~`` allocates a fresh array, so this is immune to the in-place
+        # per-tile solid updates below.
+        pre_open = ~self.solid
+
+        # Mutation pass — raise-free by construction, same atomicity story
+        # as seal_tiles (design §3.2 pin).
+        for t in span:
+            fy, fx = t
+            self.material[fy, fx] = MAT_AIR
+            self.on_tile_changed(fy, fx)
+
+            # Vacuum join (destroy_wall's exposes_vacuum predicate, minus
+            # its unconditional mint): LIVE solid mask — chains down-span.
+            joins_vacuum = bool(self.is_vacuum[fy, fx])
+            if not joins_vacuum:
+                for dy, dx in self._FACE_DIRS:
+                    ny, nx = fy + dy, fx + dx
+                    if (0 <= ny < h and 0 <= nx < w
+                            and self.is_vacuum[ny, nx]
+                            and not self.solid[ny, nx]):
+                        joins_vacuum = True
+                        break
+            if joins_vacuum:
+                self.is_vacuum[fy, fx] = True
+                continue
+
+            donors = []
+            for dy, dx in self._FACE_DIRS:
+                ny, nx = fy + dy, fx + dx
+                if (0 <= ny < h and 0 <= nx < w
+                        and pre_open[ny, nx]
+                        and not self.is_vacuum[ny, nx]
+                        and (ny, nx) not in span_set):
+                    donors.append((ny, nx))
+            if not donors:
+                # Opens empty (gas-free pocket) — NEVER mint.
+                continue
+
+            k = len(donors)
+            for g in range(N_GASES):
+                avail = [int(self.gas[g][d]) for d in donors]
+                target = sum(avail) // (k + 1)
+                if target == 0:
+                    continue
+                # Balanced two-pass withdrawal: equal shares clamped to each
+                # donor's holdings, shortfall cascaded in N,S,E,W order.
+                q, r = divmod(target, k)
+                take = [min(q + (1 if j < r else 0), avail[j])
+                        for j in range(k)]
+                short = target - sum(take)
+                for j in range(k):
+                    if short == 0:
+                        break
+                    extra = min(short, avail[j] - take[j])
+                    take[j] += extra
+                    short -= extra
+                for j, (ny, nx) in enumerate(donors):
+                    self.gas[g][ny, nx] = avail[j] - take[j]
+                self.gas[g][fy, fx] = target
+
+            # Display-alias stopgap (design §6): the MEAN of the donors'
+            # displayed atmosphere (divisor k, deliberately NOT k+1 — this
+            # is the minted display value destroy_wall also provides, not
+            # part of the conservation ledger; the solver rematerializes P
+            # next tick). wave_p matches so the |P - P_prev| ripple splash
+            # sees no phantom spike in the window before step 0.
+            self.atmosphere[fy, fx] = (
+                sum(int(self.atmosphere[d]) for d in donors) // k)
+            self.wave_p[fy, fx] = int(self.atmosphere[fy, fx])
