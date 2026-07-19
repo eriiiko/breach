@@ -93,7 +93,8 @@ Legend: ✅ implemented · ⚠️ partial (foundation built, advanced parts desi
 | 12 | [Config & hot-reload](engine/12_config_and_hot_reload.md) | ✅ |
 | 13 | [FieldEdit (write primitive)](engine/13_field_edit.md) | ⚠️ (queue + applier + explosion/smoke migration built; wall_hp/destruction-sweep + laser/gas consumers designed) |
 | 14 | [Determinism & the number-ingress rule](engine/14_determinism_and_number_ingress.md) | ⚠️ (the LAW + four doors + L1 lint + L3 digest/attestation shipped — `cuda-breached` proven Ampere↔Ada; L2 int-backed unit attrs + deterministic stat sampler owed to the units redesign) |
-| 15 | [Level format & authoring](engine/15_level_authoring.md) | ⚠️ (format v2 + painted-path tool shipped; tiled path SHIPPED — greybox tileset + autotile baker + standalone map editor + [[light]]/beacon entities + [water] aquarium seeding, P1–P5 merged 2026-07-08; AI-styled tilesets + doors-v1 owed) |
+| 15 | [Level format & authoring](engine/15_level_authoring.md) | ⚠️ (format v2 + painted-path tool shipped; tiled path SHIPPED — greybox tileset + autotile baker + standalone map editor + [[light]]/beacon entities + [water] aquarium seeding, P1–P5 merged 2026-07-08; AI-styled tilesets owed; doors-v1 superseded by entity doors, ch. 16) |
+| 16 | [Entity system](engine/16_entity_system.md) | ⚠️ (Arc A foundation SHIPPED 2026-07-19 — registry-in-code, [[entity]]+ids, level_lib data layer, entity digest sections, seal/unseal primitives, doors v0 (MAT_DOOR_CLOSED), zones/air_init/boundary format; SignalBus/sensors/logic = Arc B, editor UX = Arc C) |
 
 ### Mechanics — game logic on the engine
 | # | Chapter | Status |
