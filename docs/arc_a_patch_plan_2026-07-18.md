@@ -24,6 +24,18 @@ working tree).
    auto-merge to main as each goes green (standing authorization). Doors v0 +
    migration (A6–A7) land only after Erik's HUMAN-TEST and re-baseline
    blessing.
+4. **(2026-07-19) §7-contradiction ruling: option (c)** — conservative
+   seal/unseal pair for door flips (exact N), `destroy_wall` stays minting
+   for destruction (Erik's rubble model: debris displaces volume, pressure
+   constant — canon). Amendment folded into A5: on close, the door tile's
+   temperature is set to the mean of its SOLID neighbors (panel belongs to
+   the wall assembly), falling back to local air T if none — no instant
+   hot-door from post-grenade air. HUMAN-TEST rider for A6: judge whether
+   instant whole-span opening produces odd-looking pressure transients
+   (k+1 rarefaction, one tick); if it reads badly, options are staged
+   tile-per-tick opening (entity-level, primitive unchanged) or rebuild to
+   (d) delete+mint (documented fallback in a5 doc). Canon errata (§7 L241 +
+   eos §2.2) due at arc close.
 
 ## Patch list
 
