@@ -228,7 +228,8 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             this->temperature.o2_vacuum_thresh,
             this->temperature.c_v, this->temperature.n_floor_heat,
             this->temperature.gas_advection_rate, this->temperature.T_MAX_PHYS,
-            h, w, sim_time);
+            h, w, sim_time,
+            is_ambient);   // BC: ring wiped to ΔT=0 in Pass 0 (nullptr = space)
     } else
 #endif
     {
@@ -290,7 +291,8 @@ void PhysicsEngine::run_substeps(
             gas, gas_conservative, n_gases,
             solid, is_vacuum,
             dyn_permeability, dyn_wave_absorb,
-            h, w, sim_time);
+            h, w, sim_time,
+            is_ambient, n_amb, p_amb, sponge_sigma, sponge_udamp);   // BC (B4)
     } else
 #endif
     {

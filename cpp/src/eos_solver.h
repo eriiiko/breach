@@ -228,7 +228,10 @@ public:
     // BC (spec §5): the boundary_flux rail — per-conservative-plane int64 sum of
     // the ring mass exchange, accumulated at the reset site per substep. NOT
     // folded into any digest (absence-transparent; zero golden re-baseline).
-    // Sized n_gases in ambient mode, empty otherwise. Read-only view.
+    // Sized n_gases in ambient mode, empty otherwise. PUBLIC mutable (the
+    // digest/counter telemetry pattern) so the CUDA path (eos_step_cuda) writes
+    // it exactly as the CPU step() does; the getter gives the read-only view.
+    mutable std::vector<int64_t> boundary_flux_;
     const std::vector<int64_t>& boundary_flux() const { return boundary_flux_; }
 
     // ---- one multigrid level (v2.2 D-B) ---------------------------------
@@ -316,8 +319,6 @@ public:
 
 private:
     mutable std::vector<MGLevel> levels_;
-    // BC (spec §5): the boundary_flux rail accumulator (per-conservative-plane).
-    mutable std::vector<int64_t> boundary_flux_;
 
     // Reused per-tick scratch (house pattern: no per-tick alloc).
     mutable std::vector<int32_t> n_total_;

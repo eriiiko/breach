@@ -65,7 +65,12 @@ void eos_kick_compression(
     float n_floor_solver, float t_min, float t_work_clamp,
     float t_max_phys, float u_max, float trace_mass_scale,
     uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
-    int64_t* counters_out /* [5] */);
+    int64_t* counters_out /* [5] */,
+    // BC (spec §1/§3): the ambient ring (nullptr = space) drives the velocity
+    // zero + compression skip; the u-damping band grid sponge_udamp (nullptr =
+    // off) is the rung-2 absorber applied after the absorb chain, magnitude-
+    // first. All null -> the byte-identical space path.
+    const bool* is_ambient = nullptr, const int32_t* sponge_udamp = nullptr);
 
 // Backend selection (the P6.1/P6.2 surviving-backend idiom). NOTE: no engine
 // dispatch site consumes this yet — EOS orchestration dispatch is P6.5 ("the

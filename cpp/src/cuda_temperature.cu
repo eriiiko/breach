@@ -56,10 +56,14 @@ __device__ __forceinline__ int dx_of(int d) {
 // tile (vacuum AND solid) keeps its real solid-thermal state. Per-cell, no race.
 __global__ void temp_zero_vacuum(int32_t* __restrict__ temperature,
                                  const bool* __restrict__ solid,
-                                 const bool* __restrict__ is_vacuum, int n) {
+                                 const bool* __restrict__ is_vacuum, int n,
+                                 const bool* __restrict__ is_ambient) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
-        if (is_vacuum[i] && !solid[i]) temperature[i] = 0;
+        // BC (audit (b)): the ambient ring radiates to the T_amb sky — wiped to
+        // ΔT=0 exactly like a vacuum breach (is_ambient nullptr on space maps).
+        if ((is_vacuum[i] || (is_ambient && is_ambient[i])) && !solid[i])
+            temperature[i] = 0;
     }
 }
 
@@ -296,7 +300,8 @@ int64_t temperature_step(
     const int32_t* wind_x, const int32_t* wind_y,
     int no_face, int cool_shift, int cool_shift_vacuum, float o2_vacuum_thresh,
     float c_v, float n_floor_heat, float gas_advection_rate, float t_max_phys,
-    int h, int w, float dt) {
+    int h, int w, float dt,
+    const bool* is_ambient) {   // BC: ring wiped to ΔT=0 in Pass 0 (nullptr=space)
     const int n = h * w;
     if (n <= 0) return 0;
 
@@ -341,6 +346,12 @@ int64_t temperature_step(
     cuda_check(cudaMemcpy(d_atm, atmosphere, nb, cudaMemcpyHostToDevice), "H2D atm");
     cuda_check(cudaMemcpy(d_solid, solid, nbool, cudaMemcpyHostToDevice), "H2D solid");
     cuda_check(cudaMemcpy(d_vac, is_vacuum, nbool, cudaMemcpyHostToDevice), "H2D vac");
+    // BC: optional ambient ring mask for the Pass-0 wipe (nullptr on space maps).
+    bool* d_amb = nullptr;
+    if (is_ambient) {
+        cuda_check(cudaMalloc(&d_amb, nbool), "malloc is_ambient");
+        cuda_check(cudaMemcpy(d_amb, is_ambient, nbool, cudaMemcpyHostToDevice), "H2D is_ambient");
+    }
     if (n_bulk) cuda_check(cudaMemcpy(d_nbulk, n_bulk, nb, cudaMemcpyHostToDevice), "H2D nbulk");
     if (do_advect) {
         cuda_check(cudaMemcpy(d_wx, wind_x, nb, cudaMemcpyHostToDevice), "H2D wx");
@@ -356,7 +367,7 @@ int64_t temperature_step(
     const int grid = (n + block - 1) / block;
 
     // Pass 0a: zero gas-T at open vacuum cells (unconditional, in-place on d_temp).
-    temp_zero_vacuum<<<grid, block>>>(d_temp, d_solid, d_vac, n);
+    temp_zero_vacuum<<<grid, block>>>(d_temp, d_solid, d_vac, n, d_amb);
     cuda_check(cudaGetLastError(), "zero_vacuum launch");
 
     // Pass 0b: semi-Lagrangian advection (only when wind + dt>0, matching the CPU
@@ -405,6 +416,7 @@ int64_t temperature_step(
     if (d_src) cudaFree(d_src);
     if (d_wx) cudaFree(d_wx);
     if (d_wy) cudaFree(d_wy);
+    if (d_amb) cudaFree(d_amb);
 
     return (int64_t)hits;
 }
