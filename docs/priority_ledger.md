@@ -10,21 +10,28 @@ Created 2026-07-17 from Erik's stated stack; Erik owns the ordering.
 
 ## The stack
 
-### 1. Physics engine v1 — close it out  ← NEXT (Arc A done; this unblocks Arc B)
-- **EOS residency patch** — the last rung-B step: stop streaming all fields
-  GPU→CPU each tick (S8a). Finishes the EOS arc. Spec REWRITTEN 2026-07-19:
+### 1. Physics engine v1 — close it out  ← S8a residency is the last step
+- ~~**Boundary conditions** (space vs planetside, per-map)~~ **DONE
+  2026-07-20** — merged to main (`110e142`), Erik feel-blessed ("atmosphere
+  behaves, feel is nice"). Planetside AMBIENT ring symmetric to SPACE:
+  shift-pin P=P_amb, per-substep reservoir clamp, u-damping band absorber
+  (the σ pressure-sponge reflects — off), trace absorption, `boundary_flux`
+  rail; N-primary dials (effective pin 65540 at Earth defaults). CPU==CUDA
+  tol 0; space goldens untouched. Canon: engine/04 as-built section. Design
+  archived: `archive/boundary_conditions_spec_2026-07-19.md` (v2.4) +
+  `archive/bc_step_a_audit_2026-07-19.md`. `levels/planetside_demo` is the
+  fixture. Open follow-up: sky render tint is a placeholder (final art pass
+  later); u-damping width/k are per-level dials.
+- **EOS residency patch (S8a)** ← **NEXT** — the last rung-B step: stop
+  streaming all fields GPU→CPU each tick. Finishes the EOS arc. Spec ready:
   `cuda_s8a_residency_spec_2026-07-19.md` (post-EOS; carries the
   sensor-gather contract §5a — Arc B gated on it — and the structural
-  dirty-set rider §5b; two-rung H2D plan; old pre-EOS spec superseded with
-  banner). Awaiting Erik's review, then build per §4.
-- **Boundary conditions** (space vs planetside, per-map) — spec WRITTEN
-  2026-07-19: `boundary_conditions_spec_2026-07-19.md` (AMBIENT ring reuses
-  the SPACE tile code reinterpreted by the A9 `boundary` field; MG pin
-  carries P_amb; species reservoir reset; sponge band ships as v1 dial —
-  Erik wants *perfect* absorption; `boundary_flux` counted rail; no water
-  BC — ocean = indestructible-reservoir cheat, decided). **Lands BEFORE the
-  residency build** (Erik, 2026-07-19; S8a spec §5c). Awaiting Erik's
-  review. Survey: `notes_2026-07-17_topics_backlog.md` Topic 4.
+  dirty-set rider §5b; two-rung H2D plan). NOTE: BC landed first as planned,
+  so the kernels S8a freezes now include the ambient branches (shift,
+  reservoir clamp, u-damping) — the spec's launch-core extraction covers
+  them. Awaiting Erik's go, then build per §4. (Also addresses the
+  `cast_fire_heat` per-call GPU tax that tanks FPS with lots of fire — the
+  device port is S8c; the residency patch removes the transfer tax.)
 - Riders (chat-sized, slot when convenient):
   - ~~Wall-burst differential fix~~ **DONE 2026-07-18** — merged to main
     (true differential; only 1-deep membranes burst; Erik blessed).

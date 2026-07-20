@@ -52,6 +52,51 @@
 >   reference (`cuda_eos_step`, `cuda_mg_solve`); the CPU path is permanent as the bit-identity
 >   reference.
 
+> ## Boundary conditions — planetside AMBIENT ring (2026-07, as-built)
+>
+> The literal grid edge is closed/reflective everywhere; a map's *outer* boundary is made in
+> LEVEL DATA by its border tiles. Two modes, chosen by the top-level `boundary` field:
+>
+> - **`"space"` (default):** a ring of SPACE tiles → `is_vacuum`. The MG solve pins them
+>   Dirichlet **P = 0**; bulk transport treats them as a mass sink (native venting to vacuum);
+>   traces are absorbed. This is the original behavior; unchanged.
+> - **`"ambient"` (planetside):** the SAME SPACE tiles route **wholesale** to a new `is_ambient`
+>   mask instead (no `is_vacuum` on an ambient map; an interior SPACE tile is a legal "sky
+>   shaft"). The ring is an **infinite ambient reservoir** — air exits and enters freely.
+>
+> The AMBIENT ring is symmetric to SPACE, all local per-tile edits (no new solve structure):
+> - **Pressure via a change of variable.** The ring pins **P = P_amb**, implemented as the
+>   shift **P′ = P − P_amb**: subtract P_amb from the RHS + warm-start in the shared host-side
+>   `mg_build_levels`, solve the *unchanged* zero-Dirichlet multigrid, add P_amb back at the
+>   store (masked to `!solid`). Legal because an ambient map has no P = 0 pins to coexist. The
+>   coarse Galerkin anchor is only exact for pin value 0 — the shift is what keeps the whole MG
+>   byte-identical.
+> - **N-primary dials.** `[ambient]` carries `p_amb`/`o2_frac`; **N is primary** —
+>   `N_total := quantize(p_amb)`, split O2/inert-N2 — and the **effective pin** is the sim's own
+>   `p*(N_amb, ΔT=0)` chain (`src/simulation/ambient.py`). At Earth defaults that is **65540 raw
+>   (1.000061 atm), not 65536**: every reachable `p*` is a multiple of ~T_AMB_K raw counts, so
+>   1.0 atm has no integer preimage. Seeding the interior + ring to the effective pin is what
+>   makes a sealed planetside room's interior trajectory flat.
+> - **Reservoir + bath.** The bulk clamp resets ring `N` to `N_amb` **every substep** (mirroring
+>   the vacuum sink `N=0`), rail-counted by the int64 per-plane `boundary_flux`. `u` and `T` at
+>   the ring are the vacuum code verbatim (still boundary, ΔT = 0 ≡ ambient — no separate ambient-T
+>   dial). Traces are absorbed at the ring (the smoke solver's vacuum idiom widened to
+>   `is_vacuum | is_ambient`) — smoke vents into the sky.
+> - **Absorber.** Outgoing acoustic fronts are damped by a **velocity-damping band** (a graded
+>   `|u| *= (1−k(d))` over a BFS distance band from the ring; `sponge_u_damp`, k_max = 0.9·FP_ONE).
+>   A σ *pressure* sponge was tried and **reflects** (a pin hardened is a pressure-release wall) —
+>   it ships off (`sponge_strength = 0`). **Un-absorbable residual:** because the pressure solve is
+>   elliptic (whole-domain coupling per tick), a near boundary changes the interior at tick 0 —
+>   correct finite-domain venting, not a bounced wave, and removable only by a radiation BC we
+>   rejected. At ~0.02 atm transients this residual is a feel matter, deemed acceptable.
+> - **No water BC** (oceans are an authored indestructible reservoir; the ring is a water sink like
+>   SPACE). **Wind-in-from-boundary** stays a source term, not a boundary mode. **Structural edits**
+>   (`destroy_wall`/`unseal_tiles`) join `is_ambient` (not vacuum) on ambient maps.
+>
+> Bit-identical CPU == CUDA (tol 0). Existing space-map goldens are byte-untouched (every ambient
+> branch is gated on a live `is_ambient` — dormancy by branch). Design + as-built:
+> `docs/archive/boundary_conditions_spec_2026-07-19.md` (v2.4) + `bc_step_a_audit_2026-07-19.md`.
+
 ## 1. What this system is
 
 Breach's atmosphere is the air that fills the ship: a scalar pressure field over the
