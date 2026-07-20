@@ -1,0 +1,50 @@
+# planetside_demo — the BC (boundary-conditions) B5 HUMAN-TEST fixture
+# (boundary_conditions_spec_2026-07-19 §7 B5). A DEMO for Erik's feel-test, NOT a
+# shipped level: NEW, never migrated, never in any golden/digest suite. Flat dev
+# art. The first PLANETSIDE map — boundary = "ambient": the SPACE-code (9) ring
+# border is the open-sky reservoir (routed wholesale to is_ambient), the interior
+# is open atmosphere at the effective pin, and a sealed depressurised BUNKER sits
+# in the top-left with a bright-orange WOOD breach panel flush against the sky.
+#
+# THE MONEY SHOT (inverse of the space vent): blow a hole in the orange panel and
+# watch ambient air rush IN, re-pressurising the bunker toward 1 atm.
+#
+# The u-damping absorber band is ACTIVE (sponge_width 16 / sponge_u_damp 58982,
+# the B3c-calibrated knee) so the open boundary reads quiet (≤2% reflection).
+#
+# Launch:  conda run -n data python main.py --level planetside_demo
+#     GPU: conda run -n data python main.py --level planetside_demo --cuda
+# In-game: shoot / grenade the ORANGE panel (left wall of the bunker) -> air
+#          rushes in. `I` ignites near the ring to watch fire breathe on ambient
+#          O2; F6/pressure overlay makes the rush-in visible.
+
+version = "2"
+name = "Planetside Demo"
+
+tilemap = "tilemap.csv"
+tile_size_m = 0.333
+diffuse = "diffuse.png"
+
+# Planetside boundary: the SPACE ring is open sky, not vacuum.
+boundary = "ambient"
+
+[ambient]
+# Earth-like atmosphere (defaults, spelled out for the tester to tweak live).
+p_amb = 1.0
+o2_frac = 0.21
+# The velocity-damping absorber band (B3c rung 2): width 16 base tiles meets the
+# ≤2% reflection gate; sponge_u_damp is the pinned knee (0.9 * FP_ONE). Widen
+# sponge_width or raise sponge_u_damp if the boundary feels too reflective;
+# lower them if it feels over-damped (mushy).
+sponge_width = 16
+sponge_u_damp = 58982
+
+# air_init.npy (discovered by file presence) depressurises the sealed bunker to
+# ~0.12 atm so the breach is a real rush-in; everywhere else seeds at the pin.
+
+[[spawn]]
+name = "marine_1"
+team = 0
+x = 45.0
+y = 18.0
+footprint = 3

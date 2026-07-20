@@ -112,11 +112,16 @@ __global__ void kick_kernel(int32_t* __restrict__ wind_x,
                             int32_t n_floor_q, int32_t c_local_q,
                             int32_t u_max_q,
                             unsigned long long* __restrict__ cnt,
-                            int h, int w) {
+                            int h, int w,
+                            const bool* __restrict__ is_ambient,
+                            const int32_t* __restrict__ sponge_udamp) {
     const int n = h * w;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
-        if (solid[i] || is_vacuum[i]) { wind_x[i] = 0; wind_y[i] = 0; continue; }
+        // BC: ring u ≡ 0 — a still boundary, the vacuum idiom.
+        if (solid[i] || is_vacuum[i] || (is_ambient && is_ambient[i])) {
+            wind_x[i] = 0; wind_y[i] = 0; continue;
+        }
         const int y = i / w;
         const int x = i % w;
         const int il = mirror_idx_dev(i, y, x - 1, h, w, solid);
@@ -153,6 +158,21 @@ __global__ void kick_kernel(int32_t* __restrict__ wind_x,
             const int64_t my = mul128_shr_signed(uy < 0 ? -uy : uy, (int64_t)kk, 16);
             ux = (ux < 0) ? -mx : mx;
             uy = (uy < 0) ? -my : my;
+        }
+
+        // BC (spec §3 rung 2): the u-DAMPING BAND — |u| *= (1 − k(d)),
+        // magnitude-first, immediately after the absorb chain (the CPU's exact
+        // placement/ordering; mul128_shr_signed == the host mul128_shr). Gated
+        // on ambient mode, no-op at k==0 -> space maps byte-identical.
+        if (is_ambient && sponge_udamp) {
+            const int32_t kd = sponge_udamp[i];
+            if (kd > 0) {
+                const q16 kk2 = (kd < FP_ONE) ? (q16)(FP_ONE - kd) : 0;
+                const int64_t mx = mul128_shr_signed(ux < 0 ? -ux : ux, (int64_t)kk2, 16);
+                const int64_t my = mul128_shr_signed(uy < 0 ? -uy : uy, (int64_t)kk2, 16);
+                ux = (ux < 0) ? -mx : mx;
+                uy = (uy < 0) ? -my : my;
+            }
         }
 
         // |u| ≤ u_cap = min(c_LOCAL, U_MAX), counted per CELL; RAD_SAFE
@@ -198,11 +218,13 @@ __global__ void compression_kernel(const int32_t* __restrict__ wind_x,
                                    int32_t dt_q, int32_t work_clamp_q,
                                    int32_t t_min_q, int32_t t_max_phys_q,
                                    unsigned long long* __restrict__ cnt,
-                                   int h, int w) {
+                                   int h, int w,
+                                   const bool* __restrict__ is_ambient) {
     const int n = h * w;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
-        if (solid[i] || is_vacuum[i]) continue;
+        // BC: the ring is skipped like vacuum — no compression work.
+        if (solid[i] || is_vacuum[i] || (is_ambient && is_ambient[i])) continue;
         const int y = i / w;
         const int x = i % w;
         const int il = mirror_idx_dev(i, y, x - 1, h, w, solid);
@@ -237,7 +259,8 @@ void eos_kick_compression(
     float n_floor_solver, float t_min, float t_work_clamp,
     float t_max_phys, float u_max, float trace_mass_scale,
     uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
-    int64_t* counters_out /* [5] */) {
+    int64_t* counters_out /* [5] */,
+    const bool* is_ambient, const int32_t* sponge_udamp) {   // BC
     const int n = h * w;
     for (int c = 0; c < 5; ++c) counters_out[c] = 0;
     *digest_velocity_out = 0;
@@ -312,6 +335,20 @@ void eos_kick_compression(
     cuda_check(cudaMemcpy(d_vac, is_vacuum, nbool, cudaMemcpyHostToDevice), "H2D is_vacuum");
     cuda_check(cudaMemset(d_cnt, 0, 5 * sizeof(unsigned long long)), "memset counters");
 
+    // BC (spec §1/§3): optional ambient ring mask + u-damping band grid. Only
+    // allocated/uploaded on an ambient map; nullptr on space -> the kernels take
+    // the byte-identical space path (the `is_ambient && ...` short-circuits).
+    bool* d_amb = nullptr;
+    int32_t* d_udamp = nullptr;
+    if (is_ambient) {
+        cuda_check(cudaMalloc(&d_amb, nbool), "malloc is_ambient");
+        cuda_check(cudaMemcpy(d_amb, is_ambient, nbool, cudaMemcpyHostToDevice), "H2D is_ambient");
+    }
+    if (sponge_udamp) {
+        cuda_check(cudaMalloc(&d_udamp, nb), "malloc sponge_udamp");
+        cuda_check(cudaMemcpy(d_udamp, sponge_udamp, nb, cudaMemcpyHostToDevice), "H2D sponge_udamp");
+    }
+
     const int block = 256;
     const int grid = (n + block - 1) / block;
 
@@ -319,12 +356,12 @@ void eos_kick_compression(
     // grid-wide u (the CPU pass boundary).
     kick_kernel<<<grid, block>>>(d_wx, d_wy, d_pn, d_ntot, d_aq, d_sol, d_vac,
                                  Kdt_raw, inv_2dx_q, n_floor_q, c_local_q,
-                                 u_max_q, d_cnt, h, w);
+                                 u_max_q, d_cnt, h, w, d_amb, d_udamp);
     cuda_check(cudaGetLastError(), "kick launch");
     compression_kernel<<<grid, block>>>(d_wx, d_wy, d_t, d_sol, d_vac,
                                         inv_2dx_q, gamma_m1_q, dt_q,
                                         work_clamp_q, t_min_q, t_max_phys_q,
-                                        d_cnt, h, w);
+                                        d_cnt, h, w, d_amb);
     cuda_check(cudaGetLastError(), "compression launch");
 
     cuda_check(cudaDeviceSynchronize(), "sync");
@@ -345,6 +382,8 @@ void eos_kick_compression(
     cudaFree(d_sol);
     cudaFree(d_vac);
     cudaFree(d_cnt);
+    if (d_amb)   cudaFree(d_amb);
+    if (d_udamp) cudaFree(d_udamp);
 
     for (int c = 0; c < 5; ++c) counters_out[c] = (int64_t)cnt_host[c];
 

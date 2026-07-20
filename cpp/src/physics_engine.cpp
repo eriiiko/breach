@@ -56,7 +56,8 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // EOS P3: bulk-N source (real Pass-1 heat-deposit divisor)
         // EOS P4: o2_idx slices the real O2 gate input out of `gas`
         const int32_t* gas, const bool* gas_conservative, int n_gases, int o2_idx,
-        int h, int w, float sim_time) const {
+        int h, int w, float sim_time,
+        const bool* is_ambient) const {   // BC: ambient ring for the T pre-pass
 
     using namespace fixedpoint;
 
@@ -227,7 +228,8 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             this->temperature.o2_vacuum_thresh,
             this->temperature.c_v, this->temperature.n_floor_heat,
             this->temperature.gas_advection_rate, this->temperature.T_MAX_PHYS,
-            h, w, sim_time);
+            h, w, sim_time,
+            is_ambient);   // BC: ring wiped to ΔT=0 in Pass 0 (nullptr = space)
     } else
 #endif
     {
@@ -236,7 +238,8 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             solid, is_vacuum, atmosphere,
             n_bulk_.data(),
             nullptr, nullptr,
-            h, w, sim_time);
+            h, w, sim_time,
+            is_ambient);   // BC: ring wiped to ΔT=0 (Pass-0), vacuum idiom
     }
 
     return destroyed;
@@ -262,7 +265,9 @@ void PhysicsEngine::run_substeps(
         int32_t* gas, const float* gas_diffusion, int n_gases,   // S2b: gas Q16.16
         const bool* gas_conservative,                             // EOS P1
         const float* gas_decay, int inert_n2_idx,                 // EOS P4
-        int h, int w, float sim_time) {
+        int h, int w, float sim_time,
+        const bool* is_ambient, const int32_t* n_amb, int32_t p_amb,
+        const int32_t* sponge_sigma, const int32_t* sponge_udamp) {  // BC
     (void)obstacles;   // EOS P3: the solver's own `solid` mask IS the obstacle
                        // set (gamemap.py: obstacles == solid == permeability<=0);
                        // kept as a parameter for ABI/back-compat with the
@@ -286,7 +291,8 @@ void PhysicsEngine::run_substeps(
             gas, gas_conservative, n_gases,
             solid, is_vacuum,
             dyn_permeability, dyn_wave_absorb,
-            h, w, sim_time);
+            h, w, sim_time,
+            is_ambient, n_amb, p_amb, sponge_sigma, sponge_udamp);   // BC (B4)
     } else
 #endif
     {
@@ -295,7 +301,8 @@ void PhysicsEngine::run_substeps(
             gas, gas_conservative, n_gases,
             solid, is_vacuum,
             dyn_permeability, dyn_wave_absorb,
-            h, w, sim_time);
+            h, w, sim_time,
+            is_ambient, n_amb, p_amb, sponge_sigma, sponge_udamp);   // BC
     }
 
     // Traces advect ONCE per tick, on the solver's final (post-correction)
@@ -347,7 +354,8 @@ void PhysicsEngine::run_substeps(
                 h, w, sim_time,
                 this->smoke.d_smoke,
                 this->smoke.wind_diffusion_scale,
-                this->smoke.advection_rate);
+                this->smoke.advection_rate,
+                is_ambient);   // BC: ambient ring is a trace sink (null=space)
         } else
 #endif
         {
@@ -356,7 +364,8 @@ void PhysicsEngine::run_substeps(
                 solid, solid, is_vacuum,
                 dyn_permeability,
                 h, w,
-                sim_time);
+                sim_time,
+                is_ambient);   // BC: ambient ring is a trace sink (null=space)
         }
 
         // EOS refactor P4 (design §2.2/§5 v2.1, decisions log #12): apply

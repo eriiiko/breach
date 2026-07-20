@@ -57,7 +57,8 @@ int64_t temperature_step(
     float gas_advection_rate,       // Pass 0 wind->displacement scale
     float t_max_phys,               // v2.4 physical-max T rail (clamp + count)
     int h, int w,
-    float dt);                      // tick seconds; <=0 skips Pass 0 advection
+    float dt,                       // tick seconds; <=0 skips Pass 0 advection
+    const bool* is_ambient = nullptr);  // BC: ring wiped to ΔT=0 in Pass 0 (null=space)
 
 // Backend selection (S1 gate + integration). When true, PhysicsEngine::step_tail
 // runs temperature on the GPU instead of the CPU solver. Defaults false so the

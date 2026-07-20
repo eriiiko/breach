@@ -159,16 +159,28 @@ __global__ void bulk_diverge(int32_t* __restrict__ N,
     }
 }
 
-// ---- B5: clamps (stage 4) ---------------------------------------------------
+// ---- B5: clamps (stage 4) + the AMBIENT ring reset + rail --------------------
 // N = 0 on solid (defensive) AND vacuum (the DELIBERATE breach sink — mass
 // legitimately leaves the system); else max(N, 0). Exact CPU branch order.
+// BC (spec §1): the ambient ring is the vacuum sink's TWIN — a per-substep
+// CLAMP to the reservoir value n_amb, with the boundary_flux rail (spec §5)
+// recording Σ(N_pre_reset − n_amb) via a signed int64 atomicAdd (two's-
+// complement on unsigned long long — the cuda_combustion.cu:157 precedent;
+// integer sums are order-free, so the device total == the CPU sequential sum).
+// is_ambient nullptr on space maps -> the exact legacy clamp (byte-identical).
 __global__ void bulk_clamp(int32_t* __restrict__ N,
                            const bool* __restrict__ solid,
-                           const bool* __restrict__ is_vacuum, int n) {
+                           const bool* __restrict__ is_vacuum, int n,
+                           const bool* __restrict__ is_ambient, int32_t n_amb,
+                           unsigned long long* __restrict__ rail) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         if (solid[i] || is_vacuum[i]) {
             N[i] = 0;
+        } else if (is_ambient && is_ambient[i]) {
+            if (rail) atomicAdd(rail,
+                (unsigned long long)((int64_t)N[i] - (int64_t)n_amb));
+            N[i] = n_amb;
         } else if (N[i] < 0) {
             N[i] = 0;
         }
@@ -241,8 +253,8 @@ void bulk_flux_transport_cached(
         // B4 diverge (in-place on d_N)
         bulk_diverge<<<grid, block>>>(d_N, d_dq_e, d_dq_s, h, w);
         cuda_check(cudaGetLastError(), "diverge launch");
-        // B5 clamp (in-place on d_N)
-        bulk_clamp<<<grid, block>>>(d_N, d_solid, d_vac, n);
+        // B5 clamp (in-place on d_N). Isolated entry: no ambient ring.
+        bulk_clamp<<<grid, block>>>(d_N, d_solid, d_vac, n, nullptr, 0, nullptr);
         cuda_check(cudaGetLastError(), "clamp launch");
 
         cuda_check(cudaDeviceSynchronize(), "sync");
@@ -308,7 +320,8 @@ void bulk_flux_plane_device(
         const bool* d_solid, const bool* d_is_vacuum,
         const int32_t* d_coeffE, const int32_t* d_coeffS,
         int32_t* d_dq_e, int32_t* d_dq_s, int32_t* d_scale,
-        int h, int w) {
+        int h, int w,
+        const bool* d_is_ambient, int32_t n_amb, unsigned long long* d_rail) {
     const int n = h * w;
     const int block = 256;
     const int grid = (n + block - 1) / block;
@@ -321,7 +334,9 @@ void bulk_flux_plane_device(
     cuda_check(cudaGetLastError(), "scale-apply launch (P6.5 chained)");
     bulk_diverge<<<grid, block>>>(d_N, d_dq_e, d_dq_s, h, w);
     cuda_check(cudaGetLastError(), "diverge launch (P6.5 chained)");
-    bulk_clamp<<<grid, block>>>(d_N, d_solid, d_is_vacuum, n);
+    // BC: the ambient ring reset + rail (nullptr/0/nullptr = space path).
+    bulk_clamp<<<grid, block>>>(d_N, d_solid, d_is_vacuum, n,
+                                d_is_ambient, n_amb, d_rail);
     cuda_check(cudaGetLastError(), "clamp launch (P6.5 chained)");
 }
 

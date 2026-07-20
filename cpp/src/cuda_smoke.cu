@@ -73,13 +73,17 @@ __device__ __forceinline__ bool solid_wall_at_dev(
         int y, int x,
         const bool* __restrict__ obstacles, const bool* __restrict__ is_wall,
         const bool* __restrict__ is_vacuum, const float* __restrict__ perm,
-        int h, int w) {
+        int h, int w,
+        const bool* __restrict__ is_ambient) {
     if (y < 0 || y >= h || x < 0 || x >= w) return true;   // outside == wall
     const int i = y * w + x;
-    const bool is_breach = is_vacuum[i] &&
+    // BC: the ambient ring is a trace SINK (venting target), not a wall — the
+    // vacuum-breach idiom verbatim (is_ambient nullptr on space -> unchanged).
+    const bool amb = is_ambient && is_ambient[i];
+    const bool is_breach = (is_vacuum[i] || amb) &&
         !(obstacles[i] || is_wall[i] || perm[i] <= 0.0f);
     if (is_breach) return false;                            // venting target
-    return obstacles[i] || is_wall[i] || is_vacuum[i] || perm[i] <= 0.0f;
+    return obstacles[i] || is_wall[i] || is_vacuum[i] || amb || perm[i] <= 0.0f;
 }
 
 // ---- backtrace_sample_q (verbatim device port of smoke_dynamics.cpp:92-185) -
@@ -90,7 +94,8 @@ __device__ __forceinline__ int32_t backtrace_sample_q_dev(
         const int32_t* __restrict__ src, int x, int y, int32_t bx_q, int32_t by_q,
         const bool* __restrict__ obstacles, const bool* __restrict__ is_wall,
         const bool* __restrict__ is_vacuum, const float* __restrict__ perm,
-        int h, int w) {
+        int h, int w,
+        const bool* __restrict__ is_ambient) {
     // Departure point in Q16.16 (cell index << 16 + displacement).
     int64_t px_q = ((int64_t)x << FP_SHIFT) + bx_q;
     int64_t py_q = ((int64_t)y << FP_SHIFT) + by_q;
@@ -118,11 +123,15 @@ __device__ __forceinline__ int32_t backtrace_sample_q_dev(
             const int64_t nyp_q = cy_q + sy_q;
             const int ti = (int)((nxp_q + (FP_ONE >> 1)) >> FP_SHIFT);
             const int tj = (int)((nyp_q + (FP_ONE >> 1)) >> FP_SHIFT);
-            if (solid_wall_at_dev(tj, ti, obstacles, is_wall, is_vacuum, perm, h, w))
+            if (solid_wall_at_dev(tj, ti, obstacles, is_wall, is_vacuum, perm, h, w,
+                                  is_ambient))
                 break;
             cx_q = nxp_q;
             cy_q = nyp_q;
-            if (tj >= 0 && tj < h && ti >= 0 && ti < w && is_vacuum[tj * w + ti])
+            // BC: the ambient ring is a breach (vent target) — stop the march on it.
+            if (tj >= 0 && tj < h && ti >= 0 && ti < w
+                    && (is_vacuum[tj * w + ti]
+                        || (is_ambient && is_ambient[tj * w + ti])))
                 break;                                      // reached the breach
         }
         px_q = cx_q;
@@ -158,7 +167,8 @@ __device__ __forceinline__ int32_t backtrace_sample_q_dev(
         const int cx_ = cyx[k][1];
         const int j = cy_ * w + cx_;
         if (obstacles[j] || is_wall[j] || perm[j] <= 0.0f) continue;  // sealed corner
-        const int32_t val_q = is_vacuum[j] ? 0 : src[j];   // breach corner == 0
+        // BC: an ambient-ring corner samples 0 (absorbed), the vacuum idiom.
+        const int32_t val_q = (is_vacuum[j] || (is_ambient && is_ambient[j])) ? 0 : src[j];
         acc += mul_wide(cw[k], val_q);
         wsum_q += cw[k];
     }
@@ -227,27 +237,33 @@ __global__ void smoke_advect(int32_t* __restrict__ smoke,
                              const bool* __restrict__ is_wall,
                              const bool* __restrict__ is_vacuum,
                              const float* __restrict__ perm,
-                             int32_t dt_adv_q, int h, int w) {
+                             int32_t dt_adv_q, int h, int w,
+                             const bool* __restrict__ is_ambient) {
     const int n = h * w;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
-        if (obstacles[i] || is_wall[i] || is_vacuum[i]) continue;  // keep snapshot val
+        // BC: skip the ambient ring as a destination (it is a sink), like vacuum.
+        if (obstacles[i] || is_wall[i] || is_vacuum[i]
+                || (is_ambient && is_ambient[i])) continue;  // keep snapshot val
         const int y = i / w;
         const int x = i % w;
         const int32_t bx_q = -mul_q16(wind_x[i], dt_adv_q);
         const int32_t by_q = -mul_q16(wind_y[i], dt_adv_q);
         smoke[i] = backtrace_sample_q_dev(src, x, y, bx_q, by_q,
-                                          obstacles, is_wall, is_vacuum, perm, h, w);
+                                          obstacles, is_wall, is_vacuum, perm, h, w,
+                                          is_ambient);
     }
 }
 
 // ---- K4: clamp + zero walls/vacuum (smoke_dynamics.cpp:292-299) -------------
 __global__ void smoke_clamp(int32_t* __restrict__ smoke,
                             const bool* __restrict__ is_wall,
-                            const bool* __restrict__ is_vacuum, int n) {
+                            const bool* __restrict__ is_vacuum, int n,
+                            const bool* __restrict__ is_ambient) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
-        if (is_wall[i] || is_vacuum[i]) {
+        // BC: the ambient ring is a trace sink — zeroed like vacuum every step.
+        if (is_wall[i] || is_vacuum[i] || (is_ambient && is_ambient[i])) {
             smoke[i] = 0;
         } else {
             int32_t v = smoke[i];
@@ -286,8 +302,11 @@ __global__ void smoke_sink_hop(int32_t* __restrict__ smoke,
         const int x = i % w;
         const int32_t bx_q = quantize(sink_disp * (double)sink_x[i]);
         const int32_t by_q = quantize(sink_disp * (double)sink_y[i]);
+        // BC: sink_hop is the retired breach-pull (not on the live tick) — no
+        // ambient ring here (nullptr keeps it space-only, byte-identical).
         smoke[i] = backtrace_sample_q_dev(src, x, y, bx_q, by_q,
-                                          obstacles, is_wall, is_vacuum, perm, h, w);
+                                          obstacles, is_wall, is_vacuum, perm, h, w,
+                                          nullptr);
     }
 }
 
@@ -299,7 +318,8 @@ void smoke_step(
     const bool* obstacles, const bool* is_wall, const bool* is_vacuum,
     const float* permeability,
     int h, int w, float dt,
-    float d_smoke, float wind_diffusion_scale, float advection_rate) {
+    float d_smoke, float wind_diffusion_scale, float advection_rate,
+    const bool* is_ambient) {   // BC: ambient ring trace sink (nullptr = space)
     const int n = h * w;
     if (n <= 0) return;
 
@@ -340,6 +360,14 @@ void smoke_step(
     cuda_check(cudaMemcpy(d_vac, is_vacuum, nbool, cudaMemcpyHostToDevice), "H2D is_vacuum");
     cuda_check(cudaMemcpy(d_perm, permeability, nbf, cudaMemcpyHostToDevice), "H2D permeability");
 
+    // BC: optional ambient ring mask (nullptr on space maps -> the kernels take
+    // the byte-identical space path via the `is_ambient && ...` short-circuit).
+    bool* d_amb = nullptr;
+    if (is_ambient) {
+        cuda_check(cudaMalloc(&d_amb, nbool), "malloc is_ambient");
+        cuda_check(cudaMemcpy(d_amb, is_ambient, nbool, cudaMemcpyHostToDevice), "H2D is_ambient");
+    }
+
     const int block = 256;
     const int grid = (n + block - 1) / block;
 
@@ -356,10 +384,11 @@ void smoke_step(
     cuda_check(cudaMemcpy(d_src, d_gas, nb, cudaMemcpyDeviceToDevice), "D2D src snapshot");
     // K3 semi-Lagrangian advection (in-place on d_gas; reads the frozen d_src).
     smoke_advect<<<grid, block>>>(d_gas, d_src, d_wx, d_wy,
-                                  d_obs, d_wall, d_vac, d_perm, dt_adv_q, h, w);
+                                  d_obs, d_wall, d_vac, d_perm, dt_adv_q, h, w,
+                                  d_amb);
     cuda_check(cudaGetLastError(), "advect launch");
-    // K4 clamp + zero walls/vacuum (in-place on d_gas).
-    smoke_clamp<<<grid, block>>>(d_gas, d_wall, d_vac, n);
+    // K4 clamp + zero walls/vacuum/ambient (in-place on d_gas).
+    smoke_clamp<<<grid, block>>>(d_gas, d_wall, d_vac, n, d_amb);
     cuda_check(cudaGetLastError(), "clamp launch");
 
     cuda_check(cudaDeviceSynchronize(), "sync");
@@ -375,6 +404,7 @@ void smoke_step(
     cudaFree(d_wall);
     cudaFree(d_vac);
     cudaFree(d_perm);
+    if (d_amb) cudaFree(d_amb);
 }
 
 void smoke_sink_hop(

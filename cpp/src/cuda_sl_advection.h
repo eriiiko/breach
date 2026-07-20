@@ -62,20 +62,27 @@ uint64_t eos_sl_advect(
 // buffer residency differs (a transfer-boundary choice, not arithmetic).
 
 // K0 — the per-tick cmask build (sealed/breach/live table), once per tick.
+// BC (boundary_conditions_spec_2026-07-19): d_is_ambient (device bool*, nullptr
+// on space maps) folds the ambient ring into the breach class (cmask 1) — the
+// still-boundary idiom, mirroring eos_solver.cpp's widened cmask barrier.
 void sl_cmask_build_device(const bool* d_solid, const bool* d_vacuum,
-                           const float* d_perm, uint8_t* d_cmask, int n);
+                           const float* d_perm, uint8_t* d_cmask, int n,
+                           const bool* d_is_ambient = nullptr);
 
 // K1 — ONE fused advection substep: reads the frozen (src_vx, src_vy, src_t)
 // snapshot, writes wind/temperature in place (solid u zeroed, vacuum T := 0).
 // The caller owns the pre-substep D2D snapshot (the CPU's vx_src_/vy_src_/
 // t_src_ copies) and the substep loop.
+// BC: d_is_ambient (nullptr = space) forces ring T := 0 in the SL write, the
+// vacuum idiom (mirrors eos_solver.cpp's widened SL T ternary).
 void sl_advect3_device(int32_t* d_wind_x, int32_t* d_wind_y,
                        int32_t* d_temperature,
                        const int32_t* d_src_vx, const int32_t* d_src_vy,
                        const int32_t* d_src_t,
                        const bool* d_solid, const bool* d_vacuum,
                        const uint8_t* d_cmask,
-                       int32_t dt_s_q, int h, int w);
+                       int32_t dt_s_q, int h, int w,
+                       const bool* d_is_ambient = nullptr);
 
 // Backend selection (P6.2 gate wiring, the surviving-backend idiom). EOS
 // P6.5: now CONSUMED by the engine dispatch — PhysicsEngine::run_substeps

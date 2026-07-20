@@ -64,12 +64,18 @@ static inline int32_t neighbor_q(const int32_t* f, const float* perm,
 static inline bool solid_wall_at(int y, int x,
                                  const bool* obstacles, const bool* is_wall,
                                  const bool* is_vacuum, const float* perm,
-                                 int h, int w) {
+                                 int h, int w,
+                                 const bool* is_ambient) {
     if (y < 0 || y >= h || x < 0 || x >= w) return true;  // outside == wall
     int i = y * w + x;
-    bool is_breach = is_vacuum[i] && !(obstacles[i] || is_wall[i] || perm[i] <= 0.0f);
+    // BC (boundary_conditions_spec_2026-07-19 §1): the planetside AMBIENT ring
+    // is a trace SINK, exactly like a vacuum breach — an open (non-solid) ring
+    // tile is a venting TARGET, not a wall, so traces vent into it (sampled 0).
+    // is_ambient nullptr on space maps -> the exact prior predicate.
+    const bool amb = is_ambient && is_ambient[i];
+    bool is_breach = (is_vacuum[i] || amb) && !(obstacles[i] || is_wall[i] || perm[i] <= 0.0f);
     if (is_breach) return false;                            // venting target, not a wall
-    return obstacles[i] || is_wall[i] || is_vacuum[i] || perm[i] <= 0.0f;
+    return obstacles[i] || is_wall[i] || is_vacuum[i] || amb || perm[i] <= 0.0f;
 }
 
 // Helper: the integer semi-Lagrangian back-trace from cell (x,y) by the Q16.16
@@ -92,7 +98,8 @@ static inline bool solid_wall_at(int y, int x,
 static inline int32_t backtrace_sample_q(
         const int32_t* src, int x, int y, int32_t bx_q, int32_t by_q,
         const bool* obstacles, const bool* is_wall, const bool* is_vacuum,
-        const float* perm, int h, int w) {
+        const float* perm, int h, int w,
+        const bool* is_ambient) {
     // Departure point in Q16.16 (cell index << 16 + displacement).
     int64_t px_q = ((int64_t)x << FP_SHIFT) + bx_q;
     int64_t py_q = ((int64_t)y << FP_SHIFT) + by_q;
@@ -128,11 +135,16 @@ static inline int32_t backtrace_sample_q(
             // nxp_q + FP_HALF; the integer tile is that >> 16.
             const int ti = (int)((nxp_q + (FP_ONE >> 1)) >> FP_SHIFT);
             const int tj = (int)((nyp_q + (FP_ONE >> 1)) >> FP_SHIFT);
-            if (solid_wall_at(tj, ti, obstacles, is_wall, is_vacuum, perm, h, w))
+            if (solid_wall_at(tj, ti, obstacles, is_wall, is_vacuum, perm, h, w,
+                              is_ambient))
                 break;
             cx_q = nxp_q;
             cy_q = nyp_q;
-            if (tj >= 0 && tj < h && ti >= 0 && ti < w && is_vacuum[tj * w + ti])
+            // BC: the ambient ring is a breach (vent target) — stop the march ON
+            // it, exactly like a vacuum breach.
+            if (tj >= 0 && tj < h && ti >= 0 && ti < w
+                    && (is_vacuum[tj * w + ti]
+                        || (is_ambient && is_ambient[tj * w + ti])))
                 break;                                       // reached the breach
         }
         px_q = cx_q;
@@ -169,7 +181,8 @@ static inline int32_t backtrace_sample_q(
         const int cx_ = cyx[k][1];
         const int j = cy_ * w + cx_;
         if (obstacles[j] || is_wall[j] || perm[j] <= 0.0f) continue;   // sealed corner
-        const int32_t val_q = is_vacuum[j] ? 0 : src[j];   // breach corner == 0
+        // BC: an ambient-ring corner samples 0 (absorbed), the vacuum-breach idiom.
+        const int32_t val_q = (is_vacuum[j] || (is_ambient && is_ambient[j])) ? 0 : src[j];
         acc += mul_wide(cw[k], val_q);                     // int64; scale = 2^32
         wsum_q += cw[k];
     }
@@ -193,7 +206,8 @@ void SmokeDynamics::step(
     const bool* is_vacuum,
     const float* permeability,
     int h, int w,
-    float dt
+    float dt,
+    const bool* is_ambient   // BC: ambient ring trace sink (nullptr = space map)
 ) const {
     const int n = h * w;
     const float actual_dt = dt;
@@ -276,7 +290,10 @@ void SmokeDynamics::step(
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             int i = y * w + x;
-            if (obstacles[i] || is_wall[i] || is_vacuum[i]) continue;
+            // BC: the ambient ring holds no trace (it is a sink) — skip it as a
+            // destination exactly like a vacuum tile.
+            if (obstacles[i] || is_wall[i] || is_vacuum[i]
+                    || (is_ambient && is_ambient[i])) continue;
             // Wind pull-advection: sample upwind, p = cell - wind · dt_adv. The
             // displacement is an INTEGER multiply now (wind is Q16.16): bx_q =
             // -mul_q16(wind_x_q, dt_adv_q). No float wind read (bridge collapsed).
@@ -284,13 +301,14 @@ void SmokeDynamics::step(
             const int32_t by_q = -mul_q16(wind_y[i], dt_adv_q);
             smoke[i] = backtrace_sample_q(src.data(), x, y, bx_q, by_q,
                                           obstacles, is_wall, is_vacuum,
-                                          permeability, h, w);
+                                          permeability, h, w, is_ambient);
         }
     }
 
-    // --- Clamp and zero walls/vacuum (integer invariant) ---
+    // --- Clamp and zero walls/vacuum/ambient (integer invariant) ---
     for (int i = 0; i < n; ++i) {
-        if (is_wall[i] || is_vacuum[i]) {
+        // BC: the ambient ring is a trace sink — zeroed like vacuum every step.
+        if (is_wall[i] || is_vacuum[i] || (is_ambient && is_ambient[i])) {
             smoke[i] = 0;
         } else {
             if (smoke[i] < 0) smoke[i] = 0;

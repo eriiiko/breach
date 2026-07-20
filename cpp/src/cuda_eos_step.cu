@@ -115,11 +115,27 @@ void eos_step_cuda(
         int32_t* gas, const bool* gas_conservative, int n_gases,
         const bool* solid, const bool* is_vacuum,
         const float* dyn_permeability, const float* dyn_wave_absorb,
-        int h, int w, float dt) {
+        int h, int w, float dt,
+        const bool* is_ambient, const int32_t* n_amb, int32_t p_amb,
+        const int32_t* sponge_sigma, const int32_t* sponge_udamp) {
 
     const int n = h * w;
     if (n <= 0 || dt <= 0.0f) return;   // step()'s degenerate early-out
     ++g_eos_step_cuda_calls;
+
+    // BC: dormancy BY BRANCH — every ambient edit gated on this (space maps take
+    // the byte-identical path). Mirrors EOSSolver::step's ambient_mode.
+    const bool ambient_mode = (is_ambient != nullptr);
+    // The boundary_flux rail (spec §5): zero it each tick in ambient mode; the
+    // per-substep bulk reset accumulates into it on device, copied back below.
+    if (ambient_mode) {
+        if ((int)solver.boundary_flux_.size() != n_gases)
+            solver.boundary_flux_.assign(n_gases, 0);
+        else
+            std::fill(solver.boundary_flux_.begin(), solver.boundary_flux_.end(), (int64_t)0);
+    } else if (!solver.boundary_flux_.empty()) {
+        solver.boundary_flux_.clear();
+    }
 
     // ======================================================================
     // HOST PRE-STAGE — eos_solver.cpp step() lines up to the substep loop,
@@ -299,9 +315,23 @@ void eos_step_cuda(
             cuda_check(cudaMemcpy(d_gas[k], gas + (size_t)cons[k] * n, nb,
                                   cudaMemcpyHostToDevice), "H2D gas plane");
 
+        // BC: upload the ambient ring mask (device) + allocate the per-plane
+        // int64 boundary_flux rail (zeroed once; the bulk clamp atomicAdds into
+        // it each substep). nullptr/empty on space maps -> byte-identical path.
+        bool* d_amb = nullptr;
+        unsigned long long* d_rail = nullptr;
+        if (ambient_mode) {
+            d_amb = (bool*)dev_alloc(nbool);
+            cuda_check(cudaMemcpy(d_amb, is_ambient, nbool, cudaMemcpyHostToDevice), "H2D is_ambient");
+            if (!cons.empty()) {
+                d_rail = (unsigned long long*)dev_alloc(cons.size() * sizeof(unsigned long long));
+                cuda_check(cudaMemset(d_rail, 0, cons.size() * sizeof(unsigned long long)), "memset rail");
+            }
+        }
+
         // K0: cmask ONCE per tick (solid/vacuum/perm constant within it) —
-        // the proven P6.2 device build.
-        sl_cmask_build_device(d_sol, d_vac, d_perm, d_cmask, n);
+        // the proven P6.2 device build. BC: d_amb folds the ring into breach.
+        sl_cmask_build_device(d_sol, d_vac, d_perm, d_cmask, n, d_amb);
 
         for (int s = 0; s < n_sub; ++s) {
             // -- a+b. FUSED SL advection (P6.2 K1) on the frozen snapshot --
@@ -309,13 +339,17 @@ void eos_step_cuda(
             cuda_check(cudaMemcpy(d_svy, d_wy, nb, cudaMemcpyDeviceToDevice), "D2D src_vy");
             cuda_check(cudaMemcpy(d_st,  d_t,  nb, cudaMemcpyDeviceToDevice), "D2D src_t");
             sl_advect3_device(d_wx, d_wy, d_t, d_svx, d_svy, d_st,
-                              d_sol, d_vac, d_cmask, dt_s_q, h, w);
+                              d_sol, d_vac, d_cmask, dt_s_q, h, w, d_amb);
             // -- d. bulk O2/N2 donor-cell flux on THIS substep's u (P6.1
-            //    B1..B5). All-zero-plane skip dropped (review §1.3 no-op). --
+            //    B1..B5). All-zero-plane skip dropped (review §1.3 no-op). BC:
+            //    the ring reset clamps N to n_amb[plane] + accumulates the rail.
             for (size_t k = 0; k < cons.size(); ++k) {
                 bulk_flux_plane_device(d_gas[k], d_wx, d_wy, d_sol, d_vac,
                                        d_coeffE, d_coeffS,
-                                       d_dq_e, d_dq_s, d_scale, h, w);
+                                       d_dq_e, d_dq_s, d_scale, h, w,
+                                       d_amb,
+                                       ambient_mode ? n_amb[cons[k]] : 0,
+                                       d_rail ? &d_rail[k] : nullptr);
             }
             // -- f. zero u on solid: subsumed by the advection kernel (the
             //    proven P6.2 argument; nothing above re-touches u). --------
@@ -331,6 +365,17 @@ void eos_step_cuda(
         for (size_t k = 0; k < cons.size(); ++k)
             cuda_check(cudaMemcpy(gas + (size_t)cons[k] * n, d_gas[k], nb,
                                   cudaMemcpyDeviceToHost), "D2H gas plane");
+        // BC: copy the accumulated per-plane rail back into the solver's rail
+        // (byte-identical to the CPU: integer sums are order-free, so the
+        // device atomicAdd total == the CPU sequential sum).
+        if (ambient_mode && d_rail) {
+            std::vector<unsigned long long> rail_host(cons.size(), 0);
+            cuda_check(cudaMemcpy(rail_host.data(), d_rail,
+                                  cons.size() * sizeof(unsigned long long),
+                                  cudaMemcpyDeviceToHost), "D2H rail");
+            for (size_t k = 0; k < cons.size(); ++k)
+                solver.boundary_flux_[cons[k]] = (int64_t)rail_host[k];
+        }
         free_all();
     } catch (...) {
         free_all();
@@ -364,7 +409,8 @@ void eos_step_cuda(
         const int row = y * w;
         for (int x = 0; x < w; ++x) {
             const int i = row + x;
-            if (solid[i] || is_vacuum[i]) { div_u[i] = 0; continue; }
+            // BC (audit (b)): the ring is a Dirichlet boundary — div(u*)=0.
+            if (solid[i] || is_vacuum[i] || (ambient_mode && is_ambient[i])) { div_u[i] = 0; continue; }
             const int il = mirror_idx_host(i, y, x - 1, h, w, solid);
             const int ir = mirror_idx_host(i, y, x + 1, h, w, solid);
             const int iu = mirror_idx_host(i, y - 1, x, h, w, solid);
@@ -408,9 +454,14 @@ void eos_step_cuda(
     // 3. PRESSURE SOLVE — host-built hierarchy (the SAME mg_build_levels the
     //    CPU calls, review §2.7) + the ENTIRE iteration on device (P6.3).
     // ======================================================================
+    // BC: the SHIFT (rhs − P_amb, warm-start re-shift), the ring→Dirichlet excl,
+    // and the σ-diagonal all live in the SHARED host-side mg_build_levels —
+    // forwarding the ambient args here makes the device solve inherit them.
     const int n_levels = solver.mg_build_levels(
         pstar.data(), div_u.data(), n_total.data(), p_prev,
-        solid, is_vacuum, dyn_permeability, h, w, dt);
+        solid, is_vacuum, dyn_permeability, h, w, dt,
+        ambient_mode ? is_ambient : nullptr, p_amb,
+        ambient_mode ? sponge_sigma : nullptr);
     std::vector<int32_t> p_new(n, 0);
     {
         const auto& L = solver.mg_levels();
@@ -449,7 +500,10 @@ void eos_step_cuda(
             solver.c_max, solver.dx, solver.adiabatic_index,
             solver.absorb_strength, solver.N_FLOOR_SOLVER, solver.T_MIN,
             solver.T_WORK_CLAMP, solver.T_MAX_PHYS, solver.U_MAX,
-            solver.trace_mass_scale, &dig_vel, &dig_comp, cnts);
+            solver.trace_mass_scale, &dig_vel, &dig_comp, cnts,
+            // BC: ring velocity zero + compression skip + the u-damping band.
+            ambient_mode ? is_ambient : nullptr,
+            ambient_mode ? sponge_udamp : nullptr);
         solver.digest_velocity    = dig_vel;
         solver.digest_compression = dig_comp;
         solver.u_clamp_hits      += cnts[0];
@@ -466,7 +520,17 @@ void eos_step_cuda(
     // ======================================================================
     // 5. P := P_new — materialized ONCE (the `atmosphere` alias).
     // ======================================================================
-    for (int i = 0; i < n; ++i) atmosphere[i] = p_new[i];
+    // BC (spec §1 "the shift trick"): the solve ran in P′ = P − P_amb, so add
+    // P_amb back — MASKED to !solid (solids stay 0 absolute; ring cells (excl==1,
+    // P′=0) and every regular cell get the add). Mirrors EOSSolver::step's
+    // branch-gated store; space maps take the untouched byte-identical path.
+    if (ambient_mode) {
+        const int64_t pa = (int64_t)p_amb;
+        for (int i = 0; i < n; ++i)
+            atmosphere[i] = solid[i] ? p_new[i] : (int32_t)((int64_t)p_new[i] + pa);
+    } else {
+        for (int i = 0; i < n; ++i) atmosphere[i] = p_new[i];
+    }
 }
 
 }  // namespace breach_cuda

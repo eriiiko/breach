@@ -57,7 +57,11 @@ void smoke_step(
     const bool* is_vacuum,
     const float* permeability, // FLOAT (h,w) per-face permeability bridge
     int h, int w, float dt,
-    float d_smoke, float wind_diffusion_scale, float advection_rate);
+    float d_smoke, float wind_diffusion_scale, float advection_rate,
+    // BC (boundary_conditions_spec_2026-07-19 §1): the ambient ring is a trace
+    // SINK (traces reset to 0 there, the vacuum-breach idiom). nullptr on space
+    // maps -> byte-identical (dormant by branch). Default keeps other callers.
+    const bool* is_ambient = nullptr);
 
 // CUDA-S4b: ONE 1-cell BFS-gradient breach pull for ONE gas plane on the GPU —
 // IN-PLACE on `smoke` (h,w). Mirrors SmokeDynamics::sink_hop exactly (snapshot src

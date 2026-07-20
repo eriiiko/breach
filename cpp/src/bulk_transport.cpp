@@ -74,8 +74,12 @@ void bulk_flux_transport_cached(
         const int32_t* wind_x, const int32_t* wind_y,
         const bool* solid, const bool* is_vacuum,
         const int32_t* coeffE, const int32_t* coeffS,
-        int h, int w) {
+        int h, int w,
+        const bool* is_ambient, const int32_t* n_amb, int64_t* boundary_flux) {
     const int n = h * w;
+    // BC: dormancy BY BRANCH — every ambient edit below is gated on this flag,
+    // so a space map (is_ambient == nullptr) takes the byte-identical path.
+    const bool ambient_mode = (is_ambient != nullptr);
 
     // Reused scratch (EOS P3 micro-opt: this entry rides the substep loop —
     // up to N_SUB_MAX calls/tick — so the three per-call vector allocations
@@ -89,9 +93,16 @@ void bulk_flux_transport_cached(
         int32_t* N = gas + (size_t)gi * n;
 
         // Skip an all-zero plane (nothing to transport, matches numpy .any()).
+        // BC build-rider (ii): on an AMBIENT map the per-substep ring reset must
+        // still run even for an all-zero conservative plane (a degenerate
+        // o2_frac in {0,1} case), so never take the skip when ambient_mode is on
+        // — the transport is a no-op on the zeros and the reset below sets the
+        // ring. On a space map ambient_mode is false, so this is the exact
+        // legacy skip (byte-identical). (The non-degenerate ambient map seeds
+        // both bulk planes to N_amb > 0, so `any` is true anyway.)
         bool any = false;
         for (int i = 0; i < n; ++i) { if (N[i] != 0) { any = true; break; } }
-        if (!any) continue;
+        if (!any && !ambient_mode) continue;
 
         std::fill(dq_e.begin(), dq_e.end(), (q16)0);
         std::fill(dq_s.begin(), dq_s.end(), (q16)0);
@@ -172,16 +183,28 @@ void bulk_flux_transport_cached(
             }
         }
 
-        // ---- 4. clamps: N >= 0; zero on solid AND vacuum ----------------------
+        // ---- 4. clamps: N >= 0; zero on solid/vacuum; AMBIENT ring reset ------
         // Solid never holds N (defensive — a stale value from before a tile
         // became solid must not linger). Vacuum is the DELIBERATE sink: mass
         // that flowed there this tick legitimately leaves the system (breach
         // venting), matching §2.2's "N zeroed at vacuum" rule. Both zeroings
         // are NOT part of the sealed-room conservation gate's domain (a sealed
         // room has no vacuum cells), so they never fire there.
+        //
+        // BC (spec §1): the ambient ring is the vacuum sink's TWIN — the sink
+        // becomes a CLAMP to the infinite reservoir value N_amb[plane], applied
+        // PER SUBSTEP (a per-tick reset would let ≤8 substeps drain it). The
+        // rail (spec §5) records the mass exchanged with the open system:
+        // Σ(N_pre_reset − N_amb), int64, per conservative plane, per substep.
+        // BRANCH-gated on ambient_mode -> on a space map this middle clause is
+        // dead and the loop is byte-identical to the legacy form above.
+        const int32_t namb = (ambient_mode && n_amb) ? n_amb[gi] : 0;
         for (int i = 0; i < n; ++i) {
             if (solid[i] || is_vacuum[i]) {
                 N[i] = 0;
+            } else if (ambient_mode && is_ambient[i]) {
+                if (boundary_flux) boundary_flux[gi] += (int64_t)N[i] - (int64_t)namb;
+                N[i] = namb;
             } else if (N[i] < 0) {
                 N[i] = 0;
             }

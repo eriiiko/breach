@@ -139,9 +139,11 @@ void TemperatureSolver::step(
     const int32_t* wind_x,       // P2: Q16.16 int32, may be null (Pass 0 skipped)
     const int32_t* wind_y,       // P2: Q16.16 int32, may be null (Pass 0 skipped)
     int h, int w,
-    float dt                     // P2: tick's elapsed seconds; <= 0 skips Pass 0
+    float dt,                    // P2: tick's elapsed seconds; <= 0 skips Pass 0
+    const bool* is_ambient       // BC: ambient ring mask (nullptr = space map)
 ) const {
     const int n = h * w;
+    const bool ambient_mode = (is_ambient != nullptr);   // BC: dormancy by branch
 
     // ---- Pass 0: gas-T zero-at-vacuum + semi-Lagrangian advection (P2, §4) ----
     // Structural invariant FIRST, unconditional: an OPEN (non-solid) vacuum
@@ -157,7 +159,10 @@ void TemperatureSolver::step(
     // 1 could deposit onto it, which is wrong (and was caught by the sealed-
     // room energy E2E's vacuum-exposed-hull scenario).
     for (int i = 0; i < n; ++i) {
-        if (is_vacuum[i] && !solid[i]) temperature[i] = 0;
+        // BC (audit (b)): the ambient ring is an open (non-solid) boundary that
+        // radiates to the T_amb sky — wiped to ΔT=0 exactly like a vacuum
+        // breach. Branch-gated -> space maps byte-identical.
+        if ((is_vacuum[i] || (ambient_mode && is_ambient[i])) && !solid[i]) temperature[i] = 0;
     }
 
     // Advection: skipped as a clean no-op when dt<=0 or wind is unavailable —

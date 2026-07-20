@@ -69,11 +69,14 @@ uint64_t digest_of_host(const int32_t* buf, int n, uint64_t seed) {
 __global__ void sl_cmask_build(const bool* __restrict__ solid,
                                const bool* __restrict__ is_vacuum,
                                const float* __restrict__ perm,
-                               uint8_t* __restrict__ cmask, int n) {
+                               uint8_t* __restrict__ cmask, int n,
+                               const bool* __restrict__ is_ambient) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         if (solid[i] || perm[i] <= 0.0f) cmask[i] = 0;
-        else if (is_vacuum[i])           cmask[i] = 1;
+        // BC: the ambient ring is a breach corner (cmask 1) — a still boundary,
+        // exactly like vacuum (is_ambient nullptr on space maps -> unchanged).
+        else if (is_vacuum[i] || (is_ambient && is_ambient[i])) cmask[i] = 1;
         else                             cmask[i] = 2;
     }
 }
@@ -206,7 +209,8 @@ __global__ void sl_advect3(int32_t* __restrict__ wind_x,
                            const bool* __restrict__ solid,
                            const bool* __restrict__ is_vacuum,
                            const uint8_t* __restrict__ cmask,
-                           int32_t dt_s_q, int h, int w) {
+                           int32_t dt_s_q, int h, int w,
+                           const bool* __restrict__ is_ambient) {
     const int n = h * w;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
@@ -219,7 +223,8 @@ __global__ void sl_advect3(int32_t* __restrict__ wind_x,
             src_vx, src_vy, src_t, x, y, bx_q, by_q, cmask, h, w);
         wind_x[i] = fs.vx;
         wind_y[i] = fs.vy;
-        temperature[i] = is_vacuum[i] ? 0 : fs.t;
+        // BC: ΔT=0 IS ambient — ring T forced 0, the vacuum idiom verbatim.
+        temperature[i] = (is_vacuum[i] || (is_ambient && is_ambient[i])) ? 0 : fs.t;
     }
 }
 
@@ -274,7 +279,8 @@ uint64_t eos_sl_advect(
     const int grid = (n + block - 1) / block;
 
     // K0: cmask build, ONCE per tick (solid/vacuum/perm constant within it).
-    sl_cmask_build<<<grid, block>>>(d_sol, d_vac, d_perm, d_cmask, n);
+    // Isolated P6.2 entry: no ambient ring (nullptr) — the space-path gate.
+    sl_cmask_build<<<grid, block>>>(d_sol, d_vac, d_perm, d_cmask, n, nullptr);
     cuda_check(cudaGetLastError(), "cmask launch");
 
     for (int s = 0; s < n_sub; ++s) {
@@ -286,7 +292,7 @@ uint64_t eos_sl_advect(
         cuda_check(cudaMemcpy(d_svy, d_wy, nb, cudaMemcpyDeviceToDevice), "D2D src_vy");
         cuda_check(cudaMemcpy(d_st,  d_t,  nb, cudaMemcpyDeviceToDevice), "D2D src_t");
         sl_advect3<<<grid, block>>>(d_wx, d_wy, d_t, d_svx, d_svy, d_st,
-                                    d_sol, d_vac, d_cmask, dt_s_q, h, w);
+                                    d_sol, d_vac, d_cmask, dt_s_q, h, w, nullptr);
         cuda_check(cudaGetLastError(), "advect launch");
     }
 
@@ -320,10 +326,12 @@ uint64_t eos_sl_advect(
 // device buffers, so the P6.5 orchestrator can chain them with the bulk-flux
 // kernels while u/T/gas stay device-resident across the whole substep loop.
 void sl_cmask_build_device(const bool* d_solid, const bool* d_vacuum,
-                           const float* d_perm, uint8_t* d_cmask, int n) {
+                           const float* d_perm, uint8_t* d_cmask, int n,
+                           const bool* d_is_ambient) {
     const int block = 256;
     const int grid = (n + block - 1) / block;
-    sl_cmask_build<<<grid, block>>>(d_solid, d_vacuum, d_perm, d_cmask, n);
+    sl_cmask_build<<<grid, block>>>(d_solid, d_vacuum, d_perm, d_cmask, n,
+                                    d_is_ambient);
     cuda_check(cudaGetLastError(), "cmask launch (P6.5 chained)");
 }
 
@@ -333,13 +341,15 @@ void sl_advect3_device(int32_t* d_wind_x, int32_t* d_wind_y,
                        const int32_t* d_src_t,
                        const bool* d_solid, const bool* d_vacuum,
                        const uint8_t* d_cmask,
-                       int32_t dt_s_q, int h, int w) {
+                       int32_t dt_s_q, int h, int w,
+                       const bool* d_is_ambient) {
     const int n = h * w;
     const int block = 256;
     const int grid = (n + block - 1) / block;
     sl_advect3<<<grid, block>>>(d_wind_x, d_wind_y, d_temperature,
                                 d_src_vx, d_src_vy, d_src_t,
-                                d_solid, d_vacuum, d_cmask, dt_s_q, h, w);
+                                d_solid, d_vacuum, d_cmask, dt_s_q, h, w,
+                                d_is_ambient);
     cuda_check(cudaGetLastError(), "advect launch (P6.5 chained)");
 }
 

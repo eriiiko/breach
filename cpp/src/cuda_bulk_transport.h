@@ -98,13 +98,19 @@ void bulk_flux_transport(
 // the CALLER'S choice: the P6.5 chain runs every conservative plane
 // unconditionally — arithmetically a no-op on an all-zero plane (review
 // §1.3: zero fluxes, scale FP_ONE, unchanged N, clamp re-writes zeros).
+// BC (boundary_conditions_spec_2026-07-19 §1/§5): the ambient ring reset lives
+// in B5's clamp — d_is_ambient (nullptr = space), n_amb (this plane's reservoir
+// value), and d_rail (this plane's int64 boundary_flux accumulator, signed
+// atomicAdd). All null/0 -> the byte-identical space path.
 void bulk_flux_plane_device(
     int32_t* d_N,
     const int32_t* d_wind_x, const int32_t* d_wind_y,
     const bool* d_solid, const bool* d_is_vacuum,
     const int32_t* d_coeffE, const int32_t* d_coeffS,
     int32_t* d_dq_e, int32_t* d_dq_s, int32_t* d_scale,
-    int h, int w);
+    int h, int w,
+    const bool* d_is_ambient = nullptr, int32_t n_amb = 0,
+    unsigned long long* d_rail = nullptr);
 
 // Backend selection (P6.1 gate). EOS P6.5: now CONSUMED by the engine
 // dispatch — PhysicsEngine::run_substeps routes eos.step to the GPU

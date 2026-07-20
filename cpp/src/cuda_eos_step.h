@@ -89,6 +89,12 @@ long long eos_step_cuda_calls();
 // per-call uploads inside the P6.3/P6.4 entries. Deliberately unoptimized —
 // P6's job is correctness + digest proof, not speed; the review is explicit
 // that the per-call port will NOT beat the CPU at 160²x1 env.
+// BC (boundary_conditions_spec_2026-07-19): the planetside AMBIENT ring mirror
+// (B4). is_ambient/n_amb/p_amb/sponge_sigma/sponge_udamp default null/0 so a
+// space map takes the byte-identical path. The SHIFT + ring→Dirichlet excl +
+// σ-diagonal flow through the SHARED host-side mg_build_levels (args forwarded
+// there); the reset+rail (bulk), the u/T widenings + u-damping (SL/kick), and
+// the step-5 add-back are mirrored device/host-side here.
 void eos_step_cuda(
     const EOSSolver& solver,
     int32_t* atmosphere,
@@ -98,6 +104,11 @@ void eos_step_cuda(
     int32_t* gas, const bool* gas_conservative, int n_gases,
     const bool* solid, const bool* is_vacuum,
     const float* dyn_permeability, const float* dyn_wave_absorb,
-    int h, int w, float dt);
+    int h, int w, float dt,
+    const bool* is_ambient = nullptr,
+    const int32_t* n_amb = nullptr,
+    int32_t p_amb = 0,
+    const int32_t* sponge_sigma = nullptr,
+    const int32_t* sponge_udamp = nullptr);
 
 }  // namespace breach_cuda

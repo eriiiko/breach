@@ -200,6 +200,16 @@ public:
     mutable int32_t dbg_T_post_advect      = 0;   // T after the SL substep loop
     mutable int32_t dbg_T_post_compression = 0;   // T after step 4c
 
+    // BC (boundary_conditions_spec_2026-07-19): the planetside AMBIENT ring.
+    // is_ambient/n_amb/p_amb/sponge_sigma default null/0 so the space path is
+    // byte-identical (dormancy BY BRANCH — spec §5; every ambient edit inside
+    // step() is gated on is_ambient != nullptr):
+    //   is_ambient    : (h,w) ring mask (nullptr = space map)
+    //   n_amb         : (n_gases,) per-plane ambient N for the ring clamp
+    //   p_amb         : effective pin P_amb (raw q16) — the shift trick's shift
+    //   sponge_sigma  : (h,w) level-0 diagonal sponge mass (B3b σ; nullptr = off)
+    //   sponge_udamp  : (h,w) k(d) velocity-damping band coefficient, Q16 in
+    //                   [0,FP_ONE) (B3c rung 2, the real absorber; nullptr = off)
     void step(
         int32_t* atmosphere,
         int32_t* p_prev,
@@ -208,7 +218,21 @@ public:
         int32_t* gas, const bool* gas_conservative, int n_gases,
         const bool* solid, const bool* is_vacuum,
         const float* dyn_permeability, const float* dyn_wave_absorb,
-        int h, int w, float dt) const;
+        int h, int w, float dt,
+        const bool* is_ambient = nullptr,
+        const int32_t* n_amb = nullptr,
+        int32_t p_amb = 0,
+        const int32_t* sponge_sigma = nullptr,
+        const int32_t* sponge_udamp = nullptr) const;
+
+    // BC (spec §5): the boundary_flux rail — per-conservative-plane int64 sum of
+    // the ring mass exchange, accumulated at the reset site per substep. NOT
+    // folded into any digest (absence-transparent; zero golden re-baseline).
+    // Sized n_gases in ambient mode, empty otherwise. PUBLIC mutable (the
+    // digest/counter telemetry pattern) so the CUDA path (eos_step_cuda) writes
+    // it exactly as the CPU step() does; the getter gives the read-only view.
+    mutable std::vector<int64_t> boundary_flux_;
+    const std::vector<int64_t>& boundary_flux() const { return boundary_flux_; }
 
     // ---- one multigrid level (v2.2 D-B) ---------------------------------
     // (EOS P6.3: struct made public — unchanged fields — so the CUDA binding
@@ -258,12 +282,20 @@ public:
     // recomputed here from the SAME double expressions step() used to hoist
     // (/fp:strict TU — identical bits). Returns n_levels; 0 on degenerate
     // input (n <= 0 or dt <= 0), in which case levels_ is untouched.
+    // BC: is_ambient/p_amb/sponge_sigma default null/0 so the existing callers
+    // (cuda_eos_step.cu, eos_mg_solve_reference) compile unchanged and run the
+    // byte-identical space path. The live eos.step() passes the real values:
+    // the SHIFT (subtract p_amb from rhs + warm start), the ring→Dirichlet excl,
+    // and the σ-sponge (B3b) all live here, all gated on is_ambient != nullptr.
     int mg_build_levels(
         const int32_t* pstar, const int32_t* div_u, const int32_t* n_total,
         const int32_t* p_prev,
         const bool* solid, const bool* is_vacuum,
         const float* dyn_permeability,
-        int h, int w, float dt) const;
+        int h, int w, float dt,
+        const bool* is_ambient = nullptr,
+        int32_t p_amb = 0,
+        const int32_t* sponge_sigma = nullptr) const;
 
     // mg_run_solve_cpu: the fixed-schedule V-cycles (or the flat RB-GS
     // reference path), the vacuum-Dirichlet/solid zero on level 0, and the
@@ -314,11 +346,14 @@ private:
 // arithmetically identical to the real interleaved loop. Test entry only —
 // the live path remains EOSSolver::step.
 // ---------------------------------------------------------------------------
+// BC: is_ambient defaults nullptr — existing test callers stay byte-identical;
+// when supplied, the ring is a still-boundary breach corner (cmask) and T:=0.
 uint64_t eos_sl_advect_reference(
     int32_t* wind_x, int32_t* wind_y, int32_t* temperature,
     const bool* solid, const bool* is_vacuum,
     const float* dyn_permeability,
-    int h, int w, float dt, int n_sub);
+    int h, int w, float dt, int n_sub,
+    const bool* is_ambient = nullptr);
 
 // ---------------------------------------------------------------------------
 // EOS P6.4 — standalone CPU reference for the post-solve tail: the step-4
@@ -359,7 +394,8 @@ void eos_kick_compression_reference(
     float n_floor_solver, float t_min, float t_work_clamp,
     float t_max_phys, float u_max, float trace_mass_scale,
     uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
-    int64_t* counters_out /* [5] */);
+    int64_t* counters_out /* [5] */,
+    const bool* is_ambient = nullptr);   // BC: ring u ≡ 0 (defaults off)
 
 // ---------------------------------------------------------------------------
 // EOS P6.3 — standalone CPU reference for the multigrid pressure solve

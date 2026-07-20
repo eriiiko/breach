@@ -214,10 +214,26 @@ void EOSSolver::step(
         int32_t* gas, const bool* gas_conservative, int n_gases,
         const bool* solid, const bool* is_vacuum,
         const float* dyn_permeability, const float* dyn_wave_absorb,
-        int h, int w, float dt) const {
+        int h, int w, float dt,
+        const bool* is_ambient, const int32_t* n_amb, int32_t p_amb,
+        const int32_t* sponge_sigma, const int32_t* sponge_udamp) const {
 
     const int n = h * w;
     if (n <= 0 || dt <= 0.0f) return;
+
+    // BC (boundary_conditions_spec_2026-07-19): planetside AMBIENT ring. ONE
+    // flag gates every ambient edit in this function — a space map passes
+    // is_ambient == nullptr and takes the byte-identical path (dormancy BY
+    // BRANCH, spec §5; NO unconditional arithmetic change on the space path).
+    const bool ambient_mode = (is_ambient != nullptr);
+    // The boundary_flux rail (spec §5): zero it each tick in ambient mode; the
+    // per-substep bulk reset accumulates into it. Empty on space maps.
+    if (ambient_mode) {
+        if ((int)boundary_flux_.size() != n_gases) boundary_flux_.assign(n_gases, 0);
+        else std::fill(boundary_flux_.begin(), boundary_flux_.end(), (int64_t)0);
+    } else if (!boundary_flux_.empty()) {
+        boundary_flux_.clear();
+    }
 
     if ((int)n_total_.size() != n) n_total_.assign(n, 0);
     if ((int)vx_src_.size()  != n) vx_src_.assign(n, 0);
@@ -348,7 +364,9 @@ void EOSSolver::step(
     // corner/march mask for the fused SL sample:
     for (int i = 0; i < n; ++i) {
         if (solid[i] || dyn_permeability[i] <= 0.0f) cmask_[i] = 0;
-        else if (is_vacuum[i]) cmask_[i] = 1;
+        // BC (audit (b)): the ambient ring is a still boundary — a breach corner
+        // to the SL march (zero-valued, march-target), exactly like vacuum.
+        else if (is_vacuum[i] || (ambient_mode && is_ambient[i])) cmask_[i] = 1;
         else cmask_[i] = 2;
     }
     // donor-cell face coefficients (min-perm quantize x dt_s — the exact
@@ -399,7 +417,9 @@ void EOSSolver::step(
                     cmask_.data(), h, w);
                 wind_x[i] = fs.vx;
                 wind_y[i] = fs.vy;
-                temperature[i] = is_vacuum[i] ? 0 : fs.t;
+                // BC (audit (b)): ΔT=0 IS ambient — the ring holds T ≡ T_AMB_K
+                // (stored ΔT 0), the vacuum idiom verbatim.
+                temperature[i] = (is_vacuum[i] || (ambient_mode && is_ambient[i])) ? 0 : fs.t;
             }
         }
         if (s == n_sub - 1) digest_advect = digest_of(wind_x, n, digest_of(wind_y, n, digest_of(temperature, n, 0)));
@@ -407,9 +427,15 @@ void EOSSolver::step(
         // -- d. bulk O2/N2 <- donor-cell conservative flux on u ------------
         // (cached-coefficient entry — the per-face min/quantize/mul chain is
         // hoisted to the per-tick cache above; arithmetic identical)
+        // BC (spec §1 "N — sink becomes clamp, per substep"): the ambient ring
+        // is clamped to N_amb[plane] every substep, and boundary_flux_ records
+        // the exchange (spec §5). nullptr args on a space map -> byte-identical.
         bulk_flux_transport_cached(gas, gas_conservative, n_gases,
                                    wind_x, wind_y, solid, is_vacuum,
-                                   coeffE_.data(), coeffS_.data(), h, w);
+                                   coeffE_.data(), coeffS_.data(), h, w,
+                                   ambient_mode ? is_ambient : nullptr,
+                                   ambient_mode ? n_amb : nullptr,
+                                   ambient_mode ? boundary_flux_.data() : nullptr);
         (void)dt_s;
         if (s == n_sub - 1) {
             uint64_t bfd = 0;
@@ -432,7 +458,10 @@ void EOSSolver::step(
         const int row = y * w;
         for (int x = 0; x < w; ++x) {
             const int i = row + x;
-            if (solid[i] || is_vacuum[i]) { div_u_[i] = 0; continue; }
+            // BC (audit (b)): the ring is a Dirichlet boundary owned by the pin
+            // — div(u*)=0 there, the vacuum idiom (its rhs isn't consumed since
+            // the ring is excl==1, but keep it clean).
+            if (solid[i] || is_vacuum[i] || (ambient_mode && is_ambient[i])) { div_u_[i] = 0; continue; }
             const int il = mirror_idx(i, y, x - 1, h, w, solid);
             const int ir = mirror_idx(i, y, x + 1, h, w, solid);
             const int iu = mirror_idx(i, y - 1, x, h, w, solid);
@@ -491,10 +520,15 @@ void EOSSolver::step(
     // has the split rationale) so the CUDA port's host-side hierarchy build
     // and the standalone eos_mg_solve_reference drive the SAME routines as
     // this live path.
+    // BC: the SHIFT (P′ = P − P_amb), the ring→Dirichlet excl, and the σ-sponge
+    // (B3b) all live inside mg_build_levels, gated on is_ambient != nullptr.
     const int n_levels = mg_build_levels(pstar_.data(), div_u_.data(),
                                          n_total_.data(), p_prev,
                                          solid, is_vacuum, dyn_permeability,
-                                         h, w, dt);
+                                         h, w, dt,
+                                         ambient_mode ? is_ambient : nullptr,
+                                         p_amb,
+                                         ambient_mode ? sponge_sigma : nullptr);
     mg_run_solve_cpu(n_levels);
     MGLevel& L0 = levels_[0];
 
@@ -508,7 +542,8 @@ void EOSSolver::step(
         const int row = y * w;
         for (int x = 0; x < w; ++x) {
             const int i = row + x;
-            if (solid[i] || is_vacuum[i]) { wind_x[i] = 0; wind_y[i] = 0; continue; }
+            // BC (audit (b)): ring u ≡ 0 — a still boundary, the vacuum idiom.
+            if (solid[i] || is_vacuum[i] || (ambient_mode && is_ambient[i])) { wind_x[i] = 0; wind_y[i] = 0; continue; }
             const int il = mirror_idx(i, y, x - 1, h, w, solid);
             const int ir = mirror_idx(i, y, x + 1, h, w, solid);
             const int iu = mirror_idx(i, y - 1, x, h, w, solid);
@@ -538,6 +573,27 @@ void EOSSolver::step(
                 const int64_t my = mul128_shr(uy < 0 ? -uy : uy, (int64_t)kk, 16);
                 ux = (ux < 0) ? -mx : mx;
                 uy = (uy < 0) ? -my : my;
+            }
+
+            // BC (spec §3 rung 2, B3c): the u-DAMPING BAND — the real absorber.
+            // A second magnitude-first shrink u *= (1 − k(d)) using the static
+            // band coefficient k(d) (Q16, tapered k_max at the ring to 0 at the
+            // inner band edge), placed immediately after the absorb chain. This
+            // dissipates the outgoing MOMENTUM inside the band so it does not
+            // reach the hard Dirichlet ring and reflect (the σ pressure-sponge
+            // could not — it never touched u). MAGNITUDE-FIRST is mandatory: a
+            // naive signed truncating multiply leaves a stuck −1-count floor
+            // (fixed_point.h sign convention). Gated on ambient mode -> space
+            // maps byte-identical (dormancy BY BRANCH); no-op where k(d)==0.
+            if (ambient_mode && sponge_udamp) {
+                const int32_t kd = sponge_udamp[i];
+                if (kd > 0) {
+                    const q16 kk2 = (kd < FP_ONE) ? (q16)(FP_ONE - kd) : 0;
+                    const int64_t mx = mul128_shr(ux < 0 ? -ux : ux, (int64_t)kk2, 16);
+                    const int64_t my = mul128_shr(uy < 0 ? -uy : uy, (int64_t)kk2, 16);
+                    ux = (ux < 0) ? -mx : mx;
+                    uy = (uy < 0) ? -my : my;
+                }
             }
 
             // |u| ≤ u_cap = min(c_LOCAL, U_MAX) (state-derived cap + the v2.4
@@ -597,7 +653,9 @@ void EOSSolver::step(
             const int row = y * w;
             for (int x = 0; x < w; ++x) {
                 const int i = row + x;
-                if (solid[i] || is_vacuum[i]) continue;
+                // BC (audit (b)): the ring is skipped like vacuum — no
+                // compression work on the still ΔT=0 boundary.
+                if (solid[i] || is_vacuum[i] || (ambient_mode && is_ambient[i])) continue;
                 const int il = mirror_idx(i, y, x - 1, h, w, solid);
                 const int ir = mirror_idx(i, y, x + 1, h, w, solid);
                 const int iu = mirror_idx(i, y - 1, x, h, w, solid);
@@ -638,7 +696,19 @@ void EOSSolver::step(
     // ======================================================================
     // 5. P := P_new — materialized ONCE (the `atmosphere` alias).
     // ======================================================================
-    for (int i = 0; i < n; ++i) atmosphere[i] = L0.P[i];
+    // BC (spec §1 "the shift trick"): the whole solve ran in P′ = P − P_amb, so
+    // add P_amb back here — MASKED to !solid (solids left the solve at P′=0 and
+    // must stay 0 ABSOLUTE; ring cells (excl==1, P′=0) and every regular cell
+    // WANT the add, materializing P=P_amb at the ring and real P interior). The
+    // space path is the untouched byte-identical store (dormancy BY BRANCH — NO
+    // unconditional +0).
+    if (ambient_mode) {
+        const int64_t pa = (int64_t)p_amb;
+        for (int i = 0; i < n; ++i)
+            atmosphere[i] = solid[i] ? L0.P[i] : (int32_t)((int64_t)L0.P[i] + pa);
+    } else {
+        for (int i = 0; i < n; ++i) atmosphere[i] = L0.P[i];
+    }
 }
 
 // ===========================================================================
@@ -659,9 +729,13 @@ int EOSSolver::mg_build_levels(
         const int32_t* p_prev,
         const bool* solid, const bool* is_vacuum,
         const float* dyn_permeability,
-        int h, int w, float dt) const {
+        int h, int w, float dt,
+        const bool* is_ambient, int32_t p_amb,
+        const int32_t* sponge_sigma) const {
     const int n = h * w;
     if (n <= 0 || dt <= 0.0f) return 0;
+    // BC: dormancy BY BRANCH — every ambient edit below is gated on this flag.
+    const bool ambient_mode = (is_ambient != nullptr);
 
     // Per-tick scalar folds (identical expressions to step()'s hoists).
     const q16 n_floor_q  = quantize((double)N_FLOOR_SOLVER);
@@ -715,6 +789,12 @@ int EOSSolver::mg_build_levels(
         for (int i = 0; i < n; ++i) {
             if (solid[i]) L.excl[i] = 2;
             else if (is_vacuum[i]) L.excl[i] = 1;
+            // BC (audit (c), :715-718): the ambient ring is Dirichlet too —
+            // excl==1, pinned to P′=0 (≡ P=P_amb after the step-5 add-back). The
+            // pin VALUE is unchanged (0) under the shift, so the zero-Dirichlet
+            // MG kernels stay byte-identical (spec §1). is_vacuum is all-false
+            // on ambient maps, so this catches every ring tile.
+            else if (ambient_mode && is_ambient[i]) L.excl[i] = 1;
         }
         // Mass clamp: [1, 2^38] raw. The cap keeps the 128-bit mass-term
         // product (m·ΔP)>>8 inside int64 (2^38·2^31/2^8 = 2^61) while still
@@ -733,15 +813,24 @@ int EOSSolver::mg_build_levels(
             L.m[i] = m;
             // rhs_i = p* − (γ·p*)·dt·div(û*) (int64 raw); b = m·rhs @F8.
             const int64_t gp_dt = mul128_shr(gp_raw, (int64_t)dt_q, 16);
-            const int64_t rhs_raw = (int64_t)pstar[i]
+            int64_t rhs_raw = (int64_t)pstar[i]
                                   - mul128_shr(gp_dt, (int64_t)div_u[i], 16);
+            // BC (spec §1 "the shift trick"): solve P′ = P − P_amb. Under the
+            // shift the mass anchor's constant folds to the rhs: rhs′ = rhs −
+            // P_amb (the Σg face difference is shift-invariant, cancels exactly
+            // in integers). Subtract BEFORE the m multiply. Branch-gated -> NO
+            // unconditional −0 on the space path. m stays un-σ'd here (B3b).
+            if (ambient_mode) rhs_raw -= (int64_t)p_amb;
             L.b[i] = mul128_shr(m, rhs_raw, 8);
             // Warm start from the PREVIOUS tick's solved P (`p_prev` — copied
             // from `atmosphere` at step 0): it already carries the room-scale
             // acoustic structure the smoother is slowest to build, worth ~one
             // V-cycle of error (measured at the MG gate; p* was the earlier,
             // weaker choice).
-            L.P[i] = p_prev[i];
+            // BC (spec §1): p_prev stores the UNSHIFTED atmosphere; re-shift the
+            // warm start fresh into P′-space each tick. Branch-gated (space maps
+            // keep the byte-identical p_prev[i] warm start).
+            L.P[i] = ambient_mode ? (int32_t)((int64_t)p_prev[i] - (int64_t)p_amb) : p_prev[i];
         }
         // Face conductances g = perm/N̂ (the 1/N̂ divide folded BEFORE any
         // multiply by P — the documented joint-case order; arithmetic-N̂ IS
@@ -773,6 +862,26 @@ int EOSSolver::mg_build_levels(
                         }
                     }
                 }
+            }
+        }
+        // BC (spec §3 rung 1, B3b): the σ-SPONGE. Add the static per-cell
+        // sponge mass to the level-0 row diagonal at band cells — AFTER the L.b
+        // build (b used the un-σ'd m, the spec equation) and BEFORE the Galerkin
+        // coarse build + recip build below, so BOTH fold σ automatically. Under
+        // the shift the σ·P_amb rhs term vanishes: σ pulls P′ → 0 ≡ ambient,
+        // extending the Dirichlet ring inward with a taper (an unconditionally
+        // stable absorber that acts within the tick the wave arrives). Ring
+        // cells are excl==1 (Dirichlet), so σ is moot there anyway; the B2 grid
+        // is 0 at d==0. int64 row mass (M_CAP 2^38) keeps σ ≫ FP_ONE overflow-
+        // safe. All-zero grid (width 0 / strength 0) -> no-op (rung 0 dormant).
+        if (ambient_mode && sponge_sigma) {
+            for (int i = 0; i < n; ++i) {
+                if (L.excl[i] != 0) continue;
+                const int32_t s = sponge_sigma[i];
+                if (s <= 0) continue;
+                int64_t ms = L.m[i] + (int64_t)s;
+                if (ms > M_CAP) ms = M_CAP;
+                L.m[i] = ms;
             }
         }
     }
@@ -1063,15 +1172,17 @@ uint64_t eos_sl_advect_reference(
         int32_t* wind_x, int32_t* wind_y, int32_t* temperature,
         const bool* solid, const bool* is_vacuum,
         const float* dyn_permeability,
-        int h, int w, float dt, int n_sub) {
+        int h, int w, float dt, int n_sub,
+        const bool* is_ambient) {
     const int n = h * w;
     if (n <= 0 || dt <= 0.0f || n_sub < 1) return 0;
+    const bool ambient_mode = (is_ambient != nullptr);   // BC: dormancy by branch
 
     // cmask (verbatim: step()'s per-tick corner/march table).
     std::vector<uint8_t> cmask(n, 0);
     for (int i = 0; i < n; ++i) {
         if (solid[i] || dyn_permeability[i] <= 0.0f) cmask[i] = 0;
-        else if (is_vacuum[i]) cmask[i] = 1;
+        else if (is_vacuum[i] || (ambient_mode && is_ambient[i])) cmask[i] = 1;   // BC: ring is a breach corner
         else cmask[i] = 2;
     }
 
@@ -1096,7 +1207,7 @@ uint64_t eos_sl_advect_reference(
                     cmask.data(), h, w);
                 wind_x[i] = fs.vx;
                 wind_y[i] = fs.vy;
-                temperature[i] = is_vacuum[i] ? 0 : fs.t;
+                temperature[i] = (is_vacuum[i] || (ambient_mode && is_ambient[i])) ? 0 : fs.t;   // BC: ΔT=0 is ambient
             }
         }
     }
@@ -1134,8 +1245,10 @@ void eos_kick_compression_reference(
         float n_floor_solver, float t_min, float t_work_clamp,
         float t_max_phys, float u_max, float trace_mass_scale,
         uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
-        int64_t* counters_out /* [5] */) {
+        int64_t* counters_out /* [5] */,
+        const bool* is_ambient) {
     const int n = h * w;
+    const bool ambient_mode = (is_ambient != nullptr);   // BC: dormancy by branch
     for (int c = 0; c < 5; ++c) counters_out[c] = 0;
     *digest_velocity_out = 0;
     *digest_compression_out = 0;
@@ -1180,7 +1293,8 @@ void eos_kick_compression_reference(
         const int row = y * w;
         for (int x = 0; x < w; ++x) {
             const int i = row + x;
-            if (solid[i] || is_vacuum[i]) { wind_x[i] = 0; wind_y[i] = 0; continue; }
+            // BC (audit (b)): ring u ≡ 0 — a still boundary, the vacuum idiom.
+            if (solid[i] || is_vacuum[i] || (ambient_mode && is_ambient[i])) { wind_x[i] = 0; wind_y[i] = 0; continue; }
             const int il = mirror_idx(i, y, x - 1, h, w, solid);
             const int ir = mirror_idx(i, y, x + 1, h, w, solid);
             const int iu = mirror_idx(i, y - 1, x, h, w, solid);
@@ -1239,7 +1353,7 @@ void eos_kick_compression_reference(
             const int row = y * w;
             for (int x = 0; x < w; ++x) {
                 const int i = row + x;
-                if (solid[i] || is_vacuum[i]) continue;
+                if (solid[i] || is_vacuum[i] || (ambient_mode && is_ambient[i])) continue;   // BC: ring skipped like vacuum
                 const int il = mirror_idx(i, y, x - 1, h, w, solid);
                 const int ir = mirror_idx(i, y, x + 1, h, w, solid);
                 const int iu = mirror_idx(i, y - 1, x, h, w, solid);

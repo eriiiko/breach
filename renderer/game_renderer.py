@@ -127,6 +127,17 @@ class GameRenderer:
         _mat, vacuum_mask = materials_from_tilemap(level_data.tilemap,
                                                    level_data.version)
         self.lighting.set_vacuum_mask(vacuum_mask)
+        # BC render tint (boundary_conditions_spec_2026-07-19 B5) — RENDER-ONLY,
+        # determinism-EXEMPT: it never reads or writes any synced sim field, so
+        # it cannot perturb a golden/lockstep. On a planetside `boundary ==
+        # "ambient"` map the SPACE-code ring tiles are the open SKY, not vacuum;
+        # the vacuum shader still discards them (materials_from_tilemap marks the
+        # SPACE code as the vacuum mask regardless of boundary), so we paint a
+        # soft daylight gradient BEHIND the map instead of the starfield/black
+        # backdrop and the sky shows through the ring. Space maps: flag False ->
+        # the exact prior background path (byte-identical render).
+        self._ambient_sky_map = (
+            getattr(level_data, "boundary", "space") == "ambient")
         # smoke^gamma render-contrast knob (ch.05 §6.1 step 5): a power curve on
         # the RENDERED smoke opacity (FieldOverlay.update), not the sim field.
         # gamma > 1 crushes thin smoke toward transparent and sharpens wispy
@@ -736,6 +747,21 @@ class GameRenderer:
     def draw_background_to_screen(self) -> None:
         """Draw the level's screen-fixed background behind the map area.
         Stretched to fill the map viewport. Camera-independent."""
+        # BC (B5): on an AMBIENT map with no authored backdrop, paint the open
+        # SKY behind the map so the ring tiles read as planet atmosphere, not
+        # starfield. RENDER-ONLY (no sim field touched); a level that authors its
+        # own background keeps it. A soft vertical daylight gradient (zenith blue
+        # -> paler horizon haze); Erik tunes the look at B5.
+        if self._ambient_sky_map and self.textures.background is None:
+            x = int(self.camera.viewport_screen_x)
+            y = int(self.camera.viewport_screen_y)
+            w = int(self.cfg.map_px_w)
+            h = int(self.cfg.map_px_h)
+            rl.draw_rectangle_gradient_v(
+                x, y, w, h,
+                rl.Color(96, 152, 214, 255),    # zenith daylight blue
+                rl.Color(176, 206, 230, 255))   # paler horizon haze
+            return
         bg = self.textures.background
         if bg is None:
             return
@@ -986,7 +1012,7 @@ class GameRenderer:
             return
         mouse_f = self.mouse_to_tile_float()
         if mouse_f is None:
-            text = "tile (—, —) — cursor outside map"
+            text = "tile (-, -) - cursor outside map"
         else:
             cx, cy = int(mouse_f[0]), int(mouse_f[1])
             H, W = gmap.solid.shape
@@ -1002,9 +1028,9 @@ class GameRenderer:
                     mat = MATERIAL_NAMES.get(mat_val, f"mat{mat_val}")
                 blocked = bool(gmap.solid[cy, cx] or gmap.is_vacuum[cy, cx])
                 tag = "BLOCKED" if blocked else "walkable"
-                text = f"tile ({cx}, {cy}) — {mat} — {tag}"
+                text = f"tile ({cx}, {cy}) | {mat} | {tag}"
             else:
-                text = f"tile ({cx}, {cy}) — out of bounds"
+                text = f"tile ({cx}, {cy}) - out of bounds"
         pad, font_size = 6, 16
         x0, y0 = 12, 40
         tw = rl.measure_text(text, font_size)
