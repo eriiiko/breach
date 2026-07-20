@@ -599,12 +599,30 @@ class GameRenderer:
         if self.cfg.use_3d_units and self.unit_models.ready \
                 and self._unit_cam3d is not None:
             clock = time.perf_counter() - self._anim_t0
+            # P1: hand the marine shader the SAME baked light field the ship is
+            # lit by (light_tex_a/b) + world dims + the ship's ambient/gain/
+            # normal-y-sign (single source of truth = self.lighting), so the
+            # marine samples the field per-fragment and matches the ship beside
+            # it. light_rgb_fn stays as the flat CPU fallback (shader off / not
+            # compiled). normal_y_sign follows the ship's H-toggle.
+            from renderer.unit_model_renderer import LightFieldCtx
+            light_ctx = LightFieldCtx(
+                tex_a=self.lighting.light_tex_a,
+                tex_b=self.lighting.light_tex_b,
+                world_px_w=float(self.world.world_px_w),
+                world_px_h=float(self.world.world_px_h),
+                ambient=self.lighting.ambient,
+                light_gain=self.lighting.light_gain,
+                normal_y_sign=(-1.0 if self.normal_y_flipped else 1.0),
+            )
             self.unit_models.draw_units(
                 marines, wpt, clock, self._unit_cam3d,
-                base_tint=(90, 200, 90, 255), light_rgb_fn=light_rgb_at)
+                base_tint=(90, 200, 90, 255), light_rgb_fn=light_rgb_at,
+                light_ctx=light_ctx)
             self.unit_models.draw_units(
                 zombies, wpt, clock, self._unit_cam3d,
-                base_tint=(210, 70, 70, 255), light_rgb_fn=light_rgb_at)
+                base_tint=(210, 70, 70, 255), light_rgb_fn=light_rgb_at,
+                light_ctx=light_ctx)
             return
 
         for m in marines:

@@ -40,6 +40,8 @@ from typing import Callable, Dict, Optional, Sequence
 
 import pyray as rl
 
+from .marine_shader import load_marine_shader
+
 # ---------------------------------------------------------------------------
 # Asset + tunables
 # ---------------------------------------------------------------------------
@@ -87,6 +89,21 @@ _CAM_HEIGHT = 500.0
 
 
 @dataclass
+class LightFieldCtx:
+    """The ship's baked light field + scalars, handed to draw_units so the P1
+    marine shader samples EXACTLY what the ship samples. Built by game_renderer
+    from its LightingPass + WorldComposite (single source of truth). ``tex_a`` /
+    ``tex_b`` are the ``light_tex_a`` / ``light_tex_b`` RGBA16F textures."""
+    tex_a: object
+    tex_b: object
+    world_px_w: float
+    world_px_h: float
+    ambient: tuple
+    light_gain: float
+    normal_y_sign: float = 1.0
+
+
+@dataclass
 class _UnitAnimState:
     """Renderer-side per-unit animation state (NEVER on Unit)."""
     phase: float = 0.0           # fractional keyframe cursor
@@ -114,6 +131,8 @@ class UnitModelRenderer:
         # when present, _draw_one lets the shader sample the light field per-
         # fragment and skips the CPU tint (avoids double-darkening).
         self._shader = None
+        self._marine_shader = None       # MarineShader wrapper (locs + setters)
+        self._field_bound = False        # light textures wired into map slots
 
     # ------------------------------------------------------------------
     # Load / unload  (mirror UnitSprites.load(): needs a live GL context)
@@ -151,14 +170,45 @@ class UnitModelRenderer:
             self._loaded = rigged
             print(f"[unit_model] loaded {path}: clips={self._n_anims} "
                   f"native_height={self._native_height:.3f} rigged={rigged}")
+            if self._loaded:
+                self._setup_marine_shader()
         except Exception as exc:  # pragma: no cover - defensive, mirrors sprites
             print(f"[unit_model] WARN: could not load model: {exc}")
             self._loaded = False
 
+    def _setup_marine_shader(self) -> None:
+        """P1: compile the lit-marine shader and assign it to the mesh
+        materials (1 and 2 — material 0 is dead; verified in
+        scratchpad/introspect_model.py). Light-field textures are bound to the
+        material MAP slots and per-frame uniforms pushed in draw_units. On a
+        compile failure we leave self._shader None so _draw_one falls back to
+        the Patch-0 flat CPU RGB tint (graceful degrade, never a black marine).
+        """
+        try:
+            ms = load_marine_shader()
+            if ms.shader.id == 0:
+                print("[unit_model] WARN: marine shader failed to compile; "
+                      "falling back to flat RGB tint")
+                return
+            for mi in range(self.model.materialCount):
+                # meshMaterial maps mesh -> material; skip the dead material 0.
+                if mi == 0:
+                    continue
+                self.model.materials[mi].shader = ms.shader
+            self._marine_shader = ms
+            self._shader = ms.shader
+            print(f"[unit_model] marine lit shader ready (id={ms.shader.id})")
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"[unit_model] WARN: marine shader setup failed: {exc}")
+            self._shader = None
+            self._marine_shader = None
+
     def unload(self) -> None:
-        """Free the model + animation clips."""
+        """Free the model + animation clips + marine shader."""
         if self._anims is not None and self._n_anims:
             rl.unload_model_animations(self._anims, self._n_anims)
+        if self._marine_shader is not None:
+            rl.unload_shader(self._marine_shader.shader)
         if self.model is not None:
             rl.unload_model(self.model)
         self.model = None
@@ -167,6 +217,8 @@ class UnitModelRenderer:
         self._clip_index.clear()
         self._anim.clear()
         self._loaded = False
+        self._shader = None
+        self._marine_shader = None
 
     @property
     def ready(self) -> bool:
@@ -223,8 +275,8 @@ class UnitModelRenderer:
     def draw_units(self, units: Sequence, wpt: float, clock: float,
                    camera3d: rl.Camera3D,
                    base_tint=(255, 255, 255, 255),
-                   light_rgb_fn: Optional[Callable[[object], tuple]] = None
-                   ) -> None:
+                   light_rgb_fn: Optional[Callable[[object], tuple]] = None,
+                   light_ctx: Optional[LightFieldCtx] = None) -> None:
         """Draw every alive unit as an animated 3D body inside the world RT.
 
         Nests ``begin_mode_3d`` in the already-open world RT. Per unit: infer
@@ -242,8 +294,13 @@ class UnitModelRenderer:
         ship is lit by (ambient floor + incoming light colour at the unit's
         foot tile), so a red lamp reddens the marine and an unlit room darkens
         it — colour + occlusion parity with the ship, unlike the old max-
-        collapsed grey scalar. It is the FLAT fallback / Patch-0 path; the P1
-        lit shader samples the field per-fragment instead (self._shader).
+        collapsed grey scalar. It is the FLAT fallback / Patch-0 path.
+
+        ``light_ctx`` (P1) carries the ship's ``light_tex_a`` / ``light_tex_b``
+        + world dims + ambient/gain so the lit marine shader samples the field
+        PER-FRAGMENT on the marine's real mesh normals (half-Lambert + rim +
+        its own grazing key). When the shader is live and light_ctx is given,
+        the CPU tint above is skipped (the field sample replaces it).
 
         No-op (leaving the sprite path's world untouched) if the model failed
         to load — the toggle can be on with the asset missing and nothing breaks.
@@ -255,6 +312,26 @@ class UnitModelRenderer:
 
         scale = (_SCALE_TILES_TALL * wpt) / self._native_height
         shadow_r = _SHADOW_RADIUS_FRAC * (3.0 * wpt)  # footprint side ~3 tiles
+
+        # P1: wire the ship's light field into the marine material + push the
+        # per-frame scalar uniforms ONCE (SetShaderValue self-enables the
+        # program, so this is safe before begin_mode_3d). Textures go in the
+        # material MAP slots (METALNESS -> texture1, NORMAL -> texture2) so
+        # DrawMesh auto-binds them every draw and never clobbers the units.
+        if self._shader is not None and self._marine_shader is not None \
+                and light_ctx is not None:
+            MM = rl.MaterialMapIndex
+            for mi in range(self.model.materialCount):
+                if mi == 0:
+                    continue
+                mat = self.model.materials[mi]
+                mat.maps[MM.MATERIAL_MAP_METALNESS].texture = light_ctx.tex_a
+                mat.maps[MM.MATERIAL_MAP_NORMAL].texture = light_ctx.tex_b
+            self._marine_shader.set_frame_uniforms(
+                light_ctx.ambient, light_ctx.light_gain,
+                light_ctx.world_px_w, light_ctx.world_px_h,
+                normal_y_sign=light_ctx.normal_y_sign,
+                view_dir=(0.0, 1.0, 0.0))
 
         rl.begin_mode_3d(camera3d)
         try:
