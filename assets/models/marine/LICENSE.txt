@@ -1,0 +1,34 @@
+Breach — Phase-0 3D marine asset
+================================
+
+FILES
+  AnimationLibrary_Godot_Standard.gltf   rigged humanoid mesh + 46 animation clips
+  AnimationLibrary_Godot_Standard.bin     binary buffers for the .gltf
+  LICENSE_quaternius.txt                   full CC0 1.0 legal text (as distributed)
+  robot.glb                                secondary known-good rigged glTF (raylib
+                                           example asset) kept as a code-path fallback
+
+SOURCE
+  Quaternius — "Universal Animation Library" (standard FREE version), a rigged
+  low-poly humanoid character with a portion of the Universal Animation Library
+  clips (idle / walk / jog / sprint / crouch / pistol aim+shoot / punch / sword /
+  death / etc.). Author: Quaternius (https://quaternius.com).
+  Obtained 2026-07-20 from the glTF redistribution:
+    https://github.com/J-Ponzo/gltf-universal-animation-library
+  (mirrors https://quaternius.itch.io/universal-animation-library, 2025-06-10).
+
+  robot.glb — raylib example resource (raysan5/raylib), a known-good rigged
+  animated glTF, kept only to exercise the load path if the Quaternius file ever
+  fails to import. Also public-domain / permissive per the raylib examples.
+
+LICENSE
+  CC0 1.0 Universal (public domain dedication). Commercial use OK, attribution
+  optional, ML-training OK. Full text in LICENSE_quaternius.txt.
+
+  Attribution is not required, but crediting Quaternius is appreciated and you
+  can support the author at https://www.patreon.com/quaternius.
+
+USED BY
+  renderer/unit_model_renderer.py (Phase-0 3D marines, render-only, toggle-gated).
+  The clip names referenced there (Idle_Loop, Walk_Loop, Pistol_Shoot, Death01)
+  are the Quaternius Universal Animation Library names present in the .gltf.
