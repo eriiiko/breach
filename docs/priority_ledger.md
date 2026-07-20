@@ -29,13 +29,22 @@ Created 2026-07-17 from Erik's stated stack; Erik owns the ordering.
   dirty-set rider §5b; two-rung H2D plan). NOTE: BC landed first as planned,
   so the kernels S8a freezes now include the ambient branches (shift,
   reservoir clamp, u-damping) — the spec's launch-core extraction covers
-  them. **APPROVED + IN FLIGHT 2026-07-20** — Rung 1 building on
-  `cuda-s8a-residency` (worktree agent, auto-merge on green; bit-identity
-  tol-0 gate is the oracle). STEP-A scope confirmed (glue is a handful;
-  per-substep malloc/transfer tax is the target). §5b now carries Erik's
-  **unit-stamp always-upload rule** — `dyn_permeability`/`dyn_wave_absorb`/
-  `dyn_light_atten` stay per-tick-uploaded so body-shielding survives Rung 2.
-  (Also addresses the
+  them. **PATH B DONE + MERGED 2026-07-20** (`1ae6f86`, --no-ff, auto-merge on
+  green): leaf solvers (water substep loop + smoke 5-plane loop + decay) GPU-
+  resident via `step_resident` + a GameMap CuPy mode; EOS kept on its host
+  island and BRACKETED. tol-0 bit-identical (40-tick full-engine A/B, all synced
+  fields incl heat/ripple); suite 997 passed. Payoff (resident vs per-call on the
+  multiplied tax): **1.75× @128² · 3.20× @256² · 4.77× @384²** (scales with area —
+  the big-map win); full-tick @256² 45.8→34.2 ms even with EOS bracketed. Flag
+  default OFF (`set_residency`, `--resident`); CuPy never imported on the CPU path.
+  §5b unit-stamp always-upload masks in `GameMap._RESIDENT_MASKS` (body-shielding
+  preserved). **PATH A = the remaining step: EOS device residency** (port
+  `mg_build_levels` + host reductions to device for zero-mid-tick EOS — the
+  determinism-critical "S8 endpoint"). Deferred to **Fable** (wrote the residency
+  plan); brief `docs/s8a_path_a_eos_residency_brief_2026-07-20.md`; drops into
+  Path-B's framework (removes the EOS bracket). Physics-v1 close needs Path A.
+  Discovered+fixed en route: main's `BREACH_CUDA=ON` build was broken since
+  `472871d` (smoke_clamp arity) — fixed on main (`ae85906`). (Also addresses the
   `cast_fire_heat` per-call GPU tax that tanks FPS with lots of fire — the
   device port is S8c; the residency patch removes the transfer tax.)
 - Riders (chat-sized, slot when convenient):
