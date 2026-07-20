@@ -8,6 +8,27 @@ per-*substep* (`water_step` = 11 `cudaMalloc` + 6 H2D + 3 D2H on every substep c
 is walls-only and `run_substeps` `(void)`s it (no per-tick unit-driven upload); the BC ambient
 args (`is_ambient`/`n_amb`/`p_amb`/`sponge_sigma`/`sponge_udamp`) are static-per-map and ride the
 launch cores resident-once. **Unit body-shielding preserved** — see the §5b unit-stamp rule.
+**★ BUILD FINDING + RUNG-1 SPLIT (2026-07-20, Erik-decided).** STEP B's read of
+`cuda_eos_step.cu` overturned the STEP-A bet that "EOS is already device-chained, just strip the
+wrapper." Only the SL-advection + bulk-flux **substep loop** is device-resident; after it there is a
+**mandatory host island** — D2H at the solve boundary, host `div_u`/Dalton-`pstar`/`c_local`
+reductions, the **entire multigrid hierarchy built on the host** (`mg_build_levels`), then
+`eos_mg_vcycle`/`eos_kick_compression` which take host pointers and do their own H2D/D2H, then host
+materialization of `atmosphere`. `cuda_mg_solve.h` §2.7 flags on-device MG-build as **"the S8
+endpoint … not P6"** — a determinism-critical arc, not a wrapper strip. So this build splits:
+- **PATH B = Rung 1 (BUILD NOW, Opus).** Make the *leaf* solvers resident — water (DONE, `88f0f25`,
+  the proven `*_launch_resident` pattern) + smoke, fire, temperature, combustion — via `step_resident`
+  + the GameMap CuPy mode. **Keep the EOS host island as-is and BRACKET it with one batched D2H
+  (before EOS) + one batched H2D (after EOS).** Still **tol-0 bit-identical** (fields round-trip
+  losslessly; EOS runs its exact current code). This deviates from §3.3's "zero mid-tick transfers"
+  **for the EOS stage only** — an explicit, Erik-blessed Rung-1 compromise. It removes the
+  *substep-multiplied* leaf-solver transfer tax (water ×n_sub, smoke ×5) — the dominant grid-scaling
+  cost Erik observes (big maps slower). Flag default OFF; main behavior unchanged.
+- **PATH A = deferred follow-up (Fable, its own design pass).** The real §3.3 for EOS: port
+  `mg_build_levels` + the host reductions to device kernels, make `mg_vcycle`/`kick_compression` take
+  device pointers — all bit-exact. Drops into the Path-B framework (which builds the resident fields
+  + orchestrator + flag). Brief: `docs/s8a_path_a_eos_residency_brief_2026-07-20.md`.
+
 **Supersedes:** `cuda_s8a_residency_spec.md` (pre-EOS: it specs the retired two-field
 `atmosphere`+`wave_p` IMEX tick and the S1–S7 solver chain; kept for the record, banner added).
 **Sequencing (Erik, 2026-07-19):** the **boundary-conditions spec/patch lands FIRST**
