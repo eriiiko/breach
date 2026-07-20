@@ -1,6 +1,13 @@
 # CUDA-S8a — GPU residency, post-EOS rewrite (2026-07-19)
 
-**Status:** DRAFT for Erik's review (physics close-out, priority ledger stack #1).
+**Status:** APPROVED 2026-07-20 (Erik) — build Rung 1 against it (physics close-out,
+priority ledger stack #1). STEP-A scope confirmed against the live post-BC tree
+(`physics_runner.py` / `physics_engine.cpp` / `cuda_water.cu`): inter-solver host glue is a
+handful (matches the post-EOS bet — no surviving float bridges); the per-call tax is real and
+per-*substep* (`water_step` = 11 `cudaMalloc` + 6 H2D + 3 D2H on every substep call); `obstacles`
+is walls-only and `run_substeps` `(void)`s it (no per-tick unit-driven upload); the BC ambient
+args (`is_ambient`/`n_amb`/`p_amb`/`sponge_sigma`/`sponge_udamp`) are static-per-map and ride the
+launch cores resident-once. **Unit body-shielding preserved** — see the §5b unit-stamp rule.
 **Supersedes:** `cuda_s8a_residency_spec.md` (pre-EOS: it specs the retired two-field
 `atmosphere`+`wave_p` IMEX tick and the S1–S7 solver chain; kept for the record, banner added).
 **Sequencing (Erik, 2026-07-19):** the **boundary-conditions spec/patch lands FIRST**
@@ -157,7 +164,19 @@ buffer, downloaded in **one small D2H** alongside (later: instead of) the mirror
 correctness first. **Rung 2 (S8a.2, same branch or immediate follow-up)** replaces the full
 upload with host-produced deltas only; from that moment this rider is binding: after
 `destroy_wall` / `seal_tiles` / `unseal_tiles`, the touched set must reach the device
-before the next kernel read. The verified 2026-07-19 list:
+before the next kernel read.
+
+**Unit-stamp always-upload rule (Erik, 2026-07-20 — binding at Rung 2).** `stamp_units`
+(`simulation.py:745`, host, pre-physics) rewrites `dyn_permeability` (MIN), `dyn_wave_absorb`
+(MAX) and `dyn_light_atten` (per-channel MAX) **every tick** — units move every tick, so these are
+NOT structural-edit deltas. This is the mechanism by which a body shields/damps a shockwave for
+the unit behind it (`dyn_wave_absorb` MAX) and blocks air (`dyn_permeability` MIN). Therefore
+`dyn_permeability` / `dyn_wave_absorb` / `dyn_light_atten` (+ `obstacles`, walls-only but rebuilt
+in the same pass) **stay on the per-tick always-upload list at Rung 2** — the delta-narrowing
+applies only to the heavy synced *fields*; these `(h,w)` masks upload whole every tick (cheap).
+Rung 2 must NOT narrow them to structural events, or bodies go stale on-device and stop shielding.
+(The cleaner long-term end-state — porting `stamp_units` to a device kernel fed by a per-tick unit
+footprint list — is deferred out of S8a; noted here so it isn't lost.) The verified 2026-07-19 list:
 - `on_tile_changed` caches: `flammable`, `wall_hp`, `conductivity`, `heat_inv_shift`,
   `face_shift` (this tile's 4 faces **+ the facing entry of each 4-neighbour**),
   `permeability`→`dyn_permeability`, `solid` (raycaster-side `light_atten`/`heat_atten`

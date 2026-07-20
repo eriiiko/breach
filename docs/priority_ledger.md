@@ -29,7 +29,13 @@ Created 2026-07-17 from Erik's stated stack; Erik owns the ordering.
   dirty-set rider §5b; two-rung H2D plan). NOTE: BC landed first as planned,
   so the kernels S8a freezes now include the ambient branches (shift,
   reservoir clamp, u-damping) — the spec's launch-core extraction covers
-  them. Awaiting Erik's go, then build per §4. (Also addresses the
+  them. **APPROVED + IN FLIGHT 2026-07-20** — Rung 1 building on
+  `cuda-s8a-residency` (worktree agent, auto-merge on green; bit-identity
+  tol-0 gate is the oracle). STEP-A scope confirmed (glue is a handful;
+  per-substep malloc/transfer tax is the target). §5b now carries Erik's
+  **unit-stamp always-upload rule** — `dyn_permeability`/`dyn_wave_absorb`/
+  `dyn_light_atten` stay per-tick-uploaded so body-shielding survives Rung 2.
+  (Also addresses the
   `cast_fire_heat` per-call GPU tax that tanks FPS with lots of fire — the
   device port is S8c; the residency patch removes the transfer tax.)
 - Riders (chat-sized, slot when convenient):
