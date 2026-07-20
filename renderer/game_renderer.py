@@ -36,6 +36,7 @@ from .overlays import (
 )
 from .pressure_overlay import PressureOverlay
 from .sprites import UnitSprites
+from .unit_model_renderer import UnitModelRenderer
 from .water import WaterPass
 from .world_composite import WorldComposite
 
@@ -55,6 +56,12 @@ class RenderConfig:
     grid_w: int            # physics grid width in tiles
     grid_h: int            # physics grid height in tiles
     world_px_per_tile: float = 24.0   # world RT resolution (independent of zoom)
+    # Phase-0 3D marines (docs/anim_phase0_impl_2026-07-20.md): render-only,
+    # default OFF. When True, GameRenderer loads a rigged glTF and draws units
+    # as animated 3D bodies at the unit-draw slot instead of the 2D sprites;
+    # when False the sprite path is byte-for-byte unchanged. Feel-gated. The J
+    # key flips it live (poll_toggles) once the model is loaded.
+    use_3d_units: bool = False
 
 
 class GameRenderer:
@@ -249,6 +256,19 @@ class GameRenderer:
         # Unit sprites — loaded once, unloaded in shutdown().
         self.sprites = UnitSprites()
         self.sprites.load()
+
+        # Phase-0 3D marines (render-only, toggle-gated). The 2D sprite path
+        # above is always loaded (the toggle can flip live, and it's the
+        # fallback if the model fails to load). The model + its clips are loaded
+        # ONLY when use_3d_units, so the sprite-only path pays no load cost. The
+        # top-down Camera3D is framed to the world RT once. Per-unit animation
+        # state lives inside UnitModelRenderer (keyed by unit.id) — never on Unit.
+        self.unit_models = UnitModelRenderer()
+        self._unit_cam3d = None
+        if self.cfg.use_3d_units:
+            self.unit_models.load()
+            self._unit_cam3d = UnitModelRenderer.make_camera(
+                self.world.world_px_w, self.world.world_px_h)
 
     # ---- per-frame physics->GPU upload ---------------------------------
 
@@ -547,6 +567,25 @@ class GameRenderer:
             cy = int(u.y) + fp // 2
             base = float(lmap[cy, cx]) if (0 <= cx < W and 0 <= cy < H) else 0.0
             return amb_floor + base
+
+        # Phase-0 3D marines: when toggled on AND the model loaded, draw units as
+        # animated 3D bodies (nested begin_mode_3d inside the already-open world
+        # RT) and skip the sprite path entirely. Marines green, zombies red — the
+        # same read as the sprite tints. light_at keeps the local-light dimming.
+        # If the model failed to load, draw_units no-ops and we fall through to
+        # the unchanged sprite path below. This branch is the ONLY change to the
+        # unit-draw slot; with use_3d_units False it is never entered.
+        if self.cfg.use_3d_units and self.unit_models.ready \
+                and self._unit_cam3d is not None:
+            clock = time.perf_counter() - self._anim_t0
+            self.unit_models.draw_units(
+                marines, wpt, clock, self._unit_cam3d,
+                base_tint=(90, 200, 90, 255), light_fn=light_at)
+            self.unit_models.draw_units(
+                zombies, wpt, clock, self._unit_cam3d,
+                base_tint=(210, 70, 70, 255), light_fn=light_at)
+            return
+
         for m in marines:
             if not getattr(m, "alive", True):
                 continue
@@ -874,6 +913,7 @@ class GameRenderer:
             ("F7 pressure",    self.show_pressure),
             ("T  temperature", self.show_temperature),
             ("O  water optics", self.show_water),
+            ("J  3D units",    self.cfg.use_3d_units),
             ("B  bilinear",    self.lighting.bilinear),
             ("G  sRGB",        self.srgb_decode),
             ("H  flip-Y norm", self.normal_y_flipped),
@@ -936,6 +976,16 @@ class GameRenderer:
         # toggle. See input_handler.py.)
         if rl.is_key_pressed(rl.KeyboardKey.KEY_V):
             self.show_water = not self.show_water
+        # J: flip the Phase-0 3D marines live (render-only, feel gate). Lazy-load
+        # the rigged model + build the top-down camera the first time it turns
+        # on, so a sprite-only session never pays the load cost. If the model
+        # fails to load, draw_units no-ops and the sprite path stays in effect.
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_J):
+            self.cfg.use_3d_units = not self.cfg.use_3d_units
+            if self.cfg.use_3d_units and not self.unit_models.ready:
+                self.unit_models.load()
+                self._unit_cam3d = UnitModelRenderer.make_camera(
+                    self.world.world_px_w, self.world.world_px_h)
         if rl.is_key_pressed(rl.KeyboardKey.KEY_B):
             self.lighting.toggle_bilinear()
         if rl.is_key_pressed(rl.KeyboardKey.KEY_H):
@@ -1043,6 +1093,7 @@ class GameRenderer:
 
     def shutdown(self) -> None:
         self.sprites.unload()
+        self.unit_models.unload()
         self.textures.unload_all()
         rl.unload_shader(self.lighting.shader)
         rl.unload_texture(self.lighting.light_tex_a)
