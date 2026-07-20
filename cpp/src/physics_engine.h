@@ -241,7 +241,12 @@ public:
         const int32_t* n_amb = nullptr,
         int32_t p_amb = 0,
         const int32_t* sponge_sigma = nullptr,
-        const int32_t* sponge_udamp = nullptr);
+        const int32_t* sponge_udamp = nullptr,
+        // S8a Path B: when false, the EOS step runs but the once-per-tick TRACE
+        // smoke loop (+ decay) is SKIPPED — the resident path runs those traces
+        // itself on device (trace_smoke_resident) so the 5 per-plane per-call
+        // transfers are gone. Default true == the exact prior behaviour.
+        bool do_traces = true);
 
     // --- Patch 1 S4c: the water-layer ARRAY ARITHMETIC -------------------
     // Moves the array-op core of PhysicsRunner._step_water into C++ — the part
@@ -311,6 +316,22 @@ public:
         int32_t* before, float* dyn_permeability,
         int steam_idx, float tilt_x, float tilt_y,
         int h, int w, float sim_time,
+        double ceiling_h, double flood_eps, double ratio_cap,
+        double boil_rate, double boil_p_thresh, double steam_yield) const;
+
+    // --- S8a Path B: the water HOST TAIL, split out of step_water -----------
+    // The W5 flash-boil vacuum sink + the W3 volume-displacement evacuation +
+    // the final copyto(before, water_depth) — EVERYTHING in step_water AFTER the
+    // substep loop. Factored so the resident path can run the substep loop on
+    // device (water_substeps_resident) and then this host tail on the mirror,
+    // byte-for-byte identical to the monolithic step_water (which now calls this
+    // helper). No substep loop, no solver call — pure host float/integer arithmetic
+    // (/fp:precise), so it is bit-identical whether reached from step_water or the
+    // resident path.
+    void step_water_tail(
+        int32_t* water_depth, int32_t* atmosphere, const bool* solid,
+        int32_t* gas, int n_gases, int32_t* before, float* dyn_permeability,
+        int steam_idx, int h, int w, float sim_time,
         double ceiling_h, double flood_eps, double ratio_cap,
         double boil_rate, double boil_p_thresh, double steam_yield) const;
 

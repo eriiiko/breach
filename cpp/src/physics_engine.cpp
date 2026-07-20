@@ -267,7 +267,8 @@ void PhysicsEngine::run_substeps(
         const float* gas_decay, int inert_n2_idx,                 // EOS P4
         int h, int w, float sim_time,
         const bool* is_ambient, const int32_t* n_amb, int32_t p_amb,
-        const int32_t* sponge_sigma, const int32_t* sponge_udamp) {  // BC
+        const int32_t* sponge_sigma, const int32_t* sponge_udamp,
+        bool do_traces) {  // BC + S8a
     (void)obstacles;   // EOS P3: the solver's own `solid` mask IS the obstacle
                        // set (gamemap.py: obstacles == solid == permeability<=0);
                        // kept as a parameter for ABI/back-compat with the
@@ -304,6 +305,12 @@ void PhysicsEngine::run_substeps(
             h, w, sim_time,
             is_ambient, n_amb, p_amb, sponge_sigma, sponge_udamp);   // BC
     }
+
+    // S8a Path B: the resident path skips this loop (do_traces=false) and runs
+    // the trace planes on device itself (trace_smoke_resident) so the 5 per-plane
+    // per-call transfers are gone. Default (do_traces=true) is the exact prior
+    // behaviour — the CPU + per-call GPU paths are untouched.
+    if (!do_traces) return;
 
     // Traces advect ONCE per tick, on the solver's final (post-correction)
     // wind_x/wind_y — §3.2 step 4b. Skip the two conservative bulk planes
@@ -434,8 +441,6 @@ void PhysicsEngine::step_water(
         double boil_rate, double boil_p_thresh, double steam_yield) const {
 
     using namespace fixedpoint;
-    const int n_cells = h * w;
-    const double Q = (double)FP_ONE;   // 65536 — dequantize divisor
 
     // EOS refactor P3 (design §6 "water head" row): the water head's FLOAT
     // BRIDGE is RETIRED — `atmosphere` is now the derived integer P directly;
@@ -486,6 +491,31 @@ void PhysicsEngine::step_water(
                              solid, h, w, wdt, tilt_x, tilt_y);
         }
     }
+
+    // S8a Path B: the W5 flash-boil + W3 displacement + copyto are factored into
+    // step_water_tail so the resident path can reuse them (on the mirror) after a
+    // device-resident substep loop. Byte-for-byte identical — same host code, same
+    // call site; step_water simply delegates the tail now.
+    step_water_tail(water_depth, atmosphere, solid, gas, n_gases, before,
+                    dyn_permeability, steam_idx, h, w, sim_time,
+                    ceiling_h, flood_eps, ratio_cap,
+                    boil_rate, boil_p_thresh, steam_yield);
+}
+
+// --- S8a Path B: the water HOST TAIL (W5 flash-boil + W3 displacement + copyto),
+// split verbatim out of step_water. See physics_engine.h for the contract. Pure
+// host arithmetic (/fp:precise), bit-identical whether reached from step_water or
+// the resident path.
+void PhysicsEngine::step_water_tail(
+        int32_t* water_depth, int32_t* atmosphere, const bool* solid,
+        int32_t* gas, int n_gases, int32_t* before, float* dyn_permeability,
+        int steam_idx, int h, int w, float sim_time,
+        double ceiling_h, double flood_eps, double ratio_cap,
+        double boil_rate, double boil_p_thresh, double steam_yield) const {
+
+    using namespace fixedpoint;
+    const int n_cells = h * w;
+    const double Q = (double)FP_ONE;   // 65536 — dequantize divisor
 
     // --- W5 flash-boil vacuum sink (plan W5) — S2c: int<->int -------------
     // atmosphere + gas (steam) are now Q16.16 int32 (S2 group migrated). The boil

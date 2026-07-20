@@ -28,6 +28,27 @@ from simulation import water_fixed   # S1: water_depth Q16.16 quantize helpers
 
 
 # ---------------------------------------------------------------------------
+# S8a Path B — GPU residency opt-in (docs/cuda_s8a_residency_spec_2026-07-19).
+# Process-global, default OFF: with it off, ``PhysicsRunner.step`` takes the
+# EXACT prior CPU/per-call path and CuPy is never imported. ``--resident``
+# (tools/run_on_cuda.py) + the S8a gate flip it on; the runner then lazily puts
+# each GameMap into residency mode (:meth:`GameMap.enable_residency`) on its
+# first resident tick and dispatches to :meth:`PhysicsRunner._step_resident`.
+# ---------------------------------------------------------------------------
+_RESIDENCY_ENABLED = False
+
+
+def set_residency(on: bool) -> None:
+    """Turn GPU field residency on/off (process-global, default OFF)."""
+    global _RESIDENCY_ENABLED
+    _RESIDENCY_ENABLED = bool(on)
+
+
+def residency_enabled() -> bool:
+    return _RESIDENCY_ENABLED
+
+
+# ---------------------------------------------------------------------------
 # Fire feedback parameter defaults (fire_design_proposal §2/§3/§5). Cellular
 # spread is GONE — spread is now radiation -> heat -> temperature -> ignition
 # (apply_temperature_ignition). These drive the signed-logistic life/death of an
@@ -429,6 +450,15 @@ class PhysicsRunner:
             wall this tick. Caller should run ``gmap.destroy_wall(y, x)``
             for each (PhysicsRunner does not touch the material grid).
         """
+        # S8a Path B: the GPU-resident tick (opt-in, default OFF). Same tick,
+        # same arithmetic — the water substep loop + the smoke trace loop run
+        # resident on persistent device buffers (killing the substep-/plane-
+        # MULTIPLIED transfer tax); EOS + combustion + the tail are bracketed
+        # (one D2H/H2D each). With residency off this branch is never taken and
+        # CuPy is never imported.
+        if _RESIDENCY_ENABLED and getattr(self.bp, "HAS_CUDA", False):
+            return self._step_resident(gmap, sim_time)
+
         # K2: cast the fire heat pass FIRST — at the very START of the physics
         # step, BEFORE the atmosphere/smoke loop and BEFORE the TemperatureSolver
         # below. Each burning tile deposits HEAT into `gmap.heat` (Q16.16,
@@ -502,32 +532,7 @@ class PhysicsRunner:
         # reads its OWN depletion this same tick (no artificial 1-tick lag).
         # Its N/T mutations never re-enter this tick's already-completed
         # Helmholtz solve; they feed NEXT tick's p* = C*N_total*T instead.
-        ignition_temp_q16 = gmap.materials.ignition_temp_q16[gmap.material].astype(
-            np.int32)
-        if self._combustion_on_cuda():
-            # EOS P6.9b GPU dispatch (strictly additive; bit-identical to the CPU
-            # CombustionSolver.step — tests/cuda_combustion_check.py, key
-            # "combustion"). `fire` is dropped (the reformulation no longer reads
-            # it). The rail counts are returned but not fed back into the C++
-            # solver's telemetry members (debug-only; no test asserts them).
-            self.bp.cuda_combustion_step(
-                gmap.gas, self._o2_idx, self._inert_n2_idx, self._black_smoke_idx,
-                gmap.temperature, gmap.wall_hp,
-                gmap.flammable, gmap.solid, gmap.is_vacuum,
-                ignition_temp_q16,
-                sim_time, self.temperature.c_v, self.temperature.n_floor_heat,
-                self.combustion.burn_rate, self.combustion.o2_thresh_burn,
-                self.combustion.H_fuel, self.combustion.soot_yield,
-                self.combustion.fuel_per_o2, self.combustion.T_MAX_PHYS,
-            )
-        else:
-            self.combustion.step(
-                gmap.gas, self._o2_idx, self._inert_n2_idx, self._black_smoke_idx,
-                gmap.temperature, gmap.wall_hp, gmap.fire,
-                gmap.flammable, gmap.solid, gmap.is_vacuum,
-                ignition_temp_q16,
-                sim_time, self.temperature.c_v, self.temperature.n_floor_heat,
-            )
+        self._run_combustion(gmap, sim_time)
 
         # Per-tick orchestration TAIL — moved into C++ in Patch 1 S4a
         # (PhysicsEngine::step_tail, physics_engine.cpp, compiled /fp:precise).
@@ -580,6 +585,174 @@ class PhysicsRunner:
         # the recorder snapshot. (STEP A originally placed the clear here, when
         # conversion was the only consumer; STEP D moves it out.)
 
+        return destroyed
+
+    # ------------------------------------------------------------------
+    # Combustion dispatch (EOS P4) — shared by the normal + resident ticks
+    # ------------------------------------------------------------------
+    def _run_combustion(self, gmap, sim_time):
+        """Burn fuel against the REAL local O2 (EOS P4, design §5). GPU or CPU
+        dispatch (bit-identical); factored so :meth:`_step_resident` reuses the
+        exact same call the normal :meth:`step` makes."""
+        ignition_temp_q16 = gmap.materials.ignition_temp_q16[gmap.material].astype(
+            np.int32)
+        if self._combustion_on_cuda():
+            # EOS P6.9b GPU dispatch (strictly additive; bit-identical to the CPU
+            # CombustionSolver.step — tests/cuda_combustion_check.py). `fire` is
+            # dropped (the reformulation no longer reads it).
+            self.bp.cuda_combustion_step(
+                gmap.gas, self._o2_idx, self._inert_n2_idx, self._black_smoke_idx,
+                gmap.temperature, gmap.wall_hp,
+                gmap.flammable, gmap.solid, gmap.is_vacuum,
+                ignition_temp_q16,
+                sim_time, self.temperature.c_v, self.temperature.n_floor_heat,
+                self.combustion.burn_rate, self.combustion.o2_thresh_burn,
+                self.combustion.H_fuel, self.combustion.soot_yield,
+                self.combustion.fuel_per_o2, self.combustion.T_MAX_PHYS,
+            )
+        else:
+            self.combustion.step(
+                gmap.gas, self._o2_idx, self._inert_n2_idx, self._black_smoke_idx,
+                gmap.temperature, gmap.wall_hp, gmap.fire,
+                gmap.flammable, gmap.solid, gmap.is_vacuum,
+                ignition_temp_q16,
+                sim_time, self.temperature.c_v, self.temperature.n_floor_heat,
+            )
+
+    # ------------------------------------------------------------------
+    # S8a Path B — the GPU-resident tick
+    # ------------------------------------------------------------------
+    def _water_pre_resident(self, gmap):
+        """The Python-side water pre-step (lazy init + dormancy + source holds),
+        lifted verbatim from :meth:`_step_water` MINUS the ``engine.step_water``
+        call (the resident path runs the substep loop on device instead). Returns
+        ``True`` when water is dormant this tick (skip the whole water stage)."""
+        if (self._water_depth_before is None
+                or self._water_depth_before.shape != gmap.water_depth.shape):
+            self._water_depth_before = gmap.water_depth.copy()
+            self.water.dx = float(gmap.tile_size_m)
+            self._steam_idx = int(gmap.gases.name_to_id["white_smoke"])
+        before = self._water_depth_before
+        if (not gmap.water_sources and not gmap.water_depth.any()
+                and not before.any()):
+            return True
+        for (y, x, lvl) in gmap.water_sources:
+            lvl_q = water_fixed.quantize_scalar(float(lvl))
+            gmap.water_depth[y, x] = max(int(gmap.water_depth[y, x]), lvl_q)
+        return False
+
+    def _step_resident(self, gmap, sim_time):
+        """One GPU-resident tick (S8a Path B, spec §3.3). Bit-identical to the
+        CPU/per-call tick: the water SUBSTEP loop and the smoke TRACE loop run
+        resident on persistent device buffers (no per-substep/per-plane transfer
+        — the multiplied tax is gone); EOS + combustion + the tail are BRACKETED
+        (they run their exact current host/GPU code on the numpy mirror, one
+        H2D/D2H each). The numpy fields are the authoritative mirror throughout —
+        combat/recorder/render read them exactly as the Q4 baseline.
+        """
+        if not gmap.residency_on():
+            gmap.enable_residency()
+
+        # -- 1. host pre-physics (on the mirror): fire heat cast, water pre-step,
+        #       lazy binds, ambient args (identical to the normal step) ----------
+        self.cast_fire_heat(gmap)
+        self.eos.dx = float(gmap.tile_size_m)
+        if self._o2_idx is None:
+            self._o2_idx = int(gmap.gases.name_to_id["o2"])
+            self._inert_n2_idx = int(gmap.gases.name_to_id["inert_n2"])
+            self._black_smoke_idx = int(gmap.gases.name_to_id["black_smoke"])
+        amb = self._ambient_args(gmap)
+        water_dormant = self._water_pre_resident(gmap)
+
+        # -- 2. device handles. Rung-1 uploads ONLY what the resident loops READ
+        #       (targeted H2D, just-in-time) — the bracketed stages (EOS,
+        #       combustion, tail) read the numpy MIRROR directly, so the full
+        #       synced set need not ride to the device this rung. `from_host()`'s
+        #       DEFAULT is still the full §5b always-upload set (incl.
+        #       dyn_wave_absorb / dyn_light_atten / obstacles) — that is the
+        #       contract Path-A inherits when it makes the brackets resident; Rung 2
+        #       must NOT narrow those masks (body-shielding depends on them). --------
+        dev = gmap.device_ptrs()
+        h, w = gmap._h, gmap._w
+
+        # -- 3. WATER: substep loop RESIDENT, then the W5/W3 host tail (bracket) --
+        if not water_dormant:
+            # H2D only the water inputs the launch core reads. floor_height is
+            # static (terrain — uploaded once by enable_residency), so it is not
+            # re-sent each tick; solid IS (structural edits change it).
+            gmap.from_host(["water_depth", "flow_vx", "flow_vy",
+                            "atmosphere", "solid"])
+            n_sub = int(self.engine.water_substep_count(sim_time))
+            wdt = sim_time / n_sub   # pybind casts to float32 == step_water's wdt
+            self.bp.water_substeps_resident(
+                dev["water_depth"], dev["flow_vx"], dev["flow_vy"],
+                dev["floor_height"], dev["atmosphere"], dev["solid"],
+                h, w, n_sub, wdt, gmap.tilt_x, gmap.tilt_y,
+                self.water.g, self.water.damping, self.water.dx,
+                self.water.k_p, self.water.v_max, self.water.depth_eps)
+            gmap.to_host(["water_depth", "flow_vx", "flow_vy"])
+            self.engine.step_water_tail(
+                gmap.water_depth, gmap.atmosphere, gmap.solid,
+                gmap.gas, self._water_depth_before, gmap.dyn_permeability,
+                self._steam_idx, sim_time,
+                self.water_ceiling_h, self.water_flood_eps, self.water_ratio_cap,
+                self.water_boil_rate, self.water_boil_p_thresh,
+                self.water_steam_yield)
+
+        # -- 4. EOS bracket (on the mirror; traces SKIPPED — run resident below) --
+        self.engine.run_substeps(
+            gmap.wave_p, gmap.atmosphere,
+            gmap.wind_x, gmap.wind_y,
+            gmap.temperature,
+            gmap.obstacles, gmap.solid, gmap.is_vacuum,
+            gmap.dyn_permeability, gmap.dyn_wave_absorb,
+            gmap.gas, gmap.gases.diffusion, gmap.gases.conservative,
+            gmap.gases.decay, self._inert_n2_idx,
+            sim_time,
+            is_ambient=amb[0], n_amb=amb[1], p_amb=amb[2],
+            sponge_sigma=amb[3], sponge_udamp=amb[4],
+            do_traces=False,
+        )
+
+        # -- 5. TRACE smoke loop + decay RESIDENT (on device) --------------------
+        # H2D only the trace inputs: the gas planes + the final corrected wind +
+        # the (W3-sealed) dyn_permeability + the trace-sink masks. is_ambient is
+        # static (the reservoir ring — uploaded once); solid/is_vacuum change on
+        # structural edits so they ride each tick.
+        gmap.from_host(["gas", "wind_x", "wind_y", "dyn_permeability",
+                        "is_vacuum", "solid"])
+        # advection_rate = 1.0f / max(eos.dx, 1e-3f) — computed in float32 to match
+        # run_substeps' float expression exactly (bit-identity of the SL displacement).
+        adv_rate = np.float32(1.0) / max(np.float32(self.eos.dx), np.float32(1e-3))
+        self.bp.trace_smoke_resident(
+            dev["gas"], dev["wind_x"], dev["wind_y"],
+            dev["solid"], dev["is_vacuum"], dev["dyn_permeability"],
+            dev["is_ambient"] if amb[0] is not None else 0,
+            h, w, gmap.gas.shape[0], self._inert_n2_idx,
+            gmap.gases.conservative, gmap.gases.diffusion, gmap.gases.decay,
+            sim_time, float(adv_rate), 0.0,
+        )
+        gmap.to_host(["gas"])
+
+        # -- 6. COMBUSTION bracket (mirror) --------------------------------------
+        self._run_combustion(gmap, sim_time)
+
+        # -- 7. TAIL bracket: ripple (host) + fire + temperature (mirror) --------
+        destroyed = self.engine.step_tail(
+            gmap.ripple, gmap.ripple_v, gmap.water_depth, gmap.wave_p,
+            gmap.solid,
+            gmap.fire, gmap.atmosphere, gmap.smoke, gmap.wall_hp,
+            gmap.temperature, gmap.wind_x, gmap.wind_y,
+            gmap.is_vacuum, gmap.flammable,
+            gmap.heat, gmap.heat_inv_shift, gmap.face_shift,
+            gmap.gas, gmap.gases.conservative, self._o2_idx,
+            sim_time,
+            is_ambient=amb[0],
+        )
+        # The mirror is now authoritative for every synced field (each stage wrote
+        # it; the two resident loops' outputs were D2H'd to it). No final batched
+        # D2H is needed — consumers read the mirror unchanged (the Q4 baseline);
+        # the device set is re-uploaded whole next tick (from_host).
         return destroyed
 
     # ------------------------------------------------------------------

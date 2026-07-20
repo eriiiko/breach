@@ -70,6 +70,45 @@ class SealBlocked(ValueError):
 class GameMap:
     """2D grid map at fine-tile resolution, sized from the loaded level."""
 
+    # ------------------------------------------------------------------
+    # S8a Path B — GPU residency field sets (docs/cuda_s8a_residency_spec §2/§5b)
+    # ------------------------------------------------------------------
+    # The synced physics fields kept as CuPy device arrays in residency mode.
+    # `_RESIDENT_SYNCED` are the OUTPUT fields the resident block writes and the
+    # once-per-tick batched D2H (:meth:`to_host`) copies back to the numpy mirror
+    # (combat/recorder/render read the mirror unchanged — the Q4 baseline). The
+    # `_RESIDENT_MASKS` are the read-only inputs the resident kernels consume;
+    # they + the four §5b unit-stamp masks (`dyn_permeability`/`dyn_wave_absorb`/
+    # `dyn_light_atten` + `obstacles`) ride the per-tick always-upload set
+    # (:meth:`from_host`). Rung 2 must NOT narrow these masks to structural-edit
+    # deltas — body-shielding (a unit damping a shockwave for the unit behind it)
+    # depends on them being re-uploaded every tick (units move every tick).
+    _RESIDENT_SYNCED = (
+        "atmosphere", "wave_p", "wind_x", "wind_y", "temperature", "heat",
+        "fire", "wall_hp", "water_depth", "flow_vx", "flow_vy", "gas",
+    )
+    _RESIDENT_MASKS = (
+        "solid", "is_vacuum", "is_ambient", "obstacles", "flammable",
+        "floor_height", "heat_inv_shift", "face_shift",
+        "dyn_permeability", "dyn_wave_absorb", "conductivity", "dyn_light_atten",
+    )
+    _RESIDENT_FIELD_NAMES = _RESIDENT_SYNCED + _RESIDENT_MASKS
+
+    def __setattr__(self, name, value):
+        """Stale-pointer guard (S8a): in residency mode a resident field must be
+        written IN PLACE (``field[:] = ...``), never REASSIGNED — the CUDA
+        launch cores hold raw device pointers into the CuPy buffers, and a
+        reassignment would orphan them. Off (the default) this is a plain set."""
+        if (name in GameMap._RESIDENT_FIELD_NAMES
+                and self.__dict__.get("_residency_on", False)):
+            cur = self.__dict__.get(name)
+            if cur is not None and value is not cur:
+                raise RuntimeError(
+                    f"[residency] resident field '{name}' was REASSIGNED while "
+                    f"GPU residency is on -- write it in place (`{name}[:] = ...`) "
+                    f"so the device pointer stays valid, or disable residency first.")
+        object.__setattr__(self, name, value)
+
     def __init__(self, level_data):
         """Build a GameMap from a :class:`level_loader.LevelData`.
 
@@ -807,6 +846,60 @@ class GameMap:
         (the runner owns the engine). A bare ``GameMap`` with no engine bound
         always uses the Python reference path. Idempotent."""
         self._physics_engine = engine
+
+    # ------------------------------------------------------------------
+    # S8a Path B — GPU residency mode (CuPy device mirror of the field set)
+    # ------------------------------------------------------------------
+    def enable_residency(self):
+        """Allocate CuPy device copies of the resident field set and switch the
+        map into residency mode (:attr:`_residency_on`).
+
+        Idempotent. Requires CuPy (the resident path is opt-in behind the
+        ``--resident`` flag; with residency OFF, ``import cupy`` is never touched
+        and the CPU/per-call paths are byte-for-byte unchanged). After this the
+        numpy fields are the HOST MIRROR (all host code — ``cast_fire_heat``,
+        ``stamp_units``, structural edits, combat/recorder/render — reads/writes
+        them unchanged); the CuPy copies in ``self._dev`` are the device-resident
+        buffers ``PhysicsEngine.step_resident`` runs the launch cores on, kept in
+        sync by :meth:`from_host` / :meth:`to_host`.
+        """
+        if self.__dict__.get("_residency_on", False):
+            return
+        import cupy as cp  # opt-in only — never imported on the CPU path
+        self._cp = cp
+        dev = {}
+        for name in self._RESIDENT_FIELD_NAMES:
+            arr = getattr(self, name)
+            dev[name] = cp.ascontiguousarray(cp.asarray(arr))
+        self._dev = dev
+        self._residency_on = True
+
+    def residency_on(self):
+        """True iff this map is in GPU residency mode (device buffers live)."""
+        return self.__dict__.get("_residency_on", False)
+
+    def device_ptrs(self):
+        """Raw device addresses (int) of every resident field's CuPy buffer,
+        keyed by field name — the ``uintptr_t`` the C++ launch cores take. Stable
+        across a tick: :meth:`from_host`/:meth:`to_host` copy IN PLACE (``.set()``/
+        ``.get(out=)``), never reassigning a device array."""
+        return {name: int(arr.data.ptr) for name, arr in self._dev.items()}
+
+    def from_host(self, names=None):
+        """Batched H2D: copy the numpy mirror INTO the persistent CuPy buffers
+        (in place, pointer-stable). ``names=None`` uploads the full always-upload
+        set (Rung 1, spec §3.2 — covers every host writer: FieldEdits, ``heat``,
+        structural edits, the §5b unit-stamp masks)."""
+        for name in (names if names is not None else self._RESIDENT_FIELD_NAMES):
+            self._dev[name].set(getattr(self, name))
+
+    def to_host(self, names=None):
+        """Batched D2H: copy the CuPy buffers back INTO the numpy mirror (in
+        place — the C++ views + ``smoke`` alias stay valid). ``names=None``
+        downloads the synced OUTPUT set (spec §3.4 — combat/recorder/render read
+        the mirror unchanged)."""
+        for name in (names if names is not None else self._RESIDENT_SYNCED):
+            self._dev[name].get(out=getattr(self, name))
 
     def stamp_units(self, units):
         """Per-tick dynamic-field rebuild — dispatches to C++ or Python.

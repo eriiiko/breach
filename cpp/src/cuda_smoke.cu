@@ -18,6 +18,7 @@
 // shared device Newton reciprocal, bit-identical to fixedpoint::reciprocal_q16).
 // ============================================================================
 #include "cuda_smoke.h"
+#include "cuda_resident.h"  // S8a STEP B: smoke_launch_resident / trace_smoke_resident
 #include "fixed_point.h"   // q16, quantize, mul_q16, mul_wide, narrow, FP_ONE, FP_SHIFT
 #include "cuda_fixedpoint_device.cuh"  // reciprocal_q16_dev (S4 §0 shared kit)
 
@@ -310,6 +311,25 @@ __global__ void smoke_sink_hop(int32_t* __restrict__ smoke,
     }
 }
 
+// ---- S8a trace-decay kernel: the run_substeps decay->inert_N2 credit, on the
+// device. VERBATIM of physics_engine.cpp's per-cell decay loop: lost = mul_q16(v,
+// frac_q) for v>0, moved from the trace plane to inert_N2 IN THE SAME CELL. frac_q
+// is the host-quantized decay*dt (clamped [0,FP_ONE]) passed in. Order-independent
+// (each cell independent) -> bit-identical to the CPU credit.
+__global__ void trace_decay(int32_t* __restrict__ gas_slice,
+                            int32_t* __restrict__ n2_slice,
+                            int32_t frac_q, int n) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
+         i += gridDim.x * blockDim.x) {
+        const int32_t v = gas_slice[i];
+        if (v <= 0) continue;
+        const int32_t lost = mul_q16(v, frac_q);
+        if (lost <= 0) continue;
+        gas_slice[i] = v - lost;
+        n2_slice[i] += lost;
+    }
+}
+
 }  // namespace
 
 void smoke_step(
@@ -480,6 +500,120 @@ void smoke_sink_hop(
     cudaFree(d_wall);
     cudaFree(d_vac);
     cudaFree(d_perm);
+}
+
+// ---- STEP B launch core (S8a residency): the K1..K4 sequence, LAUNCH ONLY.
+// No cudaMalloc / cudaMemcpy (H2D/D2H) / cudaFree / cudaDeviceSynchronize — the
+// caller owns allocation, transfer, scratch (d_lap/d_src = n int32), and the
+// single sync. The D2D post-diffusion snapshot (d_src <- d_gas) stays here (it is
+// intrinsic to the algorithm — a device-to-device copy, NOT a host transfer). The
+// host scalar precompute is identical bits to smoke_step's, so smoke_step
+// (per-call) and trace_smoke_resident (once per tick) share ONE body.
+void smoke_launch_resident(
+    int32_t* d_gas,
+    const int32_t* d_wind_x, const int32_t* d_wind_y,
+    const bool* d_obstacles, const bool* d_is_wall, const bool* d_is_vacuum,
+    const float* d_perm, const bool* d_is_ambient,
+    int32_t* d_lap, int32_t* d_src,
+    int h, int w, float dt,
+    float d_smoke_f, float wind_diffusion_scale, float advection_rate) {
+    const int n = h * w;
+    if (n <= 0) return;
+
+    // Host scalar precompute (smoke_dynamics.cpp:199,267-268, VERBATIM, double).
+    const double actual_dt = (double)dt;
+    const double dt_adv = (double)advection_rate * actual_dt;
+    const int32_t dt_adv_q = quantize(dt_adv);
+    const double d_smoke_d = (double)d_smoke_f;
+    const double wds_d = (double)wind_diffusion_scale;
+
+    const int block = 256;
+    const int grid = (n + block - 1) / block;
+
+    smoke_lap<<<grid, block>>>(d_gas, d_perm, d_lap, h, w);
+    cuda_check(cudaGetLastError(), "res lap launch");
+    smoke_diffuse<<<grid, block>>>(d_gas, d_wind_x, d_wind_y, d_lap,
+                                   d_smoke_d, wds_d, actual_dt, n);
+    cuda_check(cudaGetLastError(), "res diffuse launch");
+    // Post-diffusion snapshot into d_src (the CPU std::vector copy taken AFTER
+    // the diffusion apply, BEFORE the advection). D2D on the null stream, so the
+    // stream order K2 < copy < K3 holds without an explicit sync.
+    cuda_check(cudaMemcpy(d_src, d_gas, (size_t)n * sizeof(int32_t),
+                          cudaMemcpyDeviceToDevice), "res D2D src snapshot");
+    smoke_advect<<<grid, block>>>(d_gas, d_src, d_wind_x, d_wind_y,
+                                  d_obstacles, d_is_wall, d_is_vacuum, d_perm,
+                                  dt_adv_q, h, w, d_is_ambient);
+    cuda_check(cudaGetLastError(), "res advect launch");
+    smoke_clamp<<<grid, block>>>(d_gas, d_is_wall, d_is_vacuum, n, d_is_ambient);
+    cuda_check(cudaGetLastError(), "res clamp launch");
+    // NO sync — the caller (trace_smoke_resident) owns the one sync per tick.
+}
+
+// ---- STEP B: the whole per-tick trace-plane loop, device-resident (FLOOR item 3).
+// Persistent C++-owned lap/src scratch keyed by (h,w). Per non-conservative plane:
+// smoke_launch_resident + the decay kernel. ONE sync at the end. NO per-plane
+// malloc/H2D/D2H.
+namespace {
+struct SmokeResidentScratch {
+    int h = 0, w = 0;
+    int32_t *lap = nullptr, *src = nullptr;
+    void free_all() {
+        if (lap) cudaFree(lap);
+        if (src) cudaFree(src);
+        lap = src = nullptr;
+    }
+    void ensure(int H, int W) {
+        if (H == h && W == w && lap) return;
+        free_all();
+        h = H; w = W;
+        const size_t n = (size_t)H * W;
+        cuda_check(cudaMalloc(&lap, n * sizeof(int32_t)), "res malloc lap");
+        cuda_check(cudaMalloc(&src, n * sizeof(int32_t)), "res malloc src");
+    }
+};
+SmokeResidentScratch g_smoke_res;
+}  // namespace
+
+void trace_smoke_resident(
+    int32_t* d_gas_base,
+    const int32_t* d_wind_x, const int32_t* d_wind_y,
+    const bool* d_solid, const bool* d_is_vacuum, const float* d_perm,
+    const bool* d_is_ambient,
+    int h, int w, int n_gases, int inert_n2_idx,
+    const bool* gas_conservative, const float* gas_diffusion,
+    const float* gas_decay,
+    float dt, float advection_rate, float wind_diffusion_scale) {
+    const int n = h * w;
+    if (n <= 0) return;
+    g_smoke_res.ensure(h, w);
+    const int block = 256;
+    const int grid = (n + block - 1) / block;
+    int32_t* n2_slice = d_gas_base + (size_t)inert_n2_idx * n;
+    for (int gi = 0; gi < n_gases; ++gi) {
+        if (gas_conservative[gi]) continue;   // bulk planes ride the EOS solve
+        int32_t* gas_slice = d_gas_base + (size_t)gi * n;
+        // The all-zero-plane `.any()` skip is DROPPED (arithmetic no-op — see the
+        // header note); processing every trace plane is bit-identical.
+        // obstacles == is_wall == solid (run_substeps passes solid for both).
+        smoke_launch_resident(gas_slice, d_wind_x, d_wind_y,
+                              d_solid, d_solid, d_is_vacuum, d_perm, d_is_ambient,
+                              g_smoke_res.lap, g_smoke_res.src,
+                              h, w, dt, gas_diffusion[gi], wind_diffusion_scale,
+                              advection_rate);
+        // decay -> inert_N2 (once per tick, right after this plane's advection).
+        const float decay_gi = gas_decay[gi];
+        if (decay_gi > 0.0f && gi != inert_n2_idx) {
+            using namespace fixedpoint;
+            q16 frac_q = quantize((double)decay_gi * (double)dt);
+            if (frac_q < 0) frac_q = 0;
+            if (frac_q > FP_ONE) frac_q = FP_ONE;
+            if (frac_q > 0) {
+                trace_decay<<<grid, block>>>(gas_slice, n2_slice, frac_q, n);
+                cuda_check(cudaGetLastError(), "res decay launch");
+            }
+        }
+    }
+    cuda_check(cudaDeviceSynchronize(), "trace_smoke_resident sync");
 }
 
 namespace {

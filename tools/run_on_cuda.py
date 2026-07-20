@@ -140,6 +140,18 @@ def main() -> None:
     setup_cuda_import()
     import breach_physics as bp
     enable_all_backends(bp)
+    # S8a Path B: --resident turns on GPU field residency (default OFF). The
+    # per-call backends above stay on (EOS + combustion + fire + temperature run
+    # bracketed via their per-call GPU path inside the resident tick); the water
+    # substep loop + the smoke trace loop run resident on persistent device
+    # buffers, killing the substep-/plane-MULTIPLIED transfer tax. The runner
+    # lazily puts each GameMap into residency mode on its first resident tick, so
+    # no game-loop change is needed here.
+    if "--resident" in sys.argv:
+        from simulation import physics_runner
+        physics_runner.set_residency(True)
+        print("[run_on_cuda] GPU field RESIDENCY on (--resident): water substeps "
+              "+ smoke traces resident; EOS/combustion/tail bracketed.")
     # Hand off to the real game entry (no duplication of the loop). main.main()
     # imports the already-loaded CUDA breach_physics from sys.modules and reads
     # --res itself.

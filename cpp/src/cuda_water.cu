@@ -4,6 +4,7 @@
 // step_ripple (render-only float) is NOT ported.
 // ============================================================================
 #include "cuda_water.h"
+#include "cuda_resident.h" // S8a STEP B: water_launch_resident (shared launch core)
 #include "fixed_point.h"   // q16, quantize, mul_q16, mul_wide, recip_mul,
                            // scale_mag, make_recip, tan_poly, FP_ONE, FP_SHIFT
 #include "cuda_fixedpoint_device.cuh"  // shared device 128-bit + reciprocal kit
@@ -253,10 +254,20 @@ __global__ void water_clamp(int32_t* __restrict__ depth,
 
 }  // namespace
 
-void water_step(
-    int32_t* water_depth, int32_t* flow_vx, int32_t* flow_vy,
-    const int32_t* floor_height, const int32_t* atmosphere,
-    const bool* solid, int h, int w, float dt, float tilt_x, float tilt_y,
+// ---- STEP B launch core (S8a residency): the K1..K8 sequence, LAUNCH ONLY.
+// No cudaMalloc / cudaMemcpy / cudaFree / cudaDeviceSynchronize — the caller
+// owns allocation, transfer, scratch, and the single sync. The host scalar
+// precompute (identical bits to water_step's, in double on /fp:strict) lives
+// HERE so water_step (per-call) and step_resident (once per tick) share ONE
+// body — no duplication, bit-identical arithmetic. Scratch buffers
+// (d_surface/d_dq_e/d_dq_s/d_scale = n int32; d_fx/d_fy = n int64) are
+// caller-owned + persistent. d_floor / d_atm nullable (as in water_step).
+void water_launch_resident(
+    int32_t* d_depth, int32_t* d_vx, int32_t* d_vy,
+    const int32_t* d_floor, const int32_t* d_atm, const bool* d_solid,
+    int32_t* d_surface, int32_t* d_dq_e, int32_t* d_dq_s, int32_t* d_scale,
+    int64_t* d_fx, int64_t* d_fy,
+    int h, int w, float dt, float tilt_x, float tilt_y,
     float g, float damping, float dx, float k_p, float v_max, float depth_eps) {
     const int n = h * w;
     if (n <= 0) return;
@@ -285,10 +296,112 @@ void water_step(
     const double cx = 0.5 * (double)w;
     const double cy = 0.5 * (double)h;
 
-    // EOS P3 head term: kp_q = quantize(k_p) on host (matches water_solver.cpp:118),
-    // fed to the device head as a pure-integer mul_q16(kp_q, P).
+    // EOS P3 head term: kp_q = quantize(k_p) on host; head gated on k_p != 0.
     const bool head_on = (k_p != 0.0f);
     const q16 kp_q = quantize((double)k_p);
+
+    const int block = 256;
+    const int grid = (n + block - 1) / block;
+
+    // K1 surface
+    water_surface<<<grid, block>>>(d_depth, d_floor, (d_floor != nullptr),
+                                   d_atm, head_on ? 1 : 0, kp_q,
+                                   tan_tx, tan_ty, cx, cy, dx_d,
+                                   d_surface, h, w);
+    cuda_check(cudaGetLastError(), "surface launch");
+    // K2 velocity (in-place on d_vx/d_vy)
+    water_velocity<<<grid, block>>>(d_surface, d_vx, d_vy, d_solid,
+                                    g_dt_q, damp_dt_q, v_max_q, recip_two_dx, h, w);
+    cuda_check(cudaGetLastError(), "velocity launch");
+    // K3 flux
+    water_flux<<<grid, block>>>(d_vx, d_vy, d_depth, d_solid, d_fx, d_fy, h, w);
+    cuda_check(cudaGetLastError(), "flux launch");
+    // K4 dq
+    water_dq<<<grid, block>>>(d_fx, d_fy, dt_over_dx_q, d_dq_e, d_dq_s, n);
+    cuda_check(cudaGetLastError(), "dq launch");
+    // K5 scale
+    water_scale<<<grid, block>>>(d_dq_e, d_dq_s, d_depth, d_scale, h, w);
+    cuda_check(cudaGetLastError(), "scale launch");
+    // K6 scale-apply (in-place on d_dq_e/d_dq_s)
+    water_scale_apply<<<grid, block>>>(d_dq_e, d_dq_s, d_scale, h, w);
+    cuda_check(cudaGetLastError(), "scale-apply launch");
+    // K7 diverge (in-place on d_depth)
+    water_diverge<<<grid, block>>>(d_depth, d_dq_e, d_dq_s, h, w);
+    cuda_check(cudaGetLastError(), "diverge launch");
+    // K8 clamp (in-place on d_depth)
+    water_clamp<<<grid, block>>>(d_depth, d_solid, depth_eps_q, n);
+    cuda_check(cudaGetLastError(), "clamp launch");
+    // NO sync — stream order guarantees K1<K2<...<K8; the caller owns the one
+    // cudaDeviceSynchronize before its D2H (per-call) or tick-end (resident).
+}
+
+// ---- STEP B: the whole substep loop, device-resident (S8a Path B FLOOR item 2).
+// Persistent C++-owned scratch keyed by (h,w) — allocated once, reused every
+// tick, freed/realloc'd only on a grid-size change. Loops the SHARED launch core
+// n_sub times on the caller's persistent device fields, then ONE sync. No
+// per-substep malloc/H2D/D2H — the whole point (kills the substep-MULTIPLIED
+// transfer tax water_step pays today).
+namespace {
+struct WaterResidentScratch {
+    int h = 0, w = 0;
+    int32_t *surface = nullptr, *dq_e = nullptr, *dq_s = nullptr, *scale = nullptr;
+    int64_t *fx = nullptr, *fy = nullptr;
+    void free_all() {
+        if (surface) cudaFree(surface);
+        if (dq_e) cudaFree(dq_e);
+        if (dq_s) cudaFree(dq_s);
+        if (scale) cudaFree(scale);
+        if (fx) cudaFree(fx);
+        if (fy) cudaFree(fy);
+        surface = dq_e = dq_s = scale = nullptr;
+        fx = fy = nullptr;
+    }
+    void ensure(int H, int W) {
+        if (H == h && W == w && surface) return;
+        free_all();
+        h = H; w = W;
+        const size_t n = (size_t)H * W;
+        cuda_check(cudaMalloc(&surface, n * sizeof(int32_t)), "res malloc surface");
+        cuda_check(cudaMalloc(&dq_e, n * sizeof(int32_t)), "res malloc dq_e");
+        cuda_check(cudaMalloc(&dq_s, n * sizeof(int32_t)), "res malloc dq_s");
+        cuda_check(cudaMalloc(&scale, n * sizeof(int32_t)), "res malloc scale");
+        cuda_check(cudaMalloc(&fx, n * sizeof(int64_t)), "res malloc fx");
+        cuda_check(cudaMalloc(&fy, n * sizeof(int64_t)), "res malloc fy");
+    }
+};
+WaterResidentScratch g_water_res;
+}  // namespace
+
+void water_substeps_resident(
+    int32_t* d_depth, int32_t* d_vx, int32_t* d_vy,
+    const int32_t* d_floor, const int32_t* d_atm, const bool* d_solid,
+    int h, int w, int n_sub, float wdt, float tilt_x, float tilt_y,
+    float g, float damping, float dx, float k_p, float v_max, float depth_eps) {
+    const int n = h * w;
+    if (n <= 0 || n_sub <= 0) return;
+    g_water_res.ensure(h, w);
+    for (int s = 0; s < n_sub; ++s) {
+        water_launch_resident(d_depth, d_vx, d_vy, d_floor, d_atm, d_solid,
+                              g_water_res.surface, g_water_res.dq_e,
+                              g_water_res.dq_s, g_water_res.scale,
+                              g_water_res.fx, g_water_res.fy,
+                              h, w, wdt, tilt_x, tilt_y,
+                              g, damping, dx, k_p, v_max, depth_eps);
+    }
+    cuda_check(cudaDeviceSynchronize(), "water_substeps_resident sync");
+}
+
+void water_step(
+    int32_t* water_depth, int32_t* flow_vx, int32_t* flow_vy,
+    const int32_t* floor_height, const int32_t* atmosphere,
+    const bool* solid, int h, int w, float dt, float tilt_x, float tilt_y,
+    float g, float damping, float dx, float k_p, float v_max, float depth_eps) {
+    const int n = h * w;
+    if (n <= 0) return;
+
+    // head gate for the d_atm malloc/H2D below (the launch core re-derives all
+    // scalar precompute internally — see water_launch_resident above).
+    const bool head_on = (k_p != 0.0f);
 
     // ---- Device buffers (inputs + shared scratch). -----------------------------
     const size_t nb   = (size_t)n * sizeof(int32_t);
@@ -322,37 +435,13 @@ void water_step(
     if (d_floor) cuda_check(cudaMemcpy(d_floor, floor_height, nb, cudaMemcpyHostToDevice), "H2D floor");
     if (d_atm)   cuda_check(cudaMemcpy(d_atm, atmosphere, nb, cudaMemcpyHostToDevice), "H2D atm");
 
-    const int block = 256;
-    const int grid = (n + block - 1) / block;
-
-    // K1 surface
-    water_surface<<<grid, block>>>(d_depth, d_floor, (floor_height != nullptr),
-                                   d_atm, head_on ? 1 : 0, kp_q,
-                                   tan_tx, tan_ty, cx, cy, dx_d,
-                                   d_surface, h, w);
-    cuda_check(cudaGetLastError(), "surface launch");
-    // K2 velocity (in-place on d_vx/d_vy)
-    water_velocity<<<grid, block>>>(d_surface, d_vx, d_vy, d_solid,
-                                    g_dt_q, damp_dt_q, v_max_q, recip_two_dx, h, w);
-    cuda_check(cudaGetLastError(), "velocity launch");
-    // K3 flux
-    water_flux<<<grid, block>>>(d_vx, d_vy, d_depth, d_solid, d_fx, d_fy, h, w);
-    cuda_check(cudaGetLastError(), "flux launch");
-    // K4 dq
-    water_dq<<<grid, block>>>(d_fx, d_fy, dt_over_dx_q, d_dq_e, d_dq_s, n);
-    cuda_check(cudaGetLastError(), "dq launch");
-    // K5 scale
-    water_scale<<<grid, block>>>(d_dq_e, d_dq_s, d_depth, d_scale, h, w);
-    cuda_check(cudaGetLastError(), "scale launch");
-    // K6 scale-apply (in-place on d_dq_e/d_dq_s)
-    water_scale_apply<<<grid, block>>>(d_dq_e, d_dq_s, d_scale, h, w);
-    cuda_check(cudaGetLastError(), "scale-apply launch");
-    // K7 diverge (in-place on d_depth)
-    water_diverge<<<grid, block>>>(d_depth, d_dq_e, d_dq_s, h, w);
-    cuda_check(cudaGetLastError(), "diverge launch");
-    // K8 clamp (in-place on d_depth)
-    water_clamp<<<grid, block>>>(d_depth, d_solid, depth_eps_q, n);
-    cuda_check(cudaGetLastError(), "clamp launch");
+    // K1..K8 — the SHARED launch core (host scalar precompute + the 8 kernel
+    // launches, no malloc/transfer/sync). Same body step_resident will call
+    // once per tick on persistent buffers; here it runs on the per-call ones.
+    water_launch_resident(d_depth, d_vx, d_vy, d_floor, d_atm, d_solid,
+                          d_surface, d_dq_e, d_dq_s, d_scale, d_fx, d_fy,
+                          h, w, dt, tilt_x, tilt_y,
+                          g, damping, dx, k_p, v_max, depth_eps);
 
     cuda_check(cudaDeviceSynchronize(), "sync");
 
