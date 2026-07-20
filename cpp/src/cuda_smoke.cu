@@ -462,7 +462,10 @@ void smoke_sink_hop(
                                     sink_disp, h, w);
     cuda_check(cudaGetLastError(), "sink_hop launch");
     // The SAME clamp + zero walls/vacuum pass as step (smoke_dynamics.cpp:345-352).
-    smoke_clamp<<<grid, block>>>(d_gas, d_wall, d_vac, n);
+    // S8a compile-fix: smoke_clamp gained an is_ambient 5th arg (BC B5, 472871d);
+    // this retired sink-hop path has no ambient ring -> nullptr = the byte-identical
+    // pre-BC space path (restores the CUDA target to green; behavior unchanged).
+    smoke_clamp<<<grid, block>>>(d_gas, d_wall, d_vac, n, nullptr);
     cuda_check(cudaGetLastError(), "clamp launch");
 
     cuda_check(cudaDeviceSynchronize(), "sync");
