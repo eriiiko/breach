@@ -335,6 +335,62 @@ void water_launch_resident(
     // cudaDeviceSynchronize before its D2H (per-call) or tick-end (resident).
 }
 
+// ---- STEP B: the whole substep loop, device-resident (S8a Path B FLOOR item 2).
+// Persistent C++-owned scratch keyed by (h,w) — allocated once, reused every
+// tick, freed/realloc'd only on a grid-size change. Loops the SHARED launch core
+// n_sub times on the caller's persistent device fields, then ONE sync. No
+// per-substep malloc/H2D/D2H — the whole point (kills the substep-MULTIPLIED
+// transfer tax water_step pays today).
+namespace {
+struct WaterResidentScratch {
+    int h = 0, w = 0;
+    int32_t *surface = nullptr, *dq_e = nullptr, *dq_s = nullptr, *scale = nullptr;
+    int64_t *fx = nullptr, *fy = nullptr;
+    void free_all() {
+        if (surface) cudaFree(surface);
+        if (dq_e) cudaFree(dq_e);
+        if (dq_s) cudaFree(dq_s);
+        if (scale) cudaFree(scale);
+        if (fx) cudaFree(fx);
+        if (fy) cudaFree(fy);
+        surface = dq_e = dq_s = scale = nullptr;
+        fx = fy = nullptr;
+    }
+    void ensure(int H, int W) {
+        if (H == h && W == w && surface) return;
+        free_all();
+        h = H; w = W;
+        const size_t n = (size_t)H * W;
+        cuda_check(cudaMalloc(&surface, n * sizeof(int32_t)), "res malloc surface");
+        cuda_check(cudaMalloc(&dq_e, n * sizeof(int32_t)), "res malloc dq_e");
+        cuda_check(cudaMalloc(&dq_s, n * sizeof(int32_t)), "res malloc dq_s");
+        cuda_check(cudaMalloc(&scale, n * sizeof(int32_t)), "res malloc scale");
+        cuda_check(cudaMalloc(&fx, n * sizeof(int64_t)), "res malloc fx");
+        cuda_check(cudaMalloc(&fy, n * sizeof(int64_t)), "res malloc fy");
+    }
+};
+WaterResidentScratch g_water_res;
+}  // namespace
+
+void water_substeps_resident(
+    int32_t* d_depth, int32_t* d_vx, int32_t* d_vy,
+    const int32_t* d_floor, const int32_t* d_atm, const bool* d_solid,
+    int h, int w, int n_sub, float wdt, float tilt_x, float tilt_y,
+    float g, float damping, float dx, float k_p, float v_max, float depth_eps) {
+    const int n = h * w;
+    if (n <= 0 || n_sub <= 0) return;
+    g_water_res.ensure(h, w);
+    for (int s = 0; s < n_sub; ++s) {
+        water_launch_resident(d_depth, d_vx, d_vy, d_floor, d_atm, d_solid,
+                              g_water_res.surface, g_water_res.dq_e,
+                              g_water_res.dq_s, g_water_res.scale,
+                              g_water_res.fx, g_water_res.fy,
+                              h, w, wdt, tilt_x, tilt_y,
+                              g, damping, dx, k_p, v_max, depth_eps);
+    }
+    cuda_check(cudaDeviceSynchronize(), "water_substeps_resident sync");
+}
+
 void water_step(
     int32_t* water_depth, int32_t* flow_vx, int32_t* flow_vy,
     const int32_t* floor_height, const int32_t* atmosphere,

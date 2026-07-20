@@ -16,6 +16,7 @@
 #ifdef BREACH_HAS_CUDA
 #include "cuda_hello.h"        // CUDA-S0: hello-world map kernel + device info
 #include "cuda_spike.h"        // CUDA-S8a: residency spike (raw device pointer in)
+#include "cuda_resident.h"     // CUDA-S8a Path B: water/smoke resident launch cores
 #include "cuda_temperature.h"  // CUDA-S1: GPU temperature solver + backend flag
 #include "cuda_raycaster.h"    // CUDA-S2: GPU directional raycaster (heat bit-identical)
 #include "cuda_water.h"        // CUDA-S3: GPU water solver + backend flag
@@ -87,6 +88,71 @@ PYBIND11_MODULE(breach_physics, m) {
           [](std::uintptr_t dev_ptr, int n) { breach_cuda::spike_add1(dev_ptr, n); },
           py::arg("dev_ptr"), py::arg("n"),
           "S8a spike: int32 in-place +1 on a raw device pointer (CuPy .data.ptr).");
+
+    // CUDA-S8a Path B: the two RESIDENT launch-loop entries. Each takes raw
+    // device addresses (CuPy `.data.ptr` as uintptr_t) for the persistent fields,
+    // owns its persistent scratch internally (allocated once, keyed by (h,w) — NO
+    // per-substep/per-plane malloc/H2D/D2H), and syncs once. This is what kills the
+    // substep-/plane-MULTIPLIED transfer tax; the launch cores are the SHARED
+    // bodies the per-call water_step/smoke_step also run, so both paths are
+    // bit-identical. dev_ptr == 0 -> nullptr (e.g. no floor / space-map ambient).
+    m.def("water_substeps_resident",
+          [](std::uintptr_t d_depth, std::uintptr_t d_vx, std::uintptr_t d_vy,
+             std::uintptr_t d_floor, std::uintptr_t d_atm, std::uintptr_t d_solid,
+             int h, int w, int n_sub, float wdt, float tilt_x, float tilt_y,
+             float g, float damping, float dx, float k_p, float v_max,
+             float depth_eps) {
+              breach_cuda::water_substeps_resident(
+                  reinterpret_cast<int32_t*>(d_depth),
+                  reinterpret_cast<int32_t*>(d_vx),
+                  reinterpret_cast<int32_t*>(d_vy),
+                  reinterpret_cast<const int32_t*>(d_floor),
+                  reinterpret_cast<const int32_t*>(d_atm),
+                  reinterpret_cast<const bool*>(d_solid),
+                  h, w, n_sub, wdt, tilt_x, tilt_y,
+                  g, damping, dx, k_p, v_max, depth_eps);
+          },
+          py::arg("d_depth"), py::arg("d_vx"), py::arg("d_vy"),
+          py::arg("d_floor"), py::arg("d_atm"), py::arg("d_solid"),
+          py::arg("h"), py::arg("w"), py::arg("n_sub"), py::arg("wdt"),
+          py::arg("tilt_x"), py::arg("tilt_y"),
+          py::arg("g"), py::arg("damping"), py::arg("dx"), py::arg("k_p"),
+          py::arg("v_max"), py::arg("depth_eps"),
+          "S8a Path B: water substep loop resident on device buffers (no per-substep "
+          "transfer). Device pointers are CuPy .data.ptr uintptr_t.");
+
+    m.def("trace_smoke_resident",
+          [](std::uintptr_t d_gas_base, std::uintptr_t d_wx, std::uintptr_t d_wy,
+             std::uintptr_t d_solid, std::uintptr_t d_vac, std::uintptr_t d_perm,
+             std::uintptr_t d_amb,
+             int h, int w, int n_gases, int inert_n2_idx,
+             py::array_t<bool> gas_conservative,
+             py::array_t<float> gas_diffusion,
+             py::array_t<float> gas_decay,
+             float dt, float advection_rate, float wind_diffusion_scale) {
+              auto gc = gas_conservative.unchecked<1>();
+              auto gd = gas_diffusion.unchecked<1>();
+              auto gdc = gas_decay.unchecked<1>();
+              breach_cuda::trace_smoke_resident(
+                  reinterpret_cast<int32_t*>(d_gas_base),
+                  reinterpret_cast<const int32_t*>(d_wx),
+                  reinterpret_cast<const int32_t*>(d_wy),
+                  reinterpret_cast<const bool*>(d_solid),
+                  reinterpret_cast<const bool*>(d_vac),
+                  reinterpret_cast<const float*>(d_perm),
+                  reinterpret_cast<const bool*>(d_amb),
+                  h, w, n_gases, inert_n2_idx,
+                  gc.data(0), gd.data(0), gdc.data(0),
+                  dt, advection_rate, wind_diffusion_scale);
+          },
+          py::arg("d_gas_base"), py::arg("d_wx"), py::arg("d_wy"),
+          py::arg("d_solid"), py::arg("d_vac"), py::arg("d_perm"), py::arg("d_amb"),
+          py::arg("h"), py::arg("w"), py::arg("n_gases"), py::arg("inert_n2_idx"),
+          py::arg("gas_conservative"), py::arg("gas_diffusion"), py::arg("gas_decay"),
+          py::arg("dt"), py::arg("advection_rate"), py::arg("wind_diffusion_scale"),
+          "S8a Path B: per-tick trace-plane smoke loop + decay resident on device "
+          "(no per-plane transfer). gas_conservative/diffusion/decay are host (N,) "
+          "columns; field pointers are CuPy .data.ptr uintptr_t.");
 
     // CUDA-S1: the GPU temperature solver. The backend flag switches
     // PhysicsEngine::step_tail between the CPU and GPU temperature pass (the live
@@ -1846,7 +1912,8 @@ PYBIND11_MODULE(breach_physics, m) {
                                 py::object n_amb,
                                 int32_t p_amb,
                                 py::object sponge_sigma,
-                                py::object sponge_udamp) {
+                                py::object sponge_udamp,
+                                bool do_traces) {   // S8a Path B
             auto [pp, h, w]    = get_2d(p_prev);
             auto [atm, h4, w4] = get_2d(atmosphere);
             auto [wx, h5, w5]  = get_2d(wind_x);
@@ -1910,7 +1977,7 @@ PYBIND11_MODULE(breach_physics, m) {
                 gas_ptr, gdiff, n_gases, gcons,
                 gdecay, inert_n2_idx,
                 h, w, sim_time,
-                amb, namb, p_amb, sponge, udamp);
+                amb, namb, p_amb, sponge, udamp, do_traces);
         }, py::arg("p_prev"),
            py::arg("atmosphere"), py::arg("wind_x"), py::arg("wind_y"),
            py::arg("temperature"),
@@ -1924,7 +1991,8 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("n_amb") = py::none(),
            py::arg("p_amb") = 0,
            py::arg("sponge_sigma") = py::none(),
-           py::arg("sponge_udamp") = py::none())
+           py::arg("sponge_udamp") = py::none(),
+           py::arg("do_traces") = true)   // S8a Path B (default = prior behaviour)
         // --- Patch 1 S4c: the water-layer array arithmetic ------------------
         // step_water moves the array-op body of PhysicsRunner._step_water into
         // C++ (substep loop + W5 flash-boil + W3 displacement/seal + the final
@@ -1986,6 +2054,50 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("solid"), py::arg("gas"), py::arg("before"),
            py::arg("dyn_permeability"), py::arg("steam_idx"),
            py::arg("tilt_x"), py::arg("tilt_y"), py::arg("sim_time"),
+           py::arg("ceiling_h"), py::arg("flood_eps"), py::arg("ratio_cap"),
+           py::arg("boil_rate"), py::arg("boil_p_thresh"), py::arg("steam_yield"))
+        // --- S8a Path B: the water substep COUNT (the integer cliff) ---------
+        // Exposes the exact n = max(1, ceil_div(quantize(sim_time), max_dt_q))
+        // step_water computes internally, so the resident path (which runs the
+        // substep loop on device) uses the BIT-IDENTICAL count. wdt = sim_time/n
+        // is formed Python-side and cast to float32 at the pybind boundary — the
+        // same (float)((double)sim_time / n) step_water performs.
+        .def("water_substep_count", [](const PhysicsEngine& self, float sim_time) {
+            using namespace fixedpoint;
+            return std::max(1, ceil_div(quantize((double)sim_time),
+                                        self.water.max_dt_q()));
+        }, py::arg("sim_time"))
+        // --- S8a Path B: the water HOST TAIL, split out of step_water --------
+        // The W5 flash-boil + W3 displacement + copyto, WITHOUT the substep loop.
+        // The resident path runs the substep loop on device (water_substeps_resident)
+        // then calls this on the mirror — bit-identical to the monolithic step_water.
+        .def("step_water_tail", [](const PhysicsEngine& self,
+                                   py::array_t<int32_t> water_depth,
+                                   py::array_t<int32_t> atmosphere,
+                                   py::array_t<bool>  solid,
+                                   py::array_t<int32_t> gas,
+                                   py::array_t<int32_t> before,
+                                   py::array_t<float> dyn_permeability,
+                                   int steam_idx, float sim_time,
+                                   double ceiling_h, double flood_eps,
+                                   double ratio_cap, double boil_rate,
+                                   double boil_p_thresh, double steam_yield) {
+            auto [wd, h, w]    = get_2d(water_depth);
+            auto [atm, h5, w5] = get_2d(atmosphere);
+            auto [sol, h7, w7] = get_2d_const(solid);
+            auto [bef, h8, w8] = get_2d(before);
+            auto [perm, h9, w9] = get_2d(dyn_permeability);
+            auto gv = gas.mutable_unchecked<3>();
+            int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
+            const int n_gases = static_cast<int>(gv.shape(0));
+            self.step_water_tail(
+                wd, atm, sol, gas_ptr, n_gases, bef, perm,
+                steam_idx, h, w, sim_time,
+                ceiling_h, flood_eps, ratio_cap,
+                boil_rate, boil_p_thresh, steam_yield);
+        }, py::arg("water_depth"), py::arg("atmosphere"), py::arg("solid"),
+           py::arg("gas"), py::arg("before"), py::arg("dyn_permeability"),
+           py::arg("steam_idx"), py::arg("sim_time"),
            py::arg("ceiling_h"), py::arg("flood_eps"), py::arg("ratio_cap"),
            py::arg("boil_rate"), py::arg("boil_p_thresh"), py::arg("steam_yield"))
         // --- stamp_units: the per-tick dynamic-field rebuild ----------------
