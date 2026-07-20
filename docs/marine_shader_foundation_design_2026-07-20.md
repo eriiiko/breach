@@ -11,6 +11,76 @@ Make the 3D marines a **strong, lit render foundation**: lit by Breach's raycast
 the scene (not flat-tinted), with a clean seam for later normal maps and GPU skinning. This is the
 "marines' normal surface interacts with our raycasted lights + textures (maybe normal maps)" item.
 
+## v2 — hardened plan after adversarial critique (2026-07-20)
+
+Three independent critics (shader-math, integration, scope) stress-tested v1. **No blockers to the
+approach**; two plumbing blockers, several must-fix-before-feel bugs, and a cheaper sequencing. This
+section supersedes the patch plan below.
+
+### Confirmed good (survived critique)
+- Deferring GPU skinning — empirically confirmed CPU skinning is live (`animVertices/animNormals`
+  allocated, no bone-weight VBO) and a custom shader lights posed vertices cleanly.
+- Reusing Breach's baked light textures — `LightingPass.light_tex_a/b` are public and uploaded
+  (`upload_state`) *before* units draw (`compose_world`). No raycaster reinvention.
+- The 2D→3D light-dir remap `L = vec3(dir.x, u_light_z, dir.y)` is **correct** (math critic couldn't break it).
+- Tangent-free derivative TBN for P2; no determinism/sim/regression risk.
+
+### Blockers (resolved on paper)
+- **B1 — texture binding.** Light textures CANNOT be pre-bound as uniforms before `draw_model_ex`
+  (`DrawMesh` manages its own texture units and clobbers them). **Fix:** put `light_tex_a/b` in
+  **material map slots** (METALNESS=1, NORMAL=2; albedo stays ALBEDO=0), samplers `texture1`/`texture2`,
+  auto-bound every draw. Scalars/matrices via `set_shader_value` once/frame are fine.
+- **B2 — materials + matrices.** Meshes use materials **1 and 2** (material 0 is dead) — set the custom
+  shader on both. The shader must declare `matModel`/`matNormal` by name (stock model shader has them at
+  loc −1) for the world-space normal, and must **NOT** declare `boneMatrices` (would double-transform the
+  CPU-skinned mesh). *The spike verifies matModel/matNormal actually upload in this wheel; fallback = set
+  the model matrix as a per-frame uniform.*
+
+### Bugs (fold into P1)
+- **Pre-normalized light direction** → the marine's *side* normals get an arbitrary lit direction under
+  near-overhead lamps (the flat ship floor was immune). **Resolution:** adopt **half-Lambert**
+  (`N·L*0.5+0.5`) — which the scope critic independently wanted for top-down legibility — it softens the
+  instability AND reads better. The "proper" fix (plumb a directionality magnitude through `lighting.py`)
+  touches the golden-gated ship system → **deferred unless half-Lambert proves insufficient. [Erik's call.]**
+- **Sample the light at the marine's ground position** (per-fragment world-XZ, ignore Y — no per-unit
+  uniform needed). Log the "animated limb crossing a light boundary may shimmer" risk; foot-tile-uniform
+  is the fallback knob.
+- **world_uv Y-orientation:** ship samples over a y-up RT quad; marine `worldPos.z` is y-down → a likely
+  v-flip to reconcile. De-risk in the spike.
+- **Don't over-claim parity:** same colour/occlusion/tone-map, but genuinely *different* directional
+  shading (the ship is directionless-flat with no normal map). **Don't copy the vacuum `discard`**;
+  **sRGB-decode the albedo** (`u_srgb_decode=1`) or it double-darkens; fragment must output **alpha=1.0**
+  (premultiply blit); **drop the flat `light_fn` multiply** in `_draw_one` (the field sample replaces it).
+- **GLSL drift:** factor the shared srgb/aces/unpack helpers (string-concat a common snippet), don't copy
+  the golden-gated ship GLSL verbatim.
+
+### Legibility (top-down) — into P1, not deferred to P3
+Overhead N·L barely varies on a small token. Put the readability wins IN P1: **half-Lambert** + a cheap
+**rim** `pow(1-N·V, k)` for silhouette + an **angled/grazing key** (the marine gets its OWN `u_light_z`,
+lower than the ship's). These likely matter more than normal maps top-down — so **P2 (normal maps)
+becomes genuinely optional, pending the P1 feel-check.**
+
+### Revised sequence (supersedes "The design that falls out" below)
+- **Patch 0 — RGB per-unit tint, NO shader (~10 lines).** Sample `light_rgb[cy,cx]` (already CPU-side),
+  tint `base_tint × incoming_rgb`, drop the max-collapsed scalar. Closes colour+occlusion+brightness
+  parity immediately, improves the shader's own fallback path, is the cheapest feel-probe. Ship + eyeball first.
+- **Spike — one marine on one lit tile.** Confirm (a) matModel/matNormal upload, (b) world_uv hits the
+  right tile with correct Y-flip (marine darkens in an unlit room, reddens under a red lamp beside a
+  matching ship tile), (c) N·L responds to the baked 2D direction, (d) material-slot texture binding works.
+- **P1 — lit marine shader** with all fixes (material-slot textures, matModel/matNormal, per-fragment
+  world-XZ, sRGB albedo, alpha=1, half-Lambert + rim + angled key, shared GLSL). Feel-gate.
+- **P2 — normal maps (OPTIONAL, pending P1 feel).** Derivative TBN; risk: degenerates on the marine's
+  vertical *sides* (the silhouette); needs its own y-sign + a sourced/generated normal map.
+- **Deferred — GPU skinning** (verify real on-screen count first; ~20-unit CPU ceiling straddles "tens").
+
+### The one decision for Erik
+How far to chase *directional* correctness in P1: **(recommended) half-Lambert soften now** — cheap,
+fixes legibility, masks the pre-normalized-dir instability, and leaves the ship's golden-gated lighting
+untouched — versus investing up front in plumbing a directionality scalar through `lighting.py`. I'd do
+half-Lambert now and only plumb directionality if the feel-check demands it.
+
+---
+
 ## What the search settled (convergent findings)
 
 1. **GPU skinning is NOT the blocker it looked like — and it's not needed for the look.** The missing
