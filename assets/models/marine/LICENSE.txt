@@ -7,6 +7,8 @@ FILES
   LICENSE_quaternius.txt                   full CC0 1.0 legal text (as distributed)
   robot.glb                                secondary known-good rigged glTF (raylib
                                            example asset) kept as a code-path fallback
+  marine_normal_PLACEHOLDER.png            GENERATED placeholder tangent-space normal
+                                           map (see PLACEHOLDER NORMAL MAP below)
 
 SOURCE
   Quaternius — "Universal Animation Library" (standard FREE version), a rigged
@@ -28,7 +30,20 @@ LICENSE
   Attribution is not required, but crediting Quaternius is appreciated and you
   can support the author at https://www.patreon.com/quaternius.
 
+PLACEHOLDER NORMAL MAP
+  marine_normal_PLACEHOLDER.png is NOT authored art and NOT from Quaternius. It
+  is a synthetic tiling detail-normal (subtle panel grooves + rivet lattice)
+  generated procedurally with numpy/PIL — see scratchpad/gen_placeholder_normal.py.
+  It exists ONLY to prove the P2 normal-map plumbing end-to-end on the real
+  material path; the Quaternius model is UNTEXTURED (flat base colour, no authored
+  albedo or normal map), so it carries no visible payoff. A future real normal-
+  mapped marine asset replaces this file with no code change. Public domain
+  (trivially generated, no third-party content).
+
 USED BY
   renderer/unit_model_renderer.py (Phase-0 3D marines, render-only, toggle-gated).
   The clip names referenced there (Idle_Loop, Walk_Loop, Pistol_Shoot, Death01)
   are the Quaternius Universal Animation Library names present in the .gltf.
+  marine_normal_PLACEHOLDER.png is bound to the material ROUGHNESS slot (a free
+  slot) as the P2 normal-map capability's placeholder; renderer/marine_shader.py
+  samples it via the `texture3` sampler behind the u_use_normal_marine guard.

@@ -40,7 +40,7 @@ from typing import Callable, Dict, Optional, Sequence
 
 import pyray as rl
 
-from .marine_shader import load_marine_shader
+from .marine_shader import MARINE_NORMAL_MAP_FILENAME, load_marine_shader
 
 # ---------------------------------------------------------------------------
 # Asset + tunables
@@ -133,6 +133,7 @@ class UnitModelRenderer:
         self._shader = None
         self._marine_shader = None       # MarineShader wrapper (locs + setters)
         self._field_bound = False        # light textures wired into map slots
+        self._normal_tex = None          # P2 marine normal map (ROUGHNESS slot)
 
     # ------------------------------------------------------------------
     # Load / unload  (mirror UnitSprites.load(): needs a live GL context)
@@ -197,16 +198,60 @@ class UnitModelRenderer:
                 self.model.materials[mi].shader = ms.shader
             self._marine_shader = ms
             self._shader = ms.shader
+            self._bind_normal_map(ms)
             print(f"[unit_model] marine lit shader ready (id={ms.shader.id})")
         except Exception as exc:  # pragma: no cover - defensive
             print(f"[unit_model] WARN: marine shader setup failed: {exc}")
             self._shader = None
             self._marine_shader = None
 
+    def _bind_normal_map(self, ms) -> None:
+        """P2: bind the marine normal map into the ROUGHNESS(3) material slot —
+        a FREE slot (light textures own METALNESS=1 / NORMAL=2). Static, so bind
+        ONCE here; draw_units only rewrites slots 1/2 per frame and never touches
+        3. This is the clean drop-in seam: a future real normal-mapped marine
+        asset replaces marine_normal_PLACEHOLDER.png with NO code change. If the
+        file is missing the path is inert (no texture -> DrawMesh binds nothing
+        to unit 3; the shader's guard + flat-default keep N unchanged).
+        """
+        path = _MODEL_PATH.parent / MARINE_NORMAL_MAP_FILENAME
+        try:
+            if path.is_file():
+                tex = rl.load_texture(str(path.resolve()))
+            else:
+                # No asset: bind a 1x1 FLAT-normal (0.5,0.5,1 -> tangent +Z) so
+                # the slot is never raylib's default WHITE (which would perturb N
+                # when the guard is on). Keeps the path truly inert with no asset.
+                print(f"[unit_model] note: no marine normal map at {path}; "
+                      "binding flat-normal fallback (P2 inert until asset added)")
+                fimg = rl.gen_image_color(1, 1, rl.Color(128, 128, 255, 255))
+                tex = rl.load_texture_from_image(fimg)
+                rl.unload_image(fimg)
+            if tex.id == 0:
+                print("[unit_model] WARN: marine normal map failed to load")
+                return
+            # Bilinear + wrap so the tiling detail-normal reads smoothly.
+            rl.set_texture_filter(tex, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
+            rl.set_texture_wrap(tex, rl.TextureWrap.TEXTURE_WRAP_REPEAT)
+            MM = rl.MaterialMapIndex
+            for mi in range(self.model.materialCount):
+                if mi == 0:
+                    continue  # dead material (matches shader assignment)
+                self.model.materials[mi].maps[
+                    MM.MATERIAL_MAP_ROUGHNESS].texture = tex
+            self._normal_tex = tex
+            print(f"[unit_model] marine normal map bound (id={tex.id}, "
+                  "ROUGHNESS slot -> texture3)")
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"[unit_model] WARN: marine normal map bind failed: {exc}")
+            self._normal_tex = None
+
     def unload(self) -> None:
         """Free the model + animation clips + marine shader."""
         if self._anims is not None and self._n_anims:
             rl.unload_model_animations(self._anims, self._n_anims)
+        if self._normal_tex is not None:
+            rl.unload_texture(self._normal_tex)
         if self._marine_shader is not None:
             rl.unload_shader(self._marine_shader.shader)
         if self.model is not None:
@@ -219,6 +264,7 @@ class UnitModelRenderer:
         self._loaded = False
         self._shader = None
         self._marine_shader = None
+        self._normal_tex = None
 
     @property
     def ready(self) -> bool:
