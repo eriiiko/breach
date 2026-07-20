@@ -15,6 +15,7 @@
 #include "fixed_point.h"   // Bedrock cliff-patch: expose smoke_cliff_count for unit test
 #ifdef BREACH_HAS_CUDA
 #include "cuda_hello.h"        // CUDA-S0: hello-world map kernel + device info
+#include "cuda_spike.h"        // CUDA-S8a: residency spike (raw device pointer in)
 #include "cuda_temperature.h"  // CUDA-S1: GPU temperature solver + backend flag
 #include "cuda_raycaster.h"    // CUDA-S2: GPU directional raycaster (heat bit-identical)
 #include "cuda_water.h"        // CUDA-S3: GPU water solver + backend flag
@@ -76,6 +77,16 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("in_"), py::arg("factor_q16"),
           "S0 hello-world: out[i] = mul_q16(in[i], factor_q16) computed on the "
           "GPU via the shared toolkit; bit-identical to the CPU mul_q16.");
+
+    // CUDA-S8a: the residency spike. Given a raw device address (a CuPy array's
+    // int(arr.data.ptr)) as uintptr_t, add 1 to each of n int32 elements IN
+    // PLACE on the GPU — no malloc, no transfer. Proves CuPy-owned device
+    // memory is directly launchable from the breach .pyd (shared primary
+    // context), the primitive the whole S8a resident path rests on.
+    m.def("cuda_spike_add1",
+          [](std::uintptr_t dev_ptr, int n) { breach_cuda::spike_add1(dev_ptr, n); },
+          py::arg("dev_ptr"), py::arg("n"),
+          "S8a spike: int32 in-place +1 on a raw device pointer (CuPy .data.ptr).");
 
     // CUDA-S1: the GPU temperature solver. The backend flag switches
     // PhysicsEngine::step_tail between the CPU and GPU temperature pass (the live
