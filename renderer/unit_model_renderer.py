@@ -76,6 +76,14 @@ _SHADOW_RADIUS_FRAC = 0.32       # of footprint side, in world px
 _SHADOW_COLOR = (0, 0, 0, 90)
 # Prune a unit's anim state once it has gone unseen this many seconds.
 _STALE_SECONDS = 1.0
+# Top-down camera height above the floor, in world px. Ortho => this does NOT
+# affect on-screen size, only near/far framing. It MUST stay below raylib's
+# orthographic far-clip (empirically < ~5000 in this build), so it CANNOT scale
+# with world size: a tall level (RT up to 5760 px) pushed the old
+# max(w,h)*2 height past the far plane and culled every model (the "press M and
+# everything vanishes" bug). 500 clears the tallest model (~3*wpt) with margin
+# and is safely inside the far plane at every level size (verified 2400x5760).
+_CAM_HEIGHT = 500.0
 
 
 @dataclass
@@ -174,9 +182,11 @@ class UnitModelRenderer:
         """
         cam = rl.Camera3D()
         cx, cy = world_px_w / 2.0, world_px_h / 2.0
-        # Height above the floor: large enough to clear any model; ortho so the
-        # distance does not change on-screen size, only near/far framing.
-        cam.position = rl.Vector3(cx, max(world_px_w, world_px_h) * 2.0, cy)
+        # Fixed height (NOT world-size-scaled): ortho => distance doesn't change
+        # on-screen size, only near/far framing, and it must stay under raylib's
+        # ortho far-clip. See _CAM_HEIGHT (the old max(w,h)*2 culled everything on
+        # tall levels).
+        cam.position = rl.Vector3(cx, _CAM_HEIGHT, cy)
         cam.target = rl.Vector3(cx, 0.0, cy)
         cam.up = rl.Vector3(0.0, 0.0, -1.0)
         cam.fovy = float(world_px_h)
