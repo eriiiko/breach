@@ -109,6 +109,11 @@ class UnitModelRenderer:
         self._loaded = False
         self._anim: Dict[int, _UnitAnimState] = {}
         self._last_clock: Optional[float] = None
+        # P1 lit marine shader (set up in load() once the GL context exists).
+        # None in the Patch-0 fallback path (flat per-channel CPU RGB tint);
+        # when present, _draw_one lets the shader sample the light field per-
+        # fragment and skips the CPU tint (avoids double-darkening).
+        self._shader = None
 
     # ------------------------------------------------------------------
     # Load / unload  (mirror UnitSprites.load(): needs a live GL context)
@@ -218,7 +223,8 @@ class UnitModelRenderer:
     def draw_units(self, units: Sequence, wpt: float, clock: float,
                    camera3d: rl.Camera3D,
                    base_tint=(255, 255, 255, 255),
-                   light_fn: Optional[Callable[[object], float]] = None) -> None:
+                   light_rgb_fn: Optional[Callable[[object], tuple]] = None
+                   ) -> None:
         """Draw every alive unit as an animated 3D body inside the world RT.
 
         Nests ``begin_mode_3d`` in the already-open world RT. Per unit: infer
@@ -229,8 +235,15 @@ class UnitModelRenderer:
         ``clock`` is the renderer's wall-clock (self._anim_t0-relative is fine);
         the per-unit phase advances by the real delta so it animates through
         pause — render-only, determinism-irrelevant. ``base_tint`` colours the
-        group (marines vs zombies). ``light_fn(unit) -> float`` optionally
-        modulates brightness to match the sprite path's local-light tint.
+        group (marines vs zombies).
+
+        ``light_rgb_fn(unit) -> (r, g, b)`` returns a per-channel brightness
+        multiplier in [0, 1] sampled from the SAME baked RGB light field the
+        ship is lit by (ambient floor + incoming light colour at the unit's
+        foot tile), so a red lamp reddens the marine and an unlit room darkens
+        it — colour + occlusion parity with the ship, unlike the old max-
+        collapsed grey scalar. It is the FLAT fallback / Patch-0 path; the P1
+        lit shader samples the field per-fragment instead (self._shader).
 
         No-op (leaving the sprite path's world untouched) if the model failed
         to load — the toggle can be on with the asset missing and nothing breaks.
@@ -249,14 +262,14 @@ class UnitModelRenderer:
                 if not getattr(u, "alive", True):
                     continue  # Phase 0 parity: dead units skipped (sprite path)
                 self._draw_one(u, wpt, dt, clock, scale, shadow_r,
-                               base_tint, light_fn)
+                               base_tint, light_rgb_fn)
         finally:
             rl.end_mode_3d()
 
         self._prune(clock)
 
     def _draw_one(self, u, wpt: float, dt: float, clock: float, scale: float,
-                  shadow_r: float, base_tint, light_fn) -> None:
+                  shadow_r: float, base_tint, light_rgb_fn) -> None:
         """Draw a single unit. THE SWAP SEAM: a future GPU-skinning path
         replaces the update_model_animation + DrawModelEx pair here without
         touching anything else."""
@@ -300,12 +313,18 @@ class UnitModelRenderer:
         rl.draw_cylinder(rl.Vector3(cx, 0.5, cy), shadow_r, shadow_r, 1.0, 16,
                          rl.Color(sr, sg, sb, sa))
 
-        # Tint: group base colour, optionally dimmed by local light (parity with
-        # the sprite path, which multiplies the sprite by light_at(unit)).
+        # Tint: group base colour, per-CHANNEL modulated by the local baked RGB
+        # light (Patch 0 — colour + occlusion parity with the ship: a red lamp
+        # reddens the marine, an unlit room darkens it). Replaces the old flat
+        # grey scalar multiply. When the P1 lit shader is active it samples the
+        # field per-fragment, so this CPU tint is the FALLBACK: skipped so the
+        # shader owns the lighting (else double-darkening).
         br, bg, bb2, ba = base_tint
-        if light_fn is not None:
-            L = max(0.0, min(1.0, float(light_fn(u))))
-            br, bg, bb2 = int(br * L), int(bg * L), int(bb2 * L)
+        if self._shader is None and light_rgb_fn is not None:
+            mr, mg, mb = light_rgb_fn(u)
+            br = int(br * max(0.0, min(1.0, mr)))
+            bg = int(bg * max(0.0, min(1.0, mg)))
+            bb2 = int(bb2 * max(0.0, min(1.0, mb)))
         rl.draw_model_ex(self.model, rl.Vector3(cx, 0.0, cy),
                          rl.Vector3(0.0, 1.0, 0.0), yaw,
                          rl.Vector3(scale, scale, scale),

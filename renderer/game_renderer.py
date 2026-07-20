@@ -568,6 +568,27 @@ class GameRenderer:
             base = float(lmap[cy, cx]) if (0 <= cx < W and 0 <= cy < H) else 0.0
             return amb_floor + base
 
+        # Patch 0 — per-channel RGB provider for the 3D marines. Sample the SAME
+        # baked RGB light field the ship shader reads (self.lighting.light_rgb,
+        # (H, W, 3) f32) at the unit's foot tile, add the vec3 ambient floor and
+        # the ship's exposure gain, and return a per-channel multiplier in
+        # [0, 1]. This carries light COLOUR (a red lamp reddens the marine) and
+        # OCCLUSION (an unlit/shadowed room darkens it) — the parity the old
+        # max-collapsed grey scalar (light_at) threw away. It is the flat
+        # fallback; the P1 lit shader samples the field per-fragment instead.
+        lrgb = self.lighting.light_rgb
+        gain = self.lighting.light_gain
+        def light_rgb_at(u):
+            fp = int(getattr(u, "footprint", 3))
+            cx = int(u.x) + fp // 2
+            cy = int(u.y) + fp // 2
+            if 0 <= cx < W and 0 <= cy < H:
+                inc = lrgb[cy, cx]
+                return (min(1.0, amb[0] + float(inc[0]) * gain),
+                        min(1.0, amb[1] + float(inc[1]) * gain),
+                        min(1.0, amb[2] + float(inc[2]) * gain))
+            return (min(1.0, amb[0]), min(1.0, amb[1]), min(1.0, amb[2]))
+
         # Phase-0 3D marines: when toggled on AND the model loaded, draw units as
         # animated 3D bodies (nested begin_mode_3d inside the already-open world
         # RT) and skip the sprite path entirely. Marines green, zombies red — the
@@ -580,10 +601,10 @@ class GameRenderer:
             clock = time.perf_counter() - self._anim_t0
             self.unit_models.draw_units(
                 marines, wpt, clock, self._unit_cam3d,
-                base_tint=(90, 200, 90, 255), light_fn=light_at)
+                base_tint=(90, 200, 90, 255), light_rgb_fn=light_rgb_at)
             self.unit_models.draw_units(
                 zombies, wpt, clock, self._unit_cam3d,
-                base_tint=(210, 70, 70, 255), light_fn=light_at)
+                base_tint=(210, 70, 70, 255), light_rgb_fn=light_rgb_at)
             return
 
         for m in marines:
