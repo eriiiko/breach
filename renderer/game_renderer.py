@@ -1012,7 +1012,7 @@ class GameRenderer:
             return
         mouse_f = self.mouse_to_tile_float()
         if mouse_f is None:
-            text = "tile (—, —) — cursor outside map"
+            text = "tile (-, -) - cursor outside map"
         else:
             cx, cy = int(mouse_f[0]), int(mouse_f[1])
             H, W = gmap.solid.shape
@@ -1028,9 +1028,9 @@ class GameRenderer:
                     mat = MATERIAL_NAMES.get(mat_val, f"mat{mat_val}")
                 blocked = bool(gmap.solid[cy, cx] or gmap.is_vacuum[cy, cx])
                 tag = "BLOCKED" if blocked else "walkable"
-                text = f"tile ({cx}, {cy}) — {mat} — {tag}"
+                text = f"tile ({cx}, {cy}) | {mat} | {tag}"
             else:
-                text = f"tile ({cx}, {cy}) — out of bounds"
+                text = f"tile ({cx}, {cy}) - out of bounds"
         pad, font_size = 6, 16
         x0, y0 = 12, 40
         tw = rl.measure_text(text, font_size)

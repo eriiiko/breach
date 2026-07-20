@@ -32,12 +32,14 @@ _EOS_SETTERS = ("set_sl_advection_backend", "set_bulk_flux_backend",
 
 
 def _set_backends(on: bool) -> None:
-    """Flip the four EOS kernel flags AND the temperature flag together, so the
-    GPU run exercises the whole ambient GPU surface (EOS shift/reset/widenings/
-    u-damping/rail + the temperature Pass-0 wipe)."""
+    """Flip the four EOS kernel flags, the temperature flag, AND the smoke flag
+    together, so the GPU run exercises the whole ambient GPU surface: EOS
+    shift/reset/widenings/u-damping/rail + the temperature Pass-0 wipe + the
+    smoke/trace ring-sink widening (the Erik follow-up)."""
     for name in _EOS_SETTERS:
         getattr(bp, name)(bool(on))
     bp.set_temperature_backend(bool(on))
+    bp.set_smoke_backend(bool(on))
 
 
 # Ring-adjacent hull stub we breach mid-run (joins-ambient twin coverage).
@@ -80,6 +82,11 @@ def _build_scenario():
     q = atmosphere_fixed.quantize_scalar
     g.temperature[16:26, 16:26] += q(5000.0)
     g.gas[O2, 18:24, 18:24] += q(4.0)
+    # A trace (black_smoke) cloud in the open outdoor area near the sky ring, so
+    # the smoke pass advects it toward the ring and the ring-sink widening
+    # (traces -> 0 at is_ambient) is exercised on BOTH paths (the Erik follow-up).
+    bs = g.gases.name_to_id["black_smoke"]
+    g.gas[bs, 3:9, 30:50] += q(2.0)
 
     runner = PhysicsRunner(bp)
     runner.eos.dx = float(g.tile_size_m)

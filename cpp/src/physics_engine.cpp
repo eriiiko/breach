@@ -354,7 +354,8 @@ void PhysicsEngine::run_substeps(
                 h, w, sim_time,
                 this->smoke.d_smoke,
                 this->smoke.wind_diffusion_scale,
-                this->smoke.advection_rate);
+                this->smoke.advection_rate,
+                is_ambient);   // BC: ambient ring is a trace sink (null=space)
         } else
 #endif
         {
@@ -363,7 +364,8 @@ void PhysicsEngine::run_substeps(
                 solid, solid, is_vacuum,
                 dyn_permeability,
                 h, w,
-                sim_time);
+                sim_time,
+                is_ambient);   // BC: ambient ring is a trace sink (null=space)
         }
 
         // EOS refactor P4 (design §2.2/§5 v2.1, decisions log #12): apply

@@ -798,5 +798,28 @@ def test_ambient_udamp_grid_matches_sigma_band_geometry():
     assert int(g.sponge_udamp.max()) <= 40000         # never exceeds k_max
 
 
+@pytest.mark.skipif(bp is None, reason="needs the compiled breach_physics")
+def test_ambient_gate4_traces_absorbed_at_the_ring():
+    """GATE 4 (spec §1, Erik B5 follow-up): the ambient ring is a TRACE SINK.
+    Smoke/trace planes advected toward the sky ring are reset to 0 there
+    (absorbed), the vacuum-breach idiom verbatim — so a trace cloud vents out
+    the open boundary instead of piling up against an invisible wall. Exercises
+    the SmokeDynamics::step is_ambient widening threaded from run_substeps."""
+    from simulation.physics_runner import PhysicsRunner
+    g = _ambient_gmap(30, 30)
+    runner = PhysicsRunner(bp)
+    bs = g.gases.name_to_id["black_smoke"]
+    # A trace cloud in the open interior adjacent to the sky ring.
+    g.gas[bs][2:6, 6:24] = int(2.0 * FP_ONE)
+    total0 = int(g.gas[bs].sum())
+    assert total0 > 0 and int(g.gas[bs][g.is_ambient].sum()) == 0
+    for _ in range(40):
+        runner.step(g, DT_TICK)
+        # The ring holds NO trace at any tick — absorbed every step.
+        assert int(g.gas[bs][g.is_ambient].sum()) == 0
+    # And mass left the system through the ring (the open boundary vents).
+    assert int(g.gas[bs].sum()) < total0
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

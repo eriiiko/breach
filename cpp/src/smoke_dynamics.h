@@ -46,7 +46,13 @@ public:
         const bool* is_vacuum,
         const float* permeability,
         int h, int w,
-        float dt
+        float dt,
+        // BC (boundary_conditions_spec_2026-07-19 §1): the planetside AMBIENT
+        // ring is a trace SINK (traces reset to 0 there, absorbed — the
+        // vacuum-breach idiom). nullptr on space maps -> byte-identical (the
+        // widen is dormant by branch). Default keeps the direct-binding test
+        // path + any other caller unchanged.
+        const bool* is_ambient = nullptr
     ) const;
 
 
