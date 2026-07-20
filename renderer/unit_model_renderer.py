@@ -61,7 +61,7 @@ CLIP_MAP: Dict[str, str] = {
 
 # How many tiles the model's native height represents — the single feel knob
 # for on-screen size. Uniform scale, so the top-down footprint scales with it.
-_SCALE_TILES_TALL = 3.0
+_SCALE_TILES_TALL = 6.0
 # Keyframe playback rate for the wall-clock animation advance (clips are ~30fps).
 _ANIM_FPS = 30.0
 # Facing(rad) -> yaw(deg) about the vertical axis. Calibrated: model forward is
