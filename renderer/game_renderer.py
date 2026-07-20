@@ -913,7 +913,7 @@ class GameRenderer:
             ("F7 pressure",    self.show_pressure),
             ("T  temperature", self.show_temperature),
             ("O  water optics", self.show_water),
-            ("J  3D units",    self.cfg.use_3d_units),
+            ("M  3D units",    self.cfg.use_3d_units),
             ("B  bilinear",    self.lighting.bilinear),
             ("G  sRGB",        self.srgb_decode),
             ("H  flip-Y norm", self.normal_y_flipped),
@@ -980,7 +980,7 @@ class GameRenderer:
         # the rigged model + build the top-down camera the first time it turns
         # on, so a sprite-only session never pays the load cost. If the model
         # fails to load, draw_units no-ops and the sprite path stays in effect.
-        if rl.is_key_pressed(rl.KeyboardKey.KEY_J):
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_M):
             self.cfg.use_3d_units = not self.cfg.use_3d_units
             if self.cfg.use_3d_units and not self.unit_models.ready:
                 self.unit_models.load()
