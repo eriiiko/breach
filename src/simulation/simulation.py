@@ -95,6 +95,7 @@ from simulation.logic_nodes import (
     aggregate_input, build_logic_nodes, sweep_logic_nodes,
 )
 from simulation.sensor_system import build_sensors, sample_sensors
+from simulation.pump_system import build_pumps, sweep_pumps
 from simulation.entities.schema import INPUT_HELD
 from simulation.gamemap import GameMap, MAT_DOOR, MAT_DOOR_CLOSED
 from simulation.movement import FootprintSamples, default_speed
@@ -253,6 +254,7 @@ class Simulation:
         self._logic_nodes = []
         self._sensors = []
         self._sensor_accessor = None
+        self._pumps = []
         if self._signal_bus is not None:
             self._build_logic_tables()
 
@@ -633,6 +635,10 @@ class Simulation:
         # EntityInstances, never replaced) — the accessor's site index is
         # frozen from the field sensors' resolved tiles.
         self._sensors = build_sensors(self)
+        # Pump actuators (B4, §6): the 9e(d) N-feed sweep. Building it REPLACES
+        # each pump instance in self.entities with its PumpRuntime (the at_target
+        # latch row, §8), so _entity_by_ordinal is rebuilt AFTER, like the nodes.
+        self._pumps = build_pumps(self)
         self._entity_by_ordinal = {int(e.ordinal): e for e in self.entities}
         bus = self._signal_bus
         door_ordinals = {int(d.ordinal) for d in self._doors}
@@ -980,7 +986,7 @@ class Simulation:
         # into pub BEFORE the logic sweep; (b) logic sweep — each node in
         # ordinal order reads pub, writes stg[out] (B2); (c) input resolve —
         # drive wired doors' want_open (OR/held, close-beats-open); (d) actuator
-        # sweep — pumps (none yet) then the door structural sweep; (e) swap
+        # sweep — pumps (N-feed edit, B4) then the door structural sweep; (e) swap
         # pub[node-signals] ← stg (node outputs become readable next tick — one
         # tick per hop, §2c). BEFORE the recorder snapshot so recorder/digest
         # see state consistent with this tick's flips (a6 doors §5.1). NOT gated
@@ -993,6 +999,8 @@ class Simulation:
             if self._logic_nodes:
                 sweep_logic_nodes(self)     # (b) node sweep (ordinal order)
             self._resolve_door_inputs()     # (c) drive wired doors' want_open
+            if self._pumps:
+                sweep_pumps(self)           # (d) pump N-feed edit — BEFORE doors
         if self._doors:
             sweep_doors(self)               # (d) door structural sweep
         if self._signal_bus is not None:

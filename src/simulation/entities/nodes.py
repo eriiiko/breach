@@ -31,7 +31,7 @@ from fractions import Fraction
 
 from simulation.entities.schema import (
     Entity, Field, INPUT_AND, INPUT_HELD, INPUT_SINGLE, InputDecl, KIND_BOOL,
-    KIND_ENUM, KIND_LENGTH_M, KIND_Q16, Signal, register,
+    KIND_ENUM, KIND_INT, KIND_LENGTH_M, KIND_Q16, Signal, register,
 )
 
 # The six comparator tokens (decider `comparator` enum, §5). The runtime
@@ -170,3 +170,78 @@ class filter(Entity):
         constructed sims, mirroring the door). ABSENT when no ``filter`` is
         instantiated (no runtime object => no row => dormancy, §8)."""
         return (("ema", int(entity.ema)),)
+
+
+# ---------------------------------------------------------------------------
+# The pump — an N-feed actuator (§6, D10/D11). NOT a logic node (it edits the
+# gmap gas field at 9e(d), unlike the pure-SignalBus nodes) and NOT a sensor;
+# marked ``PUMP`` so :mod:`simulation.pump_system` (the sim-side runtime) can
+# find it. The gas-N primitive it drives lives on GameMap
+# (``inject_gas_n``/``extract_gas_n``); the per-tick ΔN quantum + the D11
+# band-skip assert are computed once at load in pump_system.build_pumps.
+# ---------------------------------------------------------------------------
+
+# The default anti-chatter hysteresis half-band, ±0.05 atm, as Q16.16
+# (quantize(0.05) == 3277). Declared here so the schema default and the D11
+# load-time assert (ΔN_per_tick_atm < 2·band) read the same constant.
+PUMP_DEFAULT_BAND_Q16 = 3277
+
+
+@register
+class pump(Entity):
+    """Gas-mass (N) feed actuator (§6b, post-EOS). Drives the port tile's gas
+    up (``inject``) or down (``extract``) by a fixed per-tick quantum ΔN toward
+    ``target_atm``, and emits ``at_target`` (hysteresis-banded, anti-chatter).
+
+    The PORT tile (``port_dx``/``port_dy`` offset from the mount ``x``/``y``) is
+    DISTINCT from the solid body it mounts on — the edit lands on open air, not
+    on the wall the skip-solid mask would veto (§6). ``inject``/``extract`` are
+    OR/held; both-active resolves EXTRACT-BEATS-INJECT (the safe depressurize
+    state — the close-beats-open analogue), pinned via ``INPUT_PRIORITY``.
+    """
+
+    INTANGIBLE = False   # a placed actuator with a mount tile (like a sensor)
+    PUMP = True          # the pump_system marker (parallels LOGIC_NODE/SENSOR)
+
+    FIELDS = (
+        Field("x", KIND_INT, default=None, minimum=0,
+              doc="mount tile COL at base resolution — REQUIRED"),
+        Field("y", KIND_INT, default=None, minimum=0,
+              doc="mount tile ROW at base resolution — REQUIRED"),
+        Field("port_dx", KIND_INT, default=0,
+              doc="PORT tile COL offset from the mount (base tiles): the open-"
+                  "air tile the pump edits, distinct from the solid body (§6)"),
+        Field("port_dy", KIND_INT, default=0,
+              doc="PORT tile ROW offset from the mount (base tiles)"),
+        Field("rate", KIND_LENGTH_M, default=1.0, minimum=0.0,
+              doc="feed rate in atm/s (authoring number, quantized once at "
+                  "load into the per-tick ΔN quantum — the filter tau_s idiom); "
+                  "must satisfy rate/tps < 2·band or load hard-errors (D11)"),
+        Field("target_atm", KIND_Q16, default=65536,
+              doc="target pressure at the port tile (Q16.16 atm; 65536 == 1.0 "
+                  "atm) — at_target latches when the port P reaches this band"),
+        Field("hysteresis_band", KIND_Q16, default=PUMP_DEFAULT_BAND_Q16,
+              doc="at_target half-band in Q16.16 atm (default 3277 == ±0.05 "
+                  "atm) — the anti-chatter Schmitt band; ΔN_per_tick_atm must "
+                  "be < 2·band or the port tile can jump the band and "
+                  "at_target never latches (airlock deadlock, D11)"),
+    )
+    SIGNALS = (Signal("at_target",
+                      "1 while the port pressure is within the hysteresis band "
+                      "of target_atm (latched Schmitt, anti-chatter)"),)
+    INPUTS = (InputDecl("inject", INPUT_HELD, "held: raise the port tile's N"),
+              InputDecl("extract", INPUT_HELD, "held: lower the port tile's N"))
+    INPUT_PRIORITY = (("extract", "inject"),)   # extract beats inject (safe)
+
+    @classmethod
+    def runtime_digest_rows(cls, entity) -> tuple:
+        """§8: the latched ``at_target`` hysteresis state is a synced runtime
+        row (path-dependent — it cannot be re-derived from P alone). Read off
+        the :class:`simulation.pump_system.PumpRuntime` wrapper.
+
+        Tolerant ``getattr`` (default 0) UNLIKE the door/filter loud path: a
+        pump is swept ONLY when a SignalBus exists (it needs inject/extract
+        wires), and a pump needs wires to be useful — so a bus-free level's
+        pump is a bare, never-swept EntityInstance whose at_target is
+        definitionally 0 (inert by construction, not a missing-runtime bug)."""
+        return (("at_target", int(getattr(entity, "at_target", 0))),)

@@ -1707,3 +1707,104 @@ class GameMap:
             self.atmosphere[fy, fx] = (
                 sum(int(self.atmosphere[d]) for d in donors) // k)
             self.wave_p[fy, fx] = int(self.atmosphere[fy, fx])
+
+    # ------------------------------------------------------------------
+    # Integer gas-N source/sink primitive — the pump feed (Arc B B4, §6/D10)
+    # ------------------------------------------------------------------
+    # A per-slice, zero-clamped, RNG-free, FLOAT-free add/remove of gas mass N
+    # at ONE tile — the deliberate SOURCE/SINK the `pump` actuator drives (§6b).
+    #
+    # UNLIKE seal/unseal above (which REDISTRIBUTE — grid N is conserved to the
+    # LSB), this primitive MINTS (inject) or DESTROYS (extract) mass ON PURPOSE:
+    # an airlock pump is a gas source/sink, not a conservative transfer. UNLIKE
+    # FieldEdit's gas path (a float bridge: dequantize -> float -> [0,1] clamp ->
+    # requantize, plus an optional ``sim.rng`` noise draw — the 3-lens critique's
+    # D10 rejection), EVERY step here is pure integer Q16.16 with a PINNED
+    # remainder rule and a LOUD int32 overflow guard, so it is bit-identical
+    # cross-machine and safe for synced sim state (determinism iron rules, §9).
+    #
+    # FORWARD-NOTE (§5b Rung-2 rider, NOT Arc B): this is a structural-ish field
+    # write to ``gmap.gas`` (the CPU MIRROR). When GPU residency lands, the edited
+    # port tile joins the §5b dirty-set H2D upload — pushing this edit to the
+    # device is that LATER rider's job; Arc B edits only the host mirror. Do NOT
+    # add a ``from_host()`` / device push here.
+
+    def inject_gas_n(self, fy, fx, delta_n):
+        """Add ``delta_n`` (Q16.16 gas mass) at tile ``(fy, fx)``, split at the
+        FIXED standard O2/N2 mix across the two bulk slices (§6, D10 inject half).
+
+        Integer split (round-half-up O2, exact-remainder N2 — the ``__init__``
+        air-seed idiom), so the injected mass is EXACTLY ``delta_n`` and the mix
+        ratio is preserved within the one-LSB remainder rule. ``delta_n <= 0`` is
+        a no-op. Bounds are STRICT (a primitive caller passing OOB is a bug —
+        the seal_tiles precedent). Loud ``OverflowError`` pre-mutation: N is
+        int32 on the mirror and a saturating store would SILENTLY inject less
+        than ``delta_n`` (a source that quietly under-delivers).
+        """
+        h, w = self._h, self._w
+        if not (0 <= fy < h and 0 <= fx < w):
+            raise ValueError(f"inject_gas_n: tile ({fy}, {fx}) out of bounds")
+        dn = int(delta_n)
+        if dn <= 0:
+            return
+        from simulation import gas_fixed as _gas_fx
+        # 0.21 O2 by mole fraction (Earth-normal) — quantize_scalar(0.21) == 13763,
+        # the P1 calibration constant the ambient air seed uses (13763 + 51773 ==
+        # FP_ONE), so an inject reproduces calibrated air composition to the LSB.
+        o2_frac_q = _gas_fx.quantize_scalar(0.21)
+        o2_add = (dn * o2_frac_q + (1 << 15)) >> 16      # round-half-up (air seed)
+        n2_add = dn - o2_add                              # exact remainder
+        cur_o2 = int(self.gas[O2][fy, fx])
+        cur_n2 = int(self.gas[INERT_N2][fy, fx])
+        limit = 1 << 31
+        if cur_o2 + o2_add >= limit or cur_n2 + n2_add >= limit:
+            raise OverflowError(
+                f"inject_gas_n: tile ({fy}, {fx}) would overflow int32 "
+                f"(O2 {cur_o2}+{o2_add}, N2 {cur_n2}+{n2_add})")
+        self.gas[O2][fy, fx] = cur_o2 + o2_add
+        self.gas[INERT_N2][fy, fx] = cur_n2 + n2_add
+
+    def extract_gas_n(self, fy, fx, delta_n):
+        """Remove up to ``delta_n`` (Q16.16 gas mass) at tile ``(fy, fx)``,
+        PROPORTIONAL to the tile's current composition across ALL gas slices,
+        zero-clamped so no slice can go negative (§6, D10 extract half). Returns
+        the total mass actually withdrawn.
+
+        The withdrawn total is ``min(delta_n, N_total)`` — the aggregate
+        zero-clamp (a near-empty tile clamps at 0 and NEVER over-withdraws). The
+        per-slice split is the integer proportional ``remove_g = gas[g]*want //
+        N_total`` (a floor, no float divide, no dequantize) with the shortfall
+        cascaded in PINNED slice-id order to slices with remaining holdings, so
+        ``sum(remove_g) == want`` EXACTLY (mirrors the seal-tiles remainder rule
+        and unseal's balanced-then-greedy withdrawal). The explicit ``max(0, ...)``
+        per-slice zero-clamp before the store guarantees N can NEVER go negative
+        into the Helmholtz solver. ``delta_n <= 0`` / an empty tile is a no-op.
+        """
+        h, w = self._h, self._w
+        if not (0 <= fy < h and 0 <= fx < w):
+            raise ValueError(f"extract_gas_n: tile ({fy}, {fx}) out of bounds")
+        dn = int(delta_n)
+        if dn <= 0:
+            return 0
+        holdings = [int(self.gas[g][fy, fx]) for g in range(N_GASES)]
+        n_total = sum(holdings)
+        if n_total <= 0:
+            return 0                        # empty tile — zero-clamp, nothing to take
+        want = dn if dn < n_total else n_total          # aggregate zero-clamp
+        # Integer proportional floor split; the fractional shortfall (< N_GASES)
+        # cascades in pinned slice order to slices that still hold mass, so the
+        # per-slice removals sum to `want` to the LSB.
+        remove = [(holdings[g] * want) // n_total for g in range(N_GASES)]
+        short = want - sum(remove)
+        for g in range(N_GASES):
+            if short <= 0:
+                break
+            take = holdings[g] - remove[g]
+            if take > short:
+                take = short
+            remove[g] += take
+            short -= take
+        for g in range(N_GASES):
+            new = holdings[g] - remove[g]
+            self.gas[g][fy, fx] = new if new > 0 else 0   # explicit zero-clamp
+        return want
