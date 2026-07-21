@@ -173,6 +173,25 @@ def _cast_gpu(rc, h, w, sources, gas, gabs, gsca, light_atten, heat_atten):
     return heat
 
 
+def _cast_gpu_batch(rc, h, w, sources, gas, gabs, gsca, light_atten, heat_atten):
+    """S8c item 1: the BATCHED device cast — the whole source list in ONE march
+    (cuda_raycaster_cast_batch concatenates build_ray_list over every source and
+    issues a single H2D/march/D2H). `heat` must be byte-identical to the
+    per-source _cast_gpu loop above: the deposits are order-free saturating
+    integer atomic adds, so batching changes only the atomic interleave, never
+    the per-cell min(base + sum, INT32_MAX). This is the localized regression
+    witness for the concatenation (design section 5)."""
+    heat = np.zeros((h, w), np.int32)
+    rgb = np.zeros((h, w, 3), np.float32)
+    dx = np.zeros((h, w), np.float32)
+    dy = np.zeros((h, w), np.float32)
+    glow = np.zeros((h, w, 3), np.float32)
+    bp.cuda_raycaster_cast_batch(
+        rc, sources, rgb, dx, dy, gas, gabs, gsca, light_atten,
+        heat=heat, smoke_glow=glow, heat_atten=heat_atten)
+    return heat
+
+
 def run() -> bool:
     print("HEAT bit-identity — GPU march vs CPU cast_source_directional "
           "(firestorm + smoke, tol 0):")
@@ -187,7 +206,20 @@ def run() -> bool:
                              light_atten, heat_atten)
         heat_gpu = _cast_gpu(rc, h, w, sources, gas, gabs, gsca,
                              light_atten, heat_atten)
+        # S8c item 1: the batched cast (whole source list, ONE march) must be
+        # byte-identical to the per-source GPU loop (order-free saturating adds).
+        heat_gpu_batch = _cast_gpu_batch(rc, h, w, sources, gas, gabs, gsca,
+                                         light_atten, heat_atten)
         n_scen += 1
+
+        if not np.array_equal(heat_gpu, heat_gpu_batch):
+            ok = False
+            mism = int(np.count_nonzero(heat_gpu != heat_gpu_batch))
+            idx = int(np.argmax(heat_gpu != heat_gpu_batch))
+            ry, rx = divmod(idx, w)
+            print(f"  seed {seed}: BATCH MISMATCH vs per-source GPU "
+                  f"({mism} cells; first @ ({ry},{rx}): "
+                  f"loop={heat_gpu.flat[idx]} batch={heat_gpu_batch.flat[idx]})")
 
         if not np.array_equal(heat_cpu, heat_gpu):
             ok = False
@@ -211,7 +243,8 @@ def run() -> bool:
                       f"(nz={nz}, saturated={sat}) — gate would be vacuous.")
     if ok:
         print(f"  all {n_scen} firestorm scenarios: GPU heat == CPU heat "
-              f"byte-for-byte (incl. saturation, occlusion, smoke, source-skip).")
+              f"byte-for-byte (incl. saturation, occlusion, smoke, source-skip); "
+              f"batched cast == per-source GPU loop (S8c item 1).")
     return ok
 
 
