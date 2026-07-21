@@ -41,6 +41,23 @@ All render-only — no sim/determinism surface, auto-skipped in headless trainin
   NOT a skin swap; pre-placed = special skin. (The current green/red tint is
   fine for now.)
 
+- **Retire the M toggle + sprite path** (Erik, 2026-07-21) — make the 3D marines
+  the **default and only** unit render; drop the old 2D sprite fallback (the
+  `use_3d_units` toggle / `M` key / `UnitSprites` unit path) once confident. The
+  old sprites won't be needed anymore.
+- **Skin / appearance-asset pipeline** (Erik, 2026-07-21) — we need real
+  **textured skins** (marine, zombie, variations) to unlock the visual-profile
+  system above *and* the already-built normal-map capability (P2). The current
+  Quaternius model is untextured. Evaluate **AI generation** — mesh-texturing
+  tools that paint albedo + normal/PBR onto the existing rig's UVs (Meshy-style
+  AI texturing), or text-to-3D for whole rigged+textured models — vs
+  hand-authored. A focused tool eval (like the shader lit-search) is the right
+  first step when we pursue it.
+- **Body-part damage → animation/behaviour hook** — Erik's `01_units.md` note
+  (commit `350179c`): body parts carry hp/damaged states that drive a different
+  animation, speed, even behaviour (limping) via the ML animation system. Ties
+  render ↔ mechanics; needs refining/planning.
+
 **Deferred fixes/items from this arc:**
 - **Move-order animation bug (OURS, not the command system)** — when one marine
   gets a move order, ALL marines' models play the WALK clip while staying put.
