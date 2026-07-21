@@ -265,7 +265,17 @@ def capture_trajectory(make_sim=default_scenario_sim, n_steps=30, fields=SIM_FIE
     0`` for an entity-free level, so ``tick_digest`` can gate the entity fold
     and an entity-present run can never hash entity-free silently. Forces
     unpause each step so a phase/round boundary cannot silently halt the
-    trajectory (the round reset itself is deterministic)."""
+    trajectory (the round reset itself is deterministic).
+
+    Arc B B6 (docs/arc_b_impl_2026-07-21.md §8/§10): the carrier also captures
+    the sim's ``__signals__`` payload (the SignalBus's non-``alive`` slot values,
+    post-swap — §2b). B1 left this ``()`` because no wired golden existed yet;
+    a WIRED level (sensors/nodes/wires) now folds its live signals into the
+    tick digest, while a wire-free / entity-free sim is UNCHANGED —
+    ``sim._digest_signals()`` returns ``()`` whenever no SignalBus exists (the
+    dormancy guarantee, escalation-trigger 3), so every existing entity-free /
+    door-only golden hashes byte-identically. ``getattr`` guards a make_sim
+    that yields a non-Simulation stand-in (defaults to no signals)."""
     sim = make_sim()
     traj = []
     for _ in range(n_steps):
@@ -275,7 +285,11 @@ def capture_trajectory(make_sim=default_scenario_sim, n_steps=30, fields=SIM_FIE
         if capture_units:
             snap[UNIT_DIGEST_KEY] = _capture_unit_state(sim)
         ents = _sim_entities(sim)
-        snap[ENTITY_DIGEST_KEY] = entity_carrier(ents)
+        # __signals__ (B6): () for any sim with no SignalBus (dormancy holds);
+        # the live bus rows for a wired sim — the ONLY case that folds signals.
+        digest_signals = getattr(sim, "_digest_signals", None)
+        signals = digest_signals() if callable(digest_signals) else ()
+        snap[ENTITY_DIGEST_KEY] = entity_carrier(ents, signals=signals)
         require_entity_carrier(ents, snap)   # the A4 strict presence rule
         traj.append(snap)
     return traj
