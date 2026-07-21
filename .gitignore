@@ -35,6 +35,9 @@ prototypes/fluid_pipe_only_48s.gif
 # Debug recordings
 debug_*.npz
 
+# Phase-0 3D-marine load-verify output (throwaway render)
+prototypes/anim_marine_verify_out.png
+
 # AI tools (large repos + models, re-clone with setup script)
 # Ignore the specific AI sub-repos and model dirs; leave tools/*.py / *.toml tracked.
 tools/content_aware_tiles/

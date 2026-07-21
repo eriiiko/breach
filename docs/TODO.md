@@ -17,6 +17,51 @@
   HEAT ×4 ≈ no-op), and flamethrower feel at the new 10 m / 20 m meter-based
   ranges. After the blessing: merge W6, then the wave-close ritual.
 
+## Animation / character-render track (3D marines shipped 2026-07-21)
+
+**Shipped (arc `anim-phase0-3d-marines`, merged 2026-07-21):** render-only 3D
+marines/zombies over the 2D world (toggle **M**, default off), lit by the
+raycast light field so they match the ship, 2× scale, blob shadows; a
+tangent-free normal-map *capability* is present but default-off (the Quaternius
+model is untextured, so nothing to reveal). Docs: `marine_shader_foundation_design_2026-07-20.md`,
+`research/ml_animation_litsearch_2026-07-20.md`, `procedural_animation_brainstorm.md`.
+All render-only — no sim/determinism surface, auto-skipped in headless training.
+
+**Wanted next (Erik, 2026-07-21 — capture, later work):**
+- **Marine appearance system** — a clean per-unit *visual profile*: one model +
+  animation set + skin per unit type, with **variation** (later). Today it's a
+  single shared model + a flat group tint (green marines / red zombies via
+  `colDiffuse`). Generalize to `unit-type → {model, skin/material, clip set,
+  gait params}` so new looks are data, not code.
+- **Zombies look like their victim** — when a unit turns into a zombie
+  *mid-match*, it **keeps its own skin/model** (appearance unchanged) but
+  **swaps to the zombie animation** (shambling gait), optionally with a
+  **"bloodied" overlay**. **Pre-placed** zombies (spawned as zombies) get a
+  **dedicated zombie skin**. So: turning = animation swap (+ optional blood),
+  NOT a skin swap; pre-placed = special skin. (The current green/red tint is
+  fine for now.)
+
+**Deferred fixes/items from this arc:**
+- **Move-order animation bug (OURS, not the command system)** — when one marine
+  gets a move order, ALL marines' models play the WALK clip while staying put.
+  `UnitModelRenderer`'s motion inference mis-selects "walk" for stationary units
+  (likely `move_path` non-empty on all during planning, or the position-delta
+  test). Fix in the clip/motion-inference; its own session.
+- **P2 real asset drop-in** — the normal-map capability is inert until a
+  textured/normal-mapped marine asset exists: drop it over
+  `assets/models/marine/marine_normal_PLACEHOLDER.png`, flip
+  `MARINE_USE_NORMAL_DEFAULT` (or `marine_shader.set_use_normal(True)`), tune
+  `MARINE_NORMAL_STRENGTH` — no code change.
+- **`fire`/`dead` clips dormant** — wired in `CLIP_MAP` but unused (firing not
+  inferred from sim; dead units skipped for sprite parity). One-line extensions.
+- **GPU skinning (perf lever, deferred)** — CPU-skinning soft ceiling ~20 units;
+  when counts grow, rebuild the raylib binding with `-DSUPPORT_GPU_SKINNING=ON`
+  and flip the `_draw_one` seam (the fragment/lighting half is unchanged). Not
+  needed yet.
+- **Ceiling-lamp z** — lights carry a *constant* vertical component
+  (`u_light_z`); a true overhead shaft wants per-lamp/per-tile z. Lighting
+  nicety, low prio.
+
 ## Pending — small (background, queue up next session)
 
 - **Blast-tuple wart (Arc A rider, A6, 2026-07-19) — direction DECIDED
