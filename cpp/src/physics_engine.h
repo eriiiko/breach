@@ -248,6 +248,34 @@ public:
         // transfers are gone. Default true == the exact prior behaviour.
         bool do_traces = true);
 
+    // --- S8a Path A: the fully device-resident EOS stage -----------------
+    // (docs/cuda_s8a_path_a_impl_2026-07-21.md §3.1.) The resident sibling of
+    // run_substeps' EOS dispatch: host mirrors feed the shared pre-stage (all
+    // reductions — tick-entry state) + telemetry; the device pointers are the
+    // persistent CuPy resident fields (uintptr_t so this header stays
+    // CUDA-free; 0 == nullptr for the ambient statics). NO trace loop (the
+    // runner drives trace_smoke_resident, as in Path B). Declared on every
+    // build; the body THROWS on a non-CUDA build, and on a CUDA build throws
+    // unless eos_step_backend_is_cuda() (no CPU fallback for device
+    // pointers). Bit-identity gate: tests/cuda_s8a_check.py PART 1a/1b/1c.
+    void run_substeps_resident(
+        int32_t* p_prev,
+        const int32_t* atmosphere,
+        const int32_t* wind_x, const int32_t* wind_y,
+        const int32_t* temperature,
+        const bool* solid, const bool* is_vacuum,
+        const float* dyn_permeability, const float* dyn_wave_absorb,
+        const int32_t* gas, int n_gases, const bool* gas_conservative,
+        int h, int w, float sim_time,
+        const bool* is_ambient, const int32_t* n_amb, int32_t p_amb,
+        std::uintptr_t d_atmosphere, std::uintptr_t d_wave_p,
+        std::uintptr_t d_wind_x, std::uintptr_t d_wind_y,
+        std::uintptr_t d_temperature, std::uintptr_t d_gas_base,
+        std::uintptr_t d_solid, std::uintptr_t d_is_vacuum,
+        std::uintptr_t d_dyn_permeability,
+        std::uintptr_t d_is_ambient,
+        std::uintptr_t d_sponge_sigma, std::uintptr_t d_sponge_udamp);
+
     // --- Patch 1 S4c: the water-layer ARRAY ARITHMETIC -------------------
     // Moves the array-op core of PhysicsRunner._step_water into C++ — the part
     // AFTER the (still-Python) lazy-init + dormancy early-out + sparse

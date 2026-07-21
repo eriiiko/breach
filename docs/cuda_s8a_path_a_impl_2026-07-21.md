@@ -51,8 +51,16 @@ physics change. No golden re-baseline.
 1. host pre-physics (mirror)                          [unchanged]
 2. water: from_host(5) → substeps resident → to_host(3) → host tail  [unchanged]
 3. EOS pre-upload:  from_host(["atmosphere","wind_x","wind_y","temperature",
-                     "gas","solid","is_vacuum","dyn_permeability"])
+                     "gas","solid","is_vacuum","is_ambient",
+                     "dyn_permeability"])
       ← replaces Path B's step-5 from_host + the per-call internal H2D.
+      ★ BUILD FINDING (PART-1b catch): is_ambient is NOT static —
+      destroy_wall's joins-ambient twin mutates it on a ring-adjacent breach
+      (the ambient analogue of is_vacuum on space maps), so it rides the
+      per-tick upload. This was ALSO a latent Path-B bug: the shipped trace
+      loop reads device is_ambient as the trace sink and never re-uploaded
+      it (the space-only Path-B gate could not see it) — fixed here for both
+      consumers by this shared upload.
       NOTE: dyn_wave_absorb is NOT in this list — no device kernel in the EOS
       chain reads it (the kick consumes the host-hoisted absorb_q plane, §3.2
       step 4, computed FROM THE MIRROR — that is where body-shielding lives).
