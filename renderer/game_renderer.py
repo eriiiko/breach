@@ -27,6 +27,7 @@ from config import CFG
 from simulation.status import composed_flags
 
 from . import core
+from .blackbody import BlackbodyRamp
 from .camera import Camera2D
 from .lighting import LightingPass
 from .overlays import (
@@ -163,15 +164,16 @@ class GameRenderer:
         # smoke_glow output. Supersedes the retired light_modulation surface-tint.
         self.glow_overlay = GlowOverlay(cfg.grid_h, cfg.grid_w)
         self.pressure_overlay = PressureOverlay(cfg.grid_h, cfg.grid_w)
-        # Debug temperature overlay (engine/06): black-body ramp over
-        # gmap.temperature. temp_display_max = the ΔT that maps to white-hot;
-        # default ~300 == the wood ignition_temp so an igniting tile reads at
-        # the top of the ramp. Tunable via [display] temp_display_max. Off by
-        # default; toggled with T. RENDER-ONLY — never mutates the field.
-        temp_display_max = float(
-            getattr(getattr(CFG, "display", None), "temp_display_max", 300.0))
+        # Emissive temperature overlay (Fire & Heat Beauty B1): the physical
+        # black-body glow over gmap.temperature (engine/06). Built from the
+        # shared black-body primitive ([render.blackbody]) — temperature ->
+        # pseudo-Kelvin -> chroma * T⁴ intensity, ACES tone-mapped. This
+        # supersedes the old 5-stop ramp + temp_display_max knob. RENDER-ONLY —
+        # never mutates the field. Toggled with T (default from
+        # [render] blackbody_overlay_on).
+        self.blackbody_ramp = BlackbodyRamp.from_config(CFG)
         self.temperature_overlay = HeatFieldOverlay(
-            cfg.grid_h, cfg.grid_w, temp_display_max=temp_display_max)
+            cfg.grid_h, cfg.grid_w, self.blackbody_ramp)
         # Water overlay v2 (water W6b; canon engine/07 §6 placeholder): depth-
         # blue tint + ripple shading + foam + ambient sines over the sim's
         # water fields. All four knobs bind from [display] with getattr
@@ -212,17 +214,34 @@ class GameRenderer:
         # Toggles
         self.show_grid = False
         self.show_smoke = True
-        self.show_fire = True
+        # Fire & Heat Beauty B1 (human-test A/B): the flat-orange FireOverlay is
+        # demoted to default-OFF so the physical black-body overlay (T) is the
+        # blessed look Erik compares against. Toggle F3 on live to A/B. Default
+        # from [render] fire_overlay_on so the shipped default can be set from
+        # config after the feel-check without a code change.
+        self.show_fire = bool(getattr(
+            getattr(CFG, "render", None), "fire_overlay_on", False))
         self.show_lighting = True
         self.show_normal_map = True
         self.normal_y_flipped = False
         self.srgb_decode = True
         self.show_debug_coords = False
-        # Pressure colormap defaults ON in the main game — explosions
-        # look dramatic by default. Toggle with F7.
-        self.show_pressure = True
-        # Debug temperature overlay (engine/06) — OFF by default; toggle with T.
-        self.show_temperature = False
+        # Pressure colormap — default from [render] pressure_overlay_on (Fire &
+        # Heat Beauty B1, Erik 2026-07-21: OFF by default so it doesn't wash out
+        # the fire/heat view; still one keypress away). Toggle with F7.
+        self.show_pressure = bool(getattr(
+            getattr(CFG, "render", None), "pressure_overlay_on", False))
+        # Emissive black-body temperature overlay (Fire & Heat Beauty B1) —
+        # default ON via [render] blackbody_overlay_on so the blessed look ships
+        # as the default; toggle with T. RENDER-ONLY.
+        self.show_temperature = bool(getattr(
+            getattr(CFG, "render", None), "blackbody_overlay_on", True))
+        # Fire light sources (B1 §3) — live A/B gate for the ray-traced fire
+        # glow, seeded from [render.fire_lights] enabled; toggle with L. main.py
+        # skips the fire-light cast when this is off. RENDER-ONLY.
+        self.show_fire_lights = bool(getattr(
+            getattr(getattr(CFG, "render", None), "fire_lights", None),
+            "enabled", True))
         # Water OPTICS pass (graphics/water_rendering.md) — ON by default; the
         # GLSL pass is dormant-safe (alpha 0 on dry tiles), so a dry ship looks
         # identical whether it's on or off. Toggle with O to disable the water
@@ -232,6 +251,12 @@ class GameRenderer:
         # Frame timing
         self.last_frame_ms = 0.0
         self.last_raycast_ms = 0.0
+        # Fire-light HUD counter (Fire & Heat Beauty B1): kept count, NMS peak
+        # count, and the cap — so a tuning session SEES when the brightest-K cap
+        # truncates (no silent caps). Set each frame from main.py's sources block.
+        self.fire_light_count = 0
+        self.fire_light_peaks = 0
+        self.fire_light_cap = 0
         # Render-animation epoch: the water overlay's ambient sines take a
         # seconds clock; epoch-relative keeps the float32 sine phases small.
         # Wall-clock (animates through pause) — render-only, determinism-
@@ -1074,6 +1099,13 @@ class GameRenderer:
         draw_text(f"Raycast: {self.last_raycast_ms:.1f} ms", x, y, 14)
         y += 18
         draw_text(f"Frame:   {self.last_frame_ms:.1f} ms", x, y, 14)
+        y += 18
+        # Fire-light counter (B1 §3): kept / NMS-peaks, flag when the cap bites.
+        capped = self.fire_light_count < self.fire_light_peaks
+        fl_color = (255, 200, 120, 255) if capped else (180, 200, 180, 255)
+        fl_txt = (f"Fire lights: {self.fire_light_count}/{self.fire_light_peaks}"
+                  f"  cap {self.fire_light_cap}" + ("  CAP!" if capped else ""))
+        draw_text(fl_txt, x, y, 14, color=fl_color)
         y += 28
         draw_text("Toggles:", x, y, 14, color=(180, 200, 255, 255))
         y += 20
@@ -1086,6 +1118,7 @@ class GameRenderer:
             ("F6 coords",      self.show_debug_coords),
             ("F7 pressure",    self.show_pressure),
             ("T  temperature", self.show_temperature),
+            ("L  fire lights", self.show_fire_lights),
             ("O  water optics", self.show_water),
             ("M  3D units",    self.cfg.use_3d_units),
             ("B  bilinear",    self.lighting.bilinear),
@@ -1122,6 +1155,17 @@ class GameRenderer:
                   color=(140, 140, 160, 255))
         y += 14
 
+    def set_fire_light_stats(self, count: int, peaks: int, cap: int) -> None:
+        """Record this frame's fire-light counts for the debug HUD (B1 §3).
+
+        ``count`` = lights actually emitted (<= cap), ``peaks`` = NMS peaks
+        before the cap, ``cap`` = max_lights. count < peaks means the cap
+        truncated — surfaced on the HUD so tuning sessions see saturation.
+        """
+        self.fire_light_count = int(count)
+        self.fire_light_peaks = int(peaks)
+        self.fire_light_cap = int(cap)
+
     # ---- input ----------------------------------------------------------
 
     def poll_toggles(self) -> None:
@@ -1139,9 +1183,12 @@ class GameRenderer:
             self.show_debug_coords = not self.show_debug_coords
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F7):
             self.show_pressure = not self.show_pressure
-        # T: debug temperature overlay (black-body ramp over gmap.temperature).
+        # T: emissive black-body temperature overlay (over gmap.temperature).
         if rl.is_key_pressed(rl.KeyboardKey.KEY_T):
             self.show_temperature = not self.show_temperature
+        # L: fire light sources (B1) — A/B the ray-traced fire glow live.
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_L):
+            self.show_fire_lights = not self.show_fire_lights
         # V: toggle the water optics pass (GLSL Fresnel/GGX/refraction). The
         # pass is dormant-safe (alpha 0 on dry tiles); toggling only matters
         # once water is on the floor — disable to A/B against the bare floor.

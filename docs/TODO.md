@@ -82,6 +82,23 @@ All render-only — no sim/determinism surface, auto-skipped in headless trainin
 
 ## Pending — small (background, queue up next session)
 
+- **Fire & Heat tuning session (Erik, 2026-07-21, after B1 merged) — DEDICATED
+  SESSION.** B1 (black-body overlay + brightest-K fire lights) merged and the
+  look is blessed ("much better"), but needs a tuning pass:
+  - *Render mapping:* fires read too white at the default `k_temp_to_kelvin=2.0`
+    (saturates to white by ~T_game 3000). Dial `k_temp_to_kelvin` DOWN / raise
+    `kelvin_ref` so white is reserved for extremes (config `[render.blackbody]`).
+  - *Sim hypothesis (Erik):* radiation may ignite things too fast — the whole
+    room went white, possibly all furniture ignited. Investigate the
+    temperature→ignition path / `k_fire_heat` / combustion burn (sim-side, NOT
+    render — B1 only reveals it). Verify with a headless probe.
+  - *Diagnostics wanted (Erik's preference over more shortcut keys):* make ONE
+    dedicated fire-tuning level and hardcode a per-tile value readout into the
+    launch script — OR a small "all values of the hovered tile as a table"
+    (T in game-units + pseudo-Kelvin, fire intensity, material, ignition_temp /
+    ignited flag). Render-only (reads gmap fields). Deferred on purpose; build it
+    as the session opener, not now.
+
 - **Blast-tuple wart (Arc A rider, A6, 2026-07-19) — direction DECIDED
   2026-07-19 at physics close-out:** `apply_explosion`'s structural wall
   damage gates on the hardcoded tuple at `physics.py:104`

@@ -536,6 +536,60 @@ height_scale = 0.4
 height_edge = 0.1
 height_floor = 0.3
 
+# =============================================================================
+# Render-layer beauty config (Fire & Heat Beauty arc, B1). ALL keys here are
+# RENDER-ONLY and determinism-EXEMPT: they drive renderer/blackbody.py +
+# renderer/fire_lights.py, which read gmap.temperature and write only render
+# structures. NOTHING here touches the sim, the digest, or a golden. Every
+# value is a tune-by-eye dial (Erik), never a gated constant.
+# =============================================================================
+
+[render]
+# Default overlay visibility (the shipped look; each stays a live in-game
+# toggle). Fire & Heat Beauty B1 (Erik feel-check 2026-07-21): the physical
+# black-body emissive overlay (T) ships ON — it IS the fire/heat view; the
+# legacy flat-orange FireOverlay (F3) stays OFF (superseded); the pressure
+# colormap (F7) now ships OFF by default (it washed the scene out — Erik's
+# call) but is one keypress away when you want to see shockwaves.
+blackbody_overlay_on = true
+fire_overlay_on = false
+pressure_overlay_on = false
+
+# Blackbody temperature->colour ramp (renderer/blackbody.py; design
+# docs/fire_b1_blackbody_fire_lights_design_2026-07-21.md §1). Baked once into a
+# 1D LUT at renderer startup. Chroma via the Tanner Helland/Bartlett Kelvin->RGB
+# fit (normalized, max channel = 1); brightness via a SEPARATE T⁴-flavour
+# intensity ramp (the fits give hue only). Game ΔT -> pseudo-Kelvin is the honest
+# dial for "white reserved for extremes": kelvin = kelvin_ambient +
+# k_temp_to_kelvin * T_game. Wood ignites at T_game ~300; the physical extreme
+# rail is T_MAX_PHYS = 16000.
+[render.blackbody]
+kelvin_floor = 800.0       # LUT low end (K)
+kelvin_ceil = 10000.0      # LUT high end (K)
+lut_size = 256             # LUT entries
+kelvin_ambient = 293.0     # pseudo-Kelvin at T_game = 0 (ambient)
+k_temp_to_kelvin = 2.0     # game-ΔT -> Kelvin slope  (TUNE BY EYE)
+kelvin_glow_min = 800.0    # below this: no visible glow (intensity 0)
+kelvin_ref = 3000.0        # exposure reference temperature (Macklin)
+intensity_exponent = 4.0   # Stefan-Boltzmann flavour (T⁴)
+intensity_max = 8.0        # HDR headroom pre-tonemap (16F pipeline + ACES; NO bloom)
+
+# Fire light sources (renderer/fire_lights.py; design §3). Tier 2 of the fire
+# glow: the brightest-K hot tiles become omni ray-traced light sources so fire
+# lights rooms, walls, and marines (the marine shader samples the same light
+# field). Candidates (T_game >= t_light_min) -> 3x3 non-max suppression ->
+# brightest max_lights by temperature. RENDER-ONLY: these NEVER write the synced
+# heat channel (heat is cast separately in the sim). Cost = sum over sources of
+# ceil(2π·range) rays, so max_lights (not range) is the budget lever — range is
+# LONG on purpose (geometry caps it; big-room illumination is the point).
+[render.fire_lights]
+enabled = true             # master on/off for fire lights
+t_light_min = 250.0        # game-ΔT candidate threshold
+nms_window = 3             # non-max-suppression window (3 or 5; widen if oversubscribed)
+max_lights = 16            # brightest-K cap (the budget lever)
+light_range = 18.0         # omni reach in tiles (LONG on purpose — Erik ruling)
+light_gain = 1.0           # multiplies the black-body intensity into light weight
+
 # Material property table (named-key format, ch.02 — Material System).
 # One [materials.<name>] row per material id; columns indexed into per-id
 # arrays by simulation.materials.MaterialTable.
