@@ -545,13 +545,15 @@ height_floor = 0.3
 # =============================================================================
 
 [render]
-# Overlay A/B defaults for the B1 human-test (design §2). The physical
-# black-body emissive overlay (toggle T) ships ON; the legacy flat-orange
-# FireOverlay (toggle F3) is demoted OFF so Erik compares both live and the
-# blessed default can be set here without a code change. Both remain live
-# toggles in-game.
+# Default overlay visibility (the shipped look; each stays a live in-game
+# toggle). Fire & Heat Beauty B1 (Erik feel-check 2026-07-21): the physical
+# black-body emissive overlay (T) ships ON — it IS the fire/heat view; the
+# legacy flat-orange FireOverlay (F3) stays OFF (superseded); the pressure
+# colormap (F7) now ships OFF by default (it washed the scene out — Erik's
+# call) but is one keypress away when you want to see shockwaves.
 blackbody_overlay_on = true
 fire_overlay_on = false
+pressure_overlay_on = false
 
 # Blackbody temperature->colour ramp (renderer/blackbody.py; design
 # docs/fire_b1_blackbody_fire_lights_design_2026-07-21.md §1). Baked once into a

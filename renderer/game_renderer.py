@@ -226,9 +226,11 @@ class GameRenderer:
         self.normal_y_flipped = False
         self.srgb_decode = True
         self.show_debug_coords = False
-        # Pressure colormap defaults ON in the main game — explosions
-        # look dramatic by default. Toggle with F7.
-        self.show_pressure = True
+        # Pressure colormap — default from [render] pressure_overlay_on (Fire &
+        # Heat Beauty B1, Erik 2026-07-21: OFF by default so it doesn't wash out
+        # the fire/heat view; still one keypress away). Toggle with F7.
+        self.show_pressure = bool(getattr(
+            getattr(CFG, "render", None), "pressure_overlay_on", False))
         # Emissive black-body temperature overlay (Fire & Heat Beauty B1) —
         # default ON via [render] blackbody_overlay_on so the blessed look ships
         # as the default; toggle with T. RENDER-ONLY.
