@@ -492,3 +492,10 @@ and its consumers.
   the data-driven shape is the groundwork for it, nothing more.
 - `team` and `faction_id` are kept as redundant aliases of the same value
   pending the faction table.
+
+
+
+  **Eriks additions -needs refining andplanning **
+
+  Perhaps body parts have hp-or if not hp, they can have damaged states
+  it came to my intention that with the now in planning animation system, using ML techniques, we might get limping behaviour etc- it would be cool if this could be tied into the game mechanics- so a unit hit in the foot willstart wiht a different animation , speed, even behavuour perhaps.
