@@ -74,7 +74,10 @@ Created 2026-07-17 from Erik's stated stack; Erik owns the ordering.
   exposed GL-texture hook for cupy interop, no repo precedent) and the genuine
   render-only fields (`smoke_glow`/`ripple`) are HOST-computed (no device copy to
   skip); the recorder reads already-mirrored host data (the Q4 D2H is mandatory).
-  Both awaiting Erik's call before any build.
+  **Items 2 & 3 DEFERRED + documented as accepted gaps (Erik, 2026-07-21) —
+  `docs/s8c_items_2_3_deferred_2026-07-21.md`** (revisit triggers inside). S8c's
+  one load-bearing win (item 1) is done; next real S8 item stays S8b (CUDA
+  graphs, parked).
 - Riders (chat-sized, slot when convenient):
   - ~~Wall-burst differential fix~~ **DONE 2026-07-18** — merged to main
     (true differential; only 1-deep membranes burst; Erik blessed).
