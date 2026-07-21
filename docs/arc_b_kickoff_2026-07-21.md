@@ -67,3 +67,38 @@ digest-gated patches may auto-merge on green only if Erik pre-authorizes.
 **Arc riders on the books (do NOT absorb):** baker `[art]`/`[bake]`
 writeback (fold at Arc C) · `bake_demo` legacy-form migration (Arc C) ·
 editor UX panes/wand/wiring (Arc C) · AI tilesets (parked behind Arc C).
+
+---
+
+## Model verdict (Fable, 2026-07-21, pre-handoff session)
+
+**Run this with Opus** driving the full autonomous-patch-workflow.
+Rationale: the design is LOCKED and errata'd as-built — the Fable-tier work
+(the 2026-07-18 design + critique rounds, Erik's rulings, the §5a contract)
+already happened; this arc is build-to-spec with mechanical oracles at every
+risky edge (dormancy guarantee, existing goldens byte-untouched, the new
+cross-machine logic golden, HUMAN-TEST on the airlock).
+
+**Concurrency constraint (S8c is in flight, same repo):** an Opus agent is
+concurrently working S8c (cast_fire_heat port + render interop + recorder —
+`physics_runner.py`, the resident tick, the CUDA build). Therefore Arc B
+**MUST take the §5a implementer's-choice as: stub the sensor accessor to
+the host mirror; do NOT build the resident gather kernel in this arc.** The
+accessor seam is the binding deliverable; the kernel rides a later slot once
+S8c lands. This keeps Arc B entirely out of `physics_runner.py`'s resident
+tick and out of the CUDA build — zero merge-collision surface with S8c.
+Both sessions work in their own worktree (concurrent-agent rules); neither
+commits to the main tree while the other's session is open.
+
+**Escalation triggers — STOP and bring Erik (or a Fable design review) in
+if the work finds it must do any of:**
+1. Change the §5a accessor interface (site order, Q16.16 int32 values, the
+   `(n_sites × n_channels)` shape) — that contract is what batched training
+   inherits.
+2. Change the two-tick latency contract or the member-id sweep order
+   (canon, engine/16).
+3. Re-baseline any golden/digest — the dormancy guarantee says existing
+   levels are bit-identical; if new logic can't stay dormant, the design has
+   a hole, not the gate.
+4. Touch the resident tick / `_step_resident` / the CUDA build after all
+   (S8c collision).
