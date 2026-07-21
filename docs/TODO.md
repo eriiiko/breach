@@ -88,10 +88,18 @@ All render-only — no sim/determinism surface, auto-skipped in headless trainin
   - *Render mapping:* fires read too white at the default `k_temp_to_kelvin=2.0`
     (saturates to white by ~T_game 3000). Dial `k_temp_to_kelvin` DOWN / raise
     `kelvin_ref` so white is reserved for extremes (config `[render.blackbody]`).
-  - *Sim hypothesis (Erik):* radiation may ignite things too fast — the whole
-    room went white, possibly all furniture ignited. Investigate the
-    temperature→ignition path / `k_fire_heat` / combustion burn (sim-side, NOT
-    render — B1 only reveals it). Verify with a headless probe.
+  - *Sim — EVERYTHING BURNS TOO EASILY (Erik 2026-07-21, headline):* the whole
+    room lit and went white. Primary suspect `k_fire_heat = 1600` (the radiation
+    heat deposit — "ignites too fast"); then `ignition_temp = 300` (raise),
+    `range_per_intensity = 3` (shorten reach), `o2_threshold = 0.01` (raise the
+    ignition O2 gate). Sim-side, NOT render — B1 only reveals it. Verify with a
+    headless probe (ticks-to-full-involvement).
+  - *Fire↔pressure link:* Erik hit a `[recorder] BLOWUP DETECTED` during the B1
+    session. NOTE blowups are PRE-EXISTING (dumps back to 2026-07-12; several
+    on 07-21 from W6 explosion testing) — not B1. But over-ignition plausibly
+    FEEDS it: a fully-involved room = many `fire_pressure_gain = 0.15` plume
+    over-pressures summing → blowup trip. Fixing ignition upstream should ease
+    the pressure symptom; confirm during the session.
   - *Diagnostics wanted (Erik's preference over more shortcut keys):* make ONE
     dedicated fire-tuning level and hardcode a per-tile value readout into the
     launch script — OR a small "all values of the hovered tile as a table"
