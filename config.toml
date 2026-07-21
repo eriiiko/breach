@@ -789,6 +789,18 @@ cover_exposure = 1.0   # solid wall: stops the march physically, no roll
 # march / spread split / crits / payload executor / ammo economy are W2/W3.
 # Unlisted columns take the loader defaults (spread 0, shots 1, rof 0, mag 0,
 # crit_chance 0, crit_mult 2.0, mass 0, loudness 0, payload columns 0/empty).
+#
+# METER-BASED RANGES (W6, Erik's design decision 2026-07-07): weapon reach is
+# authored as range_m — PHYSICAL METERS — and converts to the integer tile
+# range at Simulation construction using the loaded level's tile_size_m:
+#     range_tiles = max(1, int(range_m / tile_size_m + 0.5))    # round-half-up
+# quantized ONCE at table build (engine/14 door 2; the divide is door 3), so a
+# weapon reaches the same physical distance on any grid resolution. The pinned
+# test worlds are 1.0 m/tile (meters == tiles: every pre-W6 tile count below
+# became the same number in meters — bit-identical effective ranges); the
+# playground (0.333 m/tile) derives 3x the tiles for the same physical reach.
+# The ONE deliberate exception: dragon_7 rescaled to 10 m (Erik's call — the
+# W4 value, 8 tiles, was authored pre-meters and read as 2.7 m in-playground).
 # =============================================================================
 
 [weapons.k5_carbine]                  # assault rifle — the shipped rifle, re-homed
@@ -796,7 +808,7 @@ archetype = "projectile"
 ammo_family = "rifle_556"
 spread_deg = 3.0                      # aimed cone half-angle (was cone_half_angle_degrees)
 spread_snap_deg = 3.0                 # == spread_deg in W1; the snap/aim split activates in W2
-range_tiles = 90
+range_m = 90.0                        # was range_tiles = 90 @ the 1.0 m/tile test worlds (W6 meters)
 shots_per_trigger = 5                 # was bullets_per_burst
 rof_interval_seconds = 0.16666667     # 1/6 s (was burst_interval_seconds) -> 4 ticks @ 24 tps
 mag_size = 0                          # 0 = ammo not tracked until W3 wires the economy
@@ -830,7 +842,7 @@ archetype = "hitscan"
 ammo_family = "cell_laser"
 spread_deg = 0.1                      # near-perfect collimation (the armory row)
 spread_snap_deg = 0.1
-range_tiles = 60
+range_m = 60.0                        # was range_tiles = 60 (W6 meters)
 shots_per_trigger = 1
 rof_interval_seconds = 0.5            # 1 @ 0.5 s -> 12 ticks @ 24 tps
 mag_size = 0                          # cell economy wires in W3
@@ -846,7 +858,7 @@ archetype = "projectile"              # payload-carrying PROJECTILE + the FIRST 
 ammo_family = "40mm"
 spread_deg = 3.0
 spread_snap_deg = 5.0
-range_tiles = 40
+range_m = 40.0                        # was range_tiles = 40 (W6 meters)
 shots_per_trigger = 1
 rof_interval_seconds = 1.2            # 1 @ 1.2 s -> 29 ticks @ 24 tps
 mag_size = 6                          # 6-round cylinder — the W3 economy's proving weapon
@@ -879,7 +891,12 @@ loudness = 1.0
 archetype = "spray"
 ammo_family = "fuel_tank"
 cone_half_angle_degrees = 15.0        # armory "30° cone" = the FULL angle
-range_tiles = 8
+# range_m — THE W6 RESCALE (Erik's logged intent): 10 m standard. The W4 row
+# authored 8 TILES pre-meters, which read as a 2.7 m sputter on the 0.333
+# m/tile playground — the feel-check's "invisible flamethrower" in numbers.
+# 10 m -> 30 tiles in the playground, 10 tiles in the 1.0 m/tile test worlds.
+# heat_deposit scales with it — see [ammo.fuel_standard] for the derivation.
+range_m = 10.0
 burst_seconds = 1.5                   # -> 36 deposit ticks @ 24 tps
 spread_deg = 0.0
 spread_snap_deg = 0.0
@@ -895,7 +912,7 @@ loudness = 0.6                        # reserved, no consumer yet (stealth layer
 archetype = "spray"
 ammo_family = "toxin_tank"
 cone_half_angle_degrees = 12.5        # armory "25° cone" = the FULL angle
-range_tiles = 7
+range_m = 7.0                         # was range_tiles = 7 (W6 meters — 21 tiles in-playground)
 burst_seconds = 1.5
 spread_deg = 0.0
 spread_snap_deg = 0.0
@@ -931,6 +948,12 @@ loudness = 0.05                       # near-silent — the stealth identity
 [weapons.arc_baton]                   # melee — the crowd-control stick (W5)
 archetype = "melee"
 ammo_family = "none"
+# CHAIN-STUN (W5 finding of record, mechanics/03 §8 — ERIK'S CALL; numbers
+# deliberately untouched at W6): the 19-tick strike cadence re-stuns inside
+# every 36-tick stun window (statuses tick before shooting, shooting before
+# zombie AI), so one marine with a baton holds one zombie indefinitely
+# (10 hp/strike). THE DIAL PAIR is right here: rof_interval_seconds (next
+# line) vs status_seconds (below) — cadence > duration breaks the chain.
 rof_interval_seconds = 0.8            # armory "1 @ 0.8 s" -> 19 ticks @ 24 tps
 ap_cost = 1
 crit_chance = 0.0                     # no crit path — the baton's work is the stun
@@ -948,6 +971,160 @@ status_kind = "stunned"
 status_seconds = 1.5
 mass_kg = 1.1
 loudness = 0.2                        # a crack of arc discharge (reserved)
+
+# --- W6 ARMORY (mechanics/03 §6 — the full table as data; Erik's grand
+# tuning session is the balance pass). Every number below is a STANDARD
+# VALUE dial. Ranges are range_m (physical meters, the W6 convention);
+# default_ammo is the static round-selection seam (two weapons can share a
+# family and load different rounds); crit_chance is 0 everywhere ranged
+# (the lazy-roll rule: no draw until Erik dials one up).
+
+[weapons.p12_whisper]                 # suppressed sidearm — LOUDNESS IS THE POINT
+archetype = "projectile"
+ammo_family = "9mm"
+default_ammo = "9mm_subsonic"         # heavy subsonic loading (12 KIN)
+spread_deg = 2.5                      # armory 2.5°/5°
+spread_snap_deg = 5.0
+range_m = 30.0                        # sidearm reach; 90 tiles in-playground
+shots_per_trigger = 1
+rof_interval_seconds = 0.25           # 1 @ 0.25 s -> 6 ticks @ 24 tps
+mag_size = 12
+reload_seconds = 1.5
+ap_cost = 1
+crit_chance = 0.0                     # STANDARD VALUE — the assassin's pistol
+                                      # wants ~0.1 when Erik dials crits in
+crit_mult = 2.0
+mass_kg = 1.1
+# loudness 0.15 — the row's identity (armory §6): the stealth layer's
+# reserved consumer will let a Whisper shot go unheard by sound-hunting
+# zombies where the K5's 0.8 wakes the deck. Data lands now (W1 rule).
+loudness = 0.15
+
+[weapons.mp11_pdw]                    # SMG — close-quarters bullet hose
+archetype = "projectile"
+ammo_family = "9mm"
+default_ammo = "9mm_fmj"              # light FMJ (7 KIN) — volume over punch
+spread_deg = 6.0                      # armory 6°/9°: a coin flip at ~10 m
+spread_snap_deg = 9.0
+range_m = 35.0
+shots_per_trigger = 4                 # armory "4 @ 0.4 s"
+rof_interval_seconds = 0.4            # -> 10 ticks @ 24 tps
+mag_size = 30
+reload_seconds = 2.2
+ap_cost = 1
+crit_chance = 0.0
+crit_mult = 2.0
+mass_kg = 2.6
+loudness = 0.7
+
+[weapons.lr50]                        # marksman / anti-materiel rifle
+archetype = "projectile"
+ammo_family = "rifle_50"
+spread_deg = 0.25                     # armory 0.25°/2° — "does not miss indoors"
+spread_snap_deg = 2.0
+# range_m 150: the longest reach in the armory — every ship sightline is
+# inside it (the playground is ~33 m across); the cap only matters on
+# future exterior maps. STANDARD VALUE: 100 .. 300.
+range_m = 150.0
+shots_per_trigger = 1
+rof_interval_seconds = 1.5            # armory "1 @ 1.5 s" -> 36 ticks
+mag_size = 5
+reload_seconds = 3.5
+ap_cost = 1
+crit_chance = 0.0                     # the headshot fantasy is Erik's dial
+crit_mult = 2.0
+mass_kg = 12.0
+loudness = 1.0                        # the whole deck hears a .50
+
+[weapons.jackhammer_8]                # combat shotgun — 8 pellets per trigger
+archetype = "projectile"
+ammo_family = "shell_12g"
+spread_deg = 8.0                      # armory 8°/10° — falloff EMERGES from
+spread_snap_deg = 10.0                # pellet spread geometry, no table (§5)
+range_m = 15.0                        # pellets carry short; 45 tiles in-playground
+shots_per_trigger = 8                 # PELLETS = shots_per_trigger (armory §6)
+rof_interval_seconds = 0.8            # pump cadence -> 19 ticks @ 24 tps
+mag_size = 8                          # tube of 8 shells (1 trigger = 1 shell)
+reload_seconds = 4.0                  # tube feed is slow
+ap_cost = 1
+crit_chance = 0.0
+crit_mult = 2.0
+mass_kg = 4.5
+loudness = 1.0
+
+[weapons.lance_5]                     # "Longlight" heavy laser — HITSCAN
+archetype = "hitscan"
+ammo_family = "cell_laser"
+default_ammo = "cell_laser_heavy"     # 55 ENERGY heavy cell (the Lance-3
+                                      # keeps first-family-match -> standard 25)
+spread_deg = 0.05                     # armory: half the Lance-3's 0.1°
+spread_snap_deg = 0.05
+range_m = 100.0                       # a longer light; still gas-attenuated
+shots_per_trigger = 1
+rof_interval_seconds = 1.0            # 1 @ 1.0 s -> 24 ticks @ 24 tps
+mag_size = 0                          # cell economy untracked (the Lance-3 rule)
+reload_seconds = 0.0
+ap_cost = 1
+crit_chance = 0.0                     # HITSCAN does not crit (W2 rule of record)
+crit_mult = 2.0
+mass_kg = 7.8
+loudness = 0.1                        # quiet — the stealth-tech identity
+
+[weapons.sunspot]                     # plasma caster — slow glowing bolt + splash
+archetype = "projectile"
+ammo_family = "cell_plasma"
+default_ammo = "plasma_standard"
+spread_deg = 1.5                      # armory 1.5°
+spread_snap_deg = 3.0
+range_m = 30.0                        # the bolt burns out; 90 tiles in-playground
+shots_per_trigger = 1
+rof_interval_seconds = 0.9            # armory "1 @ 0.9 s" -> 22 ticks
+mag_size = 6
+reload_seconds = 3.0
+ap_cost = 1
+crit_chance = 0.0
+crit_mult = 2.0
+mass_kg = 5.2
+loudness = 0.5
+
+[weapons.helios]                      # heavy plasma — bigger bolt, bigger splash
+archetype = "projectile"
+ammo_family = "cell_plasma"
+default_ammo = "plasma_heavy"
+spread_deg = 2.0                      # armory 2°
+spread_snap_deg = 4.0
+range_m = 35.0
+shots_per_trigger = 1
+rof_interval_seconds = 1.4            # armory "1 @ 1.4 s" -> 34 ticks
+mag_size = 4
+reload_seconds = 4.0
+ap_cost = 1
+crit_chance = 0.0
+crit_mult = 2.0
+mass_kg = 9.5
+loudness = 0.6
+
+[weapons.dragon_9_heavy]              # heavy flamethrower — the Dragon-7's big brother
+archetype = "spray"
+ammo_family = "fuel_tank"
+default_ammo = "fuel_heavy"           # 4800 heat/tick round (see its derivation)
+cone_half_angle_degrees = 15.0        # same 30° FULL cone as the Dragon-7
+# range_m 20 (Erik's spec): 60 tiles in-playground, 20 in the 1.0 m/tile
+# test worlds. NOTE the cone-membership pass is O(range^2) Python per
+# deposit tick — at 60 tiles it is the most expensive trigger in the game
+# (playable; a vectorized cone is the optimization seam if Erik hoses
+# continuously).
+range_m = 20.0
+burst_seconds = 2.0                   # a longer pull -> 48 deposit ticks @ 24 tps
+spread_deg = 0.0                      # cone weapons draw NOTHING (W4 rule)
+spread_snap_deg = 0.0
+mag_size = 3                          # 3 BURSTS per tank (bursts, not rounds)
+reload_seconds = 6.0                  # a big tank swap -> 144 ticks
+ap_cost = 1
+crit_chance = 0.0                     # sprays never touch units — no crit path
+crit_mult = 2.0
+mass_kg = 16.0
+loudness = 0.7                        # a bigger roar than the Dragon-7's 0.6
 
 [ammo.rifle_556_standard]
 family = "rifle_556"
@@ -1079,23 +1256,30 @@ damage = 0                            # sprays apply no packets, ever
 dtype = "heat"                        # bookkeeping only (no packet path)
 ap = 0
 # heat_deposit — flame heat energy per tick at distance 1 (falloff /dist).
-# STANDARD VALUE, derived from the engine/06 convert path (Erik's dial):
+# STANDARD VALUE, derived from the engine/06 convert path (Erik's dial).
+# W6 RESCALE (rides the dragon_7 range_m = 10 rescale — same derivation
+# discipline as W4's 400, new target):
 #   convert:  temperature += heat >> log2(thermal_mass); wood mass 8 -> D/8
 #   cooling:  T -= T >> COOL_SHIFT(5) per tick        -> ~1/32 loss (interior)
 #   so at a sustained per-tile deposit D:  T(n+1) = (T(n) + D/8) * 31/32
 #   -> steady state T_inf = 31*D/8 ~= 3.875*D,  T(n) = T_inf*(1-(31/32)^n)
-#   with heat_deposit = 400 the jet crosses wood's ignition_temp = 300 at:
-#     dist 1 (D=400, T_inf 1550): ~7 ticks  (~0.3 s)
-#     dist 2 (D=200, T_inf  775): ~15 ticks (~0.65 s)
-#     dist 3 (D=133, T_inf  517): ~27 ticks (~1.1 s — inside the 36-tick burst)
-#     dist 4-5: 2.0-4.5 s of sustained hosing (a second burst); beyond ~5 the
-#     direct jet alone stays under 300 — the fires it started radiate
-#     (k_fire_heat) and the ignition front cascades outward on its own.
-#   (Wood conduction kappa 0.15 bleeds a negligible face term; doors /
-#   furniture ignite at 280 — slightly sooner.) Interesting range: ~200
-#   (close-work torch: ~1 s ignition at dist 1-2 only) .. 800 (instant wall
-#   of fire out to mid-cone).
-heat_deposit = 400.0
+# TARGET: ignition reach must TRACK the new 10 m range on the playground grid
+# (0.333 m/tile -> range_tiles 30). The falloff divisor is the integer TILE
+# distance d, so sustained-jet ignition needs T_inf(d) = 3.875 * D/d >= 300
+# (wood), i.e. D >= 77.4 * d; the far edge d = 30 needs D >= 2323 ->
+# heat_deposit = 2400 (the round standard value; full-cone reach ~31 tiles).
+# Time-to-ignite from T(n): within ONE 36-tick burst (1.5 s) the jet crosses
+# 300 out to d ~ 21 (T_inf >= 440); within ~1 s (24 ticks) out to d ~ 16
+# (5.5 m) — "most of the cone within ~1 s", the near half instantly:
+#     d 2  (D 1200, T_inf 4650): ~2 ticks     d 8  (D 300, T_inf 1162): ~9
+#     d 16 (D 150,  T_inf  581): ~24          d 21 (D 114, T_inf  443): ~36
+#   beyond d ~ 21 the direct jet needs a second burst — and in practice the
+#   fires it started radiate (k_fire_heat) and cascade the front outward.
+# NOTE the derivation is grid-anchored: d is TILES, so on the 1.0 m/tile test
+# worlds (range_tiles 10) the same 2400 ignites the WHOLE cone near-instantly
+# — pinned there as the ignition-reach gate. Interesting range: ~800 (torch:
+# reach ~10 tiles) .. 4800 (the dragon_9_heavy value — reach ~62 tiles).
+heat_deposit = 2400.0
 # fuel_gas haze rides the same cone (engine/05 §6.2 slice; flammable = the
 # future per-gas combustion hook, M3). Small on purpose — an ignition-hazard
 # accent, not the damage mechanism. 0.15/tick at dist 1, falloff /dist.
@@ -1118,6 +1302,106 @@ ap = 0
 # instant wall of chlorine).
 gas_species = "poison"
 gas_amount = 0.35
+
+# --- W6 ARMORY rounds -------------------------------------------------------
+[ammo.9mm_subsonic]                   # the Whisper's loading (default_ammo)
+family = "9mm"
+damage = 12                           # heavy slow slug — armory "12 KIN"
+dtype = "kinetic"
+ap = 0
+speed_tiles_per_tick = 60.0           # armory 60 t/t = 1440 tiles/s @ 24 tps
+wall_damage = 1
+
+[ammo.9mm_fmj]                        # the MP-11's loading (default_ammo)
+family = "9mm"
+damage = 7                            # light FMJ — armory "7 KIN"; volume kills
+dtype = "kinetic"
+ap = 0
+speed_tiles_per_tick = 60.0
+wall_damage = 1
+
+[ammo.rifle_50_ap]                    # the LR-50's anti-materiel round
+family = "rifle_50"
+damage = 90                           # armory "90 KIN, AP 10" — one shot, one door
+dtype = "kinetic"
+ap = 10                               # armor pierce (mechanics/06 mitigation)
+speed_tiles_per_tick = 128.0          # fastest round in the game
+wall_damage = 8                       # chews cover fast — an AM rifle eats crates
+
+[ammo.shell_12g_buck]                 # the Jackhammer's buckshot
+family = "shell_12g"
+damage = 6                            # PER PELLET (x8 per trigger) — armory "6 KIN x8"
+dtype = "kinetic"
+ap = 0
+speed_tiles_per_tick = 50.0
+wall_damage = 1                       # each pellet chips; a full face of 8 bites
+
+[ammo.cell_laser_heavy]               # the Lance-5's cell (default_ammo). Placed
+family = "cell_laser"                 # AFTER cell_laser_standard so the Lance-3's
+damage = 55                           # first-family-match resolution is untouched.
+dtype = "energy"                      # armory "55 ENERGY (skewer)"
+ap = 0
+wall_damage = 30                      # a heavy beam bites deep at its stop
+
+# Plasma bolts (W6): the GL-6 detonate-at-stop machinery with a DIRECT-HIT
+# packet on top — a plasma round authors BOTH damage > 0 (the bolt hits the
+# unit it stops on, HEAT dtype: zombies' resist_mult[HEAT] 4x applies at
+# mitigation) AND a payload ref (the splash executes at the stop tile —
+# first solid / footprint / cover absorption / max range, event kind
+# "shell"). glow = "plasma" makes the march emit the render-only
+# ProjectileGlowEvent each tick — the slow bolt is VISIBLE (1.5 t/t = 36
+# tiles/s: dodgeable, watchable, a flying ember).
+[ammo.plasma_standard]                # the Sunspot bolt
+family = "cell_plasma"
+damage = 40                           # armory "40 HEAT + splash" — the direct hit
+dtype = "heat"
+ap = 0
+speed_tiles_per_tick = 1.5            # armory 1.5 t/t — a slow glowing bolt
+wall_damage = 0                       # the SPLASH does the wall work (40mm rule)
+payload = "plasma_splash_small"
+glow = "plasma"
+
+[ammo.plasma_heavy]                   # the Helios bolt
+family = "cell_plasma"
+damage = 70                           # armory "70 HEAT + splash"
+dtype = "heat"
+ap = 0
+speed_tiles_per_tick = 1.25           # armory 1.25 t/t — slower, heavier
+wall_damage = 0
+payload = "plasma_splash_large"
+glow = "plasma"
+
+[ammo.fuel_heavy]                     # the Dragon-9's tank (default_ammo)
+family = "fuel_tank"
+damage = 0                            # sprays apply no packets, ever (W4 invariant)
+dtype = "heat"                        # bookkeeping only (no packet path)
+ap = 0
+# heat_deposit 4800 — the fuel_standard derivation (see above) re-targeted
+# at the Dragon-9's 20 m range on the playground grid (0.333 m/tile ->
+# range_tiles 60): sustained-jet ignition needs D >= 77.4 * d, so the far
+# edge d = 60 needs D >= 4645 -> 4800 (reach ~62 tiles). Twice the
+# Dragon-7's 2400 for twice the reach — the same discipline, one dial.
+heat_deposit = 4800.0
+gas_species = "fuel_gas"
+gas_amount = 0.25                     # a thicker haze than the Dragon-7's 0.15
+
+[ammo.grenade_incendiary]             # incendiary hand grenade (mechanics/03 §6)
+family = "hand_grenade"
+damage = 0
+dtype = "blast"
+ap = 0
+speed_tiles_per_tick = 1.25           # the shipped grenade flight (30 tiles/s)
+travel_speed_tiles_per_second = 30.0
+payload = "incendiary_splash"
+
+[ammo.40mm_incendiary]                # 40 mm incendiary — SAME payload row as the
+family = "40mm"                       # hand grenade (one definition of "incendiary",
+damage = 0                            # two deliveries — the W3 row-identity rule)
+dtype = "blast"
+ap = 0
+speed_tiles_per_tick = 1.25
+wall_damage = 0
+payload = "incendiary_splash"
 
 # The W1-finding smoke boolean SPLIT (mechanics/03 §8, wired W3): clear_smoke
 # documents apply_explosion's built-in inner-radius (40%) smoke clearing — v1
@@ -1179,6 +1463,47 @@ wall_damage = 800
 unit_damage = 150
 clear_smoke = true
 emit_blast_smoke = true
+
+# --- W6 plasma splashes ------------------------------------------------------
+# Small-radius HEAT/IGNITE + modest wall damage (the launch-note spec). The
+# bolt's DIRECT HIT carries the unit damage (ammo damage 40/70 HEAT);
+# unit_damage here stays 0 — units near the splash cook through the existing
+# heat|max exchange row reading the heat_amount deposit (two-terminals, zero
+# new damage code). heat_amount derivation (engine/06 convert, one-shot):
+# centre temperature jump = heat/thermal_mass; wood (mass 8) ignites at 300,
+# and the same-tick cooling (x31/32) shaves ~3%, so the centre needs
+# heat >= 8 * 300 * 32/31 ~= 2477 to ignite wood INSTANTLY where the bolt
+# lands -> 3200 (jump 400 -> ~387 after cool: comfortable margin, and the
+# LINEAR falloff keeps instant-ignition inside ~1/5 of heat_radius; the
+# ignite ring below guarantees the visible fire pop regardless).
+[payloads.plasma_splash_small]        # Sunspot
+radius = 2                            # modest wall damage + a small pressure pop
+# wall_damage 25 — a SCORCH, not a breacher: wood walls carry hp 60, so a
+# Sunspot bolt chips the partition it wants to IGNITE rather than blowing
+# it away before the fire takes (3 bolts to break wood, and by then it
+# burns). STANDARD VALUE: 10 (cosmetic) .. 60 (one-bolts a wood wall).
+pressure = 1.5
+wall_damage = 25
+heat_amount = 3200.0                  # centre jump 400 (wood ignites instantly)
+heat_radius = 2.0
+ignite_radius = 1.5                   # the guaranteed fire pop (flammables only)
+ignite_intensity = 0.5
+clear_smoke = false                   # a bolt is not a blast wave
+emit_blast_smoke = false              # its smoke comes from what it BURNS
+
+[payloads.plasma_splash_large]        # Helios
+radius = 3
+pressure = 2.5
+# wall_damage 45 — heavier scorch (2 Helios bolts break a wood wall; steel
+# shrugs). STANDARD VALUE: 25 (the Sunspot) .. 120 (breacher-lite — but
+# then the bolt destroys the very wall it just set alight, see above).
+wall_damage = 45
+heat_amount = 5600.0                  # centre jump 700 — ignites past half-radius
+heat_radius = 3.0
+ignite_radius = 2.5
+ignite_intensity = 0.6
+clear_smoke = false
+emit_blast_smoke = false
 
 [zombie]
 hp = 400
