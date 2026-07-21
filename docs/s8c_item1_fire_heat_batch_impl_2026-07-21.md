@@ -1,6 +1,11 @@
 # S8c item 1 — `cast_fire_heat` batched device cast (impl design, 2026-07-21)
 
-**Status:** DESIGN v1 (for adversarial critique before build). **Arc:** S8c
+**Status:** DESIGN v2 — survived a 3-lens adversarial critique (determinism /
+plumbing / gate-adequacy). Determinism + plumbing: CONFIRMED-SAFE, no blocker
+(byte-identity of `heat` rests on the order-free saturating-atomic add; the
+binding is purely additive and `pybind11/stl.h` auto-converts
+`list[LightSource]`). Gate lens found NO design blocker but corrected §5 (the
+S8a `heat` compare is **vacuous** — see §5). BUILD AGAINST THIS. **Arc:** S8c
 (kickoff `docs/s8c_kickoff_2026-07-21.md`). **Workflow:**
 autonomous-patch-workflow, design-pass-first (sim-affecting). **Machine:**
 Lenovo/Ada (build + gate here).
@@ -142,25 +147,56 @@ uploads its current contents, saturating-adds every source, downloads once.
 
 ## 5. The gate
 
+★ CRITIQUE CORRECTION (gate lens): the S8a `heat` compare is **VACUOUS**.
+`heat` is zeroed at the end of every tick (`_one_tick:149`,
+`_one_tick_ambient:316`) BEFORE `_compare_tick` runs, so `array_equal(heat_A,
+heat_B)` in S8a is `0 == 0` each tick and proves nothing directly about the
+batched deposit. S8a's batched-heat coverage is therefore (a) *exercising* the
+batch path in the live tick + (b) *indirect* — `cast_fire_heat` runs before the
+TemperatureSolver, so a heat divergence propagates into `temperature`, which IS
+compared tol 0 and NOT cleared. The **non-vacuous** batched-heat proof is
+`cuda_s2b` (below).
+
 1. **Correctness (mechanical oracle, tol 0):**
-   - `tests/cuda_s2_check.py` + `tests/cuda_s2b_raycaster_live_check.py` — the
-     raycaster/live-cast digest gates (the per-source path stays live and is
-     still exercised where those tests drive it).
-   - `tests/cuda_s8a_check.py` PART 1 — the full-engine A/B, `heat` ∈ `_FIELDS`
-     compared tol 0. This now exercises the **batched** cast in the live tick
-     (the runner's CUDA fire path). CPU vs CUDA `heat` must stay bit-identical.
-   - A **direct batch-vs-per-source A/B** (new, cheap): on a multi-fire state,
-     run the old per-source loop into `heat_A` and the batch entry into
-     `heat_B`; assert `heat_A == heat_B` byte-for-byte. Localised proof that
-     concatenation changed nothing. (Both are the CUDA path — proves batching
-     alone.)
+   - **PRIMARY non-vacuous heat gate — `tests/cuda_s2b_raycaster_live_check.py`
+     PART 1/1b.** These drive the production `runner.cast_fire_heat(g)` with the
+     raycaster backend OFF (CPU) vs ON (GPU), read `g.heat.copy()` **before** the
+     end-of-tick clear, and assert `array_equal(heat_cpu, heat_gpu)` over a
+     many-fires scenario (`n_fire = max(8, |interior|//3)`). **Post-patch the ON
+     leg IS the batched call** — so this becomes exactly the "batched cast ==
+     CPU cast on `heat`, tol 0, live-wired, many sources" gate with **zero test
+     edits**. Add a vacuousness assert that ≥2 sources were batched (the `nfire`
+     print already exposes the count).
+   - **Localised regression witness — new direct batch-vs-per-source A/B in
+     `tests/cuda_s2_check.py`.** Reuse `_build_scenario`'s `sources` list (16
+     overlapping high-heat sources that drive cells to `INT32_MAX` — saturation
+     coverage). Add `_cast_gpu_batch` beside `_cast_gpu` issuing one
+     `bp.cuda_raycaster_cast_batch(rc, sources, …)`; assert
+     `array_equal(_cast_gpu(...), _cast_gpu_batch(...))` + the existing
+     non-vacuous checks (`nz>0`, `sat>0`). Not strictly necessary (transitively
+     implied: per-source-CPU==per-source-GPU via `cuda_s2_check`, and
+     batch-GPU==CPU via `cuda_s2b`), but it isolates a concatenation/ray-order
+     bug precisely — cheap insurance.
+   - `tests/cuda_s8a_check.py` PART 1 — full-engine A/B. Its GPU leg now runs the
+     batched cast (`set_raycaster_backend` is in `_BACKENDS`, forced ON before
+     the GPU tick); coverage is via `temperature` tol 0 (the `heat` compare
+     itself is vacuous, above). Keep as a live-integration + telemetry gate.
    - Full `pytest tests -q` green.
-2. **Payoff bench (the point of the patch):** a many-fires scenario
-   (dozens–hundreds of burning tiles). Measure per-source-loop tick time vs
-   batched tick time on `--cuda`; assert (a) batched clearly wins, (b) an
-   **absolute playable floor** (e.g. tick well under the 3-fps ≈ 333 ms/frame;
-   target comfortably interactive). Laptop power-state noise → assert the win +
-   an absolute floor, not a ratio (S8a bench discipline).
+2. **Payoff bench (the point of the patch):** a many-fires scenario (scale the
+   `cuda_s2b::_build_runner_and_map` `n_fire` up to hundreds). Isolate
+   `cast_fire_heat` (not the whole engine), mirroring the `_bench_*` structure in
+   `cuda_s8a_check.py`. Assert BOTH:
+   - **(primary, throttle-robust) same-invocation ratio** — per-source loop vs
+     batched measured **back-to-back in one bench call** (best-of-3 each), same
+     GPU clock/thermal state so the ratio cancels power noise: **batched > 3×
+     faster** than the per-source loop.
+   - **(absolute floor, with headroom) batched `cast_fire_heat` < ~100 ms** on
+     the many-fires scenario — >3× better than the 3-fps ≈ 333 ms pain, ~3×
+     headroom under a 2× laptop throttle so a good path never false-FAILs. Name
+     30 fps / 33 ms as the *target* in the print, NOT the gate (asserting < 33 ms
+     would spuriously fail under throttle). A > 100 ms best-of-3 means the
+     malloc/round-trip tax is genuinely back — a real regression, disambiguated
+     from throttle by the ratio.
 
 ## 6. Build order
 
