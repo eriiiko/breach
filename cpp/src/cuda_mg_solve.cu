@@ -332,7 +332,132 @@ __global__ void mg_fused_tail(MGTailArgs a) {
     }
 }
 
+// ============================================================================
+// The SHARED solve-schedule body (S8a Path A code motion): the launch loops +
+// fused tail + level-0 zero + launch counting that eos_mg_vcycle has always
+// run, factored so the resident entry runs the IDENTICAL sequence on the
+// persistent device hierarchy. No sync, no transfer — callers own those.
+// ============================================================================
+void run_schedule(const MGLevelDev* dev, int n_levels,
+                  bool use_multigrid, int mg_cycles, int mg_nu1, int mg_nu2,
+                  int mg_coarsest_sweeps, int flat_S,
+                  int* launches_actual, int* launches_naive) {
+    const int n0 = dev[0].h * dev[0].w;
+    const int block = 256;
+    auto grid_for = [&](int n) { return (n + block - 1) / block; };
+    int launches = 0;
+    auto launch_check = [&](const char* what) {
+        cuda_check(cudaGetLastError(), what);
+        ++launches;
+    };
+
+    // smooth via per-color launches (fine levels + the flat path).
+    auto smooth_launches = [&](int lv, int sweeps) {
+        const MGLevelDev& L = dev[lv];
+        const int g = grid_for(L.h * L.w);
+        for (int it = 0; it < sweeps; ++it) {
+            for (int color = 0; color < 2; ++color) {
+                mg_smooth_color<<<g, block>>>(L, color);
+                launch_check("smooth launch");
+            }
+        }
+    };
+
+    // The fused-tail entry level: first level with ≤ MG_TAIL_MAX_CELLS
+    // cells (cell counts are non-increasing with depth, so the tail is
+    // contiguous). ts == n_levels ⇒ no level qualifies (never happens at
+    // game sizes — the coarsest is 1×1 — but handled: fully per-launch).
+    int ts = n_levels;
+    for (int lv = 0; lv < n_levels; ++lv) {
+        if (dev[lv].h * dev[lv].w <= MG_TAIL_MAX_CELLS) { ts = lv; break; }
+    }
+    // The tail block: one block, threads ≥ min(1024, max tail cells) not
+    // required — block-stride loops cover any tail size ≤ 1024; 256
+    // threads keeps the one-cell coarsest from wasting a huge block.
+    const int tail_block = 256;
+
+    if (use_multigrid && n_levels > 1) {
+        for (int cyc = 0; cyc < mg_cycles; ++cyc) {
+            const int host_down_end =
+                (ts < n_levels - 1) ? ts : (n_levels - 1);
+            for (int lv = 0; lv < host_down_end; ++lv) {
+                smooth_launches(lv, mg_nu1);
+                mg_residual<<<grid_for(dev[lv].h * dev[lv].w), block>>>(dev[lv]);
+                launch_check("residual launch");
+                mg_restrict<<<grid_for(dev[lv + 1].h * dev[lv + 1].w), block>>>(
+                    dev[lv], dev[lv + 1]);
+                launch_check("restrict launch");
+            }
+            if (ts < n_levels) {
+                MGTailArgs a;
+                for (int lv = 0; lv < n_levels; ++lv) a.L[lv] = dev[lv];
+                a.ts = ts;
+                a.n_levels = n_levels;
+                a.nu1 = mg_nu1;
+                a.nu2 = mg_nu2;
+                a.coarsest_sweeps = mg_coarsest_sweeps;
+                mg_fused_tail<<<1, tail_block>>>(a);
+                launch_check("fused tail launch");
+            } else {
+                smooth_launches(n_levels - 1, mg_coarsest_sweeps);
+            }
+            for (int lv = host_down_end - 1; lv >= 0; --lv) {
+                mg_prolong<<<grid_for(dev[lv].h * dev[lv].w), block>>>(
+                    dev[lv], dev[lv + 1]);
+                launch_check("prolong launch");
+                smooth_launches(lv, mg_nu2);
+            }
+        }
+    } else {
+        smooth_launches(0, flat_S);   // flat A/B reference path
+    }
+
+    mg_zero_excl<<<grid_for(n0), block>>>(dev[0]);
+    launch_check("zero-excl launch");
+
+    // Naive launch count: the SAME schedule with one kernel per color
+    // per sweep + per pass everywhere (no tail fusion) — review §0's
+    // tally, +1 for the zero-excl.
+    int naive = 0;
+    if (use_multigrid && n_levels > 1) {
+        const int down = (n_levels - 1) * (mg_nu1 * 2 + 2);
+        const int coarsest = mg_coarsest_sweeps * 2;
+        const int up = (n_levels - 1) * (1 + mg_nu2 * 2);
+        naive = mg_cycles * (down + coarsest + up);
+    } else {
+        naive = flat_S * 2;
+    }
+    naive += 1;
+    if (launches_actual) *launches_actual = launches;
+    if (launches_naive)  *launches_naive = naive;
+}
+
 }  // namespace
+
+// ============================================================================
+// S8a Path A: the device-resident entry — the same shared schedule on the
+// persistent hierarchy (contract in the header).
+// ============================================================================
+void eos_mg_vcycle_resident(
+        const MGLevelDevPtrs* levels, int n_levels,
+        bool use_multigrid, int mg_cycles, int mg_nu1, int mg_nu2,
+        int mg_coarsest_sweeps, int flat_S) {
+    if (n_levels <= 0 || n_levels > MG_MAX_LEVELS) {
+        throw std::runtime_error("eos_mg_vcycle_resident: bad n_levels");
+    }
+    MGLevelDev dev[MG_MAX_LEVELS] = {};
+    for (int lv = 0; lv < n_levels; ++lv) {
+        const MGLevelDevPtrs& S = levels[lv];
+        if (S.h * S.w <= 0)
+            throw std::runtime_error("eos_mg_vcycle_resident: empty level");
+        MGLevelDev& D = dev[lv];
+        D.h = S.h; D.w = S.w;
+        D.excl = S.excl; D.m = S.m; D.gE = S.gE; D.gS = S.gS;
+        D.recip = S.recip; D.b = S.b; D.P = S.P; D.res = S.res;
+    }
+    run_schedule(dev, n_levels, use_multigrid, mg_cycles, mg_nu1, mg_nu2,
+                 mg_coarsest_sweeps, flat_S, nullptr, nullptr);
+}
 
 // ============================================================================
 // Host entry — see the header for the contract.
@@ -387,97 +512,15 @@ uint64_t eos_mg_vcycle(
             D.res = (int64_t*)dres;
         }
 
-        const int block = 256;
-        auto grid_for = [&](int n) { return (n + block - 1) / block; };
-        int launches = 0;
-        auto launch_check = [&](const char* what) {
-            cuda_check(cudaGetLastError(), what);
-            ++launches;
-        };
-
-        // smooth via per-color launches (fine levels + the flat path).
-        auto smooth_launches = [&](int lv, int sweeps) {
-            const MGLevelDev& L = dev[lv];
-            const int g = grid_for(L.h * L.w);
-            for (int it = 0; it < sweeps; ++it) {
-                for (int color = 0; color < 2; ++color) {
-                    mg_smooth_color<<<g, block>>>(L, color);
-                    launch_check("smooth launch");
-                }
-            }
-        };
-
-        // The fused-tail entry level: first level with ≤ MG_TAIL_MAX_CELLS
-        // cells (cell counts are non-increasing with depth, so the tail is
-        // contiguous). ts == n_levels ⇒ no level qualifies (never happens at
-        // game sizes — the coarsest is 1×1 — but handled: fully per-launch).
-        int ts = n_levels;
-        for (int lv = 0; lv < n_levels; ++lv) {
-            if (dev[lv].h * dev[lv].w <= MG_TAIL_MAX_CELLS) { ts = lv; break; }
-        }
-        // The tail block: one block, threads ≥ min(1024, max tail cells) not
-        // required — block-stride loops cover any tail size ≤ 1024; 256
-        // threads keeps the one-cell coarsest from wasting a huge block.
-        const int tail_block = 256;
-
-        if (use_multigrid && n_levels > 1) {
-            for (int cyc = 0; cyc < mg_cycles; ++cyc) {
-                const int host_down_end =
-                    (ts < n_levels - 1) ? ts : (n_levels - 1);
-                for (int lv = 0; lv < host_down_end; ++lv) {
-                    smooth_launches(lv, mg_nu1);
-                    mg_residual<<<grid_for(dev[lv].h * dev[lv].w), block>>>(dev[lv]);
-                    launch_check("residual launch");
-                    mg_restrict<<<grid_for(dev[lv + 1].h * dev[lv + 1].w), block>>>(
-                        dev[lv], dev[lv + 1]);
-                    launch_check("restrict launch");
-                }
-                if (ts < n_levels) {
-                    MGTailArgs a;
-                    for (int lv = 0; lv < n_levels; ++lv) a.L[lv] = dev[lv];
-                    a.ts = ts;
-                    a.n_levels = n_levels;
-                    a.nu1 = mg_nu1;
-                    a.nu2 = mg_nu2;
-                    a.coarsest_sweeps = mg_coarsest_sweeps;
-                    mg_fused_tail<<<1, tail_block>>>(a);
-                    launch_check("fused tail launch");
-                } else {
-                    smooth_launches(n_levels - 1, mg_coarsest_sweeps);
-                }
-                for (int lv = host_down_end - 1; lv >= 0; --lv) {
-                    mg_prolong<<<grid_for(dev[lv].h * dev[lv].w), block>>>(
-                        dev[lv], dev[lv + 1]);
-                    launch_check("prolong launch");
-                    smooth_launches(lv, mg_nu2);
-                }
-            }
-        } else {
-            smooth_launches(0, flat_S);   // flat A/B reference path
-        }
-
-        mg_zero_excl<<<grid_for(n0), block>>>(dev[0]);
-        launch_check("zero-excl launch");
+        // The SHARED schedule body (S8a Path A code motion — run_schedule
+        // above): identical launch sequence, identical counting.
+        run_schedule(dev, n_levels, use_multigrid, mg_cycles, mg_nu1, mg_nu2,
+                     mg_coarsest_sweeps, flat_S,
+                     launches_actual, launches_naive);
 
         cuda_check(cudaDeviceSynchronize(), "sync");
         cuda_check(cudaMemcpy(p_out, dev[0].P, (size_t)n0 * 4,
                               cudaMemcpyDeviceToHost), "D2H P");
-
-        // Naive launch count: the SAME schedule with one kernel per color
-        // per sweep + per pass everywhere (no tail fusion) — review §0's
-        // tally, +1 for the zero-excl.
-        int naive = 0;
-        if (use_multigrid && n_levels > 1) {
-            const int down = (n_levels - 1) * (mg_nu1 * 2 + 2);
-            const int coarsest = mg_coarsest_sweeps * 2;
-            const int up = (n_levels - 1) * (1 + mg_nu2 * 2);
-            naive = mg_cycles * (down + coarsest + up);
-        } else {
-            naive = flat_S * 2;
-        }
-        naive += 1;
-        if (launches_actual) *launches_actual = launches;
-        if (launches_naive)  *launches_naive = naive;
 
         free_all();
     } catch (...) {

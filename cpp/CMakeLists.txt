@@ -78,6 +78,7 @@ if(BREACH_CUDA)
         src/cuda_kick_compression.cu # EOS P6.4 momentum kick + compression work (counted rails)
         src/cuda_mg_solve.cu       # EOS P6.3 multigrid pressure solve (RB-GS + fused tail)
         src/cuda_eos_step.cu       # EOS P6.5 chained full-eos.step dispatch (the big flip)
+        src/cuda_eos_resident.cu   # S8a Path A: fully device-resident EOS tick + device MG build
         src/cuda_combustion.cu)    # EOS P6.9b two-gather combustion (closes P6)
     # S5 cuda_wave.cu / S7 cuda_atmosphere.cu RETIRED in EOS P6.0 — their CPU
     # solvers (wave_substep / diffuse_solve) were replaced by the compressible

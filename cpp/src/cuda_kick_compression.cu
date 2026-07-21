@@ -31,6 +31,7 @@
 //     input — the blessed P3 hoist class).
 // ============================================================================
 #include "cuda_kick_compression.h"
+#include "cuda_resident.h" // S8a Path A: KickScalarFolds + the launch core
 #include "fixed_point.h"   // q16, quantize, mul_q16, sat_add_q16, FP_ONE
 #include "cuda_fixedpoint_device.cuh"  // mul128_shr_signed, reciprocal_q16_dev, sqrt_q16_dev
 
@@ -248,6 +249,64 @@ __global__ void compression_kernel(const int32_t* __restrict__ wind_x,
 
 }  // namespace
 
+// ---- S8a Path A: the per-tick scalar folds, factored to ONE transcription
+// (cuda_resident.h — design §3.2.3). VERBATIM the fold block that lived at
+// the top of eos_kick_compression (pure code motion; /fp:strict host pass).
+KickScalarFolds kick_scalar_folds(
+        float dt, float c_max, float dx, float adiabatic_index,
+        float absorb_strength, float n_floor_solver, float t_min,
+        float t_work_clamp, float t_max_phys, float u_max) {
+    KickScalarFolds f;
+    f.n_floor_q    = quantize((double)n_floor_solver);
+    f.t_min_q      = quantize((double)t_min);
+    f.t_max_phys_q = quantize((double)t_max_phys);
+    f.u_max_q      = quantize((double)u_max);
+    const double gamma_d = (double)adiabatic_index;
+    f.gamma_m1_q   = quantize(gamma_d - 1.0);
+    const double dt_d    = (double)dt;
+    f.dt_q         = quantize(dt_d);
+    const double dx_d    = std::max((double)dx, 1e-6);
+    f.inv_2dx_q    = quantize(1.0 / (2.0 * dx_d));
+    const double K_d = (double)c_max * (double)c_max / gamma_d;
+    const int64_t K_raw = (int64_t)(K_d * 65536.0 + 0.5);
+    f.Kdt_raw      = mul128_shr_host(K_raw, (int64_t)f.dt_q, 16);
+    f.absorb_dt_q  = quantize((double)absorb_strength * dt_d);
+    f.work_clamp_q = quantize((double)t_work_clamp);
+    return f;
+}
+
+// ---- S8a Path A: the LAUNCH CORE — K1 then K2 on device pointers, nothing
+// else (contract in cuda_resident.h). The per-call entry below wraps it.
+void kick_compression_launch_resident(
+        int32_t* d_wind_x, int32_t* d_wind_y, int32_t* d_temperature,
+        const int32_t* d_p_new, const int32_t* d_ntot,
+        const int32_t* d_absorb_q,
+        const bool* d_solid, const bool* d_is_vacuum,
+        const KickScalarFolds& folds, int32_t c_local_q,
+        unsigned long long* d_cnt, int h, int w,
+        const bool* d_is_ambient, const int32_t* d_sponge_udamp) {
+    const int n = h * w;
+    if (n <= 0) return;
+    const int block = 256;
+    const int grid = (n + block - 1) / block;
+    // K1 kick, then K2 compression — same stream, so K2 sees K1's completed
+    // grid-wide u (the CPU pass boundary).
+    kick_kernel<<<grid, block>>>(d_wind_x, d_wind_y, d_p_new, d_ntot,
+                                 d_absorb_q, d_solid, d_is_vacuum,
+                                 folds.Kdt_raw, folds.inv_2dx_q,
+                                 folds.n_floor_q, c_local_q,
+                                 folds.u_max_q, d_cnt, h, w,
+                                 d_is_ambient, d_sponge_udamp);
+    cuda_check(cudaGetLastError(), "kick launch");
+    compression_kernel<<<grid, block>>>(d_wind_x, d_wind_y, d_temperature,
+                                        d_solid, d_is_vacuum,
+                                        folds.inv_2dx_q, folds.gamma_m1_q,
+                                        folds.dt_q, folds.work_clamp_q,
+                                        folds.t_min_q, folds.t_max_phys_q,
+                                        d_cnt, h, w, d_is_ambient);
+    cuda_check(cudaGetLastError(), "compression launch");
+}
+
 void eos_kick_compression(
     int32_t* wind_x, int32_t* wind_y, int32_t* temperature,
     const int32_t* p_new,
@@ -267,23 +326,12 @@ void eos_kick_compression(
     *digest_compression_out = 0;
     if (n <= 0 || dt <= 0.0f) return;
 
-    // ---- Host scalar precompute (eos_solver.cpp step()'s folds, VERBATIM,
-    //      in double on the /fp:strict host pass). ---------------------------
-    const q16 n_floor_q    = quantize((double)n_floor_solver);
-    const q16 t_min_q      = quantize((double)t_min);
-    const q16 t_max_phys_q = quantize((double)t_max_phys);
-    const q16 u_max_q      = quantize((double)u_max);
-    const double gamma_d   = (double)adiabatic_index;
-    const q16 gamma_m1_q   = quantize(gamma_d - 1.0);
-    const double dt_d      = (double)dt;
-    const q16 dt_q         = quantize(dt_d);
-    const double dx_d      = std::max((double)dx, 1e-6);
-    const q16 inv_2dx_q    = quantize(1.0 / (2.0 * dx_d));
-    const double K_d = (double)c_max * (double)c_max / gamma_d;
-    const int64_t K_raw = (int64_t)(K_d * 65536.0 + 0.5);
-    const int64_t Kdt_raw = mul128_shr_host(K_raw, (int64_t)dt_q, 16);
-    const q16 absorb_dt_q = quantize((double)absorb_strength * dt_d);
-    const q16 work_clamp_q = quantize((double)t_work_clamp);
+    // ---- Host scalar precompute — the shared ONE-transcription fold helper
+    //      (S8a Path A code motion; identical expressions, identical bits). --
+    const KickScalarFolds folds = kick_scalar_folds(
+        dt, c_max, dx, adiabatic_index, absorb_strength, n_floor_solver,
+        t_min, t_work_clamp, t_max_phys, u_max);
+    const q16 absorb_dt_q = folds.absorb_dt_q;
 
     // ---- step 2's Dalton sum (verbatim host loop — the kick's N̂ input). ----
     std::vector<int32_t> n_total(n, 0);
@@ -349,20 +397,11 @@ void eos_kick_compression(
         cuda_check(cudaMemcpy(d_udamp, sponge_udamp, nb, cudaMemcpyHostToDevice), "H2D sponge_udamp");
     }
 
-    const int block = 256;
-    const int grid = (n + block - 1) / block;
-
-    // K1 kick, then K2 compression — same stream, so K2 sees K1's completed
-    // grid-wide u (the CPU pass boundary).
-    kick_kernel<<<grid, block>>>(d_wx, d_wy, d_pn, d_ntot, d_aq, d_sol, d_vac,
-                                 Kdt_raw, inv_2dx_q, n_floor_q, c_local_q,
-                                 u_max_q, d_cnt, h, w, d_amb, d_udamp);
-    cuda_check(cudaGetLastError(), "kick launch");
-    compression_kernel<<<grid, block>>>(d_wx, d_wy, d_t, d_sol, d_vac,
-                                        inv_2dx_q, gamma_m1_q, dt_q,
-                                        work_clamp_q, t_min_q, t_max_phys_q,
-                                        d_cnt, h, w, d_amb);
-    cuda_check(cudaGetLastError(), "compression launch");
+    // The SHARED launch core (S8a Path A) — the identical K1/K2 launch pair
+    // this entry always ran; only the call shape moved.
+    kick_compression_launch_resident(d_wx, d_wy, d_t, d_pn, d_ntot, d_aq,
+                                     d_sol, d_vac, folds, c_local_q,
+                                     d_cnt, h, w, d_amb, d_udamp);
 
     cuda_check(cudaDeviceSynchronize(), "sync");
 

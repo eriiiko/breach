@@ -101,4 +101,43 @@ void trace_smoke_resident(
     const float* gas_decay,
     float dt, float advection_rate, float wind_diffusion_scale);
 
+// ---- kick + compression (cuda_kick_compression.cu) — S8a Path A ------------
+// The per-tick scalar folds the kick/compression kernels consume, factored to
+// ONE transcription (design §3.2.3): kick_scalar_folds computes them from the
+// EOSSolver config floats through the IDENTICAL double expressions the CPU
+// step() folds (/fp:strict host pass); consumed by BOTH the per-call
+// eos_kick_compression entry and the resident launch core below.
+struct KickScalarFolds {
+    int32_t n_floor_q    = 0;
+    int32_t t_min_q      = 0;
+    int32_t t_max_phys_q = 0;
+    int32_t u_max_q      = 0;
+    int32_t gamma_m1_q   = 0;
+    int32_t dt_q         = 0;
+    int32_t inv_2dx_q    = 0;
+    int32_t work_clamp_q = 0;
+    int32_t absorb_dt_q  = 0;   // absorb_strength·dt (the §2.5 hoist's factor)
+    int64_t Kdt_raw      = 0;   // (K·2^16)·dt at raw scale, 128-bit staged
+};
+KickScalarFolds kick_scalar_folds(
+    float dt, float c_max, float dx, float adiabatic_index,
+    float absorb_strength, float n_floor_solver, float t_min,
+    float t_work_clamp, float t_max_phys, float u_max);
+
+// The step-4 + step-4c tail, LAUNCH ONLY, on DEVICE pointers — K1 kick then
+// K2 compression on one stream (the CPU pass boundary), no malloc, no
+// transfer, no memset, no sync, no digest. d_ntot is the post-substep Dalton
+// N_total plane; d_absorb_q the host-hoisted §2.5 absorb plane; d_cnt the
+// 5-slot rail-counter buffer THE CALLER ZEROES each tick (design §3.2.5).
+// d_amb/d_udamp nullable (space / no band). The per-call eos_kick_compression
+// wraps this same core with its existing H2D/memset/D2H/digest flow — one
+// kernel transcription, both paths.
+void kick_compression_launch_resident(
+    int32_t* d_wind_x, int32_t* d_wind_y, int32_t* d_temperature,
+    const int32_t* d_p_new, const int32_t* d_ntot, const int32_t* d_absorb_q,
+    const bool* d_solid, const bool* d_is_vacuum,
+    const KickScalarFolds& folds, int32_t c_local_q,
+    unsigned long long* d_cnt, int h, int w,
+    const bool* d_is_ambient, const int32_t* d_sponge_udamp);
+
 }  // namespace breach_cuda

@@ -642,13 +642,17 @@ class PhysicsRunner:
         return False
 
     def _step_resident(self, gmap, sim_time):
-        """One GPU-resident tick (S8a Path B, spec §3.3). Bit-identical to the
-        CPU/per-call tick: the water SUBSTEP loop and the smoke TRACE loop run
-        resident on persistent device buffers (no per-substep/per-plane transfer
-        — the multiplied tax is gone); EOS + combustion + the tail are BRACKETED
-        (they run their exact current host/GPU code on the numpy mirror, one
-        H2D/D2H each). The numpy fields are the authoritative mirror throughout —
-        combat/recorder/render read them exactly as the Q4 baseline.
+        """One GPU-resident tick (S8a: Path B framework + Path A EOS residency).
+        Bit-identical to the CPU/per-call tick: the water SUBSTEP loop, the
+        whole EOS STAGE (advection substeps, on-device MG build + solve,
+        kick/compression — docs/cuda_s8a_path_a_impl_2026-07-21.md), and the
+        smoke TRACE loop all run resident on persistent device buffers — the
+        Path-B EOS bracket is GONE (spec §3.3's zero mid-tick transfers, for
+        real). Combustion + the tail stay BRACKETED on the mirror (S8c).
+        The numpy fields are the authoritative mirror throughout — every EOS
+        input is current on the mirror at the step-4 upload (the design §2
+        invariant), and the step-6 batched D2H lands the EOS/trace outputs
+        back on it for the brackets + combat/recorder/render (Q4 baseline).
         """
         if not gmap.residency_on():
             gmap.enable_residency()
@@ -699,28 +703,50 @@ class PhysicsRunner:
                 self.water_boil_rate, self.water_boil_p_thresh,
                 self.water_steam_yield)
 
-        # -- 4. EOS bracket (on the mirror; traces SKIPPED — run resident below) --
-        self.engine.run_substeps(
+        # -- 4. EOS stage FULLY RESIDENT (S8a Path A — the bracket is GONE) ------
+        # Pre-upload the EOS input set from the authoritative mirror (replaces
+        # Path B's post-EOS re-upload + the per-call path's internal H2D). NOTE
+        # (design §2): wave_p is NOT uploaded — on device it is written (the
+        # step-0 p_prev := atmosphere D2D) before any read; dyn_wave_absorb is
+        # NOT uploaded — no device kernel reads it (the kick consumes the
+        # host-hoisted absorb_q plane, computed FROM the mirror inside
+        # run_substeps_resident — that host hoist is where body-shielding
+        # lives). is_ambient IS in the list: it is NOT static — destroy_wall's
+        # joins-ambient twin mutates it on a ring-adjacent breach (gamemap
+        # breach_mask), exactly like is_vacuum on a space map (the PART-1b
+        # gate leg caught the stale device copy). MIRROR-CURRENCY INVARIANT:
+        # every field in this list is current on the mirror here (water tail,
+        # FieldEdits, stamp_units, combat edits all write the mirror; nothing
+        # writes it between this upload and the resident call below).
+        gmap.from_host(["atmosphere", "wind_x", "wind_y", "temperature",
+                        "gas", "solid", "is_vacuum", "is_ambient",
+                        "dyn_permeability"])
+        # The host pre-stage (all EOS reductions — they consume tick-entry
+        # state) runs on the mirror inside; the device chain (substep loop,
+        # div_u/N/p*, the on-device MG build, vcycle, kick, store) runs with
+        # ZERO mid-tick plane transfers. Gate: tests/cuda_s8a_check.py.
+        self.engine.run_substeps_resident(
             gmap.wave_p, gmap.atmosphere,
-            gmap.wind_x, gmap.wind_y,
-            gmap.temperature,
-            gmap.obstacles, gmap.solid, gmap.is_vacuum,
+            gmap.wind_x, gmap.wind_y, gmap.temperature,
+            gmap.solid, gmap.is_vacuum,
             gmap.dyn_permeability, gmap.dyn_wave_absorb,
-            gmap.gas, gmap.gases.diffusion, gmap.gases.conservative,
-            gmap.gases.decay, self._inert_n2_idx,
+            gmap.gas, gmap.gases.conservative,
             sim_time,
             is_ambient=amb[0], n_amb=amb[1], p_amb=amb[2],
-            sponge_sigma=amb[3], sponge_udamp=amb[4],
-            do_traces=False,
+            d_atmosphere=dev["atmosphere"], d_wave_p=dev["wave_p"],
+            d_wind_x=dev["wind_x"], d_wind_y=dev["wind_y"],
+            d_temperature=dev["temperature"], d_gas=dev["gas"],
+            d_solid=dev["solid"], d_is_vacuum=dev["is_vacuum"],
+            d_dyn_permeability=dev["dyn_permeability"],
+            d_is_ambient=dev["is_ambient"] if amb[0] is not None else 0,
+            d_sponge_sigma=dev["sponge_sigma"] if amb[3] is not None else 0,
+            d_sponge_udamp=dev["sponge_udamp"] if amb[4] is not None else 0,
         )
 
         # -- 5. TRACE smoke loop + decay RESIDENT (on device) --------------------
-        # H2D only the trace inputs: the gas planes + the final corrected wind +
-        # the (W3-sealed) dyn_permeability + the trace-sink masks. is_ambient is
-        # static (the reservoir ring — uploaded once); solid/is_vacuum change on
-        # structural edits so they ride each tick.
-        gmap.from_host(["gas", "wind_x", "wind_y", "dyn_permeability",
-                        "is_vacuum", "solid"])
+        # Path A: NO from_host here — the device gas/wind are FRESHER than the
+        # mirror (the resident EOS just wrote them, bit-identically), and the
+        # masks/perm rode up in step 4's pre-upload.
         # advection_rate = 1.0f / max(eos.dx, 1e-3f) — computed in float32 to match
         # run_substeps' float expression exactly (bit-identity of the SL displacement).
         adv_rate = np.float32(1.0) / max(np.float32(self.eos.dx), np.float32(1e-3))
@@ -732,12 +758,20 @@ class PhysicsRunner:
             gmap.gases.conservative, gmap.gases.diffusion, gmap.gases.decay,
             sim_time, float(adv_rate), 0.0,
         )
-        gmap.to_host(["gas"])
 
-        # -- 6. COMBUSTION bracket (mirror) --------------------------------------
+        # -- 6. The once-per-tick synced-set D2H (the locked Q4 decision): the
+        # EOS/trace outputs land on the mirror; combustion + the tail brackets
+        # read it exactly as today. RULE (design §2): a DEFAULTED to_host() is
+        # forbidden in the resident tick — the device heat/fire/wall_hp (and
+        # water fields on dormant ticks) are stale-by-design and would clobber
+        # the authoritative mirror.
+        gmap.to_host(["atmosphere", "wave_p", "wind_x", "wind_y",
+                      "temperature", "gas"])
+
+        # -- 7. COMBUSTION bracket (mirror) --------------------------------------
         self._run_combustion(gmap, sim_time)
 
-        # -- 7. TAIL bracket: ripple (host) + fire + temperature (mirror) --------
+        # -- 8. TAIL bracket: ripple (host) + fire + temperature (mirror) --------
         destroyed = self.engine.step_tail(
             gmap.ripple, gmap.ripple_v, gmap.water_depth, gmap.wave_p,
             gmap.solid,

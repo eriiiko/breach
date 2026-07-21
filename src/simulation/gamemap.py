@@ -91,6 +91,14 @@ class GameMap:
         "solid", "is_vacuum", "is_ambient", "obstacles", "flammable",
         "floor_height", "heat_inv_shift", "face_shift",
         "dyn_permeability", "dyn_wave_absorb", "conductivity", "dyn_light_atten",
+        # S8a Path A: the BC sponge grids — static per map (built ONCE in
+        # __init__, never recomputed — unlike is_ambient, which destroy_wall's
+        # joins-ambient twin mutates and therefore rides the per-tick EOS
+        # upload). Device-needed by the resident EOS (σ-fold in the MG build;
+        # u-damping band in the kick). Like floor_height they are omitted from
+        # _step_resident's explicit per-tick lists; a defaulted from_host()
+        # re-uploading them is harmless.
+        "sponge_sigma", "sponge_udamp",
     )
     _RESIDENT_FIELD_NAMES = _RESIDENT_SYNCED + _RESIDENT_MASKS
 

@@ -17,6 +17,7 @@
 #include "cuda_smoke.h"         // CUDA-S4a: GPU smoke solver + backend flag
 #include "cuda_fire.h"          // CUDA-S6: GPU fire solver + backend flag
 #include "cuda_eos_step.h"      // EOS P6.5: chained eos.step GPU dispatch
+#include "cuda_eos_resident.h"  // S8a Path A: fully device-resident EOS tick
 // CUDA-S5 cuda_wave.h / CUDA-S7 cuda_atmosphere.h RETIRED in EOS P6.0 (their
 // CPU solvers were replaced by the EOS solve in P3; nothing here called them).
 #endif
@@ -24,6 +25,7 @@
 #include <algorithm>   // std::max, std::min
 #include <cstddef>     // std::size_t
 #include <cassert>     // EOS P3 GPU-backend-retirement guards
+#include <stdexcept>   // S8a Path A: run_substeps_resident's loud-fail throws
 
 // Patch 1 S4a — the per-tick TAIL, the three trailing pure-solver-call steps of
 // PhysicsRunner.step (everything AFTER the IMEX atmosphere/smoke substep loop):
@@ -405,6 +407,68 @@ void PhysicsEngine::run_substeps(
             }
         }
     }
+}
+
+// ---- S8a Path A: the fully device-resident EOS stage ----------------------
+// Contract in the header; the heavy lifting is breach_cuda::eos_step_resident
+// (cuda_eos_resident.cu). Compiled on every build; throws where the device
+// path is unavailable so a mis-wired caller fails loudly instead of silently
+// running a different arithmetic path.
+void PhysicsEngine::run_substeps_resident(
+        int32_t* p_prev,
+        const int32_t* atmosphere,
+        const int32_t* wind_x, const int32_t* wind_y,
+        const int32_t* temperature,
+        const bool* solid, const bool* is_vacuum,
+        const float* dyn_permeability, const float* dyn_wave_absorb,
+        const int32_t* gas, int n_gases, const bool* gas_conservative,
+        int h, int w, float sim_time,
+        const bool* is_ambient, const int32_t* n_amb, int32_t p_amb,
+        std::uintptr_t d_atmosphere, std::uintptr_t d_wave_p,
+        std::uintptr_t d_wind_x, std::uintptr_t d_wind_y,
+        std::uintptr_t d_temperature, std::uintptr_t d_gas_base,
+        std::uintptr_t d_solid, std::uintptr_t d_is_vacuum,
+        std::uintptr_t d_dyn_permeability,
+        std::uintptr_t d_is_ambient,
+        std::uintptr_t d_sponge_sigma, std::uintptr_t d_sponge_udamp) {
+#ifdef BREACH_HAS_CUDA
+    if (!breach_cuda::eos_step_backend_is_cuda()) {
+        throw std::runtime_error(
+            "run_substeps_resident: all four EOS kernel backends must be ON "
+            "(sl_advection, bulk_flux, mg_solve, kick_compression) — there is "
+            "no CPU fallback for a device-pointer call.");
+    }
+    breach_cuda::eos_step_resident(
+        this->eos,
+        atmosphere, p_prev, wind_x, wind_y, temperature,
+        gas, gas_conservative, n_gases,
+        solid, is_vacuum, dyn_permeability, dyn_wave_absorb,
+        h, w, sim_time,
+        is_ambient, n_amb, p_amb,
+        reinterpret_cast<int32_t*>(d_atmosphere),
+        reinterpret_cast<int32_t*>(d_wave_p),
+        reinterpret_cast<int32_t*>(d_wind_x),
+        reinterpret_cast<int32_t*>(d_wind_y),
+        reinterpret_cast<int32_t*>(d_temperature),
+        reinterpret_cast<int32_t*>(d_gas_base),
+        reinterpret_cast<const bool*>(d_solid),
+        reinterpret_cast<const bool*>(d_is_vacuum),
+        reinterpret_cast<const float*>(d_dyn_permeability),
+        reinterpret_cast<const bool*>(d_is_ambient),
+        reinterpret_cast<const int32_t*>(d_sponge_sigma),
+        reinterpret_cast<const int32_t*>(d_sponge_udamp));
+#else
+    (void)p_prev; (void)atmosphere; (void)wind_x; (void)wind_y;
+    (void)temperature; (void)solid; (void)is_vacuum; (void)dyn_permeability;
+    (void)dyn_wave_absorb; (void)gas; (void)n_gases; (void)gas_conservative;
+    (void)h; (void)w; (void)sim_time; (void)is_ambient; (void)n_amb;
+    (void)p_amb; (void)d_atmosphere; (void)d_wave_p; (void)d_wind_x;
+    (void)d_wind_y; (void)d_temperature; (void)d_gas_base; (void)d_solid;
+    (void)d_is_vacuum; (void)d_dyn_permeability; (void)d_is_ambient;
+    (void)d_sponge_sigma; (void)d_sponge_udamp;
+    throw std::runtime_error(
+        "run_substeps_resident requires the CUDA build (BREACH_CUDA=ON).");
+#endif
 }
 
 // ---- dead code retained for reference during the P3 review window --------

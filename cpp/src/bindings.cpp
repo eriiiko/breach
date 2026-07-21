@@ -27,6 +27,7 @@
 #include "cuda_kick_compression.h"  // EOS P6.4: GPU kick + compression work + backend flag
 #include "cuda_mg_solve.h"     // EOS P6.3: GPU multigrid pressure solve + backend flag
 #include "cuda_eos_step.h"     // EOS P6.5: chained full-eos.step dispatch predicate
+#include "cuda_eos_resident.h" // S8a Path A: resident EOS telemetry + build parity
 #include "cuda_combustion.h"   // EOS P6.9b: GPU two-gather combustion + backend flag
 // CUDA-S5 cuda_wave.h / CUDA-S7 cuda_atmosphere.h RETIRED in EOS P6.0 — the
 // wave+diffuse solvers they mirrored were replaced by the compressible EOS
@@ -153,6 +154,55 @@ PYBIND11_MODULE(breach_physics, m) {
           "S8a Path B: per-tick trace-plane smoke loop + decay resident on device "
           "(no per-plane transfer). gas_conservative/diffusion/decay are host (N,) "
           "columns; field pointers are CuPy .data.ptr uintptr_t.");
+
+    // S8a Path A: resident-EOS telemetry (the gate's vacuousness guard) + the
+    // TEST-ONLY device-MG-build parity probe (gate PART 1c).
+    m.def("eos_resident_calls", &breach_cuda::eos_resident_calls,
+          "S8a Path A: how many ticks ran the fully resident EOS chain.");
+
+    m.def("eos_mg_build_parity",
+          [](const EOSSolver& solver,
+             py::array_t<int32_t> pstar, py::array_t<int32_t> div_u,
+             py::array_t<int32_t> n_total, py::array_t<int32_t> p_prev,
+             py::array_t<bool> solid, py::array_t<bool> is_vacuum,
+             py::array_t<float> dyn_permeability,
+             float dt, py::object is_ambient, int32_t p_amb,
+             py::object sponge_sigma) {
+              auto [ps, h, w]   = get_2d_const(pstar);
+              auto [du, h2, w2] = get_2d_const(div_u);
+              auto [nt, h3, w3] = get_2d_const(n_total);
+              auto [pp, h4, w4] = get_2d_const(p_prev);
+              auto [sol, h5, w5] = get_2d_const(solid);
+              auto [vac, h6, w6] = get_2d_const(is_vacuum);
+              auto [perm, h7, w7] = get_2d_const(dyn_permeability);
+              const bool* amb = nullptr;
+              py::array_t<bool> amb_arr;
+              if (!is_ambient.is_none()) {
+                  amb_arr = is_ambient.cast<py::array_t<bool>>();
+                  auto aa = amb_arr.unchecked<2>();
+                  amb = aa.data(0, 0);
+              }
+              const int32_t* sigma = nullptr;
+              py::array_t<int32_t> sigma_arr;
+              if (!sponge_sigma.is_none()) {
+                  sigma_arr = sponge_sigma.cast<py::array_t<int32_t>>();
+                  auto sg = sigma_arr.unchecked<2>();
+                  sigma = sg.data(0, 0);
+              }
+              std::string report;
+              const long long mism = breach_cuda::eos_mg_build_parity(
+                  solver, ps, du, nt, pp, sol, vac, perm, h, w, dt,
+                  amb, p_amb, sigma, &report);
+              return py::make_tuple(mism, report);
+          },
+          py::arg("solver"), py::arg("pstar"), py::arg("div_u"),
+          py::arg("n_total"), py::arg("p_prev"), py::arg("solid"),
+          py::arg("is_vacuum"), py::arg("dyn_permeability"), py::arg("dt"),
+          py::arg("is_ambient") = py::none(), py::arg("p_amb") = 0,
+          py::arg("sponge_sigma") = py::none(),
+          "S8a Path A gate PART 1c (TEST-ONLY): host mg_build_levels vs the "
+          "production device build on identical inputs — returns (mismatched "
+          "cell count, per-level report); 0 == bit-identical.");
 
     // CUDA-S1: the GPU temperature solver. The backend flag switches
     // PhysicsEngine::step_tail between the CPU and GPU temperature pass (the live
@@ -1993,6 +2043,93 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("sponge_sigma") = py::none(),
            py::arg("sponge_udamp") = py::none(),
            py::arg("do_traces") = true)   // S8a Path B (default = prior behaviour)
+        // --- S8a Path A: the fully device-resident EOS stage ----------------
+        // Host mirrors feed the shared pre-stage (all reductions consume
+        // tick-entry state == the authoritative mirror) + telemetry; device
+        // pointers are CuPy .data.ptr uintptr_t (0 == nullptr for the ambient
+        // statics). Bound on every build — the method throws without CUDA.
+        .def("run_substeps_resident", [](PhysicsEngine& self,
+                                py::array_t<int32_t> p_prev,
+                                py::array_t<int32_t> atmosphere,
+                                py::array_t<int32_t> wind_x,
+                                py::array_t<int32_t> wind_y,
+                                py::array_t<int32_t> temperature,
+                                py::array_t<bool>  solid,
+                                py::array_t<bool>  is_vacuum,
+                                py::array_t<float> dyn_permeability,
+                                py::array_t<float> dyn_wave_absorb,
+                                py::array_t<int32_t> gas,
+                                py::array_t<bool> gas_conservative,
+                                float sim_time,
+                                py::object is_ambient,
+                                py::object n_amb,
+                                int32_t p_amb,
+                                std::uintptr_t d_atmosphere,
+                                std::uintptr_t d_wave_p,
+                                std::uintptr_t d_wind_x,
+                                std::uintptr_t d_wind_y,
+                                std::uintptr_t d_temperature,
+                                std::uintptr_t d_gas,
+                                std::uintptr_t d_solid,
+                                std::uintptr_t d_is_vacuum,
+                                std::uintptr_t d_dyn_permeability,
+                                std::uintptr_t d_is_ambient,
+                                std::uintptr_t d_sponge_sigma,
+                                std::uintptr_t d_sponge_udamp) {
+            auto [pp, h, w]    = get_2d(p_prev);
+            auto [atm, h4, w4] = get_2d_const(atmosphere);
+            auto [wx, h5, w5]  = get_2d_const(wind_x);
+            auto [wy, h6, w6]  = get_2d_const(wind_y);
+            auto [temp, h6b, w6b] = get_2d_const(temperature);
+            auto [sol, h8, w8] = get_2d_const(solid);
+            auto [vac, h9, w9] = get_2d_const(is_vacuum);
+            auto [perm, h10, w10] = get_2d_const(dyn_permeability);
+            auto [wabs, h11, w11] = get_2d_const(dyn_wave_absorb);
+            auto gv = gas.unchecked<3>();
+            const int32_t* gas_ptr = gv.data(0, 0, 0);
+            const int n_gases = static_cast<int>(gv.shape(0));
+            auto gc = gas_conservative.unchecked<1>();
+            const bool* gcons = gc.data(0);
+            const bool* amb = nullptr;
+            py::array_t<bool> amb_arr;
+            if (!is_ambient.is_none()) {
+                amb_arr = is_ambient.cast<py::array_t<bool>>();
+                auto aa = amb_arr.unchecked<2>();
+                amb = aa.data(0, 0);
+            }
+            const int32_t* namb = nullptr;
+            py::array_t<int32_t> namb_arr;
+            if (!n_amb.is_none()) {
+                namb_arr = n_amb.cast<py::array_t<int32_t>>();
+                auto na = namb_arr.unchecked<1>();
+                namb = na.data(0);
+            }
+            self.run_substeps_resident(
+                pp, atm, wx, wy, temp,
+                sol, vac, perm, wabs,
+                gas_ptr, n_gases, gcons,
+                h, w, sim_time,
+                amb, namb, p_amb,
+                d_atmosphere, d_wave_p, d_wind_x, d_wind_y,
+                d_temperature, d_gas, d_solid, d_is_vacuum,
+                d_dyn_permeability, d_is_ambient,
+                d_sponge_sigma, d_sponge_udamp);
+        }, py::arg("p_prev"), py::arg("atmosphere"),
+           py::arg("wind_x"), py::arg("wind_y"), py::arg("temperature"),
+           py::arg("solid"), py::arg("is_vacuum"),
+           py::arg("dyn_permeability"), py::arg("dyn_wave_absorb"),
+           py::arg("gas"), py::arg("gas_conservative"),
+           py::arg("sim_time"),
+           py::arg("is_ambient") = py::none(),
+           py::arg("n_amb") = py::none(),
+           py::arg("p_amb") = 0,
+           py::arg("d_atmosphere") = 0, py::arg("d_wave_p") = 0,
+           py::arg("d_wind_x") = 0, py::arg("d_wind_y") = 0,
+           py::arg("d_temperature") = 0, py::arg("d_gas") = 0,
+           py::arg("d_solid") = 0, py::arg("d_is_vacuum") = 0,
+           py::arg("d_dyn_permeability") = 0,
+           py::arg("d_is_ambient") = 0,
+           py::arg("d_sponge_sigma") = 0, py::arg("d_sponge_udamp") = 0)
         // --- Patch 1 S4c: the water-layer array arithmetic ------------------
         // step_water moves the array-op body of PhysicsRunner._step_water into
         // C++ (substep loop + W5 flash-boil + W3 displacement/seal + the final

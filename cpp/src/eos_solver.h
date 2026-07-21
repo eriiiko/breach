@@ -272,6 +272,24 @@ public:
     // standalone CPU replay entry (mg_solve_reference below) can drive the
     // SAME internal routines the live path uses — zero drift by construction.
     //
+    // ---- S8a Path A: the MG-build per-tick scalar folds, EXPORTED ---------
+    // (docs/cuda_s8a_path_a_impl_2026-07-21.md §3.2.3, critique blocker A-B1.)
+    // The four folds mg_build_levels hoists — n_floor_q, gamma_q, dt_q and the
+    // 5-op double expression Kdt2dx2_raw (with its std::max(dx,1e-6) floor) —
+    // are the ONLY nontrivial double arithmetic feeding the operator build.
+    // The device-resident build (cuda_eos_resident.cu) must consume the
+    // IDENTICAL bits, so there is exactly ONE transcription: this method, in
+    // this /fp:strict MSVC TU. mg_build_levels itself calls it (pure code
+    // motion — CPU bytes unchanged, pinned by the existing CPU goldens).
+    // Caller guards dt > 0 (the mg_build_levels degenerate early-out).
+    struct MGScalarFolds {
+        int32_t n_floor_q   = 0;   // q16
+        int32_t gamma_q     = 0;   // q16
+        int32_t dt_q        = 0;   // q16
+        int64_t Kdt2dx2_raw = 0;   // K·dt²/dx² at Q16.16 raw
+    };
+    MGScalarFolds mg_scalar_folds(float dt) const;
+
     // mg_build_levels: level count (fixed by grid size), the level-0 build
     // (m/gE/gS/b/excl + the P_prev warm start), the exactly-variational PC
     // Galerkin coarse hierarchy, and the per-level Q.32 diagonal reciprocals.
