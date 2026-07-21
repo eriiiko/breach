@@ -452,6 +452,19 @@ lightning spec; it is not yet implemented.
   (the RGB/`light_dir`/`smoke_glow` buffers are not yet filled inside the sim step). The kernel
   and buffer contract are final, so this is a caller move plus extending the determinism test to
   the render fields — not a redesign.
+  - **As-built (S8c item 1, the fire-FPS fix):** on `--cuda` the heat cast is **batched**.
+    `cast_fire_heat` builds the whole burning-tile source list, then issues **one**
+    `bp.cuda_raycaster_cast_batch` — it concatenates `build_ray_list` over every source (in the
+    `/fp:strict` TU) and marches them in a **single** `raycaster_cast_directional` (one H2D of the
+    inputs + running `heat` plane, one march, one D2H). This replaces the old one-round-trip-**per
+    source** loop that ran hundreds of whole-plane transfers per tick (~3 fps with hundreds of
+    fires, 2026-07-20 B5). `heat` is **byte-identical** to the per-source path — heat deposits are
+    order-free saturating integer atomic adds, so batching changes only the atomic interleave.
+    Render channels differ in float-atomic order (determinism-exempt) and are discarded by this
+    caller (`smoke_glow=None`). Payoff: a 600-fire firestorm goes from ~424 ms (~2.4 fps) to
+    ~1.5 ms for the cast (277×). Gate: `tests/cuda_s2_check.py` batch-vs-per-source witness +
+    `tests/test_s8c_fire_heat_bench.py`. The CPU path stays the per-source
+    `cast_source_directional` loop (no transfer tax to amortise).
 - **Energy-weapon pre-phase** — no laser pre-phase exists; weapons do not yet mark the map or
   deposit heat.
 - **Attenuation-aware LoS** — `gamemap.has_los` is still binary Bresenham on `is_wall`; the
@@ -467,7 +480,11 @@ lightning spec; it is not yet implemented.
 
 - The march has deterministic per-source angular jitter seeded from source position (used by
   fire flicker). Once `heat` is sim-affecting and the cast is in the sim, this jitter must draw
-  from `sim.rng` (or be removed) to keep the heat field replay-deterministic.
+  from `sim.rng` (or be removed) to keep the heat field replay-deterministic. **As-built:** the
+  sim heat cast sets `jitter = 0` (removed) — so `build_ray_list`'s per-source `mt19937` is never
+  drawn. The S8c batched cast **depends on** this: a nonzero jitter would couple sources through
+  the RNG sequence and desync the batch from the per-source loop. A future flickering heat source
+  must draw its jitter from `sim.rng` before re-enabling it (invariant noted in `cast_fire_heat`).
 - `light_dir` is a single dominant-direction aggregate; opposing lights average toward flat
   normal-map relief and per-light coloured relief is not recoverable. Accepted, not a bug.
 - Source profiles are a copy-and-tweak convention in caller code, not centralized; callers

@@ -59,6 +59,22 @@ Created 2026-07-17 from Erik's stated stack; Erik owns the ordering.
   interop + recorder kernels + the `cast_fire_heat` device port — the fire-FPS
   fix). Earlier en-route fix (Path B): main's `BREACH_CUDA=ON` build broken since
   `472871d` (smoke_clamp arity) — fixed on main (`ae85906`).
+  **S8c ITEM 1 (fire-FPS fix) DONE 2026-07-21** (`s8c-fire-heat-batch`,
+  auto-merge on green per session pre-auth): new `bp.cuda_raycaster_cast_batch`
+  concatenates `build_ray_list` over all burning-tile sources and marches them in
+  ONE `raycaster_cast_directional` (one H2D/march/D2H) instead of one whole-plane
+  round-trip PER source; `cast_fire_heat` issues a single batched cast on the CUDA
+  path (CPU path unchanged). `heat` byte-identical (order-free saturating atomic
+  adds; no re-baseline). Design + 3-lens critique
+  (`docs/s8c_item1_fire_heat_batch_impl_2026-07-21.md`). Gate: cuda_s2 batch
+  witness + cuda_s2b live heat A/B (65 src, tol 0) + s8a full-engine A/B + 997
+  suite + payoff bench (600-fire firestorm 424 ms/~2.4 fps -> 1.5 ms, 277x, heat
+  identical). ★ Items 2 (render CUDA-GL interop) + 3 (recorder kernels) reassessed
+  as LOW-PAYOFF as literally framed — recon: renderer is raylib/pyray (cffi, no
+  exposed GL-texture hook for cupy interop, no repo precedent) and the genuine
+  render-only fields (`smoke_glow`/`ripple`) are HOST-computed (no device copy to
+  skip); the recorder reads already-mirrored host data (the Q4 D2H is mandatory).
+  Both awaiting Erik's call before any build.
 - Riders (chat-sized, slot when convenient):
   - ~~Wall-burst differential fix~~ **DONE 2026-07-18** — merged to main
     (true differential; only 1-deep membranes burst; Erik blessed).
