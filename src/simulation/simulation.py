@@ -110,7 +110,9 @@ from simulation.status import composed_flags, tick_statuses
 # Weapon/ammo/payload data tables (mechanics/03 §4, W1): the facade owns a
 # bundle, rebuilt fresh at every construction/reset (the GameMap material/gas
 # table pattern) so it always reflects the current CFG.
-from simulation.weapons import rebuild_tables as rebuild_weapon_tables
+from simulation.weapons import (
+    FIRE_ORDER_ARCHETYPES, rebuild_tables as rebuild_weapon_tables,
+)
 
 try:
     from pathfinding import astar
@@ -237,7 +239,13 @@ class Simulation:
         # live CFG at every reset, exactly like GameMap rebuilds the material/
         # gas tables above. Config-static data; Ctrl+R alone does NOT rebuild
         # (engine/12 §5 — the construction-bound precedent).
-        self.weapons_tables = rebuild_weapon_tables()
+        # W6 (meter-based ranges): the build binds THIS level's tile size, so
+        # every row's authored range_m derives its integer range_tiles once,
+        # here (quantize-once, engine/14 door 2). Pinned test worlds are
+        # 1.0 m/tile (meters == tiles, the pre-W6 numbers exactly); the
+        # playground's 0.333 m/tile derives 3x the tiles for the same reach.
+        self.weapons_tables = rebuild_weapon_tables(
+            tile_size_m=self.gmap.tile_size_m)
 
         self.units: List = []
         self.projectiles: List = []
@@ -465,6 +473,53 @@ class Simulation:
         legality check in v1.
         """
         return []
+
+    def debug_cycle_weapon(self, unit_id: int):
+        """DEBUG (W6, the playground tuning key): re-arm ``unit_id`` with the
+        NEXT triggerable ``[weapons.*]`` row, in config (table) order.
+
+        The armory-as-data payoff made playable: Erik selects a marine,
+        taps the cycle key, and the unit's ``weapon_id`` walks every row
+        whose archetype can take a FIRE order (``FIRE_ORDER_ARCHETYPES`` —
+        projectile / hitscan / spray / melee; LOBBED and PLACED rows ride
+        their own order modes, G and B, and have no trigger path, so
+        cycling onto them would arm a weapon that cannot fire).
+
+        This is the FACADE seam for the input layer (the renderer never
+        mutates sim state; input debug actions land through sim methods —
+        the I/J/K/U precedent, but through a proper facade call rather
+        than a direct field write, because a weapon swap has coupled
+        cadence/mag/burst state to reset):
+
+        - ``current_mag`` / ``reload_done_tick`` reset (a swapped weapon
+          arrives with a fresh magazine — the round-boundary rule);
+        - spray burst state clears (a half-finished Dragon-7 burst does
+          not continue out of an LR-50);
+        - ``last_fire_tick`` is left alone (the cadence gate is per-unit
+          wall-clock, and -999 resets at every round boundary anyway).
+
+        Deterministic and RNG-free; ``weapon_id`` is ordinary synced input
+        state (like an order), so replay determinism is unaffected: same
+        key presses, same trajectory. Returns the new weapon name, or
+        ``None`` for a dead/unknown/zombie unit (zombies carry no weapon
+        rows — their melee is the ai_zombie path)."""
+        u = self.get_unit(unit_id)
+        if u is None or not u.alive or u.is_zombie:
+            return None
+        rows = [name for name, w in self.weapons_tables.weapons.by_name.items()
+                if w.archetype in FIRE_ORDER_ARCHETYPES]
+        if not rows:
+            return None
+        cur = getattr(u, "weapon_id", "")
+        idx = rows.index(cur) if cur in rows else -1
+        u.weapon_id = rows[(idx + 1) % len(rows)]
+        # Fresh-magazine + dead-burst state (see docstring).
+        u.current_mag = None
+        u.reload_done_tick = -1
+        u.spray_ticks_left = 0
+        u.spray_order = None
+        u.spray_target = None
+        return u.weapon_id
 
     # ------------------------------------------------------------------
     # Path computation (precomputed at order-time per locked decision D)
@@ -736,7 +791,10 @@ class Simulation:
         # this tick's flame heat converts to temperature THIS tick). Writes
         # fields only (two-terminals invariant); draws no RNG; dormant (one
         # attribute read per unit) when no spray weapon is in play.
-        process_sprays(self.gmap, self.units, self.edit_queue)
+        # W6: tick_events rides along for the RENDER-ONLY SprayJetEvent
+        # (the flame-jet visual) — not digest-hashed, pure synced-state fn.
+        process_sprays(self.gmap, self.units, self.edit_queue,
+                       events=self.tick_events)
 
         # 5. Zombie AI.
         update_zombies_tick(self.gmap, self.units, self.tick)

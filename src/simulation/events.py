@@ -106,6 +106,48 @@ class UnitKilledEvent:
 
 
 @dataclass
+class SprayJetEvent:
+    """One tick of a live SPRAY burst (W6 — the flame-jet visual; the
+    LaserFiredEvent precedent applied to the W4 archetype).
+
+    Emitted by :func:`simulation.combat.process_sprays` on every tick a
+    burst actually deposits (an interrupted / finished burst emits
+    nothing), carrying the cone the deposits were aimed with: apex = the
+    sprayer's centre tile, ``to_tile`` = the captured burst target,
+    ``range_tiles`` + ``cone_half_angle_degrees`` = the weapon row's cone.
+    The renderer draws a translucent jet fan + a transient light from it
+    (warm for ``kind="flame"`` — the Dragon family; a fainter sickly
+    green for ``kind="miasma"`` — the poison projector) and NEVER writes
+    back. Emission is a pure function of already-synced state (unit
+    position, the captured order target, weapon-row constants) and the
+    determinism digest hashes only UnitHit/UnitKilled events
+    (field_ab_harness._SYNCED_EVENT_TYPES), so the jet moves no digest.
+    """
+    unit_id: int                    # the sprayer's unit id
+    from_tile: tuple                # (fx, fy) — cone apex (sprayer centre)
+    to_tile: tuple                  # (fx, fy) — the burst's captured target
+    range_tiles: int                # cone length (already tile-derived, W6)
+    cone_half_angle_degrees: float  # the config half-angle convention
+    kind: str = "flame"             # "flame" | "miasma"
+
+
+@dataclass
+class ProjectileGlowEvent:
+    """An in-flight glowing round's position this tick (W6 — the plasma
+    bolt visual; the LaserFiredEvent precedent for slow projectiles).
+
+    Emitted by :class:`simulation.combat.BulletInFlight` each tick it
+    advances while its round authors a nonempty ``glow`` profile
+    (``[ammo.*] glow = "plasma"``). The renderer draws a glowing orb at
+    ``pos`` + a transient light; the detonation flash itself rides the
+    ordinary :class:`ExplosionEvent` (kind "shell"). Render-only — not
+    part of the synced event digest.
+    """
+    pos: tuple                      # (fx, fy) — the bolt's position now
+    kind: str = "plasma"            # glow profile name from the ammo row
+
+
+@dataclass
 class DoorDestroyedEvent:
     """A door tile was destroyed (typically by a charge). For sound + dust."""
     pos: tuple                      # (fy, fx) in tile coords (note: matches gmap convention)
@@ -120,6 +162,8 @@ class WallDestroyedEvent:
 __all__ = [
     "ShotFiredEvent",
     "LaserFiredEvent",
+    "SprayJetEvent",
+    "ProjectileGlowEvent",
     "ExplosionEvent",
     "UnitHitEvent",
     "UnitKilledEvent",

@@ -31,6 +31,7 @@ Key bindings (decisions locked this morning):
 - J → DEBUG spawn the selected gas under the cursor
 - K → DEBUG cycle the selected gas (white→black→poison→teargas→fuel)
 - U → DEBUG pour 0.2 m of water on the tile under the cursor
+- N → DEBUG cycle the selected unit's weapon through the armory (W6)
 - O → DEBUG toggle the door entity under the cursor (A6 doors v0 — flips
   the synced want_open latch; the KEY is dev-only, ruling 5. The
   renderer's water-optics toggle moved O → V to free this key.)
@@ -136,6 +137,20 @@ class InputHandler:
         # Mirrors the I-ignite / J-gas path.
         if rl.is_key_pressed(K.KEY_U):
             self._debug_pour_water(sim, renderer)
+
+        # N: DEBUG cycle the SELECTED unit's weapon through every
+        # triggerable [weapons.*] row (W6 — Erik's grand-tuning key: the
+        # armory-as-data payoff). Goes through the FACADE
+        # (sim.debug_cycle_weapon — resets mag/burst state coherently); the
+        # input layer never edits unit fields itself. Prints the new row
+        # (the K-cycle style) and the panel shows it live. LOBBED/PLACED
+        # rows are skipped — grenades/charges ride their own modes (G / B).
+        if rl.is_key_pressed(K.KEY_N) and self.selected_unit_id is not None:
+            new_weapon = sim.debug_cycle_weapon(self.selected_unit_id)
+            if new_weapon is not None:
+                u = sim.get_unit(self.selected_unit_id)
+                print(f"[debug] {getattr(u, 'name', 'unit')} weapon -> "
+                      f"{new_weapon}")
 
         # O: DEBUG toggle the door entity under the cursor (A6 doors v0,
         # a6 doors design §10 / Erik's ruling 5). The KEY and its plumbing

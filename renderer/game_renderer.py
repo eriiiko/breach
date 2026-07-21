@@ -760,6 +760,111 @@ class GameRenderer:
                 cy = tile_to_world_px(pos[1] + 0.5, wpt)
                 col = rl.Color(255, 60, 60, int(220 * alpha_norm))
                 rl.draw_circle(int(cx), int(cy), 4.0, col)
+            elif kind == "jet":
+                # W6 spray jet (SprayJetEvent): a translucent cone fan from
+                # the sprayer toward the burst target — re-emitted every
+                # deposit tick, so it reads as a continuous hose while the
+                # burst lives and dies ~0.13 s after it ends. Flame = warm
+                # two-layer fan; miasma = a single fainter sickly-green fan.
+                # Render-side flicker only (time-based) — the sim is done.
+                import math as _m
+                ax = tile_to_world_px(fx["apex"][0], wpt)
+                ay = tile_to_world_px(fx["apex"][1], wpt)
+                dx = fx["target"][0] - fx["apex"][0]
+                dy = fx["target"][1] - fx["apex"][1]
+                d = _m.hypot(dx, dy)
+                if d > 1e-6:
+                    ang = _m.atan2(dy, dx)
+                    half = _m.radians(fx["half_deg"])
+                    length = fx["range"] * wpt
+                    flicker = 0.85 + 0.15 * _m.sin(
+                        37.0 * (time.perf_counter() - self._anim_t0)
+                        + 0.7 * ax)
+                    def _fan(frac_len, frac_half, color):
+                        L = length * frac_len * flicker
+                        h = half * frac_half
+                        p0 = rl.Vector2(ax, ay)
+                        p1 = rl.Vector2(ax + L * _m.cos(ang - h),
+                                        ay + L * _m.sin(ang - h))
+                        p2 = rl.Vector2(ax + L * _m.cos(ang + h),
+                                        ay + L * _m.sin(ang + h))
+                        # Raylib winding: draw both orders so the fan can't
+                        # vanish on a back-facing vertex order.
+                        rl.draw_triangle(p0, p1, p2, color)
+                        rl.draw_triangle(p0, p2, p1, color)
+                    if fx["flavor"] == "flame":
+                        _fan(1.0, 1.0, rl.Color(255, 110, 30,
+                                                int(60 * alpha_norm)))
+                        _fan(0.72, 0.62, rl.Color(255, 190, 70,
+                                                  int(80 * alpha_norm)))
+                        _fan(0.38, 0.35, rl.Color(255, 240, 170,
+                                                  int(110 * alpha_norm)))
+                    else:   # "miasma" — fainter, sickly, no hot core
+                        _fan(1.0, 1.0, rl.Color(120, 190, 70,
+                                                int(38 * alpha_norm)))
+                        _fan(0.6, 0.6, rl.Color(160, 210, 90,
+                                                int(50 * alpha_norm)))
+            elif kind == "glow":
+                # W6 plasma bolt (ProjectileGlowEvent): a glowing orb at the
+                # bolt's last reported position — re-emitted per tick, so a
+                # slow bolt reads as a flying ember with a short trail.
+                pos = fx["pos"]
+                cx = tile_to_world_px(pos[0], wpt)
+                cy = tile_to_world_px(pos[1], wpt)
+                halo = rl.Color(255, 140, 50, int(90 * alpha_norm))
+                core = rl.Color(255, 235, 190, int(230 * alpha_norm))
+                rl.draw_circle(int(cx), int(cy), max(3.0, 0.55 * wpt), halo)
+                rl.draw_circle(int(cx), int(cy), max(1.5, 0.22 * wpt), core)
+
+    def transient_light_specs(self) -> list:
+        """Light sources implied by the LIVE jet/glow effects (W6) — the
+        'transient light emitter' half of the spray/plasma visuals.
+
+        Returns plain dicts (x, y, max_range, intensity, color) in TILE
+        coordinates; main.py converts them to ``bp.LightSource`` and appends
+        them to the frame's source list (the renderer stays free of the
+        physics module, and the sim is never touched — lights are a pure
+        function of the renderer's own effect queue). A flame jet lights
+        from ~1/3 down the cone axis in warm orange; a miasma jet barely
+        glows (faint sickly green); a plasma bolt carries a small warm
+        light with it. Intensities fade with the effect's remaining life.
+        """
+        import math as _m
+        specs = []
+        for fx in self._effects:
+            alpha = max(0.0, 1.0 - fx["t"] / max(fx["life"], 1e-6))
+            if fx["kind"] == "jet":
+                dx = fx["target"][0] - fx["apex"][0]
+                dy = fx["target"][1] - fx["apex"][1]
+                d = _m.hypot(dx, dy)
+                if d <= 1e-6:
+                    continue
+                ux, uy = dx / d, dy / d
+                reach = float(fx["range"])
+                lx = fx["apex"][0] + ux * reach * 0.35
+                ly = fx["apex"][1] + uy * reach * 0.35
+                if fx["flavor"] == "flame":
+                    specs.append({
+                        "x": lx, "y": ly,
+                        "max_range": int(min(20, reach + 6)),
+                        "intensity": 1.8 * alpha,
+                        "color": (1.0, 0.55, 0.22),
+                    })
+                else:   # miasma
+                    specs.append({
+                        "x": lx, "y": ly,
+                        "max_range": 8,
+                        "intensity": 0.35 * alpha,
+                        "color": (0.45, 0.8, 0.35),
+                    })
+            elif fx["kind"] == "glow":
+                specs.append({
+                    "x": float(fx["pos"][0]), "y": float(fx["pos"][1]),
+                    "max_range": 10,
+                    "intensity": 1.2 * alpha,
+                    "color": (1.0, 0.65, 0.35),
+                })
+        return specs
 
     def consume_events(self, events: Sequence) -> None:
         """Read simulation tick events, spawn matching visual effects.
@@ -777,6 +882,7 @@ class GameRenderer:
         # Lazy import — keeps renderer importable without the simulation pkg.
         from simulation.events import (
             ShotFiredEvent, LaserFiredEvent, ExplosionEvent, UnitHitEvent,
+            SprayJetEvent, ProjectileGlowEvent,
         )
         for ev in events:
             if isinstance(ev, ShotFiredEvent):
@@ -794,6 +900,28 @@ class GameRenderer:
                     "to": ev.to_tile,
                     "t": 0.0,
                     "life": 0.22,    # a touch longer than a tracer
+                })
+            elif isinstance(ev, SprayJetEvent):
+                # W6 flame-jet / miasma-jet: short-lived on purpose — the
+                # sim re-emits every deposit tick (24 Hz), so the fan reads
+                # continuous during a burst and vanishes right after it.
+                self._effects.append({
+                    "kind": "jet",
+                    "apex": ev.from_tile,
+                    "target": ev.to_tile,
+                    "range": ev.range_tiles,
+                    "half_deg": ev.cone_half_angle_degrees,
+                    "flavor": ev.kind,
+                    "t": 0.0,
+                    "life": 0.13,
+                })
+            elif isinstance(ev, ProjectileGlowEvent):
+                self._effects.append({
+                    "kind": "glow",
+                    "pos": ev.pos,
+                    "flavor": ev.kind,
+                    "t": 0.0,
+                    "life": 0.12,
                 })
             elif isinstance(ev, ExplosionEvent):
                 self._effects.append({
@@ -912,6 +1040,13 @@ class GameRenderer:
                 draw_text(f"Selected: {selected_unit.name}", x, y, 14,
                           color=(120, 220, 255, 255))
                 y += 18
+                # W6: the equipped weapon row — the weapon-cycle key's (N)
+                # on-screen feedback during Erik's tuning session.
+                weapon_id = getattr(selected_unit, "weapon_id", "")
+                if weapon_id:
+                    draw_text(f"Weapon: {weapon_id}  (N cycles)", x, y, 13,
+                              color=(255, 200, 120, 255))
+                    y += 16
                 from simulation.stats import effective_vitality
                 draw_text(f"HP: {int(selected_unit.current_hp)}/{int(effective_vitality(selected_unit))}",
                           x, y, 13)
