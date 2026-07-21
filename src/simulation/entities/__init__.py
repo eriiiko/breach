@@ -40,3 +40,4 @@ from simulation.entities import door as _door    # noqa: F401  (registers the do
 from simulation.entities import controls as _controls  # noqa: F401  (registers button/terminal, B1 — inert)
 from simulation.entities import nodes as _nodes  # noqa: F401  (registers decider/gate_*/filter, B2)
 from simulation.entities import sensors as _sensors  # noqa: F401  (registers the v1 sensor catalog, B3)
+from simulation.entities import actuators as _actuators  # noqa: F401  (registers the airlock_controller, B5)

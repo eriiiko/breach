@@ -1,0 +1,129 @@
+# airlock_demo — the Arc B B5 automatic-airlock HUMAN-TEST level.
+# NEW level: never migrated, never in any golden/digest suite. Flat dev art.
+#
+# Layout (9 rows x 20 cols, 1.0 m tiles):
+#   cols 1..6   ship interior (air) — the marine starts here
+#   col  7      INNER door (v, rows 3..5) — interior <-> chamber
+#   cols 8..11  the airlock CHAMBER (air): presence plate + pump port
+#   col  12     OUTER door (v, rows 3..5) — chamber <-> space
+#   cols 13..19 open SPACE (vacuum) — the far side
+#
+# The automatic cycle (airlock_controller, impl doc §7): a marine steps into
+# the chamber -> both doors seal -> the pump EVACUATES the chamber toward the
+# far (vacuum) target -> the outer door opens with no rush -> the marine exits
+# to space -> the outer door reseals -> repressurize -> the inner door reopens.
+# The presence plate sits at chamber centre, OFF both door spans (N5), so the
+# triggering marine never blocks its own airlock.
+#
+# NOTE (single-pump v1, impl doc §7): the one pump has a single fixed
+# target_atm (= the far/evacuate target), so the EQUALIZE leg is the feelable
+# showcase; the REPRESSURIZE leg advances the state graph but does not itself
+# refill to 1 atm (a documented gap pending a retargetable pump). This is a
+# FEEL-ADJACENT patch — Erik plays it before any merge (HUMAN-TEST gate).
+#
+# Launch:  conda run -n data python main.py --level airlock_demo
+# Keys:    O toggle door under cursor | J gas | U water | I ignite | F6 HUD
+
+version = "2"
+name = "airlock_demo"
+
+tilemap = "tilemap.csv"
+tile_size_m = 1.0
+diffuse = "diffuse.png"
+
+[[spawn]]
+name = "Alpha"
+team = 0
+x = 3.0
+y = 4.0
+footprint = 3
+
+[[entity]]
+id = "inner_door"
+class = "door"
+x = 7
+y = 3
+orientation = "v"
+length_m = 3.0
+initial_state = "open"
+
+[[entity]]
+id = "outer_door"
+class = "door"
+x = 12
+y = 3
+orientation = "v"
+length_m = 3.0
+initial_state = "closed"
+
+[[entity]]
+id = "pump_1"
+class = "pump"
+x = 9
+y = 2
+port_dx = 0
+port_dy = 1
+rate = 1.0
+target_atm = 0
+
+[[entity]]
+id = "plate"
+class = "sensor_motion"
+x = 9
+y = 4
+radius = 3.0
+
+[[entity]]
+id = "ctrl"
+class = "airlock_controller"
+far_door = "outer"
+target_far_atm = 0
+target_near_atm = 65536
+
+[[wire]]
+from = "plate.value"
+to = "ctrl.presence"
+
+[[wire]]
+from = "inner_door.is_open"
+to = "ctrl.inner_open"
+
+[[wire]]
+from = "outer_door.is_open"
+to = "ctrl.outer_open"
+
+[[wire]]
+from = "inner_door.alive"
+to = "ctrl.inner_alive"
+
+[[wire]]
+from = "outer_door.alive"
+to = "ctrl.outer_alive"
+
+[[wire]]
+from = "pump_1.at_target"
+to = "ctrl.at_target"
+
+[[wire]]
+from = "ctrl.inner_close"
+to = "inner_door.close"
+
+[[wire]]
+from = "ctrl.inner_open_cmd"
+to = "inner_door.open"
+
+[[wire]]
+from = "ctrl.outer_close"
+to = "outer_door.close"
+
+[[wire]]
+from = "ctrl.outer_open_cmd"
+to = "outer_door.open"
+
+[[wire]]
+from = "ctrl.pump_inject"
+to = "pump_1.inject"
+
+[[wire]]
+from = "ctrl.pump_extract"
+to = "pump_1.extract"

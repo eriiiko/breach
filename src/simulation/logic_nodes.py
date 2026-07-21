@@ -21,6 +21,10 @@ Determinism (§9): integer-only (Q16.16); ordinal-order sweep; no RNG, no float
 from __future__ import annotations
 
 from simulation.entities import REGISTRY
+from simulation.entities.actuators import (
+    AIRLOCK_CLOSING, AIRLOCK_EQUALIZE, AIRLOCK_FAULT, AIRLOCK_IDLE,
+    AIRLOCK_OPEN_FAR, AIRLOCK_REPRESSURIZE, AIRLOCK_RESEAL,
+)
 from simulation.entities.nodes import snap_filter_k
 from simulation.entities.schema import (
     INPUT_AND, INPUT_EDGE, INPUT_HELD, INPUT_SINGLE,
@@ -191,6 +195,186 @@ class FilterRuntime:
         bus.stg[self.out_slot] = (self.ema + self._half) >> self.k
 
 
+class AirlockControllerRuntime:
+    """Sim-side runtime for one ``airlock_controller`` state machine (§7, D12).
+
+    A LOGIC-NODE evaluator (swept at 9e(b)): it reads its wired inputs from
+    ``pub`` (the presence plate value + each door's is_open/alive + the pump's
+    at_target), advances the state machine, and writes its command signals to
+    ``stg`` — swapped into ``pub`` at 9e(e), so each command reaches its door /
+    pump ONE tick later (the node-hop latency, §2c). It touches NO entity
+    directly — every read and write is a SignalBus slot — so its runtime list
+    position is never observable (§9).
+
+    Doubles as the SERIALIZER runtime object (the ordinal/id/class_name/fields
+    + ``alive`` duck-type, mirroring :class:`FilterRuntime` /
+    :class:`simulation.pump_system.PumpRuntime`) so the ``airlock_controller``
+    class's ``runtime_digest_rows`` reads ``self.state`` / ``self.dwell``
+    straight off the sim's entity list (§8). ``state`` is the integer enum
+    (:mod:`simulation.entities.actuators`); ``dwell`` counts ticks held in the
+    current state (0 on the tick a transition lands). Both are synced rows.
+
+    The transition function is a Moore machine (§7): read inputs → compute the
+    next state → drive the command outputs from the (new) state. Integer-only,
+    no RNG / float / dict-order; the outputs are a pure function of the state,
+    so the sweep is order-independent (nodes never read ``stg``, the invariant).
+
+    Single-pump note (see the actuators module docstring): ``equalize_cmd`` is
+    the pump drive direction for EQUALIZE (+1 inject toward a higher far target,
+    -1 extract toward a lower one, 0 when the two targets coincide);
+    REPRESSURIZE drives the opposite. Both phases gate on the one ``at_target``.
+    """
+
+    __slots__ = ("inst", "far_is_outer", "equalize_cmd",
+                 "i_presence", "i_inner_open", "i_outer_open",
+                 "i_inner_alive", "i_outer_alive", "i_at_target",
+                 "o_inner_close", "o_inner_open", "o_outer_close",
+                 "o_outer_open", "o_inject", "o_extract", "o_busy",
+                 "state", "dwell", "alive")
+
+    def __init__(self, inst, far_is_outer, equalize_cmd, in_slots, out_slots):
+        self.inst = inst
+        self.far_is_outer = bool(far_is_outer)
+        self.equalize_cmd = int(equalize_cmd)   # +1 inject / -1 extract / 0
+        # Input slots (None => unwired => reads 0). Named to avoid colliding
+        # with the same-named command OUTPUT (inner_open vs inner_open_cmd).
+        self.i_presence = in_slots["presence"]
+        self.i_inner_open = in_slots["inner_open"]
+        self.i_outer_open = in_slots["outer_open"]
+        self.i_inner_alive = in_slots["inner_alive"]
+        self.i_outer_alive = in_slots["outer_alive"]
+        self.i_at_target = in_slots["at_target"]
+        # Output slots (all present — a LOGIC_NODE's SIGNALS all get a slot).
+        self.o_inner_close = int(out_slots["inner_close"])
+        self.o_inner_open = int(out_slots["inner_open_cmd"])
+        self.o_outer_close = int(out_slots["outer_close"])
+        self.o_outer_open = int(out_slots["outer_open_cmd"])
+        self.o_inject = int(out_slots["pump_inject"])
+        self.o_extract = int(out_slots["pump_extract"])
+        self.o_busy = int(out_slots["busy"])
+        self.state = AIRLOCK_IDLE          # synced runtime row (§8)
+        self.dwell = 0                     # ticks in the current state (synced)
+        self.alive = True
+
+    # --- serializer duck-type (serialize.py entity_records) ------------
+    @property
+    def ordinal(self):
+        return self.inst.ordinal
+
+    @property
+    def id(self):
+        return self.inst.id
+
+    @property
+    def class_name(self):
+        return self.inst.class_name
+
+    @property
+    def fields(self):
+        return self.inst.fields
+
+    # --- the transition function (9e b) --------------------------------
+    @staticmethod
+    def _pump_dir(cmd):
+        """(inject, extract) for a signed pump command (+1 / -1 / 0)."""
+        if cmd > 0:
+            return 1, 0
+        if cmd < 0:
+            return 0, 1
+        return 0, 0
+
+    def _next_state(self, presence, inner_open, outer_open, inner_alive,
+                    outer_alive, at_target, far_open, far_alive):
+        """The §7 transition: the state to hold this tick. Integer-only."""
+        s = self.state
+        if s == AIRLOCK_IDLE:
+            return AIRLOCK_CLOSING if presence >= 1 else AIRLOCK_IDLE
+        if s == AIRLOCK_CLOSING:
+            # D12 breach-abort: a door reading alive==0 is a venting HOLE, not a
+            # seal (a destroyed door also reads is_open==0). Never pump into it.
+            if inner_alive == 0 or outer_alive == 0:
+                return AIRLOCK_FAULT
+            if inner_open == 0 and outer_open == 0:
+                return AIRLOCK_EQUALIZE
+            return AIRLOCK_CLOSING           # occupancy stall lives here (§7)
+        if s == AIRLOCK_EQUALIZE:
+            return AIRLOCK_OPEN_FAR if at_target != 0 else AIRLOCK_EQUALIZE
+        if s == AIRLOCK_OPEN_FAR:
+            return AIRLOCK_RESEAL if presence == 0 else AIRLOCK_OPEN_FAR
+        if s == AIRLOCK_RESEAL:
+            # D12 again: a far door that reads alive==0 mid-reseal is a breach —
+            # abort before REPRESSURIZE would pump into it.
+            if far_alive == 0:
+                return AIRLOCK_FAULT
+            return AIRLOCK_REPRESSURIZE if far_open == 0 else AIRLOCK_RESEAL
+        if s == AIRLOCK_REPRESSURIZE:
+            return AIRLOCK_IDLE if at_target != 0 else AIRLOCK_REPRESSURIZE
+        return AIRLOCK_FAULT                 # FAULT is latched until reset (§7)
+
+    def evaluate(self, bus) -> None:
+        pub = bus.pub
+
+        def rd(slot):
+            return int(pub[slot]) if slot is not None else 0
+
+        presence = rd(self.i_presence)
+        inner_open = rd(self.i_inner_open)
+        outer_open = rd(self.i_outer_open)
+        inner_alive = rd(self.i_inner_alive)
+        outer_alive = rd(self.i_outer_alive)
+        at_target = rd(self.i_at_target)
+        # Far / near mapping (which physical door is the far side).
+        if self.far_is_outer:
+            far_open, far_alive = outer_open, outer_alive
+        else:
+            far_open, far_alive = inner_open, inner_alive
+
+        prev = self.state
+        nxt = self._next_state(presence, inner_open, outer_open, inner_alive,
+                               outer_alive, at_target, far_open, far_alive)
+        self.dwell = self.dwell + 1 if nxt == prev else 0
+        self.state = nxt
+
+        # Moore outputs: a pure function of the (new) state. far/near are the
+        # ABSTRACT roles; mapped to inner/outer by far_door below.
+        far_open_cmd = far_close = near_open_cmd = near_close = 0
+        inject = extract = busy = 0
+        st = self.state
+        if st == AIRLOCK_IDLE:
+            near_open_cmd = 1               # near door open for entry
+            far_close = 1                  # far door held shut
+        elif st == AIRLOCK_CLOSING:
+            near_close = far_close = busy = 1
+        elif st == AIRLOCK_EQUALIZE:
+            near_close = far_close = busy = 1
+            inject, extract = self._pump_dir(self.equalize_cmd)
+        elif st == AIRLOCK_OPEN_FAR:
+            near_close = far_open_cmd = busy = 1
+        elif st == AIRLOCK_RESEAL:
+            near_close = far_close = busy = 1
+        elif st == AIRLOCK_REPRESSURIZE:
+            near_close = far_close = busy = 1
+            inject, extract = self._pump_dir(-self.equalize_cmd)
+        # AIRLOCK_FAULT: everything 0 — doors released to manual, busy 0 (§7).
+
+        # Map the far/near roles onto the physical inner/outer command slots.
+        if self.far_is_outer:
+            inner_open_o, inner_close_o = near_open_cmd, near_close
+            outer_open_o, outer_close_o = far_open_cmd, far_close
+        else:
+            inner_open_o, inner_close_o = far_open_cmd, far_close
+            outer_open_o, outer_close_o = near_open_cmd, near_close
+
+        stg = bus.stg
+        stg[self.o_inner_close] = inner_close_o
+        stg[self.o_inner_open] = inner_open_o
+        stg[self.o_outer_close] = outer_close_o
+        stg[self.o_outer_open] = outer_open_o
+        stg[self.o_inject] = inject
+        stg[self.o_extract] = extract
+        stg[self.o_busy] = busy
+
+
 # ---------------------------------------------------------------------------
 # Build + sweep — wired into simulation.py's slot-9e block.
 # ---------------------------------------------------------------------------
@@ -233,10 +417,13 @@ def build_logic_nodes(sim) -> list:
     evaluators: list = []
     for e in node_insts:
         ordinal = int(e.ordinal)
-        out_slot = bus.slot(ordinal, "out")
         drivers = input_slots.get((ordinal, "in"), [])
         cn = e.class_name
+        # Single-output nodes (decider / gate_* / filter) emit exactly `out`;
+        # the airlock_controller emits SEVERAL command signals (§7), so `out`
+        # is resolved per-branch — a node with no `out` never touches it.
         if cn == "decider":
+            out_slot = bus.slot(ordinal, "out")
             require_alive = bool(e.fields.get("require_alive"))
             alive_slot = None
             if require_alive:
@@ -247,19 +434,42 @@ def build_logic_nodes(sim) -> list:
                 out_slot, drivers, e.fields["comparator"],
                 int(e.fields["threshold"]), require_alive, alive_slot))
         elif cn == "gate_and":
-            evaluators.append(_GateEval(out_slot, drivers, INPUT_AND))
+            evaluators.append(_GateEval(bus.slot(ordinal, "out"), drivers,
+                                        INPUT_AND))
         elif cn == "gate_or":
-            evaluators.append(_GateEval(out_slot, drivers, INPUT_HELD))
+            evaluators.append(_GateEval(bus.slot(ordinal, "out"), drivers,
+                                        INPUT_HELD))
         elif cn == "gate_not":
-            evaluators.append(_NotEval(out_slot, drivers))
+            evaluators.append(_NotEval(bus.slot(ordinal, "out"), drivers))
         elif cn == "filter":
             k = snap_filter_k(e.fields["tau_s"], tps)
-            frt = FilterRuntime(e, out_slot, drivers[0] if drivers else None, k)
+            frt = FilterRuntime(e, bus.slot(ordinal, "out"),
+                                drivers[0] if drivers else None, k)
             _replace_entity(sim.entities, e, frt)
             evaluators.append(frt)
+        elif cn == "airlock_controller":
+            # A MULTI-OUTPUT node (§7): one SINGLE input each, seven command
+            # signals. Resolve every declared input's driving slot (SINGLE →
+            # the one slot or None) and every output signal's slot.
+            def _single(name, _ord=ordinal):
+                lst = input_slots.get((_ord, name), [])
+                return lst[0] if lst else None
+            in_slots = {n: _single(n) for n in (
+                "presence", "inner_open", "outer_open", "inner_alive",
+                "outer_alive", "at_target")}
+            out_slots = {sig.name: bus.slot(ordinal, sig.name)
+                         for sig in REGISTRY[cn].SIGNALS}
+            far = int(e.fields["target_far_atm"])
+            near = int(e.fields["target_near_atm"])
+            equalize_cmd = 1 if far > near else (-1 if far < near else 0)
+            far_is_outer = (e.fields["far_door"] == "outer")
+            art = AirlockControllerRuntime(
+                e, far_is_outer, equalize_cmd, in_slots, out_slots)
+            _replace_entity(sim.entities, e, art)
+            evaluators.append(art)
         else:                             # pragma: no cover - registry drift
             raise ValueError(
-                f"logic node class {cn!r} has no B2 evaluator — the registry "
+                f"logic node class {cn!r} has no B-arc evaluator — the registry "
                 f"and logic_nodes.build_logic_nodes disagree")
     return evaluators
 
