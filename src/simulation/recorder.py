@@ -94,6 +94,11 @@ class PhysicsRecorder:
         # emits no entity keys and the .npz is byte-identical to pre-A4.
         self.entity_snapshots = [None] * capacity
 
+        # Arc B: per-tick serialized __signals__ bytes (SIGNAL_SECT_V1), ring
+        # buffer style. Stays all-None on a wire-free level, so dump() emits no
+        # signal key and the .npz is byte-identical to pre-Arc-B.
+        self.signal_snapshots = [None] * capacity
+
         print(f"[recorder] Ring buffer: {capacity} slots, fields={self.fields}, "
               f"~{self._mem_mb():.0f} MB")
 
@@ -104,7 +109,7 @@ class PhysicsRecorder:
         total += self.tick_ids.nbytes + self.tick_times.nbytes
         return total / (1024 * 1024)
 
-    def record(self, gmap, tick, real_time, units, entities=None):
+    def record(self, gmap, tick, real_time, units, entities=None, signals=()):
         """Snapshot current state into ring buffer.
 
         ``entities`` (A4, additive): the sim's runtime entity list — Arc A
@@ -112,6 +117,14 @@ class PhysicsRecorder:
         per tick through THE one canonical serializer under the presence
         rule (None/empty records nothing, keeping entity-free dumps
         byte-identical).
+
+        ``signals`` (Arc B, additive): the SignalBus ``__signals__`` rows
+        ``(ordinal, name, value)`` — non-empty ONLY when the level declares
+        wires (a bus exists). A dormant (wire-free) level passes ``()`` →
+        nothing is recorded and the .npz stays byte-identical to Arc A (§8);
+        ``serialize_entity_state`` is NOT extended to fold signals (that would
+        change every door level's recorded bytes) — signals ride their own
+        additive key.
         """
         i = self.index % self.capacity
         for name in self.fields:
@@ -150,6 +163,14 @@ class PhysicsRecorder:
         # level carries no entities.
         self.entity_snapshots[i] = (
             serialize_entity_state(entities) if entities else None)
+
+        # Arc B: __signals__ bytes — additive + presence-gated (None when no
+        # bus / no wires), so a dormant level's dump is byte-identical.
+        if signals:
+            from simulation.entities.serialize import serialize_signal_state
+            self.signal_snapshots[i] = serialize_signal_state(signals)
+        else:
+            self.signal_snapshots[i] = None
 
         self.index += 1
         self.count += 1
@@ -225,6 +246,15 @@ class PhysicsRecorder:
                 [s if s is not None else b"" for s in ent_snaps],
                 dtype=np.bytes_)
             data['entity_registry_hash'] = np.array(registry_content_hash())
+
+        # Arc B: __signals__ payload — ADDITIVE + presence-gated, so a
+        # wire-free level's dump carries exactly the pre-Arc-B key set.
+        sig_snaps = [self.signal_snapshots[i]
+                     for i in (range(n) if isinstance(slc, slice) else slc)]
+        if any(s is not None for s in sig_snaps):
+            data['signal_state'] = np.array(
+                [s if s is not None else b"" for s in sig_snaps],
+                dtype=np.bytes_)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"debug_{reason}_{timestamp}.npz"

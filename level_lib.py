@@ -78,6 +78,9 @@ MANAGED_FAMILIES = {
     # A3 ([[entity]] format): one registry entry, zero writer changes —
     # exactly the promise the family-generic writer was built on.
     "entity": ManagedFamily("entity", array=True),
+    # B1 ([[wire]] logic bindings): another array-of-tables family, same
+    # family-generic writer, byte-stable round-trip via format_wire_lines.
+    "wire": ManagedFamily("wire", array=True),
 }
 
 
@@ -185,6 +188,27 @@ def format_entity_lines(entities, nl: str = "\n") -> list:
             lines.append(f"tags = {_fmt_value(list(e.tags))}{nl}")
         for key in e.authored_keys:
             lines.append(f"{key} = {_fmt_value(e.fields[key])}{nl}")
+    return lines
+
+
+def format_wire_lines(wire_specs, nl: str = "\n") -> list:
+    """The managed [[wire]] block as ``nl``-terminated lines — schema per
+    level_loader.WireSpec (Arc B impl doc §1).
+
+    Canonical form: ``from`` then ``to``, the authored dotted strings verbatim
+    (a ``tag:name.input`` target is written back as the author's single line,
+    never its pre-expanded members), blank line between entries. Load -> format
+    round-trips byte-stably. Accepts WireSpec objects (``.from_``/``.to``) or
+    ``(from, to)`` pairs."""
+    lines = []
+    for i, w in enumerate(wire_specs):
+        if i:
+            lines.append(nl)
+        from_ = w.from_ if hasattr(w, "from_") else w[0]
+        to = w.to if hasattr(w, "to") else w[1]
+        lines.append(f"[[wire]]{nl}")
+        lines.append(f"from = {_fmt_value(str(from_))}{nl}")
+        lines.append(f"to = {_fmt_value(str(to))}{nl}")
     return lines
 
 

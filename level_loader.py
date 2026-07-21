@@ -47,8 +47,8 @@ if _SRC_DIR.is_dir() and str(_SRC_DIR) not in sys.path:
 # §3b). The entities package is import-light (stdlib-only, CI-tested), so
 # this pulls in no compiled physics and never simulation.simulation.
 from simulation.entities import (  # noqa: E402
-    KIND_ENTITY_REF, REGISTRY as ENTITY_REGISTRY, effective_defaults,
-    field_value_error,
+    INPUT_EDGE, INPUT_HELD, KIND_ENTITY_REF, REGISTRY as ENTITY_REGISTRY,
+    all_signals, effective_defaults, field_value_error,
 )
 
 
@@ -242,6 +242,58 @@ class EntityInstance:
     authored_keys: tuple = ()
 
 
+@dataclass(frozen=True)
+class WireSpec:
+    """One authored ``[[wire]]`` block, verbatim (Arc B impl doc §1).
+
+    Carries the raw ``from``/``to`` dotted strings exactly as authored, so
+    level_lib's :func:`format_wire_lines` round-trips the managed block
+    byte-stably (a tag target is written back as the single ``tag:name.input``
+    the author wrote, never its pre-expanded members). ``from_`` uses the
+    trailing underscore because ``from`` is a Python keyword.
+    """
+    from_: str
+    to: str
+
+
+@dataclass(frozen=True)
+class Wire:
+    """One RESOLVED fan-out edge (Arc B impl doc §1c).
+
+    The runtime binding the SignalBus consumes: an emitter's signal driving one
+    consumer's input, addressed by runtime ORDINAL (never id/position — §3a).
+    A ``tag:`` target pre-expands to one ``Wire`` per member in ordinal order
+    (frozen at load: entities do not spawn in v1). ``aggregation_mode`` is the
+    target input's declared mode (``schema.InputDecl.mode``) — how slot 9e(c)
+    combines multiple wires into that input.
+    """
+    source_ordinal: int
+    signal: str
+    target_ordinal: int
+    input: str
+    aggregation_mode: str
+
+
+# Input modes that accept MANY driving wires (impl doc §2d). A target input
+# whose mode is NOT in this set is single-arity (exactly one wire) — the
+# generic §1b value-input arity check keys on this. In B1 only INPUT_HELD /
+# INPUT_EDGE exist and both are here, so the check is a no-op until B2 adds the
+# single-arity SINGLE mode (and the many-wire AND mode joins this set).
+_MANY_WIRE_MODES = frozenset({INPUT_HELD, INPUT_EDGE})
+
+
+def _reject_unit_reference(name: str, unit_names: set, *, where: str,
+                           toml_path) -> None:
+    """Shared A3 unit-rejection (entity design §3e): a wire/ref end naming a
+    ``[[spawn]]`` unit is a hard error — units are NOT entities until the
+    stack-2 convergence (no wire, tag, or ref may address one)."""
+    if name in unit_names:
+        raise ValueError(
+            f"{where} in {toml_path} references '{name}', a [[spawn]] unit "
+            f"— units are NOT entities (entity design §3e): no wire, tag or "
+            f"ref may address a unit until the stack-2 convergence.")
+
+
 def _light_entry_from_entity(inst: EntityInstance) -> LightEntry:
     """``[[entity]]`` light instance -> the SAME LightEntry a ``[[light]]``
     block yields (the legacy-alias equivalence contract, editor design §6):
@@ -363,6 +415,169 @@ def _parse_entities(raw: dict, toml_path, spawns: list) -> list:
                     f"'{target}' (authoring error, not fatal — entity "
                     f"design §3a).")
     return entities
+
+
+_WIRE_TAG_PREFIX = "tag:"
+
+
+def _split_endpoint(raw_str: str, *, side: str, index: int, toml_path):
+    """Split a wire endpoint ``"<head>.<tail>"`` on the FIRST dot (Arc B §1a).
+
+    Ids/tag names cannot contain ``.`` (loader slug charset), so the first dot
+    is the unambiguous separator between the addressed thing and its
+    signal/input name. Empty/malformed → hard error naming the wire index."""
+    if not isinstance(raw_str, str) or not raw_str:
+        raise ValueError(
+            f"[[wire]] entry #{index} in {toml_path}: '{side}' must be a "
+            f"non-empty \"<id>.<name>\" string, got {raw_str!r}.")
+    if "." not in raw_str:
+        raise ValueError(
+            f"[[wire]] entry #{index} in {toml_path}: '{side}' = {raw_str!r} "
+            f"is not dotted \"<id>.<name>\" (Arc B wire format §1a).")
+    head, tail = raw_str.split(".", 1)
+    if not head or not tail:
+        raise ValueError(
+            f"[[wire]] entry #{index} in {toml_path}: '{side}' = {raw_str!r} "
+            f"has an empty id or name half.")
+    return head, tail
+
+
+def _parse_wires(raw: dict, toml_path, entities: list, spawns: list):
+    """Parse + validate the ``[[wire]]`` array (Arc B impl doc §1).
+
+    Returns ``(wires, wire_specs)``: the RESOLVED fan-out table (``list[Wire]``
+    of ``(source_ordinal, signal, target_ordinal, input, aggregation_mode)``,
+    tag targets pre-expanded per member in ordinal order) plus the authored
+    ``list[WireSpec]`` (verbatim ``from``/``to`` for level_lib's byte-stable
+    round-trip). Validation (the registry IS the validator, §1b):
+
+    - **source signal exists** on the source class (incl. the free ``alive``)
+      — else a hard error (a typo, not a destroyed target);
+    - **dangling id WARNS + drops** the wire (a runtime-destroyed target
+      authored defensively is legal, §3a) — a bad signal/input NAME on an
+      EXISTING class HARD-ERRORS;
+    - **target input exists** on the target class — for ``tag:`` targets EVERY
+      member must declare it (a member lacking it → hard error, no silent
+      partial fan-out);
+    - **unit rejection** (§3e): a ``from``/``to`` naming a ``[[spawn]]`` unit
+      hard-errors (shared A3 helper);
+    - **value-input arity** (§2d): a single-arity input accepts exactly one
+      wire (generic — a no-op in B1, where every input is many-wire OR/held).
+    """
+    wires_raw = raw.get("wire", [])
+    if not isinstance(wires_raw, list):
+        raise ValueError(
+            f"[[wire]] in {toml_path} must be an array of tables "
+            f"(got {type(wires_raw).__name__}) — spell it [[wire]], "
+            f"not [wire]")
+
+    by_id = {e.id: e for e in entities}
+    ordinal_of = {e.id: int(e.ordinal) for e in entities}
+    # tag name -> member instances in ORDINAL order (§3c/§1c).
+    tag_members: dict = {}
+    for e in sorted(entities, key=lambda e: int(e.ordinal)):
+        for t in e.tags:
+            tag_members.setdefault(t, []).append(e)
+    unit_names = {str(s.name) for s in spawns}
+
+    wire_specs: list = []
+    resolved: list = []
+    # (target_ordinal, input) -> list of (mode, wire_index) for the arity check.
+    per_input: dict = {}
+
+    for i, entry in enumerate(wires_raw):
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"[[wire]] entry #{i} in {toml_path}: expected a table, got "
+                f"{type(entry).__name__}.")
+        from_raw = entry.get("from")
+        to_raw = entry.get("to")
+        wire_specs.append(WireSpec(from_=str(from_raw), to=str(to_raw)))
+
+        src_id, signal = _split_endpoint(from_raw, side="from", index=i,
+                                         toml_path=toml_path)
+        target_spec, input_name = _split_endpoint(to_raw, side="to", index=i,
+                                                   toml_path=toml_path)
+
+        # Unit rejection (§3e) — both ends, before any drop, via the A3 helper.
+        _reject_unit_reference(src_id, unit_names,
+                               where=f"[[wire]] entry #{i} 'from'",
+                               toml_path=toml_path)
+        if not target_spec.startswith(_WIRE_TAG_PREFIX):
+            _reject_unit_reference(target_spec, unit_names,
+                                   where=f"[[wire]] entry #{i} 'to'",
+                                   toml_path=toml_path)
+
+        # --- source: dangling id WARNS+drops; bad signal NAME hard-errors ---
+        if src_id not in by_id:
+            warnings.warn(
+                f"[[wire]] entry #{i} in {toml_path} 'from' names id "
+                f"'{src_id}', which no [[entity]] declares — dangling wire "
+                f"dropped (authoring error, not fatal — Arc B §1b).")
+            continue
+        src = by_id[src_id]
+        src_signals = {s.name for s in all_signals(ENTITY_REGISTRY[src.class_name])}
+        if signal not in src_signals:
+            raise ValueError(
+                f"[[wire]] entry #{i} in {toml_path} 'from' = {from_raw!r}: "
+                f"class '{src.class_name}' has no signal '{signal}' "
+                f"(declares {sorted(src_signals)}) — a bad name is a typo, "
+                f"not a destroyed target (Arc B §1b).")
+
+        # --- target: resolve members (tag → all, else single); dangling id
+        #     WARNS+drops; bad input NAME hard-errors; tag member lacking the
+        #     input hard-errors (no silent partial fan-out) ---
+        if target_spec.startswith(_WIRE_TAG_PREFIX):
+            tag_name = target_spec[len(_WIRE_TAG_PREFIX):]
+            members = tag_members.get(tag_name)
+            if not members:
+                warnings.warn(
+                    f"[[wire]] entry #{i} in {toml_path} 'to' targets "
+                    f"tag:'{tag_name}', which no [[entity]] carries — "
+                    f"dangling wire dropped (Arc B §1b).")
+                continue
+            targets = members
+        else:
+            if target_spec not in by_id:
+                warnings.warn(
+                    f"[[wire]] entry #{i} in {toml_path} 'to' names id "
+                    f"'{target_spec}', which no [[entity]] declares — "
+                    f"dangling wire dropped (Arc B §1b).")
+                continue
+            targets = [by_id[target_spec]]
+
+        for tgt in targets:                # ordinal order (members pre-sorted)
+            tinputs = {ii.name: ii for ii in ENTITY_REGISTRY[tgt.class_name].INPUTS}
+            if input_name not in tinputs:
+                member = (f"tag member '{tgt.id}'"
+                          if target_spec.startswith(_WIRE_TAG_PREFIX)
+                          else f"'{tgt.id}'")
+                raise ValueError(
+                    f"[[wire]] entry #{i} in {toml_path} 'to' = {to_raw!r}: "
+                    f"{member} (class '{tgt.class_name}') has no input "
+                    f"'{input_name}' (declares "
+                    f"{sorted(tinputs)}) — Arc B §1b.")
+            mode = tinputs[input_name].mode
+            w = Wire(source_ordinal=ordinal_of[src_id], signal=signal,
+                     target_ordinal=int(tgt.ordinal), input=input_name,
+                     aggregation_mode=mode)
+            resolved.append(w)
+            per_input.setdefault((int(tgt.ordinal), input_name), []).append(
+                (mode, i))
+
+    # --- value-input arity (§2d), generic: a single-arity input (mode NOT in
+    #     the many-wire set) accepts exactly one wire. No-op in B1. ---
+    for (tgt_ordinal, input_name), drivers in per_input.items():
+        mode = drivers[0][0]
+        if mode not in _MANY_WIRE_MODES and len(drivers) > 1:
+            raise ValueError(
+                f"[[wire]] in {toml_path}: input '{input_name}' on entity "
+                f"ordinal {tgt_ordinal} has aggregation mode '{mode}' (single "
+                f"value) but {len(drivers)} wires drive it — a single-arity "
+                f"input accepts exactly one wire (Arc B §2d). Compose multiple "
+                f"sources through a gate_or/gate_and node instead.")
+
+    return resolved, wire_specs
 
 
 def _parse_water_table(raw: dict, base: Path, toml_path,
@@ -740,6 +955,16 @@ class LevelData:
     # `lights` above as equivalent LightEntry values (the [[light]]
     # legacy-alias contract; mixed forms hard-error at load).
     entities: list = field(default_factory=list)  # list[EntityInstance]
+    # ---- [[wire]] logic bindings (Arc B impl doc §1) ---------------------
+    # `wires`: the RESOLVED fan-out table (list[Wire], tag targets pre-expanded
+    # per member in ordinal order) the SignalBus consumes at runtime — EMPTY on
+    # every Arc-A level (no [[wire]] blocks), which is the dormancy pin: no
+    # wires ⇒ the sim builds no bus ⇒ the digest is byte-identical to Arc A.
+    # `wire_specs`: the authored WireSpec list (verbatim from/to) for
+    # level_lib's byte-stable managed-block round-trip. Both defaulted so
+    # synthetic LevelData(...) in tests stays valid.
+    wires: list = field(default_factory=list)       # list[Wire] (resolved)
+    wire_specs: list = field(default_factory=list)  # list[WireSpec] (authored)
     # ---- zones.npy paint grid (editor design §5, A8) ---------------------
     # uint8 paint ids, shape == tilemap, 0 = unpainted — or None when the
     # level folder carries no zones.npy (zone dormancy: an un-zoned level
@@ -985,6 +1210,9 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
     # ---- [water] initial state (engine/15 §2.3, P5) ----------------------
     water_depth_q = _parse_water_table(raw, base, toml_path, tilemap)
 
+    # ---- [[wire]] logic bindings (Arc B impl doc §1) ---------------------
+    wires, wire_specs = _parse_wires(raw, toml_path, entities, spawns)
+
     # ---- zones.npy paint grid + binding (editor design §5, A8) -----------
     zone_grid = _parse_zones_grid(base, tilemap)
     _validate_zone_binding(zone_grid, entities, toml_path)
@@ -1023,6 +1251,8 @@ def load(level_name: str, levels_dir: str = "levels") -> LevelData:
         art_align_explicit=art_align_explicit,
         water_depth_q=water_depth_q,
         entities=entities,
+        wires=wires,
+        wire_specs=wire_specs,
         zone_grid=zone_grid,
         air_init_q=air_init_q,
         boundary=boundary,
