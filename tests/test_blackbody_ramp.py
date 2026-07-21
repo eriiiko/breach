@@ -173,3 +173,54 @@ def test_from_config_missing_section_uses_defaults():
     r = BlackbodyRamp.from_config(_NS())
     assert r.k_temp_to_kelvin == 2.0
     assert r.lut_size == 256
+
+
+# ---- P2: the overlay packing (headless, no GL) -------------------------
+
+pack_emissive_rgba = blackbody.pack_emissive_rgba
+
+
+def _field(t_game_grid):
+    return (np.asarray(t_game_grid, dtype=np.float64) * TEMP_SCALE).astype(np.int32)
+
+
+def test_pack_shape_and_dtype():
+    r = BlackbodyRamp()
+    packed = pack_emissive_rgba(r, _field([[0, 100], [3000, 9000]]))
+    assert packed.shape == (2, 2, 4)
+    assert packed.dtype == np.uint8
+
+
+def test_pack_cold_is_transparent():
+    r = BlackbodyRamp()
+    packed = pack_emissive_rgba(r, np.zeros((4, 4), dtype=np.int32))
+    assert np.all(packed[..., 3] == 0)      # alpha 0 everywhere -> invisible
+
+
+def test_pack_warm_tile_is_warm_and_visible():
+    r = BlackbodyRamp()
+    # A hot flame-zone tile (~3000 game units): visible, warm (R >= B), and the
+    # peak hue channel saturates to 255 (brightness lives in alpha).
+    packed = pack_emissive_rgba(r, _field([[3000]]))
+    px = packed[0, 0]
+    assert px[3] > 0                        # visible
+    assert int(px[0]) >= int(px[2])         # red >= blue (warm)
+    assert px[:3].max() == 255              # peak-normalized hue
+
+
+def test_pack_brightness_monotone_in_temperature():
+    r = BlackbodyRamp()
+    # Alpha (brightness) is non-decreasing with temperature across a ramp of
+    # tiles spanning cold -> extreme.
+    temps = [0, 300, 800, 1500, 3000, 6000, 12000]
+    packed = pack_emissive_rgba(r, _field([temps]))
+    alpha = packed[0, :, 3].astype(np.int32)
+    assert np.all(np.diff(alpha) >= 0), f"alpha not monotone: {alpha.tolist()}"
+
+
+def test_pack_does_not_mutate_field():
+    r = BlackbodyRamp()
+    field = _field([[0, 3000], [6000, 12000]])
+    before = field.copy()
+    pack_emissive_rgba(r, field)
+    assert np.array_equal(field, before)

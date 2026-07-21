@@ -27,6 +27,7 @@ from config import CFG
 from simulation.status import composed_flags
 
 from . import core
+from .blackbody import BlackbodyRamp
 from .camera import Camera2D
 from .lighting import LightingPass
 from .overlays import (
@@ -163,15 +164,16 @@ class GameRenderer:
         # smoke_glow output. Supersedes the retired light_modulation surface-tint.
         self.glow_overlay = GlowOverlay(cfg.grid_h, cfg.grid_w)
         self.pressure_overlay = PressureOverlay(cfg.grid_h, cfg.grid_w)
-        # Debug temperature overlay (engine/06): black-body ramp over
-        # gmap.temperature. temp_display_max = the ΔT that maps to white-hot;
-        # default ~300 == the wood ignition_temp so an igniting tile reads at
-        # the top of the ramp. Tunable via [display] temp_display_max. Off by
-        # default; toggled with T. RENDER-ONLY — never mutates the field.
-        temp_display_max = float(
-            getattr(getattr(CFG, "display", None), "temp_display_max", 300.0))
+        # Emissive temperature overlay (Fire & Heat Beauty B1): the physical
+        # black-body glow over gmap.temperature (engine/06). Built from the
+        # shared black-body primitive ([render.blackbody]) — temperature ->
+        # pseudo-Kelvin -> chroma * T⁴ intensity, ACES tone-mapped. This
+        # supersedes the old 5-stop ramp + temp_display_max knob. RENDER-ONLY —
+        # never mutates the field. Toggled with T (default from
+        # [render] blackbody_overlay_on).
+        self.blackbody_ramp = BlackbodyRamp.from_config(CFG)
         self.temperature_overlay = HeatFieldOverlay(
-            cfg.grid_h, cfg.grid_w, temp_display_max=temp_display_max)
+            cfg.grid_h, cfg.grid_w, self.blackbody_ramp)
         # Water overlay v2 (water W6b; canon engine/07 §6 placeholder): depth-
         # blue tint + ripple shading + foam + ambient sines over the sim's
         # water fields. All four knobs bind from [display] with getattr
@@ -212,7 +214,13 @@ class GameRenderer:
         # Toggles
         self.show_grid = False
         self.show_smoke = True
-        self.show_fire = True
+        # Fire & Heat Beauty B1 (human-test A/B): the flat-orange FireOverlay is
+        # demoted to default-OFF so the physical black-body overlay (T) is the
+        # blessed look Erik compares against. Toggle F3 on live to A/B. Default
+        # from [render] fire_overlay_on so the shipped default can be set from
+        # config after the feel-check without a code change.
+        self.show_fire = bool(getattr(
+            getattr(CFG, "render", None), "fire_overlay_on", False))
         self.show_lighting = True
         self.show_normal_map = True
         self.normal_y_flipped = False
@@ -221,8 +229,11 @@ class GameRenderer:
         # Pressure colormap defaults ON in the main game — explosions
         # look dramatic by default. Toggle with F7.
         self.show_pressure = True
-        # Debug temperature overlay (engine/06) — OFF by default; toggle with T.
-        self.show_temperature = False
+        # Emissive black-body temperature overlay (Fire & Heat Beauty B1) —
+        # default ON via [render] blackbody_overlay_on so the blessed look ships
+        # as the default; toggle with T. RENDER-ONLY.
+        self.show_temperature = bool(getattr(
+            getattr(CFG, "render", None), "blackbody_overlay_on", True))
         # Water OPTICS pass (graphics/water_rendering.md) — ON by default; the
         # GLSL pass is dormant-safe (alpha 0 on dry tiles), so a dry ship looks
         # identical whether it's on or off. Toggle with O to disable the water
