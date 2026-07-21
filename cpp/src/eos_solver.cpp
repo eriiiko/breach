@@ -724,6 +724,28 @@ void EOSSolver::step(
 // V-cycle (cuda_mg_solve.cu); eos_mg_solve_reference calls both.
 // ===========================================================================
 
+// S8a Path A: the MG-build scalar folds, moved VERBATIM out of
+// mg_build_levels (pure code motion — the header documents why: the
+// device-resident build must consume these identical bits, so this
+// /fp:strict TU holds the ONE transcription).
+EOSSolver::MGScalarFolds EOSSolver::mg_scalar_folds(float dt) const {
+    MGScalarFolds f;
+    // Per-tick scalar folds (identical expressions to step()'s hoists).
+    f.n_floor_q  = quantize((double)N_FLOOR_SOLVER);
+    const double gamma_d = (double)adiabatic_index;
+    f.gamma_q    = quantize(gamma_d);
+    const double dt_d    = (double)dt;
+    f.dt_q       = quantize(dt_d);
+    const double dx_d    = std::max((double)dx, 1e-6);
+    const double K_d = (double)c_max * (double)c_max / gamma_d;
+    // K·dt²/dx² — the operator's geometric factor (real ≈1,006 at bench
+    // dt/dx; ×(γp*≈1.4 ambient) reproduces the pre-v2.2 coupling ≈1,409 —
+    // the round-trip product D-A preserves by construction).
+    f.Kdt2dx2_raw =
+        (int64_t)(K_d * dt_d * dt_d / (dx_d * dx_d) * 65536.0 + 0.5);
+    return f;
+}
+
 int EOSSolver::mg_build_levels(
         const int32_t* pstar, const int32_t* div_u, const int32_t* n_total,
         const int32_t* p_prev,
@@ -737,19 +759,12 @@ int EOSSolver::mg_build_levels(
     // BC: dormancy BY BRANCH — every ambient edit below is gated on this flag.
     const bool ambient_mode = (is_ambient != nullptr);
 
-    // Per-tick scalar folds (identical expressions to step()'s hoists).
-    const q16 n_floor_q  = quantize((double)N_FLOOR_SOLVER);
-    const double gamma_d = (double)adiabatic_index;
-    const q16 gamma_q    = quantize(gamma_d);
-    const double dt_d    = (double)dt;
-    const q16 dt_q       = quantize(dt_d);
-    const double dx_d    = std::max((double)dx, 1e-6);
-    const double K_d = (double)c_max * (double)c_max / gamma_d;
-    // K·dt²/dx² — the operator's geometric factor (real ≈1,006 at bench
-    // dt/dx; ×(γp*≈1.4 ambient) reproduces the pre-v2.2 coupling ≈1,409 —
-    // the round-trip product D-A preserves by construction).
-    const int64_t Kdt2dx2_raw =
-        (int64_t)(K_d * dt_d * dt_d / (dx_d * dx_d) * 65536.0 + 0.5);
+    // Per-tick scalar folds — the ONE transcription (mg_scalar_folds above).
+    const MGScalarFolds fold = mg_scalar_folds(dt);
+    const q16 n_floor_q      = fold.n_floor_q;
+    const q16 gamma_q        = fold.gamma_q;
+    const q16 dt_q           = fold.dt_q;
+    const int64_t Kdt2dx2_raw = fold.Kdt2dx2_raw;
 
     // --- level count (fixed by grid size — deterministic) ------------------
     int n_levels = 1;

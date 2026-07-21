@@ -60,10 +60,49 @@
 // bindings.cpp can include it; cuda_eos_step.cu provides the definitions.
 // Compiled only when BREACH_CUDA.
 #include <cstdint>
+#include <vector>
 
 class EOSSolver;
 
 namespace breach_cuda {
+
+// ---- S8a Path A: the shared HOST pre-stage (ONE transcription) -------------
+// (docs/cuda_s8a_path_a_impl_2026-07-21.md §3.2.2.) The verbatim step()
+// pre-stage block eos_step_cuda has always run — the boundary_flux_ member
+// reset (BOTH branches, incl. the space-map clear), the mirror
+// p_prev := atmosphere copy (step 0 — load-bearing: the max_du grad-scan
+// reads p_prev), the dbg probe, the per-tick scalar folds, the c_LOCAL /
+// max|u| / Dalton / K·|∇P|·dt/N̂ scans and the n_sub ceil_div, the donor-cell
+// coeffE/S cache, and the conservative-plane index list. Factored so the
+// device-resident entry (cuda_eos_resident.cu) consumes the IDENTICAL bits;
+// defined in cuda_eos_step.cu (the same /fp:strict host pass either way).
+// Everything here reads TICK-ENTRY state — in the resident tick that is the
+// authoritative numpy mirror (design §0).
+struct EOSHostPrestage {
+    // Per-tick scalars the mid/late stages consume (Q16.16 raw where noted).
+    int32_t t_amb_q   = 0;   // quantize(T_AMB_K) — pstar
+    int32_t c_q       = 0;   // quantize(C) — pstar
+    int32_t inv_2dx_q = 0;   // quantize(1/(2·dx)) — div_u (+ kick per-call)
+    int32_t c_local_q = 0;   // the c_LOCAL cap (kick; == dbg_last_c_local_q)
+    int     n_sub     = 1;   // the substep schedule (== dbg_last_n_sub)
+    int32_t dt_s_q    = 0;   // quantize(dt/n_sub) — the substep dt
+    // Per-tick host planes (H2D'd once by the caller).
+    std::vector<int32_t> coeffE, coeffS;   // donor-cell face-coeff cache
+    // Conservative-plane index list (the CPU's gi order preserved).
+    std::vector<int> cons;
+};
+
+EOSHostPrestage eos_host_prestage(
+    const EOSSolver& solver,
+    const int32_t* atmosphere,
+    int32_t* p_prev,
+    const int32_t* wind_x, const int32_t* wind_y,
+    const int32_t* temperature,
+    const int32_t* gas, const bool* gas_conservative, int n_gases,
+    const bool* solid, const bool* is_vacuum,
+    const float* dyn_permeability,
+    int h, int w, float dt,
+    bool ambient_mode);
 
 // True iff EVERY kernel surface the chained dispatch needs is flagged for
 // the GPU (review §4 is silent on a master flag, so the four per-kernel

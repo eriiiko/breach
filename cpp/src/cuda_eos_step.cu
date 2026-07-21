@@ -104,30 +104,27 @@ bool eos_step_backend_is_cuda() {
         && kick_compression_backend_is_cuda();
 }
 
-long long eos_step_cuda_calls() { return g_eos_step_cuda_calls; }
-
-void eos_step_cuda(
+// ============================================================================
+// S8a Path A: the shared HOST pre-stage — the VERBATIM step() transcription
+// block below eos_step_cuda has always run, factored (PURE CODE MOTION) so
+// the device-resident entry consumes the identical bits. See the header.
+// ============================================================================
+EOSHostPrestage eos_host_prestage(
         const EOSSolver& solver,
-        int32_t* atmosphere,
+        const int32_t* atmosphere,
         int32_t* p_prev,
-        int32_t* wind_x, int32_t* wind_y,
-        int32_t* temperature,
-        int32_t* gas, const bool* gas_conservative, int n_gases,
+        const int32_t* wind_x, const int32_t* wind_y,
+        const int32_t* temperature,
+        const int32_t* gas, const bool* gas_conservative, int n_gases,
         const bool* solid, const bool* is_vacuum,
-        const float* dyn_permeability, const float* dyn_wave_absorb,
+        const float* dyn_permeability,
         int h, int w, float dt,
-        const bool* is_ambient, const int32_t* n_amb, int32_t p_amb,
-        const int32_t* sponge_sigma, const int32_t* sponge_udamp) {
-
+        bool ambient_mode) {
+    EOSHostPrestage pre;
     const int n = h * w;
-    if (n <= 0 || dt <= 0.0f) return;   // step()'s degenerate early-out
-    ++g_eos_step_cuda_calls;
 
-    // BC: dormancy BY BRANCH — every ambient edit gated on this (space maps take
-    // the byte-identical path). Mirrors EOSSolver::step's ambient_mode.
-    const bool ambient_mode = (is_ambient != nullptr);
     // The boundary_flux rail (spec §5): zero it each tick in ambient mode; the
-    // per-substep bulk reset accumulates into it on device, copied back below.
+    // per-substep bulk reset accumulates into it on device, copied back later.
     if (ambient_mode) {
         if ((int)solver.boundary_flux_.size() != n_gases)
             solver.boundary_flux_.assign(n_gases, 0);
@@ -136,11 +133,6 @@ void eos_step_cuda(
     } else if (!solver.boundary_flux_.empty()) {
         solver.boundary_flux_.clear();
     }
-
-    // ======================================================================
-    // HOST PRE-STAGE — eos_solver.cpp step() lines up to the substep loop,
-    // VERBATIM on tick-entry state (digest-neutral: same code, same bytes).
-    // ======================================================================
 
     // ---- step 0: P_prev := P (pure copy) ---------------------------------
     for (int i = 0; i < n; ++i) p_prev[i] = atmosphere[i];
@@ -237,7 +229,8 @@ void eos_step_cuda(
     const q16 dt_s_q = quantize(dt_s_d);
 
     // ---- donor-cell face-coefficient cache (step()'s hoist, verbatim) ----
-    std::vector<int32_t> coeffE(n, 0), coeffS(n, 0);
+    pre.coeffE.assign(n, 0);
+    pre.coeffS.assign(n, 0);
     {
         const q16 dts_q_c = quantize(dt_s_d);
         for (int y = 0; y < h; ++y) {
@@ -247,11 +240,11 @@ void eos_step_cuda(
                 if (solid[i]) continue;
                 if (x < w - 1 && !solid[i + 1]) {
                     const float ff = std::min(dyn_permeability[i], dyn_permeability[i + 1]);
-                    if (ff > 0.0f) coeffE[i] = mul_q16(quantize((double)ff), dts_q_c);
+                    if (ff > 0.0f) pre.coeffE[i] = mul_q16(quantize((double)ff), dts_q_c);
                 }
                 if (y < h - 1 && !solid[i + w]) {
                     const float ff = std::min(dyn_permeability[i], dyn_permeability[i + w]);
-                    if (ff > 0.0f) coeffS[i] = mul_q16(quantize((double)ff), dts_q_c);
+                    if (ff > 0.0f) pre.coeffS[i] = mul_q16(quantize((double)ff), dts_q_c);
                 }
             }
         }
@@ -259,9 +252,62 @@ void eos_step_cuda(
 
     // Conservative-plane index list (the CPU's gi order preserved; the
     // planes are independent — disjoint N, read-only wind/coeffs).
-    std::vector<int> cons;
     for (int gi = 0; gi < n_gases; ++gi)
-        if (gas_conservative[gi]) cons.push_back(gi);
+        if (gas_conservative[gi]) pre.cons.push_back(gi);
+
+    pre.t_amb_q   = t_amb_q;
+    pre.c_q       = c_q;
+    pre.inv_2dx_q = inv_2dx_q;
+    pre.c_local_q = c_local_q;
+    pre.n_sub     = n_sub;
+    pre.dt_s_q    = dt_s_q;
+    return pre;
+}
+
+long long eos_step_cuda_calls() { return g_eos_step_cuda_calls; }
+
+void eos_step_cuda(
+        const EOSSolver& solver,
+        int32_t* atmosphere,
+        int32_t* p_prev,
+        int32_t* wind_x, int32_t* wind_y,
+        int32_t* temperature,
+        int32_t* gas, const bool* gas_conservative, int n_gases,
+        const bool* solid, const bool* is_vacuum,
+        const float* dyn_permeability, const float* dyn_wave_absorb,
+        int h, int w, float dt,
+        const bool* is_ambient, const int32_t* n_amb, int32_t p_amb,
+        const int32_t* sponge_sigma, const int32_t* sponge_udamp) {
+
+    const int n = h * w;
+    if (n <= 0 || dt <= 0.0f) return;   // step()'s degenerate early-out
+    ++g_eos_step_cuda_calls;
+
+    // BC: dormancy BY BRANCH — every ambient edit gated on this (space maps take
+    // the byte-identical path). Mirrors EOSSolver::step's ambient_mode.
+    const bool ambient_mode = (is_ambient != nullptr);
+
+    // ======================================================================
+    // HOST PRE-STAGE — the shared verbatim step() transcription (S8a Path A
+    // pure code motion into eos_host_prestage above; boundary_flux_ reset,
+    // step-0 p_prev copy, scalar folds, c_LOCAL/n_sub scans, coeffE/S, cons).
+    // ======================================================================
+    const EOSHostPrestage pre = eos_host_prestage(
+        solver, atmosphere, p_prev, wind_x, wind_y, temperature,
+        gas, gas_conservative, n_gases, solid, is_vacuum,
+        dyn_permeability, h, w, dt, ambient_mode);
+    const q16 t_amb_q   = pre.t_amb_q;
+    const q16 c_q       = pre.c_q;
+    const q16 inv_2dx_q = pre.inv_2dx_q;
+    const q16 c_local_q = pre.c_local_q;
+    const int n_sub     = pre.n_sub;
+    const q16 dt_s_q    = pre.dt_s_q;
+    const std::vector<int32_t>& coeffE = pre.coeffE;
+    const std::vector<int32_t>& coeffS = pre.coeffS;
+    const std::vector<int>& cons = pre.cons;
+    // Mid-stage Dalton scratch (re-zeroed + refilled below, exactly like the
+    // CPU's member-cache reuse — a fresh vector holds the same bytes).
+    std::vector<int32_t> n_total(n, 0);
 
     // ======================================================================
     // DEVICE SUBSTEP LOOP — u/T/bulk-gas device-resident across all n_sub

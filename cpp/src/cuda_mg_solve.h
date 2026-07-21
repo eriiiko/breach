@@ -87,6 +87,35 @@ uint64_t eos_mg_vcycle(
     int32_t* p_out,
     int* launches_actual, int* launches_naive);
 
+// ---- S8a Path A: the DEVICE-RESIDENT solve entry ---------------------------
+// A pointer view of one DEVICE-RESIDENT MG level (the persistent hierarchy
+// cuda_eos_resident.cu owns and builds on device). Same layout/meaning as
+// MGLevelHostView, but every pointer is a DEVICE pointer; P/b/res are
+// written on device by the solve, m/gE/gS/recip/excl are the (device-built)
+// per-tick operator data. Plain ints + raw pointers — no CUDA types.
+struct MGLevelDevPtrs {
+    int h = 0, w = 0;
+    const uint8_t* excl = nullptr;
+    const int64_t* m = nullptr;
+    const int64_t* gE = nullptr;
+    const int64_t* gS = nullptr;
+    const int64_t* recip = nullptr;
+    int64_t* b = nullptr;
+    int32_t* P = nullptr;
+    int64_t* res = nullptr;
+};
+
+// Run the IDENTICAL solve schedule eos_mg_vcycle runs (same shared launch
+// body, same kernels, same fused tail, same level-0 zero) directly on the
+// resident device hierarchy: no upload, no D2H, no digest, no sync (the
+// caller owns stream ordering + the end-of-tick sync). The solved level-0 P
+// (post mg_zero_excl) is left in levels[0].P — byte-for-byte the p_out the
+// per-call entry would have D2H'd. Design: cuda_s8a_path_a_impl §5.
+void eos_mg_vcycle_resident(
+    const MGLevelDevPtrs* levels, int n_levels,
+    bool use_multigrid, int mg_cycles, int mg_nu1, int mg_nu2,
+    int mg_coarsest_sweeps, int flat_S);
+
 // Backend selection (the P6.1/P6.2 surviving-backend idiom). NOTE: no engine
 // dispatch site consumes this yet — EOS orchestration dispatch is P6.5 ("the
 // big flip", review §4); until then the flag exists so the gate / tooling
