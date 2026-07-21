@@ -10,7 +10,7 @@ Created 2026-07-17 from Erik's stated stack; Erik owns the ordering.
 
 ## The stack
 
-### 1. Physics engine v1 — close it out  ← S8a residency is the last step
+### 1. Physics engine v1 — CLOSED 2026-07-21 (S8a complete: Path B + Path A)
 - ~~**Boundary conditions** (space vs planetside, per-map)~~ **DONE
   2026-07-20** — merged to main (`110e142`), Erik feel-blessed ("atmosphere
   behaves, feel is nice"). Planetside AMBIENT ring symmetric to SPACE:
@@ -38,15 +38,27 @@ Created 2026-07-17 from Erik's stated stack; Erik owns the ordering.
   the big-map win); full-tick @256² 45.8→34.2 ms even with EOS bracketed. Flag
   default OFF (`set_residency`, `--resident`); CuPy never imported on the CPU path.
   §5b unit-stamp always-upload masks in `GameMap._RESIDENT_MASKS` (body-shielding
-  preserved). **PATH A = the remaining step: EOS device residency** (port
-  `mg_build_levels` + host reductions to device for zero-mid-tick EOS — the
-  determinism-critical "S8 endpoint"). Deferred to **Fable** (wrote the residency
-  plan); brief `docs/s8a_path_a_eos_residency_brief_2026-07-20.md`; drops into
-  Path-B's framework (removes the EOS bracket). Physics-v1 close needs Path A.
-  Discovered+fixed en route: main's `BREACH_CUDA=ON` build was broken since
-  `472871d` (smoke_clamp arity) — fixed on main (`ae85906`). (Also addresses the
-  `cast_fire_heat` per-call GPU tax that tanks FPS with lots of fire — the
-  device port is S8c; the residency patch removes the transfer tax.)
+  preserved). **PATH A DONE + MERGED 2026-07-21** (`93a014c`, --no-ff, Fable,
+  auto-merge on green per the kickoff): the EOS stage is FULLY device-resident —
+  on-device `mg_build_levels` port (single-writer gather kernels + per-cell
+  integer divides; host pre-stage keeps ALL the global reductions on the mirror,
+  they consume tick-entry state), device mid-stage (div_u/Dalton/p*), shared
+  vcycle + kick launch cores, zero mid-tick plane transfers (the "S8 endpoint").
+  Design: `cuda_s8a_path_a_impl_2026-07-21.md` (v2, 3-lens adversarial critique
+  survived). Gate: space + AMBIENT 40-tick A/Bs tol 0 (fields + telemetry +
+  boundary_flux rail) + a device-vs-host BUILD-PARITY probe (poisoned hierarchy,
+  3 scenarios incl. odd dims); suite 997 passed; NO re-baseline. Payoff: EOS
+  stage 1.8×→2.2× vs the per-call bracket (grows with area); **full tick @256²:
+  CPU 47.8 | per-call 53.6 | RESIDENT 27.1 ms** — the big-map win. ★ Found+fixed
+  en route: `is_ambient` is NOT static (destroy_wall's joins-ambient twin) — now
+  rides the per-tick EOS upload; this was also a latent Path-B bug (stale device
+  trace sink after a ring breach — the space-only gate couldn't see it). Resident
+  path skips the six digest_* checkpoints + dbg probes (documented gap; per-call
+  path unchanged and still carries them). **S8a COMPLETE → physics engine v1 is
+  CLOSED.** Next in the S8 line: S8b (CUDA graphs), then S8c (render CUDA-GL
+  interop + recorder kernels + the `cast_fire_heat` device port — the fire-FPS
+  fix). Earlier en-route fix (Path B): main's `BREACH_CUDA=ON` build broken since
+  `472871d` (smoke_clamp arity) — fixed on main (`ae85906`).
 - Riders (chat-sized, slot when convenient):
   - ~~Wall-burst differential fix~~ **DONE 2026-07-18** — merged to main
     (true differential; only 1-deep membranes burst; Erik blessed).
