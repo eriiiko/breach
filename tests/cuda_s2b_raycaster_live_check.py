@@ -7,7 +7,7 @@ the per-burning-tile source loop that CLEARS nothing (the per-tick heat clear is
 the end of Simulation.step) and ACCUMULATES each source's deposit into gmap.heat —
 produces a byte-identical `heat` field whether cast_fire_heat dispatches to the CPU
 (Raycaster.cast_source_directional) or the GPU (bp.cuda_raycaster_cast). It also
-proves the full 7/7 (all field solvers + the raycaster) is bit-identical end-to-end
+proves the full all-backends-on (field solvers + raycaster; 5/5 after the EOS P6.0 wave/atmos retirement) is bit-identical end-to-end
 over a real 30-tick trajectory, including the synced `heat`/`temperature` fields,
 and still reproduces the committed default-scenario golden.
 
@@ -23,11 +23,11 @@ Two parts:
   site, not a re-implementation — so it catches a wiring bug (wrong clear/accumulate,
   a dropped source, a buffer-aliasing slip) that the isolated S2 gate cannot.
 
-  PART 2 — 7/7 INTEGRATION. The default A/B scenario (fire seeded -> cast_fire_heat
-  runs) stepped 30 ticks with ALL 7 backends ON vs ALL 7 OFF (CPU). Assert the full
+  PART 2 — ALL-BACKENDS-ON INTEGRATION. The default A/B scenario (fire seeded -> cast_fire_heat
+  runs) stepped 30 ticks with ALL backends ON vs ALL OFF (CPU). Assert the full
   per-tick trajectory of EVERY synced field (incl. heat + temperature, which the
   raycaster feeds) is bit-identical (diff_trajectories tol 0), and the CPU path
-  still reproduces the golden. This is the proof that --cuda is a full 7/7.
+  still reproduces the golden. This is the proof that --cuda is fully GPU-dispatched.
 
 Prints ``S2_LIVE_RESULT: PASS``/``FAIL`` and exits 0/1, plus the headline
 ``RAYCASTER_LIVE_RESULT: PASS``/``FAIL`` the task asks for.
@@ -67,7 +67,25 @@ INT32_MAX = (1 << 31) - 1
 # ALL field trajectories are byte-identical (and the pulse's dv ~2.3 is
 # below the knockdown threshold 6.0 -> __unit_status__ unmoved too).
 # (was 6d690fda8259b392be9029082013623fbef0fc0322ed3089107d5db220e1b441)
-GOLDEN = "07c3f37043c62cb47ec1abfef1a59d47c5f7a9c313490b38ecd2ddc543d1833d"
+# Re-baselined 2026-07-10 (EOS refactor P4 — combustion on real O2): the O2 gate
+# re-point (FireSimulation + apply_temperature_ignition now read gas[O2],
+# not atmosphere/P — item 3) and the newly-applied trace decay->inert_N2
+# credit (item 2, decisions.md #12 v2.1) both touch the default scenario
+# (it seeds fire + smoke): fire[8,8]/[8,9]'s O2-gated intensity and
+# black_smoke's decay both move the trajectory. Combustion itself (item 1)
+# does NOT touch this scenario (no flammable/wood material in the level).
+# (was 493645d34b01d7ad55e5f0e6ae7254e94989dc1b6dce5c1b7ee5e53acaff3e63)
+# Re-baselined 2026-07-10 (eos-p3fix-thermal-ceiling, design v2.4):
+# the plume shim's T_FLAME_MAX self-limiter fix, the saturating T/u
+# writes, the T_MAX_PHYS/U_MAX rails, the absorption-proportional gas
+# radiant deposit (Pass 1), and the O2-gate hot-zone-equilibrium
+# rescale (P_min/P_full/o2_threshold) all touch the default scenario
+# (it seeds fire + smoke): the fire tiles' heat->T->wind->O2 chain
+# moves the trajectory. ONE re-baseline for the whole branch (the
+# gate-h rule). DIGEST_SPEC_VERSION unchanged (values moved; no field
+# added/removed/retyped).
+# (was 7eeb41d431a79ba01cbafef37416188bbf1ecb2a194d92af5f4ede279c9f2758)
+GOLDEN = "98d3dd7eaf3d574d6e562513cd95f3b5ac077b7c69b1d0b024db931261735473"
 
 
 # ----------------------------------------------------------------------------
@@ -246,11 +264,18 @@ def part1b_multitick_live() -> bool:
 
 
 # ----------------------------------------------------------------------------
-# PART 2 — 7/7 all-backends-on 30-tick integration vs CPU (tol 0) + golden.
+# PART 2 — all-backends-on 30-tick integration vs CPU (tol 0) + golden.
 # ----------------------------------------------------------------------------
+# EOS P6.0: wave/atmos backends retired (cuda_wave.cu / cuda_atmosphere.cu
+# deleted with their CPU solvers); the all-on set is now 5.
+# EOS P6.5: the four EOS kernel-surface flags (bulk_flux, sl_advection,
+# mg_solve, kick_compression) are now LIVE-DISPATCHED — with all four on,
+# run_substeps routes the whole eos.step tick to the chained GPU orchestration
+# (cuda_eos_step.cu). All six EOS-era setters are in the all-on set.
 _SETTERS = ("set_temperature_backend", "set_water_backend", "set_smoke_backend",
-            "set_wave_backend", "set_fire_backend", "set_atmos_backend",
-            "set_raycaster_backend")
+            "set_fire_backend", "set_raycaster_backend", "set_bulk_flux_backend",
+            "set_sl_advection_backend", "set_mg_solve_backend",
+            "set_kick_compression_backend")
 
 
 def _set_all(on):
@@ -259,15 +284,15 @@ def _set_all(on):
 
 
 def part2_integration() -> bool:
-    print("PART 2 — 7/7 all-backends-on 30-tick trajectory vs CPU (tol 0) + golden:")
+    print("PART 2 — all-backends-on 30-tick trajectory vs CPU (tol 0) + golden:")
     from field_ab_harness import capture_trajectory, diff_trajectories
     from field_digest import trajectory_digest
 
-    # ALL 7 backends ON (incl. raycaster) — the full GPU tick, fire seeded so
+    # ALL backends ON (incl. raycaster) — the full GPU tick, fire seeded so
     # cast_fire_heat runs the GPU ray cast each tick.
     _set_all(True)
     traj_gpu = capture_trajectory(n_steps=30)
-    # ALL 7 OFF — the pure CPU reference.
+    # ALL OFF — the pure CPU reference.
     _set_all(False)
     traj_cpu = capture_trajectory(n_steps=30)
 
@@ -286,13 +311,13 @@ def part2_integration() -> bool:
         # that fire is present (cast_fire_heat enumerates burning tiles every tick).
         peak_fire = max(int(np.abs(s["fire"]).max()) for s in traj_cpu)
         nfields = len(set(traj_cpu[0]) | set(traj_gpu[0]))
-        print(f"  CPU vs 7/7-GPU: ALL {nfields} synced fields bit-identical over "
+        print(f"  CPU vs all-on-GPU: ALL {nfields} synced fields bit-identical over "
               f"30 ticks (incl. heat + temperature; fire present each tick -> the "
               f"GPU fire->heat cast ran, peak |fire|={peak_fire} counts).")
         if peak_fire == 0:
             ok = False
             print("  SCENARIO WEAK: no fire over the run -> cast_fire_heat never "
-                  "cast on the GPU; the 7/7 integration is vacuous for the raycaster.")
+                  "cast on the GPU; the integration is vacuous for the raycaster.")
 
     # The CPU path (all backends OFF) must still reproduce the committed golden —
     # the raycaster being live-wired changes NOTHING when the flag is off.

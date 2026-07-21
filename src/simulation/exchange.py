@@ -472,7 +472,14 @@ def apply_wave_push(units, gmap, ticks_per_second):
     getup_ticks = int(cfg.knockdown_getup_ticks)
     dt_tick = 1.0 / float(ticks_per_second)
 
-    wave_p = gmap.wave_p
+    # EOS refactor P3 (design §6 "apply_wave_push" row): reads grad(P) — the
+    # derived pressure field (`gmap.atmosphere`, the design's P-alias) —
+    # instead of the retired `wave_p` acoustic anomaly. P now carries BOTH the
+    # acoustic transient and the bulk dome in one field (§3.1's buffet-vs-dome
+    # distinction survives as the field's own time evolution); the zero-mean
+    # fast path is unaffected: grad(P) is baseline-independent regardless of
+    # P's steady-state level (uniform P -> grad == 0, integer-exact).
+    p_field = gmap.atmosphere
     solid = gmap.solid
     h, w = solid.shape
 
@@ -480,7 +487,7 @@ def apply_wave_push(units, gmap, ticks_per_second):
         if not u.alive:
             continue
         tiles = u.occupied_tiles()
-        gx, gy = reduce_grad(wave_p, tiles)
+        gx, gy = reduce_grad(p_field, tiles)
         if gx == 0 and gy == 0:
             continue    # integer-exact no-op: quiet field or clipped footprint
 

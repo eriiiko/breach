@@ -31,7 +31,7 @@ Each line is::
 
 in a FIXED (tick, field) order, so two files line up for a plain ``diff``. The
 script also prints, to stdout:
-  - the host + the aggregate 30-tick trajectory digest (compare to 07c3f370… on
+  - the host + the aggregate 30-tick trajectory digest (compare to the committed golden on
     Ampere — the P4-wave-push golden — as a sanity check that the build is clean), and
   - if a SECOND file from another host is present in tests/, the first diverging
     (field, tick) between this run and that file (a built-in cross-machine diff).
@@ -77,7 +77,31 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # trajectories are byte-identical (and the pulse's dv ~2.3 is below the
 # knockdown threshold 6.0 -> __unit_status__ unmoved too).
 # (was 6d690fda8259b392be9029082013623fbef0fc0322ed3089107d5db220e1b441)
-GOLDEN_AGGREGATE = "07c3f37043c62cb47ec1abfef1a59d47c5f7a9c313490b38ecd2ddc543d1833d"
+# EOS refactor P3 (2026-07-10): whole-physics replacement (the compressible
+# gamma*p* multigrid solver supersedes wave+diffusion) — goldens moved ONCE,
+# by design, at the end of the patch (the P1+P2 merge discipline). Previous:
+# 2bab9702 (P1+P2), 07c3f370 (pre-EOS), f7b8becd (P3 at the pre-re-pin
+# N_SUB_MAX=16 — superseded same-day by the blessed 16->8 re-pin, decisions
+# log #14, which legitimately moves trajectories).
+# Re-baselined 2026-07-10 (EOS refactor P4 — combustion on real O2): the O2 gate
+# re-point (FireSimulation + apply_temperature_ignition now read gas[O2], not
+# atmosphere/P — item 3) and the newly-applied trace decay->inert_N2 credit
+# (item 2, decisions.md #12 v2.1) both touch the default scenario (it seeds
+# fire + smoke): fire[8,8]/[8,9]'s O2-gated intensity and black_smoke's decay
+# both move the trajectory. Combustion itself (item 1) does NOT touch this
+# scenario (no flammable/wood material in the level).
+# (was 493645d34b01d7ad55e5f0e6ae7254e94989dc1b6dce5c1b7ee5e53acaff3e63)
+# Re-baselined 2026-07-10 (eos-p3fix-thermal-ceiling, design v2.4):
+# the plume shim's T_FLAME_MAX self-limiter fix, the saturating T/u
+# writes, the T_MAX_PHYS/U_MAX rails, the absorption-proportional gas
+# radiant deposit (Pass 1), and the O2-gate hot-zone-equilibrium
+# rescale (P_min/P_full/o2_threshold) all touch the default scenario
+# (it seeds fire + smoke): the fire tiles' heat->T->wind->O2 chain
+# moves the trajectory. ONE re-baseline for the whole branch (the
+# gate-h rule). DIGEST_SPEC_VERSION unchanged (values moved; no field
+# added/removed/retyped).
+# (was 7eeb41d431a79ba01cbafef37416188bbf1ecb2a194d92af5f4ede279c9f2758)
+GOLDEN_AGGREGATE = "98d3dd7eaf3d574d6e562513cd95f3b5ac077b7c69b1d0b024db931261735473"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs
@@ -195,7 +219,7 @@ def main() -> int:
     print(f"per-field lines     = {len(lines)}  ({N_STEPS} ticks x "
           f"{len(DIGEST_FIELDS) + len(UNIT_SUBFIELD_LABELS) + 1} fields)")
     print(f"aggregate digest    = {agg}")
-    print(f"matches 07c3f370    = {agg == GOLDEN_AGGREGATE}  "
+    print(f"matches golden      = {agg == GOLDEN_AGGREGATE}  "
           f"(Ampere clean-build sanity)")
 
     # Built-in cross-machine diff: if any OTHER host's perfield file is present,

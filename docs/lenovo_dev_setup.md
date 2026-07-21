@@ -66,7 +66,7 @@ cross-machine proof:
    MSVC 14.44 + the miniconda `data` py3.12 interpreter).
 3. Run: `<lenovo-py> tests/_xarch_perfield_digest.py`
    → it auto-diffs vs the committed Ampere baseline (`tests/_xarch_perfield_ampere.txt`).
-   - **ALL GREEN** (aggregate digest == `07c3f37043c62cb47ec1abfef1a59d47c5f7a9c313490b38ecd2ddc543d1833d`,
+   - **ALL GREEN** (aggregate digest == `2bab9702e098b30a2aeb290e9aeb19301c9de4379f64443966ea9f3074a91b7a`,
      no diverging (field, tick)) ⇒ **cross-machine determinism PROVEN** — tell Claude,
      who tags `cuda-breached` and pushes it. Done, for good.
    - Any diverger ⇒ the tool now names the exact unit sub-field (hp / facing / pos /
@@ -185,3 +185,15 @@ re-ran §5 in full:
 **Cross-machine determinism is PROVEN on Ada.** Tagged `cuda-breached` and pushed.
 The X-ARCH Beat-B chase (spike0 → the June 29 Ada finding → Q2-lift trig kit →
 spawn-stat pin) is closed.
+
+## 10. EOS-refactor note (2026-07-10) — golden re-baselined, CUDA gates suspended
+
+P1 (O2/inert_N2 species + conservative bulk transport) and P2 (unified temperature)
+merged to main. Golden re-baselined `07c3f370…` → `2bab9702…` (P1 grew `gas` to
+7 planes — structural; P2's interface conduction — behavioral, both by design).
+The committed per-field baseline is now `tests/_xarch_perfield_erik_lenovo.txt`
+(digest is cross-machine deterministic, so a Lenovo baseline is valid everywhere).
+**CUDA gates are SUSPENDED (`cuda_harness.EOS_P6_PENDING = True`) until the P6
+kernel ports re-prove each GPU kernel bit-identical** — the design's D7 rule; do
+not "fix" the skips before P6. §5 above is HISTORICAL (the cuda-breached arc,
+completed 2026-07-04); its digest constants have been superseded by the EOS arc.

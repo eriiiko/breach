@@ -2,8 +2,8 @@
 
 SKIPS cleanly without a CUDA build / device. When the GPU build is present, runs
 the S3 check in an isolated anaconda-3.11 subprocess (cuda_harness): the isolated
-GPU-vs-CPU pipe-model solver comparison over rich synthetic inputs (head FLOAT
-bridge, tilt poly + per-tile double tilt, donor-cell flux, the OUTFLOW LIMITER,
+GPU-vs-CPU pipe-model solver comparison over rich synthetic inputs (the EOS-P3
+integer head term, tilt poly + per-tile double tilt, donor-cell flux, the OUTFLOW LIMITER,
 scale_mag, the dry/solid/eps clamps) on water_depth + flow_vx + flow_vy AND the
 full-engine backend-switch integration. A non-zero exit or a missing PASS marker
 fails the test.

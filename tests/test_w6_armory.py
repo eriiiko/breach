@@ -506,13 +506,19 @@ def test_dragon_heat_deposits_track_their_ranges():
 # ---------------------------------------------------------------------------
 # 8. Dormancy replica: the canonical scenario, bit-identical incl. RNG
 # ---------------------------------------------------------------------------
-GOLDEN_AGGREGATE = "07c3f37043c62cb47ec1abfef1a59d47c5f7a9c313490b38ecd2ddc543d1833d"
+# The sanctioned golden is OWNED by tests/_xarch_perfield_digest.py (its
+# lineage block carries every deliberate re-baseline + rationale — most
+# recently the fire/EOS gate-h event that moved 07c3f370 -> 98d3dd7e, and
+# the A7 entity migration whose committed-artifact footprint was empty).
+# Import it rather than duplicating: W6's claim is "we moved NOTHING
+# relative to main's own baseline", whatever main's baseline lawfully is.
+from _xarch_perfield_digest import GOLDEN_AGGREGATE  # noqa: E402
 
 
 def test_canonical_scenario_golden_and_untouched_rng():
     """The strongest replica there is: the canonical A/B scenario's 30-tick
     aggregate digest (every field, every cell, every tick + the synced unit
-    state) equals the golden pinned since W1 — W6 moved NOTHING. And the
+    state) equals main's sanctioned golden — W6 moved NOTHING. And the
     sim RNG end-state equals a fresh generator's: the scenario consumes
     ZERO randomness, so any W6 draw sneaking onto the stream trips here
     even if no hashed field moved yet."""

@@ -8,7 +8,7 @@ cuda_s2b_raycaster_live_check in an isolated anaconda-3.11 subprocess (cuda_harn
   byte-for-byte equal (the live wiring preserves the per-tick clear + per-source
   saturating accumulate the S2 march gate proved in isolation).
 
-  PART 2 — the default scenario stepped 30 ticks with ALL 7 backends ON vs the
+  PART 2 — the default scenario stepped 30 ticks with ALL backends ON vs the
   pure CPU path; EVERY synced field (incl. heat + temperature, which the raycaster
   feeds) bit-identical (tol 0), and the CPU path still reproduces the golden. This
   is the proof that `--cuda` is a full 7/7.

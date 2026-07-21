@@ -43,7 +43,7 @@ trained units (Model 3). Architecture-vs-architecture then becomes a first-class
 part of the game *and* the experiment at once. (Breach's faction model already
 supports this — stance is a per-mission table and three-plus mutually hostile
 teams on one map is an explicit design target;
-[01_units_and_entities.md](architecture/mechanics/01_units_and_entities.md) §8.)
+[01_units.md](architecture/mechanics/01_units.md) §8.)
 
 This inherits Civulator's core methodology directly — its CLAUDE.md states the
 project exists to "compare architectures ... through controlled experiments,"
@@ -306,7 +306,7 @@ firmer ground once the above exist.
 - **Breach:** [ML & Training](architecture/ml/01_ml_and_training.md) ·
   [Turn & Control](architecture/mechanics/04_turn_and_control.md) ·
   [AI & LoS](architecture/mechanics/02_ai_and_los.md) ·
-  [Units & Entities](architecture/mechanics/01_units_and_entities.md) ·
+  [Units](architecture/mechanics/01_units.md) ·
   [Unit Class Design](breach_unit_class_design.md) ·
   [cross_project_overlap.md](../cross_project_overlap.md) §6 ·
   [Topic 6](notes_2026-07-05_topics_backlog.md)

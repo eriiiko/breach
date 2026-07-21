@@ -1,0 +1,46 @@
+# aquarium_demo — the P5 [water] HUMAN-TEST fixture (engine/15 §2.3).
+#
+# A glass tank (4x3 interior) seeded at 1.2 m in an open room: look at
+# it (WaterPass renders any nonzero depth), shoot the glass, watch it
+# drain through the breach. Zero new mechanics. 1.2 m is the SAFE band
+# (< 1.7 m — deep tanks may flash-boil on drain, by design).
+# water_init.npy is EDITOR-AUTHORED (map_editor WATER mode, F7):
+# int32 Q16.16 metres, shape == tilemap. Re-bake art after CSV edits:
+#   python tools/bake_level_art.py aquarium_demo
+version = "2"
+name = "Aquarium Demo"
+
+# v2 codes ARE canon material ids (src/simulation/materials.py)
+tilemap = "tilemap.csv"
+
+tile_size_m = 0.333
+
+[[spawn]]
+name = "marine_1"
+team = 0
+x = 4.0
+y = 5.0
+footprint = 3
+
+[[spawn]]
+name = "zombie_1"
+team = 1
+x = 4.0
+y = 10.0
+footprint = 3
+
+[water]
+depth_map = "water_init.npy"
+
+[art.bare]
+diffuse = "baked_diffuse.png"
+normal = "baked_normal.png"
+
+[art.align]
+offset_px = [0.0, 0.0]
+px_per_tile = [64.00, 64.00]
+
+[bake]
+tileset = "art/tilesets/greybox"
+px_per_tile = 64
+seed = 0

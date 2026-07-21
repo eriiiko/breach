@@ -56,7 +56,7 @@ from simulation.combat import (  # noqa: E402
 from simulation.events import UnitHitEvent  # noqa: E402
 from simulation.field_edit import EditQueue, heat_quantize  # noqa: E402
 from simulation.gamemap import GameMap  # noqa: E402
-from simulation.gases import FUEL_GAS, N_GASES, POISON as GAS_POISON  # noqa: E402
+from simulation.gases import FUEL_GAS, N_TRACE_GASES, POISON as GAS_POISON  # noqa: E402
 from simulation.orders import (  # noqa: E402
     ORDER_FIRE, ORDER_MOVE_ATTACK, Order,
 )
@@ -247,8 +247,18 @@ def test_dragon_ignites_wood_within_the_derived_tick_count():
     full range — at ~9 (T_inf 1162): the whole near cone catches
     near-instantly and the reach tracks the new 10 m range. Whole-engine
     path: FieldEdit heat -> C++ TemperatureSolver convert ->
-    apply_temperature_ignition."""
-    for dist, tick_lo, tick_hi in ((2, 0, 8), (3, 1, 10), (8, 4, 20)):
+    apply_temperature_ignition.
+
+    EOS refactor P4 (merged from main, design §6 item 3): the ignition O2
+    gate now reads the REAL local N_O2 mean instead of the atmosphere/P
+    proxy — the spray's own heat expands the local air (p* rises ->
+    outward wind), transiently thinning REAL O2 before donor-cell flux
+    resupplies it, so ignition can land a few ticks later than the pure
+    temperature crossing (main widened its pre-W6 dist-3 window for the
+    same reason). Upper bounds here carry the same slack over the W6
+    temperature-crossing estimates; measured deterministic across
+    reruns."""
+    for dist, tick_lo, tick_hi in ((2, 0, 16), (3, 1, 24), (8, 3, 44)):
         wood_x = 6 + dist
         sim = Simulation(_level(edits=[(10, wood_x, 2)]), seed=SEED,
                          breach_physics=bp, enable_recorder=False)
@@ -362,9 +372,10 @@ def test_miasma_sustained_poison_drains_a_marine():
     assert sim.gmap.gas[GAS_POISON].any()
     assert victim.current_hp < hp_v
     assert poison_hits and all(h.unit_id == victim.id for h in poison_hits)
-    # Poison ONLY: no heat deposit, no fire, no other gas slice touched.
+    # Poison ONLY: no heat deposit, no fire, no other TRACE gas slice touched
+    # (the bulk O2/inert_N2 pair, EOS refactor P1, always carries ambient air).
     assert not sim.gmap.fire.any()
-    for g in range(N_GASES):
+    for g in range(N_TRACE_GASES):
         if g != GAS_POISON:
             assert not sim.gmap.gas[g].any(), f"slice {g} moved on a vent"
     # No blindness (no status at all) — poison is not teargas.

@@ -122,17 +122,18 @@ def test_solid_conversion_equals_heat_shifted():
     assert temp[0, 1] < temp[0, 0]
 
 
-def test_air_tile_stays_exactly_zero():
-    # An air (non-solid) tile is skipped by the conversion: even with a huge heat
-    # deposit, its temperature stays bit-exactly 0.
+def test_air_tile_receives_radiation_deposit():
+    # EOS P2 (unified temperature, design §4): air is no longer skipped by the
+    # conversion — an open-air tile with a heat deposit receives gas temperature
+    # via dT = dE/(N*c_v) (the per-tile reciprocal). The OLD doctrine ("air holds
+    # no temperature") was retired by locked decision 7; golden re-blessed at the
+    # P1+P2 merge, 2026-07-10.
     temp, heat, shift, face_shift, solid, vac, atm = _grid([MAT_AIR])
     assert not solid[0, 0], "sanity: air must be non-solid"
-    # Air's shift is 0 (>>0), so if it were wrongly converted the full deposit
-    # would land. Use the int32 ceiling to make any leak unmistakable.
     heat[0, 0] = INT32_MAX
     solver = _solver()
     _step(solver, temp, heat, shift, face_shift, solid, vac, atm)
-    assert temp[0, 0] == 0, f"air tile gained temperature: {temp[0, 0]}"
+    assert temp[0, 0] > 0, f"air tile did not receive the gas deposit: {temp[0, 0]}"
 
 
 def test_accumulates_over_two_ticks():
@@ -148,16 +149,26 @@ def test_accumulates_over_two_ticks():
     assert temp[0, 0] == 2 * per_tick, "two ticks must accumulate"
 
 
-def test_saturating_add_pins_at_int32_max():
-    # Pre-load temperature near the ceiling; a further deposit must clamp at
-    # INT32_MAX, never wrap negative.
+def test_saturating_add_pins_at_t_max_phys():
+    # Pre-load temperature near the ceiling; a further deposit must pin, never
+    # wrap negative. v2.4 (eos-p3fix-thermal-ceiling): the pin is now the
+    # COUNTED physical rail T_MAX_PHYS (default 16000 K-rel; see
+    # temperature_solver.h / eos_solver.h), applied on top of the pre-existing
+    # INT32_MAX saturating add — the never-wrap intent of this test is
+    # unchanged, the ceiling it pins at moved from the format limit to the
+    # physical rail (and the engagement is telemetry-counted, not silent).
     temp, heat, shift, face_shift, solid, vac, atm = _grid([MAT_WOOD])
     temp[0, 0] = INT32_MAX - 10
     heat[0, 0] = 1000 * HEAT_SCALE        # deposit >> 3 is far more than 10
     solver = _solver()
+    hits0 = solver.t_max_phys_hits
     _step(solver, temp, heat, shift, face_shift, solid, vac, atm)
-    assert temp[0, 0] == INT32_MAX, f"saturating add did not pin: {temp[0, 0]}"
+    t_max_phys_q = int(round(solver.T_MAX_PHYS * HEAT_SCALE))
+    assert temp[0, 0] == t_max_phys_q, (
+        f"deposit did not pin at the T_MAX_PHYS rail: {temp[0, 0]} != {t_max_phys_q}")
     assert temp[0, 0] >= 0, "must never wrap negative"
+    assert solver.t_max_phys_hits > hits0, (
+        "the T_MAX_PHYS rail engaged without counting (telemetry contract)")
 
 
 def test_deterministic_same_inputs_bit_identical():

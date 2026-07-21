@@ -30,8 +30,14 @@ CUDA_BUILD_DIR = ROOT / "cpp" / "build_cuda"
 # BREACH_CUDA_PYTHON on any machine whose CUDA build was produced by a different
 # interpreter (e.g. the Lenovo/Ada, where the `data` miniconda env is cp312). The
 # X-ARCH digest runner reuses this same interpreter.
-CUDA_PYTHON = Path(os.environ.get(
-    "BREACH_CUDA_PYTHON", r"C:\Users\steen\anaconda3\python.exe"))
+# P6.2: when the anaconda default does not exist on this machine (the Lenovo has
+# only miniconda), fall back to the Lenovo `data` env (cp312 — matches its
+# build_cuda_lenovo.bat build) so the now-ACTIVE per-kernel gates run without a
+# per-shell env var. BREACH_CUDA_PYTHON still overrides everything.
+_CUDA_PYTHON_DEFAULT = r"C:\Users\steen\anaconda3\python.exe"
+if not Path(_CUDA_PYTHON_DEFAULT).exists():
+    _CUDA_PYTHON_DEFAULT = r"C:\Users\steen\miniconda3\envs\data\python.exe"
+CUDA_PYTHON = Path(os.environ.get("BREACH_CUDA_PYTHON", _CUDA_PYTHON_DEFAULT))
 
 
 def cuda_pyd() -> Path | None:
@@ -54,9 +60,30 @@ def cuda_dll_dir() -> Path | None:
     return None
 
 
-def cuda_available() -> bool:
+# EOS P6 GPU migration — COMPLETE (closed 2026-07-11, branch eos-p6-close).
+# During the migration the CPU solvers ran ahead of the CUDA kernels, so the GPU
+# gates were pinned to SKIP via a pending SET (EOS_P6_PENDING_KERNELS) with one
+# key per P6 sub-patch surface (docs/eos_p6_gpu_alignment_review.md §2.1). The
+# contract: each sub-patch removed EXACTLY its own key once its kernel was
+# re-proved bit-identical (per-kernel A/B digest + cross-machine per-field
+# digest). combustion — the LAST key — landed as P6.9b, emptying the set and
+# closing the arc (design doc §7). Per that contract ("when the set is empty this
+# machinery is deleted outright"), the pending set AND the _P6_KERNEL_KEYS
+# typo-guard are now GONE: with every kernel ported, cuda_available() is a plain
+# "is the GPU build present?" check for both the whole-suite cuda_s* gates and
+# the per-kernel P6 gates.
+def cuda_available(kernel: str | None = None) -> bool:
     """True iff both the CUDA build and its runtime DLLs are present on disk.
-    (Whether a *device* is actually usable is checked inside the subprocess.)"""
+    (Whether a *device* is actually usable is checked inside the subprocess.)
+
+    The EOS P6 GPU migration is COMPLETE — every kernel is ported and each has a
+    passing bit-identity gate — so this is now a simple presence check used by
+    ALL gates. The optional ``kernel`` arg is a vestige of the migration's
+    pending-set pin (the per-kernel P6 gates call ``cuda_available(kernel="...")``);
+    it is accepted-and-IGNORED so those call sites need no edit now that no kernel
+    can be pending. The old per-key typo-guard (ValueError on an unknown key) is
+    retired with the pending set: with nothing pinnable, an unknown key can no
+    longer silently unpin anything, so there is nothing to guard."""
     return cuda_pyd() is not None and cuda_dll_dir() is not None
 
 

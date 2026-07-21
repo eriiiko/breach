@@ -21,7 +21,11 @@ EXCLUDED: they are render/lighting-bound or a known residual float boundary, NOT
 part of the cross-GPU integer bit-identity contract. The same-machine A/B harness
 still covers them. The synced UNIT state (HP/life/events) rides in via
 ``tick_digest`` (folding ``field_ab_harness``'s unit hash) so a fire->heat->kill
-desync on the Q2-fenced float-HP path is caught alongside the fields.
+desync on the Q2-fenced float-HP path is caught alongside the fields. A4 adds
+the ``__entity__``/``__signals__`` sections the same way — absence-transparent
+(folded ONLY when entities are present, via the snapshot's ``__entity__``
+presence carrier), section-local versioned (ENTITY_SECT_V1 / SIGNAL_SECT_V1),
+serialized by the ONE canonical ``simulation.entities.serialize`` module.
 
 Endianness: x86 and CUDA are both little-endian, so the raw int bytes compare
 directly. A big-endian dtype is REFUSED so a silent byteorder mismatch can never
@@ -99,8 +103,23 @@ def field_digest(snapshot: dict, *, strict: bool = True) -> str:
 
 def tick_digest(snapshot: dict) -> str:
     """field_digest folded with the synced unit-state hash (HP/life/event stream),
-    so a kill/HP desync that leaves every gmap cell identical still changes it."""
+    so a kill/HP desync that leaves every gmap cell identical still changes it.
+
+    A4 (docs/a4_digest_impl_note_2026-07-18.md): the ``__entity__`` /
+    ``__signals__`` sections fold in ABSENCE-TRANSPARENTLY — appended only
+    when the snapshot's presence carrier says ``n_entities > 0``, so an
+    entity-free snapshot's hashed byte stream is bit-identical to pre-A4
+    (the entity-free tail is hex-only; the ``|__entity__|`` marker can never
+    appear in it) and every existing golden stays valid unchanged. Pre-A4
+    snapshots (no carrier key) are entity-free by construction; the strict
+    presence rule (a sim WITH entities must always write the carrier) is
+    enforced at capture (``simulation.entities.serialize.
+    require_entity_carrier``). DIGEST_SPEC_VERSION stays 1: the entity
+    section carries its own version in its hashed ENTITY_SECT_V1 preamble.
+    """
     from field_ab_harness import UNIT_DIGEST_KEY  # local: avoid import cycle
+    from simulation.entities.serialize import (   # local: path set by ^
+        ENTITY_DIGEST_KEY, entity_section_bytes, signal_section_bytes)
     fd = field_digest(snapshot)
     unit_hash = ""
     if UNIT_DIGEST_KEY in snapshot:
@@ -109,6 +128,16 @@ def tick_digest(snapshot: dict) -> str:
     h.update(fd.encode("ascii"))
     h.update(b"|")
     h.update(unit_hash.encode("ascii"))
+    carrier = snapshot.get(ENTITY_DIGEST_KEY)
+    if carrier is not None and carrier["n_entities"] > 0:
+        eh = hashlib.blake2b(entity_section_bytes(carrier),
+                             digest_size=32).hexdigest()
+        sh = hashlib.blake2b(signal_section_bytes(carrier),
+                             digest_size=32).hexdigest()
+        h.update(b"|__entity__|")
+        h.update(eh.encode("ascii"))
+        h.update(b"|__signals__|")
+        h.update(sh.encode("ascii"))
     return h.hexdigest()
 
 

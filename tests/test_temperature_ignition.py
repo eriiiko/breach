@@ -62,31 +62,47 @@ O2_THRESHOLD = float(getattr(CFG.physics.fire, "o2_threshold", 0.60))
 IGN_SEED_Q = fire_fixed.quantize_scalar(IGN_SEED)
 
 
+class _GasTableStub:
+    """Minimal stand-in for GameMap's real GasTable — apply_temperature_
+    ignition only reads `.name_to_id["o2"]` (EOS refactor P4, design §6)."""
+
+    def __init__(self):
+        from simulation.gases import O2
+        self.name_to_id = {"o2": O2}
+
+
 class _GMapStub:
     """Minimal gmap carrying exactly the fields ``apply_temperature_ignition``
     reads: a 3x3 grid with a chosen material in the CENTRE tile and AIR around
-    it (the air ring is the O2 source for a flammable centre). ``atmosphere`` on
-    the air ring defaults to 1.0 (full O2); pass ``atm`` to override (e.g. 0 for
-    a vacuum-surrounded tile). Keeps the consumer tests fast and geometry-free,
-    mirroring the _HeatStub pattern in test_unit_heat_damage.py."""
+    it (the air ring is the O2 source for a flammable centre). The air ring's
+    REAL O2 (EOS refactor P4 — was ``atmosphere``) defaults to 1.0 (ample O2);
+    pass ``atm`` to override (e.g. 0 for a vacuum-surrounded tile). Keeps the
+    consumer tests fast and geometry-free, mirroring the _HeatStub pattern in
+    test_unit_heat_damage.py."""
 
     def __init__(self, centre_mat=MAT_WOOD, atm=1.0):
+        from simulation.gases import N_GASES, O2
         self.materials = _TBL
+        self.gases = _GasTableStub()
         m = np.full((3, 3), MAT_AIR, dtype=np.int8)
         m[1, 1] = centre_mat
         self.material = m
         self.flammable = _TBL.flammable[m]
         self.solid = (_TBL.permeability[m] <= 0.0)
-        # Air ring carries O2; solid tiles hold no atmosphere (== GameMap).
-        # S2c: atmosphere is int32 Q16.16 — quantize the ring pressure so the
-        # combat O2 check (which dequantizes) reads the right real value.
+        # Air ring carries REAL O2 (EOS refactor P4 — was `atmosphere`); solid
+        # tiles hold no gas (== GameMap). Q16.16 — quantize the ring O2 so the
+        # combat O2 check reads the right real value. `atm` kept as the param
+        # name for minimal diff against the pre-P4 callers below (all pass
+        # either 1.0/0.0 or an O2_THRESHOLD-relative offset, meaningful on
+        # either scale).
         from simulation import atmosphere_fixed
-        a = np.where(self.solid, 0,
-                     atmosphere_fixed.quantize_scalar(float(atm))).astype(np.int32)
-        self.atmosphere = a
+        o2 = np.where(self.solid, 0,
+                      atmosphere_fixed.quantize_scalar(float(atm))).astype(np.int32)
+        self.gas = np.zeros((N_GASES, 3, 3), dtype=np.int32)
+        self.gas[O2] = o2
         # S3a: the O2 mask excludes vacuum neighbours (matching the C++ fire P
-        # gate). Here the "no O2" case is modelled as low-PRESSURE air (atm=0),
-        # not flagged vacuum — so is_vacuum is all-False and the air ring still
+        # gate). Here the "no O2" case is modelled as low-O2 air (atm=0), not
+        # flagged vacuum — so is_vacuum is all-False and the air ring still
         # counts (mean -> 0 -> below threshold), preserving the prior behaviour.
         self.is_vacuum = np.zeros((3, 3), dtype=bool)
         self.temperature = np.zeros((3, 3), dtype=np.int32)

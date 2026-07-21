@@ -36,6 +36,7 @@ from simulation.materials import (  # noqa: F401  (re-exported)
     MAT_STEEL,
     MAT_GLASS,
     MAT_FURNITURE,
+    MAT_DOOR_CLOSED,
     MaterialTable,
 )
 
@@ -49,11 +50,72 @@ from simulation.gases import (  # noqa: F401  (re-exported)
     POISON,
     TEARGAS,
     FUEL_GAS,
+    O2,
+    INERT_N2,
 )
+
+
+class SealBlocked(ValueError):
+    """A seal precondition failed on live state. State is untouched (atomic).
+
+    Raised by :meth:`GameMap.seal_tiles` for the state-dependent refusals —
+    standing water on the span, a gas-holding sealed pocket — the cases a
+    caller resolves in play (drain, vent), not by fixing code. Caller bugs
+    (bounds, duplicates, already-solid, non-solid material) raise plain
+    ``ValueError`` instead. Subclasses ``ValueError`` so a coarse caller can
+    catch both. Design: docs/a5_evacuation_impl_2026-07-18.md §2.
+    """
 
 
 class GameMap:
     """2D grid map at fine-tile resolution, sized from the loaded level."""
+
+    # ------------------------------------------------------------------
+    # S8a Path B — GPU residency field sets (docs/cuda_s8a_residency_spec §2/§5b)
+    # ------------------------------------------------------------------
+    # The synced physics fields kept as CuPy device arrays in residency mode.
+    # `_RESIDENT_SYNCED` are the OUTPUT fields the resident block writes and the
+    # once-per-tick batched D2H (:meth:`to_host`) copies back to the numpy mirror
+    # (combat/recorder/render read the mirror unchanged — the Q4 baseline). The
+    # `_RESIDENT_MASKS` are the read-only inputs the resident kernels consume;
+    # they + the four §5b unit-stamp masks (`dyn_permeability`/`dyn_wave_absorb`/
+    # `dyn_light_atten` + `obstacles`) ride the per-tick always-upload set
+    # (:meth:`from_host`). Rung 2 must NOT narrow these masks to structural-edit
+    # deltas — body-shielding (a unit damping a shockwave for the unit behind it)
+    # depends on them being re-uploaded every tick (units move every tick).
+    _RESIDENT_SYNCED = (
+        "atmosphere", "wave_p", "wind_x", "wind_y", "temperature", "heat",
+        "fire", "wall_hp", "water_depth", "flow_vx", "flow_vy", "gas",
+    )
+    _RESIDENT_MASKS = (
+        "solid", "is_vacuum", "is_ambient", "obstacles", "flammable",
+        "floor_height", "heat_inv_shift", "face_shift",
+        "dyn_permeability", "dyn_wave_absorb", "conductivity", "dyn_light_atten",
+        # S8a Path A: the BC sponge grids — static per map (built ONCE in
+        # __init__, never recomputed — unlike is_ambient, which destroy_wall's
+        # joins-ambient twin mutates and therefore rides the per-tick EOS
+        # upload). Device-needed by the resident EOS (σ-fold in the MG build;
+        # u-damping band in the kick). Like floor_height they are omitted from
+        # _step_resident's explicit per-tick lists; a defaulted from_host()
+        # re-uploading them is harmless.
+        "sponge_sigma", "sponge_udamp",
+    )
+    _RESIDENT_FIELD_NAMES = _RESIDENT_SYNCED + _RESIDENT_MASKS
+
+    def __setattr__(self, name, value):
+        """Stale-pointer guard (S8a): in residency mode a resident field must be
+        written IN PLACE (``field[:] = ...``), never REASSIGNED — the CUDA
+        launch cores hold raw device pointers into the CuPy buffers, and a
+        reassignment would orphan them. Off (the default) this is a plain set."""
+        if (name in GameMap._RESIDENT_FIELD_NAMES
+                and self.__dict__.get("_residency_on", False)):
+            cur = self.__dict__.get(name)
+            if cur is not None and value is not cur:
+                raise RuntimeError(
+                    f"[residency] resident field '{name}' was REASSIGNED while "
+                    f"GPU residency is on -- write it in place (`{name}[:] = ...`) "
+                    f"so the device pointer stays valid, or disable residency first.")
+        object.__setattr__(self, name, value)
 
     def __init__(self, level_data):
         """Build a GameMap from a :class:`level_loader.LevelData`.
@@ -86,6 +148,12 @@ class GameMap:
         # helpers in simulation.wall_fixed; populated from the table in _update_caches.
         self.wall_hp      = np.zeros((h, w), dtype=np.int32)
         self.is_vacuum    = np.zeros((h, w), dtype=bool)
+        # Planetside reservoir ring (BC build, boundary_conditions_spec §1). On
+        # ambient maps the SPACE-code tiles route here instead of is_vacuum (a
+        # wholesale reinterpretation — no is_vacuum on a planetside map); on
+        # space maps this stays all-False and every branch keying on it is
+        # dormant. B3 pins these tiles to P_amb and clamps their gas to N_amb.
+        self.is_ambient   = np.zeros((h, w), dtype=bool)
         self.flammable    = np.zeros((h, w), dtype=bool)
         # S2c: the atmosphere (bulk pressure) is int32 Q16.16 (scale 2^16, shared
         # with water/heat/wave/gas) — the CLOSER of the S2 group: with atmosphere
@@ -148,19 +216,10 @@ class GameMap:
         # twin (combat.apply_temperature_ignition) writes it as an integer max.
         self.fire         = np.zeros((h, w), dtype=np.int32)
         self.obstacles    = np.zeros((h, w), dtype=bool)
-        # Smoke sink-direction field (ch.05 smoke v2): a per-cell unit-ish
-        # vector pointing, through air only, toward the NEAREST exposed-vacuum
-        # breach; (0, 0) where there is no path to a breach (and everywhere when
-        # the map is unbreached). The smoke solver adds ``sink_strength`` times
-        # this to its advecting velocity, so smoke is gently pulled out of a
-        # breached room even after the interior wind has died (the lingering-haze
-        # fix). Built lazily from a BFS over air cells whenever topology changes;
-        # ``_sink_dirty`` marks it stale. Allocated once, filled IN-PLACE by
-        # :meth:`_rebuild_sink_field` (never reassigned → any C++ view stays
-        # valid). Read through :meth:`sink_fields`.
-        self.sink_x       = np.zeros((h, w), dtype=np.float32)
-        self.sink_y       = np.zeros((h, w), dtype=np.float32)
-        self._sink_dirty  = True
+        # (The smoke sink-direction field — sink_x/sink_y/_sink_dirty + the
+        # BFS rebuild — is DELETED, EOS refactor P3 / decisions.md #3: venting
+        # is native to the compressible solver; smoke rides the real venting
+        # wind out of a breach instead of a scripted BFS pull.)
         # Scalar light field (legacy: fire raycaster output + render unit/smoke
         # tinting). Kept alongside light_rgb during the RGB migration.
         self.light_map    = np.zeros((h, w), dtype=np.float32)
@@ -348,9 +407,206 @@ class GameMap:
         # format-version dependent — v1 generator codes vs v2 canon ids).
         mat, vac = materials_from_tilemap(level_data.tilemap, level_data.version)
         self.material[:] = mat
-        self.is_vacuum[vac] = True
+        # Boundary mode (BC build, boundary_conditions_spec §1). On a planetside
+        # map the SPACE-code tiles ARE the ambient reservoir ring — route them
+        # WHOLESALE to is_ambient and leave is_vacuum empty (interior SPACE tiles
+        # become legal "sky shafts" open to the atmosphere). Space maps take the
+        # today's-behavior branch, byte-identical (dormancy by branch, not by
+        # arithmetic identity).
+        self._boundary = getattr(level_data, "boundary", "space")
+        self._ambient = getattr(level_data, "ambient", None)
+        if self._boundary == "ambient":
+            self.is_ambient[vac] = True
+            if self._ambient is None:      # hand-built LevelData: Earth defaults
+                from simulation.ambient import derive_ambient
+                self._ambient = derive_ambient()
+        else:
+            self.is_vacuum[vac] = True
+
+        # --- A6 door-entity load stamp (a6 doors design §4.1) -------------
+        # BETWEEN the tilemap fill and _update_caches, per the entity-doc §7
+        # load-order rule: each door entity's runtime span is stamped
+        # MAT_DOOR_CLOSED (authored closed) or MAT_AIR (authored open) so
+        # the atmosphere/gas/water seeding below runs against the POST-stamp
+        # solidity — authored-open ≡ authored-air is FIELD-identity by
+        # construction, and conservation at t=0 is trivially exact (no gas
+        # exists yet, so no seal_tiles call). Validation (§4.2 — bounds,
+        # vacuum, CSV material, overlapping spans) hard-errors here. Zero
+        # doors → zero work (dormancy is structural).
+        if any(e.class_name == "door"
+               for e in (getattr(level_data, "entities", None) or [])):
+            from simulation.door_system import stamp_door_tiles
+            # is_ambient joins the vacuum check: a door on the reservoir ring
+            # is an authoring error exactly like a door on the hull ring.
+            stamp_door_tiles(self.material, self.is_vacuum, level_data,
+                             is_ambient=self.is_ambient)
 
         self._update_caches()
+
+        # --- ambient sponge grid (BC build, boundary_conditions_spec §3) ---
+        # Static per-tile absorber-mass grid, built ONCE from the final (already
+        # upscaled) grid so `--res` keeps the physical band depth. Inert data in
+        # this patch — B3's σ-sponge on the level-0 Helmholtz diagonal consumes
+        # it. All-zero on space maps / when sponge_width == 0.
+        self._build_sponge_grid(level_data)
+
+        # --- [water] initial state seed (engine/15 §2.3, P5) --------------
+        # The seed lives HERE in __init__, right after _update_caches — and
+        # NEVER inside _update_caches itself, despite the atmosphere t=0
+        # precedent living there: _update_caches re-runs on config hot-reload
+        # (reload_material_table), and a literal mirror of that precedent
+        # would RE-FLOOD A DRAINED TANK on Ctrl+R. __init__ runs exactly once
+        # per map; Simulation.reset() builds a fresh GameMap, so the seed
+        # reapplies there by construction (and the runner's
+        # _water_depth_before snapshot re-arms with it — level-seeded water
+        # is "pre-existing", no tick-1 compression spike).
+        #
+        # Mask: only interior air gets water — the solver zeroes depth on
+        # solid every step (a mass sink) and vacuum flash-boils it, so a
+        # seed there would silently destroy mass. The editor masks at save;
+        # this warn is the hand-authored-file backstop (count once, in-place
+        # write, water_depth is never reassigned).
+        water_seed_q = getattr(level_data, "water_depth_q", None)
+        if water_seed_q is not None:
+            seed = np.asarray(water_seed_q)
+            # The ambient ring is a water sink like the vacuum ring (BC spec
+            # decision 3: no water BC — oceans are authored reservoirs).
+            mask = (~self.solid) & (~self.is_vacuum) & (~self.is_ambient)
+            self.water_depth[mask] = seed[mask]
+            dropped = int(np.count_nonzero(seed[~mask]))
+            if dropped:
+                import warnings
+                warnings.warn(
+                    f"[water] depth_map for level "
+                    f"'{getattr(level_data, 'name', '?')}': {dropped} "
+                    f"cell(s) carry depth on solid/vacuum tiles — ignored "
+                    f"(the solver zeroes depth on solid; the editor masks "
+                    f"at save, so this file was likely hand-edited)",
+                    RuntimeWarning, stacklevel=2)
+
+        # --- air_init.npy atmosphere seed (entity design §10, A9) ---------
+        # Same placement rationale as the water seed above: __init__ runs
+        # exactly ONCE per map (reset() builds a fresh GameMap, so the seed
+        # reapplies by construction), and reload_material_table snapshots +
+        # restores the running atmosphere/gas around _update_caches, so a
+        # Ctrl+R can never stomp — or re-apply — the seed mid-run.
+        #
+        # THE PINNED TILE RULE: the override applies to OPEN-AIR tiles only
+        # (~solid & ~is_vacuum & ~is_ambient). Values on SOLID tiles are
+        # IGNORED — the atmosphere on solid is identically 0 (a boundary, not
+        # a gas state; _update_caches pins it). Values on SPACE tiles are
+        # IGNORED too, whichever boundary owns them: the vacuum ring IS the
+        # boundary condition on space maps, and on planetside maps the
+        # reservoir ring (is_ambient) wins over any author override (BC build;
+        # the ring is clamped to N_amb every substep by B3). Silent by design,
+        # unlike water's warning: a full-coverage grid (np.full(shape, FP_ONE))
+        # is the natural authoring output and no conserved mass is lost there.
+        #
+        # The seed writes atmosphere = P_override AND splits the two
+        # conservative bulk species to N_total == P (O2 21% half-up-rounded,
+        # inert_N2 the exact remainder). This is what makes the seed REAL
+        # under the EOS: pressure is re-derived every tick as
+        # p* = C·N_total·T_abs (eos_solver.h §2), so an atmosphere-only
+        # seed would evaporate on tick 1. At ambient temperature (T = 0
+        # counts) N_total == P sustains the override; at P == FP_ONE the
+        # split reproduces the P1 calibration EXACTLY (13763 / 51773 —
+        # tests/test_eos_p1_calibration.py), so an explicit all-ambient
+        # grid is bit-identical to no grid at all. Pure integer math
+        # (int64 intermediate), deterministic cross-machine.
+        air_seed_q = getattr(level_data, "air_init_q", None)
+        if air_seed_q is not None:
+            from simulation import gas_fixed as _gas_fx
+            # The override applies to interior open air only — solid, vacuum AND
+            # the ambient ring are excluded (ring rules win: the reservoir is
+            # not author-overridable). On ambient maps the override's O2 split
+            # follows the level's o2_frac; on space maps it stays 0.21.
+            open_air = (~self.solid) & (~self.is_vacuum) & (~self.is_ambient)
+            p = np.asarray(air_seed_q)[open_air].astype(np.int64)
+            o2_frac = self._ambient.o2_frac if self._ambient is not None else 0.21
+            o2_frac_q = _gas_fx.quantize_scalar(o2_frac)   # 13763 at 0.21 (P1 calib)
+            o2 = (p * o2_frac_q + (1 << 15)) >> 16      # round-half-up
+            self.atmosphere[open_air] = p.astype(np.int32)
+            self.gas[O2][open_air] = o2.astype(np.int32)
+            self.gas[INERT_N2][open_air] = (p - o2).astype(np.int32)
+
+    # ------------------------------------------------------------------
+    # Ambient sponge grid (BC build, boundary_conditions_spec_2026-07-19 §3)
+    # ------------------------------------------------------------------
+    def _build_sponge_grid(self, level_data):
+        """Static per-tile absorber grids for the planetside sponge band.
+
+        Two coefficient grids share ONE 4-neighbour BFS distance ``d`` from the
+        ring through open air, both an integer quadratic ramp ``c(d) =
+        c_max·(W−d)²//W²`` over the band ``1 ≤ d < W`` (deterministic — BFS
+        distance is order-free; only d is used, never which ring tile):
+
+        - ``sponge_sigma`` — the σ pressure-sponge mass (spec §3 rung 1). B3b
+          measured this REFLECTS (a soft Dirichlet), so its dial ships at 0; the
+          grid stays wired for experimentation.
+        - ``sponge_udamp`` — the k(d) VELOCITY-damping coefficient (spec §3 rung
+          2, the real absorber, B3c). Q16 damping fraction in [0, FP_ONE); the
+          kick multiplies the band's |u| by (1 − k(d)) magnitude-first, so
+          outgoing momentum is dissipated in the band instead of reflecting off
+          the hard ring.
+
+        Built ONCE from the FINAL (already-upscaled) grid, so ``--res`` preserves
+        the physical band depth: ``sponge_width`` is in BASE tiles, the effective
+        W scales by ``res_factor`` (the door-span precedent). Both grids all-zero
+        on space maps, ring-free maps, ``sponge_width == 0`` (hard-ring escape),
+        or when the corresponding c_max is 0.
+        """
+        h, w = self.material.shape
+        self.sponge_sigma = np.zeros((h, w), dtype=np.int32)
+        self.sponge_udamp = np.zeros((h, w), dtype=np.int32)
+        amb = self._ambient
+        if amb is None or not self.is_ambient.any():
+            return
+        res_factor = int(getattr(level_data, "res_factor", 1) or 1)
+        W = int(amb.sponge_width) * res_factor
+        sigma_max = int(amb.sponge_strength)
+        kmax = int(amb.sponge_u_damp)
+        if W <= 0 or (sigma_max <= 0 and kmax <= 0):
+            return
+        # Multi-source 4-neighbour BFS: distance (in tiles) from the nearest ring
+        # tile, propagated through open air only (walls block, so a sealed room
+        # behind the ring is never damped — its σ stays 0). Ring tiles are d=0
+        # (pinned anyway); the band is interior air at 1 ≤ d < W.
+        from collections import deque
+        INF = np.iinfo(np.int32).max
+        dist = np.full((h, w), INF, dtype=np.int32)
+        passable = ~self.solid
+        dq = deque()
+        ring_ys, ring_xs = np.nonzero(self.is_ambient)
+        for fy, fx in zip(ring_ys.tolist(), ring_xs.tolist()):
+            dist[fy, fx] = 0
+            dq.append((fy, fx))
+        while dq:
+            fy, fx = dq.popleft()
+            d1 = dist[fy, fx] + 1
+            if d1 >= W:
+                continue          # nothing beyond the band needs a distance
+            for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                ny, nx = fy + dy, fx + dx
+                if (0 <= ny < h and 0 <= nx < w
+                        and passable[ny, nx] and d1 < dist[ny, nx]):
+                    dist[ny, nx] = d1
+                    dq.append((ny, nx))
+        # Quadratic ramp on the band interior (exclude the ring tiles themselves,
+        # d == 0: they are Dirichlet-pinned, so a band coefficient there is moot).
+        # Both grids share the ramp numerator (W−d)²; strong near the ring, ~0 at
+        # the inner band edge — the taper that lets a front enter without a
+        # reflecting impedance jump and be dissipated as it nears the boundary.
+        band = (dist >= 1) & (dist < W)
+        d = dist[band].astype(np.int64)
+        wq = np.int64(W)
+        ramp = (wq - d) * (wq - d)          # quadratic taper numerator
+        denom = wq * wq
+        if sigma_max > 0:
+            self.sponge_sigma[band] = (
+                (np.int64(sigma_max) * ramp) // denom).astype(np.int32)
+        if kmax > 0:
+            self.sponge_udamp[band] = (
+                (np.int64(kmax) * ramp) // denom).astype(np.int32)
 
     # ------------------------------------------------------------------
     # Cache rebuild
@@ -415,15 +671,44 @@ class GameMap:
         # physics/light/smoke/vision boundary source. Always boolean-typed.
         self.solid = self.permeability <= 0.0
 
-        # Atmosphere: 1.0 in interior air, 0.0 at solid tiles and vacuum.
-        # S2c: int32 Q16.16 (1.0 atm == FP_ONE counts). _update_caches reassigns
-        # the cache fields (the engine re-fetches field pointers each step), and
-        # the running atmosphere is snapshotted/restored around this call below,
-        # so this fresh allocation only seeds tick 0 / a reset.
+        # Atmosphere: interior air + (on ambient maps) the reservoir ring seed
+        # to the ambient fill; 0.0 at solid tiles and vacuum. On space maps the
+        # fill is FP_ONE and is_ambient is empty, so this is byte-identical to
+        # before. On ambient maps the fill is the effective pin (65540 raw at
+        # defaults — the sim's own p*(N_amb, 0)), so the interior materializes
+        # flat against the ring pin (spec §1). S2c: int32 Q16.16. _update_caches
+        # reassigns the cache fields (the engine re-fetches field pointers each
+        # step), and the running atmosphere is snapshotted/restored around this
+        # call below, so this fresh allocation only seeds tick 0 / a reset.
         from simulation import atmosphere_fixed as _atm_fx
+        from simulation import gas_fixed as _gas_fx
+        if self._ambient is not None:
+            fill_p = self._ambient.pin_q
+            o2_fill, n2_fill = self._ambient.n_o2_q, self._ambient.n_n2_q
+        else:
+            fill_p = _atm_fx.FP_ONE
+            o2_fill = _gas_fx.quantize_scalar(0.21)
+            n2_fill = _gas_fx.quantize_scalar(0.79)
         self.atmosphere = np.where(
-            self.solid | self.is_vacuum, 0, _atm_fx.FP_ONE
+            self.solid | self.is_vacuum, 0, fill_p
         ).astype(np.int32)
+
+        # EOS refactor P1 (docs/eos_refactor_design.md §2.1): ambient bulk-gas
+        # split. The two CONSERVATIVE species (O2 / inert_N2) seed the SAME
+        # open-air mask atmosphere just used. On space maps the split is 21/79
+        # by mole fraction (Earth-normal) — 0.21*FP_ONE + 0.79*FP_ONE rounds
+        # back to EXACTLY FP_ONE (13763 + 51773 == 65536), reproducing today's
+        # atmosphere==1.0 scale to the LSB (tests/test_eos_p1_calibration.py).
+        # On ambient maps the split is the level's N-primary N_amb (o2_fill /
+        # n2_fill), summing to N_total = quantize(p_amb), so p*(N_amb, 0) ==
+        # the effective pin used for atmosphere just above. 0 on solid/vacuum,
+        # exactly like atmosphere. IN-PLACE write (self.gas is never reassigned
+        # — a C++ view of the buffer must stay valid); reload_material_table
+        # snapshots + restores the running gas array around this call so a
+        # hot-reload does not stomp live O2/N2 state.
+        open_air = ~(self.solid | self.is_vacuum)
+        self.gas[O2][:] = np.where(open_air, o2_fill, 0)
+        self.gas[INERT_N2][:] = np.where(open_air, n2_fill, 0)
 
         # Obstacles (the physics solid boundary) == solid tiles (permeability
         # == 0) until stamp_units paints unit footprints over it. Sourced from
@@ -544,12 +829,20 @@ class GameMap:
         # diffusion/decay/flags next tick. Does NOT touch the ``gas`` array.
         self.gases = GasTable.from_config(CFG)
         # Rebuild only the table-derived caches; keep atmosphere/obstacles as
-        # the running sim left them by snapshotting and restoring them.
+        # the running sim left them by snapshotting and restoring them. EOS
+        # P1: _update_caches() now ALSO re-seeds ambient O2/N2 in-place
+        # (self.gas is never reassigned, so a plain "snapshot the reference"
+        # trick like atmosphere's would be a no-op — the mutation already
+        # landed in the SAME buffer). Snapshot a COPY of the whole gas array
+        # and copy it back in-place after, so a hot-reload does not stomp the
+        # running O2/N2 (or any trace gas) state.
         atmosphere = self.atmosphere
         obstacles = self.obstacles
+        gas_snapshot = self.gas.copy()
         self._update_caches()
         self.atmosphere = atmosphere
         self.obstacles = obstacles
+        self.gas[:] = gas_snapshot
 
     # ------------------------------------------------------------------
     # Per-tick rebuild: units act as walls for all physics
@@ -561,6 +854,60 @@ class GameMap:
         (the runner owns the engine). A bare ``GameMap`` with no engine bound
         always uses the Python reference path. Idempotent."""
         self._physics_engine = engine
+
+    # ------------------------------------------------------------------
+    # S8a Path B — GPU residency mode (CuPy device mirror of the field set)
+    # ------------------------------------------------------------------
+    def enable_residency(self):
+        """Allocate CuPy device copies of the resident field set and switch the
+        map into residency mode (:attr:`_residency_on`).
+
+        Idempotent. Requires CuPy (the resident path is opt-in behind the
+        ``--resident`` flag; with residency OFF, ``import cupy`` is never touched
+        and the CPU/per-call paths are byte-for-byte unchanged). After this the
+        numpy fields are the HOST MIRROR (all host code — ``cast_fire_heat``,
+        ``stamp_units``, structural edits, combat/recorder/render — reads/writes
+        them unchanged); the CuPy copies in ``self._dev`` are the device-resident
+        buffers ``PhysicsEngine.step_resident`` runs the launch cores on, kept in
+        sync by :meth:`from_host` / :meth:`to_host`.
+        """
+        if self.__dict__.get("_residency_on", False):
+            return
+        import cupy as cp  # opt-in only — never imported on the CPU path
+        self._cp = cp
+        dev = {}
+        for name in self._RESIDENT_FIELD_NAMES:
+            arr = getattr(self, name)
+            dev[name] = cp.ascontiguousarray(cp.asarray(arr))
+        self._dev = dev
+        self._residency_on = True
+
+    def residency_on(self):
+        """True iff this map is in GPU residency mode (device buffers live)."""
+        return self.__dict__.get("_residency_on", False)
+
+    def device_ptrs(self):
+        """Raw device addresses (int) of every resident field's CuPy buffer,
+        keyed by field name — the ``uintptr_t`` the C++ launch cores take. Stable
+        across a tick: :meth:`from_host`/:meth:`to_host` copy IN PLACE (``.set()``/
+        ``.get(out=)``), never reassigning a device array."""
+        return {name: int(arr.data.ptr) for name, arr in self._dev.items()}
+
+    def from_host(self, names=None):
+        """Batched H2D: copy the numpy mirror INTO the persistent CuPy buffers
+        (in place, pointer-stable). ``names=None`` uploads the full always-upload
+        set (Rung 1, spec §3.2 — covers every host writer: FieldEdits, ``heat``,
+        structural edits, the §5b unit-stamp masks)."""
+        for name in (names if names is not None else self._RESIDENT_FIELD_NAMES):
+            self._dev[name].set(getattr(self, name))
+
+    def to_host(self, names=None):
+        """Batched D2H: copy the CuPy buffers back INTO the numpy mirror (in
+        place — the C++ views + ``smoke`` alias stay valid). ``names=None``
+        downloads the synced OUTPUT set (spec §3.4 — combat/recorder/render read
+        the mirror unchanged)."""
+        for name in (names if names is not None else self._RESIDENT_SYNCED):
+            self._dev[name].get(out=getattr(self, name))
 
     def stamp_units(self, units):
         """Per-tick dynamic-field rebuild — dispatches to C++ or Python.
@@ -840,121 +1187,19 @@ class GameMap:
                 count += 1
         return total / count if count > 0 else 0.0
 
-    # ------------------------------------------------------------------
-    # Smoke sink-direction field — toward the nearest breach (ch.05 smoke v2)
-    # ------------------------------------------------------------------
-    def sink_fields(self):
-        """Return the (``sink_x``, ``sink_y``) sink-direction arrays, rebuilding
-        them first if the map topology has changed since the last build.
+    def _seed_bulk_gas_neighbor_mean(self, fy, fx):
+        """Seed ``gas[O2]``/``gas[INERT_N2]`` at a newly-opened tile (EOS
+        refactor P1, docs/eos_refactor_design.md §2.2's minimal occupancy-
+        transition slice) — mirrors the ``atmosphere`` neighbor-mean refill
+        right next to every call site of this method in :meth:`destroy_wall`,
+        same anti-vacuum-pulse intent, now on the bulk species too. The FULL
+        evacuation rule (flooding/door-close) is P3's; this is only the
+        cell-JOINS-open-air half (§2.2's last sentence)."""
+        self.gas[O2][fy, fx] = self._neighbor_mean(self.gas[O2], fy, fx)
+        self.gas[INERT_N2][fy, fx] = self._neighbor_mean(self.gas[INERT_N2], fy, fx)
 
-        This is the read seam the physics runner uses each tick. The rebuild is
-        lazy and gated by ``_sink_dirty`` (set at init and wherever ``solid`` /
-        ``is_vacuum`` change), so the O(h·w) BFS runs only on the rare ticks a
-        wall is destroyed, not every tick.
-        """
-        if self._sink_dirty:
-            self._rebuild_sink_field()
-        return self.sink_x, self.sink_y
-
-    def _rebuild_sink_field(self):
-        """Rebuild the smoke sink-direction field by a BFS over air cells.
-
-        The field is a per-cell unit-ish vector pointing toward the nearest
-        exposed-vacuum breach, propagated **through air only** (never through a
-        solid / impermeable tile). It is what biases smoke advection toward a
-        breach so a vented room actually clears (ch.05 smoke v2).
-
-        Algorithm:
-
-        1. An **air** cell is non-solid and non-vacuum (``~solid & ~is_vacuum``).
-        2. **Sources** are air cells 4-adjacent to an exposed-vacuum tile (a
-           breach: ``is_vacuum`` that is not solid). These start the BFS at
-           distance 0.
-        3. 4-connected BFS over air cells assigns each a hop-distance to the
-           nearest breach. The BFS never steps onto a solid / impermeable /
-           vacuum tile, so the distance respects walls — a sealed neighbouring
-           room is unreachable and stays at "no path".
-        4. Each reached air cell's **direction** = unit vector toward the
-           in-bounds air neighbour with the SMALLEST distance (descending the
-           distance field, i.e. the next hop along a shortest path to a breach).
-        5. Cells with no path to a breach — and the whole field when the map has
-           no breach at all — are (0, 0). Safe by construction: no breach ⇒ no
-           pull ⇒ a sealed room is bit-identical to the no-sink solver.
-
-        Written IN-PLACE into ``self.sink_x`` / ``self.sink_y`` (never
-        reassigned), then clears ``_sink_dirty``.
-        """
-        from collections import deque
-
-        h, w = self._h, self._w
-        self.sink_x[:] = 0.0
-        self.sink_y[:] = 0.0
-        self._sink_dirty = False
-
-        solid = self.solid
-        is_vacuum = self.is_vacuum
-        # Air = traversable by gas/smoke: not a wall, not vacuum.
-        air = (~solid) & (~is_vacuum)
-
-        INF = np.iinfo(np.int32).max
-        dist = np.full((h, w), INF, dtype=np.int32)
-        dirs = ((-1, 0), (1, 0), (0, -1), (0, 1))
-
-        # Sources: air cells adjacent to an EXPOSED-VACUUM tile (a breach is a
-        # vacuum tile that is NOT solid; an intact hull is vacuum AND solid).
-        breach = is_vacuum & (~solid)
-        q = deque()
-        ys, xs = np.where(air)
-        for y, x in zip(ys.tolist(), xs.tolist()):
-            for dy, dx in dirs:
-                ny, nx = y + dy, x + dx
-                if 0 <= ny < h and 0 <= nx < w and breach[ny, nx]:
-                    dist[y, x] = 0
-                    q.append((y, x))
-                    break
-
-        if not q:
-            # No breach reachable from any air cell → field stays all-zero.
-            return
-
-        # BFS through air only.
-        while q:
-            y, x = q.popleft()
-            d = dist[y, x]
-            for dy, dx in dirs:
-                ny, nx = y + dy, x + dx
-                if (0 <= ny < h and 0 <= nx < w and air[ny, nx]
-                        and dist[ny, nx] == INF):
-                    dist[ny, nx] = d + 1
-                    q.append((ny, nx))
-
-        # Direction = toward the in-bounds air neighbour of smallest distance
-        # (the next hop down the shortest path to a breach), then normalised.
-        reached_ys, reached_xs = np.where((dist < INF) & air)
-        for y, x in zip(reached_ys.tolist(), reached_xs.tolist()):
-            best_d = dist[y, x]
-            best_dy = best_dx = 0
-            for dy, dx in dirs:
-                ny, nx = y + dy, x + dx
-                if (0 <= ny < h and 0 <= nx < w and air[ny, nx]
-                        and dist[ny, nx] < best_d):
-                    best_d = dist[ny, nx]
-                    best_dy, best_dx = dy, dx
-            # A breach-adjacent source (best_d == its own 0) still has a smaller
-            # neighbour only if one exists; otherwise it points at the breach via
-            # the vacuum step it can't descend to — fall back to the breach dir.
-            if best_dy == 0 and best_dx == 0:
-                # No air neighbour is strictly closer (this is a source cell, or
-                # a local min). Point directly at the adjacent breach tile.
-                for dy, dx in dirs:
-                    ny, nx = y + dy, x + dx
-                    if 0 <= ny < h and 0 <= nx < w and breach[ny, nx]:
-                        best_dy, best_dx = dy, dx
-                        break
-            # (best_dy, best_dx) is one of the 4 unit steps → already unit length
-            # for cardinals; store as float (sink_x is +x = column, sink_y = row).
-            self.sink_x[y, x] = float(best_dx)
-            self.sink_y[y, x] = float(best_dy)
+    # (sink_fields / _rebuild_sink_field DELETED — EOS refactor P3,
+    # decisions.md #3: native venting replaces the BFS smoke sink-pull.)
 
     # ------------------------------------------------------------------
     # Over-pressure wall failure — the emergent pressure-relief valve (ch.04 §5)
@@ -965,12 +1210,19 @@ class GameMap:
 
         A sealed room that keeps absorbing grenades builds pressure without
         limit; this is the emergent relief valve (ch.04 §5). For each wall tile,
-        the differential it holds is the **spread across its opposing sides**:
+        the differential it holds is the **spread across its open sides**:
         ``max(neighbour atmosphere) - min(neighbour atmosphere)`` over its
-        in-bounds 4-neighbours, where a *solid or sealed-vacuum* neighbour
-        contributes 0 (so a hull between a pressurised room and outside-vacuum
+        in-bounds 4-neighbours, where a *solid* neighbour is not a side at all
+        (it is more wall — skipped) and an *exposed-vacuum* neighbour is a real
+        side holding 0 (so a hull between a pressurised room and outside-vacuum
         sees ``p_room - 0``). A wall between two equal-pressure rooms has ~0
-        spread and never pops — correct.
+        spread and never pops, even along a straight run whose along-wall
+        neighbours are solid.
+
+        Consequence: only 1-tile-deep wall membranes can burst. A tile of a
+        >=2-thick slab has at most one open side, so its spread is 0 — thick
+        walls hold ANY differential and breach via damage/explosions instead.
+        (Deliberate: thickness-as-strength for free, no baked thickness field.)
 
         A material with ``burst_threshold <= 0`` is treated as never-bursting
         (air, or any material omitting the column).
@@ -995,6 +1247,15 @@ class GameMap:
         atm = _atm_fx.dequantize(self.atmosphere)
         solid = self.solid
         is_vacuum = self.is_vacuum
+        # BC (boundary_conditions_spec_2026-07-19 §1, audit (c)): an ambient-side
+        # neighbour is a real side holding the effective pin P_amb (not 0 like a
+        # vacuum side, and not its possibly-stale materialized `atm` value — a
+        # just-breached ring tile is seeded by neighbour-mean, not yet re-pinned).
+        # So a wall with ambient on BOTH sides holds ~0 spread and never bursts.
+        # On a space map is_ambient is empty -> the vacuum/atm branch is unchanged.
+        is_ambient = self.is_ambient
+        p_amb_real = (float(self._ambient.pin_q) / _atm_fx.FP_ONE
+                      if self._ambient is not None else 0.0)
         thresh = self.materials.burst_threshold
 
         failing = []  # (differential, fy, fx)
@@ -1010,11 +1271,18 @@ class GameMap:
                 ny, nx = fy + dy, fx + dx
                 if not (0 <= ny < h and 0 <= nx < w):
                     continue
-                # A solid neighbour (wall, incl. sealed-hull which is also
-                # solid) or an exposed-vacuum breach holds no air → 0; an
-                # air tile contributes its atmosphere.
-                if solid[ny, nx] or is_vacuum[ny, nx]:
+                # A solid neighbour is not a side — it's more wall; skipping
+                # it (rather than counting 0) is what makes the spread a true
+                # differential: equal pressure on both open sides -> 0, and a
+                # tile with fewer than two open/vacuum sides can never burst.
+                if solid[ny, nx]:
+                    continue
+                # An exposed-vacuum breach is a real side holding no air; an
+                # ambient breach is a real side holding the effective pin P_amb.
+                if is_vacuum[ny, nx]:
                     p = 0.0
+                elif is_ambient[ny, nx]:
+                    p = p_amb_real
                 else:
                     p = float(atm[ny, nx])
                 lo = p if lo is None or p < lo else lo
@@ -1059,26 +1327,383 @@ class GameMap:
         was_hull = (self.material[fy, fx] == MAT_HULL)
         if self.material[fy, fx] != MAT_AIR:
             self.material[fy, fx] = MAT_AIR
-            # Topology changed → the smoke sink-direction field is stale; the
-            # next ``sink_fields()`` read rebuilds it (cheap, breaches are rare).
-            self._sink_dirty = True
+            # (sink-field staleness mark DELETED — EOS P3: no BFS sink field.)
             # Patch ALL table-derived caches for this tile through the single
             # incremental seam (solid, flammable, wall_hp, conductivity) —
             # no inline cache fixups, no O(grid) rebuild.
             self.on_tile_changed(fy, fx)
-            if was_hull:
-                if (fy < 1 or fy >= h - 1
-                        or fx < 1 or fx >= w - 1):
-                    # True hull breach — wall tile is on the map edge.
-                    self.is_vacuum[fy, fx] = True
-                    # Don't hard-zero — let relaxation BC drain smoothly.
-                    self.atmosphere[fy, fx] = self._neighbor_mean(
-                        self.atmosphere, fy, fx)
-                else:
-                    # Interior hull: fill with neighbor mean.
-                    self.atmosphere[fy, fx] = self._neighbor_mean(
-                        self.atmosphere, fy, fx)
-            else:
-                # Interior wall: fill with neighbor mean.
-                self.atmosphere[fy, fx] = self._neighbor_mean(
-                    self.atmosphere, fy, fx)
+            # EOS refactor P3 (design §2.3): breach→vacuum GENERALIZED beyond
+            # the edge-hull-only rule — ANY destroyed tile becomes vacuum if
+            # it EXPOSES vacuum (any 4-neighbour is already vacuum: chained
+            # breaches, a hole blown next to space), plus the original
+            # edge-hull case. A destroyed tile NOT exposing vacuum joins
+            # open-air with a neighbor-mean seed (anti-vacuum-pulse, as ever).
+            on_edge_hull = was_hull and (
+                fy < 1 or fy >= h - 1 or fx < 1 or fx >= w - 1)
+            # BC (boundary_conditions_spec_2026-07-19 §1, joins-AMBIENT twin): on
+            # a planetside map a breached edge hull opens to SKY, not to space —
+            # the exposes rule reads and joins `is_ambient`, not `is_vacuum` (the
+            # two masks are mutually exclusive; a space map's is_ambient is empty
+            # and this is the exact prior behaviour). `breach_mask` is the map's
+            # single boundary mask.
+            breach_mask = (self.is_ambient if self._boundary == "ambient"
+                           else self.is_vacuum)
+            # "Exposing the boundary" == a 4-neighbour that is the EXPOSED
+            # boundary (vacuum/ambient AND not solid — an intact hull tile is
+            # vacuum AND solid and does NOT count; see the `breach` predicate).
+            exposes = any(
+                0 <= fy + dy < h and 0 <= fx + dx < w
+                and breach_mask[fy + dy, fx + dx]
+                and not self.solid[fy + dy, fx + dx]
+                for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)))
+            if on_edge_hull or exposes:
+                # True breach — the tile joins the boundary reservoir; the
+                # solver's Dirichlet pin (P=0 vacuum / P=P_amb ambient) + donor-
+                # cell venting drain/fill it natively (no hard zero).
+                breach_mask[fy, fx] = True
+            self.atmosphere[fy, fx] = self._neighbor_mean(
+                self.atmosphere, fy, fx)
+            self._seed_bulk_gas_neighbor_mean(fy, fx)
+
+    # ------------------------------------------------------------------
+    # EOS evacuation rule — seal / unseal (A5)
+    #
+    # The door-close half of the eos_refactor_design.md §2.2 occupancy-
+    # transition rule (only the destroy direction existed before): a tile
+    # leaving the open-air mask has its gas EVACUATED conservatively into
+    # adjacent open cells before any solver pass sees the new mask — the
+    # bulk-flux solver defensively zeroes N on solid every pass, so a seal
+    # without evacuation silently deletes mass. The symmetric open half
+    # (`unseal_tiles`) withdraws its seed from the donors instead of minting
+    # (destroy_wall's neighbor-mean seed stays the rule for DESTRUCTION
+    # events only). Both primitives are pure-integer, order-pinned, and
+    # atomic. No sim path calls them yet (doors wire in at A6) — dormancy is
+    # structural. Full design + critique fold:
+    # docs/a5_evacuation_impl_2026-07-18.md (v2).
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _normalize_span(tiles):
+        """Normalize an iterable of ``(fy, fx)`` into the pinned ROW-MAJOR
+        sorted span (list of int tuples). Duplicate tiles are a caller bug →
+        ``ValueError``. The caller's ordering can never matter (determinism:
+        design §9)."""
+        span = [(int(fy), int(fx)) for fy, fx in tiles]
+        if len(set(span)) != len(span):
+            raise ValueError(f"seal/unseal span contains duplicate tiles: {span}")
+        span.sort()
+        return span
+
+    def _seal_receivers(self, fy, fx, span_set):
+        """Open 4-neighbors of ``(fy, fx)`` eligible to receive evacuated gas,
+        in the pinned N,S,E,W order (``_FACE_DIRS``). Span members are
+        excluded — the span seals simultaneously, so receivers are defined
+        against the POST-span solidity (design §3.1.5). Exposed-vacuum
+        neighbors qualify: a breach is an open side; the share pushed there
+        vents on the next flux pass through the sanctioned vacuum sink."""
+        h, w = self._h, self._w
+        out = []
+        for dy, dx in self._FACE_DIRS:
+            ny, nx = fy + dy, fx + dx
+            if (0 <= ny < h and 0 <= nx < w
+                    and not self.solid[ny, nx]
+                    and (ny, nx) not in span_set):
+                out.append((ny, nx))
+        return out
+
+    def _seal_blockers(self, span, material_id=None):
+        """Shared validation for :meth:`seal_tiles` / :meth:`can_seal_tiles`.
+
+        Runs the design §3.1 checks in their pinned order over the row-major
+        span and returns ``(error, receivers)`` — ``error`` is the exception
+        instance :meth:`seal_tiles` would raise (``None`` if the seal would
+        succeed), ``receivers`` maps each span tile to its receiver list.
+        ``material_id`` is checked only when given (``can_seal_tiles`` has no
+        material argument — validity of the id is the caller's own argument,
+        not state). NO mutation.
+        """
+        h, w = self._h, self._w
+        # 1. bounds — strict (a primitive caller passing OOB is a bug;
+        #    destroy_wall's silent OOB return is event-driven leniency).
+        for fy, fx in span:
+            if not (0 <= fy < h and 0 <= fx < w):
+                return ValueError(
+                    f"seal_tiles: tile ({fy}, {fx}) out of bounds"), None
+        # 2. already solid — catches double-close bugs.
+        for fy, fx in span:
+            if self.solid[fy, fx]:
+                return ValueError(
+                    f"seal_tiles: tile ({fy}, {fx}) is already solid"), None
+        # 3. material must be solid (permeability <= 0): sealing to a
+        #    non-solid material is incoherent (tile stays open to flow while
+        #    its gas was evacuated).
+        if material_id is not None:
+            mid = int(material_id)
+            if not (0 <= mid < len(self.materials.permeability)):
+                return ValueError(
+                    f"seal_tiles: unknown material id {mid}"), None
+            if float(self.materials.permeability[mid]) > 0.0:
+                return ValueError(
+                    f"seal_tiles: material id {mid} is not solid "
+                    f"(permeability > 0)"), None
+        # 4. water rule v1 — hard invariant guard at the primitive: the
+        #    water solver zeroes depth on solid, so sealing over standing
+        #    water is silent conserved-mass deletion. Span tiles only; a
+        #    flooded RECEIVER is fine (gas parks under the water column,
+        #    conserved — design §8).
+        for fy, fx in span:
+            if int(self.water_depth[fy, fx]) != 0:
+                return SealBlocked(
+                    f"seal_tiles: tile ({fy}, {fx}) holds standing water "
+                    f"(drain before sealing)"), None
+        # 5+6. receivers + sealed-pocket rule: a gas-holding tile with no
+        #    receiver must be REFUSED, never zeroed (§2.2 canon: "it is
+        #    never zeroed"). A gas-free tile seals fine with no receivers.
+        span_set = set(span)
+        receivers = {}
+        for t in span:
+            rs = self._seal_receivers(t[0], t[1], span_set)
+            receivers[t] = rs
+            if not rs and any(int(self.gas[g][t]) != 0 for g in range(N_GASES)):
+                return SealBlocked(
+                    f"seal_tiles: tile {t} holds gas but has no open "
+                    f"receiver (sealed pocket — refusing to delete mass)"
+                ), None
+        # 7. overflow pre-check — loud, pre-mutation. N is a conserved
+        #    field: a saturating store would SILENTLY break conservation,
+        #    so a receiver that could exceed int32 must raise instead.
+        #    Generous over-bound (assumes each receiver takes every adjacent
+        #    span tile's whole load); unreachable at shipped densities.
+        rec_order = []
+        rec_donors = {}
+        for t in span:
+            for r in receivers[t]:
+                if r not in rec_donors:
+                    rec_donors[r] = []
+                    rec_order.append(r)
+                rec_donors[r].append(t)
+        limit = 2 ** 31
+        for g in range(N_GASES):
+            for r in rec_order:
+                bound = int(self.gas[g][r]) + sum(
+                    int(self.gas[g][t]) for t in rec_donors[r])
+                if bound >= limit:
+                    return OverflowError(
+                        f"seal_tiles: receiver {r} would overflow int32 on "
+                        f"gas slice {g} (bound {bound})"), None
+        return None, receivers
+
+    def can_seal_tiles(self, tiles):
+        """Policy query: True iff :meth:`seal_tiles` on ``tiles`` would
+        succeed for a VALID solid ``material_id`` (material validity is the
+        caller's own argument, not state — it is not re-checked here).
+
+        Covers bounds / already-solid / water / receiver availability AND
+        the int32 overflow pre-check, so True really means the seal
+        completes. Does NOT check unit occupancy — that is caller policy
+        (the A6 door composes ``occupancy_clear(span) and
+        can_seal_tiles(span)``). Duplicate span tiles still raise
+        ``ValueError`` (a caller bug, not a polite refusal). Pure query, no
+        mutation. Design: docs/a5_evacuation_impl_2026-07-18.md §2.
+        """
+        span = self._normalize_span(tiles)
+        err, _ = self._seal_blockers(span)
+        return err is None
+
+    def seal_tiles(self, tiles, material_id):
+        """Seal a span of open tiles to ``material_id`` (a solid material),
+        evacuating their gas conservatively to open neighbors.
+
+        The door-close half of the §2.2 occupancy-transition rule: each
+        tile's gas (all ``N_GASES`` slices) is split equally over its open
+        non-span 4-neighbors — remainder to the first receivers in N,S,E,W
+        order — with pure Python-int arithmetic, so grid-total N per slice
+        is unchanged to the LSB. Solver-owned fields on the sealed tile are
+        set to their solid steady state; ``temperature`` becomes the integer
+        mean of the tile's PRE-call solid 4-neighbors' temperatures — the
+        door panel belongs to the wall assembly it slides from, so no
+        instant "hot door" from post-grenade air — falling back to keeping
+        the local air T only when the tile has no pre-existing solid
+        neighbor (Erik's ruling 4, 2026-07-19; design §4a). ``is_vacuum``
+        is never written (sealing a breach yields the sealed-hull state). The whole
+        span seals as ONE simultaneous edit (a 2-tile door closing is one
+        call). Atomic: validates everything, then mutates; raises
+        ``SealBlocked`` (water, sealed pocket) / ``ValueError`` (caller
+        bugs) / ``OverflowError`` (loud conservation guard) with no partial
+        mutation. Structural, not a FieldEdit: effects reach the solvers
+        next tick via the step-6 restamp, exactly like ``destroy_wall``.
+        Design: docs/a5_evacuation_impl_2026-07-18.md §3.
+        """
+        span = self._normalize_span(tiles)
+        err, receivers = self._seal_blockers(span, material_id)
+        if err is not None:
+            raise err
+        mid = int(material_id)
+
+        # Close-T (Erik ruling 4, 2026-07-19; design §4a): each sealed tile's
+        # temperature becomes the integer mean (floor) of its PRE-call solid
+        # 4-neighbors' temperatures, summed in the pinned N,S,E,W order — the
+        # door panel takes the temperature of the pre-existing wall assembly
+        # it slides from (no instant "hot door" from post-grenade air;
+        # conduction heats the panel honestly over subsequent ticks). Span
+        # members never donate: their just-assigned close-T would be
+        # circular, so "solid" means solid BEFORE this call — which is why
+        # the means are computed HERE, before any mutation (this also keeps
+        # the mutation pass below raise-free and span-order-independent).
+        # A tile with no pre-existing solid neighbor keeps its air T.
+        h, w = self._h, self._w
+        close_t = {}
+        for fy, fx in span:
+            wall_ts = []
+            for dy, dx in self._FACE_DIRS:
+                ny, nx = fy + dy, fx + dx
+                if 0 <= ny < h and 0 <= nx < w and self.solid[ny, nx]:
+                    wall_ts.append(int(self.temperature[ny, nx]))
+            if wall_ts:
+                close_t[(fy, fx)] = sum(wall_ts) // len(wall_ts)
+
+        # ATOMICITY PIN (design §3.2): atomicity rests on this mutation pass
+        # being RAISE-FREE BY CONSTRUCTION — every precondition was validated
+        # above and the pass is pure int loads/stores + on_tile_changed table
+        # lookups — NOT on any transaction/rollback machinery. Extensions to
+        # this pass must stay raise-free or add real rollback.
+        for t in span:
+            fy, fx = t
+            rs = receivers[t]
+            k = len(rs)
+            for g in range(N_GASES):
+                n = int(self.gas[g][fy, fx])
+                if n == 0:
+                    continue
+                q, r = divmod(n, k)
+                for j, (ny, nx) in enumerate(rs):
+                    share = q + (1 if j < r else 0)
+                    if share:
+                        self.gas[g][ny, nx] = int(self.gas[g][ny, nx]) + share
+                self.gas[g][fy, fx] = 0
+
+            self.material[fy, fx] = mid
+            self.on_tile_changed(fy, fx)
+
+            # Solid steady-state values for the solver-owned fields (design
+            # §6 table) — no "haunted door" values for the recorder snapshot.
+            self.atmosphere[fy, fx] = 0
+            self.wave_p[fy, fx] = 0
+            self.wind_x[fy, fx] = 0
+            self.wind_y[fy, fx] = 0
+            self.flow_vx[fy, fx] = 0
+            self.flow_vy[fy, fx] = 0
+            self.ripple[fy, fx] = 0.0
+            self.ripple_v[fy, fx] = 0.0
+
+            # Close-T write (computed pre-mutation above — design §4a).
+            if t in close_t:
+                self.temperature[fy, fx] = close_t[t]
+
+    def unseal_tiles(self, tiles):
+        """Open a span of solid tiles to ``MAT_AIR``, seeding each from its
+        open neighbors CONSERVATIVELY (withdrawn, not minted).
+
+        The joins-open-air rule's shape with an exact conservation story:
+        each opened tile is seeded at ``sum(donors) // (k + 1)`` — the
+        opened tile joins the donor set as an EQUAL member, so the
+        neighborhood relaxes toward its local uniform value (the correct
+        anti-vacuum-pulse statement for a withdrawn seed; a single donor is
+        halved, never drained to 0). The seed is withdrawn balanced-then-
+        greedy from the donors (pinned N,S,E,W order), so grid-total N per
+        slice is unchanged to the LSB. Donors come from the PRE-call open
+        mask only (a 2-tile door's second tile never seeds from the first's
+        fresh gas). A tile that is, or borders, exposed vacuum joins vacuum
+        instead — ``is_vacuum`` set, NO seed (zeroing is correct only for
+        vacuum); this predicate reads the LIVE solid mask, so the join
+        chains down the row-major span order (pinned, deliberate). Unlike
+        ``destroy_wall``, which mint-seeds unconditionally, opening never
+        creates gas. Atomic like ``seal_tiles`` (``ValueError`` on caller
+        bugs, no partial mutation).
+        Design: docs/a5_evacuation_impl_2026-07-18.md §7.
+        """
+        span = self._normalize_span(tiles)
+        h, w = self._h, self._w
+        for fy, fx in span:
+            if not (0 <= fy < h and 0 <= fx < w):
+                raise ValueError(
+                    f"unseal_tiles: tile ({fy}, {fx}) out of bounds")
+        for fy, fx in span:
+            if not self.solid[fy, fx]:
+                raise ValueError(
+                    f"unseal_tiles: tile ({fy}, {fx}) is not solid")
+        span_set = set(span)
+        # Donor snapshot: pre-existing open air only (design §7). numpy's
+        # ``~`` allocates a fresh array, so this is immune to the in-place
+        # per-tile solid updates below.
+        pre_open = ~self.solid
+
+        # Mutation pass — raise-free by construction, same atomicity story
+        # as seal_tiles (design §3.2 pin).
+        for t in span:
+            fy, fx = t
+            self.material[fy, fx] = MAT_AIR
+            self.on_tile_changed(fy, fx)
+
+            # Boundary join (destroy_wall's exposes predicate, minus its
+            # unconditional mint): LIVE solid mask — chains down-span. BC
+            # (joins-AMBIENT twin): on a planetside map the tile joins the
+            # ambient SKY reservoir (is_ambient), not space (is_vacuum). A space
+            # map's is_ambient is empty, so this is the exact prior behaviour.
+            breach_mask = (self.is_ambient if self._boundary == "ambient"
+                           else self.is_vacuum)
+            joins_boundary = bool(breach_mask[fy, fx])
+            if not joins_boundary:
+                for dy, dx in self._FACE_DIRS:
+                    ny, nx = fy + dy, fx + dx
+                    if (0 <= ny < h and 0 <= nx < w
+                            and breach_mask[ny, nx]
+                            and not self.solid[ny, nx]):
+                        joins_boundary = True
+                        break
+            if joins_boundary:
+                breach_mask[fy, fx] = True
+                continue
+
+            donors = []
+            for dy, dx in self._FACE_DIRS:
+                ny, nx = fy + dy, fx + dx
+                if (0 <= ny < h and 0 <= nx < w
+                        and pre_open[ny, nx]
+                        and not self.is_vacuum[ny, nx]
+                        and (ny, nx) not in span_set):
+                    donors.append((ny, nx))
+            if not donors:
+                # Opens empty (gas-free pocket) — NEVER mint.
+                continue
+
+            k = len(donors)
+            for g in range(N_GASES):
+                avail = [int(self.gas[g][d]) for d in donors]
+                target = sum(avail) // (k + 1)
+                if target == 0:
+                    continue
+                # Balanced two-pass withdrawal: equal shares clamped to each
+                # donor's holdings, shortfall cascaded in N,S,E,W order.
+                q, r = divmod(target, k)
+                take = [min(q + (1 if j < r else 0), avail[j])
+                        for j in range(k)]
+                short = target - sum(take)
+                for j in range(k):
+                    if short == 0:
+                        break
+                    extra = min(short, avail[j] - take[j])
+                    take[j] += extra
+                    short -= extra
+                for j, (ny, nx) in enumerate(donors):
+                    self.gas[g][ny, nx] = avail[j] - take[j]
+                self.gas[g][fy, fx] = target
+
+            # Display-alias stopgap (design §6): the MEAN of the donors'
+            # displayed atmosphere (divisor k, deliberately NOT k+1 — this
+            # is the minted display value destroy_wall also provides, not
+            # part of the conservation ledger; the solver rematerializes P
+            # next tick). wave_p matches so the |P - P_prev| ripple splash
+            # sees no phantom spike in the window before step 0.
+            self.atmosphere[fy, fx] = (
+                sum(int(self.atmosphere[d]) for d in donors) // k)
+            self.wave_p[fy, fx] = int(self.atmosphere[fy, fx])

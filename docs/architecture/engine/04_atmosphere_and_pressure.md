@@ -4,6 +4,99 @@
 
 ---
 
+> ## EOS refactor (2026-07) — as-built
+>
+> **This chapter below documents the pre-EOS two-field model (`atmosphere` + `wave_p`,
+> IMEX). That model has been replaced.** The refactor shipped end-to-end (P1–P6, closed on
+> `main`); read the rest of the chapter for the design *rationale* still in force (implicit
+> stability, sealed-vs-breach masks, permeability, wind-as-interface), but treat the specific
+> two-field mechanics as superseded by the following. Canon design lives in
+> `docs/eos_refactor_design.md` (v2) and `docs/eos_refactor_decisions.md` (locked decisions);
+> the GPU end-state in `docs/eos_p6_gpu_alignment_review.md`.
+>
+> **What actually ships now:**
+>
+> - **One derived pressure, not two fields.** Pressure is a *genuine compressible ideal gas*:
+>   `P = C · N_total · T`, evolved by a **Kwatra semi-implicit solver** (a red-black Gauss–Seidel
+>   / multigrid Helmholtz solve — the same stability story the chapter argues for, now on one
+>   field). Bulk equilibration *and* acoustic fronts fall out of that single pressure; the old
+>   `atmosphere`/`wave_p` split existed **only** as a numerical workaround for running implicit
+>   diffusion and an explicit wave on one field, and is obsolete.
+> - **`atmosphere` is now a zero-copy ALIAS of the derived `P`.** `P` is **materialized once
+>   per tick** — right after the `(N, T)` update and *before any consumer* — into a stored
+>   Q16.16 field; every reader (wind, water head, `find_burst_walls`, unit push) sees that one
+>   consistent `P`. Nothing "feeds pressure" any more: every old writer became a **heat/energy
+>   feed (T)** or a **gas-mass feed (N)**, and `P` follows from physics.
+> - **`wave_p` / `wave_v` / `wave_source` are RETIRED as acoustic fields.** `gmap.wave_p` is
+>   repurposed as the **`P_prev` store** (last tick's materialized `P`); the per-tick pressure
+>   *transient* `|P − P_prev|` is what drives the ripple splash and the blow-up trigger. The
+>   transient-buffet-vs-sustained-dome distinction consumers relied on now survives as the single
+>   field's **time evolution** (the front passes, the dome lingers) — more physical, not bolted on.
+>   (`physics_runner.py` documents `gmap.wave_p` as "the repurposed P_prev buffer".)
+> - **Two bulk species + traces.** The bulk air is two explicit, *conserved* gases —
+>   **O₂ + inert-N₂** — transported by **donor-cell conservative flux** (the water-solver pattern),
+>   with the traces (smoke / poison / …) riding on top. `N_total = Σ species` (Dalton),
+>   `P = C · T · N_total`. Mass is exact (LSB-level, no silent decay); sealed rooms are airtight
+>   by construction.
+> - **Wind = −∇P** off the single materialized field (computed before consumers read it).
+> - **Native breach venting.** Venting emerges from real `−∇P` toward a true-vacuum (`N = 0`)
+>   cell; the geometric `sink_hop` *atmosphere* hack is gone and breach→vacuum generalises beyond
+>   the old edge-hull-only rule.
+> - **Consumers repointed:** `apply_wave_push` reads `grad(P)` (`k_push` recalibrated);
+>   `find_burst_walls` reads the `P` spread through the `atmosphere` alias; the water pressure-head
+>   reads the derived **integer** `P` (the old float bridge removed); combustion/ignition O₂ gates
+>   read real `N_O2` (see ch.06). The over-pressure relief valve, sealed/breach masks, and
+>   permeability model (§2.3, §2.7) all carry over unchanged.
+> - **Ported bit-identical to CUDA (P6).** The whole tick — pressure materialization, Helmholtz
+>   solve, species flux, compression-work, combustion — runs on the GPU exactly matching the CPU
+>   reference (`cuda_eos_step`, `cuda_mg_solve`); the CPU path is permanent as the bit-identity
+>   reference.
+
+> ## Boundary conditions — planetside AMBIENT ring (2026-07, as-built)
+>
+> The literal grid edge is closed/reflective everywhere; a map's *outer* boundary is made in
+> LEVEL DATA by its border tiles. Two modes, chosen by the top-level `boundary` field:
+>
+> - **`"space"` (default):** a ring of SPACE tiles → `is_vacuum`. The MG solve pins them
+>   Dirichlet **P = 0**; bulk transport treats them as a mass sink (native venting to vacuum);
+>   traces are absorbed. This is the original behavior; unchanged.
+> - **`"ambient"` (planetside):** the SAME SPACE tiles route **wholesale** to a new `is_ambient`
+>   mask instead (no `is_vacuum` on an ambient map; an interior SPACE tile is a legal "sky
+>   shaft"). The ring is an **infinite ambient reservoir** — air exits and enters freely.
+>
+> The AMBIENT ring is symmetric to SPACE, all local per-tile edits (no new solve structure):
+> - **Pressure via a change of variable.** The ring pins **P = P_amb**, implemented as the
+>   shift **P′ = P − P_amb**: subtract P_amb from the RHS + warm-start in the shared host-side
+>   `mg_build_levels`, solve the *unchanged* zero-Dirichlet multigrid, add P_amb back at the
+>   store (masked to `!solid`). Legal because an ambient map has no P = 0 pins to coexist. The
+>   coarse Galerkin anchor is only exact for pin value 0 — the shift is what keeps the whole MG
+>   byte-identical.
+> - **N-primary dials.** `[ambient]` carries `p_amb`/`o2_frac`; **N is primary** —
+>   `N_total := quantize(p_amb)`, split O2/inert-N2 — and the **effective pin** is the sim's own
+>   `p*(N_amb, ΔT=0)` chain (`src/simulation/ambient.py`). At Earth defaults that is **65540 raw
+>   (1.000061 atm), not 65536**: every reachable `p*` is a multiple of ~T_AMB_K raw counts, so
+>   1.0 atm has no integer preimage. Seeding the interior + ring to the effective pin is what
+>   makes a sealed planetside room's interior trajectory flat.
+> - **Reservoir + bath.** The bulk clamp resets ring `N` to `N_amb` **every substep** (mirroring
+>   the vacuum sink `N=0`), rail-counted by the int64 per-plane `boundary_flux`. `u` and `T` at
+>   the ring are the vacuum code verbatim (still boundary, ΔT = 0 ≡ ambient — no separate ambient-T
+>   dial). Traces are absorbed at the ring (the smoke solver's vacuum idiom widened to
+>   `is_vacuum | is_ambient`) — smoke vents into the sky.
+> - **Absorber.** Outgoing acoustic fronts are damped by a **velocity-damping band** (a graded
+>   `|u| *= (1−k(d))` over a BFS distance band from the ring; `sponge_u_damp`, k_max = 0.9·FP_ONE).
+>   A σ *pressure* sponge was tried and **reflects** (a pin hardened is a pressure-release wall) —
+>   it ships off (`sponge_strength = 0`). **Un-absorbable residual:** because the pressure solve is
+>   elliptic (whole-domain coupling per tick), a near boundary changes the interior at tick 0 —
+>   correct finite-domain venting, not a bounced wave, and removable only by a radiation BC we
+>   rejected. At ~0.02 atm transients this residual is a feel matter, deemed acceptable.
+> - **No water BC** (oceans are an authored indestructible reservoir; the ring is a water sink like
+>   SPACE). **Wind-in-from-boundary** stays a source term, not a boundary mode. **Structural edits**
+>   (`destroy_wall`/`unseal_tiles`) join `is_ambient` (not vacuum) on ambient maps.
+>
+> Bit-identical CPU == CUDA (tol 0). Existing space-map goldens are byte-untouched (every ambient
+> branch is gated on a live `is_ambient` — dormancy by branch). Design + as-built:
+> `docs/archive/boundary_conditions_spec_2026-07-19.md` (v2.4) + `bc_step_a_audit_2026-07-19.md`.
+
 ## 1. What this system is
 
 Breach's atmosphere is the air that fills the ship: a scalar pressure field over the
@@ -235,16 +328,21 @@ the current materials and open air, and only differ where a partial coefficient 
   `[physics] burst_enabled`. An interior wall becomes air, a hull-edge wall becomes exposed vacuum → it
   then vents. Over-pressured clusters self-breach in a chain until the gradient relaxes.
   - **Opt-in per material.** `burst_threshold <= 0` means *never* (the default, and `air`). You set a
-    positive threshold only on the walls you *want* collapsible. The spread counts a *solid* or
-    sealed-vacuum neighbour as 0, so the differential is an **absolute** pressure (normal air ≈ 1.0); a
-    threshold therefore sits above 1.0 plus the over-pressure you want it to tolerate.
+    positive threshold only on the walls you *want* collapsible.
+  - **The spread is a true differential** (fixed 2026-07-17). A *solid* neighbour is not a side at all —
+    it is skipped, not counted as 0 — and an *exposed-vacuum* neighbour is a real side holding 0. So a
+    wall between two equal-pressure rooms holds regardless of how high both climb (the old rule counted
+    the along-wall solid neighbours as 0 and burst it at absolute pressure), an interior wall bursts on
+    `|P_A − P_B|`, and a hull membrane against space bursts on `P_room − 0`. A threshold is therefore a
+    plain differential (interior walls of a normal ship hold ~0).
   - **The hull never pressure-collapses.** This valve was designed for *collapsible interior walls*, not
     the hull — the hull breaches from damage/explosions, so it ships at `burst_threshold = 0`. Weak
     bulkheads (wood/glass) carry low thresholds; steel is high.
-  - **Thick walls are fine.** Walls hold normal pressure (`atmosphere` initialises to 1.0 everywhere, so
-    destroying one fills via neighbour-mean, never a vacuum punch). A thick wall's *inner* tile has only
-    solid neighbours → spread 0 → never bursts; only the air-facing tile bursts, exposing the next layer
-    the next tick. It erodes one layer at a time from the pressurised face — intended.
+  - **Only 1-tile-deep membranes can burst** (2026-07-17, replaces the old layer-by-layer erosion). A
+    tile of a ≥2-thick slab has at most one open side → spread 0 → holds ANY differential. Thickness-as-
+    strength for free, no baked thickness field: thick walls yield only to damage/explosions — though a
+    blast that thins a slab to one layer re-arms the valve there. Deliberate (Erik, 2026-07-17: "only
+    1-deep bursts simplifies lots").
   This is *why we keep* the wave→atmosphere deposit (§2.3–2.4): building pressure is physically correct,
   so the answer is an emergent relief valve, not removing the deposit (which would make blasts feel
   weak). Reuses `destroy_wall` + neighbour-mean; no new field.

@@ -1,0 +1,76 @@
+# door_test - the A6 doors v0 HUMAN-TEST level (a6 doors design section 14).
+# NEW level: never migrated, never in any golden/digest suite. Flat dev art.
+#
+# Rooms: NW / NE / SW / SE. Doors (all [[entity]]; CSV spans are AIR - the
+# load stamp seals the closed ones):
+#   door_a  3-tile CLOSED  v  (14, 8..10)   NW<->NE  pressurize + toggle
+#   door_b  2-tile CLOSED  v  (14, 20..21)  SW<->SE  water pool just east
+#   door_c  1-tile CLOSED  h  (8, 14)       NW<->SW  the alcove door
+#   door_d  3-tile OPEN    h  (24..26, 14)  NE<->SE  corridor / path-hold
+#
+# Launch:  conda run -n data python main.py --level door_test
+# Keys:    O toggle door under cursor | J gas | U water | I ignite | F6 HUD
+
+version = "2"
+name = "door_test"
+
+tilemap = "tilemap.csv"
+tile_size_m = 0.333
+diffuse = "diffuse.png"
+
+[water]
+depth_map = "water_init.npy"
+
+[[spawn]]
+name = "Alpha"
+team = 0
+x = 24
+y = 20
+
+[[spawn]]
+name = "Bravo"
+team = 0
+x = 28
+y = 20
+
+[[spawn]]
+name = "Cobra"
+team = 0
+x = 24
+y = 24
+
+[[entity]]
+id = "door_a"
+class = "door"
+x = 14
+y = 8
+orientation = "v"
+length_m = 1.0
+initial_state = "closed"
+
+[[entity]]
+id = "door_b"
+class = "door"
+x = 14
+y = 20
+orientation = "v"
+length_m = 0.5
+initial_state = "closed"
+
+[[entity]]
+id = "door_c"
+class = "door"
+x = 8
+y = 14
+orientation = "h"
+length_m = 0.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_d"
+class = "door"
+x = 24
+y = 14
+orientation = "h"
+length_m = 1.0
+initial_state = "open"

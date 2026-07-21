@@ -25,15 +25,26 @@
 #include "temperature_solver.h"
 #include "raycaster.h"
 #include "water_solver.h"
+#include "bulk_transport.h"   // EOS refactor P1: bulk O2/N2 donor-cell flux
+#include "eos_solver.h"       // EOS refactor P3: the compressible Kwatra solver
+#include "combustion.h"       // EOS refactor P4: combustion on real O2
 
 class PhysicsEngine {
 public:
+    // AtmosphereSolver is RETAINED on the engine (its wave_substep/
+    // diffuse_solve are no longer called from run_substeps — `eos` replaces
+    // them, EOS refactor P3) so any still-bound Python params / the isolated
+    // GPU test bindings keep resolving; the CPU/GPU wave+diffuse dispatch
+    // paths it fronted are asserted unreachable in run_substeps below (D7 +
+    // the P3 GPU-guard task).
     AtmosphereSolver  atmos;
     SmokeDynamics     smoke;
     FireSimulation    fire;
     TemperatureSolver temperature;
     Raycaster         raycaster;
     WaterSolver       water;
+    EOSSolver         eos;   // EOS refactor P3
+    CombustionSolver  combustion;   // EOS refactor P4
 
     // S2a FLOAT BRIDGE scratch: wave_p is now Q16.16 int32, but the water solver
     // (S1, shipped) still reads wave_p as float in its head term + ripple splash
@@ -57,6 +68,10 @@ public:
     // compare), AND the dead wind_x_f_/wind_y_f_/fire_f_ scratch (the fire logistic
     // went integer in S3b — wind/fire are read as int32, no float scratch).
     mutable std::vector<float> atm_f_;
+
+    // EOS P3: reused scratch for the bulk-N sum (O2+N2) step_tail hands to
+    // TemperatureSolver::step as the real Pass-1 heat-deposit divisor.
+    mutable std::vector<int32_t> n_bulk_;
 
     // --- Patch 1 S4a: the per-tick orchestration TAIL --------------------
     // Moves the three trailing PURE-SOLVER-CALL steps of PhysicsRunner.step
@@ -87,24 +102,36 @@ public:
     //   heat                           : int32 (h, w) Q16.16 — heat deposit (read)
     //   heat_inv_shift                 : int32 (h, w) — per-tile inverse mass shift
     //   face_shift                     : int32 (h, w, 4) — conduction face shifts
+    // EOS refactor P3: `wave_p` is the repurposed P_prev (ripple splash reads
+    // |P - P_prev|); `gas`/`gas_conservative`/`n_gases` are NEW — step_tail
+    // sums the conservative bulk planes (O2+N2) into a reused scratch and
+    // hands it to TemperatureSolver::step as the REAL N divisor for the
+    // Pass-1 heat deposit (closing the P2 `// P3:` density-proxy TODO).
+    // EOS refactor P4 (design §6): `o2_idx` is NEW — step_tail slices the O2
+    // plane out of `gas` and hands it to FireSimulation::step as the real
+    // O2-gate input (n_o2), replacing the atmosphere/P proxy.
     std::vector<std::pair<int, int>> step_tail(
         // ripple group
         float* ripple, float* ripple_v,
-        const int32_t* water_depth, const int32_t* wave_p,   // S1: water_depth Q16.16
-                                                             // S2a: wave_p Q16.16
+        const int32_t* water_depth, const int32_t* p_prev,   // S1: water_depth Q16.16
+                                                             // EOS P3: p_prev (was wave_p)
         const bool* solid,
-        // fire group — S3b: fire + wall_hp are Q16.16 int32; S2c: atmosphere + wind
-        // are Q16.16 int32. The fire logistic is now INTEGER end-to-end (it reads all
-        // of these directly + writes the int32 atmosphere plume in place). The only
-        // float bridge left in step_tail is the TEMPERATURE pass's atmosphere read
-        // (dequantized into atm_f_ AFTER the fire plume) — S3c retires that.
+        // fire group — S3b: fire + wall_hp are Q16.16 int32; S2c: atmosphere +
+        // wind are Q16.16 int32. EOS P3: atmosphere (== P) is READ-ONLY to the
+        // fire now (the plume writes temperature instead).
         int32_t* fire_field, int32_t* atmosphere, int32_t* smoke_field, int32_t* wall_hp,  // S3b: fire+wall_hp Q16.16; S2b: smoke Q16.16; S2c: atm Q16.16
         const int32_t* temperature, const int32_t* wind_x, const int32_t* wind_y,      // S2c: wind Q16.16
         const bool* is_vacuum, const bool* flammable,
         // temperature group
         int32_t* temperature_mut, const int32_t* heat,
         const int32_t* heat_inv_shift, const int32_t* face_shift,
-        int h, int w, float sim_time) const;
+        // EOS P3: bulk-N source for the Pass-1 heat-deposit divisor.
+        // EOS P4: o2_idx slices the real O2 gate input out of `gas`.
+        const int32_t* gas, const bool* gas_conservative, int n_gases, int o2_idx,
+        int h, int w, float sim_time,
+        // BC: ambient ring mask forwarded to TemperatureSolver::step's Pass-0
+        // wipe (nullptr on space maps = byte-identical).
+        const bool* is_ambient = nullptr) const;
 
     // --- Patch 1 S4b: the IMEX atmosphere/smoke substep loop -------------
     // Moves the per-tick IMEX substep block out of PhysicsRunner.step (Python)
@@ -148,15 +175,106 @@ public:
     //   gas                         : float (N, h, w) — the per-gas density planes
     //   gas_diffusion               : float (N,)     — per-gas base diffusion
     //   sink_x, sink_y              : float (h, w) — smoke sink direction (Python-fetched)
+    //
+    // --- EOS refactor P1 (docs/eos_refactor_design.md §2.2) --------------
+    // `gas_conservative` (N,) flags the BULK species (O2 / inert_N2,
+    // simulation/gases.py) — the two planes that move by donor-cell
+    // conservative flux (bulk_transport.cpp) instead of the semi-Lagrangian
+    // per-gas loop below. run_substeps calls bulk_flux_transport ONCE per
+    // tick, immediately after diffuse_solve computes the fresh wind (step 2)
+    // and BEFORE the smoke SL loop (step 3) — riding the SAME once-computed
+    // wind, purely additive (no solver change). The existing per-gas SL loop
+    // (smoke.step / sink_hop, steps 3-4) SKIPS any plane flagged conservative,
+    // so the two transport schemes never both touch the same plane; every
+    // legacy (non-bulk) plane's SL transport is untouched (conservative[gi]
+    // is false there), so this is 0-ULP for the 5 legacy species.
+    // --- EOS refactor P3 (docs/eos_refactor_design.md §3, §8 patch P3) ---
+    // The Kwatra solver (`this->eos`) REPLACES AtmosphereSolver::wave_substep
+    // + ::diffuse_solve, and its own advection substep loop REPLACES the old
+    // n_smoke-substepped semi-Lagrangian loop for the two CONSERVATIVE gas
+    // planes (bulk O2/N2 now move ONCE PER EOS SUBSTEP, inside eos.step, via
+    // bulk_flux_transport — not once per tick as P1 shipped it). The 5 TRACE
+    // planes still ride the per-gas SmokeDynamics::step, but now ONCE per
+    // tick (design §3.2 step 4b: "traces advect ONCE per tick on the final
+    // velocity") on the solver's post-correction `wind_x`/`wind_y` — the
+    // n_smoke CFL-floor substep loop AND the decoupled sink_hop BFS loop are
+    // BOTH DELETED (sink_hop + its BFS machinery, decisions.md #3; native
+    // venting replaces it). `wave_p` is REPURPOSED as `P_prev` (the design's
+    // own "keep the old name, change the meaning" pattern, already applied
+    // to `atmosphere`->P — see eos_solver.h); `wave_v`/`wave_source` are
+    // RETIRED (no longer read/written here — see gamemap.py for the arrays'
+    // fate). `temperature` is a NEW required arg (T, ambient-relative Kelvin).
+    //
+    //   p_prev              : Q16.16 (h,w) — the repurposed `wave_p` buffer.
+    //   atmosphere           : Q16.16 (h,w) — P (read prior tick's value
+    //                          implicitly via p_prev; WRITTEN once, step 5).
+    //   wind_x/wind_y        : Q16.16 (h,w) — u (self-advected + corrected).
+    //   temperature           : Q16.16 (h,w) — T (advected + compression-worked).
+    //   gas                   : Q16.16 (n_gases,h,w) — the two conservative
+    //                          planes are donor-cell transported EVERY
+    //                          eos substep; traces advect once, below.
+    //
+    // EOS refactor P4 (design §2.2/§5 v2.1, decisions log #12): `gas_decay`
+    // (n_gases,) is NEW — the per-gas trace `decay` column (simulation/
+    // gases.py, "loaded but never applied" until now), applied ONCE per tick
+    // right after each trace plane's own once-per-tick advection below, with
+    // the decayed mass credited to `inert_n2_idx`'s plane IN THE SAME CELL
+    // ("decay is settling/oxidation into inert bulk, not deletion" — closes
+    // the v2.1 residual of decision #12: N_total conserved through the FULL
+    // burn-then-decay cycle, not just the burn). `inert_n2_idx` names which
+    // gas plane receives the credited mass (0 for the two conservative bulk
+    // planes themselves — they carry decay=0 by config contract, gases.py).
     void run_substeps(
-        int32_t* wave_p, int32_t* wave_v, int32_t* wave_source,  // S2a: Q16.16
+        int32_t* p_prev,                                          // was wave_p
         int32_t* atmosphere,                                     // S2c: Q16.16
         int32_t* wind_x, int32_t* wind_y,                        // S2c: Q16.16
+        int32_t* temperature,                                    // EOS P3
         const bool* obstacles, const bool* solid, const bool* is_vacuum,
         const float* dyn_permeability, const float* dyn_wave_absorb,
         int32_t* gas, const float* gas_diffusion, int n_gases,   // S2b: gas Q16.16
-        const float* sink_x, const float* sink_y,
-        int h, int w, float sim_time);
+        const bool* gas_conservative,                             // EOS P1
+        const float* gas_decay, int inert_n2_idx,                 // EOS P4
+        int h, int w, float sim_time,
+        // BC (boundary_conditions_spec_2026-07-19): planetside AMBIENT ring —
+        // forwarded to eos.step (nullptr/0 on space maps = byte-identical).
+        const bool* is_ambient = nullptr,
+        const int32_t* n_amb = nullptr,
+        int32_t p_amb = 0,
+        const int32_t* sponge_sigma = nullptr,
+        const int32_t* sponge_udamp = nullptr,
+        // S8a Path B: when false, the EOS step runs but the once-per-tick TRACE
+        // smoke loop (+ decay) is SKIPPED — the resident path runs those traces
+        // itself on device (trace_smoke_resident) so the 5 per-plane per-call
+        // transfers are gone. Default true == the exact prior behaviour.
+        bool do_traces = true);
+
+    // --- S8a Path A: the fully device-resident EOS stage -----------------
+    // (docs/cuda_s8a_path_a_impl_2026-07-21.md §3.1.) The resident sibling of
+    // run_substeps' EOS dispatch: host mirrors feed the shared pre-stage (all
+    // reductions — tick-entry state) + telemetry; the device pointers are the
+    // persistent CuPy resident fields (uintptr_t so this header stays
+    // CUDA-free; 0 == nullptr for the ambient statics). NO trace loop (the
+    // runner drives trace_smoke_resident, as in Path B). Declared on every
+    // build; the body THROWS on a non-CUDA build, and on a CUDA build throws
+    // unless eos_step_backend_is_cuda() (no CPU fallback for device
+    // pointers). Bit-identity gate: tests/cuda_s8a_check.py PART 1a/1b/1c.
+    void run_substeps_resident(
+        int32_t* p_prev,
+        const int32_t* atmosphere,
+        const int32_t* wind_x, const int32_t* wind_y,
+        const int32_t* temperature,
+        const bool* solid, const bool* is_vacuum,
+        const float* dyn_permeability, const float* dyn_wave_absorb,
+        const int32_t* gas, int n_gases, const bool* gas_conservative,
+        int h, int w, float sim_time,
+        const bool* is_ambient, const int32_t* n_amb, int32_t p_amb,
+        std::uintptr_t d_atmosphere, std::uintptr_t d_wave_p,
+        std::uintptr_t d_wind_x, std::uintptr_t d_wind_y,
+        std::uintptr_t d_temperature, std::uintptr_t d_gas_base,
+        std::uintptr_t d_solid, std::uintptr_t d_is_vacuum,
+        std::uintptr_t d_dyn_permeability,
+        std::uintptr_t d_is_ambient,
+        std::uintptr_t d_sponge_sigma, std::uintptr_t d_sponge_udamp);
 
     // --- Patch 1 S4c: the water-layer ARRAY ARITHMETIC -------------------
     // Moves the array-op core of PhysicsRunner._step_water into C++ — the part
@@ -214,14 +332,34 @@ public:
     // (metres / m/s). atmosphere/gas/dyn_permeability stay FLOAT (the S2 group) —
     // the W5 boil + W3 displacement are FLOAT BRIDGES that dequantize water_depth
     // at the boundary (marked in the .cpp). The substep-count cliff is integer.
+    // EOS refactor P3: `wave_p` param retired (the water head reads the
+    // integer `atmosphere` == P directly, no float bridge); `n_gases` added
+    // (the W3 occupancy-transition evacuation loop touches every gas plane,
+    // not just the W5 steam slice).
     void step_water(
         int32_t* water_depth, int32_t* flow_vx, int32_t* flow_vy,
-        const int32_t* floor_height, int32_t* atmosphere, const int32_t* wave_p,  // S2a: wave_p Q16.16; S2c: atm Q16.16
+        const int32_t* floor_height, int32_t* atmosphere,   // S2c: atm Q16.16 == P
         const bool* solid,
-        int32_t* gas,   // S2b: gas Q16.16 (W5 steam puff int<-int)
+        int32_t* gas, int n_gases,   // S2b: gas Q16.16 (W5 steam puff + W3 evacuation)
         int32_t* before, float* dyn_permeability,
         int steam_idx, float tilt_x, float tilt_y,
         int h, int w, float sim_time,
+        double ceiling_h, double flood_eps, double ratio_cap,
+        double boil_rate, double boil_p_thresh, double steam_yield) const;
+
+    // --- S8a Path B: the water HOST TAIL, split out of step_water -----------
+    // The W5 flash-boil vacuum sink + the W3 volume-displacement evacuation +
+    // the final copyto(before, water_depth) — EVERYTHING in step_water AFTER the
+    // substep loop. Factored so the resident path can run the substep loop on
+    // device (water_substeps_resident) and then this host tail on the mirror,
+    // byte-for-byte identical to the monolithic step_water (which now calls this
+    // helper). No substep loop, no solver call — pure host float/integer arithmetic
+    // (/fp:precise), so it is bit-identical whether reached from step_water or the
+    // resident path.
+    void step_water_tail(
+        int32_t* water_depth, int32_t* atmosphere, const bool* solid,
+        int32_t* gas, int n_gases, int32_t* before, float* dyn_permeability,
+        int steam_idx, int h, int w, float sim_time,
         double ceiling_h, double flood_eps, double ratio_cap,
         double boil_rate, double boil_p_thresh, double steam_yield) const;
 

@@ -74,6 +74,13 @@ def _fire_d(q):
     return float(q) / fire_fixed.FP_ONE_F
 
 
+class _GasesStub:
+    """Minimal `gmap.gases` stand-in: `apply_field_edit`'s "atmosphere" policy
+    (EOS refactor P3) resolves `gmap.gas[gmap.gases.name_to_id[...]]` — the
+    real GasTable's id map, name-keyed (simulation.gases.O2/INERT_N2)."""
+    name_to_id = {"o2": 0, "inert_n2": 1}
+
+
 class _GMapStub:
     def __init__(self, h=12, w=12):
         # S2b: smoke is int32 Q16.16 (the "gas" field-edit dtype) — mirror the
@@ -81,10 +88,22 @@ class _GMapStub:
         self.smoke = np.zeros((h, w), dtype=np.int32)
         # S2c: atmosphere is int32 Q16.16 (the "atmosphere" field-edit dtype) —
         # mirror the real gmap dtype here (use _atm_q to author, _atm_d to read).
+        # EOS refactor P3: "atmosphere" edits no longer WRITE this array (P is
+        # solver-owned) — it is kept only so any generic-field test path that
+        # merely reads gmap.atmosphere for shape/dtype still finds it.
         self.atmosphere = np.zeros((h, w), dtype=np.int32)
+        # EOS refactor P3: `gas`/`gases` — the "atmosphere" edit's REAL target
+        # (a bulk-N deposit split 21/79 across O2/inert_N2, design §6). Two
+        # planes is enough for the stub (only ids 0/1 are ever resolved).
+        self.gas = np.zeros((2, h, w), dtype=np.int32)
+        self.gases = _GasesStub()
         # S2a: wave_source is int32 Q16.16 (the "wave" field-edit dtype combines
-        # in real units, stores quantized) — mirror the real gmap dtype here.
+        # in real units, stores quantized) — RETAINED array, but EOS refactor
+        # P3's "wave_source" edit now targets `temperature` instead (below).
         self.wave_source = np.zeros((h, w), dtype=np.int32)
+        # EOS refactor P3: `temperature` — the "wave_source" edit's REAL target
+        # (an energy deposit, design §6). Shares the Q16.16/HEAT_SCALE domain.
+        self.temperature = np.zeros((h, w), dtype=np.int32)
         # S3a: fire is int32 Q16.16 (the "fire" field-edit dtype combines in real
         # intensity, stores quantized) — mirror the real gmap dtype here.
         self.fire = np.zeros((h, w), dtype=np.int32)
@@ -104,11 +123,15 @@ def _rng(seed=0):
 # Modes
 # ---------------------------------------------------------------------------
 def test_mode_add():
+    # EOS refactor P3: "atmosphere" edits now target a bulk-N deposit (design
+    # §6), not this generic ADD-mode mechanic — swapped the test vehicle to
+    # "smoke" (an unaffected float-combine field; wide clamp to keep the
+    # original unclamped-value assertion honest).
     g = _GMapStub()
-    g.atmosphere[5, 5] = _atm_q(1.0)
-    apply_field_edit(g, FieldEdit("atmosphere", Region.TILE, (5, 5), 0.25,
-                                  EditMode.ADD), _rng())
-    assert abs(_atm_d(g.atmosphere[5, 5]) - 1.25) < 1e-4
+    g.smoke[5, 5] = _smoke_q(1.0)
+    apply_field_edit(g, FieldEdit("smoke", Region.TILE, (5, 5), 0.25,
+                                  EditMode.ADD, clamp=(0.0, 10.0)), _rng())
+    assert abs(_smoke_d(g.smoke[5, 5]) - 1.25) < 1e-4
 
 
 def test_mode_remove_clamps_to_floor():
@@ -136,54 +159,58 @@ def test_mode_max_never_lowers():
 # Regions
 # ---------------------------------------------------------------------------
 def test_region_tile():
+    # EOS refactor P3: swapped "atmosphere" -> "smoke" as the region-mechanics
+    # test vehicle (see test_mode_add's attribution).
     g = _GMapStub()
-    apply_field_edit(g, FieldEdit("atmosphere", Region.TILE, (3, 4), 1.0,
-                                  EditMode.ADD), _rng())
-    assert _atm_d(g.atmosphere[3, 4]) == 1.0
-    assert _atm_d(g.atmosphere.sum()) == 1.0  # only that one tile
+    apply_field_edit(g, FieldEdit("smoke", Region.TILE, (3, 4), 1.0,
+                                  EditMode.ADD, clamp=(0.0, 10.0)), _rng())
+    assert _smoke_d(g.smoke[3, 4]) == 1.0
+    assert _smoke_d(g.smoke.sum()) == 1.0  # only that one tile
 
 
 def test_region_disc_flat():
     g = _GMapStub()
-    apply_field_edit(g, FieldEdit("atmosphere", Region.DISC, (6, 6, 3.0), 1.0,
-                                  EditMode.ADD, Falloff.FLAT), _rng())
+    apply_field_edit(g, FieldEdit("smoke", Region.DISC, (6, 6, 3.0), 1.0,
+                                  EditMode.ADD, Falloff.FLAT, clamp=(0.0, 10.0)),
+                     _rng())
     # Centre is filled; a tile just outside the radius is not.
-    assert _atm_d(g.atmosphere[6, 6]) == 1.0
-    assert _atm_d(g.atmosphere[6, 6 + 3]) == 0.0   # dist == 3 == radius -> excluded (strict <)
-    assert _atm_d(g.atmosphere[6, 6 + 2]) == 1.0   # dist 2 < 3 -> filled, FLAT weight 1
+    assert _smoke_d(g.smoke[6, 6]) == 1.0
+    assert _smoke_d(g.smoke[6, 6 + 3]) == 0.0   # dist == 3 == radius -> excluded (strict <)
+    assert _smoke_d(g.smoke[6, 6 + 2]) == 1.0   # dist 2 < 3 -> filled, FLAT weight 1
 
 
 def test_region_rect():
     g = _GMapStub()
-    apply_field_edit(g, FieldEdit("atmosphere", Region.RECT, (2, 3, 4, 6), 1.0,
-                                  EditMode.ADD), _rng())
+    apply_field_edit(g, FieldEdit("smoke", Region.RECT, (2, 3, 4, 6), 1.0,
+                                  EditMode.ADD, clamp=(0.0, 10.0)), _rng())
     # The inclusive box [2..4] x [3..6] = 3 rows x 4 cols = 12 tiles.
-    assert _atm_d(g.atmosphere.sum()) == 12.0
-    assert _atm_d(g.atmosphere[2, 3]) == 1.0
-    assert _atm_d(g.atmosphere[4, 6]) == 1.0
-    assert _atm_d(g.atmosphere[1, 3]) == 0.0  # outside
+    assert _smoke_d(g.smoke.sum()) == 12.0
+    assert _smoke_d(g.smoke[2, 3]) == 1.0
+    assert _smoke_d(g.smoke[4, 6]) == 1.0
+    assert _smoke_d(g.smoke[1, 3]) == 0.0  # outside
 
 
 def test_region_beam():
     g = _GMapStub()
     # A horizontal beam from (5,1) to (5,9), width 0 -> the single centre row.
-    apply_field_edit(g, FieldEdit("atmosphere", Region.BEAM, (5, 1, 5, 9, 0.0),
-                                  1.0, EditMode.ADD), _rng())
-    row = g.atmosphere[5, 1:10]
-    assert np.all(row == _atm_q(1.0)), f"beam centre row not fully covered: {row}"
+    apply_field_edit(g, FieldEdit("smoke", Region.BEAM, (5, 1, 5, 9, 0.0),
+                                  1.0, EditMode.ADD, clamp=(0.0, 10.0)), _rng())
+    row = g.smoke[5, 1:10]
+    assert np.all(row == _smoke_q(1.0)), f"beam centre row not fully covered: {row}"
     # Nothing off the beam line.
-    assert _atm_d(g.atmosphere[4, 5]) == 0.0
-    assert _atm_d(g.atmosphere[6, 5]) == 0.0
+    assert _smoke_d(g.smoke[4, 5]) == 0.0
+    assert _smoke_d(g.smoke[6, 5]) == 0.0
 
 
 def test_region_beam_width():
     g = _GMapStub()
     # Width 1 -> the centre row plus the adjacent rows (perp dist <= 1).
-    apply_field_edit(g, FieldEdit("atmosphere", Region.BEAM, (5, 2, 5, 8, 1.0),
-                                  1.0, EditMode.ADD, Falloff.FLAT), _rng())
-    assert _atm_d(g.atmosphere[5, 5]) == 1.0
-    assert _atm_d(g.atmosphere[4, 5]) == 1.0   # 1 tile off-axis, within width
-    assert _atm_d(g.atmosphere[6, 5]) == 1.0
+    apply_field_edit(g, FieldEdit("smoke", Region.BEAM, (5, 2, 5, 8, 1.0),
+                                  1.0, EditMode.ADD, Falloff.FLAT, clamp=(0.0, 10.0)),
+                     _rng())
+    assert _smoke_d(g.smoke[5, 5]) == 1.0
+    assert _smoke_d(g.smoke[4, 5]) == 1.0   # 1 tile off-axis, within width
+    assert _smoke_d(g.smoke[6, 5]) == 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -192,11 +219,12 @@ def test_region_beam_width():
 def test_linear_falloff_weights():
     g = _GMapStub()
     cr, cc, radius = 6, 6, 4.0
-    apply_field_edit(g, FieldEdit("atmosphere", Region.DISC, (cr, cc, radius),
-                                  2.0, EditMode.ADD, Falloff.LINEAR), _rng())
+    apply_field_edit(g, FieldEdit("smoke", Region.DISC, (cr, cc, radius),
+                                  2.0, EditMode.ADD, Falloff.LINEAR,
+                                  clamp=(0.0, 10.0)), _rng())
     # weight = 1 - dist/radius; amount = 2.0.
-    assert abs(_atm_d(g.atmosphere[cr, cc]) - 2.0) < 1e-4         # dist 0 -> w 1
-    d2 = _atm_d(g.atmosphere[cr, cc + 2])                         # dist 2 -> w 0.5
+    assert abs(_smoke_d(g.smoke[cr, cc]) - 2.0) < 1e-4         # dist 0 -> w 1
+    d2 = _smoke_d(g.smoke[cr, cc + 2])                         # dist 2 -> w 0.5
     assert abs(d2 - 2.0 * (1.0 - 2.0 / radius)) < 1e-4
 
 
@@ -242,15 +270,17 @@ def test_fire_edit_skips_non_flammable():
 
 
 def test_wave_source_skips_vacuum_and_solid():
+    # EOS refactor P3 (design §6): the skip-mask is UNCHANGED (still solid +
+    # vacuum), but the deposit lands in `temperature` now (an energy deposit),
+    # not the retired `wave_source` array — assert on the real target.
     g = _GMapStub()
     g.is_vacuum[6, 7] = True
     g.solid[6, 5] = True
     apply_field_edit(g, FieldEdit("wave_source", Region.DISC, (6, 6, 3.0), 1.0,
                                   EditMode.ADD, Falloff.FLAT), _rng())
-    # S2a: wave_source is Q16.16 int32 — dequantize for the value assertions.
-    assert int(g.wave_source[6, 7]) == 0, "wave_source wrote a vacuum tile"
-    assert int(g.wave_source[6, 5]) == 0, "wave_source wrote a solid tile"
-    assert float(g.wave_source[6, 6]) / wave_fixed.FP_ONE_F == 1.0
+    assert int(g.temperature[6, 7]) == 0, "wave_source wrote a vacuum tile"
+    assert int(g.temperature[6, 5]) == 0, "wave_source wrote a solid tile"
+    assert float(g.temperature[6, 6]) / HEAT_SCALE == 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -457,8 +487,17 @@ def test_add_explosion_smoke_equivalence():
 
 
 def test_apply_explosion_atmosphere_equivalence():
-    """The migrated atmosphere deposit == the legacy ``+= pressure*falloff``."""
+    """EOS refactor P3 (design §6): the `atmosphere` FieldEdit policy no
+    longer writes P directly (solver-owned, materialized once/tick) — it
+    deposits a bulk-N split 21/79 across gas[O2]/gas[INERT_N2] instead
+    (`_combine_atmosphere_to_N`). The old "== legacy direct-P += pressure*
+    falloff" equivalence this test asserted is EXACTLY what the migration
+    retires; re-pointed to assert the new N-split contract instead (per-tile
+    deposit == pressure*falloff split 21/79, gas[O2]/gas[INERT_N2] the only
+    fields apply_explosion's atmosphere edit touches — `gmap.atmosphere`
+    itself is untouched by this FieldEdit, since it is solver-materialized)."""
     from simulation.physics import apply_explosion
+    from simulation.gases import O2, INERT_N2
     import math
 
     radius, pressure, wall_damage = 6, 3.0, 0.0  # 0 wall damage: no topology edit
@@ -466,29 +505,35 @@ def test_apply_explosion_atmosphere_equivalence():
 
     ref = _open_gmap()
     h, w = ref.material.shape
-    atm0 = ref.atmosphere.copy()
-    # S2c: atmosphere is int32 Q16.16 — build the legacy reference in REAL units
-    # (dequantize the base, do the float deposit), then compare dequantized to the
-    # migrated int field at Q16.16 granularity (the FieldEdit deposit re-quantizes).
-    ref_atm = atmosphere_fixed.dequantize(ref.atmosphere)
+    o2_0 = ref.gas[O2].copy()
+    n2_0 = ref.gas[INERT_N2].copy()
+    ref_o2 = gas_fixed.dequantize(ref.gas[O2])
+    ref_n2 = gas_fixed.dequantize(ref.gas[INERT_N2])
     for dy in range(-radius, radius + 1):
         for dx in range(-radius, radius + 1):
             ny, nx = cy + dy, cx + dx
             if 0 <= ny < h and 0 <= nx < w:
                 dist = math.sqrt(dy * dy + dx * dx)
                 if dist <= radius and not ref.solid[ny, nx] and not ref.is_vacuum[ny, nx]:
-                    ref_atm[ny, nx] += pressure * (1.0 - dist / radius)
+                    dep = pressure * (1.0 - dist / radius)
+                    ref_o2[ny, nx] += dep * 0.21
+                    ref_n2[ny, nx] += dep * 0.79
 
     got = _open_gmap()
     q = EditQueue()
     apply_explosion(got, q, cy, cx, radius, pressure, wall_damage)
     q.flush(got, np.random.default_rng(0))
 
-    got_atm = atmosphere_fixed.dequantize(got.atmosphere)
-    assert np.allclose(ref_atm, got_atm, atol=1e-4), \
-        "migrated apply_explosion atmosphere diverged from the legacy deposit"
-    # Sanity: the atmosphere actually changed somewhere.
-    assert not np.array_equal(got.atmosphere, atm0)
+    got_o2 = gas_fixed.dequantize(got.gas[O2])
+    got_n2 = gas_fixed.dequantize(got.gas[INERT_N2])
+    assert np.allclose(ref_o2, got_o2, atol=1e-4), \
+        "migrated apply_explosion O2 deposit diverged from the 21% split"
+    assert np.allclose(ref_n2, got_n2, atol=1e-4), \
+        "migrated apply_explosion inert_N2 deposit diverged from the 79% split"
+    # Sanity: the bulk species actually changed somewhere; P (`atmosphere`)
+    # itself is NOT touched by this FieldEdit (solver-materialized).
+    assert not np.array_equal(got.gas[O2], o2_0)
+    assert not np.array_equal(got.gas[INERT_N2], n2_0)
 
 
 if __name__ == "__main__":

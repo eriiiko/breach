@@ -38,6 +38,23 @@ The field lives on `GameMap` and is reached as `gmap.smoke`, consistent with the
 state contract (ch.01): no tile-objects, no per-tile smoke metadata, just one numerical array
 that every system reads or writes by name.
 
+> ## EOS refactor (2026-07) — as-built
+>
+> Two framing details in this chapter shifted with the EOS refactor; the transport model
+> (wind-dependent diffusion + semi-Lagrangian advection + sink-hop venting) is unchanged.
+> Canon: `docs/eos_refactor_design.md`, `docs/eos_refactor_decisions.md`.
+>
+> - **Wind is now `−∇P`**, the gradient of the single derived pressure `P = C·N·T` (materialized
+>   once per tick), *not* `−∇(atmosphere + wave_p)`. Every "`atmosphere + wave_p`" in this chapter
+>   reads as that one `P` now (`atmosphere` is a zero-copy alias of it; `wave_p` is retired — see
+>   ch.04). Smoke rides the same `wind_x`/`wind_y` it always did.
+> - **Smoke and the `[gases.*]` species are the "trace" layer on top of the conserved bulk.** The
+>   bulk air is two *conserved* species (O₂ + inert-N₂) that carry the mass and pressure; smoke,
+>   poison, teargas, fuel_gas ride on top as passive/traced density fields (unchanged transport).
+>   `gmap.smoke` stays a `float32` tracer (§3); the bulk N species are the Q16.16 conserved fields.
+>   Combustion consumes real `gas[O2]` and returns products to `inert_N2` (ch.06) rather than
+>   reading `atmosphere` as an O₂ proxy.
+
 ---
 
 ## 2. The model: diffusion + advection

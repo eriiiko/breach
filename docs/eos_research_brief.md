@@ -166,6 +166,16 @@ free-space explosions and undersold both rungs):
 - **S4 — open-bay fireball over standing smoke:** ignition inside an existing smoke cloud;
   expect the expansion to visibly push/shape the smoke (Erik: "if the hot air expands I suspect
   it will look nice on the smoke") and the cooling arc to read (fireball → plume → soot).
+- **S5 — water displacement pushes smoke (tilted ship):** a ship tilted a few degrees, a
+  ruptured water container releasing a flooding front across the deck, and a **non-uniformly
+  distributed** smoke cloud already in the compartment. Expect the rising water to shrink the
+  air column, raise local pressure, and drive a wind that visibly **pushes and deforms the smoke**
+  ahead of the flood — the dynamic-air-motion effect Erik is chasing. This tests the
+  **already-shipped** water↔air coupling (engine/07 §5.1: W3 volume displacement + W4 pressure
+  head, live at `k_p=0.5`, `ceiling_h=2.5 m`) and, critically, whether the EOS reframe makes that
+  push read **dramatically** rather than subtly. Needs the tilt + `floor_height` + `water_depth`
+  fields the harness must carry anyway; non-uniform smoke seeding is the point (a flat blob shows
+  nothing being pushed).
 
 ## 9. Reading seeds (the research finds the rest)
 

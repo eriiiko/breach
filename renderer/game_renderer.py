@@ -36,6 +36,7 @@ from .overlays import (
 )
 from .pressure_overlay import PressureOverlay
 from .sprites import UnitSprites
+from .unit_model_renderer import UnitModelRenderer
 from .water import WaterPass
 from .world_composite import WorldComposite
 
@@ -55,6 +56,12 @@ class RenderConfig:
     grid_w: int            # physics grid width in tiles
     grid_h: int            # physics grid height in tiles
     world_px_per_tile: float = 24.0   # world RT resolution (independent of zoom)
+    # Phase-0 3D marines (docs/anim_phase0_impl_2026-07-20.md): render-only,
+    # default OFF. When True, GameRenderer loads a rigged glTF and draws units
+    # as animated 3D bodies at the unit-draw slot instead of the 2D sprites;
+    # when False the sprite path is byte-for-byte unchanged. Feel-gated. The J
+    # key flips it live (poll_toggles) once the model is loaded.
+    use_3d_units: bool = False
 
 
 class GameRenderer:
@@ -127,6 +134,17 @@ class GameRenderer:
         _mat, vacuum_mask = materials_from_tilemap(level_data.tilemap,
                                                    level_data.version)
         self.lighting.set_vacuum_mask(vacuum_mask)
+        # BC render tint (boundary_conditions_spec_2026-07-19 B5) — RENDER-ONLY,
+        # determinism-EXEMPT: it never reads or writes any synced sim field, so
+        # it cannot perturb a golden/lockstep. On a planetside `boundary ==
+        # "ambient"` map the SPACE-code ring tiles are the open SKY, not vacuum;
+        # the vacuum shader still discards them (materials_from_tilemap marks the
+        # SPACE code as the vacuum mask regardless of boundary), so we paint a
+        # soft daylight gradient BEHIND the map instead of the starfield/black
+        # backdrop and the sky shows through the ring. Space maps: flag False ->
+        # the exact prior background path (byte-identical render).
+        self._ambient_sky_map = (
+            getattr(level_data, "boundary", "space") == "ambient")
         # smoke^gamma render-contrast knob (ch.05 §6.1 step 5): a power curve on
         # the RENDERED smoke opacity (FieldOverlay.update), not the sim field.
         # gamma > 1 crushes thin smoke toward transparent and sharpens wispy
@@ -159,7 +177,8 @@ class GameRenderer:
         # water fields. All four knobs bind from [display] with getattr
         # defaults (the W2b water_display_max precedent) and are RENDER-ONLY +
         # RESTART-BOUND: read once here; Ctrl+R re-reads config.toml but never
-        # re-binds the renderer's overlays. Off by default; toggled with O.
+        # re-binds the renderer's overlays. Off by default; toggled with V
+        # (moved from O in A6 — O is the dev door-toggle key).
         # RENDER-ONLY — never mutates any field.
         disp = getattr(CFG, "display", None)
         self.water_overlay = WaterFieldOverlay(
@@ -237,6 +256,19 @@ class GameRenderer:
         # Unit sprites — loaded once, unloaded in shutdown().
         self.sprites = UnitSprites()
         self.sprites.load()
+
+        # Phase-0 3D marines (render-only, toggle-gated). The 2D sprite path
+        # above is always loaded (the toggle can flip live, and it's the
+        # fallback if the model fails to load). The model + its clips are loaded
+        # ONLY when use_3d_units, so the sprite-only path pays no load cost. The
+        # top-down Camera3D is framed to the world RT once. Per-unit animation
+        # state lives inside UnitModelRenderer (keyed by unit.id) — never on Unit.
+        self.unit_models = UnitModelRenderer()
+        self._unit_cam3d = None
+        if self.cfg.use_3d_units:
+            self.unit_models.load()
+            self._unit_cam3d = UnitModelRenderer.make_camera(
+                self.world.world_px_w, self.world.world_px_h)
 
     # ---- per-frame physics->GPU upload ---------------------------------
 
@@ -380,7 +412,8 @@ class GameRenderer:
                       projectiles: Sequence = (),
                       orders_phase1: Optional[dict] = None,
                       orders_phase2: Optional[dict] = None,
-                      current_phase: int = 0) -> None:
+                      current_phase: int = 0,
+                      doors: Sequence = ()) -> None:
         """Draw every world-space layer into the world RT.
 
         Order: lit ship (diffuse + normal + light), smoke, fire, units,
@@ -451,7 +484,7 @@ class GameRenderer:
         # reads over the water; the lit ship beneath is the floor sample). It
         # binds the lighting pass's light textures + the level diffuse and
         # draws premultiplied; the shader emits alpha 0 on dry tiles so this is
-        # a no-op with no standing water (dormant-safe). Off-by-toggle (O).
+        # a no-op with no standing water (dormant-safe). Off-by-toggle (V).
         if self.show_water and self.textures.diffuse:
             self.water_pass.draw(
                 self.textures.diffuse,
@@ -459,6 +492,14 @@ class GameRenderer:
                 world_px_w=self.world.world_px_w,
                 world_px_h=self.world.world_px_h,
                 anim_t=time.perf_counter() - self._anim_t0)
+
+        # 2b. A6 dev door draw (a6 doors design §14, N4 honest-minimal):
+        # closed door tiles get a flat amber fill, open spans a thin
+        # outline (something to aim the O key at), destroyed doors
+        # nothing. Render-read only — `doors` is the sim's DoorRuntime
+        # list (span/state/alive); no overlay system, no field writes.
+        if doors:
+            self._draw_doors_world(doors)
 
         # 3. Units, waypoints, projectiles, effects, grid — drawn in world-pixel space
         if orders_phase1 or orders_phase2:
@@ -473,6 +514,33 @@ class GameRenderer:
             self._draw_grid_world()
 
         self.world.end()
+
+    # A6 dev door colors (render-only; the tileset's amber door reads).
+    _DOOR_CLOSED_FILL = (208, 168, 62, 210)     # amber panel
+    _DOOR_OPEN_OUTLINE = (208, 168, 62, 160)    # thin frame on the air gap
+
+    def _draw_doors_world(self, doors: Sequence) -> None:
+        """Flat per-tile fill (closed) / outline (open) for entity doors —
+        the a6 design §14 honest-minimal draw. ``doors`` items expose
+        ``span`` ((fy, fx) tiles), ``state`` (0 closed / 1 open / 2
+        destroyed) and ``alive``; destroyed doors draw nothing (the wreck
+        is just breached air)."""
+        wpt = self.world.world_px_per_tile
+        for d in doors:
+            if not getattr(d, "alive", True):
+                continue
+            closed = int(getattr(d, "state", 0)) == 0
+            for (fy, fx) in d.span:
+                x = int(fx * wpt)
+                y = int(fy * wpt)
+                side = int(wpt) if wpt >= 1 else 1
+                if closed:
+                    rl.draw_rectangle(x, y, side, side,
+                                      rl.Color(*self._DOOR_CLOSED_FILL))
+                else:
+                    rl.draw_rectangle_lines(
+                        x, y, side, side,
+                        rl.Color(*self._DOOR_OPEN_OUTLINE))
 
     def _draw_overlay_to_world(self, field_tex: rl.Texture) -> None:
         """Stretch a physics-resolution texture across the full world RT."""
@@ -499,6 +567,64 @@ class GameRenderer:
             cy = int(u.y) + fp // 2
             base = float(lmap[cy, cx]) if (0 <= cx < W and 0 <= cy < H) else 0.0
             return amb_floor + base
+
+        # Patch 0 — per-channel RGB provider for the 3D marines. Sample the SAME
+        # baked RGB light field the ship shader reads (self.lighting.light_rgb,
+        # (H, W, 3) f32) at the unit's foot tile, add the vec3 ambient floor and
+        # the ship's exposure gain, and return a per-channel multiplier in
+        # [0, 1]. This carries light COLOUR (a red lamp reddens the marine) and
+        # OCCLUSION (an unlit/shadowed room darkens it) — the parity the old
+        # max-collapsed grey scalar (light_at) threw away. It is the flat
+        # fallback; the P1 lit shader samples the field per-fragment instead.
+        lrgb = self.lighting.light_rgb
+        gain = self.lighting.light_gain
+        def light_rgb_at(u):
+            fp = int(getattr(u, "footprint", 3))
+            cx = int(u.x) + fp // 2
+            cy = int(u.y) + fp // 2
+            if 0 <= cx < W and 0 <= cy < H:
+                inc = lrgb[cy, cx]
+                return (min(1.0, amb[0] + float(inc[0]) * gain),
+                        min(1.0, amb[1] + float(inc[1]) * gain),
+                        min(1.0, amb[2] + float(inc[2]) * gain))
+            return (min(1.0, amb[0]), min(1.0, amb[1]), min(1.0, amb[2]))
+
+        # Phase-0 3D marines: when toggled on AND the model loaded, draw units as
+        # animated 3D bodies (nested begin_mode_3d inside the already-open world
+        # RT) and skip the sprite path entirely. Marines green, zombies red — the
+        # same read as the sprite tints. light_at keeps the local-light dimming.
+        # If the model failed to load, draw_units no-ops and we fall through to
+        # the unchanged sprite path below. This branch is the ONLY change to the
+        # unit-draw slot; with use_3d_units False it is never entered.
+        if self.cfg.use_3d_units and self.unit_models.ready \
+                and self._unit_cam3d is not None:
+            clock = time.perf_counter() - self._anim_t0
+            # P1: hand the marine shader the SAME baked light field the ship is
+            # lit by (light_tex_a/b) + world dims + the ship's ambient/gain/
+            # normal-y-sign (single source of truth = self.lighting), so the
+            # marine samples the field per-fragment and matches the ship beside
+            # it. light_rgb_fn stays as the flat CPU fallback (shader off / not
+            # compiled). normal_y_sign follows the ship's H-toggle.
+            from renderer.unit_model_renderer import LightFieldCtx
+            light_ctx = LightFieldCtx(
+                tex_a=self.lighting.light_tex_a,
+                tex_b=self.lighting.light_tex_b,
+                world_px_w=float(self.world.world_px_w),
+                world_px_h=float(self.world.world_px_h),
+                ambient=self.lighting.ambient,
+                light_gain=self.lighting.light_gain,
+                normal_y_sign=(-1.0 if self.normal_y_flipped else 1.0),
+            )
+            self.unit_models.draw_units(
+                marines, wpt, clock, self._unit_cam3d,
+                base_tint=(90, 200, 90, 255), light_rgb_fn=light_rgb_at,
+                light_ctx=light_ctx)
+            self.unit_models.draw_units(
+                zombies, wpt, clock, self._unit_cam3d,
+                base_tint=(210, 70, 70, 255), light_rgb_fn=light_rgb_at,
+                light_ctx=light_ctx)
+            return
+
         for m in marines:
             if not getattr(m, "alive", True):
                 continue
@@ -827,6 +953,21 @@ class GameRenderer:
     def draw_background_to_screen(self) -> None:
         """Draw the level's screen-fixed background behind the map area.
         Stretched to fill the map viewport. Camera-independent."""
+        # BC (B5): on an AMBIENT map with no authored backdrop, paint the open
+        # SKY behind the map so the ring tiles read as planet atmosphere, not
+        # starfield. RENDER-ONLY (no sim field touched); a level that authors its
+        # own background keeps it. A soft vertical daylight gradient (zenith blue
+        # -> paler horizon haze); Erik tunes the look at B5.
+        if self._ambient_sky_map and self.textures.background is None:
+            x = int(self.camera.viewport_screen_x)
+            y = int(self.camera.viewport_screen_y)
+            w = int(self.cfg.map_px_w)
+            h = int(self.cfg.map_px_h)
+            rl.draw_rectangle_gradient_v(
+                x, y, w, h,
+                rl.Color(96, 152, 214, 255),    # zenith daylight blue
+                rl.Color(176, 206, 230, 255))   # paler horizon haze
+            return
         bg = self.textures.background
         if bg is None:
             return
@@ -946,6 +1087,7 @@ class GameRenderer:
             ("F7 pressure",    self.show_pressure),
             ("T  temperature", self.show_temperature),
             ("O  water optics", self.show_water),
+            ("M  3D units",    self.cfg.use_3d_units),
             ("B  bilinear",    self.lighting.bilinear),
             ("G  sRGB",        self.srgb_decode),
             ("H  flip-Y norm", self.normal_y_flipped),
@@ -1000,11 +1142,24 @@ class GameRenderer:
         # T: debug temperature overlay (black-body ramp over gmap.temperature).
         if rl.is_key_pressed(rl.KeyboardKey.KEY_T):
             self.show_temperature = not self.show_temperature
-        # O: toggle the water optics pass (GLSL Fresnel/GGX/refraction). The
+        # V: toggle the water optics pass (GLSL Fresnel/GGX/refraction). The
         # pass is dormant-safe (alpha 0 on dry tiles); toggling only matters
         # once water is on the floor — disable to A/B against the bare floor.
-        if rl.is_key_pressed(rl.KeyboardKey.KEY_O):
+        # (Moved O -> V in A6: O is the dev door-toggle key, ruling 5 —
+        # a dual binding would flip the water rendering on every door
+        # toggle. See input_handler.py.)
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_V):
             self.show_water = not self.show_water
+        # J: flip the Phase-0 3D marines live (render-only, feel gate). Lazy-load
+        # the rigged model + build the top-down camera the first time it turns
+        # on, so a sprite-only session never pays the load cost. If the model
+        # fails to load, draw_units no-ops and the sprite path stays in effect.
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_M):
+            self.cfg.use_3d_units = not self.cfg.use_3d_units
+            if self.cfg.use_3d_units and not self.unit_models.ready:
+                self.unit_models.load()
+                self._unit_cam3d = UnitModelRenderer.make_camera(
+                    self.world.world_px_w, self.world.world_px_h)
         if rl.is_key_pressed(rl.KeyboardKey.KEY_B):
             self.lighting.toggle_bilinear()
         if rl.is_key_pressed(rl.KeyboardKey.KEY_H):
@@ -1081,24 +1236,25 @@ class GameRenderer:
             return
         mouse_f = self.mouse_to_tile_float()
         if mouse_f is None:
-            text = "tile (—, —) — cursor outside map"
+            text = "tile (-, -) - cursor outside map"
         else:
             cx, cy = int(mouse_f[0]), int(mouse_f[1])
             H, W = gmap.solid.shape
             if 0 <= cx < W and 0 <= cy < H:
+                # A6 (design §14.1): names come from the canon table, so
+                # door_closed (and every material) reads correctly — the
+                # old hardcoded 3-entry dict mislabeled all solids "hull".
+                from simulation.materials import MATERIAL_NAMES
+                mat_val = int(gmap.material[cy, cx])
                 if gmap.is_vacuum[cy, cx]:
                     mat = "vacuum"
-                elif gmap.solid[cy, cx]:
-                    mat = "hull"
                 else:
-                    mat_val = int(gmap.material[cy, cx])
-                    mat = {0: "air", 1: "hull", 3: "door"}.get(
-                        mat_val, f"mat{mat_val}")
+                    mat = MATERIAL_NAMES.get(mat_val, f"mat{mat_val}")
                 blocked = bool(gmap.solid[cy, cx] or gmap.is_vacuum[cy, cx])
                 tag = "BLOCKED" if blocked else "walkable"
-                text = f"tile ({cx}, {cy}) — {mat} — {tag}"
+                text = f"tile ({cx}, {cy}) | {mat} | {tag}"
             else:
-                text = f"tile ({cx}, {cy}) — out of bounds"
+                text = f"tile ({cx}, {cy}) - out of bounds"
         pad, font_size = 6, 16
         x0, y0 = 12, 40
         tw = rl.measure_text(text, font_size)
@@ -1111,6 +1267,7 @@ class GameRenderer:
 
     def shutdown(self) -> None:
         self.sprites.unload()
+        self.unit_models.unload()
         self.textures.unload_all()
         rl.unload_shader(self.lighting.shader)
         rl.unload_texture(self.lighting.light_tex_a)

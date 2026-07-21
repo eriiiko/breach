@@ -206,6 +206,20 @@ FP_HD inline q16 recip_mul(q16 x_q16, int64_t recip) {
 }
 #endif
 
+// ---- signed saturating add (never wrap) ------------------------------------
+// eos-p3fix-thermal-ceiling: raycaster.h's `heat_saturating_add` only
+// saturates the POSITIVE side (its accumulator is contractually non-negative
+// — heat/deposit domains). Q16.16 fields that can go negative (temperature,
+// which floors at T_MIN but is otherwise signed) need the SYMMETRIC form:
+// clamp to [INT32_MIN, INT32_MAX] on EITHER side rather than let the plain
+// int32 add silently wrap past the format's ceiling/floor. Overflow-safe
+// (no UB): tests via subtraction bounds instead of computing the sum first.
+FP_HD inline int32_t sat_add_q16(int32_t a, int32_t b) {
+    if (b > 0 && a > INT32_MAX - b) return INT32_MAX;
+    if (b < 0 && a < INT32_MIN - b) return INT32_MIN;
+    return a + b;
+}
+
 // ---- symmetric round-toward-0 shift ---------------------------------------
 // `x >> s` rounds toward -inf for negative x. For a symmetric divide-by-2^s
 // (so +x and -x lose magnitude equally) use this (temperature_solver's cooling

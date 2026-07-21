@@ -3,7 +3,7 @@
 **Depends on:** [State & ownership](../engine/02_state_and_ownership.md),
 [FieldEdit (write primitive)](../engine/13_field_edit.md),
 [Determinism & the number-ingress rule](../engine/14_determinism_and_number_ingress.md),
-[Units & entities](01_units_and_entities.md).
+[Units](01_units.md).
 **Forward refs:** [Combat & weapons](03_combat_and_weapons.md) (damage types,
 resistances, statuses get their full spec there).
 
@@ -16,6 +16,14 @@ This chapter systematizes that: ONE module, ONE table, ONE tick slot. Every
 physics↔unit coupling — shockwave damage, heat damage, water slowing, gas
 poisoning, O2, pushes — is a **row in a table**, not a plumbing project.
 Adding a coupling is O(one row).
+
+> **EOS refactor (2026-07) — as-built.** `wave_p` is retired (see
+> [Atmosphere & Pressure](../engine/04_atmosphere_and_pressure.md) as-built): the
+> impulse-push row now reduces `grad(P)` off the single derived pressure `P = C·N·T`
+> (`k_push` recalibrated); `atmosphere` is a zero-copy alias of `P`, and the planned O₂
+> suffocation row should read the real oxygen density `N_O2`, not `atmosphere`-as-a-proxy
+> (ch.04, ch.06). The `wave_p` labels in the table below are updated inline where verified;
+> a full row-by-row pass is a flagged follow-up.
 
 ---
 
@@ -45,8 +53,8 @@ point):**
 | Field | Reduction | Response → outputs | Status |
 |---|---|---|---|
 | `heat` | max | radiant flux → T_felt band → damage | ✅ shipped (`combat.apply_environmental_damage`) |
-| `wave_p` | footprint sample | blast overpressure → damage | ✅ shipped (`apply_blast_damage`) |
-| `wave_p` | grad | **impulse push**: `J = Σ_footprint(−∇p)·dt`, `Δv = J/mass` — the footprint sum scales with body area, so big-light units fly and small-heavy stand (density behavior from two existing stats); also the KNOCKED_DOWN trigger (ch. 06) | ✅ shipped (P4 — v1 uses `reduce_grad` (edge-line means, own-tiles-only: no wall-cell suction); the area-scaling Σ form returns as an explicit footprint-area factor when footprint sizes diversify) |
+| *(none — geometric)* | detonation-site distance falloff | blast overpressure → damage | ✅ shipped (`apply_blast_damage`) — **not a field read**: damage is `max_damage·(1 − dist/radius)` from the detonation point, no `wave_p`/`P` sample (corrected 2026-07) |
+| `P` | grad | **impulse push**: `J = Σ_footprint(−∇P)·dt`, `Δv = J/mass` — the footprint sum scales with body area, so big-light units fly and small-heavy stand (density behavior from two existing stats); also the KNOCKED_DOWN trigger (ch. 06). *(Reads the derived pressure `P`; `wave_p` is retired — ch.04 as-built. `k_push` recalibrated to the EOS scale.)* | ✅ shipped (P4 — v1 uses `reduce_grad` (edge-line means, own-tiles-only: no wall-cell suction); the area-scaling Σ form returns as an explicit footprint-area factor when footprint sizes diversify) |
 | `water_depth` | center | movement speed multiplier; **suffocation for non-water-breathers** | 📝 |
 | `gas[teargas]` | max | density ≥ `teargas_blind_density` → `BLINDED` (can_aim off → snap-cone fire), refresh-stacked | ✅ shipped (weapons W3 — `exchange.apply_teargas_blind`, step 9c3; the sketched `mean` became **max**, the heat row's densest-tile-on-the-body reduction) |
 | `gas[poison]` | max | density ≥ `poison_min_density` → one POISON packet/tick: `poison_dps × density / tps` through the mechanics/06 pipeline (zombie `resist_mult[POISON]=0` → immune, lazily skipped — no packet at all) | ✅ shipped (weapons W3 — `exchange.apply_poison_dose`, step 9c3 after teargas; the sketched dose-accumulation→status form simplified to direct per-tick packets, the heat row's idiom — a dose/status form can supersede it later) |

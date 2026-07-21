@@ -42,3 +42,27 @@ fields = [
 excluded_float_fields = [
     "ripple", "ripple_v", "dyn_permeability", "dyn_wave_absorb", "dyn_light_atten",
 ]
+
+# A4 (ADDITIVE — docs/a4_digest_impl_note_2026-07-18.md): the __entity__ /
+# __signals__ sections fold into tick_digest ONLY when a snapshot's presence
+# carrier says n_entities > 0, so entity-free digests are byte-identical to
+# spec v1 without this section and NO golden regenerates for it. `version`
+# above stays 1; the sections carry their own version in their hashed
+# preambles (a future entity-format change bumps ENTITY_SECT_V1 loudly
+# without touching entity-free bytes).
+[entity_section]
+format        = "ENTITY_SECT_V1"    # hashed preamble, section-local version
+signal_format = "SIGNAL_SECT_V1"    # defined now, empty until Arc B's SignalBus
+serializer    = "simulation.entities.serialize.serialize_entity_state (the ONE serializer — digest and recorder consume the same bytes)"
+encoding      = "per entity in ordinal (file) order: ascii header 'ordinal|id|class', then per SYNCED declared field in schema declaration order 'name|' + signed little-endian int64 + newline, then the 'alive|' row, then per-class runtime rows, then a newline record terminator"
+synced_kinds  = ["int", "q16", "bool", "enum", "entity_ref"]
+# length_m is authoring-bound (stored unquantized); its synced consequence is
+# quantized tile state already hashed via material/obstacles/wall_hp. The
+# other exclusions are render/authoring-only by declaration.
+excluded_kinds = ["length_m", "float_render", "str", "color_rgb", "str_list"]
+# The entity field list/order is NOT frozen here: it is defined by the entity
+# registry at the recorded content-hash (registry_content_hash — folds the
+# entities.toml effective defaults). Entity-present digests are only
+# comparable at equal registry hash; every entity-present artifact records it
+# (xarch line 'ents=N,esect_v1,reg=<hash12>', recorder 'entity_registry_hash').
+field_list = "defined by the entity registry at the recorded content-hash"

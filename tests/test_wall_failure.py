@@ -6,7 +6,13 @@ without limit. Instead, each tick (after physics) any wall holding a pressure
 differential above its material's ``burst_threshold`` fails and vents. Over-
 pressured clusters self-breach in a chain until the gradient relaxes.
 
-Two deterministic, headless cases:
+The spread is a TRUE DIFFERENTIAL across a wall's open sides: solid
+neighbours are skipped (they are more wall, not a side), exposed vacuum is a
+real side holding 0. Consequences under test: equal pressure on both sides
+never bursts, and only 1-tile-deep membranes can burst at all (a >=2-thick
+slab has no tile with two open sides).
+
+Four deterministic, headless cases:
 
 1. POPS UNDER OVER-PRESSURE: a small sealed room pumped far above any
    threshold loses at least one wall, and the peak interior pressure afterwards
@@ -14,6 +20,13 @@ Two deterministic, headless cases:
 2. NO SPURIOUS POPS: the SAME room at normal pressure (~1.0), stepped the same
    number of ticks, loses ZERO walls (the threshold is not tripped by a
    normally-pressurised ship).
+3. EQUAL PRESSURE HOLDS / DIFFERENTIAL POPS: two rooms split by a burstable
+   1-thick wood divider. Both rooms pumped equally -> the divider holds
+   (regression: the old spread counted solid neighbours as 0, so a wall
+   pressurised equally on both sides still burst). Only one room pumped ->
+   the divider pops.
+4. THICK WALL HOLDS: the same two rooms with a 2-thick divider, one room
+   pumped -> zero pops (no divider tile has two open sides).
 
 Run:
     C:/Users/steen/anaconda3/python.exe tests/test_wall_failure.py
@@ -104,10 +117,15 @@ def test_pops_under_overpressure():
         g.materials.burst_threshold[int(wid)] = 6.0
 
     walls_before = int(g.solid.sum())
-    # Pump the interior far above the (re-enabled) burst_threshold. S2c:
-    # atmosphere is int32 Q16.16 — quantize 50.0 real (raw `= 50.0` -> 50 counts).
+    # Pump the interior far above the (re-enabled) burst_threshold. EOS P3:
+    # `atmosphere` (P) is solver-materialized from (N,T) every tick — a
+    # direct P write would be overwritten. Create the overpressure through
+    # the REAL state: scale the bulk O2/N2 up 50x (p* = C*N*T -> P = 50).
     from simulation import atmosphere_fixed
-    g.atmosphere[interior] = atmosphere_fixed.quantize_scalar(50.0)
+    from simulation.gases import O2, INERT_N2
+    g.gas[O2][interior] = g.gas[O2][interior] * 50
+    g.gas[INERT_N2][interior] = g.gas[INERT_N2][interior] * 50
+    g.atmosphere[interior] = atmosphere_fixed.quantize_scalar(50.0)  # P_prev seed (solver refreshes)
     peak_before = atmosphere_fixed.dequantize(g.atmosphere.max())
 
     for _ in range(N_STEPS):
@@ -152,7 +170,126 @@ def test_no_spurious_pops_at_normal_pressure():
           f"({int(wall_set_before.sum())} walls intact)")
 
 
+def _two_room_level(divider_thick: int = 1):
+    """Two rooms split by a wood divider (v1 code 2 = MAT_WOOD), hull ring
+    outside, vacuum around. The hull stays at its shipped
+    ``burst_threshold = 0`` (never bursts) so the tests isolate the divider.
+
+    Layout (16x12), '.' = vacuum, '#' = hull, 'w' = wood divider:
+
+        ................
+        ................
+        ..############..
+        ..#    w     #..
+        ..#    w     #..   divider column(s) at x = 7 (+8 when 2-thick)
+        ..#    w     #..
+        ..#    w     #..
+        ..#    w     #..
+        ..#    w     #..
+        ..############..
+        ................
+        ................
+    """
+    h, w = 12, 16
+    tm = np.zeros((h, w), dtype=np.int32)   # all vacuum
+    tm[2:10, 2:14] = 1                       # hull box
+    tm[3:9, 3:13] = 4                        # carve interior air
+    tm[3:9, 7:7 + divider_thick] = 2         # wood divider
+    return LevelData(
+        name="two_room_test",
+        version="1",
+        path=Path("."),
+        tilemap=tm,
+        tile_size_m=1.0,
+        diffuse_path=Path("."),
+    )
+
+
+def _make_two_room_sim(divider_thick: int = 1):
+    from simulation.materials import MAT_HULL, MAT_WOOD
+    level = _two_room_level(divider_thick)
+    sim = Simulation(level, seed=SEED, breach_physics=bp, enable_recorder=False)
+    sim.set_paused(False)
+    g = sim.gmap
+    # Shipped-intent thresholds, pinned explicitly so config re-tuning can't
+    # silently change what these tests exercise: hull never pressure-bursts,
+    # the wood divider bursts above 6.0 of REAL differential.
+    g.materials.burst_threshold[MAT_HULL] = 0.0
+    g.materials.burst_threshold[MAT_WOOD] = 6.0
+    return sim
+
+
+def _pump_rooms(g, left_only: bool, factor: int = 50):
+    """Scale the bulk gas up in the left room (``left_only``) or the whole
+    interior (EOS P3: pressure is materialized from (N, T), so overpressure
+    is created through N). The divider starts at x=7, so ``xs < 7`` is the
+    left room for any divider thickness."""
+    from simulation import atmosphere_fixed
+    from simulation.gases import O2, INERT_N2
+    interior = _interior_mask(g)
+    xs = np.arange(g.atmosphere.shape[1])[None, :]
+    room = interior & (xs < 7) if left_only else interior
+    for sp in (O2, INERT_N2):
+        g.gas[sp][room] = g.gas[sp][room] * factor
+    g.atmosphere[room] = atmosphere_fixed.quantize_scalar(float(factor))
+    return room
+
+
+def test_equal_pressure_holds_differential_pops():
+    """The divider holds when both rooms are pumped equally (the old spread
+    counted solid neighbours as p=0 and burst it — regression), and pops when
+    only one room is pumped (a real differential)."""
+    from simulation.materials import MAT_WOOD
+
+    # Both rooms pumped equally -> zero pops anywhere.
+    sim = _make_two_room_sim(divider_thick=1)
+    g = sim.gmap
+    _pump_rooms(g, left_only=False)
+    walls_before = g.solid.copy()
+    for _ in range(N_STEPS):
+        sim.step()
+    assert np.array_equal(g.solid, walls_before), (
+        "equal pressure on both sides burst a wall (differential regression): "
+        f"{int(walls_before.sum())} -> {int(g.solid.sum())}")
+
+    # Only the left room pumped -> the wood divider pops; the hull holds.
+    sim = _make_two_room_sim(divider_thick=1)
+    g = sim.gmap
+    _pump_rooms(g, left_only=True)
+    wood_before = int((g.material == MAT_WOOD).sum())
+    hull_walls_before = int((g.solid & (g.material != MAT_WOOD)).sum())
+    for _ in range(N_STEPS):
+        sim.step()
+    wood_after = int((g.material == MAT_WOOD).sum())
+    hull_walls_after = int((g.solid & (g.material != MAT_WOOD)).sum())
+    assert wood_after < wood_before, (
+        f"expected the divider to pop under differential: "
+        f"wood {wood_before} -> {wood_after}")
+    assert hull_walls_after == hull_walls_before, (
+        f"hull (burst_threshold=0) must never pressure-burst: "
+        f"{hull_walls_before} -> {hull_walls_after}")
+    print(f"OK: equal_pressure_holds_differential_pops "
+          f"(wood {wood_before}->{wood_after}, hull intact)")
+
+
+def test_thick_wall_holds():
+    """A 2-thick divider has no tile with two open sides -> spread 0 -> it
+    holds any differential (thick walls breach via damage, not pressure)."""
+    sim = _make_two_room_sim(divider_thick=2)
+    g = sim.gmap
+    _pump_rooms(g, left_only=True)
+    walls_before = g.solid.copy()
+    for _ in range(N_STEPS):
+        sim.step()
+    assert np.array_equal(g.solid, walls_before), (
+        f"2-thick divider lost tiles to over-pressure: "
+        f"{int(walls_before.sum())} -> {int(g.solid.sum())}")
+    print(f"OK: thick_wall_holds ({int(walls_before.sum())} walls intact)")
+
+
 if __name__ == "__main__":
     test_pops_under_overpressure()
     test_no_spurious_pops_at_normal_pressure()
+    test_equal_pressure_holds_differential_pops()
+    test_thick_wall_holds()
     print("\nAll wall-failure tests passed.")

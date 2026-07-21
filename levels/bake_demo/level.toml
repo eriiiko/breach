@@ -1,0 +1,32 @@
+# bake_demo — the P2 autotile baker's demo fixture (engine/15 §4).
+#
+# A small hand-written tiled level: space border, hull ring, two rooms split
+# by a wood wall with a door, a 3-tile glass window run in the north hull,
+# two furniture crates. The tilemap.csv is the hand-authored truth; the art
+# below it is GENERATED — re-bake after editing the CSV:
+#
+#   python tools/bake_level_art.py bake_demo
+#
+# (the [art.*] and [bake] blocks below are written by the baker.)
+
+version = "2"
+name = "Bake Demo"
+
+# v2 codes ARE canon material ids (src/simulation/materials.py):
+#   0=air, 1=hull, 2=wood, 3=door, 4=steel, 5=glass, 6=furniture, 9=SPACE
+tilemap = "tilemap.csv"
+
+tile_size_m = 0.333
+
+[art.bare]
+diffuse = "baked_diffuse.png"
+normal = "baked_normal.png"
+
+[art.align]
+offset_px = [0.0, 0.0]
+px_per_tile = [64.00, 64.00]
+
+[bake]
+tileset = "art/tilesets/greybox"
+px_per_tile = 64
+seed = 0

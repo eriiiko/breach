@@ -3,8 +3,8 @@
 Two gates:
 
   PART 1 — ISOLATED (the rigorous one): build rich synthetic inputs that hit
-  every branch of the 8-pass pipe-model solver (surface incl. the head FLOAT
-  BRIDGE with k_p in {0, 0.5} + random float atm/wave_p, nonzero tilt exercising
+  every branch of the 8-pass pipe-model solver (surface incl. the EOS-P3
+  pure-integer head term with k_p in {0, 0.5} + random integer P, nonzero tilt exercising
   the tan poly + the per-tile DOUBLE tilt product, the damped velocity kick with
   Neumann mirror + the +-v_max clamp, donor-cell upwind flux, flux_to_dq, the
   per-cell OUTFLOW LIMITER forced by convergent-flow + shallow-depth patches
@@ -74,11 +74,12 @@ def _make_inputs(rng, h, w, v_max, dx, k_p, has_floor, atm_on):
         floor = _quantize(rng.random(n).astype(np.float64) * 0.5).reshape(h, w)
 
     atmosphere = None
-    wave_p = None
     if k_p != 0.0 and atm_on:
-        # Random float head fields (the FLOAT BRIDGE) — both signs, modest scale.
-        atmosphere = (rng.random((h, w)).astype(np.float32) * 2.0 - 0.5)
-        wave_p = (rng.random((h, w)).astype(np.float32) * 1.0 - 0.5)
+        # EOS P3: `atmosphere` IS the derived integer pressure P (Q16.16). Random
+        # both-sign, modest-scale P so the pure-integer head term mul_q16(k_p, P)
+        # fires non-trivially. wave_p is retired (no longer a step arg).
+        atm_m = rng.random((h, w)).astype(np.float64) * 2.0 - 0.5
+        atmosphere = _quantize(atm_m)
 
     # --- FORCE the outflow limiter: a convergent-flow + shallow-depth patch.
     # Pick interior cells, give them tiny depth and strong OUTWARD velocity on
@@ -111,8 +112,7 @@ def _make_inputs(rng, h, w, v_max, dx, k_p, has_floor, atm_on):
         "flow_vy": np.ascontiguousarray(flow_vy.astype(np.int32)),
         "solid": np.ascontiguousarray(solid),
         "floor": None if floor is None else np.ascontiguousarray(floor.astype(np.int32)),
-        "atmosphere": None if atmosphere is None else np.ascontiguousarray(atmosphere),
-        "wave_p": None if wave_p is None else np.ascontiguousarray(wave_p),
+        "atmosphere": None if atmosphere is None else np.ascontiguousarray(atmosphere.astype(np.int32)),
     }
 
 
@@ -145,7 +145,7 @@ def part1_isolated() -> bool:
             vx_cpu = inp["flow_vx"].copy()
             vy_cpu = inp["flow_vy"].copy()
             cpu.step(d_cpu, vx_cpu, vy_cpu,
-                     inp["floor"], inp["atmosphere"], inp["wave_p"],
+                     inp["floor"], inp["atmosphere"],
                      inp["solid"], dt, tx, ty)
 
             d_gpu = inp["water_depth"].copy()
@@ -153,7 +153,7 @@ def part1_isolated() -> bool:
             vy_gpu = inp["flow_vy"].copy()
             bp.cuda_water_step(
                 d_gpu, vx_gpu, vy_gpu,
-                inp["floor"], inp["atmosphere"], inp["wave_p"],
+                inp["floor"], inp["atmosphere"],
                 inp["solid"], dt, tx, ty,
                 g, damping, dx, k_p, v_max, depth_eps)
 
@@ -168,8 +168,8 @@ def part1_isolated() -> bool:
                           f"{name} {mism} MISMATCH (first @ {idx}: "
                           f"cpu={a.flat[idx]} gpu={b.flat[idx]})")
     if ok:
-        print(f"  all {n_cfg} configs bit-identical on depth+vx+vy (incl. head "
-              f"bridge, tilt poly, outflow limiter, dry/solid/eps clamps).")
+        print(f"  all {n_cfg} configs bit-identical on depth+vx+vy (incl. integer "
+              f"head term, tilt poly, outflow limiter, dry/solid/eps clamps).")
     return ok
 
 
@@ -200,7 +200,25 @@ def part2_integration() -> bool:
     # ALL field trajectories are byte-identical (and the pulse's dv ~2.3 is
     # below the knockdown threshold 6.0 -> __unit_status__ unmoved too).
     # (was 6d690fda8259b392be9029082013623fbef0fc0322ed3089107d5db220e1b441)
-    GOLDEN = "07c3f37043c62cb47ec1abfef1a59d47c5f7a9c313490b38ecd2ddc543d1833d"
+    # Re-baselined 2026-07-10 (EOS refactor P4 — combustion on real O2): the O2 gate
+    # re-point (FireSimulation + apply_temperature_ignition now read gas[O2],
+    # not atmosphere/P — item 3) and the newly-applied trace decay->inert_N2
+    # credit (item 2, decisions.md #12 v2.1) both touch the default scenario
+    # (it seeds fire + smoke): fire[8,8]/[8,9]'s O2-gated intensity and
+    # black_smoke's decay both move the trajectory. Combustion itself (item 1)
+    # does NOT touch this scenario (no flammable/wood material in the level).
+    # (was 493645d34b01d7ad55e5f0e6ae7254e94989dc1b6dce5c1b7ee5e53acaff3e63)
+    # Re-baselined 2026-07-10 (eos-p3fix-thermal-ceiling, design v2.4):
+    # the plume shim's T_FLAME_MAX self-limiter fix, the saturating T/u
+    # writes, the T_MAX_PHYS/U_MAX rails, the absorption-proportional gas
+    # radiant deposit (Pass 1), and the O2-gate hot-zone-equilibrium
+    # rescale (P_min/P_full/o2_threshold) all touch the default scenario
+    # (it seeds fire + smoke): the fire tiles' heat->T->wind->O2 chain
+    # moves the trajectory. ONE re-baseline for the whole branch (the
+    # gate-h rule). DIGEST_SPEC_VERSION unchanged (values moved; no field
+    # added/removed/retyped).
+    # (was 7eeb41d431a79ba01cbafef37416188bbf1ecb2a194d92af5f4ede279c9f2758)
+    GOLDEN = "98d3dd7eaf3d574d6e562513cd95f3b5ac077b7c69b1d0b024db931261735473"
 
     def make_wet():
         sim = default_scenario_sim()

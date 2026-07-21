@@ -28,6 +28,27 @@ from simulation import water_fixed   # S1: water_depth Q16.16 quantize helpers
 
 
 # ---------------------------------------------------------------------------
+# S8a Path B — GPU residency opt-in (docs/cuda_s8a_residency_spec_2026-07-19).
+# Process-global, default OFF: with it off, ``PhysicsRunner.step`` takes the
+# EXACT prior CPU/per-call path and CuPy is never imported. ``--resident``
+# (tools/run_on_cuda.py) + the S8a gate flip it on; the runner then lazily puts
+# each GameMap into residency mode (:meth:`GameMap.enable_residency`) on its
+# first resident tick and dispatches to :meth:`PhysicsRunner._step_resident`.
+# ---------------------------------------------------------------------------
+_RESIDENCY_ENABLED = False
+
+
+def set_residency(on: bool) -> None:
+    """Turn GPU field residency on/off (process-global, default OFF)."""
+    global _RESIDENCY_ENABLED
+    _RESIDENCY_ENABLED = bool(on)
+
+
+def residency_enabled() -> bool:
+    return _RESIDENCY_ENABLED
+
+
+# ---------------------------------------------------------------------------
 # Fire feedback parameter defaults (fire_design_proposal §2/§3/§5). Cellular
 # spread is GONE — spread is now radiation -> heat -> temperature -> ignition
 # (apply_temperature_ignition). These drive the signed-logistic life/death of an
@@ -100,6 +121,15 @@ class PhysicsRunner:
         self._raycaster_on_cuda = (
             _get_ray_backend if callable(_get_ray_backend) else (lambda: False))
 
+        # EOS P6.9b: the combustion pass can run on the GPU when the combustion
+        # backend flag is on (bp.set_combustion_backend). Same idiom as the
+        # raycaster flag — the setter/getter only EXIST on the CUDA build, so
+        # cache a query that is a constant False on the CPU build. Flag-off
+        # (default) is the EXACT prior CPU CombustionSolver.step call.
+        _get_comb_backend = getattr(bp, "get_combustion_backend", None)
+        self._combustion_on_cuda = (
+            _get_comb_backend if callable(_get_comb_backend) else (lambda: False))
+
         # PhysicsEngine (Patch 1 S3) owns the solver instances. The runner uses
         # its solvers (engine.<solver>) instead of constructing them itself —
         # same objects, same calls, bit-identical. engine.<solver> returns a
@@ -128,16 +158,9 @@ class PhysicsRunner:
         self.smoke.d_smoke              = float(CFG.physics.d_smoke)
         self.smoke.advection_rate       = float(CFG.physics.advection_rate)
         self.smoke.wind_diffusion_scale = float(CFG.physics.wind_diffusion_scale)
-        # Patch 2b: K = vent hops/tick (the decoupled breach-sink rate). dt_scale
-        # is gone (smoke moves on the real dt; advection_rate absorbed the ×9).
-        self.smoke.vent_hops            = int(
-            getattr(CFG.physics, 'smoke_vent_hops', 16))
-        # Smoke-side sink-pull toward the nearest breach (ch.05 smoke v2). The
-        # dial Erik wants: 0 disables it (sealed-room behaviour is then bit-
-        # identical to the plain semi-Lagrangian advection). Default 2.0 clears
-        # a breached room in ~a dozen ticks while leaving a sealed room untouched.
-        self.smoke.sink_strength        = float(
-            getattr(CFG.physics, 'smoke_sink_strength', 2.0))
+        # (vent_hops / sink_strength binds DELETED — EOS refactor P3,
+        # decisions.md #3: the BFS breach sink-pull is gone; venting is
+        # native to the compressible solver.)
 
         # FireSimulation — signed-logistic intensity FEEDBACK (fire_design_proposal
         # §2/§3/§5). Cellular spread is gone: spread is radiation -> heat ->
@@ -164,6 +187,10 @@ class PhysicsRunner:
         self.fire.params.k_wind_strip   = _fp("k_wind_strip", FIRE_K_WIND_STRIP)
         self.fire.params.fire_pressure_gain = _fp(
             "fire_pressure_gain", FIRE_PRESSURE_GAIN)
+        # p_expand_ref: RETIRED as the plume's self-limiting gate
+        # (eos-p3fix-thermal-ceiling — see FireParams::T_FLAME_MAX,
+        # fire_simulation.h). Left wired so old configs don't hard-error;
+        # the C++ side no longer reads it.
         self.fire.params.p_expand_ref   = _fp("p_expand_ref", FIRE_P_EXPAND_REF)
         self.fire.params.smoke_emission = _fp("smoke_emission", FIRE_SMOKE_EMISSION)
         self.fire.params.wall_damage    = _fp("wall_damage", FIRE_WALL_DAMAGE)
@@ -191,6 +218,24 @@ class PhysicsRunner:
             getattr(thermal, "COOL_SHIFT_VACUUM", 3))
         self.temperature.o2_vacuum_thresh = float(
             getattr(thermal, "o2_vacuum_thresh", 0.3))
+        # EOS refactor P2 (docs/eos_refactor_design.md §4, §9): gas-T dials —
+        # the wind->displacement rate for the semi-Lagrangian gas advection
+        # pre-pass, the gas heat-capacity constant for the ΔT=ΔE/(N·c_v)
+        # radiation deposit, and its independent N-divisor floor.
+        self.temperature.gas_advection_rate = float(
+            getattr(thermal, "gas_advection_rate", 900.0))
+        self.temperature.c_v = float(getattr(thermal, "c_v", 1.0))
+        # n_floor_heat CHECKED against the v2.4 single-tick criterion and
+        # KEPT at 0.05 (eos-p3fix-thermal-ceiling — derivation in
+        # temperature_solver.h/config.toml; the stacked-firestorm case is
+        # bounded by the counted T_MAX_PHYS rail, not the floor).
+        self.temperature.n_floor_heat = float(
+            getattr(thermal, "n_floor_heat", 0.05))
+        # T_MAX_PHYS (v2.4, PROVISIONAL — Erik review at P5): ONE constant,
+        # wired to every solver that deposits/writes T (rationale:
+        # cpp/src/eos_solver.h; config: [physics.thermal]).
+        self._t_max_phys = float(getattr(thermal, "T_MAX_PHYS", 16000.0))
+        self.temperature.T_MAX_PHYS = self._t_max_phys
 
         # --- K2: sim-side fire heat ray source (proposal §1) ------------------
         # Fire is a DETERMINISTIC heat source cast IN THE SIM (not the renderer).
@@ -231,6 +276,88 @@ class PhysicsRunner:
         # S2b: dequantized-gas float scratch for the fire-light heat cast (the
         # raycaster's gas optics are float; gmap.gas is int32 Q16.16). Lazy alloc.
         self._fire_gas_f = None
+
+        # EOSSolver (EOS refactor P3, docs/eos_refactor_design.md §3): the
+        # compressible Kwatra pressure-evolution solver. REPLACES the
+        # AtmosphereSolver wave+diffuse dispatch in run_substeps below (atmos
+        # is retained on the engine only for any still-bound isolated GPU test
+        # entry points — see physics_engine.cpp's GPU guards). Bound from
+        # [physics.eos]; c_max/S/N_SUB_MAX/CFL_ADV/N_FLOOR_SOLVER/T_AMB_K/C/
+        # gamma are the design's PINNED constants (docs/eos_refactor_
+        # decisions.md 2026-07-10) — defaults on the C++ struct already match;
+        # config only overrides where a key is present so a bare install still
+        # gets the pinned values.
+        self.eos = self.engine.eos
+        eos_cfg = getattr(CFG.physics, "eos", None)
+
+        def _ep(key, default):
+            return float(getattr(eos_cfg, key, default))
+
+        self.eos.c_max          = _ep("c_max", self.eos.c_max)
+        # dx is NOT a config constant — it lazy-binds from the level's
+        # tile_size_m on the first step() call below (the WaterSolver.dx
+        # precedent; the design's c_max=300 m/s and its overflow budget are
+        # both derived at the LEVEL's physical tile size, not a config guess).
+        self.eos.S              = int(
+            getattr(eos_cfg, "S", self.eos.S))
+        self.eos.N_SUB_MAX      = int(
+            getattr(eos_cfg, "N_SUB_MAX", self.eos.N_SUB_MAX))
+        self.eos.CFL_ADV        = _ep("CFL_ADV", self.eos.CFL_ADV)
+        self.eos.N_FLOOR_SOLVER = _ep("N_FLOOR_SOLVER", self.eos.N_FLOOR_SOLVER)
+        self.eos.T_AMB_K        = _ep("t_amb_k", self.eos.T_AMB_K)
+        self.eos.C              = _ep("C", self.eos.C)
+        # ingress-lint: "adiabatic_index" (not "gamma") avoids colliding with
+        # the banned RNG distribution-method name test_ingress_lint.py scans
+        # for (numpy's Generator.gamma() — an unrelated collision; this is a
+        # plain config attribute get/set, never a random draw).
+        self.eos.adiabatic_index = _ep("adiabatic_index", self.eos.adiabatic_index)
+        self.eos.absorb_strength = float(
+            getattr(eos_cfg, "absorb_strength", self.eos.absorb_strength))
+        self.eos.T_MIN           = _ep("T_MIN", self.eos.T_MIN)
+        # v2.4 rails (PROVISIONAL — Erik review at P5): T_MAX_PHYS shares
+        # [physics.thermal]'s one constant (wired above); U_MAX is the
+        # solver's own [physics.eos] dial.
+        self.eos.T_MAX_PHYS      = self._t_max_phys
+        self.eos.U_MAX           = _ep("U_MAX", self.eos.U_MAX)
+
+        # CombustionSolver (EOS refactor P4, docs/eos_refactor_design.md §5):
+        # burns fuel against the REAL local O2, once per tick, right after
+        # the EOS solver materializes P/N/T. Bound from [physics.combustion];
+        # defaults on the C++ struct already match, config only overrides
+        # where a key is present (the eos-block precedent above).
+        self.combustion = self.engine.combustion
+        comb_cfg = getattr(CFG.physics, "combustion", None)
+
+        def _cp(key, default):
+            return float(getattr(comb_cfg, key, default))
+
+        self.combustion.burn_rate = _cp("burn_rate", self.combustion.burn_rate)
+        self.combustion.o2_thresh_burn = _cp(
+            "o2_thresh_burn", self.combustion.o2_thresh_burn)
+        self.combustion.H_fuel = _cp("H_fuel", self.combustion.H_fuel)
+        self.combustion.soot_yield = _cp("soot_yield", self.combustion.soot_yield)
+        # v2.5 (P5.1 stoichiometric fuel consumption, design §5 v2.5 /
+        # decisions #17): wall_hp consumed per unit N_O2 burned — THE
+        # ember-lifetime dial. Quantized once per step in C++ like the
+        # other per-step scalars.
+        self.combustion.fuel_per_o2 = _cp(
+            "fuel_per_o2", self.combustion.fuel_per_o2)
+        self.combustion.o2_thresh_breathe = _cp(
+            "o2_thresh_breathe", self.combustion.o2_thresh_breathe)
+        # v2.4 rail: the SAME [physics.thermal].T_MAX_PHYS constant as the
+        # thermal + EOS solvers (one ceiling in the system).
+        self.combustion.T_MAX_PHYS = self._t_max_phys
+
+        # Gas-id lazy resolve (the `_steam_idx` precedent, _step_water below):
+        # resolved BY NAME from the map's gas table on the first step() call
+        # (gases.py is the single source of truth — never hardcode an index).
+        self._o2_idx = None
+        self._inert_n2_idx = None
+        self._black_smoke_idx = None
+        # BC: cached (n_gases,) int32 N_amb vector for the ambient ring clamp —
+        # built once per map on the first ambient step() (the config is static;
+        # rebuilt if the map/gas count changes). None until built / on space maps.
+        self._ambient_n_amb = None
 
         # WaterSolver (engine/07 §2, water plan W2): the pipe model that
         # advances gmap.water_depth. Params are bound through a METHOD (not
@@ -323,6 +450,15 @@ class PhysicsRunner:
             wall this tick. Caller should run ``gmap.destroy_wall(y, x)``
             for each (PhysicsRunner does not touch the material grid).
         """
+        # S8a Path B: the GPU-resident tick (opt-in, default OFF). Same tick,
+        # same arithmetic — the water substep loop + the smoke trace loop run
+        # resident on persistent device buffers (killing the substep-/plane-
+        # MULTIPLIED transfer tax); EOS + combustion + the tail are bracketed
+        # (one D2H/H2D each). With residency off this branch is never taken and
+        # CuPy is never imported.
+        if _RESIDENCY_ENABLED and getattr(self.bp, "HAS_CUDA", False):
+            return self._step_resident(gmap, sim_time)
+
         # K2: cast the fire heat pass FIRST — at the very START of the physics
         # step, BEFORE the atmosphere/smoke loop and BEFORE the TemperatureSolver
         # below. Each burning tile deposits HEAT into `gmap.heat` (Q16.16,
@@ -347,28 +483,56 @@ class PhysicsRunner:
         # the water system existed.
         self._step_water(gmap, sim_time)
 
-        # IMEX atmosphere/smoke substep loop — in C++ (PhysicsEngine::run_substeps,
-        # physics_engine.cpp). Patch 2 reshaped it into four decoupled loops, each
-        # on its OWN count (BEHAVIOR CHANGE, feel-gated — not 0-ULP):
-        #   - the WAVE substeps n_wave× at its CFL (2a);
-        #   - the implicit DIFFUSION solves ONCE per tick, computing the wind (2a);
-        #   - the SMOKE runs n_smoke× (a smoke-CFL floor from the spatial-max
-        #     d_eff) on the once-computed wind — WIND-ONLY advection now (2b);
-        #   - the breach SINK runs K = smoke.vent_hops one-cell BFS hops as its own
-        #     loop, decoupled from n_wave (2b). dt_scale is GONE (smoke on real dt).
-        #
-        # sink_fields() STAYS Python — it is a lazy BFS (rebuilt only on topology
-        # edits, gated by gmap._sink_dirty); the runner fetches the sink direction
-        # field once per tick and hands it to run_substeps (now feeding the K-hop
-        # sink loop, not the smoke advection back-trace).
-        sink_x, sink_y = gmap.sink_fields()
+        # The compressible Kwatra solver — in C++ (PhysicsEngine::run_substeps,
+        # physics_engine.cpp; EOS refactor P3, design §3). REPLACES the old
+        # four-decoupled-loop IMEX substep block: `self.eos` runs its own
+        # internal advection-substep loop (self-advect u, advect T, donor-cell
+        # O2/N2 flux every substep, substepped compression work), then the
+        # Helmholtz solve ONCE per tick, then the velocity correction. The
+        # TRACE gas planes advect ONCE per tick afterward (on the solver's
+        # final wind), inside run_substeps itself. `gmap.wave_p` is now the
+        # repurposed P_prev buffer (see eos_solver.h); the smoke breach-sink
+        # BFS field is GONE (native venting replaces it — decisions.md #3).
+        # dx lazy-binds from the level's tile size every tick (cheap; mirrors
+        # WaterSolver.dx's bind in _step_water — the design's c_max/overflow
+        # budget are both derived at this physical dx, not a config guess).
+        self.eos.dx = float(gmap.tile_size_m)
+        if self._o2_idx is None:
+            self._o2_idx = int(gmap.gases.name_to_id["o2"])
+            self._inert_n2_idx = int(gmap.gases.name_to_id["inert_n2"])
+            self._black_smoke_idx = int(gmap.gases.name_to_id["black_smoke"])
+
+        # BC (boundary_conditions_spec_2026-07-19): the planetside AMBIENT ring.
+        # On a space map every ambient arg is None -> the C++ path is
+        # byte-identical (dormancy BY BRANCH, spec §5). On an ambient map, thread
+        # the ring mask, the effective pin P_amb (the shift), the per-plane N_amb
+        # (the ring clamp), and the σ-sponge grid (B3b). n_amb is a (n_gases,)
+        # int32 vector — zero except the two conservative bulk planes, which the
+        # bulk-transport reset clamps to the level's N-primary split. Cached: the
+        # config is static per map (self._ambient_n_amb keyed off gas count).
+        amb = self._ambient_args(gmap)
         self.engine.run_substeps(
-            gmap.wave_p, gmap.wave_v, gmap.wave_source, gmap.atmosphere,
+            gmap.wave_p, gmap.atmosphere,
             gmap.wind_x, gmap.wind_y,
+            gmap.temperature,
             gmap.obstacles, gmap.solid, gmap.is_vacuum,
             gmap.dyn_permeability, gmap.dyn_wave_absorb,
-            gmap.gas, gmap.gases.diffusion, sink_x, sink_y, sim_time,
+            gmap.gas, gmap.gases.diffusion, gmap.gases.conservative,
+            gmap.gases.decay, self._inert_n2_idx,
+            sim_time,
+            is_ambient=amb[0], n_amb=amb[1], p_amb=amb[2], sponge_sigma=amb[3],
+            sponge_udamp=amb[4],
         )
+
+        # EOS refactor P4 (design §5, §3.2 "step 6: combustion pass ... reads
+        # settled P/N/T, feeds next tick"): burns fuel against the REAL local
+        # O2, right after the EOS solver materializes P/N/T (run_substeps,
+        # above) and BEFORE this tick's consumers (step_tail's fire O2 gate
+        # + the ignition O2 gate, below) read O2 — so a room that just burned
+        # reads its OWN depletion this same tick (no artificial 1-tick lag).
+        # Its N/T mutations never re-enter this tick's already-completed
+        # Helmholtz solve; they feed NEXT tick's p* = C*N_total*T instead.
+        self._run_combustion(gmap, sim_time)
 
         # Per-tick orchestration TAIL — moved into C++ in Patch 1 S4a
         # (PhysicsEngine::step_tail, physics_engine.cpp, compiled /fp:precise).
@@ -394,6 +558,9 @@ class PhysicsRunner:
         #      conversion on solids, one conduction relaxation, then ambient
         #      cooling. Reads THIS tick's `heat` (cast at the top of step()) and
         #      updates `temperature` in place for next tick.
+        # EOS P3: gas + gas_conservative added — step_tail sums the bulk
+        # O2/N2 planes for the temperature Pass-1 heat-deposit divisor (the
+        # real N_total, closing the P2 density-proxy TODO).
         destroyed = self.engine.step_tail(
             gmap.ripple, gmap.ripple_v, gmap.water_depth, gmap.wave_p,
             gmap.solid,
@@ -401,7 +568,11 @@ class PhysicsRunner:
             gmap.temperature, gmap.wind_x, gmap.wind_y,
             gmap.is_vacuum, gmap.flammable,
             gmap.heat, gmap.heat_inv_shift, gmap.face_shift,
+            gmap.gas, gmap.gases.conservative, self._o2_idx,
             sim_time,
+            # BC: the ambient ring is wiped to ΔT=0 in the temperature pre-pass
+            # (the vacuum-breach idiom); None on space maps = byte-identical.
+            is_ambient=amb[0],
         )
 
         # NOTE: the per-tick `heat` clear does NOT live here. `heat` has a
@@ -415,6 +586,237 @@ class PhysicsRunner:
         # conversion was the only consumer; STEP D moves it out.)
 
         return destroyed
+
+    # ------------------------------------------------------------------
+    # Combustion dispatch (EOS P4) — shared by the normal + resident ticks
+    # ------------------------------------------------------------------
+    def _run_combustion(self, gmap, sim_time):
+        """Burn fuel against the REAL local O2 (EOS P4, design §5). GPU or CPU
+        dispatch (bit-identical); factored so :meth:`_step_resident` reuses the
+        exact same call the normal :meth:`step` makes."""
+        ignition_temp_q16 = gmap.materials.ignition_temp_q16[gmap.material].astype(
+            np.int32)
+        if self._combustion_on_cuda():
+            # EOS P6.9b GPU dispatch (strictly additive; bit-identical to the CPU
+            # CombustionSolver.step — tests/cuda_combustion_check.py). `fire` is
+            # dropped (the reformulation no longer reads it).
+            self.bp.cuda_combustion_step(
+                gmap.gas, self._o2_idx, self._inert_n2_idx, self._black_smoke_idx,
+                gmap.temperature, gmap.wall_hp,
+                gmap.flammable, gmap.solid, gmap.is_vacuum,
+                ignition_temp_q16,
+                sim_time, self.temperature.c_v, self.temperature.n_floor_heat,
+                self.combustion.burn_rate, self.combustion.o2_thresh_burn,
+                self.combustion.H_fuel, self.combustion.soot_yield,
+                self.combustion.fuel_per_o2, self.combustion.T_MAX_PHYS,
+            )
+        else:
+            self.combustion.step(
+                gmap.gas, self._o2_idx, self._inert_n2_idx, self._black_smoke_idx,
+                gmap.temperature, gmap.wall_hp, gmap.fire,
+                gmap.flammable, gmap.solid, gmap.is_vacuum,
+                ignition_temp_q16,
+                sim_time, self.temperature.c_v, self.temperature.n_floor_heat,
+            )
+
+    # ------------------------------------------------------------------
+    # S8a Path B — the GPU-resident tick
+    # ------------------------------------------------------------------
+    def _water_pre_resident(self, gmap):
+        """The Python-side water pre-step (lazy init + dormancy + source holds),
+        lifted verbatim from :meth:`_step_water` MINUS the ``engine.step_water``
+        call (the resident path runs the substep loop on device instead). Returns
+        ``True`` when water is dormant this tick (skip the whole water stage)."""
+        if (self._water_depth_before is None
+                or self._water_depth_before.shape != gmap.water_depth.shape):
+            self._water_depth_before = gmap.water_depth.copy()
+            self.water.dx = float(gmap.tile_size_m)
+            self._steam_idx = int(gmap.gases.name_to_id["white_smoke"])
+        before = self._water_depth_before
+        if (not gmap.water_sources and not gmap.water_depth.any()
+                and not before.any()):
+            return True
+        for (y, x, lvl) in gmap.water_sources:
+            lvl_q = water_fixed.quantize_scalar(float(lvl))
+            gmap.water_depth[y, x] = max(int(gmap.water_depth[y, x]), lvl_q)
+        return False
+
+    def _step_resident(self, gmap, sim_time):
+        """One GPU-resident tick (S8a: Path B framework + Path A EOS residency).
+        Bit-identical to the CPU/per-call tick: the water SUBSTEP loop, the
+        whole EOS STAGE (advection substeps, on-device MG build + solve,
+        kick/compression — docs/cuda_s8a_path_a_impl_2026-07-21.md), and the
+        smoke TRACE loop all run resident on persistent device buffers — the
+        Path-B EOS bracket is GONE (spec §3.3's zero mid-tick transfers, for
+        real). Combustion + the tail stay BRACKETED on the mirror (S8c).
+        The numpy fields are the authoritative mirror throughout — every EOS
+        input is current on the mirror at the step-4 upload (the design §2
+        invariant), and the step-6 batched D2H lands the EOS/trace outputs
+        back on it for the brackets + combat/recorder/render (Q4 baseline).
+        """
+        if not gmap.residency_on():
+            gmap.enable_residency()
+
+        # -- 1. host pre-physics (on the mirror): fire heat cast, water pre-step,
+        #       lazy binds, ambient args (identical to the normal step) ----------
+        self.cast_fire_heat(gmap)
+        self.eos.dx = float(gmap.tile_size_m)
+        if self._o2_idx is None:
+            self._o2_idx = int(gmap.gases.name_to_id["o2"])
+            self._inert_n2_idx = int(gmap.gases.name_to_id["inert_n2"])
+            self._black_smoke_idx = int(gmap.gases.name_to_id["black_smoke"])
+        amb = self._ambient_args(gmap)
+        water_dormant = self._water_pre_resident(gmap)
+
+        # -- 2. device handles. Rung-1 uploads ONLY what the resident loops READ
+        #       (targeted H2D, just-in-time) — the bracketed stages (EOS,
+        #       combustion, tail) read the numpy MIRROR directly, so the full
+        #       synced set need not ride to the device this rung. `from_host()`'s
+        #       DEFAULT is still the full §5b always-upload set (incl.
+        #       dyn_wave_absorb / dyn_light_atten / obstacles) — that is the
+        #       contract Path-A inherits when it makes the brackets resident; Rung 2
+        #       must NOT narrow those masks (body-shielding depends on them). --------
+        dev = gmap.device_ptrs()
+        h, w = gmap._h, gmap._w
+
+        # -- 3. WATER: substep loop RESIDENT, then the W5/W3 host tail (bracket) --
+        if not water_dormant:
+            # H2D only the water inputs the launch core reads. floor_height is
+            # static (terrain — uploaded once by enable_residency), so it is not
+            # re-sent each tick; solid IS (structural edits change it).
+            gmap.from_host(["water_depth", "flow_vx", "flow_vy",
+                            "atmosphere", "solid"])
+            n_sub = int(self.engine.water_substep_count(sim_time))
+            wdt = sim_time / n_sub   # pybind casts to float32 == step_water's wdt
+            self.bp.water_substeps_resident(
+                dev["water_depth"], dev["flow_vx"], dev["flow_vy"],
+                dev["floor_height"], dev["atmosphere"], dev["solid"],
+                h, w, n_sub, wdt, gmap.tilt_x, gmap.tilt_y,
+                self.water.g, self.water.damping, self.water.dx,
+                self.water.k_p, self.water.v_max, self.water.depth_eps)
+            gmap.to_host(["water_depth", "flow_vx", "flow_vy"])
+            self.engine.step_water_tail(
+                gmap.water_depth, gmap.atmosphere, gmap.solid,
+                gmap.gas, self._water_depth_before, gmap.dyn_permeability,
+                self._steam_idx, sim_time,
+                self.water_ceiling_h, self.water_flood_eps, self.water_ratio_cap,
+                self.water_boil_rate, self.water_boil_p_thresh,
+                self.water_steam_yield)
+
+        # -- 4. EOS stage FULLY RESIDENT (S8a Path A — the bracket is GONE) ------
+        # Pre-upload the EOS input set from the authoritative mirror (replaces
+        # Path B's post-EOS re-upload + the per-call path's internal H2D). NOTE
+        # (design §2): wave_p is NOT uploaded — on device it is written (the
+        # step-0 p_prev := atmosphere D2D) before any read; dyn_wave_absorb is
+        # NOT uploaded — no device kernel reads it (the kick consumes the
+        # host-hoisted absorb_q plane, computed FROM the mirror inside
+        # run_substeps_resident — that host hoist is where body-shielding
+        # lives). is_ambient IS in the list: it is NOT static — destroy_wall's
+        # joins-ambient twin mutates it on a ring-adjacent breach (gamemap
+        # breach_mask), exactly like is_vacuum on a space map (the PART-1b
+        # gate leg caught the stale device copy). MIRROR-CURRENCY INVARIANT:
+        # every field in this list is current on the mirror here (water tail,
+        # FieldEdits, stamp_units, combat edits all write the mirror; nothing
+        # writes it between this upload and the resident call below).
+        gmap.from_host(["atmosphere", "wind_x", "wind_y", "temperature",
+                        "gas", "solid", "is_vacuum", "is_ambient",
+                        "dyn_permeability"])
+        # The host pre-stage (all EOS reductions — they consume tick-entry
+        # state) runs on the mirror inside; the device chain (substep loop,
+        # div_u/N/p*, the on-device MG build, vcycle, kick, store) runs with
+        # ZERO mid-tick plane transfers. Gate: tests/cuda_s8a_check.py.
+        self.engine.run_substeps_resident(
+            gmap.wave_p, gmap.atmosphere,
+            gmap.wind_x, gmap.wind_y, gmap.temperature,
+            gmap.solid, gmap.is_vacuum,
+            gmap.dyn_permeability, gmap.dyn_wave_absorb,
+            gmap.gas, gmap.gases.conservative,
+            sim_time,
+            is_ambient=amb[0], n_amb=amb[1], p_amb=amb[2],
+            d_atmosphere=dev["atmosphere"], d_wave_p=dev["wave_p"],
+            d_wind_x=dev["wind_x"], d_wind_y=dev["wind_y"],
+            d_temperature=dev["temperature"], d_gas=dev["gas"],
+            d_solid=dev["solid"], d_is_vacuum=dev["is_vacuum"],
+            d_dyn_permeability=dev["dyn_permeability"],
+            d_is_ambient=dev["is_ambient"] if amb[0] is not None else 0,
+            d_sponge_sigma=dev["sponge_sigma"] if amb[3] is not None else 0,
+            d_sponge_udamp=dev["sponge_udamp"] if amb[4] is not None else 0,
+        )
+
+        # -- 5. TRACE smoke loop + decay RESIDENT (on device) --------------------
+        # Path A: NO from_host here — the device gas/wind are FRESHER than the
+        # mirror (the resident EOS just wrote them, bit-identically), and the
+        # masks/perm rode up in step 4's pre-upload.
+        # advection_rate = 1.0f / max(eos.dx, 1e-3f) — computed in float32 to match
+        # run_substeps' float expression exactly (bit-identity of the SL displacement).
+        adv_rate = np.float32(1.0) / max(np.float32(self.eos.dx), np.float32(1e-3))
+        self.bp.trace_smoke_resident(
+            dev["gas"], dev["wind_x"], dev["wind_y"],
+            dev["solid"], dev["is_vacuum"], dev["dyn_permeability"],
+            dev["is_ambient"] if amb[0] is not None else 0,
+            h, w, gmap.gas.shape[0], self._inert_n2_idx,
+            gmap.gases.conservative, gmap.gases.diffusion, gmap.gases.decay,
+            sim_time, float(adv_rate), 0.0,
+        )
+
+        # -- 6. The once-per-tick synced-set D2H (the locked Q4 decision): the
+        # EOS/trace outputs land on the mirror; combustion + the tail brackets
+        # read it exactly as today. RULE (design §2): a DEFAULTED to_host() is
+        # forbidden in the resident tick — the device heat/fire/wall_hp (and
+        # water fields on dormant ticks) are stale-by-design and would clobber
+        # the authoritative mirror.
+        gmap.to_host(["atmosphere", "wave_p", "wind_x", "wind_y",
+                      "temperature", "gas"])
+
+        # -- 7. COMBUSTION bracket (mirror) --------------------------------------
+        self._run_combustion(gmap, sim_time)
+
+        # -- 8. TAIL bracket: ripple (host) + fire + temperature (mirror) --------
+        destroyed = self.engine.step_tail(
+            gmap.ripple, gmap.ripple_v, gmap.water_depth, gmap.wave_p,
+            gmap.solid,
+            gmap.fire, gmap.atmosphere, gmap.smoke, gmap.wall_hp,
+            gmap.temperature, gmap.wind_x, gmap.wind_y,
+            gmap.is_vacuum, gmap.flammable,
+            gmap.heat, gmap.heat_inv_shift, gmap.face_shift,
+            gmap.gas, gmap.gases.conservative, self._o2_idx,
+            sim_time,
+            is_ambient=amb[0],
+        )
+        # The mirror is now authoritative for every synced field (each stage wrote
+        # it; the two resident loops' outputs were D2H'd to it). No final batched
+        # D2H is needed — consumers read the mirror unchanged (the Q4 baseline);
+        # the device set is re-uploaded whole next tick (from_host).
+        return destroyed
+
+    # ------------------------------------------------------------------
+    # BC: planetside AMBIENT ring args (boundary_conditions_spec_2026-07-19)
+    # ------------------------------------------------------------------
+    def _ambient_args(self, gmap):
+        """Return ``(is_ambient, n_amb, p_amb, sponge_sigma, sponge_udamp)``.
+
+        On a space map (no ambient config, or no ring tiles) returns
+        ``(None, None, 0, None, None)`` — every C++ ambient branch is gated on a
+        non-null pointer, so the tick is byte-identical to before BC existed
+        (dormancy BY BRANCH, spec §5). On an ambient map returns the live ring
+        mask, the per-plane N_amb clamp vector, the effective pin P_amb (the
+        shift trick's shift), the σ-sponge grid (B3b σ, ships at 0), and the
+        u-damping band grid (B3c rung 2 — the real absorber, applied in the
+        kick). The N_amb vector is the N-primary split (``simulation.ambient``):
+        O2 -> n_o2_q, inert_N2 -> n_n2_q, 0 elsewhere.
+        """
+        amb = getattr(gmap, "_ambient", None)
+        if amb is None or not gmap.is_ambient.any():
+            return (None, None, 0, None, None)
+        n_gases = gmap.gas.shape[0]
+        if (self._ambient_n_amb is None
+                or self._ambient_n_amb.shape[0] != n_gases):
+            n_amb = np.zeros(n_gases, dtype=np.int32)
+            n_amb[self._o2_idx] = int(amb.n_o2_q)
+            n_amb[self._inert_n2_idx] = int(amb.n_n2_q)
+            self._ambient_n_amb = n_amb
+        return (gmap.is_ambient, self._ambient_n_amb,
+                int(amb.pin_q), gmap.sponge_sigma, gmap.sponge_udamp)
 
     # ------------------------------------------------------------------
     # K2: sim-side fire heat ray pass
@@ -510,6 +912,16 @@ class PhysicsRunner:
         # yields (row, col) pairs in C order, i.e. row-major.
         ys, xs = np.nonzero(burning)
         from simulation import fire_fixed
+        # S8c item 1 (fire-FPS fix): on the CUDA path, COLLECT every source and
+        # issue ONE batched device cast after the loop (cuda_raycaster_cast_batch
+        # concatenates build_ray_list over all sources -> one H2D of the inputs +
+        # running heat plane, one march, one D2H) instead of a whole-plane round-
+        # trip PER source. `heat` is BYTE-IDENTICAL to the per-source loop: they
+        # differ only in atomic-deposit order, and heat's saturating integer adds
+        # are order-free. The CPU path stays a per-source cast (no transfer tax to
+        # amortise). Design + 3-lens critique:
+        # docs/s8c_item1_fire_heat_batch_impl_2026-07-21.md.
+        cuda_sources = [] if use_cuda_ray else None
         for yy, xx in zip(ys.tolist(), xs.tolist()):
             # S3a: dequantize the Q16.16 intensity to real [0,1] for the ray params.
             intensity_fire = float(fire[yy, xx]) / fire_fixed.FP_ONE_F
@@ -526,28 +938,15 @@ class PhysicsRunner:
             src.angle_center = ((xx * 7 + yy * 13) % ray_count) * (two_pi / ray_count)
             src.intensity = self.fire_intensity_base + self.fire_intensity_per_i * intensity_fire
             src.heat = self.k_fire_heat * intensity_fire   # the sim payload
-            src.jitter = 0.0                   # NO dither — heat is sim-affecting
+            # NO dither -- heat is sim-affecting. MUST stay 0.0: build_ray_list's
+            # per-source mt19937 is drawn ONLY when jitter>0, so a nonzero jitter
+            # would couple sources through the RNG sequence and desync the batched
+            # cast from the per-source loop (S8c design section 1).
+            src.jitter = 0.0
             src.color = self.fire_color        # render-only tint (discarded here)
             if use_cuda_ray:
-                # GPU path (CUDA-S2 live): build_ray_list -> the device march,
-                # accumulating this source's heat into gmap.heat (saturating
-                # integer atomic) and the render channels into the scratch
-                # buffers, all round-tripped to the host. Same args + order as the
-                # CPU call below, with the raycaster as the first positional.
-                bp.cuda_raycaster_cast(
-                    self.raycaster,
-                    src,
-                    self._fire_scratch_rgb,
-                    self._fire_scratch_dx,
-                    self._fire_scratch_dy,
-                    self._fire_gas_f,
-                    gmap.gases.absorption,
-                    gmap.gases.scatter_albedo,
-                    gmap.dyn_light_atten,
-                    gmap.heat,            # <- the only synced output (heat)
-                    None,                 # smoke_glow: skipped (render-only, later)
-                    gmap.heat_atten,      # K1 per-tile heat occlusion
-                )
+                # Collected for the single batched device cast after the loop.
+                cuda_sources.append(src)
             else:
                 self.raycaster.cast_source_directional(
                     src,
@@ -567,6 +966,26 @@ class PhysicsRunner:
                     None,                 # smoke_glow: skipped (render-only, later)
                     gmap.heat_atten,      # K1 per-tile heat occlusion
                 )
+        # S8c: the ONE batched device cast for ALL sources (CUDA path only). Same
+        # inputs + argument order as the per-source cuda_raycaster_cast, with the
+        # source LIST in place of a single source. `heat` lands back on gmap.heat
+        # (the mirror), so the tick contract and every downstream heat consumer
+        # (tail temperature pass + unit damage) are unchanged.
+        if use_cuda_ray and cuda_sources:
+            bp.cuda_raycaster_cast_batch(
+                self.raycaster,
+                cuda_sources,
+                self._fire_scratch_rgb,
+                self._fire_scratch_dx,
+                self._fire_scratch_dy,
+                self._fire_gas_f,
+                gmap.gases.absorption,
+                gmap.gases.scatter_albedo,
+                gmap.dyn_light_atten,
+                gmap.heat,            # <- the only synced output (heat)
+                None,                 # smoke_glow: skipped (render-only, later)
+                gmap.heat_atten,      # K1 per-tile heat occlusion
+            )
 
     # ------------------------------------------------------------------
     # Water layer (engine/07 §2, water plan W2)
@@ -648,9 +1067,11 @@ class PhysicsRunner:
         # snapshot) is passed in and MUTATED by the final copyto (the runner keeps
         # owning it across ticks). `gmap.gas` is the (N,h,w) array; the steam puff
         # lands in slice self._steam_idx.
+        # EOS refactor P3: `gmap.wave_p` arg retired (the water head reads the
+        # integer `gmap.atmosphere` == P directly, no float bridge).
         self.engine.step_water(
             gmap.water_depth, gmap.flow_vx, gmap.flow_vy,
-            gmap.floor_height, gmap.atmosphere, gmap.wave_p,
+            gmap.floor_height, gmap.atmosphere,
             gmap.solid, gmap.gas, before, gmap.dyn_permeability,
             self._steam_idx, gmap.tilt_x, gmap.tilt_y, sim_time,
             self.water_ceiling_h, self.water_flood_eps, self.water_ratio_cap,
@@ -686,5 +1107,6 @@ class PhysicsRunner:
         """
         if not gmap.water_depth.any() and not gmap.ripple.any():
             return
+        # EOS refactor P3: the splash source is |P - P_prev| (design §6).
         self.water.step_ripple(gmap.ripple, gmap.ripple_v, gmap.water_depth,
-                               gmap.wave_p, gmap.solid, sim_time)
+                               gmap.atmosphere, gmap.wave_p, gmap.solid, sim_time)

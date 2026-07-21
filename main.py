@@ -59,6 +59,8 @@ import pyray as rl
 import breach_physics as bp
 from config import CFG
 from level_loader import load as load_level
+from level_lights import (light_source_params, monotonic_total_tick,
+                          partition_lights)
 from renderer import GameRenderer
 from renderer.game_renderer import RenderConfig
 from simulation import Simulation
@@ -137,7 +139,19 @@ def _upscale_level(level, factor: int):
     if factor <= 1:
         return level
     import numpy as np
+    from dataclasses import replace
     from level_loader import SpawnEntry
+
+    # A6 / S1 (a6 doors design §3): record the base-resolution recovery
+    # BEFORE mutating — meters-first entity consumers (door span
+    # quantization) must see the PRE-scale tile size and replicate their
+    # derived tile sets by the accumulated integer factor; a float
+    # recompute (tile_size_m * factor) is only IEEE-exact for power-of-two
+    # factors, so the base is CARRIED, never recomputed. Authored
+    # [[entity]] fields are NOT mutated (they stay the authored record).
+    if level.tile_size_m_base is None:
+        level.tile_size_m_base = float(level.tile_size_m)
+    level.res_factor = int(level.res_factor) * factor
 
     level.tilemap = np.repeat(
         np.repeat(level.tilemap, factor, axis=0), factor, axis=1)
@@ -148,6 +162,44 @@ def _upscale_level(level, factor: int):
                    footprint=max(1, s.footprint * factor))
         for s in level.spawns
     ]
+    # [[light]] entities scale like spawns (P4 — the "units land in the same
+    # place" contract): positions by ``factor``, and ``range`` too (it is
+    # measured in tiles, footprint-style, so the PHYSICAL reach is preserved
+    # when tile_size_m shrinks by 1/factor).
+    level.lights = [
+        replace(l, x=l.x * factor, y=l.y * factor, range=l.range * factor)
+        for l in level.lights
+    ]
+    # [water] initial state scales like the tilemap (P5): the loader pinned
+    # depth_map.shape == tilemap.shape, so the seed MUST follow the grid or
+    # GameMap's masked seed write would shape-mismatch. Replicating the
+    # per-tile depth (metres of standing water) preserves the physical
+    # volume exactly: Σdepth·dx² is invariant (factor² more cells, dx²
+    # smaller by factor²).
+    if level.water_depth_q is not None:
+        level.water_depth_q = np.repeat(
+            np.repeat(level.water_depth_q, factor, axis=0), factor, axis=1)
+    # zones.npy paint grid scales like the tilemap (editor design §5, A8):
+    # the loader pinned zones.npy.shape == tilemap.shape, so the mask must
+    # follow the grid or a --res run would shape-mismatch (or silently drop
+    # zones). Nearest-neighbour replication keeps every painted id covering
+    # the same PHYSICAL area — same zones, factor² more member tiles; the
+    # zone [[entity]] instances (zone_id bindings, rosters) are untouched.
+    if level.zone_grid is not None:
+        level.zone_grid = np.repeat(
+            np.repeat(level.zone_grid, factor, axis=0), factor, axis=1)
+    # air_init.npy override scales like the tilemap too (A9): the loader
+    # pinned air_init.shape == tilemap.shape, so the override must follow
+    # the grid or GameMap's masked seed would shape-mismatch. Pressure is
+    # INTENSIVE (atm per tile), so nearest-neighbour replication preserves
+    # the physical field exactly — each finer cell keeps its tile's
+    # pressure, and the room's total N (Σ P·dx² at ambient T) is invariant
+    # (factor² more cells, dx² smaller by factor²) — the same argument as
+    # water's per-tile depth. `boundary` is a scalar level property and
+    # needs nothing here.
+    if level.air_init_q is not None:
+        level.air_init_q = np.repeat(
+            np.repeat(level.air_init_q, factor, axis=0), factor, axis=1)
     # Drop any explicit art-align px_per_tile so the renderer recomputes it
     # from the new (denser) grid shape — otherwise the art would stretch.
     level.art_px_per_tile = None
@@ -180,15 +232,17 @@ def main():
     # Hazards are interactive now — I ignite, J gas, U pour water,
     # explosives breach — and will be level-defined later.
 
-    # ----- Spawn units from level.toml [[spawn]] entries.
+    # ----- Spawn units from level.toml [[spawn]] entries. Zero spawns is
+    # legal: a unit-free physics-tuning sandbox (camera starts at 0,0;
+    # marines()/zombies() handle empty rosters).
     if not level.spawns:
-        raise RuntimeError(
-            f"Level '{level.name}' has no [[spawn]] entries — nothing to play."
-        )
+        print(f"  NOTE: level '{level.name}' has no [[spawn]] entries — "
+              f"running as a unit-free physics sandbox")
     for s in level.spawns:
         sim.add_unit(Unit(s.name, x=s.x, y=s.y, team=s.team,
                           footprint=s.footprint))
-    print(f"  Spawned {len(level.spawns)} units from level.toml")
+    if level.spawns:
+        print(f"  Spawned {len(level.spawns)} units from level.toml")
 
     # 2. Render config — borderless windowed at monitor resolution.
     from renderer.camera import Camera2D
@@ -226,7 +280,9 @@ def main():
     print(f"  DEBUG: J spawns the selected gas under the cursor | "
           f"K cycles the gas (white->black->poison->teargas->fuel)")
     print(f"  DEBUG: U pours water (0.2 m) under the cursor | "
-          f"O toggles water overlay | P / Shift+P tilts the ship +/-2 deg")
+          f"V toggles water overlay | P / Shift+P tilts the ship +/-2 deg")
+    print(f"  DEBUG: O toggles the door under the cursor (A6 doors v0 — "
+          f"dev-only latch)")
     print(f"  DEBUG: N cycles the selected unit's weapon through the armory "
           f"(W6 — the tuning key)")
 
@@ -245,28 +301,51 @@ def main():
 
     input_handler = InputHandler()
 
-    # Static emergency lights — always-on, scattered through the ship.
-    # Positions are authored for the 50x120 vessel; on a smaller level
-    # (e.g. --level playground, 100x70) the off-grid ones are skipped.
-    static_lights = []
-    for (lx, ly) in [(25, 10), (25, 30), (25, 55), (25, 88), (25, 110)]:
-        if not (0 <= lx < level.width and 0 <= ly < level.height):
-            continue
+    # Level lights (P4): the [[light]] entities from level.toml (the old
+    # hardcoded emergency lamps now live in the vessel/playground tomls).
+    # Static sources are compiled structs built ONCE here; beacons are
+    # rebuilt per frame from the SIM tick (they freeze with the sim —
+    # src/level_lights.py owns the math; this stays a thin setattr loop).
+    sim_time_per_tick = 1.0 / float(CFG.clock.ticks_per_second)
+    ticks_per_round = int(CFG.clock.ticks_per_round)
+
+    def _build_light_source(params: dict):
         src = bp.LightSource()
-        src.x, src.y = float(lx), float(ly)
-        src.max_range = 18
-        src.intensity = 0.9
-        src.angle_spread = 6.283
-        # Emergency lighting — red (profile: emergency_light).
-        src.color = (1.0, 0.1, 0.05)
-        # Fire-style sources default to jitter=0.0 — natural smoke
-        # advection creates the flicker we want without C++ RNG drift.
-        src.jitter = 0.0
-        static_lights.append(src)
+        for key, val in params.items():   # pybind class: setattr only —
+            setattr(src, key, val)        # never bp.LightSource(**params)
+        return src
+
+    lights_in, lights_off = partition_lights(level.lights,
+                                             level.width, level.height)
+    if lights_off:
+        # ONE warning at load (never per frame): e.g. vessel-authored lamp
+        # coordinates on a smaller level.
+        skipped = ", ".join(f"({l.x:g}, {l.y:g})" for l in lights_off)
+        print(f"  WARNING: {len(lights_off)} [[light]] entries off-grid "
+              f"for {level.width}x{level.height} — skipped: {skipped}")
+    static_lights = [
+        _build_light_source(light_source_params(e, 0, sim_time_per_tick))
+        for e in lights_in if e.kind != "beacon"
+    ]
+    beacon_lights = [e for e in lights_in if e.kind == "beacon"]
+    if level.lights:
+        print(f"  Lights: {len(static_lights)} static + "
+              f"{len(beacon_lights)} beacon from level.toml")
+
+    # Entity registry (entity design §3b): apply the dev tuning overlay
+    # (hard-errors on schema-in-TOML mistakes, like a bad config.toml), then
+    # rewrite the editor's last-good fallback — a successful launch is the
+    # freshness guarantee. Only the file write is soft-failed: a locked file
+    # must not kill a play session.
+    from simulation.entities import apply_tuning_overlay, export_registry_json
+    apply_tuning_overlay()
+    try:
+        export_registry_json()
+    except OSError as exc:
+        print(f"  WARNING: entity_registry.json export failed: {exc}")
 
     # 3. Main loop.
     last_time = time.perf_counter()
-    sim_time_per_tick = 1.0 / float(CFG.clock.ticks_per_second)
     tick_accum = 0.0
 
     try:
@@ -295,8 +374,19 @@ def main():
                     if sim.is_paused():
                         break
 
-            # ----- Lights: mouse flashlight + static emergencies -----
+            # ----- Lights: level statics + beacons + mouse flashlight -----
             sources = list(static_lights)
+            if beacon_lights:
+                # Angle = pure function of the MONOTONIC sim tick on the SIM
+                # clock (sim_time_per_tick, NEVER the wall-clock frame dt):
+                # beacons freeze on pause and replay exactly (P4 §2.2).
+                total_tick = monotonic_total_tick(
+                    sim.turn_number, ticks_per_round, sim.tick)
+                sources += [
+                    _build_light_source(
+                        light_source_params(e, total_tick, sim_time_per_tick))
+                    for e in beacon_lights
+                ]
             mouse_f = renderer.mouse_to_tile_float()
             if mouse_f is not None:
                 src = bp.LightSource()
@@ -336,6 +426,7 @@ def main():
                 orders_phase1=sim.orders_for_phase(0),
                 orders_phase2=sim.orders_for_phase(1),
                 current_phase=input_handler.planning_phase,
+                doors=sim._doors,   # A6 dev door draw (render-read only)
             )
             renderer.draw_background_to_screen()
             renderer.blit_world_to_screen()

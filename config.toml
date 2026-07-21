@@ -61,15 +61,51 @@ COOL_SHIFT        = 5    # interior decay: T -= T >> 5 (~1/32 per tick, ~32-tick
 COOL_SHIFT_VACUUM = 3    # space-exposed decay: T -= T >> 3 (~1/8 per tick, 4× faster)
 o2_vacuum_thresh  = 0.3  # atmosphere below which a 4-neighbour counts as vacuum-exposed
 
+# EOS refactor P2 — unified temperature, gas-T dials (docs/eos_refactor_design.md
+# §4, §9). TUNING DIALS (feel-gated, first real pass at P5); sane starting points.
+gas_advection_rate = 900.0  # gas-T wind->displacement scale; SAME convention/value
+                             # as [physics].advection_rate (smoke) — hot air rides the
+                             # wind at smoke's visual rate until P3 makes `wind` a real
+                             # velocity, at which point this dial goes away.
+c_v               = 1.0     # gas heat capacity for the radiation deposit
+                             # ΔT = ΔE/(N·c_v) (§4.3). 1.0 = neutral scale (ΔT≈ΔE at
+                             # ambient N=1.0); no real-gas anchor yet (P3 territory).
+n_floor_heat      = 0.05    # floor on the per-tile N divisor (the real bulk N_total
+                             # since P3) for the SAME deposit divide — INDEPENDENT of
+                             # o2_vacuum_thresh / any other floor.
+                             # CHECKED against the v2.4 single-tick criterion and KEPT
+                             # (eos-p3fix-thermal-ceiling):
+                             #   n_floor_heat >= heat_tick_max / (T_MAX_PHYS * c_v)
+                             # measured heat_tick ~330 (one adjacent I=0.8 fire) =>
+                             # worst one-tick deposit at the floor = 6,600 K <
+                             # T_MAX_PHYS = 16,000 — holds at 0.05. A stacked firestorm
+                             # ring (~8x) can exceed the ceiling in one tick; that case
+                             # is bounded by the counted T_MAX_PHYS rail (its job). A
+                             # trial raise to 0.2 measurably perturbed marginal
+                             # ignition timings suite-wide for no correctness gain.
+T_MAX_PHYS        = 16000.0 # v2.4 counted physical-maximum rail on the temperature
+                             # FIELD (K above ambient), ~2x the design's stated 9000 K
+                             # extreme — clamps every T deposit/write path (EOS step 4c,
+                             # thermal Pass 1, combustion), each with a hit counter.
+                             # Stands in for the fast equilibration a real near-vacuum
+                             # gas would have (its T is thermodynamically ill-defined).
+                             # Full rationale: cpp/src/eos_solver.h. PROVISIONAL,
+                             # Erik review at P5.
+
 # Fire / ignition-from-temperature (engine/06 §4, proposal §6 step 4b). The READ
 # side of the temperature substrate: a flammable tile whose `temperature` (set by
 # the conduction pass above) crosses its quantized `ignition_temp` AND has oxygen
 # ignites via `fire = max(fire, ignition_seed)`. This is a SECOND ignition path
 # that runs alongside the existing cellular fire spread (it does not replace it).
 # Dormant in-game until fire/beams emit heat (temperature is ~0 with no sources).
+# EOS refactor P4 (docs/eos_refactor_design.md §6): o2_threshold now reads the
+# REAL N_O2 scale, not the old atmosphere/P (~1.0 ambient) scale — see the
+# o2_threshold/P_min/P_full recalibration note in the fire feedback block below.
 [physics.fire]
 ignition_seed = 0.1   # seed fire intensity a temperature-ignited tile gets (I_seed)
-o2_threshold  = 0.60  # min air-side-neighbour atmosphere to ignite (mirrors the fire's o2_threshold)
+o2_threshold  = 0.01  # min air-side-neighbour REAL N_O2 to ignite (mirrors the fire's
+                       # P_min — see the v2.4 hot-zone-equilibrium recalibration note at
+                       # P_min/P_full below; was 0.12 on the near-ambient-density assumption)
 
 # --- Signed-logistic fire FEEDBACK (fire_design_proposal §2/§3/§5) ------------
 # Cellular spread is DELETED: spread is now radiation -> heat -> temperature ->
@@ -77,25 +113,54 @@ o2_threshold  = 0.60  # min air-side-neighbour atmosphere to ignite (mirrors the
 # life/death of an already-lit tile. Per burning tile of intensity I in [0,1]:
 #   T     = temperature[i] / TEMP_SCALE              (game units; ignition_temp=300 wood)
 #   F     = clamp01(wall_hp[i] / fuel_ref)           (fuel from remaining wall HP)
-#   P     = mean atmosphere over open (non-solid,non-vacuum) 4-neighbours  (O2 proxy)
+#   O2    = mean REAL gas[o2] over open (non-solid,non-vacuum) 4-neighbours
+#           (EOS refactor P4 — was the atmosphere/P proxy; design §6, item 3)
 #   W     = |wind| from the SHARED wind field (= -grad p, incl. shockwaves)
 #   hot   = clamp01((T - fire_T_ext) / fire_T_span)
-#   o2    = smoothstep(P_min, P_full, P)             (pressure IS oxygen — no O2 field)
+#   o2    = smoothstep(P_min, P_full, O2)            (the REAL local O2 gate)
 #   avail = F * o2
 #   grow  = k_grow * avail * hot * I*(1-I) * (1 + k_wind_fan*W)   (logistic, wind-fanned)
 #   die   = k_die*(1 - avail*hot)*I + k_wind_strip*W*(1-I)*I      (decay + wind blow-out)
 #   I    += dt*(grow - die);  clamp01;  if I < I_min -> 0 (snap-extinguish)
-# Plume: atmosphere[i] += max(fire_pressure_gain*I*(1 - atmosphere[i]/p_expand_ref)*dt, 0)
-#   -> own-tile overpressure -> wind points OUTWARD -> smoke pushed away (not pulled in).
+# Plume: temperature[i] += the plume->T shim deposit (fire_pressure_gain-scaled,
+#   self-limiting on `atmosphere[i]/p_expand_ref` — unchanged by P4, still reads
+#   REAL pressure, not O2) -> p* rises -> wind points OUTWARD -> smoke pushed away.
 # A sealed-room fire over-pressurises -> may pop a weak wall (find_burst_walls) -> vents
-# -> P falls -> starves. Emergent. Erik tunes all of these live.
+# -> P falls -> starves; ALSO now (P4) the room's REAL O2 depletes as it burns ->
+# o2 -> 0 -> starves even in a wall that never bursts. Both emergent. Erik tunes
+# all of these live.
 k_grow            = 4.0    # logistic growth gain (1/s)
 k_die             = 2.0    # decay rate when starved/cold (1/s)
 fire_T_ext        = 350.0  # extinction temperature (~ignition_temp + 50; below it, fire dies)
 fire_T_span       = 150.0  # width of the `hot` ramp above fire_T_ext
 fuel_ref          = 60.0   # wall_hp normaliser: F = clamp01(wall_hp/fuel_ref)
-P_min             = 0.60   # pressure below which the O2 proxy is 0 (decompression extinguishes)
-P_full            = 1.00   # interior pressure where the O2 proxy is full
+# EOS refactor P4 RECALIBRATION (design §6): P_min/P_full used to be read against
+# `atmosphere` (P), where ambient == 1.0. They now read REAL gas[o2], where
+# ambient == ~0.21 (the P1 calibration: 0.21*N_amb O2 / 0.79*N_amb inert_N2, P1
+# §2.1). P4's first rescale preserved the OLD 60%-of-ambient cutoff fraction
+# (P_min = 0.60*0.21 = 0.126, P_full = 0.21).
+# v2.4 SECOND RESCALE (eos-p3fix-thermal-ceiling; PROVISIONAL, Erik review at
+# P5): onto the HOT-ZONE-EQUILIBRIUM scale. Derivation: at ideal-gas pressure
+# equilibrium (P = C*N*T), the gas density beside a flame is
+#     N_local ~= N_amb * T_amb_abs / T_air_abs
+# so air at flame-zone temperatures (measured ~3-4 kK-rel with the v2.4
+# absorption-proportional deposit) holds N ~= 0.07-0.09, i.e. N_O2 ~= 0.015-
+# 0.02 — the 0.126 gate implicitly assumed NEAR-AMBIENT density at the flame
+# edge, an atmosphere-proxy-era assumption P = C*N*T revokes. (Real fires keep
+# their flame edge oxygenated by buoyant entrainment — fresh air drawn in at
+# the base; this 2D no-gravity model has no buoyancy, so the gate scale
+# compensates.) Measured sweep (branch report): 0.01/0.03 restores STRONG
+# O2-differentiation (sealed 172 / vented 49 / flooded 39 ticks) and the
+# original ignition budgets (dragon dist-3 t=28) through genuine oxygen
+# physics; 0.02/0.05 differentiates weakly (44/42/39); 0.005/0.02 never
+# starves a sealed fire.
+# v2.5 re-measure (P5.1 stoichiometric fuel, design §5 v2.5 / decisions #17):
+# the trio is now sealed 265 / vented 48 / flooded 39 — the ember-scale fuel
+# drain weakens F and a weaker sealed flame starves its room more slowly.
+# Ordering preserved, still bit-stable under the 1e-5 dial perturbation gate
+# (test_payoff_orderings_perturbation_robust).
+P_min             = 0.01   # local N_O2 below which the O2 proxy is 0 (O2 starves the fire)
+P_full            = 0.03   # local N_O2 at which the O2 proxy saturates full
 I_min             = 0.02   # snap-to-zero extinguish floor
 k_wind_fan        = 0.5    # (1 + k_wind_fan*W) fans growth into a firestorm. NEEDS TUNING vs the live wind scale (a shockwave is a large transient spike).
 k_wind_strip      = 0.5    # W*(1-I)*I blows out small/marginal fires (the realistic crossover). NEEDS TUNING vs the live wind scale.
@@ -220,10 +285,76 @@ smoke_render_gamma = 1.5                  # default mild, visible contrast bump 
 #   flammable      ignites where density > threshold (fuel_gas only) — read M3.
 #   emits_when_hot black-body emission driven by the heat buffer — read M2/M3.
 #   effect         per-gas gameplay tag, read unit-side in mechanics (not here).
+#   conservative   EOS refactor P1 (docs/eos_refactor_design.md §2.1/§2.2):
+#                  true ONLY for the bulk pair (o2 / inert_n2) below — routes
+#                  that plane to donor-cell CONSERVATIVE flux transport
+#                  (bulk_transport.cpp) instead of this per-gas semi-Lagrangian
+#                  loop. False for every trace gas (unchanged behaviour).
 #
 # black_smoke is combustion soot — what fire and explosions emit. Its diffusion
 # (0.10) matches today's d_smoke (0.1), so mapping the EXISTING generic smoke to
 # the black_smoke slice is behaviour-preserving (engine/05 §6.2; M1).
+
+# EOS refactor P1 calibration constants (docs/eos_refactor_design.md §2.1).
+# Pressure is derived as P = C * N_total * T (Kelvin) once the compressible
+# solver lands (P3); nothing physically consumes these yet (P1 is additive-
+# only) — this is the calibration WITNESS pinned by
+# tests/test_eos_p1_calibration.py: quantize(C * N_amb * T_amb_k) must equal
+# quantize(1.0) (today's ambient atmosphere==1.0 scale) within 1 count, so
+# every downstream consumer already tuned against "1.0 == 1 atm" keeps its
+# calibration at rest when the solver switches over. N_amb == 1.0 (the
+# ambient ``o2``+``inert_n2`` split below sums back to exactly 1.0 in Q16.16 —
+# 0.21*65536 + 0.79*65536 rounds to 13763+51773 == 65536). C = 1/t_amb_k.
+[physics.eos]
+t_amb_k = 290.0                       # ambient gas temperature, Kelvin (§2.1's "290.0K-form")
+C = 0.0034482758620689655             # 1/t_amb_k — chosen so C*N_amb*T_amb_k reproduces 1.0
+# --- P3 pinned solver constants (docs/eos_refactor_decisions.md 2026-07-10) ---
+# c_max/S/N_SUB_MAX/CFL_ADV/N_FLOOR_SOLVER are FROZEN once gated (never
+# adaptive) — see cpp/src/eos_solver.h for the load-bearing derivation of
+# each. gamma/absorb_strength/T_MIN are secondary dials (compression-work
+# adiabatic index, D4 shockwave damping scale, and the T floor) not
+# explicitly pinned by the decisions log; defaults mirror the C++ struct.
+c_max = 300.0                         # m/s capped sound speed (Erik's call — retires wave_c=66)
+S = 8                                 # Helmholtz RB-GS sweep count (gate may pin up to 16)
+N_SUB_MAX = 8                         # advection substep cap (accuracy, not stability; re-pinned 16->8, Erik 2026-07-10, decisions #14)
+CFL_ADV = 0.5                         # advection CFL number
+N_FLOOR_SOLVER = 0.001                # solver-internal N floor (gameplay N unfloored)
+adiabatic_index = 1.4                 # ideal-gas adiabatic index (compression work); TUNING DIAL
+absorb_strength = 8.0                 # dyn_wave_absorb scale in the velocity-correction damping
+T_MIN = -289.0                        # floor on the ambient-relative T field (T_abs >= ~1 K)
+U_MAX = 1000.0                        # v2.4 defense-in-depth velocity rail (m/s): the step-4
+                                      # store clamp caps |u| at min(c_LOCAL, U_MAX); counted.
+                                      # Far above any legit game wind (ambient c=300); exists
+                                      # so no T-side change can push stored velocities into
+                                      # the int64/narrow overflow regime again (see
+                                      # eos_solver.cpp step 4's overflow guard). PROVISIONAL,
+                                      # Erik review at P5.
+
+# EOS refactor P4 — combustion on real O2 (docs/eos_refactor_design.md §5,
+# decisions log #12). Own pass, once per tick, after the EOS solver
+# materializes P/N/T: burns fuel (flammable + wall_hp>0) against the local
+# N_O2 mean, converting consumed O2 into black_smoke (soot_yield) + inert_N2
+# (the remainder — N_total is CONSERVED, never a fake pressure drain) and
+# depositing heat via the §4.3 reciprocal (shares c_v/n_floor_heat with
+# [physics.thermal] above — ONE combustion/deposit floor in the system).
+# Sane defaults; feel-tuned at P5 like every other fire/thermal dial.
+[physics.combustion]
+burn_rate         = 1.0    # N_O2 consumed per second, per open-neighbour burn site
+o2_thresh_burn    = 0.03   # min local N_O2 to sustain combustion (below fire's
+                            # P_min=0.126 so the VISIBLE flame dies first)
+H_fuel            = 4.0    # heat yield (T-scale ΔT) per unit N_O2 burned
+soot_yield        = 0.3    # fraction of consumed O2 -> black_smoke (rest -> inert_N2)
+# v2.5 — P5.1 stoichiometric fuel consumption (docs/eos_refactor_design.md §5
+# v2.5 amendment, decisions #17): the SOURCE tile pays wall_hp for every unit
+# of N_O2 its neighbours burn, floored at 1 Q16.16 LSB (smolder NEVER destroys
+# — structural destruction stays FireSimulation's I>0 wall_damage path). Wood
+# stoichiometry burns ~0.7 mass-units of fuel per unit O2 — physically honest
+# default, but in play THE ember-lifetime dial: smaller -> embers glow for
+# minutes awaiting oxygen; larger -> they char out fast.
+fuel_per_o2       = 0.7
+# Unit-side suffocation mechanics (LATER arc, design §5): defined here so the
+# constant lives at the right layer; nothing reads it yet.
+o2_thresh_breathe = 0.08   # min local N_O2 a unit needs to breathe (NOT wired yet)
 
 [gases.white_smoke]            # water vapour / steam
 absorption     = [0.10, 0.10, 0.10]   # flat, low — Mie scattering is spectrally neutral
@@ -234,6 +365,7 @@ glow           = 0.0                  # no self-glow (but scatters local light b
 flammable      = false
 emits_when_hot = false
 effect         = "vision_block"       # pure concealment; clears on decompression
+conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
 
 [gases.black_smoke]            # combustion soot (== today's generic smoke)
 absorption     = [0.88, 0.90, 0.93]   # near-neutral, slight blue tilt: thin soot reads warm/brown
@@ -244,6 +376,7 @@ glow           = 0.0                  # cold soot does NOT glow; hot soot via em
 flammable      = false                # the soot itself is spent fuel
 emits_when_hot = true                 # black-body emission driven by heat buffer (M2/M3)
 effect         = "vision_block_heavy" # near-opaque concealment at density
+conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
 
 [gases.poison]                 # chlorine (Cl2), yellow-green
 absorption     = [0.45, 0.10, 0.80]   # B absorbed hardest, R moderate, G passes -> yellow-green tint
@@ -254,6 +387,7 @@ glow           = 0.0
 flammable      = false
 emits_when_hot = false
 effect         = "damage_over_time"   # lethal cloud; saturates to iconic green at mid-high density
+conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
 
 [gases.teargas]                # CS aerosol, pale near-white (ambiguous vs steam)
 absorption     = [0.12, 0.16, 0.30]   # low overall, B ~2x R -> faint warm/yellow only in thick plumes
@@ -264,6 +398,7 @@ glow           = 0.0
 flammable      = false
 emits_when_hot = false
 effect         = "area_denial"        # forces units out of the area; non-lethal
+conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
 
 [gases.fuel_gas]               # combustible vapour, faint, FLAMMABLE
 absorption     = [0.08, 0.10, 0.16]   # very faint, slight blue tilt — nearly invisible haze
@@ -274,6 +409,38 @@ glow           = 0.0
 flammable      = true                 # IGNITES -> spawns heat + black_smoke; the only flammable gas
 emits_when_hot = true                 # while burning it glows via the black-body curve
 effect         = "ignition_hazard"    # invisible-ish until lit; then a fireball
+conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
+
+# EOS refactor P1 — the two BULK species (docs/eos_refactor_design.md §1/§2.1).
+# Together they ARE "air": ambient splits 21/79 (O2/inert_N2 by mole fraction,
+# gamemap._update_caches / destroy_wall). conservative=true routes both to
+# donor-cell CONSERVATIVE flux transport (bulk_transport.cpp) instead of this
+# table's per-gas semi-Lagrangian loop. Per the P1 spec: ZERO decay, ALL
+# optics zero (invisible bulk — must not tint light or change any visual),
+# not flammable, no gameplay effect tag. diffusion=0.0 is inert here (the
+# conservative pair never reaches the semi-Lagrangian diffusion step) but
+# still must be a number — a config-schema requirement, not a behavior knob.
+[gases.o2]                     # molecular oxygen — bulk air, breathable half
+absorption     = [0.0, 0.0, 0.0]
+scatter_albedo = [0.0, 0.0, 0.0]
+diffusion      = 0.0                  # unused — conservative transport bypasses the SL loop
+decay          = 0.0                  # bulk air does not decay
+glow           = 0.0
+flammable      = false
+emits_when_hot = false
+effect         = ""                   # no gameplay tag (unit-side suffocation reads N directly, later)
+conservative   = true                 # EOS P1: donor-cell flux transport, not semi-Lagrangian
+
+[gases.inert_n2]                # nitrogen + "burnt products" — bulk air, inert half
+absorption     = [0.0, 0.0, 0.0]
+scatter_albedo = [0.0, 0.0, 0.0]
+diffusion      = 0.0                  # unused — conservative transport bypasses the SL loop
+decay          = 0.0                  # bulk air does not decay
+glow           = 0.0
+flammable      = false
+emits_when_hot = false
+effect         = ""                   # no gameplay tag
+conservative   = true                 # EOS P1: donor-cell flux transport, not semi-Lagrangian
 
 [display]
 panel_width = 250
@@ -414,7 +581,23 @@ flammable = false
 mobility = 1000
 light_atten = [0.0, 0.0, 0.0]
 heat_atten = 0.0
-conductivity = 0.0
+# EOS refactor P2 (docs/eos_refactor_design.md §4, §8 patch P2): air gets a
+# small NONZERO conductivity so the EXISTING whole-grid conduction pass
+# (temperature_solver.cpp, no solid/air branch) does air<->air AND the
+# solid<->air interface exchange for free — the sealed-room energy sink.
+# Chosen so the derived face_shift_table[air][air] == 11: THREE steps
+# slower than wood's face_shift_table[wood][wood] == 8 (the §9 "2-4 steps
+# slower than wood" bound), comfortably inside [SHIFT_MIN=2, NO_FACE=63].
+# Derivation (materials.py._build_conduction_tables, harmonic-mean face,
+# shift = round(-log2(hm/KAPPA_REF)), KAPPA_REF=50):
+#   face[air,air] = round(-log2(0.024/50)) = round(11.02) = 11
+# The air<->solid interface shifts (harmonic mean, dominated by the more
+# resistive material = air) land at ~10 for every solid — a hair FASTER
+# than air-air (11) but far slower than any solid-solid face (hull/steel
+# self-face == 2, wood-wood == 8): the physically-expected "air is the
+# bottleneck resistor" ordering. furniture keeps conductivity=0.0
+# (unaffected — NO_FACE either side, unchanged).
+conductivity = 0.024
 thermal_mass = 1     # air: irrelevant (conversion skips non-solids); 1 avoids a 0-shift guard
 ignition_temp = 0.0
 wave_reflect = 0.0
@@ -522,6 +705,26 @@ cover_exposure = 0.55   # soft cover (mechanics/03 §3): a shot crossing a crate
                         # unit connects with p=0.55, else the crate eats it (wall chew).
                         # STANDARD VALUE — Erik's dial; interesting range ~0.3 (bunker
                         # furniture) .. 0.8 (thin concealment)
+
+[materials.door_closed]
+# A6 (docs/a6_doors_v0_impl_2026-07-19.md §1): the ENTITY door's CLOSED
+# stamp — [materials.door] values with mobility = 0 (fully solid to movement
+# AND flow). permeability deliberately OMITTED so it derives 0 from the
+# occluding light_atten, exactly like door. MAT_DOOR stays the legacy
+# painted door (walkable-but-flow-solid) until the A7 migration.
+hp = 40
+flammable = false
+mobility = 0
+light_atten = [1.0, 1.0, 1.0]
+heat_atten = 1.0
+conductivity = 0.3
+thermal_mass = 8     # wood-like door: heats fast (heat >> 3)
+ignition_temp = 280.0
+wave_reflect = 0.5
+wave_absorb = 0.4
+blast_resist = 0.0
+burst_threshold = 2.0
+cover_exposure = 1.0   # solid wall: stops the march physically, no roll
 
 # =============================================================================
 # Weapons framework (mechanics/03 §4) — three data tables loaded by

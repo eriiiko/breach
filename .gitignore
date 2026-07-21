@@ -35,6 +35,9 @@ prototypes/fluid_pipe_only_48s.gif
 # Debug recordings
 debug_*.npz
 
+# Phase-0 3D-marine load-verify output (throwaway render)
+prototypes/anim_marine_verify_out.png
+
 # AI tools (large repos + models, re-clone with setup script)
 # Ignore the specific AI sub-repos and model dirs; leave tools/*.py / *.toml tracked.
 tools/content_aware_tiles/
@@ -51,6 +54,15 @@ tools/models/
 tools/resynth-tiles/
 tools/seamless-tile-inpainting/
 tools/texturelab/
+
+# EOS P5 bake-off output (GIFs/plots/raw traces are large + local-only;
+# the harness script and the composed index.html are tracked).
+tools/eos_p5_out/*
+!tools/eos_p5_out/index.html
+
+# Entity registry fallback snapshot — regenerated on every successful launch
+# (entity design §3b); a committed copy would go stale.
+entity_registry.json
 
 # OS files
 Thumbs.db

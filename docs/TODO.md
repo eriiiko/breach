@@ -4,7 +4,108 @@
 
 ---
 
+## Waiting on Erik (human-gated)
+
+- **W6 armory tuning session (weapons-wave finale, added 2026-07-08)** — branch
+  `weapons-w6-armory` (head `39b0077`) is built, gated (626 green, golden
+  `07c3f370…` unchanged) and pushed, but NOT merged: the human-test gate is
+  Erik's grand tuning session. Launch the playground from a `weapons-w6-armory`
+  checkout, cycle the armory with **N** (panel confirms the row), and turn the
+  dials — full walkthrough in `docs/playground_guide.md` §9 (on the branch).
+  Flagged calls: the chain-stun pair (`rof_interval_seconds` vs `status_seconds`
+  on `[weapons.arc_baton]`), the plasma-vs-zombie resist wash (bullet ×0.25 then
+  HEAT ×4 ≈ no-op), and flamethrower feel at the new 10 m / 20 m meter-based
+  ranges. After the blessing: merge W6, then the wave-close ritual.
+
+## Animation / character-render track (3D marines shipped 2026-07-21)
+
+**Shipped (arc `anim-phase0-3d-marines`, merged 2026-07-21):** render-only 3D
+marines/zombies over the 2D world (toggle **M**, default off), lit by the
+raycast light field so they match the ship, 2× scale, blob shadows; a
+tangent-free normal-map *capability* is present but default-off (the Quaternius
+model is untextured, so nothing to reveal). Docs: `marine_shader_foundation_design_2026-07-20.md`,
+`research/ml_animation_litsearch_2026-07-20.md`, `procedural_animation_brainstorm.md`.
+All render-only — no sim/determinism surface, auto-skipped in headless training.
+
+**Wanted next (Erik, 2026-07-21 — capture, later work):**
+- **Marine appearance system** — a clean per-unit *visual profile*: one model +
+  animation set + skin per unit type, with **variation** (later). Today it's a
+  single shared model + a flat group tint (green marines / red zombies via
+  `colDiffuse`). Generalize to `unit-type → {model, skin/material, clip set,
+  gait params}` so new looks are data, not code.
+- **Zombies look like their victim** — when a unit turns into a zombie
+  *mid-match*, it **keeps its own skin/model** (appearance unchanged) but
+  **swaps to the zombie animation** (shambling gait), optionally with a
+  **"bloodied" overlay**. **Pre-placed** zombies (spawned as zombies) get a
+  **dedicated zombie skin**. So: turning = animation swap (+ optional blood),
+  NOT a skin swap; pre-placed = special skin. (The current green/red tint is
+  fine for now.)
+
+- **Retire the M toggle + sprite path** (Erik, 2026-07-21) — make the 3D marines
+  the **default and only** unit render; drop the old 2D sprite fallback (the
+  `use_3d_units` toggle / `M` key / `UnitSprites` unit path) once confident. The
+  old sprites won't be needed anymore.
+- **Skin / appearance-asset pipeline** (Erik, 2026-07-21) — we need real
+  **textured skins** (marine, zombie, variations) to unlock the visual-profile
+  system above *and* the already-built normal-map capability (P2). The current
+  Quaternius model is untextured. Evaluate **AI generation** — mesh-texturing
+  tools that paint albedo + normal/PBR onto the existing rig's UVs (Meshy-style
+  AI texturing), or text-to-3D for whole rigged+textured models — vs
+  hand-authored. A focused tool eval (like the shader lit-search) is the right
+  first step when we pursue it.
+- **Body-part damage → animation/behaviour hook** — Erik's `01_units.md` note
+  (commit `350179c`): body parts carry hp/damaged states that drive a different
+  animation, speed, even behaviour (limping) via the ML animation system. Ties
+  render ↔ mechanics; needs refining/planning.
+
+**Deferred fixes/items from this arc:**
+- **Move-order animation bug (OURS, not the command system)** — when one marine
+  gets a move order, ALL marines' models play the WALK clip while staying put.
+  `UnitModelRenderer`'s motion inference mis-selects "walk" for stationary units
+  (likely `move_path` non-empty on all during planning, or the position-delta
+  test). Fix in the clip/motion-inference; its own session.
+- **P2 real asset drop-in** — the normal-map capability is inert until a
+  textured/normal-mapped marine asset exists: drop it over
+  `assets/models/marine/marine_normal_PLACEHOLDER.png`, flip
+  `MARINE_USE_NORMAL_DEFAULT` (or `marine_shader.set_use_normal(True)`), tune
+  `MARINE_NORMAL_STRENGTH` — no code change.
+- **`fire`/`dead` clips dormant** — wired in `CLIP_MAP` but unused (firing not
+  inferred from sim; dead units skipped for sprite parity). One-line extensions.
+- **GPU skinning (perf lever, deferred)** — CPU-skinning soft ceiling ~20 units;
+  when counts grow, rebuild the raylib binding with `-DSUPPORT_GPU_SKINNING=ON`
+  and flip the `_draw_one` seam (the fragment/lighting half is unchanged). Not
+  needed yet.
+- **Ceiling-lamp z** — lights carry a *constant* vertical component
+  (`u_light_z`); a true overhead shaft wants per-lamp/per-tile z. Lighting
+  nicety, low prio.
+
 ## Pending — small (background, queue up next session)
+
+- **Blast-tuple wart (Arc A rider, A6, 2026-07-19) — direction DECIDED
+  2026-07-19 at physics close-out:** `apply_explosion`'s structural wall
+  damage gates on the hardcoded tuple at `physics.py:104`
+  (`MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_DOOR_CLOSED`) instead of the material
+  table. Fix: NOT tuple-widening — a per-material **blast-pressure-threshold
+  column** in the material table (damage only when local blast amplitude ≥
+  threshold; Erik's intent: steel shrugs off many small waves, one big one
+  can bite; also enables brittle vs space-rated glass as two rows). Defaults
+  reproduce current behavior (excluded materials ≈ ∞ threshold —
+  digest-safe). Implement + tune as a chat-sized HUMAN-TEST rider AFTER the
+  residency patch (priority ledger stack #1).
+
+- **Baker writeback onto level_lib (Arc A rider, A2 accepted gap,
+  2026-07-19)** — `bake_level_art.write_bake_blocks` is still its own
+  non-atomic `[art]`/`[bake]` writer; entity design §3c says level_lib is
+  THE data layer, all clients. Fold it in at Arc C (editor arc). Ctrl+S
+  re-records mtime+hash after baking, so staleness tracking stays honest
+  meanwhile.
+
+- **Legacy-level entity migration (Arc A ruling 2 remainder, 2026-07-19)** —
+  only `test_level` was migrated (A7). `bake_demo` waits until its committed
+  baked art rebakes (a 3→7 tilemap rewrite would desync tilemap ↔ baked
+  PNGs); `unhcr_vessel`/`unhcr_vessel_2`/`playground` migrate at Erik's
+  choosing, likely Arc C. Each later migration is a new digest event with
+  its own rationale (`docs/archive/a7_rebaseline_rationale_2026-07-19.md`).
 
 - **Fire never destroys furniture (audit rider, weapons W2, 2026-07-05)** —
   the C++ fire's burn-through list is `is_wall`-gated, so a burning crate

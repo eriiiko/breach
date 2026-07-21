@@ -1,5 +1,11 @@
 # CUDA-S8a — GPU residency (the payoff stage)
 
+> **SUPERSEDED (2026-07-19):** this spec is pre-EOS — it targets the retired two-field
+> `atmosphere`+`wave_p` IMEX tick and the S1–S7 solver chain. The live spec is
+> `cuda_s8a_residency_spec_2026-07-19.md` (post-EOS rewrite; carries the sensor-gather
+> contract + the structural dirty-set rider). Kept for the record; the spike results,
+> Q4 mirror decision, and `.data.ptr` pattern cited here remain valid and are re-cited there.
+
 **Status:** in progress (branch `cuda-s8a-residency`).
 **Goal:** keep the synced physics fields **GPU-resident across the whole tick** — allocate
 device buffers once, run the entire tick's kernels on them in place (no per-call malloc /
