@@ -6,16 +6,17 @@
 
 ## Waiting on Erik (human-gated)
 
-- **W6 armory tuning session (weapons-wave finale, added 2026-07-08)** — branch
-  `weapons-w6-armory` (head `39b0077`) is built, gated (626 green, golden
-  `07c3f370…` unchanged) and pushed, but NOT merged: the human-test gate is
-  Erik's grand tuning session. Launch the playground from a `weapons-w6-armory`
-  checkout, cycle the armory with **N** (panel confirms the row), and turn the
-  dials — full walkthrough in `docs/playground_guide.md` §9 (on the branch).
-  Flagged calls: the chain-stun pair (`rof_interval_seconds` vs `status_seconds`
-  on `[weapons.arc_baton]`), the plasma-vs-zombie resist wash (bullet ×0.25 then
-  HEAT ×4 ≈ no-op), and flamethrower feel at the new 10 m / 20 m meter-based
-  ranges. After the blessing: merge W6, then the wave-close ritual.
+- **Armory tuning session — AFTER mission 1 exists (re-scoped 2026-07-21)** —
+  W6 merged with standard values (PR #3, `f482131`); Erik's call: balance is
+  meaningless against an empty playground, so the grand tuning session waits
+  until weapons → units → enemies → a first mission are all in place, then
+  tune against real encounters. Tool: **N** cycles the selected unit's weapon
+  (walkthrough `docs/playground_guide.md` §9). Standing dial list: the
+  chain-stun pair (`rof_interval_seconds` vs `status_seconds` on
+  `[weapons.arc_baton]`), the plasma-vs-zombie resist wash (bullet ×0.25 then
+  HEAT ×4 ≈ no-op), flamethrower feel at the 10 m / 20 m meter-based ranges —
+  plus whatever mission 1 teaches. Quick residual: 30 s look at the W6 jet
+  fans + 3D marines rendered together (never exercised in one window).
 
 ## Animation / character-render track (3D marines shipped 2026-07-21)
 
