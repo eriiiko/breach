@@ -47,8 +47,9 @@ if _SRC_DIR.is_dir() and str(_SRC_DIR) not in sys.path:
 # §3b). The entities package is import-light (stdlib-only, CI-tested), so
 # this pulls in no compiled physics and never simulation.simulation.
 from simulation.entities import (  # noqa: E402
-    INPUT_EDGE, INPUT_HELD, KIND_ENTITY_REF, REGISTRY as ENTITY_REGISTRY,
-    all_signals, effective_defaults, field_value_error,
+    INPUT_AND, INPUT_EDGE, INPUT_HELD, KIND_ENTITY_REF,
+    REGISTRY as ENTITY_REGISTRY, all_signals, effective_defaults,
+    field_value_error,
 )
 
 
@@ -276,10 +277,11 @@ class Wire:
 
 # Input modes that accept MANY driving wires (impl doc §2d). A target input
 # whose mode is NOT in this set is single-arity (exactly one wire) — the
-# generic §1b value-input arity check keys on this. In B1 only INPUT_HELD /
-# INPUT_EDGE exist and both are here, so the check is a no-op until B2 adds the
-# single-arity SINGLE mode (and the many-wire AND mode joins this set).
-_MANY_WIRE_MODES = frozenset({INPUT_HELD, INPUT_EDGE})
+# generic §1b value-input arity check keys on this. B2 makes the check LIVE:
+# INPUT_AND joins the many-wire set (gate_and), while INPUT_SINGLE
+# (decider/filter/gate_not `in`) is single-arity and thus enforced to exactly
+# one wire; a second driving wire hard-errors.
+_MANY_WIRE_MODES = frozenset({INPUT_HELD, INPUT_EDGE, INPUT_AND})
 
 
 def _reject_unit_reference(name: str, unit_names: set, *, where: str,

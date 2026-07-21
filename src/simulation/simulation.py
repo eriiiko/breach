@@ -91,6 +91,10 @@ from simulation.door_system import build_runtime_entities, sweep_doors
 from simulation.entities.door import DOOR_OPEN
 from simulation.entities.serialize import entity_carrier
 from simulation.signal_bus import build_signal_bus
+from simulation.logic_nodes import (
+    aggregate_input, build_logic_nodes, sweep_logic_nodes,
+)
+from simulation.entities.schema import INPUT_HELD
 from simulation.gamemap import GameMap, MAT_DOOR, MAT_DOOR_CLOSED
 from simulation.movement import FootprintSamples, default_speed
 from simulation.orders import (
@@ -245,6 +249,7 @@ class Simulation:
         self._signal_bus = build_signal_bus(self.level)
         self._entity_by_ordinal = {}
         self._door_drives = {}
+        self._logic_nodes = []
         if self._signal_bus is not None:
             self._build_logic_tables()
 
@@ -606,13 +611,20 @@ class Simulation:
     # Arc B logic layer (impl doc §2) — built only when the bus exists
     # ------------------------------------------------------------------
     def _build_logic_tables(self) -> None:
-        """Precompute the ordinal→entity map + the per-door wire drive table
-        (impl doc §2b/§2d). Called from ``_reset_internal`` iff a bus exists.
+        """Precompute the ordinal→entity map, the node evaluator list, and the
+        per-door wire drive table (impl doc §2b/§2d). Called from
+        ``_reset_internal`` iff a bus exists.
 
-        ``_door_drives`` maps a WIRED door's ordinal to its open/close driving
-        slot-index lists (from the resolved ``level.wires``, D3): only doors
-        with an incoming open/close wire are wire-driven; every other door
-        keeps its Arc-A ``want_open`` latch + the dev O-key."""
+        ``_logic_nodes`` is the ordinal-ordered node evaluator list for the
+        9e(b) sweep; building it also REPLACES each ``filter`` instance in
+        ``self.entities`` with its runtime wrapper (the EMA row, §5), so
+        ``_entity_by_ordinal`` is rebuilt AFTER. ``_door_drives`` maps a WIRED
+        door's ordinal to its open/close driving slot-index lists (from the
+        resolved ``level.wires``, D3): only doors with an incoming open/close
+        wire are wire-driven; every other door keeps its Arc-A ``want_open``
+        latch + the dev O-key."""
+        # Node evaluators (may patch self.entities with FilterRuntime wrappers).
+        self._logic_nodes = build_logic_nodes(self)
         self._entity_by_ordinal = {int(e.ordinal): e for e in self.entities}
         bus = self._signal_bus
         door_ordinals = {int(d.ordinal) for d in self._doors}
@@ -655,8 +667,11 @@ class Simulation:
             drv = self._door_drives.get(int(d.ordinal))
             if drv is None:
                 continue                  # unwired door: Arc-A latch (D3)
-            close_active = any(int(bus.pub[i]) != 0 for i in drv["close"])
-            open_active = any(int(bus.pub[i]) != 0 for i in drv["open"])
+            # OR/held aggregation via the shared helper (§2d) — the same rule
+            # the node sweep uses, so the door input resolve is not a bespoke
+            # second implementation.
+            close_active = aggregate_input(bus, drv["close"], INPUT_HELD) != 0
+            open_active = aggregate_input(bus, drv["open"], INPUT_HELD) != 0
             if close_active:              # close beats open (safe state)
                 d.want_open = False
             elif open_active:
@@ -954,22 +969,24 @@ class Simulation:
         #    dormancy guarantee, §8).
         # Sub-order per tick when the bus exists (§2b): (a) sample + emit —
         # write every wired door's is_open (and wired entities' free alive)
-        # into pub BEFORE the logic sweep; (b) logic sweep — EMPTY in B1 (no
-        # node classes); (c) input resolve — drive wired doors' want_open
-        # (OR/held, close-beats-open); (d) actuator sweep — pumps (none in B1)
-        # then the door structural sweep; (e) swap pub[node-signals] ← stg
-        # (no-op in B1). BEFORE the recorder snapshot so recorder/digest see
-        # state consistent with this tick's flips (a6 doors §5.1). NOT gated on
-        # physics_runner — flips are pure gamemap edits; effects reach the
+        # into pub BEFORE the logic sweep; (b) logic sweep — each node in
+        # ordinal order reads pub, writes stg[out] (B2); (c) input resolve —
+        # drive wired doors' want_open (OR/held, close-beats-open); (d) actuator
+        # sweep — pumps (none yet) then the door structural sweep; (e) swap
+        # pub[node-signals] ← stg (node outputs become readable next tick — one
+        # tick per hop, §2c). BEFORE the recorder snapshot so recorder/digest
+        # see state consistent with this tick's flips (a6 doors §5.1). NOT gated
+        # on physics_runner — flips are pure gamemap edits; effects reach the
         # solvers next tick via the step-6 restamp.
         if self._signal_bus is not None:
             self._signal_emit()             # (a) is_open/alive → pub
-            # (b) logic sweep: no node classes exist in B1
+            if self._logic_nodes:
+                sweep_logic_nodes(self)     # (b) node sweep (ordinal order)
             self._resolve_door_inputs()     # (c) drive wired doors' want_open
         if self._doors:
             sweep_doors(self)               # (d) door structural sweep
         if self._signal_bus is not None:
-            self._signal_bus.swap_node_signals()   # (e) no-op in B1
+            self._signal_bus.swap_node_signals()   # (e) pub[node-slots] ← stg
 
         # Recorder snapshot. A4: the entity list rides along (presence-gated
         # inside the recorder — an entity-free level's .npz is byte-identical).

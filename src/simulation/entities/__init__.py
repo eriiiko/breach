@@ -17,11 +17,11 @@ anywhere; the sim loop does not know this package exists yet.
 from __future__ import annotations
 
 from simulation.entities.schema import (  # noqa: F401
-    ALIVE_SIGNAL, ALL_KINDS, Entity, EntitySchemaError, Field, INPUT_EDGE,
-    INPUT_HELD, INSTANCE_FIELDS, InputDecl, KIND_BOOL, KIND_COLOR_RGB,
-    KIND_ENTITY_REF, KIND_ENUM, KIND_FLOAT_RENDER, KIND_INT, KIND_LENGTH_M,
-    KIND_Q16, KIND_ROSTER, KIND_STR, KIND_STR_LIST, NUMERIC_KINDS, REGISTRY,
-    Signal, all_signals, field_value_error, register,
+    ALIVE_SIGNAL, ALL_INPUT_MODES, ALL_KINDS, Entity, EntitySchemaError, Field,
+    INPUT_AND, INPUT_EDGE, INPUT_HELD, INPUT_SINGLE, INSTANCE_FIELDS, InputDecl,
+    KIND_BOOL, KIND_COLOR_RGB, KIND_ENTITY_REF, KIND_ENUM, KIND_FLOAT_RENDER,
+    KIND_INT, KIND_LENGTH_M, KIND_Q16, KIND_ROSTER, KIND_STR, KIND_STR_LIST,
+    NUMERIC_KINDS, REGISTRY, Signal, all_signals, field_value_error, register,
 )
 from simulation.entities.registry import (  # noqa: F401
     ENTITIES_TOML, EntityTomlError, REGISTRY_JSON, apply_tuning_overlay,
@@ -38,3 +38,4 @@ from simulation.entities import light as _light  # noqa: F401  (registers the ex
 from simulation.entities import zones as _zones  # noqa: F401  (registers breach_site/extraction_zone, A8)
 from simulation.entities import door as _door    # noqa: F401  (registers the door class, A6)
 from simulation.entities import controls as _controls  # noqa: F401  (registers button/terminal, B1 — inert)
+from simulation.entities import nodes as _nodes  # noqa: F401  (registers decider/gate_*/filter, B2)

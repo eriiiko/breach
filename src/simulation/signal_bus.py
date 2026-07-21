@@ -102,16 +102,60 @@ class SignalBus:
 def build_signal_bus(level_data):
     """Build the SignalBus for a level, or ``None`` when no logic exists (D1).
 
-    In B1 the "logic exists" union ``sensors ∪ nodes ∪ wires`` reduces to
-    ``wires``: the bus is built iff the level declares at least one resolved
-    wire. The slot table is the set of distinct wire SOURCES
-    ``(source_ordinal, signal)`` — the only signals a consumer reads this arc —
-    sorted ``(ordinal, name)``. Sensor/node emitters add slots in later
-    patches; none exist yet, so there are no node-output slots to swap.
+    The "logic exists" union is ``sensors ∪ nodes ∪ wires`` (§2a); B2 grows the
+    B1 wires-only gate to ``nodes ∪ wires`` (sensor emitters join in B3). The
+    bus is built iff the level declares at least one resolved wire OR one logic
+    node. The slot table (§2a) enumerates only signals that are
+
+    - **wire-referenced** — distinct wire SOURCES ``(source_ordinal, signal)``;
+    - **node-emitted** — every LOGIC-NODE instance's ``out`` (its
+      prev-read/next-write output, swapped at 9e(e)); AND
+    - **require_alive sources** — the ``alive`` slot of the source feeding a
+      ``require_alive`` decider's ``in`` wire (D4), so 9e(a) can emit it and
+      the decider read it current-tick. ``alive`` slots never enter
+      ``__signals__`` (``digest_rows`` excludes them, A4 c7).
+
+    — never "every entity's every signal". Slots are ordered ``(ordinal,
+    name)`` (identical to ``serialize_signal_state``'s sort). Node-output slot
+    indices are passed as ``node_slots`` so :meth:`SignalBus.swap_node_signals`
+    swaps exactly those (sensor / alive / is_open slots are refreshed at 9e(a),
+    never swapped).
     """
+    from simulation.entities import REGISTRY
+
     wires = getattr(level_data, "wires", None) or []
-    if not wires:
-        return None                       # no wires ⇒ no bus ⇒ dormant (D1)
-    sources = {(int(w.source_ordinal), str(w.signal)) for w in wires}
-    slots = sorted(sources, key=lambda s: (s[0], s[1]))
-    return SignalBus(slots)
+    entities = getattr(level_data, "entities", None) or []
+    node_ents = [e for e in entities
+                 if getattr(REGISTRY.get(e.class_name), "LOGIC_NODE", False)]
+    if not wires and not node_ents:
+        return None                       # no wires, no nodes ⇒ dormant (D1)
+
+    slots: set = set()
+    node_keys: set = set()                # the swapped (node-output) slots
+    for w in wires:
+        slots.add((int(w.source_ordinal), str(w.signal)))
+    for e in node_ents:
+        cls = REGISTRY[e.class_name]
+        for sig in cls.SIGNALS:           # a node's `out` (prev-read/next-write)
+            key = (int(e.ordinal), str(sig.name))
+            slots.add(key)
+            node_keys.add(key)
+    # require_alive decider sources need an `alive` slot to read at 9e(b) (D4).
+    for e in node_ents:
+        if e.class_name == "decider" and e.fields.get("require_alive"):
+            src = _decider_in_source(wires, int(e.ordinal))
+            if src is not None:
+                slots.add((src, ALIVE_NAME))
+
+    ordered = sorted(slots, key=lambda s: (s[0], s[1]))
+    node_slots = tuple(i for i, s in enumerate(ordered) if s in node_keys)
+    return SignalBus(ordered, node_slots=node_slots)
+
+
+def _decider_in_source(wires, decider_ordinal):
+    """The source ordinal of the ``in`` wire feeding one decider (its `in` is
+    SINGLE — at most one wire, §1b). ``None`` when the input is unwired."""
+    for w in wires:
+        if int(w.target_ordinal) == int(decider_ordinal) and w.input == "in":
+            return int(w.source_ordinal)
+    return None
