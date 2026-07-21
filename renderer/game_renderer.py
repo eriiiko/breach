@@ -243,6 +243,12 @@ class GameRenderer:
         # Frame timing
         self.last_frame_ms = 0.0
         self.last_raycast_ms = 0.0
+        # Fire-light HUD counter (Fire & Heat Beauty B1): kept count, NMS peak
+        # count, and the cap — so a tuning session SEES when the brightest-K cap
+        # truncates (no silent caps). Set each frame from main.py's sources block.
+        self.fire_light_count = 0
+        self.fire_light_peaks = 0
+        self.fire_light_cap = 0
         # Render-animation epoch: the water overlay's ambient sines take a
         # seconds clock; epoch-relative keeps the float32 sine phases small.
         # Wall-clock (animates through pause) — render-only, determinism-
@@ -997,6 +1003,17 @@ class GameRenderer:
         draw_text("Ctrl+R reload config", x, y, 11,
                   color=(140, 140, 160, 255))
         y += 14
+
+    def set_fire_light_stats(self, count: int, peaks: int, cap: int) -> None:
+        """Record this frame's fire-light counts for the debug HUD (B1 §3).
+
+        ``count`` = lights actually emitted (<= cap), ``peaks`` = NMS peaks
+        before the cap, ``cap`` = max_lights. count < peaks means the cap
+        truncated — surfaced on the HUD so tuning sessions see saturation.
+        """
+        self.fire_light_count = int(count)
+        self.fire_light_peaks = int(peaks)
+        self.fire_light_cap = int(cap)
 
     # ---- input ----------------------------------------------------------
 

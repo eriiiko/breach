@@ -62,6 +62,7 @@ from level_loader import load as load_level
 from level_lights import (light_source_params, monotonic_total_tick,
                           partition_lights)
 from renderer import GameRenderer
+from renderer.fire_lights import FireLightSelector
 from renderer.game_renderer import RenderConfig
 from simulation import Simulation
 from simulation.unit import Unit
@@ -330,6 +331,13 @@ def main():
         print(f"  Lights: {len(static_lights)} static + "
               f"{len(beacon_lights)} beacon from level.toml")
 
+    # Fire light sources (Fire & Heat Beauty B1): the brightest-K hot tiles
+    # become omni ray-traced lights each frame, colour + intensity from the
+    # renderer's shared black-body ramp. RENDER-ONLY — they never write the
+    # synced heat channel (see renderer/fire_lights.py). Built once from
+    # [render.fire_lights]; queried per frame in the sources block below.
+    fire_light_selector = FireLightSelector.from_config(CFG)
+
     # Entity registry (entity design §3b): apply the dev tuning overlay
     # (hard-errors on schema-in-TOML mistakes, like a bad config.toml), then
     # rewrite the editor's last-good fallback — a successful launch is the
@@ -385,6 +393,15 @@ def main():
                         light_source_params(e, total_tick, sim_time_per_tick))
                     for e in beacon_lights
                 ]
+            # Fire lights (B1 §3): brightest-K hot tiles -> omni ray-traced
+            # sources, coloured by the black-body ramp. RENDER-ONLY (heat=0.0).
+            # Same setattr path as level lights; the peak/kept counts feed the
+            # HUD light counter (no silent caps).
+            fire_params, fire_peaks = fire_light_selector.select(
+                sim.gmap.temperature, renderer.blackbody_ramp)
+            sources += [_build_light_source(p) for p in fire_params]
+            renderer.set_fire_light_stats(len(fire_params), fire_peaks,
+                                          fire_light_selector.max_lights)
             mouse_f = renderer.mouse_to_tile_float()
             if mouse_f is not None:
                 src = bp.LightSource()

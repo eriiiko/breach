@@ -572,6 +572,22 @@ kelvin_ref = 3000.0        # exposure reference temperature (Macklin)
 intensity_exponent = 4.0   # Stefan-Boltzmann flavour (T⁴)
 intensity_max = 8.0        # HDR headroom pre-tonemap (16F pipeline + ACES; NO bloom)
 
+# Fire light sources (renderer/fire_lights.py; design §3). Tier 2 of the fire
+# glow: the brightest-K hot tiles become omni ray-traced light sources so fire
+# lights rooms, walls, and marines (the marine shader samples the same light
+# field). Candidates (T_game >= t_light_min) -> 3x3 non-max suppression ->
+# brightest max_lights by temperature. RENDER-ONLY: these NEVER write the synced
+# heat channel (heat is cast separately in the sim). Cost = sum over sources of
+# ceil(2π·range) rays, so max_lights (not range) is the budget lever — range is
+# LONG on purpose (geometry caps it; big-room illumination is the point).
+[render.fire_lights]
+enabled = true             # master on/off for fire lights
+t_light_min = 250.0        # game-ΔT candidate threshold
+nms_window = 3             # non-max-suppression window (3 or 5; widen if oversubscribed)
+max_lights = 16            # brightest-K cap (the budget lever)
+light_range = 18.0         # omni reach in tiles (LONG on purpose — Erik ruling)
+light_gain = 1.0           # multiplies the black-body intensity into light weight
+
 # Material property table (named-key format, ch.02 — Material System).
 # One [materials.<name>] row per material id; columns indexed into per-id
 # arrays by simulation.materials.MaterialTable.
