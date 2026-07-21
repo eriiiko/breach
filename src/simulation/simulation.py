@@ -94,6 +94,7 @@ from simulation.signal_bus import build_signal_bus
 from simulation.logic_nodes import (
     aggregate_input, build_logic_nodes, sweep_logic_nodes,
 )
+from simulation.sensor_system import build_sensors, sample_sensors
 from simulation.entities.schema import INPUT_HELD
 from simulation.gamemap import GameMap, MAT_DOOR, MAT_DOOR_CLOSED
 from simulation.movement import FootprintSamples, default_speed
@@ -250,6 +251,8 @@ class Simulation:
         self._entity_by_ordinal = {}
         self._door_drives = {}
         self._logic_nodes = []
+        self._sensors = []
+        self._sensor_accessor = None
         if self._signal_bus is not None:
             self._build_logic_tables()
 
@@ -625,6 +628,11 @@ class Simulation:
         latch + the dev O-key."""
         # Node evaluators (may patch self.entities with FilterRuntime wrappers).
         self._logic_nodes = build_logic_nodes(self)
+        # Sensor runtimes + the §5a accessor (B3): ordinal-order samplers read
+        # at 9e(a). Built AFTER the node build (sensors are plain
+        # EntityInstances, never replaced) — the accessor's site index is
+        # frozen from the field sensors' resolved tiles.
+        self._sensors = build_sensors(self)
         self._entity_by_ordinal = {int(e.ordinal): e for e in self.entities}
         bus = self._signal_bus
         door_ordinals = {int(d.ordinal) for d in self._doors}
@@ -980,6 +988,8 @@ class Simulation:
         # solvers next tick via the step-6 restamp.
         if self._signal_bus is not None:
             self._signal_emit()             # (a) is_open/alive → pub
+            if self._sensors:
+                sample_sensors(self)        # (a) sensors sample world → pub
             if self._logic_nodes:
                 sweep_logic_nodes(self)     # (b) node sweep (ordinal order)
             self._resolve_door_inputs()     # (c) drive wired doors' want_open

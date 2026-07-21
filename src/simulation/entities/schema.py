@@ -189,6 +189,14 @@ class Entity(abc.ABC):
     # leave this False. build_signal_bus reads it to (i) count node instances
     # toward the "logic exists" union and (ii) mark the swapped slots.
     LOGIC_NODE: bool = False
+    # Arc B §4 (B3): True for SENSOR classes (the field sensors, `clock`,
+    # `sensor_motion`) whose free-standing `value` signal is SAMPLED from the
+    # world at 9e(a) and published to `pub` — NOT a node output (never swapped;
+    # refreshed every tick, and a DEAD sensor writes 0, fail-deadly, D13).
+    # build_signal_bus reads it to (i) count sensor instances toward the "logic
+    # exists" union (sensors ∪ nodes ∪ wires ≠ ∅, D1) and (ii) give each
+    # sensor's `value` a bus slot so 9e(a) can write it.
+    SENSOR: bool = False
 
     @classmethod
     def runtime_digest_rows(cls, entity) -> tuple:
@@ -394,6 +402,10 @@ def _validate_class(cls: type) -> None:
     if not isinstance(cls.LOGIC_NODE, bool):
         raise EntitySchemaError(
             f"entity class '{name}': LOGIC_NODE must be a bool")
+
+    if not isinstance(cls.SENSOR, bool):
+        raise EntitySchemaError(
+            f"entity class '{name}': SENSOR must be a bool")
 
 
 def register(cls=None, *, registry: dict = None):

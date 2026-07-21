@@ -67,33 +67,47 @@ CHANNEL_ORDER = (
 
 
 class SiteIndex:
-    """The static site→tile map (impl doc §3): ordinal-ordered sample sites.
+    """The static site→(tile, channel) map (impl doc §3): ordinal-ordered
+    sample sites.
 
-    Built once at load from the sensors' authored sample tiles. B1 ships the
-    container + interface; no sensor populates it until B3, so it is normally
-    empty. ``sites`` is a tuple of ``(fy, fx)`` in ordinal (file) order — the
-    frozen site ordering the resident gather buffer will mirror.
+    Built once at load from the FIELD sensors' resolved sample tiles (B3;
+    ``clock`` / ``sensor_motion`` do not go through the accessor, §3/§4).
+    ``sites`` is a tuple of ``(fy, fx)`` and ``channels`` a parallel tuple of
+    :class:`Channel`, both in ordinal (file) order — the frozen site ordering
+    the later resident ``(n_sites × n_channels)`` gather buffer will mirror.
+    The CPU-mirror path samples with an explicit ``(channel, fy, fx)`` and does
+    NOT consult this map; it is the FROZEN seam artifact the resident kernel
+    binds to (escalation trigger 1).
     """
 
-    def __init__(self, sites=()):
+    def __init__(self, sites=(), channels=()):
         self.sites = tuple((int(fy), int(fx)) for fy, fx in sites)
+        self.channels = tuple(channels)
+        if self.channels and len(self.channels) != len(self.sites):
+            raise ValueError("SiteIndex sites / channels length mismatch")
 
     def __len__(self) -> int:
         return len(self.sites)
 
 
 def build_site_index(sensors=()) -> SiteIndex:
-    """The static site index for a sensor list, in ordinal order (§3).
+    """The static site index for a FIELD-sensor list, in ordinal order (§3).
 
-    B1: sensors is empty (no sensor classes until B3), so this returns an
-    empty index. The signature + ordering rule are frozen now.
+    Each sensor contributes its resolved ``sample_tile`` ``(fy, fx)`` and its
+    ``channel`` (a :class:`Channel`). Callers pass the field sensors already in
+    ordinal order (``clock`` / ``sensor_motion`` are excluded — they never read
+    a field). B1 passed an empty list (no sensor classes yet); the signature +
+    ordering rule were frozen then and are unchanged.
     """
     sites = []
+    channels = []
     for s in sensors:                     # ordinal order (caller pre-sorts)
         tile = getattr(s, "sample_tile", None)
-        if tile is not None:
-            sites.append((int(tile[0]), int(tile[1])))
-    return SiteIndex(sites)
+        if tile is None:
+            continue
+        sites.append((int(tile[0]), int(tile[1])))
+        channels.append(getattr(s, "channel", None))
+    return SiteIndex(sites, channels)
 
 
 class EntityFieldAccessor:

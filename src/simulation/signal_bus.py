@@ -102,14 +102,17 @@ class SignalBus:
 def build_signal_bus(level_data):
     """Build the SignalBus for a level, or ``None`` when no logic exists (D1).
 
-    The "logic exists" union is ``sensors ∪ nodes ∪ wires`` (§2a); B2 grows the
-    B1 wires-only gate to ``nodes ∪ wires`` (sensor emitters join in B3). The
-    bus is built iff the level declares at least one resolved wire OR one logic
-    node. The slot table (§2a) enumerates only signals that are
+    The "logic exists" union is ``sensors ∪ nodes ∪ wires`` (§2a); B3 completes
+    it — the bus is built iff the level declares at least one resolved wire OR
+    one logic node OR one SENSOR. The slot table (§2a) enumerates only signals
+    that are
 
     - **wire-referenced** — distinct wire SOURCES ``(source_ordinal, signal)``;
     - **node-emitted** — every LOGIC-NODE instance's ``out`` (its
-      prev-read/next-write output, swapped at 9e(e)); AND
+      prev-read/next-write output, swapped at 9e(e));
+    - **sensor-emitted** — every SENSOR instance's ``value`` (SAMPLED and
+      published at 9e(a); NOT a node output — never swapped, refreshed every
+      tick, a dead sensor writes 0, D13); AND
     - **require_alive sources** — the ``alive`` slot of the source feeding a
       ``require_alive`` decider's ``in`` wire (D4), so 9e(a) can emit it and
       the decider read it current-tick. ``alive`` slots never enter
@@ -127,8 +130,10 @@ def build_signal_bus(level_data):
     entities = getattr(level_data, "entities", None) or []
     node_ents = [e for e in entities
                  if getattr(REGISTRY.get(e.class_name), "LOGIC_NODE", False)]
-    if not wires and not node_ents:
-        return None                       # no wires, no nodes ⇒ dormant (D1)
+    sensor_ents = [e for e in entities
+                   if getattr(REGISTRY.get(e.class_name), "SENSOR", False)]
+    if not wires and not node_ents and not sensor_ents:
+        return None                       # no wires/nodes/sensors ⇒ dormant (D1)
 
     slots: set = set()
     node_keys: set = set()                # the swapped (node-output) slots
@@ -140,6 +145,9 @@ def build_signal_bus(level_data):
             key = (int(e.ordinal), str(sig.name))
             slots.add(key)
             node_keys.add(key)
+    for e in sensor_ents:                 # a sensor's `value` (sampled at 9e a)
+        for sig in REGISTRY[e.class_name].SIGNALS:
+            slots.add((int(e.ordinal), str(sig.name)))   # NOT a node slot
     # require_alive decider sources need an `alive` slot to read at 9e(b) (D4).
     for e in node_ents:
         if e.class_name == "decider" and e.fields.get("require_alive"):
