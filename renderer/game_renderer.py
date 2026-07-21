@@ -234,6 +234,12 @@ class GameRenderer:
         # as the default; toggle with T. RENDER-ONLY.
         self.show_temperature = bool(getattr(
             getattr(CFG, "render", None), "blackbody_overlay_on", True))
+        # Fire light sources (B1 §3) — live A/B gate for the ray-traced fire
+        # glow, seeded from [render.fire_lights] enabled; toggle with L. main.py
+        # skips the fire-light cast when this is off. RENDER-ONLY.
+        self.show_fire_lights = bool(getattr(
+            getattr(getattr(CFG, "render", None), "fire_lights", None),
+            "enabled", True))
         # Water OPTICS pass (graphics/water_rendering.md) — ON by default; the
         # GLSL pass is dormant-safe (alpha 0 on dry tiles), so a dry ship looks
         # identical whether it's on or off. Toggle with O to disable the water
@@ -956,6 +962,13 @@ class GameRenderer:
         draw_text(f"Raycast: {self.last_raycast_ms:.1f} ms", x, y, 14)
         y += 18
         draw_text(f"Frame:   {self.last_frame_ms:.1f} ms", x, y, 14)
+        y += 18
+        # Fire-light counter (B1 §3): kept / NMS-peaks, flag when the cap bites.
+        capped = self.fire_light_count < self.fire_light_peaks
+        fl_color = (255, 200, 120, 255) if capped else (180, 200, 180, 255)
+        fl_txt = (f"Fire lights: {self.fire_light_count}/{self.fire_light_peaks}"
+                  f"  cap {self.fire_light_cap}" + ("  CAP!" if capped else ""))
+        draw_text(fl_txt, x, y, 14, color=fl_color)
         y += 28
         draw_text("Toggles:", x, y, 14, color=(180, 200, 255, 255))
         y += 20
@@ -968,6 +981,7 @@ class GameRenderer:
             ("F6 coords",      self.show_debug_coords),
             ("F7 pressure",    self.show_pressure),
             ("T  temperature", self.show_temperature),
+            ("L  fire lights", self.show_fire_lights),
             ("O  water optics", self.show_water),
             ("M  3D units",    self.cfg.use_3d_units),
             ("B  bilinear",    self.lighting.bilinear),
@@ -1032,9 +1046,12 @@ class GameRenderer:
             self.show_debug_coords = not self.show_debug_coords
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F7):
             self.show_pressure = not self.show_pressure
-        # T: debug temperature overlay (black-body ramp over gmap.temperature).
+        # T: emissive black-body temperature overlay (over gmap.temperature).
         if rl.is_key_pressed(rl.KeyboardKey.KEY_T):
             self.show_temperature = not self.show_temperature
+        # L: fire light sources (B1) — A/B the ray-traced fire glow live.
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_L):
+            self.show_fire_lights = not self.show_fire_lights
         # V: toggle the water optics pass (GLSL Fresnel/GGX/refraction). The
         # pass is dormant-safe (alpha 0 on dry tiles); toggling only matters
         # once water is on the floor — disable to A/B against the bare floor.

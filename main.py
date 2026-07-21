@@ -396,9 +396,12 @@ def main():
             # Fire lights (B1 §3): brightest-K hot tiles -> omni ray-traced
             # sources, coloured by the black-body ramp. RENDER-ONLY (heat=0.0).
             # Same setattr path as level lights; the peak/kept counts feed the
-            # HUD light counter (no silent caps).
-            fire_params, fire_peaks = fire_light_selector.select(
-                sim.gmap.temperature, renderer.blackbody_ramp)
+            # HUD light counter (no silent caps). Gated by the live L toggle.
+            if renderer.show_fire_lights:
+                fire_params, fire_peaks = fire_light_selector.select(
+                    sim.gmap.temperature, renderer.blackbody_ramp)
+            else:
+                fire_params, fire_peaks = [], 0
             sources += [_build_light_source(p) for p in fire_params]
             renderer.set_fire_light_stats(len(fire_params), fire_peaks,
                                           fire_light_selector.max_lights)
