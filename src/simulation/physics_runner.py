@@ -912,6 +912,16 @@ class PhysicsRunner:
         # yields (row, col) pairs in C order, i.e. row-major.
         ys, xs = np.nonzero(burning)
         from simulation import fire_fixed
+        # S8c item 1 (fire-FPS fix): on the CUDA path, COLLECT every source and
+        # issue ONE batched device cast after the loop (cuda_raycaster_cast_batch
+        # concatenates build_ray_list over all sources -> one H2D of the inputs +
+        # running heat plane, one march, one D2H) instead of a whole-plane round-
+        # trip PER source. `heat` is BYTE-IDENTICAL to the per-source loop: they
+        # differ only in atomic-deposit order, and heat's saturating integer adds
+        # are order-free. The CPU path stays a per-source cast (no transfer tax to
+        # amortise). Design + 3-lens critique:
+        # docs/s8c_item1_fire_heat_batch_impl_2026-07-21.md.
+        cuda_sources = [] if use_cuda_ray else None
         for yy, xx in zip(ys.tolist(), xs.tolist()):
             # S3a: dequantize the Q16.16 intensity to real [0,1] for the ray params.
             intensity_fire = float(fire[yy, xx]) / fire_fixed.FP_ONE_F
@@ -928,28 +938,15 @@ class PhysicsRunner:
             src.angle_center = ((xx * 7 + yy * 13) % ray_count) * (two_pi / ray_count)
             src.intensity = self.fire_intensity_base + self.fire_intensity_per_i * intensity_fire
             src.heat = self.k_fire_heat * intensity_fire   # the sim payload
-            src.jitter = 0.0                   # NO dither — heat is sim-affecting
+            # NO dither -- heat is sim-affecting. MUST stay 0.0: build_ray_list's
+            # per-source mt19937 is drawn ONLY when jitter>0, so a nonzero jitter
+            # would couple sources through the RNG sequence and desync the batched
+            # cast from the per-source loop (S8c design section 1).
+            src.jitter = 0.0
             src.color = self.fire_color        # render-only tint (discarded here)
             if use_cuda_ray:
-                # GPU path (CUDA-S2 live): build_ray_list -> the device march,
-                # accumulating this source's heat into gmap.heat (saturating
-                # integer atomic) and the render channels into the scratch
-                # buffers, all round-tripped to the host. Same args + order as the
-                # CPU call below, with the raycaster as the first positional.
-                bp.cuda_raycaster_cast(
-                    self.raycaster,
-                    src,
-                    self._fire_scratch_rgb,
-                    self._fire_scratch_dx,
-                    self._fire_scratch_dy,
-                    self._fire_gas_f,
-                    gmap.gases.absorption,
-                    gmap.gases.scatter_albedo,
-                    gmap.dyn_light_atten,
-                    gmap.heat,            # <- the only synced output (heat)
-                    None,                 # smoke_glow: skipped (render-only, later)
-                    gmap.heat_atten,      # K1 per-tile heat occlusion
-                )
+                # Collected for the single batched device cast after the loop.
+                cuda_sources.append(src)
             else:
                 self.raycaster.cast_source_directional(
                     src,
@@ -969,6 +966,26 @@ class PhysicsRunner:
                     None,                 # smoke_glow: skipped (render-only, later)
                     gmap.heat_atten,      # K1 per-tile heat occlusion
                 )
+        # S8c: the ONE batched device cast for ALL sources (CUDA path only). Same
+        # inputs + argument order as the per-source cuda_raycaster_cast, with the
+        # source LIST in place of a single source. `heat` lands back on gmap.heat
+        # (the mirror), so the tick contract and every downstream heat consumer
+        # (tail temperature pass + unit damage) are unchanged.
+        if use_cuda_ray and cuda_sources:
+            bp.cuda_raycaster_cast_batch(
+                self.raycaster,
+                cuda_sources,
+                self._fire_scratch_rgb,
+                self._fire_scratch_dx,
+                self._fire_scratch_dy,
+                self._fire_gas_f,
+                gmap.gases.absorption,
+                gmap.gases.scatter_albedo,
+                gmap.dyn_light_atten,
+                gmap.heat,            # <- the only synced output (heat)
+                None,                 # smoke_glow: skipped (render-only, later)
+                gmap.heat_atten,      # K1 per-tile heat occlusion
+            )
 
     # ------------------------------------------------------------------
     # Water layer (engine/07 §2, water plan W2)
