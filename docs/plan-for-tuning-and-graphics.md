@@ -384,11 +384,17 @@ OPEN DECISIONS (remaining):
   ⭘ GAS-CHEMISTRY BEAT (Erik wish list 2026-07-21; sim-side, NOT in B2):
     fuel_gas ignition (the M3 hook — GasTable column exists, consumer never
     built), heat-driven water→steam boil + steam→water condensation (only
-    the W5 pressure flash-boil exists today), smoke ABSORBING radiant heat
-    (raycaster heat channel is deliberately gas-transparent — doing this
-    reverses the 2026-07-05 one-way ruling; per-tile heat_atten plumbing
-    already exists), poison thermal breakdown (fire destroys poison). Ice:
-    parked (needs a solid water phase that doesn't exist). Registry answer:
+    the W5 pressure flash-boil exists today), smoke ATTENUATING radiant
+    heat (CORRECTED Erik 2026-07-22: attenuate-and-DELETE only — NO
+    re-emission, NO deposit-into-T. This PRESERVES the 2026-07-05 one-way
+    ruling, which is about re-emission feedback loops
+    (heat→glow→emission→heat; brainstorm §8 item 2, :519-522). Today
+    gases NEVER attenuate the heat channel — only material heat_atten
+    does (physics_runner ~:884/:957, raycaster.h :195) — so the negative
+    feedback does NOT exist yet; it's a new gas-driven heat_atten fill,
+    same energy-out shape as K1 wall occlusion and wave_absorb), poison
+    thermal breakdown (fire destroys poison). Ice: DEFERRED (Erik
+    reaffirmed 2026-07-22; needs a solid water phase that doesn't exist). Registry answer:
     GasTable columns are the right HOME for the coefficients, but every
     PROCESS is a solver/exchange-row change (the exchange.py coupling-row
     idiom: teargas-blind + poison-dose are the live precedents) with full

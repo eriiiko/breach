@@ -25,9 +25,10 @@ beacon** so a sweeping beam rakes through smoke.
   (§7 non-goals). The gas-chemistry wishes (fuel-gas ignition, condensation,
   smoke heat absorption, poison thermal breakdown) are a SEPARATE future
   sim-side beat — never smuggle them in here.
-- **Traffic:** own worktree, branch `fire-b2-smoke-honesty` off main. Arc B
-  (logic layer: entities/SignalBus) is concurrently in flight in its own
-  worktree — do not touch its files. `tools/lighting_demo.py` and
+- **Traffic:** own worktree, branch `fire-b2-smoke-honesty` off CURRENT
+  main. Arc B MERGED to main 2026-07-22 (`6909c01`, entity logic layer
+  B1–B7) — no concurrent arc remains in flight, and the merge touched no
+  main.py/renderer/tools files (verified). `tools/lighting_demo.py` and
   `renderer/*` are B2's lane.
 - **Feel-adjacent → HUMAN-TEST gate.** Build, gate, push; Erik plays before
   merge. No auto-merge, ever, for any patch in this beat.
@@ -94,12 +95,21 @@ Layout (single hull-sealed box, roughly 48×32; exact dims Opus's call):
 presets + grenade/water/tilt keybinds exist). HONEST SIZING (critique
 finding): the demo's per-frame light-source list is currently the mouse
 flashlight ONLY — level statics, beacon tick-angle evaluation, fire lights
-+ the HUD count all live in main.py's sources block (~:385-409:
++ the HUD count all live in main.py's sources block (~:313-407:
 `FireLightSelector`, `monotonic_total_tick`, `_build_light_source`).
 **P1's first task is extracting that block into a shared helper** (e.g.
 `renderer/frame_lights.py: build_frame_light_sources(...)`) consumed by
 BOTH main.py and the demo — a mechanical extraction, zero behavior change
 in main.py, and the studio gets beacons + fire lights with no drift risk.
+**NOT AN ENTITY SYSTEM** (Erik's explicit concern, 2026-07-22): this
+helper creates zero entity machinery — it deduplicates the per-frame
+ASSEMBLY of raycaster `LightSource` params from whatever supplies lights
+(today: the levels-w1 `[[light]]` rows incl. the beacon, fire tiles, the
+flashlight). Lamps/beacons are NOT entities today (Arc A–B entities =
+doors/sensors/nodes/pump/airlock; lights predate them); migrating lights
+INTO the entity system is Arc C's convergence item (tracked in
+docs/TODO.md) — when it happens, only this helper's INPUT changes; the
+assembly seam survives. Do not build any lamp/beacon entity in B2.
 - `--level <name>` argument (default = `CFG.display.level`, as today;
   studio session runs `--level fire_studio`).
 - Injection keybinds at cursor: ignite tile; puff `steam`; puff `smoke`
@@ -376,11 +386,11 @@ patch boundary; surface surprises, don't plough ahead).
 Environment: Python = conda env `data` (per-machine specifics in
 docs/dev_setup.md / docs/lenovo_dev_setup.md); pytest = `pytest tests -q`;
 no C++ build needed (P0 leaves C++ identifiers alone). Work in your OWN
-worktree on branch `fire-b2-smoke-honesty` off main. Arc B (logic layer:
-entities/SignalBus) is in flight in its own worktree — its files are
-off-limits; P0's rename surface (§1: gases.py, the gamemap re-export,
-physics_runner name lookups, weapons `gas_species`, config, tests) is
-disjoint from it.
+worktree on branch `fire-b2-smoke-honesty` off CURRENT main (Arc B merged
+2026-07-22, `6909c01` — no concurrent arc is in flight). P0's rename
+surface is exactly §1 (gases.py, the gamemap re-export, physics_runner
+name lookups, weapons `gas_species`, config, tests) — unchanged by that
+merge.
 
 Gates: per-patch tests; digest/golden gate byte-identical EVERY patch (run
 it even though the beat is render-only by construction); before/after PNG

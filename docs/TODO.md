@@ -190,6 +190,16 @@ All render-only — no sim/determinism surface, auto-skipped in headless trainin
   re-records mtime+hash after baking, so staleness tracking stays honest
   meanwhile.
 
+- **Lights → entities convergence (Arc C candidate; captured 2026-07-22
+  during fire-B2 design)** — lamps/beacons still live in the pre-entity
+  levels-w1 `[[light]]` schema (`src/level_lights.py`), parallel to the
+  Arc A–B entity system (doors/sensors/nodes are entities; lights are
+  not). Fold at Arc C: lamp/beacon as entity → on/off state, SignalBus
+  wiring (lamp toggled by a sensor!), editor placement — replacing the
+  `[[light]]` loader. Fire-B2's `renderer/frame_lights.py` assembly
+  helper is input-agnostic and survives this migration (B2 design §2).
+  Original vision: tuning-plan §1a "entity/prop system + the LAMP".
+
 - **Legacy-level entity migration (Arc A ruling 2 remainder, 2026-07-19)** —
   only `test_level` was migrated (A7). `bake_demo` waits until its committed
   baked art rebakes (a 3→7 tilemap rewrite would desync tilemap ↔ baked
