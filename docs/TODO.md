@@ -94,9 +94,10 @@ All render-only — no sim/determinism surface, auto-skipped in headless trainin
   NOT a skin swap; pre-placed = special skin. (The current green/red tint is
   fine for now.)
 - **Weapon & grenade animations + shockwave-push behaviour** (Erik, folded from
-  TODO2.md 2026-07-22) — marines should **carry at least one visible weapon**,
-  plus a **throw-grenade** animation. Open question: what should a marine do
-  when **pushed by a shockwave** (they already get pushed today) — maybe
+  TODO2.md 2026-07-22) — marines should **carry at least one visible weapon**
+  and have a **rifle carry + shoot/fire** animation, plus a **throw-grenade**
+  animation. Open question: what should a marine do when **pushed by a
+  shockwave** (they already get pushed today) — maybe
   *hunker down* a little on a small push; on a big push, unclear. **Meta-
   principle (Erik, load-bearing for this whole track):** the **ML path is the
   priority** — he has no ambition to be an old-school animator, and much
