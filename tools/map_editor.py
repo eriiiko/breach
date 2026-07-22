@@ -236,13 +236,19 @@ import light_entity_port
 # reimplemented, from simulation.entities (read-only imports there).
 import door_entity_port
 import sensor_entity_port
+# Arc C4 — unified entity selection (box/shift/by-class) + move/delete/
+# tag-assign/inspector-field-edit/clump-copy-paste. The pure logic (what
+# C3 left as "no select/move/delete UX for doors/sensors/generic
+# placements") lives in entity_selection.py so it is unit-testable without
+# raylib; the SELECT mode below is the thin interactive shell over it.
+import entity_selection
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 MODES = ("PAINT", "ROOM", "CORRIDOR", "DOOR", "SPAWN", "LIGHT", "WATER",
-        "ENTITY")
+        "ENTITY", "SELECT")
 DEFAULT_CORRIDOR_WIDTH = 3
 CORRIDOR_MIN, CORRIDOR_MAX = 1, 9
 SCAFFOLD_MIN = 5                 # SPACE border + hull ring + 1 interior tile
@@ -629,6 +635,22 @@ def next_light_color(color, step: int = 1) -> tuple:
     return tuple(v / 255.0 for v in presets[idx])
 
 
+def next_color_rgb_int(value, step: int = 1) -> list:
+    """The next/previous LIGHT_COLOR_PRESETS entry after an ALREADY-0-255
+    int triple (Arc C4's SELECT-mode color nudge, generalized to any
+    `color_rgb` field a non-light class might carry — `next_light_color`'s
+    own matching logic, but never through the 0-1 float LightEntry stores,
+    since a generic entity field carries the raw 0-255 ints, per
+    `entity_editor_ui.format_field_value`'s `color_rgb` branch)."""
+    presets = [c for _, c in LIGHT_COLOR_PRESETS]
+    ints = tuple(int(c) for c in value)
+    try:
+        idx = (presets.index(ints) + int(step)) % len(presets)
+    except ValueError:
+        idx = 0
+    return list(presets[idx])
+
+
 # ---------------------------------------------------------------------------
 # Pure helpers — WATER fill (water_init.npy/[water] writeback in level_lib)
 # ---------------------------------------------------------------------------
@@ -728,6 +750,18 @@ COL_TEXT_DIM = (150, 150, 160, 255)
 COL_TEXT_HOT = (255, 230, 120, 255)
 COL_OK = (120, 255, 140, 255)
 COL_BAD = (255, 90, 80, 255)
+COL_SELECT = (255, 220, 60, 255)     # Arc C4 selection highlight
+
+# Arc C4 text-entry (tag-assign / id-rename — the one scoped, deliberate
+# exception to "no in-UI text input in v1": tag names and ids are free-form
+# slugs no preset/cycle affordance can cover, so SELECT mode's T/I gestures
+# open a tiny single-purpose buffer (GetCharPressed + backspace/enter/esc),
+# not a general text-editing widget). Mirrors level_loader's own (private)
+# id-slug charset (`_ENTITY_ID_RE`) so an id typed here is guaranteed
+# loadable; tag names use the same charset for the same reason (wire
+# `tag:name.input` targets share the slug rule, engine/16 §8).
+_SLUG_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_\-]*\Z")
+_SLUG_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
 
 # Tool-rail + palette pane row geometry (shared by click-routing and draw so
 # the hit targets match the visuals).
@@ -755,6 +789,10 @@ MODE_HINTS = {
              "-/= depth 0.1 m steps (hover shows green/red)",
     "ENTITY": "select a class in the ENTITY palette tab, then LMB place  "
               "(field sensors: drag to set the AIR-facing arrow)",
+    "SELECT": "LMB select  shift+LMB toggle  drag empty = box-select  "
+              "drag a selected instance = move  Delete removes  "
+              "A select-by-class  T tag  I re-id  [ ] focus field  "
+              "= / - nudge  Enter cycle  C color  Ctrl+C/V clump copy/paste",
 }
 
 
@@ -870,6 +908,24 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
     light_kind = "static"                       # B off-marker toggles this
     light_color = tuple(v / 255.0 for v in LIGHT_COLOR_PRESETS[0][1])
 
+    # Arc C4 — the `[[wire]]` family as DATA only (the interactive wire TOOL
+    # is C6's job). Loaded so clump paste can re-id/drop wires and so
+    # anything that touches it (delete's referential-integrity cleanup,
+    # paste) round-trips through Ctrl+S; registered as an undo collection
+    # per C2's reserved "wires" name (as-built §"the extension pattern").
+    wires = list(lvl.wire_specs)
+
+    # Arc C4 — unified entity selection (a set of ids, over lights u
+    # entities — SPAWN stays out by construction, canon §0/A1). Persists
+    # across mode switches; find_instance() re-resolves an id fresh every
+    # use, so a stale id (something deleted elsewhere) just quietly misses.
+    selection = set()
+    select_box = None        # {"anchor": (tx,ty), "add": bool} box-drag
+    select_move = None        # {"anchor": (tx,ty)} move-drag
+    select_focus_idx = 0      # focused editable field, single-selection nudge
+    clump_clipboard = None    # compute_clump_copy() snapshot, or None
+    text_entry = None         # {"kind": "tag"|"id", "buf": str} or None
+
     # WATER state (P5 §2.4): a parallel int32 Q16.16 depth grid — loaded
     # from the level's [water] seed when present, else all-dry. Depth is
     # quantized at fill time (water_fixed.quantize); the UI shows metres.
@@ -889,7 +945,8 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
     # are refilled in place, NEVER rebound (§7).
     undo_ctx = undo_log.UndoContext(
         grids={"material": grid, "water": water_q},
-        collections={"spawns": spawns, "lights": lights, "entities": entities})
+        collections={"spawns": spawns, "lights": lights, "entities": entities,
+                    "wires": wires})
     log = undo_log.TransactionLog(undo_ctx)
     csv_bak_written = False
     toml_bak_written = False
@@ -982,14 +1039,18 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
         nonlocal room_start, corr_start, spawn_drag, light_drag
         nonlocal stroke_active, stroke_dirty, last_paint_tile
         nonlocal door_drag, entity_drag
+        nonlocal select_box, select_move, text_entry
         if log.has_pending:
             log.commit()
         if stroke_dirty is not None:
             rebake_cells(*stroke_dirty)
         room_start = corr_start = spawn_drag = light_drag = None
-        # door_drag/entity_drag never open a log transaction (§6.2), so
-        # dropping them is a pure state reset — nothing to commit or revert.
+        # door_drag/entity_drag/select_box/select_move never open a log
+        # transaction (§6.2), so dropping them is a pure state reset —
+        # nothing to commit or revert.
         door_drag = entity_drag = None
+        select_box = select_move = None
+        text_entry = None
         stroke_active, stroke_dirty = False, None
         last_paint_tile = None
 
@@ -1018,10 +1079,19 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
         over_hud = not over_canvas
         mode = MODES[mode_idx]
         dirty_any = log.dirty      # position-accurate: undo to saved clears it
+        # Arc C4 text-entry sub-state (tag-assign / id-rename): while typing,
+        # every OTHER single-key global affordance (mode switch, view
+        # toggles, material hotkeys, WASD/arrow pan) is suppressed so a
+        # letter/digit in the typed name can't also jump modes or pan the
+        # camera; only the text-entry block itself (below, in SELECT mode)
+        # consumes keys. Esc cancels the entry instead of arming quit.
+        typing = text_entry is not None
 
         # ---- global: quit / mode / view ----------------------------------
         if rl.is_key_pressed(K.KEY_ESCAPE):
-            if dirty_any and esc_armed <= 0:
+            if typing:
+                text_entry = None
+            elif dirty_any and esc_armed <= 0:
                 esc_armed = 180
                 flash, flash_frames = (
                     "UNSAVED edits — Esc again to quit without saving "
@@ -1030,32 +1100,34 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                 break
         esc_armed = max(0, esc_armed - 1)
 
-        if rl.is_key_pressed(K.KEY_TAB):
+        if not typing and rl.is_key_pressed(K.KEY_TAB):
             mode_idx = (mode_idx + (-1 if shift else 1)) % len(MODES)
             cancel_transients()
             mode = MODES[mode_idx]
-        for i in range(len(MODES)):
-            if rl.is_key_pressed(K.KEY_F1 + i):
-                mode_idx = i
-                cancel_transients()
-                mode = MODES[mode_idx]
+        if not typing:
+            for i in range(len(MODES)):
+                if rl.is_key_pressed(K.KEY_F1 + i):
+                    mode_idx = i
+                    cancel_transients()
+                    mode = MODES[mode_idx]
 
-        if rl.is_key_pressed(K.KEY_V):
+        if not typing and rl.is_key_pressed(K.KEY_V):
             view_baked = not view_baked
-        if rl.is_key_pressed(K.KEY_N):
+        if not typing and rl.is_key_pressed(K.KEY_N):
             show_normal = not show_normal
-        if rl.is_key_pressed(K.KEY_G):
+        if not typing and rl.is_key_pressed(K.KEY_G):
             show_grid = not show_grid
 
         # Material palette keys — GENERATED from the material table: the
         # number key IS the material id (SPACE on 9). Ids past 8 have no key
         # (eyedropper reaches them).
-        for pid in palette_order:
-            digit = 9 if pid == SPACE_CODE else int(pid)
-            if 0 <= digit <= 9 and (
-                    rl.is_key_pressed(K.KEY_ZERO + digit)
-                    or rl.is_key_pressed(K.KEY_KP_0 + digit)):
-                selected_id = pid
+        if not typing:
+            for pid in palette_order:
+                digit = 9 if pid == SPACE_CODE else int(pid)
+                if 0 <= digit <= 9 and (
+                        rl.is_key_pressed(K.KEY_ZERO + digit)
+                        or rl.is_key_pressed(K.KEY_KP_0 + digit)):
+                    selected_id = pid
 
         # ---- view: wheel zoom around cursor, keys/drag pan ---------------
         # Mouse offsets are relative to the CANVAS pane origin (the world is
@@ -1066,7 +1138,7 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             wx0, wy0 = cam_x + mcx / zoom, cam_y + mcy / zoom
             zoom = max(0.02, min(50.0, zoom * (1.1 ** wheel)))
             cam_x, cam_y = wx0 - mcx / zoom, wy0 - mcy / zoom
-        if not ctrl:                       # keep Ctrl+S clear of S-pan
+        if not ctrl and not typing:         # keep Ctrl+S clear of S-pan
             pan = 900.0 * dt / zoom
             if rl.is_key_down(K.KEY_W) or rl.is_key_down(K.KEY_UP):
                 cam_y -= pan
@@ -1619,21 +1691,260 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                             + (f" at ({cur_tx},{cur_ty})" if has_xy else ""),
                             180)
 
+        # ---- SELECT (Arc C4 — unified selection over every [[entity]]
+        # instance: doors, sensors, generic placements, lights; SPAWN is
+        # NEVER folded in, canon §0/A1) + move/delete/tag-assign/inspector-
+        # field-edit/clump-copy-paste. The transaction-committing logic
+        # lives in entity_selection.py (headless, unit-tested); this block
+        # is the thin interactive shell (smoke-tested only, --auto has no
+        # input injection).
+        elif mode == "SELECT":
+            hover = (entity_selection.hit_test(cur_tx, cur_ty, lights,
+                                               entities, tile_size_m)
+                    if cursor_in else None)
+            # Prune ids something else deleted (LIGHT/SPAWN's own bespoke
+            # RMB-delete, or a since-undone paste) before acting this frame.
+            selection = {i for i in selection
+                        if entity_selection.find_instance(
+                            i, lights, entities)[0] is not None}
+
+            if text_entry is not None:
+                # The ONE scoped free-text gesture (tag name / id rename —
+                # see the _SLUG_RE/_SLUG_CHARS comment above): drain this
+                # frame's typed codepoints; Enter commits, Backspace erases,
+                # Esc (handled in the global block above) cancels.
+                ch = rl.get_char_pressed()
+                while ch != 0:
+                    c = chr(ch)
+                    if c in _SLUG_CHARS:
+                        text_entry["buf"] += c
+                    ch = rl.get_char_pressed()
+                if rl.is_key_pressed(K.KEY_BACKSPACE):
+                    text_entry["buf"] = text_entry["buf"][:-1]
+                if rl.is_key_pressed(K.KEY_ENTER):
+                    buf = text_entry["buf"]
+                    if not _SLUG_RE.match(buf):
+                        flash, flash_frames = (
+                            f"{text_entry['kind']} {buf!r}: letters/digits/"
+                            f"_/- only", 200)
+                    elif text_entry["kind"] == "tag":
+                        entity_selection.commit_assign_tag(
+                            log, lights, entities, list(selection), buf)
+                        flash, flash_frames = (
+                            f"tagged {len(selection)} instance"
+                            f"{'s' if len(selection) != 1 else ''} '{buf}'",
+                            160)
+                        text_entry = None
+                    else:                                      # "id"
+                        sel_id = next(iter(selection))
+                        ok, result = entity_selection.commit_field_edit(
+                            log, grid, lights, entities, sel_id, "id",
+                            buf, tile_size_m)
+                        if ok:
+                            selection = {buf}
+                            flash, flash_frames = f"renamed to '{buf}'", 160
+                            text_entry = None
+                        else:
+                            flash, flash_frames = f"refused: {result}", 200
+            else:
+                if rl.is_key_pressed(K.KEY_A):        # select-by-class
+                    basis = hover
+                    if basis is None and len(selection) == 1:
+                        basis = next(iter(selection))
+                    if basis is not None:
+                        coll_name, idx = entity_selection.find_instance(
+                            basis, lights, entities)
+                        if coll_name is not None:
+                            obj = (lights[idx] if coll_name == "lights"
+                                  else entities[idx])
+                            cls = entity_selection.instance_class_name(
+                                coll_name, obj)
+                            selection = set(entity_selection.select_by_class(
+                                cls, lights, entities))
+                            flash, flash_frames = (
+                                f"selected {len(selection)} {cls}", 140)
+                if rl.is_key_pressed(K.KEY_T) and selection:
+                    text_entry = {"kind": "tag", "buf": ""}
+                if rl.is_key_pressed(K.KEY_I) and len(selection) == 1:
+                    text_entry = {"kind": "id", "buf": next(iter(selection))}
+                if rl.is_key_pressed(K.KEY_DELETE) and selection:
+                    txn = entity_selection.commit_delete_selection(
+                        log, grid, lights, entities, wires,
+                        list(selection), tile_size_m)
+                    rebake_txn(txn)
+                    flash, flash_frames = f"deleted {len(selection)}", 140
+                    selection = set()
+                if ctrl and rl.is_key_pressed(K.KEY_C) and selection:
+                    clump_clipboard = entity_selection.compute_clump_copy(
+                        list(selection), lights, entities, wires)
+                    flash, flash_frames = (
+                        f"copied {len(selection)} (+ "
+                        f"{len(clump_clipboard['wires'])} internal wires)",
+                        160)
+                if (ctrl and rl.is_key_pressed(K.KEY_V)
+                        and clump_clipboard is not None and cursor_in):
+                    anchor = entity_selection.clump_anchor_tile(
+                        clump_clipboard)
+                    dtx, dty = ((cur_tx - anchor[0], cur_ty - anchor[1])
+                               if anchor is not None else (0, 0))
+                    txn, new_ids = entity_selection.commit_clump_paste(
+                        log, grid, lights, entities, wires, clump_clipboard,
+                        dtx, dty, tile_size_m)
+                    if txn is not None:
+                        rebake_txn(txn)
+                        selection = set(new_ids)
+                        flash, flash_frames = f"pasted {len(new_ids)}", 160
+
+                # Single-selection field focus + nudge/cycle — multi-select
+                # editing is tag-assign only (unambiguous over mixed
+                # classes; T above covers it regardless of selection size).
+                if len(selection) == 1:
+                    sel_id = next(iter(selection))
+                    coll_name, idx = entity_selection.find_instance(
+                        sel_id, lights, entities)
+                    if coll_name is not None:
+                        obj = (lights[idx] if coll_name == "lights"
+                              else entities[idx])
+                        cls_name = entity_selection.instance_class_name(
+                            coll_name, obj)
+                        cls_payload = registry_payload.get(
+                            "classes", {}).get(cls_name)
+                        if cls_payload is not None:
+                            values = (
+                                light_entity_port.light_entry_to_fields(obj)
+                                if coll_name == "lights" else obj.fields)
+                            rows = entity_editor_ui.inspector_rows(
+                                cls_payload, values)
+                            editable_rows = [r for r in rows if r.editable]
+                            if editable_rows:
+                                select_focus_idx %= len(editable_rows)
+                                if _pressed(K.KEY_LEFT_BRACKET):
+                                    select_focus_idx = (
+                                        (select_focus_idx - 1)
+                                        % len(editable_rows))
+                                if _pressed(K.KEY_RIGHT_BRACKET):
+                                    select_focus_idx = (
+                                        (select_focus_idx + 1)
+                                        % len(editable_rows))
+                                focus = editable_rows[select_focus_idx]
+                                new_value = None
+                                eui_ = entity_editor_ui
+                                if focus.kind in (eui_.KIND_INT, eui_.KIND_Q16):
+                                    if _pressed(K.KEY_EQUAL):
+                                        new_value = int(focus.value) + 1
+                                    if _pressed(K.KEY_MINUS):
+                                        new_value = int(focus.value) - 1
+                                elif focus.kind in (eui_.KIND_LENGTH_M,
+                                                    eui_.KIND_FLOAT_RENDER):
+                                    if _pressed(K.KEY_EQUAL):
+                                        new_value = round(
+                                            float(focus.value) + 0.1, 3)
+                                    if _pressed(K.KEY_MINUS):
+                                        new_value = round(
+                                            float(focus.value) - 0.1, 3)
+                                elif focus.kind == eui_.KIND_BOOL:
+                                    if rl.is_key_pressed(K.KEY_ENTER):
+                                        new_value = not focus.value
+                                elif (focus.kind == eui_.KIND_ENUM
+                                      and focus.choices):
+                                    if rl.is_key_pressed(K.KEY_ENTER):
+                                        choices = list(focus.choices)
+                                        ci = (choices.index(focus.value)
+                                             if focus.value in choices
+                                             else 0)
+                                        step = -1 if shift else 1
+                                        new_value = choices[
+                                            (ci + step) % len(choices)]
+                                elif (focus.kind == eui_.KIND_COLOR_RGB
+                                      and not ctrl):
+                                    if rl.is_key_pressed(K.KEY_C):
+                                        step = -1 if shift else 1
+                                        new_value = next_color_rgb_int(
+                                            focus.value, step)
+                                if new_value is not None:
+                                    if (focus.minimum is not None
+                                            and isinstance(
+                                                new_value, (int, float))):
+                                        new_value = max(focus.minimum,
+                                                        new_value)
+                                    if (focus.maximum is not None
+                                            and isinstance(
+                                                new_value, (int, float))):
+                                        new_value = min(focus.maximum,
+                                                        new_value)
+                                    ok, result = (
+                                        entity_selection.commit_field_edit(
+                                            log, grid, lights, entities,
+                                            sel_id, focus.name, new_value,
+                                            tile_size_m))
+                                    if ok:
+                                        rebake_txn(result)
+                                        flash, flash_frames = (
+                                            f"{focus.name} = {new_value}",
+                                            120)
+                                    else:
+                                        flash, flash_frames = (
+                                            f"refused: {result}", 180)
+
+                # Mouse: click/shift-click select, box-select, move-drag.
+                if lmb_click and not over_hud and cursor_in:
+                    if hover is not None:
+                        if shift:
+                            selection = set(selection)
+                            if hover in selection:
+                                selection.discard(hover)
+                            else:
+                                selection.add(hover)
+                        else:
+                            if hover not in selection:
+                                selection = {hover}
+                            select_move = {"anchor": (cur_tx, cur_ty)}
+                    else:
+                        select_box = {"anchor": (cur_tx, cur_ty),
+                                     "add": shift}
+                if rmb_click and not over_hud:
+                    if select_box is not None or select_move is not None:
+                        select_box = select_move = None
+                    else:
+                        selection = set()
+                if select_move is not None and lmb_up:
+                    ax, ay = select_move["anchor"]
+                    dtx, dty = cur_tx - ax, cur_ty - ay
+                    txn = entity_selection.commit_move_selection(
+                        log, grid, lights, entities, list(selection),
+                        dtx, dty, tile_size_m)
+                    if txn is not None:
+                        rebake_txn(txn)
+                    select_move = None
+                if select_box is not None and lmb_up:
+                    ax, ay = select_box["anchor"]
+                    ids = entity_selection.box_select(
+                        ax, ay, cur_tx, cur_ty, lights, entities,
+                        tile_size_m)
+                    if select_box["add"]:
+                        selection |= set(ids)
+                    else:
+                        selection = set(ids)
+                    select_box = None
+
         # ---- undo / redo / save ---------------------------------------------
         # ONE global history across ALL domains (§7.2 — the intended behavior
         # change): Ctrl+Z undoes the most-recent action irrespective of the
         # current mode. Explicit shift guards (§4/C9): Ctrl+Shift+Z is redo, not
         # undo (today's `ctrl and Z` had no shift check). Undo/redo are refused
         # while a gesture is open — commit/force-end it first.
-        undo_key = ctrl and (not shift) and rl.is_key_pressed(K.KEY_Z)
-        redo_key = ctrl and (rl.is_key_pressed(K.KEY_Y)
-                             or (shift and rl.is_key_pressed(K.KEY_Z)))
+        undo_key = (not typing and ctrl and (not shift)
+                   and rl.is_key_pressed(K.KEY_Z))
+        redo_key = (not typing and ctrl
+                   and (rl.is_key_pressed(K.KEY_Y)
+                        or (shift and rl.is_key_pressed(K.KEY_Z))))
         if undo_key:
             if log.has_pending:
                 flash, flash_frames = "release the mouse before undo", 120
             else:
                 spawn_drag = light_drag = None   # stale drag indices
                 door_drag = entity_drag = None    # stale span/arrow drags
+                select_box = select_move = None   # stale box/move drags
                 txn = log.undo()
                 if txn is None:
                     flash, flash_frames = "nothing to undo", 120
@@ -1648,6 +1959,7 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             else:
                 spawn_drag = light_drag = None
                 door_drag = entity_drag = None
+                select_box = select_move = None
                 txn = log.redo()
                 if txn is None:
                     flash, flash_frames = "nothing to redo", 120
@@ -1701,6 +2013,13 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             replacements = {
                 "spawn": lambda nl: format_spawn_lines(spawns, nl),
                 "water": level_lib.water_block_format(has_water),
+                # Arc C4 — wires as DATA (the wire TOOL is C6's): written on
+                # EVERY save, unconditionally, the same reasoning as the
+                # entity family below (C3's save-orchestration fix) — once
+                # delete/paste can mutate `wires`, an omitted family would
+                # mean "leave it byte-preserved" and silently strand a
+                # session's wire edits.
+                "wire": lambda nl: level_lib.format_wire_lines(wires, nl),
             }
             replacements.update(
                 light_entity_port.light_and_entity_replacements(
@@ -1720,6 +2039,7 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             flash, flash_frames = (
                 f"SAVED tilemap.csv + {len(spawns)} spawns + "
                 f"{len(lights)} lights + {len(entities)} entities + "
+                f"{len(wires)} wires + "
                 f"{f'{wet} water tiles' if has_water else 'no water'}"
                 f"{f' ({cleared} cleared under walls/space)' if cleared else ''}"
                 f" + bake blocks + "
@@ -1877,6 +2197,70 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                                        rl.Color(*COL_OK))
                         rl.draw_circle_v(rl.Vector2(*tip_s), 4.0,
                                          rl.Color(*COL_OK))
+
+        elif mode == "SELECT" and not over_hud:
+            def _instance_box_screen(coll_name, obj, off_tx=0, off_ty=0):
+                tiles = entity_selection.instance_tiles(
+                    coll_name, obj, tile_size_m)
+                if not tiles:
+                    return None
+                xs = [t[0] for t in tiles]
+                ys = [t[1] for t in tiles]
+                x0, y0 = min(xs) + off_tx, min(ys) + off_ty
+                x1, y1 = max(xs) + off_tx, max(ys) + off_ty
+                s0 = to_screen(x0 * preview_ppt, y0 * preview_ppt)
+                s1 = to_screen((x1 + 1) * preview_ppt, (y1 + 1) * preview_ppt)
+                return rl.Rectangle(s0[0], s0[1], s1[0] - s0[0], s1[1] - s0[1])
+
+            move_delta = None
+            if select_move is not None and cursor_in:
+                mx, my = select_move["anchor"]
+                move_delta = (cur_tx - mx, cur_ty - my)
+
+            # Selected instances: highlight outline (offset live by the
+            # in-progress move-drag delta, so the preview shows where the
+            # group WILL land — the actual mutation only happens at release).
+            for sel_id in selection:
+                coll_name, idx = entity_selection.find_instance(
+                    sel_id, lights, entities)
+                if coll_name is None:
+                    continue
+                obj = lights[idx] if coll_name == "lights" else entities[idx]
+                dtx, dty = move_delta if move_delta is not None else (0, 0)
+                rect = _instance_box_screen(coll_name, obj, dtx, dty)
+                if rect is not None:
+                    rl.draw_rectangle_lines_ex(rect, 2.0,
+                                               rl.Color(*COL_SELECT))
+
+            # Hover highlight (dim, unselected instance under the cursor).
+            if select_box is None and select_move is None and cursor_in:
+                hov = entity_selection.hit_test(cur_tx, cur_ty, lights,
+                                                entities, tile_size_m)
+                if hov is not None and hov not in selection:
+                    coll_name, idx = entity_selection.find_instance(
+                        hov, lights, entities)
+                    if coll_name is not None:
+                        obj = (lights[idx] if coll_name == "lights"
+                              else entities[idx])
+                        rect = _instance_box_screen(coll_name, obj)
+                        if rect is not None:
+                            rl.draw_rectangle_lines_ex(
+                                rect, 1.5, rl.Color(255, 255, 255, 160))
+
+            # Box-select drag preview.
+            if select_box is not None:
+                bx, by = select_box["anchor"]
+                bx0, bx1 = sorted((bx, clamp_tx))
+                by0, by1 = sorted((by, clamp_ty))
+                s0 = to_screen(bx0 * preview_ppt, by0 * preview_ppt)
+                s1 = to_screen((bx1 + 1) * preview_ppt, (by1 + 1) * preview_ppt)
+                rl.draw_rectangle(
+                    int(s0[0]), int(s0[1]),
+                    int(s1[0] - s0[0]), int(s1[1] - s0[1]),
+                    rl.Color(COL_SELECT[0], COL_SELECT[1], COL_SELECT[2], 40))
+                rl.draw_rectangle_lines_ex(
+                    rl.Rectangle(s0[0], s0[1], s1[0] - s0[0], s1[1] - s0[1]),
+                    1.5, rl.Color(*COL_SELECT))
 
         # Water overlay (every mode — level content): translucent blue per
         # wet tile, alpha scaled by depth (editor view only; in-game the
@@ -2099,6 +2483,15 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                     y += 16
             return y
 
+        def _resolve_selected(sel_id):
+            """(coll_name, obj) for `sel_id`, or None if it's gone stale."""
+            coll_name, idx = entity_selection.find_instance(
+                sel_id, lights, entities)
+            if coll_name is None:
+                return None
+            return coll_name, (lights[idx] if coll_name == "lights"
+                               else entities[idx])
+
         light_cls_payload = registry_payload.get("classes", {}).get("light")
         if mode == "LIGHT" and light_hover is not None and light_cls_payload:
             l = lights[light_hover]
@@ -2108,6 +2501,81 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             values = light_entity_port.light_entry_to_fields(l)
             rows = entity_editor_ui.inspector_rows(light_cls_payload, values)
             iy = _draw_rows(rows, iy)
+        elif mode == "SELECT" and selection:
+            # Arc C4 — the unified selection's live inspector: a single
+            # selection shows id/tags/class fields (with the FOCUSED editable
+            # field marked "> " — [ ] moves it, the value keys nudge/cycle
+            # it); a multi-selection shows a class breakdown (tag-assign is
+            # the only op that applies uniformly across mixed classes).
+            if text_entry is not None:
+                rl.draw_text(f"{text_entry['kind']}: {text_entry['buf']}_",
+                             insp.x + 10, iy, 16, rl.Color(*COL_TEXT_HOT))
+                iy += 22
+            if len(selection) == 1:
+                sel_id = next(iter(selection))
+                resolved = _resolve_selected(sel_id)
+                if resolved is None:
+                    rl.draw_text("(selection is stale)", insp.x + 10, iy, 16,
+                                 rl.Color(*COL_TEXT_DIM))
+                    iy += 20
+                else:
+                    coll_name, obj = resolved
+                    cls_name = entity_selection.instance_class_name(
+                        coll_name, obj)
+                    rl.draw_text(f"[{cls_name}] {sel_id}", insp.x + 10, iy,
+                                 18, rl.Color(*COL_TEXT_HOT))
+                    iy += 24
+                    tags_disp = entity_editor_ui.format_field_value(
+                        entity_editor_ui.KIND_STR_LIST,
+                        entity_selection.instance_tags(obj))
+                    rl.draw_text(f"tags: {tags_disp}", insp.x + 10, iy, 13,
+                                 rl.Color(*COL_TEXT))
+                    iy += 18
+                    cls_payload = registry_payload.get(
+                        "classes", {}).get(cls_name)
+                    if cls_payload is not None:
+                        values = (light_entity_port.light_entry_to_fields(obj)
+                                 if coll_name == "lights" else obj.fields)
+                        rows = entity_editor_ui.inspector_rows(
+                            cls_payload, values)
+                        editable_rows = [r for r in rows if r.editable]
+                        focus_name = (
+                            editable_rows[select_focus_idx
+                                         % len(editable_rows)].name
+                            if editable_rows else None)
+                        for row in rows:
+                            if iy + 16 > insp.y + insp.h:
+                                break
+                            hot = row.name == focus_name
+                            marker = "> " if hot else "  "
+                            col = COL_TEXT_HOT if hot else COL_TEXT
+                            for ln in wrap_text(
+                                    f"{marker}{row.name}: {row.display}",
+                                    max(20, insp.w - 20), 13):
+                                rl.draw_text(ln, insp.x + 10, iy, 13,
+                                            rl.Color(*col))
+                                iy += 16
+            else:
+                rl.draw_text(f"[SELECT] {len(selection)} instances",
+                             insp.x + 10, iy, 18, rl.Color(*COL_TEXT_HOT))
+                iy += 24
+                counts: dict = {}
+                for sel_id in selection:
+                    resolved = _resolve_selected(sel_id)
+                    if resolved is None:
+                        continue
+                    cls_name = entity_selection.instance_class_name(*resolved)
+                    counts[cls_name] = counts.get(cls_name, 0) + 1
+                summary = ", ".join(f"{n}x {c}" for c, n in sorted(
+                    counts.items()))
+                for ln in wrap_text(summary or "(none)",
+                                    max(20, insp.w - 20), 13):
+                    rl.draw_text(ln, insp.x + 10, iy, 13, rl.Color(*COL_TEXT))
+                    iy += 16
+                iy += 6
+                rl.draw_text("T assigns a tag to all selected",
+                             insp.x + 10, iy, 13, rl.Color(*COL_TEXT_DIM))
+                iy += 16
         elif (selected_entity_class is not None
               and selected_entity_class in registry_payload.get("classes", {})):
             cls_payload = registry_payload["classes"][selected_entity_class]
@@ -2187,7 +2655,7 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
     print(f"map_editor: {frames} frames; mode={MODES[mode_idx]} "
           f"unsaved={log.dirty} undo={log.undo_count} redo={log.redo_count} "
           f"spawns={len(spawns)} lights={len(lights)} "
-          f"entities={len(entities)} "
+          f"entities={len(entities)} wires={len(wires)} "
           f"water_tiles={int(np.count_nonzero(water_q))}")
     if auto:
         if shot_path is not None and shot_path.is_file():

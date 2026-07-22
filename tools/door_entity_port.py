@@ -161,6 +161,16 @@ def plan_door_span(grid, anchor, orientation: str, far_coord: int,
     return span, length_m
 
 
+def instance_span(fields: dict, tile_size_m) -> list:
+    """The tile span (`door.base_span`, THE canonical function — never a
+    parallel calculation) for an ALREADY-AUTHORED door instance's fields
+    (`x`/`y`/`orientation`/`length_m`). Arc C4's hit-testing/highlight/move/
+    edit/paste all recompute the span through this one seam so a selected
+    door's hitbox and re-stamp always match what a fresh load would derive —
+    the same parity guarantee `plan_door_span` gives the placement tool."""
+    return door_entity.base_span(fields, tile_size_m)
+
+
 def build_door_instance(x: int, y: int, orientation: str, length_m: float,
                         initial_state: str, id_: str) -> EntityInstance:
     """The `[[entity]]` instance a placed door writes — all five schema

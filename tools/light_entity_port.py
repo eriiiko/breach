@@ -54,20 +54,23 @@ _BEACON_KEYS = ("period_s", "beam_deg", "phase")
 @dataclass
 class EditableLight(LightEntry):
     """A :class:`level_loader.LightEntry` plus the `[[entity]]` instance id
-    (editor-only bookkeeping — NOT the schema). ``id`` defaults to "" only
-    so the dataclass stays constructible without it; every light the editor
-    actually holds carries a real, unique id from the moment it enters the
-    `lights` list (see :func:`initial_editable_lights` /
-    :func:`unique_light_id`)."""
+    AND tags (editor-only bookkeeping — NOT the schema; ``tags`` mirrors
+    ``EntityInstance.tags``, Arc C4's unified-selection tag-assign target).
+    ``id`` defaults to "" only so the dataclass stays constructible without
+    it; every light the editor actually holds carries a real, unique id from
+    the moment it enters the `lights` list (see
+    :func:`initial_editable_lights` / :func:`unique_light_id`)."""
     id: str = ""
+    tags: tuple = ()
 
 
-def to_editable(l: LightEntry, id_: str) -> EditableLight:
+def to_editable(l: LightEntry, id_: str, tags: tuple = ()) -> EditableLight:
     """Lift a plain ``LightEntry`` (as ``LevelData.lights`` carries it) into
-    an :class:`EditableLight` carrying the given entity id."""
+    an :class:`EditableLight` carrying the given entity id + tags."""
     return EditableLight(x=l.x, y=l.y, color=l.color, intensity=l.intensity,
                          range=l.range, kind=l.kind, period_s=l.period_s,
-                         beam_deg=l.beam_deg, phase=l.phase, id=id_)
+                         beam_deg=l.beam_deg, phase=l.phase, id=id_,
+                         tags=tuple(tags))
 
 
 def unique_light_id(existing_ids) -> str:
@@ -132,6 +135,8 @@ def initial_editable_lights(lvl) -> list:
     order]``, and mixed forms hard-error at load — so legacy levels have
     ZERO entity-derived lights and entity-form levels have ZERO legacy ones;
     the two cases never interleave."""
+    entity_light_tags = {e.id: tuple(e.tags) for e in lvl.entities
+                        if e.class_name == LIGHT_CLASS}
     entity_light_ids = [e.id for e in lvl.entities if e.class_name == LIGHT_CLASS]
     ids_seen = set(entity_light_ids)
     out = []
@@ -141,7 +146,7 @@ def initial_editable_lights(lvl) -> list:
         else:
             lid = unique_light_id(ids_seen)
             ids_seen.add(lid)
-        out.append(to_editable(l, lid))
+        out.append(to_editable(l, lid, entity_light_tags.get(lid, ())))
     return out
 
 
@@ -173,7 +178,8 @@ def light_to_entity_instance(l: EditableLight, ordinal: int) -> EntityInstance:
     field, determines the runtime ordinal on next load); callers pass the
     instance's position in the list being written."""
     return EntityInstance(
-        id=l.id, class_name=LIGHT_CLASS, ordinal=int(ordinal), tags=(),
+        id=l.id, class_name=LIGHT_CLASS, ordinal=int(ordinal),
+        tags=tuple(l.tags),
         fields=light_entry_to_fields(l),
         authored_keys=light_authored_keys(l.kind))
 
