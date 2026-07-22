@@ -40,9 +40,13 @@ Controls (the tool rail + inspector show the active mode's line):
   Any mode:
     TAB / Shift+TAB      - cycle mode PAINT -> ROOM -> CORRIDOR -> DOOR ->
                            SPAWN -> LIGHT -> WATER -> ENTITY -> SELECT ->
-                           WAND -> ZONE -> AIR -> PROPS; F1..F12 jump
-                           straight to a mode (PROPS has no F-key — TAB or
-                           a tool-rail click only, Arc C5)
+                           WAND -> ZONE -> AIR -> PROPS -> WIRE; F1..F12
+                           jump straight to a mode (PROPS/WIRE have no
+                           F-key left — TAB or a tool-rail click only,
+                           Arc C5/C6)
+    L                    - toggle the LOGIC overlay's show-all (default:
+                           only wires touching the SELECT-mode selection,
+                           Arc C6)
     0-8, 9               - select material (palette GENERATED from
                            MATERIAL_NAMES at launch — key = material id;
                            9 = SPACE; ids past 8 are eyedropper-only)
@@ -172,6 +176,28 @@ Controls (the tool rail + inspector show the active mode's line):
                            space <-> ambient — format + level_lib
                            writeback only (canon §7); no canvas edits, no
                            physics change here.
+  WIRE (Arc C6):  LMB      - the two-click wire tool, NEVER a drag: click a
+                           source (resolves its output signal — `[`/`]`
+                           cycle when it has more than one; default the
+                           primary non-alive one), navigate freely (pan/
+                           zoom/scroll stay live), click a target (resolves
+                           its input the same way; a single-input target
+                           commits immediately, multiple need `[`/`]` +
+                           Enter). T cycles an alternate TAG target
+                           (`tag:name.input`) once a source is picked. Esc
+                           cancels the pending wire. With nothing pending,
+                           LMB on an existing wire (line or tag badge)
+                           selects it — Delete removes it, RMB clears the
+                           selection. Positionless entities (logic nodes,
+                           zone instances) get a deterministic clickable
+                           tile (a zone anchors at its painted centroid;
+                           everything else auto-lays-out in a strip past
+                           the grid's right edge) — see node markers, drawn
+                           every mode. The LOGIC overlay (also every mode)
+                           draws every wire touching the current SELECT
+                           selection by default; L toggles show-all. A
+                           tag-target wire draws as ONE compact badge near
+                           its source, never fanned to every member.
 
 Undo — the transaction log (Arc C2, design docs/arc_c_c2_undo_design_
 2026-07-22.md): the four per-domain rings are GONE, replaced by ONE global
@@ -287,16 +313,21 @@ import entity_selection
 # (boundary field, format+loader-only — see level_lib.write_boundary_field).
 import air_paint
 import zone_entity_port
+# Arc C6 — the two-click wire tool + LOGIC overlay + tag badges + the
+# positionless-entity canvas layout (logic nodes / zone instances have no
+# x/y — C3/C4/C5's own punted gap). All pure/headless logic lives in
+# wire_tool.py; the WIRE mode below is the thin interactive shell.
+import wire_tool
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 MODES = ("PAINT", "ROOM", "CORRIDOR", "DOOR", "SPAWN", "LIGHT", "WATER",
-        "ENTITY", "SELECT", "WAND", "ZONE", "AIR", "PROPS")
+        "ENTITY", "SELECT", "WAND", "ZONE", "AIR", "PROPS", "WIRE")
 # F1..F12 jump straight to the first 12 modes (raylib defines no F13+); the
-# 13th (PROPS, Arc C5 — no F-key left) is reachable via TAB/Shift+TAB cycle
-# and a tool-rail click, same as every other mode.
+# 13th/14th (PROPS, Arc C5; WIRE, Arc C6 — no F-key left) are reachable via
+# TAB/Shift+TAB cycle and a tool-rail click, same as every other mode.
 MAX_MODE_FKEYS = 12
 DEFAULT_CORRIDOR_WIDTH = 3
 CORRIDOR_MIN, CORRIDOR_MAX = 1, 9
@@ -362,6 +393,11 @@ AIR_PRESSURE_STEP_ATM = 0.1
 AIR_PRESSURE_MIN_ATM = 0.0
 AIR_PRESSURE_MAX_ATM = 4.0
 AIR_OVERLAY_RGB = (255, 150, 40)      # editor overlay tint for authored air
+
+# ---- WIRE mode / LOGIC overlay (Arc C6, editor doc §8) ---------------------
+LOGIC_WIRE_RGBA = (120, 200, 255, 220)     # a plain source->input connector
+LOGIC_TAG_RGBA = (255, 200, 90, 235)       # a tag-target badge (never fanned)
+LOGIC_NODE_RADIUS_TILES = 0.35             # positionless-node marker chip
 
 
 def _zone_color(zone_id: int) -> tuple:
@@ -872,6 +908,10 @@ MODE_HINTS = {
            "RMB fill to 0 atm  -/= pressure 0.1 atm steps",
     "PROPS": "level-wide properties (no canvas edits): B toggles "
              "boundary space<->ambient (format only — no physics here)",
+    "WIRE": "LMB click a source, navigate, LMB click a target — never a "
+            "drag  [ ] cycle signal/input  T tag target  Enter confirms "
+            "(multi-input)  Esc cancels  LMB on a wire selects, Delete "
+            "removes  L (global) toggles show-all wires",
 }
 
 
@@ -955,6 +995,10 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
     registry_result = entity_editor_ui.load_registry()
     registry_payload = registry_result.payload
     entity_palette = entity_editor_ui.palette_entries(registry_payload)
+    # Arc C6 — the same deterministic chip colour the ENTITY palette already
+    # generated per class, reused for positionless logic-node markers (one
+    # colour per class, no separate recipe).
+    entity_chip_rgb = {p.class_name: p.chip_rgb for p in entity_palette}
     registry_banner = (None if registry_result.ok else
                        f"registry fallback ({registry_result.error})")
     palette_tab = "MATERIAL"           # MATERIAL <-> ENTITY (pane click only)
@@ -1004,6 +1048,19 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
     select_focus_idx = 0      # focused editable field, single-selection nudge
     clump_clipboard = None    # compute_clump_copy() snapshot, or None
     text_entry = None         # {"kind": "tag"|"id", "buf": str} or None
+
+    # Arc C6 — the two-click wire tool. `wire_pending` is the in-progress
+    # gesture (a plain dict, matching the entity_drag/select_box convention
+    # for un-committed gesture state — see wire_tool.begin_pending_wire);
+    # `wire_selected` is an EXISTING wire picked for removal (WIRE mode,
+    # Delete key). Neither ever opens a log transaction on its own (§6.2),
+    # so a mode switch simply drops them (cancel_transients below).
+    # `show_all_wires` (L, global — persists like show_grid/view_baked) is
+    # the LOGIC overlay's show-all toggle; its default (False) shows only
+    # wires touching the current SELECT-mode selection (editor doc §8).
+    wire_pending = None
+    wire_selected = None
+    show_all_wires = False
 
     # WATER state (P5 §2.4): a parallel int32 Q16.16 depth grid — loaded
     # from the level's [water] seed when present, else all-dry. Depth is
@@ -1159,18 +1216,20 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
         nonlocal stroke_active, stroke_dirty, last_paint_tile
         nonlocal door_drag, entity_drag
         nonlocal select_box, select_move, text_entry, pending_zone_delete
+        nonlocal wire_pending, wire_selected
         if log.has_pending:
             log.commit()
         if stroke_dirty is not None:
             rebake_cells(*stroke_dirty)
         room_start = corr_start = spawn_drag = light_drag = None
-        # door_drag/entity_drag/select_box/select_move never open a log
-        # transaction (§6.2), so dropping them is a pure state reset —
-        # nothing to commit or revert.
+        # door_drag/entity_drag/select_box/select_move/wire_pending/
+        # wire_selected never open a log transaction (§6.2), so dropping
+        # them is a pure state reset — nothing to commit or revert.
         door_drag = entity_drag = None
         select_box = select_move = None
         text_entry = None
         pending_zone_delete = None    # a mode switch cancels the confirm
+        wire_pending = wire_selected = None
         stroke_active, stroke_dirty = False, None
         last_paint_tile = None
 
@@ -1211,6 +1270,8 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
         if rl.is_key_pressed(K.KEY_ESCAPE):
             if typing:
                 text_entry = None
+            elif wire_pending is not None:      # Arc C6: cancel, don't quit
+                wire_pending = None
             elif dirty_any and esc_armed <= 0:
                 esc_armed = 180
                 flash, flash_frames = (
@@ -1237,6 +1298,11 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             show_normal = not show_normal
         if not typing and rl.is_key_pressed(K.KEY_G):
             show_grid = not show_grid
+        if not typing and rl.is_key_pressed(K.KEY_L):
+            # Arc C6 — the LOGIC overlay's show-all toggle (editor doc §8):
+            # global + persistent, like show_grid/view_baked, so it stays
+            # readable across a mode switch instead of resetting.
+            show_all_wires = not show_all_wires
 
         # Material palette keys — GENERATED from the material table: the
         # number key IS the material id (SPACE on 9). Ids past 8 have no key
@@ -1280,6 +1346,12 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
         cursor_in = (0 <= cur_tx < grid_w and 0 <= cur_ty < grid_h)
         clamp_tx = min(max(cur_tx, 0), grid_w - 1)
         clamp_ty = min(max(cur_ty, 0), grid_h - 1)
+
+        # Arc C6 — every positionless entity's deterministic clickable tile
+        # (recomputed fresh each frame from live state: cheap at editor-scale
+        # entity counts, and never stale after an undo/redo/paste/delete).
+        node_layout = wire_tool.positionless_layout(entities, zones,
+                                                    grid.shape)
 
         lmb = rl.is_mouse_button_down(rl.MouseButton.MOUSE_BUTTON_LEFT)
         rmb = rl.is_mouse_button_down(rl.MouseButton.MOUSE_BUTTON_RIGHT)
@@ -2277,6 +2349,140 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                     f"boundary = {level_boundary} (Ctrl+S saves; format "
                     f"only — no physics change here)", 200)
 
+        # ---- WIRE (Arc C6, editor doc §8 — the two-click wire tool, NEVER a
+        # drag): click 1 resolves a SOURCE + its output signal (multiple
+        # signals: `[`/`]` cycle, default the primary non-alive one); pan/
+        # zoom/scroll stay live while a wire is pending; click 2 resolves a
+        # TARGET + its input (multiple inputs: `[`/`]` cycle, Enter
+        # confirms; a single-input target commits immediately — "two clicks,
+        # done"). T cycles an alternate TAG target (a `tag:name.input` wire
+        # — offered once a source is picked). Esc cancels (global block
+        # above). With no pending wire, LMB on an EXISTING wire (line or tag
+        # badge) selects it for removal (Delete); RMB clears the selection.
+        # All pure logic lives in wire_tool.py — this block only reads
+        # input and calls it, matching every prior Arc C tool's split.
+        elif mode == "WIRE":
+            if wire_pending is None:
+                if lmb_click and not over_hud:
+                    hit = wire_tool.hit_test_with_layout(
+                        cur_tx, cur_ty, lights, entities, tile_size_m,
+                        node_layout)
+                    if hit is not None:
+                        cls_name, cls_payload = wire_tool.class_payload_of(
+                            hit, lights, entities, registry_payload)
+                        if cls_payload is None:
+                            flash, flash_frames = (
+                                f"{cls_name}: not in the loaded registry "
+                                f"(stale?)", 180)
+                        else:
+                            wire_pending = wire_tool.begin_pending_wire(
+                                hit, cls_payload)
+                            sig = wire_pending["signals"][
+                                wire_pending["signal_idx"]]
+                            flash, flash_frames = (
+                                f"wire source {hit}.{sig} — click a target "
+                                f"([ ] cycles signal, T = tag target)", 220)
+                    else:
+                        lines, badges = wire_tool.wire_endpoints_for_draw(
+                            wires, lights, entities, tile_size_m, node_layout)
+                        wire_selected = wire_tool.hit_test_wire(
+                            cur_tx, cur_ty, lines, badges)
+                if rmb_click and not over_hud:
+                    wire_selected = None
+                if (wire_selected is not None
+                        and rl.is_key_pressed(K.KEY_DELETE)):
+                    txn = wire_tool.commit_remove_wire(
+                        log, wires, wire_selected)
+                    if txn is not None:
+                        flash, flash_frames = "wire removed", 140
+                    wire_selected = None
+            else:
+                if wire_pending["to_spec"] is None:
+                    # Phase 2: source known, picking the signal / an
+                    # optional tag target, awaiting a target click.
+                    if _pressed(K.KEY_LEFT_BRACKET):
+                        wire_pending = wire_tool.cycle_pending_signal(
+                            wire_pending, -1)
+                    if _pressed(K.KEY_RIGHT_BRACKET):
+                        wire_pending = wire_tool.cycle_pending_signal(
+                            wire_pending, 1)
+                    if rl.is_key_pressed(K.KEY_T):
+                        tags = wire_tool.all_tags(lights, entities)
+                        if not tags:
+                            flash, flash_frames = (
+                                "no tags in this level yet", 160)
+                        else:
+                            cur_name = wire_pending.get("tag_name")
+                            cur_idx = (tags.index(cur_name)
+                                      if cur_name in tags else -1)
+                            nxt = tags[(cur_idx + 1) % len(tags)]
+                            p2, reason = wire_tool.set_pending_target_tag(
+                                wire_pending, nxt, lights, entities,
+                                registry_payload)
+                            if p2 is None:
+                                flash, flash_frames = (
+                                    f"tag:{nxt}: {reason}", 200)
+                            else:
+                                wire_pending = p2
+                    if lmb_click and not over_hud:
+                        hit = wire_tool.hit_test_with_layout(
+                            cur_tx, cur_ty, lights, entities, tile_size_m,
+                            node_layout)
+                        if hit is not None and hit != wire_pending["from_id"]:
+                            _cn, cls_payload = wire_tool.class_payload_of(
+                                hit, lights, entities, registry_payload)
+                            if cls_payload is None:
+                                flash, flash_frames = (
+                                    "target: not in the loaded registry",
+                                    180)
+                            else:
+                                p2, reason = wire_tool.set_pending_target_id(
+                                    wire_pending, hit, cls_payload)
+                                if p2 is None:
+                                    flash, flash_frames = (
+                                        f"refused: {reason}", 200)
+                                else:
+                                    wire_pending = p2
+
+                if (wire_pending is not None
+                        and wire_pending["to_spec"] is not None):
+                    # Phase 3: target known. A single-input target commits
+                    # right away (two clicks, done); multiple inputs need an
+                    # explicit pick (`[`/`]` + Enter) before committing.
+                    if len(wire_pending["inputs"]) <= 1:
+                        from_str, to_str = wire_tool.pending_wire_strings(
+                            wire_pending)
+                        from_id_, signal_ = from_str.split(".", 1)
+                        to_spec_, input_ = to_str.split(".", 1)
+                        ok, result = wire_tool.commit_add_wire(
+                            log, wires, lights, entities, spawns,
+                            from_id_, signal_, to_spec_, input_)
+                        flash, flash_frames = (
+                            (f"wired {from_str} -> {to_str}", 220) if ok
+                            else (f"refused: {result}", 240))
+                        wire_pending = None
+                    else:
+                        if _pressed(K.KEY_LEFT_BRACKET):
+                            wire_pending = wire_tool.cycle_pending_input(
+                                wire_pending, -1)
+                        if _pressed(K.KEY_RIGHT_BRACKET):
+                            wire_pending = wire_tool.cycle_pending_input(
+                                wire_pending, 1)
+                        if rl.is_key_pressed(K.KEY_ENTER):
+                            from_str, to_str = (
+                                wire_tool.pending_wire_strings(wire_pending))
+                            from_id_, signal_ = from_str.split(".", 1)
+                            to_spec_, input_ = to_str.split(".", 1)
+                            ok, result = wire_tool.commit_add_wire(
+                                log, wires, lights, entities, spawns,
+                                from_id_, signal_, to_spec_, input_)
+                            flash, flash_frames = (
+                                (f"wired {from_str} -> {to_str}", 220) if ok
+                                else (f"refused: {result}", 240))
+                            wire_pending = None
+                if rmb_click and not over_hud:
+                    wire_pending = None
+
         # ---- undo / redo / save ---------------------------------------------
         # ONE global history across ALL domains (§7.2 — the intended behavior
         # change): Ctrl+Z undoes the most-recent action irrespective of the
@@ -2599,6 +2805,30 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             rl.draw_rectangle_lines_ex(
                 rl.Rectangle(s0[0], s0[1], tw, th), 2.0, rl.Color(*col))
 
+        elif mode == "WIRE" and not over_hud:
+            # Live preview: source anchor -> cursor (pan/zoom stay live —
+            # editor doc §8's own "navigate freely" spec). Hover highlight on
+            # whatever the cursor is over (an entity OR a positionless
+            # node's layout slot).
+            if wire_pending is not None:
+                anchor = wire_tool.anchor_tile(
+                    wire_pending["from_id"], lights, entities, tile_size_m,
+                    node_layout)
+                if anchor is not None:
+                    a0 = to_screen((anchor[0] + 0.5) * preview_ppt,
+                                  (anchor[1] + 0.5) * preview_ppt)
+                    a1 = to_screen((cur_tx + 0.5) * preview_ppt,
+                                  (cur_ty + 0.5) * preview_ppt)
+                    rl.draw_line_ex(rl.Vector2(*a0), rl.Vector2(*a1), 2.0,
+                                    rl.Color(*COL_OK))
+            hover = wire_tool.hit_test_with_layout(
+                cur_tx, cur_ty, lights, entities, tile_size_m, node_layout)
+            if hover is not None:
+                s0 = to_screen(cur_tx * preview_ppt, cur_ty * preview_ppt)
+                rl.draw_rectangle_lines_ex(
+                    rl.Rectangle(s0[0], s0[1], tw, th), 2.0,
+                    rl.Color(*COL_OK))
+
         elif mode == "SELECT" and not over_hud:
             def _instance_box_screen(coll_name, obj, off_tx=0, off_ty=0):
                 tiles = entity_selection.instance_tiles(
@@ -2717,6 +2947,59 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                 rl.draw_rectangle(int(sx), int(sy),
                                   max(1, int(tw)), max(1, int(th)),
                                   rl.Color(ar, ag, ab, alpha))
+
+        # LOGIC overlay (every mode — level content, Arc C6, editor doc §8):
+        # defaults to wires touching the current SELECT-mode selection; L
+        # (global) toggles show-all. A tag-target wire draws as ONE compact
+        # badge near its source (never fanned to every current member — the
+        # whole point of the badge is staying readable when a tag has many
+        # members); every other wire draws as a plain connector between its
+        # resolved endpoints (positionless entities included, via
+        # node_layout). Drawn directly over the (small, editor-scale) wire/
+        # node lists — no tile-range culling, matching the spawn/light/
+        # sensor markers' own pattern below.
+        visible_wires = (wires if show_all_wires else
+                         wire_tool.wires_touching_selection(wires, selection))
+        wire_lines, wire_badges = wire_tool.wire_endpoints_for_draw(
+            visible_wires, lights, entities, tile_size_m, node_layout)
+        for w, (lx0, ly0), (lx1, ly1) in wire_lines:
+            a0 = to_screen((lx0 + 0.5) * preview_ppt, (ly0 + 0.5) * preview_ppt)
+            a1 = to_screen((lx1 + 0.5) * preview_ppt, (ly1 + 0.5) * preview_ppt)
+            rgba = COL_SELECT if w is wire_selected else LOGIC_WIRE_RGBA
+            rl.draw_line_ex(rl.Vector2(*a0), rl.Vector2(*a1), 2.0,
+                            rl.Color(*rgba))
+            rl.draw_circle_v(rl.Vector2(*a1), 3.0, rl.Color(*rgba))
+        for w, (bx, by), tag_name, input_name in wire_badges:
+            label = f"#{tag_name}.{input_name}"
+            s0 = to_screen((bx + 0.6) * preview_ppt, (by - 0.35) * preview_ppt)
+            rgba = COL_SELECT if w is wire_selected else LOGIC_TAG_RGBA
+            bw_ = rl.measure_text(label, 12) + 6
+            rl.draw_rectangle(int(s0[0]) - 3, int(s0[1]) - 2, bw_, 16,
+                              rl.Color(0, 0, 0, 170))
+            rl.draw_text(label, int(s0[0]), int(s0[1]), 12, rl.Color(*rgba))
+
+        # Positionless logic-node markers (every mode — level content, Arc
+        # C6): a colour chip (the SAME deterministic per-class colour the
+        # ENTITY palette shows) + class initial at each node's
+        # `node_layout` slot — the wire tool's own "give them a clickable
+        # position" answer, made visible.
+        for e in entities:
+            if not wire_tool.is_positionless(e.fields):
+                continue
+            pos = node_layout.get(e.id)
+            if pos is None:
+                continue
+            nx, ny = pos
+            sx, sy = to_screen((nx + 0.5) * preview_ppt, (ny + 0.5) * preview_ppt)
+            chip = entity_chip_rgb.get(e.class_name, (200, 200, 200))
+            r = max(6.0, LOGIC_NODE_RADIUS_TILES * preview_ppt * zoom)
+            rl.draw_circle_v(rl.Vector2(sx, sy), r,
+                             rl.Color(chip[0], chip[1], chip[2], 225))
+            rl.draw_text(e.class_name[0].upper(), int(sx - 4), int(sy - 7),
+                        14, rl.BLACK)
+            if e.id in selection:
+                rl.draw_circle_lines(int(sx), int(sy), r + 3.0,
+                                     rl.Color(*COL_SELECT))
 
         # Spawn markers (every mode — they are level content).
         hover_idx = spawn_at(spawns, ftx, fty) if mode == "SPAWN" else None
@@ -2848,6 +3131,25 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                          if air is not None else 0)
             extra = (f"pressure {air_pressure_atm:.2f} atm (-/=)  "
                      f"{n_authored} authored tiles")
+        elif mode == "WIRE":
+            if wire_pending is None:
+                pend_txt = (f"selected: {wire_selected.from_} -> "
+                           f"{wire_selected.to} (Delete removes)"
+                           if wire_selected is not None
+                           else "click a source")
+            else:
+                sig = wire_pending["signals"][wire_pending["signal_idx"]]
+                if wire_pending["to_spec"] is None:
+                    pend_txt = (f"{wire_pending['from_id']}.{sig} -> click "
+                               f"a target")
+                else:
+                    inp = wire_pending["inputs"][wire_pending["input_idx"]]
+                    pend_txt = (f"{wire_pending['from_id']}.{sig} -> "
+                               f"{wire_pending['to_spec']}.{inp}"
+                               + ("" if len(wire_pending["inputs"]) <= 1
+                                  else "  (Enter confirms)"))
+            extra = (f"{pend_txt}   {len(wires)} wires   "
+                     f"{'ALL' if show_all_wires else 'selection'} (L toggles)")
 
         # Top bar: level / grid / zoom / view mode.
         preview_note = ("" if preview_ppt == bake_ppt
