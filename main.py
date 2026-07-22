@@ -18,12 +18,17 @@ Game loop (real time + pause):
   - Backspace undoes last order; Tab switches planning phase; Esc
     clears selection; Ctrl+R reloads config; F8 dumps physics .npz.
 
-Input is in :mod:`input_handler`. The renderer reads ``sim.get_state()``
-and ``sim.tick_events`` each frame — it never writes back into the sim.
+Input is a :class:`control_source.ControlSource`, chosen at startup by the
+``--control`` flag (default ``wego`` -> :class:`input_handler.WEGOPlanningInput`,
+today's keyboard/mouse WEGO planning input, unchanged — see
+``control_source.py`` for the seam, control_modularity design §3b). The
+renderer reads ``sim.get_state()`` and ``sim.tick_events`` each frame — it
+never writes back into the sim.
 
 Run:
     C:/Users/steen/anaconda3/python.exe main.py
     C:/Users/steen/anaconda3/python.exe main.py --level playground   # sandbox
+    C:/Users/steen/anaconda3/python.exe main.py --control wego       # explicit default
 """
 from __future__ import annotations
 
@@ -67,7 +72,7 @@ from renderer.frame_lights import build_frame_light_sources, build_light_source
 from renderer.game_renderer import RenderConfig
 from simulation import Simulation
 from simulation.unit import Unit
-from input_handler import InputHandler
+from control_source import create_control_source
 
 # Windows consoles default to cp1252, which can't encode unicode (arrows etc.)
 # that creep into startup help text — force utf-8 so a stray glyph can never
@@ -131,6 +136,23 @@ def _parse_res_factor() -> int:
     if n < 1:
         raise SystemExit(f"--res factor must be >= 1, got {n}")
     return n
+
+
+def _parse_control_flag() -> str:
+    """Read an optional ``--control NAME`` launch flag from argv (P2,
+    control_modularity design §3b: the ``ControlSource`` seam). Defaults to
+    ``"wego"`` — today's WEGO planning input, unchanged behavior. See
+    ``control_source.create_control_source`` for the set of valid names
+    (only ``"wego"`` exists until P3 adds ``GamepadDirect``).
+    """
+    if "--control" not in sys.argv:
+        return "wego"
+    i = sys.argv.index("--control")
+    try:
+        name = sys.argv[i + 1]
+    except IndexError:
+        raise SystemExit("--control requires a name, e.g. --control wego")
+    return name
 
 
 def _upscale_level(level, factor: int):
@@ -313,7 +335,7 @@ def main():
                             borderless=BORDERLESS)
     renderer.lighting.set_ambient((0.10, 0.10, 0.13))
 
-    input_handler = InputHandler()
+    control_source = create_control_source(_parse_control_flag())
 
     # Level lights (P4): the [[light]] entities from level.toml (the old
     # hardcoded emergency lamps now live in the vessel/playground tomls).
@@ -375,7 +397,7 @@ def main():
             # ----- Input first (may toggle pause / queue orders) -----
             renderer.poll_toggles()
             renderer.update_camera(dt)
-            input_handler.handle_frame(sim, renderer)
+            control_source.handle_frame(sim, renderer)
 
             # ----- Tick the simulation while not paused -----
             if not sim.is_paused():
@@ -455,7 +477,7 @@ def main():
                 projectiles=sim.projectiles,
                 orders_phase1=sim.orders_for_phase(0),
                 orders_phase2=sim.orders_for_phase(1),
-                current_phase=input_handler.planning_phase,
+                current_phase=control_source.planning_phase,
                 doors=sim._doors,   # A6 dev door draw (render-read only)
             )
             renderer.draw_background_to_screen()
@@ -468,13 +490,13 @@ def main():
             renderer.consume_events(sim.tick_events)
             renderer._advance_effects(dt)
 
-            selected = sim.get_unit(input_handler.selected_unit_id) \
-                if input_handler.selected_unit_id is not None else None
+            selected = sim.get_unit(control_source.selected_unit_id) \
+                if control_source.selected_unit_id is not None else None
             renderer.draw_panel(
                 sim=sim,
                 selected_unit=selected,
-                planning_phase=input_handler.planning_phase,
-                current_mode=input_handler.current_mode,
+                planning_phase=control_source.planning_phase,
+                current_mode=control_source.current_mode,
             )
             renderer.end_frame()
     finally:
