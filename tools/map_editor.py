@@ -41,9 +41,17 @@ Controls (the tool rail + inspector show the active mode's line):
     TAB / Shift+TAB      - cycle mode PAINT -> ROOM -> CORRIDOR -> DOOR ->
                            SPAWN -> LIGHT -> WATER -> ENTITY -> SELECT ->
                            WAND -> ZONE -> AIR -> PROPS -> WIRE; F1..F12
-                           jump straight to a mode (PROPS/WIRE have no
-                           F-key left — TAB or a tool-rail click only,
-                           Arc C5/C6)
+                           jump straight to a mode EXCEPT F5 (SPAWN, PROPS
+                           and WIRE have no F-key left — TAB or a tool-rail
+                           click only, Arc C5/C6/C7)
+    F5                   - PLAY: save the FULL live state (unsaved edits
+                           included) to levels/_editor_scratch/<name>/,
+                           reusing the last bake when the material grid is
+                           unchanged since it was last written to disk, and
+                           launch the game against it via sys.executable
+                           (never bare python); the scratch folder is
+                           deleted when that process exits AND on editor
+                           quit (Arc C7)
     L                    - toggle the LOGIC overlay's show-all (default:
                            only wires touching the SELECT-mode selection,
                            Arc C6)
@@ -244,6 +252,7 @@ import colorsys
 import math
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 from dataclasses import replace
@@ -318,6 +327,11 @@ import zone_entity_port
 # x/y — C3/C4/C5's own punted gap). All pure/headless logic lives in
 # wire_tool.py; the WIRE mode below is the thin interactive shell.
 import wire_tool
+# Arc C7 — play-from-editor (F5): scratch-level save + subprocess launch +
+# cleanup, all in the pure/headless tools/play_scratch.py (no raylib import),
+# reusing the SAME level_lib/light_entity_port/bake_level_art functions
+# Ctrl+S already calls — see its module docstring.
+import play_scratch
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -329,6 +343,12 @@ MODES = ("PAINT", "ROOM", "CORRIDOR", "DOOR", "SPAWN", "LIGHT", "WATER",
 # 13th/14th (PROPS, Arc C5; WIRE, Arc C6 — no F-key left) are reachable via
 # TAB/Shift+TAB cycle and a tool-rail click, same as every other mode.
 MAX_MODE_FKEYS = 12
+# Arc C7: F5 is reserved GLOBALLY for PLAY (editor doc §8) — it can no
+# longer double as a mode-jump key. F5 was SPAWN's slot (MODES index 4,
+# since F-key = F1 + index); SPAWN drops to TAB/Shift+TAB cycle + a
+# tool-rail click only, joining PROPS/WIRE (which ran out of F-keys first,
+# C5/C6) — every OTHER mode's F-key binding is unchanged.
+PLAY_FKEY_INDEX = MODES.index("SPAWN")
 DEFAULT_CORRIDOR_WIDTH = 3
 CORRIDOR_MIN, CORRIDOR_MAX = 1, 9
 SCAFFOLD_MIN = 5                 # SPACE border + hull ring + 1 interior tile
@@ -1159,6 +1179,13 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
     flash, flash_frames = "", 0
     esc_armed = 0
 
+    # Arc C7 — F5 PLAY: [(subprocess.Popen, scratch_dir), ...] for every
+    # launched game still tracked this session. Reaped every frame (below,
+    # non-blocking poll) as each process exits; whatever remains at quit is
+    # cleaned up unconditionally right after the main loop (both cleanup
+    # paths the gate requires).
+    active_plays = []
+
     rl.set_config_flags(rl.ConfigFlags.FLAG_WINDOW_RESIZABLE)
     rl.init_window(WIN_W, WIN_H,
                    f"Breach map editor — {lvl.name} ({level_name})")
@@ -1287,6 +1314,8 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             mode = MODES[mode_idx]
         if not typing:
             for i in range(min(len(MODES), MAX_MODE_FKEYS)):
+                if i == PLAY_FKEY_INDEX:      # F5 — reserved for PLAY (below)
+                    continue
                 if rl.is_key_pressed(K.KEY_F1 + i):
                     mode_idx = i
                     cancel_transients()
@@ -2637,6 +2666,59 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                 f"full bake @ {summary['px_per_tile']} px/tile"
                 f"{' (.bak written)' if did_toml_bak else ''}", 240)
 
+        # ---- play (F5) ------------------------------------------------------
+        # editor doc §8 / C7: save the FULL live state (unsaved edits
+        # included — never just what Ctrl+S last wrote) to
+        # levels/_editor_scratch/<name>/ and launch the real game against it.
+        # Reuses the SAME level_lib/light_entity_port/bake_level_art
+        # machinery Ctrl+S calls (tools/play_scratch.py) — never a parallel
+        # serializer. Water is masked the same wall-over-pool way Ctrl+S
+        # masks it, but as a computed COPY (mask_water_to_open never mutates
+        # its input), so F5 never touches the live undo timeline. "Clean"
+        # (bake reuse) is `not log.dirty` — the C2 saved-marker: coarser than
+        # "only the material grid changed", but a false "dirty" only costs an
+        # extra re-bake, never a stale one (§ correctness first).
+        if not typing and rl.is_key_pressed(K.KEY_F5):
+            try:
+                # The scratch subfolder is named after the level_dir's OWN
+                # folder name (guaranteed filesystem-safe — it already IS a
+                # directory name on disk) rather than the authored `lvl.name`
+                # display string, which is free-form TOML text and may carry
+                # characters no filesystem accepts.
+                play_name = level_dir.name
+                water_masked, _ = mask_water_to_open(water_q, grid,
+                                                     water_solid)
+                play_dir = play_scratch.write_scratch_level(
+                    play_name, level_dir=level_dir, grid=grid,
+                    water_masked=water_masked, zones=zones, air=air,
+                    level_boundary=level_boundary, spawns=spawns,
+                    lights=lights, entities=entities, wires=wires,
+                    light_form=light_form, bake_clean=not log.dirty,
+                    tileset_arg=tileset_arg, bake_ppt=bake_ppt,
+                    bake_seed=bake_seed)
+                argv = play_scratch.build_launch_argv(play_name)
+                proc = subprocess.Popen(argv)
+                active_plays.append((proc, play_dir))
+                flash, flash_frames = (
+                    f"PLAY: launched {play_name} (pid {proc.pid}, "
+                    f"{'reused bake' if not log.dirty else 'fresh bake'})",
+                    180)
+            except Exception as exc:      # noqa: BLE001 — never crash the
+                flash, flash_frames = f"PLAY failed: {exc}", 300  # editor
+
+        # Reap finished PLAY subprocesses every frame (non-blocking poll) and
+        # clean up their scratch dirs the instant they exit — the OTHER half
+        # of the cleanup lives at quit, below the main loop, for whatever is
+        # still running when the editor closes.
+        if active_plays:
+            still_running = []
+            for proc, play_dir in active_plays:
+                if proc.poll() is None:
+                    still_running.append((proc, play_dir))
+                else:
+                    play_scratch.cleanup_scratch_dir(play_dir)
+            active_plays[:] = still_running
+
         # ---- draw ---------------------------------------------------------
         def to_screen(wx: float, wy: float) -> tuple:
             return screen_from_world(canvas, cam_x, cam_y, zoom, wx, wy)
@@ -3171,7 +3253,8 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                 rl.draw_rectangle(rail.x + 4, ry, max(0, rail.w - 8),
                                   RAIL_ROW_H - 4, rl.Color(*COL_RAIL_SEL))
             col = COL_TEXT_HOT if i == mode_idx else COL_TEXT_DIM
-            fkey = f"F{i + 1} " if i < MAX_MODE_FKEYS else "   "
+            fkey = ("   " if i == PLAY_FKEY_INDEX or i >= MAX_MODE_FKEYS
+                    else f"F{i + 1} ")
             rl.draw_text(f"{fkey}{mname}", rail.x + 12, ry + 6, 16,
                          rl.Color(*col))
 
@@ -3423,6 +3506,17 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                     shot_path = None
             if frames >= AUTO_FRAMES:
                 break
+
+    # Arc C7 — editor-quit half of the PLAY cleanup contract: whatever is
+    # still tracked (a game the user left running, or one that exited this
+    # very frame and hasn't been reaped yet) gets its scratch dir removed
+    # NOW, unconditionally — best-effort, never raises (crash-safe quit).
+    # The launched game already has every level file it needs in memory
+    # (level_loader.load reads everything once at startup), so deleting the
+    # folder out from under a still-running instance is safe.
+    for _proc, _play_dir in active_plays:
+        play_scratch.cleanup_scratch_dir(_play_dir)
+    active_plays.clear()
 
     rl.unload_texture(tex_diffuse)
     rl.unload_texture(tex_normal)

@@ -64,6 +64,10 @@ tools/eos_p5_out/*
 # (entity design §3b); a committed copy would go stale.
 entity_registry.json
 
+# Editor play-from-editor (F5) scratch levels — written fresh every launch,
+# deleted on subprocess exit and editor quit (Arc C7).
+levels/_editor_scratch/
+
 # OS files
 Thumbs.db
 .DS_Store

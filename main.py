@@ -99,6 +99,18 @@ def _parse_level_override():
     if name.startswith("--"):
         raise SystemExit(
             f"--level requires a level folder name, got {name!r}")
+    # Arc C7: `--level` also accepts the map editor's F5 scratch-play form,
+    # `_editor_scratch/<name>` (one subpath level, editor doc §8) — but
+    # never an absolute path or a `..` component, which would let a launch
+    # argument escape levels/ entirely (level_loader.load's `here /
+    # levels_dir / level_name` join follows pathlib's own rules for both:
+    # an absolute right-hand side replaces the join outright, and `..`
+    # walks back out of it). A plain single-component name is unaffected.
+    p = Path(name)
+    if p.is_absolute() or ".." in p.parts:
+        raise SystemExit(
+            f"--level must be a level folder name under levels/ (optionally "
+            f"'_editor_scratch/<name>'), got {name!r}")
     return name
 
 
