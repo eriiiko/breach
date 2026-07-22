@@ -1,12 +1,20 @@
 """Game input — translates pyray polling into Simulation actions.
 
-Single class :class:`InputHandler` that owns the small bit of
-presentation-layer state that the input system needs (which unit is
-selected, which order-placement mode the player is in, the current
-grenade fuse setting, the current detonation slot, which phase is being
-planned). The simulation is **not** told about these — they are pure UI
-state. The handler reads pyray events and pushes the matching orders
-into ``sim.apply_action``.
+Single class :class:`WEGOPlanningInput` (P2, control_modularity design
+§3b: renamed/wrapped from the original ``InputHandler`` — behavior
+UNCHANGED, ``InputHandler`` stays as a compatibility alias) that owns the
+small bit of presentation-layer state that the input system needs (which
+unit is selected, which order-placement mode the player is in, the
+current grenade fuse setting, the current detonation slot, which phase is
+being planned). The simulation is **not** told about these — they are
+pure UI state. The handler reads pyray events and pushes the matching
+orders into ``sim.apply_action``.
+
+This is one of possibly several :class:`~control_source.ControlSource`
+implementations (the WEGO planning/keyboard/mouse one); ``main.py``
+selects which to instantiate via ``--control`` (default ``wego``, this
+class). See ``control_source.py`` for the seam and the other planned
+sources (``GamepadDirect``, ``AgentPolicy`` — both P3, not built yet).
 
 Why not put this on the renderer? Because the renderer is supposed to
 draw, not interpret intent. Keeping input here means the renderer stays
@@ -48,6 +56,7 @@ import math
 import pyray as rl
 
 from config import CFG
+from control_source import ControlSource
 from simulation.gases import GAS_NAMES, N_GASES
 from simulation.weapons import get_tables as weapon_tables
 from simulation.orders import (
@@ -58,7 +67,7 @@ from simulation.orders import (
 )
 
 
-class InputHandler:
+class WEGOPlanningInput(ControlSource):
     """Bundles input-state + pyray polling glue. One per main loop."""
 
     def __init__(self):
@@ -413,4 +422,8 @@ class InputHandler:
             sim.apply_action(self.selected_unit_id, order)
 
 
-__all__ = ["InputHandler"]
+# Compatibility alias (P2): pre-rename call sites/imports that still say
+# ``InputHandler`` keep working unchanged — same class, same behavior.
+InputHandler = WEGOPlanningInput
+
+__all__ = ["WEGOPlanningInput", "InputHandler"]
