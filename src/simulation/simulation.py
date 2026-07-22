@@ -69,7 +69,7 @@ from simulation.generation import predefined_unit_attributes
 from simulation.species import get_species
 from simulation.combat import (
     apply_temperature_ignition,
-    process_door_explosives, process_shooting, process_sprays,
+    process_shooting, process_sprays,
     Projectile, Shot,
 )
 # The two shipped physics->unit couplings — rows in the mechanics/05 coupling
@@ -100,10 +100,15 @@ from simulation.entities.schema import INPUT_HELD
 from simulation.gamemap import GameMap, MAT_DOOR, MAT_DOOR_CLOSED
 from simulation.movement import FootprintSamples, default_speed
 from simulation.orders import (
-    DET_START_PHASE1, DET_BETWEEN_PHASES, DET_END_PHASE2,
     ORDER_GRENADE, ORDER_EXPLOSIVE, ORDER_FIRE, ORDER_MOVE_ATTACK,
     ORDER_MOVE_COVER, ORDER_SPRINT, MOVE_ORDER_TYPES,
 )
+# The Ruleset seam (control-modularity P1, docs/control_modularity_design_
+# 2026-07-22.md §3a): TwoPhaseWEGO is the current round-clock/AP policy,
+# extracted verbatim. Simulation owns one Ruleset instance, chosen at
+# construction; DET_* slot constants now live behind ruleset.py's own
+# import of orders (Simulation no longer references them directly).
+from simulation.ruleset import Ruleset, TwoPhaseWEGO
 from simulation.physics import apply_explosion, add_explosion_smoke  # noqa: F401 (legacy re-export)
 # The payload EXECUTOR (mechanics/03 §4, W3): the grenade fuse-out below
 # executes its round's payload row through this. Imported as a BARE NAME
@@ -180,7 +185,8 @@ class Simulation:
     # Lifecycle
     # ------------------------------------------------------------------
     def __init__(self, level_data, seed: Optional[int] = None,
-                 breach_physics=None, enable_recorder: bool = True):
+                 breach_physics=None, enable_recorder: bool = True,
+                 ruleset: Optional[Ruleset] = None):
         """Construct a fresh simulation from a level.
 
         Parameters
@@ -200,10 +206,18 @@ class Simulation:
             Whether to allocate the ring-buffer recorder (large memory
             cost). Default on for human play / debugging; AI training
             should pass False.
+        ruleset
+            The turn-structure + cost-policy strategy (control-modularity
+            P1, ``simulation.ruleset``). Chosen at construction, held for
+            the simulation's lifetime — ``reset()`` does NOT replace it.
+            Defaults to :class:`~simulation.ruleset.TwoPhaseWEGO`, the
+            shipped two-phase WEGO round (byte-identical to the pre-P1
+            hard-coded behavior).
         """
         self.level = level_data
         self._enable_recorder = enable_recorder
         self._bp = breach_physics
+        self.ruleset = ruleset if ruleset is not None else TwoPhaseWEGO()
 
         # Constants (cached so reset() doesn't re-read CFG every time)
         self._ticks_per_phase = CFG.clock.ticks_per_phase
@@ -401,7 +415,6 @@ class Simulation:
             # handled by physics, not order placement.)
             return False
 
-        phase = order.phase
         ot = order.order_type
 
         if ot in MOVE_ORDER_TYPES:
@@ -422,25 +435,29 @@ class Simulation:
 
         if ot == ORDER_GRENADE:
             ap_cost = weapon_rows["hand_grenade"].ap_cost
-            if u.get_ap(phase) < ap_cost:
-                return False
+            order.ap_cost = ap_cost
             if u.has_grenade <= 0:
                 return False
-            order.ap_cost = ap_cost
+            # AP check + spend (control-modularity P1): the cost-policy
+            # chokepoint, verbatim behavior via the ruleset (§3a). Called
+            # after the pure inventory guard above — both guards are
+            # side-effect-free until this point, so their relative order
+            # is unobservable; no mutation happens unless every guard
+            # (inventory here, AP inside the ruleset) passes.
+            if not self.ruleset.validate_and_cost(self, u, order):
+                return False
             u.orders.append(order)
-            u.spend_ap(phase, order.ap_cost)
             u.has_grenade -= 1
             return True
 
         elif ot == ORDER_EXPLOSIVE:
             ap_cost = weapon_rows["breach_charge"].ap_cost
-            if u.get_ap(phase) < ap_cost:
-                return False
+            order.ap_cost = ap_cost
             if u.has_explosive <= 0:
                 return False
-            order.ap_cost = ap_cost
+            if not self.ruleset.validate_and_cost(self, u, order):
+                return False
             u.orders.append(order)
-            u.spend_ap(phase, order.ap_cost)
             u.has_explosive -= 1
             return True
 
@@ -452,11 +469,10 @@ class Simulation:
             if not weapon_id:
                 return False
             ap_cost = weapon_rows[weapon_id].ap_cost
-            if u.get_ap(phase) < ap_cost:
-                return False
             order.ap_cost = ap_cost
+            if not self.ruleset.validate_and_cost(self, u, order):
+                return False
             u.orders.append(order)
-            u.spend_ap(phase, order.ap_cost)
             return True
 
         return False
@@ -472,8 +488,7 @@ class Simulation:
         if u is None or not u.orders:
             return False
         removed = u.orders.pop()
-        if removed.ap_cost > 0:
-            u.ap[removed.phase] += removed.ap_cost
+        self.ruleset.refund(self, u, removed)
         if removed.order_type == ORDER_GRENADE:
             u.has_grenade += 1
         elif removed.order_type == ORDER_EXPLOSIVE:
@@ -793,19 +808,11 @@ class Simulation:
         - all marines are dead, OR
         - all zombies are dead.
 
-        AI training treats this as an episode boundary.
+        AI training treats this as an episode boundary. Routed through the
+        ruleset (control-modularity P1, §3a) — ``TwoPhaseWEGO.is_terminal``
+        carries the verbatim body this docstring describes.
         """
-        if self.tick >= self._ticks_per_round:
-            return True
-        any_marine = any(u.team == 0 and u.alive for u in self.units)
-        any_zombie = any(u.team == 1 and u.alive for u in self.units)
-        # If we have neither, the simulation is degenerate; treat as terminal.
-        if not any_marine and not any_zombie:
-            return True
-        # If the player had marines and they're all dead → terminal.
-        if not any_marine and self.units:
-            return True
-        return False
+        return self.ruleset.is_terminal(self)
 
     # ------------------------------------------------------------------
     # Field-edit enqueue API (engine/13 — the canonical WRITE primitive)
@@ -853,19 +860,11 @@ class Simulation:
         # 1. Fresh event buffer.
         self.tick_events.clear()
 
-        # On the very first tick of a round, fire the start-of-P1 explosives.
-        if self.tick == 0 and not self._fired_start_p1:
-            process_door_explosives(
-                self.gmap, self.edit_queue, self.units, DET_START_PHASE1, self.rng,
-                events=self.tick_events,
-            )
-            self._fired_start_p1 = True
-            # Initialise per-unit path offsets for this round.
-            for u in self.units:
-                if u.team == 0:
-                    u.path_tick_offset = 0
-            # Stamp initial unit positions (legacy: done in _start_execution).
-            self.gmap.stamp_units(self.units)
+        # Round-clock head (control-modularity P1, §3a): tick-0-only work
+        # (DET_START_PHASE1, path-offset reset, initial unit stamp under
+        # TwoPhaseWEGO) now lives behind the ruleset; verbatim body in
+        # simulation.ruleset.TwoPhaseWEGO.on_round_start.
+        self.ruleset.on_round_start(self)
 
         # 2. Update projectiles.
         self._update_projectiles()
@@ -1089,33 +1088,15 @@ class Simulation:
             self.shots = [s for s in self.shots if
                           self.real_time - s.time < s.duration]
 
-        # 10. Advance tick + check for auto-pause boundaries.
+        # 10. Advance tick (the clock itself — not WEGO policy, stays here
+        # unconditionally so a future ContinuousRealtime ruleset still
+        # ticks) + route phase-boundary/round-end/auto-pause through the
+        # ruleset (control-modularity P1, §3a). Verbatim body in
+        # simulation.ruleset.TwoPhaseWEGO.on_tick_end.
         self.tick += 1
         self.real_time += sim_time_per_tick
 
-        # Phase 1 → Phase 2 boundary: fire between-phase explosives and
-        # advance the phase counter. NO auto-pause — the round plays
-        # through both phases smoothly in one execution. The split is a
-        # mental planning aid for the player, not a sim interruption.
-        if (self.tick == self._ticks_per_phase
-                and not self._fired_between):
-            process_door_explosives(
-                self.gmap, self.edit_queue, self.units, DET_BETWEEN_PHASES, self.rng,
-                events=self.tick_events,
-            )
-            self._fired_between = True
-            self.phase = 1
-
-        # End of round: fire end-of-phase-2 explosives, convert zombies, reset.
-        if self.tick >= self._ticks_per_round:
-            if not self._fired_end_p2:
-                process_door_explosives(
-                    self.gmap, self.edit_queue, self.units, DET_END_PHASE2, self.rng,
-                    events=self.tick_events,
-                )
-                self._fired_end_p2 = True
-            self._end_round()
-            self.paused = True
+        self.ruleset.on_tick_end(self)
 
     # ------------------------------------------------------------------
     # Tick-step helpers
