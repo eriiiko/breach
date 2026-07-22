@@ -280,3 +280,37 @@ def inspector_rows(cls_payload: dict, values: dict, *,
             minimum=f.get("minimum"), maximum=f.get("maximum"),
             choices=choices))
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Generic place-one (Arc C3) — the catch-all placement gesture for a
+# registered class with no bespoke tool (DOOR and the field sensors keep
+# their own; see tools/door_entity_port.py / tools/sensor_entity_port.py).
+# ---------------------------------------------------------------------------
+
+def required_field_names(cls_payload: dict) -> tuple:
+    """Field names with no default (``default is None`` in the registry
+    payload) — REQUIRED at authoring time, schema.py's own convention (a
+    kind's value domain never legitimately includes ``None``, so
+    ``default is None`` is unambiguous). These MUST land in an instance's
+    ``authored_keys`` or the loader rejects it as missing."""
+    return tuple(f["name"] for f in cls_payload["fields"]
+                if f["default"] is None)
+
+
+def default_instance_fields(cls_payload: dict, *, x=None, y=None) -> dict:
+    """``{field name: value}`` for a freshly placed instance of this class:
+    every field at its registry-effective default, with ``x``/``y``
+    overridden to the placement tile when the class declares them (the C3
+    generic place-one gesture). A class that declares some OTHER required
+    field (e.g. a zone's ``zone_id`` — no placement tool fills that yet)
+    still gets that field's ``None`` here; callers refuse those classes
+    (see :func:`required_field_names`) rather than author an invalid
+    instance from this template."""
+    names = {f["name"] for f in cls_payload["fields"]}
+    fields = {f["name"]: f["default"] for f in cls_payload["fields"]}
+    if x is not None and "x" in names:
+        fields["x"] = x
+    if y is not None and "y" in names:
+        fields["y"] = y
+    return fields

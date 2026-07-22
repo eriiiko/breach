@@ -42,8 +42,9 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import level_loader  # noqa: E402
 from level_loader import SPACE_CODE, materials_from_tilemap  # noqa: E402
-from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_FURNITURE,  # noqa: E402
-                                  MAT_GLASS, MAT_HULL, MAT_WOOD)
+from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_DOOR_CLOSED,  # noqa: E402
+                                  MAT_FURNITURE, MAT_GLASS, MAT_HULL,
+                                  MAT_WOOD)
 from make_tileset import build_tileset  # noqa: E402
 from bake_level_art import (BIT_E, BIT_N, BIT_S, BIT_W,  # noqa: E402
                             DEFAULT_PX_PER_TILE, DEFAULT_TILESET,
@@ -470,6 +471,36 @@ def test_bake_demo_loader_round_trip():
     codes = set(np.unique(lvl.tilemap).tolist())
     assert {MAT_AIR, MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_GLASS,
             MAT_FURNITURE, SPACE_CODE} <= codes
+
+
+# ---------------------------------------------------------------------------
+# MAT_DOOR_CLOSED preview bake (Arc C3 mandatory sub-fix)
+# ---------------------------------------------------------------------------
+
+def test_real_committed_tileset_bakes_mat_door_closed():
+    """Regression pin for the C3 mandatory sub-fix: the DOOR tool stamps
+    MAT_DOOR_CLOSED (id 7) immediately on placement, so the editor's live-
+    preview re-bake must not crash on it. This loads the REAL COMMITTED
+    art/tilesets/greybox (not a freshly generated one, unlike test_make_
+    tileset.py's `tileset_dir` fixture) — the bug was the committed
+    manifest/PNGs going stale after MAT_DOOR_CLOSED was added to
+    materials.py; make_tileset.py's code already covered it generically
+    (derived from MATERIAL_NAMES at build time), so the fix was
+    regenerating the committed artifact + a curated colour/group, not a
+    code change to the baker."""
+    ts = load_tileset(ROOT / DEFAULT_TILESET)
+    assert "door_closed" in ts.materials
+    grid = np.array([
+        [SP, SP, SP, SP, SP],
+        [SP, HU, HU, HU, SP],
+        [SP, HU, MAT_DOOR_CLOSED, HU, SP],
+        [SP, HU, HU, HU, SP],
+        [SP, SP, SP, SP, SP],
+    ], dtype=np.int32)
+    patch = bake_full(grid, ts, px_per_tile=DEFAULT_PX_PER_TILE, seed=0)
+    n = grid.shape[0] * DEFAULT_PX_PER_TILE
+    assert patch.diffuse.shape[:2] == (n, n)
+    assert patch.normal.shape[:2] == (n, n)
 
 
 if __name__ == "__main__":

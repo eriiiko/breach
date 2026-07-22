@@ -136,6 +136,25 @@ def test_wall_pieces_differ_by_mask(tileset_dir, manifest):
     assert (interior == interior[0, 0]).all()
 
 
+def test_door_closed_gets_its_own_group_and_a_curated_colour(tileset_dir,
+                                                             manifest):
+    """Arc C3 fix: MAT_DOOR_CLOSED (engine/16 §6 — a CLOSED entity door,
+    fully solid) gets a real 16-piece strip (covered generically by
+    test_manifest_covers_every_canon_material above), its OWN connectivity
+    group (never fused with the legacy 'door'/wall family — a closed door
+    reads as a distinct sealed object, not part of the wall it sits in),
+    and a curated colour distinct from the legacy walkable amber `door`."""
+    entry = manifest["materials"]["door_closed"]
+    assert entry["mode"] == "wall" and entry["pieces"] == WALL_PIECES
+    assert entry["group"] == "door_closed"
+    assert manifest["groups"]["door_closed"] == ["door_closed"]
+    assert "door_closed" not in manifest["groups"][WALL_GROUP]
+    door_closed_strip = _strip(tileset_dir, entry["diffuse"])
+    door_strip = _strip(tileset_dir, manifest["materials"]["door"]["diffuse"])
+    assert not np.array_equal(_piece(door_closed_strip, 15),
+                              _piece(door_strip, 15))
+
+
 # ---------------------------------------------------------------------------
 # Determinism — same args, byte-identical files
 # ---------------------------------------------------------------------------

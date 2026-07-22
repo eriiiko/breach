@@ -39,8 +39,8 @@ Controls (the tool rail + inspector show the active mode's line):
 
   Any mode:
     TAB / Shift+TAB      - cycle mode PAINT -> ROOM -> CORRIDOR -> DOOR ->
-                           SPAWN -> LIGHT -> WATER; F1..F7 jump straight
-                           to a mode
+                           SPAWN -> LIGHT -> WATER -> ENTITY; F1..F8 jump
+                           straight to a mode
     0-8, 9               - select material (palette GENERATED from
                            MATERIAL_NAMES at launch — key = material id;
                            9 = SPACE; ids past 8 are eyedropper-only)
@@ -77,9 +77,19 @@ Controls (the tool rail + inspector show the active mode's line):
                            cut through solid/space; sides bordering non-AIR
                            get lined with the selected wall material
                            (existing walls shared); RMB cancels
-  DOOR:   click LMB      - snap MAT_DOOR into a STRAIGHT wall run; corners /
-                           T / ends / isolated tiles are refused with a
-                           status message (hover shows green/red)
+  DOOR (Arc C3):  click LMB - place a `door` entity anchored on a STRAIGHT
+                           wall run (corners/T/ends/isolated tiles refused,
+                           hover shows green/red); default span 1.0 m,
+                           drag to resize (extends toward the cursor,
+                           clipped to the wall run — never spills onto
+                           AIR/SPACE or into another door); O toggles
+                           placing open <-> closed (default closed).
+                           MAT_DOOR_CLOSED (closed) / MAT_AIR (open) is
+                           stamped across the span IMMEDIATELY, one
+                           compound undo transaction with the entity add;
+                           a span narrower than the default marine
+                           footprint (3 tiles) warns, never blocks.
+                           RMB cancels an open drag.
   SPAWN:  LMB            - place a spawn (empty spot) or drag an existing
                            marker; RMB deletes; T toggles the team of the
                            hovered marker (or, off-marker, the placement
@@ -110,6 +120,24 @@ Controls (the tool rail + inspector show the active mode's line):
                            deep-tank hint (drains may flash-boil — by
                            design). Paint a glass box, fill it: that is an
                            aquarium.
+  ENTITY (Arc C3):  LMB    - place ONE instance of the class selected in the
+                           ENTITY palette tab at the cursor tile. Field
+                           sensors (pressure/smoke/water_depth/o2 = AIR
+                           family, temperature/fire = BODY family) get a
+                           click+drag gesture: the mount is the anchor,
+                           dragging sets the AIR family's sample_dx/dy
+                           facing (rendered as a small arrow); the sampled
+                           tile is refused (no placement, no transaction)
+                           if it is solid or SPACE at release — BODY-family
+                           sensors always sample their own mount, no drag
+                           needed. Everything else (logic nodes, pump,
+                           button/terminal, clock, sensor_motion) places
+                           via ONE `CollectionOp("entities")` — no grid
+                           stamp. DOOR and LIGHT keep their own dedicated
+                           modes (F4/F6); selecting either here just points
+                           back at that tool. A class needing a field this
+                           tool can't fill (a zone's zone_id — C5's paint
+                           tool) is refused with a status message.
 
 Undo — the transaction log (Arc C2, design docs/arc_c_c2_undo_design_
 2026-07-22.md): the four per-domain rings are GONE, replaced by ONE global
@@ -178,11 +206,11 @@ import level_loader
 from level_lib import (WATER_FILENAME, color_255, format_light_lines,  # noqa: F401
                        format_spawn_lines, format_water_lines, write_lights,
                        write_spawns, write_water)
-from level_loader import SPACE_CODE, SpawnEntry
+from level_loader import SPACE_CODE, EntityInstance, SpawnEntry
 from level_lights import beacon_angle
 from simulation import water_fixed
-from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_HULL,
-                                  MATERIAL_NAMES, MaterialTable)
+from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_DOOR_CLOSED,
+                                  MAT_HULL, MATERIAL_NAMES, MaterialTable)
 from bake_level_art import (BIT_E, BIT_N, BIT_S, BIT_W, DEFAULT_PX_PER_TILE,
                             DEFAULT_TILESET, bake_full, bake_level,
                             bake_region, edge16_mask, load_tileset)
@@ -202,12 +230,19 @@ import undo_log
 # chooses the level_lib family a level's lights round-trip through.
 import entity_editor_ui
 import light_entity_port
+# Arc C3 — placement tools: DOOR (span drag + immediate MAT_DOOR_CLOSED
+# stamp) and sensor placement (sample-tile arrow + solid refusal) each get a
+# pure, headless bridge module so the span/family logic is reused, not
+# reimplemented, from simulation.entities (read-only imports there).
+import door_entity_port
+import sensor_entity_port
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-MODES = ("PAINT", "ROOM", "CORRIDOR", "DOOR", "SPAWN", "LIGHT", "WATER")
+MODES = ("PAINT", "ROOM", "CORRIDOR", "DOOR", "SPAWN", "LIGHT", "WATER",
+        "ENTITY")
 DEFAULT_CORRIDOR_WIDTH = 3
 CORRIDOR_MIN, CORRIDOR_MAX = 1, 9
 SCAFFOLD_MIN = 5                 # SPACE border + hull ring + 1 interior tile
@@ -452,6 +487,13 @@ def apply_corridor(grid: np.ndarray, x0, y0, x1, y1, *, width: int,
 
 def door_check(grid: np.ndarray, tx, ty, wall_codes) -> tuple:
     """DOOR-mode gate (engine/15 §5): may tile (tx, ty) become MAT_DOOR?
+
+    Superseded in the interactive tool by
+    ``door_entity_port.door_anchor_check`` (Arc C3: the DOOR mode places a
+    `door` [[entity]] + stamps MAT_DOOR_CLOSED, not the legacy painted
+    MAT_DOOR this function gates) — kept as a pure, tested primitive for
+    API stability (tests/test_map_editor_tool.py) and any future legacy-
+    MAT_DOOR tooling (e.g. a "convert painted door" helper).
 
     Returns (ok, why) — ``why`` feeds the status line either way. Accepted:
     a wall-family tile inside a STRAIGHT wall run (edge16 mask exactly N|S
@@ -703,14 +745,16 @@ MODE_HINTS = {
             "shared)  RMB cancels",
     "CORRIDOR": "drag LMB: AIR swath, walls line the space/solid sides  "
                 "+/- width  RMB cancels",
-    "DOOR": "click a STRAIGHT wall run -> door (corners/ends refused; "
-            "hover shows green/red)",
+    "DOOR": "click/drag a STRAIGHT wall run -> door entity (default 1.0 m; "
+            "drag to resize)  O open/closed  hover shows green/red",
     "SPAWN": "LMB place/drag  RMB delete  T team toggle "
              "(hovered marker, else placement team)",
     "LIGHT": "LMB place/drag  RMB delete  B kind  C color  R range  "
              "E intens  P period  X beam  H phase (Shift = down)",
     "WATER": "LMB fill enclosed region to depth  RMB fill-to-dry  "
              "-/= depth 0.1 m steps (hover shows green/red)",
+    "ENTITY": "select a class in the ENTITY palette tab, then LMB place  "
+              "(field sensors: drag to set the AIR-facing arrow)",
 }
 
 
@@ -760,6 +804,13 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
     grid = np.array(lvl.tilemap, dtype=np.int32, copy=True)
     level_loader.materials_from_tilemap(grid, lvl.version)  # validate codes
     grid_h, grid_w = grid.shape
+    # Arc C3 — the DOOR tool quantizes spans at this level's OWN tile_size_m
+    # (the editor never scales resolution; that is --res's job, main.py).
+    # Checked ONCE at launch: a non-integer tiles-per-meter level has no
+    # defined door quantization (a6 doors design §3 S1) — the DOOR tool
+    # refuses cleanly with a flash instead of the quantizer raising mid-drag.
+    tile_size_m = float(lvl.tile_size_m)
+    door_tool_error = door_entity_port.door_tool_availability(tile_size_m)
 
     tileset_arg = (tileset_override if tileset_override is not None
                    else bake_tbl.get("tileset", DEFAULT_TILESET))
@@ -860,6 +911,14 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
     # detect whether the drag actually moved (else the commit drops).
     spawn_drag = None
     light_drag = None
+    # Arc C3 — DOOR span drag / ENTITY sensor-arrow drag: {"anchor": (tx,ty),
+    # ...}. Unlike every drag above, these open NO log transaction until
+    # release (§6.2: validate BEFORE the first mutation, so a refused
+    # placement never touches the log) — nothing exists yet to move.
+    door_drag = None
+    entity_drag = None
+    door_initial_state = "closed"   # O toggles the DOOR tool's placement
+                                    # default (editor doc §6: default closed)
 
     view_baked = True          # V
     show_normal = False        # N (baked view only)
@@ -922,11 +981,15 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
         still gets its dirty rect re-baked."""
         nonlocal room_start, corr_start, spawn_drag, light_drag
         nonlocal stroke_active, stroke_dirty, last_paint_tile
+        nonlocal door_drag, entity_drag
         if log.has_pending:
             log.commit()
         if stroke_dirty is not None:
             rebake_cells(*stroke_dirty)
         room_start = corr_start = spawn_drag = light_drag = None
+        # door_drag/entity_drag never open a log transaction (§6.2), so
+        # dropping them is a pure state reset — nothing to commit or revert.
+        door_drag = entity_drag = None
         stroke_active, stroke_dirty = False, None
         last_paint_tile = None
 
@@ -1204,20 +1267,56 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                 else:
                     flash, flash_frames = "corridor changed nothing", 120
 
-        # ---- DOOR -----------------------------------------------------------
+        # ---- DOOR (Arc C3 — entity door: span drag + immediate stamp) ------
         elif mode == "DOOR":
-            if lmb_click and not over_hud:
-                ok, why = door_check(grid, cur_tx, cur_ty, wall_codes)
-                if ok:
-                    log.begin("door")
-                    log.snapshot_grid("material")
-                    grid[cur_ty, cur_tx] = MAT_DOOR
-                    log.commit()
-                    rebake_cells(cur_tx, cur_ty, cur_tx, cur_ty)
+            if rl.is_key_pressed(K.KEY_O) and door_drag is None:
+                door_initial_state = ("open" if door_initial_state == "closed"
+                                      else "closed")
+                flash, flash_frames = (
+                    f"placing {door_initial_state} doors (O)", 120)
+            if door_tool_error is not None:
+                if lmb_click and not over_hud:
                     flash, flash_frames = (
-                        f"door at ({cur_tx}, {cur_ty}) — {why}", 120)
-                else:
-                    flash, flash_frames = f"no door: {why}", 180
+                        f"DOOR tool unavailable: {door_tool_error}", 240)
+            else:
+                if (lmb_click and not over_hud and cursor_in
+                        and door_drag is None):
+                    ok, orientation, why = door_entity_port.door_anchor_check(
+                        grid, cur_tx, cur_ty, wall_codes)
+                    if ok:
+                        door_drag = {"anchor": (cur_tx, cur_ty),
+                                     "orientation": orientation}
+                    else:
+                        flash, flash_frames = f"no door: {why}", 180
+                if rmb_click and door_drag is not None:
+                    door_drag = None
+                if door_drag is not None and lmb_up:
+                    orientation = door_drag["orientation"]
+                    far = clamp_tx if orientation == "h" else clamp_ty
+                    span, length_m = door_entity_port.plan_door_span(
+                        grid, door_drag["anchor"], orientation, far,
+                        tile_size_m, wall_codes)
+                    n = len(span)
+                    stamp_val = door_entity_port.stamp_value_for(
+                        door_initial_state)
+                    ax, ay = door_drag["anchor"]
+                    new_id = light_entity_port.unique_entity_id(
+                        "door", lights, entities)
+                    instance = door_entity_port.build_door_instance(
+                        ax, ay, orientation, length_m, door_initial_state,
+                        new_id)
+                    txn = door_entity_port.commit_door_placement(
+                        log, grid, entities, span, stamp_val, instance)
+                    rebake_txn(txn)
+                    msg = (f"{new_id}: {orientation} x{n} tile"
+                          f"{'s' if n != 1 else ''} ({length_m:.3f} m) "
+                          f"[{door_initial_state}]")
+                    if n < DEFAULT_FOOTPRINT:
+                        msg += (f"  — narrower than the {DEFAULT_FOOTPRINT}"
+                               f"-tile marine footprint (warning, not "
+                               f"blocked)")
+                    flash, flash_frames = msg, 220
+                    door_drag = None
 
         # ---- SPAWN ----------------------------------------------------------
         elif mode == "SPAWN":
@@ -1428,6 +1527,98 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                                         "flash-boil (by design)")
                             flash, flash_frames = msg, 180
 
+        # ---- ENTITY (Arc C3 — sensor placement + generic place-one) --------
+        elif mode == "ENTITY":
+            cls_name = selected_entity_class
+            cls_payload = (registry_payload.get("classes", {}).get(cls_name)
+                          if cls_name else None)
+            if cls_name is None:
+                pass
+            elif cls_payload is None:
+                if lmb_click and not over_hud:
+                    flash, flash_frames = (
+                        f"{cls_name}: not in the loaded registry "
+                        f"(stale selection?)", 180)
+            elif cls_name == door_entity_port.DOOR_CLASS:
+                if lmb_click and not over_hud:
+                    flash, flash_frames = "use the DOOR tool (F4) instead", 150
+            elif cls_name == light_entity_port.LIGHT_CLASS:
+                if lmb_click and not over_hud:
+                    flash, flash_frames = "use the LIGHT tool (F6) instead", 150
+            elif sensor_entity_port.is_field_sensor(cls_name):
+                # Click+drag: the mount is the anchor; dragging sets the
+                # AIR-family sample_dx/dy facing (BODY family always samples
+                # its own mount — no drag effect). Validation happens ONLY
+                # at release, BEFORE any log interaction (§6.2): a refused
+                # placement never opens a transaction.
+                family = sensor_entity_port.sample_family(cls_name)
+                if (lmb_click and not over_hud and cursor_in
+                        and entity_drag is None):
+                    entity_drag = {"class": cls_name,
+                                  "anchor": (cur_tx, cur_ty)}
+                if rmb_click and entity_drag is not None:
+                    entity_drag = None
+                if (entity_drag is not None
+                        and entity_drag["class"] == cls_name and lmb_up):
+                    ax, ay = entity_drag["anchor"]
+                    if family == sensor_entity_port.SAMPLE_AIR:
+                        dx, dy = clamp_tx - ax, clamp_ty - ay
+                    else:
+                        dx, dy = 0, 0
+                    sample_tile = sensor_entity_port.resolve_sample_tile(
+                        cls_name, {"x": ax, "y": ay,
+                                  "sample_dx": dx, "sample_dy": dy})
+                    if not sensor_entity_port.tile_is_open(
+                            grid, sample_tile, water_solid, SPACE_CODE):
+                        flash, flash_frames = (
+                            f"refused: {cls_name}'s sample tile "
+                            f"{sample_tile} is solid/vacuum", 220)
+                    else:
+                        new_id = light_entity_port.unique_entity_id(
+                            cls_name, lights, entities)
+                        instance = sensor_entity_port.build_sensor_instance(
+                            cls_name, ax, ay, dx, dy, new_id)
+                        sensor_entity_port.commit_sensor_placement(
+                            log, entities, instance)
+                        flash, flash_frames = (
+                            f"{new_id} at ({ax},{ay}) sampling "
+                            f"({sample_tile[1]},{sample_tile[0]})", 180)
+                    entity_drag = None
+            else:
+                # Generic place-one: any OTHER registered class (logic
+                # nodes, pump, button/terminal, clock, sensor_motion). A
+                # class needing a field this tool can't fill (a zone's
+                # zone_id — C5's paint tool) is refused rather than
+                # authoring an invalid instance.
+                field_names = {f["name"] for f in cls_payload["fields"]}
+                has_xy = "x" in field_names and "y" in field_names
+                required = entity_editor_ui.required_field_names(cls_payload)
+                unfillable = [f for f in required if f not in ("x", "y")]
+                clickable = not over_hud and (cursor_in if has_xy else True)
+                if lmb_click and clickable:
+                    if unfillable:
+                        flash, flash_frames = (
+                            f"{cls_name}: needs {', '.join(unfillable)} — "
+                            f"no placement tool for this yet", 220)
+                    else:
+                        fields = entity_editor_ui.default_instance_fields(
+                            cls_payload,
+                            x=(cur_tx if has_xy else None),
+                            y=(cur_ty if has_xy else None))
+                        new_id = light_entity_port.unique_entity_id(
+                            cls_name, lights, entities)
+                        instance = EntityInstance(
+                            id=new_id, class_name=cls_name, ordinal=0,
+                            tags=(), fields=fields, authored_keys=required)
+                        log.begin(f"place {cls_name}")
+                        log.snapshot_coll("entities")
+                        entities.append(instance)
+                        log.commit()
+                        flash, flash_frames = (
+                            f"{new_id} placed"
+                            + (f" at ({cur_tx},{cur_ty})" if has_xy else ""),
+                            180)
+
         # ---- undo / redo / save ---------------------------------------------
         # ONE global history across ALL domains (§7.2 — the intended behavior
         # change): Ctrl+Z undoes the most-recent action irrespective of the
@@ -1442,6 +1633,7 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                 flash, flash_frames = "release the mouse before undo", 120
             else:
                 spawn_drag = light_drag = None   # stale drag indices
+                door_drag = entity_drag = None    # stale span/arrow drags
                 txn = log.undo()
                 if txn is None:
                     flash, flash_frames = "nothing to undo", 120
@@ -1455,6 +1647,7 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                 flash, flash_frames = "release the mouse before redo", 120
             else:
                 spawn_drag = light_drag = None
+                door_drag = entity_drag = None
                 txn = log.redo()
                 if txn is None:
                     flash, flash_frames = "nothing to redo", 120
@@ -1499,16 +1692,19 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             water_bak_written = True
             # LIGHT (Arc C1, Amendment A1): write through whichever family
             # this level already used at open time — never a forced
-            # migration (editor doc §6 / Erik ruling 2 / canon §2). The
-            # OTHER family is simply omitted, so level_lib preserves it
-            # byte-for-byte (e.g. a legacy-light level's pre-existing
-            # [[entity]] door/zone instances are untouched here).
+            # migration (editor doc §6 / Erik ruling 2 / canon §2). Arc C3:
+            # `entities` now also carries doors/sensors/generic placements,
+            # so the "entity" family is written on EVERY save regardless of
+            # which family lights use (light_and_entity_replacements' own
+            # job — see its docstring for why format_lights_for_save alone
+            # is no longer enough).
             replacements = {
                 "spawn": lambda nl: format_spawn_lines(spawns, nl),
                 "water": level_lib.water_block_format(has_water),
             }
-            replacements.update(light_entity_port.format_lights_for_save(
-                light_form, lights, entities))
+            replacements.update(
+                light_entity_port.light_and_entity_replacements(
+                    light_form, lights, entities))
             handle.save(replacements, write_bak=first)
             toml_bak_written = True
             summary = bake_level(level_dir, tileset=tileset_arg,
@@ -1523,7 +1719,7 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             wet = int(np.count_nonzero(water_q))
             flash, flash_frames = (
                 f"SAVED tilemap.csv + {len(spawns)} spawns + "
-                f"{len(lights)} lights + "
+                f"{len(lights)} lights + {len(entities)} entities + "
                 f"{f'{wet} water tiles' if has_water else 'no water'}"
                 f"{f' ({cleared} cleared under walls/space)' if cleared else ''}"
                 f" + bake blocks + "
@@ -1619,12 +1815,33 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                             rl.Color(255, 255, 255, 60))
             rl.draw_line_ex(rl.Vector2(*a0), rl.Vector2(*a1), 2.0,
                             rl.Color(c[0], c[1], c[2], 230))
-        elif mode == "DOOR" and not over_hud and cursor_in:
-            ok, _why = door_check(grid, cur_tx, cur_ty, wall_codes)
-            col = COL_OK if ok else COL_BAD
-            s0 = to_screen(cur_tx * preview_ppt, cur_ty * preview_ppt)
-            rl.draw_rectangle_lines_ex(
-                rl.Rectangle(s0[0], s0[1], tw, th), 2.0, rl.Color(*col))
+        elif mode == "DOOR" and not over_hud and door_tool_error is None:
+            if door_drag is not None:
+                orientation = door_drag["orientation"]
+                far = clamp_tx if orientation == "h" else clamp_ty
+                span, _length_m = door_entity_port.plan_door_span(
+                    grid, door_drag["anchor"], orientation, far,
+                    tile_size_m, wall_codes)
+                fxs = [fx for (_fy, fx) in span]
+                fys = [fy for (fy, _fx) in span]
+                s0 = to_screen(min(fxs) * preview_ppt, min(fys) * preview_ppt)
+                s1 = to_screen((max(fxs) + 1) * preview_ppt,
+                              (max(fys) + 1) * preview_ppt)
+                col = (COL_OK if door_initial_state == "closed"
+                       else (150, 190, 255, 255))
+                rl.draw_rectangle(int(s0[0]), int(s0[1]),
+                                  int(s1[0] - s0[0]), int(s1[1] - s0[1]),
+                                  rl.Color(col[0], col[1], col[2], 70))
+                rl.draw_rectangle_lines_ex(
+                    rl.Rectangle(s0[0], s0[1], s1[0] - s0[0], s1[1] - s0[1]),
+                    2.0, rl.Color(*col))
+            elif cursor_in:
+                ok, _orientation, _why = door_entity_port.door_anchor_check(
+                    grid, cur_tx, cur_ty, wall_codes)
+                col = COL_OK if ok else COL_BAD
+                s0 = to_screen(cur_tx * preview_ppt, cur_ty * preview_ppt)
+                rl.draw_rectangle_lines_ex(
+                    rl.Rectangle(s0[0], s0[1], tw, th), 2.0, rl.Color(*col))
         elif mode == "WATER" and not over_hud and cursor_in:
             # Cheap start-tile validity only (green/red, the DOOR pattern) —
             # never a per-frame BFS; the real region resolves on click.
@@ -1634,6 +1851,32 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             s0 = to_screen(cur_tx * preview_ppt, cur_ty * preview_ppt)
             rl.draw_rectangle_lines_ex(
                 rl.Rectangle(s0[0], s0[1], tw, th), 2.0, rl.Color(*col))
+        elif mode == "ENTITY" and not over_hud:
+            cls_name = selected_entity_class
+            if cls_name and sensor_entity_port.is_field_sensor(cls_name):
+                family = sensor_entity_port.sample_family(cls_name)
+                if entity_drag is not None and entity_drag["class"] == cls_name:
+                    ax, ay = entity_drag["anchor"]
+                    dx = (clamp_tx - ax) if family == sensor_entity_port.SAMPLE_AIR else 0
+                    dy = (clamp_ty - ay) if family == sensor_entity_port.SAMPLE_AIR else 0
+                elif cursor_in:
+                    ax, ay, dx, dy = cur_tx, cur_ty, 0, 0
+                else:
+                    ax = ay = None
+                if ax is not None:
+                    mount_s = to_screen((ax + 0.5) * preview_ppt,
+                                        (ay + 0.5) * preview_ppt)
+                    rl.draw_circle_lines(
+                        int(mount_s[0]), int(mount_s[1]),
+                        max(6.0, 0.3 * preview_ppt * zoom), rl.Color(*COL_OK))
+                    if dx or dy:
+                        tip_s = to_screen((ax + dx + 0.5) * preview_ppt,
+                                          (ay + dy + 0.5) * preview_ppt)
+                        rl.draw_line_ex(rl.Vector2(*mount_s),
+                                       rl.Vector2(*tip_s), 2.0,
+                                       rl.Color(*COL_OK))
+                        rl.draw_circle_v(rl.Vector2(*tip_s), 4.0,
+                                         rl.Color(*COL_OK))
 
         # Water overlay (every mode — level content): translucent blue per
         # wet tile, alpha scaled by depth (editor view only; in-game the
@@ -1695,6 +1938,27 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                                  rl.Color(c[0], c[1], c[2], 90))
             if i == light_hover:
                 rl.draw_circle_lines(int(sx), int(sy), dot + 3.0, rl.WHITE)
+
+        # Sensor markers (every mode — level content, Arc C3): a small dot
+        # on the mount tile + the AIR family's facing arrow (BODY family —
+        # temperature/fire — samples its own mount, no arrow: D7/D8).
+        for e in entities:
+            if not sensor_entity_port.is_field_sensor(e.class_name):
+                continue
+            ex, ey = e.fields.get("x"), e.fields.get("y")
+            if ex is None or ey is None:
+                continue
+            sx, sy = to_screen((ex + 0.5) * preview_ppt, (ey + 0.5) * preview_ppt)
+            rl.draw_circle_v(rl.Vector2(sx, sy),
+                             max(3.0, 0.18 * preview_ppt * zoom),
+                             rl.Color(255, 210, 90, 230))
+            dx, dy = e.fields.get("sample_dx", 0), e.fields.get("sample_dy", 0)
+            if (sensor_entity_port.sample_family(e.class_name)
+                    == sensor_entity_port.SAMPLE_AIR and (dx or dy)):
+                tx_, ty_ = to_screen((ex + dx + 0.5) * preview_ppt,
+                                     (ey + dy + 0.5) * preview_ppt)
+                rl.draw_line_ex(rl.Vector2(sx, sy), rl.Vector2(tx_, ty_), 2.0,
+                                rl.Color(255, 210, 90, 230))
 
         # ---- panes (chrome) -----------------------------------------------
         # The map is done; stop clipping and paint the surrounding panes on

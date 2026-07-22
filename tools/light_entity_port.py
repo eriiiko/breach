@@ -230,3 +230,25 @@ def format_lights_for_save(light_form_: str, lights: list,
         return {"light": lambda nl: format_light_lines(lights, nl)}
     merged = merge_light_entities(other_entities, lights)
     return {"entity": lambda nl: format_entity_lines(merged, nl)}
+
+
+def light_and_entity_replacements(light_form_: str, lights: list,
+                                  entities: list) -> dict:
+    """The COMPLETE lights-AND-entities save replacement set (Arc C3).
+
+    :func:`format_lights_for_save` decides ONLY the light family and
+    omits ``"entity"`` entirely on a legacy-light level (C1's contract,
+    unchanged above) — that omission meant "leave it byte-preserved" back
+    when nothing but lights ever mutated ``entities``. Arc C3's placement
+    tools (DOOR/sensor/generic place-one) now append to this SAME
+    ``entities`` list regardless of which family lights use, so a legacy-
+    light level's ``"entity"`` family must be written from the live
+    ``entities`` on EVERY save, or anything placed this session would
+    silently vanish. When ``light_form_ == "entity"`` the merge already
+    folds ``entities`` in (:func:`merge_light_entities`), so adding it here
+    would be a no-op — the ``"entity" not in repl`` guard skips exactly
+    that case."""
+    repl = format_lights_for_save(light_form_, lights, entities)
+    if "entity" not in repl:
+        repl["entity"] = lambda nl: format_entity_lines(entities, nl)
+    return repl

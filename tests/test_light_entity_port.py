@@ -311,5 +311,69 @@ def test_legacy_level_save_stays_legacy_form_no_entity_family(tmp_path):
     assert len(_load(d).lights) == 2
 
 
+# ---------------------------------------------------------------------------
+# light_and_entity_replacements (Arc C3): the "entity" family must be
+# written on EVERY save now that placement tools mutate `entities`,
+# regardless of which family lights use.
+# ---------------------------------------------------------------------------
+
+def test_light_and_entity_replacements_legacy_lights_still_writes_entity():
+    """A legacy-light level with a door PLACED this session (an `entities`
+    entry with no on-disk precedent): format_lights_for_save alone would
+    omit "entity" (light_form == "legacy") and the door would silently
+    never save — light_and_entity_replacements must add it."""
+    lights = [lep.EditableLight(x=1.0, y=1.0, color=(1.0, 0.0, 0.0),
+                                id="light_1")]
+    entities = [EntityInstance(id="door_1", class_name="door", ordinal=0,
+                               tags=(), fields={"x": 0, "y": 0}, authored_keys=("x", "y"))]
+    repl = lep.light_and_entity_replacements("legacy", lights, entities)
+    assert set(repl) == {"light", "entity"}
+    text = "".join(repl["entity"]("\n"))
+    assert 'id = "door_1"' in text and 'class = "door"' in text
+    # the light family is untouched by this — still the legacy writer.
+    assert "[[light]]" in "".join(repl["light"]("\n"))
+
+
+def test_light_and_entity_replacements_entity_lights_no_double_entity_key():
+    """When lights already live in the entity family, format_lights_for_save
+    folds `entities` into the SAME merged block — adding a second "entity"
+    replacement would be a bug (level_lib only accepts one lambda per
+    family); the guard must be a no-op here."""
+    lights = [lep.EditableLight(x=1.0, y=1.0, color=(1.0, 0.0, 0.0),
+                                id="light_1")]
+    entities = [EntityInstance(id="door_1", class_name="door", ordinal=0,
+                               tags=(), fields={"x": 0, "y": 0}, authored_keys=("x", "y"))]
+    repl = lep.light_and_entity_replacements("entity", lights, entities)
+    assert set(repl) == {"entity"}
+    text = "".join(repl["entity"]("\n"))
+    assert 'class = "door"' in text and 'class = "light"' in text
+
+
+def test_legacy_level_save_with_placed_door_round_trips(tmp_path):
+    """Integration pin: a legacy-light level, a door placed this session
+    (appended to `entities`, never on disk before), saved through
+    light_and_entity_replacements — reloads with BOTH the legacy lights AND
+    the new door entity intact."""
+    d = _mini_level(tmp_path, LEGACY_LIGHTS)
+    lvl = _load(d)
+    lights = lep.initial_editable_lights(lvl)
+    form = lep.light_form(lvl.raw_toml)
+    entities = [e for e in lvl.entities if e.class_name != lep.LIGHT_CLASS]
+    entities.append(EntityInstance(
+        id="door_1", class_name="door", ordinal=0, tags=(),
+        fields={"x": 0, "y": 3, "orientation": "h", "length_m": 1.0,
+               "initial_state": "closed"},
+        authored_keys=("x", "y", "orientation", "length_m", "initial_state")))
+    from level_lib import open_level
+    handle = open_level(str(d))
+    handle.save(lep.light_and_entity_replacements(form, lights, entities))
+    text = (d / "level.toml").read_text(encoding="utf-8")
+    assert "[[light]]" in text and "[[entity]]" in text
+    reloaded = _load(d)
+    assert len(reloaded.lights) == 2
+    door_ids = [e.id for e in reloaded.entities if e.class_name == "door"]
+    assert door_ids == ["door_1"]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

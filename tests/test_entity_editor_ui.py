@@ -232,5 +232,60 @@ def test_inspector_rows_numeric_and_enum_kinds_are_editable():
     assert all(r.editable for r in rows)
 
 
+# ---------------------------------------------------------------------------
+# Generic place-one (Arc C3): required_field_names / default_instance_fields
+# ---------------------------------------------------------------------------
+
+def test_required_field_names_is_the_default_none_fields():
+    cls_payload = {"fields": [
+        _field("x", eui.KIND_INT, default=None),
+        _field("y", eui.KIND_INT, default=None),
+        _field("period", eui.KIND_INT, default=1),
+    ]}
+    assert eui.required_field_names(cls_payload) == ("x", "y")
+
+
+def test_required_field_names_empty_for_a_pure_logic_node():
+    """decider/gate_*/filter/airlock_controller: no x/y, nothing required —
+    the generic place-one authors nothing but id/class (registry defaults
+    cover every field)."""
+    cls_payload = {"fields": [
+        _field("comparator", eui.KIND_ENUM, default="gt",
+              choices=["gt", "lt"]),
+        _field("threshold", eui.KIND_Q16, default=0),
+    ]}
+    assert eui.required_field_names(cls_payload) == ()
+
+
+def test_default_instance_fields_overrides_xy_only_when_declared():
+    cls_payload = {"fields": [
+        _field("x", eui.KIND_INT, default=None),
+        _field("y", eui.KIND_INT, default=None),
+        _field("period", eui.KIND_INT, default=1),
+    ]}
+    fields = eui.default_instance_fields(cls_payload, x=4, y=7)
+    assert fields == {"x": 4, "y": 7, "period": 1}
+
+
+def test_default_instance_fields_ignores_xy_when_class_has_none():
+    """A pure logic node (no x/y field) ignores the placement tile —
+    positionless classes still get a template, per the C3 kickoff note."""
+    cls_payload = {"fields": [_field("threshold", eui.KIND_Q16, default=0)]}
+    fields = eui.default_instance_fields(cls_payload, x=4, y=7)
+    assert fields == {"threshold": 0}
+
+
+def test_default_instance_fields_leaves_unfillable_required_at_none():
+    """A zone's zone_id (required, no x/y-style placement fills it) stays
+    None in the template — callers must refuse these classes rather than
+    author an invalid instance (see required_field_names -> the "unfillable"
+    guard in map_editor.py's ENTITY mode)."""
+    cls_payload = {"fields": [_field("zone_id", eui.KIND_INT, default=None),
+                              _field("faction", eui.KIND_INT, default=0)]}
+    fields = eui.default_instance_fields(cls_payload)
+    assert fields == {"zone_id": None, "faction": 0}
+    assert eui.required_field_names(cls_payload) == ("zone_id",)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
