@@ -430,7 +430,11 @@ def main():
                 sources.append(src)
 
             # ----- Upload + draw -----
-            renderer.upload_state(sim.gmap, light_sources=sources)
+            # total_tick (the MONOTONIC sim clock computed above) is the P3 smoke
+            # detail clock too — the advected-noise crossfade rides the sim tick,
+            # not wall time, so replays/spectators render identical smoke.
+            renderer.upload_state(sim.gmap, light_sources=sources,
+                                  sim_tick=total_tick)
             renderer.begin_frame()
 
             renderer.compose_world(

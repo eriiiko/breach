@@ -29,6 +29,7 @@ from simulation.status import composed_flags
 from . import core
 from .blackbody import BlackbodyRamp
 from .camera import Camera2D
+from .gas_detail import GasDetailPass
 from .gas_medium import GasMediumOverlay
 from .lighting import LightingPass
 from .overlays import (
@@ -171,6 +172,16 @@ class GameRenderer:
         # gmap.gas + gmap.smoke_glow, writes only its own texture.
         self.gas_medium = GasMediumOverlay.from_config(
             cfg.grid_h, cfg.grid_w, CFG)
+        # Fire & Heat Beauty B2 P3 — the sub-tile detail shader for the gas
+        # medium. Draws the P2 layer THROUGH shaders/gas_medium.fs to add
+        # advected-noise wisps (bicubic + wind-advected erosion), or — when
+        # [render.gas_detail] enabled=false — is bypassed for the plain P2 draw
+        # (byte-for-byte the P2 look). RENDER-ONLY; reads gmap.wind + the P2
+        # density_proxy, writes only its own textures. sim_dt is the crossfade
+        # clock's tick length (the noise rides the sim tick, never wall time).
+        self.gas_detail = GasDetailPass.from_config(cfg.grid_h, cfg.grid_w, CFG)
+        self._sim_dt = 1.0 / float(getattr(
+            getattr(CFG, "clock", None), "ticks_per_second", 24))
         self.pressure_overlay = PressureOverlay(cfg.grid_h, cfg.grid_w)
         # Emissive temperature overlay (Fire & Heat Beauty B1): the physical
         # black-body glow over gmap.temperature (engine/06). Built from the
@@ -313,7 +324,8 @@ class GameRenderer:
 
     # ---- per-frame physics->GPU upload ---------------------------------
 
-    def upload_state(self, gmap, light_sources: Optional[List] = None) -> None:
+    def upload_state(self, gmap, light_sources: Optional[List] = None,
+                     sim_tick: int = 0) -> None:
         t_start = time.perf_counter()
 
         # Light field. Occlusion is the per-channel DYNAMIC attenuation field
@@ -393,6 +405,15 @@ class GameRenderer:
                 self.gas_medium.update(
                     trace, gmap.smoke_glow, gmap.gases,
                     base_absorb_scale=float(self.raycaster.smoke_absorb_scale))
+                # P3 detail: upload the TAMED wind (raw -grad(P) is fire-spiked +
+                # unusable as a velocity — see gas_detail.py) + the P2 density
+                # solidity, and advance the crossfade phase on the SIM clock
+                # (sim_tick, never wall time — replays render identically). Only
+                # when the pass is enabled (else the plain P2 layer draws).
+                if self.gas_detail.enabled:
+                    self.gas_detail.update(
+                        self.gas_medium.density_proxy, gmap.wind_x, gmap.wind_y,
+                        sim_tick=int(sim_tick), sim_dt=self._sim_dt)
         # Fire still gets the vacuum mask: combustion requires oxygen, so
         # fire physically cannot exist in vacuum. Keep this until the fire
         # sim is taught to extinguish at vacuum tiles directly.
@@ -517,9 +538,17 @@ class GameRenderer:
                 # T·bg). Occlusion (alpha) and inscatter (RGB) composite in a
                 # single BLEND_ALPHA_PREMULTIPLY draw — no double-count, and the
                 # real per-tile alpha leaves vacuum tiles untouched (no additive
-                # alpha-saturation hazard). gas_medium.draw owns its blend mode.
-                self.gas_medium.draw(
-                    0, 0, self.world.world_px_w, self.world.world_px_h)
+                # alpha-saturation hazard). P3: when the detail shader is enabled
+                # the layer is drawn THROUGH it (bicubic + advected-noise wisps),
+                # same premult blend; enabled=false bypasses the shader for the
+                # plain P2 draw (byte-for-byte the P2 look). Both own their blend.
+                if self.gas_detail.enabled:
+                    self.gas_detail.draw(
+                        self.gas_medium.tex,
+                        0, 0, self.world.world_px_w, self.world.world_px_h)
+                else:
+                    self.gas_medium.draw(
+                        0, 0, self.world.world_px_w, self.world.world_px_h)
         if self.show_fire:
             rl.begin_blend_mode(rl.BlendMode.BLEND_ADDITIVE)
             self._draw_overlay_to_world(self.fire_overlay.tex)
@@ -1373,6 +1402,7 @@ class GameRenderer:
         rl.unload_texture(self.fire_overlay.tex)
         rl.unload_texture(self.glow_overlay.tex)
         rl.unload_texture(self.gas_medium.tex)
+        self.gas_detail.unload()
         rl.unload_texture(self.temperature_overlay.tex)
         rl.unload_texture(self.water_overlay.tex)
         self.water_pass.unload()

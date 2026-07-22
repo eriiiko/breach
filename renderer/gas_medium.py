@@ -70,6 +70,29 @@ from simulation.gases import N_TRACE_GASES
 _EFFECT_GAS_TAGS = frozenset(("damage_over_time", "area_denial"))
 
 
+def gas_optical_depth(
+    gas_density: np.ndarray,
+    k_s: np.ndarray,
+    *,
+    base_absorb_scale: float,
+    plume_k_scale: float,
+) -> np.ndarray:
+    """Panchromatic optical depth (H, W) float64 — the PRE-curve tau.
+
+    ``tau = base_absorb_scale * plume_k_scale * Σ_s ( k_s · ρ_s )`` — the
+    density-weighted mean-extinction sum the ray march does, sharing the SAME
+    base scale (single source of scale, design §3). Extracted so both the alpha
+    build (``gas_medium_layer``) and the P3 detail pass's density-solidity field
+    read ONE definition of "how much smoke is here" (byte-identical to the old
+    inline computation; done in float64 for the thin-limit linearisation)."""
+    k_s = np.asarray(k_s, dtype=np.float32)
+    weighted = np.tensordot(k_s.astype(np.float64),
+                            np.asarray(gas_density, dtype=np.float64),
+                            axes=([0], [0]))
+    tau = (float(base_absorb_scale) * float(plume_k_scale)) * weighted
+    return np.maximum(tau, 0.0)
+
+
 def gas_medium_layer(
     gas_density: np.ndarray,
     k_s: np.ndarray,
@@ -118,16 +141,15 @@ def gas_medium_layer(
     k_s = np.asarray(k_s, dtype=np.float32)
 
     # --- optical depth (panchromatic), sharing the ray march's base scale ----
-    # tau = base_absorb_scale * plume_k_scale * Σ_s ( k_s · ρ_s )
-    # tensordot over the gas axis is the density-weighted sum the march does per
-    # channel, collapsed to the mean-extinction single channel. Done in float64
-    # so `1 - exp(-tau)` below has no catastrophic cancellation at tiny tau (the
-    # thin-smoke limit); the uint8 pack is byte-identical to float32 for any
-    # visible smoke, this only keeps the linearization accurate.
-    weighted = np.tensordot(k_s.astype(np.float64),
-                            gas_density.astype(np.float64), axes=([0], [0]))
-    tau = (float(base_absorb_scale) * float(plume_k_scale)) * weighted
-    tau = np.maximum(tau, 0.0)
+    # tau = base_absorb_scale * plume_k_scale * Σ_s ( k_s · ρ_s ), the density-
+    # weighted mean-extinction sum. Done in float64 so `1 - exp(-tau)` below has
+    # no catastrophic cancellation at tiny tau (the thin-smoke limit); the uint8
+    # pack is byte-identical to float32 for any visible smoke, this only keeps
+    # the linearization accurate. Extracted to gas_optical_depth so the P3 detail
+    # pass reads the SAME tau for its erosion-solidity field.
+    tau = gas_optical_depth(gas_density, k_s,
+                            base_absorb_scale=base_absorb_scale,
+                            plume_k_scale=plume_k_scale)
 
     # --- artistic remap in TAU-space, then Beer-Lambert to alpha -------------
     # Doing the curve on tau (not on alpha) keeps the thin limit linear and the
@@ -225,6 +247,12 @@ class GasMediumOverlay:
         self.effect_gas_floor = float(effect_gas_floor)
         self.tex = core.create_dynamic_rgba_texture(grid_w, grid_h)
         self.packed = np.zeros((grid_h, grid_w, 4), dtype=np.uint8)
+        # Density SOLIDITY field (H, W) float32 in [0,1] = saturate(pre-curve
+        # tau), refreshed each update(). The P3 detail pass (renderer/
+        # gas_detail.py) reads it as the erosion weight: 1 = solid core
+        # (untouched), 0 = wispy edge (eroded). Built from the SAME tau the
+        # alpha is, so body and detail can never disagree about "how solid".
+        self.density_proxy = np.zeros((grid_h, grid_w), dtype=np.float32)
         # Per-gas optics, bound lazily from the GasTable (see _bind_table).
         self._table_id: Optional[int] = None
         self._k_s: Optional[np.ndarray] = None
@@ -272,6 +300,15 @@ class GasMediumOverlay:
         : the Raycaster's ``smoke_absorb_scale`` (shared base scale)."""
         if self._table_id != id(gas_table):
             self._bind_table(gas_table)
+        # Density solidity for the P3 detail pass: saturate(pre-curve tau) built
+        # from the SAME optics + shared base scale as the alpha below (single
+        # source of scale). saturate -> tau>=1 reads as a solid core (erosion
+        # off), tau<1 as a wispy edge (erosion on). Cheap; the grid is small.
+        self.density_proxy = np.clip(
+            gas_optical_depth(gas_density_trace, self._k_s,
+                              base_absorb_scale=base_absorb_scale,
+                              plume_k_scale=self.plume_k_scale),
+            0.0, 1.0).astype(np.float32)
         self.packed = pack_gas_medium_rgba(
             gas_density_trace, self._k_s,
             base_absorb_scale=base_absorb_scale,
@@ -297,6 +334,6 @@ class GasMediumOverlay:
 
 
 __all__ = [
-    "gas_medium_layer", "pack_premult_rgba", "pack_gas_medium_rgba",
-    "GasMediumOverlay",
+    "gas_optical_depth", "gas_medium_layer", "pack_premult_rgba",
+    "pack_gas_medium_rgba", "GasMediumOverlay",
 ]

@@ -959,6 +959,23 @@ def main() -> None:
             gm.glow_gain = float(state.get("gm_glow_gain"))
             gm.effect_gas_floor = float(state.get("gm_effect_gas_floor"))
 
+            # ---- Sync the B2 gas-DETAIL dials LIVE (P3) ----
+            # The advected-noise shader dials drive shaders/gas_medium.fs
+            # immediately (render-only). noise_octaves is a BAKE-time param —
+            # gas_detail lazily rebakes the fBm when it changes (a few ms, only
+            # on change). enabled toggles the whole pass (else the plain P2 layer
+            # draws — byte-for-byte the P2 look).
+            gd = renderer.gas_detail
+            gd.enabled = bool(state.get("gd_enabled"))
+            gd.noise_octaves = int(round(state.get("gd_noise_octaves")))
+            gd.noise_wavelength_tiles = float(
+                state.get("gd_noise_wavelength_tiles"))
+            gd.adv_gain = float(state.get("gd_adv_gain"))
+            gd.cycle_seconds = float(state.get("gd_cycle_seconds"))
+            gd.erode_strength = float(state.get("gd_erode_strength"))
+            gd.warp_px = float(state.get("gd_warp_px"))
+            gd.dither_on = bool(state.get("gd_dither_on"))
+
             # ---- Lighting setters ----
             renderer.lighting.set_ambient((state.get("ambient_r"),
                                            state.get("ambient_g"),
@@ -1030,7 +1047,10 @@ def main() -> None:
                 sources.append(src)
 
             # ---- Upload physics state ----
-            renderer.upload_state(sim.gmap, light_sources=sources)
+            # total_tick (the MONOTONIC sim clock above) drives the P3 gas-detail
+            # crossfade too — sim tick, never wall time (replay-identical smoke).
+            renderer.upload_state(sim.gmap, light_sources=sources,
+                                  sim_tick=total_tick)
             renderer.consume_events(sim.tick_events)
             renderer._advance_effects(dt)
 
