@@ -8,8 +8,10 @@ keep working for every existing caller); the write side owns managed-block
 writeback for ``level.toml``.
 
 Managed families (``MANAGED_FAMILIES``): ``[[spawn]]``, ``[[light]]``,
-``[water]`` and — since A3 — ``[[entity]]``; the writer is family-generic.
-On save every existing table of a replaced
+``[water]``, ``[[entity]]`` (A3), ``[[wire]]`` (B1) and — since Arc C9 —
+``[art.bare]``/``[art.align]``/``[bake]`` (the baker's writeback, ported off
+its original bespoke line-targeted regex upsert); the writer is
+family-generic. On save every existing table of a replaced
 family is removed and the new block is written at the position of the first
 one (or appended at EOF); every byte OUTSIDE the managed tables — comments,
 [art]/[bake] blocks, hand formatting, newline style — is preserved exactly.
@@ -66,9 +68,12 @@ class ManagedFamily:
 
     @property
     def header_re(self) -> re.Pattern:
+        # re.escape: "art.bare"/"art.align" carry a literal dot, which must
+        # match itself, not the regex any-char wildcard.
+        name = re.escape(self.name)
         if self.array:
-            return re.compile(r"^\s*\[\[\s*" + self.name + r"\s*\]\]\s*(#.*)?$")
-        return re.compile(r"^\s*\[\s*" + self.name + r"\s*\]\s*(#.*)?$")
+            return re.compile(r"^\s*\[\[\s*" + name + r"\s*\]\]\s*(#.*)?$")
+        return re.compile(r"^\s*\[\s*" + name + r"\s*\]\s*(#.*)?$")
 
 
 MANAGED_FAMILIES = {
@@ -81,6 +86,16 @@ MANAGED_FAMILIES = {
     # B1 ([[wire]] logic bindings): another array-of-tables family, same
     # family-generic writer, byte-stable round-trip via format_wire_lines.
     "wire": ManagedFamily("wire", array=True),
+    # Arc C9 rider (A2 accepted gap, closed): the baker's [art.bare]/
+    # [art.align]/[bake] TOML writeback, formerly a bespoke hand-rolled
+    # regex line-upsert in tools/bake_level_art.py, ported onto THE single
+    # writer so it composes atomically (one temp+rename) with whatever
+    # other families a save touches. Dotted single-table headers, same as
+    # [water] — see format_art_bare_lines/format_art_align_lines/
+    # format_bake_lines below.
+    "art.bare": ManagedFamily("art.bare", array=False),
+    "art.align": ManagedFamily("art.align", array=False),
+    "bake": ManagedFamily("bake", array=False),
 }
 
 
@@ -210,6 +225,46 @@ def format_wire_lines(wire_specs, nl: str = "\n") -> list:
         lines.append(f"from = {_fmt_value(str(from_))}{nl}")
         lines.append(f"to = {_fmt_value(str(to))}{nl}")
     return lines
+
+
+def format_art_bare_lines(diffuse: str, normal: str, nl: str = "\n") -> list:
+    """The managed ``[art.bare]`` block as ``nl``-terminated lines — the
+    baker's diffuse/normal PNG filenames (engine/15 §4 P2). Arc C9 rider:
+    ported off ``tools/bake_level_art.py``'s original bespoke line-targeted
+    regex upsert onto this family-generic writer — format/meaning
+    unchanged, only WHERE the write happens."""
+    return [
+        f"[art.bare]{nl}",
+        f'diffuse = "{diffuse}"{nl}',
+        f'normal = "{normal}"{nl}',
+    ]
+
+
+def format_art_align_lines(px_per_tile, nl: str = "\n") -> list:
+    """The managed ``[art.align]`` block. ``offset_px`` is always
+    ``[0.0, 0.0]`` for a bake (a nonzero offset is ``align_level_art.py``'s
+    own job, untouched by the baker); ``px_per_tile`` is the bake's per-axis
+    pair, 2-decimal formatting (the pre-existing save_align house style,
+    unchanged by the Arc C9 port)."""
+    ppt = float(px_per_tile)
+    return [
+        f"[art.align]{nl}",
+        f"offset_px = [0.0, 0.0]{nl}",
+        f"px_per_tile = [{ppt:.2f}, {ppt:.2f}]{nl}",
+    ]
+
+
+def format_bake_lines(tileset_rel: str, px_per_tile: int, seed: int,
+                      nl: str = "\n") -> list:
+    """The managed ``[bake]`` block — the recorded parameters a bare
+    re-bake (``bake_level_art.bake_level(level_dir)``, all-``None``
+    arguments) replicates exactly (engine/15 §4)."""
+    return [
+        f"[bake]{nl}",
+        f'tileset = "{tileset_rel}"{nl}',
+        f"px_per_tile = {int(px_per_tile)}{nl}",
+        f"seed = {int(seed)}{nl}",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -438,6 +493,58 @@ def write_air_init_npy(level_dir, air_q, *, npy_bak: bool = True):
         nbak.write_bytes(npy_path.read_bytes())
     np.save(npy_path, a)
     return nbak, True
+
+
+_BOUNDARY_LINE_RE = re.compile(
+    r'^\s*boundary\s*=\s*"(space|ambient)"\s*(#.*)?$')
+
+
+def write_boundary_field(toml_path, boundary: str, *,
+                         write_bak: bool = False):
+    """Set (or insert) the top-level ``boundary`` scalar (editor design §7 /
+    canon engine/16 §7 — format + client-side writeback ONLY, never the
+    physics it will eventually drive).
+
+    ``boundary`` is validated against :data:`level_loader.BOUNDARY_MODES` so
+    the editor can never write a value its own loader would then reject.
+    Unlike every other managed field, ``boundary`` is a BARE top-level key —
+    not a ``[[table]]``/``[table]`` header — so it does not fit
+    :func:`write_managed_blocks`' table-span replace; this is its own tiny
+    single-line find-or-insert, same atomic temp+rename write. An existing
+    ``boundary = "..."`` line is replaced in place; an absent one is
+    inserted right before the FIRST table header (keeping it grouped with
+    the file's other top-level scalars, never inside a managed block); a
+    file with no table at all (never true for a map-editor level, which
+    requires ``[bake]``) appends at EOF. Every other byte is untouched.
+    Returns the ``.bak`` path, or ``None``."""
+    boundary = str(boundary)
+    if boundary not in level_loader.BOUNDARY_MODES:
+        raise ValueError(
+            f"boundary must be one of {level_loader.BOUNDARY_MODES}, "
+            f"got {boundary!r}")
+    toml_path = Path(toml_path)
+    original = toml_path.read_bytes()
+    text = original.decode("utf-8")
+    nl = "\r\n" if "\r\n" in text else "\n"
+    out = text.splitlines(keepends=True)
+    new_line = f'boundary = "{boundary}"{nl}'
+    for i, line in enumerate(out):
+        if _BOUNDARY_LINE_RE.match(line):
+            out[i] = new_line
+            break
+        if _TABLE_HEADER_RE.match(line):
+            out.insert(i, new_line)
+            break
+    else:
+        if out and not out[-1].endswith(("\n", "\r")):
+            out[-1] += nl
+        out.append(new_line)
+    bak = None
+    if write_bak:
+        bak = Path(str(toml_path) + ".bak")
+        bak.write_bytes(original)
+    _atomic_write_bytes(toml_path, "".join(out).encode("utf-8"))
+    return bak
 
 
 def write_tilemap_csv(level_dir, grid, *, tilemap_rel: str = "tilemap.csv",

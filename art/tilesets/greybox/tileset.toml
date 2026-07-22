@@ -32,6 +32,7 @@ seed = 0
 
 [groups]
 wall = ["hull", "wood", "door", "steel", "glass"]
+door_closed = ["door_closed"]
 
 [materials.air]
 mode = "floor"
@@ -79,6 +80,13 @@ mode = "floor"
 pieces = 1
 diffuse = "furniture_crate.png"
 normal = "furniture_crate_n.png"
+
+[materials.door_closed]
+mode = "wall"
+group = "door_closed"
+pieces = 16
+diffuse = "door_closed_wall.png"
+normal = "door_closed_wall_n.png"
 
 [special.space]
 mode = "transparent"

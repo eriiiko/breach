@@ -27,6 +27,8 @@ Run:
 """
 from __future__ import annotations
 
+import os
+import shutil
 import sys
 import tomllib
 from pathlib import Path
@@ -40,18 +42,21 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools"))
 
+import level_lib  # noqa: E402
 import level_loader  # noqa: E402
 from level_loader import SPACE_CODE, materials_from_tilemap  # noqa: E402
-from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_FURNITURE,  # noqa: E402
-                                  MAT_GLASS, MAT_HULL, MAT_WOOD)
+from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_DOOR_CLOSED,  # noqa: E402
+                                  MAT_FURNITURE, MAT_GLASS, MAT_HULL,
+                                  MAT_WOOD)
 from make_tileset import build_tileset  # noqa: E402
 from bake_level_art import (BIT_E, BIT_N, BIT_S, BIT_W,  # noqa: E402
                             DEFAULT_PX_PER_TILE, DEFAULT_TILESET,
                             DIFFUSE_FILENAME, FLOOR_HASH_P1, FLOOR_HASH_P2,
                             NORMAL_FILENAME, alpha_composite_over,
                             bake_full, bake_level, bake_region,
-                            downscale_normal_strip, edge16_mask,
-                            floor_variant, load_tileset, write_bake_blocks)
+                            compute_bake_replacements, downscale_normal_strip,
+                            edge16_mask, floor_variant, load_tileset,
+                            write_bake_blocks)
 from bake_level_art import main as bake_main  # noqa: E402
 
 TEST_PX = 16          # tmp tileset resolution — fast; CLI default stays 128
@@ -370,7 +375,9 @@ def test_golden_bake_pinned(ts16):
 
 
 # ---------------------------------------------------------------------------
-# level.toml writeback — save_align house style
+# level.toml writeback — level_lib's atomic managed-block writer (Arc C9
+# rider: ported off the original save_align-style hand-rolled regex upsert;
+# whole-block replace now, matching every other level_lib-managed family)
 # ---------------------------------------------------------------------------
 
 def test_writeback_appends_blocks_and_writes_bak(tmp_path):
@@ -396,12 +403,23 @@ def test_writeback_appends_blocks_and_writes_bak(tmp_path):
     assert raw["spawn"][0]["name"] == "Alpha"   # untouched
 
 
-def test_writeback_is_line_targeted_on_existing_blocks(tmp_path):
+def test_writeback_replaces_existing_blocks_only_the_changed_value_diffs(
+        tmp_path):
+    """On a level.toml that already carries canonical [art.bare]/[bake]
+    blocks (every shipped level's actual shape — see
+    test_repo_level_bake_toml_is_byte_stable_across_the_port below), calling
+    write_bake_blocks twice with only ``seed`` different is a one-line diff:
+    the whole-block replace (level_lib's family-generic writer, Arc C9)
+    reproduces the SAME bytes for every unchanged field, same as the
+    original hand-rolled upsert would have for a block this clean."""
     toml = tmp_path / "level.toml"
     toml.write_text(
         'version = "2"\nname = "T"\ntilemap = "tilemap.csv"\n\n'
-        "[art.bare]\n# baked by the P2 baker\ndiffuse = \"old.png\"\n"
-        'normal = "old_n.png"\n\n[bake]\ntileset = "art/tilesets/greybox"\n'
+        f'[art.bare]\ndiffuse = "{DIFFUSE_FILENAME}"\n'
+        f'normal = "{NORMAL_FILENAME}"\n\n'
+        "[art.align]\noffset_px = [0.0, 0.0]\n"
+        "px_per_tile = [64.00, 64.00]\n\n"
+        '[bake]\ntileset = "art/tilesets/greybox"\n'
         "px_per_tile = 64\nseed = 1\n",
         encoding="utf-8", newline="\n")
     write_bake_blocks(toml, tileset_rel="art/tilesets/greybox",
@@ -413,7 +431,100 @@ def test_writeback_is_line_targeted_on_existing_blocks(tmp_path):
     assert len(first) == len(second)
     diff = [(a, b) for a, b in zip(first, second) if a != b]
     assert diff == [("seed = 1", "seed = 9")]   # ONLY the seed line moved
-    assert "# baked by the P2 baker" in second  # comments preserved
+
+
+def test_writeback_does_not_preserve_a_stray_comment_inside_a_managed_block(
+        tmp_path):
+    """Deliberate behavior change from the pre-C9 hand-rolled upsert: a
+    whole-block replace (level_lib's family-generic writer — the SAME
+    mechanism [[spawn]]/[[entity]]/etc. already use) does not preserve a
+    hand-written comment INSIDE [art.bare]/[bake]. No shipped level carries
+    one (see test_repo_level_bake_toml_is_byte_stable_across_the_port); this
+    pins the new, intentional invariant rather than silently losing test
+    coverage of the change."""
+    toml = tmp_path / "level.toml"
+    toml.write_text(
+        'version = "2"\nname = "T"\ntilemap = "tilemap.csv"\n\n'
+        "[art.bare]\n# baked by the P2 baker\ndiffuse = \"old.png\"\n"
+        'normal = "old_n.png"\n\n[bake]\ntileset = "art/tilesets/greybox"\n'
+        "px_per_tile = 64\nseed = 1\n",
+        encoding="utf-8", newline="\n")
+    write_bake_blocks(toml, tileset_rel="art/tilesets/greybox",
+                      px_per_tile=64, seed=1)
+    text = toml.read_text(encoding="utf-8")
+    assert "# baked by the P2 baker" not in text
+    with open(toml, "rb") as f:
+        raw = tomllib.load(f)
+    assert raw["art"]["bare"] == {"diffuse": DIFFUSE_FILENAME,
+                                  "normal": NORMAL_FILENAME}
+
+
+REPO_LEVELS_WITH_BAKE = sorted(
+    p.parent.name for p in (ROOT / "levels").glob("*/level.toml")
+    if "\n[bake]" in p.read_text(encoding="utf-8")
+    or p.read_text(encoding="utf-8").startswith("[bake]"))
+
+
+@pytest.mark.parametrize("name", REPO_LEVELS_WITH_BAKE)
+def test_repo_level_bake_toml_is_byte_stable_across_the_port(name):
+    """THE Arc C9 rider oracle: for every shipped level that carries a
+    [bake] block, re-baking a COPY with its own recorded [bake] parameters
+    (tileset/px_per_tile/seed — bake_level's all-None fallback) through the
+    NEW level_lib-routed writer reproduces level.toml byte-IDENTICAL to the
+    committed original. The committed file IS the pre-port baker's output
+    (git-frozen); byte-identity here is the direct proof the port changed
+    nothing observable for real content — never re-baseline a shipped level
+    to make this pass."""
+    real_dir = ROOT / "levels" / name
+    original = (real_dir / "level.toml").read_bytes()
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        copy_dir = Path(tmp) / name
+        shutil.copytree(real_dir, copy_dir)
+        bake_level(copy_dir, write_bak=False)   # all-None: [bake] drives it
+        assert (copy_dir / "level.toml").read_bytes() == original
+    # Belt and braces: the REAL level was never touched.
+    assert (real_dir / "level.toml").read_bytes() == original
+
+
+def test_bake_replacements_compose_atomically_with_another_family(
+        tmp_path, tileset16_dir, monkeypatch):
+    """THE Arc C9 rider's core claim: compute_bake_replacements' TOML
+    output folds into the SAME write_managed_blocks call as any other
+    managed family (an "entity" replacement stands in for the map editor's
+    spawn/water/wire/light|entity families) — ONE ``os.replace``, not the
+    pre-port bake_level's second, separate (and non-atomic) [art]/[bake]
+    write. A crash between the two writes used to be able to leave a torn
+    level.toml; there is only one write to crash during now."""
+    level = _write_min_level(tmp_path / "atomic_lvl", GOLDEN_MAP)
+    toml = level / "level.toml"
+    calls = []
+    real_replace = os.replace
+
+    def spy(src, dst):
+        calls.append((Path(src), Path(dst)))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", spy)
+
+    door = level_loader.EntityInstance(
+        id="door_1", class_name="door", ordinal=0, tags=(),
+        fields={"x": 1, "y": 1}, authored_keys=("x", "y"))
+    art_replacements, summary = compute_bake_replacements(
+        level, tileset=tileset16_dir, px_per_tile=8, seed=0)
+    replacements = {
+        "entity": lambda nl: level_lib.format_entity_lines([door], nl)}
+    replacements.update(art_replacements)
+    level_lib.write_managed_blocks(toml, replacements, write_bak=False)
+
+    assert len(calls) == 1                       # ONE atomic write, period
+    assert summary["px_per_tile"] == 8 and summary["seed"] == 0
+    raw = tomllib.loads(toml.read_text(encoding="utf-8"))
+    assert raw["bake"] == {"tileset": summary["tileset"],
+                           "px_per_tile": 8, "seed": 0}
+    assert raw["art"]["bare"] == {"diffuse": DIFFUSE_FILENAME,
+                                  "normal": NORMAL_FILENAME}
+    assert raw["entity"][0]["id"] == "door_1"     # the OTHER family landed too
 
 
 def test_writeback_preserves_crlf(tmp_path):
@@ -470,6 +581,36 @@ def test_bake_demo_loader_round_trip():
     codes = set(np.unique(lvl.tilemap).tolist())
     assert {MAT_AIR, MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_GLASS,
             MAT_FURNITURE, SPACE_CODE} <= codes
+
+
+# ---------------------------------------------------------------------------
+# MAT_DOOR_CLOSED preview bake (Arc C3 mandatory sub-fix)
+# ---------------------------------------------------------------------------
+
+def test_real_committed_tileset_bakes_mat_door_closed():
+    """Regression pin for the C3 mandatory sub-fix: the DOOR tool stamps
+    MAT_DOOR_CLOSED (id 7) immediately on placement, so the editor's live-
+    preview re-bake must not crash on it. This loads the REAL COMMITTED
+    art/tilesets/greybox (not a freshly generated one, unlike test_make_
+    tileset.py's `tileset_dir` fixture) — the bug was the committed
+    manifest/PNGs going stale after MAT_DOOR_CLOSED was added to
+    materials.py; make_tileset.py's code already covered it generically
+    (derived from MATERIAL_NAMES at build time), so the fix was
+    regenerating the committed artifact + a curated colour/group, not a
+    code change to the baker."""
+    ts = load_tileset(ROOT / DEFAULT_TILESET)
+    assert "door_closed" in ts.materials
+    grid = np.array([
+        [SP, SP, SP, SP, SP],
+        [SP, HU, HU, HU, SP],
+        [SP, HU, MAT_DOOR_CLOSED, HU, SP],
+        [SP, HU, HU, HU, SP],
+        [SP, SP, SP, SP, SP],
+    ], dtype=np.int32)
+    patch = bake_full(grid, ts, px_per_tile=DEFAULT_PX_PER_TILE, seed=0)
+    n = grid.shape[0] * DEFAULT_PX_PER_TILE
+    assert patch.diffuse.shape[:2] == (n, n)
+    assert patch.normal.shape[:2] == (n, n)
 
 
 if __name__ == "__main__":

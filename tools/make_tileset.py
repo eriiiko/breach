@@ -106,6 +106,17 @@ _WALL_RGBA = {
     "steel": (152, 168, 189, 255),   # cool blue-grey
     "glass": (130, 186, 224, 150),   # translucent blue (alpha < 255)
 }
+# Arc C3 fix: MAT_DOOR_CLOSED (id 7, engine/16 §6 — a CLOSED entity door,
+# fully solid) needs its own strip + curated colour, distinct from the
+# legacy walkable-hybrid `door` above. Deliberately its OWN connectivity
+# group (never fused into WALL_GROUP): a door span reads as a distinct
+# sealed object chamfered against whatever wall it sits in, exactly like a
+# material with no recipe would default to (see the `rgba is None` branch
+# below) — this just swaps the arbitrary hash colour for a curated one.
+_OWN_GROUP_RGBA = {
+    "door_closed": (196, 54, 40, 255),   # sealed red — reads as "closed and
+                                          # solid" at a glance
+}
 _DECK_RGB = (68, 70, 76)             # MAT_AIR: dark deck plating
 _CRATE_RGBA = (168, 128, 78, 255)    # MAT_FURNITURE: crate
 
@@ -355,7 +366,10 @@ def build_tileset(out_dir, px: int = DEFAULT_PX, seed: int = DEFAULT_SEED) -> Pa
             stem, entry = "furniture_crate", {"mode": "floor", "pieces": 1}
         else:                                  # wall family (+ future fallbacks)
             rgba = _WALL_RGBA.get(name)
-            group = WALL_GROUP if rgba is not None else name
+            if name in _OWN_GROUP_RGBA:         # curated colour, OWN group
+                group, rgba = name, _OWN_GROUP_RGBA[name]
+            else:
+                group = WALL_GROUP if rgba is not None else name
             if rgba is None:                   # new material, no recipe yet
                 rgba = fallback_wall_rgba(mat_id)
             diffuse, normal = wall_strips(px, bevel_px, rgba)

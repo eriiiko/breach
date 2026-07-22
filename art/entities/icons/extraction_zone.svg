@@ -1,0 +1,5 @@
+<svg viewBox="0 0 24 24">
+  <circle cx="12" cy="12" r="11" fill="#123a1e" stroke="none"/>
+  <rect x="4" y="4" width="16" height="16" fill="none" stroke="#4ad07a" stroke-width="1.3"/>
+  <polygon points="12,6 16,11 13.5,11 13.5,17 10.5,17 10.5,11 8,11" fill="#8dffb0" stroke="none"/>
+</svg>
