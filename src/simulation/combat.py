@@ -630,7 +630,13 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
             continue
         weapon = tables.weapons.by_name[weapon_id]
 
-        fire_order = u.get_fire_order_in_phase(phase)
+        # A queued WEGO fire order for this phase, or — under direct control
+        # (control-modularity P3, §3c) — the possessed unit's per-tick aimed
+        # ``live_fire_order`` set by ``Simulation._consume_direct_intents`` for
+        # a held TRIGGER. Dormant under WEGO: no unit carries ``live_fire_order``,
+        # so ``X or getattr(...)`` is byte-identically ``X`` (the digest gate).
+        fire_order = u.get_fire_order_in_phase(phase) or getattr(
+            u, "live_fire_order", None)
         if not fire_order:
             # Move & Attack: auto-fire at nearest visible enemy (snap cone).
             for o in u.orders:

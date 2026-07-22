@@ -101,8 +101,15 @@ from simulation.gamemap import GameMap, MAT_DOOR, MAT_DOOR_CLOSED
 from simulation.movement import FootprintSamples, default_speed
 from simulation.orders import (
     ORDER_GRENADE, ORDER_EXPLOSIVE, ORDER_FIRE, ORDER_MOVE_ATTACK,
-    ORDER_MOVE_COVER, ORDER_SPRINT, MOVE_ORDER_TYPES,
+    ORDER_MOVE_COVER, ORDER_SPRINT, MOVE_ORDER_TYPES, Order,
 )
+# Per-tick continuous intents (control-modularity P3, §3c) — the direct-control
+# order vocabulary consumed under a ContinuousRealtime ruleset. Dormant under
+# TwoPhaseWEGO: WEGO control sources never call the intent facade, so no unit
+# ever carries a ``live_*``/``pending_*`` field and every consumer short-circuits
+# on a ``getattr(..., default)`` (the dormancy guarantee).
+from simulation import intents as _intents
+from simulation import unit_fixed
 # The Ruleset seam (control-modularity P1, docs/control_modularity_design_
 # 2026-07-22.md §3a): TwoPhaseWEGO is the current round-clock/AP policy,
 # extracted verbatim. Simulation owns one Ruleset instance, chosen at
@@ -318,6 +325,13 @@ class Simulation:
         self._fired_between = False
         self._fired_end_p2 = False
 
+        # Direct-control possession set (control-modularity P3, §3b/§3c): the
+        # unit ids a ControlSource has issued at least one per-tick intent for.
+        # Empty under WEGO (no control source ever calls the intent facade), so
+        # ``_consume_direct_intents`` short-circuits and the whole continuous
+        # path stays dormant — the dormancy guarantee for the digest gate.
+        self._possessed_ids: set = set()
+
         # Physics runner (created once, re-bound on reset only if bp present).
         if self._bp is not None:
             # Always build a fresh runner so per-session params are clean.
@@ -497,6 +511,203 @@ class Simulation:
             # Movement path may have changed; recompute.
             self._compute_player_paths()
         return True
+
+    # ------------------------------------------------------------------
+    # Direct-control intent facade (control-modularity P3, §3c)
+    # ------------------------------------------------------------------
+    # The per-tick continuous verbs (MOVE_DIR / AIM / TRIGGER / THROW / USE).
+    # A ControlSource (GamepadDirect, or an AgentPolicy) calls these each
+    # FRAME; the sim samples the current value at each TICK boundary (§5 —
+    # aim/move are frame-rate-continuous in the control layer, physics at 24
+    # Hz). All directions/angles arrive ALREADY quantized to Q16.16 by the
+    # control seam (``control_source.quantize_stick_direction``); these methods
+    # never see a float axis. Continuous verbs (move/aim/trigger) OVERWRITE the
+    # unit's live slot every call (last write before a tick wins); edge verbs
+    # (throw/use) LATCH until a tick consumes them, so a button tap between two
+    # ticks is neither dropped nor doubled. Setting any intent marks the unit
+    # possessed, which arms ``_consume_direct_intents`` (dormant while empty).
+
+    def set_move_dir(self, unit_id: int, dx_q: int, dy_q: int,
+                     speed_mode: int) -> None:
+        """MOVE_DIR: hold a Q16.16 unit-vector move direction + speed mode for
+        ``unit_id`` (§3c). Overwrites each call; :meth:`clear_move_dir` (stick
+        inside the deadzone) stops the unit."""
+        u = self.get_unit(unit_id)
+        if u is None:
+            return
+        u.live_move_dir = _intents.MoveDirIntent(int(dx_q), int(dy_q),
+                                                 int(speed_mode))
+        self._possessed_ids.add(unit_id)
+
+    def clear_move_dir(self, unit_id: int) -> None:
+        """Drop ``unit_id``'s live MOVE_DIR (stick centered) — it holds position
+        and replays no WEGO path (direct control owns it)."""
+        u = self.get_unit(unit_id)
+        if u is not None:
+            u.live_move_dir = None
+
+    def set_aim(self, unit_id: int, dx_q: int, dy_q: int) -> None:
+        """AIM: hold a Q16.16 unit-vector facing for ``unit_id`` (§3c). The
+        sim turns it into ``Unit.facing`` via the deterministic integer atan2
+        kit at the next tick."""
+        u = self.get_unit(unit_id)
+        if u is None:
+            return
+        u.live_aim = _intents.AimIntent(int(dx_q), int(dy_q))
+        self._possessed_ids.add(unit_id)
+
+    def set_trigger(self, unit_id: int, held: bool) -> None:
+        """TRIGGER: hold/release ``unit_id``'s weapon trigger (§3c). While held,
+        the unit auto-fires along its facing at its weapon cadence."""
+        u = self.get_unit(unit_id)
+        if u is None:
+            return
+        u.live_trigger = bool(held)
+        self._possessed_ids.add(unit_id)
+
+    def throw_grenade_intent(self, unit_id: int, dx_q: int, dy_q: int,
+                             fuse_seconds: float) -> None:
+        """THROW: latch a grenade lob along a Q16.16 unit vector (§3c). Consumed
+        (and cleared) at the next tick; ignored if the unit is out of
+        grenades then."""
+        u = self.get_unit(unit_id)
+        if u is None:
+            return
+        u.pending_throw = _intents.ThrowIntent(int(dx_q), int(dy_q),
+                                              float(fuse_seconds))
+        self._possessed_ids.add(unit_id)
+
+    def use_intent(self, unit_id: int) -> None:
+        """USE: latch a context interaction (toggle an adjacent door's latch,
+        §3c). Consumed (and cleared) at the next tick."""
+        u = self.get_unit(unit_id)
+        if u is None:
+            return
+        u.pending_use = True
+        self._possessed_ids.add(unit_id)
+
+    def _consume_direct_intents(self) -> None:
+        """Apply the possessed units' latched/held per-tick intents (§3c),
+        called once at the top of :meth:`step` (after the round-clock head).
+
+        Dormant guarantee: returns immediately when no unit is possessed —
+        under TwoPhaseWEGO ``_possessed_ids`` is always empty, so this is a
+        single set-empty check and the digest is byte-identical.
+
+        AIM sets facing (deterministic integer atan2); THROW spawns a grenade
+        BEFORE the projectile-advance slot so a freshly-lobbed grenade travels
+        this tick like a WEGO one; USE toggles a door latch; TRIGGER arms the
+        unit's ``live_fire_order`` for the shooting slot (slot 4). MOVE_DIR is
+        consumed later, in :meth:`_update_player_movement` (slot 3), where the
+        WEGO branch it replaces already lives.
+        """
+        if not self._possessed_ids:
+            return
+        for u in self.units:
+            if u.id not in self._possessed_ids or not u.alive or u.team != 0:
+                # Clear any stale trigger order on a now-invalid possessor.
+                if getattr(u, "live_fire_order", None) is not None:
+                    u.live_fire_order = None
+                continue
+
+            # AIM -> facing (synced state via the deterministic atan2 kit; a
+            # zero vector leaves facing untouched).
+            aim = getattr(u, "live_aim", None)
+            if aim is not None and (aim.dx_q != 0 or aim.dy_q != 0):
+                dx = _intents.dequantize(aim.dx_q)
+                dy = _intents.dequantize(aim.dy_q)
+                # World Y increases downward; facing is math-style (Y-up), so
+                # negate dy — the same convention as Unit.face_towards.
+                u.facing = unit_fixed.atan2_rad(-dy, dx)
+
+            # THROW -> spawn a grenade now (edge; latched until consumed).
+            throw = getattr(u, "pending_throw", None)
+            if throw is not None:
+                u.pending_throw = None
+                self._spawn_direct_grenade(u, throw)
+
+            # USE -> toggle an adjacent door latch (edge; latched).
+            if getattr(u, "pending_use", False):
+                u.pending_use = False
+                self._direct_use(u)
+
+            # TRIGGER -> arm/clear the per-tick aimed fire order for slot 4.
+            if getattr(u, "live_trigger", False):
+                u.live_fire_order = self._aim_fire_order(u)
+            else:
+                u.live_fire_order = None
+
+    def _aim_fire_order(self, u):
+        """Build the transient per-tick fire order for a held TRIGGER (§3c):
+        an aimed shot toward the integer tile ``weapon.range_tiles`` along the
+        unit's current facing. Integer target keeps the Bresenham LOS + range
+        checks in :func:`combat.process_shooting` on the shipped path (they
+        assume tile-integer targets). Direction comes from the deterministic
+        integer sin/cos kit — no libm on the sim path. Returns an
+        :class:`~simulation.orders.Order` consumed by the dormant
+        ``live_fire_order`` hook in ``process_shooting``.
+        """
+        weapon_id = getattr(u, "weapon_id", "")
+        rng_tiles = 1
+        if weapon_id:
+            row = self.weapons_tables.weapons.by_name.get(weapon_id)
+            if row is not None:
+                rng_tiles = max(1, int(getattr(row, "range_tiles", 1)))
+        cx, cy = u.center_tile_x(), u.center_tile_y()
+        # facing is math-style (Y-up); world Y is down -> negate the y-component.
+        dirx = unit_fixed.cos_rad(u.facing)
+        diry = -unit_fixed.sin_rad(u.facing)
+        h, w = self.gmap.material.shape
+        tx = int(round(cx + dirx * rng_tiles))
+        ty = int(round(cy + diry * rng_tiles))
+        tx = max(0, min(w - 1, tx))
+        ty = max(0, min(h - 1, ty))
+        order = Order(ORDER_FIRE, tx, ty, self.tick // self._ticks_per_phase)
+        return order
+
+    def _spawn_direct_grenade(self, u, throw) -> None:
+        """THROW consumption: lob a grenade from ``u`` along the intent's
+        Q16.16 unit vector, fusing after ``throw.fuse_seconds``. Reuses the
+        shipped :class:`~simulation.combat.Projectile` (the WEGO grenade path);
+        the target tile is derived deterministically from the fixed-point
+        direction. No-op if the unit has no grenade left."""
+        if getattr(u, "has_grenade", 0) <= 0:
+            return
+        cx = u.center_tile_x()
+        cy = u.center_tile_y()
+        dirx = _intents.dequantize(throw.dx_q)
+        diry = _intents.dequantize(throw.dy_q)
+        # v0.1 throw reach: a fixed tile distance along the aim (feel dial for
+        # Erik; the grenade's own fuse/blast are the shipped numbers).
+        reach = 6.0  # tiles
+        tgt_fx = cx + dirx * reach
+        tgt_fy = cy + diry * reach
+        proj = Projectile(
+            ORDER_GRENADE,
+            cx, cy,
+            tgt_fx + 0.5, tgt_fy + 0.5,
+            fuse_seconds=throw.fuse_seconds,
+            thrown_tick=self.tick,
+            ammo_name="grenade_frag",
+        )
+        self.projectiles.append(proj)
+        u.has_grenade -= 1
+
+    def _direct_use(self, u) -> None:
+        """USE consumption: flip the ``want_open`` latch of the first live door
+        whose span touches the unit's footprint or its immediate ring (§3c).
+        Reuses :meth:`door_at`; the slot-9e door sweep applies/retries the
+        latch, exactly like the dev O-key."""
+        x0, y0 = u.tile_x, u.tile_y
+        fp = u.footprint
+        # Footprint tiles plus a one-tile ring so a marine standing beside a
+        # door can open it without overlapping it.
+        for ty in range(y0 - 1, y0 + fp + 1):
+            for tx in range(x0 - 1, x0 + fp + 1):
+                door = self.door_at(ty, tx)
+                if door is not None and door.alive:
+                    door.want_open = not door.want_open
+                    return
 
     def get_legal_actions(self, unit_id: int) -> list:
         """Stub for the AI training contract — minimal v1.
@@ -866,6 +1077,13 @@ class Simulation:
         # simulation.ruleset.TwoPhaseWEGO.on_round_start.
         self.ruleset.on_round_start(self)
 
+        # 1b. Direct-control intents (control-modularity P3, §3c): consume the
+        # possessed units' held/latched per-tick verbs (AIM/THROW/USE/TRIGGER)
+        # BEFORE projectiles advance, so a THROW lobbed this tick travels this
+        # tick like a WEGO grenade and a TRIGGER arms slot 4's fire order.
+        # Dormant under WEGO (no possessed units) — a single set-empty check.
+        self._consume_direct_intents()
+
         # 2. Update projectiles.
         self._update_projectiles()
 
@@ -1161,6 +1379,19 @@ class Simulation:
         for u in self.units:
             if not u.alive or u.team != 0:
                 continue
+
+            # Direct-control branch (control-modularity P3, §3c): a unit with a
+            # live MOVE_DIR intent this tick moves by velocity, footprint-
+            # collision-checked with the SAME predicate A* uses, and NEVER
+            # replays a WEGO path. Dormant under WEGO (no unit carries
+            # ``live_move_dir``), so the branch below is untouched and
+            # byte-identical.
+            move_dir = getattr(u, "live_move_dir", None)
+            if move_dir is not None:
+                if composed_flags(u).can_move:
+                    self._step_move_dir(u, move_dir)
+                continue
+
             if not composed_flags(u).can_move:
                 u.path_tick_offset += 1
                 continue
@@ -1185,6 +1416,59 @@ class Simulation:
                 u.face_towards(px, py)
                 u.x = px
                 u.y = py
+
+    def _step_move_dir(self, u, move_dir) -> None:
+        """MOVE_DIR consumption (control-modularity P3, §3c) — the real new
+        mechanic: advance ``u`` one tick along its live direction by a
+        mobility-table-scaled velocity, footprint-collision-checked with the
+        SAME predicate A* uses (:meth:`GameMap.is_passable_block`), so direct
+        move and A* agree on both speed and what blocks.
+
+        Speed: the unit's per-tile cadence is the WEGO base ticks-per-tile for
+        the intent's ``speed_mode`` (:func:`_ticks_per_tile`), scaled by the
+        footprint's area-average mobility exactly as the WEGO A* replay scales
+        it (:func:`movement.default_speed`) — a furniture tile is 2.5x slower
+        for both. The per-tick advance is ``1 / tick_cost`` tiles.
+
+        Determinism: the direction arrives as a Q16.16 unit vector; the only
+        floats are the exact power-of-two dequantize and the position math on
+        ``u.x``/``u.y`` (plain IEEE +/-/*/ — no libm, no transcendentals), so
+        the trajectory is bit-reproducible cross-machine (``u.x``/``y`` are
+        synced digest fields — this stays on the same float discipline as the
+        WEGO path).
+
+        Collision: try the full move; if the destination footprint is blocked,
+        slide along each axis independently (still :meth:`is_passable_block`),
+        so pushing diagonally into a wall glides rather than dead-stops. A
+        fully boxed-in unit holds. Facing follows the move direction unless a
+        live AIM overrides it (aim already set facing this tick).
+        """
+        base_ticks = _ticks_per_tile(move_dir.speed_mode)
+        fp = u.footprint
+        samples = FootprintSamples(
+            mobility=self.gmap.footprint_mobility(u.tile_y, u.tile_x, fp))
+        tick_cost = default_speed(samples, base_ticks)   # ticks per tile
+        tiles_per_tick = 1.0 / tick_cost
+        dx = _intents.dequantize(move_dir.dx_q)
+        dy = _intents.dequantize(move_dir.dy_q)
+        step_x = dx * tiles_per_tick
+        step_y = dy * tiles_per_tick
+        nx = u.x + step_x
+        ny = u.y + step_y
+
+        gmap = self.gmap
+        if gmap.is_passable_block(int(ny), int(nx), fp):
+            u.x, u.y = nx, ny
+        elif gmap.is_passable_block(int(u.y), int(nx), fp):
+            u.x = nx                          # slide along X
+        elif gmap.is_passable_block(int(ny), int(u.x), fp):
+            u.y = ny                          # slide along Y
+        # else fully blocked -> hold position this tick.
+
+        # Facing: aim wins (already applied in _consume_direct_intents this
+        # tick); otherwise face the direction of travel.
+        if getattr(u, "live_aim", None) is None and (dx != 0.0 or dy != 0.0):
+            u.face_towards(u.x + dx, u.y + dy)
 
     def _end_round(self) -> None:
         """End-of-round teardown — convert dead-by-zombie marines, reset state.

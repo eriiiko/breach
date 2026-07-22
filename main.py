@@ -259,8 +259,17 @@ def main():
     print(f"  {level.name} — {level.width}x{level.height} tiles, "
           f"tile size {level.tile_size_m} m")
 
+    # Control source is chosen FIRST (control-modularity P2/P3, §3b): a control
+    # scheme also picks the turn structure it runs under (Ruleset) and whether
+    # the sim starts paused. `--control wego` -> None (default TwoPhaseWEGO),
+    # starts paused (plan first); `--control gamepad` -> ContinuousRealtime,
+    # starts running. Byte-identical to the pre-P3 default under `wego`.
+    control_source = create_control_source(_parse_control_flag())
+
     sim = Simulation(level, seed=42, breach_physics=bp,
-                     enable_recorder=True)
+                     enable_recorder=True,
+                     ruleset=control_source.initial_ruleset())
+    sim.set_paused(control_source.starts_paused())
 
     # The old hardcoded demo scene (pre-breach + persistent smoke/fire
     # sources) is gone: it permanently vented the ship from an interior
@@ -334,8 +343,6 @@ def main():
                             initial_camera=initial_camera,
                             borderless=BORDERLESS)
     renderer.lighting.set_ambient((0.10, 0.10, 0.13))
-
-    control_source = create_control_source(_parse_control_flag())
 
     # Level lights (P4): the [[light]] entities from level.toml (the old
     # hardcoded emergency lamps now live in the vessel/playground tomls).
