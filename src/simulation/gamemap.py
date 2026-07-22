@@ -41,12 +41,12 @@ from simulation.materials import (  # noqa: F401  (re-exported)
 )
 
 # Multi-gas system (engine/05 §6.2, M1): the gas-property table + slice ids.
-# Re-exported so ``from simulation.gamemap import BLACK_SMOKE`` keeps working.
+# Re-exported so ``from simulation.gamemap import SMOKE`` keeps working.
 from simulation.gases import (  # noqa: F401  (re-exported)
     GasTable,
     N_GASES,
-    WHITE_SMOKE,
-    BLACK_SMOKE,
+    STEAM,
+    SMOKE,
     POISON,
     TEARGAS,
     FUEL_GAS,
@@ -134,7 +134,7 @@ class GameMap:
         self.materials = MaterialTable.from_config(CFG)
 
         # Gas-property table (engine/05 §6.2, M1): the multi-gas analogue of the
-        # material table — one row per gas (white_smoke / black_smoke / poison /
+        # material table — one row per gas (steam / smoke / poison /
         # teargas / fuel_gas), loaded into per-gas absorption/scatter/diffusion/
         # decay/flag arrays + a name->index map. Drives the per-gas transport
         # loop (PhysicsRunner.step). Allocated once; rebuilt on hot-reload.
@@ -197,16 +197,16 @@ class GameMap:
         # (PhysicsRunner.step) steps each non-empty slice. Boundary helpers in
         # simulation.gas_fixed quantize/dequantize (field edits, render, recorder).
         self.gas          = np.zeros((N_GASES, h, w), dtype=np.int32)
-        # ``smoke`` is the canonical name for the BLACK_SMOKE slice (combustion
+        # ``smoke`` is the canonical name for the SMOKE slice (combustion
         # soot — what fire/explosions emit; its diffusion 0.10 matches today's
-        # d_smoke=0.1). It is a VIEW into ``gas[BLACK_SMOKE]``: every reader and
+        # d_smoke=0.1). It is a VIEW into ``gas[SMOKE]``: every reader and
         # in-place writer of ``gmap.smoke`` (recorder, renderer, raycaster, fire,
         # sink-pull, the FieldEdit deposit path) sees the same buffer, and writing
-        # one is visible in the other. Behaviour-preserving: with only black_smoke
+        # one is visible in the other. Behaviour-preserving: with only smoke
         # populated the result matches the pre-multigas single smoke field. NEVER
         # reassign ``smoke`` (do ``smoke[:] = ...``) — a reassignment would break
         # the aliasing and orphan any C++ view of the slice.
-        self.smoke        = self.gas[BLACK_SMOKE]
+        self.smoke        = self.gas[SMOKE]
         # Fire intensity I — int32 Q16.16 (S3a, the THIRD/final field migration).
         # [0,1]-clamped tracer (0 == unlit, FP_ONE == fully ablaze). Boundary
         # helpers in simulation.fire_fixed quantize/dequantize (debug seeds, the
@@ -342,7 +342,7 @@ class GameMap:
         # ``water_depth`` — metres of standing water on the floor — is THE
         # shared field of the water<->fire interface: the C++ WaterSolver pipe
         # model advances it each tick, and the fire side will read it as a
-        # heat sink (boil-off emits white_smoke; that consumer is the fire
+        # heat sink (boil-off emits steam; that consumer is the fire
         # side's lane). Written IN-PLACE by the solver (never reassigned) so
         # any C++ view of the buffer stays valid.
         # S1 (docs/s1_water_fixed_point_plan.md): the SYNCED water state is int32

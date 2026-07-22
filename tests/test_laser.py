@@ -42,7 +42,7 @@ from simulation import unit_fixed, wall_fixed  # noqa: E402
 from simulation.combat import BEAM_MIN_ENERGY_Q16, fire_beam  # noqa: E402
 from simulation.events import LaserFiredEvent, UnitHitEvent  # noqa: E402
 from simulation.gamemap import GameMap  # noqa: E402
-from simulation.gases import BLACK_SMOKE, WHITE_SMOKE  # noqa: E402
+from simulation.gases import SMOKE, STEAM  # noqa: E402
 from simulation.materials import MAT_HULL  # noqa: E402
 from simulation.orders import ORDER_FIRE, Order  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
@@ -134,7 +134,7 @@ def test_gas_cloud_halves_beam_energy_exact_q16():
       amount = (819200 + 32768) >> 16 = 13             (round half away)
     Both skewered units take 13 (the cloud sits before the first)."""
     gmap = _room()
-    absorb_q = int(gmap.gases.beam_absorb_q16[WHITE_SMOKE])
+    absorb_q = int(gmap.gases.beam_absorb_q16[STEAM])
     assert absorb_q > 0
     # Smallest density whose absorb product lands in the ==32768 window
     # (ceil division; window width 65536 >= absorb_q guarantees a member).
@@ -142,7 +142,7 @@ def test_gas_cloud_halves_beam_energy_exact_q16():
     term = (absorb_q * density_q) >> 16
     assert term == 32768, "chosen density must halve exactly"
     assert density_q < 2**31                          # int32-safe
-    gmap.gas[WHITE_SMOKE, 9, 6] = density_q           # on the march row
+    gmap.gas[STEAM, 9, 6] = density_q           # on the march row
 
     shooter = Unit("S", x=2, y=8, team=0)
     za = _zombie(10, 8, "ZA")
@@ -169,10 +169,10 @@ def test_beam_dies_in_dense_cloud_before_the_target():
     """A black-smoke tile dense enough that transmission <= 0 kills the beam
     at that tile: no packets, no wall chew, tracer ends in the cloud."""
     gmap = _room()
-    absorb_q = int(gmap.gases.beam_absorb_q16[BLACK_SMOKE])
+    absorb_q = int(gmap.gases.beam_absorb_q16[SMOKE])
     # density with (absorb * d) >> 16 >= ONE  ->  trans <= 0  ->  energy 0.
     density_q = -((-(FP_ONE << 16)) // absorb_q) + 1
-    gmap.gas[BLACK_SMOKE, 9, 7] = density_q
+    gmap.gas[SMOKE, 9, 7] = density_q
     east_wall_hp = int(gmap.wall_hp[9, 29])
 
     shooter = Unit("S", x=2, y=8, team=0)

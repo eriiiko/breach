@@ -474,7 +474,7 @@ def _bench_eos_stage(H, W, reps=60):
         if runner._o2_idx is None:
             runner._o2_idx = int(g.gases.name_to_id["o2"])
             runner._inert_n2_idx = int(g.gases.name_to_id["inert_n2"])
-            runner._black_smoke_idx = int(g.gases.name_to_id["black_smoke"])
+            runner._black_smoke_idx = int(g.gases.name_to_id["smoke"])
         runner.eos.dx = float(g.tile_size_m)
         if resident:
             g.enable_residency()

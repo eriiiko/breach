@@ -595,10 +595,10 @@ The two gameplay/structural properties that ride alongside the optics:
 
 - **Effect** is a per-gas gameplay tag, read **unit-side** (a mechanics-chapter concern, not the
   solver's): `poison` = damage-over-time to a unit in the cell; `teargas` = slow / blind / area
-  denial; `white_smoke` = pure vision block. The solver only transports the field; the cell-occupancy
+  denial; `steam` = pure vision block. The solver only transports the field; the cell-occupancy
   reading of it lives in mechanics.
 - **Flammability** is the `fuel_gas` row's defining flag: it ignites where `fuel_gas > threshold`
-  with oxygen/heat present, spawning fire (heat + `black_smoke`). A **flamethrower** is then just
+  with oxygen/heat present, spawning fire (heat + `smoke`). A **flamethrower** is then just
   *emit `fuel_gas` in a cone* (directed injection — the momentum-at-nozzle idea from the atmosphere
   chapter) *and ignite it*. That may grow into its own system owning ignition/spread; the gas is the
   combustible **substrate** it burns, and the `fuel_gas` `diffusion` is the knob between a tight
@@ -631,7 +631,7 @@ of that channel removed, so the gas tints transmitted light toward the channels 
 # diffusion / decay are per-tick rates (atmosphere-solver units), design defaults.
 # glow is the baseline self-glow gain (separate from black-body emission, §6.1 step 4).
 
-[gases.white_smoke]            # water vapour / steam
+[gases.steam]            # water vapour / steam
 absorption   = [0.10, 0.10, 0.10]   # flat, low — Mie scattering is spectrally neutral
 scatter_albedo = [0.92, 0.92, 0.95] # NEAR-WHITE additive brighten — the dominant visual term
 diffusion    = 0.18                 # spreads readily, light gas
@@ -642,7 +642,7 @@ effect       = "vision_block"       # pure concealment; clears on decompression
 # NOTE: steam READS as bright white because scatter_albedo * local_light dominates.
 #       Absorption alone would make it look like dilute grey smoke — do not raise it.
 
-[gases.black_smoke]            # combustion soot
+[gases.smoke]            # combustion soot
 absorption   = [0.88, 0.90, 0.93]   # near-neutral, slight blue tilt: thin soot reads warm/brown
 scatter_albedo = [0.04, 0.04, 0.04] # soot barely scatters — it is the dark gas
 diffusion    = 0.10                 # heavier, clings; slower spread than steam
@@ -672,7 +672,7 @@ decay        = 0.010                # clears moderately
 glow         = 0.0
 flammable    = false
 effect       = "area_denial"        # forces units out of the area; non-lethal
-# NOTE: kept visually NEAR white_smoke ON PURPOSE (tactical ambiguity, confirmed).
+# NOTE: kept visually NEAR steam ON PURPOSE (tactical ambiguity, confirmed).
 #       At a glance reads as steam; only thick plumes betray the faint yellow cast.
 #       For more "off" look nudge to [0.14,0.18,0.34]; to vanish into steam drop to [0.11,0.14,0.24].
 
@@ -682,7 +682,7 @@ scatter_albedo = [0.20, 0.22, 0.28] # weak, faintly cool scatter
 diffusion    = 0.22                 # GAMEPLAY KNOB: high = gassy cloud, low = tight flamethrower jet
 decay        = 0.006                # lingers as an ignition hazard
 glow         = 0.0
-flammable    = true                 # IGNITES -> spawns heat + black_smoke; the only flammable gas
+flammable    = true                 # IGNITES -> spawns heat + smoke; the only flammable gas
 emits_when_hot = true               # while burning it glows via the black-body curve
 effect       = "ignition_hazard"    # invisible-ish until lit; then a fireball
 # NOTE: diffusion is the flamethrower feel knob. A dedicated flamethrower system may
@@ -694,19 +694,19 @@ effect       = "ignition_hazard"    # invisible-ish until lit; then a fireball
 
 | Gas | Real-world | Absorption (R,G,B) | Diffusion | Decay | Glow | Flammable | Gameplay effect |
 |---|---|---|---|---|---|---|---|
-| **white_smoke** | water vapour / steam | `[0.10, 0.10, 0.10]` | 0.18 (fast) | 0.020 (fast) | scatter-bright, no self-glow | no | Vision block; clears on decompression |
-| **black_smoke** | combustion soot | `[0.88, 0.90, 0.93]` | 0.10 (slow) | 0.008 (lingers) | **hot → black-body** | no | Heavy vision block; near-opaque |
+| **steam** | water vapour / steam | `[0.10, 0.10, 0.10]` | 0.18 (fast) | 0.020 (fast) | scatter-bright, no self-glow | no | Vision block; clears on decompression |
+| **smoke** | combustion soot | `[0.88, 0.90, 0.93]` | 0.10 (slow) | 0.008 (lingers) | **hot → black-body** | no | Heavy vision block; near-opaque |
 | **poison** | chlorine (Cl₂) | `[0.45, 0.10, 0.80]` | 0.12 (pools) | 0.004 (persistent) | none | no | Damage-over-time; iconic green |
 | **teargas** | CS aerosol | `[0.12, 0.16, 0.30]` | 0.15 | 0.010 | scatter-bright (ambiguous) | no | Area denial; *reads as steam* |
 | **fuel_gas** | combustible vapour | `[0.08, 0.10, 0.16]` | 0.22 (knob) | 0.006 (lingers) | hot → black-body when lit | **yes** | Ignition hazard → fireball |
 
 **Notes on the chosen values (research-backed):**
-- **white_smoke** absorption dropped from the starting `[0.30,0.30,0.30]` to `[0.10,0.10,0.10]`:
+- **steam** absorption dropped from the starting `[0.30,0.30,0.30]` to `[0.10,0.10,0.10]`:
   steam is Mie-regime (droplets ≫ wavelength), so extinction is spectrally flat *and* its signature
   is **additive brightening**, not subtractive darkening. The visual weight lives in `scatter_albedo`
   coupled to the local RGB light field, not in absorption. Equal-RGB shape was correct;
   magnitude/sign were not.
-- **black_smoke** nudged to `[0.88,0.90,0.93]`: soot absorption rises toward blue (`~1/λ^α`, complex
+- **smoke** nudged to `[0.88,0.90,0.93]`: soot absorption rises toward blue (`~1/λ^α`, complex
   index ≈ 1.95 + 0.79i), so thin soot transmits a little extra red and reads faintly warm/brown while
   dense soot goes near-black. The starting `[0.90,0.90,0.92]` is also defensible if a more neutral
   look is wanted.
@@ -722,12 +722,12 @@ effect       = "ignition_hazard"    # invisible-ish until lit; then a fireball
   the only flammable gas and the substrate a flamethrower/ignition system burns. Its `diffusion` is
   the primary gameplay knob (tight jet ↔ explosive fog).
 
-#### Sub-note — temperature → black-body emission (`black_smoke`, and any gas with `emits_when_hot`)
+#### Sub-note — temperature → black-body emission (`smoke`, and any gas with `emits_when_hot`)
 
 Hot soot glows. Emission is **additive and is not subject to the gas's own absorption** (thin-slab
 approximation), so it is composited *after* transmission (render model §6.1 step 4 / step 6). It has
 two separable parts: **chromaticity** from a temperature LUT, and **intensity** from a
-Stefan–Boltzmann-style (∝ T⁴) ramp. Although `black_smoke` is the canonical emitter, *any* gas
+Stefan–Boltzmann-style (∝ T⁴) ramp. Although `smoke` is the canonical emitter, *any* gas
 flagged `emits_when_hot` (e.g. burning `fuel_gas`) uses the same curve — drive `T` from the heat
 buffer (commit `6d3cc22`).
 
@@ -855,9 +855,9 @@ Audited against `cpp/src/smoke_dynamics.{h,cpp}`, `src/simulation/physics_runner
   no per-pixel smoke-normal (§6.1 step 1), no curl-noise / flow-map advection of a detail texture
   (step 2), and no self-shadow shader (step 3) — no smoke-normal texture and no shader path exists.
 - **Multi-gas system** (§6.2) — **M1 + M2 shipped.** The data-driven `[gases.*]` table
-  (`white_smoke / black_smoke / poison / teargas / fuel_gas`) loads into `simulation.gases.GasTable`,
+  (`steam / smoke / poison / teargas / fuel_gas`) loads into `simulation.gases.GasTable`,
   `gmap.gas` is a dense `(N, h, w)` field (one slice per gas; `gmap.smoke` is a view of the
-  `black_smoke` slice), and the per-gas transport loop steps each non-empty slice on the shared smoke
+  `smoke` slice), and the per-gas transport loop steps each non-empty slice on the shared smoke
   solver (`physics_runner.py`). The **N-field coloured optics are fully built in the raycaster**:
   `march_ray_directional` sums the density-weighted per-channel `tau_c` / `scatter_c` across all N
   gases (`raycaster.cpp`), so multi-gas mixing (poison + black → murky) falls out for free. Still

@@ -69,7 +69,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 
 import breach_physics as bp                                     # noqa: E402
 from simulation.combat import apply_temperature_ignition, chew_wall  # noqa: E402
-from simulation.gases import O2, INERT_N2, BLACK_SMOKE           # noqa: E402
+from simulation.gases import O2, INERT_N2, SMOKE           # noqa: E402
 from simulation.materials import MAT_AIR, MAT_WOOD, MaterialTable  # noqa: E402
 from simulation import fire_fixed, gas_fixed                     # noqa: E402
 
@@ -124,7 +124,7 @@ def _solver_scene(h=7, w=7, hp=60.0, n_o2=(0.21, 0.21, 0.21, 0.21)):
 
 def _step(comb, scene, dt=0.25):
     gas, solid, is_vacuum, flammable, wall_hp, fire, ign, temperature, _ = scene
-    comb.step(gas, O2, INERT_N2, BLACK_SMOKE, temperature, wall_hp, fire,
+    comb.step(gas, O2, INERT_N2, SMOKE, temperature, wall_hp, fire,
               flammable, solid, is_vacuum, ign, dt, 1.0, 0.05)
 
 

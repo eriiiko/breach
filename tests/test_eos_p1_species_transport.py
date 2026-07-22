@@ -41,7 +41,7 @@ from simulation import atmosphere_fixed, gas_fixed  # noqa: E402
 from simulation import field_edit  # noqa: E402
 from simulation.gamemap import GameMap  # noqa: E402
 from simulation.gases import (  # noqa: E402
-    GasTable, N_GASES, WHITE_SMOKE, BLACK_SMOKE, POISON, TEARGAS, FUEL_GAS,
+    GasTable, N_GASES, STEAM, SMOKE, POISON, TEARGAS, FUEL_GAS,
     O2, INERT_N2,
 )
 from simulation.physics_runner import PhysicsRunner  # noqa: E402
@@ -70,7 +70,7 @@ def test_n_gases_grew_additively_to_seven():
     assert O2 == 5 and INERT_N2 == 6
     # The five legacy ids are UNCHANGED (index-bound views like gmap.smoke
     # depend on this — the whole point of "append, never reorder").
-    assert (WHITE_SMOKE, BLACK_SMOKE, POISON, TEARGAS, FUEL_GAS) == (0, 1, 2, 3, 4)
+    assert (STEAM, SMOKE, POISON, TEARGAS, FUEL_GAS) == (0, 1, 2, 3, 4)
 
 
 def test_gas_array_shape_is_seven_planes():
@@ -78,9 +78,9 @@ def test_gas_array_shape_is_seven_planes():
     h, w = g.smoke.shape
     assert g.gas.shape == (7, h, w)
     assert g.gas.dtype == np.int32
-    # gmap.smoke is still the BLACK_SMOKE view — untouched by the append.
+    # gmap.smoke is still the SMOKE view — untouched by the append.
     assert g.smoke.base is g.gas
-    assert np.shares_memory(g.smoke, g.gas[BLACK_SMOKE])
+    assert np.shares_memory(g.smoke, g.gas[SMOKE])
 
 
 def test_bulk_pair_table_contract():
@@ -105,8 +105,8 @@ def test_bulk_pair_table_contract():
         assert tbl.effect[gid] == ""
 
     # The 5 legacy gases are UNCHANGED (values match test_multigas_structure.py).
-    assert np.allclose(tbl.absorption[WHITE_SMOKE], [0.10, 0.10, 0.10])
-    assert np.allclose(tbl.absorption[BLACK_SMOKE], [0.88, 0.90, 0.93])
+    assert np.allclose(tbl.absorption[STEAM], [0.10, 0.10, 0.10])
+    assert np.allclose(tbl.absorption[SMOKE], [0.88, 0.90, 0.93])
     assert np.allclose(tbl.diffusion[:5], [0.18, 0.10, 0.12, 0.15, 0.22])
 
 

@@ -82,7 +82,7 @@ from level_loader import LevelData                              # noqa: E402
 from simulation.gamemap import GameMap                          # noqa: E402
 from simulation.physics_runner import PhysicsRunner             # noqa: E402
 from simulation.materials import MAT_AIR, MAT_HULL, MAT_WOOD, MaterialTable  # noqa: E402
-from simulation.gases import O2, INERT_N2, BLACK_SMOKE, WHITE_SMOKE  # noqa: E402
+from simulation.gases import O2, INERT_N2, SMOKE, STEAM  # noqa: E402
 from simulation import fire_fixed, gas_fixed                    # noqa: E402
 
 SEED_TICK_DT = 1.0 / 24.0
@@ -145,14 +145,14 @@ def _ignite(gmap, at, intensity=0.6, temp_mult=1.5):
 
 def _o2n2_total(gmap):
     """O2 + inert_N2 — the CONSERVATIVE bulk pair alone (test_eos_p1_species_
-    transport.py's `_isum2` precedent). Deliberately EXCLUDES black_smoke:
-    `gmap.smoke` IS `gas[BLACK_SMOKE]` (gases.py), and FireSimulation's own
+    transport.py's `_isum2` precedent). Deliberately EXCLUDES smoke:
+    `gmap.smoke` IS `gas[SMOKE]` (gases.py), and FireSimulation's own
     per-tick smoke emission (`smoke[nbr] += emission*dt*I`, fire_simulation.
     cpp, KEPT/pre-existing/unrelated to O2) writes into that SAME plane
-    independent of combustion — so black_smoke's total is not a P4
+    independent of combustion — so smoke's total is not a P4
     conservation signal. Combustion can only ever MOVE mass OUT of this pair
-    (the soot_yield fraction leaves permanently to black_smoke) or credit
-    SOME of it back in as black_smoke decays to inert_N2 (decisions #12
+    (the soot_yield fraction leaves permanently to smoke) or credit
+    SOME of it back in as smoke decays to inert_N2 (decisions #12
     v2.1) — so this sum is bounded ABOVE by its starting value (proving no
     fabrication) without being strictly monotonic."""
     return (int(gmap.gas[O2].astype(np.int64).sum())
@@ -164,7 +164,7 @@ def _o2n2_total(gmap):
 # ---------------------------------------------------------------------------
 def test_combustion_pass_conserves_o2_n2_soot_exactly():
     """CombustionSolver.step, called directly and repeatedly: every burn
-    transaction moves mass O2 -> (black_smoke, inert_N2) with ZERO net
+    transaction moves mass O2 -> (smoke, inert_N2) with ZERO net
     change to the three-plane sum — the literal "N_total conserved" claim
     of decisions.md #12, isolated from FireSimulation's OWN independent
     (pre-existing, unrelated) smoke-emission source and from any lossy
@@ -198,20 +198,20 @@ def test_combustion_pass_conserves_o2_n2_soot_exactly():
 
     total0 = (int(gas[O2].astype(np.int64).sum())
               + int(gas[INERT_N2].astype(np.int64).sum())
-              + int(gas[BLACK_SMOKE].astype(np.int64).sum()))
+              + int(gas[SMOKE].astype(np.int64).sum()))
     assert total0 > 0, "test setup produced no O2/N2 mass — vacuous"
 
     any_burn = False
     for _ in range(60):
-        comb.step(gas, O2, INERT_N2, BLACK_SMOKE, temperature, wall_hp, fire,
+        comb.step(gas, O2, INERT_N2, SMOKE, temperature, wall_hp, fire,
                   flammable, solid, is_vacuum, ignition_temp_q16,
                   SEED_TICK_DT, 1.0, 0.05)
         total = (int(gas[O2].astype(np.int64).sum())
                  + int(gas[INERT_N2].astype(np.int64).sum())
-                 + int(gas[BLACK_SMOKE].astype(np.int64).sum()))
+                 + int(gas[SMOKE].astype(np.int64).sum()))
         assert total == total0, (
             f"combustion transaction leaked/fabricated mass: {total} != {total0}")
-        if int(gas[BLACK_SMOKE].sum()) > 0:
+        if int(gas[SMOKE].sum()) > 0:
             any_burn = True
     assert any_burn, "the scenario never actually burned — the gate is vacuous"
 
@@ -311,7 +311,7 @@ def test_thermal_spike_is_pre_existing_not_a_p4_regression():
 def test_e2e_1_sealed_room_fire_self_starves():
     """(1) A sealed-room fire dims/dies as its LOCAL N_O2 depletes, with fuel
     (wall_hp) still remaining — self-starving, not fuel exhaustion. The
-    combustion+decay mass triple (O2+N2+black_smoke) never exceeds its
+    combustion+decay mass triple (O2+N2+smoke) never exceeds its
     starting value (no fake mass creation); room pressure rises above
     ambient during the burn and comes back down off its peak by the end
     (rise-then-settle, not a monotonic runaway).
@@ -319,7 +319,7 @@ def test_e2e_1_sealed_room_fire_self_starves():
     v2.4 re-pins (eos-p3fix-thermal-ceiling):
     - FireSimulation's OWN smoke emission (`smoke[nbr] += emission*dt*I` — a
       pre-existing, already-blessed NON-CONSERVATIVE source, unrelated to
-      combustion) is disabled for this test: emitted-from-nothing black_smoke
+      combustion) is disabled for this test: emitted-from-nothing smoke
       decays into inert_N2 via the decisions #12 v2.1 credit, so a
       longer-lived fire drifts the O2+N2 pair ABOVE its start through that
       unrelated channel and the exact `<= total0` bound (this test's actual

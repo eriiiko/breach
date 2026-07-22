@@ -88,7 +88,7 @@ WATER_RATIO_CAP = 1.5    # max per-tick isothermal compression ratio (W3)
 WATER_FLOOD_EPS = 0.05   # m air column below which a cell counts FLOODED (W3)
 WATER_BOIL_RATE = 0.02   # m/s flash-boil sink in near-vacuum (W5)
 WATER_BOIL_P_THRESH = 0.3  # atmosphere below this boils (W5; pressure-keyed)
-WATER_STEAM_YIELD = 4.0  # white_smoke density per metre boiled (W5)
+WATER_STEAM_YIELD = 4.0  # steam density per metre boiled (W5)
 WATER_GAMMA_R   = 2.0    # 1/s ripple damping (W6a — visual-only surface wave)
 WATER_H_CAP     = 0.25   # m deep-water cap: c^2 = g*min(depth, h_cap) (W6a)
 WATER_K_AMP     = 0.5    # ripple amplitude clamp |ripple| <= k_amp*depth (W6a)
@@ -500,7 +500,7 @@ class PhysicsRunner:
         if self._o2_idx is None:
             self._o2_idx = int(gmap.gases.name_to_id["o2"])
             self._inert_n2_idx = int(gmap.gases.name_to_id["inert_n2"])
-            self._black_smoke_idx = int(gmap.gases.name_to_id["black_smoke"])
+            self._black_smoke_idx = int(gmap.gases.name_to_id["smoke"])
 
         # BC (boundary_conditions_spec_2026-07-19): the planetside AMBIENT ring.
         # On a space map every ambient arg is None -> the C++ path is
@@ -631,7 +631,7 @@ class PhysicsRunner:
                 or self._water_depth_before.shape != gmap.water_depth.shape):
             self._water_depth_before = gmap.water_depth.copy()
             self.water.dx = float(gmap.tile_size_m)
-            self._steam_idx = int(gmap.gases.name_to_id["white_smoke"])
+            self._steam_idx = int(gmap.gases.name_to_id["steam"])
         before = self._water_depth_before
         if (not gmap.water_sources and not gmap.water_depth.any()
                 and not before.any()):
@@ -664,7 +664,7 @@ class PhysicsRunner:
         if self._o2_idx is None:
             self._o2_idx = int(gmap.gases.name_to_id["o2"])
             self._inert_n2_idx = int(gmap.gases.name_to_id["inert_n2"])
-            self._black_smoke_idx = int(gmap.gases.name_to_id["black_smoke"])
+            self._black_smoke_idx = int(gmap.gases.name_to_id["smoke"])
         amb = self._ambient_args(gmap)
         water_dormant = self._water_pre_resident(gmap)
 
@@ -1014,8 +1014,8 @@ class PhysicsRunner:
             self.water.dx = float(gmap.tile_size_m)
             # W5 steam slice: resolved BY NAME from the map's gas table, once
             # (gases.py is the single source of truth — never hardcode the
-            # white_smoke index here).
-            self._steam_idx = int(gmap.gases.name_to_id["white_smoke"])
+            # steam index here).
+            self._steam_idx = int(gmap.gases.name_to_id["steam"])
         before = self._water_depth_before
         # Dormant early-out: no sources, no water now, no water last tick ->
         # nothing to do (a dry ship costs ~one .any() per tick) and the whole

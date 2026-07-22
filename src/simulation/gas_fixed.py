@@ -1,7 +1,7 @@
 """Q16.16 fixed-point helpers for the smoke + 5 gas planes (S2b).
 
 The synced smoke/gas state — ``gmap.gas`` (the (N, h, w) density planes) and its
-``gmap.smoke`` view (BLACK_SMOKE slice) — is int32 Q16.16, scale 2^16 == 65536,
+``gmap.smoke`` view (SMOKE slice) — is int32 Q16.16, scale 2^16 == 65536,
 the SAME scale as water/heat/wave (so the whole fixed-point sim shares one
 domain). The gases are [0,1]-clamped tracers: 0 == clear, FP_ONE (65536) == fully
 opaque/saturated.

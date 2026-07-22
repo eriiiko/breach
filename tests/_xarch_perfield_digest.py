@@ -87,7 +87,7 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # re-point (FireSimulation + apply_temperature_ignition now read gas[O2], not
 # atmosphere/P — item 3) and the newly-applied trace decay->inert_N2 credit
 # (item 2, decisions.md #12 v2.1) both touch the default scenario (it seeds
-# fire + smoke): fire[8,8]/[8,9]'s O2-gated intensity and black_smoke's decay
+# fire + smoke): fire[8,8]/[8,9]'s O2-gated intensity and smoke's decay
 # both move the trajectory. Combustion itself (item 1) does NOT touch this
 # scenario (no flammable/wood material in the level).
 # (was 493645d34b01d7ad55e5f0e6ae7254e94989dc1b6dce5c1b7ee5e53acaff3e63)

@@ -239,7 +239,7 @@ the port.
   `(N, h, w)` multi-gas array with `channel = <gas slice id>`
   (`gmap.gases.name_to_id`), resolved to the contiguous `(h, w)` int32 view at
   apply time; same `"gas"` combine + `[0, 1]` clamp + solid skip as the
-  `smoke` (BLACK_SMOKE) view. First consumer:
+  `smoke` (SMOKE) view. First consumer:
   `simulation.payloads.emit_gas` — the gas-payload DISC deposit
   (deliberately `noise = 0`: a deterministic radial cloud, no RNG;
   tests/test_payloads.py pins the per-tile Q16.16 exactness).

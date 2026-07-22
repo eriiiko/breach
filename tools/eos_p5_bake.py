@@ -224,7 +224,7 @@ def spec_b3_breach_vent():
 
     def setup(eng, gmap):
         interior = (~gmap.solid) & (~gmap.is_vacuum)
-        gmap.gas[eng.gases.BLACK_SMOKE][interior] = q16(0.85)
+        gmap.gas[eng.gases.SMOKE][interior] = q16(0.85)
 
     def ev(eng, gmap, queue, rng):
         for y in range(55, 60):
@@ -282,7 +282,7 @@ def spec_b5_water_pushes_smoke():
 
     def setup(eng, gmap):
         interior = (~gmap.solid) & (~gmap.is_vacuum)
-        gmap.gas[eng.gases.BLACK_SMOKE][interior] = q16(0.5)
+        gmap.gas[eng.gases.SMOKE][interior] = q16(0.5)
         gmap.water_sources.append((43, 43, 1.8))
 
     return dict(

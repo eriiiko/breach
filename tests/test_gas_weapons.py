@@ -45,7 +45,7 @@ from simulation.exchange import apply_poison_dose, apply_teargas_blind  # noqa: 
 from simulation.gamemap import GameMap  # noqa: E402
 from simulation.gases import (  # noqa: E402
     N_TRACE_GASES, POISON as GAS_POISON, TEARGAS as GAS_TEARGAS,
-    WHITE_SMOKE,
+    STEAM,
 )
 from simulation.orders import ORDER_FIRE, ORDER_GRENADE, Order  # noqa: E402
 from simulation.status import (  # noqa: E402
@@ -86,7 +86,7 @@ def _fill_footprint(slice_, unit, density):
 # ---------------------------------------------------------------------------
 def test_gas_grenade_e2e_deposits_and_transports():
     """A smoke grenade through the shipped LOBBED flow: has_grenade
-    decrements, the white_smoke slice fills at the target, every other
+    decrements, the steam slice fills at the target, every other
     slice stays empty — and the cloud SURVIVES subsequent ticks (the C++
     per-gas transport loop steps every non-empty slice: verified in code,
     physics_engine.cpp run_substeps' gi-loop; this is the empirical twin)."""
@@ -107,13 +107,13 @@ def test_gas_grenade_e2e_deposits_and_transports():
     for _ in range(8):
         sim.set_paused(False)
         sim.step()
-    ws_total = int(sim.gmap.gas[WHITE_SMOKE].astype(np.int64).sum())
+    ws_total = int(sim.gmap.gas[STEAM].astype(np.int64).sum())
     assert ws_total > 0
     # Trace slices only (0..N_TRACE_GASES-1) — the bulk O2/inert_N2 pair
     # (EOS refactor P1) always carries ambient air, unrelated to a smoke
     # grenade deposit, and moves under its own conservative transport.
     for g in range(N_TRACE_GASES):
-        if g != WHITE_SMOKE:
+        if g != STEAM:
             assert not sim.gmap.gas[g].any(), f"slice {g} moved on a smoke grenade"
 
     # Transport: the cloud persists (advects/diffuses, integer-SL gentle
@@ -121,7 +121,7 @@ def test_gas_grenade_e2e_deposits_and_transports():
     for _ in range(6):
         sim.set_paused(False)
         sim.step()
-    ws_later = int(sim.gmap.gas[WHITE_SMOKE].astype(np.int64).sum())
+    ws_later = int(sim.gmap.gas[STEAM].astype(np.int64).sum())
     assert ws_later > 0
     # Diffusion spread it: more nonzero cells than the initial disc alone
     # would explain shrinking — assert the cloud still has real mass.

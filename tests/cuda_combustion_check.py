@@ -14,7 +14,7 @@ portable answer, identical on CPU and CUDA. The GPU realizes the design's
 barriered kernel chain. So the digest gate is a formality the design guarantees.
 
 COMPARED per step (tol 0): the three mutated gas planes (O2 / inert_N2 /
-black_smoke), `temperature`, `wall_hp`, AND the two PER-CELL rail counters
+smoke), `temperature`, `wall_hp`, AND the two PER-CELL rail counters
 (heat_floor_hits, t_max_phys_hits — design §3: their ABSOLUTE value is not
 asserted, only CPU==GPU equality).
 
@@ -47,7 +47,7 @@ import numpy as np
 # Import the CUDA build FIRST so it is the cached `breach_physics`.
 import breach_physics as bp
 
-from simulation.gases import O2, INERT_N2, BLACK_SMOKE, N_GASES
+from simulation.gases import O2, INERT_N2, SMOKE, N_GASES
 
 FP_ONE = 65536
 FUEL_FLOOR = 1
@@ -96,14 +96,14 @@ def run_pair(state, dt, dials_over=None, c_v=C_V, n_floor_heat=N_FLOOR_HEAT):
     c = {k: (v.copy() if isinstance(v, np.ndarray) else v) for k, v in state.items()}
     # CPU: fresh solver has zeroed rail counters -> post-step members == this
     # step's per-cell counts.
-    comb.step(c["gas"], O2, INERT_N2, BLACK_SMOKE, c["temperature"], c["wall_hp"],
+    comb.step(c["gas"], O2, INERT_N2, SMOKE, c["temperature"], c["wall_hp"],
               c["fire"], c["flammable"], c["solid"], c["is_vacuum"],
               c["ignition_temp_q16"], dt, c_v, n_floor_heat)
     cpu_rails = (int(comb.heat_floor_hits), int(comb.t_max_phys_hits))
 
     g = {k: (v.copy() if isinstance(v, np.ndarray) else v) for k, v in state.items()}
     hf, tm = bp.cuda_combustion_step(
-        g["gas"], O2, INERT_N2, BLACK_SMOKE, g["temperature"], g["wall_hp"],
+        g["gas"], O2, INERT_N2, SMOKE, g["temperature"], g["wall_hp"],
         g["flammable"], g["solid"], g["is_vacuum"], g["ignition_temp_q16"],
         dt, c_v, n_floor_heat,
         d["burn_rate"], d["o2_thresh_burn"], d["H_fuel"], d["soot_yield"],
@@ -196,7 +196,7 @@ def _random_state(rng, h, w):
     o2[rng.random(n).reshape(h, w) < 0.15] = 0.0            # starved
     st["gas"][O2][air] = _quantize(o2)[air]
     # a little pre-existing soot so SOOT += is exercised from nonzero
-    st["gas"][BLACK_SMOKE][air] = _quantize(rng.random(n).reshape(h, w) * 0.05)[air]
+    st["gas"][SMOKE][air] = _quantize(rng.random(n).reshape(h, w) * 0.05)[air]
     return _contig(st)
 
 
@@ -390,13 +390,13 @@ def part2_trajectory() -> bool:
         pre_o2 = int(cpu["gas"][O2][air_mask].sum())
 
         hf0, tm0 = int(comb.heat_floor_hits), int(comb.t_max_phys_hits)
-        comb.step(cpu["gas"], O2, INERT_N2, BLACK_SMOKE, cpu["temperature"],
+        comb.step(cpu["gas"], O2, INERT_N2, SMOKE, cpu["temperature"],
                   cpu["wall_hp"], cpu["fire"], cpu["flammable"], cpu["solid"],
                   cpu["is_vacuum"], cpu["ignition_temp_q16"], dt, C_V, N_FLOOR_HEAT)
         cpu_rails = (int(comb.heat_floor_hits) - hf0,
                      int(comb.t_max_phys_hits) - tm0)
         hf, tm = bp.cuda_combustion_step(
-            gpu["gas"], O2, INERT_N2, BLACK_SMOKE, gpu["temperature"],
+            gpu["gas"], O2, INERT_N2, SMOKE, gpu["temperature"],
             gpu["wall_hp"], gpu["flammable"], gpu["solid"], gpu["is_vacuum"],
             gpu["ignition_temp_q16"], dt, C_V, N_FLOOR_HEAT,
             d["burn_rate"], d["o2_thresh_burn"], d["H_fuel"], d["soot_yield"],

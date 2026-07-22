@@ -58,7 +58,7 @@ ship green (277 tests). Built from this chapter via the two-round-reviewed
 > - **Ripple splash reads the pressure transient `|P − P_prev|`** (the per-tick change of the
 >   materialized `P`, stored in the repurposed `wave_p`/`P_prev` buffer) instead of raw `wave_p`,
 >   so a standing pressure baseline no longer splashes — only genuine blasts/transients do.
-> - **Flash-boil steam** already deposits into `gas[white_smoke]`; under EOS that is simply one of
+> - **Flash-boil steam** already deposits into `gas[steam]`; under EOS that is simply one of
 >   the trace species riding the bulk O₂/N₂ transport (ch.04 / ch.05).
 > - **CUDA (P6):** the water solver and its head term run on-device bit-identically to the CPU
 >   reference (the head-term integer reconciliation is recorded in
@@ -483,7 +483,7 @@ air, gets shoved by blasts, boils in vacuum, and ripples — in the game tick, d
   venting drags water. Feel-tuning owed (Erik's research flag): worst case is
   near-flooded cells, `c_eff = √(g·h·(1 + k_p·P/free_h))`.
 - **Flash-boil + steam** (§5.4 stage 1) — pressure-keyed (`atmosphere < boil_p_thresh`)
-  depth sink; boiled mass enters `gas[white_smoke]` via `steam_yield` (the constant the
+  depth sink; boiled mass enters `gas[steam]` via `steam_yield` (the constant the
   fire-side evaporation branch must reuse — see `07_notes_from_claude.md` Answers).
 - **Ripple field** (§6) — `step_ripple` damped kick-drift wave, `c² = g·min(depth, h_cap)`
   (deep-water splice), amplitude-clamped, one call per tick, splash-fed by `wave_p` over
