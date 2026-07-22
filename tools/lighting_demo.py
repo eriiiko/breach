@@ -10,11 +10,12 @@ Run:
     (--flood pre-fills the ship interior with standing water at startup, for
      tuning the water look without pouring by hand; --windowed for fixed 1280x720)
 
-Controls (keymap audited — O is intentionally unused):
+Controls (keymap audited — O is intentionally unused; see the FULL map
+printed at startup / drawn in the panel, tools/lighting_demo.py §keybinds):
     WASD / arrows  — pan camera
     Q / E / wheel  — zoom
     Space          — pause / resume sim
-    T              — toggle grenade-spawn mode (click to detonate)
+    R              — toggle grenade-spawn mode (click to detonate)
     Left click     — spawn grenade (when in spawn mode)
     N / Shift+N    — explosion smoke noise down / up (live cloud-texture dial)
     U              — pour water under cursor (0.2 m per press)
@@ -33,10 +34,24 @@ Controls (keymap audited — O is intentionally unused):
     1              — toggle the static lamp group (demo-side)
     2              — toggle the rotating beacon on / off (demo-side)
 
-The right panel exposes all visual sliders (incl. the B2 gas-medium dials).
+(B2 P5: grenade-spawn mode moved T -> R — T is the shared poll_toggles
+temperature-overlay key too, main.py/game_renderer.py; the two collided —
+pressing T used to arm grenade-spawn mode AND kill the black-body overlay
+in the same keystroke. R was free.)
+
+The right panel exposes all visual sliders (incl. the B2 gas-medium dials)
+and a compact "active render state" cluster (medium/detail/speckle) at the
+top, shared with the game HUD (renderer.game_renderer.render_state_lines).
 The top-left readout is the hover-tile "microscope" (T + pseudo-Kelvin, fire,
 material, the five trace gases + O2). Save/Load presets to/from
 tools/lighting_presets.toml.
+
+Headless flags (no human at the keyboard):
+    --auto          render 120 frames then exit 0 (boot smoke test)
+    --perf [N]      B2 P5 perf pass: ignite the crate cluster, let the fire
+                     develop, then measure N (default 300) rendered frames of
+                     the NEW gas-medium path and again with legacy_smoke_on,
+                     printing mean/95th-percentile ms/frame for both.
 """
 from __future__ import annotations
 
@@ -61,7 +76,7 @@ from level_loader import load as load_level
 from renderer import GameRenderer
 from renderer import core as rcore
 from renderer.camera import Camera2D
-from renderer.game_renderer import RenderConfig
+from renderer.game_renderer import RenderConfig, render_state_lines
 from simulation import Simulation
 from simulation import gas_fixed
 from simulation import atmosphere_fixed
@@ -108,8 +123,9 @@ DEFAULTS = {
     # as a frozen constant in the renderer, so it needs no dial here.)
     # --- B2 gas-medium dials (§6). The sliders drive renderer.gas_medium live
     # (P2 consumers). Defaults = honest/identity (config [render.*]).
-    # soot_yield/smoke_emission mirror the SIM config (display-only here — Erik
-    # tunes them in the P5 feel session; this patch never changes their values).
+    # soot_yield/smoke_emission mirror the SIM config and, as of P5, DRIVE it
+    # live too (design §6 + §8: "Erik tunes them in the P5 feel session" —
+    # this is that session; see the "Sync the soot-handover pair LIVE" block).
     # Re-init from CFG at startup. --------------------------------------------
     "legacy_smoke_on": False,
     "gm_plume_k_scale": 1.0,
@@ -128,8 +144,8 @@ DEFAULTS = {
     "gd_dither_on": True,
     "speckle_mode": 2.0,     # stepped slider: 0=off 1=noise 2=soot
     "speckle_amp": 0.25,
-    "soot_yield": 0.3,       # mirror of [physics.combustion] (display-only, P1)
-    "smoke_emission": 0.8,   # mirror of [physics.fire] (display-only, P1)
+    "soot_yield": 0.3,       # mirror of [physics.combustion]; LIVE-wired, P5
+    "smoke_emission": 0.8,   # mirror of [physics.fire]; LIVE-wired, P5
     "show_pressure": True,
     "pressure_scale": 2.0,
     "blast_radius": 6.0,
@@ -549,6 +565,166 @@ def drain_all(gmap) -> int:
 
 
 # ---------------------------------------------------------------------------
+# B2 P5 — perf pass (design §7 P5 + §8): "measure frame time in the studio
+# with everything on at once" (beacon sweeping + fire burning + the full gas
+# medium + the P3 detail shader + P4 speckle), and again with legacy_smoke_on
+# for comparison. Headless (--perf N), driving the EXACT per-frame call
+# sequence main()'s interactive loop uses. See _run_perf_bench for the method.
+# ---------------------------------------------------------------------------
+
+PERF_DEFAULT_FRAMES = 300      # "a few hundred frames" (design §7 P5)
+PERF_WARMUP_FRAMES = 30        # rendered frames discarded before timing starts
+                                # (first-touch texture/shader costs, not steady state)
+PERF_SCENE_WARMUP_TICKS = 200  # sim ticks BEFORE the render loop starts, so the
+                                # fire has actually spread + built up smoke/heat
+                                # (a freshly-ignited tile has ~zero density) --
+                                # 200 ticks @ 24 Hz = ~8.3 simulated seconds
+
+# Crate-cluster tiles (tools/gen_fire_studio.py: 2x2 WOOD at x=6-7,y=9-10 +
+# the FURN skirt at (8,9),(8,10),(6:9,11)) -- two 3x3 ignite calls fully cover
+# the cluster's footprint (x 6-8, y 8-11).
+_CRATE_CLUSTER_IGNITE_TILES = ((7, 9), (7, 10))
+_WATER_POOL_CENTER_TILE = (33, 27)     # gen_fire_studio's POOL_X0..X1/Y0..Y1
+
+
+def _parse_perf_frames() -> Optional[int]:
+    """Read the optional ``--perf [N]`` perf-pass flag (B2 P5). ``--perf``
+    alone measures :data:`PERF_DEFAULT_FRAMES`; ``--perf 500`` measures 500
+    frames per path. Returns None when the flag is absent (the normal
+    interactive / --auto paths are unaffected)."""
+    if "--perf" not in sys.argv:
+        return None
+    i = sys.argv.index("--perf")
+    if i + 1 < len(sys.argv) and not sys.argv[i + 1].startswith("--"):
+        try:
+            return max(1, int(sys.argv[i + 1]))
+        except ValueError:
+            pass
+    return PERF_DEFAULT_FRAMES
+
+
+def _step_keep_running(sim) -> None:
+    """Tick once, force-resuming across the sim's end-of-round auto-pause --
+    mirrors the interactive loop's own re-enable below ("re-enable after each
+    auto-pause so smoke/pressure keeps evolving") so the perf scene keeps
+    burning instead of freezing at the first round boundary."""
+    if sim.is_paused():
+        sim.set_paused(False)
+    sim.step()
+
+
+def _seed_burning_scene(sim) -> None:
+    """Deterministic 'everything burning' scene for the perf pass (design §7
+    P5: "ignite the crate cluster or inject fire+smoke"). Ignites the main-
+    hall crate cluster (see :data:`_CRATE_CLUSTER_IGNITE_TILES`) and puffs a
+    little steam at the water pool so a beacon sweep has haze to light from
+    frame 1, instead of waiting on the fire to build density from nothing.
+    Direct sim-field writes -- the same tool-side debug-injection pattern as
+    _inject_fire/_inject_gas (TOOLS may write sim fields)."""
+    for tile in _CRATE_CLUSTER_IGNITE_TILES:
+        _inject_fire(sim, tile)
+    _inject_gas(sim, _WATER_POOL_CENTER_TILE, STEAM)
+
+
+def _run_perf_bench(renderer, sim, static_lights, beacon_lights, fire_selector,
+                    sim_time_per_tick: float, ticks_per_round: int,
+                    frames: int) -> None:
+    """B2 P5 perf pass (design §7 P5 + §8): measure whole-frame render cost in
+    the studio with EVERYTHING on -- beacon sweeping, fire burning, the full
+    gas medium, the P3 detail shader, and P4 speckle -- and again with
+    legacy_smoke_on (the pre-B2 path) for comparison. Both paths are timed
+    BACK-TO-BACK in the SAME process (the tests/bench_s8c_fire_heat_check.py
+    precedent: comparable clock/thermal state), driving the EXACT per-frame
+    call sequence main()'s interactive loop uses (sim tick, light-source
+    assembly, upload_state, compose_world, blit) so the numbers mean what a
+    real session would see -- minus the demo's own raygui debug panel (~80
+    immediate-mode UI draws that cost the same in both conditions, so they
+    would only shift both numbers by a roughly constant offset, not change
+    the delta this pass exists to measure). Prints mean + 95th-percentile
+    ms/frame for each path.
+
+    Two figures are reported per path:
+      * "wall" -- the full begin_frame..end_frame span, i.e. what actually
+        gates realized FPS (raylib's SwapBuffers/vsync wait lands inside
+        end_frame). set_target_fps(0) removes raylib's OWN software pacing
+        for this run, but the OS/driver may still honour FLAG_VSYNC_HINT (set
+        once at window creation, before this function runs) -- if "wall"
+        floors at a suspiciously round number (~16.7 ms / 60 Hz, ~6.9 ms /
+        144 Hz) for BOTH paths, that is vsync, not a real equal-cost finding.
+      * "cpu"  -- begin_frame..just-before-end_frame, i.e. CPU-side draw-call
+        SUBMISSION cost only, immune to vsync but may UNDERCOUNT true
+        GPU-bound shader cost (rlgl draw calls are async; nothing here forces
+        a GPU fence). Reported as a cross-check, not a replacement for "wall".
+    """
+    rl.set_target_fps(0)     # perf-only: remove raylib's software FPS pacing
+    _seed_burning_scene(sim)
+    for _ in range(PERF_SCENE_WARMUP_TICKS):
+        _step_keep_running(sim)
+
+    def _measure(label: str) -> None:
+        wall_ms = []
+        cpu_ms = []
+        total = PERF_WARMUP_FRAMES + frames
+        for i in range(total):
+            t0 = time.perf_counter()
+            _step_keep_running(sim)
+
+            total_tick = monotonic_total_tick(sim.turn_number, ticks_per_round,
+                                              sim.tick)
+            frame = build_frame_light_sources(
+                bp, static_lights, beacon_lights,
+                total_tick=total_tick, sim_time_per_tick=sim_time_per_tick,
+                fire_selector=fire_selector,
+                temperature_field=sim.gmap.temperature,
+                blackbody_ramp=renderer.blackbody_ramp,
+                show_fire_lights=renderer.show_fire_lights)
+            sources = frame.sources
+            renderer.set_fire_light_stats(frame.fire_count, frame.fire_peaks,
+                                          fire_selector.max_lights)
+
+            renderer.upload_state(sim.gmap, light_sources=sources,
+                                  sim_tick=total_tick)
+            renderer.begin_frame()
+            renderer.compose_world(units_marines=sim.marines(),
+                                   units_zombies=sim.zombies(),
+                                   projectiles=sim.projectiles)
+            renderer.draw_background_to_screen()
+            renderer.blit_world_to_screen()
+            t_cpu = time.perf_counter()
+            renderer.end_frame()
+            t_wall = time.perf_counter()
+
+            if i >= PERF_WARMUP_FRAMES:
+                cpu_ms.append((t_cpu - t0) * 1000.0)
+                wall_ms.append((t_wall - t0) * 1000.0)
+
+        wall = np.asarray(wall_ms, dtype=np.float64)
+        cpu = np.asarray(cpu_ms, dtype=np.float64)
+        w_mean, w_p95 = float(wall.mean()), float(np.percentile(wall, 95))
+        c_mean, c_p95 = float(cpu.mean()), float(np.percentile(cpu, 95))
+        print(f"[perf] {label:24s} wall mean {w_mean:6.2f} ms  p95 {w_p95:6.2f} ms "
+              f"(~{1000.0 / w_mean:5.1f} fps)  |  cpu mean {c_mean:6.2f} ms  "
+              f"p95 {c_p95:6.2f} ms")
+
+    print(f"[perf] fire_studio -- {frames} frames measured "
+          f"(+{PERF_WARMUP_FRAMES} discarded warm-up, "
+          f"+{PERF_SCENE_WARMUP_TICKS} sim-tick scene warm-up), "
+          f"target FPS uncapped")
+    print(f"[perf] scene: crate cluster ignited at {_CRATE_CLUSTER_IGNITE_TILES}, "
+          f"beacon ON, lamps ON, gas_detail.enabled={renderer.gas_detail.enabled}, "
+          f"speckle.mode={renderer.speckle.mode!r}")
+
+    renderer.legacy_smoke_on = False
+    _measure("NEW gas-medium (P2-P4)")
+
+    renderer.legacy_smoke_on = True
+    _measure("LEGACY smoke+glow")
+    renderer.legacy_smoke_on = False   # leave the renderer at the shipped default
+
+    print("OK — perf pass complete (--perf)")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -634,15 +810,45 @@ def main() -> None:
         print(f"[lighting_demo] Lights: {len(static_lights)} static + "
               f"{len(beacon_lights)} beacon from level.toml{_off}")
 
-    # FINAL keybindings (also on the panel; printed here since the tall panel
-    # can scroll the on-screen help off the bottom). Keymap AUDITED — O is
-    # avoided (documented water-overlay key); the studio keys land on free keys.
-    print("[lighting_demo] KEYS  I=ignite  J=smoke  K=steam  C=door  "
-          "1=lamps  2=beacon")
-    print("[lighting_demo]       Space=pause T=spawn U=water F/Shift+F=flood "
-          "P=tilt N=noise  |  L=firelights V=water G=sRGB")
-    print("[lighting_demo]       WASD/arrows=pan  Q/E/wheel=zoom  "
-          "F1/F2/F4=overlays  F9=legacy smoke A/B  F10=speckle A/B  "
+    # ---- B2 P5 (design §7 P5 + §8): --perf branches to the headless perf
+    # pass and exits before the interactive loop / PanelState / preset
+    # machinery -- none of which the perf pass needs (the renderer already
+    # carries the honest [render.*] config defaults straight from
+    # construction). See _run_perf_bench for the method.
+    perf_frames = _parse_perf_frames()
+    if perf_frames is not None:
+        try:
+            _run_perf_bench(renderer, sim, static_lights, beacon_lights,
+                            fire_selector, sim_time_per_tick, ticks_per_round,
+                            perf_frames)
+        finally:
+            renderer.shutdown()
+        return
+
+    # FINAL keybindings (B2 P5, design §8 human-test readiness) — the FULL
+    # map, also drawn on the panel (see the on-screen block in _draw_panel).
+    # Printed here since the tall panel can scroll the on-screen help off the
+    # bottom. Keymap AUDITED — O is avoided (documented water-overlay key,
+    # A6 §14 ruling 5); the studio keys land on free keys; T's collision with
+    # poll_toggles' temperature toggle was found + fixed this patch (moved to
+    # R — see the module docstring).
+    print("[lighting_demo] KEYS -- studio injection (tool writes at cursor):")
+    print("[lighting_demo]   I=ignite  J=puff smoke  K=puff steam  "
+          "C=toggle door  1=lamps  2=beacon")
+    print("[lighting_demo] KEYS -- demo-local (Space/R/N/U/F/P):")
+    print("[lighting_demo]   Space=pause/resume  R=grenade-spawn mode "
+          "(click=throw)  N/Shift+N=explosion-smoke noise")
+    print("[lighting_demo]   U=pour water  F/Shift+F=flood/drain interior  "
+          "P/Shift+P=tilt ship +/-2 deg")
+    print("[lighting_demo] KEYS -- shared render toggles (poll_toggles, "
+          "same in the main game):")
+    print("[lighting_demo]   F1=grid  F2=smoke  F3=fire(legacy overlay)  "
+          "F4=lighting  F5=normal-map  F6=debug coords  F7=pressure")
+    print("[lighting_demo]   F9=legacy smoke A/B  F10=speckle A/B "
+          "(off/noise/soot)  T=temperature  L=fire lights")
+    print("[lighting_demo]   V=water optics  M=3D units  B=bilinear  "
+          "H=flip-Y normal  G=sRGB  [ / ] = light Z")
+    print("[lighting_demo]   WASD/arrows=pan  Q/E/wheel=zoom  "
           "(O intentionally unused)")
 
     # ---- 4. Panel state ----
@@ -712,7 +918,8 @@ def main() -> None:
 
     # B2 dials: open the sliders where config.toml sits (getattr-defaults keep
     # the demo alive if a block is absent). soot_yield / smoke_emission MIRROR
-    # the sim config for display — this patch never writes them back to the sim.
+    # the sim config at startup and, as of P5, write LIVE back into the
+    # running PhysicsRunner every frame (see the interactive loop below).
     _rend = getattr(CFG, "render", None)
     _gm = getattr(_rend, "gas_medium", None)
     _gd = getattr(_rend, "gas_detail", None)
@@ -802,8 +1009,14 @@ def main() -> None:
             K = rl.KeyboardKey
             if rl.is_key_pressed(K.KEY_SPACE):
                 state.paused = not state.paused
-            # T = toggle grenade-spawn mode. (G is taken by sRGB decode in poll_toggles.)
-            if rl.is_key_pressed(K.KEY_T):
+            # R = toggle grenade-spawn mode. (G is taken by sRGB decode in
+            # poll_toggles; B2 P5 moved this OFF T — poll_toggles ALSO checks
+            # KEY_T every frame for the temperature-overlay toggle, shared
+            # with main.py, and is_key_pressed() fires for both checks on the
+            # same press — T silently doubled as "arm grenade mode" AND "kill
+            # the black-body overlay". R is unclaimed by poll_toggles or any
+            # demo-local key.)
+            if rl.is_key_pressed(K.KEY_R):
                 state.spawn_mode = not state.spawn_mode
             # N / Shift+N = nudge explosion smoke noise down / up live, so the
             # cloud's initial texture can be dialled in by eye between throws.
@@ -990,6 +1203,26 @@ def main() -> None:
             # around the panel draw (like legacy_smoke_on / F9), so it is pushed
             # AFTER the panel — not here.
             renderer.speckle.amp = float(state.get("speckle_amp"))
+
+            # ---- Sync the soot-handover pair LIVE (B2 P5, design §6 + §8) ----
+            # soot_yield / smoke_emission are EXISTING sim config (not new B2
+            # config); P1 wired them as display-only mirrors and deferred the
+            # write-back to "Erik's feel session" — this IS that session (the
+            # design's own §8 human-test script drags these sliders "until a
+            # starving fire visibly blackens its own room"). TOOL-side write to
+            # the live PhysicsRunner coefficients — the same carve-out already
+            # used for the cursor fire/gas injection (tools may write sim
+            # state; the renderer never does), just one level up the stack
+            # (a tunable COEFFICIENT instead of a field value). Effective next
+            # tick; config.toml itself is untouched here — a value Erik likes
+            # becomes its own deliberate config commit afterward, same as the
+            # design intended. No solver CODE changes; every pytest scenario
+            # builds its own PhysicsRunner from CFG and never touches this
+            # demo, so goldens/digests are unaffected.
+            pr = sim.physics_runner
+            if pr is not None:
+                pr.combustion.soot_yield = float(state.get("soot_yield"))
+                pr.fire.params.smoke_emission = float(state.get("smoke_emission"))
 
             # ---- Lighting setters ----
             renderer.lighting.set_ambient((state.get("ambient_r"),
@@ -1193,11 +1426,29 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     x = px + 10
     y = 10
 
-    # Title + perf on same line
+    # Title + perf on same line. B2 P5 (design §8 "watch the HUD frame
+    # time"): Frame is the whole-loop smoothed ms/frame -- SAME definition
+    # as the game HUD's "Frame:" row (renderer.game_renderer.draw_panel) --
+    # derived from raylib's own smoothed FPS counter, no new bookkeeping.
     rl.draw_text("Lighting Demo", x, y, 16, rl.Color(200, 220, 255, 255))
-    fps_str = f"  FPS:{rl.get_fps()} RT:{renderer.last_raycast_ms:.0f}ms"
+    frame_ms = 1000.0 / max(1, rl.get_fps())
+    fps_str = (f"  FPS:{rl.get_fps()} Frame:{frame_ms:.1f}ms "
+              f"RT:{renderer.last_raycast_ms:.0f}ms")
     rl.draw_text(fps_str, x + 100, y + 2, 11, rl.Color(140, 140, 160, 255))
     y += 22
+
+    # B2 P5 (design §7): the SAME coherent active-render-state cluster the
+    # game HUD shows (medium/detail/speckle + the non-physical gas-floor
+    # flag) -- one shared pure function (render_state_lines), drawn here in
+    # the demo's own compact style so the two HUDs can never drift apart.
+    for label, color in render_state_lines(
+            legacy_smoke_on=renderer.legacy_smoke_on,
+            detail_enabled=renderer.gas_detail.enabled,
+            speckle_mode=renderer.speckle.mode,
+            effect_gas_floor=renderer.gas_medium.effect_gas_floor):
+        rl.draw_text(label, x, y, 12, rl.Color(*color))
+        y += 14
+    y += 6
 
     # -- §4.1 Ambient --
     y = _section_header("Ambient", x, y)
@@ -1238,8 +1489,9 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     y = _slider(state, "gm_glow_gain", "Glow gain", 0.0, 4.0, x, y)
     y = _slider(state, "gm_effect_gas_floor", "Gas floor", 0.0, 1.0, x, y)
     y = _checkbox(state, "gm_fuel_haze_on", "Fuel haze", x, y)
-    # The soot handover pair (existing SIM config; DISPLAY-only in P1 — Erik
-    # tunes it by feel in the P5 session, never this patch).
+    # The soot handover pair (existing SIM config; DISPLAY-only through P1-P4
+    # — LIVE-wired to the running PhysicsRunner as of P5, design §8: drag
+    # until a starving fire visibly blackens its own room).
     y = _slider(state, "soot_yield", "Soot yield", 0.0, 1.0, x, y)
     y = _slider(state, "smoke_emission", "Smoke emit", 0.0, 3.0, x, y)
     # Detail shader (P3) + speckle (P4) dials.
@@ -1287,7 +1539,7 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     y = _slider(state, "pressure_scale", "P scale", 0.5, 10.0, x, y)
 
     # -- §4.6 Grenade tuning --
-    y = _section_header("Grenade [T=spawn mode]", x, y)
+    y = _section_header("Grenade [R=spawn mode]", x, y)
     y = _slider(state, "blast_radius", "Radius", 1.0, 15.0, x, y)
     y = _slider(state, "blast_pressure", "Pressure", 1.0, 30.0, x, y)
     y = _slider(state, "wall_damage", "Wall dmg", 0.0, 1000.0, x, y)
@@ -1346,14 +1598,18 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
         rl.gui_label(rl.Rectangle(x, y, PANEL_W - 20, 14), "(save a preset first)")
         y += 18
 
-    # Keybind reminder — the FINAL studio bindings (keymap audited; O avoided).
+    # Keybind reminder — the FINAL studio bindings (B2 P5, design §8; keymap
+    # audited, O avoided; the FULL map also prints to console at startup).
     rl.draw_text("I=ignite  J=smoke  K=steam  C=door  1=lamps  2=beacon",
                  x, y, 10, rl.Color(150, 205, 150, 255))
     y += 12
-    rl.draw_text("Space=pause T=spawn U=water F=flood P=tilt N=nz L=firelights",
+    rl.draw_text("Space=pause R=spawn U=water F=flood P=tilt N=nz L=firelights",
                  x, y, 10, rl.Color(120, 120, 140, 255))
     y += 12
     rl.draw_text("WASD=pan Q/E=zoom G=sRGB V=water F9=legacy F10=speckle",
+                 x, y, 10, rl.Color(120, 120, 140, 255))
+    y += 12
+    rl.draw_text("F1-F7=overlays M=3D B=bilinear H=flipY [/]=lightZ (O unused)",
                  x, y, 10, rl.Color(120, 120, 140, 255))
 
 

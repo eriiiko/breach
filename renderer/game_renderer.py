@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 import pyray as rl
@@ -66,6 +66,51 @@ class RenderConfig:
     # when False the sprite path is byte-for-byte unchanged. Feel-gated. The J
     # key flips it live (poll_toggles) once the model is loaded.
     use_3d_units: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Fire & Heat Beauty B2 P5 (design §7 P5): the active render-state cluster
+# ---------------------------------------------------------------------------
+
+def render_state_lines(*, legacy_smoke_on: bool, detail_enabled: bool,
+                       speckle_mode: str, effect_gas_floor: float
+                       ) -> List[Tuple[str, Tuple[int, int, int, int]]]:
+    """ONE coherent cluster describing the ACTIVE render state: medium (NEW
+    gas-medium vs LEGACY smoke, the F9 state), detail (the
+    ``[render.gas_detail] enabled`` state), speckle (the F10 off/noise/soot
+    mode), and the non-physical gas-floor flag when raised. Replaces the
+    scattered F9-in-the-toggle-list / separate F10 line / separate gas-floor
+    line the HUD used to carry before B2 P5.
+
+    Pure (pyray-free) so both the game HUD (:meth:`GameRenderer.draw_panel`)
+    and ``tools/lighting_demo.py``'s panel draw the SAME cluster in their own
+    style with no drift (the ``renderer/frame_lights.py`` / ``hover_readout.py``
+    precedent) — and it is headless-testable without a GL context. Returns
+    ``(text, RGBA color)`` pairs; the caller supplies its own draw call.
+    """
+    ON = (180, 255, 180, 255)
+    OFF = (140, 140, 140, 255)
+    FLAG = (255, 200, 120, 255)
+
+    lines: List[Tuple[str, Tuple[int, int, int, int]]] = []
+    if legacy_smoke_on:
+        lines.append(("Medium:  LEGACY smoke", FLAG))
+    else:
+        lines.append(("Medium:  NEW gas-medium", ON))
+    # gas_detail only draws on the NEW path — compose_world bypasses it
+    # entirely under legacy_smoke_on — so its line is green ONLY when it is
+    # both enabled AND actually live this frame; grey covers "off" and "on
+    # but shadowed by legacy" alike (the Medium line above disambiguates
+    # which case it is).
+    detail_live = detail_enabled and not legacy_smoke_on
+    lines.append((f"Detail:  {'on' if detail_enabled else 'off'}",
+                  ON if detail_live else OFF))
+    lines.append((f"Speckle: {speckle_mode}",
+                  OFF if speckle_mode == "off" else ON))
+    if not legacy_smoke_on and effect_gas_floor > 0.0:
+        lines.append((f"Gas floor {effect_gas_floor:.2f} (non-physical)",
+                      FLAG))
+    return lines
 
 
 class GameRenderer:
@@ -1186,9 +1231,23 @@ class GameRenderer:
 
         draw_text(f"FPS: {rl.get_fps()}", x, y, 14)
         y += 18
+        # Fire & Heat Beauty B2 P5 (design §7/§8 — "watch the HUD frame
+        # time"): the ACTUAL whole-loop frame time (input + sim tick +
+        # upload_state + compose_world + draw + blit), NOT just the
+        # upload_state slice below. Derived from raylib's own smoothed FPS
+        # counter (get_fps() already averages a short history) rather than
+        # new per-frame bookkeeping — simple, honest, and needs no new call
+        # sites in main.py / lighting_demo.py.
+        frame_ms = 1000.0 / max(1, rl.get_fps())
+        draw_text(f"Frame:   {frame_ms:.1f} ms (smoothed)", x, y, 14)
+        y += 18
         draw_text(f"Raycast: {self.last_raycast_ms:.1f} ms", x, y, 14)
         y += 18
-        draw_text(f"Frame:   {self.last_frame_ms:.1f} ms", x, y, 14)
+        # Upload = the light-cast + overlay-texture-build slice INSIDE
+        # upload_state (a SUBSET of "Frame:" above, not the whole frame).
+        # Renamed from the old, misleading "Frame:" label this line used to
+        # carry (it never included compose_world/draw/blit/sim.step).
+        draw_text(f"Upload:  {self.last_frame_ms:.1f} ms", x, y, 14)
         y += 18
         # Fire-light counter (B1 §3): kept / NMS-peaks, flag when the cap bites.
         capped = self.fire_light_count < self.fire_light_peaks
@@ -1207,7 +1266,6 @@ class GameRenderer:
             ("F5 normal map",  self.show_normal_map),
             ("F6 coords",      self.show_debug_coords),
             ("F7 pressure",    self.show_pressure),
-            ("F9 legacy smoke", self.legacy_smoke_on),
             ("T  temperature", self.show_temperature),
             ("L  fire lights", self.show_fire_lights),
             ("O  water optics", self.show_water),
@@ -1219,20 +1277,21 @@ class GameRenderer:
             color = (180, 255, 180, 255) if on else (140, 140, 140, 255)
             draw_text(label, x, y, 13, color=color)
             y += 16
-        # Dirty-Planck speckle A/B (B2 P4): show the active flame-mottle mode
-        # (off/noise/soot) so the F10 cycle has a readout. Grey when off. (P5
-        # folds this into the richer active-path HUD annotation.)
-        _sp_mode = self.speckle.mode
-        draw_text(f"F10 speckle: {_sp_mode}", x, y, 13,
-                  color=(140, 140, 140, 255) if _sp_mode == "off"
-                  else (180, 255, 180, 255))
-        y += 16
-        # Non-physical legibility floor flag (B2 §3): when the gameplay-gas
-        # emissive floor is raised, say so on the HUD — the plume's poison/
-        # teargas glow is a design override, no longer physically honest.
-        if not self.legacy_smoke_on and self.gas_medium.effect_gas_floor > 0.0:
-            draw_text(f"gas floor {self.gas_medium.effect_gas_floor:.2f} "
-                      f"(non-physical)", x, y, 12, color=(255, 180, 120, 255))
+        y += 6
+        # Fire & Heat Beauty B2 P5 (design §7): ONE coherent cluster for the
+        # ACTIVE render-medium state — folds the F9 toggle-list row, the old
+        # separate F10 line, and the separate gas-floor line above into a
+        # single readable block (render_state_lines(), module-level below
+        # the RenderConfig dataclass). Shared with tools/lighting_demo.py's
+        # panel so the two HUDs never drift apart.
+        draw_text("Render state:", x, y, 14, color=(180, 200, 255, 255))
+        y += 18
+        for label, color in render_state_lines(
+                legacy_smoke_on=self.legacy_smoke_on,
+                detail_enabled=self.gas_detail.enabled,
+                speckle_mode=self.speckle.mode,
+                effect_gas_floor=self.gas_medium.effect_gas_floor):
+            draw_text(label, x, y, 13, color=color)
             y += 16
         y += 6
         draw_text(f"[/] Light Z: {self.lighting.light_z:.2f}", x, y, 13,
@@ -1452,4 +1511,4 @@ class GameRenderer:
         core.shutdown()
 
 
-__all__ = ["GameRenderer", "RenderConfig"]
+__all__ = ["GameRenderer", "RenderConfig", "render_state_lines"]
