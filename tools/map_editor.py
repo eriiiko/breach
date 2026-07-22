@@ -23,7 +23,13 @@ a screenshot PNG into the OS temp dir and exits 0 — raylib has no
 input-injection API, so the interactive paths are smoke-only; the pure
 helpers are unit-tested in tests/test_map_editor_tool.py.
 
-Controls (HUD shows the active mode's line):
+The window is organised as panes (Arc C, editor doc §8): a top bar, a left
+tool rail (the mode list), the central canvas (the live baked map), a right
+palette + inspector column, and a bottom status bar. The map draws only
+inside the canvas pane; keyboard shortcuts are unchanged (keyboard-first
+survives the panes). Pane geometry is pure in tools/editor_layout.py.
+
+Controls (the tool rail + inspector show the active mode's line):
 
   Any mode:
     TAB / Shift+TAB      - cycle mode PAINT -> ROOM -> CORRIDOR -> DOOR ->
@@ -160,6 +166,7 @@ from bake_level_art import (BIT_E, BIT_N, BIT_S, BIT_W, DEFAULT_PX_PER_TILE,
 from level_edit_common import (BRUSH_MAX, BRUSH_MIN, UNDO_CAPACITY, UndoRing,
                                art_px_to_tile, brush_rect, build_palette,
                                line_tiles, paint_tiles, save_tilemap_csv)
+from editor_layout import compute_panes, fit_camera, screen_from_world
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -651,18 +658,26 @@ class SpawnRing:
 # ---------------------------------------------------------------------------
 
 WIN_W, WIN_H = 1280, 920
-HUD_H = 104
 AUTO_FRAMES = 90          # --auto: close after ~90 frames (smoke test)
 
 COL_BG = (16, 16, 22, 255)
 COL_GRID = (255, 255, 255, 40)
-COL_HUD_BG = (0, 0, 0, 170)
+COL_PANEL_BG = (26, 26, 34, 255)     # pane fill (top bar / rail / palette / …)
+COL_PANEL_EDGE = (60, 60, 72, 255)   # 1-px seam between panes
+COL_RAIL_SEL = (60, 62, 96, 255)     # active mode row in the tool rail
 COL_CURSOR = (255, 255, 255, 220)
 COL_TEXT = (200, 200, 200, 255)
 COL_TEXT_DIM = (150, 150, 160, 255)
 COL_TEXT_HOT = (255, 230, 120, 255)
 COL_OK = (120, 255, 140, 255)
 COL_BAD = (255, 90, 80, 255)
+
+# Tool-rail + palette pane row geometry (shared by click-routing and draw so
+# the hit targets match the visuals).
+RAIL_PAD_Y = 8
+RAIL_ROW_H = 30
+PAL_PAD_Y = 30            # room for the pane title above the first chip
+PAL_ROW_H = 22
 
 MODE_HINTS = {
     "PAINT": "LMB paint  RMB erase  Shift+click line  I eyedrop  [ ] brush",
@@ -850,15 +865,17 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
         stroke_active, stroke_pending, stroke_dirty = False, None, None
         last_paint_tile = None
 
-    # View transform (screen = (world_px - cam) * zoom); fit on start.
-    zoom = min(WIN_W / world_w, (WIN_H - HUD_H) / world_h) * 0.95
-    cam_x = (world_w - WIN_W / zoom) / 2.0
-    cam_y = (world_h - (WIN_H + HUD_H) / zoom) / 2.0
+    # View transform (screen = (world_px - cam) * zoom + canvas origin); fit
+    # the world inside the CANVAS pane on start (Arc C panes shell, §8).
+    zoom, cam_x, cam_y = fit_camera(compute_panes(WIN_W, WIN_H)["canvas"],
+                                    world_w, world_h)
 
     frames = 0
     shot_path = None
     while not rl.window_should_close():
         win_w, win_h = rl.get_screen_width(), rl.get_screen_height()
+        panes = compute_panes(win_w, win_h)
+        canvas = panes["canvas"]
         dt = rl.get_frame_time()
         K = rl.KeyboardKey
         shift = (rl.is_key_down(K.KEY_LEFT_SHIFT)
@@ -866,7 +883,11 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
         ctrl = (rl.is_key_down(K.KEY_LEFT_CONTROL)
                 or rl.is_key_down(K.KEY_RIGHT_CONTROL))
         mouse = rl.get_mouse_position()
-        over_hud = mouse.y <= HUD_H
+        # Mouse editing is gated to the canvas pane; clicks over any other
+        # pane (top bar / rail / palette / inspector / status) never edit the
+        # map. ``over_hud`` keeps its old meaning: "over non-canvas chrome".
+        over_canvas = canvas.contains(mouse.x, mouse.y)
+        over_hud = not over_canvas
         mode = MODES[mode_idx]
         dirty_any = (dirty_tiles or dirty_spawns or dirty_lights
                      or dirty_water)
@@ -910,11 +931,14 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                 selected_id = pid
 
         # ---- view: wheel zoom around cursor, keys/drag pan ---------------
+        # Mouse offsets are relative to the CANVAS pane origin (the world is
+        # drawn there, not at the window corner).
+        mcx, mcy = mouse.x - canvas.x, mouse.y - canvas.y
         wheel = rl.get_mouse_wheel_move()
-        if wheel != 0.0:
-            wx0, wy0 = cam_x + mouse.x / zoom, cam_y + mouse.y / zoom
+        if wheel != 0.0 and over_canvas:
+            wx0, wy0 = cam_x + mcx / zoom, cam_y + mcy / zoom
             zoom = max(0.02, min(50.0, zoom * (1.1 ** wheel)))
-            cam_x, cam_y = wx0 - mouse.x / zoom, wy0 - mouse.y / zoom
+            cam_x, cam_y = wx0 - mcx / zoom, wy0 - mcy / zoom
         if not ctrl:                       # keep Ctrl+S clear of S-pan
             pan = 900.0 * dt / zoom
             if rl.is_key_down(K.KEY_W) or rl.is_key_down(K.KEY_UP):
@@ -930,9 +954,9 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             cam_x -= d.x / zoom
             cam_y -= d.y / zoom
 
-        # Cursor tile (fractional + containing index).
-        ftx, fty = art_px_to_tile(cam_x + mouse.x / zoom,
-                                  cam_y + mouse.y / zoom, offset0, ppt_pair)
+        # Cursor tile (fractional + containing index) — canvas-relative.
+        ftx, fty = art_px_to_tile(cam_x + mcx / zoom,
+                                  cam_y + mcy / zoom, offset0, ppt_pair)
         cur_tx, cur_ty = int(np.floor(ftx)), int(np.floor(fty))
         cursor_in = (0 <= cur_tx < grid_w and 0 <= cur_ty < grid_h)
         clamp_tx = min(max(cur_tx, 0), grid_w - 1)
@@ -946,6 +970,23 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             rl.MouseButton.MOUSE_BUTTON_RIGHT)
         lmb_up = rl.is_mouse_button_released(
             rl.MouseButton.MOUSE_BUTTON_LEFT)
+
+        # ---- pane routing: clicks outside the canvas act on their pane ----
+        # Tool rail row -> select mode (mirrors TAB / F1-F7); palette chip ->
+        # select material (mirrors the 0-9 keys). Keyboard stays the primary
+        # path (§5 keyboard-first); the canvas gate (over_hud) already keeps
+        # these clicks from also editing the map.
+        if lmb_click and panes["tool_rail"].contains(mouse.x, mouse.y):
+            ridx = int((mouse.y - panes["tool_rail"].y - RAIL_PAD_Y)
+                       // RAIL_ROW_H)
+            if 0 <= ridx < len(MODES) and ridx != mode_idx:
+                mode_idx = ridx
+                cancel_transients()
+                mode = MODES[mode_idx]
+        elif lmb_click and panes["palette"].contains(mouse.x, mouse.y):
+            pidx = int((mouse.y - panes["palette"].y - PAL_PAD_Y) // PAL_ROW_H)
+            if 0 <= pidx < len(palette_order):
+                selected_id = palette_order[pidx]
 
         def selected_is_wall() -> bool:
             name = MATERIAL_NAMES.get(selected_id)
@@ -1383,15 +1424,20 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
 
         # ---- draw ---------------------------------------------------------
         def to_screen(wx: float, wy: float) -> tuple:
-            return ((wx - cam_x) * zoom, (wy - cam_y) * zoom)
+            return screen_from_world(canvas, cam_x, cam_y, zoom, wx, wy)
 
         rl.begin_drawing()
         rl.clear_background(rl.Color(*COL_BG))
 
+        # The map draws ONLY inside the canvas pane — scissor clips it off the
+        # surrounding chrome (top bar / rail / palette / inspector / status).
+        rl.begin_scissor_mode(canvas.x, canvas.y,
+                              max(0, canvas.w), max(0, canvas.h))
+
         tw = th = preview_ppt * zoom
         vx0, vy0 = art_px_to_tile(cam_x, cam_y, offset0, ppt_pair)
-        vx1, vy1 = art_px_to_tile(cam_x + win_w / zoom,
-                                  cam_y + win_h / zoom, offset0, ppt_pair)
+        vx1, vy1 = art_px_to_tile(cam_x + canvas.w / zoom,
+                                  cam_y + canvas.h / zoom, offset0, ppt_pair)
         tx0, ty0 = max(0, int(np.floor(vx0))), max(0, int(np.floor(vy0)))
         tx1 = min(grid_w, int(np.ceil(vx1)) + 1)
         ty1 = min(grid_h, int(np.ceil(vy1)) + 1)
@@ -1542,65 +1588,135 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             if i == light_hover:
                 rl.draw_circle_lines(int(sx), int(sy), dot + 3.0, rl.WHITE)
 
-        # ---- HUD ------------------------------------------------------------
-        rl.draw_rectangle(0, 0, win_w, HUD_H, rl.Color(*COL_HUD_BG))
-        preview_note = ("" if preview_ppt == bake_ppt
-                        else f"  preview @{preview_ppt}px (bake {bake_ppt})")
-        rl.draw_text(
-            f"{level_dir.name}  grid {grid_w}x{grid_h} tiles  "
-            f"zoom {zoom:.2f}  view: "
-            f"{'normals' if (view_baked and show_normal) else 'baked' if view_baked else 'materials'}"
-            f" (V/N){preview_note}"
-            f"{'   *UNSAVED*' if dirty_any else ''}",
-            8, 6, 18, rl.Color(*COL_TEXT))
+        # ---- panes (chrome) -----------------------------------------------
+        # The map is done; stop clipping and paint the surrounding panes on
+        # top. Every non-canvas region is a framed pane (§8): top bar, tool
+        # rail, palette, inspector, status bar. C1 fills palette + inspector
+        # from the entity registry; here they host the old HUD content.
+        rl.end_scissor_mode()
 
+        top = panes["top_bar"]
+        rail = panes["tool_rail"]
+        pal = panes["palette"]
+        insp = panes["inspector"]
+        status = panes["status_bar"]
+
+        def fill_pane(rc) -> None:
+            rl.draw_rectangle(rc.x, rc.y, rc.w, rc.h,
+                              rl.Color(*COL_PANEL_BG))
+            rl.draw_rectangle_lines(rc.x, rc.y, rc.w, rc.h,
+                                    rl.Color(*COL_PANEL_EDGE))
+
+        def wrap_text(text: str, max_w: int, font: int) -> list:
+            words, lines, cur = text.split(), [], ""
+            for wd in words:
+                trial = wd if not cur else f"{cur} {wd}"
+                if not cur or rl.measure_text(trial, font) <= max_w:
+                    cur = trial
+                else:
+                    lines.append(cur)
+                    cur = wd
+            if cur:
+                lines.append(cur)
+            return lines
+
+        for rc in (top, rail, pal, insp, status):
+            fill_pane(rc)
+
+        # Per-mode extra line — verbatim content from the old HUD.
         extra = ""
         if mode == "PAINT":
-            extra = f"  brush {brush}x{brush} [ ]"
+            extra = f"brush {brush}x{brush} [ ]"
         elif mode == "CORRIDOR":
-            extra = f"  width {corridor_w} (+/-)"
+            extra = f"width {corridor_w} (+/-)"
         elif mode == "SPAWN":
-            extra = (f"  placing {TEAM_NAMES[spawn_team]} (T)  "
+            extra = (f"placing {TEAM_NAMES[spawn_team]} (T)  "
                      f"{len(spawns)} spawns")
         elif mode == "LIGHT":
-            extra = (f"  placing {light_kind} / "
+            extra = (f"placing {light_kind} / "
                      f"{light_color_name(light_color)} (B/C)  "
                      f"{len(lights)} lights")
         elif mode == "WATER":
-            extra = (f"  depth {water_depth_m:.1f} m (-/=)  "
+            extra = (f"depth {water_depth_m:.1f} m (-/=)  "
                      f"{int(np.count_nonzero(water_q))} wet tiles")
             if water_depth_m > WATER_DEEP_HINT_M:
                 extra += "  deep tank: drains may flash-boil (by design)"
-        rl.draw_text(f"[{mode}]", 8, 28, 24, rl.Color(*COL_TEXT_HOT))
-        mode_x = 8 + rl.measure_text(f"[{mode}]", 24) + 12
-        rl.draw_text(f"material: {palette[selected_id][0]}{extra}",
-                     mode_x, 32, 18, rl.Color(*COL_TEXT_HOT))
 
-        x = 8
-        for pid in palette_order:
+        # Top bar: level / grid / zoom / view mode.
+        preview_note = ("" if preview_ppt == bake_ppt
+                        else f"  preview @{preview_ppt}px (bake {bake_ppt})")
+        view_name = ("normals" if (view_baked and show_normal)
+                     else "baked" if view_baked else "materials")
+        rl.draw_text(
+            f"{level_dir.name}   grid {grid_w}x{grid_h}   zoom {zoom:.2f}"
+            f"   view: {view_name} (V/N){preview_note}",
+            top.x + 10, top.y + 12, 18, rl.Color(*COL_TEXT))
+
+        # Tool rail: the mode list (click a row, or TAB / F1-F7).
+        for i, mname in enumerate(MODES):
+            ry = rail.y + RAIL_PAD_Y + i * RAIL_ROW_H
+            if ry + RAIL_ROW_H > rail.y + rail.h:
+                break
+            if i == mode_idx:
+                rl.draw_rectangle(rail.x + 4, ry, max(0, rail.w - 8),
+                                  RAIL_ROW_H - 4, rl.Color(*COL_RAIL_SEL))
+            col = COL_TEXT_HOT if i == mode_idx else COL_TEXT_DIM
+            rl.draw_text(f"F{i + 1} {mname}", rail.x + 12, ry + 6, 16,
+                         rl.Color(*col))
+
+        # Palette pane: chips + names, selected boxed (click a chip = 0-9).
+        rl.draw_text("MATERIAL", pal.x + 10, pal.y + 8, 14,
+                     rl.Color(*COL_TEXT))
+        for i, pid in enumerate(palette_order):
+            py = pal.y + PAL_PAD_Y + i * PAL_ROW_H
+            if py + PAL_ROW_H > pal.y + pal.h:
+                break
             pname, c = palette[pid]
-            label = f"{9 if pid == SPACE_CODE else pid} {pname}"
             chip = (rl.Color(c[0], c[1], c[2], 255) if c is not None
                     else rl.Color(70, 70, 76, 255))
-            rl.draw_rectangle(x, 56, 14, 14, chip)
+            rl.draw_rectangle(pal.x + 10, py, 14, 14, chip)
             if pid == selected_id:
                 rl.draw_rectangle_lines_ex(
-                    rl.Rectangle(x - 2, 54, 18, 18), 2.0, rl.WHITE)
-            rl.draw_text(label, x + 18, 55, 14,
+                    rl.Rectangle(pal.x + 8, py - 2, 18, 18), 2.0, rl.WHITE)
+            label = f"{9 if pid == SPACE_CODE else pid} {pname}"
+            rl.draw_text(label, pal.x + 32, py, 14,
                          rl.WHITE if pid == selected_id
                          else rl.Color(*COL_TEXT_DIM))
-            x += 18 + rl.measure_text(label, 14) + 12
-        rl.draw_text(f"|  undo {len(undo)}", x + 2, 55, 14,
+
+        # Inspector pane: active tool + material + per-mode extras + hint.
+        # (C1 replaces this with the registry-driven inspector.)
+        iy = insp.y + 10
+        rl.draw_text(f"[{mode}]", insp.x + 10, iy, 20, rl.Color(*COL_TEXT_HOT))
+        iy += 30
+        rl.draw_text(f"material: {palette[selected_id][0]}",
+                     insp.x + 10, iy, 16, rl.Color(*COL_TEXT_HOT))
+        iy += 24
+        if extra:
+            for ln in wrap_text(extra, max(20, insp.w - 20), 14):
+                rl.draw_text(ln, insp.x + 10, iy, 14, rl.Color(*COL_TEXT))
+                iy += 18
+        iy += 6
+        for ln in wrap_text(MODE_HINTS[mode], max(20, insp.w - 20), 13):
+            rl.draw_text(ln, insp.x + 10, iy, 13, rl.Color(*COL_TEXT_DIM))
+            iy += 16
+        iy += 6
+        rl.draw_text(f"undo depth {len(undo)}", insp.x + 10, iy, 14,
                      rl.Color(*COL_TEXT_DIM))
 
-        rl.draw_text(MODE_HINTS[mode], 8, 76, 14, rl.Color(*COL_TEXT_DIM))
-        rl.draw_text(
-            "TAB/F1-F7 mode | 0-6,9 material | V view N normals G grid | "
-            "wheel zoom MMB/WASD pan | Ctrl+Z undo Ctrl+S save | Esc quit",
-            8, 90, 12, rl.Color(*COL_TEXT_DIM))
+        # Status bar: mode | cursor tile | validator summary | unsaved dot |
+        # registry-import banner slot (empty in C0 — C1 fills it). The
+        # transient status flash rides the validator slot until C5 lands real
+        # validators.
         if flash_frames > 0:
             flash_frames -= 1
-            rl.draw_text(flash, 8, HUD_H + 6, 20, rl.Color(*COL_OK))
+        cur_txt = f"tile ({cur_tx},{cur_ty})" if cursor_in else "tile --"
+        valid = flash if flash_frames > 0 else "ready"
+        rl.draw_text(f"{mode}    |    {cur_txt}    |    {valid}",
+                     status.x + 10, status.y + 6, 16, rl.Color(*COL_TEXT))
+        if dirty_any:
+            tag = "UNSAVED *"
+            rl.draw_text(tag, status.x + status.w - rl.measure_text(tag, 16)
+                         - 12, status.y + 6, 16, rl.Color(*COL_BAD))
 
         rl.end_drawing()
         frames += 1
