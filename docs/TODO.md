@@ -6,16 +6,17 @@
 
 ## Waiting on Erik (human-gated)
 
-- **W6 armory tuning session (weapons-wave finale, added 2026-07-08)** — branch
-  `weapons-w6-armory` (head `39b0077`) is built, gated (626 green, golden
-  `07c3f370…` unchanged) and pushed, but NOT merged: the human-test gate is
-  Erik's grand tuning session. Launch the playground from a `weapons-w6-armory`
-  checkout, cycle the armory with **N** (panel confirms the row), and turn the
-  dials — full walkthrough in `docs/playground_guide.md` §9 (on the branch).
-  Flagged calls: the chain-stun pair (`rof_interval_seconds` vs `status_seconds`
-  on `[weapons.arc_baton]`), the plasma-vs-zombie resist wash (bullet ×0.25 then
-  HEAT ×4 ≈ no-op), and flamethrower feel at the new 10 m / 20 m meter-based
-  ranges. After the blessing: merge W6, then the wave-close ritual.
+- **Armory tuning session — AFTER mission 1 exists (re-scoped 2026-07-21)** —
+  W6 merged with standard values (PR #3, `f482131`); Erik's call: balance is
+  meaningless against an empty playground, so the grand tuning session waits
+  until weapons → units → enemies → a first mission are all in place, then
+  tune against real encounters. Tool: **N** cycles the selected unit's weapon
+  (walkthrough `docs/playground_guide.md` §9). Standing dial list: the
+  chain-stun pair (`rof_interval_seconds` vs `status_seconds` on
+  `[weapons.arc_baton]`), the plasma-vs-zombie resist wash (bullet ×0.25 then
+  HEAT ×4 ≈ no-op), flamethrower feel at the 10 m / 20 m meter-based ranges —
+  plus whatever mission 1 teaches. Quick residual: 30 s look at the W6 jet
+  fans + 3D marines rendered together (never exercised in one window).
 
 ## Animation / character-render track (3D marines shipped 2026-07-21)
 
@@ -80,6 +81,31 @@ All render-only — no sim/determinism surface, auto-skipped in headless trainin
   nicety, low prio.
 
 ## Pending — small (background, queue up next session)
+
+- **Fire & Heat tuning session (Erik, 2026-07-21, after B1 merged) — DEDICATED
+  SESSION.** B1 (black-body overlay + brightest-K fire lights) merged and the
+  look is blessed ("much better"), but needs a tuning pass:
+  - *Render mapping:* fires read too white at the default `k_temp_to_kelvin=2.0`
+    (saturates to white by ~T_game 3000). Dial `k_temp_to_kelvin` DOWN / raise
+    `kelvin_ref` so white is reserved for extremes (config `[render.blackbody]`).
+  - *Sim — EVERYTHING BURNS TOO EASILY (Erik 2026-07-21, headline):* the whole
+    room lit and went white. Primary suspect `k_fire_heat = 1600` (the radiation
+    heat deposit — "ignites too fast"); then `ignition_temp = 300` (raise),
+    `range_per_intensity = 3` (shorten reach), `o2_threshold = 0.01` (raise the
+    ignition O2 gate). Sim-side, NOT render — B1 only reveals it. Verify with a
+    headless probe (ticks-to-full-involvement).
+  - *Fire↔pressure link:* Erik hit a `[recorder] BLOWUP DETECTED` during the B1
+    session. NOTE blowups are PRE-EXISTING (dumps back to 2026-07-12; several
+    on 07-21 from W6 explosion testing) — not B1. But over-ignition plausibly
+    FEEDS it: a fully-involved room = many `fire_pressure_gain = 0.15` plume
+    over-pressures summing → blowup trip. Fixing ignition upstream should ease
+    the pressure symptom; confirm during the session.
+  - *Diagnostics wanted (Erik's preference over more shortcut keys):* make ONE
+    dedicated fire-tuning level and hardcode a per-tile value readout into the
+    launch script — OR a small "all values of the hovered tile as a table"
+    (T in game-units + pseudo-Kelvin, fire intensity, material, ignition_temp /
+    ignited flag). Render-only (reads gmap fields). Deferred on purpose; build it
+    as the session opener, not now.
 
 - **Blast-tuple wart (Arc A rider, A6, 2026-07-19) — direction DECIDED
   2026-07-19 at physics close-out:** `apply_explosion`'s structural wall

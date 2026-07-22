@@ -62,6 +62,7 @@ from level_loader import load as load_level
 from level_lights import (light_source_params, monotonic_total_tick,
                           partition_lights)
 from renderer import GameRenderer
+from renderer.fire_lights import FireLightSelector
 from renderer.game_renderer import RenderConfig
 from simulation import Simulation
 from simulation.unit import Unit
@@ -283,6 +284,8 @@ def main():
           f"V toggles water overlay | P / Shift+P tilts the ship +/-2 deg")
     print(f"  DEBUG: O toggles the door under the cursor (A6 doors v0 — "
           f"dev-only latch)")
+    print(f"  DEBUG: N cycles the selected unit's weapon through the armory "
+          f"(W6 — the tuning key)")
 
     fit_w_zoom = map_px_w / max(level.width, 1)
     initial_zoom = max(20.0, min(64.0, fit_w_zoom))
@@ -329,6 +332,13 @@ def main():
     if level.lights:
         print(f"  Lights: {len(static_lights)} static + "
               f"{len(beacon_lights)} beacon from level.toml")
+
+    # Fire light sources (Fire & Heat Beauty B1): the brightest-K hot tiles
+    # become omni ray-traced lights each frame, colour + intensity from the
+    # renderer's shared black-body ramp. RENDER-ONLY — they never write the
+    # synced heat channel (see renderer/fire_lights.py). Built once from
+    # [render.fire_lights]; queried per frame in the sources block below.
+    fire_light_selector = FireLightSelector.from_config(CFG)
 
     # Entity registry (entity design §3b): apply the dev tuning overlay
     # (hard-errors on schema-in-TOML mistakes, like a bad config.toml), then
@@ -385,6 +395,18 @@ def main():
                         light_source_params(e, total_tick, sim_time_per_tick))
                     for e in beacon_lights
                 ]
+            # Fire lights (B1 §3): brightest-K hot tiles -> omni ray-traced
+            # sources, coloured by the black-body ramp. RENDER-ONLY (heat=0.0).
+            # Same setattr path as level lights; the peak/kept counts feed the
+            # HUD light counter (no silent caps). Gated by the live L toggle.
+            if renderer.show_fire_lights:
+                fire_params, fire_peaks = fire_light_selector.select(
+                    sim.gmap.temperature, renderer.blackbody_ramp)
+            else:
+                fire_params, fire_peaks = [], 0
+            sources += [_build_light_source(p) for p in fire_params]
+            renderer.set_fire_light_stats(len(fire_params), fire_peaks,
+                                          fire_light_selector.max_lights)
             mouse_f = renderer.mouse_to_tile_float()
             if mouse_f is not None:
                 src = bp.LightSource()
@@ -395,6 +417,21 @@ def main():
                 src.angle_spread = 6.283
                 # Flashlight — cool white (profile: flashlight).
                 src.color = (1.0, 1.0, 0.95)
+                src.jitter = 0.0
+                sources.append(src)
+
+            # W6 transient emitters: flame/miasma jets + plasma bolts. The
+            # renderer derives light specs from its own live effect queue
+            # (SprayJetEvent / ProjectileGlowEvent visuals) — render-side
+            # only, one frame behind the sim tick, never written back.
+            for spec in renderer.transient_light_specs():
+                src = bp.LightSource()
+                src.x = float(spec["x"])
+                src.y = float(spec["y"])
+                src.max_range = int(spec["max_range"])
+                src.intensity = float(spec["intensity"])
+                src.angle_spread = 6.283
+                src.color = spec["color"]
                 src.jitter = 0.0
                 sources.append(src)
 

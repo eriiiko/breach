@@ -13,6 +13,7 @@ import numpy as np
 import pyray as rl
 
 from . import core
+from .blackbody import BlackbodyRamp, pack_emissive_rgba
 from .coords import tile_to_world_px
 
 
@@ -315,85 +316,51 @@ def _begin_additive_rgb_only_blend() -> None:
 
 
 class HeatFieldOverlay:
-    """Debug temperature overlay — a black-body / heat ramp over a Q16.16 field.
+    """Emissive temperature overlay — physical black-body glow over a Q16.16 field.
 
-    DEBUG / TUNING ONLY (engine/06 temperature). Render-time view of
-    ``gmap.temperature`` (Q16.16 int32 ΔT above ambient, 0 = ambient/cold); it
-    NEVER mutates the field. The field is converted to a 0..1 display value by
-    ``(temperature / TEMP_SCALE) / temp_display_max`` (so a tile sitting at the
-    wood ignition_temp ~300 reads near the top of the ramp), then mapped through
-    a black-body ramp:
+    Fire & Heat Beauty arc, B1 (design
+    docs/fire_b1_blackbody_fire_lights_design_2026-07-21.md §2). Render-time view
+    of ``gmap.temperature`` (Q16.16 int32 ΔT above ambient, 0 = cold); it NEVER
+    mutates the field. This is the tier-1, ray-free glow: the whole plume glows
+    for a LUT read per tile, no rays.
 
-        0.00  transparent          (cold / ambient — nothing drawn)
-        0.20  deep red             (just-warm)
-        0.45  orange
-        0.70  yellow
-        1.00  white-hot
+    It replaces the old 5-stop hand-tuned ramp AND the ``temp_display_max`` knob
+    with the physical black-body primitive (:class:`renderer.blackbody.
+    BlackbodyRamp`): temperature -> pseudo-Kelvin -> normalized chroma * a
+    separate T⁴ HDR intensity. The HDR emissive (``chroma * intensity``, which
+    runs past 1) is ACES tone-mapped — the SAME curve the lighting shader uses —
+    so a bright warm core reads white-hot instead of clipping to flat orange, and
+    the colour reads the physics by eye (a fire yellows with O2, reddens as it
+    starves).
 
-    Drawn ADDITIVELY (heat glows like the fire overlay): alpha rises with the
-    display value so cold tiles stay invisible and hot tiles read as a glow.
-    The packed alpha only weights the additive RGB contribution — draw() uses
-    RGB-only separate blend factors so destination alpha is never written
-    (see ``_begin_additive_rgb_only_blend``).
+    Drawn ADDITIVELY: the tone-mapped colour is split into a peak-normalized hue
+    (packed RGB) and a brightness weight (packed alpha), so the additive result
+    ``rgb * alpha`` reconstructs the tone-mapped emissive. Alpha carries the
+    intensity/brightness curve, so cold tiles stay invisible and hot tiles glow.
+    draw() uses RGB-only separate blend factors so destination alpha is never
+    written (see ``_begin_additive_rgb_only_blend``).
     """
 
-    # Q16.16 scale of the temperature field (materials.TEMP_SCALE / HEAT_SCALE).
-    TEMP_SCALE = 65536.0
-
-    # Black-body ramp stops: (display_value, (R, G, B)). The alpha is derived
-    # from the display value separately (see update) so 0 is fully transparent.
-    _STOPS = (
-        (0.00, (0, 0, 0)),
-        (0.20, (140, 0, 0)),
-        (0.45, (255, 80, 0)),
-        (0.70, (255, 200, 40)),
-        (1.00, (255, 255, 240)),
-    )
-
-    def __init__(self, grid_h: int, grid_w: int,
-                 temp_display_max: float = 300.0, max_alpha: int = 220):
+    def __init__(self, grid_h: int, grid_w: int, ramp: BlackbodyRamp,
+                 max_alpha: int = 220):
         self.h = grid_h
         self.w = grid_w
-        # temp_display_max is the ΔT (in the field's game units) that maps to the
-        # top of the ramp. ~300 == the wood ignition_temp, so an igniting tile
-        # reads white-hot. A render-only tuning knob; never touches the sim.
-        self.temp_display_max = float(temp_display_max)
+        # The shared black-body primitive (built once in the renderer from
+        # [render.blackbody]). Render-only tuning; never touches the sim.
+        self.ramp = ramp
         self.max_alpha = int(max_alpha)
         self.tex = core.create_dynamic_rgba_texture(grid_w, grid_h)
         self.packed = np.zeros((grid_h, grid_w, 4), dtype=np.uint8)
 
-        # Precompute the 256-entry ramp LUT (display 0..1 -> RGB) by
-        # piecewise-linear interpolation between the stops. Vectorised lookup in
-        # update() keeps the per-frame cost to an index + a couple of multiplies.
-        idx = np.linspace(0.0, 1.0, 256)
-        xs = np.array([s[0] for s in self._STOPS], dtype=np.float32)
-        rs = np.array([s[1][0] for s in self._STOPS], dtype=np.float32)
-        gs = np.array([s[1][1] for s in self._STOPS], dtype=np.float32)
-        bs = np.array([s[1][2] for s in self._STOPS], dtype=np.float32)
-        self._lut_r = np.interp(idx, xs, rs)
-        self._lut_g = np.interp(idx, xs, gs)
-        self._lut_b = np.interp(idx, xs, bs)
-
     def update(self, temperature: np.ndarray) -> None:
         """temperature: (H, W) Q16.16 int32 — ΔT above ambient (0 = cold).
 
-        Convert to a 0..1 display value, map through the black-body ramp, and
+        Map through the black-body ramp, ACES tone-map the HDR emissive, and
         pack to an additive RGBA texture. RENDER-ONLY: `temperature` is read,
-        never written.
+        never written. The packing math lives in renderer.blackbody
+        (pyray-free / headless-testable); here we only upload it.
         """
-        # Q16.16 -> float ΔT, then normalise against the display max. Cast to
-        # float so the divide doesn't truncate; clip to the ramp domain.
-        dt = temperature.astype(np.float32) / self.TEMP_SCALE
-        disp = np.clip(dt / max(self.temp_display_max, 1e-6), 0.0, 1.0)
-        # Index into the 256-entry ramp LUT.
-        li = (disp * 255.0).astype(np.int32)
-        self.packed[..., 0] = self._lut_r[li].astype(np.uint8)
-        self.packed[..., 1] = self._lut_g[li].astype(np.uint8)
-        self.packed[..., 2] = self._lut_b[li].astype(np.uint8)
-        # Alpha grows with the display value so cold tiles stay invisible. The
-        # ramp colour already darkens toward 0, but an explicit alpha keeps the
-        # additive draw from tinting near-cold tiles.
-        self.packed[..., 3] = (disp * self.max_alpha).astype(np.uint8)
+        self.packed = pack_emissive_rgba(self.ramp, temperature, self.max_alpha)
         core.update_rgba_texture(self.tex, self.packed)
 
     def draw(self, dst_x: int, dst_y: int, dst_w: int, dst_h: int) -> None:

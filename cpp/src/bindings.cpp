@@ -348,6 +348,112 @@ PYBIND11_MODULE(breach_physics, m) {
           "S2 isolated: cast one LightSource on the GPU into the pre-zeroed output "
           "fields; `heat` is bit-identical to Raycaster.cast_source_directional.");
 
+    // S8c item 1 (the fire-FPS fix): cast a SEQUENCE of LightSources in ONE
+    // device march. Field-for-field identical to cuda_raycaster_cast above,
+    // except it concatenates build_ray_list over every source (in this
+    // /fp:strict TU) and issues a SINGLE raycaster_cast_directional — one H2D of
+    // the inputs + running heat plane, one march, one D2H — instead of one
+    // round-trip PER source. That collapses the per-tick transfer tax that made
+    // hundreds of burning tiles run at ~3 fps (2026-07-20 B5 feel-test).
+    //
+    // `heat` is BYTE-IDENTICAL to the per-source cuda_raycaster_cast loop: heat
+    // deposits are saturating integer atomic adds of non-negative, per-ray-
+    // independent deltas (heat_atomic_sat_add, cuda_raycaster.cu:41) — order-free
+    // under the monotone INT32_MAX clamp, so batching every source's rays into one
+    // launch yields the identical per-cell min(base + Σdeltas, MAX). No march
+    // arithmetic changes; the (x*7+y*13)%ray_count phase is still set per source
+    // in Python. build_ray_list is a pure function of its source (its per-source
+    // mt19937 is drawn ONLY when jitter>0; cast_fire_heat sets jitter=0), so
+    // concatenation cannot perturb any ray's bits. Design +3-lens critique:
+    // docs/s8c_item1_fire_heat_batch_impl_2026-07-21.md.
+    //
+    // RENDER CHANNELS ARE NOT BYTE-STABLE HERE: light_rgb/dx/dy/smoke_glow use
+    // float atomics whose interleave order differs from the per-source launches.
+    // They are determinism-EXEMPT (render-only) AND cast_fire_heat discards them
+    // (smoke_glow=None, rgb/dir scratch thrown away). ONLY use this entry from a
+    // caller that discards the render channels.
+    m.def("cuda_raycaster_cast_batch",
+          [](const Raycaster& self,
+             const std::vector<LightSource>& sources,
+             py::array_t<float> light_rgb,
+             py::array_t<float> light_dx,
+             py::array_t<float> light_dy,
+             py::array_t<float> gas,
+             py::array_t<float> gas_absorption,
+             py::array_t<float> gas_scatter,
+             py::array_t<float> light_atten,
+             py::object heat,
+             py::object smoke_glow,
+             py::object heat_atten) {
+              auto [lrgb, h, w]  = get_3d(light_rgb);
+              auto [ldx, h2, w2] = get_2d(light_dx);
+              auto [ldy, h3, w3] = get_2d(light_dy);
+              auto gv = gas.unchecked<3>();
+              const float* gas_field = gv.data(0, 0, 0);
+              const int n_gases = static_cast<int>(gv.shape(0));
+              auto ga = gas_absorption.unchecked<2>();
+              const float* gabs = ga.data(0, 0);
+              auto gs = gas_scatter.unchecked<2>();
+              const float* gsca = gs.data(0, 0);
+              auto a = light_atten.unchecked<3>();
+              const float* atten = a.data(0, 0, 0);
+              int32_t* heat_ptr = nullptr;
+              py::array_t<int32_t> heat_arr;
+              if (!heat.is_none()) {
+                  heat_arr = heat.cast<py::array_t<int32_t>>();
+                  auto ha = heat_arr.mutable_unchecked<2>();
+                  heat_ptr = ha.mutable_data(0, 0);
+              }
+              float* glow_ptr = nullptr;
+              py::array_t<float> glow_arr;
+              if (!smoke_glow.is_none()) {
+                  glow_arr = smoke_glow.cast<py::array_t<float>>();
+                  auto gga = glow_arr.mutable_unchecked<3>();
+                  glow_ptr = gga.mutable_data(0, 0, 0);
+              }
+              const float* hatten = nullptr;
+              py::array_t<float> heat_atten_arr;
+              if (!heat_atten.is_none()) {
+                  heat_atten_arr = heat_atten.cast<py::array_t<float>>();
+                  auto haa = heat_atten_arr.unchecked<2>();
+                  hatten = haa.data(0, 0);
+              }
+              // Concatenate every source's rays IN SOURCE ORDER (row-major from
+              // Python). Order is irrelevant to `heat` (order-free atomics) but
+              // keeps the discarded render scratch aligned with the per-source
+              // path. Each build_ray_list call runs in this /fp:strict TU — the
+              // same place the per-source entry builds its one list.
+              std::vector<breach_cuda::RayHD> rays;
+              for (const auto& src : sources) {
+                  std::vector<breach_cuda::RayHD> r = self.build_ray_list(src);
+                  rays.insert(rays.end(), r.begin(), r.end());
+              }
+              // n_rays==0 guard (empty source list, or all sources fully
+              // angular-culled). Python also guards via burning.any(); this is
+              // defense in depth. rays.size() <= INT_MAX for any playable map
+              // (8 rays/tile; int overflows only near a 16384²-all-ablaze map).
+              if (rays.empty()) return;
+              breach_cuda::raycaster_cast_directional(
+                  rays.data(), static_cast<int>(rays.size()),
+                  lrgb, ldx, ldy, heat_ptr, glow_ptr,
+                  gas_field, gabs, gsca, n_gases,
+                  atten, hatten,
+                  self.smoke_absorb_scale, self.light_cull, self.heat_cull,
+                  h, w);
+          },
+          py::arg("raycaster"), py::arg("sources"), py::arg("light_rgb"),
+          py::arg("light_dx"), py::arg("light_dy"),
+          py::arg("gas"), py::arg("gas_absorption"), py::arg("gas_scatter"),
+          py::arg("light_atten"),
+          py::arg("heat") = py::none(),
+          py::arg("smoke_glow") = py::none(),
+          py::arg("heat_atten") = py::none(),
+          "S8c: cast a SEQUENCE of LightSources in ONE device march (the fire-FPS "
+          "fix). `heat` is bit-identical to a per-source cuda_raycaster_cast loop "
+          "(order-free saturating add). Render channels differ in float-atomic "
+          "order from the per-source path and are only valid for callers that "
+          "discard rgb/dir/glow (cast_fire_heat).");
+
     // CUDA-S2 LIVE: the raycaster backend flag (mirrors set_temperature_backend).
     // Unlike the 6 field solvers, the live fire->heat cast is NOT dispatched in
     // PhysicsEngine::step — it runs in Python (PhysicsRunner.cast_fire_heat, the

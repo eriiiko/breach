@@ -185,14 +185,15 @@ def test_occlusion_wall_stops_the_pour_but_takes_the_flame():
 # 3. Falloff pinned — exact Q16.16 deposits, nozzle rule, solid handling
 # ---------------------------------------------------------------------------
 def test_falloff_pinned_exact_deposits_and_nozzle_rule():
-    """Dragon-7 (heat 400, fuel_gas 0.15) fired due east by a marine whose
-    centre is (10, 10): per member tile the deposit is column / max(1,
-    isqrt(dist^2)), quantized ONCE at the FieldEdit combine. Pinned:
+    """Dragon-7 (heat 2400 — the W6 rescale riding the 10 m range;
+    fuel_gas 0.15) fired due east by a marine whose centre is (10, 10):
+    per member tile the deposit is column / max(1, isqrt(dist^2)),
+    quantized ONCE at the FieldEdit combine. Pinned:
 
-        (10, 12)  dist 2 -> heat 400/2 = 200   -> 200 * 65536 = 13107200
-        (10, 13)  dist 3 -> heat 400/3         -> round(8738133.33) = 8738133
-        (10, 14)  dist 4 -> heat 100           -> 6553600
-        (11, 14)  isqrt(17) = 4 -> heat 100    -> 6553600
+        (10, 12)  dist 2 -> heat 2400/2 = 1200 -> 1200 * 65536 = 78643200
+        (10, 13)  dist 3 -> heat 2400/3 = 800  -> 800 * 65536  = 52428800
+        (10, 14)  dist 4 -> heat 600           -> 39321600
+        (11, 14)  isqrt(17) = 4 -> heat 600    -> 39321600
         gas (10, 12): quantize(0.15/2 = 0.075) -> 4915
 
     The shooter's own 3x3 footprint (nozzle rule) takes NOTHING — the
@@ -207,10 +208,10 @@ def test_falloff_pinned_exact_deposits_and_nozzle_rule():
     deposit_spray_cone(gmap, queue, u, weapon, ammo, 18.0, 10.0)
     queue.flush(gmap, rng)
 
-    assert int(gmap.heat[10, 12]) == 13107200
-    assert int(gmap.heat[10, 13]) == 8738133
-    assert int(gmap.heat[10, 14]) == 6553600
-    assert int(gmap.heat[11, 14]) == 6553600
+    assert int(gmap.heat[10, 12]) == 78643200
+    assert int(gmap.heat[10, 13]) == 52428800
+    assert int(gmap.heat[10, 14]) == 39321600
+    assert int(gmap.heat[11, 14]) == 39321600
     assert int(gmap.gas[FUEL_GAS][10, 12]) == gas_fixed.quantize_scalar(0.075)
     # Nozzle rule: the shooter's own footprint tiles take no deposit.
     for (tx, ty) in u.occupied_tiles():
@@ -218,8 +219,8 @@ def test_falloff_pinned_exact_deposits_and_nozzle_rule():
         assert int(gmap.gas[FUEL_GAS][ty, tx]) == 0
     # No RNG, ever (spray edits carry noise = 0).
     assert rng.bit_generator.state == state0
-    # Pin the quantize-once arithmetic itself.
-    assert heat_quantize(400.0 / 3.0) == 8738133
+    # Pin the quantize-once arithmetic itself (2400/3 = 800 exactly).
+    assert heat_quantize(2400.0 / 3.0) == 52428800
 
 
 def test_heat_lands_on_solid_wood_but_gas_does_not():
@@ -231,7 +232,7 @@ def test_heat_lands_on_solid_wood_but_gas_does_not():
     weapon, ammo = _dragon()
     deposit_spray_cone(gmap, queue, u, weapon, ammo, 18.0, 10.0)
     queue.flush(gmap, np.random.default_rng(SEED))
-    assert int(gmap.heat[10, 13]) == 8738133          # flame ON the face
+    assert int(gmap.heat[10, 13]) == 52428800         # flame ON the face
     assert int(gmap.gas[FUEL_GAS][10, 13]) == 0       # solid skip-mask
     assert int(gmap.gas[FUEL_GAS][10, 12]) > 0        # open tile in front
 
@@ -240,22 +241,24 @@ def test_heat_lands_on_solid_wood_but_gas_does_not():
 # 4. Ignition end-to-end (CPU backend): heat -> temperature -> fire
 # ---------------------------------------------------------------------------
 def test_dragon_ignites_wood_within_the_derived_tick_count():
-    """The config derivation of record (ammo.fuel_standard): at dist 2 the
-    wood tile crosses ignition_temp 300 at ~15 ticks, dist 3 at ~27 —
-    both inside one 36-tick burst, i.e. 'clearly ignites wood-class
-    flammables within ~1 s of spraying'. Whole-engine path: FieldEdit heat
-    -> C++ TemperatureSolver convert -> apply_temperature_ignition.
+    """The config derivation of record (ammo.fuel_standard, the W6 2400
+    rescale): at dist 2 the wood tile crosses ignition_temp 300 at ~2
+    ticks (T_inf 4650), dist 3 at ~3 (T_inf 3100), dist 8 — near the old
+    full range — at ~9 (T_inf 1162): the whole near cone catches
+    near-instantly and the reach tracks the new 10 m range. Whole-engine
+    path: FieldEdit heat -> C++ TemperatureSolver convert ->
+    apply_temperature_ignition.
 
-    EOS refactor P4 (design §6, item 3): apply_temperature_ignition's O2 gate
-    now reads the REAL local N_O2 mean instead of the atmosphere/P proxy —
-    at dist 3, the spray's own heat locally expands the air (p* rises ->
-    outward wind), which transiently thins the REAL local O2 a little before
-    donor-cell flux resupplies it, pushing ignition a few ticks later than
-    the old pressure-proxy gate (which never dipped, since P near a hot spot
-    only ever rose). The dist-3 upper bound is widened accordingly (measured
-    at tick 40, stable/deterministic across reruns); dist 2's window is
-    unaffected (unchanged real O2 supply at closer range)."""
-    for dist, tick_lo, tick_hi in ((2, 5, 24), (3, 12, 44)):
+    EOS refactor P4 (merged from main, design §6 item 3): the ignition O2
+    gate now reads the REAL local N_O2 mean instead of the atmosphere/P
+    proxy — the spray's own heat expands the local air (p* rises ->
+    outward wind), transiently thinning REAL O2 before donor-cell flux
+    resupplies it, so ignition can land a few ticks later than the pure
+    temperature crossing (main widened its pre-W6 dist-3 window for the
+    same reason). Upper bounds here carry the same slack over the W6
+    temperature-crossing estimates; measured deterministic across
+    reruns."""
+    for dist, tick_lo, tick_hi in ((2, 0, 16), (3, 1, 24), (8, 3, 44)):
         wood_x = 6 + dist
         sim = Simulation(_level(edits=[(10, wood_x, 2)]), seed=SEED,
                          breach_physics=bp, enable_recorder=False)
@@ -279,14 +282,18 @@ def test_dragon_ignites_wood_within_the_derived_tick_count():
 # 5. Two-terminals: no W4 code touches unit HP; the heat row does the work
 # ---------------------------------------------------------------------------
 def test_spray_code_never_touches_unit_hp_structural_and_runtime():
-    """Structural: the spray machinery takes no generator and no event list
-    — it CANNOT emit packets. Runtime: a full Dragon-7 burst over a victim
+    """Structural: the spray machinery takes no generator — it cannot draw.
+    (W6 amendment of the W4 pin: process_sprays DOES now take an ``events``
+    list, but only to append the RENDER-ONLY SprayJetEvent — the flame-jet
+    visual; the runtime proof below shows a full burst still emits no
+    packet and moves no HP, and deposit_spray_cone itself still takes
+    neither rng nor events.) Runtime: a full Dragon-7 burst over a victim
     with NO physics attached (the exchange rows never run) leaves every HP
     bit-identical, even though the cone deposited heat all over the
     victim's tiles."""
     assert "rng" not in inspect.signature(process_sprays).parameters
-    assert "events" not in inspect.signature(process_sprays).parameters
     assert "rng" not in inspect.signature(deposit_spray_cone).parameters
+    assert "events" not in inspect.signature(deposit_spray_cone).parameters
 
     sim = Simulation(_level(), seed=SEED, breach_physics=None,
                      enable_recorder=False)
@@ -297,13 +304,22 @@ def test_spray_code_never_touches_unit_hp_structural_and_runtime():
     hp_s, hp_v = s.current_hp, victim.current_hp
     assert sim.apply_action(sid, Order(
         ORDER_FIRE, target_fx=12, target_fy=10, phase=0))
-    _step(sim, 40)                                    # a full burst and more
+    seen_kinds = set()
+    for _ in range(40):                               # a full burst and more
+        _step(sim)
+        for e in sim.tick_events:
+            seen_kinds.add(type(e).__name__)
     # Deposits DID land on the victim's tiles (no physics -> no heat clear).
     assert any(int(sim.gmap.heat[ty, tx]) > 0
                for (tx, ty) in victim.occupied_tiles())
     # ... and nobody's HP moved: the spray wrote fields, nothing else.
     assert s.current_hp == hp_s
     assert victim.current_hp == hp_v
+    # The only event a burst emits is the render-only jet — no UnitHit,
+    # no UnitKilled (the two-terminals invariant, W6 form).
+    assert "SprayJetEvent" in seen_kinds
+    assert "UnitHitEvent" not in seen_kinds
+    assert "UnitKilledEvent" not in seen_kinds
 
 
 def test_marine_in_flames_loses_hp_via_the_existing_heat_row():

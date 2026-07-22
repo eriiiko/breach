@@ -161,7 +161,7 @@ Data model (config.toml; loaded into id-indexed tables mirroring
 | `archetype` | one of the six (§1) |
 | `ammo_family` | what it feeds on (`"none"` for melee) |
 | `spread_deg`, `spread_snap_deg` | the §3 cones |
-| `range_tiles` | hard cap (energy/drag; the march length) |
+| `range_m` | hard cap (energy/drag) in **physical meters** — the W6 convention (below); `range_tiles`, the march length, is DERIVED from it once at level load |
 | `shots_per_trigger` | burst/pellet count per fire action |
 | `rof_interval_seconds` | cadence gate between triggers |
 | `mag_size`, `reload_seconds` | ammo economy (0 = not tracked, until W3 wires it) |
@@ -169,18 +169,49 @@ Data model (config.toml; loaded into id-indexed tables mirroring
 | `crit_chance`, `crit_mult` | the §3 crit base |
 | `mass_kg` | handling/encumbrance (future), melee impulse (now) |
 | `loudness` | **reserved, no consumer yet** — emitted sound level 0..1 for the stealth layer (sound-hunting zombies, suppressed weapons). Data lands now so the armory is authored once. |
+| `default_ammo` | (W6) the **static round-selection seam**: `""` = the W2 first-family-match; a row name = this weapon's standard round. Lets two weapons share a family honestly (the P12 and MP-11 both eat 9mm but load different rounds; the Lance-5 draws the heavy cell while the Lance-3 keeps the standard). Per-unit selection (loadout UI) stays §7. |
+
+**Meter-based ranges (W6, Erik's decision 2026-07-07 — the conversion
+convention of record).** Reach is authored as `range_m`, physical meters, so
+a weapon covers the same distance whatever the grid resolution. At table
+build (Simulation construction) each row derives its integer march length
+from the loaded level's tile size:
+
+    range_tiles = max(1, int(range_m / tile_size_m + 0.5))     # round-half-up
+
+quantized ONCE (engine/14 door 2; the divide is one correctly-rounded IEEE
+op, door 3) — every consumer (march length, fire-order range gate, spray
+cone) keeps reading the integer `range_tiles`. The pinned test worlds are
+1.0 m/tile, where meters and tiles coincide: every pre-W6 tile count became
+the same number in meters, so effective ranges there are bit-identical and
+the golden never moved. The playground (0.333 m/tile) derives 3× the tiles
+for the same physical reach. Direct `WeaponDef(range_tiles=...)`
+construction (the dict-table test path) remains valid; authoring both
+columns on one config row is a loud load error. The ONE deliberate behavior
+change: the Dragon-7's range became **10 m** (§6 — the W4 value was
+authored pre-meters as 8 tiles and read as a 2.7 m sputter in the
+playground: the W4 feel-check's "invisible flamethrower", now in numbers).
 
 **`[ammo.<name>]`** — the round. `family` (must match the weapon's),
 `damage`, `dtype` (mechanics/06 type), `ap` (armor pierce),
-`speed_tiles_per_tick`, and optionally `payload` (a payload row ref, for
-explosive/gas rounds). Swappable ammo is the point: AP rifle rounds, incendiary
-shells, and late-game exotics are new rows here — the progression hook.
+`speed_tiles_per_tick`, optionally `payload` (a payload row ref, for
+explosive/gas rounds), and `glow` (W6, **render-only**: a nonempty profile —
+`"plasma"` — makes the in-flight march emit one `ProjectileGlowEvent` per
+tick; the renderer draws the glowing bolt + a transient light and the sim
+never reads the column back). Swappable ammo is the point: AP rifle rounds,
+incendiary shells, and late-game exotics are new rows here — the
+progression hook.
 
 **`[payloads.<name>]`** — what happens at the destination (executed via
 FieldEdit / the physics entry points): `radius`, `pressure` (wave source),
 `wall_damage`, `unit_damage` (BLAST packets with falloff),
 `gas_species` + `gas_amount` + `gas_radius` (emission into the engine/05 gas
-slices), `ignite_radius` + `ignite_intensity`, and the smoke boolean SPLIT
+slices), `ignite_radius` + `ignite_intensity`, `heat_amount` + `heat_radius`
+(W6 — a one-shot DISC heat deposit into the engine/06 `heat` ingress buffer
+with linear falloff, `payloads.deposit_heat`: the plasma splash; converts
+to temperature the SAME tick, so ignition and the heat|max unit-damage row
+both come free — the SPRAY two-terminals discipline applied to a
+detonation), and the smoke boolean SPLIT
 (the W1 finding): `clear_smoke` (data-of-record — the inner-radius clear
 lives inside `apply_explosion` in v1) + `emit_blast_smoke` (live — gates the
 textured cloud). **Hand-grenade ammo rows and 40 mm launcher rounds point at
@@ -213,6 +244,29 @@ byte-for-byte (replica-proven).
   it. Shotguns are `shots_per_trigger = 8` pellets on one trigger — **damage
   falloff emerges from pellet spread geometry**, no falloff table. Plasma
   bolts carry a small heat payload (splash + ignition) and a glow profile.
+  - **Direct-hit rule (W6, of record):** a marching round applies its
+    direct-hit packet iff its ammo row authors `damage > 0` — the payload
+    presence no longer decides. Every kinetic small-arm (damage > 0, no
+    payload) and the 40 mm (damage 0 + payload — the W3 "the blast does
+    the work" rule) are bit-identical to before; a PLASMA bolt authors
+    BOTH: it hits the unit it stops on for its HEAT packet (40/70 — the
+    zombie ×4 HEAT vulnerability applies at mitigation, and the bullet
+    site rule's `bullet_damage_multiplier` truncation applies before it,
+    since plasma rides the bullet march) AND detonates its splash at the
+    same stop tile through the executor (event kind `"shell"`).
+  - **Plasma splash (W6, of record):** `plasma_splash_small/large` =
+    modest `wall_damage` (25/45 — a SCORCH: wood walls carry hp 60, and a
+    bolt must not destroy the partition it wants to ignite), a small
+    pressure pop, an ignite ring, and the `heat_amount` one-shot disc
+    (3200/5600 — centre temperature jump `heat/thermal_mass` = 400/700 on
+    wood's mass 8, comfortably over its 300 threshold after the same-tick
+    ×31/32 cool). `unit_damage` stays 0: the DIRECT HIT carries the unit
+    damage; bystanders cook via the heat|max row reading the splash.
+  - **The glow (W6):** `glow = "plasma"` on the ammo row → one render-only
+    `ProjectileGlowEvent` per advanced tick (position ping); the renderer
+    draws the ember + a transient light. At 1.5/1.25 t/t a bolt is
+    genuinely watchable — the first in-game user of the W2 in-flight
+    persistence machinery (`Simulation.bullets`).
 - **LOBBED / PLACED.** The shipped grenade and door charge, re-homed onto
   weapon+ammo+payload rows. C4 = PLACED with a demolition payload (radius ~8,
   wall damage ~800 — "bigger bombs") and a trigger mode (timer or the shipped
@@ -260,6 +314,15 @@ byte-for-byte (replica-proven).
   - **Determinism:** the spray draws NO randomness anywhere — cone, aim,
     and falloff are kit/integer arithmetic, so a spray-free trajectory is
     bit-identical to pre-W4 (the dormancy replica gate).
+  - **The jet visual (W6, of record):** every DEPOSITING tick also appends
+    one render-only `SprayJetEvent` (apex / captured target / range /
+    half-angle / kind) to the sim's tick events — the LaserFiredEvent
+    precedent: emission is a pure function of already-synced state, the
+    determinism digest hashes only UnitHit/UnitKilled, and the renderer
+    draws a translucent cone fan + a transient warm light (`"flame"`) or
+    a fainter sickly-green variant (`"miasma"`); it never writes back. An
+    interrupted / finished burst emits nothing, so the hose vanishes with
+    the flames. This closes the W4 finding "no spray visual yet".
 - **MELEE** *(built by W5 — this bullet is the implementation of record).*
   Adjacency + the §3 resolver (`combat.py`: `melee_adjacent` /
   `melee_strike`, the melee branch of the `process_shooting` dispatch).
@@ -325,8 +388,9 @@ with zero-field-movement proofs exactly like P3/P4.
 | Lance-5 "Longlight" | heavy laser | HITSCAN | cell_laser | 0.05° | 1 @ 1.0 s | 55 ENERGY (skewer) | ∞ | 0.1 |
 | Sunspot | plasma caster | PROJECTILE | cell_plasma | 1.5° | 1 @ 0.9 s | 40 HEAT + splash | 1.5 | 0.5 |
 | Helios | heavy plasma | PROJECTILE | cell_plasma | 2° | 1 @ 1.4 s | 70 HEAT + splash | 1.25 | 0.6 |
-| Dragon-7 | flamethrower | SPRAY | fuel_tank | 30° cone, range 8 | 1.5 s burst | heat writes | — | 0.6 |
-| Miasma Vent | poison projector | SPRAY | toxin_tank | 25° cone, range 7 | 1.5 s burst | poison gas | — | 0.4 |
+| Dragon-7 | flamethrower | SPRAY | fuel_tank | 30° cone, range **10 m** (the W6 rescale) | 1.5 s burst | heat writes (2400/tick) | — | 0.6 |
+| Dragon-9 heavy | heavy flamethrower | SPRAY | fuel_tank | 30° cone, range **20 m** | 2.0 s burst | heat writes (4800/tick) | — | 0.7 |
+| Miasma Vent | poison projector | SPRAY | toxin_tank | 25° cone, range 7 m | 1.5 s burst | poison gas | — | 0.4 |
 | Hand grenade | thrown | LOBBED | hand_grenade | — | fuse 0–10 s | payload | 1.25 | payload |
 | GL-6 Revolver | grenade launcher | PROJECTILE | 40mm | 3° | 1 @ 1.2 s | payload | 1.25 | 0.9 |
 | Breach charge | demolition | PLACED | demo_charge | — | det slot | `breach_focus` | — | 1.0 |
@@ -334,13 +398,24 @@ with zero-field-movement proofs exactly like P3/P4.
 | Combat knife | melee | MELEE | none | — | 1 @ 0.6 s | 35 KIN, crit 15 % | — | 0.05 |
 | Arc baton | melee | MELEE | none | — | 1 @ 0.8 s | 10 ENERGY + STUNNED 1.5 s | — | 0.2 |
 
+*(All row ranges are authored `range_m` since W6 — §4 conversion convention.
+The full set is data in config.toml: every row above is loaded, validated,
+and reachable in-game through the playground weapon-cycle key.)*
+
 Payload rows: `frag_standard` (the shipped grenade: radius 5, pressure 10,
 wall 200, unit 60), `breach_focus` (the shipped charge: 3/5.0/500/60),
 `demolition_c4` (8/25.0/800/150), `smoke_screen` (white_smoke), `tear_burst`
-(teargas), `poison_cloud` (poison), `incendiary_splash` (ignite ring). The
-40 mm ammo rows (`40mm_frag/_smoke/_tear/_poison`) reference these same rows.
-Ammo-family sharing is deliberate where realistic: the P12 and MP-11 both eat
-9mm.
+(teargas), `poison_cloud` (poison), `incendiary_splash` (ignite ring),
+`plasma_splash_small/large` (W6 — §5 PROJECTILE notes: scorch wall damage +
+one-shot heat disc + ignite ring, unit_damage 0). The 40 mm ammo rows
+(`40mm_frag/_smoke/_tear/_poison/_incendiary`) reference these same rows —
+`grenade_incendiary` and `40mm_incendiary` share `incendiary_splash`
+(row-object identity, the W3 gate pattern, re-pinned at W6). Ammo-family
+sharing is deliberate where realistic: the P12 and MP-11 both eat 9mm — and
+load different rounds through `default_ammo` (`9mm_subsonic` 12 KIN vs
+`9mm_fmj` 7 KIN), as do the two Lances (`cell_laser_standard` 25 /
+`cell_laser_heavy` 55), the two plasma casters, and the two Dragons
+(`fuel_standard` 2400 / `fuel_heavy` 4800).
 
 Gas grenade *effects* ride the coupling table (mechanics/05), not the payload:
 `teargas` density → `BLINDED` (the `can_aim` consumer, shipped W3 — teargas
@@ -388,8 +463,8 @@ KINETIC packets through the mechanics/06 pipeline.
 | **W2** | unified march (speed as data, in-flight persistence); spread aim/snap; §3 exposure/cover (+`cover_exposure` materials column) + crit/facing resolver; **Lance-3 laser** (skewer, wall-chew, integer gas attenuation, beam event) | ✅ **SHIPPED** `bbfb26a` (2026-07-05): 559 green (+55 W2 tests), golden `07c3f370…` **UNCHANGED** — the canonical scenario fires no weapon and every W2 roll is lazy, so stream and fields never move (findings below). Beam **glow-as-light deferred** to the explosion-light pass (`LaserFiredEvent` ships; the raycaster hookup lands with transient light sources) |
 | **W3** | payload executor generalizing the explosion triple; gas payloads (smoke/tear/poison) + coupling rows (teargas→aim status, poison→DoT); GL-6 + 40 mm ammo; C4; ammo economy (mags/reload) | ✅ **SHIPPED** (2026-07-05): 587 green (+28 W3 tests), golden `07c3f370…` **UNCHANGED** — W3 adds **no RNG consumers anywhere** (the gas deposit is deliberately noise-free, the coupling rows are threshold-deterministic and take no generator, launcher/C4 reuse existing draw sites) and every new path is dormant in the canonical scenario. Byte-identity replica gates: frag+breach detonations AND a full scripted shipped-weapons round vs the verbatim pre-W3 site body (fields + events + RNG end-state). Findings below |
 | **W4** | SPRAY: Dragon-7 + Miasma Vent (aimed sustained FieldEdit cones) | ✅ **SHIPPED** (merged `5594650`, 2026-07-07): 588 green (+15 W4 tests), golden `07c3f370…` **UNCHANGED** (W4 draws zero RNG by construction — kit/integer cone, deterministic falloff). Findings below |
-| **W5** | MELEE: knife + arc baton through the resolver; STUNNED wiring | ✅ **BUILT on branch `weapons-w5-melee`** (2026-07-07): 606 green (+17 W5 tests), golden `07c3f370…` **UNCHANGED** (the fifth patch running: melee is a dead branch in a melee-free scenario and a crit-0 melee weapon draws nothing even while swinging). Findings below |
-| **W6** | armory playground room + weapon-cycle debug key + full standard-values audit | **HUMAN-TEST** — Erik's tuning session |
+| **W5** | MELEE: knife + arc baton through the resolver; STUNNED wiring | ✅ **SHIPPED** (merged `8f493a8`, 2026-07-07): 606 green (+17 W5 tests), golden `07c3f370…` **UNCHANGED** (the fifth patch running: melee is a dead branch in a melee-free scenario and a crit-0 melee weapon draws nothing even while swinging). Findings below |
+| **W6** | METER-BASED ranges + the full armory as data + plasma detonate-at-stop + the spray-jet/plasma-glow visuals + the weapon-cycle debug key + standard-values audit | ⏳ **BUILT on branch `weapons-w6-armory`** (2026-07-08), **awaiting Erik's grand tuning session**: 626 green (+20 W6 tests, incl. the canonical-golden + untouched-RNG replica), golden `07c3f370…` **UNCHANGED** (the sixth patch running: meter conversion is identity at the pinned worlds' 1.0 m/tile, every new row is dormant until equipped, the new events are render-only). Findings below |
 
 **W1 findings of record** (carry into later patches):
 
@@ -552,8 +627,56 @@ KINETIC packets through the mechanics/06 pipeline.
   feature or a tuning problem is Erik's W6 call (`status_seconds` vs
   `rof_interval_seconds` is the dial).
 
-**Not built / explicitly owed:** everything in §7; heat-damage tuning vs the
-armory numbers; the exposure/crit numbers are standard values pending Erik's
-playground pass; beam glow-as-light (the explosion-light pass); a spray-jet
-visual cue (see the W4 findings); ammo SELECTION UI (W6 — W3 wired
-mags/reload; per-unit round choice pends the loadout pass).
+**W6 findings of record** (carry into the wave close + Erik's session):
+
+- **The golden did not move at W6 either** — the sixth patch running, and
+  the widest surface yet: the meter→tile conversion is the identity map on
+  the pinned 1.0 m/tile worlds (every derived `range_tiles` equals the old
+  authored int, bit-for-bit); every new armory row is DORMANT until a unit
+  equips it; the new events are render-only and outside the digest surface
+  (verified, not assumed — the harness hashes UnitHit/UnitKilled only);
+  and the W6 gate pins BOTH the canonical 30-tick aggregate digest AND the
+  untouched fresh-seed RNG end-state (the scenario draws zero randomness).
+- **The conversion convention** (§4): `max(1, int(range_m / tile_size_m +
+  0.5))`, derived once at `Simulation` construction (`rebuild_tables(
+  tile_size_m=gmap.tile_size_m)`); a bare `get_tables()` binds 1.0 m/tile —
+  the test-world convention. Round-half-up, floor at 1 tile.
+- **The direct-hit rule generalized** (§5): packet iff `ammo.damage > 0`
+  (was: iff no payload). Bit-identical for every pre-W6 row; it is what
+  lets plasma hit AND splash. Riding along: the zombie
+  `bullet_damage_multiplier` site rule applies to plasma's HEAT hit (it is
+  the bullet march), then the ×4 HEAT resist re-inflates it at mitigation
+  — 40 → 10 → 40: a wash on zombies by coincidence of the standard values;
+  Erik's call whether that composition stays.
+- **`default_ammo` landed as the static round-selection seam** — the §6
+  armory demanded per-weapon rounds inside shared families (P12/MP-11,
+  the Lances, the plasmas, the Dragons); first-family-match stays the
+  fallback and every pre-W6 weapon resolves exactly as before. Per-UNIT
+  selection is still the §7 loadout item.
+- **The W4 structural pin evolved**: `process_sprays` now takes `events`
+  (the SprayJetEvent emission) — the no-unit-damage invariant is held by
+  the runtime proof (a full burst emits ONLY jet events, no packet, no HP
+  movement) plus `deposit_spray_cone` staying rng/events-free.
+- **Plasma splash wall damage must stay under the wood wall's 60 hp**
+  (25/45 authored): the first cut (60) DESTROYED the wood face on impact —
+  the bolt blew away the wall it was supposed to ignite. Found by the
+  ignition e2e gate; the dial comment carries the warning.
+- **The Dragon-9's cone pass is the priciest trigger in the game** (O(r²)
+  Python membership + per-tile Bresenham at 60 playground tiles per deposit
+  tick); playable, and the vectorized cone is the optimization seam if
+  continuous hosing drags.
+- **The weapon-cycle key cycles TRIGGERABLE rows only**
+  (`FIRE_ORDER_ARCHETYPES` = projectile/hitscan/spray/melee): LOBBED and
+  PLACED have no trigger path (their order modes are G and B), and a
+  breach-charge round has no march speed — cycling onto it would arm a
+  weapon that cannot fire (and the demo round would crash the march).
+  Deviation from the letter of "all [weapons.*] rows", by construction.
+
+**Not built / explicitly owed:** everything in §7; the exposure/crit numbers
+are standard values pending Erik's playground pass (his W6 tuning session is
+the scheduled venue — chain-stun cadence vs stun duration explicitly his
+call, numbers untouched at W6); beam glow-as-light for the LANCE lines (the
+explosion-light pass — the spray-jet and plasma-bolt transient lights landed
+at W6, the beam's own raycaster hookup still pends); per-unit ammo SELECTION
+UI (W3 wired mags/reload, W6 wired per-weapon default rounds; round choice
+mid-mission pends the loadout pass).

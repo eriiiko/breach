@@ -27,6 +27,7 @@ from config import CFG
 from simulation.status import composed_flags
 
 from . import core
+from .blackbody import BlackbodyRamp
 from .camera import Camera2D
 from .lighting import LightingPass
 from .overlays import (
@@ -163,15 +164,16 @@ class GameRenderer:
         # smoke_glow output. Supersedes the retired light_modulation surface-tint.
         self.glow_overlay = GlowOverlay(cfg.grid_h, cfg.grid_w)
         self.pressure_overlay = PressureOverlay(cfg.grid_h, cfg.grid_w)
-        # Debug temperature overlay (engine/06): black-body ramp over
-        # gmap.temperature. temp_display_max = the ΔT that maps to white-hot;
-        # default ~300 == the wood ignition_temp so an igniting tile reads at
-        # the top of the ramp. Tunable via [display] temp_display_max. Off by
-        # default; toggled with T. RENDER-ONLY — never mutates the field.
-        temp_display_max = float(
-            getattr(getattr(CFG, "display", None), "temp_display_max", 300.0))
+        # Emissive temperature overlay (Fire & Heat Beauty B1): the physical
+        # black-body glow over gmap.temperature (engine/06). Built from the
+        # shared black-body primitive ([render.blackbody]) — temperature ->
+        # pseudo-Kelvin -> chroma * T⁴ intensity, ACES tone-mapped. This
+        # supersedes the old 5-stop ramp + temp_display_max knob. RENDER-ONLY —
+        # never mutates the field. Toggled with T (default from
+        # [render] blackbody_overlay_on).
+        self.blackbody_ramp = BlackbodyRamp.from_config(CFG)
         self.temperature_overlay = HeatFieldOverlay(
-            cfg.grid_h, cfg.grid_w, temp_display_max=temp_display_max)
+            cfg.grid_h, cfg.grid_w, self.blackbody_ramp)
         # Water overlay v2 (water W6b; canon engine/07 §6 placeholder): depth-
         # blue tint + ripple shading + foam + ambient sines over the sim's
         # water fields. All four knobs bind from [display] with getattr
@@ -212,17 +214,34 @@ class GameRenderer:
         # Toggles
         self.show_grid = False
         self.show_smoke = True
-        self.show_fire = True
+        # Fire & Heat Beauty B1 (human-test A/B): the flat-orange FireOverlay is
+        # demoted to default-OFF so the physical black-body overlay (T) is the
+        # blessed look Erik compares against. Toggle F3 on live to A/B. Default
+        # from [render] fire_overlay_on so the shipped default can be set from
+        # config after the feel-check without a code change.
+        self.show_fire = bool(getattr(
+            getattr(CFG, "render", None), "fire_overlay_on", False))
         self.show_lighting = True
         self.show_normal_map = True
         self.normal_y_flipped = False
         self.srgb_decode = True
         self.show_debug_coords = False
-        # Pressure colormap defaults ON in the main game — explosions
-        # look dramatic by default. Toggle with F7.
-        self.show_pressure = True
-        # Debug temperature overlay (engine/06) — OFF by default; toggle with T.
-        self.show_temperature = False
+        # Pressure colormap — default from [render] pressure_overlay_on (Fire &
+        # Heat Beauty B1, Erik 2026-07-21: OFF by default so it doesn't wash out
+        # the fire/heat view; still one keypress away). Toggle with F7.
+        self.show_pressure = bool(getattr(
+            getattr(CFG, "render", None), "pressure_overlay_on", False))
+        # Emissive black-body temperature overlay (Fire & Heat Beauty B1) —
+        # default ON via [render] blackbody_overlay_on so the blessed look ships
+        # as the default; toggle with T. RENDER-ONLY.
+        self.show_temperature = bool(getattr(
+            getattr(CFG, "render", None), "blackbody_overlay_on", True))
+        # Fire light sources (B1 §3) — live A/B gate for the ray-traced fire
+        # glow, seeded from [render.fire_lights] enabled; toggle with L. main.py
+        # skips the fire-light cast when this is off. RENDER-ONLY.
+        self.show_fire_lights = bool(getattr(
+            getattr(getattr(CFG, "render", None), "fire_lights", None),
+            "enabled", True))
         # Water OPTICS pass (graphics/water_rendering.md) — ON by default; the
         # GLSL pass is dormant-safe (alpha 0 on dry tiles), so a dry ship looks
         # identical whether it's on or off. Toggle with O to disable the water
@@ -232,6 +251,12 @@ class GameRenderer:
         # Frame timing
         self.last_frame_ms = 0.0
         self.last_raycast_ms = 0.0
+        # Fire-light HUD counter (Fire & Heat Beauty B1): kept count, NMS peak
+        # count, and the cap — so a tuning session SEES when the brightest-K cap
+        # truncates (no silent caps). Set each frame from main.py's sources block.
+        self.fire_light_count = 0
+        self.fire_light_peaks = 0
+        self.fire_light_cap = 0
         # Render-animation epoch: the water overlay's ambient sines take a
         # seconds clock; epoch-relative keeps the float32 sine phases small.
         # Wall-clock (animates through pause) — render-only, determinism-
@@ -760,6 +785,111 @@ class GameRenderer:
                 cy = tile_to_world_px(pos[1] + 0.5, wpt)
                 col = rl.Color(255, 60, 60, int(220 * alpha_norm))
                 rl.draw_circle(int(cx), int(cy), 4.0, col)
+            elif kind == "jet":
+                # W6 spray jet (SprayJetEvent): a translucent cone fan from
+                # the sprayer toward the burst target — re-emitted every
+                # deposit tick, so it reads as a continuous hose while the
+                # burst lives and dies ~0.13 s after it ends. Flame = warm
+                # two-layer fan; miasma = a single fainter sickly-green fan.
+                # Render-side flicker only (time-based) — the sim is done.
+                import math as _m
+                ax = tile_to_world_px(fx["apex"][0], wpt)
+                ay = tile_to_world_px(fx["apex"][1], wpt)
+                dx = fx["target"][0] - fx["apex"][0]
+                dy = fx["target"][1] - fx["apex"][1]
+                d = _m.hypot(dx, dy)
+                if d > 1e-6:
+                    ang = _m.atan2(dy, dx)
+                    half = _m.radians(fx["half_deg"])
+                    length = fx["range"] * wpt
+                    flicker = 0.85 + 0.15 * _m.sin(
+                        37.0 * (time.perf_counter() - self._anim_t0)
+                        + 0.7 * ax)
+                    def _fan(frac_len, frac_half, color):
+                        L = length * frac_len * flicker
+                        h = half * frac_half
+                        p0 = rl.Vector2(ax, ay)
+                        p1 = rl.Vector2(ax + L * _m.cos(ang - h),
+                                        ay + L * _m.sin(ang - h))
+                        p2 = rl.Vector2(ax + L * _m.cos(ang + h),
+                                        ay + L * _m.sin(ang + h))
+                        # Raylib winding: draw both orders so the fan can't
+                        # vanish on a back-facing vertex order.
+                        rl.draw_triangle(p0, p1, p2, color)
+                        rl.draw_triangle(p0, p2, p1, color)
+                    if fx["flavor"] == "flame":
+                        _fan(1.0, 1.0, rl.Color(255, 110, 30,
+                                                int(60 * alpha_norm)))
+                        _fan(0.72, 0.62, rl.Color(255, 190, 70,
+                                                  int(80 * alpha_norm)))
+                        _fan(0.38, 0.35, rl.Color(255, 240, 170,
+                                                  int(110 * alpha_norm)))
+                    else:   # "miasma" — fainter, sickly, no hot core
+                        _fan(1.0, 1.0, rl.Color(120, 190, 70,
+                                                int(38 * alpha_norm)))
+                        _fan(0.6, 0.6, rl.Color(160, 210, 90,
+                                                int(50 * alpha_norm)))
+            elif kind == "glow":
+                # W6 plasma bolt (ProjectileGlowEvent): a glowing orb at the
+                # bolt's last reported position — re-emitted per tick, so a
+                # slow bolt reads as a flying ember with a short trail.
+                pos = fx["pos"]
+                cx = tile_to_world_px(pos[0], wpt)
+                cy = tile_to_world_px(pos[1], wpt)
+                halo = rl.Color(255, 140, 50, int(90 * alpha_norm))
+                core = rl.Color(255, 235, 190, int(230 * alpha_norm))
+                rl.draw_circle(int(cx), int(cy), max(3.0, 0.55 * wpt), halo)
+                rl.draw_circle(int(cx), int(cy), max(1.5, 0.22 * wpt), core)
+
+    def transient_light_specs(self) -> list:
+        """Light sources implied by the LIVE jet/glow effects (W6) — the
+        'transient light emitter' half of the spray/plasma visuals.
+
+        Returns plain dicts (x, y, max_range, intensity, color) in TILE
+        coordinates; main.py converts them to ``bp.LightSource`` and appends
+        them to the frame's source list (the renderer stays free of the
+        physics module, and the sim is never touched — lights are a pure
+        function of the renderer's own effect queue). A flame jet lights
+        from ~1/3 down the cone axis in warm orange; a miasma jet barely
+        glows (faint sickly green); a plasma bolt carries a small warm
+        light with it. Intensities fade with the effect's remaining life.
+        """
+        import math as _m
+        specs = []
+        for fx in self._effects:
+            alpha = max(0.0, 1.0 - fx["t"] / max(fx["life"], 1e-6))
+            if fx["kind"] == "jet":
+                dx = fx["target"][0] - fx["apex"][0]
+                dy = fx["target"][1] - fx["apex"][1]
+                d = _m.hypot(dx, dy)
+                if d <= 1e-6:
+                    continue
+                ux, uy = dx / d, dy / d
+                reach = float(fx["range"])
+                lx = fx["apex"][0] + ux * reach * 0.35
+                ly = fx["apex"][1] + uy * reach * 0.35
+                if fx["flavor"] == "flame":
+                    specs.append({
+                        "x": lx, "y": ly,
+                        "max_range": int(min(20, reach + 6)),
+                        "intensity": 1.8 * alpha,
+                        "color": (1.0, 0.55, 0.22),
+                    })
+                else:   # miasma
+                    specs.append({
+                        "x": lx, "y": ly,
+                        "max_range": 8,
+                        "intensity": 0.35 * alpha,
+                        "color": (0.45, 0.8, 0.35),
+                    })
+            elif fx["kind"] == "glow":
+                specs.append({
+                    "x": float(fx["pos"][0]), "y": float(fx["pos"][1]),
+                    "max_range": 10,
+                    "intensity": 1.2 * alpha,
+                    "color": (1.0, 0.65, 0.35),
+                })
+        return specs
 
     def consume_events(self, events: Sequence) -> None:
         """Read simulation tick events, spawn matching visual effects.
@@ -777,6 +907,7 @@ class GameRenderer:
         # Lazy import — keeps renderer importable without the simulation pkg.
         from simulation.events import (
             ShotFiredEvent, LaserFiredEvent, ExplosionEvent, UnitHitEvent,
+            SprayJetEvent, ProjectileGlowEvent,
         )
         for ev in events:
             if isinstance(ev, ShotFiredEvent):
@@ -794,6 +925,28 @@ class GameRenderer:
                     "to": ev.to_tile,
                     "t": 0.0,
                     "life": 0.22,    # a touch longer than a tracer
+                })
+            elif isinstance(ev, SprayJetEvent):
+                # W6 flame-jet / miasma-jet: short-lived on purpose — the
+                # sim re-emits every deposit tick (24 Hz), so the fan reads
+                # continuous during a burst and vanishes right after it.
+                self._effects.append({
+                    "kind": "jet",
+                    "apex": ev.from_tile,
+                    "target": ev.to_tile,
+                    "range": ev.range_tiles,
+                    "half_deg": ev.cone_half_angle_degrees,
+                    "flavor": ev.kind,
+                    "t": 0.0,
+                    "life": 0.13,
+                })
+            elif isinstance(ev, ProjectileGlowEvent):
+                self._effects.append({
+                    "kind": "glow",
+                    "pos": ev.pos,
+                    "flavor": ev.kind,
+                    "t": 0.0,
+                    "life": 0.12,
                 })
             elif isinstance(ev, ExplosionEvent):
                 self._effects.append({
@@ -912,6 +1065,13 @@ class GameRenderer:
                 draw_text(f"Selected: {selected_unit.name}", x, y, 14,
                           color=(120, 220, 255, 255))
                 y += 18
+                # W6: the equipped weapon row — the weapon-cycle key's (N)
+                # on-screen feedback during Erik's tuning session.
+                weapon_id = getattr(selected_unit, "weapon_id", "")
+                if weapon_id:
+                    draw_text(f"Weapon: {weapon_id}  (N cycles)", x, y, 13,
+                              color=(255, 200, 120, 255))
+                    y += 16
                 from simulation.stats import effective_vitality
                 draw_text(f"HP: {int(selected_unit.current_hp)}/{int(effective_vitality(selected_unit))}",
                           x, y, 13)
@@ -939,6 +1099,13 @@ class GameRenderer:
         draw_text(f"Raycast: {self.last_raycast_ms:.1f} ms", x, y, 14)
         y += 18
         draw_text(f"Frame:   {self.last_frame_ms:.1f} ms", x, y, 14)
+        y += 18
+        # Fire-light counter (B1 §3): kept / NMS-peaks, flag when the cap bites.
+        capped = self.fire_light_count < self.fire_light_peaks
+        fl_color = (255, 200, 120, 255) if capped else (180, 200, 180, 255)
+        fl_txt = (f"Fire lights: {self.fire_light_count}/{self.fire_light_peaks}"
+                  f"  cap {self.fire_light_cap}" + ("  CAP!" if capped else ""))
+        draw_text(fl_txt, x, y, 14, color=fl_color)
         y += 28
         draw_text("Toggles:", x, y, 14, color=(180, 200, 255, 255))
         y += 20
@@ -951,6 +1118,7 @@ class GameRenderer:
             ("F6 coords",      self.show_debug_coords),
             ("F7 pressure",    self.show_pressure),
             ("T  temperature", self.show_temperature),
+            ("L  fire lights", self.show_fire_lights),
             ("O  water optics", self.show_water),
             ("M  3D units",    self.cfg.use_3d_units),
             ("B  bilinear",    self.lighting.bilinear),
@@ -987,6 +1155,17 @@ class GameRenderer:
                   color=(140, 140, 160, 255))
         y += 14
 
+    def set_fire_light_stats(self, count: int, peaks: int, cap: int) -> None:
+        """Record this frame's fire-light counts for the debug HUD (B1 §3).
+
+        ``count`` = lights actually emitted (<= cap), ``peaks`` = NMS peaks
+        before the cap, ``cap`` = max_lights. count < peaks means the cap
+        truncated — surfaced on the HUD so tuning sessions see saturation.
+        """
+        self.fire_light_count = int(count)
+        self.fire_light_peaks = int(peaks)
+        self.fire_light_cap = int(cap)
+
     # ---- input ----------------------------------------------------------
 
     def poll_toggles(self) -> None:
@@ -1004,9 +1183,12 @@ class GameRenderer:
             self.show_debug_coords = not self.show_debug_coords
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F7):
             self.show_pressure = not self.show_pressure
-        # T: debug temperature overlay (black-body ramp over gmap.temperature).
+        # T: emissive black-body temperature overlay (over gmap.temperature).
         if rl.is_key_pressed(rl.KeyboardKey.KEY_T):
             self.show_temperature = not self.show_temperature
+        # L: fire light sources (B1) — A/B the ray-traced fire glow live.
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_L):
+            self.show_fire_lights = not self.show_fire_lights
         # V: toggle the water optics pass (GLSL Fresnel/GGX/refraction). The
         # pass is dormant-safe (alpha 0 on dry tiles); toggling only matters
         # once water is on the floor — disable to A/B against the bare floor.

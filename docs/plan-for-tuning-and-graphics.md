@@ -2,6 +2,12 @@ This is a doc authored by Erik
 
 Goal: think through the next steps for getting breach into a playable state
 
+> **LIVING DOC (Erik's ruling, 2026-07-21):** this file is the living plan for
+> the Fire & Heat Beauty + Tuning arc — we edit the relevant parts in place and
+> iterate until everything is done or we're happy. (Deliberate exception to the
+> append-only doc rule; at arc close it folds to canon + archive as usual.)
+> Current state + the active plan: see the dated section at the BOTTOM.
+
 i need - some basic graphics improvements - we have a strong foundation in the phyiscs engine now - i still htink we need some improvement on the render side to make it look good- And we need it to at least look a little bit like the end result to test weather it feels fun or not- if it is fun to look at, it will be more fun to play - that is my hope. 
 
 Fire - well right now fires are active on the phyiscs grid -but i wonder if we can have their graphics begin a little higher resolution.
@@ -78,6 +84,10 @@ PROPOSED ORDERING — draft by Claude 2026-07-11, for us to refine together
 
 !!!!! STOP — PRE-EXISTING WORK on branch `levels-w1` — REVIEW BEFORE BUILDING !!!!!
 (added 2026-07-12; Erik remembered it, Claude verified against the branch)
+(✔ RESOLVED 2026-07-08/…: levels-w1 was reconciled and SHIPPED to main (457ba16) —
+ the editor, [[light]] lamps + beacons, and the level pipeline are on main. The
+ Arc A entity system is also merged. Phase 0's blocker is gone; Phases 1a and 3a
+ are substantially MET. Block kept for history.)
 
 A parallel arc — the LEVEL EDITOR, designed + built by Fable — is FULLY BUILT on
 branch `levels-w1` (7 commits e5b20b3..97b3de8, ~6,700 lines, 704 tests green, build
@@ -233,6 +243,171 @@ KEY SEQUENCING CALLS — Erik's answers (2026-07-11):
      advected along the real wind + curl noise (never a finer solve); god-rays
      are ~90% built already. Caveat: exact coefficients (Tanner Helland Kelvin→
      RGB, GPU-Gems defaults) are cited by link, not reproduced verbatim.
+
+====================================================================
+2026-07-21 — FIRE & HEAT BEAUTY ARC: verified state + active plan
+(Erik + Claude, post-physics-v1-close; supersedes the ordering above
+where they differ. S8c + Arc B are in flight — see "sequencing".)
+====================================================================
+
+WHAT THE CODE ACTUALLY DOES TODAY (scouted + verified 2026-07-21):
+  • The beloved "temp view" = HeatFieldOverlay (T key), renderer/overlays.py
+    :317-407. Debug overlay: flat additive 5-stop LUT over gmap.temperature,
+    normalized by temp_display_max=300 → everything ≥ wood-ignition already
+    renders WHITE-HOT. This is the "saturates to white too quickly" culprit.
+  • Fire does NOT light rooms because fire is absent from the render light-
+    source list (main.py:375-402 — only static lamps, beacons, flashlight).
+    The volumetric colored raycaster + light-field textures + marine shader
+    all exist; fire lights = add sources to that list. Render-only.
+  • gmap.smoke IS the black_smoke gas slice (gamemap.py:209). Fire emits into
+    it (smoke_emission=0.8, fire_simulation.cpp:264-280) and combustion adds
+    real O2-gated soot (soot_yield=0.3). It LOOKS light grey only because
+    FieldOverlay draws every gas with one flat grey tint (overlays.py:45-90).
+    → black smoke is a RENDER fix + coefficients, not new sim.
+  • Explosions inject raw PRESSURE/mass (physics.py:84-88) and never touch
+    temperature — temp didn't exist when grenades were designed. Confirmed
+    plan: remove the pressure add (payload tunable), inject HEAT instead
+    (small new sim path: payload → heat deposit → existing heat→T→P chain).
+  • Wind stretching flames is real: gas-T advects with wind
+    (gas_advection_rate=900) AND fire reads |wind| (k_wind_fan/k_wind_strip,
+    both flagged NEEDS TUNING in config.toml).
+
+ANSWERED QUESTIONS (Erik asked 2026-07-21):
+  • "Do rays from adjacent sources combine?" — NO. Each source casts its own
+    independent ray fan (omni ray count = ceil(2π·range), raycaster.h:65-70);
+    the light FIELD accumulates additively, but compute cost is the SUM:
+    ~2π·range² tile-steps per source. Per-tile lights on every T>300 tile is
+    fine for small fires; a big blaze (100s of tiles) needs a budget. Plan:
+    v1 = one light per hot tile with a hard cap (brightest-K), clustering
+    (Erik's 3×3 march) held as the optimization step — visually near-lossless
+    since adjacent hot tiles throw near-identical light.
+  • "Use the fire debug overlay as source data?" — effectively yes: the
+    overlay's source data IS gmap.temperature; fire lights read the same
+    field (threshold on T, color from the shared blackbody ramp). We read
+    the field, not the overlay texture.
+  • Bloom: Erik doesn't love it — SKIP bloom entirely. (Plain-words glossary:
+    HDR = let brightness values exceed 1.0 instead of clipping at white;
+    tone-mapping = the curve that maps those back to screen range gracefully.
+    The world shader already ACES-tone-maps; the temp overlay bypasses it.)
+  • White-saturation fix: widen the display range (temp_display_max ↑) and
+    reshape the ramp so white is RESERVED for truly extreme T; more of the
+    ramp lives in red/orange/yellow.
+  • Erik's speckle idea (Swedish "spräcklig" — speckled/mottled): interleave
+    dark/grey cells in T∈[250,300] and sparsely at higher T for life/texture.
+    Two variants to try side by side in the demo tool:
+      (a) pure render noise modulating the LUT (cheap, decorative);
+      (b) "DIRTY PLANCK": modulate the blackbody color by the tile's REAL
+          soot density (black_smoke) — physically interpretable, and the
+          O2-starvation choking-fire story then shows up in the flame color
+          for free. Try one clean Planck scale + dirtied variants.
+
+THE ARC — four beats, in order (all feel-adjacent → HUMAN-TEST gates):
+  B1. Blackbody ramp + fire lights (RENDER-ONLY, no S8c/Arc B collision):
+      one T→RGB Planck function wired into (a) the temp overlay color and
+      (b) fire light sources placed from the temp field (per-tile, capped;
+      3×3 clustering as optimization). Replaces the fixed orange
+      [1.0,0.45,0.12]. Rooms + 3D marines light up for free.
+  B2. Smoke honesty (RENDER + coefficients): per-gas plume tint in the
+      overlay (soot near-black, steam white), density/opacity curve, dirty-
+      Planck speckle experiments; tune soot_yield / smoke_emission so dying
+      fires hand over to black smoke.
+  B3. Explosion rework (SIM change): pressure-add → heat-inject per
+      blackbody_smoke_and_rendering_brainstorm.md (Tier A item 5).
+      Digest/golden rationale + design-gate + HUMAN-TEST.
+      (Was gated on S8c — UNBLOCKED 2026-07-21: S8c merged, 9eb47c0.)
+  B4. THE TUNING PASS, LAST (Erik's focused solo slots, live-slider harness
+      extended from tools/lighting_demo.py): k_fire_heat, T_MAX_PHYS
+      (provisional, Erik review owed), fire_T_ext/fire_T_span, k_wind_fan/
+      k_wind_strip, temp_display_max, smoke optics, explosion heat. Tuning
+      is last so nothing gets tuned twice.
+
+SEQUENCING / TRAFFIC (updated 2026-07-21 late): S8c is MERGED (9eb47c0) —
+only Arc B remains in flight (logic layer; disjoint files). B1+B2 are
+render-layer → can start NOW in their own worktree. B3 is sim-side →
+unblocked, but still design-gate + golden rationale + HUMAN-TEST. Fire
+lit-search report (docs/fire_rendering_research.md, branch fire-lit-search,
+unmerged) — B1's patch P0 merges it.
+  ► B1 DESIGN IS WRITTEN: docs/fire_b1_blackbody_fire_lights_design_
+    2026-07-21.md (spec + patch plan P0–P4 + Opus kickoff prompt).
+  ► B1 BUILT + MERGED 2026-07-21 (merge 85cbe14; Erik blessed "much
+    better"). Tuning session queued in docs/TODO.md.
+  ► B2 DESIGN IS WRITTEN + ADVERSARIALLY CRITIQUED (blockers resolved
+    in-doc, 2026-07-21/22): docs/fire_b2_smoke_honesty_design_2026-07-21.md
+    (patch plan P0–P5 + Opus kickoff §9; research base
+    docs/research/smoke_render_litsearch_2026-07-21.md). Fire-studio level
+    carries Erik's rotating beacon (his ruling, 2026-07-21).
+
+DECISIONS — Erik's rulings 2026-07-21:
+  ✔ Smoke species (old Phase 0a): DROP DUST (not needed yet; steam covers the
+    haze role). Keep TWO visual species + the gameplay gases:
+      • "smoke"  = what fire produces (soot) — RENAME black_smoke → smoke.
+        "Smoke" now means fire-smoke and NOTHING else. (Code already agrees:
+        gmap.smoke aliases the black_smoke slice.)
+      • "steam"  = water vapour — RENAME white_smoke → steam (also §8 item 5,
+        pre-approved there). Steam is the Alien-2 light-haze medium.
+      • gameplay gases (poison, teargas, fuel_gas) unchanged.
+    Rename mechanics: config [gases.*] keys + any level refs; mechanical
+    patch, check goldens/recorder untouched. Protoclass idea (per-species
+    properties) = the existing GasTable columns; extend as needed.
+  ✔ Fire-light budget: DON'T cap range hard — long-range lights are the
+    point (big rooms lit by explosions; geometry caps range naturally and
+    our lights are cheap). CAP THE COUNT instead: brightest-K promoted to
+    real ray-casting sources. NOTE: this two-tier design already exists in
+    brainstorm §8 item 2 (per-tile in-march glow is ray-free ~3 MADs/tile;
+    only brightest-K tiles become LightSources) — build that. If 3×3 stride
+    isn't enough, go 5×5; restrict marching to neighbourhoods of actual
+    fires. Detonations are separate: spawn ONE discrete light source with a
+    predetermined lifetime/decay envelope.
+  ✔ temp_display_max + ramp stops: tune by eye (B1/B4).
+  ✔ Explosion heat magnitude: anchor on REAL-LIFE data per payload class —
+    frag grenade / military field grenade / C4 (building-scale) / breach
+    charge (door/wall). Small research task in the B3 design; then tune by
+    feel.
+  ✔ Explosion pressure add: start at EXACTLY 0 (heat only); if underwhelming,
+    add a little back until acceptable.
+
+OPEN DECISIONS (remaining):
+  ✔ Speckle (RULED 2026-07-21): build BOTH variants behind one toggle,
+    pick by eye in the studio; both must ride the advected noise (static
+    speckle reads as a screen overlay). B2 design §5.
+  ⭘ Fire-light K + stride numbers (pick during B1 by eye/perf).
+  ✔ MacCormack anti-diffusion (RULED 2026-07-21): DEFERRED with a WRITTEN
+    TRIGGER (B2 design §7): reopen ONLY if plumes lose peak density /
+    silhouette while TRAVELING after B2 (transport dissipation — no render
+    trick recovers it); then full ceremony (digest re-baseline + rationale
+    + HUMAN-TEST). B2 ships render-side sharpness instead (bicubic +
+    τ-space curve + noise erosion).
+  ⭘ Curl-noise determinism flavor (§8 item 4): render-only wisps → likely
+    exempt; if anything sim-adjacent, use the host-precomputed noise texture.
+  ✔ ACES precondition (§8 item 8): CHECKED in B1 P4 — lighting.fs tonemap
+    is component-wise on vec3 + HDR-unclamped; no shader change needed.
+  ⭘ GAS-CHEMISTRY BEAT (Erik wish list 2026-07-21; sim-side, NOT in B2):
+    fuel_gas ignition (the M3 hook — GasTable column exists, consumer never
+    built), heat-driven water→steam boil + steam→water condensation (only
+    the W5 pressure flash-boil exists today), smoke ABSORBING radiant heat
+    (raycaster heat channel is deliberately gas-transparent — doing this
+    reverses the 2026-07-05 one-way ruling; per-tile heat_atten plumbing
+    already exists), poison thermal breakdown (fire destroys poison). Ice:
+    parked (needs a solid water phase that doesn't exist). Registry answer:
+    GasTable columns are the right HOME for the coefficients, but every
+    PROCESS is a solver/exchange-row change (the exchange.py coupling-row
+    idiom: teargas-blind + poison-dose are the live precedents) with full
+    digest ceremony. SLOT DECISION owed (Erik): before B4 (tune-once
+    principle) vs after with an accepted re-tune.
+
+BRAINSTORM §8 STATUS (checked 2026-07-21 — mostly resolved by history):
+  item 1 glow_temperature field → MOOT: the EOS reframe was adopted; real
+    gas T carries the warmth and feeds the LUT.
+  item 2 soot re-emits light-yes/heat-no → DECIDED 2026-07-05 (one-way heat
+    channel) — and it carries the brightest-K light design (see above).
+  item 3 expansion→pressure tap → MOOT/ABSORBED: post-EOS, injected heat
+    raises P = C·N·T by itself; plus Erik's pressure-add=0 ruling.
+  item 4 confinement OUT / curl-noise IN → confirmed; flavor open (above).
+  item 5 white_smoke→steam rename → APPROVED (matches species ruling).
+  item 6 MacCormack → open (above).  item 7 2.5D smoke layers → out of arc.
+  item 8 ACES per-channel check → open, mechanical (above).
+  item 9 build order → superseded by beats B1–B4.
+  item 10 canon fold at arc close → standing rule, unchanged.
 
 
 
