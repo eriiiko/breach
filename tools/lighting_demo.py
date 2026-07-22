@@ -101,16 +101,14 @@ DEFAULTS = {
     "smoke_tint_g": 195.0,
     "smoke_tint_b": 210.0,
     "smoke_max_alpha": 180.0,
-    # smoke^gamma render contrast (ch.05 §6.1 step 5): power curve on the
-    # rendered smoke opacity, render-only. 1.0 = off; ~1.2 dense -> 2.5 thin.
-    # KEPT this beat (orchestrator ruling): the still-active smoke render path
-    # consumes it; the delete + tau-curve rework happen in P2.
-    "smoke_render_gamma": 1.5,
-    # --- B2 gas-medium dials (§6). P1 PLUMBING: the sliders bind + write their
-    # config value; the medium/detail/speckle CONSUMERS land in P2-P4. Defaults
-    # = honest/identity (config [render.*]). soot_yield/smoke_emission mirror the
-    # SIM config (display-only here — Erik tunes them in the P5 feel session;
-    # this patch never changes their values). Re-init from CFG at startup. ------
+    # (Fire & Heat Beauty B2 P2: smoke_render_gamma is DELETED — the gas-medium
+    # tau-curve below subsumes it; the legacy A/B smoke path bakes the old 1.5
+    # as a frozen constant in the renderer, so it needs no dial here.)
+    # --- B2 gas-medium dials (§6). The sliders drive renderer.gas_medium live
+    # (P2 consumers). Defaults = honest/identity (config [render.*]).
+    # soot_yield/smoke_emission mirror the SIM config (display-only here — Erik
+    # tunes them in the P5 feel session; this patch never changes their values).
+    # Re-init from CFG at startup. --------------------------------------------
     "legacy_smoke_on": False,
     "gm_plume_k_scale": 1.0,
     "gm_tau_curve_a": 1.0,
@@ -642,7 +640,7 @@ def main() -> None:
     print("[lighting_demo]       Space=pause T=spawn U=water F/Shift+F=flood "
           "P=tilt N=noise  |  L=firelights V=water G=sRGB")
     print("[lighting_demo]       WASD/arrows=pan  Q/E/wheel=zoom  "
-          "F1/F2/F4=overlays  (O intentionally unused)")
+          "F1/F2/F4=overlays  F9=legacy smoke A/B  (O intentionally unused)")
 
     # ---- 4. Panel state ----
     state = PanelState()
@@ -666,7 +664,6 @@ def main() -> None:
     renderer.smoke_overlay.tint_g = int(state.get("smoke_tint_g"))
     renderer.smoke_overlay.tint_b = int(state.get("smoke_tint_b"))
     renderer.smoke_overlay.max_alpha = int(state.get("smoke_max_alpha"))
-    renderer.smoke_overlay.gamma = float(state.get("smoke_render_gamma"))
 
     # Apply the initial water-optics params from config so the panel opens
     # where [graphics.water] sits (the main game restart-binds these; here they
@@ -788,6 +785,11 @@ def main() -> None:
             # ---- Input: toggles ----
             renderer.poll_toggles()
             renderer.update_camera(dt)
+            # Legacy smoke A/B (B2 P2): reflect an F9 key flip (poll_toggles)
+            # into the panel checkbox so the key and the checkbox agree; the
+            # checkbox value is pushed back to the renderer right after the panel
+            # draw (see the post-_draw_panel push below).
+            state.set("legacy_smoke_on", renderer.legacy_smoke_on)
 
             K = rl.KeyboardKey
             if rl.is_key_pressed(K.KEY_SPACE):
@@ -843,8 +845,10 @@ def main() -> None:
                       f"{np.degrees(sim.gmap.tilt_x):+.1f} deg")
 
             # ---- B2 studio keys: injection at cursor + door + light toggles --
-            # Keymap AUDITED: renderer.poll_toggles owns F1-F7 / T / L / V / M /
-            # B / H / G / [ ] / Q / E; the demo owns Space / T / N / U / F / P.
+            # Keymap AUDITED: renderer.poll_toggles owns F1-F7 + F9 (F9 = legacy
+            # smoke A/B, B2 P2 — F8 is the input_handler recorder dump in-game) /
+            # T / L / V / M / B / H / G / [ ] / Q / E; the demo owns
+            # Space / T / N / U / F / P.
             # These land on FREE keys (I/J/K/C/1/2). O is AVOIDED per the audit
             # directive (the demo help documents O as the water-depth overlay).
             _tile = renderer.mouse_to_tile()
@@ -937,14 +941,23 @@ def main() -> None:
             elif not left_down:
                 last_click_handled = False
 
-            # ---- Sync smoke overlay params ----
+            # ---- Sync smoke overlay params (legacy A/B path) ----
             renderer.smoke_overlay.tint_r = int(state.get("smoke_tint_r"))
             renderer.smoke_overlay.tint_g = int(state.get("smoke_tint_g"))
             renderer.smoke_overlay.tint_b = int(state.get("smoke_tint_b"))
             renderer.smoke_overlay.max_alpha = int(state.get("smoke_max_alpha"))
-            # smoke^gamma render contrast — live re-push so the slider takes
-            # effect immediately (render-only; never touches the sim field).
-            renderer.smoke_overlay.gamma = float(state.get("smoke_render_gamma"))
+
+            # ---- Sync the B2 gas-medium dials LIVE (P2) ----
+            # The tau-curve / plume-k / glow-gain / gas-floor sliders drive the
+            # premultiplied gas-medium layer immediately (render-only). The
+            # legacy_smoke_on A/B is reconciled with the F9 key toggle around the
+            # panel draw (poll_toggles reflect + the post-panel push).
+            gm = renderer.gas_medium
+            gm.plume_k_scale = float(state.get("gm_plume_k_scale"))
+            gm.tau_curve_a = float(state.get("gm_tau_curve_a"))
+            gm.tau_curve_b = float(state.get("gm_tau_curve_b"))
+            gm.glow_gain = float(state.get("gm_glow_gain"))
+            gm.effect_gas_floor = float(state.get("gm_effect_gas_floor"))
 
             # ---- Lighting setters ----
             renderer.lighting.set_ambient((state.get("ambient_r"),
@@ -1046,6 +1059,10 @@ def main() -> None:
 
             # ---- raygui panel ----
             _draw_panel(state, renderer, now)
+            # Legacy smoke A/B: push the checkbox back to the renderer (a click
+            # this frame takes effect next frame; the F9 key path took effect at
+            # the top of the frame). One source of truth = renderer.legacy_smoke_on.
+            renderer.legacy_smoke_on = bool(state.get("legacy_smoke_on"))
 
             renderer.end_frame()
 
@@ -1162,20 +1179,19 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     y = _slider(state, "flash_intensity", "Intensity", 0.0, 5.0, x, y)
     y = _slider(state, "flash_angle_spread", "Spread", 0.0, 6.283, x, y)
 
-    # -- §4.4 Smoke overlay --
-    y = _section_header("Smoke overlay", x, y)
+    # -- §4.4 Smoke overlay (LEGACY A/B path — F9 or the checkbox below) --
+    y = _section_header("Smoke overlay (legacy)", x, y)
     y = _slider(state, "smoke_tint_r", "Tint R", 0.0, 255.0, x, y)
     y = _slider(state, "smoke_tint_g", "Tint G", 0.0, 255.0, x, y)
     y = _slider(state, "smoke_tint_b", "Tint B", 0.0, 255.0, x, y)
     y = _slider(state, "smoke_max_alpha", "Max alpha", 0.0, 255.0, x, y)
-    # smoke^gamma render contrast (render-only). 1.0 = off; >1 = wispier/filmic.
-    # KEPT this beat (orchestrator ruling) — the still-active smoke path uses it.
-    y = _slider(state, "smoke_render_gamma", "Gamma", 1.0, 3.0, x, y)
+    # (smoke_render_gamma slider removed in B2 P2 — the gas-medium tau-curve
+    #  below subsumes it; the legacy path bakes the old 1.5 as a constant.)
 
-    # -- B2 gas medium (P1 PLUMBING: sliders bind + hold their config value; the
-    #    medium/detail/speckle CONSUMERS land in P2-P4, so no live effect yet) --
+    # -- B2 gas medium (P2 LIVE: these sliders drive renderer.gas_medium now;
+    #    the detail/speckle dials below are still P3/P4 plumbing) --
     y = _section_header("Gas medium (B2)", x, y)
-    y = _checkbox(state, "legacy_smoke_on", "Legacy A/B", x, y)
+    y = _checkbox(state, "legacy_smoke_on", "Legacy A/B (F9)", x, y)
     y = _slider(state, "gm_plume_k_scale", "Plume k", 0.0, 4.0, x, y)
     y = _slider(state, "gm_tau_curve_a", "Tau a", 0.0, 3.0, x, y)
     y = _slider(state, "gm_tau_curve_b", "Tau b", 0.2, 4.0, x, y)

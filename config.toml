@@ -256,13 +256,12 @@ k_splash = 2.0    # wave_p -> ripple_v splash gain (W6a) — PURE FEEL DIAL, awa
 smoke_absorption = [1.0, 1.0, 1.0]       # Beer-Lambert per-channel absorption (R,G,B)
 smoke_scatter_albedo = [1.0, 1.0, 1.0]   # additive god-ray/glow gain (R,G,B), decoupled from absorption
 smoke_absorb_scale = 1.4                 # beam-reach dial: LOW = long beam (flashlight travels far), HIGH = beam dies fast
-# Render-contrast curve applied to the *rendered* smoke opacity only (ch.05 §6.1
-# step 5 "smoke^gamma"): value = pow(saturate(smoke_density), gamma) at pack time
-# in FieldOverlay.update. This NEVER touches the simulation field — pure look.
-# gamma > 1 crushes thin smoke toward transparent and sharpens wispy edges
-# (filmic), killing the flat-fog look. Useful range ~1.2 (dense, soft) -> 2.5
-# (thin, very wispy). 1.0 = off / identity (linear density-opacity, the old look).
-smoke_render_gamma = 1.5                  # default mild, visible contrast bump (1.0 = off)
+# NOTE (Fire & Heat Beauty B2 §3/§6): the old `smoke_render_gamma` render-
+# contrast dial was DELETED here — the physical gas-medium pass's tau-curve
+# ([render.gas_medium] tau_curve_a / tau_curve_b) subsumes it (contrast now
+# lives in TAU-space, before Beer-Lambert, not on the packed alpha). The legacy
+# A/B smoke path bakes the old 1.5 default as a frozen constant in
+# renderer/game_renderer.py (_LEGACY_SMOKE_GAMMA).
 
 # Multi-gas material table (engine/05 §6.2). Smoke generalises from one scalar
 # field to N gas density fields, one row per gas, sharing the SAME diffusion +

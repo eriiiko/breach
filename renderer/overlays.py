@@ -39,8 +39,11 @@ class FieldOverlay:
         # (ch.05 §6.1 step 5 "smoke^gamma"). RENDER-ONLY — never touches the sim
         # field. gamma > 1 crushes thin smoke toward transparent and sharpens
         # wispy edges (filmic); 1.0 = identity (linear opacity, the default for
-        # the base class so FireOverlay and any other field is untouched). The
-        # smoke overlay's gamma is bound from [smoke] smoke_render_gamma.
+        # the base class so FireOverlay and any other field is untouched).
+        # The LEGACY smoke overlay bakes gamma=1.5 as a frozen constant
+        # (game_renderer._LEGACY_SMOKE_GAMMA) — Fire & Heat Beauty B2 P2 DELETED
+        # the [smoke] smoke_render_gamma config dial, the gas-medium tau-curve
+        # subsumes it; WaterFieldOverlay uses gamma=0.5 to LIFT thin films.
         self.gamma = gamma
 
     def update(self, field: np.ndarray) -> None:

@@ -58,10 +58,10 @@ def _studio_sim():
 # ---------------------------------------------------------------------------
 # Preset tolerance (gate item) + the B2 dials in DEFAULTS
 # ---------------------------------------------------------------------------
-def test_defaults_carry_b2_dials_and_keep_gamma():
+def test_defaults_carry_b2_dials():
     d = demo.DEFAULTS
-    # smoke_render_gamma is NOT deleted this patch (orchestrator ruling).
-    assert "smoke_render_gamma" in d
+    # B2 P2 DELETED smoke_render_gamma (the gas-medium tau-curve subsumes it).
+    assert "smoke_render_gamma" not in d
     for k in ("legacy_smoke_on", "gm_plume_k_scale", "gm_tau_curve_a",
               "gm_tau_curve_b", "gm_glow_gain", "gm_effect_gas_floor",
               "gm_fuel_haze_on", "gd_enabled", "gd_cycle_seconds",
@@ -74,7 +74,7 @@ def test_empty_preset_tolerated():
     s = demo._toml_dict_to_state({})
     # Full state, all defaults — no KeyError, new dials at their defaults.
     assert s["gm_plume_k_scale"] == demo.DEFAULTS["gm_plume_k_scale"]
-    assert s["smoke_render_gamma"] == demo.DEFAULTS["smoke_render_gamma"]
+    assert s["gm_tau_curve_b"] == demo.DEFAULTS["gm_tau_curve_b"]
     assert set(s) >= set(demo.DEFAULTS)
 
 
@@ -144,7 +144,7 @@ def test_parse_level_arg(monkeypatch):
 
 
 if __name__ == "__main__":
-    test_defaults_carry_b2_dials_and_keep_gamma()
+    test_defaults_carry_b2_dials()
     test_empty_preset_tolerated()
     test_partial_old_preset_tolerated()
     test_load_missing_preset_returns_none()

@@ -29,6 +29,7 @@ from simulation.status import composed_flags
 from . import core
 from .blackbody import BlackbodyRamp
 from .camera import Camera2D
+from .gas_medium import GasMediumOverlay
 from .lighting import LightingPass
 from .overlays import (
     FieldOverlay, FireOverlay, GlowOverlay, HeatFieldOverlay,
@@ -146,23 +147,30 @@ class GameRenderer:
         # the exact prior background path (byte-identical render).
         self._ambient_sky_map = (
             getattr(level_data, "boundary", "space") == "ambient")
-        # smoke^gamma render-contrast knob (ch.05 §6.1 step 5): a power curve on
-        # the RENDERED smoke opacity (FieldOverlay.update), not the sim field.
-        # gamma > 1 crushes thin smoke toward transparent and sharpens wispy
-        # edges (filmic), killing the flat-fog look; 1.0 = off. Bound from
-        # [smoke] smoke_render_gamma (default 1.5). Like the other [smoke] optics
-        # above it is read at init; Ctrl+R config reload does not re-push it
-        # (consistent with the renderer's other smoke params — see ch.12). The
-        # tuning tool (tools/lighting_demo.py) re-pushes it live via a slider.
-        smoke_render_gamma = float(
-            getattr(smoke_cfg, "smoke_render_gamma", 1.5))
+        # Fire & Heat Beauty B2 (§3, §6): the [smoke] smoke_render_gamma dial is
+        # DELETED — the physical gas-medium pass's tau-curve subsumes it. The
+        # LEGACY smoke+glow pair below is kept behind `legacy_smoke_on` for the
+        # A/B comparison, so it bakes the CURRENT shipped gamma default (1.5) as
+        # a FROZEN constant to preserve "the beloved current look" for the A/B.
+        _LEGACY_SMOKE_GAMMA = 1.5
         self.smoke_overlay = FieldOverlay(cfg.grid_h, cfg.grid_w,
                                           tint=(190, 195, 210), max_alpha=180,
-                                          gamma=smoke_render_gamma)
+                                          gamma=_LEGACY_SMOKE_GAMMA)
         self.fire_overlay = FireOverlay(cfg.grid_h, cfg.grid_w)
         # God-ray / lit-smoke glow (ch.05): additive shaft from the ray march's
-        # smoke_glow output. Supersedes the retired light_modulation surface-tint.
+        # smoke_glow output. LEGACY (pre-B2) path — the new gas medium below
+        # folds occlusion + inscatter into ONE premultiplied layer instead.
         self.glow_overlay = GlowOverlay(cfg.grid_h, cfg.grid_w)
+        # Fire & Heat Beauty B2 P2 — the physical gas-medium pass (the heart of
+        # B2). ONE premultiplied-over layer per frame: alpha = Beer-Lambert
+        # extinction over the five trace gases (k_s from the SAME GasTable optics
+        # the ray march sums, scaled by the Raycaster's shared smoke_absorb_scale
+        # base × the relative plume_k_scale), RGB = ACES(glow_gain·smoke_glow) —
+        # the ray march's inscatter. Supersedes the flat smoke_overlay + additive
+        # glow_overlay pair (kept behind legacy_smoke_on). RENDER-ONLY: reads
+        # gmap.gas + gmap.smoke_glow, writes only its own texture.
+        self.gas_medium = GasMediumOverlay.from_config(
+            cfg.grid_h, cfg.grid_w, CFG)
         self.pressure_overlay = PressureOverlay(cfg.grid_h, cfg.grid_w)
         # Emissive temperature overlay (Fire & Heat Beauty B1): the physical
         # black-body glow over gmap.temperature (engine/06). Built from the
@@ -214,6 +222,14 @@ class GameRenderer:
         # Toggles
         self.show_grid = False
         self.show_smoke = True
+        # Fire & Heat Beauty B2 P2 — A/B gate for the new physical gas medium.
+        # When True, the OLD flat smoke_overlay + additive glow_overlay pair
+        # draws instead (the pre-B2 "beloved current look"); when False the new
+        # premultiplied gas_medium layer draws. Seeded from [render]
+        # legacy_smoke_on; toggled LIVE with F9 (poll_toggles) so Erik compares
+        # old vs new in one session. RENDER-ONLY.
+        self.legacy_smoke_on = bool(getattr(
+            getattr(CFG, "render", None), "legacy_smoke_on", False))
         # Fire & Heat Beauty B1 (human-test A/B): the flat-orange FireOverlay is
         # demoted to default-OFF so the physical black-body overlay (T) is the
         # blessed look Erik compares against. Toggle F3 on live to A/B. Default
@@ -351,20 +367,32 @@ class GameRenderer:
                                         self.lighting.packed_b)
             self.last_raycast_ms = 0.0
 
-        # Smoke is drawn as a flat grey density medium — alpha is density-driven
-        # only (always there regardless of light). The lit-smoke colour now
-        # comes from the additive god-ray glow overlay (gmap.smoke_glow, the
-        # energy the smoke scattered), NOT a surface-tint multiply — the old
-        # light_modulation path is retired (ch.03 C16, ch.05 §God-rays).
+        # Smoke medium. Fire & Heat Beauty B2 P2: the physical gas-medium pass
+        # (renderer/gas_medium.py) replaces the flat-grey smoke_overlay + additive
+        # glow_overlay pair with ONE premultiplied-over layer — alpha = Beer-
+        # Lambert occlusion over the five trace gases, RGB = ACES-tone-mapped
+        # inscatter (gmap.smoke_glow). The legacy pair is kept behind
+        # legacy_smoke_on for the live A/B (F9). Only the ACTIVE path's texture
+        # is refreshed; a toggle shows the other path on the next frame.
         if self.show_smoke:
-            # S2b: gmap.smoke is int32 Q16.16 (the SMOKE view) — DEQUANTIZE
-            # to float32 density for the overlay (render-only FLOAT BRIDGE). The
-            # _gas_render_f scratch already holds the dequantized planes when the
-            # cast ran this frame; recompute the smoke slice cheaply regardless so
-            # the overlay is correct even when show_lighting is off.
+            # S2b: gmap.gas is int32 Q16.16 — DEQUANTIZE to float32 density for
+            # the render overlays (render-only FLOAT BRIDGE; one source of truth
+            # = the int field). Recomputed each frame so the overlay is correct
+            # even when show_lighting (hence the cast) is off.
             from simulation import gas_fixed
-            self.smoke_overlay.update(gas_fixed.dequantize_f32(gmap.smoke))
-            self.glow_overlay.update(gmap.smoke_glow)
+            from simulation.gases import N_TRACE_GASES
+            if self.legacy_smoke_on:
+                self.smoke_overlay.update(gas_fixed.dequantize_f32(gmap.smoke))
+                self.glow_overlay.update(gmap.smoke_glow)
+            else:
+                # k_s (per-gas mean extinction) is read from gmap.gases — the
+                # SAME optics table the ray march sums — and scaled by the
+                # Raycaster's smoke_absorb_scale (the shared base), so plume body
+                # and god-rays track by construction (single source of scale).
+                trace = gas_fixed.dequantize_f32(gmap.gas[:N_TRACE_GASES])
+                self.gas_medium.update(
+                    trace, gmap.smoke_glow, gmap.gases,
+                    base_absorb_scale=float(self.raycaster.smoke_absorb_scale))
         # Fire still gets the vacuum mask: combustion requires oxygen, so
         # fire physically cannot exist in vacuum. Keep this until the fire
         # sim is taught to extinguish at vacuum tiles directly.
@@ -473,18 +501,25 @@ class GameRenderer:
         # instead of Raylib's default BLEND_ALPHA which reduces dest alpha
         # when src alpha < 1.
         if self.show_smoke:
-            rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
-            self._draw_overlay_to_world(self.smoke_overlay.tex)
-            rl.end_blend_mode()
-            # God-ray glow: additive shaft composited WITH the smoke, before
-            # units (ch.05 §God-rays). GlowOverlay.draw sets its own RGB-only
-            # additive blend — additive passes must NOT write dest alpha, or
-            # the world RT's alpha saturates and vacuum tiles render opaque
-            # black under the premultiplied blit (overlays.
-            # _begin_additive_rgb_only_blend). Not premultiplied. Supersedes
-            # the retired light_modulation surface-tint.
-            self.glow_overlay.draw(
-                0, 0, self.world.world_px_w, self.world.world_px_h)
+            if self.legacy_smoke_on:
+                # LEGACY (pre-B2) A/B path: flat premultiplied smoke + a separate
+                # additive god-ray glow. Two draws, two blend modes.
+                rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
+                self._draw_overlay_to_world(self.smoke_overlay.tex)
+                rl.end_blend_mode()
+                # GlowOverlay.draw sets its own RGB-only additive blend (dstA is
+                # never written, else vacuum tiles saturate opaque under the
+                # premultiplied blit — overlays._begin_additive_rgb_only_blend).
+                self.glow_overlay.draw(
+                    0, 0, self.world.world_px_w, self.world.world_px_h)
+            else:
+                # B2 physical gas medium: ONE premult-over layer (C = inscatter +
+                # T·bg). Occlusion (alpha) and inscatter (RGB) composite in a
+                # single BLEND_ALPHA_PREMULTIPLY draw — no double-count, and the
+                # real per-tile alpha leaves vacuum tiles untouched (no additive
+                # alpha-saturation hazard). gas_medium.draw owns its blend mode.
+                self.gas_medium.draw(
+                    0, 0, self.world.world_px_w, self.world.world_px_h)
         if self.show_fire:
             rl.begin_blend_mode(rl.BlendMode.BLEND_ADDITIVE)
             self._draw_overlay_to_world(self.fire_overlay.tex)
@@ -1117,6 +1152,7 @@ class GameRenderer:
             ("F5 normal map",  self.show_normal_map),
             ("F6 coords",      self.show_debug_coords),
             ("F7 pressure",    self.show_pressure),
+            ("F9 legacy smoke", self.legacy_smoke_on),
             ("T  temperature", self.show_temperature),
             ("L  fire lights", self.show_fire_lights),
             ("O  water optics", self.show_water),
@@ -1127,6 +1163,13 @@ class GameRenderer:
         ]:
             color = (180, 255, 180, 255) if on else (140, 140, 140, 255)
             draw_text(label, x, y, 13, color=color)
+            y += 16
+        # Non-physical legibility floor flag (B2 §3): when the gameplay-gas
+        # emissive floor is raised, say so on the HUD — the plume's poison/
+        # teargas glow is a design override, no longer physically honest.
+        if not self.legacy_smoke_on and self.gas_medium.effect_gas_floor > 0.0:
+            draw_text(f"gas floor {self.gas_medium.effect_gas_floor:.2f} "
+                      f"(non-physical)", x, y, 12, color=(255, 180, 120, 255))
             y += 16
         y += 6
         draw_text(f"[/] Light Z: {self.lighting.light_z:.2f}", x, y, 13,
@@ -1183,6 +1226,12 @@ class GameRenderer:
             self.show_debug_coords = not self.show_debug_coords
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F7):
             self.show_pressure = not self.show_pressure
+        # F9: legacy smoke A/B (Fire & Heat Beauty B2 P2) — flips between the new
+        # physical gas-medium layer (default) and the old flat smoke + additive
+        # glow pair, so Erik compares old vs new live in one session. (F8 is
+        # taken by the physics-recorder dump in input_handler.py — F9 is free.)
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_F9):
+            self.legacy_smoke_on = not self.legacy_smoke_on
         # T: emissive black-body temperature overlay (over gmap.temperature).
         if rl.is_key_pressed(rl.KeyboardKey.KEY_T):
             self.show_temperature = not self.show_temperature
@@ -1323,6 +1372,7 @@ class GameRenderer:
         rl.unload_texture(self.smoke_overlay.tex)
         rl.unload_texture(self.fire_overlay.tex)
         rl.unload_texture(self.glow_overlay.tex)
+        rl.unload_texture(self.gas_medium.tex)
         rl.unload_texture(self.temperature_overlay.tex)
         rl.unload_texture(self.water_overlay.tex)
         self.water_pass.unload()
