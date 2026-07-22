@@ -56,7 +56,7 @@ except ImportError:                       # loader/format tests still run
 
 import level_loader  # noqa: E402
 from level_lib import (AIR_INIT_FILENAME, format_entity_lines,  # noqa: E402
-                       open_level, write_air_init_npy)
+                       open_level, write_air_init_npy, write_boundary_field)
 from simulation.atmosphere_fixed import FP_ONE  # noqa: E402
 from simulation.gamemap import GameMap  # noqa: E402
 from simulation.gases import INERT_N2, O2  # noqa: E402
@@ -430,6 +430,82 @@ def test_boundary_round_trips_byte_stable_through_managed_save(tmp_path):
     handle.save({"entity":                              # real family rewrite
                  lambda nl: format_entity_lines(handle.data.entities, nl)})
     assert toml.read_bytes() == before
+
+
+# ---------------------------------------------------------------------------
+# (e2) level_lib.write_boundary_field (Arc C5 — the PROPS pane's writeback:
+#      format + client-side field edit ONLY, never the physics meaning)
+# ---------------------------------------------------------------------------
+
+def test_write_boundary_field_inserts_when_absent(tmp_path):
+    d = _mini_level(tmp_path)                        # PREFIX has no boundary
+    toml_path = d / "level.toml"
+    write_boundary_field(toml_path, "ambient")
+    # plain _load (not _load_silent): the default sealed-hull-room tilemap
+    # has no SPACE ring, so an ambient boundary legitimately warns
+    # "ring-dormant" here — this test is about the WRITTEN VALUE, not that
+    # warning.
+    assert _load(d).boundary == "ambient"
+
+
+def test_write_boundary_field_replaces_an_existing_value(tmp_path):
+    d = _mini_level(tmp_path, prefix=BOUNDARY_PREFIX)   # starts "ambient"
+    toml_path = d / "level.toml"
+    assert _load(d).boundary == "ambient"
+    write_boundary_field(toml_path, "space")
+    assert _load_silent(d).boundary == "space"
+
+
+def test_write_boundary_field_preserves_every_other_byte(tmp_path):
+    d = _mini_level(tmp_path, body=ENTITY_LIGHT, prefix=BOUNDARY_PREFIX)
+    toml_path = d / "level.toml"
+    before = toml_path.read_text(encoding="utf-8")
+    write_boundary_field(toml_path, "space")
+    after = toml_path.read_text(encoding="utf-8")
+    # only the boundary line itself should differ
+    before_lines = before.splitlines()
+    after_lines = after.splitlines()
+    assert len(before_lines) == len(after_lines)
+    diffs = [(a, b) for a, b in zip(before_lines, after_lines) if a != b]
+    assert len(diffs) == 1
+    assert diffs[0][0].startswith('boundary = "ambient"')
+    assert diffs[0][1] == 'boundary = "space"'
+    # the entity block, unrelated to boundary, is untouched
+    assert 'id = "lamp_1"' in after
+
+
+def test_write_boundary_field_no_op_round_trip_when_value_unchanged(
+        tmp_path):
+    d = _mini_level(tmp_path, prefix=BOUNDARY_PREFIX)
+    toml_path = d / "level.toml"
+    before = toml_path.read_bytes()
+    write_boundary_field(toml_path, "ambient")     # already ambient
+    assert toml_path.read_bytes() == before
+
+
+def test_write_boundary_field_rejects_unknown_value(tmp_path):
+    d = _mini_level(tmp_path)
+    with pytest.raises(ValueError, match="space.*ambient"):
+        write_boundary_field(d / "level.toml", "planet")
+
+
+def test_write_boundary_field_write_bak_writes_pre_change_bytes(tmp_path):
+    d = _mini_level(tmp_path)
+    toml_path = d / "level.toml"
+    before = toml_path.read_bytes()
+    bak = write_boundary_field(toml_path, "ambient", write_bak=True)
+    assert bak is not None and bak.read_bytes() == before
+    assert bak.read_bytes() != toml_path.read_bytes()
+
+
+def test_write_boundary_field_atomic_write_is_a_real_file_replace(tmp_path):
+    # Sanity: the write lands via the SAME atomic temp+rename path as every
+    # other level_lib writer — no leftover .tmp file after a normal write.
+    d = _mini_level(tmp_path)
+    toml_path = d / "level.toml"
+    write_boundary_field(toml_path, "ambient")
+    leftovers = list(d.glob("level.toml.*.tmp"))
+    assert leftovers == []
 
 
 # ---------------------------------------------------------------------------

@@ -57,6 +57,8 @@ from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
+
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -276,20 +278,36 @@ def commit_move_selection(log, grid, lights, entities, ids,
 # ---------------------------------------------------------------------------
 
 def commit_delete_selection(log, grid, lights, entities, wires, ids,
-                            tile_size_m):
+                            tile_size_m, *, zones=None, clear_zone_ids=None):
     """Delete every selected instance as ONE compound transaction:
     `GridCellsOp("material")` (a selected door's span clears to open air —
     the same "clear" a move's old span gets) + `CollectionOp("lights")` /
     `CollectionOp("entities")` + `CollectionOp("wires")` — any wire whose
     `from` or non-tag `to` names a deleted id is dropped in the SAME
     transaction (the referential-integrity rule: undo must restore the
-    wires along with the entity, never strand them on a dead id). Returns
-    the committed Transaction, or `None` when `ids` is empty."""
+    wires along with the entity, never strand them on a dead id).
+
+    Arc C5: `clear_zone_ids` (a set of `zone_id` ints, or `None`/empty) also
+    clears every `zones.npy` tile carrying one of those ids to 0 in the SAME
+    transaction — the "deleting a zone instance PROMPTS to clear its paint"
+    gesture (editor design §5); the caller (`map_editor`'s SELECT mode)
+    decides which ids to clear from the user's confirm keypress. A zone
+    instance deleted WITHOUT its id in `clear_zone_ids` simply leaves its
+    paint orphaned — the loader's own validator warning covers that case,
+    never a crash. `zones` is ignored unless `clear_zone_ids` is non-empty
+    (no `GridCellsOp("zones")` opens at all when nothing needs clearing, so
+    a delete with no zone instances is byte-for-byte the pre-C5 behavior).
+
+    Returns the committed Transaction, or `None` when `ids` is empty."""
     if not ids:
         return None
     ids_set = set(ids)
+    clear_zone_ids = set(clear_zone_ids) if clear_zone_ids else set()
     log.begin("delete selection")
     log.snapshot_grid("material")
+    clear_zones = zones is not None and clear_zone_ids
+    if clear_zones:
+        log.snapshot_grid("zones")
     log.snapshot_coll("lights")
     log.snapshot_coll("entities")
     log.snapshot_coll("wires")
@@ -299,6 +317,10 @@ def commit_delete_selection(log, grid, lights, entities, wires, ids,
         if e.id in ids_set and e.class_name == door_entity_port.DOOR_CLASS:
             for fy, fx in door_entity_port.instance_span(e.fields, tile_size_m):
                 grid[fy, fx] = door_entity_port.stamp_value_for("open")
+    if clear_zones:
+        mask = np.isin(zones, np.asarray(sorted(clear_zone_ids),
+                                         dtype=zones.dtype))
+        zones[mask] = 0
     lights[:] = [l for l in lights if l.id not in ids_set]
     entities[:] = [e for e in entities if e.id not in ids_set]
     wires[:] = [w for w in wires if not _wire_touches(w, ids_set)]

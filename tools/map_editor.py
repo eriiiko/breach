@@ -39,8 +39,10 @@ Controls (the tool rail + inspector show the active mode's line):
 
   Any mode:
     TAB / Shift+TAB      - cycle mode PAINT -> ROOM -> CORRIDOR -> DOOR ->
-                           SPAWN -> LIGHT -> WATER -> ENTITY; F1..F8 jump
-                           straight to a mode
+                           SPAWN -> LIGHT -> WATER -> ENTITY -> SELECT ->
+                           WAND -> ZONE -> AIR -> PROPS; F1..F12 jump
+                           straight to a mode (PROPS has no F-key — TAB or
+                           a tool-rail click only, Arc C5)
     0-8, 9               - select material (palette GENERATED from
                            MATERIAL_NAMES at launch — key = material id;
                            9 = SPACE; ids past 8 are eyedropper-only)
@@ -138,6 +140,38 @@ Controls (the tool rail + inspector show the active mode's line):
                            back at that tool. A class needing a field this
                            tool can't fill (a zone's zone_id — C5's paint
                            tool) is refused with a status message.
+  SELECT (Arc C4): see entity_selection.py — box/shift-click select, move,
+                           delete (Delete; a selected zone instance PROMPTS
+                           to also clear its paint — Arc C5), tag-assign,
+                           inspector field edit, clump copy/paste.
+  WAND (Arc C5):  LMB      - enclosure-fill the region under the cursor
+                           (bounded by walls, the WATER fill's own
+                           boundary) to the MATERIAL palette's selected id
+                           (9/SPACE = vacuum); RMB same-code-selects the
+                           contiguous run under the cursor and paints it
+                           the same way. One `GridCellsOp("material")`
+                           transaction per paint.
+  ZONE (Arc C5):  LMB      - enclosure-fill paints the current TARGET zone
+                           id into `zones.npy` (a brand-new id also mints
+                           its `breach_site`/`extraction_zone` [[entity]]
+                           instance, one compound transaction); RMB
+                           same-code-selects the id under the cursor and
+                           clears its paint; I eyedrops the id/class under
+                           the cursor as the new target; [ / ] cycle the
+                           target among "new" + every existing id; C
+                           cycles the class a NEW id authors. The status
+                           bar's validator slot runs the loader's OWN §5
+                           binding rules live.
+  AIR (Arc C5):  LMB       - enclosure-fill seeds `air_init.npy` to the
+                           current pressure over a SEALED region only —
+                           the hull-leak validator refuses (paints
+                           NOTHING) a fill that reaches the map border;
+                           RMB fills to 0 atm (a depressurized start);
+                           -/= step the target pressure 0.1 atm.
+  PROPS (Arc C5):  B       - toggle the level's `boundary` field
+                           space <-> ambient — format + level_lib
+                           writeback only (canon §7); no canvas edits, no
+                           physics change here.
 
 Undo — the transaction log (Arc C2, design docs/arc_c_c2_undo_design_
 2026-07-22.md): the four per-domain rings are GONE, replaced by ONE global
@@ -180,6 +214,7 @@ hand-authored water_init.npy.
 from __future__ import annotations
 
 import argparse
+import colorsys
 import math
 import re
 import shutil
@@ -206,7 +241,8 @@ import level_loader
 from level_lib import (WATER_FILENAME, color_255, format_light_lines,  # noqa: F401
                        format_spawn_lines, format_water_lines, write_lights,
                        write_spawns, write_water)
-from level_loader import SPACE_CODE, EntityInstance, SpawnEntry
+from level_loader import (SPACE_CODE, ZONE_CLASSES, BOUNDARY_MODES,
+                          EntityInstance, SpawnEntry)
 from level_lights import beacon_angle
 from simulation import water_fixed
 from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_DOOR_CLOSED,
@@ -216,7 +252,9 @@ from bake_level_art import (BIT_E, BIT_N, BIT_S, BIT_W, DEFAULT_PX_PER_TILE,
                             bake_region, edge16_mask, load_tileset)
 from level_edit_common import (BRUSH_MAX, BRUSH_MIN,
                                art_px_to_tile, brush_rect, build_palette,
-                               line_tiles, paint_tiles, save_tilemap_csv)
+                               enclosure_fill_region, line_tiles, paint_tiles,
+                               region_touches_border, same_code_region,
+                               save_tilemap_csv)
 from editor_layout import compute_panes, fit_camera, screen_from_world
 # Arc C2 — the single transaction-log undo (design
 # docs/arc_c_c2_undo_design_2026-07-22.md) REPLACES the four per-domain rings
@@ -242,13 +280,24 @@ import sensor_entity_port
 # placements") lives in entity_selection.py so it is unit-testable without
 # raylib; the SELECT mode below is the thin interactive shell over it.
 import entity_selection
+# Arc C5 — magic wand (enclosure fill / same-code select, imported above
+# from level_edit_common) + zone paint (zone_entity_port: the binding
+# validators are level_loader's OWN §5 rules, run live) + air_init paint
+# (air_paint: the hull-leak validator) + the level-properties PROPS mode
+# (boundary field, format+loader-only — see level_lib.write_boundary_field).
+import air_paint
+import zone_entity_port
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 MODES = ("PAINT", "ROOM", "CORRIDOR", "DOOR", "SPAWN", "LIGHT", "WATER",
-        "ENTITY", "SELECT")
+        "ENTITY", "SELECT", "WAND", "ZONE", "AIR", "PROPS")
+# F1..F12 jump straight to the first 12 modes (raylib defines no F13+); the
+# 13th (PROPS, Arc C5 — no F-key left) is reachable via TAB/Shift+TAB cycle
+# and a tool-rail click, same as every other mode.
+MAX_MODE_FKEYS = 12
 DEFAULT_CORRIDOR_WIDTH = 3
 CORRIDOR_MIN, CORRIDOR_MAX = 1, 9
 SCAFFOLD_MIN = 5                 # SPACE border + hull ring + 1 interior tile
@@ -302,6 +351,26 @@ WATER_DEPTH_MIN_M = 0.1
 WATER_DEPTH_MAX_M = 3.0
 WATER_DEEP_HINT_M = 1.5
 WATER_OVERLAY_RGB = (60, 140, 255)   # editor overlay tint (not the renderer)
+
+# ---- ZONE mode (Arc C5, editor doc §5) -------------------------------------
+ZONE_OVERLAY_ALPHA = 90
+ZONE_PAINT_CLASSES = ZONE_CLASSES     # ("breach_site", "extraction_zone")
+
+# ---- AIR mode (Arc C5, editor doc §7) --------------------------------------
+AIR_PRESSURE_DEFAULT_ATM = 1.0
+AIR_PRESSURE_STEP_ATM = 0.1
+AIR_PRESSURE_MIN_ATM = 0.0
+AIR_PRESSURE_MAX_ATM = 4.0
+AIR_OVERLAY_RGB = (255, 150, 40)      # editor overlay tint for authored air
+
+
+def _zone_color(zone_id: int) -> tuple:
+    """Deterministic, well-spread colour for a zone paint id (the same
+    golden-angle hue-walk `level_edit_common._auto_rgb` uses for materials,
+    kept local so this module never reaches into that private helper)."""
+    hue = (int(zone_id) * 0.6180339887498949) % 1.0
+    r, g, b = colorsys.hsv_to_rgb(hue, 0.7, 0.95)
+    return (int(r * 255), int(g * 255), int(b * 255))
 
 # The +1-tile re-bake margin (engine/15 §4 / P2 edge16 contract): a stroke
 # flips the edge masks of its NEIGHBOURS, so the preview re-bake rect must
@@ -793,6 +862,16 @@ MODE_HINTS = {
               "drag a selected instance = move  Delete removes  "
               "A select-by-class  T tag  I re-id  [ ] focus field  "
               "= / - nudge  Enter cycle  C color  Ctrl+C/V clump copy/paste",
+    "WAND": "LMB enclosure-fill  RMB same-code select+paint  "
+            "(paints the MATERIAL palette's selected id — 9/SPACE = vacuum)",
+    "ZONE": "LMB enclosure-fill paints the target zone  RMB same-code "
+            "clears a zone's paint  I eyedrop target  [ ] cycle target "
+            "(new/existing)  C zone class (new only)",
+    "AIR": "LMB enclosure-fill seeds air_init to the target pressure "
+           "(refused if it reaches the map border — hull-leak)  "
+           "RMB fill to 0 atm  -/= pressure 0.1 atm steps",
+    "PROPS": "level-wide properties (no canvas edits): B toggles "
+             "boundary space<->ambient (format only — no physics here)",
 }
 
 
@@ -937,20 +1016,60 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
     water_depth_m = WATER_DEPTH_DEFAULT_M
     water_solid = water_solid_codes()
 
+    # Arc C5 — ZONE paint: zones.npy (uint8 paint ids), `None` at load when
+    # the level carries no zones.npy at all (zone dormancy, canon §7). The
+    # FIRST successful zone paint allocates zeros + registers it with the
+    # undo ctx IN PLACE (C2's own forward note: "GridCellsOp('zones') —
+    # register those grids in ctx.grids only once allocated" — a GridCellsOp
+    # on a None grid crashes). `zone_paint_class` (C key, ZONE mode) picks
+    # which class a brand-new id authors; `zone_paint_id` is the paint
+    # target — None means "next unused id" ("new"), else an existing id
+    # ([ / ] cycles, I eyedrops the id under the cursor).
+    zones = (np.array(lvl.zone_grid, dtype=np.uint8, copy=True)
+             if lvl.zone_grid is not None else None)
+    zone_paint_class = ZONE_PAINT_CLASSES[0]     # "breach_site"
+    zone_paint_id = None
+    pending_zone_delete = None    # {"ids": [...], "zone_ids": set(...)} or None
+
+    # Arc C5 — AIR paint: air_init.npy (int32 Q16.16 atm), `None` at load
+    # when absent (air dormancy, A9). Allocated + registered the SAME way as
+    # zones, on the first successful (non-leaky) fill — seeded to FP_ONE
+    # everywhere first (air_paint.default_ambient_grid), so painting one
+    # room never silently zero-pressures the rest of a previously-unpainted
+    # map. `air_pressure_atm` is the UI's target pressure (-/= steps it).
+    air = (np.array(lvl.air_init_q, dtype=np.int32, copy=True)
+          if lvl.air_init_q is not None else None)
+    air_pressure_atm = AIR_PRESSURE_DEFAULT_ATM
+
+    # Arc C5 — PROPS: the level-properties pane's one field so far
+    # (`boundary`, format+loader-only — canon §7). B toggles it; Ctrl+S
+    # writes it through level_lib.write_boundary_field ONLY when changed
+    # from the value the level loaded with (never a no-op rewrite).
+    level_boundary = lvl.boundary
+
     # Arc C2 — ONE global transaction log replaces the four per-domain rings
     # (undo/spawn_undo/light_undo/water_undo) and the four dirty_* bools. The
     # ctx registry maps names to the LIVE state handles; ops write into them in
     # place (grids via fancy indexing, collections via slice-assign), so the
     # closed-over grid/water_q/spawns/lights/entities names stay valid. Handles
-    # are refilled in place, NEVER rebound (§7).
+    # are refilled in place, NEVER rebound (§7). zones/air join the grids dict
+    # ONLY if the level already had them at load — a first in-session paint
+    # allocates + adds the key then (never rebinding "material"/"water").
+    undo_grids = {"material": grid, "water": water_q}
+    if zones is not None:
+        undo_grids["zones"] = zones
+    if air is not None:
+        undo_grids["air"] = air
     undo_ctx = undo_log.UndoContext(
-        grids={"material": grid, "water": water_q},
+        grids=undo_grids,
         collections={"spawns": spawns, "lights": lights, "entities": entities,
                     "wires": wires})
     log = undo_log.TransactionLog(undo_ctx)
     csv_bak_written = False
     toml_bak_written = False
     water_bak_written = False     # water_init.npy's OWN once-per-session .bak
+    zones_bak_written = False     # zones.npy's OWN once-per-session .bak
+    air_bak_written = False       # air_init.npy's OWN once-per-session .bak
 
     # PAINT stroke state (align-tool pattern). The pre-stroke grid snapshot is
     # now the log's transient before-copy (snapshot_grid at stroke start), so
@@ -1039,7 +1158,7 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
         nonlocal room_start, corr_start, spawn_drag, light_drag
         nonlocal stroke_active, stroke_dirty, last_paint_tile
         nonlocal door_drag, entity_drag
-        nonlocal select_box, select_move, text_entry
+        nonlocal select_box, select_move, text_entry, pending_zone_delete
         if log.has_pending:
             log.commit()
         if stroke_dirty is not None:
@@ -1051,6 +1170,7 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
         door_drag = entity_drag = None
         select_box = select_move = None
         text_entry = None
+        pending_zone_delete = None    # a mode switch cancels the confirm
         stroke_active, stroke_dirty = False, None
         last_paint_tile = None
 
@@ -1105,7 +1225,7 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             cancel_transients()
             mode = MODES[mode_idx]
         if not typing:
-            for i in range(len(MODES)):
+            for i in range(min(len(MODES), MAX_MODE_FKEYS)):
                 if rl.is_key_pressed(K.KEY_F1 + i):
                     mode_idx = i
                     cancel_transients()
@@ -1768,12 +1888,69 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                 if rl.is_key_pressed(K.KEY_I) and len(selection) == 1:
                     text_entry = {"kind": "id", "buf": next(iter(selection))}
                 if rl.is_key_pressed(K.KEY_DELETE) and selection:
+                    # Arc C5 (editor design §5): deleting a zone instance
+                    # PROMPTS to clear its paint — a second Delete press (the
+                    # selection unchanged since arming) confirms "clear it
+                    # too"; Backspace confirms "keep it" (orphaned paint,
+                    # the loader's own validator just warns). A selection
+                    # change while armed restarts the prompt from scratch
+                    # rather than acting on stale state.
+                    if (pending_zone_delete is not None
+                            and set(pending_zone_delete["ids"]) != selection):
+                        pending_zone_delete = None
+                    if pending_zone_delete is None:
+                        zone_ids_here = set()
+                        for sid in selection:
+                            cn, idx = entity_selection.find_instance(
+                                sid, lights, entities)
+                            if (cn == "entities"
+                                    and entities[idx].class_name
+                                    in ZONE_CLASSES):
+                                zone_ids_here.add(
+                                    int(entities[idx].fields["zone_id"]))
+                        if zone_ids_here:
+                            pending_zone_delete = {
+                                "ids": list(selection),
+                                "zone_ids": zone_ids_here}
+                            n = len(zone_ids_here)
+                            flash, flash_frames = (
+                                f"deleting {n} zone"
+                                f"{'s' if n != 1 else ''} — Delete again to "
+                                f"ALSO clear its zones.npy paint, Backspace "
+                                f"to keep it (orphaned, validator warns)",
+                                260)
+                        else:
+                            txn = entity_selection.commit_delete_selection(
+                                log, grid, lights, entities, wires,
+                                list(selection), tile_size_m, zones=zones,
+                                clear_zone_ids=set())
+                            rebake_txn(txn)
+                            flash, flash_frames = (
+                                f"deleted {len(selection)}", 140)
+                            selection = set()
+                    else:
+                        txn = entity_selection.commit_delete_selection(
+                            log, grid, lights, entities, wires,
+                            pending_zone_delete["ids"], tile_size_m,
+                            zones=zones,
+                            clear_zone_ids=pending_zone_delete["zone_ids"])
+                        rebake_txn(txn)
+                        flash, flash_frames = (
+                            f"deleted {len(pending_zone_delete['ids'])} "
+                            f"(zone paint cleared)", 160)
+                        selection = set()
+                        pending_zone_delete = None
+                if (pending_zone_delete is not None
+                        and rl.is_key_pressed(K.KEY_BACKSPACE)):
                     txn = entity_selection.commit_delete_selection(
                         log, grid, lights, entities, wires,
-                        list(selection), tile_size_m)
+                        pending_zone_delete["ids"], tile_size_m)
                     rebake_txn(txn)
-                    flash, flash_frames = f"deleted {len(selection)}", 140
+                    flash, flash_frames = (
+                        f"deleted {len(pending_zone_delete['ids'])} (paint "
+                        f"kept, orphaned)", 160)
                     selection = set()
+                    pending_zone_delete = None
                 if ctrl and rl.is_key_pressed(K.KEY_C) and selection:
                     clump_clipboard = entity_selection.compute_clump_copy(
                         list(selection), lights, entities, wires)
@@ -1927,6 +2104,179 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                         selection = set(ids)
                     select_box = None
 
+        # ---- WAND (Arc C5 — enclosure fill / same-code select, editor doc
+        # §7): paints the MATERIAL palette's `selected_id` (9/SPACE included
+        # — vacuum is simply that id) over the region either algorithm
+        # resolves. One `GridCellsOp("material")` transaction per paint,
+        # via the same generic committer AIR/ZONE reuse.
+        elif mode == "WAND":
+            if (lmb_click or rmb_click) and not over_hud and cursor_in:
+                if lmb_click:
+                    region = enclosure_fill_region(
+                        water_open_mask(grid, water_solid), cur_tx, cur_ty)
+                    verb = "enclosure-fill"
+                else:
+                    region = same_code_region(grid, cur_tx, cur_ty)
+                    verb = "same-code select"
+                mat_name = palette.get(selected_id, ("?", None))[0]
+                if region is None:
+                    flash, flash_frames = f"wand {verb}: no region here", 160
+                elif all(int(grid[ty_, tx_]) == selected_id
+                        for tx_, ty_ in region):
+                    flash, flash_frames = (
+                        f"wand {verb}: region already {mat_name}", 120)
+                else:
+                    log.begin(f"wand {verb}")
+                    log.snapshot_grid("material")
+                    for tx_, ty_ in region:
+                        grid[ty_, tx_] = selected_id
+                    txn = log.commit()
+                    rebake_txn(txn)
+                    flash, flash_frames = (
+                        f"wand {verb}: painted {len(region)} tiles "
+                        f"{mat_name}", 180)
+
+        # ---- ZONE (Arc C5, editor doc §5): paint zones.npy, one instance
+        # per painted id. LMB enclosure-fills the current paint TARGET (a
+        # brand-new id also authors its [[entity]] instance, in the SAME
+        # compound transaction — the C3 DOOR archetype); RMB same-code-
+        # selects the id under the cursor and clears its paint; I eyedrops
+        # the id/class under the cursor as the new target; [ / ] cycle the
+        # target among "new" + every existing id.
+        elif mode == "ZONE":
+            if rl.is_key_pressed(K.KEY_C):
+                idx = ZONE_PAINT_CLASSES.index(zone_paint_class)
+                zone_paint_class = ZONE_PAINT_CLASSES[
+                    (idx + 1) % len(ZONE_PAINT_CLASSES)]
+                flash, flash_frames = (
+                    f"new zones paint as {zone_paint_class}", 140)
+            if _pressed(K.KEY_LEFT_BRACKET) or _pressed(K.KEY_RIGHT_BRACKET):
+                options = [None] + sorted(
+                    zone_entity_port.zone_ids_in_use(entities))
+                idx = (options.index(zone_paint_id)
+                      if zone_paint_id in options else 0)
+                step = -1 if _pressed(K.KEY_LEFT_BRACKET) else 1
+                zone_paint_id = options[(idx + step) % len(options)]
+                if zone_paint_id is not None:
+                    claim = zone_entity_port.find_zone_claim(
+                        entities, zone_paint_id)
+                    if claim is not None:
+                        zone_paint_class = claim.class_name
+                label = "new" if zone_paint_id is None else str(zone_paint_id)
+                flash, flash_frames = f"zone paint target: {label}", 120
+            if rl.is_key_pressed(K.KEY_I) and cursor_in and zones is not None:
+                under = int(zones[cur_ty, cur_tx])
+                if under:
+                    zone_paint_id = under
+                    claim = zone_entity_port.find_zone_claim(entities, under)
+                    if claim is not None:
+                        zone_paint_class = claim.class_name
+                    flash, flash_frames = f"picked up zone {under}", 120
+                else:
+                    zone_paint_id = None
+                    flash, flash_frames = "target: new zone", 120
+            if lmb_click and not over_hud and cursor_in:
+                region = enclosure_fill_region(
+                    water_open_mask(grid, water_solid), cur_tx, cur_ty)
+                if region is None:
+                    flash, flash_frames = "zone: no enclosed region here", 160
+                else:
+                    zid = (zone_paint_id if zone_paint_id is not None
+                          else zone_entity_port.next_zone_id(entities))
+                    existing_claim = zone_entity_port.find_zone_claim(
+                        entities, zid)
+                    cls_payload = (None if existing_claim is not None else
+                                  registry_payload.get(
+                                      "classes", {}).get(zone_paint_class))
+                    if existing_claim is None and cls_payload is None:
+                        flash, flash_frames = (
+                            f"{zone_paint_class}: not in the loaded "
+                            f"registry (stale selection?)", 200)
+                    else:
+                        new_instance = None
+                        if existing_claim is None:
+                            new_eid = light_entity_port.unique_entity_id(
+                                zone_paint_class, lights, entities)
+                            new_instance = (
+                                zone_entity_port.build_zone_instance(
+                                    cls_payload, zone_paint_class, zid,
+                                    new_eid))
+                        if zones is None:
+                            zones = np.zeros(grid.shape, dtype=np.uint8)
+                            undo_ctx.grids["zones"] = zones
+                        zone_entity_port.commit_zone_paint(
+                            log, zones, entities, region, zid, new_instance)
+                        zone_paint_id = zid
+                        msg = (f"zone {zid} ({zone_paint_class}): painted "
+                              f"{len(region)} tiles")
+                        if new_instance is not None:
+                            msg += f", new instance {new_instance.id}"
+                        flash, flash_frames = msg, 200
+            if rmb_click and not over_hud and cursor_in and zones is not None:
+                under = int(zones[cur_ty, cur_tx])
+                if not under:
+                    flash, flash_frames = "zone: nothing painted here", 120
+                else:
+                    region = same_code_region(zones, cur_tx, cur_ty)
+                    zone_entity_port.commit_zone_clear(log, zones, region)
+                    flash, flash_frames = (
+                        f"cleared {len(region)} tiles of zone {under}", 160)
+
+        # ---- AIR (Arc C5, editor doc §7): paint air_init.npy, hull-leak
+        # gated. LMB fills the enclosed region to the current pressure (only
+        # when the fill is SEALED — a leaky fill paints nothing); RMB fills
+        # to 0 atm (a depressurized start, same "drain" convention as WATER).
+        elif mode == "AIR":
+            if _pressed(K.KEY_KP_ADD) or _pressed(K.KEY_EQUAL):
+                air_pressure_atm = min(
+                    AIR_PRESSURE_MAX_ATM,
+                    round(air_pressure_atm + AIR_PRESSURE_STEP_ATM, 2))
+            if _pressed(K.KEY_KP_SUBTRACT) or _pressed(K.KEY_MINUS):
+                air_pressure_atm = max(
+                    AIR_PRESSURE_MIN_ATM,
+                    round(air_pressure_atm - AIR_PRESSURE_STEP_ATM, 2))
+            if (lmb_click or rmb_click) and not over_hud and cursor_in:
+                region, why = air_paint.plan_air_fill(
+                    grid, water_solid, cur_tx, cur_ty)
+                if region is None:
+                    flash, flash_frames = f"air: {why}", 220
+                else:
+                    target = (0 if rmb_click
+                             else air_paint.quantize_atm(air_pressure_atm))
+                    if air is None:
+                        air = air_paint.default_ambient_grid(grid.shape)
+                        undo_ctx.grids["air"] = air
+                    if all(int(air[ty_, tx_]) == target
+                          for tx_, ty_ in region):
+                        flash, flash_frames = (
+                            "air: region already at that pressure", 120)
+                    else:
+                        log.begin("drain air" if rmb_click else "air")
+                        log.snapshot_grid("air")
+                        for tx_, ty_ in region:
+                            air[ty_, tx_] = target
+                        log.commit()
+                        if rmb_click:
+                            flash, flash_frames = (
+                                f"depressurized {len(region)} tiles", 160)
+                        else:
+                            flash, flash_frames = (
+                                f"sealed fill: seeded {len(region)} tiles to "
+                                f"{air_pressure_atm:.2f} atm", 180)
+
+        # ---- PROPS (Arc C5, editor doc §7 — a level-properties pane; no
+        # canvas edits): B toggles `boundary` — format + level_lib writeback
+        # only, the physics it will eventually drive is a later project's
+        # (canon §7).
+        elif mode == "PROPS":
+            if rl.is_key_pressed(K.KEY_B):
+                level_boundary = (
+                    BOUNDARY_MODES[1] if level_boundary == BOUNDARY_MODES[0]
+                    else BOUNDARY_MODES[0])
+                flash, flash_frames = (
+                    f"boundary = {level_boundary} (Ctrl+S saves; format "
+                    f"only — no physics change here)", 200)
+
         # ---- undo / redo / save ---------------------------------------------
         # ONE global history across ALL domains (§7.2 — the intended behavior
         # change): Ctrl+Z undoes the most-recent action irrespective of the
@@ -1981,6 +2331,7 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             save_tilemap_csv(csv_path, grid, write_bak=not csv_bak_written)
             csv_bak_written = True
             first = not toml_bak_written
+            did_toml_bak = first     # captured before any writer flips `first`
             # Wall-over-pool guard (P5 critique M3): mask the water grid
             # against the CURRENT material grid before writing — a wall or
             # SPACE painted over a pool after the fill zeroes those cells
@@ -2002,6 +2353,34 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             _, has_water = level_lib.write_water_npy(
                 level_dir, water_q, npy_bak=not water_bak_written)
             water_bak_written = True
+            # Arc C5 — zones.npy / air_init.npy: the SAME once-per-session
+            # .bak carrier pattern as water_init.npy (level_lib.
+            # write_zones_npy/write_air_init_npy — A8/A9's own writers, no
+            # level_lib change needed here). `zones`/`air` are `None` only
+            # when never painted this session AND absent at load — nothing
+            # to write, nothing to delete.
+            has_zones = False
+            if zones is not None:
+                _, has_zones = level_lib.write_zones_npy(
+                    level_dir, zones, npy_bak=not zones_bak_written)
+                zones_bak_written = True
+            has_air = False
+            if air is not None:
+                _, has_air = level_lib.write_air_init_npy(
+                    level_dir, air, npy_bak=not air_bak_written)
+                air_bak_written = True
+            # Arc C5 — PROPS: `boundary` is a bare top-level scalar, not a
+            # managed family — write it through its own tiny writer ONLY
+            # when it actually changed from the value the level loaded with
+            # (never a no-op rewrite). It must land BEFORE `handle.save`
+            # below so the ONE session .bak (`first`) captures the true
+            # pre-session bytes; `handle.save` then never re-baks.
+            if level_boundary != lvl.boundary:
+                level_lib.write_boundary_field(
+                    level_dir / "level.toml", level_boundary,
+                    write_bak=first)
+                toml_bak_written = True
+                first = False
             # LIGHT (Arc C1, Amendment A1): write through whichever family
             # this level already used at open time — never a forced
             # migration (editor doc §6 / Erik ruling 2 / canon §2). Arc C3:
@@ -2036,15 +2415,21 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             # the four dirty_* bools that could never clear on undo.
             log.mark_saved()
             wet = int(np.count_nonzero(water_q))
+            n_zoned = int(np.count_nonzero(zones)) if zones is not None else 0
+            n_aired = (int(np.count_nonzero(air != air_paint.FP_ONE))
+                      if air is not None else 0)
             flash, flash_frames = (
                 f"SAVED tilemap.csv + {len(spawns)} spawns + "
                 f"{len(lights)} lights + {len(entities)} entities + "
                 f"{len(wires)} wires + "
-                f"{f'{wet} water tiles' if has_water else 'no water'}"
+                f"{f'{wet} water tiles' if has_water else 'no water'} + "
+                f"{f'{n_zoned} zoned tiles' if has_zones else 'no zones'} + "
+                f"{f'{n_aired} authored air tiles' if has_air else 'no air override'}"
                 f"{f' ({cleared} cleared under walls/space)' if cleared else ''}"
+                f" + boundary={level_boundary}"
                 f" + bake blocks + "
                 f"full bake @ {summary['px_per_tile']} px/tile"
-                f"{' (.bak written)' if first else ''}", 240)
+                f"{' (.bak written)' if did_toml_bak else ''}", 240)
 
         # ---- draw ---------------------------------------------------------
         def to_screen(wx: float, wy: float) -> tuple:
@@ -2198,6 +2583,22 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                         rl.draw_circle_v(rl.Vector2(*tip_s), 4.0,
                                          rl.Color(*COL_OK))
 
+        elif mode in ("WAND", "ZONE", "AIR") and not over_hud and cursor_in:
+            # Cheap start-tile validity only (green/red, the DOOR/WATER
+            # pattern) — never a per-frame BFS; the real region resolves on
+            # click. WAND/ZONE both refuse a start tile that is solid-for-
+            # water (the shared enclosure boundary); AIR additionally
+            # refuses vacuum/SPACE (a fill cannot start already in vacuum).
+            v = int(grid[cur_ty, cur_tx])
+            if mode == "AIR":
+                ok = v not in water_solid
+            else:
+                ok = (v != SPACE_CODE) and (v not in water_solid)
+            col = COL_OK if ok else COL_BAD
+            s0 = to_screen(cur_tx * preview_ppt, cur_ty * preview_ppt)
+            rl.draw_rectangle_lines_ex(
+                rl.Rectangle(s0[0], s0[1], tw, th), 2.0, rl.Color(*col))
+
         elif mode == "SELECT" and not over_hud:
             def _instance_box_screen(coll_name, obj, off_tx=0, off_ty=0):
                 tiles = entity_selection.instance_tiles(
@@ -2278,6 +2679,44 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             rl.draw_rectangle(int(sx), int(sy),
                               max(1, int(tw)), max(1, int(th)),
                               rl.Color(wr, wg, wb, alpha))
+
+        # Zone overlay (every mode — level content, Arc C5): a deterministic
+        # colour per painted id (the same per-id colour ZONE mode's own
+        # eyedrop/target reads reuse implicitly, since it's a pure function
+        # of the id).
+        if zones is not None:
+            sub_z = zones[ty0:ty1, tx0:tx1]
+            zys, zxs = np.nonzero(sub_z)
+            for tx_, ty_, zid in zip((zxs + tx0).tolist(),
+                                     (zys + ty0).tolist(),
+                                     sub_z[zys, zxs].tolist()):
+                sx, sy = to_screen(tx_ * preview_ppt, ty_ * preview_ppt)
+                if sx + tw < 0 or sy + th < 0 or sx > win_w or sy > win_h:
+                    continue
+                zr, zg, zb = _zone_color(int(zid))
+                rl.draw_rectangle(int(sx), int(sy),
+                                  max(1, int(tw)), max(1, int(th)),
+                                  rl.Color(zr, zg, zb, ZONE_OVERLAY_ALPHA))
+
+        # Air overlay (every mode — level content, Arc C5): only the tiles
+        # that diverge from the FP_ONE (1.0 atm) default tint — a freshly
+        # allocated air_init.npy seeds FP_ONE everywhere (air_paint.
+        # default_ambient_grid), so this overlay traces exactly what the
+        # user actually painted regardless of mode.
+        if air is not None:
+            sub_a = air[ty0:ty1, tx0:tx1]
+            ays, axs = np.nonzero(sub_a != air_paint.FP_ONE)
+            ar, ag, ab = AIR_OVERLAY_RGB
+            for tx_, ty_, pq in zip((axs + tx0).tolist(), (ays + ty0).tolist(),
+                                    sub_a[ays, axs].tolist()):
+                sx, sy = to_screen(tx_ * preview_ppt, ty_ * preview_ppt)
+                if sx + tw < 0 or sy + th < 0 or sx > win_w or sy > win_h:
+                    continue
+                atm = pq / float(air_paint.FP_ONE)
+                alpha = int(min(190.0, 40.0 + abs(atm - 1.0) * 90.0))
+                rl.draw_rectangle(int(sx), int(sy),
+                                  max(1, int(tw)), max(1, int(th)),
+                                  rl.Color(ar, ag, ab, alpha))
 
         # Spawn markers (every mode — they are level content).
         hover_idx = spawn_at(spawns, ftx, fty) if mode == "SPAWN" else None
@@ -2397,6 +2836,18 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                      f"{int(np.count_nonzero(water_q))} wet tiles")
             if water_depth_m > WATER_DEEP_HINT_M:
                 extra += "  deep tank: drains may flash-boil (by design)"
+        elif mode == "WAND":
+            extra = f"target: {palette[selected_id][0]} (material palette)"
+        elif mode == "ZONE":
+            target = "new" if zone_paint_id is None else str(zone_paint_id)
+            n_painted = int(np.count_nonzero(zones)) if zones is not None else 0
+            extra = (f"target: {target} ({zone_paint_class}, C cycles)  "
+                     f"{n_painted} painted tiles")
+        elif mode == "AIR":
+            n_authored = (int(np.count_nonzero(air != air_paint.FP_ONE))
+                         if air is not None else 0)
+            extra = (f"pressure {air_pressure_atm:.2f} atm (-/=)  "
+                     f"{n_authored} authored tiles")
 
         # Top bar: level / grid / zoom / view mode.
         preview_note = ("" if preview_ppt == bake_ppt
@@ -2408,7 +2859,8 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             f"   view: {view_name} (V/N){preview_note}",
             top.x + 10, top.y + 12, 18, rl.Color(*COL_TEXT))
 
-        # Tool rail: the mode list (click a row, or TAB / F1-F7).
+        # Tool rail: the mode list (click a row, or TAB / F1-F12 — PROPS has
+        # no F-key left, TAB/rail-click only).
         for i, mname in enumerate(MODES):
             ry = rail.y + RAIL_PAD_Y + i * RAIL_ROW_H
             if ry + RAIL_ROW_H > rail.y + rail.h:
@@ -2417,7 +2869,8 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                 rl.draw_rectangle(rail.x + 4, ry, max(0, rail.w - 8),
                                   RAIL_ROW_H - 4, rl.Color(*COL_RAIL_SEL))
             col = COL_TEXT_HOT if i == mode_idx else COL_TEXT_DIM
-            rl.draw_text(f"F{i + 1} {mname}", rail.x + 12, ry + 6, 16,
+            fkey = f"F{i + 1} " if i < MAX_MODE_FKEYS else "   "
+            rl.draw_text(f"{fkey}{mname}", rail.x + 12, ry + 6, 16,
                          rl.Color(*col))
 
         # Palette pane: tab headers (MATERIAL / ENTITY, click to switch —
@@ -2576,6 +3029,16 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                 rl.draw_text("T assigns a tag to all selected",
                              insp.x + 10, iy, 13, rl.Color(*COL_TEXT_DIM))
                 iy += 16
+        elif mode == "PROPS":
+            rl.draw_text("[level properties]", insp.x + 10, iy, 18,
+                         rl.Color(*COL_TEXT_HOT))
+            iy += 26
+            rl.draw_text(f"boundary: {level_boundary}  (B toggles)",
+                         insp.x + 10, iy, 16, rl.Color(*COL_TEXT))
+            iy += 24
+            for ln in wrap_text(MODE_HINTS[mode], max(20, insp.w - 20), 13):
+                rl.draw_text(ln, insp.x + 10, iy, 13, rl.Color(*COL_TEXT_DIM))
+                iy += 16
         elif (selected_entity_class is not None
               and selected_entity_class in registry_payload.get("classes", {})):
             cls_payload = registry_payload["classes"][selected_entity_class]
@@ -2605,13 +3068,23 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
 
         # Status bar: mode | cursor tile | validator summary | registry-
         # import banner (red, Arc C1 — right of the validator slot, left of
-        # the unsaved dot: C0's reserved layout) | unsaved dot. The
-        # transient status flash rides the validator slot until C5 lands
-        # real validators.
+        # the unsaved dot: C0's reserved layout) | unsaved dot. A transient
+        # action flash (placements, wand paints, ...) takes the slot first;
+        # with nothing transient to show, Arc C5's LIVE zone-binding
+        # validator (level_loader's own §5 rules, run via zone_entity_port.
+        # zone_binding_summary — never re-derived) fills it instead of the
+        # old unconditional "ready", whenever the level has any zone content
+        # at all.
         if flash_frames > 0:
             flash_frames -= 1
         cur_txt = f"tile ({cur_tx},{cur_ty})" if cursor_in else "tile --"
-        valid = flash if flash_frames > 0 else "ready"
+        if flash_frames > 0:
+            valid = flash
+        elif zones is not None or any(e.class_name in ZONE_CLASSES
+                                      for e in entities):
+            valid = zone_entity_port.zone_binding_summary(zones, entities)
+        else:
+            valid = "ready"
         rl.draw_text(f"{mode}    |    {cur_txt}    |    {valid}",
                      status.x + 10, status.y + 6, 16, rl.Color(*COL_TEXT))
         unsaved_reserve = 0
@@ -2656,7 +3129,10 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
           f"unsaved={log.dirty} undo={log.undo_count} redo={log.redo_count} "
           f"spawns={len(spawns)} lights={len(lights)} "
           f"entities={len(entities)} wires={len(wires)} "
-          f"water_tiles={int(np.count_nonzero(water_q))}")
+          f"water_tiles={int(np.count_nonzero(water_q))} "
+          f"zoned_tiles={int(np.count_nonzero(zones)) if zones is not None else 0} "
+          f"air_tiles={int(np.count_nonzero(air != air_paint.FP_ONE)) if air is not None else 0} "
+          f"boundary={level_boundary}")
     if auto:
         if shot_path is not None and shot_path.is_file():
             print(f"auto screenshot: {shot_path}")

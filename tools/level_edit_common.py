@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import colorsys
 import sys
+from collections import deque
 from pathlib import Path
 
 # Make project modules importable regardless of cwd.
@@ -175,3 +176,77 @@ class UndoRing:
 
     def pop(self):
         return self._snaps.pop() if self._snaps else None
+
+
+# ---------------------------------------------------------------------------
+# Wand primitives (Arc C5, editor design §7): the two selection algorithms
+# every wand target (materials, vacuum, zones, air) shares. Both are
+# 4-connected BFS, differing ONLY in what stops the flood — the "deliberate
+# split" this module already keeps for water (:func:`water_fill_region`'s
+# own boundary is "solid-for-water OR SPACE"; these two are generic over ANY
+# caller-supplied boundary so zone/air painting can reuse the SAME walk
+# against their own rules, never a parallel BFS per target).
+# ---------------------------------------------------------------------------
+
+def same_code_region(grid, tx: int, ty: int):
+    """The wand's "same-code select": every cell reachable from `(tx, ty)`
+    by repeated 4-connected steps that stay EQUAL to the start tile's value
+    — boundary = a value change, never a solid/open distinction (the
+    complement of :func:`enclosure_fill_region`). Works over ANY integer
+    grid (materials, `zones.npy`) since it never consults a material table.
+    Returns a frozenset of `(tx, ty)` tile coords, or `None` when the start
+    tile is outside the grid."""
+    g = np.asarray(grid)
+    h, w = g.shape
+    tx, ty = int(tx), int(ty)
+    if not (0 <= tx < w and 0 <= ty < h):
+        return None
+    val = g[ty, tx]
+    region = {(tx, ty)}
+    q = deque(region)
+    while q:
+        cx, cy = q.popleft()
+        for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
+            nx, ny = cx + dx, cy + dy
+            if (0 <= nx < w and 0 <= ny < h and g[ny, nx] == val
+                    and (nx, ny) not in region):
+                region.add((nx, ny))
+                q.append((nx, ny))
+    return frozenset(region)
+
+
+def enclosure_fill_region(open_mask, tx: int, ty: int):
+    """The wand's "enclosure fill": every cell reachable from `(tx, ty)` by
+    repeated 4-connected steps through `open_mask` (a boolean array — True
+    = passable) — the SAME connectivity rule
+    :func:`water_fill_region`/``tools/level_airtight.py`` walk, generalized
+    over any caller-supplied mask so zone painting (bounded by walls) and
+    air painting (bounded by walls, walked THROUGH vacuum for the hull-leak
+    check) can each pass their own boundary definition instead of a parallel
+    BFS per target. Returns a frozenset of `(tx, ty)`, or `None` when the
+    start tile is outside the grid or `open_mask` is False there."""
+    m = np.asarray(open_mask, dtype=bool)
+    h, w = m.shape
+    tx, ty = int(tx), int(ty)
+    if not (0 <= tx < w and 0 <= ty < h) or not m[ty, tx]:
+        return None
+    region = {(tx, ty)}
+    q = deque(region)
+    while q:
+        cx, cy = q.popleft()
+        for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
+            nx, ny = cx + dx, cy + dy
+            if (0 <= nx < w and 0 <= ny < h and m[ny, nx]
+                    and (nx, ny) not in region):
+                region.add((nx, ny))
+                q.append((nx, ny))
+    return frozenset(region)
+
+
+def region_touches_border(region, grid_w: int, grid_h: int) -> bool:
+    """True iff any `(tx, ty)` in `region` sits on the outermost ring of a
+    `grid_w` x `grid_h` grid (row/col 0 or the last row/col) — the hull-leak
+    test (editor design §7): a fill that reaches the map border has escaped
+    the hull, never stayed inside a sealed room."""
+    return any(tx == 0 or ty == 0 or tx == grid_w - 1 or ty == grid_h - 1
+              for tx, ty in region)

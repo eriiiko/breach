@@ -302,6 +302,87 @@ def test_commit_delete_selection_empty_ids_is_noop():
 
 
 # ---------------------------------------------------------------------------
+# Delete + clear_zone_ids (Arc C5 — "deleting a zone instance prompts to
+# clear its paint")
+# ---------------------------------------------------------------------------
+
+def _zone_entity(id_, zone_id, cls_name="breach_site"):
+    return EntityInstance(id=id_, class_name=cls_name, ordinal=0, tags=(),
+                          fields={"zone_id": zone_id, "faction": 0,
+                                  "roster": []},
+                          authored_keys=("zone_id",))
+
+
+def test_commit_delete_selection_clears_zone_paint_when_requested():
+    grid = _wall_row()
+    zones = np.zeros(grid.shape, dtype=np.uint8)
+    zones[1:3, 1:3] = 1
+    zones[4:6, 1:3] = 2
+    bs1 = _zone_entity("bs_1", 1)
+    bs2 = _zone_entity("bs_2", 2)
+    entities = [bs1, bs2]
+    wires = []
+    ctx = undo_log.UndoContext(
+        grids={"material": grid, "zones": zones},
+        collections={"lights": [], "entities": entities, "wires": wires})
+    log = undo_log.TransactionLog(ctx)
+    zones_before = zones.copy()
+
+    txn = esel.commit_delete_selection(
+        log, grid, [], entities, wires, ["bs_1"], TILE_SIZE_M,
+        zones=zones, clear_zone_ids={1})
+    assert txn is not None
+    assert [e.id for e in entities] == ["bs_2"]
+    assert not zones[1:3, 1:3].any()          # zone 1's paint cleared
+    assert (zones[4:6, 1:3] == 2).all()       # zone 2's paint untouched
+
+    log.undo()
+    assert np.array_equal(zones, zones_before)
+    assert [e.id for e in entities] == ["bs_1", "bs_2"]
+
+
+def test_commit_delete_selection_without_clear_zone_ids_leaves_paint_orphaned():
+    grid = _wall_row()
+    zones = np.zeros(grid.shape, dtype=np.uint8)
+    zones[1:3, 1:3] = 1
+    entities = [_zone_entity("bs_1", 1)]
+    wires = []
+    ctx = undo_log.UndoContext(
+        grids={"material": grid, "zones": zones},
+        collections={"lights": [], "entities": entities, "wires": wires})
+    log = undo_log.TransactionLog(ctx)
+    zones_before = zones.copy()
+
+    # zones is passed but clear_zone_ids is not — the pre-C5 default: the
+    # instance is deleted, its paint is left exactly as-is (orphaned).
+    txn = esel.commit_delete_selection(
+        log, grid, [], entities, wires, ["bs_1"], TILE_SIZE_M, zones=zones)
+    assert txn is not None
+    assert entities == []
+    assert np.array_equal(zones, zones_before)   # untouched
+
+
+def test_commit_delete_selection_backward_compatible_with_no_zones_kwarg():
+    # Every pre-C5 call site (no zones=/clear_zone_ids=) must behave exactly
+    # as before — this is the C4 test's own grid/wires assertions, just
+    # confirming the new keyword-only params default to a no-op.
+    grid = _wall_row()
+    d = _door("door_1", 2, 3, n_tiles=3)
+    _stamp_door(grid, d)
+    entities = [d]
+    wires = []
+    ctx = undo_log.UndoContext(
+        grids={"material": grid},
+        collections={"lights": [], "entities": entities, "wires": wires})
+    log = undo_log.TransactionLog(ctx)
+    txn = esel.commit_delete_selection(log, grid, [], entities, wires,
+                                       ["door_1"], TILE_SIZE_M)
+    assert txn is not None
+    assert entities == []
+    assert (grid[3, 2:5] == MAT_AIR).all()
+
+
+# ---------------------------------------------------------------------------
 # Assign-tag-to-selection
 # ---------------------------------------------------------------------------
 

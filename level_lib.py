@@ -440,6 +440,58 @@ def write_air_init_npy(level_dir, air_q, *, npy_bak: bool = True):
     return nbak, True
 
 
+_BOUNDARY_LINE_RE = re.compile(
+    r'^\s*boundary\s*=\s*"(space|ambient)"\s*(#.*)?$')
+
+
+def write_boundary_field(toml_path, boundary: str, *,
+                         write_bak: bool = False):
+    """Set (or insert) the top-level ``boundary`` scalar (editor design §7 /
+    canon engine/16 §7 — format + client-side writeback ONLY, never the
+    physics it will eventually drive).
+
+    ``boundary`` is validated against :data:`level_loader.BOUNDARY_MODES` so
+    the editor can never write a value its own loader would then reject.
+    Unlike every other managed field, ``boundary`` is a BARE top-level key —
+    not a ``[[table]]``/``[table]`` header — so it does not fit
+    :func:`write_managed_blocks`' table-span replace; this is its own tiny
+    single-line find-or-insert, same atomic temp+rename write. An existing
+    ``boundary = "..."`` line is replaced in place; an absent one is
+    inserted right before the FIRST table header (keeping it grouped with
+    the file's other top-level scalars, never inside a managed block); a
+    file with no table at all (never true for a map-editor level, which
+    requires ``[bake]``) appends at EOF. Every other byte is untouched.
+    Returns the ``.bak`` path, or ``None``."""
+    boundary = str(boundary)
+    if boundary not in level_loader.BOUNDARY_MODES:
+        raise ValueError(
+            f"boundary must be one of {level_loader.BOUNDARY_MODES}, "
+            f"got {boundary!r}")
+    toml_path = Path(toml_path)
+    original = toml_path.read_bytes()
+    text = original.decode("utf-8")
+    nl = "\r\n" if "\r\n" in text else "\n"
+    out = text.splitlines(keepends=True)
+    new_line = f'boundary = "{boundary}"{nl}'
+    for i, line in enumerate(out):
+        if _BOUNDARY_LINE_RE.match(line):
+            out[i] = new_line
+            break
+        if _TABLE_HEADER_RE.match(line):
+            out.insert(i, new_line)
+            break
+    else:
+        if out and not out[-1].endswith(("\n", "\r")):
+            out[-1] += nl
+        out.append(new_line)
+    bak = None
+    if write_bak:
+        bak = Path(str(toml_path) + ".bak")
+        bak.write_bytes(original)
+    _atomic_write_bytes(toml_path, "".join(out).encode("utf-8"))
+    return bak
+
+
 def write_tilemap_csv(level_dir, grid, *, tilemap_rel: str = "tilemap.csv",
                       csv_bak: bool = True):
     """Write a level's tilemap CSV atomically — the migration tool's grid
