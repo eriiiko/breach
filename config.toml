@@ -555,6 +555,12 @@ blackbody_overlay_on = true
 fire_overlay_on = false
 pressure_overlay_on = false
 
+# Fire & Heat Beauty B2 (§6): the old flat smoke_overlay + additive glow_overlay
+# pair, kept behind a toggle for the P2 A/B against the new physical gas medium.
+# P1 lays this key (NO consumer yet — the medium pass + the live toggle land in
+# P2); it exists so the harness checkbox binds and P2 finds it.
+legacy_smoke_on = false
+
 # Blackbody temperature->colour ramp (renderer/blackbody.py; design
 # docs/fire_b1_blackbody_fire_lights_design_2026-07-21.md §1). Baked once into a
 # 1D LUT at renderer startup. Chroma via the Tanner Helland/Bartlett Kelvin->RGB
@@ -589,6 +595,34 @@ nms_window = 3             # non-max-suppression window (3 or 5; widen if oversu
 max_lights = 16            # brightest-K cap (the budget lever)
 light_range = 18.0         # omni reach in tiles (LONG on purpose — Erik ruling)
 light_gain = 1.0           # multiplies the black-body intensity into light weight
+
+# --- Fire & Heat Beauty B2 gas-medium render pass -------------------------
+# P1 PLUMBING ONLY: these blocks have NO consumers yet — renderer/gas_medium.py
+# (P2), shaders/gas_medium.fs (P3), the speckle pass (P4) read them later. They
+# exist now so the harness sliders bind and P2 finds them cleanly. Defaults are
+# the honest / identity values (design §6). RENDER-ONLY, tuned by eye with Erik,
+# never gated. (docs/fire_b2_smoke_honesty_design_2026-07-21.md §3-§6.)
+[render.gas_medium]
+plume_k_scale = 1.0         # RELATIVE multiplier on the shared smoke_absorb_scale base
+tau_curve_a = 1.0           # tau' = a*tau^b — artistic remap IN tau-SPACE
+tau_curve_b = 1.0           #   (b>1 steepens edges; 1/1 = fully honest)
+glow_gain = 1.0             # re-match the beloved god-ray brightness (tune)
+effect_gas_floor = 0.0      # NON-PHYSICAL legibility floor, poison/teargas
+fuel_haze_on = false        # stretch: fuel_gas refraction shimmer
+
+[render.gas_detail]
+enabled = true
+noise_octaves = 4           # fBm, persistence ~0.56 (Kolmogorov-flavored)
+noise_wavelength_tiles = 3.0
+adv_gain = 1.0              # k_adv: wind -> UV advection rate
+cycle_seconds = 2.5         # tau, from the 1/3-distortion rule
+erode_strength = 0.6        # low-density erosion depth
+warp_px = 3.0               # sampling-UV domain warp
+dither_on = true
+
+[render.speckle]
+mode = "soot"               # "off" | "noise" | "soot"  (A/B in studio)
+amp = 0.25
 
 # Material property table (named-key format, ch.02 — Material System).
 # One [materials.<name>] row per material id; columns indexed into per-id

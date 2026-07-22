@@ -63,6 +63,7 @@ from level_lights import (light_source_params, monotonic_total_tick,
                           partition_lights)
 from renderer import GameRenderer
 from renderer.fire_lights import FireLightSelector
+from renderer.frame_lights import build_frame_light_sources, build_light_source
 from renderer.game_renderer import RenderConfig
 from simulation import Simulation
 from simulation.unit import Unit
@@ -310,12 +311,9 @@ def main():
     sim_time_per_tick = 1.0 / float(CFG.clock.ticks_per_second)
     ticks_per_round = int(CFG.clock.ticks_per_round)
 
-    def _build_light_source(params: dict):
-        src = bp.LightSource()
-        for key, val in params.items():   # pybind class: setattr only —
-            setattr(src, key, val)        # never bp.LightSource(**params)
-        return src
-
+    # The LightSource setattr builder + the per-frame statics/beacons/fire
+    # assembly are extracted into renderer/frame_lights.py so main.py and
+    # tools/lighting_demo.py build the SAME list with no drift (B2 P1).
     lights_in, lights_off = partition_lights(level.lights,
                                              level.width, level.height)
     if lights_off:
@@ -325,7 +323,7 @@ def main():
         print(f"  WARNING: {len(lights_off)} [[light]] entries off-grid "
               f"for {level.width}x{level.height} — skipped: {skipped}")
     static_lights = [
-        _build_light_source(light_source_params(e, 0, sim_time_per_tick))
+        build_light_source(bp, light_source_params(e, 0, sim_time_per_tick))
         for e in lights_in if e.kind != "beacon"
     ]
     beacon_lights = [e for e in lights_in if e.kind == "beacon"]
@@ -382,30 +380,26 @@ def main():
                     if sim.is_paused():
                         break
 
-            # ----- Lights: level statics + beacons + mouse flashlight -----
-            sources = list(static_lights)
-            if beacon_lights:
-                # Angle = pure function of the MONOTONIC sim tick on the SIM
-                # clock (sim_time_per_tick, NEVER the wall-clock frame dt):
-                # beacons freeze on pause and replay exactly (P4 §2.2).
-                total_tick = monotonic_total_tick(
-                    sim.turn_number, ticks_per_round, sim.tick)
-                sources += [
-                    _build_light_source(
-                        light_source_params(e, total_tick, sim_time_per_tick))
-                    for e in beacon_lights
-                ]
-            # Fire lights (B1 §3): brightest-K hot tiles -> omni ray-traced
-            # sources, coloured by the black-body ramp. RENDER-ONLY (heat=0.0).
-            # Same setattr path as level lights; the peak/kept counts feed the
-            # HUD light counter (no silent caps). Gated by the live L toggle.
-            if renderer.show_fire_lights:
-                fire_params, fire_peaks = fire_light_selector.select(
-                    sim.gmap.temperature, renderer.blackbody_ramp)
-            else:
-                fire_params, fire_peaks = [], 0
-            sources += [_build_light_source(p) for p in fire_params]
-            renderer.set_fire_light_stats(len(fire_params), fire_peaks,
+            # ----- Lights: level statics + beacons + fire (shared assembly) --
+            # The statics/beacons/fire assembly lives in renderer/frame_lights.py
+            # so main.py and tools/lighting_demo.py build the SAME per-frame list
+            # with no drift (B2 P1). NOT an entity system — it only assembles
+            # LightSource params from today's suppliers (level [[light]] rows
+            # incl. the beacon, B1 fire tiles). total_tick = the MONOTONIC sim
+            # tick on the SIM clock: beacons freeze on pause + replay exactly
+            # (P4 §2.2), never the wall-clock frame dt. The mouse flashlight + W6
+            # transient emitters stay caller-side below (they differ per caller).
+            total_tick = monotonic_total_tick(
+                sim.turn_number, ticks_per_round, sim.tick)
+            frame = build_frame_light_sources(
+                bp, static_lights, beacon_lights,
+                total_tick=total_tick, sim_time_per_tick=sim_time_per_tick,
+                fire_selector=fire_light_selector,
+                temperature_field=sim.gmap.temperature,
+                blackbody_ramp=renderer.blackbody_ramp,
+                show_fire_lights=renderer.show_fire_lights)
+            sources = frame.sources
+            renderer.set_fire_light_stats(frame.fire_count, frame.fire_peaks,
                                           fire_light_selector.max_lights)
             mouse_f = renderer.mouse_to_tile_float()
             if mouse_f is not None:

@@ -6,13 +6,13 @@ blast) via raygui sliders while seeing the result in real time.
 
 Run:
     C:/Users/steen/anaconda3/python.exe tools/lighting_demo.py
+    C:/Users/steen/anaconda3/python.exe tools/lighting_demo.py --level fire_studio
     (--flood pre-fills the ship interior with standing water at startup, for
      tuning the water look without pouring by hand; --windowed for fixed 1280x720)
 
-Controls:
+Controls (keymap audited — O is intentionally unused):
     WASD / arrows  — pan camera
-    Q / E          — zoom out / in
-    Mouse wheel    — zoom
+    Q / E / wheel  — zoom
     Space          — pause / resume sim
     T              — toggle grenade-spawn mode (click to detonate)
     Left click     — spawn grenade (when in spawn mode)
@@ -21,12 +21,19 @@ Controls:
     F / Shift+F    — flood the whole interior to ~0.6 m / drain all water
     P / Shift+P    — tilt ship +2° / −2° (the Titanic dial, clamped ±20°)
     G              — toggle sRGB decode (renderer toggle from game)
-    O              — toggle water depth overlay (renderer toggle from game)
-    F1             — toggle grid overlay
-    F2             — toggle smoke
-    F4             — toggle lighting
+    V              — toggle water optics pass (renderer toggle; O moved -> V)
+    L              — toggle fire lights   F1/F2/F4 — grid / smoke / lighting
+    --- B2 studio (tool-side sim writes at the cursor) ---
+    I              — ignite the tile under the cursor (3x3, force-flammable)
+    J              — puff SMOKE (soot) under the cursor
+    K              — puff STEAM under the cursor
+    C              — toggle the door under the cursor (DoorRuntime, not paint)
+    1              — toggle the static lamp group (demo-side)
+    2              — toggle the rotating beacon on / off (demo-side)
 
-The right panel exposes all visual sliders. Save/Load presets to/from
+The right panel exposes all visual sliders (incl. the B2 gas-medium dials).
+The top-left readout is the hover-tile "microscope" (T + pseudo-Kelvin, fire,
+material, the five trace gases + O2). Save/Load presets to/from
 tools/lighting_presets.toml.
 """
 from __future__ import annotations
@@ -58,6 +65,12 @@ from simulation import gas_fixed
 from simulation import atmosphere_fixed
 from simulation.unit import Unit
 from simulation.physics import apply_explosion, add_explosion_smoke
+from simulation.gases import STEAM, SMOKE
+from level_lights import monotonic_total_tick
+from renderer.fire_lights import FireLightSelector
+from renderer.frame_lights import (build_frame_light_sources,
+                                    build_static_light_sources)
+from renderer.hover_readout import pack_hover_readout
 
 # ---------------------------------------------------------------------------
 # Preset file location
@@ -90,7 +103,33 @@ DEFAULTS = {
     "smoke_max_alpha": 180.0,
     # smoke^gamma render contrast (ch.05 §6.1 step 5): power curve on the
     # rendered smoke opacity, render-only. 1.0 = off; ~1.2 dense -> 2.5 thin.
+    # KEPT this beat (orchestrator ruling): the still-active smoke render path
+    # consumes it; the delete + tau-curve rework happen in P2.
     "smoke_render_gamma": 1.5,
+    # --- B2 gas-medium dials (§6). P1 PLUMBING: the sliders bind + write their
+    # config value; the medium/detail/speckle CONSUMERS land in P2-P4. Defaults
+    # = honest/identity (config [render.*]). soot_yield/smoke_emission mirror the
+    # SIM config (display-only here — Erik tunes them in the P5 feel session;
+    # this patch never changes their values). Re-init from CFG at startup. ------
+    "legacy_smoke_on": False,
+    "gm_plume_k_scale": 1.0,
+    "gm_tau_curve_a": 1.0,
+    "gm_tau_curve_b": 1.0,
+    "gm_glow_gain": 1.0,
+    "gm_effect_gas_floor": 0.0,
+    "gm_fuel_haze_on": False,
+    "gd_enabled": True,
+    "gd_noise_octaves": 4.0,
+    "gd_noise_wavelength_tiles": 3.0,
+    "gd_adv_gain": 1.0,
+    "gd_cycle_seconds": 2.5,
+    "gd_erode_strength": 0.6,
+    "gd_warp_px": 3.0,
+    "gd_dither_on": True,
+    "speckle_mode": 2.0,     # stepped slider: 0=off 1=noise 2=soot
+    "speckle_amp": 0.25,
+    "soot_yield": 0.3,       # mirror of [physics.combustion] (display-only, P1)
+    "smoke_emission": 0.8,   # mirror of [physics.fire] (display-only, P1)
     "show_pressure": True,
     "pressure_scale": 2.0,
     "blast_radius": 6.0,
@@ -330,6 +369,12 @@ class PanelState:
         self.spawn_mode = False
         self.paused = False
 
+        # B2 studio: DEMO-SIDE light grouping (NOT an entity system — the
+        # harness owns the lamp list and the helper rebuilds sources; passing
+        # [] drops a group this frame). 1 toggles the static lamps, 2 the beacon.
+        self.lamps_on = True
+        self.beacon_on = True
+
         # Preset name for save/load (16 char buffer)
         self.preset_name = "default"
 
@@ -411,6 +456,77 @@ def _section_header(label: str, x: int, y: int) -> int:
 FLOOD_LEVEL_M = 0.6
 
 
+def _parse_level_arg() -> Optional[str]:
+    """Read an optional ``--level NAME`` override (B2 P1; the studio session
+    runs ``--level fire_studio``). Default stays ``CFG.display.level``."""
+    if "--level" not in sys.argv:
+        return None
+    i = sys.argv.index("--level")
+    try:
+        name = sys.argv[i + 1]
+    except IndexError:
+        raise SystemExit("--level requires a level folder name, e.g. "
+                         "--level fire_studio")
+    if name.startswith("--"):
+        raise SystemExit(f"--level requires a level folder name, got {name!r}")
+    return name
+
+
+# ---------------------------------------------------------------------------
+# B2 studio injection + door toggle (TOOL-side direct sim writes — the debug
+# pattern of src/input_handler.py:255-301). TOOLS may write sim fields; the
+# RENDERER never does. All land immediately, even while paused.
+# ---------------------------------------------------------------------------
+
+def _inject_fire(sim, tile) -> None:
+    """Ignite a 3x3 patch at the cursor tile (force-flammable + full seed)."""
+    if tile is None:
+        return
+    fx, fy = tile
+    gmap = sim.gmap
+    h, w = gmap.fire.shape
+    if not (0 <= fy < h and 0 <= fx < w):
+        return
+    y0, y1 = max(0, fy - 1), min(h, fy + 2)
+    x0, x1 = max(0, fx - 1), min(w, fx + 2)
+    gmap.flammable[y0:y1, x0:x1] = True
+    from simulation import fire_fixed
+    gmap.fire[y0:y1, x0:x1] = fire_fixed.quantize_scalar(1.0)
+
+
+def _inject_gas(sim, tile, species: int) -> None:
+    """Puff a 3x3 blob of ``species`` at full density at the cursor tile."""
+    if tile is None:
+        return
+    fx, fy = tile
+    gmap = sim.gmap
+    _, h, w = gmap.gas.shape
+    if not (0 <= fy < h and 0 <= fx < w):
+        return
+    y0, y1 = max(0, fy - 1), min(h, fy + 2)
+    x0, x1 = max(0, fx - 1), min(w, fx + 2)
+    from simulation import gas_fixed
+    gmap.gas[species, y0:y1, x0:x1] = gas_fixed.SMOKE_MAX_Q
+
+
+def _toggle_door(sim, tile) -> None:
+    """Flip the want_open latch of the door under the cursor (DoorRuntime — the
+    9e sweep applies/retries it next unpaused tick), NOT tile paint."""
+    if tile is None:
+        return
+    fx, fy = tile
+    door = sim.door_at(fy, fx)          # door_at takes (fy, fx)
+    if door is None:
+        print(f"[demo] no door at tile ({fx}, {fy})")
+        return
+    if not door.alive:
+        print(f"[demo] door '{door.id}' at ({fx}, {fy}) is destroyed")
+        return
+    door.want_open = not door.want_open
+    print(f"[demo] door '{door.id}' want_open -> {int(door.want_open)} "
+          f"(state={door.state}; applies next unpaused tick)")
+
+
 def flood_interior(gmap, level_m: float = FLOOD_LEVEL_M) -> int:
     """Pre-fill every INTERIOR tile with standing water (direct write).
 
@@ -438,7 +554,10 @@ def drain_all(gmap) -> int:
 
 def main() -> None:
     # ---- 1. Load level + build sim ----
-    level_name = getattr(CFG.display, "level", "unhcr_vessel")
+    # --level overrides config for one launch (the studio runs
+    # --level fire_studio); default stays [display] level.
+    level_name = _parse_level_arg() or getattr(CFG.display, "level",
+                                               "unhcr_vessel")
     level = load_level(level_name)
     print(f"[lighting_demo] Level: {level.name}  {level.width}x{level.height} tiles")
 
@@ -499,6 +618,31 @@ def main() -> None:
 
     # Pressure overlay is now built into the renderer (renderer/pressure_overlay.py),
     # shared with the main game. No demo-local allocations needed.
+
+    # ---- B2: shared frame-light assembly (statics + beacon + fire) ----
+    # The SAME helper main.py uses (renderer/frame_lights.py) so the studio gets
+    # the level's lamps + rotating beacon + B1 fire lights with no drift. Lamps
+    # and beacon are DEMO-SIDE toggles (state.lamps_on / state.beacon_on) — NOT
+    # an entity system; passing [] to the helper drops a group this frame.
+    sim_time_per_tick = 1.0 / float(CFG.clock.ticks_per_second)
+    ticks_per_round = int(CFG.clock.ticks_per_round)
+    static_lights, beacon_lights, lights_off = build_static_light_sources(
+        bp, level.lights, level.width, level.height, sim_time_per_tick)
+    fire_selector = FireLightSelector.from_config(CFG)
+    if level.lights:
+        _off = f"  ({len(lights_off)} off-grid skipped)" if lights_off else ""
+        print(f"[lighting_demo] Lights: {len(static_lights)} static + "
+              f"{len(beacon_lights)} beacon from level.toml{_off}")
+
+    # FINAL keybindings (also on the panel; printed here since the tall panel
+    # can scroll the on-screen help off the bottom). Keymap AUDITED — O is
+    # avoided (documented water-overlay key); the studio keys land on free keys.
+    print("[lighting_demo] KEYS  I=ignite  J=smoke  K=steam  C=door  "
+          "1=lamps  2=beacon")
+    print("[lighting_demo]       Space=pause T=spawn U=water F/Shift+F=flood "
+          "P=tilt N=noise  |  L=firelights V=water G=sRGB")
+    print("[lighting_demo]       WASD/arrows=pan  Q/E/wheel=zoom  "
+          "F1/F2/F4=overlays  (O intentionally unused)")
 
     # ---- 4. Panel state ----
     state = PanelState()
@@ -565,6 +709,47 @@ def main() -> None:
                   float(getattr(_wc, "height_edge", 0.1)))
         state.set("water_height_floor",
                   float(getattr(_wc, "height_floor", 0.3)))
+
+    # B2 dials: open the sliders where config.toml sits (getattr-defaults keep
+    # the demo alive if a block is absent). soot_yield / smoke_emission MIRROR
+    # the sim config for display — this patch never writes them back to the sim.
+    _rend = getattr(CFG, "render", None)
+    _gm = getattr(_rend, "gas_medium", None)
+    _gd = getattr(_rend, "gas_detail", None)
+    _sp = getattr(_rend, "speckle", None)
+    if _rend is not None:
+        state.set("legacy_smoke_on",
+                  bool(getattr(_rend, "legacy_smoke_on", False)))
+    if _gm is not None:
+        state.set("gm_plume_k_scale", float(getattr(_gm, "plume_k_scale", 1.0)))
+        state.set("gm_tau_curve_a", float(getattr(_gm, "tau_curve_a", 1.0)))
+        state.set("gm_tau_curve_b", float(getattr(_gm, "tau_curve_b", 1.0)))
+        state.set("gm_glow_gain", float(getattr(_gm, "glow_gain", 1.0)))
+        state.set("gm_effect_gas_floor",
+                  float(getattr(_gm, "effect_gas_floor", 0.0)))
+        state.set("gm_fuel_haze_on", bool(getattr(_gm, "fuel_haze_on", False)))
+    if _gd is not None:
+        state.set("gd_enabled", bool(getattr(_gd, "enabled", True)))
+        state.set("gd_noise_octaves", float(getattr(_gd, "noise_octaves", 4)))
+        state.set("gd_noise_wavelength_tiles",
+                  float(getattr(_gd, "noise_wavelength_tiles", 3.0)))
+        state.set("gd_adv_gain", float(getattr(_gd, "adv_gain", 1.0)))
+        state.set("gd_cycle_seconds", float(getattr(_gd, "cycle_seconds", 2.5)))
+        state.set("gd_erode_strength",
+                  float(getattr(_gd, "erode_strength", 0.6)))
+        state.set("gd_warp_px", float(getattr(_gd, "warp_px", 3.0)))
+        state.set("gd_dither_on", bool(getattr(_gd, "dither_on", True)))
+    if _sp is not None:
+        _mode_idx = {"off": 0.0, "noise": 1.0, "soot": 2.0}.get(
+            str(getattr(_sp, "mode", "soot")), 2.0)
+        state.set("speckle_mode", _mode_idx)
+        state.set("speckle_amp", float(getattr(_sp, "amp", 0.25)))
+    _comb = getattr(getattr(CFG, "physics", None), "combustion", None)
+    _fire = getattr(getattr(CFG, "physics", None), "fire", None)
+    if _comb is not None:
+        state.set("soot_yield", float(getattr(_comb, "soot_yield", 0.3)))
+    if _fire is not None:
+        state.set("smoke_emission", float(getattr(_fire, "smoke_emission", 0.8)))
 
     # ---- 5. Sim timing ----
     last_time = time.perf_counter()
@@ -656,6 +841,27 @@ def main() -> None:
                                                 sim.gmap.tilt_x + step_r))
                 print(f"[demo] ship tilt_x -> "
                       f"{np.degrees(sim.gmap.tilt_x):+.1f} deg")
+
+            # ---- B2 studio keys: injection at cursor + door + light toggles --
+            # Keymap AUDITED: renderer.poll_toggles owns F1-F7 / T / L / V / M /
+            # B / H / G / [ ] / Q / E; the demo owns Space / T / N / U / F / P.
+            # These land on FREE keys (I/J/K/C/1/2). O is AVOIDED per the audit
+            # directive (the demo help documents O as the water-depth overlay).
+            _tile = renderer.mouse_to_tile()
+            if rl.is_key_pressed(K.KEY_I):        # ignite tile at cursor
+                _inject_fire(sim, _tile)
+            if rl.is_key_pressed(K.KEY_J):        # puff SMOKE (soot) at cursor
+                _inject_gas(sim, _tile, SMOKE)
+            if rl.is_key_pressed(K.KEY_K):        # puff STEAM at cursor
+                _inject_gas(sim, _tile, STEAM)
+            if rl.is_key_pressed(K.KEY_C):        # toggle door under cursor
+                _toggle_door(sim, _tile)
+            if rl.is_key_pressed(K.KEY_ONE):      # toggle the static lamp group
+                state.lamps_on = not state.lamps_on
+                print(f"[demo] lamps {'ON' if state.lamps_on else 'OFF'}")
+            if rl.is_key_pressed(K.KEY_TWO):      # toggle the rotating beacon
+                state.beacon_on = not state.beacon_on
+                print(f"[demo] beacon {'ON' if state.beacon_on else 'OFF'}")
 
             # ---- Sim tick ----
             if not state.paused:
@@ -776,8 +982,27 @@ def main() -> None:
             wp.set_height_edge(state.get("water_height_edge"))
             wp.set_height_floor(state.get("water_height_floor"))
 
-            # ---- Build mouse flashlight ----
-            sources = []
+            # ---- Lights: level statics + beacon + fire (shared assembly) ----
+            # The SAME helper main.py uses (B2 P1). Lamps/beacon are DEMO-SIDE
+            # toggles: pass [] to drop a group this frame. total_tick = the
+            # MONOTONIC sim tick on the SIM clock so the beacon freezes on pause
+            # + replays exactly (never wall dt).
+            total_tick = monotonic_total_tick(
+                sim.turn_number, ticks_per_round, sim.tick)
+            frame = build_frame_light_sources(
+                bp,
+                static_lights if state.lamps_on else [],
+                beacon_lights if state.beacon_on else [],
+                total_tick=total_tick, sim_time_per_tick=sim_time_per_tick,
+                fire_selector=fire_selector,
+                temperature_field=sim.gmap.temperature,
+                blackbody_ramp=renderer.blackbody_ramp,
+                show_fire_lights=renderer.show_fire_lights)
+            sources = frame.sources
+            renderer.set_fire_light_stats(frame.fire_count, frame.fire_peaks,
+                                          fire_selector.max_lights)
+
+            # ---- Mouse flashlight (caller-side, slider-driven) ----
             mouse_f = renderer.mouse_to_tile_float()
             if mouse_f is not None:
                 src = bp.LightSource()
@@ -842,59 +1067,54 @@ def main() -> None:
 
 def _draw_hud(renderer: GameRenderer, gmap, state: PanelState,
               now: float) -> None:
-    """Cursor tile coords + pressure + smoke, always visible top-left."""
-    mouse_f = renderer.mouse_to_tile_float()
-    H, W = gmap.solid.shape
+    """Header + the hover-tile "microscope" readout (B2 P1), top-left.
 
-    spawn_tag = " [SPAWN MODE — click to detonate]" if state.spawn_mode else ""
+    The readout — T in game units AND pseudo-Kelvin, fire intensity, material
+    name, the five trace gases (steam/smoke/poison/teargas/fuel_gas) + O2 — is
+    packed by renderer.hover_readout (pyray-free, unit-tested headless). READ-
+    ONLY gmap reads. The T->Kelvin conversion is REUSED from the black-body
+    ramp (kelvin = kelvin_ambient + k_temp_to_kelvin * T_game), so the readout
+    and the emissive overlay agree.
+    """
+    spawn_tag = " [SPAWN — click to detonate]" if state.spawn_mode else ""
     pause_tag = " [PAUSED]" if state.paused else ""
-    header = f"BREACH Lighting Demo{spawn_tag}{pause_tag}"
+    lamp_tag = "" if state.lamps_on else "  lamps:OFF"
+    beacon_tag = "" if state.beacon_on else "  beacon:OFF"
+    header = f"BREACH Lighting Demo{spawn_tag}{pause_tag}{lamp_tag}{beacon_tag}"
 
+    mouse_f = renderer.mouse_to_tile_float()
     if mouse_f is None:
-        tile_line = "tile (-, -) — outside map"
-        pressure_line = "pressure: —"
-        smoke_line = "smoke: —"
+        lines = [header, "tile (-, -) — outside map"]
     else:
         cx, cy = int(mouse_f[0]), int(mouse_f[1])
-        if 0 <= cx < W and 0 <= cy < H:
-            if gmap.is_vacuum[cy, cx]:
-                mat_name = "vacuum"
-            elif gmap.solid[cy, cx]:
-                mat_name = "hull"
-            else:
-                mat_val = int(gmap.material[cy, cx])
-                mat_name = {0: "air", 1: "hull", 3: "door"}.get(mat_val, f"mat{mat_val}")
-            tile_line = f"tile ({cx}, {cy}) — {mat_name}"
-            # atmosphere + wave_p are both int32 Q16.16 (S2a/S2c) — dequantize
-            # for the HUD readout (raw counts are ~65536x the real pressure).
+        # Reuse the black-body ramp's own game-ΔT -> pseudo-Kelvin conversion.
+        readout = pack_hover_readout(
+            gmap, cx, cy, renderer.blackbody_ramp._kelvin_from_tgame)
+        if readout is None:
+            lines = [header, f"tile ({cx}, {cy}) — out of bounds"]
+        else:
+            # atmosphere + wave_p are int32 Q16.16 (S2a/S2c) — dequantize.
             total_p = atmosphere_fixed.dequantize(
                 gmap.atmosphere[cy, cx] + gmap.wave_p[cy, cx])
-            pressure_line = f"pressure: {total_p:.3f}"
-            smoke_line = f"smoke: {gas_fixed.dequantize(gmap.smoke[cy, cx]):.3f}"
-        else:
-            tile_line = f"tile ({cx}, {cy}) — out of bounds"
-            pressure_line = "pressure: —"
-            smoke_line = "smoke: —"
+            lines = [header] + readout.lines + [f"pressure: {total_p:8.3f} atm"]
 
-    lines = [header, tile_line, pressure_line, smoke_line]
     font_size = 15
     pad = 6
     max_w = max(rl.measure_text(line, font_size) for line in lines)
     box_w = max_w + 2 * pad
     box_h = len(lines) * (font_size + 4) + 2 * pad
     x0, y0 = 12, 12
-    rl.draw_rectangle(x0, y0, box_w, box_h, rl.Color(0, 0, 0, 180))
+    rl.draw_rectangle(x0, y0, box_w, box_h, rl.Color(0, 0, 0, 190))
     for i, line in enumerate(lines):
-        color = rl.Color(255, 230, 80, 255) if i == 0 else rl.Color(200, 230, 255, 255)
-        rl.draw_text(line, x0 + pad, y0 + pad + i * (font_size + 4), font_size, color)
+        color = (rl.Color(255, 230, 80, 255) if i == 0
+                 else rl.Color(200, 230, 255, 255))
+        rl.draw_text(line, x0 + pad, y0 + pad + i * (font_size + 4),
+                     font_size, color)
 
-    # Status message (Save / Load feedback) or pressure hint
+    # Status message (Save / Load feedback).
     if state.status_msg and now < state.status_until:
         rl.draw_text(state.status_msg, x0, y0 + box_h + 8, 14,
                      rl.Color(120, 255, 120, 255))
-    elif state.get("show_pressure"):
-        rl.draw_text("[P overlay ON — spawn a grenade to see shockwave]",
-                     x0, y0 + box_h + 8, 11, rl.Color(180, 180, 100, 200))
 
 
 # ---------------------------------------------------------------------------
@@ -949,7 +1169,34 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     y = _slider(state, "smoke_tint_b", "Tint B", 0.0, 255.0, x, y)
     y = _slider(state, "smoke_max_alpha", "Max alpha", 0.0, 255.0, x, y)
     # smoke^gamma render contrast (render-only). 1.0 = off; >1 = wispier/filmic.
+    # KEPT this beat (orchestrator ruling) — the still-active smoke path uses it.
     y = _slider(state, "smoke_render_gamma", "Gamma", 1.0, 3.0, x, y)
+
+    # -- B2 gas medium (P1 PLUMBING: sliders bind + hold their config value; the
+    #    medium/detail/speckle CONSUMERS land in P2-P4, so no live effect yet) --
+    y = _section_header("Gas medium (B2)", x, y)
+    y = _checkbox(state, "legacy_smoke_on", "Legacy A/B", x, y)
+    y = _slider(state, "gm_plume_k_scale", "Plume k", 0.0, 4.0, x, y)
+    y = _slider(state, "gm_tau_curve_a", "Tau a", 0.0, 3.0, x, y)
+    y = _slider(state, "gm_tau_curve_b", "Tau b", 0.2, 4.0, x, y)
+    y = _slider(state, "gm_glow_gain", "Glow gain", 0.0, 4.0, x, y)
+    y = _slider(state, "gm_effect_gas_floor", "Gas floor", 0.0, 1.0, x, y)
+    y = _checkbox(state, "gm_fuel_haze_on", "Fuel haze", x, y)
+    # The soot handover pair (existing SIM config; DISPLAY-only in P1 — Erik
+    # tunes it by feel in the P5 session, never this patch).
+    y = _slider(state, "soot_yield", "Soot yield", 0.0, 1.0, x, y)
+    y = _slider(state, "smoke_emission", "Smoke emit", 0.0, 3.0, x, y)
+    # Detail shader (P3) + speckle (P4) dials.
+    y = _checkbox(state, "gd_enabled", "Detail on", x, y)
+    y = _slider(state, "gd_noise_octaves", "Octaves", 1.0, 6.0, x, y)
+    y = _slider(state, "gd_noise_wavelength_tiles", "Noise wl", 1.0, 6.0, x, y)
+    y = _slider(state, "gd_adv_gain", "Adv gain", 0.0, 4.0, x, y)
+    y = _slider(state, "gd_cycle_seconds", "Cycle s", 0.5, 6.0, x, y)
+    y = _slider(state, "gd_erode_strength", "Erode", 0.0, 1.0, x, y)
+    y = _slider(state, "gd_warp_px", "Warp px", 0.0, 8.0, x, y)
+    y = _checkbox(state, "gd_dither_on", "Dither", x, y)
+    y = _slider(state, "speckle_mode", "Speckle012", 0.0, 2.0, x, y)
+    y = _slider(state, "speckle_amp", "Speckle amp", 0.0, 1.0, x, y)
 
     # -- §4.4b Water optics (live; pour with U to see them bite) --
     y = _section_header("Water [U=pour]", x, y)
@@ -1043,8 +1290,14 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
         rl.gui_label(rl.Rectangle(x, y, PANEL_W - 20, 14), "(save a preset first)")
         y += 18
 
-    # Keybind reminder
-    rl.draw_text("Space=pause  T=spawn  WASD=pan  Q/E=zoom  G=sRGB",
+    # Keybind reminder — the FINAL studio bindings (keymap audited; O avoided).
+    rl.draw_text("I=ignite  J=smoke  K=steam  C=door  1=lamps  2=beacon",
+                 x, y, 10, rl.Color(150, 205, 150, 255))
+    y += 12
+    rl.draw_text("Space=pause T=spawn U=water F=flood P=tilt N=nz L=firelights",
+                 x, y, 10, rl.Color(120, 120, 140, 255))
+    y += 12
+    rl.draw_text("WASD=pan Q/E=zoom G=sRGB V=water F1/F2/F4 (O avoided)",
                  x, y, 10, rl.Color(120, 120, 140, 255))
 
 
