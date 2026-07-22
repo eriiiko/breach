@@ -43,7 +43,7 @@ from simulation import Simulation  # noqa: E402
 from simulation.entities import REGISTRY  # noqa: E402
 from simulation.entities import sensors as sensors_mod  # noqa: E402
 from simulation.gamemap import N_GASES  # noqa: E402
-from simulation.gases import BLACK_SMOKE, O2  # noqa: E402
+from simulation.gases import SMOKE, O2  # noqa: E402
 from simulation.sensor_accessor import (  # noqa: E402
     Channel, EntityFieldAccessor, SiteIndex,
 )
@@ -149,7 +149,7 @@ def test_body_channels_read_solid_while_faced_air_reads_zero():
 def test_air_channels_read_air_tile_no_dequantize():
     g = _FakeGmap()
     g.atmosphere[1, 3] = 65536                # 1.0 atm Q16.16 — returned RAW
-    g.gas[BLACK_SMOKE][1, 3] = 4242
+    g.gas[SMOKE][1, 3] = 4242
     g.gas[O2][1, 3] = 13107
     g.water_depth[1, 3] = 999
     sim = _fake_sim(_sensor_accessor=EntityFieldAccessor(g))

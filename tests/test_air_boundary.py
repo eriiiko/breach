@@ -808,7 +808,7 @@ def test_ambient_gate4_traces_absorbed_at_the_ring():
     from simulation.physics_runner import PhysicsRunner
     g = _ambient_gmap(30, 30)
     runner = PhysicsRunner(bp)
-    bs = g.gases.name_to_id["black_smoke"]
+    bs = g.gases.name_to_id["smoke"]
     # A trace cloud in the open interior adjacent to the sky ring.
     g.gas[bs][2:6, 6:24] = int(2.0 * FP_ONE)
     total0 = int(g.gas[bs].sum())

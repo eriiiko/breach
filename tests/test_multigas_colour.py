@@ -14,8 +14,8 @@ no diagonal aliasing), mirroring test_heat_smoke_glow.py. It verifies, against
 the CANON gas table in config.toml:
 
   * poison tints the beam GREEN downrange (G survives > R > B);
-  * black_smoke dims strongly and ~neutrally (R≈G≈B, all far below poison's G);
-  * white_smoke barely dims but its smoke_glow brightens (scatter-dominated);
+  * smoke dims strongly and ~neutrally (R≈G≈B, all far below poison's G);
+  * steam barely dims but its smoke_glow brightens (scatter-dominated);
   * mixing falls out of the SUM — poison+black in the same tile attenuates as
     the product of the two transmissions (== summing their tau), per channel;
   * a single populated gas reproduces the documented single-smoke Beer-Lambert
@@ -37,7 +37,7 @@ sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
 import breach_physics as bp  # noqa: E402
 from simulation.gases import (  # noqa: E402
     GasTable, N_GASES,
-    WHITE_SMOKE, BLACK_SMOKE, POISON,
+    STEAM, SMOKE, POISON,
 )
 
 
@@ -134,7 +134,7 @@ def test_black_smoke_dims_strongly_and_neutrally():
     absorp, scatter = _canon_table()
     w = 20
     smoke_col = 5
-    gas = _single_gas_field(BLACK_SMOKE, N_GASES, smoke_col, 0.6, w=w)
+    gas = _single_gas_field(SMOKE, N_GASES, smoke_col, 0.6, w=w)
     rgb, _ = _cast(gas, absorp, scatter, absorb_scale=1.4, w=w)
     past = smoke_col + 1
     r, g, b = rgb[0, past, 0], rgb[0, past, 1], rgb[0, past, 2]
@@ -163,7 +163,7 @@ def test_white_smoke_barely_dims_but_glows():
     w = 20
     smoke_col = 5
     sd = 0.6
-    gas = _single_gas_field(WHITE_SMOKE, N_GASES, smoke_col, sd, w=w)
+    gas = _single_gas_field(STEAM, N_GASES, smoke_col, sd, w=w)
     rgb, glow = _cast(gas, absorp, scatter, absorb_scale=1.4, w=w)
     ctrl, _ = _cast(np.zeros((N_GASES, 1, w), np.float32), absorp, scatter,
                     absorb_scale=1.4, w=w)
@@ -175,7 +175,7 @@ def test_white_smoke_barely_dims_but_glows():
     glow_tile = glow[0, smoke_col]
     assert np.all(glow_tile > 0.0), "white smoke must glow (scatter)"
     # White smoke glows FAR brighter than black smoke for the same density.
-    black = _single_gas_field(BLACK_SMOKE, N_GASES, smoke_col, sd, w=w)
+    black = _single_gas_field(SMOKE, N_GASES, smoke_col, sd, w=w)
     _, glow_black = _cast(black, absorp, scatter, absorb_scale=1.4, w=w)
     assert glow_tile.sum() > 5.0 * glow_black[0, smoke_col].sum(), (
         "white smoke (scatter 0.92) must out-glow black smoke (scatter 0.04)")
@@ -195,7 +195,7 @@ def test_mixing_is_density_weighted_sum_of_tau():
     da, db = 0.5, 0.4  # poison density, black density
     # Single-gas casts (control transmissions).
     g_pois = _single_gas_field(POISON, N_GASES, smoke_col, da, w=w)
-    g_blk = _single_gas_field(BLACK_SMOKE, N_GASES, smoke_col, db, w=w)
+    g_blk = _single_gas_field(SMOKE, N_GASES, smoke_col, db, w=w)
     rgb_p, _ = _cast(g_pois, absorp, scatter, absorb_scale=scale, w=w)
     rgb_b, _ = _cast(g_blk, absorp, scatter, absorb_scale=scale, w=w)
     ctrl, _ = _cast(np.zeros((N_GASES, 1, w), np.float32), absorp, scatter,
@@ -213,7 +213,7 @@ def test_mixing_is_density_weighted_sum_of_tau():
             f"channel {c}: mixed transmission {trans_m} != product of singles "
             f"{trans_p * trans_b} (mixing must be Σ tau)")
     # Cross-check against the analytic summed-tau transmission for one channel.
-    tau_b_blue = scale * (da * absorp[POISON, 2] + db * absorp[BLACK_SMOKE, 2])
+    tau_b_blue = scale * (da * absorp[POISON, 2] + db * absorp[SMOKE, 2])
     trans_blue_analytic = float(np.exp(-tau_b_blue))
     trans_blue_measured = rgb_m[0, past, 2] / ctrl[0, past, 2]
     assert np.isclose(trans_blue_measured, trans_blue_analytic, rtol=1e-3), (
@@ -229,7 +229,7 @@ def test_mixing_scatter_glow_is_summed():
     smoke_col = 3
     da, db = 0.5, 0.4
     g_pois = _single_gas_field(POISON, N_GASES, smoke_col, da, w=w)
-    g_blk = _single_gas_field(BLACK_SMOKE, N_GASES, smoke_col, db, w=w)
+    g_blk = _single_gas_field(SMOKE, N_GASES, smoke_col, db, w=w)
     _, glow_p = _cast(g_pois, absorp, scatter, absorb_scale=1.4, w=w)
     _, glow_b = _cast(g_blk, absorp, scatter, absorb_scale=1.4, w=w)
     _, glow_m = _cast(g_pois + g_blk, absorp, scatter, absorb_scale=1.4, w=w)
@@ -287,8 +287,8 @@ def test_multigas_march_is_bit_identical():
     w = 24
     gas = np.zeros((N_GASES, 1, w), np.float32)
     gas[POISON, 0, 5] = 0.5
-    gas[BLACK_SMOKE, 0, 5] = 0.4
-    gas[WHITE_SMOKE, 0, 8] = 0.3
+    gas[SMOKE, 0, 5] = 0.4
+    gas[STEAM, 0, 8] = 0.3
     rgb1, glow1 = _cast(gas, absorp, scatter, absorb_scale=1.4, w=w)
     rgb2, glow2 = _cast(gas, absorp, scatter, absorb_scale=1.4, w=w)
     assert np.array_equal(rgb1, rgb2), "light buffer must be deterministic"

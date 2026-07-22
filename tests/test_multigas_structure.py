@@ -2,21 +2,21 @@
 
 M1 generalises the single ``smoke`` scalar field into N gas density fields
 (``gmap.gas``, shape ``(N, h, w)``) + a data-driven ``[gases.*]`` table, WITHOUT
-changing any visible behaviour: the existing smoke becomes the ``black_smoke``
+changing any visible behaviour: the existing smoke becomes the ``smoke``
 slice, ``gmap.smoke`` is a view onto it, and the per-gas transport loop steps each
 gas with the SAME C++ smoke solver. The raycaster still reads ``gmap.smoke``
-(black_smoke); per-channel colour summation over gases is M2.
+(smoke); per-channel colour summation over gases is M2.
 
 These tests assert the M1 contract:
 
 1. ``gmap.gas`` has shape ``(N_GASES, h, w)`` float32.
-2. ``gmap.smoke`` IS the ``black_smoke`` slice — a view: writing one is visible
+2. ``gmap.smoke`` IS the ``smoke`` slice — a view: writing one is visible
    in the other (both directions).
-3. ``GasTable`` exposes the 5 gases (white_smoke / black_smoke / poison / teargas
+3. ``GasTable`` exposes the 5 gases (steam / smoke / poison / teargas
    / fuel_gas) with the §6.2 absorption / scatter / diffusion / decay / flags.
 4. A populated NON-smoke gas (poison) advects + diffuses through the per-gas
    transport loop exactly as smoke does (transport generalises).
-5. BEHAVIOUR PRESERVATION — a black_smoke deposit evolved through the new per-gas
+5. BEHAVIOUR PRESERVATION — a smoke deposit evolved through the new per-gas
    loop matches the pre-refactor single-field reference (the C++ solver called
    directly with the legacy d_smoke=0.1), within fp tolerance.
 6. DETERMINISM — a full headless Simulation rollout is bit-identical run-to-run.
@@ -45,8 +45,8 @@ from simulation.gamemap import GameMap
 from simulation.gases import (
     GasTable,
     N_GASES,
-    WHITE_SMOKE,
-    BLACK_SMOKE,
+    STEAM,
+    SMOKE,
     POISON,
     TEARGAS,
     FUEL_GAS,
@@ -93,22 +93,22 @@ def test_gas_array_shape():
 
 
 # --------------------------------------------------------------------------
-# 2. gmap.smoke is the black_smoke slice (a VIEW — aliasing both ways)
+# 2. gmap.smoke is the smoke slice (a VIEW — aliasing both ways)
 # --------------------------------------------------------------------------
 def test_smoke_is_black_smoke_view():
     g = _make_gmap()
     # Same memory (a view, not a copy).
     assert g.smoke.base is g.gas, "gmap.smoke is not a view into gmap.gas"
-    assert np.shares_memory(g.smoke, g.gas[BLACK_SMOKE])
+    assert np.shares_memory(g.smoke, g.gas[SMOKE])
 
     # S2b: gas is int32 Q16.16 — write raw counts (the view aliasing is what's
     # under test, not the units, so plain integer counts are fine here).
-    # Writing smoke is visible in the black_smoke slice.
+    # Writing smoke is visible in the smoke slice.
     g.smoke[3, 4] = 42
-    assert g.gas[BLACK_SMOKE][3, 4] == 42
+    assert g.gas[SMOKE][3, 4] == 42
 
-    # Writing the black_smoke slice is visible in smoke.
-    g.gas[BLACK_SMOKE][5, 6] = 77
+    # Writing the smoke slice is visible in smoke.
+    g.gas[SMOKE][5, 6] = 77
     assert g.smoke[5, 6] == 77
 
     # Other gas slices are independent of smoke.
@@ -126,34 +126,34 @@ def test_gas_table_values():
     their contract)."""
     tbl = GasTable.from_config()
     assert tbl.n == 7
-    assert tbl.names[:5] == ["white_smoke", "black_smoke", "poison", "teargas", "fuel_gas"]
+    assert tbl.names[:5] == ["steam", "smoke", "poison", "teargas", "fuel_gas"]
     assert tbl.names[5:] == ["o2", "inert_n2"]
-    assert tbl.name_to_id["black_smoke"] == BLACK_SMOKE
+    assert tbl.name_to_id["smoke"] == SMOKE
 
     # Absorption triples (§6.2).
-    assert np.allclose(tbl.absorption[WHITE_SMOKE], [0.10, 0.10, 0.10])
-    assert np.allclose(tbl.absorption[BLACK_SMOKE], [0.88, 0.90, 0.93])
+    assert np.allclose(tbl.absorption[STEAM], [0.10, 0.10, 0.10])
+    assert np.allclose(tbl.absorption[SMOKE], [0.88, 0.90, 0.93])
     assert np.allclose(tbl.absorption[POISON],      [0.45, 0.10, 0.80])
     assert np.allclose(tbl.absorption[TEARGAS],     [0.12, 0.16, 0.30])
     assert np.allclose(tbl.absorption[FUEL_GAS],    [0.08, 0.10, 0.16])
 
     # Scatter albedo (§6.2).
-    assert np.allclose(tbl.scatter_albedo[WHITE_SMOKE], [0.92, 0.92, 0.95])
-    assert np.allclose(tbl.scatter_albedo[BLACK_SMOKE], [0.04, 0.04, 0.04])
+    assert np.allclose(tbl.scatter_albedo[STEAM], [0.92, 0.92, 0.95])
+    assert np.allclose(tbl.scatter_albedo[SMOKE], [0.04, 0.04, 0.04])
     assert np.allclose(tbl.scatter_albedo[TEARGAS],     [0.88, 0.90, 0.92])
 
     # Per-gas diffusion + decay (§6.2) — the first 5 (trace) rows.
     assert np.allclose(tbl.diffusion[:5], [0.18, 0.10, 0.12, 0.15, 0.22])
     assert np.allclose(tbl.decay[:5],     [0.020, 0.008, 0.004, 0.010, 0.006])
 
-    # black_smoke diffusion == today's d_smoke (the behaviour-preservation anchor).
+    # smoke diffusion == today's d_smoke (the behaviour-preservation anchor).
     from config import CFG
-    assert abs(float(tbl.diffusion[BLACK_SMOKE]) - float(CFG.physics.d_smoke)) < 1e-6
+    assert abs(float(tbl.diffusion[SMOKE]) - float(CFG.physics.d_smoke)) < 1e-6
 
-    # Flags: only fuel_gas is flammable; black_smoke + fuel_gas emit when hot
+    # Flags: only fuel_gas is flammable; smoke + fuel_gas emit when hot
     # (among the 5 trace gases — o2/inert_n2 are never flammable/hot-emitting).
     assert list(tbl.flammable[:5].astype(bool)) == [False, False, False, False, True]
-    assert list(tbl.emits_when_hot[:5].astype(bool)) == [True if i in (BLACK_SMOKE, FUEL_GAS) else False
+    assert list(tbl.emits_when_hot[:5].astype(bool)) == [True if i in (SMOKE, FUEL_GAS) else False
                                                           for i in range(5)]
     # Effects (gameplay tags, read unit-side in mechanics).
     assert tbl.effect[POISON] == "damage_over_time"
@@ -168,7 +168,7 @@ def test_gas_table_from_dict():
     5), so a from-scratch table must supply a row for every id — including
     the bulk pair's ``conservative`` column, now required on every row.
     """
-    names = ["white_smoke", "black_smoke", "poison", "teargas", "fuel_gas",
+    names = ["steam", "smoke", "poison", "teargas", "fuel_gas",
              "o2", "inert_n2"]
     rows = {
         name: {
@@ -200,7 +200,7 @@ def test_poison_transports_through_per_gas_loop():
     The transport generalises: stepping the physics with a populated poison slice
     (and NO smoke) advects the poison cloud downwind, while the empty smoke slice
     stays empty (a cheap no-op). This proves the per-gas loop steps every slice,
-    not just black_smoke.
+    not just smoke.
     """
     from simulation import gas_fixed
 
@@ -252,7 +252,7 @@ def test_poison_transports_through_per_gas_loop():
     cx1 = _com_x(g.gas[POISON])
     assert cx1 is not None, "poison vanished entirely"
     assert cx1 > cx0 + 1.0, f"poison did not advect right: {cx0:.2f} -> {cx1:.2f}"
-    # Smoke (black_smoke) untouched — the empty slice was a no-op.
+    # Smoke (smoke) untouched — the empty slice was a no-op.
     assert g.smoke.sum() == 0, "poison transport polluted the smoke slice"
     # Diffusion happened: the blob is no longer a sharp full column everywhere.
     assert g.gas[POISON].max() <= gas_fixed.SMOKE_MAX_Q
@@ -260,14 +260,14 @@ def test_poison_transports_through_per_gas_loop():
 
 
 # --------------------------------------------------------------------------
-# 5. BEHAVIOUR PRESERVATION — black_smoke matches the pre-refactor single field
+# 5. BEHAVIOUR PRESERVATION — smoke matches the pre-refactor single field
 # --------------------------------------------------------------------------
 def test_black_smoke_matches_pre_refactor_reference():
-    """A black_smoke deposit evolved through the per-gas loop is bit-close to the
+    """A smoke deposit evolved through the per-gas loop is bit-close to the
     legacy single-smoke-field path (the C++ solver called directly with the old
     d_smoke=0.1 and the same wind/sink/dt).
 
-    This is the M1 behaviour-preservation guarantee made explicit: black_smoke's
+    This is the M1 behaviour-preservation guarantee made explicit: smoke's
     diffusion (0.10) equals the legacy d_smoke (0.1), so the two evolutions are
     the SAME computation and must agree within float noise.
     """
@@ -297,7 +297,7 @@ def test_black_smoke_matches_pre_refactor_reference():
     dt = 0.02
 
     # Patch 2b: step is WIND-ONLY (no sink args) and runs on the real dt
-    # (dt_scale gone). This test compares black_smoke's per-gas diffusion against
+    # (dt_scale gone). This test compares smoke's per-gas diffusion against
     # the legacy single-smoke d_smoke path — both stepped identically, so the
     # equality still holds regardless of the dt_scale removal.
     # Reference (pre-refactor): the single smoke field with legacy d_smoke.
@@ -308,10 +308,10 @@ def test_black_smoke_matches_pre_refactor_reference():
         s_ref.step(ref, wind_x, wind_y,
                    obstacles, is_wall, is_vacuum, perm, dt)
 
-    # New path: the SAME field stepped with black_smoke's per-gas diffusion.
+    # New path: the SAME field stepped with smoke's per-gas diffusion.
     gas = deposit.copy()
     s_new = _solver()
-    s_new.d_smoke = float(GasTable.from_config().diffusion[BLACK_SMOKE])  # 0.10
+    s_new.d_smoke = float(GasTable.from_config().diffusion[SMOKE])  # 0.10
     for _ in range(30):
         s_new.step(gas, wind_x, wind_y,
                    obstacles, is_wall, is_vacuum, perm, dt)
@@ -319,7 +319,7 @@ def test_black_smoke_matches_pre_refactor_reference():
     # S2b: both paths run the identical integer-SL with the same d_smoke (0.1 ==
     # 0.10), so they are now BIT-IDENTICAL (was atol=1e-5 in the float build).
     assert np.array_equal(gas, ref), \
-        f"black_smoke diverged from the legacy single-field path: " \
+        f"smoke diverged from the legacy single-field path: " \
         f"max|diff|={np.abs(gas - ref).max()}"
 
 
@@ -346,8 +346,8 @@ def test_determinism_bit_identical():
     assert np.array_equal(gas_a, gas_b), "gas array not bit-identical across runs"
     assert np.array_equal(smoke_a, smoke_b), "smoke not bit-identical across runs"
     assert atm_a == atm_b
-    # The smoke view still aliases black_smoke after a full rollout.
-    assert np.array_equal(smoke_a, gas_a[BLACK_SMOKE])
+    # The smoke view still aliases smoke after a full rollout.
+    assert np.array_equal(smoke_a, gas_a[SMOKE])
 
 
 # --------------------------------------------------------------------------
@@ -355,7 +355,7 @@ def test_determinism_bit_identical():
 # --------------------------------------------------------------------------
 def test_recorder_and_headless_step():
     """A headless Simulation with the recorder ON steps cleanly; the recorder
-    snapshots ``gmap.smoke`` (the black_smoke view) without error, and the smoke
+    snapshots ``gmap.smoke`` (the smoke view) without error, and the smoke
     aliasing survives the step."""
     level = load_level("unhcr_vessel")
     sim = Simulation(level, seed=SEED, breach_physics=bp, enable_recorder=True)
@@ -363,8 +363,8 @@ def test_recorder_and_headless_step():
     for _ in range(10):
         sim.step()
     g = sim.gmap
-    # Smoke is still the black_smoke view (not orphaned by any step).
-    assert np.shares_memory(g.smoke, g.gas[BLACK_SMOKE])
+    # Smoke is still the smoke view (not orphaned by any step).
+    assert np.shares_memory(g.smoke, g.gas[SMOKE])
     # The recorder captured frames including the smoke field.
     rec = sim.recorder
     assert rec is not None
@@ -379,7 +379,7 @@ def test_renderer_overlay_reads_smoke():
     from simulation import gas_fixed
     g = _make_gmap()
     g.smoke[4:8, 4:8] = gas_fixed.quantize_scalar(0.5)
-    # The black_smoke view is a (h, w) int32 field; the renderer dequantizes it.
+    # The smoke view is a (h, w) int32 field; the renderer dequantizes it.
     assert g.smoke.ndim == 2 and g.smoke.dtype == np.int32
     assert g.smoke[5, 5] == gas_fixed.quantize_scalar(0.5)
     smoke_f = gas_fixed.dequantize_f32(g.smoke)

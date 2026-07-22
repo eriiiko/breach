@@ -48,8 +48,8 @@ from simulation.exchange import apply_blast_damage  # noqa: E402
 from simulation.field_edit import EditQueue  # noqa: E402
 from simulation.gamemap import GameMap  # noqa: E402
 from simulation.gases import (  # noqa: E402
-    BLACK_SMOKE, N_TRACE_GASES, POISON as GAS_POISON, TEARGAS as GAS_TEARGAS,
-    WHITE_SMOKE,
+    SMOKE, N_TRACE_GASES, POISON as GAS_POISON, TEARGAS as GAS_TEARGAS,
+    STEAM,
 )
 from simulation.orders import (  # noqa: E402
     DET_START_PHASE1, ORDER_EXPLOSIVE, ORDER_GRENADE, Order,
@@ -270,19 +270,19 @@ def test_gas_deposit_exact_q16_falloff_clamp_skip_and_slice():
     """Hand-computed per-tile expectations for smoke_screen (amount 1.5,
     radius 4): centre saturates to FP_ONE (the [0,1] clamp), every in-disc
     tile holds quantize(min(1, 1.5 x (1 - d/4))), solid tiles are skipped,
-    the ring d >= 4 is untouched, and ONLY the white_smoke slice moves."""
+    the ring d >= 4 is untouched, and ONLY the steam slice moves."""
     gmap = _room(edits=[(10, 13, 1)])     # a hull tile INSIDE the disc
     queue = EditQueue()
     rng = np.random.default_rng(SEED)
     state_before = rng.bit_generator.state
 
-    emit_gas(gmap, queue, 10, 11, "white_smoke", 1.5, 4)
+    emit_gas(gmap, queue, 10, 11, "steam", 1.5, 4)
     queue.flush(gmap, rng)
 
     # NO RNG: the deposit is deliberately noise-free (unlike the blast cloud).
     assert rng.bit_generator.state == state_before
 
-    ws = gmap.gas[WHITE_SMOKE]
+    ws = gmap.gas[STEAM]
     # Centre: weight 1.0 -> 1.5 clamps to 1.0 -> FP_ONE counts exactly.
     assert int(ws[10, 11]) == gas_fixed.FP_ONE
     # On-axis d=2: weight 0.5 -> 0.75 -> 49152 counts exactly (hand: .75*2^16).
@@ -299,8 +299,8 @@ def test_gas_deposit_exact_q16_falloff_clamp_skip_and_slice():
     # Slice targeting: every OTHER TRACE gas plane is untouched (the bulk
     # O2/inert_N2 pair, EOS refactor P1, always carries ambient air).
     for g in range(N_TRACE_GASES):
-        if g != WHITE_SMOKE:
-            assert not gmap.gas[g].any(), f"slice {g} moved on a white_smoke deposit"
+        if g != STEAM:
+            assert not gmap.gas[g].any(), f"slice {g} moved on a steam deposit"
 
 
 def test_gas_deposit_is_additive_with_saturation_guard():
@@ -326,11 +326,11 @@ def test_gas_deposit_is_additive_with_saturation_guard():
 
 def test_gas_payload_species_route_to_their_slices():
     """tear_burst -> the TEARGAS slice; poison_cloud -> the POISON slice;
-    smoke_screen -> WHITE_SMOKE; unknown species fail loudly."""
+    smoke_screen -> STEAM; unknown species fail loudly."""
     t = get_tables()
     for row_name, slice_id in [("tear_burst", GAS_TEARGAS),
                                ("poison_cloud", GAS_POISON),
-                               ("smoke_screen", WHITE_SMOKE)]:
+                               ("smoke_screen", STEAM)]:
         gmap = _room()
         queue = EditQueue()
         rng = np.random.default_rng(SEED)
@@ -345,7 +345,7 @@ def test_gas_payload_species_route_to_their_slices():
         # A pure-gas payload deposits NO explosion side effects.
         assert not gmap.wave_source.any()
         assert not gmap.fire.any()
-        assert not gmap.gas[BLACK_SMOKE].any()
+        assert not gmap.gas[SMOKE].any()
     # Loud on a typo'd species (belt-and-suspenders at the emit site).
     import pytest
     with pytest.raises(KeyError):

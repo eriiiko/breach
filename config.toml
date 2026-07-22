@@ -233,7 +233,7 @@ ratio_cap = 1.5   # max per-tick compression ratio (W3)
 flood_eps = 0.05  # m remaining air column below which a cell counts flooded (W3)
 boil_rate = 0.02      # m/s flash-boil sink in near-vacuum (W5)
 boil_p_thresh = 0.3   # atmosphere below this boils (W5; pressure-keyed — drained rooms boil too, intended)
-steam_yield = 4.0     # white_smoke density per metre boiled (W5)
+steam_yield = 4.0     # steam density per metre boiled (W5)
 gamma_r = 2.0     # 1/s ripple damping (W6a)
 h_cap = 0.25      # m deep-water cap: c^2 = g*min(depth, h_cap) — pins ripple speed at ~4.7 tiles/s (W6a)
 k_amp = 0.5       # ripple amplitude clamp |ripple| <= k_amp*depth — waves no taller than the water (W6a)
@@ -291,9 +291,9 @@ smoke_render_gamma = 1.5                  # default mild, visible contrast bump 
 #                  (bulk_transport.cpp) instead of this per-gas semi-Lagrangian
 #                  loop. False for every trace gas (unchanged behaviour).
 #
-# black_smoke is combustion soot — what fire and explosions emit. Its diffusion
+# smoke is combustion soot — what fire and explosions emit. Its diffusion
 # (0.10) matches today's d_smoke (0.1), so mapping the EXISTING generic smoke to
-# the black_smoke slice is behaviour-preserving (engine/05 §6.2; M1).
+# the smoke slice is behaviour-preserving (engine/05 §6.2; M1).
 
 # EOS refactor P1 calibration constants (docs/eos_refactor_design.md §2.1).
 # Pressure is derived as P = C * N_total * T (Kelvin) once the compressible
@@ -333,7 +333,7 @@ U_MAX = 1000.0                        # v2.4 defense-in-depth velocity rail (m/s
 # EOS refactor P4 — combustion on real O2 (docs/eos_refactor_design.md §5,
 # decisions log #12). Own pass, once per tick, after the EOS solver
 # materializes P/N/T: burns fuel (flammable + wall_hp>0) against the local
-# N_O2 mean, converting consumed O2 into black_smoke (soot_yield) + inert_N2
+# N_O2 mean, converting consumed O2 into smoke (soot_yield) + inert_N2
 # (the remainder — N_total is CONSERVED, never a fake pressure drain) and
 # depositing heat via the §4.3 reciprocal (shares c_v/n_floor_heat with
 # [physics.thermal] above — ONE combustion/deposit floor in the system).
@@ -343,7 +343,7 @@ burn_rate         = 1.0    # N_O2 consumed per second, per open-neighbour burn s
 o2_thresh_burn    = 0.03   # min local N_O2 to sustain combustion (below fire's
                             # P_min=0.126 so the VISIBLE flame dies first)
 H_fuel            = 4.0    # heat yield (T-scale ΔT) per unit N_O2 burned
-soot_yield        = 0.3    # fraction of consumed O2 -> black_smoke (rest -> inert_N2)
+soot_yield        = 0.3    # fraction of consumed O2 -> smoke (rest -> inert_N2)
 # v2.5 — P5.1 stoichiometric fuel consumption (docs/eos_refactor_design.md §5
 # v2.5 amendment, decisions #17): the SOURCE tile pays wall_hp for every unit
 # of N_O2 its neighbours burn, floored at 1 Q16.16 LSB (smolder NEVER destroys
@@ -356,7 +356,7 @@ fuel_per_o2       = 0.7
 # constant lives at the right layer; nothing reads it yet.
 o2_thresh_breathe = 0.08   # min local N_O2 a unit needs to breathe (NOT wired yet)
 
-[gases.white_smoke]            # water vapour / steam
+[gases.steam]            # water vapour / steam
 absorption     = [0.10, 0.10, 0.10]   # flat, low — Mie scattering is spectrally neutral
 scatter_albedo = [0.92, 0.92, 0.95]   # NEAR-WHITE additive brighten — the dominant visual term
 diffusion      = 0.18                 # spreads readily, light gas
@@ -367,7 +367,7 @@ emits_when_hot = false
 effect         = "vision_block"       # pure concealment; clears on decompression
 conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
 
-[gases.black_smoke]            # combustion soot (== today's generic smoke)
+[gases.smoke]            # combustion soot (== today's generic smoke)
 absorption     = [0.88, 0.90, 0.93]   # near-neutral, slight blue tilt: thin soot reads warm/brown
 scatter_albedo = [0.04, 0.04, 0.04]   # soot barely scatters — it is the dark gas
 diffusion      = 0.10                 # heavier, clings; matches today's d_smoke=0.1 (behaviour-preserving)
@@ -406,7 +406,7 @@ scatter_albedo = [0.20, 0.22, 0.28]   # weak, faintly cool scatter
 diffusion      = 0.22                 # GAMEPLAY KNOB: high = gassy cloud, low = tight flamethrower jet
 decay          = 0.006                # lingers as an ignition hazard
 glow           = 0.0
-flammable      = true                 # IGNITES -> spawns heat + black_smoke; the only flammable gas
+flammable      = true                 # IGNITES -> spawns heat + smoke; the only flammable gas
 emits_when_hot = true                 # while burning it glows via the black-body curve
 effect         = "ignition_hazard"    # invisible-ish until lit; then a fireball
 conservative   = false                # trace gas — semi-Lagrangian transport (unchanged)
@@ -1438,7 +1438,7 @@ emit_blast_smoke = true               # LIVE: the door charge keeps its smoke (W
 # above 1.0 saturates the cloud core to full density (the [0,1] slice clamp)
 # and feathers the edge.
 [payloads.smoke_screen]               # the laser countermeasure / concealment cloud
-gas_species = "white_smoke"
+gas_species = "steam"
 gas_amount = 1.5                      # saturates the core out to ~1/3 radius; interesting range 0.5..2.0
 gas_radius = 4
 

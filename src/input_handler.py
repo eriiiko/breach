@@ -74,9 +74,9 @@ class InputHandler:
             "hand_grenade"].fuse_default_seconds
         self.det_slot = DET_START_PHASE1
         # DEBUG multi-gas spawn (engine/05 §6.2, M2): which gas the J key drops
-        # under the cursor. K cycles white_smoke -> black_smoke -> poison ->
+        # under the cursor. K cycles steam -> smoke -> poison ->
         # teargas -> fuel_gas. Pure UI state — the sim never sees it.
-        self.selected_gas = 0   # WHITE_SMOKE (== GAS id 0)
+        self.selected_gas = 0   # STEAM (== GAS id 0)
 
     @property
     def planning_phase(self) -> int:
@@ -282,7 +282,7 @@ class InputHandler:
         Writes the selected slice of ``gmap.gas`` directly (a small clamped
         patch at full density) so the coloured ray march picks it up immediately,
         even while paused. Mirrors :meth:`_debug_ignite`. ``gmap.smoke`` is a view
-        of the black_smoke slice, so spawning black_smoke also fills ``smoke``.
+        of the smoke slice, so spawning smoke also fills ``smoke``.
         A render/tuning aid only — no gameplay code reaches this path.
         """
         tile = renderer.mouse_to_tile()

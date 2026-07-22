@@ -74,7 +74,7 @@ SYNCED_UNIT_FIELDS = (
 
 # Every field the physics writes — the sim state a structural refactor must
 # preserve bit-for-bit. `gas` is (N,h,w) and covers `smoke` (a view into
-# gas[BLACK_SMOKE]); `dyn_*` are the per-tick stamp_units outputs; material /
+# gas[SMOKE]); `dyn_*` are the per-tick stamp_units outputs; material /
 # is_vacuum / wall_hp catch any topology-path change. Render-only buffers
 # (light_rgb, light_dir, smoke_glow) are intentionally EXCLUDED — they are not
 # sim state and may legitimately differ between machines/builds.
@@ -111,7 +111,7 @@ def default_scenario_sim() -> Simulation:
     # S2b: smoke is int32 Q16.16 — quantize the seed (a raw `= 0.6` would store 0
     # counts ~ no smoke). 0.6 density -> 0.6*65536 = 39322 counts. This exercises
     # the integer-SL advection + diffusion + venting on a real cloud.
-    g.smoke[interior] = gas_fixed.quantize_scalar(0.6)  # smoke transport (gas[BLACK_SMOKE] view)
+    g.smoke[interior] = gas_fixed.quantize_scalar(0.6)  # smoke transport (gas[SMOKE] view)
     # S3a: fire is int32 Q16.16 — quantize the seed (a raw `= 0.8` would store 0
     # counts ~ no fire, leaving the fire feedback + its smoke emission DORMANT).
     # 0.8 intensity -> 0.8*65536 = 52429 counts. This exercises the fire feedback

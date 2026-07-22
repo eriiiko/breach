@@ -213,7 +213,7 @@ FIELD_POLICY = {
     # §6.2). ``gmap.gas`` is (N, h, w) int32 Q16.16 — one slice per gas type;
     # a "gas" edit names its slice via ``FieldEdit.channel`` (the GAS_* id /
     # ``gmap.gases.name_to_id``), resolved to a contiguous (h, w) view at
-    # apply time. Same combine + policy as "smoke" (which IS the BLACK_SMOKE
+    # apply time. Same combine + policy as "smoke" (which IS the SMOKE
     # slice): solid skip-mask, [0, 1] saturation clamp, quantize-once at the
     # write boundary.
     "gas":         _FieldPolicy("gas",   (0.0, 1.0), _skip_solid),
@@ -557,7 +557,7 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
         # The (N, h, w) multi-gas array (W3): ``channel`` names the SLICE
         # (gas id — engine/05 §6.2), not an RGB channel. Resolve it to the
         # contiguous (h, w) int32 view once, then the edit proceeds exactly
-        # like a scalar gas field ("smoke" is the same array's BLACK_SMOKE
+        # like a scalar gas field ("smoke" is the same array's SMOKE
         # slice). A gas edit without a channel is a caller bug — loud.
         if ch is None:
             raise ValueError(

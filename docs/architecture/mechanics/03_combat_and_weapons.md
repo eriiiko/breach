@@ -404,7 +404,7 @@ and reachable in-game through the playground weapon-cycle key.)*
 
 Payload rows: `frag_standard` (the shipped grenade: radius 5, pressure 10,
 wall 200, unit 60), `breach_focus` (the shipped charge: 3/5.0/500/60),
-`demolition_c4` (8/25.0/800/150), `smoke_screen` (white_smoke), `tear_burst`
+`demolition_c4` (8/25.0/800/150), `smoke_screen` (steam), `tear_burst`
 (teargas), `poison_cloud` (poison), `incendiary_splash` (ignite ring),
 `plasma_splash_small/large` (W6 — §5 PROJECTILE notes: scorch wall damage +
 one-shot heat disc + ignite ring, unit_damage 0). The 40 mm ammo rows

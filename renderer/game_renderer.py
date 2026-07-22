@@ -315,8 +315,8 @@ class GameRenderer:
             # Multi-gas coloured optics (engine/05 §6.2): pass the full (N,h,w)
             # gas array + the per-gas absorption/scatter tables so the march sums
             # all gases density-weighted per channel (poison greens the beam,
-            # black_smoke dims it, mixing falls out of the sum). `gmap.smoke` is
-            # just the black_smoke slice of `gmap.gas`.
+            # smoke dims it, mixing falls out of the sum). `gmap.smoke` is
+            # just the smoke slice of `gmap.gas`.
             # S2b: gmap.gas is int32 Q16.16 — DEQUANTIZE the (N,h,w) array to
             # float32 density for the render cast (the C++ raycaster's gas optics
             # are float; render-only FLOAT BRIDGE, one source of truth = the int
@@ -357,7 +357,7 @@ class GameRenderer:
         # energy the smoke scattered), NOT a surface-tint multiply — the old
         # light_modulation path is retired (ch.03 C16, ch.05 §God-rays).
         if self.show_smoke:
-            # S2b: gmap.smoke is int32 Q16.16 (the BLACK_SMOKE view) — DEQUANTIZE
+            # S2b: gmap.smoke is int32 Q16.16 (the SMOKE view) — DEQUANTIZE
             # to float32 density for the overlay (render-only FLOAT BRIDGE). The
             # _gas_render_f scratch already holds the dequantized planes when the
             # cast ran this frame; recompute the smoke slice cheaply regardless so

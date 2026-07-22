@@ -50,7 +50,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "tests", ROOT / "cpp" / "build" / "Release
         sys.path.insert(0, str(_p))
 
 import breach_physics as bp                                       # noqa: E402
-from simulation.gases import O2, INERT_N2, BLACK_SMOKE            # noqa: E402
+from simulation.gases import O2, INERT_N2, SMOKE            # noqa: E402
 from simulation.materials import MaterialTable, MAT_WOOD          # noqa: E402
 from simulation import gas_fixed                                  # noqa: E402
 
@@ -100,7 +100,7 @@ def _plus_scene(center_o2_raw, outer_o2=0.21, hp=60.0, h=9, w=9):
 
 def _step(comb, scene, dt=0.25):
     gas, solid, is_vacuum, flammable, wall_hp, fire, ign, temperature, _ = scene
-    comb.step(gas, O2, INERT_N2, BLACK_SMOKE, temperature, wall_hp, fire,
+    comb.step(gas, O2, INERT_N2, SMOKE, temperature, wall_hp, fire,
               flammable, solid, is_vacuum, ign, dt, 1.0, 0.05)
 
 
@@ -112,7 +112,7 @@ def _arm_readouts(scene):
         sy, sx = cy + dy, cx + dx
         oy, ox = cy + oy_d, cx + ox_d
         out[name] = (int(wall_hp[sy, sx]), int(gas[O2][oy, ox]),
-                     int(temperature[oy, ox]), int(gas[BLACK_SMOKE][oy, ox]),
+                     int(temperature[oy, ox]), int(gas[SMOKE][oy, ox]),
                      int(gas[INERT_N2][oy, ox]))
     return out
 

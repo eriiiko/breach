@@ -43,7 +43,7 @@ from simulation import Simulation  # noqa: E402
 from simulation.entities import door as door_mod  # noqa: E402
 from simulation.entities.serialize import entity_carrier  # noqa: E402
 from simulation.gamemap import GameMap, N_GASES  # noqa: E402
-from simulation.gases import BLACK_SMOKE, O2  # noqa: E402
+from simulation.gases import SMOKE, O2  # noqa: E402
 from simulation.sensor_accessor import (  # noqa: E402
     Channel, EntityFieldAccessor, SiteIndex, build_site_index,
 )
@@ -374,7 +374,7 @@ class _FakeGmap:
 def test_accessor_sample_reads_mirror_no_dequantize():
     g = _FakeGmap()
     g.atmosphere[1, 2] = 65536            # 1.0 atm in Q16.16 — returned RAW
-    g.gas[BLACK_SMOKE][1, 2] = 4242
+    g.gas[SMOKE][1, 2] = 4242
     g.gas[O2][1, 2] = 13107
     g.temperature[3, 3] = 777
     g.fire[0, 0] = 55

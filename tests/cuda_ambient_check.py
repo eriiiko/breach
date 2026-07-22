@@ -82,10 +82,10 @@ def _build_scenario():
     q = atmosphere_fixed.quantize_scalar
     g.temperature[16:26, 16:26] += q(5000.0)
     g.gas[O2, 18:24, 18:24] += q(4.0)
-    # A trace (black_smoke) cloud in the open outdoor area near the sky ring, so
+    # A trace (smoke) cloud in the open outdoor area near the sky ring, so
     # the smoke pass advects it toward the ring and the ring-sink widening
     # (traces -> 0 at is_ambient) is exercised on BOTH paths (the Erik follow-up).
-    bs = g.gases.name_to_id["black_smoke"]
+    bs = g.gases.name_to_id["smoke"]
     g.gas[bs, 3:9, 30:50] += q(2.0)
 
     runner = PhysicsRunner(bp)

@@ -44,7 +44,7 @@ from simulation import gas_fixed  # noqa: E402
 from simulation.entities import REGISTRY  # noqa: E402
 from simulation.entities.nodes import PUMP_DEFAULT_BAND_Q16  # noqa: E402
 from simulation.gamemap import GameMap, N_GASES  # noqa: E402
-from simulation.gases import BLACK_SMOKE, INERT_N2, O2  # noqa: E402
+from simulation.gases import SMOKE, INERT_N2, O2  # noqa: E402
 from simulation.pump_system import (  # noqa: E402
     PumpRuntime, build_pumps, is_pump,
 )
@@ -118,7 +118,7 @@ def test_inject_splits_standard_mix_exactly():
     assert o2 == (dn * o2_frac_q + (1 << 15)) >> 16       # the air-seed idiom
     assert abs(o2 / dn - 0.21) < 1e-3
     # Only the two bulk slices moved.
-    assert int(g.gas[BLACK_SMOKE][5, 5]) == 0
+    assert int(g.gas[SMOKE][5, 5]) == 0
 
 
 def test_inject_then_extract_roundtrips_total_n_exactly_empty_tile():
@@ -140,7 +140,7 @@ def test_inject_then_extract_roundtrips_total_n_exactly_populated_tile():
     _zero_tile(g, 5, 5)
     g.gas[O2][5, 5] = 1000
     g.gas[INERT_N2][5, 5] = 3000
-    g.gas[BLACK_SMOKE][5, 5] = 500
+    g.gas[SMOKE][5, 5] = 500
     total0 = sum(int(g.gas[gg][5, 5]) for gg in range(N_GASES))
     dn = 20_000
     g.inject_gas_n(5, 5, dn)
@@ -170,7 +170,7 @@ def test_extract_proportional_split_conserves_requested_dn_exactly():
     _zero_tile(g, 5, 5)
     g.gas[O2][5, 5] = 100
     g.gas[INERT_N2][5, 5] = 300
-    g.gas[BLACK_SMOKE][5, 5] = 200                         # total 600
+    g.gas[SMOKE][5, 5] = 200                         # total 600
     before = [int(g.gas[gg][5, 5]) for gg in range(N_GASES)]
     removed = g.extract_gas_n(5, 5, 150)
     after = [int(g.gas[gg][5, 5]) for gg in range(N_GASES)]
@@ -178,7 +178,7 @@ def test_extract_proportional_split_conserves_requested_dn_exactly():
     assert removed == 150
     assert sum(per_slice) == 150                           # exact conservation
     assert per_slice[O2] == 25 and per_slice[INERT_N2] == 75
-    assert per_slice[BLACK_SMOKE] == 50
+    assert per_slice[SMOKE] == 50
     assert all(x >= 0 for x in after)
 
 

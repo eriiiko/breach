@@ -50,7 +50,7 @@ class Channel(Enum):
     NOT go through this accessor (tick counter / a signal / units).
     """
     PRESSURE = "pressure"        # gmap.atmosphere — materialized P (air)
-    SMOKE = "smoke"              # gmap.gas[BLACK_SMOKE] (air)
+    SMOKE = "smoke"              # gmap.gas[SMOKE] (air)
     WATER_DEPTH = "water_depth"  # gmap.water_depth (air/floor)
     TEMPERATURE = "temperature"  # gmap.temperature — solid body tile (D7)
     FIRE = "fire"                # gmap.fire — flammable body tile (D8)
@@ -128,8 +128,8 @@ class EntityFieldAccessor:
         if channel is Channel.PRESSURE:
             return g.atmosphere
         if channel is Channel.SMOKE:
-            from simulation.gases import BLACK_SMOKE
-            return g.gas[BLACK_SMOKE]
+            from simulation.gases import SMOKE
+            return g.gas[SMOKE]
         if channel is Channel.WATER_DEPTH:
             return g.water_depth
         if channel is Channel.TEMPERATURE:

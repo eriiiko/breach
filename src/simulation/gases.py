@@ -9,15 +9,15 @@ here. Properties are stored as per-id numpy arrays so a future per-tile lookup
 
 The five TRACE gases (engine/05 §6.2):
 
-    white_smoke, black_smoke, poison, teargas, fuel_gas
+    steam, smoke, poison, teargas, fuel_gas
 
-``black_smoke`` is combustion soot — what fire and explosions emit. Its diffusion
+``smoke`` is combustion soot — what fire and explosions emit. Its diffusion
 (0.10) matches today's ``physics.d_smoke`` (0.1), so the existing generic smoke
-field maps onto the ``black_smoke`` slice with **no behaviour change** (M1).
+field maps onto the ``smoke`` slice with **no behaviour change** (M1).
 
 EOS refactor P1 (docs/eos_refactor_design.md §1/§2, decisions log #11) appends
 two **bulk** species, ``o2`` and ``inert_n2`` — ALWAYS appended, never
-prepended/reordered (existing views like ``gmap.smoke = gas[BLACK_SMOKE]`` are
+prepended/reordered (existing views like ``gmap.smoke = gas[SMOKE]`` are
 index-bound). These are the ``conservative`` pair: instead of the trace planes'
 semi-Lagrangian transport, they move by donor-cell CONSERVATIVE flux
 (``cpp/src/bulk_transport.cpp``), and carry NO optics (invisible bulk air —
@@ -43,22 +43,29 @@ import numpy as np
 # order of the dense ``gmap.gas`` (N, h, w) array; ids must be contiguous
 # 0..N-1 so an array indexed by id has no gaps (validated in GasTable).
 # ---------------------------------------------------------------------------
-WHITE_SMOKE = 0
-BLACK_SMOKE = 1
+STEAM = 0
+SMOKE = 1
 POISON = 2
 TEARGAS = 3
 FUEL_GAS = 4
 # EOS refactor P1 (§1/§2): the bulk pair, APPENDED — never renumber the five
-# ids above (they are index-bound: gmap.smoke = gas[BLACK_SMOKE], the field
+# ids above (they are index-bound: gmap.smoke = gas[SMOKE], the field
 # digest's `gas` shape/order, etc.).
 O2 = 5
 INERT_N2 = 6
 
+# TODO(B2): cpp/ still spells these `black_smoke`/`white_smoke` in identifiers
+# and comments (e.g. cpp/src/combustion.h, cuda_combustion.h/.cu,
+# bindings.cpp — `black_smoke_idx` and friends). Left as-is this beat: the
+# C++/Python boundary passes gas planes positionally/by index, never by
+# name string, so the mismatch is cosmetic and safe. Deferred cosmetic sweep,
+# no rebuild needed (B2 design doc §1, §0 iron constraints).
+
 # Config-key <-> id mapping. The key is the ``[gases.<name>]`` table name.
 # Listed in id order; ``GasTable`` validates contiguity.
 GAS_NAMES = {
-    WHITE_SMOKE: "white_smoke",
-    BLACK_SMOKE: "black_smoke",
+    STEAM: "steam",
+    SMOKE: "smoke",
     POISON: "poison",
     TEARGAS: "teargas",
     FUEL_GAS: "fuel_gas",
@@ -70,7 +77,7 @@ GAS_NAMES = {
 N_GASES = len(GAS_NAMES)
 
 # EOS refactor P1: the trace-gas id range is [0, N_TRACE_GASES) — the 5 M1
-# gases (white_smoke .. fuel_gas), always the low contiguous block since the
+# gases (steam .. fuel_gas), always the low contiguous block since the
 # bulk pair is APPENDED, never inserted. Callers that want "every gas EXCEPT
 # the one under test, but NOT the always-present ambient O2/N2 bulk pair"
 # (weapon/payload slice-isolation tests are the main consumer) iterate
@@ -102,7 +109,7 @@ class GasTable:
     is a list of per-gas strings (a gameplay tag read unit-side in mechanics, not
     a numeric column).
 
-    The id constants (:data:`WHITE_SMOKE`, :data:`BLACK_SMOKE`, ...) are the
+    The id constants (:data:`STEAM`, :data:`SMOKE`, ...) are the
     canonical slice indices into ``gmap.gas``; ``name_to_id`` gives the same map
     keyed by name.
 
@@ -113,7 +120,7 @@ class GasTable:
         """Build from the ``CFG.gases`` namespace (or any equivalent).
 
         ``gases_cfg`` is the :class:`config.Namespace` for ``[gases]``; each
-        attribute (``white_smoke``, ``black_smoke``, ...) is itself a namespace
+        attribute (``steam``, ``smoke``, ...) is itself a namespace
         of the named columns. A plain dict-of-dicts is also accepted (tests).
         """
         ids = sorted(GAS_NAMES)
@@ -211,7 +218,7 @@ class GasTable:
 
 
 __all__ = [
-    "WHITE_SMOKE", "BLACK_SMOKE", "POISON", "TEARGAS", "FUEL_GAS",
+    "STEAM", "SMOKE", "POISON", "TEARGAS", "FUEL_GAS",
     "O2", "INERT_N2",
     "GAS_NAMES", "N_GASES", "N_TRACE_GASES", "GasTable",
 ]

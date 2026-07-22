@@ -123,7 +123,7 @@ class pressure(_FieldSensor):
 
 @register
 class smoke(_FieldSensor):
-    """Black-smoke density probe — ``gas[BLACK_SMOKE]`` (air, §3)."""
+    """Black-smoke density probe — ``gas[SMOKE]`` (air, §3)."""
     CHANNEL_NAME = "smoke"
     SAMPLE_FAMILY = SAMPLE_AIR
 

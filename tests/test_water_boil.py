@@ -3,12 +3,12 @@
 Inside ``_step_water``, after the pipe-model substeps and BEFORE the W3
 displacement accounting (so a boiled-off column reads as receding water ->
 slight decompression, the physically-right sign), standing water under low
-pressure boils off and puffs ``white_smoke`` (steam):
+pressure boils off and puffs ``steam`` (steam):
 
     boiling = (atmosphere < boil_p_thresh) & (water_depth > 0)
     boiled  = where(boiling, min(water_depth, boil_rate * sim_time), 0)
     water_depth        -= boiled
-    gas[white_smoke]   += steam_yield * boiled
+    gas[steam]   += steam_yield * boiled
 
 PRESSURE-keyed, not vacuum-keyed: a drained-but-sealed room boils too. The
 fire-side evaporative heat sink (wet tiles staying cool) is the temperature
@@ -17,7 +17,7 @@ solver's lane and is NOT exercised here.
 The plan's four tests, with the plan's numbers (boil_rate 0.02 m/s,
 boil_p_thresh 0.3, steam_yield 4.0, tick 1/24 s):
   1. single wet tile held at atmosphere 0.0, depth 0.1 m: after ONE tick
-     depth == 0.1 - 0.02/24 (atol 1e-7) and the white_smoke gain
+     depth == 0.1 - 0.02/24 (atol 1e-7) and the steam gain
      == 4.0 * 0.02/24 (atol 1e-6).
   2. after 121 ticks the tile has boiled DRY: depth == 0.0 exactly
      (120 full-rate increments empty 0.1 m in exact arithmetic; float32
@@ -60,7 +60,7 @@ import breach_physics as bp  # noqa: E402
 from config import CFG  # noqa: E402
 from level_loader import LevelData  # noqa: E402
 from simulation import Simulation  # noqa: E402
-from simulation.gases import N_TRACE_GASES, WHITE_SMOKE  # noqa: E402
+from simulation.gases import N_TRACE_GASES, STEAM  # noqa: E402
 from water_q16 import q, deq  # noqa: E402  (S1: Q16.16 quantize/dequantize)
 from simulation import gas_fixed  # noqa: E402  (S2b: gas Q16.16 dequantize)
 
@@ -168,11 +168,11 @@ def test_one_tick_vacuum_boil_depth_and_steam_gain():
     sim, g = _boil_sim()
     _assert_plan_params(sim.physics_runner)
 
-    # The steam GAIN is read as TOTAL white_smoke mass (float64 sum) — robust
+    # The steam GAIN is read as TOTAL steam mass (float64 sum) — robust
     # against transport moving the puff between ticks (here transport is a
     # no-op anyway: sealed cell, zero wind, breach-less map -> zero sink).
-    total0 = _gas_mass(g.gas[WHITE_SMOKE])    # S2b: dequantized real-density mass
-    assert total0 == 0.0, "scene starts with stray white_smoke"
+    total0 = _gas_mass(g.gas[STEAM])    # S2b: dequantized real-density mass
+    assert total0 == 0.0, "scene starts with stray steam"
 
     sim.step()                                    # ONE tick = 1/24 s
 
@@ -182,21 +182,21 @@ def test_one_tick_vacuum_boil_depth_and_steam_gain():
     d = float(deq(g.water_depth[A]))
     assert abs(d - (DEPTH - INC)) < 3 * Q_EPS, (
         f"one-tick boil depth {d} != {DEPTH - INC} (tol {3*Q_EPS:.2e})")
-    # Steam: the puff is steam_yield * boiled, in white_smoke and ONLY there.
+    # Steam: the puff is steam_yield * boiled, in steam and ONLY there.
     # S1: boiled is the Q16.16-quantized full-rate amount. S2b: the steam puff
     # ITSELF is now Q16.16 too (the gas plane is integer), so the gain carries a
     # SECOND quantization (the puff quantize on top of the boil quantize) — widen
     # the slack to a few gas LSB (~1.5e-5 each) on top of the boil LSB.
-    gain = _gas_mass(g.gas[WHITE_SMOKE]) - total0
+    gain = _gas_mass(g.gas[STEAM]) - total0
     assert abs(gain - STEAM_YIELD * INC) < STEAM_YIELD * 3 * Q_EPS + 3 * Q_EPS, (
         f"one-tick steam gain {gain} != {STEAM_YIELD * INC} "
         f"(tol {STEAM_YIELD * 3 * Q_EPS + 3 * Q_EPS:.2e})")
     # Trace slices only (0..N_TRACE_GASES-1) — the bulk O2/inert_N2 pair (EOS
     # refactor P1) always carries ambient air, unrelated to the steam puff.
     for gi in range(N_TRACE_GASES):
-        if gi != WHITE_SMOKE:
+        if gi != STEAM:
             assert not g.gas[gi].any(), (
-                f"boil leaked into gas slice {gi} (steam is white_smoke only)")
+                f"boil leaked into gas slice {gi} (steam is steam only)")
     # The vacuum hold held (and the cell keeps boiling next tick). EOS P3:
     # the steam puff itself now carries trace MASS (trace_mass_scale), so
     # P_A is epsilon-positive rather than exactly 0 — the boil gate only
@@ -224,10 +224,10 @@ def test_boils_dry_exact_zero_after_121_ticks():
         f"depth after 121 ticks is {g.water_depth[A]!r}, not exactly 0.0")
 
     # Yield bookkeeping (the plan's numbers end-to-end): ALL the water left
-    # as steam, total white_smoke starts at steam_yield * 0.1 = 0.4 as it is
+    # as steam, total steam starts at steam_yield * 0.1 = 0.4 as it is
     # puffed in across the 121 ticks. EOS refactor P4 (design §2.2/§5 v2.1,
     # decisions.md #12): the per-gas trace `decay` column is now APPLIED
-    # (white_smoke decay=0.020/s, config.toml [gases.white_smoke] — "loaded
+    # (steam decay=0.020/s, config.toml [gases.steam] — "loaded
     # but never applied" pre-P4), crediting the lost mass to inert_N2 each
     # tick, so the puffed-in steam settles/condenses as it accumulates —
     # the measured total is ~4-5% below the undecayed 0.4 over this run
@@ -235,14 +235,14 @@ def test_boils_dry_exact_zero_after_121_ticks():
     # Widened from the pre-P4 0.1% float-rounding tolerance to comfortably
     # cover the REAL, expected decay loss (not a regression — it is EXACTLY
     # decision #12 v2.1's "burnt/settled products go to inert_N2" behaviour).
-    total = _gas_mass(g.gas[WHITE_SMOKE])     # S2b: dequantized real-density mass
+    total = _gas_mass(g.gas[STEAM])     # S2b: dequantized real-density mass
     assert 0.0 < total < STEAM_YIELD * DEPTH, (
         f"steam total {total} should be positive and BELOW the undecayed "
         f"steam_yield*depth {STEAM_YIELD * DEPTH} (decay only ever removes "
         f"mass from this plane)")
     assert abs(total - STEAM_YIELD * DEPTH) < 0.10 * STEAM_YIELD * DEPTH, (
         f"steam total {total} strayed too far from steam_yield*depth "
-        f"{STEAM_YIELD * DEPTH} for the known white_smoke decay rate "
+        f"{STEAM_YIELD * DEPTH} for the known steam decay rate "
         f"(0.020/s over ~121 ticks) — investigate")
 
 
@@ -259,7 +259,7 @@ def test_twin_tile_at_full_pressure_bit_exact_unchanged():
 
     # Control (the asserts bite): the vacuum twin DID boil in this same run.
     assert float(g.water_depth[A]) < float(depth_pre[A])
-    assert _gas_mass(g.gas[WHITE_SMOKE]) > 0.0
+    assert _gas_mass(g.gas[STEAM]) > 0.0
 
     # The full-pressure twin: depth bit-exact, every gas slice bit-exact.
     assert g.water_depth[B] == depth_pre[B], (

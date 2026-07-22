@@ -32,7 +32,7 @@ from simulation.gamemap import (  # noqa: E402
     MAT_AIR, MAT_HULL, MAT_DOOR, MAT_FURNITURE,
 )
 from simulation.gases import (  # noqa: E402
-    N_GASES, BLACK_SMOKE, POISON, O2, INERT_N2,
+    N_GASES, SMOKE, POISON, O2, INERT_N2,
 )
 from simulation.physics_runner import PhysicsRunner  # noqa: E402
 
@@ -110,7 +110,7 @@ def test_cycle_exact_conservation_all_slices():
     # Nonzero trace gas in and around the doorway: all 7 slices must move
     # by the same exact rule (pure-primitive cycling — no physics step, so
     # per-slice exactness holds for traces too).
-    g.gas[BLACK_SMOKE][6, 6] = 12345
+    g.gas[SMOKE][6, 6] = 12345
     g.gas[POISON][6, 6] = 7777
     g.gas[POISON][5, 6] = 999
     totals0 = _slice_totals(g)

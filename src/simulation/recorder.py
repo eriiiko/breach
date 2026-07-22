@@ -139,7 +139,7 @@ class PhysicsRecorder:
             # to real units (/65536) at the recorder boundary so the float32 ring
             # buffer (and the BLOWUP_THRESHOLD compare below) stays in meaningful
             # units, not raw counts. Render/debug only — not part of the synced
-            # state. (`smoke` is the BLACK_SMOKE int32 view; all share the 2^16
+            # state. (`smoke` is the SMOKE int32 view; all share the 2^16
             # scale.) The dtype guard makes this a no-op for any field that stays
             # float, so the same code is safe across the migration.
             if name in ("wave_p", "wave_v", "wave_source", "smoke",
