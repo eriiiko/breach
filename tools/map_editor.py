@@ -27,7 +27,13 @@ The window is organised as panes (Arc C, editor doc §8): a top bar, a left
 tool rail (the mode list), the central canvas (the live baked map), a right
 palette + inspector column, and a bottom status bar. The map draws only
 inside the canvas pane; keyboard shortcuts are unchanged (keyboard-first
-survives the panes). Pane geometry is pure in tools/editor_layout.py.
+survives the panes). Pane geometry is pure in tools/editor_layout.py. The
+palette pane is tabbed (Arc C1): MATERIAL (unchanged) and ENTITY — the
+latter generated from the live entity registry (tools/entity_editor_ui.py,
+falling back to the last-good entity_registry.json + a red status-bar
+banner on import failure, canon engine/16 §1). Clicking an ENTITY chip
+shows that class's default field template in the inspector; LIGHT mode's
+hovered marker shows its live instance fields the same way.
 
 Controls (the tool rail + inspector show the active mode's line):
 
@@ -46,7 +52,9 @@ Controls (the tool rail + inspector show the active mode's line):
     Ctrl+Z               - undo (tile ring everywhere; SPAWN / LIGHT /
                            WATER modes pop their own rings instead —
                            separate rings, see below)
-    Ctrl+S               - SAVE: tilemap.csv + [[spawn]] + [[light]] +
+    Ctrl+S               - SAVE: tilemap.csv + [[spawn]] + lights (whichever
+                           of [[light]] / [[entity]] the level already used —
+                           Arc C1, never a forced migration) +
                            [water]/water_init.npy writeback + [art]/[bake]
                            blocks (all .bak once per session) + full bake
                            at the recorded px_per_tile
@@ -73,8 +81,8 @@ Controls (the tool rail + inspector show the active mode's line):
                            marker; RMB deletes; T toggles the team of the
                            hovered marker (or, off-marker, the placement
                            team); markers draw as team-coloured circles
-  LIGHT:  LMB            - place a [[light]] (tile-center snapped) or drag
-                           an existing marker; RMB deletes; B toggles
+  LIGHT:  LMB            - place a `light` entity (tile-center snapped) or
+                           drag an existing marker; RMB deletes; B toggles
                            static <-> beacon (hovered marker, else the
                            placement kind); C / Shift+C cycles the colour
                            preset (hovered, else placement); on the hovered
@@ -104,24 +112,33 @@ Undo rings (reported design call): tile mutations (PAINT/ROOM/CORRIDOR/DOOR)
 share ONE UndoRing of grid snapshots; spawn, light and water edits live in
 their own rings — Ctrl+Z pops the spawn/light/water ring only while in that
 mode. Mixing them into one ring would make Ctrl+Z in PAINT silently rewind
-spawn/light/water work (and vice versa).
+spawn/light/water work (and vice versa). (LIGHT's ring is a temporary gap
+between Arc C1 and C2's transaction log — see tools/light_entity_port.py.)
 
 Spawn/light/water writeback (reported design call, absorbed into level_lib
 in Arc A2 — entity doc §3c: level_lib is THE single writer and this editor
-is a client): the `[[spawn]]` and `[[light]]` arrays-of-tables and the
-`[water]` table are MANAGED BLOCKS — on save every existing table is removed
-and the editor's state is written back at the position of the first one (or
-EOF), all three families in ONE atomic temp+rename write (a crash mid-save
-cannot tear level.toml). Every byte OUTSIDE the managed tables is preserved
-(comments inside individual tables are not). level.toml gets ONE .bak per
-session, carrying the pre-session bytes. water_init.npy carries its OWN
+is a client): the `[[spawn]]` array-of-tables and the `[water]` table are
+MANAGED BLOCKS — on save every existing table is removed and the editor's
+state is written back at the position of the first one (or EOF), all
+families in ONE atomic temp+rename write (a crash mid-save cannot tear
+level.toml). Every byte OUTSIDE the managed tables is preserved (comments
+inside individual tables are not). level.toml gets ONE .bak per session,
+carrying the pre-session bytes. water_init.npy carries its OWN
 once-per-session .bak (pre-session bytes, only when the file predates the
 session). On save the water grid is masked against the CURRENT materials
 (zeroed on solid/SPACE, count reported) — a wall painted over a pool never
 saves hidden depth.
 
+LIGHT is a registry entity now (Arc C1, Amendment A1 — the bespoke
+level_lib.write_lights path is DELETED): tools/light_entity_port.py decides
+ONCE at load whether a level's lights round-trip through the legacy
+`[[light]]` family or the `[[entity]]` family, and never switches a level
+between them on save (editor doc §6 / Erik ruling 2 — no forced migration).
+A level with no lights at all also saves through `[[entity]]`, since the
+old writer no longer exists to fall back to.
+
 Scope limitation on record (P4): the editor refuses levels without a [bake]
-block, so the vessel/playground lamp [[light]] entries are loader-consumed
+block, so the vessel/playground lamp `light` entries are loader-consumed
 but hand-edited — LIGHT mode authors tiled-path levels only. WATER mode
 inherits the same scope (tiled-path levels only); painted levels take a
 hand-authored water_init.npy.
@@ -155,7 +172,7 @@ import level_loader
 from level_lib import (WATER_FILENAME, color_255, format_light_lines,  # noqa: F401
                        format_spawn_lines, format_water_lines, write_lights,
                        write_spawns, write_water)
-from level_loader import SPACE_CODE, LightEntry, SpawnEntry
+from level_loader import SPACE_CODE, SpawnEntry
 from level_lights import beacon_angle
 from simulation import water_fixed
 from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_HULL,
@@ -167,6 +184,12 @@ from level_edit_common import (BRUSH_MAX, BRUSH_MIN, UNDO_CAPACITY, UndoRing,
                                art_px_to_tile, brush_rect, build_palette,
                                line_tiles, paint_tiles, save_tilemap_csv)
 from editor_layout import compute_panes, fit_camera, screen_from_world
+# Arc C1 — registry-driven palette/inspector + the LIGHT entity port (canon
+# engine/16 §1/§2; editor doc §3 pillar 1). LIGHT's bespoke writeback
+# (level_lib.write_lights) is DELETED (Amendment A1): light_entity_port
+# chooses the level_lib family a level's lights round-trip through.
+import entity_editor_ui
+import light_entity_port
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -676,8 +699,11 @@ COL_BAD = (255, 90, 80, 255)
 # the hit targets match the visuals).
 RAIL_PAD_Y = 8
 RAIL_ROW_H = 30
-PAL_PAD_Y = 30            # room for the pane title above the first chip
+PAL_PAD_Y = 30            # room for the tab header above the first chip
 PAL_ROW_H = 22
+PAL_TABS = ("MATERIAL", "ENTITY")   # the tabbed palette (Arc C1, editor §8)
+PAL_TAB_FONT = 14
+PAL_TAB_GAP = 20           # px between tab labels' click-hit boxes
 
 MODE_HINTS = {
     "PAINT": "LMB paint  RMB erase  Shift+click line  I eyedrop  [ ] brush",
@@ -760,6 +786,20 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
     mat_fill = {pid: rgb for pid, (_, rgb) in palette.items()
                 if rgb is not None}
 
+    # Arc C1 — registry-driven ENTITY palette tab (editor doc §3 pillar 1,
+    # canon §1): import-then-fallback once at launch; on success
+    # entity_registry.json is rewritten as the new last-good (the registry
+    # module's own job — see entity_editor_ui.load_registry). On failure the
+    # palette still renders (minus nothing — the whole last-good snapshot is
+    # usable) and the status bar shows a red banner (registry_banner below).
+    registry_result = entity_editor_ui.load_registry()
+    registry_payload = registry_result.payload
+    entity_palette = entity_editor_ui.palette_entries(registry_payload)
+    registry_banner = (None if registry_result.ok else
+                       f"registry fallback ({registry_result.error})")
+    palette_tab = "MATERIAL"           # MATERIAL <-> ENTITY (pane click only)
+    selected_entity_class = None       # ENTITY tab selection -> inspector template
+
     preview_ppt = choose_preview_ppt(ts.px, bake_ppt, grid_w, grid_h)
     ppt_pair = (float(preview_ppt), float(preview_ppt))
     offset0 = (0.0, 0.0)
@@ -770,7 +810,15 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
     corridor_w = DEFAULT_CORRIDOR_WIDTH
     spawn_team = TEAM_MARINE
     spawns = [replace(s) for s in lvl.spawns]
-    lights = [replace(l) for l in lvl.lights]
+    # LIGHT (Arc C1, Amendment A1): the bespoke LightEntry-list-only state is
+    # gone — `lights` now holds EditableLight (LightEntry + entity id), and
+    # `light_form`/`other_entities` (captured ONCE at load) decide which
+    # level_lib family a save writes lights through (light_entity_port
+    # preserves whichever the level already used — no forced migration).
+    light_form = light_entity_port.light_form(lvl.raw_toml)
+    other_entities = [e for e in lvl.entities
+                      if e.class_name != light_entity_port.LIGHT_CLASS]
+    lights = light_entity_port.initial_editable_lights(lvl)
     light_kind = "static"                       # B off-marker toggles this
     light_color = tuple(v / 255.0 for v in LIGHT_COLOR_PRESETS[0][1])
 
@@ -972,8 +1020,11 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             rl.MouseButton.MOUSE_BUTTON_LEFT)
 
         # ---- pane routing: clicks outside the canvas act on their pane ----
-        # Tool rail row -> select mode (mirrors TAB / F1-F7); palette chip ->
-        # select material (mirrors the 0-9 keys). Keyboard stays the primary
+        # Tool rail row -> select mode (mirrors TAB / F1-F7); palette tab
+        # header -> switch MATERIAL <-> ENTITY (Arc C1: the registry-driven
+        # tab, editor doc §8); a chip in the active tab -> select material
+        # (mirrors 0-9) or select an entity class (drives the inspector
+        # template — placement itself is C3's). Keyboard stays the primary
         # path (§5 keyboard-first); the canvas gate (over_hud) already keeps
         # these clicks from also editing the map.
         if lmb_click and panes["tool_rail"].contains(mouse.x, mouse.y):
@@ -984,9 +1035,23 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                 cancel_transients()
                 mode = MODES[mode_idx]
         elif lmb_click and panes["palette"].contains(mouse.x, mouse.y):
-            pidx = int((mouse.y - panes["palette"].y - PAL_PAD_Y) // PAL_ROW_H)
-            if 0 <= pidx < len(palette_order):
-                selected_id = palette_order[pidx]
+            pal = panes["palette"]
+            rel_y = mouse.y - pal.y
+            if rel_y < PAL_PAD_Y:
+                tx_ = pal.x + 10
+                for label in PAL_TABS:
+                    w = rl.measure_text(label, PAL_TAB_FONT)
+                    if tx_ <= mouse.x <= tx_ + w + 10:
+                        palette_tab = label
+                        break
+                    tx_ += w + PAL_TAB_GAP
+            else:
+                pidx = int((rel_y - PAL_PAD_Y) // PAL_ROW_H)
+                if palette_tab == "MATERIAL":
+                    if 0 <= pidx < len(palette_order):
+                        selected_id = palette_order[pidx]
+                elif 0 <= pidx < len(entity_palette):
+                    selected_entity_class = entity_palette[pidx].class_name
 
         def selected_is_wall() -> bool:
             name = MATERIAL_NAMES.get(selected_id)
@@ -1268,8 +1333,11 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                     light_undo.push(lights)
                     # Tile-center snap (engine/15 §2.2: centers at .5).
                     lx, ly = cur_tx + 0.5, cur_ty + 0.5
-                    lights.append(LightEntry(x=lx, y=ly, color=light_color,
-                                             kind=light_kind))
+                    new_id = light_entity_port.unique_light_id(
+                        {l.id for l in lights})
+                    lights.append(light_entity_port.EditableLight(
+                        x=lx, y=ly, color=light_color, kind=light_kind,
+                        id=new_id))
                     dirty_lights = True
                     flash, flash_frames = (
                         f"{light_kind} light at ({lx:g}, {ly:g}) "
@@ -1380,13 +1448,13 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
 
         if ctrl and rl.is_key_pressed(K.KEY_S):
             # level.toml writeback goes through level_lib (entity doc §3c:
-            # THE single writer): spawn + light + water managed blocks land
-            # as ONE atomic temp+rename write, sharing the session's one
-            # toml .bak (pre-session bytes). water_init.npy is written
-            # first (its OWN once-per-session .bak — P5 §2.4) so a written
-            # [water] block never points at a missing file; bake_level then
-            # rewrites the [art]/[bake] blocks with write_bak=False, so
-            # nothing can clobber the .bak.
+            # THE single writer): spawn + light/entity + water managed
+            # blocks land as ONE atomic temp+rename write, sharing the
+            # session's one toml .bak (pre-session bytes). water_init.npy is
+            # written first (its OWN once-per-session .bak — P5 §2.4) so a
+            # written [water] block never points at a missing file;
+            # bake_level then rewrites the [art]/[bake] blocks with
+            # write_bak=False, so nothing can clobber the .bak.
             save_tilemap_csv(csv_path, grid, write_bak=not csv_bak_written)
             csv_bak_written = True
             first = not toml_bak_written
@@ -1401,11 +1469,19 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             _, has_water = level_lib.write_water_npy(
                 level_dir, water_q, npy_bak=not water_bak_written)
             water_bak_written = True
-            handle.save({
+            # LIGHT (Arc C1, Amendment A1): write through whichever family
+            # this level already used at open time — never a forced
+            # migration (editor doc §6 / Erik ruling 2 / canon §2). The
+            # OTHER family is simply omitted, so level_lib preserves it
+            # byte-for-byte (e.g. a legacy-light level's pre-existing
+            # [[entity]] door/zone instances are untouched here).
+            replacements = {
                 "spawn": lambda nl: format_spawn_lines(spawns, nl),
-                "light": lambda nl: format_light_lines(lights, nl),
                 "water": level_lib.water_block_format(has_water),
-            }, write_bak=first)
+            }
+            replacements.update(light_entity_port.format_lights_for_save(
+                light_form, lights, other_entities))
+            handle.save(replacements, write_bak=first)
             toml_bak_written = True
             summary = bake_level(level_dir, tileset=tileset_arg,
                                  px_per_tile=bake_ppt, seed=bake_seed,
@@ -1664,59 +1740,127 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             rl.draw_text(f"F{i + 1} {mname}", rail.x + 12, ry + 6, 16,
                          rl.Color(*col))
 
-        # Palette pane: chips + names, selected boxed (click a chip = 0-9).
-        rl.draw_text("MATERIAL", pal.x + 10, pal.y + 8, 14,
-                     rl.Color(*COL_TEXT))
-        for i, pid in enumerate(palette_order):
-            py = pal.y + PAL_PAD_Y + i * PAL_ROW_H
-            if py + PAL_ROW_H > pal.y + pal.h:
-                break
-            pname, c = palette[pid]
-            chip = (rl.Color(c[0], c[1], c[2], 255) if c is not None
-                    else rl.Color(70, 70, 76, 255))
-            rl.draw_rectangle(pal.x + 10, py, 14, 14, chip)
-            if pid == selected_id:
-                rl.draw_rectangle_lines_ex(
-                    rl.Rectangle(pal.x + 8, py - 2, 18, 18), 2.0, rl.WHITE)
-            label = f"{9 if pid == SPACE_CODE else pid} {pname}"
-            rl.draw_text(label, pal.x + 32, py, 14,
-                         rl.WHITE if pid == selected_id
+        # Palette pane: tab headers (MATERIAL / ENTITY, click to switch —
+        # Arc C1) + the active tab's chips, selected boxed.
+        tab_x = pal.x + 10
+        for label in PAL_TABS:
+            w = rl.measure_text(label, PAL_TAB_FONT)
+            active = label == palette_tab
+            rl.draw_text(label, tab_x, pal.y + 8, PAL_TAB_FONT,
+                         rl.Color(*COL_TEXT_HOT) if active
                          else rl.Color(*COL_TEXT_DIM))
+            if active:
+                rl.draw_line_ex(rl.Vector2(tab_x, pal.y + 24),
+                                rl.Vector2(tab_x + w, pal.y + 24), 2.0,
+                                rl.Color(*COL_TEXT_HOT))
+            tab_x += w + PAL_TAB_GAP
+        if palette_tab == "MATERIAL":
+            for i, pid in enumerate(palette_order):
+                py = pal.y + PAL_PAD_Y + i * PAL_ROW_H
+                if py + PAL_ROW_H > pal.y + pal.h:
+                    break
+                pname, c = palette[pid]
+                chip = (rl.Color(c[0], c[1], c[2], 255) if c is not None
+                        else rl.Color(70, 70, 76, 255))
+                rl.draw_rectangle(pal.x + 10, py, 14, 14, chip)
+                if pid == selected_id:
+                    rl.draw_rectangle_lines_ex(
+                        rl.Rectangle(pal.x + 8, py - 2, 18, 18), 2.0, rl.WHITE)
+                label = f"{9 if pid == SPACE_CODE else pid} {pname}"
+                rl.draw_text(label, pal.x + 32, py, 14,
+                             rl.WHITE if pid == selected_id
+                             else rl.Color(*COL_TEXT_DIM))
+        else:
+            for i, pent in enumerate(entity_palette):
+                py = pal.y + PAL_PAD_Y + i * PAL_ROW_H
+                if py + PAL_ROW_H > pal.y + pal.h:
+                    break
+                c = pent.chip_rgb
+                selected = pent.class_name == selected_entity_class
+                rl.draw_rectangle(pal.x + 10, py, 14, 14,
+                                  rl.Color(c[0], c[1], c[2], 255))
+                rl.draw_text(pent.initial, pal.x + 13, py - 1, 12, rl.BLACK)
+                if selected:
+                    rl.draw_rectangle_lines_ex(
+                        rl.Rectangle(pal.x + 8, py - 2, 18, 18), 2.0, rl.WHITE)
+                rl.draw_text(pent.class_name, pal.x + 32, py, 14,
+                             rl.WHITE if selected else rl.Color(*COL_TEXT_DIM))
 
-        # Inspector pane: active tool + material + per-mode extras + hint.
-        # (C1 replaces this with the registry-driven inspector.)
+        # Inspector pane (Arc C1 — registry-driven): a LIGHT instance under
+        # the cursor (LIGHT mode) beats an ENTITY-tab class selection, which
+        # beats the C0 mode/material/hint content — the first thing with
+        # something concrete to show wins.
         iy = insp.y + 10
-        rl.draw_text(f"[{mode}]", insp.x + 10, iy, 20, rl.Color(*COL_TEXT_HOT))
-        iy += 30
-        rl.draw_text(f"material: {palette[selected_id][0]}",
-                     insp.x + 10, iy, 16, rl.Color(*COL_TEXT_HOT))
-        iy += 24
-        if extra:
-            for ln in wrap_text(extra, max(20, insp.w - 20), 14):
-                rl.draw_text(ln, insp.x + 10, iy, 14, rl.Color(*COL_TEXT))
-                iy += 18
-        iy += 6
-        for ln in wrap_text(MODE_HINTS[mode], max(20, insp.w - 20), 13):
-            rl.draw_text(ln, insp.x + 10, iy, 13, rl.Color(*COL_TEXT_DIM))
-            iy += 16
+
+        def _draw_rows(rows, start_y: int) -> int:
+            y = start_y
+            for row in rows:
+                if y + 16 > insp.y + insp.h:
+                    break
+                for ln in wrap_text(f"{row.name}: {row.display}",
+                                    max(20, insp.w - 20), 13):
+                    rl.draw_text(ln, insp.x + 10, y, 13, rl.Color(*COL_TEXT))
+                    y += 16
+            return y
+
+        light_cls_payload = registry_payload.get("classes", {}).get("light")
+        if mode == "LIGHT" and light_hover is not None and light_cls_payload:
+            l = lights[light_hover]
+            rl.draw_text(f"[light] {l.id}", insp.x + 10, iy, 18,
+                         rl.Color(*COL_TEXT_HOT))
+            iy += 26
+            values = light_entity_port.light_entry_to_fields(l)
+            rows = entity_editor_ui.inspector_rows(light_cls_payload, values)
+            iy = _draw_rows(rows, iy)
+        elif (selected_entity_class is not None
+              and selected_entity_class in registry_payload.get("classes", {})):
+            cls_payload = registry_payload["classes"][selected_entity_class]
+            rl.draw_text(f"[{selected_entity_class}] template",
+                         insp.x + 10, iy, 18, rl.Color(*COL_TEXT_HOT))
+            iy += 26
+            rows = entity_editor_ui.inspector_rows(cls_payload, {})
+            iy = _draw_rows(rows, iy)
+        else:
+            rl.draw_text(f"[{mode}]", insp.x + 10, iy, 20,
+                         rl.Color(*COL_TEXT_HOT))
+            iy += 30
+            rl.draw_text(f"material: {palette[selected_id][0]}",
+                         insp.x + 10, iy, 16, rl.Color(*COL_TEXT_HOT))
+            iy += 24
+            if extra:
+                for ln in wrap_text(extra, max(20, insp.w - 20), 14):
+                    rl.draw_text(ln, insp.x + 10, iy, 14, rl.Color(*COL_TEXT))
+                    iy += 18
+            iy += 6
+            for ln in wrap_text(MODE_HINTS[mode], max(20, insp.w - 20), 13):
+                rl.draw_text(ln, insp.x + 10, iy, 13, rl.Color(*COL_TEXT_DIM))
+                iy += 16
         iy += 6
         rl.draw_text(f"undo depth {len(undo)}", insp.x + 10, iy, 14,
                      rl.Color(*COL_TEXT_DIM))
 
-        # Status bar: mode | cursor tile | validator summary | unsaved dot |
-        # registry-import banner slot (empty in C0 — C1 fills it). The
-        # transient status flash rides the validator slot until C5 lands real
-        # validators.
+        # Status bar: mode | cursor tile | validator summary | registry-
+        # import banner (red, Arc C1 — right of the validator slot, left of
+        # the unsaved dot: C0's reserved layout) | unsaved dot. The
+        # transient status flash rides the validator slot until C5 lands
+        # real validators.
         if flash_frames > 0:
             flash_frames -= 1
         cur_txt = f"tile ({cur_tx},{cur_ty})" if cursor_in else "tile --"
         valid = flash if flash_frames > 0 else "ready"
         rl.draw_text(f"{mode}    |    {cur_txt}    |    {valid}",
                      status.x + 10, status.y + 6, 16, rl.Color(*COL_TEXT))
+        unsaved_reserve = 0
         if dirty_any:
             tag = "UNSAVED *"
+            unsaved_reserve = rl.measure_text(tag, 16) + 12
             rl.draw_text(tag, status.x + status.w - rl.measure_text(tag, 16)
                          - 12, status.y + 6, 16, rl.Color(*COL_BAD))
+        if registry_banner:
+            bw = rl.measure_text(registry_banner, 14)
+            bx = status.x + status.w - unsaved_reserve - bw - 12
+            rl.draw_text(registry_banner, bx, status.y + 7, 14,
+                         rl.Color(*COL_BAD))
 
         rl.end_drawing()
         frames += 1
