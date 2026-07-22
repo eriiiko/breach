@@ -219,15 +219,19 @@ class AirlockControllerRuntime:
     no RNG / float / dict-order; the outputs are a pure function of the state,
     so the sweep is order-independent (nodes never read ``stg``, the invariant).
 
-    Single-pump note (see the actuators module docstring): ``equalize_cmd`` is
-    the pump drive direction for EQUALIZE (+1 inject toward a higher far target,
-    -1 extract toward a lower one, 0 when the two targets coincide);
-    REPRESSURIZE drives the opposite. Both phases gate on the one ``at_target``.
+    Bidirectional note (B7 — Erik's Option 2): ``equalize_cmd`` is the pump
+    drive direction for EQUALIZE (+1 inject toward a higher far target, -1
+    extract toward a lower one, 0 when the two targets coincide); REPRESSURIZE
+    drives the opposite. The two legs gate on INDEPENDENT sensed inputs — a
+    chamber pressure sensor through two deciders: EQUALIZE waits on ``at_far``
+    (chamber ≤ far target), REPRESSURIZE waits on ``at_near`` (chamber ≥ near
+    target). The pump runs open-loop; the sensor closes the loop, so
+    REPRESSURIZE genuinely refills (the B5 single-pump gap is gone).
     """
 
     __slots__ = ("inst", "far_is_outer", "equalize_cmd",
                  "i_presence", "i_inner_open", "i_outer_open",
-                 "i_inner_alive", "i_outer_alive", "i_at_target",
+                 "i_inner_alive", "i_outer_alive", "i_at_far", "i_at_near",
                  "o_inner_close", "o_inner_open", "o_outer_close",
                  "o_outer_open", "o_inject", "o_extract", "o_busy",
                  "state", "dwell", "alive")
@@ -243,7 +247,8 @@ class AirlockControllerRuntime:
         self.i_outer_open = in_slots["outer_open"]
         self.i_inner_alive = in_slots["inner_alive"]
         self.i_outer_alive = in_slots["outer_alive"]
-        self.i_at_target = in_slots["at_target"]
+        self.i_at_far = in_slots["at_far"]     # chamber ≤ far target (decider)
+        self.i_at_near = in_slots["at_near"]   # chamber ≥ near target (decider)
         # Output slots (all present — a LOGIC_NODE's SIGNALS all get a slot).
         self.o_inner_close = int(out_slots["inner_close"])
         self.o_inner_open = int(out_slots["inner_open_cmd"])
@@ -284,8 +289,11 @@ class AirlockControllerRuntime:
         return 0, 0
 
     def _next_state(self, presence, inner_open, outer_open, inner_alive,
-                    outer_alive, at_target, far_open, far_alive):
-        """The §7 transition: the state to hold this tick. Integer-only."""
+                    outer_alive, at_far, at_near, far_open, far_alive):
+        """The §7 transition: the state to hold this tick. Integer-only.
+
+        B7: EQUALIZE gates on ``at_far`` and REPRESSURIZE on ``at_near`` — two
+        independent chamber-pressure-sensed inputs (Erik's Option 2)."""
         s = self.state
         if s == AIRLOCK_IDLE:
             return AIRLOCK_CLOSING if presence >= 1 else AIRLOCK_IDLE
@@ -298,7 +306,7 @@ class AirlockControllerRuntime:
                 return AIRLOCK_EQUALIZE
             return AIRLOCK_CLOSING           # occupancy stall lives here (§7)
         if s == AIRLOCK_EQUALIZE:
-            return AIRLOCK_OPEN_FAR if at_target != 0 else AIRLOCK_EQUALIZE
+            return AIRLOCK_OPEN_FAR if at_far != 0 else AIRLOCK_EQUALIZE
         if s == AIRLOCK_OPEN_FAR:
             return AIRLOCK_RESEAL if presence == 0 else AIRLOCK_OPEN_FAR
         if s == AIRLOCK_RESEAL:
@@ -308,7 +316,7 @@ class AirlockControllerRuntime:
                 return AIRLOCK_FAULT
             return AIRLOCK_REPRESSURIZE if far_open == 0 else AIRLOCK_RESEAL
         if s == AIRLOCK_REPRESSURIZE:
-            return AIRLOCK_IDLE if at_target != 0 else AIRLOCK_REPRESSURIZE
+            return AIRLOCK_IDLE if at_near != 0 else AIRLOCK_REPRESSURIZE
         return AIRLOCK_FAULT                 # FAULT is latched until reset (§7)
 
     def evaluate(self, bus) -> None:
@@ -322,7 +330,8 @@ class AirlockControllerRuntime:
         outer_open = rd(self.i_outer_open)
         inner_alive = rd(self.i_inner_alive)
         outer_alive = rd(self.i_outer_alive)
-        at_target = rd(self.i_at_target)
+        at_far = rd(self.i_at_far)
+        at_near = rd(self.i_at_near)
         # Far / near mapping (which physical door is the far side).
         if self.far_is_outer:
             far_open, far_alive = outer_open, outer_alive
@@ -331,7 +340,7 @@ class AirlockControllerRuntime:
 
         prev = self.state
         nxt = self._next_state(presence, inner_open, outer_open, inner_alive,
-                               outer_alive, at_target, far_open, far_alive)
+                               outer_alive, at_far, at_near, far_open, far_alive)
         self.dwell = self.dwell + 1 if nxt == prev else 0
         self.state = nxt
 
@@ -456,7 +465,7 @@ def build_logic_nodes(sim) -> list:
                 return lst[0] if lst else None
             in_slots = {n: _single(n) for n in (
                 "presence", "inner_open", "outer_open", "inner_alive",
-                "outer_alive", "at_target")}
+                "outer_alive", "at_far", "at_near")}
             out_slots = {sig.name: bus.slot(ordinal, sig.name)
                          for sig in REGISTRY[cn].SIGNALS}
             far = int(e.fields["target_far_atm"])

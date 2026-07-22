@@ -12,10 +12,12 @@ until Erik plays levels/airlock_demo (the HUMAN-TEST gate). Gates:
   a far door reading alive==0 during RESEAL likewise aborts.
 - OCCUPANCY-blocks-close STALL (the accepted v1 gap, §7): a door that never
   reports is_open==0 (a unit parked on its span) holds CLOSING forever.
-- at_target GATING: EQUALIZE / REPRESSURIZE wait on the pump's at_target.
+- LOOP-CLOSE GATING (B7 / Option 2): EQUALIZE waits on at_far, REPRESSURIZE on
+  at_near — the chamber pressure sensor + two deciders, not the pump at_target.
 - pump DIRECTION: the far/near targets pick inject vs extract per phase.
-- The FIXTURE level levels/airlock_demo LOADS, wires the whole graph, STEPS
-  deterministically, and CYCLES through every state via the real SignalBus.
+- The FIXTURE level levels/airlock_demo LOADS, wires the whole graph, and — over
+  REAL physics — EVACUATES then genuinely REFILLS the chamber across a full
+  bidirectional cycle; a 3×3 marine has room to walk the corridor (the B7 bug).
 - DORMANCY: the B1 door-present, wire-free digest is still byte-identical.
 
 The state-graph tests need no units and no physics (the transition function is
@@ -62,7 +64,10 @@ _IN = {
     "presence": (10, "value"),
     "inner_open": (0, "is_open"), "inner_alive": (0, "alive"),
     "outer_open": (1, "is_open"), "outer_alive": (1, "alive"),
-    "at_target": (2, "at_target"),
+    # B7 (Option 2): two chamber-pressure-sensed loop closes — a `dec_far`
+    # decider (ordinal 2) and a `dec_near` decider (ordinal 3), each emitting
+    # `out`; EQUALIZE waits on at_far, REPRESSURIZE on at_near.
+    "at_far": (2, "out"), "at_near": (3, "out"),
 }
 _OUT = ("inner_close", "inner_open_cmd", "outer_close", "outer_open_cmd",
         "pump_inject", "pump_extract", "busy")
@@ -91,14 +96,15 @@ class _Driver:
         self.ctrl, self.bus = ctrl, bus
 
     def tick(self, presence, inner_open, outer_open,
-             inner_alive=1, outer_alive=1, at_target=0):
+             inner_alive=1, outer_alive=1, at_far=0, at_near=0):
         b = self.bus
         b.set_pub(b.slot(*_IN["presence"]), presence)
         b.set_pub(b.slot(*_IN["inner_open"]), inner_open)
         b.set_pub(b.slot(*_IN["outer_open"]), outer_open)
         b.set_pub(b.slot(*_IN["inner_alive"]), inner_alive)
         b.set_pub(b.slot(*_IN["outer_alive"]), outer_alive)
-        b.set_pub(b.slot(*_IN["at_target"]), at_target)
+        b.set_pub(b.slot(*_IN["at_far"]), at_far)
+        b.set_pub(b.slot(*_IN["at_near"]), at_near)
         self.ctrl.evaluate(b)
         b.swap_node_signals()               # 9e(e): stg → pub for node slots
         return self.ctrl.state
@@ -130,10 +136,10 @@ def test_full_cycle_exact_states_and_commands():
     assert d.tick(presence=1, inner_open=0, outer_open=0) == AIRLOCK_EQUALIZE
     assert (d.out("pump_extract"), d.out("pump_inject"), d.out("busy")) == (1, 0, 1)
 
-    # at_target still 0 → hold EQUALIZE.
-    assert d.tick(presence=1, inner_open=0, outer_open=0, at_target=0) == AIRLOCK_EQUALIZE
-    # at_target latches → OPEN_FAR; the far (outer) door is commanded open.
-    assert d.tick(presence=1, inner_open=0, outer_open=0, at_target=1) == AIRLOCK_OPEN_FAR
+    # at_far still 0 → hold EQUALIZE.
+    assert d.tick(presence=1, inner_open=0, outer_open=0, at_far=0) == AIRLOCK_EQUALIZE
+    # at_far latches (chamber ≤ far target) → OPEN_FAR; far (outer) door opens.
+    assert d.tick(presence=1, inner_open=0, outer_open=0, at_far=1) == AIRLOCK_OPEN_FAR
     assert (d.out("outer_open_cmd"), d.out("inner_close"), d.out("busy")) == (1, 1, 1)
 
     # Chamber still occupied → hold OPEN_FAR.
@@ -148,8 +154,8 @@ def test_full_cycle_exact_states_and_commands():
     assert d.tick(presence=0, inner_open=0, outer_open=0) == AIRLOCK_REPRESSURIZE
     assert (d.out("pump_inject"), d.out("pump_extract"), d.out("busy")) == (1, 0, 1)
 
-    # at_target latches → back to IDLE (the near door reopens).
-    assert d.tick(presence=0, inner_open=0, outer_open=0, at_target=1) == AIRLOCK_IDLE
+    # at_near latches (chamber ≥ near target) → back to IDLE (near door reopens).
+    assert d.tick(presence=0, inner_open=0, outer_open=0, at_near=1) == AIRLOCK_IDLE
     assert (d.out("inner_open_cmd"), d.out("busy")) == (1, 0)
 
 
@@ -181,7 +187,7 @@ def test_fault_on_dead_door_during_closing_and_latches():
             d.out("outer_open_cmd"), d.out("pump_inject"), d.out("pump_extract"),
             d.out("busy")) == (0, 0, 0, 0, 0, 0, 0)
     # LATCHED: even with everything healthy again it stays FAULT (until reset).
-    assert d.tick(0, 0, 0, inner_alive=1, outer_alive=1, at_target=1) == AIRLOCK_FAULT
+    assert d.tick(0, 0, 0, inner_alive=1, outer_alive=1, at_far=1, at_near=1) == AIRLOCK_FAULT
 
 
 def test_fault_on_dead_far_door_during_reseal():
@@ -189,7 +195,7 @@ def test_fault_on_dead_far_door_during_reseal():
     d = _Driver(ctrl, bus)
     d.tick(1, 1, 0)                          # CLOSING
     d.tick(1, 0, 0)                          # EQUALIZE
-    d.tick(1, 0, 0, at_target=1)             # OPEN_FAR
+    d.tick(1, 0, 0, at_far=1)                # OPEN_FAR
     d.tick(0, 0, 1)                          # RESEAL
     assert ctrl.state == AIRLOCK_RESEAL
     # The far (outer) door is destroyed mid-reseal (alive==0) → FAULT, so
@@ -213,29 +219,34 @@ def test_occupancy_blocks_close_holds_closing_forever():
 
 
 # ---------------------------------------------------------------------------
-# at_target gating — EQUALIZE / REPRESSURIZE wait on the pump
+# Loop-close gating (B7) — EQUALIZE waits on at_far, REPRESSURIZE on at_near
+# (the chamber pressure sensor + deciders, not the pump's own at_target)
 # ---------------------------------------------------------------------------
 
-def test_equalize_waits_for_at_target():
+def test_equalize_waits_for_at_far():
     ctrl, bus = _make_controller()
     d = _Driver(ctrl, bus)
     d.tick(1, 1, 0)                          # CLOSING
     d.tick(1, 0, 0)                          # EQUALIZE
-    for _ in range(20):                      # pump not settled → hold EQUALIZE
-        assert d.tick(1, 0, 0, at_target=0) == AIRLOCK_EQUALIZE
-    assert d.tick(1, 0, 0, at_target=1) == AIRLOCK_OPEN_FAR
+    for _ in range(20):                      # chamber not yet evacuated → hold
+        assert d.tick(1, 0, 0, at_far=0) == AIRLOCK_EQUALIZE
+    # at_near is IRRELEVANT to EQUALIZE — only at_far advances it.
+    assert d.tick(1, 0, 0, at_far=0, at_near=1) == AIRLOCK_EQUALIZE
+    assert d.tick(1, 0, 0, at_far=1) == AIRLOCK_OPEN_FAR
 
 
-def test_repressurize_waits_for_at_target():
+def test_repressurize_waits_for_at_near():
     ctrl, bus = _make_controller()
     d = _Driver(ctrl, bus)
-    d.tick(1, 1, 0); d.tick(1, 0, 0); d.tick(1, 0, 0, at_target=1)   # OPEN_FAR
+    d.tick(1, 1, 0); d.tick(1, 0, 0); d.tick(1, 0, 0, at_far=1)   # OPEN_FAR
     d.tick(0, 0, 1)                          # RESEAL
     d.tick(0, 0, 0)                          # REPRESSURIZE
     assert ctrl.state == AIRLOCK_REPRESSURIZE
     for _ in range(20):
-        assert d.tick(0, 0, 0, at_target=0) == AIRLOCK_REPRESSURIZE
-    assert d.tick(0, 0, 0, at_target=1) == AIRLOCK_IDLE
+        assert d.tick(0, 0, 0, at_near=0) == AIRLOCK_REPRESSURIZE
+    # at_far is IRRELEVANT to REPRESSURIZE — only at_near advances it.
+    assert d.tick(0, 0, 0, at_far=1, at_near=0) == AIRLOCK_REPRESSURIZE
+    assert d.tick(0, 0, 0, at_near=1) == AIRLOCK_IDLE
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +275,7 @@ def test_far_door_inner_mapping():
     d = _Driver(ctrl, bus)
     d.tick(1, 1, 0)                          # CLOSING
     d.tick(1, 0, 0)                          # EQUALIZE
-    d.tick(1, 0, 0, at_target=1)             # OPEN_FAR
+    d.tick(1, 0, 0, at_far=1)                # OPEN_FAR
     assert ctrl.state == AIRLOCK_OPEN_FAR
     # The far side is inner → inner opens, outer stays shut.
     assert (d.out("inner_open_cmd"), d.out("outer_close")) == (1, 1)
@@ -309,14 +320,38 @@ def _controller(sim):
 def test_fixture_loads_and_wires_the_whole_graph():
     lvl, sim = _load_fixture()
     assert lvl.name == "airlock_demo"
-    assert len(lvl.wires) == 12               # the full command + sense graph
-    # A bus exists (wires present); the controller, pump, sensor, doors built.
+    assert len(lvl.wires) == 15               # command + sense + the B7 pressure loop
+    # A bus exists (wires present); controller + 2 deciders (3 logic nodes),
+    # pump, 2 sensors (motion plate + pressure probe), 2 doors.
     assert sim._signal_bus is not None
-    assert len(sim._logic_nodes) == 1 and len(sim._pumps) == 1
-    assert len(sim._sensors) == 1 and len(sim._doors) == 2
+    assert len(sim._logic_nodes) == 3 and len(sim._pumps) == 1
+    assert len(sim._sensors) == 2 and len(sim._doors) == 2
     ctrl = _controller(sim)
     assert ctrl.state == AIRLOCK_IDLE and ctrl.far_is_outer
     assert ctrl.equalize_cmd == -1            # far (0) < near (1 atm) → extract
+
+
+def test_fixture_corridor_gives_a_3x3_marine_room_to_walk():
+    """B7 REGRESSION (Erik's HUMAN-TEST bug): the corridor/chamber/space must be
+    tall enough that a 3×3 marine (``is_passable_block`` needs the FULL footprint
+    clear) has more than ONE valid anchor row — a 3-tall corridor admits exactly
+    fy=3 and strands the unit ("sometimes walks there, sometimes not"). After the
+    widen it is 5 tall → 3 valid anchor rows the whole way, room to maneuver."""
+    _, sim = _load_fixture()
+    g = sim.gmap
+    from simulation.materials import MAT_AIR
+    for d in sim._doors:                       # open both doors for the walk
+        for (fy, fx) in d.span:
+            g.material[fy, fx] = MAT_AIR
+    g._update_caches()
+    # Sample the mid-chamber (col 9) and deep space (col 15): each must offer
+    # ≥3 valid anchor rows for a 3×3 footprint (not a single-row knife-edge).
+    for fx in (9, 15):
+        rows = [fy for fy in range(g.material.shape[0] - 2)
+                if g.is_passable_block(fy, fx, 3)]
+        assert len(rows) >= 3, (fx, rows)
+        # and they are contiguous (a real corridor, not scattered)
+        assert rows == list(range(rows[0], rows[0] + len(rows))), (fx, rows)
 
 
 def test_fixture_idle_when_empty_and_deterministic():
@@ -337,64 +372,78 @@ def test_fixture_idle_when_empty_and_deterministic():
     assert t0 == t1                           # deterministic stepping
 
 
-class _Presence:
-    """A controllable stand-in for the plate sensor: publishes ``n`` at 9e(a)
-    so the fixture-cycle test drives presence deterministically without the
-    unit-spawn pipeline. Everything else (doors, pump, controller, the wired
-    SignalBus, the 9e(e) swap) runs for real."""
-
-    def __init__(self, value_slot):
-        self.value_slot = value_slot
-        self.inst = types.SimpleNamespace(alive=True)
-        self.n = 0
-
-    def evaluate(self, sim):
-        return self.n
+try:
+    import breach_physics as _bp          # noqa: E402
+except Exception:                          # pragma: no cover - CPU-only box
+    _bp = None
 
 
-def test_fixture_cycles_through_every_state():
-    _, sim = _load_fixture()
+@pytest.mark.skipif(_bp is None, reason="needs the compiled breach_physics")
+def test_fixture_bidirectional_cycle_evacuates_and_refills():
+    """B7 / Option 2 — the WHOLE wired graph over REAL physics: a marine in the
+    chamber triggers the cycle, the pump EVACUATES (chamber pressure falls, the
+    `dec_far` decider fires at_far → OPEN_FAR), the marine exits, and the pump
+    REPRESSURIZES (chamber pressure RISES back, `dec_near` fires at_near →
+    IDLE). The refill is the point Erik's HUMAN-TEST wanted — the B5 single-pump
+    gap is gone. Deterministic (integer, seed 1), so this is a stable gate."""
+    from simulation.unit import Unit
+    from simulation.entities.door import DOOR_OPEN
+
+    lvl = level_loader.load("airlock_demo", levels_dir=str(ROOT / "levels"))
+    sim = Simulation(lvl, seed=1, breach_physics=_bp, enable_recorder=False)
     ctrl = _controller(sim)
-    inner, outer = sim.door_at(4, 7), sim.door_at(4, 12)
-    port = (3, 9)
-    pres = _Presence(sim._sensors[0].value_slot)
-    sim._sensors[0] = pres                    # drive presence deterministically
+    unit = Unit("Alpha", x=9, y=4, team=0, footprint=3)   # in the chamber
+    sim.add_unit(unit)
+    # The probe samples chamber air at (row 2, col 10) — read the same tile.
+    chamber_p = lambda: int(sim.gmap.atmosphere[2, 10])
 
-    def _until(state, cap, evacuate=False):
+    def _run_until(state, cap):
         for _ in range(cap):
-            if evacuate:
-                sim.gmap.atmosphere[port] = 0   # so the pump latches at_target
             sim.set_paused(False)
             sim.step()
             if ctrl.state == state:
                 return True
         return False
 
-    from simulation.entities.door import DOOR_OPEN, DOOR_CLOSED
+    p_start = chamber_p()                          # ~1 atm
+    # Occupancy → seal → EVACUATE → dec_far fires → OPEN_FAR.
+    assert _run_until(AIRLOCK_OPEN_FAR, 200), AIRLOCK_STATE_NAMES[ctrl.state]
+    p_evac = chamber_p()
+    assert p_evac < p_start // 2                    # chamber genuinely evacuated
+    assert p_evac <= 6554                           # ≤ the far target (0.1 atm)
 
-    # A unit is in the chamber → both doors seal → EQUALIZE.
-    pres.n = 1
-    assert _until(AIRLOCK_EQUALIZE, 20), AIRLOCK_STATE_NAMES[ctrl.state]
-    assert inner.state == DOOR_CLOSED and outer.state == DOOR_CLOSED
-    # The pump evacuates the chamber → at_target → OPEN_FAR.
-    assert _until(AIRLOCK_OPEN_FAR, 10, evacuate=True)
-    # The far (outer) door opens a tick or two after OPEN_FAR commands it
-    # (presence still 1 → the machine holds OPEN_FAR meanwhile).
-    for _ in range(3):
-        sim.set_paused(False)
-        sim.step()
-        if outer.state == DOOR_OPEN:
-            break
-    assert outer.state == DOOR_OPEN
-    # The unit exits to space → RESEAL.
-    pres.n = 0
-    assert _until(AIRLOCK_RESEAL, 10), AIRLOCK_STATE_NAMES[ctrl.state]
-    # The outer door reseals → REPRESSURIZE → IDLE (inner reopens).
-    assert _until(AIRLOCK_IDLE, 20, evacuate=True), AIRLOCK_STATE_NAMES[ctrl.state]
-    # Back at rest: one more step and the near (inner) door is open again.
+    # The marine walks out to space → presence clears.
+    unit.alive = False
+    # RESEAL → REPRESSURIZE → the chamber REFILLS → dec_near fires → IDLE.
+    assert _run_until(AIRLOCK_IDLE, 300), AIRLOCK_STATE_NAMES[ctrl.state]
+    p_refill = chamber_p()
+    assert p_refill >= 58982                        # ≥ the near target (0.9 atm)
+    assert p_refill > p_evac * 4                    # the refill actually happened
+    # The near (inner) door reopens at IDLE for the next entry.
     sim.set_paused(False)
     sim.step()
-    assert inner.state == DOOR_OPEN
+    assert sim.door_at(4, 7).state == DOOR_OPEN
+
+
+def test_fixture_deterministic_over_physics():
+    """Two fresh physics runs of the opening leg step bit-identically (integer
+    determinism) — the controller state + signal digest match tick-for-tick."""
+    if _bp is None:
+        pytest.skip("needs the compiled breach_physics")
+    from simulation.unit import Unit
+
+    def _run():
+        lvl = level_loader.load("airlock_demo", levels_dir=str(ROOT / "levels"))
+        sim = Simulation(lvl, seed=1, breach_physics=_bp, enable_recorder=False)
+        ctrl = _controller(sim)
+        sim.add_unit(Unit("Alpha", x=9, y=4, team=0, footprint=3))
+        trace = []
+        for _ in range(30):
+            sim.set_paused(False)
+            sim.step()
+            trace.append((sim._digest_signals(), ctrl.state, ctrl.dwell))
+        return trace
+    assert _run() == _run()
 
 
 def test_fixture_level_lib_round_trips_byte_stable(tmp_path):

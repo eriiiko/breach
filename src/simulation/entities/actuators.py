@@ -22,11 +22,11 @@ The single automatic cycle (§7), the acceptance showcase:
     CLOSING       drive both doors close; both (alive AND is_open==0) → EQUALIZE
                   (a door reading alive==0 is a BREACH, not sealed — abort to
                    FAULT, never pump into a hole — D12)
-    EQUALIZE      drive pump toward the far target; at_target → OPEN_FAR
+    EQUALIZE      drive pump toward the far target; at_far → OPEN_FAR
     OPEN_FAR      drive the far door open; presence==0 (cleared) → RESEAL
     RESEAL        drive the far door close; far (alive AND is_open==0) →
                   REPRESSURIZE  (far reads alive==0 → BREACH → FAULT, D12)
-    REPRESSURIZE  drive pump toward the near target; at_target → IDLE
+    REPRESSURIZE  drive pump toward the near target; at_near → IDLE
                   (IDLE reopens the near door — the folded OPEN_NEAR step)
     FAULT         breach detected: doors released to manual, busy=0, latched
 
@@ -36,17 +36,26 @@ occupancy-blocks-close (a living unit on a door span holds CLOSING with no
 timeout — the permanent stall, §15.2). The presence plate MUST be authored OFF
 the door spans (N5) or the unit that triggered the cycle blocks its own airlock.
 
-**Single-pump limitation (v1, honest):** the built pump (§6) carries ONE fixed
-``target_atm`` and latches ``at_target`` against it. A faithful TWO-pressure
-airlock (evacuate to the far side, repressurize to the near side) would need the
-controller to RETARGET the pump per phase — a command the v1 pump does not
-expose. So in v1 the pump physically settles at its authored ``target_atm`` and
-BOTH the EQUALIZE and REPRESSURIZE transitions gate on that single ``at_target``.
-The controller's ``target_far_atm`` / ``target_near_atm`` select only the pump
-DRIVE DIRECTION per phase (inject toward the higher pressure, extract toward the
-lower). Full two-pressure cycling rides a retargetable pump (a follow-up / stack
-2). The STATE GRAPH, the breach-abort, the occupancy stall and ``busy`` are all
-complete and deterministic here; the pressure feel is Erik's B5 HUMAN-TEST.
+**Bidirectional airlock (v1, B7 — Erik's Option 2, the HUMAN-TEST revision):**
+the loop is closed by a CHAMBER PRESSURE SENSOR, not by the pump's own single
+fixed ``at_target``. The controller takes TWO independent sensed inputs:
+
+    at_far   the chamber pressure has REACHED the far/evacuate target
+             (a `pressure` sensor → `decider` `le target_far`); EQUALIZE waits
+             on it.
+    at_near  the chamber pressure has REACHED the near/pressurized target
+             (a `pressure` sensor → `decider` `ge target_near`); REPRESSURIZE
+             waits on it.
+
+The pump then runs OPEN-LOOP (it injects / extracts as commanded, its own
+``at_target`` unused by the airlock), and the SENSOR decides when each leg is
+done — so REPRESSURIZE genuinely refills the chamber back toward ~1 atm (the
+B5 single-pump gap is removed; there is no retargetable-pump requirement).
+``target_far_atm`` / ``target_near_atm`` still select the pump DRIVE DIRECTION
+per phase (EQUALIZE injects toward a higher far target / extracts toward a lower
+one; REPRESSURIZE drives the opposite). The STATE GRAPH, the breach-abort, the
+occupancy stall and ``busy`` are all deterministic here; the pressure feel is
+Erik's HUMAN-TEST.
 """
 from __future__ import annotations
 
@@ -80,9 +89,11 @@ class airlock_controller(Entity):
 
     A pure logic node (no tile — ``INTANGIBLE``). Wired to a chamber presence
     plate, an inner + outer door (drives ``close``/``open``, reads each door's
-    ``is_open`` AND ``alive`` — D12), and a pump (drives ``inject``/``extract``,
-    reads ``at_target``). Emits the door / pump command signals + ``busy`` (1
-    while cycling) + the free ``alive``. All I/O is SignalBus-only.
+    ``is_open`` AND ``alive`` — D12), a pump (drives ``inject``/``extract``,
+    open-loop), and a chamber ``pressure`` sensor via two deciders (reads
+    ``at_far`` / ``at_near`` — B7, Erik's Option 2). Emits the door / pump
+    command signals + ``busy`` (1 while cycling) + the free ``alive``. All I/O
+    is SignalBus-only.
 
     ``far_door`` names which physical door is the FAR side (the one the cycle
     opens after equalizing); the other is the NEAR side (reopened at IDLE).
@@ -129,8 +140,14 @@ class airlock_controller(Entity):
                   "the INNER door's alive (← inner_door.alive) — D12 breach"),
         InputDecl("outer_alive", INPUT_SINGLE,
                   "the OUTER door's alive (← outer_door.alive) — D12 breach"),
-        InputDecl("at_target", INPUT_SINGLE,
-                  "the pump's at_target (← pump.at_target)"),
+        InputDecl("at_far", INPUT_SINGLE,
+                  "chamber pressure REACHED the far/evacuate target — the loop "
+                  "close for EQUALIZE (← a `pressure` sensor → `decider` "
+                  "`le target_far`). B7 / Erik's Option 2."),
+        InputDecl("at_near", INPUT_SINGLE,
+                  "chamber pressure REACHED the near/pressurized target — the "
+                  "loop close for REPRESSURIZE (← a `pressure` sensor → "
+                  "`decider` `ge target_near`). B7 / Erik's Option 2."),
     )
 
     @classmethod
