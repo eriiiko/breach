@@ -287,5 +287,28 @@ def test_default_instance_fields_leaves_unfillable_required_at_none():
     assert eui.required_field_names(cls_payload) == ("zone_id",)
 
 
+# ---------------------------------------------------------------------------
+# icon_png_path (Arc C8) — the palette's PNG-vs-chip decision
+# ---------------------------------------------------------------------------
+
+def test_icon_png_path_hits_when_file_exists(tmp_path):
+    (tmp_path / "door.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    found = eui.icon_png_path("door", icons_dir=tmp_path)
+    assert found == tmp_path / "door.png"
+
+
+def test_icon_png_path_none_when_missing(tmp_path):
+    assert eui.icon_png_path("nope", icons_dir=tmp_path) is None
+
+
+def test_icon_png_path_default_dir_matches_committed_icons():
+    """Sanity: at least one real committed icon (door) resolves through the
+    default ICONS_DIR without an explicit override."""
+    found = eui.icon_png_path("door")
+    assert found is not None
+    assert found.is_file()
+    assert found.name == "door.png"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

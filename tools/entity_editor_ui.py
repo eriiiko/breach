@@ -51,6 +51,11 @@ if str(ROOT / "src") not in sys.path:
 # with no explicit export_path override.
 REGISTRY_JSON_FALLBACK = ROOT / "entity_registry.json"
 
+# Committed palette icons (Arc C8, editor doc §8) — SVG sources live next to
+# these PNGs under the same directory; PNGs are what the editor RUNTIME
+# reads (tools/rasterize_icons.py is dev-only, run when an SVG changes).
+ICONS_DIR = ROOT / "art" / "entities" / "icons"
+
 # Editor design §4: the base authoring resolution — integer tiles_per_m,
 # never the float tile_size_m. Callers at a non-default resolution pass
 # their own tiles_per_m (simulation.entities.door.tiles_per_m derives it from
@@ -178,14 +183,32 @@ def palette_entries(payload: dict) -> list:
     classes from others (``INTANGIBLE`` means "no tile", not "not an
     instance") — so EVERY registered class gets a palette entry here; C3+
     placement tools decide which classes get a dedicated gesture (DOOR span
-    drag, sensor sample-arrow) vs the generic place-one. No icons in C1
-    (C8): colour chip + class initial only, the PERMANENT fallback per
-    editor doc §8, not a placeholder to be removed later.
+    drag, sensor sample-arrow) vs the generic place-one. The chip colour +
+    class initial computed here are the PERMANENT no-icon fallback (editor
+    doc §8) — ``icon_png_path`` below is what lets a caller (map_editor.py's
+    draw loop, C8) prefer a committed PNG instead, per class, when one
+    exists; this function itself stays icon-agnostic.
     """
     classes = payload.get("classes", {})
     return [PaletteEntry(class_name=name, initial=name[0].upper(),
                          chip_rgb=_auto_class_rgb(name))
             for name in sorted(classes)]
+
+
+def icon_png_path(class_name: str, *, icons_dir=None) -> Optional[Path]:
+    """Path to ``class_name``'s committed PNG icon (Arc C8, editor doc §8)
+    if one exists on disk, else ``None``. Filename == class name is the
+    entire class -> icon mapping — no registry field, no lookup table.
+
+    The caller (map_editor.py) decides what "exists" means for drawing: a
+    hit here means "load and cache this texture, prefer it over the chip";
+    a miss means "fall back to the generated colour chip + class initial,
+    forever" — that fallback is permanent, not a placeholder, so a class
+    with no PNG is never an error.
+    """
+    d = Path(icons_dir) if icons_dir is not None else ICONS_DIR
+    p = d / f"{class_name}.png"
+    return p if p.is_file() else None
 
 
 # ---------------------------------------------------------------------------

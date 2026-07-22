@@ -266,6 +266,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import numpy as np
 import pyray as rl
+from PIL import Image
 from pyray import ffi
 
 import level_lib
@@ -960,6 +961,26 @@ def _texture_from_rgba(rgba: np.ndarray):
     return tex
 
 
+def _load_entity_icon_textures(entity_palette) -> dict:
+    """Arc C8 — load each ENTITY-palette class's committed PNG icon
+    (``art/entities/icons/<class>.png``, ``entity_editor_ui.icon_png_path``)
+    into a GPU texture ONCE at launch, keyed by class name. A class with no
+    committed PNG is simply absent from the returned dict — the draw loop's
+    palette-chip fallback (colour chip + class initial) is PERMANENT, not
+    conditional on this cache being incomplete (editor doc §8). The editor
+    RUNTIME only ever reads the already-rasterized PNGs here — it never
+    calls ``tools/rasterize_icons.py`` (that is a dev-only regeneration
+    step, run by hand when an SVG source changes)."""
+    textures = {}
+    for pent in entity_palette:
+        png_path = entity_editor_ui.icon_png_path(pent.class_name)
+        if png_path is None:
+            continue
+        rgba = np.asarray(Image.open(png_path).convert("RGBA"))
+        textures[pent.class_name] = _texture_from_rgba(rgba)
+    return textures
+
+
 def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                seed_override=None, auto: bool = False) -> None:
     handle = level_lib.open_level(str(level_name))
@@ -1197,6 +1218,14 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
     tex_diffuse = _texture_from_rgba(full.diffuse)
     tex_normal = _texture_from_rgba(full.normal)
     world_w, world_h = grid_w * preview_ppt, grid_h * preview_ppt
+
+    # Arc C8 — committed PNG icons, loaded once into GPU textures (NOT per
+    # frame; must come after init_window — texture creation needs a live GL
+    # context, same reason tex_diffuse/tex_normal are built here and not
+    # earlier). Classes with no PNG simply have no entry here; the palette
+    # draw falls back to the generated chip + class initial for those,
+    # permanently (editor doc §8).
+    entity_icon_textures = _load_entity_icon_textures(entity_palette)
 
     def rebake_rect(rect) -> None:
         """Re-bake one tile rect (ALREADY +1-expanded) into both preview
@@ -3293,11 +3322,22 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                 py = pal.y + PAL_PAD_Y + i * PAL_ROW_H
                 if py + PAL_ROW_H > pal.y + pal.h:
                     break
-                c = pent.chip_rgb
                 selected = pent.class_name == selected_entity_class
-                rl.draw_rectangle(pal.x + 10, py, 14, 14,
-                                  rl.Color(c[0], c[1], c[2], 255))
-                rl.draw_text(pent.initial, pal.x + 13, py - 1, 12, rl.BLACK)
+                # Arc C8: a committed PNG icon (loaded once into
+                # entity_icon_textures at launch) is preferred; the
+                # generated colour chip + class initial is the PERMANENT
+                # fallback for every class without one (editor doc §8).
+                icon_tex = entity_icon_textures.get(pent.class_name)
+                if icon_tex is not None:
+                    rl.draw_texture_ex(
+                        icon_tex, rl.Vector2(pal.x + 10, py),
+                        0.0, 14.0 / icon_tex.width, rl.WHITE)
+                else:
+                    c = pent.chip_rgb
+                    rl.draw_rectangle(pal.x + 10, py, 14, 14,
+                                      rl.Color(c[0], c[1], c[2], 255))
+                    rl.draw_text(pent.initial, pal.x + 13, py - 1, 12,
+                                 rl.BLACK)
                 if selected:
                     rl.draw_rectangle_lines_ex(
                         rl.Rectangle(pal.x + 8, py - 2, 18, 18), 2.0, rl.WHITE)
@@ -3520,6 +3560,8 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
 
     rl.unload_texture(tex_diffuse)
     rl.unload_texture(tex_normal)
+    for _tex in entity_icon_textures.values():
+        rl.unload_texture(_tex)
     rl.close_window()
     print(f"map_editor: {frames} frames; mode={MODES[mode_idx]} "
           f"unsaved={log.dirty} undo={log.undo_count} redo={log.redo_count} "
