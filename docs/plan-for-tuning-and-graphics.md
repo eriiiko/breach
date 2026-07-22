@@ -329,6 +329,13 @@ lit-search report (docs/fire_rendering_research.md, branch fire-lit-search,
 unmerged) — B1's patch P0 merges it.
   ► B1 DESIGN IS WRITTEN: docs/fire_b1_blackbody_fire_lights_design_
     2026-07-21.md (spec + patch plan P0–P4 + Opus kickoff prompt).
+  ► B1 BUILT + MERGED 2026-07-21 (merge 85cbe14; Erik blessed "much
+    better"). Tuning session queued in docs/TODO.md.
+  ► B2 DESIGN IS WRITTEN + ADVERSARIALLY CRITIQUED (blockers resolved
+    in-doc, 2026-07-21/22): docs/fire_b2_smoke_honesty_design_2026-07-21.md
+    (patch plan P0–P5 + Opus kickoff §9; research base
+    docs/research/smoke_render_litsearch_2026-07-21.md). Fire-studio level
+    carries Erik's rotating beacon (his ruling, 2026-07-21).
 
 DECISIONS — Erik's rulings 2026-07-21:
   ✔ Smoke species (old Phase 0a): DROP DUST (not needed yet; steam covers the
@@ -360,15 +367,33 @@ DECISIONS — Erik's rulings 2026-07-21:
     add a little back until acceptable.
 
 OPEN DECISIONS (remaining):
-  ⭘ Speckle variant choice: noise vs dirty-Planck vs both (B2 experiments).
+  ✔ Speckle (RULED 2026-07-21): build BOTH variants behind one toggle,
+    pick by eye in the studio; both must ride the advected noise (static
+    speckle reads as a screen overlay). B2 design §5.
   ⭘ Fire-light K + stride numbers (pick during B1 by eye/perf).
-  ⭘ MacCormack anti-diffusion (brainstorm §8 item 6): sharper smoke but a
-    sim behaviour change (feel-gate + golden re-baseline). Recommend: defer,
-    reassess after B2 — maybe smoke reads fine without it.
+  ✔ MacCormack anti-diffusion (RULED 2026-07-21): DEFERRED with a WRITTEN
+    TRIGGER (B2 design §7): reopen ONLY if plumes lose peak density /
+    silhouette while TRAVELING after B2 (transport dissipation — no render
+    trick recovers it); then full ceremony (digest re-baseline + rationale
+    + HUMAN-TEST). B2 ships render-side sharpness instead (bicubic +
+    τ-space curve + noise erosion).
   ⭘ Curl-noise determinism flavor (§8 item 4): render-only wisps → likely
     exempt; if anything sim-adjacent, use the host-precomputed noise texture.
-  ⭘ Mechanical precondition check in B1 (§8 item 8): ACES must be
-    per-channel (not luma-only) + emission unclamped HDR until tonemap.
+  ✔ ACES precondition (§8 item 8): CHECKED in B1 P4 — lighting.fs tonemap
+    is component-wise on vec3 + HDR-unclamped; no shader change needed.
+  ⭘ GAS-CHEMISTRY BEAT (Erik wish list 2026-07-21; sim-side, NOT in B2):
+    fuel_gas ignition (the M3 hook — GasTable column exists, consumer never
+    built), heat-driven water→steam boil + steam→water condensation (only
+    the W5 pressure flash-boil exists today), smoke ABSORBING radiant heat
+    (raycaster heat channel is deliberately gas-transparent — doing this
+    reverses the 2026-07-05 one-way ruling; per-tile heat_atten plumbing
+    already exists), poison thermal breakdown (fire destroys poison). Ice:
+    parked (needs a solid water phase that doesn't exist). Registry answer:
+    GasTable columns are the right HOME for the coefficients, but every
+    PROCESS is a solver/exchange-row change (the exchange.py coupling-row
+    idiom: teargas-blind + poison-dose are the live precedents) with full
+    digest ceremony. SLOT DECISION owed (Erik): before B4 (tune-once
+    principle) vs after with an accepted re-tune.
 
 BRAINSTORM §8 STATUS (checked 2026-07-21 — mostly resolved by history):
   item 1 glow_temperature field → MOOT: the EOS reframe was adopted; real
