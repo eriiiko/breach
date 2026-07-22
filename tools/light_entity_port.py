@@ -80,6 +80,30 @@ def unique_light_id(existing_ids) -> str:
     return f"light_{n}"
 
 
+def unique_entity_id(prefix: str, *collections) -> str:
+    """``{prefix}_1`` / ``{prefix}_2`` / ... — the first id free over the
+    UNION of every collection's `.id` (Arc C2 invariant B3, design §7).
+
+    ``lights`` and ``entities`` are separate LOGGED collections but both
+    serialize to the ONE ``[[entity]]`` family, where ids are
+    unique-or-hard-error at load. Minting a `light` via generic place-one
+    while LIGHT mode already holds ``light_1`` would otherwise mint a second
+    ``light_1`` -> save -> unloadable level. Every collection that serializes
+    to ``[[entity]]`` MUST mint from this one union-scanning allocator
+    (``lights`` u ``entities`` u future); C3 place-one/doors/sensors reuse it.
+    """
+    taken = set()
+    for coll in collections:
+        for e in coll:
+            eid = getattr(e, "id", None)
+            if eid:
+                taken.add(eid)
+    n = 1
+    while f"{prefix}_{n}" in taken:
+        n += 1
+    return f"{prefix}_{n}"
+
+
 def light_form(raw_toml: dict) -> str:
     """Which family a level's lights live in, decided ONCE at load time and
     held for the whole editor session (editor doc §6 / canon §2: preserve

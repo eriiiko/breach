@@ -49,9 +49,12 @@ Controls (the tool rail + inspector show the active mode's line):
     G                    - toggle grid lines
     Mouse wheel          - zoom (around cursor)
     Middle-drag / WASD   - pan (arrows pan too)
-    Ctrl+Z               - undo (tile ring everywhere; SPAWN / LIGHT /
-                           WATER modes pop their own rings instead —
-                           separate rings, see below)
+    Ctrl+Z               - undo · Ctrl+Y / Ctrl+Shift+Z - redo. ONE global
+                           transaction log across ALL domains (Arc C2): undo
+                           rewinds the most-recent action regardless of the
+                           current mode (a compound op — e.g. a door's grid
+                           stamp + entity — undoes atomically). Undoing back to
+                           the saved state clears the unsaved dot.
     Ctrl+S               - SAVE: tilemap.csv + [[spawn]] + lights (whichever
                            of [[light]] / [[entity]] the level already used —
                            Arc C1, never a forced migration) +
@@ -108,12 +111,15 @@ Controls (the tool rail + inspector show the active mode's line):
                            design). Paint a glass box, fill it: that is an
                            aquarium.
 
-Undo rings (reported design call): tile mutations (PAINT/ROOM/CORRIDOR/DOOR)
-share ONE UndoRing of grid snapshots; spawn, light and water edits live in
-their own rings — Ctrl+Z pops the spawn/light/water ring only while in that
-mode. Mixing them into one ring would make Ctrl+Z in PAINT silently rewind
-spawn/light/water work (and vice versa). (LIGHT's ring is a temporary gap
-between Arc C1 and C2's transaction log — see tools/light_entity_port.py.)
+Undo — the transaction log (Arc C2, design docs/arc_c_c2_undo_design_
+2026-07-22.md): the four per-domain rings are GONE, replaced by ONE global
+history of compound operations in tools/undo_log.py. Every mutating gesture
+routes through the log's builder seam (begin / snapshot_grid / snapshot_coll /
+commit); a grid edit stores a delta (changed cells only), a spawn/light/entity
+edit stores a whole-list deep-copy snapshot, and a compound action (C3's door)
+stores both in ONE atomic transaction. Ctrl+Z / Ctrl+Y walk a linear cursor;
+the unsaved dot is a cursor-vs-saved comparison (undo to the saved position
+clears it). Later Arc C patches register their op classes onto the same log.
 
 Spawn/light/water writeback (reported design call, absorbed into level_lib
 in Arc A2 — entity doc §3c: level_lib is THE single writer and this editor
@@ -180,10 +186,16 @@ from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_HULL,
 from bake_level_art import (BIT_E, BIT_N, BIT_S, BIT_W, DEFAULT_PX_PER_TILE,
                             DEFAULT_TILESET, bake_full, bake_level,
                             bake_region, edge16_mask, load_tileset)
-from level_edit_common import (BRUSH_MAX, BRUSH_MIN, UNDO_CAPACITY, UndoRing,
+from level_edit_common import (BRUSH_MAX, BRUSH_MIN,
                                art_px_to_tile, brush_rect, build_palette,
                                line_tiles, paint_tiles, save_tilemap_csv)
 from editor_layout import compute_panes, fit_camera, screen_from_world
+# Arc C2 — the single transaction-log undo (design
+# docs/arc_c_c2_undo_design_2026-07-22.md) REPLACES the four per-domain rings
+# (UndoRing/SpawnRing) with ONE global history of compound operations, adds
+# redo, and makes the unsaved dot position-accurate. Every op class joins the
+# same log through its builder seam; later Arc C patches register theirs.
+import undo_log
 # Arc C1 — registry-driven palette/inspector + the LIGHT entity port (canon
 # engine/16 §1/§2; editor doc §3 pillar 1). LIGHT's bespoke writeback
 # (level_lib.write_lights) is DELETED (Amendment A1): light_entity_port
@@ -656,26 +668,6 @@ def mask_water_to_open(depth_q: np.ndarray, grid: np.ndarray,
     return masked, cleared
 
 
-class SpawnRing:
-    """UndoRing's little sibling for the spawn list: a fixed-capacity LIFO
-    ring of independent SpawnEntry-list snapshots (dataclass copies)."""
-
-    def __init__(self, capacity: int = UNDO_CAPACITY):
-        self.capacity = int(capacity)
-        self._snaps: list = []
-
-    def __len__(self) -> int:
-        return len(self._snaps)
-
-    def push(self, spawns) -> None:
-        self._snaps.append([replace(s) for s in spawns])
-        if len(self._snaps) > self.capacity:
-            self._snaps.pop(0)
-
-    def pop(self):
-        return self._snaps.pop() if self._snaps else None
-
-
 # ---------------------------------------------------------------------------
 # Interactive editor
 # ---------------------------------------------------------------------------
@@ -812,12 +804,17 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
     spawns = [replace(s) for s in lvl.spawns]
     # LIGHT (Arc C1, Amendment A1): the bespoke LightEntry-list-only state is
     # gone — `lights` now holds EditableLight (LightEntry + entity id), and
-    # `light_form`/`other_entities` (captured ONCE at load) decide which
+    # `light_form`/`entities` (captured ONCE at load) decide which
     # level_lib family a save writes lights through (light_entity_port
     # preserves whichever the level already used — no forced migration).
     light_form = light_entity_port.light_form(lvl.raw_toml)
-    other_entities = [e for e in lvl.entities
-                      if e.class_name != light_entity_port.LIGHT_CLASS]
+    # Renamed other_entities -> entities (B4): this is the SAME live list the
+    # transaction log mutates in place AND the object Ctrl+S serializes (see
+    # the ctx registry below + format_lights_for_save). C2 places nothing into
+    # it yet (C3 does), but it is registered + logged so doors/sensors join
+    # with no model change.
+    entities = [e for e in lvl.entities
+                if e.class_name != light_entity_port.LIGHT_CLASS]
     lights = light_entity_port.initial_editable_lights(lvl)
     light_kind = "static"                       # B off-marker toggles this
     light_color = tuple(v / 255.0 for v in LIGHT_COLOR_PRESETS[0][1])
@@ -833,32 +830,36 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
     water_depth_m = WATER_DEPTH_DEFAULT_M
     water_solid = water_solid_codes()
 
-    undo = UndoRing()
-    spawn_undo = SpawnRing()
-    light_undo = SpawnRing()      # copy-generic (dataclass snapshots)
-    # Third mode-scoped ring (P5 critique M4, the SpawnRing precedent):
-    # the water state is a grid, so the ring IS an UndoRing instance —
-    # numpy snapshots, LIFO, capacity-bounded. Popped only in WATER mode.
-    water_undo = UndoRing()
-    dirty_tiles = False
-    dirty_spawns = False
-    dirty_lights = False
-    dirty_water = False
+    # Arc C2 — ONE global transaction log replaces the four per-domain rings
+    # (undo/spawn_undo/light_undo/water_undo) and the four dirty_* bools. The
+    # ctx registry maps names to the LIVE state handles; ops write into them in
+    # place (grids via fancy indexing, collections via slice-assign), so the
+    # closed-over grid/water_q/spawns/lights/entities names stay valid. Handles
+    # are refilled in place, NEVER rebound (§7).
+    undo_ctx = undo_log.UndoContext(
+        grids={"material": grid, "water": water_q},
+        collections={"spawns": spawns, "lights": lights, "entities": entities})
+    log = undo_log.TransactionLog(undo_ctx)
     csv_bak_written = False
     toml_bak_written = False
     water_bak_written = False     # water_init.npy's OWN once-per-session .bak
 
-    # PAINT stroke state (align-tool pattern).
+    # PAINT stroke state (align-tool pattern). The pre-stroke grid snapshot is
+    # now the log's transient before-copy (snapshot_grid at stroke start), so
+    # stroke_pending is gone; stroke_dirty stays as the live-preview re-bake
+    # hint (§2.1: per-gesture rects survive only as a re-bake hint).
     stroke_active = False
-    stroke_pending = None      # pre-stroke snapshot, pushed on 1st real change
     stroke_dirty = None        # inclusive (x0, y0, x1, y1) of the stroke
     last_paint_tile = None
     anchor_tile = None         # Shift+click line-tool anchor
 
     room_start = None          # ROOM drag corner (tile)
     corr_start = None          # CORRIDOR drag start (tile)
-    spawn_drag = None          # (index, pre-drag list copy, (orig x, orig y))
-    light_drag = None          # (index, pre-drag list copy, (orig x, orig y))
+    # spawn/light drag: (index, (orig x, orig y)) — the pre-drag snapshot now
+    # lives in the log (snapshot_coll at drag start); we keep orig only to
+    # detect whether the drag actually moved (else the commit drops).
+    spawn_drag = None
+    light_drag = None
 
     view_baked = True          # V
     show_normal = False        # N (baked view only)
@@ -902,15 +903,31 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
         rebake_rect(expand_dirty_rect((x0, y0, x1 - x0 + 1, y1 - y0 + 1),
                                       grid_w, grid_h))
 
+    def rebake_txn(txn) -> None:
+        """Re-bake the MATERIAL grid rects a committed/undone/redone
+        transaction touched (+1-expanded). Water/spawn/light/entity overlays
+        re-derive from live state each frame, so only material needs an
+        explicit re-bake (§7 Ctrl+Z block)."""
+        if txn is None:
+            return
+        for gname, r in txn.rebake_rects():
+            if gname == "material":
+                rebake_rect(expand_dirty_rect(r, grid_w, grid_h))
+
     def cancel_transients() -> None:
-        """Drop drag/stroke state on a mode switch; a stroke interrupted
-        mid-drag still gets its dirty rect re-baked."""
+        """Drop drag/stroke state on a mode switch (§2.4): an OPEN transaction
+        with a real change commits (a stroke or drag interrupted mid-gesture is
+        kept, matching today + the blessed drag-commit improvement); a no-op
+        gesture drops (commit() pushes nothing). A stroke interrupted mid-drag
+        still gets its dirty rect re-baked."""
         nonlocal room_start, corr_start, spawn_drag, light_drag
-        nonlocal stroke_active, stroke_pending, stroke_dirty, last_paint_tile
+        nonlocal stroke_active, stroke_dirty, last_paint_tile
+        if log.has_pending:
+            log.commit()
         if stroke_dirty is not None:
             rebake_cells(*stroke_dirty)
         room_start = corr_start = spawn_drag = light_drag = None
-        stroke_active, stroke_pending, stroke_dirty = False, None, None
+        stroke_active, stroke_dirty = False, None
         last_paint_tile = None
 
     # View transform (screen = (world_px - cam) * zoom + canvas origin); fit
@@ -937,8 +954,7 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
         over_canvas = canvas.contains(mouse.x, mouse.y)
         over_hud = not over_canvas
         mode = MODES[mode_idx]
-        dirty_any = (dirty_tiles or dirty_spawns or dirty_lights
-                     or dirty_water)
+        dirty_any = log.dirty      # position-accurate: undo to saved clears it
 
         # ---- global: quit / mode / view ----------------------------------
         if rl.is_key_pressed(K.KEY_ESCAPE):
@@ -1086,43 +1102,44 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                 # LINE TOOL: Shift+click fills anchor -> cursor (RMB erases);
                 # chained Shift+clicks draw a polyline.
                 if anchor_tile is not None:
+                    # One instantaneous transaction (begin -> mutate -> commit);
+                    # commit() diffs the whole grid and drops if nothing changed.
                     pid = selected_id if lmb_click else MAT_AIR
-                    snap = grid.copy()
-                    changed = 0
+                    log.begin("line")
+                    log.snapshot_grid("material")
                     for sx_, sy_ in line_tiles(anchor_tile[0], anchor_tile[1],
                                                cur_tx, cur_ty):
-                        changed += _stamp(sx_, sy_, pid)
-                    if changed:
-                        undo.push(snap)
-                        dirty_tiles = True
+                        _stamp(sx_, sy_, pid)
+                    log.commit()
+                    if stroke_dirty is not None:
                         rebake_cells(*stroke_dirty)
                     stroke_dirty = None
                 anchor_tile = (cur_tx, cur_ty)
             elif (lmb or rmb) and not over_hud and not shift:
+                # ONE transaction for the whole stroke: open + snapshot at
+                # mouse-down, commit at mouse-up (below). Coalescing is
+                # automatic — commit stores before=gesture-start, after=commit.
                 if not stroke_active:
                     stroke_active = True
-                    stroke_pending = grid.copy()
+                    log.begin("paint")
+                    log.snapshot_grid("material")
                     stroke_dirty = None
                     last_paint_tile = None
                 pid = selected_id if lmb else MAT_AIR      # right = eraser
                 p0 = (last_paint_tile if last_paint_tile is not None
                       else (cur_tx, cur_ty))
-                changed = 0
                 for sx_, sy_ in line_tiles(p0[0], p0[1], cur_tx, cur_ty):
-                    changed += _stamp(sx_, sy_, pid)
+                    _stamp(sx_, sy_, pid)
                 last_paint_tile = (cur_tx, cur_ty)
                 if cursor_in:
                     anchor_tile = (cur_tx, cur_ty)
-                if changed:
-                    dirty_tiles = True
-                    if stroke_pending is not None:
-                        undo.push(stroke_pending)
-                        stroke_pending = None
             elif not (lmb or rmb):
-                if stroke_dirty is not None:       # stroke END -> re-bake +1
+                if stroke_active:                  # stroke END -> commit the txn
+                    log.commit()
+                if stroke_dirty is not None:       # + re-bake +1
                     rebake_cells(*stroke_dirty)
                     stroke_dirty = None
-                stroke_active, stroke_pending = False, None
+                stroke_active = False
                 last_paint_tile = None
             else:                  # held but over the HUD: break the line
                 last_paint_tile = None
@@ -1143,11 +1160,11 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                                       cur_tx, cur_ty, grid_w, grid_h)
                 room_start = None
                 if rect is not None:
-                    snap = grid.copy()
+                    log.begin("room")
+                    log.snapshot_grid("material")
                     changed = apply_room(grid, rect, selected_id, wall_codes)
+                    log.commit()
                     if changed:
-                        undo.push(snap)
-                        dirty_tiles = True
                         rebake_cells(*rect)
                         flash, flash_frames = (
                             f"room {rect[2] - rect[0] + 1}x"
@@ -1173,17 +1190,15 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             if corr_start is not None and lmb_up:
                 x0_, y0_ = corr_start
                 corr_start = None
-                snap = grid.copy()
+                log.begin("corridor")
+                log.snapshot_grid("material")
                 changed = apply_corridor(
                     grid, x0_, y0_, clamp_tx, clamp_ty,
                     width=corridor_w, wall_id=selected_id,
                     wall_codes=wall_codes)
+                txn = log.commit()
                 if changed:
-                    undo.push(snap)
-                    dirty_tiles = True
-                    r = diff_rect(snap, grid)
-                    if r is not None:
-                        rebake_rect(expand_dirty_rect(r, grid_w, grid_h))
+                    rebake_txn(txn)      # the op's whole-grid diff rect
                     flash, flash_frames = (
                         f"corridor w={corridor_w} ({changed} tiles)", 120)
                 else:
@@ -1194,10 +1209,10 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             if lmb_click and not over_hud:
                 ok, why = door_check(grid, cur_tx, cur_ty, wall_codes)
                 if ok:
-                    snap = grid.copy()
+                    log.begin("door")
+                    log.snapshot_grid("material")
                     grid[cur_ty, cur_tx] = MAT_DOOR
-                    undo.push(snap)
-                    dirty_tiles = True
+                    log.commit()
                     rebake_cells(cur_tx, cur_ty, cur_tx, cur_ty)
                     flash, flash_frames = (
                         f"door at ({cur_tx}, {cur_ty}) — {why}", 120)
@@ -1209,12 +1224,13 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             hover = spawn_at(spawns, ftx, fty)
             if rl.is_key_pressed(K.KEY_T):
                 if hover is not None:
-                    spawn_undo.push(spawns)
+                    log.begin("spawn team")
+                    log.snapshot_coll("spawns")
                     s = spawns[hover]
                     new_team = (TEAM_ZOMBIE if int(s.team) == TEAM_MARINE
                                 else TEAM_MARINE)
                     spawns[hover] = replace(s, team=new_team)
-                    dirty_spawns = True
+                    log.commit()
                     flash, flash_frames = (
                         f"{s.name} -> {TEAM_NAMES[new_team]}", 120)
                 else:
@@ -1224,10 +1240,14 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                         f"placing {TEAM_NAMES[spawn_team]}s", 120)
             if lmb_click and not over_hud:
                 if hover is not None:
-                    spawn_drag = (hover, [replace(s) for s in spawns],
-                                  (spawns[hover].x, spawns[hover].y))
+                    # Drag: open the transaction at mouse-down (snapshot before
+                    # any move); commit at release iff the spawn moved (§2.2).
+                    spawn_drag = (hover, (spawns[hover].x, spawns[hover].y))
+                    log.begin("move spawn")
+                    log.snapshot_coll("spawns")
                 elif cursor_in:
-                    spawn_undo.push(spawns)
+                    log.begin("place spawn")
+                    log.snapshot_coll("spawns")
                     fp = DEFAULT_FOOTPRINT
                     nx = min(max(int(round(ftx - fp / 2.0)), 0), grid_w - fp)
                     ny = min(max(int(round(fty - fp / 2.0)), 0), grid_h - fp)
@@ -1235,24 +1255,22 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                     spawns.append(SpawnEntry(name=nm, team=spawn_team,
                                              x=float(nx), y=float(ny),
                                              footprint=fp))
-                    dirty_spawns = True
+                    log.commit()
                     flash, flash_frames = f"spawn {nm} at ({nx}, {ny})", 120
             if spawn_drag is not None and lmb:
-                di, _, _ = spawn_drag
+                di, _ = spawn_drag
                 fp = int(spawns[di].footprint)
                 nx = min(max(int(round(ftx - fp / 2.0)), 0), grid_w - fp)
                 ny = min(max(int(round(fty - fp / 2.0)), 0), grid_h - fp)
                 spawns[di] = replace(spawns[di], x=float(nx), y=float(ny))
             if spawn_drag is not None and lmb_up:
-                di, pre, orig = spawn_drag
                 spawn_drag = None
-                if (spawns[di].x, spawns[di].y) != orig:
-                    spawn_undo.push(pre)      # pre-drag snapshot
-                    dirty_spawns = True
+                log.commit()             # pushes iff the spawn actually moved
             if rmb_click and not over_hud and hover is not None:
-                spawn_undo.push(spawns)
+                log.begin("delete spawn")
+                log.snapshot_coll("spawns")
                 gone = spawns.pop(hover)
-                dirty_spawns = True
+                log.commit()
                 flash, flash_frames = f"deleted spawn {gone.name}", 120
 
         # ---- LIGHT (P4 §2.4 — the SPAWN interaction template) --------------
@@ -1262,9 +1280,10 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                 if hover is not None:
                     new_kind = ("beacon" if lights[hover].kind == "static"
                                 else "static")
-                    light_undo.push(lights)
+                    log.begin("light kind")
+                    log.snapshot_coll("lights")
                     lights[hover] = replace(lights[hover], kind=new_kind)
-                    dirty_lights = True
+                    log.commit()
                     flash, flash_frames = f"light -> {new_kind}", 120
                 else:
                     light_kind = ("beacon" if light_kind == "static"
@@ -1274,9 +1293,10 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                 step = -1 if shift else 1
                 if hover is not None:
                     nc = next_light_color(lights[hover].color, step)
-                    light_undo.push(lights)
+                    log.begin("light color")
+                    log.snapshot_coll("lights")
                     lights[hover] = replace(lights[hover], color=nc)
-                    dirty_lights = True
+                    log.commit()
                     flash, flash_frames = (
                         f"light color: {light_color_name(nc)}", 120)
                 else:
@@ -1307,9 +1327,10 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                     v = getattr(lights[hover], attr) + (-step if shift
                                                         else step)
                     v = min(hi, max(lo, v))
-                    light_undo.push(lights)
+                    log.begin(attr)
+                    log.snapshot_coll("lights")
                     lights[hover] = replace(lights[hover], **{attr: v})
-                    dirty_lights = True
+                    log.commit()
                     flash, flash_frames = f"{attr} = {v:g}", 120
             if rl.is_key_pressed(K.KEY_H):        # phase wraps mod 1 turn
                 if hover is None:
@@ -1321,42 +1342,47 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                     v = (lights[hover].phase
                          + (-LIGHT_PHASE_STEP if shift
                             else LIGHT_PHASE_STEP)) % 1.0
-                    light_undo.push(lights)
+                    log.begin("phase")
+                    log.snapshot_coll("lights")
                     lights[hover] = replace(lights[hover], phase=v)
-                    dirty_lights = True
+                    log.commit()
                     flash, flash_frames = f"phase = {v:g} turns", 120
             if lmb_click and not over_hud:
                 if hover is not None:
-                    light_drag = (hover, [replace(l) for l in lights],
-                                  (lights[hover].x, lights[hover].y))
+                    # Drag: snapshot at mouse-down, commit at release if moved.
+                    light_drag = (hover, (lights[hover].x, lights[hover].y))
+                    log.begin("move light")
+                    log.snapshot_coll("lights")
                 elif cursor_in:
-                    light_undo.push(lights)
+                    log.begin("place light")
+                    log.snapshot_coll("lights")
                     # Tile-center snap (engine/15 §2.2: centers at .5).
                     lx, ly = cur_tx + 0.5, cur_ty + 0.5
-                    new_id = light_entity_port.unique_light_id(
-                        {l.id for l in lights})
+                    # Mint over the UNION of lights + entities (B3): both
+                    # serialize to the ONE [[entity]] family, ids unique or the
+                    # saved level is unloadable.
+                    new_id = light_entity_port.unique_entity_id(
+                        "light", lights, entities)
                     lights.append(light_entity_port.EditableLight(
                         x=lx, y=ly, color=light_color, kind=light_kind,
                         id=new_id))
-                    dirty_lights = True
+                    log.commit()
                     flash, flash_frames = (
                         f"{light_kind} light at ({lx:g}, {ly:g}) "
                         f"[{light_color_name(light_color)}]", 120)
             if light_drag is not None and lmb:
-                di, _, _ = light_drag
+                di, _ = light_drag
                 if cursor_in:
                     lights[di] = replace(lights[di],
                                          x=cur_tx + 0.5, y=cur_ty + 0.5)
             if light_drag is not None and lmb_up:
-                di, pre, orig = light_drag
                 light_drag = None
-                if (lights[di].x, lights[di].y) != orig:
-                    light_undo.push(pre)      # pre-drag snapshot
-                    dirty_lights = True
+                log.commit()             # pushes iff the light actually moved
             if rmb_click and not over_hud and hover is not None:
-                light_undo.push(lights)
+                log.begin("delete light")
+                log.snapshot_coll("lights")
                 gone = lights.pop(hover)
-                dirty_lights = True
+                log.commit()
                 flash, flash_frames = (
                     f"deleted light at ({gone.x:g}, {gone.y:g})", 120)
 
@@ -1386,10 +1412,11 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                             "region already dry" if rmb_click else
                             f"region already at {water_depth_m:.1f} m", 120)
                     else:
-                        water_undo.push(water_q)
+                        log.begin("drain" if rmb_click else "water")
+                        log.snapshot_grid("water")
                         for tx_, ty_ in region:
                             water_q[ty_, tx_] = target
-                        dirty_water = True
+                        log.commit()
                         if rmb_click:
                             flash, flash_frames = (
                                 f"drained {len(region)} tiles", 120)
@@ -1401,50 +1428,41 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                                         "flash-boil (by design)")
                             flash, flash_frames = msg, 180
 
-        # ---- undo / save ------------------------------------------------------
-        if ctrl and rl.is_key_pressed(K.KEY_Z):
-            if mode == "SPAWN":
-                spawn_drag = None          # a live drag index would go stale
-                snap = spawn_undo.pop()
-                if snap is None:
-                    flash, flash_frames = "nothing to undo (spawns)", 120
-                else:
-                    spawns[:] = snap
-                    dirty_spawns = True
-                    flash, flash_frames = (
-                        f"undo spawns ({len(spawn_undo)} left)", 120)
-            elif mode == "LIGHT":
-                light_drag = None          # a live drag index would go stale
-                snap = light_undo.pop()
-                if snap is None:
-                    flash, flash_frames = "nothing to undo (lights)", 120
-                else:
-                    lights[:] = snap
-                    dirty_lights = True
-                    flash, flash_frames = (
-                        f"undo lights ({len(light_undo)} left)", 120)
-            elif mode == "WATER":
-                snap = water_undo.pop()
-                if snap is None:
-                    flash, flash_frames = "nothing to undo (water)", 120
-                else:
-                    water_q[...] = snap    # in-place (the live grid persists)
-                    dirty_water = True
-                    flash, flash_frames = (
-                        f"undo water ({len(water_undo)} left)", 120)
-            elif stroke_active:
+        # ---- undo / redo / save ---------------------------------------------
+        # ONE global history across ALL domains (§7.2 — the intended behavior
+        # change): Ctrl+Z undoes the most-recent action irrespective of the
+        # current mode. Explicit shift guards (§4/C9): Ctrl+Shift+Z is redo, not
+        # undo (today's `ctrl and Z` had no shift check). Undo/redo are refused
+        # while a gesture is open — commit/force-end it first.
+        undo_key = ctrl and (not shift) and rl.is_key_pressed(K.KEY_Z)
+        redo_key = ctrl and (rl.is_key_pressed(K.KEY_Y)
+                             or (shift and rl.is_key_pressed(K.KEY_Z)))
+        if undo_key:
+            if log.has_pending:
                 flash, flash_frames = "release the mouse before undo", 120
             else:
-                snap = undo.pop()
-                if snap is None:
+                spawn_drag = light_drag = None   # stale drag indices
+                txn = log.undo()
+                if txn is None:
                     flash, flash_frames = "nothing to undo", 120
                 else:
-                    r = diff_rect(grid, snap)
-                    grid[...] = snap
-                    dirty_tiles = True
-                    if r is not None:
-                        rebake_rect(expand_dirty_rect(r, grid_w, grid_h))
-                    flash, flash_frames = f"undo ({len(undo)} left)", 120
+                    rebake_txn(txn)              # material grid rects only
+                    flash, flash_frames = (
+                        f"undo: {txn.label} (undo {log.undo_count} / "
+                        f"redo {log.redo_count})", 120)
+        elif redo_key:
+            if log.has_pending:
+                flash, flash_frames = "release the mouse before redo", 120
+            else:
+                spawn_drag = light_drag = None
+                txn = log.redo()
+                if txn is None:
+                    flash, flash_frames = "nothing to redo", 120
+                else:
+                    rebake_txn(txn)
+                    flash, flash_frames = (
+                        f"redo: {txn.label} (undo {log.undo_count} / "
+                        f"redo {log.redo_count})", 120)
 
         if ctrl and rl.is_key_pressed(K.KEY_S):
             # level.toml writeback goes through level_lib (entity doc §3c:
@@ -1463,9 +1481,19 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             # SPACE painted over a pool after the fill zeroes those cells
             # (the solver would destroy them anyway, silently). The editor
             # state follows the save so the overlay matches the file.
+            # C1 (design §5): the mask is a real state mutation, so it goes
+            # THROUGH the log as a committed GridCellsOp("water") — otherwise a
+            # later undo/redo would desync live vs disk while the dot read
+            # clean. If the mask changed nothing (the common case) commit()
+            # pushes nothing. This commit truncates any redo tail; that is
+            # intended (a save is a new committed action, standard linear
+            # semantics — the redone-away future is discarded).
+            log.begin("save-mask")
+            log.snapshot_grid("water")
             masked_water, cleared = mask_water_to_open(water_q, grid,
                                                        water_solid)
             water_q[...] = masked_water
+            log.commit()
             _, has_water = level_lib.write_water_npy(
                 level_dir, water_q, npy_bak=not water_bak_written)
             water_bak_written = True
@@ -1480,14 +1508,18 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                 "water": level_lib.water_block_format(has_water),
             }
             replacements.update(light_entity_port.format_lights_for_save(
-                light_form, lights, other_entities))
+                light_form, lights, entities))
             handle.save(replacements, write_bak=first)
             toml_bak_written = True
             summary = bake_level(level_dir, tileset=tileset_arg,
                                  px_per_tile=bake_ppt, seed=bake_seed,
                                  write_bak=False)
             handle.record_disk_state()   # bake rewrote [art]/[bake] blocks
-            dirty_tiles = dirty_spawns = dirty_lights = dirty_water = False
+            # Pin the saved marker at the current cursor as the LAST save step
+            # (after the save-mask commit above): state == disk, so the dot
+            # clears and undoing back here will clear it again (§5). Replaces
+            # the four dirty_* bools that could never clear on undo.
+            log.mark_saved()
             wet = int(np.count_nonzero(water_q))
             flash, flash_frames = (
                 f"SAVED tilemap.csv + {len(spawns)} spawns + "
@@ -1836,8 +1868,8 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
                 rl.draw_text(ln, insp.x + 10, iy, 13, rl.Color(*COL_TEXT_DIM))
                 iy += 16
         iy += 6
-        rl.draw_text(f"undo depth {len(undo)}", insp.x + 10, iy, 14,
-                     rl.Color(*COL_TEXT_DIM))
+        rl.draw_text(f"undo {log.undo_count} / redo {log.redo_count}",
+                     insp.x + 10, iy, 14, rl.Color(*COL_TEXT_DIM))
 
         # Status bar: mode | cursor tile | validator summary | registry-
         # import banner (red, Arc C1 — right of the validator slot, left of
@@ -1889,9 +1921,9 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
     rl.unload_texture(tex_normal)
     rl.close_window()
     print(f"map_editor: {frames} frames; mode={MODES[mode_idx]} "
-          f"unsaved_tiles={dirty_tiles} unsaved_spawns={dirty_spawns} "
-          f"unsaved_lights={dirty_lights} unsaved_water={dirty_water} "
+          f"unsaved={log.dirty} undo={log.undo_count} redo={log.redo_count} "
           f"spawns={len(spawns)} lights={len(lights)} "
+          f"entities={len(entities)} "
           f"water_tiles={int(np.count_nonzero(water_q))}")
     if auto:
         if shot_path is not None and shot_path.is_file():
