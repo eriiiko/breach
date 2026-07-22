@@ -62,19 +62,35 @@ CLI
 Bakes ``levels/<name>/``: writes ``baked_diffuse.png`` + ``baked_normal.png``
 into the level folder and rewrites the ``[art.bare]`` (diffuse/normal),
 ``[art.align]`` (offset [0,0], px_per_tile = the bake value) and ``[bake]``
-(tileset/px_per_tile/seed) blocks of ``level.toml`` — byte-preserving and
-line-targeted with a ``.bak``, the same house style as
-``tools/align_level_art.py``'s ``save_align``; absent blocks are appended.
-Omitted flags fall back to the level's existing ``[bake]`` values, then to
-the chapter defaults — so ``python tools/bake_level_art.py <name>`` re-bakes
-a tiled level exactly as recorded. Emissive output exists only when the
-manifest declares emissive pieces (greybox: none — the file is skipped
-entirely).
+(tileset/px_per_tile/seed) blocks of ``level.toml``. Omitted flags fall back
+to the level's existing ``[bake]`` values, then to the chapter defaults — so
+``python tools/bake_level_art.py <name>`` re-bakes a tiled level exactly as
+recorded. Emissive output exists only when the manifest declares emissive
+pieces (greybox: none — the file is skipped entirely).
+
+level.toml writeback (Arc C9 rider — A2 accepted gap, closed)
+==============================================================
+The three blocks above are ``level_lib``-managed families
+(``"art.bare"``/``"art.align"``/``"bake"``, all single-table): the write
+goes through :func:`level_lib.write_managed_blocks` — a same-directory
+temp file + ``os.replace``, so a crash mid-write can never leave a torn
+``level.toml`` (the original hand-rolled regex line-upsert, replaced by
+this port, wrote directly with no such guarantee). Every byte outside
+these three tables is preserved exactly, matching every other managed
+family; a stray hand-comment INSIDE one of them does not survive a
+rewrite (whole-block replace, not the old key-level upsert) — the same
+trade-off ``[[spawn]]``/``[[entity]]``/etc. already made, and no shipped
+level carries one. :func:`bake_level` computes the bake (PNGs) AND does
+this write itself (a self-contained, standalone save — CLI/procgen);
+:func:`compute_bake_replacements` does only the PNG-writing half and
+returns the replacements dict UNWRITTEN, for a caller (the map editor's
+Ctrl+S) that wants to fold them into its OWN ``write_managed_blocks``/
+``LevelHandle.save()`` call so the whole save (spawn/light/entity/water/
+wire/art/bake) lands as ONE atomic write.
 """
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 import tomllib
 from dataclasses import dataclass
@@ -88,6 +104,7 @@ sys.path.insert(0, str(ROOT / "src"))
 import numpy as np
 from PIL import Image
 
+import level_lib  # noqa: E402
 from level_loader import SPACE_CODE  # noqa: E402
 from simulation.materials import MATERIAL_NAMES  # noqa: E402
 
@@ -432,108 +449,57 @@ def bake_full(tilemap, tileset: Tileset, *,
 
 
 # ---------------------------------------------------------------------------
-# level.toml writeback — byte-preserving, line-targeted, .bak (the save_align
-# house style from tools/align_level_art.py)
+# level.toml writeback — level_lib's atomic managed-block writer (Arc C9
+# rider: ported off the original hand-rolled regex line-upsert)
 # ---------------------------------------------------------------------------
-
-_TABLE_HEADER_RE = re.compile(r"^\s*\[")          # any table / array-of-tables
-
-
-def _upsert_block(out: list, nl: str, header: str, assignments) -> None:
-    """Rewrite ONLY the given assignment lines of one ``[header]`` block.
-
-    ``assignments`` = [(key, full assignment line), ...]. Inside an existing
-    block the first line matching each key is replaced in place (its newline
-    style kept, comments and unrelated keys untouched); missing keys are
-    appended at the end of the block; a missing block is appended at EOF
-    (valid TOML — dotted headers reopen their parent wherever they appear).
-    """
-    header_re = re.compile(r"^\s*\[" + re.escape(header) + r"\]\s*(#.*)?$")
-
-    def ending(ln: str) -> str:
-        e = ln[len(ln.rstrip("\r\n")):]
-        return e if e else nl                  # last line may lack a newline
-
-    start = next((i for i, ln in enumerate(out) if header_re.match(ln)), None)
-    if start is None:
-        if out and not out[-1].endswith(("\n", "\r")):
-            out[-1] += nl
-        out += [nl, f"[{header}]" + nl]
-        out += [line + nl for _, line in assignments]
-        return
-    end = next((i for i in range(start + 1, len(out))
-                if _TABLE_HEADER_RE.match(out[i])), len(out))
-    key_res = [(re.compile(r"^\s*" + re.escape(key) + r"\s*="), line)
-               for key, line in assignments]
-    replaced = [False] * len(key_res)
-    for i in range(start + 1, end):
-        for j, (key_re, line) in enumerate(key_res):
-            if not replaced[j] and key_re.match(out[i]):
-                out[i] = line + ending(out[i])
-                replaced[j] = True
-                break
-    inserts = [line + nl
-               for j, (_, line) in enumerate(key_res) if not replaced[j]]
-    if inserts:
-        if end > 0 and not out[end - 1].endswith(("\n", "\r")):
-            out[end - 1] += nl
-        out[end:end] = inserts
-
 
 def write_bake_blocks(toml_path, *, tileset_rel: str, px_per_tile: int,
                       seed: int, write_bak: bool = True):
-    """Rewrite the [art.bare] + [art.align] + [bake] blocks of ``toml_path``.
-
-    Every other byte of the file is preserved; the original bytes go to
-    ``<toml_path>.bak`` first (one .bak per call — pass ``write_bak=False``
-    when a caller such as the map editor's SAVE already owns the session's
-    .bak). [art.align] is written in save_align's canonical formatting
-    (offset 1 decimal, px_per_tile as the 2-decimal per-axis pair). Returns
-    the .bak path, or None when ``write_bak`` is False.
+    """Rewrite the [art.bare] + [art.align] + [bake] blocks of ``toml_path``
+    — ONE atomic write through :func:`level_lib.write_managed_blocks` (a
+    same-directory temp file + ``os.replace``; the original hand-rolled
+    regex upsert wrote directly, with no such guarantee). Every byte outside
+    these three tables is preserved exactly, matching every other
+    level_lib-managed family; a stray hand-comment INSIDE one of them does
+    NOT survive a rewrite (whole-block replace, not the old key-level
+    upsert — no shipped level carries one). Returns the .bak path, or None
+    when ``write_bak`` is False.
     """
     toml_path = Path(toml_path)
-    original = toml_path.read_bytes()
-    text = original.decode("utf-8")
-    out = text.splitlines(keepends=True)
-    nl = "\r\n" if "\r\n" in text else "\n"   # match the file's newline style
-
-    ppt = float(px_per_tile)
-    _upsert_block(out, nl, "art.bare", [
-        ("diffuse", f'diffuse = "{DIFFUSE_FILENAME}"'),
-        ("normal", f'normal = "{NORMAL_FILENAME}"'),
-    ])
-    _upsert_block(out, nl, "art.align", [
-        ("offset_px", "offset_px = [0.0, 0.0]"),
-        ("px_per_tile", f"px_per_tile = [{ppt:.2f}, {ppt:.2f}]"),
-    ])
-    _upsert_block(out, nl, "bake", [
-        ("tileset", f'tileset = "{tileset_rel}"'),
-        ("px_per_tile", f"px_per_tile = {int(px_per_tile)}"),
-        ("seed", f"seed = {int(seed)}"),
-    ])
-
-    bak = None
-    if write_bak:
-        bak = Path(str(toml_path) + ".bak")
-        bak.write_bytes(original)
-    toml_path.write_bytes("".join(out).encode("utf-8"))
-    return bak
+    replacements = {
+        "art.bare": lambda nl: level_lib.format_art_bare_lines(
+            DIFFUSE_FILENAME, NORMAL_FILENAME, nl),
+        "art.align": lambda nl: level_lib.format_art_align_lines(
+            px_per_tile, nl),
+        "bake": lambda nl: level_lib.format_bake_lines(
+            tileset_rel, px_per_tile, seed, nl),
+    }
+    return level_lib.write_managed_blocks(toml_path, replacements,
+                                          write_bak=write_bak)
 
 
 # ---------------------------------------------------------------------------
 # Level bake — the CLI / procgen entry point
 # ---------------------------------------------------------------------------
 
-def bake_level(level_dir, tileset=None, px_per_tile=None, seed=None, *,
-               write_bak: bool = True) -> dict:
-    """Full bake of one level folder + level.toml writeback.
+def compute_bake_replacements(level_dir, tileset=None, px_per_tile=None,
+                              seed=None):
+    """Bake one level folder's art (writes the PNGs to disk) and return the
+    level_lib ``[art.bare]``/``[art.align]``/``[bake]`` REPLACEMENTS —
+    NOT written to ``level.toml`` here (Arc C9 rider). The caller folds
+    these into its OWN ``write_managed_blocks``/``LevelHandle.save()``
+    replacements dict so the art/bake TOML write composes atomically (one
+    temp+rename) with whatever other families (spawn/light/entity/water/
+    wire) that save touches — see ``tools/map_editor.py``'s Ctrl+S handler
+    and ``tools/play_scratch.py``'s dirty-bake branch. A caller with
+    nothing else to save alongside should just call :func:`bake_level`,
+    which does this AND the write together.
 
-    ``None`` parameters fall back to the level's existing ``[bake]`` values,
-    then to the chapter defaults (greybox, 64 px/tile, seed 0) — a bare
-    ``bake_level(dir)`` re-bakes a tiled level exactly as recorded.
-    ``write_bak`` is passed through to :func:`write_bake_blocks` (the map
-    editor's SAVE keeps its own once-per-session .bak). Returns a summary
-    dict (paths + the resolved bake parameters).
+    ``None`` parameters fall back to the level's existing ``[bake]``
+    values, then to the chapter defaults (greybox, 64 px/tile, seed 0).
+    Returns ``(replacements, summary)`` — ``summary`` matches
+    :func:`bake_level`'s own dict minus ``toml_bak`` (the caller's own
+    write governs that).
     """
     level_dir = Path(level_dir)
     toml_path = level_dir / "level.toml"
@@ -584,18 +550,50 @@ def bake_level(level_dir, tileset=None, px_per_tile=None, seed=None, *,
         tileset_rel = tileset_dir.resolve().relative_to(ROOT).as_posix()
     except ValueError:
         tileset_rel = Path(tileset_arg).as_posix()
-    toml_bak = write_bake_blocks(toml_path, tileset_rel=tileset_rel,
-                                 px_per_tile=px, seed=seed,
-                                 write_bak=write_bak)
-    return {
+
+    replacements = {
+        "art.bare": lambda nl: level_lib.format_art_bare_lines(
+            DIFFUSE_FILENAME, NORMAL_FILENAME, nl),
+        "art.align": lambda nl: level_lib.format_art_align_lines(px, nl),
+        "bake": lambda nl: level_lib.format_bake_lines(
+            tileset_rel, px, seed, nl),
+    }
+    summary = {
         "diffuse": diffuse_path,
         "normal": normal_path,
-        "toml_bak": toml_bak,
         "tileset": tileset_rel,
         "px_per_tile": px,
         "seed": seed,
         "size_tiles": (int(tilemap.shape[1]), int(tilemap.shape[0])),
     }
+    return replacements, summary
+
+
+def bake_level(level_dir, tileset=None, px_per_tile=None, seed=None, *,
+               write_bak: bool = True) -> dict:
+    """Full bake of one level folder + level.toml writeback — a
+    SELF-CONTAINED, standalone save (CLI / procgen / any caller with no
+    other families to compose atomically with).
+
+    ``None`` parameters fall back to the level's existing ``[bake]`` values,
+    then to the chapter defaults (greybox, 64 px/tile, seed 0) — a bare
+    ``bake_level(dir)`` re-bakes a tiled level exactly as recorded. The
+    level.toml write goes through :func:`level_lib.write_managed_blocks`
+    (Arc C9 rider — one atomic temp+rename, closing the A2 gap); ``write_bak``
+    still means "one .bak of the pre-write bytes", same contract as before.
+    A caller that DOES have other families to save in the SAME atomic write
+    (the map editor's Ctrl+S, play_scratch's dirty-bake branch) should call
+    :func:`compute_bake_replacements` directly instead — see those callers.
+    Returns a summary dict (paths + the resolved bake parameters + the .bak
+    path).
+    """
+    level_dir = Path(level_dir)
+    replacements, summary = compute_bake_replacements(
+        level_dir, tileset=tileset, px_per_tile=px_per_tile, seed=seed)
+    toml_bak = level_lib.write_managed_blocks(
+        level_dir / "level.toml", replacements, write_bak=write_bak)
+    summary["toml_bak"] = toml_bak
+    return summary
 
 
 def _resolve_level_dir(level: str) -> Path:

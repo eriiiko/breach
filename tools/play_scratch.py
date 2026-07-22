@@ -13,12 +13,19 @@ folder is deleted both when that subprocess exits and when the editor quits
 Ctrl+S already calls (``level_lib.write_tilemap_csv``/``write_water_npy``/
 ``write_zones_npy``/``write_air_init_npy``/``write_boundary_field``/
 ``write_managed_blocks``, ``light_entity_port.light_and_entity_replacements``,
-``bake_level_art.bake_level``) — never a parallel serializer. The one new
-idea is copying the REAL level's already-baked PNGs into the scratch dir
-when the material grid hasn't changed since they were last written to disk
-(``bake_clean`` — the caller's own ``not log.dirty``, C2's saved-marker) so
-F5 does not force a full re-bake every press; a dirty grid always re-bakes
-from the freshly-written scratch tilemap, so a stale bake can never ship.
+``bake_level_art.compute_bake_replacements``) — never a parallel serializer.
+The one new idea is copying the REAL level's already-baked PNGs into the
+scratch dir when the material grid hasn't changed since they were last
+written to disk (``bake_clean`` — the caller's own ``not log.dirty``, C2's
+saved-marker) so F5 does not force a full re-bake every press; a dirty grid
+always re-bakes from the freshly-written scratch tilemap, so a stale bake can
+never ship.
+
+Arc C9 rider: a DIRTY bake's [art.bare]/[art.align]/[bake] TOML replacements
+now fold into the SAME ``write_managed_blocks`` call as spawn/water/wire/
+light|entity, matching Ctrl+S's own one-shot atomic save exactly (method
+equivalence, not just output equivalence) — see ``tools/map_editor.py``'s
+Ctrl+S handler for the same pattern.
 """
 from __future__ import annotations
 
@@ -34,7 +41,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "tools"):
 import level_lib  # noqa: E402
 import light_entity_port  # noqa: E402
 from bake_level_art import (DIFFUSE_FILENAME, NORMAL_FILENAME,  # noqa: E402
-                            bake_level)
+                            compute_bake_replacements)
 
 SCRATCH_SUBDIR = "_editor_scratch"
 SCRATCH_ROOT = ROOT / "levels" / SCRATCH_SUBDIR
@@ -138,19 +145,27 @@ def write_scratch_level(name, *, level_dir, grid, water_masked, zones, air,
     replacements.update(
         light_entity_port.light_and_entity_replacements(
             light_form, lights, entities))
-    level_lib.write_managed_blocks(scratch_toml, replacements, write_bak=False)
 
     # Bake: reuse the real level's on-disk PNGs when the material grid
     # hasn't changed since they were last written (bake_clean, the caller's
-    # `not log.dirty`); otherwise bake fresh from the tilemap.csv just
-    # written above — a dirty grid must never ship a stale bake.
+    # `not log.dirty`) — the copied level.toml already carries the correct
+    # [art.bare]/[art.align]/[bake] blocks for those PNGs, so nothing more
+    # to fold in. Otherwise bake fresh from the tilemap.csv just written
+    # above (a dirty grid must never ship a stale bake): compute_bake_
+    # replacements writes the PNGs and hands back its TOML replacements,
+    # which fold into the SAME write_managed_blocks call below — Arc C9
+    # rider, matching Ctrl+S's own one-shot atomic save method-for-method.
     src_diffuse = Path(level_dir) / DIFFUSE_FILENAME
     src_normal = Path(level_dir) / NORMAL_FILENAME
     if bake_clean and src_diffuse.is_file() and src_normal.is_file():
         shutil.copy2(src_diffuse, dest / DIFFUSE_FILENAME)
         shutil.copy2(src_normal, dest / NORMAL_FILENAME)
     else:
-        bake_level(dest, tileset=tileset_arg, px_per_tile=bake_ppt,
-                  seed=bake_seed, write_bak=False)
+        art_replacements, _ = compute_bake_replacements(
+            dest, tileset=tileset_arg, px_per_tile=bake_ppt,
+            seed=bake_seed)
+        replacements.update(art_replacements)
+
+    level_lib.write_managed_blocks(scratch_toml, replacements, write_bak=False)
 
     return dest

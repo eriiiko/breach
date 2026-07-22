@@ -20,6 +20,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
+
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -169,6 +171,54 @@ def instance_span(fields: dict, tile_size_m) -> list:
     door's hitbox and re-stamp always match what a fresh load would derive —
     the same parity guarantee `plan_door_span` gives the placement tool."""
     return door_entity.base_span(fields, tile_size_m)
+
+
+def door_span_tiles(entities, tile_size_m) -> set:
+    """Every `(tx, ty)` covered by SOME `door` entity's span — the union
+    over every `door` instance in `entities`, each via `instance_span`/
+    `door.base_span` (THE canonical span, never a parallel derivation). The
+    "legit door tile" set the MAT_DOOR_CLOSED-outside-a-span validator
+    (canon §9) checks against."""
+    legit = set()
+    for e in entities:
+        if e.class_name != DOOR_CLASS:
+            continue
+        for (fy, fx) in instance_span(e.fields, tile_size_m):
+            legit.add((int(fx), int(fy)))
+    return legit
+
+
+def orphaned_door_closed_tiles(grid, entities, tile_size_m) -> set:
+    """Every `(tx, ty)` carrying `MAT_DOOR_CLOSED` on `grid` that is NOT
+    covered by any door entity's span (canon §9's forward pointer:
+    "MAT_DOOR_CLOSED-outside-a-span validator warning") — door-material
+    left behind by an edit: a door entity deleted without clearing its
+    stamped span, a hand-edited tilemap, a span shrunk (C4 move/inspector-
+    edit) without re-stamping the vacated tiles. A pure query — never
+    mutates `grid`, never raises; the caller (the editor's status bar)
+    decides how to surface it."""
+    legit = door_span_tiles(entities, tile_size_m)
+    g = np.asarray(grid)
+    ys, xs = np.nonzero(g == MAT_DOOR_CLOSED)
+    return {(int(tx), int(ty)) for ty, tx in zip(ys.tolist(), xs.tolist())
+           if (int(tx), int(ty)) not in legit}
+
+
+def door_span_validator_summary(grid, entities, tile_size_m) -> str:
+    """The status-bar validator string for the MAT_DOOR_CLOSED-outside-a-
+    span check (canon §9) — the C5 zone-binding-summary pattern applied to
+    doors: `"doors ok"` when every `MAT_DOOR_CLOSED` tile sits inside some
+    door's span, else a WARNING naming the orphaned tiles (sorted, so the
+    message is stable frame to frame — never blocks save; the caller wires
+    this into the SAME reserved slot C5's `zone_entity_port.
+    zone_binding_summary` already uses)."""
+    orphaned = orphaned_door_closed_tiles(grid, entities, tile_size_m)
+    if not orphaned:
+        return "doors ok"
+    tiles = ", ".join(f"({tx},{ty})" for tx, ty in sorted(orphaned))
+    n = len(orphaned)
+    return (f"WARNING: {n} orphaned MAT_DOOR_CLOSED tile"
+           f"{'s' if n != 1 else ''} outside any door span: {tiles}")
 
 
 def build_door_instance(x: int, y: int, orientation: str, length_m: float,

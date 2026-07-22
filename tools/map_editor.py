@@ -285,7 +285,8 @@ from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_DOOR_CLOSED,
                                   MAT_HULL, MATERIAL_NAMES, MaterialTable)
 from bake_level_art import (BIT_E, BIT_N, BIT_S, BIT_W, DEFAULT_PX_PER_TILE,
                             DEFAULT_TILESET, bake_full, bake_level,
-                            bake_region, edge16_mask, load_tileset)
+                            bake_region, compute_bake_replacements,
+                            edge16_mask, load_tileset)
 from level_edit_common import (BRUSH_MAX, BRUSH_MIN,
                                art_px_to_tile, brush_rect, build_palette,
                                enclosure_fill_region, line_tiles, paint_tiles,
@@ -2585,13 +2586,17 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
 
         if ctrl and rl.is_key_pressed(K.KEY_S):
             # level.toml writeback goes through level_lib (entity doc §3c:
-            # THE single writer): spawn + light/entity + water managed
-            # blocks land as ONE atomic temp+rename write, sharing the
-            # session's one toml .bak (pre-session bytes). water_init.npy is
-            # written first (its OWN once-per-session .bak — P5 §2.4) so a
-            # written [water] block never points at a missing file;
-            # bake_level then rewrites the [art]/[bake] blocks with
-            # write_bak=False, so nothing can clobber the .bak.
+            # THE single writer): spawn + light/entity + water + art/bake
+            # managed blocks ALL land as ONE atomic temp+rename write,
+            # sharing the session's one toml .bak (pre-session bytes) — Arc
+            # C9 rider: the baker's [art.bare]/[art.align]/[bake] writeback
+            # now composes into this SAME call (compute_bake_replacements
+            # writes the PNGs and returns its family replacements; it no
+            # longer opens a second, separate TOML write of its own, closing
+            # the A2 "not atomic with the rest of the save" gap).
+            # water_init.npy is written first (its OWN once-per-session .bak
+            # — P5 §2.4) so a written [water] block never points at a
+            # missing file.
             save_tilemap_csv(csv_path, grid, write_bak=not csv_bak_written)
             csv_bak_written = True
             first = not toml_bak_written
@@ -2667,12 +2672,19 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
             replacements.update(
                 light_entity_port.light_and_entity_replacements(
                     light_form, lights, entities))
+            # Arc C9 rider: the baker's [art.bare]/[art.align]/[bake] families
+            # fold into this SAME replacements dict — compute_bake_replacements
+            # writes the PNGs to disk and hands back its (unwritten) TOML
+            # replacements, so the whole save (spawn/water/wire/light|entity/
+            # art/bake) lands as ONE atomic handle.save() call, sharing the
+            # ONE session .bak. This closes the A2 gap: previously bake_level
+            # did a second, separate (and non-atomic) [art]/[bake] write here.
+            art_replacements, summary = compute_bake_replacements(
+                level_dir, tileset=tileset_arg, px_per_tile=bake_ppt,
+                seed=bake_seed)
+            replacements.update(art_replacements)
             handle.save(replacements, write_bak=first)
             toml_bak_written = True
-            summary = bake_level(level_dir, tileset=tileset_arg,
-                                 px_per_tile=bake_ppt, seed=bake_seed,
-                                 write_bak=False)
-            handle.record_disk_state()   # bake rewrote [art]/[bake] blocks
             # Pin the saved marker at the current cursor as the LAST save step
             # (after the save-mask commit above): state == disk, so the dot
             # clears and undoing back here will clear it again (§5). Replaces
@@ -3495,21 +3507,34 @@ def run_editor(level_name: str, *, tileset_override=None, ppt_override=None,
         # import banner (red, Arc C1 — right of the validator slot, left of
         # the unsaved dot: C0's reserved layout) | unsaved dot. A transient
         # action flash (placements, wand paints, ...) takes the slot first;
-        # with nothing transient to show, Arc C5's LIVE zone-binding
+        # with nothing transient to show, the LIVE validators fill it
+        # instead of the old unconditional "ready": Arc C5's zone-binding
         # validator (level_loader's own §5 rules, run via zone_entity_port.
-        # zone_binding_summary — never re-derived) fills it instead of the
-        # old unconditional "ready", whenever the level has any zone content
-        # at all.
+        # zone_binding_summary — never re-derived), whenever the level has
+        # any zone content, and Arc C9's MAT_DOOR_CLOSED-outside-a-span
+        # validator (canon §9; door_entity_port.door_span_validator_summary
+        # — reuses door.base_span, never a parallel span calculation),
+        # whenever the level has any door entity OR any MAT_DOOR_CLOSED
+        # tile at all (so an orphaned tile left by a DELETED door still
+        # surfaces). Both are warnings — never block save; multiple active
+        # validators join with " | ".
         if flash_frames > 0:
             flash_frames -= 1
         cur_txt = f"tile ({cur_tx},{cur_ty})" if cursor_in else "tile --"
         if flash_frames > 0:
             valid = flash
-        elif zones is not None or any(e.class_name in ZONE_CLASSES
-                                      for e in entities):
-            valid = zone_entity_port.zone_binding_summary(zones, entities)
         else:
-            valid = "ready"
+            valid_parts = []
+            if zones is not None or any(e.class_name in ZONE_CLASSES
+                                        for e in entities):
+                valid_parts.append(
+                    zone_entity_port.zone_binding_summary(zones, entities))
+            if (any(e.class_name == "door" for e in entities)
+                    or bool(np.any(grid == MAT_DOOR_CLOSED))):
+                valid_parts.append(
+                    door_entity_port.door_span_validator_summary(
+                        grid, entities, tile_size_m))
+            valid = " | ".join(valid_parts) if valid_parts else "ready"
         rl.draw_text(f"{mode}    |    {cur_txt}    |    {valid}",
                      status.x + 10, status.y + 6, 16, rl.Color(*COL_TEXT))
         unsaved_reserve = 0

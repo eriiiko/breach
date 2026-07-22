@@ -8,8 +8,10 @@ keep working for every existing caller); the write side owns managed-block
 writeback for ``level.toml``.
 
 Managed families (``MANAGED_FAMILIES``): ``[[spawn]]``, ``[[light]]``,
-``[water]`` and — since A3 — ``[[entity]]``; the writer is family-generic.
-On save every existing table of a replaced
+``[water]``, ``[[entity]]`` (A3), ``[[wire]]`` (B1) and — since Arc C9 —
+``[art.bare]``/``[art.align]``/``[bake]`` (the baker's writeback, ported off
+its original bespoke line-targeted regex upsert); the writer is
+family-generic. On save every existing table of a replaced
 family is removed and the new block is written at the position of the first
 one (or appended at EOF); every byte OUTSIDE the managed tables — comments,
 [art]/[bake] blocks, hand formatting, newline style — is preserved exactly.
@@ -66,9 +68,12 @@ class ManagedFamily:
 
     @property
     def header_re(self) -> re.Pattern:
+        # re.escape: "art.bare"/"art.align" carry a literal dot, which must
+        # match itself, not the regex any-char wildcard.
+        name = re.escape(self.name)
         if self.array:
-            return re.compile(r"^\s*\[\[\s*" + self.name + r"\s*\]\]\s*(#.*)?$")
-        return re.compile(r"^\s*\[\s*" + self.name + r"\s*\]\s*(#.*)?$")
+            return re.compile(r"^\s*\[\[\s*" + name + r"\s*\]\]\s*(#.*)?$")
+        return re.compile(r"^\s*\[\s*" + name + r"\s*\]\s*(#.*)?$")
 
 
 MANAGED_FAMILIES = {
@@ -81,6 +86,16 @@ MANAGED_FAMILIES = {
     # B1 ([[wire]] logic bindings): another array-of-tables family, same
     # family-generic writer, byte-stable round-trip via format_wire_lines.
     "wire": ManagedFamily("wire", array=True),
+    # Arc C9 rider (A2 accepted gap, closed): the baker's [art.bare]/
+    # [art.align]/[bake] TOML writeback, formerly a bespoke hand-rolled
+    # regex line-upsert in tools/bake_level_art.py, ported onto THE single
+    # writer so it composes atomically (one temp+rename) with whatever
+    # other families a save touches. Dotted single-table headers, same as
+    # [water] — see format_art_bare_lines/format_art_align_lines/
+    # format_bake_lines below.
+    "art.bare": ManagedFamily("art.bare", array=False),
+    "art.align": ManagedFamily("art.align", array=False),
+    "bake": ManagedFamily("bake", array=False),
 }
 
 
@@ -210,6 +225,46 @@ def format_wire_lines(wire_specs, nl: str = "\n") -> list:
         lines.append(f"from = {_fmt_value(str(from_))}{nl}")
         lines.append(f"to = {_fmt_value(str(to))}{nl}")
     return lines
+
+
+def format_art_bare_lines(diffuse: str, normal: str, nl: str = "\n") -> list:
+    """The managed ``[art.bare]`` block as ``nl``-terminated lines — the
+    baker's diffuse/normal PNG filenames (engine/15 §4 P2). Arc C9 rider:
+    ported off ``tools/bake_level_art.py``'s original bespoke line-targeted
+    regex upsert onto this family-generic writer — format/meaning
+    unchanged, only WHERE the write happens."""
+    return [
+        f"[art.bare]{nl}",
+        f'diffuse = "{diffuse}"{nl}',
+        f'normal = "{normal}"{nl}',
+    ]
+
+
+def format_art_align_lines(px_per_tile, nl: str = "\n") -> list:
+    """The managed ``[art.align]`` block. ``offset_px`` is always
+    ``[0.0, 0.0]`` for a bake (a nonzero offset is ``align_level_art.py``'s
+    own job, untouched by the baker); ``px_per_tile`` is the bake's per-axis
+    pair, 2-decimal formatting (the pre-existing save_align house style,
+    unchanged by the Arc C9 port)."""
+    ppt = float(px_per_tile)
+    return [
+        f"[art.align]{nl}",
+        f"offset_px = [0.0, 0.0]{nl}",
+        f"px_per_tile = [{ppt:.2f}, {ppt:.2f}]{nl}",
+    ]
+
+
+def format_bake_lines(tileset_rel: str, px_per_tile: int, seed: int,
+                      nl: str = "\n") -> list:
+    """The managed ``[bake]`` block — the recorded parameters a bare
+    re-bake (``bake_level_art.bake_level(level_dir)``, all-``None``
+    arguments) replicates exactly (engine/15 §4)."""
+    return [
+        f"[bake]{nl}",
+        f'tileset = "{tileset_rel}"{nl}',
+        f"px_per_tile = {int(px_per_tile)}{nl}",
+        f"seed = {int(seed)}{nl}",
+    ]
 
 
 # ---------------------------------------------------------------------------

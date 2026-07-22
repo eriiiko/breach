@@ -245,5 +245,78 @@ def test_commit_door_placement_open_door_stamps_mat_air():
     assert (grid[3, 2:5] == MAT_AIR).all()
 
 
+# ---------------------------------------------------------------------------
+# MAT_DOOR_CLOSED-outside-a-span validator (Arc C9 rider, canon §9)
+# ---------------------------------------------------------------------------
+
+def _door_at(x, y, orientation, n_tiles, id_="door_1"):
+    length_m = dep.length_m_for_tiles(n_tiles, TILE_SIZE_M)
+    return dep.build_door_instance(x, y, orientation, length_m, "closed", id_)
+
+
+def test_door_span_tiles_unions_every_door_entity():
+    d1 = _door_at(2, 3, "h", 3, "door_1")           # (3,2) (3,3) (3,4)
+    d2 = _door_at(5, 0, "v", 2, "door_2")            # (0,5) (1,5)
+    tiles = dep.door_span_tiles([d1, d2], TILE_SIZE_M)
+    assert tiles == {(2, 3), (3, 3), (4, 3), (5, 0), (5, 1)}
+
+
+def test_door_span_tiles_ignores_non_door_entities():
+    from level_loader import EntityInstance
+    other = EntityInstance(id="s1", class_name="pressure", ordinal=0,
+                           tags=(), fields={"x": 1, "y": 1},
+                           authored_keys=("x", "y"))
+    assert dep.door_span_tiles([other], TILE_SIZE_M) == set()
+
+
+def test_orphaned_door_closed_tiles_empty_on_a_clean_level():
+    grid = _wall_row()
+    door = _door_at(2, 3, "h", 3)
+    for (fy, fx) in dep.instance_span(door.fields, TILE_SIZE_M):
+        grid[fy, fx] = MAT_DOOR_CLOSED
+    assert dep.orphaned_door_closed_tiles(grid, [door], TILE_SIZE_M) == set()
+
+
+def test_orphaned_door_closed_tiles_flags_a_stray_tile():
+    """A MAT_DOOR_CLOSED tile with no owning door entity at all (e.g. the
+    door was deleted without clearing its stamped span) is flagged."""
+    grid = _wall_row()
+    grid[3, 5] = MAT_DOOR_CLOSED
+    assert dep.orphaned_door_closed_tiles(grid, [], TILE_SIZE_M) == {(5, 3)}
+
+
+def test_orphaned_door_closed_tiles_flags_only_the_uncovered_part():
+    """A door's span shrunk (move/inspector-edit) without re-stamping the
+    vacated tile: the tile just outside the NEW (shorter) span still reads
+    MAT_DOOR_CLOSED on the grid and must be flagged, while the tiles still
+    inside the span must not be."""
+    grid = _wall_row()
+    grid[3, 2:5] = MAT_DOOR_CLOSED    # originally a 3-tile door...
+    door = _door_at(2, 3, "h", 2)     # ...now authored as only 2 tiles
+    assert dep.orphaned_door_closed_tiles(
+        grid, [door], TILE_SIZE_M) == {(4, 3)}
+
+
+def test_door_span_validator_summary_ok_and_warning():
+    grid = _wall_row()
+    door = _door_at(2, 3, "h", 3)
+    for (fy, fx) in dep.instance_span(door.fields, TILE_SIZE_M):
+        grid[fy, fx] = MAT_DOOR_CLOSED
+    assert dep.door_span_validator_summary(grid, [door], TILE_SIZE_M) \
+        == "doors ok"
+
+    grid2 = _wall_row()
+    grid2[3, 5] = MAT_DOOR_CLOSED
+    msg = dep.door_span_validator_summary(grid2, [], TILE_SIZE_M)
+    assert msg.startswith("WARNING")
+    assert "(5,3)" in msg
+
+
+def test_door_span_validator_summary_never_raises_on_an_empty_level():
+    grid = np.zeros((4, 4), dtype=np.int32)
+    assert dep.door_span_validator_summary(grid, [], TILE_SIZE_M) \
+        == "doors ok"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
