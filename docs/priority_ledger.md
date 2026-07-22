@@ -133,16 +133,21 @@ physics. Big training runs wait for the S8 optimize-hard pass.
   Canon: `architecture/engine/16_entity_system.md` §8; arc design records in
   `docs/archive/` (incl. `arc_b_impl_2026-07-21.md`).
   Build order (Erik): ~~physics close-out~~ ✅ → ~~Arc B~~ ✅ → **next =
-  Arc C** (editor UX panes, wand, wiring, play-from-editor, icons). AI
-  tilesets (levels-w1 P6) still parked behind it. Deferred Arc B rider: the
-  resident sensor-gather kernel (§5a interface frozen; was gated on S8c, now
+  Arc C** (editor UX panes, tools, undo, wiring, play-from-editor, icons) —
+  **KICKED OFF 2026-07-22**: `docs/arc_c_kickoff_2026-07-22.md` (Opus runs
+  it, autonomous-patch-workflow; Erik's rulings inside: ONE end-of-arc
+  HUMAN-TEST, legacy migrations dropped, Lenovo). AI tilesets (levels-w1
+  P6) still parked behind it. Deferred Arc B rider: the resident
+  sensor-gather kernel (§5a interface frozen; was gated on S8c, now
   buildable). Arc riders on the books:
   - baker `[art]`/`[bake]` writeback → `level_lib` client (A2 accepted
-    gap; fold in at Arc C).
+    gap; folds in at Arc C, in the kickoff).
   - `bake_demo` stays legacy-form until its committed baked art rebakes
-    (migrating now would desync tilemap ↔ baked PNGs); shipped/showcase
-    levels (`unhcr_vessel`, `playground`, …) migrate at Erik's choosing,
-    likely Arc C.
+    (migrating now would desync tilemap ↔ baked PNGs). Other legacy
+    showcase levels (`unhcr_vessel`, `unhcr_vessel_2`, `playground`):
+    **retired from migration (Erik 2026-07-22)** — a NEW level authored
+    in the Arc C editor replaces them (the acceptance drive); they stay
+    on disk untouched.
   - `physics.py:104` blast-tuple wart → decide at physics close-out
     (listed under stack #1).
 - **Sound-ML** — parked (`sound_ml_research_brief.md`), junior to the EOS arc.

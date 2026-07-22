@@ -200,12 +200,15 @@ All render-only — no sim/determinism surface, auto-skipped in headless trainin
   helper is input-agnostic and survives this migration (B2 design §2).
   Original vision: tuning-plan §1a "entity/prop system + the LAMP".
 
-- **Legacy-level entity migration (Arc A ruling 2 remainder, 2026-07-19)** —
-  only `test_level` was migrated (A7). `bake_demo` waits until its committed
-  baked art rebakes (a 3→7 tilemap rewrite would desync tilemap ↔ baked
-  PNGs); `unhcr_vessel`/`unhcr_vessel_2`/`playground` migrate at Erik's
-  choosing, likely Arc C. Each later migration is a new digest event with
-  its own rationale (`docs/archive/a7_rebaseline_rationale_2026-07-19.md`).
+- **Legacy-level entity migration — RESOLVED by retirement (Erik,
+  2026-07-22, Arc C kickoff)** — `unhcr_vessel`/`unhcr_vessel_2`/
+  `playground` will NOT be migrated: Erik is retiring that art
+  direction ("don't like the graphics anymore, hard to design that
+  way"); the replacement is a NEW level authored in the Arc C editor
+  (its acceptance drive). They stay on disk in legacy form, untouched.
+  `bake_demo` still waits for its art rebake (unchanged). If a legacy
+  level is ever migrated after all, it's a new digest event with its
+  own rationale (`docs/archive/a7_rebaseline_rationale_2026-07-19.md`).
 
 - **Fire never destroys furniture (audit rider, weapons W2, 2026-07-05)** —
   the C++ fire's burn-through list is `is_wall`-gated, so a burning crate
