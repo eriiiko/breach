@@ -34,7 +34,7 @@ Citations (repo rule — credit the source):
 """
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 
@@ -58,7 +58,9 @@ def aces_tonemap(x: np.ndarray) -> np.ndarray:
 
 
 def pack_emissive_rgba(ramp: "BlackbodyRamp", temperature: np.ndarray,
-                       max_alpha: int = 220) -> np.ndarray:
+                       max_alpha: int = 220,
+                       intensity_mod: "Optional[np.ndarray]" = None
+                       ) -> np.ndarray:
     """Q16.16 temperature field -> additive RGBA8 texture bytes (H, W, 4).
 
     The pure-numpy packing behind :class:`renderer.overlays.HeatFieldOverlay`,
@@ -69,8 +71,19 @@ def pack_emissive_rgba(ramp: "BlackbodyRamp", temperature: np.ndarray,
     RGB-only additive draw's ``rgb * alpha`` reconstructs the tone-mapped
     emissive. Cold tiles -> brightness ~0 -> alpha 0 -> invisible. RENDER-ONLY:
     ``temperature`` is read, never written.
+
+    ``intensity_mod`` (Fire & Heat Beauty B2 P4, the dirty-Planck speckle seam):
+    an optional (H, W) multiplicative field applied to the black-body INTENSITY
+    BEFORE the tone-map — the honest spot for a sooty flame (a dirtier flame
+    radiates less; ACES then compresses the mottle more in the white-hot core,
+    more visible at the cooler edges). ``None`` (the B1 default) is a strict
+    no-op: the pack is byte-for-byte identical to before. Because it scales the
+    intensity, a cold tile (intensity 0) stays invisible regardless of the mod.
+    See :mod:`renderer.speckle`.
     """
     rgb, inten = ramp.chroma_intensity(temperature)
+    if intensity_mod is not None:
+        inten = inten * np.asarray(intensity_mod, dtype=inten.dtype)
     emissive = rgb * inten[..., None]              # HDR linear (can exceed 1)
     tm = aces_tonemap(emissive)                    # (h,w,3) 0..1 — the add colour
     bright = tm.max(axis=-1)                        # (h,w) 0..1 brightness

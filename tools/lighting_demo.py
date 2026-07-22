@@ -23,6 +23,8 @@ Controls (keymap audited — O is intentionally unused):
     G              — toggle sRGB decode (renderer toggle from game)
     V              — toggle water optics pass (renderer toggle; O moved -> V)
     L              — toggle fire lights   F1/F2/F4 — grid / smoke / lighting
+    F9             — legacy smoke A/B (old flat smoke+glow vs the B2 medium)
+    F10            — dirty-Planck speckle A/B (flame mottle off / noise / soot)
     --- B2 studio (tool-side sim writes at the cursor) ---
     I              — ignite the tile under the cursor (3x3, force-flammable)
     J              — puff SMOKE (soot) under the cursor
@@ -640,7 +642,8 @@ def main() -> None:
     print("[lighting_demo]       Space=pause T=spawn U=water F/Shift+F=flood "
           "P=tilt N=noise  |  L=firelights V=water G=sRGB")
     print("[lighting_demo]       WASD/arrows=pan  Q/E/wheel=zoom  "
-          "F1/F2/F4=overlays  F9=legacy smoke A/B  (O intentionally unused)")
+          "F1/F2/F4=overlays  F9=legacy smoke A/B  F10=speckle A/B  "
+          "(O intentionally unused)")
 
     # ---- 4. Panel state ----
     state = PanelState()
@@ -790,6 +793,11 @@ def main() -> None:
             # checkbox value is pushed back to the renderer right after the panel
             # draw (see the post-_draw_panel push below).
             state.set("legacy_smoke_on", renderer.legacy_smoke_on)
+            # Speckle A/B (B2 P4): same reconcile — reflect an F10 mode cycle
+            # (poll_toggles) into the Speckle012 slider; the slider value is
+            # pushed back to renderer.speckle after the panel draw. One source of
+            # truth = renderer.speckle.mode_idx (the amp slider applies live below).
+            state.set("speckle_mode", float(renderer.speckle.mode_idx))
 
             K = rl.KeyboardKey
             if rl.is_key_pressed(K.KEY_SPACE):
@@ -976,6 +984,13 @@ def main() -> None:
             gd.warp_px = float(state.get("gd_warp_px"))
             gd.dither_on = bool(state.get("gd_dither_on"))
 
+            # ---- Sync the B2 dirty-Planck speckle amp LIVE (P4) ----
+            # The `amp` slider drives the flame-mottle depth immediately (render-
+            # only). The mode (off/noise/soot) is reconciled with the F10 cycle
+            # around the panel draw (like legacy_smoke_on / F9), so it is pushed
+            # AFTER the panel — not here.
+            renderer.speckle.amp = float(state.get("speckle_amp"))
+
             # ---- Lighting setters ----
             renderer.lighting.set_ambient((state.get("ambient_r"),
                                            state.get("ambient_g"),
@@ -1083,6 +1098,11 @@ def main() -> None:
             # this frame takes effect next frame; the F9 key path took effect at
             # the top of the frame). One source of truth = renderer.legacy_smoke_on.
             renderer.legacy_smoke_on = bool(state.get("legacy_smoke_on"))
+            # Speckle mode A/B (B2 P4): push the Speckle012 slider back to the
+            # renderer (a drag this frame takes effect next frame; an F10 flip
+            # took effect at the top of the frame). One source of truth =
+            # renderer.speckle.mode_idx.
+            renderer.speckle.mode_idx = int(round(state.get("speckle_mode")))
 
             renderer.end_frame()
 
@@ -1231,7 +1251,7 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     y = _slider(state, "gd_erode_strength", "Erode", 0.0, 1.0, x, y)
     y = _slider(state, "gd_warp_px", "Warp px", 0.0, 8.0, x, y)
     y = _checkbox(state, "gd_dither_on", "Dither", x, y)
-    y = _slider(state, "speckle_mode", "Speckle012", 0.0, 2.0, x, y)
+    y = _slider(state, "speckle_mode", "Speckle F10", 0.0, 2.0, x, y)
     y = _slider(state, "speckle_amp", "Speckle amp", 0.0, 1.0, x, y)
 
     # -- §4.4b Water optics (live; pour with U to see them bite) --
@@ -1333,7 +1353,7 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     rl.draw_text("Space=pause T=spawn U=water F=flood P=tilt N=nz L=firelights",
                  x, y, 10, rl.Color(120, 120, 140, 255))
     y += 12
-    rl.draw_text("WASD=pan Q/E=zoom G=sRGB V=water F1/F2/F4 (O avoided)",
+    rl.draw_text("WASD=pan Q/E=zoom G=sRGB V=water F9=legacy F10=speckle",
                  x, y, 10, rl.Color(120, 120, 140, 255))
 
 

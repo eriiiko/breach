@@ -32,6 +32,7 @@ from .camera import Camera2D
 from .gas_detail import GasDetailPass
 from .gas_medium import GasMediumOverlay
 from .lighting import LightingPass
+from .speckle import SpeckleField
 from .overlays import (
     FieldOverlay, FireOverlay, GlowOverlay, HeatFieldOverlay,
     WaterFieldOverlay,
@@ -193,6 +194,15 @@ class GameRenderer:
         self.blackbody_ramp = BlackbodyRamp.from_config(CFG)
         self.temperature_overlay = HeatFieldOverlay(
             cfg.grid_h, cfg.grid_w, self.blackbody_ramp)
+        # Fire & Heat Beauty B2 P4 — dirty-Planck speckle (renderer/speckle.py).
+        # A CPU-side, pyray-free field that mottles the black-body overlay's
+        # intensity at PACK TIME (the intensity_mod seam) so the flame reads as
+        # sooty and ALIVE. Two A/B variants behind one mode (off/noise/soot) +
+        # an `amp` dial, from [render.speckle]; the mottle MOVES with the flow
+        # via the shared advected_noise crossfade on the sim tick. RENDER-ONLY:
+        # reads copies of the soot/steam density planes, owns no GPU resource.
+        # Cycled live with F10 (poll_toggles) for the studio A/B.
+        self.speckle = SpeckleField.from_config(cfg.grid_h, cfg.grid_w, CFG)
         # Water overlay v2 (water W6b; canon engine/07 §6 placeholder): depth-
         # blue tint + ripple shading + foam + ambient sines over the sim's
         # water fields. All four knobs bind from [display] with getattr
@@ -433,7 +443,23 @@ class GameRenderer:
         # Q16.16 temperature field. Skipped when toggled off to save the work.
         # Render-only — gmap.temperature is read, never written.
         if self.show_temperature:
-            self.temperature_overlay.update(gmap.temperature)
+            # Fire & Heat Beauty B2 P4 — dirty-Planck speckle. Modulate the
+            # black-body intensity at PACK TIME with the moving mottle. In `soot`
+            # mode the amplitude is seeded by the REAL local soot density (smoke,
+            # id 1); steam (id 0) is admitted at <=10% so a steam puff never
+            # sparkles like dirty flame. Clocked on the SIM TICK so it moves with
+            # the flow and replays render identically. None (off/zero-amp) packs
+            # byte-for-byte as B1. RENDER-ONLY: the density planes are read,
+            # dequantized into fresh float copies, never written.
+            speckle_mod = None
+            if self.speckle.mode != "off":
+                from simulation import gas_fixed
+                from simulation.gases import SMOKE, STEAM
+                soot = gas_fixed.dequantize_f32(gmap.gas[SMOKE])
+                steam = gas_fixed.dequantize_f32(gmap.gas[STEAM])
+                speckle_mod = self.speckle.modulation(
+                    soot, steam, sim_tick=int(sim_tick))
+            self.temperature_overlay.update(gmap.temperature, speckle_mod)
         # Water overlay v2 (W6b): depth tint + ripple shading + foam +
         # ambient sines. Skipped when toggled off; the overlay itself also
         # early-outs when the ship is dry (zero-water fast path). Render-only
@@ -1193,6 +1219,14 @@ class GameRenderer:
             color = (180, 255, 180, 255) if on else (140, 140, 140, 255)
             draw_text(label, x, y, 13, color=color)
             y += 16
+        # Dirty-Planck speckle A/B (B2 P4): show the active flame-mottle mode
+        # (off/noise/soot) so the F10 cycle has a readout. Grey when off. (P5
+        # folds this into the richer active-path HUD annotation.)
+        _sp_mode = self.speckle.mode
+        draw_text(f"F10 speckle: {_sp_mode}", x, y, 13,
+                  color=(140, 140, 140, 255) if _sp_mode == "off"
+                  else (180, 255, 180, 255))
+        y += 16
         # Non-physical legibility floor flag (B2 §3): when the gameplay-gas
         # emissive floor is raised, say so on the HUD — the plume's poison/
         # teargas glow is a design override, no longer physically honest.
@@ -1261,6 +1295,13 @@ class GameRenderer:
         # taken by the physics-recorder dump in input_handler.py — F9 is free.)
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F9):
             self.legacy_smoke_on = not self.legacy_smoke_on
+        # F10: dirty-Planck speckle A/B (Fire & Heat Beauty B2 P4) — cycles the
+        # black-body flame mottle off -> noise -> soot so Erik picks by eye in the
+        # studio. (Keymap audited: in-game F1-F7 + F9 are poll_toggles, F8 is the
+        # input_handler recorder dump — F10/F11/F12 are all free; F10 is the next
+        # after F9's legacy-smoke A/B.) Prints the new mode for the console log.
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_F10):
+            print(f"[speckle] mode -> {self.speckle.cycle_mode()}")
         # T: emissive black-body temperature overlay (over gmap.temperature).
         if rl.is_key_pressed(rl.KeyboardKey.KEY_T):
             self.show_temperature = not self.show_temperature

@@ -355,15 +355,23 @@ class HeatFieldOverlay:
         self.tex = core.create_dynamic_rgba_texture(grid_w, grid_h)
         self.packed = np.zeros((grid_h, grid_w, 4), dtype=np.uint8)
 
-    def update(self, temperature: np.ndarray) -> None:
+    def update(self, temperature: np.ndarray,
+               intensity_mod: Optional[np.ndarray] = None) -> None:
         """temperature: (H, W) Q16.16 int32 — ΔT above ambient (0 = cold).
 
         Map through the black-body ramp, ACES tone-map the HDR emissive, and
         pack to an additive RGBA texture. RENDER-ONLY: `temperature` is read,
         never written. The packing math lives in renderer.blackbody
         (pyray-free / headless-testable); here we only upload it.
+
+        ``intensity_mod`` (Fire & Heat Beauty B2 P4): an optional (H, W)
+        dirty-Planck speckle field (renderer.speckle) that mottles the
+        black-body intensity at pack time. ``None`` (the B1 default) packs
+        byte-for-byte as before — the ``off`` speckle mode + the game/harness
+        that never built a SpeckleField both leave this None.
         """
-        self.packed = pack_emissive_rgba(self.ramp, temperature, self.max_alpha)
+        self.packed = pack_emissive_rgba(self.ramp, temperature, self.max_alpha,
+                                         intensity_mod=intensity_mod)
         core.update_rgba_texture(self.tex, self.packed)
 
     def draw(self, dst_x: int, dst_y: int, dst_w: int, dst_h: int) -> None:
