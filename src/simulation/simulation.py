@@ -88,7 +88,15 @@ from simulation.events import (  # noqa: F401 (ExplosionEvent: legacy re-export 
     DoorDestroyedEvent, ExplosionEvent, WallDestroyedEvent,
 )
 from simulation.door_system import build_runtime_entities, sweep_doors
+from simulation.entities.door import DOOR_OPEN
 from simulation.entities.serialize import entity_carrier
+from simulation.signal_bus import build_signal_bus
+from simulation.logic_nodes import (
+    aggregate_input, build_logic_nodes, sweep_logic_nodes,
+)
+from simulation.sensor_system import build_sensors, sample_sensors
+from simulation.pump_system import build_pumps, sweep_pumps
+from simulation.entities.schema import INPUT_HELD
 from simulation.gamemap import GameMap, MAT_DOOR, MAT_DOOR_CLOSED
 from simulation.movement import FootprintSamples, default_speed
 from simulation.orders import (
@@ -234,6 +242,23 @@ class Simulation:
         # `level.entities` and the 9e sweep is a single attribute check.
         self.entities, self._doors = build_runtime_entities(
             self.level, self.gmap)
+
+        # Arc B (impl doc §2): the SignalBus + the resolved wire drive tables.
+        # Built ONLY when the level declares wires (D1) — in B1 the union
+        # sensors∪nodes∪wires reduces to wires; a wire-free level carries NO
+        # bus, so `__signals__` stays empty and its digest is byte-identical to
+        # Arc A (the dormancy guarantee, §8). All logic in slot 9e gates on
+        # `self._signal_bus is not None`; the door STRUCTURAL sweep stays gated
+        # on `self._doors` independently (the split gate, D2).
+        self._signal_bus = build_signal_bus(self.level)
+        self._entity_by_ordinal = {}
+        self._door_drives = {}
+        self._logic_nodes = []
+        self._sensors = []
+        self._sensor_accessor = None
+        self._pumps = []
+        if self._signal_bus is not None:
+            self._build_logic_tables()
 
         # Weapon/ammo/payload tables (mechanics/03 §4, W1) — rebuilt from the
         # live CFG at every reset, exactly like GameMap rebuilds the material/
@@ -628,7 +653,8 @@ class Simulation:
             tick=self.tick,
             phase=self.phase,
             paused=self.paused,
-            entity_state=entity_carrier(self.entities),
+            entity_state=entity_carrier(self.entities,
+                                        signals=self._digest_signals()),
         )
 
     def door_at(self, fy: int, fx: int):
@@ -640,6 +666,94 @@ class Simulation:
             if d.contains(fy, fx):
                 return d
         return None
+
+    # ------------------------------------------------------------------
+    # Arc B logic layer (impl doc §2) — built only when the bus exists
+    # ------------------------------------------------------------------
+    def _build_logic_tables(self) -> None:
+        """Precompute the ordinal→entity map, the node evaluator list, and the
+        per-door wire drive table (impl doc §2b/§2d). Called from
+        ``_reset_internal`` iff a bus exists.
+
+        ``_logic_nodes`` is the ordinal-ordered node evaluator list for the
+        9e(b) sweep; building it also REPLACES each ``filter`` instance in
+        ``self.entities`` with its runtime wrapper (the EMA row, §5), so
+        ``_entity_by_ordinal`` is rebuilt AFTER. ``_door_drives`` maps a WIRED
+        door's ordinal to its open/close driving slot-index lists (from the
+        resolved ``level.wires``, D3): only doors with an incoming open/close
+        wire are wire-driven; every other door keeps its Arc-A ``want_open``
+        latch + the dev O-key."""
+        # Node evaluators (may patch self.entities with FilterRuntime wrappers).
+        self._logic_nodes = build_logic_nodes(self)
+        # Sensor runtimes + the §5a accessor (B3): ordinal-order samplers read
+        # at 9e(a). Built AFTER the node build (sensors are plain
+        # EntityInstances, never replaced) — the accessor's site index is
+        # frozen from the field sensors' resolved tiles.
+        self._sensors = build_sensors(self)
+        # Pump actuators (B4, §6): the 9e(d) N-feed sweep. Building it REPLACES
+        # each pump instance in self.entities with its PumpRuntime (the at_target
+        # latch row, §8), so _entity_by_ordinal is rebuilt AFTER, like the nodes.
+        self._pumps = build_pumps(self)
+        self._entity_by_ordinal = {int(e.ordinal): e for e in self.entities}
+        bus = self._signal_bus
+        door_ordinals = {int(d.ordinal) for d in self._doors}
+        drives: dict = {}
+        for w in (getattr(self.level, "wires", None) or []):
+            if w.target_ordinal not in door_ordinals:
+                continue                  # non-door targets: later patches
+            if w.input not in ("open", "close"):
+                continue
+            slot = bus.slot(w.source_ordinal, w.signal)
+            drives.setdefault(int(w.target_ordinal),
+                              {"open": [], "close": []})[w.input].append(slot)
+        self._door_drives = drives
+
+    def _signal_emit(self) -> None:
+        """9e(a): write every wired door's ``is_open`` (and every wired
+        entity's free ``alive``) into ``pub`` BEFORE the logic sweep, so
+        current-tick reads (require_alive / door.is_open→node, later) are not
+        a tick stale (D4). Sensor sampling joins here in B3."""
+        bus = self._signal_bus
+        for idx, (ordinal, name) in enumerate(bus.slots):
+            ent = self._entity_by_ordinal.get(ordinal)
+            if ent is None:
+                continue                  # dangling/destroyed emitter → leave 0
+            if name == "is_open":
+                bus.set_pub(idx, 1 if getattr(ent, "state", None) == DOOR_OPEN
+                            else 0)
+            elif name == "alive":
+                bus.set_pub(idx, 1 if getattr(ent, "alive", True) else 0)
+            # other names (sensor value / node out): later patches (B2/B3)
+
+    def _resolve_door_inputs(self) -> None:
+        """9e(c): for each door WITH incoming open/close wires, aggregate them
+        from ``pub`` (OR/held) and drive ``want_open`` — open active→1, close
+        active→0 with close priority (INPUT_PRIORITY, §2d), neither→retain the
+        latch. A door with NO open/close wire is skipped (keeps its Arc-A latch
+        + dev O-key, D3). Ordinal order (``self._doors`` is pre-sorted)."""
+        bus = self._signal_bus
+        for d in self._doors:
+            drv = self._door_drives.get(int(d.ordinal))
+            if drv is None:
+                continue                  # unwired door: Arc-A latch (D3)
+            # OR/held aggregation via the shared helper (§2d) — the same rule
+            # the node sweep uses, so the door input resolve is not a bespoke
+            # second implementation.
+            close_active = aggregate_input(bus, drv["close"], INPUT_HELD) != 0
+            open_active = aggregate_input(bus, drv["open"], INPUT_HELD) != 0
+            if close_active:              # close beats open (safe state)
+                d.want_open = False
+            elif open_active:
+                d.want_open = True
+            # else: neither driving → retain the current want_open latch
+
+    def _digest_signals(self) -> tuple:
+        """The ``__signals__`` payload for the digest/recorder: the bus's
+        non-``alive`` slot values, or ``()`` when no bus exists (the dormant
+        case — a wire-free level hashes exactly as Arc A, §8)."""
+        if self._signal_bus is None:
+            return ()
+        return self._signal_bus.digest_rows()
 
     def orders_for_phase(self, phase) -> dict:
         """Per-unit waypoint lists for the renderer's overlay.
@@ -917,24 +1031,46 @@ class Simulation:
             o2_threshold = float(getattr(fire_cfg, "o2_threshold", 0.60))
             apply_temperature_ignition(self.gmap, o2_threshold, ignition_seed)
 
-        # 9e. Entities — structural door sweep (v1: doors only; sensors/
-        # logic arrive with Arc B's SignalBus). Per door in ordinal order:
-        # reconcile external destruction (whole-door rule), then apply the
-        # synced want_open latch (blocked closes retry next tick). BEFORE
-        # the recorder snapshot, so recorder/digest see entity state
-        # consistent with this tick's flips (a6 doors design §5.1). NOT
-        # gated on physics_runner — flips are pure gamemap edits and tests
-        # run sim-without-physics; effects reach the solvers next tick via
-        # the step-6 restamp. Door-free levels: one attribute check.
+        # 9e. Entities — the SPLIT GATE (Arc B impl doc §2b, D2). Two
+        # independently-gated pieces:
+        #  · the door STRUCTURAL sweep runs on ANY door level (gated on
+        #    `self._doors`, unchanged from Arc A) — external-destruction
+        #    reconciliation + the synced want_open latch, ordinal order;
+        #  · the LOGIC block runs iff the SignalBus exists (wires present),
+        #    so a door-only wire-free level is byte-identical to Arc A (the
+        #    dormancy guarantee, §8).
+        # Sub-order per tick when the bus exists (§2b): (a) sample + emit —
+        # write every wired door's is_open (and wired entities' free alive)
+        # into pub BEFORE the logic sweep; (b) logic sweep — each node in
+        # ordinal order reads pub, writes stg[out] (B2); (c) input resolve —
+        # drive wired doors' want_open (OR/held, close-beats-open); (d) actuator
+        # sweep — pumps (N-feed edit, B4) then the door structural sweep; (e) swap
+        # pub[node-signals] ← stg (node outputs become readable next tick — one
+        # tick per hop, §2c). BEFORE the recorder snapshot so recorder/digest
+        # see state consistent with this tick's flips (a6 doors §5.1). NOT gated
+        # on physics_runner — flips are pure gamemap edits; effects reach the
+        # solvers next tick via the step-6 restamp.
+        if self._signal_bus is not None:
+            self._signal_emit()             # (a) is_open/alive → pub
+            if self._sensors:
+                sample_sensors(self)        # (a) sensors sample world → pub
+            if self._logic_nodes:
+                sweep_logic_nodes(self)     # (b) node sweep (ordinal order)
+            self._resolve_door_inputs()     # (c) drive wired doors' want_open
+            if self._pumps:
+                sweep_pumps(self)           # (d) pump N-feed edit — BEFORE doors
         if self._doors:
-            sweep_doors(self)
+            sweep_doors(self)               # (d) door structural sweep
+        if self._signal_bus is not None:
+            self._signal_bus.swap_node_signals()   # (e) pub[node-slots] ← stg
 
         # Recorder snapshot. A4: the entity list rides along (presence-gated
         # inside the recorder — an entity-free level's .npz is byte-identical).
         # A6: the SIM's runtime list (door rows live), not level.entities.
         if self.recorder is not None:
             self.recorder.record(self.gmap, self.tick, self.real_time,
-                                 self.units, entities=self.entities)
+                                 self.units, entities=self.entities,
+                                 signals=self._digest_signals())
 
         # Clear the per-tick `heat` deposit — END OF TICK, AFTER every heat
         # consumer (engine/06 §1.3/§6 step 7). `heat` is a per-tick deposit

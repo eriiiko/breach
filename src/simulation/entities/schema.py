@@ -82,10 +82,23 @@ ALL_KINDS = (KIND_INT, KIND_Q16, KIND_LENGTH_M, KIND_BOOL, KIND_STR,
 # Kinds the entities.toml tuning overlay may override — NUMBERS only.
 NUMERIC_KINDS = (KIND_INT, KIND_Q16, KIND_LENGTH_M, KIND_FLOAT_RENDER)
 
-# Input modes (design §4): *while-held* inputs OR across all driving wires;
-# *edge* inputs fire once per tick regardless of how many wires pulse them.
+# Input modes (design §4, extended by Arc B §2d). The first two are Arc A's
+# door vocabulary — their meaning is FROZEN (trigger-2 safe); B2 only ADDS two:
+# - INPUT_HELD  (=OR):     1 if ANY driving wire != 0 (while-held).
+# - INPUT_EDGE  (=fire-once): fires once on a 0->!=0 rise vs its own synced
+#                            prev row (reserved; no B2 node uses it).
+# - INPUT_AND   (new):     1 iff EVERY driving wire != 0 (empty => 0). Many-wire.
+# - INPUT_SINGLE (new):    the ONE driving wire's integer value verbatim;
+#                          arity == 1 (the §1b value-input arity check keys on
+#                          this being single-arity). Used by decider/filter/
+#                          gate_not `in`.
 INPUT_HELD = "held"
 INPUT_EDGE = "edge"
+INPUT_AND = "and"
+INPUT_SINGLE = "single"
+
+# The closed set of accepted input modes (the _validate_class mode guard).
+ALL_INPUT_MODES = (INPUT_HELD, INPUT_EDGE, INPUT_AND, INPUT_SINGLE)
 
 
 @dataclass(frozen=True)
@@ -115,9 +128,9 @@ class Signal:
 
 @dataclass(frozen=True)
 class InputDecl:
-    """One accepted input, marked while-held vs edge (design §4)."""
+    """One accepted input, marked with its aggregation mode (design §4/§2d)."""
     name: str
-    mode: str  # INPUT_HELD | INPUT_EDGE
+    mode: str  # one of ALL_INPUT_MODES
     doc: str = ""
 
 
@@ -168,6 +181,22 @@ class Entity(abc.ABC):
     # Physical by default (design §5); intangible classes never occupy the
     # grid. Per-instance override is the A3 loader's business.
     INTANGIBLE: bool = False
+    # Arc B §2a/§5: True for L0 LOGIC-NODE classes (decider / gate_* / filter)
+    # whose emitted signals are the prev-read/next-write NODE outputs — the
+    # SignalBus stages them at 9e(b) and SWAPS them into pub at 9e(e) (one tick
+    # per hop, §2c). A door's `is_open` / a sensor's `value` are NOT node
+    # outputs (refreshed every tick at 9e(a), never swapped) so those classes
+    # leave this False. build_signal_bus reads it to (i) count node instances
+    # toward the "logic exists" union and (ii) mark the swapped slots.
+    LOGIC_NODE: bool = False
+    # Arc B §4 (B3): True for SENSOR classes (the field sensors, `clock`,
+    # `sensor_motion`) whose free-standing `value` signal is SAMPLED from the
+    # world at 9e(a) and published to `pub` — NOT a node output (never swapped;
+    # refreshed every tick, and a DEAD sensor writes 0, fail-deadly, D13).
+    # build_signal_bus reads it to (i) count sensor instances toward the "logic
+    # exists" union (sensors ∪ nodes ∪ wires ≠ ∅, D1) and (ii) give each
+    # sensor's `value` a bus slot so 9e(a) can write it.
+    SENSOR: bool = False
 
     @classmethod
     def runtime_digest_rows(cls, entity) -> tuple:
@@ -334,10 +363,10 @@ def _validate_class(cls: type) -> None:
             raise EntitySchemaError(
                 f"entity class '{name}': INPUTS entries must be InputDecl, "
                 f"got {i!r}")
-        if i.mode not in (INPUT_HELD, INPUT_EDGE):
+        if i.mode not in ALL_INPUT_MODES:
             raise EntitySchemaError(
-                f"entity class '{name}' input '{i.name}': mode must be "
-                f"'{INPUT_HELD}' or '{INPUT_EDGE}', got {i.mode!r}")
+                f"entity class '{name}' input '{i.name}': mode must be one of "
+                f"{ALL_INPUT_MODES}, got {i.mode!r}")
         if i.name in input_names:
             raise EntitySchemaError(
                 f"entity class '{name}': duplicate input '{i.name}'")
@@ -369,6 +398,14 @@ def _validate_class(cls: type) -> None:
     if not isinstance(cls.INTANGIBLE, bool):
         raise EntitySchemaError(
             f"entity class '{name}': INTANGIBLE must be a bool")
+
+    if not isinstance(cls.LOGIC_NODE, bool):
+        raise EntitySchemaError(
+            f"entity class '{name}': LOGIC_NODE must be a bool")
+
+    if not isinstance(cls.SENSOR, bool):
+        raise EntitySchemaError(
+            f"entity class '{name}': SENSOR must be a bool")
 
 
 def register(cls=None, *, registry: dict = None):

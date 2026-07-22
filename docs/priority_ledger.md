@@ -123,14 +123,20 @@ physics. Big training runs wait for the S8 optimize-hard pass.
   `level_editor_v3_design_2026-07-18.md` view; both erratad as-built).
   **Arc A (entity foundation) DONE 2026-07-19** — A1–A9 merged to main,
   Erik blessed (doors v0 human-tested, A7 re-baseline blessed — and found
-  EMPTY of committed artifacts). Canon:
-  `architecture/engine/16_entity_system.md`; arc docs in `docs/archive/`.
-  Build order (Erik): **next = physics close-out (stack #1 — S8a spec
-  rewrite REQUIRED to carry the sensor-gather contract + the structural
-  dirty-set rider, see stack #1)** → **Arc B** (SignalBus dataflow logic,
-  sensors, pump, automatic airlock) → **Arc C** (editor UX panes, wand,
-  wiring, play-from-editor, icons). AI tilesets (levels-w1 P6) still
-  parked behind it. Arc riders on the books:
+  EMPTY of committed artifacts). **Arc B (logic layer) DONE 2026-07-22** —
+  B1–B7 merged to main, Erik blessed at the airlock HUMAN-TEST: SignalBus +
+  `[[wire]]` dotted format + split-gated slot-9e + node set
+  (decider/gates/filter) + v1 sensor catalog (§5a accessor stubbed to the
+  host mirror) + N-feed pump + the **bidirectional** automatic
+  airlock_controller (chamber pressure sensor + deciders — Erik's Option 2) +
+  cross-machine logic golden. Dormancy held (zero goldens re-baselined).
+  Canon: `architecture/engine/16_entity_system.md` §8; arc design records in
+  `docs/archive/` (incl. `arc_b_impl_2026-07-21.md`).
+  Build order (Erik): ~~physics close-out~~ ✅ → ~~Arc B~~ ✅ → **next =
+  Arc C** (editor UX panes, wand, wiring, play-from-editor, icons). AI
+  tilesets (levels-w1 P6) still parked behind it. Deferred Arc B rider: the
+  resident sensor-gather kernel (§5a interface frozen; was gated on S8c, now
+  buildable). Arc riders on the books:
   - baker `[art]`/`[bake]` writeback → `level_lib` client (A2 accepted
     gap; fold in at Arc C).
   - `bake_demo` stays legacy-form until its committed baked art rebakes

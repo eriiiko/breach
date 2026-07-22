@@ -7,7 +7,7 @@ structural carve-out door flips live in), 14 (determinism — digest/attestation
 sections join), 15 (level authoring — the format `[[entity]]` extends).
 
 **Status:** Arc A foundation ✅ (A1–A9 merged 2026-07-19, Erik blessed) · signals/sensors/logic
-📝 (Arc B, gated on the S8a spec rewrite) · editor UX 📝 (Arc C).
+✅ (Arc B, B1–B7 merged 2026-07-22, Erik blessed — §8) · editor UX 📝 (Arc C).
 
 > Canonized 2026-07-19 at Arc A close. The design record is
 > `docs/entity_system_design_2026-07-18.md` (LOCKED model, erratad as-built) +
@@ -196,20 +196,59 @@ The first real entity: class `door` (`entities/door.py` schema + span math,
 - **`boundary`** level field (`"space" | "ambient"`) — format + loader only; the
   semantics belong to the boundary-conditions physics project (ledger stack #1).
 
-## 8. Forward pointers (what builds on this)
+## 8. Signals, sensors & logic — Arc B (as-built)
 
-- **Physics close-out first** (priority ledger #1): the S8a residency spec rewrite MUST
-  include (a) the **sensor-gather contract** — sensor sample sites are static per level;
-  one compact gather-kernel D2H per tick, never per-tick full-field streaming (design doc
-  §7) — and (b) the **structural dirty-set rider** — once fields are GPU-resident,
-  `destroy_wall`/`seal_tiles`/`unseal_tiles` must push their touched-tile set
-  (`on_tile_changed` caches + gas ×7, atmosphere, wave_p, wind, flow, ripple, is_vacuum)
-  to the device before the next kernel reads (a5 doc §9).
-- **Arc B — logic:** SignalBus + the rest of slot 9e (sensors sample → logic sweep in id
-  order → inputs resolve → door sweep), the two-tick latency contract, the v1 sensor
-  catalog, the pump N-feed, the automatic airlock_controller, the cross-machine logic
-  golden. `__signals__` is already defined (empty); `is_open`/`open`/`close` are already
-  declared on the door class.
+The logic layer: dataflow over integer signals (never a scripting language). Design record
+archived at `docs/archive/arc_b_impl_2026-07-21.md` (v2, 3-lens critique folded — 14
+blockers; the resolution ledger is §0b there). B1–B7 merged 2026-07-22, Erik blessed
+(airlock HUMAN-TEST). All state here is synced Q16.16 integer, digest-gated, recorder-joined.
+
+- **SignalBus** (`src/simulation/signal_bus.py`): dense `pub`/`stg` int64 buffers over a
+  frozen `(ordinal, name)` slot table. Built **only** when `sensors ∪ nodes ∪ wires ≠ ∅`,
+  and enumerating **only** wire-referenced / sensor- / node-emitted signals — so an unwired
+  door contributes no slot and a logic-free level has **no bus** (the dormancy split, D1/D2).
+- **`[[wire]]` format** (`level_loader._parse_wires`, `level_lib.format_wire_lines`): a
+  first-class level object, dotted `from = "id.signal"` / `to = "id.input" | "tag:name.input"`
+  (Erik's call). Source-signal / target-input existence hard-errors; a dangling id warns +
+  drops; a unit reference hard-errors (§3e). Tag targets pre-expand per member in ordinal
+  order. Byte-stable round-trip (A2 client).
+- **Slot 9e (split-gated):** the door structural sweep stays `if self._doors`; the logic
+  block runs iff the bus exists. Order per tick — (a) sensors sample + `alive`/`is_open`
+  emit, (b) node sweep (ordinal order, prev-read `pub` / next-write `stg`), (c) actuator
+  input resolve, (d) pump + door sweeps, (e) node-signal swap. **Latency: 1 tick per node
+  hop; sensor → world effect = 2 ticks** (golden-locked, B6).
+- **Node set** (`entities/nodes.py` schema + `logic_nodes.py` runtime): `decider` (compare
+  + `require_alive`), `gate_and/or/not`, `filter` (integer EMA, `k` snapped once at load by
+  EXACT `Fraction`/`bit_length` — no float in the synced path). Input aggregation modes
+  `HELD(OR)`/`EDGE`/`AND`/`SINGLE`.
+- **Sensors** (`entities/sensors.py` + `sensor_system.py`, read through the §5a
+  `EntityFieldAccessor`): `pressure`/`smoke`/`water_depth`/`o2` (air-family) +
+  `temperature`/`fire` (solid-body family) + `clock` + `sensor_motion` (LOS, faction,
+  corner anchor). `o2` = `gas[O2]` density (no `p_O2` field exists). Dead sensor → 0
+  (fail-deadly). **§5a accessor is stubbed to the host mirror** — the `(n_sites ×
+  n_channels)` int32 gather-buffer interface is frozen (incl. a `solid` channel), but the
+  resident kernel is a **deferred follow-up** (was gated on S8c; now buildable — TODO).
+- **Pump** (`pump_system.py` + a new integer, per-slice, zero-clamped `GameMap.inject_gas_n`
+  / `extract_gas_n` — `FieldEdit`'s float+RNG gas path was unusable): N-feed, `ΔN` quantized
+  once at load with a `ΔN < 2·band` assert; inject at the standard mix, extract ∝
+  composition clamped ≥0 (exact N-conservation).
+- **Automatic `airlock_controller`** (`entities/actuators.py` + runtime): the acceptance
+  showcase — IDLE→CLOSING→EQUALIZE→OPEN_FAR→RESEAL→REPRESSURIZE + FAULT (breach-abort on a
+  door reading `alive==0`, D12). **Bidirectional (Erik's Option 2):** both legs gate on a
+  chamber **pressure sensor + two deciders** (`at_far`/`at_near`), the pump runs open-loop —
+  so REPRESSURIZE genuinely refills. Fixture `levels/airlock_demo` (5-tall corridor so a
+  3×3 marine has room — the fixed HUMAN-TEST bug). Manual open buttons = future "airlock v2",
+  gated on the control-scheme decision (`button`/terminal still inert).
+- **Digest/dormancy:** `__signals__` (SIGNAL_SECT_V1) populated from the bus; node/pump/
+  airlock runtime state joins `__entity__` via `runtime_digest_rows` (the door's rows
+  UNCHANGED — `is_open` rides `__signals__` only). A logic-free level is **byte-identical**
+  to Arc A; **zero existing goldens re-baselined**. Cross-machine logic golden (B6): a
+  sensor→filter→decider→door loop through the atmosphere solver, trajectory-hashed.
+
+## 9. Forward pointers (what builds on this)
+
+- **Resident sensor-gather kernel:** the §5a `(n_sites × n_channels)` int32 gather kernel on
+  the GPU-resident path (interface frozen in §8; was deferred behind S8c, now buildable).
 - **Arc C — editor UX:** registry-driven palette/inspector, transaction-log undo, the
   DOOR/wire/zone tools, play-from-editor, icons; plus riders — baker writeback onto
   level_lib, `MAT_DOOR_CLOSED`-outside-a-span validator warning, legacy-level migration
@@ -225,7 +264,10 @@ The first real entity: class `door` (`entities/door.py` schema + span math,
 - A1–A9 all merged to main 2026-07-19 (tranche 1 auto-merged on green per ruling 3;
   A6/A7 human-tested and blessed by Erik). Suite green throughout; zero pre-existing
   goldens regenerated (the A7 event's committed-artifact footprint was empty).
-- Doors have no drivers but the dev latch until Arc B; `button`/terminal classes are
+- **B1–B7 merged to main 2026-07-22** (Erik blessed at the airlock HUMAN-TEST). §8 as-built;
+  design record `docs/archive/arc_b_impl_2026-07-21.md`. Full suite green, zero goldens
+  re-baselined, dormancy byte-identical throughout. Doors now driven by real wires (the dev
+  O-key latch survives on unwired doors); `button`/terminal classes remain
   format-reserved and inert pending the control-scheme decision (interaction/cost-policy
   split — never bake AP/phase assumptions into entity code).
 - Open dials & warts: `physics.py:104` blast-tuple wart (steel/glass/furniture excluded

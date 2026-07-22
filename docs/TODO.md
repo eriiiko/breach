@@ -533,3 +533,16 @@ before those docs are archived. Source doc noted in parens._
 - **Save/load + `serialize()/deserialize()`** — nearly free given `get_state()`
   returns flat arrays; needed for replay buffers. (review_game_logic_migration.md
   #13; patch_game_logic_migration.md testing strategy)
+
+### Arc B follow-ups (entity logic layer)
+
+- **Manual airlock / "airlock v2"** (Erik, 2026-07-21 HUMAN-TEST) — manual OPEN
+  buttons on each side of both airlock doors, alongside the automatic
+  `airlock_controller`. Deferred: `button`/terminal are format-reserved but
+  INERT in v1 (entity design §3d) — they wake up only with the **control-scheme
+  decision** (WEGO → possible direct gamepad control), so manual operation is
+  gated on that arc, not Arc B. Slot after the control scheme lands.
+- **Resident sensor-gather kernel** — Arc B stubbed the §5a accessor to the host
+  mirror (no GPU gather kernel, per the S8c-concurrency constraint). Build the
+  `(n_sites × n_channels)` int32 gather kernel on the resident path once S8c has
+  landed; the accessor interface is already frozen (cuda_s8a spec §5a).
