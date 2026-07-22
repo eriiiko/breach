@@ -18,6 +18,58 @@
   plus whatever mission 1 teaches. Quick residual: 30 s look at the W6 jet
   fans + 3D marines rendered together (never exercised in one window).
 
+
+## Open threads — cross-arc index (2026-07-22, "don't forget")
+
+One place to see every loose end left by the recent burst of simultaneous
+patches (Arc B, W6, Fire & Heat, S8c, animation). Each points to where the real
+detail lives; this list is the map, not the territory.
+
+**The big fork that gates other things:**
+- **Control-scheme decision** — WEGO vs direct gamepad control (one marine).
+  Gates: unit-initiated interactions (`button`/terminal are inert until then),
+  the **manual airlock buttons** below, and any AP/phase assumptions. Nothing
+  new should bake in AP/phase until this is decided. (Entity design §3d.)
+
+**Arc B (entity logic layer — DONE + merged 2026-07-22), its two parked riders:**
+- **Resident sensor-gather kernel** — the §5a `(n_sites × n_channels)` int32 GPU
+  gather buffer. Arc B stubbed the accessor to the CPU mirror; interface is
+  FROZEN, only the GPU impl is missing. Belongs to the **S8 / CUDA-residency
+  line** (throughput for batched training — nothing broken without it). **Now
+  unblocked** (S8c landed). ↓ "Arc B follow-ups".
+- **Manual airlock buttons ("airlock v2")** — gated on the control-scheme fork
+  above. ↓ "Arc B follow-ups".
+
+**Weapons (W6 — merged):**
+- **Armory tuning session** — deferred until weapons→units→enemies→mission 1
+  exist, then tune against real encounters. ↑ "Waiting on Erik".
+
+**Fire & Heat (active arc, NOT a loose end — living plan
+`docs/plan-for-tuning-and-graphics.md`):**
+- Fire B1 blackbody lights shipped; **Fire B2 smoke-honesty** in flight
+  (`fire_b2_smoke_honesty_design_2026-07-21.md`). Fire *tuning* — "burns too
+  easily" + the fire→pressure link — is on that plan. (Tracked there; listed
+  here only so it isn't mistaken for forgotten.)
+
+**S8c (fire-heat batch — item 1 merged):**
+- **Items 2 & 3 DEFERRED** (accepted gaps): render CUDA-GL interop + recorder
+  kernels. Part of the S8-optimize line. (`s8c_items_2_3_deferred_2026-07-21.md`.)
+
+**Physics riders on the books (ledger stack #1):**
+- **Blast-pressure-threshold material column** — direction decided 2026-07-19;
+  impl + tuning is a chat-sized HUMAN-TEST rider (`physics.py:104` blast-tuple
+  wart retires here). · **Dust-stirring shockwaves** — dusty-ground flag +
+  wave_p threshold → smoke injection. · **Post-EOS doc consolidation.**
+
+**Animation track:** the weapon/grenade + shockwave-push question (just folded
+from TODO2.md) + the appearance/skin-pipeline items — all ↓ "Animation".
+
+**Housekeeping:**
+- The `.claude/worktrees/arc-b-logic` directory lingers on disk (Windows
+  file-lock after the arc merge); git is clean — `Remove-Item -Recurse -Force`
+  it after a reboot.
+
+
 ## Animation / character-render track (3D marines shipped 2026-07-21)
 
 **Shipped (arc `anim-phase0-3d-marines`, merged 2026-07-21):** render-only 3D
@@ -41,6 +93,17 @@ All render-only — no sim/determinism surface, auto-skipped in headless trainin
   **dedicated zombie skin**. So: turning = animation swap (+ optional blood),
   NOT a skin swap; pre-placed = special skin. (The current green/red tint is
   fine for now.)
+- **Weapon & grenade animations + shockwave-push behaviour** (Erik, folded from
+  TODO2.md 2026-07-22) — marines should **carry at least one visible weapon**,
+  plus a **throw-grenade** animation. Open question: what should a marine do
+  when **pushed by a shockwave** (they already get pushed today) — maybe
+  *hunker down* a little on a small push; on a big push, unclear. **Meta-
+  principle (Erik, load-bearing for this whole track):** the **ML path is the
+  priority** — he has no ambition to be an old-school animator, and much
+  hand-authored prep may be *thrown out* once ML drives motion. So weigh every
+  animation task by "will ML redo this?" — use the right tool for the job, do
+  the minimum that reads well now, and stay open to letting the ML track own
+  reactive motion (push/stagger/limp) rather than scripting it.
 
 - **Retire the M toggle + sprite path** (Erik, 2026-07-21) — make the 3D marines
   the **default and only** unit render; drop the old 2D sprite fallback (the
