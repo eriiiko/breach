@@ -30,6 +30,41 @@ detail lives; this list is the map, not the territory.
   Gates: unit-initiated interactions (`button`/terminal are inert until then),
   the **manual airlock buttons** below, and any AP/phase assumptions. Nothing
   new should bake in AP/phase until this is decided. (Entity design §3d.)
+  **Update 2026-07-23:** resolved into the *modularity* split (both schemes
+  coexist) — design `docs/control_modularity_design_2026-07-22.md`. P1 (Ruleset
+  extraction) + P2 (ControlSource seam + `--control` flag) **merged to main**,
+  WEGO byte-identical. P3 (action variant: `ContinuousRealtime` + gamepad direct
+  control) built on branch `control-modularity`, **unmerged**, human-tested once.
+  See the parked action-variant items below.
+
+**Modular control — action variant (parked, LEAST-URGENT track, 2026-07-23):**
+Erik's calls after the first controller human-test. This whole track runs in
+parallel with graphics/level-editor and blocks nothing (WEGO untouched; the door
+issue is latent for WEGO). Resume on Erik's signal.
+- **Free-aim directional shooting — OWN SESSION, design-first.** WEGO only ever
+  had *targeted* fire (order unit → enemy/tile); the action variant needs
+  face-a-direction-and-shoot. Many weapons coming → design it properly, don't
+  patch. P3's `_aim_fire_order` (fabricated targeted Order along facing) is the
+  band-aid to REPLACE. Until then the action variant's "shoot" verb is a no-op,
+  so P3 is not a complete/mergeable slice.
+- **Door ↔ unit occupancy — ENGINE-level fix, rule A+B (decided).** A unit under
+  direct control can park its footprint in a door and get stuck (WEGO's A* never
+  stops on a door, so latent there). Layer verdict: engine — `is_passable_block`
+  is shared by A* and the direct-move branch, so one fix serves both schemes. **Rule
+  A:** a door may not close onto an occupying unit (stays/re-opens/close blocked).
+  **Rule B:** collision never permanently traps an already-placed unit (a unit
+  whose current footprint is blocked may always move toward a less-blocked cell).
+  Do NOT band-aid this in `_step_move_dir` only. Feel-adjacent → HUMAN-TEST gate.
+- **Action-variant crash** — reproduced by Erik during human-test, no traceback
+  captured; root cause unknown (possibly the shooting path under continuous time,
+  or a direct-intent edge case). Get a headless repro or Erik's terminal
+  traceback next time the branch is opened.
+- **Grenade button mapping** — grenade came out on the wrong physical button;
+  pure `GamepadDirect` hardware map, Erik to specify desired button.
+- **P4 keyboard+mouse direct variant** — deferred; feel-adjacent (never
+  auto-merge) and untestable while Erik has no mouse.
+- Parked worktree: `.claude/worktrees/control-modularity` (holds P3 + a copied
+  `cpp/build`). Local `main` unpushed (~10 ahead, carries arc-c + B2 + P1/P2).
 
 **Arc B (entity logic layer — DONE + merged 2026-07-22), its two parked riders:**
 - **Resident sensor-gather kernel** — the §5a `(n_sites × n_channels)` int32 GPU
