@@ -796,7 +796,7 @@ def auto_fire(gmap, units, u, tick, shots, real_time, rng, events=None,
 def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
                tick, shots, real_time, rng, events=None, *,
                weapon=None, ammo=None, spread_deg=None, bullets=None,
-               queue=None):
+               queue=None, aim_angle=None):
     """Fire a burst of PROJECTILE rounds from (fx1, fy1) toward (fx2, fy2).
 
     Lifted from ``game.py:_fire_burst``; W2 generalizes the march to the
@@ -832,14 +832,24 @@ def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
     # versions; a ULP can flip a grazing hit cross-machine). math.radians and
     # rng.uniform stay: pure IEEE arithmetic + the seeded Generator's fixed
     # bit-stream, already cross-machine exact.
-    base_angle = unit_fixed.atan2_rad(fy2 - fy1, fx2 - fx1)
-
-    # W2 (mechanics/06 §5): firing SETS the shooter's facing to the aim
-    # bearing (before spread) — through the kit, in the unit facing
-    # convention (y up: the dy negation, unit.face_towards). Facing is
-    # already-synced state derived from synced inputs; the digest surface is
-    # unchanged.
-    shooter.facing = unit_fixed.atan2_rad(-(fy2 - fy1), fx2 - fx1)
+    #
+    # FREE-AIM SEAM (free_aim_shooting_design §4a): ``aim_angle`` is an
+    # optional Q16.16-exact bearing in the MARCH convention (screen y-down,
+    # exactly this function's ``base_angle``). ``None`` = derive from the
+    # tile target verbatim (the WEGO/targeted path -> byte-identical goldens);
+    # provided = march straight from it (no tile round-trip). When provided,
+    # ``shooter.facing`` was already set to this bearing by the AIM intent, so
+    # it is left untouched (no re-derivation, no risk to the hashed field).
+    if aim_angle is None:
+        base_angle = unit_fixed.atan2_rad(fy2 - fy1, fx2 - fx1)
+        # W2 (mechanics/06 §5): firing SETS the shooter's facing to the aim
+        # bearing (before spread) — through the kit, in the unit facing
+        # convention (y up: the dy negation, unit.face_towards). Facing is
+        # already-synced state derived from synced inputs; the digest surface
+        # is unchanged.
+        shooter.facing = unit_fixed.atan2_rad(-(fy2 - fy1), fx2 - fx1)
+    else:
+        base_angle = float(aim_angle)
 
     shooter_id = getattr(shooter, "id", -1)
 
@@ -872,7 +882,7 @@ BEAM_MIN_ENERGY_Q16 = unit_fixed.quantize_scalar(0.01)
 
 def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
               tick, shots, real_time, rng, events=None, *,
-              weapon, ammo=None, spread_deg=None):
+              weapon, ammo=None, spread_deg=None, aim_angle=None):
     """Fire a HITSCAN beam from (fx1, fy1) toward (fx2, fy2) — physically
     instant: the full-range march happens in the firing tick (photons don't
     persist; mechanics/03 §2).
@@ -917,9 +927,16 @@ def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
     if spread_deg is None:
         spread_deg = weapon.spread_deg
     cone = math.radians(spread_deg)
-    base_angle = unit_fixed.atan2_rad(fy2 - fy1, fx2 - fx1)
-    # Facing = aim bearing at fire, before spread (the fire_burst rule).
-    shooter.facing = unit_fixed.atan2_rad(-(fy2 - fy1), fx2 - fx1)
+    # FREE-AIM SEAM (free_aim_shooting_design §4a): see fire_burst — aim_angle
+    # is the march-convention (screen y-down) bearing; None = tile-derived
+    # verbatim (byte-identical WEGO), provided = march straight from it (facing
+    # already set by the AIM intent, so left untouched).
+    if aim_angle is None:
+        base_angle = unit_fixed.atan2_rad(fy2 - fy1, fx2 - fx1)
+        # Facing = aim bearing at fire, before spread (the fire_burst rule).
+        shooter.facing = unit_fixed.atan2_rad(-(fy2 - fy1), fx2 - fx1)
+    else:
+        base_angle = float(aim_angle)
     shooter_id = getattr(shooter, "id", -1)
     h, w = gmap.material.shape
     # Per-gas Q16.16 absorption (once-at-build constants; plain ints).
@@ -1029,7 +1046,7 @@ _SRC_SPRAY_GAS = 6
 
 
 def spray_cone_tiles(gmap, ay, ax, target_fx, target_fy, range_tiles,
-                     cone_half_angle_degrees, exclude=()):
+                     cone_half_angle_degrees, exclude=(), aim_angle=None):
     """Yield ``(y, x, falloff_div)`` for every tile of an aimed spray cone,
     in FIXED ROW-MAJOR order (mechanics/03 §5, W4).
 
@@ -1075,7 +1092,17 @@ def spray_cone_tiles(gmap, ay, ax, target_fx, target_fy, range_tiles,
 
     # Aim bearing + unit vector through the kit; the exact n/65536 doubles
     # scale to Q16.16 ints losslessly (quantize of an exact n/65536 is n).
-    angle = unit_fixed.atan2_rad(float(target_fy) - ay, float(target_fx) - ax)
+    #
+    # FREE-AIM SEAM (free_aim_shooting_design §4c): ``aim_angle`` (march
+    # convention, screen y-down — the same frame this atan2 produces) overrides
+    # the target-tile-derived bearing. ``None`` = tile-derived verbatim (the
+    # WEGO spray path -> byte-identical). Provided = the free-aim shooter.facing
+    # bearing; no target tile is consulted for the cone geometry.
+    if aim_angle is None:
+        angle = unit_fixed.atan2_rad(
+            float(target_fy) - ay, float(target_fx) - ax)
+    else:
+        angle = float(aim_angle)
     cos_q = unit_fixed.quantize_scalar(unit_fixed.cos_rad(angle))
     sin_q = unit_fixed.quantize_scalar(unit_fixed.sin_rad(angle))
     # Cone cosine through the kit (math.radians is pure arithmetic; the cos
