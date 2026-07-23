@@ -8,7 +8,7 @@ Prompted by the first P3 controller human-test (2026-07-23): under direct
 gamepad control the possessed marine could move and aim but **could not shoot**.
 This doc is the action-variant firing model. WEGO's *targeted* fire is not
 touched — the whole point of the modularity split
-(`docs/control_modularity_design_2026-07-22.md`) is that the two schemes coexist.
+(`docs/archive/control_modularity_design_2026-07-22.md`) is that the two schemes coexist.
 
 ---
 

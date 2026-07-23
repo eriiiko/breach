@@ -5,11 +5,12 @@
 This chapter defines how time advances in Breach and how a player drives it. It
 covers the round/phase clock, the planning-then-execution rhythm, the
 real-time-with-pause execution model, order placement and undo, and the path
-from a mouse click to a queued order. It also lays out the longer-term direction:
+from a mouse click to a queued order. It also lays out the realised direction:
 the deterministic `Simulation` is an **engine**, and a *game* is a turn structure
-plus an input scheme layered on top of it — so the same engine can host both the
-tactical two-phase game shipping today and a real-time single-character action
-game tomorrow.
+plus an input scheme layered on top of it — so the same engine hosts both the
+tactical two-phase game and a real-time single-character action variant, chosen
+at construction. Both are shipped: as of 2026-07-23 the turn structure is a
+swappable `Ruleset` and the input scheme a swappable `ControlSource`.
 
 The contract this chapter builds on is the one defined in the state chapter:
 `Simulation` owns the world (units, orders, projectiles, RNG, the turn clock) and
@@ -32,14 +33,14 @@ The tick is organised into a fixed hierarchy:
 
 | Unit | Config key | Default | Meaning |
 |---|---|---|---|
-| Tick | `clock.ticks_per_second` | 12 Hz | The atomic simulation step (83.3 ms of game time). |
-| Phase | `clock.phase_duration_seconds` | 5.0 s | A planning sub-unit. `ticks_per_phase = 60` (derived). |
-| Round | `clock.phases_per_round` | 2 | A full turn. `ticks_per_round = 120` (derived). |
+| Tick | `clock.ticks_per_second` | 24 Hz | The atomic simulation step (41.7 ms of game time). |
+| Phase | `clock.phase_duration_seconds` | 5.0 s | A planning sub-unit. `ticks_per_phase = 120` (derived). |
+| Round | `clock.phases_per_round` | 2 | A full turn. `ticks_per_round = 240` (derived). |
 | AP | `clock.ap_per_phase` | 2 | Action points each unit gets per phase, for AP-costed orders. |
 
 `ticks_per_phase` and `ticks_per_round` are computed once at config load
 (`config.py`) and cached on the `Simulation` at construction so a `reset()` never
-re-reads `CFG`. The defaults give a round of **2 phases x 60 ticks = 120 ticks =
+re-reads `CFG`. The defaults give a round of **2 phases x 120 ticks = 240 ticks =
 10 seconds** of game time.
 
 ### Why ticks, not seconds
@@ -62,10 +63,14 @@ Three properties fall out of a pure tick clock, and all three matter:
 
 ## The two-phase round
 
-The shipping game is tactical and turn-structured. A round runs in two states:
+The default game is tactical and turn-structured. This turn structure is now one
+**ruleset** — `TwoPhaseWEGO` (`src/simulation/ruleset.py`), the strategy object the
+`Simulation` defers to for round clock, AP, and terminal condition (see *Direction*
+below). It ships as the default; the action variant `ContinuousRealtime` is its
+sibling. What follows describes `TwoPhaseWEGO`. A round runs in two states:
 
 ```
-PLANNING  --(Space)-->  EXECUTING  --(120 ticks elapsed)-->  PLANNING (next round)
+PLANNING  --(Space)-->  EXECUTING  --(240 ticks elapsed)-->  PLANNING (next round)
 ```
 
 **Planning.** The simulation is paused (`tick` frozen). The player assigns orders
@@ -79,11 +84,11 @@ targeted phase's AP pool.
 through **both phases smoothly in one continuous run** — Phase 1 then Phase 2,
 like a movie. There is no forced stop at the phase boundary. The phase split is a
 *planning aid* for the player (two windows to think about), not a simulation
-interruption. At the end of the round (tick 120) the simulation auto-pauses and
+interruption. At the end of the round (tick 240) the simulation auto-pauses and
 returns to planning for the next round.
 
 This is the key design choice and it is worth stating plainly: **the phase
-boundary is a mental model, not a halt.** The simulation crosses tick 60 without
+boundary is a mental model, not a halt.** The simulation crosses tick 120 without
 pausing, fires the between-phases door explosives, advances the phase counter, and
 keeps going. Earlier designs paused at the phase boundary; the shipped engine does
 not, because a continuous 10-second execution reads better and keeps the
@@ -123,7 +128,7 @@ renderer's effect queue. See the events module for the dataclasses.
 
 ### End of round
 
-At tick 120 the round tears down (`_end_round`): marines killed by zombies convert
+At tick 240 the round tears down (`_end_round`): marines killed by zombies convert
 to the zombie team, float positions snap to integer tiles, orders clear, AP
 refills to `ap_per_phase` for both phases, undetonated long-fuse projectiles carry
 over, the obstacle grid resets to walls-only (so dead bodies stop blocking
@@ -147,10 +152,10 @@ resumes. There are exactly three ways pause is entered or left:
 | Trigger | Who | Effect |
 |---|---|---|
 | Spacebar | player (input handler) | Toggle pause at any moment during execution. |
-| End of round (tick 120) | simulation | Auto-pause; return to planning. |
+| End of round (tick 240) | simulation | Auto-pause; return to planning. |
 | Game construction / `reset()` | simulation | Starts paused — the player plans first. |
 
-The phase boundary (tick 60) deliberately does **not** auto-pause in the shipped
+The phase boundary (tick 120) deliberately does **not** auto-pause in the shipped
 build; the round runs straight through.
 
 **AI ignores pause entirely.** A training rollout never calls `set_paused`, so
@@ -261,8 +266,10 @@ planned end of Phase 1 for Phase 2).
 
 ## Input and control
 
-Input is a thin presentation layer (`src/input_handler.py`) that translates pyray
-polling into `apply_action` / `set_paused` / `undo_last_order` calls. It owns only
+Input is a thin presentation layer (`WEGOPlanningInput` in `src/input_handler.py` —
+the former `InputHandler`, renamed when the `ControlSource` family landed; the old
+name is kept as an alias) that translates pyray polling into `apply_action` /
+`set_paused` / `undo_last_order` calls. It owns only
 UI state — the selected unit, the current order-placement mode, the grenade fuse,
 the detonation slot, and the per-unit planning phase — and never tells the
 simulation about any of it. Keeping input out of the renderer keeps the renderer
@@ -302,42 +309,70 @@ debug toggle.
 The two-phase round and the click-to-plan input scheme described above are **one
 game**, not the engine. The engine is the deterministic `Simulation` and its
 `apply_action` / `step` / `get_state` contract. A *game* is two things layered on
-that contract:
+that contract, and as of 2026-07-23 **both are pluggable strategy objects**, not
+baked-in logic:
 
 - A **ruleset** — the turn structure. How long is a round? Are there phases? When
-  do orders resolve? When does control return to the player? The two-phase round
-  is one ruleset.
-- A **control mode** — the input scheme. How does intent become orders? Plan a
-  whole round up front, pause-anytime real-time, or drive a single character
-  directly? The click-to-plan handler is one control mode.
+  do orders resolve? When does control return to the player? This is now a
+  `Ruleset` strategy object (`src/simulation/ruleset.py`) that the `Simulation`
+  owns and defers to, chosen at construction.
+- A **control source** — the input scheme. How does intent become orders or
+  intents? Plan a whole round up front, or drive a single character directly? This
+  is now a `ControlSource` (`src/control_source.py`), a sibling of the facade
+  selected at startup.
 
-The intent is that **multiple games run on one engine** by swapping these two
-pieces. The same physics, the same world state, the same tick loop can host:
+**The `Ruleset` object.** `Simulation` holds one `Ruleset` and calls it at the
+seams that used to be hard-coded: `on_round_start(sim)` / `on_tick_end(sim)` for
+clock and phase bookkeeping, `validate_and_cost(sim, unit, order)` / `refund(sim,
+unit, order)` for order admission and undo, and `is_terminal(sim)` for the end
+condition. Two implementations ship:
 
-- the tactical, two-phase, multi-unit game shipping today;
-- a real-time single-character action game (one controlled unit, no phases, input
-  maps to per-tick orders, no planning pause);
-- intermediate schemes — manual-pause-anytime real-time, free real-time with no
-  pause at all.
+- **`TwoPhaseWEGO`** — the shipped two-phase behavior, extracted verbatim: the
+  round clock head/tail, per-phase AP check-and-spend, the `_end_round` teardown,
+  and the round-complete terminal. It is byte-identical to the pre-refactor engine
+  (the digest and golden gates never moved).
+- **`ContinuousRealtime`** — the action variant. No phases, no AP
+  (`validate_and_cost` checks only *alive + physical preconditions*), no auto-pause,
+  no round teardown and no tick-rewind. Zombie conversion is death-triggered — it
+  runs each tick and is idempotent, rather than being swept up at an end-of-round
+  boundary that no longer exists. `is_terminal` fires when one team is eliminated.
+  On corpses: in the current soft-body stamp engine dead units block nothing and
+  only walls hard-block, so `ContinuousRealtime` simply omits the WEGO
+  end-of-round obstacle reset — no regression, because there is nothing to reset.
 
-Today the engine already has the hooks this needs. `step()` is structure-agnostic:
-it advances one tick regardless of who queued the orders or why. Pause is just
-"skip `step()`," so a control mode that never pauses is already expressible (it is
-exactly what the AI path does). Orders are plain data validated at one chokepoint,
-so a different control mode that emits orders at a different cadence needs no
-engine change. What is **not** yet abstracted is the round/phase logic itself: the
-two-phase clock, the auto-pause at round end, and the phase-tagged AP pools are
-currently baked into `Simulation.step` and `_end_round` rather than living behind a
-pluggable `Ruleset`. Factoring those out — so the turn structure is a strategy
-object the `Simulation` defers to, and the control mode is a sibling of
-`InputHandler` chosen at startup — is the planned path to running several games on
-one engine.
+**The `ControlSource` family.** `main.py` selects one by a `--control` flag
+(default `wego`; values `wego` | `gamepad`) through `create_control_source(name)`:
 
-The boundary to preserve while doing this: **the ruleset and control mode live
-above or beside the facade, never inside the field state.** World state stays
-arrays plus a material table; `step()` stays a single-tick advance; determinism
-and headless rollouts must survive any control mode, because training is itself
-just a control mode that never pauses.
+- **`WEGOPlanningInput`** — the old `InputHandler`, renamed (alias kept), behavior
+  unchanged: click-to-plan a whole round while paused.
+- **`GamepadDirect`** (`src/control_gamepad.py`) — possesses the first team-0 unit,
+  polls the pyray raylib gamepad, and emits **per-tick intents**. It selects
+  `ContinuousRealtime` and starts unpaused. Stick floats are quantized to
+  fixed-point *at the control seam* (`quantize_stick_direction`) so only
+  fixed-point ever crosses into the sim — the determinism law holds at the input
+  boundary, not by trusting the driver.
+
+**Per-tick intents** (`src/simulation/intents.py`) are the action-variant's order
+analog: they are consumed the tick they are issued (WEGO keeps its queued
+tile-orders untouched). The set is `MOVE_DIR` (a Q16.16 unit-vector direction +
+speed_mode), `AIM` (a Q16.16 direction → `Unit.facing` via the integer atan2 kit),
+`TRIGGER` (held), `THROW` (direction + fuse), and `USE` (edge-triggered). They are
+consumed in `Simulation._consume_direct_intents`; `MOVE_DIR` drives a new
+`_step_move_dir` branch that reuses `is_passable_block` + the mobility table — the
+same predicates A* uses for planned movement. The whole path is **dormant under
+WEGO**: with no possessed units, `_consume_direct_intents` short-circuits.
+
+Free-aim directional shooting rides on top of this (details in
+mechanics/03 §"Directional (free-aim) fire"): a possessed unit's held `TRIGGER`
+fires along its `facing`, pure free-aim, hitting the first thing the march
+actually crosses.
+
+The boundary this preserves: **the ruleset and control source live above or beside
+the facade, never inside the field state.** World state stays arrays plus a
+material table; `step()` stays a single-tick advance; determinism and headless
+rollouts survive any control mode, because training is itself just a control source
+that never pauses — and the `ControlSource` base plus `create_control_source`
+factory is where an AI-driving source will slot in.
 
 ---
 
@@ -346,13 +381,13 @@ just a control mode that never pauses.
 **Built and shipping:**
 
 - The full tick / phase / round clock, derived from config
-  (`ticks_per_second` 12, `phases_per_round` 2, `phase_duration_seconds` 5.0 →
-  60 ticks/phase, 120 ticks/round), cached on the `Simulation`.
+  (`ticks_per_second` 24, `phases_per_round` 2, `phase_duration_seconds` 5.0 →
+  120 ticks/phase, 240 ticks/round), cached on the `Simulation`.
 - The planning → executing → planning round flow, with the fixed execution tick
   order exactly as listed, in `Simulation.step`.
 - **Continuous two-phase execution**: the round plays through both phases without
   pausing at the phase boundary; the phase counter advances and
-  DET_BETWEEN_PHASES explosives fire at tick 60, DET_START_PHASE1 at tick 0,
+  DET_BETWEEN_PHASES explosives fire at tick 120, DET_START_PHASE1 at tick 0,
   DET_END_PHASE2 at round end.
 - Real-time-with-pause via `set_paused` / `is_paused` (pause = `main.py` skips
   `step()`), the `main.py` real-time accumulator with catch-up cap, and auto-pause
@@ -364,8 +399,27 @@ just a control mode that never pauses.
   interpolation across both phases) and `_update_player_movement`;
   `orders_for_phase` for the overlay. Movement-speed variety across the three move
   modes is wired through `_ticks_per_tile`.
-- The `InputHandler` with the full binding set above, per-unit planning phase,
-  pause-gated order placement, and Ctrl+R config reload (F5 left to the renderer).
+- The `WEGOPlanningInput` control source (formerly `InputHandler`, alias kept)
+  with the full binding set above, per-unit planning phase, pause-gated order
+  placement, and Ctrl+R config reload (F5 left to the renderer).
+- **The ruleset / control-source abstraction** (2026-07-23, human-tested and
+  blessed; WEGO byte-identical): the `Ruleset` strategy object owned by
+  `Simulation` (`TwoPhaseWEGO` = the shipped behavior extracted verbatim;
+  `ContinuousRealtime` = the action variant, no phases/AP/auto-pause/teardown,
+  death-triggered zombie conversion, one-team-eliminated terminal), and the
+  `ControlSource` family (`src/control_source.py`) selected by `main.py`'s
+  `--control` flag via `create_control_source` — `WEGOPlanningInput` (default) and
+  `GamepadDirect` (`src/control_gamepad.py`, possesses the first team-0 unit, polls
+  the raylib gamepad, selects `ContinuousRealtime`, starts unpaused).
+- **Per-tick intents** (`src/simulation/intents.py`): `MOVE_DIR` / `AIM` /
+  `TRIGGER` / `THROW` / `USE`, consumed the tick issued in
+  `Simulation._consume_direct_intents`; `MOVE_DIR` drives `_step_move_dir` off the
+  same `is_passable_block` + mobility table A* uses. Stick floats quantized at the
+  control seam (`quantize_stick_direction`) — fixed-point only into the sim.
+  Dormant under WEGO (no possessed units).
+- **Free-aim directional shooting** (mechanics/03 §"Directional (free-aim) fire"):
+  a possessed unit's held `TRIGGER` fires along `facing`, pure free-aim, hitting
+  the first thing the march crosses; targeted (WEGO) fire is byte-identical.
 - `tick_events` as the per-tick sim→renderer signal channel, cleared each step and
   consumed by the renderer.
 - AI-rollout scaffolding present: `reset`, `is_terminal` (round complete or a side
@@ -373,12 +427,6 @@ just a control mode that never pauses.
 
 **Designed but not yet built:**
 
-- **The ruleset / control-mode abstraction.** The two-phase clock, round-end
-  auto-pause, and phase-tagged AP are hard-coded in `Simulation.step` /
-  `_end_round`, not behind a pluggable `Ruleset`. There is no second control mode
-  (real-time single-character, manual-pause-anytime) and no `ControlMode` base
-  class — `InputHandler` is the only input scheme. Running multiple games on one
-  engine is direction, not code.
 - **`get_legal_actions`** returns `[]` — a stub. Legality today is "did
   `apply_action` return `True`?". The full per-(mode × phase × tile) enumeration
   the AI contract wants is not implemented.
@@ -387,6 +435,24 @@ just a control mode that never pauses.
   whenever paused) but its interaction with in-flight projectiles and
   partially-walked paths is unspecified; the shipped flow is plan-whole-round then
   run.
+
+**Deferred — action-variant follow-ups (designed direction, not built):**
+
+- **Flamer / spray "held continuous stream" feel.** The spray archetype fires a
+  fixed burst with aim latched for its duration; under direct control you cannot
+  re-aim mid-burst. Intended feel is a continuous stream held as long as ammo
+  lasts and swept freely. Its own session (see `docs/TODO.md`).
+- **The keyboard + mouse direct control variant** (the P4 source): only
+  `GamepadDirect` exists today on the direct side; a mouse-aim + WASD `ControlSource`
+  is designed but unbuilt.
+- **Grenade button remap** on the gamepad and a dedicated `USE`-button interaction
+  pass are polish items on the action variant.
+- **The door ↔ unit occupancy engine-fix (rule A + B).** Continuous control makes
+  the "dead units block nothing / only walls hard-block" simplification more
+  visible; a proper occupancy model for doors-vs-units is future engine work.
+- **Melee / block / parry / grab + a stamina system.** The action-combat verbs
+  Erik sketched in the *Second Thoughts* note below remain deferred future work
+  with their own arc — see the editor's resolution note there.
 
 **Gaps and known issues:**
 
@@ -414,6 +480,21 @@ just a control mode that never pauses.
 
 
 
+
+> **Editor's resolution note (2026-07-24).** The *modular-control* direction Erik
+> reaches for in the note below is now built and shipped. The control scheme became
+> modular exactly as he hoped: the swappable `Ruleset` + `ControlSource` split
+> (P1–P3) plus free-aim directional shooting merged to `main` on 2026-07-23,
+> human-tested and blessed ("i felt joy shooting zombies"), WEGO byte-identical
+> throughout — see the as-built *Direction: engine vs. game* section above and the
+> archived design docs (`docs/archive/control_modularity_design_2026-07-22.md`,
+> `docs/archive/free_aim_shooting_design_2026-07-23.md`). The v0.1 "just control one
+> character with a gamepad, move on the left stick, aim on the right, shoot on the
+> triggers" idea is the shipped `GamepadDirect` + `ContinuousRealtime`. What remains
+> **deferred** is the *action-combat verb set* — melee / block / parry / grab and a
+> stamina system (the Rooms-of-Many-Rooms delayed-stamina idea) — which stays future
+> work with its own arc (listed under *Deferred* above). Erik's original text is
+> preserved verbatim below.
 
   *** Second Thoughts ***
 

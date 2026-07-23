@@ -31,7 +31,7 @@ detail lives; this list is the map, not the territory.
   the **manual airlock buttons** below, and any AP/phase assumptions. Nothing
   new should bake in AP/phase until this is decided. (Entity design §3d.)
   **Update 2026-07-23:** resolved into the *modularity* split (both schemes
-  coexist) — design `docs/control_modularity_design_2026-07-22.md`. **The whole
+  coexist) — design `docs/archive/control_modularity_design_2026-07-22.md`. **The whole
   control-modularity line (P1–P3 + free-aim shooting F1–F3) is MERGED to main**,
   human-tested and blessed by Erik ("the controller scheme basically works... i
   felt joy shooting zombies"). WEGO byte-identical throughout. Follow-up polish

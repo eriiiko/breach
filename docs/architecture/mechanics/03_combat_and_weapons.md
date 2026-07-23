@@ -149,6 +149,44 @@ dormant-seam pattern, engine/06 ignition precedent).
 
 ---
 
+## 3b. Directional (free-aim) fire — the action variant
+
+Everything in §3 answers *where a shot goes given a target tile* — the WEGO fire
+order names a destination, and the resolver derives the aim bearing from
+`(origin → target)`. The action variant (mechanics/04, `ContinuousRealtime` +
+`GamepadDirect`) has no target tile: the player aims with a stick and the shot must
+go **exactly where the unit faces**. This is **pure free-aim** — Erik's locked call;
+aim-assist / target-snapping is deferred.
+
+The seam is a single optional `aim_angle` parameter threaded through the shooting
+path (`src/simulation/combat.py`: `fire_burst`, `fire_beam`, and the spray cone):
+
+- **`aim_angle=None`** — today's tile-derived path, verbatim. WEGO fire is
+  **byte-identical**; the free-aim code is a dormant branch on the targeted path.
+- **`aim_angle` provided** — the march starts from `(origin, angle)` and goes
+  straight, ignoring the tile target entirely.
+
+A possessed unit's held `TRIGGER` intent fires through a new `_directional_fire`
+branch in `process_shooting`, aiming along `Unit.facing`. Crucially it **bypasses
+the range + LOS pre-gate** that targeted fire runs: the shot simply marches and
+hits the first thing the ray/march actually crosses. (This fixed the "aimed but
+nothing happened" bug — the old `_aim_fire_order` band-aid fired at a max-range
+endpoint *tile* and then LOS-gated it, so an aimed shot at a nearer wall or zombie
+silently evaporated. That band-aid, and an unbounded-`phase` landmine it carried,
+were deleted.) Per archetype the free-aim behavior is the natural one: a
+**projectile** marches along facing and stops on the first wall/unit; a **hitscan**
+skewers the line and bites walls along it; a **spray** cone points along facing.
+
+Determinism is unaffected: `facing` is the already-hashed synced field, the new
+fire state is derived / non-hashed, and the lazy-roll rule of §3 is preserved (a
+free-aim shot draws exactly the rolls a targeted shot of the same weapon would).
+
+*Deferred:* the flamer/spray "held continuous stream" feel (sustained hold-to-fire
+with per-tick re-aim, versus today's fixed latched burst) is a follow-up —
+mechanics/04 *Deferred* and `docs/TODO.md`.
+
+---
+
 ## 4. The three tables
 
 Data model (config.toml; loaded into id-indexed tables mirroring
