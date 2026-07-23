@@ -23,6 +23,7 @@ here.
 """
 from __future__ import annotations
 
+from simulation.ai_zombie import convert_marines_to_zombies
 from simulation.combat import process_door_explosives
 from simulation.orders import DET_START_PHASE1, DET_BETWEEN_PHASES, DET_END_PHASE2
 
@@ -167,4 +168,79 @@ class TwoPhaseWEGO(Ruleset):
         return False
 
 
-__all__ = ["Ruleset", "TwoPhaseWEGO"]
+class ContinuousRealtime(Ruleset):
+    """Direct-action realtime: no rounds, no phases, no AP, no auto-pause.
+
+    P3 (control-modularity §3a). The sibling of :class:`TwoPhaseWEGO` chosen
+    by ``--control gamepad``. The load-bearing tick body (``Simulation.step``
+    slots 1-9e) is identical; only the round-clock head/tail differ, and here
+    they very nearly vanish:
+
+    - ``on_round_start`` / ``on_tick_end``: NO phase advance, NO DET
+      phase-boundary explosive slots, NO auto-pause, NO ``_end_round``
+      teardown or tick rewind. ``Simulation.step`` still increments
+      ``sim.tick`` (that line is the clock itself, not WEGO policy) — the tick
+      is a free-running monotonic counter, never wrapped.
+
+    - Replacing ``_end_round``'s housekeeping (§3a):
+
+      * **Zombie conversion is death-triggered, not an end-of-round batch.**
+        ``on_tick_end`` runs :func:`convert_marines_to_zombies` every tick, so
+        a marine a zombie killed this tick is a walking zombie by the next
+        tick's AI (the function is idempotent — it clears each unit's
+        ``killed_by_zombie`` flag as it converts, so re-running it every tick
+        costs one bool read per unit and never double-converts). No round has
+        to end for the dead to rise.
+
+      * **Corpses blocking physics is per-tick stamp semantics — and needs no
+        code here.** ``Simulation.step`` slot 6 (``gmap.stamp_units``) rebuilds
+        ``obstacles`` (= walls only) and the soft ``dyn_*`` occluder fields
+        from the *living* units every tick, ruleset-independently. Dead units
+        are already filtered out there (they are soft occluders while alive,
+        nothing once dead), so continuous play never regresses corpse physics:
+        the WEGO ``_end_round`` obstacle reset was only undoing that round's
+        accumulated state, which per-tick stamping already keeps clean.
+
+    - ``validate_and_cost`` / ``refund``: alive + physical preconditions ONLY.
+      ``Simulation.apply_action`` already rejects dead / zombie / out-of-
+      inventory actors before calling in, so the cost policy is a pure pass
+      (return ``True``, spend nothing) — this ruleset NEVER touches the
+      ``Unit`` AP fields, and ``refund`` is a no-op.
+
+    - ``is_terminal``: one team eliminated. Continuous play has no round to
+      complete, so the episode boundary (the AI/Gymnasium contract) is "the
+      fight is over": no living marine, or no living zombie. A single-team or
+      unit-free sandbox therefore reads terminal immediately — correct (there
+      is no fight), and irrelevant to the human gamepad loop, which never
+      calls ``is_terminal``.
+    """
+
+    def on_round_start(self, sim) -> None:
+        # No tick-0 round setup: no DET_START_PHASE1, no path-offset reset, no
+        # initial unit stamp (slot 6 stamps every tick before physics anyway).
+        pass
+
+    def on_tick_end(self, sim) -> None:
+        # No phase boundary, no auto-pause, no round teardown. Death-triggered
+        # zombie conversion stands in for the WEGO end-of-round batch (see the
+        # class docstring): idempotent, so running it each tick is immediate
+        # conversion, not a per-tick storm.
+        convert_marines_to_zombies(sim.units)
+
+    def validate_and_cost(self, sim, unit, order) -> bool:
+        # No AP, no phase. The caller (apply_action) has already gated alive /
+        # not-zombie / inventory; there is nothing left to charge.
+        return True
+
+    def refund(self, sim, unit, order) -> None:
+        # No AP was spent — nothing to give back.
+        pass
+
+    def is_terminal(self, sim) -> bool:
+        any_marine = any(u.team == 0 and u.alive for u in sim.units)
+        any_zombie = any(u.team == 1 and u.alive for u in sim.units)
+        # Terminal iff one side is gone (or the world is empty).
+        return not (any_marine and any_zombie)
+
+
+__all__ = ["Ruleset", "TwoPhaseWEGO", "ContinuousRealtime"]

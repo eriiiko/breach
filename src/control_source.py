@@ -20,6 +20,44 @@ intents) and ``AgentPolicy`` (the RL path) are P3 — not built here.
 """
 from __future__ import annotations
 
+import math
+
+from simulation.unit_fixed import quantize_scalar
+
+
+def quantize_stick_direction(ax: float, ay: float, deadzone: float = 0.15):
+    """Pure float-axis -> Q16.16 intent quantization (control-modularity P3,
+    the control/facade seam, §3c).
+
+    Turns one analog stick's raw axes (``ax``/``ay``, each nominally in
+    ``[-1, 1]``) into a Q16.16 **unit-vector** direction plus a clamped Q16.16
+    magnitude: ``(dx_q, dy_q, mag_q)``. This is THE seam where a control-layer
+    float becomes a fixed-point sim intent — the sim never sees ``ax``/``ay``.
+
+    Determinism: pure and libm-free on the sim-critical path. ``math.sqrt`` is
+    IEEE-754 *correctly rounded* (a basic operation, not a libm transcendental
+    like ``sin``/``atan2``), the reciprocal and products are IEEE, and
+    :func:`~simulation.unit_fixed.quantize_scalar` is the documented
+    round-half-away-from-zero twin — so the SAME ``(ax, ay)`` yields the SAME
+    ``(dx_q, dy_q, mag_q)`` on every machine, compiler, and Python version.
+    (The one thing this function cannot make deterministic is the raw axis
+    value a physical pad/driver reports — see the P3 escalation note (c): that
+    is why the *quantized intent*, not the raw axis, is what a networked
+    lockstep would sync/replay.)
+
+    A magnitude at or below ``deadzone`` returns ``(0, 0, 0)`` — no direction,
+    the stick is centered. Magnitude is clamped to 1.0 (diagonal corners on
+    some pads read > 1). Unit-testable with synthetic floats and no hardware.
+    """
+    mag = math.sqrt(ax * ax + ay * ay)
+    if mag <= deadzone:
+        return (0, 0, 0)
+    inv = 1.0 / mag
+    ux = ax * inv
+    uy = ay * inv
+    mag_c = 1.0 if mag > 1.0 else mag
+    return (quantize_scalar(ux), quantize_scalar(uy), quantize_scalar(mag_c))
+
 
 class ControlSource:
     """Strategy interface ``main.py`` selects at startup via ``--control``.
@@ -44,20 +82,40 @@ class ControlSource:
         """
         raise NotImplementedError
 
+    # ------------------------------------------------------------------
+    # Sim-construction hooks (P3, §3a/§3b) — a control scheme also picks the
+    # turn structure it runs under. main.py queries these BEFORE building the
+    # Simulation so the two halves of the loadable game (Ruleset + ControlSource)
+    # are chosen together. The base returns the WEGO defaults, so
+    # WEGOPlanningInput is byte-identical without overriding anything.
+    # ------------------------------------------------------------------
+    def initial_ruleset(self):
+        """The :class:`~simulation.ruleset.Ruleset` this control scheme runs
+        under, or ``None`` for the shipped default
+        (:class:`~simulation.ruleset.TwoPhaseWEGO`). GamepadDirect returns a
+        :class:`~simulation.ruleset.ContinuousRealtime`."""
+        return None
 
-# Launch-flag name -> factory. Extended in P3 with "gamepad" (GamepadDirect)
-# and later the ML entry point (AgentPolicy is driven differently — it has
-# no per-frame poll loop — so it is not expected to route through this same
-# factory; see the design doc §3b).
-_KNOWN_CONTROLS = ("wego",)
+    def starts_paused(self) -> bool:
+        """Whether the sim should begin paused. WEGO plans first (``True``);
+        direct control runs immediately (``False``)."""
+        return True
+
+
+# Launch-flag name -> factory. P3 adds "gamepad" (GamepadDirect); the ML entry
+# point (AgentPolicy) is driven differently — it has no per-frame poll loop —
+# so it is not expected to route through this same factory; see the design doc
+# §3b.
+_KNOWN_CONTROLS = ("wego", "gamepad")
 
 
 def create_control_source(name: str) -> "ControlSource":
     """Factory for the ``--control`` launch flag (§3b).
 
-    ``name`` must be one of :data:`_KNOWN_CONTROLS` — in P2 that is only
-    ``"wego"``, today's default WEGO planning input. An unknown name is a
-    launch-time error (``SystemExit``), never a silent fallback — the same
+    ``name`` must be one of :data:`_KNOWN_CONTROLS`: ``"wego"`` (today's
+    default WEGO planning input) or ``"gamepad"`` (P3 direct control — one
+    possessed marine, per-tick intents, ContinuousRealtime). An unknown name
+    is a launch-time error (``SystemExit``), never a silent fallback — the same
     convention ``main.py``'s other ``--flag`` parsers use for a bad value.
     """
     if name == "wego":
@@ -65,8 +123,17 @@ def create_control_source(name: str) -> "ControlSource":
         # which imports ControlSource from here to declare its base class.
         from input_handler import WEGOPlanningInput
         return WEGOPlanningInput()
+    if name == "gamepad":
+        # Deferred import: control_gamepad imports pyray (the raylib gamepad
+        # API) at module load; keeping it lazy means importing control_source
+        # (which the sim-side test path and input_handler both do) never
+        # requires pyray.
+        from control_gamepad import GamepadDirect
+        return GamepadDirect()
     raise SystemExit(
         f"--control must be one of {_KNOWN_CONTROLS!r}, got {name!r}")
 
 
-__all__ = ["ControlSource", "create_control_source"]
+__all__ = [
+    "ControlSource", "create_control_source", "quantize_stick_direction",
+]
