@@ -120,6 +120,22 @@ class GamepadDirect(ControlSource):
         if uid is None:
             return
 
+        # DEBUG (human-test): keyboard N cycles the possessed unit's weapon
+        # through the armory — the same `sim.debug_cycle_weapon` the WEGO input
+        # uses on N (input_handler.py). Wired here because under `--control
+        # gamepad` the WEGO handler does not run, so N was dead and every shot
+        # fired the default weapon. Lets Erik feel each archetype (projectile /
+        # hitscan / spray) under direct control. raylib edge-triggers the press.
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_N):
+            sim.debug_cycle_weapon(uid)
+
+        # DEBUG (human-test): log which raylib gamepad button index fires, so
+        # the physical->enum mapping can be pinned (grenade/use came out on the
+        # wrong physical button in the first human-test). One line per press.
+        for _b in range(1, 18):  # raylib GamepadButton indices 1..17
+            if rl.is_gamepad_button_pressed(_PAD, _b):
+                print(f"[gamepad] raylib button index {_b} pressed")
+
         GA = rl.GamepadAxis
         GB = rl.GamepadButton
 
