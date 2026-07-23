@@ -129,11 +129,11 @@ o2_threshold  = 0.01  # min air-side-neighbour REAL N_O2 to ignite (mirrors the 
 # -> P falls -> starves; ALSO now (P4) the room's REAL O2 depletes as it burns ->
 # o2 -> 0 -> starves even in a wall that never bursts. Both emergent. Erik tunes
 # all of these live.
-k_grow            = 4.0    # logistic growth gain (1/s)
-k_die             = 2.0    # decay rate when starved/cold (1/s)
+k_grow            = 0.04   # logistic growth gain (1/s) — FIRE-TUNE 2026-07-23 (was 4.0): still-air crate peaks at ~2.85 min
+k_die             = 0.02   # decay rate when starved/cold (1/s) — FIRE-TUNE 2026-07-23 (was 2.0): kept 2:1 with k_grow (ratio sets peak height)
 fire_T_ext        = 350.0  # extinction temperature (~ignition_temp + 50; below it, fire dies)
 fire_T_span       = 150.0  # width of the `hot` ramp above fire_T_ext
-fuel_ref          = 60.0   # wall_hp normaliser: F = clamp01(wall_hp/fuel_ref)
+fuel_ref          = 40.0   # wall_hp normaliser: F = clamp01(wall_hp/fuel_ref) — FIRE-TUNE 2026-07-23 (was 60): still-air crate peaks ~0.61, upper ~40% reserved for wind fanning
 # EOS refactor P4 RECALIBRATION (design §6): P_min/P_full used to be read against
 # `atmosphere` (P), where ambient == 1.0. They now read REAL gas[o2], where
 # ambient == ~0.21 (the P1 calibration: 0.21*N_amb O2 / 0.79*N_amb inert_N2, P1
@@ -163,11 +163,11 @@ P_min             = 0.01   # local N_O2 below which the O2 proxy is 0 (O2 starve
 P_full            = 0.03   # local N_O2 at which the O2 proxy saturates full
 I_min             = 0.02   # snap-to-zero extinguish floor
 k_wind_fan        = 0.5    # (1 + k_wind_fan*W) fans growth into a firestorm. NEEDS TUNING vs the live wind scale (a shockwave is a large transient spike).
-k_wind_strip      = 0.5    # W*(1-I)*I blows out small/marginal fires (the realistic crossover). NEEDS TUNING vs the live wind scale.
+k_wind_strip      = 0.0    # DISABLED — FIRE-TUNE 2026-07-23 (was 0.5): the explicit blow-out made a slow fire snuff its OWN plume-wind (stalled the ramp). Wind blow-out is meant to EMERGE from convective cooling instead. Revisit in the wind phase.
 fire_pressure_gain = 0.15  # own-tile plume overpressure gain (1/s) — pushes smoke OUTWARD
 p_expand_ref      = 1.30   # self-limiting plume saturation ceiling (atm + thermal-expansion headroom)
 smoke_emission    = 0.8    # smoke produced per second per unit intensity (KEPT)
-wall_damage       = 0.4    # wall HP lost per second per unit intensity (KEPT — the burn-out brake)
+wall_damage       = 0.028  # wall HP lost per second per unit intensity — FIRE-TUNE 2026-07-23 (was 0.4): ~9 min crate burnout (with fuel_per_o2). NOTE: burnout couples to burn_rate — revisit after the Fable O2 pass.
 
 # --- K2: fire as a sim-side heat ray source (proposal §1, fire_design_notes) --
 # Each burning tile (fire > 0) becomes a short-range heat `LightSource` cast IN
@@ -350,7 +350,7 @@ soot_yield        = 0.3    # fraction of consumed O2 -> smoke (rest -> inert_N2)
 # stoichiometry burns ~0.7 mass-units of fuel per unit O2 — physically honest
 # default, but in play THE ember-lifetime dial: smaller -> embers glow for
 # minutes awaiting oxygen; larger -> they char out fast.
-fuel_per_o2       = 0.7
+fuel_per_o2       = 0.045  # FIRE-TUNE 2026-07-23 (was 0.7, the physical wood-stoich value): slows the crate burn to ~9 min. NON-PHYSICAL now + couples to burn_rate — flagged for the Fable O2 redesign (may be re-derived there).
 # Unit-side suffocation mechanics (LATER arc, design §5): defined here so the
 # constant lives at the right layer; nothing reads it yet.
 o2_thresh_breathe = 0.08   # min local N_O2 a unit needs to breathe (NOT wired yet)
