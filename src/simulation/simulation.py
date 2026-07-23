@@ -101,7 +101,7 @@ from simulation.gamemap import GameMap, MAT_DOOR, MAT_DOOR_CLOSED
 from simulation.movement import FootprintSamples, default_speed
 from simulation.orders import (
     ORDER_GRENADE, ORDER_EXPLOSIVE, ORDER_FIRE, ORDER_MOVE_ATTACK,
-    ORDER_MOVE_COVER, ORDER_SPRINT, MOVE_ORDER_TYPES, Order,
+    ORDER_MOVE_COVER, ORDER_SPRINT, MOVE_ORDER_TYPES,
 )
 # Per-tick continuous intents (control-modularity P3, §3c) — the direct-control
 # order vocabulary consumed under a ContinuousRealtime ruleset. Dormant under
@@ -596,8 +596,10 @@ class Simulation:
 
         AIM sets facing (deterministic integer atan2); THROW spawns a grenade
         BEFORE the projectile-advance slot so a freshly-lobbed grenade travels
-        this tick like a WEGO one; USE toggles a door latch; TRIGGER arms the
-        unit's ``live_fire_order`` for the shooting slot (slot 4). MOVE_DIR is
+        this tick like a WEGO one; USE toggles a door latch. TRIGGER is not
+        consumed here — a held ``live_trigger`` is read directly by the shooting
+        slot (slot 4), where ``combat._directional_fire`` marches a free-aim
+        shot along ``u.facing`` (free_aim_shooting_design §4b). MOVE_DIR is
         consumed later, in :meth:`_update_player_movement` (slot 3), where the
         WEGO branch it replaces already lives.
         """
@@ -605,9 +607,10 @@ class Simulation:
             return
         for u in self.units:
             if u.id not in self._possessed_ids or not u.alive or u.team != 0:
-                # Clear any stale trigger order on a now-invalid possessor.
-                if getattr(u, "live_fire_order", None) is not None:
-                    u.live_fire_order = None
+                # A now-invalid possessor (dead / unpossessed / wrong team)
+                # releases a held trigger, so a later rebind starts clean.
+                if getattr(u, "live_trigger", False):
+                    u.live_trigger = False
                 continue
 
             # AIM -> facing (synced state via the deterministic atan2 kit; a
@@ -631,39 +634,13 @@ class Simulation:
                 u.pending_use = False
                 self._direct_use(u)
 
-            # TRIGGER -> arm/clear the per-tick aimed fire order for slot 4.
-            if getattr(u, "live_trigger", False):
-                u.live_fire_order = self._aim_fire_order(u)
-            else:
-                u.live_fire_order = None
-
-    def _aim_fire_order(self, u):
-        """Build the transient per-tick fire order for a held TRIGGER (§3c):
-        an aimed shot toward the integer tile ``weapon.range_tiles`` along the
-        unit's current facing. Integer target keeps the Bresenham LOS + range
-        checks in :func:`combat.process_shooting` on the shipped path (they
-        assume tile-integer targets). Direction comes from the deterministic
-        integer sin/cos kit — no libm on the sim path. Returns an
-        :class:`~simulation.orders.Order` consumed by the dormant
-        ``live_fire_order`` hook in ``process_shooting``.
-        """
-        weapon_id = getattr(u, "weapon_id", "")
-        rng_tiles = 1
-        if weapon_id:
-            row = self.weapons_tables.weapons.by_name.get(weapon_id)
-            if row is not None:
-                rng_tiles = max(1, int(getattr(row, "range_tiles", 1)))
-        cx, cy = u.center_tile_x(), u.center_tile_y()
-        # facing is math-style (Y-up); world Y is down -> negate the y-component.
-        dirx = unit_fixed.cos_rad(u.facing)
-        diry = -unit_fixed.sin_rad(u.facing)
-        h, w = self.gmap.material.shape
-        tx = int(round(cx + dirx * rng_tiles))
-        ty = int(round(cy + diry * rng_tiles))
-        tx = max(0, min(w - 1, tx))
-        ty = max(0, min(h - 1, ty))
-        order = Order(ORDER_FIRE, tx, ty, self.tick // self._ticks_per_phase)
-        return order
+            # TRIGGER is NOT consumed here: a held ``live_trigger`` (set by
+            # set_trigger) is read directly by the shooting slot (slot 4),
+            # where ``combat._directional_fire`` marches a FREE-AIM shot along
+            # ``u.facing``, bypassing the range+LOS pre-gate (the march resolves
+            # range/hit — free_aim_shooting_design §4b). No fabricated Order:
+            # the tile-target band-aid (_aim_fire_order / live_fire_order) is
+            # gone, and with it the unbounded-phase landmine (design §8).
 
     def _spawn_direct_grenade(self, u, throw) -> None:
         """THROW consumption: lob a grenade from ``u`` along the intent's

@@ -630,14 +630,23 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
             continue
         weapon = tables.weapons.by_name[weapon_id]
 
-        # A queued WEGO fire order for this phase, or — under direct control
-        # (control-modularity P3, §3c) — the possessed unit's per-tick aimed
-        # ``live_fire_order`` set by ``Simulation._consume_direct_intents`` for
-        # a held TRIGGER. Dormant under WEGO: no unit carries ``live_fire_order``,
-        # so ``X or getattr(...)`` is byte-identically ``X`` (the digest gate).
-        fire_order = u.get_fire_order_in_phase(phase) or getattr(
-            u, "live_fire_order", None)
+        # A queued WEGO fire order for this phase (the targeted path, below).
+        # Under direct control a possessed unit carries NO order — it fires
+        # DIRECTIONALLY from a held TRIGGER (the no-order branch just below,
+        # free_aim_shooting_design §4b). Byte-identical under WEGO:
+        # get_fire_order_in_phase is unchanged and no WEGO unit sets a trigger.
+        fire_order = u.get_fire_order_in_phase(phase)
         if not fire_order:
+            # FREE-AIM (design §4b): a possessed unit holding TRIGGER under
+            # ContinuousRealtime fires directionally along u.facing, BYPASSING
+            # the range+LOS pre-gate — the march resolves range and hit (it
+            # stops on the first solid/unit or at range_tiles). Dormant under
+            # WEGO: no unit sets ``live_trigger``, so this is one falsy attr
+            # read and the digest is byte-identical (the P3 dormancy rule).
+            if getattr(u, "live_trigger", False):
+                _directional_fire(gmap, units, u, tick, shots, real_time, rng,
+                                  events, bullets, weapon, flags, queue)
+                continue
             # Move & Attack: auto-fire at nearest visible enemy (snap cone).
             for o in u.orders:
                 if o.order_type == ORDER_MOVE_ATTACK and o.phase == phase:
@@ -722,18 +731,73 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
 
 def _dispatch_trigger(gmap, units, u, fx1, fy1, fx2, fy2, tick, shots,
                       real_time, rng, events, bullets, weapon, spread_deg,
-                      queue=None):
+                      queue=None, aim_angle=None):
     """Route one trigger pull to its delivery archetype (mechanics/03 §1).
-    The archetype set is CLOSED; only the ranged marchers dispatch here."""
+    The archetype set is CLOSED; only the ranged marchers dispatch here.
+    ``aim_angle`` (free_aim_shooting_design §4a) is forwarded to the resolver:
+    None = tile-derived bearing (WEGO), provided = free-aim march bearing."""
     if weapon.archetype == "hitscan":
         fire_beam(gmap, units, u, fx1, fy1, fx2, fy2,
                   tick, shots, real_time, rng, events=events,
-                  weapon=weapon, spread_deg=spread_deg)
+                  weapon=weapon, spread_deg=spread_deg, aim_angle=aim_angle)
     else:  # "projectile" — the default marcher (validated set, mechanics/03)
         fire_burst(gmap, units, u, fx1, fy1, fx2, fy2,
                    tick, shots, real_time, rng, events=events,
                    weapon=weapon, spread_deg=spread_deg, bullets=bullets,
-                   queue=queue)
+                   queue=queue, aim_angle=aim_angle)
+
+
+def _directional_fire(gmap, units, u, tick, shots, real_time, rng,
+                      events, bullets, weapon, flags, queue=None):
+    """Free-aim directional fire for a possessed unit holding TRIGGER
+    (free_aim_shooting_design §4b) — the parallel to the targeted block in
+    :func:`process_shooting`, but it BYPASSES the range+LOS pre-gate: a
+    directional shot always fires (subject to the same cadence / mag / status
+    gates), and range + hit are the march's job (it stops on the first
+    solid/unit or at ``range_tiles``). Aim comes from ``u.facing`` (set every
+    tick by the AIM intent) — no fabricated Order, no tile round-trip.
+
+    The status gate (``can_act``) is already applied by the caller; ``flags``
+    is the caller's composed-flags snapshot (for the ``can_aim`` spread
+    selection). Melee and lobbed/placed are OUT OF SCOPE here (design §4c/§9):
+    melee is the deferred adjacency arc; lobbed/placed ride the THROW / USE
+    intent flows, not a trigger ray.
+    """
+    # Cadence gate (identical to the targeted path).
+    if tick - u.last_fire_tick < weapon.rof_interval_ticks:
+        return
+    # Ammo / magazine gate.
+    if not mag_gate(u, weapon, tick):
+        return
+
+    # CONVENTION (design §6): ``u.facing`` is math-style (y-up); the march
+    # bearing is screen-style (y-down); they are mirror images across the
+    # x-axis, so the march bearing is ``-facing``. This is the ONE y-up->y-down
+    # flip in the free-aim path — the resolvers take ``aim_angle`` already in
+    # the march convention and consume it verbatim (see fire_burst §4a).
+    aim_angle = -u.facing
+
+    spread = weapon.spread_deg if flags.can_aim else weapon.spread_snap_deg
+
+    if weapon.archetype == "melee":
+        return   # out of scope (design §9) — the deferred melee arc owns it
+    if weapon.archetype == "spray":
+        # A burst in progress owns the trigger until it ends (its deposits ride
+        # process_sprays); re-arm only once it has finished (continuous hosing).
+        if getattr(u, "spray_ticks_left", 0) > 0:
+            return
+        start_spray_burst_directional(u, weapon, tick, aim_angle)
+    elif weapon.archetype in ("projectile", "hitscan"):
+        uc_fx = u.center_tile_x()
+        uc_fy = u.center_tile_y()
+        # Origin only; the tile target is unused when aim_angle is provided.
+        _dispatch_trigger(gmap, units, u, uc_fx, uc_fy, uc_fx, uc_fy,
+                          tick, shots, real_time, rng, events, bullets,
+                          weapon, spread, queue, aim_angle=aim_angle)
+    else:
+        return   # lobbed / placed: not a trigger ray (design §4c) — no-op
+    mag_spend(u, weapon, tick)
+    u.last_fire_tick = tick
 
 
 def auto_fire(gmap, units, u, tick, shots, real_time, rng, events=None,
@@ -1131,7 +1195,7 @@ def spray_cone_tiles(gmap, ay, ax, target_fx, target_fy, range_tiles,
 
 
 def deposit_spray_cone(gmap, queue, shooter, weapon, ammo,
-                       target_fx, target_fy):
+                       target_fx, target_fy, aim_angle=None):
     """Enqueue ONE tick of a spray burst's cone deposits (mechanics/03 §5).
 
     Per member tile (fixed row-major order from :func:`spray_cone_tiles`),
@@ -1162,7 +1226,7 @@ def deposit_spray_cone(gmap, queue, shooter, weapon, ammo,
     for y, x, div in spray_cone_tiles(
             gmap, shooter.center_tile_y(), shooter.center_tile_x(),
             target_fx, target_fy, weapon.range_tiles,
-            weapon.cone_half_angle_degrees, exclude=own):
+            weapon.cone_half_angle_degrees, exclude=own, aim_angle=aim_angle):
         if heat > 0.0:
             queue.enqueue(FieldEdit(
                 field="heat", region=Region.TILE, coords=(y, x),
@@ -1193,9 +1257,27 @@ def start_spray_burst(u, weapon, fire_order, tick):
     u.spray_ticks_left = int(weapon.burst_ticks)
     u.spray_target = (float(fire_order.target_fx), float(fire_order.target_fy))
     u.spray_order = fire_order
+    u.spray_aim_angle = None   # tile-derived cone bearing (the WEGO path)
     u.facing = unit_fixed.atan2_rad(
         -(float(fire_order.target_fy) - u.center_tile_y()),
         float(fire_order.target_fx) - u.center_tile_x())
+
+
+def start_spray_burst_directional(u, weapon, tick, aim_angle):
+    """Arm a spray burst aimed along a FREE-AIM bearing (design §4c): the cone
+    bearing is ``u.facing`` (passed as the march-convention ``aim_angle``), NOT
+    a target tile. Stores the exact bearing as ``spray_aim_angle`` — non-hashed
+    derived state (the ``last_fire_tick`` precedent, not in the digest surface)
+    that :func:`process_sprays` feeds :func:`deposit_spray_cone`. ``spray_target``
+    is kept for the RENDER-ONLY :class:`SprayJetEvent` only (a nominal tile one
+    range along the bearing); the cone geometry uses ``spray_aim_angle``.
+    ``facing`` is left as the AIM intent set it — never re-derived."""
+    u.spray_ticks_left = int(weapon.burst_ticks)
+    u.spray_aim_angle = float(aim_angle)
+    u.spray_order = None
+    r = float(weapon.range_tiles)
+    u.spray_target = (u.center_tile_x() + unit_fixed.cos_rad(aim_angle) * r,
+                      u.center_tile_y() + unit_fixed.sin_rad(aim_angle) * r)
 
 
 def process_sprays(gmap, units, queue, events=None):
@@ -1239,6 +1321,7 @@ def process_sprays(gmap, units, queue, events=None):
             u.spray_ticks_left = 0
             u.spray_order = None
             u.spray_target = None
+            u.spray_aim_angle = None
             continue
         if not composed_flags(u).can_act:
             # Interruption: stop NOW, consume the order, never resume.
@@ -1248,11 +1331,15 @@ def process_sprays(gmap, units, queue, events=None):
             u.spray_ticks_left = 0
             u.spray_order = None
             u.spray_target = None
+            u.spray_aim_angle = None
             continue
         weapon = tables.weapons.by_name[u.weapon_id]
         ammo = tables.ammo_for_weapon(weapon)
         tx, ty = u.spray_target
-        deposit_spray_cone(gmap, queue, u, weapon, ammo, tx, ty)
+        # Free-aim bursts carry an exact facing bearing (design §4c); WEGO
+        # bursts leave it None -> the tile-derived bearing, byte-identical.
+        aim = getattr(u, "spray_aim_angle", None)
+        deposit_spray_cone(gmap, queue, u, weapon, ammo, tx, ty, aim_angle=aim)
         if events is not None:
             # W6: the jet visual — one event per DEPOSITING tick (an
             # interrupted / dead / finished burst emits nothing). "flame"
@@ -1270,6 +1357,7 @@ def process_sprays(gmap, units, queue, events=None):
         if u.spray_ticks_left <= 0:
             u.spray_order = None
             u.spray_target = None
+            u.spray_aim_angle = None
 
 
 # ---------------------------------------------------------------------------
