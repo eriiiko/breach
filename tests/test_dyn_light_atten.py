@@ -53,7 +53,7 @@ def _clear_air_anchor(g: GameMap, footprint: int = 3):
 
 
 def test_dyn_field_default_unit_shadow_and_matches_static_elsewhere():
-    g = GameMap(load_level("unhcr_vessel", levels_dir="prototypes"))
+    g = GameMap(load_level("unhcr_vessel"))
     ay, ax = _clear_air_anchor(g)
     # Footprint offsets are top-left anchored (0..2), so anchor at (ax, ay)
     # makes the footprint exactly the verified clear-air block.
@@ -79,7 +79,7 @@ def test_dyn_field_default_unit_shadow_and_matches_static_elsewhere():
 
 
 def test_dyn_field_filled_in_place_no_realloc():
-    g = GameMap(load_level("unhcr_vessel", levels_dir="prototypes"))
+    g = GameMap(load_level("unhcr_vessel"))
     ay, ax = _clear_air_anchor(g)
     buf_id = id(g.dyn_light_atten)
     u = Unit("U1", x=ax, y=ay, team=0)
@@ -91,7 +91,7 @@ def test_dyn_field_filled_in_place_no_realloc():
 
 
 def test_per_channel_max_occluder_only_adds_opacity():
-    g = GameMap(load_level("unhcr_vessel", levels_dir="prototypes"))
+    g = GameMap(load_level("unhcr_vessel"))
     ay, ax = _clear_air_anchor(g)
     # Paint glass-ish static atten on the anchor tile (inside the footprint).
     g.light_atten[ay, ax] = [0.5, 0.5, 0.5]
@@ -108,7 +108,7 @@ def test_per_channel_max_occluder_only_adds_opacity():
 
 
 def test_dead_unit_casts_no_shadow():
-    g = GameMap(load_level("unhcr_vessel", levels_dir="prototypes"))
+    g = GameMap(load_level("unhcr_vessel"))
     ay, ax = _clear_air_anchor(g)
     u = Unit("U1", x=ax, y=ay, team=0)
     u.alive = False
@@ -124,7 +124,7 @@ def test_dyn_field_blocks_a_cpp_ray_downstream():
     relevant row sliced into the headless cast)."""
     import breach_physics as bp
 
-    g = GameMap(load_level("unhcr_vessel", levels_dir="prototypes"))
+    g = GameMap(load_level("unhcr_vessel"))
     ay, ax = _clear_air_anchor(g, footprint=3)
     w = g._w
 

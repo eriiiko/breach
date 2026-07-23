@@ -327,7 +327,7 @@ def test_black_smoke_matches_pre_refactor_reference():
 # 6. Determinism — a headless Simulation rollout is bit-identical run-to-run
 # --------------------------------------------------------------------------
 def _rollout_signature(n_steps=60):
-    level = load_level("unhcr_vessel", levels_dir="prototypes")
+    level = load_level("unhcr_vessel")
     sim = Simulation(level, seed=SEED, breach_physics=bp, enable_recorder=False)
     sim.set_paused(False)
     for _ in range(n_steps):
@@ -357,7 +357,7 @@ def test_recorder_and_headless_step():
     """A headless Simulation with the recorder ON steps cleanly; the recorder
     snapshots ``gmap.smoke`` (the smoke view) without error, and the smoke
     aliasing survives the step."""
-    level = load_level("unhcr_vessel", levels_dir="prototypes")
+    level = load_level("unhcr_vessel")
     sim = Simulation(level, seed=SEED, breach_physics=bp, enable_recorder=True)
     sim.set_paused(False)
     for _ in range(10):

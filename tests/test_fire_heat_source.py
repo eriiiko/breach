@@ -178,7 +178,7 @@ def test_heat_lands_on_solid_not_lost_in_air_conversion():
     # (a) cross-check via temperature: after one convert pass, a SOLID tile that
     # received heat has temperature > 0, while an AIR tile (kappa 0) stays 0 even
     # though heat was deposited on it (temperature lives on solids only).
-    level = load_level("unhcr_vessel", levels_dir="prototypes")
+    level = load_level("unhcr_vessel")
     sim = Simulation(level, seed=3, breach_physics=bp, enable_recorder=False)
     g = sim.gmap
     g.material[50, 14] = MAT_WOOD          # burner
@@ -203,7 +203,7 @@ def test_full_chain_heat_ignites_adjacent_wood():
     spread DELETED (fire_design_proposal §1), radiation->ignition is now the ONLY
     spread path, so no spread toggle is needed to isolate it. Proves the chain
     heat -> temperature -> ignition end-to-end."""
-    level = load_level("unhcr_vessel", levels_dir="prototypes")
+    level = load_level("unhcr_vessel")
     sim = Simulation(level, seed=42, breach_physics=bp, enable_recorder=False)
     g = sim.gmap
     g.material[50, 14] = MAT_WOOD          # burner
@@ -233,7 +233,7 @@ def test_full_chain_heat_ignites_adjacent_wood():
 # (d) unit heat damage + zombie 4x, through a full Simulation.step()
 # ---------------------------------------------------------------------------
 def test_unit_next_to_fire_loses_hp_and_zombie_takes_4x():
-    level = load_level("unhcr_vessel", levels_dir="prototypes")
+    level = load_level("unhcr_vessel")
     sim = Simulation(level, seed=42, breach_physics=bp, enable_recorder=False)
     g = sim.gmap
     fy, fx = 50, 25                        # burner near the horizontal centre
@@ -272,7 +272,7 @@ def test_unit_next_to_fire_loses_hp_and_zombie_takes_4x():
 def test_unit_away_from_fire_unharmed():
     # A unit far from any fire takes no heat damage (the deposit is short-range +
     # occluded, so a distant tile reads 0 flux).
-    level = load_level("unhcr_vessel", levels_dir="prototypes")
+    level = load_level("unhcr_vessel")
     sim = Simulation(level, seed=42, breach_physics=bp, enable_recorder=False)
     g = sim.gmap
     g.material[50, 25] = MAT_WOOD
@@ -292,7 +292,7 @@ def test_unit_away_from_fire_unharmed():
 # ---------------------------------------------------------------------------
 def test_determinism_bit_identical_temperature():
     def run():
-        level = load_level("unhcr_vessel", levels_dir="prototypes")
+        level = load_level("unhcr_vessel")
         sim = Simulation(level, seed=7, breach_physics=bp, enable_recorder=False)
         g = sim.gmap
         for (yy, xx) in [(50, 14), (50, 15), (50, 16)]:
@@ -334,7 +334,7 @@ def test_lone_fire_does_not_firestorm_in_a_couple_ticks():
     # radiation -> heat -> temperature -> ignition, which is gentle: a neighbour
     # needs a few seconds of conducted heat to cross ignition_temp, so a lone
     # fire cannot firestorm the structure in a handful of ticks.
-    level = load_level("unhcr_vessel", levels_dir="prototypes")
+    level = load_level("unhcr_vessel")
     sim = Simulation(level, seed=1, breach_physics=bp, enable_recorder=False)
     g = sim.gmap
     y0, x0 = 40, 10
@@ -365,7 +365,7 @@ def test_lone_fire_does_not_firestorm_in_a_couple_ticks():
 # into Simulation.step (not just callable in isolation).
 # ---------------------------------------------------------------------------
 def test_fire_heat_is_wired_into_simulation_step():
-    level = load_level("unhcr_vessel", levels_dir="prototypes")
+    level = load_level("unhcr_vessel")
     sim = Simulation(level, seed=5, breach_physics=bp, enable_recorder=False)
     g = sim.gmap
     g.material[50, 14] = MAT_WOOD

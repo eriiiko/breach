@@ -209,7 +209,7 @@ def test_migrate_level_round_trip(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_real_level_is_v2_and_airtight():
-    lvl = load_level("unhcr_vessel", levels_dir="prototypes")
+    lvl = load_level("unhcr_vessel")
     assert lvl.version == "2"
     codes = set(int(c) for c in np.unique(lvl.tilemap))
     assert codes <= set(MATERIAL_NAMES) | {SPACE_CODE}, f"non-canon codes: {codes}"
@@ -221,4 +221,4 @@ def test_real_level_is_v2_and_airtight():
 
     # The canonical airtight certification: GameMap decode + flood fill.
     from level_airtight import check
-    assert check("unhcr_vessel", levels_dir="prototypes") is True
+    assert check("unhcr_vessel") is True

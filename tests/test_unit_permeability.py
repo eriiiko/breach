@@ -45,7 +45,7 @@ def _clear_air_anchor(g: GameMap, footprint: int = 3):
 def test_unit_is_soft_body_not_obstacle():
     """(a) unit tiles NOT in obstacles, (b) dyn_permeability == partial value,
     (c) dyn_light_atten still opaque (shadow unchanged)."""
-    g = GameMap(load_level("unhcr_vessel", levels_dir="prototypes"))
+    g = GameMap(load_level("unhcr_vessel"))
     ay, ax = _clear_air_anchor(g)
     u = Unit("U1", x=ax, y=ay, team=0)
 
@@ -72,7 +72,7 @@ def test_unit_is_soft_body_not_obstacle():
 
 def test_per_unit_permeability_hook():
     """A unit may override permeability via a `unit.permeability` attribute."""
-    g = GameMap(load_level("unhcr_vessel", levels_dir="prototypes"))
+    g = GameMap(load_level("unhcr_vessel"))
     ay, ax = _clear_air_anchor(g)
     u = Unit("U1", x=ax, y=ay, team=0)
     u.permeability = 0.2
@@ -87,7 +87,7 @@ def test_per_unit_permeability_hook():
 
 def test_dead_unit_leaves_permeability_open():
     """A dead unit is neither an obstacle nor a flow-restriction."""
-    g = GameMap(load_level("unhcr_vessel", levels_dir="prototypes"))
+    g = GameMap(load_level("unhcr_vessel"))
     ay, ax = _clear_air_anchor(g)
     u = Unit("U1", x=ax, y=ay, team=0)
     u.alive = False

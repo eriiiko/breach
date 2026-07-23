@@ -112,7 +112,7 @@ class _RaisingWaterStub:
 def test_dormant_dry_ticks_leave_water_fields_zero():
     """(i) Full Simulation on the test vessel, 5 dry ticks: the water fields
     stay EXACTLY zero (nothing writes them without water/sources)."""
-    level = load_level("unhcr_vessel", levels_dir="prototypes")
+    level = load_level("unhcr_vessel")
     sim = Simulation(level, seed=SEED, breach_physics=bp, enable_recorder=False)
     m = Unit("M1", x=14, y=50, team=0)
     sim.add_unit(m)
@@ -130,7 +130,7 @@ def test_dormant_dry_ticks_leave_water_fields_zero():
 def test_dormant_early_out_never_calls_the_solver():
     """(ii) With the solver swapped for a raiser, 5 dry ticks raise nothing —
     the dormant early-out is REALLY taken (not just harmless)."""
-    level = load_level("unhcr_vessel", levels_dir="prototypes")
+    level = load_level("unhcr_vessel")
     sim = Simulation(level, seed=SEED, breach_physics=bp, enable_recorder=False)
     sim.physics_runner.water = _RaisingWaterStub()
     sim.set_paused(False)
@@ -152,7 +152,7 @@ def test_dormant_ab_rollout_bit_identical():
               "temperature", "dyn_permeability")
 
     def rollout(noop_water: bool):
-        level = load_level("unhcr_vessel", levels_dir="prototypes")
+        level = load_level("unhcr_vessel")
         sim = Simulation(level, seed=SEED, breach_physics=bp,
                          enable_recorder=False)
         if noop_water:
