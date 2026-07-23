@@ -31,44 +31,53 @@ detail lives; this list is the map, not the territory.
   the **manual airlock buttons** below, and any AP/phase assumptions. Nothing
   new should bake in AP/phase until this is decided. (Entity design §3d.)
   **Update 2026-07-23:** resolved into the *modularity* split (both schemes
-  coexist) — design `docs/control_modularity_design_2026-07-22.md`. P1 (Ruleset
-  extraction) + P2 (ControlSource seam + `--control` flag) **merged to main**,
-  WEGO byte-identical. P3 (action variant: `ContinuousRealtime` + gamepad direct
-  control) built on branch `control-modularity`, **unmerged**, human-tested once.
-  See the parked action-variant items below.
+  coexist) — design `docs/control_modularity_design_2026-07-22.md`. **The whole
+  control-modularity line (P1–P3 + free-aim shooting F1–F3) is MERGED to main**,
+  human-tested and blessed by Erik ("the controller scheme basically works... i
+  felt joy shooting zombies"). WEGO byte-identical throughout. Follow-up polish
+  below.
 
-**Modular control — action variant (parked, LEAST-URGENT track, 2026-07-23):**
-Erik's calls after the first controller human-test. This whole track runs in
-parallel with graphics/level-editor and blocks nothing (WEGO untouched; the door
-issue is latent for WEGO). Resume on Erik's signal.
-- **Free-aim directional shooting — DESIGN LOCKED 2026-07-23, build = own
-  session.** Doc: `docs/free_aim_shooting_design_2026-07-23.md` (v0.2, decisions
-  locked). Aim model = PURE free-aim (Erik). Plan: an optional `aim_angle` seam
-  through the already-angle-driven `fire_burst`/`fire_beam`/spray resolvers
-  (`aim_angle=None` = WEGO byte-identical), a directional trigger branch that
-  bypasses the range/LOS pre-gate (march resolves hit), delete
-  `_aim_fire_order`. Build P-plan F1→F3 in the doc §10; F3 is HUMAN-TEST. Root
-  cause of "shooting didn't work" = the band-aid fired at a max-range endpoint
-  tile then LOS-gated it. Until built, action-variant "shoot" is a no-op, so P3
-  is not a complete/mergeable slice.
-- **Door ↔ unit occupancy — ENGINE-level fix, rule A+B (decided).** A unit under
-  direct control can park its footprint in a door and get stuck (WEGO's A* never
-  stops on a door, so latent there). Layer verdict: engine — `is_passable_block`
-  is shared by A* and the direct-move branch, so one fix serves both schemes. **Rule
-  A:** a door may not close onto an occupying unit (stays/re-opens/close blocked).
-  **Rule B:** collision never permanently traps an already-placed unit (a unit
-  whose current footprint is blocked may always move toward a less-blocked cell).
-  Do NOT band-aid this in `_step_move_dir` only. Feel-adjacent → HUMAN-TEST gate.
-- **Action-variant crash** — reproduced by Erik during human-test, no traceback
-  captured; root cause unknown (possibly the shooting path under continuous time,
-  or a direct-intent edge case). Get a headless repro or Erik's terminal
-  traceback next time the branch is opened.
-- **Grenade button mapping** — grenade came out on the wrong physical button;
-  pure `GamepadDirect` hardware map, Erik to specify desired button.
+**Modular control / action variant — MERGED 2026-07-23, follow-up polish (LEAST-URGENT):**
+The direct-control + free-aim slice is in main and works. Remaining items are
+polish/feel + parked engine work; none block anything (WEGO untouched). Resume on
+Erik's signal — several want their own dedicated session.
+- **Flamer / spray "held stream" feel — OWN SESSION (Erik's lean).** Today the
+  spray archetype fires a fixed ~1–2 s burst (`burst_ticks`) with the aim latched
+  for the whole burst — under direct control you can't re-aim mid-burst. Intended
+  feel: a *continuous stream you hold as long as you want / have ammo for* and can
+  sweep. Directional spray currently kicks a fixed burst (`start_spray_burst_directional`,
+  aim latched via `spray_aim_angle`); the fix is hold-to-fire + per-tick re-aim
+  while TRIGGER is down. Delicate weapon → its own design/build pass.
+- **Playground level re-convert vs current engine.** `levels/playground/` (the
+  `--level playground` sandbox) predates recent engine + Arc-C editor format
+  changes; may not be fully converted. Re-open/convert via the map editor
+  (`tools/map_editor.py`) — a map-editor-agent task, not control work.
+- **Grenade button remap.** Grenade came out on the wrong physical button. A
+  button-index logger now prints `[gamepad] raylib button index N pressed`
+  (`control_gamepad.py`, human-test debug) — press each pad button, read the
+  console, then remap `GamepadDirect` (throw/use/weapon-cycle) to the right
+  indices. Weapon-cycle is currently on **keyboard N** (works under gamepad).
+- **Action-variant crash** — seen once by Erik in the first human-test; prime
+  suspect `_aim_fire_order` is now DELETED and a stress test raises nothing, so
+  likely resolved. Confirm if it ever recurs (grab the terminal traceback).
+- **Door ↔ unit occupancy — ENGINE-level fix, rule A+B (decided, unbuilt).** A
+  unit under direct control can park its footprint in a door and get stuck (WEGO's
+  A* never stops on a door, so latent there). Layer verdict: engine —
+  `is_passable_block` is shared by A* and the direct-move branch, so one fix serves
+  both schemes. **Rule A:** a door may not close onto an occupying unit
+  (stays/re-opens/close blocked). **Rule B:** collision never permanently traps an
+  already-placed unit (a unit whose current footprint is blocked may always move
+  toward a less-blocked cell). Do NOT band-aid in `_step_move_dir` only.
+  Feel-adjacent → HUMAN-TEST gate.
 - **P4 keyboard+mouse direct variant** — deferred; feel-adjacent (never
   auto-merge) and untestable while Erik has no mouse.
-- Parked worktree: `.claude/worktrees/control-modularity` (holds P3 + a copied
-  `cpp/build`). Local `main` unpushed (~10 ahead, carries arc-c + B2 + P1/P2).
+- **Canon fold (arc close):** fold the as-built (Ruleset split, ContinuousRealtime,
+  ControlSource/`--control`, per-tick intents, free-aim directional fire) into the
+  canon chapters (esp. `mechanics/04_turn_and_control.md` — also fix its stale
+  12 Hz table → 24 Hz) and archive the two design brainstorms to `docs/archive/`.
+- Cleanup pending: delete the merged `control-modularity` branch + worktree
+  (local + `origin`) once canon fold is done. `origin/main` may still be behind —
+  push when Erik OKs (would also publish B2).
 
 **Arc B (entity logic layer — DONE + merged 2026-07-22), its two parked riders:**
 - **Resident sensor-gather kernel** — the §5a `(n_sites × n_channels)` int32 GPU
