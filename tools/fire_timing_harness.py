@@ -208,22 +208,28 @@ def _open_neighbors(gmap, cy, cx):
 
 
 def run_one(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
-            max_seconds, tail_seconds, overrides=None, seed=12345, verbose=True):
+            max_seconds, tail_seconds, overrides=None, seed=12345, verbose=True,
+            snapshot_times_s=None):
     """Run one single-crate burn. ``wind_dq == 0`` -> NATURAL wind (no forcing);
     ``wind_dq != 0`` -> FORCED constant +x wind. ``overrides`` patches CFG dials
-    (restored afterwards). Returns a metrics dict."""
+    (restored afterwards). ``snapshot_times_s`` (increasing list) -> capture a copy
+    of the FULL 2D ``gmap.gas[O2]`` field (raw Q16.16) at each requested sim-time,
+    returned under ``metrics['o2_snapshots']`` as (tick, t_s, (h,w) int32). Returns
+    a metrics dict."""
     restore = apply_overrides(overrides or {})
     try:
         return _run_one_inner(
             wind_dq, interior_w=interior_w, interior_h=interior_h, crate_xy=crate_xy,
             tile_size_m=tile_size_m, max_seconds=max_seconds, tail_seconds=tail_seconds,
-            overrides=overrides or {}, seed=seed, verbose=verbose)
+            overrides=overrides or {}, seed=seed, verbose=verbose,
+            snapshot_times_s=snapshot_times_s)
     finally:
         restore_overrides(restore)
 
 
 def _run_one_inner(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
-                   max_seconds, tail_seconds, overrides, seed, verbose):
+                   max_seconds, tail_seconds, overrides, seed, verbose,
+                   snapshot_times_s=None):
     forced = (float(wind_dq) != 0.0)
     level = build_level(interior_w, interior_h, crate_xy, tile_size_m)
     sim = Simulation(level, seed=seed, breach_physics=bp, enable_recorder=False)
@@ -254,6 +260,12 @@ def _run_one_inner(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
     o2_seed = float(np.mean([int(gmap.gas[O2, ny, nx]) for (ny, nx) in nbrs])) / FP_ONE
 
     n_max = int(round(max_seconds * tps))
+    # 2D O2-field snapshot targets (ticks), captured at the first loop-tick at or
+    # past each requested time (assumes increasing snapshot_times_s).
+    snap_targets = [max(1, min(int(round(ts * tps)), n_max))
+                    for ts in (snapshot_times_s or [])]
+    o2_snaps = []
+    _sptr = 0
     rec = {k: [] for k in ("t", "I", "T", "hp", "o2", "gate", "o2far", "cx", "mass")}
     had_fire = False
     fuel_out_tick = None       # wall_hp first <= 0  (the meaningful "burnout")
@@ -282,9 +294,17 @@ def _run_one_inner(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
             fuel_out_tick = k
         if had_fire and fire_q == 0 and snap_tick is None:
             snap_tick = k
+        while _sptr < len(snap_targets) and k >= snap_targets[_sptr]:
+            o2_snaps.append((k, k * dt, gmap.gas[O2].copy()))
+            _sptr += 1
         done_tick = snap_tick if snap_tick is not None else fuel_out_tick
         if done_tick is not None and t > done_tick * dt + tail_seconds:
             break
+
+    # Any snapshot targets past the (early-stopped) run end -> the final field.
+    while _sptr < len(snap_targets):
+        o2_snaps.append((k, k * dt, gmap.gas[O2].copy()))
+        _sptr += 1
 
     for key in rec:
         rec[key] = np.asarray(rec[key], dtype=np.float64)
@@ -348,7 +368,7 @@ def _run_one_inner(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
         drift_tiles=drift_tiles, drift_ms=drift_ms,
         n_ticks=len(t_arr), rec=rec, nbrs=len(nbrs),
         interior_w=interior_w, interior_h=interior_h, crate_xy=tuple(crate_xy),
-        tile_size_m=tile_size_m,
+        tile_size_m=tile_size_m, o2_snapshots=o2_snaps,
     )
     if verbose:
         _print_run(metrics)
