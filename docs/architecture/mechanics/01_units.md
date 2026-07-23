@@ -495,7 +495,18 @@ and its consumers.
 
 
 
-  **Eriks additions -needs refining andplanning **
+  **Eriks additions -needs refining and planning**
 
   Perhaps body parts have hp-or if not hp, they can have damaged states
   it came to my intention that with the now in planning animation system, using ML techniques, we might get limping behaviour etc- it would be cool if this could be tied into the game mechanics- so a unit hit in the foot willstart wiht a different animation , speed, even behavuour perhaps.
+
+
+  **Equipment**
+
+I have decided that, at least in the single player part of the game, we will have equipment, meaning, different armors, weapons, rings (or similar- magic rings), all standard equipment of an rpg.
+
+Armor will have visual impact and gameplay wise
+i didnt intend on having armor play a huge role inthe ML track, probably the ML teams will be equipped by us, all they may see is the final stats of the unitsthey control - and perhaps all, during training if that's beneficial.
+
+**untis and level editor**
+i am not certain how the unit class , with all its stats etc, will interact with the level editor - i think this needs to be designed now soon. Perhaps we start with finalising the unit architecture - seems it will live in speard out places (HP and perhaps position on CUDA side, one char sheet on python side perhaps, inventory etc etc- would be nice to discuss together and lay out a plan, given all the wishes we want to accomplish).

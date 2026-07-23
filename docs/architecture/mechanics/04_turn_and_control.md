@@ -408,3 +408,51 @@ just a control mode that never pauses.
   level/content concerns that intersect the turn flow (units must exist before a
   round runs); these are tracked outside this chapter and were among the items
   reconciled before the legacy entry point was deleted.
+
+
+
+
+
+
+
+  *** Second Thoughts ***
+
+I'm starting to have second thought aout this 2 phased system.
+I'm leaning on either real time with pause, or WEGO with 1 phase per round, but i am also considering simplifying alot as a v0.1 - just control one character,with gamepad or mouse and keys, move with left stick, aimwith right stick.
+shoot with thedifferent triggers, we can have normal shot,throwgrenade,melee and some kind of block, which could also serve as a parry mechanic for melee attacks.
+Perhaps a grab too. would be amazing, it would be cool if there was some kind of rock paper scissor effect between melee, grab and block, i guess aretheclassics
+we alsoneed tofit in shooting-perhaps a shot is same as melee attack in effectiveness
+will ofc depend on the units size etc as well.
+
+Now - the reasoning for this is - especially the action oriented control scheme, ithink this is very easy to implement, and be done with, while the more tactical elements might want much more, abilities and what not, we never know when we'redone.
+
+none of this is quite relevant for the machine learning track either, they will need to have their controls - and in the end it will be marines moving in corridors -so their controls can be designed in parallel to the players control scheme (the AI do not care if we pause the game for example).
+
+Anyway - i would love it if the control schema also became modular - we have the game physics, inlcuding in what order everyhing is calculated.
+
+each tick, each unit will recieve orders in one way or another
+
+the way we issue these orders (game pad, mouse +keyboard and pause,) - is free for us to decide anytime, or at least it seems so for me.
+One thing i can lock intho, it will be "real time" all the time- im not considering changing to turnbased or anything like that - the physics of the game demands real time i feel like.
+
+
+I don't know how much time we should puton thisn ow, well , if we could have a modular control scheme, that would be great i thnk.
+I wonder if you could help me design it and set it up, also figure out how invasive it would be to the curent codebase.
+
+proposed controls for the controller scheme
+xbox controller:
+left stick: move
+right stick aim
+right trigger: Shoot
+
+right buttin -melee
+left button block melee
+left tirgger = parry
+
+grenade should be X i think, same button u use itemswith in elden ring, forgot ifits X or B honestly.
+
+Weneed a usebutton too.
+
+Blocking could be effective against both melee and ranged perhaps
+
+melee and blocking will probalby need some stamina system too, i wonder if it should be more like the rooms of many rooms, or more like dark souls -- in short, rooms of many rooms has dark souls like mechanics, but fuzed with world of warcraft mana mannagemnet - You need to mind stamina exactrl as in dark souls - but the penalty doesnt come directly, instead it comes after some minutes of innefective play, you are now out of stamina a little earlier that ifoyu had conserved it- basically as a way to introduce delayed rewards. (a too agressive player do not see the downside of depleting staming until it's out - basically, the stamina bar is huge, but dont replenish quickly -so u need to useit economically)-but im not sure this is right for breach. But we can keep it in mind. 
