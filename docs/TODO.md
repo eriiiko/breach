@@ -41,12 +41,16 @@ detail lives; this list is the map, not the territory.
 Erik's calls after the first controller human-test. This whole track runs in
 parallel with graphics/level-editor and blocks nothing (WEGO untouched; the door
 issue is latent for WEGO). Resume on Erik's signal.
-- **Free-aim directional shooting — OWN SESSION, design-first.** WEGO only ever
-  had *targeted* fire (order unit → enemy/tile); the action variant needs
-  face-a-direction-and-shoot. Many weapons coming → design it properly, don't
-  patch. P3's `_aim_fire_order` (fabricated targeted Order along facing) is the
-  band-aid to REPLACE. Until then the action variant's "shoot" verb is a no-op,
-  so P3 is not a complete/mergeable slice.
+- **Free-aim directional shooting — DESIGN LOCKED 2026-07-23, build = own
+  session.** Doc: `docs/free_aim_shooting_design_2026-07-23.md` (v0.2, decisions
+  locked). Aim model = PURE free-aim (Erik). Plan: an optional `aim_angle` seam
+  through the already-angle-driven `fire_burst`/`fire_beam`/spray resolvers
+  (`aim_angle=None` = WEGO byte-identical), a directional trigger branch that
+  bypasses the range/LOS pre-gate (march resolves hit), delete
+  `_aim_fire_order`. Build P-plan F1→F3 in the doc §10; F3 is HUMAN-TEST. Root
+  cause of "shooting didn't work" = the band-aid fired at a max-range endpoint
+  tile then LOS-gated it. Until built, action-variant "shoot" is a no-op, so P3
+  is not a complete/mergeable slice.
 - **Door ↔ unit occupancy — ENGINE-level fix, rule A+B (decided).** A unit under
   direct control can park its footprint in a door and get stuck (WEGO's A* never
   stops on a door, so latent there). Layer verdict: engine — `is_passable_block`

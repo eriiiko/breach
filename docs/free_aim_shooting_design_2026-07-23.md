@@ -1,8 +1,8 @@
 # Free-aim directional shooting design (2026-07-23)
 
-**Status: DRAFT v0.1 — authored from an engine map, decisions for Erik still
-open (§9). This is the design-first seed for the dedicated build session Erik
-asked for ("its own session to get it right"). No code yet.**
+**Status: v0.2 — decisions LOCKED with Erik 2026-07-23 (§9). Ready for the
+dedicated build session Erik asked for ("its own session to get it right"). No
+code yet. Aim model = PURE FREE-AIM (Erik's call).**
 
 Prompted by the first P3 controller human-test (2026-07-23): under direct
 gamepad control the possessed marine could move and aim but **could not shoot**.
@@ -150,9 +150,9 @@ this choice shapes 4b/4d:
   non-trivial determinism surface (target selection must be deterministic); and
   it complicates the eventual agent action space.
 
-Recommendation: **A for v1** (it's the correct, minimal, deterministic core and
-the thing that unblocks a mergeable P3), with B as an optional later polish layer
-*on top of* A. But this is Erik's feel call — see §9.
+**DECIDED (Erik, 2026-07-23): A — pure free-aim for v1.** The correct, minimal,
+deterministic core; cleanest agent action-space. B (aim-assist) stays an optional
+later polish layer *on top of* A, not part of this session.
 
 ## 6. Determinism
 
@@ -184,20 +184,18 @@ the thing that unblocks a mergeable P3), with B as an optional later polish laye
   path with `u.facing` instead of building an `Order`.
 - The unbounded-`phase` landmine goes away with it.
 
-## 9. Open decisions for Erik (please lock before the build session)
+## 9. Decisions (locked 2026-07-23)
 
-1. **Aim model (§5): pure free-aim (A) or soft-lock/aim-assist (B)?**
-   Recommend A for v1, B as later polish.
-2. **Melee under free-aim:** confirm it stays with the deferred melee arc and is
-   out of scope here (recommend yes).
-3. **Scope of v1 archetypes:** projectile + hitscan + spray + (existing) grenade.
-   Placed charges (breach/c4) via the USE path — this session or later?
-   (Recommend later.)
-4. **Fire-while-moving penalty:** any accuracy cost for moving, or flat accuracy
-   in v1 and tune later? (Recommend flat v1, dial later.)
-5. **Does fixing the directional model also fix the crash**, or is the crash
-   independent? (Needs the repro; the free-aim rewrite deletes the suspect
-   `_aim_fire_order` path, so it may fall out.)
+1. **Aim model (§5): PURE FREE-AIM (A).** Erik's call. B (aim-assist) is later
+   polish on top, not this session.
+2. **Melee:** stays with the deferred melee arc — **out of scope** here.
+3. **v1 archetypes:** projectile + hitscan + spray + (existing) grenade. Placed
+   charges (breach/c4) via the USE path are **later**, not this session.
+4. **Fire-while-moving:** **flat accuracy in v1**; movement/recoil/aim-drift
+   penalties are dials tuned later once it plays.
+5. **Crash:** still open/empirical — the free-aim rewrite deletes the suspect
+   `_aim_fire_order` path, so it may fall out; confirm with a repro in the build
+   session. (Tracked in `docs/TODO.md` action-variant items regardless.)
 
 ## 10. Build plan (for the dedicated session, after §9 is locked)
 
