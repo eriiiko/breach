@@ -28,7 +28,7 @@ import pytest
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
-for _p in (ROOT, ROOT / "tools"):
+for _p in (ROOT, ROOT / "tools", ROOT / "src"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
@@ -78,10 +78,12 @@ def test_every_registry_class_with_a_committed_png_has_a_valid_stem():
     """PNG filename (minus extension) must be a real registry class name —
     the palette maps class -> icon purely by filename, so a typo here is a
     silent no-op (the icon just never gets picked up)."""
-    import json
-    registry = json.loads((ROOT / "entity_registry.json").read_text(
-        encoding="utf-8"))
-    classes = set(registry["classes"])
+    # Source of truth is the LIVE registry, not the gitignored,
+    # suite-mutated entity_registry.json — a game-launch/main.py test rewrites
+    # that file mid-run, which made this test order-dependent (flaky). Importing
+    # the import-light package registers the full class catalog deterministically.
+    from simulation.entities import registry_payload
+    classes = set(registry_payload()["classes"])
     for png_path in sorted(ICONS_DIR.glob("*.png")):
         assert png_path.stem in classes, (
             f"{png_path.name}: {png_path.stem!r} is not a registered "
