@@ -28,7 +28,7 @@ from renderer.game_renderer import RenderConfig
 
 def main():
     # Load level
-    level = load_level("unhcr_vessel")
+    level = load_level("unhcr_vessel", levels_dir="prototypes")
     print(f"Loaded level: {level.name} ({level.width}x{level.height})")
 
     # Build a minimal gmap-shim with just the fields the renderer needs.

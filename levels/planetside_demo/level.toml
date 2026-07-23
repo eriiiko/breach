@@ -48,3 +48,16 @@ team = 0
 x = 45.0
 y = 18.0
 footprint = 3
+
+[art.bare]
+diffuse = "baked_diffuse.png"
+normal = "baked_normal.png"
+
+[art.align]
+offset_px = [0.0, 0.0]
+px_per_tile = [64.00, 64.00]
+
+[bake]
+tileset = "art/tilesets/greybox"
+px_per_tile = 64
+seed = 0

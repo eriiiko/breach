@@ -337,7 +337,7 @@ def test_spread_is_radiation_only_no_cellular_stencil():
     # A burning wood tile lights an ADJACENT wood tile via heat -> temperature ->
     # ignition (the radiation path), while a far flammable tile with no heat path
     # does NOT light — i.e. there is no cellular stencil reaching across gaps.
-    level = load_level("unhcr_vessel")
+    level = load_level("unhcr_vessel", levels_dir="prototypes")
     sim = Simulation(level, seed=11, breach_physics=bp, enable_recorder=False)
     g = sim.gmap
     g.material[50, 14] = MAT_WOOD          # burner
@@ -387,7 +387,7 @@ def test_conservative_default_does_not_firestorm_wood_room():
     # A hollow WOOD room, ignite ONE tile, run a few ticks with the SHIPPED config
     # [physics.fire] defaults. With cellular spread deleted and the heat path
     # gentle, the structure must NOT be engulfed in a handful of ticks.
-    level = load_level("unhcr_vessel")
+    level = load_level("unhcr_vessel", levels_dir="prototypes")
     sim = Simulation(level, seed=2, breach_physics=bp, enable_recorder=False)
     g = sim.gmap
     y0, x0 = 40, 10

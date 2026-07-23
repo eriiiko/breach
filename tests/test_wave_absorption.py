@@ -65,7 +65,7 @@ def _make_arena() -> GameMap:
     wave_absorb 0, atmosphere 1. Everything else in the map is irrelevant — we
     only ever read/measure inside the arena, and walls outside it just seal it.
     """
-    g = GameMap(load_level("unhcr_vessel"))
+    g = GameMap(load_level("unhcr_vessel", levels_dir="prototypes"))
     ys = slice(ARENA_Y0, ARENA_Y1)
     xs = slice(ARENA_X0, ARENA_X1)
     g.solid[ys, xs] = False

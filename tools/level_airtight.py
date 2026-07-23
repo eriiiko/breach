@@ -23,8 +23,8 @@ from level_loader import load as load_level
 from simulation.gamemap import GameMap
 
 
-def check(level_name: str) -> bool:
-    g = GameMap(load_level(level_name))
+def check(level_name: str, levels_dir: str = "levels") -> bool:
+    g = GameMap(load_level(level_name, levels_dir=levels_dir))
     solid = np.asarray(g.solid, dtype=bool)
     is_vac = np.asarray(g.is_vacuum, dtype=bool)
     h, w = solid.shape

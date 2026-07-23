@@ -36,7 +36,7 @@ from config import CFG  # noqa: E402
 from level_loader import SPACE_CODE, load, materials_from_tilemap  # noqa: E402
 from simulation import Simulation  # noqa: E402
 from simulation.materials import (  # noqa: E402
-    MAT_DOOR, MAT_FURNITURE, MAT_GLASS, MAT_HULL, MAT_STEEL, MAT_WOOD,
+    MAT_DOOR_CLOSED, MAT_FURNITURE, MAT_GLASS, MAT_HULL, MAT_STEEL, MAT_WOOD,
 )
 from simulation.status import serialize_statuses  # noqa: E402
 from simulation.unit import Unit  # noqa: E402
@@ -69,15 +69,22 @@ def _run(sim: Simulation, n: int) -> None:
 # Level structure
 # ---------------------------------------------------------------------------
 def test_playground_loads_with_all_showcase_materials():
+    """Playground was migrated (A7) to the entity door system: the painted
+    MAT_DOOR runs became closed ``door`` [[entity]] instances and their
+    tiles were rewritten MAT_DOOR -> MAT_DOOR_CLOSED (a6 doors design §1).
+    The showcase still needs a "door" — now it is MAT_DOOR_CLOSED in the
+    tilemap plus at least one door entity, never painted MAT_DOOR."""
     lvl = load("playground")
     assert lvl.version == "2"
     assert lvl.tilemap.shape == (70, 100), f"shape={lvl.tilemap.shape}"
     assert lvl.diffuse_path.exists()
     mat, vac = materials_from_tilemap(lvl.tilemap, lvl.version)
     for mid, label in ((MAT_HULL, "hull"), (MAT_WOOD, "wood"),
-                       (MAT_DOOR, "door"), (MAT_STEEL, "steel"),
+                       (MAT_DOOR_CLOSED, "door"), (MAT_STEEL, "steel"),
                        (MAT_GLASS, "glass"), (MAT_FURNITURE, "furniture")):
         assert (mat == mid).any(), f"playground must contain {label}"
+    assert any(e.class_name == "door" for e in lvl.entities), \
+        "playground must contain migrated door entities"
     assert vac.any(), "playground must have outer SPACE (breach play)"
     assert int(lvl.tilemap[67, 10]) != SPACE_CODE  # breach wall is hull...
     assert bool(vac[68, 10]), "...with vacuum directly beyond it"

@@ -34,7 +34,7 @@ from simulation.movement import FootprintSamples, default_speed, half_up, MOBILI
 # ---------------------------------------------------------------------------
 def test_furniture_tile_is_enterable():
     """A single furniture tile (mobility 400 > 0) is enterable; a wall is not."""
-    g = GameMap(load_level("unhcr_vessel"))
+    g = GameMap(load_level("unhcr_vessel", levels_dir="prototypes"))
     ys, xs = np.where((g.material == MAT_AIR) & ~g.is_vacuum)
     y, x = int(ys[len(ys) // 2]), int(xs[len(ys) // 2])
 
@@ -56,7 +56,7 @@ def test_furniture_tile_is_enterable():
 def test_block_enterable_requires_every_tile_positive():
     """is_passable_block is geometry: ANY single mobility-0 tile blocks the
     footprint, but an all-furniture block IS enterable (§4)."""
-    g = GameMap(load_level("unhcr_vessel"))
+    g = GameMap(load_level("unhcr_vessel", levels_dir="prototypes"))
     # Find a 3x3 all-air block.
     ys, xs = np.where((g.material == MAT_AIR) & ~g.is_vacuum)
     found = None

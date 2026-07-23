@@ -293,7 +293,7 @@ def test_full_step_clears_heat_after_unit_damage():
     the END of the tick, AFTER the unit-damage consumer) AND the unit-damage
     consumer saw the pre-clear value (the marine lost HP from the injected heat).
     """
-    level = load_level("unhcr_vessel")
+    level = load_level("unhcr_vessel", levels_dir="prototypes")
     sim = Simulation(level, seed=42, breach_physics=bp, enable_recorder=False)
     # A marine somewhere passable in the interior (same spot the sim smoke test
     # uses) and un-paused so step() runs the tick body.

@@ -232,7 +232,7 @@ def test_full_step_is_dormant_temperature_and_fire_unchanged():
     """On a normal level with no heat source, a full Simulation.step() leaves
     `temperature` ~0 and `fire` unchanged — the ignition path is present but
     DORMANT (no behaviour change), the intended safe seam."""
-    level = load_level("unhcr_vessel")
+    level = load_level("unhcr_vessel", levels_dir="prototypes")
     sim = Simulation(level, seed=42, breach_physics=bp, enable_recorder=False)
     m = Unit("M1", x=14, y=50, team=0)
     sim.add_unit(m)

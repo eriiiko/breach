@@ -1321,7 +1321,7 @@ def materials_from_tilemap(tilemap: np.ndarray, version: str):
 
 if __name__ == "__main__":
     import sys
-    name = sys.argv[1] if len(sys.argv) > 1 else "unhcr_vessel"
+    name = sys.argv[1] if len(sys.argv) > 1 else "playground"
     lvl = load(name)
     print(f"Loaded: {lvl.name} (v{lvl.version})")
     print(f"  Grid: {lvl.width} x {lvl.height} tiles @ {lvl.tile_size_m} m each")

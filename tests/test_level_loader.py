@@ -24,7 +24,7 @@ def assert_eq(actual, expected, name=""):
 
 
 def test_load_unhcr_vessel():
-    lvl = load("unhcr_vessel")
+    lvl = load("unhcr_vessel", levels_dir="prototypes")
     assert_eq(lvl.name, "UNHCR Vessel", "name")
     assert_eq(lvl.version, "2", "version")
     assert lvl.tilemap.shape == (120, 50), f"shape={lvl.tilemap.shape}"
@@ -34,7 +34,7 @@ def test_load_unhcr_vessel():
 
 
 def test_materials_from_tilemap():
-    lvl = load("unhcr_vessel")
+    lvl = load("unhcr_vessel", levels_dir="prototypes")
     mat, vac = materials_from_tilemap(lvl.tilemap, lvl.version)
     # CSV v2: codes are canon material ids; 9=SPACE (air + vacuum)
     assert mat.shape == lvl.tilemap.shape
@@ -52,7 +52,7 @@ def test_materials_from_tilemap():
 
 def test_csv_values_match_expected():
     """CSV must contain only canon v2 codes (material ids + SPACE)."""
-    lvl = load("unhcr_vessel")
+    lvl = load("unhcr_vessel", levels_dir="prototypes")
     allowed = set(MATERIAL_NAMES) | {SPACE_CODE}
     unique = sorted(np.unique(lvl.tilemap).tolist())
     for v in unique:

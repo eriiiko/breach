@@ -100,23 +100,100 @@ y = 62
 # entities (engine/15 §2.2); color 0-255 ints = (1.0, 0.1, 0.05) * 255.
 # ---------------------------------------------------------------------------
 
-[[light]]
-pos = [25, 10]
+
+[[entity]]
+id = "door_1"
+class = "door"
+x = 60
+y = 10
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_2"
+class = "door"
+x = 82
+y = 10
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_3"
+class = "door"
+x = 66
+y = 26
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_4"
+class = "door"
+x = 82
+y = 32
+orientation = "v"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_5"
+class = "door"
+x = 66
+y = 48
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "door_6"
+class = "door"
+x = 10
+y = 54
+orientation = "h"
+length_m = 1.333
+initial_state = "closed"
+
+[[entity]]
+id = "light_1"
+class = "light"
+x = 25
+y = 10
 color = [255, 26, 13]
 intensity = 0.9
 range = 18.0
 kind = "static"
 
-[[light]]
-pos = [25, 30]
+[[entity]]
+id = "light_2"
+class = "light"
+x = 25
+y = 30
 color = [255, 26, 13]
 intensity = 0.9
 range = 18.0
 kind = "static"
 
-[[light]]
-pos = [25, 55]
+[[entity]]
+id = "light_3"
+class = "light"
+x = 25
+y = 55
 color = [255, 26, 13]
 intensity = 0.9
 range = 18.0
 kind = "static"
+
+[art.bare]
+diffuse = "baked_diffuse.png"
+normal = "baked_normal.png"
+
+[art.align]
+offset_px = [0.0, 0.0]
+px_per_tile = [64.00, 64.00]
+
+[bake]
+tileset = "art/tilesets/greybox"
+px_per_tile = 64
+seed = 0

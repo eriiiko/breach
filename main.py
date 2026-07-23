@@ -247,7 +247,7 @@ def main():
     # 1. Load level + build the simulation. --level overrides config for
     # one launch (playground / test maps); default = [display] level.
     level_name = (_parse_level_override()
-                  or getattr(CFG.display, "level", "unhcr_vessel"))
+                  or getattr(CFG.display, "level", "playground"))
     print(f"Loading level: {level_name}")
     level = load_level(level_name)
     res_factor = _parse_res_factor()

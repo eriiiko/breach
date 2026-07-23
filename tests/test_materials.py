@@ -94,7 +94,7 @@ def test_table_missing_material_raises():
 
 def test_caches_match_table():
     """Derived caches must equal the table projection (no hardcoded lists)."""
-    g = GameMap(load_level("unhcr_vessel"))
+    g = GameMap(load_level("unhcr_vessel", levels_dir="prototypes"))
     m = g.material
     tbl = g.materials
     # Solid mask == old {HULL, WOOD, DOOR} behaviour for current set.
@@ -114,7 +114,7 @@ def test_caches_match_table():
 
 
 def test_on_tile_changed_patches_all_caches_after_destroy():
-    g = GameMap(load_level("unhcr_vessel"))
+    g = GameMap(load_level("unhcr_vessel", levels_dir="prototypes"))
     # Use an interior (non-edge) hull tile so destroy_wall does NOT open a
     # vacuum breach — we are testing the cache patch, not breach behaviour.
     h, w = g.material.shape
@@ -161,7 +161,7 @@ def test_permeability_defaults_to_solid_set():
     assert tbl.permeability[MAT_AIR] == 1.0, "air must be open"
     for mid in (MAT_HULL, MAT_WOOD, MAT_DOOR, MAT_STEEL, MAT_GLASS):
         assert tbl.permeability[mid] == 0.0, f"material {mid} must be sealed"
-    g = GameMap(load_level("unhcr_vessel"))
+    g = GameMap(load_level("unhcr_vessel", levels_dir="prototypes"))
     # obstacles base (before any unit stamp) derives from permeability and must
     # equal the occlusion set for the current materials.
     assert np.array_equal(g.obstacles, g.solid), "obstacles != solid set"
@@ -206,7 +206,7 @@ def test_furniture_projects_into_grid_caches():
     """A tile patched to FURNITURE lands in every derived grid: flammable
     mask True, permeability 0.5 (NOT solid — flow drifts past), wall_hp 30,
     movement climbable-at-a-penalty (mobility 400 -> is_passable True)."""
-    g = GameMap(load_level("unhcr_vessel"))
+    g = GameMap(load_level("unhcr_vessel", levels_dir="prototypes"))
     ys, xs = np.where((g.material == MAT_AIR) & ~g.is_vacuum)
     y, x = int(ys[len(ys) // 2]), int(xs[len(ys) // 2])
     g.material[y, x] = MAT_FURNITURE
@@ -228,7 +228,7 @@ def test_furniture_projects_into_grid_caches():
 
 def test_on_tile_changed_direct_patch():
     """Directly editing material + calling on_tile_changed updates caches."""
-    g = GameMap(load_level("unhcr_vessel"))
+    g = GameMap(load_level("unhcr_vessel", levels_dir="prototypes"))
     ys, xs = np.where(g.material == MAT_AIR)
     y, x = int(ys[0]), int(xs[0])
     assert not g.solid[y, x]

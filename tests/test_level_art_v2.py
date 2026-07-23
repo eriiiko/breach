@@ -95,7 +95,7 @@ def _load_from(tmp_path: Path, name: str):
 
 def test_freeze_unhcr_vessel_flat_keys():
     """The shipped level (flat art keys) — art fields identical to pre-F2."""
-    lvl = load("unhcr_vessel")
+    lvl = load("unhcr_vessel", levels_dir="prototypes")
     base = lvl.path
     assert lvl.diffuse_path == base / "diffuse.png"
     assert lvl.normal_path == base / "normal.png"
@@ -321,14 +321,14 @@ def test_align_px_per_tile_pair_validation(tmp_path):
 # The level F2 exists for
 # ---------------------------------------------------------------------------
 
-_VESSEL2 = ROOT / "levels" / "unhcr_vessel_2"
+_VESSEL2 = ROOT / "prototypes" / "unhcr_vessel_2"
 
 
 @pytest.mark.skipif(not _VESSEL2.is_dir(),
                     reason="unhcr_vessel_2 is untracked WIP art "
                            "(present only on the authoring machine)")
 def test_unhcr_vessel_2_loads_end_to_end():
-    lvl = load("unhcr_vessel_2")
+    lvl = load("unhcr_vessel_2", levels_dir="prototypes")
     assert lvl.version == "2"
     # Which layer fills the displayed (bare) slot is an authoring choice on
     # the untracked toml (currently the furnished interim until F3 composes

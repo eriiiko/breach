@@ -50,7 +50,7 @@ from simulation import Simulation
 from simulation.unit import Unit
 from simulation.field_edit import FieldEdit, Region, EditMode, Falloff
 
-LEVEL = getattr(CFG.display, "level", "unhcr_vessel")
+LEVEL = getattr(CFG.display, "level", "playground")
 # The 4 field solvers + the raycaster (the live fire->heat cast, CUDA-S2 live).
 # With the raycaster ON, cast_fire_heat deposits `heat` on the GPU.
 # EOS P6.0: wave/atmos backends retired (kernels deleted with their solvers).

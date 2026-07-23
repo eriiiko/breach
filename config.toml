@@ -443,7 +443,7 @@ conservative   = true                 # EOS P1: donor-cell flux transport, not s
 
 [display]
 panel_width = 250
-level = "unhcr_vessel_2"          # folder under levels/ to load on startup (the repainted v2 ship; v1 = "unhcr_vessel")
+level = "playground"              # folder under levels/ to load on startup (the standard-values sandbox; ship prototypes retired to prototypes/)
 # Water overlay v2 look knobs (water W6b; canon engine/07 §6 — the tasteful
 # placeholder, not the shipped optics pass). RENDER-ONLY and RESTART-BOUND:
 # GameRenderer binds them once at construction (the water_display_max
