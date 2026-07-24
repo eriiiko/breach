@@ -50,15 +50,16 @@ namespace breach_cuda {
 // max early-exit + the atomicAdd smoke scatter + the device-collected destroyed
 // list). Because this is a FREE function (not a method on the solver), the
 // solver's scalar FireParams dials are passed explicitly:
-//   k_grow / k_die / fire_T_ext / fire_T_span / fuel_ref / P_min / P_full /
-//   I_min / k_wind_fan / k_wind_strip / fire_pressure_gain / smoke_emission /
-//   wall_damage / temp_scale / temp_gain_scale / T_FLAME_MAX.
+//   k_grow / k_die / fire_T_ext / fire_T_span / fuel_ref / o2_frac_ext /
+//   o2_frac_amb / I_min / k_wind_fan / k_wind_strip / fire_pressure_gain /
+//   smoke_emission / wall_damage / temp_scale / temp_gain_scale / T_FLAME_MAX.
 // All quantized step constants + the load-time reciprocals (make_recip) are
 // precomputed ON THE HOST in double, VERBATIM from the CPU load-time block, and
 // passed as scalar kernel args.
 //
-// n_o2 / wind_x / wind_y / is_wall / is_vacuum / flammable are READ-ONLY;
-// atmosphere is read-only + vestigial (unread). temperature is IN/OUT (plume->T).
+// n_o2 / n_total / wind_x / wind_y / is_wall / is_vacuum / flammable are
+// READ-ONLY; atmosphere is read-only + vestigial (unread). temperature is
+// IN/OUT (plume->T).
 //
 // PERF NOTE (residency is S8): per-call H2D of all fields + masks and a D2H of
 // the 4 mutated fields + the destroyed list, once per tick — deliberately
@@ -68,8 +69,11 @@ std::vector<std::pair<int, int>> fire_step(
     const int32_t* atmosphere, // Q16.16 (h,w) — read-only + VESTIGIAL (EOS P4:
                                //   the CPU step keeps it for ABI parity but no
                                //   longer reads it — never uploaded/returned here)
-    const int32_t* n_o2,       // Q16.16 (h,w) — read-only (EOS P4: the O2 gate's
-                               //   real bulk-O2 neighbour-mean input)
+    const int32_t* n_o2,       // Q16.16 (h,w) — read-only (continuous-O2 law: the
+                               //   mole-fraction NUMERATOR, real bulk-O2 density)
+    const int32_t* n_total,    // Q16.16 (h,w) — read-only (continuous-O2 law: the
+                               //   mole-fraction DENOMINATOR, real N_total = Σ
+                               //   conservative bulk planes O2+N2)
     int32_t* smoke,            // Q16.16 (h,w) — in/out (emission scatter into nbrs)
     int32_t* wall_hp,          // Q16.16 (h,w) — in/out (burn-through depletion)
     int32_t* temperature,      // Q16.16 (h,w) — in/out (READ the `hot` gate + WRITE
@@ -81,9 +85,11 @@ std::vector<std::pair<int, int>> fire_step(
     const bool* flammable,
     int h, int w, float dt,
     // FireParams dials (verbatim the CPU `params`; p_expand_ref RETIRED — the
-    // plume self-limiter now gates on T_FLAME_MAX, not p_expand_ref):
+    // plume self-limiter now gates on T_FLAME_MAX, not p_expand_ref;
+    // continuous-O2 law: P_min/P_full RETIRED from this gate, REPLACED by the
+    // o2_frac_ext/o2_frac_amb mole-fraction span):
     float k_grow, float k_die, float fire_T_ext, float fire_T_span,
-    float fuel_ref, float P_min, float P_full, float I_min,
+    float fuel_ref, float o2_frac_ext, float o2_frac_amb, float I_min,
     float k_wind_fan, float k_wind_strip, float fire_pressure_gain,
     float smoke_emission, float wall_damage,
     float temp_scale, float temp_gain_scale, float T_FLAME_MAX);

@@ -51,20 +51,26 @@ namespace breach_cuda {
 
 // ONE CombustionSolver::step on the GPU — IN-PLACE on the three mutated gas
 // planes (O2 = gas[o2_idx], inert_N2 = gas[inert_n2_idx], black_smoke =
-// gas[black_smoke_idx]), `temperature`, and `wall_hp`. `fire` is intentionally
-// absent (the reformulation dropped it — combustion.cpp header). The scalar
-// config dials arrive explicitly (the free function has no CombustionSolver).
-// The two per-call rail counts are written to *heat_floor_hits / *t_max_phys_hits
-// (added to whatever they hold, matching the CPU member `+=` accumulation).
+// gas[black_smoke_idx]), `temperature`, and `wall_hp`. `fire` is READ again
+// (continuous-O2 law, docs/continuous_o2_law_design_2026-07-24.md §2.3): it is
+// the per-claimant intensity factor I_k in demand_k = burn_cap*I_k*o2f_j (the
+// P6.9 reformulation had dropped it as an outcome-neutral prefilter; the
+// proportional-draw law reinstates it as the demand magnitude). The scalar
+// config dials arrive explicitly (the free function has no CombustionSolver),
+// now including o2_frac_ext/o2_frac_amb — the SAME mole-fraction span dial the
+// fire logistic uses (one law, shared constants). The two per-call rail counts
+// are written to *heat_floor_hits / *t_max_phys_hits (added to whatever they
+// hold, matching the CPU member `+=` accumulation).
 void combustion_step(
     int32_t* gas, int n_gases,
     int o2_idx, int inert_n2_idx, int black_smoke_idx,
     int32_t* temperature, int32_t* wall_hp,
+    const int32_t* fire,
     const bool* flammable, const bool* solid, const bool* is_vacuum,
     const int32_t* ignition_temp_q16,
     int h, int w, float dt, float c_v, float n_floor_heat,
     float burn_rate, float o2_thresh_burn, float H_fuel, float soot_yield,
-    float fuel_per_o2, float T_MAX_PHYS,
+    float fuel_per_o2, float o2_frac_ext, float o2_frac_amb, float T_MAX_PHYS,
     int64_t* heat_floor_hits, int64_t* t_max_phys_hits);
 
 // Backend flag: when ON, PhysicsRunner's combustion pass dispatches to

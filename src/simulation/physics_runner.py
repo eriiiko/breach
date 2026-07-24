@@ -620,16 +620,20 @@ class PhysicsRunner:
         if self._combustion_on_cuda():
             # EOS P6.9b GPU dispatch (strictly additive; bit-identical to the CPU
             # CombustionSolver.step — tests/cuda_combustion_check.py). `fire` is
-            # dropped (the reformulation no longer reads it).
+            # READ again (continuous-O2 law, docs/continuous_o2_law_design_2026-
+            # 07-24.md §2.3): the per-claimant intensity factor I_k in the O2
+            # demand. o2_frac_ext/amb are the SAME law the fire logistic uses.
             self.bp.cuda_combustion_step(
                 gmap.gas, self._o2_idx, self._inert_n2_idx, self._black_smoke_idx,
-                gmap.temperature, gmap.wall_hp,
+                gmap.temperature, gmap.wall_hp, gmap.fire,
                 gmap.flammable, gmap.solid, gmap.is_vacuum,
                 ignition_temp_q16,
                 sim_time, self.temperature.c_v, self.temperature.n_floor_heat,
                 self.combustion.burn_rate, self.combustion.o2_thresh_burn,
                 self.combustion.H_fuel, self.combustion.soot_yield,
-                self.combustion.fuel_per_o2, self.combustion.T_MAX_PHYS,
+                self.combustion.fuel_per_o2,
+                self.combustion.o2_frac_ext, self.combustion.o2_frac_amb,
+                self.combustion.T_MAX_PHYS,
             )
         else:
             self.combustion.step(
