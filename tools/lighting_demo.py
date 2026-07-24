@@ -733,7 +733,7 @@ def main() -> None:
     # --level overrides config for one launch (the studio runs
     # --level fire_studio); default stays [display] level.
     level_name = _parse_level_arg() or getattr(CFG.display, "level",
-                                               "unhcr_vessel")
+                                               "playground")
     level = load_level(level_name)
     print(f"[lighting_demo] Level: {level.name}  {level.width}x{level.height} tiles")
 

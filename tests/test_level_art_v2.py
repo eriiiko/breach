@@ -95,7 +95,7 @@ def _load_from(tmp_path: Path, name: str):
 
 def test_freeze_unhcr_vessel_flat_keys():
     """The shipped level (flat art keys) — art fields identical to pre-F2."""
-    lvl = load("unhcr_vessel", levels_dir="prototypes")
+    lvl = load("unhcr_vessel")
     base = lvl.path
     assert lvl.diffuse_path == base / "diffuse.png"
     assert lvl.normal_path == base / "normal.png"

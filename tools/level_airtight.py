@@ -68,5 +68,5 @@ def check(level_name: str, levels_dir: str = "levels") -> bool:
 
 
 if __name__ == "__main__":
-    name = sys.argv[1] if len(sys.argv) > 1 else "unhcr_vessel"
+    name = sys.argv[1] if len(sys.argv) > 1 else "playground"
     sys.exit(0 if check(name) else 1)

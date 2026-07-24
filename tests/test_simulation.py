@@ -69,7 +69,7 @@ def _state_signature(sim: Simulation):
 
 def test_step_smoke():
     """100 ticks with no exceptions starting from a clean sim."""
-    level = load_level("unhcr_vessel", levels_dir="prototypes")
+    level = load_level("unhcr_vessel")
     sim = Simulation(level, seed=SEED, breach_physics=bp,
                      enable_recorder=False)
     _spawn_demo_units(sim)
@@ -81,7 +81,7 @@ def test_step_smoke():
 
 def test_determinism():
     """Same seed must give the same state after N steps."""
-    level = load_level("unhcr_vessel", levels_dir="prototypes")
+    level = load_level("unhcr_vessel")
 
     sim_a = Simulation(level, seed=SEED, breach_physics=bp,
                        enable_recorder=False)
@@ -110,7 +110,7 @@ def test_determinism():
 
 def test_undo_round_trip():
     """Placing an order then undoing it returns AP and inventory."""
-    level = load_level("unhcr_vessel", levels_dir="prototypes")
+    level = load_level("unhcr_vessel")
     sim = Simulation(level, seed=SEED, breach_physics=bp,
                      enable_recorder=False)
     m_id, _ = _spawn_demo_units(sim)
@@ -143,7 +143,7 @@ def test_full_round_runs():
     """
     from simulation.orders import ORDER_FIRE
 
-    level = load_level("unhcr_vessel", levels_dir="prototypes")
+    level = load_level("unhcr_vessel")
     sim = Simulation(level, seed=SEED, breach_physics=bp,
                      enable_recorder=False)
 

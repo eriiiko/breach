@@ -244,7 +244,7 @@ def _auto_paint_check(grid: np.ndarray, csv_path: Path) -> None:
 def main() -> None:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     auto = "--auto" in sys.argv
-    level_name = args[0] if args else "unhcr_vessel_2"
+    level_name = args[0] if args else "playground"
 
     lvl = load_level(level_name)
     grid = np.array(lvl.tilemap, dtype=np.int32, copy=True)  # live paint target

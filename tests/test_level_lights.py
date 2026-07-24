@@ -316,7 +316,10 @@ def _assert_lamp(l: LightEntry) -> None:
 
 @pytest.mark.parametrize("level_name", ["unhcr_vessel", "unhcr_vessel_2"])
 def test_vessel_lamp_port(level_name):
-    lvl = load(level_name, levels_dir="prototypes")
+    # unhcr_vessel is the kept legacy fixture (levels/); unhcr_vessel_2 stays
+    # retired (prototypes/).
+    levels_dir = "prototypes" if level_name == "unhcr_vessel_2" else "levels"
+    lvl = load(level_name, levels_dir=levels_dir)
     assert [(l.x, l.y) for l in lvl.lights] == LAMP_POSITIONS
     for l in lvl.lights:
         _assert_lamp(l)

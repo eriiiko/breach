@@ -159,7 +159,7 @@ def test_unit_stamp_never_raises_solid_permeability():
     """GameMap layer: a unit whose footprint covers a DOOR tile (passable to
     movement, solid to flow) must leave the door flow-sealed (perm 0) while
     its air tiles get the partial body permeability."""
-    g = GameMap(load_level("unhcr_vessel", levels_dir="prototypes"))
+    g = GameMap(load_level("unhcr_vessel"))
     doors = np.argwhere(g.material == MAT_DOOR)
     assert len(doors) > 0, "unhcr_vessel should contain door tiles"
     # Pick a door that is solid to flow (static perm 0) — the leak config.
