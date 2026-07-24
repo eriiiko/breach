@@ -7,7 +7,8 @@ structural carve-out door flips live in), 14 (determinism — digest/attestation
 sections join), 15 (level authoring — the format `[[entity]]` extends).
 
 **Status:** Arc A foundation ✅ (A1–A9 merged 2026-07-19, Erik blessed) · signals/sensors/logic
-✅ (Arc B, B1–B7 merged 2026-07-22, Erik blessed — §8) · editor UX 📝 (Arc C).
+✅ (Arc B, B1–B7 merged 2026-07-22, Erik blessed — §8) · editor UX ✅ (Arc C, C0–C9 merged
+2026-07-22, merge `54cd6cd`).
 
 > Canonized 2026-07-19 at Arc A close. The design record is
 > `docs/entity_system_design_2026-07-18.md` (LOCKED model, erratad as-built) +
@@ -249,10 +250,13 @@ blockers; the resolution ledger is §0b there). B1–B7 merged 2026-07-22, Erik 
 
 - **Resident sensor-gather kernel:** the §5a `(n_sites × n_channels)` int32 gather kernel on
   the GPU-resident path (interface frozen in §8; was deferred behind S8c, now buildable).
-- **Arc C — editor UX:** registry-driven palette/inspector, transaction-log undo, the
-  DOOR/wire/zone tools, play-from-editor, icons; plus riders — baker writeback onto
-  level_lib, `MAT_DOOR_CLOSED`-outside-a-span validator warning, legacy-level migration
-  (Erik's call per level).
+- **Arc C — editor UX: delivered.** C0–C9 merged 2026-07-22 (`54cd6cd`) — registry-driven
+  palette/inspector, transaction-log undo, the DOOR/wire/zone tools, play-from-editor,
+  icons, plus riders (baker writeback onto level_lib, a `MAT_DOOR_CLOSED`-outside-a-span
+  validator warning). See Implementation status below; build record archived
+  `docs/archive/arc_c_impl_2026-07-22.md`. Legacy-level migration stayed a separate,
+  non-Arc-C call (Erik: keep `unhcr_vessel` as the legacy fixture in `levels/`, retire
+  `unhcr_vessel_2` to `prototypes/`, migrate playground/planetside_demo).
 - **Stack-2 — units convergence:** one id space, unit signals (`hp`, `alive`,
   `faction`), `SYNCED_UNIT_FIELDS` + entity digests merge as a planned single
   re-baseline.
@@ -270,6 +274,21 @@ blockers; the resolution ledger is §0b there). B1–B7 merged 2026-07-22, Erik 
   O-key latch survives on unwired doors); `button`/terminal classes remain
   format-reserved and inert pending the control-scheme decision (interaction/cost-policy
   split — never bake AP/phase assumptions into entity code).
+- **Arc C — editor UX (C0–C9) merged to main 2026-07-22** (`54cd6cd`). Registry-driven
+  palette/inspector (C1); transaction-log undo replacing the four per-domain rings
+  (C2, design-gated — `docs/archive/arc_c_c2_undo_design_2026-07-22.md`); DOOR
+  span-placement + sensor placement + generic entity place-one (C3); multi-select + tags +
+  clump copy/paste (C4); wand fill + zone/air/vacuum paint with hull-leak/zone-binding
+  validators + a level-properties pane (C5); two-click wire tool + LOGIC overlay + tag
+  badges (C6); play-from-editor (F5, `_editor_scratch/` loader form) (C7); an SVG->PNG
+  icons pipeline for the palette (C8); baker `[art]`/`[bake]` writeback ported onto
+  `level_lib` + a `MAT_DOOR_CLOSED`-outside-a-span validator warning (C9). **SPAWN stays a
+  bespoke, non-registry placement tool** — units are not entities (§0), so there is no
+  parity path to port it onto `[[entity]]`; the deeper unit-class/spawn-location question
+  is deferred to its own design pass. Full suite green throughout (1547 passed at C9's
+  gate), zero goldens/digests touched at any patch. Build record archived
+  `docs/archive/arc_c_impl_2026-07-22.md` (+ kickoff + the C2 undo design doc, same
+  folder).
 - Open dials & warts: `physics.py:104` blast-tuple wart (steel/glass/furniture excluded
   from blast wall damage — pre-existing; decide at physics close-out) · staged
   tile-per-tick door opening if the instant whole-span transient ever reads badly (no
