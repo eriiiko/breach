@@ -1219,11 +1219,14 @@ class Simulation:
         if self.physics_runner is not None:
             fire_cfg = getattr(CFG.physics, "fire", None)
             ignition_seed = float(getattr(fire_cfg, "ignition_seed", 0.1))
-            # Reuse the fire's O2 (pressure) survival threshold so a tile cannot be
-            # ignited into a state the next fire step would immediately suffocate.
-            # config [physics.fire].o2_threshold (0.60) mirrors the feedback P_min.
-            o2_threshold = float(getattr(fire_cfg, "o2_threshold", 0.60))
-            apply_temperature_ignition(self.gmap, o2_threshold, ignition_seed)
+            # Continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md §2.4):
+            # ignition and sustain read ONE law — a tile ignites only where the
+            # local O2 MOLE FRACTION X exceeds the extinction limit X_ext, the
+            # same o2_frac_ext the fire logistic uses. (Retires the old absolute
+            # o2_threshold gate so ignition cannot seed a tile the next fire step
+            # would immediately suffocate.)
+            o2_frac_ext = float(getattr(fire_cfg, "o2_frac_ext", 0.13))
+            apply_temperature_ignition(self.gmap, o2_frac_ext, ignition_seed)
 
         # 9e. Entities — the SPLIT GATE (Arc B impl doc §2b, D2). Two
         # independently-gated pieces:

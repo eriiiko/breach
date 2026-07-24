@@ -77,10 +77,10 @@
 // itself is EMERGENT (fire I == 0, T >= ignition_temp, wall_hp > FUEL_FLOOR)
 // — no new state.
 //
-// `fire` is now UNUSED (kept in the signature for ABI stability): the old
-// scatter read it only as an outcome-neutral row-major prefilter (the real
-// gate is ign > 0 && Tsnap >= ign), so the gather drops it with no behavioral
-// effect.
+// `fire` is READ again since the continuous-O2 law (design §2.3): it is the
+// per-claimant intensity factor I_k in demand_k = burn_rate*I_k*o2f_j*dt. (P6.9
+// had dropped it as an outcome-neutral prefilter; the proportional-draw law
+// reinstates it as the "how hard does this source burn" term.)
 //
 // o2_thresh_breathe is a SEPARATE constant, defined but NOT consumed here —
 // unit suffocation is a LATER mechanics arc (design §5: "enabled here,
@@ -102,10 +102,32 @@ public:
     // pressure spike bounded and Q16.16-safe; the room-scale "how hot does a
     // shoebox flashover get" question is explicitly a P5 feel call, not a
     // correctness one.)
-    float burn_rate       = 1.0f;    // N_O2 consumed per second, per burn site
-    float o2_thresh_burn  = 0.03f;   // min local N_O2 to sustain combustion
-                                      // (below the fire logistic's P_min so
-                                      // the VISIBLE flame dies first)
+    // Continuous O2->combustion law (docs/continuous_o2_law_design_2026-07-24.md):
+    // demand is now PROPORTIONAL in both fire intensity I and the O2 factor o2f
+    //   demand_i = burn_rate * I_i * o2f_j * dt      (was: burn_rate * dt, gated)
+    // where o2f_j is LINEAR in the air cell's O2 MOLE FRACTION X = O2/(O2+N2):
+    //   o2f = clamp01((X - o2_frac_ext) / (o2_frac_amb - o2_frac_ext))
+    // burn_rate drops to the ceiling_h-anchored physical value (~1/50). A choked
+    // (low-o2f) or low-intensity fire draws less O2 -> less heat -> "a choked
+    // fire is a cool fire". o2_thresh_burn is RETIRED as a gate (below).
+    // Huggett, R.C., "Estimation of rate of heat release by means of oxygen
+    // consumption measurements", Fire and Materials 4(2):61-65, 1980 (~13.1 MJ/kg
+    // O2) anchors the burn_rate/H_fuel scale; Peatross & Beyler 1997 the linear
+    // law. Both archived under docs/papers/ (see fire_simulation.cpp header).
+    float burn_rate       = 0.02f;   // N_O2 consumed per second per burn site at
+                                      //  I=1, o2f=1 (ceiling_h-anchored ~1/50; was
+                                      //  1.0 under the retired uniform-gated draw)
+    float o2_frac_ext     = 0.13f;   // X_ext: flame-extinction O2 mole fraction
+                                      //  (shared law with FireParams; 0 = pure
+                                      //  proportional)
+    float o2_frac_amb     = 0.21f;   // X_amb: ambient O2 mole fraction (reads the
+                                      //  level's authored [ambient] o2_frac; 0.21
+                                      //  fallback — one source of truth with BC)
+    float o2_thresh_burn  = 0.03f;   // RETIRED as the burn gate (the o2f law is the
+                                      //  throttle now); kept ONLY as an epsilon
+                                      //  skip-floor — an air cell with O2 <= this
+                                      //  is treated as fully starved and skipped
+                                      //  (a cheap early-out, no behavioral gate)
     float H_fuel           = 4.0f;   // heat yield (T-scale) per unit N_O2 burned
     float soot_yield       = 0.3f;   // fraction of consumed O2 -> black_smoke
                                       // (remainder -> inert_N2, decisions #12)
@@ -150,8 +172,8 @@ public:
     //                      AND the ember-scale fuel store — depleted
     //                      fuel_per_o2-proportionally, floored at FUEL_FLOOR,
     //                      never destroyed by this pass)
-    // fire               : (h, w) Q16.16, UNUSED since P6.9 (was a candidate
-    //                      prefilter; kept for ABI stability — see header note)
+    // fire               : (h, w) Q16.16, READ (continuous-O2 law §2.3): the
+    //                      per-claimant intensity factor I_k in the O2 demand
     // flammable/solid/is_vacuum : (h, w) bool masks
     // ignition_temp_q16  : (h, w) Q16.16, per-tile material threshold — the
     //                      SAME table apply_temperature_ignition uses

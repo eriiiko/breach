@@ -59,6 +59,15 @@ __device__ __forceinline__ bool in_bounds(int y, int x, int h, int w) {
     return y >= 0 && y < h && x >= 0 && x < w;
 }
 
+// Integer clamp to [0, FP_ONE] (the [0,1] o2f saturation) — VERBATIM device
+// port of combustion.cpp's file-local clamp01_q (mirrors cuda_fire.cu's
+// clamp01_q_dev so the two O2 laws are bit-identical).
+__device__ __forceinline__ q16 clamp01_q_dev(q16 v) {
+    if (v < 0) return 0;
+    if (v > FP_ONE) return FP_ONE;
+    return v;
+}
+
 // ---- K1: Pass A — air cells (combustion.cpp:115-228) -----------------------
 // One thread per cell j. Single writer of O2[j], SOOT[j], N2[j], temperature[j],
 // and the four face buffers at index j. Reads d_tsnap (the snapshot gate), the
@@ -69,6 +78,7 @@ __global__ void combustion_pass_a(
         int32_t* __restrict__ O2, int32_t* __restrict__ N2,
         int32_t* __restrict__ SOOT, int32_t* __restrict__ temperature,
         const int32_t* __restrict__ tsnap, const int32_t* __restrict__ wall_hp,
+        const int32_t* __restrict__ fire,
         const bool* __restrict__ flammable, const bool* __restrict__ solid,
         const bool* __restrict__ is_vacuum,
         const int32_t* __restrict__ ignition_temp_q16,
@@ -76,7 +86,9 @@ __global__ void combustion_pass_a(
         int* __restrict__ d_heat_floor_hits, int* __restrict__ d_t_max_phys_hits,
         int h, int w, int32_t burn_cap_q, int32_t o2_thresh_q,
         int32_t soot_yield_q, int32_t H_fuel_q, int64_t recip_cv,
-        int32_t n_floor_q, int32_t t_max_phys_q) {
+        int32_t n_floor_q, int32_t t_max_phys_q,
+        int32_t x_ext_q, int64_t recip_x_span, bool x_degenerate,
+        int32_t X_N_FLOOR) {
     const int n = h * w;
     const int32_t FUEL_FLOOR = CombustionSolver::FUEL_FLOOR;
     for (int j = blockIdx.x * blockDim.x + threadIdx.x; j < n;
@@ -88,9 +100,22 @@ __global__ void combustion_pass_a(
 
         const int y = j / w, x = j % w;
 
-        // Gather the <=4 flammable claimant sources of this air cell.
+        // o2f_j — the continuous-O2 factor at THIS air cell, LINEAR in its O2
+        // MOLE FRACTION X_j = O2[j]/(O2[j]+N2[j]) (pass-entry). Same hoisted
+        // x_ext_q/recip_x_span/x_degenerate/X_N_FLOOR as fire_logistic.
+        const int64_t n_tot_j = (int64_t)o2j + (int64_t)N2[j];
+        const q16 den_j = (n_tot_j < (int64_t)X_N_FLOOR) ? X_N_FLOOR : (q16)n_tot_j;
+        const q16 Xj = mul_q16(o2j, reciprocal_q16_dev(den_j));
+        const q16 o2f_j = x_degenerate
+            ? ((Xj < x_ext_q) ? (q16)0 : (q16)FP_ONE)
+            : clamp01_q_dev(recip_mul_dev(Xj - x_ext_q, recip_x_span));
+
+        // Gather the <=4 flammable claimant sources + each one's per-claimant
+        // DEMAND (design §2.3): demand_k = burn_cap * I_k * o2f_j (PINNED
+        // left-fold mul_q16, truncating). I_k = fire[i].
         int cl_dir[4];   // D4 index of the claimant (face key for alloc_face)
         int cl_src[4];   // global cell index of the claimant source
+        int64_t dem[4];  // per-claimant O2 demand this tick (Q16.16 counts)
         int n_cl = 0;
         for (int d = 0; d < 4; ++d) {
             const int iy = y + D4_dy[d], ix = x + D4_dx[d];
@@ -101,19 +126,23 @@ __global__ void combustion_pass_a(
             const q16 ign_i = ignition_temp_q16[i];
             if (ign_i <= 0) continue;                 // material can't ignite
             if (tsnap[i] < ign_i) continue;           // below ignition (snapshot!)
+            const q16 di = mul_q16(mul_q16(burn_cap_q, fire[i]), o2f_j);
             cl_dir[n_cl] = d;
             cl_src[n_cl] = i;
+            dem[n_cl] = (int64_t)di;
             ++n_cl;
         }
         if (n_cl == 0) continue;
 
         // --- Allocate O2[j] across the claimants (design §3 step 2) ---------
         int64_t alloc[4];
-        const int64_t D = (int64_t)n_cl * (int64_t)burn_cap_q;
+        int64_t D = 0;
+        for (int k = 0; k < n_cl; ++k) D += dem[k];
+        if (D == 0) continue;   // all claimants choked/flameless -> draw nothing
         int64_t burn_j;
         if (D <= (int64_t)o2j) {
-            // No contention: every claimant gets full demand.
-            for (int k = 0; k < n_cl; ++k) alloc[k] = burn_cap_q;
+            // No contention: every claimant gets its full demand.
+            for (int k = 0; k < n_cl; ++k) alloc[k] = dem[k];
             burn_j = D;
         } else {
             // Contention: EXACT INTEGER proportional split (plain int64 `/`,`%`
@@ -121,7 +150,7 @@ __global__ void combustion_pass_a(
             int64_t keys[4];
             int64_t sum_alloc = 0;
             for (int k = 0; k < n_cl; ++k) {
-                const int64_t num = (int64_t)o2j * (int64_t)burn_cap_q;  // < 2^43
+                const int64_t num = (int64_t)o2j * dem[k];  // < 2^43
                 alloc[k] = num / D;      // floor, exact integer divide
                 keys[k]  = num % D;      // integer remainder = tiebreak key
                 sum_alloc += alloc[k];
@@ -209,11 +238,12 @@ void combustion_step(
         int32_t* gas, int n_gases,
         int o2_idx, int inert_n2_idx, int black_smoke_idx,
         int32_t* temperature, int32_t* wall_hp,
+        const int32_t* fire,
         const bool* flammable, const bool* solid, const bool* is_vacuum,
         const int32_t* ignition_temp_q16,
         int h, int w, float dt, float c_v, float n_floor_heat,
         float burn_rate, float o2_thresh_burn, float H_fuel, float soot_yield,
-        float fuel_per_o2, float T_MAX_PHYS,
+        float fuel_per_o2, float o2_frac_ext, float o2_frac_amb, float T_MAX_PHYS,
         int64_t* heat_floor_hits, int64_t* t_max_phys_hits) {
 
     // --- Guards + load-time scalar precompute (VERBATIM of combustion.cpp:65-91,
@@ -235,6 +265,13 @@ void combustion_step(
     const int64_t recip_cv  = make_recip(c_v_safe);
     const q16 n_floor_q     = quantize((double)n_floor_heat);
     const q16 t_max_phys_q  = quantize((double)T_MAX_PHYS);
+    // Continuous-O2 law (design §2.3): o2f_j span, SAME hoisted constants as
+    // fire_logistic / combustion.cpp (the two laws must read identically).
+    const q16 x_ext_q          = quantize((double)o2_frac_ext);
+    const double x_span        = (double)o2_frac_amb - (double)o2_frac_ext;
+    const bool   x_degenerate  = (x_span <= 0.0);
+    const int64_t recip_x_span = x_degenerate ? 0 : make_recip(x_span);
+    const q16 X_N_FLOOR        = quantize(0.01);   // 655 counts (see fire_simulation.cpp)
 
     if (burn_cap_q <= 0) return;   // nothing burns this tick (fields untouched)
 
@@ -248,7 +285,7 @@ void combustion_step(
 
     int32_t *d_O2 = nullptr, *d_N2 = nullptr, *d_SOOT = nullptr,
             *d_temp = nullptr, *d_tsnap = nullptr, *d_whp = nullptr,
-            *d_ign = nullptr, *d_alloc = nullptr;
+            *d_ign = nullptr, *d_alloc = nullptr, *d_fire = nullptr;
     bool *d_flam = nullptr, *d_solid = nullptr, *d_vac = nullptr;
     int *d_counters = nullptr;   // [0]=heat_floor_hits, [1]=t_max_phys_hits
 
@@ -258,6 +295,7 @@ void combustion_step(
     cuda_check(cudaMalloc(&d_temp, nb), "malloc temperature");
     cuda_check(cudaMalloc(&d_tsnap, nb), "malloc tsnap");
     cuda_check(cudaMalloc(&d_whp, nb), "malloc wall_hp");
+    cuda_check(cudaMalloc(&d_fire, nb), "malloc fire");
     cuda_check(cudaMalloc(&d_ign, nb), "malloc ignition_temp");
     cuda_check(cudaMalloc(&d_alloc, (size_t)4 * nb), "malloc alloc_face");
     cuda_check(cudaMalloc(&d_flam, nbool), "malloc flammable");
@@ -270,6 +308,7 @@ void combustion_step(
     cuda_check(cudaMemcpy(d_SOOT, SOOT_h, nb, cudaMemcpyHostToDevice), "H2D SOOT");
     cuda_check(cudaMemcpy(d_temp, temperature, nb, cudaMemcpyHostToDevice), "H2D temp");
     cuda_check(cudaMemcpy(d_whp, wall_hp, nb, cudaMemcpyHostToDevice), "H2D wall_hp");
+    cuda_check(cudaMemcpy(d_fire, fire, nb, cudaMemcpyHostToDevice), "H2D fire");
     cuda_check(cudaMemcpy(d_ign, ignition_temp_q16, nb, cudaMemcpyHostToDevice), "H2D ign");
     cuda_check(cudaMemcpy(d_flam, flammable, nbool, cudaMemcpyHostToDevice), "H2D flammable");
     cuda_check(cudaMemcpy(d_solid, solid, nbool, cudaMemcpyHostToDevice), "H2D solid");
@@ -286,11 +325,12 @@ void combustion_step(
 
     // K1: Pass A (barriers after K0's D2D — d_tsnap is settled before any read).
     combustion_pass_a<<<grid, block>>>(
-        d_O2, d_N2, d_SOOT, d_temp, d_tsnap, d_whp,
+        d_O2, d_N2, d_SOOT, d_temp, d_tsnap, d_whp, d_fire,
         d_flam, d_solid, d_vac, d_ign, d_alloc,
         d_counters + 0, d_counters + 1,
         h, w, burn_cap_q, o2_thresh_q, soot_yield_q, H_fuel_q, recip_cv,
-        n_floor_q, t_max_phys_q);
+        n_floor_q, t_max_phys_q,
+        x_ext_q, recip_x_span, x_degenerate, X_N_FLOOR);
     cuda_check(cudaGetLastError(), "pass_a launch");
 
     // K2: Pass B (separate launch = grid barrier: d_alloc fully written by K1,
@@ -320,6 +360,7 @@ void combustion_step(
     cudaFree(d_temp);
     cudaFree(d_tsnap);
     cudaFree(d_whp);
+    cudaFree(d_fire);
     cudaFree(d_ign);
     cudaFree(d_alloc);
     cudaFree(d_flam);

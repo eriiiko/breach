@@ -1,9 +1,20 @@
 """EOS P6.9b — combustion GPU bit-identity check (runs inside the GPU subprocess).
 
 Proves cuda_combustion.cu (the two-gather reformulation) byte-for-byte identical
-to the P6.9a CPU CombustionSolver::step over (1) a battery of synthetic edge
-configs + random fuzz, (2) a hard 120-tick fire trajectory, and (3) the committed
+to the CPU CombustionSolver::step over (1) a battery of synthetic edge configs +
+random fuzz, (2) a hard 120-tick fire trajectory, and (3) the committed
 default-scenario golden (the CUDA build's CPU path unmoved).
+
+Continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md §2.3): the
+per-claimant O2 DEMAND is now demand_k = burn_cap*I_k*o2f_j — `fire` (I_k) is
+READ again (a choked/flameless source with fire[i]==0 draws nothing), and
+o2f_j is LINEAR in the air cell's O2 MOLE FRACTION X_j = O2[j]/(O2[j]+N2[j])
+between o2_frac_ext (extinction) and o2_frac_amb (ambient). The scene builders
+below seed `fire` at every source (default I=1.0 exactly) and keep the local
+mole fraction comfortably above o2_frac_amb, so o2f_j clamps to exactly 1.0 and
+demand_k reduces to the OLD uniform burn_cap_q bit-for-bit — the fixtures'
+hand-tuned O2 values (the zero/nonzero-remainder split points, the D<=O2j
+uncontested threshold, etc.) still hold unchanged under the new law.
 
 WHY bit-identical (docs/eos_p6_9_combustion_design.md §4): both gather passes are
 per-cell functions of frozen inputs (Tsnap snapshot, pass-entry O2 read only at
@@ -53,8 +64,12 @@ FP_ONE = 65536
 FUEL_FLOOR = 1
 
 # Combustion dials (one source of truth for BOTH the CPU solver + the GPU call).
+# Continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md §2.3):
+# o2_frac_ext/o2_frac_amb are the SAME mole-fraction span dial the fire
+# logistic uses (one law, shared constants).
 DIALS = dict(burn_rate=1.0, o2_thresh_burn=0.03, H_fuel=4.0, soot_yield=0.3,
-             fuel_per_o2=0.7, T_MAX_PHYS=16000.0)
+             fuel_per_o2=0.7, o2_frac_ext=0.13, o2_frac_amb=0.21,
+             T_MAX_PHYS=16000.0)
 C_V = 1.0
 N_FLOOR_HEAT = 0.05
 
@@ -78,6 +93,8 @@ def _mk_solver(**over):
     c.H_fuel = d["H_fuel"]
     c.soot_yield = d["soot_yield"]
     c.fuel_per_o2 = d["fuel_per_o2"]
+    c.o2_frac_ext = d["o2_frac_ext"]
+    c.o2_frac_amb = d["o2_frac_amb"]
     c.T_MAX_PHYS = d["T_MAX_PHYS"]
     return c, d
 
@@ -103,11 +120,11 @@ def run_pair(state, dt, dials_over=None, c_v=C_V, n_floor_heat=N_FLOOR_HEAT):
 
     g = {k: (v.copy() if isinstance(v, np.ndarray) else v) for k, v in state.items()}
     hf, tm = bp.cuda_combustion_step(
-        g["gas"], O2, INERT_N2, SMOKE, g["temperature"], g["wall_hp"],
+        g["gas"], O2, INERT_N2, SMOKE, g["temperature"], g["wall_hp"], g["fire"],
         g["flammable"], g["solid"], g["is_vacuum"], g["ignition_temp_q16"],
         dt, c_v, n_floor_heat,
         d["burn_rate"], d["o2_thresh_burn"], d["H_fuel"], d["soot_yield"],
-        d["fuel_per_o2"], d["T_MAX_PHYS"])
+        d["fuel_per_o2"], d["o2_frac_ext"], d["o2_frac_amb"], d["T_MAX_PHYS"])
     gpu_rails = (int(hf), int(tm))
     return c, cpu_rails, g, gpu_rails
 
@@ -149,13 +166,24 @@ def _blank(h, w, ambient_n2=0.79):
                 temperature=temperature)
 
 
-def _add_source(st, y, x, hp=60.0, temp_q=None):
-    """A hot, fuelled flammable-wood wall tile (a burn source)."""
+def _add_source(st, y, x, hp=60.0, temp_q=None, fire_i=1.0):
+    """A hot, fuelled, LIT flammable-wood wall tile (a burn source).
+
+    Continuous-O2 law (design §2.3): demand_k = burn_cap*I_k*o2f_j — a source
+    with fire[i] == 0 draws NOTHING (a choked/flameless ember), so every
+    fixture that expects to actually burn must seed `fire` at the source.
+    `fire_i` defaults to FULL intensity (I=1.0 exactly): with o2f_j also
+    clamped to exactly 1.0 (the fixtures below keep the local O2 mole
+    fraction comfortably above o2_frac_amb), demand_k == burn_cap_q exactly
+    (mul_q16(x, FP_ONE) == x, no rounding) — i.e. the OLD uniform-demand
+    arithmetic these fixtures were built against is reproduced bit-for-bit.
+    """
     st["solid"][y, x] = True
     st["flammable"][y, x] = True
     st["wall_hp"][y, x] = int(round(hp * FP_ONE))
     st["ignition_temp_q16"][y, x] = IGN_Q
     st["temperature"][y, x] = IGN_Q * 2 if temp_q is None else temp_q
+    st["fire"][y, x] = _quantize(fire_i)[()]
 
 
 def _plus_scene(center_o2_raw, outer_o2=0.21, hp=60.0, h=9, w=9):
@@ -190,7 +218,15 @@ def _random_state(rng, h, w):
     t[rng.random(n).reshape(h, w) < 0.1] = 15900.0          # near T_MAX_PHYS
     st["temperature"][flammable] = _quantize(t)[flammable]
 
-    # air cells: O2 across the full range incl. 0 and > D; ambient N2 already set.
+    # fire (continuous-O2 law §2.3): I_k, the per-claimant demand magnitude.
+    # Full range incl. 0 (a choked/flameless ember that draws nothing).
+    fire_i = rng.random(n).reshape(h, w)
+    fire_i[rng.random(n).reshape(h, w) < 0.2] = 0.0         # unlit/choked
+    st["fire"][flammable] = _quantize(fire_i)[flammable]
+
+    # air cells: O2 across the full range incl. 0 and > D; ambient N2 already
+    # set — together with O2 this sweeps the o2f_j mole-fraction span (0 to
+    # ~0.6, straddling o2_frac_ext=0.13/o2_frac_amb=0.21) across every branch.
     air = (~solid) & (~is_vacuum)
     o2 = rng.random(n).reshape(h, w) * 1.2
     o2[rng.random(n).reshape(h, w) < 0.15] = 0.0            # starved
@@ -397,10 +433,10 @@ def part2_trajectory() -> bool:
                      int(comb.t_max_phys_hits) - tm0)
         hf, tm = bp.cuda_combustion_step(
             gpu["gas"], O2, INERT_N2, SMOKE, gpu["temperature"],
-            gpu["wall_hp"], gpu["flammable"], gpu["solid"], gpu["is_vacuum"],
-            gpu["ignition_temp_q16"], dt, C_V, N_FLOOR_HEAT,
+            gpu["wall_hp"], gpu["fire"], gpu["flammable"], gpu["solid"],
+            gpu["is_vacuum"], gpu["ignition_temp_q16"], dt, C_V, N_FLOOR_HEAT,
             d["burn_rate"], d["o2_thresh_burn"], d["H_fuel"], d["soot_yield"],
-            d["fuel_per_o2"], d["T_MAX_PHYS"])
+            d["fuel_per_o2"], d["o2_frac_ext"], d["o2_frac_amb"], d["T_MAX_PHYS"])
         gpu_rails = (int(hf), int(tm))
 
         if not compare(f"tick {tick}", cpu, cpu_rails, gpu, gpu_rails):

@@ -8,13 +8,16 @@
 //
 //   T     = temperature[i]                         (Q16.16; temp_scale == FP_ONE)
 //   F     = clamp01(wall_hp[i] / fuel_ref)         (fuel from remaining wall HP)
-//   O2    = mean n_o2 over OPEN (non-solid, non-vacuum) 4-neighbours
+//   X     = Σn_o2 / Σn_total  over OPEN (non-solid, non-vacuum) 4-neighbours
+//                                                  (local O2 MOLE FRACTION)
 //   W     = sqrt(wind_x^2 + wind_y^2)              (the SHARED wind field)
 //   hot   = clamp01((T - T_ext) / T_span)
-//   o2    = smoothstep(P_min, P_full, O2)          (EOS refactor P4: the REAL
-//                                                   local N_O2 mean, NOT the
-//                                                   atmosphere/P proxy)
-//   avail = F * o2
+//   o2f   = clamp01((X - o2_frac_ext)/(o2_frac_amb - o2_frac_ext))  (LINEAR; the
+//                                                   continuous-O2 law — Peatross &
+//                                                   Beyler 1997; REPLACES the old
+//                                                   smoothstep(P_min,P_full) on
+//                                                   ABSOLUTE n_o2 density)
+//   avail = F * o2f
 //   grow  = k_grow * avail * hot * I * (1-I) * (1 + k_wind_fan * W)
 //   die   = k_die * (1 - avail*hot) * I  +  k_wind_strip * W * (1-I) * I
 //   I    += dt * (grow - die);  clamp01;  snap to 0 below I_min
@@ -45,8 +48,26 @@ struct FireParams {
     float fire_T_ext     = 350.0f; // extinction temperature (~ignition_temp + 50)
     float fire_T_span    = 150.0f; // width of the `hot` ramp above T_ext
     float fuel_ref       = 60.0f;  // wall_hp normaliser: F = clamp01(wall_hp/fuel_ref)
-    float P_min          = 0.60f;  // pressure below which the O2 proxy is 0
-    float P_full         = 1.00f;  // pressure at which the O2 proxy is full
+    // --- continuous O2 law (docs/continuous_o2_law_design_2026-07-24.md) -------
+    // The O2 factor is now LINEAR in the local O2 MOLE FRACTION X = Σn_o2/Σn_total
+    // over open neighbours (Peatross & Beyler 1997: compartment burning rate
+    // declines ~linearly with O2 volume fraction), carrying an extinction limit:
+    //   o2f = clamp01((X - o2_frac_ext) / (o2_frac_amb - o2_frac_ext))
+    // This REPLACES the old smoothstep(P_min, P_full) on ABSOLUTE n_o2 density —
+    // the fraction is invariant under thermal expansion, so hot thin gas at
+    // ambient composition burns (closes the v2.4 "density trap" / hot-zone rescale
+    // saga; only true vitiation starves a fire). P_min/P_full below are RETIRED
+    // from the sustain law (tombstoned — kept only so old configs/bindings that
+    // still set them do not hard-error; no longer read by step()).
+    float o2_frac_ext    = 0.13f;  // X_ext: flame-extinction O2 mole fraction
+                                   //  (~13% physical limit; 0 = pure proportional)
+    float o2_frac_amb    = 0.21f;  // X_amb: ambient O2 mole fraction at which o2f
+                                   //  saturates full (reads the level's authored
+                                   //  [ambient] o2_frac; 0.21 fallback — one
+                                   //  source of truth with the BC)
+    float P_min          = 0.60f;  // RETIRED (see o2_frac_ext/amb above) — was the
+                                   //  smoothstep low edge on absolute n_o2
+    float P_full         = 1.00f;  // RETIRED — was the smoothstep full edge
     float I_min          = 0.02f;  // snap-to-zero extinguish floor
 
     // --- wind coupling (fire_design_proposal §5; Erik's addition) ---
@@ -136,7 +157,10 @@ public:
     std::vector<std::pair<int, int>> step(
         int32_t* fire,             // S3b: Q16.16 (was float)
         const int32_t* atmosphere, // S2c: Q16.16 == P (EOS P3: READ-ONLY, plume only)
-        const int32_t* n_o2,       // EOS P4: Q16.16 real O2 density (the O2 gate)
+        const int32_t* n_o2,       // EOS P4: Q16.16 real O2 density (mole-fraction numerator)
+        const int32_t* n_total,    // continuous-O2 law: Q16.16 real N_total (Σ conservative
+                                   //  bulk planes = O2+N2), READ-ONLY — the mole-fraction
+                                   //  DENOMINATOR (X = Σn_o2/Σn_total over open neighbours)
         int32_t* smoke,            // S2b: Q16.16 (fire emission round + added)
         int32_t* wall_hp,          // S3b: Q16.16 (was float)
         int32_t* temperature,      // EOS P3: mutable (plume->T shim write)

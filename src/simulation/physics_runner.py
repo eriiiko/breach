@@ -60,8 +60,12 @@ FIRE_K_DIE          = 2.0    # decay rate when starved/cold (1/s)
 FIRE_T_EXT          = 350.0  # extinction temperature (~ignition_temp + 50)
 FIRE_T_SPAN         = 150.0  # width of the `hot` ramp above T_ext
 FIRE_FUEL_REF       = 60.0   # wall_hp normaliser: F = clamp01(wall_hp/fuel_ref)
-FIRE_P_MIN          = 0.60   # pressure below which the O2 proxy is 0
-FIRE_P_FULL         = 1.00   # pressure at which the O2 proxy is full
+# Continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md): o2f is LINEAR
+# in the local O2 mole fraction X = Σn_o2/Σn_total, with an extinction limit.
+FIRE_O2_FRAC_EXT    = 0.13   # X_ext: flame-extinction O2 mole fraction (0 = pure proportional)
+FIRE_O2_FRAC_AMB    = 0.21   # X_amb: ambient O2 mole fraction (per-map: reads [ambient] o2_frac)
+FIRE_P_MIN          = 0.60   # RETIRED (see o2_frac_ext/amb) — was the smoothstep low edge
+FIRE_P_FULL         = 1.00   # RETIRED — was the smoothstep full edge
 FIRE_I_MIN          = 0.02   # snap-to-zero extinguish floor
 FIRE_K_WIND_FAN     = 0.5    # (1 + k_wind_fan*W) fans growth (firestorm); TUNE vs wind scale
 FIRE_K_WIND_STRIP   = 0.5    # W*(1-I)*I blows out small fires (crossover); TUNE vs wind scale
@@ -180,6 +184,13 @@ class PhysicsRunner:
         self.fire.params.fire_T_ext     = _fp("fire_T_ext", FIRE_T_EXT)
         self.fire.params.fire_T_span    = _fp("fire_T_span", FIRE_T_SPAN)
         self.fire.params.fuel_ref       = _fp("fuel_ref", FIRE_FUEL_REF)
+        # Continuous-O2 law dials. o2_frac_amb is a per-MAP value (the level's
+        # authored [ambient] o2_frac); bound to the 0.21 fallback here and
+        # refreshed per-map in _ambient_args when an ambient config is present.
+        self.fire.params.o2_frac_ext    = _fp("o2_frac_ext", FIRE_O2_FRAC_EXT)
+        self.fire.params.o2_frac_amb    = _fp("o2_frac_amb", FIRE_O2_FRAC_AMB)
+        # P_min/P_full RETIRED from the sustain law (continuous-O2 law); left
+        # wired so old configs/bindings that still set them do not hard-error.
         self.fire.params.P_min          = _fp("P_min", FIRE_P_MIN)
         self.fire.params.P_full         = _fp("P_full", FIRE_P_FULL)
         self.fire.params.I_min          = _fp("I_min", FIRE_I_MIN)
@@ -332,6 +343,16 @@ class PhysicsRunner:
             return float(getattr(comb_cfg, key, default))
 
         self.combustion.burn_rate = _cp("burn_rate", self.combustion.burn_rate)
+        # Continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md §2.3):
+        # demand = burn_rate*I*o2f*dt. o2_frac_ext/amb are the SAME law the fire
+        # logistic uses (bound from [physics.fire] so there is one source of
+        # truth); o2_thresh_burn is now only an epsilon skip-floor. o2_frac_amb
+        # is refreshed per-map in _ambient_args (the level's [ambient] o2_frac).
+        fire_cfg_c = getattr(CFG.physics, "fire", None)
+        self.combustion.o2_frac_ext = float(
+            getattr(fire_cfg_c, "o2_frac_ext", FIRE_O2_FRAC_EXT))
+        self.combustion.o2_frac_amb = float(
+            getattr(fire_cfg_c, "o2_frac_amb", FIRE_O2_FRAC_AMB))
         self.combustion.o2_thresh_burn = _cp(
             "o2_thresh_burn", self.combustion.o2_thresh_burn)
         self.combustion.H_fuel = _cp("H_fuel", self.combustion.H_fuel)
@@ -611,16 +632,20 @@ class PhysicsRunner:
         if self._combustion_on_cuda():
             # EOS P6.9b GPU dispatch (strictly additive; bit-identical to the CPU
             # CombustionSolver.step — tests/cuda_combustion_check.py). `fire` is
-            # dropped (the reformulation no longer reads it).
+            # READ again (continuous-O2 law, docs/continuous_o2_law_design_2026-
+            # 07-24.md §2.3): the per-claimant intensity factor I_k in the O2
+            # demand. o2_frac_ext/amb are the SAME law the fire logistic uses.
             self.bp.cuda_combustion_step(
                 gmap.gas, self._o2_idx, self._inert_n2_idx, self._black_smoke_idx,
-                gmap.temperature, gmap.wall_hp,
+                gmap.temperature, gmap.wall_hp, gmap.fire,
                 gmap.flammable, gmap.solid, gmap.is_vacuum,
                 ignition_temp_q16,
                 sim_time, self.temperature.c_v, self.temperature.n_floor_heat,
                 self.combustion.burn_rate, self.combustion.o2_thresh_burn,
                 self.combustion.H_fuel, self.combustion.soot_yield,
-                self.combustion.fuel_per_o2, self.combustion.T_MAX_PHYS,
+                self.combustion.fuel_per_o2,
+                self.combustion.o2_frac_ext, self.combustion.o2_frac_amb,
+                self.combustion.T_MAX_PHYS,
             )
         else:
             self.combustion.step(
@@ -866,6 +891,12 @@ class PhysicsRunner:
         amb = getattr(gmap, "_ambient", None)
         if amb is None or not gmap.is_ambient.any():
             return (None, None, 0, None, None)
+        # Continuous-O2 law: X_amb (the mole fraction at which o2f saturates) is
+        # this map's authored ambient O2 fraction — one source of truth with the
+        # BC. Refresh both consumers (fire logistic + combustion) each tick;
+        # o2_frac is static per map, so this is a cheap idempotent set.
+        self.fire.params.o2_frac_amb = float(amb.o2_frac)
+        self.combustion.o2_frac_amb = float(amb.o2_frac)
         n_gases = gmap.gas.shape[0]
         if (self._ambient_n_amb is None
                 or self._ambient_n_amb.shape[0] != n_gases):

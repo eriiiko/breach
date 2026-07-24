@@ -626,7 +626,8 @@ PYBIND11_MODULE(breach_physics, m) {
     m.def("cuda_fire_step",
           [](py::array_t<int32_t> fire,         // Q16.16 int32 (intensity)
              py::array_t<int32_t> atmosphere,   // Q16.16 int32 (read-only, vestigial)
-             py::array_t<int32_t> n_o2,         // Q16.16 int32 (read-only, O2 gate)
+             py::array_t<int32_t> n_o2,         // Q16.16 int32 (read-only, O2 gate numerator)
+             py::array_t<int32_t> n_total,      // Q16.16 int32 (read-only, O2 gate denominator)
              py::array_t<int32_t> smoke,        // Q16.16 int32 (emission scatter)
              py::array_t<int32_t> wall_hp,      // Q16.16 int32 (burn-through)
              py::array_t<int32_t> temperature,  // Q16.16 int32 (in/out: plume->T)
@@ -636,7 +637,7 @@ PYBIND11_MODULE(breach_physics, m) {
              py::array_t<bool>  is_vacuum,
              py::array_t<bool>  flammable,
              float dt, float k_grow, float k_die, float fire_T_ext,
-             float fire_T_span, float fuel_ref, float P_min, float P_full,
+             float fire_T_span, float fuel_ref, float o2_frac_ext, float o2_frac_amb,
              float I_min, float k_wind_fan, float k_wind_strip,
              float fire_pressure_gain, float smoke_emission,
              float wall_damage, float temp_scale, float temp_gain_scale,
@@ -644,6 +645,7 @@ PYBIND11_MODULE(breach_physics, m) {
               auto [f, h, w]     = get_2d(fire);
               auto [atm, h2, w2] = get_2d_const(atmosphere);
               auto [o2, h2b, w2b] = get_2d_const(n_o2);
+              auto [nt, h2c, w2c] = get_2d_const(n_total);
               auto [sm, h3, w3]  = get_2d(smoke);
               auto [whp, h4, w4] = get_2d(wall_hp);
               auto [temp, h5, w5] = get_2d(temperature);   // in/out (plume->T shim)
@@ -653,9 +655,9 @@ PYBIND11_MODULE(breach_physics, m) {
               auto [vac, h9, w9] = get_2d_const(is_vacuum);
               auto [fl, h10, w10] = get_2d_const(flammable);
               auto destroyed = breach_cuda::fire_step(
-                  f, atm, o2, sm, whp, temp, wx, wy, wl, vac, fl, h, w, dt,
-                  k_grow, k_die, fire_T_ext, fire_T_span, fuel_ref, P_min, P_full,
-                  I_min, k_wind_fan, k_wind_strip, fire_pressure_gain,
+                  f, atm, o2, nt, sm, whp, temp, wx, wy, wl, vac, fl, h, w, dt,
+                  k_grow, k_die, fire_T_ext, fire_T_span, fuel_ref, o2_frac_ext,
+                  o2_frac_amb, I_min, k_wind_fan, k_wind_strip, fire_pressure_gain,
                   smoke_emission, wall_damage, temp_scale, temp_gain_scale,
                   T_FLAME_MAX);
               py::list result;
@@ -664,20 +666,21 @@ PYBIND11_MODULE(breach_physics, m) {
               }
               return result;
           },
-          py::arg("fire"), py::arg("atmosphere"), py::arg("n_o2"), py::arg("smoke"),
+          py::arg("fire"), py::arg("atmosphere"), py::arg("n_o2"), py::arg("n_total"),
+          py::arg("smoke"),
           py::arg("wall_hp"), py::arg("temperature"), py::arg("wind_x"),
           py::arg("wind_y"), py::arg("is_wall"), py::arg("is_vacuum"),
           py::arg("flammable"), py::arg("dt"), py::arg("k_grow"), py::arg("k_die"),
           py::arg("fire_T_ext"), py::arg("fire_T_span"), py::arg("fuel_ref"),
-          py::arg("P_min"), py::arg("P_full"), py::arg("I_min"),
+          py::arg("o2_frac_ext"), py::arg("o2_frac_amb"), py::arg("I_min"),
           py::arg("k_wind_fan"), py::arg("k_wind_strip"),
           py::arg("fire_pressure_gain"),
           py::arg("smoke_emission"), py::arg("wall_damage"), py::arg("temp_scale"),
           py::arg("temp_gain_scale"), py::arg("T_FLAME_MAX"),
-          "P6.8 isolated: run ONE GPU fire step (re-derived — n_o2 O2 gate + "
-          "plume->T shim) in place on fire/smoke/wall_hp/temperature "
-          "(bit-identical to FireSimulation.step) and return the destroyed-walls "
-          "list of (y,x) tuples.");
+          "P6.8 isolated: run ONE GPU fire step (re-derived — continuous-O2 "
+          "mole-fraction gate + plume->T shim) in place on "
+          "fire/smoke/wall_hp/temperature (bit-identical to FireSimulation.step) "
+          "and return the destroyed-walls list of (y,x) tuples.");
 
     // EOS P6.9b: the GPU combustion solver (the two-gather reformulation —
     // docs/eos_p6_9_combustion_design.md). The backend flag switches
@@ -702,13 +705,15 @@ PYBIND11_MODULE(breach_physics, m) {
              int o2_idx, int inert_n2_idx, int black_smoke_idx,
              py::array_t<int32_t> temperature,     // Q16.16, MUTATED (heat deposit)
              py::array_t<int32_t> wall_hp,         // Q16.16, MUTATED (fuel payment)
+             py::array_t<int32_t> fire,            // Q16.16, read-only (continuous-O2 law)
              py::array_t<bool> flammable,
              py::array_t<bool> solid,
              py::array_t<bool> is_vacuum,
              py::array_t<int32_t> ignition_temp_q16,  // Q16.16, read-only
              float dt, float c_v, float n_floor_heat,
              float burn_rate, float o2_thresh_burn, float H_fuel,
-             float soot_yield, float fuel_per_o2, float T_MAX_PHYS) -> py::tuple {
+             float soot_yield, float fuel_per_o2, float o2_frac_ext,
+             float o2_frac_amb, float T_MAX_PHYS) -> py::tuple {
               auto gv = gas.mutable_unchecked<3>();
               int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
               const int n_gases = static_cast<int>(gv.shape(0));
@@ -716,6 +721,7 @@ PYBIND11_MODULE(breach_physics, m) {
               const int w = static_cast<int>(gv.shape(2));
               auto [temp, h2, w2] = get_2d(temperature);
               auto [whp, h3, w3]  = get_2d(wall_hp);
+              auto [f, h4b, w4b]  = get_2d_const(fire);
               auto [fl, h4, w4]   = get_2d_const(flammable);
               auto [sol, h5, w5]  = get_2d_const(solid);
               auto [vac, h6, w6]  = get_2d_const(is_vacuum);
@@ -723,22 +729,26 @@ PYBIND11_MODULE(breach_physics, m) {
               int64_t heat_floor_hits = 0, t_max_phys_hits = 0;
               breach_cuda::combustion_step(
                   gas_ptr, n_gases, o2_idx, inert_n2_idx, black_smoke_idx,
-                  temp, whp, fl, sol, vac, ign, h, w, dt, c_v, n_floor_heat,
+                  temp, whp, f, fl, sol, vac, ign, h, w, dt, c_v, n_floor_heat,
                   burn_rate, o2_thresh_burn, H_fuel, soot_yield, fuel_per_o2,
+                  o2_frac_ext, o2_frac_amb,
                   T_MAX_PHYS, &heat_floor_hits, &t_max_phys_hits);
               return py::make_tuple(heat_floor_hits, t_max_phys_hits);
           },
           py::arg("gas"), py::arg("o2_idx"), py::arg("inert_n2_idx"),
           py::arg("black_smoke_idx"), py::arg("temperature"), py::arg("wall_hp"),
+          py::arg("fire"),
           py::arg("flammable"), py::arg("solid"), py::arg("is_vacuum"),
           py::arg("ignition_temp_q16"), py::arg("dt"), py::arg("c_v"),
           py::arg("n_floor_heat"), py::arg("burn_rate"), py::arg("o2_thresh_burn"),
           py::arg("H_fuel"), py::arg("soot_yield"), py::arg("fuel_per_o2"),
+          py::arg("o2_frac_ext"), py::arg("o2_frac_amb"),
           py::arg("T_MAX_PHYS"),
           "P6.9b isolated: run ONE GPU combustion step (the two-gather "
-          "reformulation) in place on the three gas planes + temperature + "
-          "wall_hp (bit-identical to CombustionSolver.step) and return the "
-          "(heat_floor_hits, t_max_phys_hits) per-call rail counts.");
+          "reformulation, continuous-O2 proportional demand) in place on the "
+          "three gas planes + temperature + wall_hp (bit-identical to "
+          "CombustionSolver.step) and return the (heat_floor_hits, "
+          "t_max_phys_hits) per-call rail counts.");
 
     // CUDA-S7 (set_atmos_backend / get_atmos_backend / cuda_diffuse_solve)
     // RETIRED in EOS P6.0: the diffuse_solve solver it mirrored was deleted in
@@ -1274,6 +1284,8 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("fire_T_ext",     &FireParams::fire_T_ext)
         .def_readwrite("fire_T_span",    &FireParams::fire_T_span)
         .def_readwrite("fuel_ref",       &FireParams::fuel_ref)
+        .def_readwrite("o2_frac_ext",    &FireParams::o2_frac_ext)
+        .def_readwrite("o2_frac_amb",    &FireParams::o2_frac_amb)
         .def_readwrite("P_min",          &FireParams::P_min)
         .def_readwrite("P_full",         &FireParams::P_full)
         .def_readwrite("I_min",          &FireParams::I_min)
@@ -1297,6 +1309,7 @@ PYBIND11_MODULE(breach_physics, m) {
                         py::array_t<int32_t> fire,         // S3b: Q16.16 int32
                         py::array_t<int32_t> atmosphere,   // S2c: Q16.16 int32
                         py::array_t<int32_t> n_o2,         // EOS P4: Q16.16 int32
+                        py::array_t<int32_t> n_total,      // continuous-O2 law: Q16.16 int32
                         py::array_t<int32_t> smoke,        // S2b: Q16.16 int32
                         py::array_t<int32_t> wall_hp,      // S3b: Q16.16 int32
                         py::array_t<int32_t> temperature,
@@ -1308,7 +1321,8 @@ PYBIND11_MODULE(breach_physics, m) {
                         float dt) -> py::list {
             auto [f, h, w] = get_2d(fire);
             auto [atm, h2, w2] = get_2d_const(atmosphere);   // EOS P3: read-only (== P)
-            auto [o2, h2b, w2b] = get_2d_const(n_o2);        // EOS P4: read-only (the O2 gate)
+            auto [o2, h2b, w2b] = get_2d_const(n_o2);        // fraction numerator (read-only)
+            auto [nt, h2c, w2c] = get_2d_const(n_total);     // fraction denominator (read-only)
             auto [sm, h3, w3] = get_2d(smoke);
             auto [whp, h4, w4] = get_2d(wall_hp);
             auto [temp, h5, w5] = get_2d(temperature);       // EOS P3: mutable (plume->T shim)
@@ -1317,15 +1331,15 @@ PYBIND11_MODULE(breach_physics, m) {
             auto [wl, h8, w8] = get_2d_const(is_wall);
             auto [vac, h9, w9] = get_2d_const(is_vacuum);
             auto [fl, h10, w10] = get_2d_const(flammable);
-            auto destroyed = self.step(f, atm, o2, sm, whp, temp, wx, wy,
+            auto destroyed = self.step(f, atm, o2, nt, sm, whp, temp, wx, wy,
                                        wl, vac, fl, h, w, dt);
             py::list result;
             for (const auto& [dy, dx] : destroyed) {
                 result.append(py::make_tuple(dy, dx));
             }
             return result;
-        }, py::arg("fire"), py::arg("atmosphere"), py::arg("n_o2"), py::arg("smoke"),
-           py::arg("wall_hp"), py::arg("temperature"),
+        }, py::arg("fire"), py::arg("atmosphere"), py::arg("n_o2"), py::arg("n_total"),
+           py::arg("smoke"), py::arg("wall_hp"), py::arg("temperature"),
            py::arg("wind_x"), py::arg("wind_y"),
            py::arg("is_wall"), py::arg("is_vacuum"), py::arg("flammable"),
            py::arg("dt"));
@@ -1795,6 +1809,8 @@ PYBIND11_MODULE(breach_physics, m) {
     py::class_<CombustionSolver>(m, "CombustionSolver")
         .def(py::init<>())
         .def_readwrite("burn_rate",         &CombustionSolver::burn_rate)
+        .def_readwrite("o2_frac_ext",       &CombustionSolver::o2_frac_ext)
+        .def_readwrite("o2_frac_amb",       &CombustionSolver::o2_frac_amb)
         .def_readwrite("o2_thresh_burn",    &CombustionSolver::o2_thresh_burn)
         .def_readwrite("H_fuel",            &CombustionSolver::H_fuel)
         .def_readwrite("soot_yield",        &CombustionSolver::soot_yield)
