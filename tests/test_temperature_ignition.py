@@ -4,8 +4,10 @@ The READ side of the temperature substrate. The C++ ``TemperatureSolver``
 (convert -> conduction -> cooling) fills the Q16.16 ``temperature`` field each
 tick; this consumer ignites a FLAMMABLE tile when its temperature crosses the
 per-material (Q16.16-quantized) ``ignition_temp`` AND oxygen is present (the
-same air-side-neighbour ``atmosphere`` check the existing fire uses), via
-``fire = max(fire, ignition_seed)``.
+same air-side-neighbour O2 check the existing fire uses). EDGE-TRIGGERED (Fable
+ruling 2026-07-24): an ARMED tile seeds ``fire = ignition_seed`` ONCE, disarms,
+and re-arms only when it cools below ``ignition_temp`` — the ``max``-floor is
+gone, so a lit tile (``I > 0``) is never touched (the zombie-smolder fix).
 
 This module exercises the consumer directly (temperature / atmosphere injected
 on a small synthetic grid — no renderer, no ray pass) and asserts that a normal
@@ -16,7 +18,10 @@ Verifies:
   - a flammable tile at/over ``ignition_temp`` WITH O2 ignites (fire >= I_seed);
   - the SAME tile WITHOUT O2 (vacuum / low-atmosphere neighbours) does NOT;
   - a NON-flammable tile never ignites, even when red-hot;
-  - ignition uses ``max`` — it never lowers a bigger existing fire;
+  - ignition never modifies a lit tile (``I > 0``) — neither lowering a bigger
+    fire nor re-flooring a smaller/declining one (the edge-trigger, no max-floor);
+  - the edge-trigger arm/disarm/re-arm cycle (armed -> seed -> disarm -> cool ->
+    re-arm -> re-seed);
   - below-threshold temperature does nothing;
   - determinism: same inputs -> bit-identical ``fire``;
   - dormancy: a full ``Simulation.step()`` on a normal level leaves
@@ -63,12 +68,13 @@ IGN_SEED_Q = fire_fixed.quantize_scalar(IGN_SEED)
 
 
 class _GasTableStub:
-    """Minimal stand-in for GameMap's real GasTable — apply_temperature_
-    ignition only reads `.name_to_id["o2"]` (EOS refactor P4, design §6)."""
+    """Minimal stand-in for GameMap's real GasTable — the continuous-O2 law
+    (docs/continuous_o2_law_design_2026-07-24.md §2.4) reads BOTH `o2` and
+    `inert_n2` (the mole-fraction denominator N_total = O2 + inert_N2)."""
 
     def __init__(self):
-        from simulation.gases import O2
-        self.name_to_id = {"o2": O2}
+        from simulation.gases import O2, INERT_N2
+        self.name_to_id = {"o2": O2, "inert_n2": INERT_N2}
 
 
 class _GMapStub:
@@ -81,7 +87,7 @@ class _GMapStub:
     test_unit_heat_damage.py."""
 
     def __init__(self, centre_mat=MAT_WOOD, atm=1.0):
-        from simulation.gases import N_GASES, O2
+        from simulation.gases import N_GASES, O2, INERT_N2
         self.materials = _TBL
         self.gases = _GasTableStub()
         m = np.full((3, 3), MAT_AIR, dtype=np.int8)
@@ -89,17 +95,19 @@ class _GMapStub:
         self.material = m
         self.flammable = _TBL.flammable[m]
         self.solid = (_TBL.permeability[m] <= 0.0)
-        # Air ring carries REAL O2 (EOS refactor P4 — was `atmosphere`); solid
-        # tiles hold no gas (== GameMap). Q16.16 — quantize the ring O2 so the
-        # combat O2 check reads the right real value. `atm` kept as the param
-        # name for minimal diff against the pre-P4 callers below (all pass
-        # either 1.0/0.0 or an O2_THRESHOLD-relative offset, meaningful on
-        # either scale).
-        from simulation import atmosphere_fixed
-        o2 = np.where(self.solid, 0,
-                      atmosphere_fixed.quantize_scalar(float(atm))).astype(np.int32)
+        # Air ring carries a REAL O2/inert-N2 composition; solid tiles hold no gas
+        # (== GameMap). The continuous-O2 law gates on the MOLE FRACTION X =
+        # O2/(O2+inert_N2), so `atm` names the ring's O2 fraction: O2 = atm, N2 =
+        # 1-atm at unit density -> X = atm exactly. (`atm` kept as the param name
+        # for minimal diff against the callers below, all of which pass an
+        # O2_THRESHOLD-relative fraction.)
+        from simulation import atmosphere_fixed as _fx
+        o2 = np.where(self.solid, 0, _fx.quantize_scalar(float(atm))).astype(np.int32)
+        n2 = np.where(self.solid, 0,
+                      _fx.quantize_scalar(max(0.0, 1.0 - float(atm)))).astype(np.int32)
         self.gas = np.zeros((N_GASES, 3, 3), dtype=np.int32)
         self.gas[O2] = o2
+        self.gas[INERT_N2] = n2
         # S3a: the O2 mask excludes vacuum neighbours (matching the C++ fire P
         # gate). Here the "no O2" case is modelled as low-O2 air (atm=0), not
         # flagged vacuum — so is_vacuum is all-False and the air ring still
@@ -108,6 +116,12 @@ class _GMapStub:
         self.temperature = np.zeros((3, 3), dtype=np.int32)
         # S3a: gmap.fire is int32 Q16.16.
         self.fire = np.zeros((3, 3), dtype=np.int32)
+        # o2-law: ignition needs fuel (wall_hp > 0). Q16.16 HP, 100 everywhere —
+        # only the flammable centre's value is consulted (air isn't flammable).
+        self.wall_hp = np.full((3, 3), 100 * TEMP_SCALE, dtype=np.int32)
+        # Edge-trigger arm (Fable 2026-07-24): start ARMED so the unlit centre
+        # seeds on its first hot+O2 tick; disarms once lit, re-arms once cooled.
+        self.ignition_armed = np.ones((3, 3), dtype=bool)
 
 
 def _ignite(gmap):
@@ -196,13 +210,97 @@ def test_max_does_not_lower_existing_fire():
     assert g.fire[1, 1] == big_q, "max() lowered a bigger existing fire"
 
 
-def test_max_raises_smaller_existing_fire():
-    # A flickering fire below I_seed is raised TO I_seed (max picks the seed).
+def test_declining_fire_below_seed_is_not_refloored():
+    # EDGE-TRIGGER (Fable ruling 2026-07-24): a flickering fire BELOW I_seed is
+    # NOT raised to I_seed. Temperature ignition never modifies a tile with I > 0
+    # (the `fire == 0` gate) — this REMOVES the old max-floor that re-seeded a
+    # dying fire every hot tick (the eternal 0.1 zombie smolder). The fire logistic
+    # alone now decides a lit tile's fate.
     g = _GMapStub(MAT_WOOD, atm=1.0)
     g.temperature[1, 1] = IGN_WOOD_Q16
-    g.fire[1, 1] = fire_fixed.quantize_scalar(IGN_SEED / 2.0)   # S3a: Q16.16
+    small_q = fire_fixed.quantize_scalar(IGN_SEED / 2.0)   # S3a: Q16.16
+    g.fire[1, 1] = small_q
     _ignite(g)
-    assert g.fire[1, 1] == IGN_SEED_Q
+    assert g.fire[1, 1] == small_q, "temperature ignition re-floored a declining fire"
+
+
+# ---------------------------------------------------------------------------
+# Edge-trigger arm / disarm / re-arm (Fable ruling 2026-07-24 — zombie-smolder fix)
+# ---------------------------------------------------------------------------
+def test_armed_hot_tile_seeds_then_disarms():
+    # (1) armed -> seed -> disarm: an ARMED, hot, oxygenated, fuelled, UNLIT tile
+    # ignites ONCE to exactly I_seed and then DISARMS (so it can't re-seed).
+    g = _GMapStub(MAT_WOOD, atm=1.0)
+    g.temperature[1, 1] = IGN_WOOD_Q16
+    assert bool(g.ignition_armed[1, 1])          # armed at the start
+    assert g.fire[1, 1] == 0
+    _ignite(g)
+    assert g.fire[1, 1] == IGN_SEED_Q            # seeded to exactly I_seed
+    assert not bool(g.ignition_armed[1, 1])      # and DISARMED
+
+
+def test_disarmed_declining_fire_not_refloored():
+    # (2) a declining fire is NOT re-floored: a DISARMED tile whose fire is below
+    # I_seed is left untouched (no max-floor), and stays disarmed while hot.
+    g = _GMapStub(MAT_WOOD, atm=1.0)
+    g.temperature[1, 1] = IGN_WOOD_Q16
+    g.ignition_armed[1, 1] = False               # already spent its arm this episode
+    declining = fire_fixed.quantize_scalar(IGN_SEED * 0.4)
+    g.fire[1, 1] = declining
+    _ignite(g)
+    assert g.fire[1, 1] == declining, "re-floored a declining fire"
+    assert not bool(g.ignition_armed[1, 1]), "re-armed while still hot"
+
+
+def test_rearm_only_after_cooling():
+    # (3) re-arm on cool: a disarmed tile re-arms the moment it drops below
+    # ignition_temp — and NOT while it is still hot.
+    g = _GMapStub(MAT_WOOD, atm=1.0)
+    g.ignition_armed[1, 1] = False
+    g.temperature[1, 1] = IGN_WOOD_Q16           # still hot
+    _ignite(g)
+    assert not bool(g.ignition_armed[1, 1]), "re-armed while still hot"
+    g.temperature[1, 1] = IGN_WOOD_Q16 - 1       # cooled just below threshold
+    _ignite(g)
+    assert bool(g.ignition_armed[1, 1]), "did not re-arm after cooling"
+
+
+def test_full_ignite_die_cool_reignite_cycle():
+    # (4) the whole hysteresis loop at the unit level (the physics is emulated by
+    # direct fire/temperature writes between calls, since apply_temperature_
+    # ignition is the unit under test): seed -> grow/decline (never re-floored) ->
+    # snap to 0 while hot (NOT re-seeded — the smolder fix) -> cool (re-arm) ->
+    # re-heat (re-seed a fresh fire).
+    g = _GMapStub(MAT_WOOD, atm=1.0)
+    g.temperature[1, 1] = IGN_WOOD_Q16
+
+    # arm -> seed -> disarm
+    _ignite(g)
+    assert g.fire[1, 1] == IGN_SEED_Q and not bool(g.ignition_armed[1, 1])
+
+    # peak then decline: a lit tile (I>0) is never touched while disarmed
+    g.fire[1, 1] = fire_fixed.quantize_scalar(0.5)
+    _ignite(g)
+    assert g.fire[1, 1] == fire_fixed.quantize_scalar(0.5)
+    g.fire[1, 1] = fire_fixed.quantize_scalar(IGN_SEED * 0.3)
+    _ignite(g)
+    assert g.fire[1, 1] == fire_fixed.quantize_scalar(IGN_SEED * 0.3)
+
+    # the logistic snaps I to 0 while the tile is STILL HOT -> NOT re-seeded
+    g.fire[1, 1] = 0
+    _ignite(g)
+    assert g.fire[1, 1] == 0, "re-seeded a dead-but-still-hot tile (the smolder bug)"
+    assert not bool(g.ignition_armed[1, 1])
+
+    # the tile finally cools -> re-arms; still 0 (cold => no seed)
+    g.temperature[1, 1] = IGN_WOOD_Q16 - 1
+    _ignite(g)
+    assert bool(g.ignition_armed[1, 1]) and g.fire[1, 1] == 0
+
+    # a neighbour re-heats it above threshold -> a fresh fire seeds, disarms again
+    g.temperature[1, 1] = IGN_WOOD_Q16
+    _ignite(g)
+    assert g.fire[1, 1] == IGN_SEED_Q and not bool(g.ignition_armed[1, 1])
 
 
 def test_deterministic_same_inputs_bit_identical():

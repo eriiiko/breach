@@ -8,31 +8,34 @@
 # and regenerate every committed golden/digest in the SAME commit (plan §7.6
 # gate-7 — CI must reject a stale digest tag).
 
-version = 1
+version = 2                    # v2 (2026-07-24): +ignition_armed (edge-trigger arm)
 hash = "blake2b-256"
 byte_order = "little"          # x86 + CUDA; big-endian dtypes are refused
 serialization = "per-field: ascii header 'name|dtype.str|shape' then C-order raw bytes"
 
 # The integer/bool SYNCED fields hashed into the digest, IN THIS ORDER.
 # `gas` is the 3D (n_gas, h, w) multi-gas stack (smoke is a view into it).
+# `ignition_armed` (v2) is the per-tile edge-trigger arm for temperature ignition
+# (combat.apply_temperature_ignition; Fable zombie-smolder ruling 2026-07-24).
 fields = [
-    { name = "atmosphere",  dtype = "int32" },
-    { name = "wave_p",      dtype = "int32" },
-    { name = "wave_v",      dtype = "int32" },
-    { name = "wave_source", dtype = "int32" },
-    { name = "wind_x",      dtype = "int32" },
-    { name = "wind_y",      dtype = "int32" },
-    { name = "gas",         dtype = "int32" },
-    { name = "fire",        dtype = "int32" },
-    { name = "water_depth", dtype = "int32" },
-    { name = "flow_vx",     dtype = "int32" },
-    { name = "flow_vy",     dtype = "int32" },
-    { name = "heat",        dtype = "int32" },
-    { name = "temperature", dtype = "int32" },
-    { name = "wall_hp",     dtype = "int32" },
-    { name = "material",    dtype = "int8"  },
-    { name = "obstacles",   dtype = "bool"  },
-    { name = "is_vacuum",   dtype = "bool"  },
+    { name = "atmosphere",     dtype = "int32" },
+    { name = "wave_p",         dtype = "int32" },
+    { name = "wave_v",         dtype = "int32" },
+    { name = "wave_source",    dtype = "int32" },
+    { name = "wind_x",         dtype = "int32" },
+    { name = "wind_y",         dtype = "int32" },
+    { name = "gas",            dtype = "int32" },
+    { name = "fire",           dtype = "int32" },
+    { name = "water_depth",    dtype = "int32" },
+    { name = "flow_vx",        dtype = "int32" },
+    { name = "flow_vy",        dtype = "int32" },
+    { name = "heat",           dtype = "int32" },
+    { name = "temperature",    dtype = "int32" },
+    { name = "wall_hp",        dtype = "int32" },
+    { name = "material",       dtype = "int8"  },
+    { name = "obstacles",      dtype = "bool"  },
+    { name = "is_vacuum",      dtype = "bool"  },
+    { name = "ignition_armed", dtype = "bool"  },
 ]
 
 # Float sim fields deliberately EXCLUDED from the cross-GPU integer digest

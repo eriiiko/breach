@@ -227,6 +227,9 @@ class _IgnGMap:
         self.wall_hp[1, 1] = int(round(float(wall_hp) * ONE_F))
         self.fire = np.zeros((3, 3), dtype=np.int32)
         self.fire[1, 1] = Q(float(fire0))
+        # Edge-trigger arm (Fable 2026-07-24): all tiles start ARMED, so the
+        # unlit centre seeds on its first hot+O2 tick exactly as before.
+        self.ignition_armed = np.ones((3, 3), dtype=bool)
 
 
 def _ignited(**kw):

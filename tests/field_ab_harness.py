@@ -75,7 +75,9 @@ SYNCED_UNIT_FIELDS = (
 # Every field the physics writes — the sim state a structural refactor must
 # preserve bit-for-bit. `gas` is (N,h,w) and covers `smoke` (a view into
 # gas[SMOKE]); `dyn_*` are the per-tick stamp_units outputs; material /
-# is_vacuum / wall_hp catch any topology-path change. Render-only buffers
+# is_vacuum / wall_hp catch any topology-path change. `ignition_armed` is the
+# edge-trigger arm bool (combat.apply_temperature_ignition) — synced state, so it
+# must ride the snapshot (field_digest v2 hashes it). Render-only buffers
 # (light_rgb, light_dir, smoke_glow) are intentionally EXCLUDED — they are not
 # sim state and may legitimately differ between machines/builds.
 SIM_FIELDS = (
@@ -83,7 +85,7 @@ SIM_FIELDS = (
     "gas", "fire", "water_depth", "flow_vx", "flow_vy",
     "heat", "temperature", "ripple", "ripple_v",
     "dyn_permeability", "dyn_wave_absorb", "obstacles", "dyn_light_atten",
-    "wall_hp", "material", "is_vacuum",
+    "wall_hp", "material", "is_vacuum", "ignition_armed",
 )
 
 

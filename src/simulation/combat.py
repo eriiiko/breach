@@ -398,9 +398,23 @@ def apply_temperature_ignition(gmap, o2_frac_ext, ignition_seed):
     ``PhysicsRunner.step``) has already filled ``gmap.temperature`` for this
     tick; here we gather it and start fires. For each FLAMMABLE tile::
 
-        if temperature[y,x] >= ignition_temp_q16[material]   # Q16.16 threshold
-           and X > o2_frac_ext:                              # O2 mole fraction
-               fire[y,x] = max(fire[y,x], ignition_seed)      # never lowers a fire
+        if armed[y,x]                                        # edge-trigger (below)
+           and temperature[y,x] >= ignition_temp_q16[material]   # Q16.16 threshold
+           and X > o2_frac_ext                               # O2 mole fraction
+           and wall_hp[y,x] > 0                              # fuel remaining
+           and fire[y,x] == 0:                               # never touch a lit tile
+               fire[y,x] = ignition_seed                     # seed ONCE, then disarm
+
+    EDGE-TRIGGERED (Fable ruling 2026-07-24, the zombie-smolder fix). The old
+    level-triggered ``fire = max(fire, ignition_seed)`` re-floored a tile to
+    ``I_seed`` on EVERY hot tick, so a fire the logistic was trying to kill was
+    re-seeded forever (an eternal 0.1 smolder). Now a per-tile ``ignition_armed``
+    bool gates the seed: a tile ARMS eligible, ignites ONCE (``armed -> False``),
+    and re-arms ONLY when it genuinely COOLS (``T < ignition_temp``). The
+    ``fire = max(...)`` floor is REMOVED entirely — temperature ignition NEVER
+    modifies a tile with ``I > 0`` (the ``fire == 0`` gate), so a declining fire
+    is never re-floored and dies clean. ``ignition_armed`` is SYNCED state
+    (digest/save/undo), host-only (this function runs on the numpy mirror).
 
     where ``X = Σn_o2 / Σn_total`` over the OPEN (non-solid, non-vacuum)
     4-neighbours — the continuous-O2 law (docs/continuous_o2_law_design_
@@ -426,8 +440,14 @@ def apply_temperature_ignition(gmap, o2_frac_ext, ignition_seed):
       (same threshold, same neighbourhood, same field) so a tile cannot be
       ignited into a state the fire step would immediately suffocate. A flammable
       tile is itself solid (wood/door), so its O2 comes from the adjacent air.
-    - **``max``, not assign.** ``fire = max(fire, ignition_seed)`` never lowers an
-      existing, possibly larger, fire (e.g. one an explosion already set).
+    - **Edge-triggered arm/disarm/re-arm (never touches ``I > 0``).** The seed
+      is written ONLY on tiles that are ``armed & hot & has_o2 & fuel & fire==0``;
+      those tiles then DISARM. Any tile burning while hot (``hot & fire > 0`` —
+      whether temperature-seeded or lit by a weapon/external seed) disarms too, so
+      it is never re-seeded as it dies. A cooled flammable tile (``T < ignition_
+      temp``) RE-ARMS. Because the write is gated on ``fire == 0``, this path can
+      never lower an existing, larger fire (the old ``max`` guarantee, kept) and
+      never re-floors a declining one (the smolder fix).
     - **Second, additive ignition path.** This runs ALONGSIDE the existing
       cellular fire spread/ignition — it does not replace it. With no sim heat
       sources wired yet, ``temperature`` is ~0, so this path is DORMANT in-game
@@ -461,17 +481,27 @@ def apply_temperature_ignition(gmap, o2_frac_ext, ignition_seed):
     # Per-material Q16.16 ignition threshold (quantized once at load). Project
     # onto the grid so the compare is element-wise against `temperature`.
     thresh_q16 = gmap.materials.ignition_temp_q16[material]   # (h, w) int64
+    t_q16 = temperature.astype(np.int64)
+
+    # RE-ARM (edge-trigger hysteresis, Fable ruling 2026-07-24): a flammable tile
+    # that has genuinely COOLED below its ignition_temp becomes eligible to seed
+    # again. Runs BEFORE the `hot` early-out so a tile that disarmed while burning
+    # re-arms the moment it drops below threshold — even on an otherwise dormant
+    # tick. `hot` (T >= thresh) and `cooled` (T < thresh) are disjoint, so seed and
+    # re-arm never touch the same tile (order-free). Cheap-guarded: in the fully
+    # dormant case nothing was ever disarmed, so `armed` is all-True and we skip.
+    armed = gmap.ignition_armed
+    if not bool(armed.all()):
+        armed[flammable & (t_q16 < thresh_q16)] = True
 
     # Hot enough? (Q16.16 integer compare.) Restrict to flammable tiles that
-    # still have FUEL. P1b zombie-smolder fix (continuous-O2 law §2.4 / §5.3
-    # quirk 2): re-seeding requires remaining fuel (wall_hp > 0), so a burnt-out
-    # tile (wall_hp <= 0) stops re-igniting every tick while it is still hot —
-    # it goes OUT and stays out. (A smoldered wall at the 1-LSB FUEL_FLOOR still
-    # has fuel and can re-light; a fire-destroyed wall at wall_hp <= 0 cannot.)
+    # still have FUEL: a burnt-out tile (wall_hp <= 0) can never ignite. (A
+    # smoldered wall at the 1-LSB FUEL_FLOOR still has fuel; a fire-destroyed wall
+    # at wall_hp <= 0 does not.)
     has_fuel = gmap.wall_hp > 0
-    hot = flammable & has_fuel & (temperature.astype(np.int64) >= thresh_q16)
+    hot = flammable & has_fuel & (t_q16 >= thresh_q16)
     if not bool(hot.any()):
-        return  # nothing crossed its threshold this tick (the dormant case)
+        return  # nothing hot this tick (the dormant case) — re-arm already ran
 
     # --- O2 MOLE FRACTION over the OPEN (non-wall, non-vacuum) 4-neighbours —
     # the continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md §2.4):
@@ -520,14 +550,23 @@ def apply_temperature_ignition(gmap, o2_frac_ext, ignition_seed):
     x_ext_q = np.int64(_fire_fx.quantize_scalar(float(o2_frac_ext)))
     has_o2 = (count > 0) & (X_q16 > x_ext_q)
 
-    ignite = hot & has_o2
-    if not bool(ignite.any()):
-        return
-    # max(fire, ignition_seed) on the igniting tiles only — an INTEGER max (exact,
-    # order-free) that never lowers a bigger existing fire. ignition_seed quantizes
-    # once into Q16.16.
+    # SEED (edge-triggered): ignite ONLY an ARMED, hot, oxygenated, fuelled tile
+    # that is currently UNLIT (`fire == 0`). The `fire == 0` gate is what makes
+    # this NEVER modify a tile with I > 0 — it can neither lower a bigger existing
+    # fire (an explosion's) nor re-floor a declining one (the smolder fix). A
+    # freshly-seeded tile gets exactly ignition_seed (== max, since it was 0).
+    # ignition_seed quantizes once into Q16.16.
     seed_q = np.int32(_fire_fx.quantize_scalar(float(ignition_seed)))
-    np.maximum(gmap.fire, np.where(ignite, seed_q, gmap.fire), out=gmap.fire)
+    seed_mask = armed & hot & has_o2 & (gmap.fire == 0)
+    if bool(seed_mask.any()):
+        gmap.fire[seed_mask] = seed_q
+
+    # DISARM: any tile now in a hot-fire episode (`hot & fire > 0` — the tiles we
+    # just seeded PLUS any lit by a weapon/external seed) is no longer eligible to
+    # (re-)seed until it cools. This is the edge that kills the die->reseed smolder
+    # loop: once disarmed, a fire the logistic drives toward I_min is never
+    # re-floored, so it snaps to 0 and stays out until the tile re-arms on cooling.
+    armed[hot & (gmap.fire > 0)] = False
 
 
 # ---------------------------------------------------------------------------

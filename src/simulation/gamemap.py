@@ -225,6 +225,20 @@ class GameMap:
         # S3b — and the heat-ray range/intensity params). The Python ignition
         # twin (combat.apply_temperature_ignition) writes it as an integer max.
         self.fire         = np.zeros((h, w), dtype=np.int32)
+        # Edge-triggered ignition arm (Fable ruling 2026-07-24, zombie-smolder
+        # fix): a per-tile bool that gates temperature ignition
+        # (combat.apply_temperature_ignition). A tile is ARMED (eligible to be
+        # seeded) until it ignites while hot, at which point it DISARMS; it
+        # re-arms only once it genuinely COOLS (T < ignition_temp). This is the
+        # hysteresis that stops a dying fire from being re-seeded to I_seed every
+        # tick (the eternal 0.1 smolder). Init True == every tile can catch on its
+        # first heating. SYNCED state (digest/save/undo), so it mirrors is_vacuum/
+        # obstacles; a mole-fraction bool plane like them. HOST-ONLY, never in the
+        # resident field set: apply_temperature_ignition runs on the numpy mirror
+        # in Simulation.step (both the CPU and GPU-resident ticks), so no device
+        # kernel reads/writes it. Back-compat: absent in any older serialization =>
+        # True (the level format never persists it; GameMap always inits it here).
+        self.ignition_armed = np.ones((h, w), dtype=bool)
         self.obstacles    = np.zeros((h, w), dtype=bool)
         # (The smoke sink-direction field — sink_x/sink_y/_sink_dirty + the
         # BFS rebuild — is DELETED, EOS refactor P3 / decisions.md #3: venting

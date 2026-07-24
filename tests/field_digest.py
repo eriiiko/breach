@@ -40,30 +40,35 @@ import numpy as np
 # Bump this (and regenerate every golden) whenever DIGEST_FIELDS changes shape,
 # order, dtype, or membership. The version is hashed into the digest so a stale
 # golden compared against a new spec fails loudly instead of mismatching opaquely.
-DIGEST_SPEC_VERSION = 1
+# v2 (2026-07-24): +ignition_armed — the edge-triggered ignition arm bool
+# (combat.apply_temperature_ignition; Fable zombie-smolder ruling) is synced state.
+DIGEST_SPEC_VERSION = 2
 
 # The frozen (name, dtype-string) contract — the integer/bool SYNCED fields, in a
 # fixed order. `gas` is the 3D (5,h,w) multi-gas stack (covers `smoke`, a view).
 # Topology fields (wall_hp/material/obstacles/is_vacuum) are included: a wall
-# destruction mutates them and that IS synced state.
+# destruction mutates them and that IS synced state. `ignition_armed` (v2) is the
+# per-tile edge-trigger arm — synced so an arm/disarm desync (which forks ignition
+# timing, hence the fire/HP stream) is caught directly.
 DIGEST_FIELDS = (
-    ("atmosphere",  "int32"),
-    ("wave_p",      "int32"),
-    ("wave_v",      "int32"),
-    ("wave_source", "int32"),
-    ("wind_x",      "int32"),
-    ("wind_y",      "int32"),
-    ("gas",         "int32"),
-    ("fire",        "int32"),
-    ("water_depth", "int32"),
-    ("flow_vx",     "int32"),
-    ("flow_vy",     "int32"),
-    ("heat",        "int32"),
-    ("temperature", "int32"),
-    ("wall_hp",     "int32"),
-    ("material",    "int8"),
-    ("obstacles",   "bool"),
-    ("is_vacuum",   "bool"),
+    ("atmosphere",     "int32"),
+    ("wave_p",         "int32"),
+    ("wave_v",         "int32"),
+    ("wave_source",    "int32"),
+    ("wind_x",         "int32"),
+    ("wind_y",         "int32"),
+    ("gas",            "int32"),
+    ("fire",           "int32"),
+    ("water_depth",    "int32"),
+    ("flow_vx",        "int32"),
+    ("flow_vy",        "int32"),
+    ("heat",           "int32"),
+    ("temperature",    "int32"),
+    ("wall_hp",        "int32"),
+    ("material",       "int8"),
+    ("obstacles",      "bool"),
+    ("is_vacuum",      "bool"),
+    ("ignition_armed", "bool"),
 )
 
 # Float sim fields deliberately NOT in the cross-GPU integer digest (documented).
@@ -114,8 +119,10 @@ def tick_digest(snapshot: dict) -> str:
     snapshots (no carrier key) are entity-free by construction; the strict
     presence rule (a sim WITH entities must always write the carrier) is
     enforced at capture (``simulation.entities.serialize.
-    require_entity_carrier``). DIGEST_SPEC_VERSION stays 1: the entity
-    section carries its own version in its hashed ENTITY_SECT_V1 preamble.
+    require_entity_carrier``). The ENTITY/SIGNAL sections do NOT drive
+    DIGEST_SPEC_VERSION (they carry their own version in the hashed
+    ENTITY_SECT_V1 preamble); the field-plane spec bumps it independently
+    (v2 added ``ignition_armed``).
     """
     from field_ab_harness import UNIT_DIGEST_KEY  # local: avoid import cycle
     from simulation.entities.serialize import (   # local: path set by ^

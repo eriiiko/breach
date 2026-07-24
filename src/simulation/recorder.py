@@ -62,6 +62,10 @@ class PhysicsRecorder:
     # not a named attribute).
     DEFAULT_FIELDS = ('atmosphere', 'temperature', 'gas_o2', 'smoke', 'fire',
                       'obstacles')
+    # SYNCED bool planes: recorded at bool dtype (not the float32 ring) when a
+    # session lists them in `fields`. `ignition_armed` is the edge-trigger arm
+    # (combat.apply_temperature_ignition); mirrors the `obstacles` bool handling.
+    _BOOL_FIELDS = ('obstacles', 'ignition_armed')
     # EOS P3: the blowup trigger re-keys on the per-tick pressure TRANSIENT
     # |P - P_prev| (design §6) — a standing dome is not a blowup; a runaway
     # per-tick change is.
@@ -76,10 +80,13 @@ class PhysicsRecorder:
         self.count = 0       # total snapshots written (whether buffer wrapped)
         self.dumped = False  # prevent repeated auto-dumps for same blowup
 
-        # Pre-allocate ring buffers
+        # Pre-allocate ring buffers. BOOL synced planes (`obstacles`, and the
+        # edge-trigger `ignition_armed`) record at bool dtype; everything else is
+        # the float32 (dequantized) ring. Named here so any bool plane a session
+        # adds to `fields` is stored losslessly instead of cast to float32.
         self.buffers = {}
         for name in self.fields:
-            dtype = np.bool_ if name == 'obstacles' else np.float32
+            dtype = np.bool_ if name in self._BOOL_FIELDS else np.float32
             self.buffers[name] = np.zeros((capacity, fh, fw), dtype=dtype)
 
         # Tick metadata (tick number, real_time, etc.)
