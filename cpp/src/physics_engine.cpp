@@ -124,6 +124,23 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     // own-tile saturation gate unchanged.
     const int32_t* n_o2 = gas + (size_t)o2_idx * (size_t)(h * w);
 
+    // Continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md): the fire
+    // logistic + combustion read the local O2 MOLE FRACTION X = Σn_o2/Σn_total.
+    // n_bulk_ = Σ conservative bulk planes (O2+N2) is the fraction DENOMINATOR —
+    // the SAME real N_total the temperature Pass-1 deposit uses below, so it is
+    // built ONCE here (before the fire step) and shared by BOTH consumers (one
+    // source of truth). The fire step does not mutate `gas`, so the value the
+    // temperature pass reads afterward is identical. Both the normal and the
+    // GPU-resident tick funnel through this step_tail, so the resident seam gets
+    // the identical N_total with no separate plumbing.
+    if (n_bulk_.size() != (size_t)n) n_bulk_.assign(n, 0);
+    std::fill(n_bulk_.begin(), n_bulk_.end(), 0);
+    for (int gi = 0; gi < n_gases; ++gi) {
+        if (!gas_conservative[gi]) continue;
+        const int32_t* plane = gas + (size_t)gi * n;
+        for (int i = 0; i < n; ++i) n_bulk_[i] += plane[i];
+    }
+
     std::vector<std::pair<int, int>> destroyed;
 #ifdef BREACH_HAS_CUDA
     if (breach_cuda::fire_backend_is_cuda()) {
@@ -137,14 +154,15 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // fire_step is a free function. With the flag off (default) the CPU
         // branch below is the exact prior call.
         destroyed = breach_cuda::fire_step(
-            fire_field, atmosphere, n_o2, smoke_field, wall_hp,
+            fire_field, atmosphere, n_o2, n_bulk_.data(), smoke_field, wall_hp,
             temperature_mut, wind_x, wind_y,
             solid, is_vacuum, flammable,
             h, w, sim_time,
             this->fire.params.k_grow, this->fire.params.k_die,
             this->fire.params.fire_T_ext, this->fire.params.fire_T_span,
-            this->fire.params.fuel_ref, this->fire.params.P_min,
-            this->fire.params.P_full, this->fire.params.I_min,
+            this->fire.params.fuel_ref,
+            this->fire.params.o2_frac_ext, this->fire.params.o2_frac_amb,
+            this->fire.params.I_min,
             this->fire.params.k_wind_fan, this->fire.params.k_wind_strip,
             this->fire.params.fire_pressure_gain,
             this->fire.params.smoke_emission, this->fire.params.wall_damage,
@@ -154,7 +172,7 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
 #endif
     {
         destroyed = this->fire.step(
-            fire_field, atmosphere, n_o2, smoke_field, wall_hp,
+            fire_field, atmosphere, n_o2, n_bulk_.data(), smoke_field, wall_hp,
             temperature_mut, wind_x, wind_y,
             solid, is_vacuum, flammable,
             h, w, sim_time);
@@ -198,18 +216,11 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     // divisor (a documented `// P3:` TODO in temperature_solver.h asks P3 to
     // swap this for the real N_total; NOT done here — flagged as an open
     // item, see the patch's return report).
-    // EOS P3: sum the conservative bulk planes (O2+N2) into the reused scratch
-    // — the REAL N divisor for Pass 1's ΔT = ΔE/(N·c_v) deposit (closes the P2
-    // `// P3:` density-proxy TODO; floored inside the solver by its own
-    // N_FLOOR_HEAT). Built once here so BOTH the CPU and the GPU (P6.6) paths
-    // read the identical divisor.
-    if (n_bulk_.size() != (size_t)n) n_bulk_.assign(n, 0);
-    std::fill(n_bulk_.begin(), n_bulk_.end(), 0);
-    for (int gi = 0; gi < n_gases; ++gi) {
-        if (!gas_conservative[gi]) continue;
-        const int32_t* plane = gas + (size_t)gi * n;
-        for (int i = 0; i < n; ++i) n_bulk_[i] += plane[i];
-    }
+    // EOS P3: the REAL N divisor for Pass 1's ΔT = ΔE/(N·c_v) deposit (closes
+    // the P2 `// P3:` density-proxy TODO; floored inside the solver by its own
+    // N_FLOOR_HEAT) is `n_bulk_` — now built ONCE at the top of step_tail (above
+    // the fire step) and shared with the continuous-O2 law. The fire step does
+    // not mutate `gas`, so it is still the correct pre-temperature divisor here.
 #ifdef BREACH_HAS_CUDA
     if (breach_cuda::temperature_backend_is_cuda()) {
         // CUDA-P6.6: dispatch the unified temperature pass to the GPU (bit-

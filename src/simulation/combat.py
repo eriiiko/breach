@@ -389,7 +389,7 @@ class BulletInFlight:
 # ---------------------------------------------------------------------------
 # Ignition from temperature — engine/06 §4 ("Ignition"), proposal §6 step 4b
 # ---------------------------------------------------------------------------
-def apply_temperature_ignition(gmap, o2_threshold, ignition_seed):
+def apply_temperature_ignition(gmap, o2_frac_ext, ignition_seed):
     """Ignite flammable tiles whose `temperature` has crossed `ignition_temp`
     AND that have oxygen (engine/06 §4, proposal §6 step 4b).
 
@@ -399,8 +399,15 @@ def apply_temperature_ignition(gmap, o2_threshold, ignition_seed):
     tick; here we gather it and start fires. For each FLAMMABLE tile::
 
         if temperature[y,x] >= ignition_temp_q16[material]   # Q16.16 threshold
-           and mean(atmosphere of air-side 4-neighbours) >= o2_threshold:   # O2
+           and X > o2_frac_ext:                              # O2 mole fraction
                fire[y,x] = max(fire[y,x], ignition_seed)      # never lowers a fire
+
+    where ``X = Σn_o2 / Σn_total`` over the OPEN (non-solid, non-vacuum)
+    4-neighbours — the continuous-O2 law (docs/continuous_o2_law_design_
+    2026-07-24.md §2.4): ignition and sustain read ONE law, so a tile can only
+    ignite where a flame could be sustained (X above the extinction limit
+    ``o2_frac_ext``). REPLACES the old absolute-density gate (mean n_o2 >=
+    o2_threshold), which conflated HOT/thin with VITIATED.
 
     Determinism / coexistence:
 
@@ -455,68 +462,63 @@ def apply_temperature_ignition(gmap, o2_threshold, ignition_seed):
     # onto the grid so the compare is element-wise against `temperature`.
     thresh_q16 = gmap.materials.ignition_temp_q16[material]   # (h, w) int64
 
-    # Hot enough? (Q16.16 integer compare.) Restrict to flammable tiles only.
-    hot = flammable & (temperature.astype(np.int64) >= thresh_q16)
+    # Hot enough? (Q16.16 integer compare.) Restrict to flammable tiles that
+    # still have FUEL. P1b zombie-smolder fix (continuous-O2 law §2.4 / §5.3
+    # quirk 2): re-seeding requires remaining fuel (wall_hp > 0), so a burnt-out
+    # tile (wall_hp <= 0) stops re-igniting every tick while it is still hot —
+    # it goes OUT and stays out. (A smoldered wall at the 1-LSB FUEL_FLOOR still
+    # has fuel and can re-light; a fire-destroyed wall at wall_hp <= 0 cannot.)
+    has_fuel = gmap.wall_hp > 0
+    hot = flammable & has_fuel & (temperature.astype(np.int64) >= thresh_q16)
     if not bool(hot.any()):
         return  # nothing crossed its threshold this tick (the dormant case)
 
-    # --- O2 proxy: mean REAL `gas[O2]` over the OPEN (non-wall, non-vacuum)
-    # 4-neighbours — the EXACT predicate the C++ fire O2 check uses
-    # (fire_simulation.cpp, mask `!is_wall && !is_vacuum`, with
-    # `is_wall == gmap.solid`). EOS refactor P4 (design §6, item 3): this used
-    # to read `atmosphere` (P, a pressure proxy) — it now reads the REAL bulk
-    # O2 density plane (gmap.gas[O2]), the SAME re-pointing FireSimulation's
-    # own O2 gate got in C++, so a tile still cannot ignite into a state the
-    # fire step would immediately suffocate (the design invariant, unchanged —
-    # only the underlying field did). S3a made this an INTEGER reduction on the
-    # int32 Q16.16 field, bit-matching the integer mean the C++ fire adopts
-    # (fixed_point.h mean_sum/mean_round): an int64 neighbour-sum + a
-    # round-half-away-from-zero mean, then a Q16.16 threshold compare.
-    #
-    # WHY the mask excludes vacuum: the C++ O2 gate excludes vacuum neighbours
-    # from BOTH sum and count; including them would lower the mean below the
-    # C++ value (a vacuum tile holds no gas, but the count would still
-    # increment). Excluding vacuum (matching the C++ mask) is what makes the
-    # two O2 predicates bit-identical.
+    # --- O2 MOLE FRACTION over the OPEN (non-wall, non-vacuum) 4-neighbours —
+    # the continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md §2.4):
+    # X = Σn_o2 / Σn_total, ignite iff X > o2_frac_ext (the extinction limit the
+    # C++ fire sustain uses). REPLACES the old absolute-density mean gate. The
+    # open-neighbour mask `(~solid) & (~vacuum)` matches the C++ fire/combustion
+    # laws exactly (`!is_wall && !is_vacuum`, is_wall == gmap.solid); a vacuum
+    # neighbour is dropped from BOTH sums, so a tile venting to vacuum reads
+    # X -> 0 and cannot ignite. The fraction is invariant under thermal
+    # expansion, so this no longer conflates HOT/thin gas with VITIATED.
     h, w = temperature.shape
     open_nbr = (~gmap.solid) & (~gmap.is_vacuum)   # True == counts toward O2 (== C++)
     o2_idx = gmap.gases.name_to_id["o2"]
+    n2_idx = gmap.gases.name_to_id["inert_n2"]
     o2_q = gmap.gas[o2_idx].astype(np.int64)       # int32 Q16.16 -> int64 (exact, order-free)
-    sum_o2 = np.zeros((h, w), dtype=np.int64)      # Q16.16 sum (int64, no overflow)
+    # N_total = conservative bulk (O2 + inert_N2), soot EXCLUDED — one source of
+    # truth with the EOS/temperature N_total and the C++ fire/combustion laws.
+    ntot_q = o2_q + gmap.gas[n2_idx].astype(np.int64)
+    sum_o2 = np.zeros((h, w), dtype=np.int64)      # Q16.16 numerator sum
+    sum_tot = np.zeros((h, w), dtype=np.int64)     # Q16.16 denominator sum
     count = np.zeros((h, w), dtype=np.int64)       # neighbour count 0..4
     # N, S, E, W (fixed order; integer sum is order-independent regardless).
     for dy, dx in ((-1, 0), (1, 0), (0, 1), (0, -1)):
         ys0, ys1 = max(0, -dy), h - max(0, dy)      # this-tile row span
         xs0, xs1 = max(0, -dx), w - max(0, dx)
         nbr_o2 = o2_q[ys0 + dy:ys1 + dy, xs0 + dx:xs1 + dx]
+        nbr_tot = ntot_q[ys0 + dy:ys1 + dy, xs0 + dx:xs1 + dx]
         nbr_open = open_nbr[ys0 + dy:ys1 + dy, xs0 + dx:xs1 + dx]
         sum_o2[ys0:ys1, xs0:xs1] += np.where(nbr_open, nbr_o2, np.int64(0))
+        sum_tot[ys0:ys1, xs0:xs1] += np.where(nbr_open, nbr_tot, np.int64(0))
         count[ys0:ys1, xs0:xs1] += nbr_open.astype(np.int64)
-    # Round-half-away-from-zero mean == fixed_point.h::mean_round (sign-symmetric,
-    # no DC bias). A fully walled-in tile (count == 0) averages to 0 -> below
-    # threshold -> never ignites (the C++ `count > 0 ? sum/count : 0` guard, here
-    # via safe_count).
-    #
-    # NEGATIVE-BRANCH FIX (S3b, review carry-forward #2): the C++ mean_round divide
-    # TRUNCATES TOWARD ZERO (C++ integer `/`), NOT toward -inf. Python `//` FLOORS
-    # (toward -inf), so the two diverge on a NEGATIVE neighbour sum. EOS refactor
-    # P4: `gas[O2]` is a transported bulk density, clamped >= 0 by construction
-    # (bulk_transport.cpp's final clamp) — it can never actually go negative the
-    # way the old `atmosphere` proxy could (wave forcing had no hard floor) — but
-    # the shared trunc-toward-zero emulation is KEPT so this stays bit-identical
-    # to the C++ mean_round on ANY input, not just the ones this field happens to
-    # produce today: trunc(a/b) = -((-a)//b) for b>0.
-    safe_count = np.where(count < 1, np.int64(1), count)
-    half = safe_count // 2
-    pos_num = sum_o2 + half            # >= 0 branch: (sum+half) trunc == floor
-    neg_num = sum_o2 - half            # <  0 branch: trunc toward 0, NOT floor
-    mean_o2 = np.where(sum_o2 >= 0,
-                       pos_num // safe_count,
-                       -((-neg_num) // safe_count))       # Q16.16 mean (int64), trunc-to-0
-    # Threshold quantized ONCE into Q16.16 — a plain integer >= compare, no float.
+    # X = Σn_o2 / max(Σn_total, floor), Q16.16, EXACT integer divide (floor;
+    # deterministic cross-machine). The floor (655 == quantize(0.01)) matches the
+    # C++ X_N_FLOOR: it guards the divide AND makes a near-vacuum cell read X ~= 0
+    # rather than a spurious high fraction on trace gas. gas planes are clamped
+    # >= 0 by construction (bulk_transport), so no negative-branch handling is
+    # needed. A fully walled-in tile (count == 0) -> both sums 0 -> X = 0 -> never
+    # ignites. (The C++ fire sustain uses reciprocal_q16 here; a <=1-ULP mismatch
+    # at the exact X_ext boundary only ever means a marginal tile that ignites
+    # then extinguishes next tick — deterministic either way, not a bit-parity
+    # requirement, since ignition is the seed and the fire logistic is the arbiter.)
     from simulation import fire_fixed as _fire_fx
-    o2_threshold_q = _fire_fx.quantize_scalar(float(o2_threshold))
-    has_o2 = (count > 0) & (mean_o2 >= o2_threshold_q)
+    X_N_FLOOR = np.int64(_fire_fx.quantize_scalar(0.01))
+    den = np.maximum(sum_tot, X_N_FLOOR)
+    X_q16 = (sum_o2 << np.int64(16)) // den                # Q16.16 mole fraction
+    x_ext_q = np.int64(_fire_fx.quantize_scalar(float(o2_frac_ext)))
+    has_o2 = (count > 0) & (X_q16 > x_ext_q)
 
     ignite = hot & has_o2
     if not bool(ignite.any()):

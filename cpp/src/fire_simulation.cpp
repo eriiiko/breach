@@ -3,6 +3,15 @@
 #include <algorithm>
 #include <cstdint>
 
+// Continuous O2->combustion law (docs/continuous_o2_law_design_2026-07-24.md):
+// the O2 sustain factor is LINEAR in the local O2 mole fraction with an
+// extinction limit. Technique credit:
+//   Peatross, M.J. & Beyler, C.L., "Ventilation effects on compartment fire
+//   behavior", Fire Safety Science 5:403-414, 1997 — compartment burning rate
+//   declines ~linearly with O2 volume fraction below ambient (the linear law).
+//   (Extinction-limit ~13-16 vol-% O2: Beyler, SFPE Handbook, flammability
+//   limits.) Both archived under docs/papers/.
+
 // Neighbor offsets: 4-connected (the open-neighbour pressure mean + smoke spread).
 static constexpr int D4[][2] = {{-1,0},{1,0},{0,-1},{0,1}};
 
@@ -32,7 +41,9 @@ static inline q16 clamp01_q(q16 v) {
 // construction): t = clamp01((x - edge0) * recip_span); then t2 = t*t,
 // three_minus = (3<<16) - 2t, return t2 * three_minus. recip_span is the load-time
 // reciprocal of (edge1 - edge0) (a config constant). edge1 <= edge0 -> a step.
-static inline q16 smoothstep_q(q16 edge0, q16 edge1, q16 x,
+// RETAINED past the continuous-O2 law (which replaced the fire O2 gate's use of
+// it): kept for the tombstone + any future smoothstep consumer (design §2.2).
+[[maybe_unused]] static inline q16 smoothstep_q(q16 edge0, q16 edge1, q16 x,
                                int64_t recip_span, bool degenerate) {
     if (degenerate) return (x < edge0) ? 0 : fp::FP_ONE;
     const q16 t = clamp01_q(fp::recip_mul(x - edge0, recip_span));
@@ -44,7 +55,8 @@ static inline q16 smoothstep_q(q16 edge0, q16 edge1, q16 x,
 std::vector<std::pair<int, int>> FireSimulation::step(
     q16* fire,                    // S3b: Q16.16 int32 (was float)
     const q16* atmosphere,        // S2c: Q16.16 int32 == P (EOS P3: read-only, plume only)
-    const q16* n_o2,               // EOS P4: Q16.16 int32 real O2 density (the O2 gate)
+    const q16* n_o2,               // EOS P4: Q16.16 int32 real O2 density (fraction numerator)
+    const q16* n_total,            // continuous-O2 law: Q16.16 int32 real N_total (fraction denom)
     int32_t* smoke,               // S2b: Q16.16
     q16* wall_hp,                 // S3b: Q16.16 int32 (was float)
     q16* temperature,             // EOS P3: mutable (plume->T shim)
@@ -89,8 +101,6 @@ std::vector<std::pair<int, int>> FireSimulation::step(
     const q16 k_wind_fan_q  = fp::quantize((double)p.k_wind_fan);
     const q16 k_wind_strip_q = fp::quantize((double)p.k_wind_strip);
     const q16 fire_T_ext_q  = fp::quantize((double)p.fire_T_ext);
-    const q16 P_min_q       = fp::quantize((double)p.P_min);
-    const q16 P_full_q      = fp::quantize((double)p.P_full);
     const q16 I_min_q       = fp::quantize((double)p.I_min);
     const q16 gain_q        = fp::quantize((double)p.fire_pressure_gain);
     const q16 emission_q    = fp::quantize((double)p.smoke_emission);
@@ -99,9 +109,22 @@ std::vector<std::pair<int, int>> FireSimulation::step(
     // Load-time reciprocals for the config-constant divides (make_recip/recip_mul).
     const int64_t recip_fuel_ref  = fp::make_recip((double)p.fuel_ref);       // F = wall_hp/fuel_ref
     const int64_t recip_T_span    = fp::make_recip((double)p.fire_T_span);    // hot ramp
-    const double  P_span          = (double)p.P_full - (double)p.P_min;       // smoothstep span
-    const bool    P_degenerate    = (P_span <= 0.0);
-    const int64_t recip_P_span    = P_degenerate ? 0 : fp::make_recip(P_span);
+    // Continuous-O2 law span: o2f = clamp01((X - X_ext) / (X_amb - X_ext)).
+    // recip_x_span is the load-time reciprocal of the span (like recip_T_span);
+    // X_ext = 0 gives span == X_amb (Erik's pure-proportional X/X_amb, NOT
+    // degenerate). X_span <= 0 (X_amb <= X_ext, a misconfig) -> a step at X_ext.
+    const q16 x_ext_q             = fp::quantize((double)p.o2_frac_ext);
+    const double  x_span          = (double)p.o2_frac_amb - (double)p.o2_frac_ext;
+    const bool    x_degenerate    = (x_span <= 0.0);
+    const int64_t recip_x_span    = x_degenerate ? 0 : fp::make_recip(x_span);
+    // Mole-fraction divide floor: den = max(Σn_total, X_N_FLOOR). Guards the
+    // per-cell reciprocal_q16 (undefined at denom <= 0, spurious at {1,2}) AND
+    // makes a near-vacuum cell (open-neighbour total gas < 1% of one ambient
+    // cell) read X ~= 0 rather than a spurious high mole fraction on trace gas.
+    // A legit thermally-expanded flame-edge cell holds N ~= 0.07-0.09 (config
+    // note) -> Σ >> this floor, so it never engages for a real burn. Same value
+    // host + device (the fraction division must be bit-identical CPU<->CUDA).
+    const q16 X_N_FLOOR           = fp::quantize(0.01);   // 655 counts
     // eos-p3fix-thermal-ceiling: the plume's self-limiter now gates on T
     // (see FireParams::T_FLAME_MAX doc) instead of the structurally-dead
     // atmosphere/p_expand_ref gate (retired, see FireParams::p_expand_ref).
@@ -131,26 +154,30 @@ std::vector<std::pair<int, int>> FireSimulation::step(
         // reciprocal of fuel_ref, then clamp01.
         const q16 F = clamp01_q(fp::recip_mul(wall_hp[i], recip_fuel_ref));
 
-        // O2: mean n_o2 over OPEN (non-solid, non-vacuum) 4-neighbours — the
-        // fire reads INCOMING fresh air (its own tile holds no gas — it is
-        // solid). int64 sum + mean_round (round-half-away-from-zero) — the
-        // EXACT predicate the Python ignition twin shares (closes the S3a
-        // exact-tie gap, review item #1). EOS refactor P4 (design §6): reads
-        // the REAL bulk O2 density plane, NOT the atmosphere/P proxy — the
-        // decompression-extinguishes-fire mechanism is now genuine oxygen
-        // depletion, not a pressure stand-in. No open neighbour -> count 0 ->
-        // O2 = 0 (mean_round guard).
+        // X: local O2 MOLE FRACTION over OPEN (non-solid, non-vacuum)
+        // 4-neighbours — the fire reads INCOMING fresh air (its own tile holds
+        // no gas — it is solid). BOTH sums are int64, exact, order-free (the
+        // same open-neighbour predicate the Python ignition twin shares). The
+        // continuous-O2 law reads the FRACTION Σn_o2/Σn_total, NOT the absolute
+        // n_o2 mean: invariant under thermal expansion, so hot thin gas at
+        // ambient composition burns (closes the density trap; design §2.1).
+        // No open neighbour -> both sums 0 -> den floors -> X = 0.
         int64_t sum_o2 = 0;
-        int64_t count = 0;
+        int64_t sum_tot = 0;
         for (const auto& d : D4) {
             int ny = y + d[0], nx = x + d[1];
             int ni = ny * w + nx;
             if (in_bounds(ny, nx, h, w) && !is_wall[ni] && !is_vacuum[ni]) {
-                sum_o2 += (int64_t)n_o2[ni];   // exact, order-free
-                count += 1;
+                sum_o2  += (int64_t)n_o2[ni];      // exact, order-free
+                sum_tot += (int64_t)n_total[ni];   // exact, order-free
             }
         }
-        const q16 P = fp::mean_round(sum_o2, count);
+        // X = Σn_o2 / max(Σn_total, floor), ONE per-cell reciprocal_q16 divide
+        // (the SAME primitive combustion's heat deposit uses — bit-identical
+        // CPU<->CUDA). Σn_total <= ~4*N_max fits q16 comfortably; sum_o2 <=
+        // sum_tot so X <= 1 and the product never overflows (design §2.1).
+        const q16 den = (sum_tot < (int64_t)X_N_FLOOR) ? X_N_FLOOR : (q16)sum_tot;
+        const q16 X = fp::mul_q16((q16)sum_o2, fp::reciprocal_q16(den));
 
         // W: wind magnitude from the SHARED wind field (= -grad p incl. waves, so a
         // grenade shockwave is a transient spike -> firestorm / blow-out). The int64
@@ -159,10 +186,15 @@ std::vector<std::pair<int, int>> FireSimulation::step(
                           + fp::mul_wide(wind_y[i], wind_y[i]);
         const q16 W = fp::sqrt_q16(rad);
 
-        // Gates.
+        // Gates. o2f is LINEAR in X (the continuous-O2 law), clamped to [0,1]:
+        // X <= X_ext -> 0 (extinction), X >= X_amb -> 1 (fresh air). The
+        // degenerate span (X_amb <= X_ext misconfig) falls back to a step at
+        // X_ext. Same clamp/recip_mul idiom as `hot` above.
         const q16 hot = clamp01_q(fp::recip_mul(T - fire_T_ext_q, recip_T_span));
-        const q16 o2  = smoothstep_q(P_min_q, P_full_q, P, recip_P_span, P_degenerate);
-        const q16 avail = fp::mul_q16(F, o2);
+        const q16 o2f = x_degenerate
+            ? ((X < x_ext_q) ? (q16)0 : (q16)fp::FP_ONE)
+            : clamp01_q(fp::recip_mul(X - x_ext_q, recip_x_span));
+        const q16 avail = fp::mul_q16(F, o2f);
 
         // Signed logistic update, fanned + stripped by wind. PINNED MULTIPLY ORDER
         // (master plan §2.4 / plan §5.2 — the chained-truncation association hazard):

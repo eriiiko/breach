@@ -103,9 +103,11 @@ T_MAX_PHYS        = 16000.0 # v2.4 counted physical-maximum rail on the temperat
 # o2_threshold/P_min/P_full recalibration note in the fire feedback block below.
 [physics.fire]
 ignition_seed = 0.1   # seed fire intensity a temperature-ignited tile gets (I_seed)
-o2_threshold  = 0.01  # min air-side-neighbour REAL N_O2 to ignite (mirrors the fire's
-                       # P_min — see the v2.4 hot-zone-equilibrium recalibration note at
-                       # P_min/P_full below; was 0.12 on the near-ambient-density assumption)
+# o2_threshold RETIRED (continuous-O2 law, docs/continuous_o2_law_design_2026-07-24
+# .md §2.4): ignition now reads the O2 MOLE FRACTION and ignites iff X > o2_frac_ext
+# (the SAME extinction limit the fire sustain uses — one law), NOT an absolute-N_O2
+# mean. Left here so old configs do not hard-error; no longer read.
+o2_threshold  = 0.01  # RETIRED — see o2_frac_ext (fire feedback block below)
 
 # --- Signed-logistic fire FEEDBACK (fire_design_proposal §2/§3/§5) ------------
 # Cellular spread is DELETED: spread is now radiation -> heat -> temperature ->
@@ -159,8 +161,21 @@ fuel_ref          = 60.0   # wall_hp normaliser: F = clamp01(wall_hp/fuel_ref)
 # drain weakens F and a weaker sealed flame starves its room more slowly.
 # Ordering preserved, still bit-stable under the 1e-5 dial perturbation gate
 # (test_payoff_orderings_perturbation_robust).
-P_min             = 0.01   # local N_O2 below which the O2 proxy is 0 (O2 starves the fire)
-P_full            = 0.03   # local N_O2 at which the O2 proxy saturates full
+# Continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md): the O2 sustain
+# factor is now LINEAR in the local O2 MOLE FRACTION X = Σn_o2/Σn_total over open
+# neighbours, with an extinction limit — o2f = clamp01((X - X_ext)/(X_amb - X_ext)).
+# This REPLACES the smoothstep(P_min, P_full) on ABSOLUTE n_o2 below. The fraction
+# is invariant under thermal expansion, so the v2.4 hot-zone-equilibrium rescale
+# saga (the whole P_min/P_full recalibration note above) is CLOSED — only true
+# vitiation (products displacing O2), not hot thin gas, starves a fire.
+#   o2_frac_ext = X_ext (flame-extinction limit; 0 => Erik's pure X/X_amb proportional)
+#   o2_frac_amb = X_amb (ambient fraction; per-map, reads the level's [ambient] o2_frac)
+# RE-TUNE PENDING (design §5): X_ext is a feel dial re-fit jointly with k_grow/k_die/
+# wall_damage/burn_rate AFTER this + the sky-exchange build merge.
+o2_frac_ext       = 0.13   # X_ext — physical flame-extinction O2 mole fraction (~13%)
+o2_frac_amb       = 0.21   # X_amb — ambient O2 mole fraction (overridden per-map by [ambient] o2_frac)
+P_min             = 0.01   # RETIRED (see o2_frac_ext/amb above) — smoothstep low edge on absolute n_o2
+P_full            = 0.03   # RETIRED — smoothstep full edge on absolute n_o2
 I_min             = 0.02   # snap-to-zero extinguish floor
 k_wind_fan        = 0.5    # (1 + k_wind_fan*W) fans growth into a firestorm. NEEDS TUNING vs the live wind scale (a shockwave is a large transient spike).
 k_wind_strip      = 0.5    # W*(1-I)*I blows out small/marginal fires (the realistic crossover). NEEDS TUNING vs the live wind scale.
@@ -338,9 +353,21 @@ U_MAX = 1000.0                        # v2.4 defense-in-depth velocity rail (m/s
 # [physics.thermal] above — ONE combustion/deposit floor in the system).
 # Sane defaults; feel-tuned at P5 like every other fire/thermal dial.
 [physics.combustion]
-burn_rate         = 1.0    # N_O2 consumed per second, per open-neighbour burn site
-o2_thresh_burn    = 0.03   # min local N_O2 to sustain combustion (below fire's
-                            # P_min=0.126 so the VISIBLE flame dies first)
+# Continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md §2.3): the O2
+# demand is now PROPORTIONAL — demand = burn_rate * I * o2f * dt (per claimant),
+# where o2f is LINEAR in the air cell's O2 mole fraction (the SAME o2_frac_ext/
+# o2_frac_amb law the fire logistic uses, bound from [physics.fire]). burn_rate
+# drops from the retired uniform-gated 1.0 to the ceiling_h-anchored physical
+# value ~1/50: at ceiling_h=2.5 m the per-unit-O2 heat/fuel budget that keeps a
+# room-scale flame bounded and Q16.16-safe lands here (Huggett 1980 oxygen-
+# consumption calorimetry anchors the scale). RE-TUNE PENDING: the joint re-fit
+# of k_grow/k_die/wall_damage/X_ext vs this rate happens AFTER this + the sky-
+# exchange build both merge (design §5) — burn_rate is FIXED at 0.02 for that
+# re-tune and "never touched again without a real reason" (Erik).
+burn_rate         = 0.02   # N_O2 per second per burn site AT I=1, o2f=1 (was 1.0)
+o2_thresh_burn    = 0.03   # RETIRED as the burn gate (the o2f law is the throttle);
+                            # kept ONLY as an epsilon skip-floor (O2 <= this -> the
+                            # air cell is treated as fully starved and skipped)
 H_fuel            = 4.0    # heat yield (T-scale ΔT) per unit N_O2 burned
 soot_yield        = 0.3    # fraction of consumed O2 -> smoke (rest -> inert_N2)
 # v2.5 — P5.1 stoichiometric fuel consumption (docs/eos_refactor_design.md §5

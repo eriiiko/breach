@@ -1244,6 +1244,8 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("fire_T_ext",     &FireParams::fire_T_ext)
         .def_readwrite("fire_T_span",    &FireParams::fire_T_span)
         .def_readwrite("fuel_ref",       &FireParams::fuel_ref)
+        .def_readwrite("o2_frac_ext",    &FireParams::o2_frac_ext)
+        .def_readwrite("o2_frac_amb",    &FireParams::o2_frac_amb)
         .def_readwrite("P_min",          &FireParams::P_min)
         .def_readwrite("P_full",         &FireParams::P_full)
         .def_readwrite("I_min",          &FireParams::I_min)
@@ -1267,6 +1269,7 @@ PYBIND11_MODULE(breach_physics, m) {
                         py::array_t<int32_t> fire,         // S3b: Q16.16 int32
                         py::array_t<int32_t> atmosphere,   // S2c: Q16.16 int32
                         py::array_t<int32_t> n_o2,         // EOS P4: Q16.16 int32
+                        py::array_t<int32_t> n_total,      // continuous-O2 law: Q16.16 int32
                         py::array_t<int32_t> smoke,        // S2b: Q16.16 int32
                         py::array_t<int32_t> wall_hp,      // S3b: Q16.16 int32
                         py::array_t<int32_t> temperature,
@@ -1278,7 +1281,8 @@ PYBIND11_MODULE(breach_physics, m) {
                         float dt) -> py::list {
             auto [f, h, w] = get_2d(fire);
             auto [atm, h2, w2] = get_2d_const(atmosphere);   // EOS P3: read-only (== P)
-            auto [o2, h2b, w2b] = get_2d_const(n_o2);        // EOS P4: read-only (the O2 gate)
+            auto [o2, h2b, w2b] = get_2d_const(n_o2);        // fraction numerator (read-only)
+            auto [nt, h2c, w2c] = get_2d_const(n_total);     // fraction denominator (read-only)
             auto [sm, h3, w3] = get_2d(smoke);
             auto [whp, h4, w4] = get_2d(wall_hp);
             auto [temp, h5, w5] = get_2d(temperature);       // EOS P3: mutable (plume->T shim)
@@ -1287,15 +1291,15 @@ PYBIND11_MODULE(breach_physics, m) {
             auto [wl, h8, w8] = get_2d_const(is_wall);
             auto [vac, h9, w9] = get_2d_const(is_vacuum);
             auto [fl, h10, w10] = get_2d_const(flammable);
-            auto destroyed = self.step(f, atm, o2, sm, whp, temp, wx, wy,
+            auto destroyed = self.step(f, atm, o2, nt, sm, whp, temp, wx, wy,
                                        wl, vac, fl, h, w, dt);
             py::list result;
             for (const auto& [dy, dx] : destroyed) {
                 result.append(py::make_tuple(dy, dx));
             }
             return result;
-        }, py::arg("fire"), py::arg("atmosphere"), py::arg("n_o2"), py::arg("smoke"),
-           py::arg("wall_hp"), py::arg("temperature"),
+        }, py::arg("fire"), py::arg("atmosphere"), py::arg("n_o2"), py::arg("n_total"),
+           py::arg("smoke"), py::arg("wall_hp"), py::arg("temperature"),
            py::arg("wind_x"), py::arg("wind_y"),
            py::arg("is_wall"), py::arg("is_vacuum"), py::arg("flammable"),
            py::arg("dt"));
@@ -1765,6 +1769,8 @@ PYBIND11_MODULE(breach_physics, m) {
     py::class_<CombustionSolver>(m, "CombustionSolver")
         .def(py::init<>())
         .def_readwrite("burn_rate",         &CombustionSolver::burn_rate)
+        .def_readwrite("o2_frac_ext",       &CombustionSolver::o2_frac_ext)
+        .def_readwrite("o2_frac_amb",       &CombustionSolver::o2_frac_amb)
         .def_readwrite("o2_thresh_burn",    &CombustionSolver::o2_thresh_burn)
         .def_readwrite("H_fuel",            &CombustionSolver::H_fuel)
         .def_readwrite("soot_yield",        &CombustionSolver::soot_yield)

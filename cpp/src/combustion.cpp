@@ -29,6 +29,13 @@ using namespace fixedpoint;
 // S. Feldman, J.F. O'Brien, O. Arikan, "Animating Suspended Particle
 // Explosions", SIGGRAPH 2003 — the heat + product-yield + ignition-threshold
 // source-term structure this pass follows (constants game-tuned, not lit-derived).
+//
+// Continuous O2->combustion law (docs/continuous_o2_law_design_2026-07-24.md):
+// the per-claimant O2 DEMAND is now PROPORTIONAL in fire intensity I and the
+// O2 factor o2f (linear in the air cell's O2 mole fraction) instead of a flat
+// gated draw. Credit: Peatross & Beyler 1997 (linear burning-rate vs O2 volume
+// fraction) + Huggett 1980 (oxygen-consumption calorimetry, the burn_rate/H_fuel
+// anchor). Both archived under docs/papers/ (headers: fire_simulation.cpp).
 // ============================================================================
 
 namespace {
@@ -45,6 +52,14 @@ static constexpr int D4_OPP[4] = {1, 0, 3, 2};
 
 static inline bool in_bounds(int y, int x, int h, int w) {
     return y >= 0 && y < h && x >= 0 && x < w;
+}
+
+// Integer clamp to [0, FP_ONE] (the [0,1] o2f saturation) — mirrors
+// fire_simulation.cpp's clamp01_q so the two O2 laws are bit-identical.
+static inline q16 clamp01_q(q16 v) {
+    if (v < 0) return 0;
+    if (v > FP_ONE) return FP_ONE;
+    return v;
 }
 
 }  // namespace
@@ -66,7 +81,9 @@ void CombustionSolver::step(
     if (o2_idx < 0 || o2_idx >= n_gases) return;
     if (inert_n2_idx < 0 || inert_n2_idx >= n_gases) return;
     if (black_smoke_idx < 0 || black_smoke_idx >= n_gases) return;
-    (void)fire;   // P6.9: fire[] was only an outcome-neutral prefilter — dropped.
+    // fire[] is READ again (continuous-O2 law §2.3): it is the per-claimant
+    // intensity factor I_k in demand_k = burn_cap*I_k*o2f_j. (P6.9 had dropped
+    // it as an outcome-neutral prefilter; the demand law reinstates it.)
 
     const int n = h * w;
     int32_t* O2   = gas + (size_t)o2_idx * n;
@@ -87,6 +104,16 @@ void CombustionSolver::step(
     const q16 n_floor_q    = quantize((double)n_floor_heat);
     // v2.4 T_MAX_PHYS rail (combustion.h; full rationale in eos_solver.h).
     const q16 t_max_phys_q = quantize((double)T_MAX_PHYS);
+
+    // Continuous-O2 law (design §2.3): o2f_j = clamp01((X_j - X_ext)/(X_amb -
+    // X_ext)), X_j = O2[j]/max(O2[j]+N2[j], floor). SAME hoisted constants +
+    // floor as fire_simulation.cpp (the two laws must read identically). X_ext
+    // = 0 -> span == X_amb (pure proportional). X_amb <= X_ext -> step at X_ext.
+    const q16 x_ext_q          = quantize((double)o2_frac_ext);
+    const double x_span        = (double)o2_frac_amb - (double)o2_frac_ext;
+    const bool   x_degenerate  = (x_span <= 0.0);
+    const int64_t recip_x_span = x_degenerate ? 0 : make_recip(x_span);
+    const q16 X_N_FLOOR        = quantize(0.01);   // 655 counts (see fire_simulation.cpp)
 
     if (burn_cap_q <= 0) return;   // nothing burns this tick (dt~0 or burn_rate 0)
 
@@ -124,60 +151,85 @@ void CombustionSolver::step(
             // Pass-entry O2 at THIS cell (Pass A is its sole writer; read-before-
             // write => every claimant sees pass-entry O2 — deltas beta/gamma).
             const q16 o2j = O2[j];
-            if (o2j <= o2_thresh_q) continue;   // starved: no claimant can burn here
+            if (o2j <= o2_thresh_q) continue;   // epsilon skip-floor (RETIRED gate)
 
-            // Gather the <=4 flammable claimant sources of this air cell.
+            // o2f_j — the continuous-O2 factor at THIS air cell, LINEAR in its
+            // O2 MOLE FRACTION X_j = O2[j]/(O2[j]+N2[j]) (pass-entry; N2[j] is
+            // also single-written by this cell, read-before-write). N_total is
+            // the conservative bulk (O2+N2), soot EXCLUDED — one source of truth
+            // with the EOS/temperature N_total and the fire logistic's law.
+            const int64_t n_tot_j = (int64_t)o2j + (int64_t)N2[j];
+            const q16 den_j = (n_tot_j < (int64_t)X_N_FLOOR) ? X_N_FLOOR : (q16)n_tot_j;
+            const q16 Xj = mul_q16(o2j, reciprocal_q16(den_j));
+            const q16 o2f_j = x_degenerate
+                ? ((Xj < x_ext_q) ? (q16)0 : (q16)FP_ONE)
+                : clamp01_q(recip_mul(Xj - x_ext_q, recip_x_span));
+
+            // Gather the <=4 flammable claimant sources + each one's per-claimant
+            // DEMAND (design §2.3): demand_k = burn_cap * I_k * o2f_j (PINNED
+            // left-fold mul_q16, truncating — a conservative request that never
+            // over-draws). I_k = fire[i] is now READ (the old pass dropped it as
+            // an outcome-neutral prefilter; the continuous law makes it the
+            // intensity factor). A flameless claimant (I_k == 0, e.g. a hot
+            // ember) demands 0 -> draws no O2, deposits no heat: "a choked/cool
+            // fire consumes nothing" (design §2.3).
             int cl_dir[4];   // D4 index of the claimant (face key for alloc_face)
             int cl_src[4];   // global cell index of the claimant source
+            int64_t dem[4];  // per-claimant O2 demand this tick (Q16.16 counts)
             int n_cl = 0;
             for (int d = 0; d < 4; ++d) {
                 const int iy = y + D4[d][0], ix = x + D4[d][1];
                 if (!in_bounds(iy, ix, h, w)) continue;
                 const int i = iy * w + ix;
-                // Claim gate (design §3 step 1). fire[i] is intentionally NOT
-                // read: in the old scatter it was only a PREFILTER widening that
-                // never changed the outcome (the ign/T gate below is the real
-                // one), so the reformulation drops it with no behavioral effect.
+                // Claim gate (design §3 step 1) — the ign/T/fuel gate is the real
+                // one (unchanged). fire[i] is now read for the DEMAND magnitude,
+                // not as a claim prefilter.
                 if (!flammable[i]) continue;
                 if (wall_hp[i] <= FUEL_FLOOR) continue;   // no fuel (P5.1 ember out)
                 const q16 ign_i = ignition_temp_q16[i];
                 if (ign_i <= 0) continue;                 // material can't ignite
                 if (Tsnap[i] < ign_i) continue;           // below ignition (snapshot!)
+                const q16 di = mul_q16(mul_q16(burn_cap_q, fire[i]), o2f_j);
                 cl_dir[n_cl] = d;
                 cl_src[n_cl] = i;
+                dem[n_cl] = (int64_t)di;
                 ++n_cl;
             }
             if (n_cl == 0) continue;
 
             // --- Allocate O2[j] across the claimants (design §3 step 2) ------
-            // demand_i = burn_cap for every claimant (uniform). D = n_cl*burn_cap.
+            // D = Σ demand_k (now NON-uniform — demand varies with each source's
+            // intensity). A whole cell whose claimants all demand 0 (all flameless
+            // / choked) draws nothing — skip it (no writes, no telemetry).
             int64_t alloc[4];
-            const int64_t D = (int64_t)n_cl * (int64_t)burn_cap_q;
+            int64_t D = 0;
+            for (int k = 0; k < n_cl; ++k) D += dem[k];
+            if (D == 0) continue;
             int64_t burn_j;
             if (D <= (int64_t)o2j) {
-                // No contention: every claimant gets full demand; a sub-threshold
-                // O2 sliver may remain (identical to the old uncontended burn).
-                for (int k = 0; k < n_cl; ++k) alloc[k] = burn_cap_q;
+                // No contention: every claimant gets its full demand; a sub-
+                // threshold O2 sliver may remain (as the old uncontended burn).
+                for (int k = 0; k < n_cl; ++k) alloc[k] = dem[k];
                 burn_j = D;
             } else {
                 // Contention: EXACT INTEGER proportional split (plain int64 `/`
                 // and `%` — NOT float, NOT reciprocal_q16: integer divide has a
                 // single portable answer and keeps sum(alloc) == O2[j] exactly;
                 // reciprocal_q16 is ~1 ULP inexact and would break conservation).
-                // Q16.16 scale cancels (the split is a dimensionless ratio).
+                // num_k = O2[j] * demand_k (the demand-weighted share). Q16.16
+                // scale cancels (the split is a dimensionless ratio).
                 int64_t keys[4];
                 int64_t sum_alloc = 0;
                 for (int k = 0; k < n_cl; ++k) {
-                    const int64_t num = (int64_t)o2j * (int64_t)burn_cap_q;  // < 2^43
+                    const int64_t num = (int64_t)o2j * dem[k];  // < 2^43
                     alloc[k] = num / D;      // floor, exact integer divide
                     keys[k]  = num % D;      // integer remainder = tiebreak key
                     sum_alloc += alloc[k];
                 }
                 // R leftover LSBs (provably in [0, n_cl) subset of [0,4)) go to
                 // the R claimants with the largest key; ties -> lowest source
-                // index. (demand is uniform so all keys tie => the leftovers land
-                // on the lowest-index faces — the fixed sub-LSB bias design §1
-                // accepts; the isotropy test §6 tolerates it at <=3 LSB.)
+                // index (a fixed, bounded sub-LSB bias the isotropy test §6
+                // tolerates at <=3 LSB).
                 int64_t R = (int64_t)o2j - sum_alloc;
                 bool chosen[4] = {false, false, false, false};
                 for (int r = 0; r < (int)R; ++r) {
