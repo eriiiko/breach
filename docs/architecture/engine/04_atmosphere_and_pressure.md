@@ -96,6 +96,46 @@
 > Bit-identical CPU == CUDA (tol 0). Existing space-map goldens are byte-untouched (every ambient
 > branch is gated on a live `is_ambient` — dormancy by branch). Design + as-built:
 > `docs/archive/boundary_conditions_spec_2026-07-19.md` (v2.4) + `bc_step_a_audit_2026-07-19.md`.
+>
+> ### Sky exchange — the sky as a VOLUMETRIC composition reservoir (2026-07-24, as-built)
+>
+> The ring is an **edge** reservoir: a 2-D slice has no sky, so an open planetside field is
+> refilled only by diffusion/advection *from its border*, and one crate's volumetric O2 draw
+> outruns that edge refill (a room suffocates in ~5 min even outdoors — `fire_tuning_plan` §7 Q2).
+> The missing third dimension is added as a **local source term**: every **sky-connected** interior
+> air tile slowly relaxes its gas **COMPOSITION** toward ambient at **fixed local N_total** — the
+> vertical mixing the slice cannot resolve.
+>
+> - **The sky mask** (`GameMap.sky_mask`): a flood fill from the `is_ambient` ring through open air
+>   (`~solid`) — the exact sponge-BFS reachability, no distance cap — minus the ring itself and all
+>   solid/vacuum. Sealed rooms are unreachable → excluded (no sky). Order-free (reachability), so
+>   cross-machine identical. Rebuilt **lazily** via a `_sky_mask_dirty` flag set at the
+>   `on_tile_changed` structural seam, at a **fixed tick-order point** (top of the sky pass): a wall
+>   breach EXPANDS the mask, so a newly opened room starts breathing next tick. *(Accepted
+>   approximation: a roofed room with an open door is "sky-connected" and gets refill — authored
+>   roof mask later only if it bites.)*
+> - **The exchange** (once per TICK, after combustion — `sky_exchange_step`, host pass on the
+>   mirror): `target = mul_q16(o2_frac_q, N_total[i])`; `dN = round_signed(λ·(target − N_O2[i]))`;
+>   `N_O2 += dN`, `N_inert = N_total − N_O2` (clamped `[0, N_total]`, complement restated exactly).
+>   **N_total per tile is invariant by construction → zero pressure/wind footprint** (the next-tick
+>   `p* = C·N_total·T` sees no change — the load-bearing property). `o2_frac_q` is the same quantized
+>   ambient mole fraction the ring N-split uses (one source of truth). `λ = quantize(dt_tick /
+>   sky_tau_s)`, the per-level `[ambient] sky_tau_s` dial (vertical-mixing timescale, s; **0/absent =
+>   dormant**, the back-compat default — recommended ~60 s, blessed at the fire re-tune). Conserved
+>   O2/inert pair only; smoke's upward-removal λ and temperature are out of scope (`COOL_SHIFT` is
+>   the vertical heat channel).
+> - **Conservation rail.** Per-plane totals now change volumetrically (O2 up, inert down); the int64
+>   per-plane `sky_flux` records the actual applied Δ (a pure transfer: `sky_flux[O2] ==
+>   −sky_flux[inert]`), closing the open-system budget alongside `boundary_flux`.
+> - **Quantization deadband** (as-built property): the round-to-nearest relaxation has a deadband of
+>   ≈ `0.5·N_total/λ` counts — the far field rests slightly *below* ambient (≈0.199 mole frac at
+>   τ=60, ≈0.188 at τ=120, under the 0.19 breathable floor). It grows with τ; the re-tune weighs it
+>   (τ=60 recommended). Recovery time-constant ≈ τ, confirmed end-to-end (`tools/sky_exchange_bench.py`).
+> - **Runs HOST-side on the mirror in BOTH the normal and GPU-resident ticks** (combustion is itself
+>   a host bracket on the mirror in the resident tick, so the pass rides it) → CPU↔CUDA-resident
+>   bit-identical by construction, no device kernel (gate e, `tests/cuda_sky_exchange_check.py`).
+>   Dormant by default → space + existing planetside goldens byte-untouched. Design:
+>   `docs/sky_exchange_design_2026-07-24.md`; τ menu: `docs/sky_exchange_p3_results_2026-07-24.md`.
 
 ## 1. What this system is
 
