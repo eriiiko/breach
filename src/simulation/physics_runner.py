@@ -358,6 +358,12 @@ class PhysicsRunner:
         # built once per map on the first ambient step() (the config is static;
         # rebuilt if the map/gas count changes). None until built / on space maps.
         self._ambient_n_amb = None
+        # sky-exchange conservation rail (design §1.3): the (n_gases,) int64
+        # sky_flux accumulator — Σ actual applied ΔN per plane, this tick. Cleared
+        # at the top of every tick that runs the pass (so a test/telemetry reader
+        # sees a single tick's exchange); lazily sized to the gas count. None until
+        # the first sky-active tick / on space + dormant maps.
+        self._sky_flux = None
 
         # WaterSolver (engine/07 §2, water plan W2): the pipe model that
         # advances gmap.water_depth. Params are bound through a METHOD (not
@@ -534,6 +540,12 @@ class PhysicsRunner:
         # Helmholtz solve; they feed NEXT tick's p* = C*N_total*T instead.
         self._run_combustion(gmap, sim_time)
 
+        # Sky exchange (docs/sky_exchange_design_2026-07-24.md): immediately AFTER
+        # combustion — combustion vitiates the local O2, the sky replenishes
+        # composition at fixed N_total, and the fire's NEXT-tick read sees the
+        # net. Dormant (byte-identical) on space maps / sky_tau_s == 0.
+        self._run_sky_exchange(gmap, sim_time)
+
         # Per-tick orchestration TAIL — moved into C++ in Patch 1 S4a
         # (PhysicsEngine::step_tail, physics_engine.cpp, compiled /fp:precise).
         # The three trailing PURE-SOLVER-CALL steps that used to live here —
@@ -618,6 +630,47 @@ class PhysicsRunner:
                 ignition_temp_q16,
                 sim_time, self.temperature.c_v, self.temperature.n_floor_heat,
             )
+
+    # ------------------------------------------------------------------
+    # Sky exchange (planetside volumetric O2) — shared by normal + resident tick
+    # ------------------------------------------------------------------
+    def _run_sky_exchange(self, gmap, sim_time):
+        """Relax every sky-connected air tile's composition toward ambient at
+        FIXED local N_total (docs/sky_exchange_design_2026-07-24.md).
+
+        Runs on the HOST mirror ONCE per tick, immediately AFTER combustion, in
+        BOTH the normal :meth:`step` and the GPU-resident :meth:`_step_resident`
+        (combustion is itself a host bracket on the mirror in the resident tick,
+        so this rides that bracket — one host pass, so CPU==CUDA-resident is
+        bit-identical by construction). NO-OP (byte-identical to before) on space
+        maps, ring-free maps, and any level with ``sky_tau_s == 0`` (dormant):
+        every such case returns before touching ``gmap.gas``.
+        """
+        amb = getattr(gmap, "_ambient", None)
+        if amb is None or not gmap.is_ambient.any():
+            return                                  # space / ring-free → dormant
+        tau = float(getattr(amb, "sky_tau_s", 0.0))
+        if tau <= 0.0:
+            return                                  # unblessed level → dormant
+        # λ = quantize(dt_tick / sky_tau_s), hoisted once per tick host-side (like
+        # recip_P_span). sim_time IS the tick dt. Same Q16 quantize (round-to-
+        # nearest) the ring N-split uses. λ == 0 (τ ≫ one tick and tiny dt) → no-op.
+        from simulation import gas_fixed
+        lambda_q = int(gas_fixed.quantize_scalar(float(sim_time) / tau))
+        if lambda_q == 0:
+            return
+        # FIXED tick-order rebuild point (Erik's determinism caveat): the mask is
+        # rebuilt here, after combustion, before the pass — never opportunistically.
+        mask = gmap.ensure_sky_mask()
+        if not mask.any():
+            return                                  # sealed box (ring but no interior sky)
+        n_gases = gmap.gas.shape[0]
+        if self._sky_flux is None or self._sky_flux.shape[0] != n_gases:
+            self._sky_flux = np.zeros(n_gases, dtype=np.int64)
+        self._sky_flux.fill(0)                       # per-tick rail (design §1.3)
+        self.bp.sky_exchange_step(
+            gmap.gas, self._o2_idx, self._inert_n2_idx, mask,
+            int(amb.o2_frac_q), lambda_q, self._sky_flux)
 
     # ------------------------------------------------------------------
     # S8a Path B — the GPU-resident tick
@@ -770,6 +823,11 @@ class PhysicsRunner:
 
         # -- 7. COMBUSTION bracket (mirror) --------------------------------------
         self._run_combustion(gmap, sim_time)
+
+        # -- 7b. SKY EXCHANGE bracket (mirror) — rides the combustion host bracket
+        # (design finding: no device kernel; the gas planes are on the mirror here,
+        # combustion just mutated them, next tick's step-4 from_host re-uploads).
+        self._run_sky_exchange(gmap, sim_time)
 
         # -- 8. TAIL bracket: ripple (host) + fire + temperature (mirror) --------
         destroyed = self.engine.step_tail(

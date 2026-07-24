@@ -42,6 +42,15 @@ DEFAULT_T_AMB_K = 290.0
 # Dial defaults + validation bounds (spec §4).
 DEFAULT_P_AMB = 1.0
 DEFAULT_O2_FRAC = 0.21
+# sky_tau_s — the vertical-mixing timescale for the SKY EXCHANGE pass
+# (docs/sky_exchange_design_2026-07-24.md §1.2). Seconds; the per-tick relaxation
+# rate is λ = dt_tick / sky_tau_s. This PARSE DEFAULT is 0.0 == DORMANT: an
+# existing planetside level with no sky_tau_s key keeps today's edge-only refill,
+# BYTE-IDENTICAL (gate a/b). The design's RECOMMENDED authored value is 60.0 s
+# (bench-calibrated across {30,60,120} at P3); it is written into a level's
+# [ambient] table when the feature is blessed — not baked in as the default, so
+# no unblessed level silently changes behaviour.
+DEFAULT_SKY_TAU_S = 0.0
 DEFAULT_SPONGE_WIDTH = 8
 # σ_max — a pressure-sponge mass on the level-0 Helmholtz diagonal (spec §3
 # rung 1). B3 CALIBRATION OUTCOME (2026-07-19): the σ-pressure-sponge does NOT
@@ -106,8 +115,13 @@ class AmbientConfig:
     sponge_width: int            # absorber band depth, BASE tiles (0 == hard ring)
     sponge_strength: int         # σ_max, raw Q16 (pinned by B3 calibration)
     sponge_u_damp: int           # k_max, raw Q16 (rung-2 mop-up; 0 == dormant)
+    sky_tau_s: float             # sky-exchange vertical-mixing timescale, s (0 == dormant)
     n_o2_q: int                  # ambient O2 plane value, raw Q16
     n_n2_q: int                  # ambient inert-N2 plane value, raw Q16
+    o2_frac_q: int               # ambient O2 MOLE FRACTION, raw Q16 (13763 at 0.21) —
+                                 # the sky-exchange composition target uses this same
+                                 # quantized fraction the ring N-split derives from (one
+                                 # source of truth with the ring clamp; design §1.2)
     pin_q: int                   # effective P_amb the physics pins/materializes, raw Q16
 
     @property
@@ -120,6 +134,7 @@ def derive_ambient(p_amb: float = DEFAULT_P_AMB,
                    sponge_width: int = DEFAULT_SPONGE_WIDTH,
                    sponge_strength: int = DEFAULT_SPONGE_STRENGTH,
                    sponge_u_damp: int = DEFAULT_SPONGE_U_DAMP,
+                   sky_tau_s: float = DEFAULT_SKY_TAU_S,
                    c: float = DEFAULT_C,
                    t_amb_k: float = DEFAULT_T_AMB_K) -> AmbientConfig:
     """Build an :class:`AmbientConfig` from the authored dials (N-primary)."""
@@ -131,6 +146,6 @@ def derive_ambient(p_amb: float = DEFAULT_P_AMB,
     return AmbientConfig(
         p_amb=float(p_amb), o2_frac=float(o2_frac),
         sponge_width=int(sponge_width), sponge_strength=int(sponge_strength),
-        sponge_u_damp=int(sponge_u_damp),
-        n_o2_q=int(o2), n_n2_q=int(n2), pin_q=int(pin),
+        sponge_u_damp=int(sponge_u_damp), sky_tau_s=float(sky_tau_s),
+        n_o2_q=int(o2), n_n2_q=int(n2), o2_frac_q=int(o2_frac_q), pin_q=int(pin),
     )
