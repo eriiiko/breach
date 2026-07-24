@@ -697,7 +697,8 @@ BOUNDARY_MODES = (BOUNDARY_SPACE, BOUNDARY_AMBIENT)
 # so the loader stays import-light. σ_max may exceed FP_ONE (see ambient.py).
 _FP_ONE = 1 << 16
 _AMBIENT_KEYS = frozenset(
-    {"p_amb", "o2_frac", "sponge_width", "sponge_strength", "sponge_u_damp"})
+    {"p_amb", "o2_frac", "sponge_width", "sponge_strength", "sponge_u_damp",
+     "sky_tau_s"})
 
 
 def _parse_air_init_grid(base: Path, tilemap: np.ndarray):
@@ -826,6 +827,20 @@ def _parse_ambient(raw: dict, toml_path, boundary: str, tilemap: np.ndarray):
             f"[ambient] sponge_u_damp must be an integer raw-Q16 value in "
             f"[0, {_amb.SPONGE_U_DAMP_MAX}) (got {sponge_u_damp!r}) in "
             f"{toml_path}.")
+    # sky_tau_s — the sky-exchange vertical-mixing timescale, seconds
+    # (docs/sky_exchange_design_2026-07-24.md §1.2). A non-negative float (int
+    # accepted and widened); 0.0 == the pass is dormant (parse default, so an
+    # existing level keeps today's edge-only refill byte-identically). Mirrors
+    # the sponge-dial validation house style (hard, path-bearing).
+    sky_tau_s = tbl.get("sky_tau_s", _amb.DEFAULT_SKY_TAU_S)
+    if not isinstance(sky_tau_s, (int, float)) or isinstance(sky_tau_s, bool):
+        raise ValueError(
+            f"[ambient] sky_tau_s must be a number of seconds (got "
+            f"{sky_tau_s!r}) in {toml_path}.")
+    if not (float(sky_tau_s) >= 0.0):
+        raise ValueError(
+            f"[ambient] sky_tau_s must be >= 0 seconds (0 disables the sky "
+            f"exchange; got {sky_tau_s}) in {toml_path}.")
     if not bool((tilemap == SPACE_CODE).any()):
         warnings.warn(
             f"boundary = \"ambient\" but the tilemap has no SPACE ({SPACE_CODE}) "
@@ -847,7 +862,7 @@ def _parse_ambient(raw: dict, toml_path, boundary: str, tilemap: np.ndarray):
     return _amb.derive_ambient(
         p_amb=p_amb, o2_frac=o2_frac, sponge_width=sponge_width,
         sponge_strength=sponge_strength, sponge_u_damp=sponge_u_damp,
-        c=c, t_amb_k=t_amb_k)
+        sky_tau_s=float(sky_tau_s), c=c, t_amb_k=t_amb_k)
 
 
 def _validate_zone_binding(zone_grid, entities, toml_path) -> None:
@@ -1350,7 +1365,9 @@ if __name__ == "__main__":
               f"pin={a.pin_q} raw ({a.pin_q / 65536:.6f} atm), "
               f"N=(O2 {a.n_o2_q}, N2 {a.n_n2_q}); "
               f"sponge width={a.sponge_width} strength={a.sponge_strength} "
-              f"u_damp={a.sponge_u_damp}")
+              f"u_damp={a.sponge_u_damp}; "
+              f"sky_tau_s={a.sky_tau_s}"
+              f"{' (dormant)' if a.sky_tau_s <= 0.0 else ''}")
     print(f"  Tile values: {sorted(np.unique(lvl.tilemap).tolist())}")
     mat, vac = materials_from_tilemap(lvl.tilemap, lvl.version)
     print(f"  Materials: hull={int((mat==1).sum())} door={int((mat==3).sum())} air={int((mat==0).sum())} vacuum={int(vac.sum())}")

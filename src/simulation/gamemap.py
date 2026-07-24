@@ -154,6 +154,16 @@ class GameMap:
         # space maps this stays all-False and every branch keying on it is
         # dormant. B3 pins these tiles to P_amb and clamps their gas to N_amb.
         self.is_ambient   = np.zeros((h, w), dtype=bool)
+        # sky-exchange (docs/sky_exchange_design_2026-07-24.md §1.1): the
+        # sky-connected INTERIOR air tiles — a flood fill from the is_ambient ring
+        # through open air, EXCLUDING the ring itself and all solid/vacuum. Built
+        # once at the end of __init__ (below _build_sponge_grid) and rebuilt
+        # LAZILY (:meth:`ensure_sky_mask`) at a FIXED tick-order point whenever a
+        # structural edit dirties it — a wall breach EXPANDS the mask, so a newly
+        # opened room starts breathing. HOST-ONLY (never in the resident field
+        # set): the per-tick sky pass runs on the mirror after combustion.
+        self.sky_mask     = np.zeros((h, w), dtype=bool)
+        self._sky_mask_dirty = False
         self.flammable    = np.zeros((h, w), dtype=bool)
         # S2c: the atmosphere (bulk pressure) is int32 Q16.16 (scale 2^16, shared
         # with water/heat/wave/gas) — the CLOSER of the S2 group: with atmosphere
@@ -450,6 +460,14 @@ class GameMap:
         # it. All-zero on space maps / when sponge_width == 0.
         self._build_sponge_grid(level_data)
 
+        # --- sky-connected mask (sky-exchange §1.1) ------------------------
+        # Same seeds + passability as the sponge BFS above, but no distance cap
+        # and a bool reachability output. Built eagerly here so a bare GameMap
+        # (no tick yet) already carries a valid mask; thereafter the dirty flag
+        # drives lazy rebuilds. All-false on space maps / ring-free maps → the
+        # per-tick pass is dead (gate a byte-identity).
+        self._build_sky_mask()
+
         # --- [water] initial state seed (engine/15 §2.3, P5) --------------
         # The seed lives HERE in __init__, right after _update_caches — and
         # NEVER inside _update_caches itself, despite the atmosphere t=0
@@ -607,6 +625,65 @@ class GameMap:
         if kmax > 0:
             self.sponge_udamp[band] = (
                 (np.int64(kmax) * ramp) // denom).astype(np.int32)
+
+    # ------------------------------------------------------------------
+    # Sky-connected mask (sky-exchange, sky_exchange_design_2026-07-24 §1.1)
+    # ------------------------------------------------------------------
+    def _build_sky_mask(self):
+        """(Re)build :attr:`sky_mask` — the sky-connected interior air tiles.
+
+        A multi-source 4-neighbour BFS reachability from the ``is_ambient`` ring
+        through open air (``~solid``) — the EXACT sponge-BFS pattern
+        (:meth:`_build_sponge_grid`), same seeds and same passability, but with
+        NO distance cap and a bool output. The final mask is the reachable set
+        MINUS the ring itself and any solid/vacuum tile, i.e. the sky-connected
+        *interior* air the per-tick exchange acts on.
+
+        Determinism: reachability is order-free (a visited-set flood fill depends
+        only on the graph, never on visit order), so the mask is identical
+        cross-machine. Sealed rooms behind walls are never reached → correctly
+        excluded (no sky). All-false on space maps (no ring) and ring-free maps.
+        """
+        h, w = self.material.shape
+        mask = np.zeros((h, w), dtype=bool)
+        if self._ambient is None or not self.is_ambient.any():
+            self.sky_mask = mask
+            return
+        from collections import deque
+        passable = ~self.solid
+        visited = np.zeros((h, w), dtype=bool)
+        dq = deque()
+        ring_ys, ring_xs = np.nonzero(self.is_ambient)
+        for fy, fx in zip(ring_ys.tolist(), ring_xs.tolist()):
+            visited[fy, fx] = True
+            dq.append((fy, fx))
+        while dq:
+            fy, fx = dq.popleft()
+            for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                ny, nx = fy + dy, fx + dx
+                if (0 <= ny < h and 0 <= nx < w
+                        and passable[ny, nx] and not visited[ny, nx]):
+                    visited[ny, nx] = True
+                    dq.append((ny, nx))
+        # Interior sky-connected open air only: drop the reservoir ring itself and
+        # any solid/vacuum tile (their gas planes are 0 / reservoir-clamped — a
+        # composition relaxation there is meaningless or would fight the ring).
+        self.sky_mask = (visited & (~self.is_ambient)
+                         & (~self.solid) & (~self.is_vacuum))
+
+    def ensure_sky_mask(self):
+        """Return :attr:`sky_mask`, rebuilding it first iff a structural edit
+        dirtied it since the last build.
+
+        DETERMINISM (Erik's caveat, 2026-07-24): the BFS is order-free, but WHEN
+        it runs relative to the other passes must be pinned or two machines could
+        disagree for a tick. The runner calls this at ONE fixed tick-order point —
+        the top of the sky pass, immediately after combustion, in both the normal
+        and resident ticks — never opportunistically."""
+        if self._sky_mask_dirty:
+            self._build_sky_mask()
+            self._sky_mask_dirty = False
+        return self.sky_mask
 
     # ------------------------------------------------------------------
     # Cache rebuild
@@ -812,6 +889,12 @@ class GameMap:
         self.wave_absorb[fy, fx] = float(tbl.wave_absorb[mat_id])
         # Solid mask follows permeability (sealed iff permeability == 0).
         self.solid[fy, fx] = bool(self.permeability[fy, fx] <= 0.0)
+        # sky-exchange (§1.1): any structural edit can change reachability (this
+        # tile's solidness, and — via destroy_wall's joins-ambient twin, which
+        # runs AFTER this seam — the ring). Mark the sky mask dirty; it rebuilds
+        # once, lazily, at the next tick's fixed sky-pass point. Idempotent, so a
+        # firestorm melting many walls per tick still costs at most one rebuild.
+        self._sky_mask_dirty = True
 
     # ------------------------------------------------------------------
     # Config hot-reload: rebuild the table + static caches (ch.02 §14)

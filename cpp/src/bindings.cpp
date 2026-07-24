@@ -12,6 +12,7 @@
 #include "combustion.h"
 #include "physics_engine.h"
 #include "bulk_transport.h"  // EOS refactor P1: expose bulk_flux_transport for direct unit test
+#include "sky_exchange.h"    // sky-exchange: planetside volumetric O2 replenishment (per-tick host pass)
 #include "fixed_point.h"   // Bedrock cliff-patch: expose smoke_cliff_count for unit test
 #ifdef BREACH_HAS_CUDA
 #include "cuda_hello.h"        // CUDA-S0: hello-world map kernel + device info
@@ -1040,6 +1041,35 @@ PYBIND11_MODULE(breach_physics, m) {
              py::arg("dyn_permeability"), py::arg("dt"),
           "EOS P1: donor-cell conservative flux transport of every "
           "`gas_conservative`-flagged plane, once, on the given wind field.");
+
+    // sky-exchange (docs/sky_exchange_design_2026-07-24.md): the planetside
+    // volumetric-O2 per-tick host pass — relax each sky-connected air tile's
+    // composition toward ambient at FIXED local N_total. `gas` is (n_gases,h,w)
+    // Q16.16, mutated in place (O2 + inert only); `sky_flux` is an (n_gases,)
+    // int64 rail ACCUMULATED into (the caller clears it per tick). Exposed for
+    // the runner tick AND for the gate a/b/c unit tests (tests/test_sky_exchange).
+    m.def("sky_exchange_step",
+          [](py::array_t<int32_t> gas, int o2_idx, int inert_idx,
+             py::array_t<bool> sky_mask,
+             int32_t o2_frac_q, int32_t lambda_q,
+             py::array_t<int64_t> sky_flux) {
+              auto gv = gas.mutable_unchecked<3>();
+              int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
+              const int n_gases = static_cast<int>(gv.shape(0));
+              const int h = static_cast<int>(gv.shape(1));
+              const int w = static_cast<int>(gv.shape(2));
+              auto [mask, hm, wm] = get_2d_const(sky_mask);
+              auto fv = sky_flux.mutable_unchecked<1>();
+              int64_t* flux_ptr = fv.mutable_data(0);
+              sky_exchange_step(
+                  gas_ptr, n_gases, o2_idx, inert_idx,
+                  mask, h, w, o2_frac_q, lambda_q, flux_ptr);
+          }, py::arg("gas"), py::arg("o2_idx"), py::arg("inert_idx"),
+             py::arg("sky_mask"),
+             py::arg("o2_frac_q"), py::arg("lambda_q"), py::arg("sky_flux"),
+          "sky-exchange: per-tick composition relaxation of sky-connected air "
+          "toward ambient at fixed local N_total (O2 up / inert down); "
+          "sky_flux[gas] accumulates the actual applied delta (conservation rail).");
 
     // Q2-LIFT: the deterministic trig kit (fixed_point.h). Pure integer q16 ->
     // q16 — the cross-machine-safe replacement for the libm transcendentals in
