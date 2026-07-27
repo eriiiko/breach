@@ -133,6 +133,9 @@ from simulation.status import composed_flags, tick_statuses
 from simulation.weapons import (
     FIRE_ORDER_ARCHETYPES, rebuild_tables as rebuild_weapon_tables,
 )
+# The action registry (onephase_wego design §5) — OnePhaseWEGO's verb table,
+# rebuilt beside the weapon tables at every construction/reset.
+from simulation.action_registry import rebuild_table as rebuild_action_table
 
 try:
     from pathfinding import astar
@@ -297,6 +300,13 @@ class Simulation:
         # playground's 0.333 m/tile derives 3x the tiles for the same reach.
         self.weapons_tables = rebuild_weapon_tables(
             tile_size_m=self.gmap.tile_size_m)
+        # The ACTION REGISTRY (onephase_wego design §5) — the same
+        # construction-bound, config-static contract as the weapon tables
+        # above, and built AFTER them because its item rows are generated from
+        # the LOBBED/PLACED weapon rows. Read only by the OnePhaseWEGO
+        # executor and the hotbar; inert under every other ruleset.
+        self.actions_table = rebuild_action_table(
+            weapons_tables=self.weapons_tables)
 
         self.units: List = []
         self.projectiles: List = []
