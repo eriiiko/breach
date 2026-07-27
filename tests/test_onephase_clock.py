@@ -30,7 +30,10 @@ for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
 from config import CFG  # noqa: E402
 from level_loader import LevelData
 from simulation.combat import Projectile
-from simulation.orders import ORDER_GRENADE, ORDER_MOVE_ATTACK, Order
+from simulation.orders import (  # noqa: E402
+    ORDER_GRENADE, ORDER_MOVE, ORDER_MOVE_ATTACK, ORDER_MOVE_COVER,
+    ORDER_SPRINT, Order,
+)
 from simulation.ruleset import OnePhaseWEGO, TwoPhaseWEGO
 from simulation.simulation import Simulation
 from simulation.unit import Unit
@@ -145,13 +148,26 @@ def test_two_phase_wego_still_snaps_positions():
 def test_seam_does_not_clear_orders():
     """§13 + §5: an unfinished plan continues across the seam; only the
     player issuing NEW orders replaces a queue (new orders interrupt by
-    default)."""
+    default). The move is long enough to still be running at the boundary."""
     sim = _sim()
-    u = _marine(sim)
-    sim.apply_action(u.id, Order(ORDER_MOVE_ATTACK, 9, 9, 0))
+    u = _marine(sim, x=4.0, y=4.0)
+    assert sim.apply_action(u.id, Order(ORDER_MOVE, 4, 20, 0))
     assert len(u.orders) == 1
     _run(sim, sim.ticks_per_round)
+    assert sim.round_index == 1
     assert len(u.orders) == 1, "the seam ate a queued order"
+
+
+def test_legacy_order_types_are_refused_by_this_ruleset():
+    """OnePhaseWEGO has its own vocabulary (§5): Sprint and Move-w/-Cover are
+    removed as separate orders, and Move&Attack's auto-attack-while-moving is
+    replaced by the explicit Move & Shoot. A legacy id has no registry row, so
+    it is rejected rather than silently reinterpreted."""
+    sim = _sim()
+    u = _marine(sim)
+    for legacy in (ORDER_MOVE_ATTACK, ORDER_MOVE_COVER, ORDER_SPRINT):
+        assert sim.apply_action(u.id, Order(legacy, 9, 9, 0)) is False
+    assert u.orders == []
 
 
 def test_seam_does_not_refill_ap_or_reset_fire_timers():

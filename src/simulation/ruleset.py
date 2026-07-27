@@ -31,6 +31,14 @@ from simulation.orders import DET_START_PHASE1, DET_BETWEEN_PHASES, DET_END_PHAS
 class Ruleset:
     """Strategy interface a :class:`~simulation.simulation.Simulation` owns.
 
+    ``drives_units`` (class attribute): does this ruleset own the per-tick
+    unit-simulation slots itself? ``False`` — the shipped default — means
+    ``Simulation.step`` runs its historical slot 3 (``_update_player_movement``)
+    and slot 4 (``process_shooting``) bodies verbatim. ``True`` means the
+    ruleset replaces both with :meth:`drive_units`, which is how OnePhaseWEGO
+    substitutes the compiled timeline for the phase-indexed order scan without
+    disturbing a single line of the legacy path.
+
     Every method takes the owning ``sim`` explicitly (rather than closing
     over it) so a single stateless ``Ruleset`` instance could in principle
     serve multiple simulations — none of the shipped implementations need
@@ -38,6 +46,20 @@ class Ruleset:
     round-clock state (``tick``, ``phase``, the ``_fired_*`` flags, AP)
     lives on ``sim`` / ``Unit``, never on the ruleset.
     """
+
+    #: See the class docstring. Overridden to True by OnePhaseWEGO.
+    drives_units = False
+
+    def drive_units(self, sim) -> None:
+        """One tick of unit simulation, when ``drives_units`` is True.
+        Replaces ``Simulation.step``'s slots 3 and 4 entirely."""
+        raise NotImplementedError
+
+    def on_orders_changed(self, sim, unit) -> None:
+        """Called after ``unit``'s order queue is mutated (an order placed or
+        undone), so a ruleset that precompiles can rebuild. No-op by default —
+        the shipped rulesets recompute paths from ``Simulation`` instead."""
+        pass
 
     def on_round_start(self, sim) -> None:
         """Called every tick, early in :meth:`Simulation.step`, before any
@@ -309,6 +331,28 @@ class OnePhaseWEGO(Ruleset):
     it would fire 2.5x as often and be visible), the order clear, the AP
     refill, the obstacle reset, and the tick rewind.
     """
+
+    #: This ruleset runs the compiled timeline instead of the phase-indexed
+    #: order scan — see :mod:`simulation.timeline`.
+    drives_units = True
+
+    def drive_units(self, sim) -> None:
+        # Deferred import: timeline imports combat, which imports plenty;
+        # keeping it lazy holds ruleset.py as import-light as it has always
+        # been (tests import it bare).
+        from simulation.timeline import drive_units as _drive
+        _drive(sim)
+
+    def on_orders_changed(self, sim, unit) -> None:
+        """Recompile this unit's timeline (design §3).
+
+        A plan is never patched in place — it is rebuilt from the pending
+        order queue — so what the planning UI shows and what the executor runs
+        cannot drift apart. Completed steps have already retired their orders,
+        so a recompile can never re-run an action the unit already took.
+        """
+        from simulation.timeline import compile_plan
+        unit.plan = compile_plan(sim, unit)
 
     # ------------------------------------------------------------------
     # Round-clock geometry

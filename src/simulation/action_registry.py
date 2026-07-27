@@ -72,13 +72,14 @@ class ActionDef:
     __slots__ = ("name", "icon", "order_type", "duration_seconds",
                  "cooldown_seconds", "duration_ticks", "cooldown_ticks",
                  "triggers_gcd", "gcd_exempt_within_salvo", "interruptible",
-                 "targeting", "start_condition", "classes", "item", "label")
+                 "targeting", "start_condition", "classes", "item", "label",
+                 "sustained")
 
     def __init__(self, name, order_type, *, icon="", duration_seconds=0.0,
                  cooldown_seconds=0.0, triggers_gcd=False,
                  gcd_exempt_within_salvo=False, interruptible=True,
                  targeting="none", start_condition="immediate", classes=(),
-                 item="", label=""):
+                 item="", label="", sustained=False):
         self.name = name
         self.order_type = int(order_type)
         self.icon = str(icon)
@@ -94,6 +95,13 @@ class ActionDef:
         self.classes = tuple(classes)
         self.item = str(item)
         self.label = str(label or name.replace("_", " ").title())
+        # SUSTAINED actions occupy the timeline until the NEXT step starts
+        # (or indefinitely, if they are the plan's tail) rather than for a
+        # fixed duration: "stand and shoot at that unit" is a standing order,
+        # not a 0.3 s animation. A sustained tail is precisely what §9 means by
+        # "Overwatch is a state — persists across rounds until replaced", and
+        # what makes a shoot order keep shooting after the round seam.
+        self.sustained = bool(sustained)
 
     def allows_class(self, unit_class: str) -> bool:
         """Class gating (§5): an empty ``classes`` tuple means every unit may
@@ -121,8 +129,10 @@ _V1_ROWS = (
     # Shoot: the secondary-most-important order; default is stand and shoot,
     # aim tracks the target through execution (§5).
     ActionDef("shoot", ORDER_SHOOT, icon="shoot", targeting="unit",
-              triggers_gcd=True, gcd_exempt_within_salvo=True, label="Shoot"),
+              triggers_gcd=True, gcd_exempt_within_salvo=True, sustained=True,
+              label="Shoot"),
     # Move & Shoot exists, at reduced accuracy (§7) and reduced speed (§6).
+    # Not sustained: its length is its PATH's length.
     ActionDef("move_shoot", ORDER_MOVE_SHOOT, icon="move_shoot",
               targeting="unit", triggers_gcd=True,
               gcd_exempt_within_salvo=True, label="Move & Shoot"),
@@ -135,7 +145,7 @@ _V1_ROWS = (
     # readiness counter, not a clock.
     ActionDef("ambush", ORDER_AMBUSH, icon="ambush", targeting="unit",
               start_condition="ambush_barrier", triggers_gcd=True,
-              label="Ambush"),
+              sustained=True, label="Ambush"),
     # Hold (until t): the sequencing verb that makes choreography composable
     # (§5). Its "target" is a moment.
     ActionDef("hold", ORDER_HOLD, icon="hold", targeting="time",
@@ -326,7 +336,7 @@ def _clone(a: ActionDef) -> ActionDef:
         gcd_exempt_within_salvo=a.gcd_exempt_within_salvo,
         interruptible=a.interruptible, targeting=a.targeting,
         start_condition=a.start_condition, classes=a.classes, item=a.item,
-        label=a.label)
+        label=a.label, sustained=a.sustained)
 
 
 # ---------------------------------------------------------------------------
