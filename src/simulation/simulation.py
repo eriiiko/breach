@@ -231,6 +231,11 @@ class Simulation:
         self._ticks_per_round = CFG.clock.ticks_per_round
         self._phases_per_round = CFG.clock.phases_per_round
         self._tps = CFG.clock.ticks_per_second
+        # OnePhaseWEGO's round length (onephase_wego design §2), cached beside
+        # the two-phase numbers rather than replacing them — both rulesets are
+        # constructible in the same process for the whole arc. Read only by
+        # simulation.ruleset.OnePhaseWEGO.ticks_per_round.
+        self._onephase_ticks_per_round = CFG.clock.onephase_ticks_per_round
 
         # Build the world & RNG.
         self._reset_internal(seed)
@@ -847,6 +852,31 @@ class Simulation:
 
     def get_phase(self) -> int:
         return self.phase
+
+    # Round-clock geometry, routed through the ruleset (onephase_wego design
+    # §2). Under TwoPhaseWEGO / ContinuousRealtime these return exactly what
+    # the pre-existing fields always meant (the base Ruleset defaults);
+    # OnePhaseWEGO's free-running tick makes within-round position a modulo.
+    # Read by the planning UI (arrival timestamps, the round progress bar) and
+    # by the timeline executor.
+
+    @property
+    def ticks_per_round(self) -> int:
+        return self.ruleset.ticks_per_round(self)
+
+    @property
+    def round_tick(self) -> int:
+        return self.ruleset.round_tick(self)
+
+    @property
+    def round_index(self) -> int:
+        return self.ruleset.round_index(self)
+
+    def round_start_tick(self) -> int:
+        """Absolute tick at which the CURRENT round began. The anchor every
+        scheduled action resolves against (§12: "detonate 1.8 s into the
+        round" is ``round_start_tick() + round(1.8 * tps)``)."""
+        return self.tick - self.round_tick
 
     def get_state(self) -> SimState:
         return SimState(

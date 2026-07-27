@@ -3,6 +3,65 @@ ticks_per_second = 24
 phases_per_round = 2
 phase_duration_seconds = 5.0
 ap_per_phase = 2
+# OnePhaseWEGO (onephase_wego design §2): ONE phase per round, ~4 s. Read only
+# by the OnePhaseWEGO ruleset — TwoPhaseWEGO keeps phase_duration_seconds x
+# phases_per_round above, untouched. 4.0 s @ 24 tps = 96 ticks/round; the
+# design calls 4 s "the expected neighborhood, not a promise" — this is the
+# round-length dial of §20 item 2.
+round_duration_seconds = 4.0
+
+# ---------------------------------------------------------------------------
+# OnePhaseWEGO dials (onephase_wego design; §20 item 2 is this whole block).
+# Read ONLY by the OnePhaseWEGO ruleset and its systems — nothing here is
+# consulted under TwoPhaseWEGO / ContinuousRealtime, so no shipped golden can
+# move when these change. Authored per-second / per-degree; config.py derives
+# the integer tick counts (the tick-rate-independence convention).
+# ---------------------------------------------------------------------------
+[onephase]
+# --- Time is the only currency (§3) ---
+gcd_seconds = 0.5             # global cooldown; triggered by ACTIONS, never by
+                              # movement, and never re-triggered inside one
+                              # weapon's own salvo (§3)
+weapon_swap_seconds = 0.75    # its own non-global cooldown; swapping is
+                              # otherwise free (design intent: lots of swaps)
+
+# --- Movement and aim (§6): speeds are aim-relative, as a fraction of full ---
+move_speed_pct = 1.0                 # Move, no engagement — this IS the old Sprint
+move_shoot_speed_pct = 0.7           # move & shoot, target ahead (band 0.6-0.75)
+move_shoot_reverse_speed_pct = 0.25  # backpedaling with the gun on the door
+reverse_angle_deg = 90.0             # aim-vs-travel angle at or beyond which a
+                                     # move & shoot counts as REVERSING
+
+# --- Accuracy = spread angle (§7). Multipliers on the weapon row's spread. ---
+spread_move_shoot_mult = 2.0   # firing on the move opens the cone
+spread_reverse_mult = 3.0      # backpedaling opens it further
+spread_overwatch_mult = 0.85   # a narrowed overwatch cone aims slightly better
+
+# --- Vision v1 (§8): UNLIMITED range; walls are the only limit ---
+vision_cone_half_deg = 55.0      # facing cone half-angle
+awareness_radius_tiles = 4.0     # short 360 deg hearing/peripheral radius
+vision_profile_samples = 5       # silhouette sample points per axis for the
+                                 # "largest exposed profile" metric (§9)
+
+# --- Overwatch (§9) ---
+overwatch_cone_half_deg = 55.0       # default when the player sets no width
+overwatch_cone_min_half_deg = 10.0   # narrowest the player may dial
+overwatch_cone_max_half_deg = 120.0  # widest
+
+# --- Facing determines defense (§9): attacked from outside your arc ---
+flank_damage_mult = 1.5            # any unit, hit from outside its facing arc
+overwatch_rear_damage_mult = 1.75  # overwatch has a wider/harsher rear penalty
+facing_arc_half_deg = 90.0         # the "front" arc half-angle for the above
+
+# --- Ambush (§10) ---
+ambush_stagger_ticks = 0   # §20 item 6: 0 = perfectly simultaneous volley;
+                           # raise for a ragged-volley feel if play wants it
+
+# --- Planning (§16) ---
+planning_clock_seconds = 0.0   # submit-within-N timer; 0 = untimed (single
+                               # player). Multiplayer sets it.
+idle_return_fire = true        # §13 idle stance: return fire (false = do
+                               # nothing — the §20 item 5 alternative)
 
 [movement]
 # Per-second tunables (tick-rate independent). config.py derives the integer
