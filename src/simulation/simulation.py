@@ -355,6 +355,17 @@ class Simulation:
         # (and never touched) under every other ruleset.
         self.marks: dict = {}
 
+        # Cover entities (onephase_wego design §7) — continuous-space
+        # destructible collision shapes the bullet march can hit. Populated at
+        # load from the level's [[entity]] rows in P5; the empty list here is
+        # what every vision/march consumer iterates, so a cover-free level (and
+        # every other ruleset) pays one empty loop.
+        self.cover: list = []
+
+        # Per-tick vision cache (design §8) — invalidated by tick number, so
+        # every consumer in a tick sees ONE consistent answer.
+        self._vision_cache = None
+
         # Physics runner (created once, re-bound on reset only if bp present).
         if self._bp is not None:
             # Always build a fresh runner so per-session params are clean.
@@ -1020,6 +1031,18 @@ class Simulation:
     @property
     def round_index(self) -> int:
         return self.ruleset.round_index(self)
+
+    def visible_enemy_ids(self, team: int = 0) -> tuple:
+        """Enemies ``team`` can currently see — TEAM VISION, the union of its
+        members' cones (onephase_wego design §8).
+
+        THE fog-of-war gate: fog in v1 is visibility gating only, so the
+        renderer draws no enemy whose id is absent here. Consult it only when
+        ``ruleset.fog_of_war`` is set — the shipped rulesets have no vision
+        model and show everything, exactly as they always have.
+        """
+        from simulation import vision
+        return vision.visible_enemy_ids(self, team)
 
     def round_start_tick(self) -> int:
         """Absolute tick at which the CURRENT round began. The anchor every

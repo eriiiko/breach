@@ -50,6 +50,11 @@ class Ruleset:
     #: See the class docstring. Overridden to True by OnePhaseWEGO.
     drives_units = False
 
+    #: Does this ruleset run a vision model the renderer should gate on
+    #: (onephase_wego design §8)? False on the shipped rulesets — they have no
+    #: vision system and draw everything, exactly as they always have.
+    fog_of_war = False
+
     def drive_units(self, sim) -> None:
         """One tick of unit simulation, when ``drives_units`` is True.
         Replaces ``Simulation.step``'s slots 3 and 4 entirely."""
@@ -335,6 +340,10 @@ class OnePhaseWEGO(Ruleset):
     #: This ruleset runs the compiled timeline instead of the phase-indexed
     #: order scan — see :mod:`simulation.timeline`.
     drives_units = True
+
+    #: Vision v1 is a first-class system here (§8), and fog of war is the
+    #: renderer gating on it: an enemy the team cannot see is not drawn.
+    fog_of_war = True
 
     def drive_units(self, sim) -> None:
         # Deferred import: timeline imports combat, which imports plenty;
