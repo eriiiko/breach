@@ -284,8 +284,24 @@ class Unit:
 
         # Loadout (§15): primary + secondary, swapped freely for 0 cost except
         # the swap CD. `active_slot` indexes it; `weapon_id` above mirrors the
-        # active entry so every shipped combat consumer keeps working unchanged.
-        self.loadout     = [] if self.is_zombie else [self.weapon_id]
+        # active entry so every shipped combat consumer keeps working unchanged
+        # — that mirroring is deliberate: it means the whole combat path never
+        # learns that loadouts exist. A slot may hold a weapon OR an item (§15);
+        # an item is simply a LOBBED/PLACED weapon row.
+        #
+        # The quick-item BELT is the same idea one layer out: its entries are
+        # action-registry item rows, and belt slots are hotbar slots (§15 — "one
+        # system wearing two skins"), which is why nothing here is a separate
+        # item type.
+        if self.is_zombie:
+            self.loadout = []
+            self.belt = []
+        else:
+            secondary = str(getattr(CFG.marine, "secondary", "") or "")
+            self.loadout = [self.weapon_id]
+            if secondary:
+                self.loadout.append(secondary)
+            self.belt = list(getattr(CFG.marine, "belt", ()) or ())
         self.active_slot = 0
 
         # Overwatch (§9) — a STATE, not an order: it persists across rounds

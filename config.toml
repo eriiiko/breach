@@ -1639,6 +1639,18 @@ explosives = 2
 # nothing, engine/12 §5), launch `main.py --level playground`, issue fire
 # orders, watch rooms burn.
 weapon = "k5_carbine"
+# OnePhaseWEGO loadout (onephase_wego design §15): primary + secondary, swapped
+# freely for 0 cost except the 0.75 s swap CD — "the design intent is *lots* of
+# weapon changes, choosing the tool for the task". `weapon` above is the
+# PRIMARY (and remains what every other ruleset arms a marine with, untouched);
+# `secondary` fills the second slot. A slot may hold a weapon OR an item (§15),
+# so any [weapons.*] row name is valid here.
+secondary = "p12_whisper"
+# The quick-item belt (§15, the Dark Souls 3 pattern): 4-5 slots for
+# seldom-used items. Belt slots ARE hotbar slots — same action-registry rows,
+# one system wearing two skins — so entries name LOBBED/PLACED weapon rows,
+# which is what the registry generates its `use_*` item actions from.
+belt = ["hand_grenade", "breach_charge"]
 
 [rendering]
 # Resolution of the world composite RT in pixels per tile — the sharpness

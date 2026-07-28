@@ -452,24 +452,36 @@ def test_further_orders_in_the_same_round_append():
 
 
 def test_a_channeled_action_in_progress_survives_the_replacement():
+    """§13: actions flagged ``interruptible = False`` (planting a charge,
+    operating a terminal, objective interactions) must complete first."""
     sim = _sim()
     u = _marine(sim, x=4.0, y=4.0)
     u.has_explosive = 1
     sim.apply_action(u.id, O.Order(O.ORDER_EXPLOSIVE, 6, 4, 0,
                                    action_name="plant_charge"))
-    _run(sim, 4)                              # mid-channel
-    _run(sim, sim.ticks_per_round - 4)        # into the next round
-    # ... but the channel is still running: force the situation directly.
-    sim2 = _sim()
-    v = _marine(sim2, x=4.0, y=4.0)
-    v.has_explosive = 1
-    sim2.apply_action(v.id, O.Order(O.ORDER_EXPLOSIVE, 6, 4, 0,
-                                    action_name="plant_charge"))
-    v.plan_round = -1                         # pretend a new round began
-    kept = list(v.orders)
-    sim2.apply_action(v.id, _move(4, 8))
-    assert kept[0] in v.orders, "a channeled action was interrupted"
-    assert len(v.orders) == 2
+    plant = u.orders[0]
+    _run(sim, 4)                              # part-way through the channel
+    assert u.plan.steps[0].started and not u.plan.steps[0].retired
+    u.plan_round = -1                         # the player may order again
+    sim.apply_action(u.id, _move(4, 8))
+    assert plant in u.orders, "a channeled action was interrupted"
+    assert len(u.orders) == 2
+
+
+def test_a_channeled_action_that_has_not_begun_is_freely_replaced():
+    """The predicate is "started", not "scheduled for this tick": at the
+    planning pause nothing has begun, so the player may still change their
+    mind about a charge they only just ordered."""
+    sim = _sim()
+    u = _marine(sim, x=4.0, y=4.0)
+    u.has_explosive = 1
+    sim.apply_action(u.id, O.Order(O.ORDER_EXPLOSIVE, 6, 4, 0,
+                                   action_name="plant_charge"))
+    u.plan_round = -1
+    sim.apply_action(u.id, _move(4, 8))
+    assert len(u.orders) == 1
+    assert u.orders[0].order_type == O.ORDER_MOVE
+    assert u.has_explosive == 1, "the unbuilt charge was not handed back"
 
 
 def test_undo_pops_and_recompiles_and_refunds_the_item():

@@ -372,6 +372,12 @@ class Simulation:
         # slot open for when level logic should trigger squad actions.
         self.ambush_released: dict = {}
 
+        # Planted charges awaiting their moment (design §12) — the three
+        # det SLOTS are replaced by a schedulable TICK, which only works
+        # because the ruleset's clock is monotonic: "1.8 s into the round" and
+        # "t=0 of the next round" are the same kind of number.
+        self.planted_charges: list = []
+
         # Physics runner (created once, re-bound on reset only if bp present).
         if self._bp is not None:
             # Always build a fresh runner so per-session params are clean.
@@ -592,6 +598,24 @@ class Simulation:
         self.ruleset.on_orders_changed(self, u)
         return True
 
+    def _onephase_channeled_in_progress(self, u):
+        """The unit's currently-running uninterruptible step, or ``None``.
+
+        The predicate is ``started``, NOT "the plan says this tick belongs to
+        it": at the planning pause a channeled action scheduled to begin this
+        very tick has not begun, so it is freely replaceable and undoable.
+        Only an action the unit is actually part-way through — a charge half
+        planted, a terminal half operated — resists interruption (§13).
+        """
+        plan = getattr(u, "plan", None)
+        if plan is None:
+            return None
+        step = plan.step_at(self.tick)
+        if (step is not None and step.started and not step.retired
+                and not step.action.interruptible):
+            return step
+        return None
+
     def _onephase_action_for(self, order):
         """The registry row an order runs through, or ``None`` if this order
         type has no row (a legacy TwoPhaseWEGO order handed to the wrong
@@ -611,11 +635,8 @@ class Simulation:
         """Drop the unit's remaining orders, refunding their items — except a
         channeled action already in progress (§13), which must finish."""
         keep = []
-        plan = getattr(u, "plan", None)
-        in_progress = plan.step_at(self.tick) if plan is not None else None
-        protected = (in_progress.order
-                     if in_progress is not None
-                     and not in_progress.action.interruptible else None)
+        in_progress = self._onephase_channeled_in_progress(u)
+        protected = in_progress.order if in_progress is not None else None
         for o in u.orders:
             if o is protected:
                 keep.append(o)
@@ -660,11 +681,8 @@ class Simulation:
             # OnePhaseWEGO: nothing was charged at placement (§3), so undo is
             # "pop, hand the item back, recompile" — the timeline simply gets
             # shorter. A channeled step already in progress cannot be undone.
-            plan = getattr(u, "plan", None)
-            in_progress = plan.step_at(self.tick) if plan is not None else None
-            if (in_progress is not None
-                    and in_progress.order is u.orders[-1]
-                    and not in_progress.action.interruptible):
+            in_progress = self._onephase_channeled_in_progress(u)
+            if in_progress is not None and in_progress.order is u.orders[-1]:
                 return False
             removed = u.orders.pop()
             action = self._onephase_action_for(removed)

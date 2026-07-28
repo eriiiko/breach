@@ -47,16 +47,17 @@ from __future__ import annotations
 import math
 
 from config import CFG
-from simulation import engagement
+from simulation import charges, engagement
 from simulation.action_registry import ActionDef
-from simulation.combat import mag_gate, mag_spend, _dispatch_trigger
+from simulation.combat import Projectile, mag_gate, mag_spend, _dispatch_trigger
 from simulation.movement import FootprintSamples, default_speed
 from simulation.orders import (
-    ORDER_AMBUSH, ORDER_DETONATE, ORDER_HOLD, ORDER_MARK, ORDER_MOVE,
-    ORDER_MOVE_SHOOT, ORDER_OVERWATCH, ORDER_SHOOT, ORDER_SWAP,
-    ONEPHASE_MOVE_ORDER_TYPES,
+    ORDER_AMBUSH, ORDER_DETONATE, ORDER_EXPLOSIVE, ORDER_GRENADE, ORDER_HOLD,
+    ORDER_MARK, ORDER_MOVE, ORDER_MOVE_SHOOT, ORDER_OVERWATCH, ORDER_SHOOT,
+    ORDER_SWAP, ONEPHASE_MOVE_ORDER_TYPES,
 )
 from simulation.status import composed_flags
+from simulation.weapons import FIRE_ORDER_ARCHETYPES
 from simulation import unit_fixed
 
 try:
@@ -443,6 +444,11 @@ def drive_units(sim) -> None:
     positions every unit reached this tick, exactly as the legacy
     ``_update_player_movement`` / ``process_shooting`` pair does.
     """
+    # Scheduled detonations (§12) FIRST: a charge that blows on this tick has
+    # already blown the door and vented the room before anybody walks through
+    # it, which is what makes the breach opening read right.
+    charges.tick(sim)
+
     for u in sim.units:
         if u.team == 0 and u.alive:
             _advance_movement(sim, u)
@@ -586,6 +592,10 @@ def _begin_step(sim, unit, step) -> None:
         set_overwatch(sim, unit, step)
     elif ot == ORDER_MARK:
         mark_target(sim, unit, step)
+    elif ot == ORDER_DETONATE:
+        charges.detonate_owned(sim, unit)
+    elif ot == ORDER_GRENADE:
+        throw_grenade(sim, unit, step)
 
 
 def _retire_finished(sim, unit, plan) -> None:
@@ -601,8 +611,21 @@ def _retire_finished(sim, unit, plan) -> None:
         if step.end_tick is INDEFINITE or sim.tick < step.end_tick:
             continue
         step.retired = True
+        _end_step(sim, unit, step)
         if step.order in unit.orders:
             unit.orders.remove(step.order)
+
+
+def _end_step(sim, unit, step) -> None:
+    """Side effects that happen when a step COMPLETES rather than opens.
+
+    Only planting lives here, and it must: ``plant_charge`` is channeled
+    (§5), so the charge comes into existence when the planting FINISHES. A
+    marine interrupted mid-plant has planted nothing — which is the entire
+    reason the action is flagged uninterruptible in the first place.
+    """
+    if step.order_type == ORDER_EXPLOSIVE and not step.blocked:
+        charges.plant(sim, unit, step.order)
 
 
 # ---------------------------------------------------------------------------
@@ -637,6 +660,12 @@ def _fire_at(sim, unit, target, *, order_type=ORDER_SHOOT, reversing=False,
     """
     weapon = _active_weapon(sim, unit)
     if weapon is None:
+        return False
+    # A loadout slot may hold an ITEM rather than a gun (§15). A lobbed or
+    # placed row has no trigger path — it rides its own order flow — so a unit
+    # with a grenade in hand simply does not shoot, rather than marching a
+    # grenade down a bullet's marcher.
+    if weapon.archetype not in FIRE_ORDER_ARCHETYPES:
         return False
     if sim.tick - unit.last_fire_tick < weapon.rof_interval_ticks:
         return False
@@ -747,6 +776,32 @@ def set_overwatch(sim, unit, step) -> None:
     unit.overwatch_facing = facing
     unit.overwatch_half_deg = half
     unit.facing = facing
+
+
+def throw_grenade(sim, unit, step) -> None:
+    """Lob a grenade at the step's target tile (§5's Use-item verb).
+
+    Spawned from the unit's position AT THE MOMENT OF THE THROW — the whole
+    reason the timeline exists: under the two-phase round grenades were
+    materialized up front from a *planned* end position, which is why
+    ``spawn_projectiles_from_grenade_orders`` had to exist at all. Here the
+    throw is a scheduled action like any other, so it simply happens where the
+    thrower is standing when it happens.
+
+    The inventory was already spent at order placement (and refunded on undo),
+    so nothing is decremented here.
+    """
+    order = step.order
+    proj = Projectile(
+        ORDER_GRENADE,
+        unit.center_tile_x(), unit.center_tile_y(),
+        float(order.target_fx) + 0.5, float(order.target_fy) + 0.5,
+        fuse_seconds=(order.grenade_fuse if order.grenade_fuse is not None
+                      else 2.0),
+        thrown_tick=sim.tick,
+        ammo_name=(getattr(order, "ammo_name", None) or "grenade_frag"),
+    )
+    sim.projectiles.append(proj)
 
 
 def mark_target(sim, unit, step) -> None:
