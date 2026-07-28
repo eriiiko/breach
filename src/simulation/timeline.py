@@ -602,9 +602,15 @@ def _shoot_tick(sim, unit, step) -> None:
     reversing = _step_is_reversing(sim, unit, step)
     spread = spread_deg_for(weapon, step.order_type, reversing=reversing,
                             can_aim=composed_flags(unit).can_aim)
+    # The march runs under OnePhaseWEGO's rules: PHYSICAL cover (§7 — the
+    # rectangles decide, and the statistical exposure roll is not consulted at
+    # all, even on a level with no crates on it) and facing-determines-defense
+    # (§9). ``sim.cover`` is passed even when empty — it is the LIST, not its
+    # contents, that selects the model.
     _dispatch_trigger(sim.gmap, sim.units, unit, ux, uy, tx, ty, sim.tick,
                       sim.shots, sim.real_time, sim.rng, sim.tick_events,
-                      sim.bullets, weapon, spread, sim.edit_queue)
+                      sim.bullets, weapon, spread, sim.edit_queue,
+                      cover=sim.cover, facing_defense=True)
     mag_spend(unit, weapon, sim.tick)
     unit.last_fire_tick = sim.tick
     step.fired_ticks += 1

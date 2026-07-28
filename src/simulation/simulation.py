@@ -87,6 +87,7 @@ from simulation.exchange import (  # noqa: F401 (apply_blast_damage: legacy re-e
 from simulation.events import (  # noqa: F401 (ExplosionEvent: legacy re-export — emitted by the executor now)
     DoorDestroyedEvent, ExplosionEvent, WallDestroyedEvent,
 )
+from simulation.cover_system import build_cover
 from simulation.door_system import build_runtime_entities, sweep_doors
 from simulation.entities.door import DOOR_OPEN
 from simulation.entities.serialize import entity_carrier
@@ -356,11 +357,10 @@ class Simulation:
         self.marks: dict = {}
 
         # Cover entities (onephase_wego design §7) — continuous-space
-        # destructible collision shapes the bullet march can hit. Populated at
-        # load from the level's [[entity]] rows in P5; the empty list here is
-        # what every vision/march consumer iterates, so a cover-free level (and
-        # every other ruleset) pays one empty loop.
-        self.cover: list = []
+        # destructible rectangles the bullet march stops on, built from the
+        # level's [[entity]] cover rows in ordinal order. A cover-free level
+        # yields an empty list, which every consumer iterates for free.
+        self.cover = build_cover(self.level)
 
         # Per-tick vision cache (design §8) — invalidated by tick number, so
         # every consumer in a tick sees ONE consistent answer.

@@ -41,3 +41,4 @@ from simulation.entities import controls as _controls  # noqa: F401  (registers 
 from simulation.entities import nodes as _nodes  # noqa: F401  (registers decider/gate_*/filter, B2)
 from simulation.entities import sensors as _sensors  # noqa: F401  (registers the v1 sensor catalog, B3)
 from simulation.entities import actuators as _actuators  # noqa: F401  (registers the airlock_controller, B5)
+from simulation.entities import cover as _cover  # noqa: F401  (registers the cover class — onephase_wego §7)
