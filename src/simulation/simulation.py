@@ -598,6 +598,23 @@ class Simulation:
         self.ruleset.on_orders_changed(self, u)
         return True
 
+    def begin_new_plan(self, unit_id: int) -> bool:
+        """Start a fresh plan for ``unit_id`` — the facade seam behind "a plain
+        click replaces the plan, a shift-click appends to it" (§13/§16).
+
+        Drops the unit's remaining orders (refunding their items) except a
+        channeled action already in progress, and recompiles. Idempotent, so a
+        control source may call it before every replacing order without having
+        to track whether it already did.
+        """
+        u = self.get_unit(unit_id)
+        if u is None or not self.ruleset.drives_units:
+            return False
+        self._onephase_replace_queue(u)
+        u.plan_round = self.round_index
+        self.ruleset.on_orders_changed(self, u)
+        return True
+
     def _onephase_channeled_in_progress(self, u):
         """The unit's currently-running uninterruptible step, or ``None``.
 
