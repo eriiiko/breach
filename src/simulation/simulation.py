@@ -366,6 +366,12 @@ class Simulation:
         # every consumer in a tick sees ONE consistent answer.
         self._vision_cache = None
 
+        # Ambush barriers (design §10): ``{target_unit_id: release_tick}``.
+        # A per-group readiness counter in the sim — NO SignalBus is needed in
+        # v1, though the action registry's ``start_condition`` field keeps that
+        # slot open for when level logic should trigger squad actions.
+        self.ambush_released: dict = {}
+
         # Physics runner (created once, re-bound on reset only if bp present).
         if self._bp is not None:
             # Always build a fresh runner so per-session params are clean.

@@ -244,6 +244,25 @@ def apply_packet(unit, packet: DamagePacket, events=None, *,
                       ap=packet.ap)
     dmg = unit_fixed.quantize_hp_delta(amount)
     unit.current_hp -= dmg
+    # Who is shooting at me (onephase_wego design §13, the idle stance): a unit
+    # with no orders "returns fire at attackers — preferring marked targets —
+    # but does not free-fire at everything it sees", so it needs to know who
+    # attacked it and when. Recorded here because this is the ONE place every
+    # damage source converges. Attribution only — no behaviour, no events, no
+    # digest surface — so the shipped rulesets are unaffected; a source_id of
+    # -1 (environment: heat, blast with no shooter) is not an attacker.
+    # Deliberately UNAGED: the list is cleared at the round boundary, so it
+    # means "who has shot at me this round" — which is the right window for a
+    # 4 s round and needs no clock threaded through every damage call site.
+    # ``source_id`` is None on an unattributed packet (the field's own default)
+    # and -1 where a site had no shooter to name; neither is an attacker.
+    src = getattr(packet, "source_id", None)
+    if src is not None:
+        src_id = int(src)
+        recent = getattr(unit, "recent_attackers", None)
+        if (recent is not None and src_id >= 0
+                and src_id != int(getattr(unit, "id", -1))):
+            recent[src_id] = recent.get(src_id, 0) + 1
     if events is not None:
         uid = getattr(unit, "id", -1)
         events.append(UnitHitEvent(unit_id=uid, damage=dmg, source=source))

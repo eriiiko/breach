@@ -293,10 +293,14 @@ class Unit:
         self.overwatch_facing  = None
         self.overwatch_half_deg = None
 
-        # Idle stance (§13): who last shot at this unit, so an order-less unit
-        # can return fire without free-firing at everything it sees.
-        self.last_attacked_by   = None
-        self.last_attacked_tick = -999
+        # Idle stance (§13): who has shot at this unit THIS ROUND
+        # ({attacker_id: hit_count}, insertion-ordered), so an order-less unit
+        # can return fire at its attackers without free-firing at everything
+        # it sees. Written by damage.apply_packet (the one place every damage
+        # source converges); cleared at the round boundary, which is what
+        # makes "recent" mean something without threading a clock through
+        # every damage call site.
+        self.recent_attackers: dict = {}
 
     # ------------------------------------------------------------------
     # Life state

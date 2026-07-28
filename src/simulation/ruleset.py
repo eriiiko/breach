@@ -416,6 +416,22 @@ class OnePhaseWEGO(Ruleset):
         without bound), and bumping the human-facing round counter.
         """
         sim.projectiles = [p for p in sim.projectiles if not p.detonated]
+
+        # §10's timeout backstop: an ambush group that never became ready
+        # reverts to idle stance rather than holding forever. Released groups
+        # are already ordinary shooting and are left alone.
+        from simulation.engagement import drop_unready_ambushes
+        drop_unready_ambushes(sim)
+
+        # The idle stance's "who shot at me" memory (§13) is per-round: it is
+        # deliberately unaged inside a round — 4 s is short enough that "this
+        # round" IS recent — and cleared here so a marine does not spend round
+        # three returning fire at a corpse from round one.
+        for u in sim.units:
+            attackers = getattr(u, "recent_attackers", None)
+            if attackers:
+                attackers.clear()
+
         sim.turn_number += 1
         sim.paused = True
 

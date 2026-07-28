@@ -47,6 +47,7 @@ from __future__ import annotations
 import math
 
 from config import CFG
+from simulation import engagement
 from simulation.action_registry import ActionDef
 from simulation.combat import mag_gate, mag_spend, _dispatch_trigger
 from simulation.movement import FootprintSamples, default_speed
@@ -445,6 +446,11 @@ def drive_units(sim) -> None:
     for u in sim.units:
         if u.team == 0 and u.alive:
             _advance_movement(sim, u)
+    # Ambush barriers are evaluated ONCE, between the passes: every member's
+    # readiness is read from the same post-movement world, so a group whose
+    # last member arrives this tick releases this tick — not one tick late,
+    # and not in an order that depends on where a unit sits in the roster.
+    engagement.update_ambush(sim)
     for u in sim.units:
         if u.team == 0 and u.alive:
             _resolve_action(sim, u)
@@ -517,10 +523,44 @@ def _resolve_action(sim, unit) -> None:
         _begin_step(sim, unit, step)
 
     step = plan.step_at(sim.tick)
-    if step is not None and step.order_type in (ORDER_SHOOT, ORDER_MOVE_SHOOT):
+    if step is None:
+        # Nothing scheduled: the two STANDING engagements (§9/§13). Overwatch
+        # first — it is an explicit posture the player set, and it persists
+        # across rounds until replaced; idle return-fire is the floor beneath
+        # it. Neither runs while a step is active: issuing an order supersedes
+        # standing watch, and the watch resumes when the order completes.
+        _standing_engagement(sim, unit)
+    elif step.order_type in (ORDER_SHOOT, ORDER_MOVE_SHOOT):
         _shoot_tick(sim, unit, step)
+    elif step.order_type == ORDER_AMBUSH:
+        _ambush_tick(sim, unit, step)
 
     _retire_finished(sim, unit, plan)
+
+
+def _standing_engagement(sim, unit) -> None:
+    if engagement.on_overwatch(unit):
+        target = engagement.overwatch_target(sim, unit)
+        if target is not None:
+            _fire_at(sim, unit, target, overwatch=True)
+            return
+    target = engagement.idle_target(sim, unit)
+    if target is not None:
+        _fire_at(sim, unit, target)
+
+
+def _ambush_tick(sim, unit, step) -> None:
+    """A unit sitting on the ambush barrier (§10).
+
+    While the group is unreleased it does NOTHING — that silence is the
+    mechanic. Once released it fires like any other shoot step, so a sprung
+    ambush is simply everyone shooting at once.
+    """
+    if not engagement.ambush_may_fire(sim, unit, step):
+        return
+    target = _shot_target(sim, step)
+    if target is not None and _fire_at(sim, unit, target):
+        step.fired_ticks += 1
 
 
 def _begin_step(sim, unit, step) -> None:
@@ -580,27 +620,42 @@ def _shoot_tick(sim, unit, step) -> None:
     target = _shot_target(sim, step)
     if target is None:
         return
+    if _fire_at(sim, unit, target, order_type=step.order_type,
+                reversing=_step_is_reversing(sim, unit, step)):
+        step.fired_ticks += 1
+
+
+def _fire_at(sim, unit, target, *, order_type=ORDER_SHOOT, reversing=False,
+             overwatch=False) -> bool:
+    """One trigger pull at a live target. Returns True if a round went out.
+
+    THE shared firing path for every way a unit shoots under this ruleset —
+    shoot orders, move & shoot, a sprung ambush, an overwatch engagement, idle
+    return fire. Keeping it single means the cadence, magazine, range and LOS
+    gates cannot drift apart between them, and the §7 spread selection is
+    applied in exactly one place.
+    """
     weapon = _active_weapon(sim, unit)
     if weapon is None:
-        return
+        return False
     if sim.tick - unit.last_fire_tick < weapon.rof_interval_ticks:
-        return
+        return False
     if not mag_gate(unit, weapon, sim.tick):
-        return
+        return False
 
     ux, uy = unit.center_tile_x(), unit.center_tile_y()
     tx, ty = target.center_tile_x(), target.center_tile_y()
     dist = math.sqrt((ux - tx) ** 2 + (uy - ty) ** 2)
     if dist > weapon.range_tiles:
-        return
+        return False
     # Walls block the ORDER; cover does not (§7 — cover eats the rays
     # physically, in the march, so shooting at someone behind a crate is a
     # legal order that mostly feeds the crate).
     if not sim.gmap.has_los(uy, ux, ty, tx):
-        return
+        return False
 
-    reversing = _step_is_reversing(sim, unit, step)
-    spread = spread_deg_for(weapon, step.order_type, reversing=reversing,
+    spread = spread_deg_for(weapon, order_type, reversing=reversing,
+                            overwatch=overwatch,
                             can_aim=composed_flags(unit).can_aim)
     # The march runs under OnePhaseWEGO's rules: PHYSICAL cover (§7 — the
     # rectangles decide, and the statistical exposure roll is not consulted at
@@ -613,7 +668,7 @@ def _shoot_tick(sim, unit, step) -> None:
                       cover=sim.cover, facing_defense=True)
     mag_spend(unit, weapon, sim.tick)
     unit.last_fire_tick = sim.tick
-    step.fired_ticks += 1
+    return True
 
 
 def _shot_target(sim, step):
