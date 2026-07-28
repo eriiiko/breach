@@ -280,6 +280,10 @@ def _onephase_world_overlay(sim, control_source):
                 selected_unit_id=control_source.selected_unit_id,
                 cursor_tile=None, paused=False),
             world_px_per_tile)
+        # Cover is intangible (it is a shape, not a tile), so the tileset never
+        # draws it — without this the player is protected by something
+        # invisible. Drawn UNDER the cones and plan so it reads as scenery.
+        ui_draw.draw_cover(sim, world_px_per_tile)
         for u in sim.marines():
             ui_draw.draw_overwatch_cone(u, world_px_per_tile)
         ui_draw.draw_marks(sim, 0, world_px_per_tile)

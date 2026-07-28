@@ -1,0 +1,245 @@
+# wego_test — the OnePhaseWEGO HUMAN-TEST level (Erik's kickoff ruling 3).
+#
+# Purpose-built to exercise the things the turn-formula redesign added, and
+# nothing else. Playground and planetside_demo are deliberately untouched.
+#
+#   · TWO ROOMS split by a steel bulkhead with ONE closed door — so the round
+#     has an obvious breach problem to solve (§12: plant, schedule the blast
+#     for t=0 of the next round, stack up, Ambush).
+#   · PHYSICAL COVER in the right-hand room (§7): crates a marine can hug and
+#     rounds physically stop on, plus two full-height barricades that also
+#     break line of sight — the blocks_los distinction made playable.
+#   · FOUR MARINES vs FIVE ZOMBIES, far enough apart that the first round is a
+#     planning round rather than an immediate brawl.
+#
+# Launch:
+#   python main.py --level wego_test --control onephase
+#   python main.py --level wego_test --control onephase --debug   # dev keys
+version = "2"
+name = "wego_test"
+
+tilemap = "tilemap.csv"
+
+# 0.333 m/tile — the project's standard, and the one tiles_per_m == 3 exactly
+# (a6 §3), so a 1.0 m crate is exactly 3 tiles wide.
+tile_size_m = 0.333
+
+[art.bare]
+diffuse = "baked_diffuse.png"
+normal = "baked_normal.png"
+
+[art.align]
+offset_px = [0.0, 0.0]
+px_per_tile = [64.00, 64.00]
+
+[bake]
+tileset = "art/tilesets/greybox"
+px_per_tile = 64
+seed = 0
+
+[[spawn]]
+name = "marine_1"
+team = 0
+x = 8.0
+y = 26.0
+footprint = 3
+
+[[spawn]]
+name = "marine_2"
+team = 0
+x = 8.0
+y = 34.0
+footprint = 3
+
+[[spawn]]
+name = "marine_3"
+team = 0
+x = 14.0
+y = 22.0
+footprint = 3
+
+[[spawn]]
+name = "breacher"
+team = 0
+x = 14.0
+y = 38.0
+footprint = 3
+
+# ---------------------------------------------------------------------------
+# The opposition — right room, behind the bulkhead.
+# ---------------------------------------------------------------------------
+[[spawn]]
+name = "zombie_1"
+team = 1
+x = 70.0
+y = 20.0
+footprint = 3
+
+[[spawn]]
+name = "zombie_2"
+team = 1
+x = 78.0
+y = 30.0
+footprint = 3
+
+[[spawn]]
+name = "zombie_3"
+team = 1
+x = 70.0
+y = 42.0
+footprint = 3
+
+[[spawn]]
+name = "zombie_4"
+team = 1
+x = 84.0
+y = 24.0
+footprint = 3
+
+[[spawn]]
+name = "zombie_5"
+team = 1
+x = 84.0
+y = 38.0
+footprint = 3
+
+# ---------------------------------------------------------------------------
+# The door the round is about (§12). Closed at load; blow it, or open it and
+# walk into whatever is waiting.
+# ---------------------------------------------------------------------------
+[[entity]]
+id = "bulkhead_door"
+class = "door"
+x = 46
+y = 30
+orientation = "v"
+length_m = 1.0
+initial_state = "closed"
+
+# ---------------------------------------------------------------------------
+# COVER (§7) — the point of the level.
+#
+# Crates (blocks_los = false, the default): you can SEE over them, you cannot
+# SHOOT through them. Hug one and geometry protects you exactly as much as the
+# geometry says — there is no cover stat anywhere to consult.
+#
+# Barricades (blocks_los = true): full height, so they break line of sight as
+# well as stopping rounds — cover you can hide behind rather than fight from.
+#
+# All of it is destructible: shoot a crate long enough and it stops being cover.
+# ---------------------------------------------------------------------------
+[[entity]]
+id = "crate_entry_a"
+class = "cover"
+x = 52
+y = 26
+width_m = 1.0
+height_m = 1.0
+hp = 60
+blocks_los = false
+
+[[entity]]
+id = "crate_entry_b"
+class = "cover"
+x = 52
+y = 35
+width_m = 1.0
+height_m = 1.0
+hp = 60
+blocks_los = false
+
+[[entity]]
+id = "crate_mid_long"
+class = "cover"
+x = 64
+y = 30
+width_m = 0.667
+height_m = 1.333
+hp = 90
+blocks_los = false
+
+[[entity]]
+id = "crate_north"
+class = "cover"
+x = 72
+y = 14
+width_m = 1.333
+height_m = 0.667
+hp = 60
+blocks_los = false
+
+[[entity]]
+id = "crate_south"
+class = "cover"
+x = 72
+y = 48
+width_m = 1.333
+height_m = 0.667
+hp = 60
+blocks_los = false
+
+[[entity]]
+id = "barricade_north"
+class = "cover"
+x = 78
+y = 26
+width_m = 0.667
+height_m = 1.0
+hp = 140
+blocks_los = true
+
+[[entity]]
+id = "barricade_south"
+class = "cover"
+x = 78
+y = 34
+width_m = 0.667
+height_m = 1.0
+hp = 140
+blocks_los = true
+
+# A crate on the MARINES' side too, so cover is not purely something the enemy
+# gets to use — backing out of the doorway onto it is a real option (§6's
+# reversing speed is what makes that a decision).
+[[entity]]
+id = "crate_friendly"
+class = "cover"
+x = 38
+y = 30
+width_m = 1.0
+height_m = 1.0
+hp = 60
+blocks_los = false
+
+# ---------------------------------------------------------------------------
+# Light. Dim ambient + a few lamps, so the marine flashlights (§8) read.
+# ---------------------------------------------------------------------------
+[[entity]]
+id = "lamp_left"
+class = "light"
+x = 16.5
+y = 31.5
+color = [255, 214, 170]
+intensity = 2.2
+range = 26.0
+kind = "static"
+
+[[entity]]
+id = "lamp_door"
+class = "light"
+x = 44.5
+y = 31.5
+color = [255, 160, 40]
+intensity = 1.8
+range = 14.0
+kind = "static"
+
+[[entity]]
+id = "lamp_right"
+class = "light"
+x = 80.5
+y = 31.5
+color = [180, 200, 255]
+intensity = 1.6
+range = 24.0
+kind = "static"

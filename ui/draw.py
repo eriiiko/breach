@@ -129,6 +129,44 @@ def draw_flashlight_cones(cones, world_px_per_tile: float) -> None:
             rl.Color(255, 250, 235, 16))
 
 
+def draw_cover(sim, world_px_per_tile: float) -> None:
+    """Cover rectangles (§7).
+
+    Cover is INTANGIBLE — it is a continuous-space shape, not a tile — so the
+    tileset never draws it and it has to be drawn here or the player is being
+    protected by something invisible. Greybox for now (art is a later pass);
+    what has to read correctly is the SHAPE, since geometry is the whole
+    mechanic, and the damage state, since a chewed crate is about to stop
+    protecting anybody.
+
+    A ``blocks_los`` barricade is drawn solid and taller-looking; an ordinary
+    crate is drawn lower and semi-transparent, because you can see over it.
+    """
+    wpt = float(world_px_per_tile)
+    for c in getattr(sim, "cover", ()) or ():
+        if not c.alive:
+            continue
+        x = c.x0 * wpt
+        y = c.y0 * wpt
+        w = (c.x1 - c.x0) * wpt
+        h = (c.y1 - c.y0) * wpt
+        if c.blocks_los:
+            fill = rl.Color(96, 92, 86, 255)
+            edge = rl.Color(150, 146, 138, 255)
+        else:
+            fill = rl.Color(120, 104, 74, 180)
+            edge = rl.Color(178, 156, 112, 255)
+        rl.draw_rectangle(int(x), int(y), int(w), int(h), fill)
+        rl.draw_rectangle_lines_ex(rl.Rectangle(x, y, w, h),
+                                   max(1.0, 0.1 * wpt), edge)
+        # Damage read: a red bar along the top edge as the HP goes.
+        if c.hp_now < c.hp_max:
+            frac = max(0.0, c.hp_now / float(c.hp_max))
+            rl.draw_rectangle(int(x), int(y), int(w * frac),
+                              max(2, int(0.12 * wpt)),
+                              rl.Color(210, 70, 50, 220))
+
+
 def draw_marks(sim, team: int, world_px_per_tile: float) -> None:
     """Marked targets (§11) — the mark has to be visible or marking is a
     keypress with no feedback."""
