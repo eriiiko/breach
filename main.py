@@ -274,19 +274,22 @@ def _onephase_world_overlay(sim, control_source, hover_tile=None):
     def _draw(world_px_per_tile):
         selected = (sim.get_unit(control_source.selected_unit_id)
                     if control_source.selected_unit_id is not None else None)
-        ui_draw.draw_flashlight_cones(
-            ui.flashlight_cones(
-                sim, team=0, mode=control_source.flashlight_mode,
-                selected_unit_id=control_source.selected_unit_id,
-                cursor_tile=None, paused=False),
-            world_px_per_tile)
-        # Cover is intangible (it is a shape, not a tile), so the tileset never
-        # draws it — without this the player is protected by something
-        # invisible. Drawn UNDER the cones and plan so it reads as scenery.
+        # NOTE: the flashlight cones are NOT drawn as sectors here. They are
+        # already real ray-traced light sources in the frame's source list, and
+        # drawing a translucent wedge on top of the light they cast doubled the
+        # cone and read as a UI overlay rather than as a torch (Erik, 2nd play
+        # session: "the half cones … flashlights already kind of show this, and
+        # it should be enough"). The lighting IS the facing indicator.
+        #
+        # Cover is intangible (a shape, not a tile), so the tileset never draws
+        # it — without this the player is protected by something invisible.
         ui_draw.draw_cover(sim, world_px_per_tile)
+        # An overwatch cone is not a "view" indicator, it is the player's own
+        # target-control dial (§9), so it stays.
         for u in sim.marines():
             ui_draw.draw_overwatch_cone(u, world_px_per_tile)
         ui_draw.draw_marks(sim, 0, world_px_per_tile)
+        ui_draw.draw_selected_marker(selected, world_px_per_tile)
         if selected is not None:
             ui_draw.draw_plan_overlay(
                 ui.plan_overlay(sim, selected, hover_tile=hover_tile,
@@ -636,6 +639,12 @@ def main():
                 ui_draw.draw_planning_clock(
                     ui.planning_clock(sim, control_source.planning_elapsed),
                     screen_w)
+                armed = control_source.armed_action
+                if armed:
+                    dial = control_source.armed_dial_seconds(sim)
+                    ui_draw.draw_armed_readout(
+                        sim.actions_table.get(armed).label, dial,
+                        screen_w, screen_h)
                 if control_source.menu_open:
                     ui_draw.draw_ds3_menu(
                         ui.ds3_menu(sim, selected, control_source.menu_page),

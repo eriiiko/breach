@@ -23,17 +23,18 @@ ControlSource (``src/control_onephase.py``), which is the only writer.
 from __future__ import annotations
 
 from ui.model import (  # noqa: F401
-    DEFAULT_HOTBAR, DS3_PAGES, FlashlightCone, HotbarSlot, Hologram,
-    MenuModel, MenuRow, PathViz, PlanOverlay, PlanningClock, TargetMarker,
-    WaypointMarker, bind_slot, default_bindings, drawable_enemies, ds3_menu,
-    enemy_at, flashlight_cones, hotbar, plan_overlay, planning_clock,
-    position_at,
+    ActionMarker, DEFAULT_HOTBAR, DS3_PAGES, FireLine, FlashlightCone,
+    HotbarSlot, Hologram, MenuModel, MenuRow, PathViz, PlanOverlay,
+    PlanningClock, TargetMarker, WaypointMarker, bind_slot, default_bindings,
+    drawable_enemies, ds3_menu, enemy_at, flashlight_cones, hotbar,
+    plan_overlay, planning_clock, position_at,
 )
 
 __all__ = [
-    "DEFAULT_HOTBAR", "DS3_PAGES", "FlashlightCone", "HotbarSlot", "Hologram",
-    "MenuModel", "MenuRow", "PathViz", "PlanOverlay", "PlanningClock",
-    "TargetMarker", "WaypointMarker", "bind_slot", "default_bindings",
-    "drawable_enemies", "ds3_menu", "enemy_at", "flashlight_cones", "hotbar",
-    "plan_overlay", "planning_clock", "position_at",
+    "ActionMarker", "DEFAULT_HOTBAR", "DS3_PAGES", "FireLine",
+    "FlashlightCone", "HotbarSlot", "Hologram", "MenuModel", "MenuRow",
+    "PathViz", "PlanOverlay", "PlanningClock", "TargetMarker",
+    "WaypointMarker", "bind_slot", "default_bindings", "drawable_enemies",
+    "ds3_menu", "enemy_at", "flashlight_cones", "hotbar", "plan_overlay",
+    "planning_clock", "position_at",
 ]

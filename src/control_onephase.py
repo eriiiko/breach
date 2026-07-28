@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import pyray as rl
 
+from config import CFG
 from control_source import ControlSource
 from debug_keys import DebugKeyState, handle_debug_keys
 from simulation.orders import (
@@ -70,6 +71,15 @@ class OnePhaseWEGOInput(ControlSource):
         #: "team" | "selected" — §20 item 3 says build both and let feel decide.
         self.flashlight_mode = "team"
         self._debug_state = DebugKeyState()
+        # Wheel-set schedule dials, in SECONDS from the start of the current
+        # round (§5 Hold-until-t, §12 "detonate anywhere in the round, 0-4 s").
+        # Erik's design note: a hold only ever needs a number in [0, round], so
+        # the wheel is the whole interface — no timeline scrubber required.
+        # Both may run one round-length PAST the end, which is how "at the top
+        # of the next round" is expressible: the clock is monotonic, so that is
+        # just a larger number.
+        self.hold_seconds = float(CFG.clock.round_duration_seconds)
+        self.det_seconds = float(CFG.clock.round_duration_seconds)
         #: Wall-clock seconds spent in the current planning pause, for the
         #: multiplayer submit timer (§16). Reset on every resume.
         self.planning_elapsed = 0.0
@@ -176,6 +186,16 @@ class OnePhaseWEGOInput(ControlSource):
         if rl.is_key_pressed(K.KEY_X):
             self.armed_action = "mark"
 
+        # ---- the wheel sets the SCHEDULE dial for a time-carrying action ----
+        # Only while such an action is armed, so the wheel keeps meaning zoom
+        # the rest of the time (the shipped binding, and what a player expects
+        # by default).
+        dial = self._armed_dial(sim)
+        if dial is not None:
+            wheel = rl.get_mouse_wheel_move()
+            if wheel:
+                self._nudge_dial(dial, 0.25 if wheel > 0 else -0.25)
+
         # ---- mouse ----
         if rl.is_mouse_button_pressed(rl.MouseButton.MOUSE_BUTTON_LEFT):
             self._left_click(sim, renderer)
@@ -217,6 +237,40 @@ class OnePhaseWEGOInput(ControlSource):
                                        action_name=name), replace=False)
             return
         self.armed_action = name
+
+    # ------------------------------------------------------------------
+    # Wheel-set schedule dials (§5 Hold-until-t, §12 detonation time)
+    # ------------------------------------------------------------------
+    def armed_dial_seconds(self, sim):
+        """The wheel-set moment for the armed action, or ``None`` if it does
+        not carry one. Read by the HUD so the dial is visible while turning."""
+        dial = self._armed_dial(sim)
+        return None if dial is None else float(getattr(self, dial))
+
+    def _armed_dial(self, sim):
+        """Which schedule dial the wheel is currently adjusting, or None."""
+        if not self.armed_action:
+            return None
+        action = sim.actions_table.by_name.get(self.armed_action)
+        if action is None:
+            return None
+        if action.order_type == ORDER_HOLD:
+            return "hold_seconds"
+        if action.order_type in (ORDER_EXPLOSIVE, ORDER_DETONATE):
+            return "det_seconds"
+        return None
+
+    def _nudge_dial(self, dial: str, delta: float) -> None:
+        """Clamp to ``[0, 2 x round]`` — 0 s means "immediately", one round
+        length is the end of THIS round, and beyond that reaches into the next
+        one (which the monotonic clock makes an ordinary number, §12)."""
+        span = 2.0 * float(CFG.clock.round_duration_seconds)
+        setattr(self, dial, max(0.0, min(span, getattr(self, dial) + delta)))
+
+    def _tick_for(self, sim, seconds: float) -> int:
+        """Seconds-into-this-round -> the absolute tick the sim schedules on."""
+        return sim.round_start_tick() + int(
+            round(float(seconds) * CFG.clock.ticks_per_second))
 
     def _live_bindings(self, sim) -> list:
         """Bindings for the selected unit — the belt fills the free tail slots
@@ -286,16 +340,17 @@ class OnePhaseWEGOInput(ControlSource):
                       target_unit_id=target_unit_id)
 
         if action.order_type == ORDER_HOLD:
-            # Hold-until-t: the click picks a place, the timeline picks the
-            # moment. v1 holds to the end of the round, which is the useful
-            # default for "wait here until I say go next round"; a proper
-            # timeline scrubber is where a finer choice belongs (§16).
-            order.start_tick = sim.round_start_tick() + sim.ticks_per_round
+            # Hold UNTIL t (§5), where t is the wheel-set moment inside this
+            # round — Erik's point: the scrubber was never needed for this,
+            # because a hold only ever needs "a number in [0, round]".
+            order.start_tick = self._tick_for(sim, self.hold_seconds)
         elif action.order_type in (ORDER_EXPLOSIVE, ORDER_DETONATE):
-            # §12: a detonation is a MOMENT. Default to the top of the next
-            # round — the cool breach opening the design names: door blows at
-            # 0.0, grenades and fire follow.
-            order.det_tick = sim.round_start_tick() + sim.ticks_per_round
+            # §12: a detonation is a MOMENT, "schedulable anywhere in the
+            # round, 0-4 s". The wheel sets it; the default is the top of the
+            # NEXT round — the breach opening the design names (door blows at
+            # 0.0, grenades and fire follow), which is why the dial runs one
+            # round-length past the end.
+            order.det_tick = self._tick_for(sim, self.det_seconds)
         elif action.order_type == ORDER_GRENADE:
             order.grenade_fuse = 2.0
         elif action.order_type == ORDER_OVERWATCH:

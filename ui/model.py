@@ -200,16 +200,58 @@ class TargetMarker:
 
 
 @dataclass
+class FireLine:
+    """Where an ordered shot will actually go (Erik, 2nd play session:
+    "perhaps we do not encircle the enemies with a highlight, but rather show
+    the line of fire as we ordered it").
+
+    Better than a ring on the target for two reasons: it says WHO is shooting
+    at whom when several marines are ordered at once, and it is drawn from the
+    position the marine will be FIRING from — so a shot ordered after a move
+    visibly comes from the end of the path, which a highlight on the target
+    cannot express at all.
+    """
+    from_x: float
+    from_y: float
+    to_x: float
+    to_y: float
+    at_seconds: float = 0.0
+    action_name: str = ""
+    hovered: bool = False
+
+
+@dataclass
+class ActionMarker:
+    """A symbol where a non-move, non-shoot action happens (Erik: "all skills
+    must also be highlighted somehow — for example, placing a charge on a door
+    should show some symbol, perhaps orange, indicating when it will blow up").
+
+    ``kind`` picks the draw treatment and is deliberately coarse:
+    ``"charge"`` (orange, with the DETONATION countdown — not the planting
+    time, which is not the number anyone standing next to it cares about),
+    ``"throw"``, ``"watch"``, ``"wait"``, ``"generic"``.
+    """
+    x: float
+    y: float
+    action_name: str
+    kind: str = "generic"
+    at_seconds: float = 0.0
+    label: str = ""
+
+
+@dataclass
 class PlanOverlay:
     paths: list = field(default_factory=list)
     waypoints: list = field(default_factory=list)
     holograms: list = field(default_factory=list)
     targets: list = field(default_factory=list)
+    fire_lines: list = field(default_factory=list)
+    action_markers: list = field(default_factory=list)
 
     @property
     def empty(self) -> bool:
         return not (self.paths or self.waypoints or self.holograms
-                    or self.targets)
+                    or self.targets or self.fire_lines or self.action_markers)
 
 
 def position_at(unit, tick: int):
@@ -275,18 +317,33 @@ def plan_overlay(sim, unit, hover_tile=None, armed_action=None) -> PlanOverlay:
     if plan is None:
         return overlay
     tps = float(CFG.clock.ticks_per_second)
-    round_start = sim.round_start_tick()
+    now = int(sim.tick)
 
+    # TIME REMAINING, not "seconds since this round's start" (Erik, 2nd play
+    # session: "it shows the old arrival time, also the old point of origin —
+    # these things need to update each round").
+    #
+    # The design phrases the label as "2.3 = arrives 2.3 s into the round", and
+    # at the moment the player READS it — the planning pause — the two are the
+    # same number, because the pause happens at the round's first tick. They
+    # diverge only for a plan still running mid-round or carried across a seam,
+    # and there the honest reading is a countdown: a step that began last round
+    # would otherwise be labelled with a stale (even negative) offset.
     def secs(tick):
-        return (int(tick) - round_start) / tps
+        return max(0.0, (int(tick) - now) / tps)
 
     move_steps = [s for s in plan.steps
                   if s.order_type in ONEPHASE_MOVE_ORDER_TYPES and s.path
                   and not s.retired]
     for i, step in enumerate(move_steps):
         end = step.path[-1]
+        # ...and only the REMAINING path, so the line starts at the marine
+        # rather than at where it stood when the order was given.
+        walked = max(0, now - step.start_tick)
+        remaining = step.path[walked:] if walked < len(step.path) else []
         overlay.paths.append(PathViz(
-            points=list(step.path), endpoint=(float(end[0]), float(end[1])),
+            points=remaining or [(unit.x, unit.y)],
+            endpoint=(float(end[0]), float(end[1])),
             footprint=int(unit.footprint),
             arrival_seconds=secs(step.end_tick), blocked=step.blocked))
         # Every move but the LAST is an intermediate waypoint of the string —
@@ -304,7 +361,7 @@ def plan_overlay(sim, unit, hover_tile=None, armed_action=None) -> PlanOverlay:
             continue
         # A hologram is only interesting when the action happens somewhere the
         # marine is not standing yet — that is the whole point of showing it.
-        gx, gy = position_at(unit, step.start_tick)
+        gx, gy = position_at(unit, max(step.start_tick, now))
         if (abs(gx - unit.x) < 1e-9) and (abs(gy - unit.y) < 1e-9):
             continue
         overlay.holograms.append(Hologram(
@@ -314,35 +371,80 @@ def plan_overlay(sim, unit, hover_tile=None, armed_action=None) -> PlanOverlay:
     return overlay
 
 
-def _add_target_markers(sim, unit, overlay, hover_tile, armed_action) -> None:
-    """Mark every enemy this marine's plan points at, plus the hover pick.
+#: Which registry rows get which marker treatment.
+_MARKER_KIND = {
+    "plant_charge": "charge", "use_breach_charge": "charge",
+    "detonate": "charge", "use_c4_satchel": "charge",
+    "use_hand_grenade": "throw", "overwatch": "watch", "hold": "wait",
+}
 
-    Ordered targets are collected first and in plan order, so the marker a
-    player is most likely to be reading (the next thing that happens) comes
-    first; the hover marker is only added when it is not already an ordered
-    target, so hovering something you already told the marine to shoot does
-    not stack two rings on it.
+
+def _add_target_markers(sim, unit, overlay, hover_tile, armed_action) -> None:
+    """Every ordered target, fire line and action symbol for this marine.
+
+    Ordered entries come first and in plan order, so the thing a player is
+    most likely to be reading — the next thing that happens — leads. The hover
+    preview is only added when it is not already an ordered target, so
+    hovering something you already told the marine to shoot does not stack two
+    markers on it.
     """
     tps = float(CFG.clock.ticks_per_second)
-    round_start = sim.round_start_tick()
+    now = int(sim.tick)
+
+    def secs(tick):
+        return max(0.0, (int(tick) - now) / tps)
+
     ordered = set()
     plan = getattr(unit, "plan", None)
     if plan is not None:
         for step in plan.steps:
             if step.retired:
                 continue
+            action = step.action
+            # Where the marine will be standing when this happens — so a shot
+            # ordered after a move is drawn from the END of the path.
+            fx, fy = position_at(unit, max(step.start_tick, now))
+            fx += unit.footprint * 0.5
+            fy += unit.footprint * 0.5
+
             tid = getattr(step.order, "target_unit_id", None)
-            if tid is None:
+            target = sim.get_unit(tid) if tid is not None else None
+            if target is not None and target.alive:
+                ordered.add(int(tid))
+                overlay.targets.append(TargetMarker(
+                    unit_id=int(tid), x=float(target.x), y=float(target.y),
+                    footprint=int(target.footprint),
+                    action_name=action.name, at_seconds=secs(step.start_tick)))
+                overlay.fire_lines.append(FireLine(
+                    from_x=fx, from_y=fy,
+                    to_x=float(target.center_tile_x()) + 0.5,
+                    to_y=float(target.center_tile_y()) + 0.5,
+                    at_seconds=secs(step.start_tick),
+                    action_name=action.name))
                 continue
-            target = sim.get_unit(tid)
-            if target is None or not target.alive:
-                continue
-            ordered.add(int(tid))
-            overlay.targets.append(TargetMarker(
-                unit_id=int(tid), x=float(target.x), y=float(target.y),
-                footprint=int(target.footprint),
-                action_name=step.action.name,
-                at_seconds=(step.start_tick - round_start) / tps))
+
+            if action.targeting in ("tile", "direction", "time"):
+                kind = _MARKER_KIND.get(action.name, "generic")
+                # For a charge the number that matters is when it BLOWS, not
+                # when it is planted — that is what you plan the stack around.
+                when = getattr(step.order, "det_tick", None)
+                if kind != "charge" or when is None:
+                    when = (step.order.start_tick
+                            if action.name == "hold"
+                            and step.order.start_tick is not None
+                            else step.start_tick)
+                overlay.action_markers.append(ActionMarker(
+                    x=float(step.order.target_fx),
+                    y=float(step.order.target_fy),
+                    action_name=action.name, kind=kind,
+                    at_seconds=secs(when), label=action.label))
+                if kind == "watch":
+                    overlay.fire_lines.append(FireLine(
+                        from_x=fx, from_y=fy,
+                        to_x=float(step.order.target_fx) + 0.5,
+                        to_y=float(step.order.target_fy) + 0.5,
+                        at_seconds=secs(step.start_tick),
+                        action_name=action.name, hovered=True))
 
     if not armed_action:
         return
@@ -356,6 +458,12 @@ def _add_target_markers(sim, unit, overlay, hover_tile, armed_action) -> None:
         unit_id=int(hovered.id), x=float(hovered.x), y=float(hovered.y),
         footprint=int(hovered.footprint), action_name=action.name,
         hovered=True))
+    overlay.fire_lines.append(FireLine(
+        from_x=float(unit.center_tile_x()) + 0.5,
+        from_y=float(unit.center_tile_y()) + 0.5,
+        to_x=float(hovered.center_tile_x()) + 0.5,
+        to_y=float(hovered.center_tile_y()) + 0.5,
+        action_name=action.name, hovered=True))
 
 
 def _step_target_xy(sim, step):
@@ -557,8 +665,9 @@ def ds3_menu(sim, unit, page_index: int = 0) -> MenuModel:
 
 __all__ = [
     "DEFAULT_HOTBAR", "DS3_PAGES", "FlashlightCone", "HotbarSlot", "Hologram",
-    "MenuModel", "MenuRow", "PathViz", "PlanOverlay", "PlanningClock",
-    "TargetMarker", "WaypointMarker", "bind_slot", "default_bindings",
-    "drawable_enemies", "ds3_menu", "enemy_at", "flashlight_cones", "hotbar",
-    "plan_overlay", "planning_clock", "position_at",
+    "ActionMarker", "FireLine", "MenuModel", "MenuRow", "PathViz",
+    "PlanOverlay", "PlanningClock", "TargetMarker", "WaypointMarker",
+    "bind_slot", "default_bindings", "drawable_enemies", "ds3_menu",
+    "enemy_at", "flashlight_cones", "hotbar", "plan_overlay",
+    "planning_clock", "position_at",
 ]

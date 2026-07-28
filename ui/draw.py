@@ -62,7 +62,12 @@ def draw_plan_overlay(overlay, world_px_per_tile: float) -> None:
         _time_label((wp.x, wp.y), wp.footprint, wpt,
                     f"{wp.arrival_seconds:.1f}", TEAL_DIM)
 
-    # Targets last, so a marked enemy reads on top of any path crossing it.
+    for marker in overlay.action_markers:
+        _action_marker(marker, wpt)
+
+    # Fire lines and target ticks last, so they read on top of any path.
+    for line in overlay.fire_lines:
+        _fire_line(line, wpt)
     for tgt in overlay.targets:
         _target_marker(tgt, wpt)
 
@@ -81,33 +86,118 @@ def draw_plan_overlay(overlay, world_px_per_tile: float) -> None:
                 max(1.0, 0.06 * wpt), TEAL_GHOST)
 
 
-def _target_marker(tgt, wpt) -> None:
-    """Teal bracket + tint on an ordered (or hovered) enemy's footprint.
+def _fire_line(line, wpt) -> None:
+    """THE line of fire — where this marine's ordered shot will actually go.
 
-    A HOVERED target — what you would pick if you clicked now — is drawn
-    dimmer and without a timestamp, so "considering" and "committed" never
-    look the same. Corner brackets rather than a full box: a solid outline on
-    a body reads as a selection box, while brackets read as a reticle, and
-    they leave the sprite visible underneath.
+    Carries the information a ring on the target cannot: who is shooting at
+    whom, and from where. A hovered/aim line (what you would order if you
+    clicked now, or an overwatch facing) is dashed and dim; a committed one is
+    solid, with a muzzle dot at the firing end so the direction reads.
+    """
+    x1 = tile_to_world_px(line.from_x, wpt)
+    y1 = tile_to_world_px(line.from_y, wpt)
+    x2 = tile_to_world_px(line.to_x, wpt)
+    y2 = tile_to_world_px(line.to_y, wpt)
+    th = max(1.0, (0.07 if line.hovered else 0.11) * wpt)
+    colour = TEAL_GHOST if line.hovered else TEAL
+    if line.hovered:
+        _dashed(x1, y1, x2, y2, th, colour, dash=0.6 * wpt)
+    else:
+        rl.draw_line_ex(rl.Vector2(x1, y1), rl.Vector2(x2, y2), th, colour)
+        rl.draw_circle(int(x1), int(y1), max(2.0, 0.16 * wpt), colour)
+
+
+def _dashed(x1, y1, x2, y2, th, colour, dash) -> None:
+    dx, dy = x2 - x1, y2 - y1
+    length = math.sqrt(dx * dx + dy * dy)
+    if length <= 0:
+        return
+    ux, uy = dx / length, dy / length
+    t = 0.0
+    while t < length:
+        e = min(t + dash, length)
+        rl.draw_line_ex(rl.Vector2(x1 + ux * t, y1 + uy * t),
+                        rl.Vector2(x1 + ux * e, y1 + uy * e), th, colour)
+        t = e + dash
+
+
+def _target_marker(tgt, wpt) -> None:
+    """A light tint + tick on an ordered enemy's footprint.
+
+    Deliberately SUBTLE: the fire line is what says "this one", so a heavy
+    reticle here would just be a second voice saying the same thing over the
+    sprite. A hovered target gets the tint only.
     """
     colour = TEAL_DIM if tgt.hovered else TEAL
     x = tile_to_world_px(tgt.x, wpt)
     y = tile_to_world_px(tgt.y, wpt)
     side = tgt.footprint * wpt
     rl.draw_rectangle(int(x), int(y), int(side), int(side),
-                      rl.Color(64, 224, 208, 26 if tgt.hovered else 46))
-    arm = max(2.0, side * 0.3)
-    th = max(1.0, 0.12 * wpt)
-    for (cx, cy, ax, ay) in ((x, y, 1, 1), (x + side, y, -1, 1),
-                             (x, y + side, 1, -1), (x + side, y + side, -1, -1)):
-        rl.draw_line_ex(rl.Vector2(cx, cy), rl.Vector2(cx + arm * ax, cy),
-                        th, colour)
-        rl.draw_line_ex(rl.Vector2(cx, cy), rl.Vector2(cx, cy + arm * ay),
-                        th, colour)
+                      rl.Color(64, 224, 208, 24 if tgt.hovered else 44))
     if not tgt.hovered:
+        rl.draw_rectangle_lines_ex(rl.Rectangle(x, y, side, side),
+                                   max(1.0, 0.06 * wpt), colour)
         size = max(9, int(0.6 * wpt))
         rl.draw_text(f"{tgt.action_name} {tgt.at_seconds:.1f}",
                      int(x), int(y + side + 2), size, colour)
+
+
+# Skills/items get their own colour so they never read as movement.
+ORANGE = rl.Color(255, 150, 40, 255)
+ORANGE_FILL = rl.Color(255, 150, 40, 60)
+
+
+def _action_marker(m, wpt) -> None:
+    """A symbol where a skill/item action happens (Erik: a charge on a door
+    should show a symbol, orange, indicating when it will blow up).
+
+    Charges are ORANGE and labelled with their DETONATION countdown — the
+    number you plan the stack around, not the moment the marine finishes
+    planting. Everything else uses the same shape language in teal so the
+    orange stays reserved for "this is going to explode".
+    """
+    charge = m.kind == "charge"
+    colour = ORANGE if charge else TEAL_DIM
+    fill = ORANGE_FILL if charge else rl.Color(64, 224, 208, 40)
+    cx = tile_to_world_px(m.x + 0.5, wpt)
+    cy = tile_to_world_px(m.y + 0.5, wpt)
+    r = max(3.0, 0.5 * wpt)
+
+    if charge:
+        # A diamond — distinct from every round/square marker on screen.
+        pts = [rl.Vector2(cx, cy - r), rl.Vector2(cx + r, cy),
+               rl.Vector2(cx, cy + r), rl.Vector2(cx - r, cy)]
+        rl.draw_triangle(pts[0], pts[3], pts[1], fill)
+        rl.draw_triangle(pts[1], pts[3], pts[2], fill)
+        for a, b in zip(pts, pts[1:] + pts[:1]):
+            rl.draw_line_ex(a, b, max(1.0, 0.1 * wpt), colour)
+    else:
+        rl.draw_circle(int(cx), int(cy), r, fill)
+        rl.draw_circle_lines(int(cx), int(cy), r, colour)
+
+    size = max(9, int(0.62 * wpt))
+    text = (f"{m.at_seconds:.1f}s" if charge
+            else f"{m.label} {m.at_seconds:.1f}")
+    rl.draw_text(text, int(cx - r), int(cy + r + 2), size, colour)
+
+
+def draw_selected_marker(unit, world_px_per_tile: float) -> None:
+    """Which marine is selected (Erik: it needs to be indicated graphically).
+
+    An arc under the feet rather than a box around the body: it never hides
+    the sprite, it survives the 3D-model toggle, and it does not compete with
+    the target tint, which uses a full-footprint fill.
+    """
+    if unit is None:
+        return
+    wpt = float(world_px_per_tile)
+    cx = tile_to_world_px(unit.x + unit.footprint * 0.5, wpt)
+    cy = tile_to_world_px(unit.y + unit.footprint * 0.5, wpt)
+    r = unit.footprint * wpt * 0.62
+    rl.draw_ring(rl.Vector2(cx, cy), r * 0.86, r, 0.0, 360.0, 40,
+                 rl.Color(64, 224, 208, 90))
+    rl.draw_ring(rl.Vector2(cx, cy), r * 0.86, r, -40.0, 40.0, 16, TEAL)
+    rl.draw_ring(rl.Vector2(cx, cy), r * 0.86, r, 140.0, 220.0, 16, TEAL)
 
 
 def _footprint_box(pos, footprint, wpt, colour) -> None:
@@ -259,6 +349,28 @@ def _fit(text: str, n: int) -> str:
     return text if len(text) <= n else text[:n - 1] + "."
 
 
+def draw_armed_readout(action_label: str, seconds, screen_w: int,
+                       screen_h: int) -> None:
+    """What is armed, and — for a time-carrying action — the wheel-set moment.
+
+    Without this the wheel dial is invisible: you would be scrolling a number
+    you cannot see. Sits just above the hotbar, where the eye already is.
+    """
+    if not action_label:
+        return
+    text = action_label if seconds is None else \
+        f"{action_label}  @ {seconds:.2f}s   [wheel to adjust]"
+    size = 16
+    w = rl.measure_text(text, size) + 20
+    x = (screen_w - w) // 2
+    y = screen_h - 100
+    rl.draw_rectangle(x, y, w, 26, HUD_BG)
+    rl.draw_rectangle_lines(x, y, w, 26, ORANGE if seconds is not None
+                            else HUD_EDGE)
+    rl.draw_text(text, x + 10, y + 5, size,
+                 ORANGE if seconds is not None else HUD_TEXT)
+
+
 def draw_planning_clock(clock, screen_w: int) -> None:
     """The submit-within-N timer (§16). Disabled (single-player) draws
     nothing at all — an always-visible 'untimed' badge would be noise."""
@@ -315,7 +427,7 @@ def draw_ds3_menu(model, screen_w: int, screen_h: int) -> None:
 
 
 __all__ = [
-    "draw_ds3_menu", "draw_flashlight_cones", "draw_hotbar", "draw_marks",
-    "draw_overwatch_cone", "draw_plan_overlay", "draw_planning_clock",
-    "draw_round_banner",
+    "draw_cover", "draw_ds3_menu", "draw_flashlight_cones", "draw_hotbar",
+    "draw_marks", "draw_overwatch_cone", "draw_plan_overlay",
+    "draw_planning_clock", "draw_round_banner", "draw_selected_marker",
 ]

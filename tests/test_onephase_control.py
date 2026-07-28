@@ -55,6 +55,7 @@ class FakeRl:
         self.pressed = set()
         self.down = set()
         self.mouse_pressed = set()
+        self.wheel = 0.0
 
     def is_key_pressed(self, key):
         return key in self.pressed
@@ -68,10 +69,14 @@ class FakeRl:
     def get_frame_time(self):
         return 1.0 / 60.0
 
+    def get_mouse_wheel_move(self):
+        return self.wheel
+
     def clear(self):
         self.pressed.clear()
         self.down.clear()
         self.mouse_pressed.clear()
+        self.wheel = 0.0
 
 
 class FakeRenderer:
@@ -117,7 +122,9 @@ def _zombie(sim, x=20.0, y=8.0, name="z"):
 
 
 def _frame(inp, sim, fake, renderer=None, keys=(), down=(), mouse=None):
+    wheel = fake.wheel
     fake.clear()
+    fake.wheel = wheel
     fake.pressed.update(keys)
     fake.down.update(down)
     if mouse:
@@ -423,3 +430,89 @@ def test_the_control_source_never_mutates_units_directly():
         assert forbidden not in src, (
             f"control_onephase writes {forbidden!r} directly; orders must go "
             f"through the Simulation facade (design §16)")
+
+
+# ---------------------------------------------------------------------------
+# Wheel-set schedule dials (Erik, 2nd session: a hold only ever needs a number
+# in [0, round] — the wheel is the whole interface, no scrubber required)
+# ---------------------------------------------------------------------------
+def test_the_wheel_adjusts_the_hold_moment(fake_rl):
+    from config import CFG
+    inp = OnePhaseWEGOInput()
+    sim = _sim()
+    u = _marine(sim)
+    inp.selected_unit_id = u.id
+    inp.armed_action = "hold"
+    start = inp.hold_seconds
+    fake_rl.wheel = 1.0
+    _frame(inp, sim, fake_rl)
+    assert inp.hold_seconds > start
+    fake_rl.wheel = -1.0
+    _frame(inp, sim, fake_rl)
+    _frame(inp, sim, fake_rl)
+    assert inp.hold_seconds < start
+
+
+def test_the_hold_dial_clamps_to_the_round_window(fake_rl):
+    from config import CFG
+    inp = OnePhaseWEGOInput()
+    sim = _sim()
+    inp.armed_action = "hold"
+    for _ in range(200):
+        fake_rl.wheel = -1.0
+        _frame(inp, sim, fake_rl)
+    assert inp.hold_seconds == 0.0
+    for _ in range(400):
+        fake_rl.wheel = 1.0
+        _frame(inp, sim, fake_rl)
+    assert inp.hold_seconds == 2.0 * CFG.clock.round_duration_seconds
+
+
+def test_a_hold_order_carries_the_dialled_tick(fake_rl):
+    from config import CFG
+    inp = OnePhaseWEGOInput()
+    sim = _sim()
+    u = _marine(sim, 8.0, 8.0)
+    inp.selected_unit_id = u.id
+    inp.armed_action = "hold"
+    inp.hold_seconds = 2.5
+    _frame(inp, sim, fake_rl, FakeRenderer((12, 8)), mouse="LMB")
+    hold = next(o for o in u.orders if o.order_type == O.ORDER_HOLD)
+    assert hold.start_tick == sim.round_start_tick() + round(
+        2.5 * CFG.clock.ticks_per_second)
+
+
+def test_the_wheel_sets_the_detonation_moment(fake_rl):
+    from config import CFG
+    inp = OnePhaseWEGOInput()
+    sim = _sim()
+    u = _marine(sim, 8.0, 8.0)
+    u.has_explosive = 1
+    inp.selected_unit_id = u.id
+    inp.armed_action = "plant_charge"
+    inp.det_seconds = 1.75
+    _frame(inp, sim, fake_rl, FakeRenderer((14, 8)), mouse="LMB")
+    charge = next(o for o in u.orders if o.order_type == O.ORDER_EXPLOSIVE)
+    assert charge.det_tick == sim.round_start_tick() + round(
+        1.75 * CFG.clock.ticks_per_second)
+
+
+def test_the_wheel_is_still_zoom_when_no_timed_action_is_armed(fake_rl):
+    """The dial only steals the wheel while a time-carrying action is armed;
+    otherwise the wheel keeps its shipped meaning."""
+    inp = OnePhaseWEGOInput()
+    sim = _sim()
+    inp.armed_action = "shoot"
+    before = (inp.hold_seconds, inp.det_seconds)
+    fake_rl.wheel = 3.0
+    _frame(inp, sim, fake_rl)
+    assert (inp.hold_seconds, inp.det_seconds) == before
+    assert inp.armed_dial_seconds(sim) is None
+
+
+def test_the_hud_can_read_the_dial(fake_rl):
+    inp = OnePhaseWEGOInput()
+    sim = _sim()
+    inp.armed_action = "hold"
+    inp.hold_seconds = 3.0
+    assert inp.armed_dial_seconds(sim) == 3.0
