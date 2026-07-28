@@ -139,6 +139,50 @@ def test_a_cover_free_level_builds_an_empty_list():
 
 
 # ---------------------------------------------------------------------------
+# Cover rows must BE their runtime objects in sim.entities
+# ---------------------------------------------------------------------------
+# ★ The crash Erik hit on the first play: sim.cover was built as a PARALLEL
+# list while the bare EntityInstance stayed in sim.entities — and the entity
+# list is what the serializer walks, asking each row's class for
+# runtime_digest_rows. A parsed instance has no `alive`/`hp_now`, so the
+# recorder raised on the first tick of a cover level. Every cover test here ran
+# enable_recorder=False, which is exactly why nothing caught it.
+def test_cover_rows_are_runtime_objects_in_the_entity_list():
+    sim = _sim([_Inst(0, "crate", x=10, y=10)])
+    row = next(e for e in sim.entities if e.class_name == "cover")
+    assert row is sim.cover[0], "sim.entities holds a different object"
+    assert hasattr(row, "alive") and hasattr(row, "hp_now")
+
+
+def test_a_cover_level_serializes():
+    """The direct regression: the call the recorder makes every tick."""
+    from simulation.entities.serialize import serialize_entity_state
+    sim = _sim([_Inst(0, "crate", x=10, y=10)])
+    assert serialize_entity_state(sim.entities)
+
+
+def test_a_cover_level_ticks_with_the_recorder_on():
+    """The end-to-end shape of Erik's crash — a real recorder, a real tick."""
+    lvl = _level(entities=[_Inst(0, "crate", x=10, y=10)])
+    sim = Simulation(lvl, seed=5, breach_physics=None, enable_recorder=True,
+                     ruleset=OnePhaseWEGO())
+    sim.set_paused(False)
+    _marine(sim, 4.0, 20.0)
+    _run(sim, 5)
+    assert sim.tick == 5
+
+
+def test_destroying_cover_moves_its_digest_rows():
+    sim = _sim([_Inst(0, "crate", x=10, y=10, hp=5)])
+    crate = sim.cover[0]
+    before = REGISTRY["cover"].runtime_digest_rows(crate)
+    crate.chew(5)
+    after = REGISTRY["cover"].runtime_digest_rows(crate)
+    assert dict(before)["alive"] == 1 and dict(after)["alive"] == 0
+    assert dict(after)["hp_now"] == 0
+
+
+# ---------------------------------------------------------------------------
 # Cover eats rounds (§7)
 # ---------------------------------------------------------------------------
 def test_a_crate_between_shooter_and_target_stops_the_rounds():

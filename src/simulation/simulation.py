@@ -87,7 +87,7 @@ from simulation.exchange import (  # noqa: F401 (apply_blast_damage: legacy re-e
 from simulation.events import (  # noqa: F401 (ExplosionEvent: legacy re-export — emitted by the executor now)
     DoorDestroyedEvent, ExplosionEvent, WallDestroyedEvent,
 )
-from simulation.cover_system import build_cover
+from simulation.cover_system import attach_cover
 from simulation.door_system import build_runtime_entities, sweep_doors
 from simulation.entities.door import DOOR_OPEN
 from simulation.entities.serialize import entity_carrier
@@ -273,6 +273,10 @@ class Simulation:
         # `level.entities` and the 9e sweep is a single attribute check.
         self.entities, self._doors = build_runtime_entities(
             self.level, self.gmap)
+        # Cover rows become their runtime objects IN self.entities, the same
+        # way door rows do — the entity list is what the serializer walks, and
+        # it asks each row for its runtime digest fields (onephase_wego §7).
+        self.entities, self.cover = attach_cover(self.entities, self.level)
 
         # Arc B (impl doc §2): the SignalBus + the resolved wire drive tables.
         # Built ONLY when the level declares wires (D1) — in B1 the union
@@ -356,11 +360,9 @@ class Simulation:
         # (and never touched) under every other ruleset.
         self.marks: dict = {}
 
-        # Cover entities (onephase_wego design §7) — continuous-space
-        # destructible rectangles the bullet march stops on, built from the
-        # level's [[entity]] cover rows in ordinal order. A cover-free level
-        # yields an empty list, which every consumer iterates for free.
-        self.cover = build_cover(self.level)
+        # (self.cover — the continuous-space destructible rectangles the
+        # bullet march stops on, §7 — was built with the entity list above,
+        # because each one IS an entry in it.)
 
         # Per-tick vision cache (design §8) — invalidated by tick number, so
         # every consumer in a tick sees ONE consistent answer.

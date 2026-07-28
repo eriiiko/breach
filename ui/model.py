@@ -179,14 +179,37 @@ class Hologram:
 
 
 @dataclass
+class TargetMarker:
+    """A teal marker on an ENEMY's footprint (Erik, first play session).
+
+    The design's §16 covers where a marine will BE and when; it never says
+    what an order is aimed AT, so an ordered shot was invisible until the
+    round ran. This closes that: every enemy the selected marine's plan
+    points at gets its footprint marked, labelled with the action and the
+    moment it happens, and the enemy under the cursor is marked too while a
+    unit-targeting action is armed — so you can see what you are about to
+    pick before you commit to it.
+    """
+    unit_id: int
+    x: float
+    y: float
+    footprint: int = 3
+    action_name: str = ""
+    at_seconds: float = 0.0
+    hovered: bool = False       # under the cursor right now, not yet ordered
+
+
+@dataclass
 class PlanOverlay:
     paths: list = field(default_factory=list)
     waypoints: list = field(default_factory=list)
     holograms: list = field(default_factory=list)
+    targets: list = field(default_factory=list)
 
     @property
     def empty(self) -> bool:
-        return not (self.paths or self.waypoints or self.holograms)
+        return not (self.paths or self.waypoints or self.holograms
+                    or self.targets)
 
 
 def position_at(unit, tick: int):
@@ -226,7 +249,20 @@ def position_at(unit, tick: int):
     return (float(pos[0]), float(pos[1]))
 
 
-def plan_overlay(sim, unit) -> PlanOverlay:
+def enemy_at(sim, tile, team: int = 0):
+    """The living enemy whose footprint covers ``tile``, or ``None``."""
+    if tile is None:
+        return None
+    fx, fy = int(tile[0]), int(tile[1])
+    for u in sim.units:
+        if (u.alive and u.team != team
+                and u.tile_x <= fx < u.tile_x + u.footprint
+                and u.tile_y <= fy < u.tile_y + u.footprint):
+            return u
+    return None
+
+
+def plan_overlay(sim, unit, hover_tile=None, armed_action=None) -> PlanOverlay:
     """The whole planning visualization for one unit (§16).
 
     Arrival times are read straight off the compiled schedule — they ARE the
@@ -234,6 +270,7 @@ def plan_overlay(sim, unit) -> PlanOverlay:
     numbers on screen trustworthy.
     """
     overlay = PlanOverlay()
+    _add_target_markers(sim, unit, overlay, hover_tile, armed_action)
     plan = getattr(unit, "plan", None)
     if plan is None:
         return overlay
@@ -275,6 +312,50 @@ def plan_overlay(sim, unit) -> PlanOverlay:
             at_seconds=secs(step.start_tick), action_name=step.action.name,
             target=_step_target_xy(sim, step)))
     return overlay
+
+
+def _add_target_markers(sim, unit, overlay, hover_tile, armed_action) -> None:
+    """Mark every enemy this marine's plan points at, plus the hover pick.
+
+    Ordered targets are collected first and in plan order, so the marker a
+    player is most likely to be reading (the next thing that happens) comes
+    first; the hover marker is only added when it is not already an ordered
+    target, so hovering something you already told the marine to shoot does
+    not stack two rings on it.
+    """
+    tps = float(CFG.clock.ticks_per_second)
+    round_start = sim.round_start_tick()
+    ordered = set()
+    plan = getattr(unit, "plan", None)
+    if plan is not None:
+        for step in plan.steps:
+            if step.retired:
+                continue
+            tid = getattr(step.order, "target_unit_id", None)
+            if tid is None:
+                continue
+            target = sim.get_unit(tid)
+            if target is None or not target.alive:
+                continue
+            ordered.add(int(tid))
+            overlay.targets.append(TargetMarker(
+                unit_id=int(tid), x=float(target.x), y=float(target.y),
+                footprint=int(target.footprint),
+                action_name=step.action.name,
+                at_seconds=(step.start_tick - round_start) / tps))
+
+    if not armed_action:
+        return
+    action = sim.actions_table.by_name.get(armed_action)
+    if action is None or action.targeting != "unit":
+        return
+    hovered = enemy_at(sim, hover_tile, team=unit.team)
+    if hovered is None or int(hovered.id) in ordered:
+        return
+    overlay.targets.append(TargetMarker(
+        unit_id=int(hovered.id), x=float(hovered.x), y=float(hovered.y),
+        footprint=int(hovered.footprint), action_name=action.name,
+        hovered=True))
 
 
 def _step_target_xy(sim, step):
@@ -477,7 +558,7 @@ def ds3_menu(sim, unit, page_index: int = 0) -> MenuModel:
 __all__ = [
     "DEFAULT_HOTBAR", "DS3_PAGES", "FlashlightCone", "HotbarSlot", "Hologram",
     "MenuModel", "MenuRow", "PathViz", "PlanOverlay", "PlanningClock",
-    "WaypointMarker", "bind_slot", "default_bindings", "drawable_enemies",
-    "ds3_menu", "flashlight_cones", "hotbar", "plan_overlay", "planning_clock",
-    "position_at",
+    "TargetMarker", "WaypointMarker", "bind_slot", "default_bindings",
+    "drawable_enemies", "ds3_menu", "enemy_at", "flashlight_cones", "hotbar",
+    "plan_overlay", "planning_clock", "position_at",
 ]

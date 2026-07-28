@@ -172,6 +172,36 @@ def build_cover(level_data) -> list:
     return out
 
 
+def attach_cover(entities, level_data):
+    """Patch ``entities`` so every cover row IS its runtime object.
+
+    Returns ``(entities, cover_list)``. Exactly the
+    :func:`~simulation.door_system.build_runtime_entities` contract, and for
+    exactly the same reason: the sim's entity list is what the SERIALIZER
+    walks, and it asks each row's class for ``runtime_digest_rows``. A bare
+    ``EntityInstance`` has no ``alive`` / ``hp_now``, so leaving the parsed
+    instance in the list means the recorder (and the digest, and any save)
+    raises the moment a cover level ticks.
+
+    Positional patch, so ordinals and list order are untouched — the doors
+    sublist, ``_entity_by_ordinal`` and the presence digest all keep working
+    unchanged.
+    """
+    runtimes = {id(inst): rt for inst, rt in zip(cover_instances(level_data),
+                                                 build_cover(level_data))}
+    out = []
+    cover = []
+    for e in entities:
+        rt = runtimes.get(id(e))
+        if rt is not None:
+            out.append(rt)
+            cover.append(rt)
+        else:
+            out.append(e)
+    cover.sort(key=lambda c: int(c.ordinal))
+    return out, cover
+
+
 def cover_at(cover_list, x: float, y: float):
     """The first live cover rectangle containing the point, or ``None``.
 

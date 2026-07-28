@@ -262,7 +262,7 @@ def _upscale_level(level, factor: int):
     return level
 
 
-def _onephase_world_overlay(sim, control_source):
+def _onephase_world_overlay(sim, control_source, hover_tile=None):
     """The OnePhaseWEGO world-space overlay, as a callback for
     ``compose_world`` (onephase_wego design §16).
 
@@ -288,8 +288,10 @@ def _onephase_world_overlay(sim, control_source):
             ui_draw.draw_overwatch_cone(u, world_px_per_tile)
         ui_draw.draw_marks(sim, 0, world_px_per_tile)
         if selected is not None:
-            ui_draw.draw_plan_overlay(ui.plan_overlay(sim, selected),
-                                      world_px_per_tile)
+            ui_draw.draw_plan_overlay(
+                ui.plan_overlay(sim, selected, hover_tile=hover_tile,
+                                armed_action=control_source.armed_action),
+                world_px_per_tile)
     return _draw
 
 
@@ -601,8 +603,9 @@ def main():
                 orders_phase2=None if onephase else sim.orders_for_phase(1),
                 current_phase=control_source.planning_phase,
                 doors=sim._doors,   # A6 dev door draw (render-read only)
-                overlay_fn=(_onephase_world_overlay(sim, control_source)
-                            if onephase else None),
+                overlay_fn=(_onephase_world_overlay(
+                    sim, control_source, renderer.mouse_to_tile())
+                    if onephase else None),
             )
             renderer.draw_background_to_screen()
             renderer.blit_world_to_screen()

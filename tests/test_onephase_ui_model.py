@@ -269,6 +269,93 @@ def test_an_empty_plan_yields_an_empty_overlay():
 
 
 # ---------------------------------------------------------------------------
+# Enemy target markers (Erik, after the first play session)
+# ---------------------------------------------------------------------------
+def test_an_ordered_enemy_gets_a_teal_marker():
+    """Before this, an ordered shot was invisible until the round ran — §16
+    covers where a marine will BE, never what it is aimed AT."""
+    sim = _sim()
+    u = _marine(sim, 6.0, 6.0)
+    z = _zombie(sim, 20.0, 6.0)
+    sim.apply_action(u.id, O.Order(O.ORDER_SHOOT, z.tile_x, z.tile_y, 0,
+                                   target_unit_id=z.id))
+    overlay = ui.plan_overlay(sim, u)
+    assert len(overlay.targets) == 1
+    marker = overlay.targets[0]
+    assert marker.unit_id == z.id
+    assert (marker.x, marker.y) == (z.x, z.y)
+    assert marker.footprint == z.footprint
+    assert marker.action_name == "shoot"
+    assert marker.hovered is False
+
+
+def test_several_ordered_targets_are_all_marked_in_plan_order():
+    sim = _sim()
+    u = _marine(sim, 6.0, 6.0)
+    a = _zombie(sim, 20.0, 6.0, name="a")
+    b = _zombie(sim, 24.0, 6.0, name="b")
+    sim.apply_action(u.id, O.Order(O.ORDER_MARK, a.tile_x, a.tile_y, 0,
+                                   target_unit_id=a.id))
+    sim.apply_action(u.id, O.Order(O.ORDER_SHOOT, b.tile_x, b.tile_y, 0,
+                                   target_unit_id=b.id))
+    ids = [t.unit_id for t in ui.plan_overlay(sim, u).targets]
+    assert ids == [a.id, b.id]
+
+
+def test_hovering_an_enemy_with_a_unit_action_armed_previews_the_pick():
+    sim = _sim()
+    u = _marine(sim, 6.0, 6.0)
+    z = _zombie(sim, 20.0, 6.0)
+    overlay = ui.plan_overlay(sim, u, hover_tile=(21, 7),
+                              armed_action="shoot")
+    assert len(overlay.targets) == 1
+    assert overlay.targets[0].hovered is True, \
+        "a considered target must look different from a committed one"
+
+
+def test_no_hover_marker_without_a_unit_targeting_action_armed():
+    sim = _sim()
+    u = _marine(sim, 6.0, 6.0)
+    _zombie(sim, 20.0, 6.0)
+    assert ui.plan_overlay(sim, u, hover_tile=(21, 7)).targets == []
+    assert ui.plan_overlay(sim, u, hover_tile=(21, 7),
+                           armed_action="move").targets == []
+
+
+def test_hovering_an_already_ordered_target_does_not_stack_markers():
+    sim = _sim()
+    u = _marine(sim, 6.0, 6.0)
+    z = _zombie(sim, 20.0, 6.0)
+    sim.apply_action(u.id, O.Order(O.ORDER_SHOOT, z.tile_x, z.tile_y, 0,
+                                   target_unit_id=z.id))
+    overlay = ui.plan_overlay(sim, u, hover_tile=(21, 7),
+                              armed_action="shoot")
+    assert len(overlay.targets) == 1
+    assert overlay.targets[0].hovered is False
+
+
+def test_a_dead_target_stops_being_marked():
+    sim = _sim()
+    u = _marine(sim, 6.0, 6.0)
+    z = _zombie(sim, 20.0, 6.0)
+    sim.apply_action(u.id, O.Order(O.ORDER_SHOOT, z.tile_x, z.tile_y, 0,
+                                   target_unit_id=z.id))
+    assert ui.plan_overlay(sim, u).targets
+    z.alive = False
+    assert ui.plan_overlay(sim, u).targets == []
+
+
+def test_enemy_at_finds_the_footprint_not_just_the_anchor():
+    sim = _sim()
+    _marine(sim, 6.0, 6.0)
+    z = _zombie(sim, 20.0, 6.0)
+    assert ui.enemy_at(sim, (20, 6)) is z
+    assert ui.enemy_at(sim, (22, 8)) is z       # far corner of the 3x3
+    assert ui.enemy_at(sim, (23, 9)) is None
+    assert ui.enemy_at(sim, None) is None
+
+
+# ---------------------------------------------------------------------------
 # The scrub-preview primitive (§16)
 # ---------------------------------------------------------------------------
 def test_position_at_is_an_exact_dry_run_of_the_plan():

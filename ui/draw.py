@@ -62,6 +62,10 @@ def draw_plan_overlay(overlay, world_px_per_tile: float) -> None:
         _time_label((wp.x, wp.y), wp.footprint, wpt,
                     f"{wp.arrival_seconds:.1f}", TEAL_DIM)
 
+    # Targets last, so a marked enemy reads on top of any path crossing it.
+    for tgt in overlay.targets:
+        _target_marker(tgt, wpt)
+
     for holo in overlay.holograms:
         _footprint_fill((holo.x, holo.y), holo.footprint, wpt, TEAL_GHOST)
         _footprint_box((holo.x, holo.y), holo.footprint, wpt, TEAL_DIM)
@@ -75,6 +79,35 @@ def draw_plan_overlay(overlay, world_px_per_tile: float) -> None:
                 rl.Vector2(tile_to_world_px(holo.target[0] + 0.5, wpt),
                            tile_to_world_px(holo.target[1] + 0.5, wpt)),
                 max(1.0, 0.06 * wpt), TEAL_GHOST)
+
+
+def _target_marker(tgt, wpt) -> None:
+    """Teal bracket + tint on an ordered (or hovered) enemy's footprint.
+
+    A HOVERED target — what you would pick if you clicked now — is drawn
+    dimmer and without a timestamp, so "considering" and "committed" never
+    look the same. Corner brackets rather than a full box: a solid outline on
+    a body reads as a selection box, while brackets read as a reticle, and
+    they leave the sprite visible underneath.
+    """
+    colour = TEAL_DIM if tgt.hovered else TEAL
+    x = tile_to_world_px(tgt.x, wpt)
+    y = tile_to_world_px(tgt.y, wpt)
+    side = tgt.footprint * wpt
+    rl.draw_rectangle(int(x), int(y), int(side), int(side),
+                      rl.Color(64, 224, 208, 26 if tgt.hovered else 46))
+    arm = max(2.0, side * 0.3)
+    th = max(1.0, 0.12 * wpt)
+    for (cx, cy, ax, ay) in ((x, y, 1, 1), (x + side, y, -1, 1),
+                             (x, y + side, 1, -1), (x + side, y + side, -1, -1)):
+        rl.draw_line_ex(rl.Vector2(cx, cy), rl.Vector2(cx + arm * ax, cy),
+                        th, colour)
+        rl.draw_line_ex(rl.Vector2(cx, cy), rl.Vector2(cx, cy + arm * ay),
+                        th, colour)
+    if not tgt.hovered:
+        size = max(9, int(0.6 * wpt))
+        rl.draw_text(f"{tgt.action_name} {tgt.at_seconds:.1f}",
+                     int(x), int(y + side + 2), size, colour)
 
 
 def _footprint_box(pos, footprint, wpt, colour) -> None:
