@@ -39,12 +39,32 @@ MARK_COLOR = rl.Color(255, 190, 60, 255)
 # ---------------------------------------------------------------------------
 # World-space overlays
 # ---------------------------------------------------------------------------
-def draw_plan_overlay(overlay, world_px_per_tile: float) -> None:
+def _dim(colour, factor: float = 0.42):
+    """A muted copy of a colour — the whole treatment for an UNSELECTED
+    marine's orders (Erik: "i'd like everything to stay on screen … perhaps as
+    a darker color, to show that it's not the current selected unit").
+
+    Alpha is scaled harder than the channels: a squad's worth of plans should
+    recede into the floor rather than compete, while the SHAPE of each stays
+    readable so you can see the whole assault at once.
+    """
+    return rl.Color(int(colour.r * 0.75), int(colour.g * 0.75),
+                    int(colour.b * 0.75), max(28, int(colour.a * factor)))
+
+
+def draw_plan_overlay(overlay, world_px_per_tile: float,
+                      dimmed: bool = False) -> None:
     """Teal path line, endpoint footprint + arrival label, waypoint markers,
-    and shoot holograms (§16)."""
+    shoot holograms, fire lines and skill markers (§16).
+
+    ``dimmed`` draws the whole overlay muted, for a marine that is not the
+    current selection — so the squad's plans all stay visible without the
+    selected one losing its voice.
+    """
     wpt = float(world_px_per_tile)
+    tone = _dim if dimmed else (lambda c, *a: c)
     for path in overlay.paths:
-        colour = BLOCKED if path.blocked else TEAL
+        colour = tone(BLOCKED if path.blocked else TEAL)
         pts = path.points
         for a, b in zip(pts, pts[1:]):
             rl.draw_line_ex(
@@ -58,24 +78,25 @@ def draw_plan_overlay(overlay, world_px_per_tile: float) -> None:
                     f"{path.arrival_seconds:.1f}", colour)
 
     for wp in overlay.waypoints:
-        _footprint_box((wp.x, wp.y), wp.footprint, wpt, TEAL_DIM)
+        _footprint_box((wp.x, wp.y), wp.footprint, wpt, tone(TEAL_DIM))
         _time_label((wp.x, wp.y), wp.footprint, wpt,
-                    f"{wp.arrival_seconds:.1f}", TEAL_DIM)
+                    f"{wp.arrival_seconds:.1f}", tone(TEAL_DIM))
 
     for marker in overlay.action_markers:
-        _action_marker(marker, wpt)
+        _action_marker(marker, wpt, tone)
 
     # Fire lines and target ticks last, so they read on top of any path.
     for line in overlay.fire_lines:
-        _fire_line(line, wpt)
+        _fire_line(line, wpt, tone)
     for tgt in overlay.targets:
-        _target_marker(tgt, wpt)
+        _target_marker(tgt, wpt, tone)
 
     for holo in overlay.holograms:
-        _footprint_fill((holo.x, holo.y), holo.footprint, wpt, TEAL_GHOST)
-        _footprint_box((holo.x, holo.y), holo.footprint, wpt, TEAL_DIM)
+        _footprint_fill((holo.x, holo.y), holo.footprint, wpt,
+                        tone(TEAL_GHOST))
+        _footprint_box((holo.x, holo.y), holo.footprint, wpt, tone(TEAL_DIM))
         _time_label((holo.x, holo.y), holo.footprint, wpt,
-                    f"{holo.at_seconds:.1f}", TEAL_DIM)
+                    f"{holo.at_seconds:.1f}", tone(TEAL_DIM))
         if holo.target is not None:
             cx = tile_to_world_px(holo.x + holo.footprint * 0.5, wpt)
             cy = tile_to_world_px(holo.y + holo.footprint * 0.5, wpt)
@@ -83,10 +104,10 @@ def draw_plan_overlay(overlay, world_px_per_tile: float) -> None:
                 rl.Vector2(cx, cy),
                 rl.Vector2(tile_to_world_px(holo.target[0] + 0.5, wpt),
                            tile_to_world_px(holo.target[1] + 0.5, wpt)),
-                max(1.0, 0.06 * wpt), TEAL_GHOST)
+                max(1.0, 0.06 * wpt), tone(TEAL_GHOST))
 
 
-def _fire_line(line, wpt) -> None:
+def _fire_line(line, wpt, tone=lambda c: c) -> None:
     """THE line of fire — where this marine's ordered shot will actually go.
 
     Carries the information a ring on the target cannot: who is shooting at
@@ -99,7 +120,7 @@ def _fire_line(line, wpt) -> None:
     x2 = tile_to_world_px(line.to_x, wpt)
     y2 = tile_to_world_px(line.to_y, wpt)
     th = max(1.0, (0.07 if line.hovered else 0.11) * wpt)
-    colour = TEAL_GHOST if line.hovered else TEAL
+    colour = tone(TEAL_GHOST if line.hovered else TEAL)
     if line.hovered:
         _dashed(x1, y1, x2, y2, th, colour, dash=0.6 * wpt)
     else:
@@ -121,19 +142,20 @@ def _dashed(x1, y1, x2, y2, th, colour, dash) -> None:
         t = e + dash
 
 
-def _target_marker(tgt, wpt) -> None:
+def _target_marker(tgt, wpt, tone=lambda c: c) -> None:
     """A light tint + tick on an ordered enemy's footprint.
 
     Deliberately SUBTLE: the fire line is what says "this one", so a heavy
     reticle here would just be a second voice saying the same thing over the
     sprite. A hovered target gets the tint only.
     """
-    colour = TEAL_DIM if tgt.hovered else TEAL
+    colour = tone(TEAL_DIM if tgt.hovered else TEAL)
     x = tile_to_world_px(tgt.x, wpt)
     y = tile_to_world_px(tgt.y, wpt)
     side = tgt.footprint * wpt
     rl.draw_rectangle(int(x), int(y), int(side), int(side),
-                      rl.Color(64, 224, 208, 24 if tgt.hovered else 44))
+                      tone(rl.Color(64, 224, 208,
+                                    24 if tgt.hovered else 44)))
     if not tgt.hovered:
         rl.draw_rectangle_lines_ex(rl.Rectangle(x, y, side, side),
                                    max(1.0, 0.06 * wpt), colour)
@@ -147,7 +169,7 @@ ORANGE = rl.Color(255, 150, 40, 255)
 ORANGE_FILL = rl.Color(255, 150, 40, 60)
 
 
-def _action_marker(m, wpt) -> None:
+def _action_marker(m, wpt, tone=lambda c: c) -> None:
     """A symbol where a skill/item action happens (Erik: a charge on a door
     should show a symbol, orange, indicating when it will blow up).
 
@@ -157,8 +179,8 @@ def _action_marker(m, wpt) -> None:
     orange stays reserved for "this is going to explode".
     """
     charge = m.kind == "charge"
-    colour = ORANGE if charge else TEAL_DIM
-    fill = ORANGE_FILL if charge else rl.Color(64, 224, 208, 40)
+    colour = tone(ORANGE if charge else TEAL_DIM)
+    fill = tone(ORANGE_FILL if charge else rl.Color(64, 224, 208, 40))
     cx = tile_to_world_px(m.x + 0.5, wpt)
     cy = tile_to_world_px(m.y + 0.5, wpt)
     r = max(3.0, 0.5 * wpt)

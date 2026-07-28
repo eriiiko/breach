@@ -290,6 +290,16 @@ def _onephase_world_overlay(sim, control_source, hover_tile=None):
             ui_draw.draw_overwatch_cone(u, world_px_per_tile)
         ui_draw.draw_marks(sim, 0, world_px_per_tile)
         ui_draw.draw_selected_marker(selected, world_px_per_tile)
+
+        # EVERY marine's plan stays on screen (Erik: "i'd like everything to
+        # stay on screen"), the unselected ones muted. Drawn first so the
+        # selected marine's plan lands on top at full strength — you can read
+        # the whole assault at once without losing which one you are steering.
+        for u in sim.marines():
+            if selected is not None and u.id == selected.id:
+                continue
+            ui_draw.draw_plan_overlay(ui.plan_overlay(sim, u),
+                                      world_px_per_tile, dimmed=True)
         if selected is not None:
             ui_draw.draw_plan_overlay(
                 ui.plan_overlay(sim, selected, hover_tile=hover_tile,

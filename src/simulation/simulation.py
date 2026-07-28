@@ -653,6 +653,15 @@ class Simulation:
     def _onephase_replace_queue(self, u) -> None:
         """Drop the unit's remaining orders, refunding their items — except a
         channeled action already in progress (§13), which must finish."""
+        # Standing OVERWATCH ends here (design §9: it "persists across rounds
+        # until REPLACED"). Replacing the plan IS the replacement — you have
+        # told this marine to do something else. Clearing it at the one
+        # chokepoint where a fresh plan begins is what makes the posture, and
+        # the cone drawn for it, honest: submit nothing and the watch stands
+        # into the next round; give an order and it is over.
+        u.overwatch_facing = None
+        u.overwatch_half_deg = None
+
         keep = []
         in_progress = self._onephase_channeled_in_progress(u)
         protected = in_progress.order if in_progress is not None else None

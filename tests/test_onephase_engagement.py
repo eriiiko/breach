@@ -429,3 +429,53 @@ def test_environmental_damage_is_not_an_attacker():
     apply_packet(m, DamagePacket(amount=1, dtype=KINETIC, source_id=-1),
                  None, source="heat")
     assert m.recent_attackers == {}
+
+
+# ---------------------------------------------------------------------------
+# Overwatch ends when the posture is REPLACED (Erik, 3rd play session: the
+# cones "stay even after a unit leaves overwatch, which they shouldn't")
+# ---------------------------------------------------------------------------
+def test_a_new_plan_ends_the_overwatch_posture():
+    sim = _sim()
+    m = _marine(sim, 10.0, 24.0)
+    _overwatch(sim, m, 30, 24)
+    assert m.overwatch_facing is not None
+    sim.begin_new_plan(m.id)
+    assert m.overwatch_facing is None, "the watch outlived its replacement"
+    assert m.overwatch_half_deg is None
+
+
+def test_an_ordinary_order_ends_it_too():
+    sim = _sim()
+    m = _marine(sim, 10.0, 24.0)
+    _overwatch(sim, m, 30, 24)
+    _run(sim, sim.ticks_per_round)          # into the next round
+    assert m.overwatch_facing is not None, "it must survive a quiet seam"
+    sim.apply_action(m.id, O.Order(O.ORDER_MOVE, 10, 30, 0))
+    assert m.overwatch_facing is None
+
+
+def test_a_replaced_watch_stops_engaging():
+    sim = _sim()
+    m = _marine(sim, 10.0, 24.0)
+    _overwatch(sim, m, 30, 24)
+    sim.begin_new_plan(m.id)
+    z = _zombie(sim, 24.0, 24.0)
+    hp0 = z.current_hp
+    _run(sim, 24)
+    assert z.current_hp == hp0
+    assert E.on_overwatch(m) is False
+
+
+def test_submitting_nothing_keeps_the_watch_standing():
+    """§9's actual rule: it persists across rounds until REPLACED — and doing
+    nothing is not a replacement."""
+    sim = _sim()
+    m = _marine(sim, 10.0, 24.0)
+    _overwatch(sim, m, 30, 24)
+    _run(sim, sim.ticks_per_round * 2)
+    assert m.overwatch_facing is not None
+    z = _zombie(sim, 24.0, 24.0)
+    hp0 = z.current_hp
+    _run(sim, 24)
+    assert z.current_hp < hp0
