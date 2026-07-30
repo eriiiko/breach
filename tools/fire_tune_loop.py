@@ -85,9 +85,11 @@ Two warnings before you turn a dial:
      non-linear in I — removes it, and that is a MODEL change, not a dial.
      Erik's call, at the joint re-tune.
 
-The TUNE block below is the best measured set: 6 of 9 §9.3 targets pass and
-the three misses are marginal and all live in steps 3-4, which are yours.
-ALT_* below are the other measured branches — swap one in wholesale.
+THE TUNE BLOCK BELOW WAS RE-DERIVED 2026-07-30 for Erik's tuning session
+(session seed `docs/fire_tuning_session_seed_2026-07-30.md`). Its values are
+DERIVED FROM THE ANALYTICS, not measured — each carries its provenance inline.
+The previous, measured cool_shift-12 set is preserved as ALT_MEASURED_CS12
+below; ALT_* are all swap-in-wholesale (`TUNE.update(ALT_...)`).
 
 --------------------------------------------------------------------------
 REQUIRES — read this if the scorecard says n/a or every run reads I = 0
@@ -148,32 +150,56 @@ TUNE = {
 
     # -- 2. THERMAL operating point (§9.3 step 2). THE dial pair.
     #       T* = k_fire_heat * I * 2^(cool_shift - 3)   [+/-1% at equilibrium]
-    #       Measured here: plateau 414 game (1120 K) — inside the 400-500
-    #       target. Raising k_fire_heat raises the plateau AND the far-field
-    #       rise (they scale together — far rise is the binding constraint,
-    #       not the flame temperature).
-    #       cool_shift 12 is what it takes to clear the I_crit cliff at a
-    #       400-500 plateau (bench report §4.2 — it is the ONLY member of
-    #       the iso-target family that sustains). Since the COOL-SHIFT AXIS
-    #       this is the FURNITURE row only: every other material keeps its
-    #       1.3 s e-fold, so the 12 does not follow you onto the hull.
-    "k_fire_heat": 2.2,
-    # integer shift; e-fold = 2^12 ticks = 171 s. NOTE THE KEY: the old
-    # `physics.thermal.COOL_SHIFT` no longer moves the crate (see the header).
-    "materials.furniture.cool_shift": 12,
+    #       Raising k_fire_heat raises the plateau AND the far-field rise (they
+    #       scale together — far rise is the binding constraint, not the flame
+    #       temperature). Since the COOL-SHIFT AXIS the shift is the FURNITURE
+    #       row only: every other material keeps its 1.3 s e-fold, so a big
+    #       number here does not follow you onto the hull.
+    #
+    #   DERIVED START, 2026-07-30 (session-seed handoff). NOT measured — this
+    #   run is the first measurement. Provenance of each number:
+    #
+    #   k_fire_heat 33: from the verified analytic
+    #       T* = k_fire_heat * I * 2^(cool_shift - heat_inv_shift),
+    #   heat_inv_shift = log2(furniture thermal_mass 8) = 3, so at cool_shift 9
+    #       T* = k * I * 2^6 = 64 k I;  at Erik's I anchor 0.21 -> T* = 13.4 k.
+    #   The §9.3 flame band is 400-500 game, so k ~= 33.5 lands T* ~= 450
+    #       (= 1193 K). 33 is that, rounded.
+    "k_fire_heat": 33.0,
+    #   cool_shift 9: e-fold 2^9/24 = 21.3 s — a physically plausible wood-
+    #   surface time constant (12 = 171 s was the cliff-clearing crutch, not a
+    #   wood number). Integer shift. NOTE THE KEY: the old
+    #   `physics.thermal.COOL_SHIFT` no longer moves the crate (see the header).
+    "materials.furniture.cool_shift": 9,
 
     # -- 3. RAMP (§9.3 step 3 — YOURS). Ratio sets peak, magnitude sets
-    #       speed. Measured here: peak I 0.331 @ 143.9 s (target 0.40-0.60
-    #       @ 120-300 s) — peak time is IN band, peak height is low. The
-    #       sibling 0.6/0.1 gives I 0.411 @ 61.4 s (height in band, too
-    #       fast). The pair you want is between them. --
+    #       speed.
+    #   k_die/k_grow = 0.080 is ERIK'S EXPLICIT CHOICE (2026-07-30). The
+    #   logistic (fire_simulation.cpp:209-224) is
+    #       dI/dt = I * [ k_grow*a*(1-I) - k_die*(1-a) ],  a = F * o2f * hot
+    #   so the fixed point is  I_eq = 1 - (k_die/k_grow) * (1-a)/a  and the
+    #   fire only sustains at all while  k_die/k_grow < a/(1-a).
+    #   Since the full-response split (b340bba) o2f = (X-0.13)/(1.0-0.13), so
+    #   ambient air gives o2f = 0.092. At F = 1, hot = 1 that is a = 0.092,
+    #   a/(1-a) = 0.1013, and 0.080 lands I_eq = 0.210 — exactly Erik's anchor
+    #   (0.49 @ X=0.25, 0.67 @ X=0.30, 1.00 at pure O2: normal air is not a
+    #   maximum, which is the point).
+    #   ** CAVEAT, measured 2026-07-30: F = clamp01(wall_hp/fuel_ref) and
+    #   fuel_ref below is 40 while furniture hp is 30, so a FULL-HEALTH crate
+    #   has F = 0.75, not 1. That drops a to 0.069, a/(1-a) to 0.0741 — BELOW
+    #   0.080 — so the anchor's own arithmetic predicts a fire that cannot
+    #   sustain on this crate at any intensity. fuel_ref is Erik's call, not
+    #   this bench's; left at 40 and reported. **
+    #   Realised as 0.35 / 0.028: the RATIO sets peak height, the MAGNITUDE
+    #   sets ramp speed (magnitude carried from the previous measured point,
+    #   which had its peak time in band).
     "k_grow": 0.35,
-    "k_die": 0.06,
+    "k_die": 0.028,
 
-    # -- 4. LIFETIME (§9.3 step 4 — YOURS). Measured death 332.7 s = 5.5 min
-    #       (target 6-8 min) with wall_hp 4.5 left = charred remains, and the
-    #       death IS fuel-governed here (the correct mechanism). Lower
-    #       wall_damage to stretch it toward 6-8. --
+    # -- 4. LIFETIME (§9.3 step 4 — YOURS). NOT re-derived for the 2026-07-30
+    #       start: carried over from the cool_shift-12 point (where it measured
+    #       death at 332.7 s with wall_hp 4.5 left). Lifetime is stage 4 —
+    #       settle steps 2-3 first, then move this. --
     "wall_damage": 0.083,
 
     # -- ANCHORED — verify, don't tune (see §9.3 for the paper trail) --
@@ -190,6 +216,18 @@ TUNE = {
 
 # --- Other measured branches (bench report §4.3). Swap one in wholesale by
 # --- doing  TUNE.update(ALT_...)  right here, then re-run.
+
+# The P3 close-out's best MEASURED set (the one the 2026-07-30 re-derivation
+# replaced above): 6 of 9 §9.3 targets passed — peak I 0.331 @ 143.9 s, plateau
+# 414 game (1120 K), death 332.7 s with wall_hp 4.5 left. cool_shift 12 is a
+# 171 s e-fold: it clears the I_crit cliff, but it is a crutch, not a wood
+# number. Kept as the fallback if the derived start does not sustain.
+ALT_MEASURED_CS12 = {
+    "k_fire_heat": 2.2,
+    "materials.furniture.cool_shift": 12,
+    "k_grow": 0.35, "k_die": 0.06,
+    "fire_T_ext": 250.0, "fire_T_span": 100.0,
+}
 
 # Keeps the decay shift at Erik's stated preference (6-7) and the blessed
 # fire_T_ext — but the flame runs at 1007 game (2307 K), ~2x too hot, and
@@ -410,8 +448,14 @@ if __name__ == "__main__":
     # that's the loop rhythm: look, close, edit TUNE, re-run.
     # Disable the window (PNG still written) with:  set FIRE_TUNE_SHOW=0
     show = os.environ.get("FIRE_TUNE_SHOW", "1") != "0"
+    manual = (f'    conda run -n data python '
+              f'"{ROOT / "tools" / "fire_tune_plot.py"}" "{CSV_PATH}" --show')
     try:
+        # tools/ is sys.path[0] when this file is run as a script.
         from fire_tune_plot import make_plot
-        make_plot(CSV_PATH, show=show)
-    except ImportError as e:
-        print(f"[plot] skipped ({e}) — run tools/fire_tune_plot.py manually")
+        make_plot(CSV_PATH, show=show, targets=T)
+    except Exception as e:      # matplotlib missing, no display, CSV drift, ...
+        # NEVER take the run down with the plot: the scorecard above is the
+        # deliverable. Print the exact command to reproduce the plot by hand.
+        print(f"[plot] skipped ({type(e).__name__}: {e}). Plot it manually:")
+        print(manual)
