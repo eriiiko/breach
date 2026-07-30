@@ -43,6 +43,10 @@ import numpy as np
 from config import CFG
 from simulation import attack_resolver
 from simulation import wall_fixed
+# Physical cover (onephase_wego design §7) — continuous-space rectangles the
+# march stops on. cover_system imports only the entities package + wall_fixed,
+# so this adds no weight and no cycle.
+from simulation.cover_system import cover_at
 from simulation.damage import KINETIC, DamagePacket, apply_packet
 from simulation.events import (
     LaserFiredEvent, ProjectileGlowEvent, ShotFiredEvent, SprayJetEvent,
@@ -231,10 +235,37 @@ class BulletInFlight:
         self.payload = None
         if getattr(ammo, "payload", ""):
             self.payload = weapon_tables().payloads.by_name[ammo.payload]
+        # The march rules this round was fired under (onephase_wego §7/§9),
+        # carried ON the round so a slow projectile still obeys them on the
+        # ticks it continues flying — the sim's per-tick advance does not have
+        # to know which ruleset launched it.
+        self.march_cover = None
+        self.march_facing_defense = False
 
     def advance(self, gmap, units, shots, real_time, rng, events=None,
-                queue=None):
+                queue=None, cover=None, facing_defense=False):
         """March one tick's budget. Returns True while still in flight.
+
+        PHYSICAL COVER (onephase_wego design §7). ``cover`` is the sim's
+        :class:`~simulation.cover_system.CoverRuntime` list, or ``None`` for
+        the shipped statistical model. Passing a list — even an EMPTY one —
+        switches the round onto physical cover, because "there is no
+        statistical to-hit model" is a property of the RULESET, not of whether
+        a particular level happens to have crates in it:
+
+        - a round whose marched position enters a live cover rectangle STOPS
+          there and chews it, so a marine hugging a crate is protected exactly
+          as much as geometry says;
+        - the ``cover_exposure_at`` / ``roll_exposure`` absorption roll is not
+          consulted at all.
+
+        ``facing_defense`` applies §9's "facing determines defense": a hit
+        arriving from outside the target's facing arc scales up, and a unit on
+        overwatch takes a harsher rear penalty — the cost of the side blindness
+        its target control buys.
+
+        Both default to the pre-existing behaviour, so every shipped caller is
+        byte-identical.
 
         Emits one tracer ``Shot`` (+ ``ShotFiredEvent``) for the segment
         travelled this tick; applies the packet on a connecting hit; chews
@@ -250,6 +281,12 @@ class BulletInFlight:
         :func:`simulation.payloads.execute_payload`. Payload rounds apply
         NO direct-hit packet — the blast does the work.
         """
+        # A round carries the rules it was fired under, so continuing flight on
+        # a later tick behaves like the tick it launched on.
+        if cover is None:
+            cover = self.march_cover
+        facing_defense = facing_defense or self.march_facing_defense
+
         h, w = gmap.material.shape
         seg_x, seg_y = self.rx, self.ry          # tracer segment start
 
@@ -261,6 +298,7 @@ class BulletInFlight:
 
         hit_unit = None
         stopped = False
+        approach_x, approach_y = seg_x, seg_y     # where the hit came FROM
         for _step in range(n_steps):
             px, py = self.rx, self.ry            # pre-step (absorption rollback)
             self.rx += self.step_x
@@ -277,6 +315,18 @@ class BulletInFlight:
                 stopped = True
                 break
 
+            # PHYSICAL COVER (§7): tested BEFORE bodies, so a crate standing
+            # between the muzzle and a marine stops the round short of him —
+            # which IS the protection, with no exposure roll anywhere. The
+            # rectangle eats the round's wall damage and breaks when spent.
+            if cover:
+                hit_cover = cover_at(cover, self.rx, self.ry)
+                if hit_cover is not None:
+                    hit_cover.chew(self.ammo.wall_damage)
+                    self.rx, self.ry = px, py     # stop AT its face
+                    stopped = True
+                    break
+
             for e in units:
                 if e is self.shooter or not e.alive:
                     continue
@@ -285,22 +335,31 @@ class BulletInFlight:
                     hit_unit = e
                     break
             if hit_unit:
+                approach_x, approach_y = px, py
                 # Exposure vs cover (mechanics/06 §5): inspect the tile
                 # crossed immediately BEFORE entering the footprint. LAZY:
                 # exposure 1.0 (no concealment — the overwhelming case)
                 # draws NOTHING; directional cover is geometric by
                 # construction (a flanking approach never sees the crate).
-                exposure = attack_resolver.cover_exposure_at(
-                    gmap, self.prev_iy, self.prev_ix)
-                if (exposure < 1.0
-                        and not attack_resolver.roll_exposure(exposure, rng)):
-                    # Absorbed by the cover tile: it eats the round's wall
-                    # damage, the tracer ends there, no unit packet.
-                    chew_wall(gmap, self.prev_iy, self.prev_ix,
-                              self.ammo.wall_damage)
-                    self.rx, self.ry = px, py
-                    hit_unit = None
-                    stopped = True
+                #
+                # SKIPPED ENTIRELY under physical cover (§7: "there is no
+                # statistical to-hit model and no XCOM-style modifier
+                # stack"). The rectangles above already decided this, in
+                # geometry, several steps ago — rolling here too would price
+                # the same crate twice.
+                if cover is None:
+                    exposure = attack_resolver.cover_exposure_at(
+                        gmap, self.prev_iy, self.prev_ix)
+                    if (exposure < 1.0
+                            and not attack_resolver.roll_exposure(exposure,
+                                                                  rng)):
+                        # Absorbed by the cover tile: it eats the round's wall
+                        # damage, the tracer ends there, no unit packet.
+                        chew_wall(gmap, self.prev_iy, self.prev_ix,
+                                  self.ammo.wall_damage)
+                        self.rx, self.ry = px, py
+                        hit_unit = None
+                        stopped = True
                 break
             self.prev_ix, self.prev_iy = ix, iy
 
@@ -331,6 +390,19 @@ class BulletInFlight:
                 if attack_resolver.roll_crit(crit_chance, mult, rng):
                     actual_dmg = attack_resolver.scale_half_away(
                         actual_dmg, self.weapon.crit_mult)
+            # FACING DETERMINES DEFENSE (onephase_wego design §9): a round
+            # arriving from outside the target's arc hits harder, and a unit
+            # on overwatch pays a steeper rear penalty — the side blindness
+            # its target control bought. Applied AFTER crit, on the same
+            # exact-integer scaling rule. Off by default (the shipped path is
+            # untouched); the direction is the round's own approach point, so
+            # it is honest even if the shooter has since moved.
+            if facing_defense:
+                from simulation.vision import defense_multiplier
+                dmult = defense_multiplier(hit_unit, approach_x, approach_y)
+                if dmult != 1.0:
+                    actual_dmg = attack_resolver.scale_half_away(
+                        actual_dmg, dmult)
             # Packet through the pipeline (mechanics/06 §2) — dtype/ap off the
             # ammo row (the k5's kinetic/0 reproduces the shipped packet
             # exactly); bullet deaths never convert.
@@ -731,20 +803,25 @@ def process_shooting(gmap, units, tick, shots, real_time, rng, events=None,
 
 def _dispatch_trigger(gmap, units, u, fx1, fy1, fx2, fy2, tick, shots,
                       real_time, rng, events, bullets, weapon, spread_deg,
-                      queue=None, aim_angle=None):
+                      queue=None, aim_angle=None, cover=None,
+                      facing_defense=False):
     """Route one trigger pull to its delivery archetype (mechanics/03 §1).
     The archetype set is CLOSED; only the ranged marchers dispatch here.
     ``aim_angle`` (free_aim_shooting_design §4a) is forwarded to the resolver:
-    None = tile-derived bearing (WEGO), provided = free-aim march bearing."""
+    None = tile-derived bearing (WEGO), provided = free-aim march bearing.
+    ``cover`` / ``facing_defense`` are the OnePhaseWEGO march rules (§7/§9);
+    both default to the shipped behaviour."""
     if weapon.archetype == "hitscan":
         fire_beam(gmap, units, u, fx1, fy1, fx2, fy2,
                   tick, shots, real_time, rng, events=events,
-                  weapon=weapon, spread_deg=spread_deg, aim_angle=aim_angle)
+                  weapon=weapon, spread_deg=spread_deg, aim_angle=aim_angle,
+                  cover=cover)
     else:  # "projectile" — the default marcher (validated set, mechanics/03)
         fire_burst(gmap, units, u, fx1, fy1, fx2, fy2,
                    tick, shots, real_time, rng, events=events,
                    weapon=weapon, spread_deg=spread_deg, bullets=bullets,
-                   queue=queue, aim_angle=aim_angle)
+                   queue=queue, aim_angle=aim_angle, cover=cover,
+                   facing_defense=facing_defense)
 
 
 def _directional_fire(gmap, units, u, tick, shots, real_time, rng,
@@ -860,7 +937,7 @@ def auto_fire(gmap, units, u, tick, shots, real_time, rng, events=None,
 def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
                tick, shots, real_time, rng, events=None, *,
                weapon=None, ammo=None, spread_deg=None, bullets=None,
-               queue=None, aim_angle=None):
+               queue=None, aim_angle=None, cover=None, facing_defense=False):
     """Fire a burst of PROJECTILE rounds from (fx1, fy1) toward (fx2, fy2).
 
     Lifted from ``game.py:_fire_burst``; W2 generalizes the march to the
@@ -927,8 +1004,11 @@ def fire_burst(gmap, units, shooter, fx1, fy1, fx2, fy2,
         step_y = unit_fixed.sin_rad(angle)
         b = BulletInFlight(shooter, shooter_id, weapon, ammo,
                            fx1, fy1, angle, step_x, step_y)
+        b.march_cover = cover
+        b.march_facing_defense = facing_defense
         still_flying = b.advance(gmap, units, shots, real_time, rng,
-                                 events=events, queue=queue)
+                                 events=events, queue=queue, cover=cover,
+                                 facing_defense=facing_defense)
         if still_flying and bullets is not None:
             bullets.append(b)
 
@@ -946,7 +1026,7 @@ BEAM_MIN_ENERGY_Q16 = unit_fixed.quantize_scalar(0.01)
 
 def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
               tick, shots, real_time, rng, events=None, *,
-              weapon, ammo=None, spread_deg=None, aim_angle=None):
+              weapon, ammo=None, spread_deg=None, aim_angle=None, cover=None):
     """Fire a HITSCAN beam from (fx1, fy1) toward (fx2, fy2) — physically
     instant: the full-range march happens in the firing tick (photons don't
     persist; mechanics/03 §2).
@@ -1045,6 +1125,18 @@ def fire_beam(gmap, units, shooter, fx1, fy1, fx2, fy2,
             if gmap.solid[iy, ix]:
                 chew_wall(gmap, iy, ix, ammo.wall_damage)
                 break
+
+            # 2b. PHYSICAL COVER (onephase_wego design §7): a beam is stopped
+            # by a crate exactly as a bullet is — cover eats whatever clips it,
+            # and a laser is emphatically something that clips. Placed after
+            # the solid check and BEFORE the skewer so a crate protects the
+            # bodies behind it. ``cover=None`` (every shipped caller) skips
+            # this entirely, so the pre-existing beam is byte-identical.
+            if cover:
+                hit_cover = cover_at(cover, rx, ry)
+                if hit_cover is not None:
+                    hit_cover.chew(ammo.wall_damage)
+                    break
 
             # 3. Skewer: every living unit whose footprint holds this tile
             #    takes the CURRENT energy; the beam marches on undiminished.

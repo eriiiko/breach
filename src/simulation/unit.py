@@ -267,6 +267,57 @@ class Unit:
         self.move_path        = []
         self.path_tick_offset = 0
 
+        # ---- OnePhaseWEGO timeline state (design §3) ----------------------
+        # Time is the only currency, so every one of these is an ABSOLUTE tick
+        # deadline on the ruleset's free-running clock — which is exactly what
+        # lets them survive a round boundary untouched (§13, "invisible
+        # seams"). Read ONLY by simulation.timeline and the OnePhaseWEGO
+        # ruleset; inert under TwoPhaseWEGO / ContinuousRealtime, and outside
+        # the synced digest surface for the same reason last_fire_tick is
+        # (deterministic derivations of synced inputs — orders + tick).
+        self.plan                = None   # the compiled Plan (simulation.timeline)
+        self.plan_round          = -1     # round_index whose orders are queued
+        self.busy_until_tick     = 0      # current action's duration runs to here
+        self.gcd_until_tick      = 0      # global cooldown (§3)
+        self.swap_cd_until_tick  = 0      # weapon swap's own non-global CD (§3)
+        self.action_cd           = {}     # {action_name: until_tick}
+
+        # Loadout (§15): primary + secondary, swapped freely for 0 cost except
+        # the swap CD. `active_slot` indexes it; `weapon_id` above mirrors the
+        # active entry so every shipped combat consumer keeps working unchanged
+        # — that mirroring is deliberate: it means the whole combat path never
+        # learns that loadouts exist. A slot may hold a weapon OR an item (§15);
+        # an item is simply a LOBBED/PLACED weapon row.
+        #
+        # The quick-item BELT is the same idea one layer out: its entries are
+        # action-registry item rows, and belt slots are hotbar slots (§15 — "one
+        # system wearing two skins"), which is why nothing here is a separate
+        # item type.
+        if self.is_zombie:
+            self.loadout = []
+            self.belt = []
+        else:
+            secondary = str(getattr(CFG.marine, "secondary", "") or "")
+            self.loadout = [self.weapon_id]
+            if secondary:
+                self.loadout.append(secondary)
+            self.belt = list(getattr(CFG.marine, "belt", ()) or ())
+        self.active_slot = 0
+
+        # Overwatch (§9) — a STATE, not an order: it persists across rounds
+        # until replaced. None = not on overwatch.
+        self.overwatch_facing  = None
+        self.overwatch_half_deg = None
+
+        # Idle stance (§13): who has shot at this unit THIS ROUND
+        # ({attacker_id: hit_count}, insertion-ordered), so an order-less unit
+        # can return fire at its attackers without free-firing at everything
+        # it sees. Written by damage.apply_packet (the one place every damage
+        # source converges); cleared at the round boundary, which is what
+        # makes "recent" mean something without threading a clock through
+        # every damage call site.
+        self.recent_attackers: dict = {}
+
     # ------------------------------------------------------------------
     # Life state
     # ------------------------------------------------------------------

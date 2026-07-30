@@ -3,6 +3,79 @@ ticks_per_second = 24
 phases_per_round = 2
 phase_duration_seconds = 5.0
 ap_per_phase = 2
+# OnePhaseWEGO (onephase_wego design §2): ONE phase per round, ~4 s. Read only
+# by the OnePhaseWEGO ruleset — TwoPhaseWEGO keeps phase_duration_seconds x
+# phases_per_round above, untouched. 4.0 s @ 24 tps = 96 ticks/round; the
+# design calls 4 s "the expected neighborhood, not a promise" — this is the
+# round-length dial of §20 item 2.
+round_duration_seconds = 4.0
+
+# ---------------------------------------------------------------------------
+# OnePhaseWEGO dials (onephase_wego design; §20 item 2 is this whole block).
+# Read ONLY by the OnePhaseWEGO ruleset and its systems — nothing here is
+# consulted under TwoPhaseWEGO / ContinuousRealtime, so no shipped golden can
+# move when these change. Authored per-second / per-degree; config.py derives
+# the integer tick counts (the tick-rate-independence convention).
+# ---------------------------------------------------------------------------
+[onephase]
+# --- Time is the only currency (§3) ---
+gcd_seconds = 0.5             # global cooldown; triggered by ACTIONS, never by
+                              # movement, and never re-triggered inside one
+                              # weapon's own salvo (§3)
+weapon_swap_seconds = 0.75    # its own non-global cooldown; swapping is
+                              # otherwise free (design intent: lots of swaps)
+
+# --- Movement (§4/§6): speed is METRES PER SECOND ---------------------------
+# Positions are continuous Q16.16 in a world with a physical tile size, so a
+# speed authored in ticks-per-TILE silently means different things on levels
+# with different tile_size_m — a marine crossing a 0.333 m tile in 8 ticks is
+# doing 1 m/s, the same 8 ticks on a 1.0 m test tile is 3 m/s. Authoring m/s
+# and deriving the cadence from the LEVEL's tile size fixes that: the marine
+# moves at the same physical speed everywhere.
+#
+# 1.0 m/s reproduces the shipped feel on the 0.333 m/tile levels EXACTLY (the
+# old 8 ticks/tile), so switching units changed nothing. It is a slow walk,
+# though — a jog is ~3, a loaded sprint ~5 — and §5 says Move IS the old
+# Sprint, so this dial probably wants raising once Erik has felt it.
+move_speed_mps = 1.0
+
+# --- Aim-relative fractions (§6), applied on top of the speed above ---------
+move_speed_pct = 1.0                 # Move, no engagement — this IS the old Sprint
+move_shoot_speed_pct = 0.7           # move & shoot, target ahead (band 0.6-0.75)
+move_shoot_reverse_speed_pct = 0.25  # backpedaling with the gun on the door
+reverse_angle_deg = 90.0             # aim-vs-travel angle at or beyond which a
+                                     # move & shoot counts as REVERSING
+
+# --- Accuracy = spread angle (§7). Multipliers on the weapon row's spread. ---
+spread_move_shoot_mult = 2.0   # firing on the move opens the cone
+spread_reverse_mult = 3.0      # backpedaling opens it further
+spread_overwatch_mult = 0.85   # a narrowed overwatch cone aims slightly better
+
+# --- Vision v1 (§8): UNLIMITED range; walls are the only limit ---
+vision_cone_half_deg = 55.0      # facing cone half-angle
+awareness_radius_tiles = 4.0     # short 360 deg hearing/peripheral radius
+vision_profile_samples = 5       # silhouette sample points per axis for the
+                                 # "largest exposed profile" metric (§9)
+
+# --- Overwatch (§9) ---
+overwatch_cone_half_deg = 55.0       # default when the player sets no width
+overwatch_cone_min_half_deg = 10.0   # narrowest the player may dial
+overwatch_cone_max_half_deg = 120.0  # widest
+
+# --- Facing determines defense (§9): attacked from outside your arc ---
+flank_damage_mult = 1.5            # any unit, hit from outside its facing arc
+overwatch_rear_damage_mult = 1.75  # overwatch has a wider/harsher rear penalty
+facing_arc_half_deg = 90.0         # the "front" arc half-angle for the above
+
+# --- Ambush (§10) ---
+ambush_stagger_ticks = 0   # §20 item 6: 0 = perfectly simultaneous volley;
+                           # raise for a ragged-volley feel if play wants it
+
+# --- Planning (§16) ---
+planning_clock_seconds = 0.0   # submit-within-N timer; 0 = untimed (single
+                               # player). Multiplayer sets it.
+idle_return_fire = true        # §13 idle stance: return fire (false = do
+                               # nothing — the §20 item 5 alternative)
 
 [movement]
 # Per-second tunables (tick-rate independent). config.py derives the integer
@@ -1580,6 +1653,18 @@ explosives = 2
 # nothing, engine/12 §5), launch `main.py --level playground`, issue fire
 # orders, watch rooms burn.
 weapon = "k5_carbine"
+# OnePhaseWEGO loadout (onephase_wego design §15): primary + secondary, swapped
+# freely for 0 cost except the 0.75 s swap CD — "the design intent is *lots* of
+# weapon changes, choosing the tool for the task". `weapon` above is the
+# PRIMARY (and remains what every other ruleset arms a marine with, untouched);
+# `secondary` fills the second slot. A slot may hold a weapon OR an item (§15),
+# so any [weapons.*] row name is valid here.
+secondary = "p12_whisper"
+# The quick-item belt (§15, the Dark Souls 3 pattern): 4-5 slots for
+# seldom-used items. Belt slots ARE hotbar slots — same action-registry rows,
+# one system wearing two skins — so entries name LOBBED/PLACED weapon rows,
+# which is what the registry generates its `use_*` item actions from.
+belt = ["hand_grenade", "breach_charge"]
 
 [rendering]
 # Resolution of the world composite RT in pixels per tile — the sharpness

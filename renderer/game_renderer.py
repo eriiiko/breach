@@ -558,7 +558,8 @@ class GameRenderer:
                       orders_phase1: Optional[dict] = None,
                       orders_phase2: Optional[dict] = None,
                       current_phase: int = 0,
-                      doors: Sequence = ()) -> None:
+                      doors: Sequence = (),
+                      overlay_fn=None) -> None:
         """Draw every world-space layer into the world RT.
 
         Order: lit ship (diffuse + normal + light), smoke, fire, units,
@@ -672,6 +673,14 @@ class GameRenderer:
         self._draw_effects_world()
         if self.show_grid:
             self._draw_grid_world()
+
+        # World-space overlay hook. A control scheme with its own interface
+        # (OnePhaseWEGO's ui/ package — teal paths, holograms, cones, marks)
+        # draws here, INSIDE the world RT, so the camera transforms it exactly
+        # like everything else. ``None`` (every shipped caller) costs one
+        # falsy check, and the renderer never learns what the callback draws.
+        if overlay_fn is not None:
+            overlay_fn(self.world.world_px_per_tile)
 
         self.world.end()
 
@@ -1334,6 +1343,24 @@ class GameRenderer:
     # ---- input ----------------------------------------------------------
 
     def poll_toggles(self) -> None:
+        """Every renderer-owned key: diagnostics + camera zoom.
+
+        Kept as the single call the shipped main loop makes, so the WEGO /
+        gamepad paths are byte-identical. OnePhaseWEGO calls the two halves
+        separately instead: §17 rules that "in game mode, the control scheme
+        owns every binding", so its diagnostic half is only armed under
+        ``--debug``, while zoom stays live (with Q/E released, because Q is
+        the weapon swap there).
+        """
+        self.poll_debug_toggles()
+        self.poll_camera_zoom()
+
+    def poll_debug_toggles(self) -> None:
+        """The diagnostic/graphical toggles (F1-F10, T/L/V/M/B/H/G, brackets).
+
+        Every key here is a development affordance, not a game binding — which
+        is exactly why §17 evicts them from game mode.
+        """
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F1):
             self.show_grid = not self.show_grid
         if rl.is_key_pressed(rl.KeyboardKey.KEY_F2):
@@ -1402,14 +1429,27 @@ class GameRenderer:
             self.lighting.set_light_z(self.lighting.light_z - step)
         if rl.is_key_pressed(rl.KeyboardKey.KEY_RIGHT_BRACKET):
             self.lighting.set_light_z(self.lighting.light_z + step)
+
+    def poll_camera_zoom(self, allow_qe: bool = True) -> None:
+        """Camera zoom — a view control, not a diagnostic, so it stays live in
+        game mode.
+
+        ``allow_qe=False`` releases the Q/E bindings for the control scheme
+        (OnePhaseWEGO's Q is the weapon swap, §17); the wheel and -/+ keep
+        working either way.
+        """
+        shift_held = (rl.is_key_down(rl.KeyboardKey.KEY_LEFT_SHIFT) or
+                      rl.is_key_down(rl.KeyboardKey.KEY_RIGHT_SHIFT))
         # Zoom: Q = out, E = in. Also bound to - / + for US keyboards.
         # Held auto-repeats. Mouse wheel works too.
         zoom_step = 1.0 if shift_held else 4.0
         K = rl.KeyboardKey
-        zoom_out = (rl.is_key_down(K.KEY_Q) or rl.is_key_down(K.KEY_MINUS) or
-                    rl.is_key_down(K.KEY_KP_SUBTRACT))
-        zoom_in  = (rl.is_key_down(K.KEY_E) or rl.is_key_down(K.KEY_EQUAL) or
-                    rl.is_key_down(K.KEY_KP_ADD))
+        zoom_out = (rl.is_key_down(K.KEY_MINUS) or
+                    rl.is_key_down(K.KEY_KP_SUBTRACT) or
+                    (allow_qe and rl.is_key_down(K.KEY_Q)))
+        zoom_in  = (rl.is_key_down(K.KEY_EQUAL) or
+                    rl.is_key_down(K.KEY_KP_ADD) or
+                    (allow_qe and rl.is_key_down(K.KEY_E)))
         if zoom_out:
             self.camera.set_zoom(self.camera.zoom_px_per_tile - zoom_step * 0.4)
         if zoom_in:

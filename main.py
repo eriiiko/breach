@@ -32,6 +32,7 @@ Run:
 """
 from __future__ import annotations
 
+import math
 import sys
 import time
 from pathlib import Path
@@ -73,6 +74,11 @@ from renderer.game_renderer import RenderConfig
 from simulation import Simulation
 from simulation.unit import Unit
 from control_source import create_control_source
+# The OnePhaseWEGO interface (onephase_wego design §16). Imported
+# unconditionally — ui.model is pure/headless and ui.draw only needs the pyray
+# already loaded above — and used only when that ruleset is running.
+import ui
+from ui import draw as ui_draw
 
 # Windows consoles default to cp1252, which can't encode unicode (arrows etc.)
 # that creep into startup help text — force utf-8 so a stray glyph can never
@@ -153,6 +159,19 @@ def _parse_control_flag() -> str:
     except IndexError:
         raise SystemExit("--control requires a name, e.g. --control wego")
     return name
+
+
+def _parse_debug_flag() -> bool:
+    """``--debug`` — re-arm the diagnostic keys (onephase_wego design §17 +
+    Erik's kickoff ruling 2).
+
+    §17 rules that in game mode the control scheme owns EVERY binding, so
+    ``--control onephase`` ships with no diagnostic keys at all. This flag
+    hands the whole current dev set back on the keys it already uses
+    (I/J/K/U/N/O/P sim-side, F1-F10 + T/V/M/L/B/H/G renderer-side). The other
+    control schemes are unaffected — they keep their keys either way.
+    """
+    return "--debug" in sys.argv
 
 
 def _upscale_level(level, factor: int):
@@ -243,6 +262,52 @@ def _upscale_level(level, factor: int):
     return level
 
 
+def _onephase_world_overlay(sim, control_source, hover_tile=None):
+    """The OnePhaseWEGO world-space overlay, as a callback for
+    ``compose_world`` (onephase_wego design §16).
+
+    Drawn INSIDE the world render target so the camera transforms it like the
+    ship: the teal plan viz for the selected marine, every marine's overwatch
+    cone, the flashlight cones, and the team's marks. All of it reads sim
+    state and writes nothing.
+    """
+    def _draw(world_px_per_tile):
+        selected = (sim.get_unit(control_source.selected_unit_id)
+                    if control_source.selected_unit_id is not None else None)
+        # NOTE: the flashlight cones are NOT drawn as sectors here. They are
+        # already real ray-traced light sources in the frame's source list, and
+        # drawing a translucent wedge on top of the light they cast doubled the
+        # cone and read as a UI overlay rather than as a torch (Erik, 2nd play
+        # session: "the half cones … flashlights already kind of show this, and
+        # it should be enough"). The lighting IS the facing indicator.
+        #
+        # Cover is intangible (a shape, not a tile), so the tileset never draws
+        # it — without this the player is protected by something invisible.
+        ui_draw.draw_cover(sim, world_px_per_tile)
+        # An overwatch cone is not a "view" indicator, it is the player's own
+        # target-control dial (§9), so it stays.
+        for u in sim.marines():
+            ui_draw.draw_overwatch_cone(u, world_px_per_tile)
+        ui_draw.draw_marks(sim, 0, world_px_per_tile)
+        ui_draw.draw_selected_marker(selected, world_px_per_tile)
+
+        # EVERY marine's plan stays on screen (Erik: "i'd like everything to
+        # stay on screen"), the unselected ones muted. Drawn first so the
+        # selected marine's plan lands on top at full strength — you can read
+        # the whole assault at once without losing which one you are steering.
+        for u in sim.marines():
+            if selected is not None and u.id == selected.id:
+                continue
+            ui_draw.draw_plan_overlay(ui.plan_overlay(sim, u),
+                                      world_px_per_tile, dimmed=True)
+        if selected is not None:
+            ui_draw.draw_plan_overlay(
+                ui.plan_overlay(sim, selected, hover_tile=hover_tile,
+                                armed_action=control_source.armed_action),
+                world_px_per_tile)
+    return _draw
+
+
 def main():
     # 1. Load level + build the simulation. --level overrides config for
     # one launch (playground / test maps); default = [display] level.
@@ -264,12 +329,18 @@ def main():
     # the sim starts paused. `--control wego` -> None (default TwoPhaseWEGO),
     # starts paused (plan first); `--control gamepad` -> ContinuousRealtime,
     # starts running. Byte-identical to the pre-P3 default under `wego`.
-    control_source = create_control_source(_parse_control_flag())
+    debug_mode = _parse_debug_flag()
+    control_source = create_control_source(_parse_control_flag(),
+                                           debug=debug_mode)
 
     sim = Simulation(level, seed=42, breach_physics=bp,
                      enable_recorder=True,
                      ruleset=control_source.initial_ruleset())
     sim.set_paused(control_source.starts_paused())
+    # Is the turn-formula redesign driving? The renderer/HUD branches below key
+    # off the RULESET rather than the flag name, so the two halves of the
+    # loadable game stay chosen together (control_modularity §3a/§3b).
+    onephase = bool(getattr(sim.ruleset, "drives_units", False))
 
     # The old hardcoded demo scene (pre-breach + persistent smoke/fire
     # sources) is gone: it permanently vented the ship from an interior
@@ -318,18 +389,37 @@ def main():
           f"(borderless={BORDERLESS}, world RT "
           f"{int(level.width*cfg.world_px_per_tile)}x"
           f"{int(level.height*cfg.world_px_per_tile)})")
-    print(f"  WASD/arrows pan | Q/E or wheel zoom | "
-          f"Space resume | Tab phase | Bksp undo | Ctrl+R reload")
-    print(f"  DEBUG: T toggles temperature overlay (black-body heat ramp) | "
-          f"I ignites the tile under the cursor")
-    print(f"  DEBUG: J spawns the selected gas under the cursor | "
-          f"K cycles the gas (white->black->poison->teargas->fuel)")
-    print(f"  DEBUG: U pours water (0.2 m) under the cursor | "
-          f"V toggles water overlay | P / Shift+P tilts the ship +/-2 deg")
-    print(f"  DEBUG: O toggles the door under the cursor (A6 doors v0 — "
-          f"dev-only latch)")
-    print(f"  DEBUG: N cycles the selected unit's weapon through the armory "
-          f"(W6 — the tuning key)")
+    if onephase:
+        # §17: game mode owns every binding, so the help text IS the keymap.
+        print(f"  OnePhaseWEGO — {sim.ticks_per_round} ticks/round "
+              f"({CFG.clock.round_duration_seconds:g} s), one phase")
+        print(f"  MOUSE: LMB select marine (or apply armed slot) | "
+              f"RMB MOVE here | Shift+RMB queue waypoint | wheel zoom")
+        print(f"  HOTBAR 1..0: move, shoot, move&shoot, overwatch, ambush, "
+              f"hold, grenade, charge, +belt items")
+        print(f"  KEYS: Q swap weapon | X mark | Space SUBMIT (run the round) "
+              f"| Bksp undo | Esc cancel | Tab cycle marine")
+        print(f"        I inventory (DS3 menu) | L flashlight variant | "
+              f"WASD/arrows pan")
+        if debug_mode:
+            print(f"  --debug ON: the diagnostic keys are re-armed "
+                  f"(F1-F10, T/V/M/L/B/H/G, I/J/K/U/N/O/P, Ctrl+R, F8)")
+        else:
+            print(f"  (no diagnostic keys in game mode — relaunch with "
+                  f"--debug to re-arm them)")
+    else:
+        print(f"  WASD/arrows pan | Q/E or wheel zoom | "
+              f"Space resume | Tab phase | Bksp undo | Ctrl+R reload")
+        print(f"  DEBUG: T toggles temperature overlay (black-body heat ramp) "
+              f"| I ignites the tile under the cursor")
+        print(f"  DEBUG: J spawns the selected gas under the cursor | "
+              f"K cycles the gas (white->black->poison->teargas->fuel)")
+        print(f"  DEBUG: U pours water (0.2 m) under the cursor | "
+              f"V toggles water overlay | P / Shift+P tilts the ship +/-2 deg")
+        print(f"  DEBUG: O toggles the door under the cursor (A6 doors v0 — "
+              f"dev-only latch)")
+        print(f"  DEBUG: N cycles the selected unit's weapon through the "
+              f"armory (W6 — the tuning key)")
 
     fit_w_zoom = map_px_w / max(level.width, 1)
     initial_zoom = max(20.0, min(64.0, fit_w_zoom))
@@ -402,7 +492,15 @@ def main():
             last_time = now
 
             # ----- Input first (may toggle pause / queue orders) -----
-            renderer.poll_toggles()
+            # §17: the renderer's diagnostic keys are game-mode keys too. A
+            # scheme that owns every binding (OnePhaseWEGO) only lets them
+            # through under --debug; zoom is a view control, not a diagnostic,
+            # so it stays live either way — with Q/E released, since Q is the
+            # weapon swap there.
+            if control_source.wants_renderer_toggles:
+                renderer.poll_toggles()
+            else:
+                renderer.poll_camera_zoom(allow_qe=False)
             renderer.update_camera(dt)
             control_source.handle_frame(sim, renderer)
 
@@ -442,18 +540,44 @@ def main():
             sources = frame.sources
             renderer.set_fire_light_stats(frame.fire_count, frame.fire_peaks,
                                           fire_light_selector.max_lights)
-            mouse_f = renderer.mouse_to_tile_float()
-            if mouse_f is not None:
-                src = bp.LightSource()
-                src.x = float(mouse_f[0])
-                src.y = float(mouse_f[1])
-                src.max_range = 25
-                src.intensity = 2.5
-                src.angle_spread = 6.283
-                # Flashlight — cool white (profile: flashlight).
-                src.color = (1.0, 1.0, 0.95)
-                src.jitter = 0.0
-                sources.append(src)
+            # Flashlights. §8 removes the CURSOR flashlight outright: marines
+            # carry them, and the light is the expression of their facing
+            # cone. Under any other ruleset the shipped cursor lamp is
+            # untouched.
+            if onephase:
+                for cone in ui.flashlight_cones(
+                        sim, team=0, mode=control_source.flashlight_mode,
+                        selected_unit_id=control_source.selected_unit_id,
+                        cursor_tile=renderer.mouse_to_tile(),
+                        paused=sim.is_paused()):
+                    src = bp.LightSource()
+                    src.x = float(cone.x)
+                    src.y = float(cone.y)
+                    src.max_range = int(cone.range_tiles)
+                    src.intensity = 2.5
+                    # A cone, not an omni lamp: the raylib-side spread is the
+                    # full angle, and the sim never sees any of this (§8 —
+                    # flashlights are render-only in v1).
+                    src.angle_spread = math.radians(cone.half_deg * 2.0)
+                    # Ray bearings are screen-convention (y down); Unit.facing
+                    # is y-up — the standard one negation.
+                    src.angle_center = -float(cone.facing)
+                    src.color = (1.0, 1.0, 0.95)
+                    src.jitter = 0.0
+                    sources.append(src)
+            else:
+                mouse_f = renderer.mouse_to_tile_float()
+                if mouse_f is not None:
+                    src = bp.LightSource()
+                    src.x = float(mouse_f[0])
+                    src.y = float(mouse_f[1])
+                    src.max_range = 25
+                    src.intensity = 2.5
+                    src.angle_spread = 6.283
+                    # Flashlight — cool white (profile: flashlight).
+                    src.color = (1.0, 1.0, 0.95)
+                    src.jitter = 0.0
+                    sources.append(src)
 
             # W6 transient emitters: flame/miasma jets + plasma bolts. The
             # renderer derives light specs from its own live effect queue
@@ -478,14 +602,23 @@ def main():
                                   sim_tick=total_tick)
             renderer.begin_frame()
 
+            # Fog of war (§8) is visibility GATING: an enemy the team cannot
+            # see is simply not drawn. The sim keeps simulating it in full.
+            zombies = (ui.drawable_enemies(sim, 0) if onephase
+                       else sim.zombies())
             renderer.compose_world(
                 units_marines=sim.marines(),
-                units_zombies=sim.zombies(),
+                units_zombies=zombies,
                 projectiles=sim.projectiles,
-                orders_phase1=sim.orders_for_phase(0),
-                orders_phase2=sim.orders_for_phase(1),
+                # The teal planning viz replaces the phase waypoint lines
+                # entirely under OnePhaseWEGO — there are no phases (§2).
+                orders_phase1=None if onephase else sim.orders_for_phase(0),
+                orders_phase2=None if onephase else sim.orders_for_phase(1),
                 current_phase=control_source.planning_phase,
                 doors=sim._doors,   # A6 dev door draw (render-read only)
+                overlay_fn=(_onephase_world_overlay(
+                    sim, control_source, renderer.mouse_to_tile())
+                    if onephase else None),
             )
             renderer.draw_background_to_screen()
             renderer.blit_world_to_screen()
@@ -505,6 +638,27 @@ def main():
                 planning_phase=control_source.planning_phase,
                 current_mode=control_source.current_mode,
             )
+            # Screen-space HUD (§16): hotbar, round banner, planning clock,
+            # and the DS3 menu when it is open. After the panel so the menu
+            # overlays everything, exactly as it does in DS.
+            if onephase:
+                ui_draw.draw_round_banner(sim, screen_w)
+                ui_draw.draw_hotbar(
+                    ui.hotbar(sim, selected, control_source.bindings),
+                    screen_w, screen_h)
+                ui_draw.draw_planning_clock(
+                    ui.planning_clock(sim, control_source.planning_elapsed),
+                    screen_w)
+                armed = control_source.armed_action
+                if armed:
+                    dial = control_source.armed_dial_seconds(sim)
+                    ui_draw.draw_armed_readout(
+                        sim.actions_table.get(armed).label, dial,
+                        screen_w, screen_h)
+                if control_source.menu_open:
+                    ui_draw.draw_ds3_menu(
+                        ui.ds3_menu(sim, selected, control_source.menu_page),
+                        screen_w, screen_h)
             renderer.end_frame()
     finally:
         renderer.shutdown()

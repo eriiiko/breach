@@ -87,6 +87,7 @@ from simulation.exchange import (  # noqa: F401 (apply_blast_damage: legacy re-e
 from simulation.events import (  # noqa: F401 (ExplosionEvent: legacy re-export — emitted by the executor now)
     DoorDestroyedEvent, ExplosionEvent, WallDestroyedEvent,
 )
+from simulation.cover_system import attach_cover
 from simulation.door_system import build_runtime_entities, sweep_doors
 from simulation.entities.door import DOOR_OPEN
 from simulation.entities.serialize import entity_carrier
@@ -102,6 +103,7 @@ from simulation.movement import FootprintSamples, default_speed
 from simulation.orders import (
     ORDER_GRENADE, ORDER_EXPLOSIVE, ORDER_FIRE, ORDER_MOVE_ATTACK,
     ORDER_MOVE_COVER, ORDER_SPRINT, MOVE_ORDER_TYPES,
+    ONEPHASE_MOVE_ORDER_TYPES,
 )
 # Per-tick continuous intents (control-modularity P3, §3c) — the direct-control
 # order vocabulary consumed under a ContinuousRealtime ruleset. Dormant under
@@ -133,6 +135,9 @@ from simulation.status import composed_flags, tick_statuses
 from simulation.weapons import (
     FIRE_ORDER_ARCHETYPES, rebuild_tables as rebuild_weapon_tables,
 )
+# The action registry (onephase_wego design §5) — OnePhaseWEGO's verb table,
+# rebuilt beside the weapon tables at every construction/reset.
+from simulation.action_registry import rebuild_table as rebuild_action_table
 
 try:
     from pathfinding import astar
@@ -231,6 +236,11 @@ class Simulation:
         self._ticks_per_round = CFG.clock.ticks_per_round
         self._phases_per_round = CFG.clock.phases_per_round
         self._tps = CFG.clock.ticks_per_second
+        # OnePhaseWEGO's round length (onephase_wego design §2), cached beside
+        # the two-phase numbers rather than replacing them — both rulesets are
+        # constructible in the same process for the whole arc. Read only by
+        # simulation.ruleset.OnePhaseWEGO.ticks_per_round.
+        self._onephase_ticks_per_round = CFG.clock.onephase_ticks_per_round
 
         # Build the world & RNG.
         self._reset_internal(seed)
@@ -263,6 +273,10 @@ class Simulation:
         # `level.entities` and the 9e sweep is a single attribute check.
         self.entities, self._doors = build_runtime_entities(
             self.level, self.gmap)
+        # Cover rows become their runtime objects IN self.entities, the same
+        # way door rows do — the entity list is what the serializer walks, and
+        # it asks each row for its runtime digest fields (onephase_wego §7).
+        self.entities, self.cover = attach_cover(self.entities, self.level)
 
         # Arc B (impl doc §2): the SignalBus + the resolved wire drive tables.
         # Built ONLY when the level declares wires (D1) — in B1 the union
@@ -292,6 +306,13 @@ class Simulation:
         # playground's 0.333 m/tile derives 3x the tiles for the same reach.
         self.weapons_tables = rebuild_weapon_tables(
             tile_size_m=self.gmap.tile_size_m)
+        # The ACTION REGISTRY (onephase_wego design §5) — the same
+        # construction-bound, config-static contract as the weapon tables
+        # above, and built AFTER them because its item rows are generated from
+        # the LOBBED/PLACED weapon rows. Read only by the OnePhaseWEGO
+        # executor and the hotbar; inert under every other ruleset.
+        self.actions_table = rebuild_action_table(
+            weapons_tables=self.weapons_tables)
 
         self.units: List = []
         self.projectiles: List = []
@@ -331,6 +352,33 @@ class Simulation:
         # ``_consume_direct_intents`` short-circuits and the whole continuous
         # path stays dormant — the dormancy guarantee for the digest gate.
         self._possessed_ids: set = set()
+
+        # Target marking (onephase_wego design §11): ``{team: {unit_id, ...}}``
+        # — a TEAM fact, not a unit's, consulted by every targeting function
+        # (overwatch priority, idle return-fire preference). v1 is a single
+        # "focus" level; graded 1-5 priorities are a future refinement. Empty
+        # (and never touched) under every other ruleset.
+        self.marks: dict = {}
+
+        # (self.cover — the continuous-space destructible rectangles the
+        # bullet march stops on, §7 — was built with the entity list above,
+        # because each one IS an entry in it.)
+
+        # Per-tick vision cache (design §8) — invalidated by tick number, so
+        # every consumer in a tick sees ONE consistent answer.
+        self._vision_cache = None
+
+        # Ambush barriers (design §10): ``{target_unit_id: release_tick}``.
+        # A per-group readiness counter in the sim — NO SignalBus is needed in
+        # v1, though the action registry's ``start_condition`` field keeps that
+        # slot open for when level logic should trigger squad actions.
+        self.ambush_released: dict = {}
+
+        # Planted charges awaiting their moment (design §12) — the three
+        # det SLOTS are replaced by a schedulable TICK, which only works
+        # because the ruleset's clock is monotonic: "1.8 s into the round" and
+        # "t=0 of the next round" are the same kind of number.
+        self.planted_charges: list = []
 
         # Physics runner (created once, re-bound on reset only if bp present).
         if self._bp is not None:
@@ -429,6 +477,13 @@ class Simulation:
             # handled by physics, not order placement.)
             return False
 
+        # OnePhaseWEGO owns its own order vocabulary and interrupt semantics
+        # (onephase_wego design §5/§13) — a whole different set of order types
+        # and no AP gate at all, so it branches before the legacy body rather
+        # than threading conditionals through it.
+        if self.ruleset.drives_units:
+            return self._onephase_apply_action(u, order)
+
         ot = order.order_type
 
         if ot in MOVE_ORDER_TYPES:
@@ -491,6 +546,155 @@ class Simulation:
 
         return False
 
+    # ------------------------------------------------------------------
+    # OnePhaseWEGO order placement (design §5/§13)
+    # ------------------------------------------------------------------
+    def _onephase_apply_action(self, u, order) -> bool:
+        """Queue an order under OnePhaseWEGO and recompile the unit's timeline.
+
+        Differences from the legacy body, all of them design consequences:
+
+        - **No AP gate.** Time is the only currency (§3); an order's cost is
+          the ticks it occupies on the compiled timeline, charged there.
+        - **New orders interrupt by default** (§13). The FIRST order issued
+          for a unit in a given round replaces whatever remains of its queue —
+          which is what "issuing orders at the planning pause replaces the
+          unit's remaining queue immediately" means operationally — and
+          subsequent orders that round append to build the plan up. A step
+          flagged ``interruptible = False`` (channeled: planting a charge,
+          operating a terminal, objective interactions) must complete first
+          and therefore survives the replacement.
+        - **Every action is a registry row** (§5), so validation is a row
+          lookup plus that row's own preconditions, not a per-order-type
+          branch that has to be extended for every new verb.
+        """
+        action = self._onephase_action_for(order)
+        if action is None:
+            return False
+        if not action.allows_class(getattr(u, "unit_class", "")):
+            return False
+
+        # Item-backed rows consume inventory (§15's loadout model; ground
+        # pickup/drop is explicitly out of v1 scope).
+        if action.item and not self._onephase_has_item(u, action.item):
+            return False
+
+        # Movement targets must be enterable for the unit's footprint — the
+        # same geometric gate A* itself uses, so a plan can never be compiled
+        # against a destination the unit could not stand on.
+        if order.order_type in ONEPHASE_MOVE_ORDER_TYPES:
+            if not self.gmap.is_passable_block(int(order.target_fy),
+                                               int(order.target_fx),
+                                               u.footprint):
+                return False
+
+        if u.plan_round != self.round_index:
+            self._onephase_replace_queue(u)
+            u.plan_round = self.round_index
+
+        if action.item:
+            self._onephase_take_item(u, action.item)
+        if order.action_name is None:
+            order.action_name = action.name
+        u.orders.append(order)
+        self.ruleset.on_orders_changed(self, u)
+        return True
+
+    def begin_new_plan(self, unit_id: int) -> bool:
+        """Start a fresh plan for ``unit_id`` — the facade seam behind "a plain
+        click replaces the plan, a shift-click appends to it" (§13/§16).
+
+        Drops the unit's remaining orders (refunding their items) except a
+        channeled action already in progress, and recompiles. Idempotent, so a
+        control source may call it before every replacing order without having
+        to track whether it already did.
+        """
+        u = self.get_unit(unit_id)
+        if u is None or not self.ruleset.drives_units:
+            return False
+        self._onephase_replace_queue(u)
+        u.plan_round = self.round_index
+        self.ruleset.on_orders_changed(self, u)
+        return True
+
+    def _onephase_channeled_in_progress(self, u):
+        """The unit's currently-running uninterruptible step, or ``None``.
+
+        The predicate is ``started``, NOT "the plan says this tick belongs to
+        it": at the planning pause a channeled action scheduled to begin this
+        very tick has not begun, so it is freely replaceable and undoable.
+        Only an action the unit is actually part-way through — a charge half
+        planted, a terminal half operated — resists interruption (§13).
+        """
+        plan = getattr(u, "plan", None)
+        if plan is None:
+            return None
+        step = plan.step_at(self.tick)
+        if (step is not None and step.started and not step.retired
+                and not step.action.interruptible):
+            return step
+        return None
+
+    def _onephase_action_for(self, order):
+        """The registry row an order runs through, or ``None`` if this order
+        type has no row (a legacy TwoPhaseWEGO order handed to the wrong
+        ruleset)."""
+        table = self.actions_table
+        if getattr(order, "action_name", None):
+            try:
+                return table.get(order.action_name)
+            except KeyError:
+                return None
+        try:
+            return table.for_order_type(order.order_type)
+        except KeyError:
+            return None
+
+    def _onephase_replace_queue(self, u) -> None:
+        """Drop the unit's remaining orders, refunding their items — except a
+        channeled action already in progress (§13), which must finish."""
+        # Standing OVERWATCH ends here (design §9: it "persists across rounds
+        # until REPLACED"). Replacing the plan IS the replacement — you have
+        # told this marine to do something else. Clearing it at the one
+        # chokepoint where a fresh plan begins is what makes the posture, and
+        # the cone drawn for it, honest: submit nothing and the watch stands
+        # into the next round; give an order and it is over.
+        u.overwatch_facing = None
+        u.overwatch_half_deg = None
+
+        keep = []
+        in_progress = self._onephase_channeled_in_progress(u)
+        protected = in_progress.order if in_progress is not None else None
+        for o in u.orders:
+            if o is protected:
+                keep.append(o)
+                continue
+            action = self._onephase_action_for(o)
+            if action is not None and action.item:
+                self._onephase_return_item(u, action.item)
+        u.orders = keep
+
+    # Inventory hooks — v1 keeps the shipped two counters (§15: loadout-based
+    # inventory, no ground pickup/drop). The item NAME is the weapon-row name
+    # its generated action carries, so a real item system slots in behind
+    # these three methods without touching the order path.
+    _ITEM_COUNTERS = {"hand_grenade": "has_grenade",
+                      "breach_charge": "has_explosive"}
+
+    def _onephase_has_item(self, u, item) -> bool:
+        attr = self._ITEM_COUNTERS.get(item)
+        return True if attr is None else getattr(u, attr, 0) > 0
+
+    def _onephase_take_item(self, u, item) -> None:
+        attr = self._ITEM_COUNTERS.get(item)
+        if attr is not None:
+            setattr(u, attr, getattr(u, attr, 0) - 1)
+
+    def _onephase_return_item(self, u, item) -> None:
+        attr = self._ITEM_COUNTERS.get(item)
+        if attr is not None:
+            setattr(u, attr, getattr(u, attr, 0) + 1)
+
     def undo_last_order(self, unit_id: int) -> bool:
         """Pop the most recent order off ``unit_id``'s queue and refund.
 
@@ -501,6 +705,19 @@ class Simulation:
         u = self.get_unit(unit_id)
         if u is None or not u.orders:
             return False
+        if self.ruleset.drives_units:
+            # OnePhaseWEGO: nothing was charged at placement (§3), so undo is
+            # "pop, hand the item back, recompile" — the timeline simply gets
+            # shorter. A channeled step already in progress cannot be undone.
+            in_progress = self._onephase_channeled_in_progress(u)
+            if in_progress is not None and in_progress.order is u.orders[-1]:
+                return False
+            removed = u.orders.pop()
+            action = self._onephase_action_for(removed)
+            if action is not None and action.item:
+                self._onephase_return_item(u, action.item)
+            self.ruleset.on_orders_changed(self, u)
+            return True
         removed = u.orders.pop()
         self.ruleset.refund(self, u, removed)
         if removed.order_type == ORDER_GRENADE:
@@ -848,6 +1065,53 @@ class Simulation:
     def get_phase(self) -> int:
         return self.phase
 
+    # Round-clock geometry, routed through the ruleset (onephase_wego design
+    # §2). Under TwoPhaseWEGO / ContinuousRealtime these return exactly what
+    # the pre-existing fields always meant (the base Ruleset defaults);
+    # OnePhaseWEGO's free-running tick makes within-round position a modulo.
+    # Read by the planning UI (arrival timestamps, the round progress bar) and
+    # by the timeline executor.
+
+    @property
+    def ticks_per_round(self) -> int:
+        return self.ruleset.ticks_per_round(self)
+
+    @property
+    def round_tick(self) -> int:
+        return self.ruleset.round_tick(self)
+
+    @property
+    def round_index(self) -> int:
+        return self.ruleset.round_index(self)
+
+    def visible_enemy_ids(self, team: int = 0) -> tuple:
+        """Enemies ``team`` can currently see — TEAM VISION, the union of its
+        members' cones (onephase_wego design §8).
+
+        THE fog-of-war gate: fog in v1 is visibility gating only, so the
+        renderer draws no enemy whose id is absent here. Consult it only when
+        ``ruleset.fog_of_war`` is set — the shipped rulesets have no vision
+        model and show everything, exactly as they always have.
+        """
+        from simulation import vision
+        return vision.visible_enemy_ids(self, team)
+
+    def round_start_tick(self) -> int:
+        """Absolute tick at which the CURRENT round began. The anchor every
+        scheduled action resolves against (§12: "detonate 1.8 s into the
+        round" is ``round_start_tick() + round(1.8 * tps)``)."""
+        return self.tick - self.round_tick
+
+    def round_end_tick(self) -> int:
+        """Absolute tick at which the CURRENT round ends — i.e. the next
+        planning pause.
+
+        The sibling of :meth:`round_start_tick`, and the moment the planning UI
+        cares most about after "now": everything a plan does past this tick
+        happens in a round the player will get to re-plan first.
+        """
+        return self.round_start_tick() + self.ticks_per_round
+
     def get_state(self) -> SimState:
         return SimState(
             gmap=self.gmap,
@@ -1080,18 +1344,27 @@ class Simulation:
         # synced, digest-hashed, in emission order.
         tick_statuses(self.units, events=self.tick_events)
 
-        # 3. Update player movement.
-        self._update_player_movement()
+        # 3 + 4. Unit simulation. A ruleset that owns these slots
+        # (OnePhaseWEGO — ``drives_units``) replaces BOTH with one call: its
+        # compiled timeline decides movement and shooting together, because
+        # under that ruleset they are two readings of the same schedule
+        # (onephase_wego design §3). The legacy path below is untouched and
+        # still runs verbatim for every other ruleset.
+        if self.ruleset.drives_units:
+            self.ruleset.drive_units(self)
+        else:
+            # 3. Update player movement.
+            self._update_player_movement()
 
-        # 4. Process shooting. W2: dispatches each shooter's weapon row by
-        # archetype (projectile burst / hitscan beam); rounds that outrange
-        # their per-tick speed land on self.bullets (advanced in slot 2).
-        # W3: the edit queue rides along so payload rounds (GL-6) can
-        # deposit their detonation; the mag/reload economy gates triggers.
-        process_shooting(self.gmap, self.units, self.tick,
-                         self.shots, self.real_time, self.rng,
-                         events=self.tick_events, bullets=self.bullets,
-                         queue=self.edit_queue)
+            # 4. Process shooting. W2: dispatches each shooter's weapon row by
+            # archetype (projectile burst / hitscan beam); rounds that outrange
+            # their per-tick speed land on self.bullets (advanced in slot 2).
+            # W3: the edit queue rides along so payload rounds (GL-6) can
+            # deposit their detonation; the mag/reload economy gates triggers.
+            process_shooting(self.gmap, self.units, self.tick,
+                             self.shots, self.real_time, self.rng,
+                             events=self.tick_events, bullets=self.bullets,
+                             queue=self.edit_queue)
 
         # 4b. SPRAY deposits (mechanics/03 §5, W4) — the shooting slot's
         # second half: every active spray burst enqueues its aimed heat/gas
