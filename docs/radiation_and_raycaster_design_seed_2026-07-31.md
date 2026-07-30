@@ -212,7 +212,64 @@ Erik: *"extinction is nice and we want it — we want it to be realistic — we 
 Extinction is real physics and should stay. The question is **where the walls sit**, and the
 burning run put numbers on two of them that no previous pass had.
 
-### 4.1 ★ C6 — the oxygen floor (new, and it is the binding one)
+### 4.0 ★★ THE ROOT FINDING — one margin governs everything (Erik, 2026-07-31)
+
+Erik asked two questions that turn out to have a single answer:
+*"O₂ starvation — is it because of expansion? 0.19 O₂ is not starving, we said it would die
+at 0.13. If that's lost it's a bug."* and *"`wall_damage`, how does it affect the duration?
+The crate was barely damaged after burning for 6 min — I would have expected its hp to be
+close to 0."*
+
+Sustain requires `a > r/(1+r)` with `a = F · o2f · hot`. At ambient, pristine, hot:
+
+```
+a(ambient)     = 1 × 0.0920 × 1 = 0.0920
+threshold      = 0.080/1.080    = 0.07407
+headroom ratio = 1.242×
+```
+
+**The PRODUCT `F·o2f·hot` may only fall to 80.5% of its ambient value before the fire dies
+at any temperature and any `k_fire_heat`.** That single margin sets all three floors:
+
+| factor falling alone | floor | consequence |
+|---|---|---|
+| `hot` | 0.805 | `h_min` = 0.806 — the temperature floor (§4.2) |
+| `o2f` | 0.0741 | **local X floor 0.1945** — only a 7.4% relative O₂ drop (§4.1) |
+| `F` | 0.805 | **hp floor 24.2/30 — only 19.5% of the crate can EVER burn** |
+
+**Consequence A — `o2_frac_ext = 0.13` is now dead code.** There are two extinction
+thresholds: the physical one (`o2f = 0` at X = 0.13, Peatross-Beyler anchored) and the
+logistic one (`a = r/(1+r)`). The logistic one bites at X = 0.1945, far above it, so the
+literature-anchored limit **can never be reached**.
+
+**This is a side effect of the `o2_frac_full = 1.0` change (`b340bba`) that nobody
+predicted.** With the old ambient-normalised `o2f`, ambient gave `o2f = 1.0` and the same
+threshold sat at `X_thr = 0.13 + (X_full − 0.13)·r/(1+r) = 0.13 + 0.08×0.0741 = 0.1359` —
+essentially AT the physical limit; the model was coherent. Normalising against pure O₂
+compressed ambient to 0.092 and pushed the threshold to 0.1945. **The headroom Erik wanted
+above ambient was bought by giving up the margin below it.**
+
+**Consequence B — the burn can never be fuel-governed.** `wall_damage·I` at 0.083 and
+I ≈ 0.12 over 334 s predicts ~3.3 hp, matching the observed 30 → 26.688 exactly. Reaching
+hp ≈ 0 in 6 min would need `wall_damage ≈ 0.55` (6.7×) — but raising it *shortens* the burn,
+because consuming fuel lowers `F`, lowers `a`, and walks the fire toward the threshold. And
+`F` cannot go below 0.805 regardless. **"Charred remains" at 26.7/30 is a barely-singed
+crate, and no dial in `fire_tune_loop.py` can change that.**
+
+**The structural cause:** `r = k_die/k_grow` sets **both** the equilibrium intensity **and**
+the extinction threshold. One parameter, two jobs — the same defect shape as `fuel_ref`
+(fuel fraction vs wood's hp), `COOL_SHIFT` (one e-fold for all materials) and `o2_frac_amb`
+(ambient vs full-response reference).
+
+**Decide:** should the death term be split so that `I_eq` and the extinction threshold are
+independent — e.g. a constant mortality `k_die·I` setting `I_eq`, plus a separate
+O₂/temperature-dependent extinction term that only bites near the physical limits? That
+restores `o2_frac_ext = 0.13` to meaning something, lets a crate burn most of its mass, and
+keeps Erik's `I ≈ 0.21 with headroom` anchor. **Verify the algebra independently before
+building on it** — it is derived here, not measured, and two derived floors in this arc have
+already been wrong (see §6's method note).
+
+### 4.1 ★ C6 — the oxygen floor (measured; §4.0 explains WHY it sits where it does)
 
 The sustain condition is **symmetric in `hot` and `o2f`**. Alongside the temperature floor
 there is an oxygen floor:
