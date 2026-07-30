@@ -171,6 +171,15 @@ TUNE = {
     #   wood number). Integer shift. NOTE THE KEY: the old
     #   `physics.thermal.COOL_SHIFT` no longer moves the crate (see the header).
     "materials.furniture.cool_shift": 9,
+    #   WOOD MOVES WITH FURNITURE (2026-07-30). Wood and furniture are both
+    #   cellulosic and both ship thermal_mass = 8; the seeded 5 was a
+    #   byte-identity placeholder, not a physical choice. Raising ONLY furniture
+    #   would leave wood at
+    #       I_crit = fire_T_ext / (k_fire_heat * 2^(cool_shift-3))
+    #              = 250 / (33 * 2^2) = 1.89 > 1,
+    #   i.e. wooden WALLS become permanently non-flammable. Both rows at 9 give
+    #   both materials I_crit = 250/(33*2^6) = 0.118.
+    "materials.wood.cool_shift": 9,
 
     # -- 3. RAMP (§9.3 step 3 — YOURS). Ratio sets peak, magnitude sets
     #       speed.
@@ -208,11 +217,41 @@ TUNE = {
     #         right; the MAGNITUDE (k_grow 0.35 / k_die 0.028) is below the
     #         fixed-point tick quantum. The same ratio at 5x/10x magnitude
     #         converges to I = 0.198 / 0.204 as the analytic says. **
-    #   Realised as 0.35 / 0.028: the RATIO sets peak height, the MAGNITUDE
-    #   sets ramp speed (magnitude carried from the previous measured point,
-    #   which had its peak time in band).
-    "k_grow": 0.35,
-    "k_die": 0.028,
+    #   MAGNITUDE RAISED 10x 2026-07-30 — SAME RATIO 0.080 (Erik's anchor, which
+    #   is what sets I_eq; only the magnitude, i.e. the ramp speed, changes).
+    #   At the old 0.35/0.028 the net growth peaked at 3.54e-4 /s == 0.969
+    #   Q16.16 counts per 1/24 s tick, which TRUNCATES TO ZERO: the fire could
+    #   not grow because its growth rounded away. 3.5/0.28 puts the same
+    #   logistic ~9.7 counts/tick at the seed — above the quantum.
+    "k_grow": 3.5,
+    "k_die": 0.28,
+
+    # -- 3b. IGNITION SEED. Raised 0.1 -> 0.15 (2026-07-30). The sustain floor
+    #    is I_crit = I_peak * fire_T_ext / T_flame = 0.21 * 250/450 = 0.117, so a
+    #    0.1 seed is BORN BELOW THE FLOOR and dies at any k_fire_heat. Check that
+    #    the two constraints now overlap: a plateau in the 400-500 band needs
+    #    k_fire_heat in [29.8, 37.2]; seed survival needs
+    #    k_fire_heat > fire_T_ext / (seed * 2^6) = 250/(0.15*64) = 26.0.
+    #    k_fire_heat = 33 is inside BOTH (at seed 0.1 the floor was 39.1 > 37.2 —
+    #    empty intersection, which is why nothing lit).
+    #
+    #    ** MEASURED AT THESE FOUR DIALS, 2026-07-30 — STILL DOES NOT BURN, and
+    #    the reason is that `I_crit` ABOVE IS THE WRONG THRESHOLD. It is derived
+    #    from `hot > 0` (T > fire_T_ext), but the logistic does not sustain at
+    #    hot > 0 — it sustains only where  a/(1-a) > k_die/k_grow,  and with
+    #    a = F * o2f * hot at F = 1, o2f = 0.092 (ambient air) that needs
+    #        hot > (r/(1+r))/o2f = 0.0741/0.0920 = 0.806,   r = k_die/k_grow,
+    #    i.e. T > fire_T_ext + fire_T_span*0.806 = 330.6 game, NOT 250. So the
+    #    real floor carries fire_T_span:
+    #        I_sustain = (fire_T_ext + fire_T_span*h_min)
+    #                    / (k_fire_heat * 2^(cool_shift - heat_inv_shift))
+    #                  = 330.56 / 2112 = 0.1565.
+    #    The seed 0.15 is 4.2% BELOW it, so T tops out at T*(0.15) = 316.8
+    #    (hot ceiling 0.668 < 0.806 needed) and the fire cannot bootstrap at ANY
+    #    speed. Measured: peak I 0.1488 @ tick 1 (never above the seed), peak T
+    #    281.3 @ 1.0 s, hot never above 0.313, I == 0 at 8.9 s, wall_hp 29.948
+    #    (0.05 of 30 consumed). Full numbers in the run report. **
+    "ignition_seed": 0.15,
 
     # -- 4. LIFETIME (§9.3 step 4 — YOURS). NOT re-derived for the 2026-07-30
     #       start: carried over from the cool_shift-12 point (where it measured
