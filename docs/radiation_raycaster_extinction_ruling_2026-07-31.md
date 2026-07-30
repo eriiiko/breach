@@ -306,7 +306,20 @@ the gate enumerates them (no grepping near keywords):
 
 ---
 
-## 2. The patch sequence (each lands alone, gated; Opus executes)
+## 2. The patch sequence (each lands alone, gated)
+
+**Execution contract (autonomous-patch-workflow, annotated 2026-07-31):** every
+patch runs as a fresh subagent in its OWN worktree + branch off
+`thermal-mass-axis` (one git-toucher per tree); the orchestrator session merges
+into `thermal-mass-axis` on green (standing auto-merge for oracle-gated patches;
+nothing touches `main` before P-R5's HUMAN-TEST). Tiers per the workflow's rule
+— oracle-gated → Sonnet 5, law/semantics → Opus-class, mechanical → Haiku:
+**P-R1 Sonnet 5** (byte-identity oracle) · **P-R2 Sonnet 5** (sharp numeric
+oracle: 1.000 ± 0.01 + tol 0) · **P-R3 Opus-class** (I-dynamics semantics +
+pinned-order Q16.16 + CUDA twin) · **P-R4 Opus-class** (new pass, signed plane,
+limiter, H_bed) · **P-R5 Erik + orchestrator, HUMAN-TEST** — the only patch with
+a human gate. Sequencing is serial (P-R2/P-R3 share `fire_simulation.cpp`;
+P-R4 builds on all three).
 
 | # | patch | law change? | gate |
 |---|---|---|---|
