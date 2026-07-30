@@ -117,6 +117,17 @@ would be **silently overwritten** on any real map by `physics_runner.py:956-957`
 would also corrupt the dial's real meaning. The two roles must be split — a new reference
 dial that is NOT map-overridden, with `o2_frac_amb` left alone.
 
+> **★ STATUS 2026-07-30: §2.1 is BEING BUILT, at Erik's explicit direction** (*"this should
+> probably just be `o2f = (X − 0.13)/(1 − 0.13)` — that would fix everything"*, confirmed
+> twice). A new non-map-overridden `o2_frac_full` dial (default 1.0) carries the
+> denominator in both O₂ laws and the CUDA twins; `o2_frac_amb` is untouched at 0.21.
+> Gated on back-compat byte-identity (`o2_frac_full := o2_frac_amb` reproduces today
+> exactly) and CPU↔CUDA tol 0; **goldens will move and are deliberately NOT rebased.**
+> **This session should therefore REFINE §2.1, not re-derive it** — and must still rule on
+> §2.3 (does `hot` uncap too?) and §2.4 (heat output, O₂ draw, composition), which are
+> untouched and genuinely open. If the ruling disagrees with the pure-O₂ reference, say so
+> plainly; it is one dial and cheap to change.
+
 ### 2.2 The `I ≈ 0.5` target then falls out of the EXISTING logistic — no model surgery
 
 An earlier draft of this doc proposed restructuring the death term to a constant mortality
