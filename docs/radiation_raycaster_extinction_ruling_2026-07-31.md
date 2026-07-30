@@ -6,6 +6,10 @@ this doc; nothing here is built yet. Numbers are marked **[measured]** (a bench 
 or **[derived]** (algebra on verified relations — treat per the seed's §6 method
 note: two derived floors in this arc were wrong before they were measured).
 
+**Amended 2026-07-31 after Erik's review pass:** `T_emit_gate` default 60 → **180**
+(Erik's number; his reasoning + the receivers-are-free argument recorded in A1.8),
+and A1.6 expanded with the plain-words meaning of `LIM_SHIFT`. No other change.
+
 **The one rule everything below follows from:**
 
 > **Heat moves between tiles only as an accounted exchange against a potential —
@@ -89,12 +93,22 @@ rad[s]  −= net                                 // emitter loses THE SAME integ
 6. **The stability bound is a flux limiter, designed in** (seed §1.5.2). Per pair,
    before applying:
    `budget_end = (|T_s − T_r| << heat_inv_shift_end) >> LIM_SHIFT` for each end;
-   `|net| ≤ min(budget_s, budget_r)`, `LIM_SHIFT = 4`. Each ray may close at most
-   1/16 of the pair's gap per tick per end; 8 rays → aggregate ≤ 1/2 — strictly
-   inside the convex-stability line conduction sits on (4 faces × 1/4 = 1). Shifts
-   and compares only. Because every transfer closes a fraction of a *gap*, the
-   exchange is maximum-principle-shaped: no overshoot, no undershoot below the
-   colder end. Citation to archive with the patch: Levermore & Pomraning 1981
+   `|net| ≤ min(budget_s, budget_r)`, `LIM_SHIFT = 4`.
+   **What the 4 means, in plain words:** it is a per-tick speed limit expressed as
+   a *fraction of the temperature gap a single ray may close*: `1/2^4 = 1/16` of
+   the gap, per ray, per tick, through each end's own thermal mass. With 8 rays
+   the worst-case aggregate is 8/16 = **half the gap per tick**. The stability
+   ladder for "close fraction f of a gap per tick" is: f ≤ 1 monotone approach
+   (no overshoot), 1 < f < 2 decaying oscillation, f > 2 divergence. Conduction's
+   own accepted bound sits exactly AT the monotone line (4 faces × 1/4 = 1); the
+   radiation limiter sits at 1/2 — **2× inside conduction's line, 4× from
+   divergence**. In normal operation the T⁴ net is far below the budget and the
+   limiter is inert — it is a rail against the T³-steepening at extreme gaps
+   (T_MAX_PHYS-scale events), not part of the felt law; gate (e)'s monotone-
+   convergence check is what validates it empirically. It is a power-of-two shift
+   for the same reason `cool_shift`/`face_shift` are: one arithmetic shift, no
+   multiply, deterministic — and it is a stability constant, not a feel dial.
+   Citation to archive with the patch: Levermore & Pomraning 1981
    (flux-limited diffusion) + Howell/Mengüç/Siegel, *Thermal Radiation Heat
    Transfer* (net exchange, view factors) → `docs/papers/`.
 7. **Signed accumulation needs its own plane and a signed conversion.** Two traps,
@@ -114,13 +128,36 @@ rad[s]  −= net                                 // emitter loses THE SAME integ
      the existing absorption-proportional branch. `heat[]` and its painter contract
      are left untouched until P-R4 deletes the painter.
 8. **What still emits.** Emitters = burning tiles ∪ `thermal_solid` tiles with
-   `T ≥ T_emit_gate` (new global; propose 60 game = 413 K, where εσT⁴ ≈ 1.5 kW/m²
-   ≈ 1% of flame flux — below it the exchange is COOL_SHIFT noise). A hot
-   *non-burning* crate/steel slab now radiates to its neighbours and **loses** what
-   it gives — post-fire char glow, warm walls behind steel, all fall out. NB
-   `cool_shift` today lumps *all* losses including radiation; once radiation is
-   explicit the blessed retune (P-R5) should expect furniture/wood `cool_shift` to
-   drift up (slower non-radiative loss) — noted so nobody double-counts.
+   `T ≥ T_emit_gate` — new global, **default 180 game = 653 K (Erik, amended
+   2026-07-31; was 60)**, measure-then-adjust in BOTH directions.
+   **The load-bearing asymmetry: receivers are free.** The net form accounts a
+   cold tile fully on the *flame's* rays — a crate never needs to emit to be
+   correctly heated. The gate only decides who CASTS, i.e. who can radiatively
+   *lose* heat and warm others. So raising it drops only the self-emission of
+   lukewarm tiles: at 60 game (413 K) that emission is ~1.5 kW/m² surface (3.3%
+   of the flame's ~44), at the 180 ceiling ~9.3 kW/m² (21%) — and a cooling char
+   spends only ~1 cool_shift-9 e-fold (~23 s) crossing [60, 180], during which it
+   under-sheds and the sub-gate regime is simply today's accepted lumped model
+   (`cool_shift` does the shedding). Below the gate the OLD physics runs; above
+   it, explicit radiation displaces the lump — the gate is where the handover
+   happens, not where correctness begins.
+   **The cost argument that decided the default** [derived — gate (g) measures]:
+   at gate 60, the hull ring around a large fire plausibly crosses the gate and
+   the whole wall ring starts casting — the exact emitter-count blow-up E2
+   fears; at 180 (with hull's 1.3 s e-fold keeping walls cool), emitters stay
+   confined to tiles that are burning or recently were. Post-fire warm-emitter
+   tail: ~13 s above 180 vs ~37 s above 60 for a 336-game char.
+   **Known artifact, bounded and named:** a tile whose with-radiation equilibrium
+   sits just below the gate and without-radiation equilibrium just above it will
+   dither across the gate, amplitude bounded by the per-tick radiative ΔT (the
+   limiter caps it) — deterministic and expected-invisible. If it ever shows on
+   a bench, the named fix is a hysteresis pair (`emit_on`/`emit_off`, e.g.
+   190/170), NOT a smaller tick. NB `cool_shift` today lumps *all* losses
+   including radiation; once radiation is explicit the blessed retune (P-R5)
+   should expect furniture/wood `cool_shift` to drift up (slower non-radiative
+   loss) — noted so nobody double-counts. Lowering the gate back toward 60 is
+   the FEEL lever (warm objects gently toasting their surroundings) and costs
+   emitter count; raising it further is the COST lever and costs post-fire glow.
 
 **Where the burning tile's own temperature now comes from — the load-bearing
 consequence.** With the painter gone, a lone crate's radiation *nets to zero* at
@@ -157,8 +194,9 @@ marched cell, radiation adds: 2 table loads, 1 subtract, 2 multiplies
 (τ·w folded to one q16), 2 shifts + 2 compares (limiter), 2 atomic adds — vs the
 painter's 1 multiply + 1 add. Air cells (the vast majority of marched cells) do
 **less** than today: no deposit at all. Emitter count rises from `burning` to
-`burning ∪ warm` — bounded ~2–4× post-burn by `T_emit_gate` **[assumption —
-measured at gate (g)]**. Baseline: 600-source batched CUDA cast = 1.5 ms
+`burning ∪ warm` — at `T_emit_gate = 180` the warm set is tiles that are burning
+or recently were (~1.2–1.5× post-burn; the wall ring stays sub-gate, A1.8)
+**[assumption — measured at gate (g)]**. Baseline: 600-source batched CUDA cast = 1.5 ms
 **[measured, S8c]**; linear scaling ⇒ ~3–6 ms worst-case firestorm, sub-ms for
 normal scenes. CPU reference path scales the same way in ray count. **Verdict:
 fits the budget, with gate (g) enforcing it at 2× and E2 as the escape.**
@@ -306,9 +344,10 @@ docs committed to the branch before any dependent agent spawns.
   `T_FLAME_MAX`, `coarse_cluster`, `update_from_fire`, `fuel_ref` (already
   inert), the painter deposit itself.
 - **Born:** `I_cap_per_avail` (c = 2.53), `H_BED_M`/`H_BED_SHIFT` (lumped, one
-  logical constant), `T_emit_gate` (60), `ignition_to_ext_delta` (100),
-  `LIM_SHIFT` (4, a stability constant not a dial), the `E(T)` bake (ε from
-  `heat_atten` — zero new per-material columns).
+  logical constant), `T_emit_gate` (180 — Erik; lower = feel lever, higher =
+  cost lever, A1.8), `ignition_to_ext_delta` (100), `LIM_SHIFT` (4, a stability
+  constant not a dial), the `E(T)` bake (ε from `heat_atten` — zero new
+  per-material columns).
 - **Retunes at P-R5:** `k_die` → 0.035, `wall_damage` → ~0.5 (fuel-governed
   6–8 min), `cool_shift` may drift up (radiation now explicit), `k_grow` only if
   Erik wants a slower ramp — it is finally free to move alone.
