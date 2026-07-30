@@ -669,7 +669,8 @@ PYBIND11_MODULE(breach_physics, m) {
              float I_min, float k_wind_fan, float k_wind_strip,
              float fire_pressure_gain, float smoke_emission,
              float wall_damage, float temp_scale, float temp_gain_scale,
-             float T_FLAME_MAX) -> py::list {
+             float T_FLAME_MAX,
+             py::object fuel_recip) -> py::list {   // FUEL-FRACTION AXIS
               auto [f, h, w]     = get_2d(fire);
               auto [atm, h2, w2] = get_2d_const(atmosphere);
               auto [o2, h2b, w2b] = get_2d_const(n_o2);
@@ -682,12 +683,23 @@ PYBIND11_MODULE(breach_physics, m) {
               auto [wl, h8, w8]  = get_2d_const(is_wall);
               auto [vac, h9, w9] = get_2d_const(is_vacuum);
               auto [fl, h10, w10] = get_2d_const(flammable);
+              // FUEL-FRACTION AXIS: OPTIONAL per-tile 1/hp plane (int64).
+              // None -> nullptr -> the `fuel_ref` scalar fallback, which is the
+              // pre-axis law bit-for-bit. Same nullable-plane idiom the
+              // cool-shift axis uses on the temperature kernel.
+              const int64_t* fr = nullptr;
+              py::array_t<int64_t> fr_arr;
+              if (!fuel_recip.is_none()) {
+                  fr_arr = fuel_recip.cast<py::array_t<int64_t>>();
+                  auto fv = fr_arr.unchecked<2>();
+                  fr = fv.data(0, 0);
+              }
               auto destroyed = breach_cuda::fire_step(
                   f, atm, o2, nt, sm, whp, temp, wx, wy, wl, vac, fl, h, w, dt,
                   k_grow, k_die, fire_T_ext, fire_T_span, fuel_ref, o2_frac_ext,
                   o2_frac_full, I_min, k_wind_fan, k_wind_strip, fire_pressure_gain,
                   smoke_emission, wall_damage, temp_scale, temp_gain_scale,
-                  T_FLAME_MAX);
+                  T_FLAME_MAX, fr);
               py::list result;
               for (const auto& [dy, dx] : destroyed) {
                   result.append(py::make_tuple(dy, dx));
@@ -705,6 +717,7 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("fire_pressure_gain"),
           py::arg("smoke_emission"), py::arg("wall_damage"), py::arg("temp_scale"),
           py::arg("temp_gain_scale"), py::arg("T_FLAME_MAX"),
+          py::arg("fuel_recip") = py::none(),   // fuel-fraction axis (optional)
           "P6.8 isolated: run ONE GPU fire step (re-derived — continuous-O2 "
           "mole-fraction gate + plume->T shim) in place on "
           "fire/smoke/wall_hp/temperature (bit-identical to FireSimulation.step) "
@@ -1173,6 +1186,20 @@ PYBIND11_MODULE(breach_physics, m) {
           "Q2-LIFT: pure-integer cos on Q16.16 radians (output Q16.16 in "
           "[-65536, 65536]; accuracy pinned for |a| <= 4*pi, any int32 defined).");
 
+    // FUEL-FRACTION AXIS (2026-07-30): the load-time reciprocal bake itself,
+    // exposed so Python can be GATED against it rather than trusted to
+    // reproduce it. `src/simulation/materials.fuel_recip_from_hp` bakes each
+    // material's 1/hp for `GameMap.fuel_recip`, and that plane must be
+    // BIT-IDENTICAL to what `fixedpoint::make_recip` would have produced in the
+    // solver — a one-ULP disagreement is a determinism bug, not a rounding
+    // detail. tests/test_fuel_fraction_axis.py compares the two over every
+    // shipped material and a wide sweep through this entry point.
+    m.def("fp_make_recip",
+          [](double divisor) { return fixedpoint::make_recip(divisor); },
+          py::arg("divisor"),
+          "fixed_point.h make_recip: round(2^32 / divisor) as an int64, the "
+          "load-time reciprocal `recip_mul` consumes. Divisor must be > 0.");
+
     // S2a: the explicit WAVE state (wave_p / wave_v / wave_source) is now int32
     // Q16.16 (same 2^16 scale as water/heat). Python (gamemap fields, field
     // edits, the recorder boundary, tests) reads this flag to allocate the wave
@@ -1390,7 +1417,8 @@ PYBIND11_MODULE(breach_physics, m) {
                         py::array_t<bool>  is_wall,
                         py::array_t<bool>  is_vacuum,
                         py::array_t<bool>  flammable,
-                        float dt) -> py::list {
+                        float dt,
+                        py::object fuel_recip_obj) -> py::list {
             auto [f, h, w] = get_2d(fire);
             auto [atm, h2, w2] = get_2d_const(atmosphere);   // EOS P3: read-only (== P)
             auto [o2, h2b, w2b] = get_2d_const(n_o2);        // fraction numerator (read-only)
@@ -1403,8 +1431,23 @@ PYBIND11_MODULE(breach_physics, m) {
             auto [wl, h8, w8] = get_2d_const(is_wall);
             auto [vac, h9, w9] = get_2d_const(is_vacuum);
             auto [fl, h10, w10] = get_2d_const(flammable);
+            // FUEL-FRACTION AXIS (2026-07-30): the per-tile 1/hp plane is
+            // OPTIONAL (default None) — None -> nullptr, and the solver then
+            // normalises F by the scalar `params.fuel_ref`, which is the
+            // pre-axis behaviour BIT-FOR-BIT. This is the documented
+            // back-compat idiom the thermal-mass axis established on the
+            // standalone TemperatureSolver binding: every shipped DIRECT caller
+            // of this binding (tests, tools) keeps its exact prior meaning,
+            // while the engine's step_tail always passes GameMap.fuel_recip.
+            const int64_t* fr = nullptr;
+            py::array_t<int64_t> fr_arr;
+            if (!fuel_recip_obj.is_none()) {
+                fr_arr = fuel_recip_obj.cast<py::array_t<int64_t>>();
+                auto fv = fr_arr.unchecked<2>();
+                fr = fv.data(0, 0);
+            }
             auto destroyed = self.step(f, atm, o2, nt, sm, whp, temp, wx, wy,
-                                       wl, vac, fl, h, w, dt);
+                                       wl, vac, fl, h, w, dt, fr);
             py::list result;
             for (const auto& [dy, dx] : destroyed) {
                 result.append(py::make_tuple(dy, dx));
@@ -1414,7 +1457,8 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("smoke"), py::arg("wall_hp"), py::arg("temperature"),
            py::arg("wind_x"), py::arg("wind_y"),
            py::arg("is_wall"), py::arg("is_vacuum"), py::arg("flammable"),
-           py::arg("dt"));
+           py::arg("dt"),
+           py::arg("fuel_recip") = py::none());   // fuel-fraction axis (optional)
 
     // --- TemperatureSolver (heat -> temperature conversion §1 + conduction §2
     //     + ambient cooling §3; engine/06 §1–§3) ---
@@ -2173,6 +2217,13 @@ PYBIND11_MODULE(breach_physics, m) {
                              // engine must never silently fall back to the
                              // single global COOL_SHIFT.
                              py::array_t<int32_t> cool_shift_grid,
+                             // FUEL-FRACTION AXIS: the per-tile 1/hp plane
+                             // (GameMap.fuel_recip) the fire logistic's fuel
+                             // term reads — REQUIRED for the same reason
+                             // thermal_solid/cool_shift_grid are: the live
+                             // engine must never silently fall back to the
+                             // single global [physics.fire] fuel_ref.
+                             py::array_t<int64_t> fuel_recip,
                              // EOS P3: bulk-N source (Pass-1 heat divisor)
                              py::array_t<int32_t> gas,
                              py::array_t<bool> gas_conservative,
@@ -2208,6 +2259,10 @@ PYBIND11_MODULE(breach_physics, m) {
             auto [tsol, h17, w17] = get_2d_const(thermal_solid);
             // COOL-SHIFT AXIS: the per-tile ambient-decay shift.
             auto [csg, h18, w18] = get_2d_const(cool_shift_grid);
+            // FUEL-FRACTION AXIS: the per-tile 1/hp plane (int64 — a
+            // RECIP_SHIFT=32 reciprocal does not fit int32).
+            auto fr_v = fuel_recip.unchecked<2>();
+            const int64_t* fr = fr_v.data(0, 0);
             // EOS P3: (N,h,w) gas + the conservative flags — step_tail sums
             // the bulk planes for the temperature Pass-1 N divisor.
             auto gv = gas.unchecked<3>();
@@ -2227,7 +2282,7 @@ PYBIND11_MODULE(breach_physics, m) {
             auto destroyed = self.step_tail(
                 rip, ripv, wd, wp, sol,
                 f, atm, sm, whp, temp, wx, wy, vac, fl,
-                temp, hp, shift, fs, tsol, csg,
+                temp, hp, shift, fs, tsol, csg, fr,
                 gas_ptr, gcons, n_gases, o2_idx,
                 h, w, sim_time, amb);
             py::list result;
@@ -2244,6 +2299,7 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("heat"), py::arg("heat_inv_shift"), py::arg("face_shift"),
            py::arg("thermal_solid"),             // thermal-mass axis (required)
            py::arg("cool_shift_grid"),           // cool-shift axis (required)
+           py::arg("fuel_recip"),                // fuel-fraction axis (required)
            py::arg("gas"), py::arg("gas_conservative"), py::arg("o2_idx"),
            py::arg("sim_time"),
            py::arg("is_ambient") = py::none())   // BC (default None = space map)

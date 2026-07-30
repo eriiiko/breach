@@ -94,7 +94,15 @@ std::vector<std::pair<int, int>> fire_step(
     float fuel_ref, float o2_frac_ext, float o2_frac_full, float I_min,
     float k_wind_fan, float k_wind_strip, float fire_pressure_gain,
     float smoke_emission, float wall_damage,
-    float temp_scale, float temp_gain_scale, float T_FLAME_MAX);
+    float temp_scale, float temp_gain_scale, float T_FLAME_MAX,
+    // FUEL-FRACTION AXIS (2026-07-30) — OPTIONAL read-only int64 (h,w) plane:
+    // per tile, the make_recip reciprocal of that tile's MATERIAL's full-health
+    // hp (GameMap.fuel_recip). The fuel term becomes
+    // F = clamp01(recip_mul(wall_hp[i], fuel_recip[i])) — this tile's OWN fuel
+    // fraction, not wood's. nullptr -> the `fuel_ref` scalar above, i.e. the
+    // pre-axis law bit-for-bit (nothing is allocated or copied in that case).
+    // The CPU twin takes the identical nullable plane; tol 0 between them.
+    const int64_t* fuel_recip = nullptr);
 
 // Backend selection (S6 gate + integration). When true, PhysicsEngine::step_tail
 // runs the fire step on the GPU instead of the CPU FireSimulation::step. Defaults

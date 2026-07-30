@@ -124,6 +124,7 @@ __global__ void fire_logistic(int32_t* __restrict__ fire,
                               const bool* __restrict__ is_wall,
                               const bool* __restrict__ is_vacuum,
                               const bool* __restrict__ flammable,
+                              const int64_t* __restrict__ fuel_recip,
                               int h, int w,
                               int32_t dt_q, int32_t k_grow_q, int32_t k_die_q,
                               int32_t k_wind_fan_q, int32_t k_wind_strip_q,
@@ -146,8 +147,12 @@ __global__ void fire_logistic(int32_t* __restrict__ fire,
             ? temperature[i]
             : recip_mul_dev(temperature[i], recip_temp_scale);
 
-        // F: fuel from remaining wall HP, normalised, clamped to [0,1].
-        const q16 F = clamp01_q_dev(recip_mul_dev(wall_hp[i], recip_fuel_ref));
+        // F: fuel from remaining wall HP, normalised by THIS TILE'S OWN full
+        // health (fuel-fraction axis, 2026-07-30), clamped to [0,1]. The
+        // per-tile reciprocal comes from the `fuel_recip` plane when supplied,
+        // else the scalar recip_fuel_ref fallback — VERBATIM the CPU branch.
+        const int64_t recip_fuel = fuel_recip ? fuel_recip[i] : recip_fuel_ref;
+        const q16 F = clamp01_q_dev(recip_mul_dev(wall_hp[i], recip_fuel));
 
         // X: local O2 MOLE FRACTION over OPEN (non-solid, non-vacuum)
         // 4-neighbours — continuous-O2 law (design §2.1). Both sums int64,
@@ -346,7 +351,8 @@ std::vector<std::pair<int, int>> fire_step(
     float fuel_ref, float o2_frac_ext, float o2_frac_full, float I_min,
     float k_wind_fan, float k_wind_strip, float fire_pressure_gain,
     float smoke_emission, float wall_damage,
-    float temp_scale, float temp_gain_scale, float T_FLAME_MAX) {
+    float temp_scale, float temp_gain_scale, float T_FLAME_MAX,
+    const int64_t* fuel_recip) {   // FUEL-FRACTION AXIS (nullable, see header)
     (void)atmosphere;   // EOS P4: vestigial — the CPU step keeps it in its
                         // signature (ABI parity) but no longer reads it (the O2
                         // gate moved to n_o2; the plume self-limiter to T).
@@ -408,6 +414,11 @@ std::vector<std::pair<int, int>> fire_step(
             *d_whp = nullptr, *d_temp = nullptr, *d_wx = nullptr, *d_wy = nullptr;
     bool *d_wall = nullptr, *d_vac = nullptr, *d_flam = nullptr;
     int *d_counter = nullptr, *d_destroyed_idx = nullptr;
+    // FUEL-FRACTION AXIS: the OPTIONAL per-tile 1/hp plane. nullptr host plane
+    // -> nullptr device plane, nothing allocated and nothing copied, and the
+    // kernel takes the scalar fallback — the documented nullable-plane idiom
+    // the cool-shift axis uses on the temperature kernel.
+    int64_t *d_fuel_recip = nullptr;
 
     cuda_check(cudaMalloc(&d_fire, nb), "malloc fire");
     cuda_check(cudaMalloc(&d_n_o2, nb), "malloc n_o2");
@@ -436,6 +447,13 @@ std::vector<std::pair<int, int>> fire_step(
     cuda_check(cudaMemcpy(d_vac, is_vacuum, nbool, cudaMemcpyHostToDevice), "H2D is_vacuum");
     cuda_check(cudaMemcpy(d_flam, flammable, nbool, cudaMemcpyHostToDevice), "H2D flammable");
     cuda_check(cudaMemset(d_counter, 0, sizeof(int)), "memset counter");
+    if (fuel_recip) {
+        cuda_check(cudaMalloc(&d_fuel_recip, (size_t)n * sizeof(int64_t)),
+                   "malloc fuel_recip");
+        cuda_check(cudaMemcpy(d_fuel_recip, fuel_recip,
+                              (size_t)n * sizeof(int64_t),
+                              cudaMemcpyHostToDevice), "H2D fuel_recip");
+    }
 
     const int block = 256;
     const int grid = (n + block - 1) / block;
@@ -444,7 +462,7 @@ std::vector<std::pair<int, int>> fire_step(
     // mean; reads wall_hp/temp/wind/masks).
     fire_logistic<<<grid, block>>>(
         d_fire, d_n_o2, d_n_total, d_whp, d_temp, d_wx, d_wy, d_wall, d_vac,
-        d_flam, h, w,
+        d_flam, d_fuel_recip, h, w,
         dt_q, k_grow_q, k_die_q, k_wind_fan_q, k_wind_strip_q, fire_T_ext_q,
         x_ext_q, X_N_FLOOR, I_min_q, temp_is_identity, recip_temp_scale,
         recip_fuel_ref, recip_T_span, recip_x_span, x_degenerate);
@@ -513,6 +531,7 @@ std::vector<std::pair<int, int>> fire_step(
     cudaFree(d_flam);
     cudaFree(d_counter);
     cudaFree(d_destroyed_idx);
+    cudaFree(d_fuel_recip);   // nullptr-safe (no plane supplied -> never allocated)
 
     return destroyed;
 }

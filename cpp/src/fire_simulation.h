@@ -7,7 +7,11 @@
 // step is purely the per-tile life/death of an ALREADY-lit fire:
 //
 //   T     = temperature[i]                         (Q16.16; temp_scale == FP_ONE)
-//   F     = clamp01(wall_hp[i] / fuel_ref)         (fuel from remaining wall HP)
+//   F     = clamp01(wall_hp[i] / hp_full[i])       (fuel fraction of THIS tile's
+//                                                   OWN material — the per-tile
+//                                                   `fuel_recip` plane below;
+//                                                   falls back to the global
+//                                                   fuel_ref when absent)
 //   X     = Σn_o2 / Σn_total  over OPEN (non-solid, non-vacuum) 4-neighbours
 //                                                  (local O2 MOLE FRACTION)
 //   W     = sqrt(wind_x^2 + wind_y^2)              (the SHARED wind field)
@@ -51,7 +55,18 @@ struct FireParams {
     float k_die          = 2.0f;   // decay rate when starved/cold (1/s)
     float fire_T_ext     = 350.0f; // extinction temperature (~ignition_temp + 50)
     float fire_T_span    = 150.0f; // width of the `hot` ramp above T_ext
-    float fuel_ref       = 60.0f;  // wall_hp normaliser: F = clamp01(wall_hp/fuel_ref)
+    // fuel_ref: SUPERSEDED as the fuel normaliser by the per-tile `fuel_recip`
+    // plane (fuel-fraction axis, 2026-07-30 — see FireSimulation::step). It was
+    // ONE GLOBAL standing in for a PER-MATERIAL quantity: F is meant to be "the
+    // fraction of THIS tile's fuel remaining", and 60.0 is WOOD's hp, so a
+    // full-health furniture crate (hp 30) permanently read F = 0.5 — half burnt
+    // out before it was ever lit, and below the sustain ceiling at ambient O2 at
+    // any intensity. Lowering it is NOT the fix (at 30, wood would clamp at
+    // F = 1 until it had lost half its mass). KEPT, and still live, in exactly
+    // one role: the FALLBACK divisor when a caller passes no `fuel_recip` plane
+    // (nullptr), which is the pre-axis behaviour bit-for-bit. Same tombstone
+    // shape as `o2_frac_amb` above.
+    float fuel_ref       = 60.0f;  // fallback wall_hp normaliser (no plane)
     // --- continuous O2 law (docs/continuous_o2_law_design_2026-07-24.md) -------
     // The O2 factor is now LINEAR in the local O2 MOLE FRACTION X = Σn_o2/Σn_total
     // over open neighbours (Peatross & Beyler 1997: compartment burning rate
@@ -174,6 +189,16 @@ public:
     //   is_wall     : bool (h, w) solid mask (a fire tile is itself solid).
     //   is_vacuum   : bool (h, w) vacuum mask (excluded from the O2 neighbour mean).
     //   flammable   : bool (h, w) fuel mask (fire only lives on fuel).
+    //   fuel_recip  : int64 (h, w) OPTIONAL (nullptr -> the scalar `fuel_ref`
+    //                 fallback, i.e. the pre-axis law bit-for-bit). The
+    //                 FUEL-FRACTION AXIS (2026-07-30): per tile, the
+    //                 `fixedpoint::make_recip` reciprocal of that tile's
+    //                 MATERIAL's full-health hp, baked once at load in
+    //                 GameMap.fuel_recip. F = clamp01(recip_mul(wall_hp[i], r))
+    //                 with r taken per tile, so a crate reads its own fuel
+    //                 fraction instead of wood's. int64 because a RECIP_SHIFT=32
+    //                 reciprocal exceeds int32 for small divisors; the runtime
+    //                 op is still ONE multiply (recip_mul), NO divide.
     std::vector<std::pair<int, int>> step(
         int32_t* fire,             // S3b: Q16.16 (was float)
         const int32_t* atmosphere, // S2c: Q16.16 == P (EOS P3: READ-ONLY, plume only)
@@ -190,7 +215,8 @@ public:
         const bool* is_vacuum,
         const bool* flammable,
         int h, int w,
-        float dt
+        float dt,
+        const int64_t* fuel_recip = nullptr   // FUEL-FRACTION AXIS (see above)
     ) const;
 
     // --- DEBUG probe (temporary instrumentation, eos-p3fix-thermal-ceiling

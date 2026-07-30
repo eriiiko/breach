@@ -59,7 +59,14 @@ FIRE_K_GROW         = 4.0    # logistic growth gain (1/s)
 FIRE_K_DIE          = 2.0    # decay rate when starved/cold (1/s)
 FIRE_T_EXT          = 350.0  # extinction temperature (~ignition_temp + 50)
 FIRE_T_SPAN         = 150.0  # width of the `hot` ramp above T_ext
-FIRE_FUEL_REF       = 60.0   # wall_hp normaliser: F = clamp01(wall_hp/fuel_ref)
+# FIRE_FUEL_REF: SUPERSEDED as the fuel normaliser by the per-tile
+# `GameMap.fuel_recip` plane (fuel-fraction axis, 2026-07-30). F is "the
+# fraction of THIS tile's fuel remaining", and 60.0 is WOOD's hp — one global
+# standing in for a per-material quantity, so a full-health furniture crate
+# (hp 30) permanently read F = 0.5. Still bound (below) because the solver keeps
+# it as the FALLBACK divisor when no per-tile plane is supplied; the live engine
+# always supplies one.
+FIRE_FUEL_REF       = 60.0   # fallback wall_hp normaliser (superseded, see above)
 # Continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md): o2f is LINEAR
 # in the local O2 mole fraction X = Σn_o2/Σn_total, with an extinction limit.
 FIRE_O2_FRAC_EXT    = 0.13   # X_ext: flame-extinction O2 mole fraction (0 = pure proportional)
@@ -648,6 +655,14 @@ class PhysicsRunner:
             # decay, and one global cannot be right for a hull plate and a
             # wooden crate at once.
             gmap.cool_shift,
+            # FUEL-FRACTION AXIS (2026-07-30): the per-tile reciprocal of each
+            # tile's material's OWN full-health hp, which the fire logistic's
+            # fuel term F = clamp01(wall_hp/hp_full) reads. Per-material because
+            # F means "the fraction of THIS tile's fuel left" and the retired
+            # global [physics.fire] fuel_ref (60.0) is WOOD's hp — so a
+            # full-health crate (hp 30) read F = 0.5 forever and could not clear
+            # the sustain ceiling at ambient O2 at any intensity.
+            gmap.fuel_recip,
             gmap.gas, gmap.gases.conservative, self._o2_idx,
             sim_time,
             # BC: the ambient ring is wiped to ΔT=0 in the temperature pre-pass
@@ -934,6 +949,7 @@ class PhysicsRunner:
             gmap.heat, gmap.heat_inv_shift, gmap.face_shift,
             gmap.thermal_solid,          # thermal-mass axis (host mirror)
             gmap.cool_shift,             # cool-shift axis (host mirror)
+            gmap.fuel_recip,             # fuel-fraction axis (host mirror)
             gmap.gas, gmap.gases.conservative, self._o2_idx,
             sim_time,
             is_ambient=amb[0],

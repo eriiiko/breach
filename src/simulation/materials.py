@@ -111,6 +111,46 @@ _THERMAL_DEFAULTS = {
 # slip, a Kelvin value pasted into the wrong column) than an intent.
 _COOL_SHIFT_MAX = 20
 
+# FUEL-FRACTION AXIS (2026-07-30) — the reciprocal shift `fixedpoint::make_recip`
+# uses (``fixed_point.h``: ``constexpr int RECIP_SHIFT = 32``). The fire logistic
+# divides by a per-tile constant with a load-time reciprocal + a 128-bit multiply
+# (``recip_mul``), never a runtime divide, because the sim path is Q16.16 integer
+# and determinism is a hard requirement. This mirror exists so the per-material
+# reciprocal can be baked HERE, where the material table lives, instead of
+# shipping an `hp` plane to C++ and dividing per cell.
+_FUEL_RECIP_SHIFT = 32
+
+
+def fuel_recip_from_hp(hp) -> int:
+    """Bake ``round(2**32 / hp)`` exactly as ``fixedpoint::make_recip`` does.
+
+    THE CONTRACT: this must be bit-identical to the C++ ``make_recip``, which is
+
+        double r = (double)((int64_t)1 << 32) / divisor_real;
+        return (int64_t)(r + 0.5);
+
+    i.e. one IEEE-754 binary64 divide, ``+ 0.5``, then truncation toward zero.
+    Python's ``/`` on ints/floats IS that same binary64 divide and ``int()`` IS
+    that same truncation, so the two agree on every input, on every machine —
+    the same "IEEE double is bit-identical cross-machine for load-time scalar
+    constants" rule the whole fixed-point migration rests on (S1 locked
+    decision). ``tests/test_fuel_fraction_axis.py`` pins the agreement against
+    the real C++ ``make_recip`` (exposed as ``breach_physics.fp_make_recip``)
+    for every shipped material and a wide sweep, so a divergence cannot pass CI.
+
+    ``hp <= 0`` (air, and any future massless material) returns **0**, the
+    deliberate safe value: it is never a divide, and ``recip_mul(x, 0) == 0``
+    makes the fuel fraction read F = 0, "no fuel here" — the honest answer for a
+    tile with no substance. Those tiles are unreachable in practice (the
+    logistic runs under ``if (!flammable[i]) continue`` and nothing flammable
+    has hp 0), but a sentinel that quietly means "infinite fuel" would be a trap
+    waiting for the first flammable-gas material, so it means the opposite.
+    """
+    hp_f = float(hp)
+    if not (hp_f > 0.0):
+        return 0
+    return int((float(1 << _FUEL_RECIP_SHIFT) / hp_f) + 0.5)
+
 
 class MaterialTable:
     """Per-material property table, indexed by material id.
@@ -267,6 +307,32 @@ class MaterialTable:
                 )
             cool_shifts.append(cs)
         self.cool_shift = np.array(cool_shifts, dtype=np.int32)
+
+        # fuel_recip: the per-id FUEL-FRACTION NORMALISER — the reciprocal of
+        # this material's OWN full-health `hp`, baked once at LOAD in the exact
+        # form `fixedpoint::make_recip` bakes it (fuel-fraction axis,
+        # 2026-07-30). The fire logistic's fuel term is
+        #     F = clamp01(wall_hp[i] / <this tile's full hp>)
+        # "the fraction of THIS tile's fuel still left", so the divisor is a
+        # per-material quantity by nature. It was one global
+        # ([physics.fire] fuel_ref = 60.0) — which is WOOD's hp — so every
+        # material whose hp differs from wood's read a permanently wrong fuel
+        # fraction: a brand-new furniture crate (hp 30) reported F = 0.5, i.e.
+        # half burnt out the instant it was placed. Since sustain needs
+        # k_die/k_grow < a/(1-a) with a = F*o2f*hot, that halving alone put a
+        # crate fire below the sustain ceiling at ambient O2 at ANY intensity
+        # or temperature. Lowering the global instead is not a fix: at
+        # fuel_ref = 30 wood (hp 60) would clamp at F = 1 until it had already
+        # lost half its mass, destroying its burn-down curve. One number cannot
+        # serve two materials — the same argument `thermal_mass`, `cool_shift`
+        # and `fire_T_ext` each won before it. The per-tile projection is
+        # ``GameMap.fuel_recip``.
+        #
+        # DERIVED, NOT A DIAL: there is no `fuel_recip` config column and there
+        # must never be one — it is a pure function of the row's existing `hp`,
+        # so the fuel fraction and the health bar can never disagree.
+        self.fuel_recip = np.array(
+            [fuel_recip_from_hp(v) for v in self.hp.tolist()], dtype=np.int64)
 
         # --- Conduction face-shift tables (engine/06 §2.4–§2.5) ---------------
         # All log2 / harmonic-mean / division happens HERE, at LOAD, in float;

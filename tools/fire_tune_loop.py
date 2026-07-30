@@ -184,12 +184,30 @@ TUNE = {
     #   a/(1-a) = 0.1013, and 0.080 lands I_eq = 0.210 — exactly Erik's anchor
     #   (0.49 @ X=0.25, 0.67 @ X=0.30, 1.00 at pure O2: normal air is not a
     #   maximum, which is the point).
-    #   ** CAVEAT, measured 2026-07-30: F = clamp01(wall_hp/fuel_ref) and
-    #   fuel_ref below is 40 while furniture hp is 30, so a FULL-HEALTH crate
-    #   has F = 0.75, not 1. That drops a to 0.069, a/(1-a) to 0.0741 — BELOW
-    #   0.080 — so the anchor's own arithmetic predicts a fire that cannot
-    #   sustain on this crate at any intensity. fuel_ref is Erik's call, not
-    #   this bench's; left at 40 and reported. **
+    #   ** CAVEAT RESOLVED 2026-07-30 by the FUEL-FRACTION AXIS. It used to read:
+    #   "F = clamp01(wall_hp/fuel_ref) and fuel_ref below is 40 while furniture
+    #   hp is 30, so a FULL-HEALTH crate has F = 0.75, not 1" — and with the
+    #   SHIPPED fuel_ref = 60 it was worse still (F = 0.5, ceiling 0.048, i.e.
+    #   no sustain at any intensity or temperature). F now normalises against
+    #   the tile's OWN material hp, so a pristine crate reads F = 1 and the
+    #   arithmetic above is the arithmetic that runs: ceiling 0.1013 > 0.080,
+    #   I_eq = 0.210. VERIFIED at the solver with `hot` pinned to 1: the fire
+    #   settles at I = 0.2043 (the 3% shortfall is Q16.16 truncation near the
+    #   fixed point), where the pre-patch F = 0.5 crate collapses to 0. **
+    #
+    #   ** STILL NOT ENOUGH ON THE BENCH — two limiters sit BEHIND the fuel one,
+    #   both measured 2026-07-30 at exactly these dials, both Erik's call:
+    #     (1) THE I_crit CLIFF (bench report §4, warning 2 above). T*(I_seed) =
+    #         k_fire_heat * 0.1 * 2^(9-3) = 211 game, and fire_T_ext is 250, so
+    #         `hot` collapses from the warm seed's 0.30 toward 0 and takes `a`
+    #         with it. Measured: peak I 0.0999 (never above the seed), max
+    #         T 279.9, max hot 0.2989, death 0.87 min.
+    #     (2) THE Q16.16 GROWTH QUANTUM. Even with hot pinned at 1, the LARGEST
+    #         dI/dt anywhere on this logistic is 3.547e-4 /s == 0.969 Q16.16
+    #         counts per 1/24 s tick — it TRUNCATES TO ZERO. The ratio 0.080 is
+    #         right; the MAGNITUDE (k_grow 0.35 / k_die 0.028) is below the
+    #         fixed-point tick quantum. The same ratio at 5x/10x magnitude
+    #         converges to I = 0.198 / 0.204 as the analytic says. **
     #   Realised as 0.35 / 0.028: the RATIO sets peak height, the MAGNITUDE
     #   sets ramp speed (magnitude carried from the previous measured point,
     #   which had its peak time in band).
@@ -210,7 +228,17 @@ TUNE = {
                                               # (2026-07-30 split; NOT ambient —
                                               # ambient air now gives o2f 0.092,
                                               # so k_die/k_grow moves ~10x with it)
-    "fuel_ref": 40.0,
+    # fuel_ref REMOVED from the TUNE block 2026-07-30 (FUEL-FRACTION AXIS). It
+    # is now INERT in the live engine: F normalises against the tile's OWN
+    # material hp via GameMap.fuel_recip, and the scalar survives only as the
+    # solver's fallback for callers that pass no plane — which the engine never
+    # does. MEASURED, so nobody has to take it on faith: this bench at
+    # fuel_ref = 40 and at fuel_ref = 1000 is byte-identical over 2691 ticks
+    # (only the CSV's recorded override string differs).
+    #   THE CRATE DIAL IS NOW `materials.furniture.hp` — and it is not a fire
+    #   dial, it is the crate's HEALTH. Changing it changes how much punishment
+    #   a crate takes as well as how long it burns. That coupling is the point
+    #   (fuel IS mass); it is not something to reach for casually.
     "k_wind_strip": 0.0,                      # plume self-blow-out off (2026-07-23)
 }
 

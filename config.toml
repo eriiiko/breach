@@ -125,7 +125,9 @@ o2_threshold  = 0.01  # RETIRED — see o2_frac_ext (fire feedback block below)
 # ignition (apply_temperature_ignition above). The fire step is purely the
 # life/death of an already-lit tile. Per burning tile of intensity I in [0,1]:
 #   T     = temperature[i] / TEMP_SCALE              (game units; ignition_temp=300 wood)
-#   F     = clamp01(wall_hp[i] / fuel_ref)           (fuel from remaining wall HP)
+#   F     = clamp01(wall_hp[i] / hp_of_THIS_tile)    (fuel fraction remaining, per
+#           MATERIAL — the [materials.*] hp column, via GameMap.fuel_recip; see the
+#           fuel_ref tombstone below)
 #   O2    = mean REAL gas[o2] over open (non-solid,non-vacuum) 4-neighbours
 #           (EOS refactor P4 — was the atmosphere/P proxy; design §6, item 3)
 #   W     = |wind| from the SHARED wind field (= -grad p, incl. shockwaves)
@@ -146,7 +148,22 @@ k_grow            = 4.0    # logistic growth gain (1/s)
 k_die             = 2.0    # decay rate when starved/cold (1/s)
 fire_T_ext        = 350.0  # extinction temperature (~ignition_temp + 50; below it, fire dies)
 fire_T_span       = 150.0  # width of the `hot` ramp above fire_T_ext
-fuel_ref          = 60.0   # wall_hp normaliser: F = clamp01(wall_hp/fuel_ref)
+# fuel_ref: SUPERSEDED as the fuel normaliser (fuel-fraction axis, 2026-07-30).
+# F means "the fraction of THIS tile's fuel remaining", so its divisor is the
+# tile's OWN material hp — a PER-MATERIAL quantity. This global is 60.0, which is
+# WOOD's hp, so every other flammable material read a permanently wrong fraction:
+# a full-health furniture crate (hp 30) reported F = 0.5, half burnt out before it
+# was ever lit. Since sustain needs k_die/k_grow < a/(1-a) with a = F*o2f*hot, that
+# halving alone put a crate fire below the ceiling at ambient O2 at ANY intensity
+# or temperature (measured 2026-07-30: the crate's T rose correctly and the fire
+# still died). Lowering this global is NOT the fix — at 30, wood (hp 60) would sit
+# clamped at F = 1 until it had already lost half its mass, destroying its
+# burn-down curve. The divisor is now baked per material from [materials.*].hp
+# into GameMap.fuel_recip. KEPT (like o2_frac_amb / o2_threshold above) because
+# the solver still uses it as the FALLBACK divisor when a caller supplies no
+# per-tile plane; the live engine always supplies one, so this value no longer
+# affects the game. Editing it will NOT move the fire — edit the material's hp.
+fuel_ref          = 60.0   # FALLBACK wall_hp normaliser (inert in the live engine)
 # EOS refactor P4 RECALIBRATION (design §6): P_min/P_full used to be read against
 # `atmosphere` (P), where ambient == 1.0. They now read REAL gas[o2], where
 # ambient == ~0.21 (the P1 calibration: 0.21*N_amb O2 / 0.79*N_amb inert_N2, P1

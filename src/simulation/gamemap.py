@@ -8,7 +8,8 @@ form and ``_build_ship`` fallback from the legacy implementation are gone
 
 Owns the cached arrays the physics systems read and write:
 
-    material, wall_hp, solid, thermal_solid, cool_shift, is_vacuum, flammable,
+    material, wall_hp, fuel_recip, solid, thermal_solid, cool_shift,
+    is_vacuum, flammable,
     atmosphere, wave_p, wave_v, wave_source, wind_x, wind_y,
     smoke, fire, obstacles, light_map, heat, smoke_glow
 
@@ -134,6 +135,23 @@ class GameMap:
         # `GameMap.cool_shift`. The EOS (the one resident consumer of
         # `thermal_solid`) does not read this grid at all.
         "cool_shift",
+        # FUEL-FRACTION AXIS (2026-07-30): the per-tile `make_recip` reciprocal
+        # of the material's own full-health hp, which the fire logistic's fuel
+        # term reads (`F = clamp01(wall_hp[i] * fuel_recip[i])`). Joins the
+        # resident set for the same three reasons `cool_shift` did: a device
+        # buffer + ONE upload at :meth:`enable_residency`, the __setattr__
+        # stale-pointer guard (it is REASSIGNED by `_update_caches` and patched
+        # IN PLACE by `on_tile_changed`), and `device_ptrs()["fuel_recip"]` as
+        # the pointer a future resident fire kernel takes.
+        # SAME CAVEAT AS `thermal_solid`/`cool_shift`: NOT static —
+        # `on_tile_changed` patches it whenever a tile's material changes (a
+        # crate burning out is exactly that), so the moment a DEVICE kernel
+        # reads the resident pointer it MUST join the per-tick `from_host` list
+        # in `physics_runner._step_resident`. No device kernel reads it today:
+        # the resident tick's fire pass is a host bracket (`step_tail` on the
+        # mirror) and the per-call CUDA fire kernel does its own H2D from
+        # `GameMap.fuel_recip`.
+        "fuel_recip",
         # S8a Path A: the BC sponge grids — static per map (built ONCE in
         # __init__, never recomputed — unlike is_ambient, which destroy_wall's
         # joins-ambient twin mutates and therefore rides the per-tick EOS
@@ -824,6 +842,23 @@ class GameMap:
         # offset (COOL_SHIFT - COOL_SHIFT_VACUUM) at the cooling site — ONE dial
         # per material, no second grid. See materials.py's `cool_shift` block.
         self.cool_shift = tbl.cool_shift[m].astype(np.int32, copy=True)
+        # FUEL-FRACTION AXIS (2026-07-30) — the per-tile FUEL NORMALISER: the
+        # `make_recip` reciprocal of THIS tile's material's full-health hp, so
+        # the fire logistic's fuel term
+        #     F = clamp01(wall_hp[i] * fuel_recip[i])
+        # is "the fraction of THIS tile's own fuel still left". It was one
+        # global ([physics.fire] fuel_ref = 60.0 — which is WOOD's hp), so a
+        # full-health furniture crate (hp 30) permanently read F = 0.5, half
+        # burnt out before it was ever lit, and a crate fire could not clear the
+        # sustain ceiling at ambient O2 at any intensity or temperature.
+        # DERIVED FROM `hp`, not a new dial — see materials.py's `fuel_recip`.
+        # Built HERE, in the SAME ONE function as `heat_inv_shift` /
+        # `thermal_solid` / `cool_shift`, and patched at the SAME single site in
+        # `on_tile_changed` — the thermal-mass addendum's D3 rule: one seam, so
+        # the future movable-furniture version has one place to become dynamic.
+        # int64 because a Q16.16 reciprocal at RECIP_SHIFT = 32 does not fit
+        # int32 (2^32/hp exceeds INT32_MAX for hp <= 2).
+        self.fuel_recip = tbl.fuel_recip[m].astype(np.int64, copy=True)
         # Per-tile conduction face-shift cache (engine/06 §2.5): baked from the
         # material grid via the harmonic-mean face table. NO_FACE at grid edges
         # and on any kappa==0 (air) face -> structural air no-op (built IN-PLACE
@@ -985,6 +1020,13 @@ class GameMap:
         # air (a moot value there — the cooling pass is thermal-solid only — but
         # the cache must not go stale).
         self.cool_shift[fy, fx] = int(tbl.cool_shift[mat_id])
+        # Fuel-fraction normaliser cache — patched through the SAME seam as
+        # wall_hp above (they are the numerator and the denominator of ONE
+        # quantity, F = wall_hp/hp, and must never come from different
+        # materials): the instant a burnt-out crate becomes air, its fuel
+        # reciprocal becomes air's (0 == "no fuel"), matching the fresh
+        # `wall_hp` this seam just wrote.
+        self.fuel_recip[fy, fx] = int(tbl.fuel_recip[mat_id])
         # Conduction face-shift cache — patch this tile's 4 faces AND the facing
         # entry of each neighbour (a shared face), so a breached wall's thermal
         # coupling to its neighbours updates the instant it changes.

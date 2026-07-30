@@ -66,7 +66,8 @@ std::vector<std::pair<int, int>> FireSimulation::step(
     const bool* is_vacuum,
     const bool* flammable,
     int h, int w,
-    float dt
+    float dt,
+    const int64_t* fuel_recip      // FUEL-FRACTION AXIS: per-tile 1/hp (nullable)
 ) const {
     const int n = h * w;
     const auto& p = params;
@@ -107,7 +108,13 @@ std::vector<std::pair<int, int>> FireSimulation::step(
     const q16 wall_damage_q = fp::quantize((double)p.wall_damage);
 
     // Load-time reciprocals for the config-constant divides (make_recip/recip_mul).
-    const int64_t recip_fuel_ref  = fp::make_recip((double)p.fuel_ref);       // F = wall_hp/fuel_ref
+    // FUEL-FRACTION AXIS (2026-07-30): the FALLBACK fuel normaliser, used only
+    // when the caller supplies no per-tile `fuel_recip` plane. With a plane, F
+    // divides by THIS tile's material's own full-health hp (baked with the very
+    // same make_recip, in GameMap.fuel_recip) — see the header's `fuel_ref`
+    // tombstone for why one global could not serve wood (hp 60) and a crate
+    // (hp 30) at once. Uniform plane == this scalar -> byte-identical.
+    const int64_t recip_fuel_ref  = fp::make_recip((double)p.fuel_ref);       // fallback 1/hp
     const int64_t recip_T_span    = fp::make_recip((double)p.fire_T_span);    // hot ramp
     // Continuous-O2 law span: o2f = clamp01((X - X_ext) / (X_full - X_ext)).
     // recip_x_span is the load-time reciprocal of the span (like recip_T_span);
@@ -154,9 +161,14 @@ std::vector<std::pair<int, int>> FireSimulation::step(
             ? temperature[i]
             : fp::recip_mul(temperature[i], recip_temp_scale);
 
-        // F: fuel from remaining wall HP, normalised. recip_mul by the load-time
-        // reciprocal of fuel_ref, then clamp01.
-        const q16 F = clamp01_q(fp::recip_mul(wall_hp[i], recip_fuel_ref));
+        // F: fuel from remaining wall HP, normalised by THIS TILE'S OWN full
+        // health (fuel-fraction axis, 2026-07-30). recip_mul by the load-time
+        // reciprocal — per tile from the `fuel_recip` plane when supplied, else
+        // the scalar fuel_ref fallback — then clamp01. Still ONE multiply and a
+        // shift per cell: `fuel_recip` is baked at LOAD, exactly as the scalar
+        // is, so the sim path keeps its no-divide / no-libm contract.
+        const int64_t recip_fuel = fuel_recip ? fuel_recip[i] : recip_fuel_ref;
+        const q16 F = clamp01_q(fp::recip_mul(wall_hp[i], recip_fuel));
 
         // X: local O2 MOLE FRACTION over OPEN (non-solid, non-vacuum)
         // 4-neighbours — the fire reads INCOMING fresh air (its own tile holds

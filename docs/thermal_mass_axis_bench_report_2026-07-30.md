@@ -491,6 +491,74 @@ O₂ laws.**
     (`tests/o2_full_reference_gate_a_capture.py::_sim_burning_fuel` is a
     ready-made fuel-bearing scenario.)
 
+**FUEL-FRACTION AXIS follow-ups (added 2026-07-30 by the fuel-normaliser
+patch — the fourth global standing in for a material property this arc found)**
+
+`engine/06_temperature_and_fire.md`
+27. `:279`'s `F = clamp01(wall_hp[i] / fuel_ref)` and `:338`'s dial table row
+    are both stale. State it as `F = clamp01(wall_hp[i] / hp[material[i]])` —
+    "the fraction of THIS tile's own fuel remaining" — implemented as a
+    per-material `make_recip` reciprocal (`MaterialTable.fuel_recip`) projected
+    to the derived per-tile grid `GameMap.fuel_recip` and applied with ONE
+    `recip_mul` per cell (no divide; the Q16.16 no-divide contract holds).
+28. Record the WHY, because it is the sharpest instance of the arc's error
+    class: `fuel_ref = 60.0` **is wood's hp**. A material whose hp differed
+    read a permanently wrong fuel fraction — a pristine furniture crate (hp 30)
+    reported F = 0.5 — and since sustain needs `k_die/k_grow < a/(1-a)` with
+    `a = F·o2f·hot`, that halving alone capped the ambient-air sustain ceiling
+    at 0.048, below any ratio Erik would choose. Measured: at `cool_shift = 10`
+    the crate's temperature rose correctly (280 → 313.8 game, `hot` = 0.638)
+    and the fire still died. Heat was never the limiter.
+29. Record why lowering the global was **not** the fix: at `fuel_ref = 30`,
+    wood (hp 60) would sit clamped at F = 1 until it had already lost half its
+    mass, destroying its burn-down curve. One number cannot serve two
+    materials — the identical argument `thermal_mass` / `cool_shift` /
+    `fire_T_ext` each won before it.
+30. `[physics.fire] fuel_ref` is **kept and tombstoned**, the `o2_frac_amb`
+    shape: it is the solver's fallback divisor when a caller supplies no
+    per-tile plane, and the live engine always supplies one. MEASURED INERT —
+    the tuning bench at `fuel_ref = 40` and at `fuel_ref = 1000` is
+    byte-identical over 2691 ticks. Editing it will not move the fire; edit the
+    material's `hp`.
+31. Note that the fuel normaliser is **derived, never authored**: there is no
+    `fuel_recip` config column, by design, so the fuel fraction and the health
+    bar cannot drift apart.
+
+`engine/03_material_system.md`
+32. Note that `hp` now carries a **second job** — it is the fire's fuel
+    normaliser as well as the tile's health — so moving it moves both. That
+    coupling is deliberate (fuel IS mass) but it must be documented, because
+    `hp` is the dial a level author reaches for.
+
+`engine/02_state_and_ownership.md`
+33. Add the derived grid `fuel_recip` (int64, h×w) to the derived-grid list, on
+    the SAME single structural-rebuild seam as `solid` / `heat_inv_shift` /
+    `thermal_solid` / `cool_shift` (`_update_caches` build, `on_tile_changed`
+    patch), and to `GameMap._RESIDENT_MASKS`. Note it is int64 because a
+    `RECIP_SHIFT = 32` reciprocal does not fit int32, and that it is patched on
+    the same seam as `wall_hp` — they are the numerator and denominator of one
+    quantity and must never come from two different materials.
+
+**★ Finding to hand to the re-tune: TWO limiters sit BEHIND the fuel one**
+34. Measured 2026-07-30 at the TUNE block's derived dials (`fire_T_ext` 250 /
+    span 100, `k_grow` 0.35 / `k_die` 0.028, `furniture.cool_shift` 9,
+    `k_fire_heat` 33), the crate **still does not burn**, for two reasons that
+    are neither fuel nor this patch:
+    * **the `I_crit` cliff** (§4 above, unchanged): `T*(I_seed)` =
+      `33 · 0.1 · 2^(9−3)` = 211 game against `fire_T_ext` = 250, so `hot`
+      falls from the warm seed's 0.30 toward 0 and takes `a` with it. Bench:
+      peak I 0.0999 (never above the seed), max T 279.9 game, max `hot` 0.2989,
+      death 0.87 min, `wall_hp` 29.78 of 30 left.
+    * **the Q16.16 growth quantum** — new, and it will bite any future ratio
+      chosen this close to the ceiling. With `hot` pinned at 1 the largest
+      `dI/dt` anywhere on this logistic is `3.547e-4 /s` = **0.969 Q16.16
+      counts per 1/24 s tick**, which truncates to zero: the fire freezes
+      exactly at the seed. The RATIO (0.080 vs ceiling 0.1013) is right; the
+      MAGNITUDE is below the fixed point's resolution. The same ratio at 5×/10×
+      magnitude converges to I = 0.198 / 0.204, against the analytic 0.210 —
+      and the pre-patch F = 0.5 crate collapses to 0 at the same magnitudes,
+      which is the fuel patch's payoff isolated from both limiters.
+
 Also worth folding: the escalation's process note, already adopted in ruling
 §5 — *verify a routing question by enumerating writers of the field, not by
 grepping near the mask.*

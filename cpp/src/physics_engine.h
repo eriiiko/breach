@@ -137,6 +137,15 @@ public:
         // fall back to the global. Uniform == the old global on the shipped
         // config, so this is byte-identical on arrival.
         const int32_t* cool_shift_grid,
+        // FUEL-FRACTION AXIS (2026-07-30): the per-tile `make_recip` reciprocal
+        // of each tile's material's full-health hp (GameMap.fuel_recip), which
+        // the fire logistic's fuel term F = clamp01(wall_hp/hp_full) reads
+        // instead of the single global [physics.fire] fuel_ref (== WOOD's hp).
+        // REQUIRED here (not defaulted) for the same reason `thermal_solid` and
+        // `cool_shift_grid` are: the live engine must never silently fall back
+        // to the global. A uniform plane == the old global, so this is
+        // byte-identical on arrival for any map whose fuel is wood.
+        const int64_t* fuel_recip,
         // EOS P3: bulk-N source for the Pass-1 heat-deposit divisor.
         // EOS P4: o2_idx slices the real O2 gate input out of `gas`.
         const int32_t* gas, const bool* gas_conservative, int n_gases, int o2_idx,

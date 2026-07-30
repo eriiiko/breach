@@ -62,6 +62,10 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // COOL-SHIFT AXIS: per-tile ambient-decay shift for the temperature
         // pass's Pass 3 (see physics_engine.h). Temperature-only.
         const int32_t* cool_shift_grid,
+        // FUEL-FRACTION AXIS: per-tile 1/hp for the FIRE pass's fuel term
+        // (see physics_engine.h). Fire-only — the temperature pass never
+        // reads it.
+        const int64_t* fuel_recip,
         // EOS P3: bulk-N source (real Pass-1 heat-deposit divisor)
         // EOS P4: o2_idx slices the real O2 gate input out of `gas`
         const int32_t* gas, const bool* gas_conservative, int n_gases, int o2_idx,
@@ -174,7 +178,12 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             this->fire.params.fire_pressure_gain,
             this->fire.params.smoke_emission, this->fire.params.wall_damage,
             this->fire.params.temp_scale, this->fire.params.temp_gain_scale,
-            this->fire.params.T_FLAME_MAX);
+            this->fire.params.T_FLAME_MAX,
+            // FUEL-FRACTION AXIS: the per-tile 1/hp plane. The GPU kernel takes
+            // it as an extra read-only plane and falls back to the fuel_ref
+            // scalar above on nullptr, exactly like the CPU branch — the two
+            // must stay bit-identical (tol 0).
+            fuel_recip);
     } else
 #endif
     {
@@ -182,7 +191,8 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             fire_field, atmosphere, n_o2, n_bulk_.data(), smoke_field, wall_hp,
             temperature_mut, wind_x, wind_y,
             solid, is_vacuum, flammable,
-            h, w, sim_time);
+            h, w, sim_time,
+            fuel_recip);   // FUEL-FRACTION AXIS: per-tile 1/hp (see header)
     }
 
     // --- 3. Temperature pass (PhysicsRunner: self.temperature.step) ------
