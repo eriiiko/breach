@@ -125,6 +125,11 @@ public:
         // temperature group
         int32_t* temperature_mut, const int32_t* heat,
         const int32_t* heat_inv_shift, const int32_t* face_shift,
+        // THERMAL-MASS AXIS (docs/thermal_mass_axis_design_2026-07-25.md): the
+        // per-medium THERMAL mask (thermal_mass > 0) the temperature solver's
+        // six medium tests key on, instead of the FLOW mask `solid` above.
+        // GameMap.thermal_solid; equals `solid` on any furniture-free map.
+        const bool* thermal_solid,
         // EOS P3: bulk-N source for the Pass-1 heat-deposit divisor.
         // EOS P4: o2_idx slices the real O2 gate input out of `gas`.
         const int32_t* gas, const bool* gas_conservative, int n_gases, int o2_idx,

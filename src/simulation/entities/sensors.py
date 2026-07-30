@@ -151,8 +151,11 @@ class o2(_FieldSensor):
 class temperature(_FieldSensor):
     """Temperature probe — samples the SOLID BODY tile (D7).
 
-    Temperature lives on solids only; a faced-air sample would read 0 forever,
-    so this BODY-family sensor reads its own mount (anchor) tile.
+    Temperature lives on THERMAL solids (``thermal_solid``, i.e. thermal_mass
+    > 0 — walls AND furniture since the thermal-mass axis, 2026-07-30); a
+    faced-air sample would read a plume-advected gas value, so this
+    BODY-family sensor reads its own mount (anchor) tile. Comment-only note:
+    the sensor already samples the anchor tile, so nothing here changed.
     """
     CHANNEL_NAME = "temperature"
     SAMPLE_FAMILY = SAMPLE_BODY

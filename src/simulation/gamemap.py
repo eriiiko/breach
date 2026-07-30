@@ -8,7 +8,7 @@ form and ``_build_ship`` fallback from the legacy implementation are gone
 
 Owns the cached arrays the physics systems read and write:
 
-    material, wall_hp, solid, is_vacuum, flammable,
+    material, wall_hp, solid, thermal_solid, is_vacuum, flammable,
     atmosphere, wave_p, wave_v, wave_source, wind_x, wind_y,
     smoke, fire, obstacles, light_map, heat, smoke_glow
 
@@ -707,12 +707,17 @@ class GameMap:
 
         Every cache is a projection of the material-property table
         (``self.materials``) indexed by ``material`` — no hardcoded material
-        lists. The two distinct masks are preserved (ch.02 §two masks):
+        lists. The distinct per-AXIS masks are preserved (ch.02 §two masks):
 
         - ``solid`` — the physics/light/smoke/vision boundary mask. Derived from
           ``permeability`` (a tile is solid iff ``permeability == 0``), so it
           includes doors but not air — exactly the old ``{HULL, WOOD, DOOR}``
           set for the current materials.
+        - ``thermal_solid`` — the THERMAL-medium mask (``thermal_mass > 0``,
+          thermal-mass axis design 2026-07-25). A THIRD axis, independent of
+          flow: furniture is permeable (gas seeps past a crate) yet thermally
+          solid (a crate holds an object temperature). The temperature solver's
+          per-medium branches read THIS, never ``solid``.
         - ``is_passable`` (the walkability predicate) lives in the query
           methods and is the derived view ``mobility > 0`` over the material
           table's ``mobility`` column (mobility design §2/§8) — a terrain-only
@@ -745,6 +750,22 @@ class GameMap:
         # the conductivity cache (engine/06 §1.2). Drives the heat -> temperature
         # conversion `temperature += heat >> heat_inv_shift`. int32 for C++.
         self.heat_inv_shift = tbl.heat_inv_shift[m].astype(np.int32, copy=True)
+        # THERMAL-MEDIUM mask (docs/thermal_mass_axis_design_2026-07-25.md
+        # §2.1/§2.2; build addendum 2026-07-30 D3) — the per-tile projection of
+        # the material table's `thermal_mass > 0`. THIS, not `solid`, is what the
+        # temperature solver's six per-medium branches test: `solid` is a FLOW
+        # property (permeability <= 0) and using it as the thermal medium put
+        # furniture (permeability 0.5, the deliberate "shield but not seal" soft
+        # body) into the GAS regime, so a burning crate's temperature was
+        # advected away by the fire's own plume. Built HERE, on the same
+        # structural-rebuild seam as `solid` / `heat_inv_shift`, and patched in
+        # `on_tile_changed` — ONE seam, so the future movable-furniture version
+        # has a single place to become dynamic (design §2.4).
+        #
+        # furniture is the ONLY material with permeability > 0 AND
+        # thermal_mass > 0, so on a furniture-free map `thermal_solid == solid`
+        # elementwise and every thermal path is byte-identical (addendum D4).
+        self.thermal_solid = tbl.thermal_solid[m].copy()
         # Per-tile conduction face-shift cache (engine/06 §2.5): baked from the
         # material grid via the harmonic-mean face table. NO_FACE at grid edges
         # and on any kappa==0 (air) face -> structural air no-op (built IN-PLACE
@@ -895,6 +916,11 @@ class GameMap:
         # Inverse-thermal-mass shift cache — patched through the SAME seam as
         # conductivity so a breached wall's thermal coupling updates instantly.
         self.heat_inv_shift[fy, fx] = int(tbl.heat_inv_shift[mat_id])
+        # Thermal-medium mask — patched through the SAME seam as heat_inv_shift
+        # (thermal-mass axis design §2.1; addendum D3: ONE build + ONE patch
+        # site), so a destroyed crate leaves the solid thermal regime the
+        # instant its material changes to air.
+        self.thermal_solid[fy, fx] = bool(tbl.thermal_solid[mat_id])
         # Conduction face-shift cache — patch this tile's 4 faces AND the facing
         # entry of each neighbour (a shared face), so a breached wall's thermal
         # coupling to its neighbours updates the instant it changes.
@@ -1616,11 +1642,12 @@ class GameMap:
         order — with pure Python-int arithmetic, so grid-total N per slice
         is unchanged to the LSB. Solver-owned fields on the sealed tile are
         set to their solid steady state; ``temperature`` becomes the integer
-        mean of the tile's PRE-call solid 4-neighbors' temperatures — the
-        door panel belongs to the wall assembly it slides from, so no
-        instant "hot door" from post-grenade air — falling back to keeping
-        the local air T only when the tile has no pre-existing solid
-        neighbor (Erik's ruling 4, 2026-07-19; design §4a). ``is_vacuum``
+        mean of the tile's PRE-call THERMAL-solid 4-neighbors' temperatures
+        (``thermal_solid``, i.e. thermal_mass > 0 — the thermal-medium axis,
+        addendum D5) — the door panel belongs to the wall assembly it slides
+        from, so no instant "hot door" from post-grenade air — falling back
+        to keeping the local air T only when the tile has no pre-existing
+        thermal-solid neighbor (Erik's ruling 4, 2026-07-19; design §4a). ``is_vacuum``
         is never written (sealing a breach yields the sealed-hull state). The whole
         span seals as ONE simultaneous edit (a 2-tile door closing is one
         call). Atomic: validates everything, then mutates; raises
@@ -1647,13 +1674,21 @@ class GameMap:
         # the means are computed HERE, before any mutation (this also keeps
         # the mutation pass below raise-free and span-order-independent).
         # A tile with no pre-existing solid neighbor keeps its air T.
+        #
+        # THERMAL-MASS AXIS (addendum 2026-07-30 D5): the donor test is
+        # `thermal_solid`, not `solid` — the question this seed asks is "which
+        # of my neighbours hold an OBJECT temperature I should inherit", which
+        # is the thermal-medium axis, not the flow axis. A burning crate can now
+        # seed the door panel that closes beside it. A no-op wherever
+        # `thermal_solid == solid` (every furniture-free map), so it cannot move
+        # gate (a).
         h, w = self._h, self._w
         close_t = {}
         for fy, fx in span:
             wall_ts = []
             for dy, dx in self._FACE_DIRS:
                 ny, nx = fy + dy, fx + dx
-                if 0 <= ny < h and 0 <= nx < w and self.solid[ny, nx]:
+                if 0 <= ny < h and 0 <= nx < w and self.thermal_solid[ny, nx]:
                     wall_ts.append(int(self.temperature[ny, nx]))
             if wall_ts:
                 close_t[(fy, fx)] = sum(wall_ts) // len(wall_ts)

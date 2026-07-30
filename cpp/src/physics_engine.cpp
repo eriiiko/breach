@@ -55,6 +55,10 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // temperature group
         int32_t* temperature_mut, const int32_t* heat,
         const int32_t* heat_inv_shift, const int32_t* face_shift,
+        // THERMAL-MASS AXIS: the per-medium THERMAL mask for the temperature
+        // pass (see physics_engine.h). NOT used by the ripple or fire calls —
+        // those keep `solid` (flow/LoS/obstacle) unchanged.
+        const bool* thermal_solid,
         // EOS P3: bulk-N source (real Pass-1 heat-deposit divisor)
         // EOS P4: o2_idx slices the real O2 gate input out of `gas`
         const int32_t* gas, const bool* gas_conservative, int n_gases, int o2_idx,
@@ -216,6 +220,33 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     // divisor (a documented `// P3:` TODO in temperature_solver.h asks P3 to
     // swap this for the real N_total; NOT done here — flagged as an open
     // item, see the patch's return report).
+    // ***  THERMAL-MASS AXIS, P1 FINDING (2026-07-30) — READ BEFORE P2/P3  ***
+    // The design (thermal_mass_axis_design_2026-07-25 §2.2/§2.3) and its build
+    // addendum locate the gas-vs-solid thermal MEDIUM entirely inside
+    // TemperatureSolver::step, and D5's sweep concluded no consumer outside it
+    // derives thermal behaviour from `solid`. That is NOT true of the LIVE
+    // path, and this call site is where it shows:
+    //   * step_tail passes wind_x = wind_y = nullptr above, so the temperature
+    //     solver's OWN gas-T advection (Pass 0) NEVER RUNS in the engine —
+    //     three of the design's six medium sites are dead code here (they stay
+    //     live only for the direct Python binding / unit tests).
+    //   * the live semi-Lagrangian advection of `temperature` is EOSSolver::
+    //     step's step-1b, and its compression-work term is step-4c. Both key
+    //     on `solid` / `dyn_permeability` (eos_solver.cpp cmask: sealed iff
+    //     `solid || dyn_permeability <= 0`), so a furniture tile is still a
+    //     LIVE GAS CELL there: its T is overwritten by an upwind backtrace
+    //     sample every EOS substep and worked on by −P∇·u.
+    // MEASURED on the single-crate bench (warm seed T=280, ignition_seed 0.1):
+    // run_substeps removes 21–35 game/tick from the crate's T — 2–4× the
+    // COOL_SHIFT loss (T>>5 == 8.75 at T=280) — so COOL_SHIFT is NOT yet "the
+    // one clean dial" §2.2 promises. With the EOS pass additionally routed off
+    // the crate the design's gate-(c) shape appears immediately (monotone rise
+    // from 280, no t≈0 dip, per-tick balance == §2.5 to the LSB).
+    // => Routing EOSSolver's T advection + compression work onto the thermal
+    // medium is a SEPARATE decision for Erik/Fable (it also touches the EOS
+    // cmask, which is shared with pressure/velocity — NOT a mask swap), and it
+    // is deliberately NOT done in P1.
+    //
     // EOS P3: the REAL N divisor for Pass 1's ΔT = ΔE/(N·c_v) deposit (closes
     // the P2 `// P3:` density-proxy TODO; floored inside the solver by its own
     // N_FLOOR_HEAT) is `n_bulk_` — now built ONCE at the top of step_tail (above
@@ -232,6 +263,15 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // The dials come straight off the solver so config drives both backends;
         // the per-call rail-hit count folds into the solver's own counter so
         // t_max_phys_hits telemetry is identical whichever backend ran.
+        // THERMAL-MASS AXIS, P1 SCOPE NOTE: the GPU kernel still keys its
+        // medium tests on `solid` — mirroring them onto `thermal_solid` (+ the
+        // one static mask upload on the resident path) is patch P2 of this arc,
+        // gated by CPU<->GPU lockstep tol-0 on a furniture-burn scenario. Until
+        // then the two backends agree byte-for-byte on every FURNITURE-FREE map
+        // (thermal_solid == solid there) and would diverge only with BOTH the
+        // GPU temperature backend explicitly enabled AND furniture present.
+        // `temperature_backend_is_cuda()` defaults false.
+        (void)thermal_solid;
         this->temperature.t_max_phys_hits += breach_cuda::temperature_step(
             temperature_mut, heat, heat_inv_shift, face_shift,
             solid, is_vacuum, atmosphere, n_bulk_.data(),
@@ -246,13 +286,20 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     } else
 #endif
     {
+        // THERMAL-MASS AXIS (docs/thermal_mass_axis_design_2026-07-25.md): the
+        // solver's six per-medium tests key on `thermal_solid` (thermal_mass >
+        // 0), not on the flow mask `solid` — which is still passed (it is the
+        // documented nullptr fallback) but no longer selects the medium. On a
+        // furniture-free map the two masks are elementwise equal, so this is
+        // byte-identical there.
         this->temperature.step(
             temperature_mut, heat, heat_inv_shift, face_shift,
             solid, is_vacuum, atmosphere,
             n_bulk_.data(),
             nullptr, nullptr,
             h, w, sim_time,
-            is_ambient);   // BC: ring wiped to ΔT=0 (Pass-0), vacuum idiom
+            is_ambient,      // BC: ring wiped to ΔT=0 (Pass-0), vacuum idiom
+            thermal_solid);
     }
 
     return destroyed;

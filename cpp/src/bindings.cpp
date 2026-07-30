@@ -1404,7 +1404,8 @@ PYBIND11_MODULE(breach_physics, m) {
                         py::object wind_x_obj,
                         py::object wind_y_obj,
                         float dt,
-                        py::object n_bulk_obj) {
+                        py::object n_bulk_obj,
+                        py::object thermal_solid_obj) {
             auto [temp, h, w]     = get_2d(temperature);
             auto [hp, h2, w2]     = get_2d_const(heat);
             auto [shift, h3, w3]  = get_2d_const(heat_inv_shift);
@@ -1442,12 +1443,27 @@ PYBIND11_MODULE(breach_physics, m) {
                 auto [nbp, hn, wn] = get_2d_const(nb_arr);
                 nb = nbp;
             }
-            self.step(temp, hp, shift, fs, sol, vac, atm, nb, wx, wy, h, w, dt);
+            // THERMAL-MASS AXIS (docs/thermal_mass_axis_design_2026-07-25.md):
+            // `thermal_solid` is OPTIONAL (default None) — None -> nullptr, and
+            // the solver falls back to `solid`, i.e. the exact pre-patch
+            // behaviour. Every shipped direct caller (tests/test_temperature_*)
+            // therefore keeps its meaning unchanged; the engine's step_tail
+            // always passes the real GameMap.thermal_solid.
+            const bool* tsol = nullptr;
+            py::array_t<bool> tsol_arr;
+            if (!thermal_solid_obj.is_none()) {
+                tsol_arr = thermal_solid_obj.cast<py::array_t<bool>>();
+                auto [tsp, ht, wt] = get_2d_const(tsol_arr);
+                tsol = tsp;
+            }
+            self.step(temp, hp, shift, fs, sol, vac, atm, nb, wx, wy, h, w, dt,
+                      nullptr, tsol);
         }, py::arg("temperature"), py::arg("heat"),
            py::arg("heat_inv_shift"), py::arg("face_shift"),
            py::arg("solid"), py::arg("is_vacuum"), py::arg("atmosphere"),
            py::arg("wind_x") = py::none(), py::arg("wind_y") = py::none(),
-           py::arg("dt") = 0.0f, py::arg("n_bulk") = py::none());
+           py::arg("dt") = 0.0f, py::arg("n_bulk") = py::none(),
+           py::arg("thermal_solid") = py::none());
 
     // --- Raycaster ---
     py::class_<LightSource>(m, "LightSource")
@@ -2009,6 +2025,11 @@ PYBIND11_MODULE(breach_physics, m) {
                              py::array_t<int32_t> heat,
                              py::array_t<int32_t> heat_inv_shift,
                              py::array_t<int32_t> face_shift,
+                             // THERMAL-MASS AXIS: the per-medium THERMAL mask
+                             // (thermal_mass > 0) — REQUIRED, deliberately not
+                             // nullable here, so a caller can never silently
+                             // fall the engine back to the flow mask `solid`.
+                             py::array_t<bool> thermal_solid,
                              // EOS P3: bulk-N source (Pass-1 heat divisor)
                              py::array_t<int32_t> gas,
                              py::array_t<bool> gas_conservative,
@@ -2040,6 +2061,8 @@ PYBIND11_MODULE(breach_physics, m) {
             // face_shift is (h, w, 4) int32 — mirror the TemperatureSolver binding.
             auto fa = face_shift.unchecked<3>();
             const int32_t* fs = fa.data(0, 0, 0);
+            // THERMAL-MASS AXIS: the per-medium thermal mask.
+            auto [tsol, h17, w17] = get_2d_const(thermal_solid);
             // EOS P3: (N,h,w) gas + the conservative flags — step_tail sums
             // the bulk planes for the temperature Pass-1 N divisor.
             auto gv = gas.unchecked<3>();
@@ -2059,7 +2082,7 @@ PYBIND11_MODULE(breach_physics, m) {
             auto destroyed = self.step_tail(
                 rip, ripv, wd, wp, sol,
                 f, atm, sm, whp, temp, wx, wy, vac, fl,
-                temp, hp, shift, fs,
+                temp, hp, shift, fs, tsol,
                 gas_ptr, gcons, n_gases, o2_idx,
                 h, w, sim_time, amb);
             py::list result;
@@ -2074,6 +2097,7 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("wind_x"), py::arg("wind_y"),
            py::arg("is_vacuum"), py::arg("flammable"),
            py::arg("heat"), py::arg("heat_inv_shift"), py::arg("face_shift"),
+           py::arg("thermal_solid"),             // thermal-mass axis (required)
            py::arg("gas"), py::arg("gas_conservative"), py::arg("o2_idx"),
            py::arg("sim_time"),
            py::arg("is_ambient") = py::none())   // BC (default None = space map)

@@ -601,6 +601,12 @@ class PhysicsRunner:
             gmap.temperature, gmap.wind_x, gmap.wind_y,
             gmap.is_vacuum, gmap.flammable,
             gmap.heat, gmap.heat_inv_shift, gmap.face_shift,
+            # THERMAL-MASS AXIS (docs/thermal_mass_axis_design_2026-07-25.md):
+            # the temperature pass's per-medium mask is `thermal_solid`
+            # (thermal_mass > 0), NOT the flow mask `solid` above — so a crate
+            # (permeable but thermally solid) holds an object temperature
+            # instead of gas the plume advects away.
+            gmap.thermal_solid,
             gmap.gas, gmap.gases.conservative, self._o2_idx,
             sim_time,
             # BC: the ambient ring is wiped to ΔT=0 in the temperature pre-pass
@@ -862,6 +868,7 @@ class PhysicsRunner:
             gmap.temperature, gmap.wind_x, gmap.wind_y,
             gmap.is_vacuum, gmap.flammable,
             gmap.heat, gmap.heat_inv_shift, gmap.face_shift,
+            gmap.thermal_solid,          # thermal-mass axis (host mirror)
             gmap.gas, gmap.gases.conservative, self._o2_idx,
             sim_time,
             is_ambient=amb[0],

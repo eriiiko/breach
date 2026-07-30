@@ -11,6 +11,22 @@
 // is the LAST thermal pass, §3.5). Unit damage (§4) is a LATER step and will be
 // added to step() as a further pass.
 //
+// THERMAL-MASS AXIS AMENDMENT (2026-07-30 —
+// docs/thermal_mass_axis_design_2026-07-25.md + its build addendum): every
+// per-medium branch below now keys on `thermal_solid` (`thermal_mass > 0`),
+// NOT on `solid` (`permeability <= 0`). Read the P2 text below with that
+// substitution: wherever it says the gas rules run on `!solid && !is_vacuum`,
+// the mask is `!thermal_solid && !is_vacuum`. WHY: `solid` is a FLOW property,
+// and keying the thermal medium on it silently put furniture (permeability
+// 0.5 — the deliberate "shield but not seal" soft body) into the GAS regime,
+// so a burning crate's temperature was advected away by the fire's own plume.
+// `permeability`/`solid`/mobility/LoS are UNTOUCHED — only the thermal medium
+// moved. Exactly SIX sites in the .cpp changed (marked "MEDIUM-TEST SITE n/6");
+// conduction's κ-keyed face bake is deliberately NOT one of them. furniture is
+// the only material that is permeable AND thermally solid, so on any
+// furniture-free map `thermal_solid == solid` elementwise and every path is
+// byte-identical (the patch's zero-tolerance gate).
+//
 // EOS refactor P2 (docs/eos_refactor_design.md §4 + §8 patch P2) — UNIFIED
 // TEMPERATURE, additive: `temperature` now ALSO carries gas-T on the open-air
 // mask (`!solid[i] && !is_vacuum[i]`), the same array, the SAME Q16.16 scale.
@@ -209,9 +225,16 @@ public:
     //                 order N,S,E,W. NO_FACE == grid edge or κ==0 either side ->
     //                 that face does not conduct. Baked at load from the
     //                 harmonic-mean face table, patched in on_tile_changed.
-    //   solid       : bool, (h, w). The physics solid mask. Conversion and
-    //                 cooling run on solids only; the P2 gas rules run on the
-    //                 complementary open-air mask (!solid && !is_vacuum).
+    //   solid       : bool, (h, w). The physics FLOW/obstacle mask
+    //                 (permeability <= 0). Since the thermal-mass axis
+    //                 (2026-07-30) it is read ONLY as the fallback when
+    //                 `thermal_solid` is null — every per-medium thermal branch
+    //                 keys on `thermal_solid` instead.
+    //   thermal_solid : bool, (h, w). The per-medium THERMAL mask
+    //                 (`thermal_mass > 0`; GameMap.thermal_solid). Conversion
+    //                 and cooling run on THERMAL solids only; the P2 gas rules
+    //                 run on the complementary open-air mask
+    //                 (!thermal_solid && !is_vacuum). Nullable -> `solid`.
     //   is_vacuum   : bool, (h, w). The physics vacuum mask. A solid tile cools
     //                 at cool_shift_vacuum if ANY in-bounds 4-neighbour is vacuum
     //                 (§3.3). Same field the atmosphere/smoke solvers read. P2:
@@ -246,7 +269,14 @@ public:
         // ring is wiped to ΔT=0 in the Pass-0 pre-pass, the vacuum-breach idiom
         // verbatim (heat radiates to the T_amb sky). Default nullptr keeps the
         // space path AND the direct-binding test path byte-identical.
-        const bool* is_ambient = nullptr
+        const bool* is_ambient = nullptr,
+        // THERMAL-MASS AXIS (docs/thermal_mass_axis_design_2026-07-25.md,
+        // build addendum 2026-07-30): the per-medium THERMAL mask
+        // (`thermal_mass > 0`, GameMap.thermal_solid) that replaces `solid` at
+        // the six medium tests listed above. Default nullptr -> fall back to
+        // `solid`, the pre-patch behaviour (the documented back-compat idiom
+        // this signature already uses for wind/n_bulk/is_ambient).
+        const bool* thermal_solid = nullptr
     ) const;
 
     // --- DEBUG probe (temporary instrumentation, eos-p3fix-thermal-ceiling

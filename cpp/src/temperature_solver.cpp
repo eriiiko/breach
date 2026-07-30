@@ -23,33 +23,40 @@ namespace {
     // `backtrace_sample_q` (the S2b SLint scheme: integer DDA wall-clip march +
     // integer bilinear sample + Newton-reciprocal renorm) — deliberately
     // NOT the same function (smoke_dynamics.cpp is untouched, out of P2's
-    // scope), specialized to the temperature solver's own masks: no separate
-    // obstacles/is_wall/permeability arrays are needed because `solid` already
-    // IS the physics obstacle set (gamemap.py: obstacles == solid ==
-    // permeability<=0), and gas-T has no partial-permeability weighting (a
-    // partial-permeability tile like furniture is simply non-solid open-air,
-    // per §2.2 of the design). A breach (is_vacuum && !solid) is a VENT
-    // target, not a wall — the march may reach it and the bilinear sample
-    // reads 0 there (heat drains with the venting gas), matching smoke's
-    // is_breach carve-out exactly.
+    // scope), specialized to the temperature solver's own masks. A breach
+    // (is_vacuum && !thermal_solid) is a VENT target, not a wall — the march
+    // may reach it and the bilinear sample reads 0 there (heat drains with the
+    // venting gas), matching smoke's is_breach carve-out exactly.
+    //
+    // THERMAL-MASS AXIS (docs/thermal_mass_axis_design_2026-07-25.md §2.2 +
+    // build addendum 2026-07-30 §3): the occluder here is the THERMAL medium
+    // mask `thermal_solid` (thermal_mass > 0), NOT the flow mask `solid`
+    // (permeability <= 0). P2 of the EOS refactor wrote "a partial-permeability
+    // tile like furniture is simply non-solid open-air" — that is exactly the
+    // bug this patch fixes: gas-T must no longer advect ACROSS a crate tile,
+    // because a crate holds an OBJECT temperature. Flow is untouched (gas and
+    // water still seep past at permeability 0.5); only the thermal medium
+    // moved. On any furniture-free map thermal_solid == solid elementwise, so
+    // this is byte-identical there (addendum D4).
     using namespace fixedpoint;
 
     constexpr int32_t GAS_WSUM_FLOOR_Q = FP_ONE >> 8;    // mirrors smoke's WSUM_FLOOR_Q
     constexpr int32_t GAS_WSUM_EPS_Q   = FP_ONE >> 14;   // mirrors smoke's WSUM_EPS_Q
 
-    inline bool gas_wall_at(int y, int x, const bool* solid, int h, int w) {
+    // MEDIUM-TEST SITE 3/6 (advection ray-walk occluder).
+    inline bool gas_wall_at(int y, int x, const bool* thermal_solid, int h, int w) {
         if (y < 0 || y >= h || x < 0 || x >= w) return true;   // outside == wall
-        return solid[y * w + x];
+        return thermal_solid[y * w + x];
     }
 
     // Ported (pattern, not code) from smoke_dynamics.cpp::backtrace_sample_q.
     // See that function's header comment for the derivation of each piece
     // (DDA march / tile-center test / bilinear corner weights / Newton
-    // renorm); this is the SAME arithmetic, re-typed against `solid`/
+    // renorm); this is the SAME arithmetic, re-typed against `thermal_solid`/
     // `is_vacuum` only.
     int32_t gas_backtrace_sample_q(
             const int32_t* src, int x, int y, int32_t bx_q, int32_t by_q,
-            const bool* solid, const bool* is_vacuum, int h, int w) {
+            const bool* thermal_solid, const bool* is_vacuum, int h, int w) {
         int64_t px_q = ((int64_t)x << FP_SHIFT) + bx_q;
         int64_t py_q = ((int64_t)y << FP_SHIFT) + by_q;
 
@@ -72,7 +79,7 @@ namespace {
                 const int64_t nyp_q = cy_q + sy_q;
                 const int ti = (int)((nxp_q + (FP_ONE >> 1)) >> FP_SHIFT);
                 const int tj = (int)((nyp_q + (FP_ONE >> 1)) >> FP_SHIFT);
-                if (gas_wall_at(tj, ti, solid, h, w)) break;
+                if (gas_wall_at(tj, ti, thermal_solid, h, w)) break;
                 cx_q = nxp_q;
                 cy_q = nyp_q;
                 if (tj >= 0 && tj < h && ti >= 0 && ti < w && is_vacuum[tj * w + ti])
@@ -110,7 +117,8 @@ namespace {
             const int cy_ = cyx[k][0];
             const int cx_ = cyx[k][1];
             const int j = cy_ * w + cx_;
-            if (solid[j]) continue;                            // sealed corner
+            // MEDIUM-TEST SITE 4/6 (sealed corner in the advection gather).
+            if (thermal_solid[j]) continue;                     // sealed corner
             const int32_t val_q = is_vacuum[j] ? 0 : src[j];    // breach corner == 0
             acc += mul_wide(cw[k], val_q);
             wsum_q += cw[k];
@@ -140,29 +148,45 @@ void TemperatureSolver::step(
     const int32_t* wind_y,       // P2: Q16.16 int32, may be null (Pass 0 skipped)
     int h, int w,
     float dt,                    // P2: tick's elapsed seconds; <= 0 skips Pass 0
-    const bool* is_ambient       // BC: ambient ring mask (nullptr = space map)
+    const bool* is_ambient,      // BC: ambient ring mask (nullptr = space map)
+    const bool* thermal_solid    // thermal-mass axis: medium mask (nullptr -> solid)
 ) const {
     const int n = h * w;
     const bool ambient_mode = (is_ambient != nullptr);   // BC: dormancy by branch
+
+    // --- THERMAL-MEDIUM mask (docs/thermal_mass_axis_design_2026-07-25.md) ---
+    // `solid` (permeability <= 0) is a FLOW property; the per-medium thermal
+    // branches must key on the THERMAL axis `thermal_solid` (thermal_mass > 0)
+    // instead. Six sites below — and ONLY those six — use `ts`; every other
+    // `solid`/`is_vacuum` meaning in this TU (vacuum structure, LoS, N==0) is
+    // untouched. nullptr == "the caller has no thermal mask" (the documented
+    // back-compat idiom this TU already uses for wind/n_bulk/is_ambient), and
+    // falls back to `solid` — which is EXACTLY today's behaviour, and is also
+    // elementwise equal to thermal_solid on any furniture-free map (addendum
+    // D4), so the fallback is not a second code path in practice.
+    const bool* ts = (thermal_solid != nullptr) ? thermal_solid : solid;
 
     // ---- Pass 0: gas-T zero-at-vacuum + semi-Lagrangian advection (P2, §4) ----
     // Structural invariant FIRST, unconditional: an OPEN (non-solid) vacuum
     // cell — a true breach — holds no gas, so it holds no gas-T either —
     // "energy leaves with the gas" (design §4). This also defends a cell that
     // just transitioned into an open breach carrying stale T from before the
-    // mask flipped. GUARD: `!solid[i]` is load-bearing here — a SOLID cell
-    // that is ALSO flagged vacuum (the intact hull's own space-exposure flag;
-    // gamemap.py: "an intact hull is vacuum AND solid") is NOT a breach, it is
-    // a wall radiating to space via cool_shift_vacuum (Pass 3) — its T is
-    // real solid-thermal-mass state and must survive across ticks. Without
-    // this guard every space-facing hull tile would be wiped to 0 before Pass
-    // 1 could deposit onto it, which is wrong (and was caught by the sealed-
-    // room energy E2E's vacuum-exposed-hull scenario).
+    // mask flipped. GUARD: the `!ts[i]` test is load-bearing here — a THERMAL
+    // SOLID cell that is ALSO flagged vacuum (the intact hull's own
+    // space-exposure flag; gamemap.py: "an intact hull is vacuum AND solid") is
+    // NOT a breach, it is a wall radiating to space via cool_shift_vacuum
+    // (Pass 3) — its T is real solid-thermal-mass state and must survive across
+    // ticks. Without this guard every space-facing hull tile would be wiped to
+    // 0 before Pass 1 could deposit onto it, which is wrong (and was caught by
+    // the sealed-room energy E2E's vacuum-exposed-hull scenario). MEDIUM-TEST
+    // SITE 1/6: the guard is now the THERMAL medium, so a space-exposed crate
+    // keeps its object temperature for the same reason a hull tile does; the
+    // hull case is unchanged (hull is both solid and thermal_solid).
     for (int i = 0; i < n; ++i) {
         // BC (audit (b)): the ambient ring is an open (non-solid) boundary that
         // radiates to the T_amb sky — wiped to ΔT=0 exactly like a vacuum
         // breach. Branch-gated -> space maps byte-identical.
-        if ((is_vacuum[i] || (ambient_mode && is_ambient[i])) && !solid[i]) temperature[i] = 0;
+        if ((is_vacuum[i] || (ambient_mode && is_ambient[i])) && !ts[i]) temperature[i] = 0;
     }
 
     // Advection: skipped as a clean no-op when dt<=0 or wind is unavailable —
@@ -184,11 +208,14 @@ void TemperatureSolver::step(
         for (int y = 0; y < h; ++y) {
             for (int x = 0; x < w; ++x) {
                 const int i = y * w + x;
-                if (solid[i] || is_vacuum[i]) continue;   // open-air mask only
+                // MEDIUM-TEST SITE 2/6: the gas-advection mask is the
+                // complement of the THERMAL medium (a crate is not open air
+                // thermally, even though gas flows through it).
+                if (ts[i] || is_vacuum[i]) continue;      // open-air mask only
                 const int32_t bx_q = -mul_q16(wind_x[i], dt_adv_q);
                 const int32_t by_q = -mul_q16(wind_y[i], dt_adv_q);
                 temperature[i] = gas_backtrace_sample_q(
-                    src, x, y, bx_q, by_q, solid, is_vacuum, h, w);
+                    src, x, y, bx_q, by_q, ts, is_vacuum, h, w);
             }
         }
     }
@@ -228,7 +255,10 @@ void TemperatureSolver::step(
         for (int i = 0; i < n; ++i) {
             int32_t deposit = heat[i];
             if (deposit <= 0) continue;       // nothing to convert this tick
-            if (solid[i]) {
+            // MEDIUM-TEST SITE 5/6: the heat->T convert branch. A thermal
+            // solid takes the free per-tile bit-shift (heat >> log2(
+            // thermal_mass)); gas takes the N-divided radiative deposit below.
+            if (ts[i]) {
                 int shift = heat_inv_shift[i];    // log2(thermal_mass), >= 0
                 int32_t gain = deposit >> shift;  // Q16.16 / 2^shift, still Q16.16
                 heat_saturating_add(&temperature[i], gain);
@@ -365,7 +395,12 @@ void TemperatureSolver::step(
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             const int i = y * w + x;
-            if (!solid[i]) continue;          // air / non-solid: already 0
+            // MEDIUM-TEST SITE 6/6: COOL_SHIFT ambient decay is the solid
+            // thermal regime's loss channel. furniture's conductivity is 0
+            // (NO_FACE both ways -> no conduction in or out), so with the crate
+            // now inside this pass COOL_SHIFT is its ONE loss channel — a
+            // single clean dial (design §2.2).
+            if (!ts[i]) continue;             // gas medium: already 0
             const int32_t t = temperature[i];
             if (t == 0) continue;             // exact rest: nothing to shed
 

@@ -135,16 +135,45 @@ class MaterialTable:
         # so `thermal_mass` MUST be a power of two. Validate here and freeze the
         # integer shift; the per-tile cache (GameMap.heat_inv_shift) is this
         # column indexed by the material grid.
+        #
+        # THERMAL-MASS AXIS (docs/thermal_mass_axis_design_2026-07-25.md §2.1;
+        # build addendum 2026-07-30 D2): `thermal_mass == 0` is LEGAL and means
+        # "this material lives in the GAS thermal regime" — air, and any future
+        # gas-like row. It is the ONLY non-power-of-two value accepted, because
+        # it is not a divisor at all: the derived ``thermal_solid`` mask
+        # (below) routes those tiles away from the shift path entirely, so the
+        # stored shift is a never-read placeholder. Everything >= 1 keeps
+        # today's power-of-two contract exactly.
         shifts = []
+        tm_ints = []
         for tm, name in zip(self.thermal_mass.tolist(), self.names):
             tm_int = int(round(tm))
-            if tm_int < 1 or (tm_int & (tm_int - 1)) != 0:
+            if tm_int == 0:
+                tm_ints.append(0)
+                shifts.append(0)             # placeholder: never read (gas regime)
+                continue
+            if tm_int < 0 or (tm_int & (tm_int - 1)) != 0:
                 raise ValueError(
-                    f"materials.{name}.thermal_mass must be a power of two "
-                    f">= 1 (it sits on the heat->temperature divide); got {tm!r}"
+                    f"materials.{name}.thermal_mass must be 0 (the gas thermal "
+                    f"regime) or a power of two >= 1 (it sits on the "
+                    f"heat->temperature divide); got {tm!r}"
                 )
+            tm_ints.append(tm_int)
             shifts.append(tm_int.bit_length() - 1)   # log2 of a power of two
         self.heat_inv_shift = np.array(shifts, dtype=np.int32)
+
+        # thermal_solid: the per-id THERMAL-MEDIUM axis (thermal-mass design
+        # §2.1/§2.2). `thermal_mass > 0` -> this material takes the SOLID
+        # thermal regime (bit-shift heat->T convert, conduction, COOL_SHIFT
+        # ambient decay); `== 0` -> the GAS regime (advection + the N-divided
+        # radiative deposit, no ambient decay). It is derived from the SAME
+        # rounded integers the shifts are, so the mask and the divisor can
+        # never disagree. This is deliberately NOT `permeability <= 0`: flow
+        # (`solid`) and thermal identity are separate axes — furniture is
+        # permeable (gas seeps past a crate) AND a thermal solid (a crate has
+        # an object temperature). The per-tile projection is
+        # ``GameMap.thermal_solid``.
+        self.thermal_solid = np.array([t > 0 for t in tm_ints], dtype=bool)
 
         # --- Conduction face-shift tables (engine/06 §2.4–§2.5) ---------------
         # All log2 / harmonic-mean / division happens HERE, at LOAD, in float;
