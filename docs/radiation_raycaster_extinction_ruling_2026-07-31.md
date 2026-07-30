@@ -8,7 +8,15 @@ note: two derived floors in this arc were wrong before they were measured).
 
 **Amended 2026-07-31 after Erik's review pass:** `T_emit_gate` default 60 → **180**
 (Erik's number; his reasoning + the receivers-are-free argument recorded in A1.8),
-and A1.6 expanded with the plain-words meaning of `LIM_SHIFT`. No other change.
+and A1.6 expanded with the plain-words meaning of `LIM_SHIFT`.
+
+**Amended 2026-07-31 (second pass) — Erik's 1/r question found a real defect:**
+the deposit law is now **absorptivity-weighted** (A1.4 — the original form debited
+an emitter up to ~3× its per-ray share across multi-absorber sightlines, i.e.
+super-Stefan-Boltzmann cooling), and A1.9 records where the geometric falloff
+lives (the fan is the view-factor sampler; per-ray energy does not decay). The
+`E°` table is now a PURE black-body bake (ε moved into the per-material pair
+coefficient). P-R4 builds the amended law.
 
 **The one rule everything below follows from:**
 
@@ -49,10 +57,16 @@ enumerates, with per-ray share `w = 1/ray_count` and running material transmitta
 `τ` (today's `heat_survival`):
 
 ```
-net      = τ · w · ( E[T_s] − E[T_r] )        // signed, Q16.16 heat counts/tick
-rad[r]  += net                                 // receiver gains
-rad[s]  −= net                                 // emitter loses THE SAME integer
+net       = a_s · a_r · τ · w · ( E°[T_s] − E°[T_r] )   // signed, Q16.16 heat counts/tick
+rad[r]   += net                                          // receiver gains
+rad[s]   −= net                                          // emitter loses THE SAME integer
+survival ×= (1 − a_r)                                    // AFTER the deposit — absorbed stays, rest transmits
 ```
+
+with `a_x = heat_atten[x]` (absorptivity = emissivity, Kirchhoff — A1.4), `τ` the
+running transmittance (`heat_survival`, which already IS `Π(1−a_k)` over the
+tiles crossed so far), `w = 1/ray_count`, and `E°` the **pure black-body** table
+(no ε in the bake — it lives in the per-material pair coefficient).
 
 **Why this exact shape, point by point:**
 
@@ -77,13 +91,34 @@ rad[s]  −= net                                 // emitter loses THE SAME integ
    No interpolation: a staircase in 4-game steps means near-equal pairs land in the
    same bucket and net *exactly* 0 (helps point 1); the step error at 1000 K is a
    few percent of E — below the limiter's granularity. **[derived; bake-time choice]**
-4. **Emissivity = absorptivity = the existing `heat_atten` column (Kirchhoff).**
+4. **Emissivity = absorptivity = the existing `heat_atten` column (Kirchhoff) —
+   and the deposit is absorptivity-WEIGHTED (amended after Erik's 1/r question).**
    The material that blocks heat rays is the material that emits/absorbs them —
    physically Kirchhoff's law, practically **zero new per-material dials** and the
    deposit gate stays the existing `heat_survival > heat_cull` gate, so the
    heat-touched tile set keeps its determinism contract (material-only, no gas
    `exp`). Consequence: **air (heat_atten 0) neither absorbs nor receives** — the
-   painter's air-heating dies with the painter. See §5.3 for what that does to the
+   painter's air-heating dies with the painter.
+   **Why the `a_r` weight is load-bearing:** the unweighted form (deposit the full
+   pair-exchange at every absorbing tile the ray crosses) debits the emitter once
+   per absorber — up to `Σ τ_k ≈ 3.3×` its per-ray share through a chain of glass
+   panes, i.e. **cooling faster than Stefan–Boltzmann permits**. With the deposit
+   `a_r · τ` and `survival ×= (1 − a_r)` *after* it, the absorbed fractions
+   telescope: total per-ray debit `= w·(1 − Π(1−a_k)) ≤ w` — one share, exactly;
+   a wall (a = 1.0) takes the whole remainder and kills the ray, glass (0.3)
+   takes 30% and passes 70%. Emission integrates to exactly the grey-body
+   `a_s·E°(T_s)`. The pair coefficient `a_s·a_r` is **symmetric** in s↔r (this is
+   where Kirchhoff earns its keep: with ε ≠ a the two directions of the same pair
+   would exchange at different rates and antisymmetry would break), so gate (e)
+   is untouched. Cost: `a_r` is a load the march already does for survival — one
+   extra multiply.
+   **Known value-tension, flagged for P-R5, not a design change:** `heat_atten`
+   now means occlusion AND emissivity with ONE value per material — which is
+   *correct physics* (they are the same property), but furniture's shipped 0.5
+   was tuned as gameplay occlusion, so a burning crate emits at half black-body
+   until the P-R5 retune revisits the value (real wood/char ε ≈ 0.9). Do NOT
+   split the column — splitting is a Kirchhoff violation and re-breaks
+   antisymmetry. See §5.3 for what that does to the
    far-field wall, and E3 for the room-feel escalation.
 5. **Absorption stays lumped** (seed §1.4): the deposit converts through each end's
    own `heat_inv_shift`, i.e. the existing object branch
@@ -158,6 +193,19 @@ rad[s]  −= net                                 // emitter loses THE SAME integ
    loss) — noted so nobody double-counts. Lowering the gate back toward 60 is
    the FEEL lever (warm objects gently toasting their surroundings) and costs
    emitter count; raising it further is the COST lever and costs post-fire glow.
+9. **Where the 1/r falloff lives (Erik's question, answered into the record).**
+   Emission is omnidirectional — 8 rays evenly over 2π, per-source deterministic
+   phase. Per-ray carried energy does NOT decay with distance in clear air
+   (photons do not tire; `heat_survival` decays only by occlusion — same contract
+   as today's march). The geometric falloff is in the FAN: 8 rays spread over a
+   circumference growing as 2πr, so the fraction of rays crossing a fixed tile
+   falls as ~1/r (our world is 2D; in 3D it would be 1/r² by the same argument).
+   **The ray fan is a discrete view-factor sampler** — "how many rays connect the
+   pair" IS the `F` in `εσAF(T_h⁴ − T_c⁴)`. The 8-ray aliasing (a far tile is
+   either on a ray line or not) is the SAME discretization the shipped painter
+   has always had, tamed the same two ways: the `(7x+13y) mod 8` phase hash
+   decorrelates neighbouring fans, and multi-source scenes average over fans.
+   Not a new approximation; now a documented one.
 
 **Where the burning tile's own temperature now comes from — the load-bearing
 consequence.** With the painter gone, a lone crate's radiation *nets to zero* at
