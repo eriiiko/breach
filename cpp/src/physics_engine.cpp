@@ -59,6 +59,9 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // pass (see physics_engine.h). NOT used by the ripple or fire calls —
         // those keep `solid` (flow/LoS/obstacle) unchanged.
         const bool* thermal_solid,
+        // COOL-SHIFT AXIS: per-tile ambient-decay shift for the temperature
+        // pass's Pass 3 (see physics_engine.h). Temperature-only.
+        const int32_t* cool_shift_grid,
         // EOS P3: bulk-N source (real Pass-1 heat-deposit divisor)
         // EOS P4: o2_idx slices the real O2 gate input out of `gas`
         const int32_t* gas, const bool* gas_conservative, int n_gases, int o2_idx,
@@ -282,7 +285,13 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             this->temperature.gas_advection_rate, this->temperature.T_MAX_PHYS,
             h, w, sim_time,
             is_ambient,       // BC: ring wiped to ΔT=0 in Pass 0 (nullptr = space)
-            thermal_solid);   // thermal-mass axis: the per-medium THERMAL mask
+            thermal_solid,    // thermal-mass axis: the per-medium THERMAL mask
+            // COOL-SHIFT AXIS: the per-tile decay shift + the floor on the
+            // vacuum offset, both straight off the solver/GameMap so the two
+            // backends read the SAME dials (the cool_shift/cool_shift_vacuum
+            // pair above still supplies the offset itself).
+            cool_shift_grid,
+            this->temperature.cool_shift_floor);
     } else
 #endif
     {
@@ -299,7 +308,11 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             nullptr, nullptr,
             h, w, sim_time,
             is_ambient,      // BC: ring wiped to ΔT=0 (Pass-0), vacuum idiom
-            thermal_solid);
+            thermal_solid,
+            // COOL-SHIFT AXIS: Pass 3's per-tile decay shift. The solver's own
+            // `cool_shift`/`cool_shift_vacuum`/`cool_shift_floor` members still
+            // supply the vacuum OFFSET and its clamp.
+            cool_shift_grid);
     }
 
     return destroyed;

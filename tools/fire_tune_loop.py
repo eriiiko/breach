@@ -12,7 +12,7 @@ Run (from a worktree root):
 
 Tuning order (§9.3 — one group at a time, everything else frozen):
     1. STRUCTURE (once)   fire_T_ext=250 < ignition_temp, span 100
-    2. THERMAL            k_fire_heat vs COOL_SHIFT -> flame T 400-500
+    2. THERMAL            k_fire_heat vs cool_shift -> flame T 400-500
     3. RAMP               k_grow / k_die -> peak ~0.5 @ ~3 min
     4. LIFETIME           wall_damage -> fire death 6-8 min
     5. VERIFY anchors     (burn_rate / X_ext / fuel_per_o2 / tau -- no tuning)
@@ -29,23 +29,42 @@ crate looks like now:
   * medium is chosen by `thermal_mass > 0`, not by `permeability <= 0`;
   * `temperature[]` on the crate is OWNED by the TemperatureSolver — the EOS
     pass no longer touches it (measured: 0.000 game/tick, every run);
-  * COOL_SHIFT is therefore the crate's ONE loss channel, and a REAL dial.
+  * the ambient decay is therefore the crate's ONE loss channel, and a REAL
+    dial.
 
 The equilibrium is exact (measured to +/-1% at equilibrium, 3 operating
 points), so you can predict a move before you make it:
 
-    T*(I) = k_fire_heat * I * 2^(COOL_SHIFT - heat_inv_shift)
+    T*(I) = k_fire_heat * I * 2^(cool_shift - heat_inv_shift)
 
     heat_inv_shift = log2(thermal_mass); furniture thermal_mass = 8 -> 3.
-    So at COOL_SHIFT=5:  T* = 4 * k_fire_heat * I   (design §2.5's form).
+    So at cool_shift=5:  T* = 4 * k_fire_heat * I   (design §2.5's form).
+
+--------------------------------------------------------------------------
+DIAL MOVED 2026-07-30 by the COOL-SHIFT AXIS (the loss-side twin of
+thermal_mass). READ THIS IF YOU HAVE THE OLD KEY IN MUSCLE MEMORY.
+--------------------------------------------------------------------------
+The decay shift is now a PER-MATERIAL column:
+
+    --set materials.furniture.cool_shift=12      <-- the crate dial NOW
+    --set physics.thermal.COOL_SHIFT=12          <-- NO LONGER MOVES THE CRATE
+
+`[physics.thermal] COOL_SHIFT` is kept and still has two jobs — it is the
+DEFAULT for a material row that omits the column, and (with COOL_SHIFT_VACUUM)
+it defines the vacuum-exposure OFFSET — but every row in config.toml now
+authors `cool_shift` explicitly, so the column WINS and overriding the global
+alone changes nothing on the crate. Warning 1 below used to say this dial was
+global; that WAS the problem, and it is what the axis fixed.
 
 Two warnings before you turn a dial:
 
-  1. COOL_SHIFT is GLOBAL. It is [physics.thermal] and applies to EVERY
-     thermal_solid tile — hull, steel, glass, wood, doors — not just the
-     crate. Moving it 5 -> 12 takes every wall's cooling e-fold from 1.3 s
-     to 171 s. That may well be more physical, but it is a big feel change
-     and it moves goldens everywhere.
+  1. cool_shift is PER MATERIAL now — that is the point. Move the crate
+     alone with `materials.furniture.cool_shift` and hull/steel/glass/wood/
+     doors keep their 1.3 s e-fold, so the big feel change (and the goldens
+     it would move) stays confined to the thing you are tuning. Legal range
+     [SHIFT_MIN=2, 20]; e-fold = 2^shift / 24 s (5 -> 1.3 s, 12 -> 171 s).
+     A vacuum-exposed tile takes `max(2, cool_shift - 2)` — the 4x space
+     discount stays one global rule, so each material keeps ONE dial.
 
   2. THE I_crit CLIFF (bench report §4). Deposit is linear in I and loss is
      linear in T, so T* is linear in I — and the hot gate opens at
@@ -57,11 +76,11 @@ Two warnings before you turn a dial:
      (T_flame 450 @ I_peak 0.5, fire_T_ext 250) that is I_crit = 0.278,
      nearly 3x ignition_seed = 0.1 — so the fire can neither ignite from
      the seed nor burn down gracefully. This is why design §2.5's
-     k_fire_heat = 225 @ COOL_SHIFT = 5 is arithmetically right but
+     k_fire_heat = 225 @ cool_shift = 5 is arithmetically right but
      DYNAMICALLY DEAD: measured, it snaps out at tick 1.
 
      The four levers are measured in bench report §4.3. Three of them
-     (COOL_SHIFT ~12; ignition_seed into the band; fire_T_ext below
+     (cool_shift ~12; ignition_seed into the band; fire_T_ext below
      T*(I_seed)) relocate the cliff; only the fourth — making the deposit
      non-linear in I — removes it, and that is a MODEL change, not a dial.
      Erik's call, at the joint re-tune.
@@ -114,8 +133,9 @@ TUNE = {
     # =====================================================================
     # STRUCTURE FACTS (re-measured 2026-07-30, live path, post-arc):
     #  * The crate is a THERMAL SOLID (thermal_mass 8 -> heat_inv_shift 3).
-    #    COOL_SHIFT applies to it; furniture kappa=0, so COOL_SHIFT is its
-    #    ONLY loss channel (ruling A5 — deliberate, one clean dial).
+    #    The ambient decay applies to it; furniture kappa=0, so
+    #    `materials.furniture.cool_shift` is its ONLY loss channel
+    #    (ruling A5 — deliberate, one clean dial, now per material).
     #  * The EOS pass does NOT advect its temperature away any more.
     #    Measured EOS delta on the crate: 0.000 game/tick, all 70 runs.
     #  * fire_T_ext can go back to PHYSICAL values (§9.2's below-ignition
@@ -127,17 +147,20 @@ TUNE = {
     "fire_T_span": 100.0,   # hot = 1 above T = 350
 
     # -- 2. THERMAL operating point (§9.3 step 2). THE dial pair.
-    #       T* = k_fire_heat * I * 2^(COOL_SHIFT - 3)   [+/-1% at equilibrium]
+    #       T* = k_fire_heat * I * 2^(cool_shift - 3)   [+/-1% at equilibrium]
     #       Measured here: plateau 414 game (1120 K) — inside the 400-500
     #       target. Raising k_fire_heat raises the plateau AND the far-field
     #       rise (they scale together — far rise is the binding constraint,
     #       not the flame temperature).
-    #       COOL_SHIFT 12 is what it takes to clear the I_crit cliff at a
+    #       cool_shift 12 is what it takes to clear the I_crit cliff at a
     #       400-500 plateau (bench report §4.2 — it is the ONLY member of
-    #       the iso-target family that sustains). READ WARNING 1 ABOVE:
-    #       this dial is GLOBAL.
+    #       the iso-target family that sustains). Since the COOL-SHIFT AXIS
+    #       this is the FURNITURE row only: every other material keeps its
+    #       1.3 s e-fold, so the 12 does not follow you onto the hull.
     "k_fire_heat": 2.2,
-    "physics.thermal.COOL_SHIFT": 12,   # integer shift; e-fold = 2^12 ticks
+    # integer shift; e-fold = 2^12 ticks = 171 s. NOTE THE KEY: the old
+    # `physics.thermal.COOL_SHIFT` no longer moves the crate (see the header).
+    "materials.furniture.cool_shift": 12,
 
     # -- 3. RAMP (§9.3 step 3 — YOURS). Ratio sets peak, magnitude sets
     #       speed. Measured here: peak I 0.331 @ 143.9 s (target 0.40-0.60
@@ -164,11 +187,11 @@ TUNE = {
 # --- Other measured branches (bench report §4.3). Swap one in wholesale by
 # --- doing  TUNE.update(ALT_...)  right here, then re-run.
 
-# Keeps COOL_SHIFT at Erik's stated preference (6-7) and the blessed
+# Keeps the decay shift at Erik's stated preference (6-7) and the blessed
 # fire_T_ext — but the flame runs at 1007 game (2307 K), ~2x too hot, and
 # lowering k_fire_heat from here kills the fire outright (floor is 175).
 ALT_PREFERRED_COOL_SHIFT = {
-    "physics.thermal.COOL_SHIFT": 7,
+    "materials.furniture.cool_shift": 7,
     "k_fire_heat": 175.0,
     "fire_T_ext": 250.0, "fire_T_span": 100.0,
 }
@@ -177,7 +200,7 @@ ALT_PREFERRED_COOL_SHIFT = {
 # consumed — but fire_T_ext = 90 is 473 K / 200 C, not a defensible
 # flame-extinction temperature, and it fails gate (c) monotonicity (dip -46).
 ALT_LOW_T_EXT = {
-    "physics.thermal.COOL_SHIFT": 7,
+    "materials.furniture.cool_shift": 7,
     "k_fire_heat": 56.25,
     "fire_T_ext": 90.0, "fire_T_span": 100.0,
 }
@@ -187,7 +210,7 @@ ALT_LOW_T_EXT = {
 # 24.6 wall_hp left (the cliff moves to the decay end). With the stock
 # ignition_seed = 0.1 this set snaps out at tick 1.
 ALT_DESIGN_2_5 = {
-    "physics.thermal.COOL_SHIFT": 5,
+    "materials.furniture.cool_shift": 5,
     "k_fire_heat": 225.0,
     "fire_T_ext": 250.0, "fire_T_span": 100.0,
     "ignition_seed": 0.4,
@@ -225,7 +248,9 @@ def run_harness():
     for k, v in BENCH.items():
         cmd += [k, str(v)]
     for k, v in TUNE.items():
-        vs = str(int(v)) if float(v).is_integer() and "COOL" in k else str(v)
+        # shift counts are INTEGERS (the loader rejects a fractional value)
+        int_key = ("COOL" in k) or k.endswith("cool_shift")
+        vs = str(int(v)) if float(v).is_integer() and int_key else str(v)
         cmd += ["--set", f"{k}={vs}"]
     CSV_PATH.parent.mkdir(exist_ok=True)
     print("[cmd]", " ".join(cmd), "\n")
@@ -302,9 +327,11 @@ def verdict(ok, value=None):
 def predicted_T_star(peak_I):
     """The measured equilibrium law, so the scorecard can say what the dials
     PREDICT as well as what the run did (bench report §3.1, +/-1%).
-        T* = k_fire_heat * I * 2^(COOL_SHIFT - heat_inv_shift)
-    heat_inv_shift = log2(furniture thermal_mass = 8) = 3."""
-    c = int(TUNE.get("physics.thermal.COOL_SHIFT", 5))
+        T* = k_fire_heat * I * 2^(cool_shift - heat_inv_shift)
+    heat_inv_shift = log2(furniture thermal_mass = 8) = 3. COOL-SHIFT AXIS: the
+    shift is the FURNITURE row's `cool_shift`, not the global any more."""
+    c = int(TUNE.get("materials.furniture.cool_shift",
+                     TUNE.get("physics.thermal.COOL_SHIFT", 5)))
     return float(TUNE["k_fire_heat"]) * peak_I * (2.0 ** (c - 3))
 
 
@@ -346,7 +373,7 @@ def scorecard(m):
     # what the dials PREDICT at the observed peak I (the §2.5 analytic)
     ts = predicted_T_star(m["peak_I"])
     print(f"{'  T* predicted @ peak I':<26}{ts:>16.0f}   "
-          f"= k_fire_heat*I*2^(COOL_SHIFT-3)")
+          f"= k_fire_heat*I*2^(cool_shift-3)")
     # the cliff: below this intensity the hot gate closes and the fire dies
     if ts > 0:
         i_crit = m["peak_I"] * float(TUNE["fire_T_ext"]) / ts

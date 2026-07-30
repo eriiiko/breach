@@ -8,7 +8,7 @@ form and ``_build_ship`` fallback from the legacy implementation are gone
 
 Owns the cached arrays the physics systems read and write:
 
-    material, wall_hp, solid, thermal_solid, is_vacuum, flammable,
+    material, wall_hp, solid, thermal_solid, cool_shift, is_vacuum, flammable,
     atmosphere, wave_p, wave_v, wave_source, wind_x, wind_y,
     smoke, fire, obstacles, light_map, heat, smoke_glow
 
@@ -115,6 +115,25 @@ class GameMap:
         # (`step_tail` on the mirror), and the per-call CUDA temperature kernel
         # does its own H2D from `GameMap.thermal_solid`.
         "thermal_solid",
+        # COOL-SHIFT AXIS (2026-07-30): the per-tile ambient-decay shift the
+        # temperature pass's Pass-3 reads (`T -= T >> cool_shift[i]`). Joins the
+        # resident set for the same three reasons `thermal_solid` did: a device
+        # buffer + ONE upload at :meth:`enable_residency`, the __setattr__
+        # stale-pointer guard (it is REASSIGNED by `_update_caches` and patched
+        # IN PLACE by `on_tile_changed`, exactly like `heat_inv_shift`), and
+        # `device_ptrs()["cool_shift"]` as the pointer a future resident
+        # temperature kernel takes.
+        # SAME CAVEAT AS `thermal_solid`, recorded so it is not re-learned: this
+        # grid is NOT static — `on_tile_changed` patches it whenever a tile's
+        # material changes — so the moment a DEVICE kernel reads the resident
+        # pointer it MUST join the per-tick `from_host` list in
+        # `physics_runner._step_resident` beside `solid`/`is_vacuum`/
+        # `is_ambient`/`thermal_solid`. No device kernel reads it today: the
+        # resident tick's temperature pass is a host bracket (`step_tail` on the
+        # mirror) and the per-call CUDA temperature kernel does its own H2D from
+        # `GameMap.cool_shift`. The EOS (the one resident consumer of
+        # `thermal_solid`) does not read this grid at all.
+        "cool_shift",
         # S8a Path A: the BC sponge grids — static per map (built ONCE in
         # __init__, never recomputed — unlike is_ambient, which destroy_wall's
         # joins-ambient twin mutates and therefore rides the per-tick EOS
@@ -790,6 +809,21 @@ class GameMap:
         # thermal_mass > 0, so on a furniture-free map `thermal_solid == solid`
         # elementwise and every thermal path is byte-identical (addendum D4).
         self.thermal_solid = tbl.thermal_solid[m].copy()
+        # COOL-SHIFT AXIS (2026-07-30) — the per-tile AMBIENT-DECAY shift, the
+        # LOSS-side twin of `heat_inv_shift`. The cooling pass on a thermal-solid
+        # tile is `T -= T >> cool_shift[i]` (engine/06 §3), e-fold 2^shift/24 s.
+        # Built HERE, in the SAME ONE function as `heat_inv_shift` /
+        # `thermal_solid`, and patched at the SAME single site in
+        # `on_tile_changed` — the addendum's D3 rule: one seam, so the future
+        # movable-furniture version has one place to become dynamic.
+        # WHY it is per-tile at all: furniture's conductivity is 0, so with the
+        # thermal-mass arc routing a crate into the solid thermal regime this
+        # decay is its ONE loss channel, and the old single global could not be
+        # right for both a thin hull plate and a wooden crate.
+        # The VACUUM-exposed rate is derived from this SAME number by the global
+        # offset (COOL_SHIFT - COOL_SHIFT_VACUUM) at the cooling site — ONE dial
+        # per material, no second grid. See materials.py's `cool_shift` block.
+        self.cool_shift = tbl.cool_shift[m].astype(np.int32, copy=True)
         # Per-tile conduction face-shift cache (engine/06 §2.5): baked from the
         # material grid via the harmonic-mean face table. NO_FACE at grid edges
         # and on any kappa==0 (air) face -> structural air no-op (built IN-PLACE
@@ -945,6 +979,12 @@ class GameMap:
         # site), so a destroyed crate leaves the solid thermal regime the
         # instant its material changes to air.
         self.thermal_solid[fy, fx] = bool(tbl.thermal_solid[mat_id])
+        # Ambient-decay shift cache (cool-shift axis) — patched through the SAME
+        # seam as heat_inv_shift/thermal_solid (D3: ONE build + ONE patch site),
+        # so a burnt-out crate stops cooling like wood the instant it turns to
+        # air (a moot value there — the cooling pass is thermal-solid only — but
+        # the cache must not go stale).
+        self.cool_shift[fy, fx] = int(tbl.cool_shift[mat_id])
         # Conduction face-shift cache — patch this tile's 4 faces AND the facing
         # entry of each neighbour (a shared face), so a breached wall's thermal
         # coupling to its neighbours updates the instant it changes.

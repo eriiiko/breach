@@ -36,6 +36,17 @@
 // so furniture (conductivity 0) has COOL_SHIFT as its ONE loss channel. On any
 // furniture-free map `thermal_solid == solid` elementwise, so this is
 // byte-identical there (addendum D4) — the patch's gate (a).
+//
+// COOL-SHIFT AXIS (2026-07-30): the LOSS-side twin of thermal_mass. MEDIUM-TEST
+// SITE 6/6 (temp_cool) additionally takes a per-tile decay shift
+// (`cool_shift_grid`, GameMap.cool_shift) instead of the single global
+// COOL_SHIFT, because the thermal-mass arc made furniture a thermal solid whose
+// ONLY loss channel is that decay — and 2^5/24 == 1.3 s is right for thin hull
+// plate and absurd for a wooden crate. The vacuum-exposed rate stays ONE global
+// rule applied as an OFFSET (cool_shift - cool_shift_vacuum, floored at
+// cool_shift_floor == SHIFT_MIN), so each material keeps exactly one dial. With
+// every material seeded at the old global this is bit-identical to the pre-axis
+// kernel; the CPU twin is temperature_solver.cpp Pass 3, line for line.
 // ============================================================================
 #include "cuda_temperature.h"
 #include "fixed_point.h"              // quantize/make_recip/mul_q16/mul_wide/narrow
@@ -298,11 +309,19 @@ __global__ void temp_conduct(const int32_t* __restrict__ temperature,
 // ---- Pass 3: ambient cooling (§3, thermal solids only, vacuum-exposed 4x) ---
 // In-place on temperature[i]; reads own cell + neighbours' is_vacuum/atmosphere
 // (frozen -> safe). Symmetric round-toward-0 shift; the dead-band is preserved.
+// COOL-SHIFT AXIS (2026-07-30) — the exact device twin of the CPU Pass 3. The
+// base decay shift is now PER TILE (`cool_shift_grid`, null -> the `cool_shift`
+// scalar) and the vacuum-exposed shift is that base minus the ONE global
+// offset (cool_shift - cool_shift_vacuum, computed on the host and passed in as
+// `vac_offset`), clamped at `cool_shift_floor`. Rationale for the offset form
+// (one dial per material; the 4x space discount is a property of the boundary,
+// not of the material) lives at the CPU site — temperature_solver.cpp Pass 3.
 __global__ void temp_cool(int32_t* __restrict__ temperature,
                           const bool* __restrict__ thermal_solid,
                           const bool* __restrict__ is_vacuum,
                           const int32_t* __restrict__ atmosphere,
-                          int cool_shift, int cool_shift_vacuum,
+                          const int32_t* __restrict__ cool_shift_grid,
+                          int cool_shift, int vac_offset, int cool_shift_floor,
                           int32_t thresh_q, int h, int w) {
     const int n = h * w;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
@@ -327,7 +346,13 @@ __global__ void temp_cool(int32_t* __restrict__ temperature,
                 break;
             }
         }
-        const int shift = exposed ? cool_shift_vacuum : cool_shift;
+        const int base_shift =
+            (cool_shift_grid != nullptr) ? (int)cool_shift_grid[i] : cool_shift;
+        int shift = base_shift;
+        if (exposed) {
+            shift = base_shift - vac_offset;
+            if (shift < cool_shift_floor) shift = cool_shift_floor;
+        }
         const int32_t loss = (t < 0) ? -((-t) >> shift) : (t >> shift);
         temperature[i] = t - loss;
     }
@@ -344,7 +369,10 @@ int64_t temperature_step(
     float c_v, float n_floor_heat, float gas_advection_rate, float t_max_phys,
     int h, int w, float dt,
     const bool* is_ambient,     // BC: ring wiped to ΔT=0 in Pass 0 (nullptr=space)
-    const bool* thermal_solid) {  // thermal-mass axis: medium mask (nullptr -> solid)
+    const bool* thermal_solid,  // thermal-mass axis: medium mask (nullptr -> solid)
+    const int32_t* cool_shift_grid,  // cool-shift axis: per-tile decay shift
+                                      // (nullptr -> the cool_shift scalar)
+    int cool_shift_floor) {     // low clamp on the vacuum offset (== SHIFT_MIN)
     const int n = h * w;
     if (n <= 0) return 0;
 
@@ -357,12 +385,17 @@ int64_t temperature_step(
     const int32_t n_floor_q = quantize((double)n_floor_heat);
     const int32_t t_max_phys_q = quantize((double)t_max_phys);
     const bool do_advect = (dt > 0.0f && wind_x != nullptr && wind_y != nullptr);
+    // COOL-SHIFT AXIS: the vacuum discount as a DIFFERENCE, computed ONCE on
+    // the host exactly as the CPU solver's Pass 3 does (`const int vac_offset =
+    // cool_shift - cool_shift_vacuum;`). Pure integer, no boundary cast.
+    const int vac_offset = cool_shift - cool_shift_vacuum;
 
     const size_t nb = (size_t)n * sizeof(int32_t);
     const size_t nbool = (size_t)n * sizeof(bool);
     int32_t *d_temp = nullptr, *d_temp_new = nullptr, *d_heat = nullptr,
             *d_his = nullptr, *d_fs = nullptr, *d_atm = nullptr,
-            *d_nbulk = nullptr, *d_src = nullptr, *d_wx = nullptr, *d_wy = nullptr;
+            *d_nbulk = nullptr, *d_src = nullptr, *d_wx = nullptr, *d_wy = nullptr,
+            *d_csg = nullptr;
     bool *d_solid = nullptr, *d_vac = nullptr, *d_tsol = nullptr;
     unsigned long long* d_hits = nullptr;
 
@@ -382,6 +415,10 @@ int64_t temperature_step(
     // — so the fallback allocates and copies nothing (and is not a second code
     // path). `solid` itself keeps its unconditional upload: it IS that fallback.
     if (thermal_solid) cuda_check(cudaMalloc(&d_tsol, nbool), "malloc thermal_solid");
+    // COOL-SHIFT AXIS: same nullable-plane idiom — with nullptr the kernel is
+    // handed a null pointer and falls back to the `cool_shift` scalar per cell,
+    // the exact CPU twin, so the fallback allocates and copies nothing.
+    if (cool_shift_grid) cuda_check(cudaMalloc(&d_csg, nb), "malloc cool_shift_grid");
     if (do_advect) {
         cuda_check(cudaMalloc(&d_src, nb), "malloc src");
         cuda_check(cudaMalloc(&d_wx, nb), "malloc wind_x");
@@ -398,6 +435,9 @@ int64_t temperature_step(
     if (thermal_solid)
         cuda_check(cudaMemcpy(d_tsol, thermal_solid, nbool, cudaMemcpyHostToDevice),
                    "H2D thermal_solid");
+    if (cool_shift_grid)
+        cuda_check(cudaMemcpy(d_csg, cool_shift_grid, nb, cudaMemcpyHostToDevice),
+                   "H2D cool_shift_grid");
     // BC: optional ambient ring mask for the Pass-0 wipe (nullptr on space maps).
     bool* d_amb = nullptr;
     if (is_ambient) {
@@ -450,8 +490,9 @@ int64_t temperature_step(
     cuda_check(cudaMemcpy(d_temp, d_temp_new, nb, cudaMemcpyDeviceToDevice), "D2D swap");
 
     // Pass 3: cool (in-place on d_temp).
-    temp_cool<<<grid, block>>>(d_temp, d_ts, d_vac, d_atm,
-                               cool_shift, cool_shift_vacuum, thresh_q, h, w);
+    temp_cool<<<grid, block>>>(d_temp, d_ts, d_vac, d_atm, d_csg,
+                               cool_shift, vac_offset, cool_shift_floor,
+                               thresh_q, h, w);
     cuda_check(cudaGetLastError(), "cool launch");
     cuda_check(cudaDeviceSynchronize(), "sync");
 
@@ -475,6 +516,7 @@ int64_t temperature_step(
     if (d_wy) cudaFree(d_wy);
     if (d_amb) cudaFree(d_amb);
     if (d_tsol) cudaFree(d_tsol);
+    if (d_csg) cudaFree(d_csg);
 
     return (int64_t)hits;
 }

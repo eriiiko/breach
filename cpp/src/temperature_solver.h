@@ -95,9 +95,14 @@
 //   the discrete maximum principle holds (no new extremum ever created),
 //   unconditionally stable for all time (proposal §2.6).
 //
-//   Ambient cooling (§3, gather over the geometric 4-neighbours):
-//       shift = exposed ? cool_shift_vacuum : cool_shift
+//   Ambient cooling (§3, gather over the geometric 4-neighbours) — since the
+//   COOL-SHIFT AXIS (2026-07-30) the base shift is PER TILE, not one global:
+//       base  = cool_shift_grid ? cool_shift_grid[i] : cool_shift
+//       shift = exposed ? max(cool_shift_floor, base - (cool_shift - cool_shift_vacuum))
+//                       : base
 //       T    -= (T < 0) ? -((-T) >> shift) : (T >> shift)
+//   With cool_shift_grid null (or uniformly == cool_shift, the seeded config)
+//   this is bit-exactly the old `exposed ? cool_shift_vacuum : cool_shift`.
 //   Temperature stores ΔT above ambient, so T_ambient == 0 and cooling relaxes
 //   toward 0 with NO subtraction (`T -= T >> shift`). `exposed` is true when ANY
 //   in-bounds 4-neighbour is vacuum (is_vacuum) OR has atmosphere < a quantized
@@ -133,6 +138,27 @@ public:
     // Ambient cooling shifts (§3.3), bound from config [physics.thermal].
     //   cool_shift        — interior Newtonian decay (T -= T >> cool_shift).
     //   cool_shift_vacuum — space-exposed decay (smaller shift -> faster).
+    //
+    // COOL-SHIFT AXIS (2026-07-30): these two scalars are no longer the whole
+    // story — the decay shift is a PER-MATERIAL column projected to the
+    // per-tile `cool_shift_grid` argument of step() below. They keep TWO live
+    // jobs, both of which make the axis additive rather than a replacement:
+    //   1. FALLBACK: `cool_shift` is the shift used when `cool_shift_grid` is
+    //      null (the documented back-compat path, like `solid` is for
+    //      `thermal_solid`) — so an un-plumbed caller behaves exactly as before.
+    //   2. VACUUM OFFSET: the PAIR defines the space-exposure discount as a
+    //      DIFFERENCE, not an absolute: a vacuum-exposed tile cools at
+    //          max(cool_shift_floor, cool_shift_grid[i] - (cool_shift - cool_shift_vacuum))
+    //      With the shipped 5/3 that is "two shifts == 4x faster", applied
+    //      uniformly to every material, so each material still carries exactly
+    //      ONE dial. At the seeded config (every material 5) it reproduces the
+    //      old interior-5 / exposed-3 pair bit-exactly.
+    // cool_shift_floor — the low clamp on that subtraction (bound from config
+    //   [physics.thermal] SHIFT_MIN, the same "rate floor" the conduction
+    //   buckets use, and the same floor materials.py validates the column
+    //   against). Load-bearing: without it a material legally sitting AT the
+    //   floor would derive a vacuum shift of 0 == `T -= T`, an instant total
+    //   wipe. It never binds at the seeded values (5 - 2 == 3 > 2).
     // o2_vacuum_thresh — atmosphere value below which a neighbour counts as
     //   vacuum for the exposure test (in the same REAL units as gmap.atmosphere,
     //   i.e. the pre-quantize pressure). It is a config dial (bound from Python as
@@ -142,12 +168,15 @@ public:
     //   per-cell state (the documented boundary exception, like fire's `dt`).
     int   cool_shift = 5;
     int   cool_shift_vacuum = 3;
+    int   cool_shift_floor = 2;      // == config SHIFT_MIN
     float o2_vacuum_thresh = 0.3f;
 
     void  set_cool_shift(int v) { cool_shift = v; }
     int   get_cool_shift() const { return cool_shift; }
     void  set_cool_shift_vacuum(int v) { cool_shift_vacuum = v; }
     int   get_cool_shift_vacuum() const { return cool_shift_vacuum; }
+    void  set_cool_shift_floor(int v) { cool_shift_floor = v; }
+    int   get_cool_shift_floor() const { return cool_shift_floor; }
     void  set_o2_vacuum_thresh(float v) { o2_vacuum_thresh = v; }
     float get_o2_vacuum_thresh() const { return o2_vacuum_thresh; }
 
@@ -276,7 +305,17 @@ public:
         // the six medium tests listed above. Default nullptr -> fall back to
         // `solid`, the pre-patch behaviour (the documented back-compat idiom
         // this signature already uses for wind/n_bulk/is_ambient).
-        const bool* thermal_solid = nullptr
+        const bool* thermal_solid = nullptr,
+        // COOL-SHIFT AXIS (2026-07-30): int32, (h, w). The per-tile AMBIENT
+        // DECAY shift (`GameMap.cool_shift`, the per-material `cool_shift`
+        // column projected by the material grid) — the LOSS-side twin of
+        // `heat_inv_shift`. Pass 3 does `T -= T >> cool_shift_grid[i]`.
+        // Default nullptr -> the scalar `cool_shift` member for every tile,
+        // i.e. exactly the pre-axis single-global behaviour (the same
+        // back-compat idiom as `thermal_solid` above). The vacuum-exposed
+        // shift is derived from this same per-tile value by the global offset
+        // documented at `cool_shift` — there is deliberately no second grid.
+        const int32_t* cool_shift_grid = nullptr
     ) const;
 
     // --- DEBUG probe (temporary instrumentation, eos-p3fix-thermal-ceiling

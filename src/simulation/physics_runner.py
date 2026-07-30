@@ -224,9 +224,20 @@ class PhysicsRunner:
         # and the atmosphere threshold below which a 4-neighbour counts as
         # space-facing. Bound from config so the burn-out tuning lives in one
         # place. Cooling relaxes ΔT toward 0 (T_ambient == 0): T -= T >> shift.
+        # COOL-SHIFT AXIS (2026-07-30): the decay shift itself is now a
+        # PER-MATERIAL column projected to `GameMap.cool_shift` and handed to
+        # step_tail below. These two globals keep two live jobs: `cool_shift`
+        # is the solver's fallback when no per-tile grid is supplied, and the
+        # PAIR defines the vacuum-exposure discount as an OFFSET
+        # (cool_shift - cool_shift_vacuum) applied to every material's own
+        # shift — so "space sheds 4x faster" stays one rule and each material
+        # keeps exactly ONE dial. `cool_shift_floor` clamps that subtraction;
+        # it is the SAME SHIFT_MIN the material loader validates the column
+        # against, bound from the one config key so the two can never disagree.
         self.temperature.cool_shift = int(getattr(thermal, "COOL_SHIFT", 5))
         self.temperature.cool_shift_vacuum = int(
             getattr(thermal, "COOL_SHIFT_VACUUM", 3))
+        self.temperature.cool_shift_floor = int(getattr(thermal, "SHIFT_MIN", 2))
         self.temperature.o2_vacuum_thresh = float(
             getattr(thermal, "o2_vacuum_thresh", 0.3))
         # EOS refactor P2 (docs/eos_refactor_design.md §4, §9): gas-T dials —
@@ -616,6 +627,13 @@ class PhysicsRunner:
             # (permeable but thermally solid) holds an object temperature
             # instead of gas the plume advects away.
             gmap.thermal_solid,
+            # COOL-SHIFT AXIS (2026-07-30): the per-tile ambient-decay shift
+            # (`T -= T >> cool_shift[i]`), the LOSS-side twin of the
+            # heat_inv_shift above. Per-material because the thermal-mass arc
+            # made furniture a thermal solid whose ONLY loss channel is this
+            # decay, and one global cannot be right for a hull plate and a
+            # wooden crate at once.
+            gmap.cool_shift,
             gmap.gas, gmap.gases.conservative, self._o2_idx,
             sim_time,
             # BC: the ambient ring is wiped to ΔT=0 in the temperature pre-pass
@@ -901,6 +919,7 @@ class PhysicsRunner:
             gmap.is_vacuum, gmap.flammable,
             gmap.heat, gmap.heat_inv_shift, gmap.face_shift,
             gmap.thermal_solid,          # thermal-mass axis (host mirror)
+            gmap.cool_shift,             # cool-shift axis (host mirror)
             gmap.gas, gmap.gases.conservative, self._o2_idx,
             sim_time,
             is_ambient=amb[0],

@@ -130,6 +130,13 @@ public:
         // six medium tests key on, instead of the FLOW mask `solid` above.
         // GameMap.thermal_solid; equals `solid` on any furniture-free map.
         const bool* thermal_solid,
+        // COOL-SHIFT AXIS (2026-07-30): the per-tile ambient-decay shift
+        // (GameMap.cool_shift) the temperature pass's Pass 3 reads instead of
+        // the single global COOL_SHIFT. REQUIRED here (not defaulted) for the
+        // same reason `thermal_solid` is: the live engine must never silently
+        // fall back to the global. Uniform == the old global on the shipped
+        // config, so this is byte-identical on arrival.
+        const int32_t* cool_shift_grid,
         // EOS P3: bulk-N source for the Pass-1 heat-deposit divisor.
         // EOS P4: o2_idx slices the real O2 gate input out of `gas`.
         const int32_t* gas, const bool* gas_conservative, int n_gases, int o2_idx,

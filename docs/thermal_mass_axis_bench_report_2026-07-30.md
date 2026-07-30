@@ -381,10 +381,54 @@ mechanical follow-up, enumerated so nothing is lost:
    `heat_inv_shift` on thermal_solid sites (the object path) instead of the gas
    divisor `c_v · max(N, n_floor)`.
 8. The equilibrium law, now measured and worth stating:
-   `T* = k_fire_heat · I · 2^(COOL_SHIFT − heat_inv_shift)`, exact to ±1 %.
+   `T* = k_fire_heat · I · 2^(cool_shift − heat_inv_shift)`, exact to ±1 %.
 9. The `I_crit` cliff (§4 above) belongs here too, as a documented property of
    the linear deposit/loss balance — it is the thing that makes the fire dials
    coupled.
+
+**COOL-SHIFT AXIS follow-ups (added 2026-07-30 by the loss-side patch — the
+axis that answers §4.3 lever 1's "but COOL_SHIFT is a GLOBAL dial")**
+
+`engine/06_temperature_and_fire.md`
+16. §3's ambient cooling is no longer one global. State it as
+    `T -= T >> cool_shift[i]` with `cool_shift` a **per-material column**
+    (`config.toml [materials.*]`, loader-validated integer in
+    `[SHIFT_MIN, 20]`), projected to the derived per-tile grid
+    `GameMap.cool_shift`. e-fold = `2^shift / tick_rate` seconds.
+17. State the **vacuum-exposure rule in its offset form**, which is what the
+    code now does:
+    `exposed → max(SHIFT_MIN, cool_shift[i] − (COOL_SHIFT − COOL_SHIFT_VACUUM))`.
+    The 4× space discount is a property of the BOUNDARY, so it stays ONE
+    global rule applied to every material's own shift — each material keeps
+    exactly one dial. Record the floor as load-bearing (a material at the
+    floor would otherwise derive an exposed shift of 0 == `T -= T`).
+18. Record that `[physics.thermal] COOL_SHIFT` / `COOL_SHIFT_VACUUM` are
+    **kept and still have jobs**: COOL_SHIFT is the omitted-column default and
+    the solver's nullptr fallback; the PAIR is the offset. They no longer set
+    the interior rate for any material that authors the column (all eight do).
+19. Note the WHY, next to §2.2's "furniture's one loss channel": one global
+    could not serve thin hull plate (1.3 s) and a wooden crate (171 s) at
+    once — the identical argument `thermal_mass` won on the gain side.
+
+`engine/03_material_system.md`
+20. Add `cool_shift` beside `thermal_mass` as a first-class material column —
+    gain axis and loss axis, both per material. Live values: **every material
+    5** (seeded at the retired global; the joint re-tune moves them).
+
+`engine/02_state_and_ownership.md`
+21. Add the derived grid `cool_shift` (int32, h×w) to the derived-grid list,
+    on the SAME single structural-rebuild seam as `solid` / `heat_inv_shift` /
+    `thermal_solid` (`_update_caches` build, `on_tile_changed` patch), and to
+    `GameMap._RESIDENT_MASKS`. Same not-static caveat as `thermal_solid`: a
+    device kernel that reads it must take it off the per-tick `from_host` list
+    (no device kernel reads it today).
+
+**Tooling, already done (not a fold item — recorded so it is not re-discovered)**
+22. `tools/fire_tune_loop.py` moved its thermal dial from
+    `physics.thermal.COOL_SHIFT` to `materials.furniture.cool_shift`. The old
+    key is now INERT for the crate, because the material column wins. §4.3
+    lever 1's warning ("this dial is GLOBAL, it moves goldens everywhere") is
+    obsolete and has been rewritten in place.
 
 **`docs/architecture/engine/03_material_system.md`**
 10. `thermal_mass` is **not documented at all**. Add it as a first-class

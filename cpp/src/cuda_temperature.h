@@ -61,8 +61,14 @@ int64_t temperature_step(
     const int32_t* wind_x,          // Q16.16 (h,w) wind; null -> Pass 0 advect skip
     const int32_t* wind_y,          // Q16.16 (h,w) wind; null -> Pass 0 advect skip
     int no_face,                    // sentinel: face_shift==no_face -> skip
-    int cool_shift,                 // interior cooling shift
-    int cool_shift_vacuum,          // space-exposed cooling shift (faster)
+    int cool_shift,                 // interior cooling shift — since the
+                                    // cool-shift axis this is (a) the fallback
+                                    // when cool_shift_grid is null and (b) the
+                                    // reference for the vacuum OFFSET below
+    int cool_shift_vacuum,          // space-exposed cooling shift (faster); with
+                                    // cool_shift it defines the offset
+                                    // (cool_shift - cool_shift_vacuum) applied
+                                    // to the per-tile shift on exposed tiles
     float o2_vacuum_thresh,         // config dial (quantized on host)
     float c_v,                      // gas heat capacity (deposit divide)
     float n_floor_heat,             // per-tile N divisor floor (deposit)
@@ -77,7 +83,20 @@ int64_t temperature_step(
     // the same back-compat idiom the CPU solver's signature uses. Equal to
     // `solid` elementwise on any furniture-free map (addendum D4), so the
     // fallback is not a second code path in practice.
-    const bool* thermal_solid = nullptr);
+    const bool* thermal_solid = nullptr,
+    // COOL-SHIFT AXIS (2026-07-30): int32 (h,w) — the per-tile AMBIENT-DECAY
+    // shift (`GameMap.cool_shift`, the per-material `cool_shift` column
+    // projected by the material grid), the LOSS-side twin of `heat_inv_shift`.
+    // Pass 3 does `T -= T >> cool_shift_grid[i]`; a vacuum-exposed tile takes
+    // `max(cool_shift_floor, cool_shift_grid[i] - (cool_shift -
+    // cool_shift_vacuum))` — ONE dial per material, the space discount stays a
+    // single global rule. Default nullptr -> the `cool_shift` scalar for every
+    // tile (the pre-axis behaviour; same back-compat idiom as `thermal_solid`).
+    const int32_t* cool_shift_grid = nullptr,
+    // Low clamp on that subtraction, == config [physics.thermal] SHIFT_MIN.
+    // Load-bearing: a material legally sitting AT the floor would otherwise
+    // derive an exposed shift of 0 == `T -= T` (an instant total wipe).
+    int cool_shift_floor = 2);
 
 // Backend selection (S1 gate + integration). When true, PhysicsEngine::step_tail
 // runs temperature on the GPU instead of the CPU solver. Defaults false so the

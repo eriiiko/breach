@@ -57,6 +57,17 @@ NO_FACE      = 63       # sentinel: kappa==0 face / grid edge -> zero conduction
 # atmosphere < o2_vacuum_thresh) sheds via the smaller COOL_SHIFT_VACUUM, so a
 # space-facing breached wall cools 4× faster. Pure signed-add + arithmetic right
 # shift -> deterministic. These are the burn-out tuning dials.
+#
+# COOL-SHIFT AXIS (2026-07-30): the decay shift is now a PER-MATERIAL column
+# (`cool_shift` on every [materials.*] row) — one global number cannot serve a
+# thin hull plate and a wooden crate at once. These two globals are KEPT and
+# still do two jobs:
+#   * COOL_SHIFT is the DEFAULT for a material row that omits `cool_shift`
+#     (and the solver's own fallback when no per-tile grid is supplied);
+#   * the PAIR defines the VACUUM OFFSET: a vacuum-exposed tile cools at
+#     max(SHIFT_MIN, cool_shift[tile] - (COOL_SHIFT - COOL_SHIFT_VACUUM)),
+#     i.e. "two shifts faster == 4x" stays one rule for every material. With
+#     every row seeded at 5 that reproduces 5/3 exactly.
 COOL_SHIFT        = 5    # interior decay: T -= T >> 5 (~1/32 per tick, ~32-tick e-fold)
 COOL_SHIFT_VACUUM = 3    # space-exposed decay: T -= T >> 3 (~1/8 per tick, 4× faster)
 o2_vacuum_thresh  = 0.3  # atmosphere below which a 4-neighbour counts as vacuum-exposed
@@ -716,6 +727,22 @@ thermal_mass = 0     # air: 0 == the GAS thermal regime (thermal-mass axis desig
                      # §2.1). The derived `thermal_solid` mask (thermal_mass > 0)
                      # IS the guard now, so no 0-shift placeholder is needed: air
                      # never reaches the >>shift convert path at all.
+# COOL-SHIFT AXIS (2026-07-30) — the LOSS-side twin of `thermal_mass`. The
+# per-tick Newtonian decay toward ambient on a THERMAL-SOLID tile:
+#       T -= T >> cool_shift          (T is ΔT above ambient, so T_amb == 0)
+# At the 24 Hz tick the e-fold time is 2^cool_shift / 24 seconds:
+#       5 -> 1.3 s     8 -> 10.7 s    10 -> 43 s    12 -> 171 s   14 -> 11 min
+# It was ONE global ([physics.thermal] COOL_SHIFT) until the thermal-mass arc
+# made furniture a thermal solid whose ONLY loss channel is this dial
+# (conductivity = 0 -> NO_FACE both ways -> no conduction face). A number fast
+# enough for thin hull plate is absurd for a wooden crate and vice versa, so it
+# is now a PER-MATERIAL FEEL DIAL — the same argument the gain side won with
+# `thermal_mass`. Legal range [SHIFT_MIN=2, 20]; 0 would mean `T -= T`, an
+# instant total wipe, and is rejected by the loader. A vacuum-exposed tile
+# takes the offset form documented at [physics.thermal] COOL_SHIFT above.
+# EVERY ROW IS SEEDED AT THE OLD GLOBAL (5) — this column is byte-identical on
+# arrival; moving a row is a deliberate, HUMAN-TESTED feel change.
+cool_shift = 5       # air: unused (the cooling pass is thermal-solid only), sane value
 ignition_temp = 0.0
 wave_reflect = 0.0
 wave_absorb = 0.0
@@ -731,6 +758,8 @@ light_atten = [1.0, 1.0, 1.0]
 heat_atten = 1.0
 conductivity = 50.0
 thermal_mass = 32    # steel (real rho*c ~3.8): heats slowly per ray (heat >> 5)
+cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
+                     # THE OLD GLOBAL — see the axis note on [materials.air]
 ignition_temp = 0.0
 wave_reflect = 0.9
 wave_absorb = 0.1
@@ -746,6 +775,8 @@ light_atten = [1.0, 1.0, 1.0]
 heat_atten = 1.0
 conductivity = 0.15
 thermal_mass = 8     # softwood (real rho*c ~0.7): heats fast & locally (heat >> 3)
+cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
+                     # THE OLD GLOBAL — see the axis note on [materials.air]
 ignition_temp = 300.0
 wave_reflect = 0.5
 wave_absorb = 0.4
@@ -765,6 +796,8 @@ light_atten = [1.0, 1.0, 1.0]
 heat_atten = 1.0
 conductivity = 0.3
 thermal_mass = 8     # wood-like door: heats fast (heat >> 3)
+cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
+                     # THE OLD GLOBAL — see the axis note on [materials.air]
 ignition_temp = 280.0
 wave_reflect = 0.5
 wave_absorb = 0.4
@@ -780,6 +813,8 @@ light_atten = [1.0, 1.0, 1.0]
 heat_atten = 1.0
 conductivity = 45.0
 thermal_mass = 32    # steel (real rho*c ~3.8): heats slowly per ray (heat >> 5)
+cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
+                     # THE OLD GLOBAL — see the axis note on [materials.air]
 ignition_temp = 0.0
 wave_reflect = 0.9
 wave_absorb = 0.1
@@ -795,6 +830,8 @@ light_atten = [0.1, 0.1, 0.1]
 heat_atten = 0.3
 conductivity = 1.0
 thermal_mass = 16    # glass (real rho*c ~2.1): half metal's mass (heat >> 4)
+cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
+                     # THE OLD GLOBAL — see the axis note on [materials.air]
 ignition_temp = 0.0
 wave_reflect = 0.3
 wave_absorb = 0.1
@@ -813,6 +850,11 @@ light_atten = [0.55, 0.55, 0.55]   # partial occlusion: a crate stack leaks some
 heat_atten = 0.5
 conductivity = 0.0   # kappa 0 = no conduction face (like air); fire eats it via flammability instead
 thermal_mass = 8     # wood-like (real rho*c ~0.7): heats fast & locally (heat >> 3)
+cool_shift = 5       # THE dial for a crate: conductivity = 0 means the ambient
+                     # decay above is furniture's ONE loss channel (thermal-mass
+                     # design §2.2), so this alone sets how long a burning crate
+                     # stays hot. e-fold 2^5/24 = 1.3 s at 5, 171 s at 12.
+                     # SEEDED AT THE OLD GLOBAL — the joint re-tune moves it.
 ignition_temp = 280.0   # wood-like; slightly easier to light than a solid wood wall (300)
 wave_reflect = 0.2
 wave_absorb = 0.5    # soft stuff soaks blasts
@@ -836,6 +878,8 @@ light_atten = [1.0, 1.0, 1.0]
 heat_atten = 1.0
 conductivity = 0.3
 thermal_mass = 8     # wood-like door: heats fast (heat >> 3)
+cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
+                     # THE OLD GLOBAL — see the axis note on [materials.air]
 ignition_temp = 280.0
 wave_reflect = 0.5
 wave_absorb = 0.4

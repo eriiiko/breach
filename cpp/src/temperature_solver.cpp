@@ -149,7 +149,9 @@ void TemperatureSolver::step(
     int h, int w,
     float dt,                    // P2: tick's elapsed seconds; <= 0 skips Pass 0
     const bool* is_ambient,      // BC: ambient ring mask (nullptr = space map)
-    const bool* thermal_solid    // thermal-mass axis: medium mask (nullptr -> solid)
+    const bool* thermal_solid,   // thermal-mass axis: medium mask (nullptr -> solid)
+    const int32_t* cool_shift_grid  // cool-shift axis: per-tile ambient-decay
+                                     // shift (nullptr -> the `cool_shift` scalar)
 ) const {
     const int n = h * w;
     const bool ambient_mode = (is_ambient != nullptr);   // BC: dormancy by branch
@@ -392,6 +394,28 @@ void TemperatureSolver::step(
     // the load/boundary cast) — the exposure test is then a Q16.16 integer compare
     // against the int32 atmosphere field. No per-cell float.
     const int32_t thresh_q = fixedpoint::quantize((double)o2_vacuum_thresh);
+    // COOL-SHIFT AXIS (2026-07-30) — the per-tile decay shift, and the ONE
+    // global rule that turns it into the vacuum-exposed shift.
+    //
+    // WHY PER-TILE: this used to be a single global (config COOL_SHIFT). The
+    // thermal-mass arc routed furniture into the solid thermal regime, and
+    // furniture carries conductivity 0 (NO_FACE both ways), so this decay is a
+    // crate's ONE loss channel. At 24 Hz, shift 5 is an e-fold of 2^5/24 =
+    // 1.3 s — right for thin hull plate, absurd for a wooden crate; shift 12
+    // (171 s) is right for the crate and absurd for plate. One number cannot
+    // serve both, exactly as one global heat divisor could not express "steel
+    // heats slower than wood" on the gain side.
+    //
+    // WHY THE VACUUM RATE IS AN OFFSET, NOT A SECOND COLUMN: the shipped pair
+    // (5 interior / 3 exposed) encodes "space sheds 4x faster", a property of
+    // the BOUNDARY, not of the material. Keeping it as the DIFFERENCE
+    // `cool_shift - cool_shift_vacuum` applies that one physical rule to every
+    // material and leaves each material with exactly ONE dial — the point of
+    // the axis. A per-material `cool_shift_vacuum` column would be two dials
+    // that can silently drift out of the 4x relationship.
+    // Computed ONCE per step (not per cell); at the seeded config it is 2, so
+    // a uniform grid of 5 gives interior 5 / exposed 3 bit-exactly.
+    const int vac_offset = cool_shift - cool_shift_vacuum;
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             const int i = y * w + x;
@@ -399,7 +423,8 @@ void TemperatureSolver::step(
             // thermal regime's loss channel. furniture's conductivity is 0
             // (NO_FACE both ways -> no conduction in or out), so with the crate
             // now inside this pass COOL_SHIFT is its ONE loss channel — a
-            // single clean dial (design §2.2).
+            // single clean dial (design §2.2), and since the cool-shift axis
+            // (2026-07-30) that dial is PER MATERIAL (`cool_shift_grid`).
             if (!ts[i]) continue;             // gas medium: already 0
             const int32_t t = temperature[i];
             if (t == 0) continue;             // exact rest: nothing to shed
@@ -416,7 +441,16 @@ void TemperatureSolver::step(
                     break;
                 }
             }
-            const int shift = exposed ? cool_shift_vacuum : cool_shift;
+            // COOL-SHIFT AXIS: the per-tile base, then the global vacuum
+            // offset with its floor. Pure integer end to end — a shift count
+            // is an `int`, never a real (no libm, no divide, no widening).
+            const int base_shift =
+                (cool_shift_grid != nullptr) ? (int)cool_shift_grid[i] : cool_shift;
+            int shift = base_shift;
+            if (exposed) {
+                shift = base_shift - vac_offset;
+                if (shift < cool_shift_floor) shift = cool_shift_floor;
+            }
 
             // Signed arithmetic right shift, pinned to round toward 0 (portable,
             // deterministic). The dead-band (loss == 0 for |t| < (1<<shift))
