@@ -584,39 +584,116 @@ equilibrium; the loop that converges is: set structure → fix the THERMAL
 operating point → then shape the I-dynamics on top of it → then set the
 clock (fuel). Erik drives; the script's constants block mirrors this order.
 
-### 9.5 ★ CORRECTION (2026-07-25, read-only agent investigation, verified by
-runs) — **the crate takes the GAS thermal branch, which rewrites §9.2/§9.3's
-thermal assumptions:**
-- `[materials.furniture] permeability = 0.5` → NOT solid → **`COOL_SHIFT`
-  NEVER applies to a burning crate** (the ambient-cooling pass is
-  solid-only); furniture κ=0 → **no conduction** in or out; combustion
-  `H_fuel` deposits into adjacent AIR and never reaches the crate tile.
-- The crate's "temperature" is **hot gas the fire's own EOS plume advects
-  away** — the dominant loss, violent and non-exponential (280 → shelf
-  ~90–110 in seconds). No cooling dial controls it.
-- Therefore `fire_T_ext` must sit BELOW the gas shelf: **60 (span 60)** is
-  the working window — NOT a physical flame temperature. §9.2's "250" was
-  right in spirit (below ignition) but wrong in mechanism.
-- **Verified starting set** (fire_tune_loop.py TUNE block): fire_T_ext=60,
-  span=60, k_fire_heat=12 (plateau T ≈ 490–580 ✓ realism band),
-  k_grow/k_die ratio ≥ ~4–6 (o2f self-throttles to ~0.45 at the flame),
-  magnitude scaled down together for the 3-min ramp; COOL_SHIFT untouched.
-- **RESOLVED 2026-07-25 (Erik blessed): this is a REGRESSION, not a
-  question — fix BEFORE tuning.** Canon 06:77-91 designed ignition
-  temperature to live on objects ("air temperature would ignite nothing
-  and advect everything — the wrong behavior"); the EOS-era unified field
-  keyed the medium masks on `solid` (= the FLOW axis) and furniture fell
-  into the gas regime by accident — the `is_wall` error class, one axis
-  over. **Fix = the missing axis: per-material `thermal_mass` (>0 → solid
-  thermal regime, value = the convert divisor, power-of-two); furniture
-  joins walls; `permeability` (shield-not-seal) UNTOUCHED.** Design doc:
-  `docs/thermal_mass_axis_design_2026-07-25.md` (Opus build on the
-  integration line; gates incl. furniture-free byte-identity; expected
-  new operating point k_fire_heat ≈ 225, fire_T_ext back to physical).
-  Tuning PAUSED until it lands (Erik's call — "the dials we lovingly
-  hand-tune will be the ones we ship"). Forward notes captured in the doc:
-  units ignitable later (armor-dependent ignition temps, unit-environment
-  system, own mechanics design); movable-furniture migration path.
+### 9.5 ✅ REGRESSION — **FIXED** (built + gated 2026-07-30; awaiting Erik's
+HUMAN-TEST). *Rewritten at P3 close; the "open question" version is superseded.*
+
+**What it was.** The crate took the GAS thermal branch. `[materials.furniture]
+permeability = 0.5` → NOT `solid` → `COOL_SHIFT` never applied to a burning
+crate, furniture κ=0 meant no conduction either way, and the crate's
+"temperature" was hot gas the fire's own EOS plume advected away (280 → a
+~90–110 shelf in seconds, measured at −21/−35/−33 game per tick). No cooling
+dial controlled it. Diagnosed 2026-07-25; **blessed by Erik the same day as a
+REGRESSION, not a question** — canon 06:77-91 had designed ignition temperature
+to live on objects ("air temperature would ignite nothing and advect
+everything — the wrong behavior"), and the EOS-era unified field keyed the
+medium masks on `solid` (= the FLOW axis), so furniture fell into the gas
+regime by accident. The `is_wall` error class, one axis over.
+
+**The fix, as built.** The missing axis: per-material **`thermal_mass`** (`> 0`
+→ solid thermal regime, and the value IS the convert divisor, power-of-two);
+furniture joins the walls; `permeability` (shield-not-seal) UNTOUCHED. A
+derived `thermal_solid = (thermal_mass > 0)` mask, built on the one
+structural-rebuild seam, now routes the thermal medium.
+
+| commit | patch |
+|---|---|
+| `f5e9aa3` | P1 — CPU: `thermal_solid` replaces `solid` at the six medium-test sites in `temperature_solver.cpp` |
+| `312e984` | P2 — CUDA: the six twins + the resident path, lockstep tol 0 |
+| `6f57762` | P-EOS — the EOS pass: both T-writes skip thermal_solid, T-only occluder, `cmask` untouched; combustion deposit re-routed to the object divisor |
+
+Docs: design `docs/thermal_mass_axis_design_2026-07-25.md` → build addendum
+`..._build_addendum_2026-07-30.md` → escalation `thermal_mass_eos_escalation_2026-07-30.md`
+→ **ruling** `thermal_mass_eos_ruling_2026-07-30.md` → **bench report**
+`thermal_mass_axis_bench_report_2026-07-30.md`.
+
+**The rule that came out of it** (ruling §1, now the thing that stops this
+recurring): *on `thermal_solid` tiles `temperature[]` is OWNED by the
+TemperatureSolver — deposit-convert, conduct, COOL_SHIFT. Every other system is
+a READER.* Measured in the live path: the EOS pass moves the crate's T by
+**0.000** game/tick, every run.
+
+**What this un-does in this document.** §9.5's old "verified starting set"
+(`fire_T_ext = 60`, span 60, `k_fire_heat = 12`, COOL_SHIFT inert) was a
+description of the *broken* regime and is now **dead** — do not tune from it.
+§9.2's below-ignition rule **stands** and is back on its original physical
+footing: `fire_T_ext = 250`, span 100, below furniture's `ignition_temp = 280`.
+§9.3's dial order is **unchanged** — structure → thermal → ramp → lifetime →
+verify anchors — and its step 2 finally means what it says, because COOL_SHIFT
+is now a real dial for the crate and κ=0 makes it the *only* loss channel
+(ruling A5, deliberate: one clean channel per dial). One stale parenthetical
+there: step 2's "expect O(10–60)" for `k_fire_heat` was inherited from the
+broken-regime `k_fire_heat = 12` and is meaningless on its own now — the value
+only has meaning **paired with a COOL_SHIFT**, via the equilibrium below. Read
+the starting values from "Start here" at the bottom of this section instead.
+
+**The equilibrium is now exact** (bench report §3, ±1 % measured at three
+operating points):
+
+> **T\*(I) = k_fire_heat · I · 2^(COOL_SHIFT − heat_inv_shift)**,
+> `heat_inv_shift = log2(thermal_mass)` = 3 for furniture — so at
+> `COOL_SHIFT = 5`, `T* = 4 · k_fire_heat · I`.
+
+**Two corrections to what the arc had on record**, both from the P3 bench:
+- The 0.871 analytic ratio P-EOS reported is a **12-second transient**, not a
+  steady-state deficit. At equilibrium it is 0.995–1.009. Do not carry it as a
+  fudge factor.
+- The design's expected new operating point **`k_fire_heat ≈ 225`** is
+  arithmetically right and **dynamically dead**: measured, it snaps out at tick
+  1. §9.3 step 2 does not start there.
+
+**★ What is now OPEN — the one thing the fix exposed rather than solved.**
+Deposit is linear in I and loss is linear in T, so `T*` is linear in I, and the
+hot gate opens at `fire_T_ext`. Hence a critical intensity
+
+> **I_crit = I_peak · fire_T_ext / T_flame**
+
+below which the gate closes and the fire self-collapses. At §9.3's own targets
+(flame 450 @ peak I 0.5, `fire_T_ext` 250) that is **I_crit = 0.278** — nearly
+3× `ignition_seed = 0.1`. So at the target thermal point the fire can neither
+ignite from the seed nor burn down gracefully; it is fenced into `I > 0.278` at
+both ends. This is §9.2's cold-start gap generalised, now in the object regime.
+
+Four levers, all measured (bench report §4.3). Three relocate the cliff —
+COOL_SHIFT ≈ 12 (works, but COOL_SHIFT is **global**: every wall's cooling
+e-fold goes 1.3 s → 171 s); `ignition_seed` into the band (ignites at flame
+449, then dies at 48 s); `fire_T_ext` below `T*(I_seed)` (flame 450, lives
+208 s, but 90 game = 200 °C is not a defensible extinction temperature). Only
+the fourth removes it — making the deposit non-linear in I — and that is a
+**model change, not a dial**. **Erik's call, at the joint re-tune.**
+
+**Start here (§9.3 hand-back).** `tools/fire_tune_loop.py` now ships the best
+measured set as its TUNE defaults, with COOL_SHIFT exposed as a dial and the
+ALT branches inline:
+
+```
+conda run -n data python tools/fire_tune_loop.py     # edit TUNE, run, read, repeat
+```
+
+Defaults: `fire_T_ext 250 / span 100` (step 1, done) · `k_fire_heat 2.2` +
+`COOL_SHIFT 12` (step 2) · `k_grow 0.35 / k_die 0.06` (step 3) ·
+`wall_damage 0.083` (step 4). Measured at 900 s: flame plateau **414** (1120 K)
+✓, peak @ **144 s** ✓, room N **1.000** ✓, far X **0.199** ✓, charred remains
+✓; misses are peak I 0.331 (low), death 5.5 min (target 6–8), far rise 21.4
+(target ≤20) — all three in **your** steps 3–4. Tune step 3 first (raise
+`k_grow`/`k_die` together toward the 0.6/0.1 sibling, which gives peak I 0.411
+but at 61 s), then step 4 (`wall_damage` down to stretch death to 6–8 min).
+Then decide the COOL_SHIFT question above — that one is a design call, not a
+dial turn.
+
+*Forward notes, unchanged:* units ignitable later (armor-dependent ignition
+temps, unit-environment system, own mechanics design); movable-furniture
+migration path. *Not merged:* feel-adjacent → HUMAN-TEST gate; no golden
+rebased — it rides the joint re-tune's ONE deliberate rebase.
 
 ## Session log
 - **2026-07-22** — Doc created. Read the current model + values from code.
