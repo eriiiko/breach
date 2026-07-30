@@ -263,15 +263,15 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // The dials come straight off the solver so config drives both backends;
         // the per-call rail-hit count folds into the solver's own counter so
         // t_max_phys_hits telemetry is identical whichever backend ran.
-        // THERMAL-MASS AXIS, P1 SCOPE NOTE: the GPU kernel still keys its
-        // medium tests on `solid` — mirroring them onto `thermal_solid` (+ the
-        // one static mask upload on the resident path) is patch P2 of this arc,
-        // gated by CPU<->GPU lockstep tol-0 on a furniture-burn scenario. Until
-        // then the two backends agree byte-for-byte on every FURNITURE-FREE map
-        // (thermal_solid == solid there) and would diverge only with BOTH the
-        // GPU temperature backend explicitly enabled AND furniture present.
-        // `temperature_backend_is_cuda()` defaults false.
-        (void)thermal_solid;
+        // THERMAL-MASS AXIS, P2 (2026-07-30): the GPU kernels now key their six
+        // medium tests on `thermal_solid` too (cuda_temperature.cu, sites marked
+        // "MEDIUM-TEST SITE n/6" — the same six, one-to-one with the CPU). So
+        // the backends agree byte-for-byte on maps that CARRY FURNITURE, not
+        // only on furniture-free ones; gated at tol 0 by
+        // tests/cuda_thermal_mass_check.py on a furniture-burn scenario, step
+        // path AND resident path. `solid` is still handed to the kernel — it is
+        // the documented nullptr fallback for the mask — but no longer selects
+        // the medium there, exactly as on the CPU side below.
         this->temperature.t_max_phys_hits += breach_cuda::temperature_step(
             temperature_mut, heat, heat_inv_shift, face_shift,
             solid, is_vacuum, atmosphere, n_bulk_.data(),
@@ -282,7 +282,8 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             this->temperature.c_v, this->temperature.n_floor_heat,
             this->temperature.gas_advection_rate, this->temperature.T_MAX_PHYS,
             h, w, sim_time,
-            is_ambient);   // BC: ring wiped to ΔT=0 in Pass 0 (nullptr = space)
+            is_ambient,       // BC: ring wiped to ΔT=0 in Pass 0 (nullptr = space)
+            thermal_solid);   // thermal-mass axis: the per-medium THERMAL mask
     } else
 #endif
     {

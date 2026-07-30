@@ -37,12 +37,24 @@ namespace breach_cuda {
 //   Pass 3  ambient cooling (solids only, vacuum-exposed 4x).
 // Returns the number of T_MAX_PHYS rail engagements THIS call (folds into the
 // solver's own t_max_phys_hits counter — backend-agnostic telemetry).
+//
+// THERMAL-MASS AXIS AMENDMENT (P2, 2026-07-30 —
+// docs/thermal_mass_axis_design_2026-07-25.md + its build addendum §3): read
+// every "solid" above as the THERMAL medium `thermal_solid` (`thermal_mass >
+// 0`), NOT the FLOW mask `solid` (`permeability <= 0`). This mirrors P1 on the
+// CPU (temperature_solver.{h,cpp}) at EXACTLY the same six medium tests, so the
+// two backends stay bit-identical on maps that carry furniture — the material
+// that is permeable (gas seeps past a crate) AND thermally solid (a crate holds
+// an object temperature). `solid` survives here only as the documented nullptr
+// fallback for `thermal_solid`; nothing else in the .cu reads it.
 int64_t temperature_step(
     int32_t* temperature,           // Q16.16 (h,w) — in/out
     const int32_t* heat,            // Q16.16 (h,w) — per-tick deposit (read)
     const int32_t* heat_inv_shift,  // (h,w) per-tile log2(thermal_mass)
     const int32_t* face_shift,      // (h,w,4) per-tile face shifts (N,S,E,W)
-    const bool* solid,              // (h,w) physics solid mask
+    const bool* solid,              // (h,w) physics FLOW mask (permeability<=0);
+                                    // since the thermal-mass axis it is read
+                                    // ONLY as the `thermal_solid` fallback
     const bool* is_vacuum,          // (h,w) physics vacuum mask
     const int32_t* atmosphere,      // Q16.16 (h,w) — exposure test + N proxy
     const int32_t* n_bulk,          // Q16.16 (h,w) real N_total; null -> atm proxy
@@ -58,7 +70,14 @@ int64_t temperature_step(
     float t_max_phys,               // v2.4 physical-max T rail (clamp + count)
     int h, int w,
     float dt,                       // tick seconds; <=0 skips Pass 0 advection
-    const bool* is_ambient = nullptr);  // BC: ring wiped to ΔT=0 in Pass 0 (null=space)
+    const bool* is_ambient = nullptr,   // BC: ring wiped to ΔT=0 in Pass 0 (null=space)
+    // THERMAL-MASS AXIS (P2): the per-medium THERMAL mask (`thermal_mass > 0`,
+    // GameMap.thermal_solid) the six medium tests key on instead of `solid`.
+    // Default nullptr -> fall back to `solid`, i.e. the pre-patch behaviour and
+    // the same back-compat idiom the CPU solver's signature uses. Equal to
+    // `solid` elementwise on any furniture-free map (addendum D4), so the
+    // fallback is not a second code path in practice.
+    const bool* thermal_solid = nullptr);
 
 // Backend selection (S1 gate + integration). When true, PhysicsEngine::step_tail
 // runs temperature on the GPU instead of the CPU solver. Defaults false so the

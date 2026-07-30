@@ -13,6 +13,29 @@
 // the CPU relies on is at the PASS BOUNDARIES (zero-vacuum -> snapshot -> advect
 // -> convert -> conduct -> cool), each reproduced by a separate kernel launch
 // (a global barrier); no cell ever reads another cell's same-pass write.
+//
+// THERMAL-MASS AXIS, P2 (2026-07-30 — docs/thermal_mass_axis_design_2026-07-25.md
+// + docs/thermal_mass_axis_build_addendum_2026-07-30.md §3): the GPU mirror of
+// P1. Every per-medium branch keys on the THERMAL mask `thermal_solid`
+// (`thermal_mass > 0`, GameMap.thermal_solid), NOT on the FLOW mask `solid`
+// (`permeability <= 0`) — because furniture (permeability 0.5, the deliberate
+// "shield but not seal" soft body) is permeable AND a thermal solid, and keying
+// the medium on flow put a burning crate's object temperature into the GAS
+// regime where the fire's own plume advected it away. EXACTLY the same SIX sites
+// the CPU marks "MEDIUM-TEST SITE n/6" are swapped here, marked identically; the
+// mapping is one-to-one so the two files stay readable side by side:
+//   1/6 temp_zero_vacuum's `!ts[i]` guard      (CPU temperature_solver.cpp Pass 0a)
+//   2/6 temp_advect's open-air skip            (CPU Pass 0b)
+//   3/6 gas_wall_at (ray-walk occluder)        (CPU gas_wall_at)
+//   4/6 the bilinear gather's sealed corner    (CPU gas_backtrace_sample_q)
+//   5/6 temp_convert_unified's medium branch   (CPU Pass 1)
+//   6/6 temp_cool's COOL_SHIFT decay guard     (CPU Pass 3)
+// `solid` is NOT otherwise read by this TU any more: it survives only as the
+// documented nullptr fallback for `thermal_solid`. Conduction (temp_conduct) is
+// κ-keyed via face_shift and is deliberately NOT one of the six (design §2.2),
+// so furniture (conductivity 0) has COOL_SHIFT as its ONE loss channel. On any
+// furniture-free map `thermal_solid == solid` elementwise, so this is
+// byte-identical there (addendum D4) — the patch's gate (a).
 // ============================================================================
 #include "cuda_temperature.h"
 #include "fixed_point.h"              // quantize/make_recip/mul_q16/mul_wide/narrow
@@ -49,38 +72,45 @@ __device__ __forceinline__ int dx_of(int d) {
     return (d == 2) ? 1 : (d == 3) ? -1 : 0;
 }
 
-// ---- Pass 0a: gas-T zero at OPEN (non-solid) vacuum cells (§4) --------------
+// ---- Pass 0a: gas-T zero at OPEN (non-thermal-solid) vacuum cells (§4) ------
 // The structural invariant, UNCONDITIONAL (runs whether or not advection does):
-// a true breach (is_vacuum && !solid) holds no gas, so no gas-T — energy leaves
-// with the venting gas. The `!solid` guard is load-bearing: a space-exposed hull
-// tile (vacuum AND solid) keeps its real solid-thermal state. Per-cell, no race.
+// a true breach (is_vacuum && !thermal_solid) holds no gas, so no gas-T — energy
+// leaves with the venting gas. The `!thermal_solid` guard is load-bearing: a
+// space-exposed hull tile (vacuum AND solid) keeps its real solid-thermal state.
+// MEDIUM-TEST SITE 1/6: that guard is now the THERMAL medium, so a space-exposed
+// CRATE keeps its object temperature for exactly the same reason a hull tile
+// does; the hull case is unchanged (hull is both solid and thermal_solid).
+// Per-cell, no race.
 __global__ void temp_zero_vacuum(int32_t* __restrict__ temperature,
-                                 const bool* __restrict__ solid,
+                                 const bool* __restrict__ thermal_solid,
                                  const bool* __restrict__ is_vacuum, int n,
                                  const bool* __restrict__ is_ambient) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         // BC (audit (b)): the ambient ring radiates to the T_amb sky — wiped to
         // ΔT=0 exactly like a vacuum breach (is_ambient nullptr on space maps).
-        if ((is_vacuum[i] || (is_ambient && is_ambient[i])) && !solid[i])
+        if ((is_vacuum[i] || (is_ambient && is_ambient[i])) && !thermal_solid[i])
             temperature[i] = 0;
     }
 }
 
 // ---- Pass 0b advection sampler — VERBATIM port of gas_backtrace_sample_q -----
-// (temperature_solver.cpp:50-124): integer DDA wall-clip march + integer bilinear
-// sample + Newton-reciprocal renorm, specialized to solid/is_vacuum. reciprocal_q16
-// -> reciprocal_q16_dev (bit-identical); mul_q16/mul_wide/narrow are FP_HD device-
-// clean. Every arithmetic step matches the CPU by construction.
-__device__ __forceinline__ bool gas_wall_at(int y, int x, const bool* solid,
+// (temperature_solver.cpp): integer DDA wall-clip march + integer bilinear
+// sample + Newton-reciprocal renorm, specialized to thermal_solid/is_vacuum.
+// reciprocal_q16 -> reciprocal_q16_dev (bit-identical); mul_q16/mul_wide/narrow
+// are FP_HD device-clean. Every arithmetic step matches the CPU by construction.
+// MEDIUM-TEST SITE 3/6 (the ray-walk occluder): gas-T no longer advects ACROSS a
+// crate tile, because a crate holds an OBJECT temperature (design §2.3).
+__device__ __forceinline__ bool gas_wall_at(int y, int x,
+                                             const bool* thermal_solid,
                                              int h, int w) {
     if (y < 0 || y >= h || x < 0 || x >= w) return true;   // outside == wall
-    return solid[y * w + x];
+    return thermal_solid[y * w + x];
 }
 
 __device__ int32_t gas_backtrace_sample_q_dev(
         const int32_t* src, int x, int y, int32_t bx_q, int32_t by_q,
-        const bool* solid, const bool* is_vacuum, int h, int w) {
+        const bool* thermal_solid, const bool* is_vacuum, int h, int w) {
     const int32_t GAS_WSUM_FLOOR_Q = FP_ONE >> 8;
     const int32_t GAS_WSUM_EPS_Q   = FP_ONE >> 14;
 
@@ -106,7 +136,7 @@ __device__ int32_t gas_backtrace_sample_q_dev(
             const int64_t nyp_q = cy_q + sy_q;
             const int ti = (int)((nxp_q + (FP_ONE >> 1)) >> FP_SHIFT);
             const int tj = (int)((nyp_q + (FP_ONE >> 1)) >> FP_SHIFT);
-            if (gas_wall_at(tj, ti, solid, h, w)) break;
+            if (gas_wall_at(tj, ti, thermal_solid, h, w)) break;
             cx_q = nxp_q;
             cy_q = nyp_q;
             if (tj >= 0 && tj < h && ti >= 0 && ti < w && is_vacuum[tj * w + ti])
@@ -144,7 +174,8 @@ __device__ int32_t gas_backtrace_sample_q_dev(
         const int cy_ = cyx[k][0];
         const int cx_ = cyx[k][1];
         const int j = cy_ * w + cx_;
-        if (solid[j]) continue;                              // sealed corner
+        // MEDIUM-TEST SITE 4/6 (sealed corner in the bilinear gather).
+        if (thermal_solid[j]) continue;                      // sealed corner
         const int32_t val_q = is_vacuum[j] ? 0 : src[j];      // breach corner == 0
         acc += mul_wide(cw[k], val_q);
         wsum_q += cw[k];
@@ -159,24 +190,28 @@ __device__ int32_t gas_backtrace_sample_q_dev(
 
 // ---- Pass 0b: semi-Lagrangian advection on the open-air mask ----------------
 // One thread per cell reads the FROZEN snapshot `src` and writes only its own
-// temperature[i] (open-air cells only; solid/vacuum keep their Pass-0a value).
+// temperature[i] (open-air cells only; thermal-solid/vacuum keep their Pass-0a
+// value).
 __global__ void temp_advect(int32_t* __restrict__ temperature,
                             const int32_t* __restrict__ src,
                             const int32_t* __restrict__ wind_x,
                             const int32_t* __restrict__ wind_y,
-                            const bool* __restrict__ solid,
+                            const bool* __restrict__ thermal_solid,
                             const bool* __restrict__ is_vacuum,
                             int32_t dt_adv_q, int h, int w) {
     const int n = h * w;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
-        if (solid[i] || is_vacuum[i]) continue;              // open-air mask only
+        // MEDIUM-TEST SITE 2/6: the gas-advection mask is the complement of the
+        // THERMAL medium (a crate is not open air thermally, even though gas
+        // flows through it).
+        if (thermal_solid[i] || is_vacuum[i]) continue;      // open-air mask only
         const int y = i / w;
         const int x = i % w;
         const int32_t bx_q = -mul_q16(wind_x[i], dt_adv_q);
         const int32_t by_q = -mul_q16(wind_y[i], dt_adv_q);
         temperature[i] = gas_backtrace_sample_q_dev(
-            src, x, y, bx_q, by_q, solid, is_vacuum, h, w);
+            src, x, y, bx_q, by_q, thermal_solid, is_vacuum, h, w);
     }
 }
 
@@ -189,7 +224,7 @@ __global__ void temp_advect(int32_t* __restrict__ temperature,
 __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
                                      const int32_t* __restrict__ heat,
                                      const int32_t* __restrict__ heat_inv_shift,
-                                     const bool* __restrict__ solid,
+                                     const bool* __restrict__ thermal_solid,
                                      const bool* __restrict__ is_vacuum,
                                      const int32_t* __restrict__ n_src,
                                      int64_t recip_cv, int32_t n_floor_q,
@@ -200,7 +235,10 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
         const int32_t deposit = heat[i];
         if (deposit <= 0) continue;                          // nothing to convert
         int32_t t = temperature[i];
-        if (solid[i]) {
+        // MEDIUM-TEST SITE 5/6: the heat->T convert branch. A THERMAL solid takes
+        // the free per-tile bit-shift (heat >> log2(thermal_mass)); gas takes the
+        // N-divided radiative deposit below.
+        if (thermal_solid[i]) {
             const int shift = heat_inv_shift[i];             // log2(thermal_mass)
             const int32_t gain = deposit >> shift;           // Q16.16 / 2^shift
             heat_saturating_add_dev(&t, gain);
@@ -257,11 +295,11 @@ __global__ void temp_conduct(const int32_t* __restrict__ temperature,
     }
 }
 
-// ---- Pass 3: ambient cooling (§3, solids only, vacuum-exposed 4x) ----------
+// ---- Pass 3: ambient cooling (§3, thermal solids only, vacuum-exposed 4x) ---
 // In-place on temperature[i]; reads own cell + neighbours' is_vacuum/atmosphere
 // (frozen -> safe). Symmetric round-toward-0 shift; the dead-band is preserved.
 __global__ void temp_cool(int32_t* __restrict__ temperature,
-                          const bool* __restrict__ solid,
+                          const bool* __restrict__ thermal_solid,
                           const bool* __restrict__ is_vacuum,
                           const int32_t* __restrict__ atmosphere,
                           int cool_shift, int cool_shift_vacuum,
@@ -269,7 +307,11 @@ __global__ void temp_cool(int32_t* __restrict__ temperature,
     const int n = h * w;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
-        if (!solid[i]) continue;
+        // MEDIUM-TEST SITE 6/6: COOL_SHIFT ambient decay is the SOLID thermal
+        // regime's loss channel. furniture's conductivity is 0 (NO_FACE both
+        // ways -> no conduction in or out), so with the crate now inside this
+        // pass COOL_SHIFT is its ONE loss channel — one clean dial (§2.2).
+        if (!thermal_solid[i]) continue;
         const int32_t t = temperature[i];
         if (t == 0) continue;
         const int y = i / w;
@@ -301,7 +343,8 @@ int64_t temperature_step(
     int no_face, int cool_shift, int cool_shift_vacuum, float o2_vacuum_thresh,
     float c_v, float n_floor_heat, float gas_advection_rate, float t_max_phys,
     int h, int w, float dt,
-    const bool* is_ambient) {   // BC: ring wiped to ΔT=0 in Pass 0 (nullptr=space)
+    const bool* is_ambient,     // BC: ring wiped to ΔT=0 in Pass 0 (nullptr=space)
+    const bool* thermal_solid) {  // thermal-mass axis: medium mask (nullptr -> solid)
     const int n = h * w;
     if (n <= 0) return 0;
 
@@ -320,7 +363,7 @@ int64_t temperature_step(
     int32_t *d_temp = nullptr, *d_temp_new = nullptr, *d_heat = nullptr,
             *d_his = nullptr, *d_fs = nullptr, *d_atm = nullptr,
             *d_nbulk = nullptr, *d_src = nullptr, *d_wx = nullptr, *d_wy = nullptr;
-    bool *d_solid = nullptr, *d_vac = nullptr;
+    bool *d_solid = nullptr, *d_vac = nullptr, *d_tsol = nullptr;
     unsigned long long* d_hits = nullptr;
 
     cuda_check(cudaMalloc(&d_temp, nb), "malloc temp");
@@ -333,6 +376,12 @@ int64_t temperature_step(
     cuda_check(cudaMalloc(&d_vac, nbool), "malloc is_vacuum");
     cuda_check(cudaMalloc(&d_hits, sizeof(unsigned long long)), "malloc hits");
     if (n_bulk) cuda_check(cudaMalloc(&d_nbulk, nb), "malloc n_bulk");
+    // THERMAL-MASS AXIS: the medium mask rides as its OWN plane only when the
+    // caller supplies one; with nullptr the kernels are pointed straight at
+    // d_solid, mirroring the CPU's `ts = thermal_solid ? thermal_solid : solid`
+    // — so the fallback allocates and copies nothing (and is not a second code
+    // path). `solid` itself keeps its unconditional upload: it IS that fallback.
+    if (thermal_solid) cuda_check(cudaMalloc(&d_tsol, nbool), "malloc thermal_solid");
     if (do_advect) {
         cuda_check(cudaMalloc(&d_src, nb), "malloc src");
         cuda_check(cudaMalloc(&d_wx, nb), "malloc wind_x");
@@ -346,6 +395,9 @@ int64_t temperature_step(
     cuda_check(cudaMemcpy(d_atm, atmosphere, nb, cudaMemcpyHostToDevice), "H2D atm");
     cuda_check(cudaMemcpy(d_solid, solid, nbool, cudaMemcpyHostToDevice), "H2D solid");
     cuda_check(cudaMemcpy(d_vac, is_vacuum, nbool, cudaMemcpyHostToDevice), "H2D vac");
+    if (thermal_solid)
+        cuda_check(cudaMemcpy(d_tsol, thermal_solid, nbool, cudaMemcpyHostToDevice),
+                   "H2D thermal_solid");
     // BC: optional ambient ring mask for the Pass-0 wipe (nullptr on space maps).
     bool* d_amb = nullptr;
     if (is_ambient) {
@@ -363,11 +415,16 @@ int64_t temperature_step(
     // density proxy — EXACTLY the CPU's `n_bulk ? n_bulk[i] : atmosphere[i]`.
     const int32_t* d_nsrc = n_bulk ? d_nbulk : d_atm;
 
+    // THERMAL-MASS AXIS: the mask the SIX medium tests read — the exact device
+    // twin of the CPU solver's `const bool* ts = thermal_solid ? thermal_solid
+    // : solid`. Every kernel below takes `d_ts`, never `d_solid`.
+    const bool* d_ts = thermal_solid ? (const bool*)d_tsol : (const bool*)d_solid;
+
     const int block = 256;
     const int grid = (n + block - 1) / block;
 
     // Pass 0a: zero gas-T at open vacuum cells (unconditional, in-place on d_temp).
-    temp_zero_vacuum<<<grid, block>>>(d_temp, d_solid, d_vac, n, d_amb);
+    temp_zero_vacuum<<<grid, block>>>(d_temp, d_ts, d_vac, n, d_amb);
     cuda_check(cudaGetLastError(), "zero_vacuum launch");
 
     // Pass 0b: semi-Lagrangian advection (only when wind + dt>0, matching the CPU
@@ -376,13 +433,13 @@ int64_t temperature_step(
         const double dt_adv = (double)gas_advection_rate * (double)dt;
         const int32_t dt_adv_q = quantize(dt_adv);
         cuda_check(cudaMemcpy(d_src, d_temp, nb, cudaMemcpyDeviceToDevice), "D2D src");
-        temp_advect<<<grid, block>>>(d_temp, d_src, d_wx, d_wy, d_solid, d_vac,
+        temp_advect<<<grid, block>>>(d_temp, d_src, d_wx, d_wy, d_ts, d_vac,
                                      dt_adv_q, h, w);
         cuda_check(cudaGetLastError(), "advect launch");
     }
 
     // Pass 1: unified convert (in-place on d_temp; rail counter -> d_hits).
-    temp_convert_unified<<<grid, block>>>(d_temp, d_heat, d_his, d_solid, d_vac,
+    temp_convert_unified<<<grid, block>>>(d_temp, d_heat, d_his, d_ts, d_vac,
                                           d_nsrc, recip_cv, n_floor_q,
                                           t_max_phys_q, d_hits, n);
     cuda_check(cudaGetLastError(), "convert launch");
@@ -393,7 +450,7 @@ int64_t temperature_step(
     cuda_check(cudaMemcpy(d_temp, d_temp_new, nb, cudaMemcpyDeviceToDevice), "D2D swap");
 
     // Pass 3: cool (in-place on d_temp).
-    temp_cool<<<grid, block>>>(d_temp, d_solid, d_vac, d_atm,
+    temp_cool<<<grid, block>>>(d_temp, d_ts, d_vac, d_atm,
                                cool_shift, cool_shift_vacuum, thresh_q, h, w);
     cuda_check(cudaGetLastError(), "cool launch");
     cuda_check(cudaDeviceSynchronize(), "sync");
@@ -417,6 +474,7 @@ int64_t temperature_step(
     if (d_wx) cudaFree(d_wx);
     if (d_wy) cudaFree(d_wy);
     if (d_amb) cudaFree(d_amb);
+    if (d_tsol) cudaFree(d_tsol);
 
     return (int64_t)hits;
 }

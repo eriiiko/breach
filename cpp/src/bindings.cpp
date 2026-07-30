@@ -227,7 +227,7 @@ PYBIND11_MODULE(breach_physics, m) {
              float o2_vacuum_thresh, float c_v, float n_floor_heat,
              float gas_advection_rate, float t_max_phys,
              py::object n_bulk_obj, py::object wind_x_obj, py::object wind_y_obj,
-             float dt) -> int64_t {
+             float dt, py::object thermal_solid_obj) -> int64_t {
               auto [temp, h, w]    = get_2d(temperature);
               auto [hp, h2, w2]    = get_2d_const(heat);
               auto [shift, h3, w3] = get_2d_const(heat_inv_shift);
@@ -256,10 +256,23 @@ PYBIND11_MODULE(breach_physics, m) {
                   wx = wxp;
                   wy = wyp;
               }
+              // THERMAL-MASS AXIS (P2): the per-medium THERMAL mask, OPTIONAL
+              // exactly like the CPU TemperatureSolver binding — None -> nullptr
+              // -> the kernel falls back to `solid`, the pre-patch behaviour, so
+              // every existing direct caller (tests/cuda_conduction_check) keeps
+              // its meaning. The lockstep gate passes the real mask on both sides.
+              const bool* tsol = nullptr;
+              py::array_t<bool> tsol_arr;
+              if (!thermal_solid_obj.is_none()) {
+                  tsol_arr = thermal_solid_obj.cast<py::array_t<bool>>();
+                  auto [tsp, ht, wt] = get_2d_const(tsol_arr);
+                  tsol = tsp;
+              }
               return breach_cuda::temperature_step(
                   temp, hp, shift, fs, sol, vac, atm, nb, wx, wy,
                   no_face, cool_shift, cool_shift_vacuum, o2_vacuum_thresh,
-                  c_v, n_floor_heat, gas_advection_rate, t_max_phys, h, w, dt);
+                  c_v, n_floor_heat, gas_advection_rate, t_max_phys, h, w, dt,
+                  nullptr, tsol);
           },
           py::arg("temperature"), py::arg("heat"), py::arg("heat_inv_shift"),
           py::arg("face_shift"), py::arg("solid"), py::arg("is_vacuum"),
@@ -269,6 +282,7 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("gas_advection_rate"), py::arg("t_max_phys"),
           py::arg("n_bulk") = py::none(), py::arg("wind_x") = py::none(),
           py::arg("wind_y") = py::none(), py::arg("dt") = 0.0f,
+          py::arg("thermal_solid") = py::none(),   // thermal-mass axis (optional)
           "P6.6 isolated: run the GPU unified temperature solver in place on "
           "`temperature` (bit-identical to TemperatureSolver.step); returns the "
           "T_MAX_PHYS rail-hit count for this call.");

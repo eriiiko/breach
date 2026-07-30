@@ -391,5 +391,30 @@ def test_seal_close_t_seeds_from_thermal_solid_neighbours():
         "the crate is a thermal solid and must be able to seed close-T")
 
 
+# ---------------------------------------------------------------------------
+# 7. P2 — the resident half (CPU-side; the GPU lockstep is
+#    tests/test_cuda_thermal_mass.py, which skips without a CUDA build)
+# ---------------------------------------------------------------------------
+def test_thermal_solid_is_in_the_resident_mask_set():
+    """P2: the medium mask must be a RESIDENT field — it gets a device buffer +
+    one upload at ``enable_residency``, and (the load-bearing half on a
+    CUDA-less machine) the ``__setattr__`` stale-pointer guard covers it, so it
+    can never be silently REASSIGNED out from under a device pointer the way a
+    non-resident field could."""
+    assert "thermal_solid" in GameMap._RESIDENT_MASKS
+    assert "thermal_solid" in GameMap._RESIDENT_FIELD_NAMES
+    # It rides with `solid`: same structural seam, same mutation pattern.
+    assert "solid" in GameMap._RESIDENT_MASKS
+
+
+def test_thermal_solid_grid_is_a_plain_bool_grid():
+    """Determinism contract: the mask crosses to C++/CUDA as a bool plane — no
+    floats, no packing, C-contiguous, exactly (h, w)."""
+    g = GameMap(load_level("playground"))
+    assert g.thermal_solid.dtype == np.bool_
+    assert g.thermal_solid.shape == g.solid.shape
+    assert g.thermal_solid.flags["C_CONTIGUOUS"]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

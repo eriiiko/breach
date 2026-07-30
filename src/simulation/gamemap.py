@@ -91,6 +91,27 @@ class GameMap:
         "solid", "is_vacuum", "is_ambient", "obstacles", "flammable",
         "floor_height", "heat_inv_shift", "face_shift",
         "dyn_permeability", "dyn_wave_absorb", "conductivity", "dyn_light_atten",
+        # THERMAL-MASS AXIS, P2 (docs/thermal_mass_axis_design_2026-07-25.md +
+        # build addendum §3): the per-medium THERMAL mask (`thermal_mass > 0`)
+        # the temperature pass's six medium tests key on, on BOTH backends. It
+        # joins the resident set for three reasons: (1) it gets a device buffer +
+        # ONE upload at :meth:`enable_residency` (the static-mask precedent —
+        # like `floor_height` / the sponge grids it is omitted from
+        # `_step_resident`'s explicit per-tick lists); (2) the __setattr__
+        # stale-pointer guard now covers it, exactly as it covers `solid` — both
+        # are REASSIGNED by `_update_caches` and patched IN PLACE by
+        # `on_tile_changed`; (3) `device_ptrs()["thermal_solid"]` is the pointer
+        # a future resident temperature kernel takes.
+        # CAVEAT for whoever writes that kernel: unlike the sponge grids this
+        # mask is NOT static — `on_tile_changed` patches it whenever a tile's
+        # material changes (a crate burning out). The moment a DEVICE kernel
+        # reads it, it must join the per-tick `from_host` list next to
+        # `solid`/`is_vacuum`/`is_ambient`, or the device copy goes stale on a
+        # structural edit (the exact bug the is_ambient note below records). No
+        # device kernel reads it today: the resident tick's temperature pass is a
+        # host bracket (`step_tail` on the mirror) and the per-call CUDA kernel
+        # does its own H2D from `GameMap.thermal_solid`.
+        "thermal_solid",
         # S8a Path A: the BC sponge grids — static per map (built ONCE in
         # __init__, never recomputed — unlike is_ambient, which destroy_wall's
         # joins-ambient twin mutates and therefore rides the per-tick EOS
