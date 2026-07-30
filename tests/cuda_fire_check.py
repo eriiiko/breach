@@ -6,8 +6,10 @@ The fire pass changed in the EOS refactor and the S6 kernel was STALE:
     `n_total` (continuous-O2 law, docs/continuous_o2_law_design_2026-07-24.md):
     the sustain factor is LINEAR in the local O2 MOLE FRACTION
     X = Σn_o2/Σn_total over open neighbours, clamped between an extinction
-    limit (o2_frac_ext) and the ambient fraction (o2_frac_amb) — NOT the old
-    absolute-density smoothstep(P_min, P_full);
+    limit (o2_frac_ext) and the FULL-RESPONSE reference (o2_frac_full, pure O2
+    — the 2026-07-30 split; it is NOT the ambient dial o2_frac_amb, which the
+    law no longer reads) — NOT the old absolute-density smoothstep(P_min,
+    P_full);
   * the own-tile plume deposit is the plume->T shim — a `temperature` deposit
     self-limited against T_FLAME_MAX (clamp01 taper + belt-and-suspenders
     headroom hard-cap + saturating add) — NOT the retired atmosphere overpressure
@@ -35,7 +37,7 @@ Three gates:
   T_FLAME_MAX, asserted), below-ambient (T<0) sat-clamp-to-one, wind fan/strip,
   wall burn-through (destroyed set + no drops/dupes), snap-extinguish, degenerate
   1xN / Nx1, all-solid + all-vacuum (empty O2-fraction sum), x_degenerate (the
-  o2_frac_ext >= o2_frac_amb misconfig -> a step, mirroring the old P_degenerate
+  o2_frac_ext >= o2_frac_full misconfig -> a step, mirroring the old P_degenerate
   smoothstep-step branch), non-identity temp_scale (recip_temp_scale path), a
   dense fire block (overlapping smoke atomicAdd), and the host max early-exit
   (fields untouched). CPU FireSimulation.step vs GPU cuda_fire_step on identical
@@ -75,20 +77,24 @@ FP_ONE = 65536
 MUT = ("fire", "temperature", "smoke", "wall_hp")
 
 # GPU dial kwargs, matching bindings.cpp cuda_fire_step's py::arg names EXACTLY
-# (P_min/P_full RETIRED from the O2 gate, REPLACED by o2_frac_ext/o2_frac_amb —
+# (P_min/P_full RETIRED from the O2 gate, REPLACED by o2_frac_ext/o2_frac_full —
 # the continuous-O2 law's mole-fraction span; temp_gain_scale + T_FLAME_MAX
 # still present from the earlier plume->T shim).
 DIALS = ("k_grow", "k_die", "fire_T_ext", "fire_T_span", "fuel_ref",
-         "o2_frac_ext", "o2_frac_amb", "I_min", "k_wind_fan", "k_wind_strip",
+         "o2_frac_ext", "o2_frac_full", "I_min", "k_wind_fan", "k_wind_strip",
          "fire_pressure_gain", "smoke_emission", "wall_damage", "temp_scale",
          "temp_gain_scale", "T_FLAME_MAX")
 
 # The full FireParams surface (incl. the vestigial p_expand_ref/P_min/P_full,
 # set on the CPU object but not passed to the GPU — all three are unread by
 # both paths now, kept only so old configs/bindings don't hard-error).
+# o2_frac_amb joined that tombstoned group on 2026-07-30 (the full-response
+# reference split): it is set on the CPU object and NOT passed to the GPU, which
+# is itself part of the proof it no longer participates in the law.
 _PARAM_DEFAULTS = dict(
     k_grow=4.0, k_die=2.0, fire_T_ext=350.0, fire_T_span=150.0, fuel_ref=60.0,
-    o2_frac_ext=0.13, o2_frac_amb=0.21, I_min=0.02, k_wind_fan=0.5,
+    o2_frac_ext=0.13, o2_frac_full=1.0, o2_frac_amb=0.21,
+    I_min=0.02, k_wind_fan=0.5,
     k_wind_strip=0.5, fire_pressure_gain=0.15, p_expand_ref=1.30,
     smoke_emission=0.8, wall_damage=0.4, temp_scale=float(FP_ONE),
     temp_gain_scale=50.0, T_FLAME_MAX=2000.0,
@@ -251,9 +257,12 @@ def part1_isolated() -> bool:
 
     # (b) no-O2 starve vs full-O2 grow (same hot lit tile). n_total is a fixed
     #     ambient baseline (1.0); n_o2 is the fraction NUMERATOR — 0.0 (X=0,
-    #     below extinction) vs 0.30 (X=0.30, above ambient 0.21 -> full o2f).
+    #     below extinction) vs 1.0 (X = X_full, PURE O2 -> o2f == 1). Since the
+    #     full-response reference split, "full o2f" means pure O2, not merely
+    #     above-ambient: at X = 0.30 the factor is 0.195 and the fire decays at
+    #     the un-retuned k_die/k_grow, which is the point of the change.
     for tag, o2_frac, want in (("no-O2 (starve)", 0.0, "die"),
-                               ("full-O2 (grow)", 0.30, "grow")):
+                               ("full-O2 (grow)", 1.0, "grow")):
         st = _blank(5, 5)
         st["flammable"][2, 2] = True
         st["is_wall"][2, 2] = True
@@ -332,9 +341,9 @@ def part1_isolated() -> bool:
         c, dc, g, dg = run_pair(st, fp, dials, 1.0 / 24.0)
         ok &= compare(tag, c, dc, g, dg)
 
-    # (g) x_degenerate: o2_frac_amb <= o2_frac_ext -> the linear-law STEP branch
+    # (g) x_degenerate: o2_frac_full <= o2_frac_ext -> the linear-law STEP branch
     #     (mirrors the old P_degenerate smoothstep-step branch).
-    fp_deg, dials_deg = make_params(o2_frac_ext=0.21, o2_frac_amb=0.21)
+    fp_deg, dials_deg = make_params(o2_frac_ext=0.21, o2_frac_full=0.21)
     st = _make_random_state(rng, 20, 20, 2.0)
     c, dc, g, dg = run_pair(st, fp_deg, dials_deg, 1.0 / 24.0)
     ok &= compare("x_degenerate (linear-law step)", c, dc, g, dg)
@@ -421,9 +430,12 @@ def part2_trajectory() -> bool:
     st = _blank(H, W)
     # Air room full of O2: n_total is a FIXED ambient baseline (1.0, never
     # touched by the external driver below — the "O2 converts to inert gas,
-    # total roughly conserved" shape); n_o2 = 0.30, i.e. X = 0.30 > o2_frac_amb
-    # (0.21) -> the room starts genuinely O2-RICH (full o2f) under the
-    # continuous-O2 law. A central block of flammable-wall fire tiles.
+    # total roughly conserved" shape); n_o2 = 0.30, i.e. X = 0.30 — ENRICHED
+    # relative to ambient 0.21. Under the full-response reference split that is
+    # o2f = (0.30-0.13)/(1-0.13) = 0.195, i.e. STRICTLY INSIDE the linear ramp
+    # rather than clamped at 1.0 — so the trajectory now genuinely exercises the
+    # recip_mul divide on both backends instead of the saturated fast value.
+    # A central block of flammable-wall fire tiles.
     st["n_total"][:] = _quantize(1.0)
     st["n_o2"][:] = _quantize(0.30)
     st["flammable"][7:13, 7:13] = True

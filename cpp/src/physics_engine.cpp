@@ -168,7 +168,7 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             this->fire.params.k_grow, this->fire.params.k_die,
             this->fire.params.fire_T_ext, this->fire.params.fire_T_span,
             this->fire.params.fuel_ref,
-            this->fire.params.o2_frac_ext, this->fire.params.o2_frac_amb,
+            this->fire.params.o2_frac_ext, this->fire.params.o2_frac_full,
             this->fire.params.I_min,
             this->fire.params.k_wind_fan, this->fire.params.k_wind_strip,
             this->fire.params.fire_pressure_gain,

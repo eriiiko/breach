@@ -109,12 +109,16 @@ std::vector<std::pair<int, int>> FireSimulation::step(
     // Load-time reciprocals for the config-constant divides (make_recip/recip_mul).
     const int64_t recip_fuel_ref  = fp::make_recip((double)p.fuel_ref);       // F = wall_hp/fuel_ref
     const int64_t recip_T_span    = fp::make_recip((double)p.fire_T_span);    // hot ramp
-    // Continuous-O2 law span: o2f = clamp01((X - X_ext) / (X_amb - X_ext)).
+    // Continuous-O2 law span: o2f = clamp01((X - X_ext) / (X_full - X_ext)).
     // recip_x_span is the load-time reciprocal of the span (like recip_T_span);
-    // X_ext = 0 gives span == X_amb (Erik's pure-proportional X/X_amb, NOT
-    // degenerate). X_span <= 0 (X_amb <= X_ext, a misconfig) -> a step at X_ext.
+    // X_ext = 0 gives span == X_full (Erik's pure-proportional X/X_full, NOT
+    // degenerate). X_span <= 0 (X_full <= X_ext, a misconfig) -> a step at X_ext.
+    // FULL-RESPONSE REFERENCE SPLIT (2026-07-30, FireParams::o2_frac_full): the
+    // upper end is the PURE-O2 reference, NOT o2_frac_amb. Normalizing by ambient
+    // made ambient the ceiling (clamp01), so locally elevated O2 could never
+    // register. o2_frac_amb is no longer read here.
     const q16 x_ext_q             = fp::quantize((double)p.o2_frac_ext);
-    const double  x_span          = (double)p.o2_frac_amb - (double)p.o2_frac_ext;
+    const double  x_span          = (double)p.o2_frac_full - (double)p.o2_frac_ext;
     const bool    x_degenerate    = (x_span <= 0.0);
     const int64_t recip_x_span    = x_degenerate ? 0 : fp::make_recip(x_span);
     // Mole-fraction divide floor: den = max(Σn_total, X_N_FLOOR). Guards the
@@ -187,9 +191,10 @@ std::vector<std::pair<int, int>> FireSimulation::step(
         const q16 W = fp::sqrt_q16(rad);
 
         // Gates. o2f is LINEAR in X (the continuous-O2 law), clamped to [0,1]:
-        // X <= X_ext -> 0 (extinction), X >= X_amb -> 1 (fresh air). The
-        // degenerate span (X_amb <= X_ext misconfig) falls back to a step at
-        // X_ext. Same clamp/recip_mul idiom as `hot` above.
+        // X <= X_ext -> 0 (extinction), X >= X_full -> 1 (pure O2). Ambient air
+        // (X = 0.21) lands at (0.21-0.13)/(1-0.13) = 0.092, leaving headroom for
+        // locally enriched O2. The degenerate span (X_full <= X_ext misconfig)
+        // falls back to a step at X_ext. Same clamp/recip_mul idiom as `hot`.
         const q16 hot = clamp01_q(fp::recip_mul(T - fire_T_ext_q, recip_T_span));
         const q16 o2f = x_degenerate
             ? ((X < x_ext_q) ? (q16)0 : (q16)fp::FP_ONE)

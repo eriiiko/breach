@@ -180,6 +180,10 @@ TUNE = {
     "physics.combustion.burn_rate": 0.02,     # Huggett 1980 — THE O2-draw dial
     "physics.combustion.fuel_per_o2": 0.7,    # wood stoich (0.045 was stale)
     "o2_frac_ext": 0.13,                      # Peatross-Beyler 1997 extinction
+    "o2_frac_full": 1.0,                      # full-response reference = PURE O2
+                                              # (2026-07-30 split; NOT ambient —
+                                              # ambient air now gives o2f 0.092,
+                                              # so k_die/k_grow moves ~10x with it)
     "fuel_ref": 40.0,
     "k_wind_strip": 0.0,                      # plume self-blow-out off (2026-07-23)
 }

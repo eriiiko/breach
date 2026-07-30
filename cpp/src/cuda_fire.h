@@ -51,7 +51,7 @@ namespace breach_cuda {
 // list). Because this is a FREE function (not a method on the solver), the
 // solver's scalar FireParams dials are passed explicitly:
 //   k_grow / k_die / fire_T_ext / fire_T_span / fuel_ref / o2_frac_ext /
-//   o2_frac_amb / I_min / k_wind_fan / k_wind_strip / fire_pressure_gain /
+//   o2_frac_full / I_min / k_wind_fan / k_wind_strip / fire_pressure_gain /
 //   smoke_emission / wall_damage / temp_scale / temp_gain_scale / T_FLAME_MAX.
 // All quantized step constants + the load-time reciprocals (make_recip) are
 // precomputed ON THE HOST in double, VERBATIM from the CPU load-time block, and
@@ -87,9 +87,11 @@ std::vector<std::pair<int, int>> fire_step(
     // FireParams dials (verbatim the CPU `params`; p_expand_ref RETIRED — the
     // plume self-limiter now gates on T_FLAME_MAX, not p_expand_ref;
     // continuous-O2 law: P_min/P_full RETIRED from this gate, REPLACED by the
-    // o2_frac_ext/o2_frac_amb mole-fraction span):
+    // o2_frac_ext/o2_frac_full mole-fraction span — NOTE the span's upper end is
+    // the FULL-RESPONSE reference o2_frac_full (pure O2), NOT the ambient dial
+    // o2_frac_amb, which the law no longer reads; see FireParams::o2_frac_full):
     float k_grow, float k_die, float fire_T_ext, float fire_T_span,
-    float fuel_ref, float o2_frac_ext, float o2_frac_amb, float I_min,
+    float fuel_ref, float o2_frac_ext, float o2_frac_full, float I_min,
     float k_wind_fan, float k_wind_strip, float fire_pressure_gain,
     float smoke_emission, float wall_damage,
     float temp_scale, float temp_gain_scale, float T_FLAME_MAX);

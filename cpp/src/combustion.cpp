@@ -113,12 +113,15 @@ void CombustionSolver::step(
     // v2.4 T_MAX_PHYS rail (combustion.h; full rationale in eos_solver.h).
     const q16 t_max_phys_q = quantize((double)T_MAX_PHYS);
 
-    // Continuous-O2 law (design §2.3): o2f_j = clamp01((X_j - X_ext)/(X_amb -
+    // Continuous-O2 law (design §2.3): o2f_j = clamp01((X_j - X_ext)/(X_full -
     // X_ext)), X_j = O2[j]/max(O2[j]+N2[j], floor). SAME hoisted constants +
     // floor as fire_simulation.cpp (the two laws must read identically). X_ext
-    // = 0 -> span == X_amb (pure proportional). X_amb <= X_ext -> step at X_ext.
+    // = 0 -> span == X_full (pure proportional). X_full <= X_ext -> step at
+    // X_ext. FULL-RESPONSE REFERENCE SPLIT (2026-07-30): the upper end is the
+    // PURE-O2 reference o2_frac_full, NOT o2_frac_amb (which made ambient the
+    // ceiling); o2_frac_amb is no longer read here.
     const q16 x_ext_q          = quantize((double)o2_frac_ext);
-    const double x_span        = (double)o2_frac_amb - (double)o2_frac_ext;
+    const double x_span        = (double)o2_frac_full - (double)o2_frac_ext;
     const bool   x_degenerate  = (x_span <= 0.0);
     const int64_t recip_x_span = x_degenerate ? 0 : make_recip(x_span);
     const q16 X_N_FLOOR        = quantize(0.01);   // 655 counts (see fire_simulation.cpp)

@@ -665,7 +665,7 @@ PYBIND11_MODULE(breach_physics, m) {
              py::array_t<bool>  is_vacuum,
              py::array_t<bool>  flammable,
              float dt, float k_grow, float k_die, float fire_T_ext,
-             float fire_T_span, float fuel_ref, float o2_frac_ext, float o2_frac_amb,
+             float fire_T_span, float fuel_ref, float o2_frac_ext, float o2_frac_full,
              float I_min, float k_wind_fan, float k_wind_strip,
              float fire_pressure_gain, float smoke_emission,
              float wall_damage, float temp_scale, float temp_gain_scale,
@@ -685,7 +685,7 @@ PYBIND11_MODULE(breach_physics, m) {
               auto destroyed = breach_cuda::fire_step(
                   f, atm, o2, nt, sm, whp, temp, wx, wy, wl, vac, fl, h, w, dt,
                   k_grow, k_die, fire_T_ext, fire_T_span, fuel_ref, o2_frac_ext,
-                  o2_frac_amb, I_min, k_wind_fan, k_wind_strip, fire_pressure_gain,
+                  o2_frac_full, I_min, k_wind_fan, k_wind_strip, fire_pressure_gain,
                   smoke_emission, wall_damage, temp_scale, temp_gain_scale,
                   T_FLAME_MAX);
               py::list result;
@@ -700,7 +700,7 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("wind_y"), py::arg("is_wall"), py::arg("is_vacuum"),
           py::arg("flammable"), py::arg("dt"), py::arg("k_grow"), py::arg("k_die"),
           py::arg("fire_T_ext"), py::arg("fire_T_span"), py::arg("fuel_ref"),
-          py::arg("o2_frac_ext"), py::arg("o2_frac_amb"), py::arg("I_min"),
+          py::arg("o2_frac_ext"), py::arg("o2_frac_full"), py::arg("I_min"),
           py::arg("k_wind_fan"), py::arg("k_wind_strip"),
           py::arg("fire_pressure_gain"),
           py::arg("smoke_emission"), py::arg("wall_damage"), py::arg("temp_scale"),
@@ -741,7 +741,7 @@ PYBIND11_MODULE(breach_physics, m) {
              float dt, float c_v, float n_floor_heat,
              float burn_rate, float o2_thresh_burn, float H_fuel,
              float soot_yield, float fuel_per_o2, float o2_frac_ext,
-             float o2_frac_amb, float T_MAX_PHYS,
+             float o2_frac_full, float T_MAX_PHYS,
              // THERMAL-MASS AXIS, P-EOS (ruling §2 site 3): the OBJECT-deposit
              // branch's inputs, both OPTIONAL (None -> the gas path == pre-patch).
              py::object thermal_solid,
@@ -777,7 +777,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   gas_ptr, n_gases, o2_idx, inert_n2_idx, black_smoke_idx,
                   temp, whp, f, fl, sol, vac, ign, h, w, dt, c_v, n_floor_heat,
                   burn_rate, o2_thresh_burn, H_fuel, soot_yield, fuel_per_o2,
-                  o2_frac_ext, o2_frac_amb,
+                  o2_frac_ext, o2_frac_full,
                   T_MAX_PHYS, &heat_floor_hits, &t_max_phys_hits,
                   tsol, hshift);
               return py::make_tuple(heat_floor_hits, t_max_phys_hits);
@@ -789,7 +789,7 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("ignition_temp_q16"), py::arg("dt"), py::arg("c_v"),
           py::arg("n_floor_heat"), py::arg("burn_rate"), py::arg("o2_thresh_burn"),
           py::arg("H_fuel"), py::arg("soot_yield"), py::arg("fuel_per_o2"),
-          py::arg("o2_frac_ext"), py::arg("o2_frac_amb"),
+          py::arg("o2_frac_ext"), py::arg("o2_frac_full"),
           py::arg("T_MAX_PHYS"),
           py::arg("thermal_solid") = py::none(),
           py::arg("heat_inv_shift") = py::none(),
@@ -1353,6 +1353,10 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("fire_T_span",    &FireParams::fire_T_span)
         .def_readwrite("fuel_ref",       &FireParams::fuel_ref)
         .def_readwrite("o2_frac_ext",    &FireParams::o2_frac_ext)
+        // FULL-RESPONSE REFERENCE SPLIT: o2_frac_full is the span's upper end
+        // (pure O2, 1.0, NOT map-overridden); o2_frac_amb is the ambient record
+        // and is no longer read by the availability law.
+        .def_readwrite("o2_frac_full",   &FireParams::o2_frac_full)
         .def_readwrite("o2_frac_amb",    &FireParams::o2_frac_amb)
         .def_readwrite("P_min",          &FireParams::P_min)
         .def_readwrite("P_full",         &FireParams::P_full)
@@ -1933,6 +1937,8 @@ PYBIND11_MODULE(breach_physics, m) {
         .def(py::init<>())
         .def_readwrite("burn_rate",         &CombustionSolver::burn_rate)
         .def_readwrite("o2_frac_ext",       &CombustionSolver::o2_frac_ext)
+        // FULL-RESPONSE REFERENCE SPLIT — twin of FireParams::o2_frac_full.
+        .def_readwrite("o2_frac_full",      &CombustionSolver::o2_frac_full)
         .def_readwrite("o2_frac_amb",       &CombustionSolver::o2_frac_amb)
         .def_readwrite("o2_thresh_burn",    &CombustionSolver::o2_thresh_burn)
         .def_readwrite("H_fuel",            &CombustionSolver::H_fuel)

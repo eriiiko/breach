@@ -9,12 +9,21 @@ Continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md §2.3): the
 per-claimant O2 DEMAND is now demand_k = burn_cap*I_k*o2f_j — `fire` (I_k) is
 READ again (a choked/flameless source with fire[i]==0 draws nothing), and
 o2f_j is LINEAR in the air cell's O2 MOLE FRACTION X_j = O2[j]/(O2[j]+N2[j])
-between o2_frac_ext (extinction) and o2_frac_amb (ambient). The scene builders
-below seed `fire` at every source (default I=1.0 exactly) and keep the local
-mole fraction comfortably above o2_frac_amb, so o2f_j clamps to exactly 1.0 and
-demand_k reduces to the OLD uniform burn_cap_q bit-for-bit — the fixtures'
-hand-tuned O2 values (the zero/nonzero-remainder split points, the D<=O2j
-uncontested threshold, etc.) still hold unchanged under the new law.
+between o2_frac_ext (extinction) and o2_frac_full (the FULL-RESPONSE reference).
+The scene builders below seed `fire` at every source (default I=1.0 exactly) and
+keep the local mole fraction comfortably above the span's top, so o2f_j clamps to
+exactly 1.0 and demand_k reduces to the OLD uniform burn_cap_q bit-for-bit — the
+fixtures' hand-tuned O2 values (the zero/nonzero-remainder split points, the
+D<=O2j uncontested threshold, etc.) still hold unchanged under the new law.
+
+FULL-RESPONSE REFERENCE SPLIT (2026-07-30): the span's upper end used to be the
+ambient dial o2_frac_amb (0.21); it is now the separate o2_frac_full, shipped at
+1.0 (pure O2), so ambient air no longer saturates o2f. This file's DIALS pin
+o2_frac_full BACK to 0.21 so the whole hand-tuned fixture battery keeps its
+o2f==1 arithmetic; the shipped default (1.0), where o2f sits strictly inside the
+linear ramp and the recip_mul divide is genuinely exercised, is covered by the
+extra PART 1 (k2) sweep and PART 2's second trajectory — both of which also
+assert the two spans produce DIFFERENT results (the non-vacuousness control).
 
 WHY bit-identical (docs/eos_p6_9_combustion_design.md §4): both gather passes are
 per-cell functions of frozen inputs (Tsnap snapshot, pass-entry O2 read only at
@@ -65,11 +74,15 @@ FUEL_FLOOR = 1
 
 # Combustion dials (one source of truth for BOTH the CPU solver + the GPU call).
 # Continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md §2.3):
-# o2_frac_ext/o2_frac_amb are the SAME mole-fraction span dial the fire
-# logistic uses (one law, shared constants).
+# o2_frac_ext/o2_frac_full are the SAME mole-fraction span dial the fire
+# logistic uses (one law, shared constants). o2_frac_full is pinned to 0.21 here
+# — the PRE-SPLIT span — so the hand-tuned fixtures below keep o2f_j == 1.0
+# exactly; the shipped 1.0 default is swept separately (see the module docstring).
+# o2_frac_amb is carried only to be SET on the CPU solver: the law no longer
+# reads it, and it is not passed to the GPU at all.
 DIALS = dict(burn_rate=1.0, o2_thresh_burn=0.03, H_fuel=4.0, soot_yield=0.3,
-             fuel_per_o2=0.7, o2_frac_ext=0.13, o2_frac_amb=0.21,
-             T_MAX_PHYS=16000.0)
+             fuel_per_o2=0.7, o2_frac_ext=0.13, o2_frac_full=0.21,
+             o2_frac_amb=0.21, T_MAX_PHYS=16000.0)
 C_V = 1.0
 N_FLOOR_HEAT = 0.05
 
@@ -94,7 +107,8 @@ def _mk_solver(**over):
     c.soot_yield = d["soot_yield"]
     c.fuel_per_o2 = d["fuel_per_o2"]
     c.o2_frac_ext = d["o2_frac_ext"]
-    c.o2_frac_amb = d["o2_frac_amb"]
+    c.o2_frac_full = d["o2_frac_full"]
+    c.o2_frac_amb = d["o2_frac_amb"]   # set but UNREAD by the law (split, 07-30)
     c.T_MAX_PHYS = d["T_MAX_PHYS"]
     return c, d
 
@@ -124,7 +138,7 @@ def run_pair(state, dt, dials_over=None, c_v=C_V, n_floor_heat=N_FLOOR_HEAT):
         g["flammable"], g["solid"], g["is_vacuum"], g["ignition_temp_q16"],
         dt, c_v, n_floor_heat,
         d["burn_rate"], d["o2_thresh_burn"], d["H_fuel"], d["soot_yield"],
-        d["fuel_per_o2"], d["o2_frac_ext"], d["o2_frac_amb"], d["T_MAX_PHYS"])
+        d["fuel_per_o2"], d["o2_frac_ext"], d["o2_frac_full"], d["T_MAX_PHYS"])
     gpu_rails = (int(hf), int(tm))
     return c, cpu_rails, g, gpu_rails
 
@@ -174,7 +188,7 @@ def _add_source(st, y, x, hp=60.0, temp_q=None, fire_i=1.0):
     fixture that expects to actually burn must seed `fire` at the source.
     `fire_i` defaults to FULL intensity (I=1.0 exactly): with o2f_j also
     clamped to exactly 1.0 (the fixtures below keep the local O2 mole
-    fraction comfortably above o2_frac_amb), demand_k == burn_cap_q exactly
+    fraction comfortably above the span top), demand_k == burn_cap_q exactly
     (mul_q16(x, FP_ONE) == x, no rounding) — i.e. the OLD uniform-demand
     arithmetic these fixtures were built against is reproduced bit-for-bit.
     """
@@ -226,7 +240,7 @@ def _random_state(rng, h, w):
 
     # air cells: O2 across the full range incl. 0 and > D; ambient N2 already
     # set — together with O2 this sweeps the o2f_j mole-fraction span (0 to
-    # ~0.6, straddling o2_frac_ext=0.13/o2_frac_amb=0.21) across every branch.
+    # ~0.6, straddling o2_frac_ext=0.13 and the span top) across every branch.
     air = (~solid) & (~is_vacuum)
     o2 = rng.random(n).reshape(h, w) * 1.2
     o2[rng.random(n).reshape(h, w) < 0.15] = 0.0            # starved
@@ -375,17 +389,57 @@ def part1_isolated() -> bool:
             c, cr, g, gr = run_pair(st, dtt)
             ok &= compare(f"fuzz {h}x{w} dt={dtt:.3f}", c, cr, g, gr)
 
+    # (k2) THE SHIPPED DEFAULT SPAN (full-response reference split, 2026-07-30):
+    #      re-run the same fuzz states with o2_frac_full = 1.0, where o2f_j sits
+    #      strictly INSIDE the linear ramp (ambient 0.21 -> 0.092) instead of
+    #      clamping to 1.0. This is the span the game actually ships, and it is
+    #      the one that exercises the per-cell recip_mul divide on both backends.
+    #      NON-VACUOUSNESS CONTROL: the default-span result must DIFFER from the
+    #      pinned-span (0.21) result on the same state — otherwise the dial is
+    #      inert and "CPU == GPU" would prove nothing about the new law.
+    n_cfg2 = 0
+    n_moved = 0
+    for (h, w) in ((16, 16), (24, 32), (31, 17), (40, 40), (8, 8)):
+        for dtt in (0.25, 1.0 / 24.0, 0.6):
+            n_cfg2 += 1
+            st = _random_state(rng, h, w)
+            c0, _, _, _ = run_pair(st, dtt)                       # pinned 0.21 span
+            c, cr, g, gr = run_pair(st, dtt,
+                                    dials_over=dict(o2_frac_full=1.0))
+            ok &= compare(f"fuzz(X_full=1.0) {h}x{w} dt={dtt:.3f}", c, cr, g, gr)
+            if not np.array_equal(c0["gas"], c["gas"]):
+                n_moved += 1
+    if n_moved == 0:
+        ok = False
+        print("  VACUOUS: o2_frac_full made no difference on any fuzz state — "
+              "the new reference dial is not reaching the law")
+
     if ok:
-        print(f"  all edge configs + {n_cfg} fuzz cases bit-identical on "
+        print(f"  all edge configs + {n_cfg} fuzz cases (pinned 0.21 span) + "
+              f"{n_cfg2} fuzz cases at the SHIPPED span (o2_frac_full=1.0, "
+              f"{n_moved} of which moved vs the pinned span) bit-identical on "
               f"gas/temperature/wall_hp + rail counters; full-drain, aggregate "
               f"deposit, char-out, both rails, degenerate + all-solid/vacuum "
               f"covered.")
     return ok
 
 
-def part2_trajectory() -> bool:
-    print("PART 2 — contested checkerboard fire trajectory (120 ticks, CPU vs "
-          "GPU lockstep):")
+def part2_trajectory(x_full=None, burn_rate=None) -> bool:
+    """``x_full`` None -> the DIALS-pinned 0.21 span (the pre-split arithmetic the
+    fixtures were built on); 1.0 -> the SHIPPED full-response reference, where
+    o2f_j sits strictly inside the linear ramp and the per-cell divide is live.
+
+    ``burn_rate`` compensates the demand scale for the second run: at the shipped
+    reference this scene's o2f_j is ~0.48 instead of a clamped 1.0, so the
+    per-claimant demand falls ~2x and the CONTENTION path (the whole point of the
+    checkerboard) would never fire. Raising burn_rate restores contention without
+    touching the law — the lockstep claim is unaffected either way."""
+    over = {} if x_full is None else dict(o2_frac_full=float(x_full))
+    if burn_rate is not None:
+        over["burn_rate"] = float(burn_rate)
+    print(f"PART 2 — contested checkerboard fire trajectory (120 ticks, CPU vs "
+          f"GPU lockstep, o2_frac_full="
+          f"{DIALS['o2_frac_full'] if x_full is None else x_full}):")
     H = W = 18
     dt = 0.25
     # A CHECKERBOARD of flammable-wood sources (parity even) interleaved with air
@@ -409,7 +463,7 @@ def part2_trajectory() -> bool:
 
     cpu = {k: (v.copy() if isinstance(v, np.ndarray) else v) for k, v in st.items()}
     gpu = {k: (v.copy() if isinstance(v, np.ndarray) else v) for k, v in st.items()}
-    comb, d = _mk_solver()
+    comb, d = _mk_solver(**over)
 
     init_wall_total = int(cpu["wall_hp"].sum())
     max_T = -(1 << 62)
@@ -436,7 +490,7 @@ def part2_trajectory() -> bool:
             gpu["wall_hp"], gpu["fire"], gpu["flammable"], gpu["solid"],
             gpu["is_vacuum"], gpu["ignition_temp_q16"], dt, C_V, N_FLOOR_HEAT,
             d["burn_rate"], d["o2_thresh_burn"], d["H_fuel"], d["soot_yield"],
-            d["fuel_per_o2"], d["o2_frac_ext"], d["o2_frac_amb"], d["T_MAX_PHYS"])
+            d["fuel_per_o2"], d["o2_frac_ext"], d["o2_frac_full"], d["T_MAX_PHYS"])
         gpu_rails = (int(hf), int(tm))
 
         if not compare(f"tick {tick}", cpu, cpu_rails, gpu, gpu_rails):
@@ -496,9 +550,12 @@ def main() -> int:
         return 1
     print("device:", bp.cuda_device_info())
     p1 = part1_isolated()
+    # Both spans: the DIALS-pinned pre-split 0.21 (the fixtures' arithmetic) AND
+    # the SHIPPED full-response reference 1.0 (full-response reference split).
     p2 = part2_trajectory()
+    p2b = part2_trajectory(x_full=1.0, burn_rate=5.0)
     p3 = part3_golden()
-    if p1 and p2 and p3:
+    if p1 and p2 and p2b and p3:
         print("P69_RESULT: PASS")
         return 0
     print("P69_RESULT: FAIL")

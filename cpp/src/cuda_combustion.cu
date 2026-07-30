@@ -261,7 +261,7 @@ void combustion_step(
         const int32_t* ignition_temp_q16,
         int h, int w, float dt, float c_v, float n_floor_heat,
         float burn_rate, float o2_thresh_burn, float H_fuel, float soot_yield,
-        float fuel_per_o2, float o2_frac_ext, float o2_frac_amb, float T_MAX_PHYS,
+        float fuel_per_o2, float o2_frac_ext, float o2_frac_full, float T_MAX_PHYS,
         int64_t* heat_floor_hits, int64_t* t_max_phys_hits,
         const bool* thermal_solid, const int32_t* heat_inv_shift) {
 
@@ -286,8 +286,10 @@ void combustion_step(
     const q16 t_max_phys_q  = quantize((double)T_MAX_PHYS);
     // Continuous-O2 law (design §2.3): o2f_j span, SAME hoisted constants as
     // fire_logistic / combustion.cpp (the two laws must read identically).
+    // FULL-RESPONSE REFERENCE SPLIT (2026-07-30): the span's upper end is the
+    // PURE-O2 reference o2_frac_full, NOT o2_frac_amb.
     const q16 x_ext_q          = quantize((double)o2_frac_ext);
-    const double x_span        = (double)o2_frac_amb - (double)o2_frac_ext;
+    const double x_span        = (double)o2_frac_full - (double)o2_frac_ext;
     const bool   x_degenerate  = (x_span <= 0.0);
     const int64_t recip_x_span = x_degenerate ? 0 : make_recip(x_span);
     const q16 X_N_FLOOR        = quantize(0.01);   // 655 counts (see fire_simulation.cpp)

@@ -455,6 +455,42 @@ axis that answers §4.3 lever 1's "but COOL_SHIFT is a GLOBAL dial")**
     on solids only" was left as a comment fix in P1's D5; confirm it reads
     `thermal_solid` at fold time.
 
+**O₂ FULL-RESPONSE REFERENCE SPLIT follow-ups (added 2026-07-30 by the
+normalization patch — seed doc `fire_model_design_seed_2026-07-30.md` §2.1)**
+
+`engine/06_temperature_and_fire.md`
+23. The O₂ availability law's denominator is no longer ambient. State it as
+    `o2f = clamp01((X − o2_frac_ext) / (o2_frac_full − o2_frac_ext))` with
+    `o2_frac_full` a **fixed physical reference (pure O₂, 1.0)** that is
+    deliberately **NOT** map-overridden, and `o2_frac_amb` demoted to "what the
+    ambient atmosphere is" — **no longer read by either O₂ law**. Record the
+    WHY: normalizing by ambient made ambient the ceiling under `clamp01`, so
+    every enrichment route (reservoirs, leaks, wind delivery) was invisible *by
+    construction*. Ambient air now reads `o2f = 0.092`.
+24. Record that the two O₂ laws (`fire_simulation.cpp`, `combustion.cpp`) plus
+    both CUDA twins share the reference, remain bit-identical, and that the CUDA
+    free functions now take `o2_frac_full` in the slot that used to take
+    `o2_frac_amb` (`o2_frac_amb` is not passed to the GPU at all).
+25. State the tuning consequence, so it is never re-derived: at `avail·hot =
+    0.092` the logistic needs `k_die/k_grow ≈ 0.051` (measured **9.88× smaller**
+    than the shipped 0.5) for a normal-air fire to sit at `I ≈ 0.5`. That is
+    Erik's dial, not a structural change.
+
+**★ Finding that outranks the fold items: the digest goldens are BLIND to both
+O₂ laws.**
+26. `tests/field_ab_harness.default_scenario_sim` — the scenario behind the
+    committed trajectory goldens — has **zero flammable tiles** and seeds its
+    fire on AIR (`gmap.flammable.sum() == 0`, fire at `[8,8]`/`[8,9]` unchanged
+    after 30 ticks). `FireSimulation::step` early-outs on `!flammable[i]` and
+    the combustion pass has no claimants, so **no golden in the suite can move
+    when the fire or combustion law changes**. That is why this patch — a
+    deliberate behavioural change — moved **zero** goldens. Before the joint
+    re-tune's one deliberate rebase, the golden scenario should gain fuel, or
+    a second fuel-bearing golden should be added; otherwise the re-tune will
+    rebase digests that never watched the thing being tuned.
+    (`tests/o2_full_reference_gate_a_capture.py::_sim_burning_fuel` is a
+    ready-made fuel-bearing scenario.)
+
 Also worth folding: the escalation's process note, already adopted in ruling
 §5 — *verify a routing question by enumerating writers of the field, not by
 grepping near the mask.*

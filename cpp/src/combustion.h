@@ -125,7 +125,7 @@ public:
     // demand is now PROPORTIONAL in both fire intensity I and the O2 factor o2f
     //   demand_i = burn_rate * I_i * o2f_j * dt      (was: burn_rate * dt, gated)
     // where o2f_j is LINEAR in the air cell's O2 MOLE FRACTION X = O2/(O2+N2):
-    //   o2f = clamp01((X - o2_frac_ext) / (o2_frac_amb - o2_frac_ext))
+    //   o2f = clamp01((X - o2_frac_ext) / (o2_frac_full - o2_frac_ext))
     // burn_rate drops to the ceiling_h-anchored physical value (~1/50). A choked
     // (low-o2f) or low-intensity fire draws less O2 -> less heat -> "a choked
     // fire is a cool fire". o2_thresh_burn is RETIRED as a gate (below).
@@ -139,9 +139,19 @@ public:
     float o2_frac_ext     = 0.13f;   // X_ext: flame-extinction O2 mole fraction
                                       //  (shared law with FireParams; 0 = pure
                                       //  proportional)
-    float o2_frac_amb     = 0.21f;   // X_amb: ambient O2 mole fraction (reads the
-                                      //  level's authored [ambient] o2_frac; 0.21
-                                      //  fallback — one source of truth with BC)
+    // FULL-RESPONSE REFERENCE SPLIT (2026-07-30) — the exact twin of
+    // FireParams::o2_frac_full (the two O2 laws stay bit-identical). The span's
+    // upper end used to be o2_frac_amb, which made AMBIENT the ceiling (clamp01)
+    // and hid every O2-enrichment route by construction. Normalizing by PURE O2
+    // makes o2f a true physical fraction; ambient air lands at 0.092.
+    float o2_frac_full    = 1.00f;   // X_full: the O2 mole fraction at which o2f
+                                      //  reaches 1 (pure O2). NOT the ambient
+                                      //  atmosphere, NOT map-overridden.
+    float o2_frac_amb     = 0.21f;   // X_amb: what the ambient atmosphere IS (reads
+                                      //  the level's authored [ambient] o2_frac;
+                                      //  0.21 fallback — one source of truth with
+                                      //  BC). NO LONGER read by step(): the law
+                                      //  normalizes by o2_frac_full above.
     float o2_thresh_burn  = 0.03f;   // RETIRED as the burn gate (the o2f law is the
                                       //  throttle now); kept ONLY as an epsilon
                                       //  skip-floor — an air cell with O2 <= this

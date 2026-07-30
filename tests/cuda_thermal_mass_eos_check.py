@@ -235,7 +235,7 @@ def part1_isolated() -> bool:
                     burn_rate=solver.burn_rate, o2_thresh_burn=solver.o2_thresh_burn,
                     H_fuel=solver.H_fuel, soot_yield=solver.soot_yield,
                     fuel_per_o2=solver.fuel_per_o2,
-                    o2_frac_ext=solver.o2_frac_ext, o2_frac_amb=solver.o2_frac_amb,
+                    o2_frac_ext=solver.o2_frac_ext, o2_frac_full=solver.o2_frac_full,
                     T_MAX_PHYS=solver.T_MAX_PHYS,
                     thermal_solid=mask,
                     heat_inv_shift=(_c(shift) if mask is not None else None))

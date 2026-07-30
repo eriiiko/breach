@@ -179,12 +179,25 @@ fuel_ref          = 60.0   # wall_hp normaliser: F = clamp01(wall_hp/fuel_ref)
 # is invariant under thermal expansion, so the v2.4 hot-zone-equilibrium rescale
 # saga (the whole P_min/P_full recalibration note above) is CLOSED — only true
 # vitiation (products displacing O2), not hot thin gas, starves a fire.
-#   o2_frac_ext = X_ext (flame-extinction limit; 0 => Erik's pure X/X_amb proportional)
-#   o2_frac_amb = X_amb (ambient fraction; per-map, reads the level's [ambient] o2_frac)
+#   o2_frac_ext  = X_ext  (flame-extinction limit; 0 => Erik's pure X/X_full proportional)
+#   o2_frac_full = X_full (the FULL-RESPONSE reference: the O2 mole fraction at which
+#                          o2f reaches 1. This is NOT the ambient atmosphere.)
+#   o2_frac_amb  = X_amb  (what the ambient atmosphere IS; per-map, reads the level's
+#                          [ambient] o2_frac. NO LONGER read by the fire/combustion laws.)
+# FULL-RESPONSE REFERENCE SPLIT (2026-07-30): the denominator used to be X_amb, so
+# ambient air always gave o2f = 1 and the clamp01 made AMBIENT the ceiling — every
+# enrichment route (O2 reservoirs, leaks, wind delivery) was invisible BY CONSTRUCTION
+# (at X = 0.30 the raw ratio 2.125 clamped straight back to 1.0). Normalizing by PURE
+# O2 makes o2f a true physical fraction — "O2 above extinction, normalized to pure
+# oxygen" — the clamp effectively never binds, and headroom always exists. Ambient air
+# now lands at (0.21 - 0.13)/(1 - 0.13) = 0.092. This is a NORMALIZATION FIX, not a new
+# feature: setting o2_frac_full = o2_frac_amb reproduces the pre-split law exactly.
 # RE-TUNE PENDING (design §5): X_ext is a feel dial re-fit jointly with k_grow/k_die/
-# wall_damage/burn_rate AFTER this + the sky-exchange build merge.
+# wall_damage/burn_rate AFTER this + the sky-exchange build merge. The split rescales
+# the whole avail axis by ~10x, so k_die/k_grow moves with it — Erik's loop, not here.
 o2_frac_ext       = 0.13   # X_ext — physical flame-extinction O2 mole fraction (~13%)
-o2_frac_amb       = 0.21   # X_amb — ambient O2 mole fraction (overridden per-map by [ambient] o2_frac)
+o2_frac_full      = 1.0    # X_full — o2f reaches 1 at PURE O2. NOT ambient, NOT per-map.
+o2_frac_amb       = 0.21   # X_amb — what the ambient atmosphere IS (overridden per-map by [ambient] o2_frac)
 P_min             = 0.01   # RETIRED (see o2_frac_ext/amb above) — smoothstep low edge on absolute n_o2
 P_full            = 0.03   # RETIRED — smoothstep full edge on absolute n_o2
 I_min             = 0.02   # snap-to-zero extinguish floor
@@ -367,7 +380,7 @@ U_MAX = 1000.0                        # v2.4 defense-in-depth velocity rail (m/s
 # Continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md §2.3): the O2
 # demand is now PROPORTIONAL — demand = burn_rate * I * o2f * dt (per claimant),
 # where o2f is LINEAR in the air cell's O2 mole fraction (the SAME o2_frac_ext/
-# o2_frac_amb law the fire logistic uses, bound from [physics.fire]). burn_rate
+# o2_frac_full law the fire logistic uses, bound from [physics.fire]). burn_rate
 # drops from the retired uniform-gated 1.0 to the ceiling_h-anchored physical
 # value ~1/50: at ceiling_h=2.5 m the per-unit-O2 heat/fuel budget that keeps a
 # room-scale flame bounded and Q16.16-safe lands here (Huggett 1980 oxygen-

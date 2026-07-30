@@ -12,11 +12,15 @@
 //                                                  (local O2 MOLE FRACTION)
 //   W     = sqrt(wind_x^2 + wind_y^2)              (the SHARED wind field)
 //   hot   = clamp01((T - T_ext) / T_span)
-//   o2f   = clamp01((X - o2_frac_ext)/(o2_frac_amb - o2_frac_ext))  (LINEAR; the
+//   o2f   = clamp01((X - o2_frac_ext)/(o2_frac_full - o2_frac_ext)) (LINEAR; the
 //                                                   continuous-O2 law — Peatross &
 //                                                   Beyler 1997; REPLACES the old
 //                                                   smoothstep(P_min,P_full) on
-//                                                   ABSOLUTE n_o2 density)
+//                                                   ABSOLUTE n_o2 density. The
+//                                                   denominator's upper end is the
+//                                                   FULL-RESPONSE reference
+//                                                   o2_frac_full (pure O2), NOT
+//                                                   ambient — see below)
 //   avail = F * o2f
 //   grow  = k_grow * avail * hot * I * (1-I) * (1 + k_wind_fan * W)
 //   die   = k_die * (1 - avail*hot) * I  +  k_wind_strip * W * (1-I) * I
@@ -52,7 +56,7 @@ struct FireParams {
     // The O2 factor is now LINEAR in the local O2 MOLE FRACTION X = Σn_o2/Σn_total
     // over open neighbours (Peatross & Beyler 1997: compartment burning rate
     // declines ~linearly with O2 volume fraction), carrying an extinction limit:
-    //   o2f = clamp01((X - o2_frac_ext) / (o2_frac_amb - o2_frac_ext))
+    //   o2f = clamp01((X - o2_frac_ext) / (o2_frac_full - o2_frac_ext))
     // This REPLACES the old smoothstep(P_min, P_full) on ABSOLUTE n_o2 density —
     // the fraction is invariant under thermal expansion, so hot thin gas at
     // ambient composition burns (closes the v2.4 "density trap" / hot-zone rescale
@@ -61,10 +65,26 @@ struct FireParams {
     // still set them do not hard-error; no longer read by step()).
     float o2_frac_ext    = 0.13f;  // X_ext: flame-extinction O2 mole fraction
                                    //  (~13% physical limit; 0 = pure proportional)
-    float o2_frac_amb    = 0.21f;  // X_amb: ambient O2 mole fraction at which o2f
-                                   //  saturates full (reads the level's authored
-                                   //  [ambient] o2_frac; 0.21 fallback — one
-                                   //  source of truth with the BC)
+    // FULL-RESPONSE REFERENCE SPLIT (2026-07-30). The span's upper end used to be
+    // o2_frac_amb — so ambient air always produced o2f == 1 and the clamp01 made
+    // AMBIENT the ceiling. Locally elevated O2 (reservoirs, leaks, wind delivery)
+    // was therefore invisible BY CONSTRUCTION: at X = 0.30 the raw ratio 2.125 was
+    // clamped straight back to 1.0. Splitting the two roles makes o2f a true
+    // physical fraction — "O2 above extinction, normalized to PURE oxygen" — the
+    // clamp effectively never binds, and headroom always exists. Ambient air now
+    // lands at (0.21 - 0.13)/(1 - 0.13) = 0.092.
+    float o2_frac_full   = 1.00f;  // X_full: the O2 mole fraction at which o2f
+                                   //  reaches 1 (pure O2). NOT the ambient
+                                   //  atmosphere and NOT map-overridden — a fixed
+                                   //  physical reference. Setting it to
+                                   //  o2_frac_amb reproduces the pre-split law.
+    float o2_frac_amb    = 0.21f;  // X_amb: what the ambient atmosphere IS (reads
+                                   //  the level's authored [ambient] o2_frac; 0.21
+                                   //  fallback — one source of truth with the BC).
+                                   //  NO LONGER read by step(): the availability
+                                   //  law normalizes by o2_frac_full above. Kept
+                                   //  because it is the per-map ambient record and
+                                   //  configs/levels/bindings still set it.
     float P_min          = 0.60f;  // RETIRED (see o2_frac_ext/amb above) — was the
                                    //  smoothstep low edge on absolute n_o2
     float P_full         = 1.00f;  // RETIRED — was the smoothstep full edge

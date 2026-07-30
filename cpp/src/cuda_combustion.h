@@ -57,8 +57,10 @@ namespace breach_cuda {
 // P6.9 reformulation had dropped it as an outcome-neutral prefilter; the
 // proportional-draw law reinstates it as the demand magnitude). The scalar
 // config dials arrive explicitly (the free function has no CombustionSolver),
-// now including o2_frac_ext/o2_frac_amb — the SAME mole-fraction span dial the
-// fire logistic uses (one law, shared constants). The two per-call rail counts
+// now including o2_frac_ext/o2_frac_full — the SAME mole-fraction span dial the
+// fire logistic uses (one law, shared constants; the span's upper end is the
+// FULL-RESPONSE reference o2_frac_full, pure O2, NOT the ambient dial
+// o2_frac_amb, which the law no longer reads). The two per-call rail counts
 // are written to *heat_floor_hits / *t_max_phys_hits (added to whatever they
 // hold, matching the CPU member `+=` accumulation).
 void combustion_step(
@@ -70,7 +72,7 @@ void combustion_step(
     const int32_t* ignition_temp_q16,
     int h, int w, float dt, float c_v, float n_floor_heat,
     float burn_rate, float o2_thresh_burn, float H_fuel, float soot_yield,
-    float fuel_per_o2, float o2_frac_ext, float o2_frac_amb, float T_MAX_PHYS,
+    float fuel_per_o2, float o2_frac_ext, float o2_frac_full, float T_MAX_PHYS,
     int64_t* heat_floor_hits, int64_t* t_max_phys_hits,
     // THERMAL-MASS AXIS, P-EOS (docs/thermal_mass_eos_ruling_2026-07-30.md §2
     // site 3; rationale in combustion.h's header): on a thermal_solid burn site

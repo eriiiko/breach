@@ -175,8 +175,8 @@ __global__ void fire_logistic(int32_t* __restrict__ fire,
         const q16 W = sqrt_q16_dev(rad);
 
         // Gates. o2f is LINEAR in X (the continuous-O2 law), clamped [0,1]:
-        // X <= X_ext -> 0 (extinction), X >= X_amb -> 1 (fresh air). The
-        // degenerate span falls back to a step at X_ext.
+        // X <= X_ext -> 0 (extinction), X >= X_full -> 1 (pure O2; ambient air
+        // lands at 0.092). The degenerate span falls back to a step at X_ext.
         const q16 hot = clamp01_q_dev(recip_mul_dev(T - fire_T_ext_q, recip_T_span));
         const q16 o2f = x_degenerate
             ? ((X < x_ext_q) ? (q16)0 : (q16)FP_ONE)
@@ -343,7 +343,7 @@ std::vector<std::pair<int, int>> fire_step(
     const bool* is_wall, const bool* is_vacuum, const bool* flammable,
     int h, int w, float dt,
     float k_grow, float k_die, float fire_T_ext, float fire_T_span,
-    float fuel_ref, float o2_frac_ext, float o2_frac_amb, float I_min,
+    float fuel_ref, float o2_frac_ext, float o2_frac_full, float I_min,
     float k_wind_fan, float k_wind_strip, float fire_pressure_gain,
     float smoke_emission, float wall_damage,
     float temp_scale, float temp_gain_scale, float T_FLAME_MAX) {
@@ -387,10 +387,12 @@ std::vector<std::pair<int, int>> fire_step(
     const int64_t recip_T_span    = make_recip((double)fire_T_span);
     // Continuous-O2 law span (VERBATIM of fire_simulation.cpp's x_ext_q/x_span/
     // x_degenerate/recip_x_span/X_N_FLOOR block): o2f = clamp01((X - X_ext) /
-    // (X_amb - X_ext)). X_ext = 0 gives span == X_amb (pure proportional);
-    // X_amb <= X_ext (misconfig) -> a step at X_ext.
+    // (X_full - X_ext)). X_ext = 0 gives span == X_full (pure proportional);
+    // X_full <= X_ext (misconfig) -> a step at X_ext. FULL-RESPONSE REFERENCE
+    // SPLIT (2026-07-30): the upper end is the PURE-O2 reference o2_frac_full,
+    // NOT o2_frac_amb (which made ambient the ceiling).
     const q16 x_ext_q              = quantize((double)o2_frac_ext);
-    const double  x_span           = (double)o2_frac_amb - (double)o2_frac_ext;
+    const double  x_span           = (double)o2_frac_full - (double)o2_frac_ext;
     const bool    x_degenerate     = (x_span <= 0.0);
     const int64_t recip_x_span     = x_degenerate ? 0 : make_recip(x_span);
     const q16 X_N_FLOOR             = quantize(0.01);   // 655 counts, SAME as CPU

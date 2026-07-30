@@ -63,7 +63,12 @@ FIRE_FUEL_REF       = 60.0   # wall_hp normaliser: F = clamp01(wall_hp/fuel_ref)
 # Continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md): o2f is LINEAR
 # in the local O2 mole fraction X = Σn_o2/Σn_total, with an extinction limit.
 FIRE_O2_FRAC_EXT    = 0.13   # X_ext: flame-extinction O2 mole fraction (0 = pure proportional)
-FIRE_O2_FRAC_AMB    = 0.21   # X_amb: ambient O2 mole fraction (per-map: reads [ambient] o2_frac)
+# FULL-RESPONSE REFERENCE SPLIT (2026-07-30): the law's denominator used to be
+# X_amb, so ambient always gave o2f = 1 and the clamp made AMBIENT the ceiling —
+# local O2 enrichment could never register. X_full is the separate reference at
+# which o2f reaches 1 (pure O2); ambient air lands at (0.21-0.13)/(1-0.13)=0.092.
+FIRE_O2_FRAC_FULL   = 1.0    # X_full: full-response reference — NOT ambient, NOT per-map
+FIRE_O2_FRAC_AMB    = 0.21   # X_amb: what the ambient atmosphere IS (per-map: reads [ambient] o2_frac)
 FIRE_P_MIN          = 0.60   # RETIRED (see o2_frac_ext/amb) — was the smoothstep low edge
 FIRE_P_FULL         = 1.00   # RETIRED — was the smoothstep full edge
 FIRE_I_MIN          = 0.02   # snap-to-zero extinguish floor
@@ -184,10 +189,16 @@ class PhysicsRunner:
         self.fire.params.fire_T_ext     = _fp("fire_T_ext", FIRE_T_EXT)
         self.fire.params.fire_T_span    = _fp("fire_T_span", FIRE_T_SPAN)
         self.fire.params.fuel_ref       = _fp("fuel_ref", FIRE_FUEL_REF)
-        # Continuous-O2 law dials. o2_frac_amb is a per-MAP value (the level's
-        # authored [ambient] o2_frac); bound to the 0.21 fallback here and
-        # refreshed per-map in _ambient_args when an ambient config is present.
+        # Continuous-O2 law dials. o2_frac_full is the FULL-RESPONSE reference —
+        # the mole fraction at which o2f reaches 1 (pure O2) — and is deliberately
+        # NOT per-map: it is a physical reference, not an atmosphere. o2_frac_amb
+        # IS a per-MAP value (the level's authored [ambient] o2_frac); bound to the
+        # 0.21 fallback here and refreshed per-map in _ambient_args when an ambient
+        # config is present. Since the split, o2_frac_amb is no longer read by
+        # either O2 law (fire logistic / combustion) — it stays as the ambient
+        # record other systems and levels rely on.
         self.fire.params.o2_frac_ext    = _fp("o2_frac_ext", FIRE_O2_FRAC_EXT)
+        self.fire.params.o2_frac_full   = _fp("o2_frac_full", FIRE_O2_FRAC_FULL)
         self.fire.params.o2_frac_amb    = _fp("o2_frac_amb", FIRE_O2_FRAC_AMB)
         # P_min/P_full RETIRED from the sustain law (continuous-O2 law); left
         # wired so old configs/bindings that still set them do not hard-error.
@@ -355,13 +366,16 @@ class PhysicsRunner:
 
         self.combustion.burn_rate = _cp("burn_rate", self.combustion.burn_rate)
         # Continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md §2.3):
-        # demand = burn_rate*I*o2f*dt. o2_frac_ext/amb are the SAME law the fire
+        # demand = burn_rate*I*o2f*dt. o2_frac_ext/full are the SAME law the fire
         # logistic uses (bound from [physics.fire] so there is one source of
         # truth); o2_thresh_burn is now only an epsilon skip-floor. o2_frac_amb
-        # is refreshed per-map in _ambient_args (the level's [ambient] o2_frac).
+        # is refreshed per-map in _ambient_args (the level's [ambient] o2_frac)
+        # but is NOT read by the law since the full-response reference split.
         fire_cfg_c = getattr(CFG.physics, "fire", None)
         self.combustion.o2_frac_ext = float(
             getattr(fire_cfg_c, "o2_frac_ext", FIRE_O2_FRAC_EXT))
+        self.combustion.o2_frac_full = float(
+            getattr(fire_cfg_c, "o2_frac_full", FIRE_O2_FRAC_FULL))
         self.combustion.o2_frac_amb = float(
             getattr(fire_cfg_c, "o2_frac_amb", FIRE_O2_FRAC_AMB))
         self.combustion.o2_thresh_burn = _cp(
@@ -667,7 +681,7 @@ class PhysicsRunner:
             # CombustionSolver.step — tests/cuda_combustion_check.py). `fire` is
             # READ again (continuous-O2 law, docs/continuous_o2_law_design_2026-
             # 07-24.md §2.3): the per-claimant intensity factor I_k in the O2
-            # demand. o2_frac_ext/amb are the SAME law the fire logistic uses.
+            # demand. o2_frac_ext/full are the SAME law the fire logistic uses.
             self.bp.cuda_combustion_step(
                 gmap.gas, self._o2_idx, self._inert_n2_idx, self._black_smoke_idx,
                 gmap.temperature, gmap.wall_hp, gmap.fire,
@@ -677,7 +691,7 @@ class PhysicsRunner:
                 self.combustion.burn_rate, self.combustion.o2_thresh_burn,
                 self.combustion.H_fuel, self.combustion.soot_yield,
                 self.combustion.fuel_per_o2,
-                self.combustion.o2_frac_ext, self.combustion.o2_frac_amb,
+                self.combustion.o2_frac_ext, self.combustion.o2_frac_full,
                 self.combustion.T_MAX_PHYS,
                 # THERMAL-MASS AXIS, P-EOS (ruling §2 site 3) — see the CPU
                 # branch below; the two backends must read the same masks.
@@ -949,10 +963,15 @@ class PhysicsRunner:
         amb = getattr(gmap, "_ambient", None)
         if amb is None or not gmap.is_ambient.any():
             return (None, None, 0, None, None)
-        # Continuous-O2 law: X_amb (the mole fraction at which o2f saturates) is
-        # this map's authored ambient O2 fraction — one source of truth with the
-        # BC. Refresh both consumers (fire logistic + combustion) each tick;
-        # o2_frac is static per map, so this is a cheap idempotent set.
+        # X_amb is this map's authored ambient O2 fraction — one source of truth
+        # with the BC. Refresh both solvers each tick; o2_frac is static per map,
+        # so this is a cheap idempotent set.
+        # NOTE (full-response reference split, 2026-07-30): X_amb is NO LONGER the
+        # mole fraction at which o2f saturates — that is o2_frac_full (pure O2),
+        # which is deliberately NOT map-overridden. These two writes now only keep
+        # the solvers' record of "what the ambient atmosphere is" current; neither
+        # O2 law reads it. Enriching a map's [ambient] o2_frac therefore RAISES
+        # o2f (more O2 in the air) instead of silently rescaling the law.
         self.fire.params.o2_frac_amb = float(amb.o2_frac)
         self.combustion.o2_frac_amb = float(amb.o2_frac)
         n_gases = gmap.gas.shape[0]
