@@ -148,6 +148,12 @@ void eos_step_cuda(
     const int32_t* n_amb = nullptr,
     int32_t p_amb = 0,
     const int32_t* sponge_sigma = nullptr,
-    const int32_t* sponge_udamp = nullptr);
+    const int32_t* sponge_udamp = nullptr,
+    // THERMAL-MASS AXIS, P-EOS (docs/thermal_mass_eos_ruling_2026-07-30.md §4
+    // item 1): the per-medium THERMAL mask, mirroring EOSSolver::step's trailing
+    // arg exactly. ONE static-shaped H2D per tick (the sponge-grid precedent);
+    // nullptr -> today's behaviour byte-for-byte, with `d_ts` falling back to
+    // `d_solid` so nothing is allocated or copied on that path.
+    const bool* thermal_solid = nullptr);
 
 }  // namespace breach_cuda

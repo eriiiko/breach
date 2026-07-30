@@ -52,6 +52,10 @@ void eos_step_resident(
     const float* dyn_permeability, const float* dyn_wave_absorb,
     int h, int w, float dt,
     const bool* is_ambient, const int32_t* n_amb, int32_t p_amb,
+    // THERMAL-MASS AXIS, P-EOS: the per-medium THERMAL mask on the MIRROR (the
+    // host reads it for the shared eos_thermal_occludes predicate — the same
+    // place every other pre-stage reduction reads tick-entry state).
+    const bool* thermal_solid,
     // device (persistent resident fields + static ambient grids)
     int32_t* d_atmosphere, int32_t* d_wave_p,
     int32_t* d_wind_x, int32_t* d_wind_y,
@@ -59,7 +63,15 @@ void eos_step_resident(
     const bool* d_solid, const bool* d_is_vacuum,
     const float* d_dyn_permeability,
     const bool* d_is_ambient,
-    const int32_t* d_sponge_sigma, const int32_t* d_sponge_udamp);
+    const int32_t* d_sponge_sigma, const int32_t* d_sponge_udamp,
+    // THERMAL-MASS AXIS, P-EOS: the DEVICE copy of the mask (GameMap's resident
+    // `thermal_solid` buffer). 0/nullptr -> the legacy path, where `d_ts` falls
+    // back to `d_solid` and nothing is allocated. IMPORTANT (the caveat P2
+    // recorded at the resident seam): this mask is NOT static — on_tile_changed
+    // patches it when a crate burns out — so now that DEVICE kernels read it,
+    // the caller MUST include it in the per-tick from_host upload beside
+    // solid/is_vacuum/is_ambient. physics_runner._step_resident does.
+    const bool* d_thermal_solid = nullptr);
 
 // Telemetry: how many ticks ran the resident EOS chain (the gate's
 // vacuousness guard — proves the bracket is gone, not silently per-call).

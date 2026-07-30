@@ -71,7 +71,16 @@ void combustion_step(
     int h, int w, float dt, float c_v, float n_floor_heat,
     float burn_rate, float o2_thresh_burn, float H_fuel, float soot_yield,
     float fuel_per_o2, float o2_frac_ext, float o2_frac_amb, float T_MAX_PHYS,
-    int64_t* heat_floor_hits, int64_t* t_max_phys_hits);
+    int64_t* heat_floor_hits, int64_t* t_max_phys_hits,
+    // THERMAL-MASS AXIS, P-EOS (docs/thermal_mass_eos_ruling_2026-07-30.md §2
+    // site 3; rationale in combustion.h's header): on a thermal_solid burn site
+    // — a FURNITURE tile, which is open/gas-holding but thermally an OBJECT —
+    // the aggregate deposit converts via the tile's own heat_inv_shift instead
+    // of the thin pore gas's N divisor. Both nullable; either null -> every site
+    // takes the GAS path == the pre-patch behaviour (and the two are identical
+    // anyway on any furniture-free map).
+    const bool* thermal_solid = nullptr,
+    const int32_t* heat_inv_shift = nullptr);
 
 // Backend flag: when ON, PhysicsRunner's combustion pass dispatches to
 // combustion_step on the GPU instead of the CPU CombustionSolver::step.

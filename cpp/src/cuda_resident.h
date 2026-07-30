@@ -138,6 +138,12 @@ void kick_compression_launch_resident(
     const bool* d_solid, const bool* d_is_vacuum,
     const KickScalarFolds& folds, int32_t c_local_q,
     unsigned long long* d_cnt, int h, int w,
-    const bool* d_is_ambient, const int32_t* d_sponge_udamp);
+    const bool* d_is_ambient, const int32_t* d_sponge_udamp,
+    // THERMAL-MASS AXIS, P-EOS: the medium mask K2 (compression work) skips its
+    // T write on. The P2 device-fallback idiom applies — the caller passes
+    // `d_thermal_solid ? d_thermal_solid : d_solid`, so the legacy path
+    // allocates and copies nothing and is not a second code path. K1 (the kick)
+    // never sees it: it writes u, never T.
+    const bool* d_ts = nullptr);
 
 }  // namespace breach_cuda

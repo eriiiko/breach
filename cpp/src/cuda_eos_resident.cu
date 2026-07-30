@@ -538,6 +538,11 @@ struct EOSResidentScratch {
     // substep loop
     int32_t *svx = nullptr, *svy = nullptr, *st = nullptr;
     uint8_t* cmask = nullptr;
+    // THERMAL-MASS AXIS, P-EOS: the T-ONLY occluder mask (cmask with every
+    // thermal_solid tile forced sealed). Persistent like every other scratch
+    // plane and REBUILT every tick — the mask is NOT static (on_tile_changed
+    // patches it when a crate burns out), so a cached copy would go stale.
+    uint8_t* tcmask = nullptr;
     int32_t *coeffE = nullptr, *coeffS = nullptr;
     int32_t *dq_e = nullptr, *dq_s = nullptr, *scale = nullptr;
     // mid-stage + kick
@@ -551,12 +556,13 @@ struct EOSResidentScratch {
 
     void free_all() {
         auto f = [](void* p) { if (p) cudaFree(p); };
-        f(svx); f(svy); f(st); f(cmask); f(coeffE); f(coeffS);
+        f(svx); f(svy); f(st); f(cmask); f(tcmask); f(coeffE); f(coeffS);
         f(dq_e); f(dq_s); f(scale); f(div_u); f(ntot); f(pstar);
         f(absorb_q); f(cons_flag); f(rail); f(cnt);
         svx = svy = st = coeffE = coeffS = dq_e = dq_s = scale = nullptr;
         div_u = ntot = pstar = absorb_q = nullptr;
-        cmask = nullptr; cons_flag = nullptr; rail = nullptr; cnt = nullptr;
+        cmask = nullptr; tcmask = nullptr;
+        cons_flag = nullptr; rail = nullptr; cnt = nullptr;
         for (auto& L : lv) {
             f(L.excl); f(L.m); f(L.gE); f(L.gS); f(L.recip); f(L.b);
             f(L.res); f(L.P);
@@ -578,6 +584,11 @@ struct EOSResidentScratch {
         a32(&svy, n, "res malloc svy");
         a32(&st, n, "res malloc st");
         cuda_check(cudaMalloc(&cmask, n), "res malloc cmask");
+        // THERMAL-MASS AXIS: allocated unconditionally (one byte/cell, the
+        // cmask precedent) and simply left unwritten/unread on maps where the
+        // thermal and gas media cannot diverge — the scratch key stays
+        // (h,w,n_levels,n_cons,n_gases), so no re-keying hazard is introduced.
+        cuda_check(cudaMalloc(&tcmask, n), "res malloc tcmask");
         a32(&coeffE, n, "res malloc coeffE");
         a32(&coeffS, n, "res malloc coeffS");
         a32(&dq_e, n, "res malloc dq_e");
@@ -630,19 +641,30 @@ void eos_step_resident(
         const float* dyn_permeability, const float* dyn_wave_absorb,
         int h, int w, float dt,
         const bool* is_ambient, const int32_t* n_amb, int32_t p_amb,
+        const bool* thermal_solid,
         int32_t* d_atmosphere, int32_t* d_wave_p,
         int32_t* d_wind_x, int32_t* d_wind_y,
         int32_t* d_temperature, int32_t* d_gas_base,
         const bool* d_solid, const bool* d_is_vacuum,
         const float* d_dyn_permeability,
         const bool* d_is_ambient,
-        const int32_t* d_sponge_sigma, const int32_t* d_sponge_udamp) {
+        const int32_t* d_sponge_sigma, const int32_t* d_sponge_udamp,
+        const bool* d_thermal_solid) {
 
     const int n = h * w;
     if (n <= 0 || dt <= 0.0f) return;   // step()'s degenerate early-out
     ++g_eos_resident_calls;
 
     const bool ambient_mode = (is_ambient != nullptr);
+    // THERMAL-MASS AXIS, P-EOS: the medium mask + the T-only occluder predicate.
+    // `use_tsol` requires BOTH the mirror (for the shared host predicate — all
+    // reductions read the authoritative mirror, design §0) and the device copy
+    // (what the kernels read). d_ts is the P2 device fallback: nothing is
+    // allocated or copied on the legacy path.
+    const bool use_tsol = (thermal_solid != nullptr) && (d_thermal_solid != nullptr);
+    const bool* d_ts = use_tsol ? d_thermal_solid : d_solid;
+    const bool t_occlude = use_tsol
+        && eos_thermal_occludes(thermal_solid, solid, dyn_permeability, n);
 
     // ---- HOST PRE-STAGE on the authoritative mirror (the SHARED verbatim
     //      transcription; all reductions — design §0). Writes the mirror
@@ -699,6 +721,15 @@ void eos_step_resident(
     // ---- K0: cmask ONCE per tick (the proven P6.2 device build). ---------
     sl_cmask_build_device(d_solid, d_is_vacuum, d_dyn_permeability, S.cmask,
                           n, d_is_ambient);
+    // ---- K0b (THERMAL-MASS AXIS, P-EOS): the T-ONLY occluder mask, ONCE per
+    //      tick, rebuilt from the CURRENT device thermal_solid (the caller keeps
+    //      it fresh via the per-tick from_host upload). `S.cmask` is untouched —
+    //      velocity/pressure/gas flow must stay identical (ruling §4 item 4).
+    const uint8_t* d_tcmask = nullptr;
+    if (t_occlude) {
+        sl_tcmask_build_device(S.cmask, d_thermal_solid, S.tcmask, n);
+        d_tcmask = S.tcmask;
+    }
 
     // ---- DEVICE SUBSTEP LOOP (the P6.5 chain, resident buffers). ---------
     for (int s = 0; s < pre.n_sub; ++s) {
@@ -711,7 +742,7 @@ void eos_step_resident(
         sl_advect3_device(d_wind_x, d_wind_y, d_temperature,
                           S.svx, S.svy, S.st,
                           d_solid, d_is_vacuum, S.cmask, pre.dt_s_q, h, w,
-                          d_is_ambient);
+                          d_is_ambient, d_ts, d_tcmask);
         for (int k = 0; k < n_cons; ++k) {
             bulk_flux_plane_device(
                 d_gas_base + (size_t)pre.cons[k] * n,
@@ -764,7 +795,8 @@ void eos_step_resident(
     kick_compression_launch_resident(
         d_wind_x, d_wind_y, d_temperature, S.lv[0].P, S.ntot, S.absorb_q,
         d_solid, d_is_vacuum, kf, pre.c_local_q, S.cnt, h, w,
-        d_is_ambient, d_sponge_udamp);
+        d_is_ambient, d_sponge_udamp,
+        d_ts);   // THERMAL-MASS AXIS: step 4c skips its T write on thermal_solid
 
     // ---- step 5: P := P_new (+P_amb masked, ambient). --------------------
     K_store_atm<<<grid, block>>>(d_atmosphere, S.lv[0].P, d_solid,

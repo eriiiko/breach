@@ -49,7 +49,13 @@ uint64_t eos_sl_advect(
     const bool* solid,
     const bool* is_vacuum,
     const float* dyn_permeability, // FLOAT (h,w) — cmask build only (<= 0 test)
-    int h, int w, float dt, int n_sub);
+    int h, int w, float dt, int n_sub,
+    // THERMAL-MASS AXIS, P-EOS (docs/thermal_mass_eos_ruling_2026-07-30.md §4
+    // items 1-2): the per-medium THERMAL mask. Where it is true the T write is
+    // SKIPPED (the TemperatureSolver owns that tile's temperature) and the T
+    // backtrace treats the tile as an OCCLUDER; `cmask` — hence velocity — is
+    // untouched. nullptr -> pre-patch behaviour byte-for-byte.
+    const bool* thermal_solid = nullptr);
 
 // ---- EOS P6.5: device-pointer launchers for the chained eos.step dispatch --
 // The P6.5 orchestrator (cuda_eos_step.cu) keeps u/T/gas DEVICE-RESIDENT
@@ -69,6 +75,17 @@ void sl_cmask_build_device(const bool* d_solid, const bool* d_vacuum,
                            const float* d_perm, uint8_t* d_cmask, int n,
                            const bool* d_is_ambient = nullptr);
 
+// K0b (THERMAL-MASS AXIS, P-EOS) — the T-ONLY corner/march mask: a copy of
+// d_cmask with every thermal_solid tile forced to 0 (sealed/occluder). The
+// device twin of eos_solver.cpp's `tcmask_` loop. `d_cmask` itself is NEVER
+// modified — velocity, pressure and gas flow must stay identical (ruling §4
+// item 4), so the thermal medium diverges only in this second mask. The caller
+// launches this ONLY when eos_thermal_occludes() says the two masks can differ;
+// otherwise it passes nullptr for d_tcmask below and the T sample takes the
+// fused value, bit for bit as before.
+void sl_tcmask_build_device(const uint8_t* d_cmask, const bool* d_thermal_solid,
+                            uint8_t* d_tcmask, int n);
+
 // K1 — ONE fused advection substep: reads the frozen (src_vx, src_vy, src_t)
 // snapshot, writes wind/temperature in place (solid u zeroed, vacuum T := 0).
 // The caller owns the pre-substep D2D snapshot (the CPU's vx_src_/vy_src_/
@@ -82,7 +99,15 @@ void sl_advect3_device(int32_t* d_wind_x, int32_t* d_wind_y,
                        const bool* d_solid, const bool* d_vacuum,
                        const uint8_t* d_cmask,
                        int32_t dt_s_q, int h, int w,
-                       const bool* d_is_ambient = nullptr);
+                       const bool* d_is_ambient = nullptr,
+                       // THERMAL-MASS AXIS, P-EOS: d_ts is the medium mask the T
+                       // write skips on — the device twin of the CPU's
+                       // `ts = thermal_solid ? thermal_solid : solid`, so the
+                       // caller passes d_solid on the legacy path and NOTHING is
+                       // allocated or copied for the fallback. d_tcmask is the
+                       // T-only occluder mask (nullptr => use the fused sample).
+                       const bool* d_ts = nullptr,
+                       const uint8_t* d_tcmask = nullptr);
 
 // Backend selection (P6.2 gate wiring, the surviving-backend idiom). EOS
 // P6.5: now CONSUMED by the engine dispatch — PhysicsEngine::run_substeps

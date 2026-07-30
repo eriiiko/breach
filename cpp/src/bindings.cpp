@@ -727,7 +727,11 @@ PYBIND11_MODULE(breach_physics, m) {
              float dt, float c_v, float n_floor_heat,
              float burn_rate, float o2_thresh_burn, float H_fuel,
              float soot_yield, float fuel_per_o2, float o2_frac_ext,
-             float o2_frac_amb, float T_MAX_PHYS) -> py::tuple {
+             float o2_frac_amb, float T_MAX_PHYS,
+             // THERMAL-MASS AXIS, P-EOS (ruling §2 site 3): the OBJECT-deposit
+             // branch's inputs, both OPTIONAL (None -> the gas path == pre-patch).
+             py::object thermal_solid,
+             py::object heat_inv_shift) -> py::tuple {
               auto gv = gas.mutable_unchecked<3>();
               int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
               const int n_gases = static_cast<int>(gv.shape(0));
@@ -740,13 +744,28 @@ PYBIND11_MODULE(breach_physics, m) {
               auto [sol, h5, w5]  = get_2d_const(solid);
               auto [vac, h6, w6]  = get_2d_const(is_vacuum);
               auto [ign, h7, w7]  = get_2d_const(ignition_temp_q16);
+              const bool* tsol = nullptr;
+              py::array_t<bool> tsol_arr;
+              if (!thermal_solid.is_none()) {
+                  tsol_arr = thermal_solid.cast<py::array_t<bool>>();
+                  auto ta = tsol_arr.unchecked<2>();
+                  tsol = ta.data(0, 0);
+              }
+              const int32_t* hshift = nullptr;
+              py::array_t<int32_t> hshift_arr;
+              if (!heat_inv_shift.is_none()) {
+                  hshift_arr = heat_inv_shift.cast<py::array_t<int32_t>>();
+                  auto ha = hshift_arr.unchecked<2>();
+                  hshift = ha.data(0, 0);
+              }
               int64_t heat_floor_hits = 0, t_max_phys_hits = 0;
               breach_cuda::combustion_step(
                   gas_ptr, n_gases, o2_idx, inert_n2_idx, black_smoke_idx,
                   temp, whp, f, fl, sol, vac, ign, h, w, dt, c_v, n_floor_heat,
                   burn_rate, o2_thresh_burn, H_fuel, soot_yield, fuel_per_o2,
                   o2_frac_ext, o2_frac_amb,
-                  T_MAX_PHYS, &heat_floor_hits, &t_max_phys_hits);
+                  T_MAX_PHYS, &heat_floor_hits, &t_max_phys_hits,
+                  tsol, hshift);
               return py::make_tuple(heat_floor_hits, t_max_phys_hits);
           },
           py::arg("gas"), py::arg("o2_idx"), py::arg("inert_n2_idx"),
@@ -758,6 +777,8 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("H_fuel"), py::arg("soot_yield"), py::arg("fuel_per_o2"),
           py::arg("o2_frac_ext"), py::arg("o2_frac_amb"),
           py::arg("T_MAX_PHYS"),
+          py::arg("thermal_solid") = py::none(),
+          py::arg("heat_inv_shift") = py::none(),
           "P6.9b isolated: run ONE GPU combustion step (the two-gather "
           "reformulation, continuous-O2 proportional demand) in place on the "
           "three gas planes + temperature + wall_hp (bit-identical to "
@@ -790,19 +811,28 @@ PYBIND11_MODULE(breach_physics, m) {
              py::array_t<int32_t> temperature,
              py::array_t<bool> solid, py::array_t<bool> is_vacuum,
              py::array_t<float> dyn_permeability,
-             float dt, int n_sub) -> uint64_t {
+             float dt, int n_sub,
+             py::object thermal_solid) -> uint64_t {   // THERMAL-MASS AXIS
               auto [wx, h, w]    = get_2d(wind_x);
               auto [wy, h2, w2]  = get_2d(wind_y);
               auto [t, h3, w3]   = get_2d(temperature);
               auto [sol, h4, w4] = get_2d_const(solid);
               auto [vac, h5, w5] = get_2d_const(is_vacuum);
               auto [pm, h6, w6]  = get_2d_const(dyn_permeability);
+              const bool* tsol = nullptr;
+              py::array_t<bool> tsol_arr;
+              if (!thermal_solid.is_none()) {
+                  tsol_arr = thermal_solid.cast<py::array_t<bool>>();
+                  auto ta = tsol_arr.unchecked<2>();
+                  tsol = ta.data(0, 0);
+              }
               return breach_cuda::eos_sl_advect(wx, wy, t, sol, vac, pm,
-                                                h, w, dt, n_sub);
+                                                h, w, dt, n_sub, tsol);
           },
           py::arg("wind_x"), py::arg("wind_y"), py::arg("temperature"),
           py::arg("solid"), py::arg("is_vacuum"), py::arg("dyn_permeability"),
           py::arg("dt"), py::arg("n_sub"),
+          py::arg("thermal_solid") = py::none(),
           "P6.2 isolated: run the GPU fused SL-advection substep chain in place "
           "on wind_x/wind_y/temperature (bit-identical to eos_sl_advect_ref) and "
           "return the chained FNV digest (== EOSSolver.digest_advect).");
@@ -880,7 +910,8 @@ PYBIND11_MODULE(breach_physics, m) {
              float c_max, float dx, float adiabatic_index,
              float absorb_strength, float n_floor_solver, float t_min,
              float t_work_clamp, float t_max_phys, float u_max,
-             float trace_mass_scale) -> py::tuple {
+             float trace_mass_scale,
+             py::object thermal_solid) -> py::tuple {   // THERMAL-MASS AXIS
               auto [wx, h, w]    = get_2d(wind_x);
               auto [wy, h2, w2]  = get_2d(wind_y);
               auto [t, h3, w3]   = get_2d(temperature);
@@ -893,6 +924,13 @@ PYBIND11_MODULE(breach_physics, m) {
               auto [sol, h5, w5] = get_2d_const(solid);
               auto [vac, h6, w6] = get_2d_const(is_vacuum);
               auto [ab, h7, w7]  = get_2d_const(dyn_wave_absorb);
+              const bool* tsol = nullptr;
+              py::array_t<bool> tsol_arr;
+              if (!thermal_solid.is_none()) {
+                  tsol_arr = thermal_solid.cast<py::array_t<bool>>();
+                  auto ta = tsol_arr.unchecked<2>();
+                  tsol = ta.data(0, 0);
+              }
               uint64_t dig_vel = 0, dig_comp = 0;
               int64_t cnts[5] = {0, 0, 0, 0, 0};
               breach_cuda::eos_kick_compression(
@@ -900,7 +938,8 @@ PYBIND11_MODULE(breach_physics, m) {
                   h, w, dt, c_local_q,
                   c_max, dx, adiabatic_index, absorb_strength,
                   n_floor_solver, t_min, t_work_clamp, t_max_phys, u_max,
-                  trace_mass_scale, &dig_vel, &dig_comp, cnts);
+                  trace_mass_scale, &dig_vel, &dig_comp, cnts,
+                  nullptr, nullptr, tsol);
               return py::make_tuple(dig_vel, dig_comp, cnts[0], cnts[1],
                                     cnts[2], cnts[3], cnts[4]);
           },
@@ -912,6 +951,7 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("absorb_strength"), py::arg("n_floor_solver"),
           py::arg("t_min"), py::arg("t_work_clamp"), py::arg("t_max_phys"),
           py::arg("u_max"), py::arg("trace_mass_scale"),
+          py::arg("thermal_solid") = py::none(),
           "P6.4 isolated: run the GPU kick + compression-work tail in place on "
           "wind_x/wind_y/temperature; returns (digest_velocity, "
           "digest_compression, u_clamp_hits, u_max_hits, work_clamp_hits, "
@@ -1721,19 +1761,28 @@ PYBIND11_MODULE(breach_physics, m) {
              py::array_t<int32_t> temperature,
              py::array_t<bool> solid, py::array_t<bool> is_vacuum,
              py::array_t<float> dyn_permeability,
-             float dt, int n_sub) -> uint64_t {
+             float dt, int n_sub,
+             py::object thermal_solid) -> uint64_t {   // THERMAL-MASS AXIS
               auto [wx, h, w]    = get_2d(wind_x);
               auto [wy, h2, w2]  = get_2d(wind_y);
               auto [t, h3, w3]   = get_2d(temperature);
               auto [sol, h4, w4] = get_2d_const(solid);
               auto [vac, h5, w5] = get_2d_const(is_vacuum);
               auto [pm, h6, w6]  = get_2d_const(dyn_permeability);
+              const bool* tsol = nullptr;
+              py::array_t<bool> tsol_arr;
+              if (!thermal_solid.is_none()) {
+                  tsol_arr = thermal_solid.cast<py::array_t<bool>>();
+                  auto ta = tsol_arr.unchecked<2>();
+                  tsol = ta.data(0, 0);
+              }
               return eos_sl_advect_reference(wx, wy, t, sol, vac, pm,
-                                             h, w, dt, n_sub);
+                                             h, w, dt, n_sub, nullptr, tsol);
           },
           py::arg("wind_x"), py::arg("wind_y"), py::arg("temperature"),
           py::arg("solid"), py::arg("is_vacuum"), py::arg("dyn_permeability"),
           py::arg("dt"), py::arg("n_sub"),
+          py::arg("thermal_solid") = py::none(),
           "P6.2 CPU reference: replay EOSSolver::step's SL-advection substep "
           "chain in place on wind_x/wind_y/temperature; returns the chained "
           "FNV digest (== EOSSolver.digest_advect for the same inputs).");
@@ -1760,7 +1809,8 @@ PYBIND11_MODULE(breach_physics, m) {
              float c_max, float dx, float adiabatic_index,
              float absorb_strength, float n_floor_solver, float t_min,
              float t_work_clamp, float t_max_phys, float u_max,
-             float trace_mass_scale) -> py::tuple {
+             float trace_mass_scale,
+             py::object thermal_solid) -> py::tuple {   // THERMAL-MASS AXIS
               auto [wx, h, w]    = get_2d(wind_x);
               auto [wy, h2, w2]  = get_2d(wind_y);
               auto [t, h3, w3]   = get_2d(temperature);
@@ -1773,6 +1823,13 @@ PYBIND11_MODULE(breach_physics, m) {
               auto [sol, h5, w5] = get_2d_const(solid);
               auto [vac, h6, w6] = get_2d_const(is_vacuum);
               auto [ab, h7, w7]  = get_2d_const(dyn_wave_absorb);
+              const bool* tsol = nullptr;
+              py::array_t<bool> tsol_arr;
+              if (!thermal_solid.is_none()) {
+                  tsol_arr = thermal_solid.cast<py::array_t<bool>>();
+                  auto ta = tsol_arr.unchecked<2>();
+                  tsol = ta.data(0, 0);
+              }
               uint64_t dig_vel = 0, dig_comp = 0;
               int64_t cnts[5] = {0, 0, 0, 0, 0};
               eos_kick_compression_reference(
@@ -1780,7 +1837,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   h, w, dt, c_local_q,
                   c_max, dx, adiabatic_index, absorb_strength,
                   n_floor_solver, t_min, t_work_clamp, t_max_phys, u_max,
-                  trace_mass_scale, &dig_vel, &dig_comp, cnts);
+                  trace_mass_scale, &dig_vel, &dig_comp, cnts, nullptr, tsol);
               return py::make_tuple(dig_vel, dig_comp, cnts[0], cnts[1],
                                     cnts[2], cnts[3], cnts[4]);
           },
@@ -1792,6 +1849,7 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("absorb_strength"), py::arg("n_floor_solver"),
           py::arg("t_min"), py::arg("t_work_clamp"), py::arg("t_max_phys"),
           py::arg("u_max"), py::arg("trace_mass_scale"),
+          py::arg("thermal_solid") = py::none(),
           "P6.4 CPU reference: replay EOSSolver::step's kick + compression-"
           "work tail in place on wind_x/wind_y/temperature; returns "
           "(digest_velocity, digest_compression, u_clamp_hits, u_max_hits, "
@@ -1861,7 +1919,14 @@ PYBIND11_MODULE(breach_physics, m) {
                         py::array_t<bool> solid,
                         py::array_t<bool> is_vacuum,
                         py::array_t<int32_t> ignition_temp_q16,   // Q16.16, read-only
-                        float dt, float c_v, float n_floor_heat) {
+                        float dt, float c_v, float n_floor_heat,
+                        // THERMAL-MASS AXIS, P-EOS (ruling §2 site 3): on a
+                        // thermal_solid burn site the aggregate deposit converts
+                        // via heat_inv_shift (the OBJECT path). Both OPTIONAL —
+                        // None -> nullptr -> every site takes the gas path, so
+                        // every shipped direct caller keeps its exact meaning.
+                        py::object thermal_solid,
+                        py::object heat_inv_shift) {
             auto gv = gas.mutable_unchecked<3>();
             int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
             const int n_gases = static_cast<int>(gv.shape(0));
@@ -1874,13 +1939,30 @@ PYBIND11_MODULE(breach_physics, m) {
             auto [sol, h6, w6]  = get_2d_const(solid);
             auto [vac, h7, w7]  = get_2d_const(is_vacuum);
             auto [ign, h8, w8]  = get_2d_const(ignition_temp_q16);
+            const bool* tsol = nullptr;
+            py::array_t<bool> tsol_arr;
+            if (!thermal_solid.is_none()) {
+                tsol_arr = thermal_solid.cast<py::array_t<bool>>();
+                auto ta = tsol_arr.unchecked<2>();
+                tsol = ta.data(0, 0);
+            }
+            const int32_t* hshift = nullptr;
+            py::array_t<int32_t> hshift_arr;
+            if (!heat_inv_shift.is_none()) {
+                hshift_arr = heat_inv_shift.cast<py::array_t<int32_t>>();
+                auto ha = hshift_arr.unchecked<2>();
+                hshift = ha.data(0, 0);
+            }
             self.step(gas_ptr, n_gases, o2_idx, inert_n2_idx, black_smoke_idx,
-                     temp, whp, f, fl, sol, vac, ign, h, w, dt, c_v, n_floor_heat);
+                     temp, whp, f, fl, sol, vac, ign, h, w, dt, c_v, n_floor_heat,
+                     tsol, hshift);
         }, py::arg("gas"), py::arg("o2_idx"), py::arg("inert_n2_idx"),
            py::arg("black_smoke_idx"), py::arg("temperature"), py::arg("wall_hp"),
            py::arg("fire"), py::arg("flammable"), py::arg("solid"),
            py::arg("is_vacuum"), py::arg("ignition_temp_q16"),
-           py::arg("dt"), py::arg("c_v"), py::arg("n_floor_heat"));
+           py::arg("dt"), py::arg("c_v"), py::arg("n_floor_heat"),
+           py::arg("thermal_solid") = py::none(),
+           py::arg("heat_inv_shift") = py::none());
 
     // --- WaterSolver (pipe model: damped velocity + donor-cell upwind flux;
     //     engine/07 §2, water_implementation_plan Step W1) ---
@@ -2153,7 +2235,13 @@ PYBIND11_MODULE(breach_physics, m) {
                                 int32_t p_amb,
                                 py::object sponge_sigma,
                                 py::object sponge_udamp,
-                                bool do_traces) {   // S8a Path B
+                                bool do_traces,     // S8a Path B
+                                // THERMAL-MASS AXIS, P-EOS: the per-medium
+                                // THERMAL mask (GameMap.thermal_solid).
+                                // OPTIONAL (None -> nullptr -> the pre-patch
+                                // byte-identical path), mirroring the
+                                // TemperatureSolver.step binding.
+                                py::object thermal_solid) {
             auto [pp, h, w]    = get_2d(p_prev);
             auto [atm, h4, w4] = get_2d(atmosphere);
             auto [wx, h5, w5]  = get_2d(wind_x);
@@ -2211,13 +2299,21 @@ PYBIND11_MODULE(breach_physics, m) {
                 auto up = udamp_arr.unchecked<2>();
                 udamp = up.data(0, 0);
             }
+            // THERMAL-MASS AXIS, P-EOS: nullable extraction, the BC precedent.
+            const bool* tsol = nullptr;
+            py::array_t<bool> tsol_arr;
+            if (!thermal_solid.is_none()) {
+                tsol_arr = thermal_solid.cast<py::array_t<bool>>();
+                auto ta = tsol_arr.unchecked<2>();
+                tsol = ta.data(0, 0);
+            }
             self.run_substeps(
                 pp, atm, wx, wy, temp,
                 obs, sol, vac, perm, wabs,
                 gas_ptr, gdiff, n_gases, gcons,
                 gdecay, inert_n2_idx,
                 h, w, sim_time,
-                amb, namb, p_amb, sponge, udamp, do_traces);
+                amb, namb, p_amb, sponge, udamp, do_traces, tsol);
         }, py::arg("p_prev"),
            py::arg("atmosphere"), py::arg("wind_x"), py::arg("wind_y"),
            py::arg("temperature"),
@@ -2232,7 +2328,11 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("p_amb") = 0,
            py::arg("sponge_sigma") = py::none(),
            py::arg("sponge_udamp") = py::none(),
-           py::arg("do_traces") = true)   // S8a Path B (default = prior behaviour)
+           py::arg("do_traces") = true,   // S8a Path B (default = prior behaviour)
+           // THERMAL-MASS AXIS, P-EOS: default None -> pre-patch behaviour, so
+           // every existing direct caller keeps its exact meaning; the live
+           // runner always passes GameMap.thermal_solid.
+           py::arg("thermal_solid") = py::none())
         // --- S8a Path A: the fully device-resident EOS stage ----------------
         // Host mirrors feed the shared pre-stage (all reductions consume
         // tick-entry state == the authoritative mirror) + telemetry; device
@@ -2265,7 +2365,11 @@ PYBIND11_MODULE(breach_physics, m) {
                                 std::uintptr_t d_dyn_permeability,
                                 std::uintptr_t d_is_ambient,
                                 std::uintptr_t d_sponge_sigma,
-                                std::uintptr_t d_sponge_udamp) {
+                                std::uintptr_t d_sponge_udamp,
+                                // THERMAL-MASS AXIS, P-EOS: the mirror + the
+                                // device copy of the per-medium THERMAL mask.
+                                py::object thermal_solid,
+                                std::uintptr_t d_thermal_solid) {
             auto [pp, h, w]    = get_2d(p_prev);
             auto [atm, h4, w4] = get_2d_const(atmosphere);
             auto [wx, h5, w5]  = get_2d_const(wind_x);
@@ -2294,6 +2398,14 @@ PYBIND11_MODULE(breach_physics, m) {
                 auto na = namb_arr.unchecked<1>();
                 namb = na.data(0);
             }
+            // THERMAL-MASS AXIS, P-EOS: nullable mirror extraction (BC idiom).
+            const bool* tsol = nullptr;
+            py::array_t<bool> tsol_arr;
+            if (!thermal_solid.is_none()) {
+                tsol_arr = thermal_solid.cast<py::array_t<bool>>();
+                auto ta = tsol_arr.unchecked<2>();
+                tsol = ta.data(0, 0);
+            }
             self.run_substeps_resident(
                 pp, atm, wx, wy, temp,
                 sol, vac, perm, wabs,
@@ -2303,7 +2415,8 @@ PYBIND11_MODULE(breach_physics, m) {
                 d_atmosphere, d_wave_p, d_wind_x, d_wind_y,
                 d_temperature, d_gas, d_solid, d_is_vacuum,
                 d_dyn_permeability, d_is_ambient,
-                d_sponge_sigma, d_sponge_udamp);
+                d_sponge_sigma, d_sponge_udamp,
+                tsol, d_thermal_solid);
         }, py::arg("p_prev"), py::arg("atmosphere"),
            py::arg("wind_x"), py::arg("wind_y"), py::arg("temperature"),
            py::arg("solid"), py::arg("is_vacuum"),
@@ -2319,7 +2432,10 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("d_solid") = 0, py::arg("d_is_vacuum") = 0,
            py::arg("d_dyn_permeability") = 0,
            py::arg("d_is_ambient") = 0,
-           py::arg("d_sponge_sigma") = 0, py::arg("d_sponge_udamp") = 0)
+           py::arg("d_sponge_sigma") = 0, py::arg("d_sponge_udamp") = 0,
+           // THERMAL-MASS AXIS, P-EOS: default None/0 -> the pre-patch path.
+           py::arg("thermal_solid") = py::none(),
+           py::arg("d_thermal_solid") = 0)
         // --- Patch 1 S4c: the water-layer array arithmetic ------------------
         // step_water moves the array-op body of PhysicsRunner._step_water into
         // C++ (substep loop + W5 flash-boil + W3 displacement/seal + the final

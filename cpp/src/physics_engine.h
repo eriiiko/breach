@@ -251,7 +251,14 @@ public:
         // smoke loop (+ decay) is SKIPPED — the resident path runs those traces
         // itself on device (trace_smoke_resident) so the 5 per-plane per-call
         // transfers are gone. Default true == the exact prior behaviour.
-        bool do_traces = true);
+        bool do_traces = true,
+        // THERMAL-MASS AXIS, P-EOS (docs/thermal_mass_eos_ruling_2026-07-30.md
+        // §4 item 1): the per-medium THERMAL mask (GameMap.thermal_solid),
+        // forwarded verbatim to eos.step / eos_step_cuda. It governs ONLY the
+        // solver's two `temperature[]` writes and its T backtrace; `cmask`,
+        // hence pressure/velocity/gas flow, is untouched. nullptr on the legacy
+        // path -> byte-identical to before this patch.
+        const bool* thermal_solid = nullptr);
 
     // --- S8a Path A: the fully device-resident EOS stage -----------------
     // (docs/cuda_s8a_path_a_impl_2026-07-21.md §3.1.) The resident sibling of
@@ -279,7 +286,14 @@ public:
         std::uintptr_t d_solid, std::uintptr_t d_is_vacuum,
         std::uintptr_t d_dyn_permeability,
         std::uintptr_t d_is_ambient,
-        std::uintptr_t d_sponge_sigma, std::uintptr_t d_sponge_udamp);
+        std::uintptr_t d_sponge_sigma, std::uintptr_t d_sponge_udamp,
+        // THERMAL-MASS AXIS, P-EOS: the mask on the MIRROR (for the shared host
+        // occlusion predicate — all pre-stage reductions read the mirror) plus
+        // its DEVICE copy (what the SL/compression kernels read). 0/nullptr ->
+        // the legacy path. The device copy MUST ride the per-tick from_host
+        // upload: unlike the sponge grids this mask is not static.
+        const bool* thermal_solid = nullptr,
+        std::uintptr_t d_thermal_solid = 0);
 
     // --- Patch 1 S4c: the water-layer ARRAY ARITHMETIC -------------------
     // Moves the array-op core of PhysicsRunner._step_water into C++ — the part

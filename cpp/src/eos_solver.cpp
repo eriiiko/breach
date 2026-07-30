@@ -216,10 +216,30 @@ void EOSSolver::step(
         const float* dyn_permeability, const float* dyn_wave_absorb,
         int h, int w, float dt,
         const bool* is_ambient, const int32_t* n_amb, int32_t p_amb,
-        const int32_t* sponge_sigma, const int32_t* sponge_udamp) const {
+        const int32_t* sponge_sigma, const int32_t* sponge_udamp,
+        const bool* thermal_solid) const {
 
     const int n = h * w;
     if (n <= 0 || dt <= 0.0f) return;
+
+    // --- THERMAL-MEDIUM mask (THERMAL-MASS AXIS, P-EOS; the governing rule and
+    // the per-site rationale are in eos_solver.h's header block) --------------
+    // `solid` (permeability <= 0) is a FLOW property. Steps 1b and 4c are
+    // GAS-MEDIUM claims about T, so they must key on the THERMAL axis. nullptr
+    // -> `solid`, which is exactly today's behaviour (and elementwise equal to
+    // thermal_solid on any furniture-free map — build addendum D4). ONLY the
+    // two `temperature[i]` writes and the step-1b T sample read `ts`; every
+    // other `solid` / `dyn_permeability` meaning in this function (cmask,
+    // mirror_idx, coeffE/S, div(u), p*, the kick, mg_build_levels) is
+    // UNTOUCHED, so pressure / velocity / gas flow are unchanged.
+    const bool* ts = (thermal_solid != nullptr) ? thermal_solid : solid;
+    // Does the thermal medium diverge from the gas medium anywhere? If not (the
+    // furniture-free map, or the nullptr fallback), the T-only occlusion mask
+    // would be elementwise equal to cmask_, so we do not build it and every T
+    // sample keeps taking the FUSED sample — the pre-patch code path, bit for
+    // bit (gate (a) is structurally free, and there is no per-tick cost).
+    const bool t_occlude = eos_thermal_occludes(thermal_solid, solid,
+                                                dyn_permeability, n);
 
     // BC (boundary_conditions_spec_2026-07-19): planetside AMBIENT ring. ONE
     // flag gates every ambient edit in this function — a space map passes
@@ -242,6 +262,8 @@ void EOSSolver::step(
     if ((int)pstar_.size()   != n) pstar_.assign(n, 0);
     if ((int)div_u_.size()   != n) div_u_.assign(n, 0);
     if ((int)cmask_.size()   != n) cmask_.assign(n, 0);
+    // THERMAL-MASS AXIS: the T-only mask is allocated ONLY where it is live.
+    if (t_occlude && (int)tcmask_.size() != n) tcmask_.assign(n, 0);
     if ((int)coeffE_.size()  != n) coeffE_.assign(n, 0);
     if ((int)coeffS_.size()  != n) coeffS_.assign(n, 0);
 
@@ -369,6 +391,26 @@ void EOSSolver::step(
         else if (is_vacuum[i] || (ambient_mode && is_ambient[i])) cmask_[i] = 1;
         else cmask_[i] = 2;
     }
+    // THERMAL-MASS AXIS, P-EOS (ruling A2 + §4 item 4): the T-ONLY corner/march
+    // mask. `cmask_` above is UNTOUCHED — it drives velocity self-advection (and
+    // through div(u)/p* the pressure solve and the gas flow), and item 4 requires
+    // those to be identical, so a crate must STAY cmask 2 there (a live gas cell:
+    // gas still seeps through at permeability 0.5 — shield, not seal). The
+    // thermal medium diverges only here: a thermal_solid tile is forced to 0
+    // (sealed) so the temperature backtrace treats it as a WALL to the march AND
+    // as a dead corner in the bilinear gather — the SAME two semantics as P1's
+    // `gas_wall_at` (MEDIUM-TEST SITE 3/6) and its sealed-corner test (4/6) in
+    // temperature_solver.cpp. WHY occlude: gas percolating through a packed
+    // object exchanges heat with it and does not carry the upstream temperature
+    // identity through the tile; and structurally, sampling the object's T as a
+    // source is a FREE-ENERGY channel (SL sampling copies without debiting, so a
+    // 1300 K crate would heat every parcel dragged past it, forever, at zero cost
+    // to itself). Object->gas heat transfer must be the deliberate two-sided
+    // convective term (the planned k_wind_strip replacement), not a side effect of
+    // advection.
+    if (t_occlude) {
+        for (int i = 0; i < n; ++i) tcmask_[i] = ts[i] ? (uint8_t)0 : cmask_[i];
+    }
     // donor-cell face coefficients (min-perm quantize x dt_s — the exact
     // legacy bulk_flux_transport per-face chain, hoisted):
     {
@@ -417,9 +459,33 @@ void EOSSolver::step(
                     cmask_.data(), h, w);
                 wind_x[i] = fs.vx;
                 wind_y[i] = fs.vy;
+                // THERMAL-MASS AXIS, P-EOS, T-WRITE SITE 1/2 (ruling A1): the
+                // EOS never writes `temperature` on a thermal_solid tile — the
+                // TemperatureSolver OWNS it there. The semi-Lagrangian sample is
+                // a fluid-parcel transport claim ("the gas now at i came from
+                // upstream"); the OBJECT at i did not come from upstream, so the
+                // write is semantically void for it. The vacuum/ring ΔT=0 wipe is
+                // skipped for the same reason (and for the same reason P1's SITE
+                // 1/6 guards it with `!ts[i]`: a space-exposed CRATE keeps its
+                // object temperature exactly as a space-exposed HULL tile does).
+                // Where thermal_solid == solid this line is unreachable anyway —
+                // a solid cell already `continue`d above — so gate (a) is
+                // structurally free here.
+                if (ts[i]) continue;
+                // A2: the T sample rides the T-ONLY occluder mask when the two
+                // media diverge; otherwise it IS the fused sample, verbatim.
+                // Calling the SAME routine with t_src in all three slots is
+                // deliberate: the returned `.t` depends only on src_t, the mask
+                // and the displacement, so this is zero-drift by construction
+                // (one transcription of the sampler, not a second copy of it).
+                const int32_t t_samp = t_occlude
+                    ? eos_backtrace_sample3_q(
+                          t_src_.data(), t_src_.data(), t_src_.data(),
+                          x, y, bx_q, by_q, tcmask_.data(), h, w).t
+                    : fs.t;
                 // BC (audit (b)): ΔT=0 IS ambient — the ring holds T ≡ T_AMB_K
                 // (stored ΔT 0), the vacuum idiom verbatim.
-                temperature[i] = (is_vacuum[i] || (ambient_mode && is_ambient[i])) ? 0 : fs.t;
+                temperature[i] = (is_vacuum[i] || (ambient_mode && is_ambient[i])) ? 0 : t_samp;
             }
         }
         if (s == n_sub - 1) digest_advect = digest_of(wind_x, n, digest_of(wind_y, n, digest_of(temperature, n, 0)));
@@ -655,7 +721,16 @@ void EOSSolver::step(
                 const int i = row + x;
                 // BC (audit (b)): the ring is skipped like vacuum — no
                 // compression work on the still ΔT=0 boundary.
-                if (solid[i] || is_vacuum[i] || (ambient_mode && is_ambient[i])) continue;
+                // THERMAL-MASS AXIS, P-EOS, T-WRITE SITE 2/2 (ruling A1): `ts` is
+                // ADDED to the skip set (never substituted for `solid`, which
+                // keeps its own flow meaning here) — compression work is work
+                // done ON GAS BY COMPRESSION, and an OBJECT does not compress, so
+                // the EOS may not touch a thermal_solid tile's temperature.
+                // Nothing else in this loop writes anything, so skipping the cell
+                // entirely IS the whole edit. Where thermal_solid == solid the
+                // added term is redundant (gate (a), structurally free).
+                if (solid[i] || ts[i] || is_vacuum[i]
+                        || (ambient_mode && is_ambient[i])) continue;
                 const int il = mirror_idx(i, y, x - 1, h, w, solid);
                 const int ir = mirror_idx(i, y, x + 1, h, w, solid);
                 const int iu = mirror_idx(i, y - 1, x, h, w, solid);
@@ -1188,10 +1263,14 @@ uint64_t eos_sl_advect_reference(
         const bool* solid, const bool* is_vacuum,
         const float* dyn_permeability,
         int h, int w, float dt, int n_sub,
-        const bool* is_ambient) {
+        const bool* is_ambient, const bool* thermal_solid) {
     const int n = h * w;
     if (n <= 0 || dt <= 0.0f || n_sub < 1) return 0;
     const bool ambient_mode = (is_ambient != nullptr);   // BC: dormancy by branch
+    // THERMAL-MASS AXIS, P-EOS: step()'s `ts` / `t_occlude` folds, verbatim.
+    const bool* ts = (thermal_solid != nullptr) ? thermal_solid : solid;
+    const bool t_occlude = eos_thermal_occludes(thermal_solid, solid,
+                                                dyn_permeability, n);
 
     // cmask (verbatim: step()'s per-tick corner/march table).
     std::vector<uint8_t> cmask(n, 0);
@@ -1199,6 +1278,12 @@ uint64_t eos_sl_advect_reference(
         if (solid[i] || dyn_permeability[i] <= 0.0f) cmask[i] = 0;
         else if (is_vacuum[i] || (ambient_mode && is_ambient[i])) cmask[i] = 1;   // BC: ring is a breach corner
         else cmask[i] = 2;
+    }
+    // THERMAL-MASS AXIS: the T-only occluder mask (step()'s tcmask_, verbatim).
+    std::vector<uint8_t> tcmask;
+    if (t_occlude) {
+        tcmask.assign(n, 0);
+        for (int i = 0; i < n; ++i) tcmask[i] = ts[i] ? (uint8_t)0 : cmask[i];
     }
 
     std::vector<int32_t> vx_src(n), vy_src(n), t_src(n);
@@ -1222,7 +1307,15 @@ uint64_t eos_sl_advect_reference(
                     cmask.data(), h, w);
                 wind_x[i] = fs.vx;
                 wind_y[i] = fs.vy;
-                temperature[i] = (is_vacuum[i] || (ambient_mode && is_ambient[i])) ? 0 : fs.t;   // BC: ΔT=0 is ambient
+                // THERMAL-MASS AXIS, T-WRITE SITE 1/2 + A2 occluder (step()'s
+                // chain, verbatim).
+                if (ts[i]) continue;
+                const int32_t t_samp = t_occlude
+                    ? eos_backtrace_sample3_q(
+                          t_src.data(), t_src.data(), t_src.data(),
+                          x, y, bx_q, by_q, tcmask.data(), h, w).t
+                    : fs.t;
+                temperature[i] = (is_vacuum[i] || (ambient_mode && is_ambient[i])) ? 0 : t_samp;   // BC: ΔT=0 is ambient
             }
         }
     }
@@ -1261,9 +1354,12 @@ void eos_kick_compression_reference(
         float t_max_phys, float u_max, float trace_mass_scale,
         uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
         int64_t* counters_out /* [5] */,
-        const bool* is_ambient) {
+        const bool* is_ambient, const bool* thermal_solid) {
     const int n = h * w;
     const bool ambient_mode = (is_ambient != nullptr);   // BC: dormancy by branch
+    // THERMAL-MASS AXIS, P-EOS: step()'s `ts` fold, verbatim (step-4c only —
+    // the momentum kick below is untouched: it writes u, never T).
+    const bool* ts = (thermal_solid != nullptr) ? thermal_solid : solid;
     for (int c = 0; c < 5; ++c) counters_out[c] = 0;
     *digest_velocity_out = 0;
     *digest_compression_out = 0;
@@ -1368,7 +1464,9 @@ void eos_kick_compression_reference(
             const int row = y * w;
             for (int x = 0; x < w; ++x) {
                 const int i = row + x;
-                if (solid[i] || is_vacuum[i] || (ambient_mode && is_ambient[i])) continue;   // BC: ring skipped like vacuum
+                // THERMAL-MASS AXIS, T-WRITE SITE 2/2 (step()'s guard, verbatim).
+                if (solid[i] || ts[i] || is_vacuum[i]
+                        || (ambient_mode && is_ambient[i])) continue;   // BC: ring skipped like vacuum
                 const int il = mirror_idx(i, y, x - 1, h, w, solid);
                 const int ir = mirror_idx(i, y, x + 1, h, w, solid);
                 const int iu = mirror_idx(i, y - 1, x, h, w, solid);

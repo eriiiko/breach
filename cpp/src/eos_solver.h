@@ -63,8 +63,61 @@
 //      + T_WORK_CLAMP rail, both counter-tracked
 //   5. P := P_new stored once (the `atmosphere` alias)
 
+// ---------------------------------------------------------------------------
+// THERMAL-MASS AXIS, P-EOS (docs/thermal_mass_eos_ruling_2026-07-30.md — the
+// Fable ruling that answers docs/thermal_mass_eos_escalation_2026-07-30.md).
+//
+// THE GOVERNING RULE:
+//   On `thermal_solid` tiles (`thermal_mass > 0`; GameMap.thermal_solid),
+//   `temperature[]` is OWNED by the TemperatureSolver (deposit-convert /
+//   conduct / COOL_SHIFT). Every other system is a READER. The EOS reads T
+//   (for p* = C·N·T_abs) and NEVER writes it there.
+//
+// Consequences inside this solver (ruling §4 items 1-4):
+//   * step-1b (semi-Lagrangian sample): the `temperature[i]` write is SKIPPED
+//     on thermal_solid tiles (A1 — "the gas now at i came from upstream" is a
+//     fluid-parcel claim; the OBJECT at i did not come from upstream), and a
+//     thermal_solid tile is an OCCLUDER to the T backtrace (A2 — the eos-side
+//     analog of the temperature solver's `gas_wall_at`; sampling a 1300 K
+//     crate as a source would be a free-energy channel, since SL copies
+//     without debiting).
+//   * step-4c (−P∇·u compression work): the `temperature[i]` write is SKIPPED
+//     on thermal_solid tiles (A1 — the object does not compress).
+//   * `cmask` is UNTOUCHED: pressure, velocity and gas flow are unchanged, so
+//     `permeability` / shield-but-not-seal survives verbatim (ruling §4 item 4
+//     / escalation trigger 5). The T occlusion therefore rides a SECOND,
+//     T-ONLY mask (`tcmask_` below) — occluding the shared fused march would
+//     have moved the VELOCITY self-advection, which item 4 forbids.
+//   * p* = C·N·T[i] keeps reading the OBJECT temperature on a crate tile
+//     (A3, hot pore gas — the decision stands; gate (f) is its tripwire).
+//
+// `thermal_solid == nullptr` falls back to `solid` — today's behaviour
+// byte-for-byte (the legacy / space-map path), and on any FURNITURE-FREE map
+// `thermal_solid == solid` elementwise (build addendum D4), so the fallback is
+// not a second code path in practice.
+// ---------------------------------------------------------------------------
+
 #include <cstdint>
 #include <vector>
+
+// THERMAL-MASS AXIS: does the thermal medium actually DIVERGE from the gas
+// medium anywhere on this map — i.e. is some tile thermally solid AND a LIVE
+// gas cell to the EOS cmask? The predicate is exactly `thermal_solid[i] &&
+// cmask[i] != 0`, re-expressed on the cmask's own definition
+// (`sealed <=> solid || dyn_permeability <= 0`) so the CPU step and both CUDA
+// hosts can share ONE transcription and can never disagree about whether the
+// T-only occlusion mask is live. False (the furniture-free / nullptr case) =>
+// every T sample takes the fused mask, i.e. the pre-patch code path, bit for
+// bit. The float touch is a COMPARISON only — no float arithmetic.
+inline bool eos_thermal_occludes(const bool* thermal_solid, const bool* solid,
+                                 const float* dyn_permeability, int n) {
+    if (thermal_solid == nullptr) return false;
+    for (int i = 0; i < n; ++i) {
+        if (thermal_solid[i] && !(solid[i] || dyn_permeability[i] <= 0.0f))
+            return true;
+    }
+    return false;
+}
 
 class EOSSolver {
 public:
@@ -223,7 +276,16 @@ public:
         const int32_t* n_amb = nullptr,
         int32_t p_amb = 0,
         const int32_t* sponge_sigma = nullptr,
-        const int32_t* sponge_udamp = nullptr) const;
+        const int32_t* sponge_udamp = nullptr,
+        // THERMAL-MASS AXIS, P-EOS (see the file header): the per-medium
+        // THERMAL mask (`thermal_mass > 0`, GameMap.thermal_solid). Steps 1b
+        // and 4c skip their `temperature[i]` write where it is true, and the
+        // step-1b T backtrace treats those tiles as occluders. `cmask` — hence
+        // pressure/velocity/gas flow — is UNTOUCHED. Default nullptr ->
+        // fall back to `solid`, the pre-patch behaviour byte-for-byte (the
+        // documented back-compat idiom this signature already uses for the BC
+        // args).
+        const bool* thermal_solid = nullptr) const;
 
     // BC (spec §5): the boundary_flux rail — per-conservative-plane int64 sum of
     // the ring mass exchange, accumulated at the reset site per substep. NOT
@@ -345,6 +407,12 @@ private:
     mutable std::vector<int32_t> div_u_;
     // per-tick caches for the substep loop (micro-opt, bit-identity-neutral):
     mutable std::vector<uint8_t> cmask_;              // sealed/breach/live table
+    // THERMAL-MASS AXIS, P-EOS: the T-ONLY corner/march mask — `cmask_` with
+    // every thermal_solid tile forced to 0 (sealed/occluder). Built beside
+    // cmask_ and used ONLY by the step-1b temperature sample; `cmask_` itself
+    // (velocity, and therefore pressure and gas flow) is untouched. Left empty
+    // and unread when the two masks cannot differ (eos_thermal_occludes).
+    mutable std::vector<uint8_t> tcmask_;
     mutable std::vector<int32_t> coeffE_, coeffS_;    // donor-cell face coeffs
 };
 
@@ -366,12 +434,16 @@ private:
 // ---------------------------------------------------------------------------
 // BC: is_ambient defaults nullptr — existing test callers stay byte-identical;
 // when supplied, the ring is a still-boundary breach corner (cmask) and T:=0.
+// THERMAL-MASS AXIS, P-EOS: `thermal_solid` defaults nullptr — existing test
+// callers stay byte-identical; when supplied the replay applies the SAME
+// skip-write + T-only-occluder rules step() does (one code path, zero drift).
 uint64_t eos_sl_advect_reference(
     int32_t* wind_x, int32_t* wind_y, int32_t* temperature,
     const bool* solid, const bool* is_vacuum,
     const float* dyn_permeability,
     int h, int w, float dt, int n_sub,
-    const bool* is_ambient = nullptr);
+    const bool* is_ambient = nullptr,
+    const bool* thermal_solid = nullptr);
 
 // ---------------------------------------------------------------------------
 // EOS P6.4 — standalone CPU reference for the post-solve tail: the step-4
@@ -413,7 +485,10 @@ void eos_kick_compression_reference(
     float t_max_phys, float u_max, float trace_mass_scale,
     uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
     int64_t* counters_out /* [5] */,
-    const bool* is_ambient = nullptr);   // BC: ring u ≡ 0 (defaults off)
+    const bool* is_ambient = nullptr,    // BC: ring u ≡ 0 (defaults off)
+    // THERMAL-MASS AXIS, P-EOS: step-4c skips its T write on thermal_solid
+    // tiles (the kick is untouched). Default nullptr -> `solid` -> pre-patch.
+    const bool* thermal_solid = nullptr);
 
 // ---------------------------------------------------------------------------
 // EOS P6.3 — standalone CPU reference for the multigrid pressure solve

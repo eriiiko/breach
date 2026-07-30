@@ -102,14 +102,17 @@ class GameMap:
         # are REASSIGNED by `_update_caches` and patched IN PLACE by
         # `on_tile_changed`; (3) `device_ptrs()["thermal_solid"]` is the pointer
         # a future resident temperature kernel takes.
-        # CAVEAT for whoever writes that kernel: unlike the sponge grids this
-        # mask is NOT static — `on_tile_changed` patches it whenever a tile's
-        # material changes (a crate burning out). The moment a DEVICE kernel
-        # reads it, it must join the per-tick `from_host` list next to
-        # `solid`/`is_vacuum`/`is_ambient`, or the device copy goes stale on a
-        # structural edit (the exact bug the is_ambient note below records). No
-        # device kernel reads it today: the resident tick's temperature pass is a
-        # host bracket (`step_tail` on the mirror) and the per-call CUDA kernel
+        # CAVEAT, NOW LIVE (P-EOS, docs/thermal_mass_eos_ruling_2026-07-30.md):
+        # unlike the sponge grids this mask is NOT static — `on_tile_changed`
+        # patches it whenever a tile's material changes (a crate burning out) —
+        # so any DEVICE kernel that reads it needs it re-uploaded every tick.
+        # Device kernels DO read it now (the resident EOS: the SL T advection's
+        # occluder mask + step-4c's skip), so `thermal_solid` RIDES THE PER-TICK
+        # `from_host` LIST in `physics_runner._step_resident` beside
+        # `solid`/`is_vacuum`/`is_ambient`. Do not move it back to a one-shot
+        # upload (that is the exact staleness bug the is_ambient note records).
+        # The resident temperature pass itself is still a host bracket
+        # (`step_tail` on the mirror), and the per-call CUDA temperature kernel
         # does its own H2D from `GameMap.thermal_solid`.
         "thermal_solid",
         # S8a Path A: the BC sponge grids — static per map (built ONCE in

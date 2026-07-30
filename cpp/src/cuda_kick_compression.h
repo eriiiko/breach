@@ -70,7 +70,13 @@ void eos_kick_compression(
     // zero + compression skip; the u-damping band grid sponge_udamp (nullptr =
     // off) is the rung-2 absorber applied after the absorb chain, magnitude-
     // first. All null -> the byte-identical space path.
-    const bool* is_ambient = nullptr, const int32_t* sponge_udamp = nullptr);
+    const bool* is_ambient = nullptr, const int32_t* sponge_udamp = nullptr,
+    // THERMAL-MASS AXIS, P-EOS (docs/thermal_mass_eos_ruling_2026-07-30.md §4
+    // item 3): step 4c skips its `temperature[i]` write where this mask is true
+    // — the TemperatureSolver owns an object's T. The KICK is untouched (it
+    // writes u, never T), so pressure/velocity/gas flow are unchanged. nullptr
+    // -> `solid` on the device (the P2 fallback idiom) == pre-patch behaviour.
+    const bool* thermal_solid = nullptr);
 
 // Backend selection (the P6.1/P6.2 surviving-backend idiom). NOTE: no engine
 // dispatch site consumes this yet — EOS orchestration dispatch is P6.5 ("the

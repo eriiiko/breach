@@ -86,6 +86,25 @@
 // unit suffocation is a LATER mechanics arc (design §5: "enabled here,
 // wired later" — a deliberate non-goal boundary, not an oversight).
 //
+// THERMAL-MASS AXIS, P-EOS (docs/thermal_mass_eos_ruling_2026-07-30.md §2 site
+// 3): the header text above says "a flammable tile is itself SOLID ... and
+// therefore holds no gas" — that is TRUE of wood/doors and FALSE of FURNITURE,
+// which is permeable (0.5, the deliberate "shield but not seal" soft body) and
+// therefore an open, gas-holding cell that CAN be a Pass-A burn site for an
+// adjacent burning tile. Under the ruling's A3 its pore gas is THIN (N ~ 0.3-0.4
+// of ambient), so the gas-divisor deposit dT = burn*H_fuel/(c_v*max(N,n_floor))
+// would spike the OBJECT's temperature by ~2.5-3x per unit burn — the wrong
+// conversion for an object, and rail-hunting.
+//   RULE: on a `thermal_solid` burn site the aggregate deposit converts via the
+//   tile's own `heat_inv_shift` (dT = deposit >> log2(thermal_mass)) — the
+//   OBJECT path, exactly as TemperatureSolver's MEDIUM-TEST SITE 5/6 converts a
+//   ray deposit. SAME energy in, object-appropriate scale; adjacent-crate fire
+//   spread keeps working, now honestly.
+// `thermal_solid`/`heat_inv_shift` are NULLABLE: either one null means "the
+// caller has no thermal mask" and every site takes the gas path — today's
+// behaviour byte-for-byte, and identical anyway on any furniture-free map,
+// where every open cell has thermal_mass 0 (build addendum D4).
+//
 // GPU: still CPU-only after P6.9a (this patch). P6.9b adds cuda_combustion.cu
 // mirroring the two gathers + face buffers + barrier chain, proves bit-
 // identity vs this CPU reference, and unpins "combustion" from
@@ -191,6 +210,13 @@ public:
         const bool* is_vacuum,
         const int32_t* ignition_temp_q16,
         int h, int w, float dt,
-        float c_v, float n_floor_heat
+        float c_v, float n_floor_heat,
+        // THERMAL-MASS AXIS, P-EOS (see the header block): the per-medium
+        // THERMAL mask (`thermal_mass > 0`, GameMap.thermal_solid) + the per-tile
+        // convert shift (log2(thermal_mass), GameMap.heat_inv_shift). Both
+        // nullable; either null -> every burn site takes the GAS deposit path,
+        // i.e. the pre-patch behaviour.
+        const bool* thermal_solid = nullptr,
+        const int32_t* heat_inv_shift = nullptr
     ) const;
 };

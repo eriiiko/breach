@@ -416,5 +416,299 @@ def test_thermal_solid_grid_is_a_plain_bool_grid():
     assert g.thermal_solid.flags["C_CONTIGUOUS"]
 
 
+# ---------------------------------------------------------------------------
+# 8. P-EOS — the thermal medium inside the EOS pass
+#    (docs/thermal_mass_eos_ruling_2026-07-30.md; the ruling that closes P1's
+#    escalation). THE GOVERNING RULE: on a thermal_solid tile `temperature[]` is
+#    OWNED by the TemperatureSolver — the EOS reads T (for p* = C·N·T) and never
+#    writes it there. These tests drive the two documented CPU replay entries
+#    (eos_sl_advect_ref / eos_kick_compression_ref), which call the SAME
+#    file-local routines EOSSolver::step calls, so they pin the live arithmetic.
+#    The CPU<->CUDA lockstep half is tests/test_cuda_thermal_mass_eos.py.
+# ---------------------------------------------------------------------------
+def _eos_world(h=12, w=16, crate=((5, 8), (7, 11))):
+    """A hull-shelled air box with a FURNITURE block: the only place where the
+    thermal medium (thermal_mass > 0) diverges from the flow medium
+    (permeability <= 0). Returns (solid, is_vacuum, thermal_solid, perm, furn)."""
+    solid = np.zeros((h, w), dtype=bool)
+    solid[0, :] = solid[-1, :] = solid[:, 0] = solid[:, -1] = True
+    is_vacuum = np.zeros((h, w), dtype=bool)
+    thermal_solid = solid.copy()
+    perm = np.where(solid, 0.0, 1.0).astype(np.float32)
+    furn = np.zeros((h, w), dtype=bool)
+    (y0, y1), (x0, x1) = crate
+    furn[y0:y1, x0:x1] = True
+    furn &= ~solid
+    thermal_solid |= furn
+    perm[furn] = 0.5          # shield, NOT seal — permeability is untouched
+    return solid, is_vacuum, thermal_solid, perm, furn
+
+
+def _q32(a):
+    return np.ascontiguousarray(a, dtype=np.int32)
+
+
+def test_eos_step1b_does_not_write_temperature_on_a_thermal_solid():
+    """Ruling A1 / T-WRITE SITE 1/2: the semi-Lagrangian sample is a fluid-parcel
+    transport claim; the OBJECT at i did not come from upstream, so the EOS may
+    not write its temperature. With a strong wind the crate's T must come out
+    EXACTLY as it went in, while the surrounding gas is advected normally."""
+    h, w = 12, 16
+    solid, vac, tsol, perm, furn = _eos_world(h, w)
+    T0 = _q32(np.where(furn, 900 * FP_ONE, 100 * FP_ONE))
+    wx = _q32(np.full((h, w), 6 * FP_ONE))
+    wy = _q32(np.zeros((h, w)))
+    wx[solid] = 0
+
+    T = T0.copy()
+    bp.eos_sl_advect_ref(wx.copy(), wy.copy(), T, solid, vac, perm,
+                         dt=1.0 / 24.0, n_sub=4, thermal_solid=tsol)
+    assert np.array_equal(T[furn], T0[furn]), (
+        "the EOS wrote temperature on a thermal_solid tile")
+    # The gas DID move (otherwise the test is vacuous).
+    gas_cells = ~solid & ~furn
+    assert not np.array_equal(T[gas_cells], T0[gas_cells])
+
+    # ...and without the mask (the pre-patch behaviour) the crate IS overwritten.
+    T_pre = T0.copy()
+    bp.eos_sl_advect_ref(wx.copy(), wy.copy(), T_pre, solid, vac, perm,
+                         dt=1.0 / 24.0, n_sub=4)
+    assert not np.array_equal(T_pre[furn], T0[furn]), (
+        "control failed: the pre-patch path must strip the crate's T")
+
+
+def test_eos_step1b_treats_a_thermal_solid_as_a_backtrace_occluder():
+    """Ruling A2: a thermal_solid tile is a WALL to the T backtrace (the eos-side
+    analog of P1's `gas_wall_at`). A downwind gas cell must NOT inherit the hot
+    crate's temperature — sampling it would be a free-energy channel, since
+    semi-Lagrangian sampling copies without debiting the source."""
+    h, w = 12, 16
+    solid, vac, tsol, perm, furn = _eos_world(h, w)
+    # ONLY the crate is hot; the air is at ambient.
+    T0 = _q32(np.where(furn, 4000 * FP_ONE, 0))
+    # Wind blows +x, so the cells just EAST of the crate backtrace onto it.
+    wx = _q32(np.full((h, w), 8 * FP_ONE))
+    wy = _q32(np.zeros((h, w)))
+    wx[solid] = 0
+
+    T_occl = T0.copy()
+    bp.eos_sl_advect_ref(wx.copy(), wy.copy(), T_occl, solid, vac, perm,
+                         dt=1.0 / 24.0, n_sub=1, thermal_solid=tsol)
+    T_open = T0.copy()
+    bp.eos_sl_advect_ref(wx.copy(), wy.copy(), T_open, solid, vac, perm,
+                         dt=1.0 / 24.0, n_sub=1)
+
+    downwind = np.zeros((h, w), dtype=bool)
+    downwind[5:7, 11] = True                      # the column just east of it
+    downwind &= ~solid & ~furn
+    assert downwind.any()
+    assert int(T_open[downwind].max()) > 0, (
+        "control failed: without occlusion the crate's heat leaks downwind")
+    assert int(T_occl[downwind].max()) == 0, (
+        "a thermal_solid tile must occlude the T backtrace")
+
+
+def test_eos_step1b_mask_never_moves_velocity():
+    """Ruling §4 item 4: `cmask` is UNTOUCHED, so the velocity self-advection —
+    and through it the pressure solve and the gas flow — is identical with and
+    without the thermal mask. The T occlusion rides a SEPARATE, T-only mask."""
+    h, w = 12, 16
+    solid, vac, tsol, perm, furn = _eos_world(h, w)
+    rng = np.random.default_rng(4242)
+    T0 = _q32(rng.integers(-3 * FP_ONE, 900 * FP_ONE, size=(h, w)))
+    wx0 = _q32(rng.integers(-5 * FP_ONE, 5 * FP_ONE, size=(h, w)))
+    wy0 = _q32(rng.integers(-5 * FP_ONE, 5 * FP_ONE, size=(h, w)))
+    wx0[solid] = 0
+    wy0[solid] = 0
+    a = (wx0.copy(), wy0.copy(), T0.copy())
+    b = (wx0.copy(), wy0.copy(), T0.copy())
+    bp.eos_sl_advect_ref(a[0], a[1], a[2], solid, vac, perm,
+                         dt=1.0 / 24.0, n_sub=3, thermal_solid=tsol)
+    bp.eos_sl_advect_ref(b[0], b[1], b[2], solid, vac, perm,
+                         dt=1.0 / 24.0, n_sub=3)
+    assert np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1]), (
+        "the thermal mask changed the velocity field — cmask must be untouched")
+    assert not np.array_equal(a[2], b[2]), "vacuous: T did not change either"
+
+
+def test_eos_step4c_does_not_write_temperature_on_a_thermal_solid():
+    """Ruling A1 / T-WRITE SITE 2/2: compression work is work done ON GAS BY
+    COMPRESSION — an object does not compress, so step 4c may not touch a
+    thermal_solid tile's T. The momentum kick (which writes u, never T) must be
+    bit-identical with and without the mask."""
+    h, w = 12, 16
+    solid, vac, tsol, perm, furn = _eos_world(h, w)
+    rng = np.random.default_rng(99)
+    T0 = _q32(np.where(furn, 900 * FP_ONE, 120 * FP_ONE))
+    wx0 = _q32(rng.integers(-4 * FP_ONE, 4 * FP_ONE, size=(h, w)))
+    wy0 = _q32(rng.integers(-4 * FP_ONE, 4 * FP_ONE, size=(h, w)))
+    wx0[solid] = 0
+    wy0[solid] = 0
+    p_new = _q32(rng.integers(-FP_ONE // 4, FP_ONE // 2, size=(h, w)))
+    gas = _q32(rng.integers(0, FP_ONE, size=(3, h, w)))
+    cons = np.array([True, True, False], dtype=bool)
+    wabs = np.ascontiguousarray(np.zeros((h, w), dtype=np.float32))
+    args = dict(dt=1.0 / 24.0, c_local_q=300 * FP_ONE, c_max=300.0, dx=1.0 / 3.0,
+                adiabatic_index=1.4, absorb_strength=8.0, n_floor_solver=1e-3,
+                t_min=-289.0, t_work_clamp=0.5, t_max_phys=16000.0,
+                u_max=1000.0, trace_mass_scale=0.02)
+
+    a = (wx0.copy(), wy0.copy(), T0.copy())
+    b = (wx0.copy(), wy0.copy(), T0.copy())
+    bp.eos_kick_compression_ref(a[0], a[1], a[2], p_new, gas, cons, solid, vac,
+                                wabs, thermal_solid=tsol, **args)
+    bp.eos_kick_compression_ref(b[0], b[1], b[2], p_new, gas, cons, solid, vac,
+                                wabs, **args)
+    assert np.array_equal(a[2][furn], T0[furn]), (
+        "step 4c wrote temperature on a thermal_solid tile")
+    assert not np.array_equal(b[2][furn], T0[furn]), (
+        "control failed: the pre-patch path must do compression work there")
+    assert np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1]), (
+        "the thermal mask changed the momentum kick — it must not")
+
+
+@pytest.mark.parametrize("entry", ["sl", "kick"])
+def test_eos_furniture_free_identity_at_the_replay_boundary(entry):
+    """Gate (a), at the EOS boundary: where ``thermal_solid == solid`` (any
+    furniture-free map) passing the mask must be BYTE-IDENTICAL to passing
+    nothing — the nullable fallback is not a second code path."""
+    h, w = 12, 16
+    solid, vac, _tsol, perm, _furn = _eos_world(h, w, crate=((0, 0), (0, 0)))
+    tsol = solid.copy()                        # furniture-free => identical
+    assert np.array_equal(tsol, solid)
+    rng = np.random.default_rng(7)
+    T0 = _q32(rng.integers(-2 * FP_ONE, 800 * FP_ONE, size=(h, w)))
+    wx0 = _q32(rng.integers(-5 * FP_ONE, 5 * FP_ONE, size=(h, w)))
+    wy0 = _q32(rng.integers(-5 * FP_ONE, 5 * FP_ONE, size=(h, w)))
+    wx0[solid] = 0
+    wy0[solid] = 0
+    if entry == "sl":
+        a = (wx0.copy(), wy0.copy(), T0.copy())
+        b = (wx0.copy(), wy0.copy(), T0.copy())
+        da = bp.eos_sl_advect_ref(a[0], a[1], a[2], solid, vac, perm,
+                                  dt=1.0 / 24.0, n_sub=3, thermal_solid=tsol)
+        db = bp.eos_sl_advect_ref(b[0], b[1], b[2], solid, vac, perm,
+                                  dt=1.0 / 24.0, n_sub=3)
+        assert da == db
+    else:
+        p_new = _q32(rng.integers(-FP_ONE // 4, FP_ONE // 2, size=(h, w)))
+        gas = _q32(rng.integers(0, FP_ONE, size=(3, h, w)))
+        cons = np.array([True, True, False], dtype=bool)
+        wabs = np.ascontiguousarray(np.zeros((h, w), dtype=np.float32))
+        args = dict(dt=1.0 / 24.0, c_local_q=300 * FP_ONE, c_max=300.0,
+                    dx=1.0 / 3.0, adiabatic_index=1.4, absorb_strength=8.0,
+                    n_floor_solver=1e-3, t_min=-289.0, t_work_clamp=0.5,
+                    t_max_phys=16000.0, u_max=1000.0, trace_mass_scale=0.02)
+        a = (wx0.copy(), wy0.copy(), T0.copy())
+        b = (wx0.copy(), wy0.copy(), T0.copy())
+        da = bp.eos_kick_compression_ref(a[0], a[1], a[2], p_new, gas, cons,
+                                         solid, vac, wabs, thermal_solid=tsol,
+                                         **args)
+        db = bp.eos_kick_compression_ref(b[0], b[1], b[2], p_new, gas, cons,
+                                         solid, vac, wabs, **args)
+        assert tuple(da) == tuple(db)
+    for x, y in zip(a, b):
+        assert np.array_equal(x, y)
+
+
+def test_combustion_deposit_converts_via_heat_inv_shift_on_a_thermal_solid():
+    """Ruling §2 site 3: a FURNITURE tile is an open, gas-holding burn site but
+    thermally an OBJECT, so its aggregate deposit must convert through the tile's
+    own ``heat_inv_shift`` (``deposit >> log2(thermal_mass)``) instead of the thin
+    pore gas's N divisor. Pinned to the LSB against the object formula."""
+    h = w = 9
+    solid = np.zeros((h, w), dtype=bool)
+    solid[0, :] = solid[-1, :] = solid[:, 0] = solid[:, -1] = True
+    vac = np.zeros((h, w), dtype=bool)
+    furn = np.zeros((h, w), dtype=bool)
+    furn[4, 4] = True                       # ONE crate tile == the burn site
+    tsol = solid | furn
+    shift = _q32(np.where(tsol, 3, 0))      # furniture thermal_mass 8 -> >> 3
+
+    flam = np.zeros((h, w), dtype=bool)
+    flam[4, 3] = True                       # a burning WOOD source beside it
+    solid[4, 3] = True
+    tsol[4, 3] = True
+    shift[4, 3] = 3
+
+    o2, n2, soot = 0, 1, 2
+    gas0 = np.stack([np.full((h, w), int(0.21 * FP_ONE)),
+                     np.full((h, w), int(0.79 * FP_ONE)),
+                     np.zeros((h, w))]).astype(np.int32)
+    fire = _q32(np.where(flam, int(0.8 * FP_ONE), 0))
+    wall_hp = _q32(np.where(flam, 30 * FP_ONE, 0))
+    ign = _q32(np.where(flam, 280 * FP_ONE, 0))
+    T0 = _q32(np.full((h, w), 400 * FP_ONE))
+
+    solver = bp.CombustionSolver()
+    out = {}
+    for tag, mask in (("object", tsol), ("gas", None)):
+        gas = np.ascontiguousarray(gas0.copy())
+        T = _q32(T0.copy())
+        whp = _q32(wall_hp.copy())
+        solver.step(gas, o2, n2, soot, T, whp, fire, flam, solid, vac, ign,
+                    dt=1.0 / 24.0, c_v=1.0, n_floor_heat=0.05,
+                    thermal_solid=mask,
+                    heat_inv_shift=(np.ascontiguousarray(shift)
+                                    if mask is not None else None))
+        out[tag] = (T, gas)
+
+    burn = int(gas0[o2][4, 4]) - int(out["object"][1][o2][4, 4])
+    assert burn > 0, "the crate tile must actually burn (vacuous otherwise)"
+    # OBJECT path: dT == (burn*H_fuel) >> shift, exactly.
+    h_fuel_q = int(round(float(solver.H_fuel) * FP_ONE))
+    deposit = (burn * h_fuel_q) >> 16                    # mul_q16, truncating
+    expect = int(T0[4, 4]) + (deposit >> 3)
+    assert int(out["object"][0][4, 4]) == expect, (
+        f"object deposit != deposit>>heat_inv_shift "
+        f"(got {int(out['object'][0][4, 4])}, expected {expect})")
+    # The GAS path (the pre-patch behaviour) divides by the thin pore N instead,
+    # so it lands somewhere ELSE — the branch is load-bearing, not cosmetic.
+    assert int(out["gas"][0][4, 4]) != expect
+    # Same energy IN either way: the O2 drawn and the fuel paid are identical.
+    assert np.array_equal(out["object"][1], out["gas"][1]), (
+        "the deposit's CONVERSION moved; the gas bookkeeping must not")
+
+
+def test_run_substeps_thermal_solid_is_nullable_and_solid_equivalent():
+    """The plumbing contract: ``run_substeps(thermal_solid=None)`` is the legacy
+    path, and on a furniture-free map it is byte-identical to passing the real
+    mask (which equals ``solid`` there). Driven through the real engine entry."""
+    from level_loader import LevelData
+    from simulation.physics_runner import PhysicsRunner
+
+    def _furniture_free_map():
+        h = w = 16
+        tm = np.full((h, w), MAT_HULL, dtype=np.int32)
+        tm[1:h - 1, 1:w - 1] = MAT_AIR
+        tm[5:9, 6] = MAT_WOOD                 # a thermal solid that IS flow-solid
+        lvl = LevelData(name="peos_ff", version="2", path=Path("."),
+                        tilemap=tm, tile_size_m=1.0 / 3.0, diffuse_path=Path("."))
+        return GameMap(lvl)
+
+    g1, g2 = _furniture_free_map(), _furniture_free_map()
+    assert np.array_equal(g1.thermal_solid, g1.solid), \
+        "the identity scenario must be furniture-free (addendum D4)"
+    assert g1.thermal_solid.any()
+    outs = []
+    for g, mask in ((g1, None), (g2, g2.thermal_solid)):
+        r = PhysicsRunner(bp)
+        g.bind_physics_engine(r.engine)
+        g.stamp_units([])
+        g.temperature[g.solid] = 300 * FP_ONE
+        r.eos.dx = float(g.tile_size_m)
+        r.engine.run_substeps(
+            g.wave_p, g.atmosphere, g.wind_x, g.wind_y, g.temperature,
+            g.obstacles, g.solid, g.is_vacuum,
+            g.dyn_permeability, g.dyn_wave_absorb,
+            g.gas, g.gases.diffusion, g.gases.conservative,
+            g.gases.decay, int(g.gases.name_to_id["inert_n2"]),
+            1.0 / 24.0, thermal_solid=mask)
+        outs.append((g.temperature.copy(), g.atmosphere.copy(),
+                     g.wind_x.copy(), g.wind_y.copy(), g.gas.copy()))
+    for a, b in zip(*outs):
+        assert np.array_equal(a, b)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

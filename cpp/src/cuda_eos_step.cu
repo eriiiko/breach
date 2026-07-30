@@ -277,7 +277,8 @@ void eos_step_cuda(
         const float* dyn_permeability, const float* dyn_wave_absorb,
         int h, int w, float dt,
         const bool* is_ambient, const int32_t* n_amb, int32_t p_amb,
-        const int32_t* sponge_sigma, const int32_t* sponge_udamp) {
+        const int32_t* sponge_sigma, const int32_t* sponge_udamp,
+        const bool* thermal_solid) {
 
     const int n = h * w;
     if (n <= 0 || dt <= 0.0f) return;   // step()'s degenerate early-out
@@ -286,6 +287,12 @@ void eos_step_cuda(
     // BC: dormancy BY BRANCH — every ambient edit gated on this (space maps take
     // the byte-identical path). Mirrors EOSSolver::step's ambient_mode.
     const bool ambient_mode = (is_ambient != nullptr);
+    // THERMAL-MASS AXIS, P-EOS: does the thermal medium diverge from the gas
+    // medium anywhere? The SHARED predicate (eos_solver.h) — one transcription,
+    // so this host and EOSSolver::step can never disagree about whether the
+    // T-only occluder mask is live.
+    const bool t_occlude = eos_thermal_occludes(thermal_solid, solid,
+                                                dyn_permeability, n);
 
     // ======================================================================
     // HOST PRE-STAGE — the shared verbatim step() transcription (S8a Path A
@@ -340,6 +347,14 @@ void eos_step_cuda(
         bool*    d_vac = (bool*)dev_alloc(nbool);
         float*   d_perm = (float*)dev_alloc(nbf);
         uint8_t* d_cmask = (uint8_t*)dev_alloc((size_t)n);
+        // THERMAL-MASS AXIS, P-EOS: ONE static-shaped mask upload per tick (the
+        // sponge-grid precedent) + the T-only occluder mask, allocated only where
+        // it can differ from cmask. d_ts falls back to d_sol (the P2 idiom), so
+        // the nullptr path allocates and copies NOTHING.
+        bool* d_tsol = nullptr;
+        uint8_t* d_tcmask = nullptr;
+        if (thermal_solid) d_tsol = (bool*)dev_alloc(nbool);
+        if (t_occlude) d_tcmask = (uint8_t*)dev_alloc((size_t)n);
         int32_t* d_coeffE = (int32_t*)dev_alloc(nb);
         int32_t* d_coeffS = (int32_t*)dev_alloc(nb);
         int32_t* d_dq_e  = (int32_t*)dev_alloc(nb);
@@ -355,6 +370,10 @@ void eos_step_cuda(
         cuda_check(cudaMemcpy(d_sol, solid, nbool, cudaMemcpyHostToDevice), "H2D solid");
         cuda_check(cudaMemcpy(d_vac, is_vacuum, nbool, cudaMemcpyHostToDevice), "H2D is_vacuum");
         cuda_check(cudaMemcpy(d_perm, dyn_permeability, nbf, cudaMemcpyHostToDevice), "H2D permeability");
+        if (d_tsol)
+            cuda_check(cudaMemcpy(d_tsol, thermal_solid, nbool,
+                                  cudaMemcpyHostToDevice), "H2D thermal_solid");
+        const bool* d_ts = thermal_solid ? d_tsol : d_sol;
         cuda_check(cudaMemcpy(d_coeffE, coeffE.data(), nb, cudaMemcpyHostToDevice), "H2D coeffE");
         cuda_check(cudaMemcpy(d_coeffS, coeffS.data(), nb, cudaMemcpyHostToDevice), "H2D coeffS");
         for (size_t k = 0; k < cons.size(); ++k)
@@ -378,6 +397,10 @@ void eos_step_cuda(
         // K0: cmask ONCE per tick (solid/vacuum/perm constant within it) —
         // the proven P6.2 device build. BC: d_amb folds the ring into breach.
         sl_cmask_build_device(d_sol, d_vac, d_perm, d_cmask, n, d_amb);
+        // K0b (THERMAL-MASS AXIS): the T-only occluder mask — cmask with every
+        // thermal_solid tile forced sealed. `d_cmask` itself is NEVER touched:
+        // velocity/pressure/gas flow must stay identical (ruling §4 item 4).
+        if (d_tcmask) sl_tcmask_build_device(d_cmask, d_tsol, d_tcmask, n);
 
         for (int s = 0; s < n_sub; ++s) {
             // -- a+b. FUSED SL advection (P6.2 K1) on the frozen snapshot --
@@ -385,7 +408,8 @@ void eos_step_cuda(
             cuda_check(cudaMemcpy(d_svy, d_wy, nb, cudaMemcpyDeviceToDevice), "D2D src_vy");
             cuda_check(cudaMemcpy(d_st,  d_t,  nb, cudaMemcpyDeviceToDevice), "D2D src_t");
             sl_advect3_device(d_wx, d_wy, d_t, d_svx, d_svy, d_st,
-                              d_sol, d_vac, d_cmask, dt_s_q, h, w, d_amb);
+                              d_sol, d_vac, d_cmask, dt_s_q, h, w, d_amb,
+                              d_ts, d_tcmask);
             // -- d. bulk O2/N2 donor-cell flux on THIS substep's u (P6.1
             //    B1..B5). All-zero-plane skip dropped (review §1.3 no-op). BC:
             //    the ring reset clamps N to n_amb[plane] + accumulates the rail.
@@ -549,7 +573,9 @@ void eos_step_cuda(
             solver.trace_mass_scale, &dig_vel, &dig_comp, cnts,
             // BC: ring velocity zero + compression skip + the u-damping band.
             ambient_mode ? is_ambient : nullptr,
-            ambient_mode ? sponge_udamp : nullptr);
+            ambient_mode ? sponge_udamp : nullptr,
+            // THERMAL-MASS AXIS: step 4c skips its T write on thermal_solid.
+            thermal_solid);
         solver.digest_velocity    = dig_vel;
         solver.digest_compression = dig_comp;
         solver.u_clamp_hits      += cnts[0];

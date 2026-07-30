@@ -220,32 +220,31 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
     // divisor (a documented `// P3:` TODO in temperature_solver.h asks P3 to
     // swap this for the real N_total; NOT done here — flagged as an open
     // item, see the patch's return report).
-    // ***  THERMAL-MASS AXIS, P1 FINDING (2026-07-30) — READ BEFORE P2/P3  ***
-    // The design (thermal_mass_axis_design_2026-07-25 §2.2/§2.3) and its build
-    // addendum locate the gas-vs-solid thermal MEDIUM entirely inside
-    // TemperatureSolver::step, and D5's sweep concluded no consumer outside it
-    // derives thermal behaviour from `solid`. That is NOT true of the LIVE
-    // path, and this call site is where it shows:
+    // ***  THERMAL-MASS AXIS: the P1 FINDING, and how P-EOS resolved it  ***
+    // P1's finding, kept because it explains the shape of the current code:
     //   * step_tail passes wind_x = wind_y = nullptr above, so the temperature
     //     solver's OWN gas-T advection (Pass 0) NEVER RUNS in the engine —
     //     three of the design's six medium sites are dead code here (they stay
     //     live only for the direct Python binding / unit tests).
     //   * the live semi-Lagrangian advection of `temperature` is EOSSolver::
-    //     step's step-1b, and its compression-work term is step-4c. Both key
+    //     step's step-1b, and its compression-work term is step-4c. Both keyed
     //     on `solid` / `dyn_permeability` (eos_solver.cpp cmask: sealed iff
-    //     `solid || dyn_permeability <= 0`), so a furniture tile is still a
-    //     LIVE GAS CELL there: its T is overwritten by an upwind backtrace
-    //     sample every EOS substep and worked on by −P∇·u.
-    // MEASURED on the single-crate bench (warm seed T=280, ignition_seed 0.1):
-    // run_substeps removes 21–35 game/tick from the crate's T — 2–4× the
-    // COOL_SHIFT loss (T>>5 == 8.75 at T=280) — so COOL_SHIFT is NOT yet "the
-    // one clean dial" §2.2 promises. With the EOS pass additionally routed off
-    // the crate the design's gate-(c) shape appears immediately (monotone rise
-    // from 280, no t≈0 dip, per-tick balance == §2.5 to the LSB).
-    // => Routing EOSSolver's T advection + compression work onto the thermal
-    // medium is a SEPARATE decision for Erik/Fable (it also touches the EOS
-    // cmask, which is shared with pressure/velocity — NOT a mask swap), and it
-    // is deliberately NOT done in P1.
+    //     `solid || dyn_permeability <= 0`), so a furniture tile was a LIVE GAS
+    //     CELL there: its T was overwritten by an upwind backtrace sample every
+    //     EOS substep and worked on by −P∇·u. MEASURED on the single-crate
+    //     bench (warm seed T=280): run_substeps removed 21–35 game/tick from the
+    //     crate's T — 2–4× the COOL_SHIFT loss (T>>5 == 8.75 at T=280).
+    // RESOLVED by P-EOS (docs/thermal_mass_eos_ruling_2026-07-30.md, Fable,
+    // answering docs/thermal_mass_eos_escalation_2026-07-30.md). The ruling's
+    // one rule: on a thermal_solid tile `temperature[]` is OWNED by the
+    // TemperatureSolver; every other system is a READER. So EOSSolver::step now
+    // takes the same nullable `thermal_solid` this call passes below, SKIPS both
+    // of its T writes there, and treats the tile as an occluder in its T
+    // backtrace (a SECOND, T-only mask — the shared `cmask` is untouched, so
+    // pressure/velocity/gas flow and `permeability`/shield-not-seal are
+    // unchanged). COOL_SHIFT is therefore genuinely the crate's one loss channel
+    // (§2.2's promise), and the crate's T still drives p* = C·N·T — the ruling's
+    // A3 "hot pore gas" decision. See run_substeps' dispatch below.
     //
     // EOS P3: the REAL N divisor for Pass 1's ΔT = ΔE/(N·c_v) deposit (closes
     // the P2 `// P3:` density-proxy TODO; floored inside the solver by its own
@@ -329,7 +328,8 @@ void PhysicsEngine::run_substeps(
         int h, int w, float sim_time,
         const bool* is_ambient, const int32_t* n_amb, int32_t p_amb,
         const int32_t* sponge_sigma, const int32_t* sponge_udamp,
-        bool do_traces) {  // BC + S8a
+        bool do_traces,                 // BC + S8a
+        const bool* thermal_solid) {    // THERMAL-MASS AXIS, P-EOS
     (void)obstacles;   // EOS P3: the solver's own `solid` mask IS the obstacle
                        // set (gamemap.py: obstacles == solid == permeability<=0);
                        // kept as a parameter for ABI/back-compat with the
@@ -354,17 +354,32 @@ void PhysicsEngine::run_substeps(
             solid, is_vacuum,
             dyn_permeability, dyn_wave_absorb,
             h, w, sim_time,
-            is_ambient, n_amb, p_amb, sponge_sigma, sponge_udamp);   // BC (B4)
+            is_ambient, n_amb, p_amb, sponge_sigma, sponge_udamp,    // BC (B4)
+            // THERMAL-MASS AXIS, P-EOS: the CUDA twin keys its T write / T
+            // backtrace on the SAME mask the CPU does, so the two backends agree
+            // bit-for-bit on maps that CARRY FURNITURE — gated at tol 0 by
+            // tests/cuda_thermal_mass_eos_check.py, step path AND resident path.
+            thermal_solid);
     } else
 #endif
     {
+        // THERMAL-MASS AXIS, P-EOS (docs/thermal_mass_eos_ruling_2026-07-30.md
+        // — the ruling that closes P1's escalation, recorded above §3 of
+        // step_tail): the EOS is the pass that ACTUALLY moves T in the live
+        // engine (step_tail passes wind == nullptr, so the temperature solver's
+        // own Pass-0 advection never runs). Handing it `thermal_solid` is what
+        // makes the thermal-mass axis reach the engine: on a crate tile the EOS
+        // is now a READER of T (it still derives p* = C·N·T from it — ruling A3,
+        // hot pore gas), never a writer. `solid` / `dyn_permeability` / the cmask
+        // are untouched, so gas still seeps through the crate exactly as before.
         this->eos.step(
             atmosphere, p_prev, wind_x, wind_y, temperature,
             gas, gas_conservative, n_gases,
             solid, is_vacuum,
             dyn_permeability, dyn_wave_absorb,
             h, w, sim_time,
-            is_ambient, n_amb, p_amb, sponge_sigma, sponge_udamp);   // BC
+            is_ambient, n_amb, p_amb, sponge_sigma, sponge_udamp,    // BC
+            thermal_solid);
     }
 
     // S8a Path B: the resident path skips this loop (do_traces=false) and runs
@@ -489,7 +504,8 @@ void PhysicsEngine::run_substeps_resident(
         std::uintptr_t d_solid, std::uintptr_t d_is_vacuum,
         std::uintptr_t d_dyn_permeability,
         std::uintptr_t d_is_ambient,
-        std::uintptr_t d_sponge_sigma, std::uintptr_t d_sponge_udamp) {
+        std::uintptr_t d_sponge_sigma, std::uintptr_t d_sponge_udamp,
+        const bool* thermal_solid, std::uintptr_t d_thermal_solid) {
 #ifdef BREACH_HAS_CUDA
     if (!breach_cuda::eos_step_backend_is_cuda()) {
         throw std::runtime_error(
@@ -504,6 +520,7 @@ void PhysicsEngine::run_substeps_resident(
         solid, is_vacuum, dyn_permeability, dyn_wave_absorb,
         h, w, sim_time,
         is_ambient, n_amb, p_amb,
+        thermal_solid,   // THERMAL-MASS AXIS: the mirror (host predicate)
         reinterpret_cast<int32_t*>(d_atmosphere),
         reinterpret_cast<int32_t*>(d_wave_p),
         reinterpret_cast<int32_t*>(d_wind_x),
@@ -515,7 +532,9 @@ void PhysicsEngine::run_substeps_resident(
         reinterpret_cast<const float*>(d_dyn_permeability),
         reinterpret_cast<const bool*>(d_is_ambient),
         reinterpret_cast<const int32_t*>(d_sponge_sigma),
-        reinterpret_cast<const int32_t*>(d_sponge_udamp));
+        reinterpret_cast<const int32_t*>(d_sponge_udamp),
+        // THERMAL-MASS AXIS: the DEVICE mask the SL/compression kernels read.
+        reinterpret_cast<const bool*>(d_thermal_solid));
 #else
     (void)p_prev; (void)atmosphere; (void)wind_x; (void)wind_y;
     (void)temperature; (void)solid; (void)is_vacuum; (void)dyn_permeability;
@@ -525,6 +544,7 @@ void PhysicsEngine::run_substeps_resident(
     (void)d_wind_y; (void)d_temperature; (void)d_gas_base; (void)d_solid;
     (void)d_is_vacuum; (void)d_dyn_permeability; (void)d_is_ambient;
     (void)d_sponge_sigma; (void)d_sponge_udamp;
+    (void)thermal_solid; (void)d_thermal_solid;
     throw std::runtime_error(
         "run_substeps_resident requires the CUDA build (BREACH_CUDA=ON).");
 #endif

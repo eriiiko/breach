@@ -220,12 +220,19 @@ __global__ void compression_kernel(const int32_t* __restrict__ wind_x,
                                    int32_t t_min_q, int32_t t_max_phys_q,
                                    unsigned long long* __restrict__ cnt,
                                    int h, int w,
-                                   const bool* __restrict__ is_ambient) {
+                                   const bool* __restrict__ is_ambient,
+                                   const bool* __restrict__ ts) {
     const int n = h * w;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         // BC: the ring is skipped like vacuum — no compression work.
-        if (solid[i] || is_vacuum[i] || (is_ambient && is_ambient[i])) continue;
+        // THERMAL-MASS AXIS, P-EOS, T-WRITE SITE 2/2 (ruling A1) — the CPU guard
+        // verbatim: compression work is work done ON GAS BY COMPRESSION, and an
+        // OBJECT does not compress, so the EOS may not touch a thermal_solid
+        // tile's temperature. `ts` is d_solid on the legacy path (the P2 device
+        // fallback idiom), where the added term is redundant.
+        if (solid[i] || (ts && ts[i]) || is_vacuum[i]
+                || (is_ambient && is_ambient[i])) continue;
         const int y = i / w;
         const int x = i % w;
         const int il = mirror_idx_dev(i, y, x - 1, h, w, solid);
@@ -284,7 +291,8 @@ void kick_compression_launch_resident(
         const bool* d_solid, const bool* d_is_vacuum,
         const KickScalarFolds& folds, int32_t c_local_q,
         unsigned long long* d_cnt, int h, int w,
-        const bool* d_is_ambient, const int32_t* d_sponge_udamp) {
+        const bool* d_is_ambient, const int32_t* d_sponge_udamp,
+        const bool* d_ts) {
     const int n = h * w;
     if (n <= 0) return;
     const int block = 256;
@@ -303,7 +311,7 @@ void kick_compression_launch_resident(
                                         folds.inv_2dx_q, folds.gamma_m1_q,
                                         folds.dt_q, folds.work_clamp_q,
                                         folds.t_min_q, folds.t_max_phys_q,
-                                        d_cnt, h, w, d_is_ambient);
+                                        d_cnt, h, w, d_is_ambient, d_ts);
     cuda_check(cudaGetLastError(), "compression launch");
 }
 
@@ -319,7 +327,8 @@ void eos_kick_compression(
     float t_max_phys, float u_max, float trace_mass_scale,
     uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
     int64_t* counters_out /* [5] */,
-    const bool* is_ambient, const int32_t* sponge_udamp) {   // BC
+    const bool* is_ambient, const int32_t* sponge_udamp,     // BC
+    const bool* thermal_solid) {   // THERMAL-MASS AXIS, P-EOS
     const int n = h * w;
     for (int c = 0; c < 5; ++c) counters_out[c] = 0;
     *digest_velocity_out = 0;
@@ -397,11 +406,23 @@ void eos_kick_compression(
         cuda_check(cudaMemcpy(d_udamp, sponge_udamp, nb, cudaMemcpyHostToDevice), "H2D sponge_udamp");
     }
 
+    // THERMAL-MASS AXIS, P-EOS: the medium mask K2 skips its T write on. The P2
+    // device-fallback idiom — d_ts = thermal_solid ? d_tsol : d_sol — so the
+    // legacy (nullptr) path allocates and copies NOTHING and is not a second
+    // code path.
+    bool* d_tsol = nullptr;
+    if (thermal_solid) {
+        cuda_check(cudaMalloc(&d_tsol, nbool), "malloc thermal_solid");
+        cuda_check(cudaMemcpy(d_tsol, thermal_solid, nbool,
+                              cudaMemcpyHostToDevice), "H2D thermal_solid");
+    }
+    const bool* d_ts = thermal_solid ? d_tsol : d_sol;
+
     // The SHARED launch core (S8a Path A) — the identical K1/K2 launch pair
     // this entry always ran; only the call shape moved.
     kick_compression_launch_resident(d_wx, d_wy, d_t, d_pn, d_ntot, d_aq,
                                      d_sol, d_vac, folds, c_local_q,
-                                     d_cnt, h, w, d_amb, d_udamp);
+                                     d_cnt, h, w, d_amb, d_udamp, d_ts);
 
     cuda_check(cudaDeviceSynchronize(), "sync");
 
@@ -423,6 +444,7 @@ void eos_kick_compression(
     cudaFree(d_cnt);
     if (d_amb)   cudaFree(d_amb);
     if (d_udamp) cudaFree(d_udamp);
+    if (d_tsol)  cudaFree(d_tsol);
 
     for (int c = 0; c < 5; ++c) counters_out[c] = (int64_t)cnt_host[c];
 

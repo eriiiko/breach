@@ -88,7 +88,11 @@ __global__ void combustion_pass_a(
         int32_t soot_yield_q, int32_t H_fuel_q, int64_t recip_cv,
         int32_t n_floor_q, int32_t t_max_phys_q,
         int32_t x_ext_q, int64_t recip_x_span, bool x_degenerate,
-        int32_t X_N_FLOOR) {
+        int32_t X_N_FLOOR,
+        // THERMAL-MASS AXIS, P-EOS: the object-deposit branch's inputs. Both
+        // nullptr on the legacy path -> the gas divisor, verbatim.
+        const bool* __restrict__ thermal_solid,
+        const int32_t* __restrict__ heat_inv_shift) {
     const int n = h * w;
     const int32_t FUEL_FLOOR = CombustionSolver::FUEL_FLOOR;
     for (int j = blockIdx.x * blockDim.x + threadIdx.x; j < n;
@@ -182,12 +186,26 @@ __global__ void combustion_pass_a(
         N2[j]   += (q16)(burn_j - (int64_t)soot);
 
         // ONE aggregate heat deposit against the POST-burn N_total (delta delta).
-        q16 n_total_j = (q16)((int64_t)O2[j] + (int64_t)N2[j]);
-        if (n_total_j < n_floor_q) { n_total_j = n_floor_q; atomicAdd(d_heat_floor_hits, 1); }
-        const q16 recip_n  = reciprocal_q16_dev(n_total_j);
-        const q16 deposit  = mul_q16((q16)burn_j, H_fuel_q);   // burn*H_fuel
-        const q16 e_over_n = mul_q16(deposit, recip_n);        // .../N
-        const q16 dT       = recip_mul_dev(e_over_n, recip_cv);// .../c_v
+        const q16 deposit = mul_q16((q16)burn_j, H_fuel_q);   // burn*H_fuel
+        q16 dT;
+        // THERMAL-MASS AXIS, P-EOS (ruling §2 site 3) — the CPU branch verbatim:
+        // an OBJECT burn site (furniture: open + gas-holding, but thermally
+        // solid) converts the deposit through its own heat_inv_shift, not through
+        // the thin pore gas's N. The n_floor counter is untouched on that path
+        // (no gas divisor to floor) — exactly as on the CPU.
+        const bool object_site = (thermal_solid != nullptr)
+                              && (heat_inv_shift != nullptr)
+                              && thermal_solid[j];
+        if (object_site) {
+            const int shift = heat_inv_shift[j];   // log2(thermal_mass), >= 0
+            dT = deposit >> shift;
+        } else {
+            q16 n_total_j = (q16)((int64_t)O2[j] + (int64_t)N2[j]);
+            if (n_total_j < n_floor_q) { n_total_j = n_floor_q; atomicAdd(d_heat_floor_hits, 1); }
+            const q16 recip_n  = reciprocal_q16_dev(n_total_j);
+            const q16 e_over_n = mul_q16(deposit, recip_n);        // .../N
+            dT                 = recip_mul_dev(e_over_n, recip_cv);// .../c_v
+        }
         heat_saturating_add_dev(&temperature[j], dT);
         if (temperature[j] > t_max_phys_q) {                   // v2.4 rail
             temperature[j] = t_max_phys_q; atomicAdd(d_t_max_phys_hits, 1);
@@ -244,7 +262,8 @@ void combustion_step(
         int h, int w, float dt, float c_v, float n_floor_heat,
         float burn_rate, float o2_thresh_burn, float H_fuel, float soot_yield,
         float fuel_per_o2, float o2_frac_ext, float o2_frac_amb, float T_MAX_PHYS,
-        int64_t* heat_floor_hits, int64_t* t_max_phys_hits) {
+        int64_t* heat_floor_hits, int64_t* t_max_phys_hits,
+        const bool* thermal_solid, const int32_t* heat_inv_shift) {
 
     // --- Guards + load-time scalar precompute (VERBATIM of combustion.cpp:65-91,
     //     in double). A guarded early-return leaves ALL fields untouched (no
@@ -314,6 +333,21 @@ void combustion_step(
     cuda_check(cudaMemcpy(d_solid, solid, nbool, cudaMemcpyHostToDevice), "H2D solid");
     cuda_check(cudaMemcpy(d_vac, is_vacuum, nbool, cudaMemcpyHostToDevice), "H2D is_vacuum");
 
+    // THERMAL-MASS AXIS, P-EOS: the object-deposit inputs. Allocated + uploaded
+    // ONLY when the caller supplies BOTH (the nullable idiom this file already
+    // uses for the ambient statics elsewhere) — so the legacy path costs nothing
+    // and the kernel takes the byte-identical gas branch.
+    bool* d_tsol = nullptr;
+    int32_t* d_shift = nullptr;
+    if (thermal_solid && heat_inv_shift) {
+        cuda_check(cudaMalloc(&d_tsol, nbool), "malloc thermal_solid");
+        cuda_check(cudaMalloc(&d_shift, nb), "malloc heat_inv_shift");
+        cuda_check(cudaMemcpy(d_tsol, thermal_solid, nbool,
+                              cudaMemcpyHostToDevice), "H2D thermal_solid");
+        cuda_check(cudaMemcpy(d_shift, heat_inv_shift, nb,
+                              cudaMemcpyHostToDevice), "H2D heat_inv_shift");
+    }
+
     // K0: snapshot Tsnap <- temperature (device-to-device; the explicit freeze).
     cuda_check(cudaMemcpy(d_tsnap, d_temp, nb, cudaMemcpyDeviceToDevice), "D2D tsnap");
     // Face buffers + rail counters start at zero.
@@ -330,7 +364,8 @@ void combustion_step(
         d_counters + 0, d_counters + 1,
         h, w, burn_cap_q, o2_thresh_q, soot_yield_q, H_fuel_q, recip_cv,
         n_floor_q, t_max_phys_q,
-        x_ext_q, recip_x_span, x_degenerate, X_N_FLOOR);
+        x_ext_q, recip_x_span, x_degenerate, X_N_FLOOR,
+        d_tsol, d_shift);
     cuda_check(cudaGetLastError(), "pass_a launch");
 
     // K2: Pass B (separate launch = grid barrier: d_alloc fully written by K1,
@@ -367,6 +402,8 @@ void combustion_step(
     cudaFree(d_solid);
     cudaFree(d_vac);
     cudaFree(d_counters);
+    if (d_tsol)  cudaFree(d_tsol);
+    if (d_shift) cudaFree(d_shift);
 }
 
 namespace {

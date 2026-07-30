@@ -36,6 +36,12 @@ using namespace fixedpoint;
 // gated draw. Credit: Peatross & Beyler 1997 (linear burning-rate vs O2 volume
 // fraction) + Huggett 1980 (oxygen-consumption calorimetry, the burn_rate/H_fuel
 // anchor). Both archived under docs/papers/ (headers: fire_simulation.cpp).
+//
+// THERMAL-MASS AXIS, P-EOS (docs/thermal_mass_eos_ruling_2026-07-30.md §2 site
+// 3): the ONE change here is the aggregate deposit's CONVERSION on a
+// thermal_solid burn site — see combustion.h's header block and the branch at
+// the deposit itself. Everything else (the claim gate, the demand law, the
+// proportional split, the Dalton split, Pass B's fuel payment) is untouched.
 // ============================================================================
 
 namespace {
@@ -75,7 +81,9 @@ void CombustionSolver::step(
         const bool* is_vacuum,
         const int32_t* ignition_temp_q16,
         int h, int w, float dt,
-        float c_v, float n_floor_heat) const {
+        float c_v, float n_floor_heat,
+        const bool* thermal_solid,
+        const int32_t* heat_inv_shift) const {
 
     if (h <= 0 || w <= 0 || dt <= 0.0f) return;
     if (o2_idx < 0 || o2_idx >= n_gases) return;
@@ -261,12 +269,32 @@ void CombustionSolver::step(
             // deposit; a per-source replay would reintroduce an order-dependent
             // denominator and defeat isotropy. Rail counters are now PER-CELL
             // (design §3): no test may assert their absolute value.
-            q16 n_total_j = (q16)((int64_t)O2[j] + (int64_t)N2[j]);
-            if (n_total_j < n_floor_q) { n_total_j = n_floor_q; ++heat_floor_hits; }
-            const q16 recip_n  = reciprocal_q16(n_total_j);
-            const q16 deposit  = mul_q16((q16)burn_j, H_fuel_q);   // burn*H_fuel
-            const q16 e_over_n = mul_q16(deposit, recip_n);        // .../N
-            const q16 dT       = recip_mul(e_over_n, recip_cv);    // .../c_v
+            const q16 deposit = mul_q16((q16)burn_j, H_fuel_q);   // burn*H_fuel
+            q16 dT;
+            // THERMAL-MASS AXIS, P-EOS (ruling §2 site 3): the MEDIUM branch on
+            // the deposit's CONVERSION. A furniture tile is an open, gas-holding
+            // burn site (permeability 0.5) but it is thermally an OBJECT, and
+            // under ruling A3 its pore gas is thin — so dividing by that thin N
+            // would inflate the object's T by ~2.5-3x per unit burn. Convert via
+            // the tile's own heat_inv_shift instead: the SAME free bit-shift
+            // TemperatureSolver's MEDIUM-TEST SITE 5/6 applies to a ray deposit
+            // (`deposit >> log2(thermal_mass)`), so ray heat and combustion heat
+            // reach an object on ONE scale. Same energy in, object-appropriate
+            // conversion; the n_floor_heat counter is deliberately NOT touched on
+            // this path — there is no gas divisor here to floor.
+            const bool object_site = (thermal_solid != nullptr)
+                                  && (heat_inv_shift != nullptr)
+                                  && thermal_solid[j];
+            if (object_site) {
+                const int shift = heat_inv_shift[j];   // log2(thermal_mass), >= 0
+                dT = deposit >> shift;
+            } else {
+                q16 n_total_j = (q16)((int64_t)O2[j] + (int64_t)N2[j]);
+                if (n_total_j < n_floor_q) { n_total_j = n_floor_q; ++heat_floor_hits; }
+                const q16 recip_n  = reciprocal_q16(n_total_j);
+                const q16 e_over_n = mul_q16(deposit, recip_n);        // .../N
+                dT                 = recip_mul(e_over_n, recip_cv);    // .../c_v
+            }
             heat_saturating_add(&temperature[j], dT);
             if (temperature[j] > t_max_phys_q) {                   // v2.4 rail
                 temperature[j] = t_max_phys_q; ++t_max_phys_hits;

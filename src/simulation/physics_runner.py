@@ -549,6 +549,15 @@ class PhysicsRunner:
             sim_time,
             is_ambient=amb[0], n_amb=amb[1], p_amb=amb[2], sponge_sigma=amb[3],
             sponge_udamp=amb[4],
+            # THERMAL-MASS AXIS, P-EOS (docs/thermal_mass_eos_ruling_2026-07-30
+            # .md §4 item 1): the EOS is the pass that ACTUALLY advects T in the
+            # live engine, so the thermal medium has to reach it too. On a
+            # thermal_solid tile (a crate) the solver now SKIPS both of its
+            # `temperature` writes and treats the tile as an occluder in its T
+            # backtrace — the TemperatureSolver owns an object's temperature.
+            # `solid`/`dyn_permeability`/the cmask are untouched, so gas still
+            # seeps through the crate at permeability 0.5 (shield, not seal).
+            thermal_solid=gmap.thermal_solid,
         )
 
         # EOS refactor P4 (design §5, §3.2 "step 6: combustion pass ... reads
@@ -652,6 +661,9 @@ class PhysicsRunner:
                 self.combustion.fuel_per_o2,
                 self.combustion.o2_frac_ext, self.combustion.o2_frac_amb,
                 self.combustion.T_MAX_PHYS,
+                # THERMAL-MASS AXIS, P-EOS (ruling §2 site 3) — see the CPU
+                # branch below; the two backends must read the same masks.
+                gmap.thermal_solid, gmap.heat_inv_shift,
             )
         else:
             self.combustion.step(
@@ -660,6 +672,15 @@ class PhysicsRunner:
                 gmap.flammable, gmap.solid, gmap.is_vacuum,
                 ignition_temp_q16,
                 sim_time, self.temperature.c_v, self.temperature.n_floor_heat,
+                # THERMAL-MASS AXIS, P-EOS (docs/thermal_mass_eos_ruling_2026-
+                # 07-30.md §2 site 3): a FURNITURE tile is an open, gas-holding
+                # burn site but thermally an OBJECT, and under ruling A3 its pore
+                # gas is thin — so the gas-divisor deposit would inflate the
+                # object's T by ~2.5-3x per unit burn. On a thermal_solid burn
+                # site the aggregate deposit converts through the tile's own
+                # `heat_inv_shift` instead, exactly as a ray deposit does. Same
+                # energy in, object-appropriate scale.
+                gmap.thermal_solid, gmap.heat_inv_shift,
             )
 
     # ------------------------------------------------------------------
@@ -802,9 +823,15 @@ class PhysicsRunner:
         # every field in this list is current on the mirror here (water tail,
         # FieldEdits, stamp_units, combat edits all write the mirror; nothing
         # writes it between this upload and the resident call below).
+        # THERMAL-MASS AXIS, P-EOS: `thermal_solid` JOINS this per-tick upload.
+        # It was a static one-shot upload while only host code read it (P2's
+        # recorded caveat); now DEVICE kernels read it (the resident SL advection
+        # + compression work), and it is NOT static — `on_tile_changed` patches it
+        # whenever a tile's material changes (a crate burning out) — so a
+        # one-shot device copy would go stale exactly like is_ambient's did.
         gmap.from_host(["atmosphere", "wind_x", "wind_y", "temperature",
                         "gas", "solid", "is_vacuum", "is_ambient",
-                        "dyn_permeability"])
+                        "dyn_permeability", "thermal_solid"])
         # The host pre-stage (all EOS reductions — they consume tick-entry
         # state) runs on the mirror inside; the device chain (substep loop,
         # div_u/N/p*, the on-device MG build, vcycle, kick, store) runs with
@@ -825,6 +852,11 @@ class PhysicsRunner:
             d_is_ambient=dev["is_ambient"] if amb[0] is not None else 0,
             d_sponge_sigma=dev["sponge_sigma"] if amb[3] is not None else 0,
             d_sponge_udamp=dev["sponge_udamp"] if amb[4] is not None else 0,
+            # THERMAL-MASS AXIS, P-EOS: the MIRROR (the host occlusion predicate,
+            # like every other pre-stage reduction) + the DEVICE copy the SL and
+            # compression kernels read. Uploaded fresh above.
+            thermal_solid=gmap.thermal_solid,
+            d_thermal_solid=dev["thermal_solid"],
         )
 
         # -- 5. TRACE smoke loop + decay RESIDENT (on device) --------------------
