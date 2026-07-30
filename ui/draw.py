@@ -34,6 +34,9 @@ HUD_EDGE = rl.Color(90, 100, 110, 255)
 HUD_TEXT = rl.Color(220, 228, 235, 255)
 HUD_DIM = rl.Color(120, 130, 140, 255)
 MARK_COLOR = rl.Color(255, 190, 60, 255)
+# Where a marine stands when the round ends — a paler teal than the endpoint,
+# because it is a checkpoint on the way, not a destination.
+ROUND_END = rl.Color(150, 235, 225, 190)
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +79,22 @@ def draw_plan_overlay(overlay, world_px_per_tile: float,
         _footprint_box(path.endpoint, path.footprint, wpt, colour)
         _time_label(path.endpoint, path.footprint, wpt,
                     f"{path.arrival_seconds:.1f}", colour)
+
+    if overlay.round_end is not None:
+        g = overlay.round_end
+        # Dashed, so it never competes with the solid endpoint box: this is
+        # "where you will be when you next give orders", not a destination.
+        x = tile_to_world_px(g.x, wpt)
+        y = tile_to_world_px(g.y, wpt)
+        side = g.footprint * wpt
+        colour = tone(ROUND_END)
+        for (ax, ay, bx, by) in ((x, y, x + side, y),
+                                 (x + side, y, x + side, y + side),
+                                 (x + side, y + side, x, y + side),
+                                 (x, y + side, x, y)):
+            _dashed(ax, ay, bx, by, max(1.0, 0.09 * wpt), colour, 0.35 * wpt)
+        _time_label((g.x, g.y), g.footprint, wpt,
+                    f"round end {g.seconds:.1f}", colour)
 
     for wp in overlay.waypoints:
         _footprint_box((wp.x, wp.y), wp.footprint, wpt, tone(TEAL_DIM))

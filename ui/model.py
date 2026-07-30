@@ -240,6 +240,27 @@ class ActionMarker:
 
 
 @dataclass
+class RoundEndGhost:
+    """Where this marine will be when the CURRENT round ends (Erik, 4th play
+    session: "i'd also like to indicate where it'll be at 4 seconds").
+
+    The design's endpoint marker answers "where does this order finish"; for
+    an order that outruns the round — which at 4 s rounds is most of them —
+    that is a promise about a future the player gets to re-plan first. This
+    answers the question they actually have while planning: *where will this
+    marine be standing when I next get to give orders?*
+
+    Only produced when it is genuinely a third place: a plan that finishes
+    inside the round has no round-end position distinct from its endpoint, and
+    a marine standing still has none distinct from where it already is.
+    """
+    x: float
+    y: float
+    footprint: int = 3
+    seconds: float = 0.0        # time from now until the round ends
+
+
+@dataclass
 class PlanOverlay:
     paths: list = field(default_factory=list)
     waypoints: list = field(default_factory=list)
@@ -247,11 +268,13 @@ class PlanOverlay:
     targets: list = field(default_factory=list)
     fire_lines: list = field(default_factory=list)
     action_markers: list = field(default_factory=list)
+    round_end: "RoundEndGhost" = None
 
     @property
     def empty(self) -> bool:
         return not (self.paths or self.waypoints or self.holograms
-                    or self.targets or self.fire_lines or self.action_markers)
+                    or self.targets or self.fire_lines or self.action_markers
+                    or self.round_end)
 
 
 def position_at(unit, tick: int):
@@ -368,7 +391,27 @@ def plan_overlay(sim, unit, hover_tile=None, armed_action=None) -> PlanOverlay:
             x=gx, y=gy, footprint=int(unit.footprint),
             at_seconds=secs(step.start_tick), action_name=step.action.name,
             target=_step_target_xy(sim, step)))
+
+    _add_round_end_ghost(sim, unit, overlay, now, tps)
     return overlay
+
+
+def _add_round_end_ghost(sim, unit, overlay, now, tps) -> None:
+    """Mark where this marine stands when the round ends, if that is a third
+    place — distinct from both where it is now and where its plan finishes."""
+    end_tick = sim.round_end_tick()
+    if end_tick <= now:
+        return
+    gx, gy = position_at(unit, end_tick)
+    if abs(gx - unit.x) < 1e-9 and abs(gy - unit.y) < 1e-9:
+        return                              # not going anywhere by then
+    for path in overlay.paths:
+        if (abs(gx - path.endpoint[0]) < 1e-9
+                and abs(gy - path.endpoint[1]) < 1e-9):
+            return                          # the plan already lands there
+    overlay.round_end = RoundEndGhost(
+        x=gx, y=gy, footprint=int(unit.footprint),
+        seconds=(end_tick - now) / tps)
 
 
 #: Which registry rows get which marker treatment.
@@ -666,7 +709,8 @@ def ds3_menu(sim, unit, page_index: int = 0) -> MenuModel:
 __all__ = [
     "DEFAULT_HOTBAR", "DS3_PAGES", "FlashlightCone", "HotbarSlot", "Hologram",
     "ActionMarker", "FireLine", "MenuModel", "MenuRow", "PathViz",
-    "PlanOverlay", "PlanningClock", "TargetMarker", "WaypointMarker",
+    "PlanOverlay", "PlanningClock", "RoundEndGhost", "TargetMarker",
+    "WaypointMarker",
     "bind_slot", "default_bindings", "drawable_enemies", "ds3_menu",
     "enemy_at", "flashlight_cones", "hotbar", "plan_overlay",
     "planning_clock", "position_at",

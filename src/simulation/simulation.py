@@ -1102,6 +1102,16 @@ class Simulation:
         round" is ``round_start_tick() + round(1.8 * tps)``)."""
         return self.tick - self.round_tick
 
+    def round_end_tick(self) -> int:
+        """Absolute tick at which the CURRENT round ends — i.e. the next
+        planning pause.
+
+        The sibling of :meth:`round_start_tick`, and the moment the planning UI
+        cares most about after "now": everything a plan does past this tick
+        happens in a round the player will get to re-plan first.
+        """
+        return self.round_start_tick() + self.ticks_per_round
+
     def get_state(self) -> SimState:
         return SimState(
             gmap=self.gmap,

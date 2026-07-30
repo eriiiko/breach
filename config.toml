@@ -25,7 +25,21 @@ gcd_seconds = 0.5             # global cooldown; triggered by ACTIONS, never by
 weapon_swap_seconds = 0.75    # its own non-global cooldown; swapping is
                               # otherwise free (design intent: lots of swaps)
 
-# --- Movement and aim (§6): speeds are aim-relative, as a fraction of full ---
+# --- Movement (§4/§6): speed is METRES PER SECOND ---------------------------
+# Positions are continuous Q16.16 in a world with a physical tile size, so a
+# speed authored in ticks-per-TILE silently means different things on levels
+# with different tile_size_m — a marine crossing a 0.333 m tile in 8 ticks is
+# doing 1 m/s, the same 8 ticks on a 1.0 m test tile is 3 m/s. Authoring m/s
+# and deriving the cadence from the LEVEL's tile size fixes that: the marine
+# moves at the same physical speed everywhere.
+#
+# 1.0 m/s reproduces the shipped feel on the 0.333 m/tile levels EXACTLY (the
+# old 8 ticks/tile), so switching units changed nothing. It is a slow walk,
+# though — a jog is ~3, a loaded sprint ~5 — and §5 says Move IS the old
+# Sprint, so this dial probably wants raising once Erik has felt it.
+move_speed_mps = 1.0
+
+# --- Aim-relative fractions (§6), applied on top of the speed above ---------
 move_speed_pct = 1.0                 # Move, no engagement — this IS the old Sprint
 move_shoot_speed_pct = 0.7           # move & shoot, target ahead (band 0.6-0.75)
 move_shoot_reverse_speed_pct = 0.25  # backpedaling with the gun on the door

@@ -212,7 +212,10 @@ def test_the_group_fires_together_once_the_last_member_arrives():
     _ambush(sim, ready, z)
     _ambush(sim, walker, z, pre_move=(20, 23))
     hp0 = z.current_hp
-    _run(sim, 60)
+    # The walk is 3 tiles = 72 ticks at 1 m/s on a 1 m/tile world, so the
+    # group becomes ready comfortably inside the 96-tick round — before §10's
+    # round-end timeout could drop it.
+    _run(sim, 100)
     assert z.id in sim.ambush_released
     assert z.current_hp < hp0
 
@@ -301,7 +304,10 @@ def test_the_breach_choreography_composes():
     z = _zombie(sim, 32.0, 20.0)
     _ambush(sim, a, z)
     _ambush(sim, b, z)
-    _ambush(sim, breacher, z, pre_move=(20, 26))
+    # 2 tiles = 48 ticks, so the breacher lands well inside the round: a
+    # walk that finished exactly ON the seam would be dropped by §10's
+    # timeout instead, which is the rule working, not a bug.
+    _ambush(sim, breacher, z, pre_move=(20, 28))
     hp0 = z.current_hp
     _run(sim, 8)
     assert z.current_hp == hp0, "the stack fired before the breacher arrived"

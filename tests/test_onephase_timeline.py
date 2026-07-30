@@ -256,8 +256,28 @@ def test_terrain_and_aim_multipliers_compose():
     u = _marine(sim)
     full = T.tile_cadence(sim.gmap, u, 8, 4, O.ORDER_MOVE, False)
     half = T.tile_cadence(sim.gmap, u, 8, 4, O.ORDER_MOVE_SHOOT, True)
-    assert full == CFG.movement.marine_sprint_ticks_per_tile
+    assert full == T.base_ticks_per_tile(sim.gmap)
     assert half == int(full / CFG.onephase.move_shoot_reverse_speed_pct + 0.5)
+
+
+def test_full_speed_is_derived_from_metres_per_second():
+    """Speed is authored physically, so the same marine crosses a 1 m tile in
+    three times the ticks of a 0.333 m one — the whole point of the change."""
+    sim = _sim()
+    assert sim.gmap.tile_size_m == 1.0
+    assert T.base_ticks_per_tile(sim.gmap) == int(
+        1.0 / CFG.onephase.move_speed_mps * TPS + 0.5)
+
+
+def test_the_shipped_feel_is_preserved_on_a_real_level():
+    """1.0 m/s on a 0.333 m/tile level is the old 8 ticks/tile exactly, so
+    switching units did not move the feel Erik has been playing."""
+    from level_loader import load as load_level
+    lvl = load_level("wego_test")
+    sim = Simulation(lvl, seed=1, breach_physics=None, enable_recorder=False,
+                     ruleset=OnePhaseWEGO())
+    assert sim.gmap.tile_size_m == pytest.approx(0.333)
+    assert T.base_ticks_per_tile(sim.gmap) == 8
 
 
 # ---------------------------------------------------------------------------
@@ -615,3 +635,78 @@ def test_two_phase_wego_does_not_use_the_timeline():
     _run(sim, 20)
     assert u.plan is None, "the legacy path compiled a timeline"
     assert len(u.move_path) > 0, "the legacy path stopped precomputing"
+
+
+# ---------------------------------------------------------------------------
+# Bodies are solid (Erik, 4th play session: "marines still can run over
+# each other")
+# ---------------------------------------------------------------------------
+def test_a_marine_will_not_walk_through_a_squadmate():
+    sim = _sim()
+    walker = _marine(sim, x=4.0, y=4.0, name="walker")
+    blocker = _marine(sim, x=4.0, y=10.0, name="blocker")
+    sim.apply_action(walker.id, _move(4, 20))
+    _run(sim, 400)
+    assert walker.y < blocker.y + blocker.footprint, \
+        "the walker passed through a squadmate"
+
+
+def test_a_body_holds_the_tick_rather_than_aborting_the_move():
+    """A squadmate crossing your path is transient — it must not abort the
+    whole move the way §14 terrain invalidation does."""
+    sim = _sim()
+    walker = _marine(sim, x=4.0, y=4.0, name="walker")
+    blocker = _marine(sim, x=4.0, y=10.0, name="blocker")
+    sim.apply_action(walker.id, _move(4, 20))
+    _run(sim, 300)
+    assert walker.plan.steps[0].blocked is False
+
+
+def test_the_lane_clearing_lets_the_walker_resume():
+    sim = _sim()
+    walker = _marine(sim, x=4.0, y=4.0, name="walker")
+    blocker = _marine(sim, x=4.0, y=10.0, name="blocker")
+    sim.apply_action(walker.id, _move(4, 20))
+    _run(sim, 250)
+    held_at = walker.y
+    blocker.x, blocker.y = 20.0, 20.0          # step out of the way
+    _run(sim, 250)
+    assert walker.y > held_at, "the walker never resumed once clear"
+
+
+def test_a_marine_will_not_walk_into_a_zombie():
+    sim = _sim()
+    m = _marine(sim, x=4.0, y=4.0)
+    z = _zombie(sim, x=4.0, y=12.0)
+    z.zombie_activated = False
+    sim.apply_action(m.id, _move(4, 20))
+    _run(sim, 300)
+    assert m.y < z.y + z.footprint
+
+
+def test_the_overlap_predicate_is_a_continuous_aabb():
+    sim = _sim()
+    a = _marine(sim, x=4.0, y=4.0, name="a")
+    _marine(sim, x=8.0, y=4.0, name="b")       # occupies [8,11) x [4,7)
+    assert T.occupied_by_unit(sim, a, 5.0, 4.0) is False
+    assert T.occupied_by_unit(sim, a, 5.5, 4.0) is True   # 5.5+3 = 8.5 > 8
+    assert T.occupied_by_unit(sim, a, 5.0, 8.0) is False  # clear in y
+
+
+def test_a_corpse_does_not_block():
+    sim = _sim()
+    walker = _marine(sim, x=4.0, y=4.0, name="walker")
+    blocker = _marine(sim, x=4.0, y=10.0, name="blocker")
+    blocker.alive = False
+    assert T.occupied_by_unit(sim, walker, 4.0, 9.0) is False
+
+
+# ---------------------------------------------------------------------------
+# Where a marine stands when the round ends (Erik, same session)
+# ---------------------------------------------------------------------------
+def test_round_end_tick_is_the_sibling_of_round_start_tick():
+    sim = _sim()
+    assert sim.round_end_tick() == sim.round_start_tick() + sim.ticks_per_round
+    _run(sim, sim.ticks_per_round + 3)
+    assert sim.round_end_tick() - sim.round_start_tick() == sim.ticks_per_round
+    assert sim.round_end_tick() > sim.tick

@@ -259,7 +259,7 @@ def test_a_blocked_path_is_flagged_for_the_draw_layer():
     _run(sim, 4)
     sim.gmap.material[12, :] = 1
     sim.gmap.solid[12, :] = True
-    _run(sim, 40)
+    _run(sim, 200)
     assert ui.plan_overlay(sim, u).paths[0].blocked is True
 
 

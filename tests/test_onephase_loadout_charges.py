@@ -284,7 +284,7 @@ def test_a_grenade_is_thrown_from_where_the_thrower_actually_is():
                                    grenade_fuse=2.0))
     _run(sim, 4)
     assert sim.projectiles == [], "the grenade left before the marine did"
-    _run(sim, 200)
+    _run(sim, 400)
     assert len(sim.projectiles) >= 1 or u.orders == []
     thrown = [p for p in sim.projectiles] or None
     if thrown:

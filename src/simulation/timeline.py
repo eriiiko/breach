@@ -115,19 +115,43 @@ def speed_pct(order_type: int, reversing: bool) -> float:
                  else CFG.onephase.move_shoot_speed_pct)
 
 
+def base_ticks_per_tile(gmap) -> int:
+    """Full-speed cadence for THIS level, derived from metres per second.
+
+    Speed is authored physically (``[onephase] move_speed_mps``) and the tile
+    cadence falls out of the level's own ``tile_size_m``:
+    ``ticks = tile_size_m / speed * ticks_per_second``. Authoring
+    ticks-per-TILE instead would make a marine's real speed depend on how
+    finely the level happens to be gridded — the same 8 ticks/tile is 1 m/s on
+    a 0.333 m level and 3 m/s on a 1.0 m one — which is exactly the kind of
+    unit confusion continuous positions (§4) were meant to end.
+
+    Quantized ONCE here, round-half-up, floored at one tick (a step can never
+    be instantaneous) — the same rule the weapon table's metre-based ranges
+    follow (engine/14 door 2).
+    """
+    mps = float(CFG.onephase.move_speed_mps)
+    if mps <= 0:
+        raise ValueError(
+            f"[onephase] move_speed_mps must be > 0, got {mps!r}")
+    ticks = int(float(gmap.tile_size_m) / mps
+                * float(CFG.clock.ticks_per_second) + 0.5)
+    return ticks if ticks >= 1 else 1
+
+
 def tile_cadence(gmap, unit, fy, fx, order_type, reversing) -> int:
     """Ticks this unit spends entering the tile-block at (fy, fx).
 
     Two independent multipliers compose onto the full-speed base, in the order
     the engine already establishes: TERRAIN first (``default_speed`` — the
     area-averaged mobility under the footprint, so furniture is 2.5x slower),
-    then the §6 aim-relative fraction. Full speed is the marine SPRINT cadence
-    because v1's Move folds Sprint in (§5).
+    then the §6 aim-relative fraction. Full speed is
+    :func:`base_ticks_per_tile` — v1's Move folds the old Sprint in (§5).
 
     Integer in, integer out; the one divide is IEEE and round-half-up, matching
     the weapon table's meter->tile derivation.
     """
-    base = int(CFG.movement.marine_sprint_ticks_per_tile)
+    base = base_ticks_per_tile(gmap)
     samples = FootprintSamples(
         mobility=gmap.footprint_mobility(fy, fx, unit.footprint))
     terrain = default_speed(samples, base)
@@ -171,7 +195,7 @@ class PlanStep:
     """
 
     __slots__ = ("order", "action", "start_tick", "end_tick", "path",
-                 "fired_ticks", "retired", "blocked", "started")
+                 "fired_ticks", "retired", "blocked", "started", "held_ticks")
 
     def __init__(self, order, action: ActionDef, start_tick: int,
                  end_tick, path=None):
@@ -189,6 +213,14 @@ class PlanStep:
         # can legitimately fall on the same tick, and each must still open
         # exactly once, in queue order.
         self.started = False
+        # Ticks this step spent standing still (a body in the lane, or a
+        # knocked-down unit). The path INDEX is offset by these, so a hold
+        # genuinely pauses the walk instead of letting the unit resume at a
+        # later index — which would teleport it straight through whatever it
+        # was waiting for. The step's WINDOW is unaffected, so the ticks are
+        # lost rather than repaid: no catch-up, and the schedule after this
+        # step does not move (invariant 1).
+        self.held_ticks = 0
 
     @property
     def order_type(self) -> int:
@@ -489,16 +521,51 @@ def _advance_movement(sim, unit) -> None:
     if step is None or not step.path or step.blocked:
         return
     if not composed_flags(unit).can_move:
+        step.held_ticks += 1
         return
-    idx = sim.tick - step.start_tick
+    idx = sim.tick - step.start_tick - step.held_ticks
     if not (0 <= idx < len(step.path)):
         return
     nx, ny = step.path[idx]
     if not sim.gmap.is_passable_block(int(ny), int(nx), unit.footprint):
         step.blocked = True                       # §14: halt in place
         return
+    if occupied_by_unit(sim, unit, nx, ny):
+        step.held_ticks += 1
+        # A BODY in the way, not a wall. Deliberately NOT `blocked`: a
+        # squadmate crossing your path is transient, and aborting the whole
+        # move for it (the §14 treatment for terrain that died under you)
+        # would be far too harsh. The tick is simply spent standing — the same
+        # "costs the distance, never catches up" rule a knocked-down unit
+        # follows — so the unit resumes the instant the lane clears and the
+        # schedule after it does not shift.
+        return
     unit.face_towards(nx, ny)
     unit.x, unit.y = nx, ny
+
+
+def occupied_by_unit(sim, unit, nx: float, ny: float) -> bool:
+    """Would ``unit`` standing at ``(nx, ny)`` overlap another living unit?
+
+    Continuous AABB overlap, matching how cover rectangles and the bullet
+    march already reason about space (§4): a unit occupies
+    ``[x, x+footprint) x [y, y+footprint)``. Bodies are solid to each other —
+    before this, marines walked through one another, which reads as a bug the
+    moment two of them share a corridor.
+
+    Checked against EVERY living unit, not just friendlies, so a marine cannot
+    walk into a zombie either. Iterates ``sim.units`` in id order; the result
+    is a pure geometric predicate, so no RNG and no ordering effect.
+    """
+    fp = float(unit.footprint)
+    for other in sim.units:
+        if other is unit or not other.alive:
+            continue
+        ofp = float(other.footprint)
+        if (nx < other.x + ofp and other.x < nx + fp
+                and ny < other.y + ofp and other.y < ny + fp):
+            return True
+    return False
 
 
 def _resolve_action(sim, unit) -> None:
@@ -818,7 +885,8 @@ def mark_target(sim, unit, step) -> None:
 
 
 __all__ = [
-    "INDEFINITE", "Plan", "PlanStep", "compile_plan", "drive_units",
-    "is_reversing", "mark_target", "set_overwatch", "speed_pct",
-    "spread_deg_for", "swap_weapon", "tile_cadence",
+    "INDEFINITE", "Plan", "PlanStep", "base_ticks_per_tile", "compile_plan",
+    "drive_units", "is_reversing", "mark_target", "occupied_by_unit",
+    "set_overwatch", "speed_pct", "spread_deg_for", "swap_weapon",
+    "tile_cadence",
 ]
