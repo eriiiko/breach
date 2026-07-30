@@ -144,9 +144,120 @@ TUNE = {
     #    rule still applies: ignition_temp furniture = 280).
     # =====================================================================
 
-    # -- 1. STRUCTURE (§9.2 / §9.3 step 1). One-time; blessed values. --
-    "fire_T_ext": 250.0,    # below ignition_temp (280) — ember-sustain region
-    "fire_T_span": 100.0,   # hot = 1 above T = 350
+    # =====================================================================
+    # THE VIABLE REGION — DERIVED 2026-07-30 (this pass). Read this BEFORE
+    # you move a dial; three previous passes each died by moving one dial
+    # against an assumed-away coupling.
+    # =====================================================================
+    # Fixed by Erik: r = k_die/k_grow = 0.080, k_grow 3.5 / k_die 0.28,
+    # cool_shift 9 on BOTH wood and furniture, thermal_mass 8 -> shift 3.
+    # Free: fire_T_ext, fire_T_span, k_fire_heat, ignition_seed.
+    #
+    # The five relations that actually govern the bench (all re-verified
+    # against fire_simulation.cpp:150-245 and temperature_solver.cpp:264/458
+    # this pass — the gain is `deposit >> heat_inv_shift` vs `T -= T >> cool_shift`,
+    # so equilibrium is exactly deposit * 2^(cool_shift - heat_inv_shift)):
+    #
+    #   gain      = k_fire_heat * 2^(cool_shift - heat_inv_shift) = 64*k
+    #   T*(I)     = gain * I
+    #   hot(T)    = clamp01((T - fire_T_ext)/fire_T_span)
+    #   a         = F * o2f * hot        F = 1 pristine, o2f(X=0.21) = 0.091954
+    #   I_eq      = 1 - r(1-a)/a                     = 0.2100  at hot = 1
+    #   h_min     = [r/(1+r)]/o2f                    = 0.80556
+    #   T_sustain = fire_T_ext + fire_T_span*h_min
+    #   I_sustain = T_sustain / gain
+    #
+    # THE FIVE CONSTRAINTS, solved:
+    #   C1 plateau 400-500 game   ->  k_fire_heat in [29.76, 37.20]  (at r=0.080,
+    #                                 I_eq = 0.21, cool_shift 9). ONE interval —
+    #                                 k is fully pinned by C1 alone.
+    #   C2 seed margin >= 15%     ->  ignition_seed >= 1.15 * I_sustain,
+    #                                 and ignition_seed < I_eq = 0.21.
+    #   C3 warm-seed gate (T=280) ->  T_sustain <= 280, i.e.
+    #                                 fire_T_ext + 0.8056*fire_T_span <= 280.
+    #   C4 §9.2                   ->  fire_T_ext < 280 (furniture) and < 300 (wood).
+    #   C5 physical               ->  fire_T_ext in [140, 215] game
+    #                                 = [573, 723] K = [300, 450] C (wood
+    #                                 pyrolysis-sustain). C5 is STRICTLY TIGHTER
+    #                                 than C4, so C4 is never the binding one.
+    #
+    # The region is therefore the box  fire_T_ext in [140, 215],
+    # fire_T_span in (0, (280 - fire_T_ext)/0.8056],  k in [29.8, 37.2],
+    # seed in [1.15*I_sustain, 0.21).  How much room that leaves, as the
+    # bootstrap ratio  I_sustain/I_eq = T_sustain/T_plateau  (SMALLER IS SAFER —
+    # the last pass died at 0.746, i.e. the fire had to be BORN at 75% of its
+    # final size).  At k = 33 (plateau 443.5):
+    #
+    #   fire_T_ext ->   140     160     180     200     215     (game)
+    #   (Kelvin)       573     613     653     693     723
+    #   span  20      0.352   0.397   0.442   0.487   0.521     <- ratio
+    #   span  40      0.388   0.433   0.478   0.524   0.557
+    #   span  60      0.425   0.470   0.515   0.560   0.594
+    #   span  80      0.461   0.506   0.551   0.596   0.630
+    #   span 100      0.497   0.542   0.587    --      --       (C3 fails)
+    #
+    # Every cell above is viable; the corner (140, 20) is the safest and
+    # (215, 80) the tightest. Erik has ~2x of room in the bootstrap ratio.
+    #
+    # ** C6 — THE COUPLING NOBODY HAS WRITTEN DOWN YET, and the one most
+    # likely to bite next. The sustain condition a/(1-a) > r is symmetric in
+    # `hot` and `o2f`: exactly as there is an h_min, there is an o2f floor
+    #     o2f_min = r/(1+r) = 0.074074  (at hot = 1, F = 1)
+    #  -> local X floor = X_ext + o2f_min*(X_full - X_ext) = 0.19444.
+    # Ambient is 0.21. The flame ring may therefore lose only 7.4% of its
+    # oxygen, RELATIVE, before the fire dies at ANY temperature and ANY
+    # k_fire_heat. Worse, I_eq is hypersensitive there: X 0.210 -> I_eq 0.210,
+    # X 0.205 -> 0.152, X 0.200 -> 0.086, X 0.1944 -> 0. No dial in this file
+    # moves that floor (it is r and the o2 span); only the O2 SUPPLY (sky tau,
+    # ventilation) or burn_rate move the draw. MEASURE X_local, do not assume it.
+    #
+    # ---------------------------------------------------------------------
+    # MEASURED 2026-07-30 AT EXACTLY THE DIALS BELOW — **THE CRATE BURNS.**
+    # (bench: 900 s window, sky tau 60, sponge 8, warm seed T = 280)
+    #   peak I 0.1656 @ 15.1 s | max T 336.3 game (966 K) @ 38.8 s
+    #   death 334.2 s (5.57 min) | wall_hp 26.688/30 -> charred remains
+    #   flame-ring X min 0.19803 | far-field X min 0.2005 | N_total min 0.957
+    #   far-field T rise 88.6 game (177 K)
+    #
+    # THE MODEL HELD, with ONE named correction:
+    #  * I_sustain = 0.1005 predicted the collapse EXACTLY. I coasted at
+    #    0.098-0.11 for ~200 s, then crossed ~0.10, `hot` fell off 1.0, and the
+    #    death spiral ran. h_min = 0.806 likewise: hot was 0.850 at death-10 s,
+    #    0.549 at death-5 s. The corrected sustain relations are CONFIRMED.
+    #  * T*(I) = gain*I under-predicts by a FLAT +6.3% (measured 1.060-1.068
+    #    over 233 quasi-equilibrium samples, both bench runs). That is NOT
+    #    model error — it is the plume->T shim, which writes temperature[]
+    #    DIRECTLY and so BYPASSES the thermal_mass shift:
+    #       dT/tick = (k_fire_heat*I >> heat_inv_shift)
+    #                 + fire_pressure_gain*temp_gain_scale*dt*sat * I
+    #               = 4.1250*I + 0.2600*I        (sat = 1 - T/T_FLAME_MAX)
+    #    -> shim share 5.6-6.1% of the deposit; predicted T_meas/T*_pred
+    #       1.0652 @ T=280 and 1.0612 @ T=383.5 vs MEASURED 1.066 and 1.060.
+    #    The residual is closed. Use  T*(I) = 1.063 * gain * I  when you need
+    #    2-figure accuracy. (The shim is PARKED pending a radiation design
+    #    decision — do not "fix" it here.)
+    #
+    # C6 CONFIRMED BY PROBE (sky tau 60 -> 10, the O2-SUPPLY dial, no fire dial
+    # moved): flame-ring X min 0.19803 -> 0.20174, and with it peak I
+    # 0.1656 -> 0.1778 and max T 336.3 -> 383.5 (1060 K). The plateau is
+    # O2-LIMITED, not heat-limited: `hot` sat at 1.0 the whole burn in both
+    # runs. I_eq recomputed from the MEASURED flame-ring X tracks the decline
+    # (X 0.2099 -> I_eq 0.210; X 0.2037 -> 0.130; X 0.2015 -> 0.103), i.e. a
+    # 1-3% RELATIVE O2 dip costs half the fire. Death is O2+heat-governed, NOT
+    # fuel-governed: 89% of the crate's hp was still there when it went out.
+    # ---------------------------------------------------------------------
+    # =====================================================================
+
+    # -- 1. STRUCTURE (§9.3 step 1). CHOSEN POINT: fire_T_ext 180, span 40. --
+    #    Erik's candidate, verified above against C1-C5 — all five PASS:
+    #      gain 2112, T_plateau 443.5 (1180 K), T_sustain 212.2,
+    #      I_sustain 0.1005, bootstrap ratio 0.478 (vs 0.746 that failed),
+    #      warm-seed hot clamps to 1.0 at tick 1 (needs 0.806),
+    #      fire_T_ext 653 K = 380 C — mid-band for wood pyrolysis sustain.
+    #    span 40 (not 100) is what buys the ratio: it is the h_min*span term,
+    #    not fire_T_ext, that dominated T_sustain in the failed passes.
+    "fire_T_ext": 180.0,    # 653 K / 380 C; < 280 furniture, < 300 wood
+    "fire_T_span": 40.0,    # hot = 1 above T = 220; h_min needs only 212.2
 
     # -- 2. THERMAL operating point (§9.3 step 2). THE dial pair.
     #       T* = k_fire_heat * I * 2^(cool_shift - 3)   [+/-1% at equilibrium]
@@ -236,6 +347,11 @@ TUNE = {
     #    empty intersection, which is why nothing lit).
     #
     #    ** MEASURED AT THESE FOUR DIALS, 2026-07-30 — STILL DOES NOT BURN, and
+    #    ** SUPERSEDED 2026-07-30 by the derived region at the top of this block:
+    #    seed is now 0.12 against I_sustain 0.1005 (margin 19.4%), and the
+    #    STRUCTURE dials moved (fire_T_ext 250 -> 180, span 100 -> 40) which is
+    #    what made a sub-0.21 seed viable at all. The post-mortem below is kept
+    #    because it is the derivation of h_min. **
     #    the reason is that `I_crit` ABOVE IS THE WRONG THRESHOLD. It is derived
     #    from `hot > 0` (T > fire_T_ext), but the logistic does not sustain at
     #    hot > 0 — it sustains only where  a/(1-a) > k_die/k_grow,  and with
@@ -251,7 +367,11 @@ TUNE = {
     #    speed. Measured: peak I 0.1488 @ tick 1 (never above the seed), peak T
     #    281.3 @ 1.0 s, hot never above 0.313, I == 0 at 8.9 s, wall_hp 29.948
     #    (0.05 of 30 consumed). Full numbers in the run report. **
-    "ignition_seed": 0.15,
+    #    CHOSEN 2026-07-30: 0.12 = 1.194 * I_sustain (0.1005) — 19.4% margin,
+    #    above C2's 15% floor, and 57% of I_eq so the ramp is still visible.
+    #    Q16.16 check at this seed with hot = 1: grow 2226 counts, die 1999,
+    #    net delta = +9 counts/tick — above the growth quantum (the 95bdec0 trap).
+    "ignition_seed": 0.12,
 
     # -- 4. LIFETIME (§9.3 step 4 — YOURS). NOT re-derived for the 2026-07-30
     #       start: carried over from the cool_shift-12 point (where it measured
