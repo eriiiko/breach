@@ -19,6 +19,33 @@
   fans + 3D marines rendered together (never exercised in one window).
 
 
+## Next gameplay arc — momentum / earned sprint / unit collision (2026-07-30)
+
+**Design sketch: `docs/inertia_and_sprint_design_2026-07-30.md`.** Captured
+from Erik at the close of the OnePhaseWEGO human-test; needs its own design
+session before any build.
+
+**Erik's sequencing ruling: do NOT start with the full inertial model.** Start
+with the simple rule — sprint as an EARNED STATE (speed up, navigation down)
+after ~4 s of continuous movement, so normal single-round play is unchanged and
+only multi-round runs cash in. It is a state machine, not a physics model, so
+it can be felt and thrown away cheaply. Real momentum (velocity vector,
+acceleration from mass/strength) stays behind it.
+
+Unit collision is needed by both and is the part Erik wants "intricate":
+bodies are already solid (`timeline.occupied_by_unit`, 2026-07-30), and
+`stability` already exists as the knockdown threshold for shockwave push —
+a body collision is the same shape of event and should reuse that rule. A
+stationary unit braces; a moving one has already committed its balance.
+
+Two of Erik's framings worth not re-deriving: *certainty decreasing with
+distance is a feature*, and *a predicted collision is self-cancelling* (if the
+planner sees it, the player routes around it) — so "exact except collisions" is
+a far stronger guarantee than it sounds. Momentum also feeds the ML-animation
+track: `velocity` + collision impulses are exactly the signal physics-driven
+animation wants, one-way, render-only.
+
+
 ## Open threads — cross-arc index (2026-07-22, "don't forget")
 
 One place to see every loose end left by the recent burst of simultaneous

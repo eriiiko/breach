@@ -1,13 +1,19 @@
 # OnePhaseWEGO — as built (2026-07-28)
 
-**Status:** BUILD COMPLETE on branch `onephase-wego`, **awaiting Erik's
-HUMAN-TEST**. Feel-defining arc → **no auto-merge** (project CLAUDE.md).
+**Status:** ✅ **HUMAN-TESTED AND BLESSED by Erik, 2026-07-30 — merged to
+main.** Four play sessions, each fixing what it found (see the fix log at the
+bottom); Erik's word: *"Now everything seems pretty solid … i think we can
+merge this update to main now."*
+
+`TwoPhaseWEGO` is untouched and still the default `--control wego`. Its
+retirement + the canon fold are a SEPARATE, deliberate event (design §18) and
+did NOT happen here — no golden or digest moved in this merge.
 
 **Design:** `docs/onephase_wego_design_2026-07-28.md` (LOCKED).
 **Kickoff + architecture:** `docs/onephase_wego_kickoff_2026-07-28.md`.
 
-**Gate:** `pytest tests -q` → **1931 passed, 22 skipped** (baseline before P1
-was 1680 — 251 new tests). No golden or digest was re-baselined at any point.
+**Gate:** `pytest tests -q` → **1961 passed, 22 skipped** (baseline before P1
+was 1680 — 281 new tests). No golden or digest was re-baselined at any point.
 `TwoPhaseWEGO` remains byte-identical and is still the default.
 
 ---
@@ -137,3 +143,30 @@ relaunch. Ctrl+R alone re-reads config but re-arms nothing.
 2. Retire `TwoPhaseWEGO` — ONE deliberate golden re-baseline, with written
    rationale (design §18).
 3. Archive the design + kickoff + this doc into `docs/archive/`.
+
+---
+
+## Play-session fix log (what four sessions of Erik playing it found)
+
+Recorded because the pattern is the useful part: every one of these was
+invisible to a green suite, and each points at a class of test that was
+missing rather than a careless line of code.
+
+| # | What Erik hit | Root cause | Test gap it exposed |
+|---|---|---|---|
+| 1 | Hard crash on a cover level | `sim.cover` was a PARALLEL list; the bare `EntityInstance` stayed in `sim.entities`, which is what the serializer walks | every cover test ran `enable_recorder=False`, so nothing exercised the serializer |
+| 2 | An ordered shot was invisible | §16 covers where a marine will BE, never what an order is aimed AT | the design itself had the hole; no test could have caught it |
+| 3 | Orders showed stale times + origin after a round boundary | labels were "seconds since THIS round's start", meaningless for a plan compiled last round; the whole path was drawn, including the walked part | no test read the overlay from mid-round or across a seam |
+| 4 | Facing cones looked wrong | flashlights were drawn TWICE — as real light sources AND as translucent sectors | render-layer double-draw is untested by construction |
+| 5 | Overwatch cones outlived the posture | the state was never cleared; §9's "until replaced" was unimplemented | tests covered setting overwatch, never ending it |
+| 6 | Marines walked through each other | unit-vs-unit collision simply did not exist — `is_passable_block` is terrain only | no test placed two units in one lane |
+| 7 | (found while fixing 6) a held unit later teleported THROUGH the body | holding the tick did not hold the path INDEX; the same latent bug applied to knockdown suppression | no test held a unit long enough for the index to run past the obstacle |
+
+Two lessons worth carrying into the next arc:
+
+- **Test the seams the player crosses, not just the units.** Half of these
+  (1, 3, 5, 7) are state that is correct at t=0 and wrong later — round
+  boundaries, mid-round reads, and long holds are where the bugs live.
+- **A "parallel list" of runtime objects is a smell.** #1 happened because
+  cover was built beside the entity list instead of into it; doors had the
+  right pattern all along.
