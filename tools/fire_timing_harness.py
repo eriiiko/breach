@@ -93,6 +93,17 @@ def _smoothstep(a, b, x):
     return t * t * (3.0 - 2.0 * t)
 
 
+def _hot_gate(T, fire_T_ext, fire_T_span):
+    """The REAL temperature gate fire_simulation.cpp's growth logistic reads:
+    hot = clamp01((T - fire_T_ext) / fire_T_span) -- LINEAR, not a smoothstep
+    (mirrors the C++ clamp01_q(recip_mul(T - fire_T_ext_q, recip_T_span)) exactly).
+    hot < 1 means the flame temperature itself has dipped toward extinction --
+    gate-limited death, as distinct from O2-limited (see x_local below)."""
+    if fire_T_span <= 0:
+        return 1.0 if T >= fire_T_ext else 0.0
+    return min(1.0, max(0.0, (T - fire_T_ext) / fire_T_span))
+
+
 # ---------------------------------------------------------------------------
 # Config-dial overrides (patch CFG in place; NOTHING is written to config.toml).
 # CFG is a plain mutable Namespace tree -- PhysicsRunner reads [physics.fire] at
@@ -291,10 +302,17 @@ def _run_one_inner(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
 
     seed_i = float(getattr(CFG.physics.fire, "ignition_seed", 0.1))
     gmap.fire[cy, cx] = fire_fixed.quantize_scalar(seed_i)
+    # Game-faithful seed (Fable 2026-07-25): in-engine a tile only ignites
+    # BECAUSE its T crossed ignition_temp — a cold-started seed (T=ambient)
+    # is an unphysical bootstrap race the game never runs (it made the
+    # k_fire_heat sweeps look chaotic). Seed the crate tile at furniture's
+    # ignition_temp (280) so the bench starts where real ignition starts.
+    gmap.temperature[cy, cx] = fire_fixed.quantize_scalar(280.0)
 
     p_min = float(getattr(CFG.physics.fire, "P_min", 0.01))
     p_full = float(getattr(CFG.physics.fire, "P_full", 0.03))
     fire_t_ext = float(getattr(CFG.physics.fire, "fire_T_ext", 350.0))
+    fire_t_span = float(getattr(CFG.physics.fire, "fire_T_span", 150.0))
     k_grow = float(getattr(CFG.physics.fire, "k_grow", 4.0))
     k_die = float(getattr(CFG.physics.fire, "k_die", 2.0))
 
@@ -324,7 +342,8 @@ def _run_one_inner(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
     o2_snaps = []
     _sptr = 0
     rec = {k: [] for k in ("t", "I", "T", "hp", "o2", "gate", "o2far", "cx", "mass",
-                           "o2far_x", "o2room", "o2room_x", "ntot_room")}
+                           "o2far_x", "o2room", "o2room_x", "ntot_room", "tfar",
+                           "x_local", "hot")}
     had_fire = False
     fuel_out_tick = None       # wall_hp first <= 0  (the meaningful "burnout")
     snap_tick = None           # I first snaps to 0 after burning
@@ -339,7 +358,33 @@ def _run_one_inner(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
         o2 = (float(np.mean([int(gmap.gas[O2, ny, nx]) for (ny, nx) in nbrs]))
               / FP_ONE) if nbrs else float("nan")
         gate = _smoothstep(p_min, p_full, o2)
+        # LOCAL flame O2 mole fraction X (step-4 diagnosis addition, 2026-07-25):
+        # Sigma n_o2 / Sigma n_total over the SAME open 4-neighbours `o2` reads
+        # above -- mirrors fire_simulation.cpp's own X read EXACTLY (a fraction
+        # of SUMS over the neighbours, not a mean of per-tile fractions), so this
+        # is the TRUE local value the continuous-O2 law's growth-logistic factor
+        # o2f = clamp01((X-X_ext)/(X_amb-X_ext)) gates on -- not a proxy.
+        if nbrs:
+            _o2_loc = float(sum(int(gmap.gas[O2, ny, nx]) for (ny, nx) in nbrs))
+            _tot_loc = float(sum(int(gmap.gas[O2, ny, nx]) + int(gmap.gas[INERT_N2, ny, nx])
+                                 for (ny, nx) in nbrs))
+            x_local = _o2_loc / max(1.0, _tot_loc)
+        else:
+            x_local = float("nan")
+        # The OTHER real gate fire_simulation.cpp's growth logistic reads:
+        # hot = clamp01((T - fire_T_ext) / fire_T_span). hot < 1 means the flame
+        # temperature itself has dipped toward extinction -- gate-limited, as
+        # distinct from O2-limited (x_local falling instead; see above).
+        hot = _hot_gate(T, fire_t_ext, fire_t_span)
         o2far = min(int(gmap.gas[O2, py, px]) for (py, px) in far_pts) / FP_ONE
+        # Far-field TEMPERATURE (step-3 heat-balance addition, 2026-07-25): same
+        # far_pts tile set as o2far/o2far_x (room centre + two far quadrants,
+        # already >10 tiles from a DEEP crate and clear of the sponge band) --
+        # mirrors that probe's LOCATIONS. Unlike O2 (where the worst case is the
+        # MIN), the worst case for a "does the room overheat" reading is the MAX
+        # over the probes -- the room-T rise Erik wants bounded (target <= ~20
+        # game units, far from the flame's own local hot zone).
+        tfar = max(int(gmap.temperature[py, px]) for (py, px) in far_pts) / FP_ONE
         # O2 MOLE FRACTION X = O2/(O2+inert_N2) — the density-invariant quantity
         # the continuous-O2 law gates on. Far-field X (min over probes) + room-mean
         # X disambiguate a PLANE drop (decompression: N_total falls, X holds) from
@@ -359,7 +404,8 @@ def _run_one_inner(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
         for key, val in (("t", t), ("I", I), ("T", T), ("hp", hp), ("o2", o2),
                          ("gate", gate), ("o2far", o2far), ("cx", cxc), ("mass", mass),
                          ("o2far_x", xfar), ("o2room", o2room), ("o2room_x", o2room_x),
-                         ("ntot_room", ntot_room)):
+                         ("ntot_room", ntot_room), ("tfar", tfar),
+                         ("x_local", x_local), ("hot", hot)):
             rec[key].append(val)
         if I > 0.05:
             had_fire = True
@@ -403,6 +449,14 @@ def _run_one_inner(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
     start_i = int(np.searchsorted(t_arr, time_to_peak)) if not np.isnan(time_to_peak) else 0
     win = T_arr[start_i:end_i] if end_i > start_i else T_arr
     steady_T = float(np.median(win)) if win.size else float("nan")
+    # Plateau readings of the two REAL gates (step-4 diagnosis addition,
+    # 2026-07-25), over the EXACT SAME sustained-burning window as steady_T --
+    # disambiguates O2-limited (x_local_plateau falls) from gate-limited
+    # (hot_plateau falls below 1) fire behaviour.
+    x_local_win = rec["x_local"][start_i:end_i] if end_i > start_i else rec["x_local"]
+    hot_win = rec["hot"][start_i:end_i] if end_i > start_i else rec["hot"]
+    x_local_plateau = float(np.nanmedian(x_local_win)) if x_local_win.size else float("nan")
+    hot_plateau = float(np.nanmedian(hot_win)) if hot_win.size else float("nan")
 
     # self-collapse: after the peak, does T fall BELOW fire_T_ext while a lot of
     # fuel remains (crate goes cold with fuel left = a plume-cooling collapse)?
@@ -424,6 +478,7 @@ def _run_one_inner(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
     o2room_x_min = float(rec["o2room_x"].min()) if rec["o2room_x"].size else float("nan")
     o2room_min = float(rec["o2room"].min()) if rec["o2room"].size else float("nan")
     ntot_room_min = float(rec["ntot_room"].min()) if rec["ntot_room"].size else float("nan")
+    tfar_max = float(rec["tfar"].max()) if rec["tfar"].size else float("nan")
 
     # smoke drift (only meaningful under forced wind): centroid slope, clean window
     drift_tiles = drift_ms = float("nan")
@@ -446,7 +501,8 @@ def _run_one_inner(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
         snap_time=snap_time, stalled=stalled, collapsed=collapsed, steady_T=steady_T,
         o2_min=o2_min, gate_min=gate_min, o2far_min=o2far_min,
         o2far_x_min=o2far_x_min, o2room_x_min=o2room_x_min,
-        o2room_min=o2room_min, ntot_room_min=ntot_room_min,
+        o2room_min=o2room_min, ntot_room_min=ntot_room_min, tfar_max=tfar_max,
+        x_local_plateau=x_local_plateau, hot_plateau=hot_plateau,
         hp_end=float(hp_arr[-1]) if hp_arr.size else float("nan"),
         drift_tiles=drift_tiles, drift_ms=drift_ms,
         n_ticks=len(t_arr), rec=rec, nbrs=len(nbrs),
@@ -465,8 +521,9 @@ def _run_one_inner(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
 # ---------------------------------------------------------------------------
 def write_timeseries_csv(m, path):
     """Dump the harness's own per-tick time-series to CSV (t in s AND minutes,
-    plus I / T / wall_hp / O2-at-flame / O2-gate / O2-far / soot). A commented
-    header carries the dials + the derived peak/burnout metrics."""
+    plus I / T / wall_hp / O2-at-flame / O2-gate / O2-far / soot / far-field
+    room temperature). A commented header carries the dials + the derived
+    peak/burnout metrics."""
     import csv
     rec = m["rec"]
     with open(path, "w", newline="") as f:
@@ -479,14 +536,17 @@ def write_timeseries_csv(m, path):
                     f"steady_T={m['steady_T']:.0f}"])
         w.writerow(["t_s", "t_min", "I", "T_game", "wall_hp",
                     "O2_flame_nbr", "O2_gate", "O2far_plane", "soot_deq",
-                    "O2far_X", "O2room_plane", "O2room_X", "Ntot_room"])
+                    "O2far_X", "O2room_plane", "O2room_X", "Ntot_room", "Tfar_game",
+                    "X_local", "hot"])
         for i in range(len(rec["t"])):
             w.writerow([f"{rec['t'][i]:.4f}", f"{rec['t'][i] / 60.0:.6f}",
                         f"{rec['I'][i]:.6f}", f"{rec['T'][i]:.3f}", f"{rec['hp'][i]:.6f}",
                         f"{rec['o2'][i]:.6f}", f"{rec['gate'][i]:.4f}",
                         f"{rec['o2far'][i]:.6f}", f"{rec['mass'][i] / FP_ONE:.4f}",
                         f"{rec['o2far_x'][i]:.6f}", f"{rec['o2room'][i]:.6f}",
-                        f"{rec['o2room_x'][i]:.6f}", f"{rec['ntot_room'][i]:.6f}"])
+                        f"{rec['o2room_x'][i]:.6f}", f"{rec['ntot_room'][i]:.6f}",
+                        f"{rec['tfar'][i]:.4f}",
+                        f"{rec['x_local'][i]:.6f}", f"{rec['hot'][i]:.4f}"])
 
 
 # ---------------------------------------------------------------------------
@@ -536,6 +596,13 @@ def _print_run(m):
           f"{m.get('o2room_x_min', float('nan')):.4f}   <- the density-invariant gate the new law reads")
     print(f"    room N_total min: {m.get('ntot_room_min', float('nan')):.4f}  (1.0 = ambient; "
           f"<1 = the room decompressed as it heated)")
+    print(f"  far-field ROOM TEMPERATURE (>10 tiles, max over probes): "
+          f"{m.get('tfar_max', float('nan')):7.2f} game  (target rise <= ~20)")
+    print(f"  --- plateau REAL gates (sustained-burn window, same as steady_T) ---")
+    print(f"    x_local (flame-nbr O2 mole frac X): {m.get('x_local_plateau', float('nan')):.4f}"
+          f"   (X_ext={float(getattr(CFG.physics.fire, 'o2_frac_ext', 0.13)):.2f} extinguishes)")
+    print(f"    hot     (clamp01((T-fire_T_ext)/fire_T_span)): {m.get('hot_plateau', float('nan')):.4f}"
+          f"   (<1 => T-gate limited)")
     if m["forced"]:
         print(f"  smoke drift:                {m['drift_tiles']:.3f} tiles/s = {m['drift_ms']:.3f} m/s")
     print("-" * 76)
