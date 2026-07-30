@@ -46,15 +46,15 @@ carrying an explicit column.
 
 ---
 
-## 1. Clarification the session should NOT re-derive
+## 1. Ground facts — settled, do not re-derive
 
-Erik asked "did I get it backwards — should ignition be on temperature, not intensity?"
-**Ignition is already temperature-triggered and always was.**
-`src/simulation/combat.py:392` `apply_temperature_ignition` fires when a tile's
-**temperature** crosses `ignition_temp` (wood 300 = 620 °C) with O₂ above the extinction
-limit and fuel remaining; commit `423cd38` made it an edge-trigger (seeds once, re-arms
-only after cooling). `ignition_seed = 0.1` is **not a trigger** — it is the value `I` is
-set to at that moment, i.e. the fire's starting size.
+**Ignition is temperature-triggered.** `src/simulation/combat.py:392`
+`apply_temperature_ignition` fires when a tile's **temperature** crosses `ignition_temp`
+(wood 300 = 620 °C) with O₂ above the extinction limit and fuel remaining; commit
+`423cd38` made it an edge-trigger (seeds once, re-arms only after cooling).
+`ignition_seed = 0.1` is **not a trigger** — it is the value `I` is set to at that moment,
+i.e. the fire's starting size. (Worth stating explicitly because the two are easy to
+conflate, and §4's `I_crit` is a *survival* floor, not an ignition threshold.)
 
 **What `I` is:** the tile's normalized burn rate ∈ [0,1] — "how vigorously this cell is
 burning". It scales heat out (`k_fire_heat·I` per ray), O₂ draw (`burn_rate·I·o2f`), fuel
@@ -130,9 +130,11 @@ dial that is NOT map-overridden, with `o2_frac_amb` left alone.
 
 ### 2.2 The `I ≈ 0.5` target then falls out of the EXISTING logistic — no model surgery
 
-An earlier draft of this doc proposed restructuring the death term to a constant mortality
-`die = k_die·I`. **That is not necessary and should not be built on reflex.** With the
-reference split as above, the current logistic already produces Erik's semantics.
+**With the reference split of §2.1, the current logistic already produces Erik's semantics
+— the death term does NOT need restructuring.** This is worth stating up front because the
+obvious-looking move here is to give `die` a constant mortality (`die = k_die·I`) so that a
+"perfect conditions" fire equilibrates below 1. That is unnecessary once ambient no longer
+saturates `o2f`, and it should not be built on reflex.
 
 `I_eq = 1 − d/a`, with `a = k_grow·avail·hot·fan`, `d = k_die·(1 − avail·hot)`,
 `avail = F·o2f`:
