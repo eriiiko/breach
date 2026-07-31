@@ -10,6 +10,59 @@ note: two derived floors in this arc were wrong before they were measured).
 (Erik's number; his reasoning + the receivers-are-free argument recorded in A1.8),
 and A1.6 expanded with the plain-words meaning of `LIM_SHIFT`.
 
+**Amended 2026-08-01 (third pass) — ★ E1 FIRED at P-R4; parked on
+`pr4-radiation-law` (bd8206b, worktree kept) awaiting Erik on D1–D4.**
+The blocker is NOT the radiation law (its gates closed: equal-T pairs net
+EXACTLY 0 both backends and a 600-emitter firestorm sums rad_net to 0 exactly;
+unequal pairs converge monotonically; 600-emitter cast 1.75 ms vs 3.0 budget;
+neighbour ignition 5.0 s touching / 11.2 s across a gap; CPU↔CUDA tol 0;
+far-field rise 0.00 vs the painter's 88.6). The blocker is the **combustion
+demand quantum staircase**: `mul_q16(mul_q16(burn_cap_q=55, I), o2f)` chains
+two truncations, so demand is 0 counts for I < 0.20 and 1 count at the
+operating point — the fire is born (seed 0.12) in a dead zone with ZERO
+combustion heat and dies at 21 s; even seeded above the knee it dies when the
+normal ring-O₂ dip drags I_eq (0.2098, only 4.9% above the knee) back through
+it. `H_bed` itself is correctly sized at **1.075e5** once the MEASURED
+claim-structure factor 4 replaces the ruling's assumed 1 (4.3e5/4 — the
+ruling told P-R4 to measure it; it did). `rad_scale = 1.0e-5` anchored to the
+12 kW/m² ignition physics — the "painter continuity ≈7 counts/tick" anchor is
+RETIRED as wrong-headed (the painter at these dials could not spread fire at
+all: first-ring 111 game < 280 ignition).
+**Decision menu (Erik):**
+- **D1 (the blocker):** (rec) per-tile error-feedback ACCUMULATOR on the wide
+  demand product — exact in expectation (0.607 counts/tick = 1 count every
+  ~1.65 ticks), unbiased, Huggett anchor untouched, one new synced int32
+  plane; alt-cheap: round-to-nearest on the wide product (knee moves to
+  I≈0.099, just below I_crit 0.104 — coherent but 65% over-draw at small I);
+  alt-heavy: burn_rate ×10 (breaks the Huggett anchor); alt-accept: staircase
+  stays (requires I_eq ≥ ~0.3 — violates Erik's 0.21 anchor). 
+- **D2 (goldens):** the painter's air-heating was baked into every golden via
+  the GHOST fire (seeded on AIR; its only observable was painter heat, now
+  correctly zero under Kirchhoff — a_s = 0). ~11 digests move. (rec) spend
+  the arc's ONE deliberate rebase at the P-R4 merge with this rationale, and
+  authorize rewriting `test_fire_heat_source.py` (10 tests — the painter's
+  own acceptance suite) + the spread-stencil and s8c-bench tests against the
+  radiation law, same class as the P-R1 witness rewrites.
+- **D3 (units stopped cooking):** unit damage sampled `max(heat)` on AIR
+  tiles — the painter's air heat. Radiation lands only on solids, so units no
+  longer take radiant damage. (rec) a positive-only radiant-flux SENSOR plane
+  written along rays at air cells (τ·w·a_s·E°[T_s]), read by damage only —
+  outside the energy ledger, painter-like cost, right occlusion/falloff;
+  alt: proximity-to-fire damage hack; alt: defer (units immune to radiant
+  heat — not acceptable for gameplay per the vertical-slice doctrine).
+- **D4 (fan blind spots):** no ray of the 8-ray fan ever connects some pairs
+  (axis offset +2,0 never hit — pre-existing painter aliasing, now
+  load-bearing for spread). (rec) deterministic per-TICK phase rotation
+  (time-averages the view factor over ~8 ticks, near-zero cost); alt: 16
+  rays (2× cost); alt: accept.
+Two letter-deviations RATIFIED: the signed fold uses `sat_add_q16` (the spec'd
+`heat_saturating_add` early-returns on ≤0 and would have swallowed emitter
+losses — P-R4 caught the spec bug); the E° bake computes K⁴ in exact int64
+(K is integer at every bucket midpoint) — stronger than the spec'd double.
+Also on record: the flux limiter is inert in the operating band by ~25× (as
+A1.6 intends) and the suite delta is 27 new reds, all named, all in the D2/D3
+classes.
+
 **Amended 2026-08-01 (second pass) — ★ ERIK'S CRITICALITY RULING reframes P-R5:**
 on reading the thermal-shadow finding, Erik ruled the lone-crate partial burn a
 FEATURE, not a defect: *"if I set fire to a crate and it's totally windstill,
