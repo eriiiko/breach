@@ -10,6 +10,36 @@ note: two derived floors in this arc were wrong before they were measured).
 (Erik's number; his reasoning + the receivers-are-free argument recorded in A1.8),
 and A1.6 expanded with the plain-words meaning of `LIM_SHIFT`.
 
+**Amended 2026-08-01 (fourth pass) — ★ THE AMBIENT-COUNTERPARTY DEFECT (Erik's
+questions found it; proposed P-R4b, awaiting his GO).** Erik, on the cluster
+findings: *"doesn't the radiation cost no matter what? … cold sink — ambient
+temp or colder? If it's ambient, it should make no difference, and if it does
+there is a bug. If there is nothing hitting the radiation, does it go into
+space?"* All three questions expose the same gap: the P-R4 law is strictly
+pairwise, so an emitter with no absorber in ray reach pays ZERO radiative loss
+(the residual neither goes to space nor to the room — it never emits), while
+an emitter next to AMBIENT-temperature solids pays full freight to them — the
+same ambient environment costs 0 or ~38 game/tick depending on whether it is
+made of air or crates. Double-counted besides: cool_shift's calibrated value
+still lumps the implicit radiation-to-surroundings. This — not "cold mass
+drains radiators" — is why stacks read fireproof (§ tuning session: igniter
+plateau 540 → 313, stack never lit) and why the corner-2×2 result was
+over-harsh (the corner fizzle itself is legitimate big-log physics, per Erik).
+**P-R4b spec sketch:** each ray's unabsorbed residual exchanges with an
+implicit ambient counterparty, `net_amb = a_s · τ_residual · w · (E°[T_s] −
+E°[T_amb])`, debited from the emitter only (open-system sink, the cool_shift/
+EOS-A4 ledger convention; T_amb = 0 game). Joint recal of cool_shift (sheds
+its lumped radiation share — drifts up as P-R4 predicted) and H_bed at the
+same patch. GATES: (i) ★ THE EQUIVALENCE GATE, Erik's sentence made a test —
+a crate burning beside ambient-T solid walls matches the open-air burn curve
+within calibration ε; (ii) antisymmetry unchanged (equal-T pairs net exactly
+0; the ambient term cancels between equal-T pairs by construction — both pay
+the same sky loss); (iii) spread-into-stack flips: the established igniter
+holds its plateau and lights the stack; (iv) corner-seeded 2×2 still fizzles
+(big-log physics retained); (v) CPU↔CUDA tol 0; suite set preserved modulo
+authorized re-anchors. Rough cost: one extra table-diff per ray at
+termination — negligible. Erik rules; Opus executes.
+
 **Amended 2026-08-01 (third pass) — ★ E1 FIRED at P-R4; parked on
 `pr4-radiation-law` (bd8206b, worktree kept) awaiting Erik on D1–D4.**
 The blocker is NOT the radiation law (its gates closed: equal-T pairs net
