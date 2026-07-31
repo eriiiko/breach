@@ -514,5 +514,13 @@ Per-material `k_grow`/`k_die`/`wall_damage`/`smoke_emission` (audit §1.5 — no
 victim while both fuels are cellulosic); `soot_yield` per-claimant split (audit
 §3 — structurally expensive); the `hp` structure/fuel conflation and the two
 parallel soot sources (later arc); the object→gas convective term (EOS ruling
-A2's Phase-3 fork — `k_wind_strip`'s replacement); render/sim cast sharing and
-fan adaptivity (A4.3); gas-side `c_v`/`H_fuel` anchoring (E3 owns the trigger).
+A2's Phase-3 fork — `k_wind_strip`'s replacement) — **★ upgraded 2026-08-01 by
+Erik's wind question: this term is the missing half of wind BLOW-OUT.** Wind-
+scaled convective exchange chills the fuel bed; near the criticality knee that
+pushes marginal fires below T_sustain (match blows out) while established
+fires resist (campfire doesn't) — emergent, no strip hack, and the same
+two-sided term pre-heats fuel in hot wind (spread). Recommendation on record:
+design-rule it as a rider between P-R4 and P-R5 so the knee is tuned ONCE with
+all three levers (fuel, O₂, wind) live — Erik decides at the P-R5 boundary;
+render/sim cast sharing and fan adaptivity (A4.3); gas-side `c_v`/`H_fuel`
+anchoring (E3 owns the trigger).
