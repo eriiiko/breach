@@ -42,7 +42,15 @@ import numpy as np
 # golden compared against a new spec fails loudly instead of mismatching opaquely.
 # v2 (2026-07-24): +ignition_armed — the edge-triggered ignition arm bool
 # (combat.apply_temperature_ignition; Fable zombie-smolder ruling) is synced state.
-DIGEST_SPEC_VERSION = 2
+# v3 (2026-08-01, P-R4 D1): +dem_acc — the combustion DEMAND ACCUMULATOR, the
+# (4, h, w) per-face sub-count oxygen debt that carries the wide demand
+# product's remainder ACROSS ticks (ruling amendment 5 D1). It is persistent
+# synced state, not a per-tick buffer: a desync in it forks the oxygen draw,
+# hence the fire's heat, hence the whole fire/HP stream — exactly what this
+# digest exists to catch. (The two per-TICK radiation planes `rad_net` and
+# `rad_flux` are deliberately NOT here: both are wiped at end of tick, so they
+# are identically zero at every snapshot point and would add nothing.)
+DIGEST_SPEC_VERSION = 3
 
 # The frozen (name, dtype-string) contract — the integer/bool SYNCED fields, in a
 # fixed order. `gas` is the 3D (5,h,w) multi-gas stack (covers `smoke`, a view).
@@ -69,6 +77,7 @@ DIGEST_FIELDS = (
     ("obstacles",      "bool"),
     ("is_vacuum",      "bool"),
     ("ignition_armed", "bool"),
+    ("dem_acc",        "int32"),
 )
 
 # Float sim fields deliberately NOT in the cross-GPU integer digest (documented).

@@ -238,11 +238,27 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
                                      const bool* __restrict__ thermal_solid,
                                      const bool* __restrict__ is_vacuum,
                                      const int32_t* __restrict__ n_src,
+                                     const int32_t* __restrict__ rad_net,
                                      int64_t recip_cv, int32_t n_floor_q,
                                      int32_t t_max_phys_q,
                                      unsigned long long* __restrict__ hits, int n) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
+        // ---- P-R4 SIGNED radiation fold — the CPU block verbatim ----------
+        // FIRST, and NOT gated by the `deposit <= 0` skip below (that skip
+        // would swallow every radiative loss). shr_round0 = symmetric
+        // round-toward-0; sat_add_q16 = the SIGNED saturating add (a positive-
+        // only add would drop the losses). Order pinned: radiation, then heat.
+        if (rad_net != nullptr && thermal_solid[i]) {
+            const int32_t rn = rad_net[i];
+            if (rn != 0) {
+                int32_t tr = temperature[i];
+                const int32_t dTr = shr_round0(rn, heat_inv_shift[i]);
+                tr = sat_add_q16(tr, dTr);
+                if (tr > t_max_phys_q) { tr = t_max_phys_q; atomicAdd(hits, 1ULL); }
+                temperature[i] = tr;
+            }
+        }
         const int32_t deposit = heat[i];
         if (deposit <= 0) continue;                          // nothing to convert
         int32_t t = temperature[i];
@@ -372,7 +388,8 @@ int64_t temperature_step(
     const bool* thermal_solid,  // thermal-mass axis: medium mask (nullptr -> solid)
     const int32_t* cool_shift_grid,  // cool-shift axis: per-tile decay shift
                                       // (nullptr -> the cool_shift scalar)
-    int cool_shift_floor) {     // low clamp on the vacuum offset (== SHIFT_MIN)
+    int cool_shift_floor,       // low clamp on the vacuum offset (== SHIFT_MIN)
+    const int32_t* rad_net) {   // P-R4: SIGNED radiation accumulator (nullable)
     const int n = h * w;
     if (n <= 0) return 0;
 
@@ -419,6 +436,10 @@ int64_t temperature_step(
     // handed a null pointer and falls back to the `cool_shift` scalar per cell,
     // the exact CPU twin, so the fallback allocates and copies nothing.
     if (cool_shift_grid) cuda_check(cudaMalloc(&d_csg, nb), "malloc cool_shift_grid");
+    // P-R4: same nullable-plane idiom — with nullptr the kernel is handed a
+    // null pointer and skips the fold, the exact CPU twin.
+    int32_t* d_radnet = nullptr;
+    if (rad_net) cuda_check(cudaMalloc(&d_radnet, nb), "malloc rad_net");
     if (do_advect) {
         cuda_check(cudaMalloc(&d_src, nb), "malloc src");
         cuda_check(cudaMalloc(&d_wx, nb), "malloc wind_x");
@@ -438,6 +459,9 @@ int64_t temperature_step(
     if (cool_shift_grid)
         cuda_check(cudaMemcpy(d_csg, cool_shift_grid, nb, cudaMemcpyHostToDevice),
                    "H2D cool_shift_grid");
+    if (rad_net)
+        cuda_check(cudaMemcpy(d_radnet, rad_net, nb, cudaMemcpyHostToDevice),
+                   "H2D rad_net");
     // BC: optional ambient ring mask for the Pass-0 wipe (nullptr on space maps).
     bool* d_amb = nullptr;
     if (is_ambient) {
@@ -480,7 +504,7 @@ int64_t temperature_step(
 
     // Pass 1: unified convert (in-place on d_temp; rail counter -> d_hits).
     temp_convert_unified<<<grid, block>>>(d_temp, d_heat, d_his, d_ts, d_vac,
-                                          d_nsrc, recip_cv, n_floor_q,
+                                          d_nsrc, d_radnet, recip_cv, n_floor_q,
                                           t_max_phys_q, d_hits, n);
     cuda_check(cudaGetLastError(), "convert launch");
 
@@ -517,6 +541,7 @@ int64_t temperature_step(
     if (d_amb) cudaFree(d_amb);
     if (d_tsol) cudaFree(d_tsol);
     if (d_csg) cudaFree(d_csg);
+    if (d_radnet) cudaFree(d_radnet);
 
     return (int64_t)hits;
 }

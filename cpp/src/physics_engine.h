@@ -163,7 +163,13 @@ public:
         int h, int w, float sim_time,
         // BC: ambient ring mask forwarded to TemperatureSolver::step's Pass-0
         // wipe (nullptr on space maps = byte-identical).
-        const bool* is_ambient = nullptr) const;
+        const bool* is_ambient = nullptr,
+        // P-R4 (docs/radiation_raycaster_extinction_ruling_2026-07-31.md A1):
+        // the SIGNED radiation accumulator the fire-plane cast filled at the top
+        // of the tick. step_tail hands it straight through to the temperature
+        // pass, which folds it (BEFORE the heat deposit) through each tile's own
+        // heat_inv_shift. nullptr -> no fold, byte-identical to pre-P-R4.
+        const int32_t* rad_net = nullptr) const;
 
     // --- Patch 1 S4b: the IMEX atmosphere/smoke substep loop -------------
     // Moves the per-tick IMEX substep block out of PhysicsRunner.step (Python)

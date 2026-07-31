@@ -285,7 +285,50 @@ wall_damage       = 0.4    # wall HP lost per second per unit intensity (KEPT �
 # to preserve the same deposited energy (and ignition/kill behaviour) it is scaled
 # by fire_ray_count -> 1600. (Heat now radiates with a physical 1/r reach instead
 # of the old steep 1/(1+d²) — slightly longer reach is the intended improvement.)
-k_fire_heat          = 1600.0 # TOTAL heat energy per unit fire intensity, per tick (was 200/ray)
+# k_fire_heat TOMBSTONE (P-R4, 2026-08-01): dead key — THE PAINTER IS GONE. The
+# one-way `heat = k_fire_heat * I` deposit violated the arc's one rule twice (it
+# deposited the same per-ray energy at EVERY marched cell — a 5-cell ray
+# deposited 5x its payload — and nothing was ever debited from the source), and
+# it is replaced by an antisymmetric net-T⁴ EXCHANGE whose magnitude comes from
+# the emitters' own temperatures through `rad_scale` below. Nothing reads this
+# key; it is left as a comment so an old config does not hard-error.
+# See docs/radiation_raycaster_extinction_ruling_2026-07-31.md A1.
+#
+# --- P-R4: the net-T⁴ radiation exchange (ruling A1) --------------------------
+# For every (emitter s, absorbing marched cell r) pair the ray march enumerates:
+#   net       = a_s * a_r * tau * w * (E°[T_s] - E°[T_r])   (signed, Q16.16 counts)
+#   rad_net[r] += net;   rad_net[s] -= net                   (the SAME integer)
+#   survival  *= (1 - a_r)                                   (AFTER the deposit)
+# with a_x = the material's `heat_atten` (absorptivity == emissivity, Kirchhoff),
+# tau the running material transmittance, w = 1/fire_ray_count, and E° the baked
+# black-body table E°(T) = rad_scale * (293 + 2*T_game)^4.
+#
+# rad_scale — THE EMISSION CALIBRATION. It folds sigma, the 0.833 m² tile face,
+# the per-tick dt and the game->Kelvin mapping into one number: heat counts per
+# K^4. DERIVATION of the shipped value (the seed's own ignition sanity, made
+# live by gate (h)): wood's piloted-ignition flux is ~12 kW/m² and a neighbour at
+# view factor ~0.3 receives ~22 kW/m² from a 1093 K flame — i.e. a first-ring
+# neighbour of a burning crate SHOULD reach ignition. Our 8-ray fan is a discrete
+# view-factor sampler: a first-ring tile is crossed by 2 of the 8 rays (VF 0.25,
+# the seed's 0.3), a second-ring tile at (+-2,+-1) by 1 (VF 0.125). Chaining that
+# through the receiver's own balance (radiative-in == cool_shift-out, since
+# furniture conducts nothing):
+#     T_r/2^cool_shift = a_s*a_r*(n_rays/8)*rad_scale*(K_s^4 - K_r^4) / 2^his
+# with furniture a = 0.5, his = 3, cool_shift = 9 (the P-R3 anchor), a 443-game
+# emitter (K_s = 1179) and the 280-game ignition point (K_r = 853) needs
+# rad_scale >= 6.5e-6 at 2 tiles. 1.0e-5 puts the two-tile equilibrium at ~333
+# game (ignition in ~40 s at the 21 s e-fold) and the first ring at ~387 — below
+# the emitter's own 443, as the net form guarantees: a receiver can approach the
+# emitter but never pass it. RE-TUNE AT P-R5 with cool_shift (the two multiply).
+rad_scale            = 1.0e-5 # heat counts per K^4 in the baked E° table
+# T_emit_gate — who CASTS. Emitters are burning tiles UNION thermal solids at or
+# above this temperature. RECEIVERS ARE FREE: the net form accounts a cold tile
+# fully on the flame's own rays, so a crate never needs to emit to be heated
+# correctly. This gate only decides who can radiatively LOSE heat and warm
+# others. 180 game = 653 K (Erik, 2026-07-31). LOWER = the FEEL lever (warm
+# objects gently toasting their surroundings) and costs emitter count; HIGHER =
+# the COST lever and costs post-fire glow. Ruling A1.8.
+T_emit_gate          = 180.0  # game units; below it a hot solid does not cast
 fire_ray_count       = 8      # FIXED rays per burning tile (no auto-count, no RNG dither)
 range_base           = 2.0    # max_range = range_base + range_per_intensity * I  (tiles)
 range_per_intensity  = 3.0
@@ -449,6 +492,46 @@ soot_yield        = 0.3    # fraction of consumed O2 -> smoke (rest -> inert_N2)
 # default, but in play THE ember-lifetime dial: smaller -> embers glow for
 # minutes awaiting oxygen; larger -> they char out fast.
 fuel_per_o2       = 0.7
+# --- P-R4: H_bed, the FUEL-BED deposit (ruling A1) ---------------------------
+# With the painter retired, a lone crate's radiation NETS TO ZERO at the source
+# (its own tile reads the same E° bucket) and only LOSES to cooler surroundings,
+# so combustion has to own the flame plateau. `H_fuel` above cannot: it is the
+# GAS-side yield, deposited into the air cell where the flame front sits. The
+# missing term is the flame heating its own FUEL BED — real physics (it is how
+# fires sustain), and NOT self-radiation. Per claimant k, in Pass A:
+#     heat[src_k] += mul_q16(burn_k, H_BED_M) << H_BED_SHIFT
+# strictly proportional to the O2 that claimant ACTUALLY consumed.
+#
+# ONE LOGICAL CONSTANT, SPLIT: H_bed = H_BED_M * 2^H_BED_SHIFT. Two reasons: the
+# needed magnitude does not fit a Q16.16 mantissa, and a big mantissa also keeps
+# mul_q16's truncation fine against a per-tick claim of only a few raw counts.
+#
+# DERIVATION (the lone-crate energy balance at the P-R3 anchor dials). Furniture
+# conducts nothing (kappa 0 -> NO_FACE) and a lone crate has no absorber within
+# its 2.63-tile reach, so radiation-out is ZERO and cool_shift is its only loss:
+#     H_bed * B = T* * 2^(heat_inv_shift - cool_shift)
+# with B the crate's total per-tick O2 claim = burn_rate*dt*I*o2f*n_faces. At
+# T* = 443, his = 3, cool_shift = 9, burn_rate 0.02, dt 1/24 and the FOUR air
+# faces that each file a full demand share, the ALGEBRA gives H_bed = 1.07e5 IF
+# the fire ran at the ideal anchor (I 0.21, ambient o2f 0.092). NOTE the
+# ruling's own 4.3e5 estimate assumed a claim-structure factor of 1 and told us
+# to measure it: measured, it is 4 (four air neighbours).
+# MEASURED OPERATING POINT (the bench, not the algebra): a lone crate vitiates
+# its own flame ring, so it actually sits at o2f 0.0825 (X_local 0.198, not the
+# ambient 0.21) and I 0.152 (not 0.21) — both LOWER than the ideal anchor, and
+# T* is linear in each. Scaling the algebra by (0.092/0.0825)*(0.21/0.152) and
+# placing the result on the bench lands H_bed = 2.02e5, which holds the
+# sustained plateau at T* = 440 game (window mean; max 486, gate band 400-500).
+# That is 2.1x BELOW the ruling's 4.3e5 estimate — inside its +/-3x sanity band.
+#
+# HONEST NAMING: this is a CALIBRATED LUMPED CONSTANT exactly like thermal_mass.
+# It is Huggett-SHAPED (strictly proportional to O2 consumed — so a choked fire
+# deposits nothing and the plateau SAGS with local O2, backdraft-adjacent feel)
+# but NOT Huggett-VALUED: thermal_mass = 8 already lumps the ~130x surface-layer
+# factor, so no J/mol anchor survives the conversion. Do not read it as an
+# enthalpy. RE-TUNE AT P-R5 alongside cool_shift.
+H_BED_M           = 25290.0  # mantissa (< 32768, the Q16.16 range)
+H_BED_SHIFT       = 3        # H_bed = H_BED_M * 2^H_BED_SHIFT = 2.023e5
 # Unit-side suffocation mechanics (LATER arc, design §5): defined here so the
 # constant lives at the right layer; nothing reads it yet.
 o2_thresh_breathe = 0.08   # min local N_O2 a unit needs to breathe (NOT wired yet)

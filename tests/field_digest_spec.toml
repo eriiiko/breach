@@ -8,7 +8,7 @@
 # and regenerate every committed golden/digest in the SAME commit (plan §7.6
 # gate-7 — CI must reject a stale digest tag).
 
-version = 2                    # v2 (2026-07-24): +ignition_armed (edge-trigger arm)
+version = 3                    # v3 (2026-08-01, P-R4 D1): +dem_acc (combustion demand accumulator)
 hash = "blake2b-256"
 byte_order = "little"          # x86 + CUDA; big-endian dtypes are refused
 serialization = "per-field: ascii header 'name|dtype.str|shape' then C-order raw bytes"
@@ -36,6 +36,13 @@ fields = [
     { name = "obstacles",      dtype = "bool"  },
     { name = "is_vacuum",      dtype = "bool"  },
     { name = "ignition_armed", dtype = "bool"  },
+    # v3: the (4, h, w) per-face sub-count oxygen debt the combustion demand
+    # accumulator carries ACROSS ticks (ruling amendment 5, D1). Persistent
+    # synced state — a desync here forks the oxygen draw and the whole fire
+    # stream. The per-TICK radiation planes (rad_net / rad_flux) are wiped at
+    # end of tick, so they are identically zero at every snapshot and are
+    # deliberately excluded.
+    { name = "dem_acc",        dtype = "int32" },
 ]
 
 # Float sim fields deliberately EXCLUDED from the cross-GPU integer digest

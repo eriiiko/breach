@@ -96,7 +96,13 @@ int64_t temperature_step(
     // Low clamp on that subtraction, == config [physics.thermal] SHIFT_MIN.
     // Load-bearing: a material legally sitting AT the floor would otherwise
     // derive an exposed shift of 0 == `T -= T` (an instant total wipe).
-    int cool_shift_floor = 2);
+    int cool_shift_floor = 2,
+    // P-R4 (ruling A1.7): the SIGNED radiation accumulator the raycaster's
+    // net-T⁴ exchange fills. Folded in Pass 1 BEFORE the heat deposit, through
+    // `shr_round0(rad_net[i], heat_inv_shift[i])` and a SYMMETRIC saturating
+    // add — the exact CPU twin (temperature_solver.cpp Pass 1). nullptr -> no
+    // fold, byte-identical to pre-P-R4.
+    const int32_t* rad_net = nullptr);
 
 // Backend selection (S1 gate + integration). When true, PhysicsEngine::step_tail
 // runs temperature on the GPU instead of the CPU solver. Defaults false so the

@@ -68,6 +68,23 @@ __device__ __forceinline__ q16 clamp01_q_dev(q16 v) {
     return v;
 }
 
+// P-R4: SATURATING integer atomic add — the device twin of raycaster.h's
+// `heat_saturating_add` (and a verbatim copy of cuda_raycaster.cu's
+// heat_atomic_sat_add). Needed here because several AIR cells can feed the same
+// flammable claimant, so the H_bed deposits at one source cell race. Order-free
+// for non-negative deltas: a saturating add under a monotone clamp is
+// associative + commutative, so the total is bit-identical to the CPU's ordered
+// sequence of heat_saturating_add calls.
+__device__ __forceinline__ void heat_atomic_sat_add_dev(int32_t* addr, int32_t delta) {
+    if (delta <= 0) return;
+    int32_t old = *addr, assumed;
+    do {
+        assumed = old;
+        int32_t sum = (assumed > 0x7fffffff - delta) ? 0x7fffffff : (assumed + delta);
+        old = atomicCAS(addr, assumed, sum);
+    } while (assumed != old);
+}
+
 // ---- K1: Pass A — air cells (combustion.cpp:115-228) -----------------------
 // One thread per cell j. Single writer of O2[j], SOOT[j], N2[j], temperature[j],
 // and the four face buffers at index j. Reads d_tsnap (the snapshot gate), the
@@ -92,7 +109,13 @@ __global__ void combustion_pass_a(
         // THERMAL-MASS AXIS, P-EOS: the object-deposit branch's inputs. Both
         // nullptr on the legacy path -> the gas divisor, verbatim.
         const bool* __restrict__ thermal_solid,
-        const int32_t* __restrict__ heat_inv_shift) {
+        const int32_t* __restrict__ heat_inv_shift,
+        // P-R4: the fuel-bed deposit's target plane + its split constant.
+        int32_t* __restrict__ heat, int32_t H_bed_m_q, int H_bed_shift,
+        // D1: the error-feedback demand accumulator, (4, h, w). Single writer
+        // per air cell (this thread owns all four of ITS face slots), so no
+        // atomics and no order dependence — see combustion.h.
+        int32_t* __restrict__ dem_acc) {
     const int n = h * w;
     const int32_t FUEL_FLOOR = CombustionSolver::FUEL_FLOOR;
     for (int j = blockIdx.x * blockDim.x + threadIdx.x; j < n;
@@ -125,12 +148,44 @@ __global__ void combustion_pass_a(
             const int iy = y + D4_dy[d], ix = x + D4_dx[d];
             if (!in_bounds(iy, ix, h, w)) continue;
             const int i = iy * w + ix;
-            if (!flammable[i]) continue;
-            if (wall_hp[i] <= FUEL_FLOOR) continue;   // no fuel (P5.1 ember out)
+            // D1 RESET RULE — the CPU site verbatim: the slot's sub-count debt
+            // survives only while the neighbour is an ACTIVELY BURNING
+            // claimant; every rejecting gate zeroes it first.
+            const size_t slot = (size_t)d * n + j;
+            if (!flammable[i]) { if (dem_acc) dem_acc[slot] = 0; continue; }
+            if (wall_hp[i] <= FUEL_FLOOR) {            // no fuel (P5.1 ember out)
+                if (dem_acc) dem_acc[slot] = 0; continue; }
             const q16 ign_i = ignition_temp_q16[i];
-            if (ign_i <= 0) continue;                 // material can't ignite
-            if (tsnap[i] < ign_i) continue;           // below ignition (snapshot!)
-            const q16 di = mul_q16(mul_q16(burn_cap_q, fire[i]), o2f_j);
+            if (ign_i <= 0) { if (dem_acc) dem_acc[slot] = 0; continue; }
+            // IGNITION vs SUSTAIN — the CPU site verbatim (combustion.cpp
+            // carries the full finding): the ignition-temperature gate applies
+            // only to a tile that is NOT already alight. A burning tile drops
+            // below its own ignition_temp within one cool_shift step, and
+            // gating oxygen on it deadlocked the whole chain once the painter
+            // stopped holding the tile up there. Death stays the fire
+            // logistic's job (fire_T_ext + the I_min snap).
+            const bool alight = (fire[i] > 0);
+            if (!alight && tsnap[i] < ign_i) {   // not alight -> the ign gate
+                if (dem_acc) dem_acc[slot] = 0;
+                continue;
+            }
+            if (!alight) {                        // I == 0 -> demands nothing
+                if (dem_acc) dem_acc[slot] = 0;
+                continue;
+            }
+            q16 di;
+            if (dem_acc != nullptr) {
+                // D1 error-feedback demand — the CPU block verbatim (int64
+                // wide product, scale-2^31 remainder, whole counts drawn).
+                const long long P = (long long)burn_cap_q
+                                  * (long long)fire[i] * (long long)o2f_j;
+                const long long wide = (long long)dem_acc[slot] + (P >> 1);
+                const long long draw = wide >> 31;
+                dem_acc[slot] = (int32_t)(wide - (draw << 31));
+                di = (q16)draw;
+            } else {
+                di = mul_q16(mul_q16(burn_cap_q, fire[i]), o2f_j);
+            }
             cl_dir[n_cl] = d;
             cl_src[n_cl] = i;
             dem[n_cl] = (int64_t)di;
@@ -211,9 +266,20 @@ __global__ void combustion_pass_a(
             temperature[j] = t_max_phys_q; atomicAdd(d_t_max_phys_hits, 1);
         }
 
-        // File each claimant's allocation on the face buffer for Pass B.
+        // File each claimant's allocation on the face buffer for Pass B, and
+        // pay each claimant its P-R4 FUEL-BED deposit — the CPU site verbatim
+        // (combustion.cpp Pass A): H_bed proportional to the O2 the claimant
+        // ACTUALLY got, int64 shift + INT32_MAX clamp, then a positive
+        // SATURATING atomic add at the claimant's own cell (several air cells
+        // can feed one source, hence the atomic).
         for (int k = 0; k < n_cl; ++k) {
             alloc_face[(size_t)cl_dir[k] * n + j] = (q16)alloc[k];
+            if (heat != nullptr && alloc[k] > 0 && H_bed_m_q > 0) {
+                long long bed = (long long)mul_q16((q16)alloc[k], H_bed_m_q);
+                bed <<= H_bed_shift;
+                if (bed > (long long)0x7fffffff) bed = (long long)0x7fffffff;
+                heat_atomic_sat_add_dev(&heat[cl_src[k]], (int32_t)bed);
+            }
         }
     }
 }
@@ -263,7 +329,9 @@ void combustion_step(
         float burn_rate, float o2_thresh_burn, float H_fuel, float soot_yield,
         float fuel_per_o2, float o2_frac_ext, float o2_frac_full, float T_MAX_PHYS,
         int64_t* heat_floor_hits, int64_t* t_max_phys_hits,
-        const bool* thermal_solid, const int32_t* heat_inv_shift) {
+        const bool* thermal_solid, const int32_t* heat_inv_shift,
+        int32_t* heat, float H_BED_M, int H_BED_SHIFT,
+        int32_t* dem_acc) {
 
     // --- Guards + load-time scalar precompute (VERBATIM of combustion.cpp:65-91,
     //     in double). A guarded early-return leaves ALL fields untouched (no
@@ -293,6 +361,10 @@ void combustion_step(
     const bool   x_degenerate  = (x_span <= 0.0);
     const int64_t recip_x_span = x_degenerate ? 0 : make_recip(x_span);
     const q16 X_N_FLOOR        = quantize(0.01);   // 655 counts (see fire_simulation.cpp)
+    // P-R4: the fuel-bed mantissa, quantized on the HOST with the identical
+    // fixedpoint::quantize the CPU solver uses (the load-time boundary idiom).
+    const q16 H_bed_m_q        = quantize((double)H_BED_M);
+    const int H_bed_shift      = (H_BED_SHIFT > 0) ? H_BED_SHIFT : 0;
 
     if (burn_cap_q <= 0) return;   // nothing burns this tick (fields untouched)
 
@@ -350,6 +422,24 @@ void combustion_step(
                               cudaMemcpyHostToDevice), "H2D heat_inv_shift");
     }
 
+    // P-R4: the `heat[]` plane rides only when the caller supplies it (the same
+    // nullable idiom as the thermal-mass pair above), so the legacy path costs
+    // nothing and the kernel takes the byte-identical no-H_bed branch. It is
+    // IN/OUT: uploaded so the saturating atomics start from the caller's
+    // existing accumulation, downloaded after the launch.
+    int32_t* d_heat = nullptr;
+    if (heat) {
+        cuda_check(cudaMalloc(&d_heat, nb), "malloc heat");
+        cuda_check(cudaMemcpy(d_heat, heat, nb, cudaMemcpyHostToDevice), "H2D heat");
+    }
+    // D1: the (4, h, w) demand accumulator — SYNCED state, so it is IN/OUT.
+    int32_t* d_dem_acc = nullptr;
+    if (dem_acc) {
+        cuda_check(cudaMalloc(&d_dem_acc, (size_t)4 * nb), "malloc dem_acc");
+        cuda_check(cudaMemcpy(d_dem_acc, dem_acc, (size_t)4 * nb,
+                              cudaMemcpyHostToDevice), "H2D dem_acc");
+    }
+
     // K0: snapshot Tsnap <- temperature (device-to-device; the explicit freeze).
     cuda_check(cudaMemcpy(d_tsnap, d_temp, nb, cudaMemcpyDeviceToDevice), "D2D tsnap");
     // Face buffers + rail counters start at zero.
@@ -367,7 +457,7 @@ void combustion_step(
         h, w, burn_cap_q, o2_thresh_q, soot_yield_q, H_fuel_q, recip_cv,
         n_floor_q, t_max_phys_q,
         x_ext_q, recip_x_span, x_degenerate, X_N_FLOOR,
-        d_tsol, d_shift);
+        d_tsol, d_shift, d_heat, H_bed_m_q, H_bed_shift, d_dem_acc);
     cuda_check(cudaGetLastError(), "pass_a launch");
 
     // K2: Pass B (separate launch = grid barrier: d_alloc fully written by K1,
@@ -384,6 +474,9 @@ void combustion_step(
     cuda_check(cudaMemcpy(SOOT_h, d_SOOT, nb, cudaMemcpyDeviceToHost), "D2H SOOT");
     cuda_check(cudaMemcpy(temperature, d_temp, nb, cudaMemcpyDeviceToHost), "D2H temp");
     cuda_check(cudaMemcpy(wall_hp, d_whp, nb, cudaMemcpyDeviceToHost), "D2H wall_hp");
+    if (heat) cuda_check(cudaMemcpy(heat, d_heat, nb, cudaMemcpyDeviceToHost), "D2H heat");
+    if (dem_acc) cuda_check(cudaMemcpy(dem_acc, d_dem_acc, (size_t)4 * nb,
+                                       cudaMemcpyDeviceToHost), "D2H dem_acc");
 
     int counters[2] = {0, 0};
     cuda_check(cudaMemcpy(counters, d_counters, 2 * sizeof(int), cudaMemcpyDeviceToHost),
@@ -406,6 +499,8 @@ void combustion_step(
     cudaFree(d_counters);
     if (d_tsol)  cudaFree(d_tsol);
     if (d_shift) cudaFree(d_shift);
+    if (d_heat)  cudaFree(d_heat);
+    if (d_dem_acc) cudaFree(d_dem_acc);
 }
 
 namespace {

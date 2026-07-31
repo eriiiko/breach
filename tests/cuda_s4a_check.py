@@ -208,7 +208,16 @@ def part2_integration() -> bool:
     # gate-h rule). DIGEST_SPEC_VERSION unchanged (values moved; no field
     # added/removed/retyped).
     # (was 7eeb41d431a79ba01cbafef37416188bbf1ecb2a194d92af5f4ede279c9f2758)
-    GOLDEN = "98d3dd7eaf3d574d6e562513cd95f3b5ac077b7c69b1d0b024db931261735473"
+    # P-R4 GOLDEN REBASE (2026-08-01, the arc's ONE deliberate rebase —
+    # ruling amendment 5 D2, Erik's approval). The canonical A/B scenario seeds
+    # fire at (8,8)/(8,9) on AIR tiles (material 0, heat_atten 0,
+    # flammable.sum() == 0) — a GHOST fire whose only observable was the retired
+    # painter's air deposit. Under Kirchhoff a body that cannot absorb cannot
+    # emit (a_s == 0), so that heat is now correctly ZERO and every trajectory
+    # carrying it moves. Folded into the SAME one-shot rebase: D1's demand
+    # accumulator (digest spec v2 -> v3, +dem_acc), D3's radiant-flux sensor and
+    # D4's per-tick fan rotation. ONE approved change-set, ONE rebase event.
+    GOLDEN = "e73f130ea6f514fc285825d1efc828202bfc7e2e77dee3212bed2aa822e45f8a"
 
     def make_smoky():
         sim = default_scenario_sim()

@@ -138,9 +138,32 @@ _FIRE_DEFAULTS = {
     "k_die": 0.035,
     "o2_frac_ext": 0.13,
     "o2_frac_full": 1.0,
-    "k_fire_heat": 33.0,
     "ignition_seed": 0.12,
 }
+
+# P-R4 (docs/radiation_raycaster_extinction_ruling_2026-07-31.md A1): the seed
+# check's T*/I gain used to be `k_fire_heat * 2^(cool_shift - heat_inv_shift)`.
+# The painter is gone, so the plateau is now owned by combustion's FUEL-BED
+# deposit and the gain chain runs through [physics.combustion] instead. These
+# are the fallbacks for a dict-built / config-less table (same contract as
+# _FIRE_DEFAULTS above); nothing in the sim path reads any of this.
+_COMB_DEFAULTS = {
+    "H_BED_M": 26875.0,
+    "H_BED_SHIFT": 2,
+    "burn_rate": 0.02,
+}
+
+# The seed check's two REFERENCE constants, named rather than buried:
+#   * the nominal tick length the plateau algebra is evaluated at (the engine
+#     ticks at 24 tps; dt is not a material-table input, and this check is
+#     load-time arithmetic over dials, not a simulation);
+#   * the CLAIM STRUCTURE — how many open air faces file a full demand share
+#     against one burning tile. A crate in open air has four. This is exactly
+#     the factor the ruling's own H_bed estimate assumed was 1 and told us to
+#     measure (§A1, "claim-structure factor ~= 1 for the lone crate; measure,
+#     don't trust"); measured, it is 4.
+_SEED_CHECK_DT = 1.0 / 24.0
+_SEED_CHECK_CLAIM_FACES = 4.0
 
 # The ambient O2 mole fraction the sustain arithmetic is evaluated AT. Not a
 # dial: the check answers "can a seed survive in ORDINARY air?", so it is
@@ -242,7 +265,8 @@ class MaterialTable:
     Rebuild via :meth:`from_config` after a config hot-reload.
     """
 
-    def __init__(self, materials_cfg, thermal_cfg=None, fire_cfg=None):
+    def __init__(self, materials_cfg, thermal_cfg=None, fire_cfg=None,
+                 comb_cfg=None):
         """Build from the ``CFG.materials`` namespace (or any equivalent).
 
         ``materials_cfg`` is the :class:`config.Namespace` for ``[materials]``;
@@ -260,6 +284,12 @@ class MaterialTable:
         derivation (P-R3, ruling A3), plus the dials the ``ignition_seed``
         load-time check reads. When omitted the :data:`_FIRE_DEFAULTS` are used,
         for the same reason ``thermal_cfg`` has defaults.
+
+        ``comb_cfg`` is the optional ``[physics.combustion]`` namespace (or
+        dict). P-R4 moved the ignition-seed check's ``T*/I`` gain off the
+        retired ``k_fire_heat`` and onto the fuel-bed deposit that now owns the
+        plateau, so the check reads ``H_BED_M``/``H_BED_SHIFT``/``burn_rate``
+        from here. Defaults: :data:`_COMB_DEFAULTS`.
         """
         ids = sorted(MATERIAL_NAMES)
         # Contiguity: ids must be 0..N-1 so an array indexed by id has no gaps.
@@ -453,7 +483,7 @@ class MaterialTable:
         # Pure load-time arithmetic + a console warning — NOTHING in the sim
         # path changes, and a failing check never blocks a load. Full
         # auto-derivation of the seed is deliberately deferred (audit §1.4).
-        self._check_ignition_seed(fire_cfg, thermal_cfg)
+        self._check_ignition_seed(fire_cfg, thermal_cfg, comb_cfg)
 
         # --- Conduction face-shift tables (engine/06 §2.4–§2.5) ---------------
         # All log2 / harmonic-mean / division happens HERE, at LOAD, in float;
@@ -614,7 +644,7 @@ class MaterialTable:
         self.face_shift_table = face
 
     # -- ignition-seed sanity (P-R3 Task C; ruling A3) --------------------
-    def _check_ignition_seed(self, fire_cfg, thermal_cfg):
+    def _check_ignition_seed(self, fire_cfg, thermal_cfg, comb_cfg=None):
         """Warn (console only, once) if ``ignition_seed`` cannot bootstrap a
         flammable material's fire.
 
@@ -628,8 +658,21 @@ class MaterialTable:
             r         = k_die / k_grow
             o2f_amb   = (0.21 - o2_frac_ext) / (o2_frac_full - o2_frac_ext)
             h_min     = [r/(1+r)] / o2f_amb          # the `hot` the fire needs
-            gain[mat] = k_fire_heat * 2^(cool_shift[mat] - log2(thermal_mass[mat]))
+            gain[mat] = H_bed * burn_rate * dt * o2f_amb * claim_faces
+                              * 2^(cool_shift[mat] - log2(thermal_mass[mat]))
             I_sustain[mat] = (fire_T_ext[mat] + fire_T_span*h_min) / gain[mat]
+
+        P-R4 (ruling A1): the ``gain`` line changed. It used to be
+        ``k_fire_heat * 2^(cool_shift - heat_inv_shift)`` — the painter's
+        one-way per-tile payload. The painter is retired, so the plateau is now
+        set by combustion's FUEL-BED deposit: each of the tile's open air faces
+        files a demand share ``burn_rate*dt*I*o2f`` and pays back
+        ``H_bed * (the O2 it got)`` into ``heat[]``, which converts through the
+        tile's own ``heat_inv_shift`` and is shed at ``cool_shift``. Setting
+        in == out gives the gain above. Two REFERENCE constants make it
+        evaluable at load time (see :data:`_SEED_CHECK_DT` /
+        :data:`_SEED_CHECK_CLAIM_FACES`): the nominal 24 tps tick and the
+        four-open-faces claim structure of a crate in open air.
 
         The 15% margin (``seed >= 1.15 * I_sustain``) is the ruling's C2
         constraint: born exactly AT the floor, a fire coasts on a knife edge and
@@ -645,12 +688,23 @@ class MaterialTable:
         def _f(name):
             return float(self._fire_get(fire_cfg, name))
 
+        def _c(name):
+            """One ``[physics.combustion]`` constant, defaulted (P-R4)."""
+            if comb_cfg is None:
+                return _COMB_DEFAULTS[name]
+            if isinstance(comb_cfg, dict):
+                return comb_cfg.get(name, _COMB_DEFAULTS[name])
+            return getattr(comb_cfg, name, _COMB_DEFAULTS[name])
+
         try:
             k_grow, k_die = _f("k_grow"), _f("k_die")
             x_ext, x_full = _f("o2_frac_ext"), _f("o2_frac_full")
             span = _f("fire_T_span")
-            k_fire_heat = _f("k_fire_heat")
             seed = _f("ignition_seed")
+            # P-R4: the plateau's source is the fuel-bed deposit, not the
+            # retired painter. H_bed is ONE constant split mantissa/shift.
+            h_bed = float(_c("H_BED_M")) * (2.0 ** int(_c("H_BED_SHIFT")))
+            burn_rate = float(_c("burn_rate"))
         except Exception:              # a config shape we do not recognise
             return                     # -> silently skip; this is a courtesy check
         if k_grow <= 0.0 or x_full <= x_ext:
@@ -660,17 +714,21 @@ class MaterialTable:
             return
         r = k_die / k_grow
         h_min = (r / (1.0 + r)) / o2f_amb
+        # The per-unit-I combustion deposit at ambient O2, before the material's
+        # own mass/loss shifts: H_bed * (burn_rate*dt*o2f) * claim_faces.
+        bed_per_I = (h_bed * burn_rate * _SEED_CHECK_DT * o2f_amb
+                     * _SEED_CHECK_CLAIM_FACES)
 
         for idx, name in enumerate(self.names):
             if not bool(self.flammable[idx]):
                 continue
-            # gain = k_fire_heat * 2^(cool_shift - heat_inv_shift); the shift
-            # pair IS log2(thermal_mass) and the ambient-decay shift, already
-            # validated integers on this table.
+            # P-R4 gain = bed_per_I * 2^(cool_shift - heat_inv_shift); the
+            # shift pair IS log2(thermal_mass) and the ambient-decay shift,
+            # already validated integers on this table.
             if not bool(self.thermal_solid[idx]):
                 continue               # gas-regime fuel: no T* equilibrium to chain
             exp = int(self.cool_shift[idx]) - int(self.heat_inv_shift[idx])
-            gain = k_fire_heat * (2.0 ** exp)
+            gain = bed_per_I * (2.0 ** exp)
             if gain <= 0.0:
                 continue
             i_sustain = (float(self.fire_T_ext[idx]) + span * h_min) / gain
@@ -685,7 +743,8 @@ class MaterialTable:
                 f"is below the 15% bootstrap margin over I_sustain = "
                 f"{i_sustain:.4f} (need >= {1.15 * i_sustain:.4f}). A tile "
                 f"seeded there cannot warm itself past its own `hot` floor and "
-                f"will snap out. [P-R3 load-time check, ruling A3]",
+                f"will snap out. [P-R3 load-time check, ruling A3; P-R4 gain "
+                f"chain: H_bed fuel-bed deposit, not the retired k_fire_heat]",
                 file=sys.stderr,
             )
 
@@ -759,7 +818,11 @@ class MaterialTable:
             cfg = CFG
         thermal_cfg = getattr(getattr(cfg, "physics", None), "thermal", None)
         fire_cfg = getattr(getattr(cfg, "physics", None), "fire", None)
-        return cls(cfg.materials, thermal_cfg, fire_cfg)
+        # P-R4: the seed check's gain chain now runs through the combustion
+        # fuel-bed deposit (k_fire_heat is retired), so [physics.combustion]
+        # rides along too.
+        comb_cfg = getattr(getattr(cfg, "physics", None), "combustion", None)
+        return cls(cfg.materials, thermal_cfg, fire_cfg, comb_cfg)
 
     def occludes(self, material_grid):
         """Static occlusion mask: a tile occludes if it attenuates any channel.

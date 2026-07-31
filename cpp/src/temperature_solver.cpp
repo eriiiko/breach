@@ -150,8 +150,9 @@ void TemperatureSolver::step(
     float dt,                    // P2: tick's elapsed seconds; <= 0 skips Pass 0
     const bool* is_ambient,      // BC: ambient ring mask (nullptr = space map)
     const bool* thermal_solid,   // thermal-mass axis: medium mask (nullptr -> solid)
-    const int32_t* cool_shift_grid  // cool-shift axis: per-tile ambient-decay
+    const int32_t* cool_shift_grid, // cool-shift axis: per-tile ambient-decay
                                      // shift (nullptr -> the `cool_shift` scalar)
+    const int32_t* rad_net          // P-R4: SIGNED radiation accumulator
 ) const {
     const int n = h * w;
     const bool ambient_mode = (is_ambient != nullptr);   // BC: dormancy by branch
@@ -255,6 +256,44 @@ void TemperatureSolver::step(
         const int32_t t_max_phys_q = quantize((double)T_MAX_PHYS);
 
         for (int i = 0; i < n; ++i) {
+            // ---- P-R4: the SIGNED radiation fold (ruling A1.5/A1.7) -------
+            // Runs FIRST and INDEPENDENTLY of the `deposit <= 0` skip below —
+            // that skip is the painter-era gate and it would silently swallow
+            // every radiative LOSS (a fire that cannot cool by radiating). The
+            // conversion is the SAME per-material lumped absorption the heat
+            // deposit uses (`>> heat_inv_shift`), but with `shr_round0` so it
+            // is SYMMETRIC about zero: +x and −x lose the same magnitude, no
+            // sign-dependent DC drift across a long burn.
+            //
+            // ORDER IS PINNED: radiation fold, THEN the heat deposit — both
+            // clamp at the T_MAX_PHYS rail, so the order is observable there
+            // and the CUDA twin pins the identical order.
+            //
+            // THERMAL SOLIDS ONLY: only a tile with heat_atten > 0 can ever
+            // accumulate a nonzero rad_net (air neither absorbs nor emits), and
+            // in the shipped material table every such tile is a thermal solid;
+            // the mask test is belt-and-braces so a hypothetical absorbing gas
+            // cell can never take the solid bit-shift path.
+            if (rad_net != nullptr && ts[i]) {
+                const int32_t rn = rad_net[i];
+                if (rn != 0) {
+                    const int32_t dTr = shr_round0(rn, heat_inv_shift[i]);
+                    // SYMMETRIC saturating add: raycaster.h's
+                    // heat_saturating_add early-returns on delta <= 0 (its
+                    // accumulator is contractually non-negative), which would
+                    // drop exactly the radiative losses this fold exists to
+                    // deliver. sat_add_q16 is the kit's signed twin, built for
+                    // temperature for precisely this reason (fixed_point.h).
+                    temperature[i] = sat_add_q16(temperature[i], dTr);
+                    if (temperature[i] > t_max_phys_q) {
+                        temperature[i] = t_max_phys_q; ++t_max_phys_hits;
+                    }
+                    // No LOW rail is needed: the exchange is antisymmetric, so
+                    // a tile can only be dragged toward another tile's
+                    // temperature, never below the coldest participant (and
+                    // ambient == 0 is the floor every solid starts at).
+                }
+            }
             int32_t deposit = heat[i];
             if (deposit <= 0) continue;       // nothing to convert this tick
             // MEDIUM-TEST SITE 5/6: the heat->T convert branch. A thermal

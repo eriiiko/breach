@@ -1124,7 +1124,14 @@ class Simulation:
         sim_time_per_tick = 1.0 / float(self._tps)
         destroyed = []
         if self.physics_runner is not None:
-            destroyed = self.physics_runner.step(self.gmap, sim_time_per_tick)
+            # D4 (ruling amendment 5): the SIM TICK reaches the fire cast so the
+            # 8-ray fan's phase rotates with it — without that rotation the fan
+            # casts the same 8 directions from every source forever and some
+            # tile pairs are NEVER connected (measured: the (+2,0) axis
+            # neighbour). `self.tick` is synced state, so this is save/load- and
+            # lockstep-safe (never a wall-clock or call-count counter).
+            destroyed = self.physics_runner.step(
+                self.gmap, sim_time_per_tick, tick=self.tick)
 
         # 9. Process fire burn-through walls. A6: the door-event split keys
         # on BOTH door materials — legacy painted MAT_DOOR and the entity
@@ -1280,6 +1287,19 @@ class Simulation:
         # (never reassigned) so any C++ view of the buffer stays valid.
         if self.physics_runner is not None:
             self.gmap.heat.fill(0)
+            # P-R4 (ruling A1.7): `rad_net` is the SIGNED radiation accumulator
+            # and shares `heat`'s per-tick lifetime exactly — filled by the
+            # fire-plane cast at the top of the physics step, consumed by the
+            # temperature solver's Pass-1 fold in the same step, wiped here so
+            # the next tick's cast starts clean. In-place (never reassigned) so
+            # any C++ view of the buffer stays valid.
+            self.gmap.rad_net.fill(0)
+            # D3: the radiant-flux SENSOR shares the same per-tick lifetime —
+            # filled by the cast at the top of the physics step, consumed by
+            # unit heat damage above, wiped here. (`dem_acc` does NOT belong
+            # in this clear: it is PERSISTENT synced state whose whole job is
+            # to carry a sub-count oxygen debt ACROSS ticks.)
+            self.gmap.rad_flux.fill(0)
 
         # Expire visual shot tracers (legacy fade-out behaviour).
         if self.shots:

@@ -344,11 +344,24 @@ def test_spread_is_radiation_only_no_cellular_stencil():
     g.material[50, 15] = MAT_WOOD          # adjacent target (radiation reaches it)
     g.material[50, 40] = MAT_WOOD          # far target (no heat path)
     g._update_caches()
+    # P-R4 re-anchor (ruling amendment 5 D2). Two changes, same scenario, same
+    # intent — "radiation is the ONLY spread path, and it does not leap gaps":
+    #  1. the burner is held HOT as well as lit. The retired painter deposited
+    #     `k_fire_heat * I` regardless of the tile's temperature; the net-T^4
+    #     exchange radiates against the emitter's OWN temperature, so a
+    #     synthetically-lit ice-cold tile emits E[0] and correctly heats nothing.
+    #     In play a burning tile sits at the ~440 game plateau (P-R4 gate f).
+    #  2. the pair runs at the arc's blessed cool_shift 9 rather than the shipped
+    #     5 — see the same note in tests/test_fire_heat_source.py. P-R5 owns that
+    #     dial; this test owns the spread PATH.
+    g.cool_shift[50, 14] = 9
+    g.cool_shift[50, 15] = 9
     sim.set_paused(False)
 
     adj_lit = False
     for _ in range(120):
         g.fire[50, 14] = FIRE_Q(0.8)       # hold the burner (S3a: Q16.16)
+        g.temperature[50, 14] = FIRE_Q(443.0)   # ...at flame temperature (P-R4)
         sim.step()
         if g.fire[50, 15] > 0:             # int compare on the Q16.16 field
             adj_lit = True

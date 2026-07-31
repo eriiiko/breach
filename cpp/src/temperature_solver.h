@@ -315,7 +315,20 @@ public:
         // back-compat idiom as `thermal_solid` above). The vacuum-exposed
         // shift is derived from this same per-tile value by the global offset
         // documented at `cool_shift` — there is deliberately no second grid.
-        const int32_t* cool_shift_grid = nullptr
+        const int32_t* cool_shift_grid = nullptr,
+        // ---- P-R4 RADIATION (docs/radiation_raycaster_extinction_ruling_
+        // 2026-07-31.md A1.7): the SIGNED per-tick radiation accumulator the
+        // raycaster's net-T⁴ exchange writes. int32 Q16.16 heat counts, its own
+        // plane (NOT `heat[]`) for one structural reason: `heat[]`'s adds are
+        // POSITIVE-SATURATING, which is order-free only because positives are
+        // monotone under a clamp; a SIGNED net under saturation is order-
+        // DEPENDENT. `rad_net[]` therefore takes plain (wrapping) signed adds,
+        // which ARE order-free — and it folds through a SIGNED conversion in
+        // Pass 1 that the `deposit <= 0` skip must not gate, or an emitter's
+        // radiative LOSS would silently never convert and fire could never cool
+        // by radiating. Default nullptr -> no fold (every legacy caller and
+        // every direct-binding test path stays byte-identical).
+        const int32_t* rad_net = nullptr
     ) const;
 
     // --- DEBUG probe (temporary instrumentation, eos-p3fix-thermal-ceiling
