@@ -10,6 +10,18 @@ note: two derived floors in this arc were wrong before they were measured).
 (Erik's number; his reasoning + the receivers-are-free argument recorded in A1.8),
 and A1.6 expanded with the plain-words meaning of `LIM_SHIFT`.
 
+**Amended 2026-08-01 (second pass) — ★ ERIK'S CRITICALITY RULING reframes P-R5:**
+on reading the thermal-shadow finding, Erik ruled the lone-crate partial burn a
+FEATURE, not a defect: *"if I set fire to a crate and it's totally windstill,
+chances are it may not totally burn to ashes — I've seen it many times when
+camping … we want to balance on the edge so that in some cases fire goes out,
+but in other cases they burn out."* P-R5's mission is therefore **knee
+PLACEMENT, not knee removal**: still-air lone crate dies part-burnt (current
+P-R3 behavior is approximately the TARGET); wind-fed and clustered crates cross
+the edge and burn out (radiation mutual-feeding is P-R4's channel for exactly
+this). The cool_shift-12 arithmetic in §5.5 is reclassified from destination to
+LEVER RANGE. Acceptance probes + the wind-mechanism nuance: §5.5 tail.
+
 **Amended 2026-08-01 (P-R3 boundary) — the THERMAL SHADOW finding (§5.5):** P-R3
 verified the capacity law to 0.66% but exposed a gate-placement error in THIS
 doc: the c2 (hp < 5) and c3 (X-floor) composite gates are unreachable at P-R3's
@@ -464,6 +476,26 @@ docs committed to the branch before any dependent agent spawns.
    left to a fuel-driven knee — both directionally right. **P-R5 isolation
    probe spec:** re-run c3 with `wall_damage=0` AND `fuel_per_o2=0` (F pinned
    at 1) so the O₂ wall is measured clean of the fuel knee.
+   **CRITICALITY reframe (Erik's ruling, header amendment):** the knee is the
+   separatrix his design wants. P-R5 places it, using these acceptance probes:
+   - **Lone crate, still air:** dies part-burnt (ballpark 40–60% consumed —
+     Erik blessed the current behavior's *shape*; exact fraction is his feel
+     call at the session).
+   - **2×2 crate cluster, still air:** mutual radiation (P-R4) must carry the
+     cluster across the knee → full burn-out (hp → ~0 on all four), given O₂.
+     This pair of runs IS the acceptance test for "balance on the edge."
+   - **Wind sweep on the lone crate** (`fire_timing_harness --wind-sweep`):
+     find the W that crosses the knee. ★ Mechanism nuance the session must
+     know: under the capacity law with small r, `k_wind_fan` barely moves
+     I_eq (the fan multiplies a bracket whose balance point is ≈ capacity;
+     its effect on I_eq is ∝ r) — wind's REAL lever here is O₂ SUPPLY
+     (advection refreshing the flame ring, X_local up → I_eq up linearly →
+     T* up). If the supply channel alone proves too weak to cross the knee
+     at plausible winds, re-siting the wind fan (e.g. onto capacity `c` or
+     onto the O₂ draw) is a DESIGN question — bring it back, do not dial it.
+   - The choked/vented O₂ cases (sky-τ) then span the third axis: same crate,
+     different room, different outcome — the per-situation variance Erik
+     wants from level dynamics.
 
 ## 6. Standing constraints (inherited, restated so the patch agents see them)
 
