@@ -216,13 +216,15 @@ class WindForcer:
         gmap.wind_x[m] = self.wind_q
         gmap.wind_y[m] = 0
 
-    def _step(self, gmap, sim_time):
+    def _step(self, gmap, sim_time, **kw):
+        # **kw: P-R4's fan phase rotation added a `tick` kwarg to the runner
+        # step; forward everything so this monkeypatch survives signature growth.
         self._force(gmap)                 # seam 1: smoke rides ~W in run_substeps
-        return self._orig_step(gmap, sim_time)
+        return self._orig_step(gmap, sim_time, **kw)
 
-    def _comb(self, gmap, sim_time):
+    def _comb(self, gmap, sim_time, **kw):
         self._force(gmap)                 # seam 2: fire reads exactly W in step_tail
-        return self._orig_comb(gmap, sim_time)
+        return self._orig_comb(gmap, sim_time, **kw)
 
 
 # ---------------------------------------------------------------------------
