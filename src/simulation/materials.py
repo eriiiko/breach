@@ -17,6 +17,7 @@ into the ray/wave passes in later chapters.
 from __future__ import annotations
 
 import math
+import sys
 
 import numpy as np
 
@@ -120,6 +121,83 @@ _COOL_SHIFT_MAX = 20
 # shipping an `hp` plane to C++ and dividing per cell.
 _FUEL_RECIP_SHIFT = 32
 
+# --- PER-MATERIAL EXTINCTION TEMPERATURE (P-R3, 2026-07-31 — docs/radiation_
+# raycaster_extinction_ruling_2026-07-31.md A3 ride-along) ------------------
+#
+# `[physics.fire]` defaults consumed by the `fire_T_ext` derivation and by the
+# `ignition_seed` load-time check below. Mirrors config.toml; the live values
+# are threaded in via :meth:`from_config` so the table tracks config edits, the
+# same contract `_THERMAL_DEFAULTS` has. Kept here so a dict-built table (tests)
+# and any config-less build still produce a valid `fire_T_ext_q16` column.
+_FIRE_DEFAULTS = {
+    # THE Δ: fire_T_ext[mat] = ignition_temp[mat] - ignition_to_ext_delta.
+    "ignition_to_ext_delta": 100.0,
+    # The rest are read ONLY by the ignition_seed sanity check (no behaviour).
+    "fire_T_span": 40.0,
+    "k_grow": 3.5,
+    "k_die": 0.035,
+    "o2_frac_ext": 0.13,
+    "o2_frac_full": 1.0,
+    "k_fire_heat": 33.0,
+    "ignition_seed": 0.12,
+}
+
+# The ambient O2 mole fraction the sustain arithmetic is evaluated AT. Not a
+# dial: the check answers "can a seed survive in ORDINARY air?", so it is
+# deliberately the physical 21%, not a per-map [ambient] override.
+_X_AMBIENT = 0.21
+
+# Warn-once ledger for the seed check (see `_check_ignition_seed`). A process
+# that builds two hundred MaterialTables (the test suite does) must print each
+# distinct complaint ONCE, not two hundred times.
+_SEED_WARNED = set()
+
+
+def quantize_q16(v) -> int:
+    """Real value -> Q16.16 int, ROUND-HALF-AWAY-FROM-ZERO.
+
+    THE CONTRACT: bit-identical to C++ ``fixedpoint::quantize``, which is
+
+        double scaled = v * 65536.0;
+        return (int32)(scaled >= 0.0 ? scaled + 0.5 : scaled - 0.5);
+
+    i.e. one IEEE-754 binary64 multiply, ±0.5, then truncation TOWARD ZERO.
+    Python's ``*`` is that same binary64 multiply and ``int()`` is that same
+    truncation, so the two agree on every input on every machine — the same
+    "IEEE double is bit-identical cross-machine for load-time scalar constants"
+    rule ``fuel_recip_from_hp`` above rests on. This is what makes a UNIFORM
+    ``fire_T_ext_q16`` plane byte-identical to the C++ scalar fallback, which is
+    the axis's back-compat gate.
+    """
+    scaled = float(v) * 65536.0
+    return int(scaled + 0.5) if scaled >= 0.0 else int(scaled - 0.5)
+
+
+def fire_T_ext_from_ignition(ignition_temp, delta) -> float:
+    """``fire_T_ext[mat] = ignition_temp[mat] - ignition_to_ext_delta``.
+
+    DERIVED, NOT A DIAL — there is no per-material ``fire_T_ext`` config column
+    and there must never be one. `fire_T_ext` sits on the same physical axis as
+    `ignition_temp` (both are "the temperature at which this material's
+    pyrolysis does/doesn't carry itself"), so the invariant that matters —
+    ``fire_T_ext < ignition_temp``, i.e. a tile cannot ignite below its own
+    sustain floor and snap straight back out — becomes STRUCTURAL rather than
+    something a config author must remember. The shipped global 350 violated it
+    for BOTH flammable materials (wood 300, furniture 280).
+
+    ONE new global (`ignition_to_ext_delta`), zero new per-material columns —
+    the same cool-shift-vacuum-offset precedent. `fire_T_span` deliberately
+    stays global: it is the WIDTH of the `hot` ramp, not its foot.
+
+    Non-flammable materials get the same arithmetic rather than a special case.
+    Their value is never read (the fire logistic runs under
+    ``if (!flammable[i]) continue``), so the choice is free; deriving it anyway
+    means a future flammable material needs no code edit, and it keeps the
+    column a pure function of one input column. Materials with
+    ``ignition_temp == 0`` therefore carry a negative, unread, -Δ.
+    """
+    return float(ignition_temp) - float(delta)
+
 
 def fuel_recip_from_hp(hp) -> int:
     """Bake ``round(2**32 / hp)`` exactly as ``fixedpoint::make_recip`` does.
@@ -164,7 +242,7 @@ class MaterialTable:
     Rebuild via :meth:`from_config` after a config hot-reload.
     """
 
-    def __init__(self, materials_cfg, thermal_cfg=None):
+    def __init__(self, materials_cfg, thermal_cfg=None, fire_cfg=None):
         """Build from the ``CFG.materials`` namespace (or any equivalent).
 
         ``materials_cfg`` is the :class:`config.Namespace` for ``[materials]``;
@@ -176,6 +254,12 @@ class MaterialTable:
         ``SHIFT_MIN``, ``KAPPA_REF``, ``NO_FACE``). When omitted the
         :data:`_THERMAL_DEFAULTS` are used so a dict-built table (tests) still
         produces a valid face-shift table.
+
+        ``fire_cfg`` is the optional ``[physics.fire]`` namespace (or dict). It
+        supplies ``ignition_to_ext_delta`` for the per-material ``fire_T_ext``
+        derivation (P-R3, ruling A3), plus the dials the ``ignition_seed``
+        load-time check reads. When omitted the :data:`_FIRE_DEFAULTS` are used,
+        for the same reason ``thermal_cfg`` has defaults.
         """
         ids = sorted(MATERIAL_NAMES)
         # Contiguity: ids must be 0..N-1 so an array indexed by id has no gaps.
@@ -333,6 +417,43 @@ class MaterialTable:
         # so the fuel fraction and the health bar can never disagree.
         self.fuel_recip = np.array(
             [fuel_recip_from_hp(v) for v in self.hp.tolist()], dtype=np.int64)
+
+        # fire_T_ext / fire_T_ext_q16: the per-id EXTINCTION TEMPERATURE — the
+        # foot of the fire logistic's `hot` ramp, `hot = clamp01((T -
+        # fire_T_ext[mat]) / fire_T_span)` (P-R3, ruling A3 ride-along
+        # 2026-07-31). DERIVED from this row's own `ignition_temp` minus the ONE
+        # new global `[physics.fire] ignition_to_ext_delta`; see
+        # `fire_T_ext_from_ignition` above for why, and why non-flammables are
+        # derived rather than special-cased.
+        #
+        # It was one global ([physics.fire] fire_T_ext = 350) standing in for a
+        # per-material quantity, and at 350 it exceeded BOTH shipped ignition
+        # temps (wood 300, furniture 280) — so a tile could ignite at 300 and
+        # sit permanently below its own extinction floor. Same defect shape as
+        # `fuel_recip` (wood's hp for every material), `cool_shift` (one e-fold
+        # for every material) and `o2_frac_amb` (ambient as the full-response
+        # reference) before it.
+        #
+        # The _q16 column is the one the sim reads: QUANTIZED ONCE AT LOAD into
+        # the Q16.16 domain shared by `heat`/`temperature`, in exactly the form
+        # C++ `fixedpoint::quantize` bakes it, so the per-tile projection
+        # (`GameMap.fire_T_ext_plane`) is a direct integer subtrahend for
+        # `T - fire_T_ext[i]` — no per-tick rescale, no float on the gate path.
+        # int32 because that IS the plane's dtype at the C++ boundary.
+        delta = float(self._fire_get(fire_cfg, "ignition_to_ext_delta"))
+        self.ignition_to_ext_delta = delta
+        self.fire_T_ext = np.array(
+            [fire_T_ext_from_ignition(it, delta)
+             for it in self.ignition_temp.tolist()], dtype=np.float32)
+        self.fire_T_ext_q16 = np.array(
+            [quantize_q16(v) for v in self.fire_T_ext.tolist()], dtype=np.int32)
+
+        # IGNITION-SEED SANITY (P-R3 Task C, ruling A3: "`ignition_seed` stays
+        # an explicit dial but gains a load-time check per flammable material").
+        # Pure load-time arithmetic + a console warning — NOTHING in the sim
+        # path changes, and a failing check never blocks a load. Full
+        # auto-derivation of the seed is deliberately deferred (audit §1.4).
+        self._check_ignition_seed(fire_cfg, thermal_cfg)
 
         # --- Conduction face-shift tables (engine/06 §2.4–§2.5) ---------------
         # All log2 / harmonic-mean / division happens HERE, at LOAD, in float;
@@ -492,7 +613,94 @@ class MaterialTable:
                 face[a, b] = _clamp_shift(-math.log2(hm / kappa_ref))
         self.face_shift_table = face
 
+    # -- ignition-seed sanity (P-R3 Task C; ruling A3) --------------------
+    def _check_ignition_seed(self, fire_cfg, thermal_cfg):
+        """Warn (console only, once) if ``ignition_seed`` cannot bootstrap a
+        flammable material's fire.
+
+        A tile is born at ``I = ignition_seed`` and immediately starts feeding
+        its own `hot` gate: the fire's heat sets the tile's equilibrium
+        temperature ``T*(I) = gain * I``, and the logistic only sustains while
+        ``a = F*o2f*hot`` clears ``r/(1+r)``. Chain those and the seed has a
+        FLOOR — the intensity below which the fire cannot warm itself enough to
+        stay lit, at any speed::
+
+            r         = k_die / k_grow
+            o2f_amb   = (0.21 - o2_frac_ext) / (o2_frac_full - o2_frac_ext)
+            h_min     = [r/(1+r)] / o2f_amb          # the `hot` the fire needs
+            gain[mat] = k_fire_heat * 2^(cool_shift[mat] - log2(thermal_mass[mat]))
+            I_sustain[mat] = (fire_T_ext[mat] + fire_T_span*h_min) / gain[mat]
+
+        The 15% margin (``seed >= 1.15 * I_sustain``) is the ruling's C2
+        constraint: born exactly AT the floor, a fire coasts on a knife edge and
+        the first O2 dip kills it. Three tuning passes died on this in 2026-07
+        before the relation was written down — hence a check rather than a
+        comment.
+
+        WARNING ONLY, BY DESIGN. This is derived arithmetic over dials Erik is
+        actively tuning; a hard error would make the tune loop unusable, and the
+        seed's full auto-derivation is explicitly deferred (audit §1.4). It is
+        also purely LOAD-TIME — nothing in the sim path reads any of it.
+        """
+        def _f(name):
+            return float(self._fire_get(fire_cfg, name))
+
+        try:
+            k_grow, k_die = _f("k_grow"), _f("k_die")
+            x_ext, x_full = _f("o2_frac_ext"), _f("o2_frac_full")
+            span = _f("fire_T_span")
+            k_fire_heat = _f("k_fire_heat")
+            seed = _f("ignition_seed")
+        except Exception:              # a config shape we do not recognise
+            return                     # -> silently skip; this is a courtesy check
+        if k_grow <= 0.0 or x_full <= x_ext:
+            return
+        o2f_amb = (_X_AMBIENT - x_ext) / (x_full - x_ext)
+        if o2f_amb <= 0.0:
+            return
+        r = k_die / k_grow
+        h_min = (r / (1.0 + r)) / o2f_amb
+
+        for idx, name in enumerate(self.names):
+            if not bool(self.flammable[idx]):
+                continue
+            # gain = k_fire_heat * 2^(cool_shift - heat_inv_shift); the shift
+            # pair IS log2(thermal_mass) and the ambient-decay shift, already
+            # validated integers on this table.
+            if not bool(self.thermal_solid[idx]):
+                continue               # gas-regime fuel: no T* equilibrium to chain
+            exp = int(self.cool_shift[idx]) - int(self.heat_inv_shift[idx])
+            gain = k_fire_heat * (2.0 ** exp)
+            if gain <= 0.0:
+                continue
+            i_sustain = (float(self.fire_T_ext[idx]) + span * h_min) / gain
+            if seed >= 1.15 * i_sustain:
+                continue
+            key = (name, round(seed, 6), round(i_sustain, 6))
+            if key in _SEED_WARNED:
+                continue
+            _SEED_WARNED.add(key)
+            print(
+                f"[fire] WARNING materials.{name}: ignition_seed = {seed:.4f} "
+                f"is below the 15% bootstrap margin over I_sustain = "
+                f"{i_sustain:.4f} (need >= {1.15 * i_sustain:.4f}). A tile "
+                f"seeded there cannot warm itself past its own `hot` floor and "
+                f"will snap out. [P-R3 load-time check, ruling A3]",
+                file=sys.stderr,
+            )
+
     # -- accessors -------------------------------------------------------
+    @staticmethod
+    def _fire_get(fire_cfg, name):
+        """Read one ``[physics.fire]`` constant, falling back to
+        :data:`_FIRE_DEFAULTS` so a dict-built / config-less table still bakes a
+        valid ``fire_T_ext`` column. Accepts a namespace or a plain dict."""
+        if fire_cfg is None:
+            return _FIRE_DEFAULTS[name]
+        if isinstance(fire_cfg, dict):
+            return fire_cfg.get(name, _FIRE_DEFAULTS[name])
+        return getattr(fire_cfg, name, _FIRE_DEFAULTS[name])
+
     @staticmethod
     def _thermal_get(thermal_cfg, name):
         """Read one ``[physics.thermal]`` constant, falling back to
@@ -540,14 +748,18 @@ class MaterialTable:
         """Build from the global :data:`config.CFG` (or a provided config).
 
         Threads the ``[physics.thermal]`` namespace (conduction log-bucket
-        constants) into the table so the face-shift tables track config edits.
-        Tolerates a config without that block (falls back to defaults).
+        constants) and the ``[physics.fire]`` namespace (the
+        ``ignition_to_ext_delta`` the per-material ``fire_T_ext`` derives from,
+        plus the dials the ignition-seed check reads) into the table so both
+        track config edits. Tolerates a config without either block (falls back
+        to defaults).
         """
         if cfg is None:
             from config import CFG
             cfg = CFG
         thermal_cfg = getattr(getattr(cfg, "physics", None), "thermal", None)
-        return cls(cfg.materials, thermal_cfg)
+        fire_cfg = getattr(getattr(cfg, "physics", None), "fire", None)
+        return cls(cfg.materials, thermal_cfg, fire_cfg)
 
     def occludes(self, material_grid):
         """Static occlusion mask: a tile occludes if it attenuates any channel.

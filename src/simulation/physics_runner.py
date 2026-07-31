@@ -53,10 +53,24 @@ def residency_enabled() -> bool:
 # already-lit tile. Bound from config [physics.fire]; these constants are the
 # fallback when a key is absent. Erik tunes them live.
 # ---------------------------------------------------------------------------
-FIRE_K_GROW         = 4.0    # logistic growth gain (1/s)
+FIRE_K_GROW         = 4.0    # logistic growth gain (1/s) — TEMPO only since P-R3
 FIRE_K_DIE          = 2.0    # decay rate when starved/cold (1/s)
-FIRE_T_EXT          = 350.0  # extinction temperature (~ignition_temp + 50)
-FIRE_T_SPAN         = 150.0  # width of the `hot` ramp above T_ext
+# CAPACITY LAW (P-R3, 2026-07-31 — docs/radiation_raycaster_extinction_ruling_
+# 2026-07-31.md A3, on Erik's ruling R-b): the growth term's carrying capacity
+# per unit availability, `I_cap = c * avail * hot`, so `I_eq ~= c*a`. THE SIZE
+# DIAL — it replaces the old hardwired `(1-I)` capacity, which forced `k_die`
+# to do both jobs (size AND the death wall) and left the fire 1.242x of
+# headroom on `F*o2f*hot`.
+FIRE_I_CAP_PER_AVAIL = 2.53  # c — capacity per unit availability
+# FIRE_T_EXT: SUPERSEDED as the extinction floor by the per-tile
+# `GameMap.fire_T_ext_plane` (P-R3, ruling A3 ride-along). It is now DERIVED per
+# material as `ignition_temp[mat] - ignition_to_ext_delta`; the shipped global
+# 350 sat ABOVE both flammable materials' ignition temps (wood 300, furniture
+# 280), so a tile could ignite below its own sustain floor. Still bound (below)
+# because the solver keeps it as the FALLBACK when no per-tile plane is
+# supplied; the live engine always supplies one.
+FIRE_T_EXT          = 350.0  # fallback extinction temperature (superseded)
+FIRE_T_SPAN         = 150.0  # width of the `hot` ramp above T_ext (STAYS global)
 # FIRE_FUEL_REF: SUPERSEDED as the fuel normaliser by the per-tile
 # `GameMap.fuel_recip` plane (fuel-fraction axis, 2026-07-30). F is "the
 # fraction of THIS tile's fuel remaining", and 60.0 is WOOD's hp — one global
@@ -193,6 +207,13 @@ class PhysicsRunner:
         self.fire = self.engine.fire
         self.fire.params.k_grow         = _fp("k_grow", FIRE_K_GROW)
         self.fire.params.k_die          = _fp("k_die", FIRE_K_DIE)
+        # CAPACITY LAW (P-R3, ruling A3): `c` — the SIZE dial. See the
+        # FIRE_I_CAP_PER_AVAIL block above for what it replaced and why.
+        self.fire.params.I_cap_per_avail = _fp("I_cap_per_avail",
+                                               FIRE_I_CAP_PER_AVAIL)
+        # fire_T_ext is the FALLBACK only since P-R3 — the live gate is the
+        # per-tile `GameMap.fire_T_ext_plane` (ignition_temp - Δ), which
+        # step_tail passes on every tick.
         self.fire.params.fire_T_ext     = _fp("fire_T_ext", FIRE_T_EXT)
         self.fire.params.fire_T_span    = _fp("fire_T_span", FIRE_T_SPAN)
         self.fire.params.fuel_ref       = _fp("fuel_ref", FIRE_FUEL_REF)
@@ -663,6 +684,13 @@ class PhysicsRunner:
             # full-health crate (hp 30) read F = 0.5 forever and could not clear
             # the sustain ceiling at ambient O2 at any intensity.
             gmap.fuel_recip,
+            # PER-MATERIAL EXTINCTION TEMPERATURE (P-R3, 2026-07-31): the
+            # per-tile Q16.16 foot of the fire logistic's `hot` ramp, derived
+            # `ignition_temp[mat] - ignition_to_ext_delta`. Per-material because
+            # `fire_T_ext` sits on the same axis as `ignition_temp`, and the
+            # retired global (350) exceeded BOTH shipped ignition temps — a tile
+            # could ignite below its own sustain floor and snap straight out.
+            gmap.fire_T_ext_plane,
             gmap.gas, gmap.gases.conservative, self._o2_idx,
             sim_time,
             # BC: the ambient ring is wiped to ΔT=0 in the temperature pre-pass
@@ -950,6 +978,7 @@ class PhysicsRunner:
             gmap.thermal_solid,          # thermal-mass axis (host mirror)
             gmap.cool_shift,             # cool-shift axis (host mirror)
             gmap.fuel_recip,             # fuel-fraction axis (host mirror)
+            gmap.fire_T_ext_plane,       # per-material T_ext (host mirror)
             gmap.gas, gmap.gases.conservative, self._o2_idx,
             sim_time,
             is_ambient=amb[0],

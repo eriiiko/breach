@@ -145,6 +145,16 @@ TUNE = {
     # =====================================================================
 
     # =====================================================================
+    # ###  OLD LAW (pre-P-R3), KEPT FOR ARCHAEOLOGY — DO NOT TUNE FROM IT  ###
+    # The growth term's capacity was the hardwired `(1-I)`, so the block below
+    # solves `I_eq = 1 - r(1-a)/a`. That law was REPLACED on 2026-07-31 by the
+    # CAPACITY LAW (see the block immediately after this one, which supersedes
+    # everything here). Every relation below that mentions `r` doing two jobs is
+    # a description of the DEFECT, not of the engine. Kept because it is the
+    # derivation trail for h_min, I_sustain and the Q16 quantum — all three
+    # survive the change unaltered — and because the measured runs quoted in it
+    # are the evidence the ruling stands on.
+    # =====================================================================
     # THE VIABLE REGION — DERIVED 2026-07-30 (this pass). Read this BEFORE
     # you move a dial; three previous passes each died by moving one dial
     # against an assumed-away coupling.
@@ -248,6 +258,87 @@ TUNE = {
     # ---------------------------------------------------------------------
     # =====================================================================
 
+    # =====================================================================
+    # ##  CAPACITY LAW (P-R3, ruling 2026-07-31 A3) — SUPERSEDES THE BLOCK  ##
+    # ##  ABOVE. This is the algebra the engine runs as of 2026-07-31.      ##
+    # =====================================================================
+    # WHAT CHANGED. The growth term's carrying capacity is no longer the
+    # hardwired constant 1 (the `(1-I)` factor); it is RESOURCE-PROPORTIONAL,
+    # `I_cap = c*a`. In the solver (fire_simulation.cpp, PINNED order):
+    #
+    #     gap  = avail*hot - I/c                    <- SIGNED; negative = shrink
+    #     grow = k_grow * I * gap * (1 + k_wind_fan*W)
+    #     die  = k_die*(1 - avail*hot)*I + k_wind_strip*W*(1-I)*I     [UNCHANGED]
+    #
+    # i.e. the logistic `k_grow*a*I*(1 - I/(c*a))` with `a` cancelled out of the
+    # bracket (which is why no division survives in the sim path).
+    #
+    # WHY. Under the old law `r = k_die/k_grow` set BOTH the equilibrium
+    # intensity AND the extinction wall (`I_eq = 1 - r(1-a)/a`), so asking for a
+    # small fire FORCED `r` up against the operating point. That is the "one
+    # margin governs everything" finding: the product `F*o2f*hot` could fall only
+    # to 80.5% of ambient before the fire died at ANY temperature — which is why
+    # a crate could never lose more than 19.5% of its hp (measured: 25.53/30 left
+    # at wall_damage 0.55) and why `o2_frac_ext` = 0.13 was dead code. Each dial
+    # now has EXACTLY ONE JOB:
+    #
+    #     I_cap_per_avail (c)  SIZE    I_eq ~= c*a
+    #     k_grow               TEMPO   ramp e-fold ~= 1/(k_grow*a)
+    #     k_die (r)            DEATH   where the wall sits, and nothing else
+    #
+    # THE GOVERNING RELATIONS (the five, restated for this law):
+    #
+    #     gain[mat] = k_fire_heat * 2^(cool_shift[mat] - log2(thermal_mass[mat]))
+    #     T*(I)     = gain * I                                        [UNCHANGED]
+    #     hot(T)    = clamp01((T - fire_T_ext[mat]) / fire_T_span)
+    #                 <- fire_T_ext is PER MATERIAL now: ignition_temp[mat]
+    #                    - ignition_to_ext_delta. furniture 280-100 = 180,
+    #                    wood 300-100 = 200. fire_T_span is still GLOBAL.
+    #     a         = F * o2f * hot        F = 1 pristine, o2f(X=0.21) = 0.091954
+    #     I_eq      = c * (a - r*(1-a))                       <- THE NEW ONE
+    #     sustain  <=>  a > r/(1+r)                           [SAME SHAPE]
+    #     h_min     = [r/(1+r)] / o2f                         [SAME SHAPE]
+    #     T_sustain = fire_T_ext[mat] + fire_T_span*h_min
+    #     I_sustain = T_sustain / gain[mat]
+    #
+    # THE Q16.16 QUANTUM CONDITION (the 95bdec0 trap, restated for this law —
+    # growth that truncates to zero cannot grow, however right the algebra is):
+    #
+    #     dt * k_grow * seed * (a - seed/c) * 65536  >=  2      counts/tick
+    #
+    # AT THE P-R3 DIALS (c 2.53, k_grow 3.5, k_die 0.035 -> r = 0.010):
+    #   I_eq(X):  0.21 -> 0.210 | 0.25 -> 0.328 | 0.30 -> 0.474 | pure O2 -> 1.0
+    #             LINEAR in X (Erik ruling R-a), not the old law's hyperbola.
+    #   headroom on F*o2f*hot     9.3x   (was 1.242x)
+    #   local X floor             0.1386 (was 0.1944 — o2_frac_ext is LIVE again)
+    #   h_min                     0.1077 (was 0.806)
+    #   isolated hp floor         3.2/30 (was 24.2/30)
+    #   seed quantum @ 0.12       40 counts/tick net  (MEASURED: 40)
+    #
+    # ** MEASURED 2026-07-31 (the P-R3 gate benches) — READ BEFORE TUNING. **
+    #   THE LAW IS CONFIRMED: over a 900 s burn at wall_damage 0.083 the measured
+    #   I tracks I_eq = c*(F*o2f(X_local)*hot - r*(1 - F*o2f*hot)) to mean 0.66%
+    #   / worst 2.39% across 20,880 plateau ticks.
+    #
+    #   BUT THE HP FLOOR IS NOT THE BINDING LIMIT AT THESE DIALS. At
+    #   wall_damage 0.55 the crate burns to hp 14.87/30 (50% consumed — up from
+    #   the old law's 25.53/30, i.e. 15%), then dies THERMALLY, not for lack of
+    #   fuel or oxygen: X_local at death is 0.2098, i.e. AMBIENT. The chain is
+    #       F falls -> I_eq falls -> T* = gain*I falls -> hot falls -> a falls
+    #   and `hot` stays pinned at 1 only while
+    #       gain * c * (F*o2f*(1+r) - r)  >=  fire_T_ext + fire_T_span
+    #   which at gain 2112, c 2.53, o2f 0.0897 needs F >= 0.565 (hp >= 17.0).
+    #   MEASURED knee: `hot` left 1.0 at hp 15.88 (F = 0.529); death 30 s later.
+    #   This is the I_crit cliff of warning 2 above in new clothes — a THERMAL
+    #   limit (k_fire_heat / cool_shift / fire_T_ext / span). The capacity law
+    #   does not and cannot move it. The levers that do: raise `gain`
+    #   (k_fire_heat or cool_shift) or lower fire_T_ext + fire_T_span. NOTE the
+    #   ruling retires k_fire_heat at P-R4 (replaced by the combustion-side
+    #   `H_bed`, which makes the plateau O2-proportional) and re-tunes the rest
+    #   at P-R5 — so do NOT chase this with `c`: `c` only moves SIZE, which is
+    #   the entire point of the patch. **
+    # =====================================================================
+
     # -- 1. STRUCTURE (§9.3 step 1). CHOSEN POINT: fire_T_ext 180, span 40. --
     #    Erik's candidate, verified above against C1-C5 — all five PASS:
     #      gain 2112, T_plateau 443.5 (1180 K), T_sustain 212.2,
@@ -334,8 +425,20 @@ TUNE = {
     #   Q16.16 counts per 1/24 s tick, which TRUNCATES TO ZERO: the fire could
     #   not grow because its growth rounded away. 3.5/0.28 puts the same
     #   logistic ~9.7 counts/tick at the seed — above the quantum.
+    #   CAPACITY LAW (P-R3, 2026-07-31): k_grow now moves ONLY the tempo — the
+    #   ramp e-fold is ~1/(k_grow*a) ~ 3 s at ambient. Erik may slow it later
+    #   without touching the fire's size or its death wall, which is new.
     "k_grow": 3.5,
-    "k_die": 0.28,
+    #   THE SIZE DIAL (P-R3). I_eq ~= c*a, so c alone answers "how big is a fire
+    #   in ordinary air": 2.53 * 0.09195 = 0.2100, exactly Erik's anchor. Raise
+    #   it for bigger fires everywhere; it does NOT move the death wall.
+    "I_cap_per_avail": 2.53,
+    #   k_die RETUNED 0.28 -> 0.035 (r 0.080 -> 0.010) BY THE CAPACITY LAW. `r`
+    #   no longer has to sit near the operating point to hold the fire small
+    #   (that is c's job now), so it is free to put the death wall at the
+    #   PHYSICAL limits: X floor 0.1944 -> 0.1386 (o2_frac_ext 0.13 becomes
+    #   reachable again), headroom on F*o2f*hot 1.242x -> 9.3x.
+    "k_die": 0.035,  # r = 0.010 — the death wall moves to the physical limits [derived, P-R5 blesses]
 
     # -- 3b. IGNITION SEED. Raised 0.1 -> 0.15 (2026-07-30). The sustain floor
     #    is I_crit = I_peak * fire_T_ext / T_flame = 0.21 * 250/450 = 0.117, so a

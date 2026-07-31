@@ -146,6 +146,17 @@ public:
         // to the global. A uniform plane == the old global, so this is
         // byte-identical on arrival for any map whose fuel is wood.
         const int64_t* fuel_recip,
+        // PER-MATERIAL EXTINCTION TEMPERATURE (P-R3, 2026-07-31 — docs/
+        // radiation_raycaster_extinction_ruling_2026-07-31.md A3 ride-along):
+        // per tile, that material's `ignition_temp - ignition_to_ext_delta`
+        // quantized to Q16.16 (GameMap.fire_T_ext_plane), which the fire
+        // logistic's `hot` gate reads instead of the single global
+        // [physics.fire] fire_T_ext. REQUIRED here (not defaulted) for the same
+        // reason `fuel_recip` is: the live engine must never silently fall back
+        // to a global that, at its shipped 350, sits ABOVE both shipped
+        // ignition temps — a tile could ignite below its own sustain floor. A
+        // uniform plane == the old global, so this is byte-identical on arrival.
+        const int32_t* fire_T_ext_plane,
         // EOS P3: bulk-N source for the Pass-1 heat-deposit divisor.
         // EOS P4: o2_idx slices the real O2 gate input out of `gas`.
         const int32_t* gas, const bool* gas_conservative, int n_gases, int o2_idx,

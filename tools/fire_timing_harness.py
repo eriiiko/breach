@@ -311,7 +311,16 @@ def _run_one_inner(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
 
     p_min = float(getattr(CFG.physics.fire, "P_min", 0.01))
     p_full = float(getattr(CFG.physics.fire, "P_full", 0.03))
-    fire_t_ext = float(getattr(CFG.physics.fire, "fire_T_ext", 350.0))
+    # PER-MATERIAL fire_T_ext (P-R3, 2026-07-31 — ruling A3 ride-along). The
+    # `hot` gate's FOOT is no longer the [physics.fire] global: it is derived per
+    # material as `ignition_temp[mat] - ignition_to_ext_delta` and baked into
+    # `GameMap.fire_T_ext_plane`. Read the CRATE TILE'S OWN value straight out
+    # of that plane — the exact integer the solver subtracts — so the `hot`
+    # column below stays a faithful mirror of the C++ gate instead of a stale
+    # global. (For the shipped crate that is furniture 280-100 = 180, i.e. the
+    # blessed bench value, so a derived run reproduces the old
+    # `--set fire_T_ext=180` run.) `fire_T_span` is still global.
+    fire_t_ext = int(gmap.fire_T_ext_plane[cy, cx]) / FP_ONE
     fire_t_span = float(getattr(CFG.physics.fire, "fire_T_span", 150.0))
     k_grow = float(getattr(CFG.physics.fire, "k_grow", 4.0))
     k_die = float(getattr(CFG.physics.fire, "k_die", 2.0))
@@ -503,6 +512,10 @@ def _run_one_inner(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
         o2far_x_min=o2far_x_min, o2room_x_min=o2room_x_min,
         o2room_min=o2room_min, ntot_room_min=ntot_room_min, tfar_max=tfar_max,
         x_local_plateau=x_local_plateau, hot_plateau=hot_plateau,
+        # P-R3: the crate's OWN derived extinction floor (ignition_temp - Delta),
+        # recorded so the scorecard reports the number the solver actually used
+        # rather than the retired [physics.fire] global.
+        fire_T_ext=float(fire_t_ext), fire_T_span=float(fire_t_span),
         hp_end=float(hp_arr[-1]) if hp_arr.size else float("nan"),
         drift_tiles=drift_tiles, drift_ms=drift_ms,
         n_ticks=len(t_arr), rec=rec, nbrs=len(nbrs),
@@ -580,7 +593,9 @@ def _print_run(m):
               f"left (plume cooling snuffed it) **")
     print(f"  peak I:                     {m['peak_I']:.3f}   at t = {_mmss(m['peak_time'])}  (I at MAX)")
     print(f"    (time-to-90%-of-peak:     {_mmss(m['time_to_peak'])} -- crossing on the way up)")
-    print(f"  steady T (game units):      {m['steady_T']:.0f}   (>fire_T_ext=350 -> sustains)")
+    print(f"  steady T (game units):      {m['steady_T']:.0f}   "
+          f"(>fire_T_ext={m.get('fire_T_ext', float('nan')):.0f} -> sustains; "
+          f"PER-MATERIAL since P-R3 — ignition_temp - ignition_to_ext_delta)")
     print(f"  burnout (wall_hp -> 0):     {_mmss(m['burnout_time'])}   [fuel exhausted]")
     if np.isnan(m["snap_time"]):
         print(f"  fire snap-out (I -> 0):     none (zombie smolder: furniture never destroyed;")

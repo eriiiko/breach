@@ -152,6 +152,22 @@ class GameMap:
         # mirror) and the per-call CUDA fire kernel does its own H2D from
         # `GameMap.fuel_recip`.
         "fuel_recip",
+        # PER-MATERIAL EXTINCTION TEMPERATURE (P-R3, 2026-07-31): the per-tile
+        # Q16.16 foot of the fire logistic's `hot` ramp
+        # (`hot = clamp01((T[i] - fire_T_ext_plane[i]) / fire_T_span)`). Joins
+        # the resident set for the same three reasons `fuel_recip` did: a device
+        # buffer + ONE upload at :meth:`enable_residency`, the __setattr__
+        # stale-pointer guard (it is REASSIGNED by `_update_caches` and patched
+        # IN PLACE by `on_tile_changed`), and `device_ptrs()["fire_T_ext_plane"]`
+        # as the pointer a future resident fire kernel takes.
+        # SAME CAVEAT AS `fuel_recip`: NOT static — `on_tile_changed` patches it
+        # whenever a tile's material changes — so the moment a DEVICE kernel
+        # reads the resident pointer it MUST join the per-tick `from_host` list
+        # in `physics_runner._step_resident`. No device kernel reads it today:
+        # the resident tick's fire pass is a host bracket (`step_tail` on the
+        # mirror) and the per-call CUDA fire kernel does its own H2D from
+        # `GameMap.fire_T_ext_plane`.
+        "fire_T_ext_plane",
         # S8a Path A: the BC sponge grids — static per map (built ONCE in
         # __init__, never recomputed — unlike is_ambient, which destroy_wall's
         # joins-ambient twin mutates and therefore rides the per-tick EOS
@@ -859,6 +875,22 @@ class GameMap:
         # int64 because a Q16.16 reciprocal at RECIP_SHIFT = 32 does not fit
         # int32 (2^32/hp exceeds INT32_MAX for hp <= 2).
         self.fuel_recip = tbl.fuel_recip[m].astype(np.int64, copy=True)
+        # PER-MATERIAL EXTINCTION TEMPERATURE (P-R3, 2026-07-31 — docs/
+        # radiation_raycaster_extinction_ruling_2026-07-31.md A3 ride-along) —
+        # the per-tile foot of the fire logistic's `hot` ramp, in Q16.16:
+        #     hot = clamp01((T[i] - fire_T_ext_plane[i]) / fire_T_span)
+        # It was one global ([physics.fire] fire_T_ext = 350) — which sits ABOVE
+        # both shipped ignition temps (wood 300, furniture 280), so a tile could
+        # ignite and be permanently below its own extinction floor. Now derived
+        # per material as `ignition_temp[mat] - ignition_to_ext_delta`, which
+        # makes `fire_T_ext < ignition_temp` STRUCTURAL. `fire_T_span` stays
+        # global (the ramp's WIDTH is not a per-material quantity).
+        # DERIVED FROM `ignition_temp`, not a new dial — see materials.py's
+        # `fire_T_ext_from_ignition`. Built HERE, in the SAME ONE function as
+        # `heat_inv_shift` / `thermal_solid` / `cool_shift` / `fuel_recip`, and
+        # patched at the SAME single site in `on_tile_changed` (the
+        # thermal-mass addendum's D3 rule: one seam).
+        self.fire_T_ext_plane = tbl.fire_T_ext_q16[m].astype(np.int32, copy=True)
         # Per-tile conduction face-shift cache (engine/06 §2.5): baked from the
         # material grid via the harmonic-mean face table. NO_FACE at grid edges
         # and on any kappa==0 (air) face -> structural air no-op (built IN-PLACE
@@ -1027,6 +1059,12 @@ class GameMap:
         # reciprocal becomes air's (0 == "no fuel"), matching the fresh
         # `wall_hp` this seam just wrote.
         self.fuel_recip[fy, fx] = int(tbl.fuel_recip[mat_id])
+        # Per-material extinction-temperature cache (P-R3) — patched through
+        # the SAME seam as fuel_recip/cool_shift above (D3: ONE build + ONE
+        # patch site), so a burnt-out crate stops carrying furniture's `hot`
+        # floor the instant its material becomes air (a moot value there — the
+        # logistic is flammable-only — but the cache must not go stale).
+        self.fire_T_ext_plane[fy, fx] = int(tbl.fire_T_ext_q16[mat_id])
         # Conduction face-shift cache — patch this tile's 4 faces AND the facing
         # entry of each neighbour (a shared face), so a breached wall's thermal
         # coupling to its neighbours updates the instant it changes.

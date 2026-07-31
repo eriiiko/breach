@@ -66,6 +66,9 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // (see physics_engine.h). Fire-only — the temperature pass never
         // reads it.
         const int64_t* fuel_recip,
+        // PER-MATERIAL T_ext: per-tile Q16.16 extinction temperature for the
+        // FIRE pass's `hot` gate (see physics_engine.h). Fire-only.
+        const int32_t* fire_T_ext_plane,
         // EOS P3: bulk-N source (real Pass-1 heat-deposit divisor)
         // EOS P4: o2_idx slices the real O2 gate input out of `gas`
         const int32_t* gas, const bool* gas_conservative, int n_gases, int o2_idx,
@@ -178,11 +181,17 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             this->fire.params.k_wind_fan, this->fire.params.k_wind_strip,
             this->fire.params.smoke_emission, this->fire.params.wall_damage,
             this->fire.params.temp_scale,
+            // CAPACITY LAW (P-R3): `c`, the size dial. The host precompute
+            // bakes INV_C = quantize(1/c) exactly as the CPU load-time block.
+            this->fire.params.I_cap_per_avail,
             // FUEL-FRACTION AXIS: the per-tile 1/hp plane. The GPU kernel takes
             // it as an extra read-only plane and falls back to the fuel_ref
             // scalar above on nullptr, exactly like the CPU branch — the two
             // must stay bit-identical (tol 0).
-            fuel_recip);
+            fuel_recip,
+            // PER-MATERIAL T_ext (P-R3 ride-along): the same nullable-plane
+            // idiom, one plane over.
+            fire_T_ext_plane);
     } else
 #endif
     {
@@ -191,7 +200,8 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             temperature_mut, wind_x, wind_y,
             solid, is_vacuum, flammable,
             h, w, sim_time,
-            fuel_recip);   // FUEL-FRACTION AXIS: per-tile 1/hp (see header)
+            fuel_recip,          // FUEL-FRACTION AXIS: per-tile 1/hp (see header)
+            fire_T_ext_plane);   // PER-MATERIAL T_ext (see header)
     }
 
     // --- 3. Temperature pass (PhysicsRunner: self.temperature.step) ------
