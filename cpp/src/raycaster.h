@@ -91,7 +91,7 @@ public:
     //      brightly" gases (steam) are expressible.
     //
     // Legacy scalar `smoke_absorption` (kept for the scalar march_ray /
-    // update_from_fire path which has no per-channel notion).
+    // cast_source path which has no per-channel notion).
     float smoke_absorption = 0.8f;
 
     // SUPERSEDED (engine/05 §6.2, M2): the single-field per-channel coefficients.
@@ -125,18 +125,13 @@ public:
     float light_cull = 0.01f;
     float heat_cull  = 0.01f;
 
-    int   coarse_cluster   = 3;    // cluster fire sources on this grid
-
     // ---- Legacy API (intensity only) ----
-
-    // Cast all fire sources and deposit into light_map.
-    void update_from_fire(
-        float* light_map,
-        const float* fire,
-        const float* smoke_field,
-        const bool* is_wall,
-        int h, int w
-    ) const;
+    //
+    // (P-R1, 2026-07-31: update_from_fire + its coarse_cluster dial were
+    // deleted here — no production caller, legacy intensity-only signature,
+    // an RNG jitter land-mine, and clustering is incompatible with the
+    // planned radiation law (a merged pseudo-source has no well-defined T_s).
+    // See docs/radiation_raycaster_extinction_ruling_2026-07-31.md A4.2.)
 
     // Cast a single source (for flashlights, muzzle flashes, etc.)
     void cast_source(
@@ -236,6 +231,45 @@ public:
         int h, int w
     ) const;
 
+    // ---- P-R1: whole-fire-plane cast (source build moved into C++) ----
+    //
+    // docs/radiation_raycaster_extinction_ruling_2026-07-31.md A4.1-A4.2.
+    // Replaces PhysicsRunner.cast_fire_heat's old per-tile Python loop
+    // (one bp.LightSource() + ~10 pybind attribute writes PER BURNING TILE,
+    // PER TICK): enumerates every burning tile (fire[i] > 0, Q16.16) in
+    // ROW-MAJOR order via build_fire_sources() and casts each resulting
+    // source immediately with cast_source_directional — i.e. the SAME
+    // per-source CPU cast the old Python loop drove, just built natively.
+    // `heat` is byte-identical to that old loop (same sources, same march,
+    // same order-free saturating add) — this is a mechanical relocation,
+    // no law/behavior change (P-R1's byte-identity gate).
+    //
+    // `fire` is the Q16.16 int32 fire plane (h, w); the dial parameters
+    // mirror the old Python-side runner attributes EXACTLY (see
+    // build_fire_sources for the float-parity contract on why they are
+    // `double`, not `float`). `jitter` stays fixed at 0.0 by the caller
+    // (fire heat is sim-affecting — no dither; S8c item 1's RNG-coupling
+    // guard).
+    void cast_from_fire_plane(
+        const int32_t* fire, int h, int w,
+        double k_fire_heat, int fire_ray_count,
+        double range_base, double range_per_intensity,
+        double intensity_base, double intensity_per_intensity,
+        const float color[3],
+        float* light_rgb,
+        float* light_dx,
+        float* light_dy,
+        int32_t* heat,              // Q16.16 fixed-point, (h,w) or nullptr
+        float* smoke_glow,          // RGB god-ray glow, (h,w,3) or nullptr
+        const float* gas_field,     // (n_gases, h, w) contiguous gas densities
+        const float* gas_absorption,// (n_gases, 3) per-gas per-channel absorption
+        const float* gas_scatter,   // (n_gases, 3) per-gas per-channel scatter
+        int n_gases,
+        const float* light_atten,   // per-tile static material atten (h,w,3)
+        const float* heat_atten,    // per-tile heat atten (h,w) or nullptr
+        double jitter = 0.0
+    ) const;
+
     // ---- CUDA-S2 gate: host ray-list builder (shared CPU/GPU angle math) ----
     //
     // Replicates cast_source_directional's per-ray loop EXACTLY — same
@@ -250,6 +284,27 @@ public:
     // to what the CPU march_ray_directional computes internally from `angle` —
     // which is the contract that makes the DDA tile path (hence heat) match.
     std::vector<breach_cuda::RayHD> build_ray_list(const LightSource& src) const;
+
+    // ---- P-R1: CUDA twin of cast_from_fire_plane ----
+    //
+    // The SAME enumeration + per-source parameter construction as
+    // cast_from_fire_plane (build_fire_sources, shared — the float-parity-
+    // critical code path runs exactly once for both backends), folded into
+    // RayHD via build_ray_list and concatenated in row-major source order —
+    // IDENTICAL to how cuda_raycaster_cast_batch (bindings.cpp, S8c item 1)
+    // concatenates a Python-supplied source list, except the source list is
+    // now built FROM THE FIRE PLANE here instead of supplied by Python. The
+    // caller feeds the result straight into the existing
+    // breach_cuda::raycaster_cast_directional batched march — no new device
+    // code, no march/law change.
+    std::vector<breach_cuda::RayHD> build_fire_ray_list(
+        const int32_t* fire, int h, int w,
+        double k_fire_heat, int fire_ray_count,
+        double range_base, double range_per_intensity,
+        double intensity_base, double intensity_per_intensity,
+        const float color[3],
+        double jitter = 0.0
+    ) const;
 
     // Normalize direction vectors in place: (dx, dy) /= length(dx, dy).
     // Tiles with zero-length direction stay (0, 0).
@@ -284,5 +339,41 @@ private:
         const float* light_atten,   // per-tile static material atten (h,w,3)
         const float* heat_atten,    // per-tile heat atten (h,w) or nullptr
         int h, int w
+    ) const;
+
+    // ---- P-R1: the shared fire-plane source enumerator ----
+    //
+    // Enumerates fire[row*w+col] > 0 in ROW-MAJOR order (row outer, col
+    // inner — the same order np.nonzero(fire > 0) yielded to the old Python
+    // loop) and builds ONE LightSource per burning tile, reproducing
+    // PhysicsRunner.cast_fire_heat's old per-tile Python math EXACTLY:
+    //   x = col + 0.5, y = row + 0.5
+    //   max_range  = range_base + range_per_intensity * I
+    //   angle_center = ((col*7 + row*13) % ray_count) * (2*pi/ray_count)
+    //   intensity  = intensity_base + intensity_per_intensity * I
+    //   heat       = k_fire_heat * I
+    //   jitter = 0, angle_spread = 2*pi (omni), ray_count = fire_ray_count
+    // where I = float(fire_q) / 65536 (Q16.16 dequant, fire_fixed.FP_ONE).
+    //
+    // FLOAT-PARITY CONTRACT (the reason this function exists rather than
+    // just inlining floats): the old Python loop computed every expression
+    // above in DOUBLE (Python floats are C doubles; math.pi is a double)
+    // and narrowed to float32 ONLY at the final `src.field = <python
+    // float>` pybind attribute set. To land the identical float32 bits,
+    // every expression here is DOUBLE arithmetic, with the same operator
+    // shapes/order as the Python source, cast to `float` ONLY at the point
+    // that mirrors that pybind narrowing. The dial parameters are `double`
+    // in this signature for the same reason: the Python runner's attributes
+    // (self.k_fire_heat etc.) stay double for their whole lifetime and are
+    // never pre-narrowed to float32 before this multiply — accepting them
+    // as `float` here would round a tick early and could flip the final
+    // float32 bit. `color` has no arithmetic before it lands on the source
+    // (a pure passthrough constant either way), so it is safely `float`.
+    std::vector<LightSource> build_fire_sources(
+        const int32_t* fire, int h, int w,
+        double k_fire_heat, int fire_ray_count,
+        double range_base, double range_per_intensity,
+        double intensity_base, double intensity_per_intensity,
+        const float color[3], double jitter
     ) const;
 };

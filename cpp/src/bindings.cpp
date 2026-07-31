@@ -483,6 +483,106 @@ PYBIND11_MODULE(breach_physics, m) {
           "order from the per-source path and are only valid for callers that "
           "discard rgb/dir/glow (cast_fire_heat).");
 
+    // P-R1 (docs/radiation_raycaster_extinction_ruling_2026-07-31.md
+    // A4.1-A4.2): the CUDA twin of cast_from_fire_plane (the Raycaster class
+    // method above). Builds the SAME per-tile source list as the CPU entry
+    // point (Raycaster::build_fire_ray_list — build_fire_sources, the
+    // float-parity-critical shared enumerator, folded into RayHD via
+    // build_ray_list) and concatenates it — IDENTICAL to
+    // cuda_raycaster_cast_batch's concatenation above, except the source list
+    // is built FROM THE FIRE PLANE here instead of supplied by Python. `heat`
+    // is byte-identical to cast_from_fire_plane's CPU loop (same sources,
+    // same order-free saturating add) — mechanical relocation, no march/law
+    // change. RENDER CHANNELS ARE NOT BYTE-STABLE HERE for the same reason as
+    // cuda_raycaster_cast_batch (float-atomic interleave order) — only valid
+    // for callers that discard rgb/dir/glow (cast_fire_heat).
+    m.def("cuda_raycaster_cast_from_fire_plane",
+          [](const Raycaster& self,
+             py::array_t<int32_t> fire,
+             double k_fire_heat, int fire_ray_count,
+             double range_base, double range_per_intensity,
+             double intensity_base, double intensity_per_intensity,
+             std::array<float, 3> color,
+             py::array_t<float> light_rgb,
+             py::array_t<float> light_dx,
+             py::array_t<float> light_dy,
+             py::array_t<float> gas,
+             py::array_t<float> gas_absorption,
+             py::array_t<float> gas_scatter,
+             py::array_t<float> light_atten,
+             py::object heat,
+             py::object smoke_glow,
+             py::object heat_atten,
+             double jitter) {
+              auto [fp, h, w] = get_2d_const(fire);
+              auto [lrgb, h2, w2]  = get_3d(light_rgb);
+              auto [ldx, h3, w3] = get_2d(light_dx);
+              auto [ldy, h4, w4] = get_2d(light_dy);
+              auto gv = gas.unchecked<3>();
+              const float* gas_field = gv.data(0, 0, 0);
+              const int n_gases = static_cast<int>(gv.shape(0));
+              auto ga = gas_absorption.unchecked<2>();
+              const float* gabs = ga.data(0, 0);
+              auto gs = gas_scatter.unchecked<2>();
+              const float* gsca = gs.data(0, 0);
+              auto a = light_atten.unchecked<3>();
+              const float* atten = a.data(0, 0, 0);
+              int32_t* heat_ptr = nullptr;
+              py::array_t<int32_t> heat_arr;
+              if (!heat.is_none()) {
+                  heat_arr = heat.cast<py::array_t<int32_t>>();
+                  auto ha = heat_arr.mutable_unchecked<2>();
+                  heat_ptr = ha.mutable_data(0, 0);
+              }
+              float* glow_ptr = nullptr;
+              py::array_t<float> glow_arr;
+              if (!smoke_glow.is_none()) {
+                  glow_arr = smoke_glow.cast<py::array_t<float>>();
+                  auto gga = glow_arr.mutable_unchecked<3>();
+                  glow_ptr = gga.mutable_data(0, 0, 0);
+              }
+              const float* hatten = nullptr;
+              py::array_t<float> heat_atten_arr;
+              if (!heat_atten.is_none()) {
+                  heat_atten_arr = heat_atten.cast<py::array_t<float>>();
+                  auto haa = heat_atten_arr.unchecked<2>();
+                  hatten = haa.data(0, 0);
+              }
+              std::vector<breach_cuda::RayHD> rays = self.build_fire_ray_list(
+                  fp, h, w, k_fire_heat, fire_ray_count,
+                  range_base, range_per_intensity,
+                  intensity_base, intensity_per_intensity,
+                  color.data(), jitter);
+              // n_rays==0 guard (no burning tiles, or all sources fully
+              // angular-culled) — defense in depth, mirrors
+              // cuda_raycaster_cast_batch (Python also guards via
+              // burning.any() before ever calling in).
+              if (rays.empty()) return;
+              breach_cuda::raycaster_cast_directional(
+                  rays.data(), static_cast<int>(rays.size()),
+                  lrgb, ldx, ldy, heat_ptr, glow_ptr,
+                  gas_field, gabs, gsca, n_gases,
+                  atten, hatten,
+                  self.smoke_absorb_scale, self.light_cull, self.heat_cull,
+                  h, w);
+          },
+          py::arg("raycaster"), py::arg("fire"),
+          py::arg("k_fire_heat"), py::arg("fire_ray_count"),
+          py::arg("range_base"), py::arg("range_per_intensity"),
+          py::arg("intensity_base"), py::arg("intensity_per_intensity"),
+          py::arg("color"),
+          py::arg("light_rgb"), py::arg("light_dx"), py::arg("light_dy"),
+          py::arg("gas"), py::arg("gas_absorption"), py::arg("gas_scatter"),
+          py::arg("light_atten"),
+          py::arg("heat") = py::none(),
+          py::arg("smoke_glow") = py::none(),
+          py::arg("heat_atten") = py::none(),
+          py::arg("jitter") = 0.0,
+          "P-R1: CUDA twin of cast_from_fire_plane — builds the source list "
+          "from the fire plane in C++ and marches it in ONE batched device "
+          "cast (S8c's raycaster_cast_directional). `heat` is bit-identical "
+          "to cast_from_fire_plane's CPU loop.");
+
     // CUDA-S2 LIVE: the raycaster backend flag (mirrors set_temperature_backend).
     // Unlike the 6 field solvers, the live fire->heat cast is NOT dispatched in
     // PhysicsEngine::step — it runs in Python (PhysicsRunner.cast_fire_heat, the
@@ -1656,19 +1756,9 @@ PYBIND11_MODULE(breach_physics, m) {
                 r.smoke_scatter_albedo[1] = c[1];
                 r.smoke_scatter_albedo[2] = c[2];
             })
-        .def_readwrite("coarse_cluster",   &Raycaster::coarse_cluster)
-        .def("update_from_fire", [](const Raycaster& self,
-                                     py::array_t<float> light_map,
-                                     py::array_t<float> fire,
-                                     py::array_t<float> smoke,
-                                     py::array_t<bool>  is_wall) {
-            auto [lm, h, w] = get_2d(light_map);
-            auto [f, h2, w2] = get_2d_const(fire);
-            auto [sm, h3, w3] = get_2d_const(smoke);
-            auto [wl, h4, w4] = get_2d_const(is_wall);
-            self.update_from_fire(lm, f, sm, wl, h, w);
-        }, py::arg("light_map"), py::arg("fire"),
-           py::arg("smoke"), py::arg("is_wall"))
+        // (P-R1, 2026-07-31: update_from_fire + coarse_cluster deleted here —
+        // no production caller; see raycaster.h's tombstone comment and
+        // docs/radiation_raycaster_extinction_ruling_2026-07-31.md A4.2.)
         .def("cast_source_directional",
              [](const Raycaster& self,
                 const LightSource& src,
@@ -1742,6 +1832,94 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("heat") = py::none(),
            py::arg("smoke_glow") = py::none(),
            py::arg("heat_atten") = py::none())
+        // P-R1 (docs/radiation_raycaster_extinction_ruling_2026-07-31.md
+        // A4.1-A4.2): the whole-fire-plane cast. Replaces the old Python
+        // per-tile bp.LightSource() loop in PhysicsRunner.cast_fire_heat
+        // (~10 pybind attribute writes PER BURNING TILE, PER TICK, ~6000/tick
+        // at 600 fires) with ONE call: enumerates fire>0 row-major in C++
+        // (Raycaster::build_fire_sources) and casts each source immediately,
+        // same as the old loop's cast_source_directional calls. `heat` is
+        // byte-identical to that old loop — mechanical relocation, no
+        // march/law change. Field-for-field identical march-input unpacking
+        // to cast_source_directional above; `fire` is the extra Q16.16 int32
+        // plane input, and the per-source params are dial SCALARS instead of
+        // one LightSource per call.
+        .def("cast_from_fire_plane",
+             [](const Raycaster& self,
+                py::array_t<int32_t> fire,
+                double k_fire_heat, int fire_ray_count,
+                double range_base, double range_per_intensity,
+                double intensity_base, double intensity_per_intensity,
+                std::array<float, 3> color,
+                py::array_t<float> light_rgb,
+                py::array_t<float> light_dx,
+                py::array_t<float> light_dy,
+                py::array_t<float> gas,
+                py::array_t<float> gas_absorption,
+                py::array_t<float> gas_scatter,
+                py::array_t<float> light_atten,
+                py::object heat,
+                py::object smoke_glow,
+                py::object heat_atten,
+                double jitter) {
+            auto [fp, h, w] = get_2d_const(fire);
+            auto [lrgb, h2, w2]  = get_3d(light_rgb);
+            auto [ldx, h3, w3] = get_2d(light_dx);
+            auto [ldy, h4, w4] = get_2d(light_dy);
+            auto gv = gas.unchecked<3>();
+            const float* gas_field = gv.data(0, 0, 0);
+            const int n_gases = static_cast<int>(gv.shape(0));
+            auto ga = gas_absorption.unchecked<2>();
+            const float* gabs = ga.data(0, 0);
+            auto gs = gas_scatter.unchecked<2>();
+            const float* gsca = gs.data(0, 0);
+            auto a = light_atten.unchecked<3>();
+            const float* atten = a.data(0, 0, 0);
+            int32_t* heat_ptr = nullptr;
+            py::array_t<int32_t> heat_arr;
+            if (!heat.is_none()) {
+                heat_arr = heat.cast<py::array_t<int32_t>>();
+                auto ha = heat_arr.mutable_unchecked<2>();
+                heat_ptr = ha.mutable_data(0, 0);
+            }
+            float* glow_ptr = nullptr;
+            py::array_t<float> glow_arr;
+            if (!smoke_glow.is_none()) {
+                glow_arr = smoke_glow.cast<py::array_t<float>>();
+                auto gga = glow_arr.mutable_unchecked<3>();
+                glow_ptr = gga.mutable_data(0, 0, 0);
+            }
+            const float* hatten = nullptr;
+            py::array_t<float> heat_atten_arr;
+            if (!heat_atten.is_none()) {
+                heat_atten_arr = heat_atten.cast<py::array_t<float>>();
+                auto haa = heat_atten_arr.unchecked<2>();
+                hatten = haa.data(0, 0);
+            }
+            self.cast_from_fire_plane(fp, h, w,
+                                       k_fire_heat, fire_ray_count,
+                                       range_base, range_per_intensity,
+                                       intensity_base, intensity_per_intensity,
+                                       color.data(),
+                                       lrgb, ldx, ldy,
+                                       heat_ptr, glow_ptr,
+                                       gas_field, gabs, gsca, n_gases,
+                                       atten, hatten, jitter);
+        }, py::arg("fire"),
+           py::arg("k_fire_heat"), py::arg("fire_ray_count"),
+           py::arg("range_base"), py::arg("range_per_intensity"),
+           py::arg("intensity_base"), py::arg("intensity_per_intensity"),
+           py::arg("color"),
+           py::arg("light_rgb"), py::arg("light_dx"), py::arg("light_dy"),
+           py::arg("gas"), py::arg("gas_absorption"), py::arg("gas_scatter"),
+           py::arg("light_atten"),
+           py::arg("heat") = py::none(),
+           py::arg("smoke_glow") = py::none(),
+           py::arg("heat_atten") = py::none(),
+           py::arg("jitter") = 0.0,
+           "P-R1: enumerate fire>0 row-major and cast the whole tick's fire "
+           "sources in ONE call (replaces the old Python per-tile LightSource "
+           "loop). heat is byte-identical to that loop.")
         .def_static("normalize_directions",
              [](py::array_t<float> light_dx, py::array_t<float> light_dy) {
             auto [ldx, h, w]   = get_2d(light_dx);

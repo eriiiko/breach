@@ -2,7 +2,6 @@
 #include "cuda_raycaster.h"   // CUDA-S2 gate: RayHD POD (plain header, no CUDA symbols)
 #include "fixed_point.h"      // Q2-LIFT: the deterministic trig kit (sin/cos_q16)
 #include <algorithm>
-#include <cstring>
 #include <random>
 
 static constexpr float PI = 3.14159265358979f;
@@ -460,59 +459,110 @@ void Raycaster::normalize_directions(float* light_dx, float* light_dy, int h, in
     }
 }
 
-void Raycaster::update_from_fire(
-    float* light_map,
-    const float* fire,
-    const float* smoke_field,
-    const bool* is_wall,
-    int h, int w
+// ---- P-R1: whole-fire-plane source build (moved from Python) --------------
+//
+// docs/radiation_raycaster_extinction_ruling_2026-07-31.md A4.1-A4.2. See the
+// FLOAT-PARITY CONTRACT on the declaration (raycaster.h) for why every
+// expression below is double arithmetic narrowed to float only at the very
+// end — it must land the identical float32 bits PhysicsRunner.cast_fire_heat's
+// old per-tile Python loop produced (pybind narrows a Python double to the
+// LightSource's float field at the `src.x = ...`-style assignment; Python
+// itself never narrows earlier, since Python floats are C doubles).
+std::vector<LightSource> Raycaster::build_fire_sources(
+    const int32_t* fire, int h, int w,
+    double k_fire_heat, int fire_ray_count,
+    double range_base, double range_per_intensity,
+    double intensity_base, double intensity_per_intensity,
+    const float color[3], double jitter
 ) const {
-    // Zero light map
-    std::memset(light_map, 0, h * w * sizeof(float));
+    // math.pi's bits: CPython's `math.pi` is the literal 3.14159265358979323846
+    // (Py_MATH_PI, mathmodule.c) rounded to the nearest double. The SAME
+    // literal here rounds to the identical double under any IEEE754 compiler
+    // (it carries far more digits than needed to disambiguate the nearest
+    // double), so `two_pi_d` below is bit-identical to Python's `2.0 * math.pi`.
+    static constexpr double PI_D = 3.14159265358979323846;
+    const double two_pi_d = 2.0 * PI_D;
+    const float angle_spread_f = static_cast<float>(two_pi_d);
+    const float jitter_f = static_cast<float>(jitter);
+    // Hoisted invariant sub-expression: Python recomputes `two_pi / ray_count`
+    // fresh on every loop iteration, but IEEE754 division is a deterministic
+    // pure function of its two (here loop-invariant) operands, so evaluating
+    // it once here is bit-identical to Python's per-iteration recompute.
+    const double phase_step_d = two_pi_d / static_cast<double>(fire_ray_count);
+    // Q16.16 dequant: fire's fixed-point scale is the SAME 65536 as HEAT_SCALE
+    // (== fire_fixed.FP_ONE, src/simulation/fire_fixed.py). Division by an
+    // exact power of two is exact in IEEE754 (no rounding), matching Python's
+    // `float(fire[y, x]) / fire_fixed.FP_ONE_F` bit-for-bit.
+    const double fp_one_d = static_cast<double>(HEAT_SCALE);
 
-    // Early exit if no fire
-    float max_fire = 0.0f;
-    for (int i = 0; i < h * w; ++i) max_fire = std::max(max_fire, fire[i]);
-    if (max_fire < 0.01f) return;
-
-    // Cluster fire tiles on coarse grid to avoid casting from every burning tile
-    int co = std::max(coarse_cluster, 1);
     std::vector<LightSource> sources;
+    // ROW-MAJOR enumeration (row outer, col inner) — the order np.nonzero
+    // yields in C order, which the old Python loop
+    // (`for yy, xx in zip(*np.nonzero(burning))`) walked.
+    for (int row = 0; row < h; ++row) {
+        const int32_t* row_ptr = fire + static_cast<size_t>(row) * w;
+        for (int col = 0; col < w; ++col) {
+            const int32_t fq = row_ptr[col];
+            if (fq <= 0) continue;
 
-    for (int cy = 0; cy < h; cy += co) {
-        for (int cx = 0; cx < w; cx += co) {
-            int by2 = std::min(cy + co, h);
-            int bx2 = std::min(cx + co, w);
+            const double I = static_cast<double>(fq) / fp_one_d;
 
-            // Find max fire in block
-            float block_max = 0.0f;
-            int best_y = cy, best_x = cx;
-            for (int y = cy; y < by2; ++y) {
-                for (int x = cx; x < bx2; ++x) {
-                    if (fire[y * w + x] > block_max) {
-                        block_max = fire[y * w + x];
-                        best_y = y;
-                        best_x = x;
-                    }
-                }
-            }
+            const double x_d = static_cast<double>(col) + 0.5;
+            const double y_d = static_cast<double>(row) + 0.5;
+            const double max_range_d = range_base + range_per_intensity * I;
+            const double intensity_d = intensity_base + intensity_per_intensity * I;
+            const double heat_d = k_fire_heat * I;
+            const int mod_result = (col * 7 + row * 13) % fire_ray_count;
+            const double angle_center_d =
+                static_cast<double>(mod_result) * phase_step_d;
 
-            if (block_max > 0.1f) {
-                LightSource src;
-                src.x = static_cast<float>(best_x);
-                src.y = static_cast<float>(best_y);
-                src.max_range = 15;
-                src.intensity = 0.8f * block_max;
-                src.heat = 1.0f;
-                src.jitter = 0.05f;
-                src.falloff = Falloff::UNIFORM;
-                sources.push_back(src);
-            }
+            LightSource src;
+            src.x = static_cast<float>(x_d);
+            src.y = static_cast<float>(y_d);
+            src.max_range = static_cast<float>(max_range_d);
+            src.ray_count = fire_ray_count;
+            src.angle_center = static_cast<float>(angle_center_d);
+            src.angle_spread = angle_spread_f;
+            src.intensity = static_cast<float>(intensity_d);
+            src.heat = static_cast<float>(heat_d);
+            src.jitter = jitter_f;
+            src.color[0] = color[0];
+            src.color[1] = color[1];
+            src.color[2] = color[2];
+            // falloff: default-initialized to Falloff::UNIFORM (LightSource's
+            // in-class default) — the old Python loop never set it either.
+            sources.push_back(src);
         }
     }
+    return sources;
+}
 
+void Raycaster::cast_from_fire_plane(
+    const int32_t* fire, int h, int w,
+    double k_fire_heat, int fire_ray_count,
+    double range_base, double range_per_intensity,
+    double intensity_base, double intensity_per_intensity,
+    const float color[3],
+    float* light_rgb,
+    float* light_dx,
+    float* light_dy,
+    int32_t* heat,
+    float* smoke_glow,
+    const float* gas_field,
+    const float* gas_absorption,
+    const float* gas_scatter,
+    int n_gases,
+    const float* light_atten,
+    const float* heat_atten,
+    double jitter
+) const {
+    std::vector<LightSource> sources = build_fire_sources(
+        fire, h, w, k_fire_heat, fire_ray_count, range_base, range_per_intensity,
+        intensity_base, intensity_per_intensity, color, jitter);
     for (const auto& src : sources) {
-        cast_source(src, light_map, smoke_field, is_wall, h, w);
+        cast_source_directional(src, light_rgb, light_dx, light_dy, heat, smoke_glow,
+                                 gas_field, gas_absorption, gas_scatter, n_gases,
+                                 light_atten, heat_atten, h, w);
     }
 }
 
@@ -590,6 +640,32 @@ std::vector<breach_cuda::RayHD> Raycaster::build_ray_list(const LightSource& src
             ray.max_range = src.max_range;
             rays.push_back(ray);
         }
+    }
+    return rays;
+}
+
+// ---- P-R1: CUDA twin of cast_from_fire_plane -------------------------------
+//
+// Same shared enumerator (build_fire_sources) as the CPU entry point, folded
+// into RayHD via build_ray_list and concatenated in row-major source order —
+// IDENTICAL concatenation shape to cuda_raycaster_cast_batch's pybind lambda
+// (bindings.cpp, S8c item 1), which does this same loop over a Python-supplied
+// source list. No march/law change: the caller feeds the result straight into
+// the existing breach_cuda::raycaster_cast_directional batched device march.
+std::vector<breach_cuda::RayHD> Raycaster::build_fire_ray_list(
+    const int32_t* fire, int h, int w,
+    double k_fire_heat, int fire_ray_count,
+    double range_base, double range_per_intensity,
+    double intensity_base, double intensity_per_intensity,
+    const float color[3], double jitter
+) const {
+    std::vector<LightSource> sources = build_fire_sources(
+        fire, h, w, k_fire_heat, fire_ray_count, range_base, range_per_intensity,
+        intensity_base, intensity_per_intensity, color, jitter);
+    std::vector<breach_cuda::RayHD> rays;
+    for (const auto& src : sources) {
+        std::vector<breach_cuda::RayHD> r = build_ray_list(src);
+        rays.insert(rays.end(), r.begin(), r.end());
     }
     return rays;
 }

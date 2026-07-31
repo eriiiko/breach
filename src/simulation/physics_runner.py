@@ -19,8 +19,6 @@ responsible for calling ``gmap.destroy_wall(y, x)`` on each.
 """
 from __future__ import annotations
 
-import math
-
 import numpy as np
 
 from config import CFG
@@ -287,14 +285,15 @@ class PhysicsRunner:
         # the deposit is occluded per K1 (a wall blocks the fire's heat beyond it).
         #
         # Own Raycaster instance (headless — the renderer owns a separate one for
-        # the light pass; this one only ever fills `heat`). coarse_cluster reuses
-        # the shipped clustering when many tiles burn (a firestorm casts from a
-        # coarse grid, not every tile). Determinism: fixed ray count, fixed angles
-        # (no jitter / RNG), fixed row-major source order, integer saturating-add.
+        # the light pass; this one only ever fills `heat`). Determinism: fixed
+        # ray count, fixed angles (no jitter / RNG), fixed row-major source
+        # order, integer saturating-add. P-R1 (2026-07-31): the per-tile source
+        # build that used to run here in Python now lives in C++
+        # (Raycaster.cast_from_fire_plane / cuda_raycaster_cast_from_fire_plane,
+        # see cast_fire_heat below) — coarse_cluster died with the orphaned
+        # update_from_fire path it only ever fed (no production caller).
         self.raycaster = self.engine.raycaster
         fire_cfg = getattr(CFG.physics, "fire", None)
-        self.raycaster.coarse_cluster = int(
-            getattr(fire_cfg, "coarse_cluster", 3))
         self.k_fire_heat = float(getattr(fire_cfg, "k_fire_heat", 9.0))
         self.fire_ray_count = int(getattr(fire_cfg, "fire_ray_count", 8))
         self.fire_range_base = float(getattr(fire_cfg, "range_base", 2.0))
@@ -1007,11 +1006,23 @@ class PhysicsRunner:
         """Deposit fire's radiant heat into ``gmap.heat`` (proposal §1).
 
         Enumerate every burning tile (``fire > 0``) in fixed ROW-MAJOR order,
-        turn each into a short-range heat :class:`LightSource`, and cast the
-        whole list with the C++ raycaster into ``gmap.heat`` — Q16.16,
-        saturating-add, occluded per tile by ``gmap.heat_atten`` (K1). HEAT-ONLY:
-        the render light buffers are throwaway scratch (fire's visual glow is a
-        separate later step) and ``smoke_glow`` is skipped (None).
+        turn each into a short-range heat source, and cast the whole list with
+        the C++ raycaster into ``gmap.heat`` — Q16.16, saturating-add, occluded
+        per tile by ``gmap.heat_atten`` (K1). HEAT-ONLY: the render light
+        buffers are throwaway scratch (fire's visual glow is a separate later
+        step) and ``smoke_glow`` is skipped (None).
+
+        P-R1 (docs/radiation_raycaster_extinction_ruling_2026-07-31.md A4.1):
+        the source build — enumerating ``fire > 0`` and turning each tile into
+        a per-source ``(x, y, max_range, angle_center, intensity, heat)``
+        tuple — now runs INSIDE the C++ raycaster
+        (:meth:`Raycaster.cast_from_fire_plane` /
+        ``cuda_raycaster_cast_from_fire_plane``), ONE call per tick, instead of
+        a Python loop building one ``bp.LightSource()`` per burning tile
+        (~10 pybind attribute writes each, ~6000/tick at 600 fires). The
+        per-source parameters and the march itself are UNCHANGED — this is a
+        mechanical relocation, gated byte-identical on ``heat`` against the
+        pre-patch Python loop.
 
         Determinism (must hold — ``heat`` is sim-affecting and feeds ignition /
         unit damage downstream):
@@ -1022,29 +1033,24 @@ class PhysicsRunner:
           (``angle_center``) derived from the tile coords rotates the fan so
           neighbouring fires don't all fire the same 8 directions — but it is a
           pure function of (row, col), never random. No ``sim.rng`` is touched.
-        - **Fixed source order.** Row-major enumeration of the burning tiles.
+        - **Fixed source order.** Row-major enumeration of the burning tiles
+          (the C++ enumeration walks the fire plane in the same row-major order
+          ``np.nonzero`` used to yield).
         - **Integer saturating-add deposit.** Order-independent -> bit-identical
           across machines / runs (the property that lets ``heat`` be a CUDA
-          atomicAdd later).
-
-        Many tiles burning is handled by the raycaster's ``coarse_cluster``
-        (the shipped clustering) only inside the C++ ``update_from_fire`` path;
-        here we build per-tile sources in Python and rely on the small per-source
-        ``max_range`` for cost (many sources x few short rays == cheap, the
-        cost discipline in fire_design_notes). The cluster dial is still bound on
-        the raycaster for when the source build moves into C++.
+          atomicAdd).
 
         Called at the START of :meth:`step`, BEFORE the TemperatureSolver.
         """
         # S3a: gmap.fire is int32 Q16.16. The `> 0` burning mask is exact on the
-        # integer field (0 counts == unlit); the per-tile INTENSITY that feeds the
-        # heat-ray range/intensity params is dequantized to real [0,1] below (a
-        # LOCAL/cosmetic + heat-payload float boundary, float-OK).
+        # integer field (0 counts == unlit). The per-tile INTENSITY that feeds
+        # the heat-ray range/intensity params is now dequantized INSIDE the C++
+        # source build (P-R1) — this Python-side check only decides whether
+        # there is anything to cast at all.
         fire = gmap.fire
         # Fast out: nothing burning -> no deposit (heat stays whatever it was;
         # the sim clears it at end of tick). Mirrors the C++ early-exit.
-        burning = fire > 0
-        if not bool(burning.any()):
+        if not bool((fire > 0).any()):
             return
 
         h, w = fire.shape
@@ -1075,88 +1081,29 @@ class PhysicsRunner:
                     out=self._fire_gas_f, casting="unsafe")
 
         bp = self.bp
-        two_pi = 2.0 * math.pi
-        ray_count = self.fire_ray_count
-        # CUDA-S2 LIVE: pick the per-source cast backend ONCE for this tick (a pure
-        # flag read; constant False on the CPU build). When on, each source is cast
-        # with bp.cuda_raycaster_cast (build_ray_list -> the GPU march); else the
-        # CPU Raycaster.cast_source_directional. BOTH accumulate the source's heat
-        # into the SAME gmap.heat buffer (the GPU entry uploads the running heat,
-        # saturating-atomic-adds this source's deposit, downloads it back) — so the
-        # per-tick CLEAR (end of Simulation.step) + per-source ACCUMULATE semantics
-        # are identical, and `heat` is byte-for-byte the same as the CPU path
-        # (the S2 gate proved the march; this preserves it through the live wiring).
-        # The light_rgb/dir buffers also round-trip to the host each call (render-
-        # only / deterministic-exempt). Argument order is identical to the CPU call,
-        # with the raycaster prepended as the first positional.
+        # CUDA-S2 LIVE: pick the per-tick cast backend ONCE (a pure flag read;
+        # constant False on the CPU build). P-R1: BOTH entry points enumerate
+        # the SAME fire plane in the SAME C++ row-major order and build
+        # byte-identical per-source params (Raycaster::build_fire_sources'
+        # float-parity contract) — they differ only in which EXISTING march
+        # machinery consumes the resulting source list: the CPU cast runs
+        # cast_source_directional per source in place
+        # (Raycaster::cast_from_fire_plane), the CUDA cast concatenates every
+        # source's build_ray_list into ONE device march
+        # (cuda_raycaster_cast_from_fire_plane, S8c's batched path) — so `heat`
+        # is byte-for-byte the same either way (the S2/S8c gates proved the
+        # march + batching; P-R1 only relocated the source build). The
+        # light_rgb/dir buffers also round-trip to the host on the CUDA call
+        # (render-only / deterministic-exempt).
         use_cuda_ray = bool(self._raycaster_on_cuda())
-        # Build the source list in ROW-MAJOR order (deterministic). np.argwhere
-        # yields (row, col) pairs in C order, i.e. row-major.
-        ys, xs = np.nonzero(burning)
-        from simulation import fire_fixed
-        # S8c item 1 (fire-FPS fix): on the CUDA path, COLLECT every source and
-        # issue ONE batched device cast after the loop (cuda_raycaster_cast_batch
-        # concatenates build_ray_list over all sources -> one H2D of the inputs +
-        # running heat plane, one march, one D2H) instead of a whole-plane round-
-        # trip PER source. `heat` is BYTE-IDENTICAL to the per-source loop: they
-        # differ only in atomic-deposit order, and heat's saturating integer adds
-        # are order-free. The CPU path stays a per-source cast (no transfer tax to
-        # amortise). Design + 3-lens critique:
-        # docs/s8c_item1_fire_heat_batch_impl_2026-07-21.md.
-        cuda_sources = [] if use_cuda_ray else None
-        for yy, xx in zip(ys.tolist(), xs.tolist()):
-            # S3a: dequantize the Q16.16 intensity to real [0,1] for the ray params.
-            intensity_fire = float(fire[yy, xx]) / fire_fixed.FP_ONE_F
-            src = bp.LightSource()
-            # Cast from the tile CENTRE so the 8 rays leave symmetrically.
-            src.x = float(xx) + 0.5
-            src.y = float(yy) + 0.5
-            src.max_range = self.fire_range_base + self.fire_range_per_i * intensity_fire
-            src.ray_count = ray_count          # FIXED 8 — overrides the auto count
-            src.angle_spread = two_pi          # omni
-            # Fixed per-source phase from the tile coords — deterministic, NOT
-            # random. Rotates the 8-ray fan so adjacent fires cover complementary
-            # directions; a pure function of (col, row), bit-identical everywhere.
-            src.angle_center = ((xx * 7 + yy * 13) % ray_count) * (two_pi / ray_count)
-            src.intensity = self.fire_intensity_base + self.fire_intensity_per_i * intensity_fire
-            src.heat = self.k_fire_heat * intensity_fire   # the sim payload
-            # NO dither -- heat is sim-affecting. MUST stay 0.0: build_ray_list's
-            # per-source mt19937 is drawn ONLY when jitter>0, so a nonzero jitter
-            # would couple sources through the RNG sequence and desync the batched
-            # cast from the per-source loop (S8c design section 1).
-            src.jitter = 0.0
-            src.color = self.fire_color        # render-only tint (discarded here)
-            if use_cuda_ray:
-                # Collected for the single batched device cast after the loop.
-                cuda_sources.append(src)
-            else:
-                self.raycaster.cast_source_directional(
-                    src,
-                    self._fire_scratch_rgb,
-                    self._fire_scratch_dx,
-                    self._fire_scratch_dy,
-                    # Multi-gas march (engine/05 §6.2): pass the full gas array +
-                    # per-gas tables. Gases NEVER attenuate the heat channel (only
-                    # material heat_atten does), so the heat deposit — the only output
-                    # that survives this cast (smoke_glow=None) — is bit-identical to
-                    # the pre-multigas single-smoke call. S2b: dequantized float bridge.
-                    self._fire_gas_f,
-                    gmap.gases.absorption,
-                    gmap.gases.scatter_albedo,
-                    gmap.dyn_light_atten,
-                    gmap.heat,            # <- the only output that survives the cast
-                    None,                 # smoke_glow: skipped (render-only, later)
-                    gmap.heat_atten,      # K1 per-tile heat occlusion
-                )
-        # S8c: the ONE batched device cast for ALL sources (CUDA path only). Same
-        # inputs + argument order as the per-source cuda_raycaster_cast, with the
-        # source LIST in place of a single source. `heat` lands back on gmap.heat
-        # (the mirror), so the tick contract and every downstream heat consumer
-        # (tail temperature pass + unit damage) are unchanged.
-        if use_cuda_ray and cuda_sources:
-            bp.cuda_raycaster_cast_batch(
+        if use_cuda_ray:
+            bp.cuda_raycaster_cast_from_fire_plane(
                 self.raycaster,
-                cuda_sources,
+                fire,
+                self.k_fire_heat, self.fire_ray_count,
+                self.fire_range_base, self.fire_range_per_i,
+                self.fire_intensity_base, self.fire_intensity_per_i,
+                self.fire_color,
                 self._fire_scratch_rgb,
                 self._fire_scratch_dx,
                 self._fire_scratch_dy,
@@ -1165,6 +1112,30 @@ class PhysicsRunner:
                 gmap.gases.scatter_albedo,
                 gmap.dyn_light_atten,
                 gmap.heat,            # <- the only synced output (heat)
+                None,                 # smoke_glow: skipped (render-only, later)
+                gmap.heat_atten,      # K1 per-tile heat occlusion
+            )
+        else:
+            self.raycaster.cast_from_fire_plane(
+                fire,
+                self.k_fire_heat, self.fire_ray_count,
+                self.fire_range_base, self.fire_range_per_i,
+                self.fire_intensity_base, self.fire_intensity_per_i,
+                self.fire_color,
+                self._fire_scratch_rgb,
+                self._fire_scratch_dx,
+                self._fire_scratch_dy,
+                # Multi-gas march (engine/05 §6.2): pass the full gas array +
+                # per-gas tables. Gases NEVER attenuate the heat channel (only
+                # material heat_atten does), so the heat deposit — the only
+                # output that survives this cast (smoke_glow=None) — is
+                # bit-identical to the pre-multigas single-smoke call. S2b:
+                # dequantized float bridge.
+                self._fire_gas_f,
+                gmap.gases.absorption,
+                gmap.gases.scatter_albedo,
+                gmap.dyn_light_atten,
+                gmap.heat,            # <- the only output that survives the cast
                 None,                 # smoke_glow: skipped (render-only, later)
                 gmap.heat_atten,      # K1 per-tile heat occlusion
             )
