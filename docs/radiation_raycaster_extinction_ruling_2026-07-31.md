@@ -10,6 +10,16 @@ note: two derived floors in this arc were wrong before they were measured).
 (Erik's number; his reasoning + the receivers-are-free argument recorded in A1.8),
 and A1.6 expanded with the plain-words meaning of `LIM_SHIFT`.
 
+**Amended 2026-08-01 (P-R3 boundary) — the THERMAL SHADOW finding (§5.5):** P-R3
+verified the capacity law to 0.66% but exposed a gate-placement error in THIS
+doc: the c2 (hp < 5) and c3 (X-floor) composite gates are unreachable at P-R3's
+interim dials because the `hot` gate's thermal floor (`gain·I ≥ fire_T_ext +
+fire_T_span`) shadows both logistic floors — a pre-existing coupling §5.2's own
+lesson predicted and my gate numbers ignored. Those two gates MOVE to P-R5
+(the cool_shift lever); arithmetic in §5.5. The A3 law and its gates stand
+verified. E4 is clarified: it protects the A3 *law algebra* (verified), not
+composite floor predictions.
+
 **Amended 2026-07-31 (second pass) — Erik's 1/r question found a real defect:**
 the deposit law is now **absorptivity-weighted** (A1.4 — the original form debited
 an emitter up to ~3× its per-ray share across multi-absorber sightlines, i.e.
@@ -438,6 +448,22 @@ docs committed to the branch before any dependent agent spawns.
 4. **Painter arithmetic** [from code, this pass]: combustion's current object-site
    deposit ≈ 4.2 counts/tick vs the painter's ≈ 19,000 at the blessed plateau —
    the factor `H_bed` must carry, and why A1 spends a section on it.
+5. **The THERMAL SHADOW (P-R3 bench, 2026-08-01) — why the composite floors moved
+   to P-R5.** With any I-proportional heat deposit, sustain requires
+   `gain·I ≥ fire_T_ext + fire_T_span` ⇒ `I_crit = 220/2112 = 0.104` at the
+   probe dials, and since `I_eq = c·a`, death arrives when `a` falls to
+   `≈ I_crit/c + r` — the *thermal* knee, which sits ABOVE both logistic floors:
+   fuel knee **F ≈ 0.55** (measured 0.530/0.560, T = 220.0 exact at death; hp
+   floor ~16/30, not 3.2) and O₂ knee **X ≈ 0.174 even at F = 1** (not 0.1386).
+   Structurally: `I_crit/I_eq ≈ (fire_T_ext + span)/T_plateau ≈ 220/443 ≈ 0.50`
+   — pinned by the C1 plateau band and the C5 physical ext band, so no P-R3
+   dial moves it. The scheduled levers do: P-R5's `cool_shift` 9 → 12 gives
+   gain 16,896, I_crit 0.013, hp floor < 5 and X death ≈ 0.142 [derived —
+   verify]. Still, the capacity law already moved the measured burnable
+   fraction 15% → 50% and the choked-supply death from X 0.194-with-89%-fuel-
+   left to a fuel-driven knee — both directionally right. **P-R5 isolation
+   probe spec:** re-run c3 with `wall_damage=0` AND `fuel_per_o2=0` (F pinned
+   at 1) so the O₂ wall is measured clean of the fuel knee.
 
 ## 6. Standing constraints (inherited, restated so the patch agents see them)
 
