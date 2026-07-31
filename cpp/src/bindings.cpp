@@ -770,8 +770,9 @@ PYBIND11_MODULE(breach_physics, m) {
              float fire_T_span, float fuel_ref, float o2_frac_ext, float o2_frac_full,
              float I_min, float k_wind_fan, float k_wind_strip,
              float smoke_emission,
-             float wall_damage, float temp_scale,
-             py::object fuel_recip) -> py::list {   // FUEL-FRACTION AXIS
+             float wall_damage, float temp_scale, float I_cap_per_avail,
+             py::object fuel_recip,                  // FUEL-FRACTION AXIS
+             py::object fire_T_ext_plane) -> py::list {  // PER-MATERIAL T_ext
               auto [f, h, w]     = get_2d(fire);
               auto [atm, h2, w2] = get_2d_const(atmosphere);
               auto [o2, h2b, w2b] = get_2d_const(n_o2);
@@ -796,11 +797,20 @@ PYBIND11_MODULE(breach_physics, m) {
                   auto fv = fr_arr.unchecked<2>();
                   fr = fv.data(0, 0);
               }
+              // PER-MATERIAL T_ext (P-R3): the same nullable-plane idiom.
+              const int32_t* tep = nullptr;
+              py::array_t<int32_t> tep_arr;
+              if (!fire_T_ext_plane.is_none()) {
+                  tep_arr = fire_T_ext_plane.cast<py::array_t<int32_t>>();
+                  auto tv = tep_arr.unchecked<2>();
+                  tep = tv.data(0, 0);
+              }
               auto destroyed = breach_cuda::fire_step(
                   f, atm, o2, nt, sm, whp, temp, wx, wy, wl, vac, fl, h, w, dt,
                   k_grow, k_die, fire_T_ext, fire_T_span, fuel_ref, o2_frac_ext,
                   o2_frac_full, I_min, k_wind_fan, k_wind_strip,
-                  smoke_emission, wall_damage, temp_scale, fr);
+                  smoke_emission, wall_damage, temp_scale, I_cap_per_avail,
+                  fr, tep);
               py::list result;
               for (const auto& [dy, dx] : destroyed) {
                   result.append(py::make_tuple(dy, dx));
@@ -816,7 +826,11 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("o2_frac_ext"), py::arg("o2_frac_full"), py::arg("I_min"),
           py::arg("k_wind_fan"), py::arg("k_wind_strip"),
           py::arg("smoke_emission"), py::arg("wall_damage"), py::arg("temp_scale"),
-          py::arg("fuel_recip") = py::none(),   // fuel-fraction axis (optional)
+          // CAPACITY LAW (P-R3, ruling A3): `c`. Defaulted to the FireParams
+          // default so every existing direct caller keeps a valid law.
+          py::arg("I_cap_per_avail") = 2.53f,
+          py::arg("fuel_recip") = py::none(),        // fuel-fraction axis (optional)
+          py::arg("fire_T_ext_plane") = py::none(),  // per-material T_ext (optional)
           "P6.8 isolated: run ONE GPU fire step (re-derived — continuous-O2 "
           "mole-fraction gate) in place on fire/smoke/wall_hp (bit-identical to "
           "FireSimulation.step) and return the destroyed-walls list of (y,x) "
@@ -1300,6 +1314,19 @@ PYBIND11_MODULE(breach_physics, m) {
           "fixed_point.h make_recip: round(2^32 / divisor) as an int64, the "
           "load-time reciprocal `recip_mul` consumes. Divisor must be > 0.");
 
+    // PER-MATERIAL fire_T_ext (P-R3, 2026-07-31 — ruling A3 ride-along): the
+    // boundary cast itself, exposed for the SAME reason `fp_make_recip` above
+    // is. `src/simulation/materials.quantize_q16` bakes each material's
+    // `ignition_temp - Δ` into `GameMap.fire_T_ext_plane`, and that plane must
+    // be BIT-IDENTICAL to what `fixedpoint::quantize` would have produced from
+    // the scalar — that agreement IS the "uniform plane == scalar fallback"
+    // back-compat contract. tests/test_pr3_capacity_law.py gates the two.
+    m.def("fp_quantize",
+          [](double v) { return fixedpoint::quantize(v); },
+          py::arg("v"),
+          "fixed_point.h quantize: a real value -> Q16.16 int32, "
+          "round-half-away-from-zero, computed in double.");
+
     // S2a: the explicit WAVE state (wave_p / wave_v / wave_source) is now int32
     // Q16.16 (same 2^16 scale as water/heat). Python (gamemap fields, field
     // edits, the recorder boundary, tests) reads this flag to allocate the wave
@@ -1476,6 +1503,10 @@ PYBIND11_MODULE(breach_physics, m) {
         .def(py::init<>())
         .def_readwrite("k_grow",         &FireParams::k_grow)
         .def_readwrite("k_die",          &FireParams::k_die)
+        // CAPACITY LAW (P-R3, ruling A3): `c` — the SIZE dial (I_eq ~= c*a).
+        .def_readwrite("I_cap_per_avail", &FireParams::I_cap_per_avail)
+        // fire_T_ext is now the FALLBACK only — the live gate is per-material
+        // (GameMap.fire_T_ext_plane, ignition_temp - ignition_to_ext_delta).
         .def_readwrite("fire_T_ext",     &FireParams::fire_T_ext)
         .def_readwrite("fire_T_span",    &FireParams::fire_T_span)
         .def_readwrite("fuel_ref",       &FireParams::fuel_ref)
@@ -1516,7 +1547,8 @@ PYBIND11_MODULE(breach_physics, m) {
                         py::array_t<bool>  is_vacuum,
                         py::array_t<bool>  flammable,
                         float dt,
-                        py::object fuel_recip_obj) -> py::list {
+                        py::object fuel_recip_obj,
+                        py::object fire_T_ext_plane_obj) -> py::list {
             auto [f, h, w] = get_2d(fire);
             auto [atm, h2, w2] = get_2d_const(atmosphere);   // EOS P3: read-only (== P)
             auto [o2, h2b, w2b] = get_2d_const(n_o2);        // fraction numerator (read-only)
@@ -1545,8 +1577,18 @@ PYBIND11_MODULE(breach_physics, m) {
                 auto fv = fr_arr.unchecked<2>();
                 fr = fv.data(0, 0);
             }
+            // PER-MATERIAL T_ext (P-R3, ruling A3 ride-along): the same
+            // OPTIONAL nullable-plane idiom — None -> nullptr -> the scalar
+            // `params.fire_T_ext`, which is the pre-derivation law BIT-FOR-BIT.
+            const int32_t* tep = nullptr;
+            py::array_t<int32_t> tep_arr;
+            if (!fire_T_ext_plane_obj.is_none()) {
+                tep_arr = fire_T_ext_plane_obj.cast<py::array_t<int32_t>>();
+                auto tv = tep_arr.unchecked<2>();
+                tep = tv.data(0, 0);
+            }
             auto destroyed = self.step(f, atm, o2, nt, sm, whp, temp, wx, wy,
-                                       wl, vac, fl, h, w, dt, fr);
+                                       wl, vac, fl, h, w, dt, fr, tep);
             py::list result;
             for (const auto& [dy, dx] : destroyed) {
                 result.append(py::make_tuple(dy, dx));
@@ -1557,7 +1599,8 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("wind_x"), py::arg("wind_y"),
            py::arg("is_wall"), py::arg("is_vacuum"), py::arg("flammable"),
            py::arg("dt"),
-           py::arg("fuel_recip") = py::none());   // fuel-fraction axis (optional)
+           py::arg("fuel_recip") = py::none(),        // fuel-fraction axis (optional)
+           py::arg("fire_T_ext_plane") = py::none()); // per-material T_ext (optional)
 
     // --- TemperatureSolver (heat -> temperature conversion §1 + conduction §2
     //     + ambient cooling §3; engine/06 §1–§3) ---
@@ -2401,6 +2444,13 @@ PYBIND11_MODULE(breach_physics, m) {
                              // engine must never silently fall back to the
                              // single global [physics.fire] fuel_ref.
                              py::array_t<int64_t> fuel_recip,
+                             // PER-MATERIAL T_ext (P-R3, ruling A3 ride-along):
+                             // the per-tile Q16.16 extinction temperature the
+                             // fire logistic's `hot` gate reads — REQUIRED for
+                             // the same reason fuel_recip is: the live engine
+                             // must never silently fall back to a global that
+                             // sits above both shipped ignition temps.
+                             py::array_t<int32_t> fire_T_ext_plane,
                              // EOS P3: bulk-N source (Pass-1 heat divisor)
                              py::array_t<int32_t> gas,
                              py::array_t<bool> gas_conservative,
@@ -2440,6 +2490,9 @@ PYBIND11_MODULE(breach_physics, m) {
             // RECIP_SHIFT=32 reciprocal does not fit int32).
             auto fr_v = fuel_recip.unchecked<2>();
             const int64_t* fr = fr_v.data(0, 0);
+            // PER-MATERIAL T_ext: the per-tile Q16.16 extinction temperature.
+            auto tep_v = fire_T_ext_plane.unchecked<2>();
+            const int32_t* tep = tep_v.data(0, 0);
             // EOS P3: (N,h,w) gas + the conservative flags — step_tail sums
             // the bulk planes for the temperature Pass-1 N divisor.
             auto gv = gas.unchecked<3>();
@@ -2459,7 +2512,7 @@ PYBIND11_MODULE(breach_physics, m) {
             auto destroyed = self.step_tail(
                 rip, ripv, wd, wp, sol,
                 f, atm, sm, whp, temp, wx, wy, vac, fl,
-                temp, hp, shift, fs, tsol, csg, fr,
+                temp, hp, shift, fs, tsol, csg, fr, tep,
                 gas_ptr, gcons, n_gases, o2_idx,
                 h, w, sim_time, amb);
             py::list result;
@@ -2477,6 +2530,7 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("thermal_solid"),             // thermal-mass axis (required)
            py::arg("cool_shift_grid"),           // cool-shift axis (required)
            py::arg("fuel_recip"),                // fuel-fraction axis (required)
+           py::arg("fire_T_ext_plane"),          // per-material T_ext (required)
            py::arg("gas"), py::arg("gas_conservative"), py::arg("o2_idx"),
            py::arg("sim_time"),
            py::arg("is_ambient") = py::none())   // BC (default None = space map)

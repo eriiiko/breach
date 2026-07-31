@@ -72,7 +72,8 @@ std::vector<std::pair<int, int>> FireSimulation::step(
     const bool* flammable,
     int h, int w,
     float dt,
-    const int64_t* fuel_recip      // FUEL-FRACTION AXIS: per-tile 1/hp (nullable)
+    const int64_t* fuel_recip,     // FUEL-FRACTION AXIS: per-tile 1/hp (nullable)
+    const q16* fire_T_ext_plane    // PER-MATERIAL T_ext: per-tile Q16.16 (nullable)
 ) const {
     const int n = h * w;
     const auto& p = params;
@@ -108,6 +109,18 @@ std::vector<std::pair<int, int>> FireSimulation::step(
     const q16 k_wind_strip_q = fp::quantize((double)p.k_wind_strip);
     const q16 fire_T_ext_q  = fp::quantize((double)p.fire_T_ext);
     const q16 I_min_q       = fp::quantize((double)p.I_min);
+    // CAPACITY LAW (P-R3, ruling A3): INV_C = 1/I_cap_per_avail, computed in
+    // DOUBLE at load and quantized once — the LOCKED S1 boundary idiom (a
+    // config-constant divide never happens per cell). It is a plain q16 (not a
+    // make_recip) because it multiplies a Q16.16 intensity through the same
+    // mul_q16 the rest of the tree uses, and 1/2.53 = 0.395 sits comfortably in
+    // range. `I_cap_per_avail <= 0` means "capacity ceiling OFF": INV_C = 0
+    // makes `gap == avail*hot` and growth unbounded — the deliberate,
+    // documented answer to a divide-by-zero misconfig (same spirit as
+    // fuel_recip_from_hp(0) == 0 meaning "no fuel"), and the probe idiom the
+    // o2f-readout tests use to collapse the multiply chain to a single factor.
+    const q16 INV_C = (p.I_cap_per_avail > 0.0f)
+        ? fp::quantize(1.0 / (double)p.I_cap_per_avail) : (q16)0;
     const q16 emission_q    = fp::quantize((double)p.smoke_emission);
     const q16 wall_damage_q = fp::quantize((double)p.wall_damage);
 
@@ -207,7 +220,15 @@ std::vector<std::pair<int, int>> FireSimulation::step(
         // (X = 0.21) lands at (0.21-0.13)/(1-0.13) = 0.092, leaving headroom for
         // locally enriched O2. The degenerate span (X_full <= X_ext misconfig)
         // falls back to a step at X_ext. Same clamp/recip_mul idiom as `hot`.
-        const q16 hot = clamp01_q(fp::recip_mul(T - fire_T_ext_q, recip_T_span));
+        // `hot` reads THIS TILE'S OWN extinction temperature (ruling A3
+        // ride-along, 2026-07-31): per tile from the `fire_T_ext_plane` when
+        // supplied — that material's `ignition_temp - ignition_to_ext_delta`,
+        // quantized at LOAD in GameMap.fire_T_ext_plane — else the scalar
+        // `fire_T_ext` fallback, which is the pre-derivation law bit-for-bit.
+        // `fire_T_span` stays GLOBAL, so this is still ONE subtract + ONE
+        // recip_mul + a clamp: the sim path keeps its no-divide contract.
+        const q16 T_ext_i = fire_T_ext_plane ? fire_T_ext_plane[i] : fire_T_ext_q;
+        const q16 hot = clamp01_q(fp::recip_mul(T - T_ext_i, recip_T_span));
         const q16 o2f = x_degenerate
             ? ((X < x_ext_q) ? (q16)0 : (q16)fp::FP_ONE)
             : clamp01_q(fp::recip_mul(X - x_ext_q, recip_x_span));
@@ -218,18 +239,35 @@ std::vector<std::pair<int, int>> FireSimulation::step(
         // a LEFT-FOLD of mul_q16, each narrowing once, in this EXACT sequence on
         // every peer -> deterministic by construction.
         //
-        //   grow = k_grow * avail * hot * I * (1 - I) * (1 + k_wind_fan*W)
-        const q16 one_minus_I = (q16)fp::FP_ONE - I;             // (1 - I)
+        // THE CAPACITY LAW (P-R3, ruling A3): the growth term's capacity factor
+        // is no longer the hardwired `(1 - I)` — it is the RESOURCE-PROPORTIONAL
+        // gap `avail*hot - I/c`, i.e. the logistic `k_grow*a*I*(1 - I/(c*a))`
+        // with `a = avail*hot` cancelled out of the bracket (which is why no
+        // division survives). THE NEW PINNED SEQUENCE, in this exact order:
+        //
+        //   gap  = avail*hot - mul_q16(I, INV_C)                  (SIGNED sub)
+        //   grow = k_grow;  grow = mul(grow, I);  grow = mul(grow, gap);
+        //                   grow = mul(grow, wind_fan)
+        //
+        // `gap` may be NEGATIVE — a fire sitting above its (just-shrunken)
+        // capacity, e.g. the tick after local O2 drops. That makes `grow`
+        // negative and the fire decays toward the new capacity through the
+        // existing signed-delta path; nothing extra is needed, and mul_q16's
+        // truncation-toward-minus-infinity is the same convention the whole
+        // tree already uses. `avail_hot` is hoisted ABOVE the growth block (it
+        // was computed for `die` below) because both terms now read it — one
+        // multiply, one value, no chance of the two disagreeing.
+        const q16 avail_hot = fp::mul_q16(avail, hot);          // avail*hot
+        const q16 gap = avail_hot - fp::mul_q16(I, INV_C);      // - I/c (SIGNED)
+        const q16 one_minus_I = (q16)fp::FP_ONE - I;             // (1 - I) — wind strip only
         const q16 wind_fan = (q16)fp::FP_ONE + fp::mul_q16(k_wind_fan_q, W);  // (1 + k_wind_fan*W)
         q16 grow = k_grow_q;                       // k_grow
-        grow = fp::mul_q16(grow, avail);           // * avail
-        grow = fp::mul_q16(grow, hot);             // * hot
         grow = fp::mul_q16(grow, I);               // * I
-        grow = fp::mul_q16(grow, one_minus_I);     // * (1 - I)
+        grow = fp::mul_q16(grow, gap);             // * gap   (signed)
         grow = fp::mul_q16(grow, wind_fan);        // * (1 + k_wind_fan*W)
 
         //   die = k_die * (1 - avail*hot) * I  +  k_wind_strip * W * (1 - I) * I
-        const q16 avail_hot = fp::mul_q16(avail, hot);          // avail*hot
+        //   (UNCHANGED by P-R3 — same terms, same order, same operands.)
         const q16 one_minus_ah = (q16)fp::FP_ONE - avail_hot;   // (1 - avail*hot)
         q16 die_a = k_die_q;                       // k_die
         die_a = fp::mul_q16(die_a, one_minus_ah);  // * (1 - avail*hot)

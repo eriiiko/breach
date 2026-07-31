@@ -105,6 +105,11 @@ std::vector<std::pair<int, int>> fire_step(
     float k_wind_fan, float k_wind_strip,
     float smoke_emission, float wall_damage,
     float temp_scale,
+    // CAPACITY LAW (P-R3, ruling A3) — `c`, the growth term's carrying capacity
+    // per unit availability. The host precompute bakes INV_C = quantize(1/c)
+    // VERBATIM as the CPU load-time block does; `<= 0` means the ceiling is OFF
+    // (INV_C = 0). See FireParams::I_cap_per_avail.
+    float I_cap_per_avail,
     // FUEL-FRACTION AXIS (2026-07-30) — OPTIONAL read-only int64 (h,w) plane:
     // per tile, the make_recip reciprocal of that tile's MATERIAL's full-health
     // hp (GameMap.fuel_recip). The fuel term becomes
@@ -112,7 +117,15 @@ std::vector<std::pair<int, int>> fire_step(
     // fraction, not wood's. nullptr -> the `fuel_ref` scalar above, i.e. the
     // pre-axis law bit-for-bit (nothing is allocated or copied in that case).
     // The CPU twin takes the identical nullable plane; tol 0 between them.
-    const int64_t* fuel_recip = nullptr);
+    const int64_t* fuel_recip = nullptr,
+    // PER-MATERIAL EXTINCTION TEMPERATURE (P-R3, ruling A3 ride-along) —
+    // OPTIONAL read-only int32 (h,w) Q16.16 plane: per tile, that material's
+    // `ignition_temp - ignition_to_ext_delta`, quantized once at load
+    // (GameMap.fire_T_ext_plane). `hot = clamp01((T - plane[i]) * recip_T_span)`.
+    // nullptr -> the `fire_T_ext` scalar above, i.e. the pre-derivation law
+    // bit-for-bit (nothing allocated or copied in that case). The CPU twin
+    // takes the identical nullable plane; tol 0 between them.
+    const int32_t* fire_T_ext_plane = nullptr);
 
 // Backend selection (S6 gate + integration). When true, PhysicsEngine::step_tail
 // runs the fire step on the GPU instead of the CPU FireSimulation::step. Defaults

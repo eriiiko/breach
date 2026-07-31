@@ -15,7 +15,13 @@
 //   X     = Σn_o2 / Σn_total  over OPEN (non-solid, non-vacuum) 4-neighbours
 //                                                  (local O2 MOLE FRACTION)
 //   W     = sqrt(wind_x^2 + wind_y^2)              (the SHARED wind field)
-//   hot   = clamp01((T - T_ext) / T_span)
+//   hot   = clamp01((T - T_ext[i]) / T_span)       (T_ext is PER MATERIAL — the
+//                                                   `fire_T_ext_plane` below,
+//                                                   baked ignition_temp[mat] -
+//                                                   ignition_to_ext_delta; falls
+//                                                   back to the global scalar
+//                                                   `fire_T_ext` when absent.
+//                                                   T_span STAYS global)
 //   o2f   = clamp01((X - o2_frac_ext)/(o2_frac_full - o2_frac_ext)) (LINEAR; the
 //                                                   continuous-O2 law — Peatross &
 //                                                   Beyler 1997; REPLACES the old
@@ -26,9 +32,34 @@
 //                                                   o2_frac_full (pure O2), NOT
 //                                                   ambient — see below)
 //   avail = F * o2f
-//   grow  = k_grow * avail * hot * I * (1-I) * (1 + k_wind_fan * W)
+//   gap   = avail*hot - I / I_cap_per_avail          (SIGNED — negative when the
+//                                                     fire sits ABOVE its own,
+//                                                     resource-sized capacity)
+//   grow  = k_grow * I * gap * (1 + k_wind_fan * W)
 //   die   = k_die * (1 - avail*hot) * I  +  k_wind_strip * W * (1-I) * I
 //   I    += dt * (grow - die);  clamp01;  snap to 0 below I_min
+//
+// THE CAPACITY LAW (P-R3, 2026-07-31 — docs/radiation_raycaster_extinction_
+// ruling_2026-07-31.md A3, on Erik's ruling R-b). The growth term's carrying
+// capacity used to be the hardwired constant 1 (the `(1-I)` factor). It is now
+// RESOURCE-PROPORTIONAL: `I_cap = I_cap_per_avail * avail * hot`, i.e.
+//     grow = k_grow * avail*hot * I * (1 - I/I_cap)
+// with `avail*hot` cancelling out of the bracket, which is why the implemented
+// form carries no division. The fixed point becomes
+//     I_eq = c * (a - r*(1-a)),   a = avail*hot,  r = k_die/k_grow,  c = I_cap_per_avail
+// and the sustain threshold keeps its old shape `a > r/(1+r)`.
+//
+// WHY (the defect it closes): under the old law `r` set BOTH the equilibrium
+// intensity AND the extinction wall — `I_eq = 1 - r(1-a)/a` — so asking for a
+// small fire (I_eq 0.21) forced `r` up against the operating point and left the
+// fire only 1.242x of headroom on the product `F*o2f*hot`. Measured consequences
+// (ruling §5): a crate could never lose more than 19.5% of its hp before dying
+// (fuel-governed death was unreachable), and the literature-anchored O2
+// extinction limit `o2_frac_ext` = 0.13 was DEAD CODE because the logistic wall
+// bit first, at X = 0.1944. Moving size into `c` gives each dial exactly one job:
+// `c` = size, `k_grow` = tempo, `k_die` = where the death wall sits. Same
+// tombstone shape as `fuel_ref` / `cool_shift` / `o2_frac_amb` before it: one
+// parameter that had been doing two jobs, split.
 //
 // Pressure (replaces the old O2-consumption subtraction, which sucked smoke IN):
 //   atmosphere[i] += max(fire_pressure_gain * I * (1 - atmosphere[i]/p_expand_ref) * dt, 0)
@@ -51,10 +82,33 @@
 
 struct FireParams {
     // --- signed-logistic feedback (fire_design_proposal §2) ---
-    float k_grow         = 4.0f;   // logistic growth gain (1/s)
+    float k_grow         = 4.0f;   // logistic growth gain (1/s) — TEMPO only now
     float k_die          = 2.0f;   // decay rate when starved/cold (1/s)
-    float fire_T_ext     = 350.0f; // extinction temperature (~ignition_temp + 50)
-    float fire_T_span    = 150.0f; // width of the `hot` ramp above T_ext
+    // CAPACITY LAW (P-R3, ruling A3): the growth term's carrying capacity per
+    // unit availability, `I_cap = I_cap_per_avail * avail * hot`. THE SIZE DIAL
+    // — the ONLY thing that sets how big a fire gets at a given resource level
+    // (`I_eq ~= c*a`), leaving `k_grow` free to mean tempo and `k_die` free to
+    // put the death wall at the physical limits. Its reciprocal is baked ONCE
+    // at load (`INV_C = quantize(1/c)`, the S1 double-then-quantize boundary
+    // idiom) so the sim path stays divide-free. `<= 0` is legal and means
+    // "capacity ceiling OFF" (INV_C = 0 -> unbounded growth): a deliberate
+    // guard against a divide-by-zero misconfig, and the probe idiom the
+    // o2f-readout tests use to collapse the multiply chain.
+    float I_cap_per_avail = 2.53f; // c — capacity per unit availability
+    // fire_T_ext: the FALLBACK extinction temperature, used only when the
+    // caller supplies no per-tile `fire_T_ext_plane` (ruling A3's ride-along,
+    // 2026-07-31). It was ONE GLOBAL standing in for a PER-MATERIAL quantity —
+    // `fire_T_ext` sits on the same axis as the per-material `ignition_temp`,
+    // and the shipped 350 exceeds BOTH shipped ignition temps (wood 300,
+    // furniture 280), so a tile could ignite below its own sustain floor and
+    // snap straight back out. It is now DERIVED per material,
+    // `fire_T_ext[mat] = ignition_temp[mat] - ignition_to_ext_delta`, which
+    // makes the invariant `fire_T_ext < ignition_temp` STRUCTURAL instead of a
+    // thing a config author has to remember. Same FALLBACK-only tombstone shape
+    // as `fuel_ref` below. `fire_T_span` deliberately stays GLOBAL: it is the
+    // width of the ramp, not its foot.
+    float fire_T_ext     = 350.0f; // FALLBACK extinction temperature (no plane)
+    float fire_T_span    = 150.0f; // width of the `hot` ramp above T_ext (GLOBAL)
     // fuel_ref: SUPERSEDED as the fuel normaliser by the per-tile `fuel_recip`
     // plane (fuel-fraction axis, 2026-07-30 — see FireSimulation::step). It was
     // ONE GLOBAL standing in for a PER-MATERIAL quantity: F is meant to be "the
@@ -175,6 +229,17 @@ public:
     //                 fraction instead of wood's. int64 because a RECIP_SHIFT=32
     //                 reciprocal exceeds int32 for small divisors; the runtime
     //                 op is still ONE multiply (recip_mul), NO divide.
+    //   fire_T_ext_plane : int32 (h, w) OPTIONAL (nullptr -> the scalar
+    //                 `fire_T_ext` fallback, i.e. the pre-derivation law
+    //                 bit-for-bit). PER-MATERIAL EXTINCTION TEMPERATURE
+    //                 (ruling A3 ride-along, 2026-07-31): per tile, that
+    //                 material's `ignition_temp - ignition_to_ext_delta`,
+    //                 QUANTIZED to Q16.16 once at load in GameMap.fire_T_ext_
+    //                 plane, so `hot = clamp01((T - plane[i]) * recip_T_span)`
+    //                 is the same one multiply + clamp it always was. Same
+    //                 nullable-plane idiom as `fuel_recip` above: a UNIFORM
+    //                 plane holding quantize(fire_T_ext) is byte-identical to
+    //                 passing no plane at all.
     std::vector<std::pair<int, int>> step(
         int32_t* fire,             // S3b: Q16.16 (was float)
         const int32_t* atmosphere, // S2c: Q16.16 == P (EOS P3: READ-ONLY, plume only)
@@ -194,7 +259,8 @@ public:
         const bool* flammable,
         int h, int w,
         float dt,
-        const int64_t* fuel_recip = nullptr   // FUEL-FRACTION AXIS (see above)
+        const int64_t* fuel_recip = nullptr,  // FUEL-FRACTION AXIS (see above)
+        const int32_t* fire_T_ext_plane = nullptr  // PER-MATERIAL T_ext (see above)
     ) const;
 
     // --- DEBUG probe (temporary instrumentation). dbg_probe_idx = -1 disables

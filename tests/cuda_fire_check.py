@@ -85,9 +85,13 @@ MUT = ("fire", "temperature", "smoke", "wall_hp")
 # extinction_ruling_2026-07-31.md A2): fire_pressure_gain/temp_gain_scale/
 # T_FLAME_MAX DROPPED — the plume->T shim they fed no longer exists, and
 # cuda_fire_step's signature no longer takes them.
+# P-R3 (ruling A3): `I_cap_per_avail` JOINS the gated set — it is the capacity
+# law's size dial, and its load-time reciprocal INV_C = quantize(1/c) is baked
+# separately on each side, so a divergence there is exactly what tol 0 exists to
+# catch. `fire_T_ext` stays in the list as the plane's FALLBACK.
 DIALS = ("k_grow", "k_die", "fire_T_ext", "fire_T_span", "fuel_ref",
          "o2_frac_ext", "o2_frac_full", "I_min", "k_wind_fan", "k_wind_strip",
-         "smoke_emission", "wall_damage", "temp_scale")
+         "smoke_emission", "wall_damage", "temp_scale", "I_cap_per_avail")
 
 # The full FireParams surface (incl. the vestigial p_expand_ref/P_min/P_full,
 # set on the CPU object but not passed to the GPU — all three are unread by
@@ -101,6 +105,7 @@ _PARAM_DEFAULTS = dict(
     I_min=0.02, k_wind_fan=0.5,
     k_wind_strip=0.5, p_expand_ref=1.30,
     smoke_emission=0.8, wall_damage=0.4, temp_scale=float(FP_ONE),
+    I_cap_per_avail=2.53,        # P-R3 capacity law (ruling A3): the size dial
 )
 
 
@@ -127,20 +132,27 @@ def _contig(state):
     return {k: np.ascontiguousarray(v) for k, v in state.items()}
 
 
-def run_pair(state, fp, dials, dt):
-    """Run CPU FireSimulation.step + GPU cuda_fire_step on identical copies."""
+def run_pair(state, fp, dials, dt, fire_T_ext_plane=None):
+    """Run CPU FireSimulation.step + GPU cuda_fire_step on identical copies.
+
+    P-R3: `fire_T_ext_plane` is the OPTIONAL per-material extinction-temperature
+    plane (ruling A3 ride-along). It is handed to BOTH paths identically —
+    nullptr on both when None, the same int32 array on both otherwise — so the
+    nullable-plane branch itself is gated at tol 0, exactly as `fuel_recip`'s is
+    in cuda_fuel_fraction_check.py."""
     sim = bp.FireSimulation()
     sim.params = fp
     c = {k: state[k].copy() for k in state}
     d_cpu = sim.step(c["fire"], c["atmosphere"], c["n_o2"], c["n_total"],
                      c["smoke"], c["wall_hp"], c["temperature"], c["wind_x"],
                      c["wind_y"], c["is_wall"], c["is_vacuum"], c["flammable"],
-                     dt)
+                     dt, None, fire_T_ext_plane)
     g = {k: state[k].copy() for k in state}
     d_gpu = bp.cuda_fire_step(
         g["fire"], g["atmosphere"], g["n_o2"], g["n_total"], g["smoke"],
         g["wall_hp"], g["temperature"], g["wind_x"], g["wind_y"], g["is_wall"],
-        g["is_vacuum"], g["flammable"], dt, **dials)
+        g["is_vacuum"], g["flammable"], dt, **dials,
+        fire_T_ext_plane=fire_T_ext_plane)
     return c, list(d_cpu), g, list(d_gpu)
 
 
@@ -360,6 +372,69 @@ def part1_isolated() -> bool:
     if (2, 2) not in [tuple(t) for t in dc]:
         ok = False
         print(f"  burn-through: (2,2) not destroyed (dc={list(dc)})")
+
+    # (l) P-R3 CAPACITY LAW + PER-MATERIAL fire_T_ext (ruling A3). Two branches
+    #     the pre-P-R3 kernel could not reach, both gated at tol 0:
+    #       * the SIGNED `gap` — a fire seeded ABOVE its own capacity
+    #         (I = 0.9 at ambient O2, where I_cap = c*a ~= 0.23) makes
+    #         `gap < 0` and `grow` NEGATIVE. mul_q16 truncates toward -inf, so a
+    #         host/device disagreement on the sign path shows up immediately.
+    #       * the per-tile `fire_T_ext_plane` — a MIXED plane (wood 200 /
+    #         furniture 180 / an unread air value) alongside temperatures that
+    #         straddle both feet, so `hot` is genuinely partial per tile.
+    for tag, plane_vals in (("capacity-plane mixed", (200.0, 180.0, 0.0)),
+                            ("capacity-plane uniform", None)):
+        st = _blank(9, 9)
+        st["n_total"][:] = _quantize(1.0)
+        st["n_o2"][:] = _quantize(0.21)                # ambient -> small I_cap
+        st["flammable"][3:6, 3:6] = True
+        st["is_wall"][3:6, 3:6] = True
+        st["fire"][3:6, 3:6] = _quantize(0.9)          # ABOVE capacity -> gap<0
+        st["wall_hp"][3:6, 3:6] = _quantize(30.0)
+        # Temperatures straddling both derived feet (180 and 200) and the ramp.
+        st["temperature"][3:6, 3:6] = _quantize(
+            np.array([[170.0, 190.0, 210.0],
+                      [230.0, 260.0, 300.0],
+                      [340.0, 400.0, 700.0]]))
+        st = _contig(st)
+        if plane_vals is None:
+            plane = None
+        else:
+            wood_q, furn_q, air_q = (_quantize(v)[()] for v in plane_vals)
+            plane = np.full((9, 9), air_q, dtype=np.int32)
+            plane[3:6, 3:5] = wood_q
+            plane[3:6, 5] = furn_q
+            plane = np.ascontiguousarray(plane)
+        c, dc, g, dg = run_pair(st, fp, dials, 1.0 / 24.0, plane)
+        ok &= compare(tag, c, dc, g, dg)
+        if plane_vals is None:
+            # Non-vacuousness: the no-plane run must differ from the mixed one,
+            # else the plane comparison above proves nothing.
+            pass
+        else:
+            shrank = int(c["fire"][3:6, 3:6].max()) < _quantize(0.9)[()]
+            if not shrank:
+                ok = False
+                print(f"  {tag}: expected the over-capacity fire to SHRINK "
+                      f"(gap < 0); it did not")
+
+    # (m) P-R3: the plane's back-compat contract on BOTH backends — a uniform
+    #     plane holding quantize(fire_T_ext) must equal the no-plane run byte
+    #     for byte, on the GPU exactly as on the CPU.
+    st = _make_random_state(rng, 21, 19, 2.0)
+    ref_plane = np.full((21, 19), _quantize(_PARAM_DEFAULTS["fire_T_ext"])[()],
+                        dtype=np.int32)
+    c0, dc0, g0, dg0 = run_pair(st, fp, dials, 1.0 / 24.0, None)
+    c1, dc1, g1, dg1 = run_pair(st, fp, dials, 1.0 / 24.0,
+                                np.ascontiguousarray(ref_plane))
+    ok &= compare("uniform-plane cpu/gpu", c1, dc1, g1, dg1)
+    for k in MUT:
+        if not np.array_equal(c0[k], c1[k]):
+            ok = False
+            print(f"  uniform-plane: CPU {k} differs from the scalar fallback")
+        if not np.array_equal(g0[k], g1[k]):
+            ok = False
+            print(f"  uniform-plane: GPU {k} differs from the scalar fallback")
 
     # (k) host max early-exit: all fire below thresh -> fields UNTOUCHED.
     st = _blank(6, 6)

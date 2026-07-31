@@ -144,10 +144,40 @@ o2_threshold  = 0.01  # RETIRED — see o2_frac_ext (fire feedback block below)
 # -> P falls -> starves; ALSO now (P4) the room's REAL O2 depletes as it burns ->
 # o2 -> 0 -> starves even in a wall that never bursts. Both emergent. Erik tunes
 # all of these live.
-k_grow            = 4.0    # logistic growth gain (1/s)
+k_grow            = 4.0    # logistic growth gain (1/s) — TEMPO only since P-R3
 k_die             = 2.0    # decay rate when starved/cold (1/s)
-fire_T_ext        = 350.0  # extinction temperature (~ignition_temp + 50; below it, fire dies)
-fire_T_span       = 150.0  # width of the `hot` ramp above fire_T_ext
+# THE CAPACITY LAW (P-R3, 2026-07-31 — docs/radiation_raycaster_extinction_
+# ruling_2026-07-31.md A3, on Erik's ruling R-b). The growth term's carrying
+# capacity used to be the hardwired constant 1 (the `(1-I)` factor); it is now
+# RESOURCE-PROPORTIONAL, `I_cap = I_cap_per_avail * avail * hot`:
+#     gap  = avail*hot - I/I_cap_per_avail        (SIGNED; negative = shrink)
+#     grow = k_grow * I * gap * (1 + k_wind_fan*W)
+#     I_eq = c*(a - r*(1-a)) ~= c*a,  a = F*o2f*hot,  r = k_die/k_grow
+# WHY: `r` used to set BOTH the equilibrium intensity AND the extinction wall
+# (`I_eq = 1 - r(1-a)/a`), so asking for a small fire (I_eq 0.21) left only
+# 1.242x of headroom on the product `F*o2f*hot`. Measured consequences (ruling
+# §5): only 19.5% of a crate's hp could EVER burn — fuel-governed death was
+# unreachable at any dial — and `o2_frac_ext` = 0.13 below was dead code,
+# because the logistic wall bit first at X = 0.1944. Now each dial has one job:
+# `I_cap_per_avail` = SIZE, `k_grow` = TEMPO, `k_die` = where the death wall
+# sits. `<= 0` legally means "capacity ceiling OFF" (unbounded growth).
+I_cap_per_avail   = 2.53   # capacity per unit availability: I_cap = c·a — the SIZE dial; ruling 2026-07-31 A3. [derived, unblessed — P-R5 blesses]
+# fire_T_ext: SUPERSEDED as the extinction floor (P-R3, ruling A3 ride-along).
+# It is a PER-MATERIAL quantity — it sits on the same physical axis as the
+# per-material `ignition_temp` — and this global, at 350, exceeded BOTH shipped
+# ignition temps (wood 300, furniture 280), so a tile could ignite at 300 and be
+# permanently below its own extinction floor. It is now DERIVED per material as
+#     fire_T_ext[mat] = ignition_temp[mat] - ignition_to_ext_delta
+# (furniture 280-100 = 180, wood 300-100 = 200), baked into
+# GameMap.fire_T_ext_plane, which makes `fire_T_ext < ignition_temp` STRUCTURAL
+# instead of a rule a config author has to remember. KEPT (like fuel_ref /
+# o2_frac_amb below) because the solver still uses it as the FALLBACK when a
+# caller supplies no per-tile plane; the live engine always supplies one, so
+# this value no longer affects the game. Editing it will NOT move the fire —
+# edit the material's `ignition_temp`, or the Δ below.
+fire_T_ext        = 350.0  # FALLBACK extinction temperature (inert in the live engine)
+ignition_to_ext_delta = 100.0  # fire_T_ext[mat] = ignition_temp[mat] - Δ (ONE global, zero new per-material columns; ruling 2026-07-31 A3)
+fire_T_span       = 150.0  # width of the `hot` ramp above fire_T_ext (STAYS global — a WIDTH, not a foot)
 # fuel_ref: SUPERSEDED as the fuel normaliser (fuel-fraction axis, 2026-07-30).
 # F means "the fraction of THIS tile's fuel remaining", so its divisor is the
 # tile's OWN material hp — a PER-MATERIAL quantity. This global is 60.0, which is

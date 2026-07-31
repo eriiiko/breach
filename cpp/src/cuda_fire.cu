@@ -128,11 +128,12 @@ __global__ void fire_logistic(int32_t* __restrict__ fire,
                               const bool* __restrict__ is_vacuum,
                               const bool* __restrict__ flammable,
                               const int64_t* __restrict__ fuel_recip,
+                              const int32_t* __restrict__ fire_T_ext_plane,
                               int h, int w,
                               int32_t dt_q, int32_t k_grow_q, int32_t k_die_q,
                               int32_t k_wind_fan_q, int32_t k_wind_strip_q,
                               int32_t fire_T_ext_q, int32_t x_ext_q,
-                              int32_t X_N_FLOOR, int32_t I_min_q,
+                              int32_t X_N_FLOOR, int32_t I_min_q, int32_t INV_C,
                               bool temp_is_identity, int64_t recip_temp_scale,
                               int64_t recip_fuel_ref, int64_t recip_T_span,
                               int64_t recip_x_span, bool x_degenerate) {
@@ -185,25 +186,33 @@ __global__ void fire_logistic(int32_t* __restrict__ fire,
         // Gates. o2f is LINEAR in X (the continuous-O2 law), clamped [0,1]:
         // X <= X_ext -> 0 (extinction), X >= X_full -> 1 (pure O2; ambient air
         // lands at 0.092). The degenerate span falls back to a step at X_ext.
-        const q16 hot = clamp01_q_dev(recip_mul_dev(T - fire_T_ext_q, recip_T_span));
+        // `hot` reads THIS TILE'S OWN extinction temperature (ruling A3
+        // ride-along) from the nullable `fire_T_ext_plane`, else the scalar
+        // fallback — VERBATIM the CPU branch (fire_simulation.cpp).
+        const q16 T_ext_i = fire_T_ext_plane ? fire_T_ext_plane[i] : fire_T_ext_q;
+        const q16 hot = clamp01_q_dev(recip_mul_dev(T - T_ext_i, recip_T_span));
         const q16 o2f = x_degenerate
             ? ((X < x_ext_q) ? (q16)0 : (q16)FP_ONE)
             : clamp01_q_dev(recip_mul_dev(X - x_ext_q, recip_x_span));
         const q16 avail = mul_q16(F, o2f);
 
-        // grow = k_grow * avail * hot * I * (1 - I) * (1 + k_wind_fan*W). PINNED
-        // left-fold mul_q16, each narrowing once, in this EXACT order.
-        const q16 one_minus_I = (q16)FP_ONE - I;                       // (1 - I)
+        // THE CAPACITY LAW (P-R3, ruling A3) — VERBATIM the CPU sequence
+        // (fire_simulation.cpp): the capacity factor is the SIGNED
+        // resource-proportional gap, not the hardwired (1 - I).
+        //   gap  = avail*hot - mul_q16(I, INV_C)                  (SIGNED sub)
+        //   grow = k_grow; * I; * gap; * wind_fan
+        // PINNED left-fold mul_q16, each narrowing once, in this EXACT order —
+        // any deviation is a CPU<->CUDA bit divergence, which is gate (d).
+        const q16 avail_hot = mul_q16(avail, hot);          // avail*hot (hoisted)
+        const q16 gap = avail_hot - mul_q16(I, INV_C);      // - I/c (SIGNED)
+        const q16 one_minus_I = (q16)FP_ONE - I;                       // (1 - I) — wind strip only
         const q16 wind_fan = (q16)FP_ONE + mul_q16(k_wind_fan_q, W);   // (1 + k_wind_fan*W)
         q16 grow = k_grow_q;
-        grow = mul_q16(grow, avail);
-        grow = mul_q16(grow, hot);
         grow = mul_q16(grow, I);
-        grow = mul_q16(grow, one_minus_I);
+        grow = mul_q16(grow, gap);
         grow = mul_q16(grow, wind_fan);
 
-        // die = k_die*(1 - avail*hot)*I + k_wind_strip*W*(1 - I)*I.
-        const q16 avail_hot = mul_q16(avail, hot);          // avail*hot
+        // die = k_die*(1 - avail*hot)*I + k_wind_strip*W*(1 - I)*I (UNCHANGED).
         const q16 one_minus_ah = (q16)FP_ONE - avail_hot;   // (1 - avail*hot)
         q16 die_a = k_die_q;
         die_a = mul_q16(die_a, one_minus_ah);
@@ -309,8 +318,9 @@ std::vector<std::pair<int, int>> fire_step(
     float fuel_ref, float o2_frac_ext, float o2_frac_full, float I_min,
     float k_wind_fan, float k_wind_strip,
     float smoke_emission, float wall_damage,
-    float temp_scale,
-    const int64_t* fuel_recip) {   // FUEL-FRACTION AXIS (nullable, see header)
+    float temp_scale, float I_cap_per_avail,
+    const int64_t* fuel_recip,           // FUEL-FRACTION AXIS (nullable, see header)
+    const int32_t* fire_T_ext_plane) {   // PER-MATERIAL T_ext (nullable, see header)
     (void)atmosphere;   // EOS P4: vestigial — the CPU step keeps it in its
                         // signature (ABI parity) but no longer reads it (the O2
                         // gate moved to n_o2; the plume that once self-limited
@@ -343,6 +353,10 @@ std::vector<std::pair<int, int>> fire_step(
     const q16 I_min_q       = quantize((double)I_min);
     const q16 emission_q    = quantize((double)smoke_emission);
     const q16 wall_damage_q = quantize((double)wall_damage);
+    // CAPACITY LAW (P-R3, ruling A3): INV_C = 1/I_cap_per_avail, VERBATIM the
+    // CPU load-time block (double, then ONE quantize; <= 0 -> 0 == ceiling OFF).
+    const q16 INV_C = (I_cap_per_avail > 0.0f)
+        ? quantize(1.0 / (double)I_cap_per_avail) : (q16)0;
 
     const int64_t recip_fuel_ref  = make_recip((double)fuel_ref);
     const int64_t recip_T_span    = make_recip((double)fire_T_span);
@@ -371,8 +385,10 @@ std::vector<std::pair<int, int>> fire_step(
     // FUEL-FRACTION AXIS: the OPTIONAL per-tile 1/hp plane. nullptr host plane
     // -> nullptr device plane, nothing allocated and nothing copied, and the
     // kernel takes the scalar fallback — the documented nullable-plane idiom
-    // the cool-shift axis uses on the temperature kernel.
+    // the cool-shift axis uses on the temperature kernel. PER-MATERIAL T_ext
+    // (P-R3, ruling A3 ride-along) rides the identical idiom, one plane over.
     int64_t *d_fuel_recip = nullptr;
+    int32_t *d_T_ext_plane = nullptr;
 
     cuda_check(cudaMalloc(&d_fire, nb), "malloc fire");
     cuda_check(cudaMalloc(&d_n_o2, nb), "malloc n_o2");
@@ -408,6 +424,11 @@ std::vector<std::pair<int, int>> fire_step(
                               (size_t)n * sizeof(int64_t),
                               cudaMemcpyHostToDevice), "H2D fuel_recip");
     }
+    if (fire_T_ext_plane) {
+        cuda_check(cudaMalloc(&d_T_ext_plane, nb), "malloc fire_T_ext_plane");
+        cuda_check(cudaMemcpy(d_T_ext_plane, fire_T_ext_plane, nb,
+                              cudaMemcpyHostToDevice), "H2D fire_T_ext_plane");
+    }
 
     const int block = 256;
     const int grid = (n + block - 1) / block;
@@ -416,9 +437,9 @@ std::vector<std::pair<int, int>> fire_step(
     // mean; reads wall_hp/temp/wind/masks).
     fire_logistic<<<grid, block>>>(
         d_fire, d_n_o2, d_n_total, d_whp, d_temp, d_wx, d_wy, d_wall, d_vac,
-        d_flam, d_fuel_recip, h, w,
+        d_flam, d_fuel_recip, d_T_ext_plane, h, w,
         dt_q, k_grow_q, k_die_q, k_wind_fan_q, k_wind_strip_q, fire_T_ext_q,
-        x_ext_q, X_N_FLOOR, I_min_q, temp_is_identity, recip_temp_scale,
+        x_ext_q, X_N_FLOOR, I_min_q, INV_C, temp_is_identity, recip_temp_scale,
         recip_fuel_ref, recip_T_span, recip_x_span, x_degenerate);
     cuda_check(cudaGetLastError(), "logistic launch");
 
@@ -479,6 +500,7 @@ std::vector<std::pair<int, int>> fire_step(
     cudaFree(d_counter);
     cudaFree(d_destroyed_idx);
     cudaFree(d_fuel_recip);   // nullptr-safe (no plane supplied -> never allocated)
+    cudaFree(d_T_ext_plane);  // nullptr-safe (same nullable-plane idiom)
 
     return destroyed;
 }

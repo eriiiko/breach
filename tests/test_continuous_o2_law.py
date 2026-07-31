@@ -222,9 +222,11 @@ def test_deterministic_repeat():
 # the actual Q16.16 value out of BOTH laws, exactly, by arranging each so that
 # its one observable equals o2f_q with no rounding in between:
 #
-#   FIRE       with k_grow = 4, k_die = 0, no wind, F = 1, hot = 1, I0 = 0.5,
-#              dt = 1.0 the pinned left-fold collapses to  grow == o2f_q  and
-#              I_next == 0.5 + o2f  exactly (valid while o2f <= 0.5).
+#   FIRE       with k_grow = 2, k_die = 0, the capacity ceiling OFF, no wind,
+#              F = 1, hot = 1, I0 = 0.5, dt = 1.0 the pinned left-fold collapses
+#              to  grow == o2f_q  and I_next == 0.5 + o2f  exactly (valid while
+#              o2f <= 0.5). (RE-ANCHORED at P-R3 for the capacity law — see
+#              _o2f_fire_q's docstring for the old-vs-new chain arithmetic.)
 #   COMBUSTION with burn_rate = 1.0, dt = 1.0 (burn_cap_q == FP_ONE) and a
 #              source at I = 1.0, demand_k == o2f_q exactly; an uncontested
 #              air cell therefore loses EXACTLY o2f_q counts of O2.
@@ -238,10 +240,30 @@ _LOW_XS = (X_EXT, X_AMB, 0.25, 0.30, 0.45, 0.55)   # the o2f <= 0.5 band
 
 def _o2f_fire_q(X, x_ext=X_EXT, x_full=X_FULL, x_amb=X_AMB):
     """o2f in RAW Q16.16 counts, read out of FireSimulation::step. Exact for
-    o2f <= 0.5 (above that I_next saturates at 1.0 and the read saturates)."""
+    o2f <= 0.5 (above that I_next saturates at 1.0 and the read saturates).
+
+    RE-ANCHORED 2026-07-31 for the CAPACITY LAW (P-R3, docs/radiation_raycaster_
+    extinction_ruling_2026-07-31.md A3). This probe works by arranging the
+    growth term's PINNED MULTIPLY CHAIN to collapse to the single factor o2f,
+    so the next-tick intensity reads it out with no rounding in between. The
+    chain changed, so the arrangement had to:
+
+      OLD chain  k_grow * avail * hot * I * (1-I) * wind_fan
+                 -> k_grow 4, I0 0.5: 4 * o2f * 1 * 0.5 * 0.5 == o2f
+      NEW chain  k_grow * I * gap * wind_fan,  gap = avail*hot - I/c
+                 -> k_grow 2, I0 0.5, capacity ceiling OFF (c <= 0 -> the
+                    documented INV_C = 0, so gap == avail*hot == o2f):
+                    2 * 0.5 * o2f == o2f
+
+    Same observable, same exactness claim (`I_next == 0.5 + o2f`, valid while
+    o2f <= 0.5), same LSB-level comparison against the combustion twin below —
+    only the dials that flatten the chain moved. The `(1-I)` factor the old
+    arrangement leaned on no longer exists; `c <= 0` is the law's documented
+    "capacity ceiling OFF" value, not a hack around it."""
     sim = bp.FireSimulation()
     p = sim.params
-    p.k_grow = 4.0
+    p.k_grow = 2.0               # was 4.0 — the (1-I) == 0.5 factor is gone
+    p.I_cap_per_avail = 0.0      # capacity ceiling OFF -> gap == avail*hot
     p.k_die = 0.0
     p.fire_T_ext = 350.0
     p.fire_T_span = 150.0
