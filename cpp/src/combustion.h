@@ -169,6 +169,43 @@ public:
                                       // out fast. Quantized once per step like
                                       // every other per-step scalar.
 
+    // ---- P-R4: H_bed — the FUEL-BED deposit ------------------------------
+    // (docs/radiation_raycaster_extinction_ruling_2026-07-31.md A1, "Where the
+    // burning tile's own temperature now comes from".)
+    //
+    // With the painter retired, a lone crate's radiation nets to ZERO at the
+    // source and only LOSES to cooler surroundings — so combustion must own the
+    // flame plateau. `H_fuel` above cannot: it is the GAS-side yield, deposited
+    // into the air cell where the flame front sits, and at the blessed
+    // operating point it is ~4 heat-counts/tick against the painter's ~19,000.
+    // The missing term is real physics and is NOT self-radiation: a flame heats
+    // its own FUEL BED — that is how fires sustain. Pass A already computes
+    // every claimant's demand share, so each claimant k gets
+    //
+    //     heat[src_k] += (mul_q16(burn_k, H_BED_M) << H_BED_SHIFT)
+    //
+    // a POSITIVE, order-free add into the EXISTING `heat[]` plane (which keeps
+    // its positive-saturating contract — with the painter gone, combustion and
+    // weapons/payloads are its only writers; see A5's census).
+    //
+    // ONE LOGICAL CONSTANT, SPLIT: H_bed = H_BED_M · 2^H_BED_SHIFT. The needed
+    // magnitude (order 10^5 T-counts per unit N_O2) does not fit a Q16.16
+    // mantissa, and the split also protects PRECISION at the other end: a
+    // claimant's per-tick burn is only ~1-4 raw Q16.16 counts, so mul_q16's
+    // truncation is relatively coarse unless the mantissa carries most of the
+    // magnitude. Keep H_BED_M as large as the format allows (|H_BED_M| < 32768)
+    // and take the rest in the shift.
+    //
+    // WHAT IT IS, HONESTLY: a CALIBRATED LUMPED CONSTANT, exactly like
+    // `thermal_mass`. It is Huggett-SHAPED (strictly proportional to the O2
+    // actually consumed, so a choked fire deposits nothing and the plateau sags
+    // with local O2 — backdraft-adjacent feel, by design) but it is NOT
+    // Huggett-VALUED: `thermal_mass = 8` already lumps the ~130x surface-layer
+    // factor (seed §1.4), so no J/mol anchor survives the conversion. Do not
+    // read it as an enthalpy.
+    float H_BED_M     = 26875.0f;   // mantissa (real units), quantized per step
+    int   H_BED_SHIFT = 2;          // H_bed = H_BED_M * 2^H_BED_SHIFT
+
     // v2.5 (P5.1): the fuel floor, in RAW Q16.16 counts (1 == one LSB).
     // Doubles as (a) the no-fuel gate threshold (wall_hp <= FUEL_FLOOR ->
     // the ember is out) and (b) the clamp this pass's depletion can never
@@ -227,6 +264,11 @@ public:
         // nullable; either null -> every burn site takes the GAS deposit path,
         // i.e. the pre-patch behaviour.
         const bool* thermal_solid = nullptr,
-        const int32_t* heat_inv_shift = nullptr
+        const int32_t* heat_inv_shift = nullptr,
+        // P-R4: the `heat[]` plane (Q16.16, h*w), MUTATED — the H_bed fuel-bed
+        // deposit's target. Positive-saturating adds only, so it is order-free
+        // exactly as the retired ray deposit was. nullptr -> no H_bed (every
+        // legacy/direct-binding caller stays byte-identical).
+        int32_t* heat = nullptr
     ) const;
 };

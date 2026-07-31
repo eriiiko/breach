@@ -367,7 +367,20 @@ TUNE = {
     #       T* = k * I * 2^6 = 64 k I;  at Erik's I anchor 0.21 -> T* = 13.4 k.
     #   The §9.3 flame band is 400-500 game, so k ~= 33.5 lands T* ~= 450
     #       (= 1193 K). 33 is that, rounded.
-    "k_fire_heat": 33.0,
+    # *** k_fire_heat TOMBSTONE (P-R4, 2026-08-01) ***  THE PAINTER IS GONE
+    # (docs/radiation_raycaster_extinction_ruling_2026-07-31.md A1). Nothing
+    # reads this key any more; it is left here ONLY so the derivations above
+    # stay readable. The plateau's gain is now the combustion FUEL-BED deposit:
+    #
+    #   T* = H_bed * (burn_rate*dt*I*o2f*claim_faces) * 2^(cool_shift - his)
+    #
+    # with H_bed = [physics.combustion] H_BED_M * 2^H_BED_SHIFT and claim_faces
+    # = the open air faces filing a demand share (4 for a crate in open air).
+    # MEASURED CAVEAT, P-R4 gate (f): at the anchored burn_rate 0.02 the
+    # per-claimant demand is ~1 Q16.16 COUNT at the operating point, so this
+    # gain is a STAIRCASE in I with a dead zone below I ~ 0.199 (ambient o2f) —
+    # see the P-R4 report / E1 escalation before trusting the smooth form.
+    "k_fire_heat": 33.0,   # DEAD KEY (kept for the derivations above)
     #   cool_shift 9: e-fold 2^9/24 = 21.3 s — a physically plausible wood-
     #   surface time constant (12 = 171 s was the cliff-clearing crutch, not a
     #   wood number). Integer shift. NOTE THE KEY: the old

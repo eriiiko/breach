@@ -499,7 +499,7 @@ PYBIND11_MODULE(breach_physics, m) {
     m.def("cuda_raycaster_cast_from_fire_plane",
           [](const Raycaster& self,
              py::array_t<int32_t> fire,
-             double k_fire_heat, int fire_ray_count,
+             int fire_ray_count,
              double range_base, double range_per_intensity,
              double intensity_base, double intensity_per_intensity,
              std::array<float, 3> color,
@@ -510,9 +510,12 @@ PYBIND11_MODULE(breach_physics, m) {
              py::array_t<float> gas_absorption,
              py::array_t<float> gas_scatter,
              py::array_t<float> light_atten,
-             py::object heat,
+             py::array_t<float> heat_atten,
+             py::array_t<int32_t> temperature,
+             py::array_t<int32_t> heat_inv_shift,
+             py::array_t<bool> thermal_solid,
+             py::array_t<int32_t> rad_net,
              py::object smoke_glow,
-             py::object heat_atten,
              double jitter) {
               auto [fp, h, w] = get_2d_const(fire);
               auto [lrgb, h2, w2]  = get_3d(light_rgb);
@@ -527,13 +530,6 @@ PYBIND11_MODULE(breach_physics, m) {
               const float* gsca = gs.data(0, 0);
               auto a = light_atten.unchecked<3>();
               const float* atten = a.data(0, 0, 0);
-              int32_t* heat_ptr = nullptr;
-              py::array_t<int32_t> heat_arr;
-              if (!heat.is_none()) {
-                  heat_arr = heat.cast<py::array_t<int32_t>>();
-                  auto ha = heat_arr.mutable_unchecked<2>();
-                  heat_ptr = ha.mutable_data(0, 0);
-              }
               float* glow_ptr = nullptr;
               py::array_t<float> glow_arr;
               if (!smoke_glow.is_none()) {
@@ -541,47 +537,47 @@ PYBIND11_MODULE(breach_physics, m) {
                   auto gga = glow_arr.mutable_unchecked<3>();
                   glow_ptr = gga.mutable_data(0, 0, 0);
               }
-              const float* hatten = nullptr;
-              py::array_t<float> heat_atten_arr;
-              if (!heat_atten.is_none()) {
-                  heat_atten_arr = heat_atten.cast<py::array_t<float>>();
-                  auto haa = heat_atten_arr.unchecked<2>();
-                  hatten = haa.data(0, 0);
-              }
+              auto [hatten, h5, w5] = get_2d_const(heat_atten);
+              auto [tmp, h6, w6]    = get_2d_const(temperature);
+              auto [his, h7, w7]    = get_2d_const(heat_inv_shift);
+              auto [tsol, h8, w8]   = get_2d_const(thermal_solid);
+              auto [rnet, h9, w9]   = get_2d(rad_net);
               std::vector<breach_cuda::RayHD> rays = self.build_fire_ray_list(
-                  fp, h, w, k_fire_heat, fire_ray_count,
+                  fp, h, w, fire_ray_count,
                   range_base, range_per_intensity,
                   intensity_base, intensity_per_intensity,
-                  color.data(), jitter);
-              // n_rays==0 guard (no burning tiles, or all sources fully
+                  color.data(), tmp, hatten, his, tsol, jitter);
+              // n_rays==0 guard (no emitters, or all sources fully
               // angular-culled) — defense in depth, mirrors
-              // cuda_raycaster_cast_batch (Python also guards via
-              // burning.any() before ever calling in).
+              // cuda_raycaster_cast_batch (Python also guards before calling).
               if (rays.empty()) return;
               breach_cuda::raycaster_cast_directional(
                   rays.data(), static_cast<int>(rays.size()),
-                  lrgb, ldx, ldy, heat_ptr, glow_ptr,
+                  lrgb, ldx, ldy, /*heat=*/nullptr, glow_ptr,
                   gas_field, gabs, gsca, n_gases,
                   atten, hatten,
                   self.smoke_absorb_scale, self.light_cull, self.heat_cull,
-                  h, w);
+                  h, w,
+                  // P-R4: the E° bake (host side, from THIS raycaster's
+                  // rad_scale) + the three planes + the signed accumulator.
+                  self.emissive_table(), tmp, his, rnet);
           },
           py::arg("raycaster"), py::arg("fire"),
-          py::arg("k_fire_heat"), py::arg("fire_ray_count"),
+          py::arg("fire_ray_count"),
           py::arg("range_base"), py::arg("range_per_intensity"),
           py::arg("intensity_base"), py::arg("intensity_per_intensity"),
           py::arg("color"),
           py::arg("light_rgb"), py::arg("light_dx"), py::arg("light_dy"),
           py::arg("gas"), py::arg("gas_absorption"), py::arg("gas_scatter"),
-          py::arg("light_atten"),
-          py::arg("heat") = py::none(),
+          py::arg("light_atten"), py::arg("heat_atten"),
+          py::arg("temperature"), py::arg("heat_inv_shift"),
+          py::arg("thermal_solid"), py::arg("rad_net"),
           py::arg("smoke_glow") = py::none(),
-          py::arg("heat_atten") = py::none(),
           py::arg("jitter") = 0.0,
-          "P-R1: CUDA twin of cast_from_fire_plane — builds the source list "
-          "from the fire plane in C++ and marches it in ONE batched device "
-          "cast (S8c's raycaster_cast_directional). `heat` is bit-identical "
-          "to cast_from_fire_plane's CPU loop.");
+          "P-R4: CUDA twin of cast_from_fire_plane — builds the emitter list "
+          "from the fire/temperature planes in C++ and marches it in ONE "
+          "batched device cast. `rad_net` is bit-identical to the CPU loop "
+          "(plain signed atomicAdd == the CPU's plain signed add).");
 
     // CUDA-S2 LIVE: the raycaster backend flag (mirrors set_temperature_backend).
     // Unlike the 6 field solvers, the live fire->heat cast is NOT dispatched in
@@ -872,7 +868,9 @@ PYBIND11_MODULE(breach_physics, m) {
              // THERMAL-MASS AXIS, P-EOS (ruling §2 site 3): the OBJECT-deposit
              // branch's inputs, both OPTIONAL (None -> the gas path == pre-patch).
              py::object thermal_solid,
-             py::object heat_inv_shift) -> py::tuple {
+             py::object heat_inv_shift,
+             // P-R4: the fuel-bed deposit's plane + its split constant.
+             py::object heat, float H_BED_M, int H_BED_SHIFT) -> py::tuple {
               auto gv = gas.mutable_unchecked<3>();
               int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
               const int n_gases = static_cast<int>(gv.shape(0));
@@ -899,6 +897,13 @@ PYBIND11_MODULE(breach_physics, m) {
                   auto ha = hshift_arr.unchecked<2>();
                   hshift = ha.data(0, 0);
               }
+              int32_t* heat_ptr = nullptr;
+              py::array_t<int32_t> heat_arr;
+              if (!heat.is_none()) {
+                  heat_arr = heat.cast<py::array_t<int32_t>>();
+                  auto hh = heat_arr.mutable_unchecked<2>();
+                  heat_ptr = hh.mutable_data(0, 0);
+              }
               int64_t heat_floor_hits = 0, t_max_phys_hits = 0;
               breach_cuda::combustion_step(
                   gas_ptr, n_gases, o2_idx, inert_n2_idx, black_smoke_idx,
@@ -906,7 +911,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   burn_rate, o2_thresh_burn, H_fuel, soot_yield, fuel_per_o2,
                   o2_frac_ext, o2_frac_full,
                   T_MAX_PHYS, &heat_floor_hits, &t_max_phys_hits,
-                  tsol, hshift);
+                  tsol, hshift, heat_ptr, H_BED_M, H_BED_SHIFT);
               return py::make_tuple(heat_floor_hits, t_max_phys_hits);
           },
           py::arg("gas"), py::arg("o2_idx"), py::arg("inert_n2_idx"),
@@ -920,6 +925,9 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("T_MAX_PHYS"),
           py::arg("thermal_solid") = py::none(),
           py::arg("heat_inv_shift") = py::none(),
+          py::arg("heat") = py::none(),
+          py::arg("H_BED_M") = 0.0f,
+          py::arg("H_BED_SHIFT") = 0,
           "P6.9b isolated: run ONE GPU combustion step (the two-gather "
           "reformulation, continuous-O2 proportional demand) in place on the "
           "three gas planes + temperature + wall_hp (bit-identical to "
@@ -1671,7 +1679,8 @@ PYBIND11_MODULE(breach_physics, m) {
                         float dt,
                         py::object n_bulk_obj,
                         py::object thermal_solid_obj,
-                        py::object cool_shift_grid_obj) {
+                        py::object cool_shift_grid_obj,
+                        py::object rad_net_obj) {
             auto [temp, h, w]     = get_2d(temperature);
             auto [hp, h2, w2]     = get_2d_const(heat);
             auto [shift, h3, w3]  = get_2d_const(heat_inv_shift);
@@ -1734,15 +1743,26 @@ PYBIND11_MODULE(breach_physics, m) {
                 auto [csp, hc, wc] = get_2d_const(csg_arr);
                 csg = csp;
             }
+            // P-R4 (ruling A1.7): `rad_net` is OPTIONAL by the SAME idiom —
+            // None -> nullptr and Pass 1 does no radiation fold, i.e. exactly
+            // the pre-P-R4 behaviour every shipped direct caller relies on.
+            const int32_t* rnet = nullptr;
+            py::array_t<int32_t> rnet_arr;
+            if (!rad_net_obj.is_none()) {
+                rnet_arr = rad_net_obj.cast<py::array_t<int32_t>>();
+                auto [rnp, hr, wr] = get_2d_const(rnet_arr);
+                rnet = rnp;
+            }
             self.step(temp, hp, shift, fs, sol, vac, atm, nb, wx, wy, h, w, dt,
-                      nullptr, tsol, csg);
+                      nullptr, tsol, csg, rnet);
         }, py::arg("temperature"), py::arg("heat"),
            py::arg("heat_inv_shift"), py::arg("face_shift"),
            py::arg("solid"), py::arg("is_vacuum"), py::arg("atmosphere"),
            py::arg("wind_x") = py::none(), py::arg("wind_y") = py::none(),
            py::arg("dt") = 0.0f, py::arg("n_bulk") = py::none(),
            py::arg("thermal_solid") = py::none(),
-           py::arg("cool_shift_grid") = py::none());
+           py::arg("cool_shift_grid") = py::none(),
+           py::arg("rad_net") = py::none());
 
     // --- Raycaster ---
     py::class_<LightSource>(m, "LightSource")
@@ -1774,6 +1794,21 @@ PYBIND11_MODULE(breach_physics, m) {
         // (gameplay/damage, its own dial so heat-shield materials can diverge).
         .def_readwrite("light_cull", &Raycaster::light_cull)
         .def_readwrite("heat_cull", &Raycaster::heat_cull)
+        // P-R4 radiation dials (ruling A1). `rad_scale` is the E° bake's
+        // emission calibration (heat counts per K⁴); the table re-bakes lazily
+        // whenever it moves, so setting the dial is enough. `T_emit_gate` is the
+        // warm-emitter threshold in GAME temperature units.
+        .def_readwrite("rad_scale", &Raycaster::rad_scale)
+        .def_readwrite("T_emit_gate", &Raycaster::T_emit_gate)
+        .def("bake_emissive_table", &Raycaster::bake_emissive_table,
+             "P-R4: (re)bake the black-body E° table from the current "
+             "rad_scale. Idempotent; the cast entry points bake lazily too.")
+        .def("emissive_table", [](const Raycaster& self) {
+                const int32_t* t = self.emissive_table();
+                return py::array_t<int32_t>(E_TABLE_SIZE, t);
+             },
+             "P-R4: a COPY of the baked E° table (E_TABLE_SIZE int32 entries, "
+             "4 game-units per bucket) — the oracle for the bake's tests.")
         // Per-channel Beer-Lambert absorption (R,G,B) — exposed as a 3-tuple.
         .def_property("smoke_absorption_rgb",
             [](const Raycaster& r) {
@@ -1889,7 +1924,7 @@ PYBIND11_MODULE(breach_physics, m) {
         .def("cast_from_fire_plane",
              [](const Raycaster& self,
                 py::array_t<int32_t> fire,
-                double k_fire_heat, int fire_ray_count,
+                int fire_ray_count,
                 double range_base, double range_per_intensity,
                 double intensity_base, double intensity_per_intensity,
                 std::array<float, 3> color,
@@ -1900,9 +1935,12 @@ PYBIND11_MODULE(breach_physics, m) {
                 py::array_t<float> gas_absorption,
                 py::array_t<float> gas_scatter,
                 py::array_t<float> light_atten,
-                py::object heat,
+                py::array_t<float> heat_atten,
+                py::array_t<int32_t> temperature,
+                py::array_t<int32_t> heat_inv_shift,
+                py::array_t<bool> thermal_solid,
+                py::array_t<int32_t> rad_net,
                 py::object smoke_glow,
-                py::object heat_atten,
                 double jitter) {
             auto [fp, h, w] = get_2d_const(fire);
             auto [lrgb, h2, w2]  = get_3d(light_rgb);
@@ -1917,13 +1955,6 @@ PYBIND11_MODULE(breach_physics, m) {
             const float* gsca = gs.data(0, 0);
             auto a = light_atten.unchecked<3>();
             const float* atten = a.data(0, 0, 0);
-            int32_t* heat_ptr = nullptr;
-            py::array_t<int32_t> heat_arr;
-            if (!heat.is_none()) {
-                heat_arr = heat.cast<py::array_t<int32_t>>();
-                auto ha = heat_arr.mutable_unchecked<2>();
-                heat_ptr = ha.mutable_data(0, 0);
-            }
             float* glow_ptr = nullptr;
             py::array_t<float> glow_arr;
             if (!smoke_glow.is_none()) {
@@ -1931,37 +1962,40 @@ PYBIND11_MODULE(breach_physics, m) {
                 auto gga = glow_arr.mutable_unchecked<3>();
                 glow_ptr = gga.mutable_data(0, 0, 0);
             }
-            const float* hatten = nullptr;
-            py::array_t<float> heat_atten_arr;
-            if (!heat_atten.is_none()) {
-                heat_atten_arr = heat_atten.cast<py::array_t<float>>();
-                auto haa = heat_atten_arr.unchecked<2>();
-                hatten = haa.data(0, 0);
-            }
+            // P-R4: heat_atten is now REQUIRED (it IS a_x — the emissivity AND
+            // the absorptivity, Kirchhoff), as are the three radiation planes
+            // and the signed accumulator. `heat` is GONE from this entry point:
+            // the fire has no one-way deposit any more.
+            auto [hatten, h5, w5] = get_2d_const(heat_atten);
+            auto [tmp, h6, w6]    = get_2d_const(temperature);
+            auto [his, h7, w7]    = get_2d_const(heat_inv_shift);
+            auto [tsol, h8, w8]   = get_2d_const(thermal_solid);
+            auto [rnet, h9, w9]   = get_2d(rad_net);
             self.cast_from_fire_plane(fp, h, w,
-                                       k_fire_heat, fire_ray_count,
+                                       fire_ray_count,
                                        range_base, range_per_intensity,
                                        intensity_base, intensity_per_intensity,
                                        color.data(),
-                                       lrgb, ldx, ldy,
-                                       heat_ptr, glow_ptr,
+                                       lrgb, ldx, ldy, glow_ptr,
                                        gas_field, gabs, gsca, n_gases,
-                                       atten, hatten, jitter);
+                                       atten, hatten,
+                                       tmp, his, tsol, rnet, jitter);
         }, py::arg("fire"),
-           py::arg("k_fire_heat"), py::arg("fire_ray_count"),
+           py::arg("fire_ray_count"),
            py::arg("range_base"), py::arg("range_per_intensity"),
            py::arg("intensity_base"), py::arg("intensity_per_intensity"),
            py::arg("color"),
            py::arg("light_rgb"), py::arg("light_dx"), py::arg("light_dy"),
            py::arg("gas"), py::arg("gas_absorption"), py::arg("gas_scatter"),
-           py::arg("light_atten"),
-           py::arg("heat") = py::none(),
+           py::arg("light_atten"), py::arg("heat_atten"),
+           py::arg("temperature"), py::arg("heat_inv_shift"),
+           py::arg("thermal_solid"), py::arg("rad_net"),
            py::arg("smoke_glow") = py::none(),
-           py::arg("heat_atten") = py::none(),
            py::arg("jitter") = 0.0,
-           "P-R1: enumerate fire>0 row-major and cast the whole tick's fire "
-           "sources in ONE call (replaces the old Python per-tile LightSource "
-           "loop). heat is byte-identical to that loop.")
+           "P-R4: enumerate the emitter set (burning tiles + thermal solids at "
+           "or above T_emit_gate) row-major and run the antisymmetric net-T^4 "
+           "radiation exchange into rad_net. The one-way painter deposit and "
+           "k_fire_heat are GONE.")
         .def_static("normalize_directions",
              [](py::array_t<float> light_dx, py::array_t<float> light_dy) {
             auto [ldx, h, w]   = get_2d(light_dx);
@@ -2208,6 +2242,9 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("H_fuel",            &CombustionSolver::H_fuel)
         .def_readwrite("soot_yield",        &CombustionSolver::soot_yield)
         .def_readwrite("fuel_per_o2",       &CombustionSolver::fuel_per_o2)   // v2.5 P5.1
+        // P-R4: the FUEL-BED deposit's split constant (H_bed = M * 2^SHIFT).
+        .def_readwrite("H_BED_M",           &CombustionSolver::H_BED_M)
+        .def_readwrite("H_BED_SHIFT",       &CombustionSolver::H_BED_SHIFT)
         .def_readwrite("o2_thresh_breathe", &CombustionSolver::o2_thresh_breathe)
         .def_readwrite("T_MAX_PHYS",        &CombustionSolver::T_MAX_PHYS)     // v2.4 rail
         .def_readonly("heat_floor_hits",    &CombustionSolver::heat_floor_hits)
@@ -2231,7 +2268,10 @@ PYBIND11_MODULE(breach_physics, m) {
                         // None -> nullptr -> every site takes the gas path, so
                         // every shipped direct caller keeps its exact meaning.
                         py::object thermal_solid,
-                        py::object heat_inv_shift) {
+                        py::object heat_inv_shift,
+                        // P-R4: the `heat[]` plane the fuel-bed deposit lands
+                        // in. OPTIONAL (None -> no H_bed == pre-P-R4).
+                        py::object heat) {
             auto gv = gas.mutable_unchecked<3>();
             int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
             const int n_gases = static_cast<int>(gv.shape(0));
@@ -2258,16 +2298,24 @@ PYBIND11_MODULE(breach_physics, m) {
                 auto ha = hshift_arr.unchecked<2>();
                 hshift = ha.data(0, 0);
             }
+            int32_t* heat_ptr = nullptr;
+            py::array_t<int32_t> heat_arr;
+            if (!heat.is_none()) {
+                heat_arr = heat.cast<py::array_t<int32_t>>();
+                auto hh = heat_arr.mutable_unchecked<2>();
+                heat_ptr = hh.mutable_data(0, 0);
+            }
             self.step(gas_ptr, n_gases, o2_idx, inert_n2_idx, black_smoke_idx,
                      temp, whp, f, fl, sol, vac, ign, h, w, dt, c_v, n_floor_heat,
-                     tsol, hshift);
+                     tsol, hshift, heat_ptr);
         }, py::arg("gas"), py::arg("o2_idx"), py::arg("inert_n2_idx"),
            py::arg("black_smoke_idx"), py::arg("temperature"), py::arg("wall_hp"),
            py::arg("fire"), py::arg("flammable"), py::arg("solid"),
            py::arg("is_vacuum"), py::arg("ignition_temp_q16"),
            py::arg("dt"), py::arg("c_v"), py::arg("n_floor_heat"),
            py::arg("thermal_solid") = py::none(),
-           py::arg("heat_inv_shift") = py::none());
+           py::arg("heat_inv_shift") = py::none(),
+           py::arg("heat") = py::none());
 
     // --- WaterSolver (pipe model: damped velocity + donor-cell upwind flux;
     //     engine/07 §2, water_implementation_plan Step W1) ---
@@ -2456,7 +2504,8 @@ PYBIND11_MODULE(breach_physics, m) {
                              py::array_t<bool> gas_conservative,
                              int o2_idx,                         // EOS P4
                              float sim_time,
-                             py::object is_ambient) -> py::list {   // BC
+                             py::object is_ambient,                 // BC
+                             py::object rad_net) -> py::list {      // P-R4
             // ripple group
             auto [rip, h, w]    = get_2d(ripple);
             auto [ripv, h2, w2] = get_2d(ripple_v);
@@ -2509,12 +2558,22 @@ PYBIND11_MODULE(breach_physics, m) {
                 amb = aa.data(0, 0);
             }
 
+            // P-R4: the nullable SIGNED radiation accumulator (None -> nullptr,
+            // i.e. no fold — the same idiom as is_ambient above).
+            const int32_t* rnet = nullptr;
+            py::array_t<int32_t> rnet_arr;
+            if (!rad_net.is_none()) {
+                rnet_arr = rad_net.cast<py::array_t<int32_t>>();
+                auto ra = rnet_arr.unchecked<2>();
+                rnet = ra.data(0, 0);
+            }
+
             auto destroyed = self.step_tail(
                 rip, ripv, wd, wp, sol,
                 f, atm, sm, whp, temp, wx, wy, vac, fl,
                 temp, hp, shift, fs, tsol, csg, fr, tep,
                 gas_ptr, gcons, n_gases, o2_idx,
-                h, w, sim_time, amb);
+                h, w, sim_time, amb, rnet);
             py::list result;
             for (const auto& [dy, dx] : destroyed) {
                 result.append(py::make_tuple(dy, dx));
@@ -2533,7 +2592,8 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("fire_T_ext_plane"),          // per-material T_ext (required)
            py::arg("gas"), py::arg("gas_conservative"), py::arg("o2_idx"),
            py::arg("sim_time"),
-           py::arg("is_ambient") = py::none())   // BC (default None = space map)
+           py::arg("is_ambient") = py::none(),   // BC (default None = space map)
+           py::arg("rad_net") = py::none())      // P-R4 (default None = no fold)
         // --- Patch 1 S4b: the IMEX atmosphere/smoke substep loop ------------
         // run_substeps moves the per-tick IMEX substep block of PhysicsRunner.step
         // (between _step_water and step_tail) into C++. Pointer extraction mirrors

@@ -83,7 +83,8 @@ void CombustionSolver::step(
         int h, int w, float dt,
         float c_v, float n_floor_heat,
         const bool* thermal_solid,
-        const int32_t* heat_inv_shift) const {
+        const int32_t* heat_inv_shift,
+        int32_t* heat) const {
 
     if (h <= 0 || w <= 0 || dt <= 0.0f) return;
     if (o2_idx < 0 || o2_idx >= n_gases) return;
@@ -107,6 +108,12 @@ void CombustionSolver::step(
     // v2.5 (P5.1): wall_hp consumed per unit N_O2 burned — the ember-scale
     // stoichiometric fuel cost (design §5 v2.5 amendment, decisions #17).
     const q16 fuel_per_o2_q = quantize((double)fuel_per_o2);
+    // P-R4: the fuel-bed deposit's mantissa, quantized ONCE per step like every
+    // other per-step scalar (combustion.h documents the split and why the
+    // mantissa carries most of the magnitude). The shift is applied per-deposit
+    // in int64 (see the H_bed site in Pass A) so a large burn cannot overflow.
+    const q16 H_bed_m_q     = quantize((double)H_BED_M);
+    const int H_bed_shift   = (H_BED_SHIFT > 0) ? H_BED_SHIFT : 0;
     const double c_v_safe  = (c_v > 0.0f) ? (double)c_v : 1.0;
     const int64_t recip_cv = make_recip(c_v_safe);              // 1/c_v, once per step
     const q16 n_floor_q    = quantize((double)n_floor_heat);
@@ -305,8 +312,30 @@ void CombustionSolver::step(
 
             // Record each claimant's allocation on the face buffer so Pass B can
             // charge the SOURCE for the O2 it drew from this air cell.
+            //
+            // P-R4 (ruling A1): the same loop now also pays each claimant its
+            // FUEL-BED deposit — the flame heating the surface it is burning
+            // off, which is what owns the plateau now that the painter is gone.
+            //   H_bed_k = mul_q16(burn_k, H_BED_M) << H_BED_SHIFT
+            // strictly proportional to the O2 that claimant ACTUALLY got
+            // (`alloc[k]`, not its demand) — so a choked claimant deposits
+            // nothing and the plateau sags with local O2, by design.
+            //
+            // ORDER-FREE: a positive saturating add into `heat[]`, exactly the
+            // contract the retired ray deposit used, so several air cells
+            // feeding one source in any order give the same total (and the CUDA
+            // twin's atomic is the same add). The shift is taken in int64 and
+            // clamped before the add: `alloc[k]` can reach a full ambient O2
+            // cell (~1.4e4 counts) and mul_q16 by a near-format-max mantissa
+            // then << shift would otherwise leave int32.
             for (int k = 0; k < n_cl; ++k) {
                 alloc_face[(size_t)cl_dir[k] * n + j] = (q16)alloc[k];
+                if (heat != nullptr && alloc[k] > 0 && H_bed_m_q > 0) {
+                    int64_t bed = (int64_t)mul_q16((q16)alloc[k], H_bed_m_q);
+                    bed <<= H_bed_shift;
+                    if (bed > (int64_t)INT32_MAX) bed = (int64_t)INT32_MAX;
+                    heat_saturating_add(&heat[cl_src[k]], (int32_t)bed);
+                }
             }
         }
     }

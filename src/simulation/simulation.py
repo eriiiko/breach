@@ -1280,6 +1280,13 @@ class Simulation:
         # (never reassigned) so any C++ view of the buffer stays valid.
         if self.physics_runner is not None:
             self.gmap.heat.fill(0)
+            # P-R4 (ruling A1.7): `rad_net` is the SIGNED radiation accumulator
+            # and shares `heat`'s per-tick lifetime exactly — filled by the
+            # fire-plane cast at the top of the physics step, consumed by the
+            # temperature solver's Pass-1 fold in the same step, wiped here so
+            # the next tick's cast starts clean. In-place (never reassigned) so
+            # any C++ view of the buffer stays valid.
+            self.gmap.rad_net.fill(0)
 
         # Expire visual shot tracers (legacy fade-out behaviour).
         if self.shots:

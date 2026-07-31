@@ -82,7 +82,17 @@ void combustion_step(
     // takes the GAS path == the pre-patch behaviour (and the two are identical
     // anyway on any furniture-free map).
     const bool* thermal_solid = nullptr,
-    const int32_t* heat_inv_shift = nullptr);
+    const int32_t* heat_inv_shift = nullptr,
+    // P-R4 (ruling A1): the FUEL-BED deposit. `heat` is the Q16.16 heat plane,
+    // MUTATED — each claimant receives H_bed * (the O2 it actually got) as a
+    // positive SATURATING atomic add at its own cell, exactly the CPU's
+    // heat_saturating_add (order-free for non-negative deltas under a monotone
+    // clamp, so several air cells feeding one source in any thread order give
+    // the identical total). H_BED_M/H_BED_SHIFT are the split constant
+    // (combustion.h documents why). heat == nullptr -> no H_bed, byte-identical.
+    int32_t* heat = nullptr,
+    float H_BED_M = 0.0f,
+    int H_BED_SHIFT = 0);
 
 // Backend flag: when ON, PhysicsRunner's combustion pass dispatches to
 // combustion_step on the GPU instead of the CPU CombustionSolver::step.

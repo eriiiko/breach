@@ -73,7 +73,8 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // EOS P4: o2_idx slices the real O2 gate input out of `gas`
         const int32_t* gas, const bool* gas_conservative, int n_gases, int o2_idx,
         int h, int w, float sim_time,
-        const bool* is_ambient) const {   // BC: ambient ring for the T pre-pass
+        const bool* is_ambient,           // BC: ambient ring for the T pre-pass
+        const int32_t* rad_net) const {   // P-R4: SIGNED radiation accumulator
 
     using namespace fixedpoint;
 
@@ -310,7 +311,9 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             // backends read the SAME dials (the cool_shift/cool_shift_vacuum
             // pair above still supplies the offset itself).
             cool_shift_grid,
-            this->temperature.cool_shift_floor);
+            this->temperature.cool_shift_floor,
+            // P-R4: the SIGNED radiation fold, on the GPU twin too.
+            rad_net);
     } else
 #endif
     {
@@ -331,7 +334,11 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             // COOL-SHIFT AXIS: Pass 3's per-tile decay shift. The solver's own
             // `cool_shift`/`cool_shift_vacuum`/`cool_shift_floor` members still
             // supply the vacuum OFFSET and its clamp.
-            cool_shift_grid);
+            cool_shift_grid,
+            // P-R4: the SIGNED radiation accumulator (ruling A1.7). Folded in
+            // Pass 1 BEFORE the heat deposit, through each tile's own
+            // heat_inv_shift, with shr_round0 + a symmetric saturating add.
+            rad_net);
     }
 
     return destroyed;

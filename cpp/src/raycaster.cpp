@@ -30,6 +30,42 @@ static inline float det_sin(float angle) {
     return fixedpoint::dequantize_f(fixedpoint::sin_q16(fixedpoint::quantize(angle)));
 }
 
+// ---- P-R4: the E° bake (ruling A1.3) --------------------------------------
+//
+// Credit: J.R. Howell, M.P. Mengüç, R. Siegel, "Thermal Radiation Heat
+// Transfer" — E°(T) = σT⁴ is the black-body emissive power this table holds;
+// the emissivity ε is NOT in the bake (it lives in the per-material pair
+// coefficient a_s·a_r, Kirchhoff), which is what keeps the pair coefficient
+// symmetric and the exchange antisymmetric.
+//
+// Every entry is EXACT integer work up to ONE final boundary multiply:
+//   K(t)  = 297 + 8t                       (the bucket midpoint's absolute K)
+//   k2    = K*K;  k4 = k2*k2                (int64, exact — see raycaster.h)
+//   E[t]  = clamp_int32( round( rad_scale * k4 ) )
+// NEVER pow()/libm: a 1-ULP CRT difference here would desync a synced int32
+// field across machines.
+void Raycaster::bake_emissive_table() const {
+    e_table_.resize(E_TABLE_SIZE);
+    const double scale = rad_scale;
+    for (int t = 0; t < E_TABLE_SIZE; ++t) {
+        const int64_t K  = 297LL + 8LL * (int64_t)t;   // 293 + 2*(4t+2), exact
+        const int64_t k2 = K * K;                       // repeated multiplication
+        const int64_t k4 = k2 * k2;                     // <= 1.09e18, exact in int64
+        const double  v  = (double)k4 * scale;          // the ONE rounding boundary
+        e_table_[t] = (v >= 2147483647.0)
+            ? INT32_MAX
+            : (int32_t)((v > 0.0) ? (v + 0.5) : 0.0);   // rad_scale > 0 by contract
+    }
+    e_table_scale_ = scale;
+}
+
+const int32_t* Raycaster::emissive_table() const {
+    if (e_table_.size() != (size_t)E_TABLE_SIZE || e_table_scale_ != rad_scale) {
+        bake_emissive_table();
+    }
+    return e_table_.data();
+}
+
 void Raycaster::march_ray(
     float sx, float sy, float angle,
     float ray_intensity, float max_range,
@@ -157,7 +193,9 @@ void Raycaster::march_ray_directional(
     int n_gases,
     const float* light_atten,
     const float* heat_atten,
-    int h, int w
+    int h, int w,
+    const RadCtx* rad,
+    const RadRay* rr
 ) const {
     // Stride of one gas slice in the (n_gases, h, w) contiguous array: each
     // gas[g] starts at gas_field + g*plane and is itself a (h, w) plane.
@@ -189,6 +227,14 @@ void Raycaster::march_ray_directional(
     const bool emits_g = e_g > 0.0f;
     const bool emits_b = e_b > 0.0f;
     const bool emits_heat = (heat != nullptr) && (heat_emit > 0.0f);
+    // P-R4: the RADIATION channel. It shares the heat channel's survival and
+    // its cull gate (the material-only quantity — the determinism contract that
+    // keeps the touched tile set independent of the float light path), but it
+    // is an independent DEPOSIT: `emits_heat` is the retired painter's own
+    // gate and no fire source sets it any more.
+    const bool emits_rad = (rad != nullptr) && (rr != nullptr) &&
+                           rad->active() && (heat_atten != nullptr) &&
+                           (rr->coef != 0.0f);
 
     // Per-channel SURVIVAL ∈ [0,1]: starts at 1.0, decays ONLY by occlusion
     // (material atten + gas Beer-Lambert for RGB; `heat_atten` for heat). NEVER
@@ -222,7 +268,11 @@ void Raycaster::march_ray_directional(
         if (emits_r && survival[0] > light_cull) return true;
         if (emits_g && survival[1] > light_cull) return true;
         if (emits_b && survival[2] > light_cull) return true;
-        if (emits_heat && heat_survival > heat_cull) return true;
+        // P-R4: radiation keeps the ray alive on the SAME heat survival/cull
+        // pair the painter used — so the marched (and therefore heat-touched)
+        // tile set is governed by exactly the same material-only quantity as
+        // before. Nothing about the determinism contract moves.
+        if ((emits_heat || emits_rad) && heat_survival > heat_cull) return true;
         return false;
     };
 
@@ -263,6 +313,61 @@ void Raycaster::march_ray_directional(
         if (emits_heat && heat_survival > heat_cull) {
             float heat_dep = heat_emit * heat_survival;
             heat_saturating_add(&heat[idx], heat_quantize(heat_dep));
+        }
+
+        // ---- P-R4: the NET-T⁴ RADIATION EXCHANGE (ruling A1) --------------
+        //
+        // This REPLACES the painter for every fire source (`emits_heat` is
+        // false on every source the fire builder makes — `k_fire_heat` no
+        // longer exists). Per absorbing cell r, against the SAME
+        // `heat_survival > heat_cull` gate the painter used:
+        //
+        //   diff = E°[T_s] − E°[T_r]                        (signed int32)
+        //   net  = a_s · w · τ · a_r · diff                 (ONE quantize)
+        //   net  = clamp(net, ± min(budget_s, budget_r))    (flux limiter)
+        //   rad_net[r] += net;  rad_net[s] −= net           (the SAME integer)
+        //
+        // PINNED MULTIPLY ORDER (left fold; the CUDA twin in cuda_raycaster.cu
+        // pins the IDENTICAL order — this is the tol-0 contract):
+        //     f  = rr->coef            // == a_s * (1/ray_count), host-folded
+        //     f *= heat_survival       // × τ   (running material transmittance)
+        //     f *= a_r                 // × a_r (this cell's absorptivity)
+        //     v  = (double)f * (double)diff        // ONE promotion, full
+        //                                          // integer precision on diff
+        //     net = rad_quantize_signed(v)         // round half away from zero
+        // The float part follows the march's existing float discipline (the
+        // TU is /fp:strict, the device is --fmad=false /fp:strict); the DEPOSIT
+        // is quantized ONCE per cell, exactly the old heat_quantize boundary.
+        //
+        // SELF-CELL: the source is its own first marched cell, so r == s,
+        // T_r == T_s, the two lookups hit the SAME bucket and diff == 0 —
+        // "our radiation will not heat its own tile" falls out structurally
+        // (ruling A1.2). The code runs; it produces exactly 0.
+        if (emits_rad && heat_survival > heat_cull) {
+            const float a_r = heat_atten[idx];
+            if (a_r > 0.0f) {                 // air (a == 0) neither absorbs nor receives
+                const int32_t T_r = rad->temperature[idx];
+                const int32_t diff = rr->E_s - rad->e_table[e_bucket_of(T_r)];
+                float f = rr->coef;           // a_s · w
+                f *= heat_survival;           // · τ
+                f *= a_r;                     // · a_r
+                int32_t net = rad_quantize_signed((double)f * (double)diff);
+                // ---- flux limiter (Levermore & Pomraning 1981; ruling A1.6)
+                // Each end may shed/absorb at most 1/2^RAD_LIM_SHIFT of the
+                // pair's temperature GAP through its OWN thermal mass, per ray,
+                // per tick. Inert in normal operation; a rail at extreme gaps.
+                const int64_t dT = (int64_t)rr->T_q - (int64_t)T_r;
+                const int64_t adT = (dT < 0) ? -dT : dT;
+                const int64_t b_s = rad_pair_budget(adT, rr->his_s);
+                const int64_t b_r = rad_pair_budget(adT, (int)rad->heat_inv_shift[idx]);
+                const int64_t cap = (b_s < b_r) ? b_s : b_r;
+                if ((int64_t)net >  cap) net = (int32_t)cap;
+                if ((int64_t)net < -cap) net = (int32_t)(-cap);
+                // Antisymmetric apply: the SAME integer, + to the receiver and
+                // − to the emitter. Plain signed (wrapping) adds — order-free.
+                rad_signed_add(&rad->rad_net[idx], net);
+                rad_signed_add(&rad->rad_net[rr->src_idx], -net);
+            }
         }
 
         // Occlusion via per-channel attenuation (ch.03 §the march). Static
@@ -382,7 +487,9 @@ void Raycaster::cast_source_directional(
     int n_gases,
     const float* light_atten,
     const float* heat_atten,
-    int h, int w
+    int h, int w,
+    const RadCtx* rad,
+    const RadSource* rs
 ) const {
     int ray_count = src.get_ray_count();
     // Pure-density falloff (engine/08 §Falloff is density): each ray carries the
@@ -433,11 +540,24 @@ void Raycaster::cast_source_directional(
         // cone zeroes rays outside the beam (skip), UNIFORM/COSINE always cast.
         float ray_energy = src.intensity * angular_atten * inv_n;
         float ray_heat   = src.heat * angular_atten * inv_n;
+        // P-R4: the radiation per-ray constant folds a_s and 1/N the SAME way
+        // `ray_heat` folded the painter's payload — one PINNED product, host
+        // side, so the marched cell sees a single float coefficient.
+        RadRay rr;
+        const bool has_rad = (rad != nullptr) && (rs != nullptr) && rad->active();
+        if (has_rad) {
+            rr.src_idx = rs->idx;
+            rr.T_q     = rs->T_q;
+            rr.E_s     = rs->E_s;
+            rr.his_s   = rs->his_s;
+            rr.coef    = rs->a_s * angular_atten * inv_n;
+        }
         if (angular_atten > 0.0f) {
             march_ray_directional(src.x, src.y, angle, ray_energy, src.max_range,
                       src.color, ray_heat, light_rgb, light_dx, light_dy,
                       heat, smoke_glow, gas_field, gas_absorption, gas_scatter,
-                      n_gases, light_atten, heat_atten, h, w);
+                      n_gases, light_atten, heat_atten, h, w,
+                      has_rad ? rad : nullptr, has_rad ? &rr : nullptr);
         }
     }
 }
@@ -468,12 +588,20 @@ void Raycaster::normalize_directions(float* light_dx, float* light_dy, int h, in
 // old per-tile Python loop produced (pybind narrows a Python double to the
 // LightSource's float field at the `src.x = ...`-style assignment; Python
 // itself never narrows earlier, since Python floats are C doubles).
+//
+// P-R4 (ruling A1.8): the enumeration widens from `burning` to
+// `burning ∪ (thermal_solid && T >= T_emit_gate)` and every source now also
+// yields a RadSource (its T, its E°, its a_s, its heat_inv_shift, its index).
+// `k_fire_heat` and the `heat` payload are GONE with the painter.
 std::vector<LightSource> Raycaster::build_fire_sources(
     const int32_t* fire, int h, int w,
-    double k_fire_heat, int fire_ray_count,
+    int fire_ray_count,
     double range_base, double range_per_intensity,
     double intensity_base, double intensity_per_intensity,
-    const float color[3], double jitter
+    const float color[3], double jitter,
+    const int32_t* temperature, const float* heat_atten,
+    const int32_t* heat_inv_shift, const bool* thermal_solid,
+    std::vector<RadSource>* rad_out
 ) const {
     // math.pi's bits: CPython's `math.pi` is the literal 3.14159265358979323846
     // (Py_MATH_PI, mathmodule.c) rounded to the nearest double. The SAME
@@ -495,23 +623,49 @@ std::vector<LightSource> Raycaster::build_fire_sources(
     // `float(fire[y, x]) / fire_fixed.FP_ONE_F` bit-for-bit.
     const double fp_one_d = static_cast<double>(HEAT_SCALE);
 
+    // P-R4: the warm-emitter gate, quantized ONCE (the load-time boundary cast)
+    // so the per-tile test is a pure Q16.16 integer compare.
+    const int32_t t_emit_q = fixedpoint::quantize(T_emit_gate);
+    const int32_t* e_tab = emissive_table();   // bakes on first use / on a dial move
+
     std::vector<LightSource> sources;
+    if (rad_out) rad_out->clear();
     // ROW-MAJOR enumeration (row outer, col inner) — the order np.nonzero
     // yields in C order, which the old Python loop
-    // (`for yy, xx in zip(*np.nonzero(burning))`) walked.
+    // (`for yy, xx in zip(*np.nonzero(burning))`) walked. P-R4 keeps the order
+    // and widens the predicate; the deposit is order-free either way, but the
+    // order is part of the contract the CUDA concatenation mirrors.
     for (int row = 0; row < h; ++row) {
         const int32_t* row_ptr = fire + static_cast<size_t>(row) * w;
         for (int col = 0; col < w; ++col) {
+            const size_t i = static_cast<size_t>(row) * w + col;
             const int32_t fq = row_ptr[col];
-            if (fq <= 0) continue;
+            const bool burning = (fq > 0);
+            // WARM EMITTER (ruling A1.8): a thermal solid at or above the gate
+            // also casts. The gate decides who can radiatively LOSE heat —
+            // receivers are free, so a cold crate is still heated correctly.
+            const bool warm = (!burning) && (temperature != nullptr)
+                           && (thermal_solid != nullptr) && thermal_solid[i]
+                           && (temperature[i] >= t_emit_q);
+            if (!burning && !warm) continue;
 
-            const double I = static_cast<double>(fq) / fp_one_d;
+            // A source with a_s == 0 can neither emit nor absorb (Kirchhoff),
+            // so it would contribute exactly nothing — skip it rather than
+            // spend 8 marches on a guaranteed zero. (Fire only ever burns on a
+            // flammable solid, which is heat-opaque, so this never drops a real
+            // flame; it drops a hypothetical fire painted onto air.)
+            const float a_s = (heat_atten != nullptr) ? heat_atten[i] : 0.0f;
+            if (rad_out != nullptr && !(a_s > 0.0f)) continue;
+
+            // A WARM emitter has no flame, so I = 0 in the range/intensity
+            // formulas: max_range = range_base (the documented interim choice —
+            // short reach for a merely-hot surface).
+            const double I = burning ? (static_cast<double>(fq) / fp_one_d) : 0.0;
 
             const double x_d = static_cast<double>(col) + 0.5;
             const double y_d = static_cast<double>(row) + 0.5;
             const double max_range_d = range_base + range_per_intensity * I;
             const double intensity_d = intensity_base + intensity_per_intensity * I;
-            const double heat_d = k_fire_heat * I;
             const int mod_result = (col * 7 + row * 13) % fire_ray_count;
             const double angle_center_d =
                 static_cast<double>(mod_result) * phase_step_d;
@@ -524,7 +678,10 @@ std::vector<LightSource> Raycaster::build_fire_sources(
             src.angle_center = static_cast<float>(angle_center_d);
             src.angle_spread = angle_spread_f;
             src.intensity = static_cast<float>(intensity_d);
-            src.heat = static_cast<float>(heat_d);
+            // P-R4: the painter's payload is GONE. `heat` stays 0 so
+            // march_ray_directional's `emits_heat` gate is false for every fire
+            // source — the one-way deposit cannot run on this path at all.
+            src.heat = 0.0f;
             src.jitter = jitter_f;
             src.color[0] = color[0];
             src.color[1] = color[1];
@@ -532,6 +689,16 @@ std::vector<LightSource> Raycaster::build_fire_sources(
             // falloff: default-initialized to Falloff::UNIFORM (LightSource's
             // in-class default) — the old Python loop never set it either.
             sources.push_back(src);
+
+            if (rad_out != nullptr) {
+                RadSource rs;
+                rs.idx   = static_cast<int>(i);
+                rs.T_q   = temperature[i];
+                rs.E_s   = e_tab[e_bucket_of(rs.T_q)];
+                rs.a_s   = a_s;
+                rs.his_s = (heat_inv_shift != nullptr) ? (int)heat_inv_shift[i] : 0;
+                rad_out->push_back(rs);
+            }
         }
     }
     return sources;
@@ -539,14 +706,13 @@ std::vector<LightSource> Raycaster::build_fire_sources(
 
 void Raycaster::cast_from_fire_plane(
     const int32_t* fire, int h, int w,
-    double k_fire_heat, int fire_ray_count,
+    int fire_ray_count,
     double range_base, double range_per_intensity,
     double intensity_base, double intensity_per_intensity,
     const float color[3],
     float* light_rgb,
     float* light_dx,
     float* light_dy,
-    int32_t* heat,
     float* smoke_glow,
     const float* gas_field,
     const float* gas_absorption,
@@ -554,15 +720,29 @@ void Raycaster::cast_from_fire_plane(
     int n_gases,
     const float* light_atten,
     const float* heat_atten,
+    const int32_t* temperature,
+    const int32_t* heat_inv_shift,
+    const bool* thermal_solid,
+    int32_t* rad_net,
     double jitter
 ) const {
+    std::vector<RadSource> rads;
     std::vector<LightSource> sources = build_fire_sources(
-        fire, h, w, k_fire_heat, fire_ray_count, range_base, range_per_intensity,
-        intensity_base, intensity_per_intensity, color, jitter);
-    for (const auto& src : sources) {
-        cast_source_directional(src, light_rgb, light_dx, light_dy, heat, smoke_glow,
+        fire, h, w, fire_ray_count, range_base, range_per_intensity,
+        intensity_base, intensity_per_intensity, color, jitter,
+        temperature, heat_atten, heat_inv_shift, thermal_solid, &rads);
+    RadCtx ctx;
+    ctx.e_table        = emissive_table();
+    ctx.temperature    = temperature;
+    ctx.heat_inv_shift = heat_inv_shift;
+    ctx.rad_net        = rad_net;
+    for (size_t k = 0; k < sources.size(); ++k) {
+        // `heat` is nullptr: the fire path has NO one-way deposit any more.
+        cast_source_directional(sources[k], light_rgb, light_dx, light_dy,
+                                 /*heat=*/nullptr, smoke_glow,
                                  gas_field, gas_absorption, gas_scatter, n_gases,
-                                 light_atten, heat_atten, h, w);
+                                 light_atten, heat_atten, h, w,
+                                 &ctx, &rads[k]);
     }
 }
 
@@ -583,7 +763,8 @@ void Raycaster::cast_from_fire_plane(
 // pure-integer kit — identical bits in ANY TU on ANY machine, stronger than the
 // old shared-libm argument) — so the GPU (which reads these precomputed dx/dy)
 // walks bit-identical DDA tiles -> heat matches CPU byte-for-byte.
-std::vector<breach_cuda::RayHD> Raycaster::build_ray_list(const LightSource& src) const {
+std::vector<breach_cuda::RayHD> Raycaster::build_ray_list(
+        const LightSource& src, const RadSource* rs) const {
     std::vector<breach_cuda::RayHD> rays;
 
     int ray_count = src.get_ray_count();
@@ -638,6 +819,17 @@ std::vector<breach_cuda::RayHD> Raycaster::build_ray_list(const LightSource& src
             ray.e_b = ray_energy * src.color[2];
             ray.heat_emit = ray_heat;
             ray.max_range = src.max_range;
+            // P-R4: the emitter's radiation payload rides on the ray, folded
+            // in the SAME pinned order the CPU cast folds it
+            // (a_s * angular_atten * inv_n) and in the SAME /fp:strict TU — so
+            // the device march starts from a bit-identical coefficient.
+            if (rs != nullptr) {
+                ray.rad_src_idx = rs->idx;
+                ray.rad_T_q     = rs->T_q;
+                ray.rad_E_s     = rs->E_s;
+                ray.rad_his_s   = rs->his_s;
+                ray.rad_coef    = rs->a_s * angular_atten * inv_n;
+            }
             rays.push_back(ray);
         }
     }
@@ -654,17 +846,24 @@ std::vector<breach_cuda::RayHD> Raycaster::build_ray_list(const LightSource& src
 // the existing breach_cuda::raycaster_cast_directional batched device march.
 std::vector<breach_cuda::RayHD> Raycaster::build_fire_ray_list(
     const int32_t* fire, int h, int w,
-    double k_fire_heat, int fire_ray_count,
+    int fire_ray_count,
     double range_base, double range_per_intensity,
     double intensity_base, double intensity_per_intensity,
-    const float color[3], double jitter
+    const float color[3],
+    const int32_t* temperature,
+    const float* heat_atten,
+    const int32_t* heat_inv_shift,
+    const bool* thermal_solid,
+    double jitter
 ) const {
+    std::vector<RadSource> rads;
     std::vector<LightSource> sources = build_fire_sources(
-        fire, h, w, k_fire_heat, fire_ray_count, range_base, range_per_intensity,
-        intensity_base, intensity_per_intensity, color, jitter);
+        fire, h, w, fire_ray_count, range_base, range_per_intensity,
+        intensity_base, intensity_per_intensity, color, jitter,
+        temperature, heat_atten, heat_inv_shift, thermal_solid, &rads);
     std::vector<breach_cuda::RayHD> rays;
-    for (const auto& src : sources) {
-        std::vector<breach_cuda::RayHD> r = build_ray_list(src);
+    for (size_t k = 0; k < sources.size(); ++k) {
+        std::vector<breach_cuda::RayHD> r = build_ray_list(sources[k], &rads[k]);
         rays.insert(rays.end(), r.begin(), r.end());
     }
     return rays;

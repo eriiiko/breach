@@ -1,37 +1,39 @@
-"""P-R1 gate (a), CUDA half — byte-identity of the C++ fire-plane source build
-(runs inside the GPU subprocess, tests/cuda_harness.py).
+"""P-R4 gates (d) + (g), CUDA half — the RADIATION-LAW lockstep + cost bench.
 
-docs/radiation_raycaster_extinction_ruling_2026-07-31.md A4.1-A4.2: the
-per-tile source build that used to run in PhysicsRunner.cast_fire_heat's
-Python loop now runs inside Raycaster.cast_from_fire_plane (CPU) /
-cuda_raycaster_cast_from_fire_plane (CUDA), ONE call per tick. Mechanical
-relocation only — no march/law change — so ``heat`` must be byte-identical
-(tolerance ZERO) to the pre-patch per-tile loop on BOTH backends.
+REWRITTEN AT P-R4 (documented re-anchor). This module was the P-R1 transition
+witness: it pinned ``heat`` byte-identical across four casts (old-CPU /
+old-CUDA / new-CPU / new-CUDA) with the PAINTER as its oracle. P-R4 retires the
+painter (docs/radiation_raycaster_extinction_ruling_2026-07-31.md A1), so that
+oracle no longer exists; the patch's bounded re-anchor authority turns this into
+the witness for the law that replaced it.
 
-``_old_cast_cuda`` below is a frozen, verbatim transcription of the pre-P-R1
-``cast_fire_heat`` CUDA branch (collect LightSource per tile, one
-``cuda_raycaster_cast_batch`` call) — the S8c-proven batched path this patch
-does not touch. It is the oracle for ``cuda_raycaster_cast_from_fire_plane``.
+What is gated here (runs inside the GPU subprocess, tests/cuda_harness.py):
 
-Three checks, on TWO scenarios (600-fire synthetic firestorm; the real
-"playground" level over several ticks of evolving fire — mirrors
-tests/test_pr1_fire_plane_cast.py's CPU half and
-tests/cuda_s2_check.py / cuda_s2b_raycaster_live_check.py's structure):
+  PART 1 — gate (d), scenario A: a 600-emitter synthetic firestorm. ``rad_net``
+           bit-identical CPU vs CUDA at TOLERANCE ZERO, and the plane conserving
+           EXACTLY (sum == 0) on both backends. The device scatter is a PLAIN
+           signed ``atomicAdd`` and the CPU a plain signed add — integer
+           addition is associative and commutative, so the accumulation is
+           order-free and the two agree count for count however the warps
+           interleave. (A SATURATING signed add would NOT be order-free; that
+           is why radiation has its own plane and its own contract — A1.7.)
+  PART 2 — gate (d), scenario B: the EQUAL-T PAIR. Two adjacent emitters at the
+           same temperature exchange EXACTLY 0 on both backends — gate (e)(i),
+           on the GPU too.
+  PART 3 — gate (d), scenario C: a hot/cold pair with the FLUX LIMITER ENGAGED
+           (a T_MAX_PHYS-scale gap, where the raw T⁴ net exceeds the per-ray
+           budget and the clamp actually bites). Bit-identical, and the scenario
+           asserts the clamp really fired rather than passing vacuously.
+  PART 4 — gate (g): the COST. 600 emitters, one batched device cast, timed
+           against a 3.0 ms budget (2x the 1.5 ms S8c painter baseline). The CPU
+           reference cast is timed alongside for the record.
 
-  1. NEW CUDA (cuda_raycaster_cast_from_fire_plane) == OLD CUDA
-     (cuda_raycaster_cast_batch over a Python-built source list) — the gate's
-     literal requirement.
-  2. NEW CUDA == NEW CPU (cast_from_fire_plane) — belt-and-suspenders cross-
-     backend check (transitively implied by (1) + the pre-existing S2/S8c
-     CPU==CUDA gates, but cheap to assert directly).
-  3. Scenario sanity: heat is non-trivially non-zero (not a vacuous pass).
-
-Prints ``PR1_FIRE_PLANE_RESULT: PASS``/``FAIL`` and exits 0/1.
+Prints ``PR4_RADIATION_RESULT: PASS``/``FAIL`` and exits 0/1.
 """
 from __future__ import annotations
 
-import math
 import sys
+import time
 
 import numpy as np
 
@@ -39,85 +41,11 @@ import numpy as np
 # the path) so `breach_physics` is the GPU build.
 import breach_physics as bp
 
-FP_ONE_F = 65536.0   # fire_fixed.FP_ONE_F — Q16.16 scale, shared across fields
-
-
-# ---------------------------------------------------------------------------
-# The oracles: frozen, verbatim transcriptions of the PRE-P-R1 per-tile loop
-# (physics_runner.py's old cast_fire_heat). Call only functions this patch
-# does not touch (bp.LightSource, cast_source_directional,
-# cuda_raycaster_cast_batch) — do NOT "modernize" these to match the patch.
-# ---------------------------------------------------------------------------
-def _build_old_sources(fire, k_fire_heat, fire_ray_count, range_base,
-                        range_per_i, intensity_base, intensity_per_i, color):
-    two_pi = 2.0 * math.pi
-    ray_count = fire_ray_count
-    ys, xs = np.nonzero(fire > 0)
-    sources = []
-    for yy, xx in zip(ys.tolist(), xs.tolist()):
-        intensity_fire = float(fire[yy, xx]) / FP_ONE_F
-        src = bp.LightSource()
-        src.x = float(xx) + 0.5
-        src.y = float(yy) + 0.5
-        src.max_range = range_base + range_per_i * intensity_fire
-        src.ray_count = ray_count
-        src.angle_spread = two_pi
-        src.angle_center = ((xx * 7 + yy * 13) % ray_count) * (two_pi / ray_count)
-        src.intensity = intensity_base + intensity_per_i * intensity_fire
-        src.heat = k_fire_heat * intensity_fire
-        src.jitter = 0.0
-        src.color = color
-        sources.append(src)
-    return sources
-
-
-def _old_cast_cpu(raycaster, fire, k_fire_heat, fire_ray_count, range_base,
-                   range_per_i, intensity_base, intensity_per_i, color,
-                   rgb, dx, dy, gas_f, gas_absorption, gas_scatter,
-                   light_atten, heat, heat_atten):
-    sources = _build_old_sources(fire, k_fire_heat, fire_ray_count, range_base,
-                                  range_per_i, intensity_base, intensity_per_i,
-                                  color)
-    for src in sources:
-        raycaster.cast_source_directional(
-            src, rgb, dx, dy, gas_f, gas_absorption, gas_scatter, light_atten,
-            heat=heat, smoke_glow=None, heat_atten=heat_atten)
-
-
-def _old_cast_cuda(raycaster, fire, k_fire_heat, fire_ray_count, range_base,
-                    range_per_i, intensity_base, intensity_per_i, color,
-                    rgb, dx, dy, gas_f, gas_absorption, gas_scatter,
-                    light_atten, heat, heat_atten):
-    sources = _build_old_sources(fire, k_fire_heat, fire_ray_count, range_base,
-                                  range_per_i, intensity_base, intensity_per_i,
-                                  color)
-    if not sources:
-        return
-    bp.cuda_raycaster_cast_batch(
-        raycaster, sources, rgb, dx, dy, gas_f, gas_absorption, gas_scatter,
-        light_atten, heat=heat, smoke_glow=None, heat_atten=heat_atten)
-
-
-def _new_cast_cpu(raycaster, fire, k_fire_heat, fire_ray_count, range_base,
-                   range_per_i, intensity_base, intensity_per_i, color,
-                   rgb, dx, dy, gas_f, gas_absorption, gas_scatter,
-                   light_atten, heat, heat_atten):
-    raycaster.cast_from_fire_plane(
-        fire, k_fire_heat, fire_ray_count, range_base, range_per_i,
-        intensity_base, intensity_per_i, color,
-        rgb, dx, dy, gas_f, gas_absorption, gas_scatter, light_atten,
-        heat=heat, smoke_glow=None, heat_atten=heat_atten)
-
-
-def _new_cast_cuda(raycaster, fire, k_fire_heat, fire_ray_count, range_base,
-                    range_per_i, intensity_base, intensity_per_i, color,
-                    rgb, dx, dy, gas_f, gas_absorption, gas_scatter,
-                    light_atten, heat, heat_atten):
-    bp.cuda_raycaster_cast_from_fire_plane(
-        raycaster, fire, k_fire_heat, fire_ray_count, range_base, range_per_i,
-        intensity_base, intensity_per_i, color,
-        rgb, dx, dy, gas_f, gas_absorption, gas_scatter, light_atten,
-        heat=heat, smoke_glow=None, heat_atten=heat_atten)
+FP_ONE = 1 << 16
+RAD_SCALE = 1.0e-5
+DIALS = dict(fire_ray_count=8, range_base=2.0, range_per_i=3.0,
+             intensity_base=0.3, intensity_per_i=0.7, color=(1.0, 0.6, 0.2))
+COST_BUDGET_MS = 3.0        # gate (g): 2x the 1.5 ms S8c painter baseline
 
 
 def _make_raycaster():
@@ -125,193 +53,213 @@ def _make_raycaster():
     rc.light_cull = 0.01
     rc.heat_cull = 0.01
     rc.smoke_absorb_scale = 1.4
+    rc.rad_scale = RAD_SCALE
+    rc.T_emit_gate = 180.0
+    rc.bake_emissive_table()
     return rc
 
 
-def _cast_all(rc, fire, dials, gas_f, gas_absorption, gas_scatter, light_atten,
-              heat_atten, h, w):
-    """Run OLD-CPU, OLD-CUDA, NEW-CPU, NEW-CUDA on the identical inputs;
-    return the four heat buffers."""
-    outs = {}
-    for tag, fn in (("old_cpu", _old_cast_cpu), ("old_cuda", _old_cast_cuda),
-                     ("new_cpu", _new_cast_cpu), ("new_cuda", _new_cast_cuda)):
-        heat = np.zeros((h, w), np.int32)
-        rgb = np.zeros((h, w, 3), np.float32)
-        dx = np.zeros((h, w), np.float32)
-        dy = np.zeros((h, w), np.float32)
-        fn(rc, fire, dials["k_fire_heat"], dials["fire_ray_count"],
-           dials["range_base"], dials["range_per_i"], dials["intensity_base"],
-           dials["intensity_per_i"], dials["color"], rgb, dx, dy, gas_f,
-           gas_absorption, gas_scatter, light_atten, heat, heat_atten)
-        outs[tag] = heat
-    return outs
+class Scene:
+    """The plane set the radiation cast reads, as raw numpy arrays."""
+
+    def __init__(self, h, w, n_gases=2, rng=None):
+        self.h, self.w = h, w
+        self.fire = np.zeros((h, w), np.int32)
+        self.temperature = np.zeros((h, w), np.int32)
+        self.heat_atten = np.zeros((h, w), np.float32)
+        self.heat_inv_shift = np.zeros((h, w), np.int32)
+        self.thermal_solid = np.zeros((h, w), bool)
+        self.light_atten = np.zeros((h, w, 3), np.float32)
+        if rng is None:
+            self.gas = np.zeros((n_gases, h, w), np.float32)
+            self.gas_abs = np.zeros((n_gases, 3), np.float32)
+            self.gas_sca = np.zeros((n_gases, 3), np.float32)
+        else:
+            self.gas = (rng.random((n_gases, h, w)).astype(np.float32) * 0.6)
+            self.gas_abs = np.array([[1.0, 1.0, 1.0], [0.9, 0.2, 0.9]], np.float32)
+            self.gas_sca = np.array([[0.6, 0.6, 0.6], [0.1, 0.7, 0.1]], np.float32)
+
+    def solid(self, y, x, atten=0.5, his=3, T_game=0.0):
+        self.heat_atten[y, x] = atten
+        self.heat_inv_shift[y, x] = his
+        self.thermal_solid[y, x] = True
+        self.temperature[y, x] = int(round(T_game * FP_ONE))
+
+    def burn(self, y, x, I=0.21):
+        v = float(I) * float(FP_ONE)
+        self.fire[y, x] = int(np.floor(v + 0.5))   # round-half-away-from-zero
+
+    def _bufs(self):
+        return (np.zeros((self.h, self.w, 3), np.float32),
+                np.zeros((self.h, self.w), np.float32),
+                np.zeros((self.h, self.w), np.float32),
+                np.zeros((self.h, self.w), np.int32))
+
+    def cast_cpu(self, rc):
+        rgb, dx, dy, rad = self._bufs()
+        rc.cast_from_fire_plane(
+            self.fire, DIALS["fire_ray_count"], DIALS["range_base"],
+            DIALS["range_per_i"], DIALS["intensity_base"],
+            DIALS["intensity_per_i"], DIALS["color"], rgb, dx, dy,
+            self.gas, self.gas_abs, self.gas_sca, self.light_atten,
+            self.heat_atten, self.temperature, self.heat_inv_shift,
+            self.thermal_solid, rad)
+        return rad
+
+    def cast_cuda(self, rc):
+        rgb, dx, dy, rad = self._bufs()
+        bp.cuda_raycaster_cast_from_fire_plane(
+            rc, self.fire, DIALS["fire_ray_count"], DIALS["range_base"],
+            DIALS["range_per_i"], DIALS["intensity_base"],
+            DIALS["intensity_per_i"], DIALS["color"], rgb, dx, dy,
+            self.gas, self.gas_abs, self.gas_sca, self.light_atten,
+            self.heat_atten, self.temperature, self.heat_inv_shift,
+            self.thermal_solid, rad)
+        return rad
 
 
-def _compare(tag, outs, h, w) -> bool:
-    ok = True
-    heat_old, heat_new_cuda = outs["old_cuda"], outs["new_cuda"]
-    if not np.array_equal(heat_old, heat_new_cuda):
-        ok = False
-        mism = int(np.count_nonzero(heat_old != heat_new_cuda))
-        idx = int(np.argmax(heat_old != heat_new_cuda))
-        ry, rx = divmod(idx, w)
-        print(f"  {tag}: NEW-CUDA != OLD-CUDA — {mism} MISMATCH "
-              f"(first @ ({ry},{rx}): old={heat_old.flat[idx]} "
-              f"new={heat_new_cuda.flat[idx]})")
-    if not np.array_equal(outs["new_cpu"], outs["new_cuda"]):
-        ok = False
-        mism = int(np.count_nonzero(outs["new_cpu"] != outs["new_cuda"]))
-        print(f"  {tag}: NEW-CPU != NEW-CUDA — {mism} MISMATCH (cross-backend)")
-    if not np.array_equal(outs["old_cpu"], outs["old_cuda"]):
-        # Sanity on the ORACLE itself (already proven by S2/S8c, but a red
-        # here means the scenario/harness is broken, not this patch).
-        ok = False
-        print(f"  {tag}: ORACLE INCONSISTENT — OLD-CPU != OLD-CUDA (harness bug, "
-              f"not a P-R1 regression)")
-    nz = int(np.count_nonzero(heat_old))
-    peak = int(heat_old.max())
-    if ok:
-        print(f"  {tag}: all 4 casts (old-cpu/old-cuda/new-cpu/new-cuda) "
-              f"byte-identical ({nz} heated / {h * w} cells, peak={peak}).")
-    return ok
+def _compare(tag, cpu, cuda) -> bool:
+    if not np.array_equal(cpu, cuda):
+        mism = int(np.count_nonzero(cpu != cuda))
+        idx = int(np.argmax(cpu != cuda))
+        ry, rx = divmod(idx, cpu.shape[1])
+        print(f"  {tag}: CPU != CUDA — {mism} MISMATCH (first @ ({ry},{rx}): "
+              f"cpu={cpu.flat[idx]} cuda={cuda.flat[idx]})")
+        return False
+    s_cpu, s_cuda = int(cpu.sum()), int(cuda.sum())
+    if s_cpu != 0 or s_cuda != 0:
+        print(f"  {tag}: CONSERVATION BROKEN — sum cpu={s_cpu} cuda={s_cuda}")
+        return False
+    nz = int(np.count_nonzero(cpu))
+    print(f"  {tag}: rad_net bit-identical at tol 0 ({nz} cells moved, "
+          f"|max|={int(np.abs(cpu).max())}), both planes sum to EXACTLY 0.")
+    return True
 
 
 # ---------------------------------------------------------------------------
-# Scenario (i): synthetic 600-fire firestorm.
-# ---------------------------------------------------------------------------
-def _synth_fire_plane(h, w, nfire, seed):
+def _firestorm(h=128, w=128, nfire=600, seed=20260801):
     rng = np.random.default_rng(seed)
-    fire_q = np.zeros((h, w), dtype=np.int32)
+    sc = Scene(h, w, rng=rng)
     cells = set()
     while len(cells) < nfire:
         cells.add((int(rng.integers(1, h - 1)), int(rng.integers(1, w - 1))))
-    for (yy, xx) in cells:
-        i = float(rng.uniform(0.3, 1.0))
-        v = i * FP_ONE_F
-        fire_q[yy, xx] = int(np.floor(v + 0.5))   # round-half-away-from-zero
-
-    n_gases = 2
-    gas_f = (rng.random((n_gases, h, w)).astype(np.float32) * 0.6)
-    gas_absorption = np.array([[1.0, 1.0, 1.0], [0.9, 0.2, 0.9]], np.float32)
-    gas_scatter = np.array([[0.6, 0.6, 0.6], [0.1, 0.7, 0.1]], np.float32)
-    light_atten = np.zeros((h, w, 3), np.float32)
-    heat_atten = np.zeros((h, w), np.float32)
-    heat_atten[h // 2, :] = 0.7
-    heat_atten[:, w // 2] = 1.0
-    for _ in range(40):
-        ry, rx = int(rng.integers(0, h)), int(rng.integers(0, w))
-        heat_atten[ry, rx] = float(rng.uniform(0.1, 1.0))
-    return fire_q, gas_f, gas_absorption, gas_scatter, light_atten, heat_atten
-
-
-def part1_firestorm() -> bool:
-    print("PART 1 — 600-fire synthetic firestorm, all 4 casts byte-identical:")
-    h, w, nfire = 128, 128, 600
-    (fire_q, gas_f, gas_absorption, gas_scatter,
-     light_atten, heat_atten) = _synth_fire_plane(h, w, nfire, seed=20260731)
-    dials = dict(k_fire_heat=800.0, fire_ray_count=8, range_base=2.0,
-                 range_per_i=6.0, intensity_base=0.3, intensity_per_i=0.7,
-                 color=(1.0, 0.6, 0.2))
-    rc = _make_raycaster()
-    outs = _cast_all(rc, fire_q, dials, gas_f, gas_absorption, gas_scatter,
-                      light_atten, heat_atten, h, w)
-    n_fire_tiles = int(np.count_nonzero(fire_q))
-    print(f"  {n_fire_tiles} fire sources ({h}x{w} grid)")
-    ok = _compare("firestorm", outs, h, w)
-    if int(np.count_nonzero(outs["old_cuda"])) == 0:
-        ok = False
-        print("  SCENARIO WEAK: heat never non-zero — vacuous gate")
-    return ok
+    for (y, x) in cells:
+        sc.solid(y, x, atten=0.5, his=3, T_game=float(rng.uniform(200.0, 900.0)))
+        sc.burn(y, x, I=float(rng.uniform(0.3, 1.0)))
+    # Absorbers: a scatter plus two bands, so occlusion, the survival cull and
+    # the source-tile self-occlusion skip are all exercised.
+    for _ in range(500):
+        y, x = int(rng.integers(0, h)), int(rng.integers(0, w))
+        if (y, x) in cells:
+            continue
+        sc.solid(y, x, atten=float(rng.uniform(0.1, 1.0)),
+                 his=int(rng.integers(2, 6)), T_game=0.0)
+    sc.heat_atten[h // 2, :] = 0.7
+    sc.thermal_solid[h // 2, :] = True
+    sc.heat_inv_shift[h // 2, :] = 3
+    sc.heat_atten[:, w // 2] = 1.0
+    sc.thermal_solid[:, w // 2] = True
+    sc.heat_inv_shift[:, w // 2] = 3
+    return sc
 
 
-# ---------------------------------------------------------------------------
-# Scenario (ii): the real "playground" level, several ticks, evolving fire.
-# ---------------------------------------------------------------------------
-N_TICKS = 15
-
-
-def part2_playground_multitick() -> bool:
-    print(f"PART 2 — playground level, {N_TICKS} ticks of evolving fire, "
-          f"all 4 casts byte-identical (real PhysicsRunner dials):")
-    from level_loader import load as load_level
-    from simulation import fire_fixed
-    from simulation import Simulation
-    from simulation.physics_runner import PhysicsRunner
-    from simulation.unit import Unit
-
-    level = load_level("playground")
-    sim = Simulation(level, seed=20260731, breach_physics=bp,
-                     enable_recorder=False)
-    for s in level.spawns:
-        sim.add_unit(Unit(s.name, x=s.x, y=s.y, team=s.team,
-                          footprint=s.footprint))
-    g = sim.gmap
-    interior = (~g.solid) & (~g.is_vacuum)
-    ys, xs = np.nonzero(interior)
-    rng = np.random.default_rng(20260731)
-    n_fire = max(20, len(ys) // 30)
-    pick = rng.choice(len(ys), size=min(n_fire, len(ys)), replace=False)
-    for k in pick:
-        yy, xx = int(ys[k]), int(xs[k])
-        g.fire[yy, xx] = fire_fixed.quantize_scalar(float(rng.uniform(0.3, 1.0)))
-    sim.set_paused(False)
-
-    runner = sim.physics_runner
-    if runner is None:
-        print("  no physics_runner on the sim — cannot drive the live dials")
+def part1_firestorm(rc) -> bool:
+    print("PART 1 — gate (d) scenario A: 600-emitter firestorm, rad_net tol 0:")
+    sc = _firestorm()
+    cpu, cuda = sc.cast_cpu(rc), sc.cast_cuda(rc)
+    if int(np.count_nonzero(cpu)) == 0:
+        print("  SCENARIO WEAK: nothing exchanged — vacuous gate")
         return False
-    rc = runner.raycaster
-    h, w = g.fire.shape
+    return _compare("firestorm", cpu, cuda)
 
+
+def part2_equal_pair(rc) -> bool:
+    print("PART 2 — gate (d) scenario B: the EQUAL-T pair (must be exactly 0):")
     ok = True
-    n_tick = 0
-    max_peak = 0
-    for t in range(N_TICKS):
-        fire_snapshot = g.fire.copy()
-        gas_f = (g.gas.astype(np.float64) / FP_ONE_F).astype(np.float32)
-        dials = dict(k_fire_heat=runner.k_fire_heat,
-                     fire_ray_count=runner.fire_ray_count,
-                     range_base=runner.fire_range_base,
-                     range_per_i=runner.fire_range_per_i,
-                     intensity_base=runner.fire_intensity_base,
-                     intensity_per_i=runner.fire_intensity_per_i,
-                     color=runner.fire_color)
-        outs = _cast_all(rc, fire_snapshot, dials, gas_f, g.gases.absorption,
-                          g.gases.scatter_albedo, g.dyn_light_atten,
-                          g.heat_atten, h, w)
-        tick_ok = _compare(f"tick {t}", outs, h, w)
-        ok = ok and tick_ok
-        max_peak = max(max_peak, int(outs["old_cuda"].max()))
-        n_tick += 1
-        if not tick_ok:
-            break
-
-        # Advance the REAL sim one tick (real fire solver evolves the field) —
-        # mirrors cuda_s2_check.py's / cuda_s2b_raycaster_live_check.py's
-        # multitick pattern. Backend flags are untouched by this loop (the
-        # sim's OWN internal cast_fire_heat call during sim.step() runs
-        # whatever backend is currently globally set; irrelevant here since
-        # we snapshot+compare BEFORE stepping).
-        sim.step()
-
-    if ok:
-        print(f"  {n_tick} ticks byte-identical on the real playground level "
-              f"(peak heat={max_peak}).")
-    if max_peak == 0:
-        ok = False
-        print("  SCENARIO WEAK: heat never non-zero over the run — vacuous")
+    for T in (180.0, 443.0, 1000.0):
+        sc = Scene(21, 21)
+        sc.solid(10, 10, T_game=T)
+        sc.solid(10, 11, T_game=T)
+        sc.burn(10, 10)
+        sc.burn(10, 11)
+        cpu, cuda = sc.cast_cpu(rc), sc.cast_cuda(rc)
+        if int(np.abs(cpu).sum()) != 0 or int(np.abs(cuda).sum()) != 0:
+            print(f"  equal-T @ {T}: ANTISYMMETRY BROKEN (cpu "
+                  f"{int(np.abs(cpu).sum())}, cuda {int(np.abs(cuda).sum())})")
+            ok = False
+            continue
+        ok = _compare(f"equal-T @ {T:.0f} game", cpu, cuda) and ok
     return ok
+
+
+def part3_limiter(rc) -> bool:
+    print("PART 3 — gate (d) scenario C: hot/cold pair, FLUX LIMITER ENGAGED:")
+    # WHERE THE LIMITER ACTUALLY BINDS (measured, and worth writing down):
+    # the raw per-ray net is a_s*a_r*w*|dE|, and E° SATURATES at INT32_MAX above
+    # T_game ~ 1768 at the shipped rad_scale — so the raw net is capped at
+    # w*2^31, while the budget (|dT| << his) >> 4 keeps growing LINEARLY in the
+    # gap. The clamp therefore bites in a BAND: above E°'s saturation knee and
+    # below the gap where the linear budget overtakes the capped net. For an
+    # opaque pair (atten 1.0) at wood/furniture thermal mass (his = 3) that band
+    # is roughly T_game 1768 .. 8190. 3000 sits inside it. (In the 400-500 game
+    # OPERATING band the limiter is INERT by ~25x — exactly as ruling A1.6 says
+    # it should be: a rail against T³ steepening, not part of the felt law.)
+    sc = Scene(21, 21)
+    sc.solid(10, 10, atten=1.0, his=3, T_game=3000.0)
+    sc.solid(10, 11, atten=1.0, his=3, T_game=0.0)
+    sc.burn(10, 10, I=1.0)
+    cpu, cuda = sc.cast_cpu(rc), sc.cast_cuda(rc)
+    dT = abs(int(sc.temperature[10, 10]))
+    budget = (dT << 3) >> 4                     # per-END budget, RAD_LIM_SHIFT 4
+    raw_1ray = int(0.125 * float(np.iinfo(np.int32).max))   # a_s*a_r*w*E°max
+    print(f"  raw per-ray net ~{raw_1ray}, per-pair budget {budget} -> limiter "
+          f"{'ENGAGED' if raw_1ray > budget else 'inert'}")
+    if raw_1ray <= budget:
+        print("  (the limiter did not engage — this gate would be vacuous)")
+        return False
+    moved = abs(int(cpu[10, 11]))
+    print(f"  first-ring absorber gained {moved} counts; 2-ray clamp ceiling "
+          f"{2 * budget}")
+    if moved > 2 * budget:
+        print("  LIMITER FAILED: transfer exceeded the 2-ray budget ceiling")
+        return False
+    return _compare("hot/cold + limiter", cpu, cuda)
+
+
+def part4_cost(rc) -> bool:
+    print(f"PART 4 — gate (g): 600-emitter batched cast, budget "
+          f"{COST_BUDGET_MS:.1f} ms (2x the 1.5 ms S8c painter baseline):")
+    sc = _firestorm()
+    sc.cast_cuda(rc)          # warm-up (context + first alloc)
+    n = 5
+    t0 = time.perf_counter()
+    for _ in range(n):
+        sc.cast_cuda(rc)
+    cuda_ms = (time.perf_counter() - t0) * 1000.0 / n
+    t0 = time.perf_counter()
+    for _ in range(3):
+        sc.cast_cpu(rc)
+    cpu_ms = (time.perf_counter() - t0) * 1000.0 / 3
+    print(f"  CUDA batched cast : {cuda_ms:8.3f} ms   (budget {COST_BUDGET_MS} ms)")
+    print(f"  CPU reference cast: {cpu_ms:8.3f} ms")
+    if cuda_ms > COST_BUDGET_MS:
+        print(f"  COST GATE FAIL: {cuda_ms:.3f} ms > {COST_BUDGET_MS} ms")
+        return False
+    return True
 
 
 def main() -> int:
     if not getattr(bp, "HAS_CUDA", False) or not bp.cuda_available():
-        print("PR1_FIRE_PLANE_RESULT: FAIL (no CUDA build / device)")
+        print("PR4_RADIATION_RESULT: FAIL (no CUDA build / device)")
         return 1
     print("device:", bp.cuda_device_info())
-    p1 = part1_firestorm()
-    p2 = part2_playground_multitick()
-    ok = p1 and p2
-    print("PR1_FIRE_PLANE_RESULT:", "PASS" if ok else "FAIL")
+    rc = _make_raycaster()
+    p1 = part1_firestorm(rc)
+    p2 = part2_equal_pair(rc)
+    p3 = part3_limiter(rc)
+    p4 = part4_cost(rc)
+    ok = p1 and p2 and p3 and p4
+    print("PR4_RADIATION_RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
 

@@ -404,6 +404,25 @@ class GameMap:
         # the per-tick deposit is cleared at cleanup. Allocated once, written
         # IN-PLACE (never reassigned) so any C++ view stays valid.
         self.heat = np.zeros((h, w), dtype=np.int32)
+        # P-R4 (docs/radiation_raycaster_extinction_ruling_2026-07-31.md A1.7):
+        # the RADIATION accumulator — the second per-tick deposit plane, with a
+        # DIFFERENT contract from ``heat`` above, which is why it is a separate
+        # buffer and not another writer into that one:
+        #   * ``heat``    — POSITIVE-SATURATING adds. Order-free only because
+        #                   positives are monotone under the clamp. Writers:
+        #                   combustion (H_fuel gas-side, H_bed fuel-bed side)
+        #                   and weapons/payloads.
+        #   * ``rad_net`` — PLAIN SIGNED adds (wrapping). The net-T⁴ exchange
+        #                   applies the SAME integer + to the receiver and − to
+        #                   the emitter, so a tile's total is a sum of signed
+        #                   terms; under SATURATION that sum would be order-
+        #                   DEPENDENT and the CPU↔CUDA tol-0 gate would break the
+        #                   moment two rays reached one cell in a different
+        #                   order. Plain signed adds ARE order-free.
+        # Same Q16.16 scale and the SAME per-tick lifetime as ``heat`` (cleared
+        # together at the very end of Simulation.step, after every consumer).
+        # Written IN-PLACE (never reassigned) so any C++ view stays valid.
+        self.rad_net = np.zeros((h, w), dtype=np.int32)
         # Temperature field (engine/06 §1, proposal §1 / §3.1): the persistent
         # consumer of the `heat` deposit. Q16.16 FIXED-POINT int32, SAME format
         # and scale as `heat` (TEMP_SCALE == HEAT_SCALE == 65536). Allocated to
