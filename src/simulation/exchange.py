@@ -278,8 +278,27 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
     Must run AFTER the ray pass fills ``heat`` and BEFORE the end-of-tick heat
     clear (its existence is precisely what makes clearing ``heat`` correct).
     """
+    # D3 (P-R4, ruling amendment 5) — WHERE THE FLUX NOW COMES FROM.
+    # This sampler used to read ``gmap.heat``, because the retired PAINTER
+    # deposited its per-ray energy into every marched cell including the AIR
+    # tiles a unit stands on. P-R4 replaced that with an antisymmetric
+    # net-T^4 EXCHANGE, and by Kirchhoff air (``heat_atten == 0``) neither
+    # absorbs nor emits — so nothing radiative lands on air any more and
+    # ``heat`` now carries only combustion's own deposits at burn sites. Read
+    # unchanged, a fire could no longer burn a marine standing next to it
+    # (measured: unit HP never dropped).
+    # ``gmap.rad_flux`` is the replacement: a positive-only SENSOR plane the
+    # ray march fills at air cells with ``tau * w * a_s * E[T_s]`` — the same
+    # occlusion and the same 1/r ray-density falloff the painter had, so the
+    # "already correctly occluded incident flux" contract in the docstring
+    # above still holds exactly. It is deliberately OUTSIDE the energy ledger:
+    # nothing is debited to produce it and it changes no temperature.
+    # ``heat`` is still read alongside it (max of the two) so the OTHER
+    # writers of that plane — weapons/payload deposits, combustion at a burn
+    # site — keep burning units exactly as before.
     h, w = gmap.heat.shape
     heat = gmap.heat
+    rad_flux = getattr(gmap, "rad_flux", None)
     cmb = CFG.combat
 
     absorption   = float(cmb.unit_absorption)
@@ -303,6 +322,14 @@ def apply_environmental_damage(units, gmap, ticks_per_second, events=None):
         for (tx, ty) in u.occupied_tiles():
             if 0 <= ty < h and 0 <= tx < w:
                 v = int(heat[ty, tx])
+                if rad_flux is not None:
+                    # D3: the radiant sensor and the (non-radiative) heat
+                    # writers are two independent exposures at the same tile —
+                    # take the larger, exactly as the footprint loop takes the
+                    # hottest tile. Both are Q16.16 in the same domain.
+                    fv = int(rad_flux[ty, tx])
+                    if fv > v:
+                        v = fv
                 if v > peak_raw:
                     peak_raw = v
         if peak_raw <= 0:

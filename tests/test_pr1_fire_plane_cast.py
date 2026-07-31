@@ -86,6 +86,7 @@ class _Scene:
         self.heat_inv_shift = np.zeros((h, w), np.int32)
         self.thermal_solid = np.zeros((h, w), bool)
         self.rad_net = np.zeros((h, w), np.int32)
+        self.rad_flux = np.zeros((h, w), np.int32)   # D3 damage sensor
         self.light_atten = np.zeros((h, w, 3), np.float32)
         self.gas = np.zeros((n_gases, h, w), np.float32)
         self.gas_abs = np.zeros((n_gases, 3), np.float32)
@@ -104,7 +105,7 @@ class _Scene:
     def burn(self, y, x, I=0.21):
         self.fire[y, x] = fire_fixed.quantize_scalar(float(I))
 
-    def cast(self, rc):
+    def cast(self, rc, tick=0):
         self.rgb.fill(0.0)
         self.dx.fill(0.0)
         self.dy.fill(0.0)
@@ -115,7 +116,7 @@ class _Scene:
             self.rgb, self.dx, self.dy,
             self.gas, self.gas_abs, self.gas_sca, self.light_atten,
             self.heat_atten, self.temperature, self.heat_inv_shift,
-            self.thermal_solid, self.rad_net)
+            self.thermal_solid, self.rad_net, self.rad_flux, tick)
         return self.rad_net
 
 
@@ -341,6 +342,98 @@ def test_emissive_table_is_the_exact_integer_bake():
         assert int(tab[-1]) == np.iinfo(np.int32).max or int(tab[-1]) > 0
         print(f"  rad_scale={scale:g}: exact at every probed bucket, monotone, "
               f"top = {int(tab[-1])}")
+
+
+# ---------------------------------------------------------------------------
+# D3 — the RADIANT-FLUX SENSOR (ruling amendment 5). Units must cook again.
+# ---------------------------------------------------------------------------
+def test_air_gets_flux_but_no_energy():
+    """Air takes NO energy (Kirchhoff) but DOES register incident flux.
+
+    The two planes answer different questions and must not be conflated:
+    ``rad_net`` is the energy ledger (solids only, signed, conserving);
+    ``rad_flux`` is a damage SENSOR (air only, positive, outside the ledger).
+    Without the sensor a fire could not burn a marine standing beside it —
+    measured before D3: unit HP never dropped."""
+    print("\nP-R4 D3 — the radiant-flux sensor at air cells:")
+    sc = _Scene(21, 21)
+    sc.solid(10, 10, T_game=443.0)
+    sc.burn(10, 10)
+    rad = sc.cast(_make_raycaster())
+    air = sc.heat_atten <= 0.0
+    flux_air = int(sc.rad_flux[air].sum())
+    flux_hot = int(sc.rad_flux[10, 11])           # first-ring air neighbour
+    print(f"  air cells: rad_net total {int(np.abs(rad[air]).sum())} (must be 0), "
+          f"rad_flux total {flux_air}, first-ring {flux_hot}")
+    assert int(np.abs(rad[air]).sum()) == 0, "air absorbed ENERGY — ledger leak"
+    assert flux_air > 0, "no radiant flux registered — units would not cook"
+    assert flux_hot > 0, "the tile beside the fire registered no flux"
+    # The sensor is positive-only (it keeps heat[]'s saturating contract).
+    assert int(sc.rad_flux.min()) >= 0, "the flux sensor went negative"
+    # ...and it is OCCLUDED like the painter was: behind an opaque wall, none.
+    sc2 = _Scene(21, 21)
+    sc2.solid(10, 10, T_game=443.0)
+    sc2.burn(10, 10)
+    for y in range(21):
+        sc2.solid(y, 12, atten=1.0, his=3, T_game=0.0)    # opaque wall column
+    sc2.cast(_make_raycaster())
+    beyond = int(sc2.rad_flux[:, 13:].sum())
+    print(f"  behind an opaque wall: rad_flux total {beyond} (must be 0)")
+    assert beyond == 0, "flux leaked through an opaque wall — occlusion broken"
+
+
+# ---------------------------------------------------------------------------
+# D4 — the PER-TICK FAN PHASE ROTATION (ruling amendment 5).
+# ---------------------------------------------------------------------------
+def test_fan_rotation_connects_every_neighbour_within_ray_count_ticks():
+    """The 8-ray fan used to have permanent blind spots.
+
+    Rotating N evenly-spaced rays by a multiple of their own spacing maps the
+    set onto itself, so the shipped ``((x*7+y*13) mod N)`` phase was a NO-OP and
+    EVERY source cast the same 8 directions — the (+2, 0) axis neighbour was
+    never on any of them, at any intensity (measured, and the retired painter
+    had the identical blind spot). D4 adds a sub-spacing rotation that advances
+    with the tick, so N consecutive ticks sweep one full spacing."""
+    print("\nP-R4 D4 — per-tick fan rotation kills the fan's blind spots:")
+    N = DIALS["fire_ray_count"]
+    for (dy, dx, name) in ((0, 2, "axis (+2,0)"), (2, 0, "axis (0,+2)"),
+                           (2, 2, "diagonal (+2,+2)"), (1, 2, "knight (+1,+2)")):
+        connected = []
+        for tick in range(N):
+            sc = _Scene(21, 21)
+            sc.solid(10, 10, T_game=900.0)
+            sc.solid(10 + dy, 10 + dx, T_game=0.0)
+            sc.burn(10, 10, I=1.0)                # max_range 5.0 covers 2 tiles
+            rad = sc.cast(_make_raycaster(), tick=tick)
+            if int(rad[10 + dy, 10 + dx]) != 0:
+                connected.append(tick)
+        print(f"  {name:18s} connected on ticks {connected} of 0..{N-1}")
+        assert connected, (
+            f"{name} was NEVER connected over a full {N}-tick rotation — the "
+            f"fan still has a permanent blind spot")
+
+
+def test_fan_rotation_is_a_pure_function_of_the_tick():
+    """Determinism: the same (scene, tick) must give the same plane, and two
+    different ticks in the rotation must genuinely differ (or the rotation is
+    a no-op again)."""
+    def cast_at(tick):
+        sc = _Scene(21, 21)
+        sc.solid(10, 10, T_game=900.0)
+        sc.solid(10, 12, T_game=0.0)
+        sc.burn(10, 10, I=1.0)
+        return sc.cast(_make_raycaster(), tick=tick).copy()
+
+    a1, a2 = cast_at(3), cast_at(3)
+    assert np.array_equal(a1, a2), "same tick gave two different planes"
+    # A full rotation returns to the start (tick and tick+N are congruent).
+    assert np.array_equal(cast_at(3), cast_at(3 + DIALS["fire_ray_count"])), (
+        "tick and tick+ray_count did not give the same fan")
+    diffs = sum(0 if np.array_equal(cast_at(0), cast_at(t)) else 1
+                for t in range(1, DIALS["fire_ray_count"]))
+    print(f"\nP-R4 D4 — {diffs}/{DIALS['fire_ray_count']-1} ticks in the "
+          f"rotation differ from tick 0; tick+N == tick.")
+    assert diffs > 0, "the per-tick rotation changed nothing — still a no-op"
 
 
 if __name__ == "__main__":

@@ -92,7 +92,12 @@ void combustion_step(
     // (combustion.h documents why). heat == nullptr -> no H_bed, byte-identical.
     int32_t* heat = nullptr,
     float H_BED_M = 0.0f,
-    int H_BED_SHIFT = 0);
+    int H_BED_SHIFT = 0,
+    // D1 (amendment 5): the (4, h, w) error-feedback DEMAND ACCUMULATOR —
+    // SYNCED state, IN/OUT. Single writer per air cell (each thread owns its
+    // own four face slots), so no atomics and no order dependence. Full
+    // rationale, scale algebra and reset rule: combustion.h.
+    int32_t* dem_acc = nullptr);
 
 // Backend flag: when ON, PhysicsRunner's combustion pass dispatches to
 // combustion_step on the GPU instead of the CPU CombustionSolver::step.

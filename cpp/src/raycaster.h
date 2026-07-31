@@ -248,6 +248,22 @@ struct RadCtx {
     const int32_t* temperature    = nullptr;   // Q16.16 (h,w)
     const int32_t* heat_inv_shift = nullptr;   // (h,w)
     int32_t*       rad_net        = nullptr;   // Q16.16 (h,w) signed accumulator
+    // ---- D3: the RADIANT-FLUX SENSOR plane (amendment 5, Erik's ruling) ----
+    // *** THIS IS NOT PART OF THE ENERGY LEDGER. ***  Read that again before
+    // touching it: `rad_flux` is a DAMAGE SENSOR, not a transport term. It is
+    // written at AIR cells only, it moves no energy, it changes no
+    // temperature, nothing is debited anywhere to pay for it, and no solver
+    // reads it — its ONE consumer is unit heat damage
+    // (simulation/exchange.apply_environmental_damage), which used to sample
+    // the PAINTER's air deposit at the unit's footprint. Radiation lands only
+    // on solids (air has a == 0 and neither absorbs nor emits — Kirchhoff), so
+    // without this plane a fire could not burn a marine standing next to it.
+    // It carries the same occlusion (τ) and the same 1/r ray-density falloff
+    // the painter did, so the damage sampler sees the physically right
+    // incident flux — and because it is positive-only it keeps `heat[]`'s
+    // ORDER-FREE saturating-add contract (unlike rad_net, which must be signed
+    // and therefore plain).
+    int32_t*       rad_flux       = nullptr;   // Q16.16 (h,w) positive-only
     bool active() const { return rad_net != nullptr && e_table != nullptr
                               && temperature != nullptr && heat_inv_shift != nullptr; }
 };
@@ -490,6 +506,11 @@ public:
         const int32_t* heat_inv_shift,  // (h,w) — the limiter's per-end budget
         const bool* thermal_solid,      // (h,w) — the warm-emitter mask
         int32_t* rad_net,               // Q16.16 (h,w) — SIGNED accumulator
+        int32_t* rad_flux,              // D3: (h,w) positive-only damage sensor
+        // D4 (amendment 5): the SIM TICK, as a plain integer. The per-source
+        // fan phase rotates with it, so the discrete view factor time-averages
+        // and no tile pair is permanently disconnected (see build_fire_sources).
+        int tick,
         double jitter = 0.0
     ) const;
 
@@ -538,6 +559,7 @@ public:
         const float* heat_atten,
         const int32_t* heat_inv_shift,
         const bool* thermal_solid,
+        int tick,                       // D4: the fan's per-tick phase rotation
         double jitter = 0.0
     ) const;
 
@@ -614,6 +636,20 @@ private:
     // I = 0 in the range/intensity formulas, i.e. max_range = range_base: the
     // documented interim choice (short reach for a merely-warm surface; the
     // ruling defers a per-emitter reach model).
+    //
+    // D4 — THE PER-TICK FAN PHASE ROTATION (amendment 5, Erik's ruling).
+    // The shipped phase `((x*7 + y*13) mod N) * (2*pi/N)` is a NO-OP for a
+    // full-circle fan: rotating N evenly-spaced rays by a multiple of their own
+    // spacing maps the set onto itself, so every source in the world casts the
+    // SAME N directions and some tile pairs are NEVER connected (measured: no
+    // ray reaches the (+2, 0) axis neighbour, at any intensity — pre-existing
+    // painter aliasing that became load-bearing once spread depended on it).
+    // The fix adds a sub-spacing rotation that advances with the tick:
+    //     angle_center = (hash mod N)*(2*pi/N) + (tick mod N)*(2*pi/(N*N))
+    // Over N consecutive ticks the fan sweeps one full ray spacing, so EVERY
+    // direction is sampled and the discrete view factor time-averages to the
+    // continuous one. Deterministic and a pure function of (x, y, tick) — the
+    // tick arrives as a plain integer so CPU and CUDA build identical fans.
     std::vector<LightSource> build_fire_sources(
         const int32_t* fire, int h, int w,
         int fire_ray_count,
@@ -622,6 +658,7 @@ private:
         const float color[3], double jitter,
         const int32_t* temperature, const float* heat_atten,
         const int32_t* heat_inv_shift, const bool* thermal_solid,
+        int tick,
         std::vector<RadSource>* rad_out
     ) const;
 

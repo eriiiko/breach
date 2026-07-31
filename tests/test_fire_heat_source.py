@@ -77,6 +77,12 @@ class _FireScene:
         # S3a: gmap.fire is int32 Q16.16 (cast_fire_heat dequantizes on read).
         self.fire = np.zeros((h, w), dtype=np.int32)
         self.heat = np.zeros((h, w), dtype=np.int32)
+        # P-R4 (ruling A1 + amendment 5): the cast's three read planes and its
+        # two outputs. `temperature` is now an INPUT — the exchange's magnitude
+        # comes from the emitters' own temperature, not from a payload dial.
+        self.temperature = np.zeros((h, w), dtype=np.int32)
+        self.rad_net = np.zeros((h, w), dtype=np.int32)    # SIGNED energy ledger
+        self.rad_flux = np.zeros((h, w), dtype=np.int32)   # D3 damage sensor
         self._h, self._w = h, w
         # Multi-gas march inputs (engine/05 §6.2): an empty gas field + the canon
         # per-gas tables. Gases do not attenuate heat, so this is inert here.
@@ -89,9 +95,14 @@ class _FireScene:
     def set_hull(self, y, x):
         self.material[y, x] = MAT_HULL
 
-    def light(self, y, x, intensity):
+    def light(self, y, x, intensity, T_game=443.0):
         self.material[y, x] = MAT_WOOD       # fire only ever lives on flammable
         self.fire[y, x] = fire_fixed.quantize_scalar(float(intensity))  # S3a: Q16.16
+        # P-R4: an emitter radiates against its OWN temperature. The retired
+        # painter took a `k_fire_heat * I` payload instead and did not care what
+        # the tile's temperature was; the net-T^4 exchange does. 443 game is the
+        # blessed plateau the P-R5 tune targets.
+        self.temperature[y, x] = fire_fixed.quantize_scalar(float(T_game))
 
     def _rebuild(self):
         m = self.material
@@ -99,59 +110,125 @@ class _FireScene:
         self.dyn_light_atten = np.ascontiguousarray(
             _TBL.light_atten[m], dtype=np.float32)
         self.smoke = np.zeros((self._h, self._w), dtype=np.float32)
+        # P-R4 per-tile thermal columns the exchange reads (limiter budget +
+        # the warm-emitter mask), projected from the material table like the
+        # optics columns above.
+        self.heat_inv_shift = np.ascontiguousarray(
+            _TBL.heat_inv_shift[m], dtype=np.int32)
+        self.thermal_solid = np.ascontiguousarray(_TBL.thermal_solid[m], dtype=bool)
 
-    def cast(self, runner):
+    def cast(self, runner, tick=0):
+        """Run the tick's fire cast and return BOTH P-R4 outputs, in energy
+        units: (rad_net, rad_flux).
+
+        P-R4 (ruling A1): there is no `heat` output any more. The fire no longer
+        PAINTS one-way energy into every cell its rays cross — it runs an
+        antisymmetric net-T^4 EXCHANGE into `rad_net` (signed; solids only,
+        because air has heat_atten == 0 and by Kirchhoff neither absorbs nor
+        emits), plus D3's positive-only `rad_flux` SENSOR at air cells, which is
+        what unit damage reads and is deliberately outside the energy ledger."""
         self._rebuild()
         self.heat[:] = 0
-        runner.cast_fire_heat(self)
-        return self.heat.astype(np.float64) / HEAT_SCALE   # energy units
+        self.rad_net[:] = 0
+        self.rad_flux[:] = 0
+        runner.cast_fire_heat(self, tick=tick)
+        return (self.rad_net.astype(np.float64) / HEAT_SCALE,
+                self.rad_flux.astype(np.float64) / HEAT_SCALE)
 
 
 def _runner(k=None):
-    r = PhysicsRunner(bp)
-    if k is not None:
-        r.k_fire_heat = float(k)
-    return r
+    """P-R4: `k_fire_heat` is GONE (the painter is retired). The old `k`
+    argument is accepted and IGNORED so the call sites below still read as the
+    scenarios they were; the exchange's magnitude now comes from `rad_scale`
+    (the E° bake) and the emitters' own temperatures."""
+    return PhysicsRunner(bp)
 
 
 # ---------------------------------------------------------------------------
-# (a) heat lands on the source tile and radiates to nearby tiles
+# P-R4 re-anchor helper (ruling amendment 5 D2).
+#
+# These tests hold a burner lit by writing `gmap.fire` directly. Under the
+# retired PAINTER that was enough: the deposit was `k_fire_heat * I`, a payload
+# dial that did not care what the tile's temperature was. Under the net-T^4
+# EXCHANGE an emitter radiates against its OWN temperature — a synthetically
+# lit but ICE-COLD tile emits E[0], four orders below a flame, and correctly
+# heats almost nothing. In play a burning tile is HOT (combustion's H_bed holds
+# it at the ~440 game plateau, P-R4 gate f), so holding BOTH fields is what
+# actually reproduces the scenario these tests describe.
+# ---------------------------------------------------------------------------
+FLAME_T_GAME = 443.0            # the blessed plateau (ruling A3 / P-R4 gate f)
+
+
+def _hold_burner(g, y, x, intensity=0.8, T_game=FLAME_T_GAME):
+    """Hold a tile burning AND at flame temperature (see the note above)."""
+    g.fire[y, x] = FIRE_Q(float(intensity))
+    g.temperature[y, x] = FIRE_Q(float(T_game))
+
+
+# ---------------------------------------------------------------------------
+# (a) the exchange lands on SOLIDS, the sensor lands on AIR
+#
+# RE-ANCHORED AT P-R4 (ruling amendment 5 D2). This test asserted the painter's
+# signature behaviour: "the burning tile gets the full self-deposit (all 8 rays
+# land at distance 0)" and "heat radiates OUTWARD across the surrounding AIR".
+# Both are now WRONG BY CONSTRUCTION and their inversion is the whole point of
+# the patch:
+#   * a tile does NOT heat itself — the source is its own first marched cell, so
+#     E[T_s] - E[T_s] == 0 exactly (ruling A1.2, and Erik's "I do not think our
+#     radiation will heat its own tile");
+#   * AIR takes no ENERGY — heat_atten == 0, so by Kirchhoff it neither absorbs
+#     nor emits. The painter's air-heating died with the painter.
+# The INTENT survives intact: a fire must move heat into the things around it,
+# and must register flux where a unit would stand. That is what is asserted now.
 # ---------------------------------------------------------------------------
 def test_fire_deposits_heat_on_source_and_radiates():
     r = _runner()
     sc = _FireScene(11, 11)
     sc.light(5, 5, 0.8)
-    heat = sc.cast(r)
-    # The burning tile gets the full self-deposit (all 8 rays land at distance 0).
-    assert heat[5, 5] > 0, "burning tile got no heat"
-    # Heat radiates OUTWARD across the surrounding air (source-tile skip: a fire
-    # on heat-opaque wood must still radiate into the room — engine/06 §1).
-    ring = heat[4:7, 4:7].copy()
-    ring[1, 1] = 0.0                       # exclude the source itself
-    assert ring.max() > 0, "fire deposited no heat on its surroundings"
+    sc.set_wood(5, 6)                      # a SOLID neighbour that can absorb
+    rad, flux = sc.cast(r)
+    assert rad[5, 5] < 0, "the burning tile did not LOSE heat by radiating"
+    assert rad[5, 6] > 0, "the solid neighbour gained no heat"
+    assert abs(rad.sum()) < 1e-9, "the exchange did not conserve"
+    # The surrounding AIR registers incident flux (D3) but takes no energy.
+    ring_air = flux[4:7, 4:7].copy()
+    ring_air[1, 1] = 0.0                   # exclude the source itself
+    assert ring_air.max() > 0, "no radiant flux registered around the fire"
+    air = _TBL.heat_atten[sc.material] <= 0.0
+    assert abs(rad[air]).max() == 0.0, "AIR absorbed energy — Kirchhoff violated"
 
 
 def test_no_fire_no_heat():
-    # No burning tile -> the pass is a no-op (mirrors the C++ early-exit).
+    # No emitter -> the pass is a no-op on BOTH outputs (mirrors the C++
+    # early-exit, which P-R4 widened to `burning OR warm-solid`).
     r = _runner()
-    sc = _FireScene(7, 7)              # nothing lit
-    heat = sc.cast(r)
-    assert heat.max() == 0.0
+    sc = _FireScene(7, 7)              # nothing lit, everything at ambient
+    rad, flux = sc.cast(r)
+    assert abs(rad).max() == 0.0
+    assert flux.max() == 0.0
 
 
 def test_hotter_fire_reaches_farther():
-    # max_range = range_base + range_per_intensity * I -> a full blaze radiates
-    # to a strictly larger footprint than a guttering flame.
+    # max_range = range_base + range_per_intensity * I -> a full blaze reaches a
+    # strictly larger footprint than a guttering flame. RE-ANCHORED onto the D3
+    # flux sensor: the range model is unchanged by P-R4, but the observable that
+    # covers open air is now `rad_flux` (the exchange itself only lands on
+    # solids, and an empty room has none).
     r = _runner()
     lo = _FireScene(15, 15); lo.light(7, 7, 0.1)
     hi = _FireScene(15, 15); hi.light(7, 7, 1.0)
-    n_lo = int((lo.cast(r) > 0).sum())
-    n_hi = int((hi.cast(r) > 0).sum())
+    n_lo = int((lo.cast(r)[1] > 0).sum())
+    n_hi = int((hi.cast(r)[1] > 0).sum())
     assert n_hi > n_lo, f"hotter fire should reach more tiles ({n_hi} vs {n_lo})"
 
 
 # ---------------------------------------------------------------------------
 # (b) occlusion: a wall blocks the fire's heat beyond it (heat_atten / K1)
+#
+# RE-ANCHORED: same scenario, same geometry, same intent — the observable moves
+# from the painter's `heat` to P-R4's flux sensor, which carries the identical
+# `heat_survival` occlusion (that is exactly why D3 exists: the damage sampler's
+# "already correctly occluded incident flux" contract had to survive).
 # ---------------------------------------------------------------------------
 def test_wall_blocks_fire_heat_clear_path_heats_further():
     r = _runner(k=200.0)
@@ -159,18 +236,19 @@ def test_wall_blocks_fire_heat_clear_path_heats_further():
     # ROW 5 to the LEFT: (6,6)->(5,5)->(5,4)->(5,3)->(5,2) (verified geometry).
     # A hull wall on that ray path must zero every tile beyond it.
     clear = _FireScene(13, 13); clear.light(6, 6, 0.8)
-    hc = clear.cast(r)
-    # The clear leftward ray heats tiles 3-4 out along row 5.
+    hc = clear.cast(r)[1]
+    # The clear leftward ray lights tiles 3-4 out along row 5.
     assert hc[5, 3] > 0 and hc[5, 2] > 0, (
-        f"clear leftward ray should heat tiles 3-4 out: {hc[5, 2:6]}")
+        f"clear leftward ray should light tiles 3-4 out: {hc[5, 2:6]}")
 
     blocked = _FireScene(13, 13); blocked.light(6, 6, 0.8)
     blocked.set_hull(5, 4)                 # wall ON the ray path
-    hb = blocked.cast(r)
-    # Heat still reaches up to the wall, then is killed beyond it (heat_atten 1.0).
+    hb = blocked.cast(r)[1]
+    # Flux still reaches up to the wall, then is killed beyond it (heat_atten
+    # 1.0 drives heat_survival to 0 AFTER that cell's deposit).
     assert hb[5, 3] == 0.0 and hb[5, 2] == 0.0, (
         f"hull must block fire heat beyond it: got {hb[5, 3]}, {hb[5, 2]}")
-    # And the clear path genuinely heated FURTHER than the blocked one.
+    # And the clear path genuinely reached FURTHER than the blocked one.
     assert hc[5, 2] > hb[5, 2]
 
 
@@ -209,12 +287,26 @@ def test_full_chain_heat_ignites_adjacent_wood():
     g.material[50, 14] = MAT_WOOD          # burner
     g.material[50, 15] = MAT_WOOD          # target (adjacent)
     g._update_caches()
+    # P-R4 re-anchor: run the pair at the ARC'S BLESSED cool_shift (9), not the
+    # shipped 5. `cool_shift` is the crate/plank's ONE loss channel (kappa 0 ->
+    # no conduction), so it sets the receiver's equilibrium directly:
+    # T_eq = dT_radiative_in * 2^cool_shift. The shipped 5 is a 1.33 s e-fold —
+    # a value inherited from the painter era, when the deposit was 1600 units of
+    # free energy per unit intensity and the loss rate did not matter. Under the
+    # net-T^4 exchange it puts an adjacent plank at ~293 game against wood's 300
+    # ignition_temp: a 2% miss, and a measurement of an UNTUNED config rather
+    # than of the chain. The P-R5 joint tune owns that dial (ruling §4: "cool_shift
+    # may drift up — radiation is now explicit"); this test owns the CHAIN, so it
+    # pins the dial the rest of the arc measures at. Set AFTER _update_caches,
+    # which rebuilds the plane from the material table.
+    g.cool_shift[50, 14] = 9
+    g.cool_shift[50, 15] = 9
     sim.set_paused(False)
 
     assert g.fire[50, 15] == 0
     ignited_tick = None
     for t in range(1, 120):
-        g.fire[50, 14] = FIRE_Q(0.8)       # hold the burner lit
+        _hold_burner(g, 50, 14)            # hold the burner lit AND hot (P-R4)
         sim.step()
         if g.fire[50, 15] > 0:
             ignited_tick = t
@@ -254,7 +346,7 @@ def test_unit_next_to_fire_loses_hp_and_zombie_takes_4x():
     sim.step()                             # first tick stamps the units
     marine.current_hp = zombie.current_hp = 1000.0
     hp0 = 1000.0
-    g.fire[fy, fx] = FIRE_Q(0.8)
+    _hold_burner(g, fy, fx)                # P-R4: lit AND at flame temperature
     sim.step()
 
     dmg_marine = hp0 - marine.current_hp
@@ -322,6 +414,13 @@ def test_cast_fire_heat_does_not_touch_rng():
     sc.cast(r)                              # cast_fire_heat takes no rng arg
     after = rng.bit_generator.state
     assert before == after, "the fire-heat pass perturbed an RNG (it must not)"
+    # P-R4 D4: the fan's phase now advances with the TICK — still no RNG. The
+    # rotation is a pure function of (x, y, tick), so the same tick reproduces
+    # the same plane exactly and no generator is touched.
+    a = sc.cast(r, tick=3)[0].copy()
+    b = sc.cast(r, tick=3)[0].copy()
+    assert np.array_equal(a, b), "the per-tick fan rotation is not deterministic"
+    assert rng.bit_generator.state == before, "the rotation consumed RNG state"
 
 
 # ---------------------------------------------------------------------------

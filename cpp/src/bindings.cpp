@@ -515,6 +515,8 @@ PYBIND11_MODULE(breach_physics, m) {
              py::array_t<int32_t> heat_inv_shift,
              py::array_t<bool> thermal_solid,
              py::array_t<int32_t> rad_net,
+             py::array_t<int32_t> rad_flux,
+             int tick,
              py::object smoke_glow,
              double jitter) {
               auto [fp, h, w] = get_2d_const(fire);
@@ -542,11 +544,12 @@ PYBIND11_MODULE(breach_physics, m) {
               auto [his, h7, w7]    = get_2d_const(heat_inv_shift);
               auto [tsol, h8, w8]   = get_2d_const(thermal_solid);
               auto [rnet, h9, w9]   = get_2d(rad_net);
+              auto [rflux, h10, w10] = get_2d(rad_flux);
               std::vector<breach_cuda::RayHD> rays = self.build_fire_ray_list(
                   fp, h, w, fire_ray_count,
                   range_base, range_per_intensity,
                   intensity_base, intensity_per_intensity,
-                  color.data(), tmp, hatten, his, tsol, jitter);
+                  color.data(), tmp, hatten, his, tsol, tick, jitter);
               // n_rays==0 guard (no emitters, or all sources fully
               // angular-culled) — defense in depth, mirrors
               // cuda_raycaster_cast_batch (Python also guards before calling).
@@ -559,8 +562,9 @@ PYBIND11_MODULE(breach_physics, m) {
                   self.smoke_absorb_scale, self.light_cull, self.heat_cull,
                   h, w,
                   // P-R4: the E° bake (host side, from THIS raycaster's
-                  // rad_scale) + the three planes + the signed accumulator.
-                  self.emissive_table(), tmp, his, rnet);
+                  // rad_scale) + the three planes + the signed accumulator +
+                  // D3's positive-only damage sensor.
+                  self.emissive_table(), tmp, his, rnet, rflux);
           },
           py::arg("raycaster"), py::arg("fire"),
           py::arg("fire_ray_count"),
@@ -572,6 +576,7 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("light_atten"), py::arg("heat_atten"),
           py::arg("temperature"), py::arg("heat_inv_shift"),
           py::arg("thermal_solid"), py::arg("rad_net"),
+          py::arg("rad_flux"), py::arg("tick"),
           py::arg("smoke_glow") = py::none(),
           py::arg("jitter") = 0.0,
           "P-R4: CUDA twin of cast_from_fire_plane — builds the emitter list "
@@ -870,7 +875,9 @@ PYBIND11_MODULE(breach_physics, m) {
              py::object thermal_solid,
              py::object heat_inv_shift,
              // P-R4: the fuel-bed deposit's plane + its split constant.
-             py::object heat, float H_BED_M, int H_BED_SHIFT) -> py::tuple {
+             py::object heat, float H_BED_M, int H_BED_SHIFT,
+             // D1: the (4,h,w) error-feedback demand accumulator (IN/OUT).
+             py::object dem_acc) -> py::tuple {
               auto gv = gas.mutable_unchecked<3>();
               int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
               const int n_gases = static_cast<int>(gv.shape(0));
@@ -904,6 +911,13 @@ PYBIND11_MODULE(breach_physics, m) {
                   auto hh = heat_arr.mutable_unchecked<2>();
                   heat_ptr = hh.mutable_data(0, 0);
               }
+              int32_t* dacc_ptr = nullptr;
+              py::array_t<int32_t> dacc_arr;
+              if (!dem_acc.is_none()) {
+                  dacc_arr = dem_acc.cast<py::array_t<int32_t>>();
+                  auto da = dacc_arr.mutable_unchecked<3>();   // (4, h, w)
+                  dacc_ptr = da.mutable_data(0, 0, 0);
+              }
               int64_t heat_floor_hits = 0, t_max_phys_hits = 0;
               breach_cuda::combustion_step(
                   gas_ptr, n_gases, o2_idx, inert_n2_idx, black_smoke_idx,
@@ -911,7 +925,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   burn_rate, o2_thresh_burn, H_fuel, soot_yield, fuel_per_o2,
                   o2_frac_ext, o2_frac_full,
                   T_MAX_PHYS, &heat_floor_hits, &t_max_phys_hits,
-                  tsol, hshift, heat_ptr, H_BED_M, H_BED_SHIFT);
+                  tsol, hshift, heat_ptr, H_BED_M, H_BED_SHIFT, dacc_ptr);
               return py::make_tuple(heat_floor_hits, t_max_phys_hits);
           },
           py::arg("gas"), py::arg("o2_idx"), py::arg("inert_n2_idx"),
@@ -928,6 +942,7 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("heat") = py::none(),
           py::arg("H_BED_M") = 0.0f,
           py::arg("H_BED_SHIFT") = 0,
+          py::arg("dem_acc") = py::none(),
           "P6.9b isolated: run ONE GPU combustion step (the two-gather "
           "reformulation, continuous-O2 proportional demand) in place on the "
           "three gas planes + temperature + wall_hp (bit-identical to "
@@ -1940,6 +1955,8 @@ PYBIND11_MODULE(breach_physics, m) {
                 py::array_t<int32_t> heat_inv_shift,
                 py::array_t<bool> thermal_solid,
                 py::array_t<int32_t> rad_net,
+                py::array_t<int32_t> rad_flux,
+                int tick,
                 py::object smoke_glow,
                 double jitter) {
             auto [fp, h, w] = get_2d_const(fire);
@@ -1971,6 +1988,7 @@ PYBIND11_MODULE(breach_physics, m) {
             auto [his, h7, w7]    = get_2d_const(heat_inv_shift);
             auto [tsol, h8, w8]   = get_2d_const(thermal_solid);
             auto [rnet, h9, w9]   = get_2d(rad_net);
+            auto [rflux, h10, w10] = get_2d(rad_flux);
             self.cast_from_fire_plane(fp, h, w,
                                        fire_ray_count,
                                        range_base, range_per_intensity,
@@ -1979,7 +1997,8 @@ PYBIND11_MODULE(breach_physics, m) {
                                        lrgb, ldx, ldy, glow_ptr,
                                        gas_field, gabs, gsca, n_gases,
                                        atten, hatten,
-                                       tmp, his, tsol, rnet, jitter);
+                                       tmp, his, tsol, rnet, rflux, tick,
+                                       jitter);
         }, py::arg("fire"),
            py::arg("fire_ray_count"),
            py::arg("range_base"), py::arg("range_per_intensity"),
@@ -1990,6 +2009,7 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("light_atten"), py::arg("heat_atten"),
            py::arg("temperature"), py::arg("heat_inv_shift"),
            py::arg("thermal_solid"), py::arg("rad_net"),
+           py::arg("rad_flux"), py::arg("tick"),
            py::arg("smoke_glow") = py::none(),
            py::arg("jitter") = 0.0,
            "P-R4: enumerate the emitter set (burning tiles + thermal solids at "
@@ -2271,7 +2291,10 @@ PYBIND11_MODULE(breach_physics, m) {
                         py::object heat_inv_shift,
                         // P-R4: the `heat[]` plane the fuel-bed deposit lands
                         // in. OPTIONAL (None -> no H_bed == pre-P-R4).
-                        py::object heat) {
+                        py::object heat,
+                        // D1: the (4,h,w) error-feedback demand accumulator.
+                        // OPTIONAL (None -> the pre-D1 chained truncation).
+                        py::object dem_acc) {
             auto gv = gas.mutable_unchecked<3>();
             int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
             const int n_gases = static_cast<int>(gv.shape(0));
@@ -2305,9 +2328,16 @@ PYBIND11_MODULE(breach_physics, m) {
                 auto hh = heat_arr.mutable_unchecked<2>();
                 heat_ptr = hh.mutable_data(0, 0);
             }
+            int32_t* dacc_ptr = nullptr;
+            py::array_t<int32_t> dacc_arr;
+            if (!dem_acc.is_none()) {
+                dacc_arr = dem_acc.cast<py::array_t<int32_t>>();
+                auto da = dacc_arr.mutable_unchecked<3>();   // (4, h, w)
+                dacc_ptr = da.mutable_data(0, 0, 0);
+            }
             self.step(gas_ptr, n_gases, o2_idx, inert_n2_idx, black_smoke_idx,
                      temp, whp, f, fl, sol, vac, ign, h, w, dt, c_v, n_floor_heat,
-                     tsol, hshift, heat_ptr);
+                     tsol, hshift, heat_ptr, dacc_ptr);
         }, py::arg("gas"), py::arg("o2_idx"), py::arg("inert_n2_idx"),
            py::arg("black_smoke_idx"), py::arg("temperature"), py::arg("wall_hp"),
            py::arg("fire"), py::arg("flammable"), py::arg("solid"),
@@ -2315,7 +2345,8 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("dt"), py::arg("c_v"), py::arg("n_floor_heat"),
            py::arg("thermal_solid") = py::none(),
            py::arg("heat_inv_shift") = py::none(),
-           py::arg("heat") = py::none());
+           py::arg("heat") = py::none(),
+           py::arg("dem_acc") = py::none());
 
     // --- WaterSolver (pipe model: damped velocity + donor-cell upwind flux;
     //     engine/07 §2, water_implementation_plan Step W1) ---

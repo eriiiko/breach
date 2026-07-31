@@ -86,6 +86,9 @@ SIM_FIELDS = (
     "heat", "temperature", "ripple", "ripple_v",
     "dyn_permeability", "dyn_wave_absorb", "obstacles", "dyn_light_atten",
     "wall_hp", "material", "is_vacuum", "ignition_armed",
+    # P-R4 D1 (digest spec v3): the combustion demand accumulator —
+    # persistent synced state (see tests/field_digest.py).
+    "dem_acc",
 )
 
 

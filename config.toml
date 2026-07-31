@@ -511,11 +511,18 @@ fuel_per_o2       = 0.7
 # its 2.63-tile reach, so radiation-out is ZERO and cool_shift is its only loss:
 #     H_bed * B = T* * 2^(heat_inv_shift - cool_shift)
 # with B the crate's total per-tick O2 claim = burn_rate*dt*I*o2f*n_faces. At
-# T* = 443, his = 3, cool_shift = 9, burn_rate 0.02, dt 1/24, I 0.21, ambient
-# o2f 0.092 and the FOUR air faces that each file a full demand share,
-# B = 6.44e-5 and H_bed = 443 * 2^-6 / 6.44e-5 ~= 1.07e5. NOTE the ruling's own
-# 4.3e5 estimate assumed a claim-structure factor of 1 and told us to measure it:
-# measured, it is 4 (four air neighbours), which is the whole difference.
+# T* = 443, his = 3, cool_shift = 9, burn_rate 0.02, dt 1/24 and the FOUR air
+# faces that each file a full demand share, the ALGEBRA gives H_bed = 1.07e5 IF
+# the fire ran at the ideal anchor (I 0.21, ambient o2f 0.092). NOTE the
+# ruling's own 4.3e5 estimate assumed a claim-structure factor of 1 and told us
+# to measure it: measured, it is 4 (four air neighbours).
+# MEASURED OPERATING POINT (the bench, not the algebra): a lone crate vitiates
+# its own flame ring, so it actually sits at o2f 0.0825 (X_local 0.198, not the
+# ambient 0.21) and I 0.152 (not 0.21) — both LOWER than the ideal anchor, and
+# T* is linear in each. Scaling the algebra by (0.092/0.0825)*(0.21/0.152) and
+# placing the result on the bench lands H_bed = 2.02e5, which holds the
+# sustained plateau at T* = 440 game (window mean; max 486, gate band 400-500).
+# That is 2.1x BELOW the ruling's 4.3e5 estimate — inside its +/-3x sanity band.
 #
 # HONEST NAMING: this is a CALIBRATED LUMPED CONSTANT exactly like thermal_mass.
 # It is Huggett-SHAPED (strictly proportional to O2 consumed — so a choked fire
@@ -523,8 +530,8 @@ fuel_per_o2       = 0.7
 # but NOT Huggett-VALUED: thermal_mass = 8 already lumps the ~130x surface-layer
 # factor, so no J/mol anchor survives the conversion. Do not read it as an
 # enthalpy. RE-TUNE AT P-R5 alongside cool_shift.
-H_BED_M           = 26875.0  # mantissa (< 32768, the Q16.16 range)
-H_BED_SHIFT       = 2        # H_bed = H_BED_M * 2^H_BED_SHIFT = 1.075e5
+H_BED_M           = 25290.0  # mantissa (< 32768, the Q16.16 range)
+H_BED_SHIFT       = 3        # H_bed = H_BED_M * 2^H_BED_SHIFT = 2.023e5
 # Unit-side suffocation mechanics (LATER arc, design §5): defined here so the
 # constant lives at the right layer; nothing reads it yet.
 o2_thresh_breathe = 0.08   # min local N_O2 a unit needs to breathe (NOT wired yet)

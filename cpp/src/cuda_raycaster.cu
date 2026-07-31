@@ -70,7 +70,8 @@ __global__ void march_rays_kernel(
     float smoke_absorb_scale, float light_cull, float heat_cull,
     int h, int w,
     const int32_t* __restrict__ e_table, const int32_t* __restrict__ temperature,
-    const int32_t* __restrict__ heat_inv_shift, int32_t* rad_net) {
+    const int32_t* __restrict__ heat_inv_shift, int32_t* rad_net,
+    int32_t* rad_flux) {
     const int plane = h * w;
     for (int r = blockIdx.x * blockDim.x + threadIdx.x; r < n_rays;
          r += gridDim.x * blockDim.x) {
@@ -136,6 +137,18 @@ __global__ void march_rays_kernel(
             // be reordered "for the GPU": this is the tol-0 contract.
             if (emits_rad && heat_survival > heat_cull) {
                 const float a_r = heat_atten[idx];
+                // D3: the RADIANT-FLUX SENSOR at AIR cells — the CPU block
+                // verbatim. NOT part of the energy ledger (no transport, no
+                // temperature, nothing debited); unit heat damage is its only
+                // consumer. Positive-only -> the SATURATING atomic, which is
+                // order-free exactly as the retired painter's deposit was.
+                if (rad_flux != nullptr && !(a_r > 0.0f)) {
+                    float ff = ray.rad_coef;   // a_s · w
+                    ff *= heat_survival;       // · τ
+                    const int32_t q =
+                        rad_quantize_signed((double)ff * (double)ray.rad_E_s);
+                    if (q > 0) heat_atomic_sat_add(&rad_flux[idx], q);
+                }
                 if (a_r > 0.0f) {
                     const int32_t T_r = temperature[idx];
                     const int32_t diff = ray.rad_E_s - e_table[e_bucket_of(T_r)];
@@ -220,7 +233,7 @@ void raycaster_cast_directional(
     float smoke_absorb_scale, float light_cull, float heat_cull,
     int h, int w,
     const int32_t* e_table, const int32_t* temperature,
-    const int32_t* heat_inv_shift, int32_t* rad_net) {
+    const int32_t* heat_inv_shift, int32_t* rad_net, int32_t* rad_flux) {
     const size_t n = (size_t)h * (size_t)w;
     if (n == 0 || n_rays <= 0) return;
 
@@ -254,6 +267,9 @@ void raycaster_cast_directional(
     // the atomics start from the same baseline the CPU cast would, exactly as
     // `heat` does above.
     int32_t* d_radnet = upload_opt(rad_net, n, "malloc rad_net");
+    // D3: same IN/OUT treatment — uploaded so the saturating atomics start from
+    // the caller's accumulation, downloaded after the launch.
+    int32_t* d_radflux = upload_opt(rad_flux, n, "malloc rad_flux");
 
     const int block = 256;
     const int grid = (n_rays + block - 1) / block;
@@ -261,7 +277,7 @@ void raycaster_cast_directional(
         d_rays, n_rays, d_lrgb, d_ldx, d_ldy, d_heat, d_glow,
         d_gas, d_gabs, d_gsca, n_gases, d_atten, d_hatten,
         smoke_absorb_scale, light_cull, heat_cull, h, w,
-        d_etab, d_temp, d_his, d_radnet);
+        d_etab, d_temp, d_his, d_radnet, d_radflux);
     cuda_check(cudaGetLastError(), "kernel launch");
     cuda_check(cudaDeviceSynchronize(), "sync");
 
@@ -272,6 +288,7 @@ void raycaster_cast_directional(
     if (heat)       cuda_check(cudaMemcpy(heat, d_heat, n * sizeof(int32_t), cudaMemcpyDeviceToHost), "D2H heat");
     if (smoke_glow) cuda_check(cudaMemcpy(smoke_glow, d_glow, n * 3 * sizeof(float), cudaMemcpyDeviceToHost), "D2H smoke_glow");
     if (rad_net)    cuda_check(cudaMemcpy(rad_net, d_radnet, n * sizeof(int32_t), cudaMemcpyDeviceToHost), "D2H rad_net");
+    if (rad_flux)   cuda_check(cudaMemcpy(rad_flux, d_radflux, n * sizeof(int32_t), cudaMemcpyDeviceToHost), "D2H rad_flux");
 
     cudaFree(d_rays);
     cudaFree((void*)d_gas); cudaFree((void*)d_gabs); cudaFree((void*)d_gsca);
@@ -279,7 +296,7 @@ void raycaster_cast_directional(
     cudaFree(d_lrgb); cudaFree(d_ldx); cudaFree(d_ldy);
     cudaFree(d_heat); cudaFree(d_glow);
     cudaFree((void*)d_etab); cudaFree((void*)d_temp); cudaFree((void*)d_his);
-    cudaFree(d_radnet);
+    cudaFree(d_radnet); cudaFree(d_radflux);
 }
 
 namespace {

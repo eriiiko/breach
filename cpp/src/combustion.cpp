@@ -84,7 +84,8 @@ void CombustionSolver::step(
         float c_v, float n_floor_heat,
         const bool* thermal_solid,
         const int32_t* heat_inv_shift,
-        int32_t* heat) const {
+        int32_t* heat,
+        int32_t* dem_acc) const {
 
     if (h <= 0 || w <= 0 || dt <= 0.0f) return;
     if (o2_idx < 0 || o2_idx >= n_gases) return;
@@ -202,12 +203,82 @@ void CombustionSolver::step(
                 // Claim gate (design §3 step 1) — the ign/T/fuel gate is the real
                 // one (unchanged). fire[i] is now read for the DEMAND magnitude,
                 // not as a claim prefilter.
-                if (!flammable[i]) continue;
-                if (wall_hp[i] <= FUEL_FLOOR) continue;   // no fuel (P5.1 ember out)
+                // D1 RESET RULE: this slot's sub-count debt survives only while
+                // the neighbour is an ACTIVELY BURNING claimant. Every gate
+                // below that rejects it zeroes the debt first, so a tile that
+                // stops burning and later re-ignites starts from clean books.
+                const size_t slot = (size_t)d * n + j;
+                if (!flammable[i]) { if (dem_acc) dem_acc[slot] = 0; continue; }
+                if (wall_hp[i] <= FUEL_FLOOR) {           // no fuel (P5.1 ember out)
+                    if (dem_acc) dem_acc[slot] = 0; continue; }
                 const q16 ign_i = ignition_temp_q16[i];
-                if (ign_i <= 0) continue;                 // material can't ignite
-                if (Tsnap[i] < ign_i) continue;           // below ignition (snapshot!)
-                const q16 di = mul_q16(mul_q16(burn_cap_q, fire[i]), o2f_j);
+                if (ign_i <= 0) { if (dem_acc) dem_acc[slot] = 0; continue; }
+                // *** IGNITION vs SUSTAIN (P-R4 finding, measured) ***
+                // This gate used to be a bare `Tsnap[i] < ign_i -> skip`, i.e.
+                // it demanded a tile stay above its own IGNITION temperature to
+                // keep consuming oxygen. That is an ignition threshold doing a
+                // sustain threshold's job — the mirror image of the defect
+                // P-R3's ride-along fixed on the fire logistic ("a tile could
+                // ignite below its own sustain floor"). It was INVISIBLE while
+                // the painter existed, because the painter's own deposit held a
+                // burning tile above `ignition_temp` from tick one. With the
+                // painter retired it deadlocks the whole chain: a tile ignites
+                // at exactly `ignition_temp`, cools by one `cool_shift` step
+                // within a single tick, and from tick 2 is no longer allowed to
+                // draw the oxygen whose heat is the only thing that could have
+                // kept it there. MEASURED on the bench: T 280.0 -> 279.45 after
+                // one tick, claim gate false for every tick after, zero oxygen
+                // drawn for the rest of the run, fire dead at 21 s.
+                // The fix is the standard hysteresis pair: IGNITION temperature
+                // gates a tile that is not yet alight; a tile that IS alight
+                // (fire[i] > 0) burns on, and its death is the fire logistic's
+                // job through `fire_T_ext` (180 for furniture — 100 game BELOW
+                // ignition_temp, exactly the band this gate was excluding) plus
+                // the `I_min` snap-out. Outcome-neutral in the other direction:
+                // a NON-burning tile has I == 0, so its demand was already 0 and
+                // it drew nothing.
+                const bool alight = (fire[i] > 0);
+                // Not alight -> must clear its own IGNITION temperature, read
+                // from the pass-entry SNAPSHOT so a source can never heat AND
+                // ignite a neighbour in the same tick (design delta alpha).
+                if (!alight && Tsnap[i] < ign_i) {
+                    if (dem_acc) dem_acc[slot] = 0;
+                    continue;
+                }
+                // Flameless claimant: demand is proportional to I, so it is
+                // exactly 0. Skip rather than thread a zero through the split —
+                // outcome-identical, and it keeps the debt books clean.
+                if (!alight) {
+                    if (dem_acc) dem_acc[slot] = 0;
+                    continue;
+                }
+                q16 di;
+                if (dem_acc != nullptr) {
+                    // ---- D1: error-feedback demand (combustion.h documents
+                    // the scale algebra and why the plane is face-keyed). The
+                    // WIDE product is never truncated; the sub-count remainder
+                    // is carried in this slot and whole counts fall out as the
+                    // debt accrues. Exact in expectation, unbiased, order-free
+                    // (single writer per air cell), Huggett anchor untouched.
+                    //   P    = burn_cap_q * I_q * o2f_q   (<= 2^48, scale 2^32)
+                    //   wide = acc + (P >> 1)             (scale 2^31 per count)
+                    //   draw = wide >> 31                 (whole counts)
+                    //   acc  = wide - (draw << 31)        ([0, 2^31) -> int32)
+                    // The single `>> 1` costs 2^-32 of a count per tick — six
+                    // orders below the ~1 count/tick draw, and it is what lets
+                    // the remainder live in a plain non-negative int32 (a
+                    // scale-2^32 remainder would need 33 bits).
+                    const int64_t P = (int64_t)burn_cap_q
+                                    * (int64_t)fire[i] * (int64_t)o2f_j;
+                    const int64_t wide = (int64_t)dem_acc[slot] + (P >> 1);
+                    const int64_t draw = wide >> 31;
+                    dem_acc[slot] = (int32_t)(wide - (draw << 31));
+                    di = (q16)draw;
+                } else {
+                    // Pre-D1 path (nullable back-compat): the chained
+                    // truncation, kept so direct-binding callers are unmoved.
+                    di = mul_q16(mul_q16(burn_cap_q, fire[i]), o2f_j);
+                }
                 cl_dir[n_cl] = d;
                 cl_src[n_cl] = i;
                 dem[n_cl] = (int64_t)di;

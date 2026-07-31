@@ -345,6 +345,25 @@ void Raycaster::march_ray_directional(
         // (ruling A1.2). The code runs; it produces exactly 0.
         if (emits_rad && heat_survival > heat_cull) {
             const float a_r = heat_atten[idx];
+            // ---- D3: the RADIANT-FLUX SENSOR at AIR cells -----------------
+            // *** NOT PART OF THE ENERGY LEDGER. ***  No energy moves, nothing
+            // is debited, no temperature changes, no solver reads this. It is
+            // the incident radiant flux a UNIT standing on this air tile would
+            // feel, and its only consumer is unit heat damage
+            // (apply_environmental_damage), which sampled the retired painter's
+            // air deposit here. Radiation itself lands only on solids (air has
+            // a == 0, so by Kirchhoff it neither absorbs nor emits), so without
+            // this sensor a fire could not burn a marine standing beside it.
+            // Positive-only, so it keeps `heat[]`'s ORDER-FREE saturating-add
+            // contract (the CUDA twin uses the saturating atomic).
+            // Pinned fold, same shape as the exchange's: f = a_s*w -> *= tau,
+            // then ONE promotion against the integer E°.
+            if (rad->rad_flux != nullptr && !(a_r > 0.0f)) {
+                float ff = rr->coef;          // a_s · w
+                ff *= heat_survival;          // · τ
+                const int32_t q = rad_quantize_signed((double)ff * (double)rr->E_s);
+                if (q > 0) heat_saturating_add(&rad->rad_flux[idx], q);
+            }
             if (a_r > 0.0f) {                 // air (a == 0) neither absorbs nor receives
                 const int32_t T_r = rad->temperature[idx];
                 const int32_t diff = rr->E_s - rad->e_table[e_bucket_of(T_r)];
@@ -601,6 +620,7 @@ std::vector<LightSource> Raycaster::build_fire_sources(
     const float color[3], double jitter,
     const int32_t* temperature, const float* heat_atten,
     const int32_t* heat_inv_shift, const bool* thermal_solid,
+    int tick,
     std::vector<RadSource>* rad_out
 ) const {
     // math.pi's bits: CPython's `math.pi` is the literal 3.14159265358979323846
@@ -617,6 +637,19 @@ std::vector<LightSource> Raycaster::build_fire_sources(
     // pure function of its two (here loop-invariant) operands, so evaluating
     // it once here is bit-identical to Python's per-iteration recompute.
     const double phase_step_d = two_pi_d / static_cast<double>(fire_ray_count);
+    // D4 (amendment 5): the SUB-SPACING per-tick rotation. `phase_step_d` alone
+    // is a NO-OP on a full-circle fan (rotating N evenly-spaced rays by a
+    // multiple of their own spacing maps the set onto itself — which is why the
+    // (+2,0) axis neighbour was NEVER connected at any intensity). Stepping by
+    // one N-th of the spacing instead means N consecutive ticks sweep exactly
+    // one full spacing, so every direction is sampled and the discrete view
+    // factor time-averages to the continuous one. Pure function of the tick;
+    // both backends build the fan from THIS function, so they stay identical.
+    const double tick_step_d = phase_step_d / static_cast<double>(fire_ray_count);
+    // Non-negative tick residue (a tick is never negative in the engine; the
+    // guard keeps the modulo total and deterministic if one ever were).
+    int tick_mod = tick % fire_ray_count;
+    if (tick_mod < 0) tick_mod += fire_ray_count;
     // Q16.16 dequant: fire's fixed-point scale is the SAME 65536 as HEAT_SCALE
     // (== fire_fixed.FP_ONE, src/simulation/fire_fixed.py). Division by an
     // exact power of two is exact in IEEE754 (no rounding), matching Python's
@@ -667,8 +700,13 @@ std::vector<LightSource> Raycaster::build_fire_sources(
             const double max_range_d = range_base + range_per_intensity * I;
             const double intensity_d = intensity_base + intensity_per_intensity * I;
             const int mod_result = (col * 7 + row * 13) % fire_ray_count;
+            // D4: the spatial hash (decorrelates neighbouring fans) PLUS the
+            // sub-spacing per-tick rotation (connects every pair within
+            // ray_count ticks). Both terms in double, narrowed once, as the
+            // float-parity contract requires.
             const double angle_center_d =
-                static_cast<double>(mod_result) * phase_step_d;
+                static_cast<double>(mod_result) * phase_step_d
+              + static_cast<double>(tick_mod) * tick_step_d;
 
             LightSource src;
             src.x = static_cast<float>(x_d);
@@ -724,18 +762,21 @@ void Raycaster::cast_from_fire_plane(
     const int32_t* heat_inv_shift,
     const bool* thermal_solid,
     int32_t* rad_net,
+    int32_t* rad_flux,
+    int tick,
     double jitter
 ) const {
     std::vector<RadSource> rads;
     std::vector<LightSource> sources = build_fire_sources(
         fire, h, w, fire_ray_count, range_base, range_per_intensity,
         intensity_base, intensity_per_intensity, color, jitter,
-        temperature, heat_atten, heat_inv_shift, thermal_solid, &rads);
+        temperature, heat_atten, heat_inv_shift, thermal_solid, tick, &rads);
     RadCtx ctx;
     ctx.e_table        = emissive_table();
     ctx.temperature    = temperature;
     ctx.heat_inv_shift = heat_inv_shift;
     ctx.rad_net        = rad_net;
+    ctx.rad_flux       = rad_flux;
     for (size_t k = 0; k < sources.size(); ++k) {
         // `heat` is nullptr: the fire path has NO one-way deposit any more.
         cast_source_directional(sources[k], light_rgb, light_dx, light_dy,
@@ -854,13 +895,14 @@ std::vector<breach_cuda::RayHD> Raycaster::build_fire_ray_list(
     const float* heat_atten,
     const int32_t* heat_inv_shift,
     const bool* thermal_solid,
+    int tick,
     double jitter
 ) const {
     std::vector<RadSource> rads;
     std::vector<LightSource> sources = build_fire_sources(
         fire, h, w, fire_ray_count, range_base, range_per_intensity,
         intensity_base, intensity_per_intensity, color, jitter,
-        temperature, heat_atten, heat_inv_shift, thermal_solid, &rads);
+        temperature, heat_atten, heat_inv_shift, thermal_solid, tick, &rads);
     std::vector<breach_cuda::RayHD> rays;
     for (size_t k = 0; k < sources.size(); ++k) {
         std::vector<breach_cuda::RayHD> r = build_ray_list(sources[k], &rads[k]);

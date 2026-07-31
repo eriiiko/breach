@@ -542,7 +542,7 @@ class PhysicsRunner:
     # ------------------------------------------------------------------
     # Per-tick step
     # ------------------------------------------------------------------
-    def step(self, gmap, sim_time):
+    def step(self, gmap, sim_time, tick=0):
         """Advance all physics by ``sim_time`` seconds.
 
         IMEX scheme: explicit wave on wave_p, implicit diffusion on
@@ -563,7 +563,7 @@ class PhysicsRunner:
         # (one D2H/H2D each). With residency off this branch is never taken and
         # CuPy is never imported.
         if _RESIDENCY_ENABLED and getattr(self.bp, "HAS_CUDA", False):
-            return self._step_resident(gmap, sim_time)
+            return self._step_resident(gmap, sim_time, tick=tick)
 
         # K2: cast the fire heat pass FIRST — at the very START of the physics
         # step, BEFORE the atmosphere/smoke loop and BEFORE the TemperatureSolver
@@ -577,7 +577,7 @@ class PhysicsRunner:
         # ADDITIVE / de-risked: the render-side ray pass (cold sources -> ~0 heat)
         # is untouched, so there is no double-count; the cellular fire spread
         # (self.fire.step below) keeps running unchanged.
-        self.cast_fire_heat(gmap)
+        self.cast_fire_heat(gmap, tick=tick)
 
         # Water layer (engine/07 §2, water plan W2/W3): pour / flow / settle
         # the standing-water field ONCE per tick, before the atmosphere loop —
@@ -778,6 +778,8 @@ class PhysicsRunner:
                 # constant as the CPU branch below.
                 gmap.heat,
                 self.combustion.H_BED_M, self.combustion.H_BED_SHIFT,
+                # D1: the error-feedback demand accumulator (synced, IN/OUT).
+                gmap.dem_acc,
             )
         else:
             self.combustion.step(
@@ -805,6 +807,15 @@ class PhysicsRunner:
                 # heat_inv_shift. Huggett-SHAPED, not Huggett-VALUED (see
                 # combustion.h) — and it makes the plateau sag with local O2.
                 gmap.heat,
+                # D1 (ruling amendment 5): the error-feedback DEMAND
+                # ACCUMULATOR. The per-claimant demand is ~1 Q16.16 count at
+                # the operating point, and the old chained truncation floored
+                # it to a staircase with a dead zone below I = 0.200 — a fire
+                # born at ignition_seed 0.12 drew no oxygen and died. The
+                # accumulator carries the wide product's sub-count remainder
+                # across ticks, so the draw is exact in expectation and the
+                # Huggett burn_rate anchor is untouched. Synced state, IN/OUT.
+                gmap.dem_acc,
             )
 
     # ------------------------------------------------------------------
@@ -870,7 +881,7 @@ class PhysicsRunner:
             gmap.water_depth[y, x] = max(int(gmap.water_depth[y, x]), lvl_q)
         return False
 
-    def _step_resident(self, gmap, sim_time):
+    def _step_resident(self, gmap, sim_time, tick=0):
         """One GPU-resident tick (S8a: Path B framework + Path A EOS residency).
         Bit-identical to the CPU/per-call tick: the water SUBSTEP loop, the
         whole EOS STAGE (advection substeps, on-device MG build + solve,
@@ -888,7 +899,7 @@ class PhysicsRunner:
 
         # -- 1. host pre-physics (on the mirror): fire heat cast, water pre-step,
         #       lazy binds, ambient args (identical to the normal step) ----------
-        self.cast_fire_heat(gmap)
+        self.cast_fire_heat(gmap, tick=tick)
         self.eos.dx = float(gmap.tile_size_m)
         if self._o2_idx is None:
             self._o2_idx = int(gmap.gases.name_to_id["o2"])
@@ -1084,7 +1095,7 @@ class PhysicsRunner:
     # ------------------------------------------------------------------
     # K2: sim-side fire heat ray pass
     # ------------------------------------------------------------------
-    def cast_fire_heat(self, gmap):
+    def cast_fire_heat(self, gmap, tick=0):
         """Deposit fire's radiant heat into ``gmap.heat`` (proposal §1).
 
         Enumerate every burning tile (``fire > 0``) in fixed ROW-MAJOR order,
@@ -1204,7 +1215,9 @@ class PhysicsRunner:
                 gmap.temperature,     # both ends' E° lookup
                 gmap.heat_inv_shift,  # the limiter's per-end budget
                 gmap.thermal_solid,   # the warm-emitter mask
-                gmap.rad_net,         # <- the only synced output (SIGNED)
+                gmap.rad_net,         # <- the SIGNED energy-ledger output
+                gmap.rad_flux,        # <- D3: the damage SENSOR (not the ledger)
+                int(tick),            # <- D4: the fan's per-tick phase rotation
                 None,                 # smoke_glow: skipped (render-only, later)
             )
         else:
@@ -1231,7 +1244,9 @@ class PhysicsRunner:
                 gmap.temperature,     # both ends' E° lookup
                 gmap.heat_inv_shift,  # the limiter's per-end budget
                 gmap.thermal_solid,   # the warm-emitter mask
-                gmap.rad_net,         # <- the only output that survives the cast
+                gmap.rad_net,         # <- the SIGNED energy-ledger output
+                gmap.rad_flux,        # <- D3: the damage SENSOR (not the ledger)
+                int(tick),            # <- D4: the fan's per-tick phase rotation
                 None,                 # smoke_glow: skipped (render-only, later)
             )
 

@@ -85,7 +85,16 @@ INT32_MAX = (1 << 31) - 1
 # gate-h rule). DIGEST_SPEC_VERSION unchanged (values moved; no field
 # added/removed/retyped).
 # (was 7eeb41d431a79ba01cbafef37416188bbf1ecb2a194d92af5f4ede279c9f2758)
-GOLDEN = "98d3dd7eaf3d574d6e562513cd95f3b5ac077b7c69b1d0b024db931261735473"
+# P-R4 GOLDEN REBASE (2026-08-01, the arc's ONE deliberate rebase —
+# ruling amendment 5 D2, Erik's approval). The canonical A/B scenario seeds
+# fire at (8,8)/(8,9) on AIR tiles (material 0, heat_atten 0,
+# flammable.sum() == 0) — a GHOST fire whose only observable was the retired
+# painter's air deposit. Under Kirchhoff a body that cannot absorb cannot
+# emit (a_s == 0), so that heat is now correctly ZERO and every trajectory
+# carrying it moves. Folded into the SAME one-shot rebase: D1's demand
+# accumulator (digest spec v2 -> v3, +dem_acc), D3's radiant-flux sensor and
+# D4's per-tick fan rotation. ONE approved change-set, ONE rebase event.
+GOLDEN = "e73f130ea6f514fc285825d1efc828202bfc7e2e77dee3212bed2aa822e45f8a"
 
 
 # ----------------------------------------------------------------------------
@@ -140,13 +149,27 @@ def _build_runner_and_map(seed):
     return runner, g
 
 
-def _cast_live(runner, g):
-    """Run the production cast_fire_heat once into a freshly-zeroed gmap.heat and
-    return the resulting heat field (the per-tick clear is the sim's job; we zero
-    it here to isolate THIS cast's accumulation)."""
+def _cast_live(runner, g, tick=0):
+    """Run the production cast once into freshly-zeroed output planes and return
+    them (the per-tick clear is the sim's job; we zero here to isolate THIS
+    cast's accumulation).
+
+    P-R4 RE-ANCHOR (ruling amendment 5 D2): the cast's synced output is no
+    longer `heat`. The PAINTER is retired — a fire does not deposit one-way
+    energy into every cell its rays cross — so `cast_fire_heat` now produces
+    `rad_net` (the SIGNED net-T^4 energy ledger, solids only) and `rad_flux`
+    (D3's positive-only damage SENSOR, air only). BOTH are compared at tol 0:
+    they exercise the two different device scatters this gate exists to pin —
+    a PLAIN signed atomicAdd for the ledger (order-free because integer
+    addition is associative; a saturating signed add would NOT be) and the
+    SATURATING atomic for the sensor (the old heat contract, order-free for
+    non-negative deltas). `heat` is still zeroed and returned so the
+    multi-source accumulation check below reads the same shape as before."""
     g.heat[...] = 0
-    runner.cast_fire_heat(g)
-    return g.heat.copy()
+    g.rad_net[...] = 0
+    g.rad_flux[...] = 0
+    runner.cast_fire_heat(g, tick=tick)
+    return g.rad_net.copy(), g.rad_flux.copy()
 
 
 def part1_live_cast() -> bool:
@@ -160,11 +183,11 @@ def part1_live_cast() -> bool:
         # starts from identical zeroed scratch).
         runner_cpu, g_cpu = _build_runner_and_map(seed)
         bp.set_raycaster_backend(False)
-        heat_cpu = _cast_live(runner_cpu, g_cpu)
+        heat_cpu, flux_cpu = _cast_live(runner_cpu, g_cpu)
 
         runner_gpu, g_gpu = _build_runner_and_map(seed)
         bp.set_raycaster_backend(True)
-        heat_gpu = _cast_live(runner_gpu, g_gpu)
+        heat_gpu, flux_gpu = _cast_live(runner_gpu, g_gpu)
         bp.set_raycaster_backend(False)   # restore
         n_scen += 1
 
@@ -177,28 +200,41 @@ def part1_live_cast() -> bool:
                   f"the A/B inputs are not identical, gate invalid.")
             continue
 
-        if not np.array_equal(heat_cpu, heat_gpu):
+        if not np.array_equal(heat_cpu, heat_gpu) or            not np.array_equal(flux_cpu, flux_gpu):
             ok = False
-            mism = int(np.count_nonzero(heat_cpu != heat_gpu))
-            idx = int(np.argmax(heat_cpu != heat_gpu))
-            ry, rx = divmod(idx, heat_cpu.shape[1])
-            print(f"  seed {seed}: {mism} HEAT MISMATCH "
-                  f"(first @ ({ry},{rx}): cpu={heat_cpu.flat[idx]} "
-                  f"gpu={heat_gpu.flat[idx]})")
+            bad, cpu_a, gpu_a = (("rad_net", heat_cpu, heat_gpu)
+                                 if not np.array_equal(heat_cpu, heat_gpu)
+                                 else ("rad_flux", flux_cpu, flux_gpu))
+            mism = int(np.count_nonzero(cpu_a != gpu_a))
+            idx = int(np.argmax(cpu_a != gpu_a))
+            ry, rx = divmod(idx, cpu_a.shape[1])
+            print(f"  seed {seed}: {mism} {bad.upper()} MISMATCH "
+                  f"(first @ ({ry},{rx}): cpu={cpu_a.flat[idx]} "
+                  f"gpu={gpu_a.flat[idx]})")
         else:
             nz = int(np.count_nonzero(heat_cpu))
+            nzf = int(np.count_nonzero(flux_cpu))
             nfire = int(np.count_nonzero(g_cpu.fire))
-            peak = int(heat_cpu.max())
-            print(f"  seed {seed}: bit-identical "
-                  f"({nfire} fire sources -> {nz} heated tiles, peak={peak}).")
-            if nz == 0 or nfire < 2:
+            peak = int(np.abs(heat_cpu).max())
+            print(f"  seed {seed}: bit-identical ({nfire} fire sources -> "
+                  f"{nz} exchanging tiles / {nzf} lit air tiles, "
+                  f"|rad_net|peak={peak}).")
+            if int(heat_cpu.sum()) != 0:
+                ok = False
+                print(f"  seed {seed}: rad_net does NOT conserve "
+                      f"(sum={int(heat_cpu.sum())}) — antisymmetry broken.")
+            # P-R4: `heat` is no longer the observable, so the strength check is
+            # on the two planes the cast actually writes. A scene of fires on
+            # AIR would legitimately exchange nothing (Kirchhoff), so the
+            # multi-source ACCUMULATION signal is the flux sensor.
+            if nzf == 0 or nfire < 2:
                 ok = False
                 print(f"  seed {seed}: SCENARIO TOO WEAK (nfire={nfire}, "
-                      f"heated={nz}) — multi-source accumulation not exercised.")
+                      f"lit={nzf}) — multi-source accumulation not exercised.")
     if ok:
-        print(f"  all {n_scen} live multi-source casts: GPU heat == CPU heat "
-              f"byte-for-byte through PhysicsRunner.cast_fire_heat (per-tick "
-              f"clear + per-source saturating accumulate preserved).")
+        print(f"  all {n_scen} live multi-source casts: GPU rad_net + rad_flux "
+              f"== CPU byte-for-byte through PhysicsRunner.cast_fire_heat "
+              f"(signed plain atomic + saturating atomic, both order-free).")
     return ok
 
 
@@ -209,11 +245,28 @@ def part1b_multitick_live() -> bool:
     solver; each tick, before the sim clears heat, cast on BOTH backends into a
     scratch heat buffer and assert byte-identical. Proves the wiring holds tick
     after tick on real evolving state (not just one frozen frame)."""
-    print("PART 1b — LIVE cast over EVOLVING fire, per tick, heat tol 0:")
+    print("PART 1b — LIVE cast over EVOLVING fire, per tick, radiation tol 0:")
     from field_ab_harness import default_scenario_sim
 
     sim = default_scenario_sim()
     g = sim.gmap
+    # P-R4 re-anchor (ruling amendment 5 D2): give the scenario REAL EMITTERS.
+    # The canonical A/B scenario seeds fire at (8,8)/(8,9) on AIR tiles — a
+    # GHOST fire whose only observable was the retired painter's air deposit.
+    # Under Kirchhoff a body that cannot absorb cannot emit (a_s == 0), so a
+    # ghost fire radiates NOTHING and this leg would be vacuous. Put wood under
+    # the two seeded tiles (plus a wood absorber beside them) and hold them at
+    # flame temperature, so the cast has a genuinely evolving emitter set to
+    # exercise tick after tick — which is what this leg is FOR. The golden
+    # scenario itself is untouched (this is a local mutation of one sim).
+    from simulation.materials import MAT_WOOD
+    from simulation import fire_fixed as _ff
+    for (yy, xx) in ((8, 8), (8, 9), (9, 8)):
+        g.material[yy, xx] = MAT_WOOD
+    g._update_caches()
+    for (yy, xx) in ((8, 8), (8, 9)):
+        g.fire[yy, xx] = _ff.quantize_scalar(0.8)
+        g.temperature[yy, xx] = _ff.quantize_scalar(443.0)
     runner = sim.physics_runner if sim.physics_runner is not None else None
     if runner is None:
         print("  no physics_runner on the sim — cannot drive the live cast.")
@@ -226,40 +279,57 @@ def part1b_multitick_live() -> bool:
         # Cast THIS tick's fire on both backends into a fresh scratch heat buffer
         # (don't disturb the sim's own gmap.heat — we use a private copy of the
         # field state for the A/B, casting the SAME source list both ways).
-        scratch = np.zeros_like(g.heat)
-
-        saved = g.heat
-        g.heat = scratch.copy()
+        # P-R4 re-anchor: the cast's synced outputs are `rad_net` (signed
+        # ledger) and `rad_flux` (D3 damage sensor), not `heat`. Swap BOTH out
+        # for private scratch so the sim's real buffers are untouched, and pass
+        # the real tick so D4's fan rotation is the production one.
+        saved_net, saved_flux = g.rad_net, g.rad_flux
+        g.rad_net = np.zeros_like(saved_net)
+        g.rad_flux = np.zeros_like(saved_flux)
         bp.set_raycaster_backend(False)
-        g.heat[...] = 0
-        runner.cast_fire_heat(g)
-        heat_cpu = g.heat.copy()
+        runner.cast_fire_heat(g, tick=sim.tick)
+        heat_cpu, flux_cpu = g.rad_net.copy(), g.rad_flux.copy()
 
-        g.heat[...] = 0
+        g.rad_net[...] = 0
+        g.rad_flux[...] = 0
         bp.set_raycaster_backend(True)
-        runner.cast_fire_heat(g)
-        heat_gpu = g.heat.copy()
+        runner.cast_fire_heat(g, tick=sim.tick)
+        heat_gpu, flux_gpu = g.rad_net.copy(), g.rad_flux.copy()
         bp.set_raycaster_backend(False)
-        g.heat = saved   # restore the sim's real heat buffer reference
+        g.rad_net, g.rad_flux = saved_net, saved_flux   # restore the sim's own
 
         if not np.array_equal(heat_cpu, heat_gpu):
             ok = False
             mism = int(np.count_nonzero(heat_cpu != heat_gpu))
-            print(f"  tick {t}: {mism} HEAT MISMATCH on the live evolving cast.")
+            print(f"  tick {t}: {mism} RAD_NET MISMATCH on the live evolving cast.")
             break
-        max_peak = max(max_peak, int(heat_cpu.max()))
+        if not np.array_equal(flux_cpu, flux_gpu):
+            ok = False
+            mism = int(np.count_nonzero(flux_cpu != flux_gpu))
+            print(f"  tick {t}: {mism} RAD_FLUX MISMATCH on the live evolving cast.")
+            break
+        max_peak = max(max_peak, int(np.abs(heat_cpu).max()), int(flux_cpu.max()))
         n_tick += 1
 
-        # Advance the sim one real tick so the fire field evolves for the next cast.
+        # Advance the sim one real tick so the fire field evolves for the next
+        # cast, holding the two emitters lit AND hot (P-R4: an emitter radiates
+        # against its own temperature).
         sim.set_paused(False)
         sim.step()
+        for (yy, xx) in ((8, 8), (8, 9)):
+            g.fire[yy, xx] = max(int(g.fire[yy, xx]), _ff.quantize_scalar(0.8))
+            g.temperature[yy, xx] = max(int(g.temperature[yy, xx]),
+                                        _ff.quantize_scalar(443.0))
     if ok:
-        print(f"  {n_tick} ticks of the live evolving fire->heat cast: GPU heat == "
-              f"CPU heat byte-for-byte every tick (peak |heat| over the run = "
-              f"{max_peak} counts).")
+        print(f"  {n_tick} ticks of the live evolving fire->radiation cast: GPU "
+              f"rad_net + rad_flux == CPU byte-for-byte every tick (peak over "
+              f"the run = {max_peak} counts).")
         if max_peak == 0:
             ok = False
-            print("  SCENARIO WEAK: heat never non-zero — vacuous.")
+            print("  SCENARIO WEAK: both radiation planes stayed zero — vacuous. "
+                  "(NOTE: the canonical A/B scenario seeds fire on AIR tiles, "
+                  "which by Kirchhoff neither absorb nor emit — see the golden "
+                  "rebase note above. The flux sensor is what registers there.)")
     return ok
 
 

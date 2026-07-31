@@ -129,9 +129,21 @@ def _step_tick(pr, gmap, dt=None):
     FOREVER (a dead fire keeps heating; measured: T pins at the T_MAX_PHYS
     rail and the flood-differentiation ordering inverts under the stale-heat
     artifact). These E2Es assert GAME behavior, so they must step the way
-    the game does."""
+    the game does.
+
+    P-R4 (ruling amendment 5): `rad_net` and `rad_flux` are per-tick planes with
+    EXACTLY the same lifetime and exactly the same failure mode — Simulation.step
+    wipes all three together at the end of the tick. Measured when they were
+    missed here: the burner's radiative LOSS into the sealed room's cold hull
+    re-applied every tick without ever being cleared, dragging its temperature
+    to -841 game (below ambient, which the antisymmetric exchange alone can
+    never do) and killing every arm of the payoff trio at the same ~35 ticks.
+    `dem_acc` is deliberately NOT cleared: it is PERSISTENT synced state whose
+    whole job is to carry a sub-count oxygen debt ACROSS ticks."""
     burned = pr.step(gmap, SEED_TICK_DT if dt is None else dt)
     gmap.heat.fill(0)
+    gmap.rad_net.fill(0)
+    gmap.rad_flux.fill(0)
     return burned
 
 
@@ -285,14 +297,30 @@ def test_thermal_spike_is_pre_existing_not_a_p4_regression():
 
     peak_disabled, trough_disabled = _run(0.0, 0.0)
     peak_default, trough_default = _run(4.0, 1.0)   # the shipped defaults
-    assert peak_disabled > 5000.0, (
-        "expected the PRE-EXISTING (combustion-independent) thermal spike "
-        f"to reproduce (peak={peak_disabled}); if this no longer reproduces "
-        "the P3 engine changed and this documentation test should be revisited")
-    # Same order of magnitude either way (H_fuel is not the driver).
-    assert peak_default < peak_disabled * 3.0 + 5000.0, (
-        f"P4 combustion made the pre-existing spike MUCH worse "
-        f"(disabled={peak_disabled}, default={peak_default}) — investigate")
+    # *** P-R4 RE-ANCHOR (ruling amendment 5 D2) — THE SPIKE IS GONE. ***
+    # This test used to ASSERT the runaway reproduced (`peak_disabled > 5000`),
+    # documenting it as pre-existing and out of P4's scope. P-R4 removed its
+    # DRIVER. The measured root cause (module docstring) was a feedback between
+    # TemperatureSolver Pass-1's dT = dE/(N*c_v) reciprocal and EOSSolver's
+    # step-4c compression work: as the pressure spike evacuated a cell's bulk N,
+    # the SAME heat deposit divided by an ever-smaller N and compounded
+    # geometrically. The deposit feeding that loop was the PAINTER's — one-way
+    # energy dumped into every AIR cell a fire's rays crossed. Under the net-T^4
+    # exchange air has heat_atten == 0, so by Kirchhoff it neither absorbs nor
+    # emits and receives NOTHING: the loop has no input left.
+    # The test's LIVE intent — a rails/regression guard on `temperature` — is
+    # preserved, inverted: it now guards that the runaway does not come BACK,
+    # alongside the wrap guard below that was always its other half.
+    SPIKE_CEILING = 5000.0
+    assert peak_disabled < SPIKE_CEILING, (
+        f"the P3 thermal runaway is BACK (combustion-disabled peak="
+        f"{peak_disabled} game >= {SPIKE_CEILING}). P-R4 removed its driver by "
+        f"retiring the painter's air deposit — a peak this high means something "
+        f"is feeding one-way energy into air cells again")
+    assert peak_default < SPIKE_CEILING, (
+        f"the P3 thermal runaway is BACK with combustion enabled "
+        f"(peak={peak_default} game). Combustion's gas-side H_fuel deposit is a "
+        f"BURN-SITE term, not a room-wide paint — it must not reopen the loop")
     # eos-p3fix-thermal-ceiling: no wraparound garbage (the fixed half of
     # the bug). T_MIN is -289 (EOSSolver default); a generous floor below
     # that (any legitimate T_MIN-floored cooling stays well above -1000)
@@ -576,6 +604,18 @@ def _payoff_timings(perturb_absorb=None, max_ticks=400):
         if perturb_absorb is not None:
             pr.eos.absorb_strength = perturb_absorb
         _ignite(gmap, (4, 4), intensity=0.6, temp_mult=1.5)
+        # P-R4 re-anchor (ruling amendment 5 D2): run the burner at the arc's
+        # BLESSED cool_shift (9), not the shipped 5. This test is about O2
+        # DIFFERENTIATION — sealed vs vented vs flooded must die at different
+        # times BECAUSE of oxygen. At the shipped cool_shift the burner's one
+        # loss channel is a 1.33 s e-fold, which under the retired painter's
+        # 1600-scale free energy did not matter and now does: every arm dies
+        # THERMALLY at ~34 ticks before the oxygen difference can register
+        # (measured 34/34/35 — the ordering did not break, it was ERASED). The
+        # P-R5 joint tune owns that dial (ruling §4: "cool_shift may drift up —
+        # radiation is now explicit"); this test owns the O2 axis, so it pins
+        # the dial the rest of the arc measures at.
+        gmap.cool_shift[4, 4] = 9
         if vent:
             gmap.solid[0, 4] = False
             gmap.dyn_permeability[0, 4] = 1.0

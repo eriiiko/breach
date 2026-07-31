@@ -91,24 +91,46 @@ def _drive(sim: Simulation):
     the captured trajectory (gmap fields + the per-tick unit-state digest)."""
     g = sim.gmap
     seed_q = fire_fixed.quantize_scalar(0.7)
-    # Set a fixed HP so the steady heat DPS (~14 HP/tick at this geometry/intensity)
-    # drains the unit over ~14 ticks and KILLS it MID-trajectory — the kill lands
-    # well inside TICKS, with HP visibly decreasing each tick BEFORE death (so the
-    # float-HP step is genuinely exercised, not a one-tick instakill). The number is
-    # about exercising the digest, not the balance.
+    # P-R4: the emitters' flame temperature (see the hold loop below).
+    flame_q = fire_fixed.quantize_scalar(443.0)
+    # Set a fixed HP so the steady heat DPS drains the unit over ~15 ticks and
+    # KILLS it MID-trajectory — the kill lands well inside TICKS, with HP visibly
+    # decreasing each tick BEFORE death (so the float-HP step is genuinely
+    # exercised, not a one-tick instakill). The number is about exercising the
+    # digest, not the balance.
+    # P-R4 re-anchor (ruling amendment 5 D2): the DPS moved. The retired painter
+    # delivered `k_fire_heat * I` = 1600-scale energy into the AIR tiles a unit
+    # stands on (~14 HP/tick here); the radiant flux a unit now feels is D3's
+    # SENSOR reading `tau * w * a_s * E[T_s]` — the honest incident flux from an
+    # emitter at its flame temperature — which at this geometry is ~1.4 HP/tick.
+    # HP is re-scaled to keep the kill in the same PLACE in the trajectory. The
+    # absolute damage number is P-R5 feel-tuning territory (the [combat]
+    # heat_flux_to_temp / environmental_damage_rate dials), not this test's job.
     for u in sim.units:
-        u.current_hp = 200.0
+        u.current_hp = 22.0
 
     traj = []
     from field_ab_harness import _snapshot, _capture_unit_state, SIM_FIELDS
     for _ in range(TICKS):
         # Hold the burner lit: re-light the wood patch each tick (the fire would
         # otherwise starve / blow out) so the radiant flux is sustained.
+        # P-R4 re-anchor (ruling amendment 5 D2): hold the patch HOT as well as
+        # LIT. The retired painter deposited `k_fire_heat * I` regardless of the
+        # tile's temperature, so re-seeding `fire` alone produced radiant flux.
+        # The net-T^4 exchange radiates against the emitter's OWN temperature —
+        # a synthetically-lit ice-cold tile emits E[0] and correctly damages
+        # nobody (measured: unit HP never dropped). In play a burning tile sits
+        # at the ~440 game plateau that combustion's H_bed holds (P-R4 gate f),
+        # so holding both fields is what reproduces the scenario as described.
+        # The flux itself reaches the unit through D3's radiant-flux SENSOR
+        # plane, which is what `apply_environmental_damage` now samples on air.
         for dy in (-1, 0, 1):
             for dx in (-1, 0, 1):
                 y, x = FY + dy, FX + dx
                 if 1 <= y < 15 and 1 <= x < 15:
                     g.fire[y, x] = max(int(g.fire[y, x]), seed_q)
+                    g.temperature[y, x] = max(int(g.temperature[y, x]),
+                                              flame_q)
         sim.set_paused(False)
         sim.step()
         snap = _snapshot(sim.gmap, SIM_FIELDS)

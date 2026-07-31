@@ -70,7 +70,12 @@ void raycaster_cast_directional(
     const int32_t* e_table = nullptr,        // E_TABLE_SIZE black-body entries
     const int32_t* temperature = nullptr,    // Q16.16 (h,w)
     const int32_t* heat_inv_shift = nullptr, // (h,w)
-    int32_t* rad_net = nullptr);             // Q16.16 (h,w) signed accumulator
+    int32_t* rad_net = nullptr,              // Q16.16 (h,w) signed accumulator
+    // D3: the RADIANT-FLUX SENSOR plane — positive-only, AIR cells only, NOT
+    // part of the energy ledger (no temperature effect, nothing debited); its
+    // only consumer is unit heat damage. Saturating atomic == the old heat
+    // contract, so it is order-free. See raycaster.h RadCtx::rad_flux.
+    int32_t* rad_flux = nullptr);
 
 // Backend flag (mirrors the S1 temperature backend switch).
 bool raycaster_backend_is_cuda();

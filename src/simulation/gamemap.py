@@ -423,6 +423,41 @@ class GameMap:
         # together at the very end of Simulation.step, after every consumer).
         # Written IN-PLACE (never reassigned) so any C++ view stays valid.
         self.rad_net = np.zeros((h, w), dtype=np.int32)
+        # D3 (ruling amendment 5) — the RADIANT-FLUX SENSOR plane.
+        # *** NOT part of the energy ledger. ***  It moves no energy, changes no
+        # temperature, and nothing is debited to pay for it; no solver reads it.
+        # Its ONE consumer is unit heat damage
+        # (:func:`simulation.exchange.apply_environmental_damage`), which used
+        # to sample the retired painter's deposit on the AIR tiles a unit
+        # stands on. The radiation exchange lands only on SOLIDS (air has
+        # ``heat_atten == 0`` so by Kirchhoff it neither absorbs nor emits), so
+        # without this plane a fire could not burn a marine standing beside it.
+        # Written along the rays at air cells as ``τ·w·a_s·E°[T_s]`` — same
+        # occlusion, same 1/r ray-density falloff the painter had — with
+        # POSITIVE-SATURATING adds, i.e. ``heat``'s order-free contract (it can
+        # never go negative, unlike ``rad_net``). Same per-tick lifetime as
+        # ``heat``/``rad_net``: cleared together at the end of Simulation.step.
+        self.rad_flux = np.zeros((h, w), dtype=np.int32)
+        # D1 (ruling amendment 5) — the COMBUSTION DEMAND ACCUMULATOR.
+        # (4, h, w) int32, PERSISTENT SYNCED state (not a per-tick buffer).
+        # Slot ``[d, y, x]`` is the sub-count oxygen debt the air cell (y, x)
+        # owes toward the flammable claimant in direction ``D4[d]``
+        # (N, S, W, E — the same face keying ``alloc_face`` uses inside the
+        # combustion pass).
+        #
+        # WHY IT EXISTS: the per-claimant demand ``burn_rate·dt·I·o2f`` is ~1.06
+        # Q16.16 counts at the blessed operating point, and the old chained
+        # ``mul_q16(mul_q16(...))`` truncated it to a STAIRCASE — 0 counts below
+        # I = 0.200, 1 count above. A fire born at ``ignition_seed`` 0.12 drew
+        # no oxygen at all, released no fuel-bed heat, and died at 21 s. The
+        # accumulator keeps the wide product's remainder instead of throwing it
+        # away, so the draw is exact IN EXPECTATION (1 count every ~1.65 ticks)
+        # and the Huggett ``burn_rate`` anchor is untouched.
+        #
+        # Written IN-PLACE by the combustion pass; a slot is zeroed the moment
+        # its neighbour stops being a burning claimant (see combustion.h for the
+        # full reset rule). Single-writer per air cell -> no atomics on CUDA.
+        self.dem_acc = np.zeros((4, h, w), dtype=np.int32)
         # Temperature field (engine/06 §1, proposal §1 / §3.1): the persistent
         # consumer of the `heat` deposit. Q16.16 FIXED-POINT int32, SAME format
         # and scale as `heat` (TEMP_SCALE == HEAT_SCALE == 65536). Allocated to

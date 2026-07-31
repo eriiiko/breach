@@ -93,46 +93,63 @@ class Scene:
         return (np.zeros((self.h, self.w, 3), np.float32),
                 np.zeros((self.h, self.w), np.float32),
                 np.zeros((self.h, self.w), np.float32),
+                np.zeros((self.h, self.w), np.int32),
                 np.zeros((self.h, self.w), np.int32))
 
-    def cast_cpu(self, rc):
-        rgb, dx, dy, rad = self._bufs()
+    def cast_cpu(self, rc, tick=0):
+        rgb, dx, dy, rad, flux = self._bufs()
         rc.cast_from_fire_plane(
             self.fire, DIALS["fire_ray_count"], DIALS["range_base"],
             DIALS["range_per_i"], DIALS["intensity_base"],
             DIALS["intensity_per_i"], DIALS["color"], rgb, dx, dy,
             self.gas, self.gas_abs, self.gas_sca, self.light_atten,
             self.heat_atten, self.temperature, self.heat_inv_shift,
-            self.thermal_solid, rad)
-        return rad
+            self.thermal_solid, rad, flux, tick)
+        return rad, flux
 
-    def cast_cuda(self, rc):
-        rgb, dx, dy, rad = self._bufs()
+    def cast_cuda(self, rc, tick=0):
+        rgb, dx, dy, rad, flux = self._bufs()
         bp.cuda_raycaster_cast_from_fire_plane(
             rc, self.fire, DIALS["fire_ray_count"], DIALS["range_base"],
             DIALS["range_per_i"], DIALS["intensity_base"],
             DIALS["intensity_per_i"], DIALS["color"], rgb, dx, dy,
             self.gas, self.gas_abs, self.gas_sca, self.light_atten,
             self.heat_atten, self.temperature, self.heat_inv_shift,
-            self.thermal_solid, rad)
-        return rad
+            self.thermal_solid, rad, flux, tick)
+        return rad, flux
 
 
-def _compare(tag, cpu, cuda) -> bool:
+def _compare(tag, cpu_pair, cuda_pair) -> bool:
+    """Both P-R4 planes at tol 0: the SIGNED energy ledger (which must also
+    conserve exactly) and D3's positive-only damage sensor."""
+    cpu, cpu_flux = cpu_pair
+    cuda, cuda_flux = cuda_pair
     if not np.array_equal(cpu, cuda):
         mism = int(np.count_nonzero(cpu != cuda))
         idx = int(np.argmax(cpu != cuda))
         ry, rx = divmod(idx, cpu.shape[1])
-        print(f"  {tag}: CPU != CUDA — {mism} MISMATCH (first @ ({ry},{rx}): "
-              f"cpu={cpu.flat[idx]} cuda={cuda.flat[idx]})")
+        print(f"  {tag}: rad_net CPU != CUDA — {mism} MISMATCH (first @ "
+              f"({ry},{rx}): cpu={cpu.flat[idx]} cuda={cuda.flat[idx]})")
+        return False
+    if not np.array_equal(cpu_flux, cuda_flux):
+        mism = int(np.count_nonzero(cpu_flux != cuda_flux))
+        idx = int(np.argmax(cpu_flux != cuda_flux))
+        ry, rx = divmod(idx, cpu.shape[1])
+        print(f"  {tag}: rad_flux CPU != CUDA — {mism} MISMATCH (first @ "
+              f"({ry},{rx}): cpu={cpu_flux.flat[idx]} cuda={cuda_flux.flat[idx]})")
         return False
     s_cpu, s_cuda = int(cpu.sum()), int(cuda.sum())
     if s_cpu != 0 or s_cuda != 0:
         print(f"  {tag}: CONSERVATION BROKEN — sum cpu={s_cpu} cuda={s_cuda}")
         return False
+    if int(cpu_flux.min()) < 0:
+        print(f"  {tag}: the positive-only flux sensor went NEGATIVE")
+        return False
     nz = int(np.count_nonzero(cpu))
-    print(f"  {tag}: rad_net bit-identical at tol 0 ({nz} cells moved, "
-          f"|max|={int(np.abs(cpu).max())}), both planes sum to EXACTLY 0.")
+    nzf = int(np.count_nonzero(cpu_flux))
+    print(f"  {tag}: rad_net + rad_flux bit-identical at tol 0 ({nz} cells "
+          f"exchanged, |max|={int(np.abs(cpu).max())}; {nzf} air cells lit, "
+          f"flux max={int(cpu_flux.max())}), rad_net sums to EXACTLY 0.")
     return True
 
 
@@ -167,7 +184,7 @@ def part1_firestorm(rc) -> bool:
     print("PART 1 — gate (d) scenario A: 600-emitter firestorm, rad_net tol 0:")
     sc = _firestorm()
     cpu, cuda = sc.cast_cpu(rc), sc.cast_cuda(rc)
-    if int(np.count_nonzero(cpu)) == 0:
+    if int(np.count_nonzero(cpu[0])) == 0:
         print("  SCENARIO WEAK: nothing exchanged — vacuous gate")
         return False
     return _compare("firestorm", cpu, cuda)
@@ -183,9 +200,9 @@ def part2_equal_pair(rc) -> bool:
         sc.burn(10, 10)
         sc.burn(10, 11)
         cpu, cuda = sc.cast_cpu(rc), sc.cast_cuda(rc)
-        if int(np.abs(cpu).sum()) != 0 or int(np.abs(cuda).sum()) != 0:
+        if int(np.abs(cpu[0]).sum()) != 0 or int(np.abs(cuda[0]).sum()) != 0:
             print(f"  equal-T @ {T}: ANTISYMMETRY BROKEN (cpu "
-                  f"{int(np.abs(cpu).sum())}, cuda {int(np.abs(cuda).sum())})")
+                  f"{int(np.abs(cpu[0]).sum())}, cuda {int(np.abs(cuda[0]).sum())})")
             ok = False
             continue
         ok = _compare(f"equal-T @ {T:.0f} game", cpu, cuda) and ok
@@ -217,7 +234,7 @@ def part3_limiter(rc) -> bool:
     if raw_1ray <= budget:
         print("  (the limiter did not engage — this gate would be vacuous)")
         return False
-    moved = abs(int(cpu[10, 11]))
+    moved = abs(int(cpu[0][10, 11]))
     print(f"  first-ring absorber gained {moved} counts; 2-ray clamp ceiling "
           f"{2 * budget}")
     if moved > 2 * budget:

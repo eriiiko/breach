@@ -117,7 +117,15 @@ def _build_sources(runner, g):
         s.angle_spread = two_pi
         s.angle_center = ((xx * 7 + yy * 13) % ray_count) * (two_pi / ray_count)
         s.intensity = runner.fire_intensity_base + runner.fire_intensity_per_i * intensity_fire
-        s.heat = runner.k_fire_heat * intensity_fire
+        # P-R4 re-anchor (ruling amendment 5 D2): `runner.k_fire_heat` is GONE
+        # — the painter is retired. This bench measures CAST THROUGHPUT
+        # (per-source loop vs one batched device march) plus their byte
+        # identity, on the LEGACY generic LightSource heat channel that P-R4
+        # deliberately kept alive for non-fire emitters (lamps, beams, weapon
+        # payloads — ruling A5's "unchanged external deposits"). Neither the
+        # timing ratio nor the identity check depends on the payload's VALUE,
+        # so it becomes a fixed bench constant instead of a dead dial.
+        s.heat = S8C_BENCH_HEAT * intensity_fire
         s.jitter = 0.0
         s.color = runner.fire_color
         sources.append(s)
@@ -127,6 +135,10 @@ def _build_sources(runner, g):
     dy = np.zeros((h, w), np.float32)
     gas_f = (g.gas.astype(np.float32) / gas_fixed.FP_ONE_F).astype(np.float32)
     return sources, rgb, dx, dy, gas_f
+
+
+# The bench's per-source heat payload — see the note at its use site.
+S8C_BENCH_HEAT = 1600.0
 
 
 def _synth_firestorm(h, w, nfire, seed):

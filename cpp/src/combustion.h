@@ -203,8 +203,8 @@ public:
     // Huggett-VALUED: `thermal_mass = 8` already lumps the ~130x surface-layer
     // factor (seed §1.4), so no J/mol anchor survives the conversion. Do not
     // read it as an enthalpy.
-    float H_BED_M     = 26875.0f;   // mantissa (real units), quantized per step
-    int   H_BED_SHIFT = 2;          // H_bed = H_BED_M * 2^H_BED_SHIFT
+    float H_BED_M     = 25290.0f;   // mantissa (real units), quantized per step
+    int   H_BED_SHIFT = 3;          // H_bed = H_BED_M * 2^H_BED_SHIFT = 2.023e5
 
     // v2.5 (P5.1): the fuel floor, in RAW Q16.16 counts (1 == one LSB).
     // Doubles as (a) the no-fuel gate threshold (wall_hp <= FUEL_FLOOR ->
@@ -269,6 +269,55 @@ public:
         // deposit's target. Positive-saturating adds only, so it is order-free
         // exactly as the retired ray deposit was. nullptr -> no H_bed (every
         // legacy/direct-binding caller stays byte-identical).
-        int32_t* heat = nullptr
+        int32_t* heat = nullptr,
+        // ---- D1: THE DEMAND ACCUMULATOR (amendment 5, Erik's ruling) ------
+        // (4, h, w) int32, SYNCED sim state (GameMap.dem_acc), MUTATED here.
+        //
+        // THE PROBLEM IT SOLVES. The demand was
+        //     mul_q16(mul_q16(burn_cap_q, I), o2f)
+        // — two CHAINED Q16.16 truncations on a quantity whose true value at
+        // the blessed operating point is ~1.06 counts. Measured: 0 counts for
+        // every I below 0.200, exactly 1 from 0.200 to ~0.40. A STAIRCASE with
+        // a DEAD ZONE: a fire born at ignition_seed 0.12 drew no oxygen, so it
+        // released no fuel-bed heat, so it cooled below its own `hot` floor and
+        // died at 21 s — and even a fire seeded above the knee died as soon as
+        // the normal ring-O2 dip dragged I_eq (0.2098, a 4.9% margin) back
+        // through it. `H_bed` could not fix this: it multiplies a zero.
+        //
+        // THE FIX — ERROR FEEDBACK (the classic dithered-accumulator idiom).
+        // Keep the WIDE product un-truncated, carry the sub-count remainder in
+        // a per-(air-cell, face) plane, and draw whole counts as the debt
+        // accrues:
+        //     P    = burn_cap_q * I_q * o2f_q            (int64, scale 2^32/count)
+        //     wide = acc + (P >> 1)                      (int64, scale 2^31/count)
+        //     draw = wide >> 31                          (whole Q16.16 counts)
+        //     acc  = wide - (draw << 31)                 ([0, 2^31) -> int32)
+        // EXACT IN EXPECTATION and UNBIASED: over any window the counts drawn
+        // equal the true demand to within one count, so at the operating point
+        // 1 count arrives every ~1.65 ticks instead of never-then-always. The
+        // Huggett `burn_rate` anchor is untouched — this changes only HOW the
+        // exact product is rendered into integers, not what it is.
+        //
+        // WHY (4, h, w) AND NOT PER SOURCE TILE: Pass A's thread for air cell j
+        // is the SINGLE WRITER of everything at index j, including its four
+        // face slots (the existing `alloc_face` idiom, itself the cuda_water
+        // dq_e/dq_s precedent). A per-source-tile accumulator would be written
+        // by up to four air cells in one pass — atomics, and order-dependent.
+        // Keyed identically to `alloc_face`: slot [d*n + j] is the debt air
+        // cell j owes toward the claimant in direction D4[d].
+        //
+        // RESET RULE (documented because a stale debt is a real bug): a slot is
+        // ZEROED the moment its neighbour stops being a burning claimant —
+        // i.e. the claim gate fails (not flammable / fuel exhausted / material
+        // cannot ignite / below its ignition temperature) or `fire[i] <= 0`
+        // (flameless). It persists ONLY while that neighbour is actively
+        // burning, so a re-ignition never inherits an old fraction. Bounded
+        // exception, deliberately not chased: an air cell that early-outs
+        // before the claim loop (fully O2-starved, `O2 <= o2_thresh_burn`)
+        // keeps its sub-count debt until it has oxygen again — under one count.
+        //
+        // nullptr -> the pre-D1 chained-truncation demand, so every legacy /
+        // direct-binding caller stays byte-identical.
+        int32_t* dem_acc = nullptr
     ) const;
 };
