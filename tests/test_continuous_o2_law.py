@@ -255,7 +255,6 @@ def _o2f_fire_q(X, x_ext=X_EXT, x_full=X_FULL, x_amb=X_AMB):
     p.temp_scale = float(ONE_F)
     p.wall_damage = 0.0
     p.smoke_emission = 0.0
-    p.fire_pressure_gain = 0.0
 
     h = w = 3
     z = lambda: np.zeros((h, w), dtype=np.int32)

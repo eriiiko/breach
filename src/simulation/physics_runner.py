@@ -79,7 +79,9 @@ FIRE_P_FULL         = 1.00   # RETIRED — was the smoothstep full edge
 FIRE_I_MIN          = 0.02   # snap-to-zero extinguish floor
 FIRE_K_WIND_FAN     = 0.5    # (1 + k_wind_fan*W) fans growth (firestorm); TUNE vs wind scale
 FIRE_K_WIND_STRIP   = 0.5    # W*(1-I)*I blows out small fires (crossover); TUNE vs wind scale
-FIRE_PRESSURE_GAIN  = 0.15   # own-tile plume overpressure gain (1/s)
+# fire_pressure_gain TOMBSTONE (P-R2, 2026-07-31): dead key — the plume->T shim
+# it fed (FireParams::fire_pressure_gain) was deleted; see docs/radiation_
+# raycaster_extinction_ruling_2026-07-31.md A2.
 FIRE_P_EXPAND_REF   = 1.30   # self-limiting plume saturation ceiling
 FIRE_SMOKE_EMISSION = 0.8    # smoke produced per step by fire
 FIRE_WALL_DAMAGE    = 0.4    # HP damage to wall per step while burning (the burn-out brake)
@@ -212,11 +214,10 @@ class PhysicsRunner:
         self.fire.params.I_min          = _fp("I_min", FIRE_I_MIN)
         self.fire.params.k_wind_fan     = _fp("k_wind_fan", FIRE_K_WIND_FAN)
         self.fire.params.k_wind_strip   = _fp("k_wind_strip", FIRE_K_WIND_STRIP)
-        self.fire.params.fire_pressure_gain = _fp(
-            "fire_pressure_gain", FIRE_PRESSURE_GAIN)
         # p_expand_ref: RETIRED as the plume's self-limiting gate
-        # (eos-p3fix-thermal-ceiling — see FireParams::T_FLAME_MAX,
-        # fire_simulation.h). Left wired so old configs don't hard-error;
+        # (eos-p3fix-thermal-ceiling); the plume deposit itself (the
+        # fire_pressure_gain-fed shim) is DELETED at P-R2 — see
+        # fire_simulation.h. Left wired so old configs don't hard-error;
         # the C++ side no longer reads it.
         self.fire.params.p_expand_ref   = _fp("p_expand_ref", FIRE_P_EXPAND_REF)
         self.fire.params.smoke_emission = _fp("smoke_emission", FIRE_SMOKE_EMISSION)

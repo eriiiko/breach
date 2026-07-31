@@ -113,41 +113,14 @@ struct FireParams {
     float k_wind_strip   = 0.5f;   // W*(1-I)*I blows out small/marginal fires
 
     // --- plume pressure deposit (fire_design_proposal §3) ---
-    float fire_pressure_gain = 0.15f; // own-tile overpressure gain (1/s)
     // p_expand_ref: RETIRED as the plume's saturation gate (eos-p3fix-
-    // thermal-ceiling — see T_FLAME_MAX below); kept only so old configs/
-    // bindings that still set it do not hard-error. No longer read by step().
+    // thermal-ceiling; the plume deposit itself — the `fire_pressure_gain` /
+    // `temp_gain_scale` / `T_FLAME_MAX` trio that used to live here — was
+    // DELETED at P-R2, docs/radiation_raycaster_extinction_ruling_2026-07-
+    // 31.md A2: it was the one `temperature[]` writer bypassing
+    // `heat_inv_shift`); kept only so old configs/bindings that still set it
+    // do not hard-error. No longer read by step().
     float p_expand_ref       = 1.30f;
-    // EOS refactor P3 (design §8 patch P3 writer row: "fire plume -> a
-    // minimal plume->T shim"): the plume no longer writes `atmosphere`
-    // directly (P is solver-owned now, materialized once/tick — a writer
-    // fighting that would be overwritten next tick anyway). Instead the
-    // gain scalar (fire_pressure_gain*I*sat*dt) becomes a small ΔT energy
-    // deposit: temperature += gain * temp_gain_scale. This is the MINIMAL
-    // shim named in the design (not a real ΔE/(N*c_v) energy budget) —
-    // "the pop never goes inert" during the P3->P4 window; a TUNING DIAL,
-    // feel-gated at P5 like the old fire_pressure_gain was.
-    float temp_gain_scale    = 50.0f;
-    // T_FLAME_MAX (eos-p3fix-thermal-ceiling, decisions.md #16): the plume's
-    // self-limiting ceiling, in the SAME ΔT-above-ambient Q16.16 convention
-    // as `temperature` (T_AMB_K lives on EOSSolver — see eos_solver.h). The
-    // pre-refactor plume was self-limiting via
-    // `sat = 1 - atmosphere[i]/p_expand_ref` — atmosphere WAS the field the
-    // plume drove directly, on its OWN (solid) tile, so that gate tracked
-    // its own cumulative deposit correctly. Post-P3, `atmosphere` (== P) is
-    // materialized by the EOS solver, which forces P = 0 at every SOLID
-    // cell (eos_solver.cpp: "vacuum Dirichlet + solid zero") — a fire tile
-    // IS solid (fire_simulation.cpp's own O2-neighbour-mean comment: "its
-    // own tile holds no gas"), so `atmosphere[i]` at the plume's own tile is
-    // permanently 0 and `sat` is permanently ~1.0: the self-limiter never
-    // engaged (a structural unit/placement mismatch, not a tuning miss —
-    // measured: the deposit rode fire intensity unclamped every tick).
-    // Fix: gate on the ACTUAL quantity being deposited (T, not P), against a
-    // physical ceiling — real wood/typical flames run ~2000-2300 K absolute;
-    // T_FLAME_MAX defaults to 2000 (K above T_AMB_K). Same smooth taper
-    // shape as the old gate (`sat = clamp01(1 - x/ref)`) for continuity of
-    // feel, just measured against T instead of P.
-    float T_FLAME_MAX        = 2000.0f;
 
     // --- kept behaviours ---
     float smoke_emission = 0.8f;   // smoke produced per second per unit intensity
@@ -181,9 +154,12 @@ public:
     //                 integer-added — order-free, deterministic.
     //   wall_hp     : int32 (h, w) Q16.16 (S3b), burn-through depletes it (the fuel
     //                 brake); fractional depletion needs the Q16.16 fraction.
-    //   temperature : int32 (h, w) Q16.16, READ (the T gate) + WRITE (EOS P3:
-    //                 the plume->T shim deposit, `temp_gain_scale` above,
-    //                 REPLACES the old atmosphere-plume own-tile write).
+    //   temperature : int32 (h, w) Q16.16, READ (the T gate) ONLY as of P-R2 —
+    //                 the plume->T shim deposit that used to write it here is
+    //                 DELETED (docs/radiation_raycaster_extinction_ruling_
+    //                 2026-07-31.md A2); P-R4's radiation pass will be the
+    //                 next writer, through its own rad_net[] plane, not this
+    //                 parameter.
     //   wind_x/wind_y : int32 (h, w) Q16.16 (S2c), the SHARED wind field (= -grad p
     //                 incl. waves), READ-ONLY (the W = |wind| term, via sqrt_q16).
     //   is_wall     : bool (h, w) solid mask (a fire tile is itself solid).
@@ -208,7 +184,9 @@ public:
                                    //  DENOMINATOR (X = Σn_o2/Σn_total over open neighbours)
         int32_t* smoke,            // S2b: Q16.16 (fire emission round + added)
         int32_t* wall_hp,          // S3b: Q16.16 (was float)
-        int32_t* temperature,      // EOS P3: mutable (plume->T shim write)
+        int32_t* temperature,      // mutable (signature unchanged); READ only
+                                   //  as of P-R2 — the plume->T shim write is
+                                   //  deleted
         const int32_t* wind_x,     // S2c/S3b: Q16.16
         const int32_t* wind_y,     // S2c/S3b: Q16.16
         const bool* is_wall,
@@ -219,10 +197,10 @@ public:
         const int64_t* fuel_recip = nullptr   // FUEL-FRACTION AXIS (see above)
     ) const;
 
-    // --- DEBUG probe (temporary instrumentation, eos-p3fix-thermal-ceiling
-    // investigation, decisions.md #16): the plume->T shim's deposit at ONE
-    // traced cell this call. dbg_probe_idx = -1 disables (one branch/tile,
-    // no other cost). Raw Q16.16 counts.
+    // --- DEBUG probe (temporary instrumentation). dbg_probe_idx = -1 disables
+    // (one branch/tile, no other cost). Its former partner `dbg_plume_dT` (the
+    // plume->T shim's traced-cell deposit, Q16.16 counts) was removed with the
+    // shim (P-R2 — docs/radiation_raycaster_extinction_ruling_2026-07-31.md
+    // A2); nothing currently reads dbg_probe_idx, left wired for a future probe.
     int dbg_probe_idx = -1;
-    mutable int32_t dbg_plume_dT = 0;
 };
