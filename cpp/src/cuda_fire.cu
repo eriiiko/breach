@@ -1,35 +1,38 @@
 // ============================================================================
 // CUDA-S6 fire solver implementation — see cuda_fire.h.
-// A bit-identical GPU port of FireSimulation::step (fire_simulation.cpp ~44-314),
-// RE-DERIVED for the EOS refactor (P6.8): the O2 gate now reads the REAL bulk O2
-// density plane `n_o2` (not the old atmosphere/P proxy), and the own-tile plume
-// deposit is the plume->T shim (temperature deposit, T_FLAME_MAX self-limiter —
-// eos-p3fix-thermal-ceiling), NOT the retired atmosphere-overpressure write.
-// Pipeline: per-tile signed-logistic intensity feedback → own-tile plume->T →
-// smoke emission into neighbours → wall burn-through → final clamp.
+// A bit-identical GPU port of FireSimulation::step (fire_simulation.cpp ~44-301),
+// RE-DERIVED for the EOS refactor (P6.8): the O2 gate reads the REAL bulk O2
+// density plane `n_o2` (not the old atmosphere/P proxy). The own-tile plume->T
+// shim (formerly P3 below) was DELETED at P-R2 (docs/radiation_raycaster_
+// extinction_ruling_2026-07-31.md A2) — it was the one `temperature[]` writer
+// bypassing heat_inv_shift; TemperatureSolver is now the field's ONLY writer,
+// and P-R4's radiation pass will be the next writer, through its own rad_net[]
+// plane. Pipeline: per-tile signed-logistic intensity feedback → smoke emission
+// into neighbours → wall burn-through → final clamp.
 //
-// FIVE device passes (P2-P6), one per CPU pass, launched as a barriered chain
-// (separate launches = grid barriers between dependent passes). P1 (the host max
-// early-exit) is done on the HOST before any launch:
+// FOUR device passes (P2, P4-P6 — P3's slot is retired, not renumbered, so the
+// numbering stays anchored to the CPU step's history), one per CPU pass,
+// launched as a barriered chain (separate launches = grid barriers between
+// dependent passes). P1 (the host max early-exit) is done on the HOST before
+// any launch:
 //   P1  early-exit         HOST *max_element(fire) < thresh -> return {} (untouched)
 //   P2  logistic feedback  fire += dt*(grow-die); snap-extinguish (own-tile; O2 gate
 //                          reads n_o2 neighbour mean — read-only field)
-//   P3  plume->T shim      temperature[i] += clamped dT deposit      (own-tile write)
 //   P4  smoke emission     smoke[nbr] += round(emit(fire[src]))     (SCATTER atomicAdd)
 //   P5  wall burn-through  wall_hp[i] -= dmg; collect destroyed; fire[i]=0
 //   P6  final clamp        fire, smoke -> [0, FP_ONE]               (own-tile)
 //
-// Pass order P2 → P3 → P4 → P5 → P6 matters: P3/P4/P5 all read the P2-updated
-// `fire` (frozen between launches); P5 zeroes `fire` on destroyed cells AFTER
-// P3/P4 have read it; P6 clamps last. P2 reads temperature (the `hot` gate) and
-// P3 WRITES temperature — separate launches barrier between them, so P2 reads the
-// tick-entry T (matching the CPU's fully-sequential logistic-then-plume order).
-// NO cross-cell within-pass dependence exists (every pass is an own-index write
-// with read-only neighbour reads or an order-free atomic/counter scatter), so this
-// parallel schedule reproduces the CPU sequential result bit-for-bit — there is NO
-// combustion-style Gauss-Seidel coupling here. Host scalar precompute mirrors the
-// CPU load-time block exactly — all config constants quantized once in double,
-// many via load-time make_recip/recip_mul (NOT per-cell reciprocal_q16).
+// Pass order P2 → P4 → P5 → P6 matters: P4/P5 both read the P2-updated `fire`
+// (frozen between launches); P5 zeroes `fire` on destroyed cells AFTER P4 has
+// read it; P6 clamps last. P2 reads temperature (the `hot` gate) only — no pass
+// writes it anymore this patch (temperature is copied through unchanged, same
+// as the CPU side). NO cross-cell within-pass dependence exists (every pass is
+// an own-index write with read-only neighbour reads or an order-free atomic/
+// counter scatter), so this parallel schedule reproduces the CPU sequential
+// result bit-for-bit — there is NO combustion-style Gauss-Seidel coupling here.
+// Host scalar precompute mirrors the CPU load-time block exactly — all config
+// constants quantized once in double, many via load-time make_recip/recip_mul
+// (NOT per-cell reciprocal_q16).
 //
 // Every per-cell op is a VERBATIM device transcription of the CPU loops — same
 // integer ops, same PINNED left-fold mul_q16 tree, same branch structure. The
@@ -219,51 +222,6 @@ __global__ void fire_logistic(int32_t* __restrict__ fire,
     }
 }
 
-// ---- P3: own-tile plume ENERGY DEPOSIT — the plume->T shim (EOS refactor P3;
-// self-limiter T-gated, eos-p3fix-thermal-ceiling / decisions.md #16;
-// fire_simulation.cpp ~228-262) --------------------------------------------
-// REPLACES the retired pressure write (P is solver-owned now — a direct
-// atmosphere write would be clobbered next tick). The gain scalar becomes a
-// small dT energy deposit, self-limited against a PHYSICAL flame ceiling
-// (T_FLAME_MAX) measured on the SAME quantity being deposited (T, not P):
-//   sat  = clamp01(1 - temperature[i]/T_FLAME_MAX)
-//   gain = fire_pressure_gain * I * sat * dt        (round-to-nearest deposit)
-//   dT   = gain * temp_gain_scale                   (round-to-nearest deposit)
-//   dT   = min(dT, T_FLAME_MAX - temperature[i])    (belt-and-suspenders cap)
-//   temperature[i] = sat_add_q16(temperature[i], dT)   (own-index -> no race)
-// VERBATIM device transcription of the CPU plume loop: same clamp01 on sat,
-// same PINNED left-fold, same sign-symmetric narrow_round, same headroom
-// hard-cap, same saturating add. Own-index write only -> order-free.
-__global__ void fire_plume(const int32_t* __restrict__ fire,
-                           int32_t* __restrict__ temperature,
-                           int32_t gain_q, int32_t dt_q,
-                           int32_t temp_gain_scale_q, int32_t t_flame_max_q,
-                           int64_t recip_T_flame_max, int n) {
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
-         i += gridDim.x * blockDim.x) {
-        const q16 I = fire[i];
-        if (I <= 0) continue;
-        // sat = clamp01(1 - temperature[i]/T_FLAME_MAX). temperature[i] may be
-        // negative (below ambient) or above the ceiling -> clamp to [0,1].
-        const q16 sat = clamp01_q_dev((q16)FP_ONE -
-                                      recip_mul_dev(temperature[i], recip_T_flame_max));
-        // gain = gain_q * I * sat * dt. PINNED left-fold; round-to-nearest the
-        // final narrow (deposit). sat >= 0 so gain >= 0.
-        q16 g = mul_q16(gain_q, I);            // gain_q * I
-        g = mul_q16(g, sat);                   // * (1 - T/T_FLAME_MAX)
-        const q16 gain = narrow_round_signed(mul_wide(g, dt_q));
-        if (gain > 0) {
-            q16 dT = narrow_round_signed(mul_wide(gain, temp_gain_scale_q));
-            // Belt-and-suspenders hard cap: never deposit PAST T_FLAME_MAX in
-            // one tick even if the smooth taper under-clamps at extreme dt/gain.
-            const q16 headroom = (temperature[i] < t_flame_max_q)
-                ? (q16)(t_flame_max_q - temperature[i]) : 0;
-            if (dT > headroom) dT = headroom;
-            if (dT > 0) temperature[i] = sat_add_q16(temperature[i], dT);
-        }
-    }
-}
-
 // ---- P4: smoke emission SCATTER (fire_simulation.cpp ~221-237) ----------------
 // delta_q = round_nearest(emission*dt*fire[src]) — depends ONLY on fire[src]. Each
 // source thread atomicAdds delta_q into each non-wall 4-neighbour's smoke. Integer
@@ -298,7 +256,7 @@ __global__ void fire_smoke_emit(const int32_t* __restrict__ fire,
 // ---- P5: wall burn-through + destroyed collection (fire_simulation.cpp ~245-256)
 // wall_hp[i] -= round_nearest(wall_damage*dt*fire[i]); if (wall_hp<=0 && flammable
 // && is_wall) collect (via atomicAdd counter -> packed index array) and fire[i]=0.
-// Reads the P2-updated fire (frozen since P2; P3/P4 already read it before this
+// Reads the P2-updated fire (frozen since P2; P4 already read it before this
 // kernel zeroes it). Own-cell wall_hp/fire writes; the destroyed slot is the only
 // scatter (a counter atomicAdd, order arbitrary -> the gate checks SET equality).
 __global__ void fire_burn(int32_t* __restrict__ fire,
@@ -349,13 +307,14 @@ std::vector<std::pair<int, int>> fire_step(
     int h, int w, float dt,
     float k_grow, float k_die, float fire_T_ext, float fire_T_span,
     float fuel_ref, float o2_frac_ext, float o2_frac_full, float I_min,
-    float k_wind_fan, float k_wind_strip, float fire_pressure_gain,
+    float k_wind_fan, float k_wind_strip,
     float smoke_emission, float wall_damage,
-    float temp_scale, float temp_gain_scale, float T_FLAME_MAX,
+    float temp_scale,
     const int64_t* fuel_recip) {   // FUEL-FRACTION AXIS (nullable, see header)
     (void)atmosphere;   // EOS P4: vestigial — the CPU step keeps it in its
                         // signature (ABI parity) but no longer reads it (the O2
-                        // gate moved to n_o2; the plume self-limiter to T).
+                        // gate moved to n_o2; the plume that once self-limited
+                        // against it is deleted, P-R2).
     const int n = h * w;
     if (n <= 0) return {};
 
@@ -382,12 +341,8 @@ std::vector<std::pair<int, int>> fire_step(
     const q16 k_wind_strip_q = quantize((double)k_wind_strip);
     const q16 fire_T_ext_q  = quantize((double)fire_T_ext);
     const q16 I_min_q       = quantize((double)I_min);
-    const q16 gain_q        = quantize((double)fire_pressure_gain);
     const q16 emission_q    = quantize((double)smoke_emission);
     const q16 wall_damage_q = quantize((double)wall_damage);
-    // Plume->T shim constants (EOS P3 / eos-p3fix-thermal-ceiling).
-    const q16 temp_gain_scale_q = quantize((double)temp_gain_scale);
-    const q16 t_flame_max_q     = quantize((double)T_FLAME_MAX);
 
     const int64_t recip_fuel_ref  = make_recip((double)fuel_ref);
     const int64_t recip_T_span    = make_recip((double)fire_T_span);
@@ -402,7 +357,6 @@ std::vector<std::pair<int, int>> fire_step(
     const bool    x_degenerate     = (x_span <= 0.0);
     const int64_t recip_x_span     = x_degenerate ? 0 : make_recip(x_span);
     const q16 X_N_FLOOR             = quantize(0.01);   // 655 counts, SAME as CPU
-    const int64_t recip_T_flame_max = make_recip((double)T_FLAME_MAX);
 
     // ---- Device buffers (the 4 mutated fields + read-only fields/masks + the
     //      destroyed counter/index array). Per-call H2D/D2H; residency is S8. ----
@@ -467,13 +421,6 @@ std::vector<std::pair<int, int>> fire_step(
         x_ext_q, X_N_FLOOR, I_min_q, temp_is_identity, recip_temp_scale,
         recip_fuel_ref, recip_T_span, recip_x_span, x_degenerate);
     cuda_check(cudaGetLastError(), "logistic launch");
-
-    // P3 plume->T shim (in-place on d_temp; reads the P2-updated d_fire). Barriers
-    // after P2, so d_temp reads here are the tick-entry T (matching the CPU order).
-    fire_plume<<<grid, block>>>(d_fire, d_temp, gain_q, dt_q,
-                                temp_gain_scale_q, t_flame_max_q,
-                                recip_T_flame_max, n);
-    cuda_check(cudaGetLastError(), "plume launch");
 
     // P4 smoke emission scatter (atomicAdd into d_smoke; reads the P2-updated d_fire).
     fire_smoke_emit<<<grid, block>>>(d_fire, d_smoke, d_wall, emission_q, dt_q, h, w);

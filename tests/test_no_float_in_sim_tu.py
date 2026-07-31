@@ -301,10 +301,20 @@ _FP_FAST_RE = re.compile(r"fp:fast")
 # physical-maximum rail's once-per-step scalar boundary cast (the exact
 # same documented-exception category as this TU's existing
 # `quantize((double)n_floor_heat)` line). No per-cell float/double added.
+# P-R2 (docs/radiation_raycaster_extinction_ruling_2026-07-31.md A2):
+# fire_simulation.cpp `double` 21 -> 17. The plume->T shim deposit block (the
+# own-tile ENERGY DEPOSIT loop, the one `temperature[]` writer bypassing
+# `heat_inv_shift`) is DELETED along with its two dedicated load-time
+# constants — FOUR `(double)` boundary casts removed: `gain_q`
+# (fire_pressure_gain), `recip_T_flame_max` (T_FLAME_MAX), and the block's own
+# `temp_gain_scale_q` / `t_flame_max_q`. `float` unchanged (6) and `fp:fast`
+# unchanged (0) — the shim carried no `float` token of its own. Tightened
+# (not just left under the old baseline) per test_baseline_is_not_stale_low's
+# own nudge: this is a real decrease, not migration noise.
 BASELINE = {
     "atmosphere_solver.cpp":  {"float": 32, "double": 32, "fp:fast": 1},
     "smoke_dynamics.cpp":     {"float": 24, "double": 13, "fp:fast": 0},
-    "fire_simulation.cpp":    {"float": 6,  "double": 21, "fp:fast": 0},
+    "fire_simulation.cpp":    {"float": 6,  "double": 17, "fp:fast": 0},
     "water_solver.cpp":       {"float": 32, "double": 22, "fp:fast": 1},
     "temperature_solver.cpp": {"float": 4,  "double": 6,  "fp:fast": 0},
     "physics_engine.cpp":     {"float": 68, "double": 28, "fp:fast": 1},

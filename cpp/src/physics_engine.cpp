@@ -156,14 +156,15 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
 #ifdef BREACH_HAS_CUDA
     if (breach_cuda::fire_backend_is_cuda()) {
         // EOS P6.8: the re-derived GPU fire kernel (cuda_fire.cu) — O2 gate on
-        // the real `n_o2` plane + the plume->T shim (T_FLAME_MAX self-limiter),
-        // bit-identical to the CPU FireSimulation::step (tol 0 on fire/smoke/
-        // wall_hp/temperature; set-equal destroyed). This RESOLVES the stale
-        // fire-plume assert by wiring the real dispatch. `atmosphere` is passed
-        // for signature parity but is vestigial (unread); `temperature_mut` is
-        // the plume->T target; the FireParams dials are passed explicitly since
-        // fire_step is a free function. With the flag off (default) the CPU
-        // branch below is the exact prior call.
+        // the real `n_o2` plane, bit-identical to the CPU FireSimulation::step
+        // (tol 0 on fire/smoke/wall_hp/temperature; set-equal destroyed).
+        // `atmosphere` is passed for signature parity but is vestigial
+        // (unread); `temperature_mut` is passed through READ ONLY as of P-R2
+        // (the plume->T shim that used to write it here is deleted — docs/
+        // radiation_raycaster_extinction_ruling_2026-07-31.md A2); the
+        // FireParams dials are passed explicitly since fire_step is a free
+        // function. With the flag off (default) the CPU branch below is the
+        // exact prior call.
         destroyed = breach_cuda::fire_step(
             fire_field, atmosphere, n_o2, n_bulk_.data(), smoke_field, wall_hp,
             temperature_mut, wind_x, wind_y,
@@ -175,10 +176,8 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             this->fire.params.o2_frac_ext, this->fire.params.o2_frac_full,
             this->fire.params.I_min,
             this->fire.params.k_wind_fan, this->fire.params.k_wind_strip,
-            this->fire.params.fire_pressure_gain,
             this->fire.params.smoke_emission, this->fire.params.wall_damage,
-            this->fire.params.temp_scale, this->fire.params.temp_gain_scale,
-            this->fire.params.T_FLAME_MAX,
+            this->fire.params.temp_scale,
             // FUEL-FRACTION AXIS: the per-tile 1/hp plane. The GPU kernel takes
             // it as an extra read-only plane and falls back to the fuel_ref
             // scalar above on nullptr, exactly like the CPU branch — the two

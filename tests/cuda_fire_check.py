@@ -9,51 +9,54 @@ The fire pass changed in the EOS refactor and the S6 kernel was STALE:
     limit (o2_frac_ext) and the FULL-RESPONSE reference (o2_frac_full, pure O2
     — the 2026-07-30 split; it is NOT the ambient dial o2_frac_amb, which the
     law no longer reads) — NOT the old absolute-density smoothstep(P_min,
-    P_full);
-  * the own-tile plume deposit is the plume->T shim — a `temperature` deposit
-    self-limited against T_FLAME_MAX (clamp01 taper + belt-and-suspenders
-    headroom hard-cap + saturating add) — NOT the retired atmosphere overpressure
-    write (`atmosphere` is now vestigial: read-only, unread).
+    P_full).
 This gate re-proves the re-derived kernel (cuda_fire.cu) bit-identical to the
 CURRENT CPU FireSimulation::step.
 
-PASS STRUCTURE / ORDERING (the port's correctness argument): five device passes
-(P2 logistic feedback → P3 plume->T → P4 smoke scatter → P5 wall burn → P6 clamp),
-one per CPU loop, launched as a barriered chain. EVERY pass is an own-index write
-with read-only neighbour reads (P2's O2 mole-fraction sums over `n_o2`/`n_total`),
-an order-free integer atomicAdd scatter (P4 smoke), or an order-free device
-counter (P5 destroyed). NO cell reads another cell's within-pass-written
-fire/temperature — there is NO combustion-style Gauss-Seidel coupling — so the
-parallel schedule reproduces the CPU sequential result bit-for-bit. The
-P2-reads-T / P3-writes-T dependency is separated by the launch barrier (P2 sees
-tick-entry T, matching the CPU's fully-sequential logistic-then-plume order).
+P-R2 UPDATE (2026-07-31, docs/radiation_raycaster_extinction_ruling_2026-07-
+31.md A2): the own-tile plume->T shim (formerly P3 of the pipeline below) is
+DELETED — it was the one `temperature[]` writer bypassing `heat_inv_shift`.
+`temperature` is now READ-ONLY through this pass on both backends (the `hot`
+gate only); the plume-specific sub-checks this file used to run (sat-clamp-to-
+zero at T_FLAME_MAX, the headroom hard-cap, below-ambient sat-clamp-to-one, and
+Part 2's plume-heating/ceiling assertions) are REMOVED along with the shim —
+there is nothing left to gate. The dead dials (`fire_pressure_gain`,
+`temp_gain_scale`, `T_FLAME_MAX`) are dropped from DIALS/_PARAM_DEFAULTS below.
+
+PASS STRUCTURE / ORDERING (the port's correctness argument): four device passes
+(P2 logistic feedback → P4 smoke scatter → P5 wall burn → P6 clamp; P3's slot
+is retired, not renumbered), one per CPU loop, launched as a barriered chain.
+EVERY pass is an own-index write with read-only neighbour reads (P2's O2
+mole-fraction sums over `n_o2`/`n_total`), an order-free integer atomicAdd
+scatter (P4 smoke), or an order-free device counter (P5 destroyed). NO cell
+reads another cell's within-pass-written fire — there is NO combustion-style
+Gauss-Seidel coupling — so the parallel schedule reproduces the CPU sequential
+result bit-for-bit.
 
 Three gates:
 
-  PART 1 — ISOLATED (synthetic, all branches + both T_FLAME_MAX self-limiter
-  paths FORCED): random fuzz over sizes/regimes PLUS deterministic forcers —
-  no-O2 (starve), full-O2 (grow), the plume sat-clamp-to-zero (T >= T_FLAME_MAX),
-  the plume headroom HARD-CAP (uncapped dT overshoots -> result pinned exactly at
-  T_FLAME_MAX, asserted), below-ambient (T<0) sat-clamp-to-one, wind fan/strip,
-  wall burn-through (destroyed set + no drops/dupes), snap-extinguish, degenerate
-  1xN / Nx1, all-solid + all-vacuum (empty O2-fraction sum), x_degenerate (the
-  o2_frac_ext >= o2_frac_full misconfig -> a step, mirroring the old P_degenerate
-  smoothstep-step branch), non-identity temp_scale (recip_temp_scale path), a
-  dense fire block (overlapping smoke atomicAdd), and the host max early-exit
-  (fields untouched). CPU FireSimulation.step vs GPU cuda_fire_step on identical
-  copies, byte-for-byte on fire/temperature/smoke/wall_hp + SET-equal destroyed.
+  PART 1 — ISOLATED (synthetic, all branches FORCED): random fuzz over
+  sizes/regimes PLUS deterministic forcers — no-O2 (starve), full-O2 (grow),
+  wind fan/strip, wall burn-through (destroyed set + no drops/dupes),
+  snap-extinguish, degenerate 1xN / Nx1, all-solid + all-vacuum (empty
+  O2-fraction sum), x_degenerate (the o2_frac_ext >= o2_frac_full misconfig ->
+  a step, mirroring the old P_degenerate smoothstep-step branch), non-identity
+  temp_scale (recip_temp_scale path), a dense fire block (overlapping smoke
+  atomicAdd), and the host max early-exit (fields untouched). CPU
+  FireSimulation.step vs GPU cuda_fire_step on identical copies, byte-for-byte
+  on fire/temperature/smoke/wall_hp + SET-equal destroyed.
 
   PART 2 — TRAJECTORY (the review's §4 P6.8 digest gate): ignition in an O2-rich
-  room, plume heating (a cluster pinned at the T_FLAME_MAX ceiling), fire
-  self-starving as the O2 MOLE FRACTION depletes (n_total held fixed while n_o2
-  is drawn down — the same "O2 converts to inert gas, total roughly conserved"
-  shape the real combustion pass produces), and wall burn-through — driven for
-  130 ticks. TWO lockstep states (CPU-backend copy vs GPU-backend copy) stepped
-  on identical evolving inputs, asserting per-tick byte-identity on fire /
-  temperature / smoke / wall_hp + SET-equal destroyed over the WHOLE trajectory.
-  The scenario is asserted to actually drive the pass hard (walls burned through,
-  fire starved out as O2 depleted, temperature climbed under the plume, the
-  T_FLAME_MAX ceiling reached and held — never exceeded).
+  room, fire self-starving as the O2 MOLE FRACTION depletes (n_total held fixed
+  while n_o2 is drawn down — the same "O2 converts to inert gas, total roughly
+  conserved" shape the real combustion pass produces), and wall burn-through —
+  driven for 130 ticks. TWO lockstep states (CPU-backend copy vs GPU-backend
+  copy) stepped on identical evolving inputs, asserting per-tick byte-identity
+  on fire/temperature/smoke/wall_hp + SET-equal destroyed over the WHOLE
+  trajectory. The scenario is asserted to actually drive the pass hard (walls
+  burned through, fire starved out as O2 depleted); temperature is asserted to
+  stay byte-identical to its seed throughout (the direct proof nothing writes
+  it anymore).
 
   PART 3 — the CUDA build's CPU path still reproduces the committed default-
   scenario golden (proves the P6.8 C++ changes altered no CPU trajectory).
@@ -78,12 +81,13 @@ MUT = ("fire", "temperature", "smoke", "wall_hp")
 
 # GPU dial kwargs, matching bindings.cpp cuda_fire_step's py::arg names EXACTLY
 # (P_min/P_full RETIRED from the O2 gate, REPLACED by o2_frac_ext/o2_frac_full —
-# the continuous-O2 law's mole-fraction span; temp_gain_scale + T_FLAME_MAX
-# still present from the earlier plume->T shim).
+# the continuous-O2 law's mole-fraction span). P-R2 (docs/radiation_raycaster_
+# extinction_ruling_2026-07-31.md A2): fire_pressure_gain/temp_gain_scale/
+# T_FLAME_MAX DROPPED — the plume->T shim they fed no longer exists, and
+# cuda_fire_step's signature no longer takes them.
 DIALS = ("k_grow", "k_die", "fire_T_ext", "fire_T_span", "fuel_ref",
          "o2_frac_ext", "o2_frac_full", "I_min", "k_wind_fan", "k_wind_strip",
-         "fire_pressure_gain", "smoke_emission", "wall_damage", "temp_scale",
-         "temp_gain_scale", "T_FLAME_MAX")
+         "smoke_emission", "wall_damage", "temp_scale")
 
 # The full FireParams surface (incl. the vestigial p_expand_ref/P_min/P_full,
 # set on the CPU object but not passed to the GPU — all three are unread by
@@ -95,9 +99,8 @@ _PARAM_DEFAULTS = dict(
     k_grow=4.0, k_die=2.0, fire_T_ext=350.0, fire_T_span=150.0, fuel_ref=60.0,
     o2_frac_ext=0.13, o2_frac_full=1.0, o2_frac_amb=0.21,
     I_min=0.02, k_wind_fan=0.5,
-    k_wind_strip=0.5, fire_pressure_gain=0.15, p_expand_ref=1.30,
+    k_wind_strip=0.5, p_expand_ref=1.30,
     smoke_emission=0.8, wall_damage=0.4, temp_scale=float(FP_ONE),
-    temp_gain_scale=50.0, T_FLAME_MAX=2000.0,
 )
 
 
@@ -166,7 +169,7 @@ def compare(tag, c, d_cpu, g, d_gpu):
 
 
 def _make_random_state(rng, h, w, wind_mag=0.0, hot=True):
-    """Rich random fire state exercising every P2/P3/P4/P5 branch.
+    """Rich random fire state exercising every P2/P4/P5 branch.
 
     n_o2/n_total are constructed as a MOLE FRACTION numerator/denominator pair
     (continuous-O2 law): n_total is a per-cell "total gas density" baseline and
@@ -201,12 +204,14 @@ def _make_random_state(rng, h, w, wind_mag=0.0, hot=True):
     n_o2 = _quantize(frac * total).reshape(h, w)
 
     # temperature (dT above ambient): hot enough to grow, some negative, some
-    # near/above T_FLAME_MAX (2000) to exercise the plume ceiling.
+    # very high — a wide spread for the `hot` gate's clamp01 fuzz coverage
+    # (temperature is READ-ONLY through this pass as of P-R2; no self-limiter
+    # to exercise anymore, but the spread is still useful `hot`-gate coverage).
     lo = 300.0 if hot else -200.0
     t = rng.random(n) * 900.0 + lo
-    t[rng.random(n) < 0.08] = -150.0             # below ambient (sat clamp to 1)
-    t[rng.random(n) < 0.05] = 1990.0             # just under the ceiling
-    t[rng.random(n) < 0.03] = 2100.0             # over the ceiling (sat -> 0)
+    t[rng.random(n) < 0.08] = -150.0             # below ambient (hot -> 0)
+    t[rng.random(n) < 0.05] = 1990.0             # far above fire_T_ext (hot -> 1)
+    t[rng.random(n) < 0.03] = 2100.0             # far above fire_T_ext (hot -> 1)
     temperature = _quantize(t).reshape(h, w)
 
     # wall_hp: some near 0 for burn-through, some high for sustained fuel
@@ -284,45 +289,12 @@ def part1_isolated() -> bool:
             ok = False
             print(f"  {tag}: expected growth, got fire {i0}->{f1}")
 
-    # (c) plume sat-clamp-to-zero: T >= T_FLAME_MAX -> no deposit (T unchanged).
-    #     (O2 gate irrelevant here — the plume deposit reads only fire/T.)
-    st = _blank(4, 4)
-    st["fire"][1, 1] = _quantize(0.99)
-    st["temperature"][1, 1] = _quantize(2100.0)        # above the 2000 ceiling
-    st["wall_hp"][1, 1] = _quantize(50.0)
-    st = _contig(st)
-    c, dc, g, dg = run_pair(st, fp, dials, 1.0)
-    ok &= compare("plume sat->0 (T>ceiling)", c, dc, g, dg)
-    if int(c["temperature"][1, 1]) != int(_quantize(2100.0)[()]):
-        ok = False
-        print(f"  sat->0: T changed ({int(c['temperature'][1,1])}) — deposit "
-              f"was NOT gated to zero")
-
-    # (d) plume headroom HARD-CAP: extreme gain/scale so the uncapped deposit
-    #     overshoots the ceiling; assert the result is pinned EXACTLY at
-    #     T_FLAME_MAX (proves the min(dT, headroom) branch executed) + GPU==CPU.
-    fp_cap, dials_cap = make_params(fire_pressure_gain=1000.0, temp_gain_scale=10.0)
-    st = _blank(4, 4)
-    st["fire"][2, 2] = _quantize(0.99)
-    st["temperature"][2, 2] = _quantize(1000.0)        # headroom = 1000, sat = 0.5
-    st["wall_hp"][2, 2] = _quantize(50.0)
-    st = _contig(st)
-    c, dc, g, dg = run_pair(st, fp_cap, dials_cap, 1.0)
-    ok &= compare("plume headroom cap", c, dc, g, dg)
-    t_ceiling = int(_quantize(2000.0)[()])
-    if int(c["temperature"][2, 2]) != t_ceiling:
-        ok = False
-        print(f"  headroom cap: T={int(c['temperature'][2,2])} != ceiling "
-              f"{t_ceiling} — the hard-cap branch did not pin at T_FLAME_MAX")
-
-    # (e) below-ambient T<0 -> sat clamps to 1 (deposit not amplified past 1x).
-    st = _blank(4, 4)
-    st["fire"][1, 2] = _quantize(0.6)
-    st["temperature"][1, 2] = _quantize(-120.0)
-    st["wall_hp"][1, 2] = _quantize(40.0)
-    st = _contig(st)
-    c, dc, g, dg = run_pair(st, fp, dials, 1.0 / 24.0)
-    ok &= compare("plume T<0 sat->1", c, dc, g, dg)
+    # (c)/(d)/(e) formerly the plume->T shim's self-limiter forcers (sat-clamp-
+    # to-zero at T_FLAME_MAX, the headroom hard-cap, below-ambient sat-clamp-
+    # to-one) — REMOVED at P-R2 (docs/radiation_raycaster_extinction_ruling_
+    # 2026-07-31.md A2): the shim they exercised is deleted, so there is
+    # nothing left to gate. Letters (c)-(e) retired with them, not reused, so
+    # this file's history stays legible against old failure logs.
 
     # (f) all-solid + all-vacuum: the O2 mole-fraction sum has no open
     #     neighbour -> both Σn_o2/Σn_total are 0 -> den floors -> X = 0.
@@ -411,10 +383,9 @@ def part1_isolated() -> bool:
         print(f"  early-exit: destroyed not empty (cpu={list(dc)} gpu={list(dg)})")
 
     if ok:
-        print(f"  all {n_cfg} fuzz + 11 deterministic forcers bit-identical on "
-              f"fire/temperature/smoke/wall_hp + SET-equal destroyed; T_FLAME_MAX "
-              f"sat-clamp AND headroom hard-cap paths proven, burn-through + "
-              f"early-exit + overlapping-smoke covered.")
+        print(f"  all {n_cfg} fuzz + 8 deterministic forcers bit-identical on "
+              f"fire/temperature/smoke/wall_hp + SET-equal destroyed; "
+              f"burn-through + early-exit + overlapping-smoke covered.")
     return ok
 
 
@@ -422,9 +393,7 @@ def part2_trajectory() -> bool:
     print("PART 2 — O2-rich room ignition trajectory (130 ticks, CPU vs GPU "
           "lockstep):")
     H = W = 20
-    # Boosted plume so temperature visibly climbs and the ceiling engages.
-    fp, dials = make_params(fire_pressure_gain=0.8, temp_gain_scale=600.0,
-                            wall_damage=1.2)
+    fp, dials = make_params(wall_damage=1.2)
     dt = 1.0 / 24.0
 
     st = _blank(H, W)
@@ -443,15 +412,6 @@ def part2_trajectory() -> bool:
     st["fire"][7:13, 7:13] = _quantize(0.45)
     st["temperature"][7:13, 7:13] = _quantize(700.0)   # hot -> grows
     st["wall_hp"][7:13, 7:13] = _quantize(50.0)        # sustained fuel
-    # A cell seeded AT the ceiling: sat = 0 there every tick, so the plume
-    # deposit is gated to zero and T holds EXACTLY at T_FLAME_MAX (the
-    # self-limiter's active engagement — proven bit-identically). The plume
-    # can never CLIMB to the ceiling (sat -> 0 asymptotes it below), so a
-    # seeded holder is how the ceiling value is reached-and-held in-trajectory.
-    st["temperature"][7, 7] = _quantize(2000.0)
-    # A plain 700-seed climber cell whose T we track to prove plume heating.
-    CLIMB = (11, 11)
-    st["temperature"][CLIMB] = _quantize(700.0)
     # A ring of low-HP "fuse" tiles that burn through early.
     for (yy, xx) in [(6, 9), (13, 10), (9, 6), (10, 13)]:
         st["flammable"][yy, xx] = True
@@ -466,15 +426,15 @@ def part2_trajectory() -> bool:
     gpu = {k: st[k].copy() for k in st}
     sim = bp.FireSimulation()
     sim.params = fp
-    t_ceiling = int(_quantize(2000.0)[()])
     init_fire_total = int(cpu["fire"].sum())
-    climb_seed = int(cpu["temperature"][CLIMB])
-    climb_max = climb_seed
+    # P-R2: temperature is READ-ONLY through this pass now (the plume->T shim
+    # that used to write it is deleted) — pin it byte-identical to its seed
+    # for the WHOLE trajectory, the direct proof nothing writes it anymore.
+    temp_seed = cpu["temperature"].copy()
 
     n_ticks = 130
     bad = 0
     destroyed_total = 0
-    max_T = -(1 << 62)
     for tick in range(n_ticks):
         d_cpu = sim.step(cpu["fire"], cpu["atmosphere"], cpu["n_o2"],
                          cpu["n_total"], cpu["smoke"],
@@ -494,13 +454,11 @@ def part2_trajectory() -> bool:
                 break
 
         destroyed_total += len(list(d_cpu))
-        tick_max_T = int(cpu["temperature"].max())
-        max_T = max(max_T, tick_max_T)
-        climb_max = max(climb_max, int(cpu["temperature"][CLIMB]))
-        if tick_max_T > t_ceiling:
+        if not np.array_equal(cpu["temperature"], temp_seed):
             bad += 1
-            print(f"  tick {tick}: temperature {tick_max_T} EXCEEDED the "
-                  f"T_FLAME_MAX ceiling {t_ceiling} — self-limiter failed")
+            print(f"  tick {tick}: temperature changed — P-R2 expects it "
+                  f"READ-ONLY (the plume->T shim is deleted); something "
+                  f"still writes it")
 
         # External driver (identical to BOTH copies): deplete the O2 NUMERATOR
         # in the room (n_total held fixed) to force the fire to self-starve as
@@ -514,14 +472,6 @@ def part2_trajectory() -> bool:
     if destroyed_total == 0:
         ok = False
         print("  scenario too tame: no wall burned through")
-    if climb_max <= climb_seed:
-        ok = False
-        print(f"  scenario too tame: plume never raised the climber cell "
-              f"(T {climb_seed} -> max {climb_max})")
-    if max_T != t_ceiling:
-        ok = False
-        print(f"  T_FLAME_MAX ceiling not held-at-ceiling: peak T {max_T} "
-              f"(ceiling {t_ceiling}) — the sat-clamp gate did not hold it")
     if final_fire_total >= init_fire_total:
         ok = False
         print(f"  scenario too tame: fire did not self-starve "
@@ -529,9 +479,8 @@ def part2_trajectory() -> bool:
     if ok:
         print(f"  {n_ticks} ticks bit-identical (fire/temperature/smoke/wall_hp "
               f"+ SET-equal destroyed, CPU==GPU every tick); walls destroyed="
-              f"{destroyed_total}, ceiling held at {max_T}=={t_ceiling}, climber "
-              f"T {climb_seed}->{climb_max} (plume heating), fire self-starved "
-              f"{init_fire_total}->{final_fire_total}.")
+              f"{destroyed_total}, temperature untouched throughout (P-R2), "
+              f"fire self-starved {init_fire_total}->{final_fire_total}.")
     return ok
 
 

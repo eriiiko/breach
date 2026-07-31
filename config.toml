@@ -220,7 +220,7 @@ P_full            = 0.03   # RETIRED — smoothstep full edge on absolute n_o2
 I_min             = 0.02   # snap-to-zero extinguish floor
 k_wind_fan        = 0.5    # (1 + k_wind_fan*W) fans growth into a firestorm. NEEDS TUNING vs the live wind scale (a shockwave is a large transient spike).
 k_wind_strip      = 0.5    # W*(1-I)*I blows out small/marginal fires (the realistic crossover). NEEDS TUNING vs the live wind scale.
-fire_pressure_gain = 0.15  # own-tile plume overpressure gain (1/s) — pushes smoke OUTWARD
+# fire_pressure_gain TOMBSTONE (P-R2, 2026-07-31): dead key — the plume->T shim it fed (FireParams::fire_pressure_gain, the one temperature[] writer bypassing heat_inv_shift) was deleted; see docs/radiation_raycaster_extinction_ruling_2026-07-31.md A2.
 p_expand_ref      = 1.30   # self-limiting plume saturation ceiling (atm + thermal-expansion headroom)
 smoke_emission    = 0.8    # smoke produced per second per unit intensity (KEPT)
 wall_damage       = 0.4    # wall HP lost per second per unit intensity (KEPT — the burn-out brake)

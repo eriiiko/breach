@@ -758,7 +758,9 @@ PYBIND11_MODULE(breach_physics, m) {
              py::array_t<int32_t> n_total,      // Q16.16 int32 (read-only, O2 gate denominator)
              py::array_t<int32_t> smoke,        // Q16.16 int32 (emission scatter)
              py::array_t<int32_t> wall_hp,      // Q16.16 int32 (burn-through)
-             py::array_t<int32_t> temperature,  // Q16.16 int32 (in/out: plume->T)
+             py::array_t<int32_t> temperature,  // Q16.16 int32 (in/out type; READ
+                                                 // only as of P-R2 — the plume->T
+                                                 // shim write is deleted)
              py::array_t<int32_t> wind_x,       // Q16.16 int32 (read-only)
              py::array_t<int32_t> wind_y,       // Q16.16 int32 (read-only)
              py::array_t<bool>  is_wall,
@@ -767,9 +769,8 @@ PYBIND11_MODULE(breach_physics, m) {
              float dt, float k_grow, float k_die, float fire_T_ext,
              float fire_T_span, float fuel_ref, float o2_frac_ext, float o2_frac_full,
              float I_min, float k_wind_fan, float k_wind_strip,
-             float fire_pressure_gain, float smoke_emission,
-             float wall_damage, float temp_scale, float temp_gain_scale,
-             float T_FLAME_MAX,
+             float smoke_emission,
+             float wall_damage, float temp_scale,
              py::object fuel_recip) -> py::list {   // FUEL-FRACTION AXIS
               auto [f, h, w]     = get_2d(fire);
               auto [atm, h2, w2] = get_2d_const(atmosphere);
@@ -777,7 +778,8 @@ PYBIND11_MODULE(breach_physics, m) {
               auto [nt, h2c, w2c] = get_2d_const(n_total);
               auto [sm, h3, w3]  = get_2d(smoke);
               auto [whp, h4, w4] = get_2d(wall_hp);
-              auto [temp, h5, w5] = get_2d(temperature);   // in/out (plume->T shim)
+              auto [temp, h5, w5] = get_2d(temperature);   // in/out type; READ only
+                                                            // as of P-R2
               auto [wx, h6, w6]  = get_2d_const(wind_x);
               auto [wy, h7, w7]  = get_2d_const(wind_y);
               auto [wl, h8, w8]  = get_2d_const(is_wall);
@@ -797,9 +799,8 @@ PYBIND11_MODULE(breach_physics, m) {
               auto destroyed = breach_cuda::fire_step(
                   f, atm, o2, nt, sm, whp, temp, wx, wy, wl, vac, fl, h, w, dt,
                   k_grow, k_die, fire_T_ext, fire_T_span, fuel_ref, o2_frac_ext,
-                  o2_frac_full, I_min, k_wind_fan, k_wind_strip, fire_pressure_gain,
-                  smoke_emission, wall_damage, temp_scale, temp_gain_scale,
-                  T_FLAME_MAX, fr);
+                  o2_frac_full, I_min, k_wind_fan, k_wind_strip,
+                  smoke_emission, wall_damage, temp_scale, fr);
               py::list result;
               for (const auto& [dy, dx] : destroyed) {
                   result.append(py::make_tuple(dy, dx));
@@ -814,14 +815,13 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("fire_T_ext"), py::arg("fire_T_span"), py::arg("fuel_ref"),
           py::arg("o2_frac_ext"), py::arg("o2_frac_full"), py::arg("I_min"),
           py::arg("k_wind_fan"), py::arg("k_wind_strip"),
-          py::arg("fire_pressure_gain"),
           py::arg("smoke_emission"), py::arg("wall_damage"), py::arg("temp_scale"),
-          py::arg("temp_gain_scale"), py::arg("T_FLAME_MAX"),
           py::arg("fuel_recip") = py::none(),   // fuel-fraction axis (optional)
           "P6.8 isolated: run ONE GPU fire step (re-derived — continuous-O2 "
-          "mole-fraction gate + plume->T shim) in place on "
-          "fire/smoke/wall_hp/temperature (bit-identical to FireSimulation.step) "
-          "and return the destroyed-walls list of (y,x) tuples.");
+          "mole-fraction gate) in place on fire/smoke/wall_hp (bit-identical to "
+          "FireSimulation.step) and return the destroyed-walls list of (y,x) "
+          "tuples. temperature is still a parameter but is READ ONLY as of "
+          "P-R2 (the plume->T shim write is deleted).");
 
     // EOS P6.9b: the GPU combustion solver (the two-gather reformulation —
     // docs/eos_p6_9_combustion_design.md). The backend flag switches
@@ -1490,20 +1490,18 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("I_min",          &FireParams::I_min)
         .def_readwrite("k_wind_fan",     &FireParams::k_wind_fan)
         .def_readwrite("k_wind_strip",   &FireParams::k_wind_strip)
-        .def_readwrite("fire_pressure_gain", &FireParams::fire_pressure_gain)
         .def_readwrite("p_expand_ref",   &FireParams::p_expand_ref)
         .def_readwrite("smoke_emission", &FireParams::smoke_emission)
         .def_readwrite("wall_damage",    &FireParams::wall_damage)
-        .def_readwrite("temp_scale",     &FireParams::temp_scale)
-        .def_readwrite("temp_gain_scale", &FireParams::temp_gain_scale)   // EOS P3
-        .def_readwrite("T_FLAME_MAX",    &FireParams::T_FLAME_MAX);       // eos-p3fix-thermal-ceiling
+        .def_readwrite("temp_scale",     &FireParams::temp_scale);
 
     py::class_<FireSimulation>(m, "FireSimulation")
         .def(py::init<>())
         .def_readwrite("params", &FireSimulation::params)
-        // DEBUG probe (temporary, eos-p3fix-thermal-ceiling investigation).
+        // DEBUG probe (temporary). Its former partner dbg_plume_dT (the
+        // plume->T shim's traced-cell deposit) was removed with the shim
+        // (P-R2 — docs/radiation_raycaster_extinction_ruling_2026-07-31.md A2).
         .def_readwrite("dbg_probe_idx", &FireSimulation::dbg_probe_idx)
-        .def_readonly("dbg_plume_dT",   &FireSimulation::dbg_plume_dT)
         .def("step", [](const FireSimulation& self,
                         py::array_t<int32_t> fire,         // S3b: Q16.16 int32
                         py::array_t<int32_t> atmosphere,   // S2c: Q16.16 int32
@@ -1525,7 +1523,8 @@ PYBIND11_MODULE(breach_physics, m) {
             auto [nt, h2c, w2c] = get_2d_const(n_total);     // fraction denominator (read-only)
             auto [sm, h3, w3] = get_2d(smoke);
             auto [whp, h4, w4] = get_2d(wall_hp);
-            auto [temp, h5, w5] = get_2d(temperature);       // EOS P3: mutable (plume->T shim)
+            auto [temp, h5, w5] = get_2d(temperature);       // mutable type; READ
+                                                              // only as of P-R2
             auto [wx, h6, w6] = get_2d_const(wind_x);
             auto [wy, h7, w7] = get_2d_const(wind_y);
             auto [wl, h8, w8] = get_2d_const(is_wall);
