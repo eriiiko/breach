@@ -110,7 +110,191 @@
 // identity vs this CPU reference, and unpins "combustion" from
 // EOS_P6_PENDING_KERNELS — closing the P6 arc.
 
+// P-O2b — THE EXTENDED OXYGEN DRAW (Erik's Option 2b; design
+// docs/fire_realism_design_2026-08-01.md v5.2 "F-O2b", v4 ruling batch item 1).
+//
+// A burning tile no longer draws oxygen only from its four open faces: it draws
+// from every OPEN cell within BFS hop-distance <= DRAW_R, expanded THROUGH OPEN
+// CELLS ONLY starting at its own open faces (never through a solid — "a wall
+// breathes only via its open faces, extended outward"). This is the
+// entrainment stand-in: it raises DELIVERY without inflating room O2
+// inventories, so sealed-room smothering stays exactly real.
+//
+// It is a DETERMINISTIC GENERALIZATION of the shipped per-air-cell demand
+// share, and it reduces to that law EXACTLY at DRAW_R == 1 (see W_hop below) —
+// the patch's own regression oracle.
+//
+// -------------------------------------------------------------------------
+// THE ENUMERATION (canonical fixed-offset unrolled relaxation; NO queue, NO
+// truncation). The pass is a GATHER keyed on the AIR CELL (the single-writer
+// discipline that makes it order-free), so the neighbourhood is enumerated in
+// REVERSE: air cell j asks "which burning tiles can reach me in <= R hops?".
+// The relation is symmetric — every intermediate cell on such a path is open,
+// and adjacency is symmetric — so the reverse walk is the same walk.
+//
+// Two canonical BAKED offset tables do all the work:
+//
+//   OFF[]  — the SOURCE-slot table: every offset with 1 <= |dy|+|dx| <= R.
+//            |OFF| = 2R(R+1) = 4 (R=1), 12 (R=2), 24 (R=3). RING-ORDERED, and
+//            **RING 1 IS EXACTLY D4's ORDER (N, S, W, E)** — which is what
+//            makes the widened `dem_acc` plane collapse to the shipped
+//            (4, h, w) plane, slot for slot, at R = 1.
+//   BALL[] — the TRAVERSAL offsets: every offset with |dy|+|dx| <= R-1, the
+//            cells a min-hop path of length <= R-1 can pass through (a path of
+//            length L only ever visits cells at Manhattan distance <= L, so the
+//            ball provably CONTAINS every such path — no truncation).
+//            |BALL| = 1 (R=1), 5 (R=2), 13 (R=3). CENTRE FIRST.
+//
+// The relaxation runs R-1 LEVELLED rounds over BALL: round r assigns the cells
+// at BFS distance exactly r, reading only cells assigned at r-1. Within a round
+// the combine is a MAX over incoming candidates, so it is order-free; across
+// rounds the levelling makes it plain BFS. Each claimant slot then reduces
+// lexicographically over (minimum hop distance d, then MAXIMUM path weight) —
+// also an order-free reduction.
+//
+// PATH WEIGHT is PERMEABILITY-MULTIPLICATIVE (the physics_engine/eos_solver
+// face idiom): the product of min(perm) over each traversed FACE. A crate
+// (perm 0.5) attenuates the draw THROUGH itself (0.5 in, 0.5 out = 0.25), a
+// wall (perm 0) blocks, a vacuum cell terminates expansion. The first step —
+// burning tile -> its own open face — is NOT attenuated: the expansion starts
+// AT the open face and the solid fuel tile itself is never traversed. (This is
+// also what makes W_hop[1] * w_path == 1 exactly at R = 1.)
+//
+// THE DEMAND, per (burning tile i, reachable cell j):
+//     dem = burn_cap_q * I_i * o2f_j * W_hop[d(j)] * w_path
+// with W_hop a BAKED integer table, shipped as quantize(1/(1+d)) NORMALIZED so
+// that W_hop[1] == FP_ONE:  W_hop[d] = quantize(2/(1+d)) = 1, 2/3, 1/2. At
+// R = 1 every reachable cell has d == 1 and w_path == 1, so the weight is
+// exactly FP_ONE and the demand is BIT-IDENTICAL to the shipped law.
+//
+// The per-air-cell demand-share allocation, the delta-gamma full drain, the
+// per-cell O2 floor and the lowest-source-index tiebreak all generalize
+// UNCHANGED (they never referred to the number of claimants, only to the set).
+//
+// DEPOSITS ARE RE-SITED (v5.2's rule, honouring Erik's ruling 4 "air is heated
+// at the fire ONLY"): the drawn O2 is DEBITED at the donor cells, but the
+// combustion HEAT and the SOOT/N2 products land at the FIRE'S OWN TILE + ITS
+// OPEN FACES, never at a distant donor. See `dep_site` in combustion.cpp for
+// the exact split (direct-then-remainder) and why it is identity at R = 1.
+//
+// THE o2f SENSOR STAYS RADIUS-1 — DELIBERATE AND STATED. `o2f_j` is still the
+// DONOR cell's own O2 factor, and the fire logistic's separate O2 sensor
+// (fire_simulation.cpp) still reads the burning tile's own 4-neighbour ring.
+// 2b raises DELIVERY (fuel throughput, HRR); it does NOT widen the local
+// sensor, so knee / extinction / smother semantics keep their meaning.
+
 #include <cstdint>
+
+// ---------------------------------------------------------------------------
+// The canonical P-O2b draw tables. ONE definition, shared by combustion.cpp and
+// cuda_combustion.cu (which uploads these very arrays to __constant__ memory,
+// so the two backends cannot drift).
+// ---------------------------------------------------------------------------
+namespace combustion_draw {
+
+inline constexpr int R_MAX     = 3;    // largest supported DRAW_R (v5.2's sweep top)
+inline constexpr int SLOTS_MAX = 24;   // 2R(R+1) at R = 3
+inline constexpr int BALL_MAX  = 13;   // 2(R-1)R + 1 at R = 3
+
+// |{(dy,dx) : 1 <= |dy|+|dx| <= R}| — the claimant-slot count at radius R.
+constexpr int slot_count(int R) { return 2 * R * (R + 1); }        // 4, 12, 24
+// |{(dy,dx) : |dy|+|dx| <= R-1}| — the traversal-ball size at radius R.
+constexpr int ball_count(int R) { return 2 * (R - 1) * R + 1; }    // 1, 5, 13
+
+// D4 — VERBATIM of combustion.cpp's D4 (N, S, W, E) and its opposite-face map.
+inline constexpr int8_t D4_DY[4]  = {-1,  1,  0,  0};
+inline constexpr int8_t D4_DX[4]  = { 0,  0, -1,  1};
+inline constexpr int8_t D4_OPP[4] = { 1,  0,  3,  2};
+
+// SOURCE-SLOT offsets (from the donor air cell TO the burning tile), ring by
+// ring. RING 1 (slots 0-3) IS EXACTLY D4's ORDER — the R = 1 identity anchor:
+// at R = 1 the widened dem_acc plane IS the shipped (4, h, w) plane, slot for
+// slot, so its digest bytes are unchanged. Rings are a PREFIX of one another,
+// so slot indices are stable as R grows.
+inline constexpr int8_t OFF_DY[SLOTS_MAX] = {
+    -1,  1,  0,  0,                                  // ring 1 (== D4)
+    -2, -1, -1,  0,  0,  1,  1,  2,                  // ring 2
+    -3, -2, -2, -1, -1,  0,  0,  1,  1,  2,  2,  3,  // ring 3
+};
+inline constexpr int8_t OFF_DX[SLOTS_MAX] = {
+     0,  0, -1,  1,                                  // ring 1 (== D4)
+     0, -1,  1, -2,  2, -1,  1,  0,                  // ring 2
+     0, -1,  1, -2,  2, -3,  3, -2,  2, -1,  1,  0,  // ring 3
+};
+
+// TRAVERSAL-BALL offsets (from the donor air cell), CENTRE FIRST then ring by
+// ring — again a prefix family, so ball_count(R) entries is the ball for R.
+inline constexpr int8_t BALL_DY[BALL_MAX] = {
+     0,                                   // ring 0 — the donor cell itself
+    -1,  0,  0,  1,                       // ring 1
+    -2, -1, -1,  0,  0,  1,  1,  2,       // ring 2
+};
+inline constexpr int8_t BALL_DX[BALL_MAX] = {
+     0,                                   // ring 0
+     0, -1,  1,  0,                       // ring 1
+     0, -1,  1, -2,  2, -1,  1,  0,       // ring 2
+};
+
+// ---- Derived adjacency tables (constexpr-GENERATED from the two tables above,
+// never hand-transcribed — a typo in OFF/BALL is the only possible error, and
+// the static_asserts below pin the properties the law depends on). ------------
+struct Adj { int8_t v[BALL_MAX][4]; };
+
+// BALL_NBR[b][d] = ball index of BALL[b] + D4[d], or -1 if it leaves the ball.
+constexpr Adj make_ball_nbr() {
+    Adj t{};
+    for (int b = 0; b < BALL_MAX; ++b) {
+        for (int d = 0; d < 4; ++d) {
+            t.v[b][d] = -1;
+            const int dy = BALL_DY[b] + D4_DY[d];
+            const int dx = BALL_DX[b] + D4_DX[d];
+            for (int k = 0; k < BALL_MAX; ++k) {
+                if (BALL_DY[k] == dy && BALL_DX[k] == dx) { t.v[b][d] = (int8_t)k; break; }
+            }
+        }
+    }
+    return t;
+}
+
+// BALL_SLOT[b][d] = source-slot index of BALL[b] + D4[d], or -1 when that
+// offset is (0,0) — the donor cell can never be its own claimant (hop 0 is
+// excluded from the draw, exactly as the shipped law never let cell j claim
+// from itself).
+constexpr Adj make_ball_slot() {
+    Adj t{};
+    for (int b = 0; b < BALL_MAX; ++b) {
+        for (int d = 0; d < 4; ++d) {
+            t.v[b][d] = -1;
+            const int dy = BALL_DY[b] + D4_DY[d];
+            const int dx = BALL_DX[b] + D4_DX[d];
+            if (dy == 0 && dx == 0) continue;
+            for (int k = 0; k < SLOTS_MAX; ++k) {
+                if (OFF_DY[k] == dy && OFF_DX[k] == dx) { t.v[b][d] = (int8_t)k; break; }
+            }
+        }
+    }
+    return t;
+}
+
+inline constexpr Adj BALL_NBR  = make_ball_nbr();
+inline constexpr Adj BALL_SLOT = make_ball_slot();
+
+// The properties the R = 1 identity and the enumeration's exactness rest on.
+static_assert(slot_count(1) == 4 && slot_count(2) == 12 && slot_count(3) == 24, "slot counts");
+static_assert(ball_count(1) == 1 && ball_count(2) == 5 && ball_count(3) == 13, "ball counts");
+static_assert(OFF_DY[0] == D4_DY[0] && OFF_DX[0] == D4_DX[0], "slot 0 == D4[0]");
+static_assert(OFF_DY[1] == D4_DY[1] && OFF_DX[1] == D4_DX[1], "slot 1 == D4[1]");
+static_assert(OFF_DY[2] == D4_DY[2] && OFF_DX[2] == D4_DX[2], "slot 2 == D4[2]");
+static_assert(OFF_DY[3] == D4_DY[3] && OFF_DX[3] == D4_DX[3], "slot 3 == D4[3]");
+static_assert(BALL_DY[0] == 0 && BALL_DX[0] == 0, "ball centre is index 0");
+// At R = 1 the ball is the centre alone and its four steps ARE slots 0..3 in
+// D4 order — this static_assert IS the R = 1 byte-identity, proved at compile
+// time rather than only measured on the bench.
+static_assert(BALL_SLOT.v[0][0] == 0 && BALL_SLOT.v[0][1] == 1 &&
+              BALL_SLOT.v[0][2] == 2 && BALL_SLOT.v[0][3] == 3,
+              "R=1: the centre's four steps are exactly D4 slots 0..3");
+
+}  // namespace combustion_draw
 
 class CombustionSolver {
 public:
@@ -298,26 +482,67 @@ public:
         // Huggett `burn_rate` anchor is untouched — this changes only HOW the
         // exact product is rendered into integers, not what it is.
         //
-        // WHY (4, h, w) AND NOT PER SOURCE TILE: Pass A's thread for air cell j
-        // is the SINGLE WRITER of everything at index j, including its four
-        // face slots (the existing `alloc_face` idiom, itself the cuda_water
+        // WHY (S, h, w) AND NOT PER SOURCE TILE: Pass A's thread for air cell j
+        // is the SINGLE WRITER of everything at index j, including all of its
+        // claimant slots (the existing `alloc_face` idiom, itself the cuda_water
         // dq_e/dq_s precedent). A per-source-tile accumulator would be written
-        // by up to four air cells in one pass — atomics, and order-dependent.
-        // Keyed identically to `alloc_face`: slot [d*n + j] is the debt air
-        // cell j owes toward the claimant in direction D4[d].
+        // by several air cells in one pass — atomics, and order-dependent.
+        // Keyed identically to `alloc_slot`: slot [s*n + j] is the debt air
+        // cell j owes toward the claimant at offset OFF[s] from j.
+        //
+        // P-O2b: the plane WIDENS from (4, h, w) to (max_claimants, h, w), with
+        // S = combustion_draw::slot_count(draw_r) live slots. The slot key is
+        // the SOURCE OFFSET, not an enumeration ordinal — that is what makes a
+        // carried sub-count debt still mean the same thing next tick even as
+        // fires appear and die. Because OFF's ring 1 is exactly D4's order, at
+        // draw_r == 1 this IS the shipped (4, h, w) plane, slot for slot, so
+        // its digest bytes do not move. At draw_r > 1 the widened layout is a
+        // digest-spec VERSION BUMP (tests/field_digest_spec.toml's own change
+        // procedure), taken with this patch.
         //
         // RESET RULE (documented because a stale debt is a real bug): a slot is
-        // ZEROED the moment its neighbour stops being a burning claimant —
-        // i.e. the claim gate fails (not flammable / fuel exhausted / material
+        // ZEROED the moment its source stops being a burning claimant — i.e.
+        // the claim gate fails (not flammable / fuel exhausted / material
         // cannot ignite / below its ignition temperature) or `fire[i] <= 0`
-        // (flameless). It persists ONLY while that neighbour is actively
-        // burning, so a re-ignition never inherits an old fraction. Bounded
-        // exception, deliberately not chased: an air cell that early-outs
-        // before the claim loop (fully O2-starved, `O2 <= o2_thresh_burn`)
-        // keeps its sub-count debt until it has oxygen again — under one count.
+        // (flameless). P-O2b CARRIES THE RULE OVER and adds the one new way a
+        // source can stop being a claimant: it is NO LONGER REACHABLE (a door
+        // closed, a wall was built, the path flooded) — that slot is zeroed on
+        // exactly the same footing. It persists ONLY while that source is an
+        // actively burning, currently reachable claimant, so a re-ignition
+        // never inherits an old fraction. An out-of-BOUNDS slot is never
+        // written at all (it can only ever hold the zero it was born with) —
+        // the shipped idiom, preserved verbatim so R = 1 stays byte-identical.
+        // Bounded exception, deliberately not chased: an air cell that
+        // early-outs before the claim loop (fully O2-starved, `O2 <=
+        // o2_thresh_burn`) keeps its sub-count debt until it has oxygen again
+        // — under one count.
         //
         // nullptr -> the pre-D1 chained-truncation demand, so every legacy /
         // direct-binding caller stays byte-identical.
-        int32_t* dem_acc = nullptr
+        int32_t* dem_acc = nullptr,
+        // ---- P-O2b: THE EXTENDED OXYGEN DRAW (see the header block) --------
+        // draw_r         : DRAW_R, the BFS hop radius of the draw. 1 == the
+        //                  shipped 4-face law, BIT FOR BIT (the regression
+        //                  oracle). Ship value 2; 3 is the sweep's upper point.
+        //                  HARD-CHECKED against combustion_draw::R_MAX.
+        // dyn_permeability : (h, w) float, READ — the per-tile permeability the
+        //                  path weight multiplies through. Quantized ONCE per
+        //                  step into an integer plane at pass entry (the
+        //                  load-time boundary idiom eos_solver.cpp uses for its
+        //                  own min-perm face coefficients), so the draw itself
+        //                  is pure integer. nullptr -> every open cell reads
+        //                  permeability 1.0.
+        // max_claimants  : MAX_CLAIMANTS — the DECLARED slot depth of the
+        //                  dem_acc plane. HARD-CHECKED at pass entry against
+        //                  slot_count(draw_r): a plane too shallow for the
+        //                  radius is a VIOLATION (it would alias two sources'
+        //                  debts), not a note, and throws. The per-cell
+        //                  claimant count can never exceed slot_count(draw_r)
+        //                  by construction — the gather loops over the slot
+        //                  table itself, one slot per source offset — and that
+        //                  is re-checked anyway.
+        int draw_r = 1,
+        const float* dyn_permeability = nullptr,
+        int max_claimants = 4
     ) const;
 };

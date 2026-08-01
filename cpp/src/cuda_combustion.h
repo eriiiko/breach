@@ -93,11 +93,20 @@ void combustion_step(
     int32_t* heat = nullptr,
     float H_BED_M = 0.0f,
     int H_BED_SHIFT = 0,
-    // D1 (amendment 5): the (4, h, w) error-feedback DEMAND ACCUMULATOR —
-    // SYNCED state, IN/OUT. Single writer per air cell (each thread owns its
-    // own four face slots), so no atomics and no order dependence. Full
-    // rationale, scale algebra and reset rule: combustion.h.
-    int32_t* dem_acc = nullptr);
+    // D1 (amendment 5): the (max_claimants, h, w) error-feedback DEMAND
+    // ACCUMULATOR — SYNCED state, IN/OUT. Single writer per air cell (each
+    // thread owns all of its own claimant slots), so no atomics and no order
+    // dependence. Full rationale, scale algebra and reset rule: combustion.h.
+    int32_t* dem_acc = nullptr,
+    // P-O2b — THE EXTENDED OXYGEN DRAW (design v5.2 "F-O2b"). The GPU twin
+    // mirrors the CPU law bit for bit: the same baked offset tables (uploaded
+    // to __constant__ from combustion.h's single definition, so the backends
+    // cannot drift), the same levelled relaxation, the same lexicographic slot
+    // reduction, the same re-sited deposit. draw_r == 1 is byte-identical to
+    // the shipped 4-face draw on both backends. See combustion.h.
+    int draw_r = 1,
+    const float* dyn_permeability = nullptr,
+    int max_claimants = 4);
 
 // Backend flag: when ON, PhysicsRunner's combustion pass dispatches to
 // combustion_step on the GPU instead of the CPU CombustionSolver::step.

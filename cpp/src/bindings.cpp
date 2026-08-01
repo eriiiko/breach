@@ -876,8 +876,13 @@ PYBIND11_MODULE(breach_physics, m) {
              py::object heat_inv_shift,
              // P-R4: the fuel-bed deposit's plane + its split constant.
              py::object heat, float H_BED_M, int H_BED_SHIFT,
-             // D1: the (4,h,w) error-feedback demand accumulator (IN/OUT).
-             py::object dem_acc) -> py::tuple {
+             // D1: the (max_claimants,h,w) error-feedback demand accumulator
+             // (IN/OUT).
+             py::object dem_acc,
+             // P-O2b (design v5.2 "F-O2b"): the EXTENDED OXYGEN DRAW — radius,
+             // the permeability plane the path weight rides, and the declared
+             // dem_acc slot depth. draw_r == 1 is the shipped law bit for bit.
+             int draw_r, py::object dyn_permeability, int max_claimants) -> py::tuple {
               auto gv = gas.mutable_unchecked<3>();
               int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
               const int n_gases = static_cast<int>(gv.shape(0));
@@ -915,8 +920,15 @@ PYBIND11_MODULE(breach_physics, m) {
               py::array_t<int32_t> dacc_arr;
               if (!dem_acc.is_none()) {
                   dacc_arr = dem_acc.cast<py::array_t<int32_t>>();
-                  auto da = dacc_arr.mutable_unchecked<3>();   // (4, h, w)
+                  auto da = dacc_arr.mutable_unchecked<3>();   // (max_claimants, h, w)
                   dacc_ptr = da.mutable_data(0, 0, 0);
+              }
+              const float* perm_ptr = nullptr;
+              py::array_t<float> perm_arr;
+              if (!dyn_permeability.is_none()) {
+                  perm_arr = dyn_permeability.cast<py::array_t<float>>();
+                  auto pa = perm_arr.unchecked<2>();
+                  perm_ptr = pa.data(0, 0);
               }
               int64_t heat_floor_hits = 0, t_max_phys_hits = 0;
               breach_cuda::combustion_step(
@@ -925,7 +937,8 @@ PYBIND11_MODULE(breach_physics, m) {
                   burn_rate, o2_thresh_burn, H_fuel, soot_yield, fuel_per_o2,
                   o2_frac_ext, o2_frac_full,
                   T_MAX_PHYS, &heat_floor_hits, &t_max_phys_hits,
-                  tsol, hshift, heat_ptr, H_BED_M, H_BED_SHIFT, dacc_ptr);
+                  tsol, hshift, heat_ptr, H_BED_M, H_BED_SHIFT, dacc_ptr,
+                  draw_r, perm_ptr, max_claimants);
               return py::make_tuple(heat_floor_hits, t_max_phys_hits);
           },
           py::arg("gas"), py::arg("o2_idx"), py::arg("inert_n2_idx"),
@@ -943,6 +956,9 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("H_BED_M") = 0.0f,
           py::arg("H_BED_SHIFT") = 0,
           py::arg("dem_acc") = py::none(),
+          py::arg("draw_r") = 1,
+          py::arg("dyn_permeability") = py::none(),
+          py::arg("max_claimants") = 4,
           "P6.9b isolated: run ONE GPU combustion step (the two-gather "
           "reformulation, continuous-O2 proportional demand) in place on the "
           "three gas planes + temperature + wall_hp (bit-identical to "
@@ -2292,9 +2308,19 @@ PYBIND11_MODULE(breach_physics, m) {
                         // P-R4: the `heat[]` plane the fuel-bed deposit lands
                         // in. OPTIONAL (None -> no H_bed == pre-P-R4).
                         py::object heat,
-                        // D1: the (4,h,w) error-feedback demand accumulator.
-                        // OPTIONAL (None -> the pre-D1 chained truncation).
-                        py::object dem_acc) {
+                        // D1: the (max_claimants,h,w) error-feedback demand
+                        // accumulator. OPTIONAL (None -> the pre-D1 chained
+                        // truncation).
+                        py::object dem_acc,
+                        // P-O2b (design v5.2 "F-O2b"): the EXTENDED OXYGEN
+                        // DRAW. draw_r == 1 (the default) is the shipped 4-face
+                        // law BIT FOR BIT, so every direct caller that does not
+                        // opt in is unmoved. `dyn_permeability` is the float
+                        // plane the path weight multiplies through (quantized
+                        // once at pass entry); None -> permeability 1.0.
+                        int draw_r,
+                        py::object dyn_permeability,
+                        int max_claimants) {
             auto gv = gas.mutable_unchecked<3>();
             int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
             const int n_gases = static_cast<int>(gv.shape(0));
@@ -2332,12 +2358,20 @@ PYBIND11_MODULE(breach_physics, m) {
             py::array_t<int32_t> dacc_arr;
             if (!dem_acc.is_none()) {
                 dacc_arr = dem_acc.cast<py::array_t<int32_t>>();
-                auto da = dacc_arr.mutable_unchecked<3>();   // (4, h, w)
+                auto da = dacc_arr.mutable_unchecked<3>();   // (max_claimants, h, w)
                 dacc_ptr = da.mutable_data(0, 0, 0);
+            }
+            const float* perm_ptr = nullptr;
+            py::array_t<float> perm_arr;
+            if (!dyn_permeability.is_none()) {
+                perm_arr = dyn_permeability.cast<py::array_t<float>>();
+                auto pa = perm_arr.unchecked<2>();
+                perm_ptr = pa.data(0, 0);
             }
             self.step(gas_ptr, n_gases, o2_idx, inert_n2_idx, black_smoke_idx,
                      temp, whp, f, fl, sol, vac, ign, h, w, dt, c_v, n_floor_heat,
-                     tsol, hshift, heat_ptr, dacc_ptr);
+                     tsol, hshift, heat_ptr, dacc_ptr,
+                     draw_r, perm_ptr, max_claimants);
         }, py::arg("gas"), py::arg("o2_idx"), py::arg("inert_n2_idx"),
            py::arg("black_smoke_idx"), py::arg("temperature"), py::arg("wall_hp"),
            py::arg("fire"), py::arg("flammable"), py::arg("solid"),
@@ -2346,7 +2380,10 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("thermal_solid") = py::none(),
            py::arg("heat_inv_shift") = py::none(),
            py::arg("heat") = py::none(),
-           py::arg("dem_acc") = py::none());
+           py::arg("dem_acc") = py::none(),
+           py::arg("draw_r") = 1,
+           py::arg("dyn_permeability") = py::none(),
+           py::arg("max_claimants") = 4);
 
     // --- WaterSolver (pipe model: damped velocity + donor-cell upwind flux;
     //     engine/07 §2, water_implementation_plan Step W1) ---
