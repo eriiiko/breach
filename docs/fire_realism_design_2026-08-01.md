@@ -753,3 +753,65 @@ v5.2 (F-O2b) and v5.3 (rulings fold) unchanged. v6.1 rules 1 and self-cell/
 E_emit conventions stand; this block replaces rule 2 and amends 3-4.
 Round-3.7 verifies v7.1-v7.3 before P-F1a spawns. P-O2b is unaffected and
 may start once P-F4b's sweep tooling question (same patch family) is set.
+
+---
+
+## v7.1 — CLOSURE EDITS (2026-08-02, round-3.7's prescribed fixes, folded
+## verbatim. THE BOOKS ARE CLOSED FOR BUILD: conservation, ledger identity
+## and second-law safety CERTIFIED (round-3.7); the edits below are that
+## verifier's own prescriptions, folded without alteration.)
+
+1. (M1) The gap-signedness / clamp-validity claims of v7.1 are SCOPED to
+   phi == 1, flame_lift == 0 — which is exactly what P-F1a ships. Any later
+   patch that turns on flame lift MUST first define the per-end T_eff (the
+   E_emit lookup argument) and size the budget from |dT_eff|; until then
+   lift stays off. 2. (M2) The mutual half-branch caps at HALF the shared
+   budget (RAD_LIM_SHIFT + 1 in that branch), clamp-after-halve — the rail
+   stays true by construction with both ends casting. 3. (M3) Gate (iv)(b)
+   measures over a whole multiple of fire_ray_count ticks; the continuity
+   claim is restated: equal in expectation over the D4 rotation period,
+   reciprocity-limited per pair per tick, worst case a factor-2 rate step
+   with no sign change. 4. (M4) D3's rad_flux sensor KEEPS THE OLD REACH: a
+   deterministic distance guard (damage_range = the legacy range formula) on
+   the rad_flux write only — books untouched, unit radiant damage unchanged;
+   far-field bursts never ship. 5. (M5) Gate (iv)(e) geometry PINNED:
+   air-separated walls (no wall tile face-adjacent to the emitter), a = 1.0
+   single-layer grid-border-backed walls, tolerance ZERO (the pair value is
+   bit-identical to the sky charge there), E0[0] is literally e_table[0];
+   the a = 0.5 variant runs with a contact-termination counter and a
+   tolerance derived from the measured contact-direction count. 6. (M6)
+   Gate (g) re-measured on the largest shipping level (128x256) open-field
+   firestorm WITH the pure-radiation fast path; the acceptance carries an
+   emitter-count statement (the caster set is temperature-defined and
+   unbounded — a cap/LOD policy, deterministic, is part of P-F1a's spec if
+   the measurement demands one). Fire's visible light becomes a second
+   short-range cast (cheap, golden-neutral) — the fast path does not carry
+   RGB. 7. (m1) The half factor is x0.5f INSIDE the pinned float fold,
+   before the single quantize (one rounding boundary, sign-symmetric;
+   recombination residual <= 1 count, annihilated by the fold) — NOT
+   mul_q16(HALF_Q, .). Pinned in both backends. 8. (m2) The sky term is
+   clamped by rad_pair_budget(|T_s|, his_s) — the ambient counterparty is
+   the T = 0 partner. 9. (m3) Gate (ii)'s ledger identity is evaluated
+   PRE-FOLD (the fold discards the sub-2^his remainder, bias toward zero in
+   magnitude = systematic slight under-transfer, never a mint). 10. (m4)
+   CPU-CUDA tol-0 step+resident is restated as gate (ix) for the half
+   branch, the sky term, and the fast path. 11. (m5) The heat_cull residual
+   (<= 1% of a direction share charged to nobody at cull termination;
+   under-cooling, safe direction) is named; gate (v)'s open-field grey-body
+   tolerance is set BELOW it. 12. (m6) Rule 3 sentence added: a
+   wall-adjacent crate is EXPECTED to lose less radiatively than the
+   open-field crate (its contact face conducts instead); Erik's equivalence
+   compares open field vs AIR-SEPARATED ambient scenery. 13. (3.7 §5b) The
+   emitter-mask compare is a single integer threshold against the same
+   temperature snapshot on both backends; one boundary-tile scenario pins
+   a tile at exactly quantize(T_emit_gate). 14. (3.7 §5c) One extreme-gap
+   scenario asserts monotone approach when the rail FIRES (not merely that
+   it did not). 15. (3.7 §4) The fold dead-zone acceptance is a GAMEPLAY
+   statement, named for Erik at P-R5: a tile receiving under 1 T-LSB per
+   tick of flux does not creep toward ignition; D4's burst delivery is why
+   distant exposure still accumulates in practice.
+
+**STATUS: the radiation books (v6.1 rules 1/3/4 as amended by v7 + these
+edits) are the BUILD SPEC for P-F1a. No further paper rounds; P-F1a's
+sharpened gate set is the empirical backstop. P-O2b proceeds in parallel
+(independent subsystem, spec v5.2).**
