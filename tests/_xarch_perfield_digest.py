@@ -110,7 +110,22 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # carrying it moves. Folded into the SAME one-shot rebase: D1's demand
 # accumulator (digest spec v2 -> v3, +dem_acc), D3's radiant-flux sensor and
 # D4's per-tick fan rotation. ONE approved change-set, ONE rebase event.
-GOLDEN_AGGREGATE = "e73f130ea6f514fc285825d1efc828202bfc7e2e77dee3212bed2aa822e45f8a"
+# P-O2b GOLDEN REBASE (2026-08-02) - the fire-realism arc's OWN single
+# deliberate rebase (design v5.2 section 5: "this arc carries its own
+# single deliberate rebase"; the arc-local golden the design budgets).
+# THE EXTENDED OXYGEN DRAW (Erik's Option 2b) widens `dem_acc` from the 4
+# faces to the 2*R*(R+1) SOURCE OFFSETS within BFS hop-radius DRAW_R -
+# (12, h, w) at the shipped DRAW_R = 2. The shape rides the hashed
+# per-field header, so this is a DIGEST-SPEC VERSION BUMP (v3 -> v4) taken
+# per tests/field_digest_spec.toml's own change procedure, with every
+# committed golden regenerated in the same commit.
+# The A/B scenario carries no flammable tiles, so the LAW itself moves
+# nothing here: the entire delta is dem_acc's layout. That is deliberate
+# and separately gated - at DRAW_R = 1 the offset table's ring 1 IS D4's
+# order, so the plane is bit-for-bit the v3 plane and the full engine
+# reproduces every pre-patch field, byte for byte, over 45 ticks.
+# (was e73f130ea6f514fc285825d1efc828202bfc7e2e77dee3212bed2aa822e45f8a)
+GOLDEN_AGGREGATE = "28678e9d6210533f63cc701bba8f93194e23df9ebbdfa5f75f5d26681e897040"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs

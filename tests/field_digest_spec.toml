@@ -8,7 +8,7 @@
 # and regenerate every committed golden/digest in the SAME commit (plan §7.6
 # gate-7 — CI must reject a stale digest tag).
 
-version = 3                    # v3 (2026-08-01, P-R4 D1): +dem_acc (combustion demand accumulator)
+version = 4                    # v4 (2026-08-02, P-O2b): dem_acc widens to (max_claimants, h, w)
 hash = "blake2b-256"
 byte_order = "little"          # x86 + CUDA; big-endian dtypes are refused
 serialization = "per-field: ascii header 'name|dtype.str|shape' then C-order raw bytes"
@@ -36,12 +36,18 @@ fields = [
     { name = "obstacles",      dtype = "bool"  },
     { name = "is_vacuum",      dtype = "bool"  },
     { name = "ignition_armed", dtype = "bool"  },
-    # v3: the (4, h, w) per-face sub-count oxygen debt the combustion demand
-    # accumulator carries ACROSS ticks (ruling amendment 5, D1). Persistent
-    # synced state — a desync here forks the oxygen draw and the whole fire
-    # stream. The per-TICK radiation planes (rad_net / rad_flux) are wiped at
-    # end of tick, so they are identically zero at every snapshot and are
-    # deliberately excluded.
+    # v3: the per-slot sub-count oxygen debt the combustion demand accumulator
+    # carries ACROSS ticks (ruling amendment 5, D1). Persistent synced state —
+    # a desync here forks the oxygen draw and the whole fire stream. The
+    # per-TICK radiation planes (rad_net / rad_flux) are wiped at end of tick,
+    # so they are identically zero at every snapshot and are deliberately
+    # excluded — as is P-O2b's per-tick `dep_site` deposit plane, which lives
+    # only inside the combustion pass.
+    # v4 (P-O2b): shape widens from (4, h, w) to (max_claimants, h, w) — the
+    # extended oxygen draw keys the accumulator by SOURCE OFFSET over the
+    # 2*R*(R+1) offsets within BFS hop-radius DRAW_R (12 at the shipped R = 2)
+    # instead of by the 4 faces. Ring 1 of the offset table is exactly D4's
+    # order, so at DRAW_R = 1 the bytes are identical to v3.
     { name = "dem_acc",        dtype = "int32" },
 ]
 

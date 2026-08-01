@@ -447,6 +447,15 @@ class PhysicsRunner:
         # v2.4 rail: the SAME [physics.thermal].T_MAX_PHYS constant as the
         # thermal + EOS solvers (one ceiling in the system).
         self.combustion.T_MAX_PHYS = self._t_max_phys
+        # P-O2b (design v5.2 "F-O2b") — THE EXTENDED OXYGEN DRAW. `draw_r` is
+        # the BFS hop radius the burning tile draws oxygen over, expanded
+        # through OPEN CELLS ONLY from its own open faces and weighted by
+        # W_hop[d] * (the permeability-multiplicative path weight). It is
+        # Erik's Option 2b: the entrainment stand-in that raises DELIVERY
+        # without inflating room O2 inventories, so sealed-room smothering
+        # stays exactly real. draw_r == 1 reproduces the pre-P-O2b 4-face law
+        # BIT FOR BIT (the patch's regression oracle).
+        self._draw_r = int(getattr(comb_cfg, "draw_r", 1))
 
         # Gas-id lazy resolve (the `_steam_idx` precedent, _step_water below):
         # resolved BY NAME from the map's gas table on the first step() call
@@ -780,6 +789,12 @@ class PhysicsRunner:
                 self.combustion.H_BED_M, self.combustion.H_BED_SHIFT,
                 # D1: the error-feedback demand accumulator (synced, IN/OUT).
                 gmap.dem_acc,
+                # P-O2b: the extended draw. `max_claimants` is read off the
+                # LIVE plane rather than re-read from config, so the depth the
+                # C++ hard-check sees is by construction the depth that exists.
+                self._draw_r,
+                gmap.dyn_permeability,
+                int(gmap.dem_acc.shape[0]),
             )
         else:
             self.combustion.step(
@@ -816,6 +831,19 @@ class PhysicsRunner:
                 # across ticks, so the draw is exact in expectation and the
                 # Huggett burn_rate anchor is untouched. Synced state, IN/OUT.
                 gmap.dem_acc,
+                # P-O2b (design v5.2 "F-O2b"): THE EXTENDED OXYGEN DRAW —
+                # Erik's Option 2b. The burning tile draws O2 from every open
+                # cell within `draw_r` BFS hops, reached through open cells only
+                # from its own open faces, distance- and permeability-weighted;
+                # the O2 is debited at those donors but the heat and soot land
+                # at the FIRE (ruling 4, "air is heated at the fire only").
+                # `dyn_permeability` is the plane the path weight rides —
+                # crates attenuate, walls block. `max_claimants` is read off the
+                # LIVE plane rather than re-read from config, so the depth the
+                # C++ hard-check sees is by construction the depth that exists.
+                self._draw_r,
+                gmap.dyn_permeability,
+                int(gmap.dem_acc.shape[0]),
             )
 
     # ------------------------------------------------------------------

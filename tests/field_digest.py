@@ -50,7 +50,18 @@ import numpy as np
 # digest exists to catch. (The two per-TICK radiation planes `rad_net` and
 # `rad_flux` are deliberately NOT here: both are wiped at end of tick, so they
 # are identically zero at every snapshot point and would add nothing.)
-DIGEST_SPEC_VERSION = 3
+# v4 (2026-08-02, P-O2b): dem_acc's LAYOUT WIDENS. The extended oxygen draw
+# (design v5.2 "F-O2b", Erik's Option 2b) generalizes the accumulator from the
+# 4 faces to the 2*R*(R+1) SOURCE OFFSETS within BFS hop-radius DRAW_R — so the
+# plane is (max_claimants, h, w), 12 deep at the shipped DRAW_R = 2. Membership
+# and dtype are unchanged; the SHAPE is not, and the shape rides the hashed
+# per-field header, so this is a version bump by this spec's own change
+# procedure and every committed golden is regenerated in the same commit.
+# NOTE the deliberate design of the slot key: ring 1 of the offset table is
+# exactly D4's order, so at DRAW_R = 1 the plane is bit-for-bit the v3 plane
+# and a v3-era golden still reproduces under a DRAW_R = 1 config — which is
+# what let the R = 1 identity be gated against the pre-patch build.
+DIGEST_SPEC_VERSION = 4
 
 # The frozen (name, dtype-string) contract — the integer/bool SYNCED fields, in a
 # fixed order. `gas` is the 3D (5,h,w) multi-gas stack (covers `smoke`, a view).

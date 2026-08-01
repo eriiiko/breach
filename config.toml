@@ -492,6 +492,42 @@ soot_yield        = 0.3    # fraction of consumed O2 -> smoke (rest -> inert_N2)
 # default, but in play THE ember-lifetime dial: smaller -> embers glow for
 # minutes awaiting oxygen; larger -> they char out fast.
 fuel_per_o2       = 0.7
+# --- P-O2b: THE EXTENDED OXYGEN DRAW (Erik's Option 2b) ----------------------
+# docs/fire_realism_design_2026-08-01.md v5.2 "F-O2b" + the v4 ruling batch
+# item (1). A burning tile no longer draws oxygen only from its four open
+# faces: it draws from every OPEN cell within `draw_r` BFS hops, expanded
+# THROUGH OPEN CELLS ONLY starting at its own open faces (never through a
+# solid — a wall breathes only via its open faces, extended outward).
+#
+# WHY IT EXISTS: round 2's theorem T2 measured the ceiling — diffusive O2
+# transport to ONE burning tile caps sustainable delivery far below what any
+# honest fire needs, because the engine is 2D and gravity-free and so has NO
+# buoyant entrainment (a real crate fire breathes by entrainment; our fire's
+# own plume pushes air outward). 2b is the entrainment STAND-IN. Crucially it
+# raises DELIVERY without inflating room O2 INVENTORIES, so sealed-room
+# smothering stays exactly real — the ships requirement, and the reason this
+# is the only supply term in the design.
+#
+# The demand per (burning tile, reachable cell j) becomes
+#     burn_rate*dt * I * o2f_j * W_hop[d(j)] * w_path
+# with W_hop the baked 1/(1+d) table NORMALIZED so W_hop[1] == 1, and w_path
+# the permeability-multiplicative product over the traversed faces (a crate at
+# 0.5 attenuates the draw through itself; a wall at 0 blocks; vacuum
+# terminates). The o2f SENSOR stays radius-1 — deliberate: 2b raises delivery,
+# not the local sensor, so knee / extinction / smother semantics are unmoved.
+#
+# draw_r = 1 reproduces the pre-P-O2b 4-face law BIT FOR BIT (the patch's own
+# regression oracle, gated byte-identical over the full engine). 2 ships; 3 is
+# the design's sweep upper point and the baked tables' ceiling. The
+# supply-vs-radius sweep and Erik's fire-power sizing call are P-F4b's job —
+# this patch lands the LAW at frozen dials.
+draw_r            = 2
+# MAX_CLAIMANTS — the declared slot depth of the `dem_acc` demand-accumulator
+# plane, which is keyed by the SOURCE OFFSET (2*R*(R+1) offsets: 4 / 12 / 24 at
+# R = 1 / 2 / 3). A cap smaller than the radius needs would alias two sources'
+# sub-count debts onto one slot, so it is a HARD ERROR in both Python and C++,
+# not a note (v5.2: "a hit cap is a violation"). Must be >= 2*draw_r*(draw_r+1).
+max_claimants     = 12
 # --- P-R4: H_bed, the FUEL-BED deposit (ruling A1) ---------------------------
 # With the painter retired, a lone crate's radiation NETS TO ZERO at the source
 # (its own tile reads the same E° bucket) and only LOSES to cooler surroundings,

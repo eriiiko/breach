@@ -3,6 +3,8 @@
 #include "raycaster.h"   // heat_saturating_add (shared Q16.16 domain)
 #include <algorithm>
 #include <cstdint>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 using namespace fixedpoint;
@@ -42,6 +44,29 @@ using namespace fixedpoint;
 // thermal_solid burn site — see combustion.h's header block and the branch at
 // the deposit itself. Everything else (the claim gate, the demand law, the
 // proportional split, the Dalton split, Pass B's fuel payment) is untouched.
+//
+// P-O2b — THE EXTENDED OXYGEN DRAW (docs/fire_realism_design_2026-08-01.md
+// v5.2 "F-O2b", Erik's Option 2b). The LAW lives in combustion.h's header
+// block; what changed STRUCTURALLY here is that the two gathers became THREE,
+// because the deposits were re-sited away from the donor cells:
+//
+//   Pass A — air cells. Enumerates the burning tiles that can reach this cell
+//     within DRAW_R hops (the reverse relaxation), allocates this cell's O2
+//     across them, DEBITS O2 here, files each allocation on the offset-keyed
+//     `alloc_slot` buffer, and pays each claimant its H_bed fuel-bed deposit.
+//     It no longer deposits soot / N2 / heat: those are not this cell's.
+//   Pass B — source cells. Sums its incoming allocations, pays the
+//     stoichiometric fuel cost once, and decides WHERE its combustion products
+//     land — its own tile plus its open faces — filing that on `dep_site`.
+//   Pass C — air cells. Gathers the deposit intents aimed at this cell and
+//     applies the shipped soot / N2 / heat deposit, verbatim.
+//
+// Single-writer discipline (and with it order freedom and CPU/GPU bit
+// identity) survives intact: every plane still has exactly one writing cell.
+// At DRAW_R == 1 the three passes reduce EXACTLY to the shipped two — Pass B's
+// hop-2 remainder is identically zero, so each face receives back precisely
+// the allocation it made, which is the old per-air-cell aggregate. That
+// identity is gated byte-for-byte over the full engine.
 // ============================================================================
 
 namespace {
@@ -68,6 +93,26 @@ static inline q16 clamp01_q(q16 v) {
     return v;
 }
 
+// P-O2b — apply the Q16.16 DRAW WEIGHT to the wide (scale-2^32) demand product.
+//
+// Returns EXACTLY floor((P * wq) / 2^16) for P >= 0, computed without 128-bit
+// arithmetic by splitting P at 16 bits:
+//     P*wq/2^16 = hi*wq + (lo*wq)/2^16      (P = hi*2^16 + lo)
+// and hi*wq is already an integer, so the floor distributes. Bounds: P <= 2^48
+// and wq <= FP_ONE give hi*wq <= 2^48 and lo*wq <= 2^32 — no int64 overflow,
+// and no precision is thrown away at all.
+//
+// THE POINT: at wq == FP_ONE this is the EXACT IDENTITY (hi<<16 | lo == P), bit
+// for bit — which is why DRAW_R == 1, where every reachable cell has d == 1 and
+// w_path == 1, reproduces the shipped demand byte-identically. A cheaper
+// `(P >> 16) * wq` would NOT (it would drop P's low 16 bits) and a plain
+// `P * wq >> 16` could overflow; this form is both exact and safe.
+static inline int64_t apply_draw_weight(int64_t P, q16 wq) {
+    const int64_t hi = P >> 16;
+    const int64_t lo = P & 0xFFFF;
+    return hi * (int64_t)wq + ((lo * (int64_t)wq) >> 16);
+}
+
 }  // namespace
 
 void CombustionSolver::step(
@@ -85,7 +130,10 @@ void CombustionSolver::step(
         const bool* thermal_solid,
         const int32_t* heat_inv_shift,
         int32_t* heat,
-        int32_t* dem_acc) const {
+        int32_t* dem_acc,
+        int draw_r,
+        const float* dyn_permeability,
+        int max_claimants) const {
 
     if (h <= 0 || w <= 0 || dt <= 0.0f) return;
     if (o2_idx < 0 || o2_idx >= n_gases) return;
@@ -136,6 +184,57 @@ void CombustionSolver::step(
 
     if (burn_cap_q <= 0) return;   // nothing burns this tick (dt~0 or burn_rate 0)
 
+    // ======================================================================
+    // P-O2b — THE EXTENDED DRAW's load-time bake (combustion.h's header block
+    // carries the law; this is only its arithmetic set-up).
+    // ======================================================================
+    namespace cd = combustion_draw;
+
+    // HARD CHECKS. v5.2: "MAX_CLAIMANTS per air cell is a config constant with
+    // a HARD assert (a hit cap is a violation, not a note)." A radius past the
+    // baked tables, or a dem_acc plane too shallow for the radius, would ALIAS
+    // two sources' sub-count debts onto one slot — a silent, synced-state
+    // corruption. It throws instead.
+    if (draw_r < 1 || draw_r > cd::R_MAX) {
+        throw std::runtime_error(
+            "CombustionSolver: draw_r out of range (1.." + std::to_string(cd::R_MAX) + ")");
+    }
+    const int n_slots = cd::slot_count(draw_r);   // 4, 12, 24
+    const int n_ball  = cd::ball_count(draw_r);   // 1, 5, 13
+    if (dem_acc != nullptr && max_claimants < n_slots) {
+        throw std::runtime_error(
+            "CombustionSolver: MAX_CLAIMANTS cap hit — dem_acc depth "
+            + std::to_string(max_claimants) + " < slot_count(draw_r) "
+            + std::to_string(n_slots));
+    }
+    // The dem_acc plane's DECLARED depth: slot s lives at [s*n + j]. Only the
+    // first n_slots slots are live; a deeper plane simply carries unused rows.
+    const int acc_depth = (dem_acc != nullptr) ? max_claimants : n_slots;
+    (void)acc_depth;   // slots are indexed by s < n_slots <= acc_depth
+
+    // W_hop — the BAKED hop-weight table, quantize(1/(1+d)) NORMALIZED so that
+    // W_hop[1] == FP_ONE, i.e. W_hop[d] = quantize(2/(1+d)) = {1, 2/3, 1/2}.
+    // The normalization is the whole R = 1 identity: at radius 1 every claimant
+    // sits at d == 1 with an empty (weight-1) path, so the draw weight is
+    // exactly FP_ONE and apply_draw_weight is the identity.
+    q16 w_hop_q[cd::R_MAX + 1];
+    w_hop_q[0] = 0;                                    // d == 0 is not a draw site
+    for (int d = 1; d <= cd::R_MAX; ++d) {
+        w_hop_q[d] = quantize(2.0 / (1.0 + (double)d));
+    }
+
+    // The permeability plane, QUANTIZED ONCE per step (the load-time boundary
+    // idiom eos_solver.cpp uses for its own min-perm face coefficients) so the
+    // path walk below is pure integer — no float in the per-cell draw. quantize
+    // is monotone, so min-then-quantize and quantize-then-min agree exactly.
+    // No plane -> permeability 1.0 everywhere (byte-identical to no weighting).
+    std::vector<q16> perm_q;
+    if (draw_r > 1 && dyn_permeability != nullptr) {
+        perm_q.resize(n);
+        for (int i = 0; i < n; ++i) perm_q[i] = quantize((double)dyn_permeability[i]);
+    }
+    const bool has_perm = !perm_q.empty();
+
     // --- Snapshot (design §3, the explicit freeze) --------------------------
     // temperature is read by the ignition GATE (Tsnap[i] >= ign[i]) AND written
     // by the heat DEPOSIT (temperature[j] += dT) — a genuine cross-cell read-
@@ -145,14 +244,35 @@ void CombustionSolver::step(
     // the gather structure — design §3 — so they need no copy.)
     std::vector<q16> Tsnap(temperature, temperature + n);
 
-    // --- Per-face allocation buffers (design §3 plumbing (a)) ---------------
-    // alloc_face[d*n + j] = the O2 that air cell j allocates to the flammable
-    // source in direction D4[d] of j. Pass A (single writer per air cell) fills
-    // it; Pass B gathers each source's <=4 incoming faces. The cuda_water
-    // dq_e/dq_s precedent — direction-keyed, single-writer, no recompute in B
-    // (design §3 rejects recompute-in-B: it would fork the split logic and risk
+    // --- Per-SLOT allocation buffers (design §3 plumbing (a)) ---------------
+    // alloc_slot[s*n + j] = the O2 that air cell j allocates to the flammable
+    // source at offset OFF[s] from j. Pass A (single writer per air cell) fills
+    // it; Pass B gathers each source's incoming slots. The cuda_water dq_e/dq_s
+    // precedent — offset-keyed, single-writer, no recompute in B (design §3
+    // rejects recompute-in-B: it would fork the split logic and risk
     // O2-drained-at-j vs fuel-paid-by-i silently desynchronizing).
-    std::vector<q16> alloc_face((size_t)4 * n, 0);
+    // P-O2b widens this from the 4 faces to the n_slots draw offsets; at
+    // draw_r == 1, n_slots == 4 and the slot keys ARE the D4 face keys.
+    std::vector<q16> alloc_slot((size_t)n_slots * n, 0);
+
+    // --- P-O2b: the DEPOSIT-SITE buffer (v5.2's re-sited deposits) ----------
+    // dep_site[t*n + i] = the burnt-O2 quantity flammable source i deposits at
+    // site t, where t in [0,4) is the face direction D4[t] out of i and t == 4
+    // is i's OWN tile (which is an open, gas-holding cell exactly when i is
+    // furniture). Pass B (single writer per source) fills it; Pass C gathers,
+    // so every gas/heat write still has ONE writer — its own air cell.
+    //
+    // WHY IT EXISTS (design v5.2, honouring Erik's ruling 4 "air is heated at
+    // the fire ONLY"): the O2 is debited at the DONOR cells, which under an
+    // extended draw may be two or three tiles away, but the flame — and so the
+    // heat, the soot and the hot-air visuals that read air temperature — is at
+    // the FIRE. The products must not appear in a donor cell across the room.
+    //
+    // It is per-tick scratch, wiped every step, never synced and never
+    // digested (design §5's rule for new planes). Cost, priced on both
+    // backends: one 5*n int32 allocation + memset per tick, host-side here and
+    // one cudaMalloc/cudaMemset/cudaFree in the CUDA twin.
+    std::vector<q16> dep_site((size_t)5 * n, 0);
 
     // ======================================================================
     // Pass A — air cells. Single writer of O2[j], SOOT[j], N2[j],
@@ -184,30 +304,130 @@ void CombustionSolver::step(
                 ? ((Xj < x_ext_q) ? (q16)0 : (q16)FP_ONE)
                 : clamp01_q(recip_mul(Xj - x_ext_q, recip_x_span));
 
-            // Gather the <=4 flammable claimant sources + each one's per-claimant
-            // DEMAND (design §2.3): demand_k = burn_cap * I_k * o2f_j (PINNED
-            // left-fold mul_q16, truncating — a conservative request that never
-            // over-draws). I_k = fire[i] is now READ (the old pass dropped it as
-            // an outcome-neutral prefilter; the continuous law makes it the
-            // intensity factor). A flameless claimant (I_k == 0, e.g. a hot
-            // ember) demands 0 -> draws no O2, deposits no heat: "a choked/cool
-            // fire consumes nothing" (design §2.3).
-            int cl_dir[4];   // D4 index of the claimant (face key for alloc_face)
-            int cl_src[4];   // global cell index of the claimant source
-            int64_t dem[4];  // per-claimant O2 demand this tick (Q16.16 counts)
+            // ---- P-O2b STEP 1: THE REVERSE RELAXATION -----------------------
+            // Which burning tiles can reach THIS cell in <= draw_r hops? The
+            // walk is the forward walk read backwards (every intermediate cell
+            // is open and adjacency is symmetric), so we expand outward from j
+            // through OPEN CELLS ONLY over the baked BALL offsets, in draw_r-1
+            // LEVELLED rounds. `bd[b]` is the BFS hop distance from j to ball
+            // cell b (-1 = unreached); `bw[b]` is the MAXIMUM permeability-
+            // multiplicative path weight over j's min-hop paths to b.
+            //
+            // ORDER-FREEDOM, per site: round r reads only cells stamped r-1 and
+            // stamps only previously-unstamped cells, so no cell both feeds and
+            // is fed within a round; and the combine over the (at most four)
+            // incoming candidates is a MAX, which is commutative and
+            // associative. The result therefore does not depend on the order of
+            // the b or d loops — nor on the order in which burning tiles are
+            // enumerated anywhere in the pass.
+            //
+            // At draw_r == 1 this whole block is: n_ball == 1, no rounds run,
+            // bd[0] == 0, bw[0] == FP_ONE. Free, and exactly the shipped law.
+            int   bcell[cd::BALL_MAX];   // grid index of each ball cell (-1 = OOB/closed)
+            int8_t bd[cd::BALL_MAX];
+            q16   bw[cd::BALL_MAX];
+            for (int b = 0; b < n_ball; ++b) {
+                bd[b] = -1; bw[b] = 0; bcell[b] = -1;
+                const int cy = y + cd::BALL_DY[b], cx = x + cd::BALL_DX[b];
+                if (!in_bounds(cy, cx, h, w)) continue;
+                const int c = cy * w + cx;
+                // Expansion runs THROUGH OPEN CELLS ONLY: a solid tile is never
+                // traversed (a wall breathes only via its open faces), and a
+                // vacuum cell TERMINATES expansion (there is no air to walk).
+                if (solid[c] || is_vacuum[c]) continue;
+                bcell[b] = c;
+            }
+            bd[0] = 0; bw[0] = FP_ONE;    // the donor cell itself: hop 0, empty path
+            for (int r = 1; r < draw_r; ++r) {
+                for (int b = 0; b < n_ball; ++b) {
+                    if (bd[b] >= 0 || bcell[b] < 0) continue;
+                    q16 best = 0;
+                    for (int d = 0; d < 4; ++d) {
+                        const int nb = cd::BALL_NBR.v[b][d];
+                        if (nb < 0 || nb >= n_ball) continue;
+                        if (bd[nb] != (int8_t)(r - 1)) continue;   // previous level only
+                        // Face weight = min(perm) across the traversed face —
+                        // the physics_engine/eos_solver idiom, in integers.
+                        // A crate (0.5) attenuates the draw THROUGH itself
+                        // (0.5 in, 0.5 out); a wall (0) blocks outright.
+                        q16 pf = FP_ONE;
+                        if (has_perm) {
+                            const q16 pa = perm_q[bcell[nb]], pb = perm_q[bcell[b]];
+                            pf = (pa < pb) ? pa : pb;
+                        }
+                        const q16 cand = mul_q16(bw[nb], pf);
+                        if (cand > best) best = cand;
+                    }
+                    // A zero-weight arrival is NOT a path (perm 0 blocks).
+                    if (best > 0) { bd[b] = (int8_t)r; bw[b] = best; }
+                }
+            }
+
+            // ---- P-O2b STEP 2: reduce the walk onto the SOURCE SLOTS --------
+            // Every open cell the walk reached, at hop e <= draw_r-1, offers its
+            // four face-neighbours as claimants at hop e+1 (the burning tile's
+            // own step onto its open face is NOT permeability-attenuated: the
+            // solid fuel tile is never traversed). A source can be seen from
+            // several ball cells, so each slot takes the canonical best:
+            // MINIMUM hop distance first, then MAXIMUM path weight — a
+            // lexicographic min/max, again an order-free reduction.
+            int8_t sd[cd::SLOTS_MAX];
+            q16    sw[cd::SLOTS_MAX];
+            for (int s = 0; s < n_slots; ++s) { sd[s] = -1; sw[s] = 0; }
+            for (int b = 0; b < n_ball; ++b) {
+                if (bd[b] < 0) continue;
+                const int hop = (int)bd[b] + 1;      // <= draw_r by construction
+                const q16 wp  = bw[b];
+                for (int d = 0; d < 4; ++d) {
+                    const int s = cd::BALL_SLOT.v[b][d];
+                    if (s < 0 || s >= n_slots) continue;   // (0,0), or past the radius
+                    if (sd[s] < 0 || hop < (int)sd[s] ||
+                        (hop == (int)sd[s] && wp > sw[s])) {
+                        sd[s] = (int8_t)hop; sw[s] = wp;
+                    }
+                }
+            }
+
+            // Gather the flammable claimant sources + each one's per-claimant
+            // DEMAND (design §2.3, generalized by v5.2):
+            //     demand_k = burn_cap * I_k * o2f_j * W_hop[d_k] * w_path_k
+            // (PINNED left-fold mul_q16, truncating — a conservative request
+            // that never over-draws). I_k = fire[i] is READ (the old pass
+            // dropped it as an outcome-neutral prefilter; the continuous law
+            // makes it the intensity factor). A flameless claimant (I_k == 0,
+            // e.g. a hot ember) demands 0 -> draws no O2, deposits no heat: "a
+            // choked/cool fire consumes nothing" (design §2.3).
+            //
+            // The loop walks the SLOT TABLE in its canonical order, one slot per
+            // source offset, so the claimant count can never exceed n_slots —
+            // the MAX_CLAIMANTS cap is structural, not hoped for.
+            int cl_slot[cd::SLOTS_MAX];  // slot key of the claimant (alloc_slot key)
+            int cl_src[cd::SLOTS_MAX];   // global cell index of the claimant source
+            int64_t dem[cd::SLOTS_MAX];  // per-claimant O2 demand this tick (Q16.16)
             int n_cl = 0;
-            for (int d = 0; d < 4; ++d) {
-                const int iy = y + D4[d][0], ix = x + D4[d][1];
+            for (int sl = 0; sl < n_slots; ++sl) {
+                const int iy = y + cd::OFF_DY[sl], ix = x + cd::OFF_DX[sl];
+                // Out of bounds: never written at all, so it can only ever hold
+                // the zero it was born with — the shipped idiom, preserved
+                // verbatim (zeroing here would be a no-op in practice but would
+                // no longer be byte-identical for a hand-seeded dem_acc).
                 if (!in_bounds(iy, ix, h, w)) continue;
                 const int i = iy * w + ix;
                 // Claim gate (design §3 step 1) — the ign/T/fuel gate is the real
                 // one (unchanged). fire[i] is now read for the DEMAND magnitude,
                 // not as a claim prefilter.
                 // D1 RESET RULE: this slot's sub-count debt survives only while
-                // the neighbour is an ACTIVELY BURNING claimant. Every gate
-                // below that rejects it zeroes the debt first, so a tile that
-                // stops burning and later re-ignites starts from clean books.
-                const size_t slot = (size_t)d * n + j;
+                // the source is an ACTIVELY BURNING, REACHABLE claimant. Every
+                // gate below that rejects it zeroes the debt first, so a tile
+                // that stops burning (or stops being reachable) and later
+                // re-ignites starts from clean books.
+                const size_t slot = (size_t)sl * n + j;
+                // P-O2b: the one NEW way a source stops being a claimant — the
+                // draw can no longer reach it (a door closed, a wall was built,
+                // the path flooded). Same footing as the gates below. At
+                // draw_r == 1 every in-bounds slot is always reachable
+                // (bd[0] == 0 unconditionally), so this never fires there.
+                if (sd[sl] < 0) { if (dem_acc) dem_acc[slot] = 0; continue; }
                 if (!flammable[i]) { if (dem_acc) dem_acc[slot] = 0; continue; }
                 if (wall_hp[i] <= FUEL_FLOOR) {           // no fuel (P5.1 ember out)
                     if (dem_acc) dem_acc[slot] = 0; continue; }
@@ -252,10 +472,16 @@ void CombustionSolver::step(
                     if (dem_acc) dem_acc[slot] = 0;
                     continue;
                 }
+                // ---- P-O2b: the DRAW WEIGHT for this (source, cell) pair ----
+                //     wq = W_hop[d] * w_path
+                // At draw_r == 1: d == 1 so W_hop[1] == FP_ONE, and the path is
+                // empty so w_path == FP_ONE; mul_q16(FP_ONE, FP_ONE) == FP_ONE
+                // exactly, and every use of wq below is then the identity.
+                const q16 wq = mul_q16(w_hop_q[(int)sd[sl]], sw[sl]);
                 q16 di;
                 if (dem_acc != nullptr) {
                     // ---- D1: error-feedback demand (combustion.h documents
-                    // the scale algebra and why the plane is face-keyed). The
+                    // the scale algebra and why the plane is slot-keyed). The
                     // WIDE product is never truncated; the sub-count remainder
                     // is carried in this slot and whole counts fall out as the
                     // debt accrues. Exact in expectation, unbiased, order-free
@@ -268,8 +494,15 @@ void CombustionSolver::step(
                     // orders below the ~1 count/tick draw, and it is what lets
                     // the remainder live in a plain non-negative int32 (a
                     // scale-2^32 remainder would need 33 bits).
-                    const int64_t P = (int64_t)burn_cap_q
-                                    * (int64_t)fire[i] * (int64_t)o2f_j;
+                    const int64_t P0 = (int64_t)burn_cap_q
+                                     * (int64_t)fire[i] * (int64_t)o2f_j;
+                    // P-O2b: fold the draw weight into the WIDE product, before
+                    // the accumulator sees it, so the sub-count error feedback
+                    // is carried on the weighted demand (a hop-2 claimant with
+                    // a 2/3 weight still draws its exact share in expectation,
+                    // rather than being truncated away). EXACT identity at
+                    // wq == FP_ONE — see apply_draw_weight.
+                    const int64_t P = apply_draw_weight(P0, wq);
                     const int64_t wide = (int64_t)dem_acc[slot] + (P >> 1);
                     const int64_t draw = wide >> 31;
                     dem_acc[slot] = (int32_t)(wide - (draw << 31));
@@ -277,20 +510,28 @@ void CombustionSolver::step(
                 } else {
                     // Pre-D1 path (nullable back-compat): the chained
                     // truncation, kept so direct-binding callers are unmoved.
-                    di = mul_q16(mul_q16(burn_cap_q, fire[i]), o2f_j);
+                    // The weight joins the same PINNED left fold, and
+                    // mul_q16(x, FP_ONE) == x, so draw_r == 1 is unmoved too.
+                    di = mul_q16(mul_q16(mul_q16(burn_cap_q, fire[i]), o2f_j), wq);
                 }
-                cl_dir[n_cl] = d;
+                cl_slot[n_cl] = sl;
                 cl_src[n_cl] = i;
                 dem[n_cl] = (int64_t)di;
                 ++n_cl;
             }
             if (n_cl == 0) continue;
+            // Structural, but re-checked: the gather loops the slot table, one
+            // slot per source offset, so this cannot fire. v5.2 wants a hit
+            // treated as a violation rather than a note, so it throws.
+            if (n_cl > n_slots) {
+                throw std::runtime_error("CombustionSolver: MAX_CLAIMANTS cap hit in Pass A");
+            }
 
             // --- Allocate O2[j] across the claimants (design §3 step 2) ------
             // D = Σ demand_k (now NON-uniform — demand varies with each source's
             // intensity). A whole cell whose claimants all demand 0 (all flameless
             // / choked) draws nothing — skip it (no writes, no telemetry).
-            int64_t alloc[4];
+            int64_t alloc[cd::SLOTS_MAX];
             int64_t D = 0;
             for (int k = 0; k < n_cl; ++k) D += dem[k];
             if (D == 0) continue;
@@ -307,7 +548,7 @@ void CombustionSolver::step(
                 // reciprocal_q16 is ~1 ULP inexact and would break conservation).
                 // num_k = O2[j] * demand_k (the demand-weighted share). Q16.16
                 // scale cancels (the split is a dimensionless ratio).
-                int64_t keys[4];
+                int64_t keys[cd::SLOTS_MAX];
                 int64_t sum_alloc = 0;
                 for (int k = 0; k < n_cl; ++k) {
                     const int64_t num = (int64_t)o2j * dem[k];  // < 2^43
@@ -315,12 +556,15 @@ void CombustionSolver::step(
                     keys[k]  = num % D;      // integer remainder = tiebreak key
                     sum_alloc += alloc[k];
                 }
-                // R leftover LSBs (provably in [0, n_cl) subset of [0,4)) go to
-                // the R claimants with the largest key; ties -> lowest source
-                // index (a fixed, bounded sub-LSB bias the isotropy test §6
-                // tolerates at <=3 LSB).
+                // R leftover LSBs (provably in [0, n_cl)) go to the R claimants
+                // with the largest key; ties -> lowest source index (a fixed,
+                // bounded sub-LSB bias the isotropy test §6 tolerates at <=3
+                // LSB). Order-free: the selection is a max over a fixed key +
+                // a total tiebreak, so the claimant ENUMERATION order cannot
+                // change the outcome — it generalizes to n_slots untouched.
                 int64_t R = (int64_t)o2j - sum_alloc;
-                bool chosen[4] = {false, false, false, false};
+                bool chosen[cd::SLOTS_MAX];
+                for (int k = 0; k < n_cl; ++k) chosen[k] = false;
                 for (int r = 0; r < (int)R; ++r) {
                     int best = -1;
                     for (int k = 0; k < n_cl; ++k) {
@@ -337,51 +581,16 @@ void CombustionSolver::step(
                 burn_j = (int64_t)o2j;   // contested cells fully drain (delta gamma)
             }
 
-            // --- Single-writer gas + heat writes at cell j (design §3 step 3) -
+            // --- Single-writer O2 DEBIT at cell j (design §3 step 3) ---------
+            // P-O2b: this is now the ONLY gas write Pass A makes. The O2 is
+            // booked where it was actually taken — the donor cell — so a sealed
+            // room's total O2 inventory is exactly conserved and smothering
+            // stays real (Erik's ships requirement). The combustion PRODUCTS
+            // (soot, N2) and the HEAT are no longer deposited here: they belong
+            // at the flame, and Pass B/Pass C put them there.
             O2[j] = (q16)((int64_t)o2j - burn_j);
-            // Exact Dalton split (unchanged): soot + (burn-soot) == burn, so
-            // N_total is conserved to the LSB regardless of soot rounding (#12).
-            const q16 soot = narrow_round(mul_wide((q16)burn_j, soot_yield_q));
-            SOOT[j] += soot;
-            N2[j]   += (q16)(burn_j - (int64_t)soot);
 
-            // ONE aggregate heat deposit against the POST-burn N_total (delta
-            // delta) — same idiom/dials as TemperatureSolver's Pass-1 radiative
-            // deposit; a per-source replay would reintroduce an order-dependent
-            // denominator and defeat isotropy. Rail counters are now PER-CELL
-            // (design §3): no test may assert their absolute value.
-            const q16 deposit = mul_q16((q16)burn_j, H_fuel_q);   // burn*H_fuel
-            q16 dT;
-            // THERMAL-MASS AXIS, P-EOS (ruling §2 site 3): the MEDIUM branch on
-            // the deposit's CONVERSION. A furniture tile is an open, gas-holding
-            // burn site (permeability 0.5) but it is thermally an OBJECT, and
-            // under ruling A3 its pore gas is thin — so dividing by that thin N
-            // would inflate the object's T by ~2.5-3x per unit burn. Convert via
-            // the tile's own heat_inv_shift instead: the SAME free bit-shift
-            // TemperatureSolver's MEDIUM-TEST SITE 5/6 applies to a ray deposit
-            // (`deposit >> log2(thermal_mass)`), so ray heat and combustion heat
-            // reach an object on ONE scale. Same energy in, object-appropriate
-            // conversion; the n_floor_heat counter is deliberately NOT touched on
-            // this path — there is no gas divisor here to floor.
-            const bool object_site = (thermal_solid != nullptr)
-                                  && (heat_inv_shift != nullptr)
-                                  && thermal_solid[j];
-            if (object_site) {
-                const int shift = heat_inv_shift[j];   // log2(thermal_mass), >= 0
-                dT = deposit >> shift;
-            } else {
-                q16 n_total_j = (q16)((int64_t)O2[j] + (int64_t)N2[j]);
-                if (n_total_j < n_floor_q) { n_total_j = n_floor_q; ++heat_floor_hits; }
-                const q16 recip_n  = reciprocal_q16(n_total_j);
-                const q16 e_over_n = mul_q16(deposit, recip_n);        // .../N
-                dT                 = recip_mul(e_over_n, recip_cv);    // .../c_v
-            }
-            heat_saturating_add(&temperature[j], dT);
-            if (temperature[j] > t_max_phys_q) {                   // v2.4 rail
-                temperature[j] = t_max_phys_q; ++t_max_phys_hits;
-            }
-
-            // Record each claimant's allocation on the face buffer so Pass B can
+            // Record each claimant's allocation on the slot buffer so Pass B can
             // charge the SOURCE for the O2 it drew from this air cell.
             //
             // P-R4 (ruling A1): the same loop now also pays each claimant its
@@ -400,7 +609,7 @@ void CombustionSolver::step(
             // cell (~1.4e4 counts) and mul_q16 by a near-format-max mantissa
             // then << shift would otherwise leave int32.
             for (int k = 0; k < n_cl; ++k) {
-                alloc_face[(size_t)cl_dir[k] * n + j] = (q16)alloc[k];
+                alloc_slot[(size_t)cl_slot[k] * n + j] = (q16)alloc[k];
                 if (heat != nullptr && alloc[k] > 0 && H_bed_m_q > 0) {
                     int64_t bed = (int64_t)mul_q16((q16)alloc[k], H_bed_m_q);
                     bed <<= H_bed_shift;
@@ -412,34 +621,182 @@ void CombustionSolver::step(
     }
 
     // ======================================================================
-    // Pass B — source cells. Single writer of wall_hp[i]. Each flammable source
-    // sums its <=4 incoming face allocations and pays the stoichiometric fuel
-    // cost ONCE for the total, floored ONCE at FUEL_FLOOR (design §3, "total-
-    // then-floor-once", critique B). This never takes wall_hp below 1 LSB
-    // (the "smolder never destroys" invariant — decisions #17): the floor is
-    // re-applied after the single subtraction, so wall_hp[i] >= FUEL_FLOOR
-    // always. Structural destruction stays exclusively FireSimulation's I>0 path.
+    // Pass B — source cells. Single writer of wall_hp[i] AND of this source's
+    // five deposit-site slots. Each flammable source sums its incoming slot
+    // allocations and pays the stoichiometric fuel cost ONCE for the total,
+    // floored ONCE at FUEL_FLOOR (design §3, "total-then-floor-once", critique
+    // B). This never takes wall_hp below 1 LSB (the "smolder never destroys"
+    // invariant — decisions #17): the floor is re-applied after the single
+    // subtraction, so wall_hp[i] >= FUEL_FLOOR always. Structural destruction
+    // stays exclusively FireSimulation's I>0 path.
+    //
+    // P-O2b adds the second job: decide WHERE this source's combustion products
+    // land (see `dep_site` above and the split rule at the site).
     // ======================================================================
     for (int y = 0; y < h; ++y) {
         const int row = y * w;
         for (int x = 0; x < w; ++x) {
             const int i = row + x;
             if (!flammable[i]) continue;
+            // Gather every donor's allocation to THIS source. Donor cell for
+            // slot s is j = i - OFF[s] (slot s at cell j points AT j + OFF[s]).
+            // `direct[]` keeps the hop-1 part separately, per face direction:
+            // slot s < 4 has OFF[s] == D4[s], so the donor sits on i's face in
+            // direction D4_OPP[s].
             int64_t burn_i = 0;
-            for (int d = 0; d < 4; ++d) {
-                const int jy = y + D4[d][0], jx = x + D4[d][1];
+            int64_t direct[4] = {0, 0, 0, 0};
+            for (int s = 0; s < n_slots; ++s) {
+                const int jy = y - cd::OFF_DY[s], jx = x - cd::OFF_DX[s];
                 if (!in_bounds(jy, jx, h, w)) continue;
                 const int j = jy * w + jx;
-                // The air neighbour j filed its allocation toward THIS source
-                // under j's outbound direction to i, which is D4_OPP[d].
-                burn_i += (int64_t)alloc_face[(size_t)D4_OPP[d] * n + j];
+                const int64_t a = (int64_t)alloc_slot[(size_t)s * n + j];
+                burn_i += a;
+                if (s < 4) direct[cd::D4_OPP[s]] = a;
             }
             if (burn_i == 0) continue;   // this source drew no O2 this tick
             // round-to-nearest — the same unbiased-sink idiom fire_simulation's
-            // wall_damage depletion uses.
+            // wall_damage depletion uses. UNCHANGED by P-O2b: the source still
+            // pays for exactly the O2 it consumed, wherever that O2 came from.
             const q16 fuel_cost = narrow_round(mul_wide(fuel_per_o2_q, (q16)burn_i));
             wall_hp[i] -= fuel_cost;
             if (wall_hp[i] < FUEL_FLOOR) wall_hp[i] = FUEL_FLOOR;
+
+            // ---- P-O2b: WHERE THE PRODUCTS LAND (v5.2, Erik's ruling 4) ----
+            // Deposit sites are the OPEN cells among {this tile} u {its four
+            // faces} — "the fire's own tile + its open faces". The fire's own
+            // tile counts only when it is itself an open, gas-holding cell,
+            // i.e. furniture; a wood/door tile is solid and holds no gas.
+            //
+            // THE SPLIT RULE, chosen so that R = 1 is an EXACT identity:
+            //   * what a face donated DIRECTLY (hop 1) is deposited back at
+            //     THAT face — products of the O2 drawn there stay there;
+            //   * the REMAINDER (everything drawn at hop >= 2, from cells that
+            //     are not the fire's own faces) is split EVENLY across the open
+            //     sites, exact integer divide, leftover LSBs to the LOWEST site
+            //     index. Deterministic, order-free, conservative to the LSB.
+            // At draw_r == 1 the remainder is identically ZERO and the own-tile
+            // share is therefore ZERO too, so each face receives exactly the
+            // allocation it made — which is precisely the shipped law's
+            // per-air-cell aggregate. That is the whole R = 1 oracle, at this
+            // site.
+            int  site_cell[5];
+            bool site_open[5];
+            int  m = 0;
+            for (int d = 0; d < 4; ++d) {
+                site_open[d] = false; site_cell[d] = -1;
+                const int sy = y + D4[d][0], sx = x + D4[d][1];
+                if (!in_bounds(sy, sx, h, w)) continue;
+                const int c = sy * w + sx;
+                if (solid[c] || is_vacuum[c]) continue;
+                site_open[d] = true; site_cell[d] = c; ++m;
+            }
+            // Slot 4 — the fire's OWN tile (open exactly when it is furniture).
+            site_open[4] = (!solid[i] && !is_vacuum[i]);
+            site_cell[4] = i;
+            if (site_open[4]) ++m;
+
+            const int64_t hop1 = direct[0] + direct[1] + direct[2] + direct[3];
+            int64_t rem = burn_i - hop1;          // the hop >= 2 draws
+            // m == 0 is unreachable when burn_i > 0 (every path starts at an
+            // open face of this tile, so at least one open face exists), but a
+            // lost remainder would be a silent leak, so it is guarded rather
+            // than assumed.
+            if (m == 0) rem = 0;
+            const int64_t even = (m > 0) ? rem / m : 0;
+            const int64_t extra = (m > 0) ? rem - even * m : 0;   // in [0, m)
+            int taken = 0;
+            for (int t = 0; t < 5; ++t) {
+                if (!site_open[t]) continue;
+                int64_t share = even + ((taken < (int)extra) ? 1 : 0);
+                ++taken;
+                if (t < 4) share += direct[t];
+                dep_site[(size_t)t * n + i] = (q16)share;
+            }
+        }
+    }
+
+    // ======================================================================
+    // Pass C — air cells, THE DEPOSIT (P-O2b, design v5.2 "deposits re-sited").
+    // Single writer of SOOT[s], N2[s] and temperature[s]. Every open cell
+    // gathers what the fires around it decided to deposit here: its four
+    // face-neighbours' outbound shares plus, if this cell is itself a burning
+    // furniture tile, its own share.
+    //
+    // This is the SECOND GATHER v5.2 asks for, "keyed like alloc_face" (i.e.
+    // like the alloc_slot buffer that idiom became): the
+    // deposit intent is written once by the source (Pass B) and read once by
+    // the air cell (here), so single-writer discipline — and with it order
+    // freedom and CPU/CUDA bit-identity — survives the re-siting intact.
+    //
+    // The arithmetic is the shipped deposit, verbatim, with `burn_j` replaced
+    // by the gathered `burn_dep`. At draw_r == 1 the two are equal cell for
+    // cell (see Pass B's split rule), and O2[s]/N2[s] hold exactly the values
+    // the shipped in-line deposit read, so this pass is byte-identical there.
+    // ======================================================================
+    for (int y = 0; y < h; ++y) {
+        const int row = y * w;
+        for (int x = 0; x < w; ++x) {
+            const int s = row + x;
+            if (solid[s] || is_vacuum[s]) continue;
+            // Own-tile share (non-zero only for a burning furniture tile) plus
+            // the four faces. Source i on face d of s filed its share toward s
+            // under its OWN outbound direction to s, which is D4_OPP[d].
+            int64_t burn_dep = (int64_t)dep_site[(size_t)4 * n + s];
+            for (int d = 0; d < 4; ++d) {
+                const int iy = y + D4[d][0], ix = x + D4[d][1];
+                if (!in_bounds(iy, ix, h, w)) continue;
+                const int i = iy * w + ix;
+                burn_dep += (int64_t)dep_site[(size_t)D4_OPP[d] * n + i];
+            }
+            if (burn_dep == 0) continue;   // nothing burnt for this cell
+
+            // Exact Dalton split (unchanged): soot + (burn-soot) == burn, so
+            // the products' N_total is conserved to the LSB regardless of soot
+            // rounding (#12). NOTE the honest consequence of the re-siting: the
+            // O2 leaves the DONOR and the products appear at the FLAME, so
+            // N_total is conserved GLOBALLY rather than per cell — which is the
+            // physics (combustion products rise with the flame, and the deficit
+            // they leave behind is what draws fresh air in), and is exactly
+            // what makes the hot-air visuals follow the fire again.
+            const q16 soot = narrow_round(mul_wide((q16)burn_dep, soot_yield_q));
+            SOOT[s] += soot;
+            N2[s]   += (q16)(burn_dep - (int64_t)soot);
+
+            // ONE aggregate heat deposit against the POST-burn N_total (delta
+            // delta) — same idiom/dials as TemperatureSolver's Pass-1 radiative
+            // deposit; a per-source replay would reintroduce an order-dependent
+            // denominator and defeat isotropy. Rail counters are PER-CELL
+            // (design §3): no test may assert their absolute value.
+            const q16 deposit = mul_q16((q16)burn_dep, H_fuel_q);   // burn*H_fuel
+            q16 dT;
+            // THERMAL-MASS AXIS, P-EOS (ruling §2 site 3): the MEDIUM branch on
+            // the deposit's CONVERSION. A furniture tile is an open, gas-holding
+            // burn site (permeability 0.5) but it is thermally an OBJECT, and
+            // under ruling A3 its pore gas is thin — so dividing by that thin N
+            // would inflate the object's T by ~2.5-3x per unit burn. Convert via
+            // the tile's own heat_inv_shift instead: the SAME free bit-shift
+            // TemperatureSolver's MEDIUM-TEST SITE 5/6 applies to a ray deposit
+            // (`deposit >> log2(thermal_mass)`), so ray heat and combustion heat
+            // reach an object on ONE scale. Same energy in, object-appropriate
+            // conversion; the n_floor_heat counter is deliberately NOT touched on
+            // this path — there is no gas divisor here to floor.
+            const bool object_site = (thermal_solid != nullptr)
+                                  && (heat_inv_shift != nullptr)
+                                  && thermal_solid[s];
+            if (object_site) {
+                const int shift = heat_inv_shift[s];   // log2(thermal_mass), >= 0
+                dT = deposit >> shift;
+            } else {
+                q16 n_total_s = (q16)((int64_t)O2[s] + (int64_t)N2[s]);
+                if (n_total_s < n_floor_q) { n_total_s = n_floor_q; ++heat_floor_hits; }
+                const q16 recip_n  = reciprocal_q16(n_total_s);
+                const q16 e_over_n = mul_q16(deposit, recip_n);        // .../N
+                dT                 = recip_mul(e_over_n, recip_cv);    // .../c_v
+            }
+            heat_saturating_add(&temperature[s], dT);
+            if (temperature[s] > t_max_phys_q) {                   // v2.4 rail
+                temperature[s] = t_max_phys_q; ++t_max_phys_hits;
+            }
         }
     }
 }

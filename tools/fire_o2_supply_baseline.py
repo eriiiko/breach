@@ -168,12 +168,36 @@ def measure_supply(material_id, *, pin_I=OPERATING_POINT_I,
     dt = 1.0 / tps
     n_max = int(round(run_seconds * tps))
 
-    rec_t, rec_x, rec_kw = [], [], []
+    rec_t, rec_x, rec_kw, rec_true = [], [], [], []
     for k in range(1, n_max + 1):
         gmap.fire[cy, cx] = pin_I_q          # infinite-fuel / pinned-I pass
         gmap.wall_hp[cy, cx] = wall_hp0
         sim.set_paused(False)
         sim.step()
+        # ---- P-O2b: THE LAW-AGNOSTIC TRUE DRAW ---------------------------
+        # The analytic figure below re-implements the RADIUS-1 demand formula
+        # in Python (a sum over the tile's own open faces), so it cannot see an
+        # extended draw: under P-O2b's F-O2b law the tile also draws from cells
+        # at hop 2..DRAW_R, and those donors are invisible to a four-face sum.
+        #
+        # This measures what the fire ACTUALLY consumes under WHATEVER law is
+        # configured: run ONE more combustion pass — the real dispatch, real
+        # dials, real backend — on the settled state, total the O2 it removed
+        # from the whole grid, then restore every plane the pass mutates. It is
+        # a pure diagnostic: the sim's own trajectory is untouched.
+        #
+        # (The obvious cheaper proxy — wall_hp lost per tick — is WRONG here
+        # and was measured to be ~84x too large: FireSimulation's own I>0
+        # `wall_damage` pass depletes the same plane on the same tick, and at
+        # the pinned I it dominates the combustion fuel payment completely.)
+        _saved = {k: getattr(gmap, k).copy()
+                  for k in ("gas", "temperature", "wall_hp", "heat", "dem_acc")}
+        _o2_before = float(gmap.gas[O2].astype(np.int64).sum())
+        sim.physics_runner._run_combustion(gmap, dt)
+        _drawn = _o2_before - float(gmap.gas[O2].astype(np.int64).sum())
+        for _k, _v in _saved.items():
+            getattr(gmap, _k)[...] = _v
+        rec_true.append(_drawn / dt)
         o2f_faces = []
         for (ny, nx) in nbrs:
             o2j = float(int(gmap.gas[O2, ny, nx]))
@@ -196,10 +220,13 @@ def measure_supply(material_id, *, pin_I=OPERATING_POINT_I,
     rec_t = np.asarray(rec_t)
     rec_x = np.asarray(rec_x)
     rec_kw = np.asarray(rec_kw)
+    rec_true = np.asarray(rec_true)
     steady_n = max(1, int(round(steady_window_s * tps)))
     x_ss = float(rec_x[-steady_n:].mean())
     kw_ss = float(rec_kw[-steady_n:].mean())
     counts_per_s_ss = kw_ss * 1000.0 / J_PER_COUNT
+    true_counts_per_s_ss = float(rec_true[-steady_n:].mean())
+    true_kw_ss = true_counts_per_s_ss * J_PER_COUNT / 1000.0
 
     ring_profile = _ring_profile(gmap, cy, cx, max_ring)
 
@@ -208,8 +235,11 @@ def measure_supply(material_id, *, pin_I=OPERATING_POINT_I,
         pin_I=pin_I, burn_rate=burn_rate, x_ext=x_ext, x_full=x_full,
         interior_w=interior_w, interior_h=interior_h, crate_xy=tuple(crate_xy),
         run_seconds=run_seconds, steady_window_s=steady_window_s,
+        draw_r=int(getattr(CFG.physics.combustion, "draw_r", 1)),
         x_local_ss=x_ss, delivery_kw_ss=kw_ss, delivery_counts_per_s_ss=counts_per_s_ss,
+        true_counts_per_s_ss=true_counts_per_s_ss, true_delivery_kw_ss=true_kw_ss,
         ring_profile=ring_profile, t=rec_t, x_local=rec_x, delivery_kw=rec_kw,
+        true_counts_per_s=rec_true,
     )
     if verbose:
         _print_measure(metrics)
@@ -226,7 +256,12 @@ def _print_measure(m):
     print(f"  quasi-steady X_local (last {m['steady_window_s']:g}s): {m['x_local_ss']:.4f}  "
          f"(ambient 0.21, X_ext {m['x_ext']:.2f})")
     print(f"  quasi-steady O2 delivery: {m['delivery_counts_per_s_ss']:.2f} counts/s  "
-         f"= {m['delivery_kw_ss']*1000.0:.4f} W  = {m['delivery_kw_ss']:.6f} kW")
+         f"= {m['delivery_kw_ss']*1000.0:.4f} W  = {m['delivery_kw_ss']:.6f} kW"
+         f"   [analytic RADIUS-1 formula]")
+    print(f"  TRUE draw (law-agnostic, from the fuel payment), DRAW_R = "
+         f"{m['draw_r']}: {m['true_counts_per_s_ss']:.2f} counts/s  "
+         f"= {m['true_delivery_kw_ss']*1000.0:.4f} W  "
+         f"= {m['true_delivery_kw_ss']:.6f} kW")
     print(f"  ring X profile (BFS hop-distance from the tile):")
     for r, x in sorted(m["ring_profile"].items()):
         print(f"    ring {r}: X = {x:.4f}")
@@ -240,10 +275,12 @@ def write_measure_csv(m, path):
         w.writerow(["# fire_o2_supply_baseline per-tick trace"])
         w.writerow([f"# material={m['material_name']} pin_I={m['pin_I']} "
                     f"burn_rate={m['burn_rate']}"])
-        w.writerow(["t_s", "X_local", "delivery_kW"])
+        w.writerow([f"# draw_r={m['draw_r']}"])
+        w.writerow(["t_s", "X_local", "delivery_kW", "true_counts_per_s"])
         for i in range(len(m["t"])):
             w.writerow([f"{m['t'][i]:.4f}", f"{m['x_local'][i]:.6f}",
-                        f"{m['delivery_kw'][i]:.8f}"])
+                        f"{m['delivery_kw'][i]:.8f}",
+                        f"{m['true_counts_per_s'][i]:.6f}"])
 
 
 def main():
@@ -254,18 +291,34 @@ def main():
         results[m["material_name"]] = m
         write_measure_csv(m, ARTIFACTS_DIR / f"o2_supply_baseline_{m['material_name']}.csv")
 
+    draw_r = int(getattr(CFG.physics.combustion, "draw_r", 1))
     lines = []
-    lines.append("O2 SUPPLY BASELINE -- pre-2b, radius-1 draw (P-F4a task order item 4)")
+    lines.append(f"O2 SUPPLY MEASUREMENT -- DRAW_R = {draw_r} "
+                 "(P-F4a task order item 4; P-O2b added the true-draw column)")
     lines.append(f"J_PER_COUNT = {J_PER_COUNT}  OPERATING_POINT_I = {OPERATING_POINT_I}")
     lines.append("")
     for name, m in results.items():
         lines.append(f"[{name}]")
         lines.append(f"  X_local (quasi-steady) = {m['x_local_ss']:.4f}")
         lines.append(f"  delivery = {m['delivery_counts_per_s_ss']:.2f} counts/s "
-                    f"= {m['delivery_kw_ss']*1000.0:.4f} W = {m['delivery_kw_ss']:.6f} kW")
+                    f"= {m['delivery_kw_ss']*1000.0:.4f} W = {m['delivery_kw_ss']:.6f} kW"
+                    f"  [analytic RADIUS-1 formula]")
+        lines.append(f"  TRUE draw (law-agnostic, from the fuel payment) = "
+                    f"{m['true_counts_per_s_ss']:.2f} counts/s "
+                    f"= {m['true_delivery_kw_ss']*1000.0:.4f} W "
+                    f"= {m['true_delivery_kw_ss']:.6f} kW")
         lines.append(f"  ring X profile: "
                     + ", ".join(f"r{r}={x:.4f}" for r, x in sorted(m["ring_profile"].items())))
         lines.append("")
+    lines.append(
+        "P-O2b NOTE: the 'delivery' line re-implements the RADIUS-1 demand "
+        "formula in Python (a sum over the tile's own open faces) and so "
+        "CANNOT see an extended draw -- under DRAW_R > 1 the tile also draws "
+        "from cells at hop 2..DRAW_R. The 'TRUE draw' line is the "
+        "law-agnostic measurement (recovered from Pass B's fuel payment, "
+        "which is charged on the total O2 the source drew from ALL donors); "
+        "it is the number to compare across radii.")
+    lines.append("")
     lines.append(
         "DEVIATION (flagged, not silently fixed): both figures land far below "
         "the design doc's T2-cited 10-45 kW band. See this file's module "

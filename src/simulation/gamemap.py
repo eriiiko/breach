@@ -56,6 +56,43 @@ from simulation.gases import (  # noqa: F401  (re-exported)
 )
 
 
+# P-O2b (docs/fire_realism_design_2026-08-01.md v5.2 "F-O2b") — the draw's two
+# authored dials, resolved in ONE place so the dem_acc plane's depth and the
+# value the C++ pass is told can never disagree.
+COMBUSTION_DRAW_R_MAX = 3          # the baked offset tables' radius ceiling
+
+
+def combustion_draw_slot_count(draw_r: int) -> int:
+    """|{(dy,dx) : 1 <= |dy|+|dx| <= draw_r}| — 4 / 12 / 24 at R = 1 / 2 / 3.
+
+    The twin of ``combustion_draw::slot_count`` in cpp/src/combustion.h.
+    """
+    return 2 * draw_r * (draw_r + 1)
+
+
+def combustion_draw_slots() -> int:
+    """MAX_CLAIMANTS — the ``dem_acc`` plane's slot depth, from ``config.toml``.
+
+    HARD-CHECKED here as well as in C++: a plane shallower than the radius
+    needs would ALIAS two sources' sub-count debts onto one slot, which is a
+    silent corruption of synced state, so v5.2 rules a hit cap a violation
+    rather than a note.
+    """
+    comb = getattr(CFG.physics, "combustion", None)
+    draw_r = int(getattr(comb, "draw_r", 1))
+    if not 1 <= draw_r <= COMBUSTION_DRAW_R_MAX:
+        raise ValueError(
+            f"[physics.combustion] draw_r = {draw_r} out of range "
+            f"(1..{COMBUSTION_DRAW_R_MAX})")
+    need = combustion_draw_slot_count(draw_r)
+    cap = int(getattr(comb, "max_claimants", need))
+    if cap < need:
+        raise ValueError(
+            f"[physics.combustion] max_claimants = {cap} is smaller than "
+            f"draw_r = {draw_r} requires ({need} claimant slots)")
+    return cap
+
+
 class SealBlocked(ValueError):
     """A seal precondition failed on live state. State is untouched (atomic).
 
@@ -439,11 +476,20 @@ class GameMap:
         # ``heat``/``rad_net``: cleared together at the end of Simulation.step.
         self.rad_flux = np.zeros((h, w), dtype=np.int32)
         # D1 (ruling amendment 5) — the COMBUSTION DEMAND ACCUMULATOR.
-        # (4, h, w) int32, PERSISTENT SYNCED state (not a per-tick buffer).
-        # Slot ``[d, y, x]`` is the sub-count oxygen debt the air cell (y, x)
-        # owes toward the flammable claimant in direction ``D4[d]``
-        # (N, S, W, E — the same face keying ``alloc_face`` uses inside the
-        # combustion pass).
+        # ``(max_claimants, h, w)`` int32, PERSISTENT SYNCED state (not a
+        # per-tick buffer). Slot ``[s, y, x]`` is the sub-count oxygen debt the
+        # air cell (y, x) owes toward the flammable claimant at draw-slot
+        # offset ``s`` — the same offset keying ``alloc_slot`` uses inside the
+        # combustion pass.
+        #
+        # P-O2b (design v5.2 "F-O2b"): the plane WIDENS with the extended
+        # oxygen draw, from the 4 faces to the ``2R(R+1)`` offsets within BFS
+        # hop-radius ``DRAW_R`` (4 / 12 / 24 at R = 1 / 2 / 3). The slot key is
+        # the SOURCE OFFSET, not an enumeration ordinal, so a carried debt
+        # still means the same thing next tick as fires appear and die. Ring 1
+        # of the offset table is exactly ``D4``'s order, so at DRAW_R = 1 this
+        # IS the pre-P-O2b (4, h, w) plane, slot for slot — which is why the
+        # R = 1 regression oracle reproduces the old digests byte for byte.
         #
         # WHY IT EXISTS: the per-claimant demand ``burn_rate·dt·I·o2f`` is ~1.06
         # Q16.16 counts at the blessed operating point, and the old chained
@@ -455,9 +501,10 @@ class GameMap:
         # and the Huggett ``burn_rate`` anchor is untouched.
         #
         # Written IN-PLACE by the combustion pass; a slot is zeroed the moment
-        # its neighbour stops being a burning claimant (see combustion.h for the
-        # full reset rule). Single-writer per air cell -> no atomics on CUDA.
-        self.dem_acc = np.zeros((4, h, w), dtype=np.int32)
+        # its source stops being a burning, REACHABLE claimant (see combustion.h
+        # for the full reset rule). Single-writer per air cell -> no atomics on
+        # CUDA.
+        self.dem_acc = np.zeros((combustion_draw_slots(), h, w), dtype=np.int32)
         # Temperature field (engine/06 §1, proposal §1 / §3.1): the persistent
         # consumer of the `heat` deposit. Q16.16 FIXED-POINT int32, SAME format
         # and scale as `heat` (TEMP_SCALE == HEAT_SCALE == 65536). Allocated to
