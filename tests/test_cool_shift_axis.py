@@ -73,14 +73,26 @@ def _expected_exposed(base):
 # 1. The material column
 # ---------------------------------------------------------------------------
 def test_every_material_carries_the_column_seeded_at_the_old_global():
-    """Gate (a)'s precondition, asserted in the suite: the patch ships the axis
-    with EVERY material at the value the single global used to impose, so the
-    engine is byte-identical on arrival. Moving any row is a deliberate,
-    HUMAN-TESTED feel change — and this test is what will notice."""
+    """Gate (a)'s precondition, asserted in the suite: every material that
+    EXISTED when this axis landed ships at the value the single global used
+    to impose, so the engine is byte-identical on arrival. Moving any of
+    THOSE rows is a deliberate, HUMAN-TESTED feel change — and this test is
+    what will notice.
+
+    P-F4a's kindling is a brand-new bench-only material row (no shipped
+    level paints it, so nothing EXISTING changes feel); its cool_shift=9 is
+    a locked value from its own spec
+    (docs/fire_realism_design_2026-08-01.md v5.2), not a re-tune of a
+    material this axis already shipped — excluded from the seeded-default
+    check by name, not by weakening the check for everyone else.
+    """
     tbl = MaterialTable.from_config(CFG)
     assert tbl.cool_shift.dtype == np.int32
     assert tbl.cool_shift.shape == (tbl.n,)
+    NEW_MATERIALS_WITH_LOCKED_VALUES = {"kindling"}
     for name, cs in zip(tbl.names, tbl.cool_shift.tolist()):
+        if name in NEW_MATERIALS_WITH_LOCKED_VALUES:
+            continue
         assert cs == COOL_SHIFT, (
             f"materials.{name}.cool_shift is {cs}, expected the seeded "
             f"{COOL_SHIFT}. If this is an intended re-tune, gate (a) "

@@ -40,6 +40,15 @@ MAT_FURNITURE = 6
 # walls already use. MAT_DOOR itself is untouched: it stays the LEGACY
 # painted door (walkable-but-flow-solid) until the A7 migration.
 MAT_DOOR_CLOSED = 7
+# P-F4a (docs/fire_realism_design_2026-08-01.md v5.2 execution order): the
+# CAMPFIRE REFERENCE OBJECT — a 1-3 kg effective-class fuel row, the tuning
+# reference the campfire arc's dials (growth tempo, size, knee position,
+# part-burn fraction) are calibrated against (v4 ruling 2; plain edition
+# §10). Bench-registered here (a real material id, so MaterialTable's
+# contiguity check + every load-time check stay honest) but not placed in
+# any shipped level — see [materials.kindling] in config.toml for the row
+# and its per-column deviations from furniture.
+MAT_KINDLING = 8
 
 # Config-key <-> id mapping. The key is the ``[materials.<name>]`` table name.
 # Listed in id order; ``MaterialTable`` validates contiguity.
@@ -52,6 +61,7 @@ MATERIAL_NAMES = {
     MAT_GLASS: "glass",
     MAT_FURNITURE: "furniture",
     MAT_DOOR_CLOSED: "door_closed",
+    MAT_KINDLING: "kindling",
 }
 
 # Scalar columns: name -> numpy dtype. ``light_atten`` is handled separately

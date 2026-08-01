@@ -84,23 +84,34 @@ def test_existing_solid_materials_keep_their_tuned_thermal_mass():
                 "glass": 16, "furniture": 8, "door_closed": 8}
     got = {name: int(round(float(v)))
            for name, v in zip(tbl.names, tbl.thermal_mass.tolist())}
-    assert got == expected
+    # Subset check (not full-dict equality): the test's OWN name/intent is
+    # "EXISTING materials keep their tuned value" — a later row (P-F4a's
+    # kindling, thermal_mass=8 per its own locked spec) must not force an
+    # edit here just to be listed; it is covered by its own material-row
+    # tests instead.
+    assert expected.items() <= got.items(), (
+        f"an EXISTING material's thermal_mass moved: expected {expected}, "
+        f"got {got}")
 
 
 def test_thermal_solid_is_derived_from_thermal_mass_not_permeability():
     """``thermal_solid`` is the THERMAL axis; ``solid`` is the FLOW axis.
 
-    Furniture is the ONE row where they disagree — and that divergence is the
-    entire point of the patch (addendum D4).
+    Furniture was the ONE row where they disagreed when this axis landed —
+    that divergence was the entire point of the patch (addendum D4). P-F4a's
+    kindling (a real material row, cellulosic-copied from furniture per its
+    own locked spec) shares the SAME shape by construction: permeability 0.5
+    (flow-open) + thermal_mass 8 (a thermal solid) — a second, expected
+    member of this set, not a regression.
     """
     tbl = MaterialTable.from_config(CFG)
     thermal = tbl.thermal_solid
     flow = tbl.permeability <= 0.0
     divergent = [name for name, a, b in zip(tbl.names, flow.tolist(),
                                             thermal.tolist()) if a != b]
-    assert divergent == ["furniture"], (
-        "furniture must be the ONLY permeable thermal solid — the byte-identity "
-        f"gate rests on it; got {divergent}")
+    assert divergent == ["furniture", "kindling"], (
+        "furniture + kindling must be the ONLY permeable thermal solids — "
+        f"the byte-identity gate rests on this set; got {divergent}")
     assert bool(thermal[MAT_FURNITURE]) is True
     assert bool(flow[MAT_FURNITURE]) is False
 
