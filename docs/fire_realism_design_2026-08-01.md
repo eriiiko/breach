@@ -839,3 +839,25 @@ effective rays, at the price of genuinely harder occlusion bookkeeping.
 (d) The empirical gate that decides whether this ever matters: P-F1a's gate
 (g) cost re-measure (128x256 open-field firestorm, pure-radiation fast path,
 emitter-count clause). If it passes with margin, this register entry sleeps.
+
+---
+
+## THE SIZING RULING — PACKAGE A, GO (Erik, 2026-08-02)
+
+Erik's decision, closing the arc's designed pause: **DRAW_R = 2 (shipped);
+NO potency now — but potency is PRESERVED as an explicit option:** one
+config key `o2_potency` (default 1.0), a load-time multiplier folded into
+the baked heat-per-O2 constants (H_bed/H_fuel chain) — zero runtime cost,
+documented at the key with its known price (sealed-room smothering weakens
+by the same factor). **The old plateau target is RETIRED as wrong, not
+unaffordable** (Erik: "the old temperatures were way too hot… the too hot I
+remembered was fires at 2000-4000 K… seems pretty realistic now"): the
+watt books for all calibration are the measured R=2 supply (~11-13 kW
+lone-crate) ⇒ lone still crate settles ~890 K deep orange; clusters/wind
+climb toward 1000-1300 K by the fourth-root law; the pre-arc 2000-4000 K
+era never returns. phi ≡ 1, flame_lift ≡ 0 (v7.1 item 1's scope is the
+shipped configuration). P-F1a builds the v6/v7/v7.1 radiation books at
+frozen dials (the P-R2-style acceptance: bench fires expectedly die until
+P-F1b's recalibration, reds named); P-F1b then runs the F8 order at THESE
+watt books. The R2-vs-R1 combustion wall-time delta is measured and
+reported with P-F1a's bench (owed to Erik).
