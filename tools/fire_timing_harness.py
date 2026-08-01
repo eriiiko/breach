@@ -83,6 +83,10 @@ FP_ONE = 1 << 16
 
 # Canon material ids == CSV codes (tools/gen_fire_studio.py, simulation.materials).
 AIR, HULL, WOOD, DOOR, STEEL, GLASS, FURN, SPACE = 0, 1, 2, 3, 4, 5, 6, 9
+# P-F4a: the CAMPFIRE REFERENCE OBJECT (docs/fire_realism_design_2026-08-01.md
+# v5.2's task order item 2) -- [materials.kindling], id 8 (simulation.materials
+# MAT_KINDLING). Bench-registered only; no shipped level paints it.
+KIND = 8
 
 
 def _smoothstep(a, b, x):
@@ -155,6 +159,39 @@ def restore_overrides(restore):
 
 # ---------------------------------------------------------------------------
 # Scenario builder
+# ---------------------------------------------------------------------------
+# P-F4a task order item 3 -- THE STILL-AIR REFERENCE ARENA CHARTER (round-3
+# "Problem-5 arena replan": docs/fire_realism_critiques_round3_2026-08-02.md
+# intent-fidelity lens, "the Problem-5 arena replan (STILL-AIR REFERENCE +
+# FORCED-WIND become named F4 modes with tuned-parameter lists and a
+# literature slot)"; docs/fire_realism_design_2026-08-01.md v5.2's execution
+# order names this exact bullet). ``build_level`` below (NATURAL/still-air
+# wind, ``--wind`` omitted or 0) is now the NAMED F4 mode that OWNS the
+# campfire-arc tuning dials Erik sets by eye at the tuning-and-play session
+# (design doc v5.2 "ERIK: radius + fire-power sizing call"; plain edition
+# `fire_realism_design_plain_2026-08-02.md` §7: "the campfire fraction, the
+# knee position, room feel, and the wind anchors all get set by eye"):
+#
+#   * GROWTH TEMPO   -- k_grow/k_die (the ramp-up/decay rate pair this
+#                       module's ``--k-sweep`` mode already tunes).
+#   * SIZE            -- the flame-look power/HRR the Q-0/R-SCALED sizing
+#                        call picks to match the measured air supply (design
+#                        doc v5.2, the new touchpoint "ERIK: radius +
+#                        fire-power sizing call", run AFTER P-O2b/P-F4b).
+#   * KNEE POSITION    -- I_crit/I_eq, design doc F8 steps 5+6 ("knee +
+#                        duration, JOINT under R1 ... Erik's session"; gate
+#                        (vi) targets I_crit/I_eq in [0.3, 0.7]).
+#   * PART-BURN FRACTION -- design doc gate (vii): "the part-burn fraction is
+#                        ERIK'S at the session (incumbent measured: 61.7%,
+#                        HISTORICAL -- v5.3 re-points the oracle at the
+#                        campfire reference object)".
+#
+# FORCED-WIND (``--wind`` != 0, below) is the SIBLING named F4 mode -- it
+# owns the wind anchors + its own literature slot (P-F4b: "FORCED-WIND level
+# with a literature slot"); it is NOT re-chartered by this patch.
+#
+# This is a documentation-only ownership statement: the scenario this
+# function builds, and every knob it exposes, is UNCHANGED by P-F4a.
 # ---------------------------------------------------------------------------
 def build_level(interior_w, interior_h, crate_xy, tile_size_m,
                 sky_tau_s=60.0, sponge_width=8):

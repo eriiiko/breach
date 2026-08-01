@@ -1030,6 +1030,43 @@ blast_resist = 0.0
 burst_threshold = 2.0
 cover_exposure = 1.0   # solid wall: stops the march physically, no roll
 
+# P-F4a (docs/fire_realism_design_2026-08-01.md v5.2 execution order; plain
+# edition §10, v4 ruling 2): the CAMPFIRE REFERENCE OBJECT — the 1-3 kg
+# effective-class tuning-reference fuel Erik's feel verdicts are actually
+# calibrated on (the old 6-8 min universal band + lone-crate reference are
+# RETIRED; burn durations are per-material-family now). Registered as a real
+# material id (bench-side; no shipped level paints it) so the room/vent bench
+# and the still-air arena can ignite it. Cellulosic values COPIED FROM
+# [materials.furniture] EXCEPT the four columns called out below (locked spec,
+# P-F4a task order item 2 — do not retune without a design amendment).
+[materials.kindling]
+hp = 8                # SMALL FUEL STORE (spec-locked, ~= 8): fuel is still
+                       # combat-hp-coupled TODAY — this hp doubles as both the
+                       # object's combat health AND the fire-energy store. The
+                       # fuel-column decoupling (v5.3: a dedicated `fuel`
+                       # column, hp stays combat health) lands in a LATER
+                       # patch; until then, sizing this small is what makes a
+                       # kindling-class object burn down kindling-fast.
+flammable = true
+mobility = 400        # copied from furniture (climbable at a penalty)
+permeability = 0.5    # copied from furniture (smoke/air drift past it)
+light_atten = [0.55, 0.55, 0.55]   # copied from furniture (partial occlusion)
+heat_atten = 0.5      # spec value (== furniture's)
+conductivity = 0.0    # spec value: crate-conduction lands with the law
+                       # patches (P-F1a/P-F3), not here
+thermal_mass = 8       # spec value (== furniture's; wood-like, heat >> 3)
+cool_shift = 9         # spec value — DIFFERS from furniture's 5. e-fold
+                       # 2^9/24 = 21.3 s (furniture: 2^5/24 = 1.3 s): the
+                       # campfire reference holds its heat far longer per unit
+                       # fuel than a crate does, by design (locked spec value).
+ignition_temp = 280.0  # spec value: furniture's, PER THE ROW CONVENTIONS —
+                       # do NOT import literature values (~250 C) raw here.
+wave_reflect = 0.2     # copied from furniture
+wave_absorb = 0.5      # copied from furniture
+blast_resist = 0.0     # copied from furniture
+burst_threshold = 2.0  # copied from furniture
+cover_exposure = 0.55  # copied from furniture
+
 # =============================================================================
 # Weapons framework (mechanics/03 §4) — three data tables loaded by
 # simulation.weapons: [weapons.*] the delivery instrument, [ammo.*] the round,

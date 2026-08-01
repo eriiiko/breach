@@ -47,7 +47,7 @@ from level_loader import (SPACE_CODE, SpawnEntry,  # noqa: E402
                           materials_from_tilemap)
 from simulation.materials import (MAT_AIR, MAT_DOOR, MAT_DOOR_CLOSED,  # noqa: E402
                                   MAT_FURNITURE, MAT_GLASS, MAT_HULL,
-                                  MAT_STEEL, MAT_WOOD, MATERIAL_NAMES)
+                                  MAT_KINDLING, MAT_STEEL, MAT_WOOD, MATERIAL_NAMES)
 from make_tileset import build_tileset  # noqa: E402
 from bake_level_art import (bake_full, bake_region,  # noqa: E402
                             load_tileset)
@@ -101,7 +101,12 @@ def test_build_palette_matches_material_table():
 def test_build_palette_picks_up_new_materials(monkeypatch):
     """A material added to MATERIAL_NAMES (one config row) appears in the
     palette on the next call — no tool change (engine/15 §1)."""
+    # P-F4a: material ids are now dense through 8 (kindling), so a bare
+    # `max + 1` probe lands ON SPACE_CODE (9) — walk past any taken id
+    # (including the reserved SPACE_CODE) to find a genuinely free one.
     free_id = max(MATERIAL_NAMES) + 1
+    while free_id in MATERIAL_NAMES or free_id == SPACE_CODE:
+        free_id += 1
     assert free_id != SPACE_CODE                    # 9 stays reserved
     monkeypatch.setitem(MATERIAL_NAMES, free_id, "carpet")
     pal = build_palette()
@@ -387,8 +392,12 @@ def test_wall_family_codes_from_manifest(ts16):
     # wall_family_codes unions EVERY manifest group: greybox's [groups] wall
     # family plus door_closed's own single-member wall-mode group (A6 — a
     # closed entity door IS "a wall stands here" for room/corridor/door-run
-    # geometry; the greybox recipe auto-covers new materials).
-    assert wall_family_codes(ts16) == WALL_CODES | {MAT_DOOR_CLOSED}
+    # geometry; the greybox recipe auto-covers new materials). kindling
+    # (P-F4a — no curated tileset recipe yet, bench-only material) falls
+    # into the SAME "new material, no recipe yet" fallback make_tileset.py
+    # documents (its own singleton wall-mode group + a hash-derived colour) —
+    # exactly the door_closed precedent, not a new special case.
+    assert wall_family_codes(ts16) == WALL_CODES | {MAT_DOOR_CLOSED, MAT_KINDLING}
 
 
 # ---------------------------------------------------------------------------

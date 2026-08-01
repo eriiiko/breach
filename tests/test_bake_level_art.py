@@ -353,8 +353,9 @@ def test_region_rect_is_clipped_to_the_grid(ts16):
 
 def test_unknown_tilemap_code_is_a_hard_error(ts16):
     m = _blank(3)
-    m[1, 1] = 8                # not a v2 code (7 became door_closed in A6)
-    with pytest.raises(ValueError, match="unknown code 8"):
+    m[1, 1] = 10                # not a v2 code (7 became door_closed in A6;
+                                 # 8 became kindling in P-F4a)
+    with pytest.raises(ValueError, match="unknown code 10"):
         bake_region(m, ts16, (0, 0, 3, 3), px_per_tile=TEST_PX, seed=0)
 
 
