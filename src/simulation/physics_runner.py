@@ -333,6 +333,24 @@ class PhysicsRunner:
         #                 on the flame's rays whatever this is.
         self.raycaster.rad_scale = float(getattr(fire_cfg, "rad_scale", 1.0e-5))
         self.raycaster.T_emit_gate = float(getattr(fire_cfg, "T_emit_gate", 180.0))
+        # P-F1a / v7 rule 4: RADIATION_RANGE — the emission ray's reach. A
+        # STABILITY-CLASS constant, not a feel dial: at or above the grid
+        # diagonal, reach-termination can never precede the world edge, so
+        # "genuinely escapes" == "left the world" and the corridor leak is
+        # structurally impossible. Below the floor the books stop closing, so
+        # this is a HARD ERROR rather than a clamp — a silently-corrected
+        # stability constant is exactly the kind of thing that gets shipped.
+        _rad_range = float(getattr(fire_cfg, "RADIATION_RANGE", 320.0))
+        _rad_floor = float(self.raycaster.RADIATION_RANGE_MIN)
+        if _rad_range < _rad_floor:
+            raise ValueError(
+                f"[physics.fire] RADIATION_RANGE = {_rad_range} is below the "
+                f"floor {_rad_floor} (the grid diagonal of the largest shipping "
+                f"level, 128x256 -> 286.22). An emission ray that expires before "
+                f"the world edge charges its residual to nobody, which reopens "
+                f"the corridor leak the v7 rule-4 range floor exists to close. "
+                f"Raise the key; it is not a feel dial.")
+        self.raycaster.radiation_range = _rad_range
         self.raycaster.bake_emissive_table()
         self.fire_ray_count = int(getattr(fire_cfg, "fire_ray_count", 8))
         self.fire_range_base = float(getattr(fire_cfg, "range_base", 2.0))
@@ -425,7 +443,31 @@ class PhysicsRunner:
             getattr(fire_cfg_c, "o2_frac_amb", FIRE_O2_FRAC_AMB))
         self.combustion.o2_thresh_burn = _cp(
             "o2_thresh_burn", self.combustion.o2_thresh_burn)
-        self.combustion.H_fuel = _cp("H_fuel", self.combustion.H_fuel)
+        # --- o2_potency: THE SIZING RULING's preserved option ----------------
+        # Erik's sizing ruling (2026-08-02) shipped PACKAGE A — draw_r = 2, NO
+        # potency now — but ruled potency PRESERVED as an explicit option rather
+        # than deleted. It is ONE config key, applied HERE, at load time, as a
+        # multiplier on the baked heat-per-O2 constants (the H_fuel gas-side
+        # yield and the H_bed fuel-bed deposit). Folding it at load means ZERO
+        # runtime cost: the combustion pass never sees the key.
+        #
+        # DEFAULT 1.0 IS BYTE-NEUTRAL. Multiplication by 1.0 is an exact IEEE
+        # identity, so a default config bakes bit-identical constants and no
+        # digest or golden can move. That neutrality is the whole reason the
+        # option can ship dormant.
+        #
+        # THE PRICE (documented at the config key too): potency extracts more
+        # heat per unit of oxygen, so a sealed room's FIXED oxygen inventory
+        # buys proportionally more fire — SEALED-ROOM SMOTHERING WEAKENS BY THE
+        # SAME FACTOR. Smothering is a ships requirement, so raising this is a
+        # real trade, not a tuning convenience.
+        self._o2_potency = float(getattr(comb_cfg, "o2_potency", 1.0))
+        if not (self._o2_potency > 0.0):
+            raise ValueError(
+                f"[physics.combustion] o2_potency = {self._o2_potency} must be "
+                f"> 0 (it multiplies the heat-per-O2 constants; zero or negative "
+                f"would mean a fire that consumes oxygen and yields no heat).")
+        self.combustion.H_fuel = _cp("H_fuel", self.combustion.H_fuel) * self._o2_potency
         self.combustion.soot_yield = _cp("soot_yield", self.combustion.soot_yield)
         # v2.5 (P5.1 stoichiometric fuel consumption, design §5 v2.5 /
         # decisions #17): wall_hp consumed per unit N_O2 burned — THE
@@ -441,7 +483,13 @@ class PhysicsRunner:
         # N_O2) does not fit a Q16.16 mantissa; keeping the mantissa large is
         # also what keeps mul_q16's truncation fine against a per-tick burn of
         # only a few raw counts. Calibrated (like thermal_mass), NOT anchored.
-        self.combustion.H_BED_M = _cp("H_BED_M", self.combustion.H_BED_M)
+        # o2_potency rides H_bed as well as H_fuel — the two together ARE the
+        # heat-per-O2 chain, and scaling only one would tilt the gas-side /
+        # fuel-bed split rather than the fire's power. The multiplier lands on
+        # the MANTISSA (H_BED_SHIFT is a pure power of two and stays put), so
+        # potency 1.0 is again an exact identity.
+        self.combustion.H_BED_M = (
+            _cp("H_BED_M", self.combustion.H_BED_M) * self._o2_potency)
         self.combustion.H_BED_SHIFT = int(
             getattr(comb_cfg, "H_BED_SHIFT", self.combustion.H_BED_SHIFT))
         # v2.4 rail: the SAME [physics.thermal].T_MAX_PHYS constant as the
@@ -1182,18 +1230,29 @@ class PhysicsRunner:
             return
 
         h, w = fire.shape
-        # Lazily allocate / zero the throwaway light buffers (the march writes
-        # RGB + direction unconditionally; we discard them). Zeroed each pass so
-        # the discarded float accumulators cannot grow unbounded over a session.
-        if (self._fire_scratch_rgb is None
-                or self._fire_scratch_rgb.shape[:2] != (h, w)):
-            self._fire_scratch_rgb = np.zeros((h, w, 3), dtype=np.float32)
-            self._fire_scratch_dx = np.zeros((h, w), dtype=np.float32)
-            self._fire_scratch_dy = np.zeros((h, w), dtype=np.float32)
-        else:
-            self._fire_scratch_rgb.fill(0.0)
-            self._fire_scratch_dx.fill(0.0)
-            self._fire_scratch_dy.fill(0.0)
+        # P-F1a: THE THROWAWAY LIGHT BUFFERS ARE GONE FROM THIS CALL.
+        #
+        # Until now the fire cast wrote RGB + direction into scratch planes that
+        # this method then THREW AWAY — fire's visible glow is drawn by the
+        # renderer's own blackbody selector (renderer/fire_lights.py), which
+        # never read them. That was merely wasteful while light and radiation
+        # shared ONE march. It stopped being merely wasteful when v7 rule 4 split
+        # them: the EMISSION cast (long rays, pure-radiation fast path) and the
+        # VISIBLE-LIGHT cast (short rays, legacy machinery) are two separate
+        # marches now, and on CUDA two separate DEVICE ROUND-TRIPS — upload the
+        # plane set, launch, download, twice over. Measured on this box that
+        # second round-trip costs ~2.1 ms, which DWARFS the +0.095 ms the
+        # >= grid-diagonal rays themselves add.
+        #
+        # So the runner passes None and the light cast is skipped entirely, on
+        # both backends. BEHAVIOURALLY NEUTRAL — the buffers were discarded — and
+        # it is exactly why the C++/binding API keeps the light cast as an
+        # OPTION rather than deleting it: any caller that genuinely wants fire's
+        # light still gets bit-for-bit what it always got.
+        #
+        # `_fire_scratch_rgb`/`_dx`/`_dy` stay declared (and permanently None) so
+        # a stale external reference fails loudly rather than silently reading a
+        # buffer nothing writes any more.
 
         # S2b: gmap.gas is int32 Q16.16. The C++ raycaster's gas optics are float,
         # so DEQUANTIZE the (N,h,w) planes to a reused float32 scratch for this
@@ -1232,9 +1291,9 @@ class PhysicsRunner:
                 self.fire_range_base, self.fire_range_per_i,
                 self.fire_intensity_base, self.fire_intensity_per_i,
                 self.fire_color,
-                self._fire_scratch_rgb,
-                self._fire_scratch_dx,
-                self._fire_scratch_dy,
+                None,                 # light_rgb: discarded -> skip the light cast
+                None,                 # light_dx
+                None,                 # light_dy
                 self._fire_gas_f,
                 gmap.gases.absorption,
                 gmap.gases.scatter_albedo,
@@ -1243,7 +1302,8 @@ class PhysicsRunner:
                 gmap.temperature,     # both ends' E° lookup
                 gmap.heat_inv_shift,  # the limiter's per-end budget
                 gmap.thermal_solid,   # the warm-emitter mask
-                gmap.rad_net,         # <- the SIGNED energy-ledger output
+                gmap.rad_net,         # <- the SIGNED tile ledger
+                gmap.rad_amb,         # <- rule 4: the per-tile SKY ledger
                 gmap.rad_flux,        # <- D3: the damage SENSOR (not the ledger)
                 int(tick),            # <- D4: the fan's per-tick phase rotation
                 None,                 # smoke_glow: skipped (render-only, later)
@@ -1255,9 +1315,9 @@ class PhysicsRunner:
                 self.fire_range_base, self.fire_range_per_i,
                 self.fire_intensity_base, self.fire_intensity_per_i,
                 self.fire_color,
-                self._fire_scratch_rgb,
-                self._fire_scratch_dx,
-                self._fire_scratch_dy,
+                None,                 # light_rgb: discarded -> skip the light cast
+                None,                 # light_dx
+                None,                 # light_dy
                 # Multi-gas march (engine/05 §6.2): pass the full gas array +
                 # per-gas tables. Gases NEVER attenuate the heat channel (only
                 # material heat_atten does), so the radiation exchange — the
@@ -1272,7 +1332,8 @@ class PhysicsRunner:
                 gmap.temperature,     # both ends' E° lookup
                 gmap.heat_inv_shift,  # the limiter's per-end budget
                 gmap.thermal_solid,   # the warm-emitter mask
-                gmap.rad_net,         # <- the SIGNED energy-ledger output
+                gmap.rad_net,         # <- the SIGNED tile ledger
+                gmap.rad_amb,         # <- rule 4: the per-tile SKY ledger
                 gmap.rad_flux,        # <- D3: the damage SENSOR (not the ledger)
                 int(tick),            # <- D4: the fan's per-tick phase rotation
                 None,                 # smoke_glow: skipped (render-only, later)

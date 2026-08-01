@@ -241,7 +241,9 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
                                      const int32_t* __restrict__ rad_net,
                                      int64_t recip_cv, int32_t n_floor_q,
                                      int32_t t_max_phys_q,
-                                     unsigned long long* __restrict__ hits, int n) {
+                                     unsigned long long* __restrict__ hits,
+                                     unsigned long long* __restrict__ low_hits,
+                                     int n) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         // ---- P-R4 SIGNED radiation fold — the CPU block verbatim ----------
@@ -256,6 +258,11 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
                 const int32_t dTr = shr_round0(rn, heat_inv_shift[i]);
                 tr = sat_add_q16(tr, dTr);
                 if (tr > t_max_phys_q) { tr = t_max_phys_q; atomicAdd(hits, 1ULL); }
+                // P-F1a (v7.2): the LOW rail — the CPU block verbatim. The
+                // radiation fold is the only SIGNED path into `temperature`;
+                // 0 is the ambient floor. Counted, and required INERT in every
+                // gate scenario (the budget argument, see the CPU comment).
+                if (tr < 0) { tr = 0; atomicAdd(low_hits, 1ULL); }
                 temperature[i] = tr;
             }
         }
@@ -389,6 +396,7 @@ int64_t temperature_step(
     const int32_t* cool_shift_grid,  // cool-shift axis: per-tile decay shift
                                       // (nullptr -> the cool_shift scalar)
     int cool_shift_floor,       // low clamp on the vacuum offset (== SHIFT_MIN)
+    int64_t* low_rail_hits_out, // P-F1a: Pass-1 LOW rail count (nullable)
     const int32_t* rad_net) {   // P-R4: SIGNED radiation accumulator (nullable)
     const int n = h * w;
     if (n <= 0) return 0;
@@ -415,6 +423,7 @@ int64_t temperature_step(
             *d_csg = nullptr;
     bool *d_solid = nullptr, *d_vac = nullptr, *d_tsol = nullptr;
     unsigned long long* d_hits = nullptr;
+    unsigned long long* d_low_hits = nullptr;   // P-F1a: LOW rail count
 
     cuda_check(cudaMalloc(&d_temp, nb), "malloc temp");
     cuda_check(cudaMalloc(&d_temp_new, nb), "malloc temp_new");
@@ -425,6 +434,7 @@ int64_t temperature_step(
     cuda_check(cudaMalloc(&d_solid, nbool), "malloc solid");
     cuda_check(cudaMalloc(&d_vac, nbool), "malloc is_vacuum");
     cuda_check(cudaMalloc(&d_hits, sizeof(unsigned long long)), "malloc hits");
+    cuda_check(cudaMalloc(&d_low_hits, sizeof(unsigned long long)), "malloc low_hits");
     if (n_bulk) cuda_check(cudaMalloc(&d_nbulk, nb), "malloc n_bulk");
     // THERMAL-MASS AXIS: the medium mask rides as its OWN plane only when the
     // caller supplies one; with nullptr the kernels are pointed straight at
@@ -474,6 +484,7 @@ int64_t temperature_step(
         cuda_check(cudaMemcpy(d_wy, wind_y, nb, cudaMemcpyHostToDevice), "H2D wy");
     }
     cuda_check(cudaMemset(d_hits, 0, sizeof(unsigned long long)), "memset hits");
+    cuda_check(cudaMemset(d_low_hits, 0, sizeof(unsigned long long)), "memset low_hits");
 
     // The N divisor source Pass 1 reads: n_bulk when supplied, else the atmosphere
     // density proxy — EXACTLY the CPU's `n_bulk ? n_bulk[i] : atmosphere[i]`.
@@ -505,7 +516,7 @@ int64_t temperature_step(
     // Pass 1: unified convert (in-place on d_temp; rail counter -> d_hits).
     temp_convert_unified<<<grid, block>>>(d_temp, d_heat, d_his, d_ts, d_vac,
                                           d_nsrc, d_radnet, recip_cv, n_floor_q,
-                                          t_max_phys_q, d_hits, n);
+                                          t_max_phys_q, d_hits, d_low_hits, n);
     cuda_check(cudaGetLastError(), "convert launch");
 
     // Pass 2: conduct (d_temp -> d_temp_new), then copy back (the CPU swap).
@@ -520,9 +531,12 @@ int64_t temperature_step(
     cuda_check(cudaGetLastError(), "cool launch");
     cuda_check(cudaDeviceSynchronize(), "sync");
 
-    unsigned long long hits = 0;
+    unsigned long long hits = 0, low_hits = 0;
     cuda_check(cudaMemcpy(&hits, d_hits, sizeof(unsigned long long),
                           cudaMemcpyDeviceToHost), "D2H hits");
+    cuda_check(cudaMemcpy(&low_hits, d_low_hits, sizeof(unsigned long long),
+                          cudaMemcpyDeviceToHost), "D2H low_hits");
+    if (low_rail_hits_out) *low_rail_hits_out += (int64_t)low_hits;
     cuda_check(cudaMemcpy(temperature, d_temp, nb, cudaMemcpyDeviceToHost), "D2H temp");
 
     cudaFree(d_temp);
@@ -534,6 +548,7 @@ int64_t temperature_step(
     cudaFree(d_solid);
     cudaFree(d_vac);
     cudaFree(d_hits);
+    cudaFree(d_low_hits);
     if (d_nbulk) cudaFree(d_nbulk);
     if (d_src) cudaFree(d_src);
     if (d_wx) cudaFree(d_wx);

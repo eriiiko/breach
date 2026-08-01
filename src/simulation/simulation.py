@@ -1294,6 +1294,13 @@ class Simulation:
             # the next tick's cast starts clean. In-place (never reassigned) so
             # any C++ view of the buffer stays valid.
             self.gmap.rad_net.fill(0)
+            # P-F1a (rule 4): the SKY LEDGER shares that lifetime exactly — it
+            # is the counterparty half of the same per-tick booking, so the two
+            # planes MUST be cleared together or the identity
+            # `rad_net.sum() + rad_amb.sum() == 0` would be evaluated across
+            # mismatched ticks. Filled by the emission cast at the top of the
+            # physics step, read (pre-fold) by the ledger gate, wiped here.
+            self.gmap.rad_amb.fill(0)
             # D3: the radiant-flux SENSOR shares the same per-tick lifetime —
             # filled by the cast at the top of the physics step, consumed by
             # unit heat damage above, wiped here. (`dem_acc` does NOT belong

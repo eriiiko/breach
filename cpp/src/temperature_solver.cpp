@@ -288,10 +288,35 @@ void TemperatureSolver::step(
                     if (temperature[i] > t_max_phys_q) {
                         temperature[i] = t_max_phys_q; ++t_max_phys_hits;
                     }
-                    // No LOW rail is needed: the exchange is antisymmetric, so
-                    // a tile can only be dragged toward another tile's
-                    // temperature, never below the coldest participant (and
-                    // ambient == 0 is the floor every solid starts at).
+                    // ---- THE LOW RAIL (P-F1a; v7.2) -----------------------
+                    //
+                    // P-R4's "no LOW rail is needed" comment is VOID. It argued
+                    // from antisymmetry that a tile can only be dragged TOWARD
+                    // another tile's temperature — but that reasoned about ONE
+                    // pair, and a tile's rad_net is the AGGREGATE of every pair
+                    // it is in plus every direction it casts, INCLUDING rule
+                    // 4's sky charge against a T = 0 ambient. Nothing in
+                    // antisymmetry bounds that aggregate below zero.
+                    //
+                    // THE BUDGET ARGUMENT (what actually holds, v7.2): every
+                    // term is clamped to a |ΔT|/2^RAD_LIM_SHIFT share of the
+                    // gap through this end's own thermal mass — 1/16 per ray,
+                    // and the mutual branch halves that again. With
+                    // fire_ray_count == 8 the worst-case aggregate a tile can
+                    // shed in one tick is bounded well inside its own gap to
+                    // the coldest participant, so 0 is not approached in any
+                    // operating scenario. The rail is therefore a COUNTED
+                    // DIAGNOSTIC, not a load-bearing clamp: it must be INERT in
+                    // every gate scenario (a hit inside a gate run is a RED),
+                    // and it exists so that if the argument is ever wrong we
+                    // learn it from a counter instead of from a tile going
+                    // negative and inverting the next tick's exchange sign.
+                    //
+                    // 0 is the ambient floor every solid starts at (temperature
+                    // is ΔT above the 20 °C reference, not an absolute).
+                    if (temperature[i] < 0) {
+                        temperature[i] = 0; ++t_low_rail_hits;
+                    }
                 }
             }
             int32_t deposit = heat[i];

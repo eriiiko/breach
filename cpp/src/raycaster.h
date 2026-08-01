@@ -77,17 +77,62 @@ inline void heat_saturating_add(int32_t* cell, int32_t delta) {
 }
 
 // ============================================================================
-// P-R4 — the RADIATION EXCHANGE kit (ruling A1). Shared by the CPU march
-// (raycaster.cpp), the CUDA march (cuda_raycaster.cu) and the temperature
-// solver's signed fold, so the three read ONE definition of every boundary.
+// P-F1a — THE VERIFIED RADIATION BOOKS (design v6.1 rules 1/3/4 as amended by
+// v7 + the v7.1 closure edits; docs/fire_realism_design_2026-08-01.md). Shared
+// by the CPU march (raycaster.cpp), the CUDA march (cuda_raycaster.cu) and the
+// temperature solver's signed fold, so the three read ONE definition of every
+// boundary.
+//
+// SUPERSEDES P-R4's exchange. There is NO sink, NO credit and NO refund of any
+// kind: five compensating terms telescoped into four rules (round-3.5), rule 2
+// was then re-derived as a HALF-WEIGHT copy of rule 1 (round-3.6/v7), and
+// round-3.7 certified conservation, the ledger identity and second-law safety.
 // ============================================================================
 //
-// THE LAW, for every (emitter s, absorbing marched cell r) pair the DDA march
-// already enumerates:
+// EMITTERS (v7.1 item 13): `burning ∪ (thermal_solid && T >= quantize(
+// T_emit_gate))`, materialised ONCE PER TICK as an integer-threshold MASK PLANE
+// from the same temperature snapshot both backends read — so "is r an emitter?"
+// is a plane lookup, never a re-derivation that could drift between CPU and GPU.
 //
-//     net       = a_s · a_r · τ · w · ( E°[T_s] − E°[T_r] )     // SIGNED
-//     rad_net[r] += net;   rad_net[s] −= net                     // the SAME int
-//     survival  ×= (1 − a_r)                                     // AFTER the deposit
+// Per absorbing marched cell r on a ray from emitter s (SELF-CELL WHOLLY
+// EXCLUDED — the distance-0 cell deposits nothing and is charged nothing; the
+// exclusion is coded explicitly rather than relying on diff == 0):
+//
+//  RULE 1 — r is NOT an emitter:
+//     x = a_s · a_r · τ · w · ( E°[T_s] − E°[T_r] )              // SIGNED
+//     rad_net[r] += x;   rad_net[s] −= x                          // the SAME int
+//
+//  RULE 2 (v7, replacing P-R4/v6's one-way potential term) — r IS an emitter:
+//     the SAME gap-signed antisymmetric pair at HALF WEIGHT. The ×0.5f goes
+//     INSIDE the pinned float fold BEFORE the single quantize (v7.1 item 7 —
+//     one rounding boundary, sign-symmetric; NOT mul_q16(HALF_Q, ·)), and the
+//     branch clamps at HALF the shared budget (RAD_LIM_SHIFT + 1,
+//     clamp-AFTER-halve; v7.1 item 2). The two casts of a mutual pair then sum
+//     to exactly 1× the antisymmetric exchange — no double count, two equal-T
+//     emitters exchange exactly 0 structurally, and the s↔r exchange rate is
+//     CONTINUOUS across r's own gate crossing (what changes at the gate is only
+//     r beginning to pay its OWN other directions and sky).
+//
+//  RULE 3 — CONTACT FACES ARE RADIATION-INERT (and that is the stated
+//     semantics, not a leak): a ray stepping from a solid marched cell into a
+//     face-adjacent solid cell TERMINATES with NO deposit and NO charge —
+//     conduction owns contact (Erik ruling 3). The DDA steps ONE axis per
+//     iteration, so consecutive marched cells always share the crossed face;
+//     "face-adjacent" therefore needs no extra geometry. The source's own first
+//     step into a touching solid is exactly this case, which is why a
+//     wall-adjacent crate is EXPECTED to lose less radiatively than an
+//     open-field one (v7.1 item 12) — its contact face conducts instead.
+//
+//  RULE 4 — THE SKY TERM, the ONLY ledger entry: a ray that LEAVES THE GRID
+//     charges the emitter the escaping residual
+//         sky = a_s · τ_end · w · ( E°[T_s] − E°[0] )
+//     clamped by rad_pair_budget(|T_s|, his_s) — the ambient counterparty is
+//     the T = 0 partner (v7.1 item 8) — booked as
+//         rad_net[s] −= sky;   rad_amb[s] += sky                  // the SAME int
+//     Leaving the grid is the ONLY escape, because RADIATION_RANGE is a global
+//     constant >= the grid diagonal (v7 rule 4): reach-termination can never
+//     precede the world edge, so "genuinely escapes" == "left the world",
+//     map-independent, and the corridor leak is structurally impossible.
 //
 // with a_x = heat_atten[x] (absorptivity == emissivity, Kirchhoff), τ the
 // running material transmittance (`heat_survival`, already Π(1−a_k) over the
@@ -96,10 +141,33 @@ inline void heat_saturating_add(int32_t* cell, int32_t delta) {
 // fixed-point kit's S1 conservation idiom: the pair conserves exactly, two
 // equal-T tiles net EXACTLY 0 (same bucket ⇒ diff == 0 ⇒ net == 0), and the
 // divergence hazard is impossible BY CONSTRUCTION rather than by tuning.
+//
+// THE LEDGER IDENTITY (gate ii): Σ rad_net + Σ rad_amb == 0 EXACTLY, evaluated
+// PRE-FOLD (v7.1 item 9 — the fold discards the sub-2^his remainder, a bias
+// toward zero in magnitude, i.e. a systematic slight UNDER-transfer, never a
+// mint). Every pair term is one integer applied ±; the sky term is the lone
+// ± pair that crosses into the ambient ledger. Nothing else moves energy.
+//
+// THE NAMED, ACCEPTED LEAK (v7.1 item 11): a ray culled at `heat_cull` still
+// carries <= 1% of its direction share, and that residual is charged to NOBODY.
+// It is an UNDER-cooling (safe direction), and gate (v)'s open-field grey-body
+// tolerance is set BELOW it.
 
-// ---- the E° table (ruling A1.3) -------------------------------------------
-// 4000 int32 entries over T_game ∈ [0, 16000) (== T_MAX_PHYS) in 4-game-unit
-// buckets, ~16 KB. Bucket t covers [4t, 4t+4); its MIDPOINT is T_mid = 4t+2,
+// ---- the E° table (ruling A1.3; WIDENED TO int64 at P-F1a) ----------------
+//
+// *** L2-B3: THE TABLE IS int64 NOW. ***  Under P-R4 it was int32, and at the
+// shipped `rad_scale` every entry above T_game ≈ 1768 saturated at INT32_MAX —
+// a SILENT CEILING on the whole law: two tiles above it read the same saturated
+// E°, so `diff` collapsed to 0 and a 3000-game tile radiated to a 2000-game
+// tile exactly nothing. That ceiling, not the flux limiter, was the real
+// high-T behaviour. int64 removes it: the largest entry is
+// rad_scale · K⁴(t=3999) = 1e-5 · 1.088e18 ≈ 1.088e13, ~6 orders below
+// INT64_MAX, so no shipping `rad_scale` can saturate the bake. The per-pair
+// PRODUCT stays int32-representable because the flux limiter caps it — see
+// rad_quantize_signed64 / the NO-OVERFLOW BOUND on rad_signed_add below.
+//
+// 4000 int64 entries over T_game ∈ [0, 16000) (== T_MAX_PHYS) in 4-game-unit
+// buckets, ~32 KB. Bucket t covers [4t, 4t+4); its MIDPOINT is T_mid = 4t+2,
 // so the absolute temperature at the midpoint is
 //     K(t) = 293 + 2·T_mid = 293 + 8t + 4 = 297 + 8t
 // — an EXACT INTEGER for every bucket. That is what lets the bake be exact:
@@ -154,10 +222,21 @@ RC_HD inline int e_bucket_of(int32_t T_q) {
 static constexpr int RAD_LIM_SHIFT = 4;
 
 // The pair budget for ONE end, from the Q16.16 gap |T_s − T_r| and that end's
-// heat_inv_shift: (|ΔT| << his) >> LIM_SHIFT, in HEAT counts. int64 because
+// heat_inv_shift: (|ΔT| << his) >> shift, in HEAT counts. int64 because
 // |ΔT| can reach T_MAX_PHYS·65536 ≈ 1.05e9 and his can reach 5 (steel).
+//
+// `shift` is RAD_LIM_SHIFT for the rule-1 (single-caster) branch and
+// RAD_LIM_SHIFT + 1 — i.e. HALF the shared budget — for the rule-2 mutual
+// half-weight branch (v7.1 item 2, M2). Halving the CAP alongside the term is
+// what keeps the rail TRUE BY CONSTRUCTION when BOTH ends cast: the pair's two
+// half-casts can together move at most 2 × (gap/2^(LIM+1)) == gap/2^LIM, i.e.
+// exactly the single-caster rail, never more.
+RC_HD inline int64_t rad_pair_budget_s(int64_t abs_dT_q, int his, int shift) {
+    return (abs_dT_q << his) >> shift;
+}
+// The shared symmetric budget (rule 1 / the sky term).
 RC_HD inline int64_t rad_pair_budget(int64_t abs_dT_q, int his) {
-    return (abs_dT_q << his) >> RAD_LIM_SHIFT;
+    return rad_pair_budget_s(abs_dT_q, his, RAD_LIM_SHIFT);
 }
 
 // ---- the ONE deposit boundary (mirrors heat_quantize's contract) -----------
@@ -173,6 +252,30 @@ RC_HD inline int32_t rad_quantize_signed(double v) {
     return (int32_t)((v >= 0.0) ? (v + 0.5) : (v - 0.5));
 }
 
+// The int64 twin, for the EXCHANGE terms now that E° is int64 (L2-B3). SAME
+// rounding rule (half away from zero, one boundary), a wider saturation window
+// so the clamp below — not the quantize — is what bounds the result.
+//
+// WHY THE WIDTH MATTERS: at T_MAX_PHYS the E° difference reaches ~1.09e13 and
+// w·a_s·a_r·τ can be as large as 1/ray_count, so the RAW product can exceed
+// INT32_MAX by orders of magnitude. Quantizing to int32 first would saturate to
+// INT32_MAX and only THEN meet the limiter — which happens to give the same
+// answer (INT32_MAX > any cap), but only by accident of the cap being smaller.
+// Quantizing to int64 and clamping in int64 makes the bound structural instead
+// of incidental, and it is the form the tol-0 CPU/CUDA contract is written on.
+//
+// THE NARROWING IS SAFE (re-derived at P-F1a): after the clamp,
+//   |x| <= (|ΔT| << his) >> RAD_LIM_SHIFT
+//       <= (T_MAX_PHYS·65536 << 5) >> 4          (his <= 5 for steel)
+//        = 16000·65536·2 = 2.097e9 < 2^31 − 1 = 2.147e9.
+// So every clamped term — and the halved rule-2 term, which is smaller still —
+// fits int32 exactly. The narrow is therefore total, not a truncation.
+RC_HD inline int64_t rad_quantize_signed64(double v) {
+    if (v >=  9.2233720368547748e18) return INT64_MAX;
+    if (v <= -9.2233720368547748e18) return INT64_MIN;
+    return (int64_t)((v >= 0.0) ? (v + 0.5) : (v - 0.5));
+}
+
 // Signed accumulation into `rad_net[]` — PLAIN (non-saturating) adds, because
 // order-freedom for SIGNED integers requires plain wraparound arithmetic:
 // saturating signed adds are order-DEPENDENT (ruling A1.7), which would break
@@ -181,16 +284,29 @@ RC_HD inline int32_t rad_quantize_signed(double v) {
 // case wraps deterministically instead of being C++ UB — which is also exactly
 // what the device's atomicAdd(int*) does, so the two backends agree even there.
 //
-// NO-OVERFLOW BOUND (ruling A1.7, re-derived at the calibrated dials): the
-// per-pair magnitude is |net| ≤ a_s·a_r·τ·w·|ΔE| ≤ (1/ray_count)·E°max. At the
-// shipped rad_scale the operating band (T ≈ 443 game) gives E° ≈ 1.9e7 counts
-// ⇒ |net| ≲ 1.2e6, and a cell reached by every ray of a 600-emitter firestorm
-// (≈ 4800 pairs) still sums to ≈ 5.7e9/… well under 2³¹ once the 1/r ray
-// density is counted (no cell is on more than a handful of sightlines). E°
-// itself saturates at INT32_MAX above T_game ≈ 1766 at the shipped rad_scale,
-// which caps |ΔE| and hence the per-pair term; beyond that regime the sum is
-// bounded only by the pair count, and the wraparound above is the defined
-// (not UB) behaviour. The limiter caps |net| further whenever the gap is small.
+// NO-OVERFLOW BOUND — RE-DERIVED AT P-F1a (the P-R4 derivation is VOID: it
+// leaned on E° saturating at INT32_MAX above T_game ≈ 1766 to cap |ΔE|, and
+// that saturation is exactly the ceiling L2-B3 removed by widening the table to
+// int64). The bound is now carried entirely by the FLUX LIMITER, which is the
+// honest place for it:
+//
+//   PER TERM. Every pair term and the sky term are clamped, so
+//       |x| <= (|ΔT| << his) >> RAD_LIM_SHIFT <= 16000·65536·2^5 / 2^4
+//            = 2.097e9  <  2^31 − 1 = 2.147e9
+//   at the worst case (a full-scale T_MAX_PHYS gap against steel's his = 5).
+//   In the OPERATING band (T ≈ 443 game, furniture his = 3) the T⁴ term itself
+//   binds long before the rail: E° ≈ 1.9e7 counts ⇒ |x| ≲ 1.2e6.
+//
+//   PER CELL. rad_net[i] accumulates the terms of every ray that touches i plus
+//   every ray i itself casts. Two structural facts keep that sum bounded:
+//   contact termination (rule 3) means a tile inside an assembly is on almost
+//   no sightlines, and the 1/r ray density means no cell is on more than a
+//   handful of a firestorm's sightlines. At the shipped dials a 600-emitter
+//   firestorm sums to ~1e7 per cell — two orders below the rail, three below
+//   2^31. In the pathological regime (every term railed, thousands of rays on
+//   one cell) the accumulation WRAPS, deterministically and identically on both
+//   backends — that is the documented, out-of-band contract of this function,
+//   not UB, and it is exactly what the device's atomicAdd(int*) does.
 inline void rad_signed_add(int32_t* cell, int32_t delta) {
     *cell = (int32_t)((uint32_t)*cell + (uint32_t)delta);
 }
@@ -226,9 +342,16 @@ struct LightSource {
 struct RadSource {
     int     idx   = -1;   // source cell index (row*w + col) — the debit target
     int32_t T_q   = 0;    // source temperature, Q16.16 (pass-entry snapshot)
-    int32_t E_s   = 0;    // E°[e_bucket_of(T_q)] — baked table lookup
+    int64_t E_s   = 0;    // E°[e_bucket_of(T_q)] — baked table lookup (int64)
     float   a_s   = 0.0f; // absorptivity == emissivity == heat_atten[idx]
     int     his_s = 0;    // heat_inv_shift[idx] (limiter budget, source end)
+    // D3 / v7.1 item 4 (M4): the LEGACY reach — `range_base +
+    // range_per_intensity · I`, the range this source's rays used to march to.
+    // The emission ray now runs to RADIATION_RANGE, but the rad_flux SENSOR
+    // write stays behind this deterministic distance guard so unit radiant
+    // damage is UNCHANGED and far-field damage bursts never ship. Books
+    // untouched: rad_flux is not part of the ledger.
+    float   damage_range = 0.0f;
 };
 
 // The per-RAY radiation constants (the RadSource folded with 1/ray_count),
@@ -236,18 +359,37 @@ struct RadSource {
 struct RadRay {
     int     src_idx = -1;
     int32_t T_q     = 0;
-    int32_t E_s     = 0;
+    int64_t E_s     = 0;
     int     his_s   = 0;
     float   coef    = 0.0f;   // a_s * (1/ray_count)  — the PINNED first factor
+    float   damage_range = 0.0f;   // D3's legacy reach guard (see RadSource)
 };
 
 // The planes the exchange reads/writes. nullptr `rad_net` == radiation OFF for
 // this cast (every non-fire caller: lamps, muzzle flashes, the render pass).
 struct RadCtx {
-    const int32_t* e_table        = nullptr;   // E_TABLE_SIZE entries
+    const int64_t* e_table        = nullptr;   // E_TABLE_SIZE entries (int64)
     const int32_t* temperature    = nullptr;   // Q16.16 (h,w)
     const int32_t* heat_inv_shift = nullptr;   // (h,w)
+    // ---- v7.1 item 13: THE EMITTER MASK PLANE -----------------------------
+    // `burning ∪ (thermal_solid && T >= quantize(T_emit_gate))`, computed ONCE
+    // PER TICK from the same temperature snapshot the E° lookups read, as a
+    // single INTEGER THRESHOLD compare — and then only LOOKED UP by the march.
+    // Rule 2 (the half-weight mutual branch) keys on THIS plane, so CPU and
+    // CUDA can never disagree about who is an emitter: they read the same
+    // bytes rather than each re-evaluating a predicate against a float dial.
+    // 1 == emitter, 0 == not.
+    const uint8_t* emit_mask      = nullptr;   // (h,w)
     int32_t*       rad_net        = nullptr;   // Q16.16 (h,w) signed accumulator
+    // ---- rule 4: THE AMBIENT (SKY) LEDGER ---------------------------------
+    // The ONLY place energy leaves the tile books. Per-tile int32 plane with
+    // PLAIN adds, keyed by the EMITTER's cell index — deliberately NOT a single
+    // global atomic: a per-tile plane keeps the accumulation order-free and
+    // contention-free on the device, and the host reduces it to a uint64 total
+    // once per tick. Gate (ii) checks Σ rad_net + Σ rad_amb == 0 PRE-FOLD.
+    // Entries are non-negative (E°[T_s] >= E°[0] for every bucket), so the
+    // host-side reduction into uint64 is exact.
+    int32_t*       rad_amb        = nullptr;   // (h,w) sky ledger
     // ---- D3: the RADIANT-FLUX SENSOR plane (amendment 5, Erik's ruling) ----
     // *** THIS IS NOT PART OF THE ENERGY LEDGER. ***  Read that again before
     // touching it: `rad_flux` is a DAMAGE SENSOR, not a transport term. It is
@@ -265,7 +407,8 @@ struct RadCtx {
     // and therefore plain).
     int32_t*       rad_flux       = nullptr;   // Q16.16 (h,w) positive-only
     bool active() const { return rad_net != nullptr && e_table != nullptr
-                              && temperature != nullptr && heat_inv_shift != nullptr; }
+                              && temperature != nullptr && heat_inv_shift != nullptr
+                              && emit_mask != nullptr; }
 };
 
 class Raycaster {
@@ -283,14 +426,37 @@ public:
     // gate decides who can radiatively LOSE heat; RECEIVERS ARE FREE (a cold
     // crate is heated correctly on the flame's own rays whatever this is).
     double T_emit_gate = 180.0;
+    // ---- P-F1a / v7 rule 4: RADIATION_RANGE ------------------------------
+    //
+    // The reach of an EMISSION ray, in tiles. A STABILITY-CLASS CONSTANT, NOT A
+    // FEEL DIAL: it must be >= the GRID DIAGONAL of the largest shipping level
+    // so that reach-termination can NEVER precede the world edge. That is what
+    // makes "the ray genuinely escaped" mean "the ray left the world" —
+    // map-independent, and it makes the corridor leak (a ray dying mid-room and
+    // charging nobody, so a long room silently loses less than a short one)
+    // STRUCTURALLY IMPOSSIBLE rather than tuned away.
+    //
+    // FLOOR: the largest shipping level is 128 x 256 ⇒ diagonal
+    // sqrt(128² + 256²) = 286.22 ⇒ the floor is 287. The shipped 320 carries
+    // ~12% headroom for a larger level without a law change.
+    //
+    // COST: air cells cost a march STEP and no deposit work — which is why the
+    // PURE-RADIATION FAST PATH (march_ray_radiation) exists and is mandatory:
+    // an emission ray does no RGB, no gas optics, no `exp`. Fire's visible
+    // light is a SEPARATE short cast on the legacy range formula.
+    //
+    // `range_base` / `range_per_intensity` return to render/legacy duty and to
+    // D3's damage_range guard; they do NOT bound an emission ray.
+    static constexpr double RADIATION_RANGE_MIN = 287.0;
+    double radiation_range = 320.0;
 
     // Bake (or re-bake) the E° table from the CURRENT `rad_scale`. Idempotent
     // and a pure function of `rad_scale` — cast_from_fire_plane / the ray-list
     // builders call it lazily when `rad_scale` has moved since the last bake,
     // so a caller that only sets the dial can never march against a stale table.
     void bake_emissive_table() const;
-    // The baked table (E_TABLE_SIZE int32 entries). Bakes on first use.
-    const int32_t* emissive_table() const;
+    // The baked table (E_TABLE_SIZE int64 entries). Bakes on first use.
+    const int64_t* emissive_table() const;
 
     // ---- Smoke optics (ch.05 §6.1 §6 — decoupled per-channel absorption vs glow) ----
     //
@@ -485,7 +651,35 @@ public:
     // `temperature` for both ends' E° and `heat_inv_shift` for the limiter.
     // The emitter set also widens (ruling A1.8): burning tiles ∪ thermal
     // solids at or above `T_emit_gate`, still row-major.
-    void cast_from_fire_plane(
+    //
+    // *** P-F1a: TWO CASTS PER SOURCE. ***  The single combined march is split:
+    //
+    //   1. THE EMISSION CAST (march_ray_radiation) — the PURE-RADIATION FAST
+    //      PATH, mandatory under v7 rule 4. Marches to `radiation_range` (>=
+    //      the grid diagonal) doing ONLY the integer exchange terms and the
+    //      heat_atten survival. No RGB, no direction accumulation, no gas
+    //      optics, no `exp`. This is what pays for the long rays.
+    //   2. THE VISIBLE-LIGHT CAST (cast_source_directional with radiation OFF)
+    //      — the OLD range formula (`range_base + range_per_intensity·I`) and
+    //      the OLD light machinery, unchanged. It is GOLDEN-NEUTRAL FOR RENDER:
+    //      identical LightSource, identical angles, identical march ⇒ the
+    //      light_rgb / light_dx / light_dy this function writes are bit-for-bit
+    //      what the combined cast wrote before. It is SKIPPED ENTIRELY when
+    //      `light_rgb == nullptr`, which is the zero-cost route for a caller
+    //      that only wants the books.
+    //
+    //      (NOTE for the reader: the live sim path — PhysicsRunner.
+    //      cast_fire_heat — passes scratch light buffers and DISCARDS them; the
+    //      renderer draws fire light from its own blackbody selector,
+    //      renderer/fire_lights.py. The light cast is kept here so this C++ API
+    //      keeps its contract and any light-consuming caller is unaffected.)
+    // RETURNS: the number of emission rays that terminated on a CONTACT FACE
+    // (rule 3) this cast. A pure diagnostic — contact directions are
+    // non-participating BY DESIGN — but the equivalence gate needs it to derive
+    // its a = 0.5 tolerance instead of guessing one, and it is the honest
+    // measure of how much of a given geometry's telescoping identity is
+    // legitimately not covered.
+    int64_t cast_from_fire_plane(
         const int32_t* fire, int h, int w,
         int fire_ray_count,
         double range_base, double range_per_intensity,
@@ -506,6 +700,7 @@ public:
         const int32_t* heat_inv_shift,  // (h,w) — the limiter's per-end budget
         const bool* thermal_solid,      // (h,w) — the warm-emitter mask
         int32_t* rad_net,               // Q16.16 (h,w) — SIGNED accumulator
+        int32_t* rad_amb,               // (h,w) — the SKY ledger (rule 4)
         int32_t* rad_flux,              // D3: (h,w) positive-only damage sensor
         // D4 (amendment 5): the SIM TICK, as a plain integer. The per-source
         // fan phase rotates with it, so the discrete view factor time-averages
@@ -545,6 +740,16 @@ public:
     // caller feeds the result straight into the existing
     // breach_cuda::raycaster_cast_directional batched march — no new device
     // code, no march/law change.
+    // P-F1a: `emit_mask_out` (nullable) receives the once-per-tick emitter mask
+    // plane so the caller can upload it alongside the rays — rule 2's branch
+    // reads it on the device exactly as the CPU march does.
+    //
+    // `light_rays_out` (nullable) receives the SECOND, SHORT cast: the same
+    // sources' VISIBLE-LIGHT rays on the legacy `range_base +
+    // range_per_intensity·I` formula, carrying no radiation payload
+    // (`rad_src_idx < 0`). The device runs them through the UNCHANGED
+    // raycaster_cast_directional; the returned (primary) list is the pure
+    // emission set, for the fast-path kernel.
     std::vector<breach_cuda::RayHD> build_fire_ray_list(
         const int32_t* fire, int h, int w,
         int fire_ray_count,
@@ -560,7 +765,9 @@ public:
         const int32_t* heat_inv_shift,
         const bool* thermal_solid,
         int tick,                       // D4: the fan's per-tick phase rotation
-        double jitter = 0.0
+        double jitter = 0.0,
+        std::vector<uint8_t>* emit_mask_out = nullptr,
+        std::vector<breach_cuda::RayHD>* light_rays_out = nullptr
     ) const;
 
     // Normalize direction vectors in place: (dx, dy) /= length(dx, dy).
@@ -598,6 +805,36 @@ private:
         int h, int w,
         const RadCtx* rad,          // P-R4: nullptr / inactive == exchange off
         const RadRay* rr            // P-R4: this ray's emitter payload
+    ) const;
+
+    // ---- P-F1a: THE PURE-RADIATION FAST PATH (v7 rule 4 / round-3.6 MAJOR-3)
+    //
+    // The emission ray. Same DDA, same det_cos/det_sin directions, same
+    // `heat_atten` survival and `heat_cull` floor as march_ray_directional —
+    // and NOTHING else. No light_rgb, no light_dx/dy, no smoke_glow, no gas
+    // absorption/scatter loop, no `exp`. That is what makes a >= 287-tile ray
+    // affordable: an air cell costs one DDA step, two float multiplies and a
+    // bounds test.
+    //
+    // It is also where the three structural rules live that the combined march
+    // never had: the explicit distance-0 SELF-CELL exclusion, rule 3's CONTACT
+    // TERMINATION, and rule 4's SKY charge at the grid edge.
+    //
+    // `max_range` is RADIATION_RANGE (the caller's `radiation_range`), NOT the
+    // per-intensity formula. D3's rad_flux write keeps the legacy reach through
+    // `rr->damage_range`.
+    // Returns 1 if this ray terminated on a CONTACT FACE (rule 3), else 0 — the
+    // contact-termination counter the equivalence gate's a = 0.5 variant needs
+    // to DERIVE its tolerance rather than guess one (v7.1 item 5, M5). Contact
+    // directions are non-participating by design, so their residual is charged
+    // to nobody; the count is how much of the telescoping identity a given
+    // geometry legitimately does not cover.
+    int march_ray_radiation(
+        float sx, float sy, float angle, float max_range,
+        const float* heat_atten,    // a_x — REQUIRED (Kirchhoff)
+        int h, int w,
+        const RadCtx* rad,
+        const RadRay* rr
     ) const;
 
     // ---- P-R1: the shared fire-plane source enumerator ----
@@ -659,12 +896,18 @@ private:
         const int32_t* temperature, const float* heat_atten,
         const int32_t* heat_inv_shift, const bool* thermal_solid,
         int tick,
-        std::vector<RadSource>* rad_out
+        std::vector<RadSource>* rad_out,
+        // P-F1a / v7.1 item 13: the once-per-tick EMITTER MASK PLANE, filled
+        // here (h*w bytes) from the SAME temperature snapshot the E° lookups
+        // read, by the SAME integer threshold the caster predicate uses. Both
+        // backends get it from this one function, so rule 2's half-weight
+        // branch can never key on a different set on GPU than on CPU.
+        std::vector<uint8_t>* emit_mask_out = nullptr
     ) const;
 
     // P-R4: the baked E° table + the `rad_scale` it was baked at. `mutable` so
     // the const cast entry points can lazily (re-)bake — the bake is a PURE
     // function of `rad_scale`, so this is a cache, not hidden state.
-    mutable std::vector<int32_t> e_table_;
+    mutable std::vector<int64_t> e_table_;
     mutable double e_table_scale_ = 0.0;   // 0 == never baked
 };

@@ -97,6 +97,11 @@ int64_t temperature_step(
     // Load-bearing: a material legally sitting AT the floor would otherwise
     // derive an exposed shift of 0 == `T -= T` (an instant total wipe).
     int cool_shift_floor = 2,
+    // P-F1a (v7.2): out-param for the Pass-1 LOW rail's engagement count (the
+    // return value stays the T_MAX_PHYS count, so no existing caller moves).
+    // The radiation fold is the only SIGNED path into `temperature`; the rail
+    // is a counted diagnostic that must be INERT in every gate scenario.
+    int64_t* low_rail_hits_out = nullptr,
     // P-R4 (ruling A1.7): the SIGNED radiation accumulator the raycaster's
     // net-T⁴ exchange fills. Folded in Pass 1 BEFORE the heat deposit, through
     // `shr_round0(rad_net[i], heat_inv_shift[i])` and a SYMMETRIC saturating
