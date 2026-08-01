@@ -815,3 +815,27 @@ may start once P-F4b's sweep tooling question (same patch family) is set.
 edits) are the BUILD SPEC for P-F1a. No further paper rounds; P-F1a's
 sharpened gate set is the empirical backstop. P-O2b proceeds in parallel
 (independent subsystem, spec v5.2).**
+
+---
+
+## Future-revisit register (2026-08-02, Erik)
+
+**R-1 — Distance falloff / cone tracing (Erik's recorded fear, 2026-08-02).**
+Erik: the original build used per-ray distance falloff (a 3D law he disliked);
+he dictated the current no-falloff design (intensity = ray density x per-ray
+energy) and now fears the removal was a mistake COMPUTATIONALLY. The honest
+analysis, recorded with the fear: (a) no-falloff is LOAD-BEARING for
+correctness — the closed books' telescoping (shares summing to one) and the
+equivalence theorem require per-ray energy constant in clear air; a naive
+falloff factor re-opens every leak class rounds 1-3.7 killed. (b) The fear's
+real kernel: falloff legitimizes EARLY RAY TERMINATION; no-falloff mandates
+rays that march to the first solid or the world edge (RADIATION_RANGE) —
+that, not ray count, is the cost. Falloff would NOT reduce the ray count:
+spatial coverage (blind spots) is a density/rotation problem in both designs.
+(c) The principled future alternative, if cost ever demands it, is CONE
+TRACING: each ray represents a wedge; a cell absorbs its wedge-coverage
+fraction and the remainder continues — conservative, books-closable, shorter
+effective rays, at the price of genuinely harder occlusion bookkeeping.
+(d) The empirical gate that decides whether this ever matters: P-F1a's gate
+(g) cost re-measure (128x256 open-field firestorm, pure-radiation fast path,
+emitter-count clause). If it passes with margin, this register entry sleeps.
