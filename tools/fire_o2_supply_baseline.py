@@ -87,7 +87,12 @@ from fire_timing_harness import (                 # noqa: E402
     FP_ONE, FURN, KIND, build_level, _open_neighbors,
 )
 
-J_PER_COUNT = 1.968e-4   # design doc §0 canonical anchor
+J_PER_COUNT = 4.83e6 / 65536.0   # ~73.7 J per O2-COUNT (Huggett: 1 O2 UNIT =
+# 11.53 mol = 369 g O2 = 4.83 MJ; one unit = 65536 counts). P-F4a follow-up
+# fix: the original 1.968e-4 was the HEAT-count anchor (design doc §0), wrong
+# domain for an O2-field measurement by the Huggett factor (~374,500x). With
+# this constant the P-F4a baseline reads ~5.9 kW — exactly the design's T2
+# supply band (5.8 kW measured in round 2 by an independent method).
 ARTIFACTS_DIR = ROOT / "_fire_tuning_artifacts"
 
 # The design doc §0's already-blessed operating point (peak I from

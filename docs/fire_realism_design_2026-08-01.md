@@ -667,3 +667,89 @@ equal outflows to reciprocity; net zero per tile.
 v5.2 (F-O2b) and v5.3 (rulings fold) stand unchanged. v5.1 is void. The
 round-3.6 narrow verifier re-derives v6.1-v6.2 before P-F1a spawns; P-F4a
 and P-O2b are unaffected by any of this and proceed.
+
+---
+
+## v7 — THE SYMMETRIZED BOOKS (2026-08-02, after round-3.6; SUPERSEDES v6's
+## rule 2 and amends rules 3-4. Verdict pending round-3.7.)
+
+Round-3.6 certified v6's conservation, contact well-definedness, limits (a)
+and (d) incl. the negative pair, and the sky term's determinism — and broke
+rule 2 decisively: the |dT|-based clamp annihilates a potential-vs-ambient
+term below dT ~ 76 game (mutual-emitter feeding zero across the whole
+operating band, ledger green), and a gap-blind term has no valid stability
+rail and depends on a ray-fan reciprocity the D4 record proves absent
+(cold-to-hot positive feedback possible). Its diagnosis: "rule 1's
+antisymmetry was doing three jobs — conservation, second-law safety, and
+making the flux limiter a valid rail." v7 keeps rule 1's form for EVERYTHING:
+
+### v7.1 — The law (delta from v6)
+
+- **Rule 2 (replaced): mutual emitters use the SAME gap-signed antisymmetric
+  pair as rule 1, at HALF weight:** `x = mul_q16(HALF_Q, a_s*a_r*tau*w*
+  (E_emit(s) - E_emit(r)))`; `rad_net[r] += x; rad_net[s] -= x` (one integer,
+  +/-). The two casts of a mutual pair sum to exactly 1x the antisymmetric
+  exchange (no double-count); the term is gap-signed (the shared |dT| clamp
+  is valid and inert in-band; heat can never flow cold-to-hot regardless of
+  fan asymmetry — worst case is a bounded RATE error, second-law safe); two
+  equal-T emitters exchange exactly 0 structurally. THE CROSSING BECOMES
+  CONTINUOUS in the exchange: below the gate s casts the full pair; above,
+  each casts half — the s<->r exchange rate is identical across r's crossing
+  (what changes at the gate is only r beginning to pay its OWN other
+  directions and sky — the physical onset of emission). Emitter-vs-emitter
+  uses E_emit on BOTH ends (flame lift both sides). Note the half-weight
+  branch keys on the SAME mask plane; membership stays burning OR >= gate.
+- **Rule 3 (amended scope): contact directions are NON-PARTICIPATING, and
+  that is the stated semantics, not a leak.** A ray that enters a solid-solid
+  contact face terminates; the direction's residual is charged to NOBODY —
+  the emitter's radiative loss simply excludes directions occluded by
+  contact and by interior assemblies (they conduct instead; the zero-kappa
+  contact case is the named negligible lump). Stacked absorbers/flush glass:
+  the interior of an assembly does not radiate — intended, stated. The
+  telescoping identity for the equivalence limit is over NON-CONTACT
+  directions; open-air vs ambient-walls compares like-for-like and stays
+  exact. (Round-3.6 MAJOR-1 resolved by declaration, with the semantics
+  Erik's conduction ruling already implies.)
+- **Rule 4 (amended): RADIATION_RANGE >= the GRID DIAGONAL** — reach-
+  termination can then never precede the grid edge, "genuinely escapes" ==
+  "left the world", map-independent; the corridor leak is structurally
+  impossible (round-3.6 MAJOR-2). COST: mandatory PURE-RADIATION FAST PATH —
+  emission rays skip the RGB/light and gas-optics work entirely (they need
+  only heat_atten tau + the integer terms); gate (g) re-measured with the
+  fast path + long rays (round-3.6 MAJOR-3).
+
+### v7.2 — Fold and rails
+
+The rad_net -> T fold keeps shr_round0 with NO carry: the discarded
+sub-2^his remainder is a bounded, sign-symmetric quantization floor (< 1
+T-LSB/tick), ACCEPTED and named (a far cold wall receiving < 1 LSB of flux
+does not creep — fine for gameplay; the D1-style carry would need a
+persistent synced plane and forfeit the golden freeze). LOW rail at 0 with a
+counter, justified by the budget argument (all terms clamped to |dT|/16-
+shares; aggregate bounded); rails asserted inert in gate scenarios.
+
+### v7.3 — Gates (round-3.6's coverage repairs)
+
+(ii) ledger: sky bookings + wrap, as before. (iii) NET test on an
+AIR-SEPARATED equal-T emitter lattice (rule-2 symmetry actually exercised;
+contiguous-solid grids are vacuous under rule 3) — every rad_net == 0
+exactly. (iv)(b) two-temperature box swept over dT INCLUDING small dT (5,
+10, 20, 40 game — the operating band; catches any clamp bite), exchange =
+1x the pair law, continuous across each tile's own crossing, swept BOTH
+directions. **(iv)(e) THE EQUIVALENCE GATE — the arc's headline, previously
+ungated (round-3.6 BLOCKER-3): one emitter's measured net loss open-field
+vs centred in a sealed ambient-T room (walls pinned T=0, a=1.0 single-layer
+geometry where telescoping is exact) — equal to (n+1)/2-count tolerance;
+repeated at a=0.5 walls with the derived geometric-defect tolerance.**
+(v) as v6 (room wider than the OLD max_range now trivially covered; keep as
+regression). Negative-pair case (hot sub-gate solid heats a cooler emitter)
+gets one directed scenario. v6.2(c)'s "sub-gate tiles pay nothing" is
+corrected: a sub-gate solid pays/receives via rule 1 whenever an emitter
+sees it — what it does not do is CAST.
+
+### v7.4 — Status
+
+v5.2 (F-O2b) and v5.3 (rulings fold) unchanged. v6.1 rules 1 and self-cell/
+E_emit conventions stand; this block replaces rule 2 and amends 3-4.
+Round-3.7 verifies v7.1-v7.3 before P-F1a spawns. P-O2b is unaffected and
+may start once P-F4b's sweep tooling question (same patch family) is set.
