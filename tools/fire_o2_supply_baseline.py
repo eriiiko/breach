@@ -141,16 +141,21 @@ def _ring_profile(gmap, cy, cx, max_ring):
     return profile
 
 
-def measure_supply(material_id, *, pin_I=OPERATING_POINT_I,
-                   interior_w=84, interior_h=40, crate_xy=(12, 21),
-                   tile_size_m=0.333, run_seconds=30.0, steady_window_s=5.0,
-                   max_ring=6, seed=12345, verbose=True):
-    """Pin ``material_id``'s tile at intensity ``pin_I`` (infinite-fuel
-    diagnostic) on the still-air reference arena, run to quasi-steady, and
-    measure O2 delivery at TODAY's radius-1 draw. Returns a metrics dict."""
-    level = build_level(interior_w, interior_h, crate_xy, tile_size_m)
-    cx, cy = crate_xy
-    level.tilemap[cy, cx] = material_id
+def measure_supply_on_level(level, cy, cx, material_id, *, pin_I=OPERATING_POINT_I,
+                            run_seconds=30.0, steady_window_s=5.0,
+                            max_ring=6, seed=12345, verbose=True,
+                            env_label="arena", extra_fields=None):
+    """P-F4b generalization of :func:`measure_supply`'s inner loop: the SAME
+    pin-I methodology (pin intensity + wall_hp each tick, measure the TRUE
+    law-agnostic draw by re-running the combustion pass on settled state and
+    reverting it — see the module docstring), but taking an ALREADY-BUILT
+    ``level``/tile coordinate instead of constructing the still-air arena
+    itself. This is what lets the same pin-I instrument run on the open
+    arena (``measure_supply``, below) AND on the sealed/vented SHIP rooms
+    ``fire_room_bench.build_room_level`` builds (P-F4b task 1's
+    supply-vs-radius sweep, ``tools/fire_supply_radius_sweep.py``).
+    ``env_label``/``extra_fields`` are pass-through bookkeeping only (written
+    into the returned metrics dict; no effect on the measurement)."""
     sim = Simulation(level, seed=seed, breach_physics=bp, enable_recorder=False)
     gmap = sim.gmap
 
@@ -233,25 +238,52 @@ def measure_supply(material_id, *, pin_I=OPERATING_POINT_I,
     metrics = dict(
         material_id=material_id, material_name=gmap.materials.names[material_id],
         pin_I=pin_I, burn_rate=burn_rate, x_ext=x_ext, x_full=x_full,
-        interior_w=interior_w, interior_h=interior_h, crate_xy=tuple(crate_xy),
+        env=env_label, crate_yx=(cy, cx),
         run_seconds=run_seconds, steady_window_s=steady_window_s,
         draw_r=int(getattr(CFG.physics.combustion, "draw_r", 1)),
+        max_claimants=int(getattr(CFG.physics.combustion, "max_claimants", 4)),
         x_local_ss=x_ss, delivery_kw_ss=kw_ss, delivery_counts_per_s_ss=counts_per_s_ss,
         true_counts_per_s_ss=true_counts_per_s_ss, true_delivery_kw_ss=true_kw_ss,
         ring_profile=ring_profile, t=rec_t, x_local=rec_x, delivery_kw=rec_kw,
         true_counts_per_s=rec_true,
     )
+    metrics.update(extra_fields or {})
     if verbose:
         _print_measure(metrics)
     return metrics
 
 
+def measure_supply(material_id, *, pin_I=OPERATING_POINT_I,
+                   interior_w=84, interior_h=40, crate_xy=(12, 21),
+                   tile_size_m=0.333, run_seconds=30.0, steady_window_s=5.0,
+                   max_ring=6, seed=12345, verbose=True):
+    """Pin ``material_id``'s tile at intensity ``pin_I`` (infinite-fuel
+    diagnostic) on the still-air reference arena, run to quasi-steady, and
+    measure O2 delivery at TODAY's configured draw radius. Thin wrapper
+    around :func:`measure_supply_on_level` that builds the still-air
+    reference arena (unchanged from P-F4a). Returns a metrics dict."""
+    level = build_level(interior_w, interior_h, crate_xy, tile_size_m)
+    cx, cy = crate_xy
+    level.tilemap[cy, cx] = material_id
+    m = measure_supply_on_level(
+        level, cy, cx, material_id, pin_I=pin_I, run_seconds=run_seconds,
+        steady_window_s=steady_window_s, max_ring=max_ring, seed=seed,
+        verbose=verbose, env_label="open_arena",
+        extra_fields=dict(interior_w=interior_w, interior_h=interior_h,
+                          crate_xy=tuple(crate_xy)))
+    return m
+
+
 def _print_measure(m):
     print("=" * 78)
-    print(f"O2 SUPPLY BASELINE  material={m['material_name']!r}  "
-         f"pin_I={m['pin_I']:.3f}  burn_rate={m['burn_rate']:.4f} (unmodified)")
-    print(f"  arena: interior {m['interior_w']}x{m['interior_h']}, crate at "
-         f"{m['crate_xy']} (still-air reference arena, sky-exchange ON)")
+    print(f"O2 SUPPLY BASELINE  material={m['material_name']!r}  env={m.get('env', '?')}  "
+         f"pin_I={m['pin_I']:.3f}  burn_rate={m['burn_rate']:.4f} (unmodified)  "
+         f"draw_r={m['draw_r']}")
+    if "interior_w" in m:
+        print(f"  arena: interior {m['interior_w']}x{m['interior_h']}, crate at "
+             f"{m['crate_xy']} (still-air reference arena, sky-exchange ON)")
+    else:
+        print(f"  room: crate at (row,col) {m.get('crate_yx')}")
     print("-" * 78)
     print(f"  quasi-steady X_local (last {m['steady_window_s']:g}s): {m['x_local_ss']:.4f}  "
          f"(ambient 0.21, X_ext {m['x_ext']:.2f})")
