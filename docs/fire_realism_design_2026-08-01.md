@@ -568,3 +568,102 @@ A narrow round-3.5 agent re-derives v5.1 (the mask split, all three refunds,
 clamp bookkeeping) against the four limits and the two-temperature gate
 BEFORE P-F1a spawns. P-F4a and the P11 mechanical fixes gate on nothing
 above and are buildable immediately.
+
+
+---
+
+## v6 — THE MINIMAL BOOKS (2026-08-02, after the round-3.5 verification;
+## SUPERSEDES v5.1 ENTIRELY. The sink, the credit, and all three refunds are
+## DELETED. Verdict pending round-3.6 verification.)
+
+Round-3.5 (`fire_realism_critiques_round3_2026-08-02.md` + the 3.5 report in
+the session record) found v5.1 unclosed (sink outside the ledger identity;
+opaque refund minting energy via a missing (1-a_r); range refund abolishing
+open-air loss) and, decisively, showed via the per-direction budget that the
+sink + credit + refunds telescope into a far simpler object. v6 is that
+object. Five compensating terms become four rules:
+
+### v6.1 — The law
+
+Emission rays are cast by emitters only (burning OR thermal_solid with
+T >= T_emit_gate — unchanged). Per direction d with weight w (Sum w = 1),
+marching with transmittance tau as today:
+
+1. **Non-emitter absorbing cell r:** the ORIGINAL antisymmetric pair, ONE
+   integer applied +/-: `x = a_s*a_r*tau*w*(E_emit(s) - E0[T_r])`;
+   `rad_net[r] += x; rad_net[s] -= x`. (The S1 shared-truncated-integer
+   idiom RETURNS; conservation is exact with no ledger involvement.)
+2. **Emitter absorbing cell r:** one-way potential-vs-ambient, ONE integer
+   moved: `x = a_s*a_r*tau*w*(E_emit(s) - E0[0])`; `rad_net[r] += x;
+   rad_net[s] -= x`. (r's own emission books on r's own cast — kills the
+   mutual-emitter 2x; two equal-T emitters net zero at 1x rate.)
+3. **Contact faces are radiation-inert:** a ray entering a solid-solid
+   CONTACT face (the marched cell is solid AND shares that face with the
+   previous solid cell — conducting or not) terminates with NO deposit and
+   NO charge; contact is conduction's domain (Erik ruling 3; the zero-kappa
+   contact case is a named negligible lump). A fully-enclosed tile thus
+   exchanges nothing radiatively by construction — the interior-wall mask
+   becomes a pure optimization with identical books.
+4. **The sky term — the ONLY ledger entry:** when a ray genuinely escapes
+   (grid edge, or reach-termination in the open), the emitter is charged the
+   escaping residual: `sky = a_s*tau_end*w*(E_emit(s) - E0[0])`;
+   `rad_net[s] -= sky; rad_amb += sky`. THE RANGE FLOOR makes "genuinely
+   escapes" well-defined: emission rays use a fixed RADIATION_RANGE >= the
+   design maximum room span (a global constant; the per-intensity range
+   formula does not apply to emission rays — reach is geometry, air cells
+   cost no deposit work). Indoors, opacity or contact terminates first;
+   reach-termination therefore IS the open field.
+
+There is no sink, no credit, no refund. Self-cell: excluded from all
+deposits as before (pair and one-way; distance 0 books nothing).
+phi/flame_lift ride E_emit as in v5; the source-cell exclusion covers
+everything.
+
+### v6.2 — The limits (exact, re-derived; round-3.6 verifies)
+
+(a) Lone emitter, open air: every ray escapes; loss = a_s*(E_s - E0). Full
+grey-body. (b) Ambient enclosing walls: pairs telescope to the SAME
+a_s*(E_s - E0) — Erik's equivalence holds exactly, with zero additional
+machinery, at any room size >= handled by the range floor. (c) Two equal-T
+emitters: rule 2 both ways nets zero; at DT the exchange is 1x. Sub-gate
+tiles cast nothing and pay nothing — the below-gate regime is "does not
+radiate" (the original A1.8 semantics), so there is no unrefunded-sink trap,
+no interior heat trap, and the gate-crossing step is the PHYSICAL onset of
+emission, bounded by E0(T_gate) - E0(0) (~1.7 game/tick at gate 180), listed
+as the known lump the tuning session may move (Erik's gate-raise lean).
+(d) Hot emitter, cold non-emitter: receiver gains the pair; the emitter's
+net loss per covered direction is the pair itself. Sealed equal-T room above
+the gate: all terminations are opaque or contact, no sky is charged, incomes
+equal outflows to reciprocity; net zero per tile.
+
+### v6.3 — Clamps, gates, ledger (round-3.5's remaining items)
+
+- Every transfer x is clamped by the SHARED symmetric pair budget
+  (rad_pair_budget, signed, per term); the cumulative per-emitter credit
+  budget of v5 is DELETED (it was order-dependent on CUDA). The aggregate
+  fold clamp + Pass-1 rails stay as counted diagnostics and must be ASSERTED
+  INERT in every gate scenario (a counter hit in a gate run = red).
+- Ledger identity: `Sum(rad_net) + rad_amb == 0` holds structurally (pairs
+  move integers; sky is the lone +/- ledger pair). Gate (ii) tests exactly
+  the sky bookings and int32 wrap.
+- Gate (iii) becomes the NET test: on a fire-free uniform equal-T grid above
+  the gate, every tile's rad_net == 0 exactly (rule-2 symmetry) — and on the
+  same grid below the gate, trivially 0 (nobody casts).
+- Gate (iv): (a) sealed equal-T box below the gate: all rad_net == 0
+  (nothing radiates); (b) sealed two-temperature box above the gate:
+  exchange = 1x one-way law, continuous in each tile's own T; (c) the
+  crossing step at the gate is MEASURED and reported against its derived
+  bound (not gated to zero — it is the emission onset).
+- Gate (v): sealed equal-T room WIDER than the old max_range: zero net per
+  tile (exercises the range floor); open-field lone emitter: rad_amb equals
+  the full grey-body rate (exercises the sky term).
+- `range_base`/`range_per_intensity` return fully to render/legacy duty;
+  RADIATION_RANGE is a new stability-class constant (not a feel dial),
+  sized to the maximum design room span, cost statement: air cells cost a
+  march step and no deposit.
+
+### v6.4 — Status
+
+v5.2 (F-O2b) and v5.3 (rulings fold) stand unchanged. v5.1 is void. The
+round-3.6 narrow verifier re-derives v6.1-v6.2 before P-F1a spawns; P-F4a
+and P-O2b are unaffected by any of this and proceed.
