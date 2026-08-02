@@ -503,9 +503,15 @@ PYBIND11_MODULE(breach_physics, m) {
              double range_base, double range_per_intensity,
              double intensity_base, double intensity_per_intensity,
              std::array<float, 3> color,
-             py::array_t<float> light_rgb,
-             py::array_t<float> light_dx,
-             py::array_t<float> light_dy,
+             // P-F1a: the VISIBLE-LIGHT buffers are OPTIONAL (None -> the
+             // short second cast is skipped entirely). The live sim path
+             // discards them -- the renderer draws fire light from its own
+             // blackbody selector -- and skipping saves a WHOLE extra device
+             // round-trip (upload + kernel + download), which is the dominant
+             // cost of the split, not the long rays.
+             py::object light_rgb,
+             py::object light_dx,
+             py::object light_dy,
              py::array_t<float> gas,
              py::array_t<float> gas_absorption,
              py::array_t<float> gas_scatter,
@@ -515,14 +521,26 @@ PYBIND11_MODULE(breach_physics, m) {
              py::array_t<int32_t> heat_inv_shift,
              py::array_t<bool> thermal_solid,
              py::array_t<int32_t> rad_net,
+             py::array_t<int32_t> rad_amb,
              py::array_t<int32_t> rad_flux,
              int tick,
              py::object smoke_glow,
              double jitter) {
               auto [fp, h, w] = get_2d_const(fire);
-              auto [lrgb, h2, w2]  = get_3d(light_rgb);
-              auto [ldx, h3, w3] = get_2d(light_dx);
-              auto [ldy, h4, w4] = get_2d(light_dy);
+              float* lrgb = nullptr; float* ldx = nullptr; float* ldy = nullptr;
+              py::array_t<float> lrgb_a, ldx_a, ldy_a;
+              const bool want_light = !light_rgb.is_none();
+              if (want_light) {
+                  lrgb_a = light_rgb.cast<py::array_t<float>>();
+                  ldx_a  = light_dx.cast<py::array_t<float>>();
+                  ldy_a  = light_dy.cast<py::array_t<float>>();
+                  auto lr = lrgb_a.mutable_unchecked<3>();
+                  lrgb = lr.mutable_data(0, 0, 0);
+                  auto lx = ldx_a.mutable_unchecked<2>();
+                  ldx = lx.mutable_data(0, 0);
+                  auto ly = ldy_a.mutable_unchecked<2>();
+                  ldy = ly.mutable_data(0, 0);
+              }
               auto gv = gas.unchecked<3>();
               const float* gas_field = gv.data(0, 0, 0);
               const int n_gases = static_cast<int>(gv.shape(0));
@@ -544,27 +562,45 @@ PYBIND11_MODULE(breach_physics, m) {
               auto [his, h7, w7]    = get_2d_const(heat_inv_shift);
               auto [tsol, h8, w8]   = get_2d_const(thermal_solid);
               auto [rnet, h9, w9]   = get_2d(rad_net);
+              auto [ramb, h11, w11] = get_2d(rad_amb);
               auto [rflux, h10, w10] = get_2d(rad_flux);
+              // P-F1a: TWO ray lists and TWO device casts, mirroring the CPU
+              // entry point's split. `rays` is the EMISSION set (RADIATION_RANGE,
+              // radiation payload) for the pure-radiation fast-path kernel;
+              // `light_rays` is the SHORT visible-light set (legacy range, no
+              // payload) for the UNCHANGED directional kernel. `emit_mask` is
+              // the once-per-tick emitter plane rule 2 keys on (v7.1 item 13),
+              // built by the same shared enumerator the CPU uses.
+              std::vector<uint8_t> emit_mask;
+              std::vector<breach_cuda::RayHD> light_rays;
               std::vector<breach_cuda::RayHD> rays = self.build_fire_ray_list(
                   fp, h, w, fire_ray_count,
                   range_base, range_per_intensity,
                   intensity_base, intensity_per_intensity,
-                  color.data(), tmp, hatten, his, tsol, tick, jitter);
+                  color.data(), tmp, hatten, his, tsol, tick, jitter,
+                  &emit_mask, want_light ? &light_rays : nullptr);
               // n_rays==0 guard (no emitters, or all sources fully
               // angular-culled) — defense in depth, mirrors
               // cuda_raycaster_cast_batch (Python also guards before calling).
-              if (rays.empty()) return;
-              breach_cuda::raycaster_cast_directional(
+              if (rays.empty()) return (int64_t)0;
+              const int64_t contact = breach_cuda::raycaster_cast_radiation(
                   rays.data(), static_cast<int>(rays.size()),
-                  lrgb, ldx, ldy, /*heat=*/nullptr, glow_ptr,
-                  gas_field, gabs, gsca, n_gases,
-                  atten, hatten,
-                  self.smoke_absorb_scale, self.light_cull, self.heat_cull,
-                  h, w,
-                  // P-R4: the E° bake (host side, from THIS raycaster's
-                  // rad_scale) + the three planes + the signed accumulator +
-                  // D3's positive-only damage sensor.
-                  self.emissive_table(), tmp, his, rnet, rflux);
+                  hatten, self.heat_cull, h, w,
+                  // The E° bake (host side, from THIS raycaster's rad_scale),
+                  // the three read planes, the emitter mask, and the two signed
+                  // ledgers + D3's positive-only damage sensor.
+                  self.emissive_table(), tmp, his, emit_mask.data(),
+                  rnet, ramb, rflux);
+              if (want_light && !light_rays.empty()) {
+                  breach_cuda::raycaster_cast_directional(
+                      light_rays.data(), static_cast<int>(light_rays.size()),
+                      lrgb, ldx, ldy, /*heat=*/nullptr, glow_ptr,
+                      gas_field, gabs, gsca, n_gases,
+                      atten, hatten,
+                      self.smoke_absorb_scale, self.light_cull, self.heat_cull,
+                      h, w);
+              }
+              return contact;
           },
           py::arg("raycaster"), py::arg("fire"),
           py::arg("fire_ray_count"),
@@ -576,10 +612,10 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("light_atten"), py::arg("heat_atten"),
           py::arg("temperature"), py::arg("heat_inv_shift"),
           py::arg("thermal_solid"), py::arg("rad_net"),
-          py::arg("rad_flux"), py::arg("tick"),
+          py::arg("rad_amb"), py::arg("rad_flux"), py::arg("tick"),
           py::arg("smoke_glow") = py::none(),
           py::arg("jitter") = 0.0,
-          "P-R4: CUDA twin of cast_from_fire_plane — builds the emitter list "
+          "P-F1a: CUDA twin of cast_from_fire_plane — builds the emitter list "
           "from the fire/temperature planes in C++ and marches it in ONE "
           "batched device cast. `rad_net` is bit-identical to the CPU loop "
           "(plain signed atomicAdd == the CPU's plain signed add).");
@@ -1685,6 +1721,12 @@ PYBIND11_MODULE(breach_physics, m) {
         // v2.4 T_MAX_PHYS rail + counter (temperature_solver.h).
         .def_readwrite("T_MAX_PHYS",        &TemperatureSolver::T_MAX_PHYS)
         .def_readonly("t_max_phys_hits",    &TemperatureSolver::t_max_phys_hits)
+        // P-F1a (v7.2): the Pass-1 LOW rail's engagement count. The radiation
+        // fold is the only SIGNED path into `temperature`, so it is the only
+        // one that can drive a tile below the ambient floor at 0. Justified
+        // INERT by the per-term budget argument — a nonzero count inside a gate
+        // scenario is a RED, which is exactly why it is readable from Python.
+        .def_readonly("t_low_rail_hits",    &TemperatureSolver::t_low_rail_hits)
         // P2: wind_x/wind_y/dt are OPTIONAL (default None/0.0) so the shipped
         // direct-binding call sites (tests/test_temperature_*.py,
         // tests/cuda_s1_check.py — all pre-P2, 7 positional args) keep working
@@ -1831,15 +1873,26 @@ PYBIND11_MODULE(breach_physics, m) {
         // warm-emitter threshold in GAME temperature units.
         .def_readwrite("rad_scale", &Raycaster::rad_scale)
         .def_readwrite("T_emit_gate", &Raycaster::T_emit_gate)
+        // P-F1a / v7 rule 4: RADIATION_RANGE — the emission ray's reach, in
+        // tiles. A STABILITY-CLASS CONSTANT, not a feel dial: it must be >= the
+        // grid diagonal of the largest shipping level (128x256 => 286.22, so the
+        // floor is 287) or "genuinely escapes" stops meaning "left the world"
+        // and the corridor leak reopens. `range_base`/`range_per_intensity` no
+        // longer bound an emission ray — they are render/legacy duty and D3's
+        // damage_range guard.
+        .def_readonly_static("RADIATION_RANGE_MIN", &Raycaster::RADIATION_RANGE_MIN)
+        .def_readwrite("radiation_range", &Raycaster::radiation_range)
         .def("bake_emissive_table", &Raycaster::bake_emissive_table,
              "P-R4: (re)bake the black-body E° table from the current "
              "rad_scale. Idempotent; the cast entry points bake lazily too.")
         .def("emissive_table", [](const Raycaster& self) {
-                const int32_t* t = self.emissive_table();
-                return py::array_t<int32_t>(E_TABLE_SIZE, t);
+                const int64_t* t = self.emissive_table();
+                return py::array_t<int64_t>(E_TABLE_SIZE, t);
              },
-             "P-R4: a COPY of the baked E° table (E_TABLE_SIZE int32 entries, "
-             "4 game-units per bucket) — the oracle for the bake's tests.")
+             "P-F1a: a COPY of the baked E° table (E_TABLE_SIZE INT64 entries, "
+             "4 game-units per bucket) — the oracle for the bake's tests. The "
+             "table widened from int32 at P-F1a (L2-B3): its old INT32_MAX "
+             "saturation above T_game ~ 1768 was a silent ceiling on the law.")
         // Per-channel Beer-Lambert absorption (R,G,B) — exposed as a 3-tuple.
         .def_property("smoke_absorption_rgb",
             [](const Raycaster& r) {
@@ -1959,9 +2012,11 @@ PYBIND11_MODULE(breach_physics, m) {
                 double range_base, double range_per_intensity,
                 double intensity_base, double intensity_per_intensity,
                 std::array<float, 3> color,
-                py::array_t<float> light_rgb,
-                py::array_t<float> light_dx,
-                py::array_t<float> light_dy,
+                // P-F1a: OPTIONAL (None -> the short visible-light second cast
+                // is skipped entirely). See the CUDA twin above.
+                py::object light_rgb,
+                py::object light_dx,
+                py::object light_dy,
                 py::array_t<float> gas,
                 py::array_t<float> gas_absorption,
                 py::array_t<float> gas_scatter,
@@ -1971,14 +2026,25 @@ PYBIND11_MODULE(breach_physics, m) {
                 py::array_t<int32_t> heat_inv_shift,
                 py::array_t<bool> thermal_solid,
                 py::array_t<int32_t> rad_net,
+                py::array_t<int32_t> rad_amb,
                 py::array_t<int32_t> rad_flux,
                 int tick,
                 py::object smoke_glow,
                 double jitter) {
             auto [fp, h, w] = get_2d_const(fire);
-            auto [lrgb, h2, w2]  = get_3d(light_rgb);
-            auto [ldx, h3, w3] = get_2d(light_dx);
-            auto [ldy, h4, w4] = get_2d(light_dy);
+            float* lrgb = nullptr; float* ldx = nullptr; float* ldy = nullptr;
+            py::array_t<float> lrgb_a, ldx_a, ldy_a;
+            if (!light_rgb.is_none()) {
+                lrgb_a = light_rgb.cast<py::array_t<float>>();
+                ldx_a  = light_dx.cast<py::array_t<float>>();
+                ldy_a  = light_dy.cast<py::array_t<float>>();
+                auto lr = lrgb_a.mutable_unchecked<3>();
+                lrgb = lr.mutable_data(0, 0, 0);
+                auto lx = ldx_a.mutable_unchecked<2>();
+                ldx = lx.mutable_data(0, 0);
+                auto ly = ldy_a.mutable_unchecked<2>();
+                ldy = ly.mutable_data(0, 0);
+            }
             auto gv = gas.unchecked<3>();
             const float* gas_field = gv.data(0, 0, 0);
             const int n_gases = static_cast<int>(gv.shape(0));
@@ -2004,8 +2070,9 @@ PYBIND11_MODULE(breach_physics, m) {
             auto [his, h7, w7]    = get_2d_const(heat_inv_shift);
             auto [tsol, h8, w8]   = get_2d_const(thermal_solid);
             auto [rnet, h9, w9]   = get_2d(rad_net);
+            auto [ramb, h11, w11] = get_2d(rad_amb);
             auto [rflux, h10, w10] = get_2d(rad_flux);
-            self.cast_from_fire_plane(fp, h, w,
+            return self.cast_from_fire_plane(fp, h, w,
                                        fire_ray_count,
                                        range_base, range_per_intensity,
                                        intensity_base, intensity_per_intensity,
@@ -2013,7 +2080,7 @@ PYBIND11_MODULE(breach_physics, m) {
                                        lrgb, ldx, ldy, glow_ptr,
                                        gas_field, gabs, gsca, n_gases,
                                        atten, hatten,
-                                       tmp, his, tsol, rnet, rflux, tick,
+                                       tmp, his, tsol, rnet, ramb, rflux, tick,
                                        jitter);
         }, py::arg("fire"),
            py::arg("fire_ray_count"),
@@ -2025,13 +2092,16 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("light_atten"), py::arg("heat_atten"),
            py::arg("temperature"), py::arg("heat_inv_shift"),
            py::arg("thermal_solid"), py::arg("rad_net"),
-           py::arg("rad_flux"), py::arg("tick"),
+           py::arg("rad_amb"), py::arg("rad_flux"), py::arg("tick"),
            py::arg("smoke_glow") = py::none(),
            py::arg("jitter") = 0.0,
-           "P-R4: enumerate the emitter set (burning tiles + thermal solids at "
-           "or above T_emit_gate) row-major and run the antisymmetric net-T^4 "
-           "radiation exchange into rad_net. The one-way painter deposit and "
-           "k_fire_heat are GONE.")
+           "P-F1a: enumerate the emitter set (burning tiles + thermal solids at "
+           "or above T_emit_gate) row-major, build the once-per-tick emitter "
+           "mask, and run the VERIFIED RADIATION BOOKS (v6.1 rules 1/3/4 as "
+           "amended by v7/v7.1) as a PURE-RADIATION cast at RADIATION_RANGE, "
+           "plus a second SHORT visible-light cast on the legacy range formula. "
+           "rad_net is the signed tile ledger, rad_amb the per-tile SKY ledger; "
+           "sum(rad_net) + sum(rad_amb) == 0 exactly, pre-fold.")
         .def_static("normalize_directions",
              [](py::array_t<float> light_dx, py::array_t<float> light_dy) {
             auto [ldx, h, w]   = get_2d(light_dx);

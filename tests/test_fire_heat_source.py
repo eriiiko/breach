@@ -32,6 +32,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -82,6 +83,9 @@ class _FireScene:
         # comes from the emitters' own temperature, not from a payload dial.
         self.temperature = np.zeros((h, w), dtype=np.int32)
         self.rad_net = np.zeros((h, w), dtype=np.int32)    # SIGNED energy ledger
+        # P-F1a (v6.1 rule 4): the per-tile SKY ledger — the ONLY entry that
+        # leaves the tile books. `rad_net.sum() + rad_amb.sum() == 0` exactly.
+        self.rad_amb = np.zeros((h, w), dtype=np.int32)
         self.rad_flux = np.zeros((h, w), dtype=np.int32)   # D3 damage sensor
         self._h, self._w = h, w
         # Multi-gas march inputs (engine/05 §6.2): an empty gas field + the canon
@@ -130,6 +134,7 @@ class _FireScene:
         self._rebuild()
         self.heat[:] = 0
         self.rad_net[:] = 0
+        self.rad_amb[:] = 0
         self.rad_flux[:] = 0
         runner.cast_fire_heat(self, tick=tick)
         return (self.rad_net.astype(np.float64) / HEAT_SCALE,
@@ -182,20 +187,84 @@ def _hold_burner(g, y, x, intensity=0.8, T_game=FLAME_T_GAME):
 # and must register flux where a unit would stand. That is what is asserted now.
 # ---------------------------------------------------------------------------
 def test_fire_deposits_heat_on_source_and_radiates():
+    """RE-ANCHORED AGAIN AT P-F1a (rules 3 and 4).
+
+    Two further inversions on top of P-R4's, both deliberate:
+
+      * THE NEIGHBOUR MOVED OFF THE CONTACT FACE. Under v7 rule 3 a ray stepping
+        from a solid into a FACE-ADJACENT solid terminates with no deposit and
+        no charge -- conduction owns contact (Erik ruling 3). A neighbour at
+        (5, 6) therefore receives NOTHING radiatively, by design, and asserting
+        otherwise would be asserting against the law. The absorber is now
+        air-separated, as a wall across an open room is.
+      * CONSERVATION IS THE LEDGER IDENTITY. The emitter's rays now reach the
+        grid edge and are charged there (rule 4), so `rad_net.sum()` is
+        NEGATIVE by exactly what the sky ledger received.
+    """
     r = _runner()
     sc = _FireScene(11, 11)
     sc.light(5, 5, 0.8)
-    sc.set_wood(5, 6)                      # a SOLID neighbour that can absorb
+    # A wood COLUMN one air tile away: air-separated (rule 3 never fires between
+    # it and the emitter) and wide enough that the 8-ray fan cannot miss it on
+    # any tick of the D4 rotation.
+    for y in range(11):
+        sc.set_wood(y, 7)
     rad, flux = sc.cast(r)
     assert rad[5, 5] < 0, "the burning tile did not LOSE heat by radiating"
-    assert rad[5, 6] > 0, "the solid neighbour gained no heat"
-    assert abs(rad.sum()) < 1e-9, "the exchange did not conserve"
+    assert rad[:, 7].sum() > 0, "the air-separated solid wall gained no heat"
+    # Rule 4's ledger identity, on the raw integer planes (the returned arrays
+    # are scaled floats; the books close to the COUNT, so check the integers).
+    assert int(sc.rad_net.sum()) + int(sc.rad_amb.sum()) == 0, (
+        "the exchange did not conserve: rad_net + rad_amb != 0")
+    assert int(sc.rad_amb.sum()) > 0, "no ray escaped an 11x11 open grid"
     # The surrounding AIR registers incident flux (D3) but takes no energy.
     ring_air = flux[4:7, 4:7].copy()
     ring_air[1, 1] = 0.0                   # exclude the source itself
     assert ring_air.max() > 0, "no radiant flux registered around the fire"
     air = _TBL.heat_atten[sc.material] <= 0.0
-    assert abs(rad[air]).max() == 0.0, "AIR absorbed energy — Kirchhoff violated"
+    assert abs(rad[air]).max() == 0.0, "AIR absorbed energy - Kirchhoff violated"
+
+
+def test_contact_faces_are_radiation_inert():
+    """v7 rule 3, stated positively: a FACE-ADJACENT solid receives NOTHING.
+
+    New at P-F1a. This is the semantics that took the first-ring absorber out of
+    the test above, so it is worth pinning directly rather than leaving it as an
+    inference: contact is conduction's domain, and the radiative books simply do
+    not enumerate those directions. The same tile, moved one cell further out so
+    that air separates it, DOES receive -- which is what makes this a statement
+    about contact rather than about reach.
+    """
+    r = _runner()
+    # Swept over a FULL D4 rotation. A single tile on the pure (+2, 0) axis is
+    # only swept by the fan on SOME ticks, so a one-tick probe would be
+    # measuring the rotation, not the law.
+    n_ticks = int(r.fire_ray_count)
+    touch_total = 0
+    sep_total = 0
+    for tick in range(n_ticks):
+        touching = _FireScene(11, 11)
+        touching.light(5, 5, 0.8)
+        touching.set_wood(5, 6)            # FACE-ADJACENT to the emitter
+        rad_touch, _ = touching.cast(r, tick=tick)
+        touch_total += int(touching.rad_net[5, 6])
+        assert int(touching.rad_net.sum()) + int(touching.rad_amb.sum()) == 0
+
+        separated = _FireScene(11, 11)
+        separated.light(5, 5, 0.8)
+        separated.set_wood(5, 7)           # one air tile away
+        separated.cast(r, tick=tick)
+        sep_total += int(separated.rad_net[5, 7])
+        assert int(separated.rad_net.sum()) + int(separated.rad_amb.sum()) == 0
+
+    print(f"\nP-F1a rule 3 - over {n_ticks} ticks: face-adjacent solid received "
+          f"{touch_total} counts, air-separated solid received {sep_total}")
+    assert touch_total == 0, (
+        "a face-adjacent solid absorbed radiation - rule 3 (contact faces are "
+        "radiation-inert) is not being applied")
+    assert sep_total > 0, (
+        "the air-separated solid received nothing either - the scene is "
+        "vacuous, so the contact assertion above proves nothing")
 
 
 def test_no_fire_no_heat():
@@ -275,17 +344,23 @@ def test_heat_lands_on_solid_not_lost_in_air_conversion():
 # ---------------------------------------------------------------------------
 # (c) full chain: heat -> temperature -> ignition through Simulation.step()
 # ---------------------------------------------------------------------------
-def test_full_chain_heat_ignites_adjacent_wood():
-    """A flammable wood wall held next to a burning tile crosses ignition_temp
-    and IGNITES — via fire heat -> temperature -> ignition. With the cellular
-    spread DELETED (fire_design_proposal §1), radiation->ignition is now the ONLY
-    spread path, so no spread toggle is needed to isolate it. Proves the chain
-    heat -> temperature -> ignition end-to-end."""
+def _chain_sim():
+    """The full-chain scenario: a burner and an AIR-SEPARATED wood target.
+
+    P-F1a re-anchor (v7 rule 3): the target sits OFF THE CONTACT FACE. A
+    face-adjacent plank is conduction's business now, not radiation's — a ray
+    stepping solid-into-face-adjacent-solid terminates with no deposit and no
+    charge, so an adjacent target measures the conduction path while claiming to
+    measure the radiative one. Air-separated is the geometry the chain's own
+    canon describes: "a fire radiates heat across an open room; distant wood
+    catches".
+    """
     level = load_level("unhcr_vessel")
     sim = Simulation(level, seed=42, breach_physics=bp, enable_recorder=False)
     g = sim.gmap
     g.material[50, 14] = MAT_WOOD          # burner
-    g.material[50, 15] = MAT_WOOD          # target (adjacent)
+    g.material[50, 15] = MAT_AIR           # the open tile it radiates ACROSS
+    g.material[50, 16] = MAT_WOOD          # target (air-separated)
     g._update_caches()
     # P-R4 re-anchor: run the pair at the ARC'S BLESSED cool_shift (9), not the
     # shipped 5. `cool_shift` is the crate/plank's ONE loss channel (kappa 0 ->
@@ -300,25 +375,80 @@ def test_full_chain_heat_ignites_adjacent_wood():
     # pins the dial the rest of the arc measures at. Set AFTER _update_caches,
     # which rebuilds the plane from the material table.
     g.cool_shift[50, 14] = 9
-    g.cool_shift[50, 15] = 9
+    g.cool_shift[50, 16] = 9
     sim.set_paused(False)
+    return sim, g
 
-    assert g.fire[50, 15] == 0
-    ignited_tick = None
-    for t in range(1, 120):
-        _hold_burner(g, 50, 14)            # hold the burner lit AND hot (P-R4)
+
+def test_full_chain_radiation_heats_air_separated_wood():
+    """THE CHAIN: radiation -> temperature, across an open tile, end-to-end.
+
+    RE-ANCHORED AT P-F1a. This test used to assert IGNITION. At P-F1a's frozen
+    dials it cannot reach it, and that is the patch's NAMED, EXPECTED outcome
+    (the P-R2-form acceptance) rather than a defect — so the test is SPLIT:
+    this half owns the chain, which is intact and strictly checkable, and the
+    ignition MAGNITUDE moves to the strict-xfail below that P-F1b will trip.
+
+    What is strictly gated here: with the cellular spread deleted, radiation is
+    the ONLY path by which the target can warm at all. It starts at ambient 0
+    and its temperature must climb monotonically-in-the-large to a real
+    plateau — heat crossed an air gap, landed on a solid, and converted. Every
+    link (emitter mask -> emission ray -> rule-1 pair -> rad_net -> the Pass-1
+    fold) has to work for that number to move at all.
+    """
+    sim, g = _chain_sim()
+    assert int(g.temperature[50, 16]) == 0, "target did not start at ambient"
+    peak = 0
+    for _ in range(1, 200):
+        _hold_burner(g, 50, 14)            # hold the burner lit AND hot
         sim.step()
-        if g.fire[50, 15] > 0:
+        peak = max(peak, int(g.temperature[50, 16]))
+    peak_game = peak / 65536.0
+    print(f"\nP-F1a chain - air-separated wood reached {peak_game:.1f} game "
+          f"(ignition_temp {IGN_WOOD_Q16 / 65536.0:.0f})")
+    assert peak > 0, (
+        "the air-separated target never warmed at all - the radiation chain "
+        "(emitter mask -> emission ray -> pair -> rad_net -> Pass-1 fold) is "
+        "broken somewhere, not merely under-calibrated")
+    # A real plateau well above the noise floor, not a single LSB of drift.
+    assert peak_game > 100.0, (
+        f"the target only reached {peak_game:.1f} game - the chain is moving "
+        f"far less than the frozen dials predict (~182)")
+    # The rail that guards the signed fold must never engage in a gate scenario.
+    assert int(sim.physics_runner.temperature.t_low_rail_hits) == 0, (
+        "the Pass-1 LOW rail engaged - the budget argument in v7.2 is wrong")
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "P-F1a EXPECTED RED, named in the patch's acceptance (the P-R2-form "
+    "precedent). At P-F1a's FROZEN dials the v7 books cannot carry an "
+    "air-separated plank to wood's 300-game ignition_temp: measured, it "
+    "plateaus at ~182 game. Two frozen-dial effects stack. (1) The painter-era "
+    "heat is gone and H_bed alone cannot hold the old plateau. (2) The receiver "
+    "stalls AT THE GATE: T_emit_gate is 180, so as the target crosses ~180 it "
+    "becomes an emitter itself and begins paying its OWN sky in the ~7 "
+    "directions that leave the world while still receiving on the ~1 direction "
+    "that sees the burner. That is rule 4 behaving correctly - the physical "
+    "onset of emission - and it is exactly what P-F1b's recalibration (rad_scale "
+    "/ T_emit_gate / cool_shift, at the measured R=2 watt books) has to move. "
+    "strict=True ON PURPOSE: when P-F1b restores ignition this test FAILS as an "
+    "unexpected PASS, which is the handoff signal."))
+def test_full_chain_heat_ignites_air_separated_wood():
+    """The ignition MAGNITUDE — P-F1b's to restore. See the xfail reason."""
+    sim, g = _chain_sim()
+    ignited_tick = None
+    for t in range(1, 200):
+        _hold_burner(g, 50, 14)
+        sim.step()
+        if g.fire[50, 16] > 0:
             ignited_tick = t
             break
-
-    assert ignited_tick is not None, "adjacent wood never ignited from fire heat"
-    # It ignited BECAUSE temperature crossed the (Q16.16) ignition threshold.
-    assert int(g.temperature[50, 15]) >= IGN_WOOD_Q16, (
+    assert ignited_tick is not None, (
+        "air-separated wood never ignited from fire heat")
+    assert int(g.temperature[50, 16]) >= IGN_WOOD_Q16, (
         "target ignited without its temperature crossing ignition_temp")
-    # And it took a FEW SECONDS (toward but not instantly past) — not tick 1.
     assert ignited_tick > sim._tps // 4, (
-        f"ignited too fast ({ignited_tick} ticks) — heat path is not gentle")
+        f"ignited too fast ({ignited_tick} ticks) - heat path is not gentle")
 
 
 # ---------------------------------------------------------------------------

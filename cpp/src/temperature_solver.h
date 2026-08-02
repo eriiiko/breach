@@ -218,6 +218,15 @@ public:
     // [physics.thermal] by physics_runner. Full rationale: eos_solver.h.
     float T_MAX_PHYS = 16000.0f;
     mutable int64_t t_max_phys_hits = 0;   // Pass-1 rail engagements
+    // P-F1a (v7.2): the Pass-1 LOW rail's counter. The radiation fold is the
+    // only SIGNED path into `temperature`, so it is the only one that can drive
+    // a tile below the ambient floor at 0. The rail is a COUNTED DIAGNOSTIC,
+    // justified inert by the per-term budget argument (every exchange term is
+    // clamped to a |ΔT|/2^RAD_LIM_SHIFT share; the mutual branch halves it
+    // again) — a hit inside a gate scenario is a RED, not a shrug. See the
+    // block in temperature_solver.cpp Pass 1 for the full argument and for why
+    // P-R4's "no low rail is needed" antisymmetry reasoning is void.
+    mutable int64_t t_low_rail_hits = 0;   // Pass-1 LOW rail engagements
 
     void  set_gas_advection_rate(float v) { gas_advection_rate = v; }
     float get_gas_advection_rate() const { return gas_advection_rate; }

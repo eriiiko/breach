@@ -460,6 +460,26 @@ class GameMap:
         # together at the very end of Simulation.step, after every consumer).
         # Written IN-PLACE (never reassigned) so any C++ view stays valid.
         self.rad_net = np.zeros((h, w), dtype=np.int32)
+        # P-F1a (design v6.1 rule 4 / v7.1 items 8-9) — THE AMBIENT (SKY) LEDGER.
+        # The ONLY place energy leaves the tile books. When an emission ray
+        # LEAVES THE GRID the emitter is charged the escaping residual
+        # ``a_s * tau_end * w * (E[T_s] - E[0])`` and the SAME integer is booked
+        # here, keyed by the EMITTER's cell index:
+        #     rad_net[s] -= sky ;  rad_amb[s] += sky
+        # so ``rad_net.sum() + rad_amb.sum() == 0`` EXACTLY, pre-fold — gate (ii),
+        # and the whole content of the conservation claim.
+        #
+        # WHY A PLANE AND NOT A SCALAR: a single global counter would be a
+        # contended atomic on the device and — worse — an ORDER-DEPENDENT one if
+        # it ever saturated. A per-tile int32 with PLAIN adds is order-free by
+        # the same argument ``rad_net`` uses, and the host reduces it to a
+        # uint64 total once per tick (entries are non-negative, since
+        # ``E[T_s] >= E[0]`` for every bucket, so the reduction is exact).
+        #
+        # Same Q16.16 scale and the SAME per-tick lifetime as ``heat`` /
+        # ``rad_net``: cleared together at the very end of Simulation.step.
+        # Written IN-PLACE (never reassigned) so any C++ view stays valid.
+        self.rad_amb = np.zeros((h, w), dtype=np.int32)
         # D3 (ruling amendment 5) — the RADIANT-FLUX SENSOR plane.
         # *** NOT part of the energy ledger. ***  It moves no energy, changes no
         # temperature, and nothing is debited to pay for it; no solver reads it.

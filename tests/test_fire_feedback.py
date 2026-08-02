@@ -334,14 +334,32 @@ def test_plume_does_not_subtract_atmosphere_near_fire():
 # Spread is now radiation -> ignition (the cellular stencil is GONE)
 # ---------------------------------------------------------------------------
 def test_spread_is_radiation_only_no_cellular_stencil():
-    # A burning wood tile lights an ADJACENT wood tile via heat -> temperature ->
-    # ignition (the radiation path), while a far flammable tile with no heat path
-    # does NOT light — i.e. there is no cellular stencil reaching across gaps.
+    """Radiation is the ONLY spread path, and it does not leap gaps.
+
+    RE-ANCHORED AT P-F1a. The scenario had the near target FACE-ADJACENT to the
+    burner and asserted that it IGNITED. Two P-F1a facts move that:
+
+      1. v7 rule 3 — CONTACT FACES ARE RADIATION-INERT. A face-adjacent plank
+         receives nothing radiatively at all; conduction owns contact. The near
+         target is therefore AIR-SEPARATED now, which is the geometry "spread by
+         radiation" actually means.
+      2. At P-F1a's FROZEN dials the near target warms but does NOT reach wood's
+         300-game ignition_temp (measured ~183). That is the patch's named,
+         expected outcome, and it is P-F1b's recalibration to restore — see the
+         strict-xfail twin in tests/test_fire_heat_source.py.
+
+    So this test now gates what is BOTH strictly true and what it was really
+    protecting: heat reaches the NEAR tile and reaches the FAR tile NOT AT ALL.
+    The gap-leaping cellular stencil is gone, and nothing has quietly replaced
+    it — including the long emission rays, which is worth pinning precisely
+    BECAUSE v7 rule 4 lengthened them to the grid diagonal.
+    """
     level = load_level("unhcr_vessel")
     sim = Simulation(level, seed=11, breach_physics=bp, enable_recorder=False)
     g = sim.gmap
     g.material[50, 14] = MAT_WOOD          # burner
-    g.material[50, 15] = MAT_WOOD          # adjacent target (radiation reaches it)
+    g.material[50, 15] = MAT_AIR           # the open tile it radiates ACROSS
+    g.material[50, 16] = MAT_WOOD          # near target (radiation reaches it)
     g.material[50, 40] = MAT_WOOD          # far target (no heat path)
     g._update_caches()
     # P-R4 re-anchor (ruling amendment 5 D2). Two changes, same scenario, same
@@ -355,25 +373,49 @@ def test_spread_is_radiation_only_no_cellular_stencil():
     #     5 — see the same note in tests/test_fire_heat_source.py. P-R5 owns that
     #     dial; this test owns the spread PATH.
     g.cool_shift[50, 14] = 9
-    g.cool_shift[50, 15] = 9
+    g.cool_shift[50, 16] = 9
     sim.set_paused(False)
 
-    adj_lit = False
+    near_peak = 0
     for _ in range(120):
         g.fire[50, 14] = FIRE_Q(0.8)       # hold the burner (S3a: Q16.16)
         g.temperature[50, 14] = FIRE_Q(443.0)   # ...at flame temperature (P-R4)
         sim.step()
-        if g.fire[50, 15] > 0:             # int compare on the Q16.16 field
-            adj_lit = True
-            break
-    assert adj_lit, "adjacent wood never ignited via radiation"
+        near_peak = max(near_peak, int(g.temperature[50, 16]))
+    print(f"\nP-F1a spread - near (air-separated) target reached "
+          f"{near_peak / 65536.0:.1f} game; far target fire={int(g.fire[50, 40])}")
+    assert near_peak > 0, (
+        "the near air-separated target never warmed - radiation is not "
+        "spreading heat at all")
+    assert near_peak / 65536.0 > 100.0, (
+        f"the near target only reached {near_peak / 65536.0:.1f} game - far "
+        f"below the ~183 the frozen dials deliver")
     # The far tile, with no heat reaching it, stayed cold and unlit -> the old
-    # gap-leaping cellular stencil is gone.
+    # gap-leaping cellular stencil is gone, and the >= grid-diagonal emission
+    # rays (v7 rule 4) have NOT quietly become a new one.
     assert g.fire[50, 40] == 0, "a far flammable tile lit with no heat path"
-    # EOS P3: the compressible solver's grid-wide gas-T advection/compression
-    # work leaves sub-milli-Kelvin numerical residue everywhere; assert "no
-    # MEANINGFUL heating" (|T| < 1 K) instead of an exact zero.
-    assert abs(int(g.temperature[50, 40])) < 65536, "far tile heated with no heat path"
+    # RE-ANCHOR (v7 rule 4). The old assertion was "the far tile is not heated
+    # AT ALL" (|T| < 1 K, allowing only the EOS solver's numerical residue).
+    # That was only ever true because emission rays expired at ~5 tiles — the
+    # very corridor leak rule 4 exists to close. A real fire DOES radiate across
+    # an open room, and the far tile is in clear line of sight 24 tiles down the
+    # same row, so it correctly receives a little: measured ~1.3 game.
+    #
+    # What this test is actually guarding is that the fire does not SPREAD by
+    # anything other than radiation, and that radiation's reach is governed by
+    # 1/r ray DENSITY rather than by a stencil. Both are now stated as a RATIO:
+    # the far tile must stay orders of magnitude below the near one, and must
+    # never light. A stencil (or a bug that made distance free) would collapse
+    # that ratio immediately.
+    far_T = abs(int(g.temperature[50, 40]))
+    ratio = near_peak / max(far_T, 1)
+    print(f"  far target reached {far_T / 65536.0:.2f} game "
+          f"({ratio:.0f}x below the near target)")
+    assert ratio > 20.0, (
+        f"the far tile is within {ratio:.1f}x of the near tile - radiation has "
+        f"stopped falling off with distance, or a gap-leaping stencil is back")
+    assert far_T < IGN_WOOD_Q16 // 4, (
+        "the far tile is being driven toward ignition from 24 tiles away")
 
 
 # ---------------------------------------------------------------------------

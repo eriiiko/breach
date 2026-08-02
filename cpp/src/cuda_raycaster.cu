@@ -53,13 +53,11 @@ __device__ __forceinline__ void heat_atomic_sat_add(int32_t* addr, int32_t delta
 
 // One thread per ray. Replicates march_ray_directional tile-for-tile.
 //
-// P-R4 radiation (ruling A1): the exchange is scattered with a PLAIN signed
-// atomicAdd(int*) — integer addition is associative + commutative and CUDA's
-// int atomicAdd wraps on overflow exactly as the CPU's `rad_signed_add` does,
-// so the accumulation is ORDER-FREE and bit-identical to the CPU reference even
-// in the (documented, out-of-band) overflow regime. A SATURATING signed atomic
-// would NOT be order-free — that is why rad_net has its own plane and its own
-// contract, separate from `heat[]`'s positive-saturating one (ruling A1.7).
+// P-F1a: the radiation block is GONE from this kernel — it moved, whole, into
+// march_radiation_kernel below (the mandatory pure-radiation fast path, v7
+// rule 4). This kernel is now purely the light/heat march, which is what fire's
+// SECOND, SHORT visible-light cast runs; it is byte-unchanged, so the render
+// output is golden-neutral.
 __global__ void march_rays_kernel(
     const RayHD* __restrict__ rays, int n_rays,
     float* light_rgb, float* light_dx, float* light_dy,
@@ -68,10 +66,7 @@ __global__ void march_rays_kernel(
     const float* __restrict__ gas_scatter, int n_gases,
     const float* __restrict__ light_atten, const float* __restrict__ heat_atten,
     float smoke_absorb_scale, float light_cull, float heat_cull,
-    int h, int w,
-    const int32_t* __restrict__ e_table, const int32_t* __restrict__ temperature,
-    const int32_t* __restrict__ heat_inv_shift, int32_t* rad_net,
-    int32_t* rad_flux) {
+    int h, int w) {
     const int plane = h * w;
     for (int r = blockIdx.x * blockDim.x + threadIdx.x; r < n_rays;
          r += gridDim.x * blockDim.x) {
@@ -91,11 +86,6 @@ __global__ void march_rays_kernel(
         const bool emits_heat = (heat != nullptr) && (ray.heat_emit > 0.0f);
         const float heat_emit = ray.heat_emit;
         const float max_range = ray.max_range;
-        // P-R4: the radiation channel — VERBATIM twin of the CPU `emits_rad`.
-        const bool emits_rad = (rad_net != nullptr) && (e_table != nullptr) &&
-                               (temperature != nullptr) && (heat_inv_shift != nullptr) &&
-                               (heat_atten != nullptr) && (ray.rad_src_idx >= 0) &&
-                               (ray.rad_coef != 0.0f);
 
         float sr = 1.0f, sg = 1.0f, sb = 1.0f;   // per-channel survival
         float heat_survival = 1.0f;
@@ -105,7 +95,7 @@ __global__ void march_rays_kernel(
             const bool alive =
                 (emits_r && sr > light_cull) || (emits_g && sg > light_cull) ||
                 (emits_b && sb > light_cull) ||
-                ((emits_heat || emits_rad) && heat_survival > heat_cull);
+                (emits_heat && heat_survival > heat_cull);
             if (!alive) break;
             if (x < 0 || x >= w || y < 0 || y >= h) break;
             const int idx = y * w + x;
@@ -126,46 +116,6 @@ __global__ void march_rays_kernel(
             if (emits_heat && heat_survival > heat_cull) {
                 const float heat_dep = heat_emit * heat_survival;
                 heat_atomic_sat_add(&heat[idx], heat_quantize_dev(heat_dep));
-            }
-
-            // ---- P-R4 NET-T⁴ EXCHANGE — the CPU block, line for line -------
-            // Same gate (heat_survival > heat_cull), same absorber test
-            // (a_r > 0), the SAME PINNED left fold
-            //   f = rad_coef -> *= tau -> *= a_r -> (double)f * (double)diff
-            // and the same single rad_quantize_signed boundary, the same
-            // int64 limiter, the same antisymmetric ± apply. Nothing here may
-            // be reordered "for the GPU": this is the tol-0 contract.
-            if (emits_rad && heat_survival > heat_cull) {
-                const float a_r = heat_atten[idx];
-                // D3: the RADIANT-FLUX SENSOR at AIR cells — the CPU block
-                // verbatim. NOT part of the energy ledger (no transport, no
-                // temperature, nothing debited); unit heat damage is its only
-                // consumer. Positive-only -> the SATURATING atomic, which is
-                // order-free exactly as the retired painter's deposit was.
-                if (rad_flux != nullptr && !(a_r > 0.0f)) {
-                    float ff = ray.rad_coef;   // a_s · w
-                    ff *= heat_survival;       // · τ
-                    const int32_t q =
-                        rad_quantize_signed((double)ff * (double)ray.rad_E_s);
-                    if (q > 0) heat_atomic_sat_add(&rad_flux[idx], q);
-                }
-                if (a_r > 0.0f) {
-                    const int32_t T_r = temperature[idx];
-                    const int32_t diff = ray.rad_E_s - e_table[e_bucket_of(T_r)];
-                    float f = ray.rad_coef;   // a_s · w
-                    f *= heat_survival;       // · τ
-                    f *= a_r;                 // · a_r
-                    int32_t net = rad_quantize_signed((double)f * (double)diff);
-                    const long long dT = (long long)ray.rad_T_q - (long long)T_r;
-                    const long long adT = (dT < 0) ? -dT : dT;
-                    const long long b_s = rad_pair_budget(adT, ray.rad_his_s);
-                    const long long b_r = rad_pair_budget(adT, (int)heat_inv_shift[idx]);
-                    const long long cap = (b_s < b_r) ? b_s : b_r;
-                    if ((long long)net >  cap) net = (int32_t)cap;
-                    if ((long long)net < -cap) net = (int32_t)(-cap);
-                    atomicAdd(&rad_net[idx], net);                 // receiver gains
-                    atomicAdd(&rad_net[ray.rad_src_idx], -net);    // emitter loses
-                }
             }
 
             // Per-channel material occlusion decays survival.
@@ -211,6 +161,141 @@ __global__ void march_rays_kernel(
     }
 }
 
+// ============================================================================
+// P-F1a — THE EMISSION KERNEL. The device twin of
+// Raycaster::march_ray_radiation (raycaster.cpp), line for line.
+//
+// Credit (project iron rule; same two papers as the CPU march and raycaster.h):
+//   * Howell / Mengüç / Siegel, "Thermal Radiation Heat Transfer" (6th ed.,
+//     CRC 2016) — the net-exchange formulation and the discrete view factor.
+//   * Levermore & Pomraning, ApJ 248:321 (1981) — the flux limiter.
+//
+// The exchange is scattered with a PLAIN signed atomicAdd(int*) — integer
+// addition is associative + commutative and CUDA's int atomicAdd wraps on
+// overflow exactly as the CPU's `rad_signed_add` does, so the accumulation is
+// ORDER-FREE and bit-identical to the CPU reference even in the (documented,
+// out-of-band) overflow regime. A SATURATING signed atomic would NOT be
+// order-free — that is why rad_net (and rad_amb) have their own planes and
+// their own contract, separate from `heat[]`'s positive-saturating one.
+//
+// NOTHING HERE MAY BE REORDERED "FOR THE GPU": the pinned float fold, the
+// single rad_quantize_signed64 boundary, the clamp-before-± and the
+// clamp-after-halve are the tol-0 contract with the CPU march.
+// ============================================================================
+__global__ void march_radiation_kernel(
+    const RayHD* __restrict__ rays, int n_rays,
+    const float* __restrict__ heat_atten,
+    float heat_cull, int h, int w,
+    const int64_t* __restrict__ e_table,
+    const int32_t* __restrict__ temperature,
+    const int32_t* __restrict__ heat_inv_shift,
+    const uint8_t* __restrict__ emit_mask,
+    int32_t* rad_net, int32_t* rad_amb, int32_t* rad_flux,
+    unsigned long long* __restrict__ contact_hits) {
+    const int64_t E_amb = e_table[0];   // E°[0] — literally e_table[0]
+    for (int r = blockIdx.x * blockDim.x + threadIdx.x; r < n_rays;
+         r += gridDim.x * blockDim.x) {
+        const RayHD ray = rays[r];
+        if (ray.rad_src_idx < 0 || ray.rad_coef == 0.0f) continue;
+
+        const float dx = ray.dx, dy = ray.dy;
+        const int step_x = (dx >= 0.0f) ? 1 : -1;
+        const int step_y = (dy >= 0.0f) ? 1 : -1;
+        const float dt_dx = (fabsf(dx) > 1e-8f) ? fabsf(1.0f / dx) : 1e8f;
+        const float dt_dy = (fabsf(dy) > 1e-8f) ? fabsf(1.0f / dy) : 1e8f;
+        float t_max_x = 0.5f * dt_dx;
+        float t_max_y = 0.5f * dt_dy;
+        int x = (int)ray.sx;
+        int y = (int)ray.sy;
+        const float max_range = ray.max_range;
+
+        float heat_survival = 1.0f;
+        float distance = 0.0f;
+        bool prev_solid = false;
+
+        while (heat_survival > heat_cull) {
+            // ---- RULE 4: THE SKY (leaving the grid is the only escape) ----
+            if (x < 0 || x >= w || y < 0 || y >= h) {
+                float fs = ray.rad_coef;      // a_s · w
+                fs *= heat_survival;          // · τ_end
+                long long sky = rad_quantize_signed64(
+                    (double)fs * (double)(ray.rad_E_s - E_amb));
+                const long long aTs = (ray.rad_T_q < 0) ? -(long long)ray.rad_T_q
+                                                        :  (long long)ray.rad_T_q;
+                const long long capk = rad_pair_budget(aTs, ray.rad_his_s);
+                if (sky >  capk) sky =  capk;
+                if (sky < -capk) sky = -capk;
+                const int32_t s32 = (int32_t)sky;
+                atomicAdd(&rad_net[ray.rad_src_idx], -s32);
+                if (rad_amb != nullptr) atomicAdd(&rad_amb[ray.rad_src_idx], s32);
+                break;
+            }
+
+            const int idx = y * w + x;
+            const float a_r = heat_atten[idx];
+            const bool solid_r = (a_r > 0.0f);
+
+            // ---- RULE 3: contact faces are radiation-inert ---------------
+            if (prev_solid && solid_r) {
+                // Counted, charged to nobody — the equivalence gate's a = 0.5
+                // variant DERIVES its tolerance from this count (v7.1 item 5).
+                if (contact_hits != nullptr) atomicAdd(contact_hits, 1ULL);
+                break;
+            }
+
+            // ---- SELF-CELL: wholly excluded (explicit distance-0 test) ----
+            if (distance > 0.0f) {
+                if (solid_r) {
+                    const int32_t T_r = temperature[idx];
+                    const int64_t E_r = e_table[e_bucket_of(T_r)];
+                    const int64_t diff = ray.rad_E_s - E_r;
+                    const bool r_emitter = (emit_mask[idx] != 0);
+
+                    float f = ray.rad_coef;   // a_s · w
+                    f *= heat_survival;       // · τ
+                    f *= a_r;                 // · a_r
+                    // RULE 2: the ½ INSIDE the fold, before the quantize.
+                    if (r_emitter) f *= 0.5f;
+
+                    long long x_term =
+                        rad_quantize_signed64((double)f * (double)diff);
+
+                    const int lim_shift = r_emitter ? (RAD_LIM_SHIFT + 1)
+                                                    :  RAD_LIM_SHIFT;
+                    const long long dT  = (long long)ray.rad_T_q - (long long)T_r;
+                    const long long adT = (dT < 0) ? -dT : dT;
+                    const long long b_s =
+                        rad_pair_budget_s(adT, ray.rad_his_s, lim_shift);
+                    const long long b_r =
+                        rad_pair_budget_s(adT, (int)heat_inv_shift[idx], lim_shift);
+                    const long long cap = (b_s < b_r) ? b_s : b_r;
+                    if (x_term >  cap) x_term =  cap;
+                    if (x_term < -cap) x_term = -cap;
+
+                    const int32_t x32 = (int32_t)x_term;
+                    atomicAdd(&rad_net[idx], x32);                 // receiver gains
+                    atomicAdd(&rad_net[ray.rad_src_idx], -x32);    // emitter loses
+                } else if (rad_flux != nullptr && distance <= ray.rad_damage_range) {
+                    // D3: the sensor, at its LEGACY reach (v7.1 item 4).
+                    float ff = ray.rad_coef;   // a_s · w
+                    ff *= heat_survival;       // · τ
+                    const int32_t q =
+                        rad_quantize_signed((double)ff * (double)ray.rad_E_s);
+                    if (q > 0) heat_atomic_sat_add(&rad_flux[idx], q);
+                }
+            }
+
+            // Material occlusion, with the source-tile skip (distance > 0).
+            if (distance > 0.0f) heat_survival *= (1.0f - a_r);
+            prev_solid = solid_r;
+
+            if (t_max_x < t_max_y) { x += step_x; distance = t_max_x; t_max_x += dt_dx; }
+            else                   { y += step_y; distance = t_max_y; t_max_y += dt_dy; }
+            if (distance > max_range) break;   // charges NOBODY (not an escape)
+        }
+    }
+}
+
 // Small RAII-ish upload helper for an optional host array -> device pointer.
 template <typename T>
 T* upload_opt(const T* host, size_t count, const char* what) {
@@ -231,9 +316,7 @@ void raycaster_cast_directional(
     int n_gases,
     const float* light_atten, const float* heat_atten,
     float smoke_absorb_scale, float light_cull, float heat_cull,
-    int h, int w,
-    const int32_t* e_table, const int32_t* temperature,
-    const int32_t* heat_inv_shift, int32_t* rad_net, int32_t* rad_flux) {
+    int h, int w) {
     const size_t n = (size_t)h * (size_t)w;
     if (n == 0 || n_rays <= 0) return;
 
@@ -253,31 +336,12 @@ void raycaster_cast_directional(
     int32_t* d_heat = upload_opt(heat, n, "malloc heat");
     float* d_glow = upload_opt(smoke_glow, n * 3, "malloc smoke_glow");
 
-    // ---- P-R4 radiation inputs -------------------------------------------
-    // The E° bake rides the per-call input set like every other table this
-    // entry point uploads (16 KB — ~2 us next to the (h,w) planes already
-    // moving). A one-shot __constant__ upload at bake time is a pure
-    // optimisation and is deliberately NOT taken here: a cached device copy
-    // would need a staleness protocol against `rad_scale`, and the measured
-    // cost (gate g) leaves no reason to buy that risk.
-    const int32_t* d_etab = upload_opt(e_table, (size_t)E_TABLE_SIZE, "malloc e_table");
-    const int32_t* d_temp = upload_opt(temperature, n, "malloc temperature");
-    const int32_t* d_his  = upload_opt(heat_inv_shift, n, "malloc heat_inv_shift");
-    // rad_net is IN/OUT: uploaded (the caller's pre-existing accumulation) so
-    // the atomics start from the same baseline the CPU cast would, exactly as
-    // `heat` does above.
-    int32_t* d_radnet = upload_opt(rad_net, n, "malloc rad_net");
-    // D3: same IN/OUT treatment — uploaded so the saturating atomics start from
-    // the caller's accumulation, downloaded after the launch.
-    int32_t* d_radflux = upload_opt(rad_flux, n, "malloc rad_flux");
-
     const int block = 256;
     const int grid = (n_rays + block - 1) / block;
     march_rays_kernel<<<grid, block>>>(
         d_rays, n_rays, d_lrgb, d_ldx, d_ldy, d_heat, d_glow,
         d_gas, d_gabs, d_gsca, n_gases, d_atten, d_hatten,
-        smoke_absorb_scale, light_cull, heat_cull, h, w,
-        d_etab, d_temp, d_his, d_radnet, d_radflux);
+        smoke_absorb_scale, light_cull, heat_cull, h, w);
     cuda_check(cudaGetLastError(), "kernel launch");
     cuda_check(cudaDeviceSynchronize(), "sync");
 
@@ -287,16 +351,90 @@ void raycaster_cast_directional(
     if (light_dy)   cuda_check(cudaMemcpy(light_dy, d_ldy, n * sizeof(float), cudaMemcpyDeviceToHost), "D2H light_dy");
     if (heat)       cuda_check(cudaMemcpy(heat, d_heat, n * sizeof(int32_t), cudaMemcpyDeviceToHost), "D2H heat");
     if (smoke_glow) cuda_check(cudaMemcpy(smoke_glow, d_glow, n * 3 * sizeof(float), cudaMemcpyDeviceToHost), "D2H smoke_glow");
-    if (rad_net)    cuda_check(cudaMemcpy(rad_net, d_radnet, n * sizeof(int32_t), cudaMemcpyDeviceToHost), "D2H rad_net");
-    if (rad_flux)   cuda_check(cudaMemcpy(rad_flux, d_radflux, n * sizeof(int32_t), cudaMemcpyDeviceToHost), "D2H rad_flux");
 
     cudaFree(d_rays);
     cudaFree((void*)d_gas); cudaFree((void*)d_gabs); cudaFree((void*)d_gsca);
     cudaFree((void*)d_atten); cudaFree((void*)d_hatten);
     cudaFree(d_lrgb); cudaFree(d_ldx); cudaFree(d_ldy);
     cudaFree(d_heat); cudaFree(d_glow);
+}
+
+// ---- P-F1a: the EMISSION cast host entry point ----------------------------
+//
+// Uploads only what the fast path reads: the rays, `heat_atten`, the E° bake,
+// `temperature`, `heat_inv_shift`, the emitter mask, and the three IN/OUT
+// accumulator planes. No light buffers, no gas tables, no light_atten — the
+// kernel touches none of them, and not moving them is part of what the fast
+// path buys.
+int64_t raycaster_cast_radiation(
+    const RayHD* rays, int n_rays,
+    const float* heat_atten,
+    float heat_cull,
+    int h, int w,
+    const int64_t* e_table, const int32_t* temperature,
+    const int32_t* heat_inv_shift, const uint8_t* emit_mask,
+    int32_t* rad_net, int32_t* rad_amb, int32_t* rad_flux) {
+    const size_t n = (size_t)h * (size_t)w;
+    if (n == 0 || n_rays <= 0) return 0;
+    if (heat_atten == nullptr || e_table == nullptr || temperature == nullptr ||
+        heat_inv_shift == nullptr || emit_mask == nullptr || rad_net == nullptr) {
+        throw std::runtime_error(
+            "raycaster_cast_radiation: the books require heat_atten, e_table, "
+            "temperature, heat_inv_shift, emit_mask and rad_net (v7.1 item 13: "
+            "the emitter mask is not optional — rule 2 keys on it)");
+    }
+
+    RayHD* d_rays = upload_opt(rays, (size_t)n_rays, "malloc rays");
+    const float* d_hatten = upload_opt(heat_atten, n, "malloc heat_atten");
+    // The E° bake rides the per-call input set like every other table this
+    // entry point uploads (32 KB at int64 — ~3 us next to the (h,w) planes
+    // already moving). A one-shot __constant__ upload at bake time is a pure
+    // optimisation and is deliberately NOT taken here: a cached device copy
+    // would need a staleness protocol against `rad_scale`, and the measured
+    // cost (gate viii) leaves no reason to buy that risk.
+    const int64_t* d_etab = upload_opt(e_table, (size_t)E_TABLE_SIZE, "malloc e_table");
+    const int32_t* d_temp = upload_opt(temperature, n, "malloc temperature");
+    const int32_t* d_his  = upload_opt(heat_inv_shift, n, "malloc heat_inv_shift");
+    const uint8_t* d_mask = upload_opt(emit_mask, n, "malloc emit_mask");
+    // rad_net / rad_amb / rad_flux are IN/OUT: uploaded (the caller's
+    // pre-existing accumulation) so the atomics start from the same baseline
+    // the CPU cast would.
+    int32_t* d_radnet  = upload_opt(rad_net, n, "malloc rad_net");
+    int32_t* d_radamb  = upload_opt(rad_amb, n, "malloc rad_amb");
+    int32_t* d_radflux = upload_opt(rad_flux, n, "malloc rad_flux");
+    unsigned long long* d_contact = nullptr;
+    cuda_check(cudaMalloc(&d_contact, sizeof(unsigned long long)),
+               "malloc contact_hits");
+    cuda_check(cudaMemset(d_contact, 0, sizeof(unsigned long long)),
+               "memset contact_hits");
+
+    const int block = 256;
+    const int grid = (n_rays + block - 1) / block;
+    march_radiation_kernel<<<grid, block>>>(
+        d_rays, n_rays, d_hatten, heat_cull, h, w,
+        d_etab, d_temp, d_his, d_mask, d_radnet, d_radamb, d_radflux,
+        d_contact);
+    cuda_check(cudaGetLastError(), "kernel launch");
+    cuda_check(cudaDeviceSynchronize(), "sync");
+
+    cuda_check(cudaMemcpy(rad_net, d_radnet, n * sizeof(int32_t),
+                          cudaMemcpyDeviceToHost), "D2H rad_net");
+    if (rad_amb)  cuda_check(cudaMemcpy(rad_amb, d_radamb, n * sizeof(int32_t),
+                                        cudaMemcpyDeviceToHost), "D2H rad_amb");
+    if (rad_flux) cuda_check(cudaMemcpy(rad_flux, d_radflux, n * sizeof(int32_t),
+                                        cudaMemcpyDeviceToHost), "D2H rad_flux");
+
+    cudaFree(d_rays);
+    cudaFree((void*)d_hatten);
     cudaFree((void*)d_etab); cudaFree((void*)d_temp); cudaFree((void*)d_his);
-    cudaFree(d_radnet); cudaFree(d_radflux);
+    cudaFree((void*)d_mask);
+    unsigned long long contact = 0;
+    cuda_check(cudaMemcpy(&contact, d_contact, sizeof(unsigned long long),
+                          cudaMemcpyDeviceToHost), "D2H contact_hits");
+
+    cudaFree(d_radnet); cudaFree(d_radamb); cudaFree(d_radflux);
+    cudaFree(d_contact);
+    return (int64_t)contact;
 }
 
 namespace {

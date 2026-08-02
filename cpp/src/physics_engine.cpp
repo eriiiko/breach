@@ -312,6 +312,10 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             // pair above still supplies the offset itself).
             cool_shift_grid,
             this->temperature.cool_shift_floor,
+            // P-F1a (v7.2): the Pass-1 LOW rail counter, accumulated into the
+            // same solver-side field the CPU path increments — one counter for
+            // the diagnostic regardless of backend.
+            &this->temperature.t_low_rail_hits,
             // P-R4: the SIGNED radiation fold, on the GPU twin too.
             rad_net);
     } else

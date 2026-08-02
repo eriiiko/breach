@@ -329,7 +329,39 @@ rad_scale            = 1.0e-5 # heat counts per K^4 in the baked E° table
 # objects gently toasting their surroundings) and costs emitter count; HIGHER =
 # the COST lever and costs post-fire glow. Ruling A1.8.
 T_emit_gate          = 180.0  # game units; below it a hot solid does not cast
+# --- P-F1a / v7 rule 4: RADIATION_RANGE --------------------------------------
+# The reach of an EMISSION ray, in tiles. A STABILITY-CLASS CONSTANT, NOT A FEEL
+# DIAL — do not tune it for look.
+#
+# WHY IT EXISTS. Under P-R4 an emission ray died at `range_base +
+# range_per_intensity * I` (~2-5 tiles), so "the ray ran out of reach" and "the
+# ray left the world" were different events and the books could not tell them
+# apart. That is the CORRIDOR LEAK: a fire in a long room lost less than the
+# same fire in a short one, because its rays expired mid-air and were charged to
+# nobody. Setting the range at or above the GRID DIAGONAL makes reach-termination
+# structurally unreachable before the world edge, so "genuinely escapes" ==
+# "left the world", map-independent — which is what lets rule 4's sky term be
+# the ONLY ledger entry and lets gate (ii) close exactly.
+#
+# THE FLOOR. The largest shipping level is 128 x 256 => diagonal
+# sqrt(128^2 + 256^2) = 286.22 => the floor is 287. 320 carries ~12% headroom for
+# a larger level without a law change. RAISING it is always safe; LOWERING it
+# below the diagonal of any shipped level reopens the leak.
+#
+# THE COST, and what pays for it. A long ray costs march STEPS, not deposits —
+# an air cell is one DDA step and a bounds test. What makes that affordable is
+# the MANDATORY PURE-RADIATION FAST PATH: emission rays skip ALL RGB, direction
+# and gas-optics work (no exp anywhere), doing only the integer exchange terms
+# and the heat_atten survival. Fire's VISIBLE LIGHT is a SEPARATE, SHORT second
+# cast that still uses `range_base`/`range_per_intensity` below and the unchanged
+# light machinery — so the render output is untouched.
+RADIATION_RANGE      = 320.0  # tiles; MUST be >= the largest level's diagonal (287)
 fire_ray_count       = 8      # FIXED rays per burning tile (no auto-count, no RNG dither)
+# range_base / range_per_intensity: RENDER + LEGACY duty only since P-F1a. They
+# set (a) the short visible-light cast's reach and (b) D3's `damage_range` — the
+# deterministic distance guard on the rad_flux SENSOR write, which keeps unit
+# radiant damage at exactly its old reach (v7.1 item 4) even though the emission
+# ray now crosses the map. They do NOT bound an emission ray.
 range_base           = 2.0    # max_range = range_base + range_per_intensity * I  (tiles)
 range_per_intensity  = 3.0
 intensity_base       = 0.3    # ray light intensity = intensity_base + intensity_per_I * I
@@ -483,6 +515,26 @@ o2_thresh_burn    = 0.03   # RETIRED as the burn gate (the o2f law is the thrott
                             # kept ONLY as an epsilon skip-floor (O2 <= this -> the
                             # air cell is treated as fully starved and skipped)
 H_fuel            = 4.0    # heat yield (T-scale ΔT) per unit N_O2 burned
+# --- o2_potency — THE SIZING RULING's preserved option (Erik, 2026-08-02) -----
+# A LOAD-TIME MULTIPLIER on the baked heat-per-O2 constants (the H_fuel /
+# H_BED_M chain above and below). Erik's sizing ruling shipped PACKAGE A —
+# draw_r = 2, NO potency now — but ruled potency PRESERVED AS AN EXPLICIT
+# OPTION rather than deleted, because it is the one knob that raises fire power
+# without touching the supply geometry.
+#
+# ZERO RUNTIME COST: it is folded into the constants at config-load time, so the
+# combustion pass never sees it. DEFAULT 1.0 IS BYTE-NEUTRAL — the multiply is
+# an exact IEEE identity, so a default config bakes the identical constants and
+# every digest/golden is unmoved.
+#
+# THE PRICE, stated plainly (this is why it is not free): raising potency
+# extracts more heat per unit of oxygen, so a sealed room's FIXED oxygen
+# inventory buys proportionally more fire. SEALED-ROOM SMOTHERING WEAKENS BY THE
+# SAME FACTOR — at potency 2.0 a sealed room's fire delivers twice the heat
+# before it starves, and "seal the compartment" becomes half the counter it was.
+# Smothering is a ships requirement (design §0), so this is a real trade, not a
+# tuning convenience.
+o2_potency        = 1.0    # multiplier on H_fuel + H_bed; 1.0 == byte-neutral
 soot_yield        = 0.3    # fraction of consumed O2 -> smoke (rest -> inert_N2)
 # v2.5 — P5.1 stoichiometric fuel consumption (docs/eos_refactor_design.md §5
 # v2.5 amendment, decisions #17): the SOURCE tile pays wall_hp for every unit

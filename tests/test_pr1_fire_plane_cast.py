@@ -1,4 +1,34 @@
-"""P-R4 gate (e), CPU half — the RADIATION-LAW witness for the fire-plane cast.
+"""P-F1a gate, CPU half — the RADIATION-LAW witness for the fire-plane cast.
+
+RE-ANCHORED AT P-F1a (documented re-anchor #1; the second in this module's
+life). It was re-anchored once already at P-R4, from the retired PAINTER to the
+net-T4 exchange. P-F1a replaces that exchange with the VERIFIED BOOKS (design
+v6.1 rules 1/3/4 as amended by v7 + the v7.1 closure edits), so every assertion
+that pinned a P-R4 DEPOSIT is restated against the law that replaced it. The
+four things that actually moved, and why each assertion changed:
+
+  A. RULE 3 — CONTACT FACES ARE RADIATION-INERT. A ray stepping from a solid
+     into a FACE-ADJACENT solid terminates with no deposit and no charge;
+     conduction owns contact. Every scene here that placed an absorber at the
+     emitter's first ring was therefore measuring a direction that no longer
+     participates. Those scenes are now AIR-SEPARATED — which is also exactly
+     what the design's own equivalence gate requires (v7.1 item 5, M5).
+  B. RULE 4 — THE SKY TERM. Emission rays now reach RADIATION_RANGE (>= the
+     grid diagonal), so a ray that leaves the grid charges its emitter the
+     escaping residual and books the SAME integer to the per-tile ambient
+     ledger. CONSERVATION IS THEREFORE `rad_net.sum() + rad_amb.sum() == 0`,
+     not `rad_net.sum() == 0`: the old identity was only ever true because
+     rays used to expire in mid-air and be charged to nobody (the corridor
+     leak). An open-air emitter now correctly reads NEGATIVE.
+  C. RULE 2 — mutual emitters exchange the SAME gap-signed pair at HALF weight
+     (not P-R4/v6's one-way potential term), so two equal-T emitters still net
+     exactly 0 between themselves — but each still pays its own sky.
+  D. THE E TABLE IS int64 (L2-B3). Its int32 saturation above T_game ~ 1768
+     was the law's real high-temperature ceiling, not the flux limiter.
+
+What this module still protects, unchanged in intent: the SOURCE ENUMERATION
+ORDER, the FAN GEOMETRY, air's Kirchhoff inertness, the E bake's exactness, and
+D4's per-tick rotation.
 
 REWRITTEN AT P-R4 (documented re-anchor). This module was the P-R1 transition
 witness: it pinned ``heat`` byte-identical between the new C++
@@ -23,12 +53,14 @@ marches. That is the oracle used below.
 
 What is NEW and gated here (ruling A1, gate (e)):
 
-  (i)   ANTISYMMETRY — two adjacent EQUAL-temperature emitters exchange
-        EXACTLY 0 (integer equality, not a tolerance). This is the arc's
-        load-bearing property: it makes the divergence hazard impossible by
-        construction rather than by tuning.
-  (ii)  CONSERVATION — over any scene, ``rad_net.sum() == 0`` exactly: what one
-        end loses the other gains, to the count.
+  (i)   ANTISYMMETRY — two AIR-SEPARATED EQUAL-temperature emitters exchange
+        EXACTLY 0 between themselves (integer equality, not a tolerance),
+        measured as "each loses exactly what it would lose alone". This is the
+        arc's load-bearing property: it makes the divergence hazard impossible
+        by construction rather than by tuning.
+  (ii)  CONSERVATION — over any scene, ``rad_net.sum() + rad_amb.sum() == 0``
+        exactly: what one end loses the other gains, to the count, and the only
+        energy that leaves the tile books is booked to the sky ledger.
   (iii) DIRECTION — a hot emitter LOSES (negative rad_net) and a cold absorber
         GAINS (positive), and no absorber can be driven past its emitter.
   (iv)  AIR IS INERT — a tile with ``heat_atten == 0`` neither absorbs nor
@@ -71,6 +103,12 @@ def _make_raycaster(rad_scale=RAD_SCALE, t_emit_gate=180.0):
     rc.smoke_absorb_scale = 1.4
     rc.rad_scale = rad_scale
     rc.T_emit_gate = t_emit_gate
+    # P-F1a / v7 rule 4: emission rays reach RADIATION_RANGE, a stability-class
+    # constant >= the grid diagonal of the largest shipping level. Pinned here
+    # (rather than left at the default) so these scenes measure the shipped law:
+    # every ray that is not absorbed or contact-terminated LEAVES THE GRID and
+    # is charged to the sky ledger.
+    rc.radiation_range = 320.0
     rc.bake_emissive_table()
     return rc
 
@@ -86,6 +124,7 @@ class _Scene:
         self.heat_inv_shift = np.zeros((h, w), np.int32)
         self.thermal_solid = np.zeros((h, w), bool)
         self.rad_net = np.zeros((h, w), np.int32)
+        self.rad_amb = np.zeros((h, w), np.int32)    # rule 4: the SKY ledger
         self.rad_flux = np.zeros((h, w), np.int32)   # D3 damage sensor
         self.light_atten = np.zeros((h, w, 3), np.float32)
         self.gas = np.zeros((n_gases, h, w), np.float32)
@@ -116,62 +155,135 @@ class _Scene:
             self.rgb, self.dx, self.dy,
             self.gas, self.gas_abs, self.gas_sca, self.light_atten,
             self.heat_atten, self.temperature, self.heat_inv_shift,
-            self.thermal_solid, self.rad_net, self.rad_flux, tick)
+            self.thermal_solid, self.rad_net, self.rad_amb, self.rad_flux,
+            tick)
         return self.rad_net
+
+    def books_close(self):
+        """Rule 4's ledger identity: the ONLY energy that leaves the tile books
+        is what the sky ledger received, to the count."""
+        return int(self.rad_net.sum()) + int(self.rad_amb.sum()) == 0
 
 
 # ---------------------------------------------------------------------------
 # (i) ANTISYMMETRY — the arc's load-bearing property, at integer equality.
 # ---------------------------------------------------------------------------
 def test_equal_temperature_pair_nets_exactly_zero():
-    print("\nP-R4 gate (e)(i) — two adjacent EQUAL-T emitters, integer equality:")
-    for T in (180.0, 280.0, 443.0, 1000.0):
+    """Two AIR-SEPARATED equal-T emitters exchange EXACTLY 0 between themselves.
+
+    RE-ANCHOR (A + B + C). The pair used to be FACE-ADJACENT and the assertion
+    was ``rad_net == 0`` on both ends. Both halves of that had to move:
+
+      * ADJACENT is now a CONTACT face (rule 3) — the direction between them
+        does not participate at all, so an adjacent pair would make this gate
+        VACUOUS rather than strict. They are separated by one air tile, which
+        is the geometry rule 2 is actually about.
+      * ``rad_net == 0`` is no longer the right oracle, because each emitter
+        now pays its own SKY (rule 4) in every direction that leaves the grid.
+        The property under test is that the MUTUAL exchange is zero, so the
+        oracle is the LONE emitter: each end must lose EXACTLY what it loses
+        with the other end absent. Any nonzero mutual term shows up as a
+        difference, to the count.
+
+    Under rule 2 both ends are emitters, so each casts the half-weight
+    gap-signed pair; equal T means the same E bucket, so ``diff == 0`` and the
+    term is structurally zero before any rounding can act on it.
+    """
+    print("\nP-F1a gate (i) - two AIR-SEPARATED EQUAL-T emitters, integer equality:")
+    for T in (180.0, 280.0, 443.0, 1000.0, 2500.0):
         sc = _Scene(21, 21)
         sc.solid(10, 10, T_game=T)
-        sc.solid(10, 11, T_game=T)
+        sc.solid(10, 12, T_game=T)       # AIR-SEPARATED (rule 3)
         sc.burn(10, 10)
-        sc.burn(10, 11)
+        sc.burn(10, 12)
         rad = sc.cast(_make_raycaster())
-        a, b = int(rad[10, 10]), int(rad[10, 11])
-        nz = int(np.count_nonzero(rad))
+        a, b = int(rad[10, 10]), int(rad[10, 12])
+        # The oracle: the SAME emitter, alone in the same grid.
+        lone = _Scene(21, 21)
+        lone.solid(10, 10, T_game=T)
+        lone.burn(10, 10)
+        solo = int(lone.cast(_make_raycaster())[10, 10])
         print(f"  T={T:7.1f} game -> rad_net[A]={a}  rad_net[B]={b}  "
-              f"nonzero cells={nz}")
-        assert a == 0 and b == 0, (
-            f"equal-T pair exchanged {a}/{b} counts — antisymmetry BROKEN")
-        # Nothing else in the scene absorbs (all air), so the whole plane is 0.
-        assert nz == 0, f"{nz} cells took a deposit from an equal-T pair"
-    print("  every equal-T pair exchanged EXACTLY 0 counts.")
+              f"lone={solo}  (mutual term = {a - solo})")
+        assert a == solo, (
+            f"the mutual pair moved {a - solo} counts at equal T - rule 2's "
+            f"gap-signed antisymmetry is BROKEN")
+        assert a == b, "the equal-T pair was not symmetric between its ends"
+        assert int(rad[10, 11]) == 0, "the separating air tile took energy"
+        assert sc.books_close(), "the ledger identity failed on the pair scene"
+    print("  every equal-T pair exchanged EXACTLY 0 counts between its ends.")
 
 
-def test_self_cell_deposit_is_exactly_zero():
-    """The source is its own first marched cell: E[T_s] - E[T_s] == 0."""
+def test_self_cell_is_wholly_excluded_and_open_air_loses_to_sky():
+    """The self-cell deposits nothing; a lone open-air emitter loses to SKY.
+
+    RE-ANCHOR (B). P-R4 asserted ``rad_net[src] == 0`` for a lone emitter in
+    open air, which was only true because its rays expired in mid-air and were
+    charged to NOBODY - the corridor leak. Under rule 4 the rays reach the grid
+    edge and the emitter is correctly charged the full escaping residual, so the
+    honest assertion is that its entire loss IS the sky booking, to the count.
+
+    The self-cell exclusion is now CODED (an explicit distance-0 test), not
+    inferred from ``diff == 0``: under rule 2 the source is itself an emitter
+    and would otherwise take the half-weight branch.
+    """
     sc = _Scene(15, 15)
     sc.solid(7, 7, T_game=443.0)
     sc.burn(7, 7)
     rad = sc.cast(_make_raycaster())
-    print(f"\nP-R4 — lone emitter in open air: rad_net[src]={int(rad[7, 7])}, "
-          f"nonzero cells={int(np.count_nonzero(rad))}")
-    assert int(rad[7, 7]) == 0, "a tile radiated to ITSELF"
-    assert int(np.count_nonzero(rad)) == 0, "air absorbed radiation"
+    src = int(rad[7, 7])
+    sky = int(sc.rad_amb[7, 7])
+    print(f"\nP-F1a - lone emitter in open air: rad_net[src]={src}, "
+          f"rad_amb[src]={sky}, nonzero rad_net cells="
+          f"{int(np.count_nonzero(rad))}")
+    assert src < 0, "an open-air emitter did not lose to the sky"
+    assert src == -sky, "the sky charge and the sky booking are not one integer"
+    # Nothing else moved: air is Kirchhoff-inert and there is no other solid.
+    assert int(np.count_nonzero(rad)) == 1, "something other than the emitter moved"
+    assert int(np.count_nonzero(sc.rad_amb)) == 1, "sky was booked to another tile"
+    assert sc.books_close(), "the ledger identity failed on the lone-emitter scene"
 
 
 # ---------------------------------------------------------------------------
 # (ii)/(iii) CONSERVATION + DIRECTION
 # ---------------------------------------------------------------------------
 def test_exchange_conserves_exactly_and_flows_hot_to_cold():
-    print("\nP-R4 gate (e) — conservation + direction (hot/cold pair):")
+    """RE-ANCHOR (A + B). The absorber moves off the CONTACT face to an
+    air-separated tile (rule 3 makes the adjacent direction non-participating),
+    and conservation becomes the rule-4 ledger identity
+    ``rad_net.sum() + rad_amb.sum() == 0``.
+
+    Direction is still checked exactly as before, and the pair term itself is
+    still ONE integer applied +/-: with the absorber below the gate it is rule
+    1, so what the absorber gains is exactly what that direction cost the
+    emitter — verified by differencing against the lone-emitter sky loss.
+    """
+    print("\nP-F1a gate - conservation + direction (hot/cold pair):")
+    # The absorber is a COLUMN, air-separated from the emitter by the x == 11
+    # air column. A single tile at (+2, 0) is not a usable target: the 8-ray fan
+    # only sweeps onto the pure axis on SOME ticks of the D4 rotation (that is
+    # what test_fan_rotation_connects_every_neighbour... measures), so a
+    # single-tile absorber would make this gate tick-dependent. A column cannot
+    # be missed by any rightward ray, and it is still AIR-SEPARATED, so rule 3
+    # never fires between the emitter and it.
     sc = _Scene(21, 21)
-    sc.solid(10, 10, T_game=443.0)      # hot emitter
-    sc.solid(10, 11, T_game=20.0)       # cold absorber (first ring)
+    sc.solid(10, 10, T_game=443.0)                     # hot emitter
+    for y in range(21):
+        sc.solid(y, 12, atten=0.5, his=3, T_game=20.0)  # cold absorber column
     sc.burn(10, 10)
     rad = sc.cast(_make_raycaster())
-    hot, cold = int(rad[10, 10]), int(rad[10, 11])
-    print(f"  emitter rad_net={hot}  absorber rad_net={cold}  "
-          f"sum={int(rad.sum())}")
+    hot = int(rad[10, 10])
+    cold = int(rad[:, 12].sum())
+    print(f"  emitter rad_net={hot}  absorber column rad_net={cold}  "
+          f"rad_net.sum={int(rad.sum())}  rad_amb.sum={int(sc.rad_amb.sum())}")
     assert hot < 0, "the hot emitter did not LOSE heat"
     assert cold > 0, "the cold absorber did not GAIN heat"
-    assert hot == -cold, "the pair did not exchange the SAME integer"
-    assert int(rad.sum()) == 0, "the scene created or destroyed energy"
+    assert sc.books_close(), "the scene created or destroyed energy"
+    # No absorber may be driven past its emitter: every cold tile's gain is
+    # bounded by the gap-signed pair, which is zero at equal T.
+    assert cold < -hot, "the absorbers gained more than the emitter lost"
+    assert int(rad.sum()) == -int(sc.rad_amb.sum()), (
+        "the tile books and the sky ledger disagree")
 
 
 def test_conservation_holds_over_a_600_emitter_firestorm():
@@ -197,9 +309,15 @@ def test_conservation_holds_over_a_600_emitter_firestorm():
     rad = sc.cast(_make_raycaster())
     n_moved = int(np.count_nonzero(rad))
     print(f"  600 emitters, {n_moved} cells moved, |rad_net|max="
-          f"{int(np.abs(rad).max())}, sum={int(rad.sum())}")
-    assert n_moved > 0, "vacuous gate — nothing exchanged"
-    assert int(rad.sum()) == 0, "energy was created/destroyed in a firestorm"
+          f"{int(np.abs(rad).max())}, rad_net.sum={int(rad.sum())}, "
+          f"rad_amb.sum={int(sc.rad_amb.sum())}")
+    assert n_moved > 0, "vacuous gate - nothing exchanged"
+    # RE-ANCHOR (B): the ledger identity, not `rad_net.sum() == 0`. The sky is
+    # the ONLY entry that leaves the tile books, and it is booked as one integer
+    # in both directions.
+    assert sc.books_close(), "energy was created/destroyed in a firestorm"
+    assert int(sc.rad_amb.sum()) > 0, "no ray escaped a 128x128 open grid"
+    assert int(sc.rad_amb.min()) >= 0, "the sky ledger went negative"
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +370,24 @@ def _painter_touched(rc, sc):
 
 
 def test_touched_tile_set_matches_the_unchanged_fan():
-    print("\nP-R4 gate (e)(v) — marched tile set vs the unchanged fan:")
+    """RE-ANCHOR (B). The witness moves from ``rad_net`` to ``rad_flux``.
+
+    P-R4 compared the exchange's touched SOLIDS against the painter's marched
+    set, which worked because both used the same short per-intensity range.
+    Under v7 rule 4 the emission ray reaches RADIATION_RANGE, so the exchange
+    now legitimately touches solids far beyond anything the painter marched --
+    comparing the two sets would fail for the right reason and prove nothing.
+
+    But D3's ``rad_flux`` sensor DELIBERATELY KEPT THE OLD REACH (v7.1 item 4):
+    it is written at AIR cells behind a deterministic ``damage_range`` guard
+    that is exactly the legacy ``range_base + range_per_intensity * I``. So the
+    sensor's touched set is precisely the painter's marched AIR set, and it is
+    the sharper witness for what this test always cared about: THE FAN GEOMETRY
+    AND THE ENUMERATION ORDER ARE UNCHANGED. Nothing about the DDA, the angle
+    sweep, the phase hash or the range model moved -- and if any of it had, this
+    comparison would break immediately.
+    """
+    print("\nP-F1a gate (v) - marched tile set vs the unchanged fan:")
     rng = np.random.default_rng(4242)
     h = w = 48
     sc = _Scene(h, w)
@@ -274,25 +409,26 @@ def test_touched_tile_set_matches_the_unchanged_fan():
 
     rc = _make_raycaster()
     painter = _painter_touched(rc, sc)
-    rad = sc.cast(rc)
-    absorbing = sc.heat_atten > 0.0
-    got = rad != 0
-    want = painter & absorbing
-    # The emitters themselves are debited, so they are in BOTH sets whenever
-    # they moved anything; every other difference would be a real divergence.
+    sc.cast(rc)
+    air = sc.heat_atten <= 0.0
+    got = sc.rad_flux != 0
+    want = painter & air
+    # The sensor writes only where the ray is still ALIVE and inside
+    # damage_range, which is exactly the painter's own gate, so the two sets are
+    # equal up to cells whose quantized flux rounded to 0 (a far cell behind
+    # heavy attenuation) -- the law's own "below one count moves nothing".
     extra = int(np.count_nonzero(got & ~want))
     missing = int(np.count_nonzero(want & ~got))
-    print(f"  painter-marched cells: {int(painter.sum())};  absorbing subset: "
-          f"{int(want.sum())};  exchange-touched: {int(got.sum())}")
+    print(f"  painter-marched cells: {int(painter.sum())};  air subset: "
+          f"{int(want.sum())};  flux-sensor-touched: {int(got.sum())}")
     print(f"  extra={extra}  missing={missing}")
     assert int(want.sum()) > 0, "vacuous gate"
-    assert extra == 0, f"{extra} cells took a deposit the fan never marched"
-    # `missing` cells are absorbing cells the fan marched whose E-difference
-    # quantized to 0 (a far cell behind heavy attenuation) — legal, and the
-    # law's own "below one count moves nothing". They must be a small tail.
+    assert extra == 0, (
+        f"{extra} AIR cells took a flux write the fan never marched - the "
+        f"damage_range guard or the fan geometry has moved")
     assert missing <= 0.25 * int(want.sum()), (
-        f"{missing}/{int(want.sum())} marched absorbers moved nothing — the "
-        f"tile set has genuinely shrunk, not just quantized away")
+        f"{missing}/{int(want.sum())} marched air cells got no flux - the "
+        f"sensor's reach has genuinely shrunk, not just quantized away")
 
 
 def test_emitter_enumeration_is_row_major_and_includes_warm_solids():
@@ -301,47 +437,72 @@ def test_emitter_enumeration_is_row_major_and_includes_warm_solids():
     A tile that is NOT burning but is a thermal solid at or above
     ``T_emit_gate`` also casts; below the gate it does not. Receivers are free
     either way — the gate only decides who can radiatively LOSE heat."""
-    print("\nP-R4 gate (e) — the warm-emitter gate (T_emit_gate):")
+    print("\nP-F1a gate - the warm-emitter gate (T_emit_gate):")
+    # RE-ANCHOR (A): the absorber is AIR-SEPARATED. On the first ring it shares
+    # a face with the emitter, and rule 3 makes that direction non-participating
+    # -- the gate would have read "no cast" for BOTH temperatures and passed for
+    # entirely the wrong reason.
     for T_warm, expect_cast in ((179.0, False), (181.0, True)):
         sc = _Scene(21, 21)
         sc.solid(10, 10, T_game=T_warm)      # warm, NOT burning
-        sc.solid(10, 11, T_game=0.0)         # cold absorber, first ring
+        # An absorber COLUMN, air-separated (see the hot/cold gate above for
+        # why a single (+2,0) tile is not a tick-independent target).
+        for y in range(21):
+            sc.solid(y, 12, atten=0.5, his=3, T_game=0.0)
         rad = sc.cast(_make_raycaster(t_emit_gate=180.0))
-        moved = int(rad[10, 11])
+        moved = int(rad[:, 12].sum())
         print(f"  warm tile at T={T_warm} -> absorber gained {moved} counts "
               f"(expected {'>0' if expect_cast else '0'})")
         if expect_cast:
             assert moved > 0, "a tile above T_emit_gate did not cast"
-            assert int(rad[10, 10]) == -moved, "the warm emitter was not debited"
+            # RE-ANCHOR (B): the emitter's debit is the pair term PLUS its sky,
+            # so it is strictly more negative than -moved; what must hold to the
+            # count is the ledger identity.
+            assert int(rad[10, 10]) <= -moved, "the warm emitter was not debited"
+            assert sc.books_close(), "the books did not close at the gate"
         else:
             assert moved == 0, "a tile below T_emit_gate cast anyway"
+            assert int(rad.sum()) == 0 and int(sc.rad_amb.sum()) == 0, (
+                "a sub-gate tile moved energy somewhere")
 
 
 # ---------------------------------------------------------------------------
 # (vi) THE E° BAKE — exact integers, no libm.
 # ---------------------------------------------------------------------------
 def test_emissive_table_is_the_exact_integer_bake():
-    print("\nP-R4 — the E° bake (E[t] = clamp_int32(rad_scale * K^4), K = 297+8t):")
+    """RE-ANCHOR (D). The table is int64 and NO LONGER SATURATES.
+
+    P-R4 baked int32 and this test asserted the saturation knee as intended
+    behaviour ("the exchange goes flat there by design"). L2-B3 found that knee
+    was the law's real high-temperature ceiling, not a design choice: above
+    T_game ~ 1768 at the shipped rad_scale every entry pinned at INT32_MAX, so
+    `diff` between ANY two tiles above it collapsed to 0 and a 3000-game tile
+    radiated to a 2000-game tile exactly nothing. The table is now int64, and
+    the assertion is that no shipping rad_scale can saturate it.
+    """
+    print("\nP-F1a - the E bake (E[t] = round(rad_scale * K^4), K = 297+8t, int64):")
     for scale in (1.0e-5, 3.0e-6):
         rc = _make_raycaster(rad_scale=scale)
         tab = rc.emissive_table()
-        assert tab.shape == (4000,) and tab.dtype == np.int32
-        imax = int(np.iinfo(np.int32).max)
-        for t in (0, 1, 45, 70, 110, 200, 1000):
+        assert tab.shape == (4000,) and tab.dtype == np.int64, (
+            f"the E table must be int64 since P-F1a, got {tab.dtype}")
+        for t in (0, 1, 45, 70, 110, 200, 442, 1000, 2500, 3999):
             K = 297 + 8 * t
-            # The bake's own contract: clamp_int32(round(rad_scale * K^4)) with
-            # K^4 built by repeated multiplication (exact in int64). Above the
-            # saturation knee the entry pins at INT32_MAX — T⁴ simply outruns
-            # int32 (at the shipped rad_scale that is T_game ~ 1768, 4x above
-            # the operating band), and the exchange goes flat there by design.
-            ref = min(imax, int(round(scale * float(K) ** 4)))
+            # The bake's own contract, with K^4 built by repeated
+            # multiplication (exact in int64) and ONE rounding boundary.
+            ref = int(round(scale * float(K) ** 4))
             assert int(tab[t]) == ref, (
                 f"bucket {t}: baked {int(tab[t])} != exact {ref}")
-        # Monotone (T⁴ is), and saturating rather than wrapping at the top.
-        assert bool(np.all(np.diff(tab) >= 0)), "E° table is not monotone"
-        assert int(tab[-1]) == np.iinfo(np.int32).max or int(tab[-1]) > 0
+        # Monotone (T^4 is), and STRICTLY so at the top -- the proof that the
+        # old ceiling is gone: a saturated tail would be flat here.
+        assert bool(np.all(np.diff(tab) >= 0)), "E table is not monotone"
+        assert int(tab[-1]) > int(tab[-2]), (
+            "the E table is FLAT at the top - the int32 saturation ceiling "
+            "L2-B3 removed has come back")
+        assert int(tab[-1]) > int(np.iinfo(np.int32).max), (
+            "the top entry still fits int32 - the widening bought nothing")
         print(f"  rad_scale={scale:g}: exact at every probed bucket, monotone, "
-              f"top = {int(tab[-1])}")
+              f"strictly increasing at the top, top = {int(tab[-1])}")
 
 
 # ---------------------------------------------------------------------------
