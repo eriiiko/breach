@@ -362,20 +362,14 @@ def _chain_sim():
     g.material[50, 15] = MAT_AIR           # the open tile it radiates ACROSS
     g.material[50, 16] = MAT_WOOD          # target (air-separated)
     g._update_caches()
-    # P-R4 re-anchor: run the pair at the ARC'S BLESSED cool_shift (9), not the
-    # shipped 5. `cool_shift` is the crate/plank's ONE loss channel (kappa 0 ->
-    # no conduction), so it sets the receiver's equilibrium directly:
-    # T_eq = dT_radiative_in * 2^cool_shift. The shipped 5 is a 1.33 s e-fold —
-    # a value inherited from the painter era, when the deposit was 1600 units of
-    # free energy per unit intensity and the loss rate did not matter. Under the
-    # net-T^4 exchange it puts an adjacent plank at ~293 game against wood's 300
-    # ignition_temp: a 2% miss, and a measurement of an UNTUNED config rather
-    # than of the chain. The P-R5 joint tune owns that dial (ruling §4: "cool_shift
-    # may drift up — radiation is now explicit"); this test owns the CHAIN, so it
-    # pins the dial the rest of the arc measures at. Set AFTER _update_caches,
-    # which rebuilds the plane from the material table.
-    g.cool_shift[50, 14] = 9
-    g.cool_shift[50, 16] = 9
+    # P-F1b RE-ANCHOR: THE PIN IS GONE. P-R4 pinned cool_shift = 9 here because
+    # the shipped 5 was a painter-era leftover and the arc had not yet tuned the
+    # dial — the test had to pick the value "the rest of the arc measures at".
+    # P-F1b IS that tune: [materials.wood] now ships cool_shift = 13 (the
+    # cellulosic re-tune; with T_emit_gate above every ignition_temp, cool_shift
+    # is what stands between an incoming radiative flux and the neighbour's
+    # ignition). So this scenario now runs the SHIPPED material table, and the
+    # chain is measured on the configuration the game actually loads.
     sim.set_paused(False)
     return sim, g
 
@@ -411,44 +405,69 @@ def test_full_chain_radiation_heats_air_separated_wood():
         "(emitter mask -> emission ray -> pair -> rad_net -> Pass-1 fold) is "
         "broken somewhere, not merely under-calibrated")
     # A real plateau well above the noise floor, not a single LSB of drift.
+    # P-F1b: at the recalibrated dials this reaches wood's ignition_temp (the
+    # sibling test below owns that magnitude); the frozen-dial figure this
+    # bound was written against was ~182.
     assert peak_game > 100.0, (
         f"the target only reached {peak_game:.1f} game - the chain is moving "
-        f"far less than the frozen dials predict (~182)")
+        f"far less than the recalibrated dials predict")
     # The rail that guards the signed fold must never engage in a gate scenario.
     assert int(sim.physics_runner.temperature.t_low_rail_hits) == 0, (
         "the Pass-1 LOW rail engaged - the budget argument in v7.2 is wrong")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "P-F1a EXPECTED RED, named in the patch's acceptance (the P-R2-form "
-    "precedent). At P-F1a's FROZEN dials the v7 books cannot carry an "
-    "air-separated plank to wood's 300-game ignition_temp: measured, it "
-    "plateaus at ~182 game. Two frozen-dial effects stack. (1) The painter-era "
-    "heat is gone and H_bed alone cannot hold the old plateau. (2) The receiver "
-    "stalls AT THE GATE: T_emit_gate is 180, so as the target crosses ~180 it "
-    "becomes an emitter itself and begins paying its OWN sky in the ~7 "
-    "directions that leave the world while still receiving on the ~1 direction "
-    "that sees the burner. That is rule 4 behaving correctly - the physical "
-    "onset of emission - and it is exactly what P-F1b's recalibration (rad_scale "
-    "/ T_emit_gate / cool_shift, at the measured R=2 watt books) has to move. "
-    "strict=True ON PURPOSE: when P-F1b restores ignition this test FAILS as an "
-    "unexpected PASS, which is the handoff signal."))
 def test_full_chain_heat_ignites_air_separated_wood():
-    """The ignition MAGNITUDE — P-F1b's to restore. See the xfail reason."""
+    """The ignition MAGNITUDE — RESTORED AT P-F1b (the designed handoff).
+
+    This test carried a strict xfail through P-F1a. Its reason, kept here as the
+    tombstone: "At P-F1a's FROZEN dials the v7 books cannot carry an
+    air-separated plank to wood's 300-game ignition_temp: measured, it plateaus
+    at ~182 game... the receiver STALLS AT THE GATE: T_emit_gate is 180, so as
+    the target crosses ~180 it becomes an emitter itself and begins paying its
+    OWN sky in the ~7 directions that leave the world while still receiving on
+    the ~1 direction that sees the burner... strict=True ON PURPOSE: when P-F1b
+    restores ignition this test FAILS as an unexpected PASS, which is the
+    handoff signal." It did, at the first P-F1b bench run, and this is the
+    conversion to a plain assertion.
+
+    WHAT MOVED (docs/fire_recalibration_2026-08-02.md): `T_emit_gate` 180 -> 310,
+    which is above every flammable ignition_temp, so the receiver no longer
+    starts paying sky before it can light; and [materials.wood] `cool_shift`
+    5 -> 13, which is what sets how high a one-ray-per-tick incident flux can
+    carry a non-casting solid. The two together are the gate-wall fix.
+
+    THE BAND. The receiver is crossed by ~1 of the burner's 8 fan rays, so its
+    ceiling is where a_s*a_r*w*(E[T_s]-E[T_r]) == T/2^cool_shift. Against a
+    burner pinned at FLAME_T_GAME that ceiling is a few tens of game units above
+    wood's 300, i.e. the pass has real but not lavish margin — the band asserted
+    below is "crosses 300, in the tens-of-seconds regime the chain is supposed
+    to feel like", not "blows past it".
+    """
     sim, g = _chain_sim()
     ignited_tick = None
-    for t in range(1, 200):
+    for t in range(1, 400):
         _hold_burner(g, 50, 14)
         sim.step()
         if g.fire[50, 16] > 0:
             ignited_tick = t
             break
+    peak_game = int(g.temperature[50, 16]) / 65536.0
+    print(f"\nP-F1b chain - air-separated wood ignited at tick {ignited_tick} "
+          f"({(ignited_tick or 0) / sim._tps:.1f} s), T = {peak_game:.1f} game")
     assert ignited_tick is not None, (
         "air-separated wood never ignited from fire heat")
     assert int(g.temperature[50, 16]) >= IGN_WOOD_Q16, (
         "target ignited without its temperature crossing ignition_temp")
     assert ignited_tick > sim._tps // 4, (
         f"ignited too fast ({ignited_tick} ticks) - heat path is not gentle")
+    # The recalibrated band: a radiative one-gap chain is a TENS-OF-SECONDS
+    # event, not an instant one and not a never (P-F1b gate (d); Erik's spread
+    # ruling puts crate-to-crate at 30-60 s and first ignition from cold at
+    # minutes). This burner is pinned at flame temperature, i.e. the fastest
+    # case the chain ever sees.
+    assert ignited_tick <= 12 * sim._tps, (
+        f"ignited after {ignited_tick / sim._tps:.1f} s - the recalibration is "
+        f"under-delivering on the radiative chain")
 
 
 # ---------------------------------------------------------------------------

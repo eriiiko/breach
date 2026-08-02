@@ -236,6 +236,92 @@ def _diagnose(rec, snap_tick, fuel_out_tick, had_fire, x_ext, crate_hp0,
            f"well above X_ext={x_ext:.2f} -- neither gate was binding)")
 
 
+def _death_counterfactual(rec, snap_tick, fuel_out_tick, had_fire, x_ext, x_full,
+                          k_grow, k_die, c=None, k_wind_fan=None, k_wind_strip=None):
+    """P-F1b — WHICH RESOURCE actually killed the fire, decided by counterfactual.
+
+    ``_diagnose`` above answers a DIFFERENT, coarser question ("was there fuel
+    and oxygen left in the tile when I snapped to 0"), and it decides "O2" by a
+    fixed absolute threshold, ``X_local <= X_ext + 0.01``. That threshold cannot
+    see the real O2 death, because the logistic's own extinction wall sits ABOVE
+    X_ext, so a genuine smother is labelled "knee" by a whisker.
+
+    This asks the question the smother curve is actually about, against the
+    logistic's OWN growth bracket rather than a threshold::
+
+        bracket(A, I) = k_grow*(A - I/c)*(1 + k_wf*W) - k_die*(1 - A)
+                        - k_ws*W*(1 - I)
+
+    (``A = F*o2f*hot``; the same expression fire_simulation.cpp steps I by,
+    divided by I). Take the FIRST tick after the intensity peak at which the
+    measured bracket went negative — the tick the fire was doomed — and ask two
+    counterfactuals AT THAT TICK, holding everything else measured:
+
+      * AMBIENT oxygen (X = 0.21) at the same F, hot, I and W -> bracket >= 0?
+        yes ==> O2-GOVERNED. The oxygen, and nothing else, killed it.
+      * a FULLY HOT tile (hot = 1) at the same F, O2, I and W -> bracket >= 0?
+        yes ==> TEMPERATURE-GATE-GOVERNED (the knee).
+      * neither ==> FUEL-GOVERNED (F itself is too low to close the bracket).
+
+    ``rec["w"]`` (the |wind| the fire's own plume makes at its own tile) is used
+    when the caller records it; absent, the wind terms drop out — they are
+    identical across the three counterfactual worlds, so they cannot change
+    WHICH resource the answer is, only the tick at which the fire is declared
+    doomed.
+
+    Returns ``(label, detail_dict)``; ``label`` is one of
+    "O2-governed" / "T-gate-governed" / "fuel-governed" / "n/a".
+    """
+    if not had_fire or not rec["I"].size:
+        return "n/a", {}
+    c = float(c) if c else 1e9
+    kwf = float(k_wind_fan) if k_wind_fan is not None else 0.0
+    kws = float(k_wind_strip) if k_wind_strip is not None else 0.0
+    W = rec["w"] if "w" in rec else np.zeros_like(rec["I"])
+    span = max(1e-9, x_full - x_ext)
+    o2f = np.clip((rec["x_local"] - x_ext) / span, 0.0, 1.0)
+    o2f_amb = min(1.0, max(0.0, (0.21 - x_ext) / span))
+    F = rec["_F"]
+    I = rec["I"]
+
+    def bracket(A):
+        return (k_grow * (A - I / c) * (1.0 + kwf * W)
+                - k_die * (1.0 - A) - kws * W * (1.0 - I))
+
+    A = F * o2f * rec["hot"]
+    b = bracket(A)
+    b_amb = bracket(F * o2f_amb * rec["hot"])
+    b_hot = bracket(F * o2f * 1.0)
+    # THE DOOMED TICK is the TERMINAL crossing, not the first one. A fire that
+    # overshoots and relaxes onto its equilibrium drives the bracket negative at
+    # its own peak by construction — that tick is the fire finding its size, not
+    # the fire dying. The tick that matters is the LAST one at which the bracket
+    # was still non-negative: after it, the fire never recovers.
+    # Ticks after the snap-out carry I == 0 and are not a fire; exclude them so
+    # the terminal crossing is read on a tile that was still alight.
+    alive = I > 0.0
+    ok = np.nonzero((b >= 0.0) & alive)[0]
+    if not ok.size:
+        return "n/a", {}
+    j = int(ok[-1]) + 1
+    while j < len(b) - 1 and not alive[j]:
+        j -= 1
+    if j >= len(b):
+        return "n/a", {}
+    d = dict(tick=j, t=float(rec["t"][j]), bracket=float(b[j]), A=float(A[j]),
+             F=float(F[j]), hot=float(rec["hot"][j]), I=float(I[j]),
+             x_local=float(rec["x_local"][j]), o2f=float(o2f[j]),
+             W=float(W[j]), bracket_if_ambient_O2=float(b_amb[j]),
+             bracket_if_fully_hot=float(b_hot[j]),
+             x_wall=x_ext + span * (k_die / max(k_grow, 1e-9))
+             / (1.0 + k_die / max(k_grow, 1e-9)))
+    if d["bracket_if_ambient_O2"] >= 0.0:
+        return "O2-governed", d
+    if d["bracket_if_fully_hot"] >= 0.0:
+        return "T-gate-governed", d
+    return "fuel-governed", d
+
+
 def _run_room_inner(*, interior_w, interior_h, tile_size_m, crates, ignite_xy,
                     vent_width, vent_side, vent_state, breach_tick_s,
                     max_seconds, tail_seconds, overrides, seed, verbose):
@@ -279,7 +365,7 @@ def _run_room_inner(*, interior_w, interior_h, tile_size_m, crates, ignite_xy,
     room_mask = (~gmap.solid) & (~gmap.is_vacuum)
 
     rec = {k: [] for k in ("t", "I", "T", "hp", "o2", "x_local", "hot",
-                           "o2room_x", "vent_open")}
+                           "o2room_x", "vent_open", "w")}
     had_fire = False
     fuel_out_tick = None
     snap_tick = None
@@ -320,9 +406,15 @@ def _run_room_inner(*, interior_w, interior_h, tile_size_m, crates, ignite_xy,
         o2room_x = float(np.divide(_o2m, _ntm, out=np.zeros_like(_o2m),
                                    where=_ntm > 0).mean())
         vent_open_now = bool(vent_tiles) and bool(gmap.is_vacuum[vent_tiles[0]])
+        # P-F1b: |wind| the fire's OWN plume makes at its own tile -- the
+        # logistic reads it in BOTH wind terms, and at the operating point the
+        # strip term is the same size as k_die.
+        w_here = ((int(gmap.wind_x[fy, fx]) / FP_ONE) ** 2
+                  + (int(gmap.wind_y[fy, fx]) / FP_ONE) ** 2) ** 0.5
         for key, val in (("t", t), ("I", I), ("T", T), ("hp", hp), ("o2", o2),
                         ("x_local", x_local), ("hot", hot),
-                        ("o2room_x", o2room_x), ("vent_open", float(vent_open_now))):
+                        ("o2room_x", o2room_x), ("vent_open", float(vent_open_now)),
+                        ("w", w_here)):
             rec[key].append(val)
         if I > 0.05:
             had_fire = True
@@ -338,6 +430,17 @@ def _run_room_inner(*, interior_w, interior_h, tile_size_m, crates, ignite_xy,
         rec[key] = np.asarray(rec[key], dtype=np.float64)
 
     cause = _diagnose(rec, snap_tick, fuel_out_tick, had_fire, x_ext, crate_hp0)
+    # P-F1b: the counterfactual decomposition (see _death_counterfactual). Needs
+    # the fuel FRACTION, which is hp/hp0 on this bench's single ignited tile.
+    rec["_F"] = np.clip(rec["hp"] / max(crate_hp0, 1e-9), 0.0, 1.0)
+    cause_law, cause_detail = _death_counterfactual(
+        rec, snap_tick, fuel_out_tick, had_fire, x_ext,
+        float(getattr(CFG.physics.fire, "o2_frac_full", 1.0)),
+        float(getattr(CFG.physics.fire, "k_grow", 4.0)),
+        float(getattr(CFG.physics.fire, "k_die", 2.0)),
+        c=float(getattr(CFG.physics.fire, "I_cap_per_avail", 0.0)),
+        k_wind_fan=float(getattr(CFG.physics.fire, "k_wind_fan", 0.0)),
+        k_wind_strip=float(getattr(CFG.physics.fire, "k_wind_strip", 0.0)))
 
     metrics = dict(
         vent_state=vent_state, vent_width=vent_width, vent_side=vent_side,
@@ -348,7 +451,8 @@ def _run_room_inner(*, interior_w, interior_h, tile_size_m, crates, ignite_xy,
         material_name=gmap.materials.names[mat_id], crate_hp0=crate_hp0,
         fire_T_ext=fire_t_ext, fire_T_span=fire_t_span, x_ext=x_ext,
         had_fire=had_fire, fuel_out_tick=fuel_out_tick, snap_tick=snap_tick,
-        cause=cause, n_ticks=len(rec["t"]), rec=rec, tps=tps, dt=dt,
+        cause=cause, cause_law=cause_law, cause_detail=cause_detail,
+        n_ticks=len(rec["t"]), rec=rec, tps=tps, dt=dt,
         vent_tiles=vent_tiles, overrides=dict(overrides), seed=seed,
     )
     if verbose:
@@ -407,6 +511,12 @@ def _print_room(m):
          f"burnout={_mmss(m['fuel_out_tick'] * m['dt'] if m['fuel_out_tick'] else None)}  "
          f"snap-out={_mmss(m['snap_tick'] * m['dt'] if m['snap_tick'] else None)}")
     print(f"  CAUSE: {m['cause']}")
+    d = m.get("cause_detail") or {}
+    print(f"  CAUSE (counterfactual, P-F1b): {m.get('cause_law', 'n/a')}"
+          + (f"  @t={d['t']:.1f}s bracket={d['bracket']:+.5f} | F={d['F']:.3f} "
+             f"hot={d['hot']:.3f} X_local={d['x_local']:.4f} I={d['I']:.3f} "
+             f"|W|={d['W']:.4f} | bracket|ambient_O2={d['bracket_if_ambient_O2']:+.5f} "
+             f"bracket|fully_hot={d['bracket_if_fully_hot']:+.5f}" if "bracket" in d else ""))
     if m["vent_state"] == "breach":
         print(f"  breach fired: {m['breach_done']}  "
              f"vent is_vacuum final: {bool(rec['vent_open'][-1]) if rec['vent_open'].size else 'n/a'}")

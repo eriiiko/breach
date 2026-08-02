@@ -457,7 +457,13 @@ def test_e2e_2_breach_vents_o2_and_kills_fire():
     self-starve to t=261 (was 265); vented/flooded unchanged (48 / 39). Trio
     now sealed 261 / vented 48 / flooded 39. Ordering + the perturbation gate
     stay green. This test only asserts vented < sealed, so it is unaffected."""
-    def _ticks_to_die(vent, max_ticks=400):
+    # P-F1b RE-ANCHOR (2026-08-02, docs/fire_recalibration_2026-08-02.md): the
+    # tick budget was written for fires that died in tens of ticks. The
+    # recalibration restored the sustain condition (the shipped k_die/k_grow had
+    # demanded 3.5x more oxygen availability than the atmosphere can supply), so
+    # every arm of this family now lives for MINUTES, and the O2 differentiation
+    # this test is about only resolves on that timescale.
+    def _ticks_to_die(vent, max_ticks=25000):
         gmap = _sealed_room(hh=9, wood_at=(4, 4),
                             extra_vacuum=[(0, 4)] if vent else None)
         pr = _runner()
@@ -522,7 +528,13 @@ def test_e2e_4_inert_flood_smothers_fire():
     P6.9a re-measure (design §5): the reformulation moves the unflooded
     control to t=261 (deltas gamma/delta); flooded unchanged at 39. This test
     asserts only flooded < control, so it is unaffected."""
-    def _ticks_to_die(flood, max_ticks=400):
+    # P-F1b RE-ANCHOR (2026-08-02, docs/fire_recalibration_2026-08-02.md): the
+    # tick budget was written for fires that died in tens of ticks. The
+    # recalibration restored the sustain condition (the shipped k_die/k_grow had
+    # demanded 3.5x more oxygen availability than the atmosphere can supply), so
+    # every arm of this family now lives for MINUTES, and the O2 differentiation
+    # this test is about only resolves on that timescale.
+    def _ticks_to_die(flood, max_ticks=25000):
         gmap = _sealed_room(hh=9, wood_at=(4, 4))
         pr = _runner()
         _ignite(gmap, (4, 4), intensity=0.6, temp_mult=1.5)
@@ -576,7 +588,7 @@ def test_two_run_determinism():
 # ---------------------------------------------------------------------------
 # v2.4 — perturbation robustness of the payoff orderings
 # ---------------------------------------------------------------------------
-def _payoff_timings(perturb_absorb=None, max_ticks=400):
+def _payoff_timings(perturb_absorb=None, max_ticks=25000):
     """Ticks-to-extinguish for the sealed / vented / flooded arms of the
     e2e-1/2/4 scenario family (game-faithful loop), optionally with one EOS
     dial perturbed. Returns (sealed, vented, flooded).
@@ -615,7 +627,10 @@ def _payoff_timings(perturb_absorb=None, max_ticks=400):
         # P-R5 joint tune owns that dial (ruling §4: "cool_shift may drift up —
         # radiation is now explicit"); this test owns the O2 axis, so it pins
         # the dial the rest of the arc measures at.
-        gmap.cool_shift[4, 4] = 9
+        # P-F1b RE-ANCHOR: THE PIN IS GONE. P-R4 pinned cool_shift = 9 here
+        # because the shipped 5 was a painter-era leftover and the arc had not
+        # yet tuned the dial. P-F1b IS that tune -- [materials.wood] now ships
+        # cool_shift = 13 -- so this scenario runs the shipped material table.
         if vent:
             gmap.solid[0, 4] = False
             gmap.dyn_permeability[0, 4] = 1.0

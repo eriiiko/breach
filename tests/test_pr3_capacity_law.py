@@ -399,13 +399,22 @@ def test_a_non_uniform_plane_is_read_per_tile():
 # ---------------------------------------------------------------------------
 def test_fire_T_ext_is_derived_from_ignition_temp():
     """``fire_T_ext[mat] = ignition_temp[mat] - ignition_to_ext_delta`` — ONE
-    new global, zero new per-material columns. The number that motivated
-    Δ = 100: furniture 280 - 100 = 180, EXACTLY the blessed bench value, so a
-    derived run and the old ``--set fire_T_ext=180`` override agree."""
+    new global, zero new per-material columns.
+
+    P-F1b RE-ANCHOR (2026-08-02, docs/fire_recalibration_2026-08-02.md): the
+    PINNED NUMBERS moved, the DERIVATION did not. Δ = 100 was motivated by
+    "furniture 280 - 100 = 180, EXACTLY the blessed bench value"; the
+    recalibration re-solved Δ (100 -> 200) as half of the knee geometry -- where
+    the `hot` ramp's foot sits relative to the plateau IS the part-burn dial,
+    and it is also what lets a solid a = 1.0 wood wall (which plateaus far
+    cooler than a permeable crate) sustain at all. This test now asserts the
+    RELATION for every row and reads the two pinned examples off the config
+    rather than off a remembered constant."""
     tbl = MaterialTable.from_config()
-    assert float(tbl.ignition_to_ext_delta) == 100.0
-    assert float(tbl.fire_T_ext[MAT_FURNITURE]) == pytest.approx(180.0)
-    assert float(tbl.fire_T_ext[MAT_WOOD]) == pytest.approx(200.0)
+    delta = float(tbl.ignition_to_ext_delta)
+    assert delta > 0.0
+    assert float(tbl.fire_T_ext[MAT_FURNITURE]) == pytest.approx(280.0 - delta)
+    assert float(tbl.fire_T_ext[MAT_WOOD]) == pytest.approx(300.0 - delta)
     for idx, name in enumerate(tbl.names):
         want = fire_T_ext_from_ignition(tbl.ignition_temp[idx],
                                         tbl.ignition_to_ext_delta)

@@ -113,7 +113,17 @@ T_MAX_PHYS        = 16000.0 # v2.4 counted physical-maximum rail on the temperat
 # REAL N_O2 scale, not the old atmosphere/P (~1.0 ambient) scale — see the
 # o2_threshold/P_min/P_full recalibration note in the fire feedback block below.
 [physics.fire]
-ignition_seed = 0.1   # seed fire intensity a temperature-ignited tile gets (I_seed)
+# P-F1b (2026-08-02): 0.1 -> 0.12. ONE JOB: clear the bootstrap floor with
+# margin, and NOTHING ELSE (Erik's violence headroom — the seed must sit LOW
+# against the ceiling so wind/clusters have room to climb). At the P-F1b dials
+# the true dynamic bootstrap floors (the lower, UNSTABLE fixed point of the
+# logistic, measured on the still-air arena) are kindling/furniture I_crit =
+# 0.018 and wood I_crit = 0.090 — wood is the binding one, because a solid
+# a = 1.0 wall radiates twice as hard as a permeable crate and so runs a much
+# cooler bed at the same O2 supply. 0.12 clears wood by 1.33x and kindling by
+# 6.6x, and sits at 12% of the intensity scale against a plateau of ~0.45 and a
+# ceiling of 1.0 — 8x of headroom above the seed.
+ignition_seed = 0.12  # seed fire intensity a temperature-ignited tile gets (I_seed)
 # o2_threshold RETIRED (continuous-O2 law, docs/continuous_o2_law_design_2026-07-24
 # .md §2.4): ignition now reads the O2 MOLE FRACTION and ignites iff X > o2_frac_ext
 # (the SAME extinction limit the fire sustain uses — one law), NOT an absolute-N_O2
@@ -144,8 +154,26 @@ o2_threshold  = 0.01  # RETIRED — see o2_frac_ext (fire feedback block below)
 # -> P falls -> starves; ALSO now (P4) the room's REAL O2 depletes as it burns ->
 # o2 -> 0 -> starves even in a wall that never bursts. Both emergent. Erik tunes
 # all of these live.
-k_grow            = 4.0    # logistic growth gain (1/s) — TEMPO only since P-R3
-k_die             = 2.0    # decay rate when starved/cold (1/s)
+# --- P-F1b (2026-08-02) — THE TEMPO/DEATH-WALL PAIR, RE-SOLVED --------------
+# The shipped 4.0/2.0 pair was arithmetically fire-dead and had been for weeks.
+# WHY, in one line: sustain needs `a = F*o2f*hot > r/(1+r)` with r = k_die/k_grow,
+# and under the continuous-O2 law ambient air only gives o2f = (0.21-0.13)/(1-0.13)
+# = 0.092 — so r = 0.5 demanded a = 0.333, THREE AND A HALF TIMES the maximum
+# availability the atmosphere can supply. No seed, no temperature and no dial
+# elsewhere could have saved it. (config's own note at o2_frac_ext predicted
+# exactly this: "the split rescales the whole avail axis by ~10x, so k_die/k_grow
+# moves with it".)
+#   k_grow = TEMPO ONLY. 2.0 sets the campfire ramp (measured: kindling reaches
+#     90% of its plateau intensity in ~25 s from the seed on the still-air arena).
+#   k_die  = WHERE THE DEATH WALL SITS, and nothing else. It is now set from the
+#     PHYSICS, not by feel: r = k_die/k_grow = 0.012 puts the logistic's own
+#     extinction wall at X_local = X_ext + (X_full-X_ext)*r/(1+r) = 0.1403 —
+#     just ABOVE `o2_frac_ext` = 0.13, so the OXYGEN limit is the binding one and
+#     `o2_frac_ext` is live code again. (P-R3's ruling named the opposite state —
+#     "o2_frac_ext = 0.13 was dead code, because the logistic wall bit first at
+#     X = 0.1944" — as the defect. This closes it.)
+k_grow            = 2.0    # logistic growth gain (1/s) — TEMPO only since P-R3
+k_die             = 0.008  # decay rate when starved/cold (1/s); r = 0.004
 # THE CAPACITY LAW (P-R3, 2026-07-31 — docs/radiation_raycaster_extinction_
 # ruling_2026-07-31.md A3, on Erik's ruling R-b). The growth term's carrying
 # capacity used to be the hardwired constant 1 (the `(1-I)` factor); it is now
@@ -161,7 +189,17 @@ k_die             = 2.0    # decay rate when starved/cold (1/s)
 # because the logistic wall bit first at X = 0.1944. Now each dial has one job:
 # `I_cap_per_avail` = SIZE, `k_grow` = TEMPO, `k_die` = where the death wall
 # sits. `<= 0` legally means "capacity ceiling OFF" (unbounded growth).
-I_cap_per_avail   = 2.53   # capacity per unit availability: I_cap = c·a — the SIZE dial; ruling 2026-07-31 A3. [derived, unblessed — P-R5 blesses]
+# P-F1b (2026-08-02): 2.53 -> 20.0. ONE JOB: SIZE — where the plateau intensity
+# sits, and nothing else. Solved from the plateau condition at the P-F1b books:
+#     I_eq/c = (1+r)*o2f_local(I_eq)*hot(I_eq) - r
+# with the MEASURED self-vitiated flame-ring factor o2f_local(I) = 0.0251*I^-0.46
+# (a lone crate starves its OWN ring: X_local falls 0.193 -> 0.154 as I goes
+# 0.1 -> 0.8; measured on this branch). c = 20 lands I_eq = 0.475 open-field,
+# which is the intensity the R=2 supply must reach to hold the ruling's
+# deep-orange plateau. The number is large because the availability axis it
+# multiplies is small (o2f ~ 0.04 at the operating point), NOT because the fire
+# is uncapped: I_cap = c*a*hot = 20*0.04 = 0.8 at the plateau.
+I_cap_per_avail   = 14.0   # capacity per unit availability: I_cap = c·a — the SIZE dial; ruling 2026-07-31 A3. [P-F1b re-solve]
 # fire_T_ext: SUPERSEDED as the extinction floor (P-R3, ruling A3 ride-along).
 # It is a PER-MATERIAL quantity — it sits on the same physical axis as the
 # per-material `ignition_temp` — and this global, at 350, exceeded BOTH shipped
@@ -176,8 +214,26 @@ I_cap_per_avail   = 2.53   # capacity per unit availability: I_cap = c·a — th
 # this value no longer affects the game. Editing it will NOT move the fire —
 # edit the material's `ignition_temp`, or the Δ below.
 fire_T_ext        = 350.0  # FALLBACK extinction temperature (inert in the live engine)
-ignition_to_ext_delta = 100.0  # fire_T_ext[mat] = ignition_temp[mat] - Δ (ONE global, zero new per-material columns; ruling 2026-07-31 A3)
-fire_T_span       = 150.0  # width of the `hot` ramp above fire_T_ext (STAYS global — a WIDTH, not a foot)
+# P-F1b (2026-08-02): delta 100 -> 180, span 150 -> 120. TOGETHER they are the
+# KNEE GEOMETRY: the `hot` ramp runs from fire_T_ext = ignition_temp - delta up
+# to fire_T_ext + span. New feet/tops: kindling & furniture 100 -> 220, wood
+# 120 -> 240. Two things they had to do at once:
+#   * the KNEE POSITION and the part-burn fraction. Where the ramp's foot sits
+#     relative to the plateau IS the part-burn dial: a high foot kills the crate
+#     with most of its fuel intact (P-R3 measured 19.5% burnt at delta = 100),
+#     a low foot lets it burn down further. delta 180 measures ~77-81% burnt at
+#     death for kindling/furniture — ABOVE the 30-70% band the tuning session
+#     wants, and the honest reason is structural: because a shrinking fire stops
+#     starving its own ring, o2f_local RISES as I falls, so availability does not
+#     collapse until very little fuel is left. Erik's dial at the session; delta
+#     is the one that moves it (delta 150 measures ~66-71%, at the price below).
+#   * WOOD HAS TO BE ABLE TO BURN. A solid a = 1.0 wall sheds twice the sky flux
+#     of a permeable a = 0.5 crate, so it plateaus ~240 game against the crate's
+#     ~310. At delta = 150 wood's ramp foot (150) sits so close to that plateau
+#     that wood has NO equilibrium at all — a lit wood wall dies. delta = 180
+#     restores it (wood I_eq = 0.475 at T = 240).
+ignition_to_ext_delta = 200.0  # fire_T_ext[mat] = ignition_temp[mat] - Δ (ONE global, zero new per-material columns; ruling 2026-07-31 A3)
+fire_T_span       = 180.0  # width of the `hot` ramp above fire_T_ext (STAYS global — a WIDTH, not a foot)
 # fuel_ref: SUPERSEDED as the fuel normaliser (fuel-fraction axis, 2026-07-30).
 # F means "the fraction of THIS tile's fuel remaining", so its divisor is the
 # tile's OWN material hp — a PER-MATERIAL quantity. This global is 60.0, which is
@@ -253,7 +309,17 @@ k_wind_strip      = 0.5    # W*(1-I)*I blows out small/marginal fires (the reali
 # fire_pressure_gain TOMBSTONE (P-R2, 2026-07-31): dead key — the plume->T shim it fed (FireParams::fire_pressure_gain, the one temperature[] writer bypassing heat_inv_shift) was deleted; see docs/radiation_raycaster_extinction_ruling_2026-07-31.md A2.
 p_expand_ref      = 1.30   # self-limiting plume saturation ceiling (atm + thermal-expansion headroom)
 smoke_emission    = 0.8    # smoke produced per second per unit intensity (KEPT)
-wall_damage       = 0.4    # wall HP lost per second per unit intensity (KEPT — the burn-out brake)
+# P-F1b (2026-08-02): 0.4 -> 0.05. ONE JOB: BURN DURATION (per-family, via each
+# material's own hp — fuel is still hp-COUPLED in this patch; the dedicated
+# `fuel` column lands with the materials patch, and until it does, changing a
+# burn duration also changes that object's combat health).
+# Two drains share the fuel store: this one (wall_damage*I per second) and
+# combustion's stoichiometric payment (fuel_per_o2 * the O2 actually drawn).
+# At the P-F1b operating point (I ~ 0.45) they are 0.0225 and 0.0026 hp/s — i.e.
+# wall_damage still dominates 9:1 and is therefore still THE duration dial.
+# Solved for Erik's ruling-2 target ("a 30 kg crate burning ~30 min is
+# desirable"): furniture (hp 30) measures ~28 min, kindling (hp 8) ~8 min.
+wall_damage       = 0.03   # wall HP lost per second per unit intensity (KEPT — the burn-out brake)
 
 # --- K2: fire as a sim-side heat ray source (proposal §1, fire_design_notes) --
 # Each burning tile (fire > 0) becomes a short-range heat `LightSource` cast IN
@@ -328,7 +394,32 @@ rad_scale            = 1.0e-5 # heat counts per K^4 in the baked E° table
 # others. 180 game = 653 K (Erik, 2026-07-31). LOWER = the FEEL lever (warm
 # objects gently toasting their surroundings) and costs emitter count; HIGHER =
 # the COST lever and costs post-fire glow. Ruling A1.8.
-T_emit_gate          = 180.0  # game units; below it a hot solid does not cast
+# P-F1b (2026-08-02): 180 -> 310. THE SANCTIONED RAISE (Erik's recorded lean,
+# "increase the threshold drastically, compensate by making radiation quicker";
+# design v5.3 records it as a tuning-session item with a stated accuracy cost).
+# WHY IT HAD TO MOVE — the gate wall. A receiver warmed by a fire crosses the
+# gate, becomes an emitter, and starts paying its OWN sky in the ~7 directions
+# that leave the world while still receiving on the ~1 direction that sees the
+# fire. Its equilibrium above the gate is therefore E_r ~ E_s/15, i.e.
+# K_r ~ K_s/1.97: a 893 K flame can only hold a one-gap neighbour at ~450 K, far
+# under any ignition_temp. P-F1a measured exactly this (a plank stalling at
+# 183.7 game, four game units above the old gate). Below the gate a solid does
+# not cast at all, so its only loss is cool_shift and it CAN be carried to
+# ignition. 310 sits just above the highest flammable ignition_temp (wood 300),
+# so no flammable ever occupies a "hot but stalled" window: it ignites first,
+# and a BURNING tile is an emitter regardless of this gate.
+# THE ACCURACY COST, stated: a hot NON-flammable solid (hull/steel/glass/doors)
+# below 310 game (= 913 K) does not radiate away its heat. Bounded by
+# E°(310) - E°(0) per direction; it still ABSORBS normally (v7.3: a sub-gate
+# solid pays and receives via rule 1 whenever an emitter sees it — what it does
+# not do is CAST), so no energy is minted, only under-shed.
+# THE COST BENEFIT, measured by P-F1a: the caster set is temperature-defined and
+# unbounded, and its warm-halo case (every tile within 3 of a fire above the
+# gate) reached 19,424 emitters / 6.58 ms, 2.2x over budget. At 310 the warm halo
+# does not cast at all and the caster set collapses back to (essentially) the
+# fires themselves. P-F1a's OPEN POLICY item is answered by this dial, not by a
+# new cap mechanism.
+T_emit_gate          = 310.0  # game units; below it a hot solid does not cast
 # --- P-F1a / v7 rule 4: RADIATION_RANGE --------------------------------------
 # The reach of an EMISSION ray, in tiles. A STABILITY-CLASS CONSTANT, NOT A FEEL
 # DIAL — do not tune it for look.
@@ -618,8 +709,34 @@ max_claimants     = 12
 # but NOT Huggett-VALUED: thermal_mass = 8 already lumps the ~130x surface-layer
 # factor, so no J/mol anchor survives the conversion. Do not read it as an
 # enthalpy. RE-TUNE AT P-R5 alongside cool_shift.
-H_BED_M           = 25290.0  # mantissa (< 32768, the Q16.16 range)
-H_BED_SHIFT       = 3        # H_bed = H_BED_M * 2^H_BED_SHIFT = 2.023e5
+# --- P-F1b RE-SOLVE (2026-08-02, THE RECALIBRATION AT PACKAGE A) -------------
+# The derivation above is SUPERSEDED in its loss term: it assumed "radiation-out
+# is ZERO" (true only while the painter-era ray died at 2.63 tiles). Under the
+# P-F1a books a burning tile ALWAYS casts, its rays reach the world edge, and
+# the sky term is by far its largest loss. Re-solved against the honest balance
+#     alloc(I) * H_bed / 2^his  ==  a*(E[T] - E[0]) / (2^his * 65536)  +  T/2^cs
+# (game units per tick; `a` = heat_atten; E the baked black-body table). At the
+# ruling's deep-orange target T = 300 game (893 K) a lone kindling/furniture
+# crate (a = 0.5) sheds 15.1 kW to sky and only 0.04 kW to cool_shift at the new
+# cool_shift 13 — i.e. RADIATION now owns >99% of the plateau, and cool_shift
+# has stopped being the plateau dial entirely (it is now the SPREAD dial; see
+# the [materials.*] rows).
+# MEASURED SUPPLY (docs/fire_recalibration_2026-08-02.md §2, this branch):
+#     alloc(I) = 3.06e-4 * I^0.7035   O2 units/tick   (open still-air arena, R=2)
+# so holding 300 game needs alloc = 1.63e-4 u/tick, i.e. I ~ 0.42 and ~19 kW of
+# chemical power. THE RULING'S OWN "12.6 kW => 890 K" ARITHMETIC ASSUMED
+# chi_bed = 1 (all combustion heat into the bed); at an honest chi_bed the lone
+# crate's operating point is ~19-20 kW, not 12.6 kW. Reported, not hidden.
+# chi_bed CHECK (design doc F8 step 4, band [0.3, 1.0]):
+#     chi_bed = H_bed * 65536 * 1.968e-4 / 4.83e6 = H_bed * 2.6706e-6 = 0.801 ok
+# THE SPLIT MOVES: the mantissa must stay < 32768 (Q16.16 range), so H_bed =
+# 3.0e5 needs shift 4, not 3. Deposit granularity is unchanged in kind (a lone
+# crate's per-tick claim is ~11 raw counts either way) and the int64->int32
+# deposit clamp fires on exactly the same full-drain cells it did before.
+H_BED_M           = 18125.0  # mantissa (< 32768, the Q16.16 range)
+H_BED_SHIFT       = 4        # H_bed = H_BED_M * 2^H_BED_SHIFT = 2.900e5
+                             # (was 25290.0 * 2^3 = 2.023e5, the P-R4 painter-era
+                             #  solve; P-F1b re-solve above)
 # Unit-side suffocation mechanics (LATER arc, design §5): defined here so the
 # constant lives at the right layer; nothing reads it yet.
 o2_thresh_breathe = 0.08   # min local N_O2 a unit needs to breathe (NOT wired yet)
@@ -1006,7 +1123,11 @@ light_atten = [1.0, 1.0, 1.0]
 heat_atten = 1.0
 conductivity = 0.15
 thermal_mass = 8     # softwood (real rho*c ~0.7): heats fast & locally (heat >> 3)
-cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
+# P-F1b (2026-08-02): 5 -> 13, THE CELLULOSIC RE-TUNE (design F8 step 3 — with
+# F3/convection not yet built, cool_shift interim-OWNS the whole non-radiative
+# residue, and the F3 patch re-runs this step). See [materials.kindling] for the
+# full derivation; wood shares it because it is the same cellulosic family.
+cool_shift = 13      # ambient decay T -= T>>13 (e-fold 2^13/24 = 341 s). WAS 5
                      # THE OLD GLOBAL — see the axis note on [materials.air]
 ignition_temp = 300.0
 wave_reflect = 0.5
@@ -1081,11 +1202,14 @@ light_atten = [0.55, 0.55, 0.55]   # partial occlusion: a crate stack leaks some
 heat_atten = 0.5
 conductivity = 0.0   # kappa 0 = no conduction face (like air); fire eats it via flammability instead
 thermal_mass = 8     # wood-like (real rho*c ~0.7): heats fast & locally (heat >> 3)
-cool_shift = 5       # THE dial for a crate: conductivity = 0 means the ambient
+# P-F1b (2026-08-02): 5 -> 13. The comment below is now HALF WRONG and kept as
+# the tombstone: cool_shift is NO LONGER a crate's one loss channel — under the
+# P-F1a books radiation is, and it dominates 99:1 at the plateau. What this dial
+# owns now is THE SPREAD (see [materials.kindling] for the derivation).
+cool_shift = 13      # THE dial for a crate: conductivity = 0 means the ambient
                      # decay above is furniture's ONE loss channel (thermal-mass
-                     # design §2.2), so this alone sets how long a burning crate
-                     # stays hot. e-fold 2^5/24 = 1.3 s at 5, 171 s at 12.
-                     # SEEDED AT THE OLD GLOBAL — the joint re-tune moves it.
+                     # design §2.2) — SUPERSEDED, see the P-F1b note above.
+                     # e-fold 2^13/24 = 341 s at 13 (was 5 = 1.3 s).
 ignition_temp = 280.0   # wood-like; slightly easier to light than a solid wood wall (300)
 wave_reflect = 0.2
 wave_absorb = 0.5    # soft stuff soaks blasts
@@ -1143,10 +1267,29 @@ heat_atten = 0.5      # spec value (== furniture's)
 conductivity = 0.0    # spec value: crate-conduction lands with the law
                        # patches (P-F1a/P-F3), not here
 thermal_mass = 8       # spec value (== furniture's; wood-like, heat >> 3)
-cool_shift = 9         # spec value — DIFFERS from furniture's 5. e-fold
-                       # 2^9/24 = 21.3 s (furniture: 2^5/24 = 1.3 s): the
-                       # campfire reference holds its heat far longer per unit
-                       # fuel than a crate does, by design (locked spec value).
+# --- P-F1b (2026-08-02): 9 -> 13. THE SPREAD DIAL --------------------------
+# The P-F4a spec fixed this at 9 to make the campfire reference hold its heat
+# "far longer per unit fuel than a crate". Under the P-F1a books that framing is
+# spent twice over: (1) radiation, not cool_shift, sets the plateau (at 300 game
+# a crate sheds 15.1 kW to sky and 0.04 kW through cool_shift 13), and (2) with
+# T_emit_gate raised above every ignition_temp, a NOT-YET-BURNING neighbour does
+# not cast at all — so cool_shift is the ONLY thing standing between an incoming
+# radiative flux and that neighbour's ignition. cool_shift is now the SPREAD dial.
+# DERIVATION. A tile one air gap from a burning crate is crossed by ~1 of the 8
+# fan rays, so it absorbs a_s*a_r*w*(E[T_s]-E[T_r]) = 0.25*0.125*(E_s-E_r) per
+# tick and sheds T/2^cool_shift. Its ceiling is where those balance; requiring
+# that ceiling to clear ignition_temp = 280 against a 300-game emitter gives
+#     2^cool_shift >= 280 / 0.0643 = 4355   =>   cool_shift >= 13.
+# MEASURED at 13 (pf1b_probe2, one air gap, emitter pinned at its plateau):
+# ignition in 66.0 s from a 300-game emitter, 54.5 s from 310, 39.2 s from 330.
+# At 12 the same chain FAILS from a 300-game emitter (receiver tops out at 276).
+# INTERIM, AND SAID SO: 13 is an e-fold of 341 s, far slower than the ~7 an
+# honest natural-convection anchor (h ~ 10 W/m^2K on the design's 51.6 J/K lump)
+# would give. That gap IS the convective term F3 will take back; design F8 step 3
+# hands cool_shift the whole non-radiative residue until then, and the F3 patch
+# re-runs this step. Both cellulosic siblings (wood, furniture) carry the same
+# value for the same reason — the spread chain must work between crates too.
+cool_shift = 13        # e-fold 2^13/24 = 341 s. WAS 9 (P-F4a spec value).
 ignition_temp = 280.0  # spec value: furniture's, PER THE ROW CONVENTIONS —
                        # do NOT import literature values (~250 C) raw here.
 wave_reflect = 0.2     # copied from furniture

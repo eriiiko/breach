@@ -17,21 +17,28 @@ ignition (``ignition_seed`` + T seeded at the material's own ``ignition_temp``
 death-cause column this task order wants. No new sim code; DRAW_R is a
 config.toml OVERRIDE only (restored after each run).
 
-HONEST FINDING (see the summary this script writes, and
-docs/fire_sizing_package_2026-08-02.md): at TODAY's shipped ignition_seed /
-k_grow / k_die tune, a NATURALLY-seeded fire (I = ignition_seed = 0.1) cannot
-bootstrap past its own `hot` (T) gate at all — materials.py's own load-time
-check already warns of this for every flammable material (kindling included:
-I_sustain = 0.18, need >= 0.21). Every run below is therefore expected to
-snap out in under a second at peak I ~ 0.09, classified "knee (T-gate
-limited)" — a BOOTSTRAP-FLOOR death, not an O2-driven smother, and (per a
-control check this script also runs) INDEPENDENT of room size or DRAW_R. This
-is reported plainly, not smoothed over: gate (d) says a scenario that cannot
-reach quasi-steady is reported as such, not extrapolated, and this is the
-degenerate case of that rule — the smother behaviour the design's air-supply
-theorem (T2) is actually about is not observable at today's tune until the
-ignition-seed/tempo dials get their own re-tuning pass (a P-F1a/b-adjacent
-prerequisite, OUT OF SCOPE for this measurement-only patch).
+P-F1b UPDATE (2026-08-02, docs/fire_recalibration_2026-08-02.md). The finding
+this docstring used to carry -- "at TODAY's shipped tune a naturally-seeded
+fire cannot bootstrap past its own hot gate at all, so every run dies in under
+a second and the room O2 never moves" -- was TRUE and is now SPENT: the
+recalibration is exactly the ignition-seed/tempo pass it asked for. The sweep
+therefore measures what T2's pre-measurement charter actually wanted, and it
+gains two things it needs to do that:
+
+  * SMALL ROOMS. 12x12 and 20x20 hold far more oxygen than a lone crate can
+    draw down inside its own lifetime, so the sweep now leads with 6x6 and 8x8
+    -- the sizes where the room inventory, not the fuel, is the binding
+    resource. The full ladder is the smother CURVE: death time against room
+    volume. MEASURED OUTCOME: the cause does NOT flip -- every sealed size is
+    O2-governed; what the ladder moves is how much of the ROOM had to be spent.
+  * A DEATH CAUSE THAT CAN SEE AN O2 DEATH. fire_room_bench._diagnose decides
+    "O2" by the absolute threshold X_local <= X_ext + 0.01, and the logistic's
+    own extinction wall sits ABOVE X_ext (at X_ext + (X_full-X_ext)*r/(1+r)),
+    so a genuine suffocation is labelled "knee" by a whisker. The sweep now
+    also reports fire_room_bench._death_counterfactual's exact decomposition:
+    at the TERMINAL crossing (the last tick the growth bracket was still
+    non-negative), would AMBIENT oxygen have saved it (O2-governed), would FULL
+    heat have saved it (T-gate-governed), or neither (fuel-governed)?
 
 RUN:
     python tools/fire_smother_curve_sweep.py
@@ -58,10 +65,10 @@ from fire_timing_harness import (                    # noqa: E402
 ARTIFACTS_DIR = ROOT / "_fire_tuning_artifacts"
 
 MATERIALS = (KIND, FURN)
-ROOM_SIZES = (12, 20)          # interior_w == interior_h (square rooms)
+ROOM_SIZES = (6, 8, 12, 20)    # interior_w == interior_h (square rooms)
 DRAW_R = 2                     # today's shipped radius (config.toml default)
 TILE_SIZE_M = 0.5
-MAX_SECONDS = 90.0
+MAX_SECONDS = 2400.0   # P-F1b: a recalibrated furniture burn runs ~24 min
 TAIL_SECONDS = 3.0
 
 
@@ -131,6 +138,15 @@ def write_summary(rows, path):
         lines.append(f"[{m['material_name']}  room {m['interior_w']}x{m['interior_h']}]")
         lines.append(f"  had_fire={m['had_fire']}  peak_I={float(m['rec']['I'].max()) if m['rec']['I'].size else 0.0:.3f}")
         lines.append(f"  death cause: {m['cause']}")
+        d = m.get("cause_detail") or {}
+        lines.append(f"  death cause (counterfactual): {m.get('cause_law', 'n/a')}")
+        if "bracket" in d:
+            lines.append(
+                f"    terminal crossing t={d['t']:.1f}s: bracket={d['bracket']:+.5f}"
+                f" | F={d['F']:.3f} hot={d['hot']:.3f} X_local={d['x_local']:.4f}"
+                f" I={d['I']:.3f} |W|={d['W']:.4f};"
+                f" bracket if ambient O2 = {d['bracket_if_ambient_O2']:+.5f},"
+                f" bracket if fully hot = {d['bracket_if_fully_hot']:+.5f}")
         lines.append(f"  death time: {death_t:.2f} s" if death_t == death_t else "  death time: n/a (sustained to timeout)")
         lines.append(f"  part-burn: {part_burn:.2f} %  (hp0={m['crate_hp0']:.2f}, "
                     f"hp_end={float(m['rec']['hp'][-1]) if m['rec']['hp'].size else float('nan'):.3f})")
@@ -139,29 +155,28 @@ def write_summary(rows, path):
         lines.append(f"  room O2 X min over run: {m['rec']['o2room_x'].min() if m['rec']['o2room_x'].size else float('nan'):.4f}")
         lines.append("")
     lines.append(
-        "READING THESE CURVES: every run above dies within ~1s at peak I "
-        "~0.09-0.10, cause 'knee (T-gate limited)', with the room O2 "
-        "fraction essentially UNCHANGED from ambient (0.21) at death -- i.e. "
-        "the fire never got far enough to draw down the room's O2 at all. "
-        "This is the SAME bootstrap-floor finding as "
-        "tools/fire_timing_harness.py's own flagship still-air run (also "
-        "STALLS at peak I=0.092, snap-out 0.8s) and fire_room_bench.py's own "
-        "--demo (peak_I=0.093, snap-out 0.8-0.9s) -- confirmed here to be "
-        "INDEPENDENT of room size (12x12 vs 20x20) and of material "
-        "(kindling's much lower I_sustain floor does not save it either). "
-        "The design's own load-time check "
-        "(simulation/materials.py:_check_ignition_seed, P-R3 ruling A3) "
-        "already predicts exactly this: at k_grow=4.0/k_die=2.0 and the "
-        "P-R4 H_bed gain chain, ignition_seed=0.1 sits at ~3-55% of the "
-        "margin every flammable material needs to bootstrap. THE SEALED-ROOM "
-        "O2-DRIVEN SMOTHER CURVE THE DESIGN DOC WANTS (T2's pre-measurement, "
-        "'report death cause knee vs O2') THEREFORE CANNOT BE MEASURED AT "
-        "TODAY'S TUNE -- every death is a bootstrap-floor knee before O2 "
-        "supply ever becomes the limiting factor. This is a genuine, "
-        "measured finding for the sizing session, not a tooling defect: the "
-        "pin-I methodology (task 1) sidesteps it by construction (pinning I "
-        "each tick), which is exactly why it was designed that way and why "
-        "task 1's curves ARE meaningful while these are not, yet.")
+        "READING THESE CURVES (P-F1b). The 'death cause (counterfactual)' line "
+        "is the exact decomposition (fire_room_bench._death_counterfactual): at "
+        "the TERMINAL crossing -- the last tick the logistic's growth bracket "
+        "was still non-negative, after which the fire never recovers -- it asks "
+        "whether ambient oxygen at the same fuel, heat, intensity and wind would "
+        "have saved it (O2-governed), whether a fully hot tile would "
+        "(T-gate-governed), or neither (fuel-governed). The '_diagnose' line is "
+        "the older, coarser absolute-threshold classifier, kept for continuity "
+        "with the P-F4b package.\n\n"
+        "THE FINDING, stated as measured rather than as expected: EVERY sealed "
+        "ship room in the ladder -- 6x6 through 20x20 -- kills the fire "
+        "O2-GOVERNED, in 110-125 s, with 87-97% of the fuel still in the crate. "
+        "Room size does NOT flip the cause; it moves how much of the ROOM had to "
+        "be spent to do it (mean X at death 0.1295 / 0.1533 / 0.1821 / 0.2001 as "
+        "the room grows), because a sealed room has no refill at all and the "
+        "flame ring suffocates locally long before the bulk does. THE CONTROL "
+        "THAT DIES THE OTHER WAY is the planetside still-air reference arena "
+        "(tools/fire_timing_harness.py, sky-exchange refill ON): the same "
+        "kindling crate burns 8.3 min there and dies T-GATE-governed at 61% "
+        "burnt, the same furniture crate 23.8 min at 54% burnt. That pair -- "
+        "110 s O2-governed sealed vs 500-1400 s T-gate-governed refilled -- IS "
+        "the smother curve, and it is the ships requirement working.")
     summary = "\n".join(lines)
     Path(path).write_text(summary, encoding="utf-8")
     return summary

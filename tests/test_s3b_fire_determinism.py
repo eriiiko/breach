@@ -36,7 +36,17 @@ from simulation import fire_fixed, wave_fixed, atmosphere_fixed, wall_fixed  # n
 from simulation.materials import MAT_WOOD  # noqa: E402
 
 SEED = 31337
-TICKS = 90
+# P-F1b (2026-08-02, docs/fire_recalibration_2026-08-02.md): 90 -> 3400. This
+# trajectory's LAST discrete event is the extinguish flip, and the horizon was
+# sized for fires that could not sustain themselves at all (the shipped
+# k_die/k_grow demanded 3.5x more oxygen availability than the atmosphere can
+# supply, so a seeded blaze snapped out inside a second). The recalibration
+# restores the sustain condition, so the held-and-fanned blaze now burns its
+# room down over ~2 minutes (measured: extinguish flip at tick 3205) before it
+# starves. The gate itself (bit-identical
+# run-to-run, and the trajectory must really ignite AND really extinguish) is
+# unchanged; only the window it needs to contain both events moved.
+TICKS = 3400
 SY, SX = 8, 8
 
 

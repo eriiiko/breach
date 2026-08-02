@@ -194,7 +194,7 @@ def restore_overrides(restore):
 # function builds, and every knob it exposes, is UNCHANGED by P-F4a.
 # ---------------------------------------------------------------------------
 def build_level(interior_w, interior_h, crate_xy, tile_size_m,
-                sky_tau_s=60.0, sponge_width=8):
+                sky_tau_s=60.0, sponge_width=8, material=FURN):
     """A synthetic planetside bench: a 1-tile SPACE ring (-> is_ambient reservoir)
     around an open AIR interior with ONE furniture crate. No hull, so the interior
     air is directly bounded by the ambient sky (open field).
@@ -214,7 +214,10 @@ def build_level(interior_w, interior_h, crate_xy, tile_size_m,
     tm[:, 0] = SPACE
     tm[:, w - 1] = SPACE
     cx, cy = crate_xy
-    tm[cy, cx] = FURN
+    # P-F1b: `material` (default FURN — the pre-P-F1b hardcoded value, so every
+    # existing caller is byte-identical) lets the SAME still-air reference arena
+    # host the campfire reference object (KIND) that owns the arc's tuning dials.
+    tm[cy, cx] = int(material)
     ambient = derive_ambient(sky_tau_s=float(sky_tau_s),
                              sponge_width=int(sponge_width))
     return LevelData(
@@ -304,7 +307,8 @@ def _far_probes(interior_w, interior_h, sponge_width):
 
 def run_one(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
             max_seconds, tail_seconds, overrides=None, seed=12345, verbose=True,
-            snapshot_times_s=None, sky_tau_s=60.0, sponge_width=8):
+            snapshot_times_s=None, sky_tau_s=60.0, sponge_width=8,
+            material=FURN):
     """Run one single-crate burn. ``wind_dq == 0`` -> NATURAL wind (no forcing);
     ``wind_dq != 0`` -> FORCED constant +x wind. ``overrides`` patches CFG dials
     (restored afterwards). ``sky_tau_s`` / ``sponge_width`` -> the [ambient]
@@ -320,17 +324,20 @@ def run_one(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
             tile_size_m=tile_size_m, max_seconds=max_seconds, tail_seconds=tail_seconds,
             overrides=overrides or {}, seed=seed, verbose=verbose,
             snapshot_times_s=snapshot_times_s,
-            sky_tau_s=sky_tau_s, sponge_width=sponge_width)
+            sky_tau_s=sky_tau_s, sponge_width=sponge_width,
+            material=material)
     finally:
         restore_overrides(restore)
 
 
 def _run_one_inner(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
                    max_seconds, tail_seconds, overrides, seed, verbose,
-                   snapshot_times_s=None, sky_tau_s=60.0, sponge_width=8):
+                   snapshot_times_s=None, sky_tau_s=60.0, sponge_width=8,
+                   material=FURN):
     forced = (float(wind_dq) != 0.0)
     level = build_level(interior_w, interior_h, crate_xy, tile_size_m,
-                        sky_tau_s=sky_tau_s, sponge_width=sponge_width)
+                        sky_tau_s=sky_tau_s, sponge_width=sponge_width,
+                        material=material)
     sim = Simulation(level, seed=seed, breach_physics=bp, enable_recorder=False)
     gmap = sim.gmap
     cx, cy = crate_xy
@@ -344,9 +351,12 @@ def _run_one_inner(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
     # Game-faithful seed (Fable 2026-07-25): in-engine a tile only ignites
     # BECAUSE its T crossed ignition_temp — a cold-started seed (T=ambient)
     # is an unphysical bootstrap race the game never runs (it made the
-    # k_fire_heat sweeps look chaotic). Seed the crate tile at furniture's
-    # ignition_temp (280) so the bench starts where real ignition starts.
-    gmap.temperature[cy, cx] = fire_fixed.quantize_scalar(280.0)
+    # k_fire_heat sweeps look chaotic). Seed the crate tile at THIS MATERIAL's
+    # own ignition_temp so the bench starts where real ignition starts.
+    # P-F1b: reads the material table instead of the hardcoded 280 (furniture's
+    # value, and kindling's too -- so this is byte-identical for both).
+    gmap.temperature[cy, cx] = fire_fixed.quantize_scalar(
+        float(gmap.materials.ignition_temp[int(gmap.material[cy, cx])]))
 
     p_min = float(getattr(CFG.physics.fire, "P_min", 0.01))
     p_full = float(getattr(CFG.physics.fire, "P_full", 0.03))
@@ -389,9 +399,14 @@ def _run_one_inner(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
                     for ts in (snapshot_times_s or [])]
     o2_snaps = []
     _sptr = 0
+    # P-F1b adds "w": |wind| the fire's OWN plume makes at its own tile. The
+    # logistic reads it in BOTH wind terms (fan on growth, STRIP on death) and
+    # at the recalibrated operating point the strip term is the same size as
+    # k_die -- a still-air burn is not a wind-free burn, and the death-cause
+    # decomposition cannot be honest without it.
     rec = {k: [] for k in ("t", "I", "T", "hp", "o2", "gate", "o2far", "cx", "mass",
                            "o2far_x", "o2room", "o2room_x", "ntot_room", "tfar",
-                           "x_local", "hot")}
+                           "x_local", "hot", "w")}
     had_fire = False
     fuel_out_tick = None       # wall_hp first <= 0  (the meaningful "burnout")
     snap_tick = None           # I first snaps to 0 after burning
@@ -449,7 +464,9 @@ def _run_one_inner(wind_dq, *, interior_w, interior_h, crate_xy, tile_size_m,
         smoke = gmap.gas[SMOKE].astype(np.float64)
         mass = float(smoke.sum())
         cxc = float((smoke * xgrid).sum() / mass) if mass > 1.0 else float("nan")
-        for key, val in (("t", t), ("I", I), ("T", T), ("hp", hp), ("o2", o2),
+        w_here = ((int(gmap.wind_x[cy, cx]) / FP_ONE) ** 2
+                  + (int(gmap.wind_y[cy, cx]) / FP_ONE) ** 2) ** 0.5
+        for key, val in (("t", t), ("I", I), ("T", T), ("hp", hp), ("o2", o2), ("w", w_here),
                          ("gate", gate), ("o2far", o2far), ("cx", cxc), ("mass", mass),
                          ("o2far_x", xfar), ("o2room", o2room), ("o2room_x", o2room_x),
                          ("ntot_room", ntot_room), ("tfar", tfar),

@@ -89,7 +89,19 @@ def test_every_material_carries_the_column_seeded_at_the_old_global():
     tbl = MaterialTable.from_config(CFG)
     assert tbl.cool_shift.dtype == np.int32
     assert tbl.cool_shift.shape == (tbl.n,)
-    NEW_MATERIALS_WITH_LOCKED_VALUES = {"kindling"}
+    # P-F1b (2026-08-02, docs/fire_recalibration_2026-08-02.md): THE INTENDED
+    # RE-TUNE THIS TEST'S OWN MESSAGE ANTICIPATED. The cellulosic family
+    # (wood/furniture/kindling) moved to cool_shift 13 -- the fire arc's F8
+    # step 3, where cool_shift interim-owns the whole non-radiative residue now
+    # that radiation is explicit, and (with T_emit_gate above every
+    # ignition_temp) is the dial that decides whether a radiated neighbour can
+    # reach ignition at all. Gate (a) byte-identity no longer holds for those
+    # three rows and the change carries the arc's HUMAN-TEST gate, exactly as
+    # this test demanded. Every OTHER row still ships at the seeded global, and
+    # that is what is still checked here -- the check was narrowed by NAME, not
+    # weakened.
+    RETUNED = {"wood", "furniture", "kindling"}
+    NEW_MATERIALS_WITH_LOCKED_VALUES = RETUNED
     for name, cs in zip(tbl.names, tbl.cool_shift.tolist()):
         if name in NEW_MATERIALS_WITH_LOCKED_VALUES:
             continue
@@ -444,7 +456,17 @@ def test_a_crate_grid_from_config_is_uniform_today_but_addressable():
     """The shipped state: one value everywhere (gate (a)), but the grid really
     is keyed by material — flip furniture's row and only crates move."""
     g = GameMap(load_level("playground"))
-    assert (g.cool_shift == COOL_SHIFT).all()
+    # P-F1b: the grid is no longer uniform -- the cellulosic family re-tuned to
+    # 13 (see the seeded-default test above). What this test is actually about
+    # survives intact and is asserted directly: the plane is KEYED BY MATERIAL,
+    # so every tile carries exactly its own row's value, and flipping one row
+    # moves only that material's tiles.
+    tbl0 = g.materials
+    for mid in np.unique(g.material):
+        want = int(tbl0.cool_shift[int(mid)])
+        assert (g.cool_shift[g.material == mid] == want).all(), (
+            f"material id {int(mid)} tiles do not carry their own row's "
+            f"cool_shift {want}")
     tbl = g.materials
     tbl.cool_shift = tbl.cool_shift.copy()
     tbl.cool_shift[MAT_FURNITURE] = 12
@@ -452,4 +474,6 @@ def test_a_crate_grid_from_config_is_uniform_today_but_addressable():
     furn = (g.material == MAT_FURNITURE)
     assert furn.any()
     assert (g.cool_shift[furn] == 12).all()
-    assert (g.cool_shift[~furn] == COOL_SHIFT).all()
+    for mid in np.unique(g.material[~furn]):
+        want = int(tbl.cool_shift[int(mid)])
+        assert (g.cool_shift[(g.material == mid)] == want).all()
