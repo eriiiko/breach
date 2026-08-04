@@ -41,6 +41,7 @@ import breach_physics as bp  # noqa: E402
 
 from config import CFG  # noqa: E402
 from level_loader import load as load_level  # noqa: E402
+from simulation import gas_fixed  # noqa: E402
 from simulation.gamemap import GameMap  # noqa: E402
 from simulation.materials import (  # noqa: E402
     MAT_AIR, MAT_FURNITURE, MAT_HULL, MAT_WOOD, MATERIAL_NAMES, MaterialTable,
@@ -643,8 +644,16 @@ def test_combustion_deposit_converts_via_heat_inv_shift_on_a_thermal_solid():
     shift[4, 3] = 3
 
     o2, n2, soot = 0, 1, 2
-    gas0 = np.stack([np.full((h, w), int(0.21 * FP_ONE)),
-                     np.full((h, w), int(0.79 * FP_ONE)),
+    # quantize_scalar, NOT int(x * FP_ONE) (audit Patch A / A8, 2026-08-04).
+    # int(0.21 * FP_ONE) TRUNCATES to 13762 where the suite's convention
+    # (round-half-away) gives 13763. 13762 + 51773 = 65535, so this fixture was
+    # one count short of ambient and silently violated the exact
+    # `N_amb == FP_ONE` invariant that test_eos_p1_calibration.py:55-62 exists
+    # to pin. Every other O2 fixture in the suite already uses quantize_scalar.
+    # This is the "a divergent copy makes a GATE quietly wrong rather than red"
+    # hazard in its concrete form.
+    gas0 = np.stack([np.full((h, w), gas_fixed.quantize_scalar(0.21)),
+                     np.full((h, w), gas_fixed.quantize_scalar(0.79)),
                      np.zeros((h, w))]).astype(np.int32)
     fire = _q32(np.where(flam, int(0.8 * FP_ONE), 0))
     wall_hp = _q32(np.where(flam, 30 * FP_ONE, 0))
