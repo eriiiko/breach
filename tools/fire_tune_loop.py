@@ -92,32 +92,16 @@ The previous, measured cool_shift-12 set is preserved as ALT_MEASURED_CS12
 below; ALT_* are all swap-in-wholesale (`TUNE.update(ALT_...)`).
 
 --------------------------------------------------------------------------
-REQUIRES — read this if the scorecard says n/a or every run reads I = 0
+DEPENDENCIES (settled — audit Patch A / A1, 2026-08-04)
 --------------------------------------------------------------------------
-This file was committed to the repo for the first time by the P3 close-out
-(2026-07-30). It had lived untracked in the fire-o2-integration worktree,
-and it depends on TWO other files that are STILL untracked there:
-
-  * tools/fire_timing_harness.py — the WARM-SEED build. Erik's copy adds
-    `gmap.temperature[crate] = 280` at setup (a tile only ignites in-engine
-    BECAUSE its T crossed ignition_temp; a cold seed is a bootstrap race the
-    game never runs) plus three CSV columns this scorecard reads:
-    `hot`, `Tfar_game`, `X_local`. The committed harness on this branch has
-    NEITHER. Without the warm seed the crate starts at ambient and every run
-    reads I = 0 — the scorecard will tell you so, loudly, rather than
-    crashing.
-
-  * tools/fire_tune_plot.py — the auto Kelvin plot. Absent, the run still
-    completes and prints the scorecard; only the plot is skipped.
-
-Both should be committed from that worktree — they are real tools, they are
-referenced by docs/fire_tuning_plan_2026-07-22.md, and a fresh clone loses
-them. P3 did not copy them here: they are another live session's uncommitted
-work, and the project's worktree-hygiene rule says do not reach into one.
-
-All measurements in the bench report were taken with standalone scratchpad
-scripts that apply the warm seed themselves, so the numbers do not depend on
-which harness build you have.
+An earlier REQUIRES banner here warned that the committed harness lacked the
+warm seed and the `hot` / `Tfar_game` / `X_local` CSV columns, and that the
+scorecard would therefore read n/a or I = 0. **All four are present** and were
+verified on this branch: the warm seed at fire_timing_harness.py:349
+(`gmap.temperature[cy, cx] = quantize_scalar(280.0)`) and the three columns in
+the CSV header at :591-592. tools/fire_tune_plot.py is committed too. The
+banner described a state that has not existed since those files were committed,
+so it was deleted rather than left to mislead the next reader.
 """
 from __future__ import annotations
 
@@ -380,7 +364,12 @@ TUNE = {
     # per-claimant demand is ~1 Q16.16 COUNT at the operating point, so this
     # gain is a STAIRCASE in I with a dead zone below I ~ 0.199 (ambient o2f) —
     # see the P-R4 report / E1 escalation before trusting the smooth form.
-    "k_fire_heat": 33.0,   # DEAD KEY (kept for the derivations above)
+    #
+    # THE KEY IS GONE FROM THIS DICT (audit Patch A / A1, 2026-08-04). It was
+    # still being SET here long after P-R4 retired it from [physics.fire], so
+    # `_resolve_key` raised KeyError and this tool could not execute at all.
+    # The derived value (k = 33, from T* = 13.4 k against the 400-500 band
+    # above) is preserved in the prose; only the executed entry is deleted.
     #   cool_shift 9: e-fold 2^9/24 = 21.3 s — a physically plausible wood-
     #   surface time constant (12 = 171 s was the cliff-clearing crutch, not a
     #   wood number). Integer shift. NOTE THE KEY: the old
@@ -519,14 +508,19 @@ TUNE = {
 
 # --- Other measured branches (bench report §4.3). Swap one in wholesale by
 # --- doing  TUNE.update(ALT_...)  right here, then re-run.
+#
+# EACH BLOCK'S `k_fire_heat` WAS STRIPPED (audit Patch A / A1, 2026-08-04) for
+# the same reason as the main TUNE dict: the key is retired, so any `.update()`
+# from one of these would have re-broken the tool. The retired value is recorded
+# in each block's comment so the archaeology survives; only the executed entry
+# is gone.
 
 # The P3 close-out's best MEASURED set (the one the 2026-07-30 re-derivation
 # replaced above): 6 of 9 §9.3 targets passed — peak I 0.331 @ 143.9 s, plateau
 # 414 game (1120 K), death 332.7 s with wall_hp 4.5 left. cool_shift 12 is a
 # 171 s e-fold: it clears the I_crit cliff, but it is a crutch, not a wood
 # number. Kept as the fallback if the derived start does not sustain.
-ALT_MEASURED_CS12 = {
-    "k_fire_heat": 2.2,
+ALT_MEASURED_CS12 = {                         # retired k_fire_heat was 2.2
     "materials.furniture.cool_shift": 12,
     "k_grow": 0.35, "k_die": 0.06,
     "fire_T_ext": 250.0, "fire_T_span": 100.0,
@@ -535,18 +529,16 @@ ALT_MEASURED_CS12 = {
 # Keeps the decay shift at Erik's stated preference (6-7) and the blessed
 # fire_T_ext — but the flame runs at 1007 game (2307 K), ~2x too hot, and
 # lowering k_fire_heat from here kills the fire outright (floor is 175).
-ALT_PREFERRED_COOL_SHIFT = {
+ALT_PREFERRED_COOL_SHIFT = {                  # retired k_fire_heat was 175.0
     "materials.furniture.cool_shift": 7,
-    "k_fire_heat": 175.0,
     "fire_T_ext": 250.0, "fire_T_span": 100.0,
 }
 
 # Lands the flame at 450 game (1193 K) and lives 208 s with the fuel actually
 # consumed — but fire_T_ext = 90 is 473 K / 200 C, not a defensible
 # flame-extinction temperature, and it fails gate (c) monotonicity (dip -46).
-ALT_LOW_T_EXT = {
+ALT_LOW_T_EXT = {                             # retired k_fire_heat was 56.25
     "materials.furniture.cool_shift": 7,
-    "k_fire_heat": 56.25,
     "fire_T_ext": 90.0, "fire_T_span": 100.0,
 }
 
@@ -554,9 +546,8 @@ ALT_LOW_T_EXT = {
 # ONLY if ignition_seed is raised to 0.4 — and then it dies at 48.5 s with
 # 24.6 wall_hp left (the cliff moves to the decay end). With the stock
 # ignition_seed = 0.1 this set snaps out at tick 1.
-ALT_DESIGN_2_5 = {
+ALT_DESIGN_2_5 = {                            # retired k_fire_heat was 225.0
     "materials.furniture.cool_shift": 5,
-    "k_fire_heat": 225.0,
     "fire_T_ext": 250.0, "fire_T_span": 100.0,
     "ignition_seed": 0.4,
 }
@@ -620,12 +611,6 @@ def load_series():
     return rows
 
 
-# Columns this scorecard wants that ONLY the warm-seed harness build writes.
-# See the REQUIRES note in the module docstring: without them the run is still
-# valid, the scorecard just reports n/a for those rows instead of crashing.
-OPTIONAL_COLS = ("hot", "Tfar_game", "X_local")
-
-
 def _col(s, name, reduce_fn, default=float("nan")):
     """reduce_fn over column `name`, or `default` if the harness didn't write it."""
     if not s or name not in s[0]:
@@ -635,7 +620,6 @@ def _col(s, name, reduce_fn, default=float("nan")):
 
 def metrics(s):
     m = {}
-    m["missing_cols"] = [c for c in OPTIONAL_COLS if s and c not in s[0]]
     peak = max(s, key=lambda r: r["I"])
     m["peak_I"], m["peak_t"] = peak["I"], peak["t_s"]
     i_pk = s.index(peak)
@@ -669,31 +653,16 @@ def verdict(ok, value=None):
     return "PASS" if ok else "MISS"
 
 
-def predicted_T_star(peak_I):
-    """The measured equilibrium law, so the scorecard can say what the dials
-    PREDICT as well as what the run did (bench report §3.1, +/-1%).
-        T* = k_fire_heat * I * 2^(cool_shift - heat_inv_shift)
-    heat_inv_shift = log2(furniture thermal_mass = 8) = 3. COOL-SHIFT AXIS: the
-    shift is the FURNITURE row's `cool_shift`, not the global any more."""
-    c = int(TUNE.get("materials.furniture.cool_shift",
-                     TUNE.get("physics.thermal.COOL_SHIFT", 5)))
-    return float(TUNE["k_fire_heat"]) * peak_I * (2.0 ** (c - 3))
+# THE TWO PREDICTED ROWS ARE GONE (audit Patch A / A1, 2026-08-04).
+# `predicted_T_star` computed T* = k_fire_heat * I * 2^(cool_shift - his) and
+# the `I_crit` row divided by it — both keyed on k_fire_heat, which P-R4 retired
+# (see its tombstone in the TUNE block). They printed confident numbers derived
+# from a dial nothing reads. Re-deriving them from the live H_bed chain is a
+# physics judgement, not cleanup, so the rows were deleted rather than guessed.
+# The measured rows below are unchanged.
 
 
 def scorecard(m):
-    if m.get("missing_cols"):
-        print("!" * 74)
-        print("[harness] this harness build does NOT write: "
-              + ", ".join(m["missing_cols"]))
-        print("[harness] those scorecard rows will read n/a, AND — more "
-              "importantly — this")
-        print("[harness] build almost certainly lacks the WARM SEED "
-              "(gmap.temperature[crate] = 280).")
-        print("[harness] Without it the crate starts at ambient, never "
-              "reaches ignition_temp,")
-        print("[harness] and every run reads I = 0. See the REQUIRES note in "
-              "this file's docstring.")
-        print("!" * 74)
     print("=" * 74)
     print(f"{'metric':<26}{'value':>16}   target                    verdict")
     print("-" * 74)
@@ -715,15 +684,6 @@ def scorecard(m):
           f"{verdict(T['flameT_lo'] <= m['flame_T'] <= T['flameT_hi'], m['flame_T'])}")
     print(f"{'  (hot gate at plateau)':<26}{m['hot_at_plateau']:>16.2f}   "
           f"should be ~1.0 while ablaze")
-    # what the dials PREDICT at the observed peak I (the §2.5 analytic)
-    ts = predicted_T_star(m["peak_I"])
-    print(f"{'  T* predicted @ peak I':<26}{ts:>16.0f}   "
-          f"= k_fire_heat*I*2^(cool_shift-3)")
-    # the cliff: below this intensity the hot gate closes and the fire dies
-    if ts > 0:
-        i_crit = m["peak_I"] * float(TUNE["fire_T_ext"]) / ts
-        print(f"{'  I_crit (self-collapse)':<26}{i_crit:>16.3f}   "
-              f"fire cannot live below this I")
     print(f"{'far-field T rise (game)':<26}{m['far_rise']:>16.1f}   "
           f"<= {T['far_rise_max']:.0f}                     "
           f"{verdict(m['far_rise'] <= T['far_rise_max'], m['far_rise'])}")
