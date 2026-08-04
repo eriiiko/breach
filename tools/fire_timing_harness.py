@@ -142,13 +142,35 @@ def _coerce(old, v):
 
 
 def apply_overrides(overrides):
-    """Patch CFG per an ordered dict {dotted_key: value}. Returns a restore list."""
-    restore = []
+    """Patch CFG per an ordered dict {dotted_key: value}. Returns a restore list.
+
+    ATOMIC (audit Patch A / A2, 2026-08-04): all-or-nothing. Previously this
+    resolved-and-wrote key by key and only returned the restore list on success,
+    so a KeyError on key N left keys 1..N-1 patched with NO handle to undo them.
+    Every caller binds `restore = apply_overrides(...)` OUTSIDE its try (six of
+    them), so the partial patch survived for the life of the process and
+    silently poisoned every later run in it — which is exactly how the retired
+    `k_fire_heat` key (A1) corrupted whole sweeps rather than just failing.
+
+    Two phases now: resolve every key first (this is the phase that raises, and
+    it mutates nothing), then write inside a try that rolls back on any
+    exception. Rollback is reverse-order so aliased keys unwind correctly.
+    """
+    # Phase 1 — resolve everything. _resolve_key raises here, before any write.
+    resolved = []
     for k, v in overrides.items():
         obj, leaf = _resolve_key(k)
-        old = getattr(obj, leaf)
-        restore.append((obj, leaf, old))
-        setattr(obj, leaf, _coerce(old, v))
+        resolved.append((obj, leaf, getattr(obj, leaf), v))
+
+    # Phase 2 — write. Anything thrown here unwinds what we already set.
+    restore = []
+    try:
+        for obj, leaf, old, v in resolved:
+            restore.append((obj, leaf, old))
+            setattr(obj, leaf, _coerce(old, v))
+    except Exception:
+        restore_overrides(reversed(restore))
+        raise
     return restore
 
 
