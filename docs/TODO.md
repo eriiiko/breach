@@ -6,6 +6,58 @@
 
 ---
 
+## ⏸ PICK UP HERE — Breach paused 2026-08-04, resume ~2026-08-18
+
+Erik paused Breach for two weeks (time). Two overnight investigations landed
+2026-08-03/04. **Read these four docs, in this order:**
+
+1. `docs/fire_atmosphere_oscillation_analysis_2026-08-03.md` — why the
+   atmosphere storms. **Root-caused and measured.**
+2. `docs/audit_lessons_and_rules_2026-08-04.md` — the rules worth adopting
+   (each scored by which findings it would/would not have caught).
+3. `docs/codebase_audit_2026-08-03.md` — full six-area code quality audit.
+4. `docs/audit_handover_patch_a_2026-08-04.md` — the decision-free work package.
+
+**The storming answer in three lines.** It is NOT the fire being too hot and NOT
+the flicker — both were measured and falsified (steady drive is flat across
+ΔT 50→600; flicker amplitude 0 storms as much as amplitude 90). It is
+**connected geometry with zero momentum dissipation**: the same P-F1b fire
+leaves one sealed room at 0.12 m/s and a two-room level at **6.25 m/s with
+kinetic energy still growing after 200 s**. Mode period 0.646 s — matching the
+15-tick (0.625 s) Helmholtz mode Erik measured in B2 (`eos_refactor_decisions.md:163-169`),
+whose named remedy (`k_drag`) was never built. Worst at a **2-tile door**;
+harmless at 6 tiles. Every fire bench is single-room, so the whole arc was
+structurally blind to it — including gate (f), which passed honestly.
+
+**★ DECISIONS WAITING ON ERIK** (nothing proceeds without these):
+- **The two Kelvin maps.** Radiation/render use `K = 293 + 2·T`; the EOS uses
+  `T + 290`. Same field = 893 K to the books, 590 K to the gas. The EOS is
+  already applying half the excess (an accidental φ = 0.5). Ruling needed:
+  unify, or name the expansion scale as a deliberate `φ_exp` dial.
+- **Interior air damping.** The lever exists and needs no code
+  (`[materials.air] wave_absorb`, currently 0.0) — but with fire in the loop,
+  values 0.002–0.01 **destabilise the engine** (110 m/s winds, ~4500 T-floor
+  hits, energy growing after the fire is out). Clean at 0 and ≥0.02. Needs
+  independent verification before anyone turns it on. It also throttles O2
+  supply, which re-opens the package-A sizing calibration.
+- **P-F1b merge sequencing.** P-F1b (`origin/pf1b-recalibration`, unmerged,
+  HUMAN-TEST pending) did NOT cause the storming — it predates the fire arc.
+- **`cool_shift` 9 vs shipped 5** — the fire calibration runs 16× off its own
+  anchor (`config.toml:317,602`). Flagged "RE-TUNE AT P-R5"; P-R5 passed.
+
+**Status of Patch A** (audit hygiene, decision-free): handed to an agent
+2026-08-04. If it did not land, the brief is still valid — nine bounded items,
+all behaviour-preserving. Highest-value single item: **`fire_tune_loop.py`
+cannot run at all** (retired `k_fire_heat` → `KeyError`), and it is the tool
+that draws the intensity/temperature/O2 panels. One-line fix.
+
+**Two findings worth carrying to other projects:** gate coverage — not language
+— predicted code quality here; and *in an agent-built repo, a technique that is
+not in a file agents must read does not exist* (which is why the dormancy
+discipline propagated across 15 arcs and `_ep`/`RC_HD` did not).
+
+---
+
 ## Waiting on Erik (human-gated)
 
 - **Armory tuning session — AFTER mission 1 exists (re-scoped 2026-07-21)** —
