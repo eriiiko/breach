@@ -33,6 +33,28 @@ else()
         $<$<COMPILE_LANGUAGE:CXX>:-Wall>)
 endif()
 
+# ---------------------------------------------------------------------------
+# THE DETERMINISM FLOOR, AS A TOOLCHAIN-NEUTRAL FLAG SET
+# (audit Patch A / A3, 2026-08-04)
+#
+# The per-source fast-math kill below used to be spelled `/fp:strict` inside an
+# `if(MSVC)`, so on gcc/clang NOTHING overrode the global `-ffast-math` set just
+# above — every `quantize((double)...)` boundary in the live EOS path was exposed
+# on a non-Windows build, while the comment below claimed every sim TU was
+# strict. Naming the flags once here lets the per-source override be hoisted out
+# of the MSVC guard so it applies on every toolchain.
+#
+# GCC/Clang need BOTH: `-fno-fast-math` alone does not reset FP contraction
+# (the C++ default is `-ffp-contract=fast`), which is precisely the FMA
+# reordering the fixed-point precompute passes must not have.
+if(MSVC)
+    set(BREACH_FP_STRICT "/fp:strict")
+    set(BREACH_FP_STRICT_HOST "/fp:strict")
+else()
+    set(BREACH_FP_STRICT "-fno-fast-math;-ffp-contract=off")
+    set(BREACH_FP_STRICT_HOST "-fno-fast-math,-ffp-contract=off")
+endif()
+
 # CUDA-S0: enable the CUDA language + toolkit only when requested.
 if(BREACH_CUDA)
     enable_language(CUDA)
@@ -106,7 +128,11 @@ if(BREACH_CUDA)
         $<$<COMPILE_LANGUAGE:CUDA>:-prec-sqrt=true>
         $<$<COMPILE_LANGUAGE:CUDA>:-ftz=false>
         $<$<COMPILE_LANGUAGE:CUDA>:-allow-unsupported-compiler>
-        $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/fp:strict>)
+        # HOST-CONDITIONAL (A3): `-Xcompiler` forwards to whatever host compiler
+        # nvcc is driving, so a literal /fp:strict is an unknown flag on a
+        # gcc/clang host. BREACH_FP_STRICT_HOST is comma-separated as -Xcompiler
+        # requires.
+        $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=${BREACH_FP_STRICT_HOST}>)
 endif()
 
 # S0 part 3 (fixed-point prereq gate) — fast-math kill on the SIM solver TUs.
@@ -136,20 +162,29 @@ endif()
 #
 # This is a DELIBERATE behavior change (removing fast-math) — feel-gated, not
 # 0-ULP; the /fp:fast goldens were regenerated when this landed.
-if(MSVC)
-    set_source_files_properties(
-        src/atmosphere_solver.cpp
-        src/smoke_dynamics.cpp
-        src/fire_simulation.cpp
-        src/water_solver.cpp
-        src/bulk_transport.cpp
-        src/sky_exchange.cpp
-        src/eos_solver.cpp
-        src/combustion.cpp
-        src/temperature_solver.cpp
-        src/physics_engine.cpp
-        src/raycaster.cpp
-        PROPERTIES COMPILE_OPTIONS "/fp:strict")
-endif()
+#
+# NOT `if(MSVC)` ANY MORE (audit Patch A / A3, 2026-08-04). This override lived
+# inside an MSVC guard while the else() branch above applies -ffast-math
+# GLOBALLY, so the paragraph above was true only on Windows. BREACH_FP_STRICT
+# (defined near the top) spells the same floor per toolchain, and the
+# last-flag-wins argument holds for gcc/clang too: CMake appends per-source
+# COMPILE_OPTIONS after the global ones, and -fno-fast-math / -ffp-contract=off
+# later on the command line override the earlier -ffast-math.
+#
+# MSVC codegen is UNCHANGED by this hoist — BREACH_FP_STRICT is literally
+# "/fp:strict" there. Verified by digest: goldens unmoved (A3 gate).
+set_source_files_properties(
+    src/atmosphere_solver.cpp
+    src/smoke_dynamics.cpp
+    src/fire_simulation.cpp
+    src/water_solver.cpp
+    src/bulk_transport.cpp
+    src/sky_exchange.cpp
+    src/eos_solver.cpp
+    src/combustion.cpp
+    src/temperature_solver.cpp
+    src/physics_engine.cpp
+    src/raycaster.cpp
+    PROPERTIES COMPILE_OPTIONS "${BREACH_FP_STRICT}")
 
 target_include_directories(breach_physics PRIVATE src)
