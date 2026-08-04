@@ -54,8 +54,17 @@
 //
 // P5 destroyed-list collection: a device int counter (atomicAdd for a slot) + a
 // device array of packed indices (sized n, worst case every cell destroyed); copy
-// counter + array back to the host and build the std::vector<pair> (any order). The
-// gate checks set equality + length -> no drops/dupes.
+// counter + array back to the host, SORT THE PACKED INDICES, and build the
+// std::vector<pair> in row-major order — the CPU's order.
+//
+// NOT "any order" (corrected by audit Patch A / A5, 2026-08-04). The atomicAdd
+// slot assignment is arbitrary and varies run-to-run, and the consumer
+// GameMap.destroy_wall is order-dependent, so the unsorted list was a real
+// CPU!=GPU and GPU!=GPU divergence. Measured on this branch before the fix, in
+// the gate's OWN scenario: 4 walls destroyed in tick 1, CPU
+// [(6,9),(9,6),(10,13),(13,10)] vs GPU [(13,10),(6,9),(9,6),(10,13)]. The gate
+// checked SET equality and so was structurally blind to it; it now compares
+// LISTS (tests/cuda_fire_check.py) — order, drops and dupes all caught.
 // ============================================================================
 #include "cuda_fire.h"
 #include "fixed_point.h"   // q16, quantize, mul_q16, mul_wide, narrow_round, FP_ONE, FP_SHIFT, make_recip, mean_round
@@ -468,7 +477,22 @@ std::vector<std::pair<int, int>> fire_step(
     cuda_check(cudaMemcpy(temperature, d_temp, nb, cudaMemcpyDeviceToHost), "D2H temperature");
 
     // Read the destroyed counter + the packed-index array, then build the
-    // std::vector<pair> on the host (any order — the gate checks SET equality).
+    // std::vector<pair> on the host — IN ROW-MAJOR ORDER, matching the CPU.
+    //
+    // ORDER IS LOAD-BEARING (audit Patch A / A5, 2026-08-04). This used to say
+    // "any order — the gate checks SET equality", and both halves of that were
+    // wrong. The kernel assigns slots with atomicAdd, so the list arrives in
+    // ATOMIC ARRIVAL order: arbitrary, and varying run-to-run on the SAME GPU.
+    // The CPU twin (fire_simulation.cpp:324) walks i = 0..n and is strictly
+    // row-major. The consumer, GameMap.destroy_wall (gamemap.py:1749), is
+    // ORDER-DEPENDENT — it writes breach_mask[fy,fx] inside the loop, which the
+    // next iteration's `exposes` test reads (:1743-1748), as does
+    // _neighbor_mean(atmosphere) (:1756). So two walls destroyed near each
+    // other in one tick gave a different world on CPU vs GPU, and a different
+    // world between two runs on one GPU. Determinism is a hard requirement.
+    //
+    // Sorting the PACKED LINEAR indices ascending is exactly row-major:
+    // li = y*w + x, so ascending li == the CPU's i = 0..n walk.
     int counter = 0;
     cuda_check(cudaMemcpy(&counter, d_counter, sizeof(int), cudaMemcpyDeviceToHost),
                "D2H counter");
@@ -479,6 +503,7 @@ std::vector<std::pair<int, int>> fire_step(
         cuda_check(cudaMemcpy(idx.data(), d_destroyed_idx,
                               (size_t)counter * sizeof(int), cudaMemcpyDeviceToHost),
                    "D2H destroyed_idx");
+        std::sort(idx.begin(), idx.end());   // <- the fix: arrival -> row-major
         destroyed.reserve((size_t)counter);
         for (int k = 0; k < counter; ++k) {
             const int li = idx[(size_t)k];

@@ -167,10 +167,19 @@ def compare(tag, c, d_cpu, g, d_gpu):
                   f"cpu={c[k].flat[idx]} gpu={g[k].flat[idx]})")
     s_cpu = [tuple(t) for t in d_cpu]
     s_gpu = [tuple(t) for t in d_gpu]
-    if set(s_cpu) != set(s_gpu):
+    # LIST equality, not SET (audit Patch A / A5, 2026-08-04). The destroyed
+    # list is consumed in order by GameMap.destroy_wall, which writes
+    # breach_mask inside its loop and reads it back on the next iteration
+    # (gamemap.py:1743-1756) — so ORDER changes the resulting world. Comparing
+    # sets made this gate structurally blind to the confirmed CPU!=GPU (and
+    # GPU!=GPU, run-to-run) arrival-order divergence that cuda_fire.cu now
+    # sorts away. A set comparison cannot see a permutation, which is the only
+    # thing that bug ever produced.
+    if s_cpu != s_gpu:
         ok = False
-        print(f"  {tag}: destroyed SET mismatch cpu={sorted(s_cpu)} "
-              f"gpu={sorted(s_gpu)}")
+        kind = ("ORDER (same tiles, different order)"
+                if set(s_cpu) == set(s_gpu) else "SET")
+        print(f"  {tag}: destroyed {kind} mismatch cpu={s_cpu} gpu={s_gpu}")
     if len(s_gpu) != len(set(s_gpu)):
         ok = False
         print(f"  {tag}: GPU destroyed list has DUPLICATES ({s_gpu})")
