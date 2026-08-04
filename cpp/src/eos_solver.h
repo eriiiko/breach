@@ -453,7 +453,17 @@ uint64_t eos_sl_advect_reference(
 // (T -= (γ−1)·T·div(u_new)·dt with the ±T_WORK_CLAMP rail, T_MIN floor and
 // T_MAX_PHYS ceiling, all counter-tracked) — docs/eos_p6_gpu_alignment_review.md
 // §4 row P6.4. Replays EXACTLY EOSSolver::step's chain on the given step-4-entry
-// state, IN PLACE on wind_x/wind_y/temperature:
+// state, IN PLACE on wind_x/wind_y/temperature.
+//
+// "EXACTLY" IS NOW TRUE AGAIN (audit Patch A / A6, 2026-08-04). It was false
+// from B3c until then: the sponge velocity-damping band step() applies after
+// the absorb chain was never added here, so the ambient/planetside path was
+// structurally OUTSIDE this gate's coverage — and since the CUDA twin
+// (cuda_kick_compression.cu:168) does have the band, a lockstep failure there
+// would have blamed the GPU for a drifted CPU reference. Pass `sponge_udamp`
+// (with `is_ambient`) to replay it; both default nullptr, which reproduces the
+// pre-A6 behaviour byte for byte.
+// Inputs:
 //   * p_new           — the solved pressure plane the kick differentiates
 //                       (== L0.P after the vacuum/solid zeroing == the post-tick
 //                       `atmosphere`, which step 5 copies verbatim);
@@ -488,7 +498,12 @@ void eos_kick_compression_reference(
     const bool* is_ambient = nullptr,    // BC: ring u ≡ 0 (defaults off)
     // THERMAL-MASS AXIS, P-EOS: step-4c skips its T write on thermal_solid
     // tiles (the kick is untouched). Default nullptr -> `solid` -> pre-patch.
-    const bool* thermal_solid = nullptr);
+    const bool* thermal_solid = nullptr,
+    // B3c sponge velocity-damping band (audit Patch A / A6) — the static k(d)
+    // coefficient plane step() applies immediately after the absorb chain.
+    // Only read when is_ambient != nullptr (dormancy by branch, as in step()).
+    // Default nullptr reproduces the pre-A6 reference exactly.
+    const int32_t* sponge_udamp = nullptr);
 
 // ---------------------------------------------------------------------------
 // EOS P6.3 — standalone CPU reference for the multigrid pressure solve

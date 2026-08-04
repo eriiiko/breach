@@ -2253,7 +2253,12 @@ PYBIND11_MODULE(breach_physics, m) {
              float absorb_strength, float n_floor_solver, float t_min,
              float t_work_clamp, float t_max_phys, float u_max,
              float trace_mass_scale,
-             py::object thermal_solid) -> py::tuple {   // THERMAL-MASS AXIS
+             py::object thermal_solid,                  // THERMAL-MASS AXIS
+             // A6: the ambient/planetside path. `is_ambient` was hard-coded
+             // nullptr at the call below, so no caller could reach the
+             // reference's ambient branch at all; `sponge_udamp` is the B3c
+             // band restored in eos_solver.cpp. Both default None -> pre-A6.
+             py::object is_ambient, py::object sponge_udamp) -> py::tuple {
               auto [wx, h, w]    = get_2d(wind_x);
               auto [wy, h2, w2]  = get_2d(wind_y);
               auto [t, h3, w3]   = get_2d(temperature);
@@ -2273,6 +2278,20 @@ PYBIND11_MODULE(breach_physics, m) {
                   auto ta = tsol_arr.unchecked<2>();
                   tsol = ta.data(0, 0);
               }
+              const bool* amb = nullptr;
+              py::array_t<bool> amb_arr;
+              if (!is_ambient.is_none()) {
+                  amb_arr = is_ambient.cast<py::array_t<bool>>();
+                  auto aa = amb_arr.unchecked<2>();
+                  amb = aa.data(0, 0);
+              }
+              const int32_t* sud = nullptr;
+              py::array_t<int32_t> sud_arr;
+              if (!sponge_udamp.is_none()) {
+                  sud_arr = sponge_udamp.cast<py::array_t<int32_t>>();
+                  auto sa = sud_arr.unchecked<2>();
+                  sud = sa.data(0, 0);
+              }
               uint64_t dig_vel = 0, dig_comp = 0;
               int64_t cnts[5] = {0, 0, 0, 0, 0};
               eos_kick_compression_reference(
@@ -2280,7 +2299,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   h, w, dt, c_local_q,
                   c_max, dx, adiabatic_index, absorb_strength,
                   n_floor_solver, t_min, t_work_clamp, t_max_phys, u_max,
-                  trace_mass_scale, &dig_vel, &dig_comp, cnts, nullptr, tsol);
+                  trace_mass_scale, &dig_vel, &dig_comp, cnts, amb, tsol, sud);
               return py::make_tuple(dig_vel, dig_comp, cnts[0], cnts[1],
                                     cnts[2], cnts[3], cnts[4]);
           },
@@ -2293,6 +2312,8 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("t_min"), py::arg("t_work_clamp"), py::arg("t_max_phys"),
           py::arg("u_max"), py::arg("trace_mass_scale"),
           py::arg("thermal_solid") = py::none(),
+          py::arg("is_ambient") = py::none(),
+          py::arg("sponge_udamp") = py::none(),
           "P6.4 CPU reference: replay EOSSolver::step's kick + compression-"
           "work tail in place on wind_x/wind_y/temperature; returns "
           "(digest_velocity, digest_compression, u_clamp_hits, u_max_hits, "

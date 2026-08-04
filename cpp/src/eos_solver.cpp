@@ -1354,7 +1354,8 @@ void eos_kick_compression_reference(
         float t_max_phys, float u_max, float trace_mass_scale,
         uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
         int64_t* counters_out /* [5] */,
-        const bool* is_ambient, const bool* thermal_solid) {
+        const bool* is_ambient, const bool* thermal_solid,
+        const int32_t* sponge_udamp) {
     const int n = h * w;
     const bool ambient_mode = (is_ambient != nullptr);   // BC: dormancy by branch
     // THERMAL-MASS AXIS, P-EOS: step()'s `ts` fold, verbatim (step-4c only —
@@ -1429,6 +1430,28 @@ void eos_kick_compression_reference(
                 const int64_t my = mul128_shr(uy < 0 ? -uy : uy, (int64_t)kk, 16);
                 ux = (ux < 0) ? -mx : mx;
                 uy = (uy < 0) ? -my : my;
+            }
+
+            // B3c SPONGE VELOCITY DAMPING — restored by audit Patch A / A6
+            // (2026-08-04). VERBATIM from step() (eos_solver.cpp:654-663),
+            // placed identically: immediately after the absorb chain, before
+            // the u_cap clamp. It was MISSING here since B3c landed, while the
+            // header claimed this routine "Replays EXACTLY" step()'s chain —
+            // so the P6.4 gate structurally could not cover the ambient path,
+            // and because the CUDA twin (cuda_kick_compression.cu:168) DOES
+            // have the band, a lockstep failure on a planetside map would have
+            // blamed the GPU for the CPU reference being out of step.
+            // MAGNITUDE-FIRST is mandatory (fixed_point.h sign convention: a
+            // naive signed truncating multiply leaves a stuck -1-count floor).
+            if (ambient_mode && sponge_udamp) {
+                const int32_t kd = sponge_udamp[i];
+                if (kd > 0) {
+                    const q16 kk2 = (kd < FP_ONE) ? (q16)(FP_ONE - kd) : 0;
+                    const int64_t mx = mul128_shr(ux < 0 ? -ux : ux, (int64_t)kk2, 16);
+                    const int64_t my = mul128_shr(uy < 0 ? -uy : uy, (int64_t)kk2, 16);
+                    ux = (ux < 0) ? -mx : mx;
+                    uy = (uy < 0) ? -my : my;
+                }
             }
 
             const q16 u_cap_q = (c_local_q < u_max_q) ? c_local_q : u_max_q;
