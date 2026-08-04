@@ -143,7 +143,10 @@ EOSHostPrestage eos_host_prestage(
 
     // ---- per-tick scalar constants (step()'s folds, verbatim) ------------
     const q16 n_floor_q = quantize((double)solver.N_FLOOR_SOLVER);
-    const q16 t_amb_q   = quantize((double)solver.T_AMB_K);
+    // FLOORED AT 1 COUNT — the CPU twin's A7 fix, verbatim (eos_solver.cpp:278).
+    // Divisor of the c_LOCAL ratio at :165 and, via pre.t_amb_q (:258), the
+    // resident path's too. Must stay bit-identical to the CPU fold.
+    const q16 t_amb_q   = std::max<q16>(1, quantize((double)solver.T_AMB_K));
     const q16 c_q       = quantize((double)solver.C);
     const double gamma_d = (double)solver.adiabatic_index;
     const double dt_d    = (double)dt;

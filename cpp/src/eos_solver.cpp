@@ -275,7 +275,15 @@ void EOSSolver::step(
 
     // ---- per-tick scalar constants (double-fold once, then quantize) ------
     const q16 n_floor_q  = quantize((double)N_FLOOR_SOLVER);
-    const q16 t_amb_q    = quantize((double)T_AMB_K);
+    // FLOORED AT 1 COUNT (audit Patch A / A7, 2026-08-04). t_amb_q is the
+    // DIVISOR of the c_LOCAL ratio below (:308, `(t_max_abs_raw << 16) /
+    // t_amb_q`) and T_AMB_K is def_readwrite-exposed to Python
+    // (bindings.cpp:2134), so `solver.T_AMB_K = 0` was a reachable integer
+    // divide-by-zero. Every other divide in this file is already floored; this
+    // one was the exception. Same std::max idiom as dx_d below. The floor never
+    // binds at the shipped 290 -> behaviour-preserving. Mirrored in
+    // cuda_eos_step.cu (which also feeds the resident path's pre.t_amb_q).
+    const q16 t_amb_q    = std::max<q16>(1, quantize((double)T_AMB_K));
     const q16 t_min_q    = quantize((double)T_MIN);
     const q16 t_max_phys_q = quantize((double)T_MAX_PHYS);   // v2.4 rail (see eos_solver.h)
     const q16 u_max_q      = quantize((double)U_MAX);        // v2.4 rail
