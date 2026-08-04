@@ -79,7 +79,16 @@ static constexpr int D4[][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
 // source cell i in direction d to an air neighbour j, reads the allocation air
 // cell j made toward i — which j filed under j's OWN outbound direction toward
 // i, namely D4_OPP[d].
-static constexpr int D4_OPP[4] = {1, 0, 3, 2};
+//
+// THE FILE-LOCAL COPY IS DELETED (audit Patch A / A9, 2026-08-04). combustion.h
+// already owns the canonical `combustion_draw::D4_OPP` with the identical
+// values {1,0,3,2}, and one of this file's two uses already spelled it
+// `cd::D4_OPP` (:654) while the other used the bare local (:749) — a shadowing
+// pair that could drift apart silently. Both now go through `cd::`.
+//
+// NOTE: this one was listed in the audit brief as having NO caller. It had one
+// (:749). Retargeting it is behaviour-identical (same values; both are only
+// ever used as an array index), but it was not the no-op deletion advertised.
 
 static inline bool in_bounds(int y, int x, int h, int w) {
     return y >= 0 && y < h && x >= 0 && x < w;
@@ -746,7 +755,7 @@ void CombustionSolver::step(
                 const int iy = y + D4[d][0], ix = x + D4[d][1];
                 if (!in_bounds(iy, ix, h, w)) continue;
                 const int i = iy * w + ix;
-                burn_dep += (int64_t)dep_site[(size_t)D4_OPP[d] * n + i];
+                burn_dep += (int64_t)dep_site[(size_t)cd::D4_OPP[d] * n + i];
             }
             if (burn_dep == 0) continue;   // nothing burnt for this cell
 

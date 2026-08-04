@@ -70,7 +70,7 @@ from simulation.species import get_species
 from simulation.combat import (
     apply_temperature_ignition,
     process_shooting, process_sprays,
-    Projectile, Shot,
+    Projectile,
 )
 # The two shipped physics->unit couplings — rows in the mechanics/05 coupling
 # table — are invoked through the exchange module (P1 refactor). Imported as

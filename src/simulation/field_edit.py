@@ -48,7 +48,7 @@ multi-gas array — simulation.payloads.emit_gas is the consumer.)
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field as _dc_field
+from dataclasses import dataclass
 from enum import IntEnum
 from typing import Optional, Tuple
 
@@ -402,23 +402,11 @@ def _combine_wave(old_q: int, contribution: float, mode: EditMode,
     return wave_fixed.quantize_scalar(new_v)
 
 
-def _combine_atmosphere(old_q: int, contribution: float, mode: EditMode,
-                        clamp: Optional[Tuple[float, float]]) -> int:
-    """Q16.16 combine for the `atmosphere` field (S2c). The stored value is an
-    int32 in Q16.16 pressure; dequantize to real pressure, combine with the float
-    path's exact +=/-=/max semantics (and any clamp), re-quantize round-to-
-    nearest. Keeps the explosion pressure boost authored in real units while the
-    field stays integer/deterministic (the same idiom as `_combine_wave`).
-
-    RETAINED for any legacy direct caller, but no longer used by
-    `apply_field_edit`'s "atmosphere" policy (EOS refactor P3 — see
-    `_combine_atmosphere_to_N` below): P is solver-owned now (materialized
-    once/tick by eos_solver), so writing it directly here would be silently
-    clobbered next tick."""
-    old_v = float(old_q) / atmosphere_fixed.FP_ONE_F
-    new_v = _combine_float(old_v, contribution, mode, clamp)
-    return atmosphere_fixed.quantize_scalar(new_v)
-
+# (_combine_atmosphere() DELETED - audit Patch A / A9, 2026-08-04. Its own
+# docstring said it was "RETAINED for any legacy direct caller"; a repo-wide
+# grep found none. P is solver-owned since EOS refactor P3, so a direct write
+# here would be clobbered next tick anyway - apply_field_edit's "atmosphere"
+# policy goes through _combine_atmosphere_to_N below.)
 
 # EOS refactor P3 (design §6 "FieldEdit atmosphere/wave_source policies"):
 # ambient composition split (P1 §2.1) — 21% O2, 79% inert_N2, matching the

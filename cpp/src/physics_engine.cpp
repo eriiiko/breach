@@ -1,8 +1,8 @@
 // PhysicsEngine — per-tick orchestration moved out of Python (Patch 1 S4).
 //
-// This translation unit is compiled /fp:precise (the global build is /fp:fast;
+// This translation unit is compiled /fp:strict (the global build is /fp:fast;
 // see cpp/CMakeLists.txt set_source_files_properties for this file). S4a moves
-// only the per-tick TAIL — three pure solver calls — so /fp:precise is
+// only the per-tick TAIL — three pure solver calls — so /fp:strict is
 // 0-ULP-trivial here (no new arithmetic lives in this file yet). The strict
 // rounding matters for the LATER glue ports (the IMEX substep loop and the
 // W3/W5 water accounting), which carry real float math that must match numpy's
@@ -593,14 +593,13 @@ void PhysicsEngine::run_substeps_resident(
 #endif
 }
 
-// ---- dead code retained for reference during the P3 review window --------
-// The pre-P3 IMEX substep loop (wave + diffuse_solve + n_smoke-substepped SL
-// + sink_hop). `this->atmos` and `this->smoke.sink_hop` are UNREACHABLE from
-// run_substeps as of this patch — see the GPU-backend guards below for the
-// analogous CUDA-path assertion. Left as a named, never-called function
-// (not `#if 0`) so a reviewer can diff it against the new eos.step() call
-// above; delete outright once P3 merges (P7 cleanup, per the design's own
-// "formal rename/deprecation happens in cleanup" precedent for atmosphere->P).
+// (The "dead code retained for reference during the P3 review window" banner
+// that stood here was DELETED — audit Patch A / A9, 2026-08-04. It described
+// the pre-P3 IMEX substep loop, a function that no longer exists; P3 merged
+// long ago and took it. Left in place it was actively misleading, because it
+// had come to sit directly above the LIVE step_water below and read as if it
+// described that.)
+
 // Patch 1 S4c — the water-layer ARRAY ARITHMETIC, lifted verbatim from the body
 // of PhysicsRunner._step_water (everything AFTER the Python lazy-init + dormancy
 // early-out + sparse source-holds): the substep loop, the W5 flash-boil, the W3
@@ -609,8 +608,8 @@ void PhysicsEngine::run_substeps_resident(
 // BIT-IDENTICAL to the Python: the arrays are float32, the scalar params are
 // Python doubles, and numpy casts each double scalar to float32 at the op. We
 // reproduce that EXACTLY — every scalar cast to `float` at numpy's cast point,
-// every array op in float32 (the /fp:precise TU makes them strict-IEEE, matching
-// numpy; /fp:precise does NOT reassociate, so per-cell fusion of the W5/W3 array
+// every array op in float32 (the /fp:strict TU makes them strict-IEEE, matching
+// numpy; /fp:strict does NOT reassociate, so per-cell fusion of the W5/W3 array
 // ops is bit-identical to numpy's array-at-a-time order — each cell's arithmetic
 // is independent, the only cross-cell op is `.any()`, handled by a separate scan).
 // See the header for the per-op precision contract; the inline comments mark each
@@ -690,7 +689,7 @@ void PhysicsEngine::step_water(
 
 // --- S8a Path B: the water HOST TAIL (W5 flash-boil + W3 displacement + copyto),
 // split verbatim out of step_water. See physics_engine.h for the contract. Pure
-// host arithmetic (/fp:precise), bit-identical whether reached from step_water or
+// host arithmetic (/fp:strict), bit-identical whether reached from step_water or
 // the resident path.
 void PhysicsEngine::step_water_tail(
         int32_t* water_depth, int32_t* atmosphere, const bool* solid,
@@ -822,7 +821,7 @@ void PhysicsEngine::step_water_tail(
 // stamp_units — the per-tick dynamic-field rebuild, lifted from the FIELD-REBUILD
 // half of GameMap.stamp_units (gamemap.py:485-589). PURE-STRUCTURE move: the ops
 // are exact (copies + a boolean compare + per-cell min/max), so there is NO float
-// arithmetic and it is 0-ULP by construction — /fp:precise is irrelevant here.
+// arithmetic and it is 0-ULP by construction — /fp:strict is irrelevant here.
 //
 // The unit iteration / occupied_tiles() / `u.alive` filter / per-tile bounds
 // check / the getattr-or-default for each unit's perm/wabsorb/atten all stay in

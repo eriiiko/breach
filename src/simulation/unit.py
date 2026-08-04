@@ -89,11 +89,8 @@ class LifeState(Enum):
 
 _NORTH = math.pi / 2   # 1.5707963267948966 radians
 
-# 8-compass snap table (sector width = π/4 = 45°).
-# Each entry: (low_bound, high_bound, label) where angles wrap at ±π.
-# Sectors are centred on the 8 cardinal + intercardinal directions.
-_COMPASS_LABELS = ("E", "NE", "N", "NW", "W", "SW", "S", "SE")
-_SECTOR_HALF = math.pi / 8   # 22.5°; each direction owns a 45° wedge
+# (_COMPASS_LABELS / _SECTOR_HALF DELETED - audit Patch A / A9, 2026-08-04:
+# an 8-compass snap table with no reader anywhere in the repo.)
 
 
 class Unit:

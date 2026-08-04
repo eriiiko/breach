@@ -46,28 +46,14 @@ public:
     EOSSolver         eos;   // EOS refactor P3
     CombustionSolver  combustion;   // EOS refactor P4
 
-    // S2a FLOAT BRIDGE scratch: wave_p is now Q16.16 int32, but the water solver
-    // (S1, shipped) still reads wave_p as float in its head term + ripple splash
-    // — both already float bridges (k_p / k_splash). step_tail / step_water
-    // DEQUANTIZE wave_p into this reused float buffer and hand THAT to the water
-    // calls, so the water TU is untouched. Collapses to integer<-integer when the
-    // water head/ripple bridge is retired. Reused (no per-tick alloc; GPU-prep).
-    mutable std::vector<float> wave_p_f_;
-
-    // WATER-HEAD atmosphere bridge scratch (S2c). The ONLY surviving consumer of
-    // atm_f_ after S3c: the water solver's head term k_p·(atm+wave_p) still reads
-    // `atmosphere` as float inside step_water (the gated head-term FLOAT BRIDGE).
-    // step_water dequantizes the int32 atmosphere into atm_f_ and hands THAT to
-    // water.step. This is a SEPARATE, documented water-head bridge (master plan /
-    // S1) — NOT the fire/temperature bridge S3c retired. It collapses to
-    // integer<-integer when the water head term goes fully integer (a later
-    // water/atmosphere unification), NOT in S3. Reused (no per-tick alloc; GPU-prep).
-    //
-    // S3c DELETED the temperature-pass atmosphere bridge (the fire/temperature path
-    // now reads int32 atmosphere directly — temperature's threshold is a Q16.16
-    // compare), AND the dead wind_x_f_/wind_y_f_/fire_f_ scratch (the fire logistic
-    // went integer in S3b — wind/fire are read as int32, no float scratch).
-    mutable std::vector<float> atm_f_;
+    // (wave_p_f_ / atm_f_ DELETED — audit Patch A / A9, 2026-08-04. Both float
+    // scratch buffers were DECLARED HERE AND NEVER USED: repo-wide grep found
+    // the declarations and nothing else. The paragraphs that stood here
+    // described step_tail/step_water dequantizing into them, which those
+    // functions have not done for some time — the members outlived the bridges
+    // they were written for, and the comments outlived the members. The float
+    // head/ripple bridges themselves still exist inside step_water; they simply
+    // do not stage through an engine-owned buffer.)
 
     // EOS P3: reused scratch for the bulk-N sum (O2+N2) step_tail hands to
     // TemperatureSolver::step as the real Pass-1 heat-deposit divisor.
@@ -80,7 +66,7 @@ public:
     // in that exact order, calling THIS engine's own solver instances. No new
     // arithmetic: it is the same three calls Python made, so it is bit-identical
     // (gated by the per-cell A/B harness). Lives in physics_engine.cpp, compiled
-    // /fp:precise so the LATER glue ports (substep loop, W3/W5 water accounting)
+    // /fp:strict so the LATER glue ports (substep loop, W3/W5 water accounting)
     // inherit strict-IEEE rounding to match numpy.
     //
     // Reproduces the ripple DORMANCY GUARD from PhysicsRunner._step_ripple:
@@ -179,7 +165,7 @@ public:
     // `n` is derived from the atmosphere solver's CFL bound and `sim_time`.
     //
     // BIT-IDENTITY is the whole point — this reproduces Python's arithmetic
-    // EXACTLY (the /fp:precise TU makes the FP strict-IEEE; we must match the
+    // EXACTLY (the /fp:strict TU makes the FP strict-IEEE; we must match the
     // PRECISION + ORDER numpy's pybind boundary produced):
     //   * `n` (= n_wave) is an INTEGER CLIFF (Bedrock cliff-patch): n = max(1,
     //     ceil_div(quantize(sim_time), atmos.max_dt_q())) — a pure INTEGER ceil-
@@ -342,7 +328,7 @@ public:
     // BIT-IDENTITY is the whole point: the arrays are float32, the scalar params
     // are Python doubles, and numpy elementwise `f32_array OP double_scalar`
     // casts the scalar to float32 for the op. We reproduce that EXACTLY (every
-    // scalar cast to float at numpy's cast point; /fp:precise makes the f32 ops
+    // scalar cast to float at numpy's cast point; /fp:strict makes the f32 ops
     // strict-IEEE, matching numpy). The precision pitfalls, each verified vs
     // numpy 1.26.4 and matched here:
     //   * n = max(1, (int)ceil((double)sim_time / (double)water.max_dt())) — the
@@ -406,7 +392,7 @@ public:
     // device (water_substeps_resident) and then this host tail on the mirror,
     // byte-for-byte identical to the monolithic step_water (which now calls this
     // helper). No substep loop, no solver call — pure host float/integer arithmetic
-    // (/fp:precise), so it is bit-identical whether reached from step_water or the
+    // (/fp:strict), so it is bit-identical whether reached from step_water or the
     // resident path.
     void step_water_tail(
         int32_t* water_depth, int32_t* atmosphere, const bool* solid,

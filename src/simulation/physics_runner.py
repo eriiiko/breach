@@ -42,8 +42,9 @@ def set_residency(on: bool) -> None:
     _RESIDENCY_ENABLED = bool(on)
 
 
-def residency_enabled() -> bool:
-    return _RESIDENCY_ENABLED
+# (residency_enabled() DELETED - audit Patch A / A9, 2026-08-04: an accessor
+# with no caller anywhere. The _RESIDENCY_ENABLED global it read is live and
+# is set by set_residency() above and read directly at the dispatch site.)
 
 
 # ---------------------------------------------------------------------------
@@ -1431,34 +1432,8 @@ class PhysicsRunner:
             self.water_steam_yield,
         )
 
-    def _step_ripple(self, gmap, sim_time):
-        """Advance the VISUAL-ONLY ripple field (plan W6a, canon §6).
-
-        A damped kick-drift surface wave riding ON TOP of ``water_depth``:
-        c² = g·min(depth, h_cap) (the deep-water cap), splash-sourced from
-        the fresh post-substep ``wave_p`` (gain ``k_splash`` — the pure feel
-        dial), clamped to |ripple| ≤ k_amp·depth, zeroed on dry/solid. It
-        NEVER feeds back into transport (the locked canon rule): the solver
-        writes only ``gmap.ripple`` / ``gmap.ripple_v``; ``water_depth`` /
-        ``wave_p`` / ``solid`` are read-only. Factored out of :meth:`step`
-        (the ``_step_water`` precedent) so the W6a visual-only A/B test can
-        no-op it.
-
-        Dormancy: skipped when there is no water AND no leftover ripple
-        anywhere. Ripple is zero wherever depth is zero by construction, so
-        on a dry ship both ``.any()`` are cheap falses; the extra
-        ``ripple.any()`` term lets ONE final call sweep ghost ripple to zero
-        if the last wet tile drains/boils away between calls, after which
-        the skip is total again.
-
-        ONE call per tick at full ``sim_time`` — no substep loop:
-        ``ripple_max_dt() = 0.5·dx/sqrt(g·h_cap)`` ≈ 106 ms at dx = 1/3,
-        comfortably above any tick we use (41.7 ms at 24 tps) — the same
-        derived-bound discipline as the substep counts above, with the
-        substep machinery statically unnecessary.
-        """
-        if not gmap.water_depth.any() and not gmap.ripple.any():
-            return
-        # EOS refactor P3: the splash source is |P - P_prev| (design §6).
-        self.water.step_ripple(gmap.ripple, gmap.ripple_v, gmap.water_depth,
-                               gmap.atmosphere, gmap.wave_p, gmap.solid, sim_time)
+    # (_step_ripple() DELETED - audit Patch A / A9, 2026-08-04. The ripple
+    # pass moved into C++ (PhysicsEngine::step_tail, which reproduces this
+    # method's dormancy guard - see physics_engine.h). Nothing called the
+    # Python one; tests/test_water_ripple.py:304 already records that the old
+    # monkeypatch no longer intercepts it.)

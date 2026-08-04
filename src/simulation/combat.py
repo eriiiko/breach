@@ -43,15 +43,14 @@ import numpy as np
 from config import CFG
 from simulation import attack_resolver
 from simulation import wall_fixed
-from simulation.damage import KINETIC, DamagePacket, apply_packet
+from simulation.damage import DamagePacket, apply_packet
 from simulation.events import (
     LaserFiredEvent, ProjectileGlowEvent, ShotFiredEvent, SprayJetEvent,
-    ExplosionEvent,
 )
 from simulation.gases import N_GASES
 from simulation.field_edit import EditMode, FieldEdit, Region
 from simulation.orders import (
-    ORDER_GRENADE, ORDER_EXPLOSIVE, ORDER_FIRE, ORDER_MOVE_ATTACK,
+    ORDER_EXPLOSIVE, ORDER_MOVE_ATTACK,
     MOVE_ORDER_TYPES,
 )
 from simulation import unit_fixed
