@@ -6,9 +6,31 @@ Erik in the loop. Everything here is **behaviour-preserving**, gated by the
 existing suite, and requires **no physics or feel judgement**. Everything that
 needs Erik is listed in §4 and explicitly excluded.
 
-**Prerequisite:** commit `docs/codebase_audit_2026-08-03.md` and
-`docs/fire_atmosphere_oscillation_analysis_2026-08-03.md` to the branch first —
-agents cannot see an uncommitted working tree (project CLAUDE.md).
+## ★ 0. Base branch — read this before creating a worktree
+
+**Branch from `thermal-mass-axis`, NOT from `main`** (corrected 2026-08-04 after
+an actual check; an earlier draft of this brief said main and was wrong).
+
+The entire fire bench suite — `fire_timing_harness.py`, `fire_tune_loop.py`,
+`fire_room_bench.py`, `fire_o2_supply_baseline.py`, `fire_supply_radius_sweep.py`,
+`fire_smother_curve_sweep.py`, `fire_wind_level_probe.py`, `fire_tune_plot.py` —
+**exists only on `thermal-mass-axis`.** `main` has none of them. Items **A1, A2,
+A4 and A8 target files that do not exist on main**, so a worktree branched there
+finds half the patch missing.
+
+The four audit docs live on `main` (commit `daafdae`). Read them from there, or
+merge `main` into the working branch first — the docs are additive, so the merge
+is trivial.
+
+Worktree layout is unusual, so check before assuming:
+- `main` is checked out at `breach.worktrees/onephase-wego`, **not** at
+  `projects/breach` (which sits on `o2-continuous-law` with a dirty tree).
+- The fire branch is at `breach.worktrees/thermal-mass-axis` (HEAD `d7765bc`).
+
+A fresh worktree needs its own CPU build: `cpp/build_cpu_data.bat` (the
+checked-out `.pyd` predates P-F1a and will fail on `RADIATION_RANGE_MIN`).
+A4 and A5 additionally need a CUDA build to verify; if no GPU is available,
+**report those two as unverified rather than skipping them silently.**
 
 **Execution:** `autonomous-patch-workflow` skill. Own branch, own worktree.
 `pytest tests -q` green before merge. **No golden may be re-baselined in this
