@@ -58,6 +58,49 @@ discipline propagated across 15 arcs and `_ep`/`RC_HD` did not).
 
 ---
 
+## Planning burst 2026-08-08→10 — three new capture docs (post-fire-retune queue)
+
+Erik's vacation planning pass. All three are **capture/design docs on main**;
+none starts before the fire/atmosphere lid closes (Erik's sequencing: stable
+fire + radiation first, then basic fires working, then explosions). Scope creep
+deluxe, by choice.
+
+- **Level generation v0.1** — `docs/breach_levelgen_design_v0.1.md`
+  (2026-08-10, claude.ai sessions). Graph-grammar-first levelgen; nine LOCKED
+  decisions L1–L9 (planarity by construction, pressure cells as grammar
+  concept, LLM-authored offline recipes, (ruleset hash, seed) reproducibility).
+  Design-only until fully specified. **NEXT work package = the vocabulary page
+  + consolidation pass vs the existing level generator (§4, a Claude Code
+  task); then the embedding session (§5).** Own roadmap in its §7.
+- **Tsetlin-machine / engine architecture** — `docs/breach_tm_architecture.md`
+  (2026-08-09, airplane session). TM primer + hazard-prognosis self-labeling,
+  hot/cold GPU split + command-buffer/status-mirror/event-queue membrane,
+  three-tier mind hierarchy, behavioral dials (clause truncation = intelligence,
+  vote bias = temperament), room graph as first-class citizen. **NEXT (its §16
+  step 1) = communication-contract doc: walk the repo, annotate each item
+  existing vs aspirational — the gap list becomes the implementation plan.**
+  The room graph is the shared spine with levelgen (five consumers).
+- **Brainstorm 2026-08-08** — `docs/brainstorm_2026-08-08.md`. (1) enemies
+  changing behaviour on damage (the enrage-trigger dial → focus-fire vs
+  spread-damage tactics); (2) reward-vector-as-personality (curriculum/
+  annealing, potential-based shaping, OpenAI-Five/AlphaStar precedents) —
+  serves the RL push directly; (3) water-pass-2 seeds (trapped-air-pocket
+  experiment, §5.5 unit↔water couplings, swim/float/drown) — feeds the
+  roadmap's open "aquarium/water arc scope" question.
+- **Generic explosion design (Erik, 2026-08-10 chat — capture, needs a design
+  pass).** Instead of per-weapon explosion tuning: ONE parameterized explosion
+  archetype (yield/radius/heat/pressure profile), and weapons — grenades,
+  bazooka shots, future ordnance — are *scaled instances* of it. Goal:
+  variation without balancing every weapon by hand; later hook for automatic
+  balancing (self-play / headless sweeps). Slot: with the explosions item in
+  Erik's sequencing above, after basic fires work.
+- Mission/beastiary notes updated same burst: `docs/missions/missions.md`
+  (mission-1 comments: ship floats in space not sea, org rethink, stealth-lean
+  phase 1–2) and `docs/beastiary/beastiary.md` (zombie-as-a-STATE inheriting
+  the victim's attributes + equipment; robots immune; extract the claude.ai
+  bestiary entries via egregore someday).
+
+
 ## Waiting on Erik (human-gated)
 
 - **Armory tuning session — AFTER mission 1 exists (re-scoped 2026-07-21)** —
