@@ -59,6 +59,23 @@ DEFAULT_TARGETS = {"peak_lo": 0.40, "peak_aim": 0.50, "peak_hi": 0.60,
 NEEDED = ("t_min", "I", "T_game", "O2room_X")
 
 
+def kelvin_map():
+    """Game-dT -> Kelvin mapping (kelvin_ambient, slope), read live from
+    config.toml [render.blackbody] so the plot follows the k_temp_to_kelvin
+    dial (2026-08-13, Erik's k_calibr question). Falls back to the historical
+    293 + 2*T if the config is unreadable. NOTE: the sim-side radiation LUT
+    still bakes its own copy of the mapping — this only relabels the axis."""
+    try:
+        import tomllib
+        cfg = Path(__file__).resolve().parent.parent / "config.toml"
+        with open(cfg, "rb") as f:
+            bb = tomllib.load(f).get("render", {}).get("blackbody", {})
+        return (float(bb.get("kelvin_ambient", 293.0)),
+                float(bb.get("k_temp_to_kelvin", 2.0)))
+    except Exception:
+        return 293.0, 2.0
+
+
 def make_plot(csv_path, show=False, targets=None):
     import matplotlib
     if not show:
@@ -94,14 +111,15 @@ def make_plot(csv_path, show=False, targets=None):
     ax1.set_ylabel("intensity I", color=INK)
     ax1.set_ylim(0, 1)
 
-    # 2 — temperature in KELVIN (sim stores game units; K = 293 + 2*T_game).
-    # Target band 400-500 game == 1093-1293 K (a real wood flame).
-    ax2.axhspan(293 + 2 * tg["flameT_lo"], 293 + 2 * tg["flameT_hi"],
+    # 2 — temperature in KELVIN (sim stores game units; K = amb + slope*T_game,
+    # read from config.toml [render.blackbody] — see kelvin_map()).
+    amb, slope = kelvin_map()
+    ax2.axhspan(amb + slope * tg["flameT_lo"], amb + slope * tg["flameT_hi"],
                 color=BAND, alpha=0.08)
-    ax2.axhline(293, color=BAND, alpha=0.35, lw=0.8, ls="--")
-    ax2.plot(t, [293 + 2 * r["T_game"] for r in s], color=C_T, lw=2)
-    ax2.set_ylabel("crate T (K)", color=INK)
-    ax2.annotate("ambient 293 K", xy=(t[-1], 293), fontsize=8,
+    ax2.axhline(amb, color=BAND, alpha=0.35, lw=0.8, ls="--")
+    ax2.plot(t, [amb + slope * r["T_game"] for r in s], color=C_T, lw=2)
+    ax2.set_ylabel(f"crate T (K = {amb:.0f} + {slope:g}·T_game)", color=INK)
+    ax2.annotate(f"ambient {amb:.0f} K", xy=(t[-1], amb), fontsize=8,
                  color=MUTED, ha="right", va="bottom")
 
     # 3 — room-mean O2 mole fraction

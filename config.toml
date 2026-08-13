@@ -842,7 +842,7 @@ kelvin_floor = 800.0       # LUT low end (K)
 kelvin_ceil = 10000.0      # LUT high end (K)
 lut_size = 256             # LUT entries
 kelvin_ambient = 293.0     # pseudo-Kelvin at T_game = 0 (ambient)
-k_temp_to_kelvin = 2.0     # game-ΔT -> Kelvin slope  (TUNE BY EYE)
+k_temp_to_kelvin = 3.0     # game-ΔT -> Kelvin slope  (TUNE BY EYE; 2026-08-13 Erik: 2.0 -> 3.0 preview, radiation LUT still bakes 2.0)
 kelvin_glow_min = 800.0    # below this: no visible glow (intensity 0)
 kelvin_ref = 3000.0        # exposure reference temperature (Macklin)
 intensity_exponent = 4.0   # Stefan-Boltzmann flavour (T⁴)

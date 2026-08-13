@@ -331,8 +331,22 @@ TUNE = {
     #      fire_T_ext 653 K = 380 C — mid-band for wood pyrolysis sustain.
     #    span 40 (not 100) is what buys the ratio: it is the h_min*span term,
     #    not fire_T_ext, that dominated T_sustain in the failed passes.
-    "fire_T_ext": 180.0,    # 653 K / 380 C; < 280 furniture, < 300 wood
-    "fire_T_span": 40.0,    # hot = 1 above T = 220; h_min needs only 212.2
+    # =====================================================================
+    # ## P-F1b RECALIBRATION (2026-08-02, commit 4133512) — THE EXECUTED SET ##
+    # The values below are P-F1b's "the fires live again" package-A dial set,
+    # loaded 2026-08-13 for Erik's hand-tuning session (its HUMAN-TEST).
+    # Derivations + raw numbers: docs/fire_recalibration_2026-08-02.md (in the
+    # pf1b-recalibration commit). Measured there: ignites from seed, ramps
+    # ~20 s, holds 836-856 K, spreads a 1-gap in ~30 s, burns 8 min (kindling)
+    # / 24 min (furniture), dies BY THE TEMPERATURE GATE at 54-61% fuel gone —
+    # or suffocates ~2 min in a sealed room.
+    # =====================================================================
+    # fire_T_ext DROPPED from the executed dict 2026-08-13: it is the INERT
+    # config fallback since ruling A3 (extinction is per-material:
+    # ignition_temp[mat] - ignition_to_ext_delta). The old executed value was
+    # 180.0; the LIVE foot dial is ignition_to_ext_delta below.
+    "ignition_to_ext_delta": 200.0,  # P-F1b: 100 -> 200, knee geometry (the FOOT)
+    "fire_T_span": 180.0,   # P-F1b: 150 -> 180, knee geometry (the WIDTH; was 40 here)
 
     # -- 2. THERMAL operating point (§9.3 step 2). THE dial pair.
     #       T* = k_fire_heat * I * 2^(cool_shift - 3)   [+/-1% at equilibrium]
@@ -374,7 +388,7 @@ TUNE = {
     #   surface time constant (12 = 171 s was the cliff-clearing crutch, not a
     #   wood number). Integer shift. NOTE THE KEY: the old
     #   `physics.thermal.COOL_SHIFT` no longer moves the crate (see the header).
-    "materials.furniture.cool_shift": 9,
+    "materials.furniture.cool_shift": 13,  # P-F1b: 9 -> 13, THE SPREAD DIAL
     #   WOOD MOVES WITH FURNITURE (2026-07-30). Wood and furniture are both
     #   cellulosic and both ship thermal_mass = 8; the seeded 5 was a
     #   byte-identity placeholder, not a physical choice. Raising ONLY furniture
@@ -383,7 +397,8 @@ TUNE = {
     #              = 250 / (33 * 2^2) = 1.89 > 1,
     #   i.e. wooden WALLS become permanently non-flammable. Both rows at 9 give
     #   both materials I_crit = 250/(33*2^6) = 0.118.
-    "materials.wood.cool_shift": 9,
+    "materials.wood.cool_shift": 13,       # P-F1b: moves with furniture
+    "materials.kindling.cool_shift": 13,   # P-F1b: 9 -> 13 (P-F4a's reference object)
 
     # -- 3. RAMP (§9.3 step 3 — YOURS). Ratio sets peak, magnitude sets
     #       speed.
@@ -430,17 +445,19 @@ TUNE = {
     #   CAPACITY LAW (P-R3, 2026-07-31): k_grow now moves ONLY the tempo — the
     #   ramp e-fold is ~1/(k_grow*a) ~ 3 s at ambient. Erik may slow it later
     #   without touching the fire's size or its death wall, which is new.
-    "k_grow": 3.5,
+    "k_grow": 0.5,           # P-F1b: 4.0 -> 2.0, TEMPO; 2026-08-13 Erik: 2.0 -> 0.5, slower ramp
     #   THE SIZE DIAL (P-R3). I_eq ~= c*a, so c alone answers "how big is a fire
     #   in ordinary air": 2.53 * 0.09195 = 0.2100, exactly Erik's anchor. Raise
     #   it for bigger fires everywhere; it does NOT move the death wall.
-    "I_cap_per_avail": 2.53,
+    "I_cap_per_avail": 14.0,  # P-F1b: 2.53 -> 14.0, SIZE
     #   k_die RETUNED 0.28 -> 0.035 (r 0.080 -> 0.010) BY THE CAPACITY LAW. `r`
     #   no longer has to sit near the operating point to hold the fire small
     #   (that is c's job now), so it is free to put the death wall at the
     #   PHYSICAL limits: X floor 0.1944 -> 0.1386 (o2_frac_ext 0.13 becomes
     #   reachable again), headroom on F*o2f*hot 1.242x -> 9.3x.
-    "k_die": 0.035,  # r = 0.010 — the death wall moves to the physical limits [derived, P-R5 blesses]
+    "k_die": 0.008,  # P-F1b: 2.0 -> 0.008 (r 0.5 -> 0.004) — the death wall; puts the
+                     # logistic's extinction at X = 0.1335, just ABOVE o2_frac_ext=0.13,
+                     # so THE OXYGEN LIMIT IS THE BINDING ONE (sealed rooms suffocate)
 
     # -- 3b. IGNITION SEED. Raised 0.1 -> 0.15 (2026-07-30). The sustain floor
     #    is I_crit = I_peak * fire_T_ext / T_flame = 0.21 * 250/450 = 0.117, so a
@@ -482,7 +499,15 @@ TUNE = {
     #       start: carried over from the cool_shift-12 point (where it measured
     #       death at 332.7 s with wall_hp 4.5 left). Lifetime is stage 4 —
     #       settle steps 2-3 first, then move this. --
-    "wall_damage": 0.083,
+    "wall_damage": 0.03,     # P-F1b: 0.4 -> 0.03, BURN DURATION (8 min kindling / 24 min furniture)
+
+    # -- P-F1b's combustion-side plateau gain (replaces the retired k_fire_heat;
+    #    H_bed = H_BED_M * 2^H_BED_SHIFT: 2.023e5 -> 2.900e5) and the gate wall. --
+    "physics.combustion.H_BED_M": 18125.0,   # P-F1b: 25290 -> 18125 (mantissa)
+    "physics.combustion.H_BED_SHIFT": 4,     # P-F1b: 3 -> 4
+    "T_emit_gate": 310.0,    # P-F1b: 180 -> 310 — who CASTS radiation (the gate wall;
+                             # at 180 a receiver became an emitter too early and its
+                             # ceiling collapsed to E_s/15 — spread stalled)
 
     # -- ANCHORED — verify, don't tune (see §9.3 for the paper trail) --
     "physics.combustion.burn_rate": 0.02,     # Huggett 1980 — THE O2-draw dial
@@ -678,9 +703,14 @@ def scorecard(m):
           f"{(d/60 if d else float('nan')):>13.2f} min   "
           f"{T['death_lo_s']/60:.0f}-{T['death_hi_s']/60:.0f} min             "
           f"     {verdict(d is not None and T['death_lo_s'] <= d <= T['death_hi_s'])}")
+    try:                       # Kelvin labels follow config's k_temp_to_kelvin
+        from fire_tune_plot import kelvin_map   # (tools/ is sys.path[0])
+        amb, slope = kelvin_map()
+    except Exception:
+        amb, slope = 293.0, 2.0
     print(f"{'flame plateau T (game)':<26}{m['flame_T']:>16.0f}   "
           f"{T['flameT_lo']:.0f}-{T['flameT_hi']:.0f}  "
-          f"(= {293+2*T['flameT_lo']:.0f}-{293+2*T['flameT_hi']:.0f} K)  "
+          f"(= {amb+slope*T['flameT_lo']:.0f}-{amb+slope*T['flameT_hi']:.0f} K)  "
           f"{verdict(T['flameT_lo'] <= m['flame_T'] <= T['flameT_hi'], m['flame_T'])}")
     print(f"{'  (hot gate at plateau)':<26}{m['hot_at_plateau']:>16.2f}   "
           f"should be ~1.0 while ablaze")
