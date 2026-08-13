@@ -113,7 +113,7 @@ T_MAX_PHYS        = 16000.0 # v2.4 counted physical-maximum rail on the temperat
 # REAL N_O2 scale, not the old atmosphere/P (~1.0 ambient) scale — see the
 # o2_threshold/P_min/P_full recalibration note in the fire feedback block below.
 [physics.fire]
-ignition_seed = 0.1   # seed fire intensity a temperature-ignited tile gets (I_seed)
+ignition_seed = 0.12   # seed fire intensity a temperature-ignited tile gets (I_seed) — P-K0: promoted from tools/fire_tune_loop.py TUNE (P-F1b + Erik's 2026-08-13 session; was 0.1)
 # o2_threshold RETIRED (continuous-O2 law, docs/continuous_o2_law_design_2026-07-24
 # .md §2.4): ignition now reads the O2 MOLE FRACTION and ignites iff X > o2_frac_ext
 # (the SAME extinction limit the fire sustain uses — one law), NOT an absolute-N_O2
@@ -144,8 +144,8 @@ o2_threshold  = 0.01  # RETIRED — see o2_frac_ext (fire feedback block below)
 # -> P falls -> starves; ALSO now (P4) the room's REAL O2 depletes as it burns ->
 # o2 -> 0 -> starves even in a wall that never bursts. Both emergent. Erik tunes
 # all of these live.
-k_grow            = 4.0    # logistic growth gain (1/s) — TEMPO only since P-R3
-k_die             = 2.0    # decay rate when starved/cold (1/s)
+k_grow            = 0.5    # logistic growth gain (1/s) — TEMPO only since P-R3. P-K0: promoted from TUNE (P-F1b 4.0->2.0, Erik 2026-08-13 2.0->0.5, slower ramp)
+k_die             = 0.008  # decay rate when starved/cold (1/s). P-K0: promoted from TUNE (P-F1b 2.0->0.008 — the death wall; puts extinction at X=0.1335, just above o2_frac_ext=0.13, so the oxygen limit is binding)
 # THE CAPACITY LAW (P-R3, 2026-07-31 — docs/radiation_raycaster_extinction_
 # ruling_2026-07-31.md A3, on Erik's ruling R-b). The growth term's carrying
 # capacity used to be the hardwired constant 1 (the `(1-I)` factor); it is now
@@ -161,7 +161,7 @@ k_die             = 2.0    # decay rate when starved/cold (1/s)
 # because the logistic wall bit first at X = 0.1944. Now each dial has one job:
 # `I_cap_per_avail` = SIZE, `k_grow` = TEMPO, `k_die` = where the death wall
 # sits. `<= 0` legally means "capacity ceiling OFF" (unbounded growth).
-I_cap_per_avail   = 2.53   # capacity per unit availability: I_cap = c·a — the SIZE dial; ruling 2026-07-31 A3. [derived, unblessed — P-R5 blesses]
+I_cap_per_avail   = 14.0   # capacity per unit availability: I_cap = c·a — the SIZE dial; ruling 2026-07-31 A3. P-K0: promoted from TUNE (P-F1b 2.53->14.0, SIZE)
 # fire_T_ext: SUPERSEDED as the extinction floor (P-R3, ruling A3 ride-along).
 # It is a PER-MATERIAL quantity — it sits on the same physical axis as the
 # per-material `ignition_temp` — and this global, at 350, exceeded BOTH shipped
@@ -176,8 +176,8 @@ I_cap_per_avail   = 2.53   # capacity per unit availability: I_cap = c·a — th
 # this value no longer affects the game. Editing it will NOT move the fire —
 # edit the material's `ignition_temp`, or the Δ below.
 fire_T_ext        = 350.0  # FALLBACK extinction temperature (inert in the live engine)
-ignition_to_ext_delta = 100.0  # fire_T_ext[mat] = ignition_temp[mat] - Δ (ONE global, zero new per-material columns; ruling 2026-07-31 A3)
-fire_T_span       = 150.0  # width of the `hot` ramp above fire_T_ext (STAYS global — a WIDTH, not a foot)
+ignition_to_ext_delta = 200.0  # fire_T_ext[mat] = ignition_temp[mat] - Δ (ONE global, zero new per-material columns; ruling 2026-07-31 A3). P-K0: promoted from TUNE (P-F1b 100->200, knee geometry — the FOOT)
+fire_T_span       = 180.0  # width of the `hot` ramp above fire_T_ext (STAYS global — a WIDTH, not a foot). P-K0: promoted from TUNE (P-F1b 150->180, knee geometry — the WIDTH)
 # fuel_ref: SUPERSEDED as the fuel normaliser (fuel-fraction axis, 2026-07-30).
 # F means "the fraction of THIS tile's fuel remaining", so its divisor is the
 # tile's OWN material hp — a PER-MATERIAL quantity. This global is 60.0, which is
@@ -249,11 +249,11 @@ P_min             = 0.01   # RETIRED (see o2_frac_ext/amb above) — smoothstep 
 P_full            = 0.03   # RETIRED — smoothstep full edge on absolute n_o2
 I_min             = 0.02   # snap-to-zero extinguish floor
 k_wind_fan        = 0.5    # (1 + k_wind_fan*W) fans growth into a firestorm. NEEDS TUNING vs the live wind scale (a shockwave is a large transient spike).
-k_wind_strip      = 0.5    # W*(1-I)*I blows out small/marginal fires (the realistic crossover). NEEDS TUNING vs the live wind scale.
+k_wind_strip      = 0.0    # W*(1-I)*I blows out small/marginal fires (the realistic crossover). P-K0: promoted from TUNE (plume self-blow-out off, 2026-07-23)
 # fire_pressure_gain TOMBSTONE (P-R2, 2026-07-31): dead key — the plume->T shim it fed (FireParams::fire_pressure_gain, the one temperature[] writer bypassing heat_inv_shift) was deleted; see docs/radiation_raycaster_extinction_ruling_2026-07-31.md A2.
 p_expand_ref      = 1.30   # self-limiting plume saturation ceiling (atm + thermal-expansion headroom)
 smoke_emission    = 0.8    # smoke produced per second per unit intensity (KEPT)
-wall_damage       = 0.4    # wall HP lost per second per unit intensity (KEPT — the burn-out brake)
+wall_damage       = 0.03   # wall HP lost per second per unit intensity (KEPT — the burn-out brake). P-K0: promoted from TUNE (P-F1b 0.4->0.03, BURN DURATION: 8 min kindling / 24 min furniture)
 
 # --- K2: fire as a sim-side heat ray source (proposal §1, fire_design_notes) --
 # Each burning tile (fire > 0) becomes a short-range heat `LightSource` cast IN
@@ -328,7 +328,9 @@ rad_scale            = 1.0e-5 # heat counts per K^4 in the baked E° table
 # others. 180 game = 653 K (Erik, 2026-07-31). LOWER = the FEEL lever (warm
 # objects gently toasting their surroundings) and costs emitter count; HIGHER =
 # the COST lever and costs post-fire glow. Ruling A1.8.
-T_emit_gate          = 180.0  # game units; below it a hot solid does not cast
+# P-K0: promoted from TUNE (P-F1b 180->310 — at 180 a receiver became an
+# emitter too early and its ceiling collapsed to E_s/15, stalling spread).
+T_emit_gate          = 310.0  # game units; below it a hot solid does not cast
 # --- P-F1a / v7 rule 4: RADIATION_RANGE --------------------------------------
 # The reach of an EMISSION ray, in tiles. A STABILITY-CLASS CONSTANT, NOT A FEEL
 # DIAL — do not tune it for look.
@@ -618,8 +620,8 @@ max_claimants     = 12
 # but NOT Huggett-VALUED: thermal_mass = 8 already lumps the ~130x surface-layer
 # factor, so no J/mol anchor survives the conversion. Do not read it as an
 # enthalpy. RE-TUNE AT P-R5 alongside cool_shift.
-H_BED_M           = 25290.0  # mantissa (< 32768, the Q16.16 range)
-H_BED_SHIFT       = 3        # H_bed = H_BED_M * 2^H_BED_SHIFT = 2.023e5
+H_BED_M           = 18125.0  # mantissa (< 32768, the Q16.16 range). P-K0: promoted from TUNE (P-F1b 25290->18125)
+H_BED_SHIFT       = 4        # H_bed = H_BED_M * 2^H_BED_SHIFT = 2.900e5. P-K0: promoted from TUNE (P-F1b 3->4)
 # Unit-side suffocation mechanics (LATER arc, design §5): defined here so the
 # constant lives at the right layer; nothing reads it yet.
 o2_thresh_breathe = 0.08   # min local N_O2 a unit needs to breathe (NOT wired yet)
@@ -1006,8 +1008,9 @@ light_atten = [1.0, 1.0, 1.0]
 heat_atten = 1.0
 conductivity = 0.15
 thermal_mass = 8     # softwood (real rho*c ~0.7): heats fast & locally (heat >> 3)
-cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
-                     # THE OLD GLOBAL — see the axis note on [materials.air]
+cool_shift = 13      # ambient decay T -= T>>13 (e-fold 2^13/24 = 341.3 s). P-K0:
+                     # promoted from TUNE (P-F1b 9->13, THE SPREAD DIAL; wood
+                     # moves with furniture — both cellulosic, both thermal_mass 8)
 ignition_temp = 300.0
 wave_reflect = 0.5
 wave_absorb = 0.4
@@ -1081,11 +1084,11 @@ light_atten = [0.55, 0.55, 0.55]   # partial occlusion: a crate stack leaks some
 heat_atten = 0.5
 conductivity = 0.0   # kappa 0 = no conduction face (like air); fire eats it via flammability instead
 thermal_mass = 8     # wood-like (real rho*c ~0.7): heats fast & locally (heat >> 3)
-cool_shift = 5       # THE dial for a crate: conductivity = 0 means the ambient
+cool_shift = 13      # THE dial for a crate: conductivity = 0 means the ambient
                      # decay above is furniture's ONE loss channel (thermal-mass
                      # design §2.2), so this alone sets how long a burning crate
-                     # stays hot. e-fold 2^5/24 = 1.3 s at 5, 171 s at 12.
-                     # SEEDED AT THE OLD GLOBAL — the joint re-tune moves it.
+                     # stays hot. e-fold 2^13/24 = 341.3 s. P-K0: promoted from
+                     # TUNE (P-F1b 9->13, THE SPREAD DIAL).
 ignition_temp = 280.0   # wood-like; slightly easier to light than a solid wood wall (300)
 wave_reflect = 0.2
 wave_absorb = 0.5    # soft stuff soaks blasts
@@ -1143,10 +1146,9 @@ heat_atten = 0.5      # spec value (== furniture's)
 conductivity = 0.0    # spec value: crate-conduction lands with the law
                        # patches (P-F1a/P-F3), not here
 thermal_mass = 8       # spec value (== furniture's; wood-like, heat >> 3)
-cool_shift = 9         # spec value — DIFFERS from furniture's 5. e-fold
-                       # 2^9/24 = 21.3 s (furniture: 2^5/24 = 1.3 s): the
-                       # campfire reference holds its heat far longer per unit
-                       # fuel than a crate does, by design (locked spec value).
+cool_shift = 13        # P-K0: promoted from TUNE (P-F1b 9->13, matches
+                       # furniture/wood — all three cellulosic materials moved
+                       # together). e-fold 2^13/24 = 341.3 s.
 ignition_temp = 280.0  # spec value: furniture's, PER THE ROW CONVENTIONS —
                        # do NOT import literature values (~250 C) raw here.
 wave_reflect = 0.2     # copied from furniture
