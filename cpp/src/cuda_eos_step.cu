@@ -147,6 +147,11 @@ EOSHostPrestage eos_host_prestage(
     // Divisor of the c_LOCAL ratio at :165 and, via pre.t_amb_q (:258), the
     // resident path's too. Must stay bit-identical to the CPU fold.
     const q16 t_amb_q   = std::max<q16>(1, quantize((double)solver.T_AMB_K));
+    // s_eos_q: fold of S_EOS, verbatim CPU twin (eos_solver.cpp:290). At the
+    // frozen identity (65536) the t_abs product below has zero low bits, so
+    // the SAR is exact truncation — see eos_solver.cpp's comment for the
+    // off-identity T<0 flooring convention.
+    const q16 s_eos_q   = quantize((double)solver.S_EOS);
     const q16 c_q       = quantize((double)solver.C);
     const double gamma_d = (double)solver.adiabatic_index;
     const double dt_d    = (double)dt;
@@ -161,7 +166,7 @@ EOSHostPrestage eos_host_prestage(
     int64_t t_max_abs_raw = (int64_t)t_amb_q;
     for (int i = 0; i < n; ++i) {
         if (solid[i] || is_vacuum[i]) continue;
-        const int64_t t_abs = (int64_t)temperature[i] + (int64_t)t_amb_q;
+        const int64_t t_abs = (((int64_t)s_eos_q * (int64_t)temperature[i]) >> 16) + (int64_t)t_amb_q;
         if (t_abs > t_max_abs_raw) t_max_abs_raw = t_abs;
     }
     const q16 c_amb_q = quantize((double)solver.c_max);
@@ -259,6 +264,7 @@ EOSHostPrestage eos_host_prestage(
         if (gas_conservative[gi]) pre.cons.push_back(gi);
 
     pre.t_amb_q   = t_amb_q;
+    pre.s_eos_q   = s_eos_q;
     pre.c_q       = c_q;
     pre.inv_2dx_q = inv_2dx_q;
     pre.c_local_q = c_local_q;
@@ -307,6 +313,7 @@ void eos_step_cuda(
         gas, gas_conservative, n_gases, solid, is_vacuum,
         dyn_permeability, h, w, dt, ambient_mode);
     const q16 t_amb_q   = pre.t_amb_q;
+    const q16 s_eos_q   = pre.s_eos_q;
     const q16 c_q       = pre.c_q;
     const q16 inv_2dx_q = pre.inv_2dx_q;
     const q16 c_local_q = pre.c_local_q;
@@ -514,7 +521,7 @@ void eos_step_cuda(
         if (solver.debug_pstar_from_prev) {
             pstar[i] = p_prev[i];   // MEASUREMENT-ONLY diagnostic (parity)
         } else {
-            const int64_t t_abs_wide = (int64_t)temperature[i] + (int64_t)t_amb_q;
+            const int64_t t_abs_wide = (((int64_t)s_eos_q * (int64_t)temperature[i]) >> 16) + (int64_t)t_amb_q;
             const q16 t_abs = (q16)t_abs_wide;
             const q16 cn = mul_q16(c_q, n_total[i]);
             pstar[i] = mul_q16(cn, t_abs);

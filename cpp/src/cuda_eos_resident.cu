@@ -143,7 +143,7 @@ __global__ void K_pstar(int32_t* __restrict__ pstar,
                         const int32_t* __restrict__ p_prev,
                         const bool* __restrict__ solid,
                         const bool* __restrict__ is_vacuum,
-                        int32_t t_amb_q, int32_t c_q,
+                        int32_t t_amb_q, int32_t s_eos_q, int32_t c_q,
                         bool debug_from_prev, int n) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
@@ -152,7 +152,10 @@ __global__ void K_pstar(int32_t* __restrict__ pstar,
         if (debug_from_prev) {
             ps = p_prev[i];   // MEASUREMENT-ONLY diagnostic (parity)
         } else {
-            const int64_t t_abs_wide = (int64_t)temperature[i] + (int64_t)t_amb_q;
+            // s_eos_q joins t_amb_q, CPU twin verbatim (eos_solver.cpp:290,
+            // cuda_eos_step.cu:169/522). Frozen identity (65536) => exact
+            // truncation, byte-identical this arc (P-K3).
+            const int64_t t_abs_wide = (((int64_t)s_eos_q * (int64_t)temperature[i]) >> 16) + (int64_t)t_amb_q;
             const q16 t_abs = (q16)t_abs_wide;
             const q16 cn = mul_q16(c_q, ntot[i]);
             ps = mul_q16(cn, t_abs);
@@ -767,7 +770,7 @@ void eos_step_resident(
         cuda_check(cudaGetLastError(), "K_ntot");
     }
     K_pstar<<<grid, block>>>(S.pstar, S.ntot, d_temperature, d_wave_p,
-                             d_solid, d_is_vacuum, pre.t_amb_q, pre.c_q,
+                             d_solid, d_is_vacuum, pre.t_amb_q, pre.s_eos_q, pre.c_q,
                              solver.debug_pstar_from_prev, n);
     cuda_check(cudaGetLastError(), "K_pstar");
 

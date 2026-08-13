@@ -9,7 +9,8 @@ Pure-arithmetic + config-plumbing unit tests
   - ``tools/fire_tune_plot.kelvin_map()`` (the tool-facing wrapper) returns
     the same (293.0, 3.0) via the real config,
   - the phi_exp value-freeze assert lands on exactly 65536 counts,
-  - the migration guard hard-errors on a stale ``[render.blackbody]`` key.
+  - the migration guard hard-errors on a stale ``[render.blackbody]`` key,
+    or a stale ``[physics.eos]`` t_amb_k/C key (P-K3).
 
 Run:
     conda run -n data python -m pytest tests/test_temperature_scale.py -q
@@ -81,7 +82,8 @@ def test_C_is_reciprocal_of_eos_t_amb_k():
 
 # ---- migration guard: stale [render.blackbody] key hard-errors -----------
 
-def _fake_cfg(*, with_section=True, stale_blackbody_key=False):
+def _fake_cfg(*, with_section=True, stale_blackbody_key=False,
+              stale_eos_key=False):
     physics = SimpleNamespace()
     if with_section:
         # phi_exp set to 1/k_temp_to_kelvin so the eos_slope invariant
@@ -94,6 +96,11 @@ def _fake_cfg(*, with_section=True, stale_blackbody_key=False):
             phi_exp=0.2,
             eos_t_amb_k=290.0,
         )
+    eos = SimpleNamespace()
+    if stale_eos_key:
+        eos.t_amb_k = 290.0
+        eos.C = 1.0 / 290.0
+    physics.eos = eos
     blackbody = SimpleNamespace()
     if stale_blackbody_key:
         blackbody.kelvin_ambient = 293.0
@@ -104,6 +111,16 @@ def _fake_cfg(*, with_section=True, stale_blackbody_key=False):
 
 def test_load_raises_on_stale_blackbody_key():
     cfg = _fake_cfg(stale_blackbody_key=True)
+    with pytest.raises(RuntimeError, match=r"\[physics\.temperature_scale\]"):
+        temperature_scale.load(cfg)
+
+
+def test_load_raises_on_stale_eos_key():
+    """[physics.eos] t_amb_k/C moved to [physics.temperature_scale]
+    (eos_t_amb_k / the derived C property) — P-K3, design §2/§3c. A stale
+    key left behind on the ORIGINAL section must hard-error, the same way a
+    stale [render.blackbody] key does above."""
+    cfg = _fake_cfg(stale_eos_key=True)
     with pytest.raises(RuntimeError, match=r"\[physics\.temperature_scale\]"):
         temperature_scale.load(cfg)
 
@@ -136,6 +153,24 @@ def test_from_toml_raises_on_stale_blackbody_key(tmp_path):
         "[render.blackbody]\n"
         "kelvin_ambient = 293.0\n"
         "k_temp_to_kelvin = 2.0\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match=r"\[physics\.temperature_scale\]"):
+        temperature_scale.from_toml(stale_toml)
+
+
+def test_from_toml_raises_on_stale_eos_key(tmp_path):
+    stale_toml = tmp_path / "stale_eos_config.toml"
+    stale_toml.write_text(
+        "[physics.temperature_scale]\n"
+        "kelvin_ambient = 293.0\n"
+        "k_temp_to_kelvin = 3.0\n"
+        "phi_exp = 0.3333333333333333\n"
+        "eos_t_amb_k = 290.0\n"
+        "\n"
+        "[physics.eos]\n"
+        "t_amb_k = 290.0\n"
+        "C = 0.0034482758620689655\n",
         encoding="utf-8",
     )
     with pytest.raises(RuntimeError, match=r"\[physics\.temperature_scale\]"):

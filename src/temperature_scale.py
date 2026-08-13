@@ -49,6 +49,10 @@ DEFAULTS = {
 # The stale keys [render.blackbody] must no longer carry (design §2).
 _STALE_BLACKBODY_KEYS = ("kelvin_ambient", "k_temp_to_kelvin")
 
+# The stale keys [physics.eos] must no longer carry (design §2/§3c, P-K3):
+# t_amb_k/C moved to this table's eos_t_amb_k / the derived C property.
+_STALE_EOS_KEYS = ("t_amb_k", "C")
+
 
 class TemperatureScale(NamedTuple):
     """The loaded table plus its derived quantities.
@@ -144,6 +148,16 @@ def load(cfg=None) -> TemperatureScale:
             f"[render.blackbody]."
         )
 
+    eos = getattr(physics, "eos", None)
+    stale_eos = [k for k in _STALE_EOS_KEYS
+                 if getattr(eos, k, None) is not None]
+    if stale_eos:
+        raise _migration_error(
+            f"[physics.eos] still carries {stale_eos} — these moved to "
+            f"[physics.temperature_scale] (eos_t_amb_k / the derived C "
+            f"property); remove them from [physics.eos]."
+        )
+
     d = {k: getattr(section, k) for k in DEFAULTS if hasattr(section, k)}
     return _build(d)
 
@@ -175,6 +189,15 @@ def from_toml(path: Optional[Path] = None) -> TemperatureScale:
             f"{p}: [render.blackbody] still carries {stale} — these moved "
             f"to [physics.temperature_scale]; remove them from "
             f"[render.blackbody]."
+        )
+
+    eos = physics.get("eos", {})
+    stale_eos = [k for k in _STALE_EOS_KEYS if k in eos]
+    if stale_eos:
+        raise _migration_error(
+            f"{p}: [physics.eos] still carries {stale_eos} — these moved to "
+            f"[physics.temperature_scale] (eos_t_amb_k / the derived C "
+            f"property); remove them from [physics.eos]."
         )
 
     return _build(physics[SECTION_NAME])

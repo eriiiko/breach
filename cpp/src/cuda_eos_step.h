@@ -81,6 +81,7 @@ namespace breach_cuda {
 struct EOSHostPrestage {
     // Per-tick scalars the mid/late stages consume (Q16.16 raw where noted).
     int32_t t_amb_q   = 0;   // quantize(T_AMB_K) — pstar
+    int32_t s_eos_q   = 0;   // quantize(S_EOS) — pstar (phi_exp*k_temp_to_kelvin, frozen == 65536)
     int32_t c_q       = 0;   // quantize(C) — pstar
     int32_t inv_2dx_q = 0;   // quantize(1/(2·dx)) — div_u (+ kick per-call)
     int32_t c_local_q = 0;   // the c_LOCAL cap (kick; == dbg_last_c_local_q)

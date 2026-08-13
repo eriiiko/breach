@@ -475,10 +475,12 @@ smoke_absorb_scale = 1.4                 # beam-reach dial: LOW = long beam (fla
 # every downstream consumer already tuned against "1.0 == 1 atm" keeps its
 # calibration at rest when the solver switches over. N_amb == 1.0 (the
 # ambient ``o2``+``inert_n2`` split below sums back to exactly 1.0 in Q16.16 —
-# 0.21*65536 + 0.79*65536 rounds to 13763+51773 == 65536). C = 1/t_amb_k.
+# 0.21*65536 + 0.79*65536 rounds to 13763+51773 == 65536).
+# t_amb_k / C MOVED to [physics.temperature_scale] (eos_t_amb_k / the derived
+# C = 1/eos_t_amb_k property, temperature_scale_unification_design_2026-08-13
+# §2/§3c, P-K3) — this section no longer carries them; a stale t_amb_k/C key
+# here hard-errors at config load (src/temperature_scale.py migration guard).
 [physics.eos]
-t_amb_k = 290.0                       # ambient gas temperature, Kelvin (§2.1's "290.0K-form")
-C = 0.0034482758620689655             # 1/t_amb_k — chosen so C*N_amb*T_amb_k reproduces 1.0
 # --- P3 pinned solver constants (docs/eos_refactor_decisions.md 2026-07-10) ---
 # c_max/S/N_SUB_MAX/CFL_ADV/N_FLOOR_SOLVER are FROZEN once gated (never
 # adaptive) — see cpp/src/eos_solver.h for the load-bearing derivation of
@@ -504,10 +506,12 @@ U_MAX = 1000.0                        # v2.4 defense-in-depth velocity rail (m/s
 # Canonical game-T -> Kelvin map (temperature_scale_unification_design_
 # 2026-08-13 §2). The ONE place these constants are defined — radiation bake,
 # render blackbody, and tuning tools all read this section (accessor:
-# src/temperature_scale.py). [physics.eos] t_amb_k/C stay a DELIBERATE
-# exception (ruling 6): T_game is a ΔT, EOS pressure calibration doesn't care
-# what "0" means in Kelvin, and 290 is Q16.16-near-optimal where 293 would
-# add 92 extra quantization counts to every ambient cell.
+# src/temperature_scale.py). eos_t_amb_k below (derived C = 1/eos_t_amb_k) is
+# a DELIBERATE exception to kelvin_ambient (ruling 6): T_game is a ΔT, EOS
+# pressure calibration doesn't care what "0" means in Kelvin, and 290 is
+# Q16.16-near-optimal where 293 would add 92 extra quantization counts to
+# every ambient cell. [physics.eos] no longer carries t_amb_k/C — a stale key
+# there hard-errors at load (migration guard, src/temperature_scale.py).
 [physics.temperature_scale]
 kelvin_ambient = 293.0                 # absolute K at T_game = 0 (~20 C) — THE map ambient
 k_temp_to_kelvin = 3.0                 # game-dT -> Kelvin slope (Erik's k_calibr, blessed 2026-08-13)

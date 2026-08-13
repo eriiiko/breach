@@ -284,6 +284,15 @@ void EOSSolver::step(
     // binds at the shipped 290 -> behaviour-preserving. Mirrored in
     // cuda_eos_step.cu (which also feeds the resident path's pre.t_amb_q).
     const q16 t_amb_q    = std::max<q16>(1, quantize((double)T_AMB_K));
+    // s_eos_q: fold of S_EOS (phi_exp*k_temp_to_kelvin, value-frozen to 1.0
+    // exactly this arc — P-K3). At s_eos_q == 65536 the product below has zero
+    // low bits, so the arithmetic right shift (mul_q16 convention) is exactly
+    // truncation and t_abs == T + t_amb_q for every int32 T including
+    // negatives (no overflow: |product| <= 2^47). Off-identity values of
+    // s_eos_q floor toward -inf at T<0 (mul_q16's documented convention) —
+    // deliberate, so the asymmetry is expected when the storm session retunes
+    // phi_exp.
+    const q16 s_eos_q    = quantize((double)S_EOS);
     const q16 t_min_q    = quantize((double)T_MIN);
     const q16 t_max_phys_q = quantize((double)T_MAX_PHYS);   // v2.4 rail (see eos_solver.h)
     const q16 u_max_q      = quantize((double)U_MAX);        // v2.4 rail
@@ -308,7 +317,7 @@ void EOSSolver::step(
     int64_t t_max_abs_raw = (int64_t)t_amb_q;
     for (int i = 0; i < n; ++i) {
         if (solid[i] || is_vacuum[i]) continue;
-        const int64_t t_abs = (int64_t)temperature[i] + (int64_t)t_amb_q;
+        const int64_t t_abs = (((int64_t)s_eos_q * (int64_t)temperature[i]) >> 16) + (int64_t)t_amb_q;
         if (t_abs > t_max_abs_raw) t_max_abs_raw = t_abs;
     }
     const q16 c_amb_q = quantize((double)c_max);
@@ -570,7 +579,7 @@ void EOSSolver::step(
             // structure — pressure evolves as its own state. Diagnostic.
             pstar_[i] = p_prev[i];
         } else {
-            const int64_t t_abs_wide = (int64_t)temperature[i] + (int64_t)t_amb_q;
+            const int64_t t_abs_wide = (((int64_t)s_eos_q * (int64_t)temperature[i]) >> 16) + (int64_t)t_amb_q;
             const q16 t_abs = (q16)t_abs_wide;
             const q16 cn = mul_q16(c_q, n_total_[i]);
             pstar_[i] = mul_q16(cn, t_abs);

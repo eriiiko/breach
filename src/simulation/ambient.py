@@ -29,15 +29,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import temperature_scale
 from simulation import gas_fixed as _gas_fx
 
 FP_ONE = _gas_fx.FP_ONE                  # 65536
 
-# Pinned EOS constants (docs/eos_refactor_decisions.md 2026-07-10; config.toml
-# [physics.eos] only echoes these frozen struct defaults). Callers that have the
-# live config pass its values so the pin matches runtime under any override.
-DEFAULT_C = 1.0 / 290.0
-DEFAULT_T_AMB_K = 290.0
+# Pinned EOS constants (docs/eos_refactor_decisions.md 2026-07-10). Source of
+# truth is [physics.temperature_scale] (eos_t_amb_k / the derived C property)
+# via the canonical accessor — P-K3, temperature_scale_unification_design_
+# 2026-08-13.md §2/§3c; [physics.eos] no longer carries t_amb_k/C at all.
+# Derived once at import (no module-level caching in the accessor itself, but
+# these two names are load-bearing defaults for callers below and for
+# pump_system.py's DEFAULT_C/DEFAULT_T_AMB_K import, so they snapshot here the
+# same way `from config import CFG` snapshots the singleton). Callers that
+# have the live config pass its values so the pin matches runtime under any
+# override.
+_ts = temperature_scale.load()
+DEFAULT_C = _ts.C
+DEFAULT_T_AMB_K = _ts.eos_t_amb_k
 
 # Dial defaults + validation bounds (spec §4).
 DEFAULT_P_AMB = 1.0

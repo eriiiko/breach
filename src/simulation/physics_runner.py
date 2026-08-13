@@ -387,11 +387,12 @@ class PhysicsRunner:
         # AtmosphereSolver wave+diffuse dispatch in run_substeps below (atmos
         # is retained on the engine only for any still-bound isolated GPU test
         # entry points — see physics_engine.cpp's GPU guards). Bound from
-        # [physics.eos]; c_max/S/N_SUB_MAX/CFL_ADV/N_FLOOR_SOLVER/T_AMB_K/C/
-        # gamma are the design's PINNED constants (docs/eos_refactor_
-        # decisions.md 2026-07-10) — defaults on the C++ struct already match;
-        # config only overrides where a key is present so a bare install still
-        # gets the pinned values.
+        # [physics.eos]; c_max/S/N_SUB_MAX/CFL_ADV/N_FLOOR_SOLVER/gamma are
+        # the design's PINNED constants (docs/eos_refactor_decisions.md
+        # 2026-07-10) — defaults on the C++ struct already match; config only
+        # overrides where a key is present so a bare install still gets the
+        # pinned values. T_AMB_K/C/S_EOS come from the canonical accessor
+        # (_ts, [physics.temperature_scale]) instead — P-K3, design §2/§3c.
         self.eos = self.engine.eos
         eos_cfg = getattr(CFG.physics, "eos", None)
 
@@ -409,8 +410,14 @@ class PhysicsRunner:
             getattr(eos_cfg, "N_SUB_MAX", self.eos.N_SUB_MAX))
         self.eos.CFL_ADV        = _ep("CFL_ADV", self.eos.CFL_ADV)
         self.eos.N_FLOOR_SOLVER = _ep("N_FLOOR_SOLVER", self.eos.N_FLOOR_SOLVER)
-        self.eos.T_AMB_K        = _ep("t_amb_k", self.eos.T_AMB_K)
-        self.eos.C              = _ep("C", self.eos.C)
+        # P-K3: [physics.eos] no longer carries t_amb_k/C — both are read via
+        # the canonical accessor (_ts, loaded above for the raycaster's
+        # kelvin map). eos_t_amb_k stays 290 (ruling 6, a deliberate exception
+        # to kelvin_ambient); S_EOS is the phi_exp*k_temp_to_kelvin slope
+        # mechanism, value-frozen to 1.0 exactly this arc (byte-identical).
+        self.eos.T_AMB_K        = float(_ts.eos_t_amb_k)
+        self.eos.C              = float(_ts.C)
+        self.eos.S_EOS          = float(_ts.eos_slope)
         # ingress-lint: "adiabatic_index" (not "gamma") avoids colliding with
         # the banned RNG distribution-method name test_ingress_lint.py scans
         # for (numpy's Generator.gamma() — an unrelated collision; this is a

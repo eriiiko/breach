@@ -159,8 +159,21 @@ public:
     // property 2 — never to the outer γ·p* coefficient, whose vanishing at
     // vacuum IS the desired Dirichlet degeneracy).
     float N_FLOOR_SOLVER = 1e-3f;
+    // T_AMB_K / C mirror [physics.temperature_scale].eos_t_amb_k (ruling 6:
+    // EOS pressure calibration is a deliberate 290 K exception to the unified
+    // kelvin_ambient map — see docs/temperature_scale_unification_design_
+    // 2026-08-13.md §2/§3c). Fold path for both is double -> float -> quantize
+    // (struct default here, in double at config load, then requantized to q16
+    // per-tick in eos_solver.cpp) -- do not "fix" one backend's rounding
+    // without the other; c_q is still 226 after the float32 round-trip.
     float T_AMB_K = 290.0f;
     float C = 1.0f / 290.0f;
+    // S_EOS mirrors [physics.temperature_scale]: phi_exp * k_temp_to_kelvin,
+    // value-frozen to 1.0 exactly this arc (P-K3) — the slope MECHANISM exists
+    // (t_abs = (S_EOS_q16 * T >> 16) + t_amb_q in eos_solver.cpp/cuda_eos_*)
+    // but at the frozen identity the EOS is byte-identical to pre-P-K3. Same
+    // double -> float -> quantize fold idiom as T_AMB_K/C above.
+    float S_EOS = 1.0f;
     float adiabatic_index = 1.4f;   // γ (compile-time-class constant; config echo)
     float absorb_strength = 8.0f;
     float T_MIN = -289.0f;
