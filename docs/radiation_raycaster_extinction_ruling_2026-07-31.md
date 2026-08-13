@@ -607,3 +607,18 @@ design-rule it as a rider between P-R4 and P-R5 so the knee is tuned ONCE with
 all three levers (fuel, O₂, wind) live — Erik decides at the P-R5 boundary;
 render/sim cast sharing and fan adaptivity (A4.3); gas-side `c_v`/`H_fuel`
 anchoring (E3 owns the trigger).
+
+---
+
+**Appended 2026-08-13 (supersession note; restores the append-only form of a
+pending in-place edit found in the working tree).** The fourth-pass block above
+("★ THE AMBIENT-COUNTERPARTY DEFECT … proposed P-R4b, awaiting his GO",
+amended 2026-08-01) was SUPERSEDED the same day by the comprehensive design
+pass: `fire_realism_design_2026-08-01.md` carries it as P1/F1. The block above
+is the RECORD; the design doc is the spec. Carried forward from that
+supersession: the fix design, its critique — which found the naive residual
+form insufficient (energy books 17× off) — and the equivalence gate built from
+Erik's own sentence all live in the design doc. (2026-08-13 context: recorded
+while slicing commits for the temperature-scale unification arc,
+`temperature_scale_unification_design_2026-08-13.md`, per Erik's ruling that
+dated docs stay append-only.)
