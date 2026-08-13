@@ -42,7 +42,11 @@ import numpy as np
 import breach_physics as bp
 
 FP_ONE = 1 << 16
-RAD_SCALE = 1.0e-5
+# P-K2: re-anchored to preserve emitted flux at the P-F1b plateau (T=300 game)
+# under the ×3 Kelvin map — rad_scale' = 1.0e-5 * (893/1193)^4 = 3.1394e-6
+# (temperature_scale_unification_design_2026-08-13 §3b; config.toml carries
+# the derivation).
+RAD_SCALE = 3.1394e-6
 DIALS = dict(fire_ray_count=8, range_base=2.0, range_per_i=3.0,
              intensity_base=0.3, intensity_per_i=0.7, color=(1.0, 0.6, 0.2))
 COST_BUDGET_MS = 3.0        # gate (g): 2x the 1.5 ms S8c painter baseline

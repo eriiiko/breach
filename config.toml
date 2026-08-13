@@ -301,26 +301,35 @@ wall_damage       = 0.03   # wall HP lost per second per unit intensity (KEPT �
 #   survival  *= (1 - a_r)                                   (AFTER the deposit)
 # with a_x = the material's `heat_atten` (absorptivity == emissivity, Kirchhoff),
 # tau the running material transmittance, w = 1/fire_ray_count, and E° the baked
-# black-body table E°(T) = rad_scale * (293 + 2*T_game)^4.
+# black-body table E°(T) = rad_scale * (293 + 3*T_game)^4 — the canonical
+# game-T -> Kelvin map now lives in [physics.temperature_scale]
+# (kelvin_ambient=293, k_temp_to_kelvin=3); this is the SAME map baked into
+# the raycaster's E° table, render blackbody, and the tuning tools (P-K2,
+# docs/temperature_scale_unification_design_2026-08-13.md §2/§3a-b).
 #
 # rad_scale — THE EMISSION CALIBRATION. It folds sigma, the 0.833 m² tile face,
 # the per-tick dt and the game->Kelvin mapping into one number: heat counts per
-# K^4. DERIVATION of the shipped value (the seed's own ignition sanity, made
-# live by gate (h)): wood's piloted-ignition flux is ~12 kW/m² and a neighbour at
-# view factor ~0.3 receives ~22 kW/m² from a 1093 K flame — i.e. a first-ring
-# neighbour of a burning crate SHOULD reach ignition. Our 8-ray fan is a discrete
-# view-factor sampler: a first-ring tile is crossed by 2 of the 8 rays (VF 0.25,
-# the seed's 0.3), a second-ring tile at (+-2,+-1) by 1 (VF 0.125). Chaining that
-# through the receiver's own balance (radiative-in == cool_shift-out, since
-# furniture conducts nothing):
+# K^4. RE-ANCHORED AT P-K2 for the ×3 map (was 1.0e-5, derived under the old
+# ×2 map 293 + 2*T_game): the value is chosen to PRESERVE EMITTED FLUX at the
+# P-F1b plateau anchor T_a = 300 game, which reads K=893 under the old map and
+# K=1193 under the new one —
+#     rad_scale' = 1.0e-5 * (893/1193)^4 = 1.0e-5 * 0.313938 = 3.1394e-6
+# (the ONE shipped literal — exactly one so two machines syncing config.toml
+# via git can't diverge). Flux is IDENTICAL at the plateau; E'/E ratio vs. the
+# old map: 0.31 @ T=0, 0.87 @ 200, 1.00 @ 300 (the anchor), 1.09 @ 400,
+# 1.21 @ 600, 1.34 @ 1000, asymptote 1.59 — never exceeds 2x.
+#
+# The config's own two-tile ignition inequality, RE-DERIVED under the ×3
+# anchors (was: furniture a=0.5, his=3, cool_shift=9, a 443-game emitter
+# K_s=1179, the 280-game ignition point K_r=853, needing rad_scale >= 6.5e-6
+# at two tiles, ×1.54 margin under the shipped 1.0e-5):
 #     T_r/2^cool_shift = a_s*a_r*(n_rays/8)*rad_scale*(K_s^4 - K_r^4) / 2^his
-# with furniture a = 0.5, his = 3, cool_shift = 9 (the P-R3 anchor), a 443-game
-# emitter (K_s = 1179) and the 280-game ignition point (K_r = 853) needs
-# rad_scale >= 6.5e-6 at 2 tiles. 1.0e-5 puts the two-tile equilibrium at ~333
-# game (ignition in ~40 s at the 21 s e-fold) and the first ring at ~387 — below
-# the emitter's own 443, as the net form guarantees: a receiver can approach the
-# emitter but never pass it. RE-TUNE AT P-R5 with cool_shift (the two multiply).
-rad_scale            = 1.0e-5 # heat counts per K^4 in the baked E° table
+# with the SAME furniture a=0.5, his=3, cool_shift=9 but K_s = 293+3*443 =
+# 1622 and K_r = 293+3*280 = 1133, the required rad_scale for ignition at two
+# tiles is ~1.73e-6; the shipped 3.1394e-6 clears it with ×1.82 margin (up
+# from ×1.54 — the steeper ×3 map makes ignition EASIER at a given rad_scale,
+# not harder). RE-TUNE AT P-R5 with cool_shift (the two multiply).
+rad_scale            = 3.1394e-6 # heat counts per K^4 in the baked E° table
 # T_emit_gate — who CASTS. Emitters are burning tiles UNION thermal solids at or
 # above this temperature. RECEIVERS ARE FREE: the net form accounts a cold tile
 # fully on the flame's own rays, so a crate never needs to emit to be heated

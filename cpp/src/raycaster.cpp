@@ -3,6 +3,8 @@
 #include "fixed_point.h"      // Q2-LIFT: the deterministic trig kit (sin/cos_q16)
 #include <algorithm>
 #include <random>
+#include <stdexcept>
+#include <string>
 
 static constexpr float PI = 3.14159265358979f;
 
@@ -39,7 +41,9 @@ static inline float det_sin(float angle) {
 // symmetric and the exchange antisymmetric.
 //
 // Every entry is EXACT integer work up to ONE final boundary multiply:
-//   K(t)  = 297 + 8t                       (the bucket midpoint's absolute K)
+//   K(t)  = kelvin_ambient + k_temp_to_kelvin·(4t+2)   (bucket midpoint's
+//           absolute K; 299 + 12t at the shipped dials — kelvin_ambient=293,
+//           k_temp_to_kelvin=3, temperature_scale_unification design §3a)
 //   k2    = K*K;  k4 = k2*k2                (int64, exact — see raycaster.h)
 //   E[t]  = clamp_int64( round( rad_scale * k4 ) )
 // NEVER pow()/libm: a 1-ULP CRT difference here would desync a synced int32
@@ -49,26 +53,49 @@ static inline float det_sin(float angle) {
 // above T_game ≈ 1768 at the shipped rad_scale, which silently zeroed `diff`
 // between any two tiles above that temperature — a hard ceiling on the law that
 // masqueraded as the flux limiter. The largest entry is now
-// 1e-5 · K⁴(3999) = 1e-5 · 1.088e18 ≈ 1.088e13, six orders inside INT64_MAX, so
-// the bake cannot saturate at any shipping rad_scale. (The clamp is retained
-// for an absurd rad_scale rather than deleted — it must never wrap.)
+// rad_scale · K⁴(3999) = 3.1394e-6 · 5.4365e18 ≈ 1.71e13, six orders inside
+// INT64_MAX, so the bake cannot saturate at any shipping rad_scale. (The clamp
+// is retained for an absurd rad_scale rather than deleted — it must never wrap.)
 void Raycaster::bake_emissive_table() const {
     e_table_.resize(E_TABLE_SIZE);
     const double scale = rad_scale;
+    const double amb   = kelvin_ambient;
+    const double slope = k_temp_to_kelvin;
+    // Integer-bake precondition (design §3a): the exact-int64 chain below is
+    // only exact while both Kelvin-map dials are whole numbers — a HARD
+    // invariant (a config that moves them off-integer without also updating
+    // this bake to the double+quantize path would silently desync CPU/CUDA),
+    // so it throws instead of a debug-only assert.
+    if (amb != std::floor(amb) || slope != std::floor(slope)) {
+        throw std::runtime_error(
+            "Raycaster::bake_emissive_table: kelvin_ambient/k_temp_to_kelvin "
+            "must be integer-valued for the exact int64 E-table bake "
+            "(kelvin_ambient=" + std::to_string(amb) +
+            ", k_temp_to_kelvin=" + std::to_string(slope) + ")");
+    }
+    const int64_t amb_i   = llround(amb);
+    const int64_t slope_i = llround(slope);
     for (int t = 0; t < E_TABLE_SIZE; ++t) {
-        const int64_t K  = 297LL + 8LL * (int64_t)t;   // 293 + 2*(4t+2), exact
-        const int64_t k2 = K * K;                       // repeated multiplication
-        const int64_t k4 = k2 * k2;                     // <= 1.09e18, exact in int64
-        const double  v  = (double)k4 * scale;          // the ONE rounding boundary
+        const int64_t T_mid = 4LL * (int64_t)t + 2LL;
+        const int64_t K   = amb_i + slope_i * T_mid;    // 299 + 12t at the shipped dials
+        const int64_t k2  = K * K;                       // repeated multiplication
+        const int64_t k4  = k2 * k2;                     // <= 5.4365e18, exact in int64
+        // The ONE rounding boundary: int64->double conversion (inexact at max
+        // K, ~-385 counts, benign — see raycaster.h) followed by the
+        // rad_scale boundary multiply.
+        const double  v   = (double)k4 * scale;
         e_table_[t] = (v >= 9.2233720368547748e18)
             ? INT64_MAX
             : (int64_t)((v > 0.0) ? (v + 0.5) : 0.0);   // rad_scale > 0 by contract
     }
     e_table_scale_ = scale;
+    e_table_amb_   = amb;
+    e_table_slope_ = slope;
 }
 
 const int64_t* Raycaster::emissive_table() const {
-    if (e_table_.size() != (size_t)E_TABLE_SIZE || e_table_scale_ != rad_scale) {
+    if (e_table_.size() != (size_t)E_TABLE_SIZE || e_table_scale_ != rad_scale ||
+        e_table_amb_ != kelvin_ambient || e_table_slope_ != k_temp_to_kelvin) {
         bake_emissive_table();
     }
     return e_table_.data();

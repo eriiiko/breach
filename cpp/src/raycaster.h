@@ -161,7 +161,7 @@ inline void heat_saturating_add(int32_t* cell, int32_t delta) {
 // E°, so `diff` collapsed to 0 and a 3000-game tile radiated to a 2000-game
 // tile exactly nothing. That ceiling, not the flux limiter, was the real
 // high-T behaviour. int64 removes it: the largest entry is
-// rad_scale · K⁴(t=3999) = 1e-5 · 1.088e18 ≈ 1.088e13, ~6 orders below
+// rad_scale · K⁴(t=3999) = 3.1394e-6 · 5.4365e18 ≈ 1.71e13, ~6 orders below
 // INT64_MAX, so no shipping `rad_scale` can saturate the bake. The per-pair
 // PRODUCT stays int32-representable because the flux limiter caps it — see
 // rad_quantize_signed64 / the NO-OVERFLOW BOUND on rad_signed_add below.
@@ -169,18 +169,22 @@ inline void heat_saturating_add(int32_t* cell, int32_t delta) {
 // 4000 int64 entries over T_game ∈ [0, 16000) (== T_MAX_PHYS) in 4-game-unit
 // buckets, ~32 KB. Bucket t covers [4t, 4t+4); its MIDPOINT is T_mid = 4t+2,
 // so the absolute temperature at the midpoint is
-//     K(t) = 293 + 2·T_mid = 293 + 8t + 4 = 297 + 8t
-// — an EXACT INTEGER for every bucket. That is what lets the bake be exact:
+//     K(t) = kelvin_ambient + k_temp_to_kelvin·T_mid
+// which at the shipped dials (kelvin_ambient=293, k_temp_to_kelvin=3) is
+//     K(t) = 293 + 3·T_mid = 293 + 12t + 6 = 299 + 12t
+// — an EXACT INTEGER for every bucket while both dials are integer-valued
+// (bake_emissive_table asserts this). That is what lets the bake be exact:
 //
 //   *** CRITICAL DETERMINISM RULE ***  K⁴ is built by REPEATED MULTIPLICATION
 //   (k2 = K*K; k4 = k2*k2) in int64 — NEVER pow()/libm, whose last ULP varies
 //   across CRT versions and would desync machines through a synced int32
-//   field. In int64 the chain is EXACT (max K = 297+8·3999 = 32289,
-//   K⁴ ≈ 1.09e18 < 9.22e18), so the ONLY rounding in the whole bake is the
-//   single `rad_scale · k4` boundary multiply — the locked load-time
-//   double->quantize idiom. (The ruling says "repeated multiplication in
-//   double"; int64 is that same chain in a type that cannot round at all,
-//   which is strictly stronger and needs no /fp: discipline.)
+//   field. In int64 the chain is EXACT (max K = 299+12·3999 = 48287,
+//   K⁴ ≈ 5.4365e18 < 9.22e18, headroom ×1.70), so the ONLY rounding in the
+//   whole bake is the single `rad_scale · k4` boundary multiply — the locked
+//   load-time double->quantize idiom. (The ruling says "repeated
+//   multiplication in double"; int64 is that same chain in a type that
+//   cannot round at all, which is strictly stronger and needs no /fp:
+//   discipline.)
 //
 // NO INTERPOLATION, deliberately: the 4-unit staircase means near-equal pairs
 // land in the SAME bucket and net exactly 0, which reinforces the antisymmetry
@@ -256,7 +260,7 @@ RC_HD inline int32_t rad_quantize_signed(double v) {
 // rounding rule (half away from zero, one boundary), a wider saturation window
 // so the clamp below — not the quantize — is what bounds the result.
 //
-// WHY THE WIDTH MATTERS: at T_MAX_PHYS the E° difference reaches ~1.09e13 and
+// WHY THE WIDTH MATTERS: at T_MAX_PHYS the E° difference reaches ~1.71e13 and
 // w·a_s·a_r·τ can be as large as 1/ray_count, so the RAW product can exceed
 // INT32_MAX by orders of magnitude. Quantizing to int32 first would saturate to
 // INT32_MAX and only THEN meet the limiter — which happens to give the same
@@ -421,6 +425,17 @@ public:
     // is in config.toml [physics.fire] rad_scale and in bake_emissive_table().
     // Changing it re-bakes the table (see bake_emissive_table).
     double rad_scale = 1.0e-5;
+    // `kelvin_ambient` / `k_temp_to_kelvin` — the canonical game-T -> Kelvin
+    // map (temperature_scale_unification_design_2026-08-13 §2/§3a), owned by
+    // config [physics.temperature_scale] and assigned here by physics_runner
+    // before the eager bake. K(t) = kelvin_ambient + k_temp_to_kelvin·T_mid,
+    // T_mid = 4t+2 (see bake_emissive_table / the E° table comment above).
+    // Both dials are integer-valued while frozen; bake_emissive_table asserts
+    // that so the exact-int64 bake path stays honest if either ever moves.
+    // Changing either re-bakes the table (see the e_table_amb_/e_table_slope_
+    // staleness cache below).
+    double kelvin_ambient = 293.0;
+    double k_temp_to_kelvin = 3.0;
     // `T_emit_gate` — the temperature (game units) at or above which a NON-
     // burning thermal solid also CASTS (ruling A1.8, Erik's 180 = 653 K). The
     // gate decides who can radiatively LOSE heat; RECEIVERS ARE FREE (a cold
@@ -910,4 +925,9 @@ private:
     // function of `rad_scale`, so this is a cache, not hidden state.
     mutable std::vector<int64_t> e_table_;
     mutable double e_table_scale_ = 0.0;   // 0 == never baked
+    // Staleness cache twins for the Kelvin-map dials (design §3a): written in
+    // bake_emissive_table(), compared alongside e_table_scale_ in
+    // emissive_table() so a dial move re-bakes exactly like rad_scale does.
+    mutable double e_table_amb_   = 0.0;
+    mutable double e_table_slope_ = 0.0;
 };

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import numpy as np
 
+import temperature_scale        # P-K2: canonical game-T -> Kelvin map accessor
 from config import CFG
 from simulation import water_fixed   # S1: water_depth Q16.16 quantize helpers
 
@@ -333,6 +334,13 @@ class PhysicsRunner:
         #                 Receivers are free: a cold crate is heated correctly
         #                 on the flame's rays whatever this is.
         self.raycaster.rad_scale = float(getattr(fire_cfg, "rad_scale", 1.0e-5))
+        # P-K2: the canonical game-T -> Kelvin map (design §2/§3a), read via
+        # the accessor rather than CFG directly so the phi_exp/eos_slope
+        # load-time assert (temperature_scale._assert_invariants) always
+        # runs on this path too. K(t) is baked from these below.
+        _ts = temperature_scale.load(CFG)
+        self.raycaster.kelvin_ambient = float(_ts.kelvin_ambient)
+        self.raycaster.k_temp_to_kelvin = float(_ts.k_temp_to_kelvin)
         self.raycaster.T_emit_gate = float(getattr(fire_cfg, "T_emit_gate", 180.0))
         # P-F1a / v7 rule 4: RADIATION_RANGE — the emission ray's reach. A
         # STABILITY-CLASS constant, not a feel dial: at or above the grid

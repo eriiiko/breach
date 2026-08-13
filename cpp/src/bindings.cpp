@@ -1851,6 +1851,11 @@ PYBIND11_MODULE(breach_physics, m) {
         // whenever it moves, so setting the dial is enough. `T_emit_gate` is the
         // warm-emitter threshold in GAME temperature units.
         .def_readwrite("rad_scale", &Raycaster::rad_scale)
+        // Canonical game-T -> Kelvin map (temperature_scale_unification design
+        // §2/§3a): kelvin_ambient + k_temp_to_kelvin owned by config
+        // [physics.temperature_scale], assigned here by physics_runner.
+        .def_readwrite("kelvin_ambient", &Raycaster::kelvin_ambient)
+        .def_readwrite("k_temp_to_kelvin", &Raycaster::k_temp_to_kelvin)
         .def_readwrite("T_emit_gate", &Raycaster::T_emit_gate)
         // P-F1a / v7 rule 4: RADIATION_RANGE — the emission ray's reach, in
         // tiles. A STABILITY-CLASS CONSTANT, not a feel dial: it must be >= the

@@ -53,7 +53,11 @@ import breach_physics as bp  # noqa: E402
 from simulation import fire_fixed  # noqa: E402
 
 FP_ONE = 1 << 16
-RAD_SCALE = 1.0e-5
+# P-K2: re-anchored to preserve emitted flux at the P-F1b plateau (T=300 game)
+# under the ×3 Kelvin map — rad_scale' = 1.0e-5 * (893/1193)^4 = 3.1394e-6
+# (temperature_scale_unification_design_2026-08-13 §3b; config.toml carries
+# the derivation).
+RAD_SCALE = 3.1394e-6
 T_EMIT_GATE = 180.0
 RAY_COUNT = 8                      # == fire_ray_count == the D4 rotation period
 DIALS = dict(fire_ray_count=RAY_COUNT, range_base=2.0, range_per_i=3.0,
@@ -317,6 +321,21 @@ def test_gate_ii_ledger_identity_pre_fold_on_a_firestorm():
     half-weight mutual pairs (600 emitters see each other), rule-3 contact
     terminations (the random scatter creates plenty), and rule-4 sky escapes at
     all four edges.
+
+    P-K2 RETUNE (measured, temperature_scale_unification_design_2026-08-13
+    §3b): the emitter T upper bound was 3000 game. Under this seed
+    (20260802) the busiest cell's true (pre-wrap) magnitude is already
+    2,057,775,870 counts at the OLD map/rad_scale -- 96% of INT32_MAX, a
+    pre-existing near-the-rail scene the old dials happened to clear. The ×3
+    Kelvin map's re-anchored rad_scale (config.toml, §3b) raises E'/E by up
+    to ~1.59x in this range, which nudges that SAME cell's magnitude to
+    2,103,861,838 -- past INT32_MAX, wrapping `rad_net`'s documented
+    out-of-band contract (raycaster.h rad_signed_add) and breaking the
+    pre-fold ledger identity by exactly 2**32. This is a scene-construction
+    margin issue, not a conservation bug: lowering the upper bound to 2500
+    restores comfortable headroom (measured max|rad_net| 1,660,430,139, ~23%
+    below INT32_MAX) while still exercising temperatures far above the
+    operating band and well past T_emit_gate.
     """
     print("\nP-F1a GATE (ii) - ledger identity, pre-fold, firestorm scale:")
     rng = np.random.default_rng(20260802)
@@ -326,7 +345,7 @@ def test_gate_ii_ledger_identity_pre_fold_on_a_firestorm():
     while len(cells) < 600:
         cells.add((int(rng.integers(1, h - 1)), int(rng.integers(1, w - 1))))
     for (y, x) in cells:
-        sc.solid(y, x, atten=0.5, his=3, T_game=float(rng.uniform(200.0, 3000.0)))
+        sc.solid(y, x, atten=0.5, his=3, T_game=float(rng.uniform(200.0, 2500.0)))
         sc.burn(y, x, I=float(rng.uniform(0.3, 1.0)))
     for _ in range(800):
         y, x = int(rng.integers(0, h)), int(rng.integers(0, w))
@@ -700,11 +719,29 @@ def test_gate_v_open_field_lone_emitter_matches_the_grey_body_rate():
     (|dT| << his) >> RAD_LIM_SHIFT, and against the T = 0 ambient counterparty
     |dT| is just T_s -- which grows LINEARLY while the T^4 term does not. Above
     a crossover the rail therefore engages on the sky term itself and the loss
-    is legitimately BELOW the grey-body rate. At the shipped dials
-    (rad_scale 1e-5, a_s 0.5, his 3, N 8) that crossover is ~1300 game, four
-    times the operating band; the sweep stays under it, and the test then
-    CONFIRMS the rail does engage above it, so the boundary is pinned rather
-    than avoided.
+    is legitimately BELOW the grey-body rate. At the OLD dials (rad_scale 1e-5,
+    293 + 2*T_game map) that crossover was ~1300 game.
+
+    P-K2 RE-DERIVED (temperature_scale_unification_design_2026-08-13 §3e):
+    the design's own pre-patch estimate ("the limiter onset moves to ~1450
+    game", physics lens F6) reasoned that the steeper K(T) would push the
+    crossover UP. Measuring it in-patch (both analytically -- solving
+    N*(T_s<<his>>RAD_LIM_SHIFT) == a_s*(E[T_s]-E[0]) for T_s -- and against
+    the actual built table) shows the OPPOSITE: the crossover moves DOWN, to
+    ~1140 game. The reason is the anchor: rad_scale' was re-derived to
+    PRESERVE flux at T=300 (E'/E == 1.00 there), and E'/E is > 1.00 for every
+    T above the anchor (1.09 @ 400, 1.21 @ 600, 1.34 @ 1000 -- config.toml's
+    derivation comment carries the full table) -- so the RAW (unclamped) T^4
+    term is now LARGER at a given T_game than before, and a larger raw term
+    against the SAME linear rail (the rail depends only on game-T and `his`,
+    never on rad_scale or the Kelvin map) crosses the budget SOONER, not
+    later. Measured at the shipped dials (rad_scale 3.1394e-6, 293 + 3*T_game
+    map, a_s 0.5, his 3, N 8): T=1100 is still exact (rel err ~1.5e-8),
+    T=1120 exact, T=1140 already 0.47% off (past the 0.1% gate tolerance).
+    The sweep below stays at T=1100, comfortably under the ~1140 crossover;
+    the second loop CONFIRMS the rail engages above it (now probing 1200 too,
+    where the old dials were still exact but the new ones already show the
+    rail at ratio 0.867), so the boundary is pinned rather than avoided.
     """
     print("\nP-F1a GATE (v) - open-field lone emitter vs the grey-body rate:")
     tol_frac = 0.001                       # 10x below the ~1% heat_cull residual
@@ -726,7 +763,7 @@ def test_gate_v_open_field_lone_emitter_matches_the_grey_body_rate():
         return a_s * float(int(tab[bucket]) - int(tab[0]))
 
     rc = _rc()
-    for T in (300.0, 443.0, 800.0, 1200.0):
+    for T in (300.0, 443.0, 800.0, 1100.0):
         measured = _open_field_loss(T, rc)
         expected = _grey_body(T, rc)
         rel = abs(measured - expected) / expected
@@ -736,9 +773,10 @@ def test_gate_v_open_field_lone_emitter_matches_the_grey_body_rate():
             f"open-field loss is {rel:.4%} off the grey-body rate at T={T} -- "
             f"above the {tol_frac:.1%} tolerance, which is itself set BELOW "
             f"the named ~1% heat_cull residual")
-    # ABOVE THE CROSSOVER the limiter takes over, and the loss must fall BELOW
-    # the grey body (never above it -- railing can only under-transfer).
-    for T in (3000.0, 8000.0):
+    # ABOVE THE CROSSOVER (~1140 game, re-derived at P-K2) the limiter takes
+    # over, and the loss must fall BELOW the grey body (never above it --
+    # railing can only under-transfer).
+    for T in (1200.0, 3000.0, 8000.0):
         measured = _open_field_loss(T, rc)
         expected = _grey_body(T, rc)
         frac = measured / expected
@@ -749,7 +787,8 @@ def test_gate_v_open_field_lone_emitter_matches_the_grey_body_rate():
             f"adding energy, which it must never do")
     print(f"  within {tol_frac:.1%} through the operating band (the named "
           f"heat_cull residual is ~1%, an order of magnitude larger); the rail "
-          f"engages above ~1300 game and only ever under-transfers.")
+          f"engages above ~1140 game (P-K2 re-derivation) and only ever "
+          f"under-transfers.")
 
 
 # ===========================================================================

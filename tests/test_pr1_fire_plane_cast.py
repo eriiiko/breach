@@ -67,7 +67,9 @@ What is NEW and gated here (ruling A1, gate (e)):
         receives. The painter's air-heating died with the painter.
   (v)   TILE SET / ORDER — as above, against the legacy painter cast.
   (vi)  THE E° BAKE — exact integers, no libm: E[t] == round(rad_scale * K^4)
-        with K = 297 + 8t computed by repeated multiplication.
+        with K = kelvin_ambient + k_temp_to_kelvin*(4t+2) (== 299 + 12t at the
+        canonical [physics.temperature_scale] dials) computed by repeated
+        multiplication.
 
 The CUDA half (CPU vs GPU at tolerance 0) is tests/cuda_pr1_fire_plane_check.py
 (skips cleanly without a CUDA build).
@@ -88,10 +90,15 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "cpp" / "build" / "Release"))
 
 import breach_physics as bp  # noqa: E402
+import temperature_scale  # noqa: E402  P-K2: the canonical game-T -> Kelvin map
 from simulation import fire_fixed  # noqa: E402  S3a: gmap.fire is int32 Q16.16
 
 FP_ONE = 1 << 16
-RAD_SCALE = 1.0e-5
+# P-K2: re-anchored to preserve emitted flux at the P-F1b plateau (T=300 game)
+# under the ×3 Kelvin map — rad_scale' = 1.0e-5 * (893/1193)^4 = 3.1394e-6
+# (temperature_scale_unification_design_2026-08-13 §3b; config.toml carries
+# the derivation).
+RAD_SCALE = 3.1394e-6
 DIALS = dict(fire_ray_count=8, range_base=2.0, range_per_i=3.0,
              intensity_base=0.3, intensity_per_i=0.7, color=(1.0, 0.6, 0.2))
 
@@ -475,19 +482,32 @@ def test_emissive_table_is_the_exact_integer_bake():
     P-R4 baked int32 and this test asserted the saturation knee as intended
     behaviour ("the exchange goes flat there by design"). L2-B3 found that knee
     was the law's real high-temperature ceiling, not a design choice: above
-    T_game ~ 1768 at the shipped rad_scale every entry pinned at INT32_MAX, so
-    `diff` between ANY two tiles above it collapsed to 0 and a 3000-game tile
+    T_game ~ 1768 at the then-shipped rad_scale (1.0e-5, since re-anchored at
+    P-K2 — see RAD_SCALE above) every entry pinned at INT32_MAX, so `diff`
+    between ANY two tiles above it collapsed to 0 and a 3000-game tile
     radiated to a 2000-game tile exactly nothing. The table is now int64, and
     the assertion is that no shipping rad_scale can saturate it.
     """
-    print("\nP-F1a - the E bake (E[t] = round(rad_scale * K^4), K = 297+8t, int64):")
+    # P-K2: K(t) is read from [physics.temperature_scale] via the accessor —
+    # an INDEPENDENT re-implementation of the bake's formula (not a call into
+    # the engine's own table), so this stays an oracle rather than a tautology.
+    ts = temperature_scale.load()
+    amb, slope = ts.kelvin_ambient, ts.k_temp_to_kelvin
+    assert amb == int(amb) and slope == int(slope), (
+        "the exact-integer bake reference below assumes integer-valued dials")
+    amb, slope = int(amb), int(slope)
+    print(f"\nP-F1a - the E bake (E[t] = round(rad_scale * K^4), "
+          f"K = {amb} + {slope}*(4t+2) == {amb + 2 * slope} + {4 * slope}t, int64):")
+    # Saturation-property probe values (design §3e: "survive, headroom
+    # verified") — deliberately NOT tied to the shipped RAD_SCALE pin; they
+    # exercise the no-saturation property across a range, old and new.
     for scale in (1.0e-5, 3.0e-6):
         rc = _make_raycaster(rad_scale=scale)
         tab = rc.emissive_table()
         assert tab.shape == (4000,) and tab.dtype == np.int64, (
             f"the E table must be int64 since P-F1a, got {tab.dtype}")
         for t in (0, 1, 45, 70, 110, 200, 442, 1000, 2500, 3999):
-            K = 297 + 8 * t
+            K = amb + slope * (4 * t + 2)
             # The bake's own contract, with K^4 built by repeated
             # multiplication (exact in int64) and ONE rounding boundary.
             ref = int(round(scale * float(K) ** 4))
