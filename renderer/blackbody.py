@@ -162,7 +162,7 @@ class BlackbodyRamp:
         kelvin_ceil: float = 10000.0,
         lut_size: int = 256,
         kelvin_ambient: float = 293.0,
-        k_temp_to_kelvin: float = 2.0,
+        k_temp_to_kelvin: float = 3.0,
         kelvin_glow_min: float = 800.0,
         kelvin_ref: float = 3000.0,
         intensity_exponent: float = 4.0,
@@ -251,18 +251,25 @@ class BlackbodyRamp:
 
     @classmethod
     def from_config(cls, cfg) -> "BlackbodyRamp":
-        """Build from a config object, reading ``[render.blackbody]`` with
-        getattr defaults (the renderer's standard optional-section idiom — a
-        level/config without the section still gets the design defaults)."""
+        """Build from a config object, reading render-only dials from
+        ``[render.blackbody]`` (getattr defaults — the renderer's standard
+        optional-section idiom, a level/config without the section still
+        gets the design defaults) and the game-T -> Kelvin map itself from
+        ``[physics.temperature_scale]`` (the ONE canonical table shared with
+        radiation + the tuning tools — design
+        docs/temperature_scale_unification_design_2026-08-13.md §2/§3d)."""
         render = getattr(cfg, "render", None)
         bb = getattr(render, "blackbody", None)
         g = lambda name, default: float(getattr(bb, name, default))
+        physics = getattr(cfg, "physics", None)
+        ts = getattr(physics, "temperature_scale", None)
+        gt = lambda name, default: float(getattr(ts, name, default))
         return cls(
             kelvin_floor=g("kelvin_floor", 800.0),
             kelvin_ceil=g("kelvin_ceil", 10000.0),
             lut_size=int(getattr(bb, "lut_size", 256)),
-            kelvin_ambient=g("kelvin_ambient", 293.0),
-            k_temp_to_kelvin=g("k_temp_to_kelvin", 2.0),
+            kelvin_ambient=gt("kelvin_ambient", 293.0),
+            k_temp_to_kelvin=gt("k_temp_to_kelvin", 3.0),
             kelvin_glow_min=g("kelvin_glow_min", 800.0),
             kelvin_ref=g("kelvin_ref", 3000.0),
             intensity_exponent=g("intensity_exponent", 4.0),

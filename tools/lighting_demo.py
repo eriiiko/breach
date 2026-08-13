@@ -1363,8 +1363,9 @@ def _draw_hud(renderer: GameRenderer, gmap, state: PanelState,
     name, the five trace gases (steam/smoke/poison/teargas/fuel_gas) + O2 — is
     packed by renderer.hover_readout (pyray-free, unit-tested headless). READ-
     ONLY gmap reads. The T->Kelvin conversion is REUSED from the black-body
-    ramp (kelvin = kelvin_ambient + k_temp_to_kelvin * T_game), so the readout
-    and the emissive overlay agree.
+    ramp (kelvin = kelvin_ambient + k_temp_to_kelvin * T_game, config
+    [physics.temperature_scale]), so the readout and the emissive overlay
+    agree.
     """
     spawn_tag = " [SPAWN — click to detonate]" if state.spawn_mode else ""
     pause_tag = " [PAUSED]" if state.paused else ""

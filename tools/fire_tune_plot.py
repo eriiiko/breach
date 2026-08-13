@@ -61,19 +61,24 @@ NEEDED = ("t_min", "I", "T_game", "O2room_X")
 
 def kelvin_map():
     """Game-dT -> Kelvin mapping (kelvin_ambient, slope), read live from
-    config.toml [render.blackbody] so the plot follows the k_temp_to_kelvin
-    dial (2026-08-13, Erik's k_calibr question). Falls back to the historical
-    293 + 2*T if the config is unreadable. NOTE: the sim-side radiation LUT
-    still bakes its own copy of the mapping — this only relabels the axis."""
+    config.toml [physics.temperature_scale] — the ONE canonical game-T ->
+    Kelvin table (temperature_scale_unification_design_2026-08-13 §2/§3d) —
+    via the standalone accessor entry point, so the plot follows the
+    k_temp_to_kelvin dial without pulling in the full game config. NARROW
+    except: only a missing/stale/unreadable config falls back (printed
+    warning + the design's own default (293.0, 3.0)) — anything else
+    (a real bug in the accessor) is not swallowed."""
+    ROOT = Path(__file__).resolve().parent.parent
+    for _p in (ROOT, ROOT / "src"):
+        if str(_p) not in sys.path:
+            sys.path.insert(0, str(_p))
+    from temperature_scale import from_toml
     try:
-        import tomllib
-        cfg = Path(__file__).resolve().parent.parent / "config.toml"
-        with open(cfg, "rb") as f:
-            bb = tomllib.load(f).get("render", {}).get("blackbody", {})
-        return (float(bb.get("kelvin_ambient", 293.0)),
-                float(bb.get("k_temp_to_kelvin", 2.0)))
-    except Exception:
-        return 293.0, 2.0
+        ts = from_toml()
+    except (FileNotFoundError, RuntimeError, KeyError) as exc:
+        print(f"[fire_tune_plot] kelvin_map(): {exc} — falling back to (293.0, 3.0)")
+        return 293.0, 3.0
+    return ts.kelvin_ambient, ts.k_temp_to_kelvin
 
 
 def make_plot(csv_path, show=False, targets=None):

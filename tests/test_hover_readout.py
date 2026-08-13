@@ -46,11 +46,15 @@ from simulation.gases import (FUEL_GAS, N_GASES, O2, POISON, SMOKE,  # noqa: E40
 from simulation.materials import MAT_WOOD  # noqa: E402
 from simulation.fire_fixed import FP_ONE_F as FIRE_FP_ONE_F  # noqa: E402
 from simulation.gas_fixed import FP_ONE_F as GAS_FP_ONE_F  # noqa: E402
+from temperature_scale import load as _load_temperature_scale  # noqa: E402
 
 H, W = 4, 5
-# The config-default T->Kelvin conversion (kelvin_ambient + slope * T_game);
-# the demo passes the real ramp's _kelvin_from_tgame — here a plain lambda.
-KELVIN_FN = lambda t: 293.0 + 2.0 * t   # noqa: E731
+# The config-live T->Kelvin conversion (kelvin_ambient + slope * T_game),
+# re-derived from the SAME accessor the game uses (src/temperature_scale.py,
+# [physics.temperature_scale]) rather than a hardcoded lambda — the demo
+# passes the real ramp's _kelvin_from_tgame, which reads the same section.
+_TS = _load_temperature_scale()
+KELVIN_FN = _TS.to_kelvin
 
 
 def _stub_gmap():
@@ -89,7 +93,7 @@ def test_packs_all_fields_dequantized():
     assert (r.tx, r.ty) == (tx, ty)
     assert r.material == "wood"
     assert r.t_game == pytest.approx(300.0, abs=1e-3)
-    assert r.kelvin == pytest.approx(893.0, abs=1e-2)   # 293 + 2*300
+    assert r.kelvin == pytest.approx(_TS.to_kelvin(300.0), abs=1e-2)  # 293 + 3*300
     assert r.fire == pytest.approx(0.5, abs=1e-4)
     assert r.gases["steam"] == pytest.approx(0.25, abs=1e-4)
     assert r.gases["smoke"] == pytest.approx(0.50, abs=1e-4)
@@ -115,7 +119,7 @@ def test_cold_empty_tile_reads_zero():
     g = _stub_gmap()
     r = pack_hover_readout(g, 1, 1, KELVIN_FN)
     assert r.t_game == 0.0 and r.fire == 0.0
-    assert r.kelvin == pytest.approx(293.0)     # ambient at T_game 0
+    assert r.kelvin == pytest.approx(_TS.kelvin_ambient)  # ambient at T_game 0
     assert all(v == 0.0 for v in r.gases.values())
     assert r.material == "air"                  # MAT_AIR == 0
 

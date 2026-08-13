@@ -151,17 +151,28 @@ def test_field_not_mutated():
 # ---- config binding -----------------------------------------------------
 
 def test_from_config_reads_section():
+    # NON-default values through BOTH sections that feed from_config, so this
+    # cannot pass vacuously once the ctor defaults happen to equal config
+    # (temperature_scale_unification_design_2026-08-13 §3e's de-vacuousing —
+    # the map keys now live in [physics.temperature_scale], not
+    # [render.blackbody]).
     class _NS:
         pass
+    ts = _NS()
+    ts.kelvin_ambient = 111.0
+    ts.k_temp_to_kelvin = 5.0
+    physics = _NS()
+    physics.temperature_scale = ts
     bb = _NS()
-    bb.k_temp_to_kelvin = 3.0
     bb.intensity_max = 4.0
     render = _NS()
     render.blackbody = bb
     cfg = _NS()
     cfg.render = render
+    cfg.physics = physics
     r = BlackbodyRamp.from_config(cfg)
-    assert r.k_temp_to_kelvin == 3.0
+    assert r.kelvin_ambient == 111.0
+    assert r.k_temp_to_kelvin == 5.0
     assert r.intensity_max == 4.0
     # Unspecified keys fall back to the design defaults.
     assert r.kelvin_ref == 3000.0
@@ -171,7 +182,8 @@ def test_from_config_missing_section_uses_defaults():
     class _NS:
         pass
     r = BlackbodyRamp.from_config(_NS())
-    assert r.k_temp_to_kelvin == 2.0
+    assert r.kelvin_ambient == 293.0
+    assert r.k_temp_to_kelvin == 3.0
     assert r.lut_size == 256
 
 
@@ -199,9 +211,14 @@ def test_pack_cold_is_transparent():
 
 def test_pack_warm_tile_is_warm_and_visible():
     r = BlackbodyRamp()
-    # A hot flame-zone tile (~3000 game units): visible, warm (R >= B), and the
-    # peak hue channel saturates to 255 (brightness lives in alpha).
-    packed = pack_emissive_rgba(r, _field([[3000]]))
+    # A hot flame-zone tile (~1500 game units -> ~4793 K under the 293+3*T
+    # map): visible, warm (R >= B), and the peak hue channel saturates to 255
+    # (brightness lives in alpha). Kept comfortably below the ~6600 K point
+    # where the Tanner Helland fit tips blue-white (test_chroma_desaturates_
+    # with_temperature) — 3000 game units crossed that line once
+    # k_temp_to_kelvin moved 2.0 -> 3.0 (temperature_scale_unification_
+    # design_2026-08-13), which isn't what this test is checking.
+    packed = pack_emissive_rgba(r, _field([[1500]]))
     px = packed[0, 0]
     assert px[3] > 0                        # visible
     assert int(px[0]) >= int(px[2])         # red >= blue (warm)

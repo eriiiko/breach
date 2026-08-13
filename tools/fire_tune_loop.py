@@ -172,8 +172,13 @@ TUNE = {
     #   C4 §9.2                   ->  fire_T_ext < 280 (furniture) and < 300 (wood).
     #   C5 physical               ->  fire_T_ext in [140, 215] game
     #                                 = [573, 723] K = [300, 450] C (wood
-    #                                 pyrolysis-sustain). C5 is STRICTLY TIGHTER
-    #                                 than C4, so C4 is never the binding one.
+    #                                 pyrolysis-sustain; x2-era numbers — this
+    #                                 derivation predates temperature_scale_
+    #                                 unification_design_2026-08-13, the map
+    #                                 is now 293 + 3*T, kept as authored so the
+    #                                 2026-07-30 derivation stays legible).
+    #                                 C5 is STRICTLY TIGHTER than C4, so C4 is
+    #                                 never the binding one.
     #
     # The region is therefore the box  fire_T_ext in [140, 215],
     # fire_T_span in (0, (280 - fire_T_ext)/0.8056],  k in [29.8, 37.2],
@@ -183,7 +188,9 @@ TUNE = {
     # final size).  At k = 33 (plateau 443.5):
     #
     #   fire_T_ext ->   140     160     180     200     215     (game)
-    #   (Kelvin)       573     613     653     693     723
+    #   (Kelvin)       573     613     653     693     723       (x2-era
+    #                                                    numbers; map is now
+    #                                                    293 + 3*T)
     #   span  20      0.352   0.397   0.442   0.487   0.521     <- ratio
     #   span  40      0.388   0.433   0.478   0.524   0.557
     #   span  60      0.425   0.470   0.515   0.560   0.594
@@ -707,7 +714,7 @@ def scorecard(m):
         from fire_tune_plot import kelvin_map   # (tools/ is sys.path[0])
         amb, slope = kelvin_map()
     except Exception:
-        amb, slope = 293.0, 2.0
+        amb, slope = 293.0, 3.0  # [physics.temperature_scale] defaults
     print(f"{'flame plateau T (game)':<26}{m['flame_T']:>16.0f}   "
           f"{T['flameT_lo']:.0f}-{T['flameT_hi']:.0f}  "
           f"(= {amb+slope*T['flameT_lo']:.0f}-{amb+slope*T['flameT_hi']:.0f} K)  "

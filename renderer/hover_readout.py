@@ -16,7 +16,7 @@ nothing at all). Renderer-side module importing ``simulation`` is fine
 The T -> pseudo-Kelvin conversion is REUSED, not reinvented: the caller passes
 ``kelvin_fn`` = the black-body ramp's own ``_kelvin_from_tgame``
 (``kelvin = kelvin_ambient + k_temp_to_kelvin * T_game``, config
-[render.blackbody]), so the readout and the emissive overlay agree by
+[physics.temperature_scale]), so the readout and the emissive overlay agree by
 construction. Passing a callable keeps this module ramp-agnostic (and trivially
 testable with a plain lambda).
 """

@@ -492,6 +492,23 @@ U_MAX = 1000.0                        # v2.4 defense-in-depth velocity rail (m/s
                                       # eos_solver.cpp step 4's overflow guard). PROVISIONAL,
                                       # Erik review at P5.
 
+# Canonical game-T -> Kelvin map (temperature_scale_unification_design_
+# 2026-08-13 §2). The ONE place these constants are defined — radiation bake,
+# render blackbody, and tuning tools all read this section (accessor:
+# src/temperature_scale.py). [physics.eos] t_amb_k/C stay a DELIBERATE
+# exception (ruling 6): T_game is a ΔT, EOS pressure calibration doesn't care
+# what "0" means in Kelvin, and 290 is Q16.16-near-optimal where 293 would
+# add 92 extra quantization counts to every ambient cell.
+[physics.temperature_scale]
+kelvin_ambient = 293.0                 # absolute K at T_game = 0 (~20 C) — THE map ambient
+k_temp_to_kelvin = 3.0                 # game-dT -> Kelvin slope (Erik's k_calibr, blessed 2026-08-13)
+phi_exp = 0.3333333333333333           # EOS expansion fraction of the Kelvin excess.
+# VALUE-FROZEN this arc: phi_exp * k_temp_to_kelvin == 1.0 exactly
+# (0.3333333333333333 parses to double(1/3); 3.0*double(1/3) == 1.0, a
+# round-to-even tie landing on 1.0 — verified). Retuning phi_exp is the storm
+# session's ruling, not this one.
+eos_t_amb_k = 290.0                    # EOS absolute-ambient (pressure calibration) — see note above
+
 # EOS refactor P4 — combustion on real O2 (docs/eos_refactor_design.md §5,
 # decisions log #12). Own pass, once per tick, after the EOS solver
 # materializes P/N/T: burns fuel (flammable + wall_hp>0) against the local
@@ -837,14 +854,14 @@ legacy_smoke_on = false
 # fit (normalized, max channel = 1); brightness via a SEPARATE T⁴-flavour
 # intensity ramp (the fits give hue only). Game ΔT -> pseudo-Kelvin is the honest
 # dial for "white reserved for extremes": kelvin = kelvin_ambient +
-# k_temp_to_kelvin * T_game. Wood ignites at T_game ~300; the physical extreme
-# rail is T_MAX_PHYS = 16000.
+# k_temp_to_kelvin * T_game — the map itself now lives in
+# [physics.temperature_scale] (temperature_scale_unification_design_
+# 2026-08-13 §2/§3d); this section keeps only the render-only dials. Wood
+# ignites at T_game ~300; the physical extreme rail is T_MAX_PHYS = 16000.
 [render.blackbody]
 kelvin_floor = 800.0       # LUT low end (K)
 kelvin_ceil = 10000.0      # LUT high end (K)
 lut_size = 256             # LUT entries
-kelvin_ambient = 293.0     # pseudo-Kelvin at T_game = 0 (ambient)
-k_temp_to_kelvin = 3.0     # game-ΔT -> Kelvin slope  (TUNE BY EYE; 2026-08-13 Erik: 2.0 -> 3.0 preview, radiation LUT still bakes 2.0)
 kelvin_glow_min = 800.0    # below this: no visible glow (intensity 0)
 kelvin_ref = 3000.0        # exposure reference temperature (Macklin)
 intensity_exponent = 4.0   # Stefan-Boltzmann flavour (T⁴)
