@@ -348,3 +348,11 @@ session feel circular.
 open feel items are the ones §4 constrains: fire is small, fast and cool because it is
 **starving**, and the two walls (O₂ floor, far-field rise) are more interesting than dial
 work. Any ruling here should say what it does to those two numbers.
+
+---
+
+**Appended 2026-08-14 (supersession note).** Any ×2 game-T→Kelvin map referenced
+above is superseded by the unified canonical map in
+`[physics.temperature_scale]` (`K = 293 + 3·T_game`; EOS pressure calibration
+keeps a named, deliberate exception at `eos_t_amb_k = 290`). See
+`docs/temperature_scale_unification_design_2026-08-13.md`.

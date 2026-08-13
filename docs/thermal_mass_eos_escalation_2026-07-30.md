@@ -177,3 +177,13 @@ lines apart, so no single line contains both. The design doc's own instruction â
 grep is not a verification. For a *routing* question, the check that works is to
 start from the written field (`temperature[]`) and enumerate every writer, not to
 start from the mask and look for thermal words nearby.
+
+---
+
+**Appended 2026-08-14 (supersession note).** Any `T + 290`-only EOS ambient
+description above is superseded by the unified canonical map in
+`[physics.temperature_scale]`: the sim-wide Kelvin map is now `K = 293 +
+3Â·T_game`, with the EOS pressure calibration keeping a named, deliberate
+exception at `eos_t_amb_k = 290` (unchanged value, now a documented exception
+rather than the only convention). See
+`docs/temperature_scale_unification_design_2026-08-13.md`.

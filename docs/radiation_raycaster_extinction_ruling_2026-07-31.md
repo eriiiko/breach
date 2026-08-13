@@ -622,3 +622,9 @@ Erik's own sentence all live in the design doc. (2026-08-13 context: recorded
 while slicing commits for the temperature-scale unification arc,
 `temperature_scale_unification_design_2026-08-13.md`, per Erik's ruling that
 dated docs stay append-only.)
+
+**Appended 2026-08-14 (supersession note, separate from the 2026-08-13 note
+above).** Any ×2 game-T→Kelvin map referenced anywhere above is superseded by
+the unified canonical map in `[physics.temperature_scale]` (`K = 293 +
+3·T_game`; EOS pressure calibration keeps a named, deliberate exception at
+`eos_t_amb_k = 290`). See `docs/temperature_scale_unification_design_2026-08-13.md`.

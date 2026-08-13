@@ -296,3 +296,13 @@ B is the "could-make-money" ceiling and it runs on kernels you already own bit-i
 delta is marginal at that coarseness, A wins — production-proven, cheapest, and already the shape of
 your instinct. Either way the acoustic-CFL fear is retired, determinism stays intact (fixed-sweep
 Poisson, fluid render-only), and the heat channel stays the one-way absorber you decided on.
+
+---
+
+**Appended 2026-08-14 (supersession note).** Any `T + 290`-only EOS ambient
+description above is superseded by the unified canonical map in
+`[physics.temperature_scale]`: the sim-wide Kelvin map is now `K = 293 +
+3·T_game`, with the EOS pressure calibration keeping a named, deliberate
+exception at `eos_t_amb_k = 290` (unchanged value, now a documented exception
+rather than the only convention). See
+`docs/temperature_scale_unification_design_2026-08-13.md`.

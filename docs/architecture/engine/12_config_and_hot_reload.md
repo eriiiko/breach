@@ -83,6 +83,44 @@ shape:
 | `[rendering]` | pressure-overlay colormap | `pressure_scale`, `pressure_stops` |
 | `[combat]` | shared combat constants | `blast_damage_threshold`, `unit_absorption` |
 
+### `[physics.temperature_scale]` (2026-08-14, as-built)
+
+One new section holds the sim's single canonical game-T→Kelvin map, previously
+scattered across a hardcoded C++ constant (radiation), a config `[physics.eos]`
+pair (EOS), and an unconfigured render preview:
+
+```toml
+[physics.temperature_scale]
+kelvin_ambient   = 293.0   # THE map ambient (K at T_game = 0)
+k_temp_to_kelvin = 3.0     # THE map slope
+phi_exp          = 0.3333333333333333   # EOS expansion fraction; frozen so
+                                          # phi_exp * k_temp_to_kelvin == 1.0
+eos_t_amb_k      = 290.0   # EOS ambient — deliberate exception, see ch.06
+```
+
+Radiation (ch.08) and render (blackbody glow, ch.05) read `kelvin_ambient`/
+`k_temp_to_kelvin` from here directly; the EOS reads `eos_t_amb_k`/`phi_exp`
+(ch.04, ch.06). A Python accessor (`src/temperature_scale.py`) is the single
+place both the live `CFG` path and the standalone-tool `from_toml(path)` path
+resolve these keys, so the two entry points cannot drift apart on defaults.
+
+**Migration guards are hard errors, by design.** Because Erik edits config on
+two machines that only sync via git, a stale key must fail loudly rather than
+silently fall back: config load raises if `[physics.eos]` still carries
+`t_amb_k`/`C` (moved to `eos_t_amb_k`/the derived `C = 1/eos_t_amb_k`), if
+`[render.blackbody]` still carries `kelvin_ambient`/`k_temp_to_kelvin` (moved
+here), or if `[physics.temperature_scale]` itself is missing. The standalone
+tool path (`tools/fire_tune_plot.py`, `tools/fire_tune_loop.py`) is the one
+exception — it falls back to `(293.0, 3.0)` on a narrow load failure rather
+than hard-erroring, since it must keep working against an older checkout.
+
+**Reload caveat.** The accessor is **not** a live-reload path: like the C++
+solver values below, it snapshots `[physics.temperature_scale]` at first use
+(no module-level cache invalidation on `CFG.reload()`), so a Ctrl+R edit to
+this section needs a restart to reach the raycaster/EOS/render dials it
+feeds — the same restart-required class as the physics coefficients in §5.
+Design + rationale: `docs/temperature_scale_unification_design_2026-08-13.md`.
+
 The `[materials.*]` block is the data-driven heart of the material system: each
 `[materials.<name>]` row is a full property record (structural HP, flammability,
 walkability, per-channel optical attenuation, thermal conductivity, ignition

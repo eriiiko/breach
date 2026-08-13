@@ -334,3 +334,95 @@ notes — `fire_tuning_plan_2026-07-22.md`, `radiation_and_raycaster_design_seed
 `cuda_s7_diffuse_port_spec.md`, `cuda_xarch_ada_runbook.md:24`.
 
 Externals: clean — no CI, no config-reading .bat/.vscode tasks (verified).
+
+## 10. As-built record (P-K4, 2026-08-14)
+
+Bookkeeping close-out for P-K0..P-K3, written after the fact from patch gates.
+§3b above is left as the pre-build estimate (record, not corrected in place);
+this section is the measured reality, and where the two disagree, THIS section
+governs.
+
+**Commit chain:** `9e3f570` (session WIP: k_grow 0.5, k_temp_to_kelvin 3.0
+preview, config-driven Kelvin axis) → `6a312d2` (restore the extinction-ruling
+doc to its append-only form; re-express the pending change as an appended
+supersession note) → `f4c8c4a` (this design doc, v2, rulings locked) →
+`9016cd7` (P-K0: promote the blessed TUNE dial set into config, values
+verbatim) → `d243993` (P-K1: `[physics.temperature_scale]` + accessor;
+render/tools migrate) → `2922eb3` (P-K2: radiation bake on the canonical map)
+→ `57e9e67` (P-K3: EOS `phi_exp` slope mechanism at the frozen identity).
+
+**The canonical map, as shipped:**
+
+```toml
+[physics.temperature_scale]
+kelvin_ambient   = 293.0   # THE map ambient
+k_temp_to_kelvin = 3.0     # THE map slope
+phi_exp          = 0.3333333333333333   # frozen; eos_slope == 1.0 exact,
+                                          # quantizes to 65536
+eos_t_amb_k      = 290.0   # deliberate exception (ruling 6) — Q16.16 pin
+                            # 65540 (+4 counts) vs 65632 (+96) at 293
+```
+
+**Radiation (P-K2), measured:** the bake formula is
+`K = kelvin_ambient + k_temp_to_kelvin·(4t+2) = 299 + 12t` from the table
+(was hardcoded `297 + 8t`). `rad_scale` re-anchored `1.0e-5 → 3.1394e-6`,
+flux preserved exactly at the P-F1b plateau (T = 300 game) — the factor is
+`(893/1193)⁴ = 0.313938`. Max `e_table` entry measured `1.7067e13`; int64
+headroom ×1.70 (max K = 48287, K⁴ = 5.4365e18).
+
+**Flux-limiter crossover — corrects §3b.** §3b's pre-build estimate said the
+crossover moves to "~1450 game" and gave the direction as the steeper `K(T)`
+pushing it later. **Measured in-patch: the crossover is at ~1140 game** (down
+from ~1300 under the old ×2 map), and the direction in §3b was backwards —
+above the T=300 plateau anchor, the re-anchored curve is *hotter* than the old
+map at the same game-T, so it reaches the map-independent linear rail
+**sooner**, not later. This entry in §3b's estimate table is superseded by
+this paragraph; §3b's text is left unedited as the historical record of what
+was predicted before measurement.
+
+**EOS (P-K3):** byte-identical this arc, as designed. 120 s bench CSV
+byte-equal pre/post; CUDA PART-1 lockstep bit-identical. `t_abs = (s_eos_q·T
+>> 16) + t_amb_q`, `s_eos_q = 65536` (the frozen identity).
+
+**Goldens:** deferred per Erik's ruling 4 — no re-baseline this arc. The new
+golden suite (water + fire + pressure rooms + explosion) is co-designed with
+Erik post-tuning (§7), separately.
+
+**Known-red additions from this arc** (the 27-known-reds gate is
+"set-unchanged"; these are the named, justified additions on top of it, all
+sourced from P-K0's dial promotion unless noted):
+
+- `tests/test_cool_shift_axis.py` (2 tests) — pinned the pre-promotion
+  `cool_shift` dial value; the promoted TUNE set moved it.
+- `tests/test_eos_p4_combustion.py` (3 e2e tests) — combustion outcomes shift
+  under the promoted fire dial set (values verbatim from Erik's blessed TUNE
+  bench, not a retune).
+- `tests/test_fire_heat_source.py::test_full_chain_heat_ignites_air_separated_wood`
+  — now `XPASS(strict)`. Its own docstring names this the P-F1b handoff
+  signal. Verified caused by the P-K0 dial promotion; present already at the
+  OLD map (not a P-K2/radiation effect). **DECISION PENDING WITH ERIK:**
+  whether to un-xfail it now that the handoff it signals has actually landed.
+- `tests/test_pr3_capacity_law.py::test_fire_T_ext_is_derived_from_ignition_temp`
+  — `fire_T_ext` derivation shifts under the promoted dial set.
+- `tests/test_s3b_fire_determinism.py` (golden-digest based) — digest moves
+  with the promoted fire dials; not re-baselined (ruling 4).
+- `tests/test_w6_armory.py` (golden) — same digest-movement cause.
+
+**Justified scenario retune (P-K2, not a new red, a deliberate parameter
+change):** `test_pf1a_radiation_books` gate-ii firestorm emitter cap lowered
+`3000 → 2500` game to restore int32 headroom to ~23% (a pre-existing scene
+was already at ~96% of rail before this arc; the ~3.6% flux increase from the
+re-anchor tipped it over). Recorded here, not silent.
+
+**Suite state (this machine — Lenovo, CUDA build present):** 47 failed / 1879
+passed / 5 skipped. The 47-failure set is stable across P-K1..P-K3 (verified
+by stash A/B at each patch boundary — no drift). CUDA reds decompose into (a)
+stale-golden parts (expected, ruling 4 defers re-baseline) and (b) one
+desktop-calibrated 3.0 ms cost budget the Lenovo doesn't consistently clear
+(measured 3.35 ms once, 1.54 ms another run — machine variance, not a
+regression); every parity part (CPU↔CUDA bit-identity) is green at tol 0.
+
+**Arc status:** P-K0 through P-K4 complete on `thermal-mass-axis`. P-K5
+(HUMAN-TEST, Erik plays) is the only remaining gate before merge — see §6's
+checklist pointer (E′/E table §3b, the stand-next-to-fire damage delta, the
+warm-glow-but-inert band).

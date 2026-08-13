@@ -76,7 +76,13 @@
 >   `p*(N_amb, ΔT=0)` chain (`src/simulation/ambient.py`). At Earth defaults that is **65540 raw
 >   (1.000061 atm), not 65536**: every reachable `p*` is a multiple of ~T_AMB_K raw counts, so
 >   1.0 atm has no integer preimage. Seeding the interior + ring to the effective pin is what
->   makes a sealed planetside room's interior trajectory flat.
+>   makes a sealed planetside room's interior trajectory flat. **(2026-08-14, temperature-scale
+>   unification):** `C` and the EOS ambient now live in `[physics.temperature_scale]
+>   eos_t_amb_k` (290 K), not `[physics.eos]` — a *deliberate* exception to the sim's unified
+>   Kelvin map (`kelvin_ambient = 293`), kept because 290 gives this exact 65540 pin (+4 counts)
+>   while 293 would give 65632 (+96 counts), a 24× larger standing source in every ambient cell.
+>   The pin is test-pinned: `tests/test_eos_p1_calibration.py` asserts `effective_pin == 65540`.
+>   See `docs/temperature_scale_unification_design_2026-08-13.md` §2 ruling 6.
 > - **Reservoir + bath.** The bulk clamp resets ring `N` to `N_amb` **every substep** (mirroring
 >   the vacuum sink `N=0`), rail-counted by the int64 per-plane `boundary_flux`. `u` and `T` at
 >   the ring are the vacuum code verbatim (still boundary, ΔT = 0 ≡ ambient — no separate ambient-T

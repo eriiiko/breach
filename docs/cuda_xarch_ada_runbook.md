@@ -182,3 +182,20 @@ C:/Users/steen/miniconda3/python.exe -m pytest tests/test_cuda_s*.py -v
 #   ALL GREEN -> Ada attested (GPU == CPU golden 07c3f370). Record + push.
 #   ANY RED   -> real cross-arch bug. Localize the field/tick/op. Surface to Erik.
 ```
+
+---
+
+**Appended 2026-08-14 (temperature-scale unification arc).** The CPU golden
+lineage documented above (`2bab9702…` → … → `07c3f370…`) **predates** the
+2026-08-13/14 fire-dial promotion (P-K0) and radiation re-anchor (P-K2) — the
+digest has moved and is not re-baselined this arc, per Erik's explicit ruling
+(`docs/temperature_scale_unification_design_2026-08-13.md` ruling 4: goldens
+are deferred, a new golden suite is co-designed with Erik post-tuning, §7 of
+that doc). This does **not** reopen the cross-arch attestation this runbook
+proves: the **parity gates** (CPU↔CUDA bit-identity at tol 0, PART-1 style —
+the same shape as the per-solver `tests/test_cuda_s*.py` gates this runbook
+runs) remain the live oracle regardless of which historical baseline the CPU
+side reproduces, and they were attested green on Ada 2026-08-14 (RTX 1000
+Ada, driver 596.47, CUDA runtime 12090) across the temperature-scale arc's
+patches (P-K2 radiation, P-K3 EOS). A fresh golden digest is a separate,
+future action item — not required to trust this runbook's cross-arch claim.

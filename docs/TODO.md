@@ -18,8 +18,20 @@
   plus whatever mission 1 teaches. Quick residual: 30 s look at the W6 jet
   fans + 3D marines rendered together (never exercised in one window).
 
-
-## Open threads — cross-arc index (2026-07-22, "don't forget")
+- **Temperature-scale unification, awaiting P-K5 HUMAN-TEST (2026-08-14,
+  branch `thermal-mass-axis`)** — P-K0 through P-K4 are complete: one
+  canonical game-T→Kelvin map (`[physics.temperature_scale]`, `K = 293 +
+  3·T_game`) now backs radiation, render, and (via a named exception,
+  `eos_t_amb_k = 290`) the EOS pressure calibration; EOS is byte-identical
+  this arc. **P-K5 is Erik playing** — fire spread feel under the re-anchored
+  map, stand-next-to-fire damage at plateau/inferno/smolder, the
+  warm-glow-but-radiatively-inert band now visible from 169 game (was 253).
+  Checklist + numbers: `docs/temperature_scale_unification_design_2026-08-13.md`
+  §6 (patch table) and §10 (as-built record). NO auto-merge — Erik's verdict
+  gates it. **Storm-session preconditions updated:** `phi_exp` now exists as
+  a named (still frozen) dial, and two of the storm session's four parked
+  decisions are already taken (Kelvin-map unification; `phi_exp` naming) —
+  see the design doc's header rulings + §5.
 
 One place to see every loose end left by the recent burst of simultaneous
 patches (Arc B, W6, Fire & Heat, S8c, animation). Each points to where the real

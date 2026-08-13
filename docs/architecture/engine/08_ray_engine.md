@@ -372,6 +372,53 @@ Every choice above is shaped to port to the GPU unchanged:
 Per-tick ray-list construction (host list vs device launch grid) and near-source atomic
 contention are CUDA-phase tuning items, not contract changes.
 
+## Radiation bake — tile-to-tile thermal emission (P-R4, as-built 2026-08-14)
+
+Separate from the `LightSource` march above, `Raycaster` also drives **P-R4**: direct
+tile-to-tile Stefan–Boltzmann radiative exchange between hot solids (a burning tile
+radiating to its neighbours, independent of the emitter/light-source cast). It shares the
+`Raycaster` class and the determinism discipline (no `pow`/libm — `T⁴` must be a baked
+table) but is a distinct mechanism; this section documents only its temperature-scale
+surface — the full P-R4 exchange law (emissivity, pair coefficients, the flux limiter) is
+not yet canon-folded and lives in `config.toml`'s `[physics.fire]` comments and
+`cpp/src/raycaster.{h,cpp}` (credit: Howell/Mengüç/Siegel, *Thermal Radiation Heat
+Transfer*, for `E°(T) = σT⁴`).
+
+**The bake reads the same canonical map as everywhere else** (ch.06's temperature-scale
+callout): `Raycaster` holds `kelvin_ambient`/`k_temp_to_kelvin`, assigned from
+`[physics.temperature_scale]` by `physics_runner.py` before the eager bake. Bucket `t`
+covers game-`T ∈ [4t, 4t+4)`; its midpoint is `T_mid = 4t+2`, so the baked emissive table is
+
+```
+K(t) = kelvin_ambient + k_temp_to_kelvin·(4t+2)
+     = 293 + 3·(4t+2) = 299 + 12t          (shipped dials, exact int64)
+E[t] = clamp_int64(round(rad_scale · K(t)⁴))
+```
+
+`kelvin_ambient`/`k_temp_to_kelvin` must be integer-valued for this exact-int64 chain
+(`bake_emissive_table` throws otherwise, rather than silently falling back — a config that
+moves either dial off-integer without also moving to a double+quantize bake would desync
+CPU/CUDA). Max table entry at the shipped dials: `1.7067e13` (max `K = 48287`, `K⁴ =
+5.4365e18` — int64 headroom ×1.70).
+
+**Staleness on three dials.** The bake is a pure function of `rad_scale`,
+`kelvin_ambient`, and `k_temp_to_kelvin`; two cache members (`e_table_amb_`,
+`e_table_slope_`) sit alongside the existing `e_table_scale_`, written by
+`bake_emissive_table()` and compared in `emissive_table()` — moving *any* of the three
+re-bakes lazily on next use, exactly like `rad_scale` alone used to.
+
+**`rad_scale = 3.1394e-6`** (re-anchored 2026-08-14 from the pre-unification `1.0e-5`,
+which was derived under the old ×2 map). Derivation: flux is held exactly equal at the
+P-F1b plateau anchor (T = 300 game) across the map change — `rad_scale' = 1.0e-5 ·
+(893/1193)⁴ = 1.0e-5 · 0.313938`. See
+`docs/temperature_scale_unification_design_2026-08-13.md` §3b for the full E′/E ramp
+table and §10 for the as-measured numbers.
+
+**Flux-limiter crossover: ~1140 game** (measured; was ~1300 under the old ×2 map). The
+steeper post-unification curve is hotter than the old map above the T=300 anchor, so it
+reaches the map-independent linear rail *sooner* — see the design doc §10, which also
+corrects an earlier (wrong-direction) pre-build estimate.
+
 ## Lightning arcs (design, unbuilt)
 
 Electrical arcs are a separate, event-driven effect that shares nothing with the lighting

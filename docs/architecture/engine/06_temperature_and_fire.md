@@ -67,6 +67,30 @@ and fire feeds the loop as a heat-ray source. The remaining gaps are tuning
 >   unified `T`); glow would visually mark re-ignition sites (`ignition ≡ fuel ∧ O₂ ∧ T`). Not
 >   built — see `docs/blackbody_smoke_and_rendering_brainstorm.md`.
 
+> ## Temperature-scale unification (2026-08-14) — as-built
+>
+> Everywhere above, `T`/`temperature` is in **game units** (wood ignites at 300, `fire_T_ext`
+> is 350) — that is the sim's native scale, not an absolute temperature. **THE canonical
+> absolute-Kelvin map is `K = kelvin_ambient + k_temp_to_kelvin·T_game = 293 + 3·T_game`**,
+> defined once in config `[physics.temperature_scale]` and read by an accessor
+> (`src/temperature_scale.py`), never hand-derived per call site. Three consumers key off this
+> one map:
+>
+> - **Radiation** (Ray Engine ch.08) bakes its tile-to-tile emissive table directly from it:
+>   `K(t) = 293 + 12t` at the shipped dials.
+> - **Render** (blackbody glow, ch.05 §4a) reads the same ambient/slope for its temperature→RGB
+>   fit.
+> - **EOS pressure calibration is the one deliberate exception.** `t_abs = eos_t_amb_k +
+>   phi_exp·k_temp_to_kelvin·T_game`, with `phi_exp` frozen at exactly `1/3` so
+>   `phi_exp·k_temp_to_kelvin == 1.0` (the EOS slope is an identity — `t_abs = T_game +
+>   eos_t_amb_k` at these values). `eos_t_amb_k = 290`, not the map's `293`: 290 is
+>   Q16.16-near-optimal for the ambient pressure pin (see ch.04's `65540 raw` note), and a
+>   ΔT-only EOS has no in-game meaning for the 3 K offset. `phi_exp` is *named* now so a future
+>   retune (the storm-session line) tunes a real dial instead of an accidental constant.
+>
+> Design + as-built record: `docs/temperature_scale_unification_design_2026-08-13.md` (rulings,
+> §10 as-built).
+
 
 ## 1. Where heat comes from, where temperature lives
 

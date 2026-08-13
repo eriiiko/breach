@@ -310,3 +310,11 @@ No recommendation; the sizing call is Erik's. The two axes:
 - Task 3 STOPPED per its own escape clause; §3 is the required
   documentation of why, with direct measurement rather than only
   architectural argument.
+
+---
+
+**Appended 2026-08-14 (supersession note).** Any ×2 game-T→Kelvin map referenced
+above is superseded by the unified canonical map in
+`[physics.temperature_scale]` (`K = 293 + 3·T_game`; EOS pressure calibration
+keeps a named, deliberate exception at `eos_t_amb_k = 290`). See
+`docs/temperature_scale_unification_design_2026-08-13.md`.

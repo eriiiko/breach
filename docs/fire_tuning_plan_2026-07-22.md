@@ -765,3 +765,9 @@ rebased — it rides the joint re-tune's ONE deliberate rebase.
   re-tune — one crate cooked an 84×40 room to 2.3× ambient. Merge calls:
   sky-exchange → main now (behavior-free); o2-law stays parked. 4b re-tune
   order restated. 3c smoke build unblocked (integration line exists).
+
+**Appended 2026-08-14 (supersession note).** Any ×2 game-T→Kelvin map referenced
+above is superseded by the unified canonical map in
+`[physics.temperature_scale]` (`K = 293 + 3·T_game`; EOS pressure calibration
+keeps a named, deliberate exception at `eos_t_amb_k = 290`). See
+`docs/temperature_scale_unification_design_2026-08-13.md`.
