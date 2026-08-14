@@ -6,55 +6,74 @@
 
 ---
 
-## ⏸ PICK UP HERE — Breach paused 2026-08-04, resume ~2026-08-18
+## ⏸ PICK UP HERE — fire + temperature-scale arcs merged 2026-08-14; storm audit running
 
-Erik paused Breach for two weeks (time). Two overnight investigations landed
-2026-08-03/04. **Read these four docs, in this order:**
+### Map of docs/
+- **Canon (live-edited, source of truth):** `docs/architecture/**`.
+- **Open items:** this file (`docs/TODO.md`) — item-level; `docs/priority_ledger.md`
+  — the standing stack, coarser, in order.
+- **Capture (append-only, dated):** everything else in `docs/` — design docs,
+  seeds, critiques, audits, session records. Archived to `docs/archive/` at
+  arc close, unchanged (`git mv`); see `docs/archive/ARCHIVE_INDEX.md` for
+  what moved and why.
 
-1. `docs/fire_atmosphere_oscillation_analysis_2026-08-03.md` — why the
-   atmosphere storms. **Root-caused and measured.**
-2. `docs/audit_lessons_and_rules_2026-08-04.md` — the rules worth adopting
-   (each scored by which findings it would/would not have caught).
-3. `docs/codebase_audit_2026-08-03.md` — full six-area code quality audit.
-4. `docs/audit_handover_patch_a_2026-08-04.md` — the decision-free work package.
+### Where things stand
+The fire arc and the temperature-scale unification arc (P-K0–P-K5) are both
+**complete and merged to main**, Erik-played and blessed (P-K5). The 2026-08-03/04
+audit's Patch A (9 bounded items, decision-free) **landed** — commits A1–A9
+are on main. The docs those investigations produced are archived; see
+`docs/archive/ARCHIVE_INDEX.md`'s "2026-08-14 — fire arc + temperature-scale
+unification arc close" entry for the full list and what superseded what.
 
-**The storming answer in three lines.** It is NOT the fire being too hot and NOT
-the flicker — both were measured and falsified (steady drive is flat across
-ΔT 50→600; flicker amplitude 0 storms as much as amplitude 90). It is
-**connected geometry with zero momentum dissipation**: the same P-F1b fire
-leaves one sealed room at 0.12 m/s and a two-room level at **6.25 m/s with
-kinetic energy still growing after 200 s**. Mode period 0.646 s — matching the
-15-tick (0.625 s) Helmholtz mode Erik measured in B2 (`eos_refactor_decisions.md:163-169`),
-whose named remedy (`k_drag`) was never built. Worst at a **2-tile door**;
-harmless at 6 tiles. Every fire bench is single-room, so the whole arc was
-structurally blind to it — including gate (f), which passed honestly.
+**The canonical map**, as shipped (`[physics.temperature_scale]`):
+`K = 293 + 3·T_game`; EOS keeps a named, deliberate exception (`eos_t_amb_k =
+290`); `phi_exp` exists as a named (still frozen at 1/3) dial. Full as-built
+record, including what each old doc's formula/claim is now superseded by:
+`docs/temperature_scale_unification_design_2026-08-13.md` §10.
 
-**★ DECISIONS WAITING ON ERIK** (nothing proceeds without these):
-- **The two Kelvin maps.** Radiation/render use `K = 293 + 2·T`; the EOS uses
-  `T + 290`. Same field = 893 K to the books, 590 K to the gas. The EOS is
-  already applying half the excess (an accidental φ = 0.5). Ruling needed:
-  unify, or name the expansion scale as a deliberate `φ_exp` dial.
-- **Interior air damping.** The lever exists and needs no code
-  (`[materials.air] wave_absorb`, currently 0.0) — but with fire in the loop,
-  values 0.002–0.01 **destabilise the engine** (110 m/s winds, ~4500 T-floor
-  hits, energy growing after the fire is out). Clean at 0 and ≥0.02. Needs
-  independent verification before anyone turns it on. It also throttles O2
-  supply, which re-opens the package-A sizing calibration.
-- **P-F1b merge sequencing.** P-F1b (`origin/pf1b-recalibration`, unmerged,
-  HUMAN-TEST pending) did NOT cause the storming — it predates the fire arc.
-- **`cool_shift` 9 vs shipped 5** — the fire calibration runs 16× off its own
-  anchor (`config.toml:317,602`). Flagged "RE-TUNE AT P-R5"; P-R5 passed.
+**Two of the four "DECISIONS WAITING ON ERIK" from the 2026-08-04 audit are
+now TAKEN:** the two Kelvin maps are unified (above), and `phi_exp` naming is
+done (value still frozen). This did not change storming dynamics — the EOS
+stayed byte-identical through the arc by construction.
 
-**Status of Patch A** (audit hygiene, decision-free): handed to an agent
-2026-08-04. If it did not land, the brief is still valid — nine bounded items,
-all behaviour-preserving. Highest-value single item: **`fire_tune_loop.py`
-cannot run at all** (retired `k_fire_heat` → `KeyError`), and it is the tool
-that draws the intensity/temperature/O2 panels. One-line fix.
+**Storm-damping session — STAGED, audit running.** Erik's ruling
+(2026-08-14): the session runs the **momentum/energy ledger audit BEFORE
+choosing any damping dial** (reproduce → two-room bench → budget audit incl.
+the 2026-08-14 blowup dump → explain the `wave_absorb` 0.002–0.01 instability
+window and the density-division amplifier → then dissipation). A parallel
+agent is running that audit now — **do not touch `docs/storm_audit_*.md` if
+one appears while this is in flight.** `docs/fire_atmosphere_oscillation_analysis_2026-08-03.md`
+(root-caused the storming: connected geometry with zero momentum dissipation,
+not fire temperature or flicker) is the **live input** to that session — kept
+at `docs/`, not archived.
 
-**Two findings worth carrying to other projects:** gate coverage — not language
-— predicted code quality here; and *in an agent-built repo, a technique that is
-not in a file agents must read does not exist* (which is why the dormancy
-discipline propagated across 15 arcs and `_ep`/`RC_HD` did not).
+**Still open, not yet decided:**
+- **Interior air damping** — the storm audit above is the precondition for
+  this; see its ruling.
+- **`cool_shift` 9 vs shipped 5** — the fire calibration runs off its own
+  anchor (`config.toml:317,602`); flagged "RE-TUNE AT P-R5", not yet resolved.
+- **P-F1b branch cleanup** — its calibration values are already promoted into
+  the shipped TUNE set (P-K0); the branch (`origin/pf1b-recalibration`) itself
+  is now closable.
+- **Un-xfail the ignition handoff test** — `test_fire_heat_source.py::test_full_chain_heat_ignites_air_separated_wood`
+  is `XPASS(strict)` now that the handoff it signals has landed; Erik's call
+  whether to un-xfail it (`temperature_scale_unification_design_2026-08-13.md`
+  §10).
+
+**Deferred (post-tuning, Erik's initiative, §7 of the design doc):**
+- **Golden-suite co-design with Erik** — one deterministic canonical scenario
+  exercising the full sim surface (standing water, a living fire, rooms at
+  different pressures, an explosion), replacing re-baseline-from-whatever-state
+  with a suite designed to catch regressions everywhere, not just the quiet
+  systems. Own design session.
+- **Wind assessment** and **fire-vs-wind + O2-suffocation tuning** — queued
+  behind the storm-damping session (wind/damping share the momentum surface).
+
+**Two findings worth carrying to other projects** (from the 2026-08-04 audit,
+still true): gate coverage — not language — predicted code quality here; and
+*in an agent-built repo, a technique that is not in a file agents must read
+does not exist* (which is why the dormancy discipline propagated across 15
+arcs and `_ep`/`RC_HD` did not).
 
 ---
 
