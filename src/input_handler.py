@@ -51,13 +51,11 @@ to Ctrl+R for this reason.
 """
 from __future__ import annotations
 
-import math
-
 import pyray as rl
 
 from config import CFG
 from control_source import ControlSource
-from simulation.gases import GAS_NAMES, N_GASES
+from debug_keys import DebugKeyState, handle_debug_keys
 from simulation.weapons import get_tables as weapon_tables
 from simulation.orders import (
     DET_START_PHASE1,
@@ -82,10 +80,18 @@ class WEGOPlanningInput(ControlSource):
         self.grenade_fuse = weapon_tables().weapons.by_name[
             "hand_grenade"].fuse_default_seconds
         self.det_slot = DET_START_PHASE1
-        # DEBUG multi-gas spawn (engine/05 §6.2, M2): which gas the J key drops
-        # under the cursor. K cycles steam -> smoke -> poison ->
-        # teargas -> fuel_gas. Pure UI state — the sim never sees it.
-        self.selected_gas = 0   # STEAM (== GAS id 0)
+        # DEBUG key state (which gas the J key drops). Lives in `debug_keys`
+        # now so both control schemes share one implementation; the
+        # ``selected_gas`` property below keeps the old attribute working.
+        self._debug_state = DebugKeyState()
+
+    @property
+    def selected_gas(self) -> int:
+        return self._debug_state.selected_gas
+
+    @selected_gas.setter
+    def selected_gas(self, value: int) -> None:
+        self._debug_state.selected_gas = int(value)
 
     @property
     def planning_phase(self) -> int:
@@ -108,82 +114,12 @@ class WEGOPlanningInput(ControlSource):
         # ---- Global keys ----
         K = rl.KeyboardKey
 
-        # Ctrl+R: hot-reload config.
-        ctrl_held = (rl.is_key_down(K.KEY_LEFT_CONTROL) or
-                     rl.is_key_down(K.KEY_RIGHT_CONTROL))
-        if ctrl_held and rl.is_key_pressed(K.KEY_R):
-            CFG.reload()
-
-        # F8: manual recorder dump.
-        if rl.is_key_pressed(K.KEY_F8) and sim.recorder is not None:
-            sim.recorder.dump("manual")
-
-        # I: DEBUG ignite the tile under the cursor (engine/06 fire tuning).
-        # Drops fire anywhere — forces the tile flammable so Erik can light up
-        # any spot without hunting for a wood wall. Writes gmap.fire directly
-        # (not via sim.edit) so it lands immediately even while paused. Debug
-        # only; guarded behind a single key, no gameplay path touches it.
-        if rl.is_key_pressed(K.KEY_I):
-            self._debug_ignite(sim, renderer)
-
-        # K: DEBUG cycle which gas the spawn key drops (engine/05 §6.2, M2).
-        # Prints the new selection so Erik can see what J will spawn.
-        if rl.is_key_pressed(K.KEY_K):
-            self.selected_gas = (self.selected_gas + 1) % N_GASES
-            print(f"[debug] selected gas -> {self.selected_gas} "
-                  f"({GAS_NAMES[self.selected_gas]})")
-
-        # J: DEBUG spawn a blob of the currently-selected gas under the cursor
-        # (engine/05 §6.2, M2). Writes gmap.gas[sel] directly so it lands
-        # immediately even while paused — the colour render then sums it with any
-        # other gases present. Debug-only; mirrors the I-ignite path.
-        if rl.is_key_pressed(K.KEY_J):
-            self._debug_spawn_gas(sim, renderer)
-
-        # U: DEBUG pour 0.2 m of water on the tile under the cursor (water
-        # W2b). Writes gmap.water_depth directly so it lands immediately even
-        # while paused — the FieldEdit queue only flushes in an unpaused step.
-        # Mirrors the I-ignite / J-gas path.
-        if rl.is_key_pressed(K.KEY_U):
-            self._debug_pour_water(sim, renderer)
-
-        # N: DEBUG cycle the SELECTED unit's weapon through every
-        # triggerable [weapons.*] row (W6 — Erik's grand-tuning key: the
-        # armory-as-data payoff). Goes through the FACADE
-        # (sim.debug_cycle_weapon — resets mag/burst state coherently); the
-        # input layer never edits unit fields itself. Prints the new row
-        # (the K-cycle style) and the panel shows it live. LOBBED/PLACED
-        # rows are skipped — grenades/charges ride their own modes (G / B).
-        if rl.is_key_pressed(K.KEY_N) and self.selected_unit_id is not None:
-            new_weapon = sim.debug_cycle_weapon(self.selected_unit_id)
-            if new_weapon is not None:
-                u = sim.get_unit(self.selected_unit_id)
-                print(f"[debug] {getattr(u, 'name', 'unit')} weapon -> "
-                      f"{new_weapon}")
-
-        # O: DEBUG toggle the door entity under the cursor (A6 doors v0,
-        # a6 doors design §10 / Erik's ruling 5). The KEY and its plumbing
-        # are dev/render-layer (same citizenship as I-ignite); the
-        # want_open latch it flips IS synced entity state — the slot-9e
-        # sweep works toward it (blocked closes retry each tick). The
-        # renderer's water-optics toggle moved O -> V to free this key.
-        if rl.is_key_pressed(K.KEY_O):
-            self._debug_toggle_door(sim, renderer)
-
-        # P / Shift+P: DEBUG tilt the ship about x (water W2b — feel the
-        # Titanic slide): +2 degrees per press, -2 with Shift, clamped to
-        # +/-20. gmap.tilt_x is the water solver's tilt input, stored in
-        # RADIANS. Prints the new tilt (the K-cycle style) — nothing on
-        # screen shows the tilt yet, so the console line IS the feedback.
-        if rl.is_key_pressed(K.KEY_P):
-            shift_held = (rl.is_key_down(K.KEY_LEFT_SHIFT) or
-                          rl.is_key_down(K.KEY_RIGHT_SHIFT))
-            step = math.radians(-2.0 if shift_held else 2.0)
-            lim = math.radians(20.0)
-            gmap = sim.gmap
-            gmap.tilt_x = max(-lim, min(lim, gmap.tilt_x + step))
-            print(f"[debug] ship tilt_x -> "
-                  f"{math.degrees(gmap.tilt_x):+.1f} deg")
+        # The DEV keys (Ctrl+R reload, F8 dump, I/J/K/U/N/O/P) moved verbatim
+        # into `debug_keys` so the OnePhaseWEGO scheme can gate the SAME set
+        # behind --debug (onephase_wego design §17). Behaviour here is
+        # unchanged: this scheme still polls them every frame, as it always has.
+        handle_debug_keys(sim, renderer, self._debug_state,
+                          self.selected_unit_id)
 
         # Spacebar: pause toggle. If we're resuming AND there are queued
         # grenade orders, materialise them before time starts flowing.
@@ -257,110 +193,6 @@ class WEGOPlanningInput(ControlSource):
         elif sim.is_paused() and rl.is_mouse_button_pressed(
                 rl.MouseButton.MOUSE_BUTTON_RIGHT):
             self._handle_right_click(sim, renderer)
-
-    # ------------------------------------------------------------------
-    # Debug actions
-    # ------------------------------------------------------------------
-    def _debug_ignite(self, sim, renderer):
-        """DEBUG: ignite a small patch at the tile under the mouse cursor.
-
-        Forces the patch flammable and sets ``fire`` directly so a fire starts
-        anywhere (no need for a wood wall) and lands immediately even while
-        paused. A render/tuning aid only — no gameplay code reaches this path.
-        """
-        tile = renderer.mouse_to_tile()
-        if tile is None:
-            return
-        fx, fy = tile
-        gmap = sim.gmap
-        h, w = gmap.fire.shape
-        if not (0 <= fy < h and 0 <= fx < w):
-            return
-        # Light a 3x3 patch so it reads at typical zoom; clamp to bounds.
-        y0, y1 = max(0, fy - 1), min(h, fy + 2)
-        x0, x1 = max(0, fx - 1), min(w, fx + 2)
-        gmap.flammable[y0:y1, x0:x1] = True   # force-flammable for debug
-        # S3a: gmap.fire is int32 Q16.16 — quantize the full-intensity seed (a raw
-        # `= 1.0` would store 1 count ~ no fire).
-        from simulation import fire_fixed
-        gmap.fire[y0:y1, x0:x1] = fire_fixed.quantize_scalar(1.0)  # full-intensity seed
-
-    def _debug_spawn_gas(self, sim, renderer):
-        """DEBUG: spawn a blob of the selected gas at the tile under the cursor.
-
-        Writes the selected slice of ``gmap.gas`` directly (a small clamped
-        patch at full density) so the coloured ray march picks it up immediately,
-        even while paused. Mirrors :meth:`_debug_ignite`. ``gmap.smoke`` is a view
-        of the smoke slice, so spawning smoke also fills ``smoke``.
-        A render/tuning aid only — no gameplay code reaches this path.
-        """
-        tile = renderer.mouse_to_tile()
-        if tile is None:
-            return
-        fx, fy = tile
-        gmap = sim.gmap
-        _, h, w = gmap.gas.shape
-        if not (0 <= fy < h and 0 <= fx < w):
-            return
-        # A 3x3 patch at full density so it reads at typical zoom; clamp to bounds.
-        y0, y1 = max(0, fy - 1), min(h, fy + 2)
-        x0, x1 = max(0, fx - 1), min(w, fx + 2)
-        # S2b: gmap.gas is int32 Q16.16 — write full density (1.0) as FP_ONE counts.
-        from simulation import gas_fixed
-        gmap.gas[self.selected_gas, y0:y1, x0:x1] = gas_fixed.SMOKE_MAX_Q
-
-    def _debug_pour_water(self, sim, renderer):
-        """DEBUG: pour 0.2 m of water on the tile under the mouse cursor.
-
-        Writes ``gmap.water_depth`` directly (the :meth:`_debug_ignite` /
-        :meth:`_debug_spawn_gas` precedent) so the pour lands immediately
-        even while paused — the FieldEdit queue only flushes in an unpaused
-        step. Single tile (the pipe model spreads it next tick); skips solid
-        tiles (water never stands on a wall); total depth clamps at 2.5 m
-        (the air-column ceiling). A render/tuning aid only — no gameplay
-        code reaches this path.
-        """
-        tile = renderer.mouse_to_tile()
-        if tile is None:
-            return
-        fx, fy = tile
-        gmap = sim.gmap
-        h, w = gmap.water_depth.shape
-        if not (0 <= fy < h and 0 <= fx < w):
-            return
-        if gmap.solid[fy, fx]:
-            return
-        # S1: water_depth is int32 Q16.16 metres. Dequantize, add 0.2 m, clamp at
-        # the 2.5 m ceiling, re-quantize.
-        from simulation import water_fixed
-        cur_m = float(gmap.water_depth[fy, fx]) / water_fixed.FP_ONE_F
-        gmap.water_depth[fy, fx] = water_fixed.quantize_scalar(
-            min(cur_m + 0.2, 2.5))
-
-    def _debug_toggle_door(self, sim, renderer):
-        """DEBUG: flip the want_open latch of the door under the cursor.
-
-        A6 doors v0 (design §10, ruling 5): dev-only key, synced latch.
-        ``mouse_to_tile()`` returns (x, y) — ``door_at`` takes (fy, fx),
-        so the SAME (col,row)->(row,col) flip every debug key applies is
-        applied here (the N9 pin). Destroyed door or no door: print only.
-        """
-        tile = renderer.mouse_to_tile()
-        if tile is None:
-            return
-        fx, fy = tile
-        door = sim.door_at(fy, fx)
-        if door is None:
-            print(f"[debug] no door at tile ({fx}, {fy})")
-            return
-        if not door.alive:
-            print(f"[debug] door '{door.id}' at ({fx}, {fy}) is destroyed "
-                  f"— inputs are dead")
-            return
-        door.want_open = not door.want_open
-        print(f"[debug] door '{door.id}' want_open -> "
-              f"{int(door.want_open)} (state={door.state}; the 9e sweep "
-              f"applies/retries next unpaused tick)")
 
     # ------------------------------------------------------------------
     # Click handlers

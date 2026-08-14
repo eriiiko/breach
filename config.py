@@ -72,6 +72,13 @@ class GameConfig:
         self.clock.ticks_per_round = (
             self.clock.ticks_per_phase * self.clock.phases_per_round
         )
+        # OnePhaseWEGO's own round length (onephase_wego design §2) — ONE
+        # phase, ~4 s. Derived beside the two-phase numbers above rather than
+        # replacing them: both rulesets ship simultaneously for the whole arc,
+        # and TwoPhaseWEGO must keep reading exactly the value it always did.
+        self.clock.onephase_ticks_per_round = ticks_from_seconds(
+            self.clock.round_duration_seconds, self.clock.ticks_per_second
+        )
 
         # Tick-rate-independent tunables: authored per-second in config.toml,
         # derived here into the integer tick counts the engine consumes. These
@@ -112,6 +119,25 @@ class GameConfig:
         # same seconds -> integer-ticks derivation. 1.0 s -> 24 ticks @ 24 tps.
         self.exchange.teargas_blind_ticks = ticks_from_seconds(
             self.exchange.teargas_blind_seconds, tps
+        )
+
+        # OnePhaseWEGO time-currency dials (onephase_wego design §3): authored
+        # in seconds, consumed as integer tick deadlines. Dormant under every
+        # other ruleset — nothing outside simulation.ruleset.OnePhaseWEGO and
+        # its systems reads these, so no shipped golden can move.
+        self.onephase.gcd_ticks = ticks_from_seconds(
+            self.onephase.gcd_seconds, tps
+        )
+        self.onephase.weapon_swap_ticks = ticks_from_seconds(
+            self.onephase.weapon_swap_seconds, tps
+        )
+        # The planning clock is the one duration allowed to be ZERO (0 =
+        # untimed single-player, design §16), so it cannot use the max(1, ...)
+        # helper — that floor exists to keep a real duration from collapsing
+        # to instantaneous, and "no timer at all" is a distinct meaning.
+        self.onephase.planning_clock_ticks = (
+            round(self.onephase.planning_clock_seconds * tps)
+            if self.onephase.planning_clock_seconds > 0 else 0
         )
 
         self.recorder.capacity = round(self.recorder.replay_seconds * tps)

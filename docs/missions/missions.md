@@ -10,6 +10,9 @@
 
 ### The Hook
 
+Eriks comments - the ship is floating in space, not in a sea
+also-i wonder if there is some better org than unhcr to use here, perhaps UN or something made up. In the game universe, whatever org it is is a corrupted org, or at least some one is using the ship in nefarious ways.
+
 A UNHCR transport — the *MV Caduceus* — entered national waters three days ago carrying WHO humanitarian vaccine supplies. Routine docking was expected. Instead: silence. No radio contact. No crew movement visible on satellite. The ship is drifting.
 
 This is politically sensitive. UNHCR ships are sovereign — boarding one without permission is an international incident. But people are nervous. The government can't be seen ignoring a ghost ship off the coast. Your squad is sent quietly: investigate, report, get out. No media. No footprint.
@@ -18,15 +21,15 @@ This is politically sensitive. UNHCR ships are sovereign — boarding one withou
 
 ### What the Player Finds
 
-The squad breaches through a lower cargo bay. The ship is dark — emergency lighting only. Power is on but systems are in standby. The air smells wrong.
+The squad enters the ship silently through a lower cargo bay. The ship is dark — emergency lighting only. Power is on but systems are in standby. The air smells wrong.
 
-**Phase 1: Cargo Hold** — crates everywhere, UNHCR and WHO markings, medical supplies. Some crates are smashed open. Spilled vials, broken cold-storage units. A body — but it's not dead. It moves wrong. The first zombie encounter. The player's rules of engagement said "defensive only" — but these things aren't crew anymore. The ROE becomes irrelevant fast.
+**Phase 1: Cargo Hold** — crates everywhere, UNHCR and WHO markings, medical supplies. Some crates are smashed open. Spilled vials, broken cold-storage units. The player's mission is to recon, and enter the crew's quarters and medical bay - they may use door explosive, or any other tools at their disposal.
 
-The opening combat is tight, claustrophobic. Cargo containers create natural cover and chokepoints. The player learns movement, shooting, cover mechanics against a slow, low-threat enemy. Zombies teach the basics without being overwhelming.
-
-**Phase 2: Crew Quarters & Medical Bay** — the squad pushes deeper into the ship. More zombies, some in medical scrubs, some in crew uniforms. The medical bay is trashed — someone tried to barricade themselves in. It didn't work. Medical logs on a terminal (if the player checks): symptoms started 36 hours after the crew handled certain crates. Fever, confusion, aggression. The ship's doctor logged three cases before the entries stop mid-sentence.
+**Phase 2: Crew Quarters & Medical Bay** — the squad pushes deeper into the ship. The ship seems empty, but the players vision is restricted to where the marines flashlights point. They sunddenly notice a zombie very close. More zombies, some in medical scrubs, some in crew uniforms are spread along the walls. The medical bay is trashed — someone tried to barricade themselves in. It didn't work. Medical logs on a terminal (if the player checks): symptoms started 36 hours after the crew handled certain crates. Fever, confusion, aggression. The ship's doctor logged three cases before the entries stop mid-sentence.
 
 Environmental storytelling: a half-eaten meal in the mess hall. Personal effects scattered in corridors. This was fast — the crew didn't have time to organize. The player pieces together a collapse that took maybe 48 hours.
+
+The player may or may not encounter zombies here - i'm leaning one encounter only, and perhaps not even combat. 
 
 **Phase 3: The Bridge** — the squad fights up through stairwells and corridors to the command bridge. The bridge door is sealed from inside. When the squad breaches it:
 

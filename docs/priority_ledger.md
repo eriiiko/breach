@@ -6,6 +6,14 @@ standing stack so any session can orient in ten seconds. Update it whenever a
 priority is decided, finished, or dropped — a stale ledger is worse than none.
 Created 2026-07-17 from Erik's stated stack; Erik owns the ordering.
 
+**Planning window 2026-07-30 →** `roadmap_2026-07-30_rl_push.md` (Erik-blessed):
+the RL push — real-time-primary + player-insertable-at-any-seat vision; tracks
+F (fire re-tune, ACTIVE, Erik) · 1 combat completeness (momentum/sprint next) ·
+2 RL substrate (recorder-first; milestones M0–M4 can start in parallel
+worktrees) · 3 training ladder (full-AI R1–R4 first, human-insertion H1–H2
+after) · 4 content · 5 rendering (motivation-driven, never blocking). The stack
+below remains the standing order.
+
 ---
 
 ## The stack

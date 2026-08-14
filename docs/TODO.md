@@ -1,8 +1,105 @@
 # Breach — TODO
 
 > What needs to be done. Not what's done — git has that.
+> Planning window: `roadmap_2026-07-30_rl_push.md` maps these items into tracks
+> (the RL push); this file stays the item-level ledger. Staleness-swept 2026-07-30.
 
 ---
+
+## ⏸ PICK UP HERE — Breach paused 2026-08-04, resume ~2026-08-18
+
+Erik paused Breach for two weeks (time). Two overnight investigations landed
+2026-08-03/04. **Read these four docs, in this order:**
+
+1. `docs/fire_atmosphere_oscillation_analysis_2026-08-03.md` — why the
+   atmosphere storms. **Root-caused and measured.**
+2. `docs/audit_lessons_and_rules_2026-08-04.md` — the rules worth adopting
+   (each scored by which findings it would/would not have caught).
+3. `docs/codebase_audit_2026-08-03.md` — full six-area code quality audit.
+4. `docs/audit_handover_patch_a_2026-08-04.md` — the decision-free work package.
+
+**The storming answer in three lines.** It is NOT the fire being too hot and NOT
+the flicker — both were measured and falsified (steady drive is flat across
+ΔT 50→600; flicker amplitude 0 storms as much as amplitude 90). It is
+**connected geometry with zero momentum dissipation**: the same P-F1b fire
+leaves one sealed room at 0.12 m/s and a two-room level at **6.25 m/s with
+kinetic energy still growing after 200 s**. Mode period 0.646 s — matching the
+15-tick (0.625 s) Helmholtz mode Erik measured in B2 (`eos_refactor_decisions.md:163-169`),
+whose named remedy (`k_drag`) was never built. Worst at a **2-tile door**;
+harmless at 6 tiles. Every fire bench is single-room, so the whole arc was
+structurally blind to it — including gate (f), which passed honestly.
+
+**★ DECISIONS WAITING ON ERIK** (nothing proceeds without these):
+- **The two Kelvin maps.** Radiation/render use `K = 293 + 2·T`; the EOS uses
+  `T + 290`. Same field = 893 K to the books, 590 K to the gas. The EOS is
+  already applying half the excess (an accidental φ = 0.5). Ruling needed:
+  unify, or name the expansion scale as a deliberate `φ_exp` dial.
+- **Interior air damping.** The lever exists and needs no code
+  (`[materials.air] wave_absorb`, currently 0.0) — but with fire in the loop,
+  values 0.002–0.01 **destabilise the engine** (110 m/s winds, ~4500 T-floor
+  hits, energy growing after the fire is out). Clean at 0 and ≥0.02. Needs
+  independent verification before anyone turns it on. It also throttles O2
+  supply, which re-opens the package-A sizing calibration.
+- **P-F1b merge sequencing.** P-F1b (`origin/pf1b-recalibration`, unmerged,
+  HUMAN-TEST pending) did NOT cause the storming — it predates the fire arc.
+- **`cool_shift` 9 vs shipped 5** — the fire calibration runs 16× off its own
+  anchor (`config.toml:317,602`). Flagged "RE-TUNE AT P-R5"; P-R5 passed.
+
+**Status of Patch A** (audit hygiene, decision-free): handed to an agent
+2026-08-04. If it did not land, the brief is still valid — nine bounded items,
+all behaviour-preserving. Highest-value single item: **`fire_tune_loop.py`
+cannot run at all** (retired `k_fire_heat` → `KeyError`), and it is the tool
+that draws the intensity/temperature/O2 panels. One-line fix.
+
+**Two findings worth carrying to other projects:** gate coverage — not language
+— predicted code quality here; and *in an agent-built repo, a technique that is
+not in a file agents must read does not exist* (which is why the dormancy
+discipline propagated across 15 arcs and `_ep`/`RC_HD` did not).
+
+---
+
+## Planning burst 2026-08-08→10 — three new capture docs (post-fire-retune queue)
+
+Erik's vacation planning pass. All three are **capture/design docs on main**;
+none starts before the fire/atmosphere lid closes (Erik's sequencing: stable
+fire + radiation first, then basic fires working, then explosions). Scope creep
+deluxe, by choice.
+
+- **Level generation v0.1** — `docs/breach_levelgen_design_v0.1.md`
+  (2026-08-10, claude.ai sessions). Graph-grammar-first levelgen; nine LOCKED
+  decisions L1–L9 (planarity by construction, pressure cells as grammar
+  concept, LLM-authored offline recipes, (ruleset hash, seed) reproducibility).
+  Design-only until fully specified. **NEXT work package = the vocabulary page
+  + consolidation pass vs the existing level generator (§4, a Claude Code
+  task); then the embedding session (§5).** Own roadmap in its §7.
+- **Tsetlin-machine / engine architecture** — `docs/breach_tm_architecture.md`
+  (2026-08-09, airplane session). TM primer + hazard-prognosis self-labeling,
+  hot/cold GPU split + command-buffer/status-mirror/event-queue membrane,
+  three-tier mind hierarchy, behavioral dials (clause truncation = intelligence,
+  vote bias = temperament), room graph as first-class citizen. **NEXT (its §16
+  step 1) = communication-contract doc: walk the repo, annotate each item
+  existing vs aspirational — the gap list becomes the implementation plan.**
+  The room graph is the shared spine with levelgen (five consumers).
+- **Brainstorm 2026-08-08** — `docs/brainstorm_2026-08-08.md`. (1) enemies
+  changing behaviour on damage (the enrage-trigger dial → focus-fire vs
+  spread-damage tactics); (2) reward-vector-as-personality (curriculum/
+  annealing, potential-based shaping, OpenAI-Five/AlphaStar precedents) —
+  serves the RL push directly; (3) water-pass-2 seeds (trapped-air-pocket
+  experiment, §5.5 unit↔water couplings, swim/float/drown) — feeds the
+  roadmap's open "aquarium/water arc scope" question.
+- **Generic explosion design (Erik, 2026-08-10 chat — capture, needs a design
+  pass).** Instead of per-weapon explosion tuning: ONE parameterized explosion
+  archetype (yield/radius/heat/pressure profile), and weapons — grenades,
+  bazooka shots, future ordnance — are *scaled instances* of it. Goal:
+  variation without balancing every weapon by hand; later hook for automatic
+  balancing (self-play / headless sweeps). Slot: with the explosions item in
+  Erik's sequencing above, after basic fires work.
+- Mission/beastiary notes updated same burst: `docs/missions/missions.md`
+  (mission-1 comments: ship floats in space not sea, org rethink, stealth-lean
+  phase 1–2) and `docs/beastiary/beastiary.md` (zombie-as-a-STATE inheriting
+  the victim's attributes + equipment; robots immune; extract the claude.ai
+  bestiary entries via egregore someday).
+
 
 ## Waiting on Erik (human-gated)
 
@@ -18,20 +115,52 @@
   plus whatever mission 1 teaches. Quick residual: 30 s look at the W6 jet
   fans + 3D marines rendered together (never exercised in one window).
 
-- **Temperature-scale unification, awaiting P-K5 HUMAN-TEST (2026-08-14,
-  branch `thermal-mass-axis`)** — P-K0 through P-K4 are complete: one
-  canonical game-T→Kelvin map (`[physics.temperature_scale]`, `K = 293 +
-  3·T_game`) now backs radiation, render, and (via a named exception,
-  `eos_t_amb_k = 290`) the EOS pressure calibration; EOS is byte-identical
-  this arc. **P-K5 is Erik playing** — fire spread feel under the re-anchored
-  map, stand-next-to-fire damage at plateau/inferno/smolder, the
-  warm-glow-but-radiatively-inert band now visible from 169 game (was 253).
-  Checklist + numbers: `docs/temperature_scale_unification_design_2026-08-13.md`
-  §6 (patch table) and §10 (as-built record). NO auto-merge — Erik's verdict
-  gates it. **Storm-session preconditions updated:** `phi_exp` now exists as
-  a named (still frozen) dial, and two of the storm session's four parked
-  decisions are already taken (Kelvin-map unification; `phi_exp` naming) —
-  see the design doc's header rulings + §5.
+- **Temperature-scale unification — P-K5 PASSED, arc merged (2026-08-14,
+  built on `thermal-mass-axis`)** — one canonical game-T→Kelvin map
+  (`[physics.temperature_scale]`, `K = 293 + 3·T_game`) backs radiation,
+  render, and (via the named exception `eos_t_amb_k = 290`) the EOS pressure
+  calibration; EOS byte-identical through the arc. Erik played and blessed
+  the fire 2026-08-14; during that session the recorder captured a live
+  multi-room storming blowup (`debug_blowup_20260814_015714.npz`) — evidence
+  for the storm session, explicitly out of the arc's scope. Full record:
+  `docs/temperature_scale_unification_design_2026-08-13.md` §10.
+  **Storm-session preconditions updated:** `phi_exp` exists as a named
+  (still frozen) dial; two of the four parked decisions are taken
+  (Kelvin-map unification; `phi_exp` naming); **Erik's ruling 2026-08-14:
+  the session runs the momentum/energy LEDGER AUDIT before choosing any
+  damping dial** (reproduce → two-room bench → budget audit incl. the
+  blowup dump → explain the wave_absorb 0.002–0.01 instability window and
+  the density-division amplifier → then dissipation). Still open from the
+  arc: un-xfail the ignition handoff test (Erik's call).
+
+## Next gameplay arc — momentum / earned sprint / unit collision (2026-07-30)
+
+**Design sketch: `docs/inertia_and_sprint_design_2026-07-30.md`.** Captured
+from Erik at the close of the OnePhaseWEGO human-test; needs its own design
+session before any build.
+
+**Erik's sequencing ruling: do NOT start with the full inertial model.** Start
+with the simple rule — sprint as an EARNED STATE (speed up, navigation down)
+after ~4 s of continuous movement, so normal single-round play is unchanged and
+only multi-round runs cash in. It is a state machine, not a physics model, so
+it can be felt and thrown away cheaply. Real momentum (velocity vector,
+acceleration from mass/strength) stays behind it.
+
+Unit collision is needed by both and is the part Erik wants "intricate":
+bodies are already solid (`timeline.occupied_by_unit`, 2026-07-30), and
+`stability` already exists as the knockdown threshold for shockwave push —
+a body collision is the same shape of event and should reuse that rule. A
+stationary unit braces; a moving one has already committed its balance.
+
+Two of Erik's framings worth not re-deriving: *certainty decreasing with
+distance is a feature*, and *a predicted collision is self-cancelling* (if the
+planner sees it, the player routes around it) — so "exact except collisions" is
+a far stronger guarantee than it sounds. Momentum also feeds the ML-animation
+track: `velocity` + collision impulses are exactly the signal physics-driven
+animation wants, one-way, render-only.
+
+
+## Open threads — cross-arc index (2026-07-22, "don't forget")
 
 One place to see every loose end left by the recent burst of simultaneous
 patches (Arc B, W6, Fire & Heat, S8c, animation). Each points to where the real
@@ -60,10 +189,6 @@ Erik's signal — several want their own dedicated session.
   sweep. Directional spray currently kicks a fixed burst (`start_spray_burst_directional`,
   aim latched via `spray_aim_angle`); the fix is hold-to-fire + per-tick re-aim
   while TRIGGER is down. Delicate weapon → its own design/build pass.
-- **Playground level re-convert vs current engine.** `levels/playground/` (the
-  `--level playground` sandbox) predates recent engine + Arc-C editor format
-  changes; may not be fully converted. Re-open/convert via the map editor
-  (`tools/map_editor.py`) — a map-editor-agent task, not control work.
 - **Grenade button remap.** Grenade came out on the wrong physical button. A
   button-index logger now prints `[gamepad] raylib button index N pressed`
   (`control_gamepad.py`, human-test debug) — press each pad button, read the
@@ -88,8 +213,8 @@ Erik's signal — several want their own dedicated session.
   canon chapters (esp. `mechanics/04_turn_and_control.md` — also fix its stale
   12 Hz table → 24 Hz) and archive the two design brainstorms to `docs/archive/`.
 - Cleanup pending: delete the merged `control-modularity` branch + worktree
-  (local + `origin`) once canon fold is done. `origin/main` may still be behind —
-  push when Erik OKs (would also publish B2).
+  (local + `origin`) once canon fold is done. *(The old "origin/main may be
+  behind" note is resolved — verified in sync 2026-07-30.)*
 
 **Arc B (entity logic layer — DONE + merged 2026-07-22), its two parked riders:**
 - **Resident sensor-gather kernel** — the §5a `(n_sites × n_channels)` int32 GPU
@@ -120,6 +245,15 @@ Erik's signal — several want their own dedicated session.
   impl + tuning is a chat-sized HUMAN-TEST rider (`physics.py:104` blast-tuple
   wart retires here). · **Dust-stirring shockwaves** — dusty-ground flag +
   wave_p threshold → smoke injection. · **Post-EOS doc consolidation.**
+- **Grenade energy-budget retune (Erik, 2026-07-30)** — grenades currently dump
+  too much static pressure into the room (blowup-adjacent; cf. the fire→pressure
+  link under the Fire & Heat tuning session). Re-split the deposit: HEAT as the
+  primary payload, less raw over-pressure, and evaluate seeding an initial
+  radial WIND (velocity initial condition) so the shockwave is carried by
+  momentum — a directional/impulse dial instead of a pressure spike. Check how
+  a u-field injection couples with the (separate, post-EOS-confirmed) wave_p
+  blast system before tuning. Feel-adjacent → HUMAN-TEST; natural companion to
+  the fire-tuning session.
 
 **Animation track:** the weapon/grenade + shockwave-push question (just folded
 from TODO2.md) + the appearance/skin-pipeline items — all ↓ "Animation".
@@ -290,11 +424,6 @@ All render-only — no sim/determinism surface, auto-skipped in headless trainin
   brush is a dark-red feathered blob, no normal-map relief. Design
   added to `graphics_lighting_design.md` §7.5.
 
-- **Fire as a short-range light source** — wire burning tiles into
-  the raycaster as `LightSource` instances with small `max_range`
-  (2–4 tiles). Design in `docs/fire_design_notes.md`. Lands with the
-  upcoming physics-engine pass.
-
 - **1-bounce raycaster with surface tint** — light rays bounce once
   off walls, tinted by the surface colour. Cheap caustics-lite for
   metal corridors and coloured rooms. Note in `architecture.md` §7
@@ -302,9 +431,7 @@ All render-only — no sim/determinism surface, auto-skipped in headless trainin
 
 ---
 
-## Gameplay / graphics — before returning to physics (Erik, 2026-05-23)
-
-Three small items to land before the next deep physics-engine pass.
+## Gameplay / graphics — small standing items (Erik, 2026-05-23)
 
 1. **Ambient lighting + two-kinds-of-lights discussion** — picks up the
    prior thread (see [[project-lighting-vision]] in memory and
@@ -348,89 +475,6 @@ Task:
 
 ---
 
-## NEXT SESSION: Build One Complete Level
-
-_Priority #1 — everything else is blocked on having a real testbed._
-
-> Status note: the current `unhcr_vessel` level is **render-complete** (walls
-> cast shadows, normal map present). The goal below — a fully layered level
-> running every physics system end to end — remains OPEN.
-
-**Goal:** One fully layered level (textures, heightmaps, normalmaps) that can run
-all physics systems (atmosphere, smoke, fire, water, water-air coupling). Pick a
-reference ship section and build it end to end.
-
-**Plan:**
-1. **Research tools** — search the internet for the best tools to create layered
-   ship levels. We need tools that can produce: diffuse textures, height maps,
-   normal maps — ideally with layer-based workflows matching the ship build-up
-   described in the graphics docs.
-2. **Choose a workflow** — evaluate candidates, pick a pipeline. Consider:
-   what creates the layers, what exports the maps, how do we scale/align to our
-   pixel grid (may need manual or heterogeneous scaling).
-3. **Choose materials** — decide on surface types (metal hull, deck plating,
-   interior walls, grating, etc.) so the heightmap has real physical detail for
-   the water sim to interact with.
-4. **Build the level** — execute the workflow. Produce all required layers for
-   one complete ship section.
-5. **Integration test** — load it into the engine and run every physics system
-   on it: atmosphere, smoke, fire, fluid sim, water-air coupling. This becomes
-   the permanent testbed.
-
-**Open question:** Pick a specific reference ship/deck type before starting, so
-tool research is grounded in something concrete.
-
----
-
-## Migrate Rendering: pygame → pyray
-
-Replace all pygame rendering with pyray (Python bindings for raylib). Game logic
-stays in Python, only the draw calls change. This unlocks GPU-accelerated
-rendering, normal map shaders, and aligns with the C++ physics / CUDA pipeline.
-
-- [ ] Set up pyray in the main game loop (window, input, frame cycle)
-- [ ] Port tile/map rendering
-- [ ] Port unit sprite rendering
-- [ ] Port UI (orders, phase indicator, debug overlays)
-- [ ] Port physics debug visualization (pressure, smoke, fire colormaps)
-- [ ] Remove pygame dependency entirely
-
-**Prototype exists:** `prototypes/raylib_test.py` already uses pyray.
-
----
-
-## Blocking: One Perfect Level (original notes)
-
-1. **Art assets** — 4 congruent textures: ship hull, interior, skeleton, + normal/height maps. Erik's job, requires graphic design work.
-2. **Normal map shader** — integrate into raylib rendering pipeline. Course notes in `breach_graphics_course.md`. Huge visual upgrade once textures exist.
-
-## Physics — recently landed (coefficient model)
-
-- ~~**Pressure-driven wall failure**~~ **DONE** (commit 3fbdc12) —
-  `MaterialTable.burst_threshold` + `GameMap.find_burst_walls(max_pops)`;
-  `Simulation.step` (after fire burn-through) destroys walls holding a
-  pressure differential above their per-material `burst_threshold`, capped
-  by `[physics] burst_max_per_tick`, gated by `[physics] burst_enabled`.
-  The emergent pressure-relief valve. (Architecture: engine/04 §2.7.)
-- ~~**Permeability column + permeability boundary**~~ **DONE** (5220148,
-  e005c9a) — `MaterialTable.permeability` (default sealed iff occludes
-  light); `GameMap.permeability`/`dyn_permeability`; the C++ atmosphere +
-  smoke solvers gather flux via `face = min(perm[self], perm[neighbor])`.
-  `obstacles` now sourced from `permeability == 0`. Behaviour-identical for
-  the current materials.
-- ~~**Soft units (units as partial gas)**~~ **DONE** (4f26f0c) — a living
-  unit writes a partial `dyn_permeability` (default 0.5, per-unit hook +
-  `[physics] unit_permeability`) so smoke/air seep past a body; still casts
-  light shadows + impassable to movement.
-- ~~**Units absorb blasts (4a)**~~ **DONE** (89026ca) — `GameMap.wave_absorb`
-  / `dyn_wave_absorb` (material `wave_absorb` + units via
-  `[physics] unit_wave_absorb`); the C++ wave update damps per cell by it.
-  Energy-out only; open air bit-identical.
-- ~~**Retire `is_wall`**~~ **DONE** (3c99b1c) — `GameMap.solid`
-  (= `permeability <= 0`) replaces `is_wall` everywhere in Python.
-  *Follow-up still open:* remove the now-vestigial C++ `is_wall` parameter
-  (fed `gmap.solid`) + rebuild.
-
 ## Physics — Open Items
 
 4. **Breach decompression / lingering-smoke venting fix** — sponge + vacuum
@@ -440,27 +484,24 @@ rendering, normal map shaders, and aligns with the C++ physics / CUDA pipeline.
    → wind → 0). The real fix needs a *sustained continuity wind toward the
    breach* — an open design decision. (Architecture: engine/04 §4; smoke
    ch.05.) See `atmosphere_solver_analysis_and_patch_plan_20260319.md`.
+   *(2026-07-30: pre-EOS item — re-verify against the EOS/BC/sky-exchange
+   engine before designing; the substrate changed under it.)*
 4. **Shallow water / fluid simulation** — prototype exists (`prototypes/fluid_test.py`: pipe model + shallow water equations, ship tilting). Needs integration into game engine. Use cases: water flooding, coolant leaks, blood pooling.
-5. **Fire ignition model** — ignition as O₂ + temperature function. Explosions deposit heat, temperature diffuses, spontaneous ignition above threshold. Pieces exist but integration glue is missing.
-
-## CUDA Migration
-
-6. **Raycaster → CUDA** — first target, embarrassingly parallel. See `cuda_integration_plan.md`.
-7. **Diffusion solver → CUDA** — 2D stencil, textbook GPU kernel.
-8. **Wave equation → CUDA** — same pattern as diffusion.
-9. **Smoke advection → CUDA** — semi-Lagrangian with GPU texture interpolation.
-
 ## Code Cleanup
 
-10. **Remove deprecated solvers** — `wave_solver.cpp` and `atmo_diffusion.cpp` are superseded by `atmosphere_solver.cpp`.
-11. **Fix debug_physics.py** — references `WaveSolver` which doesn't exist anymore (should be `AtmosphereSolver`).
-12. **Flashlight prototype: take CLI args** — `prototypes/raylib_cpp/flashlight.cpp` hardcodes `art/ships/chatgptSpaceShip1.png` and the matching wall mask / normal map / emissive files. Should accept `--ship`, `--walls`, `--normals` arguments so we can test arbitrary levels without overwriting files. Recompile with cmake after changes.
+10. **Remove the vestigial C++ `is_wall` parameter** — Python retired `is_wall`
+    for `GameMap.solid` (3c99b1c), but the C++ solvers still take `is_wall`
+    arguments (fed `gmap.solid`; ~125 references across `cpp/src/` as of
+    2026-07-30); remove the parameter + rebuild.
 
 ## Gameplay
 
-12. **Mission 1 implementation** — "Silent Cargo" is fully designed in `missions/missions.md`. Needs the art assets first.
-13. **Creature AI** — genetic soldiers and hybrids not yet designed. Zombies work.
-14. **Weapons** — need 1-2 more weapon types (at minimum) for Mission 1.
+12. **Mission 1 implementation** — "Silent Cargo" is fully designed in
+    `missions/missions.md`. Needs a level authored for it first (the Arc-C
+    editor is the tool; the old art-asset blocker retired with that art
+    direction, 2026-07-22).
+13. **Creature AI** — genetic soldiers and hybrids not yet designed. Zombies
+    work. (Roster expansion — critters/cages/aquariums — is roadmap Track 4.)
 
 ## Future (not blocking anything)
 
@@ -608,10 +649,6 @@ before those docs are archived. Source doc noted in parens._
 
 - **Phase-transition detection is fragile** — `new_phase = exec_tick // tpp`
   works but consider explicit phase-boundary tracking. (architecture.md §16 #7)
-- **Turn/phase flow regression** — flagged at migration playtest; symptom not
-  captured (candidates: transition trigger, pause-release timing, order
-  resolution at tick boundaries). Reproduce + diagnose against legacy behaviour.
-  (patch_game_logic_migration.md playtest #6)
 - **Explosion visuals are weak** — no flame burst/flash; port or redesign the
   legacy pressure-to-color drama. (patch_game_logic_migration.md playtest #1)
 - **Explosions should emit a transient light source** at the blast center for a
@@ -664,6 +701,9 @@ before those docs are archived. Source doc noted in parens._
 
 ### AI training infrastructure
 
+*(2026-07-30: these are now Track 2 of `roadmap_2026-07-30_rl_push.md` — the
+substrate milestones M0–M4 subsume them.)*
+
 - **AI training scaffolding (`train.py`)** — Gymnasium loop over `Simulation`;
   add `get_reward`/`is_terminal` hooks (facade stubs exist). Separate patch.
   (patch_game_logic_migration.md follow-ups; review_game_logic_migration.md #3)
@@ -676,9 +716,10 @@ before those docs are archived. Source doc noted in parens._
 - **Manual airlock / "airlock v2"** (Erik, 2026-07-21 HUMAN-TEST) — manual OPEN
   buttons on each side of both airlock doors, alongside the automatic
   `airlock_controller`. Deferred: `button`/terminal are format-reserved but
-  INERT in v1 (entity design §3d) — they wake up only with the **control-scheme
-  decision** (WEGO → possible direct gamepad control), so manual operation is
-  gated on that arc, not Arc B. Slot after the control scheme lands.
+  INERT in v1 (entity design §3d) — they were gated on the control-scheme
+  decision, which RESOLVED 2026-07-23 (modularity split; direct gamepad control
+  is merged and blessed). **Now unblocked** — needs unit-initiated `use`
+  interaction under direct control. Slot when wanted.
 - **Resident sensor-gather kernel** — Arc B stubbed the §5a accessor to the host
   mirror (no GPU gather kernel, per the S8c-concurrency constraint). Build the
   `(n_sites × n_channels)` int32 gather kernel on the resident path once S8c has

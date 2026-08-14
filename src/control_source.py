@@ -101,15 +101,28 @@ class ControlSource:
         direct control runs immediately (``False``)."""
         return True
 
+    @property
+    def wants_renderer_toggles(self) -> bool:
+        """May the RENDERER keep its own diagnostic key bindings (F1-F10, T,
+        V, M, …)?
+
+        ``True`` for every shipped scheme — nothing about their keymaps
+        changes. ``OnePhaseWEGOInput`` returns ``self.debug``, because §17
+        rules that in game mode the control scheme owns every binding, so the
+        renderer's diagnostic keys are evicted with the rest unless ``--debug``
+        arms them.
+        """
+        return True
+
 
 # Launch-flag name -> factory. P3 adds "gamepad" (GamepadDirect); the ML entry
 # point (AgentPolicy) is driven differently — it has no per-frame poll loop —
 # so it is not expected to route through this same factory; see the design doc
 # §3b.
-_KNOWN_CONTROLS = ("wego", "gamepad")
+_KNOWN_CONTROLS = ("wego", "gamepad", "onephase")
 
 
-def create_control_source(name: str) -> "ControlSource":
+def create_control_source(name: str, debug: bool = False) -> "ControlSource":
     """Factory for the ``--control`` launch flag (§3b).
 
     ``name`` must be one of :data:`_KNOWN_CONTROLS`: ``"wego"`` (today's
@@ -130,6 +143,12 @@ def create_control_source(name: str) -> "ControlSource":
         # requires pyray.
         from control_gamepad import GamepadDirect
         return GamepadDirect()
+    if name == "onephase":
+        # The turn-formula redesign (onephase_wego design). Picks OnePhaseWEGO
+        # as its ruleset; ``debug`` re-arms the evicted diagnostic keys (§17 +
+        # Erik's kickoff ruling 2).
+        from control_onephase import OnePhaseWEGOInput
+        return OnePhaseWEGOInput(debug=debug)
     raise SystemExit(
         f"--control must be one of {_KNOWN_CONTROLS!r}, got {name!r}")
 

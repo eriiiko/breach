@@ -31,6 +31,14 @@ from simulation.orders import DET_START_PHASE1, DET_BETWEEN_PHASES, DET_END_PHAS
 class Ruleset:
     """Strategy interface a :class:`~simulation.simulation.Simulation` owns.
 
+    ``drives_units`` (class attribute): does this ruleset own the per-tick
+    unit-simulation slots itself? ``False`` — the shipped default — means
+    ``Simulation.step`` runs its historical slot 3 (``_update_player_movement``)
+    and slot 4 (``process_shooting``) bodies verbatim. ``True`` means the
+    ruleset replaces both with :meth:`drive_units`, which is how OnePhaseWEGO
+    substitutes the compiled timeline for the phase-indexed order scan without
+    disturbing a single line of the legacy path.
+
     Every method takes the owning ``sim`` explicitly (rather than closing
     over it) so a single stateless ``Ruleset`` instance could in principle
     serve multiple simulations — none of the shipped implementations need
@@ -38,6 +46,25 @@ class Ruleset:
     round-clock state (``tick``, ``phase``, the ``_fired_*`` flags, AP)
     lives on ``sim`` / ``Unit``, never on the ruleset.
     """
+
+    #: See the class docstring. Overridden to True by OnePhaseWEGO.
+    drives_units = False
+
+    #: Does this ruleset run a vision model the renderer should gate on
+    #: (onephase_wego design §8)? False on the shipped rulesets — they have no
+    #: vision system and draw everything, exactly as they always have.
+    fog_of_war = False
+
+    def drive_units(self, sim) -> None:
+        """One tick of unit simulation, when ``drives_units`` is True.
+        Replaces ``Simulation.step``'s slots 3 and 4 entirely."""
+        raise NotImplementedError
+
+    def on_orders_changed(self, sim, unit) -> None:
+        """Called after ``unit``'s order queue is mutated (an order placed or
+        undone), so a ruleset that precompiles can rebuild. No-op by default —
+        the shipped rulesets recompute paths from ``Simulation`` instead."""
+        pass
 
     def on_round_start(self, sim) -> None:
         """Called every tick, early in :meth:`Simulation.step`, before any
@@ -69,6 +96,29 @@ class Ruleset:
         """Episode-boundary check for the AI training / Gymnasium contract
         (``Simulation.is_terminal``)."""
         raise NotImplementedError
+
+    # ------------------------------------------------------------------
+    # Round-clock geometry (OnePhaseWEGO, onephase_wego design §2/§13)
+    # ------------------------------------------------------------------
+    # Concrete on the base — NOT abstract — so the two shipped rulesets keep
+    # working untouched. The defaults describe the pre-existing world: a
+    # round is CFG.clock.ticks_per_round long and ``sim.tick`` already counts
+    # within it, because TwoPhaseWEGO rewinds the tick at every boundary.
+    # OnePhaseWEGO overrides all three: its tick is FREE-RUNNING (§2.1 of the
+    # kickoff doc — a rewound clock cannot carry cooldowns across a seam,
+    # which §13 requires), so within-round position becomes a modulo.
+
+    def ticks_per_round(self, sim) -> int:
+        """Length of one round, in ticks."""
+        return sim._ticks_per_round
+
+    def round_tick(self, sim) -> int:
+        """Ticks elapsed since the CURRENT round began (0 .. len-1)."""
+        return sim.tick
+
+    def round_index(self, sim) -> int:
+        """How many complete rounds have been executed before this one."""
+        return sim.turn_number - 1
 
 
 class TwoPhaseWEGO(Ruleset):
@@ -243,4 +293,185 @@ class ContinuousRealtime(Ruleset):
         return not (any_marine and any_zombie)
 
 
-__all__ = ["Ruleset", "TwoPhaseWEGO", "ContinuousRealtime"]
+class OnePhaseWEGO(Ruleset):
+    """The turn-formula redesign: ONE phase per round, time as the only
+    currency (``docs/onephase_wego_design_2026-07-28.md``).
+
+    Built BESIDE :class:`TwoPhaseWEGO`, which stays shipped and byte-identical
+    until Erik blesses this one (design §18). Nothing in this class is reachable
+    from another ruleset, so no existing golden/digest can move while it grows.
+
+    What it is (design §2/§3/§13):
+
+    - **No phases.** No phase tags on orders, no per-phase AP pools, no
+      Tab toggle, no DET_BETWEEN_PHASES slot semantics.
+    - **One ~4 s round** (``CFG.clock.round_duration_seconds``), flow
+      PLAN (paused) -> EXECUTE (96 ticks @ 24 Hz) -> PLAN.
+    - **AP is dead.** :meth:`validate_and_cost` charges nothing — the round's
+      seconds ARE the budget, and actions cost ticks (durations, cooldowns,
+      the GCD). That economy lives on the timeline (P3), not here.
+
+    THE MONOTONIC CLOCK (the load-bearing structural difference)
+    ------------------------------------------------------------
+    ``TwoPhaseWEGO`` rewinds ``sim.tick`` to 0 at every boundary, which is
+    exactly why its ``_end_round`` must scrub ``last_fire_tick``,
+    ``reload_done_tick`` and the spray burst — a carried deadline compared
+    against a rewound clock is nonsense (the hazard its own comments call
+    out). Design §13 demands the OPPOSITE: cooldowns, GCD, overwatch state,
+    ambush groups, in-flight projectiles and fires ALL persist across the
+    boundary, because "round boundaries are invisible seams".
+
+    So under this ruleset ``sim.tick`` is **free-running and monotonic**, and
+    within-round position is ``tick % ticks_per_round``. Every timer in the
+    ruleset is an ABSOLUTE tick deadline, which makes seam-crossing
+    arithmetically invisible rather than something to special-case — there is
+    no teardown to write, and no "cram an action at t=3.9 to reset it"
+    exploit (§3) because nothing resets.
+
+    What the boundary does, therefore, is exactly two things: **pause** (the
+    player may issue orders now) and hand off to :meth:`on_round_boundary`,
+    whose entire body is housekeeping that changes no observable world state.
+    Notably ABSENT versus ``TwoPhaseWEGO._end_round``: the end-of-round
+    integer-tile position snap (design §4 removes it outright — at 4 s rounds
+    it would fire 2.5x as often and be visible), the order clear, the AP
+    refill, the obstacle reset, and the tick rewind.
+    """
+
+    #: This ruleset runs the compiled timeline instead of the phase-indexed
+    #: order scan — see :mod:`simulation.timeline`.
+    drives_units = True
+
+    #: Vision v1 is a first-class system here (§8), and fog of war is the
+    #: renderer gating on it: an enemy the team cannot see is not drawn.
+    fog_of_war = True
+
+    def drive_units(self, sim) -> None:
+        # Deferred import: timeline imports combat, which imports plenty;
+        # keeping it lazy holds ruleset.py as import-light as it has always
+        # been (tests import it bare).
+        from simulation.timeline import drive_units as _drive
+        _drive(sim)
+
+    def on_orders_changed(self, sim, unit) -> None:
+        """Recompile this unit's timeline (design §3).
+
+        A plan is never patched in place — it is rebuilt from the pending
+        order queue — so what the planning UI shows and what the executor runs
+        cannot drift apart. Completed steps have already retired their orders,
+        so a recompile can never re-run an action the unit already took.
+        """
+        from simulation.timeline import compile_plan
+        unit.plan = compile_plan(sim, unit)
+
+    # ------------------------------------------------------------------
+    # Round-clock geometry
+    # ------------------------------------------------------------------
+    def ticks_per_round(self, sim) -> int:
+        return sim._onephase_ticks_per_round
+
+    def round_tick(self, sim) -> int:
+        # Free-running tick -> within-round position. The one modulo that
+        # replaces TwoPhaseWEGO's whole rewind-and-scrub teardown.
+        return sim.tick % self.ticks_per_round(sim)
+
+    def round_index(self, sim) -> int:
+        return sim.tick // self.ticks_per_round(sim)
+
+    # ------------------------------------------------------------------
+    # Round clock (Simulation.step() head/tail)
+    # ------------------------------------------------------------------
+    def on_round_start(self, sim) -> None:
+        # Tick-0-only world setup. No DET_START_PHASE1: scheduled detonations
+        # (§12) are absolute ticks chosen by the player anywhere in the round,
+        # resolved by the timeline executor, not by phase-boundary slots. No
+        # path-offset reset either — a path offset is a within-round rewind
+        # artifact, and this clock never rewinds.
+        if sim.tick == 0:
+            sim.gmap.stamp_units(sim.units)
+
+    def on_tick_end(self, sim) -> None:
+        # Death-triggered conversion, every tick (the ContinuousRealtime rule,
+        # not TwoPhaseWEGO's end-of-round batch): a marine killed by a zombie
+        # rises on the next tick's AI rather than waiting for the seam. The
+        # function is idempotent — it clears each unit's killed_by_zombie flag
+        # as it converts — so per-tick invocation costs one bool read per unit
+        # and never double-converts. Batching it at the boundary would make
+        # the seam VISIBLE, which is precisely what §13 forbids.
+        convert_marines_to_zombies(sim.units)
+
+        # Boundary test on the MONOTONIC tick. `sim.tick` has already been
+        # incremented by step(), so this fires on the tick that COMPLETES a
+        # round (96, 192, ...) and never at tick 0.
+        if sim.tick > 0 and sim.tick % self.ticks_per_round(sim) == 0:
+            self.on_round_boundary(sim)
+
+    def on_round_boundary(self, sim) -> None:
+        """The invisible seam (§13): pause for planning, and nothing else that
+        the world can see.
+
+        The only work here is housekeeping that is unobservable by
+        construction: dropping already-detonated projectiles (they are inert —
+        the projectile loop skips them every tick — so pruning them changes no
+        trajectory, it just stops an all-day session from growing the list
+        without bound), and bumping the human-facing round counter.
+        """
+        sim.projectiles = [p for p in sim.projectiles if not p.detonated]
+
+        # §10's timeout backstop: an ambush group that never became ready
+        # reverts to idle stance rather than holding forever. Released groups
+        # are already ordinary shooting and are left alone.
+        from simulation.engagement import drop_unready_ambushes
+        drop_unready_ambushes(sim)
+
+        # The idle stance's "who shot at me" memory (§13) is per-round: it is
+        # deliberately unaged inside a round — 4 s is short enough that "this
+        # round" IS recent — and cleared here so a marine does not spend round
+        # three returning fire at a corpse from round one.
+        for u in sim.units:
+            attackers = getattr(u, "recent_attackers", None)
+            if attackers:
+                attackers.clear()
+
+        sim.turn_number += 1
+        sim.paused = True
+
+    # ------------------------------------------------------------------
+    # Cost policy — time is the only currency (§3)
+    # ------------------------------------------------------------------
+    def validate_and_cost(self, sim, unit, order) -> bool:
+        """AP is dead: there is nothing to charge at order-placement time.
+
+        The real economy is the TIMELINE — an action costs the ticks its
+        registry row says it costs (duration), plus what its cooldown and the
+        GCD deny afterwards. That is enforced when the plan compiles and
+        executes (P3), not by a gate here; a plan that overruns the round
+        simply does not finish inside it, which is the intended feedback.
+        ``Simulation.apply_action`` has already rejected dead / zombie /
+        out-of-inventory actors before calling in.
+        """
+        return True
+
+    def refund(self, sim, unit, order) -> None:
+        # Nothing was spent at placement — nothing to give back. The ticks an
+        # order would have consumed were never taken from a pool; undoing it
+        # just shortens the compiled timeline.
+        pass
+
+    # ------------------------------------------------------------------
+    # Episode boundary
+    # ------------------------------------------------------------------
+    def is_terminal(self, sim) -> bool:
+        """One side eliminated.
+
+        Deliberately NOT "the round is complete" (the ``TwoPhaseWEGO`` rule):
+        with a free-running clock there is no round-completion tick to compare
+        against, and a 4 s round is a planning cadence rather than an episode.
+        The WEGO cadence is a natural RL action interface (design §1), so the
+        episode boundary that matters to training is the fight ending.
+        """
+        any_marine = any(u.team == 0 and u.alive for u in sim.units)
+        any_zombie = any(u.team == 1 and u.alive for u in sim.units)
+        return not (any_marine and any_zombie)
+
+
+__all__ = ["Ruleset", "TwoPhaseWEGO", "ContinuousRealtime", "OnePhaseWEGO"]
