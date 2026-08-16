@@ -487,7 +487,7 @@ def part3_energy_books() -> bool:
         last = per_backend[False][-1]
         print(f"  {n_ticks} ticks: books CLOSE every tick (worst residual "
               f"{worst_slack} raw, inside the §7 active-flux bound), all five "
-              f"P-E1 counters bit-identical CPU↔GPU; "
+              f"P-E1 counters bit-identical CPU<->GPU; "
               f"{n_active_total} active cell-substeps, final-tick "
               f"n_bulk_active_sum {last['n_bulk_active_sum']}.")
     return ok

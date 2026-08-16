@@ -86,8 +86,11 @@
 //   * `cmask` is UNTOUCHED: pressure, velocity and gas flow are unchanged, so
 //     `permeability` / shield-but-not-seal survives verbatim (ruling §4 item 4
 //     / escalation trigger 5). The T occlusion therefore rides a SECOND,
-//     T-ONLY mask (`tcmask_` below) — occluding the shared fused march would
-//     have moved the VELOCITY self-advection, which item 4 forbids.
+//     T-ONLY mask — occluding the shared fused march would have moved the
+//     VELOCITY self-advection, which item 4 forbids. (P-E1 RETIRED that second
+//     mask with the SL T sample itself; the bullet above it is likewise
+//     historical — step 1b no longer writes temperature at all. Step 4c's
+//     A1 skip and the p* reading below are unchanged and still live.)
 //   * p* = C·N·T[i] keeps reading the OBJECT temperature on a crate tile
 //     (A3, hot pore gas — the decision stands; gate (f) is its tripwire).
 //
@@ -458,12 +461,13 @@ private:
     mutable std::vector<int32_t> div_u_;
     // per-tick caches for the substep loop (micro-opt, bit-identity-neutral):
     mutable std::vector<uint8_t> cmask_;              // sealed/breach/live table
-    // THERMAL-MASS AXIS, P-EOS: the T-ONLY corner/march mask — `cmask_` with
-    // every thermal_solid tile forced to 0 (sealed/occluder). Built beside
-    // cmask_ and used ONLY by the step-1b temperature sample; `cmask_` itself
-    // (velocity, and therefore pressure and gas flow) is untouched. Left empty
-    // and unread when the two masks cannot differ (eos_thermal_occludes).
-    mutable std::vector<uint8_t> tcmask_;
+    // (The THERMAL-MASS-AXIS T-ONLY corner/march mask `tcmask_` lived here and
+    // is RETIRED at P-E1 — energy-books design §2.1.1. Its ONLY consumer was
+    // the step-1b temperature sample, and that sample is gone: temperature now
+    // rides the conservative energy books, where a thermal_solid tile is
+    // excluded structurally by ts-face rule (d) rather than by an occluder
+    // mask. `cmask_` above is untouched, so velocity / pressure / gas flow are
+    // bit-identical.)
     mutable std::vector<int32_t> coeffE_, coeffS_;    // donor-cell face coeffs
     // P-E1 (design §2.1.2): the TRANSIENT energy accumulator + the applied
     // per-face dq planes. int64, scratch only — NOT synced state, never
