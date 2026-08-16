@@ -2137,6 +2137,15 @@ PYBIND11_MODULE(breach_physics, m) {
         // Σ n_bulk·T (transport substeps / step-4c). Digest-inert telemetry.
         .def_readonly("eth_transport_delta",   &EOSSolver::eth_transport_delta)
         .def_readonly("eth_compression_delta", &EOSSolver::eth_compression_delta)
+        // P-E1 (energy-books design §2.1.5/§2.5): the transport law's one-way
+        // guard terms + the active-flux telemetry §7's bound is scaled by.
+        // Read-only, per-tick, int64 raw Q16.16² (dequant = raw / 65536²)
+        // except the two counts.
+        .def_readonly("e_ts_residual",         &EOSSolver::e_ts_residual)
+        .def_readonly("e_wipe_sum",            &EOSSolver::e_wipe_sum)
+        .def_readonly("e_floor_sum",           &EOSSolver::e_floor_sum)
+        .def_readonly("n_active_flux",         &EOSSolver::n_active_flux)
+        .def_readonly("n_bulk_active_sum",     &EOSSolver::n_bulk_active_sum)
         // BC (spec §5): the boundary_flux rail — per-conservative-plane int64
         // Σ(N_pre_reset − N_amb). Returned as a Python list (empty on space
         // maps). NOT folded into any digest (absence-transparent, zero golden

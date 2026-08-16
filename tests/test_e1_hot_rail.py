@@ -109,6 +109,10 @@ def run_scenario(interior, tile, fuel_block, ticks, collect=False):
 
         traj = {name: hashlib.sha256() for name in DIGEST_FIELDS}
         eth_ticks = []      # (eth_transport_delta, allowance) per tick
+        # P-E1 counter accumulators (design SS2.5): the run totals the
+        # as-built reports and the active-flux fraction SS7's bound scales by.
+        e1 = dict(n_active_flux=0, n_bulk_active_sum=0, n_cell_substeps=0,
+                  e_ts_residual=0, e_wipe_sum=0, e_floor_sum=0)
         peak_T = 0.0
         o2_start = int(gas[o2i][om].astype(np.int64).sum())
         for _ in range(ticks):
@@ -124,6 +128,15 @@ def run_scenario(interior, tile, fuel_block, ticks, collect=False):
                               + gas[n2i].astype(np.int64)).sum())
                 allowance = int(eos.dbg_last_n_sub) * nb_tot
                 eth_ticks.append((int(eos.eth_transport_delta), allowance))
+                # P-E1 (design SS2.5/SS7): the ACTIVE-FLUX fraction the SS7
+                # bound is really scaled by, plus the counted one-way terms.
+                n_cells = int(om.sum())
+                e1["n_active_flux"] += int(eos.n_active_flux)
+                e1["n_bulk_active_sum"] += int(eos.n_bulk_active_sum)
+                e1["n_cell_substeps"] += int(eos.dbg_last_n_sub) * n_cells
+                e1["e_ts_residual"] += int(eos.e_ts_residual)
+                e1["e_wipe_sum"] += int(eos.e_wipe_sum)
+                e1["e_floor_sum"] += int(eos.e_floor_sum)
                 peak_T = max(peak_T, float(
                     gmap.temperature[om].astype(np.int64).max()) / FP_ONE)
             for name in DIGEST_FIELDS:
@@ -133,7 +146,7 @@ def run_scenario(interior, tile, fuel_block, ticks, collect=False):
             digests={n: h.hexdigest() for n, h in traj.items()},
             t_max_phys_hits=int(eos.t_max_phys_hits),
             work_clamp_hits=int(eos.work_clamp_hits),
-            eth_ticks=eth_ticks, peak_T=peak_T,
+            eth_ticks=eth_ticks, peak_T=peak_T, e1=e1,
             o2_burned_frac=1.0 - o2_end / max(o2_start, 1))
     finally:
         restore_overrides(restore)
@@ -161,19 +174,38 @@ def test_hot_scenario_reaches_the_audit_anatomy(hot_run):
         f"peak gas T {hot_run['peak_T']:.0f} never reached flame grade")
 
 
-@pytest.mark.xfail(reason="owned by P-E1", strict=False)
 def test_no_transport_mint(hot_run):
     """HEALTHY property (design SS7): the transport pass never creates
     thermal book-energy beyond the truncation allowance — per tick,
     eth_transport_delta <= n_sub x SUM n_bulk (one raw-T LSB per bulk count
     per substep). RED on HEAD: the SL T-copy writes phantom-T onto real
     mass; the measured worst tick beats the allowance by ~8 orders of
-    magnitude (see the P-E0 as-built)."""
+    magnitude (see the P-E0 as-built).
+
+    P-E1 FLIPPED THIS STRICT (design SS6, cross-rung red idiom): this rung
+    IS the owning patch, so the property must now genuinely hold. The
+    remaining allowance is the floor-division LSB loss on ACTIVE-flux cells
+    only — quiescent cells rebuild T exactly (SS2.1.5) — and the loss is
+    one-way NEGATIVE, so the interesting direction is the one asserted."""
     worst = max(et - al for et, al in hot_run["eth_ticks"])
     n_viol = sum(1 for et, al in hot_run["eth_ticks"] if et > al)
     assert n_viol == 0, (
         f"transport minted book-energy on {n_viol} ticks "
         f"(worst overshoot {worst} raw Q16.16^2 above the allowance)")
+
+
+def test_transport_delta_is_one_way_negative(hot_run):
+    """P-E1 sharpening of the same property: with the books closed, the
+    per-tick transport delta is not merely BOUNDED above — it is a pure
+    LOSS. Every counted one-way term (floor-div truncation, the N_EPS wipe,
+    rule (d)'s ts residual) destroys; the only counted CREATOR in this pass
+    is the T_MIN recovery clamp (`e_floor_sum`), which the run total below
+    is allowed to include. A positive run total would mean a mint survived
+    the rewrite."""
+    total = sum(et for et, _ in hot_run["eth_ticks"])
+    assert total <= 0, (
+        f"transport pass NET-CREATED {total} raw Q16.16^2 of book-energy "
+        "over the run — the books are still open somewhere")
 
 
 @pytest.mark.xfail(reason="owned by P-E4", strict=False)

@@ -104,127 +104,14 @@ __global__ void temp_zero_vacuum(int32_t* __restrict__ temperature,
             temperature[i] = 0;
     }
 }
-
-// ---- Pass 0b advection sampler — VERBATIM port of gas_backtrace_sample_q -----
-// (temperature_solver.cpp): integer DDA wall-clip march + integer bilinear
-// sample + Newton-reciprocal renorm, specialized to thermal_solid/is_vacuum.
-// reciprocal_q16 -> reciprocal_q16_dev (bit-identical); mul_q16/mul_wide/narrow
-// are FP_HD device-clean. Every arithmetic step matches the CPU by construction.
-// MEDIUM-TEST SITE 3/6 (the ray-walk occluder): gas-T no longer advects ACROSS a
-// crate tile, because a crate holds an OBJECT temperature (design §2.3).
-__device__ __forceinline__ bool gas_wall_at(int y, int x,
-                                             const bool* thermal_solid,
-                                             int h, int w) {
-    if (y < 0 || y >= h || x < 0 || x >= w) return true;   // outside == wall
-    return thermal_solid[y * w + x];
-}
-
-__device__ int32_t gas_backtrace_sample_q_dev(
-        const int32_t* src, int x, int y, int32_t bx_q, int32_t by_q,
-        const bool* thermal_solid, const bool* is_vacuum, int h, int w) {
-    const int32_t GAS_WSUM_FLOOR_Q = FP_ONE >> 8;
-    const int32_t GAS_WSUM_EPS_Q   = FP_ONE >> 14;
-
-    int64_t px_q = ((int64_t)x << FP_SHIFT) + bx_q;
-    int64_t py_q = ((int64_t)y << FP_SHIFT) + by_q;
-
-    // ---- Wall-clip march (DDA, no sqrt) ----
-    const int32_t abx = bx_q >= 0 ? bx_q : -bx_q;
-    const int32_t aby = by_q >= 0 ? by_q : -by_q;
-    const int32_t amax = abx >= aby ? abx : aby;
-    int n_steps = amax >> FP_SHIFT;
-    if (amax & (FP_ONE - 1)) n_steps += 1;                   // ceil
-    if (n_steps > 0) {
-        // floordiv(a, b) with a int32, b > 0 (matches the CPU lambda exactly).
-        const int32_t sx_q = (bx_q >= 0) ? (bx_q / n_steps)
-                             : -(int32_t)(((-(int64_t)bx_q) + n_steps - 1) / n_steps);
-        const int32_t sy_q = (by_q >= 0) ? (by_q / n_steps)
-                             : -(int32_t)(((-(int64_t)by_q) + n_steps - 1) / n_steps);
-        int64_t cx_q = (int64_t)x << FP_SHIFT;
-        int64_t cy_q = (int64_t)y << FP_SHIFT;
-        for (int s = 0; s < n_steps; ++s) {
-            const int64_t nxp_q = cx_q + sx_q;
-            const int64_t nyp_q = cy_q + sy_q;
-            const int ti = (int)((nxp_q + (FP_ONE >> 1)) >> FP_SHIFT);
-            const int tj = (int)((nyp_q + (FP_ONE >> 1)) >> FP_SHIFT);
-            if (gas_wall_at(tj, ti, thermal_solid, h, w)) break;
-            cx_q = nxp_q;
-            cy_q = nyp_q;
-            if (tj >= 0 && tj < h && ti >= 0 && ti < w && is_vacuum[tj * w + ti])
-                break;                                        // reached the breach
-        }
-        px_q = cx_q;
-        py_q = cy_q;
-    }
-
-    // ---- Clamp in-bounds (Q16.16) ----
-    const int64_t hi_x = (int64_t)(w - 1) << FP_SHIFT;
-    const int64_t hi_y = (int64_t)(h - 1) << FP_SHIFT;
-    if (px_q < 0) px_q = 0; else if (px_q > hi_x) px_q = hi_x;
-    if (py_q < 0) py_q = 0; else if (py_q > hi_y) py_q = hi_y;
-
-    // ---- Integer bilinear sample ----
-    const int x0 = (int)(px_q >> FP_SHIFT);
-    const int y0 = (int)(py_q >> FP_SHIFT);
-    const int x1 = (x0 + 1 <= w - 1) ? x0 + 1 : w - 1;
-    const int y1 = (y0 + 1 <= h - 1) ? y0 + 1 : h - 1;
-    const int32_t fx_q = (int32_t)(px_q - ((int64_t)x0 << FP_SHIFT));
-    const int32_t fy_q = (int32_t)(py_q - ((int64_t)y0 << FP_SHIFT));
-    const int32_t ifx_q = FP_ONE - fx_q;
-    const int32_t ify_q = FP_ONE - fy_q;
-    const int32_t w00 = mul_q16(ifx_q, ify_q);
-    const int32_t w10 = mul_q16(fx_q,  ify_q);
-    const int32_t w01 = mul_q16(ifx_q, fy_q);
-    const int32_t w11 = mul_q16(fx_q,  fy_q);
-    const int cyx[4][2] = { {y0, x0}, {y0, x1}, {y1, x0}, {y1, x1} };
-    const int32_t cw[4] = { w00, w10, w01, w11 };
-
-    int64_t acc = 0;
-    int32_t wsum_q = 0;
-    for (int k = 0; k < 4; ++k) {
-        const int cy_ = cyx[k][0];
-        const int cx_ = cyx[k][1];
-        const int j = cy_ * w + cx_;
-        // MEDIUM-TEST SITE 4/6 (sealed corner in the bilinear gather).
-        if (thermal_solid[j]) continue;                      // sealed corner
-        const int32_t val_q = is_vacuum[j] ? 0 : src[j];      // breach corner == 0
-        acc += mul_wide(cw[k], val_q);
-        wsum_q += cw[k];
-    }
-    if (wsum_q <= GAS_WSUM_EPS_Q) return src[y * w + x];      // negligible -> keep self
-
-    const int32_t wsum_clamped = (wsum_q < GAS_WSUM_FLOOR_Q) ? GAS_WSUM_FLOOR_Q : wsum_q;
-    const int32_t recip_q = reciprocal_q16_dev(wsum_clamped);
-    const int32_t acc_q = narrow(acc);
-    return mul_q16(acc_q, recip_q);
-}
-
-// ---- Pass 0b: semi-Lagrangian advection on the open-air mask ----------------
-// One thread per cell reads the FROZEN snapshot `src` and writes only its own
-// temperature[i] (open-air cells only; thermal-solid/vacuum keep their Pass-0a
-// value).
-__global__ void temp_advect(int32_t* __restrict__ temperature,
-                            const int32_t* __restrict__ src,
-                            const int32_t* __restrict__ wind_x,
-                            const int32_t* __restrict__ wind_y,
-                            const bool* __restrict__ thermal_solid,
-                            const bool* __restrict__ is_vacuum,
-                            int32_t dt_adv_q, int h, int w) {
-    const int n = h * w;
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
-         i += gridDim.x * blockDim.x) {
-        // MEDIUM-TEST SITE 2/6: the gas-advection mask is the complement of the
-        // THERMAL medium (a crate is not open air thermally, even though gas
-        // flows through it).
-        if (thermal_solid[i] || is_vacuum[i]) continue;      // open-air mask only
-        const int y = i / w;
-        const int x = i % w;
-        const int32_t bx_q = -mul_q16(wind_x[i], dt_adv_q);
-        const int32_t by_q = -mul_q16(wind_y[i], dt_adv_q);
-        temperature[i] = gas_backtrace_sample_q_dev(
-            src, x, y, bx_q, by_q, thermal_solid, is_vacuum, h, w);
-    }
-}
+// ---- Pass 0b gas-T SL advection (`gas_wall_at`, `gas_backtrace_sample_q_dev`,
+// `temp_advect`) — DELETED at P-E1 (energy-books arc, design §2.1.1; round-1
+// finding L3-5), IDENTICALLY to the CPU twin in temperature_solver.cpp. This was
+// the engine's second semi-Lagrangian T-COPIER — a temperature copy onto mass it
+// never paid for — live on this backend only because the caller happens to pass
+// null winds. Gas temperature is now transported once and conservatively by the
+// EOS energy books. MEDIUM-TEST SITES 2/6, 3/6 and 4/6 lived here and retire
+// with it; 1/6, 5/6 and 6/6 are untouched and still marked below.
 
 // ---- Pass 1: heat -> temperature deposit (§1.2 solids; §4.3 open-air) -------
 // Solid: the UNCHANGED bit-shift. Open-air (non-vacuum): the v2.4 absorption-∝-
@@ -409,7 +296,10 @@ int64_t temperature_step(
     const int64_t recip_cv = make_recip(c_v_safe);
     const int32_t n_floor_q = quantize((double)n_floor_heat);
     const int32_t t_max_phys_q = quantize((double)t_max_phys);
-    const bool do_advect = (dt > 0.0f && wind_x != nullptr && wind_y != nullptr);
+    // P-E1: Pass 0b (gas-T SL advection) is RETIRED — `wind_x`/`wind_y`/`dt`
+    // and `gas_advection_rate` survive only as inert back-compat surface, and
+    // nothing on this backend reads them any more (CPU twin identical).
+    (void)wind_x; (void)wind_y; (void)gas_advection_rate;
     // COOL-SHIFT AXIS: the vacuum discount as a DIFFERENCE, computed ONCE on
     // the host exactly as the CPU solver's Pass 3 does (`const int vac_offset =
     // cool_shift - cool_shift_vacuum;`). Pure integer, no boundary cast.
@@ -419,7 +309,7 @@ int64_t temperature_step(
     const size_t nbool = (size_t)n * sizeof(bool);
     int32_t *d_temp = nullptr, *d_temp_new = nullptr, *d_heat = nullptr,
             *d_his = nullptr, *d_fs = nullptr, *d_atm = nullptr,
-            *d_nbulk = nullptr, *d_src = nullptr, *d_wx = nullptr, *d_wy = nullptr,
+            *d_nbulk = nullptr,
             *d_csg = nullptr;
     bool *d_solid = nullptr, *d_vac = nullptr, *d_tsol = nullptr;
     unsigned long long* d_hits = nullptr;
@@ -450,11 +340,6 @@ int64_t temperature_step(
     // null pointer and skips the fold, the exact CPU twin.
     int32_t* d_radnet = nullptr;
     if (rad_net) cuda_check(cudaMalloc(&d_radnet, nb), "malloc rad_net");
-    if (do_advect) {
-        cuda_check(cudaMalloc(&d_src, nb), "malloc src");
-        cuda_check(cudaMalloc(&d_wx, nb), "malloc wind_x");
-        cuda_check(cudaMalloc(&d_wy, nb), "malloc wind_y");
-    }
 
     cuda_check(cudaMemcpy(d_temp, temperature, nb, cudaMemcpyHostToDevice), "H2D temp");
     cuda_check(cudaMemcpy(d_heat, heat, nb, cudaMemcpyHostToDevice), "H2D heat");
@@ -479,10 +364,6 @@ int64_t temperature_step(
         cuda_check(cudaMemcpy(d_amb, is_ambient, nbool, cudaMemcpyHostToDevice), "H2D is_ambient");
     }
     if (n_bulk) cuda_check(cudaMemcpy(d_nbulk, n_bulk, nb, cudaMemcpyHostToDevice), "H2D nbulk");
-    if (do_advect) {
-        cuda_check(cudaMemcpy(d_wx, wind_x, nb, cudaMemcpyHostToDevice), "H2D wx");
-        cuda_check(cudaMemcpy(d_wy, wind_y, nb, cudaMemcpyHostToDevice), "H2D wy");
-    }
     cuda_check(cudaMemset(d_hits, 0, sizeof(unsigned long long)), "memset hits");
     cuda_check(cudaMemset(d_low_hits, 0, sizeof(unsigned long long)), "memset low_hits");
 
@@ -502,16 +383,7 @@ int64_t temperature_step(
     temp_zero_vacuum<<<grid, block>>>(d_temp, d_ts, d_vac, n, d_amb);
     cuda_check(cudaGetLastError(), "zero_vacuum launch");
 
-    // Pass 0b: semi-Lagrangian advection (only when wind + dt>0, matching the CPU
-    // guard). The snapshot is taken AFTER the zero-vacuum write (the CPU order).
-    if (do_advect) {
-        const double dt_adv = (double)gas_advection_rate * (double)dt;
-        const int32_t dt_adv_q = quantize(dt_adv);
-        cuda_check(cudaMemcpy(d_src, d_temp, nb, cudaMemcpyDeviceToDevice), "D2D src");
-        temp_advect<<<grid, block>>>(d_temp, d_src, d_wx, d_wy, d_ts, d_vac,
-                                     dt_adv_q, h, w);
-        cuda_check(cudaGetLastError(), "advect launch");
-    }
+    // (Pass 0b — gas-T SL advection — RETIRED at P-E1; see the file header.)
 
     // Pass 1: unified convert (in-place on d_temp; rail counter -> d_hits).
     temp_convert_unified<<<grid, block>>>(d_temp, d_heat, d_his, d_ts, d_vac,
@@ -550,9 +422,6 @@ int64_t temperature_step(
     cudaFree(d_hits);
     cudaFree(d_low_hits);
     if (d_nbulk) cudaFree(d_nbulk);
-    if (d_src) cudaFree(d_src);
-    if (d_wx) cudaFree(d_wx);
-    if (d_wy) cudaFree(d_wy);
     if (d_amb) cudaFree(d_amb);
     if (d_tsol) cudaFree(d_tsol);
     if (d_csg) cudaFree(d_csg);

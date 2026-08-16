@@ -245,6 +245,30 @@ public:
     mutable int64_t eth_transport_delta = 0;
     mutable int64_t eth_compression_delta = 0;
 
+    // --- P-E1 energy-transport counters (design §2.1.5/§2.5) -------------
+    // The one-way guard terms of the new conservative transport law, all in
+    // ENERGY units (raw Q16.16², dequant = raw / 65536²) and all int64.
+    // Accumulated over the tick's substeps; RESET at step() entry.
+    //   e_ts_residual     SIGNED — rule (d) air->ts debits: the relative energy
+    //                     gas sheds when it transits a thermal_solid face
+    //                     (counted DESTRUCTION; signed because sub-ambient gas
+    //                     carries negative relative energy).
+    //   e_wipe_sum        SIGNED — residual e destroyed by the N_EPS wipe
+    //                     (n_bulk_new < 1 raw count -> T := ambient).
+    //   e_floor_sum       energy CREATED by the T_MIN clamp on recovery (a
+    //                     CREATOR under R3 — floors destroy, rails may create,
+    //                     both counted).
+    //   n_active_flux     count of (cell, substep) pairs with ANY nonzero
+    //                     touching face dq — the ACTIVE-FLUX fraction §7's
+    //                     truncation bound is scaled by (L2-10); quiescent
+    //                     cells rebuild T exactly and lose nothing.
+    //   n_bulk_active_sum Σ n_bulk_new (raw) over exactly those cells.
+    mutable int64_t e_ts_residual = 0;
+    mutable int64_t e_wipe_sum = 0;
+    mutable int64_t e_floor_sum = 0;
+    mutable int64_t n_active_flux = 0;
+    mutable int64_t n_bulk_active_sum = 0;
+
     // --- P6.2 telemetry: the substep count the last step() actually ran ---
     // (design §3.2 step 1's n = ceil(dt/dt_adv), N_SUB_MAX-capped). Exposed so
     // the P6 per-kernel digest gates can reconstruct the substep-loop inputs
@@ -441,29 +465,36 @@ private:
     // and unread when the two masks cannot differ (eos_thermal_occludes).
     mutable std::vector<uint8_t> tcmask_;
     mutable std::vector<int32_t> coeffE_, coeffS_;    // donor-cell face coeffs
+    // P-E1 (design §2.1.2): the TRANSIENT energy accumulator + the applied
+    // per-face dq planes. int64, scratch only — NOT synced state, never
+    // digested, rebuilt from (n_bulk, T) at the top of every substep (R4).
+    mutable std::vector<int64_t> e_scratch_, dqsum_e_, dqsum_s_;
 };
 
 // ---------------------------------------------------------------------------
-// EOS P6.2 — standalone CPU reference for the fused SL-advection substep loop
+// EOS P6.2 — standalone CPU reference for the SL-advection substep loop
 // (docs/eos_p6_gpu_alignment_review.md §4 row P6.2). Replays EXACTLY the
-// step-1a/1b/1f chain of EOSSolver::step for a GIVEN substep count: the
-// per-tick cmask build, then n_sub x [src snapshot -> fused 3-field backtrace
-// (vx, vy, T) -> zero-u-on-solid / T:=0-on-vacuum], IN PLACE on
-// wind_x/wind_y/temperature. Calls the SAME file-local eos_backtrace_sample3_q
-// the real solver uses (one routine, zero drift), and returns the SAME chained
-// FNV digest step() stores in digest_advect at its last substep — so a gate
-// that reconstructs step-1-entry state + n_sub can assert
-// eos_sl_advect_reference(...) == solver.digest_advect, then hold the GPU port
-// to the identical bytes. The interleaved bulk flux (step 1d, P6.1) neither
-// reads nor writes u/T, so replaying the advection substeps back-to-back is
-// arithmetically identical to the real interleaved loop. Test entry only —
-// the live path remains EOSSolver::step.
+// step-1a/1f chain of EOSSolver::step for a GIVEN substep count: the per-tick
+// cmask build, then n_sub x [src snapshot -> fused backtrace -> u write /
+// zero-u-on-solid], IN PLACE on wind_x/wind_y. Calls the SAME file-local
+// eos_backtrace_sample3_q the real solver uses (one routine, zero drift).
+//
+// P-E1 (energy-books arc, design §2.1.1 — CONTRACT CHANGE, authorized rewrite
+// Appendix A): **this reference is now u-ONLY.** The SL sample's `.t` slot is
+// RETIRED — temperature is transported by the conservative energy books
+// (bulk_flux_energy_transport_cached), not by a semi-Lagrangian copy — so
+// `temperature` here is a READ-ONLY src slot for the fused sampler (its `.t`
+// result is discarded, exactly as in step(); `.vx`/`.vy` do not depend on it)
+// and the returned digest is the chained FNV over (wind_y, wind_x) ALONE.
+// It is therefore NO LONGER comparable to `digest_advect`, which now hashes
+// (wx, wy, T-after-recovery) and is taken AFTER the flux call (§2.1.6). The
+// gate it still serves is CPU-reference vs GPU-twin bit-identity on u.
 // ---------------------------------------------------------------------------
 // BC: is_ambient defaults nullptr — existing test callers stay byte-identical;
-// when supplied, the ring is a still-boundary breach corner (cmask) and T:=0.
-// THERMAL-MASS AXIS, P-EOS: `thermal_solid` defaults nullptr — existing test
-// callers stay byte-identical; when supplied the replay applies the SAME
-// skip-write + T-only-occluder rules step() does (one code path, zero drift).
+// when supplied, the ring is a still-boundary breach corner (cmask).
+// THERMAL-MASS AXIS: `thermal_solid` is RETIRED here with the T sample — the
+// A2 T-only occluder mask had no consumer once the `.t` slot went (design
+// §2.1.1). The parameter is kept for ABI/back-compat and ignored.
 uint64_t eos_sl_advect_reference(
     int32_t* wind_x, int32_t* wind_y, int32_t* temperature,
     const bool* solid, const bool* is_vacuum,

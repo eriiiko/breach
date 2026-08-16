@@ -18,118 +18,20 @@ namespace {
     constexpr int DX[4] = {  0,  0, +1, -1 };
 
     // ------------------------------------------------------------------
-    // P2 — gas-T semi-Lagrangian advection helper (docs/eos_refactor_design.md
-    // §4, §8 patch P2). Same PATTERN as smoke_dynamics.cpp's
-    // `backtrace_sample_q` (the S2b SLint scheme: integer DDA wall-clip march +
-    // integer bilinear sample + Newton-reciprocal renorm) — deliberately
-    // NOT the same function (smoke_dynamics.cpp is untouched, out of P2's
-    // scope), specialized to the temperature solver's own masks. A breach
-    // (is_vacuum && !thermal_solid) is a VENT target, not a wall — the march
-    // may reach it and the bilinear sample reads 0 there (heat drains with the
-    // venting gas), matching smoke's is_breach carve-out exactly.
-    //
-    // THERMAL-MASS AXIS (docs/thermal_mass_axis_design_2026-07-25.md §2.2 +
-    // build addendum 2026-07-30 §3): the occluder here is the THERMAL medium
-    // mask `thermal_solid` (thermal_mass > 0), NOT the flow mask `solid`
-    // (permeability <= 0). P2 of the EOS refactor wrote "a partial-permeability
-    // tile like furniture is simply non-solid open-air" — that is exactly the
-    // bug this patch fixes: gas-T must no longer advect ACROSS a crate tile,
-    // because a crate holds an OBJECT temperature. Flow is untouched (gas and
-    // water still seep past at permeability 0.5); only the thermal medium
-    // moved. On any furniture-free map thermal_solid == solid elementwise, so
-    // this is byte-identical there (addendum D4).
-    using namespace fixedpoint;
-
-    constexpr int32_t GAS_WSUM_FLOOR_Q = FP_ONE >> 8;    // mirrors smoke's WSUM_FLOOR_Q
-    constexpr int32_t GAS_WSUM_EPS_Q   = FP_ONE >> 14;   // mirrors smoke's WSUM_EPS_Q
-
-    // MEDIUM-TEST SITE 3/6 (advection ray-walk occluder).
-    inline bool gas_wall_at(int y, int x, const bool* thermal_solid, int h, int w) {
-        if (y < 0 || y >= h || x < 0 || x >= w) return true;   // outside == wall
-        return thermal_solid[y * w + x];
-    }
-
-    // Ported (pattern, not code) from smoke_dynamics.cpp::backtrace_sample_q.
-    // See that function's header comment for the derivation of each piece
-    // (DDA march / tile-center test / bilinear corner weights / Newton
-    // renorm); this is the SAME arithmetic, re-typed against `thermal_solid`/
-    // `is_vacuum` only.
-    int32_t gas_backtrace_sample_q(
-            const int32_t* src, int x, int y, int32_t bx_q, int32_t by_q,
-            const bool* thermal_solid, const bool* is_vacuum, int h, int w) {
-        int64_t px_q = ((int64_t)x << FP_SHIFT) + bx_q;
-        int64_t py_q = ((int64_t)y << FP_SHIFT) + by_q;
-
-        // ---- Wall-clip march (DDA, no sqrt) ----
-        const int32_t abx = bx_q >= 0 ? bx_q : -bx_q;
-        const int32_t aby = by_q >= 0 ? by_q : -by_q;
-        const int32_t amax = abx >= aby ? abx : aby;
-        int n_steps = amax >> FP_SHIFT;
-        if (amax & (FP_ONE - 1)) n_steps += 1;               // ceil
-        if (n_steps > 0) {
-            auto floordiv = [](int32_t a, int b) -> int32_t {
-                return (a >= 0) ? (a / b) : -(((-(int64_t)a) + b - 1) / b);
-            };
-            const int32_t sx_q = floordiv(bx_q, n_steps);
-            const int32_t sy_q = floordiv(by_q, n_steps);
-            int64_t cx_q = (int64_t)x << FP_SHIFT;
-            int64_t cy_q = (int64_t)y << FP_SHIFT;
-            for (int s = 0; s < n_steps; ++s) {
-                const int64_t nxp_q = cx_q + sx_q;
-                const int64_t nyp_q = cy_q + sy_q;
-                const int ti = (int)((nxp_q + (FP_ONE >> 1)) >> FP_SHIFT);
-                const int tj = (int)((nyp_q + (FP_ONE >> 1)) >> FP_SHIFT);
-                if (gas_wall_at(tj, ti, thermal_solid, h, w)) break;
-                cx_q = nxp_q;
-                cy_q = nyp_q;
-                if (tj >= 0 && tj < h && ti >= 0 && ti < w && is_vacuum[tj * w + ti])
-                    break;                                    // reached the breach
-            }
-            px_q = cx_q;
-            py_q = cy_q;
-        }
-
-        // ---- Clamp in-bounds (Q16.16) ----
-        const int64_t hi_x = (int64_t)(w - 1) << FP_SHIFT;
-        const int64_t hi_y = (int64_t)(h - 1) << FP_SHIFT;
-        if (px_q < 0) px_q = 0; else if (px_q > hi_x) px_q = hi_x;
-        if (py_q < 0) py_q = 0; else if (py_q > hi_y) py_q = hi_y;
-
-        // ---- Integer bilinear sample ----
-        const int x0 = (int)(px_q >> FP_SHIFT);
-        const int y0 = (int)(py_q >> FP_SHIFT);
-        const int x1 = (x0 + 1 <= w - 1) ? x0 + 1 : w - 1;
-        const int y1 = (y0 + 1 <= h - 1) ? y0 + 1 : h - 1;
-        const int32_t fx_q = (int32_t)(px_q - ((int64_t)x0 << FP_SHIFT));
-        const int32_t fy_q = (int32_t)(py_q - ((int64_t)y0 << FP_SHIFT));
-        const int32_t ifx_q = FP_ONE - fx_q;
-        const int32_t ify_q = FP_ONE - fy_q;
-        const int32_t w00 = mul_q16(ifx_q, ify_q);
-        const int32_t w10 = mul_q16(fx_q,  ify_q);
-        const int32_t w01 = mul_q16(ifx_q, fy_q);
-        const int32_t w11 = mul_q16(fx_q,  fy_q);
-        const int cyx[4][2] = { {y0, x0}, {y0, x1}, {y1, x0}, {y1, x1} };
-        const int32_t cw[4] = { w00, w10, w01, w11 };
-
-        int64_t acc = 0;
-        int32_t wsum_q = 0;
-        for (int k = 0; k < 4; ++k) {
-            const int cy_ = cyx[k][0];
-            const int cx_ = cyx[k][1];
-            const int j = cy_ * w + cx_;
-            // MEDIUM-TEST SITE 4/6 (sealed corner in the advection gather).
-            if (thermal_solid[j]) continue;                     // sealed corner
-            const int32_t val_q = is_vacuum[j] ? 0 : src[j];    // breach corner == 0
-            acc += mul_wide(cw[k], val_q);
-            wsum_q += cw[k];
-        }
-        if (wsum_q <= GAS_WSUM_EPS_Q) return src[y * w + x];    // negligible -> keep self
-
-        const int32_t wsum_clamped = (wsum_q < GAS_WSUM_FLOOR_Q) ? GAS_WSUM_FLOOR_Q : wsum_q;
-        const int32_t recip_q = reciprocal_q16(wsum_clamped);
-        const int32_t acc_q = narrow(acc);
-        return mul_q16(acc_q, recip_q);
-    }
+    // P2 gas-T semi-Lagrangian advection helper (`gas_wall_at` +
+    // `gas_backtrace_sample_q`, ~110 lines) — DELETED at P-E1 (energy-books
+    // arc, design §2.1.1; round-1 finding L3-5). It served ONE caller: the
+    // Pass-0b gas-T advection retired in step() below. That pass was the
+    // engine's second semi-Lagrangian T-COPIER, i.e. the same free-energy
+    // channel the EOS one was, dormant only because `step_tail` happens to
+    // pass null winds. Gas temperature is now transported once, and
+    // conservatively, by the EOS energy books. The MEDIUM-TEST SITE 2/6, 3/6
+    // and 4/6 marks lived here and retire with it (sites 1/6, 5/6 and 6/6 —
+    // the vacuum wipe, the Pass-1 medium branch and the Pass-2 conduction
+    // medium — are untouched and still marked below). Deleted rather than
+    // left dead so no future plumbing change can quietly re-adopt it; the
+    // CUDA twin (`cuda_temperature.cu` temp_advect) is deleted identically.
+    // ------------------------------------------------------------------
 }
 
 void TemperatureSolver::step(
@@ -192,36 +94,26 @@ void TemperatureSolver::step(
         if ((is_vacuum[i] || (ambient_mode && is_ambient[i])) && !ts[i]) temperature[i] = 0;
     }
 
-    // Advection: skipped as a clean no-op when dt<=0 or wind is unavailable —
-    // the Python direct-binding back-compat path (bindings.cpp) takes this
-    // branch, so the shipped solid-only unit tests (test_temperature_*.py)
-    // exercise EXACTLY the pre-P2 passes below, unchanged.
-    if (dt > 0.0f && wind_x != nullptr && wind_y != nullptr) {
-        using namespace fixedpoint;
-        gas_scratch_.resize(n);
-        int32_t* src = gas_scratch_.data();
-        for (int i = 0; i < n; ++i) src[i] = temperature[i];
-
-        // Same dt_adv = rate * dt convention as SmokeDynamics::step, so gas-T
-        // rides the wind at the same visual scale smoke does (§9 TUNING DIAL;
-        // P3 replaces `wind` with a real velocity and this rate goes away).
-        const double dt_adv = (double)gas_advection_rate * (double)dt;
-        const int32_t dt_adv_q = quantize(dt_adv);
-
-        for (int y = 0; y < h; ++y) {
-            for (int x = 0; x < w; ++x) {
-                const int i = y * w + x;
-                // MEDIUM-TEST SITE 2/6: the gas-advection mask is the
-                // complement of the THERMAL medium (a crate is not open air
-                // thermally, even though gas flows through it).
-                if (ts[i] || is_vacuum[i]) continue;      // open-air mask only
-                const int32_t bx_q = -mul_q16(wind_x[i], dt_adv_q);
-                const int32_t by_q = -mul_q16(wind_y[i], dt_adv_q);
-                temperature[i] = gas_backtrace_sample_q(
-                    src, x, y, bx_q, by_q, ts, is_vacuum, h, w);
-            }
-        }
-    }
+    // ---- Pass 0b: gas-T semi-Lagrangian advection — RETIRED (P-E1) ---------
+    // Energy-books arc, design §2.1.1 (round-1 finding L3-5). This was the
+    // SECOND semi-Lagrangian T-copier in the engine, and the same mint as the
+    // EOS one: a T *copy* moves temperature onto mass it never paid for. It was
+    // dormant in the live engine only by plumbing accident — `step_tail` passes
+    // null winds (`physics_engine.cpp`), so wind was never supplied — and the
+    // design's ruling is that "one plumbing change must not silently re-open
+    // the mint". Gas temperature is now transported ONCE, conservatively, by
+    // the EOS energy books (`bulk_flux_energy_transport_cached`).
+    //
+    // Retired by DELETION rather than by an assert: the CUDA twin
+    // (`cuda_temperature.cu`) is retired identically, so both backends agree,
+    // and a caller that still passes wind (the pybind back-compat surface keeps
+    // the optional wind_x/wind_y args) now simply gets no advection instead of
+    // an exception. `gas_advection_rate` / `gas_scratch_` are kept as inert
+    // config/ABI surface (the P-T0 `inert_n2_idx` idiom); the shipped
+    // solid-only unit tests exercised the wind-free branch and are unchanged.
+    (void)wind_x;
+    (void)wind_y;
+    (void)dt;
 
     // ---- Pass 1: heat -> temperature conversion (proposal §1.2; P2 §4.3) ----
     // Solid tiles: UNCHANGED bit-shift path (bit-identical to pre-P2 — the

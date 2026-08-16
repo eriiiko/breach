@@ -341,6 +341,26 @@ FP_HD inline q16 scale_mag(q16 x, q16 scale) {
     return (x < 0) ? -scaled : scaled;
 }
 
+// ---- FLOOR division toward -inf (energy-books arc, design §2.1.5 + §2.7) ---
+//
+// C++ and CUDA integer `/` both truncate toward ZERO. On a SUB-AMBIENT cell the
+// energy books carry a NEGATIVE relative energy e, and truncation-toward-zero
+// rounds the recovered T *upward* — i.e. eth = ΣN·T_abs *increases*: a mint of
+// exactly the class this arc exists to kill. Both backends' `/` agree with each
+// other, so CPU<->CUDA parity gates CANNOT catch it; only the ledger can. Hence
+// ONE shared helper, transcribed once, used by BOTH the §2.1.5 transport
+// recovery (P-E1) and the §2.7 expansion-work branch (P-E4).
+//
+// Contract: d != 0 (every caller floors its divisor at >= 1, so the
+// INT64_MIN / -1 overflow case is unreachable). `(n ^ d) < 0` is the
+// sign-disagreement test; combined with a nonzero remainder it is exactly the
+// "truncation moved the quotient up" case, so one decrement lands on floor.
+FP_HD inline int64_t floordiv_q(int64_t n, int64_t d) {
+    int64_t q = n / d;
+    if (((n % d) != 0) && ((n ^ d) < 0)) --q;
+    return q;
+}
+
 // ---- fixed-point ceil-divide (the substep-count cliff) --------------------
 //
 // n = ceil(a_real / b_real), computed entirely in integer from the Q16.16

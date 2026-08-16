@@ -233,13 +233,12 @@ void EOSSolver::step(
     // mirror_idx, coeffE/S, div(u), p*, the kick, mg_build_levels) is
     // UNTOUCHED, so pressure / velocity / gas flow are unchanged.
     const bool* ts = (thermal_solid != nullptr) ? thermal_solid : solid;
-    // Does the thermal medium diverge from the gas medium anywhere? If not (the
-    // furniture-free map, or the nullptr fallback), the T-only occlusion mask
-    // would be elementwise equal to cmask_, so we do not build it and every T
-    // sample keeps taking the FUSED sample — the pre-patch code path, bit for
-    // bit (gate (a) is structurally free, and there is no per-tick cost).
-    const bool t_occlude = eos_thermal_occludes(thermal_solid, solid,
-                                                dyn_permeability, n);
+    // P-E1 (design §2.1.1): the A2 T-ONLY occluder mask (`tcmask_`) and its
+    // `eos_thermal_occludes` gate are RETIRED HERE — they existed only to keep
+    // the semi-Lagrangian T *sample* from reading through a crate, and that
+    // sample is gone (T now rides the conservative energy books, step 1d).
+    // `ts` itself stays: it is the participation mask of the energy build /
+    // recovery and the step-4c skip, i.e. still the THERMAL medium test.
 
     // BC (boundary_conditions_spec_2026-07-19): planetside AMBIENT ring. ONE
     // flag gates every ambient edit in this function — a space map passes
@@ -263,6 +262,13 @@ void EOSSolver::step(
     // instrumentation — nothing in the sim path reads it, no digest folds it.
     eth_transport_delta = 0;    // per-tick reset (boundary_flux_ idiom)
     eth_compression_delta = 0;
+    // P-E1 (design §2.1.5/§2.5): the new transport law's one-way guard terms,
+    // same per-tick reset idiom.
+    e_ts_residual = 0;
+    e_wipe_sum = 0;
+    e_floor_sum = 0;
+    n_active_flux = 0;
+    n_bulk_active_sum = 0;
     const auto eth_books_sum = [&]() -> int64_t {
         int64_t acc = 0;
         for (int i = 0; i < n; ++i) {
@@ -284,10 +290,12 @@ void EOSSolver::step(
     if ((int)pstar_.size()   != n) pstar_.assign(n, 0);
     if ((int)div_u_.size()   != n) div_u_.assign(n, 0);
     if ((int)cmask_.size()   != n) cmask_.assign(n, 0);
-    // THERMAL-MASS AXIS: the T-only mask is allocated ONLY where it is live.
-    if (t_occlude && (int)tcmask_.size() != n) tcmask_.assign(n, 0);
     if ((int)coeffE_.size()  != n) coeffE_.assign(n, 0);
     if ((int)coeffS_.size()  != n) coeffS_.assign(n, 0);
+    // P-E1: the transient energy accumulator + applied-dq face planes.
+    if ((int)e_scratch_.size() != n) e_scratch_.assign(n, 0);
+    if ((int)dqsum_e_.size()   != n) dqsum_e_.assign(n, 0);
+    if ((int)dqsum_s_.size()   != n) dqsum_s_.assign(n, 0);
 
     // ---- step 0: P_prev := P ---------------------------------------------
     for (int i = 0; i < n; ++i) p_prev[i] = atmosphere[i];
@@ -428,26 +436,12 @@ void EOSSolver::step(
         else if (is_vacuum[i] || (ambient_mode && is_ambient[i])) cmask_[i] = 1;
         else cmask_[i] = 2;
     }
-    // THERMAL-MASS AXIS, P-EOS (ruling A2 + §4 item 4): the T-ONLY corner/march
-    // mask. `cmask_` above is UNTOUCHED — it drives velocity self-advection (and
-    // through div(u)/p* the pressure solve and the gas flow), and item 4 requires
-    // those to be identical, so a crate must STAY cmask 2 there (a live gas cell:
-    // gas still seeps through at permeability 0.5 — shield, not seal). The
-    // thermal medium diverges only here: a thermal_solid tile is forced to 0
-    // (sealed) so the temperature backtrace treats it as a WALL to the march AND
-    // as a dead corner in the bilinear gather — the SAME two semantics as P1's
-    // `gas_wall_at` (MEDIUM-TEST SITE 3/6) and its sealed-corner test (4/6) in
-    // temperature_solver.cpp. WHY occlude: gas percolating through a packed
-    // object exchanges heat with it and does not carry the upstream temperature
-    // identity through the tile; and structurally, sampling the object's T as a
-    // source is a FREE-ENERGY channel (SL sampling copies without debiting, so a
-    // 1300 K crate would heat every parcel dragged past it, forever, at zero cost
-    // to itself). Object->gas heat transfer must be the deliberate two-sided
-    // convective term (the planned k_wind_strip replacement), not a side effect of
-    // advection.
-    if (t_occlude) {
-        for (int i = 0; i < n; ++i) tcmask_[i] = ts[i] ? (uint8_t)0 : cmask_[i];
-    }
+    // (THERMAL-MASS AXIS ruling A2's T-only `tcmask_` build lived here and is
+    // RETIRED with the T sample — P-E1, design §2.1.1. Its whole job was to
+    // stop the SL T sample reading an object's temperature as a free-energy
+    // source; the energy books now solve that structurally, by never letting
+    // relative energy cross a ts face at all (rule (d), §2.1.4). `cmask_` is
+    // untouched, so velocity / pressure / gas flow are bit-identical.)
     // donor-cell face coefficients (min-perm quantize x dt_s — the exact
     // legacy bulk_flux_transport per-face chain, hoisted):
     {
@@ -477,11 +471,16 @@ void EOSSolver::step(
         // P-E0 bracket open: substep transport-block entry (design §2.5).
         const int64_t eth_pre_transport = eth_books_sum();
 
-        // -- a+b. FUSED SL advection of u (self) and T ---------------------
-        // All three fields ride the SAME displacement −uⁿ·dt_s (uⁿ = the
-        // pre-substep velocity — the consistent SL choice, and what lets one
-        // march serve three samples; T purely advected — no compression work
-        // here, that is step 4c, design §3.2 corrected 2026-07-10).
+        // -- a. SL advection of u (self) ------------------------------------
+        // P-E1 (design §2.1.1): the `.t` slot of the fused sample is RETIRED —
+        // T-WRITE SITE 1/2 is GONE. The SL copy was the measured mint (`:423`'s
+        // "FREE-ENERGY channel"): it copied a collapsing-denominator T onto real
+        // mass without debiting anyone. Temperature is now transported by the
+        // conservative energy books in step 1d below.
+        // The fused 3-slot sampler call is kept VERBATIM (t_src_ still feeds the
+        // third slot and its `.t` result is discarded): `.vx`/`.vy` do not depend
+        // on the third array, so u stays bit-identical to HEAD — the whole point
+        // of not re-deriving a 2-field sampler here.
         for (int i = 0; i < n; ++i) {
             vx_src_[i] = wind_x[i];
             vy_src_[i] = wind_y[i];
@@ -499,52 +498,46 @@ void EOSSolver::step(
                     cmask_.data(), h, w);
                 wind_x[i] = fs.vx;
                 wind_y[i] = fs.vy;
-                // THERMAL-MASS AXIS, P-EOS, T-WRITE SITE 1/2 (ruling A1): the
-                // EOS never writes `temperature` on a thermal_solid tile — the
-                // TemperatureSolver OWNS it there. The semi-Lagrangian sample is
-                // a fluid-parcel transport claim ("the gas now at i came from
-                // upstream"); the OBJECT at i did not come from upstream, so the
-                // write is semantically void for it. The vacuum/ring ΔT=0 wipe is
-                // skipped for the same reason (and for the same reason P1's SITE
-                // 1/6 guards it with `!ts[i]`: a space-exposed CRATE keeps its
-                // object temperature exactly as a space-exposed HULL tile does).
-                // Where thermal_solid == solid this line is unreachable anyway —
-                // a solid cell already `continue`d above — so gate (a) is
-                // structurally free here.
-                if (ts[i]) continue;
-                // A2: the T sample rides the T-ONLY occluder mask when the two
-                // media diverge; otherwise it IS the fused sample, verbatim.
-                // Calling the SAME routine with t_src in all three slots is
-                // deliberate: the returned `.t` depends only on src_t, the mask
-                // and the displacement, so this is zero-drift by construction
-                // (one transcription of the sampler, not a second copy of it).
-                const int32_t t_samp = t_occlude
-                    ? eos_backtrace_sample3_q(
-                          t_src_.data(), t_src_.data(), t_src_.data(),
-                          x, y, bx_q, by_q, tcmask_.data(), h, w).t
-                    : fs.t;
-                // BC (audit (b)): ΔT=0 IS ambient — the ring holds T ≡ T_AMB_K
-                // (stored ΔT 0), the vacuum idiom verbatim.
-                temperature[i] = (is_vacuum[i] || (ambient_mode && is_ambient[i])) ? 0 : t_samp;
+                (void)fs.t;   // P-E1: the T slot is retired (see above).
             }
         }
-        if (s == n_sub - 1) digest_advect = digest_of(wind_x, n, digest_of(wind_y, n, digest_of(temperature, n, 0)));
 
-        // -- d. bulk O2/N2 <- donor-cell conservative flux on u ------------
+        // -- d. bulk O2/N2 <- donor-cell conservative flux on u, WITH the
+        //       thermal energy riding it (P-E1, design §2.1) ---------------
         // (cached-coefficient entry — the per-face min/quantize/mul chain is
-        // hoisted to the per-tick cache above; arithmetic identical)
+        // hoisted to the per-tick cache above; the MASS arithmetic inside is
+        // untouched, so gas planes stay bit-identical to HEAD.)
         // BC (spec §1 "N — sink becomes clamp, per substep"): the ambient ring
         // is clamped to N_amb[plane] every substep, and boundary_flux_ records
         // the exchange (spec §5). nullptr args on a space map -> byte-identical.
-        bulk_flux_transport_cached(gas, gas_conservative, n_gases,
-                                   wind_x, wind_y, solid, is_vacuum,
-                                   coeffE_.data(), coeffS_.data(), h, w,
-                                   ambient_mode ? is_ambient : nullptr,
-                                   ambient_mode ? n_amb : nullptr,
-                                   ambient_mode ? boundary_flux_.data() : nullptr);
+        {
+            BulkEnergyCounters ec;
+            bulk_flux_energy_transport_cached(
+                gas, gas_conservative, n_gases,
+                temperature, wind_x, wind_y, solid, is_vacuum, ts,
+                coeffE_.data(), coeffS_.data(), t_min_q, h, w,
+                e_scratch_.data(), dqsum_e_.data(), dqsum_s_.data(), ec,
+                ambient_mode ? is_ambient : nullptr,
+                ambient_mode ? n_amb : nullptr,
+                ambient_mode ? boundary_flux_.data() : nullptr);
+            e_ts_residual     += ec.e_ts_residual;
+            e_wipe_sum        += ec.e_wipe_sum;
+            e_floor_sum       += ec.e_floor_sum;
+            n_active_flux     += ec.n_active_flux;
+            n_bulk_active_sum += ec.n_bulk_active_sum;
+        }
         (void)dt_s;
-        // P-E0 bracket close: after the step-d flux, accumulated per tick.
+        // P-E0 bracket close, P-E1 bracket MOVE: the transport bracket now
+        // closes after the RECOVERY (which is the last thing the call above
+        // does), not merely after the mass flux — that is where the pass's
+        // net contribution to the books is finally observable (design §2.5).
         eth_transport_delta += eth_books_sum() - eth_pre_transport;
+        // P-E1 (design §2.1.6, declared re-baseline-class): `digest_advect`
+        // MOVES ACROSS THE FLUX CALL. It hashed (wx, wy, T) BEFORE step 1d;
+        // post-arc the T it must hash — T after the energy recovery — only
+        // exists after it. The expression itself is unchanged, and the CUDA
+        // per-call twin already took it post-loop, so the two agree.
+        if (s == n_sub - 1) digest_advect = digest_of(wind_x, n, digest_of(wind_y, n, digest_of(temperature, n, 0)));
         if (s == n_sub - 1) {
             uint64_t bfd = 0;
             for (int gi = 0; gi < n_gases; ++gi)
@@ -1284,23 +1277,25 @@ void EOSSolver::mg_run_solve_cpu(int n_levels) const {
 }
 
 // ===========================================================================
-// EOS P6.2 — standalone CPU reference for the fused SL-advection substep loop
+// EOS P6.2 — standalone CPU reference for the SL-advection substep loop
 // (declared in eos_solver.h; rationale there). A VERBATIM replay of step()'s
-// step-1a/1b/1f chain for a GIVEN n_sub:
+// step-1a/1f chain for a GIVEN n_sub:
 //   * cmask build     — the same solid/perm<=0 -> 0, vacuum -> 1, live -> 2
 //                       table step() builds once per tick;
 //   * per substep     — src snapshot of (vx, vy, T), then the per-cell fused
 //                       backtrace via the SAME file-local
 //                       eos_backtrace_sample3_q (one routine, zero drift),
-//                       solid cells zero u / keep T, vacuum destinations
-//                       force T := 0;
+//                       solid cells zero u;
 //   * dt_s_q          — quantize((double)dt / (double)n_sub), exactly the
 //                       dt_d/dt_s_d fold step() performs.
 // The step-1f "zero u on solid" pass is subsumed: the advection pass itself
 // zeroes solid cells' u, and nothing between (bulk flux writes only gas
-// planes) re-touches u — replicated here by construction.
-// Returns the chained FNV digest over (T, then wy, then wx) — byte-for-byte
-// the digest_advect expression at step()'s last substep.
+// planes + T) re-touches u — replicated here by construction.
+//
+// P-E1 (design §2.1.1): U-ONLY. The `.t` slot is retired; `temperature` is a
+// READ-ONLY src slot whose sampled `.t` is discarded (as in step()), and the
+// return is the chained FNV over (wy, wx). No longer == digest_advect — see
+// the header block for the contract change.
 // ===========================================================================
 uint64_t eos_sl_advect_reference(
         int32_t* wind_x, int32_t* wind_y, int32_t* temperature,
@@ -1311,10 +1306,10 @@ uint64_t eos_sl_advect_reference(
     const int n = h * w;
     if (n <= 0 || dt <= 0.0f || n_sub < 1) return 0;
     const bool ambient_mode = (is_ambient != nullptr);   // BC: dormancy by branch
-    // THERMAL-MASS AXIS, P-EOS: step()'s `ts` / `t_occlude` folds, verbatim.
-    const bool* ts = (thermal_solid != nullptr) ? thermal_solid : solid;
-    const bool t_occlude = eos_thermal_occludes(thermal_solid, solid,
-                                                dyn_permeability, n);
+    // P-E1: `thermal_solid` is RETIRED here with the T sample (design §2.1.1) —
+    // the A2 T-only occluder mask had no consumer once `.t` went. Kept in the
+    // signature for ABI/back-compat, exactly as P-T0 kept `inert_n2_idx`.
+    (void)thermal_solid;
 
     // cmask (verbatim: step()'s per-tick corner/march table).
     std::vector<uint8_t> cmask(n, 0);
@@ -1322,12 +1317,6 @@ uint64_t eos_sl_advect_reference(
         if (solid[i] || dyn_permeability[i] <= 0.0f) cmask[i] = 0;
         else if (is_vacuum[i] || (ambient_mode && is_ambient[i])) cmask[i] = 1;   // BC: ring is a breach corner
         else cmask[i] = 2;
-    }
-    // THERMAL-MASS AXIS: the T-only occluder mask (step()'s tcmask_, verbatim).
-    std::vector<uint8_t> tcmask;
-    if (t_occlude) {
-        tcmask.assign(n, 0);
-        for (int i = 0; i < n; ++i) tcmask[i] = ts[i] ? (uint8_t)0 : cmask[i];
     }
 
     std::vector<int32_t> vx_src(n), vy_src(n), t_src(n);
@@ -1351,19 +1340,11 @@ uint64_t eos_sl_advect_reference(
                     cmask.data(), h, w);
                 wind_x[i] = fs.vx;
                 wind_y[i] = fs.vy;
-                // THERMAL-MASS AXIS, T-WRITE SITE 1/2 + A2 occluder (step()'s
-                // chain, verbatim).
-                if (ts[i]) continue;
-                const int32_t t_samp = t_occlude
-                    ? eos_backtrace_sample3_q(
-                          t_src.data(), t_src.data(), t_src.data(),
-                          x, y, bx_q, by_q, tcmask.data(), h, w).t
-                    : fs.t;
-                temperature[i] = (is_vacuum[i] || (ambient_mode && is_ambient[i])) ? 0 : t_samp;   // BC: ΔT=0 is ambient
+                (void)fs.t;   // P-E1: the T slot is retired (step(), verbatim).
             }
         }
     }
-    return digest_of(wind_x, n, digest_of(wind_y, n, digest_of(temperature, n, 0)));
+    return digest_of(wind_x, n, digest_of(wind_y, n, 0));
 }
 
 // ===========================================================================
