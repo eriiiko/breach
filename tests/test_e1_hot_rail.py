@@ -1,0 +1,204 @@
+"""P-E0 hot-rail repro + pinned N~0.15 pocket variant (energy-books arc).
+
+The committed E2E reproduction of the in-game HOT-RAIL blowup anatomy
+(storm audit 2026-08-14 SS4.4): a small sealed room with an oversized fire
+load; the burning block exhausts its O2, saturates smoke, evacuates (the
+plume wind blows bulk N out, min N -> 0.000), and step-4c compression work
+then multiplies T geometrically (the x~1.5/tick = 1+T_WORK_CLAMP rate-rail
+signature) up to the T_MAX_PHYS ceiling, with multi-atm |dP| spikes when
+gas slams back into the ceiling-hot pocket.
+
+Measured on HEAD at the committed parameters (P-E0 as-built,
+docs/e1_p_e0_asbuilt_2026-08-17.md): eos.t_max_phys_hits = 2130 over the
+2000-tick run, first hit tick 1761; a x1.4972/tick geometric climb
+sustained 19 consecutive ticks (the audit's x1.4957 signature); peak T at
+the 15984.5 ceiling; |dP| spike 97.5 atm (tick 1904); and the P-E0
+eth_transport_delta bracket shows the SL T-copy transport pass MINTING
++3.72e16 raw book-energy over the run, beating the SS7 truncation
+allowance on 901 ticks (worst tick +3.80e15 vs an allowance ~5e7).
+
+Gate idiom (design energy_transport_design_2026-08-16.md v2.1 SS6): the two
+healthy-property tests below assert what a CLOSED energy book will satisfy,
+so they are RED on HEAD by construction and carried as
+xfail-with-owning-patch until their owning rung lands:
+  - test_no_transport_mint  -> owned by P-E1 (energy-conservative transport)
+  - test_no_rail_hits       -> owned by P-E4 (compression-work trust gate;
+                               flips strict at P-E4)
+The determinism tests pin the scenarios themselves (P-E0 oracle row:
+"all scenarios deterministic + committed").
+"""
+import hashlib
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+ROOT = Path(__file__).resolve().parent.parent
+for _p in (ROOT, ROOT / "src", ROOT / "tools",
+           ROOT / "cpp" / "build" / "Release"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
+import breach_physics as bp                      # noqa: E402
+from config import CFG                           # noqa: E402
+from level_loader import LevelData               # noqa: E402
+from simulation import Simulation                # noqa: E402
+from simulation import fire_fixed                # noqa: E402
+
+import storm_probe as sp                         # noqa: E402
+from fire_timing_harness import (                # noqa: E402
+    FP_ONE, AIR, HULL, FURN, apply_overrides, restore_overrides,
+)
+
+# The synced planes the determinism digests cover (bench_two_room idiom).
+DIGEST_FIELDS = ("atmosphere", "temperature", "wind_x", "wind_y",
+                 "gas", "fire", "smoke")
+
+# --- the committed scenarios (parameters are PINNED; see the as-built) ----
+# Hot rail: 8x8 interior at the SHIPPED tile scale (0.333 m) almost filled
+# by a 6x6 furniture block, every fuel tile ignited at once (the oversized
+# fire load). Rail first trips ~tick 1761 on HEAD -> 2000 ticks.
+HOT = dict(interior=8, tile=0.333, fuel_block=6)
+HOT_TICKS = 2000
+# Pinned pocket variant (design SS2.4: the mid-band trust-gate residual):
+# 10x10 interior at tile 0.5 with a 4x4 block — the burning block's hot
+# cells sit at n_bulk ~0.145-0.156 (the n_work_ref half-band) for the whole
+# plateau on HEAD, with NO rail engagement (measured; see the as-built).
+POCKET = dict(interior=10, tile=0.5, fuel_block=4)
+
+
+def build_fuel_room(interior, tile, fuel_block):
+    """Sealed room (1-tile HULL ring, space boundary) with a centered
+    fuel_block x fuel_block FURN block."""
+    h = w = interior + 2
+    tm = np.full((h, w), AIR, dtype=np.int32)
+    tm[0, :] = HULL
+    tm[-1, :] = HULL
+    tm[:, 0] = HULL
+    tm[:, -1] = HULL
+    f0 = (h - fuel_block) // 2
+    tm[f0:f0 + fuel_block, f0:f0 + fuel_block] = FURN
+    return LevelData(name="e0_fuel_room", version="2", path=Path("."),
+                     tilemap=tm, tile_size_m=float(tile),
+                     diffuse_path=Path("."), boundary="space"), f0
+
+
+def _plane_bytes(gmap, name):
+    return np.ascontiguousarray(getattr(gmap, name)).tobytes()
+
+
+def run_scenario(interior, tile, fuel_block, ticks, collect=False):
+    """Run the scenario under the P-F1b dials; return telemetry + digests."""
+    restore = apply_overrides(dict(sp.PF1B))
+    try:
+        level, f0 = build_fuel_room(interior, tile, fuel_block)
+        sim = Simulation(level, seed=12345, breach_physics=bp,
+                         enable_recorder=False)
+        gmap = sim.gmap
+        seed_i = float(getattr(CFG.physics.fire, "ignition_seed", 0.1))
+        slf = (slice(f0, f0 + fuel_block), slice(f0, f0 + fuel_block))
+        gmap.fire[slf] = fire_fixed.quantize_scalar(seed_i)
+        gmap.temperature[slf] = fire_fixed.quantize_scalar(280.0)
+
+        eos = sim.physics_runner.eos
+        gas = gmap.gas
+        o2i = int(gmap.gases.name_to_id["o2"])
+        n2i = int(gmap.gases.name_to_id["inert_n2"])
+        om = ~gmap.solid
+
+        traj = {name: hashlib.sha256() for name in DIGEST_FIELDS}
+        eth_ticks = []      # (eth_transport_delta, allowance) per tick
+        peak_T = 0.0
+        o2_start = int(gas[o2i][om].astype(np.int64).sum())
+        for _ in range(ticks):
+            sim.set_paused(False)
+            sim.step()
+            if collect:
+                # SS7 truncation allowance, deliberately GENEROUS and
+                # law-independent: n_sub x (total bulk N raw over the whole
+                # map) — one raw-T LSB per bulk count per substep. The
+                # active-flux scaling (P-E1's n_active_flux counter) can only
+                # SHRINK it, so a mint that beats this bound beats SS7 too.
+                nb_tot = int((gas[o2i].astype(np.int64)
+                              + gas[n2i].astype(np.int64)).sum())
+                allowance = int(eos.dbg_last_n_sub) * nb_tot
+                eth_ticks.append((int(eos.eth_transport_delta), allowance))
+                peak_T = max(peak_T, float(
+                    gmap.temperature[om].astype(np.int64).max()) / FP_ONE)
+            for name in DIGEST_FIELDS:
+                traj[name].update(_plane_bytes(gmap, name))
+        o2_end = int(gas[o2i][om].astype(np.int64).sum())
+        return dict(
+            digests={n: h.hexdigest() for n, h in traj.items()},
+            t_max_phys_hits=int(eos.t_max_phys_hits),
+            work_clamp_hits=int(eos.work_clamp_hits),
+            eth_ticks=eth_ticks, peak_T=peak_T,
+            o2_burned_frac=1.0 - o2_end / max(o2_start, 1))
+    finally:
+        restore_overrides(restore)
+
+
+# The full hot-rail run is expensive (~2000 ticks) — run it ONCE per session
+# and let both healthy-property tests read the same telemetry.
+@pytest.fixture(scope="module")
+def hot_run():
+    return run_scenario(ticks=HOT_TICKS, collect=True, **HOT)
+
+
+def test_hot_scenario_reaches_the_audit_anatomy(hot_run):
+    """Non-vacuousness (audit rule R1): the committed scenario really is an
+    oversized-load starved fire, not a fizzle — it burns most of the room's
+    O2 and reaches flame-grade temperatures. (Stays green post-arc: closing
+    the energy books must not put the fire out.)"""
+    # Measured on HEAD: 31.5% of the ROOM total is burned by tick 2000 (the
+    # burning block's own cells hit O2 = 0.000 long before — starvation is
+    # local). 15% is the fizzle line, generous to post-arc retuning.
+    assert hot_run["o2_burned_frac"] > 0.15, (
+        f"fire only burned {hot_run['o2_burned_frac']:.1%} of the room O2 — "
+        "the oversized-load premise is gone")
+    assert hot_run["peak_T"] > 1000.0, (
+        f"peak gas T {hot_run['peak_T']:.0f} never reached flame grade")
+
+
+@pytest.mark.xfail(reason="owned by P-E1", strict=False)
+def test_no_transport_mint(hot_run):
+    """HEALTHY property (design SS7): the transport pass never creates
+    thermal book-energy beyond the truncation allowance — per tick,
+    eth_transport_delta <= n_sub x SUM n_bulk (one raw-T LSB per bulk count
+    per substep). RED on HEAD: the SL T-copy writes phantom-T onto real
+    mass; the measured worst tick beats the allowance by ~8 orders of
+    magnitude (see the P-E0 as-built)."""
+    worst = max(et - al for et, al in hot_run["eth_ticks"])
+    n_viol = sum(1 for et, al in hot_run["eth_ticks"] if et > al)
+    assert n_viol == 0, (
+        f"transport minted book-energy on {n_viol} ticks "
+        f"(worst overshoot {worst} raw Q16.16^2 above the allowance)")
+
+
+@pytest.mark.xfail(reason="owned by P-E4", strict=False)
+def test_no_rail_hits(hot_run):
+    """HEALTHY property (design SS7 rails row): the T_MAX_PHYS value rail
+    never engages — a bounded system does not need the ceiling. RED on
+    HEAD: step-4c compression work compounds x~1.5/tick on the evacuated
+    burning block until the rail catches it (measured 2130 hits here)."""
+    assert hot_run["t_max_phys_hits"] == 0, (
+        f"T_MAX_PHYS engaged {hot_run['t_max_phys_hits']} times — the "
+        "hot-rail runaway is live")
+
+
+def test_hot_scenario_prefix_is_deterministic():
+    """Scenario pin: two short prefix runs are digest-identical, all planes."""
+    a = run_scenario(ticks=240, **HOT)
+    b = run_scenario(ticks=240, **HOT)
+    assert a["digests"] == b["digests"]
+
+
+def test_pocket_variant_is_deterministic():
+    """The pinned N~0.15 pocket variant (design SS2.4 measurement scenario):
+    determinism assert only — the healthy-property gate values for this
+    scenario are frozen later, per SS7 (P-E4 row). Measured HEAD anatomy is
+    recorded in the P-E0 as-built."""
+    a = run_scenario(ticks=240, **POCKET)
+    b = run_scenario(ticks=240, **POCKET)
+    assert a["digests"] == b["digests"]
