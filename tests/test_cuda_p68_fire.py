@@ -11,8 +11,10 @@ check in an isolated subprocess (cuda_harness):
     sat-clamp-to-zero above the ceiling AND the headroom HARD-CAP pinned exactly
     at T_FLAME_MAX), below-ambient sat-clamp, wind fan/strip, wall burn-through
     (SET-equal destroyed, no drops/dupes), snap-extinguish, degenerate 1xN/Nx1,
-    P_degenerate smoothstep, non-identity temp_scale, overlapping-neighbour
-    smoke atomicAdd, and the host max early-exit (fields untouched).
+    P_degenerate smoothstep, non-identity temp_scale, a dense overlapping-fire
+    block (P2/P5 parity — formerly also an overlapping-smoke-atomicAdd proof;
+    that scatter is deleted at P-S1, docs/smoke_single_source_asbuilt_
+    2026-08-15.md), and the host max early-exit (fields untouched).
   * PART 2 — a 130-tick O2-rich-room ignition trajectory (plume heating to the
     T_FLAME_MAX ceiling, O2-depletion self-starving, wall burn-through) with the
     CPU-backend and GPU-backend states stepped in LOCKSTEP, per-tick byte-identity

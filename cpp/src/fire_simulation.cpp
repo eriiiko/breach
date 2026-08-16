@@ -121,7 +121,6 @@ std::vector<std::pair<int, int>> FireSimulation::step(
     // o2f-readout tests use to collapse the multiply chain to a single factor.
     const q16 INV_C = (p.I_cap_per_avail > 0.0f)
         ? fp::quantize(1.0 / (double)p.I_cap_per_avail) : (q16)0;
-    const q16 emission_q    = fp::quantize((double)p.smoke_emission);
     const q16 wall_damage_q = fp::quantize((double)p.wall_damage);
 
     // Load-time reciprocals for the config-constant divides (make_recip/recip_mul).
@@ -286,27 +285,22 @@ std::vector<std::pair<int, int>> FireSimulation::step(
         fire[i] = I_next;
     }
 
-    // --- Fire produces smoke in neighbouring air tiles (KEPT) ---
-    // smoke is Q16.16. The emission delta (smoke_emission*dt*I) is a small positive
-    // Q16.16 product, ROUND-TO-NEAREST (unbiased deposit), integer-added — order-free
-    // + deterministic.
-    for (int y = 0; y < h; ++y) {
-        for (int x = 0; x < w; ++x) {
-            const q16 I = fire[y * w + x];
-            if (I <= 0) continue;
-            // delta = smoke_emission * dt * I (all positive Q16.16). PINNED order;
-            // round-to-nearest the final narrow (deposit).
-            const q16 ed = fp::mul_q16(emission_q, dt_q);       // emission*dt
-            const int64_t wide = fp::mul_wide(ed, I);           // * I (wide for round)
-            const q16 delta_q = fp::narrow_round(wide);         // >= 0 (positive deposit)
-            for (const auto& d : D4) {
-                int ny = y + d[0], nx = x + d[1];
-                if (in_bounds(ny, nx, h, w) && !is_wall[ny * w + nx]) {
-                    smoke[ny * w + nx] += delta_q;     // Q16.16 integer add
-                }
-            }
-        }
-    }
+    // --- Fire-step smoke scatter DELETED (P-S1, 2026-08-15) -----------------
+    // Erik's single-source ruling (docs/smoke_single_source_design_2026-07-24.md,
+    // 2026-07-24): fire smoke has ONE source — the physically-bookkept
+    // combustion soot channel (`soot_yield`, cpp/src/combustion.cpp) — not two.
+    // This block used to add `smoke_emission*dt*I` to each lit tile's open
+    // 4-neighbours EX NIHILO (no debit anywhere), which the storm audit
+    // (docs/storm_audit_2026-08-14.md §4.2) traced into a real mass/pressure
+    // pump: the P4 decay->inert_N2 credit (physics_engine.cpp) then converted
+    // that unbacked trace mass into full-pressure-weight bulk N2 — two
+    // individually-defensible rules composing into a sealed room gaining
+    // +42% of its bulk gas inventory in 200s. See
+    // docs/smoke_single_source_asbuilt_2026-08-15.md for the as-built record
+    // and measured before/after numbers. The CUDA mirror (cuda_fire.cu's
+    // fire_smoke_emit kernel) is deleted the same way. `smoke_emission` is
+    // retired from FireParams/config/bindings entirely (a stale key now
+    // loud-errors at load, src/simulation/physics_runner.py).
 
     // --- Fire damages walls, collect destroyed tiles (KEPT — the fuel-consumption
     //     brake: as wall_hp -> 0, F -> 0 in the feedback, the fire starves) ---

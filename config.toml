@@ -325,7 +325,13 @@ k_wind_fan        = 0.5    # (1 + k_wind_fan*W) fans growth into a firestorm. NE
 k_wind_strip      = 0.0    # W*(1-I)*I blows out small/marginal fires (the realistic crossover). P-K0: promoted from TUNE (plume self-blow-out off, 2026-07-23)
 # fire_pressure_gain TOMBSTONE (P-R2, 2026-07-31): dead key — the plume->T shim it fed (FireParams::fire_pressure_gain, the one temperature[] writer bypassing heat_inv_shift) was deleted; see docs/radiation_raycaster_extinction_ruling_2026-07-31.md A2.
 p_expand_ref      = 1.30   # self-limiting plume saturation ceiling (atm + thermal-expansion headroom)
-smoke_emission    = 0.8    # smoke produced per second per unit intensity (KEPT)
+# smoke_emission TOMBSTONE (P-S1, 2026-08-15): dead key — the ex-nihilo fire
+# smoke scatter it fed was DELETED (Erik's single-source ruling,
+# docs/smoke_single_source_design_2026-07-24.md; killed the smoke->N2
+# pressure pump, docs/storm_audit_2026-08-14.md §4.2). Combustion soot
+# ([physics.combustion] soot_yield) is now the ONE fire-smoke source. Unlike
+# the other TOMBSTONEs on this page, leaving this key set is a LOUD load-time
+# error (src/simulation/physics_runner.py), not a silent no-op.
 wall_damage       = 0.03   # wall HP lost per second per unit intensity (KEPT — the burn-out brake). P-K0: promoted from TUNE (P-F1b 0.4->0.03, BURN DURATION: 8 min kindling / 24 min furniture)
 
 # --- K2: fire as a sim-side heat ray source (proposal §1, fire_design_notes) --

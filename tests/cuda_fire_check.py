@@ -23,15 +23,17 @@ Part 2's plume-heating/ceiling assertions) are REMOVED along with the shim —
 there is nothing left to gate. The dead dials (`fire_pressure_gain`,
 `temp_gain_scale`, `T_FLAME_MAX`) are dropped from DIALS/_PARAM_DEFAULTS below.
 
-PASS STRUCTURE / ORDERING (the port's correctness argument): four device passes
-(P2 logistic feedback → P4 smoke scatter → P5 wall burn → P6 clamp; P3's slot
-is retired, not renumbered), one per CPU loop, launched as a barriered chain.
-EVERY pass is an own-index write with read-only neighbour reads (P2's O2
-mole-fraction sums over `n_o2`/`n_total`), an order-free integer atomicAdd
-scatter (P4 smoke), or an order-free device counter (P5 destroyed). NO cell
-reads another cell's within-pass-written fire — there is NO combustion-style
-Gauss-Seidel coupling — so the parallel schedule reproduces the CPU sequential
-result bit-for-bit.
+PASS STRUCTURE / ORDERING (the port's correctness argument): three device
+passes (P2 logistic feedback → P5 wall burn → P6 clamp; P3's slot retired at
+P-R2, P4's (smoke scatter) at P-S1 2026-08-15 — docs/smoke_single_source_
+asbuilt_2026-08-15.md — NEITHER renumbered), one per CPU loop, launched as a
+barriered chain. EVERY pass is an own-index write with read-only neighbour
+reads (P2's O2 mole-fraction sums over `n_o2`/`n_total`) or an order-free
+device counter (P5 destroyed — the only scatter left in this kernel since
+P4's atomicAdd smoke deposit was deleted). NO cell reads another cell's
+within-pass-written fire — there is NO combustion-style Gauss-Seidel
+coupling — so the parallel schedule reproduces the CPU sequential result
+bit-for-bit.
 
 Three gates:
 
@@ -41,10 +43,12 @@ Three gates:
   snap-extinguish, degenerate 1xN / Nx1, all-solid + all-vacuum (empty
   O2-fraction sum), x_degenerate (the o2_frac_ext >= o2_frac_full misconfig ->
   a step, mirroring the old P_degenerate smoothstep-step branch), non-identity
-  temp_scale (recip_temp_scale path), a dense fire block (overlapping smoke
-  atomicAdd), and the host max early-exit (fields untouched). CPU
-  FireSimulation.step vs GPU cuda_fire_step on identical copies, byte-for-byte
-  on fire/temperature/smoke/wall_hp + SET-equal destroyed.
+  temp_scale (recip_temp_scale path), a dense fire block (P2/P5 parity under
+  overlapping lit neighbours — formerly ALSO an overlapping-smoke-atomicAdd
+  proof; that mechanism is deleted at P-S1, see (i) below), and the host max
+  early-exit (fields untouched). CPU FireSimulation.step vs GPU
+  cuda_fire_step on identical copies, byte-for-byte on
+  fire/temperature/smoke/wall_hp + SET-equal destroyed.
 
   PART 2 — TRAJECTORY (the review's §4 P6.8 digest gate): ignition in an O2-rich
   room, fire self-starving as the O2 MOLE FRACTION depletes (n_total held fixed
@@ -91,7 +95,14 @@ MUT = ("fire", "temperature", "smoke", "wall_hp")
 # catch. `fire_T_ext` stays in the list as the plane's FALLBACK.
 DIALS = ("k_grow", "k_die", "fire_T_ext", "fire_T_span", "fuel_ref",
          "o2_frac_ext", "o2_frac_full", "I_min", "k_wind_fan", "k_wind_strip",
-         "smoke_emission", "wall_damage", "temp_scale", "I_cap_per_avail")
+         "wall_damage", "temp_scale", "I_cap_per_avail")
+# smoke_emission DROPPED from DIALS at P-S1 (2026-08-15): the field it named
+# no longer exists on FireParams and cuda_fire_step no longer takes it — the
+# ex-nihilo smoke scatter both sides drove is deleted (docs/
+# smoke_single_source_asbuilt_2026-08-15.md). Joins the p_expand_ref/P_min/
+# P_full/o2_frac_amb tombstoned group below (set on the CPU object, never
+# passed to the GPU) — except this one is gone from BOTH sides, not merely
+# unpassed.
 
 # The full FireParams surface (incl. the vestigial p_expand_ref/P_min/P_full,
 # set on the CPU object but not passed to the GPU — all three are unread by
@@ -104,7 +115,7 @@ _PARAM_DEFAULTS = dict(
     o2_frac_ext=0.13, o2_frac_full=1.0, o2_frac_amb=0.21,
     I_min=0.02, k_wind_fan=0.5,
     k_wind_strip=0.5, p_expand_ref=1.30,
-    smoke_emission=0.8, wall_damage=0.4, temp_scale=float(FP_ONE),
+    wall_damage=0.4, temp_scale=float(FP_ONE),
     I_cap_per_avail=2.53,        # P-R3 capacity law (ruling A3): the size dial
 )
 
@@ -347,7 +358,14 @@ def part1_isolated() -> bool:
     c, dc, g, dg = run_pair(st, fp_ts, dials_ts, 1.0 / 24.0)
     ok &= compare("non-identity temp_scale", c, dc, g, dg)
 
-    # (i) dense fire block -> overlapping smoke atomicAdd (order-free proof).
+    # (i) dense fire block: P2 logistic + P5 burn-through parity under a
+    #     block of overlapping lit flammable neighbours. FORMERLY (pre-P-S1)
+    #     this also proved the P4 smoke scatter's overlapping atomicAdd
+    #     deposits were order-free — that mechanism is DELETED (docs/
+    #     smoke_single_source_asbuilt_2026-08-15.md), so `smoke` is expected
+    #     to stay EXACTLY at its seed (0) through this pass now; the
+    #     dense-overlap scenario itself is kept as a P2/P5 fuzz config (still
+    #     useful, still free) rather than deleted outright.
     st = _blank(10, 10)
     st["flammable"][3:7, 3:7] = True
     st["is_wall"][3:7, 3:7] = True
@@ -358,10 +376,11 @@ def part1_isolated() -> bool:
     st["n_o2"][:] = _quantize(0.9)
     st = _contig(st)
     c, dc, g, dg = run_pair(st, fp, dials, 1.0 / 24.0)
-    ok &= compare("dense-block overlapping smoke", c, dc, g, dg)
-    if not (c["smoke"] > 0).any():
+    ok &= compare("dense-block (P2/P5 parity)", c, dc, g, dg)
+    if (c["smoke"] != 0).any():
         ok = False
-        print("  dense block: no smoke was deposited")
+        print("  dense block: smoke moved, but P-S1 deleted the fire step's "
+              "only smoke writer (should stay at its all-zero seed)")
 
     # (j) burn-through forcer: a low-HP flammable wall tile burns through. dt is
     #     SMALL (1/24) so the fire survives the logistic pass (a large dt starves
@@ -469,7 +488,8 @@ def part1_isolated() -> bool:
     if ok:
         print(f"  all {n_cfg} fuzz + 8 deterministic forcers bit-identical on "
               f"fire/temperature/smoke/wall_hp + SET-equal destroyed; "
-              f"burn-through + early-exit + overlapping-smoke covered.")
+              f"burn-through + early-exit + dense-overlap covered "
+              f"(smoke stays at its all-zero seed throughout, P-S1).")
     return ok
 
 

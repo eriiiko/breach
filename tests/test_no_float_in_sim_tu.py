@@ -311,10 +311,23 @@ _FP_FAST_RE = re.compile(r"fp:fast")
 # unchanged (0) — the shim carried no `float` token of its own. Tightened
 # (not just left under the old baseline) per test_baseline_is_not_stale_low's
 # own nudge: this is a real decrease, not migration noise.
+# P-S1 (2026-08-15, docs/smoke_single_source_asbuilt_2026-08-15.md):
+# fire_simulation.cpp `double` 17 -> 16. The ex-nihilo smoke-emission scatter
+# (Erik's single-source ruling, docs/smoke_single_source_design_2026-07-24.md
+# — combustion soot is now the ONE fire-smoke source) is DELETED along with
+# its ONE dedicated load-time constant, `emission_q = fp::quantize((double)
+# p.smoke_emission)` — ONE `(double)` boundary cast removed. `float` is
+# UNCHANGED at the file's real pre-patch count (verified directly against
+# `git show HEAD:cpp/src/fire_simulation.cpp` before editing: 5 lines, not
+# the 6 this baseline records) — the recorded `float` baseline already
+# carried 1 count of pre-existing slack unrelated to this patch (nothing
+# P-S1 touches carries a `float` token), so it is intentionally NOT tightened
+# here to avoid mis-attributing someone else's earlier decrease to this one.
+# `fp:fast` unchanged (0).
 BASELINE = {
     "atmosphere_solver.cpp":  {"float": 32, "double": 32, "fp:fast": 1},
     "smoke_dynamics.cpp":     {"float": 24, "double": 13, "fp:fast": 0},
-    "fire_simulation.cpp":    {"float": 6,  "double": 17, "fp:fast": 0},
+    "fire_simulation.cpp":    {"float": 6,  "double": 16, "fp:fast": 0},
     "water_solver.cpp":       {"float": 32, "double": 22, "fp:fast": 1},
     "temperature_solver.cpp": {"float": 4,  "double": 6,  "fp:fast": 0},
     "physics_engine.cpp":     {"float": 68, "double": 28, "fp:fast": 1},

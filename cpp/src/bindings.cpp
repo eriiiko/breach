@@ -785,7 +785,6 @@ PYBIND11_MODULE(breach_physics, m) {
              float dt, float k_grow, float k_die, float fire_T_ext,
              float fire_T_span, float fuel_ref, float o2_frac_ext, float o2_frac_full,
              float I_min, float k_wind_fan, float k_wind_strip,
-             float smoke_emission,
              float wall_damage, float temp_scale, float I_cap_per_avail,
              py::object fuel_recip,                  // FUEL-FRACTION AXIS
              py::object fire_T_ext_plane) -> py::list {  // PER-MATERIAL T_ext
@@ -825,7 +824,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   f, atm, o2, nt, sm, whp, temp, wx, wy, wl, vac, fl, h, w, dt,
                   k_grow, k_die, fire_T_ext, fire_T_span, fuel_ref, o2_frac_ext,
                   o2_frac_full, I_min, k_wind_fan, k_wind_strip,
-                  smoke_emission, wall_damage, temp_scale, I_cap_per_avail,
+                  wall_damage, temp_scale, I_cap_per_avail,
                   fr, tep);
               py::list result;
               for (const auto& [dy, dx] : destroyed) {
@@ -841,7 +840,7 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("fire_T_ext"), py::arg("fire_T_span"), py::arg("fuel_ref"),
           py::arg("o2_frac_ext"), py::arg("o2_frac_full"), py::arg("I_min"),
           py::arg("k_wind_fan"), py::arg("k_wind_strip"),
-          py::arg("smoke_emission"), py::arg("wall_damage"), py::arg("temp_scale"),
+          py::arg("wall_damage"), py::arg("temp_scale"),
           // CAPACITY LAW (P-R3, ruling A3): `c`. Defaulted to the FireParams
           // default so every existing direct caller keeps a valid law.
           py::arg("I_cap_per_avail") = 2.53f,
@@ -1576,7 +1575,10 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("k_wind_fan",     &FireParams::k_wind_fan)
         .def_readwrite("k_wind_strip",   &FireParams::k_wind_strip)
         .def_readwrite("p_expand_ref",   &FireParams::p_expand_ref)
-        .def_readwrite("smoke_emission", &FireParams::smoke_emission)
+        // smoke_emission RETIRED at P-S1 (2026-08-15) — the field it drove
+        // was deleted from FireParams itself (fire_simulation.h), not just
+        // unbound here, so an old caller gets a loud AttributeError instead
+        // of silently writing a dial with nothing behind it.
         .def_readwrite("wall_damage",    &FireParams::wall_damage)
         .def_readwrite("temp_scale",     &FireParams::temp_scale);
 

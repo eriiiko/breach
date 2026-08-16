@@ -102,7 +102,8 @@ def _make(c=C_CAP, k_grow=K_GROW, k_die=K_DIE, I_min=0.0):
     p.k_wind_fan = 0.0
     p.k_wind_strip = 0.0
     p.wall_damage = 0.0         # F stays pinned at 1 (no fuel drain)
-    p.smoke_emission = 0.0
+    # smoke_emission RETIRED at P-S1 — the field no longer exists on
+    # FireParams (the scatter it drove is deleted); nothing to zero here now.
     p.temp_scale = ONE_F        # identity: T in game units IS the Q16.16 field
     return sim
 
