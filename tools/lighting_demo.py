@@ -123,9 +123,12 @@ DEFAULTS = {
     # as a frozen constant in the renderer, so it needs no dial here.)
     # --- B2 gas-medium dials (§6). The sliders drive renderer.gas_medium live
     # (P2 consumers). Defaults = honest/identity (config [render.*]).
-    # soot_yield/smoke_emission mirror the SIM config and, as of P5, DRIVE it
-    # live too (design §6 + §8: "Erik tunes them in the P5 feel session" —
-    # this is that session; see the "Sync the soot-handover pair LIVE" block).
+    # soot_yield mirrors the SIM config and, as of P5, DRIVES it live too
+    # (design §6 + §8: "Erik tunes them in the P5 feel session" — this is
+    # that session; see the "Sync soot_yield LIVE" block). Its former
+    # handover partner smoke_emission was retired at P-S1 (2026-08-15, docs/
+    # smoke_single_source_asbuilt_2026-08-15.md) along with the fire-step
+    # smoke scatter it drove — soot_yield is now the ONLY fire-smoke dial.
     # Re-init from CFG at startup. --------------------------------------------
     "legacy_smoke_on": False,
     "gm_plume_k_scale": 1.0,
@@ -145,7 +148,8 @@ DEFAULTS = {
     "speckle_mode": 2.0,     # stepped slider: 0=off 1=noise 2=soot
     "speckle_amp": 0.25,
     "soot_yield": 0.3,       # mirror of [physics.combustion]; LIVE-wired, P5
-    "smoke_emission": 0.8,   # mirror of [physics.fire]; LIVE-wired, P5
+    # smoke_emission DELETED (P-S1, 2026-08-15): mirrored a [physics.fire]
+    # key that no longer exists — see the comment above.
     "show_pressure": True,
     "pressure_scale": 2.0,
     "blast_radius": 6.0,
@@ -917,9 +921,10 @@ def main() -> None:
                   float(getattr(_wc, "height_floor", 0.3)))
 
     # B2 dials: open the sliders where config.toml sits (getattr-defaults keep
-    # the demo alive if a block is absent). soot_yield / smoke_emission MIRROR
-    # the sim config at startup and, as of P5, write LIVE back into the
-    # running PhysicsRunner every frame (see the interactive loop below).
+    # the demo alive if a block is absent). soot_yield MIRRORS the sim config
+    # at startup and, as of P5, writes LIVE back into the running
+    # PhysicsRunner every frame (see the interactive loop below). Its former
+    # partner smoke_emission was retired at P-S1 — see the DEFAULTS comment.
     _rend = getattr(CFG, "render", None)
     _gm = getattr(_rend, "gas_medium", None)
     _gd = getattr(_rend, "gas_detail", None)
@@ -952,11 +957,10 @@ def main() -> None:
         state.set("speckle_mode", _mode_idx)
         state.set("speckle_amp", float(getattr(_sp, "amp", 0.25)))
     _comb = getattr(getattr(CFG, "physics", None), "combustion", None)
-    _fire = getattr(getattr(CFG, "physics", None), "fire", None)
     if _comb is not None:
         state.set("soot_yield", float(getattr(_comb, "soot_yield", 0.3)))
-    if _fire is not None:
-        state.set("smoke_emission", float(getattr(_fire, "smoke_emission", 0.8)))
+    # smoke_emission mirror REMOVED at P-S1 — [physics.fire] no longer
+    # carries the key (a stale config now loud-errors at load instead).
 
     # ---- 5. Sim timing ----
     last_time = time.perf_counter()
@@ -1204,25 +1208,27 @@ def main() -> None:
             # AFTER the panel — not here.
             renderer.speckle.amp = float(state.get("speckle_amp"))
 
-            # ---- Sync the soot-handover pair LIVE (B2 P5, design §6 + §8) ----
-            # soot_yield / smoke_emission are EXISTING sim config (not new B2
-            # config); P1 wired them as display-only mirrors and deferred the
-            # write-back to "Erik's feel session" — this IS that session (the
-            # design's own §8 human-test script drags these sliders "until a
-            # starving fire visibly blackens its own room"). TOOL-side write to
-            # the live PhysicsRunner coefficients — the same carve-out already
-            # used for the cursor fire/gas injection (tools may write sim
-            # state; the renderer never does), just one level up the stack
-            # (a tunable COEFFICIENT instead of a field value). Effective next
-            # tick; config.toml itself is untouched here — a value Erik likes
+            # ---- Sync soot_yield LIVE (B2 P5, design §6 + §8) ----
+            # soot_yield is EXISTING sim config (not new B2 config); P1 wired
+            # it as a display-only mirror and deferred the write-back to
+            # "Erik's feel session" — this IS that session (the design's own
+            # §8 human-test script drags the slider "until a starving fire
+            # visibly blackens its own room"). TOOL-side write to the live
+            # PhysicsRunner coefficient — the same carve-out already used for
+            # the cursor fire/gas injection (tools may write sim state; the
+            # renderer never does), just one level up the stack (a tunable
+            # COEFFICIENT instead of a field value). Effective next tick;
+            # config.toml itself is untouched here — a value Erik likes
             # becomes its own deliberate config commit afterward, same as the
             # design intended. No solver CODE changes; every pytest scenario
             # builds its own PhysicsRunner from CFG and never touches this
-            # demo, so goldens/digests are unaffected.
+            # demo, so goldens/digests are unaffected. Its former handover
+            # partner, `pr.fire.params.smoke_emission`, was retired at P-S1
+            # (2026-08-15) along with the field itself — soot_yield is now
+            # the ONLY fire-smoke dial, live-wired or otherwise.
             pr = sim.physics_runner
             if pr is not None:
                 pr.combustion.soot_yield = float(state.get("soot_yield"))
-                pr.fire.params.smoke_emission = float(state.get("smoke_emission"))
 
             # ---- Lighting setters ----
             renderer.lighting.set_ambient((state.get("ambient_r"),
@@ -1490,11 +1496,12 @@ def _draw_panel(state: PanelState, renderer: GameRenderer,
     y = _slider(state, "gm_glow_gain", "Glow gain", 0.0, 4.0, x, y)
     y = _slider(state, "gm_effect_gas_floor", "Gas floor", 0.0, 1.0, x, y)
     y = _checkbox(state, "gm_fuel_haze_on", "Fuel haze", x, y)
-    # The soot handover pair (existing SIM config; DISPLAY-only through P1-P4
-    # — LIVE-wired to the running PhysicsRunner as of P5, design §8: drag
-    # until a starving fire visibly blackens its own room).
+    # soot_yield (existing SIM config; DISPLAY-only through P1-P4 — LIVE-wired
+    # to the running PhysicsRunner as of P5, design §8: drag until a starving
+    # fire visibly blackens its own room). Its former handover partner
+    # smoke_emission was retired at P-S1 (2026-08-15) — soot_yield is now the
+    # ONLY fire-smoke dial.
     y = _slider(state, "soot_yield", "Soot yield", 0.0, 1.0, x, y)
-    y = _slider(state, "smoke_emission", "Smoke emit", 0.0, 3.0, x, y)
     # Detail shader (P3) + speckle (P4) dials.
     y = _checkbox(state, "gd_enabled", "Detail on", x, y)
     y = _slider(state, "gd_noise_octaves", "Octaves", 1.0, 6.0, x, y)

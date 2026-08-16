@@ -71,10 +71,11 @@
 // atmosphere/wind/temperature int32). Cross-machine bit-identical: integer
 // +/-/*/>> are exact + associative, and the per-cell sqrt is a fixed-iteration
 // floor-isqrt (fixed_point.h::sqrt_q16, the arc's first per-cell transcendental).
-// The multiply tree order is PINNED (left-fold mul_q16); the plume + smoke-emission
-// + wall-burn deposits ROUND-TO-NEAREST (unbiased sources). The discrete outputs
-// (the I_min extinguish flip, the wall_hp<=0 burn-through list) are integer compares
-// -> bit-deterministic. Plume deposit is an own-index write -> order-independent.
+// The multiply tree order is PINNED (left-fold mul_q16); the wall-burn deposit
+// ROUND-TO-NEARESTs (an unbiased source — the plume deposit was deleted at P-R2,
+// the smoke-emission scatter at P-S1; wall-burn is the sole survivor of that
+// family). The discrete outputs (the I_min extinguish flip, the wall_hp<=0
+// burn-through list) are integer compares -> bit-deterministic.
 
 #include <vector>
 #include <utility>
@@ -177,7 +178,17 @@ struct FireParams {
     float p_expand_ref       = 1.30f;
 
     // --- kept behaviours ---
-    float smoke_emission = 0.8f;   // smoke produced per second per unit intensity
+    // smoke_emission TOMBSTONE (P-S1, 2026-08-15): dead key — the ex-nihilo
+    // smoke scatter it fed was DELETED (Erik's single-source ruling, docs/
+    // smoke_single_source_design_2026-07-24.md; killed the smoke->N2 pressure
+    // pump, docs/storm_audit_2026-08-14.md §4.2). Combustion soot
+    // (`soot_yield`, cpp/src/combustion.cpp) is now the ONE fire-smoke
+    // source. Unlike the other TOMBSTONEs on this struct (p_expand_ref,
+    // P_min/P_full, ...), this key is NOT left wired for back-compat: a
+    // stale config still carrying it loud-errors at load
+    // (src/simulation/physics_runner.py) rather than silently doing
+    // nothing, so nobody tunes a dial that no longer has a mechanism behind
+    // it. See docs/smoke_single_source_asbuilt_2026-08-15.md.
     float wall_damage    = 0.4f;   // wall HP lost per second per unit intensity
                                    //  (burn-through IS the fuel-consumption brake)
 
@@ -203,9 +214,12 @@ public:
     //                 the neighbour-mean O2 gate's input, REPLACING the old
     //                 atmosphere/P proxy. Solid cells hold 0 (no gas), matching
     //                 `atmosphere`'s pre-P4 convention there.
-    //   smoke       : int32 (h, w) Q16.16 (S2b), fire ADDS to it (kept). The
-    //                 emission delta smoke_emission*dt*I is round-to-nearest and
-    //                 integer-added — order-free, deterministic.
+    //   smoke       : int32 (h, w) Q16.16 (S2b), mutable but READ-mostly as of
+    //                 P-S1 (2026-08-15) — the fire step no longer ADDS to it
+    //                 (the ex-nihilo emission scatter is deleted; combustion
+    //                 soot is the ONE fire-smoke source, cpp/src/combustion.cpp).
+    //                 Still passed through the final [0, FP_ONE] clamp below,
+    //                 alongside `fire`.
     //   wall_hp     : int32 (h, w) Q16.16 (S3b), burn-through depletes it (the fuel
     //                 brake); fractional depletion needs the Q16.16 fraction.
     //   temperature : int32 (h, w) Q16.16, READ (the T gate) ONLY as of P-R2 —

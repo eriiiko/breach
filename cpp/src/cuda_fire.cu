@@ -7,29 +7,34 @@
 // extinction_ruling_2026-07-31.md A2) — it was the one `temperature[]` writer
 // bypassing heat_inv_shift; TemperatureSolver is now the field's ONLY writer,
 // and P-R4's radiation pass will be the next writer, through its own rad_net[]
-// plane. Pipeline: per-tile signed-logistic intensity feedback → smoke emission
-// into neighbours → wall burn-through → final clamp.
+// plane. Pipeline: per-tile signed-logistic intensity feedback → wall
+// burn-through → final clamp. (Smoke emission into neighbours was DELETED at
+// P-S1, 2026-08-15 — Erik's single-source ruling, docs/smoke_single_source_
+// design_2026-07-24.md: it was an ex-nihilo scatter the storm audit traced
+// into a real mass/pressure pump, docs/storm_audit_2026-08-14.md §4.2.
+// Combustion soot is now the ONE fire-smoke source, cpp/src/combustion.cpp.)
 //
-// FOUR device passes (P2, P4-P6 — P3's slot is retired, not renumbered, so the
-// numbering stays anchored to the CPU step's history), one per CPU pass,
-// launched as a barriered chain (separate launches = grid barriers between
-// dependent passes). P1 (the host max early-exit) is done on the HOST before
-// any launch:
+// THREE device passes (P2, P5-P6 — P3's slot retired at P-R2, P4's at P-S1,
+// NEITHER renumbered, so the numbering stays anchored to the CPU step's
+// history), one per CPU pass, launched as a barriered chain (separate
+// launches = grid barriers between dependent passes). P1 (the host max
+// early-exit) is done on the HOST before any launch:
 //   P1  early-exit         HOST *max_element(fire) < thresh -> return {} (untouched)
 //   P2  logistic feedback  fire += dt*(grow-die); snap-extinguish (own-tile; O2 gate
 //                          reads n_o2 neighbour mean — read-only field)
-//   P4  smoke emission     smoke[nbr] += round(emit(fire[src]))     (SCATTER atomicAdd)
 //   P5  wall burn-through  wall_hp[i] -= dmg; collect destroyed; fire[i]=0
-//   P6  final clamp        fire, smoke -> [0, FP_ONE]               (own-tile)
+//   P6  final clamp        fire, smoke -> [0, FP_ONE]               (own-tile;
+//                          `smoke` is READ-mostly here since P-S1 — no pass
+//                          writes it, only clamps whatever combustion wrote)
 //
-// Pass order P2 → P4 → P5 → P6 matters: P4/P5 both read the P2-updated `fire`
-// (frozen between launches); P5 zeroes `fire` on destroyed cells AFTER P4 has
-// read it; P6 clamps last. P2 reads temperature (the `hot` gate) only — no pass
-// writes it anymore this patch (temperature is copied through unchanged, same
-// as the CPU side). NO cross-cell within-pass dependence exists (every pass is
-// an own-index write with read-only neighbour reads or an order-free atomic/
-// counter scatter), so this parallel schedule reproduces the CPU sequential
-// result bit-for-bit — there is NO combustion-style Gauss-Seidel coupling here.
+// Pass order P2 → P5 → P6 matters: P5 reads the P2-updated `fire` (frozen
+// between launches) and zeroes it on destroyed cells; P6 clamps last. P2
+// reads temperature (the `hot` gate) only — no pass writes it anymore this
+// patch (temperature is copied through unchanged, same as the CPU side). NO
+// cross-cell within-pass dependence exists (every pass is an own-index write
+// with read-only neighbour reads or an order-free counter scatter), so this
+// parallel schedule reproduces the CPU sequential result bit-for-bit — there
+// is NO combustion-style Gauss-Seidel coupling here.
 // Host scalar precompute mirrors the CPU load-time block exactly — all config
 // constants quantized once in double, many via load-time make_recip/recip_mul
 // (NOT per-cell reciprocal_q16).
@@ -43,14 +48,11 @@
 // absolute density (RETIRED from this gate). The make_recip reciprocals use
 // recip_mul_dev (the device 128-bit path).
 //
-// THE DETERMINISM CRUX (P4): the 4 smoke emissions per source thread are deposited
-// with integer atomicAdd. The deposit depends ONLY on fire[src] (NOT on the
-// neighbour's current smoke — VERIFIED in the CPU code, lines ~223-234: delta_q is
-// computed from `I = fire[y*w+x]` before the neighbour loop, which just adds the
-// SAME delta_q to each non-wall neighbour). Integer + is associative + commutative
-// -> the per-neighbour sum of overlapping deposits is ORDER-FREE -> bit-identical
-// to the CPU's sequential row-major adds. The S2 raycaster's saturating-int atomic
-// is precedent; here it is a plain non-saturating add.
+// THE FORMER DETERMINISM CRUX (P4, RETIRED at P-S1): this used to be the one
+// scatter in the fire kernel — 4 smoke emissions per source thread deposited
+// with integer atomicAdd, proven order-free because the deposit depended only
+// on fire[src], never on a neighbour's current smoke. With P4 deleted, P5's
+// destroyed-index counter below is the ONLY remaining scatter in this kernel.
 //
 // P5 destroyed-list collection: a device int counter (atomicAdd for a slot) + a
 // device array of packed indices (sized n, worst case every cell destroyed); copy
@@ -240,36 +242,13 @@ __global__ void fire_logistic(int32_t* __restrict__ fire,
     }
 }
 
-// ---- P4: smoke emission SCATTER (fire_simulation.cpp ~221-237) ----------------
-// delta_q = round_nearest(emission*dt*fire[src]) — depends ONLY on fire[src]. Each
-// source thread atomicAdds delta_q into each non-wall 4-neighbour's smoke. Integer
-// atomicAdd is associative + commutative -> order-free -> the per-neighbour sum is
-// bit-identical to the CPU's sequential row-major adds (the determinism crux).
-__global__ void fire_smoke_emit(const int32_t* __restrict__ fire,
-                                int32_t* __restrict__ smoke,
-                                const bool* __restrict__ is_wall,
-                                int32_t emission_q, int32_t dt_q, int h, int w) {
-    const int n = h * w;
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
-         i += gridDim.x * blockDim.x) {
-        const q16 I = fire[i];
-        if (I <= 0) continue;
-        const int y = i / w, x = i % w;
-        // delta = smoke_emission * dt * I (positive). PINNED order; round-to-nearest.
-        const q16 ed = mul_q16(emission_q, dt_q);       // emission*dt
-        const int64_t wide = mul_wide(ed, I);           // * I (wide for round)
-        const q16 delta_q = narrow_round(wide);         // >= 0 (positive deposit)
-        for (int d = 0; d < 4; ++d) {
-            const int ny = y + D4_dy[d], nx = x + D4_dx[d];
-            if (ny >= 0 && ny < h && nx >= 0 && nx < w) {
-                const int ni = ny * w + nx;
-                if (!is_wall[ni]) {
-                    atomicAdd(&smoke[ni], (int)delta_q);   // order-free integer add
-                }
-            }
-        }
-    }
-}
+// ---- P4: smoke emission SCATTER — DELETED (P-S1, 2026-08-15) -----------------
+// The ex-nihilo `smoke[nbr] += round(emission*dt*fire[src])` atomicAdd scatter
+// that lived here is gone (Erik's single-source ruling, docs/smoke_single_
+// source_design_2026-07-24.md; killed the smoke->N2 pressure pump measured by
+// docs/storm_audit_2026-08-14.md §4.2). Combustion soot (cpp/src/combustion.cpp)
+// is now the ONE fire-smoke source, on both CPU and GPU. P4's slot is retired,
+// not renumbered — see the file header.
 
 // ---- P5: wall burn-through + destroyed collection (fire_simulation.cpp ~245-256)
 // wall_hp[i] -= round_nearest(wall_damage*dt*fire[i]); if (wall_hp<=0 && flammable
@@ -326,7 +305,7 @@ std::vector<std::pair<int, int>> fire_step(
     float k_grow, float k_die, float fire_T_ext, float fire_T_span,
     float fuel_ref, float o2_frac_ext, float o2_frac_full, float I_min,
     float k_wind_fan, float k_wind_strip,
-    float smoke_emission, float wall_damage,
+    float wall_damage,
     float temp_scale, float I_cap_per_avail,
     const int64_t* fuel_recip,           // FUEL-FRACTION AXIS (nullable, see header)
     const int32_t* fire_T_ext_plane) {   // PER-MATERIAL T_ext (nullable, see header)
@@ -360,7 +339,6 @@ std::vector<std::pair<int, int>> fire_step(
     const q16 k_wind_strip_q = quantize((double)k_wind_strip);
     const q16 fire_T_ext_q  = quantize((double)fire_T_ext);
     const q16 I_min_q       = quantize((double)I_min);
-    const q16 emission_q    = quantize((double)smoke_emission);
     const q16 wall_damage_q = quantize((double)wall_damage);
     // CAPACITY LAW (P-R3, ruling A3): INV_C = 1/I_cap_per_avail, VERBATIM the
     // CPU load-time block (double, then ONE quantize; <= 0 -> 0 == ceiling OFF).
@@ -452,12 +430,10 @@ std::vector<std::pair<int, int>> fire_step(
         recip_fuel_ref, recip_T_span, recip_x_span, x_degenerate);
     cuda_check(cudaGetLastError(), "logistic launch");
 
-    // P4 smoke emission scatter (atomicAdd into d_smoke; reads the P2-updated d_fire).
-    fire_smoke_emit<<<grid, block>>>(d_fire, d_smoke, d_wall, emission_q, dt_q, h, w);
-    cuda_check(cudaGetLastError(), "smoke_emit launch");
+    // P4 smoke emission scatter DELETED (P-S1) — see the file header.
 
     // P5 wall burn-through (in-place on d_whp; zeroes d_fire on destroyed AFTER
-    // P3/P4 read it; collects the destroyed indices via the device counter).
+    // P2 read it; collects the destroyed indices via the device counter).
     fire_burn<<<grid, block>>>(d_fire, d_whp, d_wall, d_flam, d_counter,
                                d_destroyed_idx, wall_damage_q, dt_q, n);
     cuda_check(cudaGetLastError(), "burn launch");

@@ -335,8 +335,18 @@ purely the *life and death* of an already-lit tile: a signed-logistic
    over-pressurises → the existing `find_burst_walls` may pop a weak wall → the
    room vents → `P` falls → the fire starves. Emergent, no new code.
 
-3. **Smoke emission.** Fire adds `smoke` to adjacent air tiles, which the smoke
-   dynamics then advect on the wind.
+3. ~~Smoke emission.~~ **RETIRED at P-S1 (2026-08-15).** The fire step no
+   longer touches `smoke` at all (beyond the final `[0,1]` clamp it shares
+   with `fire`) — it used to add `smoke_emission · dt · I` to adjacent air
+   tiles ex nihilo, every tick, with nothing debited anywhere. Erik's
+   single-source ruling (`docs/smoke_single_source_design_2026-07-24.md`)
+   called that out as a duplicate of combustion's soot channel and ordered
+   it deleted; the storm audit (`docs/storm_audit_2026-08-14.md` §4.2) found
+   it was also feeding a real mass/pressure pump through the decay→N₂
+   credit. Combustion soot (ch.05 §4, `combustion.cpp`'s `soot_yield`) is
+   now the ONE fire-smoke source — see `docs/smoke_single_source_asbuilt_
+   2026-08-15.md` for the as-built record. Stage numbering is kept as-is
+   (retired, not renumbered) so this section's history stays anchored.
 
 4. **Wall burn-through.** Fire depletes `wall_hp` on the tile it burns; when a
    flammable wall reaches zero HP it is reported as destroyed. The fire step
@@ -367,8 +377,11 @@ Set on the C++ `FireParams` struct, bound from `config.toml` `[physics.fire]`
 | `k_wind_strip`       | 0.5   | `W·(1−I)·I` blows out small fires — *needs tuning vs the wind scale* |
 | `fire_pressure_gain` | 0.15  | Own-tile plume overpressure gain (1/s) |
 | `p_expand_ref`       | 1.30  | Self-limiting plume saturation ceiling |
-| `smoke_emission`     | 0.8   | Smoke produced per second per unit intensity |
 | `wall_damage`        | 0.4   | Wall HP lost per second per unit intensity (the burnout brake) |
+
+`smoke_emission` (formerly 0.8, smoke produced per second per unit intensity) was RETIRED at P-S1
+(2026-08-15) along with stage 3 above — it is no longer a `FireParams` field, and a config that
+still sets it loud-errors at load (`src/simulation/physics_runner.py`).
 
 ### Fire as a light source
 
@@ -417,10 +430,13 @@ Built, running, and honest about the seam between the three layers.
 
 - `FireSimulation` in `cpp/src/fire_simulation.{h,cpp}` implements the §5
   signed-logistic intensity feedback (grow/die with the `hot`/`o2`/`avail` gates
-  + the wind fan/strip terms), the own-tile plume pressure deposit, smoke
-  emission, and wall burn-through. The cellular spread (12-connected stencil,
+  + the wind fan/strip terms), the own-tile plume pressure deposit, and
+  wall burn-through. The cellular spread (12-connected stencil,
   wind-biased spread) and the backwards O₂-consumption subtraction are
-  **deleted** — spread is radiation → heat → temperature → ignition (§4). It
+  **deleted** — spread is radiation → heat → temperature → ignition (§4). Its
+  OWN smoke emission is **deleted too** (P-S1, 2026-08-15) — combustion soot
+  (ch.05 §4) is now the ONE fire-smoke source; `FireSimulation` still passes
+  `smoke` through its final `[0,1]` clamp but no longer writes to it. It
   returns destroyed-tile coordinates; the runner destroys them.
 - `PhysicsRunner` (`src/simulation/physics_runner.py`) constructs the solver,
   binds the `[physics.fire]` parameter table from `config.toml`, and calls

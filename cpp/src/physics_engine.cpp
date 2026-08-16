@@ -180,7 +180,7 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             this->fire.params.o2_frac_ext, this->fire.params.o2_frac_full,
             this->fire.params.I_min,
             this->fire.params.k_wind_fan, this->fire.params.k_wind_strip,
-            this->fire.params.smoke_emission, this->fire.params.wall_damage,
+            this->fire.params.wall_damage,   // smoke_emission RETIRED at P-S1
             this->fire.params.temp_scale,
             // CAPACITY LAW (P-R3): `c`, the size dial. The host precompute
             // bakes INV_C = quantize(1/c) exactly as the CPU load-time block.

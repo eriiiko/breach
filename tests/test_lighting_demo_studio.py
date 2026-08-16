@@ -62,10 +62,14 @@ def test_defaults_carry_b2_dials():
     d = demo.DEFAULTS
     # B2 P2 DELETED smoke_render_gamma (the gas-medium tau-curve subsumes it).
     assert "smoke_render_gamma" not in d
+    # P-S1 (2026-08-15) DELETED smoke_emission — the fire-step smoke scatter
+    # it drove is gone (docs/smoke_single_source_asbuilt_2026-08-15.md);
+    # soot_yield is now the ONLY fire-smoke dial.
+    assert "smoke_emission" not in d
     for k in ("legacy_smoke_on", "gm_plume_k_scale", "gm_tau_curve_a",
               "gm_tau_curve_b", "gm_glow_gain", "gm_effect_gas_floor",
               "gm_fuel_haze_on", "gd_enabled", "gd_cycle_seconds",
-              "speckle_mode", "speckle_amp", "soot_yield", "smoke_emission"):
+              "speckle_mode", "speckle_amp", "soot_yield"):
         assert k in d, f"missing B2 dial {k!r} in DEFAULTS"
 
 

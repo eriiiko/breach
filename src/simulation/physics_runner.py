@@ -99,7 +99,9 @@ FIRE_K_WIND_STRIP   = 0.5    # W*(1-I)*I blows out small fires (crossover); TUNE
 # it fed (FireParams::fire_pressure_gain) was deleted; see docs/radiation_
 # raycaster_extinction_ruling_2026-07-31.md A2.
 FIRE_P_EXPAND_REF   = 1.30   # self-limiting plume saturation ceiling
-FIRE_SMOKE_EMISSION = 0.8    # smoke produced per step by fire
+# FIRE_SMOKE_EMISSION TOMBSTONE (P-S1, 2026-08-15): removed along with the
+# `smoke_emission` key it fell back for — see the loud stale-key guard below
+# and fire_simulation.h's own tombstone comment on the struct field.
 FIRE_WALL_DAMAGE    = 0.4    # HP damage to wall per step while burning (the burn-out brake)
 
 
@@ -203,6 +205,26 @@ class PhysicsRunner:
         # All tunables bound from config [physics.fire] (FIRE_* are the fallbacks).
         fire_cfg = getattr(CFG.physics, "fire", None)
 
+        # P-S1 (2026-08-15, docs/smoke_single_source_asbuilt_2026-08-15.md):
+        # `smoke_emission` was retired along with the ex-nihilo fire-smoke
+        # scatter it drove (Erik's single-source ruling, docs/
+        # smoke_single_source_design_2026-07-24.md — combustion soot,
+        # [physics.combustion] soot_yield, is now the ONE fire-smoke source).
+        # LOUD guard, same idiom as src/temperature_scale.py's migration
+        # guards: an old config.toml still carrying the key would otherwise
+        # silently do nothing (FireParams no longer has the field), and
+        # whoever is tuning it would never find out why it has no effect.
+        if getattr(fire_cfg, "smoke_emission", None) is not None:
+            raise RuntimeError(
+                "[physics.fire] still carries 'smoke_emission' — this key "
+                "was retired at P-S1 (the ex-nihilo fire smoke scatter was "
+                "deleted; combustion soot, [physics.combustion] soot_yield, "
+                "is now the single fire-smoke source). Remove it from "
+                "config.toml. See docs/smoke_single_source_asbuilt_"
+                "2026-08-15.md and docs/smoke_single_source_design_"
+                "2026-07-24.md."
+            )
+
         def _fp(key, default):
             return float(getattr(fire_cfg, key, default))
 
@@ -243,7 +265,8 @@ class PhysicsRunner:
         # fire_simulation.h. Left wired so old configs don't hard-error;
         # the C++ side no longer reads it.
         self.fire.params.p_expand_ref   = _fp("p_expand_ref", FIRE_P_EXPAND_REF)
-        self.fire.params.smoke_emission = _fp("smoke_emission", FIRE_SMOKE_EMISSION)
+        # smoke_emission bind REMOVED at P-S1 — see the loud stale-key guard
+        # above (FireParams no longer has the field to bind).
         self.fire.params.wall_damage    = _fp("wall_damage", FIRE_WALL_DAMAGE)
         # Q16.16 scale of the temperature field (== HEAT_SCALE). Keep C++/config
         # in lockstep so T = temperature/temp_scale matches ignition_temp units.

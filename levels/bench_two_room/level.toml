@@ -1,0 +1,41 @@
+# bench_two_room — DEV BENCH FIXTURE, not a game level (storm audit 2026-08-14).
+#
+# The committed two-room-with-door storming bench. Purpose: every fire bench
+# before this one was single-room, a geometry that is structurally BLIND to the
+# door-neck Helmholtz mode Erik reported ("it oscillates") — see
+# docs/fire_atmosphere_oscillation_analysis_2026-08-03.md §4 and
+# docs/storm_audit_2026-08-14.md. This fixture is the R4 answer: a doored,
+# multi-room geometry in the committed bench set.
+#
+# Geometry is byte-identical to tools/storm_probe.build_tworoom(12, 12, 0.5,
+# door_h=1, crate_xy=(7, 7)) — the exact case every number in both storm docs
+# was measured on: two 12x12 AIR rooms, 1-tile HULL ring, shared partition with
+# a 1-tile door at row 6, one FURNITURE crate at (x=7, y=7) in the left room.
+# tools/bench_two_room.py asserts this equivalence at load (do not hand-edit
+# the tilemap without updating that gate).
+#
+# BLIND (R4 — what this fixture cannot show):
+#   - tile_size_m = 0.5 matches the storm-probe battery, NOT the shipped-level
+#     standard 0.333 (wego_test/playground). Resolution-dependent effects are
+#     out of scope here; a 0.333 variant needs its own capture.
+#   - sealed hull, boundary "space": no ambient/planetside exchange, no sponge.
+#   - single crate fire; no units, no entities, no wires.
+#
+# Run the bench:
+#   conda run -n data python tools/bench_two_room.py --ticks 4800 --pf1b
+#
+# Art is a flat placeholder (the bench is headless; the loader requires the file).
+version = "2"
+name = "bench_two_room"
+
+tilemap = "tilemap.csv"
+
+# Matches the storm-probe battery (0.5 m tiles), deliberately — see BLIND above.
+tile_size_m = 0.5
+
+[art.bare]
+diffuse = "diffuse.png"
+
+[art.align]
+offset_px = [0.0, 0.0]
+px_per_tile = [16.0, 16.0]

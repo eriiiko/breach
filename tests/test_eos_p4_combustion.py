@@ -158,15 +158,20 @@ def _ignite(gmap, at, intensity=0.6, temp_mult=1.5):
 def _o2n2_total(gmap):
     """O2 + inert_N2 — the CONSERVATIVE bulk pair alone (test_eos_p1_species_
     transport.py's `_isum2` precedent). Deliberately EXCLUDES smoke:
-    `gmap.smoke` IS `gas[SMOKE]` (gases.py), and FireSimulation's own
-    per-tick smoke emission (`smoke[nbr] += emission*dt*I`, fire_simulation.
-    cpp, KEPT/pre-existing/unrelated to O2) writes into that SAME plane
-    independent of combustion — so smoke's total is not a P4
-    conservation signal. Combustion can only ever MOVE mass OUT of this pair
-    (the soot_yield fraction leaves permanently to smoke) or credit
-    SOME of it back in as smoke decays to inert_N2 (decisions #12
-    v2.1) — so this sum is bounded ABOVE by its starting value (proving no
-    fabrication) without being strictly monotonic."""
+    `gmap.smoke` IS `gas[SMOKE]` (gases.py), and smoke's own semi-Lagrangian
+    transport is separately non-conservative by design (smoke_dynamics.h;
+    unrelated to combustion) — so smoke's total is not a P4 conservation
+    signal regardless of what feeds it. (Historical note: before P-S1,
+    2026-08-15, FireSimulation ALSO had its own independent, unbacked
+    per-tick smoke emission here — `smoke[nbr] += emission*dt*I`,
+    fire_simulation.cpp — which was the additional reason this sum excluded
+    smoke; that scatter is now deleted, docs/smoke_single_source_asbuilt_
+    2026-08-15.md, but the exclusion still holds for the transport reason
+    above.) Combustion can only ever MOVE mass OUT of this pair (the
+    soot_yield fraction leaves permanently to smoke) or credit SOME of it
+    back in as smoke decays to inert_N2 (decisions #12 v2.1) — so this sum
+    is bounded ABOVE by its starting value (proving no fabrication) without
+    being strictly monotonic."""
     return (int(gmap.gas[O2].astype(np.int64).sum())
             + int(gmap.gas[INERT_N2].astype(np.int64).sum()))
 
@@ -346,14 +351,17 @@ def test_e2e_1_sealed_room_fire_self_starves():
 
     v2.4 re-pins (eos-p3fix-thermal-ceiling):
     - FireSimulation's OWN smoke emission (`smoke[nbr] += emission*dt*I` — a
-      pre-existing, already-blessed NON-CONSERVATIVE source, unrelated to
-      combustion) is disabled for this test: emitted-from-nothing smoke
-      decays into inert_N2 via the decisions #12 v2.1 credit, so a
-      longer-lived fire drifts the O2+N2 pair ABOVE its start through that
-      unrelated channel and the exact `<= total0` bound (this test's actual
-      conservation claim about the COMBUSTION+DECAY transactions) would
-      false-positive. Zeroing the emission isolates the claim exactly the
-      way tier 1 does.
+      pre-existing, unbacked source, unrelated to combustion) used to be
+      disabled for this test: emitted-from-nothing smoke decayed into
+      inert_N2 via the decisions #12 v2.1 credit, so a longer-lived fire
+      drifted the O2+N2 pair ABOVE its start through that unrelated channel
+      and the exact `<= total0` bound (this test's actual conservation claim
+      about the COMBUSTION+DECAY transactions) would false-positive. P-S1
+      (2026-08-15, docs/smoke_single_source_asbuilt_2026-08-15.md) DELETED
+      that emission outright (Erik's single-source ruling: combustion soot
+      is the ONE fire-smoke source), so there is no longer anything to
+      isolate here — the per-test zeroing this bullet used to describe is
+      gone along with the field it zeroed.
     - Room 9x9 -> 15x15: under the hot-zone-equilibrium O2 gates
       (config.toml [physics.fire], v2.4 second rescale) the 9x9 box reaches
       a SELF-SUSTAINING SMOLDER — its whole gas mass ends up hot enough
@@ -389,7 +397,8 @@ def test_e2e_1_sealed_room_fire_self_starves():
       tests/test_eos_p5_1_stoich.py."""
     gmap = _sealed_room(hh=15, wood_at=(7, 7))
     pr = _runner()
-    pr.fire.params.smoke_emission = 0.0   # isolate combustion+decay (docstring)
+    # smoke_emission zeroing REMOVED at P-S1 — the field/mechanism it
+    # isolated is deleted outright now (see the docstring above).
     _ignite(gmap, (7, 7), intensity=0.6, temp_mult=1.5)
 
     wall_hp0 = float(gmap.wall_hp[7, 7]) / 65536.0

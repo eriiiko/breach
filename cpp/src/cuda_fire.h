@@ -11,17 +11,21 @@
 // one `temperature[]` writer bypassing heat_inv_shift; TemperatureSolver is now
 // the field's ONLY writer, and P-R4's radiation pass will be the next writer,
 // through its own rad_net[] plane. The per-tile signed-logistic intensity
-// FEEDBACK (ignition/spread is elsewhere) → smoke emission into neighbours →
-// wall burn-through → final clamp. Four passes (P3's slot retired, not
-// renumbered), launched as a barriered chain (separate launches = grid
-// barriers between dependent passes):
+// FEEDBACK (ignition/spread is elsewhere) → wall burn-through → final clamp.
+// (Smoke emission into neighbours was DELETED at P-S1, 2026-08-15 — Erik's
+// single-source ruling, docs/smoke_single_source_design_2026-07-24.md; killed
+// the smoke->N2 pressure pump measured by docs/storm_audit_2026-08-14.md
+// §4.2. Combustion soot is now the ONE fire-smoke source, cpp/src/
+// combustion.cpp.) Three passes (P3's slot retired at P-R2, P4's at P-S1,
+// NEITHER renumbered), launched as a barriered chain (separate launches =
+// grid barriers between dependent passes):
 //
 //   P1 early-exit         HOST: if max(fire) < thresh -> return {} (fields untouched)
 //   P2 logistic feedback  fire += dt*(grow-die); snap-extinguish below I_min
 //                         (O2 gate = n_o2 neighbour mean)
-//   P4 smoke emission     smoke[nbr] += round(emit(fire[src]))     (SCATTER, atomicAdd)
 //   P5 wall burn-through  wall_hp[i] -= dmg; collect destroyed; fire[i]=0
-//   P6 final clamp        fire, smoke -> [0, FP_ONE]
+//   P6 final clamp        fire, smoke -> [0, FP_ONE] (smoke is READ-mostly
+//                         since P-S1 — no pass writes it, only clamps)
 //
 // The synced fields fire, smoke, wall_hp (int32 Q16.16) come out byte-for-byte
 // identical to the CPU step on every architecture (tol 0); temperature is now
@@ -29,13 +33,9 @@
 // The returned destroyed-walls list matches as a SET (order is irrelevant — the
 // caller processes each cell independently; only field state is synced).
 //
-// DETERMINISM crux (P4): the 4 smoke emissions per source thread are deposited
-// with integer atomicAdd. The deposit `delta_q = round(emission*dt*fire[src])`
-// depends ONLY on fire[src] (NOT on the neighbour's current smoke), so the
-// per-neighbour sum of overlapping deposits is associative + commutative ->
-// order-free -> bit-identical to the CPU's sequential row-major adds. P5's
-// destroyed list is collected via a device atomicAdd counter + an index array;
-// the gate checks SET equality (no order, no drops/dupes).
+// P5's destroyed list is collected via a device atomicAdd counter + an index
+// array (the ONLY scatter left in this kernel since P4's atomicAdd smoke
+// deposit was deleted); the gate checks SET equality (no order, no drops/dupes).
 //
 // Plain C++ declaration header (no CUDA types) so the .cpp TUs (bindings.cpp,
 // physics_engine.cpp, compiled by cl.exe even in the CUDA build) can include it;
@@ -54,8 +54,8 @@ namespace breach_cuda {
 // list). Because this is a FREE function (not a method on the solver), the
 // solver's scalar FireParams dials are passed explicitly:
 //   k_grow / k_die / fire_T_ext / fire_T_span / fuel_ref / o2_frac_ext /
-//   o2_frac_full / I_min / k_wind_fan / k_wind_strip / smoke_emission /
-//   wall_damage / temp_scale.
+//   o2_frac_full / I_min / k_wind_fan / k_wind_strip / wall_damage /
+//   temp_scale. (smoke_emission RETIRED at P-S1 — see the file header.)
 // All quantized step constants + the load-time reciprocals (make_recip) are
 // precomputed ON THE HOST in double, VERBATIM from the CPU load-time block, and
 // passed as scalar kernel args.
@@ -103,7 +103,7 @@ std::vector<std::pair<int, int>> fire_step(
     float k_grow, float k_die, float fire_T_ext, float fire_T_span,
     float fuel_ref, float o2_frac_ext, float o2_frac_full, float I_min,
     float k_wind_fan, float k_wind_strip,
-    float smoke_emission, float wall_damage,
+    float wall_damage,
     float temp_scale,
     // CAPACITY LAW (P-R3, ruling A3) — `c`, the growth term's carrying capacity
     // per unit availability. The host precompute bakes INV_C = quantize(1/c)

@@ -28,8 +28,9 @@ rather than special-case code:
 - **Vision and rays.** Smoke attenuates light per channel as a ray marches through it, casts soft
   shadows, and — because the absorbed light is captured rather than discarded — produces
   volumetric god-ray shafts. This is the smoke↔ray-engine seam (ch.03), detailed in §5.
-- **Fire.** Burning tiles emit smoke into adjacent air; explosions dump a cloud. Fire is the
-  primary source (§4).
+- **Fire.** Combustion soot is the fire-smoke source (§4): burning debits O₂ and credits a share of
+  it to soot in the SAME transaction, so every count of fire smoke is backed by something real.
+  Explosions dump a cloud separately.
 - **Tactics.** A breach sucks smoke out toward vacuum; a sealed compartment fills with it; a
   grenade clears a pocket then refills it. None of this is scripted — it is the wind field acting
   on a tracer.
@@ -235,11 +236,29 @@ the CPU→GPU migration.
 
 Smoke is added by two systems; the solver itself only transports and dissipates.
 
-**Fire (continuous).** Each burning tile emits into its 4-connected air neighbours every fire
-step: `smoke[neighbour] += smoke_emission · dt · fire_intensity`. This is part of the
-`FireSimulation` step (ch.08), so a sustained fire produces a sustained plume that the wind then
-carries. A fire near a breach starves *and* its smoke is sucked out — the emergent chain the
-design aims for, with no code linking the two.
+**Fire (combustion soot — the ONE fire-smoke source).** Fire's smoke comes from combustion, and
+only from combustion: for every burn transaction, `combustion.cpp` debits the consumed O₂ and
+credits a `soot_yield`-sized share of it to the `smoke` plane at the burn site, crediting the rest
+to `inert_N2` — an exact split (`SOOT += round(burn·soot_yield); inert_N2 += burn − SOOT`) that
+conserves the O₂+N₂+smoke triple to the last count. `soot_yield` is a fixed dial today
+(`[physics.combustion]`); a starvation-dependent yield law (dirtier smoke from a choking burn) is
+designed but not yet built (Q6, `docs/fire_tuning_plan_2026-07-22.md`,
+`docs/smoke_single_source_design_2026-07-24.md`). Smoke deposited this way rides the ordinary
+transport (above) exactly like any other source — a sustained fire produces a sustained plume the
+wind carries, and a fire near a breach starves *and* its smoke is sucked out, with no code linking
+the two.
+
+**Single-source history (P-S1, 2026-08-15).** Before this, the fire step ALSO emitted smoke
+directly and ex nihilo — `smoke[neighbour] += smoke_emission · dt · fire_intensity` on every lit
+tile's 4-connected air neighbours, every tick, with nothing debited anywhere. That unbacked source
+composed with the honest trace-decay→N₂ credit (§6.2's `decay` column,
+`PhysicsEngine::run_substeps`) into a real mass/pressure pump: a sealed burning room gained +42% of
+its bulk gas inventory in 200 s (`docs/storm_audit_2026-08-14.md` §4.2). Erik's ruling
+(`docs/smoke_single_source_design_2026-07-24.md`, 2026-07-24 — "DELETE source A ... duplicates B's
+purpose") said combustion soot was already the honest half and the scatter should go; P-S1 executed
+that (`docs/smoke_single_source_asbuilt_2026-08-15.md`), deleting the scatter from both the CPU
+step and its CUDA mirror. Steam, grenade gas, and explosion smoke (below) are a separate,
+still-open class-level question — not touched by this ruling.
 
 **Explosions (impulse).** A detonation does two smoke things, in two places:
 
@@ -826,9 +845,12 @@ Audited against `cpp/src/smoke_dynamics.{h,cpp}`, `src/simulation/physics_runner
   was **removed in Patch 2**). Defaults in the doc match `config.toml` (`0.1 / 900.0 / 50.0 / 16`).
   Note the *C++ class defaults* (`d_smoke=0.4`, `advection_rate=225.0`, `wind_diffusion_scale=0.0`,
   `vent_hops=16`) differ but are always overwritten at init, so config wins.
-- **Sources** — fire smoke emission (`fire_simulation.cpp`, into 4-connected air neighbours);
-  explosion smoke clear (inner 40 %, `physics.apply_explosion`) and noisy disc deposit
-  (`physics.add_explosion_smoke`) via the seeded RNG. Matches §4.
+- **Sources** — combustion soot (`combustion.cpp`'s `soot_yield`, deposited at the burn site) is the
+  ONE fire-smoke source as of P-S1 (2026-08-15, `docs/smoke_single_source_asbuilt_2026-08-15.md`);
+  the fire step's own ex-nihilo scatter (formerly `fire_simulation.cpp`, into 4-connected air
+  neighbours) is deleted, CPU and CUDA both. Explosion smoke clear (inner 40 %,
+  `physics.apply_explosion`) and noisy disc deposit (`physics.add_explosion_smoke`) via the seeded
+  RNG are untouched. Matches §4.
 - **Ray-engine coupling (per-channel `exp(-τ)` + additive scatter)** — `6e568f8`:
   `raycaster.cpp` `march_ray_directional` now applies live smoke attenuation as **per-channel
   Beer–Lambert** `trans_c = exp(-absorption_c · density · absorb_scale)` (the beam survives deep
