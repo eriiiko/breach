@@ -646,7 +646,11 @@ H_fuel            = 4.0    # heat yield (T-scale ΔT) per unit N_O2 burned
 # Smothering is a ships requirement (design §0), so this is a real trade, not a
 # tuning convenience.
 o2_potency        = 1.0    # multiplier on H_fuel + H_bed; 1.0 == byte-neutral
-soot_yield        = 0.3    # fraction of consumed O2 -> smoke (rest -> inert_N2)
+soot_yield        = 0.5    # fraction of consumed O2 -> smoke (rest -> inert_N2)
+                           # 2026-08-15 P-S1 visibility bump 0.3->0.5 (Erik-authorized,
+                           # provisional): combustion is now the ONE smoke source and
+                           # mints ~800x less than the deleted scatter; real smoke
+                           # look arrives with the Q6 starved-yield law (P-S2).
 # v2.5 — P5.1 stoichiometric fuel consumption (docs/eos_refactor_design.md §5
 # v2.5 amendment, decisions #17): the SOURCE tile pays wall_hp for every unit
 # of N_O2 its neighbours burn, floored at 1 Q16.16 LSB (smolder NEVER destroys
@@ -982,7 +986,12 @@ light_gain = 1.0           # multiplies the black-body intensity into light weig
 # the honest / identity values (design §6). RENDER-ONLY, tuned by eye with Erik,
 # never gated. (docs/fire_b2_smoke_honesty_design_2026-07-21.md §3-§6.)
 [render.gas_medium]
-plume_k_scale = 1.0         # RELATIVE multiplier on the shared smoke_absorb_scale base
+plume_k_scale = 300.0       # RELATIVE multiplier on the shared smoke_absorb_scale base
+                            # 2026-08-15 P-S1 visibility gain (render-only, provisional):
+                            # combustion-sourced smoke peaks ~0.002 density vs the old
+                            # saturated 1.0 — this maps the new relational field into the
+                            # visible tau window (peak ~0.8 opacity at the flame). Tune by
+                            # eye with Erik; retire when Q6 (P-S2) restores density scale.
 tau_curve_a = 1.0           # tau' = a*tau^b — artistic remap IN tau-SPACE
 tau_curve_b = 1.0           #   (b>1 steepens edges; 1/1 = fully honest)
 glow_gain = 1.0             # re-match the beloved god-ray brightness (tune)
