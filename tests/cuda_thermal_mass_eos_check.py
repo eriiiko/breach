@@ -125,20 +125,41 @@ def part1_isolated() -> bool:
                     print(f"  1a {size}^2 seed{seed} n_sub{n_sub}: CPU/GPU "
                           f"DIVERGE (digests {d_cpu} vs {d_gpu}, "
                           f"{int(np.count_nonzero(a[0] != b[0]))} T cells)")
+                # P-E1 (energy-books design SS2.1.1, AUTHORIZED REWRITE):
+                # the "mask-is-live" control INVERTS here. It used to require
+                # that omitting `thermal_solid` CHANGED the T result, because
+                # the mask's whole job at this entry was guarding the SL T
+                # sample. That sample is retired (T-WRITE SITE 1/2, the
+                # measured mint) — SL advection is u-only now — so the mask
+                # must change NOTHING at this entry, and temperature must come
+                # back exactly as it went in on BOTH twins. The mask's live
+                # roles moved to 1b (step-4c) and to the energy books' ts-face
+                # rule (d), both still controlled below / at the engine level.
                 if not np.array_equal(b[0], c[0]):
-                    n_div += 1
+                    ok = False
+                    print(f"  1a {size}^2 seed{seed} n_sub{n_sub}: the mask "
+                          f"changed TEMPERATURE — SL advection is u-only now")
+                for tag, fields in (("cpu", a), ("gpu", b)):
+                    if not np.array_equal(fields[0], t):
+                        ok = False
+                        print(f"  1a {size}^2 seed{seed} n_sub{n_sub}: {tag} "
+                              f"twin WROTE temperature — the retired SL "
+                              f"T-copy is back")
                 # velocity must be UNTOUCHED by the mask (ruling §4 item 4)
                 if not (np.array_equal(b[1], c[1]) and np.array_equal(b[2], c[2])):
                     ok = False
                     print(f"  1a {size}^2 seed{seed} n_sub{n_sub}: the mask "
                           f"CHANGED VELOCITY — cmask must be untouched")
-    if n_div == 0:
+                # non-vacuity: the pass really ran and really advected u
+                if np.array_equal(b[1], wx) and np.array_equal(b[2], wy):
+                    n_div += 1
+    if n_div:
         ok = False
-        print("  1a: the mask-omitted control never diverged — VACUOUS")
+        print(f"  1a: {n_div} configs never moved velocity — VACUOUS")
     else:
         print(f"  1a SL advection: {n_cfg} configs bit-identical CPU<->GPU "
-              f"(tol 0); the mask-omitted control diverged in {n_div}/{n_cfg} "
-              f"and NEVER moved velocity.")
+              f"(tol 0); u-only (P-E1) — temperature untouched by both twins "
+              f"and by the mask-omitted control; velocity moved everywhere.")
 
     # ---------------- 1b: kick + compression (step-4c) ---------------------
     n_cfg = n_div = 0

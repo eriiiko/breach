@@ -302,10 +302,16 @@ def test_permeable_thermal_solid_takes_the_SHIFT_convert_not_the_gas_deposit():
             assert got == deposit
 
 
-def test_thermal_solid_blocks_gas_T_advection_across_the_tile():
-    """Medium sites 2-4: with the crate in the thermal regime, the gas-T
-    semi-Lagrangian pass neither advects the crate's own T nor samples through
-    it (it is an occluder / sealed corner for the ray-walk)."""
+def test_temperature_solver_gas_T_advection_is_retired():
+    """P-E1 (energy-books design SS2.1.1; round-1 finding L3-5) — REPLACES
+    `test_thermal_solid_blocks_gas_T_advection_across_the_tile`.
+
+    TemperatureSolver Pass 0b was the engine's SECOND semi-Lagrangian T-copier
+    (medium sites 2/6, 3/6 and 4/6 lived there). It was dormant in the live
+    engine only because `step_tail` passes null winds — "one plumbing change
+    must not silently re-open the mint" — so the arc DELETES it on both
+    backends. The guarantee is now the strongest available one: supplying wind
+    changes nothing, with the mask or without it."""
     s = _solver()
     gr = _grid(5, 7)
     # Hot gas to the left of the crate, wind blowing +x.
@@ -317,20 +323,23 @@ def test_thermal_solid_blocks_gas_T_advection_across_the_tile():
 
     results = {}
     for use_mask in (True, False):
-        t = gr["temperature"].copy()
-        ts = gr["solid"].copy()
-        ts[crate] = True
-        kw = {"thermal_solid": ts} if use_mask else {}
-        s.step(t, gr["heat"], gr["heat_inv_shift"], gr["face_shift"],
-               gr["solid"], gr["is_vacuum"], gr["atmosphere"],
-               wind_x=wind_x, wind_y=wind_y, dt=1.0, **kw)
-        results[use_mask] = t
-    # Pre-patch: the crate tile is open air, so the advection pass rewrites its
-    # T from the upwind sample.  Post-patch: it is a thermal solid, so the
-    # advection pass skips it entirely (only convert/cool can touch it, and
-    # there is no deposit here).
-    assert int(results[True][crate]) == 0
-    assert results[False][crate] != results[True][crate]
+        for windy in (True, False):
+            t = gr["temperature"].copy()
+            ts = gr["solid"].copy()
+            ts[crate] = True
+            kw = {"thermal_solid": ts} if use_mask else {}
+            if windy:
+                kw.update(wind_x=wind_x, wind_y=wind_y, dt=1.0)
+            s.step(t, gr["heat"], gr["heat_inv_shift"], gr["face_shift"],
+                   gr["solid"], gr["is_vacuum"], gr["atmosphere"], **kw)
+            results[(use_mask, windy)] = t
+    for use_mask in (True, False):
+        assert np.array_equal(results[(use_mask, True)],
+                              results[(use_mask, False)]), (
+            "TemperatureSolver Pass 0b is back: supplying wind moved gas T "
+            "(mask=%s)" % ("on" if use_mask else "off"))
+    # The hot upwind gas cell simply STAYS where it is (nothing advected).
+    assert int(results[(True, True)][2, 1]) != 0
 
 
 def test_furniture_free_grid_is_byte_identical_with_and_without_the_mask():
@@ -460,64 +469,121 @@ def _q32(a):
     return np.ascontiguousarray(a, dtype=np.int32)
 
 
-def test_eos_step1b_does_not_write_temperature_on_a_thermal_solid():
-    """Ruling A1 / T-WRITE SITE 1/2: the semi-Lagrangian sample is a fluid-parcel
-    transport claim; the OBJECT at i did not come from upstream, so the EOS may
-    not write its temperature. With a strong wind the crate's T must come out
-    EXACTLY as it went in, while the surrounding gas is advected normally."""
+def test_eos_sl_advect_is_u_only_and_never_writes_temperature():
+    """P-E1 (energy-books design SS2.1.1) — REPLACES the two step-1b T-sample
+    tests (`..._does_not_write_temperature_on_a_thermal_solid` and
+    `..._treats_a_thermal_solid_as_a_backtrace_occluder`), whose premise WAS
+    the semi-Lagrangian T sample.
+
+    That sample is RETIRED: it was T-WRITE SITE 1/2 and the measured mint (a
+    temperature COPY onto mass that never paid for it). Ruling A1's guarantee
+    therefore no longer needs the `thermal_solid` mask to hold at this site —
+    it holds STRUCTURALLY, for every cell, because SL advection writes no
+    temperature at all. That is strictly stronger than the two tests it
+    replaces, so it is asserted directly, with the mask and without it, with
+    the velocity field asserted to still move (non-vacuity).
+
+    (Ruling A2's job — a hot crate must not heat downwind gas for free — is
+    now carried by ts-face rule (d) in the energy books, gated at the engine
+    level by `test_eos_energy_transport_never_heats_gas_from_a_crate` below.)
+    """
     h, w = 12, 16
     solid, vac, tsol, perm, furn = _eos_world(h, w)
     T0 = _q32(np.where(furn, 900 * FP_ONE, 100 * FP_ONE))
-    wx = _q32(np.full((h, w), 6 * FP_ONE))
-    wy = _q32(np.zeros((h, w)))
-    wx[solid] = 0
+    wx0 = _q32(np.full((h, w), 6 * FP_ONE))
+    wy0 = _q32(np.zeros((h, w)))
+    wx0[solid] = 0
 
-    T = T0.copy()
-    bp.eos_sl_advect_ref(wx.copy(), wy.copy(), T, solid, vac, perm,
-                         dt=1.0 / 24.0, n_sub=4, thermal_solid=tsol)
-    assert np.array_equal(T[furn], T0[furn]), (
-        "the EOS wrote temperature on a thermal_solid tile")
-    # The gas DID move (otherwise the test is vacuous).
-    gas_cells = ~solid & ~furn
-    assert not np.array_equal(T[gas_cells], T0[gas_cells])
-
-    # ...and without the mask (the pre-patch behaviour) the crate IS overwritten.
-    T_pre = T0.copy()
-    bp.eos_sl_advect_ref(wx.copy(), wy.copy(), T_pre, solid, vac, perm,
-                         dt=1.0 / 24.0, n_sub=4)
-    assert not np.array_equal(T_pre[furn], T0[furn]), (
-        "control failed: the pre-patch path must strip the crate's T")
+    for kw in ({"thermal_solid": tsol}, {}):
+        T = T0.copy()
+        wx, wy = wx0.copy(), wy0.copy()
+        bp.eos_sl_advect_ref(wx, wy, T, solid, vac, perm,
+                             dt=1.0 / 24.0, n_sub=4, **kw)
+        assert np.array_equal(T, T0), (
+            "the retired SL T-copy is back: eos_sl_advect_ref wrote "
+            "temperature (mask=%s)" % ("on" if kw else "off"))
+        # Non-vacuity: the pass really ran and really advected VELOCITY.
+        assert not np.array_equal(wx, wx0), "vacuous: u did not move"
 
 
-def test_eos_step1b_treats_a_thermal_solid_as_a_backtrace_occluder():
-    """Ruling A2: a thermal_solid tile is a WALL to the T backtrace (the eos-side
-    analog of P1's `gas_wall_at`). A downwind gas cell must NOT inherit the hot
-    crate's temperature — sampling it would be a free-energy channel, since
-    semi-Lagrangian sampling copies without debiting the source."""
-    h, w = 12, 16
-    solid, vac, tsol, perm, furn = _eos_world(h, w)
-    # ONLY the crate is hot; the air is at ambient.
-    T0 = _q32(np.where(furn, 4000 * FP_ONE, 0))
-    # Wind blows +x, so the cells just EAST of the crate backtrace onto it.
-    wx = _q32(np.full((h, w), 8 * FP_ONE))
-    wy = _q32(np.zeros((h, w)))
-    wx[solid] = 0
+def test_eos_energy_transport_never_heats_gas_from_a_crate():
+    """P-E1 ts-face rule (d) (design SS2.1.4), at the ENGINE level — the
+    structural replacement for ruling A2's retired backtrace occluder.
 
-    T_occl = T0.copy()
-    bp.eos_sl_advect_ref(wx.copy(), wy.copy(), T_occl, solid, vac, perm,
-                         dt=1.0 / 24.0, n_sub=1, thermal_solid=tsol)
-    T_open = T0.copy()
-    bp.eos_sl_advect_ref(wx.copy(), wy.copy(), T_open, solid, vac, perm,
-                         dt=1.0 / 24.0, n_sub=1)
+    Relative energy never crosses a face touching a thermal_solid tile: mass
+    still moves through a permeable crate, but it arrives carrying ZERO
+    relative energy (ts->air), and gas leaving into the crate is debited at
+    its OWN temperature into the counted `e_ts_residual` (air->ts). So a
+    1300-deg crate parked in a windy room can NEVER warm the gas — the
+    free-energy channel the occluder mask used to patch is gone at the root.
+    """
+    from level_loader import LevelData
+    from simulation.physics_runner import PhysicsRunner
 
-    downwind = np.zeros((h, w), dtype=bool)
-    downwind[5:7, 11] = True                      # the column just east of it
-    downwind &= ~solid & ~furn
-    assert downwind.any()
-    assert int(T_open[downwind].max()) > 0, (
-        "control failed: without occlusion the crate's heat leaks downwind")
-    assert int(T_occl[downwind].max()) == 0, (
-        "a thermal_solid tile must occlude the T backtrace")
+    # v1 tilemap vocabulary: 1 = hull wall, 4 = interior air. The crate is
+    # stamped through `material` + on_tile_changed (this module's idiom), the
+    # only place the THERMAL medium diverges from the FLOW medium.
+    H = W = 16
+    tm = np.full((H, W), 1, dtype=np.int32)
+    tm[1:-1, 1:-1] = 4
+    level = LevelData(name="e1_crate_rule_d", version="1", path=Path("."),
+                      tilemap=tm, tile_size_m=1.0 / 3.0,
+                      diffuse_path=Path("."))
+    g = GameMap(level)
+    g.stamp_units([])
+    for y in range(6, 9):
+        for x in range(5, 8):
+            g.material[y, x] = MAT_FURNITURE
+            g.on_tile_changed(y, x)
+    furn = g.thermal_solid & ~g.solid
+    assert furn.any(), "fixture must carry a permeable thermal_solid crate"
+
+    # The crate is hot, and a HOT AIR POCKET sits upwind of it; a steady wind
+    # drags that air across the crate for the whole run. Both directions of
+    # rule (d) are therefore exercised: air->ts (the hot pocket sheds its
+    # relative energy into the counted `e_ts_residual` as it enters the crate)
+    # and ts->air (the crate's own 1300 must never ride out the far side).
+    # Ambient air alone would make the air->ts leg VACUOUS — at T_rel = 0 it
+    # carries exactly zero relative energy, so nothing is there to destroy.
+    g.temperature[:] = 0
+    g.temperature[furn] = 1300 * FP_ONE
+    g.temperature[6:9, 2:5] = 800 * FP_ONE          # the upwind hot pocket
+    g.wind_x[~g.solid] = 5 * FP_ONE
+
+    runner = PhysicsRunner(bp)
+    runner.eos.dx = float(g.tile_size_m)
+    inert_n2_idx = int(g.gases.name_to_id["inert_n2"])
+    dt = 1.0 / float(CFG.clock.ticks_per_second)
+    gas_cells = ~g.solid & ~g.thermal_solid
+    assert gas_cells.any()
+    eos = runner.engine.eos
+
+    # The observable is the EOS TRANSPORT BRACKET, not the raw gas T: the
+    # engine's OTHER thermal channels (Pass-2 conduction across the crate's
+    # faces above all) are honest, separate and deliberately still live at
+    # this rung — P-E2a owns them. What rule (d) claims is exactly what the
+    # bracket measures: the transport pass itself may only ever DESTROY
+    # relative energy at a ts face, never deliver it.
+    ts_debits = 0
+    for _ in range(30):
+        runner.engine.run_substeps(
+            g.wave_p, g.atmosphere, g.wind_x, g.wind_y, g.temperature,
+            g.obstacles, g.solid, g.is_vacuum,
+            g.dyn_permeability, g.dyn_wave_absorb,
+            g.gas, g.gases.diffusion, g.gases.conservative,
+            g.gases.decay, inert_n2_idx, dt,
+            thermal_solid=g.thermal_solid,   # the axis under test
+        )
+        assert int(eos.eth_transport_delta) <= 0, (
+            "the transport pass CREATED %d raw of gas book-energy beside a "
+            "hot crate" % int(eos.eth_transport_delta))
+        ts_debits += int(eos.e_ts_residual)
+    # Non-vacuity: air really did transit the crate, so rule (d) really fired.
+    assert ts_debits > 0, (
+        "vacuous: no air->ts face traffic, so rule (d) never engaged")
+    # The crate itself keeps its object temperature (T-WRITE guard, ruling A1).
+    assert int(g.temperature[furn].min()) > 0, (
+        "the EOS stripped the crate's own temperature")
 
 
 def test_eos_step1b_mask_never_moves_velocity():
@@ -540,7 +606,12 @@ def test_eos_step1b_mask_never_moves_velocity():
                          dt=1.0 / 24.0, n_sub=3)
     assert np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1]), (
         "the thermal mask changed the velocity field — cmask must be untouched")
-    assert not np.array_equal(a[2], b[2]), "vacuous: T did not change either"
+    # P-E1: the second leg INVERTS. It used to read "vacuous: T did not change
+    # either" — i.e. the mask HAD to change the T sample. The T sample is
+    # retired (design SS2.1.1), so the mask must now change nothing at this
+    # entry at all, temperature included.
+    assert np.array_equal(a[2], b[2]) and np.array_equal(a[2], T0), (
+        "the SL entry is u-only now — neither run may write temperature")
 
 
 def test_eos_step4c_does_not_write_temperature_on_a_thermal_solid():
