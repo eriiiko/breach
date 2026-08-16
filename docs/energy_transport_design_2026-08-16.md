@@ -306,7 +306,7 @@ lose all this complexity."
   real bulk N₂ (detonation products) + ΔT directly; the visible smoke stays
   render-only. Better physics than promoted smoke at none of the cost.
 
-## 2.7 Reversible compression work (rides P-E4, same file/twins as the trust gate)
+### 2.7 Reversible compression work (rides P-E4, same file/twins as the trust gate)
 
 **Motivation — hygiene, NOT the window fix.** The multiplicative update is not
 self-inverse: a full oscillation gives `T·(1+k)(1−k) = T·(1−k²)`, so an
@@ -387,7 +387,7 @@ the single-compare form `if (w > work_clamp_q)` in all three twins (identical
 counts to today's exclusive pair; the verbatim-transcription contract is the
 safety story). Values still shift per §2.4's fade declaration.
 
-## 2.8 Interior momentum drag with heat counterparty (NEW patch P-E3, after P-E2b)
+### 2.8 Interior momentum drag with heat counterparty (NEW patch P-E3, after P-E2b)
 
 **Motivation.** No interior momentum sink exists at shipped dials (audit
 headline 5); the undamped Helmholtz mode IS the storming. Damping *without* an
@@ -491,7 +491,7 @@ and fire convection persist with softened transients, plus the neck heating
 above. **P-E5 play list gains "door-neck temperature under sustained venting"
 as its own row.**
 
-## 2.9 The cold-rail engine — identified, and deliberately deferred (RULING R1)
+### 2.9 The cold-rail engine — identified, and deliberately deferred (RULING R1)
 
 **What it actually is.** Step 4c multiplies **ambient-relative** T. Below
 ambient (T_rel < 0) the compression branch `×(1+|k|)` makes a cold cell
