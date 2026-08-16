@@ -364,18 +364,16 @@ void EOSSolver::step(
         if (rad > max_rad) max_rad = rad;
     }
     const q16 max_u = sqrt_q16(max_rad);
-    // Dalton sum with the trace-mass calibration (see eos_solver.h): bulk
-    // planes at full weight, trace planes scaled by trace_mass_scale.
+    // Dalton sum, P-T0 (design §2.6, the 0% ruling): n_total ≡ n_bulk — only
+    // the gas_conservative pair (O2/inert_N2) contributes, at full weight.
+    // trace_mass_scale is RETIRED, not wired to 0.0: trace planes are
+    // skipped outright, never even read here.
     {
-        const q16 tms_q = quantize((double)trace_mass_scale);
         for (int i = 0; i < n; ++i) n_total_[i] = 0;
         for (int gi = 0; gi < n_gases; ++gi) {
+            if (!gas_conservative[gi]) continue;
             const int32_t* plane = gas + (size_t)gi * n;
-            if (gas_conservative[gi]) {
-                for (int i = 0; i < n; ++i) n_total_[i] += plane[i];
-            } else {
-                for (int i = 0; i < n; ++i) n_total_[i] += mul_q16(tms_q, plane[i]);
-            }
+            for (int i = 0; i < n; ++i) n_total_[i] += plane[i];
         }
     }
     int64_t max_du_raw = 0;   // max K·|∇P|·dt/N̂ over the grid (int64 raw)
@@ -585,18 +583,16 @@ void EOSSolver::step(
     // ======================================================================
     // 2. p* := C · N_total · (T + T_AMB_K)      (post-substep N, wide mul)
     // ======================================================================
-    // Dalton sum with the trace-mass calibration (see eos_solver.h): bulk
-    // planes at full weight, trace planes scaled by trace_mass_scale.
+    // Dalton sum, P-T0 (design §2.6, the 0% ruling): n_total ≡ n_bulk — only
+    // the gas_conservative pair (O2/inert_N2) contributes, at full weight.
+    // trace_mass_scale is RETIRED, not wired to 0.0: trace planes are
+    // skipped outright, never even read here.
     {
-        const q16 tms_q = quantize((double)trace_mass_scale);
         for (int i = 0; i < n; ++i) n_total_[i] = 0;
         for (int gi = 0; gi < n_gases; ++gi) {
+            if (!gas_conservative[gi]) continue;
             const int32_t* plane = gas + (size_t)gi * n;
-            if (gas_conservative[gi]) {
-                for (int i = 0; i < n; ++i) n_total_[i] += plane[i];
-            } else {
-                for (int i = 0; i < n; ++i) n_total_[i] += mul_q16(tms_q, plane[i]);
-            }
+            for (int i = 0; i < n; ++i) n_total_[i] += plane[i];
         }
     }
     for (int i = 0; i < n; ++i) {
@@ -1377,9 +1373,10 @@ uint64_t eos_sl_advect_reference(
 //   * scalar folds    — the IDENTICAL double expressions step() performs
 //                       (K_raw/Kdt_raw, inv_2dx_q, absorb_dt_q, the rail
 //                       quantizes), from the same config values;
-//   * Dalton sum      — step 2's n_total_ loop verbatim (bulk planes at full
-//                       weight, trace planes × trace_mass_scale) — the kick's
-//                       1/N̂ input is REBUILT, not approximated;
+//   * Dalton sum      — step 2's n_total_ loop verbatim (P-T0, design §2.6:
+//                       n_total ≡ n_bulk, the gas_conservative pair at full
+//                       weight) — the kick's 1/N̂ input is REBUILT, not
+//                       approximated;
 //   * step 4          — gradient/kick/absorption/rail chain copied line for
 //                       line from step() (same int64 staging, same clamp
 //                       order, same per-CELL counter semantics);
@@ -1399,7 +1396,7 @@ void eos_kick_compression_reference(
         int h, int w, float dt, int32_t c_local_q,
         float c_max, float dx, float adiabatic_index, float absorb_strength,
         float n_floor_solver, float t_min, float t_work_clamp,
-        float t_max_phys, float u_max, float trace_mass_scale,
+        float t_max_phys, float u_max,   // trace_mass_scale param RETIRED (P-T0)
         uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
         int64_t* counters_out /* [5] */,
         const bool* is_ambient, const bool* thermal_solid,
@@ -1431,16 +1428,13 @@ void eos_kick_compression_reference(
     const q16 absorb_dt_q = quantize((double)absorb_strength * dt_d);
 
     // ---- step 2's Dalton sum (verbatim — the kick's N̂ input) --------------
+    // P-T0 (design §2.6): n_total ≡ n_bulk; trace planes skipped outright.
     std::vector<int32_t> n_total(n, 0);
     {
-        const q16 tms_q = quantize((double)trace_mass_scale);
         for (int gi = 0; gi < n_gases; ++gi) {
+            if (!gas_conservative[gi]) continue;
             const int32_t* plane = gas + (size_t)gi * n;
-            if (gas_conservative[gi]) {
-                for (int i = 0; i < n; ++i) n_total[i] += plane[i];
-            } else {
-                for (int i = 0; i < n; ++i) n_total[i] += mul_q16(tms_q, plane[i]);
-            }
+            for (int i = 0; i < n; ++i) n_total[i] += plane[i];
         }
     }
 

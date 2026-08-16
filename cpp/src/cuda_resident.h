@@ -83,14 +83,18 @@ void smoke_launch_resident(
 
 // The whole per-tick TRACE-PLANE LOOP, device-resident (S8a Path B FLOOR item 3).
 // For each non-conservative gas plane: smoke_launch_resident (once per tick, on
-// the final corrected wind) + the decay->inert_N2 credit (a device kernel,
-// bit-identical to the CPU mul_q16 credit). Persistent scratch owned here (lap/
-// src, keyed by (h,w)); one cudaDeviceSynchronize at the end; NO per-plane
-// cudaMalloc/H2D/D2H. The all-zero-plane `.any()` skip is DROPPED — smoke_step
-// on an all-zero plane is an arithmetic no-op (the EOS P6.5 device precedent), so
-// processing every trace plane is bit-identical to the CPU skip. gas_conservative
-// / gas_diffusion / gas_decay are the small (n_gases,) HOST columns (control-flow
-// + the per-plane diffusion/decay scalars, exactly as run_substeps reads them).
+// the final corrected wind) + decay (a device kernel, bit-identical to the CPU
+// mul_q16 shrink). P-T0 (energy-books arc, design §2.6 — the trace 0% ruling):
+// the decay->inert_N2 credit this kernel used to pay is DELETED — decayed mass
+// simply VANISHES, same as the CPU twin (physics_engine.cpp's run_substeps
+// trace loop); `inert_n2_idx` stays a parameter for ABI/back-compat. Persistent
+// scratch owned here (lap/src, keyed by (h,w)); one cudaDeviceSynchronize at
+// the end; NO per-plane cudaMalloc/H2D/D2H. The all-zero-plane `.any()` skip is
+// DROPPED — smoke_step on an all-zero plane is an arithmetic no-op (the EOS
+// P6.5 device precedent), so processing every trace plane is bit-identical to
+// the CPU skip. gas_conservative / gas_diffusion / gas_decay are the small
+// (n_gases,) HOST columns (control-flow + the per-plane diffusion/decay
+// scalars, exactly as run_substeps reads them).
 void trace_smoke_resident(
     int32_t* d_gas_base,
     const int32_t* d_wind_x, const int32_t* d_wind_y,

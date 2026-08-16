@@ -63,7 +63,8 @@ void eos_kick_compression(
     int h, int w, float dt, int32_t c_local_q,
     float c_max, float dx, float adiabatic_index, float absorb_strength,
     float n_floor_solver, float t_min, float t_work_clamp,
-    float t_max_phys, float u_max, float trace_mass_scale,
+    float t_max_phys, float u_max,   // trace_mass_scale param RETIRED (P-T0,
+                                      // design §2.6 — n_total ≡ n_bulk now)
     uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
     int64_t* counters_out /* [5] */,
     // BC (spec §1/§3): the ambient ring (nullptr = space) drives the velocity

@@ -204,15 +204,15 @@ public:
     // no future T-side change can push stored velocities back into the
     // int64/narrow overflow regime (see step 4's overflow guard).
     float U_MAX = 1000.0f;
-    // trace_mass_scale (P3 integration constant, FLAGGED for Erik): the
-    // Dalton sum N_total = Σ N_i must weight the TRACE planes by the molar
-    // mass of a full-opacity cloud relative to ambient — the trace fields
-    // are [0,1] OPACITY tracers, not molar densities, and an unweighted sum
-    // makes a 0.6-opacity teargas cloud a +60% pressure bomb that blasts
-    // itself apart in one tick (measured). 0.02 == "a fully opaque cloud
-    // carries 2% of ambient molar density" — keeps the design §2.1 premise
-    // ("the bulk pair carries ~99% of N_total") true by calibration.
-    float trace_mass_scale = 0.02f;
+    // trace_mass_scale RETIRED (energy-books arc, P-T0, design §2.6 — the
+    // 0% ruling): traces left the Dalton sum entirely rather than keep the
+    // half-citizenship (2% pressure weight, zero thermal weight) that fed
+    // both the storm audit's pressure pump and the round-1 energy-mint
+    // class. N_total is now exactly n_bulk (the gas_conservative pair) —
+    // see the Dalton-sum sites in eos_solver.cpp/cuda_eos_step.cu/
+    // cuda_eos_resident.cu/cuda_kick_compression.cu, which no longer read a
+    // trace weight at all (not wired to 0.0 — the trace planes are skipped
+    // outright). Full-citizenship recipe for a future plane: design §2.6.
 
     // --- MEASUREMENT-ONLY diagnostic (MG gate; never a ship path) --------
     // debug_pstar_from_prev = true replaces step 2's p* = C*N*T_abs with
@@ -494,9 +494,10 @@ uint64_t eos_sl_advect_reference(
 //   * p_new           — the solved pressure plane the kick differentiates
 //                       (== L0.P after the vacuum/solid zeroing == the post-tick
 //                       `atmosphere`, which step 5 copies verbatim);
-//   * gas planes      — the step-2 Dalton sum N_total (bulk planes at full
-//                       weight, trace planes × trace_mass_scale) is recomputed
-//                       here verbatim: it is the kick's 1/N̂ input;
+//   * gas planes      — the step-2 Dalton sum N_total (P-T0, design §2.6:
+//                       n_total ≡ n_bulk, the gas_conservative pair summed
+//                       at full weight; trace planes contribute nothing) is
+//                       recomputed here verbatim: it is the kick's 1/N̂ input;
 //   * c_local_q       — the per-tick state-derived cap the solver computed
 //                       PRE-advection (EOSSolver::dbg_last_c_local_q);
 //   * scalar params   — the EOSSolver config members, folded to q16/int64
@@ -519,7 +520,7 @@ void eos_kick_compression_reference(
     int h, int w, float dt, int32_t c_local_q,
     float c_max, float dx, float adiabatic_index, float absorb_strength,
     float n_floor_solver, float t_min, float t_work_clamp,
-    float t_max_phys, float u_max, float trace_mass_scale,
+    float t_max_phys, float u_max,   // trace_mass_scale param RETIRED (P-T0)
     uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
     int64_t* counters_out /* [5] */,
     const bool* is_ambient = nullptr,    // BC: ring u ≡ 0 (defaults off)

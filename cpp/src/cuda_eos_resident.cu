@@ -118,18 +118,20 @@ __global__ void K_div_u(int32_t* __restrict__ div_u,
 
 // Step 2's Dalton sum (post-substep N) — per cell, gi ASCENDING (the CPU's
 // per-cell add sequence). uint32 accumulation = defined wrap, byte-identical
-// to the hosts' int32 wrap for all inputs (design §3.2.6e).
+// to the hosts' int32 wrap for all inputs (design §3.2.6e). P-T0 (design
+// §2.6): n_total ≡ n_bulk — non-conservative (trace) planes are skipped
+// outright, not weighted by a retired tms_q.
 __global__ void K_ntot(int32_t* __restrict__ ntot,
                        const int32_t* __restrict__ gas_base,
                        const bool* __restrict__ cons_flag,
-                       int n_gases, int32_t tms_q, int n) {
+                       int n_gases, int n) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         int32_t acc = 0;
         for (int gi = 0; gi < n_gases; ++gi) {
+            if (!cons_flag[gi]) continue;
             const int32_t v = gas_base[(size_t)gi * n + i];
-            const int32_t term = cons_flag[gi] ? v : mul_q16(tms_q, v);
-            acc = (int32_t)((uint32_t)acc + (uint32_t)term);
+            acc = (int32_t)((uint32_t)acc + (uint32_t)v);
         }
         ntot[i] = acc;
     }
@@ -764,9 +766,8 @@ void eos_step_resident(
                              d_is_vacuum, d_is_ambient, pre.inv_2dx_q, h, w);
     cuda_check(cudaGetLastError(), "K_div_u");
     {
-        const q16 tms_q = quantize((double)solver.trace_mass_scale);
-        K_ntot<<<grid, block>>>(S.ntot, d_gas_base, S.cons_flag, n_gases,
-                                tms_q, n);
+        // trace_mass_scale arg RETIRED (P-T0, design §2.6).
+        K_ntot<<<grid, block>>>(S.ntot, d_gas_base, S.cons_flag, n_gases, n);
         cuda_check(cudaGetLastError(), "K_ntot");
     }
     K_pstar<<<grid, block>>>(S.pstar, S.ntot, d_temperature, d_wave_p,

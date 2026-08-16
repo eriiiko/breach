@@ -324,7 +324,7 @@ void eos_kick_compression(
     int h, int w, float dt, int32_t c_local_q,
     float c_max, float dx, float adiabatic_index, float absorb_strength,
     float n_floor_solver, float t_min, float t_work_clamp,
-    float t_max_phys, float u_max, float trace_mass_scale,
+    float t_max_phys, float u_max,   // trace_mass_scale param RETIRED (P-T0)
     uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
     int64_t* counters_out /* [5] */,
     const bool* is_ambient, const int32_t* sponge_udamp,     // BC
@@ -343,16 +343,13 @@ void eos_kick_compression(
     const q16 absorb_dt_q = folds.absorb_dt_q;
 
     // ---- step 2's Dalton sum (verbatim host loop — the kick's N̂ input). ----
+    // P-T0 (design §2.6): n_total ≡ n_bulk; trace planes skipped outright.
     std::vector<int32_t> n_total(n, 0);
     {
-        const q16 tms_q = quantize((double)trace_mass_scale);
         for (int gi = 0; gi < n_gases; ++gi) {
+            if (!gas_conservative[gi]) continue;
             const int32_t* plane = gas + (size_t)gi * n;
-            if (gas_conservative[gi]) {
-                for (int i = 0; i < n; ++i) n_total[i] += plane[i];
-            } else {
-                for (int i = 0; i < n; ++i) n_total[i] += mul_q16(tms_q, plane[i]);
-            }
+            for (int i = 0; i < n; ++i) n_total[i] += plane[i];
         }
     }
 

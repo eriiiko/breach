@@ -455,6 +455,23 @@ class PhysicsRunner:
         self.eos.T_MAX_PHYS      = self._t_max_phys
         self.eos.U_MAX           = _ep("U_MAX", self.eos.U_MAX)
 
+        # P-T0 (energy-books arc, 2026-08-17, docs/energy_transport_design_
+        # 2026-08-16.md §2.6 — the trace 0% ruling): `trace_mass_scale`
+        # retired from EOSSolver entirely (the C++ member is gone, not
+        # wired to 0.0). LOUD guard, the P-S1 `smoke_emission` idiom: a
+        # config that still carries the key would otherwise silently do
+        # nothing (this binding never read it even before P-T0 — the
+        # struct's own default was always used), and whoever set it would
+        # never find out why it has no effect.
+        if getattr(eos_cfg, "trace_mass_scale", None) is not None:
+            raise RuntimeError(
+                "[physics.eos] still carries 'trace_mass_scale' — this key "
+                "was retired at P-T0 (traces left the Dalton sum entirely; "
+                "N_total is now exactly n_bulk). Remove it from "
+                "config.toml. See docs/energy_transport_design_2026-08-16."
+                "md §2.6 and docs/e1_p_t0_asbuilt_2026-08-17.md."
+            )
+
         # CombustionSolver (EOS refactor P4, docs/eos_refactor_design.md §5):
         # burns fuel against the REAL local O2, once per tick, right after
         # the EOS solver materializes P/N/T. Bound from [physics.combustion];

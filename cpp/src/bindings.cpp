@@ -1104,7 +1104,7 @@ PYBIND11_MODULE(breach_physics, m) {
              float c_max, float dx, float adiabatic_index,
              float absorb_strength, float n_floor_solver, float t_min,
              float t_work_clamp, float t_max_phys, float u_max,
-             float trace_mass_scale,
+             // trace_mass_scale param RETIRED (P-T0, design §2.6)
              py::object thermal_solid) -> py::tuple {   // THERMAL-MASS AXIS
               auto [wx, h, w]    = get_2d(wind_x);
               auto [wy, h2, w2]  = get_2d(wind_y);
@@ -1132,7 +1132,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   h, w, dt, c_local_q,
                   c_max, dx, adiabatic_index, absorb_strength,
                   n_floor_solver, t_min, t_work_clamp, t_max_phys, u_max,
-                  trace_mass_scale, &dig_vel, &dig_comp, cnts,
+                  &dig_vel, &dig_comp, cnts,   // trace_mass_scale arg RETIRED
                   nullptr, nullptr, tsol);
               return py::make_tuple(dig_vel, dig_comp, cnts[0], cnts[1],
                                     cnts[2], cnts[3], cnts[4]);
@@ -1144,7 +1144,7 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("c_max"), py::arg("dx"), py::arg("adiabatic_index"),
           py::arg("absorb_strength"), py::arg("n_floor_solver"),
           py::arg("t_min"), py::arg("t_work_clamp"), py::arg("t_max_phys"),
-          py::arg("u_max"), py::arg("trace_mass_scale"),
+          py::arg("u_max"),
           py::arg("thermal_solid") = py::none(),
           "P6.4 isolated: run the GPU kick + compression-work tail in place on "
           "wind_x/wind_y/temperature; returns (digest_velocity, "
@@ -2126,7 +2126,8 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("T_WORK_CLAMP",      &EOSSolver::T_WORK_CLAMP)
         .def_readwrite("T_MAX_PHYS",        &EOSSolver::T_MAX_PHYS)     // v2.4 rail
         .def_readwrite("U_MAX",             &EOSSolver::U_MAX)          // v2.4 rail
-        .def_readwrite("trace_mass_scale",  &EOSSolver::trace_mass_scale)
+        // trace_mass_scale binding RETIRED (P-T0, design §2.6 — the member
+        // itself is gone from EOSSolver; see eos_solver.h).
         .def_readonly("energy_floor_hits",  &EOSSolver::energy_floor_hits)
         .def_readonly("u_clamp_hits",       &EOSSolver::u_clamp_hits)
         .def_readonly("work_clamp_hits",    &EOSSolver::work_clamp_hits)
@@ -2243,7 +2244,7 @@ PYBIND11_MODULE(breach_physics, m) {
              float c_max, float dx, float adiabatic_index,
              float absorb_strength, float n_floor_solver, float t_min,
              float t_work_clamp, float t_max_phys, float u_max,
-             float trace_mass_scale,
+             // trace_mass_scale param RETIRED (P-T0, design §2.6)
              py::object thermal_solid,                  // THERMAL-MASS AXIS
              // A6: the ambient/planetside path. `is_ambient` was hard-coded
              // nullptr at the call below, so no caller could reach the
@@ -2290,7 +2291,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   h, w, dt, c_local_q,
                   c_max, dx, adiabatic_index, absorb_strength,
                   n_floor_solver, t_min, t_work_clamp, t_max_phys, u_max,
-                  trace_mass_scale, &dig_vel, &dig_comp, cnts, amb, tsol, sud);
+                  &dig_vel, &dig_comp, cnts, amb, tsol, sud);   // trace_mass_scale arg RETIRED
               return py::make_tuple(dig_vel, dig_comp, cnts[0], cnts[1],
                                     cnts[2], cnts[3], cnts[4]);
           },
@@ -2301,7 +2302,7 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("c_max"), py::arg("dx"), py::arg("adiabatic_index"),
           py::arg("absorb_strength"), py::arg("n_floor_solver"),
           py::arg("t_min"), py::arg("t_work_clamp"), py::arg("t_max_phys"),
-          py::arg("u_max"), py::arg("trace_mass_scale"),
+          py::arg("u_max"),
           py::arg("thermal_solid") = py::none(),
           py::arg("is_ambient") = py::none(),
           py::arg("sponge_udamp") = py::none(),
@@ -2813,7 +2814,9 @@ PYBIND11_MODULE(breach_physics, m) {
             const bool* gcons = gc.data(0);
             // gas_decay: (N,) float32 — EOS P4's per-gas trace decay column
             // (simulation.gases.GasTable.decay), applied once per tick after
-            // each trace plane's own advection, credited to inert_n2_idx.
+            // each trace plane's own advection. The decayed count simply
+            // VANISHES (P-T0, design §2.6 — the P4 decay->inert_N2 credit is
+            // DELETED; decay is no longer "oxidation into bulk", just loss).
             auto gdc = gas_decay.unchecked<1>();
             const float* gdecay = gdc.data(0);
             // BC nullable extraction (the WaterSolver.step precedent, above):
