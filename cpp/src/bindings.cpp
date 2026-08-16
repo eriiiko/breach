@@ -2132,6 +2132,10 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readonly("work_clamp_hits",    &EOSSolver::work_clamp_hits)
         .def_readonly("t_max_phys_hits",    &EOSSolver::t_max_phys_hits) // v2.4
         .def_readonly("u_max_hits",         &EOSSolver::u_max_hits)      // v2.4
+        // P-E0 (energy-books §2.5): per-tick energy-bracket deltas over
+        // Σ n_bulk·T (transport substeps / step-4c). Digest-inert telemetry.
+        .def_readonly("eth_transport_delta",   &EOSSolver::eth_transport_delta)
+        .def_readonly("eth_compression_delta", &EOSSolver::eth_compression_delta)
         // BC (spec §5): the boundary_flux rail — per-conservative-plane int64
         // Σ(N_pre_reset − N_amb). Returned as a Python list (empty on space
         // maps). NOT folded into any digest (absence-transparent, zero golden

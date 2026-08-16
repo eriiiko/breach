@@ -255,6 +255,28 @@ void EOSSolver::step(
         boundary_flux_.clear();
     }
 
+    // P-E0 (energy-books design §2.5): the law-independent bracket sum
+    // S = Σ n_bulk·T over the step-4c skip-set complement (!solid, !ts,
+    // !vacuum, !ring); n_bulk = the gas_conservative planes as int64.
+    // Range: per-cell |n_bulk·T| ≤ N_cell·T_MAX_PHYS raw ≈ 2^47 at ambient
+    // counts, Σ over a map ≪ 2^62 (design §2.1.2 invariant). Pure
+    // instrumentation — nothing in the sim path reads it, no digest folds it.
+    eth_transport_delta = 0;    // per-tick reset (boundary_flux_ idiom)
+    eth_compression_delta = 0;
+    const auto eth_books_sum = [&]() -> int64_t {
+        int64_t acc = 0;
+        for (int i = 0; i < n; ++i) {
+            if (solid[i] || ts[i] || is_vacuum[i]
+                    || (ambient_mode && is_ambient[i])) continue;
+            int64_t nb = 0;
+            for (int gi = 0; gi < n_gases; ++gi)
+                if (gas_conservative[gi])
+                    nb += (int64_t)gas[(size_t)gi * (size_t)n + (size_t)i];
+            acc += nb * (int64_t)temperature[i];
+        }
+        return acc;
+    };
+
     if ((int)n_total_.size() != n) n_total_.assign(n, 0);
     if ((int)vx_src_.size()  != n) vx_src_.assign(n, 0);
     if ((int)vy_src_.size()  != n) vy_src_.assign(n, 0);
@@ -454,6 +476,9 @@ void EOSSolver::step(
         const float dt_s = (float)dt_s_d;
         const q16 dt_s_q = quantize(dt_s_d);
 
+        // P-E0 bracket open: substep transport-block entry (design §2.5).
+        const int64_t eth_pre_transport = eth_books_sum();
+
         // -- a+b. FUSED SL advection of u (self) and T ---------------------
         // All three fields ride the SAME displacement −uⁿ·dt_s (uⁿ = the
         // pre-substep velocity — the consistent SL choice, and what lets one
@@ -520,6 +545,8 @@ void EOSSolver::step(
                                    ambient_mode ? n_amb : nullptr,
                                    ambient_mode ? boundary_flux_.data() : nullptr);
         (void)dt_s;
+        // P-E0 bracket close: after the step-d flux, accumulated per tick.
+        eth_transport_delta += eth_books_sum() - eth_pre_transport;
         if (s == n_sub - 1) {
             uint64_t bfd = 0;
             for (int gi = 0; gi < n_gases; ++gi)
@@ -731,6 +758,8 @@ void EOSSolver::step(
     //     (the named 4th energy sink, counter-tracked).
     // ======================================================================
     {
+        // P-E0 bracket open: around the step-4c loop (design §2.5).
+        const int64_t eth_pre_4c = eth_books_sum();
         const q16 work_clamp_q = quantize((double)T_WORK_CLAMP);
         for (int y = 0; y < h; ++y) {
             const int row = y * w;
@@ -780,6 +809,8 @@ void EOSSolver::step(
                 temperature[i] = t_new;
             }
         }
+        // P-E0 bracket close: the 4c compression-work energy delta.
+        eth_compression_delta += eth_books_sum() - eth_pre_4c;
     }
     digest_compression = digest_of(temperature, n, 0);
     // DEBUG probe (temporary): T after step 4c (compression work).

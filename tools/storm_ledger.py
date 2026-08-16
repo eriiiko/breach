@@ -157,11 +157,18 @@ class _Masks:
         self.n2_idx = int(gmap.gases.name_to_id["inert_n2"])
 
 
+# P-E0 (energy-books §2.5): these two are PER-TICK deltas (reset at every
+# EOSSolver.step entry), unlike the cumulative hit counters — the series
+# code below must read them raw, never as a diff of consecutive reads.
+PER_TICK_COUNTERS = ("eos.eth_transport_delta", "eos.eth_compression_delta")
+
+
 def counters(runner):
     out = {}
     for holder, names in (
             (runner.eos, ("u_clamp_hits", "u_max_hits", "work_clamp_hits",
-                          "energy_floor_hits", "t_max_phys_hits")),
+                          "energy_floor_hits", "t_max_phys_hits",
+                          "eth_transport_delta", "eth_compression_delta")),
             (runner.combustion, ("heat_floor_hits",)),
     ):
         for nm in names:
@@ -256,7 +263,12 @@ def run_ledger(ticks=4800, damp=0.0, dials=None, keep_series=True):
         series = {"tick": [], "ke": [], "ke_probe": [], "eth_gas": [],
                   "t_obj": [], "n_o2": [], "n_bulk": [], "n_smoke": [],
                   "p_sum": [], "t_min_gas": [], "umax": [],
-                  "mom_abs": [], "fire_I": []}
+                  "mom_abs": [], "fire_I": [],
+                  # P-E0 pocket telemetry (design §2.3): the flat index of the
+                  # gas-T argmin cell and the bulk N sitting there — the
+                  # window-pocket N the trust-band decision reads.
+                  "t_min_cell": [], "n_at_tmin": []}
+        eth_totals = {c: 0 for c in PER_TICK_COUNTERS}
         pass_series = {p: {"ke": [], "eth_gas": [], "mom_abs": [],
                            "sum_ux": [], "sum_uy": []} for p in PASSES}
         counter_series = []
@@ -296,6 +308,10 @@ def run_ledger(ticks=4800, damp=0.0, dials=None, keep_series=True):
                     for q in pass_series[p]:
                         pass_series[p][q].append(d.get(q, 0))
 
+            cnow = counters(runner)
+            for c in PER_TICK_COUNTERS:      # per-tick values: accumulate
+                if c in cnow:
+                    eth_totals[c] += cnow[c]
             if keep_series:
                 series["tick"].append(k)
                 for q in ("ke", "ke_probe", "eth_gas", "t_obj", "n_o2",
@@ -303,9 +319,18 @@ def run_ledger(ticks=4800, damp=0.0, dials=None, keep_series=True):
                           "t_min_gas", "umax", "mom_abs"):
                     series[q].append(tick_state[q])
                 series["fire_I"].append(int(gmap.fire[fy, fx]) / FP_ONE)
-                cnow = counters(runner)
+                # P-E0 pocket telemetry: argmin-T gas cell + its bulk N.
+                t_masked = np.where(masks.gas_open, gmap.temperature,
+                                    np.int32(np.iinfo(np.int32).max))
+                j = int(np.argmin(t_masked))
+                nb_j = (int(gmap.gas[masks.o2_idx].flat[j])
+                        + int(gmap.gas[masks.n2_idx].flat[j]))
+                series["t_min_cell"].append(j)
+                series["n_at_tmin"].append(nb_j / FP_ONE)
                 counter_series.append(
-                    {c: cnow[c] - prev_counters.get(c, 0) for c in cnow})
+                    {c: (cnow[c] if c in PER_TICK_COUNTERS
+                         else cnow[c] - prev_counters.get(c, 0))
+                     for c in cnow})
                 prev_counters = cnow
 
         return {
@@ -314,6 +339,7 @@ def run_ledger(ticks=4800, damp=0.0, dials=None, keep_series=True):
             "counter_series": counter_series,
             "amp_series": amp_series,
             "final_counters": counters(runner),
+            "eth_totals": eth_totals,   # P-E0: run totals of the per-tick deltas
             "n_open": int(masks.gas_open.sum()),
         }
     finally:
@@ -348,6 +374,7 @@ def main(argv=None):
             continue
         print(f"  {p:10s} " + "  ".join(f"{t.get(q, 0):>12.4g}" for q in qs))
     print(f"\n  final counters: {out['final_counters']}")
+    print(f"  eth bracket totals (raw Q16.16^2): {out['eth_totals']}")
     amp = out["amp_series"]
     if amp:
         mx = max(r[1] for r in amp)
@@ -362,7 +389,8 @@ def main(argv=None):
             amp=np.asarray(out["amp_series"], dtype=np.float64),
             counters=json.dumps(out["counter_series"]),
             per_pass_totals=json.dumps(out["per_pass_totals"]),
-            final_counters=json.dumps(out["final_counters"]))
+            final_counters=json.dumps(out["final_counters"]),
+            eth_totals=json.dumps(out["eth_totals"]))
         print(f"  series -> {a.out}")
     return 0
 

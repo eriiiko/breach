@@ -231,6 +231,20 @@ public:
     mutable int64_t u_max_hits = 0;        // clamps where U_MAX (not c_LOCAL)
                                            // was the binding cap (v2.4)
 
+    // --- P-E0 energy-bracket counters (energy-books arc, design §2.5) ----
+    // Law-independent brackets over S = Σ n_bulk·T on the step-4c skip-set
+    // complement (gas cells: !solid, !ts, !vacuum, !ring); n_bulk = the
+    // gas_conservative pair summed as int64; T = raw game-T (Q16.16).
+    //   eth_transport_delta   = Σ_substeps [S after step-d flux − S at the
+    //                           substep transport-block entry]  (HEAD bracket;
+    //                           moves to after-recovery at P-E1)
+    //   eth_compression_delta = S after − S before the step-4c loop.
+    // Pure instrumentation, digest-inert; RESET at step() entry (per tick,
+    // the boundary_flux_ idiom) so each read is that tick's delta. These are
+    // the counters P-E1's ≤ 0 transport gate measures (design §7).
+    mutable int64_t eth_transport_delta = 0;
+    mutable int64_t eth_compression_delta = 0;
+
     // --- P6.2 telemetry: the substep count the last step() actually ran ---
     // (design §3.2 step 1's n = ceil(dt/dt_adv), N_SUB_MAX-capped). Exposed so
     // the P6 per-kernel digest gates can reconstruct the substep-loop inputs
