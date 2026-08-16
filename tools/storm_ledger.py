@@ -160,7 +160,13 @@ class _Masks:
 # P-E0 (energy-books §2.5): these two are PER-TICK deltas (reset at every
 # EOSSolver.step entry), unlike the cumulative hit counters — the series
 # code below must read them raw, never as a diff of consecutive reads.
-PER_TICK_COUNTERS = ("eos.eth_transport_delta", "eos.eth_compression_delta")
+# P-E1 (energy-books §2.1.5/§2.5) adds the transport law's one-way guard terms
+# and the active-flux telemetry §7's truncation bound is scaled by. All five
+# are PER-TICK too (same reset-at-step()-entry idiom), so they belong in this
+# tuple: the run totals below accumulate them instead of diffing them.
+PER_TICK_COUNTERS = ("eos.eth_transport_delta", "eos.eth_compression_delta",
+                     "eos.e_ts_residual", "eos.e_wipe_sum", "eos.e_floor_sum",
+                     "eos.n_active_flux", "eos.n_bulk_active_sum")
 
 
 def counters(runner):
@@ -168,7 +174,11 @@ def counters(runner):
     for holder, names in (
             (runner.eos, ("u_clamp_hits", "u_max_hits", "work_clamp_hits",
                           "energy_floor_hits", "t_max_phys_hits",
-                          "eth_transport_delta", "eth_compression_delta")),
+                          "eth_transport_delta", "eth_compression_delta",
+                          # P-E1: rule (d) destruction, the N_EPS wipe, the
+                          # T_MIN creator, and the active-flux pair.
+                          "e_ts_residual", "e_wipe_sum", "e_floor_sum",
+                          "n_active_flux", "n_bulk_active_sum")),
             (runner.combustion, ("heat_floor_hits",)),
     ):
         for nm in names:
