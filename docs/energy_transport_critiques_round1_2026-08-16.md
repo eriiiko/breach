@@ -264,3 +264,53 @@ v2 of `energy_transport_design_2026-08-16.md` after Erik rules on the five
 evidence + coupling to N_ref; (3) born-diluting rule + wave_source deferral;
 (4) trust-gate hard-zero band vs accept-bounded; (5) starved-heat destroy vs
 redistribute. Everything tagged [ADOPT] goes into v2 without further debate.
+
+---
+
+## Addendum (2026-08-17) — the L3 WRITER TABLE, committed verbatim
+
+Round-2 verification flagged that design v2 §5 names this table as the
+completeness oracle for P-E2b while it lived only in session transcript.
+Committed here so worktree subagents can read it. (Line refs = tree at
+`bda08eb`.)
+
+| # | Writer | File:line | Design coverage (v2.1 §) |
+|---|---|---|---|
+| 1 | EOS SL T-sample (live step) | `cpp/src/eos_solver.cpp:505` | §2.1 (retires) |
+| 2 | EOS 4c compression work + T_MIN/T_MAX rails | `cpp/src/eos_solver.cpp:777-780` | §2.4 / P-E4 |
+| 3 | EOS SL T-sample, CPU reference twin | `cpp/src/eos_solver.cpp:1335` | §2.1.1 (retires) |
+| 4 | EOS 4c reference twin | `cpp/src/eos_solver.cpp:1522-1525` | §2.4 / P-E4 |
+| 5 | Pass-0 vacuum/ambient-ring T wipe | `cpp/src/temperature_solver.cpp:192` | §4 |
+| 6 | Pass-0 gas-T SL advection (dormant: wind=nullptr live) | `cpp/src/temperature_solver.cpp:220` | §2.1.1 (retire/assert-dead) |
+| 7 | Pass-1 rad_net signed fold + T_MAX + low rail | `cpp/src/temperature_solver.cpp:287-318` | §2.2 (+`t_low_rail_hits` §2.5) |
+| 8 | Pass-1 solid heat deposit (`heat>>shift`) | `cpp/src/temperature_solver.cpp:330-332` | §2.2 |
+| 9 | Pass-1 gas heat deposit (v2.4 absorption form) | `cpp/src/temperature_solver.cpp:361-374` | §2.2 (corrected description) |
+| 10 | Pass-2 conduction copy-back | `cpp/src/temperature_solver.cpp:426` | §2.3 / P-E2a |
+| 11 | Pass-3 ambient cooling (signed relaxation) | `cpp/src/temperature_solver.cpp:523` | §2.3 (named SIGNED channel) |
+| 12 | Combustion aggregate deposit (object/gas) + T_MAX | `cpp/src/combustion.cpp:795-808` | §2.2 |
+| 13 | Explosion/event `wave_source` FieldEdit → T | `src/simulation/field_edit.py:539-540, 593-598, 446-466` | §5 (named-legal creator, `e_expl_sum`) |
+| 14 | `seal_tiles` close-T seed (object T ex nihilo) | `src/simulation/gamemap.py:1995-1997` | §4 (named; counted at P-E2b if nonzero) |
+| 15 | CUDA SL twin | `cpp/src/cuda_sl_advection.cu:262` | §2.1 / P-E1 |
+| 16 | CUDA 4c twin | `cpp/src/cuda_kick_compression.cu:250-253` | §2.4 / P-E4 |
+| 17 | CUDA temperature Pass 0-3 twins (incl. Pass-0 advection at `:224`) | `cpp/src/cuda_temperature.cu:104, 224, 266, 280, 297, 380` | §2.1.1/§2.2/§2.3 per pass |
+| 18 | CUDA combustion deposit twin | `cpp/src/cuda_combustion.cu:~495-503` | §2.2 |
+| 19 | CUDA resident orchestration | `cuda_eos_resident.cu` / `cuda_resident.h:105-125` | §2.4 / P-E4 |
+
+**Feeder planes** (become T via Pass-1): raycaster heat deposit +
+antisymmetric rad_net (`raycaster.cpp:500`, `cuda_raycaster.cu:118`) — §2.2;
+combustion bed heat (`combustion.h:369`, `cuda_combustion.cu:364`) — §2.2;
+payload `deposit_heat` weapons splash (`src/simulation/payloads.py:112-129`)
+— §5 named creator.
+
+**Implicit eth writers post-arc** (bulk-N at T≠0): trace-decay→N₂ credit
+`physics_engine.cpp:508-525` — DELETED at P-T0 (§2.6); FieldEdit
+atmosphere→O2/N₂ `field_edit.py:602-609` — §5 born-at-ambient; W3 water
+evacuation `physics_engine.cpp:785-812` — §5 mover rule; seal/unseal
+redistribution `gamemap.py:1966-1979` — §5 mover rule; ambient-ring N-clamp
+— §4/§5 boundary channel; combustion O2-sink/N₂-credit
+`combustion.cpp:762-772` — inside the named chemistry channel.
+
+**Non-writers verified:** `physics_engine.cpp` (orchestration),
+`raycaster.cpp`/`cuda_fire.cu` (read-only), `water_solver.cpp` (no thermal
+contact — steam boils off with zero thermal coupling), `fire_simulation.cpp`
+(plume→T shim deleted P-R2; smoke source deleted P-S1).

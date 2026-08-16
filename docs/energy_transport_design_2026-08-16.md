@@ -1,7 +1,17 @@
-# Energy-books arc — energy-conservative thermal transport (design v2, 2026-08-17)
+# Energy-books arc — energy-conservative thermal transport (design v2.1, 2026-08-17)
 
-**Status: v2 — all round-1 blockers resolved on paper; submitted to a round-2
-verification pass before build.** v1 (`bda08eb`) went to a 4-lens adversarial
+**Status: v2.1 — SURVIVED round-2 verification (verdict: survives-with-edits;
+all three MUST-EDITs folded below). Critique phase CLOSED per the skill;
+build begins at P-E0.**
+
+**v2→v2.1 changelog (round-2 folds):** §2.1.4 ts-face law given explicit
+per-face formulas (the v2 "receiver-priced" phrasing retired as a mint);
+ts exclusion from e build/recovery stated; L3 writer table committed
+(round-1 doc addendum); P-T0 scope gains the kick-reference Dalton family +
+bindings/test signature surface; `test_eos_p4_combustion.py` reclassified to
+P-T0; counter definitions pinned (law-independent brackets); conduction
+limiter fraction pinned ≤ 1/2; rail-observable xfail-with-owning-patch idiom
+stated; §2.4 mid-band claim softened to match the measurement plan. v1 (`bda08eb`) went to a 4-lens adversarial
 panel; verdicts + finding index: `energy_transport_critiques_round1_2026-08-16.md`
 (`6141cfc`). v2 folds every [ADOPT] disposition and Erik's post-panel rulings
 (2026-08-16→17 session, each marked `RULING`). Branch: `storm-damping`.
@@ -70,7 +80,10 @@ Inside the existing substep loop (`eos_solver.cpp:453-534`):
 2. **Build the transient energy accumulator** (int64 scratch, not synced):
    `e[i] = (int64)n_bulk_raw[i] · (int64)T_raw[i]`, `n_bulk = O2 + inert_N2`
    (the `gas_conservative` pair — post-0%-ruling this equals the Dalton
-   total, §2.6). Exact, unshifted. Range: per-cell e ≤ N_map·T_max; bench
+   total, §2.6). **ts cells are EXCLUDED from the e build** (their
+   `temperature[]` is the OBJECT's T, ruling A1 — e[ts] would be bogus) and
+   **from the recovery write** (the T-WRITE SITE 1/2 guard, `:491`, upheld:
+   the EOS never writes a ts tile's temperature). Exact, unshifted. Range: per-cell e ≤ N_map·T_max; bench
    ≈2e16, a 10⁴-ambient-count map 6.8e17 < 2⁶² — stated invariant
    N_cell < 2^30 raw with a debug assert (the divergence apply narrows to
    int32 unchecked, `bulk_transport.cpp:181`).
@@ -83,13 +96,26 @@ Inside the existing substep loop (`eos_solver.cpp:453-534`):
    like the mass pass itself: face values single-written, each read by two
    cells; int64 sums are order-immaterial, per-cell expression order
    transcribed from CPU (L2-11 — P-E3-class work does not re-derive this).
-4. **ts faces (RULING — rule (d)):** NO energy flux through any face whose
-   donor or receiver is a `thermal_solid` tile. Mass still moves; gas
-   arriving on an air-side receiver is priced at the receiver's own current
-   T (no eth change from that inflow). The forgone transfer accumulates in a
-   SIGNED counter `e_ts_residual`. The honest gas↔object convective exchange
-   (via the heat plane / Pass-1 fold) is the NAMED FUTURE UPGRADE — not
-   built this arc.
+4. **ts faces (RULING — rule (d), per-face formulas):** relative energy
+   never crosses a face touching a `thermal_solid` tile; mass still moves.
+   - **air→ts** (air-side donor): the donor is debited at its OWN
+     temperature — `e[donor] -= dq·T_rel[donor]` — which leaves the donor's
+     recovered T exactly invariant (no concentration mint as mass leaves);
+     the debited amount accumulates in the SIGNED counter `e_ts_residual`
+     (counted destruction; signed because cold gas carries negative
+     relative energy).
+   - **ts→air** (air-side receiver): mass arrives carrying ZERO relative
+     energy (`e[receiver]` unchanged) — the receiver dilutes toward ambient
+     on recovery. This is the §5 born-at-ambient class rule applied to
+     emergence from an object; the ts side holds no gas energy, so there is
+     nothing to debit and no residual term.
+   - **ts→ts:** no energy term (neither side holds gas energy).
+   The v2 phrasing "priced at the receiver's own current T" is RETIRED — it
+   would have held T constant while minting `dq·T_recv` from nothing.
+   Physical story: gas transiting an object sheds its excess relative heat
+   (counted in the ledger, not delivered to the object). The honest
+   gas↔object convective exchange (via the heat plane / Pass-1 fold) is the
+   NAMED FUTURE UPGRADE — not built this arc.
 5. **Recovery:** `T[i] = floordiv(e[i], n_bulk_new[i])`, floor division
    toward −∞ pinned by idiom `q = e/n; if (e % n != 0 && e < 0) --q`
    (identical C++/CUDA; n ≥ 1 so INT64_MIN/−1 unreachable; −n < e < 0
@@ -161,10 +187,11 @@ Constraints (the fourth added per L4-2/L1-2):
 1. Face-antisymmetric energy quantum ΔE_face (what leaves i enters j, exactly).
 2. Endpoint-local conversion (R2), floors counted in energy.
 3. One-way counted guards only.
-4. **Per-face |ΔE| ≤ a fixed fraction of the gap closed through the SMALLER
-   endpoint capacity** (the P-R4 `LIM_SHIFT`/A1.6 idiom) — restores the
-   discrete maximum principle the ΔT form had for free; without it a floored
-   thin endpoint closes 4× the gap per tick (past the f=2 divergence line).
+4. **Per-face |ΔE| ≤ a fixed fraction — pinned ≤ 1/2, the safe side of the
+   f=2 line — of the gap closed through the SMALLER endpoint capacity**
+   (the P-R4 `LIM_SHIFT`/A1.6 shift idiom, `cuda_raycaster.cu:263-264`
+   precedent) — restores the discrete maximum principle the ΔT form had for
+   free; without it a floored thin endpoint closes 4× the gap per tick.
 The exact current Pass-2 law is transcribed into P-E2a's spec before rewrite.
 Pass-3 cooling / sky / ambient pinning stay open by design but are named
 **SIGNED channels** in the ledger (L3-6: Pass-3 relaxes toward 0 from BOTH
@@ -181,8 +208,10 @@ Additions:
 
 - **RULING: trust gate as a dial** `n_work_ref` (config-plumbed; default
   0.25): fade factor = 0 for n < n_work_ref/2, linear from 0 at n_work_ref/2
-  to 1 at n_work_ref (hard-zero below half — kills the mid-band compounding
-  L1-7 found; N_ref power-of-two makes the fade exact integer arithmetic).
+  to 1 at n_work_ref (hard-zero below half — REDUCES the L1-7 mid-band fade,
+  0.6 → 0.2 at N≈0.15; it does not eliminate it — the residual is exactly
+  what the pinned-pocket variant measures; at the 0.25 default the
+  power-of-two reciprocal is exact).
   Input n = the existing `n_total_`/`d_ntot`/`K_ntot` plane — post-0% this
   IS the bulk sum; zero new reductions in any twin. Implementation:
   magnitude-first multiply (the sponge idiom, `eos_solver.cpp:1458-1462`) so
@@ -213,7 +242,17 @@ Additions:
   default 0.01) and `n_work_ref` (default 0.25); energy counters
   `eth_transport_delta`, `eth_compression_delta`, `e_wipe_sum` (signed),
   `e_floor_sum`, `e_ts_residual` (signed), `e_deposit_drop_sum` (both
-  deposit sites), `t_low_rail_hits` joins the rail list; the §5 inventory.
+  deposit sites), `n_active_flux`/`n_bulk_active_sum` (the active-flux
+  fraction §7's bound is scaled by), `e_expl_sum` (harness-level, at the
+  FieldEdit apply site), `t_low_rail_hits` joins the rail list; the §5
+  inventory. **Counter definitions (law-independent, pinned):**
+  `eth_transport_delta` = Σ_cells n_bulk·T over the 4c skip-set complement
+  (gas cells: !solid, !ts, !vacuum, !ring), sampled at the pinned bracket
+  [substep transport-block entry → after step-d flux (HEAD) / after
+  recovery (post-P-E1)], accumulated over substeps per tick;
+  `eth_compression_delta` = the same sum bracketed around the 4c loop.
+  Pure instrumentation, digest-inert; CPU lands at P-E0 (its gate: suite
+  failure set + bench digests byte-identical), CUDA twins ride P-E1.
 - **Unchanged:** mass transport arithmetic, EOS solve/kick, cool laws,
   Huggett anchors, the radiation law, digests infra (one declared move).
 
@@ -292,9 +331,11 @@ redesign (which moves to bulk-mass+ΔE injection, §2.6).
 - Combustion O2-sink/N₂-credit (`combustion.cpp:762-772`): inside the named
   chemistry channel.
 
-**T-writer table:** round-1 L3 WRITER TABLE adopted verbatim as the
+**T-writer table:** the L3 WRITER TABLE is COMMITTED as an addendum to
+`energy_transport_critiques_round1_2026-08-16.md` (round-2 fold — it must be
+readable by worktree subagents, not live in session transcript) and is the
 completeness oracle; every row is covered by a § of this doc (rows 3, 6, 13,
-14 gained coverage in v2). P-E2b's threshold inventory (§6 of v1, unchanged:
+14 gained coverage in v2). Explosions' counter is `e_expl_sum` (§2.5). P-E2b's threshold inventory (§6 of v1, unchanged:
 ignition stays temperature-based; no threshold may act on a temperature not
 backed by energy) verifies the CONSUMER side the same way.
 
@@ -304,12 +345,16 @@ Merge semantics: green gates commit to the arc branch; auto-continue applies
 within the branch; ONE merge to main after P-E5 HUMAN-TEST. Memory
 checkpoint at every boundary. Expected-red manifest: Appendix A, maintained
 per rung — "a parity red in the manifest is the rung's declared debt; any
-OTHER red is a stop."
+OTHER red is a stop." **Cross-rung red idiom:** P-E0's rail observable is
+xfail-with-owning-patch (owner P-E4): it stays a DECLARED red carried in
+EVERY intermediate rung's manifest (P-T0 through P-E2b) and flips strict at
+P-E4. `ledger_window.npz` is a regenerable audit artifact, NOT committed —
+P-E0 regenerates it via the audit §7 command.
 
 | # | patch | contents | mode | tier | oracle / gate | HUMAN-TEST |
 |---|---|---|---|---|---|---|
 | P-E0 | repro + instruments | hot-rail repro (dump anatomy; RED on HEAD: ΔP-spike/mint observable AND rail-counter observable, asserted SEPARATELY) + cold-rail window scenario + pinned N≈0.15 pocket variant + window-pocket N recovered from `ledger_window.npz` + the per-stage energy counters (`eth_transport_delta`, `eth_compression_delta`) landed AHEAD of the law change so P-E1's gate is measurable | subagent | Opus-class (defines the oracles) | all scenarios deterministic + committed; counters exported + ledger reads them; reds on HEAD documented | no |
-| P-T0 | trace 0% | `trace_mass_scale` retired from both Dalton sites + CUDA twins; decay→N₂ credit deleted; stale-key guards (P-S1 idiom); bench re-anchor (pressure shifts ≤2% where smoke was dense) | subagent | Sonnet 5 (subtractive, oracle: ledger + suite) | bulk-N creation stays 0 LSB; suite set-diff vs manifest; CPU↔CUDA tol 0 | no |
+| P-T0 | trace 0% | `trace_mass_scale` retired from ALL THREE Dalton families: (1) both live-step sites (`eos_solver.cpp:345-358`, `:561-574`) + CUDA twins (`cuda_eos_step.cu:190,507,583`, `cuda_eos_resident.cu:767`); (2) **the P6.4 kick-reference family** — `eos_kick_compression_reference` (`eos_solver.cpp:1402-1414`, sig `:1371`) + device twin (`cuda_kick_compression.cu:327,348`, `.h:66`) so the VERBATIM-replay contract holds; (3) the bindings/API surface (`bindings.cpp:1107-1147, 2129, 2242-2300`; `eos_solver.h:207-215, :484, :508`) + explicit call-sites (`tests/test_thermal_mass_axis.py:566,613`, `tests/cuda_thermal_mass_eos_check.py:160`, `tests/cuda_kick_check.py:71,318`). Decay→N₂ credit deleted (`physics_engine.cpp:498-525` + `bindings.cpp:2812` note); stale-key guards (P-S1 idiom); bench re-anchor — pre-registered expectation = the audit's pump-off row, regenerated (`storm_audit_2026-08-14.md:360` command) | subagent | Sonnet 5 (subtractive, oracle: ledger + suite) | bulk-N creation stays 0 LSB; suite set-diff vs manifest; CPU↔CUDA tol 0 incl. the kick-check pair | no |
 | P-E1 | energy transport, CPU+CUDA together | §2.1 complete: e-plane on applied fluxes, ts rule (d), recovery+guards, BOTH SL T-copier retirements, reference twin, resident twin, digest move, `cuda_p62`/`eos_sl_advect_reference` authorized rewrites | subagent | Opus-class | `eth_transport_delta` ≤ 0 bounded (counters, not seams) + active-fraction measured; O2 conservation unchanged; P-E0 mint observable GREEN (rail observable stays red by design); CPU↔CUDA tol 0 SAME PATCH; **anchor scorecard + flame-cell N histogram at this boundary** (MacCormack fallback decision point) | no |
 | P-E2a | conduction energy form | §2.3 with the 4-constraint set incl. the per-face limiter; Kirchhoff exact-0 re-gate; Pass-3/sky named signed channels; max-principle test rewrite (authorized) | subagent | Opus-class | face-antisymmetry exact; Kirchhoff 0 both backends; ledger; CPU↔CUDA tol 0 same patch | no |
 | P-E2b | deposit dial + inventories | `n_floor_heat` → dial default 0.01 (int64 recip path to 0.001); `n_work_ref` dial plumbing; Pass-1 drop counter; §5 T-threshold consumer inventory executed; margin/N-histogram re-measure | subagent | Sonnet 5 (counters+parity oracle; inventory is mechanical against L3's table) | lockstep tol 0; counters bounded; inventory table committed | no |
@@ -371,8 +416,17 @@ retired by the 0% + low-floor rulings. Round-1 panel record:
 
 ## Appendix A — expected-move manifest (starting point; maintained per rung)
 
-- **P-T0:** pressure-sensitive digests where smoke was dense (bench
-  re-anchor documents deltas); no parity reds expected.
+- **P-T0 (authorized rewrites):** `test_eos_p4_combustion.py` —
+  `test_trace_decay_credits_inert_n2_exactly` (`:236-269`) asserts the
+  deleted credit; the `:159-184` conservation helper's premise ("smoke
+  decays back in") dies with it. Signature-surface reds at the explicit
+  `trace_mass_scale` call-sites (`test_thermal_mass_axis.py:566,613`,
+  `cuda_thermal_mass_eos_check.py:160`, `cuda_kick_check.py:71,318`).
+  Pressure-sensitive digests where smoke was dense (bench re-anchor
+  documents deltas vs the regenerated pump-off row). Cosmetic:
+  `tools/eos_p5_bake.py:679` doc row, `test_ps1_smoke_roundtrip.py:8`
+  docstring. No parity reds expected once the kick-reference family moves
+  in the same patch.
 - **P-E1 (authorized rewrites):** `test_cuda_p62_sl_advection.py` +
   `cuda_p62_check.py` (3-field contract + PART-2 replay premise),
   `eos_sl_advect_reference` consumers, `digest_advect`/`digest_bulk_flux`
@@ -384,9 +438,10 @@ retired by the 0% + low-floor rulings. Round-1 panel record:
   `test_eos_p2_sealed_room_energy.py` (metric premise),
   `test_pf1a_radiation_books.py` (floor counters).
 - **Trajectory-coupled, must stay green or be re-derived:**
-  `test_eos_p4_combustion.py`, `test_temperature_ignition.py`,
-  `test_water_boil.py`, `test_continuous_o2_law.py`,
-  `test_pr3_capacity_law.py`, `test_thermal_mass_axis.py`,
+  `test_temperature_ignition.py`, `test_water_boil.py` (`:200-206` comment
+  goes stale, assert stays green; `:229-246` decay itself survives),
+  `test_continuous_o2_law.py`, `test_pr3_capacity_law.py`,
+  `test_thermal_mass_axis.py` (post its P-T0 signature fix),
   `test_fuel_fraction_axis.py`.
 - **Expected stable:** `test_bench_two_room.py`, `test_ps1_smoke_roundtrip.py`
   (bounded-above idiom — note P-T0 makes it strictly easier),
