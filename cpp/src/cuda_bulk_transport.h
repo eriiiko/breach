@@ -102,6 +102,12 @@ void bulk_flux_transport(
 // in B5's clamp — d_is_ambient (nullptr = space), n_amb (this plane's reservoir
 // value), and d_rail (this plane's int64 boundary_flux accumulator, signed
 // atomicAdd). All null/0 -> the byte-identical space path.
+// P-E1 (energy-books design §2.1.3): the two trailing int64 face planes, when
+// non-null, ACCUMULATE the APPLIED (post-limiter, post-scale_mag) per-face dq
+// — the CPU's stage-2c loop, as one kernel launched between B3 and B4. The
+// caller owns them and zeroes them once before the plane loop (the CPU zeroes
+// on entry because it owns the whole plane loop; same net contract).
+// nullptr -> dormancy by branch, the byte-identical legacy chain.
 void bulk_flux_plane_device(
     int32_t* d_N,
     const int32_t* d_wind_x, const int32_t* d_wind_y,
@@ -110,7 +116,42 @@ void bulk_flux_plane_device(
     int32_t* d_dq_e, int32_t* d_dq_s, int32_t* d_scale,
     int h, int w,
     const bool* d_is_ambient = nullptr, int32_t n_amb = 0,
-    unsigned long long* d_rail = nullptr);
+    unsigned long long* d_rail = nullptr,
+    int64_t* d_dqsum_e = nullptr, int64_t* d_dqsum_s = nullptr);
+
+// ===========================================================================
+// P-E1 — energy-conservative thermal transport, DEVICE twin (energy-books
+// design §2.1). The kernel-for-loop transcription of
+// bulk_flux_energy_transport_cached (bulk_transport.cpp): the same four pinned
+// stages, the same per-cell expression order (face order E, W, S, N — L2-11:
+// the gather form is single-writer-per-cell, so no atomics are needed for the
+// energy itself; only the VALUE-SUM counters use int64 atomicAdd, which is
+// order-free on two's complement).
+//
+// d_gas_planes : host array of `n_cons` DEVICE pointers, one per conservative
+//                plane, in the caller's cons order (ascending gi — the CPU
+//                sums in the same order; integer sums are order-free anyway).
+// n_amb_cons   : host array of `n_cons` reservoir values (ambient maps only).
+// d_rail       : host array of `n_cons` device rail pointers, or nullptr.
+// Scratch, caller-owned, all h*w unless noted: d_e / d_nb / d_dqsum_e /
+// d_dqsum_s (int64), d_dq_e / d_dq_s / d_scale (int32).
+// d_ecnt       : 5 int64 slots, ACCUMULATED into (caller memsets per tick):
+//                [0] e_ts_residual [1] e_wipe_sum [2] e_floor_sum
+//                [3] n_active_flux [4] n_bulk_active_sum.
+// ===========================================================================
+void bulk_flux_energy_transport_device(
+    int32_t* const* d_gas_planes, int n_cons,
+    int32_t* d_temperature,
+    const int32_t* d_wind_x, const int32_t* d_wind_y,
+    const bool* d_solid, const bool* d_is_vacuum, const bool* d_ts,
+    const int32_t* d_coeffE, const int32_t* d_coeffS,
+    int32_t t_min_q, int h, int w,
+    int64_t* d_e, int64_t* d_nb, int64_t* d_dqsum_e, int64_t* d_dqsum_s,
+    int32_t* d_dq_e, int32_t* d_dq_s, int32_t* d_scale,
+    unsigned long long* d_ecnt,
+    const bool* d_is_ambient = nullptr,
+    const int32_t* n_amb_cons = nullptr,
+    unsigned long long* const* d_rail = nullptr);
 
 // Backend selection (P6.1 gate). EOS P6.5: now CONSUMED by the engine
 // dispatch — PhysicsEngine::run_substeps routes eos.step to the GPU

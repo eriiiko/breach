@@ -187,6 +187,177 @@ __global__ void bulk_clamp(int32_t* __restrict__ N,
     }
 }
 
+// ===========================================================================
+// P-E1 kernels — the energy books (design §2.1). Each is the CPU loop of the
+// same name in bulk_transport.cpp, transcribed body-for-body.
+// ===========================================================================
+
+// ---- stage 2c: bank the APPLIED per-face dq (CPU's accum_dq loop) ----------
+__global__ void bulk_dq_accum(int64_t* __restrict__ dqsum_e,
+                              int64_t* __restrict__ dqsum_s,
+                              const int32_t* __restrict__ dq_e,
+                              const int32_t* __restrict__ dq_s, int n) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
+         i += gridDim.x * blockDim.x) {
+        dqsum_e[i] += (int64_t)dq_e[i];
+        dqsum_s[i] += (int64_t)dq_s[i];
+    }
+}
+
+// The participation predicate (CPU e_participates, verbatim).
+__device__ __forceinline__ bool e_part_dev(int i, const bool* solid,
+                                           const bool* ts, const bool* is_vacuum,
+                                           const bool* is_ambient) {
+    return !solid[i] && !ts[i] && !is_vacuum[i]
+           && !(is_ambient != nullptr && is_ambient[i]);
+}
+
+// ---- n_bulk accumulate (one plane per launch; the CPU's inner gi sum) ------
+__global__ void bulk_nb_accum(int64_t* __restrict__ nb,
+                              const int32_t* __restrict__ N, int n) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
+         i += gridDim.x * blockDim.x) {
+        nb[i] += (int64_t)N[i];
+    }
+}
+
+// ---- stage 1: e build ------------------------------------------------------
+__global__ void bulk_e_build(int64_t* __restrict__ e,
+                             const int64_t* __restrict__ nb,
+                             const int32_t* __restrict__ temperature,
+                             const bool* __restrict__ solid,
+                             const bool* __restrict__ ts,
+                             const bool* __restrict__ is_vacuum,
+                             const bool* __restrict__ is_ambient, int n) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
+         i += gridDim.x * blockDim.x) {
+        e[i] = e_part_dev(i, solid, ts, is_vacuum, is_ambient)
+             ? nb[i] * (int64_t)temperature[i]
+             : (int64_t)0;
+    }
+}
+
+// ---- stage 3: e apply, GATHER form (CPU face order E, W, S, N) -------------
+__global__ void bulk_e_apply(int64_t* __restrict__ e,
+                             const int64_t* __restrict__ dqsum_e,
+                             const int64_t* __restrict__ dqsum_s,
+                             const int32_t* __restrict__ temperature,
+                             const bool* __restrict__ solid,
+                             const bool* __restrict__ ts,
+                             const bool* __restrict__ is_vacuum,
+                             const bool* __restrict__ is_ambient,
+                             unsigned long long* __restrict__ cnt,
+                             int h, int w) {
+    const int n = h * w;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
+         i += gridDim.x * blockDim.x) {
+        if (!e_part_dev(i, solid, ts, is_vacuum, is_ambient)) continue;
+        const int y = i / w;
+        const int x = i % w;
+        const int64_t t_own = (int64_t)temperature[i];
+        int64_t de = 0;
+        int64_t resid = 0;
+        if (x < w - 1) {                       // EAST face of i
+            const int64_t q = dqsum_e[i];
+            if (q > 0) {
+                const int64_t phi = q * t_own;
+                de -= phi;
+                if (ts[i + 1]) resid += phi;
+            } else if (q < 0) {
+                if (e_part_dev(i + 1, solid, ts, is_vacuum, is_ambient))
+                    de += (-q) * (int64_t)temperature[i + 1];
+            }
+        }
+        if (x > 0) {                           // WEST face of i
+            const int64_t q = dqsum_e[i - 1];
+            if (q > 0) {
+                if (e_part_dev(i - 1, solid, ts, is_vacuum, is_ambient))
+                    de += q * (int64_t)temperature[i - 1];
+            } else if (q < 0) {
+                const int64_t phi = (-q) * t_own;
+                de -= phi;
+                if (ts[i - 1]) resid += phi;
+            }
+        }
+        if (y < h - 1) {                       // SOUTH face of i
+            const int64_t q = dqsum_s[i];
+            if (q > 0) {
+                const int64_t phi = q * t_own;
+                de -= phi;
+                if (ts[i + w]) resid += phi;
+            } else if (q < 0) {
+                if (e_part_dev(i + w, solid, ts, is_vacuum, is_ambient))
+                    de += (-q) * (int64_t)temperature[i + w];
+            }
+        }
+        if (y > 0) {                           // NORTH face of i
+            const int64_t q = dqsum_s[i - w];
+            if (q > 0) {
+                if (e_part_dev(i - w, solid, ts, is_vacuum, is_ambient))
+                    de += q * (int64_t)temperature[i - w];
+            } else if (q < 0) {
+                const int64_t phi = (-q) * t_own;
+                de -= phi;
+                if (ts[i - w]) resid += phi;
+            }
+        }
+        e[i] += de;
+        // VALUE sum -> signed int64 atomicAdd on two's complement (the
+        // cuda_combustion.cu:157 precedent): order-free, so the device total
+        // == the CPU sequential sum exactly.
+        if (resid != 0) atomicAdd(&cnt[0], (unsigned long long)resid);
+    }
+}
+
+// ---- stage 4: recovery T = floordiv(e, n_bulk_new) -------------------------
+__global__ void bulk_e_recover(int32_t* __restrict__ temperature,
+                               const int64_t* __restrict__ e,
+                               const int64_t* __restrict__ nb_new,
+                               const int64_t* __restrict__ dqsum_e,
+                               const int64_t* __restrict__ dqsum_s,
+                               const bool* __restrict__ solid,
+                               const bool* __restrict__ ts,
+                               const bool* __restrict__ is_vacuum,
+                               const bool* __restrict__ is_ambient,
+                               int32_t t_min_q,
+                               unsigned long long* __restrict__ cnt,
+                               int h, int w) {
+    const int n = h * w;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
+         i += gridDim.x * blockDim.x) {
+        if (!e_part_dev(i, solid, ts, is_vacuum, is_ambient)) {
+            // T-WRITE guard (ruling A1) + the vacuum/ring wipe moved here
+            // verbatim from the retired SL write (CPU twin, line for line).
+            if (!solid[i] && !ts[i]) temperature[i] = 0;
+            continue;
+        }
+        const int y = i / w;
+        const int x = i % w;
+        const int64_t n_new = nb_new[i];
+        const bool active =
+               (x < w - 1 && dqsum_e[i]     != 0)
+            || (x > 0     && dqsum_e[i - 1] != 0)
+            || (y < h - 1 && dqsum_s[i]     != 0)
+            || (y > 0     && dqsum_s[i - w] != 0);
+        if (active) {
+            atomicAdd(&cnt[3], (unsigned long long)(int64_t)1);
+            atomicAdd(&cnt[4], (unsigned long long)n_new);
+        }
+        if (n_new < (int64_t)1) {              // N_EPS = 1 raw count
+            if (e[i] != 0) atomicAdd(&cnt[1], (unsigned long long)e[i]);
+            temperature[i] = 0;
+            continue;
+        }
+        int64_t t_new = floordiv_q(e[i], n_new);
+        if (t_new < (int64_t)t_min_q) {
+            atomicAdd(&cnt[2],
+                (unsigned long long)((((int64_t)t_min_q) - t_new) * n_new));
+            t_new = (int64_t)t_min_q;
+        }
+        temperature[i] = (int32_t)t_new;
+    }
+}
+
 }  // namespace
 
 void bulk_flux_transport_cached(
@@ -321,7 +492,8 @@ void bulk_flux_plane_device(
         const int32_t* d_coeffE, const int32_t* d_coeffS,
         int32_t* d_dq_e, int32_t* d_dq_s, int32_t* d_scale,
         int h, int w,
-        const bool* d_is_ambient, int32_t n_amb, unsigned long long* d_rail) {
+        const bool* d_is_ambient, int32_t n_amb, unsigned long long* d_rail,
+        int64_t* d_dqsum_e, int64_t* d_dqsum_s) {
     const int n = h * w;
     const int block = 256;
     const int grid = (n + block - 1) / block;
@@ -332,12 +504,82 @@ void bulk_flux_plane_device(
     cuda_check(cudaGetLastError(), "scale launch (P6.5 chained)");
     bulk_scale_apply<<<grid, block>>>(d_dq_e, d_dq_s, d_scale, h, w);
     cuda_check(cudaGetLastError(), "scale-apply launch (P6.5 chained)");
+    // P-E1 stage 2c: bank the APPLIED dq — AFTER the limiter/scale_mag and
+    // BEFORE the divergence apply, exactly where the CPU banks it.
+    if (d_dqsum_e && d_dqsum_s) {
+        bulk_dq_accum<<<grid, block>>>(d_dqsum_e, d_dqsum_s, d_dq_e, d_dq_s, n);
+        cuda_check(cudaGetLastError(), "dq_accum launch (P-E1)");
+    }
     bulk_diverge<<<grid, block>>>(d_N, d_dq_e, d_dq_s, h, w);
     cuda_check(cudaGetLastError(), "diverge launch (P6.5 chained)");
     // BC: the ambient ring reset + rail (nullptr/0/nullptr = space path).
     bulk_clamp<<<grid, block>>>(d_N, d_solid, d_is_vacuum, n,
                                 d_is_ambient, n_amb, d_rail);
     cuda_check(cudaGetLastError(), "clamp launch (P6.5 chained)");
+}
+
+// ---- P-E1: the energy-books orchestration (header contract) -----------------
+// Four pinned stages, each a launch (or a short launch run) whose boundary IS
+// the CPU's loop boundary — the same argument that makes B1..B5 bit-identical.
+// Stage 2's per-plane chain is the UNCHANGED mass pass, so gas planes stay
+// byte-for-byte what they were before this patch.
+void bulk_flux_energy_transport_device(
+        int32_t* const* d_gas_planes, int n_cons,
+        int32_t* d_temperature,
+        const int32_t* d_wind_x, const int32_t* d_wind_y,
+        const bool* d_solid, const bool* d_is_vacuum, const bool* d_ts,
+        const int32_t* d_coeffE, const int32_t* d_coeffS,
+        int32_t t_min_q, int h, int w,
+        int64_t* d_e, int64_t* d_nb, int64_t* d_dqsum_e, int64_t* d_dqsum_s,
+        int32_t* d_dq_e, int32_t* d_dq_s, int32_t* d_scale,
+        unsigned long long* d_ecnt,
+        const bool* d_is_ambient, const int32_t* n_amb_cons,
+        unsigned long long* const* d_rail) {
+    const int n = h * w;
+    if (n <= 0) return;
+    const int block = 256;
+    const int grid = (n + block - 1) / block;
+    const size_t n8 = (size_t)n * sizeof(int64_t);
+
+    // ---- stage 1: e build (n_bulk PRE, then e = n_bulk*T) ------------------
+    cuda_check(cudaMemset(d_nb, 0, n8), "memset nb (pre)");
+    for (int k = 0; k < n_cons; ++k) {
+        bulk_nb_accum<<<grid, block>>>(d_nb, d_gas_planes[k], n);
+        cuda_check(cudaGetLastError(), "nb_accum (pre)");
+    }
+    bulk_e_build<<<grid, block>>>(d_e, d_nb, d_temperature, d_solid, d_ts,
+                                  d_is_vacuum, d_is_ambient, n);
+    cuda_check(cudaGetLastError(), "e_build");
+
+    // ---- stage 2: the mass flux, banking the APPLIED per-face dq ----------
+    cuda_check(cudaMemset(d_dqsum_e, 0, n8), "memset dqsum_e");
+    cuda_check(cudaMemset(d_dqsum_s, 0, n8), "memset dqsum_s");
+    for (int k = 0; k < n_cons; ++k) {
+        bulk_flux_plane_device(
+            d_gas_planes[k], d_wind_x, d_wind_y, d_solid, d_is_vacuum,
+            d_coeffE, d_coeffS, d_dq_e, d_dq_s, d_scale, h, w,
+            d_is_ambient, n_amb_cons ? n_amb_cons[k] : 0,
+            d_rail ? d_rail[k] : nullptr,
+            d_dqsum_e, d_dqsum_s);
+    }
+
+    // ---- stage 3: e apply (gather) -----------------------------------------
+    bulk_e_apply<<<grid, block>>>(d_e, d_dqsum_e, d_dqsum_s, d_temperature,
+                                  d_solid, d_ts, d_is_vacuum, d_is_ambient,
+                                  d_ecnt, h, w);
+    cuda_check(cudaGetLastError(), "e_apply");
+
+    // ---- stage 4: recovery (n_bulk POST, then T = floordiv(e, n)) ----------
+    cuda_check(cudaMemset(d_nb, 0, n8), "memset nb (post)");
+    for (int k = 0; k < n_cons; ++k) {
+        bulk_nb_accum<<<grid, block>>>(d_nb, d_gas_planes[k], n);
+        cuda_check(cudaGetLastError(), "nb_accum (post)");
+    }
+    bulk_e_recover<<<grid, block>>>(d_temperature, d_e, d_nb,
+                                    d_dqsum_e, d_dqsum_s,
+                                    d_solid, d_ts, d_is_vacuum, d_is_ambient,
+                                    t_min_q, d_ecnt, h, w);
+    cuda_check(cudaGetLastError(), "e_recover");
 }
 
 namespace {

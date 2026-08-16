@@ -21,12 +21,20 @@ Three gates:
   step-1-entry (wind, T) state, run the real tick, then replay the isolated
   advection on the snapshot with the solver's own schedule (dbg_last_n_sub)
   through BOTH the CPU reference and the GPU chain, asserting
-      ref_digest == EOSSolver.digest_advect == gpu_digest
+      ref_digest == gpu_digest
   and byte-equality of the post-advect fields — a full per-tick digest
   trajectory, CPU vs GPU, over the whole run. The scenario is asserted to
   actually drive advection hard (n_sub pins at N_SUB_MAX, multi-tile
-  displacements). Replaying the advection substeps back-to-back is exact:
-  the interleaved bulk flux (step 1d) neither reads nor writes u/T.
+  displacements).
+
+  P-E1 (energy-books arc, design §2.1.1/§2.1.6 — AUTHORIZED REWRITE): SL
+  advection is **u-only** now. The `.t` slot is retired (temperature rides
+  the conservative energy books in step 1d), so (a) the digests here are
+  over (wy, wx) alone, (b) the `== EOSSolver.digest_advect` leg is gone —
+  digest_advect now hashes T-after-recovery and is taken AFTER the flux
+  call, which an isolated advection replay cannot reproduce — and (c) a NEW
+  assertion replaces it: both twins must leave `temperature` byte-for-byte
+  untouched, which is the retirement itself, gated.
 
   PART 3 — the CUDA build's CPU path still reproduces the committed
   default-scenario golden (the s4a-check idiom; proves the P6.2 additions
@@ -219,7 +227,6 @@ def part2_trajectory() -> bool:
             dt,
         )
         n_sub = int(eos.dbg_last_n_sub)
-        dig_cpu = int(eos.digest_advect)
         max_n_sub = max(max_n_sub, n_sub)
         max_u_counts = max(max_u_counts,
                            int(np.abs(wx0).max()), int(np.abs(wy0).max()))
@@ -229,14 +236,17 @@ def part2_trajectory() -> bool:
                "perm": g.dyn_permeability}
         f_ref, dig_ref, f_gpu, dig_gpu = _run_pair(inp, dt, n_sub)
 
-        # The CPU reference must reproduce the REAL solver's digest_advect —
-        # proves both the input reconstruction and the reference itself.
-        if dig_ref != dig_cpu:
-            bad += 1
-            print(f"  tick {tick}: CPU ref != solver digest_advect "
-                  f"(ref={dig_ref:#018x} solver={dig_cpu:#018x} n_sub={n_sub})")
-        # The GPU chain must be bit-identical to the reference (and hence to
-        # the solver's own advection bytes).
+        # P-E1 (energy-books design SS2.1.1/SS2.1.6, AUTHORIZED REWRITE —
+        # Appendix A): the "ref_digest == EOSSolver.digest_advect" leg is
+        # DELETED. The premise it rested on ("the interleaved bulk flux
+        # neither reads nor writes u/T, so the advection substeps can be
+        # replayed back to back") died with the law change: step 1d now
+        # RECOVERS temperature from the energy books every substep, and
+        # digest_advect moved across the flux call to hash that recovered T.
+        # An isolated SL replay cannot reproduce it and must not pretend to.
+        # What survives — and is what this gate was always really for — is
+        # CPU-reference vs GPU-twin bit-identity of the U advection, on the
+        # real trajectory's per-tick step-1-entry snapshots.
         if dig_gpu != dig_ref:
             bad += 1
             print(f"  tick {tick}: GPU != CPU digest "
@@ -246,6 +256,15 @@ def part2_trajectory() -> bool:
                 bad += 1
                 mism = int(np.count_nonzero(f_ref[k] != f_gpu[k]))
                 print(f"  tick {tick}: {k} {mism} byte mismatch(es)")
+        # P-E1 positive assertion: SL advection is U-ONLY now. BOTH twins must
+        # leave `temperature` byte-for-byte as handed in — if either ever
+        # writes it again, the retired mint is back.
+        for k, twin in (("ref", f_ref), ("gpu", f_gpu)):
+            if not np.array_equal(twin["temperature"], t0):
+                bad += 1
+                mism = int(np.count_nonzero(twin["temperature"] != t0))
+                print(f"  tick {tick}: {k} SL twin WROTE temperature "
+                      f"({mism} cells) — the retired T-copy is back")
         if bad >= 10:
             print("  aborting after 10 divergences")
             break
@@ -262,9 +281,9 @@ def part2_trajectory() -> bool:
         print(f"  scenario too tame: peak |u| {max_u_counts / FP_ONE:.1f} m/s "
               f"< 30 m/s")
     if ok:
-        print(f"  {n_ticks} ticks bit-identical (per-tick digest_advect == CPU "
-              f"ref == GPU; peak |u| = {max_u_counts / FP_ONE:.1f} m/s, "
-              f"n_sub pinned at {max_n_sub}).")
+        print(f"  {n_ticks} ticks bit-identical (per-tick u-only digest, CPU "
+              f"ref == GPU, temperature untouched by both; peak |u| = "
+              f"{max_u_counts / FP_ONE:.1f} m/s, n_sub pinned at {max_n_sub}).")
     return ok
 
 

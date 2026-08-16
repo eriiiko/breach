@@ -87,6 +87,7 @@ struct EOSHostPrestage {
     int32_t c_local_q = 0;   // the c_LOCAL cap (kick; == dbg_last_c_local_q)
     int     n_sub     = 1;   // the substep schedule (== dbg_last_n_sub)
     int32_t dt_s_q    = 0;   // quantize(dt/n_sub) — the substep dt
+    int32_t t_min_q   = 0;   // quantize(T_MIN) — P-E1's recovery clamp (§2.1.5)
     // Per-tick host planes (H2D'd once by the caller).
     std::vector<int32_t> coeffE, coeffS;   // donor-cell face-coeff cache
     // Conservative-plane index list (the CPU's gi order preserved).
