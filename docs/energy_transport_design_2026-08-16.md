@@ -1,8 +1,23 @@
-# Energy-books arc — energy-conservative thermal transport (design v2.1, 2026-08-17)
+# Energy-books arc — energy-conservative thermal transport (design v2.2, 2026-08-17)
 
-**Status: v2.1 — SURVIVED round-2 verification (verdict: survives-with-edits;
-all three MUST-EDITs folded below). Critique phase CLOSED per the skill;
-build begins at P-E0.**
+**Status: v2.2 — round-2 verified (v2.1) and extended by two ruled additions
+(§2.7/§2.8) plus the cold-rail engine identification (§2.9). Both additions
+passed a focused two-lens critique (thermo + Q16/CUDA determinism); every
+finding is folded. Critique phase CLOSED; build in progress (P-E0, P-T0
+landed).**
+
+**v2.1→v2.2 changelog:** §2.7 reversible compression work — **hygiene, and the
+earlier "standing-wave refrigerator" attribution is RETRACTED** (the window's
+engine is §2.9); compression branch kept VERBATIM so the hot rail stays
+bit-identical and the sat_add wrap protection survives; expansion divides via
+a new shared `floordiv_q` FP_HD helper (plain `/` truncates toward zero and
+would MINT on sub-ambient cells — invisible to parity gates, ledger-only).
+§2.8 interior drag with heat counterparty as NEW patch P-E3 — per-TICK in
+step 4 post-cap (dissolving the substep-count trap), n-weighted int64 oracle
+counters, phantom-T guard, ts skip, rail-clip counted, dial default 0.0 +
+`k_drag_heat_frac` default 1.0 (RULING R2). §2.9 cold-rail engine identified
+(compression on negative game-T) and deferred to its own post-P-E5 patch
+(RULING R1). §6 gains P-E3 and two P-E4 gate rows; §7/§8/§9 amended.
 
 **v2→v2.1 changelog (round-2 folds):** §2.1.4 ts-face law given explicit
 per-face formulas (the v2 "receiver-priced" phrasing retired as a mint);
@@ -291,6 +306,221 @@ lose all this complexity."
   real bulk N₂ (detonation products) + ΔT directly; the visible smoke stays
   render-only. Better physics than promoted smoke at none of the cost.
 
+## 2.7 Reversible compression work (rides P-E4, same file/twins as the trust gate)
+
+**Motivation — hygiene, NOT the window fix.** The multiplicative update is not
+self-inverse: a full oscillation gives `T·(1+k)(1−k) = T·(1−k²)`, so an
+oscillating cell loses a proportional slice of T per cycle with no
+counterparty. That is real and worth removing. It is **not** the cold-rail
+window's amplifier — the earlier claim (v2.2 draft, and the orchestrator's
+verbal account to Erik) was WRONG and is retracted here. Measured refutation
+(audit §4.3 + P-E0 as-built): at damp 0 the alternating work is harmless
+(T_min −0.02); the window descent is monotonic and mostly sub-clamp; and
+`T·(1−k)` with k>0 moves a NEGATIVE game-T *toward* zero — it cannot drive
+−91 → −288.65. The window's true engine is §2.9.
+
+**Mechanism (asymmetric by design — the rounding is the point).** Let k be the
+work factor after the trust-gate fade and the ±T_WORK_CLAMP rail, w = |k|.
+
+- **Compression (k < 0): KEPT VERBATIM** — `dT = mul_q16(k, T);
+  T = sat_add_q16(T, −dT)`, exactly today's code. Two consequences, both
+  wanted: the hot rail stays **bit-identical to HEAD** (P-E0's measured
+  ×1.4972/tick expectations survive untouched, no re-measure), and the
+  `sat_add_q16` wrap protection that `eos-p3fix-thermal-ceiling` exists for is
+  retained rather than silently dropped. Do NOT reimplement this branch as
+  `mul_q16(T, FP_ONE+w)` — that is a 1-LSB-per-tick rounding change on the
+  branch this section promises is unchanged.
+- **Expansion (k > 0): the inverse** — `T = floordiv_q((int64)T << 16,
+  (int64)(FP_ONE + w))`, replacing `T·(1−k)`.
+- **k == 0 takes the expansion branch** (pinned; both are exact identity at
+  w=0 — `mul_q16(T, FP_ONE) = T`, `floordiv(T<<16, FP_ONE) = T` with zero
+  remainder — but an unpinned measure-zero branch is how twins drift on the
+  next edit).
+
+**`floordiv_q` is a new shared FP_HD helper in `fixed_point.h`, and its absence
+is a silent minter.** C++ and CUDA integer `/` truncate toward ZERO; on
+sub-ambient cells (T_rel to −289·65536) that rounds T *upward*, i.e.
+eth = ΣN·T_abs *increases* — a mint of exactly the class this arc kills. Both
+backends' `/` agree with each other, so **CPU↔CUDA parity gates cannot catch
+this; only the ledger can.** Helper (one transcription, shared with §2.1.5's
+recovery — not re-derived): `q = n / d; if ((n % d != 0) && ((n ^ d) < 0)) --q;`
+
+**Honest property claims (the draft over-claimed).**
+
+- The pair is exactly self-inverse in reals; in integers the compression branch
+  rounds its increment UP (mul_q16 floors a negative dT) while expansion
+  floors, so the biases partially cancel. Expected per-cycle residual: 0 in
+  compress-then-expand order, ≤1 LSB in expand-then-compress, one-way (never
+  above exact). **This is a MEASUREMENT, not an assertion** — P-E4's unit
+  oracle sweeps both orders, both signs of T, and w below/at the clamp, and
+  the doc records what was measured.
+- **"Absolute, not proportional" holds only for symmetric-w cycles.** Under
+  asymmetric oscillation a proportional term survives, ≈ ½(Σ_c k² − Σ_e k²)·T
+  (worked example: one compression at w=0.4 against two expansions at w=0.2
+  deletes 2.8%/cycle — versus 10.4% under the current law). Large gain, not
+  total; stated as such.
+- **No claim of better adiabatic fidelity.** Exact is `T·r^(γ−1)`; both
+  `(1−k)` and `1/(1+k)` match `exp(∓k)` only to first order, in opposite
+  directions. The virtue is reversibility, full stop.
+
+**Consequence needing its own gate: expansion cooling weakens ~33% at the
+clamp** (0.667 vs 0.5). Nothing in the suite pins the expansion rate
+numerically, so this is invisible unless we look. Required follow-ons: (a)
+`tests/test_air_boundary.py:820` asserts `t_max_phys_hits == 0` absolutely,
+and weaker expansion cooling moves that rail the **unsafe** direction — P-E4
+must re-verify it explicitly (contrast §2.4's trust gate, which moved it the
+safe way); (b) P-E4 carries no HUMAN-TEST, so **P-E5's play list gains "breach
+venting cold / rarefaction look"** — P-S1's blessed look was tuned under the
+old rate.
+
+**P-E4 gains a direct oracle** (no battery row can see this section
+otherwise): a unit test driving one cell with alternating ±div at fixed |k|,
+below and at the clamp, asserting the measured residual bound; plus the
+asymmetric-cycle figure recorded as a measurement.
+
+**Cost:** one emulated s64 divide per expansion-branch gas cell per tick (4c
+is per-TICK) — tens of µs at 256² on GPU; the CPU reference twin pays
+~0.2–0.5 ms. Warp divergence bounded (both arms short).
+
+**Counters:** semantics unchanged (one `work_clamp_hits` per railed cell); pin
+the single-compare form `if (w > work_clamp_q)` in all three twins (identical
+counts to today's exclusive pair; the verbatim-transcription contract is the
+safety story). Values still shift per §2.4's fade declaration.
+
+## 2.8 Interior momentum drag with heat counterparty (NEW patch P-E3, after P-E2b)
+
+**Motivation.** No interior momentum sink exists at shipped dials (audit
+headline 5); the undamped Helmholtz mode IS the storming. Damping *without* an
+energy destination is what created the 0.002–0.01 rectifier window — real
+viscosity deposits wave KE as heat, which makes a damping dial safe at every
+value instead of only above a threshold.
+
+**Placement — PER TICK, in the step-4 kick loop, after the |u| cap, before the
+store.** The draft said "kick loop per substep"; that is self-contradictory —
+the kick runs once per tick (`eos_solver.cpp:618-724`), the substep loop
+(`:473`) is advection-only. Correcting placement **dissolves** the kd_sub
+question: no per-substep factor, no n_sub dependence (n_sub varies 1–8 per
+tick with CFL state, so any per-substep form would make total damping depend
+on flow speed and create cliffs at substep-count boundaries), and critically
+**no `pow`** — which would have been the codebase's first scalar fold not
+built from IEEE-exact ops, a cross-machine desync hazard. Follow the absorb
+precedent: `kd_q = quantize(k_drag · dt)` folded once per tick beside the
+other scalars. Post-cap placement bounds the deposit (pre-cap, u can
+transiently sit at the RAD_SAFE guard ≈16384 m/s and one tick could reach
+T_MAX_PHYS). Downstream, 4c then sees dragged velocities — deterministic, and
+the direction that cooperates with the storm fix.
+
+**Velocity update.** Component-wise magnitude-first shrink (`u ← u·(1−kd_q)`,
+the sponge idiom `eos_solver.cpp:1458-1462`). Load-bearing beyond style:
+component-wise magnitude-first makes `|u_old|² − |u_new|² ≥ 0`
+**structurally**, so the deposit can never go negative from rounding and needs
+no clamp and no signed term in the oracle. An implementer who "improves" this
+to a magnitude-based scale silently reintroduces that term — the reason is
+recorded here, and a debug assert is cheap.
+
+**Heat deposit.** `ΔE_cell = (|u_old|² − |u_new|²) / 2` in ledger units;
+`ΔT = k_drag_heat_frac · ΔE_cell / c_v`, into the same cell's T. Same-cell is
+right for a collocated grid (shear heating at a door neck is physically
+placed).
+
+- **`k_drag_heat_frac` is a new dial, default 1.0 (RULING R2, Erik
+  2026-08-17).** Rationale: Q16 game units put air's heat capacity ~700× below
+  physical (c_v = 1 by convention), so a fully honest deposit runs ~700×
+  physical — at k_drag 0.02 a sustained 20 m/s neck flow deposits ~96
+  game-deg/s into neck cells, which can reach ignition-relevant temperatures
+  under long venting. Default 1.0 keeps the conservation oracle EXACT through
+  every gate; Erik sweeps the fraction at P-E5 (physical-air anchor ≈0.0014).
+  Any non-deposited remainder is a **counted, named** destruction channel
+  `e_drag_drop_sum` (R3-legal).
+- **Arithmetic:** |u|² is int64-safe post-cap (≤ 2·(6.55e7)² ≈ 8.6e15), but ΔT
+  at c_v=1 can exceed int32 (a full stop from 1000 m/s is ~6.55e10 raw) — keep
+  int64 until a **saturating** narrow, then apply the rails.
+- **Phantom-T guard:** skip the T-write when `n_bulk < 1 raw count` (foregone
+  energy ≈0, counted anyway). Without it the deposit writes full ΔT into
+  evacuated cells where the books balance trivially (0 = 0) while ignition
+  thresholds read the number — precisely the "temperature not backed by
+  energy" pattern §5 forbids.
+- **ts cells:** the kick's skip set lacks `ts`, but 4c skips it (ruling A1 —
+  the EOS may not write a thermal_solid's temperature). Pinned: **skip both
+  the drag and the deposit at ts cells**, so the oracle stays exact with no
+  new residual term.
+- **Order:** deposit lands BEFORE 4c, identically in all twins.
+
+**Oracle (exact, at the drag site).** Two int64 per-tick counters accumulated
+inside the drag loop, both **n-weighted** (raw ΔT is not comparable to KE):
+`ke_drag_removed += n·(u_old² − u_new²)` and `e_drag_deposit += n·ΔT_applied`,
+with the product shifted inside (`n·(Δu² >> 16) >> 16`) — the naive raw
+product reaches ~2^70 and overflows int64 before summation. Per-tick reset
+(`PER_TICK_COUNTERS` idiom). Identity asserted per tick:
+
+`ke_removed = 2·c_v·(e_deposit + e_drag_drop + e_drag_rail_clipped) ± Σ_active n·LSB_T·2c_v`
+
+The rail-clip term is NOT optional bookkeeping: with c_v=1 a capped jet
+reaches T_MAX_PHYS in ~14 ticks, so clipping is an expected regime, and every
+clipped LSB is KE destroyed without counterparty unless counted.
+
+**Dormancy.** Dial default 0.0 ⇒ mechanism ships silent and digests must be
+byte-identical. Branch on the **quantized** fold (`if (kd_q > 0)`,
+dormancy-by-branch precedent) — not the float, since k_drag = 1e-6 quantizes
+to 0 and a float-keyed branch would disagree about which code runs. P-E3
+carries a P-E0-style inertness gate: suite failure set + bench digests
+pre/post at default 0.0, run twice.
+
+**Twins:** all four kick sites — live `step()`, `eos_kick_compression_reference`
+(the P6.4 verbatim-replay contract), `cuda_kick_compression.cu` K1, and the
+resident path. K1 today takes neither `temperature` nor `ts`; its signature
+grows (own-cell T write from K1 is race-free — K2 reads only neighbour u).
+`KickScalarFolds` gains kd_q; the `d_cnt` D2H block grows 5 → ~8 slots (an ABI
+edit touching the reference signature, the .cu slot comments, bindings, and
+`cuda_kick_check.py` — named so it isn't discovered late). int64 `atomicAdd`
+on two's-complement is exact and order-free — the right tool for value sums.
+
+**Gates.** Window battery (damp 0.005, strip 0.5 restored, k_drag 0.02
+override) expected CLEAN — **stated WITHOUT any dependence on §2.7, which
+lands one rung later at P-E4.** Justification is measured, not hoped: the
+audit's damped-safe row (damp 0.02, strip 0.5) was clean under the current
+law, and k_drag 0.02 is a strictly stronger sink than wave_absorb 0.02
+(A@0.02 ≡ k_drag 0.0067, audit §5B). The forbidden-band config load-warn
+tripwire rides along. CPU+CUDA same patch.
+
+**Feel at 0.02 (for P-E5's brief).** Free-momentum e-fold ≈2.1 s: room-scale
+sloshing and quiet-room drift die within seconds; smoke hangs sooner; blast
+pushback at range softens (~18% KE over a 10-tick flight). Pressure-DRIVEN
+flows survive at a terminal velocity where kick balances drag — breach suction
+and fire convection persist with softened transients, plus the neck heating
+above. **P-E5 play list gains "door-neck temperature under sustained venting"
+as its own row.**
+
+## 2.9 The cold-rail engine — identified, and deliberately deferred (RULING R1)
+
+**What it actually is.** Step 4c multiplies **ambient-relative** T. Below
+ambient (T_rel < 0) the compression branch `×(1+|k|)` makes a cold cell
+COLDER: compression freezes sub-ambient gas. The window's pocket is dense
+(P-E0 measured n_bulk 1.7–9.3 — sustained convergence, k<0), so this branch is
+exactly what drives −91 → −288.65 → the T_MIN floor, after which the pinned
+hull conducts in for free and the kick converts the standing pressure deficit
+to wind. This is the §8 game-T-vs-T_abs gap not merely omitting physics but
+**inverting** it below ambient.
+
+**The honest fix, specified for later:** run the (reversible) work on absolute
+temperature — `T_new = (T + 290)·(1±w) − 290` — so compression warms
+sub-ambient cells and ambient air finally heats under compression at all,
+restoring the missing acoustic thermalization the §8 bound names.
+
+**RULING R1 (Erik, 2026-08-17): NOT in this arc.** It re-opens a ruled
+accepted gap mid-arc and is feel-adjacent everywhere (breach rarefaction
+becomes genuinely cold — ~97 game-deg at the clamp vs 0 today — and venting
+acoustics change). It lands as **its own short designed patch immediately
+after P-E5**, with its own critique round and its own HUMAN-TEST, back-to-back
+with the recalibration Erik is doing anyway. Within THIS arc the window dies
+operationally via k_drag (§2.8, measured basis above) and the engine is
+documented here as the sharpened form of the §8 gap.
+
+**Consequence for the cold-rail accepted-gap question:** it is no longer
+"accept a mystery." P-E4's window battery re-run measures whether the loop is
+gone in practice; §7's window-row expectations are set from that measurement,
+and §2.9 names the residual mechanism precisely with its scheduled fix.
+
 ## 3. Q16.16 arithmetic and determinism
 
 Ranges restated from map inventory (§2.1.2); floor-div idiom pinned
@@ -316,7 +546,11 @@ radiative deposit (chemistry); **explosions** — RULING: `wave_source`
 FieldEdit ΔT writes (`field_edit.py:539-540, 446-466`) and payload
 `deposit_heat` (`payloads.py:112-129`) are legal creators, energy = N·ΔT
 counted at the write site; semantics unchanged until the queued explosive
-redesign (which moves to bulk-mass+ΔE injection, §2.6).
+redesign (which moves to bulk-mass+ΔE injection, §2.6). **Drag deposit
+(§2.8, from P-E3)** — a CONVERTER, not a true creator: its source is the
+kick's unpaid pressure work (the half-coupled gap, §8), and it is counted at
+the drag site by `e_drag_deposit` / `e_drag_drop_sum` /
+`e_drag_rail_clipped`.
 
 **Mass writers (class rules):**
 - Trace-decay→N₂ credit: DELETED (§2.6).
@@ -358,10 +592,14 @@ P-E0 regenerates it via the audit §7 command.
 | P-E1 | energy transport, CPU+CUDA together | §2.1 complete: e-plane on applied fluxes, ts rule (d), recovery+guards, BOTH SL T-copier retirements, reference twin, resident twin, digest move, `cuda_p62`/`eos_sl_advect_reference` authorized rewrites | subagent | Opus-class | `eth_transport_delta` ≤ 0 bounded (counters, not seams) + active-fraction measured; O2 conservation unchanged; P-E0 mint observable GREEN (rail observable stays red by design); CPU↔CUDA tol 0 SAME PATCH; **anchor scorecard + flame-cell N histogram at this boundary** (MacCormack fallback decision point) | no |
 | P-E2a | conduction energy form | §2.3 with the 4-constraint set incl. the per-face limiter; Kirchhoff exact-0 re-gate; Pass-3/sky named signed channels; max-principle test rewrite (authorized) | subagent | Opus-class | face-antisymmetry exact; Kirchhoff 0 both backends; ledger; CPU↔CUDA tol 0 same patch | no |
 | P-E2b | deposit dial + inventories | `n_floor_heat` → dial default 0.01 (int64 recip path to 0.001); `n_work_ref` dial plumbing; Pass-1 drop counter; §5 T-threshold consumer inventory executed; margin/N-histogram re-measure | subagent | Sonnet 5 (counters+parity oracle; inventory is mechanical against L3's table) | lockstep tol 0; counters bounded; inventory table committed | no |
-| P-E4 | trust gate | §2.4 in the three step-4c twins + folds + resident; hard-zero-below-half fade | subagent | Sonnet 5 (parity oracle) | lockstep tol 0; P-E0 rail observable GREEN; N≈0.15 variant measured + recorded | no |
-| P-E5 | recal + bless | `fire_tune_loop` scorecard vs pre-arc; storm-ledger battery (all rows; rails bounded, counters within derived bounds); canon fold + archive | inline (Erik + orchestrator) | Opus-class | **HUMAN-TEST: Erik plays** — blowup level, two-room in-game, space/venting map, smoke/fire look, `temperature_overlay` (T-key; phantom max-white gone = correct, edge softening = §9 fallback trigger), explosion/plasma splash into blast-evacuated cells, water-quench steam burst, smother-then-vent | **YES — merge gate** |
+| P-E3 | interior drag + heat counterparty | §2.8 complete: per-tick drag in step 4 post-cap (all four kick twins), component-wise magnitude-first shrink, same-cell deposit with `k_drag_heat_frac`, phantom-T guard, ts skip, n-weighted int64 oracle counters, `k_drag`/`k_drag_heat_frac` dials + forbidden-band load-warn tripwire | subagent | Sonnet 5 (hard conservation oracle) | drag identity exact per tick (§2.8) incl. rail-clip + drop terms; **dormancy inertness at default 0.0** (suite set + bench digests byte-identical, twice); window battery clean at k_drag 0.02 **WITHOUT depending on §2.7**; CPU↔CUDA tol 0 same patch | no |
+| P-E4 | trust gate **+ §2.7 reversible work** | §2.4 in the three step-4c twins + folds + resident (hard-zero-below-half fade); §2.7 expansion-branch inverse via the shared `floordiv_q` helper, compression branch verbatim | subagent | Sonnet 5 (parity oracle) | lockstep tol 0; P-E0 rail observable GREEN; N≈0.15 variant measured + recorded; **§2.7 unit oracle** (alternating ±div, both cycle orders, both signs of T, below/at clamp — measured residual bound recorded); **explicit re-verification of `test_air_boundary.py:820`'s absolute `t_max_phys_hits == 0`** (weaker expansion cooling moves that rail the UNSAFE direction); window battery re-run → sets §7's window-row expectations | no |
+| P-E5 | recal + bless | `fire_tune_loop` scorecard vs pre-arc; storm-ledger battery (all rows; rails bounded, counters within derived bounds); canon fold + archive | inline (Erik + orchestrator) | Opus-class | **HUMAN-TEST: Erik plays** — blowup level, two-room in-game, space/venting map, smoke/fire look, `temperature_overlay` (T-key; phantom max-white gone = correct, edge softening = §9 fallback trigger), explosion/plasma splash into blast-evacuated cells, water-quench steam burst, smother-then-vent, **breach venting cold / rarefaction look** (§2.7 weakens expansion cooling ~33% at the clamp), **door-neck temperature under sustained venting** (§2.8), **the `k_drag` / `k_drag_heat_frac` sweep** (Erik picks the shipped values) | **YES — merge gate** |
 
-(P-E3 dissolved into P-E1/P-E2a per L4-1. Patch IDs otherwise kept.)
+(P-E3 was dissolved at v2.1 per L4-1; v2.2 REBORN it as the drag patch —
+different contents, same slot position after P-E2b. The T_abs work form
+(§2.9) is a separate patch queued immediately AFTER P-E5, with its own
+design + critique round + HUMAN-TEST.)
 
 ## 7. Ledger acceptance (measured by counters + `tools/storm_ledger.py`)
 
@@ -371,20 +609,33 @@ N≈0.15-pocket rows), after P-E4:
   scaled by the MEASURED active-flux fraction (was +7,805 unbounded);
 - conduction: face-antisymmetric exact; global drift = counted floor terms;
 - creators: only the §5 named channels, each counter-attributed;
-- rails: `t_max_phys_hits = 0` on baseline/damped rows; window + pocket rows
-  per the P-E0 measurements (bounded + counted; if the measured window
-  pocket sits above the trust band, the residual loop goes to Erik as a
-  measured accepted-gap ruling before P-E5);
+- rails: `t_max_phys_hits = 0` on baseline/damped rows; **window-row
+  expectations are SET FROM P-E4's measured battery re-run, not asserted in
+  advance** (§2.9 — P-E0 measured the window pocket at n_bulk 1.7–9.3, far
+  above the trust band, so `n_work_ref` cannot bound that loop; k_drag is
+  what closes it operationally and the measurement says by how much);
+- **drag identity** (§2.8) holds every tick on every row carrying
+  `k_drag > 0`: `ke_removed = 2·c_v·(e_deposit + e_drag_drop +
+  e_drag_rail_clipped)` within the stated per-cell LSB slack;
 - eth estimator frozen across the arc (harness-level Σ N_bulk·T_abs — the
   ledger's existing definition, which the arc makes exactly right).
 
 ## 8. ACCEPTED GAPS (decisions, not findings)
 
-- KE↔eth uncoupled (kick creates KE; 4c changes eth) — rails + trust dial
-  bound abuse; ledger names it.
+- KE↔eth **HALF-coupled** (amended v2.2): the kick still mints KE with no eth
+  debit, and §2.8's drag now launders that mint into eth. Bounded by
+  k_drag·KE and small at bench scale (EOS KE injection 146–286 per 200 s vs
+  +38k eth elsewhere, audit §4 table), but it is a new positive-feedback path
+  at blast scale and is named here rather than discovered later. The kick-side
+  debit remains the open half.
 - **Compression work multiplies game-T, not T_abs** — bound
-  |err| ≤ (γ−1)·|div·dt|·290·N per cell-tick; the missing acoustic
-  thermalization is named (L1-6); honest fix rides the KE↔eth reform.
+  |err| ≤ (γ−1)·|div·dt|·290·N per cell-tick. **SHARPENED + SCHEDULED at
+  v2.2:** below ambient this does not merely omit physics, it INVERTS the sign
+  (compression freezes cold gas) and is the cold-rail window's engine — see
+  §2.9. No longer open-ended: the T_abs form is a queued patch immediately
+  after P-E5 (RULING R1).
+- §2.7's per-cycle one-way residual (≤1 LSB expected, measured at P-E4) — a
+  bounded, named integer ratchet replacing an unbounded proportional leak.
 - Traces carry no thermal energy — now trivially true (0% ruling).
 - Object pore gas not separately modeled (ruling A3); ts rule (d) residual
   counted; convective-exchange upgrade named, not built.
@@ -396,8 +647,11 @@ N≈0.15-pocket rows), after P-E4:
 
 ## 9. Out of scope
 
-Damping (audit A/B/C — parked; this arc removes the explosion tail, not the
-ring); golden re-bless (deferral stands; new fuel-bearing golden at blessed
+Damping as a bare feel dial (audit A/B/C) — **superseded within this arc by
+§2.8**, which builds the same sink WITH an energy counterparty (a bare
+`wave_absorb` raise remains available but is no longer the plan); the T_abs
+compression-work form (§2.9 — queued as its own designed patch immediately
+after P-E5, not out of scope so much as out of THIS arc); golden re-bless (deferral stands; new fuel-bearing golden at blessed
 dials); the explosive redesign (brief note §2.6 queued to its own arc);
 MacCormack/BFECC (named fallback; decision at the P-E1 boundary, before any
 further CUDA work); recorder/RL sequencing — this arc lands BEFORE any
