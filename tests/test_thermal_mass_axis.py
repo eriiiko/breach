@@ -563,7 +563,7 @@ def test_eos_step4c_does_not_write_temperature_on_a_thermal_solid():
     args = dict(dt=1.0 / 24.0, c_local_q=300 * FP_ONE, c_max=300.0, dx=1.0 / 3.0,
                 adiabatic_index=1.4, absorb_strength=8.0, n_floor_solver=1e-3,
                 t_min=-289.0, t_work_clamp=0.5, t_max_phys=16000.0,
-                u_max=1000.0, trace_mass_scale=0.02)
+                u_max=1000.0)   # trace_mass_scale arg RETIRED (P-T0)
 
     a = (wx0.copy(), wy0.copy(), T0.copy())
     b = (wx0.copy(), wy0.copy(), T0.copy())
@@ -610,7 +610,7 @@ def test_eos_furniture_free_identity_at_the_replay_boundary(entry):
         args = dict(dt=1.0 / 24.0, c_local_q=300 * FP_ONE, c_max=300.0,
                     dx=1.0 / 3.0, adiabatic_index=1.4, absorb_strength=8.0,
                     n_floor_solver=1e-3, t_min=-289.0, t_work_clamp=0.5,
-                    t_max_phys=16000.0, u_max=1000.0, trace_mass_scale=0.02)
+                    t_max_phys=16000.0, u_max=1000.0)  # trace_mass_scale RETIRED (P-T0)
         a = (wx0.copy(), wy0.copy(), T0.copy())
         b = (wx0.copy(), wy0.copy(), T0.copy())
         da = bp.eos_kick_compression_ref(a[0], a[1], a[2], p_new, gas, cons,

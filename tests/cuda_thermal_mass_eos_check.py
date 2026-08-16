@@ -156,8 +156,8 @@ def part1_isolated() -> bool:
             args = dict(dt=1.0 / 24.0, c_local_q=int(300 * FP_ONE),
                         c_max=300.0, dx=1.0 / 3.0, adiabatic_index=1.4,
                         absorb_strength=8.0, n_floor_solver=1e-3, t_min=-289.0,
-                        t_work_clamp=0.5, t_max_phys=16000.0, u_max=1000.0,
-                        trace_mass_scale=0.02)
+                        t_work_clamp=0.5, t_max_phys=16000.0, u_max=1000.0)
+                        # trace_mass_scale arg RETIRED (P-T0)
             n_cfg += 1
             A = (wx.copy(), wy.copy(), t.copy())
             B = (wx.copy(), wy.copy(), t.copy())

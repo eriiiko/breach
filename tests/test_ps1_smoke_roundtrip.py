@@ -5,7 +5,8 @@ docs/storm_audit_2026-08-14.md §4.2).
 The storm audit found a mass/pressure pump: fire's ex-nihilo smoke scatter
 (`fire_simulation.cpp`, pre-P-S1 `smoke[nbr] += smoke_emission*dt*I`) fed
 UNBACKED counts into the trace `smoke` plane every tick a fire tile was lit;
-the P4 decay->inert_N2 credit (`physics_engine.cpp`, decisions #12 v2.1) then
+the P4 decay->inert_N2 credit (`physics_engine.cpp`, decisions #12 v2.1,
+DELETED at P-T0 — energy-books arc, design §2.6, the trace 0% ruling) then
 converted that unbacked trace mass into full-pressure-weight bulk N2 — two
 individually-defensible rules composing into a real injection bug (audit
 §4.2: +125.2 bulk-N counts / 200 s in a sealed two-room bench). P-S1 deletes
@@ -13,8 +14,11 @@ the scatter (fire_simulation.cpp + its CUDA mirror cuda_fire.cu); combustion
 soot (`combustion.cpp`'s `soot_yield` channel) is now the ONE fire-smoke
 source, and it is honest by construction: `SOOT[s] += soot; N2[s] +=
 burn_dep - soot` is an exact Dalton split of `burn_dep` (no rounding loss
-across the pair), and decay's credit is the same local, exact transfer
-(`gas_slice[i] -= lost; n2_slice[i] += lost`, same cell, same tick).
+across the pair). (Historical note: at P-S1 time, decay's credit was ALSO
+an exact local transfer, `gas_slice[i] -= lost; n2_slice[i] += lost`, same
+cell same tick — P-T0 deleted the credit half of that transfer outright,
+so decay now only ever removes trace mass; see test_eos_p4_combustion.py's
+`test_trace_decay_credits_nothing_to_inert_n2`.)
 
 THE ORACLE. With source A gone, the only things left that can move
 `gmap.gas`'s total AT ALL are (a) the bulk O2/N2 donor-cell flux — exactly
@@ -29,8 +33,9 @@ remove a fractional count, never add one) — the same reason
 claim bit-exact transport. So the honest, correct invariant here is
 BOUNDED-ABOVE, not bit-exact equality — the same idiom
 `test_e2e_1_sealed_room_fire_self_starves`'s `_o2n2_total` already uses
-("bounded ABOVE by its starting value... without being strictly monotonic").
-Measured on this scenario: with source A deleted, a 300-tick sustained burn
+("strictly bounded above by its starting value" post-P-T0 — the credit that
+used to make it non-monotonic is gone). Measured on this scenario: with
+source A deleted, a 300-tick sustained burn
 drifts DOWN by <=2400 LSB out of a ~3.1M-count room (the honest transport
 decay); with source A alive, the SAME scenario mints +5244 LSB on the very
 first tick and +617761 by tick 120 — three orders of magnitude apart, and

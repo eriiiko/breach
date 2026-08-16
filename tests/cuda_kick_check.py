@@ -68,7 +68,8 @@ FP_ONE = 65536
 CONSTS = dict(
     c_max=300.0, dx=1.0 / 3.0, adiabatic_index=1.4, absorb_strength=8.0,
     n_floor_solver=1e-3, t_min=-289.0, t_work_clamp=0.5,
-    t_max_phys=16000.0, u_max=1000.0, trace_mass_scale=0.02,
+    t_max_phys=16000.0, u_max=1000.0,
+    # trace_mass_scale key RETIRED (P-T0, design §2.6)
 )
 
 COUNTER_NAMES = ("u_clamp", "u_max", "work_clamp", "energy_floor", "t_max_phys")
@@ -315,7 +316,8 @@ def part2_trajectory() -> bool:
         n_floor_solver=float(eos.N_FLOOR_SOLVER),
         t_min=float(eos.T_MIN), t_work_clamp=float(eos.T_WORK_CLAMP),
         t_max_phys=float(eos.T_MAX_PHYS), u_max=float(eos.U_MAX),
-        trace_mass_scale=float(eos.trace_mass_scale),
+        # trace_mass_scale key RETIRED (P-T0, design §2.6) — the EOSSolver
+        # member is gone; eos.trace_mass_scale no longer exists to read.
     )
     trace_planes = [gi for gi in range(g.gas.shape[0])
                     if not bool(g.gases.conservative[gi])]
