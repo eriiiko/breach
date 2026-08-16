@@ -294,6 +294,12 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // path AND resident path. `solid` is still handed to the kernel — it is
         // the documented nullptr fallback for the mask — but no longer selects
         // the medium there, exactly as on the CPU side below.
+        //
+        // P-E2a: the GPU pass fills a local 6-slot block which is then folded
+        // into the solver's own accumulators below the call — the same
+        // "backend-agnostic telemetry" idiom t_max_phys_hits / t_low_rail_hits
+        // already use here.
+        int64_t cond_counters[breach_cuda::TEMPERATURE_ENERGY_SLOTS] = {0};
         this->temperature.t_max_phys_hits += breach_cuda::temperature_step(
             temperature_mut, heat, heat_inv_shift, face_shift,
             solid, is_vacuum, atmosphere, n_bulk_.data(),
@@ -317,7 +323,17 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             // the diagnostic regardless of backend.
             &this->temperature.t_low_rail_hits,
             // P-R4: the SIGNED radiation fold, on the GPU twin too.
-            rad_net);
+            rad_net,
+            // P-E2a: the six energy counters, folded into the SAME solver
+            // fields the CPU path increments — one set of books regardless of
+            // backend. Slot order is pinned by cuda_temperature.h.
+            cond_counters);
+        this->temperature.e_cond_trunc_sum += cond_counters[0];
+        this->temperature.e_cond_cap_sum   += cond_counters[1];
+        this->temperature.cond_limit_hits  += cond_counters[2];
+        this->temperature.e_cool_sum       += cond_counters[3];
+        this->temperature.e_vac_wipe_sum   += cond_counters[4];
+        this->temperature.e_ring_pin_sum   += cond_counters[5];
     } else
 #endif
     {

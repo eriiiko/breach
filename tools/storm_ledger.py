@@ -171,20 +171,33 @@ PER_TICK_COUNTERS = ("eos.eth_transport_delta", "eos.eth_compression_delta",
 
 def counters(runner):
     out = {}
-    for holder, names in (
-            (runner.eos, ("u_clamp_hits", "u_max_hits", "work_clamp_hits",
-                          "energy_floor_hits", "t_max_phys_hits",
-                          "eth_transport_delta", "eth_compression_delta",
-                          # P-E1: rule (d) destruction, the N_EPS wipe, the
-                          # T_MIN creator, and the active-flux pair.
-                          "e_ts_residual", "e_wipe_sum", "e_floor_sum",
-                          "n_active_flux", "n_bulk_active_sum")),
-            (runner.combustion, ("heat_floor_hits",)),
+    # (holder, prefix, names). P-E2a added the third holder: the temperature
+    # solver's own energy books — conduction's two counted residuals plus the
+    # three SIGNED boundary channels (design §2.3, round-1 finding L3-6). These
+    # are CUMULATIVE (the `t_max_phys_hits` idiom of that class), so they are
+    # deliberately NOT in PER_TICK_COUNTERS: the series code diffs them.
+    for holder, prefix, names in (
+            (runner.eos, "eos.",
+             ("u_clamp_hits", "u_max_hits", "work_clamp_hits",
+              "energy_floor_hits", "t_max_phys_hits",
+              "eth_transport_delta", "eth_compression_delta",
+              # P-E1: rule (d) destruction, the N_EPS wipe, the
+              # T_MIN creator, and the active-flux pair.
+              "e_ts_residual", "e_wipe_sum", "e_floor_sum",
+              "n_active_flux", "n_bulk_active_sum")),
+            (runner.combustion, "comb.", ("heat_floor_hits",)),
+            (runner.temperature, "temp.",
+             # P-E2a: conduction's endpoint-truncation and capacity-floor
+             # residuals + the limiter's engagement count; then Pass 3 /
+             # sky, the breach wipe and the ambient-ring pin — all three
+             # SIGNED, all three named creators as well as sinks.
+             ("e_cond_trunc_sum", "e_cond_cap_sum", "cond_limit_hits",
+              "e_cool_sum", "e_vac_wipe_sum", "e_ring_pin_sum",
+              "t_max_phys_hits", "t_low_rail_hits")),
     ):
         for nm in names:
             try:
-                out["eos." + nm if holder is runner.eos else "comb." + nm] = \
-                    int(getattr(holder, nm))
+                out[prefix + nm] = int(getattr(holder, nm))
             except Exception:
                 pass
     return out

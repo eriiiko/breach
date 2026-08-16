@@ -228,7 +228,7 @@ PYBIND11_MODULE(breach_physics, m) {
              float gas_advection_rate, float t_max_phys,
              py::object n_bulk_obj, py::object wind_x_obj, py::object wind_y_obj,
              float dt, py::object thermal_solid_obj,
-             py::object cool_shift_grid_obj, int cool_shift_floor) -> int64_t {
+             py::object cool_shift_grid_obj, int cool_shift_floor) -> py::tuple {
               auto [temp, h, w]    = get_2d(temperature);
               auto [hp, h2, w2]    = get_2d_const(heat);
               auto [shift, h3, w3] = get_2d_const(heat_inv_shift);
@@ -280,11 +280,21 @@ PYBIND11_MODULE(breach_physics, m) {
                   auto [csp, hc, wc] = get_2d_const(csg_arr);
                   csg = csp;
               }
-              return breach_cuda::temperature_step(
+              // P-E2a: the isolated GPU entry now returns
+              // (t_max_phys_hits, e_cond_trunc_sum, e_cond_cap_sum,
+              //  cond_limit_hits, e_cool_sum, e_vac_wipe_sum, e_ring_pin_sum)
+              // — the energy books the conduction rewrite must be gated on.
+              // An AUTHORIZED contract change (Appendix A P-E2a): the sole
+              // caller is tests/cuda_conduction_check.py, which now compares
+              // all six against the CPU solver's own fields.
+              int64_t cnt[breach_cuda::TEMPERATURE_ENERGY_SLOTS] = {0};
+              const int64_t hits = breach_cuda::temperature_step(
                   temp, hp, shift, fs, sol, vac, atm, nb, wx, wy,
                   no_face, cool_shift, cool_shift_vacuum, o2_vacuum_thresh,
                   c_v, n_floor_heat, gas_advection_rate, t_max_phys, h, w, dt,
-                  nullptr, tsol, csg, cool_shift_floor);
+                  nullptr, tsol, csg, cool_shift_floor, nullptr, nullptr, cnt);
+              return py::make_tuple(hits, cnt[0], cnt[1], cnt[2], cnt[3],
+                                    cnt[4], cnt[5]);
           },
           py::arg("temperature"), py::arg("heat"), py::arg("heat_inv_shift"),
           py::arg("face_shift"), py::arg("solid"), py::arg("is_vacuum"),
@@ -298,8 +308,9 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("cool_shift_grid") = py::none(), // cool-shift axis (optional)
           py::arg("cool_shift_floor") = 2,         // == config SHIFT_MIN
           "P6.6 isolated: run the GPU unified temperature solver in place on "
-          "`temperature` (bit-identical to TemperatureSolver.step); returns the "
-          "T_MAX_PHYS rail-hit count for this call.");
+          "`temperature` (bit-identical to TemperatureSolver.step); returns "
+          "(t_max_phys_hits, e_cond_trunc_sum, e_cond_cap_sum, cond_limit_hits, "
+          "e_cool_sum, e_vac_wipe_sum, e_ring_pin_sum) for this call (P-E2a).");
 
     // CUDA-S2: the GPU directional raycaster gate. Casts ONE LightSource on the
     // GPU into the (pre-zeroed) output fields, replicating the CPU cast's per-ray
@@ -1708,6 +1719,17 @@ PYBIND11_MODULE(breach_physics, m) {
         // INERT by the per-term budget argument — a nonzero count inside a gate
         // scenario is a RED, which is exactly why it is readable from Python.
         .def_readonly("t_low_rail_hits",    &TemperatureSolver::t_low_rail_hits)
+        // P-E2a energy books (design §2.3/§5/§7): conduction's two counted
+        // residuals + the limiter's engagement count, then the three
+        // open-by-design SIGNED channels (L3-6). All in RAW ENERGY counts
+        // except `cond_limit_hits`; all accumulating across step() calls (the
+        // ledger diffs them per tick), and shared with the CUDA path.
+        .def_readonly("e_cond_trunc_sum",   &TemperatureSolver::e_cond_trunc_sum)
+        .def_readonly("e_cond_cap_sum",     &TemperatureSolver::e_cond_cap_sum)
+        .def_readonly("cond_limit_hits",    &TemperatureSolver::cond_limit_hits)
+        .def_readonly("e_cool_sum",         &TemperatureSolver::e_cool_sum)
+        .def_readonly("e_vac_wipe_sum",     &TemperatureSolver::e_vac_wipe_sum)
+        .def_readonly("e_ring_pin_sum",     &TemperatureSolver::e_ring_pin_sum)
         // P2: wind_x/wind_y/dt are OPTIONAL (default None/0.0) so the shipped
         // direct-binding call sites (tests/test_temperature_*.py,
         // tests/cuda_s1_check.py — all pre-P2, 7 positional args) keep working

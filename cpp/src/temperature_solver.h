@@ -80,20 +80,70 @@
 //   bit-identical across machines/compilers (no float, no division). Air tiles
 //   (not solid) are skipped, so an air tile that starts at 0 stays 0.
 //
-//   Conduction (§2.2, gather + double-buffer):
+//   Conduction — THE PRE-P-E2a LAW, transcribed here because P-E2a replaced it
+//   (design energy_transport_design_2026-08-16.md §2.3 requires the old law be
+//   written down before the rewrite; the as-built doc
+//   docs/e1_p_e2a_asbuilt_2026-08-17.md §1 carries the full transcription):
 //       acc = Σ_{dir∈N,S,E,W}  (temp[n] - temp[i]) >> face_shift[i][dir]
 //       temp_new[i] = temp[i] + acc            (then swap temp_new -> temp)
-//   The DIFFERENCE is shifted (not the neighbour), so equal neighbours produce
-//   EXACTLY 0 change (no drift) and the flux is conservative-shaped. A face is
-//   skipped when face_shift == NO_FACE (grid edge, or κ==0 on either side), so
-//   air (all faces NO_FACE) is a structural no-op (Σr = 0 -> unchanged). The
-//   per-tile face_shift cache is baked at LOAD from the harmonic-mean face table
-//   (all log2/division at load, in float); the runtime is a PURE signed add +
-//   arithmetic right shift -> order-independent (gather over a frozen buffer),
-//   bit-identical cross-machine. With SHIFT_MIN==2 (max face rate ¼) and 4
-//   neighbours, Σr ≤ 1, so the update is a convex combination of {T_i, T_n} —
-//   the discrete maximum principle holds (no new extremum ever created),
-//   unconditionally stable for all time (proposal §2.6).
+//   The DIFFERENCE was shifted (not the neighbour), so equal neighbours produced
+//   EXACTLY 0 change (no drift). A face was skipped when face_shift == NO_FACE
+//   (grid edge, or κ==0 on either side). With SHIFT_MIN==2 (max face rate ¼) and
+//   4 neighbours, Σr ≤ 1, so the update was a convex combination of {T_i, T_n} —
+//   the discrete maximum principle held for free (proposal §2.6).
+//   WHY IT HAD TO GO: it relaxed TEMPERATURES, not energies. Across a
+//   solid<->air face the wall and the gas have wildly different heat capacities
+//   (hull thermal_mass 32 vs gas N·c_v ≈ 1), so "cell i loses ΔT, cell j gains
+//   the same ΔT" moved 32× more energy into the wall than it took out of the
+//   gas (or destroyed 32× more, in the other direction). That was the sealed
+//   room's largest silent energy channel. It was not antisymmetric even in ΔT:
+//   the arithmetic shift rounds toward −∞, so the hot side lost ceil(g/2^s)
+//   while the cold side gained floor(g/2^s) — a 1-LSB-per-face-per-tick
+//   uncounted destruction.
+//
+//   Conduction (P-E2a, design §2.3 — ENERGY form, gather + double-buffer):
+//   Every cell carries a CAPACITY C (gas: N·c_v, floored by the shared
+//   `n_floor_heat` dial; object: thermal_mass == 2^heat_inv_shift), held in
+//   Q16.16 as `cap_q = C·65536`, so raw energy E = C·T. Then, per face:
+//       g     = |T_j − T_i|                 (magnitude FIRST — see below)
+//       C_min = min(C_i, C_j)               (symmetric)
+//       ΔE    = ±((g·C_min) >> s),  clamped to ±((g·C_min) >> LIM_SHIFT)
+//       ΔT_i  = floordiv_q(Σ_faces ΔE, C_i)     (endpoint-local, R2)
+//   The FOUR design constraints, and where each lives:
+//     1. FACE-ANTISYMMETRIC ΔE. `conduction::face_energy_q` computes the
+//        magnitude from |ΔT| and re-applies the sign, and every other input
+//        (C_min, s) is symmetric in the endpoint pair — so evaluating the same
+//        face from the other cell returns EXACTLY the negation. What leaves i
+//        enters j, bit for bit, in int64. (A plain `(T_j−T_i) >> s` is NOT
+//        antisymmetric — that is the old law's silent leak, above.)
+//     2. ENDPOINT-LOCAL CONVERSION (R2): each endpoint divides the energy it
+//        received by ITS OWN capacity. A hull tile taking gas energy warms 32×
+//        less than the gas cooled, because it is 32× heavier — which is the
+//        physics the ΔT form was papering over.
+//     3. ONE-WAY COUNTED GUARDS: the endpoint divide uses `floordiv_q`
+//        (toward −∞, the shared §2.1.5/§2.7 helper) so the residual can only
+//        DESTROY, never create, in both signs — counted in ENERGY by
+//        `e_cond_trunc_sum`. The capacity floor/ceiling's energy is counted by
+//        `e_cond_cap_sum`. Nothing else in this pass writes T.
+//     4. PER-FACE LIMITER (LIM_SHIFT == 1): |ΔE| ≤ ½ of the energy that would
+//        close the whole gap through the SMALLER endpoint capacity. Since
+//        moving E across the face changes the gap by E/C_i + E/C_j ≥ E·2/C_min,
+//        capping at (g·C_min)/2 guarantees the gap never inverts — neither
+//        endpoint can pass the donor. This is the P-R4 `LIM_SHIFT`/A1.6 shift
+//        idiom (cuda_raycaster.cu:263-264 precedent) and it restores per face
+//        what the convex bound used to give for free. The AGGREGATE bound is
+//        still SHIFT_MIN's: with s ≥ 2 and C_min ≤ C_i, each face moves
+//        ΔT ≤ g/4, so Σ over 4 faces is still a convex combination and the
+//        discrete maximum principle survives — now up to the ≤1-LSB overshoot
+//        `floordiv_q`'s toward−∞ rounding can add on the losing side.
+//   Equal neighbours still produce EXACTLY 0 (g = 0 ⇒ ΔE = 0). A face is
+//   skipped when face_shift == NO_FACE on EITHER side (the neighbour's facing
+//   entry is read too, and the slower shift `s = max(s_ij, s_ji)` is used, so
+//   the pass is symmetric BY CONSTRUCTION rather than by trusting the bake to
+//   be symmetric — the harmonic-mean table is symmetric, so this is
+//   bit-identical there). Still order-independent (gather over a frozen
+//   buffer), still float-free at runtime, still bit-identical cross-machine —
+//   the one new operation is an int64 divide per active cell per tick.
 //
 //   Ambient cooling (§3, gather over the geometric 4-neighbours) — since the
 //   COOL-SHIFT AXIS (2026-07-30) the base shift is PER TILE, not one global:
@@ -125,6 +175,108 @@
 
 #include <cstdint>
 #include <vector>
+
+#include "fixed_point.h"   // P-E2a: FP_HD, FP_SHIFT, floordiv_q (shared helper)
+
+// ===========================================================================
+// P-E2a — the conduction ENERGY kit (design §2.3).
+//
+// These three helpers are the ONE transcription of the new law: the CPU pass
+// (temperature_solver.cpp Pass 2) and the CUDA twin (cuda_temperature.cu
+// temp_cap_build / temp_conduct) both call them, so the two backends cannot
+// drift on an edit. FP_HD makes them callable from a __device__ kernel; the
+// header is otherwise plain C++ and is included by the .cu for exactly this.
+// ===========================================================================
+namespace conduction {
+
+// Capacity ceiling, as a shift: C ≤ 2^CAP_SHIFT_MAX. Load-bearing ONLY as the
+// int64-overflow guard on the face product `g·C_min` (|g| ≤ 2^31 raw counts,
+// so C ≤ 2^12 keeps g·C_min·(Q16.16 scale) ≤ 2^59 with room for the 4-face
+// sum and for the `ΔT·C` counter products). The shipped material table's
+// largest thermal_mass is 32 (shift 5) — SEVEN doublings below this ceiling —
+// and gas N·c_v never approaches 4096 either, so it is inert in practice. It
+// is a clamp rather than an assert because a clamp is deterministic on both
+// backends; when it DOES bind, the energy it implies is counted (the cell
+// converts through a smaller capacity than it really has, and the difference
+// lands in `e_cond_cap_sum` exactly like the n_floor_heat floor's does).
+constexpr int CAP_SHIFT_MAX = 12;
+
+// Constraint 4's fraction, as a shift. 1 == "at most HALF the gap closed
+// through the smaller endpoint capacity" — the design's pinned ≤ ½, the safe
+// side of the f = 2 line.
+constexpr int LIM_SHIFT = 1;
+
+// One cell's heat capacity, Q16.16 (raw energy E = cap_q·T >> 16; equivalently
+// C = cap_q / 65536 and E_raw = C · T_raw).
+//   * object (`thermal_solid`): C = thermal_mass = 2^heat_inv_shift — the SAME
+//     divisor Pass 1's `heat >> heat_inv_shift` deposit uses, so a deposit and
+//     a conduction gain of equal energy raise T by equal amounts.
+//   * gas: C = N·c_v, with N floored by `n_floor_heat` — the SAME dial Pass 1's
+//     ΔT = E_abs/(max(N,floor)·c_v) deposit uses (P-E2b owns its VALUE; this
+//     patch only shares it).
+// `cap_used` is what the law divides by; `cap_real` is the unfloored,
+// unclamped truth the ledger's Σ N·T sees. Their difference is the counted
+// floor/ceiling term — the R3 "every floor counted in ENERGY units" rule.
+FP_HD inline void cell_capacity_q(bool is_ts, int32_t heat_inv_shift_i,
+                                  int32_t n_raw, int32_t n_floor_q,
+                                  int32_t c_v_q,
+                                  int64_t* cap_used, int64_t* cap_real) {
+    if (is_ts) {
+        int s = (int)heat_inv_shift_i;
+        if (s < 0) s = 0;
+        int s_used = (s > CAP_SHIFT_MAX) ? CAP_SHIFT_MAX : s;
+        int s_real = (s > 30) ? 30 : s;          // int64 hygiene on cap_real too
+        *cap_used = (int64_t)1 << (s_used + fixedpoint::FP_SHIFT);
+        *cap_real = (int64_t)1 << (s_real + fixedpoint::FP_SHIFT);
+    } else {
+        const int64_t ceiling = (int64_t)1 << (CAP_SHIFT_MAX + fixedpoint::FP_SHIFT);
+        int64_t nr = (int64_t)n_raw;
+        if (nr < 0) nr = 0;                       // no negative density
+        int64_t nu = (nr < (int64_t)n_floor_q) ? (int64_t)n_floor_q : nr;
+        int64_t cr = (nr * (int64_t)c_v_q) >> fixedpoint::FP_SHIFT;
+        int64_t cu = (nu * (int64_t)c_v_q) >> fixedpoint::FP_SHIFT;
+        if (cu > ceiling) cu = ceiling;
+        if (cr > ceiling) cr = ceiling;
+        // Divide-by-zero guard: `n_floor_heat` and `c_v` are both positive by
+        // config contract, but a direct-binding caller may set either to 0 and
+        // the endpoint divide must not fault. 1 raw count of capacity is 2^-16
+        // of a unit — far below any real cell, so this never binds in the sim.
+        if (cu < 1) cu = 1;
+        if (cr < 0) cr = 0;
+        *cap_used = cu;
+        *cap_real = cr;
+    }
+}
+
+// ONE face's energy quantum, seen from cell i (positive == energy flows INTO
+// i). Constraint 1 lives here: the magnitude is computed from |ΔT| and the
+// sign re-applied, and C_min / s are symmetric in the pair — so calling this
+// with (t_j, t_i, cap_j, cap_i, s) returns EXACTLY the negation. No rounding
+// mode, no shift, and no clamp in this function can break that, because every
+// one of them acts on the MAGNITUDE.
+FP_HD inline int64_t face_energy_q(int64_t t_i, int64_t t_j,
+                                   int64_t cap_i, int64_t cap_j, int s,
+                                   int64_t* limit_hits) {
+    const int64_t d = t_j - t_i;
+    const int64_t g = (d < 0) ? -d : d;
+    const int64_t cmin = (cap_i < cap_j) ? cap_i : cap_j;
+    const int64_t full = g * cmin;          // energy to close the gap through C_min
+    int64_t q = full >> s;                  // the face's baked rate
+    const int64_t lim = full >> LIM_SHIFT;  // constraint 4
+    if (q > lim) {
+        q = lim;
+        if (limit_hits) ++(*limit_hits);
+    }
+    return (d < 0) ? -q : q;
+}
+
+// The facing direction index for the shared-face lookup (N<->S, E<->W), in the
+// fixed N,S,E,W order this whole TU family uses.
+FP_HD inline int opposite_dir(int d) {
+    return (d == 0) ? 1 : (d == 1) ? 0 : (d == 2) ? 3 : 2;
+}
+
+}  // namespace conduction
 
 class TemperatureSolver {
 public:
@@ -228,6 +380,39 @@ public:
     // P-R4's "no low rail is needed" antisymmetry reasoning is void.
     mutable int64_t t_low_rail_hits = 0;   // Pass-1 LOW rail engagements
 
+    // --- P-E2a ENERGY BOOKS (design §2.3, §5, §7) --------------------------
+    // Every counter here is an int64 sum in RAW ENERGY counts (Q16.16 capacity
+    // × Q16.16 temperature, i.e. the same unit the EOS books use), NOT a hit
+    // count — R3's "all counted, in ENERGY units". They ACCUMULATE across
+    // step() calls (the `t_max_phys_hits` idiom of this class; the ledger
+    // diffs them per tick) and the CUDA twin folds its own totals into these
+    // same fields, so telemetry is identical whichever backend ran.
+    //
+    // The conduction pass's exact ledger identity, asserted by
+    // tests/test_temperature_conduction.py::test_conduction_energy_books_close
+    // and by cuda_conduction_check PART 1:
+    //
+    //     Σ_cells ΔT_i · C_real_i  ==  e_cond_trunc_sum + e_cond_cap_sum
+    //
+    // because Σ_cells ΔE_i == 0 EXACTLY (constraint 1). Conduction's global
+    // energy drift is therefore the counted floor terms and nothing else.
+    mutable int64_t e_cond_trunc_sum = 0;  // endpoint floordiv residual (≤ 0: one-way)
+    mutable int64_t e_cond_cap_sum   = 0;  // the capacity floor/ceiling term (signed)
+    mutable int64_t cond_limit_hits  = 0;  // constraint-4 per-face limiter engagements
+    // The three OPEN-BY-DESIGN channels, named as SIGNED per round-1 finding
+    // L3-6. None of their LAWS changed at P-E2a — they are instrumented so
+    // §7's "every creator named and counted" can actually be checked:
+    //   * Pass 3 relaxes T toward 0 from BOTH sides, so it destroys energy
+    //     above ambient and CREATES it below — a creator, not just a sink.
+    //   * the Pass-0a vacuum wipe destroys the energy a breach vents (and
+    //     creates, if it pins a sub-ambient cell up to 0).
+    //   * the ambient-ring pin is the §5 boundary channel, bidirectional.
+    // All three are priced at the cell's REAL capacity (unfloored), i.e. in
+    // the same currency as the ledger's Σ N·T_abs estimator.
+    mutable int64_t e_cool_sum      = 0;   // Pass 3 ambient cooling / sky (signed)
+    mutable int64_t e_vac_wipe_sum  = 0;   // Pass 0a open-vacuum wipe (signed)
+    mutable int64_t e_ring_pin_sum  = 0;   // Pass 0a ambient-ring pin (signed)
+
     void  set_gas_advection_rate(float v) { gas_advection_rate = v; }
     float get_gas_advection_rate() const { return gas_advection_rate; }
     void  set_c_v(float v) { c_v = v; }
@@ -242,10 +427,11 @@ public:
     //   Pass 1 — heat -> temperature conversion (§1.2): solids via the
     //            UNCHANGED bit-shift; open-air (non-vacuum) cells via the NEW
     //            ΔT = ΔE/(N·c_v) reciprocal deposit (P2 §4.3).
-    //   Pass 2 — conduction relaxation (§2.2), gather + double-buffered.
-    //            UNCHANGED CODE: air's newly-nonzero `conductivity` (config)
-    //            makes this whole-grid pass do air<->air and solid<->air for
-    //            free (P2 §4).
+    //   Pass 2 — conduction relaxation, gather + double-buffered. P-E2a: now
+    //            in ENERGY form (see the header block above) — air<->air AND
+    //            solid<->air both ride the same face-antisymmetric ΔE with the
+    //            per-face limiter; each endpoint converts through its own
+    //            capacity.
     //   Pass 3 — ambient cooling (§3), solids only, vacuum-exposure 1-bit.
     //            UNCHANGED: gas cells are structurally excluded (no decay).
     //
@@ -358,4 +544,11 @@ private:
     // pass (Pass 0) — kept distinct from `scratch_` (the conduction double
     // buffer) so the two passes never alias each other's live data.
     mutable std::vector<int32_t> gas_scratch_;
+    // P-E2a: the per-cell capacity planes, built ONCE per step() before any
+    // pass runs (they depend only on frozen inputs — the medium mask, N and
+    // the dials — never on T). `cap_used_` is what every conversion divides
+    // by; `cap_real_` is the honest capacity the energy counters price with.
+    // Transient scratch, never synced, never digested (R4).
+    mutable std::vector<int64_t> cap_used_;
+    mutable std::vector<int64_t> cap_real_;
 };
