@@ -1125,6 +1125,8 @@ PYBIND11_MODULE(breach_physics, m) {
              float absorb_strength, float n_floor_solver, float t_min,
              float t_work_clamp, float t_max_phys, float u_max,
              // trace_mass_scale param RETIRED (P-T0, design §2.6)
+             // P-E3 (design §2.8): interior drag + heat counterparty.
+             float k_drag, float k_drag_heat_frac, float c_v,
              py::object thermal_solid) -> py::tuple {   // THERMAL-MASS AXIS
               auto [wx, h, w]    = get_2d(wind_x);
               auto [wy, h2, w2]  = get_2d(wind_y);
@@ -1146,16 +1148,18 @@ PYBIND11_MODULE(breach_physics, m) {
                   tsol = ta.data(0, 0);
               }
               uint64_t dig_vel = 0, dig_comp = 0;
-              int64_t cnts[5] = {0, 0, 0, 0, 0};
+              int64_t cnts[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
               breach_cuda::eos_kick_compression(
                   wx, wy, t, pn, gas_ptr, gcons, n_gases, sol, vac, ab,
                   h, w, dt, c_local_q,
                   c_max, dx, adiabatic_index, absorb_strength,
                   n_floor_solver, t_min, t_work_clamp, t_max_phys, u_max,
+                  k_drag, k_drag_heat_frac, c_v,
                   &dig_vel, &dig_comp, cnts,   // trace_mass_scale arg RETIRED
                   nullptr, nullptr, tsol);
               return py::make_tuple(dig_vel, dig_comp, cnts[0], cnts[1],
-                                    cnts[2], cnts[3], cnts[4]);
+                                    cnts[2], cnts[3], cnts[4], cnts[5],
+                                    cnts[6], cnts[7], cnts[8]);
           },
           py::arg("wind_x"), py::arg("wind_y"), py::arg("temperature"),
           py::arg("p_new"), py::arg("gas"), py::arg("gas_conservative"),
@@ -1165,12 +1169,15 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("absorb_strength"), py::arg("n_floor_solver"),
           py::arg("t_min"), py::arg("t_work_clamp"), py::arg("t_max_phys"),
           py::arg("u_max"),
+          py::arg("k_drag") = 0.0f, py::arg("k_drag_heat_frac") = 1.0f,
+          py::arg("c_v") = 1.0f,
           py::arg("thermal_solid") = py::none(),
           "P6.4 isolated: run the GPU kick + compression-work tail in place on "
           "wind_x/wind_y/temperature; returns (digest_velocity, "
           "digest_compression, u_clamp_hits, u_max_hits, work_clamp_hits, "
-          "energy_floor_hits, t_max_phys_hits) for this call — bit-identical "
-          "to eos_kick_compression_ref.");
+          "energy_floor_hits, t_max_phys_hits, ke_drag_removed, "
+          "e_drag_deposit, e_drag_drop_sum, e_drag_rail_clipped) for this "
+          "call — bit-identical to eos_kick_compression_ref.");
 
     // EOS P6.3: the GPU multigrid Helmholtz pressure solve (cuda_mg_solve.cu
     // — per-color RB-GS launches on fine levels, gather-form restriction/
@@ -2193,6 +2200,16 @@ PYBIND11_MODULE(breach_physics, m) {
         // P-E2b (design §2.4): trust-gate dial, PLUMBING ONLY — the fade
         // mechanism is P-E4's. Provably inert (nothing reads this member).
         .def_readwrite("n_work_ref",        &EOSSolver::n_work_ref)
+        // P-E3 (energy-books arc, design §2.8): interior momentum drag with a
+        // heat counterparty. k_drag default 0.0 -> dormant (branch on the
+        // QUANTIZED kd_q, not this float); k_drag_heat_frac default 1.0
+        // (RULING R2) keeps the conservation oracle EXACT through every gate.
+        .def_readwrite("k_drag",            &EOSSolver::k_drag)
+        .def_readwrite("k_drag_heat_frac",  &EOSSolver::k_drag_heat_frac)
+        // c_v: EOSSolver's own copy of the SAME [physics.thermal] c_v gas
+        // heat-capacity constant TemperatureSolver::c_v prices its deposits
+        // with (physics_runner.py binds both from the one config key).
+        .def_readwrite("c_v",               &EOSSolver::c_v)
         .def_readwrite("T_MAX_PHYS",        &EOSSolver::T_MAX_PHYS)     // v2.4 rail
         .def_readwrite("U_MAX",             &EOSSolver::U_MAX)          // v2.4 rail
         // trace_mass_scale binding RETIRED (P-T0, design §2.6 — the member
@@ -2215,6 +2232,14 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readonly("e_floor_sum",           &EOSSolver::e_floor_sum)
         .def_readonly("n_active_flux",         &EOSSolver::n_active_flux)
         .def_readonly("n_bulk_active_sum",     &EOSSolver::n_bulk_active_sum)
+        // P-E3 (design §2.8): the interior-drag oracle, PER-TICK, both
+        // n-weighted, raw Q16.16^2 (the SAME "N*T" currency as the P-E1 five
+        // above). Identity: ke_drag_removed == 2*c_v*(e_drag_deposit +
+        // e_drag_drop_sum + e_drag_rail_clipped) within a small LSB slack.
+        .def_readonly("ke_drag_removed",       &EOSSolver::ke_drag_removed)
+        .def_readonly("e_drag_deposit",        &EOSSolver::e_drag_deposit)
+        .def_readonly("e_drag_drop_sum",       &EOSSolver::e_drag_drop_sum)
+        .def_readonly("e_drag_rail_clipped",   &EOSSolver::e_drag_rail_clipped)
         // BC (spec §5): the boundary_flux rail — per-conservative-plane int64
         // Σ(N_pre_reset − N_amb). Returned as a Python list (empty on space
         // maps). NOT folded into any digest (absence-transparent, zero golden
@@ -2323,6 +2348,8 @@ PYBIND11_MODULE(breach_physics, m) {
              float absorb_strength, float n_floor_solver, float t_min,
              float t_work_clamp, float t_max_phys, float u_max,
              // trace_mass_scale param RETIRED (P-T0, design §2.6)
+             // P-E3 (design §2.8): interior drag + heat counterparty.
+             float k_drag, float k_drag_heat_frac, float c_v,
              py::object thermal_solid,                  // THERMAL-MASS AXIS
              // A6: the ambient/planetside path. `is_ambient` was hard-coded
              // nullptr at the call below, so no caller could reach the
@@ -2363,15 +2390,17 @@ PYBIND11_MODULE(breach_physics, m) {
                   sud = sa.data(0, 0);
               }
               uint64_t dig_vel = 0, dig_comp = 0;
-              int64_t cnts[5] = {0, 0, 0, 0, 0};
+              int64_t cnts[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
               eos_kick_compression_reference(
                   wx, wy, t, pn, gas_ptr, gcons, n_gases, sol, vac, ab,
                   h, w, dt, c_local_q,
                   c_max, dx, adiabatic_index, absorb_strength,
                   n_floor_solver, t_min, t_work_clamp, t_max_phys, u_max,
+                  k_drag, k_drag_heat_frac, c_v,
                   &dig_vel, &dig_comp, cnts, amb, tsol, sud);   // trace_mass_scale arg RETIRED
               return py::make_tuple(dig_vel, dig_comp, cnts[0], cnts[1],
-                                    cnts[2], cnts[3], cnts[4]);
+                                    cnts[2], cnts[3], cnts[4], cnts[5],
+                                    cnts[6], cnts[7], cnts[8]);
           },
           py::arg("wind_x"), py::arg("wind_y"), py::arg("temperature"),
           py::arg("p_new"), py::arg("gas"), py::arg("gas_conservative"),
@@ -2381,14 +2410,17 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("absorb_strength"), py::arg("n_floor_solver"),
           py::arg("t_min"), py::arg("t_work_clamp"), py::arg("t_max_phys"),
           py::arg("u_max"),
+          py::arg("k_drag") = 0.0f, py::arg("k_drag_heat_frac") = 1.0f,
+          py::arg("c_v") = 1.0f,
           py::arg("thermal_solid") = py::none(),
           py::arg("is_ambient") = py::none(),
           py::arg("sponge_udamp") = py::none(),
           "P6.4 CPU reference: replay EOSSolver::step's kick + compression-"
           "work tail in place on wind_x/wind_y/temperature; returns "
           "(digest_velocity, digest_compression, u_clamp_hits, u_max_hits, "
-          "work_clamp_hits, energy_floor_hits, t_max_phys_hits) for this "
-          "call.");
+          "work_clamp_hits, energy_floor_hits, t_max_phys_hits, "
+          "ke_drag_removed, e_drag_deposit, e_drag_drop_sum, "
+          "e_drag_rail_clipped) for this call.");
 
     // EOS P6.3: the standalone CPU reference for the multigrid pressure
     // solve (eos_solver.cpp eos_mg_solve_reference — drives the SAME

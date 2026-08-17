@@ -602,7 +602,9 @@ struct EOSResidentScratch {
         cuda_check(cudaMalloc(&cons_flag, (size_t)NG), "res malloc cons_flag");
         if (NC > 0)
             cuda_check(cudaMalloc(&rail, (size_t)NC * 8), "res malloc rail");
-        cuda_check(cudaMalloc(&cnt, 5 * 8), "res malloc cnt");
+        // P-E3 (design §2.8): cnt grows 5 -> 9 slots (drag's four int64
+        // energy sums, written by K1 alongside the original five hit counts).
+        cuda_check(cudaMalloc(&cnt, 9 * 8), "res malloc cnt");
         // P-E1 scratch (int64), same unconditional-allocation idiom.
         auto a64 = [&](int64_t** p, size_t cnt_, const char* what) {
             cuda_check(cudaMalloc(p, cnt_ * 8), what);
@@ -689,7 +691,9 @@ void eos_step_resident(
     const KickScalarFolds kf = kick_scalar_folds(
         dt, solver.c_max, solver.dx, solver.adiabatic_index,
         solver.absorb_strength, solver.N_FLOOR_SOLVER, solver.T_MIN,
-        solver.T_WORK_CLAMP, solver.T_MAX_PHYS, solver.U_MAX);
+        solver.T_WORK_CLAMP, solver.T_MAX_PHYS, solver.U_MAX,
+        // P-E3 (design §2.8): interior drag + heat counterparty.
+        solver.k_drag, solver.k_drag_heat_frac, solver.c_v);
     const EOSSolver::MGScalarFolds mf = solver.mg_scalar_folds(dt);
 
     // ---- §2.5 hoist: the per-cell absorb plane, on the MIRROR (this is
@@ -719,7 +723,7 @@ void eos_step_resident(
     // ---- PER-TICK ZERO RULE (design §3.2.5): the persistent rail + counter
     //      buffers carry last tick's sums — memset EVERY tick (the per-call
     //      wrappers' memsets, moved here). --------------------------------
-    cuda_check(cudaMemset(S.cnt, 0, 5 * 8), "memset cnt");
+    cuda_check(cudaMemset(S.cnt, 0, 9 * 8), "memset cnt");   // P-E3: 5 -> 9 slots
     cuda_check(cudaMemset(S.ecnt, 0, 5 * 8), "memset ecnt");   // P-E1
     const bool use_rail = ambient_mode && n_cons > 0;
     if (use_rail)
@@ -823,14 +827,20 @@ void eos_step_resident(
         for (int k = 0; k < n_cons; ++k)
             solver.boundary_flux_[pre.cons[k]] = (int64_t)rail_host[k];
     }
-    unsigned long long cnt_host[5] = {0, 0, 0, 0, 0};
-    cuda_check(cudaMemcpy(cnt_host, S.cnt, 5 * 8, cudaMemcpyDeviceToHost),
+    unsigned long long cnt_host[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+    cuda_check(cudaMemcpy(cnt_host, S.cnt, 9 * 8, cudaMemcpyDeviceToHost),
                "D2H counters");
     solver.u_clamp_hits      += (int64_t)cnt_host[0];
     solver.u_max_hits        += (int64_t)cnt_host[1];
     solver.work_clamp_hits   += (int64_t)cnt_host[2];
     solver.energy_floor_hits += (int64_t)cnt_host[3];
     solver.t_max_phys_hits   += (int64_t)cnt_host[4];
+    // P-E3 (design §2.8): PER-TICK semantics (assigned, not accumulated —
+    // the P-E1 idiom the sibling ecnt block below also uses).
+    solver.ke_drag_removed     = (int64_t)cnt_host[5];
+    solver.e_drag_deposit      = (int64_t)cnt_host[6];
+    solver.e_drag_drop_sum     = (int64_t)cnt_host[7];
+    solver.e_drag_rail_clipped = (int64_t)cnt_host[8];
     // P-E1 energy counters — ASSIGNED (per-TICK semantics, matching the CPU's
     // reset-at-step()-entry idiom and the per-call GPU path), not accumulated
     // like the rail counters above. int64 atomicAdd on two's complement is

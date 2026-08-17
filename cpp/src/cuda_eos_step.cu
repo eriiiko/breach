@@ -596,7 +596,7 @@ void eos_step_cuda(
     // ======================================================================
     {
         uint64_t dig_vel = 0, dig_comp = 0;
-        int64_t cnts[5] = {0, 0, 0, 0, 0};
+        int64_t cnts[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
         eos_kick_compression(
             wind_x, wind_y, temperature, p_new.data(),
             gas, gas_conservative, n_gases, solid, is_vacuum,
@@ -604,6 +604,8 @@ void eos_step_cuda(
             solver.c_max, solver.dx, solver.adiabatic_index,
             solver.absorb_strength, solver.N_FLOOR_SOLVER, solver.T_MIN,
             solver.T_WORK_CLAMP, solver.T_MAX_PHYS, solver.U_MAX,
+            // P-E3 (design §2.8): interior drag + heat counterparty.
+            solver.k_drag, solver.k_drag_heat_frac, solver.c_v,
             &dig_vel, &dig_comp, cnts,   // trace_mass_scale arg RETIRED (P-T0)
             // BC: ring velocity zero + compression skip + the u-damping band.
             ambient_mode ? is_ambient : nullptr,
@@ -617,6 +619,12 @@ void eos_step_cuda(
         solver.work_clamp_hits   += cnts[2];
         solver.energy_floor_hits += cnts[3];
         solver.t_max_phys_hits   += cnts[4];
+        // P-E3: PER-TICK semantics (assigned, not accumulated — the P-E1
+        // reset-at-step()-entry idiom; this dispatch runs once per tick).
+        solver.ke_drag_removed     = cnts[5];
+        solver.e_drag_deposit      = cnts[6];
+        solver.e_drag_drop_sum     = cnts[7];
+        solver.e_drag_rail_clipped = cnts[8];
     }
 
     // DEBUG probe parity: T after step 4c (compression work).

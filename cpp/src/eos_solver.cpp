@@ -31,15 +31,28 @@ uint64_t digest_of(const int32_t* buf, int n, uint64_t seed) {
 // every coefficient×field product in the solve goes through a 128-bit
 // intermediate and one arithmetic shift — no int64 product is ever formed
 // raw×raw. MSVC path mirrors fixed_point.h's recip_mul _mul128 idiom.
+//
+// P-E3 (design §2.8) EXTENDS the valid domain to shift==0 (every prior call
+// site in this file uses shift==16, so this is purely additive): the
+// original `_mul128` recombine computed `hi << (64 - shift)`, which is
+// UNDEFINED BEHAVIOUR at shift==0 (a 64-bit shift by 64) — on this box it
+// silently degenerates to `hi << 0` (x86's mod-64 shift-count masking),
+// corrupting the result by OR-ing in `hi` unshifted. At shift==0 the
+// low 64 bits of the product ARE the answer (no `hi` contribution belongs
+// in a shift-by-nothing narrow), so it is special-cased directly rather than
+// routed through the general recombine.
 #if defined(__SIZEOF_INT128__)
 inline int64_t mul128_shr(int64_t a, int64_t b, int shift) {
-    return (int64_t)(((__int128)a * (__int128)b) >> shift);
+    return (int64_t)(((__int128)a * (__int128)b) >> shift);   // shift==0 is
+                                                               // well-defined
+                                                               // for __int128
 }
 #else
 inline int64_t mul128_shr(int64_t a, int64_t b, int shift) {
     long long hi;
     long long lo = _mul128((long long)a, (long long)b, &hi);
     unsigned long long ulo = (unsigned long long)lo;
+    if (shift == 0) return (int64_t)ulo;   // P-E3: the UB-avoiding special case
     return (int64_t)((ulo >> shift) | ((unsigned long long)hi << (64 - shift)));
 }
 #endif
@@ -269,6 +282,12 @@ void EOSSolver::step(
     e_floor_sum = 0;
     n_active_flux = 0;
     n_bulk_active_sum = 0;
+    // P-E3 (design §2.8): the interior-drag oracle, same per-tick reset
+    // idiom (P-E1's, not P-E2a's accumulate — see the as-built for why).
+    ke_drag_removed = 0;
+    e_drag_deposit = 0;
+    e_drag_drop_sum = 0;
+    e_drag_rail_clipped = 0;
     const auto eth_books_sum = [&]() -> int64_t {
         int64_t acc = 0;
         for (int i = 0; i < n; ++i) {
@@ -352,6 +371,16 @@ void EOSSolver::step(
     }
     const q16 c_amb_q = quantize((double)c_max);
     const q16 absorb_dt_q = quantize((double)absorb_strength * dt_d);
+    // P-E3 (design §2.8): the drag scalar folds — kd_q = quantize(k_drag*dt),
+    // the absorb precedent exactly; heat_frac_q the plain dial fraction; the
+    // c_v reciprocal (Q.32, make_recip, the SAME shared idiom Pass 1's
+    // deposit already uses) folded ONCE per tick rather than per cell.
+    // Dormancy branches on kd_q (QUANTIZED), never on the float k_drag — a
+    // tiny k_drag (e.g. 1e-6) quantizes to 0 and a float-keyed branch would
+    // disagree with CUDA about which code ran (design's explicit warning).
+    const q16 kd_q = quantize((double)k_drag * dt_d);
+    const q16 heat_frac_q = quantize((double)k_drag_heat_frac);
+    const int64_t recip_cv = make_recip(std::max((double)c_v, 1e-6));
     const int32_t ratio_q = (int32_t)((t_max_abs_raw << 16) / (int64_t)t_amb_q);
     const q16 sqrt_ratio = sqrt_q16((int64_t)ratio_q << 16);   // Q.32 radicand
     q16 c_local_q = mul_q16(c_amb_q, sqrt_ratio);
@@ -733,6 +762,78 @@ void EOSSolver::step(
                     uy = mul128_shr(mul128_shr(uy, (int64_t)scale, 16), (int64_t)u_cap_q, 16);
                 }
             }
+
+            // ==================================================================
+            // P-E3 — INTERIOR MOMENTUM DRAG + HEAT COUNTERPARTY (energy-books
+            // arc, design §2.8). PER TICK, in the step-4 kick loop, AFTER the
+            // |u| cap and BEFORE the store — the kick runs once per tick, so
+            // there is no per-substep factor and no n_sub dependence. Dial
+            // default k_drag=0.0 -> kd_q==0 -> this whole block is skipped
+            // (dormancy BY BRANCH on the QUANTIZED fold, not the float).
+            // Ruling A1 pinned: ts cells skip BOTH the drag and the deposit
+            // (the kick's own skip-set lacks `ts`, but the drag adds it here)
+            // so the oracle stays exact with no new residual term.
+            // ==================================================================
+            if (kd_q > 0 && !ts[i]) {
+                const int64_t ux_old = ux, uy_old = uy;
+                // Component-wise magnitude-first shrink u *= (1 - kd_q) — the
+                // absorb/sponge idiom immediately above, verbatim. LOAD-BEARING
+                // beyond style: magnitude-first makes |u_old|^2 - |u_new|^2 >= 0
+                // STRUCTURALLY (each component's magnitude can only shrink), so
+                // the deposit can never go negative from rounding and needs no
+                // clamp and no signed oracle term.
+                const q16 kk_drag = (kd_q < FP_ONE) ? (q16)(FP_ONE - kd_q) : 0;
+                const int64_t dmx = mul128_shr(ux_old < 0 ? -ux_old : ux_old, (int64_t)kk_drag, 16);
+                const int64_t dmy = mul128_shr(uy_old < 0 ? -uy_old : uy_old, (int64_t)kk_drag, 16);
+                ux = (ux_old < 0) ? -dmx : dmx;
+                uy = (uy_old < 0) ? -dmy : dmy;
+
+                // Δ(|u|^2), raw (Q32-ish, plain int64-safe post-cap per the
+                // |u| <= u_cap_q <= U_MAX bound above — the SAME "int64-safe
+                // post-cap" property the design's ΔE_cell derivation relies on).
+                const int64_t du2_raw = (ux_old * ux_old + uy_old * uy_old)
+                                       - (ux * ux + uy * uy);   // >= 0 structurally
+
+                // n-weighted oracle, raw Q16.16^2 (the SAME "N*T" currency as
+                // eth_transport_delta/e_floor_sum). mul128_shr avoids the naive
+                // n_bulk*du2_raw overflow (n_bulk up to the map's N_cell<2^30
+                // raw invariant, du2_raw up to ~2^53 post-cap).
+                const int64_t n_bulk = (int64_t)n_total_[i];
+                ke_drag_removed += mul128_shr(n_bulk, du2_raw, 16);
+
+                // Heat deposit: ΔE_cell = Δ(|u|^2)/2, ALREADY a SPECIFIC
+                // (per-N) quantity (u is a velocity, not a momentum) — no
+                // per-cell N divisor, only the load-time c_v reciprocal. Kept
+                // WIDE (int64) until a SATURATING narrow (a full stop from
+                // 1000 m/s is far past int32 — fixed_point.h's
+                // drag_dT_wide_q16 header).
+                const int64_t dE_cell_q16 = (du2_raw >> 16) >> 1;
+                const int64_t dT_intended_wide =
+                    drag_dT_wide_q16(dE_cell_q16, heat_frac_q, recip_cv);
+                const int32_t drop_frac_q = (int32_t)(FP_ONE - heat_frac_q);
+                const int64_t dT_drop_wide =
+                    drag_dT_wide_q16(dE_cell_q16, drop_frac_q, recip_cv);
+                e_drag_drop_sum += mul128_shr(n_bulk, dT_drop_wide, 0);
+
+                const int32_t dT_intended_narrow =
+                    (dT_intended_wide > (int64_t)INT32_MAX)
+                        ? INT32_MAX : (int32_t)dT_intended_wide;
+                const int32_t t_old = temperature[i];
+                int32_t t_candidate = sat_add_q16(t_old, dT_intended_narrow);
+                if (t_candidate > t_max_phys_q) t_candidate = t_max_phys_q;
+                const int64_t dT_applied = (int64_t)t_candidate - (int64_t)t_old;
+                const int64_t dT_clipped = dT_intended_wide - dT_applied;
+                e_drag_deposit      += mul128_shr(n_bulk, dT_applied, 0);
+                e_drag_rail_clipped += mul128_shr(n_bulk, dT_clipped, 0);
+
+                // Phantom-T guard (design §2.8): only WRITE where n_bulk >= 1
+                // raw count (N_EPS) — foregone energy is already ~=0 above
+                // (n-weighted), "counted anyway" per the design; only the
+                // temperature[] WRITE itself is guarded, so a skipped write
+                // cannot desync the oracle.
+                if (n_bulk >= 1) temperature[i] = t_candidate;
+            }
+
             wind_x[i] = (int32_t)ux;   // the ONE narrow at store — safe: |u| is
             wind_y[i] = (int32_t)uy;   // ≤ max(√2·u_cap, RAD_SAFE) ≪ int32 range
         }
@@ -1378,8 +1479,9 @@ void eos_kick_compression_reference(
         float c_max, float dx, float adiabatic_index, float absorb_strength,
         float n_floor_solver, float t_min, float t_work_clamp,
         float t_max_phys, float u_max,   // trace_mass_scale param RETIRED (P-T0)
+        float k_drag, float k_drag_heat_frac, float c_v,   // P-E3 (design §2.8)
         uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
-        int64_t* counters_out /* [5] */,
+        int64_t* counters_out /* [9] */,
         const bool* is_ambient, const bool* thermal_solid,
         const int32_t* sponge_udamp) {
     const int n = h * w;
@@ -1387,7 +1489,7 @@ void eos_kick_compression_reference(
     // THERMAL-MASS AXIS, P-EOS: step()'s `ts` fold, verbatim (step-4c only —
     // the momentum kick below is untouched: it writes u, never T).
     const bool* ts = (thermal_solid != nullptr) ? thermal_solid : solid;
-    for (int c = 0; c < 5; ++c) counters_out[c] = 0;
+    for (int c = 0; c < 9; ++c) counters_out[c] = 0;
     *digest_velocity_out = 0;
     *digest_compression_out = 0;
     if (n <= 0 || dt <= 0.0f) return;
@@ -1407,6 +1509,12 @@ void eos_kick_compression_reference(
     const int64_t K_raw = (int64_t)(K_d * 65536.0 + 0.5);
     const int64_t Kdt_raw = mul128_shr(K_raw, (int64_t)dt_q, 16);
     const q16 absorb_dt_q = quantize((double)absorb_strength * dt_d);
+    // P-E3 (design §2.8): the drag scalar folds, verbatim step()'s.
+    const q16 kd_q = quantize((double)k_drag * dt_d);
+    const q16 heat_frac_q = quantize((double)k_drag_heat_frac);
+    const int64_t recip_cv = make_recip(std::max((double)c_v, 1e-6));
+    int64_t ke_drag_removed = 0, e_drag_deposit = 0, e_drag_drop_sum = 0,
+            e_drag_rail_clipped = 0;
 
     // ---- step 2's Dalton sum (verbatim — the kick's N̂ input) --------------
     // P-T0 (design §2.6): n_total ≡ n_bulk; trace planes skipped outright.
@@ -1497,6 +1605,45 @@ void eos_kick_compression_reference(
                     uy = mul128_shr(mul128_shr(uy, (int64_t)scale, 16), (int64_t)u_cap_q, 16);
                 }
             }
+
+            // P-E3 — interior drag + heat counterparty (design §2.8), VERBATIM
+            // from step()'s kick loop: PER TICK, after the |u| cap, before the
+            // store; ts cells skip both the drag and the deposit (ruling A1).
+            if (kd_q > 0 && !ts[i]) {
+                const int64_t ux_old = ux, uy_old = uy;
+                const q16 kk_drag = (kd_q < FP_ONE) ? (q16)(FP_ONE - kd_q) : 0;
+                const int64_t dmx = mul128_shr(ux_old < 0 ? -ux_old : ux_old, (int64_t)kk_drag, 16);
+                const int64_t dmy = mul128_shr(uy_old < 0 ? -uy_old : uy_old, (int64_t)kk_drag, 16);
+                ux = (ux_old < 0) ? -dmx : dmx;
+                uy = (uy_old < 0) ? -dmy : dmy;
+
+                const int64_t du2_raw = (ux_old * ux_old + uy_old * uy_old)
+                                       - (ux * ux + uy * uy);   // >= 0 structurally
+                const int64_t n_bulk = (int64_t)n_total[i];
+                ke_drag_removed += mul128_shr(n_bulk, du2_raw, 16);
+
+                const int64_t dE_cell_q16 = (du2_raw >> 16) >> 1;
+                const int64_t dT_intended_wide =
+                    drag_dT_wide_q16(dE_cell_q16, heat_frac_q, recip_cv);
+                const int32_t drop_frac_q = (int32_t)(FP_ONE - heat_frac_q);
+                const int64_t dT_drop_wide =
+                    drag_dT_wide_q16(dE_cell_q16, drop_frac_q, recip_cv);
+                e_drag_drop_sum += mul128_shr(n_bulk, dT_drop_wide, 0);
+
+                const int32_t dT_intended_narrow =
+                    (dT_intended_wide > (int64_t)INT32_MAX)
+                        ? INT32_MAX : (int32_t)dT_intended_wide;
+                const int32_t t_old = temperature[i];
+                int32_t t_candidate = sat_add_q16(t_old, dT_intended_narrow);
+                if (t_candidate > t_max_phys_q) t_candidate = t_max_phys_q;
+                const int64_t dT_applied = (int64_t)t_candidate - (int64_t)t_old;
+                const int64_t dT_clipped = dT_intended_wide - dT_applied;
+                e_drag_deposit      += mul128_shr(n_bulk, dT_applied, 0);
+                e_drag_rail_clipped += mul128_shr(n_bulk, dT_clipped, 0);
+
+                if (n_bulk >= 1) temperature[i] = t_candidate;
+            }
+
             wind_x[i] = (int32_t)ux;
             wind_y[i] = (int32_t)uy;
         }
@@ -1539,6 +1686,10 @@ void eos_kick_compression_reference(
     counters_out[2] = work_clamp_hits;
     counters_out[3] = energy_floor_hits;
     counters_out[4] = t_max_phys_hits;
+    counters_out[5] = ke_drag_removed;
+    counters_out[6] = e_drag_deposit;
+    counters_out[7] = e_drag_drop_sum;
+    counters_out[8] = e_drag_rail_clipped;
 }
 
 // ===========================================================================

@@ -276,6 +276,58 @@ FP_HD inline int64_t deposit_dT_wide_q16(int32_t deposit_q, int32_t recip_n_q,
 }
 #endif
 
+// ---- wide DRAG deposit divide: ΔE_cell*heat_frac/c_v, no premature narrow --
+// (P-E3, energy-books arc, design §2.8) — the SAME overflow-narrowing hazard
+// class deposit_dT_wide_q16 exists for (P-E2b), specialized to the interior-
+// drag deposit's TWO-input-plus-fraction chain. UNLIKE the combustion/
+// radiation deposits, there is no per-cell N divisor here: ΔE_cell is already
+// a SPECIFIC (per-N) quantity — u is a velocity, not a momentum, so
+// ΔE_cell = (|u_old|^2 - |u_new|^2)/2 is a specific kinetic energy, and only
+// the load-time c_v reciprocal divides it (see the design's "ledger units"
+// derivation). energy_q16 is a WIDE (int64) Q16.16 value — NOT narrowed to
+// q16/int32 first: a full stop from 1000 m/s puts it far past int32 (~3e10
+// raw), the exact hazard class this helper exists to avoid. heat_frac_q is a
+// plain Q16.16 fraction (k_drag_heat_frac, normally in [0,1] — NOT a
+// reciprocal); recip_cv is the load-time c_v reciprocal (make_recip,
+// RECIP_SHIFT=32 bits, the same fold Pass 1's deposit already uses). Chained
+// as one 128-bit product, narrowed EXACTLY ONCE to int64 (never to q16) at
+// the combined shift FP_SHIFT+RECIP_SHIFT=48 — deposit_dT_wide_q16's own
+// shift, since both helpers narrow a 3-factor Q16.16 x Q16.16-ish x Q.32
+// product the identical way. The caller saturates this wide result to
+// int32 range before any sat_add_q16 / T_MAX_PHYS rail downstream.
+#if defined(__SIZEOF_INT128__)
+FP_HD inline int64_t drag_dT_wide_q16(int64_t energy_q16, int32_t heat_frac_q,
+                                       int64_t recip_cv) {
+    const __int128 prod = (__int128)energy_q16 * (__int128)heat_frac_q
+                         * (__int128)recip_cv;
+    return (int64_t)(prod >> (FP_SHIFT + RECIP_SHIFT));   // one narrow, 48 bits
+}
+#elif defined(_MSC_VER)
+FP_HD inline int64_t drag_dT_wide_q16(int64_t energy_q16, int32_t heat_frac_q,
+                                       int64_t recip_cv) {
+    // Stage 1: energy_q16 (up to ~2^40 at the format's worst case) times
+    // heat_frac_q (<= ~2^17) stays comfortably inside a plain int64 (<= ~2^57)
+    // — no 128-bit needed yet. Stage 2: that int64 times recip_cv needs the
+    // 128-bit product (the same _mul128 primitive deposit_dT_wide_q16's MSVC
+    // path above already uses).
+    const int64_t stage1 = energy_q16 * (int64_t)heat_frac_q;
+    long long hi;
+    long long lo = _mul128((long long)stage1, (long long)recip_cv, &hi);
+    unsigned long long ulo = (unsigned long long)lo;
+    const int shift = FP_SHIFT + RECIP_SHIFT;   // 48, < 64
+    long long res = (long long)((ulo >> shift) |
+                                ((unsigned long long)hi << (64 - shift)));
+    return (int64_t)res;
+}
+#else
+FP_HD inline int64_t drag_dT_wide_q16(int64_t energy_q16, int32_t heat_frac_q,
+                                       int64_t recip_cv) {
+    // Portable fallback (exotic toolchains only, mirrors recip_mul's own).
+    return (int64_t)(((__int128_t)energy_q16 * heat_frac_q * recip_cv)
+                      >> (FP_SHIFT + RECIP_SHIFT));
+}
+#endif
+
 // ---- signed saturating add (never wrap) ------------------------------------
 // eos-p3fix-thermal-ceiling: raycaster.h's `heat_saturating_add` only
 // saturates the POSITIVE side (its accumulator is contractually non-negative

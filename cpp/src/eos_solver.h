@@ -192,6 +192,31 @@ public:
     // bind, nothing in eos_solver.cpp or any CUDA kernel reads it yet — it is
     // therefore provably INERT (digests byte-identical pre/post this patch).
     float n_work_ref = 0.25f;
+    // k_drag / k_drag_heat_frac (energy-books arc, design §2.8, NEW patch
+    // P-E3): interior momentum drag WITH a heat counterparty — the mechanism
+    // that gives the Helmholtz storm an honest grave. Per-tick, in the step-4
+    // kick loop, AFTER the |u| cap and BEFORE the store: component-wise
+    // magnitude-first shrink u *= (1 - kd_q), kd_q = quantize(k_drag*dt)
+    // folded once per tick (the absorb precedent); the removed kinetic energy
+    // deposits into the SAME cell's T (a collocated-grid shear-heating
+    // placement). k_drag default 0.0 -> the mechanism ships SILENT (dormancy
+    // BY BRANCH on the QUANTIZED kd_q, not the float — see the .cpp).
+    // k_drag_heat_frac default 1.0 (RULING R2, Erik 2026-08-17): full deposit
+    // keeps the conservation oracle EXACT through every gate; Erik sweeps the
+    // fraction at P-E5 (physical-air anchor ~=0.0014 — Q16 game units put
+    // air's heat capacity ~700x below physical, c_v=1 by convention). Any
+    // non-deposited remainder is the counted, named e_drag_drop_sum channel.
+    float k_drag = 0.0f;
+    float k_drag_heat_frac = 1.0f;
+    // c_v (energy-books arc, design §2.8): the SAME gas heat-capacity
+    // constant TemperatureSolver::c_v prices its ΔT=ΔE/(N*c_v) deposits with
+    // ([physics.thermal] c_v — physics_runner.py binds both from the ONE
+    // config key). The drag deposit's ΔT = k_drag_heat_frac*ΔE_cell/c_v needs
+    // NO per-cell N divisor (ΔE_cell is already specific — a velocity, not a
+    // momentum), so this is EOSSolver's own copy of the same load-time
+    // constant rather than a cross-solver reference. Default 1.0 mirrors
+    // TemperatureSolver's own default.
+    float c_v = 1.0f;
     // T_MAX_PHYS (v2.4 as-built amendment, PROVISIONAL pending Erik's P5
     // review — eos-p3fix-thermal-ceiling, decisions.md #16): a COUNTED
     // physical-maximum rail on the T FIELD itself, applied as a saturating
@@ -282,6 +307,36 @@ public:
     mutable int64_t e_floor_sum = 0;
     mutable int64_t n_active_flux = 0;
     mutable int64_t n_bulk_active_sum = 0;
+
+    // --- P-E3 interior-drag oracle counters (design §2.8) -----------------
+    // Both n-WEIGHTED (raw ΔT is not comparable to KE) and PER-TICK (the
+    // P-E1 reset-at-step()-entry idiom, not P-E2a's accumulate idiom — see
+    // the as-built for why: the drag identity is checked ONE tick at a time,
+    // like the transport gate, not diffed against a run total). Raw
+    // Q16.16^2 (dequant = raw / 65536^2), the SAME "N*T" currency as
+    // eth_transport_delta / e_floor_sum / e_ts_residual.
+    //   ke_drag_removed     = Sigma n_bulk*(|u_old|^2 - |u_new|^2) over the
+    //                         drag loop (structurally >= 0 — the
+    //                         magnitude-first shrink guarantees it, no
+    //                         clamp/signed term needed).
+    //   e_drag_deposit      = Sigma n_bulk*ΔT_applied — the CONVERTER's
+    //                         output (§5: the kick's unpaid pressure work,
+    //                         named here rather than a true creator).
+    //   e_drag_drop_sum     = Sigma n_bulk*ΔT_drop — the (1-k_drag_heat_frac)
+    //                         remainder, a counted R3-legal destruction.
+    //   e_drag_rail_clipped = Sigma n_bulk*ΔT_clipped — the T_MAX_PHYS-rail
+    //                         (and int32-narrow) shortfall between the
+    //                         INTENDED deposit and what actually landed;
+    //                         NOT a formality (c_v=1 reaches the ceiling in
+    //                         ~14 ticks from a capped jet — an expected
+    //                         regime).
+    // Identity (asserted per tick, k_drag > 0): ke_drag_removed ==
+    // 2*c_v*(e_drag_deposit + e_drag_drop_sum + e_drag_rail_clipped) within
+    // the measured per-cell LSB slack (design §2.8/§7).
+    mutable int64_t ke_drag_removed = 0;
+    mutable int64_t e_drag_deposit = 0;
+    mutable int64_t e_drag_drop_sum = 0;
+    mutable int64_t e_drag_rail_clipped = 0;
 
     // --- P6.2 telemetry: the substep count the last step() actually ran ---
     // (design §3.2 step 1's n = ceil(dt/dt_adv), N_SUB_MAX-capped). Exposed so
@@ -549,13 +604,17 @@ uint64_t eos_sl_advect_reference(
 //   * scalar params   — the EOSSolver config members, folded to q16/int64
 //                       through the IDENTICAL double expressions step() uses.
 // Outputs: the SAME chained FNV digests step() stores in digest_velocity /
-// digest_compression, plus the five rail counters FOR THIS CALL in
-// counters_out[5] = { u_clamp_hits, u_max_hits, work_clamp_hits,
-// energy_floor_hits, t_max_phys_hits } (the solver's members are cumulative;
-// a gate compares per-tick deltas). Counter semantics are the solver's own:
-// ONE increment per engaging CELL (the |u| clamp is a magnitude event, not
-// per-component; the 4c rails are an exclusive if/else-if chain). Test entry
-// only — the live path remains EOSSolver::step.
+// digest_compression, plus the NINE rail counters FOR THIS CALL in
+// counters_out[9] = { u_clamp_hits, u_max_hits, work_clamp_hits,
+// energy_floor_hits, t_max_phys_hits, ke_drag_removed, e_drag_deposit,
+// e_drag_drop_sum, e_drag_rail_clipped } (the solver's members are
+// cumulative for the first five, PER-TICK for the drag four; a gate compares
+// per-tick deltas either way). Counter semantics are the solver's own: ONE
+// increment per engaging CELL for the first five (the |u| clamp is a
+// magnitude event, not per-component; the 4c rails are an exclusive
+// if/else-if chain); the drag four are int64 ENERGY SUMS (raw Q16.16^2), not
+// hit counts (design §2.8). Test entry only — the live path remains
+// EOSSolver::step.
 // ---------------------------------------------------------------------------
 void eos_kick_compression_reference(
     int32_t* wind_x, int32_t* wind_y, int32_t* temperature,   // in/out
@@ -567,8 +626,12 @@ void eos_kick_compression_reference(
     float c_max, float dx, float adiabatic_index, float absorb_strength,
     float n_floor_solver, float t_min, float t_work_clamp,
     float t_max_phys, float u_max,   // trace_mass_scale param RETIRED (P-T0)
+    // P-E3 (design §2.8): interior drag + its heat counterparty. k_drag
+    // default 0.0 -> the mechanism is dormant (branch on the QUANTIZED kd_q,
+    // not these floats — see the .cpp).
+    float k_drag, float k_drag_heat_frac, float c_v,
     uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
-    int64_t* counters_out /* [5] */,
+    int64_t* counters_out /* [9] */,
     const bool* is_ambient = nullptr,    // BC: ring u ≡ 0 (defaults off)
     // THERMAL-MASS AXIS, P-EOS: step-4c skips its T write on thermal_solid
     // tiles (the kick is untouched). Default nullptr -> `solid` -> pre-patch.

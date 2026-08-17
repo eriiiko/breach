@@ -19,6 +19,8 @@ responsible for calling ``gmap.destroy_wall(y, x)`` on each.
 """
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 
 import temperature_scale        # P-K2: canonical game-T -> Kelvin map accessor
@@ -461,6 +463,44 @@ class PhysicsRunner:
         # dial is reachable from config ahead of that patch, and is provably
         # inert (nothing downstream reads self.eos.n_work_ref yet).
         self.eos.n_work_ref      = _ep("n_work_ref", self.eos.n_work_ref)
+        # P-E3 (energy-books arc, design §2.8, NEW patch): interior momentum
+        # drag with a heat counterparty. k_drag default 0.0 -> the mechanism
+        # ships SILENT (dormancy BY BRANCH on the quantized fold, not this
+        # float — see eos_solver.cpp). k_drag_heat_frac default 1.0 (RULING
+        # R2, Erik 2026-08-17) keeps the conservation oracle EXACT through
+        # every gate; Erik sweeps the fraction at P-E5.
+        self.eos.k_drag          = _ep("k_drag", self.eos.k_drag)
+        self.eos.k_drag_heat_frac = _ep("k_drag_heat_frac",
+                                        self.eos.k_drag_heat_frac)
+        # c_v: EOSSolver's own copy of the SAME [physics.thermal] c_v gas
+        # heat-capacity constant self.temperature.c_v was bound from above —
+        # ONE config key, two solvers, the n_floor_heat/T_MAX_PHYS precedent.
+        self.eos.c_v              = float(getattr(thermal, "c_v", 1.0))
+
+        # P-E3 forbidden-band load-warn tripwire (design §2.8, task item D):
+        # the storm audit's §5 window (docs/storm_audit_2026-08-14.md §5 row
+        # d/d', §5B) is dormant at shipped dials (k_wind_strip=0.0) but must
+        # never be wandered into unwarned. [materials.air] wave_absorb in the
+        # OPEN interval (0, 0.02) WHILE k_wind_strip > 0 is that historical
+        # rectifier window — warn loudly at load, naming the audit, rather
+        # than silently let a config drift back into it.
+        air_cfg = getattr(CFG.materials, "air", None)
+        air_wave_absorb = float(getattr(air_cfg, "wave_absorb", 0.0)) \
+            if air_cfg is not None else 0.0
+        if 0.0 < air_wave_absorb < 0.02 and self.fire.params.k_wind_strip > 0.0:
+            warnings.warn(
+                f"[materials.air] wave_absorb={air_wave_absorb} sits inside "
+                "the FORBIDDEN BAND (0, 0.02) while [physics.fire] "
+                f"k_wind_strip={self.fire.params.k_wind_strip} > 0 — this is "
+                "the storm audit's §5 instability window (docs/storm_audit_"
+                "2026-08-14.md §5 mechanism, row d/d', §5B): damp "
+                "0.002-0.01 + a live wind-strip fire is the measured "
+                "violently-unstable regime (KE burst, T-floor spiral to the "
+                "T_MIN rail). Raise wave_absorb to >= 0.02, use k_drag "
+                "instead ([physics.eos] k_drag, design §2.8 — a strictly "
+                "stronger sink at the equivalent rate, A@0.02 == k_drag "
+                "0.0067), or set k_wind_strip = 0.0.",
+                RuntimeWarning, stacklevel=2)
 
         # P-T0 (energy-books arc, 2026-08-17, docs/energy_transport_design_
         # 2026-08-16.md §2.6 — the trace 0% ruling): `trace_mass_scale`

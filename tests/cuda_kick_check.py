@@ -70,9 +70,21 @@ CONSTS = dict(
     n_floor_solver=1e-3, t_min=-289.0, t_work_clamp=0.5,
     t_max_phys=16000.0, u_max=1000.0,
     # trace_mass_scale key RETIRED (P-T0, design §2.6)
+    # P-E3 (design §2.8): interior drag + heat counterparty. Shipped
+    # defaults here (k_drag=0.0) so the base CONSTS dict stays DORMANT —
+    # every Part 1/2 config below therefore ALSO doubles as drag-dormancy
+    # CPU<->GPU parity coverage. The dedicated drag-active config below
+    # (CONSTS_DRAG) is what exercises the mechanism itself.
+    k_drag=0.0, k_drag_heat_frac=1.0, c_v=1.0,
 )
 
-COUNTER_NAMES = ("u_clamp", "u_max", "work_clamp", "energy_floor", "t_max_phys")
+# A drag-ACTIVE variant: k_drag > 0 (dormancy branch open) and
+# k_drag_heat_frac < 1 (so e_drag_drop_sum is non-vacuous too).
+CONSTS_DRAG = dict(CONSTS, k_drag=0.02, k_drag_heat_frac=0.5)
+
+COUNTER_NAMES = ("u_clamp", "u_max", "work_clamp", "energy_floor", "t_max_phys",
+                 "ke_drag_removed", "e_drag_deposit", "e_drag_drop_sum",
+                 "e_drag_rail_clipped")
 
 
 def _quantize(x):
@@ -201,11 +213,41 @@ def _make_rail_forcer(h=24, w=24):
     return inp
 
 
+def _make_drag_forcer(h=24, w=24):
+    """P-E3 (design §2.8) drag-rail forcer: substantial velocity everywhere
+    (real KE to remove), a near-ceiling hot band (a sustained drag deposit
+    there clips at T_MAX_PHYS — e_drag_rail_clipped), ordinary ambient N
+    (n_bulk >= 1, so the deposit WRITES most places), and a near-vacuum strip
+    (n_bulk < 1 raw count — the phantom-T guard: still priced, n-weighted to
+    ~0, T never written there)."""
+    inp = {
+        "wind_x": np.full((h, w), _quantize(900.0), dtype=np.int32),
+        "wind_y": np.full((h, w), _quantize(-900.0), dtype=np.int32),
+        "temperature": np.full((h, w), _quantize(100.0), dtype=np.int32),
+        "p_new": np.full((h, w), _quantize(1.0), dtype=np.int32),
+        "gas": np.zeros((3, h, w), dtype=np.int32),
+        "gas_conservative": np.array([True, True, False]),
+        "solid": np.zeros((h, w), dtype=bool),
+        "is_vacuum": np.zeros((h, w), dtype=bool),
+        "absorb": np.zeros((h, w), dtype=np.float32),
+    }
+    inp["gas"][0][:, :] = _quantize(0.21)
+    inp["gas"][1][:, :] = _quantize(0.79)
+    # Near-ceiling hot band: the drag deposit here should clip at T_MAX_PHYS.
+    inp["temperature"][8:16, :] = _quantize(15990.0)
+    # Near-vacuum strip: n_bulk < 1 raw count -> the phantom-T guard engages.
+    inp["gas"][0][20:24, :] = 0
+    inp["gas"][1][20:24, :] = 0
+    for k in inp:
+        inp[k] = np.ascontiguousarray(inp[k])
+    return inp
+
+
 def part1_isolated() -> bool:
     print("PART 1 — isolated GPU vs CPU reference (synthetic, all rails):")
     ok = True
     rng = np.random.default_rng(20260711)
-    totals = np.zeros(5, dtype=np.int64)   # ref counter engagement coverage
+    totals = np.zeros(9, dtype=np.int64)   # ref counter engagement coverage
     n_cfg = 0
 
     # (a) the deterministic all-rails forcer, both cap regimes.
@@ -253,6 +295,25 @@ def part1_isolated() -> bool:
             ok &= _compare(f"{h}x{w} dt={dt} wmag={wmag} c_loc={c_local}",
                            f_ref, res_ref, f_gpu, res_gpu)
             totals += np.array(res_ref[2:], dtype=np.int64)
+
+    # (c) P-E3 (design §2.8): the dedicated drag-active forcer, both cap
+    # regimes — CONSTS_DRAG (k_drag=0.02, k_drag_heat_frac=0.5) so all four
+    # new counters engage (ke_drag_removed, e_drag_deposit non-vacuous from
+    # the heat_frac<1 split; e_drag_drop_sum non-vacuous for the same
+    # reason; e_drag_rail_clipped from the near-ceiling hot band).
+    for c_local, tag in ((300.0, "drag forcer c_LOCAL<U_MAX"),
+                         (2300.0, "drag forcer c_LOCAL>U_MAX")):
+        n_cfg += 1
+        inp = _make_drag_forcer()
+        f_ref, res_ref, f_gpu, res_gpu = _run_pair(
+            inp, 1.0 / 24.0, _quantize(c_local), CONSTS_DRAG)
+        ok &= _compare(tag, f_ref, res_ref, f_gpu, res_gpu)
+        totals += np.array(res_ref[2:], dtype=np.int64)
+        if res_ref[7] == 0 or res_ref[8] == 0 or res_ref[9] == 0 or res_ref[10] == 0:
+            ok = False
+            print(f"  {tag}: drag rails did not all engage "
+                  f"(ke_removed={res_ref[7]} deposit={res_ref[8]} "
+                  f"drop={res_ref[9]} clipped={res_ref[10]})")
 
     # Coverage: every rail counter must have engaged somewhere in Part 1.
     for i, name in enumerate(COUNTER_NAMES):
@@ -323,14 +384,25 @@ def part2_trajectory() -> bool:
                     if not bool(g.gases.conservative[gi])]
 
     def counters():
+        # u_clamp/u_max/work_clamp/energy_floor/t_max_phys: CUMULATIVE (the
+        # caller diffs two snapshots). ke_drag_removed/e_drag_deposit/
+        # e_drag_drop_sum/e_drag_rail_clipped (P-E3, design §2.8): PER-TICK
+        # (reset at every step() entry) — at this scenario's default
+        # k_drag=0.0 (dormant, matching the live engine everywhere else)
+        # these four stay 0 throughout, so a plain diff is harmless here,
+        # but the caller still takes them as a direct per-tick READ (not a
+        # diff) to stay correct in general — see the loop below.
         return np.array([eos.u_clamp_hits, eos.u_max_hits,
                          eos.work_clamp_hits, eos.energy_floor_hits,
-                         eos.t_max_phys_hits], dtype=np.int64)
+                         eos.t_max_phys_hits,
+                         eos.ke_drag_removed, eos.e_drag_deposit,
+                         eos.e_drag_drop_sum, eos.e_drag_rail_clipped],
+                        dtype=np.int64)
 
     n_ticks = 120
     max_n_sub = 0
     max_u_counts = 0
-    totals = np.zeros(5, dtype=np.int64)
+    totals = np.zeros(9, dtype=np.int64)
     bad = 0
     for tick in range(n_ticks):
         # Snapshot the eos.step step-1-entry state (run_substeps calls
@@ -352,7 +424,14 @@ def part2_trajectory() -> bool:
         )
         n_sub = int(eos.dbg_last_n_sub)
         c_local_q = int(eos.dbg_last_c_local_q)
-        cnt_delta = counters() - cnt0
+        cnt_now = counters()
+        cnt_delta = cnt_now - cnt0
+        # P-E3 (design §2.8): indices 5..8 are PER-TICK (reset every
+        # step() entry) — READ directly rather than diffed against cnt0
+        # (which holds the PREVIOUS tick's per-tick snapshot, not a base to
+        # subtract from). Harmless at this scenario's k_drag=0.0, correct
+        # in general.
+        cnt_delta[5:] = cnt_now[5:]
         totals += cnt_delta
         max_n_sub = max(max_n_sub, n_sub)
         max_u_counts = max(max_u_counts,

@@ -37,9 +37,18 @@ namespace breach_cuda {
 // does: ((uint64_t)lo >> S) | ((uint64_t)hi << (64 - S)). Bit-identical to the CPU
 // by construction (the same single arithmetic >>S of the full 128-bit product).
 // See [[fixed_point_migration_lessons]] #10 + cuda_water.cu's original comment.
+// P-E3 (energy-books arc, design §2.8) EXTENDS the valid domain to S==0
+// (every prior call site uses S in {16,32,48}, so this is purely additive):
+// the general recombine computes `hi << (64 - S)`, UNDEFINED BEHAVIOUR at
+// S==0 (a 64-bit shift by 64) — on this hardware it silently degenerates to
+// `hi << 0` (the shift-count-mod-64 masking real GPUs share with x86),
+// OR-ing an unshifted `hi` into the result. At S==0 the low 64 bits of the
+// product ARE the answer, so it is special-cased directly (mirrors the CPU
+// host fix in eos_solver.cpp's file-local mul128_shr).
 __device__ __forceinline__ int64_t mul128_shr_signed(int64_t a, int64_t b, int S) {
-    const long long hi = __mul64hi((long long)a, (long long)b);   // signed hi 64
     const unsigned long long lo = (unsigned long long)((long long)a * (long long)b);
+    if (S == 0) return (int64_t)lo;   // P-E3: the UB-avoiding special case
+    const long long hi = __mul64hi((long long)a, (long long)b);   // signed hi 64
     const long long res = (long long)((lo >> S) |
                                       ((unsigned long long)hi << (64 - S)));
     return (int64_t)res;
@@ -102,6 +111,24 @@ __device__ __forceinline__ q16 recip_mul_dev(q16 x_q16, int64_t recip) {
 __device__ __forceinline__ int64_t deposit_dT_wide_q16_dev(
         int32_t deposit_q, int32_t recip_n_q, int64_t recip_cv) {
     const int64_t stage1 = (int64_t)deposit_q * (int64_t)recip_n_q;
+    return mul128_shr_signed(stage1, recip_cv,
+                             fixedpoint::FP_SHIFT + fixedpoint::RECIP_SHIFT);
+}
+
+// ---- drag_dT_wide_q16_dev — the wide DRAG deposit divide (P-E3) ------------
+// A VERBATIM device port of fixedpoint::drag_dT_wide_q16 (fixed_point.h,
+// energy-books arc design §2.8): ΔE_cell*heat_frac/c_v chained as ONE
+// 128-bit product, narrowed EXACTLY ONCE to int64 (NOT q16) — the same
+// overflow-narrowing hazard class deposit_dT_wide_q16_dev exists for, minus
+// the per-cell N divisor (ΔE_cell is already specific — see the host
+// comment). Stage 1 (energy_q16 * heat_frac_q) fits a plain int64 (energy_q16
+// is bounded ~2^40 at the format's worst case, heat_frac_q <= ~2^17); stage 2
+// combines that with recip_cv via the SAME mul128_shr_signed this file
+// already shares with deposit_dT_wide_q16_dev, at the identical combined
+// shift (FP_SHIFT + RECIP_SHIFT = 48).
+__device__ __forceinline__ int64_t drag_dT_wide_q16_dev(
+        int64_t energy_q16, int32_t heat_frac_q, int64_t recip_cv) {
+    const int64_t stage1 = energy_q16 * (int64_t)heat_frac_q;
     return mul128_shr_signed(stage1, recip_cv,
                              fixedpoint::FP_SHIFT + fixedpoint::RECIP_SHIFT);
 }
