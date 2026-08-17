@@ -75,19 +75,31 @@ def _shift_grid(h, w, rng, kind):
     raise AssertionError(kind)
 
 
+# P-E2a: the six energy counters `cuda_temperature_step` now returns
+# alongside the T_MAX_PHYS hit count (design §2.3). This gate is a
+# TEMPERATURE-SOLVER lockstep, so it compares them too — the conduction
+# rewrite's books must agree bit-for-bit across the backends here as well.
+E_COUNTERS = ("e_cond_trunc_sum", "e_cond_cap_sum", "cond_limit_hits",
+              "e_cool_sum", "e_vac_wipe_sum", "e_ring_pin_sum")
+
+
 def _run_pair(solver, f, solid, is_vacuum, ts, csg):
     """CPU reference vs GPU kernel on identical copies, BOTH given `csg`; plus a
-    GPU control with the grid OMITTED (the pre-axis scalar fallback)."""
+    GPU control with the grid OMITTED (the pre-axis scalar fallback). `hits` is
+    (t_max_phys_hits,) + the six P-E2a energy counters, all per-call."""
     t_cpu = np.ascontiguousarray(f["temperature"].copy())
-    c0 = int(solver.t_max_phys_hits)
+    c0 = (int(solver.t_max_phys_hits),) + tuple(
+        int(getattr(solver, nm)) for nm in E_COUNTERS)
     solver.step(t_cpu, f["heat"], f["his"], f["fs"], solid, is_vacuum,
                 f["atmosphere"], wind_x=f["wind_x"], wind_y=f["wind_y"],
                 dt=f["dt"], n_bulk=f["n_bulk"], thermal_solid=ts,
                 cool_shift_grid=csg)
-    hits_cpu = int(solver.t_max_phys_hits) - c0
+    c1 = (int(solver.t_max_phys_hits),) + tuple(
+        int(getattr(solver, nm)) for nm in E_COUNTERS)
+    hits_cpu = tuple(b - a for a, b in zip(c0, c1))
 
     t_gpu = np.ascontiguousarray(f["temperature"].copy())
-    hits_gpu = int(bp.cuda_temperature_step(
+    hits_gpu = tuple(int(v) for v in bp.cuda_temperature_step(
         t_gpu, f["heat"], f["his"], f["fs"], solid, is_vacuum, f["atmosphere"],
         n_bulk=f["n_bulk"], wind_x=f["wind_x"], wind_y=f["wind_y"], dt=f["dt"],
         thermal_solid=ts, cool_shift_grid=csg, cool_shift_floor=SHIFT_MIN,
@@ -140,7 +152,7 @@ def part1_isolated() -> bool:
                         solver, fld, solid, is_vacuum, ts, csg)
                     tag = f"{h}x{w}/{kind}/grid={gkind}/wind={wind}"
                     ok &= TM._compare(tag, t_cpu, hc, t_gpu, hg)
-                    total_hits += hc
+                    total_hits += hc[0]
                     n_cfg += 1
                     if not np.array_equal(t_cpu, t_ctl):
                         control_differed += 1
