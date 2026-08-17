@@ -426,10 +426,15 @@ placed).
 - **`k_drag_heat_frac` is a new dial, default 1.0 (RULING R2, Erik
   2026-08-17).** Rationale: Q16 game units put air's heat capacity ~700× below
   physical (c_v = 1 by convention), so a fully honest deposit runs ~700×
-  physical — at k_drag 0.02 a sustained 20 m/s neck flow deposits ~96
-  game-deg/s into neck cells, which can reach ignition-relevant temperatures
-  under long venting. Default 1.0 keeps the conservation oracle EXACT through
-  every gate; Erik sweeps the fraction at P-E5 (physical-air anchor ≈0.0014).
+  physical. **MEASURED CORRECTION (P-E3, 2026-08-17):** the pre-build estimate
+  of "~96 game-deg/s into neck cells at a sustained 20 m/s" was wrong by ~12× —
+  the measured rate is **≈8.05 game-deg/s** at k_drag 0.02, verified by hand
+  against the locked formula. The ignition-risk concern that motivated this
+  dial is therefore far milder than feared, but the dial stays (it is the
+  honest knob for the KE→heat exchange rate, and the risk scales with whatever
+  k_drag Erik ultimately ships). Default 1.0 keeps the conservation oracle
+  EXACT through every gate; Erik sweeps the fraction at P-E5 (physical-air
+  anchor ≈0.0014).
   Any non-deposited remainder is a **counted, named** destruction channel
   `e_drag_drop_sum` (R3-legal).
 - **Arithmetic:** |u|² is int64-safe post-cap (≤ 2·(6.55e7)² ≈ 8.6e15), but ΔT
@@ -483,12 +488,18 @@ law, and k_drag 0.02 is a strictly stronger sink than wave_absorb 0.02
 (A@0.02 ≡ k_drag 0.0067, audit §5B). The forbidden-band config load-warn
 tripwire rides along. CPU+CUDA same patch.
 
-**Feel at 0.02 (for P-E5's brief).** Free-momentum e-fold ≈2.1 s: room-scale
-sloshing and quiet-room drift die within seconds; smoke hangs sooner; blast
-pushback at range softens (~18% KE over a 10-tick flight). Pressure-DRIVEN
-flows survive at a terminal velocity where kick balances drag — breach suction
-and fire convection persist with softened transients, plus the neck heating
-above. **P-E5 play list gains "door-neck temperature under sustained venting"
+**Feel (for P-E5's brief) — MEASURED, superseding the pre-build estimate.**
+P-E3 measured the free-momentum e-fold at k_drag 0.02 as **≈49.6 s**, not the
+≈2.1 s this section originally predicted (~24× off; the corrected figure was
+verified by hand against the locked formula). Consequence for the sweep:
+**0.02 is far too weak to be the "storm dies in seconds" dial — k_drag ≈ 0.5
+gives a ~2 s e-fold**, so Erik's P-E5 sweep should start well above the audit's
+suggested 0.02–0.05 band if he wants the originally-described feel. The
+qualitative picture stands at whatever value produces a seconds-scale e-fold:
+room-scale sloshing and quiet-room drift die, smoke hangs sooner, blast
+pushback at range softens, while pressure-DRIVEN flows (breach suction, fire
+convection) survive at a terminal velocity where kick balances drag, with
+softened transients plus the neck heating above. **P-E5 play list gains "door-neck temperature under sustained venting"
 as its own row.**
 
 ### 2.9 The cold-rail engine — identified, and deliberately deferred (RULING R1)
