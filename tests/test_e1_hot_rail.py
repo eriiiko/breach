@@ -208,12 +208,15 @@ def test_transport_delta_is_one_way_negative(hot_run):
         "over the run — the books are still open somewhere")
 
 
-@pytest.mark.xfail(reason="owned by P-E4", strict=False)
 def test_no_rail_hits(hot_run):
     """HEALTHY property (design SS7 rails row): the T_MAX_PHYS value rail
     never engages — a bounded system does not need the ceiling. RED on
-    HEAD: step-4c compression work compounds x~1.5/tick on the evacuated
-    burning block until the rail catches it (measured 2130 hits here)."""
+    HEAD (measured 2130 hits) and still red after P-E1 alone (46 hits, the
+    trust gate not yet wired). FLIPPED STRICT at P-E4 (design SS2.4/SS6,
+    the cross-rung red idiom's owning patch): the compression-work trust
+    gate fades step-4c's work factor to 0 as the evacuated burning block's
+    N collapses toward zero, so the x~1.5/tick geometric climb the rail
+    used to catch never gets the authority to compound in the first place."""
     assert hot_run["t_max_phys_hits"] == 0, (
         f"T_MAX_PHYS engaged {hot_run['t_max_phys_hits']} times — the "
         "hot-rail runaway is live")

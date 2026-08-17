@@ -70,6 +70,10 @@ void eos_kick_compression(
     // P-E3 (energy-books arc, design §2.8): interior drag + heat
     // counterparty. k_drag default 0.0 -> dormant.
     float k_drag, float k_drag_heat_frac, float c_v,
+    // P-E4 (energy-books arc, design §2.4): the compression-work trust
+    // gate's reference density (fades step 4c's work factor toward 0 below
+    // n_work_ref, hard-zero below n_work_ref/2).
+    float n_work_ref,
     uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
     int64_t* counters_out /* [9] */,
     // BC (spec §1/§3): the ambient ring (nullptr = space) drives the velocity

@@ -463,6 +463,27 @@ FP_HD inline q16 scale_mag(q16 x, q16 scale) {
     return (x < 0) ? -scaled : scaled;
 }
 
+// ---- compression-work TRUST-GATE fade (energy-books arc, design §2.4) -----
+// P-E4: fades the step-4c compression-work factor k toward 0 when the cell's
+// bulk density n is too thin to trust — n < n_work_ref/2 -> fade 0 (hard
+// zero), linear 0->1 for n in [n_work_ref/2, n_work_ref], 1 above. `ratio_q`
+// is n/n_work_ref in Q16.16 (the CALLER computes it via recip_mul(n,
+// recip_n_ref) on host / recip_mul_dev(n, recip_n_ref) on device — the
+// 128-bit reciprocal multiply differs per backend, exactly like
+// deposit_dT_wide_q16/_dev, so only this trivial clamp01 tail is shared).
+// fade = clamp01(2*ratio - 1): ratio==0.5 -> 0, ratio==1.0 -> 1, ratio>1 ->
+// clamped to 1. Widened to int64 before the *2 step so a dense pocket
+// (P-E0 measured the cold-rail window at ratio 7-37x the trust band) cannot
+// overflow — the final clamp brings it back to a plain q16 in [0, FP_ONE].
+// The caller applies the fade to k via scale_mag (magnitude-first, design
+// §2.4's pinned idiom) so a NEGATIVE k fades toward zero, never past it.
+FP_HD inline q16 work_fade_clamp01_q(q16 ratio_q) {
+    int64_t f = ((int64_t)ratio_q << 1) - (int64_t)FP_ONE;
+    if (f < 0) f = 0;
+    else if (f > (int64_t)FP_ONE) f = (int64_t)FP_ONE;
+    return (q16)f;
+}
+
 // ---- FLOOR division toward -inf (energy-books arc, design §2.1.5 + §2.7) ---
 //
 // C++ and CUDA integer `/` both truncate toward ZERO. On a SUB-AMBIENT cell the

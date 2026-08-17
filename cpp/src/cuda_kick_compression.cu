@@ -263,10 +263,12 @@ __global__ void kick_kernel(int32_t* __restrict__ wind_x,
 __global__ void compression_kernel(const int32_t* __restrict__ wind_x,
                                    const int32_t* __restrict__ wind_y,
                                    int32_t* __restrict__ temperature,
+                                   const int32_t* __restrict__ n_total,   // P-E4
                                    const bool* __restrict__ solid,
                                    const bool* __restrict__ is_vacuum,
                                    int32_t inv_2dx_q, int32_t gamma_m1_q,
                                    int32_t dt_q, int32_t work_clamp_q,
+                                   int64_t recip_n_work_ref,   // P-E4
                                    int32_t t_min_q, int32_t t_max_phys_q,
                                    unsigned long long* __restrict__ cnt,
                                    int h, int w,
@@ -294,10 +296,36 @@ __global__ void compression_kernel(const int32_t* __restrict__ wind_x,
         const q16 div_new = dux + duy;
         q16 k = mul_q16(gamma_m1_q, div_new);
         k = mul_q16(k, dt_q);
-        if (k > work_clamp_q)       { k = work_clamp_q;  atomicAdd(&cnt[2], 1ULL); }
-        else if (k < -work_clamp_q) { k = -work_clamp_q; atomicAdd(&cnt[2], 1ULL); }
-        const q16 dT = mul_q16(k, temperature[i]);
-        q16 t_new = sat_add_q16(temperature[i], (q16)(-(int64_t)dT));
+        // P-E4 TRUST GATE (design §2.4), VERBATIM device transcription of
+        // the CPU's block: fade k toward 0 for thin/untrustworthy N,
+        // magnitude-first (scale_mag) so a negative k fades TOWARD zero,
+        // never past it. recip_mul_dev is the device 128-bit reciprocal
+        // multiply (recip_mul's device twin); work_fade_clamp01_q is the
+        // shared FP_HD clamp01 tail (no 128-bit ops, identical both sides).
+        {
+            const q16 ratio = recip_mul_dev(n_total[i], recip_n_work_ref);
+            const q16 fade = work_fade_clamp01_q(ratio);
+            k = scale_mag(k, fade);
+        }
+        // P-E4 REVERSIBLE WORK (design §2.7), VERBATIM device transcription:
+        // magnitude-first clamp, single-compare form (pinned) — identical
+        // hit semantics to the old signed if/else-if pair.
+        const bool k_neg = (k < 0);
+        q16 w_mag = k_neg ? (q16)(-(int64_t)k) : k;
+        if (w_mag > work_clamp_q) { w_mag = work_clamp_q; atomicAdd(&cnt[2], 1ULL); }
+        q16 t_new;
+        if (k_neg) {
+            // COMPRESSION — KEPT VERBATIM (design §2.7): bit-identical to HEAD.
+            const q16 k_signed = (q16)(-(int64_t)w_mag);
+            const q16 dT = mul_q16(k_signed, temperature[i]);
+            t_new = sat_add_q16(temperature[i], (q16)(-(int64_t)dT));
+        } else {
+            // EXPANSION (k >= 0, including the pinned k==0 identity): the
+            // reversible inverse via the shared floordiv_q helper (P-E1's
+            // recovery divide) — plain `/` would MINT on sub-ambient T.
+            t_new = (q16)floordiv_q((int64_t)temperature[i] << 16,
+                                    (int64_t)FP_ONE + (int64_t)w_mag);
+        }
         if (t_new < t_min_q) { t_new = t_min_q; atomicAdd(&cnt[3], 1ULL); }
         else if (t_new > t_max_phys_q) { t_new = t_max_phys_q; atomicAdd(&cnt[4], 1ULL); }
         temperature[i] = t_new;
@@ -313,7 +341,7 @@ KickScalarFolds kick_scalar_folds(
         float dt, float c_max, float dx, float adiabatic_index,
         float absorb_strength, float n_floor_solver, float t_min,
         float t_work_clamp, float t_max_phys, float u_max,
-        float k_drag, float k_drag_heat_frac, float c_v) {
+        float k_drag, float k_drag_heat_frac, float c_v, float n_work_ref) {
     KickScalarFolds f;
     f.n_floor_q    = quantize((double)n_floor_solver);
     f.t_min_q      = quantize((double)t_min);
@@ -336,6 +364,8 @@ KickScalarFolds kick_scalar_folds(
     f.kd_q         = quantize((double)k_drag * dt_d);
     f.heat_frac_q  = quantize((double)k_drag_heat_frac);
     f.recip_cv     = make_recip(std::max((double)c_v, 1e-6));
+    // P-E4 (design §2.4): the trust-gate fold, verbatim step()'s.
+    f.recip_n_work_ref = make_recip(std::max((double)n_work_ref, 1e-6));
     return f;
 }
 
@@ -369,9 +399,11 @@ void kick_compression_launch_resident(
                                  d_is_ambient, d_sponge_udamp);
     cuda_check(cudaGetLastError(), "kick launch");
     compression_kernel<<<grid, block>>>(d_wind_x, d_wind_y, d_temperature,
+                                        d_ntot,   // P-E4: the trust-gate input
                                         d_solid, d_is_vacuum,
                                         folds.inv_2dx_q, folds.gamma_m1_q,
                                         folds.dt_q, folds.work_clamp_q,
+                                        folds.recip_n_work_ref,   // P-E4
                                         folds.t_min_q, folds.t_max_phys_q,
                                         d_cnt, h, w, d_is_ambient, d_ts);
     cuda_check(cudaGetLastError(), "compression launch");
@@ -388,6 +420,7 @@ void eos_kick_compression(
     float n_floor_solver, float t_min, float t_work_clamp,
     float t_max_phys, float u_max,   // trace_mass_scale param RETIRED (P-T0)
     float k_drag, float k_drag_heat_frac, float c_v,   // P-E3 (design §2.8)
+    float n_work_ref,   // P-E4 (design §2.4): the compression-work trust gate
     uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
     int64_t* counters_out /* [9] */,
     const bool* is_ambient, const int32_t* sponge_udamp,     // BC
@@ -403,7 +436,7 @@ void eos_kick_compression(
     const KickScalarFolds folds = kick_scalar_folds(
         dt, c_max, dx, adiabatic_index, absorb_strength, n_floor_solver,
         t_min, t_work_clamp, t_max_phys, u_max,
-        k_drag, k_drag_heat_frac, c_v);
+        k_drag, k_drag_heat_frac, c_v, n_work_ref);
     const q16 absorb_dt_q = folds.absorb_dt_q;
 
     // ---- step 2's Dalton sum (verbatim host loop — the kick's N̂ input). ----

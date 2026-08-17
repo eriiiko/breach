@@ -183,14 +183,13 @@ public:
     float T_WORK_CLAMP = 0.5f;
     // n_work_ref (energy-books arc, design §2.4, RULING 2026-08-17): the
     // compression-work TRUST GATE's reference density — config-plumbed dial,
-    // default 0.25. THE FADE MECHANISM ITSELF IS NOT IMPLEMENTED HERE — that
-    // is P-E4's territory (fade factor = 0 for n < n_work_ref/2, linear from
-    // 0 at n_work_ref/2 to 1 at n_work_ref, applied before the ±T_WORK_CLAMP
-    // compare via a magnitude-first `recip_mul`/`recip_mul_dev`, keyed on the
-    // existing `n_total_`/`d_ntot`/`K_ntot` bulk plane). This member is
-    // PLUMBING ONLY (P-E2b): config key -> C++ member -> bindings -> Python
-    // bind, nothing in eos_solver.cpp or any CUDA kernel reads it yet — it is
-    // therefore provably INERT (digests byte-identical pre/post this patch).
+    // default 0.25. P-E2b plumbed it inert; P-E4 WIRES THE FADE (fade factor
+    // = 0 for n < n_work_ref/2, linear from 0 at n_work_ref/2 to 1 at
+    // n_work_ref, 1 above — hard-zero below half), applied to step 4c's work
+    // factor k BEFORE the ±T_WORK_CLAMP compare, via a magnitude-first
+    // `recip_mul`/`recip_mul_dev` keyed on the existing `n_total_`/`d_ntot`/
+    // `K_ntot` bulk plane (fixed_point.h's `work_fade_clamp01_q` — zero new
+    // reductions, no new synced plane).
     float n_work_ref = 0.25f;
     // k_drag / k_drag_heat_frac (energy-books arc, design §2.8, NEW patch
     // P-E3): interior momentum drag WITH a heat counterparty — the mechanism
@@ -630,6 +629,10 @@ void eos_kick_compression_reference(
     // default 0.0 -> the mechanism is dormant (branch on the QUANTIZED kd_q,
     // not these floats — see the .cpp).
     float k_drag, float k_drag_heat_frac, float c_v,
+    // P-E4 (design §2.4): the compression-work trust gate's reference
+    // density — fades step 4c's work factor k toward 0 below n_work_ref,
+    // hard-zero below n_work_ref/2 (see fixed_point.h's work_fade_clamp01_q).
+    float n_work_ref,
     uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
     int64_t* counters_out /* [9] */,
     const bool* is_ambient = nullptr,    // BC: ring u ≡ 0 (defaults off)

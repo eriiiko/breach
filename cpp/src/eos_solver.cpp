@@ -381,6 +381,10 @@ void EOSSolver::step(
     const q16 kd_q = quantize((double)k_drag * dt_d);
     const q16 heat_frac_q = quantize((double)k_drag_heat_frac);
     const int64_t recip_cv = make_recip(std::max((double)c_v, 1e-6));
+    // P-E4 (design §2.4): the compression-work trust gate's per-tick fold —
+    // 1/n_work_ref (make_recip, the SAME load-time-constant idiom recip_cv
+    // uses), self-guarded against a misconfigured 0/negative dial.
+    const int64_t recip_n_work_ref = make_recip(std::max((double)n_work_ref, 1e-6));
     const int32_t ratio_q = (int32_t)((t_max_abs_raw << 16) / (int64_t)t_amb_q);
     const q16 sqrt_ratio = sqrt_q16((int64_t)ratio_q << 16);   // Q.32 radicand
     q16 c_local_q = mul_q16(c_amb_q, sqrt_ratio);
@@ -876,24 +880,54 @@ void EOSSolver::step(
                 const q16 div_new = dux + duy;
                 q16 k = mul_q16(gamma_m1_q, div_new);
                 k = mul_q16(k, dt_q);
-                if (k > work_clamp_q)       { k = work_clamp_q;  ++work_clamp_hits; }
-                else if (k < -work_clamp_q) { k = -work_clamp_q; ++work_clamp_hits; }
-                const q16 dT = mul_q16(k, temperature[i]);
-                // eos-p3fix-thermal-ceiling: this term is MULTIPLICATIVE in
-                // the current T (t_new = T*(1-k)) — the ±T_WORK_CLAMP rail
-                // above only bounds the per-tick RATE, not the resulting
-                // VALUE, so a persistent negative-divergence driver (a real
-                // local compression pocket) compounds it geometrically
-                // (measured: ~1.5x/tick at the clamp rail, reaching the
-                // Q16.16 ceiling in ~8-9 ticks from a modest seed). The plain
-                // subtract below used to silently WRAP once that compounding
-                // exceeded int32 range — a hard correctness bug independent
-                // of whatever seeds the compounding. Saturating add fixes
-                // the wrap unconditionally; the v2.4 T_MAX_PHYS rail (see
-                // eos_solver.h) then bounds the compounding's VALUE at the
-                // physical ceiling — counted, so a scenario that leans on it
-                // is visible in telemetry, never silent.
-                q16 t_new = sat_add_q16(temperature[i], (q16)(-(int64_t)dT));
+                // P-E4 TRUST GATE (design §2.4): fade k toward 0 when the
+                // cell's bulk N is too thin to trust — hard-zero below
+                // n_work_ref/2, linear to full trust at n_work_ref. Input n
+                // is the existing n_total_ plane (post-P-T0 the bulk sum,
+                // zero new reductions). Magnitude-first (scale_mag, the
+                // sponge idiom) so a NEGATIVE k fades TOWARD zero, never
+                // past it. Applied BEFORE the ±T_WORK_CLAMP compare.
+                {
+                    const q16 ratio = recip_mul(n_total_[i], recip_n_work_ref);
+                    const q16 fade = fixedpoint::work_fade_clamp01_q(ratio);
+                    k = scale_mag(k, fade);
+                }
+                // P-E4 REVERSIBLE WORK (design §2.7): magnitude-first clamp,
+                // single-compare form (pinned) — identical hit semantics to
+                // the old signed if/else-if pair (|k| > clamp <=> k > clamp
+                // OR k < -clamp). w = |k| after the fade AND this clamp.
+                const bool k_neg = (k < 0);
+                q16 w = k_neg ? (q16)(-(int64_t)k) : k;
+                if (w > work_clamp_q) { w = work_clamp_q; ++work_clamp_hits; }
+                q16 t_new;
+                if (k_neg) {
+                    // COMPRESSION — KEPT VERBATIM (design §2.7's explicit
+                    // instruction): the hot rail stays bit-identical to
+                    // HEAD, and the sat_add wrap protection
+                    // (eos-p3fix-thermal-ceiling) is retained. This term is
+                    // MULTIPLICATIVE in the current T (t_new = T*(1+w)) — the
+                    // ±T_WORK_CLAMP rail above only bounds the per-tick RATE,
+                    // not the resulting VALUE, so a persistent
+                    // negative-divergence driver (a real local compression
+                    // pocket) compounds it geometrically (measured:
+                    // ~1.5x/tick at the clamp rail, reaching the Q16.16
+                    // ceiling in ~8-9 ticks from a modest seed) — the v2.4
+                    // T_MAX_PHYS rail bounds the compounding's VALUE at the
+                    // physical ceiling, counted, never silent.
+                    const q16 k_signed = (q16)(-(int64_t)w);
+                    const q16 dT = mul_q16(k_signed, temperature[i]);
+                    t_new = sat_add_q16(temperature[i], (q16)(-(int64_t)dT));
+                } else {
+                    // EXPANSION (k >= 0, including the pinned k==0 identity):
+                    // the reversible inverse T_new = (T<<16)/(FP_ONE+w),
+                    // floor toward -inf via the SHARED floordiv_q helper
+                    // (P-E1's recovery divide, fixed_point.h) — plain `/`
+                    // truncates toward zero and would MINT on a sub-ambient
+                    // T (both backends agree on that mint, so CPU<->CUDA
+                    // parity cannot catch it; only the ledger can).
+                    t_new = (q16)floordiv_q((int64_t)temperature[i] << 16,
+                                            (int64_t)FP_ONE + (int64_t)w);
+                }
                 if (t_new < t_min_q) { t_new = t_min_q; ++energy_floor_hits; }
                 else if (t_new > t_max_phys_q) { t_new = t_max_phys_q; ++t_max_phys_hits; }
                 temperature[i] = t_new;
@@ -1480,6 +1514,7 @@ void eos_kick_compression_reference(
         float n_floor_solver, float t_min, float t_work_clamp,
         float t_max_phys, float u_max,   // trace_mass_scale param RETIRED (P-T0)
         float k_drag, float k_drag_heat_frac, float c_v,   // P-E3 (design §2.8)
+        float n_work_ref,   // P-E4 (design §2.4) — the compression-work trust gate
         uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
         int64_t* counters_out /* [9] */,
         const bool* is_ambient, const bool* thermal_solid,
@@ -1513,6 +1548,8 @@ void eos_kick_compression_reference(
     const q16 kd_q = quantize((double)k_drag * dt_d);
     const q16 heat_frac_q = quantize((double)k_drag_heat_frac);
     const int64_t recip_cv = make_recip(std::max((double)c_v, 1e-6));
+    // P-E4 (design §2.4): the trust-gate fold, verbatim step()'s.
+    const int64_t recip_n_work_ref = make_recip(std::max((double)n_work_ref, 1e-6));
     int64_t ke_drag_removed = 0, e_drag_deposit = 0, e_drag_drop_sum = 0,
             e_drag_rail_clipped = 0;
 
@@ -1669,10 +1706,25 @@ void eos_kick_compression_reference(
                 const q16 div_new = dux + duy;
                 q16 k = mul_q16(gamma_m1_q, div_new);
                 k = mul_q16(k, dt_q);
-                if (k > work_clamp_q)       { k = work_clamp_q;  ++work_clamp_hits; }
-                else if (k < -work_clamp_q) { k = -work_clamp_q; ++work_clamp_hits; }
-                const q16 dT = mul_q16(k, temperature[i]);
-                q16 t_new = sat_add_q16(temperature[i], (q16)(-(int64_t)dT));
+                // P-E4 trust gate (design §2.4, step()'s block verbatim).
+                {
+                    const q16 ratio = recip_mul(n_total[i], recip_n_work_ref);
+                    const q16 fade = fixedpoint::work_fade_clamp01_q(ratio);
+                    k = scale_mag(k, fade);
+                }
+                // P-E4 reversible work (design §2.7, step()'s block verbatim).
+                const bool k_neg = (k < 0);
+                q16 w = k_neg ? (q16)(-(int64_t)k) : k;
+                if (w > work_clamp_q) { w = work_clamp_q; ++work_clamp_hits; }
+                q16 t_new;
+                if (k_neg) {
+                    const q16 k_signed = (q16)(-(int64_t)w);
+                    const q16 dT = mul_q16(k_signed, temperature[i]);
+                    t_new = sat_add_q16(temperature[i], (q16)(-(int64_t)dT));
+                } else {
+                    t_new = (q16)floordiv_q((int64_t)temperature[i] << 16,
+                                            (int64_t)FP_ONE + (int64_t)w);
+                }
                 if (t_new < t_min_q) { t_new = t_min_q; ++energy_floor_hits; }
                 else if (t_new > t_max_phys_q) { t_new = t_max_phys_q; ++t_max_phys_hits; }
                 temperature[i] = t_new;

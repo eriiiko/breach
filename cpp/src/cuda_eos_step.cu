@@ -606,6 +606,8 @@ void eos_step_cuda(
             solver.T_WORK_CLAMP, solver.T_MAX_PHYS, solver.U_MAX,
             // P-E3 (design §2.8): interior drag + heat counterparty.
             solver.k_drag, solver.k_drag_heat_frac, solver.c_v,
+            // P-E4 (design §2.4): the compression-work trust gate.
+            solver.n_work_ref,
             &dig_vel, &dig_comp, cnts,   // trace_mass_scale arg RETIRED (P-T0)
             // BC: ring velocity zero + compression skip + the u-damping band.
             ambient_mode ? is_ambient : nullptr,

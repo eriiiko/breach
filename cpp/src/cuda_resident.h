@@ -127,12 +127,16 @@ struct KickScalarFolds {
     int32_t kd_q         = 0;   // quantize(k_drag * dt) — dormancy branches on this
     int32_t heat_frac_q  = 0;   // quantize(k_drag_heat_frac), a plain fraction
     int64_t recip_cv     = 0;   // make_recip(c_v), Q.32 (RECIP_SHIFT=32)
+    // P-E4 (energy-books arc, design §2.4): the compression-work trust
+    // gate's per-tick fold — 1/n_work_ref, the SAME load-time-constant
+    // idiom recip_cv uses.
+    int64_t recip_n_work_ref = 0;
 };
 KickScalarFolds kick_scalar_folds(
     float dt, float c_max, float dx, float adiabatic_index,
     float absorb_strength, float n_floor_solver, float t_min,
     float t_work_clamp, float t_max_phys, float u_max,
-    float k_drag, float k_drag_heat_frac, float c_v);
+    float k_drag, float k_drag_heat_frac, float c_v, float n_work_ref);
 
 // The step-4 + step-4c tail, LAUNCH ONLY, on DEVICE pointers — K1 kick then
 // K2 compression on one stream (the CPU pass boundary), no malloc, no
