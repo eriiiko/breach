@@ -60,8 +60,21 @@ class PhysicsRecorder:
     # `temperature` + the O2 plane join (the new solver's primary state).
     # NOTE: `gas_o2` is resolved specially in record() (a slice of gmap.gas,
     # not a named attribute).
-    DEFAULT_FIELDS = ('atmosphere', 'temperature', 'gas_o2', 'smoke', 'fire',
-                      'obstacles')
+    # ENERGY-BOOKS ARC, P-E5 (2026-08-17): `wind_x`/`wind_y` and `inert_n2`
+    # joined the default set. Rationale — the arc closed the THERMAL books and
+    # in-game dumps confirm temperature is now well behaved, but pressure
+    # transients remain (98 atm at a normal ~700 game-T => ~29x ambient density
+    # in one cell: a MASS/MOMENTUM event, not a thermal one). Every remaining
+    # candidate is a momentum story, and wind is NOT recoverable from the
+    # pressure field: the gradient gives the per-tick ACCELERATION, while u is
+    # its accumulated history (the two run ~90 deg out of phase in the
+    # Helmholtz mode). The storm audit named this exact gap
+    # (docs/storm_audit_2026-08-14.md §1: "a momentum ledger needs a recorder
+    # session that adds wind_x/wind_y to `fields`"), and design §9 already
+    # required the bulk pair for P-E5 validation recordings. `gas_o2` +
+    # `inert_n2` together give N, so p* = C*N*T_abs can be decomposed offline.
+    DEFAULT_FIELDS = ('atmosphere', 'temperature', 'gas_o2', 'inert_n2',
+                      'wind_x', 'wind_y', 'smoke', 'fire', 'obstacles')
     # SYNCED bool planes: recorded at bool dtype (not the float32 ring) when a
     # session lists them in `fields`. `ignition_armed` is the edge-trigger arm
     # (combat.apply_temperature_ignition); mirrors the `obstacles` bool handling.
@@ -136,9 +149,16 @@ class PhysicsRecorder:
         i = self.index % self.capacity
         for name in self.fields:
             # EOS P3: `gas_o2` names the O2 slice of the (N,h,w) gas array.
+            # P-E5: `inert_n2` is the same idiom for the other bulk plane —
+            # together they are N, which is what makes p* = C*N*T_abs
+            # decomposable offline (a 98 atm cell at a normal ~700 game-T is a
+            # DENSITY event, and without this plane that is not provable).
             if name == 'gas_o2':
                 from simulation.gases import O2
                 arr = gmap.gas[O2]
+            elif name == 'inert_n2':
+                from simulation.gases import INERT_N2
+                arr = gmap.gas[INERT_N2]
             else:
                 arr = getattr(gmap, name)
             # S2a/S2b/S2c: wave_p / wave_v / wave_source / smoke (S2a/S2b) AND

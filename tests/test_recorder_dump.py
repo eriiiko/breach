@@ -34,6 +34,12 @@ class _FakeGmap:
         self.smoke = np.zeros((fh, fw), dtype=np.int32)
         self.fire = np.zeros((fh, fw), dtype=np.int32)
         self.obstacles = np.zeros((fh, fw), dtype=bool)
+        # P-E5: wind_x/wind_y joined Recorder.DEFAULT_FIELDS (momentum evidence
+        # for the pressure-transient investigation). The real GameMap has
+        # carried these Q16.16 planes since the EOS refactor; the fake was
+        # simply behind, so this mirrors it rather than relaxing the recorder.
+        self.wind_x = np.zeros((fh, fw), dtype=np.int32)
+        self.wind_y = np.zeros((fh, fw), dtype=np.int32)
         self.gas = np.zeros((n_gases, fh, fw), dtype=np.int32)
         assert O2 < n_gases
 
