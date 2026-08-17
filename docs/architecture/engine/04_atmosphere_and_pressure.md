@@ -143,6 +143,126 @@
 >   Dormant by default → space + existing planetside goldens byte-untouched. Design:
 >   `docs/sky_exchange_design_2026-07-24.md`; τ menu: `docs/sky_exchange_p3_results_2026-07-24.md`.
 
+> ## Energy-conservative thermal transport (energy-books arc, 2026-08-17) — as-built
+>
+> **The EOS no longer *copies* temperature; it moves ENERGY.** Every thermal exchange in the
+> pressure path is denominated in energy, and temperature is what that energy looks like through
+> a cell's actual mass. This closed a measured mint: the old semi-Lagrangian T-*sample* wrote
+> whatever T it found — including the enormous values a collapsing denominator produces in a
+> near-empty cell — onto real mass downstream, creating energy from nothing every tick. Arc
+> record: `docs/energy_books_arc_close_2026-08-17.md`; design + per-patch as-builts under
+> `docs/archive/` (`energy_transport_design_2026-08-16.md` v2.2 is the contract).
+>
+> **The four rules the pass obeys.** *Transport conserves* — thermal energy rides the same
+> conservative donor-cell face fluxes bulk mass rides, so mixing is mass-weighted by construction
+> and phantom T carries ~no energy and dilutes on contact. *Conversions are endpoint-local* —
+> energy→T at any endpoint divides by that endpoint's own capacity. *One-way guards, all counted,
+> in energy units* — floors and wipes may only destroy, and every such site carries an int64
+> energy-sum counter, not a hit count. *Determinism unchanged* — Q16.16/int64, order-pinned loops,
+> CPU↔CUDA bit-identical, and the energy accumulator is transient scratch, never synced state.
+>
+> - **Transport (the substep loop).** The fused SL sample is **u-only**: its `.t` slot is retired
+>   at every site, live and reference and both GPU dispatch paths, and the A2 `t_occlude`/`tcmask`
+>   machinery retires with it. In its place, each substep builds an exact unshifted int64
+>   accumulator `e[i] = n_bulk[i] · T[i]` over participating gas cells (`!solid && !ts &&
+>   !is_vacuum && !ring`), moves `φ_e = (Σ conservative dq) · T[donor]` across every face using the
+>   **post-limiter, post-`scale_mag`** flux the mass books actually move, and recovers
+>   `T[i] = floordiv_q(e[i], n_bulk_new[i])`.
+> - **Floor division is load-bearing, not a style choice.** Both C++ and CUDA integer `/` truncate
+>   toward zero, which on a sub-ambient cell rounds T *upward* — a mint. Both backends agree with
+>   each other, so **no parity gate can catch it; only an energy ledger can.** The shared FP_HD
+>   helper `floordiv_q` (`fixed_point.h`) is the one transcription, used by the recovery, by
+>   conduction's endpoint divide, and by the expansion branch of compression work.
+> - **Rule (d) — the crate face.** Relative energy never crosses a face touching a `thermal_solid`
+>   tile; mass still moves. Air→ts debits the donor **at its own temperature**, so the donor's
+>   recovered T is exactly invariant as mass leaves (no concentration mint), and the debited amount
+>   lands in the signed counter `e_ts_residual`. Ts→air delivers **zero** relative energy — mass
+>   emerging from an object dilutes the receiver toward ambient, the same born-at-ambient class rule
+>   vacuum and ring emergence follow. Ts→ts moves no energy at all. Physically: gas transiting an
+>   object sheds its excess relative heat, counted in the ledger rather than delivered to the object.
+>   The honest gas↔object convective exchange is a named future upgrade, not built.
+> - **Guards, each with an energy counter.** `n_bulk_new < N_EPS` wipes T to 0 with the residual in
+>   the signed `e_wipe_sum`; the T_MIN clamp on recovery is a **creator** and is counted in
+>   `e_floor_sum`; vacuum and ambient-ring cells keep their per-substep `T := 0` wipe verbatim; the
+>   ring's N reset stays a named boundary channel. `n_active_flux` / `n_bulk_active_sum` measure the
+>   active-flux fraction the truncation bound is scaled by, rather than assuming it.
+> - **The property, and how it is gated.** The transport pass's Σ eth contribution is **one-way
+>   non-positive per tick**, and on a sealed map it closes as an *identity*:
+>   `eth_transport_delta = −e_ts_residual − e_wipe_sum + e_floor_sum + trunc`, with
+>   `trunc ∈ (−n_bulk_active_sum, 0]`. Asserted every tick on both backends
+>   (`cuda_bulk_flux_check` PART 3), with all five counters bit-identical CPU↔GPU.
+> - **`digest_advect` moved** across the flux call — it hashes `(wx, wy, T)` and the T it must hash
+>   now only exists after recovery. A declared, one-time digest-stream reorder.
+>
+> **Compression work (step 4c) gained a trust gate and became reversible.**
+>
+> - **Trust gate (`n_work_ref`, default 0.25).** The work term is faded by the cell's own bulk N:
+>   the factor is 0 below `n_work_ref/2`, ramps linearly to 1 at `n_work_ref`, and is applied
+>   magnitude-first (`scale_mag`) **before** the ±`T_WORK_CLAMP` compare, so a negative k fades
+>   toward zero and never past it. The input is the existing `n_total` plane — no new reduction in
+>   any twin. This is what ended the hot-rail runaway: a starved, evacuated pocket is no longer
+>   trusted to do compression work on itself.
+> - **Reversible work.** The multiplicative update was not self-inverse — a full oscillation gave
+>   `T·(1+k)(1−k) = T·(1−k²)`, bleeding a proportional slice of T per cycle with no counterparty.
+>   The **compression branch is kept verbatim** (so the hot rail stays bit-identical to its measured
+>   history and `sat_add_q16`'s wrap protection survives) and the **expansion branch is its exact
+>   inverse**, `T ← floordiv_q(T << 16, FP_ONE + w)`, with `k == 0` pinned to the expansion branch.
+>   The pair is exactly self-inverse in reals; in integers the residual is ≤1 LSB, one-way, and
+>   measured (exactly 0 at the clamp in both cycle orders and both signs of T). Under asymmetric
+>   oscillation a proportional term survives but is far smaller — the worked case loses 2.78 %/cycle
+>   where the retired law lost 10.4 %. The virtue claimed is **reversibility, not adiabatic
+>   fidelity**; expansion cooling is ~33 % weaker at the clamp as a consequence.
+> - **Named accepted gap:** the work term multiplies **game-T, not T_abs**. Below ambient this does
+>   not merely omit physics, it inverts it — compression *freezes* sub-ambient gas — and that is the
+>   cold-rail window's engine. The honest form (`T_new = (T + 290)·(1±w) − 290`) is specified and
+>   queued as its own patch with its own HUMAN-TEST.
+>
+> **Interior momentum drag — the storm's honest grave.** The engine had no interior momentum sink
+> at shipped dials, and the undamped door-neck Helmholtz mode *is* the storming. Damping without an
+> energy destination is what created the old 0.002–0.01 `wave_absorb` rectifier window; real
+> viscosity deposits wave KE as heat, which makes the dial safe at every value instead of only above
+> a threshold.
+>
+> - **Placement: per TICK, in the step-4 kick loop, after the |u| cap and before the store**, in all
+>   four kick twins. Per-tick (not per-substep) dissolves the substep-count trap — `n_sub` varies
+>   1–8 with CFL state, so any per-substep form would make total damping depend on flow speed — and
+>   removes any need for a `pow`, which would have been the codebase's first scalar fold not built
+>   from IEEE-exact ops. `kd_q = quantize(k_drag·dt)` is folded once per tick beside the other
+>   scalars, and the mechanism branches on the **quantized** fold, so a `k_drag` too small to
+>   quantize is exactly dormant rather than float-branch-live.
+> - **The shrink is component-wise magnitude-first** (`u ← u·(1−kd_q)`, the sponge idiom). This is
+>   load-bearing beyond style: it makes `|u_old|² − |u_new|² ≥ 0` **structurally**, so the heat
+>   deposit can never go negative from rounding and needs no clamp and no signed oracle term.
+>   "Improving" this to a magnitude-based scale silently reintroduces that term.
+> - **The counterparty.** `ΔE_cell = (|u_old|² − |u_new|²)/2` is a *specific* (per-unit-mass) kinetic
+>   energy — `u` is intensive — so `ΔT = k_drag_heat_frac · ΔE_cell / c_v` needs **no per-cell N
+>   divisor**; N enters only in the n-weighted oracle counters that convert to the extensive N·T
+>   currency the rest of the books use. The deposit lands in the same cell (shear heating at a door
+>   neck is physically placed), before 4c, identically in every twin. Ts cells skip both the drag and
+>   the deposit; a phantom-T guard suppresses the T *write* below 1 raw count of bulk N while the
+>   accounting still runs.
+> - **Its oracle is an identity, checked per tick:** `ke_drag_removed = 2·c_v·(e_drag_deposit +
+>   e_drag_drop_sum + e_drag_rail_clipped)`. The rail-clip term is not optional bookkeeping — with
+>   `c_v = 1` a capped jet reaches `T_MAX_PHYS` in ~14 ticks, so clipping is an expected regime and
+>   every clipped LSB is KE destroyed without counterparty unless counted.
+> - **Two dials, both in `[physics.eos]`.** `k_drag` (per-second rate; **shipped 0.5** — a *starting*
+>   value Erik picked at the HUMAN-TEST, with real tuning deferred to the retune pass after the
+>   pressure arc) and `k_drag_heat_frac` (**shipped 0.0014**, the physical-air anchor). The fraction
+>   matters more than it looks: Q16 game units put air's heat capacity ~700× below physical
+>   (`c_v = 1` by convention), and because the deposit scales with **u²**, a fully honest fraction
+>   detonates at blast velocities — an explosion's own wind self-immolates into heat. Any
+>   non-deposited remainder is the counted, named destruction channel `e_drag_drop_sum`. A load-time
+>   tripwire warns when `wave_absorb` sits in the forbidden `(0, 0.02)` band with `k_wind_strip > 0`:
+>   `k_drag` is the intended replacement for that lever (`wave_absorb`@0.02 ≡ `k_drag` 0.0067).
+> - **KE↔eth is HALF-coupled, by decision.** The kick still mints KE with no eth debit, and the drag
+>   launders that mint into eth. Bounded and small at bench scale; named here because it is a
+>   positive-feedback path at blast scale.
+>
+> **Dalton is bulk-only.** Traces carry **zero** pressure weight — `trace_mass_scale` is retired from
+> every Dalton sum (both live-step sites, the P6.4 kick-reference family, and every CUDA twin), so
+> `n_total ≡ n_bulk = O₂ + inert-N₂` everywhere, and the trace-decay→N₂ credit is deleted. See ch.05
+> for what traces still are.
+
 ## 1. What this system is
 
 Breach's atmosphere is the air that fills the ship: a scalar pressure field over the

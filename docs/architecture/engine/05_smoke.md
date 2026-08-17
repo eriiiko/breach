@@ -56,6 +56,44 @@ that every system reads or writes by name.
 >   Combustion consumes real `gas[O2]` and returns products to `inert_N2` (ch.06) rather than
 >   reading `atmosphere` as an O₂ proxy.
 
+> ## Traces leave the physics books (energy-books arc, 2026-08-17) — as-built
+>
+> **§1's opening claim — smoke "has no mass of its own and exerts no pressure" — is now literally,
+> structurally true.** It used to be an approximation: traces carried a 2 % pressure weight
+> (`trace_mass_scale`) in the Dalton sum, zero thermal weight, and full weight on decay, which
+> credited decayed trace counts back into `inert_N2`. That half-citizenship was the root of both the
+> storm audit's pressure pump and a whole class of energy mint. Erik's ruling (2026-08-17): *why not
+> approximate 2 % with 0 % and lose all this complexity.* Arc record:
+> `docs/energy_books_arc_close_2026-08-17.md`; ruling and rationale in design §2.6
+> (`docs/archive/energy_transport_design_2026-08-16.md`).
+>
+> - **`trace_mass_scale` is retired** from every Dalton sum — both live-step sites, the P6.4
+>   kick-reference family, and every CUDA twin including the on-device resident recompute — plus the
+>   whole bindings/API surface. `n_total ≡ n_bulk = O₂ + inert-N₂` everywhere afterward (ch.04).
+> - **The decay→N₂ credit is DELETED**, on the CPU *and* in `cuda_smoke.cu`'s device-resident twin.
+>   Decay itself stays: a decayed trace count simply vanishes. **The P4 doctrine — "decay is
+>   oxidation, not deletion" — is deliberately retired**, with written rationale: at zero pressure
+>   weight there is no mass to conserve. The born-at-ambient question is mooted with it.
+> - **Nothing else is thrown away.** All five trace planes, their once-per-tick semi-Lagrangian
+>   advection and diffusion, `sink_hop` breach venting, gas damage, visibility and every optical
+>   channel in §5–§6 are untouched. Traces remain fully alive as visual and gameplay fields; they
+>   just stop whispering into pressure.
+> - **The ex-nihilo source queue closes for physics purposes.** Grenade puffs, explosion smoke and
+>   steam deposits are render-only sources now, and a render-only source cannot pump anything. (The
+>   authoring question — that explosion smoke reads as a flat blob, §4 — is unaffected and still
+>   open.)
+> - **The upgrade path is preserved, per plane:** flip the plane's `gas_conservative` flag, weight it
+>   1.0 in Dalton, and it joins the per-substep conservative flux *and* the energy build/recovery;
+>   every source of that plane then owes a real mass **and** energy debit, and the fire recalibrates.
+>   Cost scales linearly in plane count and the promoted plane moves per-substep (≤8×/tick) instead
+>   of per-tick. **Steam is the expected first candidate, owned by the water arc.** Explosions do not
+>   need trace citizenship — as a named creator channel they can inject real bulk N₂ (detonation
+>   products) plus ΔE directly, which is better physics than promoted smoke at none of the cost.
+>
+> Measured consequence: bulk-N creation inside the EOS pass is **0 to the LSB** over a 4800-tick
+> sealed-room burn with the fire alive — and it holds without the audit's `gases.smoke.decay = 0`
+> workaround, because the Dalton sum no longer reads trace planes at all.
+
 ---
 
 ## 2. The model: diffusion + advection
@@ -251,8 +289,9 @@ the two.
 **Single-source history (P-S1, 2026-08-15).** Before this, the fire step ALSO emitted smoke
 directly and ex nihilo — `smoke[neighbour] += smoke_emission · dt · fire_intensity` on every lit
 tile's 4-connected air neighbours, every tick, with nothing debited anywhere. That unbacked source
-composed with the honest trace-decay→N₂ credit (§6.2's `decay` column,
-`PhysicsEngine::run_substeps`) into a real mass/pressure pump: a sealed burning room gained +42% of
+composed with the then-live trace-decay→N₂ credit (§6.2's `decay` column,
+`PhysicsEngine::run_substeps`; that credit is **itself deleted** as of the energy-books arc — see
+the trace fold above) into a real mass/pressure pump: a sealed burning room gained +42% of
 its bulk gas inventory in 200 s (`docs/storm_audit_2026-08-14.md` §4.2). Erik's ruling
 (`docs/smoke_single_source_design_2026-07-24.md`, 2026-07-24 — "DELETE source A ... duplicates B's
 purpose") said combustion soot was already the honest half and the scatter should go; P-S1 executed
