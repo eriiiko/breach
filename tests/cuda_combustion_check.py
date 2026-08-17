@@ -34,9 +34,10 @@ portable answer, identical on CPU and CUDA. The GPU realizes the design's
 barriered kernel chain. So the digest gate is a formality the design guarantees.
 
 COMPARED per step (tol 0): the three mutated gas planes (O2 / inert_N2 /
-smoke), `temperature`, `wall_hp`, AND the two PER-CELL rail counters
-(heat_floor_hits, t_max_phys_hits — design §3: their ABSOLUTE value is not
-asserted, only CPU==GPU equality).
+smoke), `temperature`, `wall_hp`, AND the three PER-CELL rail counters
+(heat_floor_hits, t_max_phys_hits, e_deposit_drop_sum — design §3: their
+ABSOLUTE value is not asserted, only CPU==GPU equality; e_deposit_drop_sum
+is P-E2b's energy-sum twin of heat_floor_hits, design §2.2/§2.5).
 
   PART 1 — ISOLATED edge configs + fuzz: uncontested (D<=O2, full demand),
   heavily-contested 4-claimant cells with ZERO remainder (O2 divisible by 4) AND
@@ -130,16 +131,17 @@ def run_pair(state, dt, dials_over=None, c_v=C_V, n_floor_heat=N_FLOOR_HEAT):
     comb.step(c["gas"], O2, INERT_N2, SMOKE, c["temperature"], c["wall_hp"],
               c["fire"], c["flammable"], c["solid"], c["is_vacuum"],
               c["ignition_temp_q16"], dt, c_v, n_floor_heat)
-    cpu_rails = (int(comb.heat_floor_hits), int(comb.t_max_phys_hits))
+    cpu_rails = (int(comb.heat_floor_hits), int(comb.t_max_phys_hits),
+                 int(comb.e_deposit_drop_sum))
 
     g = {k: (v.copy() if isinstance(v, np.ndarray) else v) for k, v in state.items()}
-    hf, tm = bp.cuda_combustion_step(
+    hf, tm, dd = bp.cuda_combustion_step(
         g["gas"], O2, INERT_N2, SMOKE, g["temperature"], g["wall_hp"], g["fire"],
         g["flammable"], g["solid"], g["is_vacuum"], g["ignition_temp_q16"],
         dt, c_v, n_floor_heat,
         d["burn_rate"], d["o2_thresh_burn"], d["H_fuel"], d["soot_yield"],
         d["fuel_per_o2"], d["o2_frac_ext"], d["o2_frac_full"], d["T_MAX_PHYS"])
-    gpu_rails = (int(hf), int(tm))
+    gpu_rails = (int(hf), int(tm), int(dd))
     return c, cpu_rails, g, gpu_rails
 
 
@@ -479,19 +481,21 @@ def part2_trajectory(x_full=None, burn_rate=None) -> bool:
             s["gas"][O2][air_mask] = REFILL_O2
         pre_o2 = int(cpu["gas"][O2][air_mask].sum())
 
-        hf0, tm0 = int(comb.heat_floor_hits), int(comb.t_max_phys_hits)
+        hf0, tm0, dd0 = (int(comb.heat_floor_hits), int(comb.t_max_phys_hits),
+                        int(comb.e_deposit_drop_sum))
         comb.step(cpu["gas"], O2, INERT_N2, SMOKE, cpu["temperature"],
                   cpu["wall_hp"], cpu["fire"], cpu["flammable"], cpu["solid"],
                   cpu["is_vacuum"], cpu["ignition_temp_q16"], dt, C_V, N_FLOOR_HEAT)
         cpu_rails = (int(comb.heat_floor_hits) - hf0,
-                     int(comb.t_max_phys_hits) - tm0)
-        hf, tm = bp.cuda_combustion_step(
+                     int(comb.t_max_phys_hits) - tm0,
+                     int(comb.e_deposit_drop_sum) - dd0)
+        hf, tm, dd = bp.cuda_combustion_step(
             gpu["gas"], O2, INERT_N2, SMOKE, gpu["temperature"],
             gpu["wall_hp"], gpu["fire"], gpu["flammable"], gpu["solid"],
             gpu["is_vacuum"], gpu["ignition_temp_q16"], dt, C_V, N_FLOOR_HEAT,
             d["burn_rate"], d["o2_thresh_burn"], d["H_fuel"], d["soot_yield"],
             d["fuel_per_o2"], d["o2_frac_ext"], d["o2_frac_full"], d["T_MAX_PHYS"])
-        gpu_rails = (int(hf), int(tm))
+        gpu_rails = (int(hf), int(tm), int(dd))
 
         if not compare(f"tick {tick}", cpu, cpu_rails, gpu, gpu_rails):
             bad += 1

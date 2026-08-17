@@ -181,6 +181,17 @@ public:
     float absorb_strength = 8.0f;
     float T_MIN = -289.0f;
     float T_WORK_CLAMP = 0.5f;
+    // n_work_ref (energy-books arc, design §2.4, RULING 2026-08-17): the
+    // compression-work TRUST GATE's reference density — config-plumbed dial,
+    // default 0.25. THE FADE MECHANISM ITSELF IS NOT IMPLEMENTED HERE — that
+    // is P-E4's territory (fade factor = 0 for n < n_work_ref/2, linear from
+    // 0 at n_work_ref/2 to 1 at n_work_ref, applied before the ±T_WORK_CLAMP
+    // compare via a magnitude-first `recip_mul`/`recip_mul_dev`, keyed on the
+    // existing `n_total_`/`d_ntot`/`K_ntot` bulk plane). This member is
+    // PLUMBING ONLY (P-E2b): config key -> C++ member -> bindings -> Python
+    // bind, nothing in eos_solver.cpp or any CUDA kernel reads it yet — it is
+    // therefore provably INERT (digests byte-identical pre/post this patch).
+    float n_work_ref = 0.25f;
     // T_MAX_PHYS (v2.4 as-built amendment, PROVISIONAL pending Erik's P5
     // review — eos-p3fix-thermal-ceiling, decisions.md #16): a COUNTED
     // physical-maximum rail on the T FIELD itself, applied as a saturating

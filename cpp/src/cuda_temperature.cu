@@ -87,11 +87,15 @@ __device__ __forceinline__ int dx_of(int d) {
     return (d == 2) ? 1 : (d == 3) ? -1 : 0;
 }
 
-// ---- P-E2a: the energy-counter slot map (design §2.3) -----------------------
-// One 6-slot int64 block, atomicAdd'd (order-free on two's complement, which is
-// what makes a VALUE sum legal here at all). The host folds it into the CPU
-// solver's own fields so telemetry is identical whichever backend ran. Slot
-// order is pinned and mirrored by cuda_temperature.h / bindings.cpp.
+// ---- P-E2a/P-E2b: the energy-counter slot map (design §2.3/§2.2) -----------
+// One 7-slot int64 block (P-E2b grew it from 6), atomicAdd'd (order-free on
+// two's complement, which is what makes a VALUE sum legal here at all). The
+// host folds it into the CPU solver's own fields so telemetry is identical
+// whichever backend ran. Slot order is pinned and mirrored by
+// cuda_temperature.h / bindings.cpp.
+// P-E2b: slot 6 added — e_deposit_drop_sum, the Pass-1 attenuation-drop
+// energy sum (design §2.2/§2.5, L3-7). The block grew from 6 to 7 slots;
+// TEMPERATURE_ENERGY_SLOTS (cuda_temperature.h) is the pinned mirror.
 enum : int {
     C_COND_TRUNC = 0,   // e_cond_trunc_sum   (endpoint floordiv residual, ≤ 0)
     C_COND_CAP   = 1,   // e_cond_cap_sum     (capacity floor/ceiling, signed)
@@ -99,7 +103,8 @@ enum : int {
     C_COOL       = 3,   // e_cool_sum         (Pass 3 / sky, SIGNED)
     C_VAC_WIPE   = 4,   // e_vac_wipe_sum     (Pass 0a breach wipe, SIGNED)
     C_RING_PIN   = 5,   // e_ring_pin_sum     (Pass 0a ring pin, SIGNED)
-    C_SLOTS      = 6
+    C_DEP_DROP   = 6,   // e_deposit_drop_sum (Pass 1 attenuation drop, P-E2b)
+    C_SLOTS      = 7
 };
 
 __device__ __forceinline__ void cadd(unsigned long long* c, int slot, int64_t v) {
@@ -184,6 +189,7 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
                                      int32_t t_max_phys_q,
                                      unsigned long long* __restrict__ hits,
                                      unsigned long long* __restrict__ low_hits,
+                                     unsigned long long* __restrict__ cnt,
                                      int n) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
@@ -228,11 +234,23 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
             const int32_t e_abs = (N_raw >= FP_ONE)
                 ? deposit                                    // ambient+: exact old path
                 : mul_q16(deposit, (q16)N_raw);              // thin gas: ∝ density
+            if (N_raw < FP_ONE) {
+                // P-E2b / L3-7: the CPU twin's e_deposit_drop_sum fold.
+                cadd(cnt, C_DEP_DROP, (int64_t)deposit - (int64_t)e_abs);
+            }
             int32_t N_q = N_raw;
             if (N_q < n_floor_q) N_q = n_floor_q;            // N_FLOOR_HEAT
             const int32_t recip_N_q = reciprocal_q16_dev(N_q);
-            const int32_t e_over_n  = mul_q16(e_abs, recip_N_q);
-            const int32_t dT = recip_mul_dev(e_over_n, recip_cv);
+            // P-E2b: the WIDE E_abs/(N*c_v) chain (int64, no premature q16
+            // narrow — cuda_fixedpoint_device.cuh's deposit_dT_wide_q16_dev,
+            // the device twin of fixed_point.h's deposit_dT_wide_q16). Clamp
+            // to a safe non-negative int32 range BEFORE narrowing; an
+            // honestly-huge deposit still hits the T_MAX_PHYS rail right
+            // below, through a value that was never corrupted on the way.
+            const int64_t dT_wide =
+                deposit_dT_wide_q16_dev(e_abs, recip_N_q, recip_cv);
+            const int32_t dT = (int32_t)(dT_wide < 0 ? 0
+                : (dT_wide > 0x7fffffffLL ? 0x7fffffffLL : dT_wide));
             heat_saturating_add_dev(&t, dT);
             if (t > t_max_phys_q) { t = t_max_phys_q; atomicAdd(hits, 1ULL); }
             temperature[i] = t;
@@ -488,10 +506,12 @@ int64_t temperature_step(
 
     // (Pass 0b — gas-T SL advection — RETIRED at P-E1; see the file header.)
 
-    // Pass 1: unified convert (in-place on d_temp; rail counter -> d_hits).
+    // Pass 1: unified convert (in-place on d_temp; rail counter -> d_hits;
+    // P-E2b's attenuation-drop energy sum -> d_cnt[C_DEP_DROP]).
     temp_convert_unified<<<grid, block>>>(d_temp, d_heat, d_his, d_ts, d_vac,
                                           d_nsrc, d_radnet, recip_cv, n_floor_q,
-                                          t_max_phys_q, d_hits, d_low_hits, n);
+                                          t_max_phys_q, d_hits, d_low_hits,
+                                          d_cnt, n);
     cuda_check(cudaGetLastError(), "convert launch");
 
     // Pass 2: conduct (d_temp -> d_temp_new), then copy back (the CPU swap).
@@ -517,7 +537,7 @@ int64_t temperature_step(
     // P-E2a: fold the 6-slot energy block into the caller's accumulators.
     // Two's-complement round-trip through unsigned long long is exact.
     {
-        unsigned long long cnt_h[C_SLOTS] = {0, 0, 0, 0, 0, 0};
+        unsigned long long cnt_h[C_SLOTS] = {0, 0, 0, 0, 0, 0, 0};
         cuda_check(cudaMemcpy(cnt_h, d_cnt, C_SLOTS * sizeof(unsigned long long),
                               cudaMemcpyDeviceToHost), "D2H cnt");
         if (energy_counters_out) {

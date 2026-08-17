@@ -171,11 +171,12 @@ def _cpu_step(s, draw_r, legacy=False):
                   s["ignition_temp_q16"], DT, C_V, N_FLOOR_HEAT,
                   s["thermal_solid"], s["heat_inv_shift"], s["heat"], s["dem_acc"],
                   draw_r, s["dyn_permeability"], int(s["dem_acc"].shape[0]))
-    return (int(comb.heat_floor_hits), int(comb.t_max_phys_hits))
+    return (int(comb.heat_floor_hits), int(comb.t_max_phys_hits),
+            int(comb.e_deposit_drop_sum))
 
 
 def _gpu_step(s, draw_r):
-    hf, tm = bp.cuda_combustion_step(
+    hf, tm, dd = bp.cuda_combustion_step(
         s["gas"], O2, INERT_N2, SMOKE, s["temperature"], s["wall_hp"], s["fire"],
         s["flammable"], s["solid"], s["is_vacuum"], s["ignition_temp_q16"],
         DT, C_V, N_FLOOR_HEAT,
@@ -184,7 +185,7 @@ def _gpu_step(s, draw_r):
         DIALS["o2_frac_full"], DIALS["T_MAX_PHYS"],
         s["thermal_solid"], s["heat_inv_shift"], s["heat"], H_BED_M, H_BED_SHIFT,
         s["dem_acc"], draw_r, s["dyn_permeability"], int(s["dem_acc"].shape[0]))
-    return (int(hf), int(tm))
+    return (int(hf), int(tm), int(dd))
 
 
 def compare(tag, a, b):

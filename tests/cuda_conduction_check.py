@@ -101,17 +101,19 @@ def _build_face_shift(solid, is_vacuum, shift=3):
     return fs
 
 
-# P-E2a: the SIX energy counters the conduction rewrite is gated on, in the
-# pinned slot order of cuda_temperature.h / the C_* enum / the CPU field order.
+# P-E2a/P-E2b: the SEVEN energy counters the conduction rewrite (P-E2a) and
+# the Pass-1 attenuation drop (P-E2b) are gated on, in the pinned slot order
+# of cuda_temperature.h / the C_* enum / the CPU field order.
 E_COUNTERS = ("e_cond_trunc_sum", "e_cond_cap_sum", "cond_limit_hits",
-              "e_cool_sum", "e_vac_wipe_sum", "e_ring_pin_sum")
+              "e_cool_sum", "e_vac_wipe_sum", "e_ring_pin_sum",
+              "e_deposit_drop_sum")
 
 
 def _run_pair(solver, temperature, heat, his, fs, solid, is_vacuum,
               atmosphere, n_bulk, wind_x, wind_y, dt):
     """Run CPU reference + GPU kernel on identical copies; return
     (t_cpu, cnt_cpu, t_gpu, cnt_gpu) where cnt is
-    (t_max_phys_hits,) + the six P-E2a energy counters, all per-call."""
+    (t_max_phys_hits,) + the seven P-E2a/P-E2b energy counters, all per-call."""
     t_cpu = np.ascontiguousarray(temperature.copy())
     c0 = (int(solver.t_max_phys_hits),) + tuple(
         int(getattr(solver, nm)) for nm in E_COUNTERS)
@@ -122,8 +124,10 @@ def _run_pair(solver, temperature, heat, his, fs, solid, is_vacuum,
     cnt_cpu = tuple(b - a for a, b in zip(c0, c1))
 
     t_gpu = np.ascontiguousarray(temperature.copy())
-    # P-E2a: the isolated GPU entry returns (hits, *energy_counters) — an
-    # AUTHORIZED contract change (this file is its only caller).
+    # P-E2a/P-E2b: the isolated GPU entry returns (hits, *energy_counters).
+    # NOT this file's sole caller — cuda_thermal_mass_check.py and
+    # cuda_cool_shift_check.py also call it (P-E2a as-built §8.1) and are
+    # updated in lockstep whenever this tuple grows.
     cnt_gpu = tuple(int(v) for v in bp.cuda_temperature_step(
         t_gpu, heat, his, fs, solid, is_vacuum, atmosphere,
         n_bulk=n_bulk, wind_x=wind_x, wind_y=wind_y, dt=dt, **DIALS))
@@ -299,7 +303,7 @@ def part1_isolated() -> bool:
             print(f"  COVERAGE HOLE: {nm} stayed 0 across all {n_cfg} configs")
     if ok:
         print(f"  all {n_cfg} configs bit-identical on `temperature` + rail hits "
-              f"+ the six P-E2a energy counters (total rail engagements: "
+              f"+ the seven P-E2a/P-E2b energy counters (total rail engagements: "
               f"{total_hits}; |counters| {dict(zip(E_COUNTERS, e_touched))}).")
     return ok
 
@@ -374,7 +378,7 @@ def part2_trajectory() -> bool:
         print(f"  scenario too tame: peak |T| {max_T} counts too low")
     if ok:
         print(f"  {n_ticks} ticks bit-identical on `temperature` + rail hits "
-              f"+ the six P-E2a energy counters "
+              f"+ the seven P-E2a/P-E2b energy counters "
               f"(total rail engagements {total_hits}, peak |T| "
               f"{max_T / FP_ONE:.0f} K-rel).")
     return ok

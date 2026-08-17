@@ -154,19 +154,35 @@ gas_advection_rate = 900.0  # gas-T wind->displacement scale; SAME convention/va
 c_v               = 1.0     # gas heat capacity for the radiation deposit
                              # ΔT = ΔE/(N·c_v) (§4.3). 1.0 = neutral scale (ΔT≈ΔE at
                              # ambient N=1.0); no real-gas anchor yet (P3 territory).
-n_floor_heat      = 0.05    # floor on the per-tile N divisor (the real bulk N_total
-                             # since P3) for the SAME deposit divide — INDEPENDENT of
-                             # o2_vacuum_thresh / any other floor.
-                             # CHECKED against the v2.4 single-tick criterion and KEPT
-                             # (eos-p3fix-thermal-ceiling):
-                             #   n_floor_heat >= heat_tick_max / (T_MAX_PHYS * c_v)
-                             # measured heat_tick ~330 (one adjacent I=0.8 fire) =>
-                             # worst one-tick deposit at the floor = 6,600 K <
-                             # T_MAX_PHYS = 16,000 — holds at 0.05. A stacked firestorm
-                             # ring (~8x) can exceed the ceiling in one tick; that case
-                             # is bounded by the counted T_MAX_PHYS rail (its job). A
-                             # trial raise to 0.2 measurably perturbed marginal
-                             # ignition timings suite-wide for no correctness gain.
+n_floor_heat      = 0.01    # floor on the per-tile N divisor (the real bulk N_total
+                             # since P3) for the SAME deposit divide, SHARED by BOTH
+                             # deposit sites — this Pass-1 gas branch AND combustion's
+                             # aggregate deposit (combustion.cpp:799-803, ONE floor in
+                             # the system) — INDEPENDENT of o2_vacuum_thresh / any
+                             # other floor.
+                             # RULING (energy-books arc, design v2.2 §2.2, Erik
+                             # 2026-08-17): now a LOW, tunable VALUE-HYGIENE dial —
+                             # default 0.01 (was 0.05), swept DOWNWARD during tuning.
+                             # Its STABILITY job is GONE: P-E1 closed the EOS
+                             # transport books (deposit spikes at thin cells dilute
+                             # honestly on contact now, instead of minting via the old
+                             # SL T-copy) and T_MAX_PHYS is the real value backstop
+                             # for a single-tick spike (a COUNTED clamp — see that
+                             # dial). The v1 single-tick criterion below this comment
+                             # (n_floor_heat >= heat_tick_max/(T_MAX_PHYS*c_v)) is
+                             # STALE — it argued for RAISING the floor to protect
+                             # T_MAX_PHYS, which no longer needs protecting from this
+                             # angle. The OLD 0.2-trial warning ("measurably perturbed
+                             # marginal ignition timings") is MOOT IN THIS DIRECTION:
+                             # a LOWER floor deposits MORE into thin cells (dividing
+                             # by a smaller floor raises ΔT), so marginal ignition
+                             # trends FASTER, not slower, as the floor drops — the
+                             # opposite of the 0.2-raise trial's regime. The
+                             # reciprocal divide's precision was verified sane down to
+                             # 0.001 (tools/e2b_floor_reciprocal_probe.py); the v1
+                             # 0.25-shared-with-the-trust-gate ruling is retired (see
+                             # n_work_ref, [physics.eos], for the unrelated trust-gate
+                             # dial — plumbed this patch, mechanism lands at P-E4).
 T_MAX_PHYS        = 16000.0 # v2.4 counted physical-maximum rail on the temperature
                              # FIELD (K above ambient), ~2x the design's stated 9000 K
                              # extreme — clamps every T deposit/write path (EOS step 4c,
@@ -581,6 +597,15 @@ U_MAX = 1000.0                        # v2.4 defense-in-depth velocity rail (m/s
                                       # the int64/narrow overflow regime again (see
                                       # eos_solver.cpp step 4's overflow guard). PROVISIONAL,
                                       # Erik review at P5.
+n_work_ref = 0.25                     # energy-books arc (design §2.4, RULING 2026-08-17):
+                                      # the compression-work TRUST GATE's reference density —
+                                      # fade factor = 0 below n_work_ref/2, linear to 1 at
+                                      # n_work_ref, applied before the T_WORK_CLAMP compare.
+                                      # PLUMBING ONLY at P-E2b (config key -> C++ member ->
+                                      # bindings -> this bind): the fade MECHANISM is P-E4's;
+                                      # nothing reads this dial yet (provably inert — digests
+                                      # byte-identical). At 0.25 the power-of-two reciprocal
+                                      # is exact (P-E4's territory to exploit).
 
 # Canonical game-T -> Kelvin map (temperature_scale_unification_design_
 # 2026-08-13 §2). The ONE place these constants are defined — radiation bake,
@@ -607,7 +632,11 @@ eos_t_amb_k = 290.0                    # EOS absolute-ambient (pressure calibrat
 # N_O2 mean, converting consumed O2 into smoke (soot_yield) + inert_N2
 # (the remainder — N_total is CONSERVED, never a fake pressure drain) and
 # depositing heat via the §4.3 reciprocal (shares c_v/n_floor_heat with
-# [physics.thermal] above — ONE combustion/deposit floor in the system).
+# [physics.thermal] above — ONE combustion/deposit floor in the system, now a
+# LOW value-hygiene dial at 0.01 per the energy-books arc's ruling — see
+# [physics.thermal]'s n_floor_heat comment for the full rationale; both
+# deposit sites also gained an energy-sum counter for the floor's
+# destruction, e_deposit_drop_sum, design §2.2/§2.5).
 # Sane defaults; feel-tuned at P5 like every other fire/thermal dial.
 [physics.combustion]
 # Continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md §2.3): the O2

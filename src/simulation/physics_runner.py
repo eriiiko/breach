@@ -310,12 +310,13 @@ class PhysicsRunner:
         self.temperature.gas_advection_rate = float(
             getattr(thermal, "gas_advection_rate", 900.0))
         self.temperature.c_v = float(getattr(thermal, "c_v", 1.0))
-        # n_floor_heat CHECKED against the v2.4 single-tick criterion and
-        # KEPT at 0.05 (eos-p3fix-thermal-ceiling — derivation in
-        # temperature_solver.h/config.toml; the stacked-firestorm case is
-        # bounded by the counted T_MAX_PHYS rail, not the floor).
+        # n_floor_heat (energy-books arc, design §2.2, RULING 2026-08-17): now
+        # a LOW, tunable VALUE-hygiene dial — default 0.01 (was 0.05). Its
+        # stability job is gone (P-E1 closed the transport books; T_MAX_PHYS
+        # is the real value backstop) — see temperature_solver.h / config.toml
+        # for the full rationale.
         self.temperature.n_floor_heat = float(
-            getattr(thermal, "n_floor_heat", 0.05))
+            getattr(thermal, "n_floor_heat", 0.01))
         # T_MAX_PHYS (v2.4, PROVISIONAL — Erik review at P5): ONE constant,
         # wired to every solver that deposits/writes T (rationale:
         # cpp/src/eos_solver.h; config: [physics.thermal]).
@@ -454,6 +455,12 @@ class PhysicsRunner:
         # solver's own [physics.eos] dial.
         self.eos.T_MAX_PHYS      = self._t_max_phys
         self.eos.U_MAX           = _ep("U_MAX", self.eos.U_MAX)
+        # n_work_ref (energy-books arc, design §2.4, RULING 2026-08-17): the
+        # compression-work trust gate's reference density. PLUMBING ONLY at
+        # P-E2b — the fade mechanism itself is P-E4's; this bind exists so the
+        # dial is reachable from config ahead of that patch, and is provably
+        # inert (nothing downstream reads self.eos.n_work_ref yet).
+        self.eos.n_work_ref      = _ep("n_work_ref", self.eos.n_work_ref)
 
         # P-T0 (energy-books arc, 2026-08-17, docs/energy_transport_design_
         # 2026-08-16.md §2.6 — the trace 0% ruling): `trace_mass_scale`

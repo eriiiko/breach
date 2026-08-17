@@ -89,6 +89,23 @@ __device__ __forceinline__ q16 recip_mul_dev(q16 x_q16, int64_t recip) {
     return (q16)mul128_shr_signed((int64_t)x_q16, recip, fixedpoint::RECIP_SHIFT);
 }
 
+// ---- deposit_dT_wide_q16_dev — the wide deposit divide (P-E2b) -------------
+// A VERBATIM device port of fixedpoint::deposit_dT_wide_q16 (fixed_point.h):
+// deposit/(N*c_v) chained as ONE 128-bit product, narrowed EXACTLY ONCE to an
+// int64 (NOT q16) — see the host comment for why the old two-step
+// mul_q16-then-recip_mul chain silently overflows q16's ~32768 magnitude
+// ceiling at n_floor_heat as low as 0.01-0.001. Stage 1 (deposit_q *
+// recip_n_q) fits a plain int64 (mul_wide's own bound); stage 2 combines that
+// with recip_cv via the SAME mul128_shr_signed this file already shares with
+// recip_mul_dev, just at the deposit chain's combined shift (FP_SHIFT +
+// RECIP_SHIFT = 48) instead of RECIP_SHIFT alone.
+__device__ __forceinline__ int64_t deposit_dT_wide_q16_dev(
+        int32_t deposit_q, int32_t recip_n_q, int64_t recip_cv) {
+    const int64_t stage1 = (int64_t)deposit_q * (int64_t)recip_n_q;
+    return mul128_shr_signed(stage1, recip_cv,
+                             fixedpoint::FP_SHIFT + fixedpoint::RECIP_SHIFT);
+}
+
 // ---- reciprocal_q16_dev — the per-cell Newton reciprocal -------------------
 // A VERBATIM device port of fixedpoint::reciprocal_q16 (fixed_point.h:261), the
 // integer Newton-Raphson reciprocal 1/denom in Q16.16 the smoke bilinear renorm

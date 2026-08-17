@@ -344,25 +344,48 @@ public:
     //   step (not per cell). TUNING DIAL.
     // n_floor_heat — floor on the per-tile N divisor (the real bulk N_total
     //   since P3; `atmosphere` only on the nullable back-compat path) for the
-    //   SAME deposit divide, INDEPENDENT of any other floor in the system
-    //   (design §4.3 / decisions.md item 7).
-    //   CHECKED against the v2.4 criterion (eos-p3fix-thermal-ceiling) and
-    //   KEPT at 0.05: one tick's Pass-1 deposit into a near-vacuum cell
-    //   must not exceed T_MAX_PHYS by itself —
-    //       N_floor >= heat_tick_max / (T_MAX_PHYS * c_v)
-    //   Measured heat_tick (B4-class repro, single adjacent I=0.8 fire):
-    //   ~330/tick at the hottest neighbour => worst single-tick deposit at
-    //   the floor is 330/0.05 = 6,600 < T_MAX_PHYS = 16,000 (c_v = 1) — the
-    //   criterion HOLDS at 0.05; the floor is not mis-set. A stacked
-    //   firestorm ring (~8x, ~2,600/tick => 52,000 at the floor) CAN exceed
-    //   the ceiling in one tick — that case is bounded by the counted
-    //   T_MAX_PHYS clamp (visible in telemetry), which is the rail's job.
-    //   A trial raise to 0.2 (covering the stacked case at the floor) was
-    //   measured to perturb marginal ignition timings suite-wide for no
-    //   correctness gain — the floor stays a deposit-scale dial, not a rail.
+    //   SAME deposit divide. SHARED by BOTH deposit sites (this Pass-1 gas
+    //   branch AND combustion.cpp's aggregate deposit, combustion.cpp:799-803)
+    //   — the ONE floor in the system, wired from the same config key
+    //   ([physics.thermal].n_floor_heat) to both.
+    //
+    //   RULING (energy-books arc, design v2.2 §2.2, Erik 2026-08-17): now a
+    //   LOW, tunable dial — default 0.01 (was 0.05), swept DOWNWARD during
+    //   tuning ("we can see how low we can go"). Its STABILITY job is GONE:
+    //   P-E1 closed the EOS transport books (deposit spikes at thin cells now
+    //   dilute honestly on contact instead of minting via the old SL T-copy)
+    //   and T_MAX_PHYS is the real value backstop for a single-tick spike —
+    //   see that field's rail, which is a COUNTED clamp, not this floor. So
+    //   n_floor_heat is VALUE HYGIENE only now: it keeps the divide's
+    //   reciprocal from blowing up arithmetically at N -> 0, nothing more.
+    //   The v1 "0.25 shared with the trust gate" ruling is RETIRED — see
+    //   n_work_ref (§2.4) for the (unrelated, unimplemented-this-patch) trust
+    //   gate dial.
+    //
+    //   The v1 eos-p3fix-thermal-ceiling single-tick criterion above this
+    //   ruling — N_floor >= heat_tick_max/(T_MAX_PHYS*c_v) — is STALE in the
+    //   direction that mattered (it argued for RAISING the floor to protect
+    //   T_MAX_PHYS); it no longer gates this dial's value, because T_MAX_PHYS
+    //   is now the counted backstop regardless of what the floor lets through
+    //   on the way there. The OLD 0.2-trial warning ("measurably perturbed
+    //   marginal ignition timings suite-wide") is MOOT IN THIS DIRECTION: a
+    //   LOWER floor means LESS dilution of a thin cell's deposit divide — the
+    //   L1-4 objection inverts, and marginal ignition trends FASTER, not
+    //   slower, as the floor drops (P-E2b measures this; see the as-built).
+    //
+    //   PRECISION: the divide is a per-cell Newton reciprocal
+    //   (`fixedpoint::reciprocal_q16`), int64 internally already (the seed +
+    //   4 Newton refinements all run in int64 before narrowing the RESULT to
+    //   Q16.16); its self-guard floors any denom < 3 raw counts (< 0.0000458
+    //   real) to 3, well below where this dial's sweep (down to 0.001, per
+    //   design §2.2) ever lands. Verified by probe
+    //   (`tools/e2b_floor_reciprocal_probe.py`): a 0.001 floor keeps the
+    //   deposit divide's arithmetic sane (no overflow, no sign flip, no
+    //   collapse) across the whole per-cell chain
+    //   (reciprocal_q16 -> mul_q16 -> recip_mul).
     float gas_advection_rate = 900.0f;
     float c_v = 1.0f;
-    float n_floor_heat = 0.05f;
+    float n_floor_heat = 0.01f;
     // T_MAX_PHYS (v2.4 as-built amendment, PROVISIONAL pending Erik's P5
     // review): the counted physical-maximum T rail — Pass 1's deposit clamps
     // at this ceiling (own counter below). One constant shared across
@@ -412,6 +435,14 @@ public:
     mutable int64_t e_cool_sum      = 0;   // Pass 3 ambient cooling / sky (signed)
     mutable int64_t e_vac_wipe_sum  = 0;   // Pass 0a open-vacuum wipe (signed)
     mutable int64_t e_ring_pin_sum  = 0;   // Pass 0a ambient-ring pin (signed)
+    // P-E2b (energy-books arc, design §2.2/§2.5, round-1 finding L3-7): the
+    // Pass-1 v2.4 absorption-proportional deposit's (1-N)*deposit attenuation
+    // drop below ambient density — PHYSICAL (absorptivity proportional to
+    // density), stays, but never had a counter until now. Same currency as
+    // `deposit`/`heat` (Q16.16, single power). One-way DESTRUCTION (N < FP_ONE
+    // here, so >= 0 by construction) — accumulates across step() calls, the
+    // t_max_phys_hits/t_low_rail_hits idiom of this class (never reset).
+    mutable int64_t e_deposit_drop_sum = 0;
 
     void  set_gas_advection_rate(float v) { gas_advection_rate = v; }
     float get_gas_advection_rate() const { return gas_advection_rate; }

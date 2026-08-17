@@ -75,12 +75,14 @@ def _shift_grid(h, w, rng, kind):
     raise AssertionError(kind)
 
 
-# P-E2a: the six energy counters `cuda_temperature_step` now returns
-# alongside the T_MAX_PHYS hit count (design §2.3). This gate is a
+# P-E2a/P-E2b: the seven energy counters `cuda_temperature_step` now returns
+# alongside the T_MAX_PHYS hit count (design §2.3/§2.2). This gate is a
 # TEMPERATURE-SOLVER lockstep, so it compares them too — the conduction
-# rewrite's books must agree bit-for-bit across the backends here as well.
+# rewrite's books (P-E2a) and the Pass-1 attenuation drop (P-E2b) must agree
+# bit-for-bit across the backends here as well.
 E_COUNTERS = ("e_cond_trunc_sum", "e_cond_cap_sum", "cond_limit_hits",
-              "e_cool_sum", "e_vac_wipe_sum", "e_ring_pin_sum")
+              "e_cool_sum", "e_vac_wipe_sum", "e_ring_pin_sum",
+              "e_deposit_drop_sum")
 
 
 def _run_pair(solver, f, solid, is_vacuum, ts, csg):

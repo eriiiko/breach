@@ -280,13 +280,16 @@ PYBIND11_MODULE(breach_physics, m) {
                   auto [csp, hc, wc] = get_2d_const(csg_arr);
                   csg = csp;
               }
-              // P-E2a: the isolated GPU entry now returns
+              // P-E2a/P-E2b: the isolated GPU entry now returns
               // (t_max_phys_hits, e_cond_trunc_sum, e_cond_cap_sum,
-              //  cond_limit_hits, e_cool_sum, e_vac_wipe_sum, e_ring_pin_sum)
-              // — the energy books the conduction rewrite must be gated on.
-              // An AUTHORIZED contract change (Appendix A P-E2a): the sole
-              // caller is tests/cuda_conduction_check.py, which now compares
-              // all six against the CPU solver's own fields.
+              //  cond_limit_hits, e_cool_sum, e_vac_wipe_sum, e_ring_pin_sum,
+              //  e_deposit_drop_sum) — the energy books the conduction
+              // rewrite (P-E2a) and the Pass-1 attenuation drop (P-E2b) must
+              // be gated on. An AUTHORIZED contract change (Appendix A
+              // P-E2a, extended P-E2b): the callers are
+              // tests/cuda_conduction_check.py, tests/cuda_thermal_mass_check.py
+              // and tests/cuda_cool_shift_check.py, which compare all seven
+              // against the CPU solver's own fields.
               int64_t cnt[breach_cuda::TEMPERATURE_ENERGY_SLOTS] = {0};
               const int64_t hits = breach_cuda::temperature_step(
                   temp, hp, shift, fs, sol, vac, atm, nb, wx, wy,
@@ -294,7 +297,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   c_v, n_floor_heat, gas_advection_rate, t_max_phys, h, w, dt,
                   nullptr, tsol, csg, cool_shift_floor, nullptr, nullptr, cnt);
               return py::make_tuple(hits, cnt[0], cnt[1], cnt[2], cnt[3],
-                                    cnt[4], cnt[5]);
+                                    cnt[4], cnt[5], cnt[6]);
           },
           py::arg("temperature"), py::arg("heat"), py::arg("heat_inv_shift"),
           py::arg("face_shift"), py::arg("solid"), py::arg("is_vacuum"),
@@ -310,7 +313,8 @@ PYBIND11_MODULE(breach_physics, m) {
           "P6.6 isolated: run the GPU unified temperature solver in place on "
           "`temperature` (bit-identical to TemperatureSolver.step); returns "
           "(t_max_phys_hits, e_cond_trunc_sum, e_cond_cap_sum, cond_limit_hits, "
-          "e_cool_sum, e_vac_wipe_sum, e_ring_pin_sum) for this call (P-E2a).");
+          "e_cool_sum, e_vac_wipe_sum, e_ring_pin_sum, e_deposit_drop_sum) for "
+          "this call (P-E2a + P-E2b).");
 
     // CUDA-S2: the GPU directional raycaster gate. Casts ONE LightSource on the
     // GPU into the (pre-zeroed) output fields, replicating the CPU cast's per-ray
@@ -869,10 +873,12 @@ PYBIND11_MODULE(breach_physics, m) {
     // the GPU combustion_step (live CPU fallback stays; flag-off == exact prior
     // CPU call). cuda_combustion_step runs ONE GPU combustion step IN PLACE on
     // the three mutated gas planes + temperature + wall_hp (bit-identical to
-    // CombustionSolver::step) and returns the two per-call rail counts
-    // (heat_floor_hits, t_max_phys_hits) as a tuple so the gate can compare them
-    // against the CPU solver's member-counter deltas. The scalar config dials
-    // are passed explicitly since combustion_step is a free function.
+    // CombustionSolver::step) and returns the per-call rail counts
+    // (heat_floor_hits, t_max_phys_hits, e_deposit_drop_sum — the last is
+    // P-E2b's energy-sum twin of heat_floor_hits) as a tuple so the gate can
+    // compare them against the CPU solver's member-counter deltas. The scalar
+    // config dials are passed explicitly since combustion_step is a free
+    // function.
     m.def("set_combustion_backend",
           [](bool use_cuda) { breach_cuda::set_combustion_backend_cuda(use_cuda); },
           py::arg("use_cuda"),
@@ -956,15 +962,18 @@ PYBIND11_MODULE(breach_physics, m) {
                   perm_ptr = pa.data(0, 0);
               }
               int64_t heat_floor_hits = 0, t_max_phys_hits = 0;
+              int64_t e_deposit_drop_sum = 0;   // P-E2b
               breach_cuda::combustion_step(
                   gas_ptr, n_gases, o2_idx, inert_n2_idx, black_smoke_idx,
                   temp, whp, f, fl, sol, vac, ign, h, w, dt, c_v, n_floor_heat,
                   burn_rate, o2_thresh_burn, H_fuel, soot_yield, fuel_per_o2,
                   o2_frac_ext, o2_frac_full,
                   T_MAX_PHYS, &heat_floor_hits, &t_max_phys_hits,
+                  &e_deposit_drop_sum,
                   tsol, hshift, heat_ptr, H_BED_M, H_BED_SHIFT, dacc_ptr,
                   draw_r, perm_ptr, max_claimants);
-              return py::make_tuple(heat_floor_hits, t_max_phys_hits);
+              return py::make_tuple(heat_floor_hits, t_max_phys_hits,
+                                    e_deposit_drop_sum);
           },
           py::arg("gas"), py::arg("o2_idx"), py::arg("inert_n2_idx"),
           py::arg("black_smoke_idx"), py::arg("temperature"), py::arg("wall_hp"),
@@ -988,7 +997,7 @@ PYBIND11_MODULE(breach_physics, m) {
           "reformulation, continuous-O2 proportional demand) in place on the "
           "three gas planes + temperature + wall_hp (bit-identical to "
           "CombustionSolver.step) and return the (heat_floor_hits, "
-          "t_max_phys_hits) per-call rail counts.");
+          "t_max_phys_hits, e_deposit_drop_sum) per-call rail counts.");
 
     // CUDA-S7 (set_atmos_backend / get_atmos_backend / cuda_diffuse_solve)
     // RETIRED in EOS P6.0: the diffuse_solve solver it mirrored was deleted in
@@ -1391,6 +1400,38 @@ PYBIND11_MODULE(breach_physics, m) {
           "fixed_point.h quantize: a real value -> Q16.16 int32, "
           "round-half-away-from-zero, computed in double.");
 
+    // P-E2b (energy-books arc, design §2.2): exposed so the n_floor_heat
+    // low-dial sweep (0.05 -> 0.01, reachable down to 0.001) can be verified
+    // against the ACTUAL per-cell reciprocal + the deposit multiply chain
+    // both deposit sites use, rather than a re-derived Python approximation
+    // (tools/e2b_floor_reciprocal_probe.py).
+    m.def("fp_reciprocal_q16",
+          [](int32_t denom_q) { return fixedpoint::reciprocal_q16(denom_q); },
+          py::arg("denom_q"),
+          "fixed_point.h reciprocal_q16: per-cell Newton reciprocal, Q16.16 "
+          "in -> Q16.16 out (int64 internally, ~1 ULP accurate; self-guards "
+          "denom_q <= 0 -> 0 and floors {1,2} to 3).");
+    m.def("fp_recip_mul",
+          [](int32_t x_q16, int64_t recip) {
+              return fixedpoint::recip_mul(x_q16, recip);
+          },
+          py::arg("x_q16"), py::arg("recip"),
+          "fixed_point.h recip_mul: x_q16 * recip >> RECIP_SHIFT via a "
+          "128-bit intermediate (the make_recip reciprocal multiply, used "
+          "for the deposit's .../c_v step).");
+    m.def("fp_deposit_dT_wide_q16",
+          [](int32_t deposit_q, int32_t recip_n_q, int64_t recip_cv) {
+              return fixedpoint::deposit_dT_wide_q16(deposit_q, recip_n_q,
+                                                      recip_cv);
+          },
+          py::arg("deposit_q"), py::arg("recip_n_q"), py::arg("recip_cv"),
+          "fixed_point.h deposit_dT_wide_q16 (P-E2b): deposit/(N*c_v) chained "
+          "as one 128-bit product, narrowed ONCE to int64 (not q16) — the "
+          "fix for the old two-step mul_q16->recip_mul chain's silent q16 "
+          "overflow at low n_floor_heat. Both deposit sites (combustion.cpp, "
+          "temperature_solver.cpp Pass 1) use this; exposed so it can be "
+          "verified directly rather than re-derived.");
+
     // S2a: the explicit WAVE state (wave_p / wave_v / wave_source) is now int32
     // Q16.16 (same 2^16 scale as water/heat). Python (gamemap fields, field
     // edits, the recorder boundary, tests) reads this flag to allocate the wave
@@ -1730,6 +1771,9 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readonly("e_cool_sum",         &TemperatureSolver::e_cool_sum)
         .def_readonly("e_vac_wipe_sum",     &TemperatureSolver::e_vac_wipe_sum)
         .def_readonly("e_ring_pin_sum",     &TemperatureSolver::e_ring_pin_sum)
+        // P-E2b (design §2.2/§2.5, L3-7): the Pass-1 attenuation-drop energy
+        // sum. Same accumulate-across-step() idiom as the P-E2a six above.
+        .def_readonly("e_deposit_drop_sum", &TemperatureSolver::e_deposit_drop_sum)
         // P2: wind_x/wind_y/dt are OPTIONAL (default None/0.0) so the shipped
         // direct-binding call sites (tests/test_temperature_*.py,
         // tests/cuda_s1_check.py — all pre-P2, 7 positional args) keep working
@@ -2146,6 +2190,9 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("absorb_strength",   &EOSSolver::absorb_strength)
         .def_readwrite("T_MIN",             &EOSSolver::T_MIN)
         .def_readwrite("T_WORK_CLAMP",      &EOSSolver::T_WORK_CLAMP)
+        // P-E2b (design §2.4): trust-gate dial, PLUMBING ONLY — the fade
+        // mechanism is P-E4's. Provably inert (nothing reads this member).
+        .def_readwrite("n_work_ref",        &EOSSolver::n_work_ref)
         .def_readwrite("T_MAX_PHYS",        &EOSSolver::T_MAX_PHYS)     // v2.4 rail
         .def_readwrite("U_MAX",             &EOSSolver::U_MAX)          // v2.4 rail
         // trace_mass_scale binding RETIRED (P-T0, design §2.6 — the member
@@ -2399,6 +2446,8 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("T_MAX_PHYS",        &CombustionSolver::T_MAX_PHYS)     // v2.4 rail
         .def_readonly("heat_floor_hits",    &CombustionSolver::heat_floor_hits)
         .def_readonly("t_max_phys_hits",    &CombustionSolver::t_max_phys_hits) // v2.4
+        // P-E2b (design §2.2/§2.5): the energy-sum twin of heat_floor_hits.
+        .def_readonly("e_deposit_drop_sum", &CombustionSolver::e_deposit_drop_sum)
         .def("step", [](const CombustionSolver& self,
                         py::array_t<int32_t> gas,             // (n_gases,h,w) Q16.16
                         int o2_idx, int inert_n2_idx, int black_smoke_idx,

@@ -796,11 +796,34 @@ void CombustionSolver::step(
                 const int shift = heat_inv_shift[s];   // log2(thermal_mass), >= 0
                 dT = deposit >> shift;
             } else {
-                q16 n_total_s = (q16)((int64_t)O2[s] + (int64_t)N2[s]);
+                const q16 n_real_s = (q16)((int64_t)O2[s] + (int64_t)N2[s]);
+                q16 n_total_s = n_real_s;
                 if (n_total_s < n_floor_q) { n_total_s = n_floor_q; ++heat_floor_hits; }
-                const q16 recip_n  = reciprocal_q16(n_total_s);
-                const q16 e_over_n = mul_q16(deposit, recip_n);        // .../N
-                dT                 = recip_mul(e_over_n, recip_cv);    // .../c_v
+                const q16 recip_n = reciprocal_q16(n_total_s);
+                if (n_total_s != n_real_s) {
+                    // P-E2b: the energy-sum twin of heat_floor_hits (design
+                    // §2.2/§2.5) — destroyed ΔE = deposit*(1 - n_real/floor).
+                    // WIDE throughout (int64, no premature q16 narrow): at
+                    // n_floor_heat as low as 0.01-0.001, deposit/floor alone
+                    // can exceed q16's ~32768 ceiling for a routine deposit
+                    // (see fixed_point.h's deposit_dT_wide_q16 header
+                    // comment) — mul_wide's own bound (|a*b| < 2^62 for any
+                    // int32 a,b) keeps this int64 chain safe. n_real < floor
+                    // here so this is >= 0 by construction.
+                    const int64_t e_over_n_wide =
+                        mul_wide(deposit, recip_n) >> FP_SHIFT;   // deposit/floor
+                    e_deposit_drop_sum += (int64_t)deposit
+                        - ((e_over_n_wide * (int64_t)n_real_s) >> FP_SHIFT);
+                }
+                // P-E2b: the WIDE deposit/(N*c_v) chain (int64, no premature
+                // q16 narrow — fixed_point.h's deposit_dT_wide_q16). Clamp to
+                // a safe non-negative int32 range BEFORE narrowing for
+                // heat_saturating_add; an honestly-huge deposit still hits
+                // the T_MAX_PHYS rail right below, through a value that was
+                // never corrupted on the way there.
+                const int64_t dT_wide =
+                    deposit_dT_wide_q16(deposit, recip_n, recip_cv);
+                dT = (q16)std::clamp<int64_t>(dT_wide, 0, INT32_MAX);
             }
             heat_saturating_add(&temperature[s], dT);
             if (temperature[s] > t_max_phys_q) {                   // v2.4 rail

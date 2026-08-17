@@ -414,6 +414,16 @@ public:
     // moved and no test may assert it (design §3).
     mutable int64_t heat_floor_hits = 0;   // n_floor_heat engagements
     mutable int64_t t_max_phys_hits = 0;   // T_MAX_PHYS rail engagements (v2.4)
+    // P-E2b (energy-books arc, design §2.2/§2.5): the energy-sum TWIN of
+    // heat_floor_hits — `heat_floor_hits` only ever counted the ENGAGEMENT;
+    // this sums what the floor engagement DESTROYS. When N_total < floor the
+    // divide uses `floor` instead of the real N, delivering only a N/floor
+    // fraction of the aggregate deposit; the dropped fraction is
+    // deposit*(1 - N/floor), same currency as `deposit`/`heat` (Q16.16,
+    // single power). One-way DESTRUCTION (N < floor here, so >= 0 by
+    // construction) — accumulates across step() calls, never reset (the
+    // heat_floor_hits/t_max_phys_hits idiom of this class).
+    mutable int64_t e_deposit_drop_sum = 0;
 
     // gas                : (n_gases, h, w) Q16.16 density planes, mutated
     // o2_idx/inert_n2_idx/black_smoke_idx : gas ids (simulation/gases.py)

@@ -185,15 +185,20 @@ def counters(runner):
               # T_MIN creator, and the active-flux pair.
               "e_ts_residual", "e_wipe_sum", "e_floor_sum",
               "n_active_flux", "n_bulk_active_sum")),
-            (runner.combustion, "comb.", ("heat_floor_hits",)),
+            (runner.combustion, "comb.",
+             # P-E2b: e_deposit_drop_sum is heat_floor_hits' energy-sum twin
+             # (design §2.2/§2.5) — the combustion floor's destroyed ΔE.
+             ("heat_floor_hits", "e_deposit_drop_sum")),
             (runner.temperature, "temp.",
              # P-E2a: conduction's endpoint-truncation and capacity-floor
              # residuals + the limiter's engagement count; then Pass 3 /
              # sky, the breach wipe and the ambient-ring pin — all three
              # SIGNED, all three named creators as well as sinks.
+             # P-E2b adds e_deposit_drop_sum: the Pass-1 attenuation-drop
+             # energy sum (L3-7) — same accumulate idiom as the P-E2a six.
              ("e_cond_trunc_sum", "e_cond_cap_sum", "cond_limit_hits",
               "e_cool_sum", "e_vac_wipe_sum", "e_ring_pin_sum",
-              "t_max_phys_hits", "t_low_rail_hits")),
+              "t_max_phys_hits", "t_low_rail_hits", "e_deposit_drop_sum")),
     ):
         for nm in names:
             try:

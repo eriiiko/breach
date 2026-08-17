@@ -5,6 +5,7 @@
 #include "temperature_solver.h"
 #include "raycaster.h"     // HEAT_SCALE, heat_saturating_add (shared Q16.16 domain)
 #include "fixed_point.h"   // S3c: quantize() for the o2_vacuum_thresh integer compare
+#include <algorithm>        // P-E2b: std::clamp on the wide deposit-divide result
 
 // Direction order for the per-tile face_shift cache (MUST match the Python
 // bake in GameMap: index 0=N, 1=S, 2=E, 3=W).
@@ -297,11 +298,28 @@ void TemperatureSolver::step(
                 const int32_t e_abs = (N_raw >= FP_ONE)
                     ? deposit                              // ambient+: exact old path
                     : mul_q16(deposit, (q16)N_raw);        // thin gas: ∝ density
+                if (N_raw < FP_ONE) {
+                    // P-E2b / L3-7: the (1-N)*deposit attenuation drop below
+                    // ambient density is PHYSICAL and stays — it never had a
+                    // counter. Same currency as `deposit`/`heat`. N_raw<FP_ONE
+                    // here so deposit >= e_abs (one-way destruction).
+                    e_deposit_drop_sum += (int64_t)deposit - (int64_t)e_abs;
+                }
                 int32_t N_q = N_raw;
                 if (N_q < n_floor_q) N_q = n_floor_q;    // floor independent of anything else (N_FLOOR_HEAT)
                 const int32_t recip_N_q = reciprocal_q16(N_q);        // 1/N, per-tile Newton recip
-                const int32_t e_over_n  = mul_q16(e_abs, recip_N_q);  // E_abs/N, Q16.16
-                const int32_t dT = recip_mul(e_over_n, recip_cv);     // (E_abs/N)/c_v, Q16.16
+                // P-E2b: the WIDE E_abs/(N*c_v) chain (int64, no premature
+                // q16 narrow — fixed_point.h's deposit_dT_wide_q16 header
+                // comment: at n_floor_heat as low as 0.01-0.001, E_abs/floor
+                // alone can exceed q16's ~32768 ceiling for a routine
+                // deposit). Clamp to a safe non-negative int32 range BEFORE
+                // narrowing for heat_saturating_add; an honestly-huge
+                // deposit still hits the T_MAX_PHYS rail right below,
+                // through a value that was never corrupted on the way there.
+                const int64_t dT_wide =
+                    deposit_dT_wide_q16(e_abs, recip_N_q, recip_cv);
+                const int32_t dT =
+                    (int32_t)std::clamp<int64_t>(dT_wide, 0, INT32_MAX);
                 heat_saturating_add(&temperature[i], dT);
                 if (temperature[i] > t_max_phys_q) {
                     temperature[i] = t_max_phys_q; ++t_max_phys_hits;

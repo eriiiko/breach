@@ -206,6 +206,76 @@ FP_HD inline q16 recip_mul(q16 x_q16, int64_t recip) {
 }
 #endif
 
+// ---- wide per-cell deposit divide: deposit/(N*c_v) without a premature ----
+// Q16.16 narrow (P-E2b, energy-books arc, design §2.2) -----------------------
+//
+// Both radiative/combustion deposit sites (temperature_solver.cpp Pass 1,
+// combustion.cpp) chain TWO reciprocal multiplies: /N (the per-cell Newton
+// `reciprocal_q16(N)`, runtime-dynamic) then /c_v (the load-time
+// make_recip/recip_mul constant). The OLD two-step form narrowed the FIRST
+// result to q16 (Q16.16 int32, representable magnitude <= ~32768) BEFORE the
+// second multiply:
+//     e_over_n = mul_q16(deposit, recip_n);   // NARROWS to q16 HERE
+//     dT       = recip_mul(e_over_n, recip_cv);
+// At n_floor_heat as low as 0.01-0.001 (design §2.2's swept-downward ruling,
+// RULING 2026-08-17) a ROUTINE per-tick deposit (~330, the eos-p3fix-thermal-
+// ceiling repro's own reference number — one adjacent I=0.8 fire) divided by
+// the floor ALONE already exceeds what q16 can represent (deposit/floor =
+// 33,000 at floor=0.01, vs Q16.16 int32's ~32,767.9998 ceiling): the narrow
+// silently WRAPS (two's-complement, frequently to NEGATIVE), and
+// `heat_saturating_add`'s `delta <= 0` early-return then drops the ENTIRE
+// deposit — no clamp, no counter, nothing — the exact "temperature not
+// backed by energy" failure class this arc exists to close, arising at the
+// SOURCE instead of a downstream consumer. (The overflow was already
+// reachable at the pre-arc 0.05 floor for a "stacked firestorm" deposit
+// (~2,600/0.05 = 52,000); the low-floor ruling makes it reachable by an
+// ORDINARY single-fire deposit too. Caught by
+// tools/e2b_floor_reciprocal_probe.py, which is why this helper exists.)
+//
+// Fix: chain deposit*recip_n*recip_cv as ONE 128-bit product and narrow
+// EXACTLY ONCE, to an int64 (deliberately NOT q16/int32) — the caller clamps
+// this WIDE result to a safe non-negative int32 range before narrowing
+// further for heat_saturating_add. That clamp composes correctly with the
+// existing counted T_MAX_PHYS rail immediately downstream: an honestly-huge
+// deposit still hits that rail exactly as before, it just arrives through a
+// value that was never corrupted on the way there. All three factors
+// (deposit_q, recip_n_q, recip_cv) are non-negative by construction (a
+// deposit <= 0 never reaches this path; reciprocal_q16 self-guards to >= 0;
+// recip_cv is a positive-divisor reciprocal) — no sign combination needed.
+#if defined(__SIZEOF_INT128__)
+FP_HD inline int64_t deposit_dT_wide_q16(int32_t deposit_q, int32_t recip_n_q,
+                                          int64_t recip_cv) {
+    const __int128 prod = (__int128)deposit_q * (__int128)recip_n_q
+                         * (__int128)recip_cv;
+    return (int64_t)(prod >> (FP_SHIFT + RECIP_SHIFT));   // one narrow, 48 bits
+}
+#elif defined(_MSC_VER)
+FP_HD inline int64_t deposit_dT_wide_q16(int32_t deposit_q, int32_t recip_n_q,
+                                          int64_t recip_cv) {
+    // Stage 1: deposit_q * recip_n_q fits in a plain int64 (mul_wide's own
+    // bound: |a*b| < 2^62 for any int32 a,b — no 128-bit needed yet). Stage 2:
+    // that int64 times recip_cv (up to ~2^42 for a very small c_v) needs the
+    // 128-bit product — the SAME _mul128 primitive recip_mul's MSVC path
+    // above already uses, generalized from a q16 first operand to int64 (the
+    // intrinsic takes two 64-bit registers regardless of the value's range).
+    const int64_t stage1 = (int64_t)deposit_q * (int64_t)recip_n_q;
+    long long hi;
+    long long lo = _mul128((long long)stage1, (long long)recip_cv, &hi);
+    unsigned long long ulo = (unsigned long long)lo;
+    const int shift = FP_SHIFT + RECIP_SHIFT;   // 48, < 64
+    long long res = (long long)((ulo >> shift) |
+                                ((unsigned long long)hi << (64 - shift)));
+    return (int64_t)res;
+}
+#else
+FP_HD inline int64_t deposit_dT_wide_q16(int32_t deposit_q, int32_t recip_n_q,
+                                          int64_t recip_cv) {
+    // Portable fallback (exotic toolchains only, mirrors recip_mul's own).
+    return (int64_t)(((__int128_t)deposit_q * recip_n_q * recip_cv)
+                      >> (FP_SHIFT + RECIP_SHIFT));
+}
+#endif
+
 // ---- signed saturating add (never wrap) ------------------------------------
 // eos-p3fix-thermal-ceiling: raycaster.h's `heat_saturating_add` only
 // saturates the POSITIVE side (its accumulator is contractually non-negative
