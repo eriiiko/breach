@@ -1,5 +1,14 @@
 # Session handoff — 2026-08-17 (energy-books arc closed; pressure arc next)
 
+> **SUPERSEDED 2026-08-17 (same day) — read
+> `docs/pressure_arc_root_cause_2026-08-17.md` first.** The "★ Lead worth
+> chasing first: the peak cell is at a corner" below was **measured and
+> falsified**: restricted to true interior gas, the anomaly is volume-filling
+> with no edge or wall preference (the corner reading came from counting
+> solid/vacuum cells, which sit at P=0). The root cause is the pressure solve
+> running under-converged at `mg_cycles = 2`. Everything else below still
+> stands. Kept unedited as the dated record.
+
 **Why this file exists:** Erik is switching to the office PC. Everything a fresh
 session needs must live in the repo, not in machine-local memory. This is the
 "how to pick up" note; the arc's own record is
