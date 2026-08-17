@@ -44,9 +44,11 @@ namespace breach_cuda {
 // the solver's per-tick cap (EOSSolver::dbg_last_c_local_q), and the float
 // scalars are the EOSSolver config members. Outputs: digest_velocity_out /
 // digest_compression_out — byte-for-byte step()'s digest expressions,
-// computed host-side after the D2H (review §2.6) — and counters_out[5] =
+// computed host-side after the D2H (review §2.6) — and counters_out[9] =
 // { u_clamp_hits, u_max_hits, work_clamp_hits, energy_floor_hits,
-// t_max_phys_hits } for THIS call.
+// t_max_phys_hits, ke_drag_removed, e_drag_deposit, e_drag_drop_sum,
+// e_drag_rail_clipped } for THIS call (the last four are P-E3's interior-
+// drag int64 ENERGY SUMS, design §2.8 — not hit counts).
 //
 // PERF NOTE (residency is S8): per-call H2D of 3 fields + P + N_total +
 // absorb plane + masks, 2 kernel launches, D2H of 2 fields + counters.
@@ -63,9 +65,17 @@ void eos_kick_compression(
     int h, int w, float dt, int32_t c_local_q,
     float c_max, float dx, float adiabatic_index, float absorb_strength,
     float n_floor_solver, float t_min, float t_work_clamp,
-    float t_max_phys, float u_max, float trace_mass_scale,
+    float t_max_phys, float u_max,   // trace_mass_scale param RETIRED (P-T0,
+                                      // design §2.6 — n_total ≡ n_bulk now)
+    // P-E3 (energy-books arc, design §2.8): interior drag + heat
+    // counterparty. k_drag default 0.0 -> dormant.
+    float k_drag, float k_drag_heat_frac, float c_v,
+    // P-E4 (energy-books arc, design §2.4): the compression-work trust
+    // gate's reference density (fades step 4c's work factor toward 0 below
+    // n_work_ref, hard-zero below n_work_ref/2).
+    float n_work_ref,
     uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
-    int64_t* counters_out /* [5] */,
+    int64_t* counters_out /* [9] */,
     // BC (spec §1/§3): the ambient ring (nullptr = space) drives the velocity
     // zero + compression skip; the u-damping band grid sponge_udamp (nullptr =
     // off) is the rung-2 absorber applied after the absorb chain, magnitude-

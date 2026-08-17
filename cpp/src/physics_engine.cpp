@@ -294,6 +294,12 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // path AND resident path. `solid` is still handed to the kernel — it is
         // the documented nullptr fallback for the mask — but no longer selects
         // the medium there, exactly as on the CPU side below.
+        //
+        // P-E2a/P-E2b: the GPU pass fills a local 7-slot block which is then
+        // folded into the solver's own accumulators below the call — the same
+        // "backend-agnostic telemetry" idiom t_max_phys_hits / t_low_rail_hits
+        // already use here.
+        int64_t cond_counters[breach_cuda::TEMPERATURE_ENERGY_SLOTS] = {0};
         this->temperature.t_max_phys_hits += breach_cuda::temperature_step(
             temperature_mut, heat, heat_inv_shift, face_shift,
             solid, is_vacuum, atmosphere, n_bulk_.data(),
@@ -317,7 +323,18 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             // the diagnostic regardless of backend.
             &this->temperature.t_low_rail_hits,
             // P-R4: the SIGNED radiation fold, on the GPU twin too.
-            rad_net);
+            rad_net,
+            // P-E2a: the six energy counters, folded into the SAME solver
+            // fields the CPU path increments — one set of books regardless of
+            // backend. Slot order is pinned by cuda_temperature.h.
+            cond_counters);
+        this->temperature.e_cond_trunc_sum   += cond_counters[0];
+        this->temperature.e_cond_cap_sum     += cond_counters[1];
+        this->temperature.cond_limit_hits    += cond_counters[2];
+        this->temperature.e_cool_sum         += cond_counters[3];
+        this->temperature.e_vac_wipe_sum     += cond_counters[4];
+        this->temperature.e_ring_pin_sum     += cond_counters[5];
+        this->temperature.e_deposit_drop_sum += cond_counters[6];  // P-E2b
     } else
 #endif
     {
@@ -377,6 +394,11 @@ void PhysicsEngine::run_substeps(
                        // set (gamemap.py: obstacles == solid == permeability<=0);
                        // kept as a parameter for ABI/back-compat with the
                        // Python call site's existing positional argument.
+    (void)inert_n2_idx;   // P-T0 (design §2.6): the decay->inert_N2 credit
+                          // this index fed is DELETED below; kept as a
+                          // parameter for ABI/back-compat with the Python
+                          // call site's existing positional argument, the
+                          // `obstacles` idiom above.
 
     // EOS P6.5 ("the big flip", docs/eos_p6_gpu_alignment_review.md §4):
     // dispatch the WHOLE eos.step tick to the chained GPU orchestration
@@ -469,7 +491,8 @@ void PhysicsEngine::run_substeps(
         // eos dispatch idiom: with the flag OFF (default) it is the EXACT prior
         // CPU call (the live CPU path stays byte-identical); with it ON,
         // smoke_step runs this same single once-per-tick step on the GPU. The
-        // subsequent P4 decay->inert_N2 credit below stays on the CPU in BOTH
+        // subsequent P4 decay (its inert_N2 credit DELETED at P-T0, design
+        // §2.6 — decay just removes mass now) below stays on the CPU in BOTH
         // paths (it is not part of the advection pass — strictly additive).
         // Gated by tests/cuda_trace_smoke_check.py (key "trace_smoke").
         if (breach_cuda::smoke_backend_is_cuda()) {
@@ -494,32 +517,30 @@ void PhysicsEngine::run_substeps(
                 is_ambient);   // BC: ambient ring is a trace sink (null=space)
         }
 
-        // EOS refactor P4 (design §2.2/§5 v2.1, decisions log #12): apply
-        // this trace plane's `decay` column ONCE per tick, right after its
-        // own once-per-tick advection above — decay is settling/oxidation
-        // into inert bulk, NOT deletion, so the lost mass is credited to
-        // inert_N2 IN THE SAME CELL. This closes the v2.1 residual of
-        // decision #12: N_total is now conserved through the FULL
-        // burn-then-decay cycle, not just the combustion burn. The two
-        // conservative bulk planes carry decay=0 by config contract
-        // (gases.py), so `gas_conservative[gi]` guards this loop out for
-        // them structurally (unreachable here already); `inert_n2_idx`
-        // itself is skipped defensively so a self-credit can never happen.
+        // EOS refactor P4's decay->inert_N2 credit is DELETED (P-T0,
+        // energy-books arc, design §2.6 — the 0% ruling): with zero
+        // pressure weight there is no mass to conserve, so the "decay is
+        // oxidation, not deletion" doctrine is deliberately retired. The
+        // decay ITSELF STAYS — this trace plane's `decay` column still
+        // applies ONCE per tick, right after its own once-per-tick
+        // advection above — but the lost count simply VANISHES instead of
+        // crediting inert_N2 in the same cell. The two conservative bulk
+        // planes carry decay=0 by config contract (gases.py), so
+        // `gas_conservative[gi]` guards this loop out for them structurally
+        // (unreachable here already).
         const float decay_gi = gas_decay[gi];
-        if (decay_gi > 0.0f && gi != inert_n2_idx) {
+        if (decay_gi > 0.0f) {
             using namespace fixedpoint;
             q16 frac_q = quantize((double)decay_gi * (double)sim_time);
             if (frac_q < 0) frac_q = 0;
             if (frac_q > FP_ONE) frac_q = FP_ONE;   // a decay*dt >= 1.0 removes it all
             if (frac_q > 0) {
-                int32_t* n2_slice = gas + (size_t)inert_n2_idx * plane;
                 for (int i = 0; i < plane; ++i) {
                     const int32_t v = gas_slice[i];
                     if (v <= 0) continue;
                     const int32_t lost = mul_q16(v, frac_q);
                     if (lost <= 0) continue;
                     gas_slice[i] = v - lost;
-                    n2_slice[i] += lost;
                 }
             }
         }

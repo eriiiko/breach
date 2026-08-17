@@ -193,19 +193,33 @@ def _synth_fields(h, w, rng, solid, is_vacuum, thin=False, wind=False):
                 wind_x=wind_x, wind_y=wind_y, dt=dt)
 
 
+# P-E2a/P-E2b: the seven energy counters `cuda_temperature_step` now returns
+# alongside the T_MAX_PHYS hit count (design §2.3/§2.2). This gate is a
+# TEMPERATURE-SOLVER lockstep, so it compares them too — the conduction
+# rewrite's books (P-E2a) and the Pass-1 attenuation drop (P-E2b) must agree
+# bit-for-bit across the backends here as well.
+E_COUNTERS = ("e_cond_trunc_sum", "e_cond_cap_sum", "cond_limit_hits",
+              "e_cool_sum", "e_vac_wipe_sum", "e_ring_pin_sum",
+              "e_deposit_drop_sum")
+
+
 def _run_pair(solver, f, solid, is_vacuum, ts):
     """CPU reference vs GPU kernel on identical copies, BOTH given `ts`; plus the
     GPU control run with the mask OMITTED (the pre-P2 `solid` fallback).
-    Returns (t_cpu, hits_cpu, t_gpu, hits_gpu, t_ctl)."""
+    Returns (t_cpu, cnt_cpu, t_gpu, cnt_gpu, t_ctl), where cnt is
+    (t_max_phys_hits,) + the six P-E2a energy counters, all per-call."""
     t_cpu = np.ascontiguousarray(f["temperature"].copy())
-    c0 = int(solver.t_max_phys_hits)
+    c0 = (int(solver.t_max_phys_hits),) + tuple(
+        int(getattr(solver, nm)) for nm in E_COUNTERS)
     solver.step(t_cpu, f["heat"], f["his"], f["fs"], solid, is_vacuum,
                 f["atmosphere"], wind_x=f["wind_x"], wind_y=f["wind_y"],
                 dt=f["dt"], n_bulk=f["n_bulk"], thermal_solid=ts)
-    hits_cpu = int(solver.t_max_phys_hits) - c0
+    c1 = (int(solver.t_max_phys_hits),) + tuple(
+        int(getattr(solver, nm)) for nm in E_COUNTERS)
+    hits_cpu = tuple(b - a for a, b in zip(c0, c1))
 
     t_gpu = np.ascontiguousarray(f["temperature"].copy())
-    hits_gpu = int(bp.cuda_temperature_step(
+    hits_gpu = tuple(int(v) for v in bp.cuda_temperature_step(
         t_gpu, f["heat"], f["his"], f["fs"], solid, is_vacuum, f["atmosphere"],
         n_bulk=f["n_bulk"], wind_x=f["wind_x"], wind_y=f["wind_y"], dt=f["dt"],
         thermal_solid=ts, **DIALS))
@@ -226,9 +240,11 @@ def _compare(tag, t_cpu, hits_cpu, t_gpu, hits_gpu):
         idx = int(np.argmax(t_cpu != t_gpu))
         print(f"  {tag}: temperature {mism} MISMATCH (first @ {idx}: "
               f"cpu={t_cpu.flat[idx]} gpu={t_gpu.flat[idx]})")
-    if hits_cpu != hits_gpu:
-        ok = False
-        print(f"  {tag}: t_max_phys hits mismatch cpu={hits_cpu} gpu={hits_gpu}")
+    # P-E2a: `hits_*` is now (t_max_phys_hits,) + the six energy counters.
+    for nm, a, b in zip(("t_max_phys_hits",) + E_COUNTERS, hits_cpu, hits_gpu):
+        if a != b:
+            ok = False
+            print(f"  {tag}: {nm} mismatch cpu={a} gpu={b}")
     return ok
 
 
@@ -260,7 +276,7 @@ def part1_isolated() -> bool:
                         solver, fld, solid, is_vacuum, ts)
                     tag = f"{h}x{w}/{kind}/crate={crate}/wind={wind}"
                     ok &= _compare(tag, t_cpu, hc, t_gpu, hg)
-                    total_hits += hc
+                    total_hits += hc[0]
                     n_cfg += 1
                     if not np.array_equal(t_cpu, t_ctl):
                         control_differed += 1
@@ -353,7 +369,7 @@ def part1b_trajectory() -> bool:
             solver, fld, solid, is_vacuum, thermal_solid)
         if not _compare(f"tick {tick}", t_cpu, hc, t_gpu, hg):
             bad += 1
-        total_hits += hc
+        total_hits += hc[0]
         if int(t_cpu[11, 26]) != 0:
             crate_seen += 1
         if int(t_cpu[1, 7]) != 0:

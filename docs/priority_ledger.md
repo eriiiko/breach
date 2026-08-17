@@ -16,6 +16,53 @@ below remains the standing order.
 
 ---
 
+## Live thread — the physics lid (storm → energy books → pressure)
+
+**Energy-books arc — CLOSED 2026-08-17, Erik-blessed at the P-E5 HUMAN-TEST.**
+The EOS no longer copies temperature, it moves energy: the semi-Lagrangian
+T-copy that minted **+7,805 eth per 200 s bench run** is gone, transport is
+one-way non-positive on every tick (**+3.72e16 → −5.33e14** on the hot-rail
+scenario), the hot rail is closed (`t_max_phys_hits` **2130 → 0**, peak T
+**15984 → 3702**), conduction's free cold-rail leg flipped sign (`t_min_gas`
+**−0.1908 → 0.0000**), and traces left the physics books entirely. Shipped
+dials `k_drag = 0.5` / `k_drag_heat_frac = 0.0014`. Full record:
+`docs/energy_books_arc_close_2026-08-17.md`; canon folded into engine
+chapters 04/05/06; the arc's design, critique and seven as-builts are in
+`docs/archive/`. Origin: `docs/storm_audit_2026-08-14.md`.
+
+**Sequencing note (design §9, load-bearing for track 2 of the RL push): this
+arc landed BEFORE any recorder milestone that snapshots physics for
+training.** That was the point — the recorder must capture a substrate whose
+books close, or every trajectory in the replay buffer carries a mint. M0–M4
+are unblocked on this axis now.
+
+Queued next, in this order:
+
+1. **Pressure/momentum arc — AUDIT FIRST** (Erik's standing ruling; the
+   recorder is already instrumented for it). The thermal books are closed and
+   the dumps prove it (peak T 741, zero cells near the ceiling), but pressure
+   transients remain: **~98 atm at a normal ~700 game-T ⇒ ~29× ambient density
+   in one cell**, plus a negative `P_min`. A mass/momentum event, not a
+   thermal one. `recorder.DEFAULT_FIELDS` now captures `wind_x`/`wind_y`
+   (wind is NOT recoverable from the pressure field — the gradient is
+   acceleration, `u` is its history, ~90° out of phase in the Helmholtz mode)
+   and `inert_n2` (so `p* = C·N·T_abs` decomposes offline). Its own arc.
+2. **T_abs compression work** (design §2.9, RULING R1) — a short designed
+   patch with its own critique round and its own HUMAN-TEST: run the
+   reversible work on absolute temperature, `T_new = (T + 290)·(1±w) − 290`,
+   so compression stops *freezing* sub-ambient gas and ambient air finally
+   heats under compression at all. Feel-adjacent (breach rarefaction becomes
+   genuinely cold).
+3. **Post-pressure retune pass** — one sweep over everything once the pressure
+   arc lands: the fire anchors (`peak time` fell out of its band at P-E1;
+   `peak I`, plateau T and `fire death` were already MISSing), `k_drag` (0.5
+   is a *starting* value, not a tuned one — Erik's explicit ruling), and the
+   arc's one declared red,
+   `tests/test_p3_direct_e2e.py::test_directional_spray_cone_follows_facing`
+   (damped air shortens a spray cone's throw — expected, left honestly red).
+
+---
+
 ## The stack
 
 ### 1. Physics engine v1 — CLOSED 2026-07-21 (S8a complete: Path B + Path A)

@@ -107,7 +107,20 @@ int64_t temperature_step(
     // `shr_round0(rad_net[i], heat_inv_shift[i])` and a SYMMETRIC saturating
     // add — the exact CPU twin (temperature_solver.cpp Pass 1). nullptr -> no
     // fold, byte-identical to pre-P-R4.
-    const int32_t* rad_net = nullptr);
+    const int32_t* rad_net = nullptr,
+    // P-E2a/P-E2b (design §2.3/§2.2): out-param for the SEVEN energy counters,
+    // accumulated (+=) into the caller's TemperatureSolver fields so telemetry
+    // is identical whichever backend ran. Slot order is PINNED and mirrored by
+    // the C_* enum in cuda_temperature.cu and by the CPU field order:
+    //   0 e_cond_trunc_sum  1 e_cond_cap_sum  2 cond_limit_hits
+    //   3 e_cool_sum        4 e_vac_wipe_sum  5 e_ring_pin_sum
+    //   6 e_deposit_drop_sum (P-E2b, Pass-1 attenuation drop, L3-7)
+    // nullptr -> the counters are still computed on-device (they cost one
+    // atomicAdd per engaged cell) but discarded, exactly like the rail counts.
+    int64_t* energy_counters_out = nullptr);
+
+// The number of slots `energy_counters_out` must have room for.
+constexpr int TEMPERATURE_ENERGY_SLOTS = 7;
 
 // Backend selection (S1 gate + integration). When true, PhysicsEngine::step_tail
 // runs temperature on the GPU instead of the CPU solver. Defaults false so the

@@ -206,6 +206,128 @@ FP_HD inline q16 recip_mul(q16 x_q16, int64_t recip) {
 }
 #endif
 
+// ---- wide per-cell deposit divide: deposit/(N*c_v) without a premature ----
+// Q16.16 narrow (P-E2b, energy-books arc, design §2.2) -----------------------
+//
+// Both radiative/combustion deposit sites (temperature_solver.cpp Pass 1,
+// combustion.cpp) chain TWO reciprocal multiplies: /N (the per-cell Newton
+// `reciprocal_q16(N)`, runtime-dynamic) then /c_v (the load-time
+// make_recip/recip_mul constant). The OLD two-step form narrowed the FIRST
+// result to q16 (Q16.16 int32, representable magnitude <= ~32768) BEFORE the
+// second multiply:
+//     e_over_n = mul_q16(deposit, recip_n);   // NARROWS to q16 HERE
+//     dT       = recip_mul(e_over_n, recip_cv);
+// At n_floor_heat as low as 0.01-0.001 (design §2.2's swept-downward ruling,
+// RULING 2026-08-17) a ROUTINE per-tick deposit (~330, the eos-p3fix-thermal-
+// ceiling repro's own reference number — one adjacent I=0.8 fire) divided by
+// the floor ALONE already exceeds what q16 can represent (deposit/floor =
+// 33,000 at floor=0.01, vs Q16.16 int32's ~32,767.9998 ceiling): the narrow
+// silently WRAPS (two's-complement, frequently to NEGATIVE), and
+// `heat_saturating_add`'s `delta <= 0` early-return then drops the ENTIRE
+// deposit — no clamp, no counter, nothing — the exact "temperature not
+// backed by energy" failure class this arc exists to close, arising at the
+// SOURCE instead of a downstream consumer. (The overflow was already
+// reachable at the pre-arc 0.05 floor for a "stacked firestorm" deposit
+// (~2,600/0.05 = 52,000); the low-floor ruling makes it reachable by an
+// ORDINARY single-fire deposit too. Caught by
+// tools/e2b_floor_reciprocal_probe.py, which is why this helper exists.)
+//
+// Fix: chain deposit*recip_n*recip_cv as ONE 128-bit product and narrow
+// EXACTLY ONCE, to an int64 (deliberately NOT q16/int32) — the caller clamps
+// this WIDE result to a safe non-negative int32 range before narrowing
+// further for heat_saturating_add. That clamp composes correctly with the
+// existing counted T_MAX_PHYS rail immediately downstream: an honestly-huge
+// deposit still hits that rail exactly as before, it just arrives through a
+// value that was never corrupted on the way there. All three factors
+// (deposit_q, recip_n_q, recip_cv) are non-negative by construction (a
+// deposit <= 0 never reaches this path; reciprocal_q16 self-guards to >= 0;
+// recip_cv is a positive-divisor reciprocal) — no sign combination needed.
+#if defined(__SIZEOF_INT128__)
+FP_HD inline int64_t deposit_dT_wide_q16(int32_t deposit_q, int32_t recip_n_q,
+                                          int64_t recip_cv) {
+    const __int128 prod = (__int128)deposit_q * (__int128)recip_n_q
+                         * (__int128)recip_cv;
+    return (int64_t)(prod >> (FP_SHIFT + RECIP_SHIFT));   // one narrow, 48 bits
+}
+#elif defined(_MSC_VER)
+FP_HD inline int64_t deposit_dT_wide_q16(int32_t deposit_q, int32_t recip_n_q,
+                                          int64_t recip_cv) {
+    // Stage 1: deposit_q * recip_n_q fits in a plain int64 (mul_wide's own
+    // bound: |a*b| < 2^62 for any int32 a,b — no 128-bit needed yet). Stage 2:
+    // that int64 times recip_cv (up to ~2^42 for a very small c_v) needs the
+    // 128-bit product — the SAME _mul128 primitive recip_mul's MSVC path
+    // above already uses, generalized from a q16 first operand to int64 (the
+    // intrinsic takes two 64-bit registers regardless of the value's range).
+    const int64_t stage1 = (int64_t)deposit_q * (int64_t)recip_n_q;
+    long long hi;
+    long long lo = _mul128((long long)stage1, (long long)recip_cv, &hi);
+    unsigned long long ulo = (unsigned long long)lo;
+    const int shift = FP_SHIFT + RECIP_SHIFT;   // 48, < 64
+    long long res = (long long)((ulo >> shift) |
+                                ((unsigned long long)hi << (64 - shift)));
+    return (int64_t)res;
+}
+#else
+FP_HD inline int64_t deposit_dT_wide_q16(int32_t deposit_q, int32_t recip_n_q,
+                                          int64_t recip_cv) {
+    // Portable fallback (exotic toolchains only, mirrors recip_mul's own).
+    return (int64_t)(((__int128_t)deposit_q * recip_n_q * recip_cv)
+                      >> (FP_SHIFT + RECIP_SHIFT));
+}
+#endif
+
+// ---- wide DRAG deposit divide: ΔE_cell*heat_frac/c_v, no premature narrow --
+// (P-E3, energy-books arc, design §2.8) — the SAME overflow-narrowing hazard
+// class deposit_dT_wide_q16 exists for (P-E2b), specialized to the interior-
+// drag deposit's TWO-input-plus-fraction chain. UNLIKE the combustion/
+// radiation deposits, there is no per-cell N divisor here: ΔE_cell is already
+// a SPECIFIC (per-N) quantity — u is a velocity, not a momentum, so
+// ΔE_cell = (|u_old|^2 - |u_new|^2)/2 is a specific kinetic energy, and only
+// the load-time c_v reciprocal divides it (see the design's "ledger units"
+// derivation). energy_q16 is a WIDE (int64) Q16.16 value — NOT narrowed to
+// q16/int32 first: a full stop from 1000 m/s puts it far past int32 (~3e10
+// raw), the exact hazard class this helper exists to avoid. heat_frac_q is a
+// plain Q16.16 fraction (k_drag_heat_frac, normally in [0,1] — NOT a
+// reciprocal); recip_cv is the load-time c_v reciprocal (make_recip,
+// RECIP_SHIFT=32 bits, the same fold Pass 1's deposit already uses). Chained
+// as one 128-bit product, narrowed EXACTLY ONCE to int64 (never to q16) at
+// the combined shift FP_SHIFT+RECIP_SHIFT=48 — deposit_dT_wide_q16's own
+// shift, since both helpers narrow a 3-factor Q16.16 x Q16.16-ish x Q.32
+// product the identical way. The caller saturates this wide result to
+// int32 range before any sat_add_q16 / T_MAX_PHYS rail downstream.
+#if defined(__SIZEOF_INT128__)
+FP_HD inline int64_t drag_dT_wide_q16(int64_t energy_q16, int32_t heat_frac_q,
+                                       int64_t recip_cv) {
+    const __int128 prod = (__int128)energy_q16 * (__int128)heat_frac_q
+                         * (__int128)recip_cv;
+    return (int64_t)(prod >> (FP_SHIFT + RECIP_SHIFT));   // one narrow, 48 bits
+}
+#elif defined(_MSC_VER)
+FP_HD inline int64_t drag_dT_wide_q16(int64_t energy_q16, int32_t heat_frac_q,
+                                       int64_t recip_cv) {
+    // Stage 1: energy_q16 (up to ~2^40 at the format's worst case) times
+    // heat_frac_q (<= ~2^17) stays comfortably inside a plain int64 (<= ~2^57)
+    // — no 128-bit needed yet. Stage 2: that int64 times recip_cv needs the
+    // 128-bit product (the same _mul128 primitive deposit_dT_wide_q16's MSVC
+    // path above already uses).
+    const int64_t stage1 = energy_q16 * (int64_t)heat_frac_q;
+    long long hi;
+    long long lo = _mul128((long long)stage1, (long long)recip_cv, &hi);
+    unsigned long long ulo = (unsigned long long)lo;
+    const int shift = FP_SHIFT + RECIP_SHIFT;   // 48, < 64
+    long long res = (long long)((ulo >> shift) |
+                                ((unsigned long long)hi << (64 - shift)));
+    return (int64_t)res;
+}
+#else
+FP_HD inline int64_t drag_dT_wide_q16(int64_t energy_q16, int32_t heat_frac_q,
+                                       int64_t recip_cv) {
+    // Portable fallback (exotic toolchains only, mirrors recip_mul's own).
+    return (int64_t)(((__int128_t)energy_q16 * heat_frac_q * recip_cv)
+                      >> (FP_SHIFT + RECIP_SHIFT));
+}
+#endif
+
 // ---- signed saturating add (never wrap) ------------------------------------
 // eos-p3fix-thermal-ceiling: raycaster.h's `heat_saturating_add` only
 // saturates the POSITIVE side (its accumulator is contractually non-negative
@@ -339,6 +461,47 @@ FP_HD inline q16 scale_mag(q16 x, q16 scale) {
     const int64_t mag = (int64_t)(x < 0 ? -x : x);
     const q16 scaled  = (q16)((mag * (int64_t)scale) >> FP_SHIFT);  // toward 0
     return (x < 0) ? -scaled : scaled;
+}
+
+// ---- compression-work TRUST-GATE fade (energy-books arc, design §2.4) -----
+// P-E4: fades the step-4c compression-work factor k toward 0 when the cell's
+// bulk density n is too thin to trust — n < n_work_ref/2 -> fade 0 (hard
+// zero), linear 0->1 for n in [n_work_ref/2, n_work_ref], 1 above. `ratio_q`
+// is n/n_work_ref in Q16.16 (the CALLER computes it via recip_mul(n,
+// recip_n_ref) on host / recip_mul_dev(n, recip_n_ref) on device — the
+// 128-bit reciprocal multiply differs per backend, exactly like
+// deposit_dT_wide_q16/_dev, so only this trivial clamp01 tail is shared).
+// fade = clamp01(2*ratio - 1): ratio==0.5 -> 0, ratio==1.0 -> 1, ratio>1 ->
+// clamped to 1. Widened to int64 before the *2 step so a dense pocket
+// (P-E0 measured the cold-rail window at ratio 7-37x the trust band) cannot
+// overflow — the final clamp brings it back to a plain q16 in [0, FP_ONE].
+// The caller applies the fade to k via scale_mag (magnitude-first, design
+// §2.4's pinned idiom) so a NEGATIVE k fades toward zero, never past it.
+FP_HD inline q16 work_fade_clamp01_q(q16 ratio_q) {
+    int64_t f = ((int64_t)ratio_q << 1) - (int64_t)FP_ONE;
+    if (f < 0) f = 0;
+    else if (f > (int64_t)FP_ONE) f = (int64_t)FP_ONE;
+    return (q16)f;
+}
+
+// ---- FLOOR division toward -inf (energy-books arc, design §2.1.5 + §2.7) ---
+//
+// C++ and CUDA integer `/` both truncate toward ZERO. On a SUB-AMBIENT cell the
+// energy books carry a NEGATIVE relative energy e, and truncation-toward-zero
+// rounds the recovered T *upward* — i.e. eth = ΣN·T_abs *increases*: a mint of
+// exactly the class this arc exists to kill. Both backends' `/` agree with each
+// other, so CPU<->CUDA parity gates CANNOT catch it; only the ledger can. Hence
+// ONE shared helper, transcribed once, used by BOTH the §2.1.5 transport
+// recovery (P-E1) and the §2.7 expansion-work branch (P-E4).
+//
+// Contract: d != 0 (every caller floors its divisor at >= 1, so the
+// INT64_MIN / -1 overflow case is unreachable). `(n ^ d) < 0` is the
+// sign-disagreement test; combined with a nonzero remainder it is exactly the
+// "truncation moved the quotient up" case, so one decrement lands on floor.
+FP_HD inline int64_t floordiv_q(int64_t n, int64_t d) {
+    int64_t q = n / d;
+    if (((n % d) != 0) && ((n ^ d) < 0)) --q;
+    return q;
 }
 
 // ---- fixed-point ceil-divide (the substep-count cliff) --------------------

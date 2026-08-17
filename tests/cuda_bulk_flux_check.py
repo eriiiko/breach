@@ -26,9 +26,21 @@ P6.1 row: "digest_bulk_flux trajectory + per-plane byte-compare"). Two gates:
   outflow limiter must actually engage (all asserted, so the gate can never go
   vacuous).
 
+  PART 3 — P-E1 ENERGY BOOKS (energy-books arc, design §2.1; authorized
+  rewrite per Appendix A: "test_cuda_bulk_flux.py gains energy assertions").
+  The flux now carries thermal ENERGY as well as mass. On a SEALED map — no
+  vacuum, no ambient ring, so no boundary channel can remove energy uncounted
+  — the pass's book closes to an identity: the per-tick change in Σ n_bulk·T
+  equals exactly the three counted one-way terms (rule (d)'s `e_ts_residual`,
+  the N_EPS `e_wipe_sum`, the T_MIN `e_floor_sum`) plus a floor-division
+  truncation that is one-way NEGATIVE and bounded by Σ n_bulk over
+  ACTIVE-FLUX cells. Asserted every tick on BOTH dispatch backends, with the
+  five new counters required to agree CPU↔GPU exactly.
+
 Engine dispatch waits for P6.5, so there is no backend-switch integration part
-here (the review's P6.1 row is explicit: kernel-gate only); the closed-loop
-trajectory stands in for it by evolving state through the kernel itself.
+here (the review's P6.1 row is explicit: kernel-gate only) for PARTS 1-2; the
+closed-loop trajectory stands in for it by evolving state through the kernel
+itself, and PART 3 exercises the real dispatch on both backends.
 
 Prints ``BULK_FLUX_RESULT: PASS``/``FAIL`` and exits 0/1.
 """
@@ -335,6 +347,152 @@ def part2_trajectory() -> bool:
     return ok
 
 
+
+# ---------------------------------------------------------------------------
+# PART 3 — P-E1 ENERGY BOOKS (energy-books arc, design §2.1; Appendix A lists
+# this file as an authorized rewrite gaining energy assertions).
+#
+# The bulk flux no longer moves mass alone: thermal energy rides the SAME
+# applied donor-cell face fluxes, and temperature is RECOVERED as
+# floordiv(e, n_bulk_new) at each endpoint. That law has an exact book, and on
+# a SEALED map (no vacuum, no ambient ring — so no boundary channel can take
+# energy out uncounted) the book closes to a checkable identity per tick:
+#
+#     eth_transport_delta
+#         = −e_ts_residual − e_wipe_sum + e_floor_sum + truncation
+#     truncation ∈ (−n_bulk_active_sum, 0]
+#
+# i.e. the ONLY ways the pass may move the books are the three counted one-way
+# terms and the floor-division LSB loss on ACTIVE-flux cells — quiescent cells
+# rebuild T exactly (§2.1.5), which is what makes the drift bound acceptable
+# at all (L2-10). Asserted every tick, on BOTH dispatch backends, with the five
+# new counters additionally required to agree CPU↔GPU exactly (they are int64
+# atomicAdd VALUE sums on the device — order-free, so "exactly" is the right
+# word, not "approximately").
+# ---------------------------------------------------------------------------
+_EOS_SETTERS = ("set_sl_advection_backend", "set_bulk_flux_backend",
+                "set_mg_solve_backend", "set_kick_compression_backend")
+
+_E1_COUNTERS = ("e_ts_residual", "e_wipe_sum", "e_floor_sum",
+                "n_active_flux", "n_bulk_active_sum")
+
+
+def _set_eos_backends(on: bool) -> None:
+    for name in _EOS_SETTERS:
+        getattr(bp, name)(bool(on))
+
+
+def _sealed_hot_scene():
+    """A SEALED hull box (no vacuum, no ambient ring) with a hot pocket and a
+    cold pocket, so real thermal gradients ride real fluxes — and no boundary
+    channel exists to make the book non-closing."""
+    from pathlib import Path
+
+    from config import CFG
+    from level_loader import LevelData
+    from simulation import atmosphere_fixed
+    from simulation.gamemap import GameMap
+    from simulation.gases import O2
+    from simulation.physics_runner import PhysicsRunner
+
+    H = W = 40
+    tm = np.zeros((H, W), dtype=np.int32)
+    tm[2:38, 2:38] = 1          # hull ring
+    tm[3:37, 3:37] = 4          # interior air
+    level = LevelData(name="e1_sealed_books", version="1", path=Path("."),
+                      tilemap=tm, tile_size_m=1.0 / 3.0,
+                      diffuse_path=Path("."))
+    g = GameMap(level)
+    g.stamp_units([])
+    assert not g.is_vacuum[3:37, 3:37].any(), "interior must be sealed"
+
+    q = atmosphere_fixed.quantize_scalar
+    g.temperature[8:14, 8:14] += q(3000.0)      # hot pocket -> buoyant plume
+    g.temperature[26:32, 26:32] += q(-120.0)    # cold pocket -> sub-ambient e
+    g.gas[O2, 9:13, 9:13] += q(3.0)             # an overdensity to drive flow
+
+    runner = PhysicsRunner(bp)
+    runner.eos.dx = float(g.tile_size_m)
+    n2 = int(g.gases.name_to_id["inert_n2"])
+    dt = 1.0 / float(CFG.clock.ticks_per_second)
+    return runner, g, n2, dt
+
+
+def _tick(runner, g, n2, dt):
+    runner.engine.run_substeps(
+        g.wave_p, g.atmosphere, g.wind_x, g.wind_y, g.temperature,
+        g.obstacles, g.solid, g.is_vacuum,
+        g.dyn_permeability, g.dyn_wave_absorb,
+        g.gas, g.gases.diffusion, g.gases.conservative,
+        g.gases.decay, n2, dt,
+    )
+
+
+def part3_energy_books() -> bool:
+    print("PART 3 — P-E1 energy books: per-tick closure identity on a sealed "
+          "map, both backends, + counter parity:")
+    ok = True
+    n_ticks = 60
+    per_backend = {}
+
+    for gpu in (False, True):
+        _set_eos_backends(gpu)
+        try:
+            runner, g, n2, dt = _sealed_hot_scene()
+            eos = runner.engine.eos
+            rows = []
+            for tick in range(n_ticks):
+                _tick(runner, g, n2, dt)
+                c = {k: int(getattr(eos, k)) for k in _E1_COUNTERS}
+                c["eth"] = int(eos.eth_transport_delta)
+                rows.append(c)
+            per_backend[gpu] = rows
+        finally:
+            _set_eos_backends(False)
+
+    # (a) the closure identity, per tick, on the CPU dispatch (which is the
+    #     backend that carries the eth bracket instrumentation).
+    n_active_total = 0
+    worst_slack = 0
+    for tick, c in enumerate(per_backend[False]):
+        counted = -c["e_ts_residual"] - c["e_wipe_sum"] + c["e_floor_sum"]
+        trunc = c["eth"] - counted
+        n_active_total += c["n_active_flux"]
+        worst_slack = min(worst_slack, trunc)
+        if trunc > 0:
+            ok = False
+            print(f"  tick {tick}: books OPEN — {trunc} raw of book-energy "
+                  f"appeared beyond the counted terms "
+                  f"(eth={c['eth']} counted={counted})")
+            break
+        if trunc < -c["n_bulk_active_sum"]:
+            ok = False
+            print(f"  tick {tick}: truncation loss {trunc} beats the §7 bound "
+                  f"-{c['n_bulk_active_sum']} (active cells "
+                  f"{c['n_active_flux']})")
+            break
+    # (b) non-vacuity: the scenario must actually move mass across faces.
+    if n_active_total == 0:
+        ok = False
+        print("  PART 3 VACUOUS: no cell ever had face traffic")
+    # (c) the five counters must agree CPU↔GPU exactly, every tick.
+    for tick, (a, b) in enumerate(zip(per_backend[False], per_backend[True])):
+        bad = [k for k in _E1_COUNTERS if a[k] != b[k]]
+        if bad:
+            ok = False
+            print(f"  tick {tick}: energy counters diverge CPU vs GPU on "
+                  + ", ".join(f"{k} ({a[k]} vs {b[k]})" for k in bad))
+            break
+    if ok:
+        last = per_backend[False][-1]
+        print(f"  {n_ticks} ticks: books CLOSE every tick (worst residual "
+              f"{worst_slack} raw, inside the §7 active-flux bound), all five "
+              f"P-E1 counters bit-identical CPU<->GPU; "
+              f"{n_active_total} active cell-substeps, final-tick "
+              f"n_bulk_active_sum {last['n_bulk_active_sum']}.")
+    return ok
+
+
 def main() -> int:
     if not getattr(bp, "HAS_CUDA", False) or not bp.cuda_available():
         print("BULK_FLUX_RESULT: FAIL (no CUDA build / device)")
@@ -342,7 +500,8 @@ def main() -> int:
     print("device:", bp.cuda_device_info())
     p1 = part1_isolated()
     p2 = part2_trajectory()
-    if p1 and p2:
+    p3 = part3_energy_books()
+    if p1 and p2 and p3:
         print("BULK_FLUX_RESULT: PASS")
         return 0
     print("BULK_FLUX_RESULT: FAIL")

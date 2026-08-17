@@ -82,22 +82,9 @@ __global__ void sl_cmask_build(const bool* __restrict__ solid,
     }
 }
 
-// ---- K0b: the T-ONLY corner/march mask (THERMAL-MASS AXIS, P-EOS) -----------
-// VERBATIM device twin of eos_solver.cpp's `tcmask_[i] = ts[i] ? 0 : cmask_[i]`
-// loop. cmask itself is read-only here: velocity/pressure/gas flow must stay
-// identical (ruling §4 item 4), so a crate STAYS cmask 2 (a live gas cell — gas
-// still seeps through at permeability 0.5) and diverges only in this T mask,
-// where it becomes 0 = an occluder to the temperature backtrace + a dead corner
-// in its bilinear gather (the same two semantics as P1's gas_wall_at / sealed
-// corner in temperature_solver.cpp).
-__global__ void sl_tcmask_build(const uint8_t* __restrict__ cmask,
-                                const bool* __restrict__ thermal_solid,
-                                uint8_t* __restrict__ tcmask, int n) {
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
-         i += gridDim.x * blockDim.x) {
-        tcmask[i] = thermal_solid[i] ? (uint8_t)0 : cmask[i];
-    }
-}
+// (K0b — the THERMAL-MASS-AXIS T-only occluder mask `sl_tcmask_build` — is
+// DELETED at P-E1: it existed only to stop the SL T *sample* reading through
+// a crate, and that sample is retired. Design §2.1.1; CPU twin identical.)
 
 // ---- eos_backtrace_sample3_q (VERBATIM device port, eos_solver.cpp) ---------
 // The FUSED 3-field integer semi-Lagrangian back-trace: one DDA wall-clip
@@ -220,17 +207,12 @@ __device__ __forceinline__ FusedSample eos_backtrace_sample3_q_dev(
 // bulk flux, P6.1, writes only gas planes) — arithmetically identical.
 __global__ void sl_advect3(int32_t* __restrict__ wind_x,
                            int32_t* __restrict__ wind_y,
-                           int32_t* __restrict__ temperature,
                            const int32_t* __restrict__ src_vx,
                            const int32_t* __restrict__ src_vy,
                            const int32_t* __restrict__ src_t,
                            const bool* __restrict__ solid,
-                           const bool* __restrict__ is_vacuum,
                            const uint8_t* __restrict__ cmask,
-                           int32_t dt_s_q, int h, int w,
-                           const bool* __restrict__ is_ambient,
-                           const bool* __restrict__ ts,
-                           const uint8_t* __restrict__ tcmask) {
+                           int32_t dt_s_q, int h, int w) {
     const int n = h * w;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
@@ -243,23 +225,13 @@ __global__ void sl_advect3(int32_t* __restrict__ wind_x,
             src_vx, src_vy, src_t, x, y, bx_q, by_q, cmask, h, w);
         wind_x[i] = fs.vx;
         wind_y[i] = fs.vy;
-        // THERMAL-MASS AXIS, P-EOS, T-WRITE SITE 1/2 (ruling A1) — the CPU
-        // branch verbatim: the EOS never writes `temperature` on a thermal_solid
-        // tile (the TemperatureSolver owns it there), vacuum/ring wipe included.
-        // `ts` is d_solid on the legacy path, and a solid cell already continued
-        // above, so this is unreachable there — byte-identical.
-        if (ts && ts[i]) continue;
-        // A2: when the media diverge the T sample rides the T-ONLY occluder mask.
-        // Calling the SAME device sampler with src_t in all three slots is
-        // deliberate — `.t` depends only on src_t/mask/displacement, so this is
-        // zero-drift by construction and mirrors the CPU line for line.
-        int32_t t_samp = fs.t;
-        if (tcmask) {
-            t_samp = eos_backtrace_sample3_q_dev(
-                src_t, src_t, src_t, x, y, bx_q, by_q, tcmask, h, w).t;
-        }
-        // BC: ΔT=0 IS ambient — ring T forced 0, the vacuum idiom verbatim.
-        temperature[i] = (is_vacuum[i] || (is_ambient && is_ambient[i])) ? 0 : t_samp;
+        // P-E1 (design §2.1.1): T-WRITE SITE 1/2 is RETIRED — the `.t` slot of
+        // the fused sample is discarded here exactly as on the CPU. Temperature
+        // rides the conservative energy books (cuda_bulk_transport.cu) now, and
+        // the vacuum/ring T := 0 wipe moved to the recovery kernel with it.
+        // The 3-slot sampler call is kept VERBATIM: `.vx`/`.vy` do not depend
+        // on src_t, so u stays bit-identical to pre-patch.
+        (void)fs.t;
     }
 }
 
@@ -337,11 +309,6 @@ uint64_t eos_sl_advect(
     // Isolated P6.2 entry: no ambient ring (nullptr) — the space-path gate.
     sl_cmask_build<<<grid, block>>>(d_sol, d_vac, d_perm, d_cmask, n, nullptr);
     cuda_check(cudaGetLastError(), "cmask launch");
-    // K0b: the T-only occluder mask, once per tick, only where it can differ.
-    if (d_tcmask) {
-        sl_tcmask_build<<<grid, block>>>(d_cmask, d_tsol, d_tcmask, n);
-        cuda_check(cudaGetLastError(), "tcmask launch");
-    }
 
     for (int s = 0; s < n_sub; ++s) {
         // Snapshot the pre-substep (vx, vy, T) into the frozen src buffers —
@@ -351,9 +318,8 @@ uint64_t eos_sl_advect(
         cuda_check(cudaMemcpy(d_svx, d_wx, nb, cudaMemcpyDeviceToDevice), "D2D src_vx");
         cuda_check(cudaMemcpy(d_svy, d_wy, nb, cudaMemcpyDeviceToDevice), "D2D src_vy");
         cuda_check(cudaMemcpy(d_st,  d_t,  nb, cudaMemcpyDeviceToDevice), "D2D src_t");
-        sl_advect3<<<grid, block>>>(d_wx, d_wy, d_t, d_svx, d_svy, d_st,
-                                    d_sol, d_vac, d_cmask, dt_s_q, h, w, nullptr,
-                                    d_ts, d_tcmask);
+        sl_advect3<<<grid, block>>>(d_wx, d_wy, d_svx, d_svy, d_st,
+                                    d_sol, d_cmask, dt_s_q, h, w);
         cuda_check(cudaGetLastError(), "advect launch");
     }
 
@@ -361,7 +327,8 @@ uint64_t eos_sl_advect(
 
     cuda_check(cudaMemcpy(wind_x, d_wx, nb, cudaMemcpyDeviceToHost), "D2H wind_x");
     cuda_check(cudaMemcpy(wind_y, d_wy, nb, cudaMemcpyDeviceToHost), "D2H wind_y");
-    cuda_check(cudaMemcpy(temperature, d_t, nb, cudaMemcpyDeviceToHost), "D2H temperature");
+    // P-E1: `temperature` is an INPUT-only src slot now — never written, so
+    // never read back (the CPU reference twin leaves it untouched identically).
 
     cudaFree(d_wx);
     cudaFree(d_wy);
@@ -376,11 +343,10 @@ uint64_t eos_sl_advect(
     if (d_tsol)   cudaFree(d_tsol);
     if (d_tcmask) cudaFree(d_tcmask);
 
-    // Host-side digest, byte-for-byte the CPU's last-substep digest_advect
-    // expression: digest_of(wx, digest_of(wy, digest_of(T, 0))).
-    return digest_of_host(wind_x, n,
-           digest_of_host(wind_y, n,
-           digest_of_host(temperature, n, 0)));
+    // P-E1: the U-ONLY digest, byte-for-byte the CPU reference twin's
+    // `digest_of(wx, digest_of(wy, 0))`. No longer == digest_advect (which now
+    // hashes T-after-recovery and is taken AFTER the flux call, §2.1.6).
+    return digest_of_host(wind_x, n, digest_of_host(wind_y, n, 0));
 }
 
 // ---- EOS P6.5: device-pointer launchers (header rationale) ------------------
@@ -398,31 +364,17 @@ void sl_cmask_build_device(const bool* d_solid, const bool* d_vacuum,
     cuda_check(cudaGetLastError(), "cmask launch (P6.5 chained)");
 }
 
-void sl_tcmask_build_device(const uint8_t* d_cmask, const bool* d_thermal_solid,
-                            uint8_t* d_tcmask, int n) {
-    if (n <= 0 || !d_cmask || !d_thermal_solid || !d_tcmask) return;
-    const int block = 256;
-    const int grid = (n + block - 1) / block;
-    sl_tcmask_build<<<grid, block>>>(d_cmask, d_thermal_solid, d_tcmask, n);
-    cuda_check(cudaGetLastError(), "tcmask launch (P6.5 chained)");
-}
-
 void sl_advect3_device(int32_t* d_wind_x, int32_t* d_wind_y,
-                       int32_t* d_temperature,
                        const int32_t* d_src_vx, const int32_t* d_src_vy,
                        const int32_t* d_src_t,
-                       const bool* d_solid, const bool* d_vacuum,
-                       const uint8_t* d_cmask,
-                       int32_t dt_s_q, int h, int w,
-                       const bool* d_is_ambient,
-                       const bool* d_ts, const uint8_t* d_tcmask) {
+                       const bool* d_solid, const uint8_t* d_cmask,
+                       int32_t dt_s_q, int h, int w) {
     const int n = h * w;
     const int block = 256;
     const int grid = (n + block - 1) / block;
-    sl_advect3<<<grid, block>>>(d_wind_x, d_wind_y, d_temperature,
+    sl_advect3<<<grid, block>>>(d_wind_x, d_wind_y,
                                 d_src_vx, d_src_vy, d_src_t,
-                                d_solid, d_vacuum, d_cmask, dt_s_q, h, w,
-                                d_is_ambient, d_ts, d_tcmask);
+                                d_solid, d_cmask, dt_s_q, h, w);
     cuda_check(cudaGetLastError(), "advect launch (P6.5 chained)");
 }
 

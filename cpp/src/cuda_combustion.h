@@ -74,6 +74,10 @@ void combustion_step(
     float burn_rate, float o2_thresh_burn, float H_fuel, float soot_yield,
     float fuel_per_o2, float o2_frac_ext, float o2_frac_full, float T_MAX_PHYS,
     int64_t* heat_floor_hits, int64_t* t_max_phys_hits,
+    // P-E2b (energy-books arc, design §2.2/§2.5): the energy-sum twin of
+    // heat_floor_hits — the combustion floor's destroyed ΔE (see
+    // combustion.h's e_deposit_drop_sum doc). Added +=, nullable.
+    int64_t* e_deposit_drop_sum = nullptr,
     // THERMAL-MASS AXIS, P-EOS (docs/thermal_mass_eos_ruling_2026-07-30.md §2
     // site 3; rationale in combustion.h's header): on a thermal_solid burn site
     // — a FURNITURE tile, which is open/gas-holding but thermally an OBJECT —

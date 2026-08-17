@@ -20,31 +20,57 @@ Three gates:
   energy_floor, t_max_phys) — the rails and their telemetry are digest-covered,
   not just the happy path.
 
-  PART 2 — TRAJECTORY (the review's §4 P6.4 digest gate): a blast + breach
-  venting scenario (a 5000 K core + O2 overpressure, PLUS a near-ceiling
-  15500 K pocket so the v2.4 rails engage in-engine) driven through the REAL
-  engine path (PhysicsEngine.run_substeps -> EOSSolver::step) for 120 ticks
-  on the CPU. Per tick: snapshot the step-1-entry (wind, T) state and the
-  solver's cumulative rail counters, run the real tick, reconstruct the
-  step-4-entry state by replaying the advection substeps on the snapshot
-  (eos_sl_advect_ref + dbg_last_n_sub, asserted == digest_advect — the P6.2
-  contract), then replay the isolated kick+compression on that state (p_new =
-  the post-tick atmosphere, which step 5 copies verbatim from the solved P;
-  N̂ from the post-tick gas planes — valid because run_substeps' post-step
-  trace advection/decay only moves NON-ZERO trace planes and this scenario
-  keeps every trace plane zero, asserted; c_local_q = dbg_last_c_local_q)
-  through BOTH the CPU reference and the GPU chain, asserting
-      ref digests == EOSSolver.digest_velocity / digest_compression
-      ref fields  == the engine's own post-tick wind/temperature bytes
-      ref counter deltas == the solver's cumulative-counter deltas
-      GPU == ref on fields, digests, AND counters
-  — a full per-tick digest + rail-telemetry trajectory, CPU vs GPU, over the
-  whole run. The scenario is asserted to actually drive the tail hard (n_sub
-  pins at N_SUB_MAX, the counted |u| clamp engages with U_MAX as the binding
-  cap, the work clamp engages). The T_MIN/T_MAX_PHYS field rails do not fire
-  in a pure run_substeps loop (the v2.4 measured outcome — they need
-  fire/combustion heat, outside this pass's surface); their coverage is
-  Part 1's deterministic forcer.
+  PART 2 — TRAJECTORY (the review's §4 P6.4 digest gate). REPAIRED at P-E4
+  (design §6 P-E4 row, item C) to its NEW, TRUE contract — the original
+  premise (reconstruct the exact step-4-entry TEMPERATURE by replaying the
+  advection substeps, then check the isolated tail against the real
+  engine's post-tick bytes) died at P-E1: `eos_sl_advect_reference` became
+  u-only (temperature is read-only there now, its `.t` slot discarded) and
+  `digest_advect` moved to hash (wx, wy, T-AFTER-RECOVERY) — T evolution now
+  happens entirely inside the energy-transport pass, which has no isolated
+  Python entry point at this granularity. P-E2a's investigation (as-built
+  §8.3) found this via revert+rebuild: PART 2 was ALREADY diverging on that
+  base, from tick 1, digest_compression only — digest_velocity matched
+  exactly. That is the key fact the repair rests on: step 4 (the momentum
+  kick) reads pressure/N/absorb and NEVER reads temperature, so wind
+  reconstruction is completely unaffected by T's now-stale-by-one-tick
+  reconstruction — only step 4c (compression work) consumes T, and its
+  output is what can no longer be checked against ground truth this way.
+  P-E1's own gate (`cuda_bulk_flux_check` PART 3) already proves the energy-
+  transport pass that produces the TRUE step-4-entry T is bit-identical
+  CPU<->GPU and closes the energy books every tick — so T-side coverage
+  was relocated to its rightful owner, not lost.
+
+  A blast + breach venting scenario (a 5000 K core + O2 overpressure, PLUS a
+  near-ceiling 15500 K pocket so the v2.4 rails engage in-engine) driven
+  through the REAL engine path (PhysicsEngine.run_substeps -> EOSSolver::step)
+  for 120 ticks on the CPU. Per tick: snapshot the step-1-entry (wind, T)
+  state and the solver's cumulative rail counters, run the real tick, replay
+  the advection substeps on the snapshot to reconstruct step-4-entry WIND
+  (eos_sl_advect_ref + dbg_last_n_sub — no digest comparison; see above),
+  then replay the isolated kick+compression on (that wind, the STALE t0,
+  p_new = the post-tick atmosphere, N̂ from the post-tick gas planes — valid
+  because run_substeps' post-step trace advection/decay only moves NON-ZERO
+  trace planes and this scenario keeps every trace plane zero, asserted;
+  c_local_q = dbg_last_c_local_q) through BOTH the CPU reference and the GPU
+  chain, asserting
+      ref digest_velocity          == EOSSolver.digest_velocity
+      ref wind_x/wind_y            == the engine's own post-tick wind bytes
+      ref T-INDEPENDENT counters   == the solver's cumulative deltas
+                                       (u_clamp, u_max, work_clamp — the
+                                       SS2.4 fade + the ±T_WORK_CLAMP compare
+                                       key off N/divergence, never T)
+      GPU == ref on EVERYTHING — fields, BOTH digests, ALL rail counters
+                                       (the core P6.4 proof: unaffected by
+                                       t0's staleness, since CPU ref and GPU
+                                       are fed the identical input)
+  — a per-tick wind-side ground-truth trajectory PLUS a full CPU<->GPU
+  bit-identity trajectory, over the whole run. The scenario is asserted to
+  actually drive the tail hard (n_sub pins at N_SUB_MAX, the counted |u|
+  clamp engages with U_MAX as the binding cap, the work clamp engages). The
+  T_MIN/T_MAX_PHYS field rails do not fire in a pure run_substeps loop (the
+  v2.4 measured outcome — they need fire/combustion heat, outside this
+  pass's surface); their coverage is Part 1's deterministic forcer.
 
   PART 3 — the CUDA build's CPU path still reproduces the committed
   default-scenario golden (the s4a-check idiom; proves the P6.4 additions
@@ -68,10 +94,23 @@ FP_ONE = 65536
 CONSTS = dict(
     c_max=300.0, dx=1.0 / 3.0, adiabatic_index=1.4, absorb_strength=8.0,
     n_floor_solver=1e-3, t_min=-289.0, t_work_clamp=0.5,
-    t_max_phys=16000.0, u_max=1000.0, trace_mass_scale=0.02,
+    t_max_phys=16000.0, u_max=1000.0,
+    # trace_mass_scale key RETIRED (P-T0, design §2.6)
+    # P-E3 (design §2.8): interior drag + heat counterparty. Shipped
+    # defaults here (k_drag=0.0) so the base CONSTS dict stays DORMANT —
+    # every Part 1/2 config below therefore ALSO doubles as drag-dormancy
+    # CPU<->GPU parity coverage. The dedicated drag-active config below
+    # (CONSTS_DRAG) is what exercises the mechanism itself.
+    k_drag=0.0, k_drag_heat_frac=1.0, c_v=1.0,
 )
 
-COUNTER_NAMES = ("u_clamp", "u_max", "work_clamp", "energy_floor", "t_max_phys")
+# A drag-ACTIVE variant: k_drag > 0 (dormancy branch open) and
+# k_drag_heat_frac < 1 (so e_drag_drop_sum is non-vacuous too).
+CONSTS_DRAG = dict(CONSTS, k_drag=0.02, k_drag_heat_frac=0.5)
+
+COUNTER_NAMES = ("u_clamp", "u_max", "work_clamp", "energy_floor", "t_max_phys",
+                 "ke_drag_removed", "e_drag_deposit", "e_drag_drop_sum",
+                 "e_drag_rail_clipped")
 
 
 def _quantize(x):
@@ -200,11 +239,41 @@ def _make_rail_forcer(h=24, w=24):
     return inp
 
 
+def _make_drag_forcer(h=24, w=24):
+    """P-E3 (design §2.8) drag-rail forcer: substantial velocity everywhere
+    (real KE to remove), a near-ceiling hot band (a sustained drag deposit
+    there clips at T_MAX_PHYS — e_drag_rail_clipped), ordinary ambient N
+    (n_bulk >= 1, so the deposit WRITES most places), and a near-vacuum strip
+    (n_bulk < 1 raw count — the phantom-T guard: still priced, n-weighted to
+    ~0, T never written there)."""
+    inp = {
+        "wind_x": np.full((h, w), _quantize(900.0), dtype=np.int32),
+        "wind_y": np.full((h, w), _quantize(-900.0), dtype=np.int32),
+        "temperature": np.full((h, w), _quantize(100.0), dtype=np.int32),
+        "p_new": np.full((h, w), _quantize(1.0), dtype=np.int32),
+        "gas": np.zeros((3, h, w), dtype=np.int32),
+        "gas_conservative": np.array([True, True, False]),
+        "solid": np.zeros((h, w), dtype=bool),
+        "is_vacuum": np.zeros((h, w), dtype=bool),
+        "absorb": np.zeros((h, w), dtype=np.float32),
+    }
+    inp["gas"][0][:, :] = _quantize(0.21)
+    inp["gas"][1][:, :] = _quantize(0.79)
+    # Near-ceiling hot band: the drag deposit here should clip at T_MAX_PHYS.
+    inp["temperature"][8:16, :] = _quantize(15990.0)
+    # Near-vacuum strip: n_bulk < 1 raw count -> the phantom-T guard engages.
+    inp["gas"][0][20:24, :] = 0
+    inp["gas"][1][20:24, :] = 0
+    for k in inp:
+        inp[k] = np.ascontiguousarray(inp[k])
+    return inp
+
+
 def part1_isolated() -> bool:
     print("PART 1 — isolated GPU vs CPU reference (synthetic, all rails):")
     ok = True
     rng = np.random.default_rng(20260711)
-    totals = np.zeros(5, dtype=np.int64)   # ref counter engagement coverage
+    totals = np.zeros(9, dtype=np.int64)   # ref counter engagement coverage
     n_cfg = 0
 
     # (a) the deterministic all-rails forcer, both cap regimes.
@@ -252,6 +321,25 @@ def part1_isolated() -> bool:
             ok &= _compare(f"{h}x{w} dt={dt} wmag={wmag} c_loc={c_local}",
                            f_ref, res_ref, f_gpu, res_gpu)
             totals += np.array(res_ref[2:], dtype=np.int64)
+
+    # (c) P-E3 (design §2.8): the dedicated drag-active forcer, both cap
+    # regimes — CONSTS_DRAG (k_drag=0.02, k_drag_heat_frac=0.5) so all four
+    # new counters engage (ke_drag_removed, e_drag_deposit non-vacuous from
+    # the heat_frac<1 split; e_drag_drop_sum non-vacuous for the same
+    # reason; e_drag_rail_clipped from the near-ceiling hot band).
+    for c_local, tag in ((300.0, "drag forcer c_LOCAL<U_MAX"),
+                         (2300.0, "drag forcer c_LOCAL>U_MAX")):
+        n_cfg += 1
+        inp = _make_drag_forcer()
+        f_ref, res_ref, f_gpu, res_gpu = _run_pair(
+            inp, 1.0 / 24.0, _quantize(c_local), CONSTS_DRAG)
+        ok &= _compare(tag, f_ref, res_ref, f_gpu, res_gpu)
+        totals += np.array(res_ref[2:], dtype=np.int64)
+        if res_ref[7] == 0 or res_ref[8] == 0 or res_ref[9] == 0 or res_ref[10] == 0:
+            ok = False
+            print(f"  {tag}: drag rails did not all engage "
+                  f"(ke_removed={res_ref[7]} deposit={res_ref[8]} "
+                  f"drop={res_ref[9]} clipped={res_ref[10]})")
 
     # Coverage: every rail counter must have engaged somewhere in Part 1.
     for i, name in enumerate(COUNTER_NAMES):
@@ -315,20 +403,36 @@ def part2_trajectory() -> bool:
         n_floor_solver=float(eos.N_FLOOR_SOLVER),
         t_min=float(eos.T_MIN), t_work_clamp=float(eos.T_WORK_CLAMP),
         t_max_phys=float(eos.T_MAX_PHYS), u_max=float(eos.U_MAX),
-        trace_mass_scale=float(eos.trace_mass_scale),
+        # trace_mass_scale key RETIRED (P-T0, design §2.6) — the EOSSolver
+        # member is gone; eos.trace_mass_scale no longer exists to read.
+        # k_drag left at the pybind default (0.0, dormant) — matches the
+        # live engine's shipped default everywhere else in this scenario.
+        # P-E4 (design §2.4): the trust gate's reference density.
+        n_work_ref=float(eos.n_work_ref),
     )
     trace_planes = [gi for gi in range(g.gas.shape[0])
                     if not bool(g.gases.conservative[gi])]
 
     def counters():
+        # u_clamp/u_max/work_clamp/energy_floor/t_max_phys: CUMULATIVE (the
+        # caller diffs two snapshots). ke_drag_removed/e_drag_deposit/
+        # e_drag_drop_sum/e_drag_rail_clipped (P-E3, design §2.8): PER-TICK
+        # (reset at every step() entry) — at this scenario's default
+        # k_drag=0.0 (dormant, matching the live engine everywhere else)
+        # these four stay 0 throughout, so a plain diff is harmless here,
+        # but the caller still takes them as a direct per-tick READ (not a
+        # diff) to stay correct in general — see the loop below.
         return np.array([eos.u_clamp_hits, eos.u_max_hits,
                          eos.work_clamp_hits, eos.energy_floor_hits,
-                         eos.t_max_phys_hits], dtype=np.int64)
+                         eos.t_max_phys_hits,
+                         eos.ke_drag_removed, eos.e_drag_deposit,
+                         eos.e_drag_drop_sum, eos.e_drag_rail_clipped],
+                        dtype=np.int64)
 
     n_ticks = 120
     max_n_sub = 0
     max_u_counts = 0
-    totals = np.zeros(5, dtype=np.int64)
+    totals = np.zeros(9, dtype=np.int64)
     bad = 0
     for tick in range(n_ticks):
         # Snapshot the eos.step step-1-entry state (run_substeps calls
@@ -350,7 +454,14 @@ def part2_trajectory() -> bool:
         )
         n_sub = int(eos.dbg_last_n_sub)
         c_local_q = int(eos.dbg_last_c_local_q)
-        cnt_delta = counters() - cnt0
+        cnt_now = counters()
+        cnt_delta = cnt_now - cnt0
+        # P-E3 (design §2.8): indices 5..8 are PER-TICK (reset every
+        # step() entry) — READ directly rather than diffed against cnt0
+        # (which holds the PREVIOUS tick's per-tick snapshot, not a base to
+        # subtract from). Harmless at this scenario's k_drag=0.0, correct
+        # in general.
+        cnt_delta[5:] = cnt_now[5:]
         totals += cnt_delta
         max_n_sub = max(max_n_sub, n_sub)
         max_u_counts = max(max_u_counts,
@@ -363,14 +474,30 @@ def part2_trajectory() -> bool:
             assert not g.gas[gi].any(), \
                 f"tick {tick}: trace plane {gi} non-zero — N̂ reconstruction invalid"
 
-        # Reconstruct the step-4-entry (u, T): replay the advection substeps
-        # on the snapshot (the P6.2-proven contract).
-        dig_adv = bp.eos_sl_advect_ref(wx0, wy0, t0, g.solid, g.is_vacuum,
-                                       g.dyn_permeability, dt, n_sub)
-        if dig_adv != int(eos.digest_advect):
-            bad += 1
-            print(f"  tick {tick}: advection replay != solver digest_advect "
-                  f"(ref={dig_adv:#018x} solver={int(eos.digest_advect):#018x})")
+        # Reconstruct the step-4-entry WIND: replay the advection substeps
+        # on the snapshot (the P6.2-proven contract, still exactly valid —
+        # advection/kick never depended on T even before P-E1).
+        #
+        # P-E4 REPAIR (design §6 P-E4 row, item C — inherited debt from
+        # P-E1, verified by revert+rebuild at P-E2a §8.3): this call used to
+        # ALSO be compared against `eos.digest_advect`. That comparison is
+        # now STRUCTURALLY invalid, not merely stale: P-E1 made
+        # `eos_sl_advect_reference` u-only (`temperature` is read-only, its
+        # `.t` slot discarded) and moved `digest_advect` to hash
+        # (wx, wy, T-AFTER-RECOVERY) — a 3-field chained digest — whereas
+        # this replay returns a 2-field (wx, wy)-only digest. No wind/T
+        # values were ever compared by that check; two DIFFERENTLY-SHAPED
+        # digests were being compared for equality, which cannot pass by
+        # construction. Dropped, not worked around.
+        bp.eos_sl_advect_ref(wx0, wy0, t0, g.solid, g.is_vacuum,
+                             g.dyn_permeability, dt, n_sub)
+        # `t0` is INTENTIONALLY left as the tick-START temperature — P-E1
+        # retired the SL T-copy, so nothing advects it any more (T evolution
+        # now happens entirely inside the energy-transport pass, which has
+        # no isolated Python entry point at this granularity). `t0` is
+        # therefore NOT the true step-4-entry T from here on (it is missing
+        # this tick's own transport delta) — this is the SAME thing that
+        # made P-E2a's investigation find PART 2 diverging from tick 1.
 
         inp = {"wind_x": wx0, "wind_y": wy0, "temperature": t0,
                "p_new": np.ascontiguousarray(g.atmosphere),
@@ -380,28 +507,46 @@ def part2_trajectory() -> bool:
                "absorb": np.ascontiguousarray(g.dyn_wave_absorb)}
         f_ref, res_ref, f_gpu, res_gpu = _run_pair(inp, dt, c_local_q, consts)
 
-        # The CPU reference must reproduce the REAL solver: digests, the
-        # engine's own post-tick bytes, AND the per-tick counter deltas —
-        # proves the input reconstruction and the reference itself.
-        if res_ref[0] != int(eos.digest_velocity) or \
-           res_ref[1] != int(eos.digest_compression):
+        # THE NEW, TRUE CONTRACT (repair, see above): step 4 (the momentum
+        # kick) reads pressure/N/absorb — NEVER temperature — so its output
+        # is independent of t0's staleness and MUST still reproduce the
+        # real solver exactly: digest_velocity, wind_x, wind_y, and the
+        # T-independent rail counters (u_clamp, u_max, work_clamp — the
+        # SS2.4 trust-gate fade and the ±T_WORK_CLAMP compare both key off N
+        # and the divergence, never T, so work_clamp_hits is T-independent
+        # too). Step 4c (compression work) DOES read T, so its output
+        # (digest_compression, the temperature field, energy_floor_hits,
+        # t_max_phys_hits) is downstream of the now-unreconstructible t0 and
+        # is NO LONGER checked against the real solver here — P-E1's own
+        # gate (`cuda_bulk_flux_check` PART 3) already proves the energy-
+        # transport pass that actually produces the true step-4-entry T is
+        # bit-identical CPU<->GPU and closes the energy books every tick;
+        # that coverage was never lost, it lives at its rightful owner.
+        if res_ref[0] != int(eos.digest_velocity):
             bad += 1
-            print(f"  tick {tick}: CPU ref digests != solver "
-                  f"(ref=({res_ref[0]:#018x}, {res_ref[1]:#018x}) solver="
-                  f"({int(eos.digest_velocity):#018x}, "
-                  f"{int(eos.digest_compression):#018x}) n_sub={n_sub})")
+            print(f"  tick {tick}: CPU ref digest_velocity != solver "
+                  f"(ref={res_ref[0]:#018x} solver={int(eos.digest_velocity):#018x} "
+                  f"n_sub={n_sub})")
         if not (np.array_equal(f_ref["wind_x"], g.wind_x)
-                and np.array_equal(f_ref["wind_y"], g.wind_y)
-                and np.array_equal(f_ref["temperature"], g.temperature)):
+                and np.array_equal(f_ref["wind_y"], g.wind_y)):
             bad += 1
-            print(f"  tick {tick}: CPU ref fields != engine post-tick fields")
-        if tuple(int(v) for v in res_ref[2:]) != tuple(int(v) for v in cnt_delta):
+            print(f"  tick {tick}: CPU ref wind != engine post-tick wind")
+        wind_counter_names = ("u_clamp", "u_max", "work_clamp")
+        wind_counters_ref = tuple(int(v) for v in res_ref[2:5])
+        wind_counters_solver = tuple(int(v) for v in cnt_delta[0:3])
+        if wind_counters_ref != wind_counters_solver:
             bad += 1
-            print(f"  tick {tick}: CPU ref counters {tuple(res_ref[2:])} != "
-                  f"solver deltas {tuple(cnt_delta)}")
+            print(f"  tick {tick}: CPU ref T-independent counters "
+                  f"{dict(zip(wind_counter_names, wind_counters_ref))} != "
+                  f"solver deltas "
+                  f"{dict(zip(wind_counter_names, wind_counters_solver))}")
 
-        # The GPU chain must be bit-identical to the reference — fields,
-        # digests, AND rail counters.
+        # The GPU chain must be bit-identical to the CPU reference on
+        # EVERYTHING — fields, digests, and ALL rail counters (including the
+        # T-dependent ones): both are fed the SAME (possibly-stale-T) input,
+        # so their outputs must agree with EACH OTHER regardless of whether
+        # that input matches the real engine. This remains the core P6.4
+        # proof, untouched by the repair above.
         if not _compare(f"tick {tick}", f_ref, res_ref, f_gpu, res_gpu):
             bad += 1
         if bad >= 10:
@@ -431,10 +576,12 @@ def part2_trajectory() -> bool:
             ok = False
             print(f"  scenario too tame: rail {name!r} never engaged in-engine")
     if ok:
-        print(f"  {n_ticks} ticks bit-identical (per-tick digest_velocity/"
-              f"digest_compression == CPU ref == GPU, counters matched; "
-              f"peak |u| = {max_u_counts / FP_ONE:.1f} m/s, n_sub pinned at "
-              f"{max_n_sub}; in-engine rail engagements: "
+        print(f"  {n_ticks} ticks: wind-side ground truth held (per-tick "
+              f"digest_velocity + wind_x/wind_y + T-independent counters == "
+              f"solver) AND CPU ref == GPU on EVERYTHING (both digests, all "
+              f"fields, all rail counters); peak |u| = "
+              f"{max_u_counts / FP_ONE:.1f} m/s, n_sub pinned at {max_n_sub}; "
+              f"in-engine rail engagements: "
               + ", ".join(f"{n}={int(t)}" for n, t in zip(COUNTER_NAMES, totals))
               + ").")
     return ok

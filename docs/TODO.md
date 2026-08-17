@@ -6,7 +6,66 @@
 
 ---
 
-## ⏸ PICK UP HERE — fire + temperature-scale arcs merged 2026-08-14; storm audit running
+## ✅ Energy-books arc CLOSED 2026-08-17 (Erik-blessed) — and the three items it queued
+
+The storm line's second half landed. The EOS moves **energy**, not copied
+temperature: the mint the storm audit measured (**+7,805 eth per 200 s bench
+run**) is closed, transport is one-way non-positive every tick, the hot rail
+is gone (`t_max_phys_hits` 2130 → 0, peak T 15984 → 3702), conduction's free
+cold-rail leg flipped sign (`t_min_gas` −0.1908 → 0.0000), and traces left the
+physics books entirely. Shipped: `k_drag = 0.5`, `k_drag_heat_frac = 0.0014`.
+Read `docs/energy_books_arc_close_2026-08-17.md` — canon is folded into engine
+chapters 04/05/06 and the arc's working docs are in `docs/archive/`.
+
+Blessed suite state: **48 failed / 2186 passed / 5 skipped**.
+
+**Three items this arc queued, in order:**
+
+1. **Pressure / momentum arc — its OWN arc, AUDIT FIRST.** Thermal is closed
+   and the in-game dumps confirm it (peak T 741; zero cells near the 16000
+   ceiling), but pressure transients remain: **~98 atm at a normal ~700
+   game-T ⇒ ~29× ambient density in one cell**, plus negative `P_min`. That is
+   a **mass/momentum event, not a thermal one**. The recorder is already
+   instrumented for it (`wind_x`/`wind_y`/`inert_n2` in `DEFAULT_FIELDS`,
+   `df088f1`) — wind cannot be recovered from the pressure field, so the next
+   pop needs those planes to be diagnosable. Erik's standing ruling applies:
+   audit before choosing any dial.
+2. **T_abs compression-work patch** (design §2.9, RULING R1) — its own short
+   design + critique round + HUMAN-TEST. Step 4c multiplies ambient-*relative*
+   T, so below ambient it doesn't merely omit physics, it **inverts** it
+   (compression freezes cold gas — the cold-rail window's engine). The honest
+   form is `T_new = (T + 290)·(1±w) − 290`, which also restores the missing
+   acoustic thermalization the §8 bound names. Feel-adjacent: breach
+   rarefaction becomes genuinely cold (~97 game-deg at the clamp vs 0 today).
+3. **Post-pressure retune pass** — one sweep after the pressure arc lands:
+   **fire anchors** (`peak time` 2.29 → 2.00 min fell out of its 2–5 min band;
+   `peak I`, plateau T and `fire death` were already MISSing for pre-existing
+   reasons — `k_grow`/`k_die`/`wall_damage` own them), **`k_drag`** (0.5 is a
+   *starting* value Erik picked at the HUMAN-TEST, explicitly not a tuned one),
+   and **the arc's one declared red**,
+   `tests/test_p3_direct_e2e.py::test_directional_spray_cone_follows_facing`
+   (with damping live a spray cone rides shortened wind; feel-adjacent, left
+   honestly red rather than xfail-papered).
+
+**Also reported by the arc, not fixed, awaiting a ruling** — three consumers
+that read raw, N-unguarded gas temperature. The serious one is **sim-affecting**:
+the EOS CFL sound-speed max-reduction (`eos_solver.cpp:347-351` + its CUDA
+twin) takes an unweighted MAX of gas `t_abs` and that maximum steers `n_sub`,
+the substep count for the whole tick — so one thin-N cell with a
+rounding-dominated T can change the substep count everywhere. (Contrast `p*`
+in the same function, which is N-weighted and benign by construction.) The
+other two: the `temperature` sensor's area-mean (`sensor_accessor.py:154-175`,
+wire-able by a level author, covered by no test) and render fire-light
+selection (cosmetic). A threshold change is feel-adjacent — Erik's call.
+
+---
+
+## ⏸ PICK UP HERE — energy-books arc merged 2026-08-17; pressure/momentum arc is next
+
+(Superseded two stale pointers at this merge: main's "storm audit running" — the
+audit finished and the arc it spawned has now closed — and this branch's own
+"Breach paused 2026-08-04". The live thread is the three queued items above,
+in order; the pressure arc leads and starts with an audit, not a dial.)
 
 ### Map of docs/
 - **Canon (live-edited, source of truth):** `docs/architecture/**`.

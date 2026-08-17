@@ -45,27 +45,36 @@ newly-live air<->air / air<->solid faces). Scenario (b) leaves
 `cool_shift_vacuum` at its real, fast, shipped-scale value — THAT is the one
 mechanism under test there.
 
-WHY A PLAIN SUM IS THE RIGHT "TOTAL ENERGY" METRIC: the conduction pass
-(temperature_solver.cpp Pass 2, UNCHANGED CODE) exchanges `(T_j - T_i) >> s`
-between cells i/j sharing a face — a temperature-difference relaxation, not a
-heat-capacity-weighted one (this scheme was already shipped for solid<->solid
-faces; P2 does not change its shape, only widens which faces are non-NO_FACE).
-Since both gas and solid cells now live in the exact same array/scale, "total
-thermal content" is naturally the flat sum `temperature.sum()` — exactly the
-metric test_temperature_conduction.py's discrete-maximum-principle test and
-test_temperature_cooling.py's test_integration_inject_then_burn_out already
-use for solids alone; P2 extends it to the unified field for free.
+*** P-E2a REWROTE THIS MODULE'S METRIC (authorized, Appendix A) ***
 
-WHY THE EPSILON BOUND IS PROVABLE, NOT A GUESS: for a conducting face pair
-(i, j) sharing shift s, cell i gains `floor(d / 2^s)` (d = T_j - T_i, C++'s
-arithmetic right shift == floor for signed ints) and cell j gains
-`floor(-d / 2^s)`. The identity `floor(x) + floor(-x) == 0` if x is an
-integer, else `-1`, means EVERY conducting pair contributes EITHER 0 or
-EXACTLY -1 to the grid-wide sum each tick — NEVER positive. So Sigma(T) is
-PROVABLY monotonically non-increasing under conduction alone, and the total
-per-tick loss is bounded by the number of live (non-NO_FACE) conducting face
-PAIRS. epsilon_bound = pairs * n_ticks is therefore a real, derived upper
-bound on the drift, not an empirical tolerance — see `_epsilon_bound` below.
+THE PLAIN SUM IS DEAD. P2's original premise was that conduction exchanges
+`(T_j - T_i) >> s` — a temperature-difference relaxation — so "total thermal
+content" was the flat sum `temperature.sum()`, and the drift bound was "each
+conducting face pair loses 0 or exactly 1 count per tick" (`floor(x) +
+floor(-x) ∈ {0, -1}`).
+
+Both statements died with the P-E2a conduction rewrite (energy-books arc,
+design §2.3), and BOTH deserved to. Under the ΔT law the hull tile and the gas
+cell on either side of a face have capacities differing by ~32×, so an
+exchange that moved equal ΔT to both ends moved 32× more ENERGY into the wall
+than it took out of the gas. The flat sum looked conserved precisely because
+it was measuring the wrong quantity: it was blind to the largest energy
+channel in the sealed room. P-E2a's law moves a face-antisymmetric ΔE and lets
+each endpoint convert through ITS OWN capacity, so the flat sum is now
+correctly NOT conserved (a wall shedding one degree warms the light gas by
+~32) while the capacity-weighted sum IS.
+
+THE METRIC IS THEREFORE Σ_cells C_i · T_i — object C = thermal_mass, gas
+C = N·c_v — and the drift is no longer bounded, it is COUNTED: the solver
+exports `e_cond_trunc_sum` (the endpoint floor-division residual, one-way
+negative) and `e_cond_cap_sum` (the capacity floor/ceiling term), plus the
+three SIGNED boundary channels `e_cool_sum` / `e_vac_wipe_sum` /
+`e_ring_pin_sum`. So this module asserts an IDENTITY, not a tolerance:
+
+    Δ(Σ C·T)  ==  e_cond_trunc_sum + e_cond_cap_sum + e_cool_sum
+                  + e_vac_wipe_sum + e_ring_pin_sum
+
+which is a strictly stronger gate than the epsilon bound it replaces.
 
 Run:
     C:/Users/steen/miniconda3/envs/data/python.exe -m pytest tests/test_eos_p2_sealed_room_energy.py -q
@@ -119,16 +128,31 @@ def _build_caches(material_grid):
             np.ascontiguousarray(solid))
 
 
-def _epsilon_bound(face, n_ticks):
-    """Provable upper bound on |Sigma(T) drift| from conduction's per-pair
-    arithmetic-shift truncation over n_ticks (see module docstring). Each
-    live (non-NO_FACE) DIRECTED face entry has a symmetric partner (the
-    harmonic-mean face table is symmetric — test_temperature_conduction.py's
-    own test_face_table_anchor_values pins this); directed_count // 2 is the
-    number of undirected conducting PAIRS, each losing at most 1 count/tick."""
-    directed_count = int(np.sum(face != NO_FACE))
-    pairs = directed_count // 2
-    return pairs * n_ticks
+CAP_SHIFT_MAX = 12      # conduction::CAP_SHIFT_MAX (temperature_solver.h)
+
+
+def _capacity_real(mats, shift, solid, n_raw, n_floor_heat=0.05, c_v=1.0):
+    """conduction::cell_capacity_q's `cap_real` — the honest capacity the
+    energy books are denominated in. These callers pass no `thermal_solid`, so
+    the solver's medium mask falls back to `solid`.
+
+    Object: C = thermal_mass = 2^heat_inv_shift.  Gas: C = N·c_v (UNfloored —
+    the n_floor_heat floor is what `e_cond_cap_sum` counts)."""
+    c_v_q = int(math.floor(c_v * FP_ONE + 0.5))
+    ceiling = np.int64(1) << (CAP_SHIFT_MAX + 16)
+    his = np.maximum(shift.astype(np.int64), 0)
+    out = np.zeros(mats.shape, dtype=np.int64)
+    out[solid] = (np.int64(1) << np.minimum(his[solid], 30)) << 16
+    nr = np.maximum(n_raw.astype(np.int64), 0)
+    out[~solid] = np.minimum((nr[~solid] * c_v_q) >> 16, ceiling)
+    return out
+
+
+def _books(solver):
+    """The five P-E2a energy counters, as one signed total (raw energy)."""
+    return (int(solver.e_cond_trunc_sum) + int(solver.e_cond_cap_sum)
+            + int(solver.e_cool_sum) + int(solver.e_vac_wipe_sum)
+            + int(solver.e_ring_pin_sum))
 
 
 def _room_8x8():
@@ -219,34 +243,47 @@ def test_sealed_room_energy_conserved_and_walls_warm():
     assert temperature[0, 3] > 0, "an edge-adjacent hull tile did not conduct within one tick"
     assert temperature[0, 0] == 0, "a corner hull tile (no direct interior neighbour) got heat in one tick"
 
-    total0 = int(temperature.astype(np.int64).sum())
-    eps_one_tick = _epsilon_bound(face, 1)
-    assert 0 <= DEPOSIT * int(interior_mask.sum()) - total0 <= eps_one_tick, (
-        "post-seed total drifted from the exact deposit total by more than one "
-        "tick's proven conduction-truncation bound"
-    )
+    # P-E2a: the CAPACITY-WEIGHTED total is the conserved quantity (module
+    # docstring). Every cell here sits at ambient N (atmosphere == FP_ONE), so
+    # the n_floor_heat floor never binds and `e_cond_cap_sum` must stay 0.
+    cap = _capacity_real(mats, shift, solid, atmosphere)
+    energy = lambda: int((temperature.astype(np.int64) * cap).sum())
 
-    # --- No further heat: pure advection(=identity, wind==0) + conduction + cooling ---
+    total0 = energy()
+    assert total0 > 0
+
+    # --- No further heat: pure conduction + (disabled) cooling ---------------
     heat[:, :] = 0
     N_TICKS = 400
-    eps = _epsilon_bound(face, N_TICKS)
     prev_total = total0
-    for _ in range(N_TICKS):
+    # Baseline the counters HERE: the seeding step above already ran a
+    # conduction pass, and its residual belongs to the seed, not to the run.
+    books0 = _books(solver)
+    trunc0 = int(solver.e_cond_trunc_sum)
+    prev_books = books0
+    for k in range(N_TICKS):
         solver.step(temperature, heat, shift, face, solid, is_vacuum, atmosphere,
                     wind_x, wind_y, 1.0 / 24.0)
-        cur_total = int(temperature.astype(np.int64).sum())
-        # Provable invariant (module docstring): conduction alone can only
-        # hold or LOSE total(T), never gain — monotonic non-increase, every
-        # tick, not just net.
+        cur_total = energy()
+        cur_books = _books(solver)
+        # THE IDENTITY (module docstring): every count of energy that left the
+        # books is attributed to a NAMED counter — nothing drifts silently.
+        assert cur_total - prev_total == cur_books - prev_books, (
+            f"tick {k}: sealed-room energy moved {cur_total - prev_total} but "
+            f"the counters account for {cur_books - prev_books}")
+        # And conduction alone is ONE-WAY: it may hold or lose, never gain.
         assert cur_total <= prev_total, (
-            f"total thermal content increased tick-over-tick: {prev_total} -> {cur_total}")
-        prev_total = cur_total
+            f"total thermal ENERGY increased tick-over-tick: "
+            f"{prev_total} -> {cur_total}")
+        prev_total, prev_books = cur_total, cur_books
 
-    total_end = prev_total
-    drift = total0 - total_end
-    assert 0 <= drift <= eps, (
-        f"sealed-room drift {drift} exceeds the proven epsilon bound {eps} "
-        f"(total0={total0}, total_end={total_end})")
+    assert int(solver.e_cond_cap_sum) == 0, (
+        "the capacity floor engaged in a room that is everywhere at ambient N")
+    assert int(solver.e_cool_sum) == 0, "cooling was supposed to be disabled"
+    assert int(solver.e_vac_wipe_sum) == 0 and int(solver.e_ring_pin_sum) == 0
+    # The drift IS the counted endpoint truncation, exactly.
+    assert total0 - prev_total == -(int(solver.e_cond_trunc_sum) - trunc0)
+    assert int(solver.e_cond_trunc_sum) <= 0, "truncation CREATED energy"
 
     # Heat visibly flowed gas -> walls: every wall tile borders a hot interior
     # cell in this room, so the WHOLE hull ring must have warmed from 0.
@@ -273,30 +310,48 @@ def test_sealed_room_with_one_hull_face_exposed_drains_monotonically():
     solver.step(temperature, heat, shift, face, solid, is_vacuum, atmosphere,
                 wind_x, wind_y, 1.0 / 24.0)
 
-    total0 = int(temperature.astype(np.int64).sum())
+    cap = _capacity_real(mats, shift, solid, atmosphere)
+    energy = lambda: int((temperature.astype(np.int64) * cap).sum())
+    total0 = energy()
     assert total0 > 0
 
     heat[:, :] = 0
     N_TICKS = 400
     prev_total = total0
-    for _ in range(N_TICKS):
+    # Baseline the counters at total0 — the seeding step's own residual is not
+    # part of this run's drain.
+    base = dict(cool=int(solver.e_cool_sum), vac=int(solver.e_vac_wipe_sum),
+                trunc=int(solver.e_cond_trunc_sum),
+                cap=int(solver.e_cond_cap_sum))
+    prev_books = _books(solver)
+    for k in range(N_TICKS):
         solver.step(temperature, heat, shift, face, solid, is_vacuum, atmosphere,
                     wind_x, wind_y, 1.0 / 24.0)
-        cur_total = int(temperature.astype(np.int64).sum())
+        cur_total = energy()
+        cur_books = _books(solver)
+        assert cur_total - prev_total == cur_books - prev_books, (
+            f"tick {k}: energy moved {cur_total - prev_total}, counters say "
+            f"{cur_books - prev_books}")
         assert cur_total <= prev_total, (
             f"total energy increased with a hull face exposed to vacuum: "
             f"{prev_total} -> {cur_total}")
-        prev_total = cur_total
+        prev_total, prev_books = cur_total, cur_books
 
     total_end = prev_total
-    # A REAL, non-negligible drain (not just truncation noise): the exposed
-    # tile's cool_shift_vacuum (>>3, ~12.5%/tick once it's warmed) must visibly
-    # out-pace the sealed room's proven near-zero epsilon drift.
-    eps_conduction_only = _epsilon_bound(face, N_TICKS)
     drop = total0 - total_end
-    assert drop > 10 * eps_conduction_only, (
-        f"drop {drop} is not meaningfully larger than pure-conduction noise "
-        f"{eps_conduction_only} — the exposed face does not appear to radiate")
+    # A REAL, non-negligible drain, and — the P-E2a sharpening — one that is
+    # ATTRIBUTED: the two space-facing channels (the exposed tile's
+    # cool_shift_vacuum decay and the breach cell's Pass-0 wipe) must dominate
+    # the counted conduction truncation, not merely exceed it.
+    e_space = -((int(solver.e_cool_sum) - base["cool"])
+                + (int(solver.e_vac_wipe_sum) - base["vac"]))
+    e_trunc = -(int(solver.e_cond_trunc_sum) - base["trunc"])
+    e_cap = int(solver.e_cond_cap_sum) - base["cap"]
+    assert e_space > 10 * max(e_trunc, 1), (
+        f"the space-facing channels ({e_space}) do not dominate conduction's "
+        f"counted truncation ({e_trunc}) — the exposed face does not radiate")
+    assert drop == e_space + e_trunc - e_cap, (
+        "the run's total drain is not fully attributed to named channels")
     # The vacuum cell NEVER ACCUMULATES T across ticks (Pass 0 zeroes it at the
     # START of every tick — "energy leaves with the gas"): it cannot exceed
     # what a SINGLE tick's conduction from its one hot neighbour (7,3) could

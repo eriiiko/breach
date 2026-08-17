@@ -91,6 +91,112 @@ and fire feeds the loop as a heat-ray source. The remaining gaps are tuning
 > Design + as-built record: `docs/temperature_scale_unification_design_2026-08-13.md` (rulings,
 > §10 as-built).
 
+> ## Conduction in ENERGY form (energy-books arc, 2026-08-17) — as-built
+>
+> **The conduction pass relaxes ENERGY, not temperature.** §2 below describes the retired law: a
+> per-face fraction of the temperature *gap*, `(T_j − T_i) >> face_shift`, applied identically to
+> both endpoints. That was cheap and unconditionally stable, and it was wrong about the physics in
+> a way no gate could see. Arc record: `docs/energy_books_arc_close_2026-08-17.md`; the law's
+> contract is design §2.3 (`docs/archive/energy_transport_design_2026-08-16.md`).
+>
+> **Why it had to go.** Air was given a small nonzero conductivity at EOS-P2, which made hull↔air a
+> live face in the same whole-grid loop — with no branch and no capacity term. Across that face the
+> endpoints' heat capacities differ by ~32× (`thermal_mass` 32 versus gas `N·c_v ≈ 1`), so "i loses
+> ΔT and j gains the same ΔT" moved **32× more energy into the light side than it took out of the
+> heavy one**. That was the sealed room's largest energy channel, and the gate watching it summed
+> flat `Σ T`, which looked conserved throughout. The old law was not even antisymmetric in ΔT: the
+> arithmetic right shift rounds toward −∞, so a conducting pair lost 0 or exactly 1 count per tick,
+> uncounted.
+>
+> **The law now.** Each cell's capacity is built once per `step()`, ahead of every pass, into two
+> planes: `cap_used` (the divisor of record — for objects exactly the divisor Pass 1's
+> `heat >> heat_inv_shift` deposit uses, so a deposit and a conduction gain of equal energy raise T
+> equally; for gas `max(N, n_floor_heat)·c_v`) and `cap_real` (what the counters price with). Both
+> backends call the same `conduction::` helpers out of `temperature_solver.h` — the law exists in one
+> place. Four constraints hold:
+>
+> 1. **Face-antisymmetric energy quantum.** What leaves i enters j, exactly. The magnitude is
+>    computed from `|ΔT|` and the sign re-applied afterwards, and every other input is symmetric in
+>    the pair (`min`, gap, shift — and the shift is `max(s_ij, s_ji)`, read from both sides so
+>    antisymmetry is structural rather than a trust in the bake). Evaluating a face from the other
+>    cell returns exactly the negation; no rounding mode, shift or clamp inside can break it.
+> 2. **Endpoint-local conversion.** Each end divides the energy it received by **its own** capacity.
+>    A hull tile taking gas energy warms 32× less than the gas cooled, because it is 32× heavier.
+> 3. **One-way counted guards.** The endpoint divide is the shared `floordiv_q` (toward −∞ — plain
+>    truncation would round a *losing* cell's ΔT up, i.e. mint, and both backends agree on that mint
+>    so only the ledger could see it). Both residual terms are counted **in energy**:
+>    `e_cond_trunc_sum` (≤ 0 always) and `e_cond_cap_sum`.
+> 4. **A per-face limiter.** `|ΔE|` is capped at half the energy needed to close the gap through the
+>    **smaller** endpoint capacity. Moving `E` changes the gap by `E/C_i + E/C_j ≥ 2E/C_min`, so
+>    capping at `(g·C_min)/2` guarantees a face can never invert its own gap — no endpoint passes the
+>    donor. This restores per face what the old form's convex bound gave for free, and it is the
+>    backstop against a floored thin endpoint closing 4× the gap in a tick.
+>
+> **The maximum principle survived the change of currency.** Two distinct properties, and both are
+> asserted separately because the design's one-sentence phrasing conflates them: *per face, in
+> isolation*, the limiter guarantees the gap never inverts (swept across 640× capacity ratios, zero
+> inversions and zero gap growths in 11,760 pairs); *in aggregate*, `SHIFT_MIN` still makes the update
+> a convex combination over the four neighbours, up to the ≤1-count `floordiv_q` slack a losing cell
+> can carry. Measured aggregate excursion beyond the frozen field's range: **0 raw counts**. Measured
+> worst per-face fraction: **0.250000** against the limiter's 0.5 ceiling — i.e. the aggregate bound
+> is what actually binds and `cond_limit_hits` is 0 everywhere at shipped face shifts. The limiter is
+> a structural backstop, not an operating mechanism.
+>
+> **The books close as an identity, not a bound.** `Σ ΔE == 0` exactly in int64 across the grid, so
+> `Σ ΔT·C_real == e_cond_trunc_sum + e_cond_cap_sum` every tick, on both backends. On a real 200 s
+> bench run conduction's *entire* global drift is that one counted, one-way truncation term.
+>
+> **Pass 0a and Pass 3 are named SIGNED channels.** No law changed there, but they are instrumented,
+> because a counter that only ever went one way would hide half of the same line of code: ambient
+> cooling / sky (`e_cool_sum`) relaxes T toward 0 from **both** sides, so on a sub-ambient tile it
+> *creates*; the open-vacuum wipe (`e_vac_wipe_sum`) destroys what a breach vents but creates if it
+> pins a sub-ambient cell up to 0; the ambient-ring pin (`e_ring_pin_sum`) is the bidirectional
+> boundary channel. All three are priced at `cap_real`, the same currency the ledger's `Σ N·T_abs`
+> estimator uses.
+>
+> **Gas-T advection is retired from this solver.** Pass 0b (semi-Lagrangian gas-temperature
+> advection) and its ~110-line sampler are deleted, along with the CUDA twin — identically, so a
+> caller that still supplies wind gets no advection on either backend and the two still agree. Gas
+> temperature moves in exactly one place now: the EOS energy-transport pass (ch.04).
+>
+> ### The heat deposit — the floor's job changed
+>
+> The deposit was never the mint: `ΔT = ΔE/(N·c_v)` at the cell's true N deposits exactly ΔE, and
+> with conservative transport in place a deposit spike at a thin cell is *honest* and dilutes on
+> contact. So the deposit keeps its form, and **`n_floor_heat` is no longer a stability device — it
+> is a low value-hygiene dial** (`[physics.thermal]`, **shipped 0.01**, was 0.05). Closing the
+> transport books removed the floor's stability job; `T_MAX_PHYS` is the value backstop now. The old
+> 0.2-trial warning about perturbed marginal ignition timings is moot in the downward direction: a
+> *lower* floor deposits *more* into a thin cell, so marginal ignition trends slightly faster, not
+> slower. Measured behavioural footprint of 0.05 → 0.01 on every live scenario in the repo — ledger,
+> fire scorecard, flame-cell histogram, the one live ignition-timing test — is exactly **zero**,
+> because flame-zone density sits at mean ≈ 0.43 (p0 ≈ 0.39), far above either value. Floor
+> engagement is counted anyway, in energy, at **both** deposit sites (`e_deposit_drop_sum` on the
+> combustion site's floor drop and on Pass 1's absorption-proportional attenuation drop below ambient
+> density, which is physical and stays).
+>
+> **The deposit arithmetic is 128-bit wide, and it has to be.** The old two-step reciprocal chain
+> narrowed `deposit/N` to Q16.16 *before* dividing by `c_v`, which at these floors overflows on a
+> routine deposit; the narrow wrapped, and `heat_saturating_add`'s non-positive early-return then
+> **dropped the whole deposit — silently, with no clamp and no counter**. The shared helper
+> `deposit_dT_wide_q16` (and its CUDA twin) chains all three factors through one 128-bit product and
+> narrows exactly once, to int64, with the caller clamping before the final Q16.16 narrow. An
+> honestly enormous deposit still hits the counted `T_MAX_PHYS` rail — it just arrives through a
+> value that was never corrupted on the way there.
+>
+> ### Where a temperature threshold may be read
+>
+> **No threshold may act on a temperature that is not backed by energy.** A full read-side inventory
+> confirms ignition stays temperature-based and is honest: every ignition and emission decision in
+> the engine — the per-claimant combustion gate and its CUDA twin, `apply_temperature_ignition` and
+> its re-arm half, the fire sustain ramp, and the raycaster's warm-emitter gate — is masked to
+> `flammable`/`thermal_solid` (object T, always thermal-mass-backed) or gated by Kirchhoff
+> absorptivity (air is radiation-inert). Unit heat damage reads flux planes, not `temperature[]`, by
+> design. Three consumers do read raw, N-unguarded gas T and are recorded as open items in the
+> arc-close doc rather than silently changed (a threshold change is feel-adjacent): the EOS CFL
+> sound-speed max-reduction — the sim-affecting one, since it steers the substep count — a
+> level-designer sensor's area-mean, and cosmetic render fire-light selection.
+
 
 ## 1. Where heat comes from, where temperature lives
 

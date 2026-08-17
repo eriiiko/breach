@@ -283,13 +283,20 @@ __global__ void smoke_clamp(int32_t* __restrict__ smoke,
 // no C++ caller, and no Python caller of the `cuda_smoke_sink_hop` binding,
 // which is deleted with them. ~150 lines that still compiled and shipped.)
 
-// ---- S8a trace-decay kernel: the run_substeps decay->inert_N2 credit, on the
-// device. VERBATIM of physics_engine.cpp's per-cell decay loop: lost = mul_q16(v,
-// frac_q) for v>0, moved from the trace plane to inert_N2 IN THE SAME CELL. frac_q
-// is the host-quantized decay*dt (clamped [0,FP_ONE]) passed in. Order-independent
-// (each cell independent) -> bit-identical to the CPU credit.
+// ---- S8a trace-decay kernel: the run_substeps decay loop, on the device.
+// VERBATIM of physics_engine.cpp's per-cell decay loop: lost = mul_q16(v,
+// frac_q) for v>0, REMOVED from the trace plane. frac_q is the host-
+// quantized decay*dt (clamped [0,FP_ONE]) passed in. Order-independent
+// (each cell independent) -> bit-identical to the CPU decay.
+// P-T0 (energy-books arc, design §2.6 — the trace 0% ruling): the credit
+// this kernel used to pay into inert_N2 (an `n2_slice` output param) is
+// DELETED — decayed mass simply VANISHES now, same as the CPU twin
+// (physics_engine.cpp's run_substeps trace loop). This device twin was
+// MISSED by the P-T0 spec's explicit site list (it names only
+// physics_engine.cpp:498-525 + the bindings.cpp:2812 note) — found by the
+// CPU<->CUDA resident-path lockstep gates going red (test_cuda_thermal_
+// mass.py et al.) until this credit was deleted here too.
 __global__ void trace_decay(int32_t* __restrict__ gas_slice,
-                            int32_t* __restrict__ n2_slice,
                             int32_t frac_q, int n) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
@@ -298,7 +305,6 @@ __global__ void trace_decay(int32_t* __restrict__ gas_slice,
         const int32_t lost = mul_q16(v, frac_q);
         if (lost <= 0) continue;
         gas_slice[i] = v - lost;
-        n2_slice[i] += lost;
     }
 }
 
@@ -485,7 +491,11 @@ void trace_smoke_resident(
     g_smoke_res.ensure(h, w);
     const int block = 256;
     const int grid = (n + block - 1) / block;
-    int32_t* n2_slice = d_gas_base + (size_t)inert_n2_idx * n;
+    // P-T0 (design §2.6): the decay->inert_N2 credit is DELETED (this
+    // kernel no longer touches inert_N2 at all); `inert_n2_idx` is kept as
+    // a parameter for ABI/back-compat with the existing call site (the
+    // physics_engine.cpp `(void)inert_n2_idx;` idiom).
+    (void)inert_n2_idx;
     for (int gi = 0; gi < n_gases; ++gi) {
         if (gas_conservative[gi]) continue;   // bulk planes ride the EOS solve
         int32_t* gas_slice = d_gas_base + (size_t)gi * n;
@@ -497,15 +507,16 @@ void trace_smoke_resident(
                               g_smoke_res.lap, g_smoke_res.src,
                               h, w, dt, gas_diffusion[gi], wind_diffusion_scale,
                               advection_rate);
-        // decay -> inert_N2 (once per tick, right after this plane's advection).
+        // decay (once per tick, right after this plane's advection). The
+        // decayed count simply VANISHES — P-T0 deleted the credit.
         const float decay_gi = gas_decay[gi];
-        if (decay_gi > 0.0f && gi != inert_n2_idx) {
+        if (decay_gi > 0.0f) {
             using namespace fixedpoint;
             q16 frac_q = quantize((double)decay_gi * (double)dt);
             if (frac_q < 0) frac_q = 0;
             if (frac_q > FP_ONE) frac_q = FP_ONE;
             if (frac_q > 0) {
-                trace_decay<<<grid, block>>>(gas_slice, n2_slice, frac_q, n);
+                trace_decay<<<grid, block>>>(gas_slice, frac_q, n);
                 cuda_check(cudaGetLastError(), "res decay launch");
             }
         }

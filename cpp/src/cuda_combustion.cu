@@ -455,6 +455,7 @@ __global__ void combustion_pass_c(
         const bool* __restrict__ solid, const bool* __restrict__ is_vacuum,
         const int32_t* __restrict__ dep_site,
         int* __restrict__ d_heat_floor_hits, int* __restrict__ d_t_max_phys_hits,
+        unsigned long long* __restrict__ d_dep_drop,
         int h, int w, int32_t soot_yield_q, int32_t H_fuel_q, int64_t recip_cv,
         int32_t n_floor_q, int32_t t_max_phys_q,
         const bool* __restrict__ thermal_solid,
@@ -492,11 +493,34 @@ __global__ void combustion_pass_c(
             const int shift = heat_inv_shift[s];   // log2(thermal_mass), >= 0
             dT = deposit >> shift;
         } else {
-            q16 n_total_s = (q16)((int64_t)O2[s] + (int64_t)N2[s]);
+            const q16 n_real_s = (q16)((int64_t)O2[s] + (int64_t)N2[s]);
+            q16 n_total_s = n_real_s;
             if (n_total_s < n_floor_q) { n_total_s = n_floor_q; atomicAdd(d_heat_floor_hits, 1); }
-            const q16 recip_n  = reciprocal_q16_dev(n_total_s);
-            const q16 e_over_n = mul_q16(deposit, recip_n);        // .../N
-            dT                 = recip_mul_dev(e_over_n, recip_cv);// .../c_v
+            const q16 recip_n = reciprocal_q16_dev(n_total_s);
+            if (n_total_s != n_real_s) {
+                // P-E2b: CUDA twin of the CPU e_deposit_drop_sum fold — WIDE
+                // throughout (int64, no premature q16 narrow; see
+                // fixed_point.h's deposit_dT_wide_q16 header comment for why
+                // the narrowed form overflows at n_floor_heat as low as
+                // 0.01-0.001) then int64 atomicAdd (order-free on two's
+                // complement), NOT the 32-bit hit-count block, since this is
+                // a value SUM not a count.
+                const int64_t e_over_n_wide =
+                    mul_wide(deposit, recip_n) >> FP_SHIFT;   // deposit/floor
+                const int64_t drop = (int64_t)deposit
+                    - ((e_over_n_wide * (int64_t)n_real_s) >> FP_SHIFT);
+                if (drop != 0) atomicAdd(d_dep_drop, (unsigned long long)drop);
+            }
+            // P-E2b: the WIDE deposit/(N*c_v) chain (int64, no premature q16
+            // narrow — cuda_fixedpoint_device.cuh's deposit_dT_wide_q16_dev,
+            // the device twin of fixed_point.h's deposit_dT_wide_q16). Clamp
+            // to a safe non-negative int32 range BEFORE narrowing; an
+            // honestly-huge deposit still hits the T_MAX_PHYS rail right
+            // below, through a value that was never corrupted on the way.
+            const int64_t dT_wide =
+                deposit_dT_wide_q16_dev(deposit, recip_n, recip_cv);
+            dT = (q16)(dT_wide < 0 ? 0 : (dT_wide > 0x7fffffffLL ? 0x7fffffffLL
+                                                                  : dT_wide));
         }
         heat_saturating_add_dev(&temperature[s], dT);
         if (temperature[s] > t_max_phys_q) {                   // v2.4 rail
@@ -518,6 +542,7 @@ void combustion_step(
         float burn_rate, float o2_thresh_burn, float H_fuel, float soot_yield,
         float fuel_per_o2, float o2_frac_ext, float o2_frac_full, float T_MAX_PHYS,
         int64_t* heat_floor_hits, int64_t* t_max_phys_hits,
+        int64_t* e_deposit_drop_sum,
         const bool* thermal_solid, const int32_t* heat_inv_shift,
         int32_t* heat, float H_BED_M, int H_BED_SHIFT,
         int32_t* dem_acc,
@@ -596,6 +621,11 @@ void combustion_step(
             *d_ign = nullptr, *d_alloc = nullptr, *d_fire = nullptr;
     bool *d_flam = nullptr, *d_solid = nullptr, *d_vac = nullptr;
     int *d_counters = nullptr;   // [0]=heat_floor_hits, [1]=t_max_phys_hits
+    // P-E2b: the combustion-floor drop energy SUM — a separate int64 slot
+    // (not the 32-bit d_counters pair above, which are occurrence COUNTS
+    // safe in int32; this is a VALUE sum and needs the wider type, the
+    // cuda_temperature.cu `d_cnt` idiom).
+    unsigned long long* d_dep_drop = nullptr;
 
     cuda_check(cudaMalloc(&d_O2, nb), "malloc O2");
     cuda_check(cudaMalloc(&d_N2, nb), "malloc N2");
@@ -610,6 +640,7 @@ void combustion_step(
     cuda_check(cudaMalloc(&d_solid, nbool), "malloc solid");
     cuda_check(cudaMalloc(&d_vac, nbool), "malloc is_vacuum");
     cuda_check(cudaMalloc(&d_counters, 2 * sizeof(int)), "malloc counters");
+    cuda_check(cudaMalloc(&d_dep_drop, sizeof(unsigned long long)), "malloc dep_drop");
 
     cuda_check(cudaMemcpy(d_O2, O2_h, nb, cudaMemcpyHostToDevice), "H2D O2");
     cuda_check(cudaMemcpy(d_N2, N2_h, nb, cudaMemcpyHostToDevice), "H2D N2");
@@ -688,6 +719,7 @@ void combustion_step(
     cuda_check(cudaMemset(d_alloc, 0, (size_t)n_slots * nb), "memset alloc_slot");
     cuda_check(cudaMemset(d_dep, 0, (size_t)5 * nb), "memset dep_site");
     cuda_check(cudaMemset(d_counters, 0, 2 * sizeof(int)), "memset counters");
+    cuda_check(cudaMemset(d_dep_drop, 0, sizeof(unsigned long long)), "memset dep_drop");
 
     const int block = 256;
     const int grid = (n + block - 1) / block;
@@ -746,7 +778,7 @@ void combustion_step(
     // debit is settled before Pass C reads O2 for the gas divisor).
     combustion_pass_c<<<grid, block>>>(
         d_O2, d_N2, d_SOOT, d_temp, d_solid, d_vac, d_dep,
-        d_counters + 0, d_counters + 1,
+        d_counters + 0, d_counters + 1, d_dep_drop,
         h, w, soot_yield_q, H_fuel_q, recip_cv, n_floor_q, t_max_phys_q,
         d_tsol, d_shift);
     cuda_check(cudaGetLastError(), "pass_c launch");
@@ -768,6 +800,10 @@ void combustion_step(
                "D2H counters");
     if (heat_floor_hits)  *heat_floor_hits  += (int64_t)counters[0];
     if (t_max_phys_hits)  *t_max_phys_hits  += (int64_t)counters[1];
+    unsigned long long dep_drop = 0;
+    cuda_check(cudaMemcpy(&dep_drop, d_dep_drop, sizeof(unsigned long long),
+                          cudaMemcpyDeviceToHost), "D2H dep_drop");
+    if (e_deposit_drop_sum) *e_deposit_drop_sum += (int64_t)dep_drop;
 
     cudaFree(d_O2);
     cudaFree(d_N2);
@@ -782,6 +818,7 @@ void combustion_step(
     cudaFree(d_solid);
     cudaFree(d_vac);
     cudaFree(d_counters);
+    cudaFree(d_dep_drop);
     if (d_tsol)  cudaFree(d_tsol);
     if (d_shift) cudaFree(d_shift);
     if (d_heat)  cudaFree(d_heat);

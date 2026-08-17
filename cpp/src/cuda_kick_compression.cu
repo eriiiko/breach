@@ -94,24 +94,34 @@ __device__ __forceinline__ int mirror_idx_dev(
     return ni;
 }
 
-// Counter slots (the reference's counters_out[5] order).
+// Counter slots (the reference's counters_out[9] order).
 // 0 u_clamp_hits, 1 u_max_hits, 2 work_clamp_hits, 3 energy_floor_hits,
-// 4 t_max_phys_hits.
+// 4 t_max_phys_hits, 5 ke_drag_removed, 6 e_drag_deposit, 7 e_drag_drop_sum,
+// 8 e_drag_rail_clipped (P-E3, design §2.8 — slots 5-8 are int64 ENERGY
+// SUMS via atomicAdd on two's-complement, not hit counts, all non-negative
+// by construction).
 
 // ---- K1: the momentum kick (eos_solver.cpp step 4, verbatim) ----------------
 // Pure gather: reads its OWN u, the solved-P plane (never written here),
-// N_total, the hoisted absorb plane; writes ONLY its own u. Counter
-// increments are per-CELL (one magnitude event), via order-free atomics.
+// N_total, the hoisted absorb plane; writes ITS OWN u AND (P-E3) its OWN T —
+// own-cell T write is race-free (K2 reads only NEIGHBOUR u, never T here;
+// the launch boundary between K1 and K2 is the CPU's pass boundary). Counter
+// increments are per-CELL (one magnitude event) or int64 energy sums, both
+// via order-free atomics.
 __global__ void kick_kernel(int32_t* __restrict__ wind_x,
                             int32_t* __restrict__ wind_y,
+                            int32_t* __restrict__ temperature,   // P-E3: own-cell T
                             const int32_t* __restrict__ p_new,
                             const int32_t* __restrict__ n_total,
                             const int32_t* __restrict__ absorb_q,   // §2.5 hoist
                             const bool* __restrict__ solid,
                             const bool* __restrict__ is_vacuum,
+                            const bool* __restrict__ ts,             // P-E3
                             int64_t Kdt_raw, int32_t inv_2dx_q,
                             int32_t n_floor_q, int32_t c_local_q,
                             int32_t u_max_q,
+                            int32_t kd_q, int32_t heat_frac_q,       // P-E3
+                            int64_t recip_cv, int32_t t_max_phys_q,  // P-E3
                             unsigned long long* __restrict__ cnt,
                             int h, int w,
                             const bool* __restrict__ is_ambient,
@@ -201,6 +211,46 @@ __global__ void kick_kernel(int32_t* __restrict__ wind_x,
                                        (int64_t)u_cap_q, 16);
             }
         }
+
+        // P-E3 — interior drag + heat counterparty (design §2.8), VERBATIM
+        // device transcription of eos_solver.cpp's kick-loop insertion: PER
+        // TICK, after the |u| cap, before the store; ts cells skip both the
+        // drag and the deposit (ruling A1). Dormancy BY BRANCH on kd_q.
+        if (kd_q > 0 && !(ts && ts[i])) {
+            const int64_t ux_old = ux, uy_old = uy;
+            const q16 kk_drag = (kd_q < FP_ONE) ? (q16)(FP_ONE - kd_q) : 0;
+            const int64_t dmx = mul128_shr_signed(ux_old < 0 ? -ux_old : ux_old, (int64_t)kk_drag, 16);
+            const int64_t dmy = mul128_shr_signed(uy_old < 0 ? -uy_old : uy_old, (int64_t)kk_drag, 16);
+            ux = (ux_old < 0) ? -dmx : dmx;
+            uy = (uy_old < 0) ? -dmy : dmy;
+
+            const int64_t du2_raw = (ux_old * ux_old + uy_old * uy_old)
+                                   - (ux * ux + uy * uy);   // >= 0 structurally
+            const int64_t n_bulk = (int64_t)n_total[i];
+            atomicAdd(&cnt[5], (unsigned long long)mul128_shr_signed(n_bulk, du2_raw, 16));
+
+            const int64_t dE_cell_q16 = (du2_raw >> 16) >> 1;
+            const int64_t dT_intended_wide =
+                drag_dT_wide_q16_dev(dE_cell_q16, heat_frac_q, recip_cv);
+            const int32_t drop_frac_q = (int32_t)(FP_ONE - heat_frac_q);
+            const int64_t dT_drop_wide =
+                drag_dT_wide_q16_dev(dE_cell_q16, drop_frac_q, recip_cv);
+            atomicAdd(&cnt[7], (unsigned long long)mul128_shr_signed(n_bulk, dT_drop_wide, 0));
+
+            const int32_t dT_intended_narrow =
+                (dT_intended_wide > (int64_t)INT32_MAX)
+                    ? INT32_MAX : (int32_t)dT_intended_wide;
+            const int32_t t_old = temperature[i];
+            int32_t t_candidate = sat_add_q16(t_old, dT_intended_narrow);
+            if (t_candidate > t_max_phys_q) t_candidate = t_max_phys_q;
+            const int64_t dT_applied = (int64_t)t_candidate - (int64_t)t_old;
+            const int64_t dT_clipped = dT_intended_wide - dT_applied;
+            atomicAdd(&cnt[6], (unsigned long long)mul128_shr_signed(n_bulk, dT_applied, 0));
+            atomicAdd(&cnt[8], (unsigned long long)mul128_shr_signed(n_bulk, dT_clipped, 0));
+
+            if (n_bulk >= 1) temperature[i] = t_candidate;
+        }
+
         wind_x[i] = (int32_t)ux;   // the ONE narrow at store (CPU comment: safe
         wind_y[i] = (int32_t)uy;   // by construction — caps ≪ int32 range)
     }
@@ -213,10 +263,12 @@ __global__ void kick_kernel(int32_t* __restrict__ wind_x,
 __global__ void compression_kernel(const int32_t* __restrict__ wind_x,
                                    const int32_t* __restrict__ wind_y,
                                    int32_t* __restrict__ temperature,
+                                   const int32_t* __restrict__ n_total,   // P-E4
                                    const bool* __restrict__ solid,
                                    const bool* __restrict__ is_vacuum,
                                    int32_t inv_2dx_q, int32_t gamma_m1_q,
                                    int32_t dt_q, int32_t work_clamp_q,
+                                   int64_t recip_n_work_ref,   // P-E4
                                    int32_t t_min_q, int32_t t_max_phys_q,
                                    unsigned long long* __restrict__ cnt,
                                    int h, int w,
@@ -244,10 +296,36 @@ __global__ void compression_kernel(const int32_t* __restrict__ wind_x,
         const q16 div_new = dux + duy;
         q16 k = mul_q16(gamma_m1_q, div_new);
         k = mul_q16(k, dt_q);
-        if (k > work_clamp_q)       { k = work_clamp_q;  atomicAdd(&cnt[2], 1ULL); }
-        else if (k < -work_clamp_q) { k = -work_clamp_q; atomicAdd(&cnt[2], 1ULL); }
-        const q16 dT = mul_q16(k, temperature[i]);
-        q16 t_new = sat_add_q16(temperature[i], (q16)(-(int64_t)dT));
+        // P-E4 TRUST GATE (design §2.4), VERBATIM device transcription of
+        // the CPU's block: fade k toward 0 for thin/untrustworthy N,
+        // magnitude-first (scale_mag) so a negative k fades TOWARD zero,
+        // never past it. recip_mul_dev is the device 128-bit reciprocal
+        // multiply (recip_mul's device twin); work_fade_clamp01_q is the
+        // shared FP_HD clamp01 tail (no 128-bit ops, identical both sides).
+        {
+            const q16 ratio = recip_mul_dev(n_total[i], recip_n_work_ref);
+            const q16 fade = work_fade_clamp01_q(ratio);
+            k = scale_mag(k, fade);
+        }
+        // P-E4 REVERSIBLE WORK (design §2.7), VERBATIM device transcription:
+        // magnitude-first clamp, single-compare form (pinned) — identical
+        // hit semantics to the old signed if/else-if pair.
+        const bool k_neg = (k < 0);
+        q16 w_mag = k_neg ? (q16)(-(int64_t)k) : k;
+        if (w_mag > work_clamp_q) { w_mag = work_clamp_q; atomicAdd(&cnt[2], 1ULL); }
+        q16 t_new;
+        if (k_neg) {
+            // COMPRESSION — KEPT VERBATIM (design §2.7): bit-identical to HEAD.
+            const q16 k_signed = (q16)(-(int64_t)w_mag);
+            const q16 dT = mul_q16(k_signed, temperature[i]);
+            t_new = sat_add_q16(temperature[i], (q16)(-(int64_t)dT));
+        } else {
+            // EXPANSION (k >= 0, including the pinned k==0 identity): the
+            // reversible inverse via the shared floordiv_q helper (P-E1's
+            // recovery divide) — plain `/` would MINT on sub-ambient T.
+            t_new = (q16)floordiv_q((int64_t)temperature[i] << 16,
+                                    (int64_t)FP_ONE + (int64_t)w_mag);
+        }
         if (t_new < t_min_q) { t_new = t_min_q; atomicAdd(&cnt[3], 1ULL); }
         else if (t_new > t_max_phys_q) { t_new = t_max_phys_q; atomicAdd(&cnt[4], 1ULL); }
         temperature[i] = t_new;
@@ -262,7 +340,8 @@ __global__ void compression_kernel(const int32_t* __restrict__ wind_x,
 KickScalarFolds kick_scalar_folds(
         float dt, float c_max, float dx, float adiabatic_index,
         float absorb_strength, float n_floor_solver, float t_min,
-        float t_work_clamp, float t_max_phys, float u_max) {
+        float t_work_clamp, float t_max_phys, float u_max,
+        float k_drag, float k_drag_heat_frac, float c_v, float n_work_ref) {
     KickScalarFolds f;
     f.n_floor_q    = quantize((double)n_floor_solver);
     f.t_min_q      = quantize((double)t_min);
@@ -279,6 +358,14 @@ KickScalarFolds kick_scalar_folds(
     f.Kdt_raw      = mul128_shr_host(K_raw, (int64_t)f.dt_q, 16);
     f.absorb_dt_q  = quantize((double)absorb_strength * dt_d);
     f.work_clamp_q = quantize((double)t_work_clamp);
+    // P-E3 (design §2.8): the drag folds, the SAME per-tick-not-per-cell
+    // idiom absorb_dt_q already uses; make_recip is the host double-divide
+    // the CPU reference's own recip_cv fold uses.
+    f.kd_q         = quantize((double)k_drag * dt_d);
+    f.heat_frac_q  = quantize((double)k_drag_heat_frac);
+    f.recip_cv     = make_recip(std::max((double)c_v, 1e-6));
+    // P-E4 (design §2.4): the trust-gate fold, verbatim step()'s.
+    f.recip_n_work_ref = make_recip(std::max((double)n_work_ref, 1e-6));
     return f;
 }
 
@@ -298,18 +385,25 @@ void kick_compression_launch_resident(
     const int block = 256;
     const int grid = (n + block - 1) / block;
     // K1 kick, then K2 compression — same stream, so K2 sees K1's completed
-    // grid-wide u (the CPU pass boundary).
-    kick_kernel<<<grid, block>>>(d_wind_x, d_wind_y, d_p_new, d_ntot,
-                                 d_absorb_q, d_solid, d_is_vacuum,
+    // grid-wide u (the CPU pass boundary). P-E3: K1 also takes temperature +
+    // ts now (own-cell T write from K1 is race-free — K2 reads only
+    // neighbour u, never T, at this point in the tick).
+    kick_kernel<<<grid, block>>>(d_wind_x, d_wind_y, d_temperature, d_p_new,
+                                 d_ntot, d_absorb_q, d_solid, d_is_vacuum, d_ts,
                                  folds.Kdt_raw, folds.inv_2dx_q,
                                  folds.n_floor_q, c_local_q,
-                                 folds.u_max_q, d_cnt, h, w,
+                                 folds.u_max_q,
+                                 folds.kd_q, folds.heat_frac_q,
+                                 folds.recip_cv, folds.t_max_phys_q,
+                                 d_cnt, h, w,
                                  d_is_ambient, d_sponge_udamp);
     cuda_check(cudaGetLastError(), "kick launch");
     compression_kernel<<<grid, block>>>(d_wind_x, d_wind_y, d_temperature,
+                                        d_ntot,   // P-E4: the trust-gate input
                                         d_solid, d_is_vacuum,
                                         folds.inv_2dx_q, folds.gamma_m1_q,
                                         folds.dt_q, folds.work_clamp_q,
+                                        folds.recip_n_work_ref,   // P-E4
                                         folds.t_min_q, folds.t_max_phys_q,
                                         d_cnt, h, w, d_is_ambient, d_ts);
     cuda_check(cudaGetLastError(), "compression launch");
@@ -324,13 +418,15 @@ void eos_kick_compression(
     int h, int w, float dt, int32_t c_local_q,
     float c_max, float dx, float adiabatic_index, float absorb_strength,
     float n_floor_solver, float t_min, float t_work_clamp,
-    float t_max_phys, float u_max, float trace_mass_scale,
+    float t_max_phys, float u_max,   // trace_mass_scale param RETIRED (P-T0)
+    float k_drag, float k_drag_heat_frac, float c_v,   // P-E3 (design §2.8)
+    float n_work_ref,   // P-E4 (design §2.4): the compression-work trust gate
     uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
-    int64_t* counters_out /* [5] */,
+    int64_t* counters_out /* [9] */,
     const bool* is_ambient, const int32_t* sponge_udamp,     // BC
     const bool* thermal_solid) {   // THERMAL-MASS AXIS, P-EOS
     const int n = h * w;
-    for (int c = 0; c < 5; ++c) counters_out[c] = 0;
+    for (int c = 0; c < 9; ++c) counters_out[c] = 0;
     *digest_velocity_out = 0;
     *digest_compression_out = 0;
     if (n <= 0 || dt <= 0.0f) return;
@@ -339,20 +435,18 @@ void eos_kick_compression(
     //      (S8a Path A code motion; identical expressions, identical bits). --
     const KickScalarFolds folds = kick_scalar_folds(
         dt, c_max, dx, adiabatic_index, absorb_strength, n_floor_solver,
-        t_min, t_work_clamp, t_max_phys, u_max);
+        t_min, t_work_clamp, t_max_phys, u_max,
+        k_drag, k_drag_heat_frac, c_v, n_work_ref);
     const q16 absorb_dt_q = folds.absorb_dt_q;
 
     // ---- step 2's Dalton sum (verbatim host loop — the kick's N̂ input). ----
+    // P-T0 (design §2.6): n_total ≡ n_bulk; trace planes skipped outright.
     std::vector<int32_t> n_total(n, 0);
     {
-        const q16 tms_q = quantize((double)trace_mass_scale);
         for (int gi = 0; gi < n_gases; ++gi) {
+            if (!gas_conservative[gi]) continue;
             const int32_t* plane = gas + (size_t)gi * n;
-            if (gas_conservative[gi]) {
-                for (int i = 0; i < n; ++i) n_total[i] += plane[i];
-            } else {
-                for (int i = 0; i < n; ++i) n_total[i] += mul_q16(tms_q, plane[i]);
-            }
+            for (int i = 0; i < n; ++i) n_total[i] += plane[i];
         }
     }
 
@@ -380,7 +474,7 @@ void eos_kick_compression(
     cuda_check(cudaMalloc(&d_aq, nb), "malloc absorb_q");
     cuda_check(cudaMalloc(&d_sol, nbool), "malloc solid");
     cuda_check(cudaMalloc(&d_vac, nbool), "malloc is_vacuum");
-    cuda_check(cudaMalloc(&d_cnt, 5 * sizeof(unsigned long long)), "malloc counters");
+    cuda_check(cudaMalloc(&d_cnt, 9 * sizeof(unsigned long long)), "malloc counters");
 
     cuda_check(cudaMemcpy(d_wx, wind_x, nb, cudaMemcpyHostToDevice), "H2D wind_x");
     cuda_check(cudaMemcpy(d_wy, wind_y, nb, cudaMemcpyHostToDevice), "H2D wind_y");
@@ -390,7 +484,7 @@ void eos_kick_compression(
     cuda_check(cudaMemcpy(d_aq, absorb_q.data(), nb, cudaMemcpyHostToDevice), "H2D absorb_q");
     cuda_check(cudaMemcpy(d_sol, solid, nbool, cudaMemcpyHostToDevice), "H2D solid");
     cuda_check(cudaMemcpy(d_vac, is_vacuum, nbool, cudaMemcpyHostToDevice), "H2D is_vacuum");
-    cuda_check(cudaMemset(d_cnt, 0, 5 * sizeof(unsigned long long)), "memset counters");
+    cuda_check(cudaMemset(d_cnt, 0, 9 * sizeof(unsigned long long)), "memset counters");
 
     // BC (spec §1/§3): optional ambient ring mask + u-damping band grid. Only
     // allocated/uploaded on an ambient map; nullptr on space -> the kernels take
@@ -429,8 +523,8 @@ void eos_kick_compression(
     cuda_check(cudaMemcpy(wind_x, d_wx, nb, cudaMemcpyDeviceToHost), "D2H wind_x");
     cuda_check(cudaMemcpy(wind_y, d_wy, nb, cudaMemcpyDeviceToHost), "D2H wind_y");
     cuda_check(cudaMemcpy(temperature, d_t, nb, cudaMemcpyDeviceToHost), "D2H temperature");
-    unsigned long long cnt_host[5] = {0, 0, 0, 0, 0};
-    cuda_check(cudaMemcpy(cnt_host, d_cnt, 5 * sizeof(unsigned long long),
+    unsigned long long cnt_host[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+    cuda_check(cudaMemcpy(cnt_host, d_cnt, 9 * sizeof(unsigned long long),
                           cudaMemcpyDeviceToHost), "D2H counters");
 
     cudaFree(d_wx);
@@ -446,7 +540,7 @@ void eos_kick_compression(
     if (d_udamp) cudaFree(d_udamp);
     if (d_tsol)  cudaFree(d_tsol);
 
-    for (int c = 0; c < 5; ++c) counters_out[c] = (int64_t)cnt_host[c];
+    for (int c = 0; c < 9; ++c) counters_out[c] = (int64_t)cnt_host[c];
 
     // Host-side digests, byte-for-byte step()'s expressions:
     //   digest_velocity    = digest_of(wx, digest_of(wy, 0))

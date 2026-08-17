@@ -49,6 +49,10 @@
 // kernel; the CPU twin is temperature_solver.cpp Pass 3, line for line.
 // ============================================================================
 #include "cuda_temperature.h"
+#include "temperature_solver.h"       // P-E2a: the SHARED conduction energy kit
+                                       // (conduction::cell_capacity_q /
+                                       // face_energy_q / opposite_dir) — one
+                                       // transcription, both backends.
 #include "fixed_point.h"              // quantize/make_recip/mul_q16/mul_wide/narrow
 #include "cuda_fixedpoint_device.cuh" // heat_saturating_add_dev, reciprocal_q16_dev,
                                        // recip_mul_dev
@@ -83,6 +87,51 @@ __device__ __forceinline__ int dx_of(int d) {
     return (d == 2) ? 1 : (d == 3) ? -1 : 0;
 }
 
+// ---- P-E2a/P-E2b: the energy-counter slot map (design §2.3/§2.2) -----------
+// One 7-slot int64 block (P-E2b grew it from 6), atomicAdd'd (order-free on
+// two's complement, which is what makes a VALUE sum legal here at all). The
+// host folds it into the CPU solver's own fields so telemetry is identical
+// whichever backend ran. Slot order is pinned and mirrored by
+// cuda_temperature.h / bindings.cpp.
+// P-E2b: slot 6 added — e_deposit_drop_sum, the Pass-1 attenuation-drop
+// energy sum (design §2.2/§2.5, L3-7). The block grew from 6 to 7 slots;
+// TEMPERATURE_ENERGY_SLOTS (cuda_temperature.h) is the pinned mirror.
+enum : int {
+    C_COND_TRUNC = 0,   // e_cond_trunc_sum   (endpoint floordiv residual, ≤ 0)
+    C_COND_CAP   = 1,   // e_cond_cap_sum     (capacity floor/ceiling, signed)
+    C_LIMIT_HITS = 2,   // cond_limit_hits    (constraint-4 engagements)
+    C_COOL       = 3,   // e_cool_sum         (Pass 3 / sky, SIGNED)
+    C_VAC_WIPE   = 4,   // e_vac_wipe_sum     (Pass 0a breach wipe, SIGNED)
+    C_RING_PIN   = 5,   // e_ring_pin_sum     (Pass 0a ring pin, SIGNED)
+    C_DEP_DROP   = 6,   // e_deposit_drop_sum (Pass 1 attenuation drop, P-E2b)
+    C_SLOTS      = 7
+};
+
+__device__ __forceinline__ void cadd(unsigned long long* c, int slot, int64_t v) {
+    if (v != 0) atomicAdd(&c[slot], (unsigned long long)v);
+}
+
+// ---- P-E2a: the capacity planes (the CPU's pre-pass build, verbatim) --------
+// Depends only on FROZEN inputs (medium mask, N, the two dials) — never on T —
+// so one kernel ahead of every pass is the exact device twin of the CPU's
+// once-per-step loop. `cap_used` is the divisor of record; `cap_real` prices
+// the counters.
+__global__ void temp_cap_build(int64_t* __restrict__ cap_used,
+                               int64_t* __restrict__ cap_real,
+                               const bool* __restrict__ thermal_solid,
+                               const int32_t* __restrict__ heat_inv_shift,
+                               const int32_t* __restrict__ n_src,
+                               int32_t n_floor_q, int32_t c_v_q, int n) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
+         i += gridDim.x * blockDim.x) {
+        int64_t cu = 0, cr = 0;
+        conduction::cell_capacity_q(thermal_solid[i], heat_inv_shift[i],
+                                    n_src[i], n_floor_q, c_v_q, &cu, &cr);
+        cap_used[i] = cu;
+        cap_real[i] = cr;
+    }
+}
+
 // ---- Pass 0a: gas-T zero at OPEN (non-thermal-solid) vacuum cells (§4) ------
 // The structural invariant, UNCONDITIONAL (runs whether or not advection does):
 // a true breach (is_vacuum && !thermal_solid) holds no gas, so no gas-T — energy
@@ -95,136 +144,33 @@ __device__ __forceinline__ int dx_of(int d) {
 __global__ void temp_zero_vacuum(int32_t* __restrict__ temperature,
                                  const bool* __restrict__ thermal_solid,
                                  const bool* __restrict__ is_vacuum, int n,
-                                 const bool* __restrict__ is_ambient) {
+                                 const bool* __restrict__ is_ambient,
+                                 const int64_t* __restrict__ cap_real,
+                                 unsigned long long* __restrict__ cnt) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
         // BC (audit (b)): the ambient ring radiates to the T_amb sky — wiped to
         // ΔT=0 exactly like a vacuum breach (is_ambient nullptr on space maps).
-        if ((is_vacuum[i] || (is_ambient && is_ambient[i])) && !thermal_solid[i])
+        if ((is_vacuum[i] || (is_ambient && is_ambient[i])) && !thermal_solid[i]) {
+            // P-E2a (L3-6): law unchanged, both wipes named as SIGNED channels
+            // (they CREATE whenever they pin a sub-ambient cell up to 0). The
+            // vacuum-before-ring attribution order is the CPU block's, pinned.
+            const int32_t t_old = temperature[i];
+            if (t_old != 0)
+                cadd(cnt, is_vacuum[i] ? C_VAC_WIPE : C_RING_PIN,
+                     -(int64_t)t_old * cap_real[i]);
             temperature[i] = 0;
-    }
-}
-
-// ---- Pass 0b advection sampler — VERBATIM port of gas_backtrace_sample_q -----
-// (temperature_solver.cpp): integer DDA wall-clip march + integer bilinear
-// sample + Newton-reciprocal renorm, specialized to thermal_solid/is_vacuum.
-// reciprocal_q16 -> reciprocal_q16_dev (bit-identical); mul_q16/mul_wide/narrow
-// are FP_HD device-clean. Every arithmetic step matches the CPU by construction.
-// MEDIUM-TEST SITE 3/6 (the ray-walk occluder): gas-T no longer advects ACROSS a
-// crate tile, because a crate holds an OBJECT temperature (design §2.3).
-__device__ __forceinline__ bool gas_wall_at(int y, int x,
-                                             const bool* thermal_solid,
-                                             int h, int w) {
-    if (y < 0 || y >= h || x < 0 || x >= w) return true;   // outside == wall
-    return thermal_solid[y * w + x];
-}
-
-__device__ int32_t gas_backtrace_sample_q_dev(
-        const int32_t* src, int x, int y, int32_t bx_q, int32_t by_q,
-        const bool* thermal_solid, const bool* is_vacuum, int h, int w) {
-    const int32_t GAS_WSUM_FLOOR_Q = FP_ONE >> 8;
-    const int32_t GAS_WSUM_EPS_Q   = FP_ONE >> 14;
-
-    int64_t px_q = ((int64_t)x << FP_SHIFT) + bx_q;
-    int64_t py_q = ((int64_t)y << FP_SHIFT) + by_q;
-
-    // ---- Wall-clip march (DDA, no sqrt) ----
-    const int32_t abx = bx_q >= 0 ? bx_q : -bx_q;
-    const int32_t aby = by_q >= 0 ? by_q : -by_q;
-    const int32_t amax = abx >= aby ? abx : aby;
-    int n_steps = amax >> FP_SHIFT;
-    if (amax & (FP_ONE - 1)) n_steps += 1;                   // ceil
-    if (n_steps > 0) {
-        // floordiv(a, b) with a int32, b > 0 (matches the CPU lambda exactly).
-        const int32_t sx_q = (bx_q >= 0) ? (bx_q / n_steps)
-                             : -(int32_t)(((-(int64_t)bx_q) + n_steps - 1) / n_steps);
-        const int32_t sy_q = (by_q >= 0) ? (by_q / n_steps)
-                             : -(int32_t)(((-(int64_t)by_q) + n_steps - 1) / n_steps);
-        int64_t cx_q = (int64_t)x << FP_SHIFT;
-        int64_t cy_q = (int64_t)y << FP_SHIFT;
-        for (int s = 0; s < n_steps; ++s) {
-            const int64_t nxp_q = cx_q + sx_q;
-            const int64_t nyp_q = cy_q + sy_q;
-            const int ti = (int)((nxp_q + (FP_ONE >> 1)) >> FP_SHIFT);
-            const int tj = (int)((nyp_q + (FP_ONE >> 1)) >> FP_SHIFT);
-            if (gas_wall_at(tj, ti, thermal_solid, h, w)) break;
-            cx_q = nxp_q;
-            cy_q = nyp_q;
-            if (tj >= 0 && tj < h && ti >= 0 && ti < w && is_vacuum[tj * w + ti])
-                break;                                        // reached the breach
         }
-        px_q = cx_q;
-        py_q = cy_q;
-    }
-
-    // ---- Clamp in-bounds (Q16.16) ----
-    const int64_t hi_x = (int64_t)(w - 1) << FP_SHIFT;
-    const int64_t hi_y = (int64_t)(h - 1) << FP_SHIFT;
-    if (px_q < 0) px_q = 0; else if (px_q > hi_x) px_q = hi_x;
-    if (py_q < 0) py_q = 0; else if (py_q > hi_y) py_q = hi_y;
-
-    // ---- Integer bilinear sample ----
-    const int x0 = (int)(px_q >> FP_SHIFT);
-    const int y0 = (int)(py_q >> FP_SHIFT);
-    const int x1 = (x0 + 1 <= w - 1) ? x0 + 1 : w - 1;
-    const int y1 = (y0 + 1 <= h - 1) ? y0 + 1 : h - 1;
-    const int32_t fx_q = (int32_t)(px_q - ((int64_t)x0 << FP_SHIFT));
-    const int32_t fy_q = (int32_t)(py_q - ((int64_t)y0 << FP_SHIFT));
-    const int32_t ifx_q = FP_ONE - fx_q;
-    const int32_t ify_q = FP_ONE - fy_q;
-    const int32_t w00 = mul_q16(ifx_q, ify_q);
-    const int32_t w10 = mul_q16(fx_q,  ify_q);
-    const int32_t w01 = mul_q16(ifx_q, fy_q);
-    const int32_t w11 = mul_q16(fx_q,  fy_q);
-    const int cyx[4][2] = { {y0, x0}, {y0, x1}, {y1, x0}, {y1, x1} };
-    const int32_t cw[4] = { w00, w10, w01, w11 };
-
-    int64_t acc = 0;
-    int32_t wsum_q = 0;
-    for (int k = 0; k < 4; ++k) {
-        const int cy_ = cyx[k][0];
-        const int cx_ = cyx[k][1];
-        const int j = cy_ * w + cx_;
-        // MEDIUM-TEST SITE 4/6 (sealed corner in the bilinear gather).
-        if (thermal_solid[j]) continue;                      // sealed corner
-        const int32_t val_q = is_vacuum[j] ? 0 : src[j];      // breach corner == 0
-        acc += mul_wide(cw[k], val_q);
-        wsum_q += cw[k];
-    }
-    if (wsum_q <= GAS_WSUM_EPS_Q) return src[y * w + x];      // negligible -> keep self
-
-    const int32_t wsum_clamped = (wsum_q < GAS_WSUM_FLOOR_Q) ? GAS_WSUM_FLOOR_Q : wsum_q;
-    const int32_t recip_q = reciprocal_q16_dev(wsum_clamped);
-    const int32_t acc_q = narrow(acc);
-    return mul_q16(acc_q, recip_q);
-}
-
-// ---- Pass 0b: semi-Lagrangian advection on the open-air mask ----------------
-// One thread per cell reads the FROZEN snapshot `src` and writes only its own
-// temperature[i] (open-air cells only; thermal-solid/vacuum keep their Pass-0a
-// value).
-__global__ void temp_advect(int32_t* __restrict__ temperature,
-                            const int32_t* __restrict__ src,
-                            const int32_t* __restrict__ wind_x,
-                            const int32_t* __restrict__ wind_y,
-                            const bool* __restrict__ thermal_solid,
-                            const bool* __restrict__ is_vacuum,
-                            int32_t dt_adv_q, int h, int w) {
-    const int n = h * w;
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
-         i += gridDim.x * blockDim.x) {
-        // MEDIUM-TEST SITE 2/6: the gas-advection mask is the complement of the
-        // THERMAL medium (a crate is not open air thermally, even though gas
-        // flows through it).
-        if (thermal_solid[i] || is_vacuum[i]) continue;      // open-air mask only
-        const int y = i / w;
-        const int x = i % w;
-        const int32_t bx_q = -mul_q16(wind_x[i], dt_adv_q);
-        const int32_t by_q = -mul_q16(wind_y[i], dt_adv_q);
-        temperature[i] = gas_backtrace_sample_q_dev(
-            src, x, y, bx_q, by_q, thermal_solid, is_vacuum, h, w);
     }
 }
+// ---- Pass 0b gas-T SL advection (`gas_wall_at`, `gas_backtrace_sample_q_dev`,
+// `temp_advect`) — DELETED at P-E1 (energy-books arc, design §2.1.1; round-1
+// finding L3-5), IDENTICALLY to the CPU twin in temperature_solver.cpp. This was
+// the engine's second semi-Lagrangian T-COPIER — a temperature copy onto mass it
+// never paid for — live on this backend only because the caller happens to pass
+// null winds. Gas temperature is now transported once and conservatively by the
+// EOS energy books. MEDIUM-TEST SITES 2/6, 3/6 and 4/6 lived here and retire
+// with it; 1/6, 5/6 and 6/6 are untouched and still marked below.
 
 // ---- Pass 1: heat -> temperature deposit (§1.2 solids; §4.3 open-air) -------
 // Solid: the UNCHANGED bit-shift. Open-air (non-vacuum): the v2.4 absorption-∝-
@@ -243,6 +189,7 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
                                      int32_t t_max_phys_q,
                                      unsigned long long* __restrict__ hits,
                                      unsigned long long* __restrict__ low_hits,
+                                     unsigned long long* __restrict__ cnt,
                                      int n) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x) {
@@ -287,11 +234,23 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
             const int32_t e_abs = (N_raw >= FP_ONE)
                 ? deposit                                    // ambient+: exact old path
                 : mul_q16(deposit, (q16)N_raw);              // thin gas: ∝ density
+            if (N_raw < FP_ONE) {
+                // P-E2b / L3-7: the CPU twin's e_deposit_drop_sum fold.
+                cadd(cnt, C_DEP_DROP, (int64_t)deposit - (int64_t)e_abs);
+            }
             int32_t N_q = N_raw;
             if (N_q < n_floor_q) N_q = n_floor_q;            // N_FLOOR_HEAT
             const int32_t recip_N_q = reciprocal_q16_dev(N_q);
-            const int32_t e_over_n  = mul_q16(e_abs, recip_N_q);
-            const int32_t dT = recip_mul_dev(e_over_n, recip_cv);
+            // P-E2b: the WIDE E_abs/(N*c_v) chain (int64, no premature q16
+            // narrow — cuda_fixedpoint_device.cuh's deposit_dT_wide_q16_dev,
+            // the device twin of fixed_point.h's deposit_dT_wide_q16). Clamp
+            // to a safe non-negative int32 range BEFORE narrowing; an
+            // honestly-huge deposit still hits the T_MAX_PHYS rail right
+            // below, through a value that was never corrupted on the way.
+            const int64_t dT_wide =
+                deposit_dT_wide_q16_dev(e_abs, recip_N_q, recip_cv);
+            const int32_t dT = (int32_t)(dT_wide < 0 ? 0
+                : (dT_wide > 0x7fffffffLL ? 0x7fffffffLL : dT_wide));
             heat_saturating_add_dev(&t, dT);
             if (t > t_max_phys_q) { t = t_max_phys_q; atomicAdd(hits, 1ULL); }
             temperature[i] = t;
@@ -299,14 +258,21 @@ __global__ void temp_convert_unified(int32_t* __restrict__ temperature,
     }
 }
 
-// ---- Pass 2: conduction relaxation (§2.2, gather, double-buffered) ---------
-// Reads the FROZEN temperature, writes temp_new[i]. The DIFFERENCE is shifted,
-// not the neighbour (equal neighbours -> exactly 0). int64 accumulator, identical
-// to the CPU. Every cell is fully written (air -> all NO_FACE -> acc=0 -> temp_new
-// == ti), so temp_new has no uninitialised read (scratch hygiene).
+// ---- Pass 2: conduction — ENERGY FORM (P-E2a, design §2.3) -----------------
+// The CPU loop (temperature_solver.cpp Pass 2) transcribed body-for-body, over
+// the SHARED `conduction::` kit so neither backend can carry its own copy of
+// the law. Reads the FROZEN temperature + the frozen capacity planes, writes
+// temp_new[i] and nothing else — still a single-writer gather, still no
+// atomics for the physics itself (only the VALUE-SUM counters atomicAdd, which
+// is order-free on two's complement). Every cell is fully written (a cell with
+// no live face takes the ΔE == 0 early-out and copies ti through), so temp_new
+// has no uninitialised read.
 __global__ void temp_conduct(const int32_t* __restrict__ temperature,
                              int32_t* __restrict__ temp_new,
                              const int32_t* __restrict__ face_shift,
+                             const int64_t* __restrict__ cap_used,
+                             const int64_t* __restrict__ cap_real,
+                             unsigned long long* __restrict__ cnt,
                              int no_face, int h, int w) {
     const int n = h * w;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
@@ -314,18 +280,34 @@ __global__ void temp_conduct(const int32_t* __restrict__ temperature,
         const int y = i / w;
         const int x = i % w;
         const int32_t* fs = &face_shift[i * 4];
-        const int32_t ti = temperature[i];
-        long long acc = 0;
+        const int64_t ti = (int64_t)temperature[i];
+        const int64_t cap_i = cap_used[i];
+        int64_t de = 0;
+        int64_t lim_hits = 0;          // thread-local; folded once, below
         for (int d = 0; d < 4; ++d) {
-            const int s = fs[d];
-            if (s == no_face) continue;
+            const int s_i = fs[d];
+            if (s_i == no_face) continue;
             const int ny = y + dy_of(d);
             const int nx = x + dx_of(d);
             if (ny < 0 || ny >= h || nx < 0 || nx >= w) continue;
-            const int32_t tn = temperature[ny * w + nx];
-            acc += (long long)(tn - ti) >> s;                // arithmetic shift
+            const int j = ny * w + nx;
+            // The neighbour's facing entry — the face is skipped and rated
+            // identically from both ends BY CONSTRUCTION (CPU comment).
+            const int s_j = face_shift[j * 4 + conduction::opposite_dir(d)];
+            if (s_j == no_face) continue;
+            const int s = (s_i > s_j) ? s_i : s_j;
+            de += conduction::face_energy_q(ti, (int64_t)temperature[j],
+                                            cap_i, cap_used[j], s, &lim_hits);
         }
-        temp_new[i] = (int32_t)((long long)ti + acc);
+        cadd(cnt, C_LIMIT_HITS, lim_hits);
+        if (de == 0) {                                  // exact rest
+            temp_new[i] = (int32_t)ti;
+            continue;
+        }
+        const int64_t dT = fixedpoint::floordiv_q(de, cap_i);
+        cadd(cnt, C_COND_TRUNC, dT * cap_i - de);
+        cadd(cnt, C_COND_CAP,   dT * (cap_real[i] - cap_i));
+        temp_new[i] = (int32_t)(ti + dT);
     }
 }
 
@@ -344,6 +326,8 @@ __global__ void temp_cool(int32_t* __restrict__ temperature,
                           const bool* __restrict__ is_vacuum,
                           const int32_t* __restrict__ atmosphere,
                           const int32_t* __restrict__ cool_shift_grid,
+                          const int64_t* __restrict__ cap_real,
+                          unsigned long long* __restrict__ cnt,
                           int cool_shift, int vac_offset, int cool_shift_floor,
                           int32_t thresh_q, int h, int w) {
     const int n = h * w;
@@ -378,6 +362,9 @@ __global__ void temp_cool(int32_t* __restrict__ temperature,
         }
         const int32_t loss = (t < 0) ? -((-t) >> shift) : (t >> shift);
         temperature[i] = t - loss;
+        // P-E2a (L3-6): law unchanged; Pass 3 is a SIGNED channel — it relaxes
+        // toward 0 from BOTH sides, so on a sub-ambient tile it CREATES.
+        cadd(cnt, C_COOL, -(int64_t)loss * cap_real[i]);
     }
 }
 
@@ -397,7 +384,10 @@ int64_t temperature_step(
                                       // (nullptr -> the cool_shift scalar)
     int cool_shift_floor,       // low clamp on the vacuum offset (== SHIFT_MIN)
     int64_t* low_rail_hits_out, // P-F1a: Pass-1 LOW rail count (nullable)
-    const int32_t* rad_net) {   // P-R4: SIGNED radiation accumulator (nullable)
+    const int32_t* rad_net,     // P-R4: SIGNED radiation accumulator (nullable)
+    int64_t* energy_counters_out) {  // P-E2a: 6 slots (C_* enum), nullable;
+                                      // accumulated (+=) into the caller's
+                                      // TemperatureSolver fields
     const int n = h * w;
     if (n <= 0) return 0;
 
@@ -409,7 +399,14 @@ int64_t temperature_step(
     const int64_t recip_cv = make_recip(c_v_safe);
     const int32_t n_floor_q = quantize((double)n_floor_heat);
     const int32_t t_max_phys_q = quantize((double)t_max_phys);
-    const bool do_advect = (dt > 0.0f && wind_x != nullptr && wind_y != nullptr);
+    // P-E2a: c_v as a Q16.16 MULTIPLIER for the conduction capacity (Pass 1
+    // needs its reciprocal; the capacity needs the value). Same dial, same
+    // once-per-step boundary cast the CPU does.
+    const int32_t c_v_q = quantize(c_v_safe);
+    // P-E1: Pass 0b (gas-T SL advection) is RETIRED — `wind_x`/`wind_y`/`dt`
+    // and `gas_advection_rate` survive only as inert back-compat surface, and
+    // nothing on this backend reads them any more (CPU twin identical).
+    (void)wind_x; (void)wind_y; (void)gas_advection_rate;
     // COOL-SHIFT AXIS: the vacuum discount as a DIFFERENCE, computed ONCE on
     // the host exactly as the CPU solver's Pass 3 does (`const int vac_offset =
     // cool_shift - cool_shift_vacuum;`). Pure integer, no boundary cast.
@@ -419,11 +416,14 @@ int64_t temperature_step(
     const size_t nbool = (size_t)n * sizeof(bool);
     int32_t *d_temp = nullptr, *d_temp_new = nullptr, *d_heat = nullptr,
             *d_his = nullptr, *d_fs = nullptr, *d_atm = nullptr,
-            *d_nbulk = nullptr, *d_src = nullptr, *d_wx = nullptr, *d_wy = nullptr,
+            *d_nbulk = nullptr,
             *d_csg = nullptr;
     bool *d_solid = nullptr, *d_vac = nullptr, *d_tsol = nullptr;
     unsigned long long* d_hits = nullptr;
     unsigned long long* d_low_hits = nullptr;   // P-F1a: LOW rail count
+    // P-E2a: the two capacity planes + the 6-slot energy counter block.
+    int64_t *d_cap_used = nullptr, *d_cap_real = nullptr;
+    unsigned long long* d_cnt = nullptr;
 
     cuda_check(cudaMalloc(&d_temp, nb), "malloc temp");
     cuda_check(cudaMalloc(&d_temp_new, nb), "malloc temp_new");
@@ -435,6 +435,9 @@ int64_t temperature_step(
     cuda_check(cudaMalloc(&d_vac, nbool), "malloc is_vacuum");
     cuda_check(cudaMalloc(&d_hits, sizeof(unsigned long long)), "malloc hits");
     cuda_check(cudaMalloc(&d_low_hits, sizeof(unsigned long long)), "malloc low_hits");
+    cuda_check(cudaMalloc(&d_cap_used, (size_t)n * sizeof(int64_t)), "malloc cap_used");
+    cuda_check(cudaMalloc(&d_cap_real, (size_t)n * sizeof(int64_t)), "malloc cap_real");
+    cuda_check(cudaMalloc(&d_cnt, C_SLOTS * sizeof(unsigned long long)), "malloc cnt");
     if (n_bulk) cuda_check(cudaMalloc(&d_nbulk, nb), "malloc n_bulk");
     // THERMAL-MASS AXIS: the medium mask rides as its OWN plane only when the
     // caller supplies one; with nullptr the kernels are pointed straight at
@@ -450,11 +453,6 @@ int64_t temperature_step(
     // null pointer and skips the fold, the exact CPU twin.
     int32_t* d_radnet = nullptr;
     if (rad_net) cuda_check(cudaMalloc(&d_radnet, nb), "malloc rad_net");
-    if (do_advect) {
-        cuda_check(cudaMalloc(&d_src, nb), "malloc src");
-        cuda_check(cudaMalloc(&d_wx, nb), "malloc wind_x");
-        cuda_check(cudaMalloc(&d_wy, nb), "malloc wind_y");
-    }
 
     cuda_check(cudaMemcpy(d_temp, temperature, nb, cudaMemcpyHostToDevice), "H2D temp");
     cuda_check(cudaMemcpy(d_heat, heat, nb, cudaMemcpyHostToDevice), "H2D heat");
@@ -479,12 +477,9 @@ int64_t temperature_step(
         cuda_check(cudaMemcpy(d_amb, is_ambient, nbool, cudaMemcpyHostToDevice), "H2D is_ambient");
     }
     if (n_bulk) cuda_check(cudaMemcpy(d_nbulk, n_bulk, nb, cudaMemcpyHostToDevice), "H2D nbulk");
-    if (do_advect) {
-        cuda_check(cudaMemcpy(d_wx, wind_x, nb, cudaMemcpyHostToDevice), "H2D wx");
-        cuda_check(cudaMemcpy(d_wy, wind_y, nb, cudaMemcpyHostToDevice), "H2D wy");
-    }
     cuda_check(cudaMemset(d_hits, 0, sizeof(unsigned long long)), "memset hits");
     cuda_check(cudaMemset(d_low_hits, 0, sizeof(unsigned long long)), "memset low_hits");
+    cuda_check(cudaMemset(d_cnt, 0, C_SLOTS * sizeof(unsigned long long)), "memset cnt");
 
     // The N divisor source Pass 1 reads: n_bulk when supplied, else the atmosphere
     // density proxy — EXACTLY the CPU's `n_bulk ? n_bulk[i] : atmosphere[i]`.
@@ -498,34 +493,36 @@ int64_t temperature_step(
     const int block = 256;
     const int grid = (n + block - 1) / block;
 
+    // P-E2a: the capacity planes, built ONCE ahead of every pass (frozen
+    // inputs only) — the exact device twin of the CPU's pre-pass loop.
+    temp_cap_build<<<grid, block>>>(d_cap_used, d_cap_real, d_ts, d_his,
+                                    d_nsrc, n_floor_q, c_v_q, n);
+    cuda_check(cudaGetLastError(), "cap_build launch");
+
     // Pass 0a: zero gas-T at open vacuum cells (unconditional, in-place on d_temp).
-    temp_zero_vacuum<<<grid, block>>>(d_temp, d_ts, d_vac, n, d_amb);
+    temp_zero_vacuum<<<grid, block>>>(d_temp, d_ts, d_vac, n, d_amb,
+                                      d_cap_real, d_cnt);
     cuda_check(cudaGetLastError(), "zero_vacuum launch");
 
-    // Pass 0b: semi-Lagrangian advection (only when wind + dt>0, matching the CPU
-    // guard). The snapshot is taken AFTER the zero-vacuum write (the CPU order).
-    if (do_advect) {
-        const double dt_adv = (double)gas_advection_rate * (double)dt;
-        const int32_t dt_adv_q = quantize(dt_adv);
-        cuda_check(cudaMemcpy(d_src, d_temp, nb, cudaMemcpyDeviceToDevice), "D2D src");
-        temp_advect<<<grid, block>>>(d_temp, d_src, d_wx, d_wy, d_ts, d_vac,
-                                     dt_adv_q, h, w);
-        cuda_check(cudaGetLastError(), "advect launch");
-    }
+    // (Pass 0b — gas-T SL advection — RETIRED at P-E1; see the file header.)
 
-    // Pass 1: unified convert (in-place on d_temp; rail counter -> d_hits).
+    // Pass 1: unified convert (in-place on d_temp; rail counter -> d_hits;
+    // P-E2b's attenuation-drop energy sum -> d_cnt[C_DEP_DROP]).
     temp_convert_unified<<<grid, block>>>(d_temp, d_heat, d_his, d_ts, d_vac,
                                           d_nsrc, d_radnet, recip_cv, n_floor_q,
-                                          t_max_phys_q, d_hits, d_low_hits, n);
+                                          t_max_phys_q, d_hits, d_low_hits,
+                                          d_cnt, n);
     cuda_check(cudaGetLastError(), "convert launch");
 
     // Pass 2: conduct (d_temp -> d_temp_new), then copy back (the CPU swap).
-    temp_conduct<<<grid, block>>>(d_temp, d_temp_new, d_fs, no_face, h, w);
+    temp_conduct<<<grid, block>>>(d_temp, d_temp_new, d_fs, d_cap_used,
+                                  d_cap_real, d_cnt, no_face, h, w);
     cuda_check(cudaGetLastError(), "conduct launch");
     cuda_check(cudaMemcpy(d_temp, d_temp_new, nb, cudaMemcpyDeviceToDevice), "D2D swap");
 
     // Pass 3: cool (in-place on d_temp).
     temp_cool<<<grid, block>>>(d_temp, d_ts, d_vac, d_atm, d_csg,
+                               d_cap_real, d_cnt,
                                cool_shift, vac_offset, cool_shift_floor,
                                thresh_q, h, w);
     cuda_check(cudaGetLastError(), "cool launch");
@@ -537,6 +534,17 @@ int64_t temperature_step(
     cuda_check(cudaMemcpy(&low_hits, d_low_hits, sizeof(unsigned long long),
                           cudaMemcpyDeviceToHost), "D2H low_hits");
     if (low_rail_hits_out) *low_rail_hits_out += (int64_t)low_hits;
+    // P-E2a: fold the 6-slot energy block into the caller's accumulators.
+    // Two's-complement round-trip through unsigned long long is exact.
+    {
+        unsigned long long cnt_h[C_SLOTS] = {0, 0, 0, 0, 0, 0, 0};
+        cuda_check(cudaMemcpy(cnt_h, d_cnt, C_SLOTS * sizeof(unsigned long long),
+                              cudaMemcpyDeviceToHost), "D2H cnt");
+        if (energy_counters_out) {
+            for (int k = 0; k < C_SLOTS; ++k)
+                energy_counters_out[k] += (int64_t)cnt_h[k];
+        }
+    }
     cuda_check(cudaMemcpy(temperature, d_temp, nb, cudaMemcpyDeviceToHost), "D2H temp");
 
     cudaFree(d_temp);
@@ -549,10 +557,10 @@ int64_t temperature_step(
     cudaFree(d_vac);
     cudaFree(d_hits);
     cudaFree(d_low_hits);
+    cudaFree(d_cap_used);
+    cudaFree(d_cap_real);
+    cudaFree(d_cnt);
     if (d_nbulk) cudaFree(d_nbulk);
-    if (d_src) cudaFree(d_src);
-    if (d_wx) cudaFree(d_wx);
-    if (d_wy) cudaFree(d_wy);
     if (d_amb) cudaFree(d_amb);
     if (d_tsol) cudaFree(d_tsol);
     if (d_csg) cudaFree(d_csg);

@@ -101,24 +101,40 @@ def _build_face_shift(solid, is_vacuum, shift=3):
     return fs
 
 
+# P-E2a/P-E2b: the SEVEN energy counters the conduction rewrite (P-E2a) and
+# the Pass-1 attenuation drop (P-E2b) are gated on, in the pinned slot order
+# of cuda_temperature.h / the C_* enum / the CPU field order.
+E_COUNTERS = ("e_cond_trunc_sum", "e_cond_cap_sum", "cond_limit_hits",
+              "e_cool_sum", "e_vac_wipe_sum", "e_ring_pin_sum",
+              "e_deposit_drop_sum")
+
+
 def _run_pair(solver, temperature, heat, his, fs, solid, is_vacuum,
               atmosphere, n_bulk, wind_x, wind_y, dt):
     """Run CPU reference + GPU kernel on identical copies; return
-    (t_cpu, hits_cpu, t_gpu, hits_gpu)."""
+    (t_cpu, cnt_cpu, t_gpu, cnt_gpu) where cnt is
+    (t_max_phys_hits,) + the seven P-E2a/P-E2b energy counters, all per-call."""
     t_cpu = np.ascontiguousarray(temperature.copy())
-    c0 = int(solver.t_max_phys_hits)
+    c0 = (int(solver.t_max_phys_hits),) + tuple(
+        int(getattr(solver, nm)) for nm in E_COUNTERS)
     solver.step(t_cpu, heat, his, fs, solid, is_vacuum, atmosphere,
                 wind_x=wind_x, wind_y=wind_y, dt=dt, n_bulk=n_bulk)
-    hits_cpu = int(solver.t_max_phys_hits) - c0
+    c1 = (int(solver.t_max_phys_hits),) + tuple(
+        int(getattr(solver, nm)) for nm in E_COUNTERS)
+    cnt_cpu = tuple(b - a for a, b in zip(c0, c1))
 
     t_gpu = np.ascontiguousarray(temperature.copy())
-    hits_gpu = int(bp.cuda_temperature_step(
+    # P-E2a/P-E2b: the isolated GPU entry returns (hits, *energy_counters).
+    # NOT this file's sole caller — cuda_thermal_mass_check.py and
+    # cuda_cool_shift_check.py also call it (P-E2a as-built §8.1) and are
+    # updated in lockstep whenever this tuple grows.
+    cnt_gpu = tuple(int(v) for v in bp.cuda_temperature_step(
         t_gpu, heat, his, fs, solid, is_vacuum, atmosphere,
         n_bulk=n_bulk, wind_x=wind_x, wind_y=wind_y, dt=dt, **DIALS))
-    return t_cpu, hits_cpu, t_gpu, hits_gpu
+    return t_cpu, cnt_cpu, t_gpu, cnt_gpu
 
 
-def _compare(tag, t_cpu, hits_cpu, t_gpu, hits_gpu):
+def _compare(tag, t_cpu, cnt_cpu, t_gpu, cnt_gpu):
     ok = True
     if not np.array_equal(t_cpu, t_gpu):
         ok = False
@@ -126,9 +142,11 @@ def _compare(tag, t_cpu, hits_cpu, t_gpu, hits_gpu):
         idx = int(np.argmax(t_cpu != t_gpu))
         print(f"  {tag}: temperature {mism} MISMATCH (first @ {idx}: "
               f"cpu={t_cpu.flat[idx]} gpu={t_gpu.flat[idx]})")
-    if hits_cpu != hits_gpu:
-        ok = False
-        print(f"  {tag}: t_max_phys hits mismatch cpu={hits_cpu} gpu={hits_gpu}")
+    names = ("t_max_phys_hits",) + E_COUNTERS
+    for nm, a, b in zip(names, cnt_cpu, cnt_gpu):
+        if a != b:
+            ok = False
+            print(f"  {tag}: {nm} mismatch cpu={a} gpu={b}")
     return ok
 
 
@@ -238,9 +256,10 @@ def part1_isolated() -> bool:
         solver, f["temperature"], f["heat"], f["his"], f["fs"], f["solid"],
         f["is_vacuum"], f["atmosphere"], f["n_bulk"], f["wind_x"], f["wind_y"], f["dt"])
     ok &= _compare("rail_forcer", t_cpu, hc, t_gpu, hg)
-    total_hits += hc
+    total_hits += hc[0]
+    e_touched = [abs(v) for v in hc[1:]]
     n_cfg += 1
-    if hc < expect_hits:
+    if hc[0] < expect_hits:
         ok = False
         print(f"  rail_forcer: T_MAX_PHYS rail under-engaged "
               f"(cpu hits={hc}, expected >= {expect_hits})")
@@ -261,15 +280,31 @@ def part1_isolated() -> bool:
                         fld["n_bulk"], fld["wind_x"], fld["wind_y"], fld["dt"])
                     tag = f"{h}x{w}/{kind}/thin={thin}/wind={wind}"
                     ok &= _compare(tag, t_cpu, hc, t_gpu, hg)
-                    total_hits += hc
+                    total_hits += hc[0]
+                    e_touched = [a + abs(b) for a, b in zip(e_touched, hc[1:])]
                     n_cfg += 1
 
     if total_hits == 0:
         ok = False
         print("  COVERAGE HOLE: the T_MAX_PHYS rail never engaged in Part 1")
+    # P-E2a: a counter that is 0 on every config proves nothing when compared.
+    # Conduction's truncation, the capacity floor (thin-gas configs), the
+    # cooling channel and the vacuum wipe must all be non-trivially exercised.
+    for nm, tot in zip(E_COUNTERS, e_touched):
+        if nm == "cond_limit_hits":
+            if tot != 0:
+                ok = False
+                print(f"  the per-face limiter ENGAGED ({tot}) at shipped shifts")
+            continue
+        if nm == "e_ring_pin_sum":
+            continue          # no ambient-ring mask in this isolated harness
+        if tot == 0:
+            ok = False
+            print(f"  COVERAGE HOLE: {nm} stayed 0 across all {n_cfg} configs")
     if ok:
         print(f"  all {n_cfg} configs bit-identical on `temperature` + rail hits "
-              f"(total rail engagements: {total_hits}).")
+              f"+ the seven P-E2a/P-E2b energy counters (total rail engagements: "
+              f"{total_hits}; |counters| {dict(zip(E_COUNTERS, e_touched))}).")
     return ok
 
 
@@ -318,7 +353,7 @@ def part2_trajectory() -> bool:
             atmosphere, n_bulk, None, None, 0.0)
         if not _compare(f"tick {tick}", t_cpu, hc, t_gpu, hg):
             bad += 1
-        total_hits += hc
+        total_hits += hc[0]
         max_T = max(max_T, int(np.abs(t_cpu).max()))
         # conduction must have spread heat off the deposit cells at least once.
         if int((t_cpu[17, 19] != 0)) or int((t_cpu[23, 20] != 0)):
@@ -343,6 +378,7 @@ def part2_trajectory() -> bool:
         print(f"  scenario too tame: peak |T| {max_T} counts too low")
     if ok:
         print(f"  {n_ticks} ticks bit-identical on `temperature` + rail hits "
+              f"+ the seven P-E2a/P-E2b energy counters "
               f"(total rail engagements {total_hits}, peak |T| "
               f"{max_T / FP_ONE:.0f} K-rel).")
     return ok

@@ -157,17 +157,59 @@ class _Masks:
         self.n2_idx = int(gmap.gases.name_to_id["inert_n2"])
 
 
+# P-E0 (energy-books §2.5): these two are PER-TICK deltas (reset at every
+# EOSSolver.step entry), unlike the cumulative hit counters — the series
+# code below must read them raw, never as a diff of consecutive reads.
+# P-E1 (energy-books §2.1.5/§2.5) adds the transport law's one-way guard terms
+# and the active-flux telemetry §7's truncation bound is scaled by. All five
+# are PER-TICK too (same reset-at-step()-entry idiom), so they belong in this
+# tuple: the run totals below accumulate them instead of diffing them.
+PER_TICK_COUNTERS = ("eos.eth_transport_delta", "eos.eth_compression_delta",
+                     "eos.e_ts_residual", "eos.e_wipe_sum", "eos.e_floor_sum",
+                     "eos.n_active_flux", "eos.n_bulk_active_sum",
+                     # P-E3 (energy-books §2.8): the interior-drag oracle,
+                     # the SAME per-tick reset idiom (not P-E2a's accumulate).
+                     "eos.ke_drag_removed", "eos.e_drag_deposit",
+                     "eos.e_drag_drop_sum", "eos.e_drag_rail_clipped")
+
+
 def counters(runner):
     out = {}
-    for holder, names in (
-            (runner.eos, ("u_clamp_hits", "u_max_hits", "work_clamp_hits",
-                          "energy_floor_hits", "t_max_phys_hits")),
-            (runner.combustion, ("heat_floor_hits",)),
+    # (holder, prefix, names). P-E2a added the third holder: the temperature
+    # solver's own energy books — conduction's two counted residuals plus the
+    # three SIGNED boundary channels (design §2.3, round-1 finding L3-6). These
+    # are CUMULATIVE (the `t_max_phys_hits` idiom of that class), so they are
+    # deliberately NOT in PER_TICK_COUNTERS: the series code diffs them.
+    for holder, prefix, names in (
+            (runner.eos, "eos.",
+             ("u_clamp_hits", "u_max_hits", "work_clamp_hits",
+              "energy_floor_hits", "t_max_phys_hits",
+              "eth_transport_delta", "eth_compression_delta",
+              # P-E1: rule (d) destruction, the N_EPS wipe, the
+              # T_MIN creator, and the active-flux pair.
+              "e_ts_residual", "e_wipe_sum", "e_floor_sum",
+              "n_active_flux", "n_bulk_active_sum",
+              # P-E3 (design §2.8): the interior-drag oracle.
+              "ke_drag_removed", "e_drag_deposit",
+              "e_drag_drop_sum", "e_drag_rail_clipped")),
+            (runner.combustion, "comb.",
+             # P-E2b: e_deposit_drop_sum is heat_floor_hits' energy-sum twin
+             # (design §2.2/§2.5) — the combustion floor's destroyed ΔE.
+             ("heat_floor_hits", "e_deposit_drop_sum")),
+            (runner.temperature, "temp.",
+             # P-E2a: conduction's endpoint-truncation and capacity-floor
+             # residuals + the limiter's engagement count; then Pass 3 /
+             # sky, the breach wipe and the ambient-ring pin — all three
+             # SIGNED, all three named creators as well as sinks.
+             # P-E2b adds e_deposit_drop_sum: the Pass-1 attenuation-drop
+             # energy sum (L3-7) — same accumulate idiom as the P-E2a six.
+             ("e_cond_trunc_sum", "e_cond_cap_sum", "cond_limit_hits",
+              "e_cool_sum", "e_vac_wipe_sum", "e_ring_pin_sum",
+              "t_max_phys_hits", "t_low_rail_hits", "e_deposit_drop_sum")),
     ):
         for nm in names:
             try:
-                out["eos." + nm if holder is runner.eos else "comb." + nm] = \
-                    int(getattr(holder, nm))
+                out[prefix + nm] = int(getattr(holder, nm))
             except Exception:
                 pass
     return out
@@ -256,7 +298,12 @@ def run_ledger(ticks=4800, damp=0.0, dials=None, keep_series=True):
         series = {"tick": [], "ke": [], "ke_probe": [], "eth_gas": [],
                   "t_obj": [], "n_o2": [], "n_bulk": [], "n_smoke": [],
                   "p_sum": [], "t_min_gas": [], "umax": [],
-                  "mom_abs": [], "fire_I": []}
+                  "mom_abs": [], "fire_I": [],
+                  # P-E0 pocket telemetry (design §2.3): the flat index of the
+                  # gas-T argmin cell and the bulk N sitting there — the
+                  # window-pocket N the trust-band decision reads.
+                  "t_min_cell": [], "n_at_tmin": []}
+        eth_totals = {c: 0 for c in PER_TICK_COUNTERS}
         pass_series = {p: {"ke": [], "eth_gas": [], "mom_abs": [],
                            "sum_ux": [], "sum_uy": []} for p in PASSES}
         counter_series = []
@@ -296,6 +343,10 @@ def run_ledger(ticks=4800, damp=0.0, dials=None, keep_series=True):
                     for q in pass_series[p]:
                         pass_series[p][q].append(d.get(q, 0))
 
+            cnow = counters(runner)
+            for c in PER_TICK_COUNTERS:      # per-tick values: accumulate
+                if c in cnow:
+                    eth_totals[c] += cnow[c]
             if keep_series:
                 series["tick"].append(k)
                 for q in ("ke", "ke_probe", "eth_gas", "t_obj", "n_o2",
@@ -303,9 +354,18 @@ def run_ledger(ticks=4800, damp=0.0, dials=None, keep_series=True):
                           "t_min_gas", "umax", "mom_abs"):
                     series[q].append(tick_state[q])
                 series["fire_I"].append(int(gmap.fire[fy, fx]) / FP_ONE)
-                cnow = counters(runner)
+                # P-E0 pocket telemetry: argmin-T gas cell + its bulk N.
+                t_masked = np.where(masks.gas_open, gmap.temperature,
+                                    np.int32(np.iinfo(np.int32).max))
+                j = int(np.argmin(t_masked))
+                nb_j = (int(gmap.gas[masks.o2_idx].flat[j])
+                        + int(gmap.gas[masks.n2_idx].flat[j]))
+                series["t_min_cell"].append(j)
+                series["n_at_tmin"].append(nb_j / FP_ONE)
                 counter_series.append(
-                    {c: cnow[c] - prev_counters.get(c, 0) for c in cnow})
+                    {c: (cnow[c] if c in PER_TICK_COUNTERS
+                         else cnow[c] - prev_counters.get(c, 0))
+                     for c in cnow})
                 prev_counters = cnow
 
         return {
@@ -314,6 +374,7 @@ def run_ledger(ticks=4800, damp=0.0, dials=None, keep_series=True):
             "counter_series": counter_series,
             "amp_series": amp_series,
             "final_counters": counters(runner),
+            "eth_totals": eth_totals,   # P-E0: run totals of the per-tick deltas
             "n_open": int(masks.gas_open.sum()),
         }
     finally:
@@ -348,6 +409,7 @@ def main(argv=None):
             continue
         print(f"  {p:10s} " + "  ".join(f"{t.get(q, 0):>12.4g}" for q in qs))
     print(f"\n  final counters: {out['final_counters']}")
+    print(f"  eth bracket totals (raw Q16.16^2): {out['eth_totals']}")
     amp = out["amp_series"]
     if amp:
         mx = max(r[1] for r in amp)
@@ -362,7 +424,8 @@ def main(argv=None):
             amp=np.asarray(out["amp_series"], dtype=np.float64),
             counters=json.dumps(out["counter_series"]),
             per_pass_totals=json.dumps(out["per_pass_totals"]),
-            final_counters=json.dumps(out["final_counters"]))
+            final_counters=json.dumps(out["final_counters"]),
+            eth_totals=json.dumps(out["eth_totals"]))
         print(f"  series -> {a.out}")
     return 0
 

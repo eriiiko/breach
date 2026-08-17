@@ -5,6 +5,7 @@
 #include "temperature_solver.h"
 #include "raycaster.h"     // HEAT_SCALE, heat_saturating_add (shared Q16.16 domain)
 #include "fixed_point.h"   // S3c: quantize() for the o2_vacuum_thresh integer compare
+#include <algorithm>        // P-E2b: std::clamp on the wide deposit-divide result
 
 // Direction order for the per-tile face_shift cache (MUST match the Python
 // bake in GameMap: index 0=N, 1=S, 2=E, 3=W).
@@ -18,118 +19,20 @@ namespace {
     constexpr int DX[4] = {  0,  0, +1, -1 };
 
     // ------------------------------------------------------------------
-    // P2 — gas-T semi-Lagrangian advection helper (docs/eos_refactor_design.md
-    // §4, §8 patch P2). Same PATTERN as smoke_dynamics.cpp's
-    // `backtrace_sample_q` (the S2b SLint scheme: integer DDA wall-clip march +
-    // integer bilinear sample + Newton-reciprocal renorm) — deliberately
-    // NOT the same function (smoke_dynamics.cpp is untouched, out of P2's
-    // scope), specialized to the temperature solver's own masks. A breach
-    // (is_vacuum && !thermal_solid) is a VENT target, not a wall — the march
-    // may reach it and the bilinear sample reads 0 there (heat drains with the
-    // venting gas), matching smoke's is_breach carve-out exactly.
-    //
-    // THERMAL-MASS AXIS (docs/thermal_mass_axis_design_2026-07-25.md §2.2 +
-    // build addendum 2026-07-30 §3): the occluder here is the THERMAL medium
-    // mask `thermal_solid` (thermal_mass > 0), NOT the flow mask `solid`
-    // (permeability <= 0). P2 of the EOS refactor wrote "a partial-permeability
-    // tile like furniture is simply non-solid open-air" — that is exactly the
-    // bug this patch fixes: gas-T must no longer advect ACROSS a crate tile,
-    // because a crate holds an OBJECT temperature. Flow is untouched (gas and
-    // water still seep past at permeability 0.5); only the thermal medium
-    // moved. On any furniture-free map thermal_solid == solid elementwise, so
-    // this is byte-identical there (addendum D4).
-    using namespace fixedpoint;
-
-    constexpr int32_t GAS_WSUM_FLOOR_Q = FP_ONE >> 8;    // mirrors smoke's WSUM_FLOOR_Q
-    constexpr int32_t GAS_WSUM_EPS_Q   = FP_ONE >> 14;   // mirrors smoke's WSUM_EPS_Q
-
-    // MEDIUM-TEST SITE 3/6 (advection ray-walk occluder).
-    inline bool gas_wall_at(int y, int x, const bool* thermal_solid, int h, int w) {
-        if (y < 0 || y >= h || x < 0 || x >= w) return true;   // outside == wall
-        return thermal_solid[y * w + x];
-    }
-
-    // Ported (pattern, not code) from smoke_dynamics.cpp::backtrace_sample_q.
-    // See that function's header comment for the derivation of each piece
-    // (DDA march / tile-center test / bilinear corner weights / Newton
-    // renorm); this is the SAME arithmetic, re-typed against `thermal_solid`/
-    // `is_vacuum` only.
-    int32_t gas_backtrace_sample_q(
-            const int32_t* src, int x, int y, int32_t bx_q, int32_t by_q,
-            const bool* thermal_solid, const bool* is_vacuum, int h, int w) {
-        int64_t px_q = ((int64_t)x << FP_SHIFT) + bx_q;
-        int64_t py_q = ((int64_t)y << FP_SHIFT) + by_q;
-
-        // ---- Wall-clip march (DDA, no sqrt) ----
-        const int32_t abx = bx_q >= 0 ? bx_q : -bx_q;
-        const int32_t aby = by_q >= 0 ? by_q : -by_q;
-        const int32_t amax = abx >= aby ? abx : aby;
-        int n_steps = amax >> FP_SHIFT;
-        if (amax & (FP_ONE - 1)) n_steps += 1;               // ceil
-        if (n_steps > 0) {
-            auto floordiv = [](int32_t a, int b) -> int32_t {
-                return (a >= 0) ? (a / b) : -(((-(int64_t)a) + b - 1) / b);
-            };
-            const int32_t sx_q = floordiv(bx_q, n_steps);
-            const int32_t sy_q = floordiv(by_q, n_steps);
-            int64_t cx_q = (int64_t)x << FP_SHIFT;
-            int64_t cy_q = (int64_t)y << FP_SHIFT;
-            for (int s = 0; s < n_steps; ++s) {
-                const int64_t nxp_q = cx_q + sx_q;
-                const int64_t nyp_q = cy_q + sy_q;
-                const int ti = (int)((nxp_q + (FP_ONE >> 1)) >> FP_SHIFT);
-                const int tj = (int)((nyp_q + (FP_ONE >> 1)) >> FP_SHIFT);
-                if (gas_wall_at(tj, ti, thermal_solid, h, w)) break;
-                cx_q = nxp_q;
-                cy_q = nyp_q;
-                if (tj >= 0 && tj < h && ti >= 0 && ti < w && is_vacuum[tj * w + ti])
-                    break;                                    // reached the breach
-            }
-            px_q = cx_q;
-            py_q = cy_q;
-        }
-
-        // ---- Clamp in-bounds (Q16.16) ----
-        const int64_t hi_x = (int64_t)(w - 1) << FP_SHIFT;
-        const int64_t hi_y = (int64_t)(h - 1) << FP_SHIFT;
-        if (px_q < 0) px_q = 0; else if (px_q > hi_x) px_q = hi_x;
-        if (py_q < 0) py_q = 0; else if (py_q > hi_y) py_q = hi_y;
-
-        // ---- Integer bilinear sample ----
-        const int x0 = (int)(px_q >> FP_SHIFT);
-        const int y0 = (int)(py_q >> FP_SHIFT);
-        const int x1 = (x0 + 1 <= w - 1) ? x0 + 1 : w - 1;
-        const int y1 = (y0 + 1 <= h - 1) ? y0 + 1 : h - 1;
-        const int32_t fx_q = (int32_t)(px_q - ((int64_t)x0 << FP_SHIFT));
-        const int32_t fy_q = (int32_t)(py_q - ((int64_t)y0 << FP_SHIFT));
-        const int32_t ifx_q = FP_ONE - fx_q;
-        const int32_t ify_q = FP_ONE - fy_q;
-        const int32_t w00 = mul_q16(ifx_q, ify_q);
-        const int32_t w10 = mul_q16(fx_q,  ify_q);
-        const int32_t w01 = mul_q16(ifx_q, fy_q);
-        const int32_t w11 = mul_q16(fx_q,  fy_q);
-        const int cyx[4][2] = { {y0, x0}, {y0, x1}, {y1, x0}, {y1, x1} };
-        const int32_t cw[4] = { w00, w10, w01, w11 };
-
-        int64_t acc = 0;
-        int32_t wsum_q = 0;
-        for (int k = 0; k < 4; ++k) {
-            const int cy_ = cyx[k][0];
-            const int cx_ = cyx[k][1];
-            const int j = cy_ * w + cx_;
-            // MEDIUM-TEST SITE 4/6 (sealed corner in the advection gather).
-            if (thermal_solid[j]) continue;                     // sealed corner
-            const int32_t val_q = is_vacuum[j] ? 0 : src[j];    // breach corner == 0
-            acc += mul_wide(cw[k], val_q);
-            wsum_q += cw[k];
-        }
-        if (wsum_q <= GAS_WSUM_EPS_Q) return src[y * w + x];    // negligible -> keep self
-
-        const int32_t wsum_clamped = (wsum_q < GAS_WSUM_FLOOR_Q) ? GAS_WSUM_FLOOR_Q : wsum_q;
-        const int32_t recip_q = reciprocal_q16(wsum_clamped);
-        const int32_t acc_q = narrow(acc);
-        return mul_q16(acc_q, recip_q);
-    }
+    // P2 gas-T semi-Lagrangian advection helper (`gas_wall_at` +
+    // `gas_backtrace_sample_q`, ~110 lines) — DELETED at P-E1 (energy-books
+    // arc, design §2.1.1; round-1 finding L3-5). It served ONE caller: the
+    // Pass-0b gas-T advection retired in step() below. That pass was the
+    // engine's second semi-Lagrangian T-COPIER, i.e. the same free-energy
+    // channel the EOS one was, dormant only because `step_tail` happens to
+    // pass null winds. Gas temperature is now transported once, and
+    // conservatively, by the EOS energy books. The MEDIUM-TEST SITE 2/6, 3/6
+    // and 4/6 marks lived here and retire with it (sites 1/6, 5/6 and 6/6 —
+    // the vacuum wipe, the Pass-1 medium branch and the Pass-2 conduction
+    // medium — are untouched and still marked below). Deleted rather than
+    // left dead so no future plumbing change can quietly re-adopt it; the
+    // CUDA twin (`cuda_temperature.cu` temp_advect) is deleted identically.
+    // ------------------------------------------------------------------
 }
 
 void TemperatureSolver::step(
@@ -169,6 +72,32 @@ void TemperatureSolver::step(
     // D4), so the fallback is not a second code path in practice.
     const bool* ts = (thermal_solid != nullptr) ? thermal_solid : solid;
 
+    // ---- P-E2a: the per-cell CAPACITY planes (design §2.3) -----------------
+    // Built ONCE per step, ahead of every pass, because they depend only on
+    // FROZEN inputs (the medium mask, N, and the two dials) — never on T. Three
+    // passes read them: Pass 0a prices its wipes, Pass 2 IS the energy law, and
+    // Pass 3 prices its cooling. `cap_used_` is the divisor of record;
+    // `cap_real_` is the unfloored truth the counters are denominated in.
+    //
+    // `n_floor_q` is hoisted out of the Pass-1 block it used to live in so both
+    // the deposit divide and the conduction capacity read ONE quantization of
+    // the SAME dial (design §2.3: "use the same n_floor_heat dial the deposits
+    // use"). The value is P-E2b's to move, not this patch's.
+    // `c_v_q` is new: Pass 1 needs 1/c_v (a make_recip reciprocal), the capacity
+    // needs c_v itself as a Q16.16 MULTIPLIER. Both are the same load-time dial.
+    const int32_t n_floor_q = fixedpoint::quantize((double)n_floor_heat);
+    const int32_t c_v_q     = fixedpoint::quantize(
+        (c_v > 0.0f) ? (double)c_v : 1.0);
+    cap_used_.resize(n);
+    cap_real_.resize(n);
+    for (int i = 0; i < n; ++i) {
+        // The SAME N source Pass 1's deposit divides by: the real bulk sum when
+        // the engine supplies it, else the P2 atmosphere density proxy.
+        const int32_t n_raw = (n_bulk != nullptr) ? n_bulk[i] : atmosphere[i];
+        conduction::cell_capacity_q(ts[i], heat_inv_shift[i], n_raw, n_floor_q,
+                                    c_v_q, &cap_used_[i], &cap_real_[i]);
+    }
+
     // ---- Pass 0: gas-T zero-at-vacuum + semi-Lagrangian advection (P2, §4) ----
     // Structural invariant FIRST, unconditional: an OPEN (non-solid) vacuum
     // cell — a true breach — holds no gas, so it holds no gas-T either —
@@ -189,39 +118,44 @@ void TemperatureSolver::step(
         // BC (audit (b)): the ambient ring is an open (non-solid) boundary that
         // radiates to the T_amb sky — wiped to ΔT=0 exactly like a vacuum
         // breach. Branch-gated -> space maps byte-identical.
-        if ((is_vacuum[i] || (ambient_mode && is_ambient[i])) && !ts[i]) temperature[i] = 0;
-    }
-
-    // Advection: skipped as a clean no-op when dt<=0 or wind is unavailable —
-    // the Python direct-binding back-compat path (bindings.cpp) takes this
-    // branch, so the shipped solid-only unit tests (test_temperature_*.py)
-    // exercise EXACTLY the pre-P2 passes below, unchanged.
-    if (dt > 0.0f && wind_x != nullptr && wind_y != nullptr) {
-        using namespace fixedpoint;
-        gas_scratch_.resize(n);
-        int32_t* src = gas_scratch_.data();
-        for (int i = 0; i < n; ++i) src[i] = temperature[i];
-
-        // Same dt_adv = rate * dt convention as SmokeDynamics::step, so gas-T
-        // rides the wind at the same visual scale smoke does (§9 TUNING DIAL;
-        // P3 replaces `wind` with a real velocity and this rate goes away).
-        const double dt_adv = (double)gas_advection_rate * (double)dt;
-        const int32_t dt_adv_q = quantize(dt_adv);
-
-        for (int y = 0; y < h; ++y) {
-            for (int x = 0; x < w; ++x) {
-                const int i = y * w + x;
-                // MEDIUM-TEST SITE 2/6: the gas-advection mask is the
-                // complement of the THERMAL medium (a crate is not open air
-                // thermally, even though gas flows through it).
-                if (ts[i] || is_vacuum[i]) continue;      // open-air mask only
-                const int32_t bx_q = -mul_q16(wind_x[i], dt_adv_q);
-                const int32_t by_q = -mul_q16(wind_y[i], dt_adv_q);
-                temperature[i] = gas_backtrace_sample_q(
-                    src, x, y, bx_q, by_q, ts, is_vacuum, h, w);
+        if ((is_vacuum[i] || (ambient_mode && is_ambient[i])) && !ts[i]) {
+            // P-E2a (L3-6): the LAW is unchanged — this is instrumentation.
+            // Both wipes are SIGNED channels: they destroy the energy a breach
+            // vents / the ring exports, and they CREATE energy whenever they
+            // pin a sub-ambient (T < 0) cell up to 0. A vacuum cell that is
+            // also flagged ambient is counted as vacuum (the test order below
+            // matches the condition's own order — pinned so the two backends
+            // and the ledger attribute it identically).
+            const int32_t t_old = temperature[i];
+            if (t_old != 0) {
+                const int64_t de = -(int64_t)t_old * cap_real_[i];
+                if (is_vacuum[i]) e_vac_wipe_sum += de;
+                else              e_ring_pin_sum += de;
             }
+            temperature[i] = 0;
         }
     }
+
+    // ---- Pass 0b: gas-T semi-Lagrangian advection — RETIRED (P-E1) ---------
+    // Energy-books arc, design §2.1.1 (round-1 finding L3-5). This was the
+    // SECOND semi-Lagrangian T-copier in the engine, and the same mint as the
+    // EOS one: a T *copy* moves temperature onto mass it never paid for. It was
+    // dormant in the live engine only by plumbing accident — `step_tail` passes
+    // null winds (`physics_engine.cpp`), so wind was never supplied — and the
+    // design's ruling is that "one plumbing change must not silently re-open
+    // the mint". Gas temperature is now transported ONCE, conservatively, by
+    // the EOS energy books (`bulk_flux_energy_transport_cached`).
+    //
+    // Retired by DELETION rather than by an assert: the CUDA twin
+    // (`cuda_temperature.cu`) is retired identically, so both backends agree,
+    // and a caller that still passes wind (the pybind back-compat surface keeps
+    // the optional wind_x/wind_y args) now simply gets no advection instead of
+    // an exception. `gas_advection_rate` / `gas_scratch_` are kept as inert
+    // config/ABI surface (the P-T0 `inert_n2_idx` idiom); the shipped
+    // solid-only unit tests exercised the wind-free branch and are unchanged.
+    (void)wind_x;
+    (void)wind_y;
+    (void)dt;
 
     // ---- Pass 1: heat -> temperature conversion (proposal §1.2; P2 §4.3) ----
     // Solid tiles: UNCHANGED bit-shift path (bit-identical to pre-P2 — the
@@ -245,7 +179,8 @@ void TemperatureSolver::step(
         using namespace fixedpoint;
         const double c_v_safe = (c_v > 0.0f) ? (double)c_v : 1.0;
         const int64_t recip_cv = make_recip(c_v_safe);            // 1/c_v, once per step
-        const int32_t n_floor_q = quantize((double)n_floor_heat); // independent floor (§4.3)
+        // (`n_floor_q` — the §4.3 deposit floor — is hoisted to the top of
+        //  step() at P-E2a and shared with the conduction capacity build.)
         // v2.4 T_MAX_PHYS rail (temperature_solver.h; full rationale in
         // eos_solver.h): Pass 1 is a DEPOSIT path — clamp at the physical
         // ceiling (counted) so an N-starved reciprocal or a stacked
@@ -363,11 +298,28 @@ void TemperatureSolver::step(
                 const int32_t e_abs = (N_raw >= FP_ONE)
                     ? deposit                              // ambient+: exact old path
                     : mul_q16(deposit, (q16)N_raw);        // thin gas: ∝ density
+                if (N_raw < FP_ONE) {
+                    // P-E2b / L3-7: the (1-N)*deposit attenuation drop below
+                    // ambient density is PHYSICAL and stays — it never had a
+                    // counter. Same currency as `deposit`/`heat`. N_raw<FP_ONE
+                    // here so deposit >= e_abs (one-way destruction).
+                    e_deposit_drop_sum += (int64_t)deposit - (int64_t)e_abs;
+                }
                 int32_t N_q = N_raw;
                 if (N_q < n_floor_q) N_q = n_floor_q;    // floor independent of anything else (N_FLOOR_HEAT)
                 const int32_t recip_N_q = reciprocal_q16(N_q);        // 1/N, per-tile Newton recip
-                const int32_t e_over_n  = mul_q16(e_abs, recip_N_q);  // E_abs/N, Q16.16
-                const int32_t dT = recip_mul(e_over_n, recip_cv);     // (E_abs/N)/c_v, Q16.16
+                // P-E2b: the WIDE E_abs/(N*c_v) chain (int64, no premature
+                // q16 narrow — fixed_point.h's deposit_dT_wide_q16 header
+                // comment: at n_floor_heat as low as 0.01-0.001, E_abs/floor
+                // alone can exceed q16's ~32768 ceiling for a routine
+                // deposit). Clamp to a safe non-negative int32 range BEFORE
+                // narrowing for heat_saturating_add; an honestly-huge
+                // deposit still hits the T_MAX_PHYS rail right below,
+                // through a value that was never corrupted on the way there.
+                const int64_t dT_wide =
+                    deposit_dT_wide_q16(e_abs, recip_N_q, recip_cv);
+                const int32_t dT =
+                    (int32_t)std::clamp<int64_t>(dT_wide, 0, INT32_MAX);
                 heat_saturating_add(&temperature[i], dT);
                 if (temperature[i] > t_max_phys_q) {
                     temperature[i] = t_max_phys_q; ++t_max_phys_hits;
@@ -379,21 +331,31 @@ void TemperatureSolver::step(
     // DEBUG probe (temporary): T after Pass 1 (heat -> temperature convert).
     if (dbg_probe_idx >= 0 && dbg_probe_idx < n) dbg_T_post_heat = temperature[dbg_probe_idx];
 
-    // ---- Pass 2: conduction relaxation (proposal §2.2) ----
+    // ---- Pass 2: conduction relaxation — ENERGY FORM (P-E2a, design §2.3) ----
     // Gather stencil, double-buffered so the whole pass reads the FROZEN
     // pre-conduction field and writes a fresh one (order-independent, no
-    // scatter, no atomics). For tile i with 4 neighbours n ∈ {N,S,E,W}:
+    // scatter, no atomics). For tile i with 4 neighbours j ∈ {N,S,E,W}:
     //
-    //     acc = Σ  (temp[n] - temp[i]) >> face_shift[i][dir]
-    //     temp_new[i] = temp[i] + acc
+    //     ΔE_i = Σ_faces  face_energy_q(T_i, T_j, C_i, C_j, s)
+    //     T_new[i] = T_i + floordiv_q(ΔE_i, C_i)
     //
-    // The DIFFERENCE is shifted, not the neighbour, so equal neighbours give
-    // EXACTLY 0 (no drift) and the flux is conservative-shaped. A NO_FACE face
-    // (grid edge or κ==0 either side) is skipped, so air (all NO_FACE) is a
-    // structural no-op: Σr == 0 -> temp_new == temp, an air tile at 0 stays
-    // bit-exactly 0. 64-bit accumulator avoids any intermediate overflow; the
-    // final write fits int32 because the result is a convex combination of the
-    // (already-int32) field values (§2.6 discrete maximum principle).
+    // The four constraints and the full rationale live in the header block;
+    // the two properties to keep in mind while reading this loop are:
+    //   (1) `face_energy_q` is EXACTLY antisymmetric under swapping the
+    //       endpoints, so the same face evaluated from j returns −ΔE. Nothing
+    //       here may make an endpoint-asymmetric choice: `s` is the MAX of the
+    //       two facing shifts (symmetric even if the bake were not), C_min is a
+    //       min (symmetric), the limiter acts on the magnitude (symmetric).
+    //   (2) with s ≥ SHIFT_MIN == 2 and C_min ≤ C_i, each face moves at most
+    //       ΔT = g/4, so the update remains a convex combination over the four
+    //       neighbours — the discrete maximum principle survives the change of
+    //       currency, up to the ≤1-LSB `floordiv_q` overshoot on a LOSING cell.
+    //
+    // A NO_FACE face (grid edge or κ==0 either side) is skipped from BOTH
+    // sides, so air-with-conductivity-0 stays a structural no-op and an air
+    // tile at 0 stays bit-exactly 0. The skip set is otherwise UNCHANGED from
+    // the old law: vacuum / ring / solid cells all still conduct exactly where
+    // they did — this patch changes the currency, not who participates.
     scratch_.resize(n);
     int32_t* temp_new = scratch_.data();
     const int NO_FACE = no_face;
@@ -402,22 +364,48 @@ void TemperatureSolver::step(
         for (int x = 0; x < w; ++x) {
             const int i = y * w + x;
             const int32_t* fs = &face_shift[i * 4];  // [N,S,E,W] for this tile
-            const int32_t ti = temperature[i];
-            int64_t acc = 0;
+            const int64_t ti = (int64_t)temperature[i];
+            const int64_t cap_i = cap_used_[i];
+            int64_t de = 0;
             for (int d = 0; d < 4; ++d) {
-                const int s = fs[d];
-                if (s == NO_FACE) continue;          // grid edge or κ==0 -> no face
+                const int s_i = fs[d];
+                if (s_i == NO_FACE) continue;        // grid edge or κ==0 -> no face
                 const int ny = y + DY[d];
                 const int nx = x + DX[d];
                 // NO_FACE already marks grid edges, so neighbours are in-bounds;
                 // guard anyway for robustness against a mis-baked cache.
                 if (ny < 0 || ny >= h || nx < 0 || nx >= w) continue;
-                const int32_t tn = temperature[ny * w + nx];
-                // Signed Q16.16 difference; arithmetic right shift == ÷2^s
-                // (rounds toward -inf, deterministic & identical cross-machine).
-                acc += (int64_t)(tn - ti) >> s;
+                const int j = ny * w + nx;
+                // The NEIGHBOUR's facing entry, read so the face is skipped and
+                // rated identically from both ends BY CONSTRUCTION. The shipped
+                // harmonic-mean table is symmetric, so `max` picks the common
+                // value and this is bit-identical to reading only our own side.
+                const int s_j = face_shift[j * 4 + conduction::opposite_dir(d)];
+                if (s_j == NO_FACE) continue;
+                const int s = (s_i > s_j) ? s_i : s_j;
+                de += conduction::face_energy_q(ti, (int64_t)temperature[j],
+                                                cap_i, cap_used_[j], s,
+                                                &cond_limit_hits);
             }
-            temp_new[i] = (int32_t)((int64_t)ti + acc);
+            if (de == 0) {                           // exact rest: equal neighbours
+                temp_new[i] = (int32_t)ti;
+                continue;
+            }
+            // Endpoint-local conversion (R2), through the SHARED floor-division
+            // helper so the residual is one-way DESTROYING in both signs — a
+            // truncation toward zero would MINT on cells losing energy, and
+            // both backends' `/` agree on that mint so only the ledger could
+            // see it (fixed_point.h floordiv_q's own header says this).
+            const int64_t dT = fixedpoint::floordiv_q(de, cap_i);
+            // R3: every residual counted, in ENERGY.
+            //  * trunc — what the endpoint divide dropped (≤ 0, always).
+            //  * cap   — what the capacity FLOOR (thin gas) or the overflow
+            //            CEILING implied: the cell moved ΔT through cap_used
+            //            while really owning cap_real, so the books gained
+            //            ΔT·(cap_real − cap_used) that the faces never moved.
+            e_cond_trunc_sum += dT * cap_i - de;
+            e_cond_cap_sum   += dT * (cap_real_[i] - cap_i);
+            temp_new[i] = (int32_t)(ti + dT);
         }
     }
 
@@ -521,6 +509,13 @@ void TemperatureSolver::step(
             // gives an exact resting state at ambient.
             const int32_t loss = (t < 0) ? -((-t) >> shift) : (t >> shift);
             temperature[i] = t - loss;
+            // P-E2a (L3-6): the LAW is unchanged — this is instrumentation.
+            // Pass 3 is a SIGNED channel, not a sink: it relaxes T toward 0
+            // from BOTH sides, so on a sub-ambient tile (t < 0, loss < 0) it
+            // CREATES energy. Naming it signed is the whole point of the
+            // finding — an "ambient cooling" counter that only ever went one
+            // way would hide the creator half of the same line of code.
+            e_cool_sum -= (int64_t)loss * cap_real_[i];
         }
     }
 

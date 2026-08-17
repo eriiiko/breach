@@ -38,6 +38,11 @@ namespace breach_cuda {
 // last substep, computed host-side after the D2H (review §2.6: digests stay
 // host-side in the per-call era).
 //
+// P-E1 (design §2.1.1) CONTRACT CHANGE: U-ONLY. `temperature` is never written
+// (it is the fused sampler's third slot, discarded) and the return is the
+// chained FNV over (wy, wx) alone — byte-for-byte the u-only CPU reference
+// twin, and NO LONGER == digest_advect.
+//
 // PERF NOTE (residency is S8): per-call H2D of 3 fields + masks + perm and a
 // D2H of the 3 fields; n_sub kernel launches + 3*n_sub D2D snapshot copies.
 // Deliberately unoptimized — P6's job is correctness + digest proof per
@@ -45,7 +50,7 @@ namespace breach_cuda {
 uint64_t eos_sl_advect(
     int32_t* wind_x,               // Q16.16 (h,w) — in/out (solver u.x)
     int32_t* wind_y,               // Q16.16 (h,w) — in/out (solver u.y)
-    int32_t* temperature,          // Q16.16 (h,w) — in/out (ΔT above ambient)
+    int32_t* temperature,          // Q16.16 (h,w) — P-E1: INPUT-ONLY src slot
     const bool* solid,
     const bool* is_vacuum,
     const float* dyn_permeability, // FLOAT (h,w) — cmask build only (<= 0 test)
@@ -75,39 +80,24 @@ void sl_cmask_build_device(const bool* d_solid, const bool* d_vacuum,
                            const float* d_perm, uint8_t* d_cmask, int n,
                            const bool* d_is_ambient = nullptr);
 
-// K0b (THERMAL-MASS AXIS, P-EOS) — the T-ONLY corner/march mask: a copy of
-// d_cmask with every thermal_solid tile forced to 0 (sealed/occluder). The
-// device twin of eos_solver.cpp's `tcmask_` loop. `d_cmask` itself is NEVER
-// modified — velocity, pressure and gas flow must stay identical (ruling §4
-// item 4), so the thermal medium diverges only in this second mask. The caller
-// launches this ONLY when eos_thermal_occludes() says the two masks can differ;
-// otherwise it passes nullptr for d_tcmask below and the T sample takes the
-// fused value, bit for bit as before.
-void sl_tcmask_build_device(const uint8_t* d_cmask, const bool* d_thermal_solid,
-                            uint8_t* d_tcmask, int n);
+// (K0b — `sl_tcmask_build_device`, the THERMAL-MASS-AXIS T-only occluder mask
+// — is DELETED at P-E1: its only consumer was the SL T *sample*, retired with
+// the `.t` slot. Design §2.1.1; the CPU twin's `tcmask_` went the same way.)
 
-// K1 — ONE fused advection substep: reads the frozen (src_vx, src_vy, src_t)
-// snapshot, writes wind/temperature in place (solid u zeroed, vacuum T := 0).
-// The caller owns the pre-substep D2D snapshot (the CPU's vx_src_/vy_src_/
-// t_src_ copies) and the substep loop.
-// BC: d_is_ambient (nullptr = space) forces ring T := 0 in the SL write, the
-// vacuum idiom (mirrors eos_solver.cpp's widened SL T ternary).
+// K1 — ONE advection substep: reads the frozen (src_vx, src_vy, src_t)
+// snapshot, writes wind in place (solid u zeroed). The caller owns the
+// pre-substep D2D snapshot (the CPU's vx_src_/vy_src_/t_src_ copies) and the
+// substep loop.
+// P-E1 (design §2.1.1): U-ONLY. The T write is retired — temperature rides the
+// conservative energy books (cuda_bulk_transport.cu), and the vacuum/ring
+// T := 0 wipe moved to the recovery kernel with it. `d_src_t` stays as the
+// fused sampler's third slot (its `.t` result is discarded, exactly as on the
+// CPU) so `.vx`/`.vy` remain bit-identical to pre-patch.
 void sl_advect3_device(int32_t* d_wind_x, int32_t* d_wind_y,
-                       int32_t* d_temperature,
                        const int32_t* d_src_vx, const int32_t* d_src_vy,
                        const int32_t* d_src_t,
-                       const bool* d_solid, const bool* d_vacuum,
-                       const uint8_t* d_cmask,
-                       int32_t dt_s_q, int h, int w,
-                       const bool* d_is_ambient = nullptr,
-                       // THERMAL-MASS AXIS, P-EOS: d_ts is the medium mask the T
-                       // write skips on — the device twin of the CPU's
-                       // `ts = thermal_solid ? thermal_solid : solid`, so the
-                       // caller passes d_solid on the legacy path and NOTHING is
-                       // allocated or copied for the fallback. d_tcmask is the
-                       // T-only occluder mask (nullptr => use the fused sample).
-                       const bool* d_ts = nullptr,
-                       const uint8_t* d_tcmask = nullptr);
+                       const bool* d_solid, const uint8_t* d_cmask,
+                       int32_t dt_s_q, int h, int w);
 
 // Backend selection (P6.2 gate wiring, the surviving-backend idiom). EOS
 // P6.5: now CONSUMED by the engine dispatch — PhysicsEngine::run_substeps

@@ -676,7 +676,7 @@ def cmd_compose(args):
         ("cool_shift_vacuum", "[physics.thermal] COOL_SHIFT_VACUUM=3", "hull radiate-to-space rate under the real energy path"),
         ("CFL_ADV / N_SUB_MAX", "[physics.eos]", "CFL_ADV=0.5 (pinned constraint), N_SUB_MAX=8 (re-pinned from 16 at the P3 gate)"),
         ("dyn_wave_absorb / absorb_strength", "[physics.eos] absorb_strength=8.0", "unit/material shockwave absorption; now also locally damps smoke-carrying wind near units (named P5 feel item)"),
-        ("trace_mass_scale / trace advection", "engine-owned, [physics] advection_rate now dead", "trace_mass_scale=0.02 (opacity not molar density); wind_diffusion_scale disabled pending this P5 feel pass"),
+        ("trace_mass_scale / trace advection", "engine-owned, [physics] advection_rate now dead", "trace_mass_scale RETIRED at P-T0 (energy-books arc, design §2.6 — the 0% ruling; traces left the Dalton sum entirely, was 0.02 opacity-not-molar-density); wind_diffusion_scale disabled pending this P5 feel pass"),
     ]
 
     html = _render_index_html(rows, cost_rows, agg, determinism, dials)

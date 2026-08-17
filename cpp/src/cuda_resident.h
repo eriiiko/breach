@@ -83,14 +83,18 @@ void smoke_launch_resident(
 
 // The whole per-tick TRACE-PLANE LOOP, device-resident (S8a Path B FLOOR item 3).
 // For each non-conservative gas plane: smoke_launch_resident (once per tick, on
-// the final corrected wind) + the decay->inert_N2 credit (a device kernel,
-// bit-identical to the CPU mul_q16 credit). Persistent scratch owned here (lap/
-// src, keyed by (h,w)); one cudaDeviceSynchronize at the end; NO per-plane
-// cudaMalloc/H2D/D2H. The all-zero-plane `.any()` skip is DROPPED — smoke_step
-// on an all-zero plane is an arithmetic no-op (the EOS P6.5 device precedent), so
-// processing every trace plane is bit-identical to the CPU skip. gas_conservative
-// / gas_diffusion / gas_decay are the small (n_gases,) HOST columns (control-flow
-// + the per-plane diffusion/decay scalars, exactly as run_substeps reads them).
+// the final corrected wind) + decay (a device kernel, bit-identical to the CPU
+// mul_q16 shrink). P-T0 (energy-books arc, design §2.6 — the trace 0% ruling):
+// the decay->inert_N2 credit this kernel used to pay is DELETED — decayed mass
+// simply VANISHES, same as the CPU twin (physics_engine.cpp's run_substeps
+// trace loop); `inert_n2_idx` stays a parameter for ABI/back-compat. Persistent
+// scratch owned here (lap/src, keyed by (h,w)); one cudaDeviceSynchronize at
+// the end; NO per-plane cudaMalloc/H2D/D2H. The all-zero-plane `.any()` skip is
+// DROPPED — smoke_step on an all-zero plane is an arithmetic no-op (the EOS
+// P6.5 device precedent), so processing every trace plane is bit-identical to
+// the CPU skip. gas_conservative / gas_diffusion / gas_decay are the small
+// (n_gases,) HOST columns (control-flow + the per-plane diffusion/decay
+// scalars, exactly as run_substeps reads them).
 void trace_smoke_resident(
     int32_t* d_gas_base,
     const int32_t* d_wind_x, const int32_t* d_wind_y,
@@ -118,20 +122,34 @@ struct KickScalarFolds {
     int32_t work_clamp_q = 0;
     int32_t absorb_dt_q  = 0;   // absorb_strength·dt (the §2.5 hoist's factor)
     int64_t Kdt_raw      = 0;   // (K·2^16)·dt at raw scale, 128-bit staged
+    // P-E3 (energy-books arc, design §2.8): the interior-drag scalar folds,
+    // the SAME per-tick-not-per-cell idiom absorb_dt_q already uses.
+    int32_t kd_q         = 0;   // quantize(k_drag * dt) — dormancy branches on this
+    int32_t heat_frac_q  = 0;   // quantize(k_drag_heat_frac), a plain fraction
+    int64_t recip_cv     = 0;   // make_recip(c_v), Q.32 (RECIP_SHIFT=32)
+    // P-E4 (energy-books arc, design §2.4): the compression-work trust
+    // gate's per-tick fold — 1/n_work_ref, the SAME load-time-constant
+    // idiom recip_cv uses.
+    int64_t recip_n_work_ref = 0;
 };
 KickScalarFolds kick_scalar_folds(
     float dt, float c_max, float dx, float adiabatic_index,
     float absorb_strength, float n_floor_solver, float t_min,
-    float t_work_clamp, float t_max_phys, float u_max);
+    float t_work_clamp, float t_max_phys, float u_max,
+    float k_drag, float k_drag_heat_frac, float c_v, float n_work_ref);
 
 // The step-4 + step-4c tail, LAUNCH ONLY, on DEVICE pointers — K1 kick then
 // K2 compression on one stream (the CPU pass boundary), no malloc, no
 // transfer, no memset, no sync, no digest. d_ntot is the post-substep Dalton
 // N_total plane; d_absorb_q the host-hoisted §2.5 absorb plane; d_cnt the
-// 5-slot rail-counter buffer THE CALLER ZEROES each tick (design §3.2.5).
-// d_amb/d_udamp nullable (space / no band). The per-call eos_kick_compression
-// wraps this same core with its existing H2D/memset/D2H/digest flow — one
-// kernel transcription, both paths.
+// 9-slot rail-counter buffer THE CALLER ZEROES each tick (design §3.2.5) —
+// slots 0-4 are the original per-CELL hit counts, slots 5-8 are P-E3's
+// interior-drag int64 ENERGY SUMS (design §2.8: ke_drag_removed,
+// e_drag_deposit, e_drag_drop_sum, e_drag_rail_clipped), written by K1 (the
+// kick kernel now also writes temperature — own-cell T write from K1 is
+// race-free, K2 reads only neighbour u). d_amb/d_udamp nullable (space / no
+// band). The per-call eos_kick_compression wraps this same core with its
+// existing H2D/memset/D2H/digest flow — one kernel transcription, both paths.
 void kick_compression_launch_resident(
     int32_t* d_wind_x, int32_t* d_wind_y, int32_t* d_temperature,
     const int32_t* d_p_new, const int32_t* d_ntot, const int32_t* d_absorb_q,

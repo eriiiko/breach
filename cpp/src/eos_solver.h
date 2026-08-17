@@ -86,8 +86,11 @@
 //   * `cmask` is UNTOUCHED: pressure, velocity and gas flow are unchanged, so
 //     `permeability` / shield-but-not-seal survives verbatim (ruling §4 item 4
 //     / escalation trigger 5). The T occlusion therefore rides a SECOND,
-//     T-ONLY mask (`tcmask_` below) — occluding the shared fused march would
-//     have moved the VELOCITY self-advection, which item 4 forbids.
+//     T-ONLY mask — occluding the shared fused march would have moved the
+//     VELOCITY self-advection, which item 4 forbids. (P-E1 RETIRED that second
+//     mask with the SL T sample itself; the bullet above it is likewise
+//     historical — step 1b no longer writes temperature at all. Step 4c's
+//     A1 skip and the p* reading below are unchanged and still live.)
 //   * p* = C·N·T[i] keeps reading the OBJECT temperature on a crate tile
 //     (A3, hot pore gas — the decision stands; gate (f) is its tripwire).
 //
@@ -178,6 +181,41 @@ public:
     float absorb_strength = 8.0f;
     float T_MIN = -289.0f;
     float T_WORK_CLAMP = 0.5f;
+    // n_work_ref (energy-books arc, design §2.4, RULING 2026-08-17): the
+    // compression-work TRUST GATE's reference density — config-plumbed dial,
+    // default 0.25. P-E2b plumbed it inert; P-E4 WIRES THE FADE (fade factor
+    // = 0 for n < n_work_ref/2, linear from 0 at n_work_ref/2 to 1 at
+    // n_work_ref, 1 above — hard-zero below half), applied to step 4c's work
+    // factor k BEFORE the ±T_WORK_CLAMP compare, via a magnitude-first
+    // `recip_mul`/`recip_mul_dev` keyed on the existing `n_total_`/`d_ntot`/
+    // `K_ntot` bulk plane (fixed_point.h's `work_fade_clamp01_q` — zero new
+    // reductions, no new synced plane).
+    float n_work_ref = 0.25f;
+    // k_drag / k_drag_heat_frac (energy-books arc, design §2.8, NEW patch
+    // P-E3): interior momentum drag WITH a heat counterparty — the mechanism
+    // that gives the Helmholtz storm an honest grave. Per-tick, in the step-4
+    // kick loop, AFTER the |u| cap and BEFORE the store: component-wise
+    // magnitude-first shrink u *= (1 - kd_q), kd_q = quantize(k_drag*dt)
+    // folded once per tick (the absorb precedent); the removed kinetic energy
+    // deposits into the SAME cell's T (a collocated-grid shear-heating
+    // placement). k_drag default 0.0 -> the mechanism ships SILENT (dormancy
+    // BY BRANCH on the QUANTIZED kd_q, not the float — see the .cpp).
+    // k_drag_heat_frac default 1.0 (RULING R2, Erik 2026-08-17): full deposit
+    // keeps the conservation oracle EXACT through every gate; Erik sweeps the
+    // fraction at P-E5 (physical-air anchor ~=0.0014 — Q16 game units put
+    // air's heat capacity ~700x below physical, c_v=1 by convention). Any
+    // non-deposited remainder is the counted, named e_drag_drop_sum channel.
+    float k_drag = 0.0f;
+    float k_drag_heat_frac = 1.0f;
+    // c_v (energy-books arc, design §2.8): the SAME gas heat-capacity
+    // constant TemperatureSolver::c_v prices its ΔT=ΔE/(N*c_v) deposits with
+    // ([physics.thermal] c_v — physics_runner.py binds both from the ONE
+    // config key). The drag deposit's ΔT = k_drag_heat_frac*ΔE_cell/c_v needs
+    // NO per-cell N divisor (ΔE_cell is already specific — a velocity, not a
+    // momentum), so this is EOSSolver's own copy of the same load-time
+    // constant rather than a cross-solver reference. Default 1.0 mirrors
+    // TemperatureSolver's own default.
+    float c_v = 1.0f;
     // T_MAX_PHYS (v2.4 as-built amendment, PROVISIONAL pending Erik's P5
     // review — eos-p3fix-thermal-ceiling, decisions.md #16): a COUNTED
     // physical-maximum rail on the T FIELD itself, applied as a saturating
@@ -204,15 +242,15 @@ public:
     // no future T-side change can push stored velocities back into the
     // int64/narrow overflow regime (see step 4's overflow guard).
     float U_MAX = 1000.0f;
-    // trace_mass_scale (P3 integration constant, FLAGGED for Erik): the
-    // Dalton sum N_total = Σ N_i must weight the TRACE planes by the molar
-    // mass of a full-opacity cloud relative to ambient — the trace fields
-    // are [0,1] OPACITY tracers, not molar densities, and an unweighted sum
-    // makes a 0.6-opacity teargas cloud a +60% pressure bomb that blasts
-    // itself apart in one tick (measured). 0.02 == "a fully opaque cloud
-    // carries 2% of ambient molar density" — keeps the design §2.1 premise
-    // ("the bulk pair carries ~99% of N_total") true by calibration.
-    float trace_mass_scale = 0.02f;
+    // trace_mass_scale RETIRED (energy-books arc, P-T0, design §2.6 — the
+    // 0% ruling): traces left the Dalton sum entirely rather than keep the
+    // half-citizenship (2% pressure weight, zero thermal weight) that fed
+    // both the storm audit's pressure pump and the round-1 energy-mint
+    // class. N_total is now exactly n_bulk (the gas_conservative pair) —
+    // see the Dalton-sum sites in eos_solver.cpp/cuda_eos_step.cu/
+    // cuda_eos_resident.cu/cuda_kick_compression.cu, which no longer read a
+    // trace weight at all (not wired to 0.0 — the trace planes are skipped
+    // outright). Full-citizenship recipe for a future plane: design §2.6.
 
     // --- MEASUREMENT-ONLY diagnostic (MG gate; never a ship path) --------
     // debug_pstar_from_prev = true replaces step 2's p* = C*N*T_abs with
@@ -230,6 +268,74 @@ public:
     mutable int64_t t_max_phys_hits = 0;   // step-4c T_MAX_PHYS rail (v2.4)
     mutable int64_t u_max_hits = 0;        // clamps where U_MAX (not c_LOCAL)
                                            // was the binding cap (v2.4)
+
+    // --- P-E0 energy-bracket counters (energy-books arc, design §2.5) ----
+    // Law-independent brackets over S = Σ n_bulk·T on the step-4c skip-set
+    // complement (gas cells: !solid, !ts, !vacuum, !ring); n_bulk = the
+    // gas_conservative pair summed as int64; T = raw game-T (Q16.16).
+    //   eth_transport_delta   = Σ_substeps [S after step-d flux − S at the
+    //                           substep transport-block entry]  (HEAD bracket;
+    //                           moves to after-recovery at P-E1)
+    //   eth_compression_delta = S after − S before the step-4c loop.
+    // Pure instrumentation, digest-inert; RESET at step() entry (per tick,
+    // the boundary_flux_ idiom) so each read is that tick's delta. These are
+    // the counters P-E1's ≤ 0 transport gate measures (design §7).
+    mutable int64_t eth_transport_delta = 0;
+    mutable int64_t eth_compression_delta = 0;
+
+    // --- P-E1 energy-transport counters (design §2.1.5/§2.5) -------------
+    // The one-way guard terms of the new conservative transport law, all in
+    // ENERGY units (raw Q16.16², dequant = raw / 65536²) and all int64.
+    // Accumulated over the tick's substeps; RESET at step() entry.
+    //   e_ts_residual     SIGNED — rule (d) air->ts debits: the relative energy
+    //                     gas sheds when it transits a thermal_solid face
+    //                     (counted DESTRUCTION; signed because sub-ambient gas
+    //                     carries negative relative energy).
+    //   e_wipe_sum        SIGNED — residual e destroyed by the N_EPS wipe
+    //                     (n_bulk_new < 1 raw count -> T := ambient).
+    //   e_floor_sum       energy CREATED by the T_MIN clamp on recovery (a
+    //                     CREATOR under R3 — floors destroy, rails may create,
+    //                     both counted).
+    //   n_active_flux     count of (cell, substep) pairs with ANY nonzero
+    //                     touching face dq — the ACTIVE-FLUX fraction §7's
+    //                     truncation bound is scaled by (L2-10); quiescent
+    //                     cells rebuild T exactly and lose nothing.
+    //   n_bulk_active_sum Σ n_bulk_new (raw) over exactly those cells.
+    mutable int64_t e_ts_residual = 0;
+    mutable int64_t e_wipe_sum = 0;
+    mutable int64_t e_floor_sum = 0;
+    mutable int64_t n_active_flux = 0;
+    mutable int64_t n_bulk_active_sum = 0;
+
+    // --- P-E3 interior-drag oracle counters (design §2.8) -----------------
+    // Both n-WEIGHTED (raw ΔT is not comparable to KE) and PER-TICK (the
+    // P-E1 reset-at-step()-entry idiom, not P-E2a's accumulate idiom — see
+    // the as-built for why: the drag identity is checked ONE tick at a time,
+    // like the transport gate, not diffed against a run total). Raw
+    // Q16.16^2 (dequant = raw / 65536^2), the SAME "N*T" currency as
+    // eth_transport_delta / e_floor_sum / e_ts_residual.
+    //   ke_drag_removed     = Sigma n_bulk*(|u_old|^2 - |u_new|^2) over the
+    //                         drag loop (structurally >= 0 — the
+    //                         magnitude-first shrink guarantees it, no
+    //                         clamp/signed term needed).
+    //   e_drag_deposit      = Sigma n_bulk*ΔT_applied — the CONVERTER's
+    //                         output (§5: the kick's unpaid pressure work,
+    //                         named here rather than a true creator).
+    //   e_drag_drop_sum     = Sigma n_bulk*ΔT_drop — the (1-k_drag_heat_frac)
+    //                         remainder, a counted R3-legal destruction.
+    //   e_drag_rail_clipped = Sigma n_bulk*ΔT_clipped — the T_MAX_PHYS-rail
+    //                         (and int32-narrow) shortfall between the
+    //                         INTENDED deposit and what actually landed;
+    //                         NOT a formality (c_v=1 reaches the ceiling in
+    //                         ~14 ticks from a capped jet — an expected
+    //                         regime).
+    // Identity (asserted per tick, k_drag > 0): ke_drag_removed ==
+    // 2*c_v*(e_drag_deposit + e_drag_drop_sum + e_drag_rail_clipped) within
+    // the measured per-cell LSB slack (design §2.8/§7).
+    mutable int64_t ke_drag_removed = 0;
+    mutable int64_t e_drag_deposit = 0;
+    mutable int64_t e_drag_drop_sum = 0;
+    mutable int64_t e_drag_rail_clipped = 0;
 
     // --- P6.2 telemetry: the substep count the last step() actually ran ---
     // (design §3.2 step 1's n = ceil(dt/dt_adv), N_SUB_MAX-capped). Exposed so
@@ -420,36 +526,44 @@ private:
     mutable std::vector<int32_t> div_u_;
     // per-tick caches for the substep loop (micro-opt, bit-identity-neutral):
     mutable std::vector<uint8_t> cmask_;              // sealed/breach/live table
-    // THERMAL-MASS AXIS, P-EOS: the T-ONLY corner/march mask — `cmask_` with
-    // every thermal_solid tile forced to 0 (sealed/occluder). Built beside
-    // cmask_ and used ONLY by the step-1b temperature sample; `cmask_` itself
-    // (velocity, and therefore pressure and gas flow) is untouched. Left empty
-    // and unread when the two masks cannot differ (eos_thermal_occludes).
-    mutable std::vector<uint8_t> tcmask_;
+    // (The THERMAL-MASS-AXIS T-ONLY corner/march mask `tcmask_` lived here and
+    // is RETIRED at P-E1 — energy-books design §2.1.1. Its ONLY consumer was
+    // the step-1b temperature sample, and that sample is gone: temperature now
+    // rides the conservative energy books, where a thermal_solid tile is
+    // excluded structurally by ts-face rule (d) rather than by an occluder
+    // mask. `cmask_` above is untouched, so velocity / pressure / gas flow are
+    // bit-identical.)
     mutable std::vector<int32_t> coeffE_, coeffS_;    // donor-cell face coeffs
+    // P-E1 (design §2.1.2): the TRANSIENT energy accumulator + the applied
+    // per-face dq planes. int64, scratch only — NOT synced state, never
+    // digested, rebuilt from (n_bulk, T) at the top of every substep (R4).
+    mutable std::vector<int64_t> e_scratch_, dqsum_e_, dqsum_s_;
 };
 
 // ---------------------------------------------------------------------------
-// EOS P6.2 — standalone CPU reference for the fused SL-advection substep loop
+// EOS P6.2 — standalone CPU reference for the SL-advection substep loop
 // (docs/eos_p6_gpu_alignment_review.md §4 row P6.2). Replays EXACTLY the
-// step-1a/1b/1f chain of EOSSolver::step for a GIVEN substep count: the
-// per-tick cmask build, then n_sub x [src snapshot -> fused 3-field backtrace
-// (vx, vy, T) -> zero-u-on-solid / T:=0-on-vacuum], IN PLACE on
-// wind_x/wind_y/temperature. Calls the SAME file-local eos_backtrace_sample3_q
-// the real solver uses (one routine, zero drift), and returns the SAME chained
-// FNV digest step() stores in digest_advect at its last substep — so a gate
-// that reconstructs step-1-entry state + n_sub can assert
-// eos_sl_advect_reference(...) == solver.digest_advect, then hold the GPU port
-// to the identical bytes. The interleaved bulk flux (step 1d, P6.1) neither
-// reads nor writes u/T, so replaying the advection substeps back-to-back is
-// arithmetically identical to the real interleaved loop. Test entry only —
-// the live path remains EOSSolver::step.
+// step-1a/1f chain of EOSSolver::step for a GIVEN substep count: the per-tick
+// cmask build, then n_sub x [src snapshot -> fused backtrace -> u write /
+// zero-u-on-solid], IN PLACE on wind_x/wind_y. Calls the SAME file-local
+// eos_backtrace_sample3_q the real solver uses (one routine, zero drift).
+//
+// P-E1 (energy-books arc, design §2.1.1 — CONTRACT CHANGE, authorized rewrite
+// Appendix A): **this reference is now u-ONLY.** The SL sample's `.t` slot is
+// RETIRED — temperature is transported by the conservative energy books
+// (bulk_flux_energy_transport_cached), not by a semi-Lagrangian copy — so
+// `temperature` here is a READ-ONLY src slot for the fused sampler (its `.t`
+// result is discarded, exactly as in step(); `.vx`/`.vy` do not depend on it)
+// and the returned digest is the chained FNV over (wind_y, wind_x) ALONE.
+// It is therefore NO LONGER comparable to `digest_advect`, which now hashes
+// (wx, wy, T-after-recovery) and is taken AFTER the flux call (§2.1.6). The
+// gate it still serves is CPU-reference vs GPU-twin bit-identity on u.
 // ---------------------------------------------------------------------------
 // BC: is_ambient defaults nullptr — existing test callers stay byte-identical;
-// when supplied, the ring is a still-boundary breach corner (cmask) and T:=0.
-// THERMAL-MASS AXIS, P-EOS: `thermal_solid` defaults nullptr — existing test
-// callers stay byte-identical; when supplied the replay applies the SAME
-// skip-write + T-only-occluder rules step() does (one code path, zero drift).
+// when supplied, the ring is a still-boundary breach corner (cmask).
+// THERMAL-MASS AXIS: `thermal_solid` is RETIRED here with the T sample — the
+// A2 T-only occluder mask had no consumer once the `.t` slot went (design
+// §2.1.1). The parameter is kept for ABI/back-compat and ignored.
 uint64_t eos_sl_advect_reference(
     int32_t* wind_x, int32_t* wind_y, int32_t* temperature,
     const bool* solid, const bool* is_vacuum,
@@ -480,21 +594,26 @@ uint64_t eos_sl_advect_reference(
 //   * p_new           — the solved pressure plane the kick differentiates
 //                       (== L0.P after the vacuum/solid zeroing == the post-tick
 //                       `atmosphere`, which step 5 copies verbatim);
-//   * gas planes      — the step-2 Dalton sum N_total (bulk planes at full
-//                       weight, trace planes × trace_mass_scale) is recomputed
-//                       here verbatim: it is the kick's 1/N̂ input;
+//   * gas planes      — the step-2 Dalton sum N_total (P-T0, design §2.6:
+//                       n_total ≡ n_bulk, the gas_conservative pair summed
+//                       at full weight; trace planes contribute nothing) is
+//                       recomputed here verbatim: it is the kick's 1/N̂ input;
 //   * c_local_q       — the per-tick state-derived cap the solver computed
 //                       PRE-advection (EOSSolver::dbg_last_c_local_q);
 //   * scalar params   — the EOSSolver config members, folded to q16/int64
 //                       through the IDENTICAL double expressions step() uses.
 // Outputs: the SAME chained FNV digests step() stores in digest_velocity /
-// digest_compression, plus the five rail counters FOR THIS CALL in
-// counters_out[5] = { u_clamp_hits, u_max_hits, work_clamp_hits,
-// energy_floor_hits, t_max_phys_hits } (the solver's members are cumulative;
-// a gate compares per-tick deltas). Counter semantics are the solver's own:
-// ONE increment per engaging CELL (the |u| clamp is a magnitude event, not
-// per-component; the 4c rails are an exclusive if/else-if chain). Test entry
-// only — the live path remains EOSSolver::step.
+// digest_compression, plus the NINE rail counters FOR THIS CALL in
+// counters_out[9] = { u_clamp_hits, u_max_hits, work_clamp_hits,
+// energy_floor_hits, t_max_phys_hits, ke_drag_removed, e_drag_deposit,
+// e_drag_drop_sum, e_drag_rail_clipped } (the solver's members are
+// cumulative for the first five, PER-TICK for the drag four; a gate compares
+// per-tick deltas either way). Counter semantics are the solver's own: ONE
+// increment per engaging CELL for the first five (the |u| clamp is a
+// magnitude event, not per-component; the 4c rails are an exclusive
+// if/else-if chain); the drag four are int64 ENERGY SUMS (raw Q16.16^2), not
+// hit counts (design §2.8). Test entry only — the live path remains
+// EOSSolver::step.
 // ---------------------------------------------------------------------------
 void eos_kick_compression_reference(
     int32_t* wind_x, int32_t* wind_y, int32_t* temperature,   // in/out
@@ -505,9 +624,17 @@ void eos_kick_compression_reference(
     int h, int w, float dt, int32_t c_local_q,
     float c_max, float dx, float adiabatic_index, float absorb_strength,
     float n_floor_solver, float t_min, float t_work_clamp,
-    float t_max_phys, float u_max, float trace_mass_scale,
+    float t_max_phys, float u_max,   // trace_mass_scale param RETIRED (P-T0)
+    // P-E3 (design §2.8): interior drag + its heat counterparty. k_drag
+    // default 0.0 -> the mechanism is dormant (branch on the QUANTIZED kd_q,
+    // not these floats — see the .cpp).
+    float k_drag, float k_drag_heat_frac, float c_v,
+    // P-E4 (design §2.4): the compression-work trust gate's reference
+    // density — fades step 4c's work factor k toward 0 below n_work_ref,
+    // hard-zero below n_work_ref/2 (see fixed_point.h's work_fade_clamp01_q).
+    float n_work_ref,
     uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
-    int64_t* counters_out /* [5] */,
+    int64_t* counters_out /* [9] */,
     const bool* is_ambient = nullptr,    // BC: ring u ≡ 0 (defaults off)
     // THERMAL-MASS AXIS, P-EOS: step-4c skips its T write on thermal_solid
     // tiles (the kick is untouched). Default nullptr -> `solid` -> pre-patch.

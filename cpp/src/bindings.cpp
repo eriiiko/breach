@@ -228,7 +228,7 @@ PYBIND11_MODULE(breach_physics, m) {
              float gas_advection_rate, float t_max_phys,
              py::object n_bulk_obj, py::object wind_x_obj, py::object wind_y_obj,
              float dt, py::object thermal_solid_obj,
-             py::object cool_shift_grid_obj, int cool_shift_floor) -> int64_t {
+             py::object cool_shift_grid_obj, int cool_shift_floor) -> py::tuple {
               auto [temp, h, w]    = get_2d(temperature);
               auto [hp, h2, w2]    = get_2d_const(heat);
               auto [shift, h3, w3] = get_2d_const(heat_inv_shift);
@@ -280,11 +280,24 @@ PYBIND11_MODULE(breach_physics, m) {
                   auto [csp, hc, wc] = get_2d_const(csg_arr);
                   csg = csp;
               }
-              return breach_cuda::temperature_step(
+              // P-E2a/P-E2b: the isolated GPU entry now returns
+              // (t_max_phys_hits, e_cond_trunc_sum, e_cond_cap_sum,
+              //  cond_limit_hits, e_cool_sum, e_vac_wipe_sum, e_ring_pin_sum,
+              //  e_deposit_drop_sum) — the energy books the conduction
+              // rewrite (P-E2a) and the Pass-1 attenuation drop (P-E2b) must
+              // be gated on. An AUTHORIZED contract change (Appendix A
+              // P-E2a, extended P-E2b): the callers are
+              // tests/cuda_conduction_check.py, tests/cuda_thermal_mass_check.py
+              // and tests/cuda_cool_shift_check.py, which compare all seven
+              // against the CPU solver's own fields.
+              int64_t cnt[breach_cuda::TEMPERATURE_ENERGY_SLOTS] = {0};
+              const int64_t hits = breach_cuda::temperature_step(
                   temp, hp, shift, fs, sol, vac, atm, nb, wx, wy,
                   no_face, cool_shift, cool_shift_vacuum, o2_vacuum_thresh,
                   c_v, n_floor_heat, gas_advection_rate, t_max_phys, h, w, dt,
-                  nullptr, tsol, csg, cool_shift_floor);
+                  nullptr, tsol, csg, cool_shift_floor, nullptr, nullptr, cnt);
+              return py::make_tuple(hits, cnt[0], cnt[1], cnt[2], cnt[3],
+                                    cnt[4], cnt[5], cnt[6]);
           },
           py::arg("temperature"), py::arg("heat"), py::arg("heat_inv_shift"),
           py::arg("face_shift"), py::arg("solid"), py::arg("is_vacuum"),
@@ -298,8 +311,10 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("cool_shift_grid") = py::none(), // cool-shift axis (optional)
           py::arg("cool_shift_floor") = 2,         // == config SHIFT_MIN
           "P6.6 isolated: run the GPU unified temperature solver in place on "
-          "`temperature` (bit-identical to TemperatureSolver.step); returns the "
-          "T_MAX_PHYS rail-hit count for this call.");
+          "`temperature` (bit-identical to TemperatureSolver.step); returns "
+          "(t_max_phys_hits, e_cond_trunc_sum, e_cond_cap_sum, cond_limit_hits, "
+          "e_cool_sum, e_vac_wipe_sum, e_ring_pin_sum, e_deposit_drop_sum) for "
+          "this call (P-E2a + P-E2b).");
 
     // CUDA-S2: the GPU directional raycaster gate. Casts ONE LightSource on the
     // GPU into the (pre-zeroed) output fields, replicating the CPU cast's per-ray
@@ -858,10 +873,12 @@ PYBIND11_MODULE(breach_physics, m) {
     // the GPU combustion_step (live CPU fallback stays; flag-off == exact prior
     // CPU call). cuda_combustion_step runs ONE GPU combustion step IN PLACE on
     // the three mutated gas planes + temperature + wall_hp (bit-identical to
-    // CombustionSolver::step) and returns the two per-call rail counts
-    // (heat_floor_hits, t_max_phys_hits) as a tuple so the gate can compare them
-    // against the CPU solver's member-counter deltas. The scalar config dials
-    // are passed explicitly since combustion_step is a free function.
+    // CombustionSolver::step) and returns the per-call rail counts
+    // (heat_floor_hits, t_max_phys_hits, e_deposit_drop_sum — the last is
+    // P-E2b's energy-sum twin of heat_floor_hits) as a tuple so the gate can
+    // compare them against the CPU solver's member-counter deltas. The scalar
+    // config dials are passed explicitly since combustion_step is a free
+    // function.
     m.def("set_combustion_backend",
           [](bool use_cuda) { breach_cuda::set_combustion_backend_cuda(use_cuda); },
           py::arg("use_cuda"),
@@ -945,15 +962,18 @@ PYBIND11_MODULE(breach_physics, m) {
                   perm_ptr = pa.data(0, 0);
               }
               int64_t heat_floor_hits = 0, t_max_phys_hits = 0;
+              int64_t e_deposit_drop_sum = 0;   // P-E2b
               breach_cuda::combustion_step(
                   gas_ptr, n_gases, o2_idx, inert_n2_idx, black_smoke_idx,
                   temp, whp, f, fl, sol, vac, ign, h, w, dt, c_v, n_floor_heat,
                   burn_rate, o2_thresh_burn, H_fuel, soot_yield, fuel_per_o2,
                   o2_frac_ext, o2_frac_full,
                   T_MAX_PHYS, &heat_floor_hits, &t_max_phys_hits,
+                  &e_deposit_drop_sum,
                   tsol, hshift, heat_ptr, H_BED_M, H_BED_SHIFT, dacc_ptr,
                   draw_r, perm_ptr, max_claimants);
-              return py::make_tuple(heat_floor_hits, t_max_phys_hits);
+              return py::make_tuple(heat_floor_hits, t_max_phys_hits,
+                                    e_deposit_drop_sum);
           },
           py::arg("gas"), py::arg("o2_idx"), py::arg("inert_n2_idx"),
           py::arg("black_smoke_idx"), py::arg("temperature"), py::arg("wall_hp"),
@@ -977,7 +997,7 @@ PYBIND11_MODULE(breach_physics, m) {
           "reformulation, continuous-O2 proportional demand) in place on the "
           "three gas planes + temperature + wall_hp (bit-identical to "
           "CombustionSolver.step) and return the (heat_floor_hits, "
-          "t_max_phys_hits) per-call rail counts.");
+          "t_max_phys_hits, e_deposit_drop_sum) per-call rail counts.");
 
     // CUDA-S7 (set_atmos_backend / get_atmos_backend / cuda_diffuse_solve)
     // RETIRED in EOS P6.0: the diffuse_solve solver it mirrored was deleted in
@@ -1104,7 +1124,11 @@ PYBIND11_MODULE(breach_physics, m) {
              float c_max, float dx, float adiabatic_index,
              float absorb_strength, float n_floor_solver, float t_min,
              float t_work_clamp, float t_max_phys, float u_max,
-             float trace_mass_scale,
+             // trace_mass_scale param RETIRED (P-T0, design §2.6)
+             // P-E3 (design §2.8): interior drag + heat counterparty.
+             float k_drag, float k_drag_heat_frac, float c_v,
+             // P-E4 (design §2.4): the compression-work trust gate.
+             float n_work_ref,
              py::object thermal_solid) -> py::tuple {   // THERMAL-MASS AXIS
               auto [wx, h, w]    = get_2d(wind_x);
               auto [wy, h2, w2]  = get_2d(wind_y);
@@ -1126,16 +1150,18 @@ PYBIND11_MODULE(breach_physics, m) {
                   tsol = ta.data(0, 0);
               }
               uint64_t dig_vel = 0, dig_comp = 0;
-              int64_t cnts[5] = {0, 0, 0, 0, 0};
+              int64_t cnts[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
               breach_cuda::eos_kick_compression(
                   wx, wy, t, pn, gas_ptr, gcons, n_gases, sol, vac, ab,
                   h, w, dt, c_local_q,
                   c_max, dx, adiabatic_index, absorb_strength,
                   n_floor_solver, t_min, t_work_clamp, t_max_phys, u_max,
-                  trace_mass_scale, &dig_vel, &dig_comp, cnts,
+                  k_drag, k_drag_heat_frac, c_v, n_work_ref,
+                  &dig_vel, &dig_comp, cnts,   // trace_mass_scale arg RETIRED
                   nullptr, nullptr, tsol);
               return py::make_tuple(dig_vel, dig_comp, cnts[0], cnts[1],
-                                    cnts[2], cnts[3], cnts[4]);
+                                    cnts[2], cnts[3], cnts[4], cnts[5],
+                                    cnts[6], cnts[7], cnts[8]);
           },
           py::arg("wind_x"), py::arg("wind_y"), py::arg("temperature"),
           py::arg("p_new"), py::arg("gas"), py::arg("gas_conservative"),
@@ -1144,13 +1170,16 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("c_max"), py::arg("dx"), py::arg("adiabatic_index"),
           py::arg("absorb_strength"), py::arg("n_floor_solver"),
           py::arg("t_min"), py::arg("t_work_clamp"), py::arg("t_max_phys"),
-          py::arg("u_max"), py::arg("trace_mass_scale"),
+          py::arg("u_max"),
+          py::arg("k_drag") = 0.0f, py::arg("k_drag_heat_frac") = 1.0f,
+          py::arg("c_v") = 1.0f, py::arg("n_work_ref") = 0.25f,
           py::arg("thermal_solid") = py::none(),
           "P6.4 isolated: run the GPU kick + compression-work tail in place on "
           "wind_x/wind_y/temperature; returns (digest_velocity, "
           "digest_compression, u_clamp_hits, u_max_hits, work_clamp_hits, "
-          "energy_floor_hits, t_max_phys_hits) for this call — bit-identical "
-          "to eos_kick_compression_ref.");
+          "energy_floor_hits, t_max_phys_hits, ke_drag_removed, "
+          "e_drag_deposit, e_drag_drop_sum, e_drag_rail_clipped) for this "
+          "call — bit-identical to eos_kick_compression_ref.");
 
     // EOS P6.3: the GPU multigrid Helmholtz pressure solve (cuda_mg_solve.cu
     // — per-color RB-GS launches on fine levels, gather-form restriction/
@@ -1379,6 +1408,38 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("v"),
           "fixed_point.h quantize: a real value -> Q16.16 int32, "
           "round-half-away-from-zero, computed in double.");
+
+    // P-E2b (energy-books arc, design §2.2): exposed so the n_floor_heat
+    // low-dial sweep (0.05 -> 0.01, reachable down to 0.001) can be verified
+    // against the ACTUAL per-cell reciprocal + the deposit multiply chain
+    // both deposit sites use, rather than a re-derived Python approximation
+    // (tools/e2b_floor_reciprocal_probe.py).
+    m.def("fp_reciprocal_q16",
+          [](int32_t denom_q) { return fixedpoint::reciprocal_q16(denom_q); },
+          py::arg("denom_q"),
+          "fixed_point.h reciprocal_q16: per-cell Newton reciprocal, Q16.16 "
+          "in -> Q16.16 out (int64 internally, ~1 ULP accurate; self-guards "
+          "denom_q <= 0 -> 0 and floors {1,2} to 3).");
+    m.def("fp_recip_mul",
+          [](int32_t x_q16, int64_t recip) {
+              return fixedpoint::recip_mul(x_q16, recip);
+          },
+          py::arg("x_q16"), py::arg("recip"),
+          "fixed_point.h recip_mul: x_q16 * recip >> RECIP_SHIFT via a "
+          "128-bit intermediate (the make_recip reciprocal multiply, used "
+          "for the deposit's .../c_v step).");
+    m.def("fp_deposit_dT_wide_q16",
+          [](int32_t deposit_q, int32_t recip_n_q, int64_t recip_cv) {
+              return fixedpoint::deposit_dT_wide_q16(deposit_q, recip_n_q,
+                                                      recip_cv);
+          },
+          py::arg("deposit_q"), py::arg("recip_n_q"), py::arg("recip_cv"),
+          "fixed_point.h deposit_dT_wide_q16 (P-E2b): deposit/(N*c_v) chained "
+          "as one 128-bit product, narrowed ONCE to int64 (not q16) — the "
+          "fix for the old two-step mul_q16->recip_mul chain's silent q16 "
+          "overflow at low n_floor_heat. Both deposit sites (combustion.cpp, "
+          "temperature_solver.cpp Pass 1) use this; exposed so it can be "
+          "verified directly rather than re-derived.");
 
     // S2a: the explicit WAVE state (wave_p / wave_v / wave_source) is now int32
     // Q16.16 (same 2^16 scale as water/heat). Python (gamemap fields, field
@@ -1708,6 +1769,20 @@ PYBIND11_MODULE(breach_physics, m) {
         // INERT by the per-term budget argument — a nonzero count inside a gate
         // scenario is a RED, which is exactly why it is readable from Python.
         .def_readonly("t_low_rail_hits",    &TemperatureSolver::t_low_rail_hits)
+        // P-E2a energy books (design §2.3/§5/§7): conduction's two counted
+        // residuals + the limiter's engagement count, then the three
+        // open-by-design SIGNED channels (L3-6). All in RAW ENERGY counts
+        // except `cond_limit_hits`; all accumulating across step() calls (the
+        // ledger diffs them per tick), and shared with the CUDA path.
+        .def_readonly("e_cond_trunc_sum",   &TemperatureSolver::e_cond_trunc_sum)
+        .def_readonly("e_cond_cap_sum",     &TemperatureSolver::e_cond_cap_sum)
+        .def_readonly("cond_limit_hits",    &TemperatureSolver::cond_limit_hits)
+        .def_readonly("e_cool_sum",         &TemperatureSolver::e_cool_sum)
+        .def_readonly("e_vac_wipe_sum",     &TemperatureSolver::e_vac_wipe_sum)
+        .def_readonly("e_ring_pin_sum",     &TemperatureSolver::e_ring_pin_sum)
+        // P-E2b (design §2.2/§2.5, L3-7): the Pass-1 attenuation-drop energy
+        // sum. Same accumulate-across-step() idiom as the P-E2a six above.
+        .def_readonly("e_deposit_drop_sum", &TemperatureSolver::e_deposit_drop_sum)
         // P2: wind_x/wind_y/dt are OPTIONAL (default None/0.0) so the shipped
         // direct-binding call sites (tests/test_temperature_*.py,
         // tests/cuda_s1_check.py — all pre-P2, 7 positional args) keep working
@@ -2124,14 +2199,49 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("absorb_strength",   &EOSSolver::absorb_strength)
         .def_readwrite("T_MIN",             &EOSSolver::T_MIN)
         .def_readwrite("T_WORK_CLAMP",      &EOSSolver::T_WORK_CLAMP)
+        // P-E2b (design §2.4): trust-gate dial, PLUMBING ONLY — the fade
+        // mechanism is P-E4's. Provably inert (nothing reads this member).
+        .def_readwrite("n_work_ref",        &EOSSolver::n_work_ref)
+        // P-E3 (energy-books arc, design §2.8): interior momentum drag with a
+        // heat counterparty. k_drag default 0.0 -> dormant (branch on the
+        // QUANTIZED kd_q, not this float); k_drag_heat_frac default 1.0
+        // (RULING R2) keeps the conservation oracle EXACT through every gate.
+        .def_readwrite("k_drag",            &EOSSolver::k_drag)
+        .def_readwrite("k_drag_heat_frac",  &EOSSolver::k_drag_heat_frac)
+        // c_v: EOSSolver's own copy of the SAME [physics.thermal] c_v gas
+        // heat-capacity constant TemperatureSolver::c_v prices its deposits
+        // with (physics_runner.py binds both from the one config key).
+        .def_readwrite("c_v",               &EOSSolver::c_v)
         .def_readwrite("T_MAX_PHYS",        &EOSSolver::T_MAX_PHYS)     // v2.4 rail
         .def_readwrite("U_MAX",             &EOSSolver::U_MAX)          // v2.4 rail
-        .def_readwrite("trace_mass_scale",  &EOSSolver::trace_mass_scale)
+        // trace_mass_scale binding RETIRED (P-T0, design §2.6 — the member
+        // itself is gone from EOSSolver; see eos_solver.h).
         .def_readonly("energy_floor_hits",  &EOSSolver::energy_floor_hits)
         .def_readonly("u_clamp_hits",       &EOSSolver::u_clamp_hits)
         .def_readonly("work_clamp_hits",    &EOSSolver::work_clamp_hits)
         .def_readonly("t_max_phys_hits",    &EOSSolver::t_max_phys_hits) // v2.4
         .def_readonly("u_max_hits",         &EOSSolver::u_max_hits)      // v2.4
+        // P-E0 (energy-books §2.5): per-tick energy-bracket deltas over
+        // Σ n_bulk·T (transport substeps / step-4c). Digest-inert telemetry.
+        .def_readonly("eth_transport_delta",   &EOSSolver::eth_transport_delta)
+        .def_readonly("eth_compression_delta", &EOSSolver::eth_compression_delta)
+        // P-E1 (energy-books design §2.1.5/§2.5): the transport law's one-way
+        // guard terms + the active-flux telemetry §7's bound is scaled by.
+        // Read-only, per-tick, int64 raw Q16.16² (dequant = raw / 65536²)
+        // except the two counts.
+        .def_readonly("e_ts_residual",         &EOSSolver::e_ts_residual)
+        .def_readonly("e_wipe_sum",            &EOSSolver::e_wipe_sum)
+        .def_readonly("e_floor_sum",           &EOSSolver::e_floor_sum)
+        .def_readonly("n_active_flux",         &EOSSolver::n_active_flux)
+        .def_readonly("n_bulk_active_sum",     &EOSSolver::n_bulk_active_sum)
+        // P-E3 (design §2.8): the interior-drag oracle, PER-TICK, both
+        // n-weighted, raw Q16.16^2 (the SAME "N*T" currency as the P-E1 five
+        // above). Identity: ke_drag_removed == 2*c_v*(e_drag_deposit +
+        // e_drag_drop_sum + e_drag_rail_clipped) within a small LSB slack.
+        .def_readonly("ke_drag_removed",       &EOSSolver::ke_drag_removed)
+        .def_readonly("e_drag_deposit",        &EOSSolver::e_drag_deposit)
+        .def_readonly("e_drag_drop_sum",       &EOSSolver::e_drag_drop_sum)
+        .def_readonly("e_drag_rail_clipped",   &EOSSolver::e_drag_rail_clipped)
         // BC (spec §5): the boundary_flux rail — per-conservative-plane int64
         // Σ(N_pre_reset − N_amb). Returned as a Python list (empty on space
         // maps). NOT folded into any digest (absence-transparent, zero golden
@@ -2239,7 +2349,11 @@ PYBIND11_MODULE(breach_physics, m) {
              float c_max, float dx, float adiabatic_index,
              float absorb_strength, float n_floor_solver, float t_min,
              float t_work_clamp, float t_max_phys, float u_max,
-             float trace_mass_scale,
+             // trace_mass_scale param RETIRED (P-T0, design §2.6)
+             // P-E3 (design §2.8): interior drag + heat counterparty.
+             float k_drag, float k_drag_heat_frac, float c_v,
+             // P-E4 (design §2.4): the compression-work trust gate.
+             float n_work_ref,
              py::object thermal_solid,                  // THERMAL-MASS AXIS
              // A6: the ambient/planetside path. `is_ambient` was hard-coded
              // nullptr at the call below, so no caller could reach the
@@ -2280,15 +2394,17 @@ PYBIND11_MODULE(breach_physics, m) {
                   sud = sa.data(0, 0);
               }
               uint64_t dig_vel = 0, dig_comp = 0;
-              int64_t cnts[5] = {0, 0, 0, 0, 0};
+              int64_t cnts[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
               eos_kick_compression_reference(
                   wx, wy, t, pn, gas_ptr, gcons, n_gases, sol, vac, ab,
                   h, w, dt, c_local_q,
                   c_max, dx, adiabatic_index, absorb_strength,
                   n_floor_solver, t_min, t_work_clamp, t_max_phys, u_max,
-                  trace_mass_scale, &dig_vel, &dig_comp, cnts, amb, tsol, sud);
+                  k_drag, k_drag_heat_frac, c_v, n_work_ref,
+                  &dig_vel, &dig_comp, cnts, amb, tsol, sud);   // trace_mass_scale arg RETIRED
               return py::make_tuple(dig_vel, dig_comp, cnts[0], cnts[1],
-                                    cnts[2], cnts[3], cnts[4]);
+                                    cnts[2], cnts[3], cnts[4], cnts[5],
+                                    cnts[6], cnts[7], cnts[8]);
           },
           py::arg("wind_x"), py::arg("wind_y"), py::arg("temperature"),
           py::arg("p_new"), py::arg("gas"), py::arg("gas_conservative"),
@@ -2297,15 +2413,18 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("c_max"), py::arg("dx"), py::arg("adiabatic_index"),
           py::arg("absorb_strength"), py::arg("n_floor_solver"),
           py::arg("t_min"), py::arg("t_work_clamp"), py::arg("t_max_phys"),
-          py::arg("u_max"), py::arg("trace_mass_scale"),
+          py::arg("u_max"),
+          py::arg("k_drag") = 0.0f, py::arg("k_drag_heat_frac") = 1.0f,
+          py::arg("c_v") = 1.0f, py::arg("n_work_ref") = 0.25f,
           py::arg("thermal_solid") = py::none(),
           py::arg("is_ambient") = py::none(),
           py::arg("sponge_udamp") = py::none(),
           "P6.4 CPU reference: replay EOSSolver::step's kick + compression-"
           "work tail in place on wind_x/wind_y/temperature; returns "
           "(digest_velocity, digest_compression, u_clamp_hits, u_max_hits, "
-          "work_clamp_hits, energy_floor_hits, t_max_phys_hits) for this "
-          "call.");
+          "work_clamp_hits, energy_floor_hits, t_max_phys_hits, "
+          "ke_drag_removed, e_drag_deposit, e_drag_drop_sum, "
+          "e_drag_rail_clipped) for this call.");
 
     // EOS P6.3: the standalone CPU reference for the multigrid pressure
     // solve (eos_solver.cpp eos_mg_solve_reference — drives the SAME
@@ -2363,6 +2482,8 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readwrite("T_MAX_PHYS",        &CombustionSolver::T_MAX_PHYS)     // v2.4 rail
         .def_readonly("heat_floor_hits",    &CombustionSolver::heat_floor_hits)
         .def_readonly("t_max_phys_hits",    &CombustionSolver::t_max_phys_hits) // v2.4
+        // P-E2b (design §2.2/§2.5): the energy-sum twin of heat_floor_hits.
+        .def_readonly("e_deposit_drop_sum", &CombustionSolver::e_deposit_drop_sum)
         .def("step", [](const CombustionSolver& self,
                         py::array_t<int32_t> gas,             // (n_gases,h,w) Q16.16
                         int o2_idx, int inert_n2_idx, int black_smoke_idx,
@@ -2809,7 +2930,9 @@ PYBIND11_MODULE(breach_physics, m) {
             const bool* gcons = gc.data(0);
             // gas_decay: (N,) float32 — EOS P4's per-gas trace decay column
             // (simulation.gases.GasTable.decay), applied once per tick after
-            // each trace plane's own advection, credited to inert_n2_idx.
+            // each trace plane's own advection. The decayed count simply
+            // VANISHES (P-T0, design §2.6 — the P4 decay->inert_N2 credit is
+            // DELETED; decay is no longer "oxidation into bulk", just loss).
             auto gdc = gas_decay.unchecked<1>();
             const float* gdecay = gdc.data(0);
             // BC nullable extraction (the WaterSolver.step precedent, above):

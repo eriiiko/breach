@@ -147,6 +147,10 @@ EOSHostPrestage eos_host_prestage(
     // Divisor of the c_LOCAL ratio at :165 and, via pre.t_amb_q (:258), the
     // resident path's too. Must stay bit-identical to the CPU fold.
     const q16 t_amb_q   = std::max<q16>(1, quantize((double)solver.T_AMB_K));
+    // P-E1: the recovery T_MIN clamp fold — the SAME `quantize((double)T_MIN)`
+    // expression step() performs, hoisted here so BOTH GPU dispatch paths read
+    // one transcription (design §2.1.5).
+    pre.t_min_q = quantize((double)solver.T_MIN);
     // s_eos_q: fold of S_EOS, verbatim CPU twin (eos_solver.cpp:290). At the
     // frozen identity (65536) the t_abs product below has zero low bits, so
     // the SAR is exact truncation — see eos_solver.cpp's comment for the
@@ -185,16 +189,13 @@ EOSHostPrestage eos_host_prestage(
         if (rad > max_rad) max_rad = rad;
     }
     const q16 max_u = sqrt_q16(max_rad);
+    // P-T0 (design §2.6): n_total ≡ n_bulk; trace planes skipped outright.
     std::vector<int32_t> n_total(n, 0);
     {
-        const q16 tms_q = quantize((double)solver.trace_mass_scale);
         for (int gi = 0; gi < n_gases; ++gi) {
+            if (!gas_conservative[gi]) continue;
             const int32_t* plane = gas + (size_t)gi * n;
-            if (gas_conservative[gi]) {
-                for (int i = 0; i < n; ++i) n_total[i] += plane[i];
-            } else {
-                for (int i = 0; i < n; ++i) n_total[i] += mul_q16(tms_q, plane[i]);
-            }
+            for (int i = 0; i < n; ++i) n_total[i] += plane[i];
         }
     }
     int64_t max_du_raw = 0;
@@ -300,8 +301,10 @@ void eos_step_cuda(
     // medium anywhere? The SHARED predicate (eos_solver.h) — one transcription,
     // so this host and EOSSolver::step can never disagree about whether the
     // T-only occluder mask is live.
-    const bool t_occlude = eos_thermal_occludes(thermal_solid, solid,
-                                                dyn_permeability, n);
+    // P-E1 (design §2.1.1): the A2 T-only occluder mask retires with the SL
+    // T sample on this backend too — `eos_thermal_occludes` has no consumer
+    // here any more. `d_ts` survives: it is the PARTICIPATION mask of the new
+    // energy build/recovery (ruling A1 — the EOS never writes a ts tile's T).
 
     // ======================================================================
     // HOST PRE-STAGE — the shared verbatim step() transcription (S8a Path A
@@ -362,17 +365,29 @@ void eos_step_cuda(
         // it can differ from cmask. d_ts falls back to d_sol (the P2 idiom), so
         // the nullptr path allocates and copies NOTHING.
         bool* d_tsol = nullptr;
-        uint8_t* d_tcmask = nullptr;
         if (thermal_solid) d_tsol = (bool*)dev_alloc(nbool);
-        if (t_occlude) d_tcmask = (uint8_t*)dev_alloc((size_t)n);
         int32_t* d_coeffE = (int32_t*)dev_alloc(nb);
         int32_t* d_coeffS = (int32_t*)dev_alloc(nb);
         int32_t* d_dq_e  = (int32_t*)dev_alloc(nb);
         int32_t* d_dq_s  = (int32_t*)dev_alloc(nb);
         int32_t* d_scale = (int32_t*)dev_alloc(nb);
+        // P-E1: the transient energy plane + the applied-dq face planes + the
+        // n_bulk accumulator (all int64), and the 5-slot counter block.
+        const size_t nb8 = (size_t)n * sizeof(int64_t);
+        int64_t* d_e       = (int64_t*)dev_alloc(nb8);
+        int64_t* d_nbulk   = (int64_t*)dev_alloc(nb8);
+        int64_t* d_dqsum_e = (int64_t*)dev_alloc(nb8);
+        int64_t* d_dqsum_s = (int64_t*)dev_alloc(nb8);
+        unsigned long long* d_ecnt =
+            (unsigned long long*)dev_alloc(5 * sizeof(unsigned long long));
+        cuda_check(cudaMemset(d_ecnt, 0, 5 * sizeof(unsigned long long)),
+                   "memset e-counters");
         std::vector<int32_t*> d_gas(cons.size());
         for (size_t k = 0; k < cons.size(); ++k)
             d_gas[k] = (int32_t*)dev_alloc(nb);
+        // P-E1 per-plane host side-tables the energy entry reads.
+        std::vector<int32_t> n_amb_cons(cons.size(), 0);
+        std::vector<unsigned long long*> rail_ptrs(cons.size(), nullptr);
 
         cuda_check(cudaMemcpy(d_wx, wind_x, nb, cudaMemcpyHostToDevice), "H2D wind_x");
         cuda_check(cudaMemcpy(d_wy, wind_y, nb, cudaMemcpyHostToDevice), "H2D wind_y");
@@ -407,30 +422,29 @@ void eos_step_cuda(
         // K0: cmask ONCE per tick (solid/vacuum/perm constant within it) —
         // the proven P6.2 device build. BC: d_amb folds the ring into breach.
         sl_cmask_build_device(d_sol, d_vac, d_perm, d_cmask, n, d_amb);
-        // K0b (THERMAL-MASS AXIS): the T-only occluder mask — cmask with every
-        // thermal_solid tile forced sealed. `d_cmask` itself is NEVER touched:
-        // velocity/pressure/gas flow must stay identical (ruling §4 item 4).
-        if (d_tcmask) sl_tcmask_build_device(d_cmask, d_tsol, d_tcmask, n);
 
         for (int s = 0; s < n_sub; ++s) {
             // -- a+b. FUSED SL advection (P6.2 K1) on the frozen snapshot --
             cuda_check(cudaMemcpy(d_svx, d_wx, nb, cudaMemcpyDeviceToDevice), "D2D src_vx");
             cuda_check(cudaMemcpy(d_svy, d_wy, nb, cudaMemcpyDeviceToDevice), "D2D src_vy");
             cuda_check(cudaMemcpy(d_st,  d_t,  nb, cudaMemcpyDeviceToDevice), "D2D src_t");
-            sl_advect3_device(d_wx, d_wy, d_t, d_svx, d_svy, d_st,
-                              d_sol, d_vac, d_cmask, dt_s_q, h, w, d_amb,
-                              d_ts, d_tcmask);
-            // -- d. bulk O2/N2 donor-cell flux on THIS substep's u (P6.1
-            //    B1..B5). All-zero-plane skip dropped (review §1.3 no-op). BC:
-            //    the ring reset clamps N to n_amb[plane] + accumulates the rail.
-            for (size_t k = 0; k < cons.size(); ++k) {
-                bulk_flux_plane_device(d_gas[k], d_wx, d_wy, d_sol, d_vac,
-                                       d_coeffE, d_coeffS,
-                                       d_dq_e, d_dq_s, d_scale, h, w,
-                                       d_amb,
-                                       ambient_mode ? n_amb[cons[k]] : 0,
-                                       d_rail ? &d_rail[k] : nullptr);
-            }
+            sl_advect3_device(d_wx, d_wy, d_svx, d_svy, d_st,
+                              d_sol, d_cmask, dt_s_q, h, w);
+            // -- d. bulk O2/N2 donor-cell flux on THIS substep's u, WITH the
+            //    thermal energy riding it (P-E1, design §2.1). The mass chain
+            //    inside is the UNCHANGED P6.1 B1..B5 per plane. BC: the ring
+            //    reset clamps N to n_amb[plane] + accumulates the rail.
+            for (size_t k = 0; k < cons.size(); ++k)
+                n_amb_cons[k] = ambient_mode ? n_amb[cons[k]] : 0;
+            for (size_t k = 0; k < cons.size(); ++k)
+                rail_ptrs[k] = d_rail ? &d_rail[k] : nullptr;
+            bulk_flux_energy_transport_device(
+                d_gas.data(), (int)cons.size(), d_t, d_wx, d_wy,
+                d_sol, d_vac, d_ts, d_coeffE, d_coeffS, pre.t_min_q, h, w,
+                d_e, d_nbulk, d_dqsum_e, d_dqsum_s,
+                d_dq_e, d_dq_s, d_scale, d_ecnt,
+                d_amb, n_amb_cons.data(),
+                d_rail ? rail_ptrs.data() : nullptr);
             // -- f. zero u on solid: subsumed by the advection kernel (the
             //    proven P6.2 argument; nothing above re-touches u). --------
         }
@@ -448,6 +462,19 @@ void eos_step_cuda(
         // BC: copy the accumulated per-plane rail back into the solver's rail
         // (byte-identical to the CPU: integer sums are order-free, so the
         // device atomicAdd total == the CPU sequential sum).
+        // P-E1: the energy-transport counters back to the solver (int64
+        // atomicAdd on two's complement is order-free, so the device totals
+        // equal the CPU's sequential sums exactly).
+        {
+            unsigned long long ec[5] = {0, 0, 0, 0, 0};
+            cuda_check(cudaMemcpy(ec, d_ecnt, sizeof(ec),
+                                  cudaMemcpyDeviceToHost), "D2H e-counters");
+            solver.e_ts_residual     = (int64_t)ec[0];
+            solver.e_wipe_sum        = (int64_t)ec[1];
+            solver.e_floor_sum       = (int64_t)ec[2];
+            solver.n_active_flux     = (int64_t)ec[3];
+            solver.n_bulk_active_sum = (int64_t)ec[4];
+        }
         if (ambient_mode && d_rail) {
             std::vector<unsigned long long> rail_host(cons.size(), 0);
             cuda_check(cudaMemcpy(rail_host.data(), d_rail,
@@ -502,17 +529,14 @@ void eos_step_cuda(
     }
 
     // step 2's Dalton sum (post-substep N — the same n_total scratch reused,
-    // exactly like the CPU's member cache).
+    // exactly like the CPU's member cache). P-T0 (design §2.6): n_total ≡
+    // n_bulk; trace planes skipped outright.
     {
-        const q16 tms_q = quantize((double)solver.trace_mass_scale);
         for (int i = 0; i < n; ++i) n_total[i] = 0;
         for (int gi = 0; gi < n_gases; ++gi) {
+            if (!gas_conservative[gi]) continue;
             const int32_t* plane = gas + (size_t)gi * n;
-            if (gas_conservative[gi]) {
-                for (int i = 0; i < n; ++i) n_total[i] += plane[i];
-            } else {
-                for (int i = 0; i < n; ++i) n_total[i] += mul_q16(tms_q, plane[i]);
-            }
+            for (int i = 0; i < n; ++i) n_total[i] += plane[i];
         }
     }
     std::vector<int32_t> pstar(n, 0);
@@ -572,7 +596,7 @@ void eos_step_cuda(
     // ======================================================================
     {
         uint64_t dig_vel = 0, dig_comp = 0;
-        int64_t cnts[5] = {0, 0, 0, 0, 0};
+        int64_t cnts[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
         eos_kick_compression(
             wind_x, wind_y, temperature, p_new.data(),
             gas, gas_conservative, n_gases, solid, is_vacuum,
@@ -580,7 +604,11 @@ void eos_step_cuda(
             solver.c_max, solver.dx, solver.adiabatic_index,
             solver.absorb_strength, solver.N_FLOOR_SOLVER, solver.T_MIN,
             solver.T_WORK_CLAMP, solver.T_MAX_PHYS, solver.U_MAX,
-            solver.trace_mass_scale, &dig_vel, &dig_comp, cnts,
+            // P-E3 (design §2.8): interior drag + heat counterparty.
+            solver.k_drag, solver.k_drag_heat_frac, solver.c_v,
+            // P-E4 (design §2.4): the compression-work trust gate.
+            solver.n_work_ref,
+            &dig_vel, &dig_comp, cnts,   // trace_mass_scale arg RETIRED (P-T0)
             // BC: ring velocity zero + compression skip + the u-damping band.
             ambient_mode ? is_ambient : nullptr,
             ambient_mode ? sponge_udamp : nullptr,
@@ -593,6 +621,12 @@ void eos_step_cuda(
         solver.work_clamp_hits   += cnts[2];
         solver.energy_floor_hits += cnts[3];
         solver.t_max_phys_hits   += cnts[4];
+        // P-E3: PER-TICK semantics (assigned, not accumulated — the P-E1
+        // reset-at-step()-entry idiom; this dispatch runs once per tick).
+        solver.ke_drag_removed     = cnts[5];
+        solver.e_drag_deposit      = cnts[6];
+        solver.e_drag_drop_sum     = cnts[7];
+        solver.e_drag_rail_clipped = cnts[8];
     }
 
     // DEBUG probe parity: T after step 4c (compression work).

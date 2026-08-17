@@ -154,19 +154,35 @@ gas_advection_rate = 900.0  # gas-T wind->displacement scale; SAME convention/va
 c_v               = 1.0     # gas heat capacity for the radiation deposit
                              # ΔT = ΔE/(N·c_v) (§4.3). 1.0 = neutral scale (ΔT≈ΔE at
                              # ambient N=1.0); no real-gas anchor yet (P3 territory).
-n_floor_heat      = 0.05    # floor on the per-tile N divisor (the real bulk N_total
-                             # since P3) for the SAME deposit divide — INDEPENDENT of
-                             # o2_vacuum_thresh / any other floor.
-                             # CHECKED against the v2.4 single-tick criterion and KEPT
-                             # (eos-p3fix-thermal-ceiling):
-                             #   n_floor_heat >= heat_tick_max / (T_MAX_PHYS * c_v)
-                             # measured heat_tick ~330 (one adjacent I=0.8 fire) =>
-                             # worst one-tick deposit at the floor = 6,600 K <
-                             # T_MAX_PHYS = 16,000 — holds at 0.05. A stacked firestorm
-                             # ring (~8x) can exceed the ceiling in one tick; that case
-                             # is bounded by the counted T_MAX_PHYS rail (its job). A
-                             # trial raise to 0.2 measurably perturbed marginal
-                             # ignition timings suite-wide for no correctness gain.
+n_floor_heat      = 0.01    # floor on the per-tile N divisor (the real bulk N_total
+                             # since P3) for the SAME deposit divide, SHARED by BOTH
+                             # deposit sites — this Pass-1 gas branch AND combustion's
+                             # aggregate deposit (combustion.cpp:799-803, ONE floor in
+                             # the system) — INDEPENDENT of o2_vacuum_thresh / any
+                             # other floor.
+                             # RULING (energy-books arc, design v2.2 §2.2, Erik
+                             # 2026-08-17): now a LOW, tunable VALUE-HYGIENE dial —
+                             # default 0.01 (was 0.05), swept DOWNWARD during tuning.
+                             # Its STABILITY job is GONE: P-E1 closed the EOS
+                             # transport books (deposit spikes at thin cells dilute
+                             # honestly on contact now, instead of minting via the old
+                             # SL T-copy) and T_MAX_PHYS is the real value backstop
+                             # for a single-tick spike (a COUNTED clamp — see that
+                             # dial). The v1 single-tick criterion below this comment
+                             # (n_floor_heat >= heat_tick_max/(T_MAX_PHYS*c_v)) is
+                             # STALE — it argued for RAISING the floor to protect
+                             # T_MAX_PHYS, which no longer needs protecting from this
+                             # angle. The OLD 0.2-trial warning ("measurably perturbed
+                             # marginal ignition timings") is MOOT IN THIS DIRECTION:
+                             # a LOWER floor deposits MORE into thin cells (dividing
+                             # by a smaller floor raises ΔT), so marginal ignition
+                             # trends FASTER, not slower, as the floor drops — the
+                             # opposite of the 0.2-raise trial's regime. The
+                             # reciprocal divide's precision was verified sane down to
+                             # 0.001 (tools/e2b_floor_reciprocal_probe.py); the v1
+                             # 0.25-shared-with-the-trust-gate ruling is retired (see
+                             # n_work_ref, [physics.eos], for the unrelated trust-gate
+                             # dial — plumbed this patch, mechanism lands at P-E4).
 T_MAX_PHYS        = 16000.0 # v2.4 counted physical-maximum rail on the temperature
                              # FIELD (K above ambient), ~2x the design's stated 9000 K
                              # extreme — clamps every T deposit/write path (EOS step 4c,
@@ -581,6 +597,57 @@ U_MAX = 1000.0                        # v2.4 defense-in-depth velocity rail (m/s
                                       # the int64/narrow overflow regime again (see
                                       # eos_solver.cpp step 4's overflow guard). PROVISIONAL,
                                       # Erik review at P5.
+n_work_ref = 0.25                     # energy-books arc (design §2.4, RULING 2026-08-17):
+                                      # the compression-work TRUST GATE's reference density —
+                                      # fade factor = 0 below n_work_ref/2, linear to 1 at
+                                      # n_work_ref, applied before the T_WORK_CLAMP compare.
+                                      # PLUMBING ONLY at P-E2b (config key -> C++ member ->
+                                      # bindings -> this bind): the fade MECHANISM is P-E4's;
+                                      # nothing reads this dial yet (provably inert — digests
+                                      # byte-identical). At 0.25 the power-of-two reciprocal
+                                      # is exact (P-E4's territory to exploit).
+k_drag = 0.5                          # energy-books arc (design §2.8, NEW patch P-E3).
+                                      # SHIPPED VALUE 0.5 (Erik, P-E5 2026-08-17) — a
+                                      # starting point, not a tuned value: he ruled that
+                                      # real tuning waits until the pressure-transient arc
+                                      # lands, then one more retune pass over everything.
+                                      # NOTE this is NO LONGER the dormant default the
+                                      # P-E3 inertness gate was measured at — damping is
+                                      # LIVE in the shipped config from here on:
+                                      # interior momentum drag with a heat counterparty — the
+                                      # storm's honest grave. Per-second rate, applied
+                                      # kd = k_drag*dt once per TICK (not per substep) in the
+                                      # step-4 kick loop, AFTER the |u| cap. Default 0.0 ships
+                                      # the mechanism SILENT (dormancy BY BRANCH on the
+                                      # quantized fold kd_q, not this float — a k_drag as
+                                      # small as 1e-6 quantizes to kd_q==0). The audit's own
+                                      # sizing is ~0.02-0.05 (docs/storm_audit_2026-08-14.md
+                                      # §5 mechanism B) but that band is FAR too weak:
+                                      # P-E3 MEASURED the free-momentum e-fold at k_drag=0.02
+                                      # as ~49.6 s (the design's ~2.1 s estimate was 24x off).
+                                      # A ~2 s e-fold needs k_drag ~= 0.5 -- the P-E5 sweep
+                                      # value Erik is trying now. Erik picks the shipped value.
+                                      # FORBIDDEN BAND (see the [materials.air] wave_absorb
+                                      # comment there): this dial is the intended replacement
+                                      # for wandering wave_absorb into (0, 0.02) with
+                                      # k_wind_strip > 0 — k_drag is a strictly stronger sink
+                                      # at the equivalent rate (A@0.02 == k_drag 0.0067).
+k_drag_heat_frac = 0.0014             # energy-books arc (design §2.8, RULING R2, Erik
+                                      # 2026-08-17): the fraction of the drag-removed kinetic
+                                      # energy actually deposited as heat (into the SAME
+                                      # cell's T). Default 1.0 (full deposit) keeps the
+                                      # conservation oracle EXACT through every gate — Q16
+                                      # game units put air's heat capacity ~700x below
+                                      # physical (c_v=1 by convention), so a fully honest
+                                      # deposit runs ~700x physical. MEASURED (P-E3): at
+                                      # k_drag=0.02 a sustained 20 m/s neck flow deposits
+                                      # ~8.05 game-deg/s into neck cells -- the design's
+                                      # ~96 estimate was 12x too high, so the ignition risk
+                                      # is milder than feared (but scales with k_drag, so
+                                      # re-check it at 0.5). Erik sweeps this fraction at P-E5
+                                      # (physical-air anchor ~=0.0014); any non-deposited
+                                      # remainder is a counted, named destruction channel
+                                      # (e_drag_drop_sum, R3-legal).
 
 # Canonical game-T -> Kelvin map (temperature_scale_unification_design_
 # 2026-08-13 §2). The ONE place these constants are defined — radiation bake,
@@ -607,7 +674,11 @@ eos_t_amb_k = 290.0                    # EOS absolute-ambient (pressure calibrat
 # N_O2 mean, converting consumed O2 into smoke (soot_yield) + inert_N2
 # (the remainder — N_total is CONSERVED, never a fake pressure drain) and
 # depositing heat via the §4.3 reciprocal (shares c_v/n_floor_heat with
-# [physics.thermal] above — ONE combustion/deposit floor in the system).
+# [physics.thermal] above — ONE combustion/deposit floor in the system, now a
+# LOW value-hygiene dial at 0.01 per the energy-books arc's ruling — see
+# [physics.thermal]'s n_floor_heat comment for the full rationale; both
+# deposit sites also gained an energy-sum counter for the floor's
+# destruction, e_deposit_drop_sum, design §2.2/§2.5).
 # Sane defaults; feel-tuned at P5 like every other fire/thermal dial.
 [physics.combustion]
 # Continuous-O2 law (docs/continuous_o2_law_design_2026-07-24.md §2.3): the O2
@@ -1096,6 +1167,15 @@ thermal_mass = 0     # air: 0 == the GAS thermal regime (thermal-mass axis desig
 cool_shift = 5       # air: unused (the cooling pass is thermal-solid only), sane value
 ignition_temp = 0.0
 wave_reflect = 0.0
+# FORBIDDEN BAND (storm audit 2026-08-14 §5, row d/d', §5B; energy-books
+# design §2.8): wave_absorb in the OPEN interval (0, 0.02) WHILE
+# [physics.fire] k_wind_strip > 0 is the historical rectifier window — a
+# live fire in that band goes violently unstable (KE burst, T-floor
+# spiral). Dormant at k_wind_strip=0.0 (shipped), but physics_runner.py
+# warns loudly at load if this band is ever wandered into unwarned. Prefer
+# [physics.eos] k_drag (P-E3, design §2.8) for interior damping — a
+# strictly stronger sink at the equivalent rate that ships with a heat
+# counterparty, so it never opens this window.
 wave_absorb = 0.0
 blast_resist = 0.0
 burst_threshold = 0.0

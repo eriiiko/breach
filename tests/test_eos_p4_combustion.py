@@ -2,8 +2,10 @@
 decisions log #12). Own pass, once per tick, after the EOS solver materializes
 P/N/T (cpp/src/combustion.{h,cpp}); re-points FireSimulation's + ignition's O2
 gates to the REAL local N_O2 mean (cpp/src/fire_simulation.cpp,
-src/simulation/combat.py); applies the per-gas trace `decay` column, crediting
-the lost mass to `inert_N2` in the same cell (cpp/src/physics_engine.cpp).
+src/simulation/combat.py); applies the per-gas trace `decay` column
+(cpp/src/physics_engine.cpp) — decayed mass simply VANISHES since P-T0
+(energy-books arc, design §2.6 — the decay->inert_N2 credit is DELETED,
+see test_trace_decay_credits_nothing_to_inert_n2 below).
 
 Two tiers of gate, per the patch instructions:
 
@@ -168,10 +170,13 @@ def _o2n2_total(gmap):
     smoke; that scatter is now deleted, docs/smoke_single_source_asbuilt_
     2026-08-15.md, but the exclusion still holds for the transport reason
     above.) Combustion can only ever MOVE mass OUT of this pair (the
-    soot_yield fraction leaves permanently to smoke) or credit SOME of it
-    back in as smoke decays to inert_N2 (decisions #12 v2.1) — so this sum
-    is bounded ABOVE by its starting value (proving no fabrication) without
-    being strictly monotonic."""
+    soot_yield fraction leaves permanently to smoke). P-T0 (energy-books
+    arc, design §2.6 — the 0% ruling) DELETED the decay->inert_N2 credit
+    that used to move some mass back in (decisions #12 v2.1, now retired
+    doctrine) — decayed trace counts simply vanish, crediting nothing — so
+    this sum is now MONOTONICALLY NON-INCREASING (strictly bounded above by
+    its starting value; the premise that "smoke decays back in" no longer
+    holds)."""
     return (int(gmap.gas[O2].astype(np.int64).sum())
             + int(gmap.gas[INERT_N2].astype(np.int64).sum()))
 
@@ -233,16 +238,24 @@ def test_combustion_pass_conserves_o2_n2_soot_exactly():
     assert any_burn, "the scenario never actually burned — the gate is vacuous"
 
 
-def test_trace_decay_credits_inert_n2_exactly():
-    """The v2.1 decay->inert_N2 credit (physics_engine.cpp's run_substeps
-    trace loop), isolated from the trace plane's OWN two ALREADY-blessed
-    non-conservative mechanisms (smoke_dynamics.h: "NON-CONSERVATIVE by
-    design ... smoke decay is the tuning knob") — its diffusion Laplacian
-    (a real truncation loss even at zero wind: disabled here via
-    `gases.diffusion[TEARGAS] = 0`) and its SL advection displacement
-    (a no-op here since wind stays exactly 0 in this quiescent, no-fire,
-    no-vacuum sealed room — verified below). With those isolated, any mass
-    movement observed is decay's credit transaction alone."""
+def test_trace_decay_credits_nothing_to_inert_n2():
+    """P-T0 (energy-books arc, 2026-08-17, design §2.6 — the trace 0%
+    ruling): the v2.1 decay->inert_N2 credit (physics_engine.cpp's
+    run_substeps trace loop) is DELETED — "decay is oxidation, not
+    deletion" is retired doctrine now that traces carry zero pressure
+    weight (nothing to conserve). This is the INVERSE of the pre-P-T0 gate
+    it replaces (`test_trace_decay_credits_inert_n2_exactly`, which
+    asserted trace+N2 held constant): decay now simply REMOVES trace mass;
+    inert_N2 must be unchanged TO THE LSB. Isolated from the trace plane's
+    OWN two ALREADY-blessed non-conservative mechanisms (smoke_dynamics.h:
+    "NON-CONSERVATIVE by design ... smoke decay is the tuning knob") — its
+    diffusion Laplacian (a real truncation loss even at zero wind: disabled
+    here via `gases.diffusion[TEARGAS] = 0`) and its SL advection
+    displacement (a no-op here since wind stays exactly 0 in this
+    quiescent, no-fire, no-vacuum sealed room — verified below). With those
+    isolated, decay is the ONLY mechanism touching either plane, so
+    inert_N2's exact-LSB stillness proves the credit is truly gone, not
+    just small."""
     gmap = _sealed_room(hh=9)
     pr = _runner()
     # Seed a trace gas (teargas — decay 0.010/s per config.toml) at ambient
@@ -255,16 +268,14 @@ def test_trace_decay_credits_inert_n2_exactly():
 
     trace0 = int(gmap.gas[TEARGAS].astype(np.int64).sum())
     n2_0 = int(gmap.gas[INERT_N2].astype(np.int64).sum())
-    total0 = trace0 + n2_0
     assert trace0 > 0, "test setup produced no trace mass — vacuous"
 
     for _ in range(20):
         pr.step(gmap, SEED_TICK_DT)
-        trace = int(gmap.gas[TEARGAS].astype(np.int64).sum())
         n2 = int(gmap.gas[INERT_N2].astype(np.int64).sum())
-        assert trace + n2 == total0, (
-            f"decay->inert_N2 credit leaked mass: {trace + n2} != {total0} "
-            f"(trace={trace}, n2={n2})")
+        assert n2 == n2_0, (
+            f"trace decay credited inert_N2 — the P-T0 deletion did not "
+            f"hold: {n2} != {n2_0}")
     assert trace0 - int(gmap.gas[TEARGAS].astype(np.int64).sum()) > 0, (
         "no decay was observed over 20 ticks at decay=0.010/s — the gate is "
         "vacuous")
@@ -424,10 +435,10 @@ def test_e2e_1_sealed_room_fire_self_starves():
     assert wall_hp_final > 0.9 * wall_hp0, (
         f"the wall burned through instead of starving "
         f"(wall_hp {wall_hp0:.2f} -> {wall_hp_final:.2f})")
-    # No mass fabrication: the bulk O2+N2 pair never exceeds its start (it
-    # may recover SOME as soot decays back to inert_N2, decisions #12 v2.1,
-    # but combustion can only ever REMOVE mass from this pair, never add to
-    # it beyond what decay credits back).
+    # No mass fabrication: the bulk O2+N2 pair never exceeds its start.
+    # P-T0 (design §2.6) deleted the decay->inert_N2 credit (decisions #12
+    # v2.1, now retired doctrine) — combustion can now only ever REMOVE mass
+    # from this pair, never add any back, so the bound is strict.
     assert max(mass_hist) <= total0, (
         f"O2+N2 exceeded its starting total "
         f"(max {max(mass_hist)} > start {total0}) — mass fabricated")
@@ -672,7 +683,7 @@ def test_payoff_orderings_perturbation_robust():
 
 if __name__ == "__main__":
     test_combustion_pass_conserves_o2_n2_soot_exactly()
-    test_trace_decay_credits_inert_n2_exactly()
+    test_trace_decay_credits_nothing_to_inert_n2()
     test_thermal_spike_is_pre_existing_not_a_p4_regression()
     test_e2e_1_sealed_room_fire_self_starves()
     test_e2e_2_breach_vents_o2_and_kills_fire()
