@@ -119,8 +119,14 @@ def main(argv=None):
 
     n1 = bulk_n(gmap)
     print(f"\n  Sum N after         {n1:>18,d} raw = {n1 / FP_ONE:10.3f} cell-eq")
-    print(f"  MINTED BY DESTRUCTION {total:>+16,d} raw = {total / FP_ONE:+8.3f} "
+    print(f"  MOVED BY DESTRUCTION  {total:>+16,d} raw = {total / FP_ONE:+8.3f} "
           f"cell-eq  ({100.0 * total / n0:+.4f}% of the map's air)")
+    # P-M3: the seed is now a NAMED channel, not an anonymous mint. The tool's
+    # own bracket and the engine's must agree to the LSB.
+    booked = int(getattr(gmap, "n_destruction_seed_sum", 0))
+    print(f"  booked to n_destruction_seed_sum "
+          f"{booked:>+14,d} raw = {booked / FP_ONE:+8.3f} cell-eq"
+          f"   [{'MATCHES' if booked == total else 'MISMATCH'} the measured Sum N move]")
 
     if a.step:
         sim.set_paused(False)
@@ -129,10 +135,15 @@ def main(argv=None):
         print(f"\n  after one solver tick {n2:>16,d} raw = {n2 / FP_ONE:10.3f} "
               f"cell-eq   (tick alone: {(n2 - n1) / FP_ONE:+.3f} cell-eq)")
 
-    print("\nVERDICT:", "DESTRUCTION MINTS MASS" if total > 0 else
-          "destruction is mass-neutral")
-    # Always exit 0: this is a measurement tool, not the gate. The gate belongs
-    # in tests/ and lands with the fix (a red test on main helps nobody).
+    # The DEFECT was never "total > 0" — a bounded, booked ambient seed is the
+    # sanctioned behaviour (design §2). The defect was that the seed scaled with
+    # local density. Run --pressurize 1 / 10 / 100 and compare: a constant
+    # per-tile move is healthy, a proportional one is the amplifier.
+    per_tile = total / len(tiles) / FP_ONE
+    print(f"\nVERDICT: {per_tile:+.3f} cell-eq per destroyed tile. "
+          f"Re-run at --pressurize 10/100: this number must NOT move.")
+    # Always exit 0: this is a measurement tool, not the gate. The gate lives in
+    # tests/test_destroy_wall_conserves_mass.py.
     return 0
 
 
