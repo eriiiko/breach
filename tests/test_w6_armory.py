@@ -515,21 +515,16 @@ def test_dragon_heat_deposits_track_their_ranges():
 from _xarch_perfield_digest import GOLDEN_AGGREGATE  # noqa: E402
 
 
-def test_canonical_scenario_golden_and_untouched_rng():
-    """The strongest replica there is: the canonical A/B scenario's 30-tick
-    aggregate digest (every field, every cell, every tick + the synced unit
-    state) equals main's sanctioned golden — W6 moved NOTHING. And the
-    sim RNG end-state equals a fresh generator's: the scenario consumes
-    ZERO randomness, so any W6 draw sneaking onto the stream trips here
-    even if no hashed field moved yet."""
+def _run_canonical_scenario():
+    """Run the canonical A/B scenario 30 ticks; return (sim, trajectory).
+
+    capture_trajectory owns its sim; replicate its body verbatim so the
+    generator stays inspectable afterwards.
+    """
     from field_ab_harness import (
-        SEED as AB_SEED, SIM_FIELDS, UNIT_DIGEST_KEY,
+        SIM_FIELDS, UNIT_DIGEST_KEY,
         _capture_unit_state, _snapshot, default_scenario_sim,
     )
-    from field_digest import trajectory_digest
-
-    # capture_trajectory owns its sim; replicate its body verbatim so the
-    # generator stays inspectable afterwards.
     sim = default_scenario_sim()
     traj = []
     for _ in range(30):
@@ -538,13 +533,58 @@ def test_canonical_scenario_golden_and_untouched_rng():
         snap = _snapshot(sim.gmap, SIM_FIELDS)
         snap[UNIT_DIGEST_KEY] = _capture_unit_state(sim)
         traj.append(snap)
+    return sim, traj
 
-    assert trajectory_digest(traj) == GOLDEN_AGGREGATE, (
-        "the canonical scenario's aggregate digest moved — W6 changed a "
-        "dormant trajectory; this is a bug, never a re-baseline")
+
+# RE-SCOPED 2026-08-18 (pressure arc close, Erik's ruling (b)-then-(a)). This
+# was ONE test asserting two different things under one message that read "this
+# is a bug, never a re-baseline". That message was true of the RNG half and
+# FALSE of the digest half: the canonical scenario exercises the EOS, so every
+# deliberate physics arc lawfully moves its trajectory. The premise being wrong
+# cost 12 permanently-red tests (this one + all eleven CUDA files, each of which
+# PASSES its real GPU<->CPU parity legs and fails only the shared golden), i.e.
+# a quarter of the red baseline, for zero signal. Split so each half can say
+# what it actually means.
+def test_canonical_scenario_consumes_no_rng():
+    """THE DURABLE DORMANCY CANARY — and the one W6 actually needed.
+
+    The canonical scenario consumes ZERO randomness, so the sim RNG end-state
+    must equal a fresh generator's. Any weapons/AI path sneaking a draw onto
+    the stream trips here even if no hashed field moved.
+
+    This assertion is INDEPENDENT OF PHYSICS: it is about who touched the RNG,
+    not about what the gas did, so it stays meaningful across every physics
+    re-baseline. If this goes red it IS a bug, never a re-baseline.
+    """
+    from field_ab_harness import SEED as AB_SEED
+    sim, _ = _run_canonical_scenario()
     fresh = np.random.default_rng(AB_SEED)
     assert sim.rng.bit_generator.state == fresh.bit_generator.state, (
-        "the canonical scenario drew RNG — some W6 path consumed the stream")
+        "the canonical scenario drew RNG — some path consumed the stream")
+
+
+def test_canonical_scenario_matches_sanctioned_golden():
+    """THE DETERMINISM PIN: the 30-tick aggregate digest (every field, every
+    cell, every tick + synced unit state) equals main's sanctioned golden.
+
+    What this guards is cross-machine / cross-time bit-reproducibility — the
+    multiplayer + distributed-training requirement. It is NOT the CPU<->CUDA
+    parity check: that is the lockstep suite (tests/test_cuda_*.py PARTs 1-2),
+    which compares the two backends DIFFERENTIALLY in one run and needs no
+    golden at all.
+
+    Unlike the RNG canary above, this digest MOVES on any deliberate physics
+    change, and that is lawful. Re-baseline it in tests/_xarch_perfield_digest.py
+    — ONE event per approved change-set, with a lineage entry naming the cause
+    (the iron rule). An UNEXPLAINED move is still a bug.
+    """
+    from field_digest import trajectory_digest
+    _, traj = _run_canonical_scenario()
+    assert trajectory_digest(traj) == GOLDEN_AGGREGATE, (
+        "the canonical scenario's aggregate digest moved. If you did not "
+        "intend a behavioural change, this is a BUG — find it. If you did, "
+        "re-baseline GOLDEN_AGGREGATE in tests/_xarch_perfield_digest.py and "
+        "add a lineage entry naming the cause.")
 
 
 if __name__ == "__main__":
