@@ -27,6 +27,12 @@ for. Keep it.
 
 ## 2. Mass is CREATED, and not by a little
 
+> *Correction appended 2026-08-18 — see §8. The conclusion of this section
+> stands; several figures in it do not. The plane-units bug applies here
+> (`inert_n2` is raw Q16.16, `gas_o2` is not), `atmosphere` is the solved
+> pressure rather than N, and "4.15e7 × ambient" below is a raw value
+> mislabelled as a ratio — the true figure is 797.5×.*
+
 Total N summed over all gas cells, per tick:
 
 ```
@@ -74,6 +80,13 @@ ones, median N ≈ 10,954 × ambient in the top-1000 by |u|. Low-N cells
 (N < 0.001) have mean |u| = 1.77. The amplifier is not driving this.
 
 ## 4. Mechanism — semi-Lagrangian mass duplication at 27× CFL
+
+> *Correction appended 2026-08-18 — **this section is superseded; the mechanism
+> named in its title is falsified.** Bulk N is not advected semi-Lagrangian: it
+> uses donor-cell flux with a per-cell outflow limiter, and is mass-exact by
+> construction. See §8 and `mass_books_arc_kickoff_2026-08-18.md` §2. The
+> secondary observation at the foot of this section — the velocity clamp not
+> binding — survives and is carried into the arc.*
 
 ```
 peak |u|                          862.2 m/s   (1.35x c_local ~ 640)
@@ -123,3 +136,44 @@ remedy shape: instrument first, find which pass mints, then fix the law.
 or waits for the mass arc is Erik's call; the two are independent, and shipping
 the storm fix first makes the mass bug *easier* to see, not harder, because it
 removes the noise that was masking it.
+
+---
+
+## 8. Correction (appended 2026-08-18, re-derived from the dump)
+
+The headline finding — **the engine mints mass, and the mass and pressure fields
+have decoupled** — is confirmed and if anything understated. Several supporting
+figures above are wrong and are corrected here rather than edited in place.
+
+**Units.** The recorder dequantizes a named list of planes; `gas_o2` is on it,
+`inert_n2` is not. So `N_physical = gas_o2 + inert_n2/65536`, ambient cell = 1.0
+(`tools/analyze_blowup_dump.py:90-100` is the canonical converter — the same
+units bug it was fixed for on 2026-08-18 is the one that produced §2's figures).
+Separately, `atmosphere` in this dump is the **solved pressure**, not N: its
+value at the quoted cell at snap 2239 is 1.3714, which is the P column of §2's
+own table.
+
+| §2 as written | corrected (physical cell-equivalents) |
+|---|---|
+| start 2.89632e8 → peak 6.25819e8 → final 6.23429e8, **2.15×** | start **5,591.9** → final **12,306.8**, **2.201×** |
+| ≈ 5,124 cell-equivalents created | **6,714.9** cell-equivalents |
+| 6,257 gas cells | 6,257 at the start, **6,364** at the end (107 walls destroyed) |
+| one cell reaches "4.15e7 × ambient" | **797.5× ambient** (snap 2239, y=65 x=95); 709.6× at the final snap |
+| §3: "O₂ only fell to 77.5% of initial" | O₂ *count* **grows 2.151×** (1,172.5 → 2,522.2) — the 77.5% was a concentration, not a mass |
+
+**What the re-derivation adds** (detail in the kickoff doc §1.1): 100.3% of the
+mint arrives in **62 discrete blast-shaped events**, with payloads of **260.5**
+(×3, snaps 92/572/1292) and **72.4** (×2) cell-equivalents recurring to four
+significant figures; **12.9% was minted before the first wall broke**, so the
+breach amplifies but does not cause; solid cells hold exactly zero N at every
+snap, so no stale mass is carried in walls; and the vacuum sink **is** working —
+it removes mass on 2,337 of 2,399 snaps, but at under 1 cell-equivalent per snap
+against deposits of 72–260.
+
+**What this costs §6's framing.** "A handful of grenades is a handful of cells'
+worth, not five thousand" is measured false — a single grenade deposits ~260
+cell-equivalents. That does not by itself make the deposit the defect (deposits
+are by design), but the arc's audit must treat `n_deposit_sum` as a candidate
+for the whole budget rather than as negligible background. §6's three
+recommendations are otherwise unaffected, and recommendation 2 — instrument
+before choosing a fix — is what surfaced all of the above.
