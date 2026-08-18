@@ -321,6 +321,17 @@ class GameMap:
         # (PhysicsRunner.step) steps each non-empty slice. Boundary helpers in
         # simulation.gas_fixed quantize/dequantize (field edits, render, recorder).
         self.gas          = np.zeros((N_GASES, h, w), dtype=np.int32)
+        # --- mass-books channel: destruction seeding (P-M3 §3.4) -----------
+        # Signed, MEASURED lifetime total of every change to Sum(bulk N) made by
+        # :meth:`destroy_wall` — the named channel for the one sanctioned mass
+        # SOURCE in the destruction path (and, on furniture/breach tiles, sink).
+        # Signed because it is not a formula: writing the constant ambient seed
+        # into a non-solid destructible that already held gas (furniture ships
+        # permeability 0.5) is `seed - prior`, negative in any room above
+        # ambient. Python int, so it never wraps; raw Q16.16 counts, so it can be
+        # compared against a bulk-N sum to the LSB. P-M1 folds this into the
+        # per-tick `Delta(Sum N) == Sum(named channels)` identity.
+        self.n_destruction_seed_sum = 0
         # ``smoke`` is the canonical name for the SMOKE slice (combustion
         # soot — what fire/explosions emit; its diffusion 0.10 matches today's
         # d_smoke=0.1). It is a VIEW into ``gas[SMOKE]``: every reader and
@@ -898,6 +909,48 @@ class GameMap:
         return self.sky_mask
 
     # ------------------------------------------------------------------
+    # The map's ambient air constant — ONE accessor (P-M3 §3.1.1)
+    # ------------------------------------------------------------------
+    def ambient_seed(self):
+        """This map's ambient air, as EXACT Q16.16 integers:
+        ``(n_total_q, o2_q, n2_q, pin_q)``.
+
+        The single source of truth for "what one cell of this map's air is".
+        Before P-M3 the same constant was re-derived at several sites by two
+        derivations that agree only at default dials; anything that needs it
+        (the tick-0/reload fill below, ``destroy_wall``'s destruction seed)
+        now routes through here.
+
+        ``self._ambient`` is ``None`` on EVERY space map — it is populated only
+        under ``boundary == "ambient"`` (see ``__init__``) — so the two branches
+        are load-bearing, not defensive:
+
+        - **ambient map**: the level's own derived constants (``derive_ambient``)
+          — ``n_total_q = quantize(p_amb)``, the split from the authored
+          ``o2_frac``, and ``pin_q`` = the sim's own ``p*(N_amb, ΔT=0)``.
+        - **space map**: Earth-normal ``FP_ONE`` of air, split 21/79 by mole
+          fraction — ``quantize_scalar(0.21) == 13763`` and
+          ``quantize_scalar(0.79) == 51773``, which sum back to EXACTLY
+          ``FP_ONE`` (65536), and ``pin_q = FP_ONE`` to match.
+
+        Note ``n_total_q != pin_q`` in general: on an ambient map the effective
+        pin is ``p*(N)``, 65540 raw at Earth defaults, not 65536. Callers that
+        mean *mass* must use ``n_total_q``; callers that mean *displayed
+        pressure* must use ``pin_q``. Never assert the two are equal.
+
+        Design: docs/mass_books_pm3_destroy_wall_seed_design_2026-08-18.md §3.1.1.
+        """
+        from simulation import atmosphere_fixed as _atm_fx
+        from simulation import gas_fixed as _gas_fx
+        amb = self._ambient
+        if amb is not None:
+            return (int(amb.n_total_q), int(amb.n_o2_q), int(amb.n_n2_q),
+                    int(amb.pin_q))
+        o2_q = int(_gas_fx.quantize_scalar(0.21))
+        n2_q = int(_gas_fx.quantize_scalar(0.79))
+        return (o2_q + n2_q, o2_q, n2_q, int(_atm_fx.FP_ONE))
+
+    # ------------------------------------------------------------------
     # Cache rebuild
     # ------------------------------------------------------------------
     def _update_caches(self):
@@ -1038,15 +1091,11 @@ class GameMap:
         # reassigns the cache fields (the engine re-fetches field pointers each
         # step), and the running atmosphere is snapshotted/restored around this
         # call below, so this fresh allocation only seeds tick 0 / a reset.
-        from simulation import atmosphere_fixed as _atm_fx
-        from simulation import gas_fixed as _gas_fx
-        if self._ambient is not None:
-            fill_p = self._ambient.pin_q
-            o2_fill, n2_fill = self._ambient.n_o2_q, self._ambient.n_n2_q
-        else:
-            fill_p = _atm_fx.FP_ONE
-            o2_fill = _gas_fx.quantize_scalar(0.21)
-            n2_fill = _gas_fx.quantize_scalar(0.79)
+        # ONE accessor (P-M3 §3.1.1) — this was the reference derivation of the
+        # constant and is now its single home; `ambient_seed()` reproduces both
+        # branches exactly (ambient map -> derive_ambient's values; space map ->
+        # FP_ONE split 21/79). Pure refactor, no value moves.
+        _n_total_q, o2_fill, n2_fill, fill_p = self.ambient_seed()
         self.atmosphere = np.where(
             self.solid | self.is_vacuum, 0, fill_p
         ).astype(np.int32)
@@ -1575,16 +1624,13 @@ class GameMap:
                 count += 1
         return total / count if count > 0 else 0.0
 
-    def _seed_bulk_gas_neighbor_mean(self, fy, fx):
-        """Seed ``gas[O2]``/``gas[INERT_N2]`` at a newly-opened tile (EOS
-        refactor P1, docs/eos_refactor_design.md §2.2's minimal occupancy-
-        transition slice) — mirrors the ``atmosphere`` neighbor-mean refill
-        right next to every call site of this method in :meth:`destroy_wall`,
-        same anti-vacuum-pulse intent, now on the bulk species too. The FULL
-        evacuation rule (flooding/door-close) is P3's; this is only the
-        cell-JOINS-open-air half (§2.2's last sentence)."""
-        self.gas[O2][fy, fx] = self._neighbor_mean(self.gas[O2], fy, fx)
-        self.gas[INERT_N2][fy, fx] = self._neighbor_mean(self.gas[INERT_N2], fy, fx)
+    # (``_seed_bulk_gas_neighbor_mean`` DELETED — P-M3: it WAS the mint. It
+    # seeded gas[O2]/gas[INERT_N2] at a newly-opened tile with the neighbour
+    # mean, withdrawing nothing from the donors, so every destroyed tile
+    # created one neighbour-mean cell of air out of nothing — scaling with
+    # exactly the pressure that made the wall burst. :meth:`destroy_wall` now
+    # writes a CONSTANT ambient total with an inherited composition, and books
+    # it. Design: docs/mass_books_pm3_destroy_wall_seed_design_2026-08-18.md.)
 
     # (sink_fields / _rebuild_sink_field DELETED — EOS refactor P3,
     # decisions.md #3: native venting replaces the BFS smoke sink-pull.)
@@ -1692,28 +1738,70 @@ class GameMap:
     # ------------------------------------------------------------------
     # Mutators (used by explosions, fire wall burn-through)
     # ------------------------------------------------------------------
-    def destroy_wall(self, fy, fx):
-        """Convert (fy, fx) to air. Handles hull breach (edge => vacuum).
+    def _bulk_n_sum(self):
+        """Exact int64 total of the CONSERVATIVE bulk species (O2 + inert_N2)
+        over the whole grid, raw Q16.16 — the quantity the mass books track.
 
-        Interior walls and non-edge hulls are refilled with the neighbor
-        mean of ``atmosphere`` so we don't open with an artificial vacuum
-        pulse. Edge hull tiles become vacuum and rely on relaxation BCs
-        to drain smoothly.
+        Integer sum, never a float reduction: the ledger has to close to the
+        LSB or it cannot distinguish a mint from rounding."""
+        return (int(self.gas[O2].astype(np.int64).sum())
+                + int(self.gas[INERT_N2].astype(np.int64).sum()))
+
+    def destroy_wall(self, fy, fx):
+        """Convert (fy, fx) to air. Handles hull breach (edge => boundary).
+
+        Interior walls and non-edge hulls are seeded with **one cell of the
+        map's ambient air** (:meth:`ambient_seed`) so we don't open with an
+        artificial vacuum pulse — a CONSTANT total, whatever the local
+        pressure. Edge hull tiles (and any tile that exposes the boundary)
+        join the boundary reservoir instead: no seed, and whatever gas the
+        tile already held is evacuated here rather than left for the
+        transport clamp to wipe unbooked.
+
+        **Why a constant, and why it is not withdrawn from the donors**
+        (P-M3, docs/mass_books_pm3_destroy_wall_seed_design_2026-08-18.md §2):
+        this used to write the neighbour MEAN, minting one neighbour-mean cell
+        of air per destroyed tile. Since ``find_burst_walls`` fires on a
+        pressure differential, the mint scaled with exactly the pressure that
+        triggered the burst — the emergent relief valve was a pressure
+        AMPLIFIER, and carried 87.7% of a measured 2.201x session mass growth.
+        Withdrawing the seed from the donors (as ``unseal_tiles`` does) would
+        close the books exactly but was rejected on physical grounds: an
+        explosion redistributes matter, it does not eliminate it, and the sim
+        carries no rubble, so charging the player for the opened volume makes a
+        blasted-open cave suffocate you for digging it out. Seeding ambient
+        models the reservoir that is actually there. The seed is therefore a
+        NAMED, BOOKED source, not a silent one — see
+        ``n_destruction_seed_sum`` below; the load-bearing property is the
+        CONSTANT TOTAL (it breaks the feedback loop), not the value.
 
         W2 (mechanics/03 §3): the gate is ``material != MAT_AIR`` — any
         destructible MATERIAL tile converts, solid walls (the shipped set,
         unchanged behaviour) AND non-solid destructibles like furniture:
         bullet chew must be able to break a crate so it stops *being* cover.
-        No shipped caller ever reached here with a non-solid tile (the C++
-        fire burn-through list is is_wall-gated; find_burst_walls scans
-        walls; explosions gate on wall materials), so the widened gate only
-        activates for the new W2 chew path.
+        Furniture ships ``permeability = 0.5`` -> NOT solid -> it already holds
+        bulk N, so writing the constant into it is ``seed - prior``, which is
+        NEGATIVE whenever the room is above ambient. That is why the booking
+        channel is measured and signed rather than a formula.
         """
         h, w = self._h, self._w
         if not (0 <= fy < h and 0 <= fx < w):
             return
         was_hull = (self.material[fy, fx] == MAT_HULL)
         if self.material[fy, fx] != MAT_AIR:
+            # --- mass-books bracket (P-M3 §3.5) ---------------------------
+            # The bracket lives INSIDE destroy_wall, not around a "destruction
+            # block", because there is no such block: the six callers are
+            # scattered across THREE regions straddling physics_runner.step()
+            # — grenade/explosion (slot 2), bullet chew (2) and beam chew (4)
+            # run BEFORE it; fire burn-through (9), the burst valve (9b) and
+            # door-assembly death (9e) after. A bracket around slots 9/9b would
+            # miss 2 and 4; one around the whole tick would enclose the solver,
+            # whose own Sum N legitimately moves via the ambient rail and the
+            # vacuum sink. Bracketing here is the only form that covers all six
+            # call sites without enclosing solver behaviour, and it makes the
+            # channel correct by construction wherever a caller fires.
+            _n_before = self._bulk_n_sum()
             self.material[fy, fx] = MAT_AIR
             # (sink-field staleness mark DELETED — EOS P3: no BFS sink field.)
             # Patch ALL table-derived caches for this tile through the single
@@ -1725,7 +1813,7 @@ class GameMap:
             # it EXPOSES vacuum (any 4-neighbour is already vacuum: chained
             # breaches, a hole blown next to space), plus the original
             # edge-hull case. A destroyed tile NOT exposing vacuum joins
-            # open-air with a neighbor-mean seed (anti-vacuum-pulse, as ever).
+            # open-air with the constant ambient seed (anti-vacuum-pulse).
             on_edge_hull = was_hull and (
                 fy < 1 or fy >= h - 1 or fx < 1 or fx >= w - 1)
             # BC (boundary_conditions_spec_2026-07-19 §1, joins-AMBIENT twin): on
@@ -1749,9 +1837,129 @@ class GameMap:
                 # solver's Dirichlet pin (P=0 vacuum / P=P_amb ambient) + donor-
                 # cell venting drain/fill it natively (no hard zero).
                 breach_mask[fy, fx] = True
-            self.atmosphere[fy, fx] = self._neighbor_mean(
-                self.atmosphere, fy, fx)
-            self._seed_bulk_gas_neighbor_mean(fy, fx)
+
+            # --- the seed (P-M3 §3.1-§3.3) --------------------------------
+            n_total_q, o2_amb_q, _n2_amb_q, pin_q = self.ambient_seed()
+            if breach_mask[fy, fx]:
+                # §3.2 — a tile that joined the boundary is Dirichlet-pinned;
+                # seeding it would be pointless on a space map (measured: +10
+                # this tick, -10 the next) and wrong on an ambient map (the
+                # rail FILLS it to N_amb each substep and books the difference
+                # to boundary_flux). Predicate is the LIVE mask, mirroring
+                # `unseal_tiles`' `joins_boundary`, so the two cannot drift.
+                #
+                # But a SKIP alone is not enough. destroy_wall's gate is
+                # `material != MAT_AIR`, and furniture is a NON-solid
+                # destructible that already holds N. Chew a crate next to
+                # vacuum and, with only a skip, its existing gas would never be
+                # booked here — the next transport pass zeroes it via the
+                # `solid || is_vacuum -> N = 0` clamp, which carries no
+                # boundary_flux credit. Mass would vanish with a channel on
+                # NEITHER side of the seam. So evacuate explicitly, at destroy
+                # time, where the measured bracket above can see it.
+                self.gas[O2][fy, fx] = 0
+                self.gas[INERT_N2][fy, fx] = 0
+            else:
+                # §3.1.3 — CONSTANT total (`n_total_q`), composition INHERITED
+                # from the open donors. A fixed 21/79 seed would inject fresh
+                # oxidizer inside combustion's 2-hop draw radius on every tile
+                # of a burning wall run; inheriting keeps the local mole
+                # fraction. Donor set is PINNED to the same predicate the old
+                # `_neighbor_mean` used — 4-neighbours that are `not solid and
+                # not is_vacuum` (is_ambient cells DO count: on a planetside
+                # map the reservoir composition is the right thing to inherit
+                # toward).
+                #
+                # ONE exact int64 form, ONE rounding, no intermediate ratio.
+                # Written naively as `sum_o2 / sum_n` this would be a float in
+                # the sim path (iron rule); written via the house
+                # mul_q16(reciprocal_q16(...)) idiom the reciprocal's rounding
+                # can push the fraction to FP_ONE and make n2 NEGATIVE, which
+                # bulk_transport then silently clamps to 0 — an unbooked mint
+                # one substep after the books recorded a smaller delta.
+                sum_o2 = 0
+                sum_n = 0
+                for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    ny, nx = fy + dy, fx + dx
+                    if (0 <= ny < h and 0 <= nx < w
+                            and not self.solid[ny, nx]
+                            and not self.is_vacuum[ny, nx]):
+                        d_o2 = int(self.gas[O2][ny, nx])
+                        sum_o2 += d_o2
+                        sum_n += d_o2 + int(self.gas[INERT_N2][ny, nx])
+                if sum_n > 0:
+                    # round-half-up; 0 <= o2_q <= n_total_q is GUARANTEED
+                    # because sum_o2 <= sum_n (per-plane N >= 0 is held by
+                    # bulk_transport's clamp), so n2 can never go negative.
+                    o2_q = (n_total_q * sum_o2 + sum_n // 2) // sum_n
+                else:
+                    # §3.1.4 — NOT an edge case: this fires whenever no donor
+                    # holds gas, most importantly when all four neighbours are
+                    # solid, i.e. the interior tile of a >=2-thick slab, which
+                    # is ordinary blast geometry. Erik's ruling: fall back to
+                    # the map's AMBIENT composition, not pure N2 — the cave
+                    # case in the docstring is the whole motivation for the
+                    # ambient seed, and digging out a cave must not fill it
+                    # with nitrogen and suffocate the player. ACCEPTED GAP:
+                    # blasting a burning slab therefore briefly feeds the fire
+                    # (bounded at ambient_N per tile, does NOT scale with
+                    # pressure, and arguably the behaviour wanted anyway —
+                    # breach a burning wall, air rushes in, the fire flares).
+                    o2_q = o2_amb_q
+                self.gas[O2][fy, fx] = o2_q
+                self.gas[INERT_N2][fy, fx] = n_total_q - o2_q
+
+            # §3.1.2 — `atmosphere` MUST be written, on every path including a
+            # breach. A solid tile's atmosphere is a hard 0 (the MG solve zeroes
+            # it), and the two callers that run AFTER the physics step — fire
+            # burn-through and the burst valve — are refilled by nothing in that
+            # tick. find_burst_walls then reads `atm[ny, nx]` for every
+            # non-solid, non-vacuum, non-ambient neighbour: leave the hole at 0
+            # and a wall between a 2.1 atm room and a 1.0 atm corridor sees
+            # sides {2.1, 1.0, 0.0} -> spread 2.1 > burst_threshold 2.0 -> its
+            # along-wall neighbours pop, up to burst_max_per_tick per event.
+            # Dropping this write would remove the amplifier at the mass end and
+            # install one at the burst end, same code path, same tick. Three
+            # further same-tick readers of a stale 0 confirm it is not
+            # display-only: the MG warm start (p_prev := atmosphere),
+            # apply_wave_push (a ~1 atm phantom grad-P that can fire
+            # KNOCKED_DOWN beside a burnt-through wall), and the PRESSURE sensor
+            # channel (an RL observation).
+            #
+            # The value is the map's effective PIN, not n_total_q: p*(N_amb, 0)
+            # is 65540 raw (1.000061 atm) at Earth defaults, not 65536. Do not
+            # assert p* == N — the seed is stated purely in N.
+            self.atmosphere[fy, fx] = pin_q
+            # §3.1 — T := 0 explicitly, on EVERY destroyed tile including a
+            # breach. The energy books sum `n_bulk * T_game` over a set that
+            # skips solid/ts/vacuum/ambient with NO offset term, so a cell
+            # joining at T = 0 contributes exactly 0 and the books need no
+            # energy channel for the destruction (destroy_wall writes no
+            # temperature today, so a burning wall currently joins the books
+            # HOT — this closes a pre-existing energy-seam hole). On a breach
+            # tile it also stops a burning hull tile joining is_ambient still
+            # carrying the wall's heat: the c_local scan skips only
+            # `solid || is_vacuum`, so that would inflate map-wide sound speed
+            # and substep count for a tick.
+            self.temperature[fy, fx] = 0
+            # §3.3 — clear `fire`. The C++ burn-through path already zeroes it
+            # on every tile it emits, but the OTHER callers (burst, explosion,
+            # bullet chew, door) do not: `on_tile_changed` patches ten caches
+            # and never `fire`. This is a stale display/sensor cleanup, and it
+            # stops fire_simulation decrementing a now-air tile's wall_hp
+            # forever. It is NOT a change to fire spread — cellular spread no
+            # longer exists, apply_temperature_ignition is `flammable`-gated so
+            # it cannot relight an air tile, and a destroyed burning tile is
+            # already dropped as a radiation emitter. It DOES change the FIRE
+            # sensor channel, which is an RL observation change.
+            self.fire[fy, fx] = 0
+
+            # §3.4 — book it. MEASURED (post - pre), not derived from a
+            # formula, and SIGNED: on the solid path the prior N is 0 so the
+            # delta is +n_total_q per tile, but chewing furniture in a 5 atm
+            # room DELETES ~4 cell-equivalents, and evacuating a breached
+            # furniture tile is negative too.
+            self.n_destruction_seed_sum += self._bulk_n_sum() - _n_before
 
     # ------------------------------------------------------------------
     # EOS evacuation rule — seal / unseal (A5)
@@ -1762,9 +1970,15 @@ class GameMap:
     # adjacent open cells before any solver pass sees the new mask — the
     # bulk-flux solver defensively zeroes N on solid every pass, so a seal
     # without evacuation silently deletes mass. The symmetric open half
-    # (`unseal_tiles`) withdraws its seed from the donors instead of minting
-    # (destroy_wall's neighbor-mean seed stays the rule for DESTRUCTION
-    # events only). Both primitives are pure-integer, order-pinned, and
+    # (`unseal_tiles`) withdraws its seed from the donors, so opening a door
+    # is exactly conservative. `destroy_wall` deliberately does NOT: it seeds a
+    # CONSTANT cell of the map's ambient air and BOOKS it to
+    # `n_destruction_seed_sum` (P-M3 §2 — an explosion redistributes matter
+    # rather than eliminating it, and the sim carries no rubble, so charging
+    # the player for the opened volume would make a blasted-open cave
+    # suffocate him). The asymmetry survives, but it is now a NAMED bounded
+    # source rather than the pressure-proportional mint it used to be.
+    # Both primitives are pure-integer, order-pinned, and
     # atomic. No sim path calls them yet (doors wire in at A6) — dormancy is
     # structural. Full design + critique fold:
     # docs/a5_evacuation_impl_2026-07-18.md (v2).
@@ -2013,9 +2227,10 @@ class GameMap:
         instead — ``is_vacuum`` set, NO seed (zeroing is correct only for
         vacuum); this predicate reads the LIVE solid mask, so the join
         chains down the row-major span order (pinned, deliberate). Unlike
-        ``destroy_wall``, which mint-seeds unconditionally, opening never
-        creates gas. Atomic like ``seal_tiles`` (``ValueError`` on caller
-        bugs, no partial mutation).
+        ``destroy_wall``, which seeds one constant cell of the map's ambient
+        air and books it to ``n_destruction_seed_sum``, opening never creates
+        gas at all — a door is not a demolition. Atomic like ``seal_tiles``
+        (``ValueError`` on caller bugs, no partial mutation).
         Design: docs/a5_evacuation_impl_2026-07-18.md §7.
         """
         span = self._normalize_span(tiles)
@@ -2096,11 +2311,23 @@ class GameMap:
                 self.gas[g][fy, fx] = target
 
             # Display-alias stopgap (design §6): the MEAN of the donors'
-            # displayed atmosphere (divisor k, deliberately NOT k+1 — this
-            # is the minted display value destroy_wall also provides, not
-            # part of the conservation ledger; the solver rematerializes P
-            # next tick). wave_p matches so the |P - P_prev| ripple splash
-            # sees no phantom spike in the window before step 0.
+            # displayed atmosphere (divisor k, deliberately NOT k+1). The
+            # ORIGINAL justification — "the minted display value destroy_wall
+            # also provides" — no longer holds as written: since P-M3
+            # destroy_wall writes the map's effective ambient PIN there, not a
+            # neighbour mean. The write survives on its own merits, which are
+            # the load-bearing half anyway: `atmosphere` is not display-only.
+            # It is read the SAME tick by the MG warm start (p_prev :=
+            # atmosphere), by find_burst_walls' spread scan — where a stale 0
+            # in a freshly-opened tile manufactures a phantom differential that
+            # pops its neighbours — by apply_wave_push, and by the PRESSURE
+            # sensor channel. Leaving it unwritten trades a mass artefact for a
+            # burst artefact. It remains OUTSIDE the conservation ledger (the
+            # solver rematerializes P from N next tick); the divisor stays k
+            # because the seed here is withdrawn, so the opened tile should
+            # display what its donors display, not their post-withdrawal value.
+            # wave_p matches so the |P - P_prev| ripple splash sees no phantom
+            # spike in the window before step 0.
             self.atmosphere[fy, fx] = (
                 sum(int(self.atmosphere[d]) for d in donors) // k)
             self.wave_p[fy, fx] = int(self.atmosphere[fy, fx])
