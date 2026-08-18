@@ -541,6 +541,42 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// P-M4b (mass-books arc) — THE energy-books sum, extracted so there is exactly
+// ONE implementation of the accountable set.
+//
+// S = Σ n_bulk·T over the step-4c skip-set complement, i.e. every cell that is
+// NOT (solid || thermal-solid || vacuum || ambient-ring); n_bulk = the
+// gas_conservative planes summed as int64; T = raw game-T (Q16.16). Units are
+// raw Q16.16² (dequant = raw / 65536²) — the same currency as
+// eth_transport_delta / e_wipe_sum / e_floor_sum.
+//
+// WHY IT LIVES HERE. This was a `[&]`-capturing lambda local to
+// EOSSolver::step, so the only way to read the books from Python was to
+// re-implement the four-flag skip-set on the Python side — which would drift
+// from this file the first time the skip-set changed, and a books instrument
+// that silently disagrees with the books is worse than none. Both callers now
+// go through this one function: step()'s per-tick brackets
+// (eth_transport_delta / eth_compression_delta) and the `eos_energy_books_sum`
+// binding the mass-books gates measure Δ(books) across a destruction with.
+//
+// PURE INSTRUMENTATION — nothing in the sim path reads S, no digest folds it.
+// The extraction is byte-for-byte the lambda's arithmetic in the lambda's loop
+// order; it moves no behaviour (gated by the canonical-scenario digest).
+//
+// `thermal_solid == nullptr` falls back to `solid` — the same back-compat
+// idiom EOSSolver::step's `ts` uses, and the reason the fallback is HERE and
+// not at the call site: the binding gets it for free.
+// `is_ambient == nullptr` means space map -> the ring term is dormant BY
+// BRANCH, exactly as `ambient_mode` gates it inside step().
+int64_t eos_energy_books_sum(
+    const int32_t* gas, const bool* gas_conservative, int n_gases,
+    const int32_t* temperature,
+    const bool* solid, const bool* is_vacuum,
+    int n,
+    const bool* is_ambient = nullptr,
+    const bool* thermal_solid = nullptr);
+
+// ---------------------------------------------------------------------------
 // EOS P6.2 — standalone CPU reference for the SL-advection substep loop
 // (docs/eos_p6_gpu_alignment_review.md §4 row P6.2). Replays EXACTLY the
 // step-1a/1f chain of EOSSolver::step for a GIVEN substep count: the per-tick

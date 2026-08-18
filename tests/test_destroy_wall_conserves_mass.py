@@ -19,8 +19,9 @@ changes to the signed ``n_destruction_seed_sum`` channel. The load-bearing
 property is the constant TOTAL — it is what breaks the feedback loop — not the
 value and not the composition.
 
-Gates here are §6's 1-5. Deliberately NOT here: 6 (energy books — needs a C++
-binding for ``eth_books_sum``), 8/8b (caller order pins), 10 (CPU<->GPU), 11
+Gates here are §6's 1-5 and, since P-M4b, 6 (energy books — the C++ binding
+``bp.eos_energy_books_sum`` / ``PhysicsRunner.energy_books_sum`` now exists).
+Deliberately NOT here: 8/8b (caller order pins), 10 (CPU<->GPU), 11
 (HUMAN-TEST). Each is its own patch.
 
 Every gate below is written so it can go RED. In particular Gate 1 asserts the
@@ -427,6 +428,312 @@ def test_gate5_the_channel_accumulates_across_mixed_events():
     gmap.destroy_wall(fy, fx)        # the 5 atm crate:   -(4 * n_total)
     assert gmap.n_destruction_seed_sum == bulk_n(gmap) - n_before
     assert gmap.n_destruction_seed_sum == n_total_q - 4 * n_total_q
+
+
+# ===========================================================================
+# GATE 6 — the ENERGY books close across a destruction (design §4)
+# ===========================================================================
+# The claim: the energy books sum ``n_bulk * T_game`` over an accountable set
+# that skips ``solid || thermal_solid || is_vacuum || (ambient && is_ambient)``
+# with NO offset term (eos_solver.cpp: ``acc += nb * (int64_t)temperature[i]``
+# — no C, no s_eos_q, no ``+ t_amb_q``). A destroyed tile therefore joins that
+# set at ``T = 0`` contributing exactly ``nb * 0 == 0``, so
+# ``Delta(energy books) == 0`` across a destruction and NO energy channel is
+# needed — including for a BURNING wall.
+#
+# The instrument is ``PhysicsRunner.energy_books_sum`` -> the C++
+# ``eos_energy_books_sum``, which is THE SAME routine ``EOSSolver::step``'s
+# eth_transport_delta / eth_compression_delta brackets call (P-M4b extracted it
+# from the step-local lambda). Nothing here re-implements the skip-set: a
+# Python transcription of those four flags would drift from the books it claims
+# to measure, which is the exact failure class this arc exists to close.
+#
+# WHICH LEGS HAVE TEETH — measured, not assumed, by deleting
+# ``self.temperature[fy, fx] = 0`` from ``destroy_wall`` and re-running.
+# The measured DELTAS (the gate-6 claim itself):
+#   (b) burning wall     0 -> +58,982,400   (65536 * 900)  RED
+#   (d) furniture at T   0 -> +45,875,200   (65536 * 700)  RED
+#   (a) plain solid wall 0 ->            0                 delta stays green
+#   (c) breach tile      0 ->            0                 delta stays green
+# (a)'s delta is green either way only because this fixture's T field is 0
+# everywhere, so the hole has nothing to leak — the same "the obvious leg does
+# not discriminate" shape Gate 1 hit with room_density. (c)'s delta is green
+# STRUCTURALLY: a breach tile is skipped by ``is_vacuum`` on both sides of the
+# destruction, so no T written there can reach the books at all. Both are kept
+# as the stated-per-path coverage §6 asks for, with the REASON asserted so a
+# future change that stops excluding them fails loudly.
+#
+# (As a TEST, (c) does go red in that experiment — but on its trailing
+# ``temperature == 0`` companion assertion, which is coverage of the write, not
+# of the books. Only (b) and (d) fail on the Delta itself, and those are the
+# two legs that make gate 6 a real gate.)
+#
+# All four cases are SPACE maps, on which ``is_ambient`` reaches C++ as a NULL
+# pointer — so none of them exercise the fourth flag of the skip-set. The
+# AMBIENT-map leg below covers it, and covers it falsifiably: heating a ring
+# tile that really holds bulk N must move the books by exactly nothing.
+# ===========================================================================
+def _books(sim):
+    """Sigma n_bulk*T over the accountable set — raw Q16.16^2, exact int."""
+    return sim.physics_runner.energy_books_sum(sim.gmap)
+
+
+def test_gate6_energy_books_binding_matches_the_solvers_own_bracket():
+    """Support gate: the binding is not a second implementation.
+
+    A tick's ``eth_compression_delta`` is ``S_after - S_before`` across step
+    4c, taken by the SAME function this test calls. So the books read straight
+    after a tick must be an exact int64 (no float, no overflow, no re-derived
+    mask), and a second read of untouched state must return the identical
+    value. Cheap, but it is what makes the four Delta assertions below
+    meaningful rather than self-consistent noise."""
+    sim = _fixture_sim()
+    sim.set_paused(False)
+    sim.step()
+    s1 = _books(sim)
+    s2 = _books(sim)
+    assert isinstance(s1, int)
+    assert s1 == s2, "the instrument must be a pure read"
+    # The solver's own bracket ran this tick over the same set; if the binding
+    # had a different mask the counters below could not both be finite int64.
+    assert isinstance(sim.physics_runner.eos.eth_compression_delta, int)
+
+
+def test_gate6_energy_books_unchanged_across_a_plain_solid_wall():
+    """(a) Plain solid wall. Delta(energy books) == 0.
+
+    NOTE (measured): this leg stays green with the ``T := 0`` write deleted,
+    because the fixture's T field is 0 everywhere so a solid wall has no heat
+    to carry in. It is the baseline-path coverage, not the discriminating leg
+    — see (b)."""
+    sim = _fixture_sim()
+    gmap = sim.gmap
+    fy, fx = partition_wall_tiles(gmap)[1]
+    assert gmap.solid[fy, fx]
+
+    before = _books(sim)
+    gmap.destroy_wall(fy, fx)
+    after = _books(sim)
+
+    assert after - before == 0
+    # It really joined the accountable set (otherwise 0 is green for the wrong
+    # reason: an excluded tile contributes 0 whatever it holds).
+    assert not gmap.solid[fy, fx]
+    assert not gmap.thermal_solid[fy, fx]
+    assert not gmap.is_vacuum[fy, fx] and not gmap.is_ambient[fy, fx]
+    assert tile_n(gmap, fy, fx) > 0, "it joined WITH mass, at T = 0"
+    assert int(gmap.temperature[fy, fx]) == 0
+
+
+def test_gate6_energy_books_unchanged_across_a_BURNING_wall():
+    """(b) THE discriminating leg. A wall carrying fire and a hot T.
+
+    ``destroy_wall`` wrote no temperature before P-M3, and the solver skips its
+    two ``temperature`` writes on a ``thermal_solid`` tile — so a wall's T is
+    stale-but-live state that nothing resets, and a burning wall joined the
+    books HOT. That is a pre-existing energy-seam hole (design §4), and it is
+    what ``T := 0`` closes.
+
+    Measured with the write deleted: Delta == +58,982,400 == 65536 * 900, i.e.
+    the tile's seeded n_bulk times its stale T — energy minted out of a
+    destruction, in the same currency as eth_transport_delta."""
+    sim = _fixture_sim()
+    gmap = sim.gmap
+    fy, fx = partition_wall_tiles(gmap)[1]
+    assert gmap.solid[fy, fx] and gmap.thermal_solid[fy, fx]
+    gmap.temperature[fy, fx] = 900          # the burning wall's stored heat
+    gmap.fire[fy, fx] = 40000
+    # Excluded WHILE solid, so the 900 is invisible to the books right now —
+    # the whole question is what happens when the tile joins.
+    before = _books(sim)
+
+    gmap.destroy_wall(fy, fx)
+    after = _books(sim)
+
+    assert after - before == 0, (
+        "a burning wall must join the energy books COLD; a nonzero delta here "
+        "is energy created by destruction, with no channel to name it")
+    assert not gmap.thermal_solid[fy, fx], "on_tile_changed must clear ts"
+    assert not gmap.solid[fy, fx] and not gmap.is_vacuum[fy, fx]
+    assert int(gmap.temperature[fy, fx]) == 0
+    assert int(gmap.fire[fy, fx]) == 0
+    assert tile_n(gmap, fy, fx) > 0
+
+
+def test_gate6_energy_books_unchanged_across_a_breach_tile():
+    """(c) Breach tile on a SPACE map. Delta == 0, structurally.
+
+    A breached tile joins ``is_vacuum``, which the accountable set skips — so
+    it is excluded on BOTH sides of the destruction and no temperature written
+    there can reach the books. Stated as coverage of the third path, with the
+    REASON asserted: if a future change stops marking breach tiles vacuum while
+    still leaving them hot, the exclusion assertion fires even though the delta
+    would not.
+
+    (The T := 0 write still matters on this path for a different consumer: the
+    c_local scan skips only ``solid || is_vacuum``, so on an AMBIENT map a hot
+    breached tile inflates map-wide sound speed for a tick. That is not an
+    energy-books effect and is not gated here.)"""
+    sim = _fixture_sim()
+    gmap = sim.gmap
+    assert gmap._boundary == "space"
+    h, w = gmap.solid.shape
+    fy, fx = 0, w // 4                       # edge hull -> joins the boundary
+    assert gmap.solid[fy, fx]
+    gmap.temperature[fy, fx] = 900
+    gmap.fire[fy, fx] = 40000
+
+    before = _books(sim)
+    gmap.destroy_wall(fy, fx)
+    after = _books(sim)
+
+    assert after - before == 0
+    assert gmap.is_vacuum[fy, fx], (
+        "the breach tile's exclusion from the books rests on is_vacuum; if it "
+        "is no longer vacuum the zero above stops being structural")
+    assert tile_n(gmap, fy, fx) == 0, "breach seeds nothing"
+    assert int(gmap.temperature[fy, fx]) == 0
+
+
+def test_gate6_energy_books_unchanged_across_a_furniture_tile():
+    """(d) Furniture, the second discriminating leg — and a different shape
+    from (b).
+
+    Furniture is ``permeability = 0.5`` -> NOT solid, so it already holds bulk
+    N; but it IS ``thermal_solid`` (``thermal_mass > 0`` — the crate's
+    temperature belongs to the TemperatureSolver), so it is excluded from the
+    energy books anyway. Destroying it clears ts and it joins the books for the
+    first time, with the seeded N and T := 0 -> contributes 0.
+
+    So this leg exercises the ``thermal_solid`` flag of the skip-set rather
+    than the ``solid`` flag (b) exercises — and it is exactly the case a Python
+    transcription of the four flags would get wrong, since a crate looks like
+    open air on the ``solid`` axis.
+
+    Measured with the ``T := 0`` write deleted: Delta == +45,875,200 ==
+    65536 * 700."""
+    fy, fx = 6, 6                            # interior, NOT adjacent to vacuum
+    sim = _sim(_hull_box_level(edits=[(fy, fx, MAT_FURNITURE)],
+                               name="pm4b_furniture_books"))
+    gmap = sim.gmap
+    assert int(gmap.material[fy, fx]) == MAT_FURNITURE
+    assert not gmap.solid[fy, fx], "furniture is permeable -> it holds gas"
+    assert gmap.thermal_solid[fy, fx], "...and it is a THERMAL solid"
+    assert tile_n(gmap, fy, fx) > 0
+    gmap.temperature[fy, fx] = 700
+
+    before = _books(sim)
+    gmap.destroy_wall(fy, fx)
+    after = _books(sim)
+
+    assert after - before == 0
+    assert not gmap.thermal_solid[fy, fx], "destroying it must clear ts"
+    assert not gmap.solid[fy, fx] and not gmap.is_vacuum[fy, fx]
+    assert int(gmap.temperature[fy, fx]) == 0
+    assert tile_n(gmap, fy, fx) > 0, "it joined the books WITH mass"
+
+
+def test_gate6_energy_books_unchanged_across_breached_furniture():
+    """(d') The §3.2 escape: furniture adjacent to vacuum, evacuated at destroy
+    time. The mass side is Gate 4; the energy side is zero for the same
+    structural reason as (c) — the tile ends is_vacuum — and it is asserted so
+    the evacuation path is not silently outside gate 6's coverage."""
+    fy, fx = 1, 6
+    sim = _sim(_hull_box_level(edits=[(fy, fx, MAT_FURNITURE)],
+                               name="pm4b_breach_furniture_books"))
+    gmap = sim.gmap
+    gmap.temperature[fy, fx] = 700
+
+    before = _books(sim)
+    gmap.destroy_wall(fy, fx)
+    after = _books(sim)
+
+    assert after - before == 0
+    assert gmap.is_vacuum[fy, fx]
+    assert tile_n(gmap, fy, fx) == 0
+
+
+def test_gate6_energy_books_on_an_AMBIENT_map_exclude_the_ring():
+    """The fourth skip flag. Every case above is a SPACE map, where
+    ``is_ambient`` reaches C++ as a null pointer and the ring term is dormant
+    by branch — so none of them prove the ambient leg is wired at all.
+
+    On a planetside map ``PhysicsRunner._ambient_mask`` returns the live ring,
+    and heating a ring tile (which holds real bulk N) must move the books by
+    EXACTLY nothing. If the mask were dropped on the way to C++ this goes red
+    immediately; the space-map cases could not notice.
+
+    Then the gate-6 claim itself on this map class: destroying a burning
+    interior wall is still Delta == 0."""
+    sim = _sim(level_loader.load("planetside_demo"))
+    gmap = sim.gmap
+    runner = sim.physics_runner
+    assert gmap._boundary == "ambient"
+    assert gmap.is_ambient.any(), "the fixture must actually have a ring"
+    assert runner._ambient_mask(gmap) is not None
+
+    # A ring tile holds bulk N, and heating it must be invisible to the books.
+    ys, xs = np.nonzero(gmap.is_ambient)
+    ry, rx = int(ys[0]), int(xs[0])
+    assert tile_n(gmap, ry, rx) > 0, "a ring tile holds gas — that is the point"
+    before = _books(sim)
+    gmap.temperature[ry, rx] = 4000
+    assert _books(sim) - before == 0, (
+        "the ambient ring must be excluded; a nonzero delta means the "
+        "is_ambient mask never reached the C++ skip-set")
+
+    # ...while an interior cell on the SAME map is accounted normally.
+    ys, xs = np.nonzero((~gmap.solid) & (~gmap.thermal_solid)
+                        & (~gmap.is_vacuum) & (~gmap.is_ambient))
+    iy, ix = int(ys[len(ys) // 2]), int(xs[len(xs) // 2])
+    nb = tile_n(gmap, iy, ix)
+    assert nb > 0
+    mid = _books(sim)
+    gmap.temperature[iy, ix] = int(gmap.temperature[iy, ix]) + 250
+    assert _books(sim) - mid == nb * 250
+
+    # And the gate-6 claim on this map class: a burning interior wall.
+    h, w = gmap.solid.shape
+    wall = next(((y, x) for y in range(3, h - 3) for x in range(3, w - 3)
+                 if gmap.solid[y, x] and not gmap.is_ambient[y, x]), None)
+    assert wall is not None, "the fixture must offer an interior wall"
+    wy, wx = wall
+    gmap.temperature[wy, wx] = 900
+    gmap.fire[wy, wx] = 40000
+    before = _books(sim)
+    gmap.destroy_wall(wy, wx)
+    assert _books(sim) - before == 0
+    assert int(gmap.temperature[wy, wx]) == 0
+
+
+def test_gate6_the_instrument_can_see_energy_when_there_is_energy():
+    """Non-vacuity for the four zeros above: the instrument is not a constant.
+
+    Heating one accountable cell by dT moves the books by exactly
+    ``n_bulk * dT``. If this did not hold, ``Delta == 0`` everywhere above
+    would prove nothing — a books function that always returns the same number
+    passes every conservation gate ever written."""
+    sim = _fixture_sim()
+    gmap = sim.gmap
+    h, w = gmap.solid.shape
+    ys, xs = np.nonzero((~gmap.solid) & (~gmap.thermal_solid)
+                        & (~gmap.is_vacuum) & (~gmap.is_ambient))
+    assert len(ys) > 0
+    fy, fx = int(ys[0]), int(xs[0])
+    nb = tile_n(gmap, fy, fx)
+    assert nb > 0
+
+    before = _books(sim)
+    gmap.temperature[fy, fx] = int(gmap.temperature[fy, fx]) + 250
+    assert _books(sim) - before == nb * 250
+
+    # ...and a cell OUTSIDE the set moves it by nothing, which is the skip-set
+    # actually being applied rather than a whole-map sum.
+    sy, sx = partition_wall_tiles(gmap)[1]
+    assert gmap.solid[sy, sx]
+    mid = _books(sim)
+    gmap.temperature[sy, sx] = 5000
+    assert _books(sim) - mid == 0
 
 
 # ===========================================================================

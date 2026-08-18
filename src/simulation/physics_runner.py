@@ -1248,6 +1248,22 @@ class PhysicsRunner:
     # ------------------------------------------------------------------
     # BC: planetside AMBIENT ring args (boundary_conditions_spec_2026-07-19)
     # ------------------------------------------------------------------
+    @staticmethod
+    def _ambient_mask(gmap):
+        """The ``is_ambient`` argument every C++ ambient branch is gated on.
+
+        ``None`` on a space map (no ambient config, or no ring tiles) — the
+        null pointer is what makes the ambient path dormant BY BRANCH (spec
+        §5); the live ring mask otherwise. Split out of ``_ambient_args``
+        (P-M4b) so the SPACE-vs-AMBIENT decision exists exactly once and a
+        read-only caller can reach it without ``_ambient_args``' per-tick side
+        effects (the o2_frac_amb refresh, the n_amb cache fill).
+        """
+        amb = getattr(gmap, "_ambient", None)
+        if amb is None or not gmap.is_ambient.any():
+            return None
+        return gmap.is_ambient
+
     def _ambient_args(self, gmap):
         """Return ``(is_ambient, n_amb, p_amb, sponge_sigma, sponge_udamp)``.
 
@@ -1262,7 +1278,7 @@ class PhysicsRunner:
         O2 -> n_o2_q, inert_N2 -> n_n2_q, 0 elsewhere.
         """
         amb = getattr(gmap, "_ambient", None)
-        if amb is None or not gmap.is_ambient.any():
+        if self._ambient_mask(gmap) is None:
             return (None, None, 0, None, None)
         # X_amb is this map's authored ambient O2 fraction — one source of truth
         # with the BC. Refresh both solvers each tick; o2_frac is static per map,
@@ -1282,8 +1298,44 @@ class PhysicsRunner:
             n_amb[self._o2_idx] = int(amb.n_o2_q)
             n_amb[self._inert_n2_idx] = int(amb.n_n2_q)
             self._ambient_n_amb = n_amb
-        return (gmap.is_ambient, self._ambient_n_amb,
+        return (self._ambient_mask(gmap), self._ambient_n_amb,
                 int(amb.pin_q), gmap.sponge_sigma, gmap.sponge_udamp)
+
+    # ------------------------------------------------------------------
+    # P-M4b (mass-books arc): the energy books, readable from Python
+    # ------------------------------------------------------------------
+    def energy_books_sum(self, gmap) -> int:
+        """S = Σ n_bulk·T over the energy books' accountable set (raw Q16.16²).
+
+        THE instrument for the arc's energy-seam gates: bracket any state edit
+        (a ``destroy_wall``, a weapon, a whole tick) with two calls and diff
+        them.
+
+        The skip-set — ``solid || thermal_solid || is_vacuum ||
+        (ambient_mode && is_ambient)`` — and the ``Σ n_bulk·T`` arithmetic live
+        in C++ (``eos_energy_books_sum``, eos_solver.cpp), which is the SAME
+        routine ``EOSSolver::step``'s own ``eth_transport_delta`` /
+        ``eth_compression_delta`` brackets call. Nothing here re-implements it:
+        this method only ASSEMBLES the planes, and it assembles them from the
+        very expressions ``step`` threads into ``run_substeps`` (``gmap.gas``,
+        ``gmap.gases.conservative``, ``gmap.temperature``, ``gmap.solid``,
+        ``gmap.is_vacuum``, ``_ambient_mask(gmap)``, ``gmap.thermal_solid``)
+        — so a plane that changes over there changes here in the same edit.
+        Do NOT inline the skip-set into Python: drift between the books and the
+        instrument that reads them is the failure this arc is about.
+
+        ``_ambient_mask`` is the ONE space-map-vs-ambient-map decision
+        ``_ambient_args`` itself makes (``None`` -> the C++ ring term is dormant
+        by branch), not a second copy of it.
+
+        Pure instrumentation: reads state, writes none, folds into no digest.
+        """
+        return int(self.bp.eos_energy_books_sum(
+            gmap.gas, gmap.gases.conservative, gmap.temperature,
+            gmap.solid, gmap.is_vacuum,
+            is_ambient=self._ambient_mask(gmap),
+            thermal_solid=gmap.thermal_solid,
+        ))
 
     # ------------------------------------------------------------------
     # K2: sim-side fire heat ray pass
