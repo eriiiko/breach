@@ -177,6 +177,11 @@ def _drive_isolated_fire(dt, *, k_grow, k_die, k_wind_fan, ticks=40):
     # EOS refactor P4: n_o2 is the O2 gate's own input, non-limiting here
     # (this test is about dt/param-config determinism, not O2 starvation).
     n_o2 = np.where(solid, 0, atmosphere_fixed.quantize_scalar(1.0)).astype(np.int32)
+    # Continuous-O2 law (547fb12): the gate reads the MOLE FRACTION
+    # X = Sn_o2/Sn_total, so `step` takes the denominator plane. Gas density 1.0
+    # == n_o2, i.e. X == 1.0 -> o2f == 1: the same NON-LIMITING gate the absolute
+    # law gave at n_o2 = 1.0 (smoothstep well past the retired P_full = 0.03).
+    n_total = np.where(solid, 0, atmosphere_fixed.quantize_scalar(1.0)).astype(np.int32)
     smoke = np.zeros((h, w), dtype=np.int32)
     wall_hp = np.zeros((h, w), dtype=np.int32)
     wall_hp[2, 2] = wall_fixed.quantize_scalar(60.0)
@@ -187,8 +192,8 @@ def _drive_isolated_fire(dt, *, k_grow, k_die, k_wind_fan, ticks=40):
     wind_x = np.full((h, w), atmosphere_fixed.quantize_scalar(1.5), dtype=np.int32)
     wind_y = np.zeros((h, w), dtype=np.int32)
     for _ in range(ticks):
-        fs.step(fire, atm, n_o2, smoke, wall_hp, temperature, wind_x, wind_y,
-                solid, is_vac, flammable, float(dt))
+        fs.step(fire, atm, n_o2, n_total, smoke, wall_hp, temperature,
+                wind_x, wind_y, solid, is_vac, flammable, float(dt))
     return fire.copy()
 
 
