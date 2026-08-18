@@ -161,6 +161,33 @@ Prefer this over lowering `c_max`: it makes the solver *correct* rather than
 altering the physics to be easier to solve, and `c_max = 300` is a deliberate
 physical choice of Erik's (with `c` scaling as √T, which he wants to keep).
 
+### Why `c_max` was the other working knob — the mechanism, corrected
+
+Egregore node `concept:kwatra-cfl-c-decoupled` (2026-07-08) already had this,
+and it corrects a hypothesis I floated during the hunt:
+
+> In the Kwatra 2009 semi-implicit scheme the implicit acoustic solve **removes
+> c from the stability condition entirely**; the timestep is limited by |u|,
+> not |u|+c. Empirically proven on `eos-prototype`: c_max=120 vs c_max=60 gave
+> **identical substep counts** across all 5 scenarios. **c instead governs the
+> stiffness of the Helmholtz implicit solve** — higher c is marginally more
+> expensive per sweep at a fixed sweep count.
+
+So my "explicit acoustic coupling, c·dt/dx = 37.5 over the limit" guess was
+**wrong** (it was flagged unverified at the time). The real chain is:
+
+```
+higher c  ->  stiffer Helmholtz  ->  less converged at fixed cycle count  ->  storm
+```
+
+Two knobs, one mechanism — which is exactly why `c_max=75` and `mg_cycles=8`
+produced the same cure. It also means `c_max` is a legitimate physics/look dial
+(the node's words), not a cheat; we simply prefer to fix convergence and keep
+c near real air (343 m/s).
+
+Note the substep collapse (8 → 1) is consistent with this too: the velocities
+driving `n_sub` to its cap were **solver residual**, not acoustics.
+
 This is **not a free change**: it moves every digest, so it needs a deliberate
 golden re-baseline with written rationale, plus CUDA lockstep (`mg_cycles` is
 already plumbed to the device path, `bindings.cpp:1240`).
@@ -186,6 +213,75 @@ applies. Worth measuring before assuming.
 - The T_abs compression-work patch (Erik approved, timing mine) — note it
   makes step 4c act on ambient air where today it is inert, so it should land
   *after* this and be re-measured against it.
+
+## 7b. IMPLEMENTED 2026-08-18 — as-built, awaiting Erik's blessing
+
+**Change:** `mg_cycles = 8` (was a C++-only default of 2), plus `mg_nu1`,
+`mg_nu2`, `mg_coarsest_sweeps` made config-visible.
+Files: `config.toml` `[physics.eos]`, `src/simulation/physics_runner.py`.
+
+**No C++ change, no rebuild.** `mg_cycles` was already `def_readwrite` on the
+binding and already forwarded to the device V-cycle (`bindings.cpp:1240`), so
+one config key drives both backends. Only the plumbing was missing.
+
+Also corrected the `c_max` comment, which was actively wrong: it said "capped
+sound speed" and it is neither a cap (hot gas exceeds it via √T) nor a CFL
+parameter (§6 addendum).
+
+### Suite: 48 failed / 2187 passed / 5 skipped — set-diff EMPTY both directions
+
+Verified by running the full suite twice, with the change stashed and applied.
+Zero new reds, zero newly-green.
+
+**That is NOT evidence of safety, and must not be read as such.** Behaviour
+changed enormously — on `bench_two_room`, `ke_peak` 144.7 → 20.95 (7×) and
+`umax_peak` 6.65 → 2.09 m/s, with every field digest moving. The suite cannot
+see it because **the gate that would catch it is already red.**
+
+### Gate-health finding (side discovery, arguably as important)
+
+The 48-red baseline is dominated by **two single root causes**:
+
+- **12 tests fail on ONE stale canonical golden** (`28678e9d…`). All eleven
+  CUDA tests + `test_w6_armory`. Every one of them **passes its real
+  GPU↔CPU parity legs** — `test_cuda_mg_solve` reports PART 1 (22 configs
+  bit-identical) and PART 2 (120 ticks bit-identical, real engine) green, and
+  fails only PART 3 against this constant.
+- **12 tests fail on ONE stale signature**: `TypeError: step(): incompatible
+  function arguments` (`test_fire_feedback.py` ×11 + 1). Stale *test code*,
+  not a stale build — the compiled module (04:28) is newer than the newest
+  source (04:27). The tests were never updated when `FireSimulation.step()`
+  gained `fuel_recip` / `fire_T_ext_plane`.
+
+So ~half the red baseline is two pieces of hygiene, and neither is a physics
+bug. **CUDA lockstep is healthy** — that was the one verification I expected to
+owe and it is already green.
+
+### The golden: why I did NOT re-baseline
+
+`GOLDEN_AGGREGATE` has not been touched since W6 stage 4 (`6b606d2`). The drift
+is documented in the arc's own as-builts (`docs/archive/e1_p_e2a_asbuilt…`,
+`…e1_p_e4_asbuilt…`): P-T0 moved it to `8203584350ae…`, and P-E5's shipped
+`k_drag` moved it again to today's `b4f7d86c…`.
+
+Re-baselining now would bake **three** behavioural changes into one number —
+P-T0, P-E5 and this — which is precisely what "once per approved behavioral
+change, with written rationale" exists to prevent. It is also Erik's call.
+
+**Deeper problem worth a ruling:** the test's own message reads *"this is a
+bug, never a re-baseline"*. It was written as a W6 canary asserting the
+canonical scenario is **dormant** under weapons/RNG work. But that scenario
+exercises the EOS, so every physics arc legitimately moves it. **The canary's
+premise is false**, and it now costs 12 permanent red tests while providing no
+signal. Options: (a) re-baseline deliberately and accept it moves every physics
+arc; (b) re-scope it to assert what it actually meant — weapons/RNG dormancy —
+on a scenario genuinely inert to physics. I lean (b), then (a) once.
+
+### Still owed before merge
+
+- Erik's HUMAN-TEST (feel-adjacent: fires burn cooler/slower, storm gone).
+- The golden ruling above.
+- The fire retune (§5) — the dials were tuned against the storm.
 
 ## 8. Reproduction
 

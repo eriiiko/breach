@@ -432,6 +432,20 @@ class PhysicsRunner:
         # both derived at the LEVEL's physical tile size, not a config guess).
         self.eos.S              = int(
             getattr(eos_cfg, "S", self.eos.S))
+        # PRESSURE ARC (docs/pressure_arc_root_cause_2026-08-17.md): the MG
+        # V-cycle schedule becomes config-visible. It was a C++-only default
+        # "FROZEN at the MG gate" at C=2, measured there on 16²/160² scenarios
+        # for 300 ticks; at real map size over long runs C=2 leaves ~0.28 atm
+        # of residual per tick, which IS the storm. Config-visible so the
+        # schedule can be swept and gated like any other solver constant.
+        self.eos.mg_cycles      = int(
+            getattr(eos_cfg, "mg_cycles", self.eos.mg_cycles))
+        self.eos.mg_nu1         = int(
+            getattr(eos_cfg, "mg_nu1", self.eos.mg_nu1))
+        self.eos.mg_nu2         = int(
+            getattr(eos_cfg, "mg_nu2", self.eos.mg_nu2))
+        self.eos.mg_coarsest_sweeps = int(
+            getattr(eos_cfg, "mg_coarsest_sweeps", self.eos.mg_coarsest_sweeps))
         self.eos.N_SUB_MAX      = int(
             getattr(eos_cfg, "N_SUB_MAX", self.eos.N_SUB_MAX))
         self.eos.CFL_ADV        = _ep("CFL_ADV", self.eos.CFL_ADV)
