@@ -36,28 +36,65 @@ training.** That was the point — the recorder must capture a substrate whose
 books close, or every trajectory in the replay buffer carries a mint. M0–M4
 are unblocked on this axis now.
 
+**Pressure arc — CLOSED 2026-08-18, Erik HUMAN-TESTED.** The "storming
+atmosphere" was **not physics**: the pressure solve was running under-converged
+at `mg_cycles = 2` and re-injecting its residual every tick. Shipped
+**`mg_cycles = 8`** (now config-visible in `[physics.eos]`). On `playground`:
+**P_max 103.239 → 1.405 atm**, negative `P_min` gone, `u_clamp_hits` 69,672 → 0,
+`work_clamp_hits` 386,835 → 0, `n_sub` 8 → 1 — and **~18% faster per tick**,
+because a converged solve collapses the substep count. Grid size was the
+dominant variable (25× worse at fixed tile size from 14×27 → 70×99), which is
+why every bench we owned was blind to it. Erik's verdict: *"fires dont blow up
+anymore."* Full record `docs/pressure_arc_root_cause_2026-08-17.md`; canon
+folded into engine chapter 04; suite **48 → 37 reds, zero newly red**.
+
+Bonus from the close: the sanctioned golden had been stale for **three**
+approved changes (P-T0, P-E5's `k_drag`, this) and was duplicated as a hardcoded
+literal in 11 CUDA check scripts, so one re-baseline fixed only one test. Now
+single-sourced from `tests/_xarch_perfield_digest.py`; the mis-scoped W6 canary
+was split so its durable half (RNG dormancy, physics-independent) keeps its
+"never a re-baseline" contract. **CUDA lockstep is now genuinely green** rather
+than masked by a stale constant.
+
 Queued next, in this order:
 
-1. **Pressure/momentum arc — AUDIT FIRST** (Erik's standing ruling; the
-   recorder is already instrumented for it). The thermal books are closed and
-   the dumps prove it (peak T 741, zero cells near the ceiling), but pressure
-   transients remain: **~98 atm at a normal ~700 game-T ⇒ ~29× ambient density
-   in one cell**, plus a negative `P_min`. A mass/momentum event, not a
-   thermal one. `recorder.DEFAULT_FIELDS` now captures `wind_x`/`wind_y`
-   (wind is NOT recoverable from the pressure field — the gradient is
-   acceleration, `u` is its history, ~90° out of phase in the Helmholtz mode)
-   and `inert_n2` (so `p* = C·N·T_abs` decomposes offline). Its own arc.
+1. **★ MASS-BOOKS ARC — AUDIT FIRST** (opened 2026-08-18 by the pressure arc's
+   HUMAN-TEST). Erik: *"grenades still can [blow up], especially after i broke
+   a wall with a high pressure room."* **Mass is being created.** Total map N
+   grows **2.15×** on `playground`, which is `boundary = space, ambient = None`
+   — no reservoir, no legitimate source, and the only sink (venting to vacuum)
+   can only *remove* mass. Locally one cell reaches ~710× ambient, doubling
+   every tick for 12 ticks, while the *solved* pressure sits at 1.371 — the mass
+   and pressure fields have decoupled. Grenade bulk-N deposits are real and by
+   design but are worth a few cells, not thousands.
+   **The mint is UNATTRIBUTED**: the donor-cell transport has a per-cell outflow
+   limiter and is mass-exact by construction, so three plausible mechanisms have
+   already been proposed and falsified by measurement (density-division
+   amplifier; SL duplication; O₂ suffocation). Do NOT choose a fix before the
+   instrument exists. **First patch = a per-pass MASS LEDGER** — who creates N,
+   who removes it, asserted every tick — the exact shape that worked for energy
+   (`test_no_transport_mint`). Carries a known pre-existing lockstep divergence
+   on its own target scenario: `test_cuda_p64_kick_compression` PART 2
+   (blast + venting) diverges CPU↔GPU at both C=2 and C=8, despite P-E4's
+   as-built claiming it repaired. Seed doc:
+   `docs/human_test_2026-08-18_mass_books.md`.
 2. **T_abs compression work** (design §2.9, RULING R1) — a short designed
    patch with its own critique round and its own HUMAN-TEST: run the
    reversible work on absolute temperature, `T_new = (T + 290)·(1±w) − 290`,
    so compression stops *freezing* sub-ambient gas and ambient air finally
    heats under compression at all. Feel-adjacent (breach rarefaction becomes
    genuinely cold).
-3. **Post-pressure retune pass** — one sweep over everything once the pressure
-   arc lands: the fire anchors (`peak time` fell out of its band at P-E1;
-   `peak I`, plateau T and `fire death` were already MISSing), `k_drag` (0.5
-   is a *starting* value, not a tuned one — Erik's explicit ruling), and the
-   arc's one declared red,
+3. **Post-pressure retune pass** — **DO NOT START BEFORE THE MASS ARC LANDS.**
+   Retuning against a substrate that mints mass would bake the mint into the
+   dials — the same argument the energy-books arc made for landing before any
+   recorder milestone. Note the fires are now *legitimately* weaker: total fire
+   intensity roughly halved on playground (79 → 33) once the spurious wind
+   stopped delivering oxygen, so the anchors moved for a real reason.
+   One sweep over everything: the fire anchors (`peak time` fell out of its band
+   at P-E1; `peak I`, plateau T and `fire death` were already MISSing), `k_drag`
+   (0.5 is a *starting* value, not a tuned one — Erik's explicit ruling, and it
+   may now be unnecessary since it was damping a storm that was largely solver
+   artifact), and the arc's one declared red,
    `tests/test_p3_direct_e2e.py::test_directional_spray_cone_follows_facing`
    (damped air shortens a spray cone's throw — expected, left honestly red).
 

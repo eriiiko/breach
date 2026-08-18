@@ -1,5 +1,49 @@
 # Breach — TODO
 
+## ★ PICK UP HERE (2026-08-18) — the MASS-BOOKS arc, audit-first
+
+The pressure arc closed and immediately opened this one at its HUMAN-TEST.
+Erik: *"fires dont blow up anymore, but grenades still can, especially after i
+broke a wall with a high pressure room."*
+
+**Mass is being created.** Total map N grows **2.15×** over one play session on
+`playground` — a `boundary = space, ambient = None` level, so there is **no
+reservoir, no legitimate source**, and the only sink (venting through a breach)
+can only *remove* mass. Locally one cell reaches ~710× ambient, **doubling every
+tick for 12 consecutive ticks**, while the *solved* pressure at that cell sits at
+1.371: the mass field and the pressure field have come apart. Grenade bulk-N
+deposits are real and by design, but worth a few cells — not thousands.
+
+**The mint is UNATTRIBUTED, and that is the point.** Three plausible mechanisms
+have already been proposed and killed by measurement — the density-division
+amplifier (fastest cells turn out to be the *dense* ones), semi-Lagrangian
+duplication (mass uses donor-cell, not SL), and O₂ suffocation. The donor-cell
+transport even has a per-cell outflow limiter and is mass-exact by construction.
+**Do not choose a fix before the instrument exists.**
+
+**FIRST PATCH = the per-pass MASS LEDGER** — who creates N, who removes it,
+asserted every tick. Exactly the shape that worked for energy
+(`test_no_transport_mint`), and a *property* gate rather than a golden, so it
+survives the retune and every dial change still queued.
+
+Read: `docs/human_test_2026-08-18_mass_books.md` (seed + measurements),
+`docs/pressure_arc_root_cause_2026-08-17.md` (what just closed).
+Evidence: `debug_blowup_20260818_040647.npz` — **the first dump carrying
+`wind_x`/`wind_y`/`inert_n2`**, so the first that can answer a momentum
+question. Keep it.
+
+**Carries a known pre-existing defect on its own target scenario:**
+`test_cuda_p64_kick_compression` PART 2 (blast + venting) diverges CPU↔GPU —
+verified at both `mg_cycles` 2 and 8, so unrelated to the pressure fix.
+`docs/archive/e1_p_e2a_asbuilt_2026-08-17.md` records P-E2a finding it and
+P-E4's as-built claims it repaired; it has not. May be the same bug from the
+GPU side.
+
+**Blocked on this arc:** the post-pressure retune pass (item 3 below). Retuning
+against a substrate that mints mass bakes the mint into the dials.
+
+---
+
 > What needs to be done. Not what's done — git has that.
 > Planning window: `roadmap_2026-07-30_rl_push.md` maps these items into tracks
 > (the RL push); this file stays the item-level ledger. Staleness-swept 2026-07-30.
@@ -21,15 +65,12 @@ Blessed suite state: **48 failed / 2186 passed / 5 skipped**.
 
 **Three items this arc queued, in order:**
 
-1. **Pressure / momentum arc — its OWN arc, AUDIT FIRST.** Thermal is closed
-   and the in-game dumps confirm it (peak T 741; zero cells near the 16000
-   ceiling), but pressure transients remain: **~98 atm at a normal ~700
-   game-T ⇒ ~29× ambient density in one cell**, plus negative `P_min`. That is
-   a **mass/momentum event, not a thermal one**. The recorder is already
-   instrumented for it (`wind_x`/`wind_y`/`inert_n2` in `DEFAULT_FIELDS`,
-   `df088f1`) — wind cannot be recovered from the pressure field, so the next
-   pop needs those planes to be diagnosable. Erik's standing ruling applies:
-   audit before choosing any dial.
+1. ~~**Pressure / momentum arc**~~ — **CLOSED 2026-08-18, HUMAN-TESTED.** It was
+   not physics: the pressure solve ran under-converged at `mg_cycles = 2`.
+   Shipped `mg_cycles = 8` → on playground **P_max 103.2 → 1.4 atm**, negative
+   `P_min` gone, all rail counters → 0, `n_sub` 8 → 1, **~18% faster**.
+   `docs/pressure_arc_root_cause_2026-08-17.md`, canon in engine ch. 04.
+   **It replaced itself with the MASS-BOOKS ARC — see ★ below.**
 2. **T_abs compression-work patch** (design §2.9, RULING R1) — its own short
    design + critique round + HUMAN-TEST. Step 4c multiplies ambient-*relative*
    T, so below ambient it doesn't merely omit physics, it **inverts** it

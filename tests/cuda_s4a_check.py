@@ -232,7 +232,12 @@ def part2_integration() -> bool:
     # order, so the plane is bit-for-bit the v3 plane and the full engine
     # reproduces every pre-patch field, byte for byte, over 45 ticks.
     # (was e73f130ea6f514fc285825d1efc828202bfc7e2e77dee3212bed2aa822e45f8a)
-    GOLDEN = "28678e9d6210533f63cc701bba8f93194e23df9ebbdfa5f75f5d26681e897040"
+    # SINGLE-SOURCED 2026-08-18: was a hardcoded copy of the golden.
+    # 11 scripts each carried their own, so ONE deliberate re-baseline
+    # left 11 tests red. The sanctioned golden is OWNED by
+    # tests/_xarch_perfield_digest.py (its lineage block carries every
+    # rebase + rationale); import it, per test_w6_armory.py's own rule.
+    from _xarch_perfield_digest import GOLDEN_AGGREGATE as GOLDEN
 
     def make_smoky():
         sim = default_scenario_sim()

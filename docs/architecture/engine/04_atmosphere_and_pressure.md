@@ -263,6 +263,56 @@
 > `n_total ≡ n_bulk = O₂ + inert-N₂` everywhere, and the trace-decay→N₂ credit is deleted. See ch.05
 > for what traces still are.
 
+> ## Pressure-solve convergence (pressure arc, 2026-08-18) — as-built
+>
+> Full record: `docs/pressure_arc_root_cause_2026-08-17.md`. HUMAN-TEST:
+> `docs/human_test_2026-08-18_mass_books.md`.
+>
+> **The "storming atmosphere" was never physics. It was the pressure solve running
+> under-converged, and its residual re-injected every tick.** `mg_cycles` (the MG V-cycle
+> schedule) was a C++-only default frozen at **2**, measured at the 2026-07-10 MG gate on
+> 16²/160² scenarios over 300 ticks. At real map size with live fires that budget does not
+> hold: on `levels/playground`, C=2 reaches **P_max 103.2 atm with a negative P_min** and pins
+> `n_sub` at its cap — reproducing the in-game blow-up (Erik's dump measured 103.961 atm).
+> **Shipped: `mg_cycles = 8`**, now config-visible in `[physics.eos]` together with `mg_nu1`,
+> `mg_nu2`, `mg_coarsest_sweeps`.
+>
+> - **The converged solver is ~18% FASTER, not slower.** More cycles cost more per solve, but a
+>   converged solve collapses `n_sub` **8 → 1**, and substeps dominate tick cost (the gate's own
+>   split: `substeps(16) ≈ 16.5 ms` vs `MG C=2 ≈ 3.2 ms` at 160²). We had been paying for eight
+>   advection substeps to chase velocities that were solver error. This also dissolves the gate's
+>   unresolved `N_SUB_MAX` / "sustained sonic venting" perf complaint — a symptom, not a cause.
+>   Measured (playground, sequential): C=2 6.74 ms mean · C=4 4.86 · **C=8 5.51** · C=16 7.49.
+>   C=8 and C=16 agree to 0.3% ⇒ converged at 8; C=3 is unstable, matching the gate's own ladder.
+> - **Why it took so long to see: grid size is the dominant variable.** At a fixed tile size,
+>   14×27 gives RMS|P−1| 0.007 and 70×99 gives 0.178 — 25× worse from size alone. **Every bench
+>   we owned was small**, so the whole bench set was structurally blind to it, exactly as the
+>   single-room fire benches were blind to the door-neck Helmholtz mode.
+> - **`c_max` is NOT a cap and NOT a CFL parameter** — the chapter's older text below says
+>   otherwise and is superseded on this point. `c_local = c_max·√(t_max_abs/t_amb)`, so hot gas
+>   is *faster* than `c_max`. And under Kwatra's semi-implicit scheme the implicit acoustic solve
+>   removes `c` from the stability condition entirely (measured on `eos-prototype`: c=120 vs c=60
+>   gave *identical* substep counts). What `c` actually governs is the **stiffness of the
+>   Helmholtz solve** — i.e. how many V-cycles convergence needs. That is why lowering `c_max`
+>   *also* suppressed the storm; `mg_cycles` is the honest lever, and `c_max = 300` stays.
+> - **Why the residual lands in the low modes.** Convergence was measured at only **~×0.55/cycle**
+>   (textbook geometric MG is ~×0.1). The cause is the **piecewise-constant injection**
+>   prolongation: Galerkin coarsening is optimal *within the range of interpolation*, and PC
+>   injection's range cannot represent smooth error. So the header's "the two-grid correction
+>   cannot amplify at ANY pyramid depth" is true **and weak** — it bounds divergence, not
+>   correction quality. The named fix (Dendy's BoxMG operator-induced interpolation; we already
+>   have every other BoxMG component) is scoped in
+>   `docs/lit_research_2026-08-17_multigrid_and_blast.md`, unmeasured.
+>
+> **What this did NOT fix — the mass books are still open.** HUMAN-TEST verdict (Erik): *"fires
+> dont blow up anymore, but grenades still can."* A grenade fired through a breached wall still
+> blows up, by a **different** mechanism: total map N grows **2.15×** on a `boundary = space`
+> level that has no reservoir and whose only sink (venting) can only *remove* mass. Mass is being
+> created; the transport's donor-cell outflow limiter is mass-exact by construction, so the mint
+> is **unattributed** and owns the next arc. Also open and pre-existing:
+> `test_cuda_p64_kick_compression` PART 2 diverges CPU↔GPU on the blast+venting trajectory
+> (verified at both C=2 and C=8) — the same scenario the mass bug lives on.
+
 ## 1. What this system is
 
 Breach's atmosphere is the air that fills the ship: a scalar pressure field over the

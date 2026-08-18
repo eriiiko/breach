@@ -582,8 +582,33 @@ smoke_absorb_scale = 1.4                 # beam-reach dial: LOW = long beam (fla
 # each. gamma/absorb_strength/T_MIN are secondary dials (compression-work
 # adiabatic index, D4 shockwave damping scale, and the T floor) not
 # explicitly pinned by the decisions log; defaults mirror the C++ struct.
-c_max = 300.0                         # m/s capped sound speed (Erik's call — retires wave_c=66)
-S = 8                                 # Helmholtz RB-GS sweep count (gate may pin up to 16)
+c_max = 300.0                         # m/s AMBIENT sound speed — NOT a cap: c_local =
+                                      # c_max*sqrt(t_max_abs/t_amb), so hot gas is faster
+                                      # (eos_solver.cpp:388-391). Under Kwatra's semi-implicit
+                                      # scheme c does NOT enter the substep/stability condition
+                                      # (measured on eos-prototype: c=120 vs c=60 gave identical
+                                      # substep counts) — it governs the STIFFNESS of the
+                                      # Helmholtz solve instead, i.e. how many V-cycles the
+                                      # pressure solve needs. That is why lowering c_max also
+                                      # suppressed the storm; mg_cycles is the honest lever.
+S = 8                                 # Helmholtz RB-GS sweep count (gate may pin up to 16).
+                                      # Used ONLY on the flat path (use_multigrid=false).
+# --- MG V-cycle schedule (PRESSURE ARC 2026-08-18) -------------------------
+# docs/pressure_arc_root_cause_2026-08-17.md. Was a C++-only default frozen at
+# mg_cycles=2 at the 2026-07-10 MG gate, which measured convergence at only
+# ~x0.55/cycle (textbook MG is ~x0.1 — the cause is piecewise-constant
+# injection prolongation; see docs/lit_research_2026-08-17_multigrid_and_blast.md)
+# and 0.24 atm single-tick error at C=2. C=2 was adopted on a warm-start credit
+# validated for 300 ticks on 16^2/160^2 scenarios. At real map size with live
+# fires that credit evaporates: on levels/playground, C=2 reaches P_max 103.2
+# atm with NEGATIVE P_min and pins n_sub at the cap, reproducing the in-game
+# storm; C=8 gives P_max 1.405, zero rail hits, n_sub 1 — and is 18% FASTER per
+# tick, because a converged solve collapses the substep count. C=8 and C=16
+# agree to 0.3% (converged); C=3 is unstable, matching the gate's own ladder.
+mg_cycles = 8                         # V-cycles per tick (was 2)
+mg_nu1 = 2                            # pre-smoothing sweeps per level
+mg_nu2 = 2                            # post-smoothing sweeps per level
+mg_coarsest_sweeps = 32               # RB-GS sweeps at the coarsest level
 N_SUB_MAX = 8                         # advection substep cap (accuracy, not stability; re-pinned 16->8, Erik 2026-07-10, decisions #14)
 CFL_ADV = 0.5                         # advection CFL number
 N_FLOOR_SOLVER = 0.001                # solver-internal N floor (gameplay N unfloored)

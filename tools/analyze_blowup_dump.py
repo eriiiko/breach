@@ -35,6 +35,9 @@ import argparse
 import numpy as np
 
 T_MAX_PHYS = 16000.0   # eos_solver.h — the counted physical-maximum rail on T
+FP_ONE = 65536.0       # Q16.16 scale (the recorder's dequantize divisor)
+N_AMBIENT = 1.0        # ambient bulk N: the o2+n2 split sums to exactly 1.0
+                       # (config.toml [physics.eos]: 0.21 + 0.79 in Q16.16)
 
 
 def main() -> None:
@@ -85,14 +88,23 @@ def main() -> None:
     yx = np.unravel_index(np.argmax(P[worst]), P[worst].shape)
     p_w, t_w = P[worst][yx], T[worst][yx]
     if "gas_o2" in have and "inert_n2" in have:
-        n_bulk = (d["gas_o2"][worst][yx] + d["inert_n2"][worst][yx])
-        src = "measured (gas_o2 + inert_n2)"
+        # UNITS (fixed 2026-08-18): Recorder.record() dequantizes a NAMED list
+        # of planes by /65536 and `gas_o2` is on it while `inert_n2` is NOT
+        # (recorder.py:172-176). Summing them raw therefore mixes physical
+        # units with Q16.16 counts and overstates N by ~65536x — this printed
+        # "36973768 x ambient" for a cell that is really ~714x. Normalise the
+        # raw plane before summing, and state the ambient reference explicitly.
+        o2_w = float(d["gas_o2"][worst][yx])            # already physical
+        n2_w = float(d["inert_n2"][worst][yx]) / FP_ONE  # raw Q16.16 -> physical
+        n_bulk = o2_w + n2_w
+        src = "measured (gas_o2 + inert_n2/65536)"
     else:
         # p* = C*N*T_abs with C = 1/290 => N = P * 290 / T_abs
         n_bulk = p_w * 290.0 / (t_w + 290.0)
         src = "RECONSTRUCTED from p*/T (dump predates the inert_n2 field)"
     print(f"peak-pressure cell {yx} at snap {worst}: "
-          f"P={p_w:.3f} atm  T={t_w:.1f}  N~={n_bulk:.3f} x ambient  [{src}]")
+          f"P={p_w:.3f} atm  T={t_w:.1f}  N~={n_bulk / N_AMBIENT:.3f} x ambient "
+          f"(N={n_bulk:.4f}, ambient={N_AMBIENT})  [{src}]")
 
     if "wind_x" in have and "wind_y" in have:
         wx, wy = d["wind_x"].astype(np.float64), d["wind_y"].astype(np.float64)

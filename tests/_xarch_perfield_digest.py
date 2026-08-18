@@ -125,7 +125,34 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # order, so the plane is bit-for-bit the v3 plane and the full engine
 # reproduces every pre-patch field, byte for byte, over 45 ticks.
 # (was e73f130ea6f514fc285825d1efc828202bfc7e2e77dee3212bed2aa822e45f8a)
-GOLDEN_AGGREGATE = "28678e9d6210533f63cc701bba8f93194e23df9ebbdfa5f75f5d26681e897040"
+# PRESSURE-ARC GOLDEN REBASE (2026-08-18, Erik's ruling: re-scope the canary,
+# then ONE re-baseline). This one clears a BACKLOG of THREE deliberate,
+# separately-approved behavioural changes that were each left un-rebased, so
+# the golden had been stale — and this file's lineage silent — since P-T0:
+#   1. P-T0 (energy-books arc): trace_mass_scale RETIRED and the decay->N2
+#      credit deleted. Moved the canonical scenario to 8203584350ae69a5...
+#      (recorded in docs/archive/e1_p_e2a_asbuilt_2026-08-17.md, not here).
+#   2. P-E5 (energy-books arc close): Erik shipped k_drag = 0.5 +
+#      k_drag_heat_frac = 0.0014 at the HUMAN-TEST. Interior momentum drag is
+#      a live sink now, so the scenario's wind trajectory moves. -> b4f7d86c...
+#   3. THIS ARC: mg_cycles 2 -> 8 (docs/pressure_arc_root_cause_2026-08-17.md).
+#      The MG V-cycle schedule was frozen at C=2 on 16^2/160^2 scenarios for
+#      300 ticks; at map scale C=2 leaves ~0.28 atm of residual per tick, which
+#      IS the storm (playground: P_max 103.2 atm, negative P_min, n_sub pinned
+#      at the cap). C=8 converges (C=8 and C=16 agree to 0.3%), zeroes every
+#      rail counter, and is 18% FASTER per tick because a converged solve
+#      collapses n_sub 8 -> 1. Every pressure-coupled field therefore moves.
+# The three are folded into ONE rebase event, per the gate-h rule. Reproducible
+# across builds: the CPU build and the CUDA build's CPU path both produce the
+# new value (tests/test_cuda_mg_solve.py PART 3 et al.). DIGEST_SPEC_VERSION
+# unchanged — values moved; no field added/removed/retyped.
+# NOTE the companion change: tests/test_w6_armory.py's single
+# "golden_and_untouched_rng" test was SPLIT, because its "this is a bug, never
+# a re-baseline" message was true of its RNG half and false of its digest half
+# (the canonical scenario exercises the EOS, so physics arcs lawfully move it).
+# The durable dormancy canary is now test_canonical_scenario_consumes_no_rng.
+# (was 28678e9d6210533f63cc701bba8f93194e23df9ebbdfa5f75f5d26681e897040)
+GOLDEN_AGGREGATE = "a18e0dfb017b98cb2454857014a6531c5f69b0460ecda70e60b486f281274c1b"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs
