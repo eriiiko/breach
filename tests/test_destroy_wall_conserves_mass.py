@@ -20,8 +20,9 @@ property is the constant TOTAL — it is what breaks the feedback loop — not t
 value and not the composition.
 
 Gates here are §6's 1-5. Deliberately NOT here: 6 (energy books — needs a C++
-binding for ``eth_books_sum``), 8/8b (caller order pins), 10 (CPU<->GPU), 11
-(HUMAN-TEST). Each is its own patch.
+binding for ``eth_books_sum``), 10 (CPU<->GPU), 11 (HUMAN-TEST). Each is its
+own patch. Gates 8 / 8b (the caller ORDER pins and the per-tile split under
+reordering) landed as P-M4c in ``tests/test_destroy_order_pins.py``.
 
 Every gate below is written so it can go RED. In particular Gate 1 asserts the
 PREDICTED value ``k * ambient_seed().n_total_q``, never ``Delta(Sum N) ==
