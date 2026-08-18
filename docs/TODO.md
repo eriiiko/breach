@@ -88,6 +88,31 @@ Blessed suite state: **48 failed / 2186 passed / 5 skipped**.
    (with damping live a spray cone rides shortened wind; feel-adjacent, left
    honestly red rather than xfail-papered).
 
+   **Added 2026-08-18 (mass-books arc, measured — fire is mistuned at BOTH
+   ends).** Surfaced by repairing the fire tests, which had been masked by a
+   signature drift since 547fb12 (2026-07-24) and were therefore not reporting:
+   - **Ignition is far too fast.** From a 0.5 seed the centre cell goes to full
+     intensity in **under 5 ticks** (~0.2 s) in every config; from a 0.1 seed it
+     is capped by tick 15. Erik, on being shown it: *"maximum intensity in 5
+     ticks is NOT what i want, but we are not at tuning yet, we need to make
+     sure all the systems WORK before tuning."* Owners: `k_grow`, and the
+     intensity cap.
+   - **Extinction is far too slow — the "death wall".** `k_die` 2.0 → 0.008
+     leaves fires taking **~2,334–2,400 ticks** to die against test horizons of
+     200. This is the single largest cause of the remaining red fire tests, and
+     it is why `test_s3b_fire_determinism.py:113`
+     (`assert la[-1] == 0, "the fire never extinguished"`) is red — a
+     non-vacuousness guard correctly reporting that no extinguish is exercised.
+   - **Dead levers to re-decide, not just re-dial:** `k_wind_strip == 0.0` since
+     2026-07-23, so wind can only fan a fire, never blow it out — the blow-out
+     term is identically zero and its test asserts a mechanism that no longer
+     exists. `wall_damage` 0.4 → 0.03 leaves burnout at hp 2.26 after 500 ticks.
+   - **Test horizons must be re-derived from the retuned dials**, not nudged:
+     several fire tests encode a 200–500 tick expectation from the pre-retune
+     regime. `test_s3b_fire_determinism::test_cross_config_self_match` already
+     had its measurement window re-derived this way (0.1 seed @ 10 ticks) and
+     carries the measured saturation table in-file.
+
 **Also reported by the arc, not fixed, awaiting a ruling** — three consumers
 that read raw, N-unguarded gas temperature. The serious one is **sim-affecting**:
 the EOS CFL sound-speed max-reduction (`eos_solver.cpp:347-351` + its CUDA

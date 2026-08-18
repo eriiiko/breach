@@ -157,7 +157,7 @@ def test_shockwave_fanned_firestorm_no_overflow():
 # run-to-run (the integer logistic is deterministic for ANY config, not just the
 # shipped one — a config-dependent float leak would fail this).
 # ---------------------------------------------------------------------------
-def _drive_isolated_fire(dt, *, k_grow, k_die, k_wind_fan, ticks=40):
+def _drive_isolated_fire(dt, *, k_grow, k_die, k_wind_fan, ticks=40, seed_i=0.5):
     """Drive the C++ FireSimulation.step in isolation on a 5x5 wood-centre scene
     with the given dt + fire params; return the final fire field (int32 Q16.16)."""
     from simulation.physics_runner import PhysicsRunner
@@ -188,7 +188,7 @@ def _drive_isolated_fire(dt, *, k_grow, k_die, k_wind_fan, ticks=40):
     temperature = np.zeros((h, w), dtype=np.int32)
     temperature[2, 2] = int(round(500.0 * 65536))
     fire = np.zeros((h, w), dtype=np.int32)
-    fire[2, 2] = fire_fixed.quantize_scalar(0.5)
+    fire[2, 2] = fire_fixed.quantize_scalar(seed_i)
     wind_x = np.full((h, w), atmosphere_fixed.quantize_scalar(1.5), dtype=np.int32)
     wind_y = np.zeros((h, w), dtype=np.int32)
     for _ in range(ticks):
@@ -205,10 +205,27 @@ def test_cross_config_self_match():
         dict(dt=1.0 / 30, k_grow=4.0, k_die=2.0, k_wind_fan=0.5),   # higher tps
         dict(dt=1.0 / 12, k_grow=6.0, k_die=1.5, k_wind_fan=1.0),   # lower tps + params
     ]
+    # WINDOW (2026-08-18, mass-books arc): measured EARLIER and from a SMALLER
+    # seed than the original (0.1 @ 10 ticks, was 0.5 @ 40). Fire now ramps to
+    # full intensity in under 5 ticks from a 0.5 seed, so at 40 ticks all three
+    # configs sit pegged at the cap and are bit-identical — the vacuity guard
+    # below (rightly) fired. Measured saturation, centre cell, X = 1.0:
+    #     seed 0.5 -> configs differ at 2-3 ticks, ALL CAPPED from tick 5
+    #     seed 0.1 -> configs differ out to 10 ticks, all capped by tick 15
+    # The O2 gate stays NON-LIMITING (X = 1.0) as this scene documents — the
+    # alternative repair (feed it ambient air) would green the test by starving
+    # the fire to ~1/10 rate, i.e. by making it partly an O2 test, which is not
+    # what it is for.
+    #
+    # That saturation speed is itself a TUNING finding, not a test defect --
+    # Erik, 2026-08-18: "maximum intensity in 5 ticks is NOT what i want, but we
+    # are not at tuning yet, we need to make sure all the systems WORK before
+    # tuning." Recorded on the post-pressure retune list (docs/TODO.md item 3).
+    window = dict(ticks=10, seed_i=0.1)
     results = []
     for cfg in configs:
-        a = _drive_isolated_fire(**cfg)
-        b = _drive_isolated_fire(**cfg)
+        a = _drive_isolated_fire(**cfg, **window)
+        b = _drive_isolated_fire(**cfg, **window)
         assert np.array_equal(a, b), f"config {cfg} not bit-identical run-to-run"
         results.append(a)
     # The three configs should NOT all be identical (else the params do nothing —
