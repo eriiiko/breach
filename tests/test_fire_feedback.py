@@ -104,6 +104,20 @@ class _FeedbackScene:
         self.n_o2 = np.where(
             self.solid, 0, atmosphere_fixed.quantize_scalar(float(o2_val))
         ).astype(np.int32)
+        # CONTINUOUS-O2 LAW (547fb12, 2026-07-24): the gate stopped reading the
+        # ABSOLUTE n_o2 and now reads the MOLE FRACTION X = Sn_o2/Sn_total over
+        # the open 4-neighbours, so `step` takes the denominator plane too.
+        # `atm` IS this scene's gas density (it is the value `o2` defaults to),
+        # which is the same n_o2 = X*density / n_total = density idiom the law's
+        # own tests use (test_continuous_o2_law._step_once). Consequences, both
+        # of them the pre-547fb12 gate value bit-for-bit:
+        #   * atm-only callers (o2 is None) -> X == 1.0 -> o2f == 1, the
+        #     NON-LIMITING gate they have always tested;
+        #   * the `o2` override reads straight through as the fraction o2/atm,
+        #     so the low-O2 seed still lands below the extinction limit.
+        self.n_total = np.where(
+            self.solid, 0, atmosphere_fixed.quantize_scalar(float(atm))
+        ).astype(np.int32)
         self.smoke = np.zeros((3, 3), dtype=np.int32)
         self.wall_hp = np.zeros((3, 3), dtype=np.int32)
         self.wall_hp[1, 1] = wall_fixed.quantize_scalar(float(wall_hp))
@@ -118,8 +132,8 @@ class _FeedbackScene:
 
     def step(self, fire_sim, dt=DT):
         fire_sim.step(
-            self.fire, self.atmosphere, self.n_o2, self.smoke, self.wall_hp,
-            self.temperature, self.wind_x, self.wind_y,
+            self.fire, self.atmosphere, self.n_o2, self.n_total, self.smoke,
+            self.wall_hp, self.temperature, self.wind_x, self.wind_y,
             self.solid, self.is_vacuum, self.flammable,
             dt,
         )
@@ -281,6 +295,10 @@ def test_plume_raises_own_atmosphere_wind_points_outward():
     # EOS refactor P4: n_o2 is the O2 gate's own input, non-limiting here
     # (this test is about the plume->T shim, unrelated to O2).
     n_o2 = np.full((h, w), atmosphere_fixed.quantize_scalar(1.0), dtype=np.int32)
+    # Continuous-O2 law (547fb12): the fraction denominator. Equal to n_o2 here,
+    # i.e. X == 1.0 -> o2f == 1, the same NON-LIMITING gate this test had before
+    # the law change (it is about the plume->T shim, not about O2).
+    n_total = np.full((h, w), atmosphere_fixed.quantize_scalar(1.0), dtype=np.int32)
     smoke = np.zeros((h, w), dtype=np.int32)
     wall_hp = np.zeros((h, w), dtype=np.int32)
     wall_hp[2, 2] = wall_fixed.quantize_scalar(60.0)
@@ -296,7 +314,7 @@ def test_plume_raises_own_atmosphere_wind_points_outward():
     # into `temperature` instead; the EOS turns that into outward pressure.
     t_before = float(temperature[2, 2])
     for _ in range(10):
-        fs.step(fire, atmosphere, n_o2, smoke, wall_hp, temperature,
+        fs.step(fire, atmosphere, n_o2, n_total, smoke, wall_hp, temperature,
                 wind_x, wind_y, solid, is_vacuum, flammable, DT)
     t_after = float(temperature[2, 2])
     assert t_after > t_before, (
