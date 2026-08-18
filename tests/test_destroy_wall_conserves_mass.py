@@ -19,10 +19,12 @@ changes to the signed ``n_destruction_seed_sum`` channel. The load-bearing
 property is the constant TOTAL — it is what breaks the feedback loop — not the
 value and not the composition.
 
-Gates here are §6's 1-5 and, since P-M4b, 6 (energy books — the C++ binding
-``bp.eos_energy_books_sum`` / ``PhysicsRunner.energy_books_sum`` now exists).
-Deliberately NOT here: 8/8b (caller order pins), 10 (CPU<->GPU), 11
-(HUMAN-TEST). Each is its own patch.
+Gates here are §6's 1-5, and 6 (energy books) since P-M4b added the C++ binding
+``bp.eos_energy_books_sum`` / ``PhysicsRunner.energy_books_sum``. Gates 8 / 8b
+(the caller ORDER pins, and the per-tile split under reordering) landed as
+P-M4c in ``tests/test_destroy_order_pins.py``. Deliberately NOT here: 10
+(CPU<->GPU, P-M5) and 11 (HUMAN-TEST — PASSED 2026-08-18, see
+``docs/human_test_2026-08-18_destroy_wall_seed.md``).
 
 Every gate below is written so it can go RED. In particular Gate 1 asserts the
 PREDICTED value ``k * ambient_seed().n_total_q``, never ``Delta(Sum N) ==
