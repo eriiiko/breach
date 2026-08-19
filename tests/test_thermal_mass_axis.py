@@ -631,7 +631,11 @@ def test_eos_step4c_does_not_write_temperature_on_a_thermal_solid():
     gas = _q32(rng.integers(0, FP_ONE, size=(3, h, w)))
     cons = np.array([True, True, False], dtype=bool)
     wabs = np.ascontiguousarray(np.zeros((h, w), dtype=np.float32))
-    args = dict(dt=1.0 / 24.0, c_local_q=300 * FP_ONE, c_max=300.0, dx=1.0 / 3.0,
+    # VELOCITY-CLAMP (P-V1, D2v2): a uniform (h,w) cap² plane at the old
+    # scalar c_local_q's value — this test is about the thermal_solid mask,
+    # not clamp behavior, so any valid (>= 0) plane works (D5).
+    cap2 = np.full((h, w), (300 * FP_ONE) ** 2, dtype=np.int64)
+    args = dict(dt=1.0 / 24.0, cap2_plane=cap2, c_max=300.0, dx=1.0 / 3.0,
                 adiabatic_index=1.4, absorb_strength=8.0, n_floor_solver=1e-3,
                 t_min=-289.0, t_work_clamp=0.5, t_max_phys=16000.0,
                 u_max=1000.0)   # trace_mass_scale arg RETIRED (P-T0)
@@ -678,7 +682,10 @@ def test_eos_furniture_free_identity_at_the_replay_boundary(entry):
         gas = _q32(rng.integers(0, FP_ONE, size=(3, h, w)))
         cons = np.array([True, True, False], dtype=bool)
         wabs = np.ascontiguousarray(np.zeros((h, w), dtype=np.float32))
-        args = dict(dt=1.0 / 24.0, c_local_q=300 * FP_ONE, c_max=300.0,
+        # VELOCITY-CLAMP (P-V1, D2v2): a uniform cap² plane (see the sibling
+        # test above for why any valid plane suffices here).
+        cap2 = np.full((h, w), (300 * FP_ONE) ** 2, dtype=np.int64)
+        args = dict(dt=1.0 / 24.0, cap2_plane=cap2, c_max=300.0,
                     dx=1.0 / 3.0, adiabatic_index=1.4, absorb_strength=8.0,
                     n_floor_solver=1e-3, t_min=-289.0, t_work_clamp=0.5,
                     t_max_phys=16000.0, u_max=1000.0)  # trace_mass_scale RETIRED (P-T0)

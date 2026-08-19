@@ -174,7 +174,12 @@ def part1_isolated() -> bool:
             gas = _c(_q(rng.uniform(0.0, 1.2, size=(n_gases, h, w))))
             cons = np.array([True, True, False], dtype=bool)
             wabs = _c(rng.uniform(0.0, 1.0, size=(h, w)).astype(np.float32))
-            args = dict(dt=1.0 / 24.0, c_local_q=int(300 * FP_ONE),
+            # VELOCITY-CLAMP (P-V1, D2v2): a uniform (h,w) cap² plane at the
+            # old scalar c_local_q's value (300 m/s) — this gate compares
+            # CPU vs GPU, not clamp behavior, so any valid (>= 0) plane
+            # works; a uniform fill reproduces the old regime exactly (D5).
+            cap2 = np.full((h, w), (300 * FP_ONE) ** 2, dtype=np.int64)
+            args = dict(dt=1.0 / 24.0, cap2_plane=cap2,
                         c_max=300.0, dx=1.0 / 3.0, adiabatic_index=1.4,
                         absorb_strength=8.0, n_floor_solver=1e-3, t_min=-289.0,
                         t_work_clamp=0.5, t_max_phys=16000.0, u_max=1000.0)

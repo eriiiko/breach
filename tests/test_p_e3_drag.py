@@ -69,11 +69,20 @@ def _make_case(h, w, wmag, tlo, thi, nsc, seed, thin_frac=0.1):
 
 def _run(inp, k_drag, k_drag_heat_frac, c_v, c_local=2300.0, dt=1.0 / 24.0,
          thermal_solid=None):
+    # VELOCITY-CLAMP (P-V1, D2v2/D5): a UNIFORM plane at c_local² — the kick
+    # trusts it VERBATIM (no re-min against U_MAX), so this genuinely keeps
+    # the |u| clamp disengaged for this module's velocities (unlike the old
+    # min(c_local, u_max) semantics, where c_local=2300 > u_max=1000 meant
+    # every call was silently capped at 1000 regardless) — the drag identity
+    # then runs on the UNCLAMPED velocity, which is why the worst_frac bound
+    # below was re-measured rather than assumed.
+    h, w = inp["wind_x"].shape
+    cap2 = np.full((h, w), int(_q(c_local)) ** 2, dtype=np.int64)
     res = bp.eos_kick_compression_ref(
         inp["wind_x"].copy(), inp["wind_y"].copy(), inp["temperature"].copy(),
         inp["p_new"], inp["gas"], inp["gas_conservative"],
         inp["solid"], inp["is_vacuum"], inp["dyn_wave_absorb"],
-        dt, int(_q(c_local)), k_drag=k_drag, k_drag_heat_frac=k_drag_heat_frac,
+        dt, cap2, k_drag=k_drag, k_drag_heat_frac=k_drag_heat_frac,
         c_v=c_v, thermal_solid=thermal_solid, **CONSTS)
     names = ("dig_vel", "dig_comp", "u_clamp", "u_max", "work_clamp",
              "energy_floor", "t_max_phys", "ke_drag_removed", "e_drag_deposit",
@@ -169,13 +178,18 @@ def test_ts_cells_skip_drag_entirely():
     # only the ordinary kick/absorb/cap chain does, which is k_drag-blind);
     # at an ordinary cell they must DIFFER (proving k_drag is actually live
     # elsewhere, so the ts-identity above isn't a vacuous "nothing moved").
+    # VELOCITY-CLAMP (P-V1, D2v2/D5): a uniform 2300²-scale plane — trusted
+    # verbatim, so the |u| clamp stays disengaged for this test's velocities
+    # (see `_run`'s comment above for why this differs from the old
+    # min(c_local, u_max) semantics).
+    cap2 = np.full((h, w), int(_q(2300.0)) ** 2, dtype=np.int64)
     wx_off, wy_off, t_off = (inp["wind_x"].copy(), inp["wind_y"].copy(),
                              inp["temperature"].copy())
     bp.eos_kick_compression_ref(
         wx_off, wy_off, t_off,
         inp["p_new"], inp["gas"], inp["gas_conservative"],
         inp["solid"], inp["is_vacuum"], inp["dyn_wave_absorb"],
-        1.0 / 24.0, int(_q(2300.0)),
+        1.0 / 24.0, cap2,
         k_drag=0.0, k_drag_heat_frac=1.0, c_v=1.0,
         thermal_solid=ts, **CONSTS)
 
@@ -185,7 +199,7 @@ def test_ts_cells_skip_drag_entirely():
         wx_on, wy_on, t_on,
         inp["p_new"], inp["gas"], inp["gas_conservative"],
         inp["solid"], inp["is_vacuum"], inp["dyn_wave_absorb"],
-        1.0 / 24.0, int(_q(2300.0)),
+        1.0 / 24.0, cap2,
         k_drag=1.0, k_drag_heat_frac=1.0, c_v=1.0,
         thermal_solid=ts, **CONSTS)
 
@@ -226,9 +240,12 @@ def test_phantom_cell_temperature_not_written():
     absorb = np.zeros((h, w), dtype=np.float32)
     t0 = t[2, 2]
 
+    # VELOCITY-CLAMP (P-V1, D2v2/D5): a uniform 2300²-scale plane, verbatim
+    # (D5) — the |u| clamp stays out of the way of this test's velocities.
+    cap2 = np.full((h, w), int(_q(2300.0)) ** 2, dtype=np.int64)
     bp.eos_kick_compression_ref(
         wx, wy, t, p_new, gas, gas_conservative, solid, is_vacuum, absorb,
-        1.0 / 24.0, int(_q(2300.0)),
+        1.0 / 24.0, cap2,
         k_drag=1.0, k_drag_heat_frac=1.0, c_v=1.0, **CONSTS)
 
     # A neighbouring, non-phantom cell DID get a deposit (proves the drag
