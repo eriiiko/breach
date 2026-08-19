@@ -24,8 +24,11 @@
 // per cell as (γ·p*)_cell — in P's own units by construction. ONE unit-
 // bridge constant K = c_amb²/γ (a WIDE int64 — it does not fit q16) lives in
 // the momentum kick u -= dt·K·grad(P)/N̂ and in the CFL estimate's ∇P term.
-// c is state-derived (c ∝ √T); the per-tick velocity cap is
-// c_LOCAL = c_amb·sqrt(T_max_abs/T_AMB), never a stale ambient constant.
+// c is state-derived (c ∝ √T); the velocity cap is PER-CELL
+// (VELOCITY-CLAMP, P-V1, design v3): cap²_cell = c_amb²·t_abs_cell/T_AMB,
+// folded from tick-entry T alongside c_LOCAL in the same scan. c_LOCAL
+// itself survives solely as the n_sub/CFL estimate's ceiling (never a stale
+// ambient constant there either).
 // The per-tick system is LINEAR ((γ·p*) frozen at the advected value);
 // near-vacuum rows degenerate to identity (correct Dirichlet physics);
 // N_FLOOR_SOLVER applies ONLY to the face 1/N̂ divide.
@@ -521,6 +524,10 @@ private:
 
     // Reused per-tick scratch (house pattern: no per-tick alloc).
     mutable std::vector<int32_t> n_total_;
+    // VELOCITY-CLAMP (P-V1, design v3, D2v2): the per-cell velocity-cap²
+    // plane (Q32.32 raw), folded once per tick alongside c_LOCAL in the same
+    // scan (eos_solver.cpp:397-427) — the kick trusts it verbatim (D5).
+    mutable std::vector<int64_t> cap2_plane_;
     mutable std::vector<int32_t> vx_src_, vy_src_, t_src_;
     mutable std::vector<int32_t> pstar_;
     mutable std::vector<int32_t> div_u_;
@@ -611,7 +618,7 @@ uint64_t eos_sl_advect_reference(
 // ---------------------------------------------------------------------------
 // EOS P6.4 — standalone CPU reference for the post-solve tail: the step-4
 // momentum kick (u -= dt·K·grad(P_new)/N̂ → absorption damping → the
-// min(c_LOCAL, U_MAX) counted magnitude clamp, with the ±2^30 component
+// per-cell cap2_plane counted magnitude clamp, with the ±2^30 component
 // pre-clamp overflow guard) AND the step-4c compression work
 // (T -= (γ−1)·T·div(u_new)·dt with the ±T_WORK_CLAMP rail, T_MIN floor and
 // T_MAX_PHYS ceiling, all counter-tracked) — docs/eos_p6_gpu_alignment_review.md
@@ -626,6 +633,16 @@ uint64_t eos_sl_advect_reference(
 // would have blamed the GPU for a drifted CPU reference. Pass `sponge_udamp`
 // (with `is_ambient`) to replay it; both default nullptr, which reproduces the
 // pre-A6 behaviour byte for byte.
+//
+// VELOCITY-CLAMP (P-V1, design v3): the contract INVERTS from the pre-P-V1
+// shape above — the cap is now fully derivable from the replay's own inputs.
+// `cap2_plane` is folded from the SAME tick-entry T (== `temperature` on
+// entry, the P6.4 replay's own t0 state) via formula A, so a caller with the
+// step-4-entry state in hand can reconstruct the exact plane itself (no
+// hidden `dbg_last_c_local_q` telemetry dependency the way the old scalar
+// cap needed — the P6.4 replay used to be the ONE place that couldn't see
+// the pre-advection T scan; now it can, because the plane rides the same t0
+// the caller already has).
 // Inputs:
 //   * p_new           — the solved pressure plane the kick differentiates
 //                       (== L0.P after the vacuum/solid zeroing == the post-tick
@@ -634,8 +651,11 @@ uint64_t eos_sl_advect_reference(
 //                       n_total ≡ n_bulk, the gas_conservative pair summed
 //                       at full weight; trace planes contribute nothing) is
 //                       recomputed here verbatim: it is the kick's 1/N̂ input;
-//   * c_local_q       — the per-tick state-derived cap the solver computed
-//                       PRE-advection (EOSSolver::dbg_last_c_local_q);
+//   * cap2_plane      — the per-cell Q32.32 velocity-cap-squared plane (D5:
+//                       the kick TRUSTS it verbatim, no re-min against U_MAX
+//                       here — the caller/scan owns floor/ts/min policy;
+//                       HARD CONTRACT: every entry must be >= 0, or a
+//                       divide-by-zero is reachable inside the clamp branch);
 //   * scalar params   — the EOSSolver config members, folded to q16/int64
 //                       through the IDENTICAL double expressions step() uses.
 // Outputs: the SAME chained FNV digests step() stores in digest_velocity /
@@ -645,11 +665,11 @@ uint64_t eos_sl_advect_reference(
 // e_drag_drop_sum, e_drag_rail_clipped } (the solver's members are
 // cumulative for the first five, PER-TICK for the drag four; a gate compares
 // per-tick deltas either way). Counter semantics are the solver's own: ONE
-// increment per engaging CELL for the first five (the |u| clamp is a
-// magnitude event, not per-component; the 4c rails are an exclusive
-// if/else-if chain); the drag four are int64 ENERGY SUMS (raw Q16.16^2), not
-// hit counts (design §2.8). Test entry only — the live path remains
-// EOSSolver::step.
+// increment per engaging CELL for the first five (the |u| clamp is now an
+// EXACT rad > cap2 magnitude test — no component Chebyshev pre-test, so no
+// diagonal leak; the 4c rails are an exclusive if/else-if chain); the drag
+// four are int64 ENERGY SUMS (raw Q16.16^2), not hit counts (design §2.8).
+// Test entry only — the live path remains EOSSolver::step.
 // ---------------------------------------------------------------------------
 void eos_kick_compression_reference(
     int32_t* wind_x, int32_t* wind_y, int32_t* temperature,   // in/out
@@ -657,7 +677,7 @@ void eos_kick_compression_reference(
     const int32_t* gas, const bool* gas_conservative, int n_gases,
     const bool* solid, const bool* is_vacuum,
     const float* dyn_wave_absorb,
-    int h, int w, float dt, int32_t c_local_q,
+    int h, int w, float dt, const int64_t* cap2_plane,        // D2v2 (h,w) Q32.32, >= 0
     float c_max, float dx, float adiabatic_index, float absorb_strength,
     float n_floor_solver, float t_min, float t_work_clamp,
     float t_max_phys, float u_max,   // trace_mass_scale param RETIRED (P-T0)
