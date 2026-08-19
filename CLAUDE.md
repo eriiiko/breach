@@ -16,14 +16,6 @@ new dated docs, don't rewrite old ones. At the close of every arc, fold the
 as-built result into the canon chapters and archive the brainstorms
 (`docs/archive/`).
 
-**VERSION-TAG EVERY DOC YOU WRITE (Erik's ruling, 2026-08-19).** Any doc —
-canon chapter, capture doc, section within one — states the version it
-describes: the commit SHA, branch, or arc it was true of. Untagged prose is
-the failure mode Erik named: *"i'm starting to think that these docs are
-forever stale."* A doc tagged `as of a1b2c3d / mass-books close` is still
-useful when stale, because the reader can diff against it; an untagged one
-silently lies. **This is not optional and it is cheap — a one-line header.**
-
 **Canon-fold cadence is DEFERRED, by ruling (Erik, 2026-08-19):** while the
 engine is still gaining whole systems (animation, ML, levelgen, weapons/chars),
 do NOT spend arc-close time folding canon. The code plus git history is the
