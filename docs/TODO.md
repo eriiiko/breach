@@ -1,46 +1,123 @@
 # Breach — TODO
 
-## ★ PICK UP HERE (2026-08-18) — the MASS-BOOKS arc, audit-first
+## ★ PICK UP HERE (2026-08-19) — the VELOCITY-CLAMP arc
 
-The pressure arc closed and immediately opened this one at its HUMAN-TEST.
-Erik: *"fires dont blow up anymore, but grenades still can, especially after i
-broke a wall with a high pressure room."*
+> *As of `cd83d1a` (mass-books arc close, merged to main 2026-08-19).*
 
-**Mass is being created.** Total map N grows **2.15×** over one play session on
-`playground` — a `boundary = space, ambient = None` level, so there is **no
-reservoir, no legitimate source**, and the only sink (venting through a breach)
-can only *remove* mass. Locally one cell reaches ~710× ambient, **doubling every
-tick for 12 consecutive ticks**, while the *solved* pressure at that cell sits at
-1.371: the mass field and the pressure field have come apart. Grenade bulk-N
-deposits are real and by design, but worth a few cells — not thousands.
+The mass-books arc closed and handed this one a seed. **Erik has not started it;
+this is the open front.**
 
-**The mint is UNATTRIBUTED, and that is the point.** Three plausible mechanisms
-have already been proposed and killed by measurement — the density-division
-amplifier (fastest cells turn out to be the *dense* ones), semi-Lagrangian
-duplication (mass uses donor-cell, not SL), and O₂ suffocation. The donor-cell
-transport even has a per-cell outflow limiter and is mass-exact by construction.
-**Do not choose a fix before the instrument exists.**
+**The symptom Erik saw:** *"it is stable but i still get individual pressure
+spikes… some individual tiles that flashes yellow or white."* Correct, and it is
+NOT mass creation — the mass-books fix landed and destruction now books exactly
+1.00 cell of ambient per destroyed wall. Mass is being **piled into** those tiles
+by transport far faster than it should, then draining back out. Snap 616 deposits
+1.99 cell-equivalents in total, yet a single cell in that event gains **278.34**.
 
-**FIRST PATCH = the per-pass MASS LEDGER** — who creates N, who removes it,
-asserted every tick. Exactly the shape that worked for energy
-(`test_no_transport_mint`), and a *property* gate rather than a golden, so it
-survives the retune and every dial change still queued.
+**The measured state:**
 
-Read: `docs/human_test_2026-08-18_mass_books.md` (seed + measurements),
-`docs/pressure_arc_root_cause_2026-08-17.md` (what just closed).
-Evidence: `debug_blowup_20260818_040647.npz` — **the first dump carrying
-`wind_x`/`wind_y`/`inert_n2`**, so the first that can answer a momentum
-question. Keep it.
+```
+peak |u|      773.0 m/s      local sound speed ~565   <-- SUPERSONIC
+P_min         -1.324 atm                              <-- NEGATIVE, unphysical
+worst cell    433.5x ambient                          <-- transient, 1-2 ticks
+T_max         737.7           (ceiling 16000 — NOT thermal)
+U_MAX = 1000                                          <-- never binds
+```
 
-**Carries a known pre-existing defect on its own target scenario:**
-`test_cuda_p64_kick_compression` PART 2 (blast + venting) diverges CPU↔GPU —
-verified at both `mg_cycles` 2 and 8, so unrelated to the pressure fix.
-`docs/archive/e1_p_e2a_asbuilt_2026-08-17.md` records P-E2a finding it and
-P-E4's as-built claims it repaired; it has not. May be the same bug from the
-GPU side.
+Three symptoms, one cause: **`|u|` exceeding the local sound speed means
+advection is running outside what the substep count can resolve.**
 
-**Blocked on this arc:** the post-pressure retune pass (item 4 below). Retuning
-against a substrate that mints mass bakes the mint into the dials.
+**A LEAD, found in a 2-minute read on 2026-08-19 — CONFIRM IT, do not trust it.**
+Erik's framing was *"we had clamps but they didn't really work as intended"* and
+that looks right. The clamp is not missing; it binds against the wrong number:
+
+```c
+// eos_solver.cpp:405-426
+t_max_abs_raw = MAX over the ENTIRE FIELD of t_abs   // one global max
+ratio_q       = t_max_abs_raw / t_amb
+c_local_q     = c_amb * sqrt(ratio_q)                 // ONE scalar per tick
+...
+u_cap_q       = min(c_local_q, u_max_q)               // applied to EVERY cell
+```
+
+`c_local_q` is a **single per-tick scalar derived from the hottest cell on the
+map**, then used as the velocity ceiling everywhere — the "local" in the name is
+a lie. A fire or explosion anywhere raises the ceiling for every cell, including
+cool ones whose true sound speed is far lower. That is exactly how a cool cell
+legally carries 773 m/s while its own `c` is 565, and why `U_MAX = 1000` never
+binds either.
+
+**If it holds, it unifies two separately-reported defects.** The mass-books arc
+also reported, still unruled (see "Also reported by the arc" below), that the EOS
+CFL sound-speed max-reduction takes an **unweighted MAX of gas `t_abs`** and that
+maximum steers `n_sub`, the substep count for the whole tick. Same mechanism: one
+unweighted global max steering **both** the substep count and the velocity
+ceiling. Fixing the reduction may fix both.
+
+**What this arc starts with — a better position than mass-books had:**
+- a **recorded seed session** with the defect isolated and no mass mint
+  confounding it: `debug_manual_20260818_194038_velocity_clamp_seed.npz`
+  (775 snapshots ≈ 32 s, kept at repo root — **do not delete**)
+- a **discriminator that already works**: deposited-total vs peak-cell-delta
+  separates "created" from "piled", and `analyze_blowup_dump.py --mass-books`
+  prints both
+- **three symptoms to gate against**: supersonic `|u|`, negative `P_min`,
+  transient ≫100× cells
+
+Read: `docs/human_test_2026-08-18_destroy_wall_seed.md` §3 (the measurement) and
+§5 (what it hands this arc).
+
+**CLOSE-OUT DEBT THIS ARC INHERITS — golden re-baseline.** Six digest tests are
+red (`test_b1_signal_bus`, `test_b2_nodes`, `test_b5_airlock`,
+`test_b6_logic_golden` ×3). The b6 golden was committed at Arc B (`add8969`,
+July) and **three approved behavioral changes have landed since** — energy-books,
+the pressure arc's `mg_cycles` 2→8, and mass-books' `destroy_wall` seed. This is
+accumulated re-baseline debt, not a new break, and it means the digest gates are
+currently providing **zero** regression protection. Erik's ruling 2026-08-19:
+**do NOT re-baseline until this arc lands** — today's behaviour still contains the
+supersonic defect, and stamping it as golden would enshrine the bug. Re-baseline
+once, with written rationale, at this arc's close.
+
+**Carries a known pre-existing defect:** `test_cuda_p64_kick_compression` PART 2
+(blast + venting) diverges CPU↔GPU — verified at both `mg_cycles` 2 and 8, so
+unrelated to the pressure fix. `docs/archive/e1_p_e2a_asbuilt_2026-08-17.md`
+records P-E2a finding it and P-E4's as-built claims it repaired; it has not.
+May be the same bug from the GPU side. **Plausibly related to this arc** — it is
+the kick/compression kernel, which is where the clamp lives.
+
+**Blocked on this arc:** the post-pressure retune pass (item 4 below) and the
+drag-law change (item 3 below). Both would be sized against a flow that is
+running outside its resolvable regime.
+
+---
+
+## ✅ Mass-books arc CLOSED 2026-08-19 — merged to main (`cd83d1a`)
+
+**Root cause:** `destroy_wall` seeded a newly-opened cell from the **neighbour
+mean**, so a high-pressure room paid out proportionally to its own pressure — and
+`find_burst_walls` fires *on* a pressure differential. The valve and the seed
+formed a feedback loop. **Fix:** a CONSTANT ambient cell, booked.
+
+| | before | after |
+|---|---|---|
+| per destroyed wall | 40–130 cell-eq, 52 distinct payloads in 58 events | **1.00, every time** |
+| deposits riding wall breaks | 87.7% | **19.0%** |
+| scaling with local pressure | linear | **none** |
+
+HUMAN-TEST **PASS** — Erik: *"it feels like the engine is finally starting to
+behave now!"* Record: `docs/human_test_2026-08-18_destroy_wall_seed.md`.
+
+**Two things this arc did NOT do, on purpose or by drift:**
+- **The grenade payload is still open** — 260 cell-eq per throw, **81% of all
+  deposits** in the session (snap 263 = 260.53, snap 503 = 521.06 for two). Erik
+  scoped it out; it remains the largest single mass source in the game.
+- **P-M1's per-pass mass ledger and P-M2's CUDA twin were never built.** P-M0's
+  audit isolated the root cause directly, so the arc reached its fix without the
+  instrument it specified as its first patch. The destruction seam IS gated
+  (`test_destroy_wall_conserves_mass.py`, `test_destroy_order_pins.py` — property
+  gates, so they survive the retune); the **general** per-pass ledger is not.
+  Erik's ruling 2026-08-19: acceptable — prefer property gates over goldens while
+  systems are still landing, and do not build the full ledger now.
 
 ### Water leaves a sealed aquarium under a shockwave (Erik, 2026-08-18 — UNVERIFIED)
 
@@ -48,8 +125,8 @@ Reported alongside the tuning register below; unconfirmed against current HEAD.
 A shockwave (air pressure) passing a sealed glass box — a rectangular room with
 glass walls, **no tiles destroyed** — puts water OUTSIDE the box. If it
 reproduces, this is a **conservation bug, not a tuning item**, and it is the
-same FAILURE CLASS as the ★ arc above (mass where there should be none) in a
-different field.
+same FAILURE CLASS as the mass-books arc closed above (mass where there should
+be none) in a different field.
 
 **Do these in order; the first two are cheap and either can invalidate the rest:**
 1. **Verify the box is actually sealed** — `level_airtight.py` (flood-fill
@@ -100,7 +177,8 @@ the retune that follows it):
    Shipped `mg_cycles = 8` → on playground **P_max 103.2 → 1.4 atm**, negative
    `P_min` gone, all rail counters → 0, `n_sub` 8 → 1, **~18% faster**.
    `docs/pressure_arc_root_cause_2026-08-17.md`, canon in engine ch. 04.
-   **It replaced itself with the MASS-BOOKS ARC — see ★ below.**
+   **It replaced itself with the MASS-BOOKS ARC, now CLOSED — see the closed-arc
+   section above; the live front is the VELOCITY-CLAMP arc at ★.**
 2. **T_abs compression-work patch** (design §2.9, RULING R1) — its own short
    design + critique round + HUMAN-TEST. Step 4c multiplies ambient-*relative*
    T, so below ambient it doesn't merely omit physics, it **inverts** it
@@ -232,8 +310,9 @@ the retune that follows it):
    the rim, where tau sweeps 0→3, still carries pattern.
    - **Split this BEFORE dialling anything:** is tau too large because the
      optical constants are too large (render), or because the sim is producing
-     too much smoke MASS (sim)? With the ★ arc measuring a 2.15–2.20× mint,
-     the second is live — and pulling `tau_curve_a/b` down to compensate for
+     too much smoke MASS (sim)? With the mass-books arc having measured a
+     2.15–2.20× mint, the second is live — and pulling `tau_curve_a/b` down to
+     compensate for
      over-produced density would paper a sim bug with a render dial and
      un-tune itself the moment mass-books lands. **Diagnostic first (a tau
      histogram across a real cloud), taste second.**
@@ -257,7 +336,10 @@ selection (cosmetic). A threshold change is feel-adjacent — Erik's call.
 
 ---
 
-## ⏸ PICK UP HERE — energy-books arc merged 2026-08-17; pressure/momentum arc is next
+## ⏸ Superseded pointer — energy-books merge, 2026-08-17 (kept for lineage)
+
+> NOT the live front. The live front is the ★ VELOCITY-CLAMP arc at the top of
+> this file. Pressure arc: CLOSED. Mass-books arc: CLOSED.
 
 (Superseded two stale pointers at this merge: main's "storm audit running" — the
 audit finished and the arc it spawned has now closed — and this branch's own
