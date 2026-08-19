@@ -2289,6 +2289,70 @@ PYBIND11_MODULE(breach_physics, m) {
         }, "P6.3: (pstar, div_u, n_total) flat int32 copies as consumed by "
            "the last step()'s pressure solve.");
 
+    // P-M4b (mass-books arc): the energy-books sum, S = Σ n_bulk·T over the
+    // accountable set (!solid, !thermal_solid, !vacuum, !ambient-ring).
+    //
+    // THE SAME eos_energy_books_sum EOSSolver::step's own eth_transport_delta
+    // / eth_compression_delta brackets call — one implementation, so the
+    // instrument cannot drift from the books it measures. Deliberately NOT a
+    // Python re-implementation of the four-flag skip-set: that transcription
+    // is precisely the class of silent drift the mass-books arc exists to
+    // close.
+    //
+    // Free function, not a solver method, because the gate it serves measures
+    // Δ(books) across a `destroy_wall` with NO solver step in between — the
+    // planes are the caller's, the solver holds no copy of them. The Python
+    // side assembles them in exactly one place (PhysicsRunner.energy_books_sum,
+    // which reuses the very args it threads into run_substeps).
+    //
+    // Returns raw Q16.16² (dequant = raw / 65536²). Pure instrumentation: no
+    // sim state is read or written, no digest folds it.
+    m.def("eos_energy_books_sum",
+          [](py::array_t<int32_t> gas, py::array_t<bool> gas_conservative,
+             py::array_t<int32_t> temperature,
+             py::array_t<bool> solid, py::array_t<bool> is_vacuum,
+             py::object is_ambient, py::object thermal_solid) -> int64_t {
+              auto gv = gas.unchecked<3>();
+              const int32_t* gas_ptr = gv.data(0, 0, 0);
+              const int n_gases = static_cast<int>(gv.shape(0));
+              auto gc = gas_conservative.unchecked<1>();
+              const bool* gcons = gc.data(0);
+              auto [t, h, w]     = get_2d_const(temperature);
+              auto [sol, h2, w2] = get_2d_const(solid);
+              auto [vac, h3, w3] = get_2d_const(is_vacuum);
+              const int n = h * w;
+              if ((int)gv.shape(1) != h || (int)gv.shape(2) != w)
+                  throw std::runtime_error(
+                      "eos_energy_books_sum: gas planes must be (n_gases, h, w) "
+                      "matching temperature");
+              if ((int)gc.shape(0) != n_gases)
+                  throw std::runtime_error(
+                      "eos_energy_books_sum: gas_conservative length != n_gases");
+              const bool* amb = nullptr;
+              py::array_t<bool> amb_arr;
+              if (!is_ambient.is_none()) {
+                  amb_arr = is_ambient.cast<py::array_t<bool>>();
+                  auto aa = amb_arr.unchecked<2>();
+                  amb = aa.data(0, 0);
+              }
+              const bool* tsol = nullptr;
+              py::array_t<bool> tsol_arr;
+              if (!thermal_solid.is_none()) {
+                  tsol_arr = thermal_solid.cast<py::array_t<bool>>();
+                  auto ta = tsol_arr.unchecked<2>();
+                  tsol = ta.data(0, 0);
+              }
+              return eos_energy_books_sum(gas_ptr, gcons, n_gases, t,
+                                          sol, vac, n, amb, tsol);
+          },
+          py::arg("gas"), py::arg("gas_conservative"), py::arg("temperature"),
+          py::arg("solid"), py::arg("is_vacuum"),
+          py::arg("is_ambient") = py::none(),
+          py::arg("thermal_solid") = py::none(),
+          "P-M4b: S = sum(n_bulk * T) over the energy books' accountable set "
+          "(!solid, !thermal_solid, !vacuum, !ambient ring), raw Q16.16^2. "
+          "THE SAME C++ routine EOSSolver::step's energy brackets use.");
+
     // EOS P6.2: the standalone CPU reference for the fused SL-advection
     // substep chain (eos_solver.cpp eos_sl_advect_reference — the SAME
     // file-local backtrace routine EOSSolver::step calls). Runs IN PLACE on

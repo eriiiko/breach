@@ -40,11 +40,88 @@ N_AMBIENT = 1.0        # ambient bulk N: the o2+n2 split sums to exactly 1.0
                        # (config.toml [physics.eos]: 0.21 + 0.79 in Q16.16)
 
 
+def bulk_n_planes(d):
+    """Total bulk N per snapshot, in PHYSICAL cell-equivalents (ambient = 1.0).
+
+    THE UNITS RULE, in one place so it cannot be got wrong again (it has been,
+    twice — see this module's header and the mass-books arc kickoff):
+    ``Recorder.record()`` dequantizes a NAMED list of planes by /65536.
+    ``gas_o2`` is on that list; ``inert_n2`` is NOT. Summing them raw mixes
+    physical values with Q16.16 counts and overstates N by ~65536x.
+    """
+    return (d["gas_o2"].astype(np.float64)
+            + d["inert_n2"].astype(np.float64) / FP_ONE)
+
+
+def mass_books(d, have) -> None:
+    """Are the MASS books closed? Totals, and the catalogue of events that move
+    them (mass-books arc P-M0, docs/mass_books_arc_kickoff_2026-08-18.md §1).
+
+    A total alone hides the structure that actually names a culprit: whether the
+    mint is diffuse or arrives in discrete events, whether payloads repeat (a
+    fired constant) or never do (proportional to local state), and whether they
+    coincide with the obstacle grid changing.
+    """
+    if not {"gas_o2", "inert_n2"} <= have:
+        print("\nMASS BOOKS: dump predates the inert_n2 field — cannot audit N.")
+        return
+    N = bulk_n_planes(d)
+    s = N.shape[0]
+    tot = N.reshape(s, -1).sum(axis=1)
+    dn = np.diff(tot)
+    excess = tot[-1] - tot[0]
+
+    print(f"\n{'=' * 62}\nMASS BOOKS (physical cell-equivalents, ambient = 1.0)")
+    print(f"  total N   start {tot[0]:12.1f}   final {tot[-1]:12.1f}   "
+          f"ratio {tot[-1] / tot[0]:6.3f}")
+    print(f"  net change      {excess:+12.1f} cell-equivalents")
+    print(f"  worst cell      {N.max():12.1f} x ambient")
+    print(f"  snaps where N falls: {int((dn < 0).sum())} of {len(dn)}"
+          f"   (largest single fall {-dn.min() if dn.min() < 0 else 0:.2f})")
+
+    ob = d["obstacles"] if "obstacles" in have else None
+    dsolid = np.diff(ob.reshape(s, -1).sum(axis=1)) if ob is not None else None
+
+    ev = np.nonzero(dn > 1.0)[0]
+    if not len(ev):
+        print("  no discrete deposit events > 1 cell-eq.")
+        return
+    print(f"\n  {len(ev)} events > 1 cell-eq deliver {dn[ev].sum():.1f} "
+          f"({100 * dn[ev].sum() / excess:.1f}% of the net change); "
+          f"all other snaps net {dn[dn <= 1.0].sum():+.1f}")
+
+    print(f"\n  {'snap':>6} {'payload':>10} {'cells':>6} {'peak':>9}  walls")
+    rows = []
+    for i in ev:
+        delta = N[i + 1] - N[i]
+        hot = delta > max(delta.max() * 0.01, 1e-3)
+        walls = int(-dsolid[i]) if dsolid is not None and dsolid[i] < 0 else 0
+        rows.append((int(i), float(dn[i]), int(hot.sum()), float(delta.max()), walls))
+        print(f"  {i:6d} {dn[i]:10.2f} {int(hot.sum()):6d} {delta.max():9.2f}"
+              f"  {'-' + str(walls) if walls else '.':>5}")
+
+    pay = np.array([r[1] for r in rows])
+    rep = {v: c for v, c in zip(*np.unique(np.round(pay, 1), return_counts=True)) if c > 1}
+    print(f"\n  payloads: {len(np.unique(np.round(pay, 1)))} distinct in {len(rows)} events")
+    for v, c in sorted(rep.items(), key=lambda t: -t[0] * t[1])[:5]:
+        print(f"    {v:9.2f} cell-eq recurs x{c}  <- a FIXED payload (a fired constant)")
+    if dsolid is not None:
+        w = np.array([r[4] for r in rows]) > 0
+        print(f"  coinciding with a wall break: {int(w.sum())}/{len(rows)} events, "
+              f"{100 * pay[w].sum() / pay.sum():.1f}% of the deposited mass")
+        print("  (a payload that does NOT repeat, riding wall breaks, is "
+              "proportional to\n   local state — see destroy_wall's neighbour-mean "
+              "seed, gamemap.py:1752-1754)")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("dump", help="path to a debug_blowup_*.npz")
     ap.add_argument("--tail", type=int, default=30,
                     help="snapshots of context to print around the event")
+    ap.add_argument("--mass-books", action="store_true",
+                    help="audit bulk N: totals + the catalogue of events that "
+                         "move them (mass-books arc)")
     args = ap.parse_args()
 
     d = np.load(args.dump)
@@ -115,6 +192,9 @@ def main() -> None:
     else:
         print("wind planes ABSENT — momentum analysis impossible for this dump. "
               "Re-record: wind_x/wind_y are in Recorder.DEFAULT_FIELDS since df088f1.")
+
+    if args.mass_books:
+        mass_books(d, have)
 
     # --- context trace -----------------------------------------------------
     lo = max(0, n - args.tail)

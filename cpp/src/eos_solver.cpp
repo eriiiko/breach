@@ -219,6 +219,43 @@ FusedSample eos_backtrace_sample3_q(
 // reciprocal), applied as inc = (resi·recip) >> 32 through 128 bits.
 // ===========================================================================
 
+// ---------------------------------------------------------------------------
+// P-M4b (mass-books arc): THE energy-books sum. See eos_solver.h for the
+// contract and for why this is a file-scope function rather than the
+// step()-local lambda it used to be.
+//
+// The body below is the P-E0 lambda VERBATIM — same skip-set, same nested loop
+// order, same int64 accumulation, same `nb * (int64_t)temperature[i]` with NO
+// offset term (no C, no s_eos_q, no + t_amb_q). That last fact is load-bearing
+// for the mass-books arc: a cell joining the accountable set with T == 0
+// contributes exactly nb * 0 == 0, so seeding a destroyed tile at T := 0 moves
+// the books by exactly nothing (P-M3 design §4, gate 6).
+// ---------------------------------------------------------------------------
+int64_t eos_energy_books_sum(
+        const int32_t* gas, const bool* gas_conservative, int n_gases,
+        const int32_t* temperature,
+        const bool* solid, const bool* is_vacuum,
+        int n,
+        const bool* is_ambient,
+        const bool* thermal_solid) {
+    // Same back-compat idiom as step()'s: the THERMAL axis falls back to the
+    // FLOW mask when the caller has no thermal_mass plane.
+    const bool* ts = (thermal_solid != nullptr) ? thermal_solid : solid;
+    // Dormancy BY BRANCH, exactly as step()'s `ambient_mode` does it.
+    const bool ambient_mode = (is_ambient != nullptr);
+    int64_t acc = 0;
+    for (int i = 0; i < n; ++i) {
+        if (solid[i] || ts[i] || is_vacuum[i]
+                || (ambient_mode && is_ambient[i])) continue;
+        int64_t nb = 0;
+        for (int gi = 0; gi < n_gases; ++gi)
+            if (gas_conservative[gi])
+                nb += (int64_t)gas[(size_t)gi * (size_t)n + (size_t)i];
+        acc += nb * (int64_t)temperature[i];
+    }
+    return acc;
+}
+
 void EOSSolver::step(
         int32_t* atmosphere,
         int32_t* p_prev,
@@ -288,18 +325,16 @@ void EOSSolver::step(
     e_drag_deposit = 0;
     e_drag_drop_sum = 0;
     e_drag_rail_clipped = 0;
+    // P-M4b (mass-books arc): the body moved OUT to the file-scope
+    // eos_energy_books_sum (declared in eos_solver.h) so the Python binding
+    // measures the books through the SAME skip-set and the SAME arithmetic
+    // this bracket does — one implementation, no Python transcription of the
+    // four flags. `ts` is already the resolved thermal mask here, so the
+    // function's own nullptr->solid fallback is a no-op on this path.
     const auto eth_books_sum = [&]() -> int64_t {
-        int64_t acc = 0;
-        for (int i = 0; i < n; ++i) {
-            if (solid[i] || ts[i] || is_vacuum[i]
-                    || (ambient_mode && is_ambient[i])) continue;
-            int64_t nb = 0;
-            for (int gi = 0; gi < n_gases; ++gi)
-                if (gas_conservative[gi])
-                    nb += (int64_t)gas[(size_t)gi * (size_t)n + (size_t)i];
-            acc += nb * (int64_t)temperature[i];
-        }
-        return acc;
+        return eos_energy_books_sum(gas, gas_conservative, n_gases,
+                                    temperature, solid, is_vacuum, n,
+                                    ambient_mode ? is_ambient : nullptr, ts);
     };
 
     if ((int)n_total_.size() != n) n_total_.assign(n, 0);

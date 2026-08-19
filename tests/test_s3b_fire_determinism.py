@@ -157,7 +157,7 @@ def test_shockwave_fanned_firestorm_no_overflow():
 # run-to-run (the integer logistic is deterministic for ANY config, not just the
 # shipped one — a config-dependent float leak would fail this).
 # ---------------------------------------------------------------------------
-def _drive_isolated_fire(dt, *, k_grow, k_die, k_wind_fan, ticks=40):
+def _drive_isolated_fire(dt, *, k_grow, k_die, k_wind_fan, ticks=40, seed_i=0.5):
     """Drive the C++ FireSimulation.step in isolation on a 5x5 wood-centre scene
     with the given dt + fire params; return the final fire field (int32 Q16.16)."""
     from simulation.physics_runner import PhysicsRunner
@@ -177,18 +177,23 @@ def _drive_isolated_fire(dt, *, k_grow, k_die, k_wind_fan, ticks=40):
     # EOS refactor P4: n_o2 is the O2 gate's own input, non-limiting here
     # (this test is about dt/param-config determinism, not O2 starvation).
     n_o2 = np.where(solid, 0, atmosphere_fixed.quantize_scalar(1.0)).astype(np.int32)
+    # Continuous-O2 law (547fb12): the gate reads the MOLE FRACTION
+    # X = Sn_o2/Sn_total, so `step` takes the denominator plane. Gas density 1.0
+    # == n_o2, i.e. X == 1.0 -> o2f == 1: the same NON-LIMITING gate the absolute
+    # law gave at n_o2 = 1.0 (smoothstep well past the retired P_full = 0.03).
+    n_total = np.where(solid, 0, atmosphere_fixed.quantize_scalar(1.0)).astype(np.int32)
     smoke = np.zeros((h, w), dtype=np.int32)
     wall_hp = np.zeros((h, w), dtype=np.int32)
     wall_hp[2, 2] = wall_fixed.quantize_scalar(60.0)
     temperature = np.zeros((h, w), dtype=np.int32)
     temperature[2, 2] = int(round(500.0 * 65536))
     fire = np.zeros((h, w), dtype=np.int32)
-    fire[2, 2] = fire_fixed.quantize_scalar(0.5)
+    fire[2, 2] = fire_fixed.quantize_scalar(seed_i)
     wind_x = np.full((h, w), atmosphere_fixed.quantize_scalar(1.5), dtype=np.int32)
     wind_y = np.zeros((h, w), dtype=np.int32)
     for _ in range(ticks):
-        fs.step(fire, atm, n_o2, smoke, wall_hp, temperature, wind_x, wind_y,
-                solid, is_vac, flammable, float(dt))
+        fs.step(fire, atm, n_o2, n_total, smoke, wall_hp, temperature,
+                wind_x, wind_y, solid, is_vac, flammable, float(dt))
     return fire.copy()
 
 
@@ -200,10 +205,27 @@ def test_cross_config_self_match():
         dict(dt=1.0 / 30, k_grow=4.0, k_die=2.0, k_wind_fan=0.5),   # higher tps
         dict(dt=1.0 / 12, k_grow=6.0, k_die=1.5, k_wind_fan=1.0),   # lower tps + params
     ]
+    # WINDOW (2026-08-18, mass-books arc): measured EARLIER and from a SMALLER
+    # seed than the original (0.1 @ 10 ticks, was 0.5 @ 40). Fire now ramps to
+    # full intensity in under 5 ticks from a 0.5 seed, so at 40 ticks all three
+    # configs sit pegged at the cap and are bit-identical — the vacuity guard
+    # below (rightly) fired. Measured saturation, centre cell, X = 1.0:
+    #     seed 0.5 -> configs differ at 2-3 ticks, ALL CAPPED from tick 5
+    #     seed 0.1 -> configs differ out to 10 ticks, all capped by tick 15
+    # The O2 gate stays NON-LIMITING (X = 1.0) as this scene documents — the
+    # alternative repair (feed it ambient air) would green the test by starving
+    # the fire to ~1/10 rate, i.e. by making it partly an O2 test, which is not
+    # what it is for.
+    #
+    # That saturation speed is itself a TUNING finding, not a test defect --
+    # Erik, 2026-08-18: "maximum intensity in 5 ticks is NOT what i want, but we
+    # are not at tuning yet, we need to make sure all the systems WORK before
+    # tuning." Recorded on the post-pressure retune list (docs/TODO.md item 3).
+    window = dict(ticks=10, seed_i=0.1)
     results = []
     for cfg in configs:
-        a = _drive_isolated_fire(**cfg)
-        b = _drive_isolated_fire(**cfg)
+        a = _drive_isolated_fire(**cfg, **window)
+        b = _drive_isolated_fire(**cfg, **window)
         assert np.array_equal(a, b), f"config {cfg} not bit-identical run-to-run"
         results.append(a)
     # The three configs should NOT all be identical (else the params do nothing —

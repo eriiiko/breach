@@ -9,8 +9,9 @@ Covers the P1 scope end to end:
    and ``conservative=False``.
 2. Ambient initialization — interior air seeds O2/inert_N2 21/79 (summing
    back to exactly today's atmosphere==1.0 Q16.16 scale); solid/vacuum stay 0.
-3. ``destroy_wall`` seeds the newly-opened tile's O2/inert_N2 by neighbor mean
-   (mirrors the existing atmosphere refill).
+3. ``destroy_wall`` seeds the newly-opened tile's O2/inert_N2 with a CONSTANT
+   ambient total, split by the donors' inherited mole fraction (re-pointed at
+   P-M3 — it was the neighbour mean, which was the mass mint).
 4. Donor-cell conservative flux transport (C++ ``bulk_flux_transport``):
    moves mass under wind, respects face permeability, and — the P1 GATE — a
    SEALED room's total O2+inert_N2 is EXACTLY conserved (integer equality)
@@ -159,13 +160,22 @@ def test_reload_material_table_preserves_running_gas_state():
 
 
 # ---------------------------------------------------------------------------
-# 3. destroy_wall neighbor-mean seeding
+# 3. destroy_wall seeding — a CONSTANT ambient total, composition inherited
+#
+# RE-POINTED at P-M3 (was `test_destroy_wall_seeds_bulk_gas_by_neighbor_mean`,
+# which pinned the neighbour MEAN). The mean was the mass mint: it wrote the
+# donors' average without withdrawing anything, so the seed scaled with local
+# pressure — and the burst valve fires on pressure, which made the relief valve
+# a pressure amplifier. destroy_wall now seeds one CONSTANT cell of the map's
+# ambient air and books it. Full gate set:
+# tests/test_destroy_wall_conserves_mass.py; design:
+# docs/mass_books_pm3_destroy_wall_seed_design_2026-08-18.md.
 # ---------------------------------------------------------------------------
-def test_destroy_wall_seeds_bulk_gas_by_neighbor_mean():
+def test_destroy_wall_seeds_constant_ambient_total_with_inherited_split():
     g = _make_gmap()
     # Pick an interior wall tile (a hull tile NOT on the map edge) so the
-    # "interior hull: fill with neighbor mean" branch fires, not the true
-    # breach (which would zero via is_vacuum's relaxation instead).
+    # "interior: seed one ambient cell" branch fires, not the true breach
+    # (which seeds nothing and evacuates instead).
     # Carve a single-tile pillar of hull inside the room to destroy.
     h, w = g._h, g._w
     py, px = h // 2, w // 2
@@ -173,18 +183,37 @@ def test_destroy_wall_seeds_bulk_gas_by_neighbor_mean():
     g.material[py, px] = MAT_HULL
     g.on_tile_changed(py, px)
     g.solid[py, px] = True
-    # Give its neighbors a distinct O2/N2 value so "neighbor mean" is a
-    # nontrivial, checkable prediction (not just re-reading ambient).
+    # A real solid tile holds NO bulk N (bulk_transport zeroes it every pass),
+    # and the hand-carved pillar above kept the ambient gas the constructor
+    # seeded. Clear it, or this is not the solid path and the booked delta is
+    # `seed - prior` instead of the full seed.
+    g.gas[O2][py, px] = 0
+    g.gas[INERT_N2][py, px] = 0
+    # Give its neighbors a distinct total AND a distinct composition, so the
+    # two halves of the rule are separately checkable: the TOTAL must ignore
+    # them (constant), the SPLIT must follow them (inherited).
     for (dy, dx) in ((-1, 0), (1, 0), (0, -1), (0, 1)):
         ny, nx = py + dy, px + dx
         g.gas[O2][ny, nx] = 20000
         g.gas[INERT_N2][ny, nx] = 40000
 
+    n_total_q, _o2_amb, _n2_amb, pin_q = g.ambient_seed()
     g.destroy_wall(py, px)
 
-    assert g.gas[O2][py, px] == 20000
-    assert g.gas[INERT_N2][py, px] == 40000
+    # Total: the map's ambient constant — NOT the donors' 60000.
+    assert int(g.gas[O2][py, px]) + int(g.gas[INERT_N2][py, px]) == n_total_q
+    # Split: the donors' 20000/60000 mole fraction, by the exact int64 form
+    # `(n_total * sum_o2 + sum_n // 2) // sum_n` — one rounding, no float.
+    expected_o2 = (n_total_q * 20000 + 30000) // 60000
+    assert int(g.gas[O2][py, px]) == expected_o2
+    assert int(g.gas[INERT_N2][py, px]) == n_total_q - expected_o2
+    # The same-tick companions (design §3.1.2 / §3.1 / §3.3).
+    assert int(g.atmosphere[py, px]) == pin_q
+    assert int(g.temperature[py, px]) == 0
+    assert int(g.fire[py, px]) == 0
     assert not g.solid[py, px]
+    # And it is BOOKED: a solid tile held 0, so the delta is one ambient cell.
+    assert g.n_destruction_seed_sum == n_total_q
 
 
 # ---------------------------------------------------------------------------
@@ -381,7 +410,7 @@ if __name__ == "__main__":
     test_bulk_pair_table_contract()
     test_ambient_o2_n2_split_on_open_air()
     test_reload_material_table_preserves_running_gas_state()
-    test_destroy_wall_seeds_bulk_gas_by_neighbor_mean()
+    test_destroy_wall_seeds_constant_ambient_total_with_inherited_split()
     test_bulk_flux_transport_moves_mass_downwind()
     test_bulk_flux_transport_never_goes_negative_under_high_cfl_stress()
     test_sealed_room_bulk_conservation_e2e_1000_ticks()

@@ -16,6 +16,13 @@ new dated docs, don't rewrite old ones. At the close of every arc, fold the
 as-built result into the canon chapters and archive the brainstorms
 (`docs/archive/`).
 
+**Canon-fold cadence is DEFERRED, by ruling (Erik, 2026-08-19):** while the
+engine is still gaining whole systems (animation, ML, levelgen, weapons/chars),
+do NOT spend arc-close time folding canon. The code plus git history is the
+source of truth for now, and the fold happens once, later, when the systems
+stop moving. Arc closes still push, archive, and tag — they just don't rewrite
+the canon chapters. Revisit when the physics side stops changing weekly.
+
 ## Environment (machine-agnostic — specifics live in docs/dev_setup.md + docs/lenovo_dev_setup.md)
 
 - **Python: always the conda env `data`** (same env name on all dev machines;
