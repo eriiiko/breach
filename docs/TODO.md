@@ -39,8 +39,37 @@ verified at both `mg_cycles` 2 and 8, so unrelated to the pressure fix.
 P-E4's as-built claims it repaired; it has not. May be the same bug from the
 GPU side.
 
-**Blocked on this arc:** the post-pressure retune pass (item 3 below). Retuning
+**Blocked on this arc:** the post-pressure retune pass (item 4 below). Retuning
 against a substrate that mints mass bakes the mint into the dials.
+
+### Water leaves a sealed aquarium under a shockwave (Erik, 2026-08-18 — UNVERIFIED)
+
+Reported alongside the tuning register below; unconfirmed against current HEAD.
+A shockwave (air pressure) passing a sealed glass box — a rectangular room with
+glass walls, **no tiles destroyed** — puts water OUTSIDE the box. If it
+reproduces, this is a **conservation bug, not a tuning item**, and it is the
+same FAILURE CLASS as the ★ arc above (mass where there should be none) in a
+different field.
+
+**Do these in order; the first two are cheap and either can invalidate the rest:**
+1. **Verify the box is actually sealed** — `level_airtight.py` (flood-fill
+   hull-seal checker) exists for exactly this. A level-authoring leak looks
+   identical from the outside.
+2. **Is total water mass CONSERVED when it happens?** This one measurement
+   splits the hypothesis space cleanly:
+   - *Conserved but relocated* → a transfer path is crossing a solid tile.
+     Suspects, all the same shape (a missing solid mask): the pressure-head
+     transfer (`docs/water_cuda_head_determinism_fix.md` — that path has had
+     trouble before), an advection backtrace that doesn't clamp at solids, or
+     a diffusion/smoothing pass that ignores `solid`.
+   - *Not conserved* → minting or destruction at the boundary; belongs inside
+     the mass-books arc, not beside it.
+3. Only then chase the mechanism.
+
+**Characterize it at a FROZEN, RECORDED config, and fix the mechanism, not the
+threshold.** `k_drag` sets how much shock amplitude survives to reach the box,
+so any drag change (item 3 below) can make this stop reproducing *without
+fixing anything*. A threshold fix un-fixes itself at the next dial change.
 
 ---
 
@@ -63,7 +92,8 @@ chapters 04/05/06 and the arc's working docs are in `docs/archive/`.
 
 Blessed suite state: **48 failed / 2186 passed / 5 skipped**.
 
-**Three items this arc queued, in order:**
+**Four items now queued, in order** (item 3 added 2026-08-18, and it *gates*
+the retune that follows it):
 
 1. ~~**Pressure / momentum arc**~~ — **CLOSED 2026-08-18, HUMAN-TESTED.** It was
    not physics: the pressure solve ran under-converged at `mg_cycles = 2`.
@@ -78,7 +108,84 @@ Blessed suite state: **48 failed / 2186 passed / 5 skipped**.
    form is `T_new = (T + 290)·(1±w) − 290`, which also restores the missing
    acoustic thermalization the §8 bound names. Feel-adjacent: breach
    rarefaction becomes genuinely cold (~97 game-deg at the clamp vs 0 today).
-3. **Post-pressure retune pass** — one sweep after the pressure arc lands:
+3. **Drag law: linear → quadratic `k_drag`** (Erik, 2026-08-18) — a MODEL
+   change, and it must land BEFORE the retune below: it changes the velocity
+   field every other dial is tuned against, and it retires the `k_drag = 0.5`
+   sizing outright (a quadratic `k` has different units).
+
+   *Why.* Today's fold is Stokes-linear — `u *= (1 - kd_q)`, one rate for every
+   speed (`cpp/src/cuda_kick_compression.cu:219-252`, CPU twin in
+   `eos_solver.cpp`'s kick loop). At `k_drag = 0.5` that is a ~2 s e-fold
+   applied equally to a 40 m/s blast front and a 0.5 m/s convective curl, so
+   the dial that kills the storm also flattens the slow structure. Real air
+   drag is quadratic (~ρu²): it barely touches slow flow and bites hard on
+   transients — exactly the discrimination we want, and plausibly half the
+   answer to the smoke item under 4 below.
+
+   *Cost — Erik asked; the honest read is CHEAP, for one structural reason.*
+   The energy bookkeeping downstream (`du2_raw`, the heat deposit, counters
+   5–8) is computed from `ux_old` vs `ux` and is therefore **law-agnostic** —
+   it does not care how the shrink was derived, so the whole energy-books
+   machinery survives untouched. The change is the two lines that build
+   `kk_drag`, in the two places that already carry the block verbatim (CPU +
+   CUDA). Concretely:
+   - Needs `|u|` unconditionally. `sqrt_q16_dev(rad)` is already computed ~15
+     lines above in the |u|-cap branch, but only *inside* that branch — so
+     this costs one extra Q16 sqrt per gas cell per tick. Measure it; almost
+     certainly fine, but it is the one real perf question.
+   - The `(kd_q < FP_ONE) ? FP_ONE - kd_q : 0` guard already has the right
+     shape for the new fold going negative at high `|u|` — reuse it; never let
+     the fold reverse the velocity.
+   - **Quantization is the subtle part, and it is load-bearing.** At small
+     `|u|`, `k·|u|·dt` quantizes to 0 and drag vanishes for slow flow. That is
+     the DESIRED behaviour — but it must be a *named, measured* threshold
+     ("drag is identically zero below X m/s"), not an accident discovered
+     later. Derive and record the cutoff speed.
+   - CPU↔GPU lockstep on the sqrt is already exercised by the |u| cap, so the
+     determinism risk is low. Still one deliberate golden re-baseline.
+
+   *What it does NOT buy:* the new `k` needs sizing from scratch, and
+   `k_drag_heat_frac = 0.0014` was measured at `k_drag = 0.02` under the OLD
+   law — that measurement dies with the law. Both belong to item 4.
+
+   *Scope ruling (Erik, 2026-08-18):* "pretty neat if it's not too much work…
+   if it's really hard to implement and cost way too much we could also skip
+   it." So if the sqrt cost or the lockstep turns ugly, this is **droppable,
+   not load-bearing** — fall back to keeping the linear law and sizing it at
+   item 4.
+
+   **THREE SEQUENCING RULINGS (Erik, 2026-08-19) — read before starting:**
+   - **A design session comes first**, house style: design doc → adversarial
+     critique → patches with gates. Do NOT open this as a straight
+     implementation task. Erik: *"i would like to have a nice design session
+     before that implementation."*
+   - **The EXPONENT is an open design question, not a settled 2.** Erik asked
+     whether real drag is quadratic or quartic. Physically it is `u²` in the
+     inertial/turbulent regime (`u¹` is Stokes; there is no `u⁴` fluid-drag
+     regime) — but two things make "just use 2" premature. (a) Dissipated
+     *power* for quadratic drag is `F·u ∝ u³`, and since our drag carries a
+     heat counterparty we are already reasoning in energy terms, where the
+     exponent is one higher. (b) Transonic drag genuinely steepens past `u²`
+     as `C_d` climbs near Mach 1. **Q16 cost is the constraint on making the
+     exponent a free dial:** `u²` needs `|u|` (one sqrt) × `u`; `u⁴` needs
+     `|u|³`, and Q16.16 overflow headroom shrinks fast. Derive the headroom in
+     the design session before promising a general `u^p`.
+   - **DO NOT size this against today's supersonic flow.** The P-M3 human test
+     measured peak `|u|` = 773 m/s against `c_local` ≈ 565
+     (`docs/human_test_2026-08-18_destroy_wall_seed.md` §3) — the engine is
+     running outside the regime the substep count can resolve. That is the
+     **velocity-clamp arc's** defect, not a drag-law question. Tuning drag to
+     tame supersonic flow would use a dial to paper over a bug — the same
+     error pattern as the aquarium and smoke items. **The velocity-clamp arc
+     must land first**, then the flow is subsonic and `u²` is defensible.
+   - **Visual tuning of this dial waits on the smoke fix** (item 4's smoke
+     bullet). Erik: *"i would also like to tune quadratic drag visually — and
+     possibly after we fix the saturation of the smoke so we can actually see
+     anything."* The smoke cloud IS the instrument for reading the velocity
+     field by eye; with it saturated to black there is nothing to tune against.
+     So: smoke diagnostic+fix → drag law → visual sizing.
+
+4. **Post-pressure retune pass** — one sweep after the pressure arc lands:
    **fire anchors** (`peak time` 2.29 → 2.00 min fell out of its 2–5 min band;
    `peak I`, plateau T and `fire death` were already MISSing for pre-existing
    reasons — `k_grow`/`k_die`/`wall_damage` own them), **`k_drag`** (0.5 is a
@@ -112,6 +219,30 @@ Blessed suite state: **48 failed / 2186 passed / 5 skipped**.
      regime. `test_s3b_fire_determinism::test_cross_config_self_match` already
      had its measurement window re-derived this way (0.1 seed @ 10 ticks) and
      carries the measured saturation table in-file.
+
+   **Added 2026-08-18 (Erik) — smoke saturates to black FAR too early.** The
+   whole cloud reads as a flat black mass with only a thin transparent rim;
+   the patterns that should be among the prettiest things in the game are
+   invisible inside it. Erik: *"this is really sad because the patterns have
+   potentiality to be so beautiful."* Render path is `tau = base_absorb_scale ·
+   plume_k_scale · Σ(k_s·ρ_s)` → artistic remap `tau_p = a·tau^b` → `alpha =
+   1 − exp(−tau_p)` (`renderer/gas_medium.py:150-159`; the tau-space curve
+   replaced the retired `smoke_render_gamma`). Because of the exponential,
+   `tau > ~4` means `alpha > 0.98` and ALL interior structure is gone — only
+   the rim, where tau sweeps 0→3, still carries pattern.
+   - **Split this BEFORE dialling anything:** is tau too large because the
+     optical constants are too large (render), or because the sim is producing
+     too much smoke MASS (sim)? With the ★ arc measuring a 2.15–2.20× mint,
+     the second is live — and pulling `tau_curve_a/b` down to compensate for
+     over-produced density would paper a sim bug with a render dial and
+     un-tune itself the moment mass-books lands. **Diagnostic first (a tau
+     histogram across a real cloud), taste second.**
+   - The taste half — where the transition band sits and how wide it is — is
+     Erik-at-the-screen work, not a number an agent picks.
+   - **Coupled to item 3:** smoke advects on the velocity field `k_drag` damps,
+     so linear drag's flattening of slow convection may be suppressing the very
+     structure the opacity curve is then failing to show. Expect the quadratic
+     law to move this problem before any optical dial does.
 
 **Also reported by the arc, not fixed, awaiting a ruling** — three consumers
 that read raw, N-unguarded gas temperature. The serious one is **sim-affecting**:
