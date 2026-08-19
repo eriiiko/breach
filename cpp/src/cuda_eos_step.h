@@ -84,12 +84,20 @@ struct EOSHostPrestage {
     int32_t s_eos_q   = 0;   // quantize(S_EOS) — pstar (phi_exp*k_temp_to_kelvin, frozen == 65536)
     int32_t c_q       = 0;   // quantize(C) — pstar
     int32_t inv_2dx_q = 0;   // quantize(1/(2·dx)) — div_u (+ kick per-call)
-    int32_t c_local_q = 0;   // the c_LOCAL cap (kick; == dbg_last_c_local_q)
+    // VELOCITY-CLAMP (P-V1, D2v2): c_LOCAL survives SOLELY as the n_sub/CFL
+    // estimate's ceiling (D7's clip) — the kick no longer reads it, see
+    // `cap2` below. == dbg_last_c_local_q.
+    int32_t c_local_q = 0;
     int     n_sub     = 1;   // the substep schedule (== dbg_last_n_sub)
     int32_t dt_s_q    = 0;   // quantize(dt/n_sub) — the substep dt
     int32_t t_min_q   = 0;   // quantize(T_MIN) — P-E1's recovery clamp (§2.1.5)
     // Per-tick host planes (H2D'd once by the caller).
     std::vector<int32_t> coeffE, coeffS;   // donor-cell face-coeff cache
+    // VELOCITY-CLAMP (P-V1, D2v2): the per-cell velocity-cap² plane (Q32.32
+    // raw), folded from tick-entry T in the SAME scan as c_LOCAL above (the
+    // coeffE/coeffS idiom — a HOST std::vector, H2D'd once by the caller;
+    // NOT a device pointer, per this struct's CUDA-type-free contract).
+    std::vector<int64_t> cap2;
     // Conservative-plane index list (the CPU's gi order preserved).
     std::vector<int> cons;
 };
@@ -104,7 +112,11 @@ EOSHostPrestage eos_host_prestage(
     const bool* solid, const bool* is_vacuum,
     const float* dyn_permeability,
     int h, int w, float dt,
-    bool ambient_mode);
+    bool ambient_mode,
+    // THERMAL-MASS AXIS, P-EOS: the per-medium THERMAL mask, mirroring
+    // EOSSolver::step's `ts` fold (nullptr -> `solid`, today's behaviour).
+    // VELOCITY-CLAMP (P-V1, D4): also gates the cap2 fold's ts->ambient rule.
+    const bool* thermal_solid = nullptr);
 
 // True iff EVERY kernel surface the chained dispatch needs is flagged for
 // the GPU (review §4 is silent on a master flag, so the four per-kernel

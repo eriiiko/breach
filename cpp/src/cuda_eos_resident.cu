@@ -552,6 +552,10 @@ struct EOSResidentScratch {
     // mid-stage + kick
     int32_t *div_u = nullptr, *ntot = nullptr, *pstar = nullptr,
             *absorb_q = nullptr;
+    // VELOCITY-CLAMP (P-V1, D2v2): the per-cell cap² plane, uploaded fresh
+    // every tick (the coeffE/coeffS/absorb_q precedent — a per-tick INPUT,
+    // not scratch that survives across ticks).
+    int64_t* cap2 = nullptr;
     bool* cons_flag = nullptr;                 // (n_gases,) device flags
     unsigned long long* rail = nullptr;        // (n_cons,)
     unsigned long long* cnt = nullptr;         // (5,)
@@ -562,10 +566,11 @@ struct EOSResidentScratch {
         auto f = [](void* p) { if (p) cudaFree(p); };
         f(svx); f(svy); f(st); f(cmask); f(coeffE); f(coeffS);
         f(dq_e); f(dq_s); f(scale); f(div_u); f(ntot); f(pstar);
-        f(absorb_q); f(cons_flag); f(rail); f(cnt);
+        f(absorb_q); f(cap2); f(cons_flag); f(rail); f(cnt);
         f(e); f(nbulk); f(dqsum_e); f(dqsum_s); f(ecnt);
         svx = svy = st = coeffE = coeffS = dq_e = dq_s = scale = nullptr;
         div_u = ntot = pstar = absorb_q = nullptr;
+        cap2 = nullptr;
         cmask = nullptr;
         cons_flag = nullptr; rail = nullptr; cnt = nullptr;
         e = nbulk = dqsum_e = dqsum_s = nullptr; ecnt = nullptr;
@@ -609,6 +614,9 @@ struct EOSResidentScratch {
         auto a64 = [&](int64_t** p, size_t cnt_, const char* what) {
             cuda_check(cudaMalloc(p, cnt_ * 8), what);
         };
+        // VELOCITY-CLAMP (P-V1, D2v2): the per-cell cap² plane (P-E1's a64
+        // idiom).
+        a64(&cap2, n, "res malloc cap2");
         a64(&e, n, "res malloc e");
         a64(&nbulk, n, "res malloc nbulk");
         a64(&dqsum_e, n, "res malloc dqsum_e");
@@ -685,7 +693,7 @@ void eos_step_resident(
     const EOSHostPrestage pre = eos_host_prestage(
         solver, atmosphere, p_prev, wind_x, wind_y, temperature,
         gas, gas_conservative, n_gases, solid, is_vacuum,
-        dyn_permeability, h, w, dt, ambient_mode);
+        dyn_permeability, h, w, dt, ambient_mode, thermal_solid);
 
     // ---- host fold helpers (ONE transcription each — design §3.2.3) -------
     const KickScalarFolds kf = kick_scalar_folds(
@@ -710,7 +718,8 @@ void eos_step_resident(
     g_eos_res.ensure(h, w, n_levels, n_cons, n_gases);
     EOSResidentScratch& S = g_eos_res;
 
-    const size_t nb = (size_t)n * 4;
+    const size_t nb  = (size_t)n * 4;
+    const size_t nb8 = (size_t)n * 8;
 
     // ---- per-tick hoisted-plane H2D (per-tick INPUTS, not mid-tick traffic)
     cuda_check(cudaMemcpy(S.coeffE, pre.coeffE.data(), nb,
@@ -719,6 +728,11 @@ void eos_step_resident(
                           cudaMemcpyHostToDevice), "H2D coeffS");
     cuda_check(cudaMemcpy(S.absorb_q, absorb_q.data(), nb,
                           cudaMemcpyHostToDevice), "H2D absorb_q");
+    // VELOCITY-CLAMP (P-V1, D2v2): the per-cell cap² plane, ONE ~56 KB H2D
+    // per tick at 70x100 — the coeffE/coeffS/absorb_q precedent (measured
+    // resident-path cost, noted in the as-built).
+    cuda_check(cudaMemcpy(S.cap2, pre.cap2.data(), nb8,
+                          cudaMemcpyHostToDevice), "H2D cap2");
     cuda_check(cudaMemcpy(S.cons_flag, gas_conservative, (size_t)n_gases,
                           cudaMemcpyHostToDevice), "H2D cons_flag");
 
@@ -809,7 +823,8 @@ void eos_step_resident(
     //      (== the per-call p_new bytes) with the device post-substep Dalton.
     kick_compression_launch_resident(
         d_wind_x, d_wind_y, d_temperature, S.lv[0].P, S.ntot, S.absorb_q,
-        d_solid, d_is_vacuum, kf, pre.c_local_q, S.cnt, h, w,
+        d_solid, d_is_vacuum, kf, S.cap2,   // D2v2: the per-cell cap² plane
+        S.cnt, h, w,
         d_is_ambient, d_sponge_udamp,
         d_ts);   // THERMAL-MASS AXIS: step 4c skips its T write on thermal_solid
 
