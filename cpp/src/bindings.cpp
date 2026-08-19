@@ -1120,7 +1120,7 @@ PYBIND11_MODULE(breach_physics, m) {
              py::array_t<int32_t> gas, py::array_t<bool> gas_conservative,
              py::array_t<bool> solid, py::array_t<bool> is_vacuum,
              py::array_t<float> dyn_wave_absorb,
-             float dt, int32_t c_local_q,
+             float dt, py::array_t<int64_t> cap2_plane,
              float c_max, float dx, float adiabatic_index,
              float absorb_strength, float n_floor_solver, float t_min,
              float t_work_clamp, float t_max_phys, float u_max,
@@ -1142,6 +1142,10 @@ PYBIND11_MODULE(breach_physics, m) {
               auto [sol, h5, w5] = get_2d_const(solid);
               auto [vac, h6, w6] = get_2d_const(is_vacuum);
               auto [ab, h7, w7]  = get_2d_const(dyn_wave_absorb);
+              // VELOCITY-CLAMP (P-V1, D2v2): the per-cell cap² plane —
+              // int64 (the fuel_recip idiom, RECIP-scale values do not fit
+              // int32). HARD CONTRACT: every entry must be >= 0.
+              auto [cap2, h8, w8] = get_2d_const(cap2_plane);
               const bool* tsol = nullptr;
               py::array_t<bool> tsol_arr;
               if (!thermal_solid.is_none()) {
@@ -1153,7 +1157,7 @@ PYBIND11_MODULE(breach_physics, m) {
               int64_t cnts[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
               breach_cuda::eos_kick_compression(
                   wx, wy, t, pn, gas_ptr, gcons, n_gases, sol, vac, ab,
-                  h, w, dt, c_local_q,
+                  h, w, dt, cap2,
                   c_max, dx, adiabatic_index, absorb_strength,
                   n_floor_solver, t_min, t_work_clamp, t_max_phys, u_max,
                   k_drag, k_drag_heat_frac, c_v, n_work_ref,
@@ -1166,7 +1170,7 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("wind_x"), py::arg("wind_y"), py::arg("temperature"),
           py::arg("p_new"), py::arg("gas"), py::arg("gas_conservative"),
           py::arg("solid"), py::arg("is_vacuum"), py::arg("dyn_wave_absorb"),
-          py::arg("dt"), py::arg("c_local_q"),
+          py::arg("dt"), py::arg("cap2_plane"),
           py::arg("c_max"), py::arg("dx"), py::arg("adiabatic_index"),
           py::arg("absorb_strength"), py::arg("n_floor_solver"),
           py::arg("t_min"), py::arg("t_work_clamp"), py::arg("t_max_phys"),
@@ -1175,7 +1179,10 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("c_v") = 1.0f, py::arg("n_work_ref") = 0.25f,
           py::arg("thermal_solid") = py::none(),
           "P6.4 isolated: run the GPU kick + compression-work tail in place on "
-          "wind_x/wind_y/temperature; returns (digest_velocity, "
+          "wind_x/wind_y/temperature; cap2_plane is the per-cell (h,w) int64 "
+          "velocity-cap-squared plane (Q32.32 raw) — MUST be >= 0 everywhere "
+          "(a negative entry makes rad=0 > cap2 reachable, i.e. a divide by "
+          "zero inside the clamp). Returns (digest_velocity, "
           "digest_compression, u_clamp_hits, u_max_hits, work_clamp_hits, "
           "energy_floor_hits, t_max_phys_hits, ke_drag_removed, "
           "e_drag_deposit, e_drag_drop_sum, e_drag_rail_clipped) for this "
@@ -2266,10 +2273,12 @@ PYBIND11_MODULE(breach_physics, m) {
         // lets the per-kernel digest gates replay the isolated advection on
         // the exact schedule the solver derived).
         .def_readonly("dbg_last_n_sub",          &EOSSolver::dbg_last_n_sub)
-        // EOS P6.4: the c_LOCAL velocity cap the last step() derived (q16 raw;
-        // gate telemetry — lets the P6.4 digest gate feed the isolated
-        // kick+compression replay the exact per-tick cap, which is computed
-        // from the PRE-advection T scan the replay cannot see).
+        // EOS P6.4: the c_LOCAL scalar the last step() derived (q16 raw).
+        // VELOCITY-CLAMP (P-V1, D2v2): the kick no longer reads this — the
+        // kick's per-cell cap is folded fresh from tick-entry T (formula A;
+        // the P6.4 gate rebuilds the cap2 plane from its own t0 state, not
+        // from this telemetry). c_LOCAL survives solely as the n_sub/CFL
+        // estimate's ceiling (D7's clip) — gate telemetry for THAT.
         .def_readonly("dbg_last_c_local_q",      &EOSSolver::dbg_last_c_local_q)
         // EOS P6.3 gate telemetry: 1-D int32 copies of the last step()'s
         // solve-input caches (pstar, div_u, n_total — nothing after the
@@ -2399,8 +2408,11 @@ PYBIND11_MODULE(breach_physics, m) {
     // energy_floor_hits, t_max_phys_hits) — the digests == EOSSolver's own
     // when fed the reconstructed step-4-entry state (post-advection u/T via
     // eos_sl_advect_ref + dbg_last_n_sub, post-tick atmosphere as p_new, the
-    // post-tick gas planes, dbg_last_c_local_q); the counters are per-call
-    // (the solver's members are cumulative — gates compare per-tick deltas).
+    // post-tick gas planes, and cap2_plane folded from THIS replay's own t0
+    // temperature via formula A — VELOCITY-CLAMP, P-V1, D2v2: the contract
+    // now derives fully from the replay's own inputs, no dbg_last_c_local_q
+    // dependency); the counters are per-call (the solver's members are
+    // cumulative — gates compare per-tick deltas).
     // Test entry only (both CPU and CUDA builds) — the live path is
     // EOSSolver::step inside PhysicsEngine::run_substeps.
     m.def("eos_kick_compression_ref",
@@ -2409,7 +2421,7 @@ PYBIND11_MODULE(breach_physics, m) {
              py::array_t<int32_t> gas, py::array_t<bool> gas_conservative,
              py::array_t<bool> solid, py::array_t<bool> is_vacuum,
              py::array_t<float> dyn_wave_absorb,
-             float dt, int32_t c_local_q,
+             float dt, py::array_t<int64_t> cap2_plane,
              float c_max, float dx, float adiabatic_index,
              float absorb_strength, float n_floor_solver, float t_min,
              float t_work_clamp, float t_max_phys, float u_max,
@@ -2436,6 +2448,9 @@ PYBIND11_MODULE(breach_physics, m) {
               auto [sol, h5, w5] = get_2d_const(solid);
               auto [vac, h6, w6] = get_2d_const(is_vacuum);
               auto [ab, h7, w7]  = get_2d_const(dyn_wave_absorb);
+              // VELOCITY-CLAMP (P-V1, D2v2): the per-cell cap² plane — int64
+              // (the fuel_recip idiom). HARD CONTRACT: every entry >= 0.
+              auto [cap2, h8, w8] = get_2d_const(cap2_plane);
               const bool* tsol = nullptr;
               py::array_t<bool> tsol_arr;
               if (!thermal_solid.is_none()) {
@@ -2461,7 +2476,7 @@ PYBIND11_MODULE(breach_physics, m) {
               int64_t cnts[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
               eos_kick_compression_reference(
                   wx, wy, t, pn, gas_ptr, gcons, n_gases, sol, vac, ab,
-                  h, w, dt, c_local_q,
+                  h, w, dt, cap2,
                   c_max, dx, adiabatic_index, absorb_strength,
                   n_floor_solver, t_min, t_work_clamp, t_max_phys, u_max,
                   k_drag, k_drag_heat_frac, c_v, n_work_ref,
@@ -2473,7 +2488,7 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("wind_x"), py::arg("wind_y"), py::arg("temperature"),
           py::arg("p_new"), py::arg("gas"), py::arg("gas_conservative"),
           py::arg("solid"), py::arg("is_vacuum"), py::arg("dyn_wave_absorb"),
-          py::arg("dt"), py::arg("c_local_q"),
+          py::arg("dt"), py::arg("cap2_plane"),
           py::arg("c_max"), py::arg("dx"), py::arg("adiabatic_index"),
           py::arg("absorb_strength"), py::arg("n_floor_solver"),
           py::arg("t_min"), py::arg("t_work_clamp"), py::arg("t_max_phys"),
@@ -2484,7 +2499,10 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("is_ambient") = py::none(),
           py::arg("sponge_udamp") = py::none(),
           "P6.4 CPU reference: replay EOSSolver::step's kick + compression-"
-          "work tail in place on wind_x/wind_y/temperature; returns "
+          "work tail in place on wind_x/wind_y/temperature; cap2_plane is "
+          "the per-cell (h,w) int64 velocity-cap-squared plane (Q32.32 raw) "
+          "— MUST be >= 0 everywhere (a negative entry makes rad=0 > cap2 "
+          "reachable, i.e. a divide by zero inside the clamp). Returns "
           "(digest_velocity, digest_compression, u_clamp_hits, u_max_hits, "
           "work_clamp_hits, energy_floor_hits, t_max_phys_hits, "
           "ke_drag_removed, e_drag_deposit, e_drag_drop_sum, "
