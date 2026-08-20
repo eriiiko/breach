@@ -6,24 +6,25 @@
 
 The physics lid keeps tightening. Next, in order:
 
-1. **N_SUB_MAX ruling (NEW — opened by the velocity-clamp arc, Erik's call,
-   perf-coupled).** The clamp fix removed all illegal velocities, but P-V2
-   measured the substep rail as the remaining owner of residual pressure
-   flashes: required `n_sub` **median 251 vs the `N_SUB_MAX = 8` rail,
-   exceeded on 99.5% of blast-window ticks** — a hull punctured to vacuum is
-   a SUSTAINED sonic venting condition, not a transient. Options, none free:
-   raise the rail (advection cost multiplies per tick), adaptive/local
-   substepping, transport-side receiver limiting, or accept the residual.
-   Live inputs: `docs/velocity_clamp_audit_2026-08-19.md`,
+1. ~~**N_SUB_MAX ruling**~~ — **RULED (Erik, 2026-08-20): stays at 8.**
+   *"I think we can leave it at 8 to be honest. It seems to work quite
+   well."* The residual over-Courant transport during breach venting
+   (required `n_sub` median 251 vs the rail, 99.5% of blast ticks — P-V2)
+   is an ACCEPTED cost at current feel. Revisit only if pile-up flashes
+   become a felt problem again; the measurements live in
+   `docs/velocity_clamp_audit_2026-08-19.md` and
    `docs/velocity_clamp_pv2_measurement_2026-08-19.md`.
-2. **T_abs compression-work patch** — item 2 below (unchanged).
+2. **T_abs compression-work patch** — item 2 below. **NEXT UP (Erik,
+   2026-08-20): start in a FRESH session** (own short design + critique +
+   HUMAN-TEST, per its queued spec).
 3. **Drag law design session** — item 3 below, now UNBLOCKED (flow is
    subsonic post-clamp). Erik is feel-probing the LINEAR law first
-   (k_drag 0.5 → 1.0 trial, 2026-08-20) to build intuition before the
-   quadratic design session.
+   (k_drag 0.5 → 1.0 → 2.0 trials, 2026-08-20 — no felt difference at 1.0)
+   to build intuition before the quadratic design session.
 4. **Post-pressure retune pass** — item 4 below, unblocked by this arc.
 
-Also queued 2026-08-20: the **skills backlog** (see "Pending — small").
+Also queued 2026-08-20: the **skills backlog** and the **bug list** (both
+under "Pending — small").
 
 ## ✅ VELOCITY-CLAMP arc CLOSED 2026-08-20 — HUMAN-TEST PASS, merged
 
@@ -440,7 +441,11 @@ at `docs/`, not archived.
   exercising the full sim surface (standing water, a living fire, rooms at
   different pressures, an explosion), replacing re-baseline-from-whatever-state
   with a suite designed to catch regressions everywhere, not just the quiet
-  systems. Own design session.
+  systems. Own design session. **Re-confirmed by Erik 2026-08-20** (at the
+  velocity-clamp close's re-baseline): the current goldens still carry the
+  old coverage gaps (no water, no doors, no burnables) — re-stamping them at
+  arc closes is fine for now, but the co-design happens once the physics
+  engine is fully fixed, WITH Erik, and replaces this set.
 - **Wind assessment** and **fire-vs-wind + O2-suffocation tuning** — queued
   behind the storm-damping session (wind/damping share the momentum surface).
 
@@ -734,20 +739,38 @@ All render-only — no sim/determinism surface, auto-skipped in headless trainin
 
 ## Pending — small (background, queue up next session)
 
+- **Bug list (started 2026-08-20 — Erik wants known bugs tracked in one
+  place; graduate items into arcs when picked up):**
+  - **Pressure-burst walls keep their graphics** (Erik, 2026-08-20 feel
+    probe, post-velocity-clamp build). A wall destroyed by pressure
+    (`find_burst_walls` → `destroy_wall`) stays visually intact — the only
+    tell is smoke flowing through the gap. Sim is correct (flow passes);
+    the render/bake layer isn't invalidated on destruction. Suspect: baked
+    art/tile layer not refreshed when `solid` flips outside the editor
+    path. Render-only.
+
 - **Skills backlog (Erik, 2026-08-20).** Procedures live in skills, not docs
-  (master CLAUDE.md rule) — several are overdue:
+  (master CLAUDE.md rule) — several are overdue. Erik's meta-ruling: *take
+  time to get each workflow genuinely right — we'll use them over and over.*
   - **run-game skill** — launch the game per machine (the `<env-py> main.py
     --cuda` line, worktree-aware, common flags like `--res`, where
     stdout/stderr land, how to launch detached for a HUMAN-TEST).
   - **level-editor skill** — launching + driving the Arc-C editor.
   - **level-generator skill** — once levelgen exists (design v0.1 is
     design-only).
+  - **bug-report skill** — how to record a bug (repro, build/branch, dump
+    if physics, where it goes in this list) so feel-session findings don't
+    evaporate.
+  - **arc-close skill** — the close ritual (golden re-baseline steps +
+    archive + tag + merge) AND the workspace flip: at close, check out
+    `main` in the arc worktree Erik is sitting in (freeing `main` from
+    wherever it's parked first) so his VSCode view + chat history follow to
+    main automatically — solved manually 2026-08-20, must be encoded.
   - **Skill-audit session with Claude** — walk the repo's recurring
     procedures and decide what else deserves a skill. Seed candidates:
-    the arc-close ritual (golden re-baseline steps + archive + tag — the
-    riskiest recurring procedure), CUDA build per machine, recording +
-    analyzing an F8/blowup dump, HUMAN-TEST record-keeping, and Erik's
-    question: documentation navigation (canon vs capture vs archive map).
+    CUDA build per machine, recording + analyzing an F8/blowup dump,
+    HUMAN-TEST record-keeping, and Erik's question: documentation
+    navigation (canon vs capture vs archive map).
 
 - **Fire & Heat tuning session (Erik, 2026-07-21, after B1 merged) — DEDICATED
   SESSION.** B1 (black-body overlay + brightest-K fire lights) merged and the
