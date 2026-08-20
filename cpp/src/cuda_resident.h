@@ -116,6 +116,9 @@ struct KickScalarFolds {
     int32_t t_min_q      = 0;
     int32_t t_max_phys_q = 0;
     int32_t u_max_q      = 0;
+    // T_ABS COMPRESSION WORK (P-W1a, design §5): the A7-floored ambient fold,
+    // threaded through the ABI. NOT read in arithmetic yet — lands at P-W1b.
+    int32_t t_amb_q      = 0;
     // VELOCITY-CLAMP (P-V1, D3): u_max² (Q32.32) for the kick's cap_is_umax
     // test against the per-cell cap2_plane — the SAME fold every kick site
     // derives from u_max_q.
@@ -140,7 +143,10 @@ KickScalarFolds kick_scalar_folds(
     float dt, float c_max, float dx, float adiabatic_index,
     float absorb_strength, float n_floor_solver, float t_min,
     float t_work_clamp, float t_max_phys, float u_max,
-    float k_drag, float k_drag_heat_frac, float c_v, float n_work_ref);
+    float k_drag, float k_drag_heat_frac, float c_v, float n_work_ref,
+    // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K, folded to
+    // t_amb_q the SAME A7-floored expression the CPU live path folds.
+    float t_amb_k);
 
 // The step-4 + step-4c tail, LAUNCH ONLY, on DEVICE pointers — K1 kick then
 // K2 compression on one stream (the CPU pass boundary), no malloc, no

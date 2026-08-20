@@ -689,6 +689,10 @@ void eos_kick_compression_reference(
     // density — fades step 4c's work factor k toward 0 below n_work_ref,
     // hard-zero below n_work_ref/2 (see fixed_point.h's work_fade_clamp01_q).
     float n_work_ref,
+    // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K, folded the SAME
+    // A7-floored expression as the CPU live path; NOT read in the loop body
+    // yet (P-W1b lands the law). Default 290.0 matches EOSSolver::T_AMB_K.
+    float t_amb_k,
     uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
     int64_t* counters_out /* [9] */,
     const bool* is_ambient = nullptr,    // BC: ring u ≡ 0 (defaults off)

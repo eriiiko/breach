@@ -275,6 +275,7 @@ __global__ void compression_kernel(const int32_t* __restrict__ wind_x,
                                    int32_t dt_q, int32_t work_clamp_q,
                                    int64_t recip_n_work_ref,   // P-E4
                                    int32_t t_min_q, int32_t t_max_phys_q,
+                                   q16 t_amb_q,   // P-W1a: plumbed, unused until P-W1b
                                    unsigned long long* __restrict__ cnt,
                                    int h, int w,
                                    const bool* __restrict__ is_ambient,
@@ -346,7 +347,8 @@ KickScalarFolds kick_scalar_folds(
         float dt, float c_max, float dx, float adiabatic_index,
         float absorb_strength, float n_floor_solver, float t_min,
         float t_work_clamp, float t_max_phys, float u_max,
-        float k_drag, float k_drag_heat_frac, float c_v, float n_work_ref) {
+        float k_drag, float k_drag_heat_frac, float c_v, float n_work_ref,
+        float t_amb_k) {
     KickScalarFolds f;
     f.n_floor_q    = quantize((double)n_floor_solver);
     f.t_min_q      = quantize((double)t_min);
@@ -374,6 +376,10 @@ KickScalarFolds kick_scalar_folds(
     f.recip_cv     = make_recip(std::max((double)c_v, 1e-6));
     // P-E4 (design §2.4): the trust-gate fold, verbatim step()'s.
     f.recip_n_work_ref = make_recip(std::max((double)n_work_ref, 1e-6));
+    // T_ABS COMPRESSION WORK (P-W1a, design §5): the A7-floored fold,
+    // VERBATIM the CPU live path's local (eos_solver.cpp:372). Not read in
+    // arithmetic yet — P-W1b lands the law.
+    f.t_amb_q = std::max<q16>(1, quantize((double)t_amb_k));
     return f;
 }
 
@@ -414,6 +420,7 @@ void kick_compression_launch_resident(
                                         folds.dt_q, folds.work_clamp_q,
                                         folds.recip_n_work_ref,   // P-E4
                                         folds.t_min_q, folds.t_max_phys_q,
+                                        folds.t_amb_q,   // P-W1a: unused until P-W1b
                                         d_cnt, h, w, d_is_ambient, d_ts);
     cuda_check(cudaGetLastError(), "compression launch");
 }
@@ -430,6 +437,9 @@ void eos_kick_compression(
     float t_max_phys, float u_max,   // trace_mass_scale param RETIRED (P-T0)
     float k_drag, float k_drag_heat_frac, float c_v,   // P-E3 (design §2.8)
     float n_work_ref,   // P-E4 (design §2.4): the compression-work trust gate
+    // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K, threaded to the
+    // folds; NOT read in arithmetic yet (P-W1b lands the law).
+    float t_amb_k,
     uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
     int64_t* counters_out /* [9] */,
     const bool* is_ambient, const int32_t* sponge_udamp,     // BC
@@ -445,7 +455,7 @@ void eos_kick_compression(
     const KickScalarFolds folds = kick_scalar_folds(
         dt, c_max, dx, adiabatic_index, absorb_strength, n_floor_solver,
         t_min, t_work_clamp, t_max_phys, u_max,
-        k_drag, k_drag_heat_frac, c_v, n_work_ref);
+        k_drag, k_drag_heat_frac, c_v, n_work_ref, t_amb_k);
     const q16 absorb_dt_q = folds.absorb_dt_q;
 
     // ---- step 2's Dalton sum (verbatim host loop — the kick's N̂ input). ----

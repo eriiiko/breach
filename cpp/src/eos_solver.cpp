@@ -1609,6 +1609,8 @@ void eos_kick_compression_reference(
         float t_max_phys, float u_max,   // trace_mass_scale param RETIRED (P-T0)
         float k_drag, float k_drag_heat_frac, float c_v,   // P-E3 (design §2.8)
         float n_work_ref,   // P-E4 (design §2.4) — the compression-work trust gate
+        // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K.
+        float t_amb_k,
         uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
         int64_t* counters_out /* [9] */,
         const bool* is_ambient, const bool* thermal_solid,
@@ -1647,6 +1649,11 @@ void eos_kick_compression_reference(
     const int64_t recip_cv = make_recip(std::max((double)c_v, 1e-6));
     // P-E4 (design §2.4): the trust-gate fold, verbatim step()'s.
     const int64_t recip_n_work_ref = make_recip(std::max((double)n_work_ref, 1e-6));
+    // T_ABS COMPRESSION WORK (P-W1a, design §5): the A7-floored fold,
+    // VERBATIM eos_solver.cpp:372 / the CUDA kick_scalar_folds() fold. Not
+    // read in the loop body yet — P-W1b lands the law.
+    const q16 t_amb_q = std::max<q16>(1, quantize((double)t_amb_k));
+    (void)t_amb_q;   // P-W1a: plumbed, unused until P-W1b
     int64_t ke_drag_removed = 0, e_drag_deposit = 0, e_drag_drop_sum = 0,
             e_drag_rail_clipped = 0;
 

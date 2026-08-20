@@ -499,6 +499,11 @@ def part2_trajectory() -> bool:
         c_v=float(eos.c_v),
         # P-E4 (design §2.4): the trust gate's reference density.
         n_work_ref=float(eos.n_work_ref),
+        # T_ABS COMPRESSION WORK (P-W1a, design §5): thread the solver's own
+        # T_AMB_K explicitly — a silent pybind default here would compare a
+        # defaulted reference against a solver-valued device path, exactly
+        # the quiet hole this lockstep gate exists to close.
+        t_amb_k=float(eos.T_AMB_K),
     )
     trace_planes = [gi for gi in range(g.gas.shape[0])
                     if not bool(g.gases.conservative[gi])]
