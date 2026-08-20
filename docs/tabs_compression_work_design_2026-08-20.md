@@ -1,4 +1,4 @@
-# T_abs compression work — design (v2, 2026-08-20)
+# T_abs compression work — design (v2.1, 2026-08-20)
 
 **Arc:** `tabs-compression-work` (TODO ★ item 2). **Origin ruling:** RULING R1
 (Erik, 2026-08-17), `docs/archive/energy_transport_design_2026-08-16.md` §2.9 —
@@ -19,6 +19,38 @@ P-W1 split into ABI-plumb + law-flip (C14); P-W0 becomes a P-E0-style
 instruments patch with a baseline red-set artifact (C2/C11); close ritual
 completed (C13); conduction timescale numbers (B-F6); the ~97 figure framed as
 the scheme's number (B-F16).
+
+## 0. Amendments at the P-W0 boundary (v2.1, 2026-08-20 — measured, not renegotiated)
+
+P-W0's baselines (`docs/tabs_compression_work_baseline_2026-08-20.md`, commit
+`0a7a428`) contradicted two of this design's premises. Neither changes the law,
+the patch plan, or any gate contract; both change what the AFTER measurements
+are compared against. Recorded here so P-W1b/P-W2 agents inherit the corrected
+expectations:
+
+- **A-1: the cold-rail window spiral is ALREADY dead on HEAD** (`t_min_gas`
+  flat 0.0 on the exact audit lineage command; all rails silent). Reconciled:
+  the energy-books close itself recorded the feeder flip (`t_min_gas`
+  −0.1908 → 0.0000) and the velocity-clamp audit measured 0 sub-ambient open
+  cells — the paths that pushed cells below ambient were closed AFTER §2.9's
+  spiral was measured. The inverted compression branch survives as **dormant**
+  wrong physics (nothing reaches it), and the arc's justification is
+  unchanged (R1: inversion fixed, thermalization restored, rarefaction cold).
+  Consequence: P-W2's window-battery row is an **AFTER-only characterization**
+  — under the new law sub-ambient cells exist again for the first time since
+  energy-books, created honestly by expansion; there is no spiral to warm.
+- **A-2: ambient gate 2 was never vacuous** (contra §3/B-F3's static read):
+  a ~1e-5 game-deg ambient-ring leak is already amplified geometrically by
+  HEAD's `T·(1+w)` rail compounding to `work_clamp_hits = 4345`,
+  `u_clamp_hits = 2816`, peak interior T 24.46 game-deg over 80 ticks —
+  while `t_max_phys_hits = 0` holds as a REAL green. The new law's change at
+  small T is the additive `+w·290` term dominating from tiny seeds (faster
+  to O(100) game-deg, then the geometric factor declines toward ×1.5). The
+  gate-2 AFTER diff runs against 4345/2816/24.46, not zeros; the
+  RED = STOP rule and the named levers stand exactly as written.
+- **A-3 (minor):** quiet-room drift on HEAD is not exact-zero — a known
+  P-E1 SL-transport LSB transient (≤2 raw counts, self-healed by tick 4).
+  The P-W2 bound gate's baseline is this measured floor, not an idealized 0.
 
 ## 1. The defect (verified against HEAD 3b13cf9)
 
