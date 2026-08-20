@@ -29,8 +29,10 @@ from simulation.status import composed_flags
 from . import core
 from .blackbody import BlackbodyRamp
 from .camera import Camera2D
+from .cold_overlay import ColdFieldOverlay
 from .gas_detail import GasDetailPass
 from .gas_medium import GasMediumOverlay
+from .hover_readout import pack_hover_readout
 from .lighting import LightingPass
 from .speckle import SpeckleField
 from .overlays import (
@@ -239,6 +241,13 @@ class GameRenderer:
         self.blackbody_ramp = BlackbodyRamp.from_config(CFG)
         self.temperature_overlay = HeatFieldOverlay(
             cfg.grid_h, cfg.grid_w, self.blackbody_ramp)
+        # T_abs compression-work arc, P-W2 (design D-7/B-F13/C12): the cold
+        # tier. HeatFieldOverlay above is additive-emissive and structurally
+        # cannot show T_rel < 0 (additive blending only adds light) — this is
+        # the minimal second instrument, a diverging blue ramp drawn UNDER the
+        # heat pass on the SAME toggle (show_temperature / T key). Placeholder
+        # constants, explicitly provisional (renderer/cold_overlay.py).
+        self.cold_overlay = ColdFieldOverlay(cfg.grid_h, cfg.grid_w)
         # Fire & Heat Beauty B2 P4 — dirty-Planck speckle (renderer/speckle.py).
         # A CPU-side, pyray-free field that mottles the black-body overlay's
         # intensity at PACK TIME (the intensity_mod seam) so the flame reads as
@@ -505,6 +514,9 @@ class GameRenderer:
                 speckle_mod = self.speckle.modulation(
                     soot, steam, sim_tick=int(sim_tick))
             self.temperature_overlay.update(gmap.temperature, speckle_mod)
+            # Cold tier (P-W2, D-7): same toggle, same source field. RENDER-
+            # ONLY — gmap.temperature is read, never written.
+            self.cold_overlay.update(gmap.temperature)
         # Water overlay v2 (W6b): depth tint + ripple shading + foam +
         # ambient sines. Skipped when toggled off; the overlay itself also
         # early-outs when the ship is dry (zero-water fast path). Render-only
@@ -637,6 +649,13 @@ class GameRenderer:
         # gmap.temperature. Drawn AFTER the field overlays but BEFORE units so
         # units stay readable on top of the heat glow. Off-by-toggle (T).
         if self.show_temperature:
+            # Cold tier FIRST (P-W2, D-7): alpha-blended UNDER the additive
+            # heat pass, same toggle. T_rel is never both cold and hot at once
+            # per pixel, so "under" is about draw order, not overlap — this
+            # pass paints sub-ambient cells blue before the heat pass adds its
+            # (zero, for those same cells) emissive contribution on top.
+            self.cold_overlay.draw(
+                0, 0, self.world.world_px_w, self.world.world_px_h)
             self.temperature_overlay.draw(
                 0, 0, self.world.world_px_w, self.world.world_px_h)
         # Water OPTICS pass (graphics/water_rendering.md §5): the GLSL
@@ -1495,13 +1514,20 @@ class GameRenderer:
     # ---- debug HUD ------------------------------------------------------
 
     def draw_debug_hud(self, gmap) -> None:
-        """Cursor tile (x, y) + material readout. F6 toggles. Useful for
-        scouting spawn coordinates and verifying level geometry."""
+        """Cursor tile (x, y) + material readout, PLUS the hover "microscope"
+        (T in game-deg + pseudo-Kelvin + fire/O2/trace-gas densities) on the
+        line below. F6 toggles both — the diagnostic readout Erik asked for
+        (docs/TODO.md:814-819, "a small 'all values of the hovered tile as a
+        table'") wired into the main game render path rather than staying a
+        tuning-harness-only affordance (tools/lighting_demo.py already had
+        it). T_abs compression-work arc, P-W2 (design D-7). READ-ONLY:
+        renderer.hover_readout.pack_hover_readout only reads gmap fields."""
         if not self.show_debug_coords:
             return
         mouse_f = self.mouse_to_tile_float()
         if mouse_f is None:
             text = "tile (-, -) - cursor outside map"
+            readout_lines: List[str] = []
         else:
             cx, cy = int(mouse_f[0]), int(mouse_f[1])
             H, W = gmap.solid.shape
@@ -1518,15 +1544,26 @@ class GameRenderer:
                 blocked = bool(gmap.solid[cy, cx] or gmap.is_vacuum[cy, cx])
                 tag = "BLOCKED" if blocked else "walkable"
                 text = f"tile ({cx}, {cy}) | {mat} | {tag}"
+                # hover_readout wants (tx, ty) in the same order this HUD
+                # already computes cursor coords in.
+                readout = pack_hover_readout(
+                    gmap, cx, cy, self.blackbody_ramp._kelvin_from_tgame)
+                readout_lines = readout.lines[1:] if readout else []
             else:
                 text = f"tile ({cx}, {cy}) - out of bounds"
+                readout_lines = []
         pad, font_size = 6, 16
         x0, y0 = 12, 40
-        tw = rl.measure_text(text, font_size)
-        rl.draw_rectangle(x0, y0, tw + 2 * pad, font_size + 2 * pad,
+        lines = [text] + readout_lines
+        tw = max(rl.measure_text(ln, font_size) for ln in lines)
+        line_h = font_size + 2
+        panel_h = 2 * pad + line_h * len(lines)
+        rl.draw_rectangle(x0, y0, tw + 2 * pad, panel_h,
                           rl.Color(0, 0, 0, 180))
-        rl.draw_text(text, x0 + pad, y0 + pad, font_size,
-                     rl.Color(255, 230, 120, 255))
+        for i, ln in enumerate(lines):
+            color = (rl.Color(255, 230, 120, 255) if i == 0
+                     else rl.Color(210, 225, 255, 255))
+            rl.draw_text(ln, x0 + pad, y0 + pad + i * line_h, font_size, color)
 
     # ---- shutdown -------------------------------------------------------
 
@@ -1544,6 +1581,7 @@ class GameRenderer:
         rl.unload_texture(self.gas_medium.tex)
         self.gas_detail.unload()
         rl.unload_texture(self.temperature_overlay.tex)
+        rl.unload_texture(self.cold_overlay.tex)
         rl.unload_texture(self.water_overlay.tex)
         self.water_pass.unload()
         self.pressure_overlay.unload()
