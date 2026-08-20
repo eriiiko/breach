@@ -18,9 +18,26 @@ The physics lid keeps tightening. Next, in order:
    2026-08-20): start in a FRESH session** (own short design + critique +
    HUMAN-TEST, per its queued spec).
 3. **Drag law design session** — item 3 below, now UNBLOCKED (flow is
-   subsonic post-clamp). Erik is feel-probing the LINEAR law first
-   (k_drag 0.5 → 1.0 → 2.0 trials, 2026-08-20 — no felt difference at 1.0)
-   to build intuition before the quadratic design session.
+   subsonic post-clamp). **Feel-probe COMPLETE (Erik, 2026-08-20), and it
+   produced the session's key input.** k_drag 0.5 → 1.0 → 2.0: no felt
+   difference. k = 10: *"totally changed everything — blowup in pressure…
+   a few grenades pressurized the whole main room."* Dump analysis
+   (`debug_manual_20260820_044708_kdrag10_molasses.npz`, kept at repo
+   root): NOT thermal (T_max 179), NOT a mass mint — **venting death**.
+   N fell on 0 of 719 snaps (vs 762/774 at k=0.5); final-window mean wind
+   0.017 m/s (vs ~60 at k=0.5); P frozen at 1.357 atm indefinitely.
+   Mechanism: linear drag is one rate for ALL flow, so at kd_q ≈ 0.42/tick
+   it annihilates the pressure-equalization/venting wind the same as the
+   aftermath swirl — the room integrates every grenade deposit and can
+   never exhale. Lessons for the design session: (a) the linear dial
+   cannot separate "kill the aftermath" from "kill the venting" — the
+   discrimination-by-speed argument for quadratic, felt in-game; (b) felt
+   differences only appear between k=2 and k=10, i.e. the linear law's
+   usable range is narrow and its feel gradient is flat where it's safe;
+   (c) any drag law must leave venting/equalization flow alive — add a
+   VENTING gate (N falls on quiet snaps) to the drag arc's test set.
+   Also magnified here: the known grenade payload item (one snap deposited
+   779.8 cell-eq — with venting dead, the room keeps all of it).
 4. **Post-pressure retune pass** — item 4 below, unblocked by this arc.
 
 Also queued 2026-08-20: the **skills backlog** and the **bug list** (both
