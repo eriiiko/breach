@@ -3,7 +3,7 @@
 Measurement patch. Reports numbers; changes no engine code, tunes no dial,
 re-baselines nothing. Compares P-V1's fixed build against
 `docs/velocity_clamp_audit_2026-08-19.md`'s pre-fix numbers, per the patch
-contract in `docs/velocity_clamp_impl_2026-08-19.md`.
+contract in `docs/archive/velocity_clamp_impl_2026-08-19.md`.
 
 ## 1. The scripted scenario
 

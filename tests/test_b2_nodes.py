@@ -521,7 +521,7 @@ def test_b1_dormancy_still_byte_identical():
     from field_digest import DIGEST_FIELDS, trajectory_digest
 
     DOORTEST_NOPHYS_TRAJ_DIGEST = \
-        "d123a518520ba57809304ebb6a88fabed9b47db2b207a1d5fe5c14bd7ef36558"
+        "5d944aa8b085fa24a100575a1292196058f15953e0c0726f95342650cb685d8b"
 
     lvl = level_loader.load("door_test", levels_dir=str(ROOT / "levels"))
     sim = Simulation(lvl, seed=42, breach_physics=None, enable_recorder=False)

@@ -2,7 +2,7 @@
 locality, exact via the P6.4 CPU reference (the state the cap derives from);
 plus a loose full-engine smoke wiring check.
 
-Design: docs/velocity_clamp_impl_2026-08-19.md (v3). Audit:
+Design: docs/archive/velocity_clamp_impl_2026-08-19.md (v3). Audit:
 docs/velocity_clamp_audit_2026-08-19.md.
 
 Gate 1 — diagonal leak closed (exact): construct winds with strong diagonal

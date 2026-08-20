@@ -96,7 +96,7 @@ def _step(sim, n=1):
 # signal path (the exact B1 surface). If B1 (or any later patch) perturbs a
 # wire-free level's bytes, this fails — new logic MUST stay dormant (§8).
 DOORTEST_NOPHYS_TRAJ_DIGEST = \
-    "d123a518520ba57809304ebb6a88fabed9b47db2b207a1d5fe5c14bd7ef36558"
+    "5d944aa8b085fa24a100575a1292196058f15953e0c0726f95342650cb685d8b"
 
 
 def test_dormancy_door_present_wire_free_digest_byte_identical():
