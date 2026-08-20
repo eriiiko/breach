@@ -1,4 +1,4 @@
-# T_abs compression work — design (v2.1, 2026-08-20)
+# T_abs compression work — design (v2.2, 2026-08-20)
 
 **Arc:** `tabs-compression-work` (TODO ★ item 2). **Origin ruling:** RULING R1
 (Erik, 2026-08-17), `docs/archive/energy_transport_design_2026-08-16.md` §2.9 —
@@ -51,6 +51,80 @@ expectations:
 - **A-3 (minor):** quiet-room drift on HEAD is not exact-zero — a known
   P-E1 SL-transport LSB transient (≤2 raw counts, self-healed by tick 4).
   The P-W2 bound gate's baseline is this measured floor, not an idealized 0.
+
+## 0b. The P-W1b STOP ruling (v2.2, 2026-08-20 — the design table convened)
+
+P-W1b implemented the law, verified it three independent ways (the at-clamp
+exactness oracle, CPU↔CUDA lockstep tol 0 across the full parity set, byte
+match to §2's pinned code), and HALTED per protocol on two STOP-set reds
+(WIP `743f222`). Two read-only investigations quantified all four anomalous
+reds; every mechanism is now understood and MEASURED (evidence:
+`hot_rail_h1_probe.py` + npz in the session scratchpad; summaries below).
+Rulings, each with its measured basis:
+
+**R-1 — `test_no_transport_mint`: the books are INTACT; the GATE is
+re-derived to the exact closure identity.** The old allowance
+(`n_sub · whole-map bulk N`) predates any counted creation/destruction
+channel being live. Measured on the HOT run: the entire excess on all 290
+violating ticks is **`e_ts_residual`** — rule (d)'s air→thermal_solid debit
+charging genuinely sub-ambient donor gas (min_t to −248 game-deg), a COUNTED
+signed channel; corr(excess, −e_ts_residual) = 0.999999992;
+`e_floor_sum = e_wipe_sum = 0` all run. The exact PART-3 identity
+(`trunc = eth_transport_delta − (−e_ts_residual − e_wipe_sum + e_floor_sum)`,
+assert `trunc ∈ (−n_bulk_active_sum, 0]`) holds on **2000/2000 ticks** —
+books never open, truncation bounded. (`e_vac_wipe_sum`/`e_ring_pin_sum` are
+TemperatureSolver channels OUTSIDE this bracket — verified, not in the
+formula.) The test is rewritten to assert the closure identity — STRICTER
+than the old bound in the honest dimension (zero uncounted energy, ever)
+while correct in the new regime. The one-way-negative companion test
+(`test_transport_delta_is_one_way_negative`, `total ≤ 0`) is superseded by
+the same identity (the SUM of a now-legitimately-two-signed counted series
+is no longer the invariant; trunc ≤ 0 per tick is).
+
+**R-2 — `test_no_rail_hits`: re-derived from `== 0` to a bounded-transient
+gate that still catches the old runaway.** Measured character: ONE episode,
+a 13-tick variable-rate climb (ratios 1.01–1.29/tick — NOT the old sustained
+×1.4972 signature), 4 counted ceiling hits (ticks 1680–83), sharp collapse
+(×0.44) via evacuation, then a 3,600–10,000 oscillating band; only 7 ticks
+all-run with any cell above 15000; late-run equilibrium (mean of last 1000
+ticks' peak) 5,341 ≈ the old law's all-run peak 5,553. The rail did exactly
+its designed job ("bounds the compounding's VALUE, counted, never silent")
+on one transient. New gate: `t_max_phys_hits ≤ 8` AND
+`ticks with peak T > 15000 ≤ 14` (both 2× measured headroom; the old
+runaway — 2130 hits, 19+ sustained ceiling ticks — fails both by orders of
+magnitude), plus the R-1 identity green on the same run. The transient
+episode goes to Erik's brief verbatim.
+
+**R-3 — quiet-room bound gate re-specified (RISK-2 measured).** The v2
+provisional (max|T_rel| ≤ 10 over 2000 ticks) conflated two different
+things. Measured: NET books drift is negligible (mean T_rel ≈ +0.004
+game-deg at tick 2000 — the mint guard holds easily) while a standing
+SPATIAL pattern of ±16–17 game-deg (peak 22.07 at tick 222) persists after
+the ringing dies — a frozen acoustic imprint, near-canceling in the mean,
+far below the 800 K glow threshold, conducted away on the §3 timescales.
+Split gate: (a) mint guard |mean T_rel| ≤ 1 game-deg at run end;
+(b) envelope guard max|T_rel| ≤ 33 game-deg (1.5× measured peak). The P-W0
+smoke test is re-derived to the same split. Erik sees the 16-deg imprint
+number in the brief.
+
+**R-4 — `test_water_displacement` re-pinned to what it means.** Measured:
+spatial re-equalization is PERFECT (spread 1.0700–1.0701 atm); the LEVEL
+sits +0.070 atm above ambient because the flood transient's compression
+work honestly warmed the sealed air (mean T_rel +23.5; p* = C·N·(T+290)
+predicts +0.081 — same sign, same order; N exactly conserved). The old
+assert encoded isothermal restoration, which the honest law correctly
+refuses. New asserts: spatial spread ≤ 0.05 atm (measured 0.0001) AND final
+level within [1.00, 1.12] atm with the mechanism comment. The
+warm-rooms-after-transients behavior goes to Erik's brief (it is gameplay-
+visible physics: violent events leave rooms slightly warm and pressurized).
+
+**Process note:** gate 2 (`test_air_boundary:820`) — the rail assert the
+design worried most about — stayed GREEN under the law (AFTER: work_clamp
+6014, u_clamp 4080, peak interior T 629.2 vs baseline 4345/2816/24.46;
+t_max_phys_hits 0 unchanged). No STOP-set gate was weakened silently: R-1
+is strictly stronger where it matters (zero uncounted energy), R-2/R-3/R-4
+are re-derivations from measurement with written rationale, and ALL of them
+are in the P-W3 brief for Erik's veto before anything merges.
 
 ## 1. The defect (verified against HEAD 3b13cf9)
 
