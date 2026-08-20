@@ -779,10 +779,14 @@ All render-only — no sim/determinism surface, auto-skipped in headless trainin
     if physics, where it goes in this list) so feel-session findings don't
     evaporate.
   - **arc-close skill** — the close ritual (golden re-baseline steps +
-    archive + tag + merge) AND the workspace flip: at close, check out
-    `main` in the arc worktree Erik is sitting in (freeing `main` from
-    wherever it's parked first) so his VSCode view + chat history follow to
-    main automatically — solved manually 2026-08-20, must be encoded.
+    archive + tag + merge) AND the workspace handling: `main` lives in ONE
+    worktree at a time, so the close must put it where Erik's VSCode sits
+    (solved manually 2026-08-20, must be encoded). The ritual also runs
+    **egregore-collect-transcripts** as a close step: verified 2026-08-20
+    that transcripts live in `~/.claude/projects/` OUTSIDE the repos and
+    survive worktree/branch deletion — the only loss mode is the
+    collector's 60-day window, which collecting at every close defeats
+    (details in that skill's 2026-08-20 note).
   - **Skill-audit session with Claude** — walk the repo's recurring
     procedures and decide what else deserves a skill. Seed candidates:
     CUDA build per machine, recording + analyzing an F8/blowup dump,
