@@ -1,11 +1,48 @@
 # Breach — TODO
 
-## ★ PICK UP HERE (2026-08-19) — the VELOCITY-CLAMP arc
+## ★ PICK UP HERE (2026-08-20) — the post-clamp queue
 
-> *As of `cd83d1a` (mass-books arc close, merged to main 2026-08-19).*
+> *As of the velocity-clamp arc close (2026-08-20, HUMAN-TEST PASS).*
 
-The mass-books arc closed and handed this one a seed. **Erik has not started it;
-this is the open front.**
+The physics lid keeps tightening. Next, in order:
+
+1. **N_SUB_MAX ruling (NEW — opened by the velocity-clamp arc, Erik's call,
+   perf-coupled).** The clamp fix removed all illegal velocities, but P-V2
+   measured the substep rail as the remaining owner of residual pressure
+   flashes: required `n_sub` **median 251 vs the `N_SUB_MAX = 8` rail,
+   exceeded on 99.5% of blast-window ticks** — a hull punctured to vacuum is
+   a SUSTAINED sonic venting condition, not a transient. Options, none free:
+   raise the rail (advection cost multiplies per tick), adaptive/local
+   substepping, transport-side receiver limiting, or accept the residual.
+   Live inputs: `docs/velocity_clamp_audit_2026-08-19.md`,
+   `docs/velocity_clamp_pv2_measurement_2026-08-19.md`.
+2. **T_abs compression-work patch** — item 2 below (unchanged).
+3. **Drag law design session** — item 3 below, now UNBLOCKED (flow is
+   subsonic post-clamp). Erik is feel-probing the LINEAR law first
+   (k_drag 0.5 → 1.0 trial, 2026-08-20) to build intuition before the
+   quadratic design session.
+4. **Post-pressure retune pass** — item 4 below, unblocked by this arc.
+
+Also queued 2026-08-20: the **skills backlog** (see "Pending — small").
+
+## ✅ VELOCITY-CLAMP arc CLOSED 2026-08-20 — HUMAN-TEST PASS, merged
+
+Erik: *"feel test is perfect."* Record:
+`docs/human_test_2026-08-20_velocity_clamp.md`. Both audited defects fixed
+(the global-scalar cap → per-cell cap² plane folded at tick entry; the
+Chebyshev diagonal leak → exact squared magnitude test): own-cell cap
+violations 52,923 → **0**, P_min −1.324 → −0.310 atm, worst cell 433× →
+299×, peak single-tick pile-up 328 → 197 cell-eq, lockstep tol 0,
+`u_max_hits` structurally 0. Bonus find: `cuda_kick_check` PART 2 had run
+its CPU reference drag-dormant since k_drag shipped (consts never passed
+the drag dials) — fixed, wind replay restored 120/120. The golden
+re-baseline debt (six standing digest reds + the 11 GOLDEN_AGGREGATE flips)
+was settled ONCE at this close, with rationale, per Erik's standing ruling.
+What it deliberately did NOT fix: the substep ceiling (★ item 1 above).
+
+<details of the original arc brief kept below for lineage>
+
+The mass-books arc closed and handed this one a seed.
 
 **The symptom Erik saw:** *"it is stable but i still get individual pressure
 spikes… some individual tiles that flashes yellow or white."* Correct, and it is
@@ -696,6 +733,21 @@ All render-only — no sim/determinism surface, auto-skipped in headless trainin
   nicety, low prio.
 
 ## Pending — small (background, queue up next session)
+
+- **Skills backlog (Erik, 2026-08-20).** Procedures live in skills, not docs
+  (master CLAUDE.md rule) — several are overdue:
+  - **run-game skill** — launch the game per machine (the `<env-py> main.py
+    --cuda` line, worktree-aware, common flags like `--res`, where
+    stdout/stderr land, how to launch detached for a HUMAN-TEST).
+  - **level-editor skill** — launching + driving the Arc-C editor.
+  - **level-generator skill** — once levelgen exists (design v0.1 is
+    design-only).
+  - **Skill-audit session with Claude** — walk the repo's recurring
+    procedures and decide what else deserves a skill. Seed candidates:
+    the arc-close ritual (golden re-baseline steps + archive + tag — the
+    riskiest recurring procedure), CUDA build per machine, recording +
+    analyzing an F8/blowup dump, HUMAN-TEST record-keeping, and Erik's
+    question: documentation navigation (canon vs capture vs archive map).
 
 - **Fire & Heat tuning session (Erik, 2026-07-21, after B1 merged) — DEDICATED
   SESSION.** B1 (black-body overlay + brightest-K fire lights) merged and the
