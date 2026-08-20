@@ -17,7 +17,11 @@ zeroed — so nothing here asserts ``wave_p`` on flooded tiles.
 The four plan tests, in order:
   1. sealed single-cell column, dump 0 -> 0.5 m in one FieldEdit tick:
      atmosphere x exactly 2.5/(2.5-0.5) = 1.25 (the cap doesn't bite);
-     REMOVE the water -> pressure returns within float tolerance.
+     REMOVE the water -> the solver re-equalizes pressure SPATIALLY, but
+     (P-W1b, design SS0b R-4, T_abs compression-work law) NOT back to the
+     pre-flood isothermal value -- the flood transient's compression work
+     honestly warms the sealed air, so the settled level sits ~0.07 atm
+     above ambient (mechanism + numbers in the test's own docstring/comments).
   2. ceiling-slam (depth -> 2.5 in one tick): the true ratio (50x) is capped
      at ratio_cap (atmosphere x exactly 1.5), no inf/NaN anywhere, and the
      slammed cell reads flooded (dyn_permeability == 0 for the tick).
@@ -174,8 +178,32 @@ def test_single_cell_dump_compresses_then_remove_restores():
     assert int(g.water_depth[cy, cx]) == 0
     interior = (~g.solid) & (~g.is_vacuum)
     p = g.atmosphere[interior].astype(np.float64) / 65536.0
-    assert float(np.abs(p - 1.0).max()) < 0.05, (
-        f"pressure did not re-equalize: spread {float(p.min()):.4f}..{float(p.max()):.4f}")
+    # P-W1b (design SS0b R-4): the old assert (`|p - 1.0| < 0.05` everywhere)
+    # encoded ISOTHERMAL restoration -- that the flood-then-drain transient
+    # must return the room to exactly ambient pressure. The T_abs
+    # compression-work law correctly refuses that: the flood transient's
+    # compression work honestly warmed the sealed air (measured mean T_rel
+    # +23.5 game-deg at this point in the run), and p* = C*N*(T+T_AMB_K)
+    # predicts the room settles WARM and slightly over ambient, not back at
+    # it (p* = C*N*(23.5+290) predicts +0.081 atm over ambient; measured
+    # +0.070 atm -- same sign, same order; N is exactly conserved
+    # (bulk_total() == total0, asserted below), so the excess pressure is a
+    # temperature effect, not a mass leak). Two asserts instead: (a) the
+    # SOLVER did re-equalize SPATIALLY (spread is near machine-epsilon --
+    # measured 0.0001 atm, i.e. every open cell agrees almost exactly, just
+    # not with the isothermal PRE-flood value); (b) the settled LEVEL sits
+    # honestly above ambient, in the physically-predicted band, not at an
+    # arbitrary or runaway value.
+    spread = float(p.max() - p.min())
+    assert spread <= 0.05, (
+        f"pressure did not spatially re-equalize: spread {spread:.4f} atm "
+        f"({float(p.min()):.4f}..{float(p.max()):.4f})")
+    mean_p = float(p.mean())
+    assert 1.00 <= mean_p <= 1.12, (
+        f"settled mean pressure {mean_p:.4f} atm is outside the "
+        "compression-work-warmed band [1.00, 1.12] -- either the room "
+        "isothermally restored (law regression) or warmed further than "
+        "the p* = C*N*(T+T_AMB_K) prediction accounts for")
     assert bulk_total() == total0
 
 
