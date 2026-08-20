@@ -261,7 +261,21 @@ def _make_rail_forcer(h=24, w=24):
     - a blast quadrant: huge P spike against near-zero N̂ -> RAD_SAFE + |u| clamp;
     - a convergent-flow band around a near-ceiling-hot column -> work clamp
       (k pinned negative) + T_MAX_PHYS ceiling;
-    - the same band crossing a floor-cold column -> T_MIN energy floor.
+    - a DIVERGENT-flow band at the T_MIN floor column -> work clamp
+      (k pinned positive) + T_MIN energy floor.
+
+    T_ABS COMPRESSION WORK (P-W1b, design SS2): under the retired ambient-
+    relative law, compression on a T_MIN-seeded cell (-289*(1+w)=-433.5 at
+    the clamp) was how this forcer crossed the T_MIN floor. Under the new
+    law compression runs on t_abs = T + t_amb_q and always WARMS -- a
+    T=-289 seed has t_abs=1 (real units; T_MIN sits EXACTLY at t_abs=1 by
+    construction), so compression can no longer push it lower at all. The
+    floor is now crossed by EXPANSION instead: t_abs=1, divided by (1+w)
+    for ANY w>0, floors to something <1 -- i.e. strictly below T_MIN by
+    construction, not merely "at large w". At the clamp (w=0.5):
+    floordiv_q(65536<<16, 98304) = 43690 raw (0.6667 real) -> T_rel =
+    43690 - t_amb_q = -289.33, below t_min_q=-289 -> the floor fires
+    (critique C15's worked numbers, design SS6 P-W1b row).
     """
     inp = {
         "wind_x": np.zeros((h, w), dtype=np.int32),
@@ -283,18 +297,26 @@ def _make_rail_forcer(h=24, w=24):
     # Direct overspeed seeds (RAD_SAFE: |u| raw > 2^30 == 16384 m/s).
     inp["wind_x"][1, 12] = _quantize(25000.0)
     inp["wind_y"][1, 14] = _quantize(-25000.0)
-    # Convergent-flow bands (div < 0 at the meeting cell): +u on the left
-    # half, -u on the right. Band 1's center is near-ceiling hot (k pinned
-    # at -T_WORK_CLAMP -> T*(1.5) crosses T_MAX_PHYS); band 2's center is at
-    # the T_MIN floor (-289*(1.5) = -433.5 crosses the floor).
+    # Band 1: CONVERGENT flow (div < 0 at the meeting cell, +u on the left
+    # half / -u on the right) around a near-ceiling-hot column -> k pinned
+    # at -T_WORK_CLAMP -> compression, t_abs=(15000+290)=15290 real ->
+    # (15290)*1.5-290 = 22645 real, past T_MAX_PHYS=16000 -> the ceiling
+    # fires (re-verified under the new law, design SS3/P-W1b: still fires --
+    # the clamp-rate compounding is unchanged in kind, only in base).
     cy, cx = 16, 12
     inp["wind_x"][cy, :cx] = _quantize(400.0)
     inp["wind_x"][cy, cx:] = _quantize(-400.0)
     inp["temperature"][cy, cx] = _quantize(15000.0)   # -> past T_MAX_PHYS
+    # Band 2: DIVERGENT flow (div > 0 at the meeting cell, -u on the left
+    # half / +u on the right — the MIRROR of band 1's wind pattern) at the
+    # T_MIN-seeded column -> k pinned at +T_WORK_CLAMP -> EXPANSION crosses
+    # the floor (see the T_ABS COMPRESSION WORK docstring note above; the
+    # old compression-based forcer no longer reaches T_MIN at all under the
+    # new law -- this is P-W1b's deterministic-will-fail re-derivation).
     cy2 = 20
-    inp["wind_x"][cy2, :cx] = _quantize(400.0)
-    inp["wind_x"][cy2, cx:] = _quantize(-400.0)
-    inp["temperature"][cy2, cx] = _quantize(-289.0)   # -> past T_MIN (k<0)
+    inp["wind_x"][cy2, :cx] = _quantize(-400.0)
+    inp["wind_x"][cy2, cx:] = _quantize(400.0)
+    inp["temperature"][cy2, cx] = _quantize(-289.0)   # -> past T_MIN (k>=0, expansion)
     for k in inp:
         inp[k] = np.ascontiguousarray(inp[k])
     return inp

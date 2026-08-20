@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <stdexcept>
 #include <vector>
 
 #if !defined(__SIZEOF_INT128__) && defined(_MSC_VER)
@@ -380,6 +381,20 @@ void EOSSolver::step(
     // phi_exp.
     const q16 s_eos_q    = quantize((double)S_EOS);
     const q16 t_min_q    = quantize((double)T_MIN);
+    // D-3 RELEASE-LIVE GUARD (design §4, docs/tabs_compression_work_design_
+    // 2026-08-20.md): step 4c's t_abs = T + t_amb_q form is honest only while
+    // S_EOS == 1 (value-frozen at P-K3) AND T_MIN > -T_AMB_K (else the
+    // compression branch silently re-inverts — t_abs < 0 — the exact defect
+    // this arc kills). Both are Python-writable dials, and assert() is dead
+    // in the Release builds every gate and every play session uses, so this
+    // is a plain, always-compiled, once-per-tick check instead. The
+    // eos_kick_compression_reference test-only twin is exempt by contract
+    // (it replays step() under the dials it is handed).
+    if (s_eos_q != FP_ONE || t_min_q <= -(int64_t)t_amb_q) {
+        throw std::runtime_error(
+            "T_abs compression work requires S_EOS==1 and T_MIN > -T_AMB_K; "
+            "see docs/tabs_compression_work_design_2026-08-20.md D-3");
+    }
     const q16 t_max_phys_q = quantize((double)T_MAX_PHYS);   // v2.4 rail (see eos_solver.h)
     const q16 u_max_q      = quantize((double)U_MAX);        // v2.4 rail
     const q16 c_q        = quantize((double)C);
@@ -989,33 +1004,50 @@ void EOSSolver::step(
                 q16 w = k_neg ? (q16)(-(int64_t)k) : k;
                 if (w > work_clamp_q) { w = work_clamp_q; ++work_clamp_hits; }
                 q16 t_new;
+                // T_ABS COMPRESSION WORK (P-W1b, design §2): the "KEPT
+                // VERBATIM" promise from design §2.7 (energy-books) is
+                // DELIBERATELY REVOKED here — see
+                // docs/tabs_compression_work_design_2026-08-20.md §2. The
+                // arithmetic now runs on ABSOLUTE temperature t_abs =
+                // T + t_amb_q (int64, NOT q16 — A1: T_MAX_PHYS is a
+                // Python-writable dial with no 4c-entry rail, so the sum can
+                // overflow int32). Below ambient, compression on T_rel used
+                // to multiply a NEGATIVE number by (1+w) — cold gas got
+                // COLDER under compression, the exact inversion this patch
+                // kills. On t_abs it is honest: compression always WARMS.
+                // t_amb_q is the local already folded in scope (:372, the
+                // A7-floored expression, reused verbatim — no second fold).
+                const int64_t t_abs = (int64_t)temperature[i] + (int64_t)t_amb_q;
                 if (k_neg) {
-                    // COMPRESSION — KEPT VERBATIM (design §2.7's explicit
-                    // instruction): the hot rail stays bit-identical to
-                    // HEAD, and the sat_add wrap protection
-                    // (eos-p3fix-thermal-ceiling) is retained. This term is
-                    // MULTIPLICATIVE in the current T (t_new = T*(1+w)) — the
+                    // COMPRESSION: t_new = T + w*(T+290), heating rounds UP
+                    // (mul_q16/SAR floors a negative dT toward -inf, so the
+                    // subtraction below rounds the increase up — A6's
+                    // reversibility proof: C(a) = ceil(a(1+w))). The sat_add
+                    // wrap protection (eos-p3fix-thermal-ceiling) is
+                    // retained. This term is MULTIPLICATIVE in t_abs — the
                     // ±T_WORK_CLAMP rail above only bounds the per-tick RATE,
                     // not the resulting VALUE, so a persistent
                     // negative-divergence driver (a real local compression
-                    // pocket) compounds it geometrically (measured:
-                    // ~1.5x/tick at the clamp rail, reaching the Q16.16
-                    // ceiling in ~8-9 ticks from a modest seed) — the v2.4
+                    // pocket) compounds it geometrically — the v2.4
                     // T_MAX_PHYS rail bounds the compounding's VALUE at the
                     // physical ceiling, counted, never silent.
                     const q16 k_signed = (q16)(-(int64_t)w);
-                    const q16 dT = mul_q16(k_signed, temperature[i]);
+                    const q16 dT = (q16)(((int64_t)k_signed * t_abs) >> 16);
                     t_new = sat_add_q16(temperature[i], (q16)(-(int64_t)dT));
                 } else {
-                    // EXPANSION (k >= 0, including the pinned k==0 identity):
-                    // the reversible inverse T_new = (T<<16)/(FP_ONE+w),
-                    // floor toward -inf via the SHARED floordiv_q helper
-                    // (P-E1's recovery divide, fixed_point.h) — plain `/`
-                    // truncates toward zero and would MINT on a sub-ambient
-                    // T (both backends agree on that mint, so CPU<->CUDA
-                    // parity cannot catch it; only the ledger can).
-                    t_new = (q16)floordiv_q((int64_t)temperature[i] << 16,
-                                            (int64_t)FP_ONE + (int64_t)w);
+                    // EXPANSION (k >= 0, including the pinned k==0 identity,
+                    // D-4): the reversible inverse on t_abs, floor toward
+                    // -inf via the SHARED floordiv_q helper (P-E1's recovery
+                    // divide, fixed_point.h), then shift back to the stored
+                    // ambient-relative convention by subtracting t_amb_q
+                    // AFTER the floor (subtract-before-narrow — the design's
+                    // int32-safe ordering). t_abs >= 1 raw for all T >= T_MIN
+                    // = -289 (D-3's guard), so the numerator is non-negative
+                    // and the §2.7 sub-ambient mint hazard dissolves
+                    // structurally; floordiv_q is kept anyway as the shared,
+                    // zero-cost, T_MIN-move-robust idiom.
+                    t_new = (q16)(floordiv_q(t_abs << 16, (int64_t)FP_ONE + (int64_t)w)
+                                  - (int64_t)t_amb_q);
                 }
                 if (t_new < t_min_q) { t_new = t_min_q; ++energy_floor_hits; }
                 else if (t_new > t_max_phys_q) { t_new = t_max_phys_q; ++t_max_phys_hits; }
@@ -1649,11 +1681,12 @@ void eos_kick_compression_reference(
     const int64_t recip_cv = make_recip(std::max((double)c_v, 1e-6));
     // P-E4 (design §2.4): the trust-gate fold, verbatim step()'s.
     const int64_t recip_n_work_ref = make_recip(std::max((double)n_work_ref, 1e-6));
-    // T_ABS COMPRESSION WORK (P-W1a, design §5): the A7-floored fold,
-    // VERBATIM eos_solver.cpp:372 / the CUDA kick_scalar_folds() fold. Not
-    // read in the loop body yet — P-W1b lands the law.
+    // T_ABS COMPRESSION WORK (P-W1b, design §2/§5): the A7-floored fold,
+    // VERBATIM eos_solver.cpp:372 / the CUDA kick_scalar_folds() fold —
+    // read in the 4c loop below now that the law has landed. This test-only
+    // reference twin is exempt from D-3's guard by contract (it replays
+    // step() under the dials it is handed).
     const q16 t_amb_q = std::max<q16>(1, quantize((double)t_amb_k));
-    (void)t_amb_q;   // P-W1a: plumbed, unused until P-W1b
     int64_t ke_drag_removed = 0, e_drag_deposit = 0, e_drag_drop_sum = 0,
             e_drag_rail_clipped = 0;
 
@@ -1815,18 +1848,24 @@ void eos_kick_compression_reference(
                     const q16 fade = fixedpoint::work_fade_clamp01_q(ratio);
                     k = scale_mag(k, fade);
                 }
-                // P-E4 reversible work (design §2.7, step()'s block verbatim).
+                // P-E4 reversible work (design §2.4/§2.7, step()'s block
+                // verbatim). T_ABS COMPRESSION WORK (P-W1b, design §2):
+                // identical transcription of the live twin's absolute-T
+                // arithmetic — t_abs = T + t_amb_q (int64), compression
+                // warms via t_abs, expansion inverts on t_abs then shifts
+                // back to the stored ambient-relative convention.
                 const bool k_neg = (k < 0);
                 q16 w = k_neg ? (q16)(-(int64_t)k) : k;
                 if (w > work_clamp_q) { w = work_clamp_q; ++work_clamp_hits; }
                 q16 t_new;
+                const int64_t t_abs = (int64_t)temperature[i] + (int64_t)t_amb_q;
                 if (k_neg) {
                     const q16 k_signed = (q16)(-(int64_t)w);
-                    const q16 dT = mul_q16(k_signed, temperature[i]);
+                    const q16 dT = (q16)(((int64_t)k_signed * t_abs) >> 16);
                     t_new = sat_add_q16(temperature[i], (q16)(-(int64_t)dT));
                 } else {
-                    t_new = (q16)floordiv_q((int64_t)temperature[i] << 16,
-                                            (int64_t)FP_ONE + (int64_t)w);
+                    t_new = (q16)(floordiv_q(t_abs << 16, (int64_t)FP_ONE + (int64_t)w)
+                                  - (int64_t)t_amb_q);
                 }
                 if (t_new < t_min_q) { t_new = t_min_q; ++energy_floor_hits; }
                 else if (t_new > t_max_phys_q) { t_new = t_max_phys_q; ++t_max_phys_hits; }
