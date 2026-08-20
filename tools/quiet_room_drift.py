@@ -18,6 +18,13 @@ air-boundary gates use), recording per tick:
                             idiom).
   max|T_rel|                max abs raw-then-dequantized T over the open
                             interior cells (game-deg).
+  mean_t_rel                SIGNED spatial mean T over the open interior
+                            cells (game-deg) — the R-3 MINT guard's own
+                            quantity (design §0b; test_quiet_room_drift_
+                            smoke.py's ``_run_with_signed_mean`` duplicated
+                            this at P-W1b because tools/ was off that
+                            patch's edit surface; P-W2 folds it back into
+                            the tool proper, tools/ being back on-surface).
   t_min_gas                 min T over the open interior cells (game-deg) —
                             the storm_ledger.measure_state() idiom.
   rail counters              work_clamp_hits, energy_floor_hits,
@@ -112,7 +119,7 @@ def run(ticks: int = DEFAULT_TICKS) -> dict:
     _seed_pressure_bump(g, interior)
 
     cols = ("tick", "eos_energy_books_sum", "eth_compression_delta",
-            "max_abs_t_rel", "t_min_gas") + COUNTER_NAMES
+            "max_abs_t_rel", "mean_t_rel", "t_min_gas") + COUNTER_NAMES
     series = {c: [] for c in cols}
 
     for k in range(1, ticks + 1):
@@ -123,6 +130,7 @@ def run(ticks: int = DEFAULT_TICKS) -> dict:
         series["eos_energy_books_sum"].append(int(runner.energy_books_sum(g)))
         series["eth_compression_delta"].append(int(eos.eth_compression_delta))
         series["max_abs_t_rel"].append(float(np.abs(t_interior).max()) / FP_ONE)
+        series["mean_t_rel"].append(float(t_interior.mean()) / FP_ONE)
         series["t_min_gas"].append(float(t_interior.min()) / FP_ONE)
         for c in COUNTER_NAMES:
             series[c].append(int(getattr(eos, c)))
@@ -134,6 +142,7 @@ def run(ticks: int = DEFAULT_TICKS) -> dict:
         "eos_energy_books_sum_end": int(series["eos_energy_books_sum"][-1]),
         "eth_compression_delta_sum": int(series["eth_compression_delta"].sum()),
         "max_abs_t_rel_over_run": float(series["max_abs_t_rel"].max()),
+        "mean_t_rel_final": float(series["mean_t_rel"][-1]),
         "t_min_gas_over_run": float(series["t_min_gas"].min()),
     }
     for c in COUNTER_NAMES:
@@ -158,6 +167,7 @@ def main(argv=None) -> int:
     print(f"  {'eos_energy_books_sum end':28s} {s['eos_energy_books_sum_end']:18d}")
     print(f"  {'eth_compression_delta sum':28s} {s['eth_compression_delta_sum']:18d}")
     print(f"  {'max|T_rel| over run (deg)':28s} {s['max_abs_t_rel_over_run']:18.6f}")
+    print(f"  {'mean T_rel at run end (deg)':28s} {s['mean_t_rel_final']:18.6f}")
     print(f"  {'t_min_gas over run (deg)':28s} {s['t_min_gas_over_run']:18.6f}")
     for c in COUNTER_NAMES:
         print(f"  {c + ' (final)':28s} {s[c + '_final']:18d}")
