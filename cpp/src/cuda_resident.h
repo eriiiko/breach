@@ -116,6 +116,10 @@ struct KickScalarFolds {
     int32_t t_min_q      = 0;
     int32_t t_max_phys_q = 0;
     int32_t u_max_q      = 0;
+    // VELOCITY-CLAMP (P-V1, D3): u_max² (Q32.32) for the kick's cap_is_umax
+    // test against the per-cell cap2_plane — the SAME fold every kick site
+    // derives from u_max_q.
+    int64_t u_max2_q32   = 0;
     int32_t gamma_m1_q   = 0;
     int32_t dt_q         = 0;
     int32_t inv_2dx_q    = 0;
@@ -154,7 +158,8 @@ void kick_compression_launch_resident(
     int32_t* d_wind_x, int32_t* d_wind_y, int32_t* d_temperature,
     const int32_t* d_p_new, const int32_t* d_ntot, const int32_t* d_absorb_q,
     const bool* d_solid, const bool* d_is_vacuum,
-    const KickScalarFolds& folds, int32_t c_local_q,
+    const KickScalarFolds& folds,
+    const int64_t* d_cap2_plane,   // VELOCITY-CLAMP (P-V1, D2v2), (h,w), >= 0
     unsigned long long* d_cnt, int h, int w,
     const bool* d_is_ambient, const int32_t* d_sponge_udamp,
     // THERMAL-MASS AXIS, P-EOS: the medium mask K2 (compression work) skips its

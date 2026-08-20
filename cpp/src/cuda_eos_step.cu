@@ -119,9 +119,13 @@ EOSHostPrestage eos_host_prestage(
         const bool* solid, const bool* is_vacuum,
         const float* dyn_permeability,
         int h, int w, float dt,
-        bool ambient_mode) {
+        bool ambient_mode,
+        const bool* thermal_solid) {
     EOSHostPrestage pre;
     const int n = h * w;
+    // THERMAL-MASS AXIS: the same nullptr -> `solid` fallback step()'s `ts`
+    // fold uses. VELOCITY-CLAMP (P-V1, D4): the cap2 fold below reads it.
+    const bool* ts = (thermal_solid != nullptr) ? thermal_solid : solid;
 
     // The boundary_flux rail (spec §5): zero it each tick in ambient mode; the
     // per-substep bulk reset accumulates into it on device, copied back later.
@@ -157,6 +161,10 @@ EOSHostPrestage eos_host_prestage(
     // off-identity T<0 flooring convention.
     const q16 s_eos_q   = quantize((double)solver.S_EOS);
     const q16 c_q       = quantize((double)solver.C);
+    // VELOCITY-CLAMP (P-V1, D2v2/v2.4): u_max_q fold — the CPU twin's rail
+    // (eos_solver.cpp:384), missing here pre-P-V1 (the kick never needed it
+    // on this backend until the per-cell cap plane).
+    const q16 u_max_q   = quantize((double)solver.U_MAX);
     const double gamma_d = (double)solver.adiabatic_index;
     const double dt_d    = (double)dt;
     const q16 dt_q       = quantize(dt_d);
@@ -167,13 +175,32 @@ EOSHostPrestage eos_host_prestage(
     const int64_t Kdt_raw = mul128_shr_host(K_raw, (int64_t)dt_q, 16);
 
     // ---- c_LOCAL = c_amb·sqrt(T_max_abs/T_AMB) (step()'s scan, verbatim) --
+    const q16 c_amb_q = quantize((double)solver.c_max);
+    // VELOCITY-CLAMP (P-V1, D2v2): the per-cell cap² fold, SAME scan, SAME
+    // tick-entry T basis as c_LOCAL — the eos_solver.cpp scan's TWIN
+    // transcription (design's "TWO transcription sites, no third").
+    const int64_t c_amb2_q32 = (int64_t)c_amb_q * (int64_t)c_amb_q;   // Q32.32
+    const int64_t u_max2_q32 = (int64_t)u_max_q * (int64_t)u_max_q;   // Q32.32
+    const double ru = (double)u_max_q / (double)c_amb_q;
+    const int64_t ratio_umax = (int64_t)(ru * ru * 65536.0) + 1;
+
+    pre.cap2.assign(n, 0);
     int64_t t_max_abs_raw = (int64_t)t_amb_q;
     for (int i = 0; i < n; ++i) {
-        if (solid[i] || is_vacuum[i]) continue;
+        if (solid[i] || is_vacuum[i]) { pre.cap2[i] = u_max2_q32; continue; }
         const int64_t t_abs = (((int64_t)s_eos_q * (int64_t)temperature[i]) >> 16) + (int64_t)t_amb_q;
         if (t_abs > t_max_abs_raw) t_max_abs_raw = t_abs;
+
+        // D4 + D1: ts-gas cells get the AMBIENT cap; floor at ambient. A
+        // LOCAL copy: t_max_abs_raw above must stay on the unfloored,
+        // un-ts'd t_abs.
+        int64_t t_abs_cap = t_abs;
+        if (ts[i] || t_abs_cap < (int64_t)t_amb_q) t_abs_cap = (int64_t)t_amb_q;
+        const int64_t ratio = (t_abs_cap << 16) / (int64_t)t_amb_q;   // int64, NO narrow
+        pre.cap2[i] = (ratio >= ratio_umax)
+            ? u_max2_q32
+            : mul128_shr_host(c_amb2_q32, ratio, 16);
     }
-    const q16 c_amb_q = quantize((double)solver.c_max);
     const int32_t ratio_q = (int32_t)((t_max_abs_raw << 16) / (int64_t)t_amb_q);
     const q16 sqrt_ratio = sqrt_q16((int64_t)ratio_q << 16);   // Q.32 radicand
     q16 c_local_q = mul_q16(c_amb_q, sqrt_ratio);
@@ -225,7 +252,12 @@ EOSHostPrestage eos_host_prestage(
         }
     }
     int64_t u_est_raw = (int64_t)max_u + max_du_raw + 1;   // +1 count eps
-    if (u_est_raw > (int64_t)c_local_q) u_est_raw = (int64_t)c_local_q;
+    // D7 (VELOCITY-CLAMP, P-V1): the clip widens to max(c_LOCAL, U_MAX) —
+    // verbatim the CPU twin's fold (eos_solver.cpp) — stored |u| may now
+    // reach U_MAX on hot cells even though c_LOCAL is folded from entry-T.
+    const int64_t u_est_cap = ((int64_t)c_local_q > (int64_t)u_max_q)
+        ? (int64_t)c_local_q : (int64_t)u_max_q;
+    if (u_est_raw > u_est_cap) u_est_raw = u_est_cap;
     const q16 cfl_dx_q = quantize((double)solver.CFL_ADV * dx_d);
     const int64_t numer_wide = mul128_shr_host((int64_t)dt_q, u_est_raw, 16);
     int n_sub = std::max(1, ceil_div(
@@ -314,12 +346,14 @@ void eos_step_cuda(
     const EOSHostPrestage pre = eos_host_prestage(
         solver, atmosphere, p_prev, wind_x, wind_y, temperature,
         gas, gas_conservative, n_gases, solid, is_vacuum,
-        dyn_permeability, h, w, dt, ambient_mode);
+        dyn_permeability, h, w, dt, ambient_mode, thermal_solid);
     const q16 t_amb_q   = pre.t_amb_q;
     const q16 s_eos_q   = pre.s_eos_q;
     const q16 c_q       = pre.c_q;
     const q16 inv_2dx_q = pre.inv_2dx_q;
-    const q16 c_local_q = pre.c_local_q;
+    // VELOCITY-CLAMP (P-V1, D2v2): the local c_local_q unpack RETIRES here —
+    // the kick now reads pre.cap2 (below), not this scalar; pre.c_local_q
+    // itself still feeds dbg_last_c_local_q via eos_host_prestage.
     const int n_sub     = pre.n_sub;
     const q16 dt_s_q    = pre.dt_s_q;
     const std::vector<int32_t>& coeffE = pre.coeffE;
@@ -600,7 +634,7 @@ void eos_step_cuda(
         eos_kick_compression(
             wind_x, wind_y, temperature, p_new.data(),
             gas, gas_conservative, n_gases, solid, is_vacuum,
-            dyn_wave_absorb, h, w, dt, c_local_q,
+            dyn_wave_absorb, h, w, dt, pre.cap2.data(),   // D2v2
             solver.c_max, solver.dx, solver.adiabatic_index,
             solver.absorb_strength, solver.N_FLOOR_SOLVER, solver.T_MIN,
             solver.T_WORK_CLAMP, solver.T_MAX_PHYS, solver.U_MAX,

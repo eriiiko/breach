@@ -346,6 +346,8 @@ void EOSSolver::step(
     if ((int)cmask_.size()   != n) cmask_.assign(n, 0);
     if ((int)coeffE_.size()  != n) coeffE_.assign(n, 0);
     if ((int)coeffS_.size()  != n) coeffS_.assign(n, 0);
+    // VELOCITY-CLAMP (P-V1, D2v2): per-cell cap² scratch plane.
+    if ((int)cap2_plane_.size() != n) cap2_plane_.assign(n, 0);
     // P-E1: the transient energy accumulator + applied-dq face planes.
     if ((int)e_scratch_.size() != n) e_scratch_.assign(n, 0);
     if ((int)dqsum_e_.size()   != n) dqsum_e_.assign(n, 0);
@@ -398,13 +400,43 @@ void EOSSolver::step(
     // Per-tick max of T_abs over open air; one sqrt_q16. A stale ambient cap
     // would re-create the under-substep failure the CFL ∇P term prevents
     // (a 9000 K core's sound speed is ~5.6× ambient).
+    const q16 c_amb_q = quantize((double)c_max);
+    // VELOCITY-CLAMP (P-V1, design v3, D2v2): the per-cell cap² fold rides
+    // the SAME scan as c_LOCAL above, on the SAME tick-entry T basis — one
+    // scan, one basis. Squares against squares (Erik's ruling): no per-cell
+    // sqrt in the fold; only a CLAMPED cell later pays a sqrt (the kick).
+    const int64_t c_amb2_q32 = (int64_t)c_amb_q * (int64_t)c_amb_q;   // Q32.32
+    const int64_t u_max2_q32 = (int64_t)u_max_q * (int64_t)u_max_q;   // Q32.32
+    // smallest ratio that rails at U_MAX. HOST DOUBLE FOLD — the K_raw idiom
+    // above (a per-tick scalar, one transcription per side, no float in the
+    // per-cell path). The naive integer form ((u_max2_q32 << 16) /
+    // c_amb2_q32) OVERFLOWS int64 at the shipped dials (4.3e15 << 16 = 2^68)
+    // — do not use it. Value at shipped dials: 728178 (≈ 11.11 in Q16.16).
+    const double ru = (double)u_max_q / (double)c_amb_q;
+    const int64_t ratio_umax = (int64_t)(ru * ru * 65536.0) + 1;
+
     int64_t t_max_abs_raw = (int64_t)t_amb_q;
     for (int i = 0; i < n; ++i) {
-        if (solid[i] || is_vacuum[i]) continue;
+        // The kick's skip-set (solid||is_vacuum||ambient-ring) is a strict
+        // SUPERSET of this scan's (solid||is_vacuum), so no kick-processed
+        // cell ever reads the filler — u_max2_q32 is a safe defined value.
+        if (solid[i] || is_vacuum[i]) { cap2_plane_[i] = u_max2_q32; continue; }
         const int64_t t_abs = (((int64_t)s_eos_q * (int64_t)temperature[i]) >> 16) + (int64_t)t_amb_q;
         if (t_abs > t_max_abs_raw) t_max_abs_raw = t_abs;
+
+        // D4 + D1: ts-gas cells get the AMBIENT cap (`temperature[i]` is the
+        // OBJECT's T here by ruling A1, not the gas's — reading it would
+        // make furniture the one structural path to a U_MAX-scale cap);
+        // floor at ambient (never below ambient, per cell — mirrors c_LOCAL's
+        // own floor below). A LOCAL copy: the global t_max_abs_raw reduction
+        // above must stay on the UNFLOORED, UN-ts'd t_abs.
+        int64_t t_abs_cap = t_abs;
+        if (ts[i] || t_abs_cap < (int64_t)t_amb_q) t_abs_cap = (int64_t)t_amb_q;
+        const int64_t ratio = (t_abs_cap << 16) / (int64_t)t_amb_q;   // int64, NO narrow
+        cap2_plane_[i] = (ratio >= ratio_umax)
+            ? u_max2_q32                                       // rail; avoids the
+            : mul128_shr(c_amb2_q32, ratio, 16);               // 2^65+ overflow path
     }
-    const q16 c_amb_q = quantize((double)c_max);
     const q16 absorb_dt_q = quantize((double)absorb_strength * dt_d);
     // P-E3 (design §2.8): the drag scalar folds — kd_q = quantize(k_drag*dt),
     // the absorb precedent exactly; heat_frac_q the plain dial fraction; the
@@ -430,6 +462,10 @@ void EOSSolver::step(
     // 1. ADVECTION SUBSTEPS — n = ceil(dt/dt_adv), N_SUB_MAX-capped.
     //    u_est = max|u| + max(K·|∇P|/N̂)·dt, capped at c_LOCAL (§3.2 v2.2 —
     //    the ∇P term goes through the SAME unit bridge K as the kick).
+    //    VELOCITY-CLAMP (P-V1): c_LOCAL is a GLOBAL scalar and stays one on
+    //    purpose (Erik's ruling — n_sub must satisfy the worst cell); this is
+    //    now its ONLY consumer — the kick's velocity ceiling moved to the
+    //    per-cell cap2_plane_ above (D2v2).
     // ======================================================================
     // max|u| — micro-opt (BIT-IDENTITY-PRESERVING): sqrt_q16 is monotone
     // non-decreasing, so max_i sqrt(rad_i) == sqrt(max_i rad_i) — ONE
@@ -483,7 +519,14 @@ void EOSSolver::step(
         }
     }
     int64_t u_est_raw = (int64_t)max_u + max_du_raw + 1;   // +1 count eps
-    if (u_est_raw > (int64_t)c_local_q) u_est_raw = (int64_t)c_local_q;
+    // D7 (VELOCITY-CLAMP, P-V1): the clip widens to max(c_LOCAL, U_MAX) —
+    // stored |u| may now reach U_MAX on hot cells (the per-cell cap2_plane_
+    // can rail there) even though c_LOCAL is folded from entry-T; clipping at
+    // c_LOCAL alone would under-derive n_sub for that cell's substep needs.
+    // Still a global scalar (Erik's ruling — n_sub must satisfy the worst cell).
+    const int64_t u_est_cap = ((int64_t)c_local_q > (int64_t)u_max_q)
+        ? (int64_t)c_local_q : (int64_t)u_max_q;
+    if (u_est_raw > u_est_cap) u_est_raw = u_est_cap;
     const q16 cfl_dx_q = quantize((double)CFL_ADV * dx_d);
     const int64_t numer_wide = mul128_shr((int64_t)dt_q, u_est_raw, 16);
     int n_sub = std::max(1, ceil_div(
@@ -701,8 +744,10 @@ void EOSSolver::step(
 
     // ======================================================================
     // 4. u -= dt·K·grad(P)/N̂ (v2.2: K MANDATORY — omitting it IS the
-    //    64,000× unit bug). Whole chain int64; |u| clamped to c_LOCAL
-    //    (scale-to-cap, counter-tracked); narrowed to q16 ONCE at store.
+    //    64,000× unit bug). Whole chain int64; |u| clamped to the PER-CELL
+    //    cap2_plane_ (VELOCITY-CLAMP, P-V1, D2v2 — scale-to-cap, counter-
+    //    tracked, exact rad > cap² test, no diagonal leak); narrowed to
+    //    q16 ONCE at store.
     // ======================================================================
     const int32_t* Pn = L0.P.data();
     for (int y = 0; y < h; ++y) {
@@ -763,12 +808,16 @@ void EOSSolver::step(
                 }
             }
 
-            // |u| ≤ u_cap = min(c_LOCAL, U_MAX) (state-derived cap + the v2.4
-            // defense-in-depth rail; scale-to-cap preserves direction;
-            // counter-tracked; the cheap Chebyshev pre-test avoids a sqrt
-            // per cell).
-            const q16 u_cap_q = (c_local_q < u_max_q) ? c_local_q : u_max_q;
-            const bool cap_is_umax = (u_max_q < c_local_q);
+            // |u| <= per-cell cap2_plane_[i] (VELOCITY-CLAMP, P-V1, D2v2:
+            // tick-entry-T fold, floors at ambient, U_MAX rail, ts->ambient —
+            // ALL policy lives in the scan; D5: the kick TRUSTS the plane
+            // verbatim, no re-min against U_MAX here). scale-to-cap preserves
+            // direction; counter-tracked. The EXACT rad = ux²+uy² > cap² test
+            // (audit defect 2: the old component Chebyshev pre-test let
+            // diagonal flow up to √2×cap through — no pre-test, no leak; only
+            // a CLAMPED cell pays the sqrt below).
+            const int64_t cap2_q32 = cap2_plane_[i];   // D5: trusted verbatim
+            const bool cap_is_umax = (cap2_q32 >= u_max2_q32);
             // OVERFLOW GUARD (eos-p3fix-thermal-ceiling — the measured
             // runaway-wind wrap): pre-clamp each component to ±2^30 raw
             // (16384 m/s — unphysical; purely a range guard). Pre-fix, a
@@ -780,7 +829,7 @@ void EOSSolver::step(
             // investigation, INDEPENDENT of the temperature wrap. With the
             // guard, rad ≤ 2·2^60 < int64 max, sqrt_q16's result ≤ ~1.5e9
             // (fits int32), so the magnitude clamp below always engages on
-            // anything above u_cap and the narrow is safe by construction.
+            // anything above the cap and the narrow is safe by construction.
             // Behavior-neutral for every legitimate velocity (all caps are
             // orders of magnitude below the guard).
             const int64_t RAD_SAFE = (int64_t)1 << 30;
@@ -788,18 +837,20 @@ void EOSSolver::step(
             else if (ux < -RAD_SAFE) ux = -RAD_SAFE;
             if      (uy >  RAD_SAFE) uy =  RAD_SAFE;
             else if (uy < -RAD_SAFE) uy = -RAD_SAFE;
-            const int64_t ax = ux < 0 ? -ux : ux;
-            const int64_t ay = uy < 0 ? -uy : uy;
-            if ((ax > (int64_t)u_cap_q) || (ay > (int64_t)u_cap_q)) {
-                const int64_t rad = ux * ux + uy * uy;   // int64-safe (guard above)
-                const q16 umag = sqrt_q16(rad);
-                if (umag > u_cap_q) {
-                    ++u_clamp_hits;
-                    if (cap_is_umax) ++u_max_hits;
-                    const q16 scale = reciprocal_q16(umag);
-                    ux = mul128_shr(mul128_shr(ux, (int64_t)scale, 16), (int64_t)u_cap_q, 16);
-                    uy = mul128_shr(mul128_shr(uy, (int64_t)scale, 16), (int64_t)u_cap_q, 16);
-                }
+            const int64_t rad = ux * ux + uy * uy;   // int64-safe (guard above)
+            if (rad > cap2_q32) {
+                ++u_clamp_hits;
+                if (cap_is_umax) ++u_max_hits;
+                const q16 umag    = sqrt_q16(rad);        // Q.32 radicand -> Q16.16
+                const q16 u_cap_q = sqrt_q16(cap2_q32);   // same convention
+                // D6 exact rescale (replaces the reciprocal_q16 chain, which
+                // landed up to ~0.8% above cap and floored negative
+                // components toward -inf): trunc-toward-0 integer divide
+                // shrinks magnitude on BOTH signs identically, C++/CUDA
+                // bit-identical. |ux*u_cap_q| < 2^30*2^31 = 2^61, int64-safe
+                // unconditionally (sqrt_q16 self-clamps at INT32_MAX).
+                ux = (ux * (int64_t)u_cap_q) / (int64_t)umag;
+                uy = (uy * (int64_t)u_cap_q) / (int64_t)umag;
             }
 
             // ==================================================================
@@ -828,8 +879,9 @@ void EOSSolver::step(
                 uy = (uy_old < 0) ? -dmy : dmy;
 
                 // Δ(|u|^2), raw (Q32-ish, plain int64-safe post-cap per the
-                // |u| <= u_cap_q <= U_MAX bound above — the SAME "int64-safe
-                // post-cap" property the design's ΔE_cell derivation relies on).
+                // |u| <= sqrt(cap2_q32) + ~2 counts <= U_MAX bound above (D6) —
+                // the SAME "int64-safe post-cap" property the design's ΔE_cell
+                // derivation relies on).
                 const int64_t du2_raw = (ux_old * ux_old + uy_old * uy_old)
                                        - (ux * ux + uy * uy);   // >= 0 structurally
 
@@ -874,7 +926,9 @@ void EOSSolver::step(
             }
 
             wind_x[i] = (int32_t)ux;   // the ONE narrow at store — safe: |u| is
-            wind_y[i] = (int32_t)uy;   // ≤ max(√2·u_cap, RAD_SAFE) ≪ int32 range
+            wind_y[i] = (int32_t)uy;   // ≤ max(u_cap, RAD_SAFE) ≪ int32 range
+                                       // (D6/D2v2 close the √2 diagonal-leak
+                                       // slack this bound used to carry)
         }
     }
     digest_velocity = digest_of(wind_x, n, digest_of(wind_y, n, 0));
@@ -1532,11 +1586,16 @@ uint64_t eos_sl_advect_reference(
 //                       line from step() (same int64 staging, same clamp
 //                       order, same per-CELL counter semantics);
 //   * step 4c         — the compression-work loop copied line for line.
-// c_local_q comes in as a parameter (dbg_last_c_local_q telemetry): it is
-// derived from the PRE-advection T scan that an isolated tail replay cannot
-// see. Counters are returned per-call; digests are byte-for-byte step()'s
-// digest_velocity / digest_compression expressions. Test entry only — the
-// live path remains EOSSolver::step.
+// VELOCITY-CLAMP (P-V1, design v3): the contract INVERTS here — `cap2_plane`
+// comes in as a parameter, folded from the SAME tick-entry T state
+// (`temperature` on entry, i.e. this replay's own t0) via formula A. That is
+// now TRUE, not a limitation: the isolated tail replay CAN see its own
+// step-4-entry T, so the cap is fully derivable from the replay's own inputs
+// (no more `dbg_last_c_local_q` telemetry dependency the way the old scalar
+// cap needed — the pre-P-V1 comment here said the opposite). Counters are
+// returned per-call; digests are byte-for-byte step()'s digest_velocity /
+// digest_compression expressions. Test entry only — the live path remains
+// EOSSolver::step.
 // ===========================================================================
 void eos_kick_compression_reference(
         int32_t* wind_x, int32_t* wind_y, int32_t* temperature,
@@ -1544,7 +1603,7 @@ void eos_kick_compression_reference(
         const int32_t* gas, const bool* gas_conservative, int n_gases,
         const bool* solid, const bool* is_vacuum,
         const float* dyn_wave_absorb,
-        int h, int w, float dt, int32_t c_local_q,
+        int h, int w, float dt, const int64_t* cap2_plane,   // D2v2 (h,w) Q32.32, >= 0
         float c_max, float dx, float adiabatic_index, float absorb_strength,
         float n_floor_solver, float t_min, float t_work_clamp,
         float t_max_phys, float u_max,   // trace_mass_scale param RETIRED (P-T0)
@@ -1569,6 +1628,9 @@ void eos_kick_compression_reference(
     const q16 t_min_q      = quantize((double)t_min);
     const q16 t_max_phys_q = quantize((double)t_max_phys);
     const q16 u_max_q      = quantize((double)u_max);
+    // VELOCITY-CLAMP (P-V1, D2v2): u_max2_q32 for the kick's cap_is_umax test
+    // (D3) — the SAME fold every kick site derives from u_max_q.
+    const int64_t u_max2_q32 = (int64_t)u_max_q * (int64_t)u_max_q;
     const double gamma_d   = (double)adiabatic_index;
     const q16 gamma_m1_q   = quantize(gamma_d - 1.0);
     const double dt_d      = (double)dt;
@@ -1657,25 +1719,24 @@ void eos_kick_compression_reference(
                 }
             }
 
-            const q16 u_cap_q = (c_local_q < u_max_q) ? c_local_q : u_max_q;
-            const bool cap_is_umax = (u_max_q < c_local_q);
+            // VELOCITY-CLAMP (P-V1, D2v2/D5/D6): per-cell plane, trusted
+            // verbatim; exact rad > cap² test (no Chebyshev pre-test, no
+            // diagonal leak) — step()'s block, verbatim.
+            const int64_t cap2_q32 = cap2_plane[i];
+            const bool cap_is_umax = (cap2_q32 >= u_max2_q32);
             const int64_t RAD_SAFE = (int64_t)1 << 30;
             if      (ux >  RAD_SAFE) ux =  RAD_SAFE;
             else if (ux < -RAD_SAFE) ux = -RAD_SAFE;
             if      (uy >  RAD_SAFE) uy =  RAD_SAFE;
             else if (uy < -RAD_SAFE) uy = -RAD_SAFE;
-            const int64_t ax = ux < 0 ? -ux : ux;
-            const int64_t ay = uy < 0 ? -uy : uy;
-            if ((ax > (int64_t)u_cap_q) || (ay > (int64_t)u_cap_q)) {
-                const int64_t rad = ux * ux + uy * uy;
-                const q16 umag = sqrt_q16(rad);
-                if (umag > u_cap_q) {
-                    ++u_clamp_hits;
-                    if (cap_is_umax) ++u_max_hits;
-                    const q16 scale = reciprocal_q16(umag);
-                    ux = mul128_shr(mul128_shr(ux, (int64_t)scale, 16), (int64_t)u_cap_q, 16);
-                    uy = mul128_shr(mul128_shr(uy, (int64_t)scale, 16), (int64_t)u_cap_q, 16);
-                }
+            const int64_t rad = ux * ux + uy * uy;   // int64-safe (guard above)
+            if (rad > cap2_q32) {
+                ++u_clamp_hits;
+                if (cap_is_umax) ++u_max_hits;
+                const q16 umag    = sqrt_q16(rad);
+                const q16 u_cap_q = sqrt_q16(cap2_q32);
+                ux = (ux * (int64_t)u_cap_q) / (int64_t)umag;   // D6 exact rescale
+                uy = (uy * (int64_t)u_cap_q) / (int64_t)umag;
             }
 
             // P-E3 — interior drag + heat counterparty (design §2.8), VERBATIM

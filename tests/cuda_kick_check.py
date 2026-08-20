@@ -7,18 +7,19 @@ Three gates:
   and random inputs that hit every branch of the step-4/4c tail — the
   zero-gradient fast path, the kick's reciprocal chain against floored and
   ambient N̂, absorption a=0 / 0<a<1 / a>=1 (kk=0), the ±2^30 RAD_SAFE
-  component pre-clamp, the counted |u| clamp with BOTH binding caps (c_LOCAL
-  when c_local_q < U_MAX; U_MAX when the state-derived cap exceeds it), the
-  4c work clamp on both signs, the T_MIN energy floor and the T_MAX_PHYS
-  ceiling, solid/vacuum cells, trace-plane Dalton weighting, degenerate
-  1xN / Nx1 grids. Run BOTH the GPU chain (bp.cuda_eos_kick_compression) and
-  the CPU reference (bp.eos_kick_compression_ref — the step-4/4c loops copied
-  line for line from EOSSolver::step) on identical copies and assert
-  byte-for-byte equality on (wind_x, wind_y, temperature) + digest equality +
-  BIT-EXACT equality of all five rail counters. The config set is asserted to
-  engage every counter at least once (u_clamp, u_max, work_clamp,
-  energy_floor, t_max_phys) — the rails and their telemetry are digest-covered,
-  not just the happy path.
+  component pre-clamp, the counted |u| clamp with BOTH binding caps
+  (VELOCITY-CLAMP, P-V1, D2v2: a per-cell cap2_plane, uniform per config here
+  — an ambient-scale plane where the ambient cap binds; a U_MAX² plane where
+  the U_MAX rail binds), the 4c work clamp on both signs, the T_MIN energy
+  floor and the T_MAX_PHYS ceiling, solid/vacuum cells, trace-plane Dalton
+  weighting, degenerate 1xN / Nx1 grids. Run BOTH the GPU chain
+  (bp.cuda_eos_kick_compression) and the CPU reference
+  (bp.eos_kick_compression_ref — the step-4/4c loops copied line for line
+  from EOSSolver::step) on identical copies and assert byte-for-byte equality
+  on (wind_x, wind_y, temperature) + digest equality + BIT-EXACT equality of
+  all five rail counters. The config set is asserted to engage every counter
+  at least once (u_clamp, u_max, work_clamp, energy_floor, t_max_phys) — the
+  rails and their telemetry are digest-covered, not just the happy path.
 
   PART 2 — TRAJECTORY (the review's §4 P6.4 digest gate). REPAIRED at P-E4
   (design §6 P-E4 row, item C) to its NEW, TRUE contract — the original
@@ -52,8 +53,11 @@ Three gates:
   p_new = the post-tick atmosphere, N̂ from the post-tick gas planes — valid
   because run_substeps' post-step trace advection/decay only moves NON-ZERO
   trace planes and this scenario keeps every trace plane zero, asserted;
-  c_local_q = dbg_last_c_local_q) through BOTH the CPU reference and the GPU
-  chain, asserting
+  cap2_plane REBUILT FROM t0 via formula A — VELOCITY-CLAMP, P-V1, D2v2: t0
+  IS tick-entry T, never mutated, so the rebuild stays exact and this gate is
+  RESTORED to full validity, not merely patched around the T-staleness below
+  — the scenario has no ts-gas cells, so ts == solid on both sides) through
+  BOTH the CPU reference and the GPU chain, asserting
       ref digest_velocity          == EOSSolver.digest_velocity
       ref wind_x/wind_y            == the engine's own post-tick wind bytes
       ref T-INDEPENDENT counters   == the solver's cumulative deltas
@@ -67,10 +71,16 @@ Three gates:
   — a per-tick wind-side ground-truth trajectory PLUS a full CPU<->GPU
   bit-identity trajectory, over the whole run. The scenario is asserted to
   actually drive the tail hard (n_sub pins at N_SUB_MAX, the counted |u|
-  clamp engages with U_MAX as the binding cap, the work clamp engages). The
-  T_MIN/T_MAX_PHYS field rails do not fire in a pure run_substeps loop (the
-  v2.4 measured outcome — they need fire/combustion heat, outside this
-  pass's surface); their coverage is Part 1's deterministic forcer.
+  clamp engages, the work clamp engages). VELOCITY-CLAMP (P-V1, D2v2): u_max
+  is NOT required to engage here any more — pre-D2v2 the near-ceiling hot
+  pocket alone pushed the (global-scalar) cap to U_MAX for the WHOLE map
+  regardless of a cell's own temperature (audit defect 1); post-D2v2 the cap
+  is per-cell, so u_max only binds where a cell is both hot AND carries fast
+  local flow, which this static hot pocket (no local pressure driver) never
+  does — see the assertion below for the full rationale. The T_MIN/T_MAX_PHYS
+  field rails do not fire in a pure run_substeps loop (the v2.4 measured
+  outcome — they need fire/combustion heat, outside this pass's surface);
+  their coverage is Part 1's deterministic forcer.
 
   PART 3 — the CUDA build's CPU path still reproduces the committed
   default-scenario golden (the s4a-check idiom; proves the P6.4 additions
@@ -120,19 +130,70 @@ def _quantize(x):
                              np.ceil(x * FP_ONE - 0.5)))
 
 
-def _run_pair(inp, dt, c_local_q, consts):
-    """Run CPU reference + GPU chain on identical copies; return everything."""
+def _run_pair(inp, dt, cap2_plane, consts):
+    """Run CPU reference + GPU chain on identical copies; return everything.
+
+    VELOCITY-CLAMP (P-V1, D2v2): `cap2_plane` drops into the old `c_local_q`
+    positional slot as an (h,w) int64 array (Q32.32 raw, >= 0 everywhere —
+    the hard contract both bindings document).
+    """
     args_tail = (inp["p_new"], inp["gas"], inp["gas_conservative"],
                  inp["solid"], inp["is_vacuum"], inp["absorb"])
+    cap2_plane = np.ascontiguousarray(cap2_plane, dtype=np.int64)
     f_ref = {k: inp[k].copy() for k in ("wind_x", "wind_y", "temperature")}
     res_ref = bp.eos_kick_compression_ref(
         f_ref["wind_x"], f_ref["wind_y"], f_ref["temperature"],
-        *args_tail, dt, int(c_local_q), **consts)
+        *args_tail, dt, cap2_plane, **consts)
     f_gpu = {k: inp[k].copy() for k in ("wind_x", "wind_y", "temperature")}
     res_gpu = bp.cuda_eos_kick_compression(
         f_gpu["wind_x"], f_gpu["wind_y"], f_gpu["temperature"],
-        *args_tail, dt, int(c_local_q), **consts)
+        *args_tail, dt, cap2_plane, **consts)
     return f_ref, res_ref, f_gpu, res_gpu
+
+
+def _uniform_cap2(h, w, cap_val):
+    """A uniform (h,w) int64 cap2 plane at the given real-units cap value —
+    Part 1's constructed-config idiom (D5: the kick trusts the plane
+    verbatim, so a uniform fill reproduces the old uniform-scalar regimes
+    exactly)."""
+    cap_q = int(_quantize(cap_val))
+    return np.full((h, w), cap_q * cap_q, dtype=np.int64)
+
+
+def _fold_cap2_plane(temperature, solid, is_vacuum, ts, eos):
+    """VELOCITY-CLAMP (P-V1, D2v2) formula A, ported to Python verbatim (the
+    eos_solver.cpp / cuda_eos_step.cu scan) — used by PART 2 to rebuild the
+    exact per-tick cap plane from `temperature` (must be tick-entry T, never
+    mutated after capture — the plane-from-t0 rebuild is what restores PART
+    2's wind-side gate to full validity under D2v2).
+
+    c_amb2*ratio reaches ~2^68 and WRAPS SILENTLY in numpy int64 (the same
+    hazard fixed_point.h's mul128_shr sidesteps in C++) — the fold multiply
+    runs in PLAIN PYTHON INTS (arbitrary precision); only the masking and the
+    ratio_umax comparison are vectorized (ratio itself is bounded by
+    ratio_umax, ~7e5, safely int64-representable).
+    """
+    s_eos_q = int(_quantize(eos.S_EOS))
+    t_amb_q = max(1, int(_quantize(eos.T_AMB_K)))
+    c_amb_q = int(_quantize(eos.c_max))
+    u_max_q = int(_quantize(eos.U_MAX))
+    c_amb2 = c_amb_q * c_amb_q
+    u_max2 = u_max_q * u_max_q
+    ru = u_max_q / c_amb_q
+    ratio_umax = int(ru * ru * 65536.0) + 1
+
+    t_abs = ((s_eos_q * temperature.astype(np.int64)) >> 16) + t_amb_q
+    floor_mask = ts | (t_abs < t_amb_q)                 # D4 + D1
+    t_abs_cap = np.where(floor_mask, t_amb_q, t_abs)
+    ratio = (t_abs_cap.astype(np.int64) << 16) // t_amb_q   # int64-safe
+
+    rails = solid | is_vacuum | (ratio >= ratio_umax)   # filler + U_MAX rail
+
+    cap2 = np.full(temperature.shape, u_max2, dtype=np.int64)
+    idx = np.nonzero(~rails)
+    for pos, r in zip(zip(*idx), ratio[idx].tolist()):
+        cap2[pos] = (c_amb2 * int(r)) >> 16
+    return np.ascontiguousarray(cap2)
 
 
 def _compare(tag, f_ref, res_ref, f_gpu, res_gpu):
@@ -276,16 +337,21 @@ def part1_isolated() -> bool:
     totals = np.zeros(9, dtype=np.int64)   # ref counter engagement coverage
     n_cfg = 0
 
-    # (a) the deterministic all-rails forcer, both cap regimes.
-    for c_local, tag in ((2300.0, "forcer c_LOCAL>U_MAX (U_MAX binds)"),
-                         (300.0, "forcer c_LOCAL<U_MAX (c_LOCAL binds)")):
+    # (a) the deterministic all-rails forcer, both cap regimes — VELOCITY-
+    # CLAMP (P-V1, D2v2): two constructed UNIFORM planes (D5: the kick
+    # trusts the plane verbatim). A u_max2 plane reaches the U_MAX rail (the
+    # forcer's RAD_SAFE-clamped seeds far exceed 1000 m/s — reachable); a
+    # c_amb2 plane keeps the ambient cap binding (u_max_hits == 0).
+    RAIL_FORCER_H, RAIL_FORCER_W = 24, 24
+    for cap_val, tag, is_umax in ((CONSTS["u_max"], "forcer u_max2 plane (U_MAX binds)", True),
+                                  (CONSTS["c_max"], "forcer c_amb2 plane (ambient binds)", False)):
         n_cfg += 1
         inp = _make_rail_forcer()
-        f_ref, res_ref, f_gpu, res_gpu = _run_pair(
-            inp, 1.0 / 24.0, _quantize(c_local), CONSTS)
+        cap2 = _uniform_cap2(RAIL_FORCER_H, RAIL_FORCER_W, cap_val)
+        f_ref, res_ref, f_gpu, res_gpu = _run_pair(inp, 1.0 / 24.0, cap2, CONSTS)
         ok &= _compare(tag, f_ref, res_ref, f_gpu, res_gpu)
         totals += np.array(res_ref[2:], dtype=np.int64)
-        if c_local > CONSTS["u_max"]:
+        if is_umax:
             if res_ref[2] == 0 or res_ref[3] == 0:
                 ok = False
                 print(f"  {tag}: U_MAX rail did NOT engage "
@@ -293,7 +359,7 @@ def part1_isolated() -> bool:
         else:
             if res_ref[2] == 0 or res_ref[3] != 0:
                 ok = False
-                print(f"  {tag}: c_LOCAL cap regime wrong "
+                print(f"  {tag}: ambient cap regime wrong "
                       f"(u_clamp={res_ref[2]} u_max={res_ref[3]})")
         if res_ref[4] == 0 or res_ref[5] == 0 or res_ref[6] == 0:
             ok = False
@@ -316,8 +382,12 @@ def part1_isolated() -> bool:
         for _ in range(4):
             n_cfg += 1
             inp = _make_random_inputs(rng, h, w, wmag, tlo, thi, pmag, nsc)
-            f_ref, res_ref, f_gpu, res_gpu = _run_pair(
-                inp, dt, _quantize(c_local), CONSTS)
+            # VELOCITY-CLAMP (P-V1, D2v2): a uniform plane per config (D5:
+            # trusted verbatim — no implicit re-min against U_MAX here, so
+            # a > u_max fill value legitimately means an ambient cap ABOVE
+            # U_MAX, exercised deliberately by several of the configs above).
+            cap2 = _uniform_cap2(h, w, c_local)
+            f_ref, res_ref, f_gpu, res_gpu = _run_pair(inp, dt, cap2, CONSTS)
             ok &= _compare(f"{h}x{w} dt={dt} wmag={wmag} c_loc={c_local}",
                            f_ref, res_ref, f_gpu, res_gpu)
             totals += np.array(res_ref[2:], dtype=np.int64)
@@ -326,13 +396,20 @@ def part1_isolated() -> bool:
     # regimes — CONSTS_DRAG (k_drag=0.02, k_drag_heat_frac=0.5) so all four
     # new counters engage (ke_drag_removed, e_drag_deposit non-vacuous from
     # the heat_frac<1 split; e_drag_drop_sum non-vacuous for the same
-    # reason; e_drag_rail_clipped from the near-ceiling hot band).
-    for c_local, tag in ((300.0, "drag forcer c_LOCAL<U_MAX"),
-                         (2300.0, "drag forcer c_LOCAL>U_MAX")):
+    # reason; e_drag_rail_clipped from the near-ceiling hot band). The two
+    # regimes use a c_amb2 plane and a u_max2 plane DIRECTLY (D5: NOT a
+    # 2300²-style plane — the drag forcer's ~1272 m/s is below 2300, so
+    # that literal fill would DISENGAGE the clamp under D5's no-re-min
+    # contract and lose the U_MAX-regime coverage the old min(c_local,
+    # u_max)=u_max semantics gave for free).
+    DRAG_FORCER_H, DRAG_FORCER_W = 24, 24
+    for cap_val, tag in ((CONSTS["c_max"], "drag forcer c_amb2 plane (ambient binds)"),
+                         (CONSTS["u_max"], "drag forcer u_max2 plane (U_MAX binds)")):
         n_cfg += 1
         inp = _make_drag_forcer()
+        cap2 = _uniform_cap2(DRAG_FORCER_H, DRAG_FORCER_W, cap_val)
         f_ref, res_ref, f_gpu, res_gpu = _run_pair(
-            inp, 1.0 / 24.0, _quantize(c_local), CONSTS_DRAG)
+            inp, 1.0 / 24.0, cap2, CONSTS_DRAG)
         ok &= _compare(tag, f_ref, res_ref, f_gpu, res_gpu)
         totals += np.array(res_ref[2:], dtype=np.int64)
         if res_ref[7] == 0 or res_ref[8] == 0 or res_ref[9] == 0 or res_ref[10] == 0:
@@ -405,8 +482,21 @@ def part2_trajectory() -> bool:
         t_max_phys=float(eos.T_MAX_PHYS), u_max=float(eos.U_MAX),
         # trace_mass_scale key RETIRED (P-T0, design §2.6) — the EOSSolver
         # member is gone; eos.trace_mass_scale no longer exists to read.
-        # k_drag left at the pybind default (0.0, dormant) — matches the
-        # live engine's shipped default everywhere else in this scenario.
+        # P-E3 (design §2.8) BUGFIX (VELOCITY-CLAMP arc investigation,
+        # 2026-08-19): read the LIVE k_drag/k_drag_heat_frac/c_v from `eos`
+        # instead of leaving them at the pybind dormant default — the shipped
+        # config ([physics.eos] k_drag = 0.5) has drag ACTIVE by default, so
+        # the old "matches the live engine's shipped default" comment here
+        # was stale (true only before P-E3 shipped a nonzero k_drag) and the
+        # CPU reference was silently running drag-dormant against a
+        # drag-ACTIVE live solver — the actual source of this gate's
+        # wind-side digest_velocity/wind_x/wind_y divergence (confirmed by
+        # reproducing it bit-for-bit on the UNMODIFIED pre-P-V1 tree; the
+        # velocity-clamp per-cell cap plane was not involved). Pre-existing,
+        # unrelated to D2v2 — fixed here because it was silently defeating
+        # THIS gate's wind-side ground-truth check.
+        k_drag=float(eos.k_drag), k_drag_heat_frac=float(eos.k_drag_heat_frac),
+        c_v=float(eos.c_v),
         # P-E4 (design §2.4): the trust gate's reference density.
         n_work_ref=float(eos.n_work_ref),
     )
@@ -453,7 +543,6 @@ def part2_trajectory() -> bool:
             dt,
         )
         n_sub = int(eos.dbg_last_n_sub)
-        c_local_q = int(eos.dbg_last_c_local_q)
         cnt_now = counters()
         cnt_delta = cnt_now - cnt0
         # P-E3 (design §2.8): indices 5..8 are PER-TICK (reset every
@@ -499,13 +588,23 @@ def part2_trajectory() -> bool:
         # this tick's own transport delta) — this is the SAME thing that
         # made P-E2a's investigation find PART 2 diverging from tick 1.
 
+        # VELOCITY-CLAMP (P-V1, D2v2): rebuild the per-cell cap2 plane from
+        # t0 (tick-entry T, never mutated by the advection replay above —
+        # see the comment there) via formula A — this is what RESTORES the
+        # wind-side ground-truth gate to full validity: the cap is now
+        # derivable from the replay's own inputs, not a telemetry scalar
+        # (dbg_last_c_local_q) the isolated tail can no longer even use.
+        # The scenario has no ts-gas cells (no thermal_solid plane), so
+        # ts == solid on both sides (D4's fallback).
+        cap2 = _fold_cap2_plane(t0, g.solid, g.is_vacuum, g.solid, eos)
+
         inp = {"wind_x": wx0, "wind_y": wy0, "temperature": t0,
                "p_new": np.ascontiguousarray(g.atmosphere),
                "gas": np.ascontiguousarray(g.gas),
                "gas_conservative": np.ascontiguousarray(g.gases.conservative),
                "solid": g.solid, "is_vacuum": g.is_vacuum,
                "absorb": np.ascontiguousarray(g.dyn_wave_absorb)}
-        f_ref, res_ref, f_gpu, res_gpu = _run_pair(inp, dt, c_local_q, consts)
+        f_ref, res_ref, f_gpu, res_gpu = _run_pair(inp, dt, cap2, consts)
 
         # THE NEW, TRUE CONTRACT (repair, see above): step 4 (the momentum
         # kick) reads pressure/N/absorb — NEVER temperature — so its output
@@ -564,14 +663,27 @@ def part2_trajectory() -> bool:
         ok = False
         print(f"  scenario too tame: peak |u| {max_u_counts / FP_ONE:.1f} m/s "
               f"< 30 m/s")
-    # Required in-engine rails: the |u| clamp (both counters — the hot pocket
-    # pushes c_LOCAL past U_MAX, so engagements bind on U_MAX) and the work
-    # clamp. The T_MIN/T_MAX_PHYS field rails do NOT fire in a pure
-    # run_substeps loop (the v2.4 measured outcome: "rails untouched" in the
-    # game-faithful loop — they need fire/combustion heat, which is not part
-    # of this pass's surface); their digest + counter coverage is Part 1's
+    # Required in-engine rails: the |u| clamp and the work clamp. The
+    # T_MIN/T_MAX_PHYS field rails do NOT fire in a pure run_substeps loop
+    # (the v2.4 measured outcome: "rails untouched" in the game-faithful
+    # loop — they need fire/combustion heat, which is not part of this
+    # pass's surface); their digest + counter coverage is Part 1's
     # deterministic forcer.
-    for i, name in enumerate(("u_clamp", "u_max", "work_clamp")):
+    #
+    # VELOCITY-CLAMP (P-V1, D2v2) — u_max is DELIBERATELY not required here
+    # any more. Pre-D2v2, "u_max" bound trivially: c_LOCAL was a GLOBAL
+    # scalar, so the far-away near-ceiling hot pocket alone pushed EVERY
+    # cell's ceiling to U_MAX regardless of that cell's own temperature —
+    # exactly the audit's defect 1. Post-D2v2 the cap is per-cell, so u_max
+    # only binds where a cell is BOTH hot enough (T ≳ 2930 K, design's own
+    # claims section) AND carries fast local flow — this scenario's hot
+    # pocket is a static thermal anomaly with no local pressure driver, so
+    # it never engages the rail, which is now CORRECT behavior, not a
+    # scenario weakness (P-V2's job is to measure how often this combination
+    # occurs in a real blast, not this gate's).
+    for name in ("u_clamp", "work_clamp"):
+        i = COUNTER_NAMES.index(name)   # totals is 9-wide, positional — NOT
+                                        # the (shortened) loop tuple's own index
         if totals[i] == 0:
             ok = False
             print(f"  scenario too tame: rail {name!r} never engaged in-engine")

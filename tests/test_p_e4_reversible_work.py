@@ -106,10 +106,17 @@ def _apply(T0_real, mode, v_mps, dt=1.0 / 24.0, c_local=300.0):
         st["wind_x"][CY, CX + 1] = vv
     else:
         raise ValueError(mode)
+    # VELOCITY-CLAMP (P-V1, D2v2): signature only — a uniform (h,w) cap²
+    # plane at c_local² (D5: trusted verbatim, matches the old scalar's
+    # effective cap exactly since c_local=300.0 < u_max=1000.0 here). Its
+    # neighbours sit at T=0 -> cap = c_amb = 300 = |u| exactly, and
+    # rad > cap2 is strict -> no clamp, same as today. Do NOT "fix" the
+    # 300.0 default.
+    cap2 = np.full((GRID, GRID), int(_q(c_local)) ** 2, dtype=np.int64)
     res = bp.eos_kick_compression_ref(
         st["wind_x"], st["wind_y"], st["temperature"], st["p_new"],
         st["gas"], st["gas_conservative"], st["solid"], st["is_vacuum"],
-        st["absorb"], dt, int(_q(c_local)), thermal_solid=None, **CONSTS)
+        st["absorb"], dt, cap2, thermal_solid=None, **CONSTS)
     names = ("dig_vel", "dig_comp", "u_clamp", "u_max", "work_clamp",
              "energy_floor", "t_max_phys", "ke_drag_removed", "e_drag_deposit",
              "e_drag_drop_sum", "e_drag_rail_clipped")

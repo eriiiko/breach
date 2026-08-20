@@ -152,7 +152,20 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # (the canonical scenario exercises the EOS, so physics arcs lawfully move it).
 # The durable dormancy canary is now test_canonical_scenario_consumes_no_rng.
 # (was 28678e9d6210533f63cc701bba8f93194e23df9ebbdfa5f75f5d26681e897040)
-GOLDEN_AGGREGATE = "a18e0dfb017b98cb2454857014a6531c5f69b0460ecda70e60b486f281274c1b"
+# VELOCITY-CLAMP GOLDEN REBASE (2026-08-20, Erik's ruling: canon-fold cadence
+# deferred, but the accumulated re-baseline debt is settled ONCE at this arc's
+# close, docs/golden_rebaseline_2026-08-20.md). Folds the ONE deliberate
+# behavioural change this arc shipped (HUMAN-TEST PASS 2026-08-20): the
+# global-scalar velocity cap replaced by a per-cell cap^2 plane, plus the
+# Chebyshev-pretest diagonal-leak fix replaced by an exact squared-magnitude
+# clamp (docs/archive/velocity_clamp_pv1_asbuilt_2026-08-19.md sites 1-18).
+# The canonical A/B scenario engages the new clamp (u_clamp_hits = 4 over 30
+# ticks, all in tick-0 startup transient), so every pressure-coupled field
+# trajectory moves -- the predicted GOLDEN_AGGREGATE cascade (11 dependent
+# test files), not a scattered regression. DIGEST_SPEC_VERSION unchanged --
+# values moved; no field added/removed/retyped.
+# (was a18e0dfb017b98cb2454857014a6531c5f69b0460ecda70e60b486f281274c1b)
+GOLDEN_AGGREGATE = "d575df33de5c2af37108d29b73853b465eda761b148c6b812f4a4c4da40e0bb0"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs

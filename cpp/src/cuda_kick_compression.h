@@ -9,8 +9,9 @@
 //   * K1 (kick): u -= dt·K·grad(P_new)/N̂ (the whole chain int64, the wide
 //     Kdt bridge staged through 128-bit products) → absorption damping
 //     u *= (1 − absorb·dt) (magnitude-first shrink) → the ±2^30 component
-//     pre-clamp overflow guard → the |u| ≤ min(c_LOCAL, U_MAX) counted
-//     magnitude clamp (scale-to-cap) → the ONE (int32_t) narrow at store;
+//     pre-clamp overflow guard → the |u| <= per-cell cap2_plane[i] counted
+//     magnitude clamp (VELOCITY-CLAMP, P-V1, D2v2: exact rad > cap² test,
+//     D6 exact int64-divide rescale) → the ONE (int32_t) narrow at store;
 //     u zeroed outside open-air.
 //   * K2 (compression work): T -= (γ−1)·T·div(u_new)·dt on the corrected
 //     velocity, factor clamped to ±T_WORK_CLAMP (counted), saturating add,
@@ -40,20 +41,22 @@ namespace breach_cuda {
 // wind_x/wind_y/temperature (h, w). Argument-for-argument the mirror of
 // eos_kick_compression_reference (eos_solver.h — semantics documented there):
 // p_new is the solved pressure plane (== post-tick `atmosphere`), the gas
-// planes rebuild step 2's Dalton N_total on the host verbatim, c_local_q is
-// the solver's per-tick cap (EOSSolver::dbg_last_c_local_q), and the float
-// scalars are the EOSSolver config members. Outputs: digest_velocity_out /
-// digest_compression_out — byte-for-byte step()'s digest expressions,
-// computed host-side after the D2H (review §2.6) — and counters_out[9] =
-// { u_clamp_hits, u_max_hits, work_clamp_hits, energy_floor_hits,
-// t_max_phys_hits, ke_drag_removed, e_drag_deposit, e_drag_drop_sum,
-// e_drag_rail_clipped } for THIS call (the last four are P-E3's interior-
-// drag int64 ENERGY SUMS, design §2.8 — not hit counts).
+// planes rebuild step 2's Dalton N_total on the host verbatim, cap2_plane is
+// the per-cell (h,w) Q32.32 velocity-cap² plane (VELOCITY-CLAMP, P-V1, D2v2
+// — folded by the caller from tick-entry T via formula A; HARD CONTRACT:
+// every entry must be >= 0, see cuda_kick_compression.cu's D5/D6 note), and
+// the float scalars are the EOSSolver config members. Outputs:
+// digest_velocity_out / digest_compression_out — byte-for-byte step()'s
+// digest expressions, computed host-side after the D2H (review §2.6) — and
+// counters_out[9] = { u_clamp_hits, u_max_hits, work_clamp_hits,
+// energy_floor_hits, t_max_phys_hits, ke_drag_removed, e_drag_deposit,
+// e_drag_drop_sum, e_drag_rail_clipped } for THIS call (the last four are
+// P-E3's interior-drag int64 ENERGY SUMS, design §2.8 — not hit counts).
 //
 // PERF NOTE (residency is S8): per-call H2D of 3 fields + P + N_total +
-// absorb plane + masks, 2 kernel launches, D2H of 2 fields + counters.
-// Deliberately unoptimized — P6's job is correctness + digest proof per
-// kernel, not speed (review, executive verdict).
+// cap2 plane + absorb plane + masks, 2 kernel launches, D2H of 2 fields +
+// counters. Deliberately unoptimized — P6's job is correctness + digest
+// proof per kernel, not speed (review, executive verdict).
 void eos_kick_compression(
     int32_t* wind_x,               // Q16.16 (h,w) — in/out (solver u.x)
     int32_t* wind_y,               // Q16.16 (h,w) — in/out (solver u.y)
@@ -62,7 +65,7 @@ void eos_kick_compression(
     const int32_t* gas, const bool* gas_conservative, int n_gases,
     const bool* solid, const bool* is_vacuum,
     const float* dyn_wave_absorb,  // FLOAT (h,w) — host-hoisted to q16 (§2.5)
-    int h, int w, float dt, int32_t c_local_q,
+    int h, int w, float dt, const int64_t* cap2_plane,   // D2v2 (h,w), >= 0
     float c_max, float dx, float adiabatic_index, float absorb_strength,
     float n_floor_solver, float t_min, float t_work_clamp,
     float t_max_phys, float u_max,   // trace_mass_scale param RETIRED (P-T0,

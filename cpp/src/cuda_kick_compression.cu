@@ -15,10 +15,12 @@
 // mul128_shr chains (mul128_shr_signed — the same hi:lo combine as the MSVC
 // host path), reciprocal_q16_dev / sqrt_q16_dev (verbatim device mirrors),
 // the magnitude-first absorption shrink, the ±2^30 RAD_SAFE pre-clamp, the
-// counted min(c_LOCAL, U_MAX) scale-to-cap, the FP_HD mul_q16 / sat_add_q16
-// bodies, and the exclusive 4c rail chain. Rail counters are device
-// atomicAdds — pure +1 per engaging CELL (the CPU increments ONCE per cell:
-// the |u| clamp inside the single magnitude test, the 4c rails in an
+// counted per-cell cap2_plane[i] scale-to-cap (VELOCITY-CLAMP, P-V1, D2v2:
+// exact rad > cap² test, D6 exact int64-divide rescale — replaces the old
+// global min(c_LOCAL, U_MAX) + Chebyshev pre-test), the FP_HD mul_q16 /
+// sat_add_q16 bodies, and the exclusive 4c rail chain. Rail counters are
+// device atomicAdds — pure +1 per engaging CELL (the CPU increments ONCE per
+// cell: the |u| clamp inside the single magnitude test, the 4c rails in an
 // if/else-if chain), so the totals are order-free and deterministic.
 //
 // Host-side precompute, verbatim step()'s (/fp:strict host pass):
@@ -118,8 +120,9 @@ __global__ void kick_kernel(int32_t* __restrict__ wind_x,
                             const bool* __restrict__ is_vacuum,
                             const bool* __restrict__ ts,             // P-E3
                             int64_t Kdt_raw, int32_t inv_2dx_q,
-                            int32_t n_floor_q, int32_t c_local_q,
-                            int32_t u_max_q,
+                            int32_t n_floor_q,
+                            const int64_t* __restrict__ cap2_plane,  // D2v2, >= 0
+                            int64_t u_max2_q32,                      // D3
                             int32_t kd_q, int32_t heat_frac_q,       // P-E3
                             int64_t recip_cv, int32_t t_max_phys_q,  // P-E3
                             unsigned long long* __restrict__ cnt,
@@ -186,30 +189,32 @@ __global__ void kick_kernel(int32_t* __restrict__ wind_x,
             }
         }
 
-        // |u| ≤ u_cap = min(c_LOCAL, U_MAX), counted per CELL; RAD_SAFE
-        // component pre-clamp (±2^30) so rad = ux²+uy² is int64-safe and the
-        // final narrow cannot wrap — the CPU chain verbatim.
-        const q16 u_cap_q = (c_local_q < u_max_q) ? c_local_q : u_max_q;
-        const bool cap_is_umax = (u_max_q < c_local_q);
+        // |u| <= per-cell cap2_plane[i] (VELOCITY-CLAMP, P-V1, D2v2/D5),
+        // counted per CELL; RAD_SAFE component pre-clamp (±2^30) so
+        // rad = ux²+uy² is int64-safe and the final narrow cannot wrap —
+        // the CPU chain verbatim. EXACT rad > cap² test (D3/audit defect 2:
+        // no component Chebyshev pre-test — that let diagonal flow up to
+        // √2×cap through; the exact test closes it, only a CLAMPED cell
+        // pays the sqrt below).
+        const int64_t cap2_q32 = cap2_plane[i];   // D5: trusted verbatim
+        const bool cap_is_umax = (cap2_q32 >= u_max2_q32);
         const int64_t RAD_SAFE = (int64_t)1 << 30;
         if      (ux >  RAD_SAFE) ux =  RAD_SAFE;
         else if (ux < -RAD_SAFE) ux = -RAD_SAFE;
         if      (uy >  RAD_SAFE) uy =  RAD_SAFE;
         else if (uy < -RAD_SAFE) uy = -RAD_SAFE;
-        const int64_t ax = ux < 0 ? -ux : ux;
-        const int64_t ay = uy < 0 ? -uy : uy;
-        if ((ax > (int64_t)u_cap_q) || (ay > (int64_t)u_cap_q)) {
-            const int64_t rad = ux * ux + uy * uy;   // int64-safe (guard above)
-            const q16 umag = sqrt_q16_dev(rad);
-            if (umag > u_cap_q) {
-                atomicAdd(&cnt[0], 1ULL);                    // u_clamp_hits
-                if (cap_is_umax) atomicAdd(&cnt[1], 1ULL);   // u_max_hits
-                const q16 scale = reciprocal_q16_dev(umag);
-                ux = mul128_shr_signed(mul128_shr_signed(ux, (int64_t)scale, 16),
-                                       (int64_t)u_cap_q, 16);
-                uy = mul128_shr_signed(mul128_shr_signed(uy, (int64_t)scale, 16),
-                                       (int64_t)u_cap_q, 16);
-            }
+        const int64_t rad = ux * ux + uy * uy;   // int64-safe (guard above)
+        if (rad > cap2_q32) {
+            atomicAdd(&cnt[0], 1ULL);                    // u_clamp_hits
+            if (cap_is_umax) atomicAdd(&cnt[1], 1ULL);   // u_max_hits
+            const q16 umag    = sqrt_q16_dev(rad);
+            const q16 u_cap_q = sqrt_q16_dev(cap2_q32);
+            // D6 exact rescale: trunc-toward-0 integer divide, C++/CUDA
+            // bit-identical (both truncate toward zero); int64-safe
+            // unconditionally (sqrt_q16_dev self-clamps at INT32_MAX, so
+            // |ux*u_cap_q| < 2^30*2^31 = 2^61).
+            ux = (ux * (int64_t)u_cap_q) / (int64_t)umag;
+            uy = (uy * (int64_t)u_cap_q) / (int64_t)umag;
         }
 
         // P-E3 — interior drag + heat counterparty (design §2.8), VERBATIM
@@ -347,6 +352,9 @@ KickScalarFolds kick_scalar_folds(
     f.t_min_q      = quantize((double)t_min);
     f.t_max_phys_q = quantize((double)t_max_phys);
     f.u_max_q      = quantize((double)u_max);
+    // VELOCITY-CLAMP (P-V1, D3): u_max² (Q32.32), the SAME fold every kick
+    // site derives from u_max_q.
+    f.u_max2_q32   = (int64_t)f.u_max_q * (int64_t)f.u_max_q;
     const double gamma_d = (double)adiabatic_index;
     f.gamma_m1_q   = quantize(gamma_d - 1.0);
     const double dt_d    = (double)dt;
@@ -376,7 +384,8 @@ void kick_compression_launch_resident(
         const int32_t* d_p_new, const int32_t* d_ntot,
         const int32_t* d_absorb_q,
         const bool* d_solid, const bool* d_is_vacuum,
-        const KickScalarFolds& folds, int32_t c_local_q,
+        const KickScalarFolds& folds,
+        const int64_t* d_cap2_plane,   // VELOCITY-CLAMP (P-V1, D2v2), >= 0
         unsigned long long* d_cnt, int h, int w,
         const bool* d_is_ambient, const int32_t* d_sponge_udamp,
         const bool* d_ts) {
@@ -391,8 +400,8 @@ void kick_compression_launch_resident(
     kick_kernel<<<grid, block>>>(d_wind_x, d_wind_y, d_temperature, d_p_new,
                                  d_ntot, d_absorb_q, d_solid, d_is_vacuum, d_ts,
                                  folds.Kdt_raw, folds.inv_2dx_q,
-                                 folds.n_floor_q, c_local_q,
-                                 folds.u_max_q,
+                                 folds.n_floor_q, d_cap2_plane,
+                                 folds.u_max2_q32,
                                  folds.kd_q, folds.heat_frac_q,
                                  folds.recip_cv, folds.t_max_phys_q,
                                  d_cnt, h, w,
@@ -415,7 +424,7 @@ void eos_kick_compression(
     const int32_t* gas, const bool* gas_conservative, int n_gases,
     const bool* solid, const bool* is_vacuum,
     const float* dyn_wave_absorb,
-    int h, int w, float dt, int32_t c_local_q,
+    int h, int w, float dt, const int64_t* cap2_plane,   // D2v2 (h,w), >= 0
     float c_max, float dx, float adiabatic_index, float absorb_strength,
     float n_floor_solver, float t_min, float t_work_clamp,
     float t_max_phys, float u_max,   // trace_mass_scale param RETIRED (P-T0)
@@ -459,11 +468,13 @@ void eos_kick_compression(
 
     // ---- Device buffers (per-call H2D/D2H — the P6.1/P6.2 pattern). --------
     const size_t nb    = (size_t)n * sizeof(int32_t);
+    const size_t nb8   = (size_t)n * sizeof(int64_t);
     const size_t nbool = (size_t)n * sizeof(bool);
 
     int32_t *d_wx = nullptr, *d_wy = nullptr, *d_t = nullptr,
             *d_pn = nullptr, *d_ntot = nullptr, *d_aq = nullptr;
     bool *d_sol = nullptr, *d_vac = nullptr;
+    int64_t* d_cap2 = nullptr;   // VELOCITY-CLAMP (P-V1, D2v2)
     unsigned long long* d_cnt = nullptr;
 
     cuda_check(cudaMalloc(&d_wx, nb), "malloc wind_x");
@@ -474,6 +485,7 @@ void eos_kick_compression(
     cuda_check(cudaMalloc(&d_aq, nb), "malloc absorb_q");
     cuda_check(cudaMalloc(&d_sol, nbool), "malloc solid");
     cuda_check(cudaMalloc(&d_vac, nbool), "malloc is_vacuum");
+    cuda_check(cudaMalloc(&d_cap2, nb8), "malloc cap2_plane");
     cuda_check(cudaMalloc(&d_cnt, 9 * sizeof(unsigned long long)), "malloc counters");
 
     cuda_check(cudaMemcpy(d_wx, wind_x, nb, cudaMemcpyHostToDevice), "H2D wind_x");
@@ -484,6 +496,7 @@ void eos_kick_compression(
     cuda_check(cudaMemcpy(d_aq, absorb_q.data(), nb, cudaMemcpyHostToDevice), "H2D absorb_q");
     cuda_check(cudaMemcpy(d_sol, solid, nbool, cudaMemcpyHostToDevice), "H2D solid");
     cuda_check(cudaMemcpy(d_vac, is_vacuum, nbool, cudaMemcpyHostToDevice), "H2D is_vacuum");
+    cuda_check(cudaMemcpy(d_cap2, cap2_plane, nb8, cudaMemcpyHostToDevice), "H2D cap2_plane");
     cuda_check(cudaMemset(d_cnt, 0, 9 * sizeof(unsigned long long)), "memset counters");
 
     // BC (spec §1/§3): optional ambient ring mask + u-damping band grid. Only
@@ -515,7 +528,7 @@ void eos_kick_compression(
     // The SHARED launch core (S8a Path A) — the identical K1/K2 launch pair
     // this entry always ran; only the call shape moved.
     kick_compression_launch_resident(d_wx, d_wy, d_t, d_pn, d_ntot, d_aq,
-                                     d_sol, d_vac, folds, c_local_q,
+                                     d_sol, d_vac, folds, d_cap2,
                                      d_cnt, h, w, d_amb, d_udamp, d_ts);
 
     cuda_check(cudaDeviceSynchronize(), "sync");
@@ -535,6 +548,7 @@ void eos_kick_compression(
     cudaFree(d_aq);
     cudaFree(d_sol);
     cudaFree(d_vac);
+    cudaFree(d_cap2);
     cudaFree(d_cnt);
     if (d_amb)   cudaFree(d_amb);
     if (d_udamp) cudaFree(d_udamp);

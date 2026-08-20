@@ -80,7 +80,7 @@ from simulation.entities.registry import registry_content_hash  # noqa: E402
 # second machine reproduces it bit-for-bit (the cross-machine attestation). This
 # is a NEW golden constant (expected, §11) — NOT a re-baseline of an existing one.
 LOOP_GOLDEN_TRAJ_DIGEST = \
-    "36ea71b2c31dcb62fec37c2832e1737f8e9b970da75e58ebb92292cf383503cb"
+    "ed42914ebe44d355ab311e0346ce8d9602dd9728887f1fe35fe7a377dc5cb189"
 LOOP_GOLDEN_STEPS = 30
 LOOP_GOLDEN_SEED = 1
 
