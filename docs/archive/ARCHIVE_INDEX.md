@@ -8,6 +8,32 @@ New entries go at the top.
 
 ---
 
+## 2026-08-20 — velocity-clamp arc close
+
+Arc closed and merged to main, HUMAN-TEST PASS (Erik, 2026-08-20: "feel test
+is perfect"). Record: `docs/human_test_2026-08-20_velocity_clamp.md`. Moved
+to archive (`git mv`, content unchanged):
+- `velocity_clamp_impl_2026-08-19.md` — the locked P-V1 design spec (v3,
+  sites 1-18): the global-scalar velocity cap replaced by a per-cell cap²
+  plane; the Chebyshev-pretest diagonal-leak fix replaced by an exact
+  squared-magnitude clamp.
+- `velocity_clamp_pv1_baseline_2026-08-19.md` — the pre-patch step-0 red-test
+  list (31 names), gate 5's comparison baseline.
+- `velocity_clamp_pv1_asbuilt_2026-08-19.md` — the as-built record: what was
+  built, gate 1-5 results, the two incidental test-harness bugs fixed along
+  the way, and the close-out note that named the `GOLDEN_AGGREGATE`
+  re-baseline this arc close executed.
+
+Superseded by `docs/golden_rebaseline_2026-08-20.md` (the written rationale
+for the golden re-baseline this close performed — the 11 `GOLDEN_AGGREGATE`
+flips this arc caused, plus the six standing Arc-B digest reds settled as
+accumulated debt) and by the merge itself
+(`velocity-clamp-close` tag). Kept at `docs/` (live inputs to the queued
+N_SUB_MAX ruling, `docs/TODO.md` ★): `velocity_clamp_audit_2026-08-19.md`,
+`velocity_clamp_pv2_measurement_2026-08-19.md`.
+
+---
+
 ## 2026-08-14 — fire arc + temperature-scale unification arc close
 
 Both arcs are complete and merged to main (temperature-scale: commit chain
