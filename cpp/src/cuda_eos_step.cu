@@ -160,6 +160,17 @@ EOSHostPrestage eos_host_prestage(
     // the SAR is exact truncation — see eos_solver.cpp's comment for the
     // off-identity T<0 flooring convention.
     const q16 s_eos_q   = quantize((double)solver.S_EOS);
+    // D-3 RELEASE-LIVE GUARD (design §4, docs/tabs_compression_work_design_
+    // 2026-08-20.md): the byte-identical companion to EOSSolver::step's own
+    // guard (eos_solver.cpp, beside its s_eos_q fold) — step 4c's t_abs =
+    // T + t_amb_q form is honest only while S_EOS == 1 AND
+    // T_MIN > -T_AMB_K; assert() is dead in Release, so this is a plain,
+    // always-compiled, once-per-tick check on this dispatch path too.
+    if (s_eos_q != FP_ONE || pre.t_min_q <= -(int64_t)t_amb_q) {
+        throw std::runtime_error(
+            "T_abs compression work requires S_EOS==1 and T_MIN > -T_AMB_K; "
+            "see docs/tabs_compression_work_design_2026-08-20.md D-3");
+    }
     const q16 c_q       = quantize((double)solver.C);
     // VELOCITY-CLAMP (P-V1, D2v2/v2.4): u_max_q fold — the CPU twin's rail
     // (eos_solver.cpp:384), missing here pre-P-V1 (the kick never needed it
@@ -642,6 +653,8 @@ void eos_step_cuda(
             solver.k_drag, solver.k_drag_heat_frac, solver.c_v,
             // P-E4 (design §2.4): the compression-work trust gate.
             solver.n_work_ref,
+            // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K.
+            solver.T_AMB_K,
             &dig_vel, &dig_comp, cnts,   // trace_mass_scale arg RETIRED (P-T0)
             // BC: ring velocity zero + compression skip + the u-damping band.
             ambient_mode ? is_ambient : nullptr,

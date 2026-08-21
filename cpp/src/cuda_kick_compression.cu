@@ -275,6 +275,7 @@ __global__ void compression_kernel(const int32_t* __restrict__ wind_x,
                                    int32_t dt_q, int32_t work_clamp_q,
                                    int64_t recip_n_work_ref,   // P-E4
                                    int32_t t_min_q, int32_t t_max_phys_q,
+                                   q16 t_amb_q,   // T_ABS COMPRESSION WORK (P-W1b): folded host-side in kick_scalar_folds
                                    unsigned long long* __restrict__ cnt,
                                    int h, int w,
                                    const bool* __restrict__ is_ambient,
@@ -319,17 +320,31 @@ __global__ void compression_kernel(const int32_t* __restrict__ wind_x,
         q16 w_mag = k_neg ? (q16)(-(int64_t)k) : k;
         if (w_mag > work_clamp_q) { w_mag = work_clamp_q; atomicAdd(&cnt[2], 1ULL); }
         q16 t_new;
+        // T_ABS COMPRESSION WORK (P-W1b, design §2): identical transcription
+        // to the CPU twins (eos_solver.cpp step() 4c). No std::max here —
+        // the A7-floored fold already happened host-side in
+        // kick_scalar_folds() (P-W1a); this kernel only ever reads the
+        // plumbed t_amb_q param. CUDA has no std::max<q16> device intrinsic
+        // used here, by design.
+        const int64_t t_abs = (int64_t)temperature[i] + (int64_t)t_amb_q;
         if (k_neg) {
-            // COMPRESSION — KEPT VERBATIM (design §2.7): bit-identical to HEAD.
+            // COMPRESSION: t_new = T + w*(T+290), heating rounds UP (mul_q16/
+            // SAR floors the negative dT toward -inf). The §2.7 "KEPT
+            // VERBATIM" promise is revoked this patch — see design §2.
             const q16 k_signed = (q16)(-(int64_t)w_mag);
-            const q16 dT = mul_q16(k_signed, temperature[i]);
+            const q16 dT = (q16)(((int64_t)k_signed * t_abs) >> 16);
             t_new = sat_add_q16(temperature[i], (q16)(-(int64_t)dT));
         } else {
-            // EXPANSION (k >= 0, including the pinned k==0 identity): the
-            // reversible inverse via the shared floordiv_q helper (P-E1's
-            // recovery divide) — plain `/` would MINT on sub-ambient T.
-            t_new = (q16)floordiv_q((int64_t)temperature[i] << 16,
-                                    (int64_t)FP_ONE + (int64_t)w_mag);
+            // EXPANSION (k >= 0, including the pinned k==0 identity, D-4):
+            // the reversible inverse on t_abs via the shared floordiv_q
+            // helper (P-E1's recovery divide), shifted back to the stored
+            // ambient-relative convention by subtracting t_amb_q AFTER the
+            // floor. t_abs >= 1 raw for T >= T_MIN = -289 (D-3's guard), so
+            // the numerator is non-negative — the §2.7 sub-ambient mint
+            // hazard dissolves structurally; floordiv_q kept as the shared
+            // idiom regardless.
+            t_new = (q16)(floordiv_q(t_abs << 16, (int64_t)FP_ONE + (int64_t)w_mag)
+                          - (int64_t)t_amb_q);
         }
         if (t_new < t_min_q) { t_new = t_min_q; atomicAdd(&cnt[3], 1ULL); }
         else if (t_new > t_max_phys_q) { t_new = t_max_phys_q; atomicAdd(&cnt[4], 1ULL); }
@@ -346,7 +361,8 @@ KickScalarFolds kick_scalar_folds(
         float dt, float c_max, float dx, float adiabatic_index,
         float absorb_strength, float n_floor_solver, float t_min,
         float t_work_clamp, float t_max_phys, float u_max,
-        float k_drag, float k_drag_heat_frac, float c_v, float n_work_ref) {
+        float k_drag, float k_drag_heat_frac, float c_v, float n_work_ref,
+        float t_amb_k) {
     KickScalarFolds f;
     f.n_floor_q    = quantize((double)n_floor_solver);
     f.t_min_q      = quantize((double)t_min);
@@ -374,6 +390,11 @@ KickScalarFolds kick_scalar_folds(
     f.recip_cv     = make_recip(std::max((double)c_v, 1e-6));
     // P-E4 (design §2.4): the trust-gate fold, verbatim step()'s.
     f.recip_n_work_ref = make_recip(std::max((double)n_work_ref, 1e-6));
+    // T_ABS COMPRESSION WORK (P-W1b, design §2/§5): the A7-floored fold,
+    // VERBATIM the CPU live path's local (eos_solver.cpp:372) — the ONE
+    // host-side transcription of this fold on the CUDA side; compression_kernel
+    // (above) reads the folded value, no std::max on device.
+    f.t_amb_q = std::max<q16>(1, quantize((double)t_amb_k));
     return f;
 }
 
@@ -414,6 +435,7 @@ void kick_compression_launch_resident(
                                         folds.dt_q, folds.work_clamp_q,
                                         folds.recip_n_work_ref,   // P-E4
                                         folds.t_min_q, folds.t_max_phys_q,
+                                        folds.t_amb_q,   // P-W1b: the T_abs law
                                         d_cnt, h, w, d_is_ambient, d_ts);
     cuda_check(cudaGetLastError(), "compression launch");
 }
@@ -430,6 +452,9 @@ void eos_kick_compression(
     float t_max_phys, float u_max,   // trace_mass_scale param RETIRED (P-T0)
     float k_drag, float k_drag_heat_frac, float c_v,   // P-E3 (design §2.8)
     float n_work_ref,   // P-E4 (design §2.4): the compression-work trust gate
+    // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K, threaded to the
+    // folds; NOT read in arithmetic yet (P-W1b lands the law).
+    float t_amb_k,
     uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
     int64_t* counters_out /* [9] */,
     const bool* is_ambient, const int32_t* sponge_udamp,     // BC
@@ -445,7 +470,7 @@ void eos_kick_compression(
     const KickScalarFolds folds = kick_scalar_folds(
         dt, c_max, dx, adiabatic_index, absorb_strength, n_floor_solver,
         t_min, t_work_clamp, t_max_phys, u_max,
-        k_drag, k_drag_heat_frac, c_v, n_work_ref);
+        k_drag, k_drag_heat_frac, c_v, n_work_ref, t_amb_k);
     const q16 absorb_dt_q = folds.absorb_dt_q;
 
     // ---- step 2's Dalton sum (verbatim host loop — the kick's N̂ input). ----

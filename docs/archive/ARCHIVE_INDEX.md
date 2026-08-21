@@ -8,6 +8,39 @@ New entries go at the top.
 
 ---
 
+## 2026-08-21 — T_abs compression-work arc close
+
+Arc closed and merged to main, HUMAN-TEST PASS (Erik, 2026-08-21: "ok bless").
+Record: `docs/human_test_2026-08-21_tabs_compression_work.md`. Moved to
+archive (`git mv`, content unchanged):
+- `tabs_compression_work_design_2026-08-20.md` — the locked design, v2.2:
+  §2 the pinned absolute-T arithmetic (RULING R1 executed), §0/§0b the two
+  boundary-amendment sets (P-W0 measurement surprises; the P-W1b STOP ruling
+  R-1..R-4 — the books-closure-identity gate re-derivation lives here),
+  D-1..D-7 decisions, the patch table.
+- `tabs_compression_work_critiques_2026-08-20.md` — round-1 adversarial
+  critique capture (3 lenses + the test-blast-radius sweep): the exact
+  integer reversibility proof, the ABI trap list, the manifest evidence base.
+- `tabs_compression_work_baseline_2026-08-20.md` — P-W0's BEFORE captures +
+  the baseline red-set artifact (24 names) every gate set-diff cited.
+- `tabs_compression_work_manifest_pw1b_2026-08-20.md` — the P-W1b close-out
+  manifest: STOP set green, EXPECTED/GRAY classification, gate-2 AFTER
+  counters.
+- `tabs_compression_work_pw2_measurements_2026-08-20.md` — the AFTER halves:
+  mach census (max |u|/c_own ≈ 3, no flash route), quiet-room long-horizon
+  drift (+10.4 game-deg @ 10k ticks, non-saturating), vac/ring channel gap.
+- `tabs_compression_work_humantest_brief_2026-08-20.md` — the P-W3 play list
+  + D-1/D-6 decision sheets Erik ruled on.
+
+Kept at `docs/` (dated capture, live references):
+`human_test_2026-08-21_tabs_compression_work.md` (the verdict + the five
+observations run to ground) and `tabs_compression_work_rebaseline_2026-08-21.md`
+(the arc's single sanctioned golden re-baseline rationale). The vacuum-fire
+bug and the cold-grenade payload item live on in `docs/TODO.md` (bug list +
+retune queue).
+
+---
+
 ## 2026-08-20 — velocity-clamp arc close
 
 Arc closed and merged to main, HUMAN-TEST PASS (Erik, 2026-08-20: "feel test

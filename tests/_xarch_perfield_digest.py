@@ -165,7 +165,22 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # test files), not a scattered regression. DIGEST_SPEC_VERSION unchanged --
 # values moved; no field added/removed/retyped.
 # (was a18e0dfb017b98cb2454857014a6531c5f69b0460ecda70e60b486f281274c1b)
-GOLDEN_AGGREGATE = "d575df33de5c2af37108d29b73853b465eda761b148c6b812f4a4c4da40e0bb0"
+# T_ABS COMPRESSION-WORK GOLDEN REBASE (2026-08-21, arc `tabs-compression-work`,
+# RULING R1 (Erik, 2026-08-17) executed. HUMAN-TEST PASS 2026-08-21, Erik
+# blessed; the standing ruling's ONE deliberate re-baseline at this arc's
+# close, docs/tabs_compression_work_rebaseline_2026-08-21.md). Folds step 4c's
+# reversible-work arithmetic onto ABSOLUTE T (t_abs = T_rel + t_amb_q) instead
+# of ambient-relative T: the inverted sub-ambient compression branch (cold gas
+# got COLDER under compression) is fixed, ambient air stops being an exact
+# fixed point of 4c, and honest rarefaction cooling / compression warming both
+# now register (docs/tabs_compression_work_design_2026-08-20.md §1/§2). The
+# canonical A/B scenario exercises the EOS every tick, so this lawfully moves
+# every pressure/thermal-coupled field trajectory -- the predicted
+# GOLDEN_AGGREGATE cascade (12 dependent test files + test_b6_logic_golden's
+# inline golden), not a scattered regression. DIGEST_SPEC_VERSION unchanged --
+# values moved; no field added/removed/retyped.
+# (was d575df33de5c2af37108d29b73853b465eda761b148c6b812f4a4c4da40e0bb0)
+GOLDEN_AGGREGATE = "a2cbc77ac324db99e0fcf2dc76e9ca15b3187c220a6d5abc5f4a110022c65cea"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs

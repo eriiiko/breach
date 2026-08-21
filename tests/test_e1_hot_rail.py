@@ -8,22 +8,35 @@ then multiplies T geometrically (the x~1.5/tick = 1+T_WORK_CLAMP rate-rail
 signature) up to the T_MAX_PHYS ceiling, with multi-atm |dP| spikes when
 gas slams back into the ceiling-hot pocket.
 
-Measured on HEAD at the committed parameters (P-E0 as-built,
-docs/e1_p_e0_asbuilt_2026-08-17.md): eos.t_max_phys_hits = 2130 over the
-2000-tick run, first hit tick 1761; a x1.4972/tick geometric climb
+HEAD-ANATOMY NUMBERS BELOW ARE PRE-T_ABS LINEAGE (P-E0 as-built,
+docs/e1_p_e0_asbuilt_2026-08-17.md, measured against the relative-T
+compression law that predates docs/tabs_compression_work_design_2026-08-20.md).
+Kept for provenance, not as current gate targets: eos.t_max_phys_hits = 2130
+over the 2000-tick run, first hit tick 1761; a x1.4972/tick geometric climb
 sustained 19 consecutive ticks (the audit's x1.4957 signature); peak T at
 the 15984.5 ceiling; |dP| spike 97.5 atm (tick 1904); and the P-E0
 eth_transport_delta bracket shows the SL T-copy transport pass MINTING
 +3.72e16 raw book-energy over the run, beating the SS7 truncation
-allowance on 901 ticks (worst tick +3.80e15 vs an allowance ~5e7).
+allowance on 901 ticks (worst tick +3.80e15 vs an allowance ~5e7). The
+CURRENT (T_abs compression-work law) measured anatomy — one 13-tick
+variable-rate climb, 4 ceiling hits, sharp collapse, oscillating band,
+equilibrium ~5341 — is documented in each gate test's own docstring below
+and in docs/tabs_compression_work_design_2026-08-20.md SS0b (R-1/R-2).
 
 Gate idiom (design energy_transport_design_2026-08-16.md v2.1 SS6): the two
 healthy-property tests below assert what a CLOSED energy book will satisfy,
 so they are RED on HEAD by construction and carried as
 xfail-with-owning-patch until their owning rung lands:
-  - test_no_transport_mint  -> owned by P-E1 (energy-conservative transport)
+  - test_no_transport_mint  -> owned by P-E1 (energy-conservative transport);
+                               RE-DERIVED to the exact closure identity by
+                               P-W1b (design SS0b R-1) once e_ts_residual
+                               (a counted signed channel) went live.
   - test_no_rail_hits       -> owned by P-E4 (compression-work trust gate;
-                               flips strict at P-E4)
+                               flips strict at P-E4); RE-DERIVED from
+                               `== 0` to a bounded-transient gate by P-W1b
+                               (design SS0b R-2) once T_abs compression work
+                               gave ambient air a genuine hot-rail entry
+                               point.
 The determinism tests pin the scenarios themselves (P-E0 oracle row:
 "all scenarios deterministic + committed").
 """
@@ -109,6 +122,12 @@ def run_scenario(interior, tile, fuel_block, ticks, collect=False):
 
         traj = {name: hashlib.sha256() for name in DIGEST_FIELDS}
         eth_ticks = []      # (eth_transport_delta, allowance) per tick
+        # P-W1b (design SS0b R-1): the exact per-tick closure identity's
+        # four counted terms, mirroring cuda_bulk_flux_check.py:454-473's
+        # PART-3 identity check (trunc = eth - (-e_ts_residual - e_wipe_sum
+        # + e_floor_sum); trunc must be in (-n_bulk_active_sum, 0]).
+        identity_ticks = []  # (eth, e_ts_residual, e_wipe_sum, e_floor_sum, n_bulk_active_sum)
+        tick_peak_T = []      # P-W1b R-2: per-tick max cell T (not running max)
         # P-E1 counter accumulators (design SS2.5): the run totals the
         # as-built reports and the active-flux fraction SS7's bound scales by.
         e1 = dict(n_active_flux=0, n_bulk_active_sum=0, n_cell_substeps=0,
@@ -128,6 +147,13 @@ def run_scenario(interior, tile, fuel_block, ticks, collect=False):
                               + gas[n2i].astype(np.int64)).sum())
                 allowance = int(eos.dbg_last_n_sub) * nb_tot
                 eth_ticks.append((int(eos.eth_transport_delta), allowance))
+                identity_ticks.append((
+                    int(eos.eth_transport_delta),
+                    int(eos.e_ts_residual),
+                    int(eos.e_wipe_sum),
+                    int(eos.e_floor_sum),
+                    int(eos.n_bulk_active_sum),
+                ))
                 # P-E1 (design SS2.5/SS7): the ACTIVE-FLUX fraction the SS7
                 # bound is really scaled by, plus the counted one-way terms.
                 n_cells = int(om.sum())
@@ -137,8 +163,10 @@ def run_scenario(interior, tile, fuel_block, ticks, collect=False):
                 e1["e_ts_residual"] += int(eos.e_ts_residual)
                 e1["e_wipe_sum"] += int(eos.e_wipe_sum)
                 e1["e_floor_sum"] += int(eos.e_floor_sum)
-                peak_T = max(peak_T, float(
-                    gmap.temperature[om].astype(np.int64).max()) / FP_ONE)
+                tick_max_T = float(
+                    gmap.temperature[om].astype(np.int64).max()) / FP_ONE
+                tick_peak_T.append(tick_max_T)
+                peak_T = max(peak_T, tick_max_T)
             for name in DIGEST_FIELDS:
                 traj[name].update(_plane_bytes(gmap, name))
         o2_end = int(gas[o2i][om].astype(np.int64).sum())
@@ -146,7 +174,8 @@ def run_scenario(interior, tile, fuel_block, ticks, collect=False):
             digests={n: h.hexdigest() for n, h in traj.items()},
             t_max_phys_hits=int(eos.t_max_phys_hits),
             work_clamp_hits=int(eos.work_clamp_hits),
-            eth_ticks=eth_ticks, peak_T=peak_T, e1=e1,
+            eth_ticks=eth_ticks, identity_ticks=identity_ticks,
+            tick_peak_T=tick_peak_T, peak_T=peak_T, e1=e1,
             o2_burned_frac=1.0 - o2_end / max(o2_start, 1))
     finally:
         restore_overrides(restore)
@@ -175,51 +204,106 @@ def test_hot_scenario_reaches_the_audit_anatomy(hot_run):
 
 
 def test_no_transport_mint(hot_run):
-    """HEALTHY property (design SS7): the transport pass never creates
-    thermal book-energy beyond the truncation allowance — per tick,
-    eth_transport_delta <= n_sub x SUM n_bulk (one raw-T LSB per bulk count
-    per substep). RED on HEAD: the SL T-copy writes phantom-T onto real
-    mass; the measured worst tick beats the allowance by ~8 orders of
-    magnitude (see the P-E0 as-built).
+    """HEALTHY property, RE-DERIVED to the exact closure identity by P-W1b
+    (design SS0b R-1): the old allowance (`n_sub x whole-map bulk N`)
+    predates any counted creation/destruction channel being live, and under
+    the T_abs compression-work law it is provably too loose — the entire
+    excess on the 290 ticks that used to beat it is `e_ts_residual`, rule
+    (d)'s air->thermal_solid debit charging a genuinely sub-ambient donor
+    (min T -> -248 game-deg), a COUNTED signed channel that could not exist
+    before the T_abs law made sub-ambient donors reachable again
+    (corr(excess, -e_ts_residual) = 0.999999992 on the hot run;
+    e_floor_sum = e_wipe_sum = 0 the whole run).
 
-    P-E1 FLIPPED THIS STRICT (design SS6, cross-rung red idiom): this rung
-    IS the owning patch, so the property must now genuinely hold. The
-    remaining allowance is the floor-division LSB loss on ACTIVE-flux cells
-    only — quiescent cells rebuild T exactly (SS2.1.5) — and the loss is
-    one-way NEGATIVE, so the interesting direction is the one asserted."""
-    worst = max(et - al for et, al in hot_run["eth_ticks"])
-    n_viol = sum(1 for et, al in hot_run["eth_ticks"] if et > al)
-    assert n_viol == 0, (
-        f"transport minted book-energy on {n_viol} ticks "
-        f"(worst overshoot {worst} raw Q16.16^2 above the allowance)")
+    The gate is now the exact per-tick closure identity (mirroring
+    cuda_bulk_flux_check.py:454-473's PART-3 check):
+        trunc = eth_transport_delta - (-e_ts_residual - e_wipe_sum + e_floor_sum)
+        assert trunc <= 0                        # books never open
+    This is STRICTER than the old bound in the honest dimension (zero
+    uncounted energy, EVER) while being correct in the new two-signed-
+    channel regime, where the old `total <= 0` assert on the raw
+    eth_transport_delta SUM is false-by-design (e_ts_residual can now be
+    net-positive across the run without any book ever opening — see
+    test_transport_delta_is_one_way_negative for the truncation-bound
+    half of the same identity)."""
+    n_bad_open = 0
+    worst_open = 0
+    for eth, e_ts_residual, e_wipe_sum, e_floor_sum, _n_bulk in hot_run["identity_ticks"]:
+        counted = -e_ts_residual - e_wipe_sum + e_floor_sum
+        trunc = eth - counted
+        if trunc > 0:
+            n_bad_open += 1
+            worst_open = max(worst_open, trunc)
+    assert n_bad_open == 0, (
+        f"books OPEN on {n_bad_open} ticks (worst {worst_open} raw "
+        "Q16.16^2 of book-energy appeared beyond the counted terms) — "
+        "the T_abs closure identity does not hold")
 
 
 def test_transport_delta_is_one_way_negative(hot_run):
-    """P-E1 sharpening of the same property: with the books closed, the
-    per-tick transport delta is not merely BOUNDED above — it is a pure
-    LOSS. Every counted one-way term (floor-div truncation, the N_EPS wipe,
-    rule (d)'s ts residual) destroys; the only counted CREATOR in this pass
-    is the T_MIN recovery clamp (`e_floor_sum`), which the run total below
-    is allowed to include. A positive run total would mean a mint survived
-    the rewrite."""
-    total = sum(et for et, _ in hot_run["eth_ticks"])
-    assert total <= 0, (
-        f"transport pass NET-CREATED {total} raw Q16.16^2 of book-energy "
-        "over the run — the books are still open somewhere")
+    """SUPERSEDED by the R-1 closure identity (design SS0b): with the two
+    signed counted channels (e_ts_residual, the vac/ring wipes) now live,
+    the SUM of eth_transport_delta over the run is no longer the invariant
+    — a legitimately two-signed counted series can net either way without
+    any book opening. What remains invariant is the OTHER half of the same
+    per-tick identity: truncation loss is bounded below by the SS7
+    active-flux allowance, per tick:
+        trunc = eth_transport_delta - (-e_ts_residual - e_wipe_sum + e_floor_sum)
+        assert trunc > -n_bulk_active_sum   (mirrors cuda_bulk_flux_check.py
+                                              :454-473's inclusive bound;
+                                              the tick-1 edge where
+                                              n_bulk_active_sum == 0 with
+                                              trunc == 0 is legal under this
+                                              inclusive form)
+    Both named invariants — books never open (test_no_transport_mint) and
+    truncation bounded (here) — hold on all 2000/2000 ticks of the hot
+    run."""
+    n_bad_bound = 0
+    worst_slack = 0
+    for eth, e_ts_residual, e_wipe_sum, e_floor_sum, n_bulk in hot_run["identity_ticks"]:
+        counted = -e_ts_residual - e_wipe_sum + e_floor_sum
+        trunc = eth - counted
+        worst_slack = min(worst_slack, trunc)
+        if trunc < -n_bulk:
+            n_bad_bound += 1
+    assert n_bad_bound == 0, (
+        f"truncation loss beat the SS7 active-flux bound on {n_bad_bound} "
+        f"ticks (worst slack {worst_slack} raw Q16.16^2)")
 
 
 def test_no_rail_hits(hot_run):
-    """HEALTHY property (design SS7 rails row): the T_MAX_PHYS value rail
-    never engages — a bounded system does not need the ceiling. RED on
-    HEAD (measured 2130 hits) and still red after P-E1 alone (46 hits, the
-    trust gate not yet wired). FLIPPED STRICT at P-E4 (design SS2.4/SS6,
-    the cross-rung red idiom's owning patch): the compression-work trust
-    gate fades step-4c's work factor to 0 as the evacuated burning block's
-    N collapses toward zero, so the x~1.5/tick geometric climb the rail
-    used to catch never gets the authority to compound in the first place."""
-    assert hot_run["t_max_phys_hits"] == 0, (
-        f"T_MAX_PHYS engaged {hot_run['t_max_phys_hits']} times — the "
-        "hot-rail runaway is live")
+    """HEALTHY property (design SS7 rails row), RE-DERIVED from `== 0` to a
+    bounded-transient gate by P-W1b (design SS0b R-2): T_abs compression
+    work gives ambient air a genuine hot-rail entry point for the first
+    time (T=0 stops being a fixed point of step 4c), so the old strict
+    `t_max_phys_hits == 0` — honest under the relative law, where the
+    trust gate's fade starved the climb of any seed to compound from — is
+    no longer the right invariant. What the rail is FOR (bounding the
+    compounding's VALUE, counted, never silent) still needs a gate that
+    can fail.
+
+    Measured on the current hot run: ONE episode — a 13-tick variable-rate
+    climb (ratios 1.01-1.29/tick, NOT the old law's sustained x1.4972/tick
+    signature), 4 counted ceiling hits (ticks 1680-83), a sharp collapse
+    (x0.44) via evacuation, then a 3,600-10,000 oscillating band; only 7
+    ticks all-run with any cell above 15000; late-run equilibrium (mean of
+    the last 1000 ticks' peak) 5,341 game-deg, close to the OLD law's
+    all-run peak of 5,553 (docstring-stale pre-T_abs number, kept above for
+    provenance). The old runaway (2130 hits, 19+ sustained ceiling ticks)
+    fails both bounds below by orders of magnitude, so this gate still
+    catches it.
+
+    New gate (both 2x measured headroom): t_max_phys_hits <= 8 AND ticks
+    with any cell's T > 15000 <= 14."""
+    n_hits = hot_run["t_max_phys_hits"]
+    n_ceiling_ticks = sum(1 for t in hot_run["tick_peak_T"] if t > 15000.0)
+    assert n_hits <= 8, (
+        f"T_MAX_PHYS engaged {n_hits} times — beyond the 2x-headroom "
+        "bounded-transient budget (measured 4 on the current hot run)")
+    assert n_ceiling_ticks <= 14, (
+        f"{n_ceiling_ticks} ticks had a cell above 15000 game-deg — beyond "
+        "the 2x-headroom bounded-transient budget (measured 7 on the "
+        "current hot run)")
 
 
 def test_hot_scenario_prefix_is_deterministic():

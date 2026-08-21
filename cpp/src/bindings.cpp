@@ -1129,6 +1129,8 @@ PYBIND11_MODULE(breach_physics, m) {
              float k_drag, float k_drag_heat_frac, float c_v,
              // P-E4 (design §2.4): the compression-work trust gate.
              float n_work_ref,
+             // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K.
+             float t_amb_k,
              py::object thermal_solid) -> py::tuple {   // THERMAL-MASS AXIS
               auto [wx, h, w]    = get_2d(wind_x);
               auto [wy, h2, w2]  = get_2d(wind_y);
@@ -1160,7 +1162,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   h, w, dt, cap2,
                   c_max, dx, adiabatic_index, absorb_strength,
                   n_floor_solver, t_min, t_work_clamp, t_max_phys, u_max,
-                  k_drag, k_drag_heat_frac, c_v, n_work_ref,
+                  k_drag, k_drag_heat_frac, c_v, n_work_ref, t_amb_k,
                   &dig_vel, &dig_comp, cnts,   // trace_mass_scale arg RETIRED
                   nullptr, nullptr, tsol);
               return py::make_tuple(dig_vel, dig_comp, cnts[0], cnts[1],
@@ -1177,6 +1179,9 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("u_max"),
           py::arg("k_drag") = 0.0f, py::arg("k_drag_heat_frac") = 1.0f,
           py::arg("c_v") = 1.0f, py::arg("n_work_ref") = 0.25f,
+          // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K, threaded
+          // through the ABI; NOT read in arithmetic yet (P-W1b lands the law).
+          py::arg("t_amb_k") = 290.0f,
           py::arg("thermal_solid") = py::none(),
           "P6.4 isolated: run the GPU kick + compression-work tail in place on "
           "wind_x/wind_y/temperature; cap2_plane is the per-cell (h,w) int64 "
@@ -2430,6 +2435,8 @@ PYBIND11_MODULE(breach_physics, m) {
              float k_drag, float k_drag_heat_frac, float c_v,
              // P-E4 (design §2.4): the compression-work trust gate.
              float n_work_ref,
+             // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K.
+             float t_amb_k,
              py::object thermal_solid,                  // THERMAL-MASS AXIS
              // A6: the ambient/planetside path. `is_ambient` was hard-coded
              // nullptr at the call below, so no caller could reach the
@@ -2479,7 +2486,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   h, w, dt, cap2,
                   c_max, dx, adiabatic_index, absorb_strength,
                   n_floor_solver, t_min, t_work_clamp, t_max_phys, u_max,
-                  k_drag, k_drag_heat_frac, c_v, n_work_ref,
+                  k_drag, k_drag_heat_frac, c_v, n_work_ref, t_amb_k,
                   &dig_vel, &dig_comp, cnts, amb, tsol, sud);   // trace_mass_scale arg RETIRED
               return py::make_tuple(dig_vel, dig_comp, cnts[0], cnts[1],
                                     cnts[2], cnts[3], cnts[4], cnts[5],
@@ -2495,6 +2502,9 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("u_max"),
           py::arg("k_drag") = 0.0f, py::arg("k_drag_heat_frac") = 1.0f,
           py::arg("c_v") = 1.0f, py::arg("n_work_ref") = 0.25f,
+          // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K, threaded
+          // through the ABI; NOT read in arithmetic yet (P-W1b lands the law).
+          py::arg("t_amb_k") = 290.0f,
           py::arg("thermal_solid") = py::none(),
           py::arg("is_ambient") = py::none(),
           py::arg("sponge_udamp") = py::none(),

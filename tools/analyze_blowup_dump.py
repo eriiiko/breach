@@ -114,6 +114,87 @@ def mass_books(d, have) -> None:
               "seed, gamemap.py:1752-1754)")
 
 
+def mach_census(d, have) -> None:
+    """--mach-census (P-W0, docs/tabs_compression_work_design_2026-08-20.md
+    §6): per-snapshot census for the T_abs compression-work arc's D-1/B-F7
+    data needs — sub-ambient (bulk N < N_AMBIENT) open-cell count, the
+    |u|/c_own percentile distribution (c_own = 300*sqrt(t_abs/290), t_abs =
+    T_game + 290 — floats fine, this is an analysis tool, not the sim path),
+    min P over open cells, and a max|grad P| proxy (max abs neighbour diff
+    of the atmosphere plane). Follows this module's existing unit convention
+    (see the header docstring + ``bulk_n_planes``): ``atmosphere`` and
+    ``temperature`` are ALREADY dequantized to physical units by
+    ``Recorder.record()`` — no /65536 on those two planes here."""
+    P = d["atmosphere"].astype(np.float64)
+    T = d["temperature"].astype(np.float64)
+    n = P.shape[0]
+    flat = lambda a: a.reshape(n, -1)          # noqa: E731
+
+    if "obstacles" in have:
+        open_mask = ~d["obstacles"].astype(bool)
+    else:
+        open_mask = np.ones_like(P, dtype=bool)
+        print("mach-census: no 'obstacles' field -- treating ALL cells as "
+              "open (census includes walls).")
+    open_flat = flat(open_mask)
+
+    if {"gas_o2", "inert_n2"} <= have:
+        N = bulk_n_planes(d)
+        n_src = "measured (gas_o2 + inert_n2/65536)"
+    else:
+        N = P * 290.0 / (T + 290.0)             # p* = C*N*T_abs, C = 1/290
+        n_src = "RECONSTRUCTED from p*/T_abs (dump predates inert_n2)"
+
+    sub_amb_count = flat((N < N_AMBIENT) & open_mask).sum(axis=1)
+
+    t_abs = T + 290.0
+    c_own = 300.0 * np.sqrt(t_abs / 290.0)
+
+    have_wind = {"wind_x", "wind_y"} <= have
+    if have_wind:
+        wx, wy = d["wind_x"].astype(np.float64), d["wind_y"].astype(np.float64)
+        ratio_flat = flat(np.hypot(wx, wy) / np.maximum(c_own, 1e-9))
+        open_ratio = [ratio_flat[i][open_flat[i]] for i in range(n)]
+    else:
+        print("mach-census: no wind_x/wind_y -- |u|/c_own percentiles "
+              "unavailable for this dump.")
+
+    Pf = flat(P)
+    min_P = np.array([Pf[i][open_flat[i]].min() if open_flat[i].any()
+                      else np.nan for i in range(n)])
+
+    dPy = np.abs(np.diff(P, axis=1)).reshape(n, -1)
+    dPx = np.abs(np.diff(P, axis=2)).reshape(n, -1)
+    max_grad_P = np.maximum(dPy.max(axis=1) if dPy.size else np.zeros(n),
+                            dPx.max(axis=1) if dPx.size else np.zeros(n))
+
+    print(f"\n{'=' * 62}\nMACH CENSUS (N source: {n_src})")
+    print(f"  sub-ambient (N < {N_AMBIENT}) open cells: peak "
+          f"{int(sub_amb_count.max())} (snap {int(np.argmax(sub_amb_count))}), "
+          f"total snap-cells {int(sub_amb_count.sum())}")
+    print(f"  min P over open cells: {np.nanmin(min_P):.4f} atm "
+          f"(snap {int(np.nanargmin(min_P))})")
+    print(f"  max|grad P| proxy (neighbour diff): {max_grad_P.max():.4f} atm "
+          f"(snap {int(np.argmax(max_grad_P))})")
+
+    header = f"  {'snap':>6} {'sub_amb':>8} {'min_P':>9} {'max|dP|':>9}"
+    if have_wind:
+        header += f" {'u/c_p50':>8} {'u/c_p90':>8} {'u/c_p99':>8} {'u/c_max':>8}"
+    print(header)
+    for i in range(n):
+        row = (f"  {i:6d} {int(sub_amb_count[i]):8d} {min_P[i]:9.4f} "
+               f"{max_grad_P[i]:9.4f}")
+        if have_wind:
+            arr = open_ratio[i]
+            if arr.size:
+                row += (f" {np.percentile(arr, 50):8.3f} "
+                        f"{np.percentile(arr, 90):8.3f} "
+                        f"{np.percentile(arr, 99):8.3f} {arr.max():8.3f}")
+            else:
+                row += f" {'--':>8} {'--':>8} {'--':>8} {'--':>8}"
+        print(row)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("dump", help="path to a debug_blowup_*.npz")
@@ -122,6 +203,10 @@ def main() -> None:
     ap.add_argument("--mass-books", action="store_true",
                     help="audit bulk N: totals + the catalogue of events that "
                          "move them (mass-books arc)")
+    ap.add_argument("--mach-census", action="store_true",
+                    help="sub-ambient open-cell census + |u|/c_own "
+                         "percentiles + min P + max|grad P| proxy per "
+                         "snapshot (T_abs compression-work arc, P-W0)")
     args = ap.parse_args()
 
     d = np.load(args.dump)
@@ -195,6 +280,9 @@ def main() -> None:
 
     if args.mass_books:
         mass_books(d, have)
+
+    if args.mach_census:
+        mach_census(d, have)
 
     # --- context trace -----------------------------------------------------
     lo = max(0, n - args.tail)

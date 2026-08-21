@@ -14,9 +14,22 @@ The physics lid keeps tightening. Next, in order:
    become a felt problem again; the measurements live in
    `docs/velocity_clamp_audit_2026-08-19.md` and
    `docs/velocity_clamp_pv2_measurement_2026-08-19.md`.
-2. **T_abs compression-work patch** — item 2 below. **NEXT UP (Erik,
-   2026-08-20): start in a FRESH session** (own short design + critique +
-   HUMAN-TEST, per its queued spec).
+2. ~~**T_abs compression-work patch**~~ — **CLOSED 2026-08-21, HUMAN-TEST
+   PASS, merged.** Step 4c runs on absolute T (`T_new = (T+290)·(1±w) − 290`,
+   RULING R1 executed): compression finally heats ambient/cold gas, breach
+   rarefaction is genuinely cold (cold RING around vents — the trust gate
+   correctly fades the near-empty core), rooms stay honestly warm/pressurized
+   after violent transients. Record:
+   `docs/human_test_2026-08-21_tabs_compression_work.md`; design + critiques +
+   measurements in `docs/archive/`. One sanctioned golden re-baseline
+   (`docs/tabs_compression_work_rebaseline_2026-08-21.md`). Decisions at the
+   gate: cap ambient floor KEPT (D-1), T_MIN −289 KEPT (D-6). New instruments:
+   hover readout on F6 (game-deg + K/K_eos), cold overlay tier on T.
+   **Handed forward:** grenades read COLD (payload is pressure-only, no heat
+   term — correct physics exposing a payload bug; → grenade energy-budget
+   retune), fires burn in vacuum (→ bug list below, fire retune session),
+   quiet-room acoustic drift ≈ +10 game-deg/7 min non-saturating (monitored
+   accepted gap; the KE↔eth kick-side debit remains the open half).
 3. **Drag law design session** — item 3 below, now UNBLOCKED (flow is
    subsonic post-clamp). **Feel-probe COMPLETE (Erik, 2026-08-20), and it
    produced the session's key input.** k_drag 0.5 → 1.0 → 2.0: no felt
@@ -758,6 +771,21 @@ All render-only — no sim/determinism surface, auto-skipped in headless trainin
 
 - **Bug list (started 2026-08-20 — Erik wants known bugs tracked in one
   place; graduate items into arcs when picked up):**
+  - **Fires burn in hard vacuum** (Erik, 2026-08-21 HUMAN-TEST of the T_abs
+    arc; measured in `debug_manual_20260821_143234/143409.npz`: crates at
+    fire intensity ~0.37 with N_total = 0.0000 for 2335+ snaps; 78–83% of
+    all burning snap-cells sit below a quarter of ambient air). ROOT CAUSE
+    (code-verified): the continuous-O2 law (2026-07-24) gates sustain on
+    the O2 MOLE FRACTION X = n_O2/n_total — deliberately, to fix the
+    "density trap" (thermal expansion suffocating fires) — but venting
+    removes O2 and N2 TOGETHER, so X stays ≈0.21 down to zero molecules
+    and o2f never crosses X_ext = 0.13. The fraction law needs an absolute-
+    availability companion (composition above the flammability limit AND
+    enough molar O2 to feed the flame) designed so the density-trap fix
+    survives. NOT the T_abs arc's doing (law untouched; the cold overlay
+    just made evacuated rooms visible enough to notice). Owner: the fire
+    retune / O2-suffocation session already queued under item 4 above —
+    graduate this entry into that session's design list.
   - **Pressure-burst walls keep their graphics** (Erik, 2026-08-20 feel
     probe, post-velocity-clamp build). A wall destroyed by pressure
     (`find_burst_walls` → `destroy_wall`) stays visually intact — the only

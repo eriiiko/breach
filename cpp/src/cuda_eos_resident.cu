@@ -703,7 +703,9 @@ void eos_step_resident(
         // P-E3 (design §2.8): interior drag + heat counterparty.
         solver.k_drag, solver.k_drag_heat_frac, solver.c_v,
         // P-E4 (design §2.4): the compression-work trust gate.
-        solver.n_work_ref);
+        solver.n_work_ref,
+        // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K.
+        solver.T_AMB_K);
     const EOSSolver::MGScalarFolds mf = solver.mg_scalar_folds(dt);
 
     // ---- §2.5 hoist: the per-cell absorb plane, on the MIRROR (this is

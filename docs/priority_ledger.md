@@ -78,12 +78,17 @@ Queued next, in this order:
    (blast + venting) diverges CPU↔GPU at both C=2 and C=8, despite P-E4's
    as-built claiming it repaired. Seed doc:
    `docs/human_test_2026-08-18_mass_books.md`.
-2. **T_abs compression work** (design §2.9, RULING R1) — a short designed
-   patch with its own critique round and its own HUMAN-TEST: run the
-   reversible work on absolute temperature, `T_new = (T + 290)·(1±w) − 290`,
-   so compression stops *freezing* sub-ambient gas and ambient air finally
-   heats under compression at all. Feel-adjacent (breach rarefaction becomes
-   genuinely cold).
+2. ~~**T_abs compression work**~~ — **CLOSED 2026-08-21, Erik HUMAN-TESTED
+   and blessed.** RULING R1 executed: step 4c on absolute T in all three
+   twins, lockstep tol 0, books closure identity proven per tick (the
+   transport gate is now STRICTER — zero uncounted energy, ever). Breach
+   rarefaction genuinely cold; compression finally heats ambient air. Cap
+   ambient floor + T_MIN kept on measured data. Full record:
+   `docs/human_test_2026-08-21_tabs_compression_work.md` + `docs/archive/`
+   (design v2.2, critiques, baseline, manifest, measurements). Handed
+   forward: cold grenades (payload has no heat term → energy-budget retune),
+   vacuum fires (fraction-based O2 law → fire retune), quiet-room acoustic
+   drift (monitored gap; kick-side KE debit still the open half).
 3. **Post-pressure retune pass** — **DO NOT START BEFORE THE MASS ARC LANDS.**
    Retuning against a substrate that mints mass would bake the mint into the
    dials — the same argument the energy-books arc made for landing before any

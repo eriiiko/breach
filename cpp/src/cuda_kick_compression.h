@@ -77,6 +77,9 @@ void eos_kick_compression(
     // gate's reference density (fades step 4c's work factor toward 0 below
     // n_work_ref, hard-zero below n_work_ref/2).
     float n_work_ref,
+    // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K, threaded through
+    // the ABI; NOT read in arithmetic yet (P-W1b lands the law).
+    float t_amb_k,
     uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
     int64_t* counters_out /* [9] */,
     // BC (spec §1/§3): the ambient ring (nullptr = space) drives the velocity

@@ -79,8 +79,14 @@ from simulation.entities.registry import registry_content_hash  # noqa: E402
 # LOOP_GOLDEN_STEPS ticks (seed=1, physics=breach_physics). Integer-only ⇒ a
 # second machine reproduces it bit-for-bit (the cross-machine attestation). This
 # is a NEW golden constant (expected, §11) — NOT a re-baseline of an existing one.
+# T_ABS COMPRESSION-WORK GOLDEN REBASE (2026-08-21, arc `tabs-compression-work`,
+# HUMAN-TEST PASS 2026-08-21, docs/tabs_compression_work_rebaseline_2026-08-21.md).
+# The loop closes THROUGH the atmosphere solver (module docstring), so step 4c's
+# move onto absolute T (docs/tabs_compression_work_design_2026-08-20.md §1/§2)
+# lawfully moves this trajectory too. Re-run twice, independently: identical.
+# (was ed42914ebe44d355ab311e0346ce8d9602dd9728887f1fe35fe7a377dc5cb189)
 LOOP_GOLDEN_TRAJ_DIGEST = \
-    "ed42914ebe44d355ab311e0346ce8d9602dd9728887f1fe35fe7a377dc5cb189"
+    "a631c182c5669ebefd390dd321868874bbe17db1cd1f3e3195be1c276ede05dd"
 LOOP_GOLDEN_STEPS = 30
 LOOP_GOLDEN_SEED = 1
 
@@ -89,6 +95,11 @@ LOOP_GOLDEN_SEED = 1
 # crosses the threshold (visible in pub at tick 11), the decider is high one hop
 # later (tick 12), and the door flips one more tick later (tick 13) — exactly one
 # tick per hop, the 2-tick/per-hop contract golden-locked.
+# T_ABS COMPRESSION-WORK GOLDEN REBASE (2026-08-21): re-measured against the new
+# law and UNMOVED (11/12/13, same as before) — the chamber's pressure trajectory
+# up to first threshold-cross is dominated by the sealed-room fill, not by the
+# ambient-air 4c term this arc changes; `test_logic_loop_latency_pins_the_per_hop_contract`
+# passed green on this arc's own build without edits, confirming no re-pin was needed.
 LOOP_FILTER_CROSS_TICK = 11
 LOOP_DECIDER_HIGH_TICK = 12
 LOOP_DOOR_OPEN_TICK = 13

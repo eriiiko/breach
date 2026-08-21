@@ -78,7 +78,21 @@ def pack_hover_readout(gmap, tx: int, ty: int,
 
     material = _material_name(gmap, ty, tx)
     t_game = float(gmap.temperature[ty, tx]) / TEMP_SCALE
-    kelvin = float(kelvin_fn(t_game))
+    # Kelvin display, two frames (T_abs arc, design D-7/C12 + HUMAN-TEST
+    # 2026-08-21: Erik read "-574 K" off a 1.1 K cell and rightly asked if
+    # the T_MIN floor had failed). The canonical render map
+    # (kelvin_fn: K = 293 + 3*T_game) matches the visible glow and stays
+    # the display for T >= ambient — but it is INVALID below ambient (goes
+    # negative from T_game < -97.67). Sub-ambient gas therefore displays
+    # the EOS's own absolute frame (K = T_game + 290, [physics.eos]
+    # eos_t_amb_k — always positive, floor exactly 1 K), labeled "K_eos"
+    # so the two frames cannot be confused.
+    if t_game >= 0.0:
+        kelvin = float(kelvin_fn(t_game))
+        kelvin_label = "K"
+    else:
+        kelvin = 290.0 + t_game
+        kelvin_label = "K_eos"
     fire = float(gmap.fire[ty, tx]) / _FIRE_FP_ONE_F
     gases = {
         GAS_NAMES[g]: float(gmap.gas[g][ty, tx]) / _GAS_FP_ONE_F
@@ -87,7 +101,7 @@ def pack_hover_readout(gmap, tx: int, ty: int,
 
     lines = [
         f"tile ({tx}, {ty})  {material}",
-        f"T: {t_game:8.1f} u   ({kelvin:6.0f} K)",
+        f"T: {t_game:8.1f} u   ({kelvin:6.0f} {kelvin_label})",
         f"fire: {fire:5.3f}    O2: {gases['o2']:5.3f}",
         f"steam {gases['steam']:5.3f}   smoke {gases['smoke']:5.3f}",
         f"poison {gases['poison']:5.3f}  teargas {gases['teargas']:5.3f}",
