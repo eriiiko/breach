@@ -52,22 +52,43 @@ COLD_STOPS = np.array([
     [-150.0, 90, 170, 255, 210],   # deep cold (near the T_MIN floor)
 ], dtype=np.float32)
 
+# Gas-presence gate for painting cold, as a fraction of ambient bulk N.
+# HUMAN-TEST feedback (Erik, 2026-08-21, P-W3 round 1): without it the ramp
+# paints every near-vacuum/vented cell — on a space map that is thousands of
+# cells and the screen floods blue ("i first thought u filled everything with
+# water"). The cold of near-nothing is noise, not information — and the sim
+# itself agrees: the EOS trust gate fades compression work to zero below
+# n_work_ref/2 = 0.125 and to full trust at n_work_ref = 0.25 of ambient.
+# Aligning the overlay with that rule means we only PAINT cold where the
+# engine considers the temperature meaningful. 0.25 = full-trust threshold.
+COLD_N_MIN_FRAC = 0.25
+# Ambient bulk N in the measured (gas_o2 + inert_n2) Q16.16 convention.
+N_AMBIENT_RAW = 65536.0
 
-def pack_cold_rgba(temperature: np.ndarray, max_alpha: int = 210
-                    ) -> np.ndarray:
+
+def pack_cold_rgba(temperature: np.ndarray, max_alpha: int = 210,
+                   n_bulk: Optional[np.ndarray] = None,
+                   n_min_frac: float = COLD_N_MIN_FRAC) -> np.ndarray:
     """temperature: (H, W) Q16.16 int32 -- ΔT above ambient (D-7's frame).
+    n_bulk: optional (H, W) Q16.16 bulk gas (gas_o2 + inert_n2); when given,
+    cells below ``n_min_frac`` of ambient N are NOT painted (the trust-gate
+    alignment above). When None, behaves as before (paint all cold cells).
 
     Returns a premultiplied-alpha uint8 (H, W, 4) RGBA array: T_rel >= 0
     packs fully transparent (0,0,0,0); T_rel < 0 interpolates linearly
     through ``COLD_STOPS`` (clamped at the deepest stop), matching
-    ``PressureOverlay.update``'s stop-interpolation idiom. RENDER-ONLY: the
-    temperature field is read, never written.
+    ``PressureOverlay.update``'s stop-interpolation idiom. RENDER-ONLY: every
+    field is read, never written.
     """
     t_game = np.asarray(temperature, dtype=np.float64) / TEMP_SCALE
     h, w = t_game.shape
     rgba = np.zeros((h, w, 4), dtype=np.float32)
 
     cold = t_game < 0.0
+    if n_bulk is not None:
+        has_gas = np.asarray(n_bulk, dtype=np.float64) \
+            >= (n_min_frac * N_AMBIENT_RAW)
+        cold &= has_gas
     if np.any(cold):
         # COLD_STOPS[:, 0] runs 0 -> -150 (decreasing); np.interp needs an
         # ASCENDING xp, so flip both the query sign and the table.
@@ -95,9 +116,10 @@ class ColdFieldOverlay:
         self.max_alpha = int(max_alpha)
         self.tex = core.create_dynamic_rgba_texture(grid_w, grid_h)
 
-    def update(self, temperature: np.ndarray) -> None:
+    def update(self, temperature: np.ndarray,
+               n_bulk: Optional[np.ndarray] = None) -> None:
         from . import core
-        rgba = pack_cold_rgba(temperature, self.max_alpha)
+        rgba = pack_cold_rgba(temperature, self.max_alpha, n_bulk=n_bulk)
         core.update_rgba_texture(self.tex, rgba)
 
     def draw(self, dst_x: int, dst_y: int, dst_w: int, dst_h: int) -> None:

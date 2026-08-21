@@ -515,8 +515,14 @@ class GameRenderer:
                     soot, steam, sim_tick=int(sim_tick))
             self.temperature_overlay.update(gmap.temperature, speckle_mod)
             # Cold tier (P-W2, D-7): same toggle, same source field. RENDER-
-            # ONLY — gmap.temperature is read, never written.
-            self.cold_overlay.update(gmap.temperature)
+            # ONLY — every field is read, never written. N-masked (HUMAN-TEST
+            # round-1 feedback): cold is painted only where the cell holds
+            # >= 25% of ambient gas, so vented/space cells stop flooding the
+            # screen blue — see COLD_N_MIN_FRAC in renderer/cold_overlay.py.
+            _o2 = gmap.gases.name_to_id["o2"]
+            _n2 = gmap.gases.name_to_id["inert_n2"]
+            self.cold_overlay.update(
+                gmap.temperature, n_bulk=gmap.gas[_o2] + gmap.gas[_n2])
         # Water overlay v2 (W6b): depth tint + ripple shading + foam +
         # ambient sines. Skipped when toggled off; the overlay itself also
         # early-outs when the ship is dry (zero-water fast path). Render-only
