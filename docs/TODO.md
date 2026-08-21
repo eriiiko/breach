@@ -14,9 +14,22 @@ The physics lid keeps tightening. Next, in order:
    become a felt problem again; the measurements live in
    `docs/velocity_clamp_audit_2026-08-19.md` and
    `docs/velocity_clamp_pv2_measurement_2026-08-19.md`.
-2. **T_abs compression-work patch** — item 2 below. **NEXT UP (Erik,
-   2026-08-20): start in a FRESH session** (own short design + critique +
-   HUMAN-TEST, per its queued spec).
+2. ~~**T_abs compression-work patch**~~ — **CLOSED 2026-08-21, HUMAN-TEST
+   PASS, merged.** Step 4c runs on absolute T (`T_new = (T+290)·(1±w) − 290`,
+   RULING R1 executed): compression finally heats ambient/cold gas, breach
+   rarefaction is genuinely cold (cold RING around vents — the trust gate
+   correctly fades the near-empty core), rooms stay honestly warm/pressurized
+   after violent transients. Record:
+   `docs/human_test_2026-08-21_tabs_compression_work.md`; design + critiques +
+   measurements in `docs/archive/`. One sanctioned golden re-baseline
+   (`docs/tabs_compression_work_rebaseline_2026-08-21.md`). Decisions at the
+   gate: cap ambient floor KEPT (D-1), T_MIN −289 KEPT (D-6). New instruments:
+   hover readout on F6 (game-deg + K/K_eos), cold overlay tier on T.
+   **Handed forward:** grenades read COLD (payload is pressure-only, no heat
+   term — correct physics exposing a payload bug; → grenade energy-budget
+   retune), fires burn in vacuum (→ bug list below, fire retune session),
+   quiet-room acoustic drift ≈ +10 game-deg/7 min non-saturating (monitored
+   accepted gap; the KE↔eth kick-side debit remains the open half).
 3. **Drag law design session** — item 3 below, now UNBLOCKED (flow is
    subsonic post-clamp). **Feel-probe COMPLETE (Erik, 2026-08-20), and it
    produced the session's key input.** k_drag 0.5 → 1.0 → 2.0: no felt
