@@ -134,3 +134,16 @@ A1–A9 are ancestors of `main`):
   all 9 items landed (see commits A1–A9, e.g. `1e14669`..`af50a3a`).
 - `breach_todo_2026-08-03.md` — Erik's original brain-dump (Swedish) naming
   the `T0 + k·T_game` idea that became the canonical Kelvin map.
+
+## 2026-08-22 — GitHub-issues migration + rules-first CLAUDE.md
+
+Task tracking moved wholesale to GitHub issues (`eriiiko/breach`); the pinned
+Roadmap issue #46 now carries the arc sequencing. CLAUDE.md restructured
+rules-first with the canonical-systems inventory (survey capture:
+`docs/canonical_systems_survey_2026-08-22.md`).
+
+- `TODO_final_2026-08-22.md` — the item-level TODO at retirement. Open items
+  were migrated to issues #4–#45 (closed-arc lineage sections stay here as
+  history, deliberately NOT issues).
+- `priority_ledger_final_2026-08-22.md` — the standing stack at retirement;
+  its sequencing function is replaced by the pinned Roadmap issue #46.
