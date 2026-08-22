@@ -3,10 +3,12 @@
 This is the GPU launch path. It is ADDITIVE — the normal CPU launch
 (``python main.py``) is completely untouched and still imports the CPU
 build from ``cpp/build/Release``. This wrapper instead points
-``import breach_physics`` at the CUDA build in ``cpp/build_cuda`` (mirroring
-``tests/cuda_harness.py``), asserts a usable GPU, flips ALL solver backends
-to CUDA, then hands off to ``main.main()`` — it does NOT duplicate the game
-loop.
+``import breach_physics`` at the CUDA build in ``cpp/build_cuda`` (reusing
+``tests/cuda_harness.py``'s build discovery, ``cuda_dll_dir``/``cuda_pyd`` —
+issue #15: this module used to hand-maintain its own copy, drift risk against
+the harness's pinned CUDA v12.4 path), asserts a usable GPU, flips ALL solver
+backends to CUDA, then hands off to ``main.main()`` — it does NOT duplicate
+the game loop.
 
 Speed is not the goal: each kernel does its own malloc/H2D/D2H per call (the
 "per-call path"). It RUNS on the GPU and is bit-identical to the CPU solvers;
@@ -39,25 +41,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 CUDA_BUILD_DIR = ROOT / "cpp" / "build_cuda"
 
-
-def _cuda_dll_dir() -> Path | None:
-    """The CUDA runtime ``bin`` dir holding cudart64_*.dll (CUDA_PATH or the
-    pinned v12.4 install). Mirrors tests/cuda_harness.cuda_dll_dir."""
-    cands = []
-    cp = os.environ.get("CUDA_PATH")
-    if cp:
-        cands.append(Path(cp) / "bin")
-    cands.append(
-        Path(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin"))
-    for c in cands:
-        if c.is_dir() and list(c.glob("cudart64_*.dll")):
-            return c
-    return None
-
-
-def _cuda_pyd() -> Path | None:
-    hits = list(CUDA_BUILD_DIR.glob("breach_physics*.pyd"))
-    return hits[0] if hits else None
+# tools/ and tests/ are sibling dirs (both under ROOT) — reuse cuda_harness's
+# CUDA-build discovery (issue #15: this file used to hand-maintain its own
+# copy, `_cuda_dll_dir`/`_cuda_pyd`, drift risk against the harness's
+# `cuda_dll_dir`/`cuda_pyd`, including the pinned v12.4 path). Path is
+# relative to this file, not cwd, so it works regardless of launch directory.
+_TESTS_DIR = ROOT / "tests"
+if str(_TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TESTS_DIR))
+from cuda_harness import cuda_dll_dir as _cuda_dll_dir  # noqa: E402
+from cuda_harness import cuda_pyd as _cuda_pyd  # noqa: E402
 
 
 def setup_cuda_import() -> None:

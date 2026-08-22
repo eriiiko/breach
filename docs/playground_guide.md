@@ -180,5 +180,6 @@ with its interesting range.
   unit construction), `[zombie]` (species tables bind at import),
   `[physics.*]` (solvers bind at construction — engine/12 §5),
   `[materials.*]` (table binds at map build).
-- Regenerate the map after layout tweaks:
-  `C:/Users/steen/anaconda3/python.exe tools/gen_playground_level.py`.
+- Layout tweaks go through the Arc-C map editor (`tools/map_editor.py`);
+  the old `gen_playground_level.py` generator was deleted as stale
+  (`97c0980`) when playground migrated into the entity system.

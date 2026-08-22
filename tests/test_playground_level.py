@@ -8,9 +8,8 @@ the standard-values sandbox stays launchable —
     (wood / glass / steel / furniture / door / hull / SPACE);
   - the spawn layout invariants hold: every spawn footprint stands on open
     walkable floor, and the penned zombies are far enough from the squad
-    that the brawl cannot start at tick 0 (trigger_radius guard — a layout
-    tweak in tools/gen_playground_level.py that breaks this fails HERE, not
-    silently in play);
+    that the brawl cannot start at tick 0 (trigger_radius guard — an editor
+    layout tweak that breaks this fails HERE, not silently in play);
   - a headless sim constructs and runs 30 ticks without error, everyone
     alive (the map is quiet until the player pokes it);
   - the same seed run twice is bitwise identical (fields + synced unit

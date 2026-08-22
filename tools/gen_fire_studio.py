@@ -285,20 +285,22 @@ initial_state = "closed"
 """
 
 
-def main() -> None:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+def main(out_dir=OUT_DIR) -> None:
+    # out_dir parameter (2026-08-22, issue #47): lets the determinism test
+    # regenerate into a tmp dir instead of mutating the committed level.
+    out_dir.mkdir(parents=True, exist_ok=True)
     tm = build_tilemap()
 
-    csv_path = OUT_DIR / "tilemap.csv"
+    csv_path = out_dir / "tilemap.csv"
     np.savetxt(csv_path, tm, fmt="%d", delimiter=",")
 
-    water_path = OUT_DIR / "water_init.npy"
+    water_path = out_dir / "water_init.npy"
     np.save(water_path, build_water())
 
-    png_path = OUT_DIR / "diffuse.png"
+    png_path = out_dir / "diffuse.png"
     build_diffuse(tm).save(png_path)
 
-    toml_path = OUT_DIR / "level.toml"
+    toml_path = out_dir / "level.toml"
     toml_path.write_text(LEVEL_TOML, encoding="utf-8")
 
     codes = sorted(np.unique(tm).tolist())

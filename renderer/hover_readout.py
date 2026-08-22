@@ -31,10 +31,12 @@ from simulation.gases import (FUEL_GAS, GAS_NAMES, O2, POISON, SMOKE, STEAM,
                               TEARGAS)
 from simulation.materials import MATERIAL_NAMES
 
-# Q16.16 temperature scale — MUST match materials.TEMP_SCALE /
-# renderer.blackbody.TEMP_SCALE (the shared temperature/heat fixed-point
-# domain). Defined locally so this module pulls in no pyray-touching import.
-TEMP_SCALE = 65536.0
+# Q16.16 temperature scale — matches materials.TEMP_SCALE / renderer.blackbody
+# .TEMP_SCALE (the shared temperature/heat fixed-point domain). ONE shared
+# constant (cleanup #15): the SAME simulation.fire_fixed.FP_ONE_F already
+# imported above for the fire field, so this module pulls in no new import
+# and still no pyray-touching dependency.
+TEMP_SCALE = _FIRE_FP_ONE_F
 
 # The gases shown, in readout order: the five trace species then O2 (the
 # O2-starvation story). inert_n2 is invisible bulk air — omitted deliberately.

@@ -31,8 +31,7 @@ the bullet march never does — every cover shape stops rounds.
 """
 from __future__ import annotations
 
-from fractions import Fraction
-
+from simulation.entities.quantize import quantize_meters_to_tiles
 from simulation.entities.schema import (
     Entity, Field, KIND_BOOL, KIND_INT, KIND_LENGTH_M, register,
 )
@@ -97,14 +96,11 @@ def quantize_extent_tiles(length_m, tile_size_m, *, context: str = "cover") -> i
 
     ``floor(length_m * tiles_per_m + 1/2)`` in exact ``Fraction`` arithmetic —
     never ``round()`` on a float (Python 3's ``round`` is banker's rounding,
-    the exact trap that rule exists to avoid) — clamped to at least 1. Reusing
-    the door quantizer's shape rather than inventing a second one keeps every
-    meters-first extent in the project on ONE rule.
+    the exact trap that rule exists to avoid) — clamped to at least 1. Reuses
+    the door quantizer's shared helper rather than a second hand-copy, so
+    every meters-first extent in the project runs on ONE rule.
     """
     from simulation.entities.door import tiles_per_m
-    lm = Fraction(str(float(length_m)))
-    if lm <= 0:
-        raise ValueError(
-            f"{context}: length must be > 0, got {length_m!r}")
-    n = (lm * tiles_per_m(tile_size_m) + Fraction(1, 2)).__floor__()
-    return max(1, int(n))
+    return quantize_meters_to_tiles(
+        length_m, tile_size_m, context=context, field_name="length",
+        tiles_per_m_fn=tiles_per_m)

@@ -1,27 +1,35 @@
 """S1 test helpers — Q16.16 water field quantize/dequantize for the water tests.
 
-The water core is int32 Q16.16 (S1). The water tests author scenarios in metres;
-these helpers convert at the solver boundary so the tests stay readable in SI
-units. Mirrors src/simulation/water_fixed.py (and the C++ fixed_point.h).
+Re-export shim (issue #15): this used to be a hand-maintained copy of the
+Q16.16 rounding helpers, admittedly just "mirroring" src/simulation/water_fixed.py
+(and the C++ fixed_point.h) — a test-only duplicate of a sim-path rounding
+rule, which is drift risk (a rounding fix could land in water_fixed.py and
+silently not apply here). It now imports the canonical helpers directly; the
+public names (`q`, `deq`, `zeros_q`, `FP_ONE`, `FP_ONE_F`) are unchanged so
+every existing importer keeps working.
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# Defensive path bootstrap (relative to this file, not cwd): every current
+# importer already puts ROOT and ROOT/src on sys.path before importing this
+# module (see e.g. tests/test_water_solver.py), but this module may also be
+# imported standalone/outside pytest, so don't rely on that.
+_ROOT = Path(__file__).resolve().parent.parent
+for _p in (_ROOT, _ROOT / "src"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
 import numpy as np
 
-FP_ONE = 65536
-FP_ONE_F = float(FP_ONE)
-
-
-def q(metres) -> np.ndarray:
-    """Real metres -> Q16.16 int32 (round-half-away-from-zero)."""
-    arr = np.asarray(metres, dtype=np.float64) * FP_ONE_F
-    out = np.where(arr >= 0.0, np.floor(arr + 0.5), np.ceil(arr - 0.5))
-    return out.astype(np.int32)
-
-
-def deq(qarr) -> np.ndarray:
-    """Q16.16 int32 -> float64 metres (exact /65536)."""
-    return np.asarray(qarr, dtype=np.float64) / FP_ONE_F
+from simulation.water_fixed import (  # noqa: E402
+    FP_ONE,
+    FP_ONE_F,
+    quantize as q,
+    dequantize as deq,
+)
 
 
 def zeros_q(h, w) -> np.ndarray:
