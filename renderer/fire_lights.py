@@ -30,9 +30,12 @@ from typing import List, Tuple
 
 import numpy as np
 
-# Q16.16 scale of the temperature field — MUST match renderer.blackbody.TEMP_SCALE
+from simulation.fire_fixed import FP_ONE_F as TEMP_SCALE
+
+# Q16.16 scale of the temperature field — matches renderer.blackbody.TEMP_SCALE
 # and materials.TEMP_SCALE (the shared temperature/heat fixed-point domain).
-TEMP_SCALE = 65536.0
+# ONE shared constant (cleanup #15): sourced from simulation.fire_fixed.FP_ONE_F
+# — see renderer/blackbody.py's header for why that module.
 TAU = 2.0 * math.pi
 
 

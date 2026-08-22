@@ -38,9 +38,17 @@ from typing import Optional, Tuple
 
 import numpy as np
 
+from simulation.fire_fixed import FP_ONE_F as TEMP_SCALE
+
 # Q16.16 scale of the temperature field (materials.TEMP_SCALE == HEAT_SCALE).
 # gmap.temperature is int32 ΔT above ambient in this fixed-point domain.
-TEMP_SCALE = 65536.0
+# ONE shared constant (cleanup #15, was independently re-declared as a float
+# literal in blackbody/cold_overlay/fire_lights/hover_readout with a
+# "MUST match" comment): sourced from simulation.fire_fixed.FP_ONE_F, the
+# pure-numpy leaf module (no breach_physics, no pyray) that already proves
+# this exact value across the shared Q16.16 domain (fire/water/wave/
+# atmosphere/gas/heat all == 65536). cold_overlay.py / fire_lights.py /
+# hover_readout.py import this SAME name from the SAME place.
 
 
 def aces_tonemap(x: np.ndarray) -> np.ndarray:

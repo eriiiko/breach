@@ -36,9 +36,12 @@ from typing import Optional
 
 import numpy as np
 
+from simulation.fire_fixed import FP_ONE_F as TEMP_SCALE
+
 # Q16.16 temperature scale (materials.TEMP_SCALE / renderer.blackbody.TEMP_SCALE
 # / renderer.hover_readout.TEMP_SCALE — the one shared fixed-point domain).
-TEMP_SCALE = 65536.0
+# ONE shared constant (cleanup #15): sourced from simulation.fire_fixed.FP_ONE_F
+# — see renderer/blackbody.py's header for why that module.
 
 # Diverging blue ramp stops: (T_rel game-deg, R, G, B, A). T_rel >= 0 (ambient
 # and warm) is handled separately (fully transparent) — these stops only cover
