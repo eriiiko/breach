@@ -43,6 +43,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SIM_DIR = ROOT / "src" / "simulation"
 
+# pathfinding.py lives at repo ROOT (not src/simulation/) but is imported
+# lazily by three sim modules (ai_zombie.py, simulation.py, timeline.py) and
+# its A* results feed synced state (unit orders/movement) — scan it too, so
+# it can't dodge the ingress rule just by sitting outside SIM_DIR (issue #15).
+EXTRA_SIM_FILES = [ROOT / "pathfinding.py"]
+
 BANNED_MATH_FUNCS = {
     "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
     "exp", "expm1", "log", "log2", "log10", "log1p",
@@ -125,7 +131,7 @@ def _scan_file(path: Path) -> list[str]:
 
 
 def test_no_banned_number_ingress_in_simulation():
-    files = sorted(SIM_DIR.rglob("*.py"))
+    files = sorted(SIM_DIR.rglob("*.py")) + EXTRA_SIM_FILES
     assert files, f"no python files found under {SIM_DIR}"
     violations: list[str] = []
     for path in files:
