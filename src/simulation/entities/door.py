@@ -33,6 +33,7 @@ from __future__ import annotations
 
 from fractions import Fraction
 
+from simulation.entities.quantize import quantize_meters_to_tiles
 from simulation.entities.schema import (
     Entity, Field, INPUT_HELD, InputDecl, KIND_ENUM, KIND_INT,
     KIND_LENGTH_M, Signal, register,
@@ -124,13 +125,13 @@ def quantize_span_tiles(length_m, tile_size_m, *, context: str = "door") -> int:
     ``length_m`` ingresses as ``Fraction(str(length_m))`` (N10 pin — the
     decimal the author typed, not the binary float's expansion) and must be
     strictly positive (explicit check: schema minimums are inclusive).
+
+    Delegates to :func:`simulation.entities.quantize.quantize_meters_to_tiles`
+    — the one shared rule cover's ``quantize_extent_tiles`` also uses.
     """
-    lm = Fraction(str(float(length_m)))
-    if lm <= 0:
-        raise ValueError(
-            f"{context}: length_m must be > 0, got {length_m!r}")
-    n = (lm * tiles_per_m(tile_size_m) + Fraction(1, 2)).__floor__()
-    return max(1, int(n))
+    return quantize_meters_to_tiles(
+        length_m, tile_size_m, context=context, field_name="length_m",
+        tiles_per_m_fn=tiles_per_m)
 
 
 def base_span(fields: dict, tile_size_m, *, context: str = "door") -> list:
