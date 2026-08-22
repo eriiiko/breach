@@ -6,9 +6,10 @@
 # (the tough room), pool basin (U-key water), zombie pen (glass box, no door
 # — grenade it open), breach bay (blow the marked south hull to space).
 #
-# Layout + derived art come from tools/gen_playground_level.py — tweak the
-# constants there and re-run it to reshape the map. Play guide with launch
-# instructions + experiments: docs/playground_guide.md.
+# Hand-maintained in the Arc-C map editor since the 2026-07-24 entity
+# migration (the old tools/gen_playground_level.py generator was deleted as
+# stale in 97c0980 — layout tweaks go through the editor now). Play guide
+# with launch instructions + experiments: docs/playground_guide.md.
 #
 # Launch:  C:/Users/steen/anaconda3/python.exe main.py --level playground
 # (or set [display] level = "playground" in config.toml)

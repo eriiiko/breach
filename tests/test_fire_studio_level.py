@@ -55,15 +55,33 @@ def test_generator_has_no_rng():
     assert "random." not in src, "generator must be RNG-free (deterministic)"
 
 
-def test_generator_is_byte_deterministic():
-    """Re-running the generator reproduces every output file byte-for-byte
-    (and confirms the committed folder already matches the tool)."""
-    before = {name: (LEVEL_DIR / name).read_bytes() for name in _OUTPUTS}
-    _load_generator().main()          # regenerate in place
-    after = {name: (LEVEL_DIR / name).read_bytes() for name in _OUTPUTS}
+def test_generator_is_byte_deterministic(tmp_path):
+    """Two independent generator runs are byte-identical, and the committed
+    folder matches the tool — WITHOUT writing into the working tree.
+
+    Rewritten 2026-08-22 (issue #47): the old form regenerated in place, which
+    (a) mutated a committed art file on any machine whose PNG encoder differs,
+    and (b) self-healed — after the first run it compared the regenerated file
+    against itself and passed forever. Now: determinism = tmp run A == tmp run
+    B, byte-for-byte; committed-match = bytes for csv/npy/toml, PIXELS for the
+    PNG (encoder versions differ across machines; pixel content must not)."""
+    gen = _load_generator()
+    run_a, run_b = tmp_path / "a", tmp_path / "b"
+    gen.main(out_dir=run_a)
+    gen.main(out_dir=run_b)
     for name in _OUTPUTS:
-        assert before[name] == after[name], (
-            f"{name} changed on re-run — generator is not deterministic")
+        assert (run_a / name).read_bytes() == (run_b / name).read_bytes(), (
+            f"{name} differs between two runs — generator is not deterministic")
+
+    for name in ("tilemap.csv", "water_init.npy", "level.toml"):
+        assert (run_a / name).read_bytes() == (LEVEL_DIR / name).read_bytes(), (
+            f"committed {name} does not match the tool's output")
+
+    from PIL import Image
+    gen_px = np.asarray(Image.open(run_a / "diffuse.png").convert("RGBA"))
+    com_px = np.asarray(Image.open(LEVEL_DIR / "diffuse.png").convert("RGBA"))
+    assert np.array_equal(gen_px, com_px), (
+        "committed diffuse.png pixel content does not match the tool's output")
 
 
 # ---------------------------------------------------------------------------
