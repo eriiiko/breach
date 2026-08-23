@@ -97,6 +97,7 @@ from simulation.logic_nodes import (
 )
 from simulation.sensor_system import build_sensors, sample_sensors
 from simulation.pump_system import build_pumps, sweep_pumps
+from simulation.vent_system import build_vents, sweep_vents
 from simulation.entities.schema import INPUT_HELD
 from simulation.gamemap import GameMap, MAT_DOOR, MAT_DOOR_CLOSED
 from simulation.movement import FootprintSamples, default_speed
@@ -277,6 +278,14 @@ class Simulation:
         # way door rows do — the entity list is what the serializer walks, and
         # it asks each row for its runtime digest fields (onephase_wego §7).
         self.entities, self.cover = attach_cover(self.entities, self.level)
+
+        # Vent system PATCH 1 (issue #48, docs/vent_system_design_2026-08-23.
+        # md §2/§7): duct + vent runtime, built UNCONDITIONALLY (unlike pumps
+        # — vents carry no wired inputs in patch 1, so there is no SignalBus
+        # gate). A duct/vent-free level builds two empty lists; the 9e(d)
+        # sweep call is a single `if self._ducts` check (dormancy: byte-
+        # identical to a vent-free build, ENTITY_SECT absence transparency).
+        self._ducts, self._vents = build_vents(self)
 
         # Arc B (impl doc §2): the SignalBus + the resolved wire drive tables.
         # Built ONLY when the level declares wires (D1) — in B1 the union
@@ -1515,13 +1524,17 @@ class Simulation:
         #    reconciliation + the synced want_open latch, ordinal order;
         #  · the LOGIC block runs iff the SignalBus exists (wires present),
         #    so a door-only wire-free level is byte-identical to Arc A (the
-        #    dormancy guarantee, §8).
+        #    dormancy guarantee, §8);
+        #  · the VENT circulation sweep (issue #48) is a THIRD independently-
+        #    gated piece, gated on `self._ducts` alone — vents carry no wired
+        #    inputs in patch 1, so it runs even on a bus-free level.
         # Sub-order per tick when the bus exists (§2b): (a) sample + emit —
         # write every wired door's is_open (and wired entities' free alive)
         # into pub BEFORE the logic sweep; (b) logic sweep — each node in
         # ordinal order reads pub, writes stg[out] (B2); (c) input resolve —
         # drive wired doors' want_open (OR/held, close-beats-open); (d) actuator
-        # sweep — pumps (N-feed edit, B4) then the door structural sweep; (e) swap
+        # sweep — pumps (N-feed edit, B4), then vents (circulation N-feed edit,
+        # #48, bus-independent), then the door structural sweep; (e) swap
         # pub[node-signals] ← stg (node outputs become readable next tick — one
         # tick per hop, §2c). BEFORE the recorder snapshot so recorder/digest
         # see state consistent with this tick's flips (a6 doors §5.1). NOT gated
@@ -1536,6 +1549,14 @@ class Simulation:
             self._resolve_door_inputs()     # (c) drive wired doors' want_open
             if self._pumps:
                 sweep_pumps(self)           # (d) pump N-feed edit — BEFORE doors
+        # Vent circulation N-feed edit (vent system PATCH 1, issue #48) — a
+        # sibling of the pump sweep at the SAME 9e(d) actuator slot, but
+        # OUTSIDE the SignalBus gate: vents carry no wired inputs in patch 1
+        # (design §2), so a wire-free duct/vent level still circulates.
+        # Ordered after pumps (both are gas-mass actuators; pumps are the
+        # explicit player-controlled case) and BEFORE doors, like pumps.
+        if self._ducts:
+            sweep_vents(self)               # (d) vent circulation edit — BEFORE doors
         if self._doors:
             sweep_doors(self)               # (d) door structural sweep
         if self._signal_bus is not None:
