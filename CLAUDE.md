@@ -67,6 +67,7 @@ One line per system built for reuse. Long form + entry points:
 | GameMap | `src/simulation/gamemap.py` | The single field store; topology changes only via `destroy_wall`/`seal_tiles` |
 | FieldEdit | `src/simulation/field_edit.py` | The only way to write a continuous field — never `gmap.<field>[...] +=` inline |
 | Payload executor | `src/simulation/payloads.py` + `physics.py::apply_explosion` | The one entry for gameplay events perturbing fields |
+| Gas pump primitives | `src/simulation/pump_system.py` + `gamemap.py::inject_gas_n`/`extract_gas_n` | THE per-tick gas mass flux path for entity actuators (slot 9e sweep, integer-native) — never a parallel flux path, never per-tick FieldEdits (incident: vent design v1 nearly rebuilt it, 2026-08-23) |
 | PhysicsRunner / PhysicsEngine | `src/simulation/physics_runner.py` / `cpp/src/physics_engine.*` | The only solver callers; new C++ orchestration lands in PhysicsEngine, not Python glue |
 | Fixed-point kits | `cpp/src/fixed_point.h` + `cpp/src/cuda_fixedpoint_device.cuh` | The only sim arithmetic, CPU and device — never re-derive a shift/round/reciprocal |
 | Q16 boundary modules | `src/simulation/*_fixed.py` (per field) | All Python↔field conversion; never hardcode 65536 |
