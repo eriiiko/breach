@@ -137,51 +137,131 @@ def test_bulk_field_plus_plenum_bulk_conserved_exactly():
         assert bulk == bulk0, "bulk-only sub-invariant violated"
 
 
-def test_energy_conserved_exactly_when_no_trace_present():
-    """The energy ledger (§4: "the energy books likewise"), isolated from
-    the DELIBERATE trace-carried-heat asymmetry ("scrubbed smoke keeps its
-    heat" — a trace gas contributes to E_plenum's credit at intake but not
-    to the field's own N_bulk*T tally, by design): with ZERO trace gas ever
-    present, Sum(N_bulk*T over the grid) + E_plenum + e_wipe is EXACTLY
-    constant, proving the floor-division remainder banking (§4) and the
-    T-rail hit accounting introduce no drift."""
-    ents = _duct_vent_pair((2, 5), (7, 5), q_circ=6.0)
+def test_energy_conserved_exactly_with_trace_and_filtering_present():
+    """The energy ledger (§4: "the energy books likewise") — REVIEW FIX
+    (2026-08-23): intake credits `E_plenum` BULK-ONLY (per the engine's own
+    P-T0 convention, `n_total == n_bulk` — trace carries no engine-side
+    energy anywhere else), so the bulk-only invariant
+    Sum(N_bulk*T over the grid) + E_plenum + e_wipe is EXACTLY constant EVEN
+    WITH heavy trace gas present and filtered at intake (the "scrubbed smoke
+    keeps its heat" framing that needed a zero-trace carve-out is retired —
+    crediting the trace share was itself the bug: an uncounted energy
+    source). Hot, smoky, poisoned intake through a scrubbing filter,
+    multi-tick."""
+    ents = _duct_vent_pair((2, 5), (7, 5), q_circ=6.0, filter_name="hepa_basic")
     sim = Simulation(_level(_tm(), ents), seed=3, breach_physics=None,
                      enable_recorder=False)
     ry, rx = sim._vents[0].aperture_y, sim._vents[0].aperture_x
-    sim.gmap.temperature[:, :] = 5000        # uniform warm field, no trace anywhere
+    sim.gmap.temperature[:, :] = 5000
+    sim.gmap.temperature[ry, rx] = 20000      # hot return tile
+    sim.gmap.gas[SMOKE][ry, rx] = 40000       # heavy smoke — scrubbed by hepa_basic
+    sim.gmap.gas[POISON][ry, rx] = 25000      # poison — passes hepa_basic untouched
     e0 = _bulk_energy_total(sim.gmap)
     for _ in range(200):
         _step(sim)
         duct = sim._ducts[0]
         e = _bulk_energy_total(sim.gmap) + duct.e_plenum + duct.e_wipe
-        assert e == e0, "energy ledger drifted with zero trace in play"
-    # Sanity: the mechanism actually MOVED something (vacuous-gate guard).
+        assert e == e0, "energy ledger drifted with trace present and filtered"
+    # Sanity: the mechanism actually MOVED something AND actually scrubbed
+    # something (vacuous-gate guard).
     assert duct.o2_raw != 0 or duct.n2_raw != 0 or \
         int(sim.gmap.gas[O2][sim._vents[1].aperture_y,
                              sim._vents[1].aperture_x]) > 0
-
-
-def test_deposit_runs_warm_under_smoky_intake_scrubbed_or_not():
-    """§4 decision: scrubbed smoke KEEPS its heat — a hot, smoky return
-    tile raises the plenum's T_dep (and hence the supply deposit's T) even
-    though the smoke's MASS is scrubbed into the counted sink. Qualitative/
-    directional check (the exact-energy case above already proves the
-    ledger arithmetic to the LSB)."""
-    ents = _duct_vent_pair((2, 5), (7, 5), q_circ=10.0, filter_name="hepa_basic")
-    sim = Simulation(_level(_tm(), ents), seed=4, breach_physics=None,
-                     enable_recorder=False)
-    ry, rx = sim._vents[0].aperture_y, sim._vents[0].aperture_x
-    sy, sx = sim._vents[1].aperture_y, sim._vents[1].aperture_x
-    sim.gmap.temperature[:, :] = 0
-    sim.gmap.temperature[ry, rx] = 20000     # hot return tile
-    sim.gmap.gas[SMOKE][ry, rx] = 40000      # heavy smoke — fully scrubbed by hepa_basic
-    for _ in range(60):
-        _step(sim)
-    duct = sim._ducts[0]
     assert duct.sink[1] > 0, "smoke was never scrubbed — test is vacuous"  # SMOKE index 1
-    assert int(sim.gmap.temperature[sy, sx]) > 0, \
-        "supply deposit never warmed despite hot+smoky return intake"
+
+
+def test_multi_supply_bulk_split_never_goes_negative_adversarial_ratio():
+    """REVIEW FIX (MAJOR): two supply vents on ONE duct, an adversarial
+    skewed plenum ratio (99:1 o2:n2) — the ORIGINAL per-vent "floor +
+    exact-complement" split inflated the summed MINOR species past its
+    actual holdings across several vents (concrete repro: o2=99, n2=1, two
+    shares of 50 -> n2 goes to -1). The fixed `gas_proportional_split`-
+    against-the-REMAINING-pool approach must hold per-species (not just
+    summed) conservation and NEVER drive a holding negative, tick after
+    tick, as the pre-loaded plenum drains through the N_EPS floor."""
+    duct = _inst("duct", "d1", 0, filter="derelict")
+    sup_a = _inst("vent", "vsup_a", 1, x=3, y=5, mount="floor", role="supply",
+                 duct="d1", q_circ=9.0)
+    sup_b = _inst("vent", "vsup_b", 2, x=6, y=5, mount="floor", role="supply",
+                 duct="d1", q_circ=4.0)      # DIFFERENT weight from sup_a
+    sim = Simulation(_level(_tm(), [duct, sup_a, sup_b]), seed=9,
+                     breach_physics=None, enable_recorder=False)
+    duct_rt = sim._ducts[0]
+    duct_rt.o2_raw = 9900
+    duct_rt.n2_raw = 100                     # the adversarial 99:1 ratio
+    o2_total0 = 9900 + int(sim.gmap.gas[O2].astype(np.int64).sum())
+    n2_total0 = 100 + int(sim.gmap.gas[INERT_N2].astype(np.int64).sum())
+
+    for _ in range(400):
+        _step(sim)
+        assert duct_rt.o2_raw >= 0, "o2_raw went negative"
+        assert duct_rt.n2_raw >= 0, "n2_raw went negative"
+        o2_now = duct_rt.o2_raw + int(sim.gmap.gas[O2].astype(np.int64).sum())
+        n2_now = duct_rt.n2_raw + int(sim.gmap.gas[INERT_N2].astype(np.int64).sum())
+        assert o2_now == o2_total0, "O2 not conserved per-species (not just summed)"
+        assert n2_now == n2_total0, "N2 not conserved per-species (not just summed)"
+
+    # Vacuous-gate guard: both supply vents must have actually received
+    # SOMETHING over the run (the multi-vent split path was really exercised).
+    ay, ax = sup_a.fields["y"], sup_a.fields["x"]
+    by, bx = sup_b.fields["y"], sup_b.fields["x"]
+    got_a = int(sim.gmap.gas[O2][ay, ax]) + int(sim.gmap.gas[INERT_N2][ay, ax])
+    got_b = int(sim.gmap.gas[O2][by, bx]) + int(sim.gmap.gas[INERT_N2][by, bx])
+    assert got_a > 0 and got_b > 0, \
+        "one of the two supply vents never received a deposit — test is vacuous"
+
+
+def test_t_rail_clamp_hi_and_lo_bank_exact_energy_and_count_hits():
+    """REVIEW FIX (minor): engineer `e_plenum`/`n_bulk` so `t_dep` forces
+    each T-rail on deposit — the MEASURED-delta debit (§4) must still bank
+    the clamp exactly (no energy leak), and `rail_lo_hits`/`rail_hi_hits`
+    must increment. Drives `_duct_sweep` directly (needs precise control
+    over e_plenum relative to n_bulk that a field scenario can't reliably
+    hit)."""
+    from simulation.vent_system import _duct_sweep, _t_rails_q
+
+    ents = _duct_vent_pair((2, 5), (7, 5), q_circ=50.0)
+    sim = Simulation(_level(_tm(), ents), seed=10, breach_physics=None,
+                     enable_recorder=False)
+    duct = sim._ducts[0]
+    ret, sup = sim._vents
+    t_min_q, t_max_q = _t_rails_q()
+    sy, sx = sup.aperture_y, sup.aperture_x
+
+    # The tile's PRE-EXISTING ambient bulk N is a WEIGHT in the mass-weighted
+    # mix (T_new = (N_old*T_old + dN*T_dep)/(N_old+dN)) — an ambient-filled
+    # tile would dilute even an astronomical t_dep back under the rail
+    # (delta_n_bulk is a small fraction of the mix). Zero the aperture's bulk
+    # gas first so N_old == 0 and T_new == t_dep exactly — a clean, robust
+    # way to force the rail regardless of the vent's per-tick quantum size.
+    def _zero_bulk_at(y, x):
+        sim.gmap.gas[O2][y, x] = 0
+        sim.gmap.gas[INERT_N2][y, x] = 0
+
+    # --- HI rail ---------------------------------------------------------
+    _zero_bulk_at(sy, sx)
+    duct.o2_raw, duct.n2_raw = 50000, 50000
+    duct.e_plenum = (t_max_q * 10) * (duct.o2_raw + duct.n2_raw)  # forces t_dep >> t_max_q
+    e_before = _bulk_energy_total(sim.gmap) + duct.e_plenum + duct.e_wipe
+    hits_before = duct.rail_hi_hits
+    _duct_sweep(sim.gmap, duct, [], [sup], t_min_q, t_max_q)
+    assert duct.rail_hi_hits == hits_before + 1, "the hi rail never fired — vacuous"
+    assert int(sim.gmap.temperature[sy, sx]) == t_max_q
+    e_after = _bulk_energy_total(sim.gmap) + duct.e_plenum + duct.e_wipe
+    assert e_after == e_before, "the hi-rail clamp leaked energy out of the ledger"
+
+    # --- LO rail (fresh plenum + a cold, zeroed aperture) -----------------
+    _zero_bulk_at(sy, sx)
+    duct.o2_raw, duct.n2_raw = 50000, 50000
+    duct.e_plenum = (t_min_q * 10) * (duct.o2_raw + duct.n2_raw)  # forces t_dep << t_min_q (t_min_q < 0)
+    duct.e_wipe = 0
+    e_before = _bulk_energy_total(sim.gmap) + duct.e_plenum + duct.e_wipe
+    hits_before = duct.rail_lo_hits
+    _duct_sweep(sim.gmap, duct, [], [sup], t_min_q, t_max_q)
+    assert duct.rail_lo_hits == hits_before + 1, "the lo rail never fired — vacuous"
+    assert int(sim.gmap.temperature[sy, sx]) == t_min_q
+    e_after = _bulk_energy_total(sim.gmap) + duct.e_plenum + duct.e_wipe
+    assert e_after == e_before, "the lo-rail clamp leaked energy out of the ledger"
 
 
 # ===========================================================================

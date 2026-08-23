@@ -23,18 +23,36 @@ machine-identical — the serializer's own order, §3):
    quantum (``extract_gas_n_vec`` — zero-clamped by the aperture's actual
    content). The MEASURED per-slice withdrawal vector credits the plenum:
    bulk (o2/n2) verbatim, trace species through the duct's filter (§4:
-   scrubbed mass -> the counted sink, but scrubbed smoke KEEPS its heat — the
-   energy credit is booked on the FULL measured withdrawal, filter or no).
+   scrubbed mass -> the counted sink). The ENERGY credit is BULK-ONLY —
+   ``(removed[O2]+removed[INERT_N2]) * t_tile`` — per the engine's own P-T0
+   convention (cpp/src/eos_solver.cpp:719-729: ``n_total == n_bulk``, trace
+   planes carry no engine-side energy). REVIEW FIX (2026-08-23, orchestrator-
+   ruled): the v1 patch credited the FULL measured withdrawal (bulk + trace),
+   which manufactured energy out of nothing whenever trace mass was present
+   (a scrubber-becomes-heater bug) — the "scrubbed smoke keeps its heat"
+   framing in the design doc's §4 is retired; trace transport is mass-only,
+   full stop, and the energy books close exactly WITH trace present.
 2. The duct then distributes ``min(N_plenum_bulk, sum of supply vents' own
-   accrued quanta)`` across its supply vents, each vent's own accrued quantum
-   serving as its FIXED INTEGER WEIGHT (§3) — floor-proportional per vent,
-   remainder simply never leaves the plenum (the "Bresenham remainder carried
-   plenum-side" idiom: nothing is force-cascaded to sum exactly, so the dust
-   just stays in the ledger for next tick). Each supply vent deposits bulk at
-   the plenum's OWN o2:n2 ratio + the plenum's unfiltered trace composition,
-   at the SAME ratio (well-mixed assumption), via ``inject_gas_n_vec`` — which
-   also mass-weighted-mixes the tile's temperature toward the plenum's own
-   ``T_dep = E_plenum // N_plenum_bulk`` (§4).
+   accrued quanta)`` across its supply vents — draining CIRCULATING CREDIT
+   ONLY (patch 3's reserve, when it lands, is a SEPARATE additive ENTITY_SECT
+   row pair on the duct, never seeded into ``o2_raw``/``n2_raw``, or
+   circulation would drain the reserve by construction) — each vent's own
+   accrued quantum serving as its FIXED INTEGER WEIGHT (§3) — floor-
+   proportional per vent, remainder simply never leaves the plenum (the
+   "Bresenham remainder carried plenum-side" idiom: nothing is force-
+   cascaded to sum exactly, so the dust just stays in the ledger for next
+   tick). Each supply vent's bulk share is split via
+   :meth:`GameMap.gas_proportional_split` against the plenum's REMAINING
+   ``[o2, n2]`` pool, DEDUCTED as each vent is processed (REVIEW FIX: the v1
+   patch used the plenum's ORIGINAL ratio + an "exact complement" trick for
+   EVERY vent independently, which is only safe for a single split — across
+   several supply vents on a skewed ratio it could inflate the summed minor
+   species past its actual holdings, going negative). Trace rides along at
+   the SAME plenum ratio (well-mixed assumption) — safe already, by floor
+   subadditivity, without the remaining-pool bookkeeping (see
+   ``_duct_sweep``'s comment). Every deposit lands via ``inject_gas_n_vec``,
+   which also mass-weighted-mixes the tile's temperature toward the plenum's
+   own ``T_dep = E_plenum // N_plenum_bulk`` (§4).
 
 RUNTIME APERTURE GUARDS (§4, checked EVERY tick, not just at load): a vent
 whose aperture is solid, thermal_solid, vacuum, ambient, or flooded is a
@@ -45,6 +63,12 @@ ledger, so a guard hit can never corrupt conservation.
 Determinism: integer-only (Q16.16 for flux quanta, int64 raw N*T for the
 energy ledger); ordinal-order sweep; rates quantized ONCE at load
 (build_vents); no RNG, no float, no dequantize in the sweep itself.
+``e_plenum``/``e_wipe`` are plain Python ints (no overflow in the sim layer
+itself) but are PACKED as signed int64 at the ENTITY_SECT digest boundary
+(entities/serialize.py's ``_pack_i64``) — a pathological-scale run that
+overflows int64 there fails LOUD (an ``OverflowError`` naming the row), which
+is accepted: no shipped scenario gets remotely close (accumulated N*T at
+Q16.16 scale needs ~2^63 raw to overflow).
 """
 from __future__ import annotations
 
@@ -78,7 +102,12 @@ def _duct_filter_efficiency_q(duct_inst_fields, filters_cfg, duct_id):
     """Resolve ``duct.filter`` against ``[filters.<name>]`` (§4) — a
     CONFIG-integrity error (not the generic dangling-entity-ref warning:
     this name addresses config.toml, not another ``[[entity]]``). Returns a
-    length-``N_TRACE`` list of Q16 fractions in TRACE-id order."""
+    length-``N_TRACE`` list of Q16 fractions in TRACE-id order.
+
+    REVIEW FIX (minor): each quantized efficiency is validated
+    ``0 <= eff_q <= FP_ONE`` (65536) — an authored value outside ``[0, 1]``
+    would scrub MORE than the removed mass (or a negative amount), a silent
+    conservation break at the intake site rather than a loud one here."""
     name = duct_inst_fields["filter"]
     row = getattr(filters_cfg, name, None) if filters_cfg is not None else None
     if row is None:
@@ -87,8 +116,17 @@ def _duct_filter_efficiency_q(duct_inst_fields, filters_cfg, duct_id):
             f"duct '{duct_id}': filter '{name}' has no [filters.{name}] row "
             f"in config.toml (vent design §4 — a filter is a table row); "
             f"declared rows: {known}")
-    return [_gas_fx.quantize_scalar(float(getattr(row, gname)))
-            for gname in _TRACE_NAMES]
+    eff_q = []
+    for gname in _TRACE_NAMES:
+        q = _gas_fx.quantize_scalar(float(getattr(row, gname)))
+        if not (0 <= q <= _gas_fx.FP_ONE):
+            raise ValueError(
+                f"duct '{duct_id}': [filters.{name}].{gname} = "
+                f"{getattr(row, gname)!r} quantizes to {q} raw, outside "
+                f"[0, {_gas_fx.FP_ONE}] (a filter efficiency is a [0,1] "
+                f"fraction of removed mass — vent design §4)")
+        eff_q.append(q)
+    return eff_q
 
 
 class DuctRuntime:
@@ -240,6 +278,16 @@ def build_vents(sim):
 
     duct_insts = sorted((e for e in sim.entities if e.class_name == "duct"),
                         key=lambda e: int(e.ordinal))
+    # T-mix rails (§4), cached ONCE here (not re-read every tick, REVIEW FIX)
+    # — a reset (F5/Ctrl+R) already rebuilds the whole vent runtime from a
+    # fresh CFG, so this stays live across a hot-reload exactly like every
+    # other build-time-bound constant in this module. Gated on ducts actually
+    # existing: a duct-free level must stay a TRUE no-op (never even risk the
+    # loud missing-config-key error below) — dormancy, §2/§7.
+    sim._vent_t_min_q = sim._vent_t_max_phys_q = None
+    if duct_insts:
+        sim._vent_t_min_q, sim._vent_t_max_phys_q = _t_rails_q()
+
     ducts: list = []
     duct_by_id: dict = {}
     for e in duct_insts:
@@ -295,16 +343,31 @@ def _replace_entity(entities, old, new) -> None:
 
 
 def _t_rails_q():
-    """``(T_MIN, T_MAX_PHYS)`` quantized ONCE per call — the shared
-    fixed-point domain (gas_fixed.FP_ONE == 65536, the same scale every
-    ``*_fixed`` module shares, §4). Called once per duct per tick (cheap;
-    keeping this a pure function rather than a cached sim attribute avoids
-    a stale rail surviving a config hot-reload mid-run — the F5 precedent)."""
+    """``(T_MIN, T_MAX_PHYS)`` quantized ONCE — read at ``build_vents`` time
+    and cached on the sim (REVIEW FIX: no longer re-read every tick; a reset
+    — the F5/Ctrl+R reload path — already rebuilds the whole vent runtime
+    from a fresh ``CFG``, so a per-tick re-read bought nothing but cost).
+
+    LOUD on a missing config key (REVIEW FIX: was a silent -289.0/16000.0
+    fallback) — ``[physics.eos].T_MIN`` / ``[physics.thermal].T_MAX_PHYS``
+    are load-bearing rails for every OTHER T writer in the engine
+    (physics_runner.py); a config that has dropped them is broken in a way
+    that should fail here just as loudly as it would fail the EOS solver's
+    own bind."""
     eos_cfg = getattr(CFG.physics, "eos", None)
     thermal_cfg = getattr(CFG.physics, "thermal", None)
-    t_min = float(getattr(eos_cfg, "T_MIN", -289.0)) if eos_cfg is not None else -289.0
-    t_max = float(getattr(thermal_cfg, "T_MAX_PHYS", 16000.0)) \
-        if thermal_cfg is not None else 16000.0
+    if eos_cfg is None or not hasattr(eos_cfg, "T_MIN"):
+        raise ValueError(
+            "vent design §4: [physics.eos].T_MIN is missing from config.toml "
+            "— the vent T-mix rail has no fallback (it must agree with the "
+            "EOS solver's own T_MIN bind, physics_runner.py)")
+    if thermal_cfg is None or not hasattr(thermal_cfg, "T_MAX_PHYS"):
+        raise ValueError(
+            "vent design §4: [physics.thermal].T_MAX_PHYS is missing from "
+            "config.toml — the vent T-mix rail has no fallback (it must "
+            "agree with every other T writer's T_MAX_PHYS rail)")
+    t_min = float(eos_cfg.T_MIN)
+    t_max = float(thermal_cfg.T_MAX_PHYS)
     return _gas_fx.quantize_scalar(t_min), _gas_fx.quantize_scalar(t_max)
 
 
@@ -338,10 +401,13 @@ def _duct_sweep(gmap, duct, return_vents, supply_vents, t_min_q, t_max_phys_q):
             passed = r - scrub
             duct.trace_raw[i] += passed
             duct.sink[i] += scrub
-        # E_plenum credit on the FULL measured withdrawal (bulk + trace) —
-        # scrubbed smoke KEEPS its heat (§4 decision): the filter is a MASS
-        # sink only, never an energy sink.
-        duct.e_plenum += total_removed * t_tile
+        # E_plenum credit is BULK-ONLY (REVIEW FIX, orchestrator-ruled): the
+        # engine's own P-T0 convention is n_total == n_bulk (trace planes
+        # carry no engine-side energy, cpp/src/eos_solver.cpp:719-729), so
+        # crediting the trace share too (the v1 patch's "scrubbed smoke
+        # keeps its heat" framing) manufactured energy out of nothing —
+        # a scrubber-becomes-heater bug. Trace transport is mass-only.
+        duct.e_plenum += (removed[O2] + removed[INERT_N2]) * t_tile
 
     # --- 2. SUPPLY vents accrue their own weight (ordinal order) --------
     ready = []                              # [(vent, w_i), ...]
@@ -378,12 +444,35 @@ def _duct_sweep(gmap, duct, return_vents, supply_vents, t_min_q, t_max_phys_q):
     total_n2_out = 0
     total_trace_out = [0] * N_TRACE
     deposits = []                            # [(vent, comp[7]), ...]
+    # REVIEW FIX (MAJOR): the bulk O2/N2 split for each vent's share is drawn
+    # against the plenum's REMAINING [o2_rem, n2_rem] pool via
+    # gas_proportional_split, DEDUCTED as each vent is processed — the ORIGINAL
+    # per-vent "floor(share*o2_raw/n_bulk) + exact complement" trick is only
+    # safe for a SINGLE split: `n2_i = share_i - o2_i` is share_i's leftover,
+    # not a floor-bounded quantity, so across several supply vents on a
+    # skewed ratio the summed n2_i can inflate past n2_raw (concrete:
+    # o2_raw=99, n2_raw=1, two shares of 50 -> n2_raw goes to -1). Each
+    # `gas_proportional_split` call, by contrast, is individually exact
+    # (sums to share_i) AND bounded by what it's handed, so decrementing the
+    # remaining pool after each call keeps every later split inside the
+    # true remaining holdings — never negative.
+    #
+    # Trace does NOT need this treatment: `trace_i[g] = floor(share_i *
+    # trace_raw[g] / n_bulk)`, computed independently per vent against the
+    # ORIGINAL (undecremented) n_bulk/trace_raw, is already safe by floor
+    # subadditivity — floor(a/n) + floor(b/n) <= floor((a+b)/n) for any
+    # nonnegative a, b, n>0 — so summed across ALL ready vents,
+    # Sum(trace_i[g]) <= floor(Sum(share_i) * trace_raw[g] / n_bulk) <=
+    # trace_raw[g] (since Sum(share_i) <= total_avail <= n_bulk). No
+    # remaining-pool bookkeeping needed there.
+    o2_rem, n2_rem = duct.o2_raw, duct.n2_raw
     for v, w_i in ready:
         share_i = (total_avail * w_i) // sum_w
         if share_i <= 0:
             continue
-        o2_i = (share_i * duct.o2_raw) // n_bulk
-        n2_i = share_i - o2_i                # exact complement (the air-seed idiom)
+        o2_i, n2_i = gmap.gas_proportional_split([o2_rem, n2_rem], share_i)
+        o2_rem -= o2_i
+        n2_rem -= n2_i
         trace_i = [(share_i * duct.trace_raw[i]) // n_bulk for i in range(N_TRACE)]
         comp = [0] * N_GASES
         for i, gid in enumerate(_TRACE_IDS):
@@ -436,7 +525,7 @@ def sweep_vents(sim) -> None:
     if not sim._ducts:
         return
     gmap = sim.gmap
-    t_min_q, t_max_phys_q = _t_rails_q()
+    t_min_q, t_max_phys_q = sim._vent_t_min_q, sim._vent_t_max_phys_q
     by_duct: dict = {id(d): ([], []) for d in sim._ducts}
     for v in sim._vents:
         if v.duct is None:

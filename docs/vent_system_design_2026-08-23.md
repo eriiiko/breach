@@ -186,11 +186,18 @@ per-tick emission smooth.
   return re-emerges at every supply on that duct — mission mechanic from
   physics, symmetric, enemy ships included). Quality is data: rusty freighter
   0.4, military ~1.0, derelict all-zeros (ducts merely redistribute).
-  ⟨crit⟩ **Scrubbed smoke KEEPS its heat** (decision): the filter removes
-  mass, not energy — soot's thermal share stays in `E_plenum`, so deposits
-  run slightly warm under smoky intake. Physically defensible (a clogged
-  filter is hot) and one less counted channel; the R3 energy gate knows the
-  smoke sink is mass-only.
+  ⟨patch-1 review, 2026-08-23⟩ **RETIRED: "scrubbed smoke keeps its heat."**
+  v1's decision credited `E_plenum` on the FULL measured withdrawal (bulk +
+  trace) at intake, on the theory that trace's "thermal share" stays in the
+  ledger even once its mass is scrubbed. This does not hold against the
+  engine's own convention: `eos_solver.cpp`'s P-T0 ruling is `n_total ==
+  n_bulk` — trace planes carry NO engine-side energy anywhere else in the
+  codebase — so crediting a trace share into `E_plenum` was an UNCOUNTED
+  energy source (a scrubber-becomes-heater bug under smoky intake, caught at
+  patch-1 review). Corrected: intake credits `E_plenum` **bulk-only** —
+  `(removed_O2 + removed_N2) · T_tile` — trace transport is mass-only, full
+  stop, and the energy books close EXACTLY with trace present (no zero-trace
+  carve-out needed in the gate).
 - **Deposit** (supply vent): bulk at the plenum ratio + the plenum's
   unfiltered trace composition, via the extended `inject_gas_n`.
 - **Temperature** (grounded in `eos_solver.h`: state = (N, T), T intensive,
@@ -250,7 +257,13 @@ rooms connect by reference.
 **Reserve gameplay** (patch 3, with the makeup term): the makeup term only
 draws the reserve — after a hull breach the system fights the leak, visibly,
 then runs dry: the ship slowly loses the ability to repressurize. Missions
-hang objectives on it.
+hang objectives on it. ⟨patch-1 review, 2026-08-23⟩ **Warning for patch 3**:
+the reserve MUST be a separate additive ENTITY_SECT row pair on the duct,
+never seeded into (or merged with) `o2_raw`/`n2_raw` — patch 1's `o2_raw`/
+`n2_raw` is CIRCULATING CREDIT ONLY (`min(N_plenum_bulk, Σ supply quanta)`
+caps distribution to what's actually sitting in that pair); if the reserve
+shared the same pair, ordinary circulation would drain it by construction,
+long before a breach ever happened.
 
 ⟨crit⟩ **Digest/serialization — the ENTITY_SECT route, no spec bump.** v1's
 "join the digest, version bump, regenerate goldens" was wrong twice: it

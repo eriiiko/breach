@@ -83,16 +83,20 @@ def test_sweep_vents_is_never_called_on_a_vent_free_level():
         spy.assert_not_called()
 
 
-def test_vent_free_level_field_state_matches_a_hand_built_reference():
-    """A door-only level run through the FULL patched Simulation produces
-    the exact same field bytes as one more directly reconstructed WITHOUT
-    ever importing/registering the vent-system runtime module — proxied
-    here by asserting the trajectory is IDENTICAL across two independent
-    constructions (the same property the door/pump dormancy pins exercise,
-    tests/test_b1_signal_bus.py's `test_dormancy_door_present_wire_free_
-    digest_byte_identical`), i.e. nothing about having vent-system CODE
-    LOADED (vs not) perturbs a vent-free run — determinism at the
-    zero-vents boundary."""
+def test_vent_free_level_is_deterministic_on_the_patched_build():
+    """REVIEW REWORD (2026-08-23): this proves DETERMINISM of a vent-free
+    run on the PATCHED build (two independent constructions of the same
+    door-only level produce byte-identical field trajectories) — it is NOT
+    the absence-transparency/dormancy proof itself (that a vent-free level
+    is byte-identical to the PRE-PATCH behavior). That proof is the
+    unchanged GOLDEN_AGGREGATE (tests/test_w6_armory.py's
+    `test_canonical_scenario_matches_sanctioned_golden`) and the byte-
+    identical pinned trajectory in tests/test_b1_signal_bus.py's
+    `test_dormancy_door_present_wire_free_digest_byte_identical` — both ran
+    green, unchanged, against this patch. This test's own value: it rules
+    out a subtler failure mode (vent-system code merely being LOADED/
+    REGISTERED introducing nondeterminism on a level that never touches it
+    — e.g. a stray dict-order or id()-based iteration dependency)."""
     def _run():
         sim = Simulation(_level(_tm(), [_door_inst("d0", 0)]), seed=7,
                          breach_physics=None, enable_recorder=False)
