@@ -950,6 +950,31 @@ emits_when_hot = false
 effect         = ""                   # no gameplay tag
 conservative   = true                 # EOS P1: donor-cell flux transport, not semi-Lagrangian
 
+# ---------------------------------------------------------------------------
+# Duct filter table (vent system PATCH 1, issue #48 — docs/vent_system_
+# design_2026-08-23.md §4). A filter is a table row: per-TRACE-gas efficiency
+# (Q16 fraction [0,1] of intake mass SCRUBBED into the plenum's counted sink,
+# `simulation.vent_system`). Bulk (o2/inert_n2) is NEVER filtered — real
+# filters catch particulates, not gas molecules — so a row names only the
+# five trace species (steam/smoke/poison/teargas/fuel_gas); a name absent
+# from a row is a hard load error (§4: "a filter is a table row", never a
+# hardcoded per-gas if). A `duct.filter` field references one row by name,
+# loader-validated at build_vents (a config-integrity error, not the generic
+# dangling-entity-ref warning — this addresses config.toml, not [[entity]]).
+[filters.derelict]     # "ducts merely redistribute" (§4) — the duct schema default
+steam    = 0.0
+smoke    = 0.0
+poison   = 0.0
+teargas  = 0.0
+fuel_gas = 0.0
+
+[filters.hepa_basic]   # catches particulates (smoke), passes every gas (§4 physical anchor)
+steam    = 0.0
+smoke    = 1.0
+poison   = 0.0
+teargas  = 0.0
+fuel_gas = 0.0
+
 [display]
 panel_width = 250
 level = "playground"              # folder under levels/ to load on startup (the standard-values sandbox; ship prototypes retired to prototypes/)

@@ -2353,6 +2353,60 @@ class GameMap:
     # device is that LATER rider's job; Arc B edits only the host mirror. Do NOT
     # add a ``from_host()`` / device push here.
 
+    @staticmethod
+    def gas_proportional_split(holdings, want):
+        """THE pinned proportional-floor-split-with-cascade (§6/D10, extended
+        by the vent design's §3 plenum withdrawal — docs/vent_system_design_
+        2026-08-23.md). Splits ``want`` (an int, ``0 <= want <= sum(holdings)``)
+        across ``holdings`` (a list of non-negative ints, any length)
+        proportionally: ``take_g = holdings[g]*want // sum(holdings)`` (a
+        floor, no float divide), with the fractional shortfall (< len(holdings))
+        cascaded in PINNED index order to slots with remaining headroom, so
+        ``sum(take) == want`` EXACTLY. Pure — no bounds/overflow/zero-clamp of
+        its own; callers own the array they're splitting (a tile's ``gas``
+        column via :meth:`extract_gas_n_vec`, or a duct plenum's holdings list
+        via the vent runtime) and apply the zero-clamp store themselves.
+
+        Extracted from the original ``extract_gas_n`` body (D10) so the ONE
+        pinned split algorithm serves both the tile primitive and the plenum
+        ledger — never a second copy (CLAUDE.md canonical-systems rule).
+        """
+        n_total = sum(holdings)
+        if want <= 0 or n_total <= 0:
+            return [0] * len(holdings)
+        take = [(holdings[g] * want) // n_total for g in range(len(holdings))]
+        short = want - sum(take)
+        for g in range(len(holdings)):
+            if short <= 0:
+                break
+            room = holdings[g] - take[g]
+            if room <= 0:
+                continue
+            grab = room if room < short else short
+            take[g] += grab
+            short -= grab
+        return take
+
+    def _inject_gas_n_core(self, fy, fx, add_vec):
+        """The shared mutation core (§6/D10, extended §3): add ``add_vec``
+        (a length-``N_GASES`` list of non-negative Q16.16 ints, ANY subset of
+        slices non-zero) to tile ``(fy, fx)``, loud ``OverflowError``
+        pre-mutation exactly like the original single-pair ``inject_gas_n``.
+        No bounds check (callers check), no T-mix (the vent-facing
+        :meth:`inject_gas_n_vec` wrapper owns that — §4).
+        """
+        limit = 1 << 31
+        cur = [int(self.gas[g][fy, fx]) for g in range(N_GASES)]
+        new = [cur[g] + int(add_vec[g]) for g in range(N_GASES)]
+        for g in range(N_GASES):
+            if new[g] >= limit:
+                raise OverflowError(
+                    f"inject_gas_n: tile ({fy}, {fx}) would overflow int32 "
+                    f"on slice {g} ({cur[g]}+{add_vec[g]})")
+        for g in range(N_GASES):
+            if add_vec[g]:
+                self.gas[g][fy, fx] = new[g]
+
     def inject_gas_n(self, fy, fx, delta_n):
         """Add ``delta_n`` (Q16.16 gas mass) at tile ``(fy, fx)``, split at the
         FIXED standard O2/N2 mix across the two bulk slices (§6, D10 inject half).
@@ -2378,15 +2432,10 @@ class GameMap:
         o2_frac_q = _gas_fx.quantize_scalar(0.21)
         o2_add = (dn * o2_frac_q + (1 << 15)) >> 16      # round-half-up (air seed)
         n2_add = dn - o2_add                              # exact remainder
-        cur_o2 = int(self.gas[O2][fy, fx])
-        cur_n2 = int(self.gas[INERT_N2][fy, fx])
-        limit = 1 << 31
-        if cur_o2 + o2_add >= limit or cur_n2 + n2_add >= limit:
-            raise OverflowError(
-                f"inject_gas_n: tile ({fy}, {fx}) would overflow int32 "
-                f"(O2 {cur_o2}+{o2_add}, N2 {cur_n2}+{n2_add})")
-        self.gas[O2][fy, fx] = cur_o2 + o2_add
-        self.gas[INERT_N2][fy, fx] = cur_n2 + n2_add
+        add_vec = [0] * N_GASES
+        add_vec[O2] = o2_add
+        add_vec[INERT_N2] = n2_add
+        self._inject_gas_n_core(fy, fx, add_vec)
 
     def extract_gas_n(self, fy, fx, delta_n):
         """Remove up to ``delta_n`` (Q16.16 gas mass) at tile ``(fy, fx)``,
@@ -2396,39 +2445,97 @@ class GameMap:
 
         The withdrawn total is ``min(delta_n, N_total)`` — the aggregate
         zero-clamp (a near-empty tile clamps at 0 and NEVER over-withdraws). The
-        per-slice split is the integer proportional ``remove_g = gas[g]*want //
-        N_total`` (a floor, no float divide, no dequantize) with the shortfall
-        cascaded in PINNED slice-id order to slices with remaining holdings, so
-        ``sum(remove_g) == want`` EXACTLY (mirrors the seal-tiles remainder rule
-        and unseal's balanced-then-greedy withdrawal). The explicit ``max(0, ...)``
-        per-slice zero-clamp before the store guarantees N can NEVER go negative
-        into the Helmholtz solver. ``delta_n <= 0`` / an empty tile is a no-op.
+        per-slice split is :meth:`gas_proportional_split` (a floor, no float
+        divide, no dequantize) with the shortfall cascaded in PINNED slice-id
+        order to slices with remaining holdings, so ``sum(remove_g) == want``
+        EXACTLY (mirrors the seal-tiles remainder rule and unseal's balanced-
+        then-greedy withdrawal). The explicit ``max(0, ...)`` per-slice
+        zero-clamp before the store guarantees N can NEVER go negative into
+        the Helmholtz solver. ``delta_n <= 0`` / an empty tile is a no-op.
+
+        Thin wrapper over :meth:`extract_gas_n_vec` (§3 extension, vent design)
+        — the SAME withdrawal, this call just collapses it to the scalar total
+        pump_system.py has always consumed.
+        """
+        return int(sum(self.extract_gas_n_vec(fy, fx, delta_n)))
+
+    def extract_gas_n_vec(self, fy, fx, delta_n):
+        """§3 extension (docs/vent_system_design_2026-08-23.md): the SAME
+        withdrawal :meth:`extract_gas_n` performs, returning the per-slice
+        withdrawal as a length-``N_GASES`` list instead of collapsing it to a
+        scalar — so a caller (the vent circulation sweep) can credit each bulk
+        plane separately and apply the per-species filter, rather than
+        re-deriving proportions the primitive already computed. ``delta_n <= 0``
+        or an empty tile returns an all-zero vector (never negative slices).
         """
         h, w = self._h, self._w
         if not (0 <= fy < h and 0 <= fx < w):
-            raise ValueError(f"extract_gas_n: tile ({fy}, {fx}) out of bounds")
+            raise ValueError(f"extract_gas_n_vec: tile ({fy}, {fx}) out of bounds")
         dn = int(delta_n)
         if dn <= 0:
-            return 0
+            return [0] * N_GASES
         holdings = [int(self.gas[g][fy, fx]) for g in range(N_GASES)]
         n_total = sum(holdings)
         if n_total <= 0:
-            return 0                        # empty tile — zero-clamp, nothing to take
+            return [0] * N_GASES            # empty tile — zero-clamp, nothing to take
         want = dn if dn < n_total else n_total          # aggregate zero-clamp
-        # Integer proportional floor split; the fractional shortfall (< N_GASES)
-        # cascades in pinned slice order to slices that still hold mass, so the
-        # per-slice removals sum to `want` to the LSB.
-        remove = [(holdings[g] * want) // n_total for g in range(N_GASES)]
-        short = want - sum(remove)
-        for g in range(N_GASES):
-            if short <= 0:
-                break
-            take = holdings[g] - remove[g]
-            if take > short:
-                take = short
-            remove[g] += take
-            short -= take
+        remove = self.gas_proportional_split(holdings, want)
         for g in range(N_GASES):
             new = holdings[g] - remove[g]
             self.gas[g][fy, fx] = new if new > 0 else 0   # explicit zero-clamp
-        return want
+        return remove
+
+    def inject_gas_n_vec(self, fy, fx, add_vec, t_dep, t_min_q, t_max_phys_q):
+        """§3/§4 extension (docs/vent_system_design_2026-08-23.md): inject an
+        ARBITRARY per-slice composition ``add_vec`` (length ``N_GASES``,
+        non-negative Q16.16 ints — bulk AND trace slices alike, unlike
+        :meth:`inject_gas_n`'s fixed 21/79 split), THEN mass-weighted-mix the
+        tile's ``temperature`` toward ``t_dep`` (the deposit's characteristic
+        temperature, Q16.16 ΔT-from-ambient — the vent plenum's own
+        ``E_plenum/N_plenum``).
+
+        T-mix (§4): weighted by BULK N only — ``N_old = gas[O2]+gas[INERT_N2]``
+        BEFORE this call, ``ΔN = add_vec[O2]+add_vec[INERT_N2]`` — matching the
+        EOS's own N_total convention (P-T0: n_total == n_bulk, trace planes
+        carry no independent T). ``T_new = floor((N_old*T_old + ΔN*t_dep) /
+        (N_old+ΔN))`` toward -inf (Python ``//`` on ints IS floor-toward-inf
+        for a positive divisor — the same contract as C++ ``floordiv_q``,
+        cpp/src/fixed_point.h:501, energy-books arc §2.1.5/§2.7: truncation-
+        toward-zero would mint energy on a sub-ambient mix). Skipped entirely
+        (T untouched) when ``N_old+ΔN <= 0`` (a bulk-free deposit — e.g. into a
+        vacuum tile with only trace moving — has nothing to weight the mix by).
+        Railed to ``[t_min_q, t_max_phys_q]`` like every other T writer;
+        returns ``(t_new_raw, rail_hit)`` with ``rail_hit`` in
+        ``{-1, 0, +1}`` (low / none / high) so the caller can count the hit
+        (the plenum's runtime-row diagnostics) — the caller derives its OWN
+        energy debit from ``(N_old, T_old)`` it already read and ``(N_old+ΔN,
+        t_new_raw)``, so this primitive need not return N/T twice.
+
+        The caller (the vent 9e(d) sweep) is responsible for the RUNTIME
+        aperture guards (docs §4: never call this on a solid, thermal_solid,
+        vacuum, ambient, or flooded tile) — this primitive trusts its caller,
+        exactly like :meth:`inject_gas_n` trusts the pump port resolve.
+        """
+        h, w = self._h, self._w
+        if not (0 <= fy < h and 0 <= fx < w):
+            raise ValueError(f"inject_gas_n_vec: tile ({fy}, {fx}) out of bounds")
+        dn_total = sum(int(v) for v in add_vec)
+        if dn_total <= 0:
+            return int(self.temperature[fy, fx]), 0
+        n_old = int(self.gas[O2][fy, fx]) + int(self.gas[INERT_N2][fy, fx])
+        delta_n_bulk = int(add_vec[O2]) + int(add_vec[INERT_N2])
+        t_old = int(self.temperature[fy, fx])
+        self._inject_gas_n_core(fy, fx, add_vec)
+        n_new = n_old + delta_n_bulk
+        if n_new <= 0:
+            return t_old, 0                  # nothing bulk to weight the mix by
+        t_new = (n_old * t_old + delta_n_bulk * int(t_dep)) // n_new   # floor(-inf)
+        rail_hit = 0
+        if t_new < t_min_q:
+            t_new = int(t_min_q)
+            rail_hit = -1
+        elif t_new > t_max_phys_q:
+            t_new = int(t_max_phys_q)
+            rail_hit = 1
+        self.temperature[fy, fx] = t_new
+        return t_new, rail_hit
