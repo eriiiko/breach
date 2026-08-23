@@ -209,6 +209,15 @@ public:
     // air's heat capacity ~700x below physical, c_v=1 by convention). Any
     // non-deposited remainder is the counted, named e_drag_drop_sum channel.
     float k_drag = 0.0f;
+    // k_drag2 (drag-law v2, docs/drag_law_v2_design_2026-08-23.md, issue #4
+    // P1): the QUADRATIC term of the two-term law F = -k1*u - k2*|u|*u
+    // (k1 = k_drag above, independent dial). Implicit discretization
+    // u <- u/(1+k2*dt*|u|), applied in the SAME kick-loop drag block
+    // immediately after the linear shrink, before the energy booking (see
+    // the .cpp). Default 0.0 -> dormant (branch on the quantized kd2_q, not
+    // this float -- the k_drag idiom). Lands dormant this arc (P1/P2);
+    // dial-turning is P3, HUMAN-TEST.
+    float k_drag2 = 0.0f;
     float k_drag_heat_frac = 1.0f;
     // c_v (energy-books arc, design §2.8): the SAME gas heat-capacity
     // constant TemperatureSolver::c_v prices its ΔT=ΔE/(N*c_v) deposits with
@@ -683,8 +692,10 @@ void eos_kick_compression_reference(
     float t_max_phys, float u_max,   // trace_mass_scale param RETIRED (P-T0)
     // P-E3 (design §2.8): interior drag + its heat counterparty. k_drag
     // default 0.0 -> the mechanism is dormant (branch on the QUANTIZED kd_q,
-    // not these floats — see the .cpp).
-    float k_drag, float k_drag_heat_frac, float c_v,
+    // not these floats — see the .cpp). k_drag2 (drag-law v2, design
+    // docs/drag_law_v2_design_2026-08-23.md): the quadratic term, same
+    // dormancy idiom (kd2_q).
+    float k_drag, float k_drag2, float k_drag_heat_frac, float c_v,
     // P-E4 (design §2.4): the compression-work trust gate's reference
     // density — fades step 4c's work factor k toward 0 below n_work_ref,
     // hard-zero below n_work_ref/2 (see fixed_point.h's work_fade_clamp01_q).

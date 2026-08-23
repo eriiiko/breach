@@ -673,6 +673,35 @@ k_drag_heat_frac = 0.0014             # energy-books arc (design §2.8, RULING R
                                       # (physical-air anchor ~=0.0014); any non-deposited
                                       # remainder is a counted, named destruction channel
                                       # (e_drag_drop_sum, R3-legal).
+k_drag2 = 0.0                         # drag-law v2 (design docs/drag_law_v2_design_
+                                      # 2026-08-23.md, issue #4 P1): the QUADRATIC
+                                      # term of the two-term interior drag law
+                                      # F = -k1*u - k2*|u|*u (k1 = k_drag above,
+                                      # independent dial). Implicit discretization
+                                      # u <- u/(1+k2*dt*|u|) -- exact solution of
+                                      # du/dt=-k2*u^2 sampled at ticks, never
+                                      # reverses flow or overshoots zero (design R2).
+                                      # Default 0.0 ships the mechanism SILENT --
+                                      # dormancy BY BRANCH on the quantized fold
+                                      # kd2_q, same idiom as k_drag, not this float.
+                                      # LANDS DORMANT this arc (P1/P2 auto-merge);
+                                      # dial-turning is HUMAN-TEST, waits behind
+                                      # #48 (vents) + #6 (smoke), folds into #5's
+                                      # retune (P3) -- no re-baseline before that.
+                                      # k2 is the storm-killer and lives in a
+                                      # narrow honest band (design §1b/§1c: per-tick
+                                      # neck retention reaches k_drag=10's molasses
+                                      # parity at k2~=0.86; a named ceiling
+                                      # u_ceil=1/(k2*dt) caps stored wind); the
+                                      # vent-drift protection Erik wants comes from
+                                      # sizing k1 DOWN, not from k2's shape.
+                                      # FORBIDDEN BAND (see the [materials.air]
+                                      # wave_absorb comment below): k2 inherits
+                                      # k_drag's contract unchanged (design §10) --
+                                      # stage Q is sign-symmetric and strictly
+                                      # dissipative (factor in (0,1], trunc toward 0
+                                      # both signs), so it cannot rectify
+                                      # oscillation or open this window either.
 
 # Canonical game-T -> Kelvin map (temperature_scale_unification_design_
 # 2026-08-13 §2). The ONE place these constants are defined — radiation bake,

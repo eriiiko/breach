@@ -118,6 +118,16 @@ CONSTS = dict(
 # k_drag_heat_frac < 1 (so e_drag_drop_sum is non-vacuous too).
 CONSTS_DRAG = dict(CONSTS, k_drag=0.02, k_drag_heat_frac=0.5)
 
+# drag-law v2 (docs/drag_law_v2_design_2026-08-23.md §8 gate 2) — the TWO
+# pinned k_drag2-armed legs: the "main" leg (k_drag2=1.0, U0=24 raw — too
+# tight a window to comfortably construct a dead-zone straddle) and the
+# dead-zone-straddle leg (k_drag2=0.01, U0=2428 raw — comfortably
+# constructible; see _make_drag2_dead_zone_forcer). Without these legs every
+# other gate in this file passes with stage Q switched off (kd2_q == 0
+# everywhere) — the v1 hole both critique lenses found independently.
+CONSTS_DRAG2 = dict(CONSTS_DRAG, k_drag2=1.0)
+CONSTS_DRAG2_DEAD_ZONE = dict(CONSTS_DRAG, k_drag2=0.01)
+
 COUNTER_NAMES = ("u_clamp", "u_max", "work_clamp", "energy_floor", "t_max_phys",
                  "ke_drag_removed", "e_drag_deposit", "e_drag_drop_sum",
                  "e_drag_rail_clipped")
@@ -352,6 +362,43 @@ def _make_drag_forcer(h=24, w=24):
     return inp
 
 
+def _make_drag2_dead_zone_forcer(h=24, w=24):
+    """drag-law v2 (design §8 gate 2) — a forcer straddling stage Q's dead
+    zone at k_drag2=0.01 (U0 = 2428 raw, ~0.037 m/s) in ONE grid: a CALM band
+    with |u| clearly BELOW U0 (rad1 < rad_dead_q32 -- the fast-path skip must
+    fire, an EXACT no-op) and an ACTIVE band with |u| clearly ABOVE U0 (the
+    real divide must fire) -- both bands carry a NEGATIVE component and a
+    true DIAGONAL (ux, uy both nonzero, mixed signs), so the recomputed rad1
+    exercises both components, not one axis (design §4/§8 gate 2's explicit
+    "negative-component and diagonal cases" requirement). Raw-count
+    magnitudes (not m/s) are used deliberately -- the point is proximity to
+    U0=2428 raw, not a realistic wind speed."""
+    inp = {
+        "wind_x": np.zeros((h, w), dtype=np.int32),
+        "wind_y": np.zeros((h, w), dtype=np.int32),
+        "temperature": np.full((h, w), _quantize(20.0), dtype=np.int32),
+        "p_new": np.full((h, w), _quantize(1.0), dtype=np.int32),
+        "gas": np.zeros((3, h, w), dtype=np.int32),
+        "gas_conservative": np.array([True, True, False]),
+        "solid": np.zeros((h, w), dtype=bool),
+        "is_vacuum": np.zeros((h, w), dtype=bool),
+        "absorb": np.zeros((h, w), dtype=np.float32),
+    }
+    inp["gas"][0][:, :] = _quantize(0.21)
+    inp["gas"][1][:, :] = _quantize(0.79)
+    # CALM band (rows 0:12): rad1 = 1200^2 + 900^2 = 2,250,000 < U0^2 =
+    # 5,895,184 (U0=2428) -- comfortably below the dead-zone floor.
+    inp["wind_x"][0:12, :] = 1200
+    inp["wind_y"][0:12, :] = -900
+    # ACTIVE band (rows 12:24): rad1 = 3200^2 + 2700^2 = 17,530,000 > U0^2 --
+    # comfortably above the dead-zone floor.
+    inp["wind_x"][12:24, :] = 3200
+    inp["wind_y"][12:24, :] = -2700
+    for k in inp:
+        inp[k] = np.ascontiguousarray(inp[k])
+    return inp
+
+
 def part1_isolated() -> bool:
     print("PART 1 — isolated GPU vs CPU reference (synthetic, all rails):")
     ok = True
@@ -440,6 +487,63 @@ def part1_isolated() -> bool:
                   f"(ke_removed={res_ref[7]} deposit={res_ref[8]} "
                   f"drop={res_ref[9]} clipped={res_ref[10]})")
 
+    # (d) drag-law v2 (design §8 gate 2): the k_drag2-ARMED cross-mirror
+    # gate — TWO pinned legs (CONSTS_DRAG2 main @ k2=1.0; CONSTS_DRAG2_
+    # DEAD_ZONE @ k2=0.01), BOTH cap regimes, on the dead-zone-straddle
+    # forcer (negative-component + diagonal, per §4). Without these legs
+    # every gate above passes with stage Q switched off (kd2_q == 0
+    # everywhere) — the v1 hole both critique lenses found independently.
+    DRAG2_H, DRAG2_W = 24, 24
+    for consts_drag2, leg_tag in ((CONSTS_DRAG2, "k_drag2=1.0 (main)"),
+                                  (CONSTS_DRAG2_DEAD_ZONE,
+                                   "k_drag2=0.01 (dead-zone straddle)")):
+        for cap_val, cap_tag in ((CONSTS["c_max"], "c_amb2 plane"),
+                                 (CONSTS["u_max"], "u_max2 plane")):
+            n_cfg += 1
+            tag = f"drag2 forcer {leg_tag}, {cap_tag}"
+            inp = _make_drag2_dead_zone_forcer(DRAG2_H, DRAG2_W)
+            cap2 = _uniform_cap2(DRAG2_H, DRAG2_W, cap_val)
+            f_ref, res_ref, f_gpu, res_gpu = _run_pair(
+                inp, 1.0 / 24.0, cap2, consts_drag2)
+            ok &= _compare(tag, f_ref, res_ref, f_gpu, res_gpu)
+            totals += np.array(res_ref[2:], dtype=np.int64)
+            if res_ref[7] == 0:
+                ok = False
+                print(f"  {tag}: ke_drag_removed did not engage "
+                      "(vacuous — stage L/Q never ran)")
+
+    # Straddle proof (k_drag2=0.01 leg, CPU reference only — gate 2's own
+    # CPU==GPU comparison above already proves the GPU kernel agrees on
+    # these exact bytes): the CALM band (rows 0:12, rad1 < rad_dead_q32)
+    # must be BIT-IDENTICAL to a k_drag2=0 control (the fast-path skip is an
+    # EXACT no-op — design §7); the ACTIVE band (rows 12:24) must DIFFER
+    # (stage Q's divide actually fired there) — proving this leg really
+    # straddles the dead zone in ONE run, not just "some cells somewhere".
+    inp = _make_drag2_dead_zone_forcer(DRAG2_H, DRAG2_W)
+    cap2 = _uniform_cap2(DRAG2_H, DRAG2_W, CONSTS["c_max"])
+    args_tail = (inp["p_new"], inp["gas"], inp["gas_conservative"],
+                 inp["solid"], inp["is_vacuum"], inp["absorb"])
+    wx_on, wy_on = inp["wind_x"].copy(), inp["wind_y"].copy()
+    t_on = inp["temperature"].copy()
+    bp.eos_kick_compression_ref(wx_on, wy_on, t_on, *args_tail,
+                                1.0 / 24.0, cap2, **CONSTS_DRAG2_DEAD_ZONE)
+    wx_off, wy_off = inp["wind_x"].copy(), inp["wind_y"].copy()
+    t_off = inp["temperature"].copy()
+    bp.eos_kick_compression_ref(wx_off, wy_off, t_off, *args_tail, 1.0 / 24.0,
+                                cap2, **dict(CONSTS_DRAG2_DEAD_ZONE, k_drag2=0.0))
+    if not (np.array_equal(wx_on[0:12], wx_off[0:12])
+            and np.array_equal(wy_on[0:12], wy_off[0:12])):
+        ok = False
+        print("  drag2 dead-zone straddle: the CALM band (below U0) was NOT "
+              "bit-identical to the k_drag2=0 control — the fast-path skip "
+              "is not exact")
+    if (np.array_equal(wx_on[12:24], wx_off[12:24])
+            and np.array_equal(wy_on[12:24], wy_off[12:24])):
+        ok = False
+        print("  drag2 dead-zone straddle: the ACTIVE band (above U0) "
+              "matched the k_drag2=0 control — stage Q never fired "
+              "(gate is vacuous)")
+
     # Coverage: every rail counter must have engaged somewhere in Part 1.
     for i, name in enumerate(COUNTER_NAMES):
         if totals[i] == 0:
@@ -517,7 +621,14 @@ def part2_trajectory() -> bool:
         # velocity-clamp per-cell cap plane was not involved). Pre-existing,
         # unrelated to D2v2 — fixed here because it was silently defeating
         # THIS gate's wind-side ground-truth check.
-        k_drag=float(eos.k_drag), k_drag_heat_frac=float(eos.k_drag_heat_frac),
+        # drag-law v2 (docs/drag_law_v2_design_2026-08-23.md, issue #4 P1
+        # gate 3): thread the LIVE k_drag2 too, the same P-V1-incident
+        # reasoning as k_drag above — a silent pybind default here would
+        # compare a defaulted reference against a solver-valued device path.
+        # Dormant (0.0) at this scenario's shipped config, same as k_drag2
+        # everywhere else until P3 arms it.
+        k_drag=float(eos.k_drag), k_drag2=float(eos.k_drag2),
+        k_drag_heat_frac=float(eos.k_drag_heat_frac),
         c_v=float(eos.c_v),
         # P-E4 (design §2.4): the trust gate's reference density.
         n_work_ref=float(eos.n_work_ref),

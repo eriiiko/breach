@@ -71,8 +71,11 @@ void eos_kick_compression(
     float t_max_phys, float u_max,   // trace_mass_scale param RETIRED (P-T0,
                                       // design §2.6 — n_total ≡ n_bulk now)
     // P-E3 (energy-books arc, design §2.8): interior drag + heat
-    // counterparty. k_drag default 0.0 -> dormant.
-    float k_drag, float k_drag_heat_frac, float c_v,
+    // counterparty. k_drag default 0.0 -> dormant. k_drag2 (drag-law v2,
+    // docs/drag_law_v2_design_2026-08-23.md): the quadratic term, same
+    // dormancy idiom (kd2_q). Neither parameter is defaulted here (the
+    // number-doors law, engine/14) — every caller must thread a real value.
+    float k_drag, float k_drag2, float k_drag_heat_frac, float c_v,
     // P-E4 (energy-books arc, design §2.4): the compression-work trust
     // gate's reference density (fades step 4c's work factor toward 0 below
     // n_work_ref, hard-zero below n_work_ref/2).

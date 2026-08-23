@@ -166,7 +166,7 @@ def run_scenario(n_ticks, seed=20260819):
                     c_max=eos.c_max, dx=eos.dx, adiabatic_index=eos.adiabatic_index,
                     CFL_ADV=eos.CFL_ADV, N_SUB_MAX=eos.N_SUB_MAX,
                     N_FLOOR_SOLVER=eos.N_FLOOR_SOLVER, U_MAX=eos.U_MAX,
-                    k_drag=eos.k_drag))
+                    k_drag=eos.k_drag, k_drag2=eos.k_drag2))
 
 
 # ===========================================================================

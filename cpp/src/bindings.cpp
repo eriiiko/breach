@@ -1126,7 +1126,9 @@ PYBIND11_MODULE(breach_physics, m) {
              float t_work_clamp, float t_max_phys, float u_max,
              // trace_mass_scale param RETIRED (P-T0, design §2.6)
              // P-E3 (design §2.8): interior drag + heat counterparty.
-             float k_drag, float k_drag_heat_frac, float c_v,
+             // drag-law v2 (docs/drag_law_v2_design_2026-08-23.md): k_drag2,
+             // the quadratic term (same dormancy idiom).
+             float k_drag, float k_drag2, float k_drag_heat_frac, float c_v,
              // P-E4 (design §2.4): the compression-work trust gate.
              float n_work_ref,
              // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K.
@@ -1162,7 +1164,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   h, w, dt, cap2,
                   c_max, dx, adiabatic_index, absorb_strength,
                   n_floor_solver, t_min, t_work_clamp, t_max_phys, u_max,
-                  k_drag, k_drag_heat_frac, c_v, n_work_ref, t_amb_k,
+                  k_drag, k_drag2, k_drag_heat_frac, c_v, n_work_ref, t_amb_k,
                   &dig_vel, &dig_comp, cnts,   // trace_mass_scale arg RETIRED
                   nullptr, nullptr, tsol);
               return py::make_tuple(dig_vel, dig_comp, cnts[0], cnts[1],
@@ -1177,7 +1179,8 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("absorb_strength"), py::arg("n_floor_solver"),
           py::arg("t_min"), py::arg("t_work_clamp"), py::arg("t_max_phys"),
           py::arg("u_max"),
-          py::arg("k_drag") = 0.0f, py::arg("k_drag_heat_frac") = 1.0f,
+          py::arg("k_drag") = 0.0f, py::arg("k_drag2") = 0.0f,
+          py::arg("k_drag_heat_frac") = 1.0f,
           py::arg("c_v") = 1.0f, py::arg("n_work_ref") = 0.25f,
           // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K, threaded
           // through the ABI; NOT read in arithmetic yet (P-W1b lands the law).
@@ -2219,6 +2222,10 @@ PYBIND11_MODULE(breach_physics, m) {
         // QUANTIZED kd_q, not this float); k_drag_heat_frac default 1.0
         // (RULING R2) keeps the conservation oracle EXACT through every gate.
         .def_readwrite("k_drag",            &EOSSolver::k_drag)
+        // drag-law v2 (docs/drag_law_v2_design_2026-08-23.md, issue #4 P1):
+        // the quadratic term, same dormancy idiom (default 0.0 -> dormant,
+        // branch on the quantized kd2_q).
+        .def_readwrite("k_drag2",           &EOSSolver::k_drag2)
         .def_readwrite("k_drag_heat_frac",  &EOSSolver::k_drag_heat_frac)
         // c_v: EOSSolver's own copy of the SAME [physics.thermal] c_v gas
         // heat-capacity constant TemperatureSolver::c_v prices its deposits
@@ -2432,7 +2439,9 @@ PYBIND11_MODULE(breach_physics, m) {
              float t_work_clamp, float t_max_phys, float u_max,
              // trace_mass_scale param RETIRED (P-T0, design §2.6)
              // P-E3 (design §2.8): interior drag + heat counterparty.
-             float k_drag, float k_drag_heat_frac, float c_v,
+             // drag-law v2 (docs/drag_law_v2_design_2026-08-23.md): k_drag2,
+             // the quadratic term (same dormancy idiom).
+             float k_drag, float k_drag2, float k_drag_heat_frac, float c_v,
              // P-E4 (design §2.4): the compression-work trust gate.
              float n_work_ref,
              // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K.
@@ -2486,7 +2495,7 @@ PYBIND11_MODULE(breach_physics, m) {
                   h, w, dt, cap2,
                   c_max, dx, adiabatic_index, absorb_strength,
                   n_floor_solver, t_min, t_work_clamp, t_max_phys, u_max,
-                  k_drag, k_drag_heat_frac, c_v, n_work_ref, t_amb_k,
+                  k_drag, k_drag2, k_drag_heat_frac, c_v, n_work_ref, t_amb_k,
                   &dig_vel, &dig_comp, cnts, amb, tsol, sud);   // trace_mass_scale arg RETIRED
               return py::make_tuple(dig_vel, dig_comp, cnts[0], cnts[1],
                                     cnts[2], cnts[3], cnts[4], cnts[5],
@@ -2500,7 +2509,8 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("absorb_strength"), py::arg("n_floor_solver"),
           py::arg("t_min"), py::arg("t_work_clamp"), py::arg("t_max_phys"),
           py::arg("u_max"),
-          py::arg("k_drag") = 0.0f, py::arg("k_drag_heat_frac") = 1.0f,
+          py::arg("k_drag") = 0.0f, py::arg("k_drag2") = 0.0f,
+          py::arg("k_drag_heat_frac") = 1.0f,
           py::arg("c_v") = 1.0f, py::arg("n_work_ref") = 0.25f,
           // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K, threaded
           // through the ABI; NOT read in arithmetic yet (P-W1b lands the law).

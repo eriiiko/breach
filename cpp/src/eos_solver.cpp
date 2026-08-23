@@ -461,6 +461,20 @@ void EOSSolver::step(
     // tiny k_drag (e.g. 1e-6) quantizes to 0 and a float-keyed branch would
     // disagree with CUDA about which code ran (design's explicit warning).
     const q16 kd_q = quantize((double)k_drag * dt_d);
+    // drag-law v2 (design §2/§7, docs/drag_law_v2_design_2026-08-23.md):
+    // kd2_q beside kd_q, the SAME per-tick-not-per-cell idiom, plus the
+    // MANDATORY dormant-dial-guarded rad_dead_q32 = U0^2 (U0 = ceil(2^16/
+    // kd2_q)) — the calm-cell fast-path threshold stage Q skips below. An
+    // unconditional ceil-divide would be a divide-by-zero at the shipped
+    // config (kd2_q == 0); kd2_q >= 1 => U0 <= 2^16 => U0^2 <= 2^32,
+    // comfortably int64. Dormancy branches on the QUANTIZED kd2_q, never the
+    // float (the kd_q idiom).
+    const q16 kd2_q = quantize((double)k_drag2 * dt_d);
+    int64_t rad_dead_q32 = 0;
+    if (kd2_q > 0) {
+        const int64_t U0 = ((int64_t)FP_ONE + (int64_t)kd2_q - 1) / (int64_t)kd2_q;
+        rad_dead_q32 = U0 * U0;
+    }
     const q16 heat_frac_q = quantize((double)k_drag_heat_frac);
     const int64_t recip_cv = make_recip(std::max((double)c_v, 1e-6));
     // P-E4 (design §2.4): the compression-work trust gate's per-tick fold —
@@ -879,20 +893,50 @@ void EOSSolver::step(
             // (the kick's own skip-set lacks `ts`, but the drag adds it here)
             // so the oracle stays exact with no new residual term.
             // ==================================================================
-            if (kd_q > 0 && !ts[i]) {
+            if ((kd_q > 0 || kd2_q > 0) && !ts[i]) {
                 const int64_t ux_old = ux, uy_old = uy;
-                // Component-wise magnitude-first shrink u *= (1 - kd_q) — the
-                // absorb/sponge idiom immediately above, verbatim. LOAD-BEARING
-                // beyond style: magnitude-first makes |u_old|^2 - |u_new|^2 >= 0
+                // Stage L — linear: the EXISTING lines, verbatim, now
+                // inner-branched (drag-law v2, design §2). Component-wise
+                // magnitude-first shrink u *= (1 - kd_q) — the absorb/sponge
+                // idiom immediately above, verbatim. LOAD-BEARING beyond
+                // style: magnitude-first makes |u_old|^2 - |u_new|^2 >= 0
                 // STRUCTURALLY (each component's magnitude can only shrink), so
                 // the deposit can never go negative from rounding and needs no
                 // clamp and no signed oracle term.
-                const q16 kk_drag = (kd_q < FP_ONE) ? (q16)(FP_ONE - kd_q) : 0;
-                const int64_t dmx = mul128_shr(ux_old < 0 ? -ux_old : ux_old, (int64_t)kk_drag, 16);
-                const int64_t dmy = mul128_shr(uy_old < 0 ? -uy_old : uy_old, (int64_t)kk_drag, 16);
-                ux = (ux_old < 0) ? -dmx : dmx;
-                uy = (uy_old < 0) ? -dmy : dmy;
+                if (kd_q > 0) {
+                    const q16 kk_drag = (kd_q < FP_ONE) ? (q16)(FP_ONE - kd_q) : 0;
+                    const int64_t dmx = mul128_shr(ux_old < 0 ? -ux_old : ux_old, (int64_t)kk_drag, 16);
+                    const int64_t dmy = mul128_shr(uy_old < 0 ? -uy_old : uy_old, (int64_t)kk_drag, 16);
+                    ux = (ux_old < 0) ? -dmx : dmx;
+                    uy = (uy_old < 0) ? -dmy : dmy;
+                }
 
+                // Stage Q — implicit quadratic (NEW, drag-law v2 design §2),
+                // dormant by branch on kd2_q. rad1 is RECOMPUTED here (the
+                // clamp block's `rad` above is stale once the rescale ran) —
+                // int64-safe: |ux|,|uy| <= the post-clamp bound, far under
+                // RAD_SAFE. The calm-cell fast path (design §7) skips exactly
+                // when the divide below would be an exact no-op (prod == 0).
+                if (kd2_q > 0) {
+                    const int64_t rad1 = ux * ux + uy * uy;
+                    if (rad1 >= rad_dead_q32) {
+                        const q16 umag = sqrt_q16(rad1);
+                        // trunc(k2*dt*|u|), the SAME 128-wide mul as the rest
+                        // of this file; denom >= FP_ONE+1 whenever this branch
+                        // runs (rad1 >= rad_dead_q32 <=> prod >= 1 by
+                        // construction — see rad_dead_q32's fold above).
+                        const int64_t prod  = mul128_shr((int64_t)kd2_q, (int64_t)umag, 16);
+                        const int64_t denom = (int64_t)FP_ONE + prod;
+                        // trunc-toward-0 int64 divide — the clamp-rescale
+                        // idiom (:867-868), exact sign symmetry, shrink-only.
+                        ux = (ux * (int64_t)FP_ONE) / denom;
+                        uy = (uy * (int64_t)FP_ONE) / denom;
+                    }
+                }
+
+                // Energy booking — the EXISTING block, verbatim, now booking
+                // the COMBINED Δ(|u|^2) across whichever of stage L / stage Q
+                // actually ran (ux_old/uy_old were captured before stage L).
                 // Δ(|u|^2), raw (Q32-ish, plain int64-safe post-cap per the
                 // |u| <= sqrt(cap2_q32) + ~2 counts <= U_MAX bound above (D6) —
                 // the SAME "int64-safe post-cap" property the design's ΔE_cell
@@ -1639,7 +1683,7 @@ void eos_kick_compression_reference(
         float c_max, float dx, float adiabatic_index, float absorb_strength,
         float n_floor_solver, float t_min, float t_work_clamp,
         float t_max_phys, float u_max,   // trace_mass_scale param RETIRED (P-T0)
-        float k_drag, float k_drag_heat_frac, float c_v,   // P-E3 (design §2.8)
+        float k_drag, float k_drag2, float k_drag_heat_frac, float c_v,   // P-E3 (design §2.8) / drag-law v2
         float n_work_ref,   // P-E4 (design §2.4) — the compression-work trust gate
         // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K.
         float t_amb_k,
@@ -1677,6 +1721,14 @@ void eos_kick_compression_reference(
     const q16 absorb_dt_q = quantize((double)absorb_strength * dt_d);
     // P-E3 (design §2.8): the drag scalar folds, verbatim step()'s.
     const q16 kd_q = quantize((double)k_drag * dt_d);
+    // drag-law v2 (design §2/§7): kd2_q + the dormant-guarded rad_dead_q32,
+    // verbatim step()'s fold.
+    const q16 kd2_q = quantize((double)k_drag2 * dt_d);
+    int64_t rad_dead_q32 = 0;
+    if (kd2_q > 0) {
+        const int64_t U0 = ((int64_t)FP_ONE + (int64_t)kd2_q - 1) / (int64_t)kd2_q;
+        rad_dead_q32 = U0 * U0;
+    }
     const q16 heat_frac_q = quantize((double)k_drag_heat_frac);
     const int64_t recip_cv = make_recip(std::max((double)c_v, 1e-6));
     // P-E4 (design §2.4): the trust-gate fold, verbatim step()'s.
@@ -1782,13 +1834,28 @@ void eos_kick_compression_reference(
             // P-E3 — interior drag + heat counterparty (design §2.8), VERBATIM
             // from step()'s kick loop: PER TICK, after the |u| cap, before the
             // store; ts cells skip both the drag and the deposit (ruling A1).
-            if (kd_q > 0 && !ts[i]) {
+            // drag-law v2 (design §2): widened to the two-term law, stage L /
+            // stage Q, verbatim step()'s restructured block.
+            if ((kd_q > 0 || kd2_q > 0) && !ts[i]) {
                 const int64_t ux_old = ux, uy_old = uy;
-                const q16 kk_drag = (kd_q < FP_ONE) ? (q16)(FP_ONE - kd_q) : 0;
-                const int64_t dmx = mul128_shr(ux_old < 0 ? -ux_old : ux_old, (int64_t)kk_drag, 16);
-                const int64_t dmy = mul128_shr(uy_old < 0 ? -uy_old : uy_old, (int64_t)kk_drag, 16);
-                ux = (ux_old < 0) ? -dmx : dmx;
-                uy = (uy_old < 0) ? -dmy : dmy;
+                if (kd_q > 0) {
+                    const q16 kk_drag = (kd_q < FP_ONE) ? (q16)(FP_ONE - kd_q) : 0;
+                    const int64_t dmx = mul128_shr(ux_old < 0 ? -ux_old : ux_old, (int64_t)kk_drag, 16);
+                    const int64_t dmy = mul128_shr(uy_old < 0 ? -uy_old : uy_old, (int64_t)kk_drag, 16);
+                    ux = (ux_old < 0) ? -dmx : dmx;
+                    uy = (uy_old < 0) ? -dmy : dmy;
+                }
+
+                if (kd2_q > 0) {
+                    const int64_t rad1 = ux * ux + uy * uy;
+                    if (rad1 >= rad_dead_q32) {
+                        const q16 umag = sqrt_q16(rad1);
+                        const int64_t prod  = mul128_shr((int64_t)kd2_q, (int64_t)umag, 16);
+                        const int64_t denom = (int64_t)FP_ONE + prod;
+                        ux = (ux * (int64_t)FP_ONE) / denom;
+                        uy = (uy * (int64_t)FP_ONE) / denom;
+                    }
+                }
 
                 const int64_t du2_raw = (ux_old * ux_old + uy_old * uy_old)
                                        - (ux * ux + uy * uy);   // >= 0 structurally

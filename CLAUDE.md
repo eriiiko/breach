@@ -77,6 +77,7 @@ One line per system built for reuse. Long form + entry points:
 | Recorder | `src/simulation/recorder.py` | Frozen .npz contract; extend `DEFAULT_FIELDS` additively |
 | Entity system | `src/simulation/entities/` (schema, import-light) + runtimes in `simulation/` + `signal_bus.py` + `sensor_accessor.py` | Registry-driven; one serializer (`entities/serialize.py`); sensors read only via the accessor |
 | Level data layer | `level_lib.py` (write) / `level_loader.py` (read) | One writer ever — every tool is a client; never hand-write level.toml |
+| Interior drag | `eos_solver.cpp` kick loops + `cuda_kick_compression.cu` | Momentum drag (the storm sink) lives only in the staged drag block; extend its stages (e.g. `k_drag`/`k_drag2`'s linear+quadratic terms), never add a parallel damping site — the `dyn_wave_absorb` chain and the B3c space-sponge band are separately-scoped neighbours in the same loop, NOT under this rule |
 
 ### Determinism gates
 

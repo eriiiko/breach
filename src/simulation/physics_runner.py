@@ -484,6 +484,10 @@ class PhysicsRunner:
         # R2, Erik 2026-08-17) keeps the conservation oracle EXACT through
         # every gate; Erik sweeps the fraction at P-E5.
         self.eos.k_drag          = _ep("k_drag", self.eos.k_drag)
+        # k_drag2 (drag-law v2, docs/drag_law_v2_design_2026-08-23.md, issue
+        # #4 P1): the quadratic term, same dormancy idiom (default 0.0 ->
+        # dormant, branch on the quantized kd2_q, not this float).
+        self.eos.k_drag2         = _ep("k_drag2", self.eos.k_drag2)
         self.eos.k_drag_heat_frac = _ep("k_drag_heat_frac",
                                         self.eos.k_drag_heat_frac)
         # c_v: EOSSolver's own copy of the SAME [physics.thermal] c_v gas

@@ -132,6 +132,13 @@ struct KickScalarFolds {
     // P-E3 (energy-books arc, design §2.8): the interior-drag scalar folds,
     // the SAME per-tick-not-per-cell idiom absorb_dt_q already uses.
     int32_t kd_q         = 0;   // quantize(k_drag * dt) — dormancy branches on this
+    // drag-law v2 (docs/drag_law_v2_design_2026-08-23.md §2/§7): kd2_q beside
+    // kd_q, plus the MANDATORY dormant-dial-guarded rad_dead_q32 = U0^2
+    // (U0 = ceil(2^16/kd2_q)) — the calm-cell fast-path threshold stage Q's
+    // divide skips below (0 when kd2_q == 0 — an unconditional ceil-divide
+    // would be a divide-by-zero at the shipped config).
+    int32_t kd2_q        = 0;   // quantize(k_drag2 * dt) — dormancy branches on this
+    int64_t rad_dead_q32 = 0;   // U0^2, Q.32; 0 iff kd2_q == 0
     int32_t heat_frac_q  = 0;   // quantize(k_drag_heat_frac), a plain fraction
     int64_t recip_cv     = 0;   // make_recip(c_v), Q.32 (RECIP_SHIFT=32)
     // P-E4 (energy-books arc, design §2.4): the compression-work trust
@@ -143,7 +150,7 @@ KickScalarFolds kick_scalar_folds(
     float dt, float c_max, float dx, float adiabatic_index,
     float absorb_strength, float n_floor_solver, float t_min,
     float t_work_clamp, float t_max_phys, float u_max,
-    float k_drag, float k_drag_heat_frac, float c_v, float n_work_ref,
+    float k_drag, float k_drag2, float k_drag_heat_frac, float c_v, float n_work_ref,
     // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K, folded to
     // t_amb_q the SAME A7-floored expression the CPU live path folds.
     float t_amb_k);

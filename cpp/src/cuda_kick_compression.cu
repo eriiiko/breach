@@ -124,6 +124,7 @@ __global__ void kick_kernel(int32_t* __restrict__ wind_x,
                             const int64_t* __restrict__ cap2_plane,  // D2v2, >= 0
                             int64_t u_max2_q32,                      // D3
                             int32_t kd_q, int32_t heat_frac_q,       // P-E3
+                            int32_t kd2_q, int64_t rad_dead_q32,     // drag-law v2
                             int64_t recip_cv, int32_t t_max_phys_q,  // P-E3
                             unsigned long long* __restrict__ cnt,
                             int h, int w,
@@ -220,14 +221,38 @@ __global__ void kick_kernel(int32_t* __restrict__ wind_x,
         // P-E3 — interior drag + heat counterparty (design §2.8), VERBATIM
         // device transcription of eos_solver.cpp's kick-loop insertion: PER
         // TICK, after the |u| cap, before the store; ts cells skip both the
-        // drag and the deposit (ruling A1). Dormancy BY BRANCH on kd_q.
-        if (kd_q > 0 && !(ts && ts[i])) {
+        // drag and the deposit (ruling A1). drag-law v2 (design §2): widened
+        // to the two-term law, stage L / stage Q, verbatim the CPU's
+        // restructured block (each mirror keeps its own spellings — device:
+        // mul128_shr_signed, sqrt_q16_dev, !(ts && ts[i])).
+        if ((kd_q > 0 || kd2_q > 0) && !(ts && ts[i])) {
             const int64_t ux_old = ux, uy_old = uy;
-            const q16 kk_drag = (kd_q < FP_ONE) ? (q16)(FP_ONE - kd_q) : 0;
-            const int64_t dmx = mul128_shr_signed(ux_old < 0 ? -ux_old : ux_old, (int64_t)kk_drag, 16);
-            const int64_t dmy = mul128_shr_signed(uy_old < 0 ? -uy_old : uy_old, (int64_t)kk_drag, 16);
-            ux = (ux_old < 0) ? -dmx : dmx;
-            uy = (uy_old < 0) ? -dmy : dmy;
+            if (kd_q > 0) {
+                const q16 kk_drag = (kd_q < FP_ONE) ? (q16)(FP_ONE - kd_q) : 0;
+                const int64_t dmx = mul128_shr_signed(ux_old < 0 ? -ux_old : ux_old, (int64_t)kk_drag, 16);
+                const int64_t dmy = mul128_shr_signed(uy_old < 0 ? -uy_old : uy_old, (int64_t)kk_drag, 16);
+                ux = (ux_old < 0) ? -dmx : dmx;
+                uy = (uy_old < 0) ? -dmy : dmy;
+            }
+
+            // Stage Q — implicit quadratic (NEW, design §2), dormant by
+            // branch on kd2_q. rad1 is RECOMPUTED (the clamp block's `rad`
+            // above is stale once the rescale ran). The calm-cell fast path
+            // (design §7) skips exactly when the divide below would be an
+            // exact no-op (prod == 0).
+            if (kd2_q > 0) {
+                const int64_t rad1 = ux * ux + uy * uy;
+                if (rad1 >= rad_dead_q32) {
+                    const q16 umag = sqrt_q16_dev(rad1);
+                    const int64_t prod  = mul128_shr_signed((int64_t)kd2_q, (int64_t)umag, 16);
+                    const int64_t denom = (int64_t)FP_ONE + prod;
+                    // trunc-toward-0 int64 divide — the clamp-rescale idiom
+                    // above (mul128_shr_signed(...) / (int64_t)umag), exact
+                    // sign symmetry, shrink-only, C++/CUDA bit-identical.
+                    ux = (ux * (int64_t)FP_ONE) / denom;
+                    uy = (uy * (int64_t)FP_ONE) / denom;
+                }
+            }
 
             const int64_t du2_raw = (ux_old * ux_old + uy_old * uy_old)
                                    - (ux * ux + uy * uy);   // >= 0 structurally
@@ -361,7 +386,7 @@ KickScalarFolds kick_scalar_folds(
         float dt, float c_max, float dx, float adiabatic_index,
         float absorb_strength, float n_floor_solver, float t_min,
         float t_work_clamp, float t_max_phys, float u_max,
-        float k_drag, float k_drag_heat_frac, float c_v, float n_work_ref,
+        float k_drag, float k_drag2, float k_drag_heat_frac, float c_v, float n_work_ref,
         float t_amb_k) {
     KickScalarFolds f;
     f.n_floor_q    = quantize((double)n_floor_solver);
@@ -386,6 +411,14 @@ KickScalarFolds kick_scalar_folds(
     // idiom absorb_dt_q already uses; make_recip is the host double-divide
     // the CPU reference's own recip_cv fold uses.
     f.kd_q         = quantize((double)k_drag * dt_d);
+    // drag-law v2 (design §2/§7): kd2_q + the dormant-guarded rad_dead_q32,
+    // verbatim the CPU host fold (eos_solver.cpp).
+    f.kd2_q        = quantize((double)k_drag2 * dt_d);
+    f.rad_dead_q32 = 0;
+    if (f.kd2_q > 0) {
+        const int64_t U0 = ((int64_t)FP_ONE + (int64_t)f.kd2_q - 1) / (int64_t)f.kd2_q;
+        f.rad_dead_q32 = U0 * U0;
+    }
     f.heat_frac_q  = quantize((double)k_drag_heat_frac);
     f.recip_cv     = make_recip(std::max((double)c_v, 1e-6));
     // P-E4 (design §2.4): the trust-gate fold, verbatim step()'s.
@@ -424,6 +457,7 @@ void kick_compression_launch_resident(
                                  folds.n_floor_q, d_cap2_plane,
                                  folds.u_max2_q32,
                                  folds.kd_q, folds.heat_frac_q,
+                                 folds.kd2_q, folds.rad_dead_q32,
                                  folds.recip_cv, folds.t_max_phys_q,
                                  d_cnt, h, w,
                                  d_is_ambient, d_sponge_udamp);
@@ -450,7 +484,7 @@ void eos_kick_compression(
     float c_max, float dx, float adiabatic_index, float absorb_strength,
     float n_floor_solver, float t_min, float t_work_clamp,
     float t_max_phys, float u_max,   // trace_mass_scale param RETIRED (P-T0)
-    float k_drag, float k_drag_heat_frac, float c_v,   // P-E3 (design §2.8)
+    float k_drag, float k_drag2, float k_drag_heat_frac, float c_v,   // P-E3 (design §2.8) / drag-law v2
     float n_work_ref,   // P-E4 (design §2.4): the compression-work trust gate
     // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K, threaded to the
     // folds; NOT read in arithmetic yet (P-W1b lands the law).
@@ -470,7 +504,7 @@ void eos_kick_compression(
     const KickScalarFolds folds = kick_scalar_folds(
         dt, c_max, dx, adiabatic_index, absorb_strength, n_floor_solver,
         t_min, t_work_clamp, t_max_phys, u_max,
-        k_drag, k_drag_heat_frac, c_v, n_work_ref, t_amb_k);
+        k_drag, k_drag2, k_drag_heat_frac, c_v, n_work_ref, t_amb_k);
     const q16 absorb_dt_q = folds.absorb_dt_q;
 
     // ---- step 2's Dalton sum (verbatim host loop — the kick's N̂ input). ----
