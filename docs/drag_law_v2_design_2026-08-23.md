@@ -301,6 +301,45 @@ k2 = 1.0 leg (orifice stretch 1.29 < 1.5 there) does NOT establish
 §1(b)'s `k2 ≲ 0.6` band — that band is set by longer necks. P3 must not
 read gate-green-at-1.0 as venting-safe-at-1.0.
 
+**→ §12 records the P2 AS-MEASURED outcome, which supersedes this
+section's predicted numbers.**
+
+## 12. P2 as-measured addendum (2026-08-23, commit `afae8dc`)
+
+The gate was built and run; measurement amends two things the paper
+analysis got wrong, in the safe direction of MORE caution on k2:
+
+- **The steady-orifice estimate does not apply at blast scale.** The
+  scenario is a blast release (uncapped neck velocity 294→838 in the
+  first 5 ticks; baseline 50%-equalization at tick 15 of 120), so §1(c)'s
+  ceiling `u_ceil = 1/(k2·dt)` — not §1(b)'s steady stretch — dominates:
+  measured neck speeds settle almost exactly AT the ceiling (k2=0.25 →
+  ~72-82 vs predicted 96; k2=1.0 → ~22-23 vs predicted 24). Result:
+  §6 leg 2 is RED at all three designed dials (ratios 1.93 / 2.87 / 4.67
+  at k2 = 0.25 / 0.5 / 1.0), encoded as `xfail(strict=True)` (the
+  house pattern, `test_fire_heat_source.py:422`) so a future retune that
+  flips one is LOUD. **Empirical 1.5× crossover at this scenario:
+  k2 between 0.10 (ratio 1.40) and 0.15 (ratio 1.60).** P3's plausible
+  band is therefore ≈ ≤0.1-0.15 at blast-vented necks, weighed together
+  with k1-down sizing; the full dial table lives in
+  `tests/_drag2_sweep_bench.py` (worst|u| falls 838→2.4 across the
+  sweep — the ceiling mechanism made visible).
+- **The equalization observable is GAS MASS, not mean pressure**
+  (deviation from §6's example, investigated not assumed): above k2≈1
+  the drag-heat side channel rails neck cells to T_MAX_PHYS and the
+  pressure solve smears that energy room-wide, so mean pressure RISES
+  while ~94% of the mass has yet to vent — the signal inverts. Dalton
+  gas mass over open cells is monotone and immune; exact definition
+  pinned in `tests/test_drag2_venting_gate.py`'s docstring.
+- Leg 1 fence PASS (tick_50 = 15); leg 3 quadratic control k2=10 never
+  reaches 50% in 120 ticks (robust FAIL of the bound, as required);
+  leg 4 linear control k_drag=10 ratio 1.60 — exceeds the bound as
+  required but with a thin ~6.7% margin (note for any future bound
+  change). Leg 5 pinned: `e_drag_deposit` 57.96× @k2=1 (band [15,200]),
+  162× @k2=10 (band [60,600]); rail channel opens only at k2=10;
+  worst-tick ledger headroom 126.78× under 2^31 (asserted >10×).
+- Suite: 25 pre-existing failures unchanged, 3 xfails (leg 2), zero new.
+
 ## 7. Cost — honest class + the calm-cell fast path
 
 Stage Q armed is a NEW always-on per-open-cell cost (isqrt + 2 int64
