@@ -327,6 +327,11 @@ class GameRenderer:
         # as the default; toggle with T. RENDER-ONLY.
         self.show_temperature = bool(getattr(
             getattr(CFG, "render", None), "blackbody_overlay_on", True))
+        # Cold tier (P-W2, D-7) — default OFF via [render] cold_overlay_on
+        # (Erik 2026-08-25: cold must read TRANSPARENT in normal play; the blue
+        # ramp is the #8 cold-blast instrument, one config flip away).
+        self.show_cold = bool(getattr(
+            getattr(CFG, "render", None), "cold_overlay_on", False))
         # Fire light sources (B1 §3) — live A/B gate for the ray-traced fire
         # glow, seeded from [render.fire_lights] enabled; toggle with L. main.py
         # skips the fire-light cast when this is off. RENDER-ONLY.
@@ -519,10 +524,11 @@ class GameRenderer:
             # round-1 feedback): cold is painted only where the cell holds
             # >= 25% of ambient gas, so vented/space cells stop flooding the
             # screen blue — see COLD_N_MIN_FRAC in renderer/cold_overlay.py.
-            _o2 = gmap.gases.name_to_id["o2"]
-            _n2 = gmap.gases.name_to_id["inert_n2"]
-            self.cold_overlay.update(
-                gmap.temperature, n_bulk=gmap.gas[_o2] + gmap.gas[_n2])
+            if self.show_cold:
+                _o2 = gmap.gases.name_to_id["o2"]
+                _n2 = gmap.gases.name_to_id["inert_n2"]
+                self.cold_overlay.update(
+                    gmap.temperature, n_bulk=gmap.gas[_o2] + gmap.gas[_n2])
         # Water overlay v2 (W6b): depth tint + ripple shading + foam +
         # ambient sines. Skipped when toggled off; the overlay itself also
         # early-outs when the ship is dry (zero-water fast path). Render-only
@@ -660,8 +666,9 @@ class GameRenderer:
             # per pixel, so "under" is about draw order, not overlap — this
             # pass paints sub-ambient cells blue before the heat pass adds its
             # (zero, for those same cells) emissive contribution on top.
-            self.cold_overlay.draw(
-                0, 0, self.world.world_px_w, self.world.world_px_h)
+            if self.show_cold:
+                self.cold_overlay.draw(
+                    0, 0, self.world.world_px_w, self.world.world_px_h)
             self.temperature_overlay.draw(
                 0, 0, self.world.world_px_w, self.world.world_px_h)
         # Water OPTICS pass (graphics/water_rendering.md §5): the GLSL

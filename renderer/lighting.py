@@ -15,6 +15,7 @@ import numpy as np
 import pyray as rl
 
 from . import core
+from config import CFG
 
 
 SHADERS_DIR = Path(__file__).resolve().parent.parent / "shaders"
@@ -112,7 +113,12 @@ class LightingPass:
         # field. This gain maps physical power -> display brightness so sources are
         # tuned by physics, exposure by one master dial. Default 1.0 (neutral);
         # game_renderer / the demo override from config.
-        self.light_gain = 1.0
+        # Config-bound 2026-08-25 ([render.lighting] master_gain): the game ran
+        # the neutral 1.0 while the demo harness tunes at ~10 — the "too dark
+        # everywhere" gap (Erik). Distinct from the blackbody light_gain dial.
+        self.light_gain = float(getattr(
+            getattr(getattr(CFG, "render", None), "lighting", None),
+            "master_gain", 1.0))
         self.set_light_gain(self.light_gain)
         # u_art_uv_rect MUST be initialised: an unset vec4 uniform reads as
         # (0,0,0,0) and the shader's world_uv division would produce NaNs.

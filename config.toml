@@ -1087,6 +1087,9 @@ height_floor = 0.3
 blackbody_overlay_on = true
 fire_overlay_on = false
 pressure_overlay_on = false
+cold_overlay_on = false    # P-W2 blue cold tier — the #8 cold-blast instrument.
+                           # OFF in normal play (Erik 2026-08-25: cold reads
+                           # TRANSPARENT); flip on for cold-blast sessions.
 
 # Fire & Heat Beauty B2 (§6): the old flat smoke_overlay + additive glow_overlay
 # pair, kept behind a toggle for the P2 A/B against the new physical gas medium.
@@ -1129,6 +1132,15 @@ max_lights = 16            # brightest-K cap (the budget lever)
 light_range = 18.0         # omni reach in tiles (LONG on purpose — Erik ruling)
 light_gain = 1.0           # multiplies the black-body intensity into light weight
 
+# --- Lighting pass (master exposure) ---------------------------------------
+[render.lighting]
+master_gain = 2.0          # ONE master display-exposure dial on the light field
+                           # (LightingPass u_light_gain). Was hardcoded 1.0 in
+                           # the game while the demo harness tunes at ~10 — the
+                           # "too dark everywhere" gap. TRIAL 2.0 (Erik
+                           # 2026-08-25, "just double it"); reconcile with the
+                           # demo's regime in the pre-tuning instrument pass.
+
 # --- Fire & Heat Beauty B2 gas-medium render pass -------------------------
 # P1 PLUMBING ONLY: these blocks have NO consumers yet — renderer/gas_medium.py
 # (P2), shaders/gas_medium.fs (P3), the speckle pass (P4) read them later. They
@@ -1136,12 +1148,13 @@ light_gain = 1.0           # multiplies the black-body intensity into light weig
 # the honest / identity values (design §6). RENDER-ONLY, tuned by eye with Erik,
 # never gated. (docs/fire_b2_smoke_honesty_design_2026-07-21.md §3-§6.)
 [render.gas_medium]
-plume_k_scale = 300.0       # RELATIVE multiplier on the shared smoke_absorb_scale base
-                            # 2026-08-15 P-S1 visibility gain (render-only, provisional):
-                            # combustion-sourced smoke peaks ~0.002 density vs the old
-                            # saturated 1.0 — this maps the new relational field into the
-                            # visible tau window (peak ~0.8 opacity at the flame). Tune by
-                            # eye with Erik; retire when Q6 (P-S2) restores density scale.
+plume_k_scale = 50.0        # RELATIVE multiplier on the shared smoke_absorb_scale base
+                            # 2026-08-25 #6 diagnostic (docs/smoke_tau_diagnostic_2026-08-25.md):
+                            # the 300.0 hack was calibrated on the old ~0.002-peak soot
+                            # regime; real fire sessions live at rho 0.02-0.3, so 300 put
+                            # 60-100% of visible smoke past alpha 0.98 (flat black). 50
+                            # puts the black knee at the measured p90 density. TRIAL value,
+                            # Erik's eye decides; final band placement after #48's drift.
 tau_curve_a = 1.0           # tau' = a*tau^b — artistic remap IN tau-SPACE
 tau_curve_b = 1.0           #   (b>1 steepens edges; 1/1 = fully honest)
 glow_gain = 1.0             # re-match the beloved god-ray brightness (tune)
