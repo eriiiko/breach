@@ -13,10 +13,17 @@ pathfinding, rendering — addresses the same cells the same way.
 
 ## 1. One grid
 
-Breach has **exactly one grid**. Every spatial quantity lives on it — material, wall health,
-atmosphere, smoke, fire, wind, the per-channel light-attenuation field, the heat buffer, unit
-footprints, line-of-sight. There is no second, coarser grid: a unit is not on a different grid from
-the smoke it walks through; it occupies a block of the *same* cells the smoke diffuses across.
+Breach has **exactly one state grid**. Every synced spatial quantity lives on it — material, wall
+health, atmosphere, smoke, fire, wind, the per-channel light-attenuation field, the heat buffer,
+unit footprints, line-of-sight. There is no second *state* grid: a unit is not on a different grid
+from the smoke it walks through; it occupies a block of the *same* cells the smoke diffuses across.
+
+This rule scopes **game state, not internals**. Other resolutions exist and are legitimate, as long
+as they are derived, non-authoritative views of the one state grid: the pressure solve builds a
+multigrid pyramid of coarsened levels internally and discards it every tick (chapter 04); the
+renderer works at whatever resolutions serve the look — the world RT, detail-noise textures, a
+render-only fire-VFX grid (chapter 09) — reading dequantized copies and writing nothing back. What
+is forbidden is a second *authoritative* grid, not auxiliary ones.
 
 Every field is a numpy array of shape `(h, w)` (or `(h, w, 3)` for the RGB light / attenuation
 fields), all indexed identically. So one wall mask, one Laplacian, and one set of boundary
