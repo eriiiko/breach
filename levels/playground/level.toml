@@ -186,6 +186,52 @@ intensity = 0.9
 range = 18.0
 kind = "static"
 
+[[entity]]
+id = "duct_loop"
+class = "duct"
+filter = "hepa_basic"
+
+[[entity]]
+id = "duct_sealed"
+class = "duct"
+filter = "derelict"
+
+[[entity]]
+id = "vent_loop_supply"
+class = "vent"
+x = 68
+y = 39
+role = "supply"
+duct = "duct_loop"
+q_circ = 0.65
+
+[[entity]]
+id = "vent_loop_return"
+class = "vent"
+x = 68
+y = 23
+role = "return"
+duct = "duct_loop"
+q_circ = 0.65
+
+[[entity]]
+id = "vent_sealed_supply"
+class = "vent"
+x = 85
+y = 51
+role = "supply"
+duct = "duct_sealed"
+q_circ = 0.6
+
+[[entity]]
+id = "vent_sealed_return"
+class = "vent"
+x = 93
+y = 63
+role = "return"
+duct = "duct_sealed"
+q_circ = 0.6
+
 [art.bare]
 diffuse = "baked_diffuse.png"
 normal = "baked_normal.png"
