@@ -88,3 +88,49 @@ slices shared verbatim with `_hotplate_heating_bench.py`), materials table
 (enters CLAUDE.md when promoted to a gate): *scenario-level "does the ship
 behave" checks extend `_scenario_all_systems_bench.py`'s script + property
 list — never a second parallel scenario bench.*
+
+---
+
+## Addendum (same evening): tough-glass run + the #54 bisection
+
+**Tough-glass scenario** (`--tough-glass`: glass burst_threshold 1.0→3.0,
+the candidate aquarium-pane row): with panes that survive the decompression
+differential, **both tanks hold 100.00% of their water at every checkpoint
+through 25 s of ~0.03 atm vacuum — exact to the integer LSB, zero stray,
+zero wall changes beyond the declared breach hole.** Erik's original
+spilled-container incident (shockwave pushing water through intact glass)
+does not reproduce on the S1 integer water substrate. Shockwaves still
+cross walls (P2 unchanged); water never does. Note: the aquarium's P5
+reads 1.65 atm at end — NOT a leak; that is #54's false heating inflating
+the sealed box (dT +314 by 42 s, fire still burning in vacuum feeding it).
+
+**Sealed-box bisection** (`tests/_sealedbox_bisect_bench.py` — minimal
+probe: crate fire + dry sealed glass box, 18 s, one EOSSolver field per
+run):
+
+| variant | box dT | box P | bunker dT | pen dT | u_max |
+|---|---|---|---|---|---|
+| baseline | +115.0 | 1.00→1.50 | +72.7 | +66.4 | 19.1 |
+| k_drag_heat_frac=0 | +124.4 | →1.51 | +74.8 | +66.2 | 19.2 |
+| k_drag=0 | +165.6 | →1.43 | +133.7 | +139.9 | 16.5 |
+| **adiabatic_index=1.0** | **+0.0** | →1.28 | **+0.0** | **+0.0** | **1.8** |
+| use_multigrid=False | −286.4 | →0.02 | −274.0 | −283.0 | 277.4 |
+| U_MAX=1e9 | +115.0 | →1.50 | +72.7 | +66.4 | 19.1 |
+
+**Verdict: the compression-work term (−P∇·u, γ=1.4) is THE #54
+mechanism** — switching it off (γ=1.0) zeroes every false-heating channel
+at once. Drag-heat and the velocity rail are exonerated (no effect);
+momentum drag is a partial damper of the mechanism (removing it worsens
+heating ~+45%); the flat point-GS path blows up at current settings and
+cannot serve as the MG control. Composed story consistent with P2: wave
+energy crosses walls it shouldn't (1.17 atm inside 0%-transmit steel),
+and inside closed cavities the compression-work term rectifies that
+oscillation into net heat while the open source region cools. Residual
+worth the mass-books look: with compression work OFF, the sealed box still
+rose to 1.28 atm at dT 0 — pressure without temperature suggests some mass
+does cross.
+
+Next per the #54 session plan: design ruling with Erik — energy-conserving
+fix of the compression-work term in place (and/or the wall-crossing wave
+path it feeds on) vs an additive second method. Erik's standing ruling
+holds: the Kwatra solver is not discarded either way.

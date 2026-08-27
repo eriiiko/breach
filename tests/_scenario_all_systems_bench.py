@@ -28,6 +28,13 @@ Assertions get promoted to real gates one by one as the issues close.
 
 Run:
     conda run -n data python tests/_scenario_all_systems_bench.py
+    conda run -n data python tests/_scenario_all_systems_bench.py --tough-glass
+
+--tough-glass raises [materials.glass] burst_threshold 1.0 -> 3.0 BEFORE
+map construction (materials bind at map build) — the candidate "aquarium
+pane" material row. With it the tanks must survive the decompression
+differential, so the harness can answer Erik's core question directly:
+does water stay inside an INTACT tank through blasts AND hard vacuum?
 """
 from __future__ import annotations
 
@@ -85,6 +92,11 @@ def box_wall_mask(shape, box):
 
 
 def main() -> None:
+    if "--tough-glass" in sys.argv[1:]:
+        from config import CFG
+        CFG.materials.glass.burst_threshold = 3.0
+        print("[tough-glass] [materials.glass] burst_threshold -> 3.0 "
+              "(candidate aquarium-pane row; binds at map construction)")
     lvl = load_level("playground", levels_dir=str(ROOT / "levels"))
     lvl = replace(lvl, entities=[e for e in lvl.entities
                                  if e.class_name not in ("vent", "duct")])
