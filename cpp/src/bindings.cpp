@@ -1844,6 +1844,14 @@ PYBIND11_MODULE(breach_physics, m) {
         // P-E2b (design §2.2/§2.5, L3-7): the Pass-1 attenuation-drop energy
         // sum. Same accumulate-across-step() idiom as the P-E2a six above.
         .def_readonly("e_deposit_drop_sum", &TemperatureSolver::e_deposit_drop_sum)
+        // --- arc #54 P-G1b: the gas side's own closure identity ------------
+        //   Δ Σ_accountable gas_energy == e_gas_deposit_sum + e_gas_cond_sum
+        //                               + e_gas_rail_sum
+        // (temperature_solver.h carries the full statement). Same
+        // accumulate-across-step() idiom as every counter above.
+        .def_readonly("e_gas_deposit_sum",  &TemperatureSolver::e_gas_deposit_sum)
+        .def_readonly("e_gas_cond_sum",     &TemperatureSolver::e_gas_cond_sum)
+        .def_readonly("e_gas_rail_sum",     &TemperatureSolver::e_gas_rail_sum)
         // P2: wind_x/wind_y/dt are OPTIONAL (default None/0.0) so the shipped
         // direct-binding call sites (tests/test_temperature_*.py,
         // tests/cuda_s1_check.py — all pre-P2, 7 positional args) keep working
@@ -2680,6 +2688,23 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readonly("t_max_phys_hits",    &CombustionSolver::t_max_phys_hits) // v2.4
         // P-E2b (design §2.2/§2.5): the energy-sum twin of heat_floor_hits.
         .def_readonly("e_deposit_drop_sum", &CombustionSolver::e_deposit_drop_sum)
+        // --- arc #54 P-G1b: the two-hop energy ledger's counters -----------
+        // Identity (A), the BOOKS identity:
+        //   Δ Σ_accountable gas_energy == − e_comb_draw_sum
+        //       + e_comb_deliver_sum + e_comb_heat_sum + e_comb_rail_sum
+        // Identity (B), the PARCEL identity (nothing drawn is lost en route):
+        //   e_comb_draw_sum + e_comb_mint_sum == e_comb_deliver_sum
+        //       + e_soot_shed_sum + e_ts_products_sum + e_comb_export_sum
+        // combustion.h carries the full statement and the R3-#9 rationale for
+        // why the soot's share is SHED rather than delivered.
+        .def_readonly("e_comb_draw_sum",    &CombustionSolver::e_comb_draw_sum)
+        .def_readonly("e_comb_mint_sum",    &CombustionSolver::e_comb_mint_sum)
+        .def_readonly("e_comb_deliver_sum", &CombustionSolver::e_comb_deliver_sum)
+        .def_readonly("e_soot_shed_sum",    &CombustionSolver::e_soot_shed_sum)
+        .def_readonly("e_ts_products_sum",  &CombustionSolver::e_ts_products_sum)
+        .def_readonly("e_comb_export_sum",  &CombustionSolver::e_comb_export_sum)
+        .def_readonly("e_comb_heat_sum",    &CombustionSolver::e_comb_heat_sum)
+        .def_readonly("e_comb_rail_sum",    &CombustionSolver::e_comb_rail_sum)
         .def("step", [](const CombustionSolver& self,
                         py::array_t<int32_t> gas,             // (n_gases,h,w) Q16.16
                         int o2_idx, int inert_n2_idx, int black_smoke_idx,
@@ -2715,7 +2740,17 @@ PYBIND11_MODULE(breach_physics, m) {
                         // once at pass entry); None -> permeability 1.0.
                         int draw_r,
                         py::object dyn_permeability,
-                        int max_claimants) {
+                        int max_claimants,
+                        // arc #54 P-G1b (design §2.7): the conserved gas
+                        // energy field, the ring mask the accountable set
+                        // needs, and the T_AMB_K fold the born-at-ambient rule
+                        // converts through. All OPTIONAL — None -> nullptr ->
+                        // this pass is byte-identical to pre-#54, which is
+                        // what leaves every direct-binding combustion test
+                        // (and the CUDA check harness) unmoved.
+                        py::object gas_energy,
+                        py::object is_ambient,
+                        int32_t t_amb_q) {
             auto gv = gas.mutable_unchecked<3>();
             int32_t* gas_ptr = gv.mutable_data(0, 0, 0);
             const int n_gases = static_cast<int>(gv.shape(0));
@@ -2763,10 +2798,27 @@ PYBIND11_MODULE(breach_physics, m) {
                 auto pa = perm_arr.unchecked<2>();
                 perm_ptr = pa.data(0, 0);
             }
+            // arc #54 P-G1b: the conserved field + the ring mask (both
+            // nullable, the shipped idiom above).
+            int64_t* gen_ptr = nullptr;
+            py::array_t<int64_t> gen_arr;
+            if (!gas_energy.is_none()) {
+                gen_arr = gas_energy.cast<py::array_t<int64_t>>();
+                auto ga = gen_arr.mutable_unchecked<2>();
+                gen_ptr = ga.mutable_data(0, 0);
+            }
+            const bool* amb_ptr = nullptr;
+            py::array_t<bool> amb_arr;
+            if (!is_ambient.is_none()) {
+                amb_arr = is_ambient.cast<py::array_t<bool>>();
+                auto aa = amb_arr.unchecked<2>();
+                amb_ptr = aa.data(0, 0);
+            }
             self.step(gas_ptr, n_gases, o2_idx, inert_n2_idx, black_smoke_idx,
                      temp, whp, f, fl, sol, vac, ign, h, w, dt, c_v, n_floor_heat,
                      tsol, hshift, heat_ptr, dacc_ptr,
-                     draw_r, perm_ptr, max_claimants);
+                     draw_r, perm_ptr, max_claimants,
+                     gen_ptr, amb_ptr, t_amb_q);
         }, py::arg("gas"), py::arg("o2_idx"), py::arg("inert_n2_idx"),
            py::arg("black_smoke_idx"), py::arg("temperature"), py::arg("wall_hp"),
            py::arg("fire"), py::arg("flammable"), py::arg("solid"),
@@ -2778,7 +2830,10 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("dem_acc") = py::none(),
            py::arg("draw_r") = 1,
            py::arg("dyn_permeability") = py::none(),
-           py::arg("max_claimants") = 4);
+           py::arg("max_claimants") = 4,
+           py::arg("gas_energy") = py::none(),   // arc #54 (None = pre-#54)
+           py::arg("is_ambient") = py::none(),   // arc #54 accountable set
+           py::arg("t_amb_q") = 0);              // arc #54 T_AMB_K raw
 
     // --- WaterSolver (pipe model: damped velocity + donor-cell upwind flux;
     //     engine/07 §2, water_implementation_plan Step W1) ---
@@ -2974,7 +3029,14 @@ PYBIND11_MODULE(breach_physics, m) {
                              int o2_idx,                         // EOS P4
                              float sim_time,
                              py::object is_ambient,                 // BC
-                             py::object rad_net) -> py::list {      // P-R4
+                             py::object rad_net,                    // P-R4
+                             // arc #54 P-G1b (design §2.7 row 3): the
+                             // conserved gas energy field + the T_AMB_K fold.
+                             // Optional (None -> nullptr -> the pre-#54 T-form
+                             // tail, bit-identical), the same nullable idiom
+                             // is_ambient/rad_net use.
+                             py::object gas_energy,
+                             int32_t t_amb_q) -> py::list {
             // ripple group
             auto [rip, h, w]    = get_2d(ripple);
             auto [ripv, h2, w2] = get_2d(ripple_v);
@@ -3037,12 +3099,22 @@ PYBIND11_MODULE(breach_physics, m) {
                 rnet = ra.data(0, 0);
             }
 
+            // arc #54 P-G1b: the nullable conserved energy field (None ->
+            // nullptr -> the pre-#54 T-form tail).
+            int64_t* gen = nullptr;
+            py::array_t<int64_t> gen_arr;
+            if (!gas_energy.is_none()) {
+                gen_arr = gas_energy.cast<py::array_t<int64_t>>();
+                auto ga = gen_arr.mutable_unchecked<2>();
+                gen = ga.mutable_data(0, 0);
+            }
+
             auto destroyed = self.step_tail(
                 rip, ripv, wd, wp, sol,
                 f, atm, sm, whp, temp, wx, wy, vac, fl,
                 temp, hp, shift, fs, tsol, csg, fr, tep,
                 gas_ptr, gcons, n_gases, o2_idx,
-                h, w, sim_time, amb, rnet);
+                h, w, sim_time, amb, rnet, gen, t_amb_q);
             py::list result;
             for (const auto& [dy, dx] : destroyed) {
                 result.append(py::make_tuple(dy, dx));
@@ -3062,7 +3134,9 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("gas"), py::arg("gas_conservative"), py::arg("o2_idx"),
            py::arg("sim_time"),
            py::arg("is_ambient") = py::none(),   // BC (default None = space map)
-           py::arg("rad_net") = py::none())      // P-R4 (default None = no fold)
+           py::arg("rad_net") = py::none(),      // P-R4 (default None = no fold)
+           py::arg("gas_energy") = py::none(),   // arc #54 (None = T-form tail)
+           py::arg("t_amb_q") = 0)               // arc #54 T_AMB_K raw
         // --- Patch 1 S4b: the IMEX atmosphere/smoke substep loop ------------
         // run_substeps moves the per-tick IMEX substep block of PhysicsRunner.step
         // (between _step_water and step_tail) into C++. Pointer extraction mirrors

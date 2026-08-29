@@ -1,5 +1,6 @@
 #include "combustion.h"
 #include "fixed_point.h"
+#include "gas_energy.h"  // arc #54 P-G1b: THE gas energy seam (design §2.7)
 #include "raycaster.h"   // heat_saturating_add (shared Q16.16 domain)
 #include <algorithm>
 #include <cstdint>
@@ -90,6 +91,14 @@ static constexpr int D4[][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
 // (:749). Retargeting it is behaviour-identical (same values; both are only
 // ever used as an array index), but it was not the no-op deletion advertised.
 
+// arc #54 P-G1b: "is this a thermal solid" with the nullable-mask fallback the
+// whole file uses. `object_site` ALSO requires `heat_inv_shift`; this one does
+// not, because the ENERGY routing must send a parcel away from a thermal solid
+// whether or not a convert shift happens to be plumbed.
+static inline bool thermal_solid_at(const bool* thermal_solid, int i) {
+    return (thermal_solid != nullptr) && thermal_solid[i];
+}
+
 static inline bool in_bounds(int y, int x, int h, int w) {
     return y >= 0 && y < h && x >= 0 && x < w;
 }
@@ -142,7 +151,10 @@ void CombustionSolver::step(
         int32_t* dem_acc,
         int draw_r,
         const float* dyn_permeability,
-        int max_claimants) const {
+        int max_claimants,
+        int64_t* gas_energy,          // arc #54 P-G1b: the conserved gas energy
+        const bool* is_ambient,       // ring mask (accountable-set input)
+        int32_t t_amb_q) const {      // T_AMB_K raw (born-at-ambient rule)
 
     if (h <= 0 || w <= 0 || dt <= 0.0f) return;
     if (o2_idx < 0 || o2_idx >= n_gases) return;
@@ -282,6 +294,29 @@ void CombustionSolver::step(
     // backends: one 5*n int32 allocation + memset per tick, host-side here and
     // one cudaMalloc/cudaMemset/cudaFree in the CUDA twin.
     std::vector<q16> dep_site((size_t)5 * n, 0);
+
+    // --- arc #54 P-G1b: THE PARALLEL ENERGY LEDGER (design §2.7, R3-#8) -----
+    // Two int64 SIBLINGS of the two mass buffers above, keyed identically:
+    //   e_slot[s*n + j]     the ENERGY air cell j sends with the O2 it
+    //                       allocates to the source at offset OFF[s]
+    //   e_dep_site[t*n + i] the ENERGY source i sends to deposit site t
+    // They exist because an accumulator beside `alloc[]` cannot reach the
+    // deposit site `s`: the mass makes two hops through two different gathers,
+    // and the energy has to make exactly the same two, or the products would
+    // arrive at the flame carrying a temperature nobody paid for.
+    //
+    // Per-tick scratch, like `alloc_slot`/`dep_site`: never synced, never
+    // digested. Allocated only when the field is supplied, so the pre-#54
+    // direct-binding path costs nothing.
+    const bool e_on = (gas_energy != nullptr);
+    std::vector<int64_t> e_slot(e_on ? (size_t)n_slots * n : 0, 0);
+    std::vector<int64_t> e_dep_site(e_on ? (size_t)5 * n : 0, 0);
+    // The canonical accountable set (design §2.2), read through the ONE shared
+    // predicate — never re-derived here.
+    auto acct = [&](int i) -> bool {
+        return gas_energy::accountable(solid, thermal_solid, is_vacuum,
+                                       is_ambient, i);
+    };
 
     // ======================================================================
     // Pass A — air cells. Single writer of O2[j], SOOT[j], N2[j],
@@ -617,14 +652,50 @@ void CombustionSolver::step(
             // clamped before the add: `alloc[k]` can reach a full ambient O2
             // cell (~1.4e4 counts) and mul_q16 by a near-format-max mantissa
             // then << shift would otherwise leave int32.
+            // ---- arc #54 P-G1b: THE DONOR'S ENERGY LEAVES WITH ITS O2 -----
+            // MOVED mass carries its source's T_abs (design §2.7). Every
+            // claimant's slot gets `alloc_k · T_abs,j`, and the donor is
+            // debited the total `burn_j · T_abs,j` — one common factor, so the
+            // per-slot sum is the debit EXACTLY, with no rounding to reconcile.
+            //
+            // A NON-accountable donor (a ring cell, a thermal solid) holds no
+            // `gas_energy`, so its parcel is MINTED at ambient — the same
+            // convention bulk transport uses for a non-participating donor
+            // (design §2.7 row 1) — and the mint is counted rather than
+            // silently created.
+            const bool acct_j = e_on && acct(j);
+            const int64_t t_abs_j = acct_j
+                ? ((int64_t)Tsnap[j] + (int64_t)t_amb_q) : (int64_t)t_amb_q;
+            if (e_on) {
+                const int64_t e_out = burn_j * t_abs_j;
+                if (acct_j) {
+                    gas_energy[j] -= e_out;
+                    e_comb_draw_sum += e_out;
+                } else {
+                    e_comb_mint_sum += e_out;
+                }
+            }
             for (int k = 0; k < n_cl; ++k) {
                 alloc_slot[(size_t)cl_slot[k] * n + j] = (q16)alloc[k];
+                if (e_on) {
+                    e_slot[(size_t)cl_slot[k] * n + j] = alloc[k] * t_abs_j;
+                }
                 if (heat != nullptr && alloc[k] > 0 && H_bed_m_q > 0) {
                     int64_t bed = (int64_t)mul_q16((q16)alloc[k], H_bed_m_q);
                     bed <<= H_bed_shift;
                     if (bed > (int64_t)INT32_MAX) bed = (int64_t)INT32_MAX;
                     heat_saturating_add(&heat[cl_src[k]], (int32_t)bed);
                 }
+            }
+            // The donor's mirror follows its own stored energy (design §2.6:
+            // a seam write refreshes the MIRROR, never the rails). E and N both
+            // fell by the same T_abs ratio, so this moves T by at most one raw
+            // count — it is here so no reader between now and the next
+            // recovery can see an E and a T that disagree.
+            if (acct_j) {
+                temperature[j] = gas_energy::mirror_q(
+                    gas_energy[j],
+                    (int64_t)O2[j] + (int64_t)N2[j], t_amb_q);
             }
         }
     }
@@ -654,6 +725,9 @@ void CombustionSolver::step(
             // direction D4_OPP[s].
             int64_t burn_i = 0;
             int64_t direct[4] = {0, 0, 0, 0};
+            // arc #54 P-G1b: the energy siblings, gathered on the SAME walk.
+            int64_t e_i = 0;
+            int64_t direct_e[4] = {0, 0, 0, 0};
             for (int s = 0; s < n_slots; ++s) {
                 const int jy = y - cd::OFF_DY[s], jx = x - cd::OFF_DX[s];
                 if (!in_bounds(jy, jx, h, w)) continue;
@@ -661,6 +735,11 @@ void CombustionSolver::step(
                 const int64_t a = (int64_t)alloc_slot[(size_t)s * n + j];
                 burn_i += a;
                 if (s < 4) direct[cd::D4_OPP[s]] = a;
+                if (e_on) {
+                    const int64_t ea = e_slot[(size_t)s * n + j];
+                    e_i += ea;
+                    if (s < 4) direct_e[cd::D4_OPP[s]] = ea;
+                }
             }
             if (burn_i == 0) continue;   // this source drew no O2 this tick
             // round-to-nearest — the same unbiased-sink idiom fire_simulation's
@@ -713,13 +792,74 @@ void CombustionSolver::step(
             if (m == 0) rem = 0;
             const int64_t even = (m > 0) ? rem / m : 0;
             const int64_t extra = (m > 0) ? rem - even * m : 0;   // in [0, m)
+            // ---- arc #54 P-G1b: THE ENERGY FOLLOWS THE MASS, EXACTLY ------
+            // hop-1 energy rides its own face home (a face that donated mass
+            // always donated energy — `e = alloc·T_abs` with T_abs >= 1 by the
+            // D-3 guard — so the two can never disagree about WHICH faces).
+            //
+            // The hop >= 2 REMAINDER is the subtle one. It is tempting to
+            // split `rem_e` by the same even/leftover rule the mass uses, but
+            // that DESYNCHRONIZES them: energy is ~T_abs times larger than
+            // mass, so `rem/m` can floor to 0 on a site where `rem_e/m` is
+            // millions. A site would receive energy with NO mass — and Pass C,
+            // which correctly skips a site that got nothing (`burn_dep == 0`),
+            // would drop it on the floor. That is a real leak, measured at
+            // ~1e11 raw over the hot-rail run before this was fixed.
+            //
+            // So the remainder ENERGY is split in proportion to the remainder
+            // MASS each site actually received, with the leftover raw counts
+            // going to the first open site that got mass. A site with zero
+            // mass share gets exactly zero energy, by construction.
+            // The product is decomposed as `q·share + (r·share)/rem` from
+            // `rem_e = q·rem + r` so the wide term never leaves int64.
+            //
+            // At draw_r == 1 the remainder is identically zero on both sides,
+            // so the R = 1 identity survives untouched.
+            int64_t rem_mass_share[5] = {0, 0, 0, 0, 0};
             int taken = 0;
             for (int t = 0; t < 5; ++t) {
                 if (!site_open[t]) continue;
-                int64_t share = even + ((taken < (int)extra) ? 1 : 0);
+                rem_mass_share[t] = even + ((taken < (int)extra) ? 1 : 0);
                 ++taken;
+                int64_t share = rem_mass_share[t];
                 if (t < 4) share += direct[t];
                 dep_site[(size_t)t * n + i] = (q16)share;
+            }
+            if (e_on) {
+                const int64_t hop1_e = direct_e[0] + direct_e[1]
+                                     + direct_e[2] + direct_e[3];
+                int64_t rem_e = e_i - hop1_e;
+                // m == 0 is unreachable while burn_i > 0 (the mass rule above
+                // relies on the same fact), but a lost remainder would break
+                // the parcel identity silently, so it is EXPORTED rather than
+                // assumed away.
+                if (m == 0) { e_comb_export_sum += rem_e; rem_e = 0; }
+                const int64_t q = (rem > 0) ? rem_e / rem : 0;
+                const int64_t r = (rem > 0) ? rem_e - q * rem : 0;
+                int64_t placed = 0;
+                int first_massive = -1;
+                for (int t = 0; t < 5; ++t) {
+                    if (!site_open[t]) continue;
+                    int64_t share_e = 0;
+                    if (rem_mass_share[t] > 0 && rem > 0) {
+                        share_e = q * rem_mass_share[t]
+                                + (r * rem_mass_share[t]) / rem;
+                        placed += share_e;
+                        if (first_massive < 0) first_massive = t;
+                    }
+                    if (t < 4) share_e += direct_e[t];
+                    e_dep_site[(size_t)t * n + i] = share_e;
+                }
+                // The floor's leftover (strictly < m raw counts) rides with the
+                // first site that took mass, so `Σ_t e_dep_site == e_i` exactly.
+                if (first_massive >= 0 && rem_e > placed) {
+                    e_dep_site[(size_t)first_massive * n + i] += rem_e - placed;
+                } else if (first_massive < 0 && rem_e != 0) {
+                    // Nothing took remainder MASS, so nothing may take its
+                    // energy either — export it rather than inflate a site's
+                    // E/N (unreachable: rem > 0 implies some site got mass).
+                    e_comb_export_sum += rem_e;
+                }
             }
         }
     }
@@ -751,11 +891,13 @@ void CombustionSolver::step(
             // the four faces. Source i on face d of s filed its share toward s
             // under its OWN outbound direction to s, which is D4_OPP[d].
             int64_t burn_dep = (int64_t)dep_site[(size_t)4 * n + s];
+            int64_t e_dep = e_on ? e_dep_site[(size_t)4 * n + s] : 0;
             for (int d = 0; d < 4; ++d) {
                 const int iy = y + D4[d][0], ix = x + D4[d][1];
                 if (!in_bounds(iy, ix, h, w)) continue;
                 const int i = iy * w + ix;
                 burn_dep += (int64_t)dep_site[(size_t)cd::D4_OPP[d] * n + i];
+                if (e_on) e_dep += e_dep_site[(size_t)cd::D4_OPP[d] * n + i];
             }
             if (burn_dep == 0) continue;   // nothing burnt for this cell
 
@@ -770,6 +912,32 @@ void CombustionSolver::step(
             const q16 soot = narrow_round(mul_wide((q16)burn_dep, soot_yield_q));
             SOOT[s] += soot;
             N2[s]   += (q16)(burn_dep - (int64_t)soot);
+
+            // ---- arc #54 P-G1b: THE PARCEL LANDS (design §2.7, R3-#8/#9) ---
+            // The arriving parcel's energy is split in the SAME proportion as
+            // its mass: `soot/burn_dep` of it leaves the bulk books with the
+            // black smoke (a trace plane), `(burn_dep − soot)/burn_dep` of it
+            // stays with the bulk N2 that actually arrived. Split EXACTLY —
+            // `e_deliver = e_dep − e_shed` by construction, so no raw count is
+            // created or lost at the seam — and computed as
+            // `q·soot + (r·soot)/burn_dep` from `e_dep = q·burn_dep + r` so the
+            // wide product never leaves int64 (a naive `e_dep·soot` can reach
+            // 2^64 at a hot, many-donor flame).
+            //
+            // NEVER deliver the whole parcel: that would raise the arriving
+            // mass's E/N by 1/(1−soot_yield) and, in the R = 1 donor==deposit
+            // case, compound this very cell's temperature every tick with no
+            // counterparty (R3-#9 — #54 again, through a new door).
+            const bool acct_s = e_on && acct(s);
+            int64_t e_shed = 0, e_deliver = 0;
+            if (e_on) {
+                if (e_dep > 0 && soot > 0) {
+                    const int64_t q = e_dep / burn_dep;
+                    const int64_t r = e_dep - q * burn_dep;      // in [0, burn_dep)
+                    e_shed = q * (int64_t)soot + (r * (int64_t)soot) / burn_dep;
+                }
+                e_deliver = e_dep - e_shed;
+            }
 
             // ONE aggregate heat deposit against the POST-burn N_total (delta
             // delta) — same idiom/dials as TemperatureSolver's Pass-1 radiative
@@ -792,6 +960,24 @@ void CombustionSolver::step(
             const bool object_site = (thermal_solid != nullptr)
                                   && (heat_inv_shift != nullptr)
                                   && thermal_solid[s];
+            // Route the parcel now that the deposit site's MEDIUM is known.
+            // A thermal solid carries no `gas_energy` at all (D2: solids stay
+            // on T, and rule (d) exports what they would have exchanged), and
+            // an ambient-ring cell is outside the accountable set — in both
+            // cases the parcel's whole energy leaves the gas books through a
+            // NAMED counter rather than through a hole. Only an accountable
+            // gas cell actually receives it, and then only the bulk share.
+            if (e_on) {
+                if (object_site || thermal_solid_at(thermal_solid, s)) {
+                    e_ts_products_sum += e_dep;
+                } else if (!acct_s) {
+                    e_comb_export_sum += e_dep;
+                } else {
+                    gas_energy[s] += e_deliver;
+                    e_comb_deliver_sum += e_deliver;
+                    e_soot_shed_sum += e_shed;
+                }
+            }
             if (object_site) {
                 const int shift = heat_inv_shift[s];   // log2(thermal_mass), >= 0
                 dT = deposit >> shift;
@@ -825,9 +1011,35 @@ void CombustionSolver::step(
                     deposit_dT_wide_q16(deposit, recip_n, recip_cv);
                 dT = (q16)std::clamp<int64_t>(dT_wide, 0, INT32_MAX);
             }
-            heat_saturating_add(&temperature[s], dT);
-            if (temperature[s] > t_max_phys_q) {                   // v2.4 rail
-                temperature[s] = t_max_phys_q; ++t_max_phys_hits;
+            // ---- arc #54 P-G1b: the fire heat lands in the ENERGY field ----
+            // `N·dT` is exactly the books-energy the old `temperature += dT`
+            // implied, so the deposit LAW is untouched (the absorption
+            // fraction, the n_floor divide and their counters above still
+            // decide dT) — only the currency it lands in changes.
+            //
+            // THE RAIL LIVES HERE, not in the recovery: combustion runs AFTER
+            // the EOS's once-per-tick recovery (physics_runner slot order), so
+            // nothing downstream would clamp this tick's deposit. Without a
+            // rail at the deposit site the stored-E bound (design §2.2:
+            // E <= 2^60 holds only because T_MAX_PHYS runs every tick) and
+            // tests/test_air_boundary.py:820's `t_max_phys_hits == 0` STOP
+            // would both quietly stop meaning anything.
+            //
+            // The seam is called even when dT == 0: the products credited
+            // above still have to be reflected in this cell's mirror before
+            // any downstream reader (the fire logistic, the sensors) sees it.
+            if (acct_s && !object_site) {
+                const int64_t nb = (int64_t)O2[s] + (int64_t)N2[s];
+                const int64_t de = nb * (int64_t)dT;
+                gas_energy::deposit_railed(gas_energy, temperature, s, de, nb,
+                                           t_amb_q, t_max_phys_q,
+                                           &e_comb_rail_sum, &t_max_phys_hits);
+                e_comb_heat_sum += de;
+            } else {
+                heat_saturating_add(&temperature[s], dT);
+                if (temperature[s] > t_max_phys_q) {               // v2.4 rail
+                    temperature[s] = t_max_phys_q; ++t_max_phys_hits;
+                }
             }
         }
     }

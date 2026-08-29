@@ -155,7 +155,15 @@ public:
         // of the tick. step_tail hands it straight through to the temperature
         // pass, which folds it (BEFORE the heat deposit) through each tile's own
         // heat_inv_shift. nullptr -> no fold, byte-identical to pre-P-R4.
-        const int32_t* rad_net = nullptr) const;
+        const int32_t* rad_net = nullptr,
+        // arc #54 P-G1b (design §2.7 row 3): the CONSERVED gas energy field,
+        // handed straight through to TemperatureSolver::step so its Pass-1
+        // deposit and Pass-2 conduction land in the books instead of in the
+        // mirror. nullptr keeps the whole tail bit-identical to pre-#54.
+        // `t_amb_q` is T_AMB_K in raw Q16.16 counts — the SAME fold EOSSolver
+        // does, passed in rather than re-derived so the two cannot drift.
+        int64_t* gas_energy = nullptr,
+        int32_t t_amb_q = 0) const;
 
     // --- Patch 1 S4b: the IMEX atmosphere/smoke substep loop -------------
     // Moves the per-tick IMEX substep block out of PhysicsRunner.step (Python)

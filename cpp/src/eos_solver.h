@@ -343,7 +343,7 @@ public:
     // THE CLOSURE IDENTITY (§2.8), exact in int64 across ONE EOSSolver::step:
     //
     //   Δ Σ_accountable gas_energy ==
-    //         e_entry_resync_sum          (P-G1a transitional; 0 from P-G1b)
+    //         e_entry_resync_sum          (RETIRED at P-G1b; structurally 0)
     //       + e_transport_net_sum         (§2.7 row 1, all substeps)
     //       - e_wipe_sum                  (the N_EPS wipe's destruction)
     //       - e_kick_ke_sum               (∇p kick KE debit)
@@ -362,7 +362,14 @@ public:
     // are the D4 accepted-gap PROBES; e_energy_floor_sum is the suppressed
     // (not destroyed) transfer of the positivity rail.
     // =====================================================================
-    mutable int64_t e_entry_resync_sum = 0;    // transitional (§6 P-G1a row)
+    // RETIRED at P-G1b and structurally 0 (the D10 "retired and zero"
+    // convention): the entry re-sync it measured is deleted and `gas_energy`
+    // is now the cross-tick truth. Kept as a term so every Python
+    // transcription of the identity — the five §6 benches, test_e1_hot_rail,
+    // tools/storm_ledger — reads the same seven names it did at P-G1a, and so
+    // that a future re-introduction has a booked home instead of being
+    // invisible.
+    mutable int64_t e_entry_resync_sum = 0;    // RETIRED (P-G1b), always 0
     mutable int64_t e_transport_net_sum = 0;   // Σ over accountable cells of de
     mutable int64_t e_kick_ke_sum = 0;         // ∇p kick bracket (debit, ≥/≤0)
     mutable int64_t e_absorb_export_sum = 0;   // dyn_wave_absorb (exported)

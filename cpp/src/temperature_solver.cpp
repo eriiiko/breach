@@ -5,6 +5,7 @@
 #include "temperature_solver.h"
 #include "raycaster.h"     // HEAT_SCALE, heat_saturating_add (shared Q16.16 domain)
 #include "fixed_point.h"   // S3c: quantize() for the o2_vacuum_thresh integer compare
+#include "gas_energy.h"    // arc #54 P-G1b: THE gas energy seam (design §2.7)
 #include <algorithm>        // P-E2b: std::clamp on the wide deposit-divide result
 
 // Direction order for the per-tile face_shift cache (MUST match the Python
@@ -55,7 +56,9 @@ void TemperatureSolver::step(
     const bool* thermal_solid,   // thermal-mass axis: medium mask (nullptr -> solid)
     const int32_t* cool_shift_grid, // cool-shift axis: per-tile ambient-decay
                                      // shift (nullptr -> the `cool_shift` scalar)
-    const int32_t* rad_net          // P-R4: SIGNED radiation accumulator
+    const int32_t* rad_net,         // P-R4: SIGNED radiation accumulator
+    int64_t* gas_energy,            // arc #54 P-G1b: the conserved gas energy
+    int32_t t_amb_q                 // T_AMB_K raw (only read with gas_energy)
 ) const {
     const int n = h * w;
     const bool ambient_mode = (is_ambient != nullptr);   // BC: dormancy by branch
@@ -71,6 +74,27 @@ void TemperatureSolver::step(
     // elementwise equal to thermal_solid on any furniture-free map (addendum
     // D4), so the fallback is not a second code path in practice.
     const bool* ts = (thermal_solid != nullptr) ? thermal_solid : solid;
+
+    // ---- arc #54 P-G1b: the gas-energy seam's two pass-entry facts --------
+    // `e_on` is the ONE branch that selects the energy-form gas side; with it
+    // false every line below is the pre-#54 T-form law, bit for bit (the
+    // direct-binding / unit-test path). `acct` is the canonical accountable
+    // set (design §2.2), read through the SAME predicate the EOS, the bulk
+    // transport and GameMap._gas_energy_accountable all use — never re-derived
+    // here. NOTE it keys on `ts`, i.e. it inherits this TU's documented
+    // thermal-mask fallback, so a caller with no thermal mask sees the same
+    // set the rest of its passes do.
+    const bool e_on = (gas_energy != nullptr);
+    auto acct = [&](int i) -> bool {
+        return !solid[i] && !ts[i] && !is_vacuum[i]
+            && !(ambient_mode && is_ambient[i]);
+    };
+    // The books' N: the SAME bulk sum the capacity build reads (and the same
+    // O2+N2 Dalton total `gas_energy` was built from) — one source, no drift.
+    auto n_books = [&](int i) -> int64_t {
+        const int32_t nr = (n_bulk != nullptr) ? n_bulk[i] : atmosphere[i];
+        return (nr > 0) ? (int64_t)nr : (int64_t)0;
+    };
 
     // ---- P-E2a: the per-cell CAPACITY planes (design §2.3) -----------------
     // Built ONCE per step, ahead of every pass, because they depend only on
@@ -133,6 +157,17 @@ void TemperatureSolver::step(
                 else              e_ring_pin_sum += de;
             }
             temperature[i] = 0;
+            // arc #54 P-G1b (design §2.2): the wipe zeroes the stored energy
+            // too. HYGIENE, NOT A BOOK: every cell this branch can reach is
+            // vacuum or ring, i.e. OUTSIDE the accountable set, so its stored E
+            // is already excluded from `Σ_accountable gas_energy` and zeroing
+            // it moves no book. What CAN carry stale E here is a cell that only
+            // just became a breach — and retiring THAT is the structural seam's
+            // job (gamemap.on_tile_changed / destroy_wall, §2.7 row 8), where
+            // the mask flip and its `e_retire_sum` booking happen together.
+            // Zeroing here as well means no stale energy can ever survive a
+            // mask flip that some future caller performs without the seam.
+            if (e_on) gas_energy[i] = 0;
         }
     }
 
@@ -320,9 +355,27 @@ void TemperatureSolver::step(
                     deposit_dT_wide_q16(e_abs, recip_N_q, recip_cv);
                 const int32_t dT =
                     (int32_t)std::clamp<int64_t>(dT_wide, 0, INT32_MAX);
-                heat_saturating_add(&temperature[i], dT);
-                if (temperature[i] > t_max_phys_q) {
-                    temperature[i] = t_max_phys_q; ++t_max_phys_hits;
+                // arc #54 P-G1b (design §2.7 row 3): on an ACCOUNTABLE gas cell
+                // the deposit lands in the conserved field, not in the mirror.
+                // The QUANTITY is unchanged on purpose — `N·dT` is exactly the
+                // books-energy the old `temperature += dT` implied, so this is
+                // a booking change, not a retune: the absorption law, the
+                // n_floor divide and their counters above are all still the
+                // ones that decide `dT`. The T_MAX_PHYS rail rides the seam's
+                // railed form so the ceiling is applied to the STORED energy
+                // (a mirror-only clamp would be undone by the next refresh).
+                if (e_on && acct(i)) {
+                    const int64_t nb = n_books(i);
+                    gas_energy::deposit_railed(
+                        gas_energy, temperature, i, nb * (int64_t)dT, nb,
+                        t_amb_q, t_max_phys_q, &e_gas_rail_sum,
+                        &t_max_phys_hits);
+                    e_gas_deposit_sum += nb * (int64_t)dT;
+                } else {
+                    heat_saturating_add(&temperature[i], dT);
+                    if (temperature[i] > t_max_phys_q) {
+                        temperature[i] = t_max_phys_q; ++t_max_phys_hits;
+                    }
                 }
             }
         }
@@ -359,6 +412,13 @@ void TemperatureSolver::step(
     scratch_.resize(n);
     int32_t* temp_new = scratch_.data();
     const int NO_FACE = no_face;
+    // arc #54 P-G1b: the gas side's per-cell face sum, parked here and applied
+    // AFTER the swap. It cannot be applied inside the gather loop: the seam
+    // refreshes the mirror, and the pass's whole determinism argument is that
+    // every cell reads the FROZEN pre-conduction `temperature`.
+    if (e_on) {
+        de_gas_.assign(n, 0);
+    }
 
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
@@ -391,6 +451,22 @@ void TemperatureSolver::step(
                 temp_new[i] = (int32_t)ti;
                 continue;
             }
+            // ---- arc #54 P-G1b (design §2.7 row 3): THE ENDPOINT DIVIDE IS
+            // DELETED FOR GAS. An accountable gas cell's four-face sum IS its
+            // energy change — `de` is already in the books' currency (a face
+            // quantum is |ΔT|·C with C = N·c_v, and the books' capacity IS N),
+            // so it goes straight to the seam with no conversion and no
+            // truncation. That also retires this cell's `e_cond_trunc_sum` /
+            // `e_cond_cap_sum` contribution: with no divide there is no
+            // residual to count and no cap_used/cap_real gap to book. The
+            // SOLIDS side (and any non-accountable gas cell — ring, vacuum)
+            // keeps the T-form law below, unchanged (D2).
+            if (e_on && acct(i)) {
+                de_gas_[i] = de;
+                e_gas_cond_sum += de;
+                temp_new[i] = (int32_t)ti;           // mirror refreshed post-swap
+                continue;
+            }
             // Endpoint-local conversion (R2), through the SHARED floor-division
             // helper so the residual is one-way DESTROYING in both signs — a
             // truncation toward zero would MINT on cells losing energy, and
@@ -412,6 +488,17 @@ void TemperatureSolver::step(
     // Swap temp_new -> temperature (write the new field back in place; the
     // caller's buffer is the persistent one, scratch_ is reused next tick).
     for (int i = 0; i < n; ++i) temperature[i] = temp_new[i];
+    // arc #54 P-G1b: NOW apply the gas side's parked face sums, once the whole
+    // frozen-field gather is finished. `deposit` (not `deposit_railed`) — the
+    // rails belong to the once-per-tick recovery (design §2.6) and conduction
+    // is a convex combination that cannot create a new maximum anyway.
+    if (e_on) {
+        for (int i = 0; i < n; ++i) {
+            if (de_gas_[i] == 0) continue;
+            gas_energy::deposit(gas_energy, temperature, i, de_gas_[i],
+                                n_books(i), t_amb_q);
+        }
+    }
     // DEBUG probe (temporary): T after Pass 2 (conduction).
     if (dbg_probe_idx >= 0 && dbg_probe_idx < n) dbg_T_post_conduction = temperature[dbg_probe_idx];
 

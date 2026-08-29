@@ -422,6 +422,36 @@ public:
     mutable int64_t e_cond_trunc_sum = 0;  // endpoint floordiv residual (≤ 0: one-way)
     mutable int64_t e_cond_cap_sum   = 0;  // the capacity floor/ceiling term (signed)
     mutable int64_t cond_limit_hits  = 0;  // constraint-4 per-face limiter engagements
+
+    // --- arc #54 P-G1b: THE GAS SIDE IS ENERGY NOW (design §2.7 row 3) -----
+    //
+    // When `gas_energy` is supplied, an ACCOUNTABLE gas cell no longer takes
+    // the endpoint divide at all: Pass 1's deposit and Pass 2's conduction sum
+    // are handed to the gas-energy seam (`gas_energy::deposit`) and the mirror
+    // is re-read from the stored E. The SOLIDS side is untouched — thermal
+    // solids are their own truth (D2) and keep the T-form law, its capacity
+    // build, and `e_cond_trunc_sum` / `e_cond_cap_sum` exactly as before.
+    //
+    // `gas_energy == nullptr` (the direct-binding / unit-test path) keeps the
+    // whole pre-#54 T-form law bit-identical, including the two counters above
+    // — which is why tests/test_temperature_conduction.py's
+    // `Σ ΔT_i·C_real_i == e_cond_trunc_sum + e_cond_cap_sum` identity survives
+    // unchanged.
+    //
+    // THE STEP'S OWN CLOSURE IDENTITY (gated across ticks by
+    // tests/test_e1_hot_rail.py::test_no_transport_mint):
+    //
+    //     Δ Σ_accountable gas_energy  ==  e_gas_deposit_sum
+    //                                   + e_gas_cond_sum
+    //                                   + e_gas_rail_sum
+    //
+    // exact in int64. Every one of these is a NET signed sum over accountable
+    // cells, so a face that leaks energy into a ring / vacuum / solid cell
+    // shows up as the export it is (that cell is not in the books) rather than
+    // as an unexplained drift.
+    mutable int64_t e_gas_deposit_sum = 0;  // Pass 1 heat->E on gas (net)
+    mutable int64_t e_gas_cond_sum    = 0;  // Pass 2 conduction into gas E (net)
+    mutable int64_t e_gas_rail_sum    = 0;  // Pass 1's T_MAX_PHYS rail (signed)
     // The three OPEN-BY-DESIGN channels, named as SIGNED per round-1 finding
     // L3-6. None of their LAWS changed at P-E2a — they are instrumented so
     // §7's "every creator named and counted" can actually be checked:
@@ -554,7 +584,21 @@ public:
         // radiative LOSS would silently never convert and fire could never cool
         // by radiating. Default nullptr -> no fold (every legacy caller and
         // every direct-binding test path stays byte-identical).
-        const int32_t* rad_net = nullptr
+        const int32_t* rad_net = nullptr,
+        // ---- arc #54 P-G1b (design §2.7 row 3): THE GAS SIDE IS ENERGY -----
+        // `gas_energy` — the CONSERVED gas energy field, (h, w) int64, MUTATED
+        // on ACCOUNTABLE gas cells (Pass 1's deposit and Pass 2's conduction
+        // sum both go through the gas-energy seam instead of the endpoint
+        // divide). nullptr keeps the entire pre-#54 T-form law bit-identical,
+        // which is what leaves the direct-binding unit tests — and their
+        // `Σ ΔT_i·C_real_i == e_cond_trunc_sum + e_cond_cap_sum` identity —
+        // untouched. The SOLIDS side never changes either way (D2).
+        // `t_amb_q` — T_AMB_K in raw Q16.16 counts, the absolute-temperature
+        // offset the seam converts through; read only when gas_energy != null.
+        // The engine folds it from the SAME temperature_scale accessor
+        // EOSSolver's own fold reads, so the two cannot drift.
+        int64_t* gas_energy = nullptr,
+        int32_t t_amb_q = 0
     ) const;
 
     // --- DEBUG probe (temporary instrumentation, eos-p3fix-thermal-ceiling
@@ -582,4 +626,10 @@ private:
     // Transient scratch, never synced, never digested (R4).
     mutable std::vector<int64_t> cap_used_;
     mutable std::vector<int64_t> cap_real_;
+    // arc #54 P-G1b: Pass 2's parked per-cell face sum for ACCOUNTABLE gas
+    // cells. It exists because the seam refreshes the mirror, and the pass's
+    // determinism rests on every cell reading the frozen pre-conduction field
+    // — so the deposits are applied only after the double-buffer swap. Sized
+    // (and zeroed) once per step, and only when `gas_energy` is supplied.
+    mutable std::vector<int64_t> de_gas_;
 };

@@ -425,6 +425,46 @@ public:
     // heat_floor_hits/t_max_phys_hits idiom of this class).
     mutable int64_t e_deposit_drop_sum = 0;
 
+    // --- arc #54 P-G1b: THE COMBUSTION ENERGY LEDGER (design §2.7 row 3) ---
+    //
+    // Combustion is the arc's hardest writer seam, because its mass moves TWO
+    // HOPS: O2 is debited at DONOR cells (which under an extended draw sit up
+    // to `draw_r` tiles away) while the products appear at the FLAME. Under a
+    // stored energy field every writer of N is a writer of T, so the energy
+    // has to make the same two hops — hence the parallel `e_slot` /
+    // `e_dep_site` ledger, keyed exactly like the mass buffers.
+    //
+    // THE TWO IDENTITIES, exact in int64, gated by tests/_fire_bench.py:
+    //
+    //   (A) the BOOKS identity — what this pass did to the conserved field:
+    //         Δ Σ_accountable gas_energy ==
+    //             − e_comb_draw_sum      (parcels leaving accountable donors)
+    //             + e_comb_deliver_sum   (products landing on accountable gas)
+    //             + e_comb_heat_sum      (the fire heat deposit)
+    //             + e_comb_rail_sum      (the deposit-site T_MAX_PHYS rail)
+    //
+    //   (B) the PARCEL identity — nothing drawn is lost on the way:
+    //         e_comb_draw_sum + e_comb_mint_sum ==
+    //             e_comb_deliver_sum + e_soot_shed_sum
+    //           + e_ts_products_sum  + e_comb_export_sum
+    //
+    // WHY `e_soot_shed_sum` EXISTS AT ALL (R3-#9). `soot_yield` of the burnt
+    // O2 leaves the BULK books as black smoke (a trace plane), so only
+    // `burn − soot` of bulk mass arrives at the flame. Delivering the WHOLE
+    // parcel's energy anyway would raise the arriving mass's E/N by
+    // 1/(1−soot_yield) — and in the R = 1 donor==deposit case that compounds
+    // the same cell's temperature every tick with no counterparty, i.e. #54
+    // again through a new door. So the parcel is split in the SAME proportion
+    // as its mass, exactly, and the soot's share is shed to this counter.
+    mutable int64_t e_comb_draw_sum    = 0;  // withdrawn from accountable donors
+    mutable int64_t e_comb_mint_sum    = 0;  // parcels born at ambient (ring/ts donor)
+    mutable int64_t e_comb_deliver_sum = 0;  // products into accountable gas cells
+    mutable int64_t e_soot_shed_sum    = 0;  // the soot's share, out of the bulk books
+    mutable int64_t e_ts_products_sum  = 0;  // products landing on a thermal solid
+    mutable int64_t e_comb_export_sum  = 0;  // products landing on a ring cell
+    mutable int64_t e_comb_heat_sum    = 0;  // the fire heat deposit (into gas E)
+    mutable int64_t e_comb_rail_sum    = 0;  // deposit-site T_MAX_PHYS rail (signed)
+
     // gas                : (n_gases, h, w) Q16.16 density planes, mutated
     // o2_idx/inert_n2_idx/black_smoke_idx : gas ids (simulation/gases.py)
     // temperature        : (h, w) Q16.16, mutated (the heat deposit)
@@ -553,6 +593,23 @@ public:
         //                  is re-checked anyway.
         int draw_r = 1,
         const float* dyn_permeability = nullptr,
-        int max_claimants = 4
+        int max_claimants = 4,
+        // ---- arc #54 P-G1b: THE PARALLEL TWO-HOP ENERGY LEDGER ------------
+        // (docs/gas_energy_conservation_design_2026-08-29.md §2.7, R3-#8/#9.)
+        //
+        // gas_energy  : (h, w) int64, MUTATED — the conserved gas thermal
+        //               energy. nullptr keeps this whole pass byte-identical
+        //               to pre-#54 (the direct-binding / unit-test path).
+        // is_ambient  : (h, w) bool, READ — the ring mask, needed for the
+        //               canonical accountable set (a ring cell holds N and can
+        //               donate O2, but carries no `gas_energy`). nullptr ==
+        //               space map, the usual dormancy-by-branch.
+        // t_amb_q     : T_AMB_K in raw Q16.16 counts. A parcel drawn from a
+        //               NON-accountable donor is MINTED at ambient (§2.7's
+        //               born-at-ambient rule, and the same convention bulk
+        //               transport uses for a non-participating donor).
+        int64_t* gas_energy = nullptr,
+        const bool* is_ambient = nullptr,
+        int32_t t_amb_q = 0
     ) const;
 };

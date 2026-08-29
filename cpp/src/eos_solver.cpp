@@ -505,32 +505,26 @@ void EOSSolver::step(
     }
 
     // ======================================================================
-    // arc #54 P-G1a — THE TRANSITIONAL ENTRY RE-SYNC (design §6, P-G1a row).
+    // arc #54 P-G1b — THE TRANSITIONAL ENTRY RE-SYNC IS GONE. D1 IS LIVE.
     //
-    // `gas_energy := N_raw · (T_raw + T_AMB_raw)` on the accountable set, 0
-    // elsewhere. P-G1a does NOT yet own the field across tick boundaries: the
-    // §2.7 writers (combustion, the thermal solver, the pumps, the seal /
-    // unseal / destroy seams, FieldEdit) still write `temperature` alone, and
-    // those writes all land BETWEEN two EOS steps. Re-syncing here absorbs
-    // them exactly, so the field is authoritative WITHIN the step (which is
-    // where every P-G1a gate measures) while T stays the cross-tick truth.
-    // P-G1b lands the writers and DELETES this block — that is when D1 goes
-    // live. The delta is BOOKED (`e_entry_resync_sum`) so the §2.8 closure
-    // identity stays exactly checkable from Python across the whole step.
+    // P-G1a re-derived `gas_energy := N_raw · (T_raw + T_AMB_raw)` here every
+    // tick, because the §2.7 writers (combustion, the thermal solver, the
+    // pumps, the seal / unseal / destroy seams, FieldEdit) still wrote
+    // `temperature` alone and their writes land BETWEEN two EOS steps. P-G1b
+    // moves every one of them onto the gas-energy seam, so `gas_energy` is now
+    // the CROSS-TICK truth and re-deriving it from the mirror here would do
+    // exactly the damage §2.6 warns about — `N·floordiv(E,N) <= E` drains up
+    // to N−1 raw counts per cell per tick, and any energy a seam wrote that
+    // the mirror cannot represent (a sub-count deposit) would vanish unbooked.
+    //
+    // `e_entry_resync_sum` survives as a RETIRED, always-zero counter (the D10
+    // "retired and zero" convention): it stays in the §2.8 identity as a term
+    // that is structurally 0, so the identity's Python transcription — in the
+    // benches, in test_e1_hot_rail and in the ledger tools — did not have to
+    // be rewritten to drop a name, and a future re-introduction of an entry
+    // re-sync would have a booked home rather than being invisible.
     // ======================================================================
-    {
-        int64_t resync = 0;
-        for (int i = 0; i < n; ++i) {
-            int64_t e_new = 0;
-            if (accountable(i)) {
-                const int64_t t_abs = (int64_t)temperature[i] + (int64_t)t_amb_q;
-                e_new = (int64_t)n_total_[i] * t_abs;
-                resync += e_new - gas_energy[i];
-            }
-            gas_energy[i] = e_new;
-        }
-        e_entry_resync_sum = resync;
-    }
+    e_entry_resync_sum = 0;
 
     // N_EPS_RAW (design §2.6): the 1-raw-count bulk floor, the SAME constant
     // bulk_transport.cpp's recovery divides against — ONE value, both files.

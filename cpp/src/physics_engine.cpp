@@ -74,7 +74,9 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         const int32_t* gas, const bool* gas_conservative, int n_gases, int o2_idx,
         int h, int w, float sim_time,
         const bool* is_ambient,           // BC: ambient ring for the T pre-pass
-        const int32_t* rad_net) const {   // P-R4: SIGNED radiation accumulator
+        const int32_t* rad_net,           // P-R4: SIGNED radiation accumulator
+        int64_t* gas_energy,              // arc #54 P-G1b: the conserved field
+        int32_t t_amb_q) const {          // T_AMB_K raw (the seam's offset)
 
     using namespace fixedpoint;
 
@@ -299,6 +301,11 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // folded into the solver's own accumulators below the call — the same
         // "backend-agnostic telemetry" idiom t_max_phys_hits / t_low_rail_hits
         // already use here.
+        // arc #54: the CUDA temperature kernel is a P-G2 twin — parity is
+        // SUSPENDED from P-G1a (design §5), so this branch deliberately does
+        // NOT carry `gas_energy`. It stays on the T-form law until P-G2 ports
+        // the gas-side deposit; the CPU branch below is the arc's live path.
+        (void)gas_energy; (void)t_amb_q;
         int64_t cond_counters[breach_cuda::TEMPERATURE_ENERGY_SLOTS] = {0};
         this->temperature.t_max_phys_hits += breach_cuda::temperature_step(
             temperature_mut, heat, heat_inv_shift, face_shift,
@@ -359,7 +366,13 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             // P-R4: the SIGNED radiation accumulator (ruling A1.7). Folded in
             // Pass 1 BEFORE the heat deposit, through each tile's own
             // heat_inv_shift, with shr_round0 + a symmetric saturating add.
-            rad_net);
+            rad_net,
+            // arc #54 P-G1b (design §2.7 row 3): the conserved gas energy
+            // field + the T_AMB_K fold. With these supplied, an accountable
+            // gas cell's Pass-1 deposit and Pass-2 conduction sum go through
+            // the gas-energy seam and the endpoint divide is gone; the solids
+            // side is untouched (D2).
+            gas_energy, t_amb_q);
     }
 
     return destroyed;
