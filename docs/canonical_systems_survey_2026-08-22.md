@@ -31,7 +31,7 @@ intent, not as-built status (canon-fold is deferred by ruling).
 | 19 | EOS solver | `cpp/src/eos_solver.{h,cpp}` + `cuda_eos_*.cu`, `cuda_mg_solve.cu`, `cuda_kick_compression.cu` | Pressure is derived (`p* = C·N·T_abs`) — never store a second pressure state |
 | 20 | Bulk/trace transport | `cpp/src/bulk_transport.*`, `smoke_dynamics.*`, `sky_exchange.*` + CUDA twins | Add a gas = a `[gases.*]` config row, never a bespoke advection loop |
 | 21 | Fire + combustion | `cpp/src/fire_simulation.*`, `combustion.*`; ignition twin in `combat` | Spread is radiation→heat→ignition; there is no cellular spread rule |
-| 22 | Temperature solver | `cpp/src/temperature_solver.*` + `cuda_temperature.cu` | Heat deposits are Q16.16 saturating adds; temperature derived here alone |
+| 22 | Temperature solver | `cpp/src/temperature_solver.*` + `cuda_temperature.cu` | Heat deposits are Q16.16 saturating adds; SOLIDS' temperature derived here alone — GAS temperature is the energy field's mirror (amended by arc #54 P-G1b; see CLAUDE.md) |
 | 23 | Temperature scale | `src/temperature_scale.py` — `load(cfg)`/`from_toml`; `[physics.temperature_scale]` | The single T_game→Kelvin answer for bake, render, readouts, tools |
 | 24 | Water solver | `cpp/src/water_solver.*` + `cuda_water.cu`; `[physics.water]` | Depth/flow are Q16.16 metres via `water_fixed`; `dx` lazy-bound from `tile_size_m` |
 | 25 | Raycaster | `cpp/src/raycaster.*` + `cuda_raycaster.cu`; `PhysicsRunner.cast_fire_heat` | One DDA march, two consumers (light+heat) — never a second marcher |
