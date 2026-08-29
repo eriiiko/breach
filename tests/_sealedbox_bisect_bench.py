@@ -121,20 +121,24 @@ def run_variant(name, overrides, wall_thick=1, ignite=True, no_conduction=False)
     T0 = g.temperature.astype(np.int64)
 
     # ======================================================================
-    # arc #54 SB gate instrumentation (design §6 "SB", P-G1a).
+    # arc #54 SB gate instrumentation (design §6 "SB").
     #
-    # (i) THE CLOSURE IDENTITY, exact in int64, measured WITHIN the EOS step.
-    #     It has to be bracketed around `run_substeps` rather than around the
-    #     whole tick because P-G1a is TRANSITIONAL: combustion, the thermal
-    #     solver and the seam writers still write `temperature` outside the
-    #     EOS, and the solver's entry re-sync absorbs them. So we wrap the
-    #     engine call, sum Sum_accountable gas_energy either side, and hold the
-    #     delta to the seven counters of §2.8. Restricting the identity to the
-    #     box would need per-region counters; the GLOBAL identity being exact
-    #     is strictly stronger for the flux term, since the flux contributes
-    #     exactly 0 to it only by per-face cancellation -- and the box's own
-    #     sealed guarantee then follows from telescoping. The box's Delta E is
-    #     reported alongside so both numbers are on the table.
+    # (i) THE CLOSURE IDENTITY, exact in int64, measured ACROSS WHOLE TICKS.
+    #     P-G1a could only bracket `run_substeps`, because the writers outside
+    #     the EOS still wrote `temperature` and the solver's entry re-sync
+    #     absorbed them. P-G1b lands every one of those writers on the seam and
+    #     DELETES the re-sync (D1 live), so the honest bracket is now the whole
+    #     `Simulation.step`: the field's per-tick drift has to equal the sum of
+    #     the four counter groups that are allowed to move it —
+    #         EOS       (design §2.8's seven terms, reset per step)
+    #         tail      the thermal solver's gas side (accumulating)
+    #         combustion the two-hop energy ledger (accumulating)
+    #         seam      every Python writer's net (GameMap.gas_energy_books)
+    #     Restricting the identity to the box would need per-region counters;
+    #     the GLOBAL identity being exact is strictly stronger for the flux
+    #     term, since the flux contributes exactly 0 to it only by per-face
+    #     cancellation -- and the box's own sealed guarantee then follows from
+    #     telescoping. The box's Delta E is reported alongside.
     #
     # (ii) DeltaT_box = Delta(Sum E / Sum N) -- N-WEIGHTED (an unweighted mirror
     #     mean is not conserved by mixing). THIS is the arc's headline.
@@ -143,6 +147,8 @@ def run_variant(name, overrides, wall_thick=1, ignite=True, no_conduction=False)
     # ======================================================================
     eos = sim.physics_runner.eos
     engine = sim.physics_runner.engine
+    tsolver = engine.temperature
+    comb = sim.physics_runner.combustion
     t_amb_raw = g._gas_energy_t_amb_raw()
     ident = {"worst": 0, "ticks": 0, "bad": 0}
 
@@ -158,39 +164,27 @@ def run_variant(name, overrides, wall_thick=1, ignite=True, no_conduction=False)
         bench must not be the thing that wraps at a blast core)."""
         return int(g.gas_energy[mask].astype(object).sum())
 
-    class _EngineProbe:
-        """A transparent proxy over the pybind PhysicsEngine (whose methods
-        are read-only, so they cannot be monkeypatched in place) that brackets
-        `run_substeps` with the Sum_accountable gas_energy measurement."""
-
-        def __init__(self, inner):
-            object.__setattr__(self, "_inner", inner)
-
-        def __getattr__(self, k):
-            return getattr(object.__getattribute__(self, "_inner"), k)
-
-        def run_substeps(self, *a, **kw):
-            inner = object.__getattribute__(self, "_inner")
-            acct = g._gas_energy_accountable()   # the ONE canonical predicate;
-            pre = _e_sum(acct)                   # masks are constant across the
-            out = inner.run_substeps(*a, **kw)   # call, so the same set is
-            post = _e_sum(acct)                  # measured on both sides
-            expected = (int(eos.e_entry_resync_sum)
-                        + int(eos.e_transport_net_sum)
-                        - int(eos.e_wipe_sum)
-                        - int(eos.e_kick_ke_sum)
-                        + int(eos.e_drag_heat_sum)
-                        - int(eos.e_work_export_sum)
-                        + int(eos.e_rail_sum))
-            resid = (post - pre) - expected
-            ident["ticks"] += 1
-            if resid:
-                ident["bad"] += 1
-                ident["worst"] = max(ident["worst"], abs(resid))
-            return out
-
-    _raw_engine = engine
-    sim.physics_runner.engine = _EngineProbe(engine)
+    def _ident_terms():
+        """The four counter groups §2.8's identity is allowed to move the field
+        with. The EOS group RESETS every step (so it is read absolutely); the
+        other three ACCUMULATE (so they are differenced tick to tick)."""
+        return (
+            # EOS (design §2.8). `e_entry_resync_sum` is RETIRED at P-G1b and
+            # structurally 0; it is kept in the sum so this transcription still
+            # names all seven terms.
+            int(eos.e_entry_resync_sum) + int(eos.e_transport_net_sum)
+            - int(eos.e_wipe_sum) - int(eos.e_kick_ke_sum)
+            + int(eos.e_drag_heat_sum) - int(eos.e_work_export_sum)
+            + int(eos.e_rail_sum),
+            # thermal solver, gas side (temperature_solver.h)
+            int(tsolver.e_gas_deposit_sum) + int(tsolver.e_gas_cond_sum)
+            + int(tsolver.e_gas_rail_sum),
+            # combustion's two-hop ledger, identity (A) (combustion.h)
+            -int(comb.e_comb_draw_sum) + int(comb.e_comb_deliver_sum)
+            + int(comb.e_comb_heat_sum) + int(comb.e_comb_rail_sum),
+            # every Python seam (GameMap.gas_energy_books, diagnostics excluded)
+            int(g.gas_energy_seam_net()),
+        )
 
     def _box_ET():
         """(Sum_box E, Sum_box N) over the box's ACCOUNTABLE cells."""
@@ -205,12 +199,11 @@ def run_variant(name, overrides, wall_thick=1, ignite=True, no_conduction=False)
         u2 = (g.wind_x.astype(np.int64) ** 2 + g.wind_y.astype(np.int64) ** 2)
         return int((n * (u2 >> 32)).astype(object).sum())
 
-    # `seal_tiles` moved N into the box without touching `gas_energy` (P-G1a:
-    # the seam writers land at P-G1b), so the field is stale here by exactly
-    # the mass the seal pushed in. Re-derive it -- the SAME thing the runner's
-    # own end-of-tick maintenance step does -- so t=0 is an honest baseline
-    # and not a 1.29x-too-small denominator masquerading as -64 game-deg.
-    g.refresh_gas_energy()
+    # P-G1b: NO re-derive here any more. `seal_tiles` is an energy writer now
+    # (design §2.7: the evacuated mass is MOVED, carrying the sealed tile's own
+    # T_abs to each receiver, and the sub-count remainder retires), so the
+    # field is already correct -- and re-deriving it from the mirror would
+    # DESTROY exactly the remainders the seam just booked.
     if no_conduction:
         # Every conduction face becomes the NO_FACE sentinel, so the thermal
         # solver's §2 conduction pass is a structural no-op. The dial is read
@@ -235,11 +228,28 @@ def run_variant(name, overrides, wall_thick=1, ignite=True, no_conduction=False)
         d = (g.temperature.astype(np.int64) - T0)[sl]
         return float(d[open0[sl]].mean()) / 65536.0
 
+    # (i) the ACROSS-TICK closure identity: bracket the WHOLE tick.
+    acct0 = g._gas_energy_accountable()
+    prev_e = _e_sum(acct0)
+    prev_terms = _ident_terms()
     for t in range(1, END_TICK + 1):
         if t == IGNITE_TICK and ignite:
             ignite_ring(g, sim.edit_queue, *CRATE, 2.5, 1.0)
         sim.set_paused(False)
         sim.step()
+        acct = g._gas_energy_accountable()
+        e_now = _e_sum(acct)
+        terms = _ident_terms()
+        expected = (terms[0]                      # EOS: absolute (reset/step)
+                    + (terms[1] - prev_terms[1])  # tail: accumulating
+                    + (terms[2] - prev_terms[2])  # combustion: accumulating
+                    + (terms[3] - prev_terms[3])) # seams: accumulating
+        resid = (e_now - prev_e) - expected
+        ident["ticks"] += 1
+        if resid:
+            ident["bad"] += 1
+            ident["worst"] = max(ident["worst"], abs(resid))
+        prev_e, prev_terms = e_now, terms
 
     P_aq = float(g.atmosphere[box_in][open0[box_in]].mean()) / 65536.0
     # 2026-08-29 LESSON: seal_tiles pushes the ring's gas INTO the box, so the
@@ -256,7 +266,6 @@ def run_variant(name, overrides, wall_thick=1, ignite=True, no_conduction=False)
           + (f"  [{overrides}]" if overrides else ""))
 
     # ---- arc #54 SB gate report (design §6 "SB") --------------------------
-    sim.physics_runner.engine = _raw_engine          # unhook
     E1_box, N1_box = _box_ET()
     # (ii) the HEADLINE: N-weighted mean absolute T over the box, in game-deg.
     q = 65536.0
@@ -268,7 +277,7 @@ def run_variant(name, overrides, wall_thick=1, ignite=True, no_conduction=False)
     detail = "" if ok_i else (f" ({ident['bad']} bad, worst |resid|="
                               f"{ident['worst']})")
     print(f"{'':>11}  arc#54  (i) closure identity: "
-          f"{'EXACT' if ok_i else 'BROKEN'} over {ident['ticks']} EOS steps"
+          f"{'EXACT' if ok_i else 'BROKEN'} across {ident['ticks']} TICKS"
           f"{detail}"
           f"   (ii) dT_box=D(SumE/SumN)={t1 - t0:+7.2f} "
           f"{'PASS' if ok_ii else 'FAIL'} (+/-2)"
@@ -282,6 +291,21 @@ def run_variant(name, overrides, wall_thick=1, ignite=True, no_conduction=False)
           f" p_floor={int(eos.p_face_floor_hits)}"
           f" flux_sat={int(eos.flux_sat_hits)}"
           f" t_max={int(eos.t_max_phys_hits)}")
+    # arc #54 P-G1b: THE THERMAL SOLVER'S GAS-SIDE CHANNEL, named and counted.
+    # `e_gas_cond_sum` is the whole of gate (ii)'s residual and the bench's
+    # `nofire_nocond` control is its zero: conduction across gas<->THERMAL_SOLID
+    # faces carries energy INTO the gas books, because the solids are held at
+    # ambient by Pass 3's two-way relaxation while conduction diffuses the
+    # UNWEIGHTED T and the books are N-WEIGHTED. In an acoustically ringing
+    # cell T and N are positively correlated, so the unweighted mean sits below
+    # the N-weighted one and the walls top the gas up forever. P-G1b BOOKS this
+    # channel (that is what makes (i) exact across ticks); REMOVING it is a
+    # physics decision outside this patch's scope -- see the P-G1b report.
+    print(f"{'':>11}  gas-side  cond={int(tsolver.e_gas_cond_sum)}"
+          f"  deposit={int(tsolver.e_gas_deposit_sum)}"
+          f"  rail={int(tsolver.e_gas_rail_sum)}"
+          f"  (cond in box-deg = "
+          f"{int(tsolver.e_gas_cond_sum) / N1_box / q if N1_box else 0.0:+.2f})")
 
 
 def main() -> None:

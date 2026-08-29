@@ -589,6 +589,13 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
     is_atmosphere = (pol.dtype == "atmosphere")
     is_fire = (pol.dtype == "fire")
     is_gas_energy = (pol.dtype == "gas_energy")
+    # arc #54 P-G1b: a caller may hand us a minimal GameMap DOUBLE (the test
+    # stubs in tests/test_field_edit.py and tests/test_eos_p1_*.py) that has no
+    # gas-energy seam at all. Detect it ONCE, outside the per-tile loop, and
+    # fall back to the direct write — the same nullable-plane dormancy idiom
+    # the solvers use for `thermal_solid` / `is_ambient` / `rad_net`. On a real
+    # GameMap this is always True.
+    has_seam = hasattr(gmap, "gas_energy_deposit")
     # arc #54 P-G1b (design §2.7 FieldEdit row): the generic "gas" policy
     # REFUSES a CONSERVATIVE slice. It is a float bridge (dequantize -> float
     # -> [0,1] clamp -> requantize, plus an optional RNG draw), and a
@@ -599,7 +606,7 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
     # nothing and closes the door before someone opens it. A conservative-slice
     # edit belongs on the pump primitives or the `atmosphere` policy, both of
     # which carry the energy.
-    if is_gas and edit.field in ("gas", "smoke"):
+    if is_gas and has_seam and edit.field in ("gas", "smoke"):
         gid = edit.channel
         if gid is None and edit.field == "smoke":
             gid = gmap.gases.name_to_id.get("smoke")
@@ -647,7 +654,7 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
             # truth (D2).
             t_old = int(arr[r, c])
             t_new = _combine_temperature(t_old, contribution, edit.mode, clamp)
-            if gmap.gas_is_accountable(r, c):
+            if has_seam and gmap.gas_is_accountable(r, c):
                 n = gmap.gas_bulk_n_at(r, c)
                 gmap.gas_energy_deposit(r, c, n * (t_new - t_old),
                                         "field_edit_wave")
@@ -659,7 +666,9 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
             # counts (the field is a Q32 product, D12: there is no
             # `gas_energy_fixed` and no real-unit bridge), so ADD is the only
             # mode that means anything; SET would need the caller to know N.
-            gmap.gas_energy_deposit(r, c, int(contribution), "field_edit")
+            if has_seam:
+                gmap.gas_energy_deposit(r, c, int(contribution),
+                                        "field_edit")
         elif is_gas:
             arr[r, c] = _combine_gas(int(arr[r, c]), contribution,
                                      edit.mode, clamp)
@@ -680,7 +689,7 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
             # direction) removes `ΔN·T_abs(cell)`, the MOVED rule, because that
             # mass really is leaving this cell.
             dn = (new_o2 + new_n2) - (old_o2 + old_n2)
-            if dn and gmap.gas_is_accountable(r, c):
+            if dn and has_seam and gmap.gas_is_accountable(r, c):
                 if dn > 0:
                     gmap.gas_energy_deposit(
                         r, c, dn * gmap.gas_t_amb_raw(), "field_edit_atm")

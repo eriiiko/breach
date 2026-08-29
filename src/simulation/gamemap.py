@@ -955,7 +955,21 @@ class GameMap:
         # Python's `//` on ints IS floor-toward-minus-infinity for a positive
         # divisor — the same contract as C++ `floordiv_q`, so the two backends
         # read the same mirror out of the same E.
-        self.temperature[fy, fx] = (e // n) - self.gas_t_amb_raw()
+        t = (e // n) - self.gas_t_amb_raw()
+        # STRUCTURAL saturation, not a physics rail (the rails belong to the
+        # once-per-tick recovery, design §2.6): `temperature` is int32, and a
+        # caller that has left E and N wildly inconsistent — a direct
+        # `gmap.gas[...] = ` write outside the seam, which several unit tests
+        # do on purpose to exercise a split algorithm — would otherwise raise
+        # an OverflowError out of numpy here (where the C++ twin's
+        # `(int32_t)t_rel` would silently wrap). Saturating is the one
+        # behaviour that is neither a crash nor a wrap, and it cannot bind in
+        # the sim: the recovery's T_MAX_PHYS rail runs every tick.
+        if t > 2147483647:
+            t = 2147483647
+        elif t < -2147483648:
+            t = -2147483648
+        self.temperature[fy, fx] = t
 
     def gas_energy_deposit(self, fy, fx, de, channel):
         """THE deposit primitive: add `de` raw energy at one cell and refresh
@@ -1078,6 +1092,28 @@ class GameMap:
         the cells being seeded.
         """
         self.temperature[sel] = T_q
+        self.reseed_gas_energy(sel)
+
+    def reseed_gas_energy(self, sel):
+        """:meth:`refresh_gas_energy`, RESTRICTED TO ``sel`` — re-derive
+        ``gas_energy := N_raw * (temperature_raw + T_AMB_K_raw)`` there and
+        nowhere else (design §2.2).
+
+        THE ONE LEGITIMATE USE, and it is not the tick loop: a scenario
+        builder — a test, a bench, a tool — that has just written bulk ``gas``
+        or ``temperature`` DIRECTLY and needs the stored energy brought back
+        into agreement with what it wrote. Under D1 a direct bulk-N write is a
+        seam violation with a visible consequence: scaling a room's N by 50
+        without touching ``gas_energy`` divides its `E/N` by 50, so the room
+        gets COLDER by exactly the factor it was meant to get denser by, and
+        its pressure `p = C·N·T_abs` does not move at all.
+
+        NEVER call it mid-run over the whole grid — that is
+        :meth:`refresh_gas_energy`'s retired maintenance role, and it destroys
+        state (the `N*floordiv(E,N) <= E` drip plus any sub-count energy a
+        seam wrote). Restricted to a selection the caller just authored, it is
+        the same act as the level-load seeding.
+        """
         accountable = self._gas_energy_accountable()
         t_amb_raw = self._gas_energy_t_amb_raw()
         n_bulk = self._gas_bulk_n_raw()

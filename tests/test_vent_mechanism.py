@@ -93,9 +93,32 @@ def _bulk_field_total(gmap) -> int:
 
 def _bulk_energy_total(gmap) -> int:
     """Sum(N_bulk_tile * T_tile) over the whole grid — the EOS's own N
-    convention (P-T0: n_total == n_bulk, cpp/src/eos_solver.cpp:719-729)."""
+    convention (P-T0: n_total == n_bulk, cpp/src/eos_solver.cpp:719-729).
+
+    arc #54 P-G1b: read off the STORED `gas_energy`, in the plenum's own
+    RELATIVE currency (`E - N*T_AMB`), not off `temperature`. The mirror is a
+    FLOOR read of the stored truth — `T = floordiv(E, N) - T_AMB` — so a
+    mirror-based sum under-reports the books by up to `N-1` raw counts per
+    cell, which on a 200-tick run is a drift this exact-to-the-LSB ledger
+    would blame on the vent system. The field IS the ledger now."""
+    acct = gmap._gas_energy_accountable()
     n_bulk = gmap.gas[O2].astype(np.int64) + gmap.gas[INERT_N2].astype(np.int64)
-    return int((n_bulk * gmap.temperature.astype(np.int64)).sum())
+    t_amb = gmap._gas_energy_t_amb_raw()
+    return int(np.where(acct, gmap.gas_energy - n_bulk * t_amb, 0)
+               .sum(dtype=np.int64))
+
+
+def _rail_destroyed(gmap) -> int:
+    """arc #54 P-G1b: the energy the deposit-site T-RAIL destroyed, signed.
+
+    The vent sweep runs at slot 9e — AFTER the EOS's once-per-tick recovery —
+    so `inject_gas_n_vec` carries the rails itself, and a clamp is a COUNTED
+    DESTRUCTION at the tile (GameMap books it to `pump_rail`). It is no longer
+    banked back into the plenum: charging the duct less because the tile
+    railed would quietly re-create the destroyed energy inside the duct, which
+    is exactly the class of leak this arc closes. So the ledger below has to
+    name it as its own term rather than expect it to come back."""
+    return int(gmap.gas_energy_books.get("pump_rail", 0))
 
 
 # ===========================================================================
@@ -152,15 +175,19 @@ def test_energy_conserved_exactly_with_trace_and_filtering_present():
     sim = Simulation(_level(_tm(), ents), seed=3, breach_physics=None,
                      enable_recorder=False)
     ry, rx = sim._vents[0].aperture_y, sim._vents[0].aperture_x
-    sim.gmap.temperature[:, :] = 5000
-    sim.gmap.temperature[ry, rx] = 20000      # hot return tile
+    # arc #54 P-G1b: seed through the ONE sanctioned seam. A bare
+    # `temperature[...] = ` write leaves `gas_energy` (the stored truth) behind,
+    # and the pump primitives price their withdrawal off that field.
+    sim.gmap.seed_gas_temperature(np.s_[:, :], 5000)
+    sim.gmap.seed_gas_temperature((ry, rx), 20000)   # hot return tile
     sim.gmap.gas[SMOKE][ry, rx] = 40000       # heavy smoke — scrubbed by hepa_basic
     sim.gmap.gas[POISON][ry, rx] = 25000      # poison — passes hepa_basic untouched
     e0 = _bulk_energy_total(sim.gmap)
     for _ in range(200):
         _step(sim)
         duct = sim._ducts[0]
-        e = _bulk_energy_total(sim.gmap) + duct.e_plenum + duct.e_wipe
+        e = (_bulk_energy_total(sim.gmap) + duct.e_plenum + duct.e_wipe
+             - _rail_destroyed(sim.gmap))
         assert e == e0, "energy ledger drifted with trace present and filtered"
     # Sanity: the mechanism actually MOVED something AND actually scrubbed
     # something (vacuous-gate guard).
@@ -237,17 +264,24 @@ def test_t_rail_clamp_hi_and_lo_bank_exact_energy_and_count_hits():
     def _zero_bulk_at(y, x):
         sim.gmap.gas[O2][y, x] = 0
         sim.gmap.gas[INERT_N2][y, x] = 0
+        # arc #54 P-G1b: a direct bulk-N write needs its stored energy
+        # re-derived at the cells it authored, or `gas_energy` keeps holding
+        # the energy of mass that is no longer there — and the deposit below
+        # would then read a tile whose E and N disagree.
+        sim.gmap.reseed_gas_energy((y, x))
 
     # --- HI rail ---------------------------------------------------------
     _zero_bulk_at(sy, sx)
     duct.o2_raw, duct.n2_raw = 50000, 50000
     duct.e_plenum = (t_max_q * 10) * (duct.o2_raw + duct.n2_raw)  # forces t_dep >> t_max_q
-    e_before = _bulk_energy_total(sim.gmap) + duct.e_plenum + duct.e_wipe
+    e_before = (_bulk_energy_total(sim.gmap) + duct.e_plenum
+                + duct.e_wipe - _rail_destroyed(sim.gmap))
     hits_before = duct.rail_hi_hits
     _duct_sweep(sim.gmap, duct, [], [sup], t_min_q, t_max_q)
     assert duct.rail_hi_hits == hits_before + 1, "the hi rail never fired — vacuous"
     assert int(sim.gmap.temperature[sy, sx]) == t_max_q
-    e_after = _bulk_energy_total(sim.gmap) + duct.e_plenum + duct.e_wipe
+    e_after = (_bulk_energy_total(sim.gmap) + duct.e_plenum
+               + duct.e_wipe - _rail_destroyed(sim.gmap))
     assert e_after == e_before, "the hi-rail clamp leaked energy out of the ledger"
 
     # --- LO rail (fresh plenum + a cold, zeroed aperture) -----------------
@@ -255,12 +289,14 @@ def test_t_rail_clamp_hi_and_lo_bank_exact_energy_and_count_hits():
     duct.o2_raw, duct.n2_raw = 50000, 50000
     duct.e_plenum = (t_min_q * 10) * (duct.o2_raw + duct.n2_raw)  # forces t_dep << t_min_q (t_min_q < 0)
     duct.e_wipe = 0
-    e_before = _bulk_energy_total(sim.gmap) + duct.e_plenum + duct.e_wipe
+    e_before = (_bulk_energy_total(sim.gmap) + duct.e_plenum
+                + duct.e_wipe - _rail_destroyed(sim.gmap))
     hits_before = duct.rail_lo_hits
     _duct_sweep(sim.gmap, duct, [], [sup], t_min_q, t_max_q)
     assert duct.rail_lo_hits == hits_before + 1, "the lo rail never fired — vacuous"
     assert int(sim.gmap.temperature[sy, sx]) == t_min_q
-    e_after = _bulk_energy_total(sim.gmap) + duct.e_plenum + duct.e_wipe
+    e_after = (_bulk_energy_total(sim.gmap) + duct.e_plenum
+               + duct.e_wipe - _rail_destroyed(sim.gmap))
     assert e_after == e_before, "the lo-rail clamp leaked energy out of the ledger"
 
 

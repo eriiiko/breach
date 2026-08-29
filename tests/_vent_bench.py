@@ -118,7 +118,9 @@ def main() -> None:
     for _ in range(SETTLE_TICKS):
         sim.set_paused(False)
         sim.step()
-    g.refresh_gas_energy()   # the seam writers are P-G1b's; re-derive here
+    # P-G1b: no re-derive -- D1 is live and the field is the truth, so
+    # re-deriving it from the mirror here would destroy the settle's own
+    # sub-count state before the gate ever measured it.
 
     room = g._gas_energy_accountable().copy()   # the whole pressurized volume
     t_amb_raw = g._gas_energy_t_amb_raw()
@@ -135,9 +137,11 @@ def main() -> None:
           f"N = {N0 / Q:.1f} atm-equiv over {int(room.sum())} cells")
 
     # --- THE BREACH --------------------------------------------------------
+    # P-G1b: `destroy_wall` is an energy writer now (design 2.7) -- the
+    # breached tile's stored energy retires and, where a tile joins open air
+    # instead of the boundary, its seed is born at ambient. No re-derive.
     for (y, x) in MOUTH_TILES:
         g.destroy_wall(y, x)
-    g.refresh_gas_energy()
 
     # --- instrumentation ---------------------------------------------------
     state = {"pre": 0, "acct": None}
@@ -224,7 +228,7 @@ def main() -> None:
     print(f"      counted channels (per-tick sums): "
           f"work_export={tally['work_export']} transport={tally['transport']} "
           f"kick={tally['kick']} drag={tally['drag']} rail={tally['rail']} "
-          f"wipe={tally['wipe']} resync={tally['resync']}")
+          f"wipe={tally['wipe']} resync={tally['resync']} (retired, 0)")
     print(f"      Sum(counted) = {tally.get('counted', 0)}   "
           f"residual vs INSIDE = {inside - tally.get('counted', 0)}  "
           f"(this is the LSB-exactness ask -- it must be 0)")

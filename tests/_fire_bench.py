@@ -79,8 +79,10 @@ def main() -> None:
     r0, r1, c0, c1 = AQ_BOX
     ring = [(r, c) for r in range(r0, r1 + 1) for c in range(c0, c1 + 1)
             if min(r - r0, r1 - r, c - c0, c1 - c) == 0]
+    # P-G1b: no re-derive here -- `seal_tiles` is an energy writer now
+    # (design 2.7: the evacuated mass is MOVED at the sealed tile's own T_abs
+    # and the sub-count remainder retires), so the field is already correct.
     g.seal_tiles(ring, materials.MAT_GLASS)
-    g.refresh_gas_energy()
 
     open0 = ~g.solid.copy()
     T0 = g.temperature.astype(np.int64).copy()
@@ -101,42 +103,48 @@ def main() -> None:
 
     box0, bunk0, pen0 = region_T(AQ_IN), region_T(BUNKER), region_T(PEN)
 
-    state = {"pre": 0, "acct": None}
     tally = dict(ticks=0, bad=0, worst=0, soot_note=0)
+    tsolver = sim.physics_runner.engine.temperature
+    comb = sim.physics_runner.combustion
 
-    class _EngineProbe:
-        def __init__(self, inner):
-            object.__setattr__(self, "_inner", inner)
+    # arc #54 P-G1b: the closure identity is checked ACROSS WHOLE TICKS now.
+    # P-G1a could only bracket `run_substeps` (the writers outside the EOS
+    # still wrote `temperature` and were swept up by the entry re-sync); with
+    # D1 live the honest bracket is the whole tick, and it has to account for
+    # all four groups of counters that may move the field.
+    def _terms():
+        return (
+            int(eos.e_entry_resync_sum) + int(eos.e_transport_net_sum)
+            - int(eos.e_wipe_sum) - int(eos.e_kick_ke_sum)
+            + int(eos.e_drag_heat_sum) - int(eos.e_work_export_sum)
+            + int(eos.e_rail_sum),
+            int(tsolver.e_gas_deposit_sum) + int(tsolver.e_gas_cond_sum)
+            + int(tsolver.e_gas_rail_sum),
+            -int(comb.e_comb_draw_sum) + int(comb.e_comb_deliver_sum)
+            + int(comb.e_comb_heat_sum) + int(comb.e_comb_rail_sum),
+            int(g.gas_energy_seam_net()),
+        )
 
-        def __getattr__(self, k):
-            return getattr(object.__getattribute__(self, "_inner"), k)
-
-        def run_substeps(self, *a, **kw):
-            inner = object.__getattribute__(self, "_inner")
-            acct = g._gas_energy_accountable()
-            pre = _sum_obj(g.gas_energy[acct])
-            inner.run_substeps(*a, **kw)
-            post = _sum_obj(g.gas_energy[acct])
-            expected = (int(eos.e_entry_resync_sum)
-                        + int(eos.e_transport_net_sum)
-                        - int(eos.e_wipe_sum) - int(eos.e_kick_ke_sum)
-                        + int(eos.e_drag_heat_sum)
-                        - int(eos.e_work_export_sum) + int(eos.e_rail_sum))
-            resid = (post - pre) - expected
-            tally["ticks"] += 1
-            if resid:
-                tally["bad"] += 1
-                tally["worst"] = max(tally["worst"], abs(resid))
-
-    sim.physics_runner.engine = _EngineProbe(sim.physics_runner.engine)
+    def _e_acct():
+        return _sum_obj(g.gas_energy[g._gas_energy_accountable()])
 
     flame_peak = 0.0
     en_peak = 0.0
+    prev_e, prev_terms = _e_acct(), _terms()
     for t in range(1, RUN_TICKS + 1):
         if t == IGNITE_TICK:
             ignite_ring(g, sim.edit_queue, *CRATE, 2.5, 1.0)
         sim.set_paused(False)
         sim.step()
+        e_now, terms = _e_acct(), _terms()
+        expected = (terms[0] + (terms[1] - prev_terms[1])
+                    + (terms[2] - prev_terms[2]) + (terms[3] - prev_terms[3]))
+        resid = (e_now - prev_e) - expected
+        tally["ticks"] += 1
+        if resid:
+            tally["bad"] += 1
+            tally["worst"] = max(tally["worst"], abs(resid))
+        prev_e, prev_terms = e_now, terms
         burning = g.fire > 0
         if burning.any():
             tally["soot_note"] += 1     # ticks with live fire (non-vacuity)
@@ -156,7 +164,7 @@ def main() -> None:
 
     print(f"FIRE gate — ignite_ring on the crate stack at {CRATE}, "
           f"{RUN_TICKS / TPS:.0f} s")
-    print(f"  (1) CLOSURE IDENTITY over {tally['ticks']} EOS steps: "
+    print(f"  (1) CLOSURE IDENTITY across {tally['ticks']} TICKS: "
           f"{'EXACT' if tally['bad'] == 0 else 'BROKEN'}"
           + ("" if tally["bad"] == 0 else
              f" ({tally['bad']} bad, worst |resid| {tally['worst']})"))
@@ -168,10 +176,22 @@ def main() -> None:
     print(f"        pen R8       {pen0:+7.2f} -> {pen1:+7.2f}  "
           f"(d {pen1 - pen0:+7.2f})")
     print(f"        arena mirror mean dT {dT_arena:+7.2f}")
-    print(f"  DEFERRED (P-G1b): flame-cell peak T = {flame_peak:.1f}, "
-          f"peak gas E/N - T_AMB = {en_peak:.1f} game-deg over "
-          f"{tally['soot_note']} ticks with live fire "
-          f"(the R3-#9 compounding bound lands with the combustion ledger)")
+    parcel = (int(comb.e_comb_draw_sum) + int(comb.e_comb_mint_sum)
+              - int(comb.e_comb_deliver_sum) - int(comb.e_soot_shed_sum)
+              - int(comb.e_ts_products_sum) - int(comb.e_comb_export_sum))
+    print(f"  (3) COMBUSTION PARCEL identity (combustion.h (B)): "
+          f"{'EXACT' if parcel == 0 else f'BROKEN by {parcel}'}")
+    print(f"        drawn={int(comb.e_comb_draw_sum)} "
+          f"mint={int(comb.e_comb_mint_sum)} "
+          f"deliver={int(comb.e_comb_deliver_sum)} "
+          f"soot_shed={int(comb.e_soot_shed_sum)} "
+          f"ts_products={int(comb.e_ts_products_sum)} "
+          f"export={int(comb.e_comb_export_sum)}")
+    print(f"        heat={int(comb.e_comb_heat_sum)} "
+          f"rail={int(comb.e_comb_rail_sum)}")
+    print(f"  (4) FLAME CELL bound (R3-#9, no per-tick compounding): "
+          f"peak T = {flame_peak:.1f}, peak gas E/N - T_AMB = {en_peak:.1f} "
+          f"game-deg over {tally['soot_note']} ticks with live fire")
     print(f"      hits: rad_clip={int(eos.rad_clip_hits)} "
           f"p_floor={int(eos.p_face_floor_hits)} "
           f"p_ceil={int(eos.p_face_ceil_hits)} "

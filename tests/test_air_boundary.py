@@ -804,6 +804,12 @@ def test_ambient_gate2_rush_in_recovers_and_rails_bounded():
     g.atmosphere[interior] = int(pin * 0.1)
     g.gas[o2][interior] = int(g._ambient.n_o2_q * 0.1)
     g.gas[n2][interior] = int(g._ambient.n_n2_q * 0.1)
+    # arc #54 P-G1b: a direct bulk-N write needs its stored energy re-derived
+    # at the cells it authored. Without this the interior keeps the ENERGY of
+    # the mass it no longer has, so venting it to 10% N would make it ~10x
+    # HOTTER rather than thinner -- the opposite of the scenario, and a
+    # thermal-runaway probe measured on a fixture that manufactured one.
+    g.reseed_gas_energy(interior)
     start = float(g.atmosphere[interior].mean())
     for _ in range(80):
         runner.step(g, DT_TICK)
