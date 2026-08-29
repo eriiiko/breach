@@ -919,6 +919,13 @@ class PhysicsRunner:
         # the recorder snapshot. (STEP A originally placed the clear here, when
         # conversion was the only consumer; STEP D moves it out.)
 
+        # gas-energy conservation arc #54, design §2.2/§5 (P-G0): the
+        # mirror-derived gas_energy maintenance step -- NO physics here
+        # (P-G1a replaces this with the stored, seam-written truth). Runs
+        # LAST, after step_tail's thermal solver, so it reflects this
+        # tick's final (N, T) mirror.
+        gmap.refresh_gas_energy()
+
         return destroyed
 
     # ------------------------------------------------------------------
@@ -1161,9 +1168,16 @@ class PhysicsRunner:
         # + compression work), and it is NOT static — `on_tile_changed` patches it
         # whenever a tile's material changes (a crate burning out) — so a
         # one-shot device copy would go stale exactly like is_ambient's did.
+        # gas-energy conservation arc #54, design §5 (P-G0): `gas_energy`
+        # joins the upload/D2H pair beside `temperature` so the resident
+        # path's device mirror round-trips it every tick, even though no
+        # kernel reads/writes it yet (no consumer this patch) — the field
+        # is refreshed on the HOST mirror at tick end (below) and re-
+        # uploaded here next tick, exactly like every other host-refreshed
+        # field in this list.
         gmap.from_host(["atmosphere", "wind_x", "wind_y", "temperature",
                         "gas", "solid", "is_vacuum", "is_ambient",
-                        "dyn_permeability", "thermal_solid"])
+                        "dyn_permeability", "thermal_solid", "gas_energy"])
         # The host pre-stage (all EOS reductions — they consume tick-entry
         # state) runs on the mirror inside; the device chain (substep loop,
         # div_u/N/p*, the on-device MG build, vcycle, kick, store) runs with
@@ -1214,7 +1228,7 @@ class PhysicsRunner:
         # water fields on dormant ticks) are stale-by-design and would clobber
         # the authoritative mirror.
         gmap.to_host(["atmosphere", "wave_p", "wind_x", "wind_y",
-                      "temperature", "gas"])
+                      "temperature", "gas", "gas_energy"])
 
         # -- 7. COMBUSTION bracket (mirror) --------------------------------------
         self._run_combustion(gmap, sim_time)
@@ -1247,6 +1261,14 @@ class PhysicsRunner:
         # it; the two resident loops' outputs were D2H'd to it). No final batched
         # D2H is needed — consumers read the mirror unchanged (the Q4 baseline);
         # the device set is re-uploaded whole next tick (from_host).
+
+        # gas-energy conservation arc #54, design §2.2/§5 (P-G0): the
+        # mirror-derived gas_energy maintenance step -- NO physics here
+        # (P-G1a replaces this with the stored, seam-written truth). Runs
+        # LAST, after step_tail's thermal solver, so it reflects this
+        # tick's final (N, T) mirror; next tick's upload above re-sends it.
+        gmap.refresh_gas_energy()
+
         return destroyed
 
     # ------------------------------------------------------------------
