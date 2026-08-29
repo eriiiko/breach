@@ -260,42 +260,64 @@ inline bool e_participates(int i, const bool* solid, const bool* ts,
            && !(is_ambient != nullptr && is_ambient[i]);
 }
 
+// arc #54 §2.7 row 1: floordiv(dq * E, N) — EXACT, in 64 bits only.
+//
+// The naive product overflows: dq <= N < 2^30 and E <= 2^60 give dq*E up to
+// 2^90. Splitting E by its own divisor removes the problem entirely. Write
+// E = N*q + r with q = floordiv(E, N) and 0 <= r < N. Then
+//     floordiv(dq*E, N) == dq*q + floordiv(dq*r, N)
+// exactly (dq >= 0), and BOTH products are bounded by N_max^2 = 2^60:
+//   dq*q : dq <= 2^30, q == T_abs_raw <= 2^30
+//   dq*r : dq <= 2^30, r <  N <= 2^30
+// No 128-bit multiply, no 128-bit divide — so the P-G2 device twin is a
+// literal transcription. Requires N >= 1 and dq >= 0 (both hold at every
+// call site: the mass limiter bounds dq by the donor's own pre-flux N, and
+// the caller guards N_EPS). E >= 0 is guaranteed by the D-3 guard
+// (T_MIN > -T_AMB_K => T_abs > 0) plus the positivity rail.
+inline int64_t price_face(int64_t dq, int64_t e_i, int64_t n_i) {
+    const int64_t q = floordiv_q(e_i, n_i);
+    const int64_t r = e_i - q * n_i;              // 0 <= r < n_i (floor form)
+    return dq * q + floordiv_q(dq * r, n_i);
+}
+
 }  // namespace
 
 void bulk_flux_energy_transport_cached(
         int32_t* gas, const bool* gas_conservative, int n_gases,
         int32_t* temperature,
+        int64_t* gas_energy, int32_t t_amb_raw, int32_t t_max_phys_q,
         const int32_t* wind_x, const int32_t* wind_y,
         const bool* solid, const bool* is_vacuum, const bool* thermal_solid_ts,
         const int32_t* coeffE, const int32_t* coeffS,
         int32_t t_min_q,
         int h, int w,
-        int64_t* e_scratch, int64_t* dqsum_e, int64_t* dqsum_s,
+        int64_t* e_pre, int64_t* n_pre, int64_t* dqsum_e, int64_t* dqsum_s,
         BulkEnergyCounters& cnt,
         const bool* is_ambient, const int32_t* n_amb, int64_t* boundary_flux) {
     const int n = h * w;
     if (n <= 0) return;
     const bool* ts = thermal_solid_ts;
-    int64_t* e = e_scratch;
 
-    // ---- stage 1: e build — e[i] = n_bulk_pre[i] * T[i], exact, unshifted ---
-    // Participating cells only; everyone else carries e = 0 (never read).
-    // T is FROZEN from here through stage 3: the retired SL sample was the only
-    // writer of `temperature` inside a substep, and the recovery (stage 4) is
-    // the last thing this function does — so every donor price below is the
-    // pre-transport temperature, as design §2.1.3 requires.
+    // ---- stage 1: snapshot (E, n_bulk) PRE-flux (design §2.7 row 1) --------
+    // Replaces P-E1's `e[i] = n_bulk_pre[i] * T[i]` rebuild: the energy is
+    // CARRIED now, not re-derived. Two read-only snapshots are still needed,
+    // and for the SAME reason P-E1 relied on `temperature` being frozen: the
+    // apply below is a GATHER that writes `gas_energy[i]` while its neighbours
+    // are still being read, so both operands of every face price must come
+    // from planes nothing in the pass mutates. `n_pre` additionally survives
+    // stage 2, which overwrites `gas` in place.
     for (int i = 0; i < n; ++i) {
-        if (!e_participates(i, solid, ts, is_vacuum, is_ambient)) { e[i] = 0; continue; }
+        e_pre[i] = gas_energy[i];
+        if (!e_participates(i, solid, ts, is_vacuum, is_ambient)) { n_pre[i] = 0; continue; }
         int64_t nb = 0;
         for (int gi = 0; gi < n_gases; ++gi) {
             if (!gas_conservative[gi]) continue;
             nb += (int64_t)gas[(size_t)gi * (size_t)n + (size_t)i];
         }
-        // Design §2.1.2 / L2-5: the stated map invariant. |e| <= 2^30·2^31 well
-        // inside int64; the divergence apply narrows to int32 unchecked anyway,
-        // so this assert is the cheapest place to notice a map that broke it.
+        // Design §2.1.2 / L2-5: the stated map invariant, and the bound
+        // `price_face`'s 64-bit-only split rests on.
         assert(nb < ((int64_t)1 << 30));
-        e[i] = nb * (int64_t)temperature[i];
+        n_pre[i] = nb;
     }
 
     // ---- stage 2: the mass flux, banking the APPLIED per-face dq ------------
@@ -310,43 +332,59 @@ void bulk_flux_energy_transport_cached(
     // order is PINNED E, W, S, N — int64 sums are order-immaterial but the
     // twins must transcribe the same expression order.
     //
-    // Donor side is UNIFORM: a participating donor is always debited at its OWN
-    // frozen T (`dq·T_rel[donor]`), which leaves its recovered T exactly
-    // invariant as mass leaves — no concentration mint. Receiver side is
-    // CONDITIONAL: it is credited the donor's price only if the donor
-    // PARTICIPATES; mass emerging from a thermal_solid / vacuum / ring arrives
-    // carrying ZERO relative energy (rule (d) ts->air, and the §5
-    // born-at-ambient class rule for the boundary channels).
+    // arc #54 §2.7 row 1: the price is `floordiv(dq * E_donor, N_donor^pre)`,
+    // read off the LIVE energy field — no mirror, no per-substep rebuild. Both
+    // sides of a face compute it from the identical triple (dq, E, N_pre), so
+    // the debit and the credit are the SAME int64 and the pass telescopes.
+    //
+    // Donor side is UNIFORM: a participating donor is always debited its own
+    // share, which leaves its recovered T exactly invariant as mass leaves —
+    // no concentration mint, and Sum_f phi_f <= E_i because Sum_f dq_f <= N_i.
+    // Receiver side is CONDITIONAL: mass emerging from a thermal_solid /
+    // vacuum / ring has no gas donor, so it is MINTED — born at AMBIENT,
+    // `dq * T_AMB_raw` (§2.7: "moved mass carries its source's T_abs, minted
+    // mass is born at ambient"; the pre-#54 rule was the same statement in
+    // relative currency, where ambient IS zero).
     // `e_ts_residual` counts the air->ts debits ONLY — the counted destruction
-    // of rule (d). air->vacuum and air->ring debits are the §4/§5 boundary
-    // channels and stay uncounted here by design.
+    // of rule (d), now in absolute currency. air->vacuum and air->ring debits
+    // are the §4/§5 boundary channels; both are inside `e_transport_net`.
+    const int64_t t_amb64 = (int64_t)t_amb_raw;
     for (int y = 0; y < h; ++y) {
         const int row = y * w;
         for (int x = 0; x < w; ++x) {
             const int i = row + x;
             if (!e_participates(i, solid, ts, is_vacuum, is_ambient)) continue;
-            const int64_t t_own = (int64_t)temperature[i];
+            const int64_t e_own = e_pre[i], n_own = n_pre[i];
             int64_t de = 0;
+            // A donation is priced only where the donor has capacity to divide
+            // by; below N_EPS the cell is about to be wiped anyway (stage 4).
+            const auto donate = [&](int64_t q) -> int64_t {
+                return (n_own >= N_EPS_RAW) ? price_face(q, e_own, n_own) : 0;
+            };
+            const auto receive = [&](int nb, int64_t q) -> int64_t {
+                if (!e_participates(nb, solid, ts, is_vacuum, is_ambient))
+                    return q * t_amb64;                 // MINTED at ambient
+                return (n_pre[nb] >= N_EPS_RAW)
+                    ? price_face(q, e_pre[nb], n_pre[nb]) : 0;
+            };
             // EAST face of i: dqsum_e[i], positive = i -> i+1.
             if (x < w - 1) {
                 const int64_t q = dqsum_e[i];
                 if (q > 0) {                    // i donates east
-                    const int64_t phi = q * t_own;
+                    const int64_t phi = donate(q);
                     de -= phi;
                     if (ts[i + 1]) cnt.e_ts_residual += phi;
                 } else if (q < 0) {             // i receives from the east
-                    if (e_participates(i + 1, solid, ts, is_vacuum, is_ambient))
-                        de += (-q) * (int64_t)temperature[i + 1];
+                    de += receive(i + 1, -q);
                 }
             }
             // WEST face of i: dqsum_e[i-1], positive = (i-1) -> i.
             if (x > 0) {
                 const int64_t q = dqsum_e[i - 1];
                 if (q > 0) {                    // i receives from the west
-                    if (e_participates(i - 1, solid, ts, is_vacuum, is_ambient))
-                        de += q * (int64_t)temperature[i - 1];
+                    de += receive(i - 1, q);
                 } else if (q < 0) {             // i donates west
-                    const int64_t phi = (-q) * t_own;
+                    const int64_t phi = donate(-q);
                     de -= phi;
                     if (ts[i - 1]) cnt.e_ts_residual += phi;
                 }
@@ -355,31 +393,43 @@ void bulk_flux_energy_transport_cached(
             if (y < h - 1) {
                 const int64_t q = dqsum_s[i];
                 if (q > 0) {                    // i donates south
-                    const int64_t phi = q * t_own;
+                    const int64_t phi = donate(q);
                     de -= phi;
                     if (ts[i + w]) cnt.e_ts_residual += phi;
                 } else if (q < 0) {             // i receives from the south
-                    if (e_participates(i + w, solid, ts, is_vacuum, is_ambient))
-                        de += (-q) * (int64_t)temperature[i + w];
+                    de += receive(i + w, -q);
                 }
             }
             // NORTH face of i: dqsum_s[i-w], positive = (i-w) -> i.
             if (y > 0) {
                 const int64_t q = dqsum_s[i - w];
                 if (q > 0) {                    // i receives from the north
-                    if (e_participates(i - w, solid, ts, is_vacuum, is_ambient))
-                        de += q * (int64_t)temperature[i - w];
+                    de += receive(i - w, q);
                 } else if (q < 0) {             // i donates north
-                    const int64_t phi = (-q) * t_own;
+                    const int64_t phi = donate(-q);
                     de -= phi;
                     if (ts[i - w]) cnt.e_ts_residual += phi;
                 }
             }
-            e[i] += de;
+            gas_energy[i] += de;
+            cnt.e_transport_net += de;
         }
     }
 
-    // ---- stage 4: recovery T = floordiv(e, n_bulk_new) (design §2.1.5) ------
+    // ---- stage 4: the MIRROR REFRESH (arc #54 §2.6/§2.7 row 1) -------------
+    // T := floordiv(E, n_bulk_new) − T_AMB_raw. This is no longer the
+    // AUTHORITY it was at P-E1 — it is a mirror refresh, so that `p*`, the SL
+    // march and every T reader stay in step with the energy WITHIN the tick.
+    // The authoritative rails (T_MIN / T_MAX_PHYS) and their write-back into
+    // `gas_energy` run ONCE PER TICK in EOSSolver::step's §2.6 recovery,
+    // because a per-substep write-back of `N·floordiv(E,N) <= E` would drain
+    // up to N−1 raw per cell per substep — the exact drip class this arc
+    // kills. The clamps below therefore touch ONLY the mirror (they bound the
+    // int32 narrow) and book nothing.
+    //
+    // The N_EPS WIPE stays authoritative here: a cell with no capacity to
+    // divide by cannot carry energy into the next substep either, so its
+    // residual is destroyed (counted, ABSOLUTE) and it is reset to ambient.
     for (int y = 0; y < h; ++y) {
         const int row = y * w;
         for (int x = 0; x < w; ++x) {
@@ -411,20 +461,26 @@ void bulk_flux_energy_transport_cached(
                 cnt.n_bulk_active_sum += n_new;
             }
             if (n_new < N_EPS_RAW) {
-                // No capacity to divide by: the residual is DESTROYED (signed —
-                // cold gas carries negative relative energy) and T := ambient.
-                cnt.e_wipe_sum += e[i];
+                // No capacity to divide by: the residual (relative to what the
+                // remaining wisp of mass carries AT AMBIENT) is DESTROYED —
+                // signed, since sub-ambient gas carries less than that — and
+                // both the field and its mirror are reset to ambient.
+                const int64_t e_amb = n_new * t_amb64;
+                cnt.e_wipe_sum += gas_energy[i] - e_amb;
+                gas_energy[i] = e_amb;
                 temperature[i] = 0;
                 continue;
             }
             // FLOOR division toward -inf — plain `/` truncates toward zero and
             // would MINT on every sub-ambient cell (fixed_point.h floordiv_q).
-            int64_t t_new = floordiv_q(e[i], n_new);
-            if (t_new < (int64_t)t_min_q) {
-                // R3: the T_MIN rail is a counted CREATOR, in ENERGY units.
-                cnt.e_floor_sum += ((int64_t)t_min_q - t_new) * n_new;
-                t_new = (int64_t)t_min_q;
-            }
+            // The −T_AMB_raw shift lands the result back in the stored
+            // ambient-RELATIVE convention every T reader expects.
+            int64_t t_new = floordiv_q(gas_energy[i], n_new) - t_amb64;
+            // MIRROR-ONLY clamps (see the stage header): they keep the int32
+            // narrow safe; the counted rails with their write-back are the
+            // once-per-tick §2.6 recovery's.
+            if (t_new < (int64_t)t_min_q)           t_new = (int64_t)t_min_q;
+            else if (t_new > (int64_t)t_max_phys_q) t_new = (int64_t)t_max_phys_q;
             temperature[i] = (int32_t)t_new;
         }
     }

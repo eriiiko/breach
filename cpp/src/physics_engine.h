@@ -253,6 +253,7 @@ public:
         int32_t* atmosphere,                                     // S2c: Q16.16
         int32_t* wind_x, int32_t* wind_y,                        // S2c: Q16.16
         int32_t* temperature,                                    // EOS P3
+        int64_t* gas_energy,                                     // arc #54 §2.2
         const bool* obstacles, const bool* solid, const bool* is_vacuum,
         const float* dyn_permeability, const float* dyn_wave_absorb,
         int32_t* gas, const float* gas_diffusion, int n_gases,   // S2b: gas Q16.16
@@ -383,7 +384,15 @@ public:
         int steam_idx, float tilt_x, float tilt_y,
         int h, int w, float sim_time,
         double ceiling_h, double flood_eps, double ratio_cap,
-        double boil_rate, double boil_p_thresh, double steam_yield) const;
+        double boil_rate, double boil_p_thresh, double steam_yield,
+        // arc #54 §2.7: forwarded VERBATIM to step_water_tail (the W3
+        // evacuation row). All default nullptr -> the pre-#54 path.
+        int64_t* gas_energy = nullptr,
+        const bool* gas_conservative = nullptr,
+        const bool* thermal_solid = nullptr,
+        const bool* is_vacuum = nullptr,
+        const bool* is_ambient = nullptr,
+        int32_t t_amb_raw = 0) const;
 
     // --- S8a Path B: the water HOST TAIL, split out of step_water -----------
     // The W5 flash-boil vacuum sink + the W3 volume-displacement evacuation +
@@ -394,12 +403,44 @@ public:
     // helper). No substep loop, no solver call — pure host float/integer arithmetic
     // (/fp:strict), so it is bit-identical whether reached from step_water or the
     // resident path.
+    //
+    // arc #54 (gas-energy conservation, design §2.7 "water-displacement gas
+    // evacuation" — the row v1/v2 MISSED): the W3 evacuation moves N out of a
+    // flooding cell into neighbours selected by `!solid && perm > 0` ONLY,
+    // i.e. also into VACUUM, the ambient RING and THERMAL_SOLID tiles — and it
+    // did so with no temperature/energy argument at all, so under a stored
+    // energy field it would have been a silent mass-without-energy mint at
+    // every flood. It now takes the field and the four masks:
+    //   * only the BULK (gas_conservative) planes carry energy — a trace share
+    //     is mass the books never counted;
+    //   * an ACCOUNTABLE receiver is credited at the DONOR's T_abs (moved
+    //     mass carries its source's temperature — the seam's first rule);
+    //   * a share into a NON-accountable cell leaves the books and is booked
+    //     to `e_water_evac_export_sum` (R3-#10).
+    // Host-side on BOTH backends (confirmed: there is no .cu twin), and it
+    // runs BEFORE the EOS — so at P-G1a the entry re-sync would absorb it
+    // anyway; wiring it here is what makes P-G1b's D1 flip a deletion rather
+    // than a hunt.
     void step_water_tail(
         int32_t* water_depth, int32_t* atmosphere, const bool* solid,
         int32_t* gas, int n_gases, int32_t* before, float* dyn_permeability,
         int steam_idx, int h, int w, float sim_time,
         double ceiling_h, double flood_eps, double ratio_cap,
-        double boil_rate, double boil_p_thresh, double steam_yield) const;
+        double boil_rate, double boil_p_thresh, double steam_yield,
+        // arc #54 §2.7 — ALL default nullptr so a caller without the field
+        // takes the pre-#54 path byte-for-byte (dormancy BY BRANCH).
+        int64_t* gas_energy = nullptr,
+        const bool* gas_conservative = nullptr,
+        const bool* thermal_solid = nullptr,
+        const bool* is_vacuum = nullptr,
+        const bool* is_ambient = nullptr,
+        int32_t t_amb_raw = 0) const;
+
+    // arc #54 §2.7: energy that left the accountable set through the W3
+    // water-displacement evacuation (shares into vacuum / ring / thermal
+    // solids). PER-CALL reset, the EOSSolver counter idiom; int64, in the
+    // gas_energy Q32 currency.
+    mutable int64_t e_water_evac_export_sum = 0;
 
     // --- stamp_units: the per-tick dynamic-field rebuild --------------------
     // Moves GameMap.stamp_units' FIELD REBUILD (gamemap.py:485-589) into C++ —

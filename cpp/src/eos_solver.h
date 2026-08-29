@@ -62,9 +62,19 @@
 //      use_multigrid=false — the measurement-gate A/B reference)
 //   4. u -= dt·K·grad(P)/N̂ (whole chain int64; |u| clamped to c_LOCAL;
 //      narrowed once at store); absorption damping; zero outside open-air
-//   4c. compression work ONCE, post-correction, on div(u_new); T_MIN floor
-//      + T_WORK_CLAMP rail, both counter-tracked
 //   5. P := P_new stored once (the `atmosphere` alias)
+//   6. FACE-FLUX ENERGY STEP (gas-energy conservation arc #54, design §2.4 —
+//      REPLACES step 4c): n_sub sub-cycles of a two-pass (rail, apply) gather
+//      over the 4 faces, on the ABSOLUTE solved p^{n+1} and the stored u_new,
+//      applying each face with opposite signs to its two cells so Σ_region ΔE
+//      telescopes to 0 exactly. Kwatra eq. 3 with the eq. 15 face pressure.
+//   7. RECOVERY (§2.6): T := floordiv(E, N) − T_AMB once per tick over the
+//      whole accountable set; T_MIN / T_MAX_PHYS rails clamp the mirror AND
+//      write gas_energy back ONLY when a rail binds (counted, e_rail_sum).
+//
+// Step 4c (T ← T(1±w), the per-cell temperature-form compression work) is
+// DELETED at P-G1a: reversible per cell, but the books quantity Σ N_i T_i did
+// not telescope, which is issue #54's +121/−20 sealed-box signature.
 
 // ---------------------------------------------------------------------------
 // THERMAL-MASS AXIS, P-EOS (docs/thermal_mass_eos_ruling_2026-07-30.md — the
@@ -183,17 +193,15 @@ public:
     float adiabatic_index = 1.4f;   // γ (compile-time-class constant; config echo)
     float absorb_strength = 8.0f;
     float T_MIN = -289.0f;
-    float T_WORK_CLAMP = 0.5f;
-    // n_work_ref (energy-books arc, design §2.4, RULING 2026-08-17): the
-    // compression-work TRUST GATE's reference density — config-plumbed dial,
-    // default 0.25. P-E2b plumbed it inert; P-E4 WIRES THE FADE (fade factor
-    // = 0 for n < n_work_ref/2, linear from 0 at n_work_ref/2 to 1 at
-    // n_work_ref, 1 above — hard-zero below half), applied to step 4c's work
-    // factor k BEFORE the ±T_WORK_CLAMP compare, via a magnitude-first
-    // `recip_mul`/`recip_mul_dev` keyed on the existing `n_total_`/`d_ntot`/
-    // `K_ntot` bulk plane (fixed_point.h's `work_fade_clamp01_q` — zero new
-    // reductions, no new synced plane).
-    float n_work_ref = 0.25f;
+    // T_WORK_CLAMP / n_work_ref RETIRED (gas-energy conservation arc #54,
+    // design D11, P-G1a): step 4c — the per-cell temperature-form compression
+    // work whose rate rail and trust gate these two dials were — is GONE,
+    // replaced by the conservative face-flux energy step (§2.4). Their job is
+    // done structurally: telescoping (no temperature unbacked by energy) plus
+    // the flux step's own donor-only positivity rail. `renderer/cold_overlay.
+    // py` keeps its own COLD_N_MIN_FRAC constant (HUMAN-TEST ruling
+    // 2026-08-21 stands). Do not re-add them: a rate rail on a conservative
+    // flux would break the exact ± cancellation the whole arc rests on.
     // k_drag / k_drag_heat_frac (energy-books arc, design §2.8, NEW patch
     // P-E3): interior momentum drag WITH a heat counterparty — the mechanism
     // that gives the Helmholtz storm an honest grave. Per-tick, in the step-4
@@ -218,7 +226,13 @@ public:
     // this float -- the k_drag idiom). Lands dormant this arc (P1/P2);
     // dial-turning is P3, HUMAN-TEST.
     float k_drag2 = 0.0f;
-    float k_drag_heat_frac = 1.0f;
+    // k_drag_heat_frac RETIRED (arc #54, design D5/§2.1, P-G1a): the drag
+    // deposit is no longer a DIAL-scaled fraction of ΔKE divided by the
+    // convention c_v — it is the derived unit-bridge constant
+    // k_ke = γ(γ−1)·T_AMB_K/(2·c_max²) applied to the SAME Δ(|u|²) bracket
+    // (eos_solver.cpp's k_ke_recip_q32 fold). 0.0014 was the hand-rolled
+    // stand-in for 1/c_v_phys ≈ 0.0018; the P-E5 `k_drag_heat_frac = 1.0`
+    // detonation cannot recur because the constant is DERIVED, not dialled.
     // c_v (energy-books arc, design §2.8): the SAME gas heat-capacity
     // constant TemperatureSolver::c_v prices its ΔT=ΔE/(N*c_v) deposits with
     // ([physics.thermal] c_v — physics_runner.py binds both from the ONE
@@ -276,10 +290,24 @@ public:
     // --- debug telemetry -----------------------------------------------
     mutable int64_t energy_floor_hits = 0;
     mutable int64_t u_clamp_hits = 0;      // |u| clamped (c_LOCAL or U_MAX)
-    mutable int64_t work_clamp_hits = 0;   // step-4c factor rail engagements
-    mutable int64_t t_max_phys_hits = 0;   // step-4c T_MAX_PHYS rail (v2.4)
+    // work_clamp_hits: RETIRED with step 4c (arc #54, D10/D11) — the member
+    // and its counters_out[2] slot are KEPT so the positional unpacks in the
+    // gates/tools do not renumber, and it is ALWAYS 0 from P-G1a on.
+    mutable int64_t work_clamp_hits = 0;
+    // t_max_phys_hits / energy_floor_hits now count the ONCE-PER-TICK recovery
+    // rails (design §2.6), not step 4c's per-cell rails. tests/test_air_
+    // boundary.py:820's `t_max_phys_hits == 0` STOP survives verbatim.
+    mutable int64_t t_max_phys_hits = 0;
     mutable int64_t u_max_hits = 0;        // clamps where U_MAX (not c_LOCAL)
                                            // was the binding cap (v2.4)
+    // --- arc #54 P-G1a rail/telemetry hit counters (design §2.3/§2.4) ------
+    //   rad_clip_hits      the ±2^27 component guard (load-side clamp AND the
+    //                      post-∇p guard) engaging in the kick loop.
+    //   p_face_floor_hits  a per-cell p floored at 0 before eq. 15 (§2.4 F15).
+    //   flux_sat_hits      a face magnitude saturated (the int64 corner).
+    mutable int64_t rad_clip_hits = 0;
+    mutable int64_t p_face_floor_hits = 0;
+    mutable int64_t flux_sat_hits = 0;
 
     // --- P-E0 energy-bracket counters (energy-books arc, design §2.5) ----
     // Law-independent brackets over S = Σ n_bulk·T on the step-4c skip-set
@@ -293,7 +321,56 @@ public:
     // the boundary_flux_ idiom) so each read is that tick's delta. These are
     // the counters P-E1's ≤ 0 transport gate measures (design §7).
     mutable int64_t eth_transport_delta = 0;
+    // eth_compression_delta RETIRED (arc #54 §2.8, P-G1a): step 4c is gone and
+    // the flux step's contribution to Σ_region E is STRUCTURALLY 0 by
+    // telescoping, so this bracket can no longer detect anything. The member
+    // and its `int` type are KEPT (test_destroy_wall_conserves_mass.py:501's
+    // type assert is MECHANICAL, gate 6 STOPs) and it is always 0.
     mutable int64_t eth_compression_delta = 0;
+
+    // =====================================================================
+    // arc #54 (gas-energy conservation) — THE ABSOLUTE ENERGY COUNTERS
+    // (design §2.3/§2.4/§2.6/§2.8). All int64, all in the field's own Q32
+    // currency (E = N_raw · T_abs_raw; dequant = raw / 65536²), all RESET at
+    // step() entry (the boundary_flux_ / P-E1 per-tick idiom).
+    //
+    // THE CLOSURE IDENTITY (§2.8), exact in int64 across ONE EOSSolver::step:
+    //
+    //   Δ Σ_accountable gas_energy ==
+    //         e_entry_resync_sum          (P-G1a transitional; 0 from P-G1b)
+    //       + e_transport_net_sum         (§2.7 row 1, all substeps)
+    //       - e_wipe_sum                  (the N_EPS wipe's destruction)
+    //       - e_kick_ke_sum               (∇p kick KE debit)
+    //       + e_drag_heat_sum             (structural drag heat, D5)
+    //       - e_work_export_sum           (boundary face work, §2.4)
+    //       + e_rail_sum                  (§2.6 T_MIN / T_MAX_PHYS rails)
+    //
+    // The face-flux term itself contributes EXACTLY 0 to that sum over the
+    // accountable set (every interior face is applied with opposite signs to
+    // its two cells, from identical int64 inputs — §2.5). That is the arc.
+    //
+    // NOT in the identity, by construction (they never touch gas_energy):
+    // e_absorb_export_sum / e_sponge_export_sum / e_clamp_destroyed_sum /
+    // e_ts_ke_sum are EXPORTS (D6: numerical dampers and rails export or
+    // destroy KE, never heat the gas); e_ts_work_sum / e_wall_work_probe_sum
+    // are the D4 accepted-gap PROBES; e_energy_floor_sum is the suppressed
+    // (not destroyed) transfer of the positivity rail.
+    // =====================================================================
+    mutable int64_t e_entry_resync_sum = 0;    // transitional (§6 P-G1a row)
+    mutable int64_t e_transport_net_sum = 0;   // Σ over accountable cells of de
+    mutable int64_t e_kick_ke_sum = 0;         // ∇p kick bracket (debit, ≥/≤0)
+    mutable int64_t e_absorb_export_sum = 0;   // dyn_wave_absorb (exported)
+    mutable int64_t e_sponge_export_sum = 0;   // B3c band (exported)
+    mutable int64_t e_clamp_destroyed_sum = 0; // velocity cap (destroyed)
+    mutable int64_t e_drag_heat_sum = 0;       // drag L+Q (deposited; ex
+                                               // e_drag_deposit, slot 6)
+    mutable int64_t e_ts_ke_sum = 0;           // thermal_solid cells' brackets
+    mutable int64_t e_work_export_sum = 0;     // vacuum/ring OUTFLOW faces
+    mutable int64_t e_ts_work_sum = 0;         // PROBE: work lost at ts faces
+    mutable int64_t e_wall_work_probe_sum = 0; // PROBE: D4 wall-stencil term
+    mutable int64_t e_energy_floor_sum = 0;    // positivity-rail shortfall
+    mutable int64_t e_rail_sum = 0;            // §2.6 recovery rails (signed)
+    mutable int64_t e_retire_sum = 0;          // P-G1b seam (declared, 0 here)
 
     // --- P-E1 energy-transport counters (design §2.1.5/§2.5) -------------
     // The one-way guard terms of the new conservative transport law, all in
@@ -330,24 +407,16 @@ public:
     //                         drag loop (structurally >= 0 — the
     //                         magnitude-first shrink guarantees it, no
     //                         clamp/signed term needed).
-    //   e_drag_deposit      = Sigma n_bulk*ΔT_applied — the CONVERTER's
-    //                         output (§5: the kick's unpaid pressure work,
-    //                         named here rather than a true creator).
-    //   e_drag_drop_sum     = Sigma n_bulk*ΔT_drop — the (1-k_drag_heat_frac)
-    //                         remainder, a counted R3-legal destruction.
-    //   e_drag_rail_clipped = Sigma n_bulk*ΔT_clipped — the T_MAX_PHYS-rail
-    //                         (and int32-narrow) shortfall between the
-    //                         INTENDED deposit and what actually landed;
-    //                         NOT a formality (c_v=1 reaches the ceiling in
-    //                         ~14 ticks from a capped jet — an expected
-    //                         regime).
-    // Identity (asserted per tick, k_drag > 0): ke_drag_removed ==
-    // 2*c_v*(e_drag_deposit + e_drag_drop_sum + e_drag_rail_clipped) within
-    // the measured per-cell LSB slack (design §2.8/§7).
+    // arc #54 P-G1a (D5/D11): `e_drag_deposit`, `e_drag_drop_sum` and
+    // `e_drag_rail_clipped` are RETIRED — there is no heat FRACTION any more
+    // (the whole ΔKE is deposited, at the derived k_ke), no c_v divide, and no
+    // T_MAX_PHYS rail AT the deposit site (the rail runs once per tick in the
+    // §2.6 recovery). The one drag energy counter is `e_drag_heat_sum` above.
+    // `ke_drag_removed` SURVIVES as the raw KE oracle; the P-E3 identity is
+    // restated in absolute currency (tests/test_p_e3_drag.py, rewritten):
+    //     e_drag_heat_sum == Σ_cells N_i · trunc_k_ke(Δ|u|²_i)
+    // with the SAME per-cell truncation the kick applies (no c_v factor).
     mutable int64_t ke_drag_removed = 0;
-    mutable int64_t e_drag_deposit = 0;
-    mutable int64_t e_drag_drop_sum = 0;
-    mutable int64_t e_drag_rail_clipped = 0;
 
     // --- P6.2 telemetry: the substep count the last step() actually ran ---
     // (design §3.2 step 1's n = ceil(dt/dt_adv), N_SUB_MAX-capped). Exposed so
@@ -399,6 +468,14 @@ public:
         int32_t* p_prev,
         int32_t* wind_x, int32_t* wind_y,
         int32_t* temperature,
+        // arc #54 (design §2.2/§6 P-G1a): `gas_energy`, the (h,w) int64
+        // CONSERVED gas thermal energy field — the exact unshifted product
+        // N_raw·T_abs_raw on the accountable set, 0 elsewhere. TRANSITIONAL
+        // at P-G1a: step() RE-SYNCS it from the (N, T) mirror at entry (T is
+        // still the cross-tick truth) and REFRESHES the mirror from it at
+        // exit (the §2.6 recovery). nullptr is NOT accepted — every caller
+        // passes GameMap.gas_energy.
+        int64_t* gas_energy,
         int32_t* gas, const bool* gas_conservative, int n_gases,
         const bool* solid, const bool* is_vacuum,
         const float* dyn_permeability, const float* dyn_wave_absorb,
@@ -554,6 +631,20 @@ private:
     // per-face dq planes. int64, scratch only — NOT synced state, never
     // digested, rebuilt from (n_bulk, T) at the top of every substep (R4).
     mutable std::vector<int64_t> e_scratch_, dqsum_e_, dqsum_s_;
+    // arc #54 §2.7 row 1: the transport's PRE-flux bulk-N denominator plane
+    // (e_scratch_ becomes its energy sibling — see bulk_transport.h).
+    mutable std::vector<int64_t> n_pre_;
+    // arc #54 P-G1a scratch (design §2.4/§2.5). All rebuilt every tick, never
+    // synced, never digested. RL-batch habits: CPU keeps (h,w); the device
+    // twin (P-G2) allocates (N,h,w) with N=1.
+    //   e0_      E at the ENERGY-PASS entry — the increment-form pressure
+    //            refresh's one fixed baseline (§2.4 F2/R3-#6);
+    //   pcur_    the per-sub-cycle refreshed cell pressure, materialized into
+    //            a PLANE so pass A and pass B read byte-identical operands;
+    //   s_plane_ the donor-only positivity rail's per-cell Q16 scale (F3/F13).
+    mutable std::vector<int64_t> e0_;
+    mutable std::vector<int32_t> pcur_;
+    mutable std::vector<int32_t> s_plane_;
 };
 
 // ---------------------------------------------------------------------------
@@ -584,13 +675,24 @@ private:
 // not at the call site: the binding gets it for free.
 // `is_ambient == nullptr` means space map -> the ring term is dormant BY
 // BRANCH, exactly as `ambient_mode` gates it inside step().
+//
+// arc #54 P-G1a (design §2.8): the sum is now READ OFF THE FIELD —
+//     S = Σ_accountable ( gas_energy_i − n_bulk_i · T_AMB_raw )
+// which is the SAME quantity (gas_energy ≡ n_bulk·(T + T_AMB_raw) whenever
+// the mirror is current) in the SAME units, computed as an int64 per-cell
+// DIFFERENCE then summed — never as two absolute sums (§2.2's overflow rule).
+// `gas_energy == nullptr` falls back to the pre-#54 `n_bulk · temperature`
+// form, byte-identically, so a caller without the field (a bare unit test)
+// still measures the same books.
 int64_t eos_energy_books_sum(
     const int32_t* gas, const bool* gas_conservative, int n_gases,
     const int32_t* temperature,
     const bool* solid, const bool* is_vacuum,
     int n,
     const bool* is_ambient = nullptr,
-    const bool* thermal_solid = nullptr);
+    const bool* thermal_solid = nullptr,
+    const int64_t* gas_energy = nullptr,
+    int32_t t_amb_raw = 0);
 
 // ---------------------------------------------------------------------------
 // EOS P6.2 — standalone CPU reference for the SL-advection substep loop
@@ -667,42 +769,49 @@ uint64_t eos_sl_advect_reference(
 //                       divide-by-zero is reachable inside the clamp branch);
 //   * scalar params   — the EOSSolver config members, folded to q16/int64
 //                       through the IDENTICAL double expressions step() uses.
-// Outputs: the SAME chained FNV digests step() stores in digest_velocity /
-// digest_compression, plus the NINE rail counters FOR THIS CALL in
-// counters_out[9] = { u_clamp_hits, u_max_hits, work_clamp_hits,
-// energy_floor_hits, t_max_phys_hits, ke_drag_removed, e_drag_deposit,
-// e_drag_drop_sum, e_drag_rail_clipped } (the solver's members are
-// cumulative for the first five, PER-TICK for the drag four; a gate compares
-// per-tick deltas either way). Counter semantics are the solver's own: ONE
-// increment per engaging CELL for the first five (the |u| clamp is now an
-// EXACT rad > cap2 magnitude test — no component Chebyshev pre-test, so no
-// diagonal leak; the 4c rails are an exclusive if/else-if chain); the drag
-// four are int64 ENERGY SUMS (raw Q16.16^2), not hit counts (design §2.8).
+// Outputs: the SAME chained FNV digest step() stores in digest_velocity, plus
+// the NINE counters FOR THIS CALL in
+// counters_out[9] = { u_clamp_hits, u_max_hits, 0, 0, 0,
+//                     ke_drag_removed, e_drag_heat_sum, 0, 0 }
+// arc #54 P-G1a, D10: the LAYOUT IS KEPT so no positional unpack renumbers.
+// Slot 2 (work_clamp_hits), slots 3/4 (the step-4c energy_floor / T_MAX_PHYS
+// rails) and slots 7/8 are RETIRED-AND-ZERO: step 4c is gone from this
+// reference, so it no longer writes `temperature` at all and
+// *digest_compression_out is the digest of the UNCHANGED temperature plane
+// (the once-per-tick recovery that now owns those rails lives in step(), not
+// in this isolated tail replay). Slot 5 stays the raw KE oracle; slot 6 is
+// the arc's one drag energy counter. All ENERGY slots are int64 sums in the
+// gas_energy Q32 currency, not hit counts.
 // Test entry only — the live path remains EOSSolver::step.
 // ---------------------------------------------------------------------------
 void eos_kick_compression_reference(
     int32_t* wind_x, int32_t* wind_y, int32_t* temperature,   // in/out
+    // arc #54 P-G1a: the (h,w) int64 gas_energy field the KE brackets debit /
+    // credit (§2.3). IN/OUT. May be nullptr — then the brackets are computed
+    // and COUNTED exactly as in step(), but nothing is stored (the pre-#54
+    // callers' shape, kept so a gate can measure the brackets alone).
+    int64_t* gas_energy,
     const int32_t* p_new,                                     // solved P (q16)
     const int32_t* gas, const bool* gas_conservative, int n_gases,
     const bool* solid, const bool* is_vacuum,
     const float* dyn_wave_absorb,
     int h, int w, float dt, const int64_t* cap2_plane,        // D2v2 (h,w) Q32.32, >= 0
     float c_max, float dx, float adiabatic_index, float absorb_strength,
-    float n_floor_solver, float t_min, float t_work_clamp,
-    float t_max_phys, float u_max,   // trace_mass_scale param RETIRED (P-T0)
+    float n_floor_solver, float t_min,
+    float t_max_phys, float u_max,   // t_work_clamp param RETIRED (arc #54 D11)
     // P-E3 (design §2.8): interior drag + its heat counterparty. k_drag
     // default 0.0 -> the mechanism is dormant (branch on the QUANTIZED kd_q,
     // not these floats — see the .cpp). k_drag2 (drag-law v2, design
     // docs/drag_law_v2_design_2026-08-23.md): the quadratic term, same
     // dormancy idiom (kd2_q).
-    float k_drag, float k_drag2, float k_drag_heat_frac, float c_v,
-    // P-E4 (design §2.4): the compression-work trust gate's reference
-    // density — fades step 4c's work factor k toward 0 below n_work_ref,
-    // hard-zero below n_work_ref/2 (see fixed_point.h's work_fade_clamp01_q).
-    float n_work_ref,
-    // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K, folded the SAME
-    // A7-floored expression as the CPU live path; NOT read in the loop body
-    // yet (P-W1b lands the law). Default 290.0 matches EOSSolver::T_AMB_K.
+    // arc #54 P-G1a (D5): `k_drag_heat_frac` and `n_work_ref` are RETIRED
+    // (there is no heat fraction and no trust gate any more). `c_v` stays in
+    // the signature as the config echo — it is NOT read by the drag deposit
+    // (that is the derived k_ke now).
+    float k_drag, float k_drag2, float c_v,
+    // ambient K — folded the SAME A7-floored expression as the CPU live path.
+    // arc #54: now LOAD-BEARING in the KE brackets too (k_ke is derived from
+    // c_max, adiabatic_index and this).
     float t_amb_k,
     uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
     int64_t* counters_out /* [9] */,

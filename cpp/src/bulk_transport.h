@@ -139,12 +139,50 @@ void bulk_flux_transport_cached(
 // the e build), |T| <= T_MAX_PHYS raw < 2^31 => |e| < 2^61; recovered T is a
 // mass-weighted mix of donor T's (convexity) so the int32 narrow is safe.
 // ===========================================================================
+// ===========================================================================
+// arc #54 P-G1a (gas-energy conservation, design §2.7 row 1) — THE ENERGY
+// HALF IS REWRITTEN. What changed, and why:
+//
+//   * stage 1 is GONE. There is no per-substep `e[i] = n_bulk*T[i]` rebuild
+//     from the mirror: the energy IS the stored `gas_energy` field, carried
+//     across the substeps (and, from P-G1b, across ticks).
+//   * stage 3 prices every face OFF LIVE STATE (F6):
+//         phi_f = floordiv(dq_f * E_i, N_i^pre)     for the donor i
+//     computed identically by both sides from (dq_f, E_i, N_i^pre) — the same
+//     5-point read the gather already does. Since Sum_f dq_f <= N_i (the mass
+//     limiter guarantees it), Sum_f phi_f <= E_i: a donor can never be driven
+//     negative, and its recovered T is exactly invariant as mass leaves.
+//     Non-participating donors (ts / vacuum / ring) credit the receiver
+//     `dq * T_AMB_raw` — the P-E1 "born carrying zero RELATIVE energy" rule,
+//     restated in the absolute currency (§2.7 "minted mass is born at
+//     ambient"; the naive absolute reading would have borne it at 0 K).
+//   * the exact `dq*E/N` is evaluated WITHOUT a 128-bit divide (device
+//     portability, R3-#7's spirit) by splitting E = N*q + r:
+//         floordiv(dq*E, N) == dq*q + floordiv(dq*r, N),  0 <= r < N
+//     and both products are bounded by N_max^2 = 2^60. See `price_face`.
+//   * stage 4 is a MIRROR REFRESH, not the authority. It rebuilds
+//     `temperature` from the live E so p* (which still reads the mirror) and
+//     the SL march stay in step within the tick, but the RAILS and their
+//     write-back live in EOSSolver::step's once-per-tick §2.6 recovery. The
+//     N_EPS wipe stays HERE (it must: a cell with no capacity to divide by
+//     cannot carry energy across the next substep either) and now writes
+//     E := N*T_AMB, booking the destroyed residual to e_wipe_sum in ABSOLUTE
+//     currency. `e_floor_sum` is therefore structurally 0 at P-G1a — the
+//     T_MIN rail it counted is the recovery's now (e_rail_sum).
+//   * counters are ABSOLUTE: e_ts_residual books dq*T_abs (not dq*T_rel), and
+//     the new `e_transport_net` is Sum over accountable cells of the applied
+//     `de` — the closure identity's transport term (§2.8), which makes the
+//     identity checkable from Python without per-channel bookkeeping.
+// ===========================================================================
 struct BulkEnergyCounters {
-    int64_t e_ts_residual = 0;      // signed rule-(d) air->ts debits
-    int64_t e_wipe_sum = 0;         // signed N_EPS wipe residuals
-    int64_t e_floor_sum = 0;        // energy CREATED by the T_MIN recovery clamp
+    int64_t e_ts_residual = 0;      // ABSOLUTE rule-(d) air->ts debits
+    int64_t e_wipe_sum = 0;         // ABSOLUTE N_EPS wipe destruction
+    int64_t e_floor_sum = 0;        // retired at P-G1a (the T_MIN rail moved
+                                    // to the §2.6 recovery); always 0
     int64_t n_active_flux = 0;      // active-cell count (substep-accumulated)
     int64_t n_bulk_active_sum = 0;  // sum n_bulk_new (raw) over active cells
+    int64_t e_transport_net = 0;    // Sum_accountable de — the §2.8 identity's
+                                    // transport term (arc #54)
 };
 
 // thermal_solid_ts: the resolved medium mask (caller passes its `ts` fold —
@@ -157,6 +195,13 @@ void bulk_flux_energy_transport_cached(
     const bool* gas_conservative,
     int n_gases,
     int32_t* temperature,
+    // arc #54 §2.2/§2.7: the stored energy field this pass now MOVES (in/out),
+    // the ambient-K raw fold it prices minted mass at, and the T_MAX_PHYS
+    // quantize the mirror refresh clamps against (mirror-only — the
+    // authoritative rail with its write-back is the §2.6 recovery's).
+    int64_t* gas_energy,
+    int32_t t_amb_raw,
+    int32_t t_max_phys_q,
     const int32_t* wind_x,
     const int32_t* wind_y,
     const bool* solid,
@@ -166,7 +211,13 @@ void bulk_flux_energy_transport_cached(
     const int32_t* coeffS,
     int32_t t_min_q,
     int h, int w,
-    int64_t* e_scratch,
+    // arc #54: `e_scratch` becomes the PRE-flux energy snapshot and gains a
+    // sibling, `n_pre` — the pre-flux bulk-N denominator every face price
+    // divides by (stage 2 overwrites `gas` in place, and the stage-3 gather
+    // writes `gas_energy` while its neighbours are still being read, so BOTH
+    // operands must come from planes the pass does not mutate).
+    int64_t* e_pre,
+    int64_t* n_pre,
     int64_t* dqsum_e,
     int64_t* dqsum_s,
     BulkEnergyCounters& cnt,

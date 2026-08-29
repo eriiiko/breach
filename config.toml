@@ -622,15 +622,11 @@ U_MAX = 1000.0                        # v2.4 defense-in-depth velocity rail (m/s
                                       # the int64/narrow overflow regime again (see
                                       # eos_solver.cpp step 4's overflow guard). PROVISIONAL,
                                       # Erik review at P5.
-n_work_ref = 0.25                     # energy-books arc (design §2.4, RULING 2026-08-17):
-                                      # the compression-work TRUST GATE's reference density —
-                                      # fade factor = 0 below n_work_ref/2, linear to 1 at
-                                      # n_work_ref, applied before the T_WORK_CLAMP compare.
-                                      # PLUMBING ONLY at P-E2b (config key -> C++ member ->
-                                      # bindings -> this bind): the fade MECHANISM is P-E4's;
-                                      # nothing reads this dial yet (provably inert — digests
-                                      # byte-identical). At 0.25 the power-of-two reciprocal
-                                      # is exact (P-E4's territory to exploit).
+# n_work_ref RETIRED -- gas-energy conservation arc (#54, P-G1a, D11).
+# It faded step 4c's compression-work factor on thin-N cells; step 4c is
+# gone, replaced by the conservative face-flux energy step, whose
+# telescoping and donor-only positivity rail do the job structurally.
+# physics_runner raises loudly if this key comes back.
 k_drag = 0.5                          # energy-books arc (design §2.8, NEW patch P-E3).
                                       # SHIPPED VALUE 0.5 (Erik, P-E5 2026-08-17) — a
                                       # starting point, not a tuned value: he ruled that
@@ -657,22 +653,14 @@ k_drag = 0.5                          # energy-books arc (design §2.8, NEW patc
                                       # for wandering wave_absorb into (0, 0.02) with
                                       # k_wind_strip > 0 — k_drag is a strictly stronger sink
                                       # at the equivalent rate (A@0.02 == k_drag 0.0067).
-k_drag_heat_frac = 0.0014             # energy-books arc (design §2.8, RULING R2, Erik
-                                      # 2026-08-17): the fraction of the drag-removed kinetic
-                                      # energy actually deposited as heat (into the SAME
-                                      # cell's T). Default 1.0 (full deposit) keeps the
-                                      # conservation oracle EXACT through every gate — Q16
-                                      # game units put air's heat capacity ~700x below
-                                      # physical (c_v=1 by convention), so a fully honest
-                                      # deposit runs ~700x physical. MEASURED (P-E3): at
-                                      # k_drag=0.02 a sustained 20 m/s neck flow deposits
-                                      # ~8.05 game-deg/s into neck cells -- the design's
-                                      # ~96 estimate was 12x too high, so the ignition risk
-                                      # is milder than feared (but scales with k_drag, so
-                                      # re-check it at 0.5). Erik sweeps this fraction at P-E5
-                                      # (physical-air anchor ~=0.0014); any non-deposited
-                                      # remainder is a counted, named destruction channel
-                                      # (e_drag_drop_sum, R3-legal).
+# k_drag_heat_frac RETIRED -- gas-energy conservation arc (#54, P-G1a,
+# design D5/2.1). The drag deposit is no longer a DIAL-scaled fraction of
+# the removed kinetic energy divided by the convention c_v: it is the
+# DERIVED unit-bridge constant k_ke = gamma*(gamma-1)*T_AMB_K/(2*c_max^2)
+# (~9.0e-4 game-deg per (m/s)^2 at the shipped dials) applied to the same
+# Delta(|u|^2) bracket. 0.0014 was the hand-rolled stand-in for exactly
+# that constant (1/c_v_phys ~= 0.0018). physics_runner raises loudly if
+# this key comes back -- see the stale-key guard there.
 k_drag2 = 0.0                         # drag-law v2 (design docs/drag_law_v2_design_
                                       # 2026-08-23.md, issue #4 P1): the QUADRATIC
                                       # term of the two-term interior drag law
