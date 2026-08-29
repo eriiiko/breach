@@ -61,7 +61,14 @@ import numpy as np
 # exactly D4's order, so at DRAW_R = 1 the plane is bit-for-bit the v3 plane
 # and a v3-era golden still reproduces under a DRAW_R = 1 config — which is
 # what let the R = 1 identity be gated against the pre-patch build.
-DIGEST_SPEC_VERSION = 4
+# v5 (2026-08-29, P-G0, gas-energy conservation arc #54, design §2.2/§5): +
+# gas_energy -- the new int64 CONSERVED energy field (N_raw*T_abs_raw on the
+# accountable set, 0 elsewhere). Synced state from this patch on (mirror-
+# derived in P-G0; the seam-written stored truth from P-G1a on). Membership
+# AND dtype both change (a NEW int64 field, not a reshape/retype of an
+# existing one), so this is a version bump per this file's own change
+# procedure.
+DIGEST_SPEC_VERSION = 5
 
 # The frozen (name, dtype-string) contract — the integer/bool SYNCED fields, in a
 # fixed order. `gas` is the 3D (5,h,w) multi-gas stack (covers `smoke`, a view).
@@ -89,6 +96,7 @@ DIGEST_FIELDS = (
     ("is_vacuum",      "bool"),
     ("ignition_armed", "bool"),
     ("dem_acc",        "int32"),
+    ("gas_energy",     "int64"),
 )
 
 # Float sim fields deliberately NOT in the cross-GPU integer digest (documented).
