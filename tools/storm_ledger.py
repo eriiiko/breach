@@ -164,13 +164,20 @@ class _Masks:
 # and the active-flux telemetry §7's truncation bound is scaled by. All five
 # are PER-TICK too (same reset-at-step()-entry idiom), so they belong in this
 # tuple: the run totals below accumulate them instead of diffing them.
-PER_TICK_COUNTERS = ("eos.eth_transport_delta", "eos.eth_compression_delta",
+# arc #54 P-G1a: `eth_compression_delta` is structurally 0 (step 4c is
+# gone and the flux step telescopes), and the drag triple collapsed to the
+# single `e_drag_heat_sum`. The arc's own absolute counters join the
+# roster so the ledger keeps reading the WHOLE energy chain.
+PER_TICK_COUNTERS = ("eos.eth_transport_delta",
                      "eos.e_ts_residual", "eos.e_wipe_sum", "eos.e_floor_sum",
                      "eos.n_active_flux", "eos.n_bulk_active_sum",
                      # P-E3 (energy-books §2.8): the interior-drag oracle,
                      # the SAME per-tick reset idiom (not P-E2a's accumulate).
-                     "eos.ke_drag_removed", "eos.e_drag_deposit",
-                     "eos.e_drag_drop_sum", "eos.e_drag_rail_clipped")
+                     "eos.ke_drag_removed", "eos.e_drag_heat_sum",
+                     "eos.e_kick_ke_sum", "eos.e_absorb_export_sum",
+                     "eos.e_sponge_export_sum", "eos.e_clamp_destroyed_sum",
+                     "eos.e_work_export_sum", "eos.e_rail_sum",
+                     "eos.e_transport_net_sum", "eos.e_entry_resync_sum")
 
 
 def counters(runner):
@@ -184,14 +191,17 @@ def counters(runner):
             (runner.eos, "eos.",
              ("u_clamp_hits", "u_max_hits", "work_clamp_hits",
               "energy_floor_hits", "t_max_phys_hits",
-              "eth_transport_delta", "eth_compression_delta",
+              "eth_transport_delta",
               # P-E1: rule (d) destruction, the N_EPS wipe, the
               # T_MIN creator, and the active-flux pair.
               "e_ts_residual", "e_wipe_sum", "e_floor_sum",
               "n_active_flux", "n_bulk_active_sum",
               # P-E3 (design §2.8): the interior-drag oracle.
-              "ke_drag_removed", "e_drag_deposit",
-              "e_drag_drop_sum", "e_drag_rail_clipped")),
+              "ke_drag_removed", "e_drag_heat_sum",
+              "e_kick_ke_sum", "e_absorb_export_sum",
+              "e_sponge_export_sum", "e_clamp_destroyed_sum",
+              "e_work_export_sum", "e_rail_sum",
+              "e_transport_net_sum", "e_entry_resync_sum")),
             (runner.combustion, "comb.",
              # P-E2b: e_deposit_drop_sum is heat_floor_hits' energy-sum twin
              # (design §2.2/§2.5) — the combustion floor's destroyed ΔE.

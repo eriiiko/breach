@@ -3,7 +3,8 @@
 Written during the energy-books arc's HUMAN-TEST (2026-08-17) to separate two
 in-game blowups that looked identical from the outside and had different causes:
 
-  * `debug_blowup_20260817_051730` (k_drag 0.5, k_drag_heat_frac 1.0) —
+  * `debug_blowup_20260817_051730` (k_drag 0.5, k_drag_heat_frac 1.0 --
+    that dial is RETIRED at arc #54 P-G1a, design D5; the dump predates it) --
     THERMAL. T slammed into the 16000 ceiling across 739 cells while pressure
     was still a normal 1.16 atm, and pressure followed it up to 66 atm one
     snapshot later. Cause: the drag heat deposit scales with u^2, so at blast
