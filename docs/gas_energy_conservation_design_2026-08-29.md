@@ -1,4 +1,4 @@
-# Gas energy conservation — design v2 (2026-08-29)
+# Gas energy conservation — design v3 (2026-08-29)
 
 Arc for issue **#54**. Replaces EOS step 4c (per-cell temperature-form
 compression work) with Kwatra's conservative flux-form energy update on a
@@ -30,6 +30,23 @@ Rulings by Erik, 2026-08-29 (recorded; not re-litigated below):
 v2 asks Erik for two confirmations (flagged ★ in §4): the velocity-cap /
 wave-sponge KE is **exported and counted, not heated** (D6); the energy step
 is **sub-cycled** inside the tick (D8).
+
+**v3 (same day)**: round-2 critique (physics+numerics; seam/gates). All
+round-1 blockers confirmed resolved (the §2.1 constants were re-derived
+independently and match). v3 fixes: RAD_SAFE guard moved above the KE
+brackets + ΔKE operation order (F1); sub-cycles refresh `p_i` from the
+running `E_i` (F2); donor-only positivity rail with a two-pass kernel (F3,
+F13); **thermal-solid faces are walls** and ts cells export their brackets
+(F4, F5); transport prices faces off live `E_i` (F6); recovery + rails once
+per tick, pinned (F7); SB gate = closure identity on the box (F8);
+always-compiled throw for the constants + the S_EOS guard carried forward
+(F9, seam 7); `mul128_shr` promoted as a three-branch primitive (F10);
+combustion soot + object-site rows (F11, seam 2); KE-not-a-book stated
+(F12); water-displacement evacuation row (seam 1); `unseal_tiles` is a
+withdrawal, not a mint (seam 3); MECHANICAL red class + corrected test
+list, benches migrate in P-G0 (seam 4-6); GPU flux pass is a new kernel
+after `K_store_atm` (seam 8); CUDA parity suspension named (seam 9);
+Recorder true-int64 branch (seam 10).
 
 ---
 
@@ -85,7 +102,15 @@ deposit, NOT this constant (config.toml:154, :660 — "c_v=1 by convention …
 ~700x below physical"). `k_drag_heat_frac = 0.0014` was the hand-rolled
 stand-in for `1/c_v_phys ≈ 0.0018`; v2 replaces it with the derived `k_ke`
 (D5). Both constants fold host-side once per tick from `c_max`, `γ`,
-`T_AMB_K` (the P-W1a fold site), with a build-time consistency assert.
+`T_AMB_K` (the P-W1a fold site). `C` is **derived from `T_AMB_K`** at the
+fold (the two are separate `def_readwrite` members today and can drift);
+the check is an **always-compiled `throw`** beside the D-3 guard
+(eos_solver.cpp:384-397 explains why `assert` is dead in Release) — and the
+D-3 guard itself (`S_EOS == 1 && T_MIN > −T_AMB_K`) **moves unchanged** to
+the energy pass: the recovery `T_rel = E/N − T_AMB` assumes a slope-free
+`T_abs`, so `s_eos_q` must be 1 wherever it still multiplies T (:439, :738)
+or the recovery gains the slope. `k_ke` folds as a Q.32 `make_recip`
+reciprocal (a Q16 constant would be 59 counts — 0.22% bias, ~6 bits).
 
 ### 2.2 State
 - **`gas_energy`** — int64 per cell, **the exact unshifted product
@@ -93,9 +118,12 @@ stand-in for `1/c_v_phys ≈ 0.0018`; v2 replaces it with the derived `k_ke`
   set** = the one canonical skip-set complement `!(solid || thermal_solid ||
   is_vacuum || is_ambient)` (`eos_energy_books_sum`, `e_participates()` in
   bulk_transport.cpp:386 — reused verbatim, not re-derived). Zero elsewhere
-  and never read there; the two existing wipes (bulk_transport.cpp:392,
-  temperature_solver.cpp:135) zero it and book `−(E − N·T_AMB)` to
-  `e_vac_wipe_sum` / `e_ring_pin_sum` (existing signed counters).
+  and never read there; the two existing vacuum/ring temperature wipes
+  (bulk_transport.cpp:392, temperature_solver.cpp:135) zero it and book
+  `−(E − N·T_AMB)` to `e_vac_wipe_sum` / `e_ring_pin_sum` (existing signed
+  counters). **Thermal-solid cells carry N and u but no `gas_energy`**:
+  every energy they would exchange is exported to counters (§2.3 F5, §2.4
+  walls, §2.7).
 - Shape: host `(h, w)` like every field; device `(N, h, w)`, N=1 (RL-batch
   habits row). Digest hashes the host shape → **digest spec v5**.
 - `temperature[]` stays stored, digested, universally read. **Truth for
@@ -105,7 +133,9 @@ stand-in for `1/c_v_phys ≈ 0.0018`; v2 replaces it with the derived `k_ke`
   narrow) so pressure never carries the floored-mirror bias.
 - Overflow budget of the field: the enforced map invariant is `N_raw <
   2^30` (eos_solver.cpp:948) and `T_abs_raw ≤ (T_MAX_PHYS + T_AMB)·2^16 ≈
-  2^30` ⇒ `E ≤ 2^60`. **Absolute sums over > 8 cells may overflow int64 —
+  2^30` ⇒ `E ≤ 2^60` — which holds only because the recovery's
+  `T_MAX_PHYS` rail runs **once per tick on the whole accountable set**
+  (§2.6); pressure is int32 (`atmosphere`/`pstar_`), bound 2^31. **Absolute sums over > 8 cells may overflow int64 —
   forbidden**; all books are relative (`Σ (E − N·T_AMB_raw)`), computed as
   the existing books do (int64 per-cell difference, then sum).
 
@@ -124,100 +154,163 @@ is ruled **individually** (D6), inside the loop, per cell, on the cell's own
 | cap clamp | **destroyed, counted** (rail; pre-clamp |u| unbounded) | `e_clamp_destroyed_sum` |
 | drag L + Q | `gas_energy_i += −ΔKE` (structural drag heat, D5) | `e_drag_heat_sum` (replaces `e_drag_deposit`) |
 
-`T_ke` per cell uses `mul_q16(|u|²-terms, k_ke_q)` with `|u|² ≤ U_MAX²`
-(cap applied first for the drag stages; the kick stage bound is
-`RAD_SAFE`, so its product runs through `mul128_shr`). This retires the
-P-E3 deposit formula (`recip_cv`, `heat_frac_q`, `e_drag_drop_sum`,
-`e_drag_rail_clipped`) — see §5.
+**Bounds and order (F1).** Today the `RAD_SAFE` component guard sits at
+eos_solver.cpp:864-868, *after* absorb and sponge, and the pre-guard
+magnitude is measured at ~2^53 raw (comment :850-863) — squaring it is
+2^106. So: the guard **moves to immediately after the ∇p subtraction**,
+before any bracket, and tightens to **2^27 raw per component (≈2000 m/s,
+2× U_MAX)**; the clipped KE is folded into the kick bracket (the gas keeps
+the energy the clip removed — the no-mint direction) with its own counter
+`rad_clip_hits`. Then every stage sees `|u|² ≤ 2^55` and the pinned order
+`t = mul128_shr(k_ke_recip_q32, du2_raw, 32)` (≤ 2^29), `dE =
+mul128_shr(N_raw, t, 0)` (≤ 2^59) is int64-safe unconditionally. Moving
+the guard changes absorb/sponge inputs only when it binds —
+re-baseline-class, declared. **Thermal-solid cells** are kicked/absorbed/
+sponged/capped too (the kick skip-set is `solid || is_vacuum || ring`, not
+`ts`; only drag adds `!ts`): their brackets all go to `e_ts_ke_sum`,
+never to `gas_energy` (F5). This retires the P-E3 deposit formula
+(`recip_cv`, `heat_frac_q`, `e_drag_drop_sum`, `e_drag_rail_clipped`) —
+see §5. Counter slots: `counters_out[6] = e_drag_heat_sum`, slots 7/8
+retired-and-zero (D10); the device counter array and its D2H grow for
+the new `def_readonly` members.
 
 ### 2.4 The face-flux energy step (replaces 4c; a separate pass after the kick loop)
 Operands: the **absolute solved pressure `p^{n+1}`** (on an ambient map the
 solve runs shifted, `P' = P − p_amb`, restored at step 5 — the energy step
 runs **after step 5**, or adds `p_amb` itself; pinned: after step 5) and the
-corrected velocity `u_new`. Negative `p^{n+1}` (measured `P_min = −0.98` in
-the energy-books close): `p_f` is floored at 0 with a hit counter
-`p_face_floor_hits` (a negative absolute pressure is unphysical; flooring
-never breaks telescoping since both cells see the same `p_f`).
+corrected-and-damped velocity `u_new` (the stored velocity after absorb /
+sponge / cap / drag — NOT the projected `u^{n+1}`; where those bands vary
+spatially they do spurious, conservative, redistributive work — §7, same
+class as HEAD's 4c). Negative `p^{n+1}` (measured `P_min = −0.98` in the
+energy-books close): **`p_i` and `p_j` are floored at 0 individually before
+eq. 15** (F15 — keeps every operand non-negative for `floordiv`, identical on
+both sides), with a hit counter `p_face_floor_hits`.
 
-For each face f between cells i and j, in **canonical orientation** (i =
-lower linear index; east and south faces owned by i), evaluated **once**
-from identical inputs on both sides (gather form, no atomics — §2.5):
+Face velocity: the **arithmetic** mean `(u_i+u_j)/2` — a deliberate deviation
+from Kwatra eq. 13's density-weighted `û` (F16): it is exactly the face value
+our centred `div_u_` stencil implies, so `Σ_f p_f û_f` vanishes where the
+solve zeroed the divergence.
 
-    if both i, j in the accountable set:                       (interior face)
-        p_f   = floordiv( p_j·N_i + p_i·N_j , N_i + N_j )      (eq. 15; skip face if N_i+N_j == 0;
-                                                                p ≤ 2^30, N < 2^30 ⇒ products ≤ 2^60, int64)
-        u_f   = u_i + u_j            (the ½ is folded into k_flux — no separate >>1 bias)
-    elif exactly one side (i) is accountable and the other is is_vacuum / is_ambient:   (OUTFLOW face)
-        p_f   = p_i ;  u_f = u_i     (ring/vacuum u ≡ 0, so (u_i+0)/2·2 = u_i — the same value the
-                                      divergence stencil reads there, since mirror_idx keys on solid only)
-        flux booked to i only, and to `e_work_export_sum` (breach rarefaction, §3)
-    elif the other side is solid:                              (WALL: reflected u ⇒ û_f = 0)
-        no face
-    elif the other side is thermal_solid (furniture — permeable, carries N/u/p):
-        p_f, u_f as interior using the ts cell's SOLVED p^{n+1} and u; flux applied to the
-        gas side only and booked to `e_ts_work_sum` (rule (d)'s precedent: energy crossing a
-        ts face is shed and counted). Conservation claim is scoped to furniture-free regions.
+For each face f, **canonical orientation fixes the sign**: `i` = lower linear
+index, `j` = higher; east and south faces are owned by `i`. Evaluated
+**once** from identical inputs on both sides (gather form — §2.5):
 
-    mag   = mul128_shr( mul128_shr( p_f , |u_f| , 16 ) , k_flux_q , 16 )   (int64, two stages)
+    if both i, j accountable:                                        (INTERIOR face)
+        p_f   = floordiv( p_j·N_i + p_i·N_j , N_i + N_j )              (eq. 15 literally; skip if N_i+N_j == 0;
+                                                                       p ≤ 2^31, N < 2^30 ⇒ products ≤ 2^62, int64)
+        u_f   = u_i + u_j                                              (½ folded into k_flux — no separate >>1 bias)
+        applied to BOTH cells
+    elif exactly one side accountable, the other is_vacuum / is_ambient:   (OUTFLOW face)
+        p_f = p_acc ; u_f = u_acc  substituted INTO the fixed i/j orientation (F14 — the accountable
+        side may be i OR j; the sign never flips). ring/vacuum u ≡ 0, so (u_acc+0)/2·2 = u_acc — the
+        value the divergence stencil reads there (mirror_idx keys on solid only).
+        applied to the accountable cell only; counted in `e_work_export_sum` (breach rarefaction, §3)
+    elif the other side is solid OR thermal_solid:                   (WALL: û_f = 0 — no face)
+        no face.   Furniture is a wall to the energy step (F4): a one-sided flux from a ts
+        cell would be an unbounded, uncounted source driven by the OBJECT's temperature
+        (eos_solver.cpp:442-447: T on a ts cell is the object's). Consistent with HEAD's 4c
+        skip (:1020), transport rule (d), and D2. The lost pressure work through a permeable
+        crate is a D4-class accepted gap with a probe (§7).
+
+    mag   = mul128_shr( mul128_shr( p_f , |u_f| , 16 ) , k_flux_q , 16 )   (int64, two stages:
+                                                                            ≤ 2^42, ≤ 2^45; 4 faces ≤ 2^47)
     flux  = sign(u_f)·mag                    (sign applied AFTER truncation — exact cancellation)
-    E_i −= flux ;  E_j += flux               (interior) 
+    E_i −= flux ;  E_j += flux               (interior)
 
 `k_flux_q = quantize( k_work · dt_s / (2·dx) )` folded once per tick
 (includes the ½ of the face mean and the sub-cycle `dt_s`, D8).
 
-**Positivity / sub-cycling (D8):** the tick's material Courant number is not
-bounded by 1 (`n_sub ≤ N_SUB_MAX = 8` rails during venting; `|div|·dt` up to
-~8, i.e. 6× past the retired `T_WORK_CLAMP` rail). The energy step therefore
-runs **`n_sub` sub-cycles** with `dt_s = dt/n_sub`, holding `p^{n+1}` and
-`u_new` fixed (telescoping exact per sub-cycle; per-sub-cycle outflow
-`≤ (γ−1)·E_i·|div|·dt_s` with `|div|·dt_s ≤ ~1` ⇒ positive). Last-resort
-rail: if `E_i` would drop below `N_i·(T_MIN + T_AMB)_raw`, the cell's
-outgoing fluxes for that sub-cycle are all scaled by one factor `s_i ∈
-[0,1)` **and the same factor is applied to each neighbour's credit** (both
-sides recompute `s_i` from identical inputs), counted in `e_energy_floor_sum`
-(signed energy, not a hit count).
+**Positivity / sub-cycling (D8, F2, F3):** the tick's material Courant
+number is not bounded by 1 (`n_sub ≤ N_SUB_MAX = 8` rails during venting;
+`|div|·dt` up to ~8, i.e. 6× past the retired `T_WORK_CLAMP` rail). The
+energy step runs **`n_sub` sub-cycles** with `dt_s = dt/n_sub`, holding
+`u_new` and `N` fixed but **refreshing the cell pressure from the running
+energy each sub-cycle**: `p_i ← mul128_shr(c_q, E_i, 32)` (the design's own
+identity `p_code = C·E`; at ambient this yields 65540 raw vs 65536 —
+`c_q`'s quantization, harmless). Without the refresh, sub-cycling with
+frozen operands is arithmetically identical to one pass at `dt` (F2); with
+it the outflow shrinks as `E_i` shrinks and the bound is geometric.
+Telescoping survives (both sides read the same live `E_i`, `E_j`).
+
+Last-resort rail, **donor-only** (F3 — a rail that also scales incoming
+credit cannot reach a fixed point in one pass, and incoming credits are all
+≥ 0, so ignoring them is safe):
+
+    OUT_i  = Σ over faces where flux leaves i of |flux_f|        (interior + outflow)
+    head_i = max(0, E_i − N_i·(T_MIN + T_AMB)_raw)
+    s_i    = (OUT_i == 0) ? 2^16 : min(2^16, floordiv(head_i << 16, OUT_i))
+    applied_f = mul128_shr(flux_f, s_donor(f), 16)                (truncating; donor's factor only)
+
+so `Σ_f applied_f ≤ head_i` and `E_i ≥ floor_i` unconditionally. The rail
+is a two-pass kernel (§2.5, F13): pass A computes `OUT_i` and `s_i` into a
+scratch plane; pass B gathers with each face's donor factor read from the
+plane. Shortfall counted in `e_energy_floor_sum` (signed energy).
 
 ### 2.5 Parity-safe kernel shape
-Per-cell **gather**: every cell recomputes the flux of each of its four
-faces in canonical orientation from the same inputs, truncates the
-magnitude once, applies the sign, and sums — identical to the S1 water-flux
-idiom (fixed_point.h:22-25). No face buffer, no atomics; the CPU twin is
-the same loop. `mul128_shr` is promoted into `fixed_point.h` as ONE
-`FP_HD` primitive (today three copies: eos_solver.cpp:46, `mul128_shr_signed`
-in cuda_fixedpoint_device.cuh, `mul128_shr_host` in
-cuda_kick_compression.cu:77) — P-G0, bit-identical.
+Two passes per sub-cycle, both per-cell **gather** (5-point), no atomics,
+no face buffer; the CPU twin is the same two loops:
+- **Pass A** (`OUT_i`, `s_i` → scratch plane `(N,h,w)` int32 Q16): every
+  cell recomputes its four face fluxes in canonical orientation from the
+  same inputs, truncating the magnitude once and applying the sign after.
+- **Pass B** (apply): every cell recomputes the same four fluxes, scales
+  each by the *donor's* `s` read from the plane, and sums.
+Identical int64 on both sides of a face ⇒ exact cancellation — the S1
+water-flux idiom (fixed_point.h:22-25). On device this is a **new third
+kernel `K3` launched after `K_store_atm`** (cuda_eos_resident.cu:835 — the
+step-5 un-shift), NOT a rewrite of K2 inside the K1→K2 pair (K2 runs
+before the un-shift; on a space map the two would agree and AB would pass,
+on an ambient map they would diverge — seam finding 8). `mul128_shr` is
+promoted into `fixed_point.h` as ONE primitive with **three branches**
+(`__SIZEOF_INT128__` host, MSVC `_mul128` host, and a `__CUDA_ARCH__` arm
+carrying the existing `mul128_shr_signed` body incl. its `S == 0` case —
+F10: under MSVC-host nvcc the device pass has no `__int128`); today three
+copies: eos_solver.cpp:46, cuda_fixedpoint_device.cuh, cuda_kick_
+compression.cu:77 — P-G0, bit-identical.
 
-### 2.6 Recovery (mirror refresh)
+### 2.6 Recovery (mirror refresh) — cadence pinned (F7)
 `T_rel,i = floordiv(gas_energy_i, N_i) − T_AMB_K_raw` on accountable cells;
 divide policy reused from bulk_transport.cpp verbatim (`N_EPS_RAW = 1`:
 below it, wipe to ambient and book `e_wipe_sum`; never divide by 0 — the
-same on both backends). Rails `T_MIN` / `T_MAX_PHYS` clamp the mirror **and
-write back `gas_energy = N·(T_clamped + T_AMB)` ONLY when a rail binds**,
-booking the delta to `e_rail_sum` (signed energy). **Never** write back
-otherwise (`N·floordiv(E,N) ≤ E` would drain up to N−1 raw per cell per
-tick — the drip class this arc kills). The CFL max-T scan
-(eos_solver.cpp:434-440) gains the same `N_EPS_RAW` guard (thin-N cells
-cannot set `c_LOCAL`/`n_sub` for the grid).
+same on both backends). **The full recovery with both rails runs exactly
+once per tick, at the end of the energy pass, over the whole accountable
+set** — that is what bounds stored `E` (§2.2) and `p* = C·E` (int32) and
+keeps `t_max_phys_hits` meaningful (`test_air_boundary.py:820` STOP). Rails
+`T_MIN` / `T_MAX_PHYS` clamp the mirror **and write back `gas_energy =
+N·(T_clamped + T_AMB)` ONLY when a rail binds**, booking the delta to
+`e_rail_sum` (signed energy). **Never** write back otherwise
+(`N·floordiv(E,N) ≤ E` would drain up to N−1 raw per cell per tick — the
+drip class this arc kills). Seam writes (§2.7) refresh the **mirror only**
+(no rails, no write-back). The CFL max-T scan (eos_solver.cpp:434-440)
+gains the same `N_EPS_RAW` guard (thin-N cells cannot set `c_LOCAL`/`n_sub`
+for the grid).
 
 ### 2.7 The writer seam — energy AND mass
 Under stored E every writer of **N** is a writer of T. One primitive,
 `gas_energy_move(i, ΔN, T_abs_src)` / `gas_energy_deposit(i, ΔE)` (C++, with
-the Python-visible twin on GameMap), applies: mass leaving cell i carries
-`ΔN·T_abs,i` out; mass arriving carries the donor's `T_abs`; mass **born**
-(seed / donor split / ambient / ring / vacuum / ts-face inflow) is born
-**at ambient = credited `ΔN·T_AMB_K_raw` absolute** (the P-E1 "born carrying
-zero *relative* energy" rule restated in absolute currency — v1 would have
-born it at 0 K). Every site, with its rule:
+the Python-visible twin on GameMap), applies two rules — **moved mass
+carries its source's `T_abs`; minted mass is born at ambient**:
+- **moved**: mass leaving cell i carries `ΔN·T_abs,i` out; arriving mass
+  carries the donor's `T_abs` (transport, pumps, seal receivers, `unseal`
+  withdrawals, combustion products);
+- **minted**: mass with no gas donor (`destroy_wall`'s seed, ambient / ring
+  / vacuum / ts-face inflow) is credited `ΔN·T_AMB_K_raw` absolute (the
+  P-E1 "born carrying zero *relative* energy" rule in absolute currency —
+  v1 would have born it at 0 K).
+Every site, with its rule:
 
-| site | today | v2 |
+| site | today | v3 |
 |---|---|---|
-| bulk transport donor-cell (bulk_transport.cpp:265 + CUDA) | moves `N·T_rel` as int64 `e[]`, per-substep recovery divide | moves `gas_energy` with the face `dq` at the donor's price (single evaluation per face — debit/credit telescope); non-participating donors credit `dq·T_AMB`; the per-substep recovery is deleted (floor error `< N` raw/cell → `< 1` raw/face); counters `e_ts_residual`, `e_wipe_sum`, `e_floor_sum` re-derived in absolute convention; identity `test_no_transport_mint` / `cuda_bulk_flux_check` PART 3 re-stated (§6 table) |
-| combustion O2 consumed (combustion.cpp:600) / products to flame cell (:778) | N moves, T untouched | consumed O2 leaves with `burn·T_abs(donor)`; products arrive carrying that energy at the flame cell (mass and its energy travel together; global N conservation ⇒ global E conservation); fire heat `heat_saturating_add` → `gas_energy_deposit` on gas, unchanged on solids |
+| bulk transport donor-cell (bulk_transport.cpp:265 + CUDA) | moves `N·T_rel` as int64 `e[]`, per-substep recovery divide | face energy priced **off live state, no mirror** (F6): `phi_f = floordiv(dq_f·E_i, N_i)` for donor i, computed identically by both sides from `(dq_f, E_i, N_i)` — the 5-point read stage 3 already does; `Σ_f phi_f ≤ E_i` since `Σ_f dq_f ≤ N_i`; non-participating donors credit `dq·T_AMB`; the per-substep recovery is deleted; counters `e_ts_residual`, `e_wipe_sum`, `e_floor_sum` re-derived in absolute convention; closure identity `test_no_transport_mint` (in `test_e1_hot_rail.py:206`) / `cuda_bulk_flux_check` PART 3 re-stated (§6) |
+| **water-displacement gas evacuation** (`physics_engine.cpp:820-834` `step_water_tail`, host-side on BOTH backends, before the EOS) — **missed by v1/v2** | flooding cell pushes `(1 − 1/ratio)` of EVERY plane incl. bulk O2/N2 to open neighbours, T untouched | each bulk `share` → `gas_energy_move(i → nb, share, T_abs,i)`; no CUDA twin (host-only) |
+| combustion O2 consumed (combustion.cpp:600) / products to flame cell (:770-779) | N moves, T untouched; `soot_yield = 0.5` (config.toml:774): donor loses `burn` bulk O2, flame gains only `burn − soot` bulk N2 — **bulk N is NOT conserved across a burn** (F11, seam 2) | per-donor energy accumulated beside `alloc[]`: `Σ_k burn_k·T_abs,k` (int64); **all of it** is delivered to the flame cell's `gas_energy` (the soot particles stay suspended in the flame gas — energy conserved, bulk-N loss counted in `n_soot_shed_sum`; the flame cell's `E/N` rises by the soot fraction on the transported portion — a stated, BLAST-gated consequence). If the flame cell is a `thermal_solid` (`object_site` branch) the products' energy is exported to `e_ts_products_sum` (rule (d)). Fire heat `heat_saturating_add` → `gas_energy_deposit` on gas, unchanged on solids |
 | thermal solver: heat→T deposit (:323), conduction swap (:414), radiation (:222) | writes T | gas side: `de` (already int64) → `gas_energy_deposit`, endpoint divide deleted; solids side unchanged; wipes (:135) zero E and book |
 | pump primitives `inject_gas_n(_vec)` / `extract_gas_n(_vec)` (gamemap.py:2410-2540) | vec inject mixes T; extract leaves T | extract removes `ΔN·T_abs(cell)`; inject credits `ΔN·T_abs(t_dep)`; the vent plenum ledger (`vent_system.py`, relative currency, ENTITY_SECT-digested) is **kept relative** and converted at this seam (`E = e + n·T_AMB`); the primitive's direct `temperature[...] =` write (gamemap.py:2540) is replaced by the seam's mirror refresh |
-| `seal_tiles` receivers (:2192), `unseal_tiles` (:2213, writes no T today), `destroy_wall` seed (:1909/:1944) | N moves / seeds; T := 0 or untouched | receivers credited at the donor's `T_abs`; a new gas cell (unseal / destroy) is born at ambient `N·T_AMB`; a gas cell becoming solid/ts retires its `gas_energy` to `e_retire_sum` (counted). Seam = the callers of `on_tile_changed` (gamemap.py:1187) — one row per caller |
-| FieldEdit `atmosphere` policy (O2/N2 deposits, field_edit.py:536), `temperature`/`wave_source` (:597), `heat` (:589) | direct writes | `atmosphere` deposits credit at ambient; `temperature` combine on gas cells → deposit; a `FIELD_POLICY` row for `gas_energy` with a **dual-write combine** (store + mirror) |
-| tests/tools seeding `gmap.temperature[...] = ` on gas cells (**154 sites / 73 files**, incl. `_hotplate_heating_bench.py:73`) | direct | `GameMap.seed_gas_temperature(sel, T_q)` writes both planes; harnesses migrated in P-G0 (the HP gate would otherwise pass vacuously) |
+| `seal_tiles` receivers (:2192) | N redistributed to receivers, T untouched | receivers credited at the sealed tile's `T_abs` (**moved**); the sealed tile's remaining `gas_energy` retires to `e_retire_sum` |
+| `unseal_tiles` (:2292-2311; doors via `door_system.py:253`) | seed = `sum(donors)//(k+1)` **withdrawn from the donors** — grid-total N unchanged to the LSB (:2224) | a conservative **withdrawal, not a mint** (seam 3): each donor's share carries its `T_abs` (**moved**); NOT born at ambient (that would mint/destroy `ΔN·(T_AMB − T_abs,donor)` at every door) |
+| `destroy_wall` seed (:1909/:1944, `n_destruction_seed_sum`) | mints an ambient cell | born at ambient (**minted**) — the one true mint |
+| any gas cell becoming solid / ts (all `on_tile_changed` callers, gamemap.py:1187: seal, burst walls, bullet cover-chew, furniture flips) | — | `gas_energy` retires to `e_retire_sum`; a ts cell becoming gas is born at ambient (its object T stays on the solids side — the mirror is refreshed so no stale 1300 K survives). Property gate: flip a tile both ways, books move by exactly the named amount (`test_destroy_wall_conserves_mass.py` gate 6 precedent) |
+| FieldEdit `atmosphere` policy (O2/N2 deposits, field_edit.py:536), the **`wave_source`** row (which is the T writer, :541/:595 — there is no `temperature` row), `heat` (:589), and the generic **`gas`** policy (:219, any slice by channel) | direct writes | `atmosphere` deposits credit at ambient; the `wave_source` combine on gas cells → deposit; a `FIELD_POLICY` row for `gas_energy` with a **dual-write combine** (store + mirror); the `gas` policy **refuses conservative slices** (assert — trace-only today: combat.py:1370, payloads.py:85) |
+| tests/tools seeding `gmap.temperature[...] = ` (re-grep at patch time: ~146 sites / 60 files incl. `_hotplate_heating_bench.py:72`; some seed **wall/ts** tiles, e.g. `test_thermal_mass_axis.py:524-537`) | direct | gas-cell sites → `GameMap.seed_gas_temperature(sel, T_q)` (both planes); ts/wall sites unchanged (solids stay T). **Per-site medium check, not a sed.** The three gate benches migrate in P-G0 (else the HP gate passes vacuously) |
 | `sky_exchange.cpp:46` (O2↔N2 swap) | conserves n_tot per tile | nothing |
 
 ### 2.8 Books
@@ -233,8 +326,13 @@ ring / ts counters in absolute convention. Closure identity (the new
 ± rails`, exact in int64.
 
 ## 3. What changes physically (named before measured)
-- Sealed, furniture-free rooms cannot gain or lose energy except through
-  conduction with their walls (exact). #54 disappears structurally.
+- Sealed, furniture-free rooms cannot gain or lose **thermal** energy
+  through the flux step (exact); the remaining channels into a sealed box
+  are all counted — conduction deposits, the KE brackets (kick debit, drag
+  credit), and the rails. KE itself is not a book (F12): `Σ N k_ke|u|²`
+  changes with N during transport with no counterparty (bounded by `k_ke`;
+  sub-degree at wind speeds; SB probes `Σ N|u|²` drift). #54's +121 / −20
+  signature disappears structurally.
 - Blast cores: **cooler than HEAD**, not hotter — HEAD's 4c pumped energy
   into cavities; the flux form bounds a cell's heating by its neighbours'
   energy. (Corrects v1 §8.) Fire tuning (#5/#8) will see lower core T.
@@ -252,8 +350,8 @@ ring / ts counters in absolute convention. Closure identity (the new
 ## 4. Design decisions
 - **D1 stored E (int64), derived T mirror** — Erik's ruling.
 - **D2 solids stay T** — Erik's ruling; the gas↔solid interface is the
-  conduction exchange, booked as ΔE on the gas side; ts faces shed and count
-  pressure work (§2.4).
+  conduction exchange, booked as ΔE on the gas side; ts faces are walls to
+  the energy step and ts cells export their KE brackets (§2.3/§2.4).
 - **D3 face pressure = eq. 15 literally**: `p_f = floordiv(p_j N_i + p_i
   N_j, N_i+N_j)` — harmonic-flavoured N × arithmetic T_abs. NOT
   "N-weighted (N T)_f" (v1's parenthetical was wrong).
@@ -273,12 +371,14 @@ ring / ts counters in absolute convention. Closure identity (the new
   is #54 through a new door; the absorb/sponge stages exist to remove energy
   (CLAUDE.md scopes them out of the drag rule). Drag L/Q *is* heated. Erik
   to confirm.
-- **D7 KE advection non-conservative** (rides u's SL step) — ACCEPTED GAP,
-  now correctly bounded: `KE/E = k_ke·|u|²/T_abs ≈ 1.2e-3` at 20 m/s,
-  ≈ 0.28 at 300 m/s (blast cores; short-lived).
-- **★ D8 energy step sub-cycled `n_sub` times** with `p^{n+1}`, `u_new`
-  held (§2.4). Erik to confirm (cost: n_sub × one gather pass; n_sub = 1 in
-  calm play).
+- **D7 KE is not a book** — ACCEPTED GAP, two channels: KE rides u's SL
+  advection (non-conservative) and `Σ N k_ke|u|²` changes with N during
+  transport with no counterparty (F12). Bound: `KE/E = k_ke·|u|²/T_abs ≈
+  1.2e-3` at 20 m/s, ≈ 0.28 at 300 m/s (blast cores; short-lived); SB
+  probes the drift.
+- **★ D8 energy step sub-cycled `n_sub` times** with `u_new`, `N` held and
+  `p_i` refreshed from the running `E_i` each sub-cycle (§2.4). Erik to
+  confirm (cost: n_sub × two gather passes; n_sub = 1 in calm play).
 - **D9 int64 + two-stage `mul128_shr`** for every `p·u·k` product; face
   divide by `floordiv` on non-negative operands; operation order pinned in
   the code comment like the v2.2 solve's budget.
@@ -293,28 +393,41 @@ ring / ts counters in absolute convention. Closure identity (the new
 - **D12 no `gas_energy_fixed.py`.** The field is a Q32 product, not a Q16
   quantity; the `(N, T) ↔ E` conversion lives beside its single C++
   transcription (books binding) and as `FP_ONE_SQ` helpers in `gas_fixed.py`.
-- **D13 Recorder**: int64 fields get their own branch (float64 ring, scale
-  2^32) — the frozen npz contract is extended additively by *dtype class*,
-  not just membership. `analyze_blowup_dump.py` gas_energy column: later.
+- **D13 Recorder**: int64 fields get a **true int64 ring branch** (a
+  float64 ring is exact only to 2^53 and would drop the LSBs SB asserts on;
+  recorder.py:102 pre-allocates float32 today) — the frozen npz contract is
+  extended additively by *dtype class*, not just membership (a CLAUDE.md
+  Recorder-rule amendment, §Systems). `analyze_blowup_dump.py` gas_energy
+  column: later.
 
 ## 5. Twin sites + ABI (deletion blast radius verified by the critique)
 - C++/CUDA: `EOSSolver::step` 4c block + `eos_kick_compression_reference`
-  twin; `cuda_kick_compression.cu` K1 (per-stage KE brackets) + K2 (rewritten
-  as the gather flux pass) + `kick_scalar_folds`; `cuda_eos_step.cu` /
-  `cuda_eos_resident.cu` call sites; `bulk_transport.cpp` + `cuda_bulk_
-  transport.cu` (gas_energy transport, absolute born-at-ambient);
-  `combustion.cpp` + `.cu` (O2/product energy, deposit); `temperature_
-  solver.cpp` + `cuda_temperature.cu` (gas-side deposit, wipes);
-  `physics_engine.cpp` (buffer plumbing). Promote `mul128_shr` to
-  `fixed_point.h` (P-G0).
+  twin; `cuda_kick_compression.cu` K1 (per-stage KE brackets, RAD_SAFE
+  guard moved/tightened) — **K2 deleted**; the flux pass is a **new K3
+  (two launches, A/B passes) after `K_store_atm`** (§2.5) + `kick_scalar_
+  folds`; `cuda_eos_step.cu` / `cuda_eos_resident.cu` call sites;
+  `bulk_transport.cpp` + `cuda_bulk_transport.cu` (live-priced energy
+  faces, absolute born-at-ambient); `combustion.cpp` + `.cu` (per-donor
+  energy, soot/object-site rows, deposit); `temperature_solver.cpp` +
+  `cuda_temperature.cu` (gas-side deposit, wipes); `physics_engine.cpp`
+  (buffer plumbing + `step_water_tail` evacuation row, host-only). Promote
+  `mul128_shr` (three-branch) to `fixed_point.h` (P-G0). **CUDA parity is
+  suspended from P-G1a until P-G2** (named, time-boxed: the resident path
+  keeps the 4c kernels meanwhile; AB and `cuda_*_check` are marked
+  `xfail(reason="P-G2 pending")` in P-G1a and re-armed as P-G2's gate).
 - Deleted symbols and their consumers (full list in the critique; the
   implementer greps before deleting): `T_WORK_CLAMP`/`t_work_clamp`/
-  `work_clamp_q` (~12 test files incl. `test_p_e4_reversible_work.py` ×21,
-  5 tools), `n_work_ref` (+ `physics_runner.py:474` stale-key guard),
-  `k_drag_heat_frac`/`heat_frac_q`/`recip_cv` (+ `physics_runner.py:483`),
-  `e_drag_deposit`/`e_drag_drop_sum`/`e_drag_rail_clipped` (→ `e_drag_heat_
-  sum`). pybind `run_substeps` / `kick` signatures lose the three floats
-  (~29 Python callers) and gain `gas_energy`.
+  `work_clamp_q` (~12 test files incl. `test_p_e4_reversible_work.py` ×21;
+  **8 tools**: batch_rails, quiet_room_drift, storm_ledger, storm_probe,
+  tabs_pw2_venting_capture, velocity_clamp_pv2_measure, analyze_blowup_
+  dump, e2b_floor_reciprocal_probe), `n_work_ref` (+ `physics_runner.py:479`
+  stale-key guard), `k_drag_heat_frac`/`heat_frac_q`/`recip_cv` (+
+  `physics_runner.py:492`), `e_drag_deposit`/`e_drag_drop_sum`/`e_drag_
+  rail_clipped` (→ `e_drag_heat_sum` in `counters_out[6]`; 7/8 zero),
+  `eth_compression_delta` (→ removed; `test_destroy_wall_conserves_mass.py:
+  501` asserts its type — MECHANICAL). pybind `run_substeps` / `kick`
+  signatures lose the three floats (~29 Python callers) and gain
+  `gas_energy`; the device counter array grows for the new members.
 - Python: `GameMap.gas_energy` (h,w) int64; `seed_gas_temperature`;
   `gas_energy_move/deposit`; FieldEdit `gas_energy` policy row; residency
   upload/D2H lists (physics_runner.py:1164/:1216 — combustion + tail run on
@@ -327,11 +440,15 @@ ring / ts counters in absolute convention. Closure identity (the new
   radiation convention dial and `k_ke` as derived.
 
 ## 6. Patch plan
-Gate vocabulary — **SB**: sealed-box bench `nofire`: (i) `Σ_box gas_energy`
-constant to the LSB across the whole run except by counted conduction
-deposits (`ΔΣE_box == Σ deposits_box`, exact); (ii) `ΔT_box = Δ(ΣE/ΣN)`
-within ±2 game-deg (N-weighted — an unweighted mirror mean is not
-conserved by mixing); (iii) u_max < 3 m/s; (iv) the D4 wall probe reported.
+Gate vocabulary — **SB**: sealed-box bench `nofire`: (i) the **§2.8 closure
+identity restricted to the box**, exact in int64: `ΔΣ_box E == Σ_box
+(conduction deposits − kick KE debit + drag KE credit ± rails)` — the flux
+term contributes exactly 0 (F8: a bare "constant except conduction" gate
+would fail a correct implementation, since `k_drag = 0.5` moves KE every
+tick); (ii) `ΔT_box = Δ(ΣE/ΣN)` within ±2 game-deg (N-weighted — an
+unweighted mirror mean is not conserved by mixing); (iii) u_max < 3 m/s;
+(iv) probes reported: the D4 wall term `Σ_wall-adjacent |u_i·p_i|`, the ts
+(furniture) wall term, and the `Σ N|u|²` drift (D7).
 **HP**: hot-plate via `seed_gas_temperature`, rooms ≈ 0. **VENT**: a new
 venting bench (breach of a 1-atm room to vacuum, 5 s): `gas_energy ≥ 0`
 everywhere, `n_sub` stable, mouth cools, `e_work_export_sum` matches the
@@ -342,36 +459,55 @@ CPU vs CUDA tol 0. **SUITE**: `pytest tests -q` against the §6 red table.
 
 | # | Patch | Mode / tier | Gate |
 |---|---|---|---|
-| P-G0 | Field + plumbing, NO physics: `gas_energy` (init `N·T_abs`), digest v5 + regenerate goldens (spec bump event 1), recorder int64 branch, `seed_gas_temperature` + migrate the 154 harness/test seeds, `mul128_shr` promotion, AB `SIM_FIELDS`. Books identity `Σ(E − N·T_AMB) == old sum` on 3 levels. | subagent, Sonnet 5 | SUITE green (values unchanged; only the spec-bump regeneration) |
-| P-G1a | CPU EOS-internal: §2.3 brackets in the kick loop, §2.4 flux pass (sub-cycled), §2.6 recovery, transport moves `gas_energy` (§2.7 row 1), trust gate/clamp/heat-frac retired, CFL scan guard. **Transitional state, stated**: at EOS entry `gas_energy := N·T_abs` from the mirror (T is still the cross-tick truth); at exit the mirror is refreshed. D1 not yet live across ticks. | subagent, **Opus 4.8** | SB (i) within the EOS step, HP, **VENT**, **BLAST**, AS P3 |
-| P-G1b | Writers: combustion, thermal solver gas side, pump primitives + plenum conversion, seal/unseal/destroy seams, FieldEdit rows; remove the entry re-sync → **D1 live**. Closure identity test rewritten. | subagent, Opus 4.8 | SB (i) across ticks (exact), SUITE per red table, 60 s quiet-run books drift == counted |
-| P-G2 | CUDA twins: K1 brackets, K2 gather flux pass, bulk transport, combustion, temperature kernels; resident buffer + upload/D2H lists. | subagent, Sonnet 5 (oracle) | **AB tol 0** on playground + 2 levels; CUDA harness green → auto-merge on green |
+| P-G0 | Field + plumbing, NO physics: `gas_energy` (init `N·T_abs`), digest v5 + regenerate goldens (spec bump event 1), recorder int64 branch, `seed_gas_temperature` + per-site migration of the gas-cell seeds (**the three gate benches first**: `_sealedbox_bisect_bench`, `_hotplate_heating_bench`, `_xarch_perfield_digest` — they also reference the retired dials), `mul128_shr` three-branch promotion, AB `SIM_FIELDS`, the constants fold + throw guard (§2.1, no consumer yet). Books identity `Σ(E − N·T_AMB) == old sum` on 3 levels. | subagent, Sonnet 5 | **every per-field digest except `gas_energy` byte-identical to HEAD; only `GOLDEN_AGGREGATE` moves** (catches a bad seed migration — plain "SUITE green" does not); SUITE green |
+| P-G1a | CPU EOS-internal: §2.3 brackets in the kick loop (+ RAD_SAFE move), §2.4 flux pass (sub-cycled, two-pass rail), §2.6 recovery once per tick, transport prices faces off `E` (§2.7 row 1), water-tail evacuation row (host), trust gate/clamp/heat-frac retired, CFL scan guard, S_EOS guard carried. **Transitional state, stated**: at EOS entry `gas_energy := N·T_abs` from the mirror (T is still the cross-tick truth; the tail's writers are absorbed by next tick's re-sync); at exit the mirror is refreshed. D1 not yet live across ticks. CUDA parity suspended (xfail, §5). | subagent, **Opus 4.8** | SB (i) within the EOS step, HP, **VENT**, **BLAST**, AS P3 |
+| P-G1b | Writers: combustion (per-donor energy, soot, object-site), thermal solver gas side, pump primitives + plenum conversion, seal/unseal/destroy/`on_tile_changed` seams, FieldEdit rows + `gas`-policy assert; remove the entry re-sync → **D1 live**. Closure identity test rewritten; tile-flip property gate added. | subagent, Opus 4.8 | SB (i) across ticks (exact), SUITE per red table, 60 s quiet-run books drift == counted |
+| P-G2 | CUDA twins: K1 brackets, **K3** two-pass flux kernel after `K_store_atm`, bulk transport, combustion, temperature kernels; resident buffer + upload/D2H lists; counter array; xfails removed. | subagent, Sonnet 5 (oracle) | **AB tol 0** on playground + 2 levels incl. one **ambient** map (the un-shift trap); CUDA harness green → auto-merge on green |
 | P-G3 | Golden re-baseline (value-move event 2) with `docs/gas_energy_rebaseline_<date>.md`; float ratchet + ingress lint; docs outside archive amended (list in critique: engine/04, drag_law_v2, storm_audit, …). | inline, Haiku 4.5 | SUITE green |
 | P-G4 | **HUMAN-TEST**: Erik plays (fires, grenades, breach; T overlay). Brief: §3. | Erik | feel |
 
-**Red-classification table (agreed before P-G1a):**
-STOP (must stay green): `test_destroy_wall_conserves_mass.py` gate 6 (restated
-in absolute currency), `test_air_boundary.py:820` (`t_max_phys_hits == 0`),
-`test_velocity_clamp_property.py`, all `cuda_*_check` A/B parity checks.
-EXPECTED red → regenerate in P-G3: every field/aggregate golden, the 11
-CUDA check goldens, inline goldens (`test_b6_logic_golden`, `test_vent_*`,
-`test_w6_armory`). RETIRED (delete with rationale in the commit):
-`test_p_e4_reversible_work.py`, `test_p_e4_trust_gate.py`, `test_e1_cold_
-rail.py`, `test_e1_hot_rail.py` (their subject is gone; their *property* —
-no temperature unbacked by energy — is the new closure identity).
-REWRITTEN: `test_p_e3_drag.py` (drag identity on `e_drag_heat_sum`),
-`test_no_transport_mint` + `cuda_bulk_flux_check` PART 3 (absolute closure).
-GRAY: `test_thermal_mass_axis.py:640/690`, `test_eos_p4_combustion.py:53`
-(keyword args only — mechanical).
+**Red-classification table (agreed before P-G1a; verified against the
+tree by the round-2 critique):**
+- **STOP** (assertion survives verbatim): `test_destroy_wall_conserves_
+  mass.py` gate 6 (restated in absolute currency — its `eth_compression_
+  delta` type assert at :501 is MECHANICAL), `test_air_boundary.py:820`
+  (`t_max_phys_hits == 0`).
+- **MECHANICAL** (signature/kwarg/docstring edits, property unchanged —
+  the retired dials are required pybind kwargs, so these `TypeError`
+  until edited): `test_velocity_clamp_property.py:48`, `test_thermal_mass_
+  axis.py:640/690`, `test_eos_p4_combustion.py:53` (docstring only), `test_
+  drag2_dead_zone_property.py`, `test_drag2_stage_q_law.py`, every
+  `cuda_*_check.py` that passes `t_work_clamp`/`k_drag_heat_frac`.
+- **EXPECTED red → regenerate in P-G3**: every field/aggregate golden, the
+  11 CUDA check goldens, inline goldens (`test_b6_logic_golden`,
+  `test_vent_*`, `test_w6_armory`).
+- **SUSPENDED P-G1a→P-G2** (xfail): AB harness + `cuda_*_check` parity.
+- **RETIRED** (delete with rationale): `test_p_e4_reversible_work.py`,
+  `test_e1_cold_rail.py` (subject gone; their property — no temperature
+  unbacked by energy — is the closure identity). (`test_p_e4_trust_gate.py`
+  does not exist; the trust gate lives inside the former two.)
+- **REWRITTEN**: `test_p_e3_drag.py` (drag identity on `e_drag_heat_sum`),
+  `test_drag2_venting_gate.py` (`e_drag_*` counters), **`test_e1_hot_
+  rail.py`** (hosts `test_no_transport_mint` at :206 — kept, rewritten to
+  the absolute closure; NOT retired) + `cuda_bulk_flux_check` PART 3.
+- **BENCHES/TOOLS** (migrate in P-G0): `_sealedbox_bisect_bench`,
+  `_hotplate_heating_bench`, `_xarch_perfield_digest`, `_drag2_sweep_bench`;
+  the 8 tools in §5.
 
 Each patch: own worktree + branch; re-plan at boundaries; checkpoint memory.
 
 ## 7. Accepted gaps (decisions with bounds)
 - D4 wall-stencil mismatch (bound: reported probe; follow-up queued).
-- D7 KE advection non-conservative (≈1.2e-3 at 20 m/s; ≈0.28 at 300 m/s,
-  transient).
-- ts (furniture) faces shed pressure work — counted in `e_ts_work_sum`;
-  conservation claim scoped to furniture-free regions.
+- D7 KE is not a book — SL-advection and transport-ΔN channels (≈1.2e-3
+  at 20 m/s; ≈0.28 at 300 m/s, transient; SB probes `Σ N|u|²` drift).
+- ts (furniture) faces are walls to the energy step: the pressure work of
+  gas seeping through a permeable crate is lost, D4-class, probed not
+  counted; ts cells' KE brackets and products' energy are exported and
+  counted (`e_ts_ke_sum`, `e_ts_products_sum`).
+- `u_new` is the damped velocity, not the projected one: where
+  `dyn_wave_absorb` / `sponge_udamp` vary spatially the flux step does
+  spurious but conservative, redistributive work (F17) — HEAD's 4c has the
+  same; D4's probe covers it.
 - 0.4% cross-wall pressure contamination stays; it can only *redistribute*
   energy inside a sealed region (telescoping), never pump it. Residual
   channels that remain open are the rails and the KE brackets — all counted.
@@ -397,18 +533,29 @@ D12); FieldEdit (policy row with dual-write combine); GameMap +
 (`inject_gas_n`/`extract_gas_n` become energy-aware — the rule is amended,
 not bypassed); Vent/duct plenum ledger (kept relative, converted at the
 seam); field digest / GOLDEN_AGGREGATE / A/B harness / CUDA harness
-(gates); Recorder (dtype-class extension); Config; RL-batch habits
-(`(N,h,w)` device buffer); temperature scale (`T_AMB_K`, `c_max`, `γ`
-define the two constants); the three benches (extended, not forked).
+(gates); Recorder (dtype-class extension — rule amended in (b)); Config;
+RL-batch habits (`(N,h,w)` device buffer + scratch plane); temperature
+scale (`T_AMB_K`, `c_max`, `γ` define the two constants); PhysicsEngine's
+`step_water_tail` (the water-displacement evacuation joins the seam);
+**Entity system / sensor accessor** (`sensor_accessor.py:135` returns gas
+`temperature` — a mirror read; the once-per-tick recovery runs before the
+sensor sweep, so it is never stale); the **Coupling table** (`exchange.py`
+reads `gmap.heat`, not `temperature` — untouched, stated); the three
+benches (extended, not forked).
 
 **(b) New systems / amended rules (→ CLAUDE.md at implementation)**:
 - **Gas energy field** (`gamemap.gas_energy`): *the conserved truth for gas
   thermal energy; `temperature` is its mirror on gas cells and the truth on
   thermal solids.*
 - **Gas energy seam** (`gas_energy_move` / `gas_energy_deposit`): *every
-  change of gas N or gas heat goes through the seam — mass carries its
-  source's `T_abs`, born mass is born at ambient; nothing writes gas
-  `temperature` directly (tests included: use `seed_gas_temperature`).*
+  change of gas N or gas heat goes through the seam — MOVED mass carries
+  its source's `T_abs`, MINTED mass is born at ambient.*
+- **Gas temperature is a mirror**: *nothing writes gas `temperature`
+  directly (tests included: `seed_gas_temperature`); the recovery refreshes
+  it once per tick and at every seam write.*
+- **Amend** Recorder rule: "extend `DEFAULT_FIELDS` additively" → "+ a new
+  dtype class (int64) is a contract extension with its own ring branch,
+  never a cast".
 - **Face-flux energy step**: *energy exchange between gas cells is a per-face
   flux evaluated once in canonical orientation and applied with opposite
   signs — never a per-cell source term; boundary faces export to a counter.*
