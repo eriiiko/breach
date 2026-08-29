@@ -71,20 +71,11 @@ uint64_t digest_of_host(const int32_t* buf, int n, uint64_t seed) {
     return h;
 }
 
-// ---- host mul128_shr (step()'s file-local helper, for the Kdt_raw fold) -----
-// MSVC-host path mirror; only used on the HOST here (the Kdt_raw scalar fold).
-#if defined(__SIZEOF_INT128__)
-inline int64_t mul128_shr_host(int64_t a, int64_t b, int shift) {
-    return (int64_t)(((__int128)a * (__int128)b) >> shift);
-}
-#else
-inline int64_t mul128_shr_host(int64_t a, int64_t b, int shift) {
-    long long hi;
-    long long lo = _mul128((long long)a, (long long)b, &hi);
-    unsigned long long ulo = (unsigned long long)lo;
-    return (int64_t)((ulo >> shift) | ((unsigned long long)hi << (64 - shift)));
-}
-#endif
+// ---- host mul128_shr (the Kdt_raw scalar fold) ------------------------------
+// PROMOTED into fixed_point.h as `fixedpoint::mul128_shr` (gas-energy
+// conservation arc #54, design §2.5, P-G0) — this file's own host-only copy
+// is gone; `using namespace fixedpoint;` (top of file) resolves the plain
+// `mul128_shr(...)` call below to the shared primitive's host branch.
 
 // ---- solid-mirror neighbor read (eos_solver.cpp mirror_idx, verbatim) -------
 __device__ __forceinline__ int mirror_idx_dev(
@@ -404,7 +395,7 @@ KickScalarFolds kick_scalar_folds(
     f.inv_2dx_q    = quantize(1.0 / (2.0 * dx_d));
     const double K_d = (double)c_max * (double)c_max / gamma_d;
     const int64_t K_raw = (int64_t)(K_d * 65536.0 + 0.5);
-    f.Kdt_raw      = mul128_shr_host(K_raw, (int64_t)f.dt_q, 16);
+    f.Kdt_raw      = mul128_shr(K_raw, (int64_t)f.dt_q, 16);
     f.absorb_dt_q  = quantize((double)absorb_strength * dt_d);
     f.work_clamp_q = quantize((double)t_work_clamp);
     // P-E3 (design §2.8): the drag folds, the SAME per-tick-not-per-cell

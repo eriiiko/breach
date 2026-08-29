@@ -150,6 +150,67 @@ FP_HD inline q16 narrow_round_signed(int64_t wide) {
     return (wide >= 0) ? narrow_round(wide) : (q16)(-narrow_round(-wide));
 }
 
+// ---- 128-bit staged multiply: (a*b) >> shift, both int64 (P-G0 promotion) --
+//
+// mul128_shr(a, b, shift) == (int64_t)((a*b) >> shift), where a*b is the FULL
+// 128-bit SIGNED product — the "wide multiply, single truncation" idiom every
+// coefficient x field product in the EOS solve chains through (v2.2 §3.4 rule
+// 1). THREE independent copies of this existed before this promotion
+// (gas-energy conservation arc #54, design §2.5, P-G0): eos_solver.cpp's
+// file-local `mul128_shr` (host), cuda_fixedpoint_device.cuh's
+// `mul128_shr_signed` (device), and cuda_kick_compression.cu's file-local
+// `mul128_shr_host` (host, the Kdt_raw scalar fold) — this is their ONE
+// shared transcription now. Both host branches below are bit-for-bit their
+// old bodies (P-E3's shift==0 UB-avoiding special case, already present on
+// two of the three copies, now covers all three); the __CUDA_ARCH__ branch is
+// a VERBATIM copy of cuda_fixedpoint_device.cuh's mul128_shr_signed body —
+// see that header's own comment for why S==0 is special-cased there (a
+// 64-bit shift by 64 is UB and silently degenerates to `hi << 0` on real
+// hardware, OR-ing an unshifted `hi` into the result).
+//
+// FP_HD, not plain `inline`: under nvcc a __host__ __device__ function is
+// compiled TWICE per .cu TU — once with __CUDA_ARCH__ defined (the device
+// pass), once without (the host pass) — so the branch below is a
+// COMPILE-TIME dispatch on which pass is active. The __CUDA_ARCH__ check MUST
+// come FIRST: under MSVC-host nvcc, _MSC_VER can still be defined during the
+// device pass (the host compiler's predefined macros are forwarded), and a
+// device instantiation that fell into the _MSC_VER branch would try to call
+// the host-only `_mul128` intrinsic and fail to compile — the exact hazard
+// this file's FP_HD doc comment (top) warns recip_mul about; this primitive
+// sidesteps it by handling __CUDA_ARCH__ explicitly instead of leaving it
+// unhandled. This header is never compiled with __CUDA_ARCH__ defined from a
+// plain .cpp TU (the CPU sim TUs never see nvcc), so the device branch's use
+// of `__mul64hi` — a CUDA device builtin, implicitly declared by nvcc's
+// device compiler, no header needed — is inert dead code on every host-only
+// build.
+#if defined(__CUDA_ARCH__)
+FP_HD inline int64_t mul128_shr(int64_t a, int64_t b, int shift) {
+    const unsigned long long lo = (unsigned long long)((long long)a * (long long)b);
+    if (shift == 0) return (int64_t)lo;   // P-E3: the UB-avoiding special case
+    const long long hi = __mul64hi((long long)a, (long long)b);   // signed hi 64
+    const long long res = (long long)((lo >> shift) |
+                                      ((unsigned long long)hi << (64 - shift)));
+    return (int64_t)res;
+}
+#elif defined(__SIZEOF_INT128__)
+FP_HD inline int64_t mul128_shr(int64_t a, int64_t b, int shift) {
+    return (int64_t)(((__int128)a * (__int128)b) >> shift);   // shift==0 is
+                                                               // well-defined
+                                                               // for __int128
+}
+#elif defined(_MSC_VER)
+} // namespace fixedpoint
+#include <intrin.h>
+namespace fixedpoint {
+FP_HD inline int64_t mul128_shr(int64_t a, int64_t b, int shift) {
+    long long hi;
+    long long lo = _mul128((long long)a, (long long)b, &hi);
+    unsigned long long ulo = (unsigned long long)lo;
+    if (shift == 0) return (int64_t)ulo;   // P-E3: the UB-avoiding special case
+    return (int64_t)((ulo >> shift) | ((unsigned long long)hi << (64 - shift)));
+}
+#endif
+
 // ---- precomputed reciprocal (divide -> multiply) --------------------------
 //
 // A divide by a runtime-known-but-loop-invariant value becomes a reciprocal
