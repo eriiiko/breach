@@ -379,9 +379,13 @@ ring / ts counters in absolute convention. Closure identity (the new
   changes with N during transport with no counterparty (bounded by `k_ke`;
   sub-degree at wind speeds; SB probes `Σ N|u|²` drift). #54's +121 / −20
   signature disappears structurally.
-- Blast cores: **cooler than HEAD**, not hotter — HEAD's 4c pumped energy
-  into cavities; the flux form bounds a cell's heating by its neighbours'
-  energy. (Corrects v1 §8.) Fire tuning (#5/#8) will see lower core T.
+- Blast cores: **HOTTER than HEAD** (measured at P-G1a: core +200.6 vs
+  HEAD +38.3; outside-disc peak +219.6 vs HEAD +383.2). v2/v3's "cooler"
+  prediction was wrong and the measurement explains why: HEAD's core was
+  *colder than its own surroundings* because 4c pumped the blast's energy
+  away from it and out into the map; the conservative form keeps the
+  energy in the disc. Fire tuning (#5/#8) will see hotter cores and cooler
+  surroundings. (Corrects v1 §8 and v2 §3.)
 - Breach rarefaction: the mouth's net cooling comes from the **outflow
   face export + the KE debit** (jet enthalpy → kinetic), not from a per-cell
   expansion factor; expect the same order as the T_abs arc's −97 but a
@@ -567,9 +571,56 @@ Each patch: own worktree + branch; re-plan at boundaries; checkpoint memory.
 
 ## 8. What Erik must know before playing (P-G4 brief)
 - Rooms stay at ambient unless something heats them. Hot corners gone.
-- Grenade cores are **cooler** than before (HEAD was pumping); the ring
-  cooler on expansion. Judge the shape; retune is #5/#8.
-- Breach: chill present, as a ring around the mouth rather than a core.
+- Grenade cores are **hotter** than before and the surroundings cooler
+  (HEAD was pumping the core's energy outward). Judge the shape; retune is
+  #5/#8.
+- Breach: chill present, as a ring around the mouth rather than a core
+  (P-G1a VENT: mouth ring −231…−238, interior −102).
+
+---
+
+## P-G1a results (2026-08-29, branch `gas-energy-arc`, commits 3c3ba66..ddabe8c)
+
+| sealed-box `nofire`, 18 s, term ON | HEAD | P-G1a |
+|---|---|---|
+| box ΔT | +121.0 | **+6.0** (−0.00 with conduction off — the residual is §2.7 row 3, P-G1b) |
+| bunker / pen ΔT | +72.1 / +61.7 | **−0.1 / −0.1** |
+| arena ΔT | −19.7 | +0.0 |
+| u_max | 21.2 | 5.6 |
+| closure identity | n/a | **exact in int64, all 432 steps** |
+
+HP: rooms −0.1, plate's neighbourhood +16.8 (the bench's own FIXED).
+VENT: `gas_energy ≥ 0` every tick, identity exact, export counter matches
+the room's loss. BLAST: no `T_MAX_PHYS` hit; cores hotter (§3). FIRE:
+identity exact, box +3.35 (conduction), bunker/pen 0. AS: **P3 PASS**
+(bunker +0.0, pen +0.0, gallery +1.0, basin −0.1); P1b/P5 lab now hold
+water and air. Suite: 31 red = 24 pre-existing + 4 EXPECTED goldens + 3
+value moves (below).
+
+**Open rulings from P-G1a (Erik):**
+1. `test_air_boundary.py` gate 2 (`t_max_phys_hits == 0`, STOP) reads 564
+   → 0 by tick 4 on its slam-a-40×40-room-to-0.1-atm-then-open test: the
+   MG solve lifts P to ~1 atm acoustically while N is still 0.1, the kick
+   hits ~200 m/s, energy Courant ~40 per tick, and the `T_MAX_PHYS` rail
+   catches the first-tick overshoot — as §2.2/§2.6 specify. An inflow rail
+   was tried and reverted (it turns an open boundary into a refrigerator).
+   Ruling: restate the gate as "hits decay to 0 within 4 ticks and are
+   counted in `e_rail_sum`" (recommended) vs. design an inflow rail.
+2. `test_b5_airlock`: cycle completes at +310 ticks vs cap 300 because the
+   evacuated chamber's gas is honestly cold (−133 ≈ adiabatic −150) so the
+   pump needs more mass for 0.9 atm. Re-measure after P-G1b's pump seam;
+   then a cap retune or a pump-rate dial.
+3. `test_water_displacement` settle 0.9953 atm vs band [1.00, 1.12] (band
+   encoded the 4c law) and `test_air_boundary` gate 3 reflection 2.48% vs
+   2%: value moves → P-G3 re-baseline with rationale.
+
+Agent decisions accepted at review: `p*` keeps reading the mirror (ts
+cells' `p*` must read the object's T); rail scales magnitude then
+re-applies sign; `price_face` splits `E = N·q + r` to avoid a 128-bit
+divide; per-face saturation at the `p·u` stage via a folded `pu_cap`;
+sub-cycle pressure refresh ceilinged at `C·N·(T_MAX_PHYS+T_AMB)`
+(`p_face_ceil_hits`); retired counters kept as always-0 members (D10);
+`test_field_ab_harness` (CPU-vs-CPU) NOT xfailed.
 
 ## Systems (rules lifecycle)
 **(a) Existing canonical systems used**: PhysicsRunner/PhysicsEngine;
