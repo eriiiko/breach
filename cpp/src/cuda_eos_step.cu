@@ -648,12 +648,21 @@ void eos_step_cuda(
             dyn_wave_absorb, h, w, dt, pre.cap2.data(),   // D2v2
             solver.c_max, solver.dx, solver.adiabatic_index,
             solver.absorb_strength, solver.N_FLOOR_SOLVER, solver.T_MIN,
-            solver.T_WORK_CLAMP, solver.T_MAX_PHYS, solver.U_MAX,
+            // CUDA PARITY SUSPENDED, P-G1a -> P-G2 (arc #54, design §5): the
+            // three dials this call needs left EOSSolver with step 4c
+            // (D5/D11), but the DEVICE still runs the old step-4c law until
+            // P-G2 ports K1's brackets and the new K3 flux kernel. Frozen at
+            // the values they carried when retired (eos_solver.h's 0.5 for
+            // T_WORK_CLAMP; config.toml's 0.0014 and 0.25), so the suspended
+            // device path behaves exactly as it did in play. P-G2 deletes
+            // these three literals with the K2 kernel. Same note, and the
+            // same values, at cuda_eos_resident.cu's kick_scalar_folds call.
+            0.5f, solver.T_MAX_PHYS, solver.U_MAX,
             // P-E3 (design §2.8): interior drag + heat counterparty.
             // drag-law v2 (docs/drag_law_v2_design_2026-08-23.md): k_drag2.
-            solver.k_drag, solver.k_drag2, solver.k_drag_heat_frac, solver.c_v,
+            solver.k_drag, solver.k_drag2, 0.0014f, solver.c_v,
             // P-E4 (design §2.4): the compression-work trust gate.
-            solver.n_work_ref,
+            0.25f,
             // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K.
             solver.T_AMB_K,
             &dig_vel, &dig_comp, cnts,   // trace_mass_scale arg RETIRED (P-T0)
@@ -672,9 +681,11 @@ void eos_step_cuda(
         // P-E3: PER-TICK semantics (assigned, not accumulated — the P-E1
         // reset-at-step()-entry idiom; this dispatch runs once per tick).
         solver.ke_drag_removed     = cnts[5];
-        solver.e_drag_deposit      = cnts[6];
-        solver.e_drag_drop_sum     = cnts[7];
-        solver.e_drag_rail_clipped = cnts[8];
+        // CUDA PARITY SUSPENDED, P-G1a -> P-G2 (arc #54, D5/D10): slot 6 is
+        // the ONE drag energy counter now; slots 7/8 are retired with the
+        // heat fraction and the deposit-site rail, so they are DROPPED rather
+        // than stored. Same note at cuda_eos_resident.cu's write-back.
+        solver.e_drag_heat_sum     = cnts[6];
     }
 
     // DEBUG probe parity: T after step 4c (compression work).

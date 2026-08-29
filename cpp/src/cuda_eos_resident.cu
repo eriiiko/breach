@@ -699,12 +699,24 @@ void eos_step_resident(
     const KickScalarFolds kf = kick_scalar_folds(
         dt, solver.c_max, solver.dx, solver.adiabatic_index,
         solver.absorb_strength, solver.N_FLOOR_SOLVER, solver.T_MIN,
-        solver.T_WORK_CLAMP, solver.T_MAX_PHYS, solver.U_MAX,
+        // CUDA PARITY SUSPENDED, P-G1a -> P-G2 (gas-energy conservation arc
+        // #54, design §5). The CPU energy chain moved to the conservative
+        // face-flux form and `EOSSolver::T_WORK_CLAMP` / `k_drag_heat_frac` /
+        // `n_work_ref` went with step 4c (D5/D11); the DEVICE kernels still
+        // run the old step-4c law until P-G2 ports K1's brackets and the new
+        // K3 flux kernel, so they still need those three scalars. They are
+        // frozen here at the values the dials CARRIED when they were retired
+        // — T_WORK_CLAMP: the eos_solver.h default 0.5 (there was never a
+        // config key, only a comment); k_drag_heat_frac: config.toml's
+        // shipped 0.0014; n_work_ref: config.toml's shipped 0.25 — so the
+        // suspended device path keeps behaving exactly as it did in play.
+        // P-G2 DELETES these three literals along with the K2 kernel.
+        0.5f, solver.T_MAX_PHYS, solver.U_MAX,
         // P-E3 (design §2.8): interior drag + heat counterparty.
         // drag-law v2 (docs/drag_law_v2_design_2026-08-23.md): k_drag2.
-        solver.k_drag, solver.k_drag2, solver.k_drag_heat_frac, solver.c_v,
+        solver.k_drag, solver.k_drag2, 0.0014f, solver.c_v,
         // P-E4 (design §2.4): the compression-work trust gate.
-        solver.n_work_ref,
+        0.25f,
         // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K.
         solver.T_AMB_K);
     const EOSSolver::MGScalarFolds mf = solver.mg_scalar_folds(dt);
@@ -858,9 +870,15 @@ void eos_step_resident(
     // P-E3 (design §2.8): PER-TICK semantics (assigned, not accumulated —
     // the P-E1 idiom the sibling ecnt block below also uses).
     solver.ke_drag_removed     = (int64_t)cnt_host[5];
-    solver.e_drag_deposit      = (int64_t)cnt_host[6];
-    solver.e_drag_drop_sum     = (int64_t)cnt_host[7];
-    solver.e_drag_rail_clipped = (int64_t)cnt_host[8];
+    // CUDA PARITY SUSPENDED, P-G1a -> P-G2 (arc #54, D5/D10): slot 6 lands in
+    // `e_drag_heat_sum` — the ONE drag energy counter now — and slots 7/8
+    // (`e_drag_drop_sum`, `e_drag_rail_clipped`) are RETIRED with the heat
+    // fraction and the deposit-site rail. The device still writes the old
+    // three, so the two retired ones are DROPPED here rather than stored:
+    // reporting a dropped fraction that no longer exists would be worse than
+    // reporting nothing. P-G2 replaces the whole block with the arc's
+    // counters when K1 lands the brackets.
+    solver.e_drag_heat_sum     = (int64_t)cnt_host[6];
     // P-E1 energy counters — ASSIGNED (per-TICK semantics, matching the CPU's
     // reset-at-step()-entry idiom and the per-call GPU path), not accumulated
     // like the rail counters above. int64 atomicAdd on two's complement is
