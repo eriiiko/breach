@@ -37,9 +37,10 @@ Rulings by Erik, 2026-08-29 (recorded; not re-litigated below):
 - Scope stays tight. Sequence: design → critique → patches with gates →
   CUDA lockstep → re-baseline → HUMAN-TEST.
 
-v2 asks Erik for two confirmations (flagged ★ in §4): the velocity-cap /
+v2 asked Erik for two confirmations (flagged ★ in §4): the velocity-cap /
 wave-sponge KE is **exported and counted, not heated** (D6); the energy step
-is **sub-cycled** inside the tick (D8).
+is **sub-cycled** inside the tick (D8). **Both CONFIRMED by Erik,
+2026-08-29 ("option A" on each).** P-G0 merged `dc35ede`.
 
 **v3 (same day)**: round-2 critique (physics+numerics; seam/gates). All
 round-1 blockers confirmed resolved (the §2.1 constants were re-derived
