@@ -307,6 +307,12 @@ public:
     //   flux_sat_hits      a face magnitude saturated (the int64 corner).
     mutable int64_t rad_clip_hits = 0;
     mutable int64_t p_face_floor_hits = 0;
+    //   p_face_ceil_hits   the sub-cycle pressure refresh clamped at the
+    //                      physical ceiling C·N·(T_MAX_PHYS + T_AMB) — §2.2's
+    //                      own E bound, expressed as the pressure it implies
+    //                      (see the fold site for why the increment form
+    //                      needs it in the INFLOW direction).
+    mutable int64_t p_face_ceil_hits = 0;
     mutable int64_t flux_sat_hits = 0;
 
     // --- P-E0 energy-bracket counters (energy-books arc, design §2.5) ----

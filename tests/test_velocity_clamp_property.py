@@ -45,7 +45,10 @@ FP_ONE = 65536
 
 CONSTS = dict(
     c_max=300.0, dx=1.0 / 3.0, adiabatic_index=1.4, absorb_strength=8.0,
-    n_floor_solver=1e-3, t_min=-289.0, t_work_clamp=0.5,
+    # arc #54 P-G1a (MECHANICAL): `t_work_clamp` left the kick reference's
+    # signature with step 4c (design D11) -- the property under test here (the
+    # velocity clamp's exact rad > cap2 rescale) is untouched.
+    n_floor_solver=1e-3, t_min=-289.0,
     t_max_phys=16000.0, u_max=1000.0,
 )
 
@@ -261,6 +264,7 @@ def test_gate2_full_engine_smoke_playground_blast():
     for _ in range(5):
         runner.engine.run_substeps(
             g.wave_p, g.atmosphere, g.wind_x, g.wind_y, g.temperature,
+            g.gas_energy,              # arc #54 §2.2 (MECHANICAL)
             g.obstacles, g.solid, g.is_vacuum, g.dyn_permeability,
             g.dyn_wave_absorb, g.gas, g.gases.diffusion, g.gases.conservative,
             g.gases.decay, inert_n2_idx, dt)

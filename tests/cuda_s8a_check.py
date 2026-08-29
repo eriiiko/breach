@@ -486,6 +486,7 @@ def _bench_eos_stage(H, W, reps=60):
         def fn():
             runner.engine.run_substeps(
                 g.wave_p, g.atmosphere, g.wind_x, g.wind_y, g.temperature,
+                g.gas_energy,          # arc #54 §2.2 (MECHANICAL)
                 g.obstacles, g.solid, g.is_vacuum,
                 g.dyn_permeability, g.dyn_wave_absorb,
                 g.gas, g.gases.diffusion, g.gases.conservative,

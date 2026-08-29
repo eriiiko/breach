@@ -165,7 +165,15 @@ def _run_leg(ticks, k_drag2=0.0, k_drag=None):
 
     n_trace = np.empty(ticks + 1, dtype=np.float64)
     n_trace[0] = n_total()
-    ke_sum = e_dep_sum = e_drop_sum = e_rail_sum = 0
+    # arc #54 P-G1a (design D5/D10): `e_drag_deposit` / `e_drag_drop_sum` /
+    # `e_drag_rail_clipped` are RETIRED -- there is no heat FRACTION, no c_v
+    # divide and no T_MAX_PHYS rail AT the deposit site any more (the
+    # once-per-tick §2.6 recovery owns the rails). The one drag energy
+    # counter is `e_drag_heat_sum`, in the gas_energy Q32 currency, and it is
+    # the WHOLE removed KE at the derived k_ke -- so what used to be three
+    # channels (deposit / dropped / rail-clipped) is now one, and the
+    # "dominant sink" split the old leg-5 reported no longer exists.
+    ke_sum = e_heat_sum = 0
     worst_ke = 0
     worst_ke_tick = -1
     worst_speed = 0.0
@@ -175,9 +183,7 @@ def _run_leg(ticks, k_drag2=0.0, k_drag=None):
         n_trace[k] = n_total()
         ke = int(runner.eos.ke_drag_removed)
         ke_sum += ke
-        e_dep_sum += int(runner.eos.e_drag_deposit)
-        e_drop_sum += int(runner.eos.e_drag_drop_sum)
-        e_rail_sum += int(runner.eos.e_drag_rail_clipped)
+        e_heat_sum += int(runner.eos.e_drag_heat_sum)
         if ke > worst_ke:
             worst_ke = ke
             worst_ke_tick = k
@@ -188,8 +194,8 @@ def _run_leg(ticks, k_drag2=0.0, k_drag=None):
 
     return dict(
         n_trace=n_trace, k_drag2=float(k_drag2), k_drag=float(runner.eos.k_drag),
-        ke_sum=ke_sum, e_dep_sum=e_dep_sum, e_drop_sum=e_drop_sum,
-        e_rail_sum=e_rail_sum, worst_ke=worst_ke, worst_ke_tick=worst_ke_tick,
+        ke_sum=ke_sum, e_heat_sum=e_heat_sum,
+        worst_ke=worst_ke, worst_ke_tick=worst_ke_tick,
         worst_speed=worst_speed, t_max_phys_hits=int(runner.eos.t_max_phys_hits),
     )
 
@@ -360,40 +366,35 @@ def test_leg5_blast_heat_watch(legs):
     k2_1 = legs["sweep"][1.0]
     k2_10 = legs["quad"]
 
-    assert b["e_dep_sum"] > 0 and b["e_rail_sum"] == 0, (
+    # arc #54 P-G1a: the observable is `e_drag_heat_sum` (the whole removed
+    # KE, at the derived k_ke) rather than the deposit/drop/rail triple. The
+    # RATIO the leg gates is the same physical statement -- "more quadratic
+    # drag means proportionally more heat in the neck" -- and its band is
+    # UNCHANGED, because e_drag_heat_sum is proportional to what
+    # e_drag_deposit was at the shipped k_drag_heat_frac = 1.0 (the constant
+    # differs, the ratio does not). The `e_drag_rail_clipped > 0` half of the
+    # old leg is RETIRED with the deposit-site rail: a deposit can no longer
+    # be clipped at all, which is the point (D5) -- the T_MAX_PHYS rail is
+    # the once-per-tick recovery's, and `t_max_phys_hits` is still reported.
+    assert b["e_heat_sum"] > 0, (
         "baseline (k_drag=0.5 shipped, k2=0) must already show some linear "
-        "drag heat deposit and ZERO rail-clipping -- else the ratios below "
-        "are meaningless")
+        "drag heat deposit -- else the ratios below are meaningless")
 
-    ratio_dep_k2_1 = k2_1["e_dep_sum"] / b["e_dep_sum"]
-    ratio_dep_k2_10 = k2_10["e_dep_sum"] / b["e_dep_sum"]
-    # e_drag_drop_sum is reported (design's ACCEPTED GAP §2/§10: no assert
-    # bound is required for it, only deposit + rail) -- per design §1(c) it
-    # is the DOMINANT sink at large k2 ("e_drag_drop_sum becomes the
-    # dominant sink"); shown here for the full P-E3 picture.
-    ratio_drop_k2_1 = k2_1["e_drop_sum"] / b["e_drop_sum"]
-    ratio_drop_k2_10 = k2_10["e_drop_sum"] / b["e_drop_sum"]
-    print(f"\nleg5 e_drag_deposit ratio vs baseline: k2=1.0 -> {ratio_dep_k2_1:.2f}x  "
+    ratio_dep_k2_1 = k2_1["e_heat_sum"] / b["e_heat_sum"]
+    ratio_dep_k2_10 = k2_10["e_heat_sum"] / b["e_heat_sum"]
+    print(f"\nleg5 e_drag_heat_sum ratio vs baseline: k2=1.0 -> {ratio_dep_k2_1:.2f}x  "
           f"k2=10 -> {ratio_dep_k2_10:.2f}x")
-    print(f"leg5 e_drag_drop_sum ratio vs baseline (reported, not asserted): "
-          f"k2=1.0 -> {ratio_drop_k2_1:.2f}x  k2=10 -> {ratio_drop_k2_10:.2f}x")
-    print(f"leg5 e_drag_rail_clipped: baseline={b['e_rail_sum']} "
-          f"k2=1.0={k2_1['e_rail_sum']} k2=10={k2_10['e_rail_sum']}")
+    print(f"leg5 ke_drag_removed (raw KE oracle): baseline={b['ke_sum']} "
+          f"k2=1.0={k2_1['ke_sum']} k2=10={k2_10['ke_sum']}")
     print(f"leg5 t_max_phys_hits (cumulative): baseline={b['t_max_phys_hits']} "
           f"k2=1.0={k2_1['t_max_phys_hits']} k2=10={k2_10['t_max_phys_hits']}")
 
     assert 15.0 <= ratio_dep_k2_1 <= 200.0, (
-        f"k2=1.0 e_drag_deposit ratio {ratio_dep_k2_1:.2f}x moved outside "
+        f"k2=1.0 e_drag_heat_sum ratio {ratio_dep_k2_1:.2f}x moved outside "
         "the pinned [15x, 200x] band -- re-measure and re-pin")
     assert 60.0 <= ratio_dep_k2_10 <= 600.0, (
-        f"k2=10 e_drag_deposit ratio {ratio_dep_k2_10:.2f}x moved outside "
+        f"k2=10 e_drag_heat_sum ratio {ratio_dep_k2_10:.2f}x moved outside "
         "the pinned [60x, 600x] band -- re-measure and re-pin")
-
-    # k2=10 opens a rail-clipping channel that does not exist at all at the
-    # baseline (T_MAX_PHYS-railed neck cells get their drag heat clipped).
-    assert k2_10["e_rail_sum"] > 0, (
-        "k2=10 was expected to open the e_drag_rail_clipped channel "
-        "(design §1c/§2's T_MAX_PHYS behavior note) -- it did not")
 
     candidates = {"baseline": b, "k2=0.25": legs["sweep"][0.25],
                   "k2=0.5": legs["sweep"][0.5], "k2=1.0": k2_1,

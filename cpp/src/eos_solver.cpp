@@ -326,6 +326,7 @@ void EOSSolver::step(
     e_retire_sum = 0;
     rad_clip_hits = 0;
     p_face_floor_hits = 0;
+    p_face_ceil_hits = 0;
     flux_sat_hits = 0;
     // D10/D11: retired-and-zero for the whole of this tick.
     work_clamp_hits = 0;
@@ -1365,6 +1366,20 @@ void EOSSolver::step(
                 // value the divergence stencil reads there (mirror_idx keys
                 // on solid only).
                 u_f = east ? wind_x[acc_i] : wind_y[acc_i];
+                // The face is TWO-WAY on purpose. It was briefly made
+                // outflow-only during P-G1a (the name "OUTFLOW face" and §3's
+                // one-directional description invite it), and that is WRONG,
+                // measured: an open boundary then becomes a refrigerator. The
+                // reservoir's inward p·u work is precisely the FLOW WORK
+                // (the p/rho half of enthalpy) that the arriving gas turns
+                // into kinetic energy, which the kick debits and the
+                // absorb/sponge bands then destroy. Cut the import and the
+                // interior loses that energy with nothing replacing it: on
+                // tests/test_air_boundary.py's GATE 2 rush-in the interior
+                // recovered to 43% of P_amb instead of >90%, freezing onto
+                // the T_MIN rail (e_rail_sum ~ +3e15 raw per tick). §2.7's
+                // born-at-ambient credit supplies the INTERNAL energy of the
+                // arriving mass; this face supplies its flow work. Both.
                 cls = a_lo ? 2 : 3;
             }
             if (u_f == 0 || p_f <= 0) return 0;
@@ -1395,7 +1410,34 @@ void EOSSolver::step(
                 int64_t p = (int64_t)atmosphere[i]
                           + mul128_shr((int64_t)c_q, gas_energy[i] - e0_[i], 32);
                 if (p < 0) { p = 0; ++p_face_floor_hits; }
-                else if (p > (int64_t)INT32_MAX) p = INT32_MAX;
+                // THE PHYSICAL CEILING on the refreshed operand (arc #54; a
+                // case §2.4 does not settle — recorded in the as-built).
+                //
+                // R3-#6's increment form is self-limiting in the OUTFLOW
+                // direction — that is the whole argument for it ("the outflow
+                // shrinks as E_i shrinks and the bound is geometric"). In the
+                // INFLOW direction it runs the other way: E rises, so p rises,
+                // so the next sub-cycle imports MORE. With n_sub up to 8 that
+                // is a within-tick positive feedback, and it is exactly what
+                // GATE 2's rush-in trips (a 40x40 interior slammed to 0.1 atm
+                // / 0.1 N and opened to the ring: the solve lifts P to ~0.98
+                // acoustically while N is still 0.1, the kick puts |u| at
+                // ~200 m/s, and a single ring face delivers many times the
+                // receiving cell's whole energy).
+                //
+                // The ceiling is NOT a new rail: it is §2.2's own stated
+                // bound, `E <= N·(T_MAX_PHYS + T_AMB)`, expressed as the
+                // pressure it implies through the EOS the refresh is built
+                // on. Past it the cell's temperature is meaningless anyway —
+                // that is what T_MAX_PHYS means (eos_solver.h) — so letting
+                // the operand run past it only feeds a runaway the §2.6
+                // recovery would have to clip afterwards. Below the ceiling
+                // this is dormant, so ordinary play is untouched.
+                const int64_t e_ceil = (int64_t)n_total_[i]
+                    * ((int64_t)t_max_phys_q + (int64_t)t_amb_q);
+                const int64_t p_ceil = mul128_shr((int64_t)c_q, e_ceil, 32);
+                if (p > p_ceil) { p = p_ceil; ++p_face_ceil_hits; }
+                if (p > (int64_t)INT32_MAX) p = INT32_MAX;
                 pcur_[i] = (int32_t)p;
             }
 

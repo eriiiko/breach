@@ -2328,6 +2328,7 @@ PYBIND11_MODULE(breach_physics, m) {
         .def_readonly("e_retire_sum",          &EOSSolver::e_retire_sum)
         .def_readonly("rad_clip_hits",         &EOSSolver::rad_clip_hits)
         .def_readonly("p_face_floor_hits",     &EOSSolver::p_face_floor_hits)
+        .def_readonly("p_face_ceil_hits",      &EOSSolver::p_face_ceil_hits)
         .def_readonly("flux_sat_hits",         &EOSSolver::flux_sat_hits)
         // BC (spec §5): the boundary_flux rail — per-conservative-plane int64
         // Σ(N_pre_reset − N_amb). Returned as a Python list (empty on space

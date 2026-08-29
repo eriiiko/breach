@@ -12,11 +12,17 @@ This is a HARNESS, not a pytest gate (the ``_`` prefix — tests/
 convention): it prints the region table and exits 0. FIXED behavior =
 room means stay ~0 while only the plate's neighbourhood warms.
 
-Bisection use: toggle one energy-chain term per run (k_drag_heat_frac=0,
-compression-work off, MG vs point-GS solve, velocity clamp off) and watch
-which toggle kills the room heating. Diagnosis step 1 per #54: the
-mass-books audit — rooms heat while LOSING mass; find where mass goes
-(tools/analyze_blowup_dump.py::mass_books is the instrument pattern).
+Bisection use: toggle one energy-chain term per run (k_drag=0, MG vs
+point-GS solve, velocity clamp off) and watch which toggle kills the room
+heating. (`k_drag_heat_frac=0` and `T_WORK_CLAMP=0` were the other two
+handles; both dials are RETIRED by the gas-energy conservation arc — #54
+P-G1a, design D5/D11 — with the step-4c term they controlled.)
+
+RESOLVED at P-G1a: the room heating was step 4c's non-telescoping
+per-cell compression work. Measured here after the conservative face-flux
+step replaced it: R5/R6/R8 hold at -0.1 over the whole 30 s (HEAD:
++75..+105) while the arena — which CONTAINS the plate — warms +16.8, which
+is the shape the docstring above calls FIXED.
 
 Run:
     conda run -n data python tests/_hotplate_heating_bench.py

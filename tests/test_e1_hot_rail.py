@@ -134,6 +134,51 @@ def run_scenario(interior, tile, fuel_block, ticks, collect=False):
                   e_ts_residual=0, e_wipe_sum=0, e_floor_sum=0)
         peak_T = 0.0
         o2_start = int(gas[o2i][om].astype(np.int64).sum())
+
+        # ==============================================================
+        # arc #54 (gas-energy conservation) §2.8 — THE CLOSURE IDENTITY.
+        # `test_no_transport_mint` is re-derived onto it (design §6's
+        # REWRITTEN row). It has to bracket the EOS STEP, not the tick:
+        # P-G1a is transitional, so combustion, the thermal solver and the
+        # seam writers still write `temperature` outside the EOS and are
+        # absorbed by the solver's entry re-sync (which the identity books
+        # as `e_entry_resync_sum`). pybind methods are read-only, so the
+        # bracket rides a transparent proxy over the engine.
+        # ==============================================================
+        closure = {"ticks": 0, "bad": 0, "worst": 0}
+
+        def _e_acct():
+            acct = gmap._gas_energy_accountable()
+            return int(gmap.gas_energy[acct].astype(object).sum())
+
+        class _EngineProbe:
+            def __init__(self, inner):
+                object.__setattr__(self, "_inner", inner)
+
+            def __getattr__(self, k):
+                return getattr(object.__getattribute__(self, "_inner"), k)
+
+            def run_substeps(self, *a, **kw):
+                inner = object.__getattribute__(self, "_inner")
+                pre = _e_acct()          # the mask is constant across the
+                inner.run_substeps(*a, **kw)   # call, so the same accountable
+                post = _e_acct()         # set is measured on both sides
+                expected = (int(eos.e_entry_resync_sum)
+                            + int(eos.e_transport_net_sum)
+                            - int(eos.e_wipe_sum)
+                            - int(eos.e_kick_ke_sum)
+                            + int(eos.e_drag_heat_sum)
+                            - int(eos.e_work_export_sum)
+                            + int(eos.e_rail_sum))
+                resid = (post - pre) - expected
+                closure["ticks"] += 1
+                if resid:
+                    closure["bad"] += 1
+                    closure["worst"] = max(closure["worst"], abs(resid))
+
+        if collect:
+            sim.physics_runner.engine = _EngineProbe(sim.physics_runner.engine)
+
         for _ in range(ticks):
             sim.set_paused(False)
             sim.step()
@@ -175,6 +220,7 @@ def run_scenario(interior, tile, fuel_block, ticks, collect=False):
             t_max_phys_hits=int(eos.t_max_phys_hits),
             work_clamp_hits=int(eos.work_clamp_hits),
             eth_ticks=eth_ticks, identity_ticks=identity_ticks,
+            closure=closure,                       # arc #54 §2.8
             tick_peak_T=tick_peak_T, peak_T=peak_T, e1=e1,
             o2_burned_frac=1.0 - o2_end / max(o2_start, 1))
     finally:
@@ -204,7 +250,30 @@ def test_hot_scenario_reaches_the_audit_anatomy(hot_run):
 
 
 def test_no_transport_mint(hot_run):
-    """HEALTHY property, RE-DERIVED to the exact closure identity by P-W1b
+    """HEALTHY property, RE-DERIVED AGAIN by the gas-energy conservation arc
+    (#54 P-G1a, design §2.8) onto the ABSOLUTE closure identity:
+
+        d(Sum_accountable gas_energy) ==
+              e_entry_resync_sum + e_transport_net_sum - e_wipe_sum
+            - e_kick_ke_sum + e_drag_heat_sum - e_work_export_sum
+            + e_rail_sum
+
+    exact in int64, EVERY EOS step. That is strictly stronger than every
+    earlier form of this gate: the previous one bounded the TRANSPORT pass
+    alone and only in the "books never open" direction, whereas this one
+    pins the WHOLE energy chain -- transport, the five KE brackets, the
+    face-flux step and the recovery rails -- in both directions at once, on
+    the field that is now the truth rather than on a T-derived bracket. The
+    face-flux term contributes exactly 0 to it, by per-face cancellation:
+    that IS the arc.
+
+    (`e_entry_resync_sum` is P-G1a's transitional term -- combustion, the
+    thermal solver and the seam writers still write `temperature` outside
+    the EOS, and the solver's entry re-sync absorbs them. It goes to 0 at
+    P-G1b, when D1 goes live, and this identity is unchanged.)
+
+    --- the superseded P-W1b statement, kept for the history it carries ---
+    HEALTHY property, RE-DERIVED to the exact closure identity by P-W1b
     (design SS0b R-1): the old allowance (`n_sub x whole-map bulk N`)
     predates any counted creation/destruction channel being live, and under
     the T_abs compression-work law it is provably too loose — the entire
@@ -226,18 +295,13 @@ def test_no_transport_mint(hot_run):
     net-positive across the run without any book ever opening — see
     test_transport_delta_is_one_way_negative for the truncation-bound
     half of the same identity)."""
-    n_bad_open = 0
-    worst_open = 0
-    for eth, e_ts_residual, e_wipe_sum, e_floor_sum, _n_bulk in hot_run["identity_ticks"]:
-        counted = -e_ts_residual - e_wipe_sum + e_floor_sum
-        trunc = eth - counted
-        if trunc > 0:
-            n_bad_open += 1
-            worst_open = max(worst_open, trunc)
-    assert n_bad_open == 0, (
-        f"books OPEN on {n_bad_open} ticks (worst {worst_open} raw "
-        "Q16.16^2 of book-energy appeared beyond the counted terms) — "
-        "the T_abs closure identity does not hold")
+    c = hot_run["closure"]
+    assert c["ticks"] > 0, "vacuous: the closure bracket never ran"
+    assert c["bad"] == 0, (
+        f"the arc #54 §2.8 closure identity FAILED on {c['bad']} of "
+        f"{c['ticks']} EOS steps (worst |residual| {c['worst']} raw Q32) — "
+        "energy appeared in or vanished from `gas_energy` beyond the seven "
+        "counted channels")
 
 
 def test_transport_delta_is_one_way_negative(hot_run):
