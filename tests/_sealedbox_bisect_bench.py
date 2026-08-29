@@ -70,15 +70,24 @@ VARIANTS = [
     ("comp_clamp0", {"T_WORK_CLAMP": 0.0}),
     ("stiff_K",     {"adiabatic_index": 1.0, "T_WORK_CLAMP": 0.0}),
     ("flat_gs",   {"use_multigrid": False}),
+    # 2026-08-29: is the pressure leak MULTIGRID's? The flat path at S=8 blows
+    # up (under-converged); give it enough sweeps to converge and compare
+    # the box's P drift with the term off. Slow — a control, not a setting.
+    ("flat_S128_clamp0", {"use_multigrid": False, "S": 128, "T_WORK_CLAMP": 0.0}),
+    ("flat_S512_clamp0", {"use_multigrid": False, "S": 512, "T_WORK_CLAMP": 0.0}),
     ("no_vrail",  {"U_MAX": 1e9}),
     # MG thin-wall probe (2026-08-29): same box, 2- and 3-tile glass walls.
     ("wall2",       {}, 2),
     ("wall3",       {}, 3),
     ("wall2_clamp0", {"T_WORK_CLAMP": 0.0}, 2),
+    # 2026-08-29: does the sealed box drift with NO forcing at all? If P
+    # still climbs, the driver is the box's own equation, not the fire.
+    ("nofire",        {}, 1, False),
+    ("nofire_clamp0", {"T_WORK_CLAMP": 0.0}, 1, False),
 ]
 
 
-def run_variant(name, overrides, wall_thick=1):
+def run_variant(name, overrides, wall_thick=1, ignite=True):
     """One fresh Simulation; ``wall_thick`` = glass ring thickness in tiles
     (2026-08-29: the MG thin-wall probe — if a coarse cell straddling a
     1-tile wall is the leak, thicker walls should shrink it)."""
@@ -121,15 +130,20 @@ def run_variant(name, overrides, wall_thick=1):
         return float(d[open0[sl]].mean()) / 65536.0
 
     for t in range(1, END_TICK + 1):
-        if t == IGNITE_TICK:
+        if t == IGNITE_TICK and ignite:
             ignite_ring(g, sim.edit_queue, *CRATE, 2.5, 1.0)
         sim.set_paused(False)
         sim.step()
 
     P_aq = float(g.atmosphere[box_in][open0[box_in]].mean()) / 65536.0
+    # 2026-08-29 LESSON: seal_tiles pushes the ring's gas INTO the box, so the
+    # box starts at N ~ 1.29 atm-equivalent while P still reads 1.000 (the
+    # solve catches up over ~2 s). The honest sealed-pocket invariant is
+    # P == N x T_abs/T_amb, so report P/N — 1.000 means the solve is right.
+    n_mean = float((g.gas[o2] + g.gas[n2])[box_in].mean()) / 65536.0
     u = np.sqrt((g.wind_x / 65536.0) ** 2 + (g.wind_y / 65536.0) ** 2)
     print(f"{name:>11}: box dT={dT(box_in):+7.1f}  box P {P0_aq:.3f}->{P_aq:.3f}"
-          f"  box N x{n_box()/N0:5.3f}"
+          f"  box N x{n_box()/N0:5.3f} P/N={P_aq/n_mean:5.3f}"
           f"  bunker dT={dT(BUNKER):+7.1f}  pen dT={dT(PEN):+7.1f}"
           f"  arena dT={dT(ARENA):+6.1f}  u_max={float(u.max()):5.1f}"
           f"  wall={wall_thick}"
