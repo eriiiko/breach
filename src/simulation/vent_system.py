@@ -493,24 +493,33 @@ def _duct_sweep(gmap, duct, return_vents, supply_vents, t_min_q, t_max_phys_q):
     for i in range(N_TRACE):
         duct.trace_raw[i] -= total_trace_out[i]
 
-    # Debit the plenum by the MEASURED tile-side energy change PER DEPOSIT
-    # (§4: "E_plenum debited by the measured tile-side energy change
-    # (N_old+ΔN)*T_new - N_old*T_old"), NOT by the naive `share*t_dep` — the
-    # naive form drops both the mix's floor-division remainder AND any
-    # T-rail clamp, which would leak energy out of the ledger silently. This
-    # measured form "banks both division remainders back into the plenum
-    # automatically — conservation exact by construction, no counted leak"
-    # (§4), because whatever the primitive ACTUALLY wrote to the tile is
-    # exactly what leaves the plenum, to the raw.
+    # Debit the plenum by exactly what the deposit HANDED OVER: `ΔN·t_dep`,
+    # in the plenum's own RELATIVE currency.
+    #
+    # arc #54 P-G1b (design §2.7 pump row) REPLACES the old "measured tile-side
+    # change `(N_old+ΔN)*T_new − N_old*T_old`" rule, and the review finding
+    # that rule answered is now answered structurally instead of by
+    # measurement. The old rule existed because `inject_gas_n_vec` MIXED
+    # temperatures — a mass-weighted average with a floor-division remainder
+    # and a rail clamp, neither visible from here — so the only safe debit was
+    # to measure the result. There is no mix any more: the primitive converts
+    # at the seam (`E = e + n·T_AMB`) and adds `ΔN·(t_dep + T_AMB)` to the
+    # cell's stored energy, EXACTLY. So the honest relative debit is
+    # `ΔN·t_dep`, exactly, with no remainder to bank back.
+    #
+    # A RAIL CLAMP IS NO LONGER THE PLENUM'S PROBLEM either: it is a counted
+    # DESTRUCTION at the deposit site (GameMap books it to `pump_rail`), not
+    # energy that stayed behind in the duct. Charging the plenum less because
+    # the tile railed would have quietly re-created the destroyed energy in the
+    # duct — the exact class of leak this arc exists to close. The hit counters
+    # below still fire, so the diagnostic is unchanged.
     total_debit = 0
     for v, comp in deposits:
         fy, fx = v.aperture_y, v.aperture_x
-        n_old_bulk = int(gmap.gas[O2][fy, fx]) + int(gmap.gas[INERT_N2][fy, fx])
-        t_old = int(gmap.temperature[fy, fx])
         delta_n_bulk = comp[O2] + comp[INERT_N2]
-        t_new, rail_hit = gmap.inject_gas_n_vec(
+        _t_new, rail_hit = gmap.inject_gas_n_vec(
             fy, fx, comp, t_dep, t_min_q, t_max_phys_q)
-        total_debit += (n_old_bulk + delta_n_bulk) * t_new - n_old_bulk * t_old
+        total_debit += delta_n_bulk * t_dep
         if rail_hit < 0:
             duct.rail_lo_hits += 1
         elif rail_hit > 0:

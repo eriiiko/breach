@@ -942,6 +942,14 @@ class PhysicsRunner:
             # radiative GAIN and its emitter's matching LOSS both convert this
             # tick, on one scale, with no painter in sight.
             rad_net=gmap.rad_net,
+            # gas-energy conservation arc #54 P-G1b (design §2.7 row 3): the
+            # CONSERVED energy field. With it supplied, the temperature pass's
+            # Pass-1 deposit and Pass-2 conduction land on an accountable gas
+            # cell's `gas_energy` (and refresh its mirror) instead of taking
+            # the endpoint divide into `temperature`. The solids side is
+            # untouched -- a thermal solid's T is its own truth (D2).
+            gas_energy=gmap.gas_energy,
+            t_amb_q=self._eos_t_amb_raw(),
         )
 
         # NOTE: the per-tick `heat` clear does NOT live here. `heat` has a
@@ -954,12 +962,14 @@ class PhysicsRunner:
         # the recorder snapshot. (STEP A originally placed the clear here, when
         # conversion was the only consumer; STEP D moves it out.)
 
-        # gas-energy conservation arc #54, design §2.2/§5 (P-G0): the
-        # mirror-derived gas_energy maintenance step -- NO physics here
-        # (P-G1a replaces this with the stored, seam-written truth). Runs
-        # LAST, after step_tail's thermal solver, so it reflects this
-        # tick's final (N, T) mirror.
-        gmap.refresh_gas_energy()
+        # gas-energy conservation arc #54 P-G1b: THE MAINTENANCE STEP IS GONE.
+        # D1 is live -- `gas_energy` is the cross-tick truth, written by the
+        # EOS energy pass, by the thermal solver's gas side, by combustion and
+        # by the GameMap seams. Re-deriving it from the (N, T) mirror here
+        # would DESTROY state every tick (design §2.6: `N*floordiv(E,N) <= E`
+        # drains up to N-1 raw counts per cell, and any sub-count energy a seam
+        # wrote would vanish unbooked). `refresh_gas_energy` survives as the
+        # level-load initialiser only.
 
         return destroyed
 
@@ -1055,6 +1065,17 @@ class PhysicsRunner:
                 self._draw_r,
                 gmap.dyn_permeability,
                 int(gmap.dem_acc.shape[0]),
+                # gas-energy conservation arc #54 P-G1b (design §2.7): the
+                # PARALLEL TWO-HOP ENERGY LEDGER. Consumed O2 leaves each donor
+                # carrying `burn_k·T_abs,k`; the products deliver
+                # `(burn − soot)·T_abs` to the flame cell's `gas_energy` and
+                # shed `soot·T_abs` to a counter; a thermal-solid flame cell
+                # exports the whole parcel. `is_ambient` is needed for the
+                # accountable set (a ring cell can donate O2 but holds no
+                # stored energy — its parcel is minted at ambient).
+                gmap.gas_energy,
+                gmap.is_ambient,
+                self._eos_t_amb_raw(),
             )
 
     # ------------------------------------------------------------------
@@ -1299,18 +1320,28 @@ class PhysicsRunner:
             # P-R4: the radiation accumulator rides the SAME host mirror the
             # rest of this bracket reads (the cast at step 1 filled it there).
             rad_net=gmap.rad_net,
+            # gas-energy conservation arc #54 P-G1b (design §2.7 row 3): the
+            # CONSERVED energy field. With it supplied, the temperature pass's
+            # Pass-1 deposit and Pass-2 conduction land on an accountable gas
+            # cell's `gas_energy` (and refresh its mirror) instead of taking
+            # the endpoint divide into `temperature`. The solids side is
+            # untouched -- a thermal solid's T is its own truth (D2).
+            gas_energy=gmap.gas_energy,
+            t_amb_q=self._eos_t_amb_raw(),
         )
         # The mirror is now authoritative for every synced field (each stage wrote
         # it; the two resident loops' outputs were D2H'd to it). No final batched
         # D2H is needed — consumers read the mirror unchanged (the Q4 baseline);
         # the device set is re-uploaded whole next tick (from_host).
 
-        # gas-energy conservation arc #54, design §2.2/§5 (P-G0): the
-        # mirror-derived gas_energy maintenance step -- NO physics here
-        # (P-G1a replaces this with the stored, seam-written truth). Runs
-        # LAST, after step_tail's thermal solver, so it reflects this
-        # tick's final (N, T) mirror; next tick's upload above re-sends it.
-        gmap.refresh_gas_energy()
+        # gas-energy conservation arc #54 P-G1b: THE MAINTENANCE STEP IS GONE.
+        # D1 is live -- `gas_energy` is the cross-tick truth, written by the
+        # EOS energy pass, by the thermal solver's gas side, by combustion and
+        # by the GameMap seams. Re-deriving it from the (N, T) mirror here
+        # would DESTROY state every tick (design §2.6: `N*floordiv(E,N) <= E`
+        # drains up to N-1 raw counts per cell, and any sub-count energy a seam
+        # wrote would vanish unbooked). `refresh_gas_energy` survives as the
+        # level-load initialiser only.
 
         return destroyed
 
@@ -1399,11 +1430,20 @@ class PhysicsRunner:
 
         Pure instrumentation: reads state, writes none, folds into no digest.
         """
+        # arc #54 P-G1b: THE INSTRUMENT NOW READS THE TRUTH. With D1 live,
+        # `Σ n_bulk·T` is a reading off the MIRROR — a floor of `E/N`, so it
+        # under-reports the books by up to `N-1` raw counts per cell. Handing
+        # the stored field in switches the C++ routine to its
+        # `Σ (gas_energy − n_bulk·T_AMB_raw)` branch, which is the same
+        # quantity computed off the conserved state instead of off its lossy
+        # shadow. `t_amb_raw` is the SAME fold EOSSolver::step does.
         return int(self.bp.eos_energy_books_sum(
             gmap.gas, gmap.gases.conservative, gmap.temperature,
             gmap.solid, gmap.is_vacuum,
             is_ambient=self._ambient_mask(gmap),
             thermal_solid=gmap.thermal_solid,
+            gas_energy=gmap.gas_energy,
+            t_amb_raw=self._eos_t_amb_raw(),
         ))
 
     # ------------------------------------------------------------------

@@ -195,6 +195,13 @@ def _skip_non_flammable(gmap):
     return ~gmap.flammable
 
 
+def _skip_non_accountable(gmap):
+    """arc #54 P-G1b: the veto for `gas_energy` edits — everything OUTSIDE the
+    accountable set (design §2.2). Read through GameMap's own predicate, never
+    re-derived here, so the field's one membership rule stays in one place."""
+    return ~gmap._gas_energy_accountable()
+
+
 @dataclass(frozen=True)
 class _FieldPolicy:
     dtype: str
@@ -240,6 +247,18 @@ FIELD_POLICY = {
     # re-quantizes round-to-nearest — so field edits keep being authored in
     # metres while the stored field stays integer/deterministic.
     "water_depth": _FieldPolicy("water", (0.0, float("inf")), _skip_solid),
+    # --- arc #54 P-G1b (design §2.7 FieldEdit row) ---------------------------
+    # `gas_energy` is the conserved gas thermal energy (int64, the exact
+    # unshifted `N_raw·T_abs_raw`). Its combine is a DUAL WRITE: the stored
+    # field AND its mirror, through GameMap's seam — because a `gas_energy`
+    # edit that left `temperature` stale would be read by everything from the
+    # sensors to the renderer before the next recovery could fix it.
+    #
+    # The skip mask is the ACCOUNTABLE SET, not `solid`: a thermal solid and an
+    # ambient-ring tile are both non-solid in places and neither holds
+    # `gas_energy`, so an edit there must be a no-op rather than a write into a
+    # cell the books do not read.
+    "gas_energy":  _FieldPolicy("gas_energy", None, _skip_non_accountable),
 }
 
 
@@ -569,6 +588,28 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
     is_gas = (pol.dtype == "gas")
     is_atmosphere = (pol.dtype == "atmosphere")
     is_fire = (pol.dtype == "fire")
+    is_gas_energy = (pol.dtype == "gas_energy")
+    # arc #54 P-G1b (design §2.7 FieldEdit row): the generic "gas" policy
+    # REFUSES a CONSERVATIVE slice. It is a float bridge (dequantize -> float
+    # -> [0,1] clamp -> requantize, plus an optional RNG draw), and a
+    # conservative slice is bulk N — the quantity `gas_energy` is denominated
+    # against, so writing it here would move N without moving E and mint or
+    # destroy `ΔN·T_abs` invisibly. Every shipped caller is TRACE-only today
+    # (combat.py's smoke, payloads.py's gas payloads), so this assert costs
+    # nothing and closes the door before someone opens it. A conservative-slice
+    # edit belongs on the pump primitives or the `atmosphere` policy, both of
+    # which carry the energy.
+    if is_gas and edit.field in ("gas", "smoke"):
+        gid = edit.channel
+        if gid is None and edit.field == "smoke":
+            gid = gmap.gases.name_to_id.get("smoke")
+        if gid is not None and bool(gmap.gases.conservative[int(gid)]):
+            raise AssertionError(
+                f"FieldEdit: the 'gas' policy refuses the CONSERVATIVE slice "
+                f"{int(gid)} — bulk N is the quantity gas_energy is "
+                f"denominated against (arc #54 design §2.7). Use the pump "
+                f"primitives or the 'atmosphere' policy, which carry the "
+                f"energy with the mass.")
     # ``ch`` was resolved above: None for scalar fields (incl. a gas SLICE,
     # already sliced out), 0/1/2 for the RGB channel of an (h, w, 3) field.
 
@@ -594,19 +635,58 @@ def apply_field_edit(gmap, edit: FieldEdit, rng) -> None:
             # EOS refactor P3: `arr` is `gmap.temperature` here (resolved
             # above) — the energy-deposit target, not the retired wave_source
             # array.
-            arr[r, c] = _combine_temperature(int(arr[r, c]), contribution,
-                                             edit.mode, clamp)
+            #
+            # arc #54 P-G1b (design §2.7 FieldEdit row): on an ACCOUNTABLE gas
+            # cell that write goes through the seam instead. The combine still
+            # decides the new MIRROR temperature — the authoring units, the
+            # clamp and the mode are all untouched — and the seam then turns
+            # that into the energy it implies (`ΔE = N·ΔT`), so the deposit is
+            # in the books rather than in a mirror the next recovery would
+            # overwrite. A thermal solid / ring / vacuum tile keeps the direct
+            # T write: those are not in the books, and a solid's T is its own
+            # truth (D2).
+            t_old = int(arr[r, c])
+            t_new = _combine_temperature(t_old, contribution, edit.mode, clamp)
+            if gmap.gas_is_accountable(r, c):
+                n = gmap.gas_bulk_n_at(r, c)
+                gmap.gas_energy_deposit(r, c, n * (t_new - t_old),
+                                        "field_edit_wave")
+            else:
+                arr[r, c] = t_new
+        elif is_gas_energy:
+            # arc #54 P-G1b: the DUAL WRITE — the stored field and its mirror,
+            # through the one seam. `contribution` is authored in raw energy
+            # counts (the field is a Q32 product, D12: there is no
+            # `gas_energy_fixed` and no real-unit bridge), so ADD is the only
+            # mode that means anything; SET would need the caller to know N.
+            gmap.gas_energy_deposit(r, c, int(contribution), "field_edit")
         elif is_gas:
             arr[r, c] = _combine_gas(int(arr[r, c]), contribution,
                                      edit.mode, clamp)
         elif is_atmosphere:
             # EOS refactor P3: bulk-N deposit split 21/79 across O2/inert_N2
             # (o2_arr/n2_arr resolved above), not a direct P write.
+            old_o2, old_n2 = int(o2_arr[r, c]), int(n2_arr[r, c])
             new_o2, new_n2 = _combine_atmosphere_to_N(
-                int(o2_arr[r, c]), int(n2_arr[r, c]), contribution,
-                edit.mode, clamp)
+                old_o2, old_n2, contribution, edit.mode, clamp)
             o2_arr[r, c] = new_o2
             n2_arr[r, c] = new_n2
+            # arc #54 P-G1b (design §2.7 FieldEdit row): an `atmosphere` edit
+            # MINTS bulk N (a grenade's overpressure is modelled as mass
+            # appearing, not as mass moved), so the deposited mass is BORN AT
+            # AMBIENT and credited `ΔN·T_AMB_raw` — never at the local T, which
+            # would let a blast in a hot room manufacture energy in proportion
+            # to how hot the room already was. A NEGATIVE ΔN (the clear/-=
+            # direction) removes `ΔN·T_abs(cell)`, the MOVED rule, because that
+            # mass really is leaving this cell.
+            dn = (new_o2 + new_n2) - (old_o2 + old_n2)
+            if dn and gmap.gas_is_accountable(r, c):
+                if dn > 0:
+                    gmap.gas_energy_deposit(
+                        r, c, dn * gmap.gas_t_amb_raw(), "field_edit_atm")
+                else:
+                    gmap.gas_energy_deposit(
+                        r, c, dn * gmap.gas_t_abs_at(r, c), "field_edit_atm")
         elif is_fire:
             arr[r, c] = _combine_fire(int(arr[r, c]), contribution,
                                       edit.mode, clamp)

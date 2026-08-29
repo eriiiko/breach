@@ -1562,21 +1562,18 @@ class Simulation:
         if self._signal_bus is not None:
             self._signal_bus.swap_node_signals()   # (e) pub[node-slots] ← stg
 
-        # 9f. Gas energy mirror refresh (gas-energy conservation arc #54,
-        # design §2.2/§5, P-G0). `PhysicsRunner.step`/`_step_resident`
-        # already refresh `gas_energy` once, right after the thermal solver
-        # — sufficient for a bare PhysicsRunner caller (benches/tests with no
-        # Simulation wrapper). But 9e's pump/vent/door sweeps run AFTER
-        # physics_runner.step() returns and can move gas N (inject_gas_n /
-        # extract_gas_n / seal/unseal-tiles), which would leave `gas_energy`
-        # one tick stale for exactly the levels that exercise those seams
-        # (found via tests/test_gas_energy_field.py's `playground` scenario).
-        # A second (cheap, idempotent, whole-grid-derive-not-physics) refresh
-        # here — BEFORE the recorder snapshot, so a recorded/digested tick's
-        # `gas_energy` reflects the SAME settled (N, T) every other recorded
-        # field does — closes that gap.
-        if self.physics_runner is not None:
-            self.gmap.refresh_gas_energy()
+        # 9f. Gas energy mirror refresh -- RETIRED at arc #54 P-G1b.
+        #
+        # P-G0 needed a second whole-grid re-derive here because 9e's
+        # pump / vent / door sweeps run AFTER physics_runner.step() returns and
+        # move gas N, which left the mirror-derived `gas_energy` one tick stale
+        # on exactly the levels that exercise those seams. P-G1b makes every
+        # one of those sweeps an ENERGY writer -- the pump primitives carry
+        # `dN*T_abs` through the gas-energy seam, seal/unseal move and retire,
+        # `on_tile_changed` books the membership flips -- so the field is never
+        # stale, and re-deriving it from the mirror here would now DESTROY the
+        # very state those seams just wrote (design §2.6's `N*floordiv(E,N)`
+        # drip, plus any sub-count deposit the mirror cannot represent).
 
         # Recorder snapshot. A4: the entity list rides along (presence-gated
         # inside the recorder — an entity-free level's .npz is byte-identical).

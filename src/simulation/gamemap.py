@@ -562,11 +562,27 @@ class GameMap:
         # the TRUTH for thermal solids and, for now, the per-tick MIRROR for
         # gas cells (P-G0 has NO physics: this field is entirely
         # mirror-derived — :meth:`refresh_gas_energy` recomputes it from
-        # (N, T) at the end of every tick; P-G1a+ makes it the live stored
-        # truth and the writers in design §2.7 keep it in sync instead).
+        # (N, T) at the end of every tick).
+        #
+        # P-G1b: D1 IS LIVE. `gas_energy` is the CROSS-TICK truth now — the
+        # EOS energy pass, the thermal solver's gas side, combustion and the
+        # §2.7 seams below all write it, `refresh_gas_energy` is the LEVEL-LOAD
+        # INITIALISER only, and `temperature` is a lossy mirror read of it on
+        # gas cells (still the truth on thermal solids).
         # Populated for the level's t=0 state at the end of __init__, after
         # every N/T seed above has run.
         self.gas_energy = np.zeros((h, w), dtype=np.int64)
+        # THE SEAM'S BOOKS (arc #54 P-G1b, design §2.7/§2.8). Named signed
+        # channels; each records the NET change this seam made to
+        # `Σ_accountable gas_energy`. Not synced, not digested — telemetry, in
+        # the `n_destruction_seed_sum` tradition — but load-bearing for the
+        # ACROSS-TICK closure identity: what the EOS, the thermal solver and
+        # combustion do is booked by their own C++ counters, and everything a
+        # Python seam does is booked here, so the two together have to account
+        # for the whole per-tick drift of the field. A channel that does not
+        # exist yet reads 0 (`.get`), so a new seam is one `_gas_energy_book`
+        # call and nothing else.
+        self.gas_energy_books = {}
         # Per-tile inverse-thermal-mass SHIFT cache (engine/06 §1.2): the
         # precomputed log2(thermal_mass) per tile, so the conversion is a pure
         # arithmetic right shift `temperature += heat >> heat_inv_shift` (no
@@ -836,21 +852,204 @@ class GameMap:
         """Recompute ``gas_energy := N_raw * (temperature_raw + T_AMB_K_raw)``
         on the accountable set, 0 elsewhere (design §2.2/§5).
 
-        P-G0's 'mirror-derived' state: there is NO physics behind this field
-        yet (no writer stores an independent truth in it), so it is always
-        fully re-derivable from the current ``(N, T)`` mirror and this method
-        just does that — cheap, and always consistent by construction.
-        :meth:`seed_gas_temperature` and :class:`~simulation.physics_runner.
-        PhysicsRunner` (once per tick, after the thermal solver) are its two
-        callers. P-G1a+ replaces this whole-grid recompute with the seam-
-        written stored truth (design §2.6/§2.7) — this method's call sites
-        will change, but the accountable-set/T_AMB_K helpers above stay.
+        **P-G1b — THIS IS NOW THE LEVEL-LOAD INITIALISER, AND NOTHING ELSE.**
+        D1 is live: ``gas_energy`` is the CROSS-TICK truth, written by the EOS
+        energy pass and by the §2.7 seams below, and the mirror is a lossy read
+        of it (``floordiv``). Re-deriving E from that mirror therefore DESTROYS
+        state — up to ``N-1`` raw counts per cell per call, plus any sub-count
+        energy a seam wrote that the mirror cannot represent. P-G0's per-tick
+        maintenance call (PhysicsRunner slot 9f, Simulation slot 9f) and
+        P-G1a's EOS-entry re-sync are both GONE.
+
+        Legitimate callers, all of them "there is no stored truth yet":
+          * ``__init__`` — the one true seeding, from the level's (N, T);
+          * a test/bench that has just hand-built a scenario's (N, T) and
+            wants a consistent starting point (the same thing __init__ does);
+          * ``seed_gas_temperature``, restricted to its own selection.
+        Calling it mid-run is a bug, not a maintenance step.
         """
         accountable = self._gas_energy_accountable()
         t_amb_raw = self._gas_energy_t_amb_raw()
         n_bulk = self._gas_bulk_n_raw()
         t_abs = self.temperature.astype(np.int64) + t_amb_raw
         self.gas_energy[:] = np.where(accountable, n_bulk * t_abs, 0)
+
+    # ------------------------------------------------------------------
+    # THE GAS ENERGY SEAM (design §2.7; C++ twin: cpp/src/gas_energy.h)
+    # ------------------------------------------------------------------
+    # Under a stored energy field every writer of gas N is a writer of gas T.
+    # These are the Python-visible primitives every such writer goes through:
+    #
+    #   MOVED  — mass leaving a cell carries `dN * T_abs,i` out; arriving mass
+    #            carries its DONOR's T_abs in.
+    #   MINTED — mass with no gas donor is born at ambient, `dN * T_AMB_raw`.
+    #
+    # Each one BOOKS its net effect on `Σ_accountable gas_energy` into a named
+    # channel of :attr:`gas_energy_books`, because the arc's closure identity
+    # is checked ACROSS TICKS now: what the EOS, the thermal solver and
+    # combustion do is booked by their own C++ counters, and everything else
+    # that touches the field has to be booked here or the identity has a hole.
+    #
+    # Rails are NOT applied here. The full recovery with both rails runs
+    # exactly once per tick inside the EOS (design §2.6); a seam write
+    # refreshes the MIRROR only.
+
+    # A channel whose name starts with this prefix is a PARCEL DIAGNOSTIC, not
+    # a change to `Σ_accountable gas_energy`: it records energy that entered or
+    # left the seam from OUTSIDE the books (a ring-cell donor, a thermal-solid
+    # receiver). :meth:`gas_energy_seam_net` filters on exactly this prefix, so
+    # the across-tick closure identity can sum "what the seams did to the
+    # books" without hand-maintaining a list of channel names.
+    _GAS_BOOKS_DIAG = "diag_"
+
+    def _gas_energy_book(self, channel, delta):
+        """Add `delta` (signed, raw energy) to a named books channel."""
+        if delta:
+            self.gas_energy_books[channel] = (
+                self.gas_energy_books.get(channel, 0) + int(delta))
+
+    def gas_energy_seam_net(self):
+        """The NET change every Python seam made to `Σ_accountable gas_energy`
+        since the map was built — the term the across-tick closure identity
+        adds to the EOS's, the thermal solver's and combustion's own counters.
+        Diagnostics (`diag_*`) are excluded by construction."""
+        return sum(v for k, v in self.gas_energy_books.items()
+                   if not k.startswith(GameMap._GAS_BOOKS_DIAG))
+
+    def gas_t_amb_raw(self):
+        """``T_AMB_K`` in raw Q16.16 counts, cached (the uncached helper walks
+        config + temperature_scale, which is far too heavy for a per-tile seam
+        loop). Invalidated only by a config reload, which rebuilds the map."""
+        v = self.__dict__.get("_gas_t_amb_raw_cache")
+        if v is None:
+            v = self._gas_energy_t_amb_raw()
+            self._gas_t_amb_raw_cache = v
+        return v
+
+    def gas_is_accountable(self, fy, fx):
+        """The accountable-set predicate at ONE tile — the same conjunction
+        :meth:`_gas_energy_accountable` vectorizes, never a second rule."""
+        return not (self.solid[fy, fx] or self.thermal_solid[fy, fx]
+                    or self.is_vacuum[fy, fx] or self.is_ambient[fy, fx])
+
+    def gas_bulk_n_at(self, fy, fx):
+        """The books' N at ONE tile: the sum of the CONSERVATIVE bulk planes
+        (the Dalton total `gas_energy` is denominated against)."""
+        return (int(self.gas[O2][fy, fx]) + int(self.gas[INERT_N2][fy, fx]))
+
+    def gas_t_abs_at(self, fy, fx):
+        """The cell's ABSOLUTE mirror temperature, raw. This is the `T_abs,i`
+        a MOVED parcel leaving this cell carries (design §2.7)."""
+        return int(self.temperature[fy, fx]) + self.gas_t_amb_raw()
+
+    def gas_energy_refresh_cell(self, fy, fx):
+        """Re-read the mirror at ONE cell from its stored energy — the seam's
+        only `temperature` write. No rails, no write-back into E."""
+        if not self.gas_is_accountable(fy, fx):
+            return
+        n = self.gas_bulk_n_at(fy, fx)
+        if n < 1:                      # N_EPS_RAW — no capacity to divide by
+            self.temperature[fy, fx] = 0
+            return
+        e = int(self.gas_energy[fy, fx])
+        # Python's `//` on ints IS floor-toward-minus-infinity for a positive
+        # divisor — the same contract as C++ `floordiv_q`, so the two backends
+        # read the same mirror out of the same E.
+        self.temperature[fy, fx] = (e // n) - self.gas_t_amb_raw()
+
+    def gas_energy_deposit(self, fy, fx, de, channel):
+        """THE deposit primitive: add `de` raw energy at one cell and refresh
+        its mirror, booking the change to `channel`.
+
+        A NON-accountable target holds no `gas_energy`, so the energy leaves
+        the books: it is booked to ``channel + "_export"`` and dropped, never
+        written into a cell the books do not read.
+        """
+        de = int(de)
+        if not de:
+            return
+        if not self.gas_is_accountable(fy, fx):
+            self._gas_energy_book(
+                GameMap._GAS_BOOKS_DIAG + channel + "_to_nonacct", de)
+            return
+        self.gas_energy[fy, fx] = int(self.gas_energy[fy, fx]) + de
+        self._gas_energy_book(channel, de)
+        self.gas_energy_refresh_cell(fy, fx)
+
+    def gas_energy_move(self, src, dst, dn, channel, t_abs):
+        """THE move primitive: `dn` counts of bulk mass leave `src` carrying
+        `t_abs` — the DONOR's absolute temperature — and arrive at `dst`
+        (design §2.7 MOVED).
+
+        `t_abs` is a REQUIRED argument, not read here, on purpose: it has to
+        be the donor's temperature BEFORE the caller drained its N, and this
+        primitive is called AFTER the mass moved (so the mirrors it refreshes
+        divide by the post-move N). Making the caller carry that one value
+        across its own mutation is what keeps the ordering trap out of the
+        seam. :meth:`gas_t_abs_at` is where callers get it.
+
+        Either endpoint may be non-accountable: an accountable donor is always
+        debited (its mass really left), only an accountable receiver is
+        credited, and the difference is booked as a mint / an export — so
+        nothing is created or lost without a name. Mirrors are NOT refreshed
+        here; callers refresh once, after the whole span moved.
+        """
+        dn = int(dn)
+        if dn <= 0:
+            return 0
+        de = dn * int(t_abs)
+        if self.gas_is_accountable(*src):
+            self.gas_energy[src] = int(self.gas_energy[src]) - de
+            self._gas_energy_book(channel, -de)
+        else:
+            self._gas_energy_book(
+                GameMap._GAS_BOOKS_DIAG + channel + "_from_nonacct", de)
+        if self.gas_is_accountable(*dst):
+            self.gas_energy[dst] = int(self.gas_energy[dst]) + de
+            self._gas_energy_book(channel, de)
+        else:
+            self._gas_energy_book(
+                GameMap._GAS_BOOKS_DIAG + channel + "_to_nonacct", de)
+        return de
+
+    def gas_energy_mint(self, fy, fx, dn, channel):
+        """MINTED mass: `dn` counts with no gas donor, born at ambient."""
+        dn = int(dn)
+        if dn <= 0 or not self.gas_is_accountable(fy, fx):
+            return 0
+        de = dn * self.gas_t_amb_raw()
+        self.gas_energy[fy, fx] = int(self.gas_energy[fy, fx]) + de
+        self._gas_energy_book(channel, de)
+        return de
+
+    def gas_energy_retire(self, fy, fx, channel="retire"):
+        """Retire a cell's stored energy because it is leaving the accountable
+        set (it became solid / thermal_solid / vacuum / ring). The books lose
+        it through a NAMED channel instead of through a mask flip nobody saw.
+
+        Call BEFORE the mask actually flips, or after — either works, because
+        this reads only `gas_energy[fy, fx]`; the callers below call it before,
+        so the retired amount is the value the books last agreed on.
+        """
+        e = int(self.gas_energy[fy, fx])
+        if e:
+            self._gas_energy_book(channel, -e)
+            self.gas_energy[fy, fx] = 0
+        return e
+
+    def gas_energy_born_at_ambient(self, fy, fx, channel="mint"):
+        """A cell JOINING the accountable set (a thermal solid flipping to
+        air, a wall opened to air) is born at ambient: its stored energy is
+        `N * T_AMB_raw` and its mirror is refreshed to match. The whole credit
+        is a mint (there was no gas donor for it)."""
+        if not self.gas_is_accountable(fy, fx):
+            return 0
+        n = self.gas_bulk_n_at(fy, fx)
+        de = n * self.gas_t_amb_raw() - int(self.gas_energy[fy, fx])
+        self.gas_energy[fy, fx] = n * self.gas_t_amb_raw()
+        self._gas_energy_book(channel, de)
+        self.temperature[fy, fx] = 0        # ambient, by definition of "born"
+        return de
 
     def seed_gas_temperature(self, sel, T_q):
         """Write a gas cell's ``temperature`` (the mirror) AND ``gas_energy``
@@ -869,12 +1068,21 @@ class GameMap:
         stay on ``temperature`` alone, unchanged (thermal solids are their
         own truth; nothing about their heat is booked in ``gas_energy``).
         Calling this on a non-accountable cell is harmless, not silently
-        wrong: ``temperature`` is written as asked, and the follow-on
-        :meth:`refresh_gas_energy` leaves ``gas_energy`` at its correct
-        value there (0, by the accountable-set definition) either way.
+        wrong: ``temperature`` is written as asked, and ``gas_energy`` keeps
+        its correct value there (0, by the accountable-set definition).
+
+        P-G1b: the re-derivation is RESTRICTED TO ``sel``. D1 is live, so a
+        whole-grid ``refresh_gas_energy`` here would silently re-derive — and
+        so damage — every cell the caller did not ask about (design §2.6's
+        `N*floordiv(E,N) <= E` drip). Seeding IS a re-derivation, but only of
+        the cells being seeded.
         """
         self.temperature[sel] = T_q
-        self.refresh_gas_energy()
+        accountable = self._gas_energy_accountable()
+        t_amb_raw = self._gas_energy_t_amb_raw()
+        n_bulk = self._gas_bulk_n_raw()
+        t_abs = self.temperature.astype(np.int64) + t_amb_raw
+        self.gas_energy[sel] = np.where(accountable, n_bulk * t_abs, 0)[sel]
 
     # ------------------------------------------------------------------
     # Ambient sponge grid (BC build, boundary_conditions_spec_2026-07-19 §3)
@@ -1303,6 +1511,14 @@ class GameMap:
         """
         if not (0 <= fy < self._h and 0 <= fx < self._w):
             return
+        # arc #54 P-G1b (design §2.7, last structural row): THE MEMBERSHIP
+        # SNAPSHOT. `material` has already been reassigned by the caller, but
+        # the `solid` / `thermal_solid` caches this predicate reads are patched
+        # BELOW — so this is the tile's OLD accountability, read at the last
+        # moment it is still true. The membership diff at the bottom of this
+        # method is what turns "a tile changed medium" into a booked energy
+        # event instead of a silent hole in `Σ_accountable gas_energy`.
+        was_accountable = self.gas_is_accountable(fy, fx)
         mat_id = int(self.material[fy, fx])
         tbl = self.materials
         self.light_atten[fy, fx] = tbl.light_atten[mat_id]
@@ -1355,6 +1571,33 @@ class GameMap:
         # once, lazily, at the next tick's fixed sky-pass point. Idempotent, so a
         # firestorm melting many walls per tick still costs at most one rebuild.
         self._sky_mask_dirty = True
+
+        # --- arc #54 P-G1b: THE MEMBERSHIP DIFF (design §2.7 last row) ------
+        # Every structural edit funnels through this seam (seal, unseal,
+        # destroy_wall, burst walls, bullet cover-chew, furniture flips), so
+        # this is the ONE place a tile's arrival in — or departure from — the
+        # accountable set can be booked. Both directions are named events:
+        #
+        #   gas -> solid/thermal_solid : the tile's stored energy RETIRES.
+        #       Its mass was already dealt with by the caller (seal_tiles
+        #       evacuates it, destroy_wall books it); what is left here is the
+        #       energy the books must stop counting, and `e_retire_sum` is
+        #       where it goes.
+        #   thermal_solid/solid -> gas : the tile is BORN AT AMBIENT, mirror
+        #       included. Load-bearing for furniture: a crate at 1300 K that
+        #       burns away must not leave a stale 1300 K sitting on the air
+        #       tile that replaces it — the OBJECT's temperature stays on the
+        #       solids side of the ledger, where it was earned.
+        #
+        # Callers that then seed the fresh tile (destroy_wall's ambient seed,
+        # unseal's withdrawal from its donors) run AFTER this and book their
+        # own mass through the seam, so there is no double count: this event
+        # only ever moves the energy of the N that is present RIGHT NOW.
+        now_accountable = self.gas_is_accountable(fy, fx)
+        if was_accountable and not now_accountable:
+            self.gas_energy_retire(fy, fx)
+        elif now_accountable and not was_accountable:
+            self.gas_energy_born_at_ambient(fy, fx)
 
     # ------------------------------------------------------------------
     # Config hot-reload: rebuild the table + static caches (ch.02 §14)
@@ -1963,8 +2206,14 @@ class GameMap:
                 # boundary_flux credit. Mass would vanish with a channel on
                 # NEITHER side of the seam. So evacuate explicitly, at destroy
                 # time, where the measured bracket above can see it.
+                # arc #54 P-G1b: the evacuated gas takes its energy with it.
+                # The tile is (or is about to be) the boundary, i.e. OUTSIDE
+                # the accountable set, so `gas_energy_retire` is the right
+                # channel — and on_tile_changed's membership diff above may
+                # already have retired it, in which case this is a 0 no-op.
                 self.gas[O2][fy, fx] = 0
                 self.gas[INERT_N2][fy, fx] = 0
+                self.gas_energy_retire(fy, fx)
             else:
                 # §3.1.3 — CONSTANT total (`n_total_q`), composition INHERITED
                 # from the open donors. A fixed 21/79 seed would inject fresh
@@ -2014,6 +2263,26 @@ class GameMap:
                     o2_q = o2_amb_q
                 self.gas[O2][fy, fx] = o2_q
                 self.gas[INERT_N2][fy, fx] = n_total_q - o2_q
+                # arc #54 P-G1b (design §2.7 destroy_wall row): THE ONE TRUE
+                # MINT. This seed has no gas donor — it models the reservoir
+                # that is physically there behind a blown-open wall (P-M3 §2)
+                # — so it is BORN AT AMBIENT, exactly as its mass is minted at
+                # a constant total. Booked, like `n_destruction_seed_sum`
+                # books the mass half.
+                #
+                # The composition is INHERITED from the donors but the
+                # TEMPERATURE deliberately is not: inheriting a burning room's
+                # T here would make every blown wall a free heat source scaled
+                # by the room it opened, which is #54's whole family of bug.
+                # RETIRE, never a silent zero. `on_tile_changed` above already
+                # ran the membership diff, and on a FURNITURE tile (a thermal
+                # solid that holds gas) it born-at-ambient'ed the mass that was
+                # already there — so the field is not empty when we get here.
+                # Zeroing it without a book would double-count against the mint
+                # below by exactly that prior credit.
+                self.gas_energy_retire(fy, fx, "destroy_seed")
+                self.gas_energy_mint(fy, fx, n_total_q, "destroy_seed")
+                self.gas_energy_refresh_cell(fy, fx)
 
             # §3.1.2 — `atmosphere` MUST be written, on every path including a
             # breach. A solid tile's atmosphere is a hard 0 (the MG solve zeroes
@@ -2287,6 +2556,15 @@ class GameMap:
             fy, fx = t
             rs = receivers[t]
             k = len(rs)
+            # arc #54 P-G1b (design §2.7 seal row): the evacuated mass is
+            # MOVED, so it carries the sealed tile's own T_abs to each
+            # receiver — read here, before a single count leaves. Only the two
+            # CONSERVATIVE bulk slices carry energy (the books' N is the
+            # Dalton bulk total; a trace plane has no independent temperature),
+            # so the per-receiver bulk share is accumulated separately from
+            # the all-slices redistribution below.
+            t_abs_seal = self.gas_t_abs_at(fy, fx)
+            bulk_share = {r: 0 for r in rs}
             for g in range(N_GASES):
                 n = int(self.gas[g][fy, fx])
                 if n == 0:
@@ -2296,9 +2574,19 @@ class GameMap:
                     share = q + (1 if j < r else 0)
                     if share:
                         self.gas[g][ny, nx] = int(self.gas[g][ny, nx]) + share
+                        if g in (O2, INERT_N2):
+                            bulk_share[(ny, nx)] += share
                 self.gas[g][fy, fx] = 0
+            for rcv, dn in bulk_share.items():
+                self.gas_energy_move(t, rcv, dn, "seal", t_abs_seal)
+            for rcv in bulk_share:
+                self.gas_energy_refresh_cell(*rcv)
 
             self.material[fy, fx] = mid
+            # on_tile_changed's membership diff RETIRES whatever energy is
+            # left on the sealed tile — which, after the move above, is only
+            # the sub-count remainder the mirror could not represent
+            # (`E = N*T_abs + r`, r in [0, N)). Booked, not dropped.
             self.on_tile_changed(fy, fx)
 
             # Solid steady-state values for the solver-owned fields (design
@@ -2395,6 +2683,15 @@ class GameMap:
                 continue
 
             k = len(donors)
+            # arc #54 P-G1b (design §2.7 unseal row, seam finding 3): opening
+            # a tile is a conservative WITHDRAWAL, not a mint — so the energy
+            # is a withdrawal too. EACH DONOR'S SHARE CARRIES THAT DONOR'S OWN
+            # T_abs, read before any of its mass leaves. Born-at-ambient would
+            # be wrong here in a way that shows: every door cycle would mint or
+            # destroy `ΔN·(T_AMB − T_abs,donor)`, which in a burning or a
+            # vented room is not a rounding term.
+            t_abs_donor = [self.gas_t_abs_at(*d) for d in donors]
+            bulk_take = [0] * k
             for g in range(N_GASES):
                 avail = [int(self.gas[g][d]) for d in donors]
                 target = sum(avail) // (k + 1)
@@ -2414,7 +2711,15 @@ class GameMap:
                     short -= extra
                 for j, (ny, nx) in enumerate(donors):
                     self.gas[g][ny, nx] = avail[j] - take[j]
+                    if g in (O2, INERT_N2):
+                        bulk_take[j] += take[j]
                 self.gas[g][fy, fx] = target
+            for j, d in enumerate(donors):
+                self.gas_energy_move(d, (fy, fx), bulk_take[j], "unseal",
+                                     t_abs_donor[j])
+            for d in donors:
+                self.gas_energy_refresh_cell(*d)
+            self.gas_energy_refresh_cell(fy, fx)
 
             # Display-alias stopgap (design §6): the MEAN of the donors'
             # displayed atmosphere (divisor k, deliberately NOT k+1). The
@@ -2542,6 +2847,13 @@ class GameMap:
         add_vec[O2] = o2_add
         add_vec[INERT_N2] = n2_add
         self._inject_gas_n_core(fy, fx, add_vec)
+        # arc #54 P-G1b (design §2.7 pump row): this primitive MINTS mass (an
+        # airlock pump is a source, not a conservative transfer), so the mass
+        # is born at ambient and credited `ΔN · T_AMB_raw`. The vector form
+        # below is the one that carries a real donor temperature; this scalar
+        # form has no donor to carry.
+        self.gas_energy_mint(fy, fx, dn, "pump_inject")
+        self.gas_energy_refresh_cell(fy, fx)
 
     def extract_gas_n(self, fy, fx, delta_n):
         """Remove up to ``delta_n`` (Q16.16 gas mass) at tile ``(fy, fx)``,
@@ -2586,9 +2898,19 @@ class GameMap:
             return [0] * N_GASES            # empty tile — zero-clamp, nothing to take
         want = dn if dn < n_total else n_total          # aggregate zero-clamp
         remove = self.gas_proportional_split(holdings, want)
+        # arc #54 P-G1b (design §2.7 pump row): the withdrawn mass takes
+        # `ΔN · T_abs(cell)` with it — read BEFORE the slices move, and
+        # counted over the CONSERVATIVE bulk slices only (the books' N).
+        t_abs = self.gas_t_abs_at(fy, fx)
         for g in range(N_GASES):
             new = holdings[g] - remove[g]
             self.gas[g][fy, fx] = new if new > 0 else 0   # explicit zero-clamp
+        dn_bulk = int(remove[O2]) + int(remove[INERT_N2])
+        if dn_bulk and self.gas_is_accountable(fy, fx):
+            de = dn_bulk * t_abs
+            self.gas_energy[fy, fx] = int(self.gas_energy[fy, fx]) - de
+            self._gas_energy_book("pump_extract", -de)
+            self.gas_energy_refresh_cell(fy, fx)
         return remove
 
     def inject_gas_n_vec(self, fy, fx, add_vec, t_dep, t_min_q, t_max_phys_q):
@@ -2635,6 +2957,49 @@ class GameMap:
         n_new = n_old + delta_n_bulk
         if n_new <= 0:
             return t_old, 0                  # nothing bulk to weight the mix by
+
+        # ---- arc #54 P-G1b (design §2.7 pump row): THE CONVERSION SEAM -----
+        # The vent plenum's ledger stays in RELATIVE currency (that is the
+        # ENTITY_SECT-digested state, and the vent design's own R3 accounting
+        # is written in it); the gas books are ABSOLUTE. This is the ONE place
+        # the two meet: `E = e + n·T_AMB`, so a deposit of `ΔN` counts at the
+        # plenum's characteristic RELATIVE temperature `t_dep` credits exactly
+        # `ΔN · (t_dep + T_AMB_raw)` of absolute energy.
+        #
+        # THE T-MIX IS GONE, and that is the point: mixing temperatures with a
+        # mass-weighted average was the old way of not having an energy field.
+        # Adding the parcel's energy to the cell's and re-reading the mirror IS
+        # the mix, exactly, with no floor-division remainder to leak.
+        #
+        # THE RAILS STAY HERE. The vent sweep runs at slot 9e — AFTER the EOS's
+        # once-per-tick recovery (design §2.6) — so nothing downstream would
+        # clamp this deposit; the deposit site has to carry the rails itself,
+        # the same reasoning combustion's `deposit_railed` rests on. The rail
+        # delta is BOOKED, so a clamp is a counted destruction and not a hole.
+        if self.gas_is_accountable(fy, fx):
+            t_amb = self.gas_t_amb_raw()
+            de = delta_n_bulk * (int(t_dep) + t_amb)
+            self.gas_energy[fy, fx] = int(self.gas_energy[fy, fx]) + de
+            self._gas_energy_book("pump_inject_vec", de)
+            t_new = (int(self.gas_energy[fy, fx]) // n_new) - t_amb
+            rail_hit = 0
+            if t_new < t_min_q:
+                t_new = int(t_min_q)
+                rail_hit = -1
+            elif t_new > t_max_phys_q:
+                t_new = int(t_max_phys_q)
+                rail_hit = 1
+            if rail_hit:
+                e_new = n_new * (t_new + t_amb)
+                self._gas_energy_book("pump_rail",
+                                      e_new - int(self.gas_energy[fy, fx]))
+                self.gas_energy[fy, fx] = e_new
+            self.temperature[fy, fx] = t_new
+            return t_new, rail_hit
+
+        # Non-accountable target (a ring tile; the runtime aperture guards
+        # already exclude solid / thermal_solid / vacuum / flooded). No stored
+        # energy exists there, so the pre-#54 mass-weighted T-mix stands.
         t_new = (n_old * t_old + delta_n_bulk * int(t_dep)) // n_new   # floor(-inf)
         rail_hit = 0
         if t_new < t_min_q:
