@@ -62,6 +62,13 @@ VARIANTS = [
     ("drag_heat", {"k_drag_heat_frac": 0.0}),
     ("drag",      {"k_drag": 0.0}),
     ("comp_work", {"adiabatic_index": 1.0}),
+    # 2026-08-29: adiabatic_index is CONFOUNDED — it also sets the kick's
+    # pressure stiffness K = c_max^2/gamma (cuda_kick_compression.cu
+    # kick_scalar_folds), so comp_work stiffens the EOS by 1.4x as well.
+    # T_WORK_CLAMP = 0 zeroes ONLY the step-4c work term (w_mag clamps to
+    # 0 -> t_new == T exactly on both rails); stiff_K isolates the K change.
+    ("comp_clamp0", {"T_WORK_CLAMP": 0.0}),
+    ("stiff_K",     {"adiabatic_index": 1.0, "T_WORK_CLAMP": 0.0}),
     ("flat_gs",   {"use_multigrid": False}),
     ("no_vrail",  {"U_MAX": 1e9}),
 ]
@@ -105,7 +112,10 @@ def run_variant(name, overrides):
 def main() -> None:
     print(f"sealed-box bisection — crate fire only, {END_TICK/TPS:.0f} s, "
           f"FIXED = box dT ~ 0")
+    wanted = set(sys.argv[1:])          # optional: run only the named variants
     for name, overrides in VARIANTS:
+        if wanted and name not in wanted:
+            continue
         run_variant(name, overrides)
 
 
