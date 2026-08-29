@@ -73,12 +73,25 @@ class PhysicsRecorder:
     # session that adds wind_x/wind_y to `fields`"), and design §9 already
     # required the bulk pair for P-E5 validation recordings. `gas_o2` +
     # `inert_n2` together give N, so p* = C*N*T_abs can be decomposed offline.
+    # GAS-ENERGY CONSERVATION ARC, P-G0 (2026-08-29, design §5/§Systems): +
+    # `gas_energy` -- the new int64 conserved-energy field (design §2.2). It
+    # rides the TRUE int64 ring branch below (`_INT64_FIELDS`), not the
+    # float32 one: a float32 cast would drop bits SB's closure-identity gate
+    # asserts on exactly (Recorder rule amendment, CLAUDE.md).
     DEFAULT_FIELDS = ('atmosphere', 'temperature', 'gas_o2', 'inert_n2',
-                      'wind_x', 'wind_y', 'smoke', 'fire', 'obstacles')
+                      'wind_x', 'wind_y', 'smoke', 'fire', 'obstacles',
+                      'gas_energy')
     # SYNCED bool planes: recorded at bool dtype (not the float32 ring) when a
     # session lists them in `fields`. `ignition_armed` is the edge-trigger arm
     # (combat.apply_temperature_ignition); mirrors the `obstacles` bool handling.
     _BOOL_FIELDS = ('obstacles', 'ignition_armed')
+    # GAS-ENERGY CONSERVATION ARC, P-G0: SYNCED int64 planes, recorded at
+    # int64 dtype -- NO CAST (a float64 ring is only exact to 2^53 and would
+    # drop the LSBs the arc's closure-identity gates assert on; the frozen
+    # .npz contract is extended additively by *dtype class*, not just
+    # membership -- the Recorder rule amendment this arc makes, mirroring
+    # `_BOOL_FIELDS`'s own precedent).
+    _INT64_FIELDS = ('gas_energy',)
     # EOS P3: the blowup trigger re-keys on the per-tick pressure TRANSIENT
     # |P - P_prev| (design §6) — a standing dome is not a blowup; a runaway
     # per-tick change is.
@@ -99,7 +112,12 @@ class PhysicsRecorder:
         # adds to `fields` is stored losslessly instead of cast to float32.
         self.buffers = {}
         for name in self.fields:
-            dtype = np.bool_ if name in self._BOOL_FIELDS else np.float32
+            if name in self._BOOL_FIELDS:
+                dtype = np.bool_
+            elif name in self._INT64_FIELDS:
+                dtype = np.int64
+            else:
+                dtype = np.float32
             self.buffers[name] = np.zeros((capacity, fh, fw), dtype=dtype)
 
         # Tick metadata (tick number, real_time, etc.)

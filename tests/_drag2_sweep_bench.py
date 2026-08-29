@@ -74,9 +74,15 @@ def build_scenario():
     assert g.is_vacuum.any(), "scenario must have vacuum to vent into"
 
     q = atmosphere_fixed.quantize_scalar
-    g.temperature[10:16, 10:16] += q(5000.0)
+    # gas-energy conservation arc #54, design §2.7 last row (P-G0): both
+    # patches are open interior air (material 4, inside the [3:45,3:45]
+    # carve), so their temperature seeds go through the seam primitive that
+    # keeps gas_energy in sync — not a raw `temperature[...] =` write.
+    g.seed_gas_temperature((slice(10, 16), slice(10, 16)),
+                           g.temperature[10:16, 10:16] + q(5000.0))
     g.gas[O2, 11:14, 11:14] += q(4.0)
-    g.temperature[30:36, 30:36] += q(15500.0)
+    g.seed_gas_temperature((slice(30, 36), slice(30, 36)),
+                           g.temperature[30:36, 30:36] + q(15500.0))
     return g
 
 

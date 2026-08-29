@@ -43,15 +43,16 @@ namespace breach_cuda {
 // S==0 (a 64-bit shift by 64) — on this hardware it silently degenerates to
 // `hi << 0` (the shift-count-mod-64 masking real GPUs share with x86),
 // OR-ing an unshifted `hi` into the result. At S==0 the low 64 bits of the
-// product ARE the answer, so it is special-cased directly (mirrors the CPU
-// host fix in eos_solver.cpp's file-local mul128_shr).
+// product ARE the answer, so it is special-cased directly.
+//
+// PROMOTED (gas-energy conservation arc #54, design §2.5, P-G0): the body
+// above now lives ONCE, in fixed_point.h's `fixedpoint::mul128_shr` (the
+// __CUDA_ARCH__ branch there is a VERBATIM copy of this function's old body,
+// incl. the S==0 case). This name stays as a thin forwarding wrapper so
+// every existing call site in this codebase (cuda_kick_compression.cu and
+// friends) is untouched.
 __device__ __forceinline__ int64_t mul128_shr_signed(int64_t a, int64_t b, int S) {
-    const unsigned long long lo = (unsigned long long)((long long)a * (long long)b);
-    if (S == 0) return (int64_t)lo;   // P-E3: the UB-avoiding special case
-    const long long hi = __mul64hi((long long)a, (long long)b);   // signed hi 64
-    const long long res = (long long)((lo >> S) |
-                                      ((unsigned long long)hi << (64 - S)));
-    return (int64_t)res;
+    return fixedpoint::mul128_shr(a, b, S);
 }
 
 // ---- flux_to_dq_dev — the donor-cell flux truncation (hoisted P6.1) ---------

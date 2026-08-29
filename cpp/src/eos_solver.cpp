@@ -28,35 +28,11 @@ uint64_t digest_of(const int32_t* buf, int n, uint64_t seed) {
 }
 
 // ---- 128-bit staged multiply: (a·b) >> shift, both int64 ------------------
-// THE v2.2 wide idiom (§3.4 rules 1 + 4b + the joint-case ordering note):
-// every coefficient×field product in the solve goes through a 128-bit
-// intermediate and one arithmetic shift — no int64 product is ever formed
-// raw×raw. MSVC path mirrors fixed_point.h's recip_mul _mul128 idiom.
-//
-// P-E3 (design §2.8) EXTENDS the valid domain to shift==0 (every prior call
-// site in this file uses shift==16, so this is purely additive): the
-// original `_mul128` recombine computed `hi << (64 - shift)`, which is
-// UNDEFINED BEHAVIOUR at shift==0 (a 64-bit shift by 64) — on this box it
-// silently degenerates to `hi << 0` (x86's mod-64 shift-count masking),
-// corrupting the result by OR-ing in `hi` unshifted. At shift==0 the
-// low 64 bits of the product ARE the answer (no `hi` contribution belongs
-// in a shift-by-nothing narrow), so it is special-cased directly rather than
-// routed through the general recombine.
-#if defined(__SIZEOF_INT128__)
-inline int64_t mul128_shr(int64_t a, int64_t b, int shift) {
-    return (int64_t)(((__int128)a * (__int128)b) >> shift);   // shift==0 is
-                                                               // well-defined
-                                                               // for __int128
-}
-#else
-inline int64_t mul128_shr(int64_t a, int64_t b, int shift) {
-    long long hi;
-    long long lo = _mul128((long long)a, (long long)b, &hi);
-    unsigned long long ulo = (unsigned long long)lo;
-    if (shift == 0) return (int64_t)ulo;   // P-E3: the UB-avoiding special case
-    return (int64_t)((ulo >> shift) | ((unsigned long long)hi << (64 - shift)));
-}
-#endif
+// PROMOTED into fixed_point.h as `fixedpoint::mul128_shr` (gas-energy
+// conservation arc #54, design §2.5, P-G0) — this file's own copy is gone;
+// `using namespace fixedpoint;` (top of file) resolves every unqualified
+// `mul128_shr(...)` call below to the shared primitive, bit-identically
+// (same two host branches, same shift==0 special case).
 
 // ---- solid-mirror neighbor read (Neumann BC helper) ----------------------
 inline int mirror_idx(int self_i, int ny, int nx, int h, int w, const bool* solid) {
@@ -400,6 +376,35 @@ void EOSSolver::step(
     const q16 c_q        = quantize((double)C);
     const double gamma_d = (double)adiabatic_index;
     const q16 gamma_m1_q = quantize(gamma_d - 1.0);
+    // P-G0 (gas-energy conservation arc #54, design §2.1): the two derived
+    // energy-books constants, folded host-side once per tick from c_max,
+    // gamma, T_AMB_K (the P-W1a fold site) -- NO CONSUMER YET (P-G1a wires
+    // k_ke into the kick loop's KE brackets, design §2.3; this patch only
+    // folds + guards).
+    //
+    // `C` is already its own def_readwrite member (defined `1/T_AMB_K` at
+    // construction, eos_solver.h) and can DRIFT from T_AMB_K if a caller
+    // edits only one from Python. This ALWAYS-COMPILED throw (assert() is
+    // dead in every Release build every gate and play session uses -- same
+    // rationale as the D-3 guard above) catches the drift once per tick,
+    // beside it.
+    const q16 c_from_t_amb_q = quantize(1.0 / (double)T_AMB_K);
+    if (c_q != c_from_t_amb_q) {
+        throw std::runtime_error(
+            "EOSSolver::C must equal 1/T_AMB_K (design Sec 2.1: R_books = "
+            "K*C = c_max^2/(gamma*T_AMB_K)); the two def_readwrite members "
+            "have drifted apart -- see "
+            "docs/gas_energy_conservation_design_2026-08-29.md Sec 2.1");
+    }
+    // k_ke = gamma*(gamma-1)*T_AMB_K / (2*c_max^2) -- the specific-KE-to-
+    // game-deg bridge (design §2.1); ~9.0e-4 game-deg per (m/s)^2 at the
+    // shipped dials, so it folds as the RECIPROCAL's Q.32 make_recip
+    // reciprocal (a direct Q16.16 fold of k_ke itself would carry only ~59
+    // counts of precision -- 0.22% bias, ~6 bits).
+    const double k_ke_d = gamma_d * (gamma_d - 1.0) * (double)T_AMB_K
+                        / (2.0 * (double)c_max * (double)c_max);
+    const int64_t k_ke_recip_q32 = make_recip(std::max(k_ke_d, 1e-12));
+    (void)k_ke_recip_q32;   // P-G0: folded + guarded; P-G1a consumes it
     const double dt_d    = (double)dt;
     const q16 dt_q       = quantize(dt_d);
     const double dx_d    = std::max((double)dx, 1e-6);

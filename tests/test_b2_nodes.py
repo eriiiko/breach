@@ -520,8 +520,12 @@ def test_b1_dormancy_still_byte_identical():
     from simulation.entities.serialize import ENTITY_DIGEST_KEY, entity_carrier
     from field_digest import DIGEST_FIELDS, trajectory_digest
 
+    # GAS-ENERGY CONSERVATION ARC, P-G0 GOLDEN REBASE (2026-08-29, digest
+    # spec bump event 1: v4 -> v5, +gas_energy int64) -- same rebase as
+    # test_b1_signal_bus.py's own copy of this constant; keep the two in
+    # sync. (was 5d944aa8b085fa24a100575a1292196058f15953e0c0726f95342650cb685d8b)
     DOORTEST_NOPHYS_TRAJ_DIGEST = \
-        "5d944aa8b085fa24a100575a1292196058f15953e0c0726f95342650cb685d8b"
+        "d256de5eb8094e03877e300e98dbe8a19746ce89df73299922a68bed3d7b993e"
 
     lvl = level_loader.load("door_test", levels_dir=str(ROOT / "levels"))
     sim = Simulation(lvl, seed=42, breach_physics=None, enable_recorder=False)

@@ -95,8 +95,14 @@ def _step(sim, n=1):
 # O-key latch toggle at ticks 1/4 exercises the door sweep + entity carrier +
 # signal path (the exact B1 surface). If B1 (or any later patch) perturbs a
 # wire-free level's bytes, this fails — new logic MUST stay dormant (§8).
+# GAS-ENERGY CONSERVATION ARC, P-G0 GOLDEN REBASE (2026-08-29, digest spec
+# bump event 1: v4 -> v5, +gas_energy int64). A SCHEMA move, not a dormancy
+# break: DIGEST_FIELDS now includes gas_energy (all-zero on this
+# physics=None, ambient scenario -- verified this level's other fields are
+# untouched by re-running with the old field set and diffing arrays). (was
+# 5d944aa8b085fa24a100575a1292196058f15953e0c0726f95342650cb685d8b)
 DOORTEST_NOPHYS_TRAJ_DIGEST = \
-    "5d944aa8b085fa24a100575a1292196058f15953e0c0726f95342650cb685d8b"
+    "d256de5eb8094e03877e300e98dbe8a19746ce89df73299922a68bed3d7b993e"
 
 
 def test_dormancy_door_present_wire_free_digest_byte_identical():

@@ -124,6 +124,12 @@ class GameMap:
     _RESIDENT_SYNCED = (
         "atmosphere", "wave_p", "wind_x", "wind_y", "temperature", "heat",
         "fire", "wall_hp", "water_depth", "flow_vx", "flow_vy", "gas",
+        # gas-energy conservation arc #54, design §5 (P-G0): no device kernel
+        # reads/writes this field yet (no consumer this patch), but it joins
+        # the resident set now so the round-trip is already wired for P-G1a+
+        # — PhysicsRunner._step_resident uploads/downloads it explicitly
+        # beside `temperature`.
+        "gas_energy",
     )
     _RESIDENT_MASKS = (
         "solid", "is_vacuum", "is_ambient", "obstacles", "flammable",
@@ -547,6 +553,20 @@ class GameMap:
         # STEP A: only the heat -> temperature conversion consumes it; conduction
         # (§2) and cooling (§3) land in later steps.
         self.temperature = np.zeros((h, w), dtype=np.int32)
+        # Gas energy field (gas-energy conservation arc #54, design §2.2,
+        # P-G0): int64 per cell, the EXACT unshifted product `N_raw *
+        # T_abs_raw` (Q32 raw, no >>16) on the accountable set (!solid &
+        # !thermal_solid & !is_vacuum & !is_ambient — bulk_transport.cpp's
+        # `e_participates()`, mirrored here rather than re-derived
+        # differently); 0 elsewhere, never read there. `temperature` stays
+        # the TRUTH for thermal solids and, for now, the per-tick MIRROR for
+        # gas cells (P-G0 has NO physics: this field is entirely
+        # mirror-derived — :meth:`refresh_gas_energy` recomputes it from
+        # (N, T) at the end of every tick; P-G1a+ makes it the live stored
+        # truth and the writers in design §2.7 keep it in sync instead).
+        # Populated for the level's t=0 state at the end of __init__, after
+        # every N/T seed above has run.
+        self.gas_energy = np.zeros((h, w), dtype=np.int64)
         # Per-tile inverse-thermal-mass SHIFT cache (engine/06 §1.2): the
         # precomputed log2(thermal_mass) per tile, so the conversion is a pure
         # arithmetic right shift `temperature += heat >> heat_inv_shift` (no
@@ -769,6 +789,92 @@ class GameMap:
             self.atmosphere[open_air] = p.astype(np.int32)
             self.gas[O2][open_air] = o2.astype(np.int32)
             self.gas[INERT_N2][open_air] = (p - o2).astype(np.int32)
+
+        # Gas energy seed (design §2.2/§5, P-G0): mirrors the level's t=0
+        # (N, T) state now that every seed above (water/air_init) has run.
+        # `temperature` is all-ambient (0) at this point on every level (no
+        # per-level temperature seed exists yet), so this only matters where
+        # `air_init_q` set N != the P1 calibration default.
+        self.refresh_gas_energy()
+
+    # ------------------------------------------------------------------
+    # Gas energy field (gas-energy conservation arc #54, design §2.2/§2.7)
+    # ------------------------------------------------------------------
+    def _gas_energy_accountable(self):
+        """The accountable set for ``gas_energy`` (design §2.2): the one
+        canonical skip-set complement, MIRRORING (not re-deriving)
+        ``bulk_transport.cpp``'s ``e_participates()`` — ``!solid &
+        !thermal_solid & !is_vacuum & !is_ambient``. ``is_ambient`` is
+        all-False on a space map, so this is the SAME predicate on both
+        boundary modes without an ambient-mode branch (the C++ side's
+        ``is_ambient != nullptr`` dormancy-by-branch collapses to the same
+        answer here because the array itself is the dormant value)."""
+        return (~self.solid) & (~self.thermal_solid) & (~self.is_vacuum) \
+            & (~self.is_ambient)
+
+    def _gas_bulk_n_raw(self):
+        """Sum of the two CONSERVATIVE bulk gas planes (o2 + inert_n2), int64
+        per cell — the Dalton N_total the EOS derives pressure from
+        (``gases.conservative`` — reused, not re-derived; design §2.2)."""
+        n = np.zeros((self._h, self._w), dtype=np.int64)
+        for gi in np.flatnonzero(self.gases.conservative):
+            n += self.gas[gi].astype(np.int64)
+        return n
+
+    def _gas_energy_t_amb_raw(self):
+        """``T_AMB_K``, in raw Q16.16 counts (design §2.1/§2.2) — read
+        through the canonical :mod:`temperature_scale` accessor and
+        quantized via :mod:`simulation.gas_fixed` (never a hardcoded 290 or
+        65536), mirroring the ``std::max<q16>(1, quantize(T_AMB_K))`` fold
+        ``EOSSolver::step`` computes every tick (eos_solver.cpp)."""
+        import temperature_scale
+        from simulation import gas_fixed as _gas_fx
+        t_amb_k = temperature_scale.load(CFG).eos_t_amb_k
+        return max(1, _gas_fx.quantize_scalar(t_amb_k))
+
+    def refresh_gas_energy(self):
+        """Recompute ``gas_energy := N_raw * (temperature_raw + T_AMB_K_raw)``
+        on the accountable set, 0 elsewhere (design §2.2/§5).
+
+        P-G0's 'mirror-derived' state: there is NO physics behind this field
+        yet (no writer stores an independent truth in it), so it is always
+        fully re-derivable from the current ``(N, T)`` mirror and this method
+        just does that — cheap, and always consistent by construction.
+        :meth:`seed_gas_temperature` and :class:`~simulation.physics_runner.
+        PhysicsRunner` (once per tick, after the thermal solver) are its two
+        callers. P-G1a+ replaces this whole-grid recompute with the seam-
+        written stored truth (design §2.6/§2.7) — this method's call sites
+        will change, but the accountable-set/T_AMB_K helpers above stay.
+        """
+        accountable = self._gas_energy_accountable()
+        t_amb_raw = self._gas_energy_t_amb_raw()
+        n_bulk = self._gas_bulk_n_raw()
+        t_abs = self.temperature.astype(np.int64) + t_amb_raw
+        self.gas_energy[:] = np.where(accountable, n_bulk * t_abs, 0)
+
+    def seed_gas_temperature(self, sel, T_q):
+        """Write a gas cell's ``temperature`` (the mirror) AND ``gas_energy``
+        (design §2.2's stored field) TOGETHER — the one sanctioned way
+        tests/tools seed a GAS cell's temperature (design §2.7 last row, arc
+        #54; CLAUDE.md rule 'Gas temperature is a mirror').
+
+        ``sel`` is any numpy selection into the ``(h, w)`` grid (boolean
+        mask, slice tuple, fancy index — whatever ``gmap.temperature[sel] =
+        ...`` already accepted); ``T_q`` is the ABSOLUTE (relative-to-
+        ambient) Q16.16 temperature to write, scalar or shaped like the
+        selection, exactly like a plain ``temperature[sel] = T_q`` would
+        take.
+
+        Wall / thermal_solid tiles are NOT this method's business — those
+        stay on ``temperature`` alone, unchanged (thermal solids are their
+        own truth; nothing about their heat is booked in ``gas_energy``).
+        Calling this on a non-accountable cell is harmless, not silently
+        wrong: ``temperature`` is written as asked, and the follow-on
+        :meth:`refresh_gas_energy` leaves ``gas_energy`` at its correct
+        value there (0, by the accountable-set definition) either way.
+        """
+        self.temperature[sel] = T_q
+        self.refresh_gas_energy()
 
     # ------------------------------------------------------------------
     # Ambient sponge grid (BC build, boundary_conditions_spec_2026-07-19 §3)

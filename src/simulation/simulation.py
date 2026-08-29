@@ -1562,6 +1562,22 @@ class Simulation:
         if self._signal_bus is not None:
             self._signal_bus.swap_node_signals()   # (e) pub[node-slots] ← stg
 
+        # 9f. Gas energy mirror refresh (gas-energy conservation arc #54,
+        # design §2.2/§5, P-G0). `PhysicsRunner.step`/`_step_resident`
+        # already refresh `gas_energy` once, right after the thermal solver
+        # — sufficient for a bare PhysicsRunner caller (benches/tests with no
+        # Simulation wrapper). But 9e's pump/vent/door sweeps run AFTER
+        # physics_runner.step() returns and can move gas N (inject_gas_n /
+        # extract_gas_n / seal/unseal-tiles), which would leave `gas_energy`
+        # one tick stale for exactly the levels that exercise those seams
+        # (found via tests/test_gas_energy_field.py's `playground` scenario).
+        # A second (cheap, idempotent, whole-grid-derive-not-physics) refresh
+        # here — BEFORE the recorder snapshot, so a recorded/digested tick's
+        # `gas_energy` reflects the SAME settled (N, T) every other recorded
+        # field does — closes that gap.
+        if self.physics_runner is not None:
+            self.gmap.refresh_gas_energy()
+
         # Recorder snapshot. A4: the entity list rides along (presence-gated
         # inside the recorder — an entity-free level's .npz is byte-identical).
         # A6: the SIM's runtime list (door rows live), not level.entities.

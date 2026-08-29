@@ -89,6 +89,10 @@ SIM_FIELDS = (
     # P-R4 D1 (digest spec v3): the combustion demand accumulator —
     # persistent synced state (see tests/field_digest.py).
     "dem_acc",
+    # gas-energy conservation arc #54, design §2.2/§5 (P-G0, digest spec v5):
+    # the int64 conserved-energy field — synced state now (mirror-derived
+    # this patch; the stored writer-fed truth from P-G1a on).
+    "gas_energy",
 )
 
 
