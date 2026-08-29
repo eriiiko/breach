@@ -175,6 +175,13 @@ def run_scenario(interior, tile, fuel_block, ticks, collect=False):
                 -int(comb.e_comb_draw_sum) + int(comb.e_comb_deliver_sum)
                 + int(comb.e_comb_heat_sum) + int(comb.e_comb_rail_sum),
                 int(gmap.gas_energy_seam_net()),
+                # the water-displacement evacuation's export (design §2.7 row
+                # 2, R3-#10): `step_water_tail` moves `gas_energy` with the
+                # bulk shares a flooding cell pushes out, conservatively
+                # inside the accountable set, so the only term is what LEFT
+                # it. Reset per call, like the EOS group. Zero on this dry
+                # scenario -- named so a future wet one cannot open a hole.
+                -int(sim.physics_runner.engine.e_water_evac_export_sum),
             )
 
         # The combustion PARCEL identity (combustion.h identity (B)): nothing
@@ -193,7 +200,8 @@ def run_scenario(interior, tile, fuel_block, ticks, collect=False):
                 expected = (terms[0]                       # EOS: reset/step
                             + (terms[1] - prev_terms[1])   # tail
                             + (terms[2] - prev_terms[2])   # combustion
-                            + (terms[3] - prev_terms[3]))  # seams
+                            + (terms[3] - prev_terms[3])   # seams
+                            + terms[4])                    # water tail
                 resid = (e_now - prev_e) - expected
                 closure["ticks"] += 1
                 if resid:

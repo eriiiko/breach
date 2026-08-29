@@ -454,16 +454,44 @@ void TemperatureSolver::step(
             // ---- arc #54 P-G1b (design §2.7 row 3): THE ENDPOINT DIVIDE IS
             // DELETED FOR GAS. An accountable gas cell's four-face sum IS its
             // energy change — `de` is already in the books' currency (a face
-            // quantum is |ΔT|·C with C = N·c_v, and the books' capacity IS N),
-            // so it goes straight to the seam with no conversion and no
-            // truncation. That also retires this cell's `e_cond_trunc_sum` /
-            // `e_cond_cap_sum` contribution: with no divide there is no
-            // residual to count and no cap_used/cap_real gap to book. The
-            // SOLIDS side (and any non-accountable gas cell — ring, vacuum)
-            // keeps the T-form law below, unchanged (D2).
+            // quantum is |ΔT|·C with C = N·c_v, and the books' capacity IS N)
+            // — so it goes to the seam with no Q16 truncation of ΔT, which is
+            // what the deleted divide cost. This also retires this cell's
+            // `e_cond_trunc_sum` contribution: with no divide there is no
+            // truncation residual to count. The SOLIDS side (and any
+            // non-accountable gas cell — ring, vacuum) keeps the T-form law
+            // below, unchanged (D2).
+            //
+            // THE CAPACITY FLOOR STILL APPLIES, and it is load-bearing.
+            // `cap_used` is `max(N, n_floor_heat)·c_v`; where that floor binds
+            // (a near-vacuum cell), the T-form moved `ΔT = de/cap_used`, i.e.
+            // the cell absorbed only a `cap_real/cap_used` FRACTION of the
+            // face energy. That fraction is exactly what keeps the pass a
+            // convex combination — the discrete maximum principle the header
+            // leans on when it says Pass 2 needs no rail. Depositing the raw
+            // `de` instead would overshoot at precisely those cells, and it
+            // does: measured on the VENT bench (a room decompressing to
+            // vacuum) the raw form drove `gas_energy` NEGATIVE on 8
+            // cell-ticks, worst −4.5e8 — a negative absolute temperature, fed
+            // straight into next tick's `p* = C·E` before the recovery could
+            // rail it. So the floor's shrink is applied here, in the ENERGY
+            // currency, and the difference keeps its existing name
+            // (`e_cond_cap_sum`: "the cell moved ΔT through cap_used while
+            // really owning cap_real").
+            //
+            // The multiply is int64-safe BECAUSE the floor binds: when it
+            // does, `cap_used == n_floor·c_v` (~655 raw at the shipped dial)
+            // bounds every face's `cmin`, so `|de| <= 4·2^31·655 < 2^43` and
+            // `|de·cap_real| < 2^53`. In the common case the branch is not
+            // taken at all and `de` passes through untouched.
             if (e_on && acct(i)) {
-                de_gas_[i] = de;
-                e_gas_cond_sum += de;
+                int64_t de_books = de;
+                if (cap_real_[i] != cap_i && cap_i > 0) {
+                    de_books = fixedpoint::floordiv_q(de * cap_real_[i], cap_i);
+                    e_cond_cap_sum += de - de_books;
+                }
+                de_gas_[i] = de_books;
+                e_gas_cond_sum += de_books;
                 temp_new[i] = (int32_t)ti;           // mirror refreshed post-swap
                 continue;
             }

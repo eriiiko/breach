@@ -123,6 +123,9 @@ def main() -> None:
             -int(comb.e_comb_draw_sum) + int(comb.e_comb_deliver_sum)
             + int(comb.e_comb_heat_sum) + int(comb.e_comb_rail_sum),
             int(g.gas_energy_seam_net()),
+            # the water-displacement evacuation's export (R3-#10) -- host-side,
+            # before the EOS, reset per call like the EOS group.
+            -int(sim.physics_runner.engine.e_water_evac_export_sum),
         )
 
     def _e_acct():
@@ -138,7 +141,8 @@ def main() -> None:
         sim.step()
         e_now, terms = _e_acct(), _terms()
         expected = (terms[0] + (terms[1] - prev_terms[1])
-                    + (terms[2] - prev_terms[2]) + (terms[3] - prev_terms[3]))
+                    + (terms[2] - prev_terms[2]) + (terms[3] - prev_terms[3])
+                    + terms[4])
         resid = (e_now - prev_e) - expected
         tally["ticks"] += 1
         if resid:

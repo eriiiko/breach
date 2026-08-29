@@ -184,6 +184,12 @@ def run_variant(name, overrides, wall_thick=1, ignite=True, no_conduction=False)
             + int(comb.e_comb_heat_sum) + int(comb.e_comb_rail_sum),
             # every Python seam (GameMap.gas_energy_books, diagnostics excluded)
             int(g.gas_energy_seam_net()),
+            # the water-displacement evacuation's export (design 2.7 row 2,
+            # R3-#10): `step_water_tail` runs on the host BEFORE the EOS and
+            # moves gas_energy with the bulk shares it pushes out of a flooding
+            # cell. The move is conservative INSIDE the accountable set, so the
+            # only term is what left it. Reset per call, like the EOS group.
+            -int(engine.e_water_evac_export_sum),
         )
 
     def _box_ET():
@@ -243,7 +249,8 @@ def run_variant(name, overrides, wall_thick=1, ignite=True, no_conduction=False)
         expected = (terms[0]                      # EOS: absolute (reset/step)
                     + (terms[1] - prev_terms[1])  # tail: accumulating
                     + (terms[2] - prev_terms[2])  # combustion: accumulating
-                    + (terms[3] - prev_terms[3])) # seams: accumulating
+                    + (terms[3] - prev_terms[3])  # seams: accumulating
+                    + terms[4])                   # water tail: reset per call
         resid = (e_now - prev_e) - expected
         ident["ticks"] += 1
         if resid:
