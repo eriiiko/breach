@@ -70,7 +70,11 @@ def main() -> None:
 
     row(0)
     for t in range(1, TICKS + 1):
-        g.temperature[PLATE] = T_HOLD_Q       # the held hot plate
+        # gas-energy conservation arc #54, design §2.7 last row (P-G0): PLATE
+        # is open air (mid-arena), so its temperature seed goes through the
+        # seam primitive that keeps gas_energy in sync — not a raw
+        # `temperature[...] =` write.
+        g.seed_gas_temperature(PLATE, T_HOLD_Q)   # the held hot plate
         sim.set_paused(False)
         sim.step()
         if t % 144 == 0 or t == TICKS:
