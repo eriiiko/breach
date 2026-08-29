@@ -81,7 +81,6 @@ _SCALAR_COLUMNS = {
     "thermal_mass": np.float32,
     "ignition_temp": np.float32,
     "heat_atten": np.float32,
-    "wave_reflect": np.float32,
     "wave_absorb": np.float32,
     "blast_resist": np.float32,
 }

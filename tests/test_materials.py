@@ -32,7 +32,7 @@ from simulation.materials import (
 
 SCALAR_COLUMNS = (
     "hp", "flammable", "mobility", "conductivity",
-    "ignition_temp", "heat_atten", "wave_reflect", "wave_absorb",
+    "ignition_temp", "heat_atten", "wave_absorb",
     "blast_resist",
 )
 
@@ -190,7 +190,6 @@ def test_furniture_row_values():
     assert tbl.heat_atten[MAT_FURNITURE] == np.float32(0.5)
     assert tbl.conductivity[MAT_FURNITURE] == 0.0
     assert tbl.heat_inv_shift[MAT_FURNITURE] == 3       # thermal_mass 8 = 2**3
-    assert tbl.wave_reflect[MAT_FURNITURE] == np.float32(0.2)
     assert tbl.wave_absorb[MAT_FURNITURE] == np.float32(0.5)
     assert tbl.blast_resist[MAT_FURNITURE] == 0.0
     assert tbl.burst_threshold[MAT_FURNITURE] == np.float32(2.0)

@@ -134,3 +134,25 @@ Next per the #54 session plan: design ruling with Erik — energy-conserving
 fix of the compression-work term in place (and/or the wall-crossing wave
 path it feeds on) vs an additive second method. Erik's standing ruling
 holds: the Kwatra solver is not discarded either way.
+
+---
+
+## Erratum + narrowing (2026-08-29)
+
+- **"Transmission by design" above is WRONG.** `wave_reflect` had no
+  consumer in C++ (column deleted 2026-08-29, Erik's ruling); `wave_absorb`
+  is a velocity-damping weight, not a transmission model. On the EOS
+  substrate a wall is a perm=0 face: designed transmission is ZERO for
+  every material. Any wave inside a sealed enclosure is a solver leak.
+- **The γ=1 bisection toggle was confounded** (`adiabatic_index` also sets
+  kick stiffness K = c_max²/γ). Clean switch `T_WORK_CLAMP = 0` gives the
+  identical zeroing — verdict stands, unconfounded.
+- **No mass crosses sealed walls** (box N ×1.000 in every variant). The
+  pressure FIELD alone drifts inside sealed cavities (1.00→1.28 atm at
+  ΔT 0, N const), growing for thicker walls / smaller pockets
+  (1.50/1.69/1.82 for 1/2/3-tile walls, term on) while the work-term
+  heating shrinks (+115/+92/+61). The pressure solve is contaminated across
+  solid faces; the compression-work term is the rectifier, not the source.
+- **Erik's ruling 2026-08-29**: the compression-work term is physics we
+  keep (explosives will become physical, not injected). Fix the
+  pressure-solve wall leak first, then re-measure with the term on.

@@ -1195,8 +1195,13 @@ amp = 0.25
 #                 to real rho*c (~5x metal:wood spread): steel/hull 32, glass
 #                 16, wood/door/furniture 8, air 1 (engine/06 §1, proposal §1.1).
 #   ignition_temp catches fire at this temperature (0 = non-flammable)
-#   wave_reflect  fraction of shockwave energy reflected
-#   wave_absorb   fraction damped; transmit = 1 - reflect - absorb
+#   wave_absorb   per-cell velocity-damping weight in the EOS correction
+#                 (dyn_wave_absorb x absorb_strength). NOT a transmission
+#                 model: on the EOS substrate a wall is a perm=0 face — zero
+#                 designed transmission for every material. (wave_reflect,
+#                 the old "transmit = 1 - reflect - absorb" column, had no
+#                 consumer and was deleted 2026-08-29 — Erik's ruling: no
+#                 feature intent in the tables until what exists works.)
 #   blast_resist  structural blast resistance
 #   burst_threshold  max pressure DIFFERENTIAL a wall holds before it fails
 #                    (over-pressure relief valve). 0 = n/a (air). Interior
@@ -1258,7 +1263,6 @@ thermal_mass = 0     # air: 0 == the GAS thermal regime (thermal-mass axis desig
 # arrival; moving a row is a deliberate, HUMAN-TESTED feel change.
 cool_shift = 5       # air: unused (the cooling pass is thermal-solid only), sane value
 ignition_temp = 0.0
-wave_reflect = 0.0
 # FORBIDDEN BAND (storm audit 2026-08-14 §5, row d/d', §5B; energy-books
 # design §2.8): wave_absorb in the OPEN interval (0, 0.02) WHILE
 # [physics.fire] k_wind_strip > 0 is the historical rectifier window — a
@@ -1284,7 +1288,6 @@ thermal_mass = 32    # steel (real rho*c ~3.8): heats slowly per ray (heat >> 5)
 cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
                      # THE OLD GLOBAL — see the axis note on [materials.air]
 ignition_temp = 0.0
-wave_reflect = 0.9
 wave_absorb = 0.1
 blast_resist = 0.0
 burst_threshold = 0.0  # 0 = never; the hull breaches via damage/explosions, not over-pressure
@@ -1302,7 +1305,6 @@ cool_shift = 13      # ambient decay T -= T>>13 (e-fold 2^13/24 = 341.3 s). P-K0
                      # promoted from TUNE (P-F1b 9->13, THE SPREAD DIAL; wood
                      # moves with furniture — both cellulosic, both thermal_mass 8)
 ignition_temp = 300.0
-wave_reflect = 0.5
 wave_absorb = 0.4
 blast_resist = 0.0
 burst_threshold = 2.0
@@ -1323,7 +1325,6 @@ thermal_mass = 8     # wood-like door: heats fast (heat >> 3)
 cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
                      # THE OLD GLOBAL — see the axis note on [materials.air]
 ignition_temp = 280.0
-wave_reflect = 0.5
 wave_absorb = 0.4
 blast_resist = 0.0
 burst_threshold = 2.0
@@ -1340,7 +1341,6 @@ thermal_mass = 32    # steel (real rho*c ~3.8): heats slowly per ray (heat >> 5)
 cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
                      # THE OLD GLOBAL — see the axis note on [materials.air]
 ignition_temp = 0.0
-wave_reflect = 0.9
 wave_absorb = 0.1
 blast_resist = 0.8
 burst_threshold = 10.0
@@ -1357,7 +1357,6 @@ thermal_mass = 16    # glass (real rho*c ~2.1): half metal's mass (heat >> 4)
 cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
                      # THE OLD GLOBAL — see the axis note on [materials.air]
 ignition_temp = 0.0
-wave_reflect = 0.3
 wave_absorb = 0.1
 blast_resist = 0.0
 burst_threshold = 1.0
@@ -1380,7 +1379,6 @@ cool_shift = 13      # THE dial for a crate: conductivity = 0 means the ambient
                      # stays hot. e-fold 2^13/24 = 341.3 s. P-K0: promoted from
                      # TUNE (P-F1b 9->13, THE SPREAD DIAL).
 ignition_temp = 280.0   # wood-like; slightly easier to light than a solid wood wall (300)
-wave_reflect = 0.2
 wave_absorb = 0.5    # soft stuff soaks blasts
 blast_resist = 0.0
 burst_threshold = 2.0   # overpressure can topple/burst furniture (door-equal; TUNING DIAL)
@@ -1405,7 +1403,6 @@ thermal_mass = 8     # wood-like door: heats fast (heat >> 3)
 cool_shift = 5       # ambient decay T -= T>>5 (e-fold 2^5/24 = 1.3 s). SEEDED AT
                      # THE OLD GLOBAL — see the axis note on [materials.air]
 ignition_temp = 280.0
-wave_reflect = 0.5
 wave_absorb = 0.4
 blast_resist = 0.0
 burst_threshold = 2.0
@@ -1441,7 +1438,6 @@ cool_shift = 13        # P-K0: promoted from TUNE (P-F1b 9->13, matches
                        # together). e-fold 2^13/24 = 341.3 s.
 ignition_temp = 280.0  # spec value: furniture's, PER THE ROW CONVENTIONS —
                        # do NOT import literature values (~250 C) raw here.
-wave_reflect = 0.2     # copied from furniture
 wave_absorb = 0.5      # copied from furniture
 blast_resist = 0.0     # copied from furniture
 burst_threshold = 2.0  # copied from furniture

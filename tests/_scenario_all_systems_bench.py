@@ -18,9 +18,9 @@ should suffocate · end t=45 s.
 
 Properties reported PASS / FAIL / KNOWN-FAIL(#issue) — this harness is the
 wide-net instrument for #54 (undeclared heat), #10 (water conservation),
-#7 (fires must die in vacuum), and the wave-transmission split (steel/hull
-enclosures must be wave-silent; wood 10% / glass 60% pass-through is
-design, config.toml [materials.*] wave_reflect/wave_absorb). Vents are
+#7 (fires must die in vacuum), and wall wave-tightness (on the EOS
+substrate a wall is a perm=0 face: designed transmission is ZERO for every
+material — any wave inside a sealed enclosure is a solver leak). Vents are
 stripped in-memory like the hot-plate bench so #48 stays out of frame.
 
 HARNESS, not a pytest gate (``_`` prefix): prints the report, exits 0.

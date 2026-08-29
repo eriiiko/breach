@@ -121,7 +121,7 @@ def test_efold_seconds_are_the_documented_powers_of_two():
 def _row(**over):
     base = dict(hp=10.0, flammable=False, mobility=1000, conductivity=1.0,
                 thermal_mass=8, ignition_temp=0.0, heat_atten=0.0,
-                wave_reflect=0.0, wave_absorb=0.0, blast_resist=0.0,
+                wave_absorb=0.0, blast_resist=0.0,
                 light_atten=[0.0, 0.0, 0.0])
     base.update(over)
     return base
