@@ -71,10 +71,17 @@ VARIANTS = [
     ("stiff_K",     {"adiabatic_index": 1.0, "T_WORK_CLAMP": 0.0}),
     ("flat_gs",   {"use_multigrid": False}),
     ("no_vrail",  {"U_MAX": 1e9}),
+    # MG thin-wall probe (2026-08-29): same box, 2- and 3-tile glass walls.
+    ("wall2",       {}, 2),
+    ("wall3",       {}, 3),
+    ("wall2_clamp0", {"T_WORK_CLAMP": 0.0}, 2),
 ]
 
 
-def run_variant(name, overrides):
+def run_variant(name, overrides, wall_thick=1):
+    """One fresh Simulation; ``wall_thick`` = glass ring thickness in tiles
+    (2026-08-29: the MG thin-wall probe — if a coarse cell straddling a
+    1-tile wall is the leak, thicker walls should shrink it)."""
     lvl = load_level("playground", levels_dir=str(ROOT / "levels"))
     lvl = replace(lvl, entities=[e for e in lvl.entities
                                  if e.class_name not in ("vent", "duct")])
@@ -84,12 +91,30 @@ def run_variant(name, overrides):
         setattr(sim.physics_runner.eos, field, value)
 
     r0, r1, c0, c1 = AQ_BOX
-    ring = [(r, c) for r in range(r0, r1 + 1) for c in range(c0, c1 + 1)
-            if r in (r0, r1) or c in (c0, c1)]
-    g.seal_tiles(ring, materials.MAT_GLASS)
+    box_in = np.s_[r0 + wall_thick:r1 + 1 - wall_thick,
+                   c0 + wall_thick:c1 + 1 - wall_thick]
+    # Seal one layer per call, INNERMOST first: seal_tiles evacuates each
+    # tile's gas to an OPEN non-span neighbour and refuses a tile with none
+    # (its sealed-pocket guard) — an inner layer's corners only have open
+    # neighbours while the layer outside them is still open.
+    for k in reversed(range(wall_thick)):
+        layer = [(r, c) for r in range(r0, r1 + 1) for c in range(c0, c1 + 1)
+                 if min(r - r0, r1 - r, c - c0, c1 - c) == k]
+        g.seal_tiles(layer, materials.MAT_GLASS)
     open0 = ~g.solid.copy()
     T0 = g.temperature.astype(np.int64)
-    P0_aq = float(g.atmosphere[AQ_IN][open0[AQ_IN]].mean()) / 65536.0
+    P0_aq = float(g.atmosphere[box_in][open0[box_in]].mean()) / 65536.0
+    # MASS vs PRESSURE-FIELD (2026-08-29, Erik's question): N inside the box
+    # from the two conservative bulk planes — if P rises while N holds, the
+    # pressure SOLVE is contaminated (no mass moved); if N rises, mass
+    # actually crossed the sealed faces.
+    o2 = int(g.gases.name_to_id["o2"])
+    n2 = int(g.gases.name_to_id["inert_n2"])
+
+    def n_box():
+        return int(g.gas[o2][box_in].sum(dtype=np.int64) +
+                   g.gas[n2][box_in].sum(dtype=np.int64))
+    N0 = n_box()
 
     def dT(sl):
         d = (g.temperature.astype(np.int64) - T0)[sl]
@@ -101,11 +126,13 @@ def run_variant(name, overrides):
         sim.set_paused(False)
         sim.step()
 
-    P_aq = float(g.atmosphere[AQ_IN][open0[AQ_IN]].mean()) / 65536.0
+    P_aq = float(g.atmosphere[box_in][open0[box_in]].mean()) / 65536.0
     u = np.sqrt((g.wind_x / 65536.0) ** 2 + (g.wind_y / 65536.0) ** 2)
-    print(f"{name:>9}: box dT={dT(AQ_IN):+7.1f}  box P {P0_aq:.3f}->{P_aq:.3f}"
+    print(f"{name:>11}: box dT={dT(box_in):+7.1f}  box P {P0_aq:.3f}->{P_aq:.3f}"
+          f"  box N x{n_box()/N0:5.3f}"
           f"  bunker dT={dT(BUNKER):+7.1f}  pen dT={dT(PEN):+7.1f}"
           f"  arena dT={dT(ARENA):+6.1f}  u_max={float(u.max()):5.1f}"
+          f"  wall={wall_thick}"
           + (f"  [{overrides}]" if overrides else ""))
 
 
@@ -113,10 +140,11 @@ def main() -> None:
     print(f"sealed-box bisection — crate fire only, {END_TICK/TPS:.0f} s, "
           f"FIXED = box dT ~ 0")
     wanted = set(sys.argv[1:])          # optional: run only the named variants
-    for name, overrides in VARIANTS:
+    for spec in VARIANTS:
+        name, overrides = spec[0], spec[1]
         if wanted and name not in wanted:
             continue
-        run_variant(name, overrides)
+        run_variant(name, overrides, *spec[2:])
 
 
 if __name__ == "__main__":
