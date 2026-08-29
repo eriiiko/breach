@@ -390,6 +390,10 @@ class _FakeGmap:
         self.wind_x = np.zeros((fh, fw), dtype=np.int32)
         self.wind_y = np.zeros((fh, fw), dtype=np.int32)
         self.gas = np.zeros((n_gases, fh, fw), dtype=np.int32)
+        # gas-energy conservation arc #54, P-G0: `gas_energy` joined
+        # Recorder.DEFAULT_FIELDS (design §5). Same fix as the twin fake in
+        # tests/test_recorder_dump.py.
+        self.gas_energy = np.zeros((fh, fw), dtype=np.int64)
         assert O2 < n_gases
 
 

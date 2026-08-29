@@ -180,7 +180,23 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # inline golden), not a scattered regression. DIGEST_SPEC_VERSION unchanged --
 # values moved; no field added/removed/retyped.
 # (was d575df33de5c2af37108d29b73853b465eda761b148c6b812f4a4c4da40e0bb0)
-GOLDEN_AGGREGATE = "a2cbc77ac324db99e0fcf2dc76e9ca15b3187c220a6d5abc5f4a110022c65cea"
+# GAS-ENERGY CONSERVATION ARC, P-G0 GOLDEN REBASE (2026-08-29, design
+# §2.2/§5, digest spec bump event 1: v4 -> v5, +gas_energy int64). This is a
+# SCHEMA move, not a physics move: `gas_energy` is a new field, so its bytes
+# fold into every tick_digest whether or not anything else changed, and
+# DIGEST_SPEC_VERSION is itself hashed into every per-field digest — so
+# EVERY GOLDEN this suite carries moves on a spec bump, by construction, even
+# when the underlying arithmetic is untouched. Verified NOT a physics move
+# directly (not just inferred from the spec-bump argument): captured every
+# SIM_FIELDS array (raw, not hashed -- immune to the version salt) for this
+# exact 30-tick canonical scenario on a clean HEAD build and on this patch's
+# build, and diffed with np.array_equal per (tick, field) -- 0 mismatches
+# on all 24 pre-existing fields x 30 ticks (720/720 identical); the only new
+# keys are the 30 `gas_energy` entries. mul128_shr's three-copy ->
+# one-primitive promotion (design §2.5) and the C/T_AMB_K throw guard +
+# unconsumed k_ke fold (design §2.1) are therefore confirmed
+# behaviour-preserving on the CPU build. (was a2cbc77ac324db99e0fcf2dc76e9ca15b3187c220a6d5abc5f4a110022c65cea)
+GOLDEN_AGGREGATE = "df1f5153c9ce60a4de8e9c2198ff8eab3eb8d8267cf8be43d3ede03650b236bd"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs

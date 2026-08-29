@@ -85,8 +85,16 @@ from simulation.entities.registry import registry_content_hash  # noqa: E402
 # move onto absolute T (docs/tabs_compression_work_design_2026-08-20.md §1/§2)
 # lawfully moves this trajectory too. Re-run twice, independently: identical.
 # (was ed42914ebe44d355ab311e0346ce8d9602dd9728887f1fe35fe7a377dc5cb189)
+# GAS-ENERGY CONSERVATION ARC, P-G0 GOLDEN REBASE (2026-08-29, digest spec
+# bump event 1: v4 -> v5, +gas_energy int64). A SCHEMA move: gas_energy
+# joins DIGEST_FIELDS and folds into every tick_digest regardless of
+# whether the physics changed (field_ab_harness's canonical-scenario A/B
+# diff over 30 ticks proved every pre-existing field byte-identical to
+# HEAD; this loop scenario is a different level but exercises the SAME
+# unmodified EOS/thermal/pump code paths). (was
+# a631c182c5669ebefd390dd321868874bbe17db1cd1f3e3195be1c276ede05dd)
 LOOP_GOLDEN_TRAJ_DIGEST = \
-    "a631c182c5669ebefd390dd321868874bbe17db1cd1f3e3195be1c276ede05dd"
+    "4fa67f37383c9c3abeedef73699f480e2d7f30d35d37397b34719ad653778769"
 LOOP_GOLDEN_STEPS = 30
 LOOP_GOLDEN_SEED = 1
 
