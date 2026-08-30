@@ -407,8 +407,15 @@ def _sealed_hot_scene():
     assert not g.is_vacuum[3:37, 3:37].any(), "interior must be sealed"
 
     q = atmosphere_fixed.quantize_scalar
-    g.temperature[8:14, 8:14] += q(3000.0)      # hot pocket -> buoyant plume
-    g.temperature[26:32, 26:32] += q(-120.0)    # cold pocket -> sub-ambient e
+    # arc #54 (design §2.7 last row): `temperature` is now a MIRROR of the
+    # stored `gas_energy` field on gas cells — a direct `+=` here would move
+    # the mirror but leave `gas_energy` (and therefore the solver's actual
+    # pressure/wind-driving state, p* = C*gas_energy) at ambient, producing
+    # NO real thermal gradient and hence no flux at all (measured: PART 3
+    # went vacuous). `seed_gas_temperature` writes both together, the one
+    # sanctioned way to seed a gas cell's temperature post-arc-54.
+    g.seed_gas_temperature((slice(8, 14), slice(8, 14)), q(3000.0))    # hot pocket -> buoyant plume
+    g.seed_gas_temperature((slice(26, 32), slice(26, 32)), q(-120.0))  # cold pocket -> sub-ambient e
     g.gas[O2, 9:13, 9:13] += q(3.0)             # an overdensity to drive flow
 
     runner = PhysicsRunner(bp)
