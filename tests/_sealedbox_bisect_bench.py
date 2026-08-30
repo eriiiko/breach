@@ -27,6 +27,12 @@ HARNESS, not a pytest gate (``_`` prefix): prints the table, exits 0.
 
 Run:
     conda run -n data python tests/_sealedbox_bisect_bench.py
+    conda run -n data python tests/_sealedbox_bisect_bench.py --cuda [variant...]
+
+P-G2b: ``--cuda`` (anywhere in argv, stripped before variant-name parsing)
+selects the CUDA build + the resident-backend GPU path through the SAME
+plumbing ``tools/run_on_cuda.py`` (== ``python main.py --cuda``) uses — the
+project's one GPU-launch path (CLAUDE.md) — never a second launch path here.
 """
 from __future__ import annotations
 
@@ -37,15 +43,31 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
-for _p in (ROOT, ROOT / "src", ROOT / "tests", ROOT / "cpp" / "build" / "Release"):
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
+
+# P-G2b: --cuda must be resolved BEFORE `import breach_physics` — whichever
+# build lands in sys.modules first wins for the rest of this process, exactly
+# the constraint tools/run_on_cuda.py's own docstring states.
+_USE_CUDA = "--cuda" in sys.argv
+if _USE_CUDA:
+    sys.argv.remove("--cuda")
+    sys.path.insert(0, str(ROOT / "tools"))
+    from run_on_cuda import enable_all_backends, setup_cuda_import  # noqa: E402
+    setup_cuda_import()
+    if str(ROOT / "tests") not in sys.path:
+        sys.path.insert(0, str(ROOT / "tests"))
+else:
+    for _p in (ROOT, ROOT / "src", ROOT / "tests", ROOT / "cpp" / "build" / "Release"):
+        if str(_p) not in sys.path:
+            sys.path.insert(0, str(_p))
 
 import breach_physics as bp  # noqa: E402
 from level_loader import load as load_level  # noqa: E402
 from simulation import Simulation  # noqa: E402
 from simulation import materials  # noqa: E402
 from simulation.payloads import ignite_ring  # noqa: E402
+
+if _USE_CUDA:
+    enable_all_backends(bp)
 
 TPS = 24
 END_TICK = 18 * TPS
