@@ -419,22 +419,15 @@ def test_full_chain_radiation_heats_air_separated_wood():
         "the Pass-1 LOW rail engaged - the budget argument in v7.2 is wrong")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "P-F1a EXPECTED RED, named in the patch's acceptance (the P-R2-form "
-    "precedent). At P-F1a's FROZEN dials the v7 books cannot carry an "
-    "air-separated plank to wood's 300-game ignition_temp: measured, it "
-    "plateaus at ~182 game. Two frozen-dial effects stack. (1) The painter-era "
-    "heat is gone and H_bed alone cannot hold the old plateau. (2) The receiver "
-    "stalls AT THE GATE: T_emit_gate is 180, so as the target crosses ~180 it "
-    "becomes an emitter itself and begins paying its OWN sky in the ~7 "
-    "directions that leave the world while still receiving on the ~1 direction "
-    "that sees the burner. That is rule 4 behaving correctly - the physical "
-    "onset of emission - and it is exactly what P-F1b's recalibration (rad_scale "
-    "/ T_emit_gate / cool_shift, at the measured R=2 watt books) has to move. "
-    "strict=True ON PURPOSE: when P-F1b restores ignition this test FAILS as an "
-    "unexpected PASS, which is the handoff signal."))
 def test_full_chain_heat_ignites_air_separated_wood():
-    """The ignition MAGNITUDE — P-F1b's to restore. See the xfail reason."""
+    """The ignition MAGNITUDE, restored by P-F1b's recalibration (rad_scale /
+    T_emit_gate / cool_shift, config.toml).
+
+    Re-derivation note (fire-family triage, 2026-08-30): this test used to
+    carry `xfail(strict=True)`, whose own reason names the flip to an
+    unexpected PASS as "the handoff signal" that P-F1b landed — which is
+    exactly what happened (it now passes green). Per that docstring's own
+    instructions, the marker is removed and this is a normal assertion."""
     sim, g = _chain_sim()
     ignited_tick = None
     for t in range(1, 200):

@@ -190,7 +190,15 @@ def test_combustion_pass_conserves_o2_n2_soot_exactly():
     change to the three-plane sum — the literal "N_total conserved" claim
     of decisions.md #12, isolated from FireSimulation's OWN independent
     (pre-existing, unrelated) smoke-emission source and from any lossy
-    trace transport (this test never calls SmokeDynamics.step)."""
+    trace transport (this test never calls SmokeDynamics.step).
+
+    Re-derivation note (fire-family triage, 547fb12, 2026-07-24): burn
+    demand became `burn_rate*I*o2f_j*dt` — PER-CLAIMANT, proportional to
+    fire intensity `I` (was a uniform gate). A cell with fire==0 now has
+    zero demand regardless of wall_hp/temperature/flammable, so this direct
+    CombustionSolver.step fixture must seed `fire[]` nonzero at the burning
+    cell for the conservation property (still the same "moves mass, never
+    fabricates or destroys it" claim) to actually exercise a burn."""
     h = w = 7
     gas = np.zeros((7, h, w), dtype=np.int32)
     solid = np.zeros((h, w), dtype=bool)
@@ -207,6 +215,7 @@ def test_combustion_pass_conserves_o2_n2_soot_exactly():
     wall_hp[cy, cx] = fire_fixed.quantize_scalar(60.0)
     ignition_temp_q16[cy, cx] = IGN_WOOD_Q16
     temperature[cy, cx] = IGN_WOOD_Q16 * 2
+    fire[cy, cx] = fire_fixed.quantize_scalar(0.6)
     # Open-air ring around the fuel tile, ambient O2/N2.
     open_air = ~solid
     gas[O2][open_air] = gas_fixed.quantize_scalar(0.21)

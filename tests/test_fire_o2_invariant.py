@@ -245,12 +245,14 @@ def test_py_twin_matches_cpp_integer_gate_exactly_incl_negative():
 #     ignite decision matches the C++ float O2 gate on a hot flammable tile.
 # ---------------------------------------------------------------------------
 class _GasTableStub:
-    """Minimal stand-in for GameMap's real GasTable — apply_temperature_
-    ignition only reads `.name_to_id["o2"]` (EOS refactor P4, design §6)."""
+    """Minimal stand-in for GameMap's real GasTable. Used to read both
+    `.name_to_id["o2"]` (EOS refactor P4, design §6) AND `["inert_n2"]` —
+    the continuous-O2 law (547fb12) reads the O2 MOLE FRACTION
+    X = O2/(O2+N2), not O2 alone, so N2 is a required input now too."""
 
     def __init__(self):
-        from simulation.gases import O2
-        self.name_to_id = {"o2": O2}
+        from simulation.gases import O2, INERT_N2
+        self.name_to_id = {"o2": O2, "inert_n2": INERT_N2}
 
 
 class _Cross3x3:
@@ -260,7 +262,7 @@ class _Cross3x3:
     real production path."""
 
     def __init__(self, ring_atm):
-        from simulation.gases import N_GASES, O2
+        from simulation.gases import N_GASES, O2, INERT_N2
         m = np.full((3, 3), MAT_AIR, dtype=np.int8)
         m[1, 1] = MAT_WOOD
         self.materials = _TBL
@@ -276,8 +278,28 @@ class _Cross3x3:
                           atmosphere_fixed.quantize_scalar(float(ring_atm))).astype(np.int32)
         self.gas = np.zeros((N_GASES, 3, 3), dtype=np.int32)
         self.gas[O2] = o2_val
+        # Continuous-O2 law (547fb12): the gate reads X = O2/(O2+N2), not O2
+        # alone. N2 is pinned so O2+N2 == FP_ONE (a unit total) EXACTLY on
+        # every open ring cell, which makes X == ring_atm by construction —
+        # preserving this test's original comparison (the swept quantity IS
+        # the fraction both gates evaluate), now that "fraction of a unit
+        # total" is the real gate rather than an absolute density mean.
+        n2_val = np.where(self.solid, 0,
+                          atmosphere_fixed.FP_ONE - o2_val).astype(np.int32)
+        self.gas[INERT_N2] = n2_val
         self.temperature = np.full((3, 3), IGN_WOOD_Q16 * 2, dtype=np.int32)  # hot
         self.fire = np.zeros((3, 3), dtype=np.int32)
+        # Edge-trigger arm (Fable ruling 2026-07-24, the zombie-smolder fix,
+        # 423cd38): apply_temperature_ignition now requires `ignition_armed`
+        # on the gmap stand-in — all tiles start ARMED so the unlit centre
+        # seeds on its first hot+O2 tick exactly as before that ruling.
+        self.ignition_armed = np.ones((3, 3), dtype=bool)
+        # P1b (547fb12, 2026-07-24): "re-seed requires wall_hp > 0 -> burnt-
+        # out tiles stay out" — apply_temperature_ignition now also reads
+        # `wall_hp`. Fuel present everywhere so this fixture's ignition
+        # decision is governed by the O2 predicate under test, not fuel.
+        self.wall_hp = np.full((3, 3), fire_fixed.quantize_scalar(60.0),
+                                dtype=np.int32)
 
 
 def test_production_ignition_matches_cpp_gate_off_tie():

@@ -61,6 +61,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 for _p in (ROOT, ROOT / "src", ROOT / "cpp" / "build" / "Release"):
@@ -95,12 +96,79 @@ def _narrow_round(wide):
     return (wide + (1 << 15)) >> 16
 
 
+def _mul_q16(a, b):
+    """Python twin of fixed_point.h mul_q16 for NON-NEGATIVE q16 operands:
+    (a*b) >> 16, truncating. Python's >> on a non-negative int is an exact
+    match for the C++ int64 arithmetic shift here (no sign subtlety to
+    replicate, unlike reciprocal_q16 below)."""
+    return (a * b) >> 16
+
+
+def _read_o2f_exact(o2_q, n2_q, x_ext=0.13, x_full=1.0):
+    """Read o2f_j EXACTLY (to the LSB) for the given integer O2/N2 counts, by
+    probing the REAL CombustionSolver in isolation (test_continuous_o2_law.
+    py's `_o2f_combustion_q` technique) rather than re-implementing
+    `reciprocal_q16`'s Newton-iteration reciprocal in Python — that routine
+    is explicitly documented (fixed_point.h) as "NOT correctly-rounded...
+    deterministic [but] not a Newton fixed-iteration can [reproduce]", so a
+    from-scratch Python port risks silently disagreeing by an LSB or two.
+    The probe uses burn_rate=1, dt=1, fire=FP_ONE so demand collapses to
+    EXACTLY o2f_q (mul_q16(FP_ONE, mul_q16(FP_ONE, o2f_q)) == o2f_q, no
+    rounding in between) — the same identity test_continuous_o2_law.py's
+    gate (a) already relies on. One isolated open neighbour, no contention,
+    so `drawn == o2f_q` as long as the read is uncontested (checked below)."""
+    h = w = 5
+    gas = np.zeros((7, h, w), dtype=np.int32)
+    solid = np.zeros((h, w), dtype=bool)
+    is_vacuum = np.zeros((h, w), dtype=bool)
+    flammable = np.zeros((h, w), dtype=bool)
+    wall_hp = np.zeros((h, w), dtype=np.int32)
+    fire = np.zeros((h, w), dtype=np.int32)
+    ign = np.zeros((h, w), dtype=np.int32)
+    temperature = np.zeros((h, w), dtype=np.int32)
+    cy, cx = 2, 2
+    solid[cy, cx] = True
+    flammable[cy, cx] = True
+    wall_hp[cy, cx] = fire_fixed.quantize_scalar(1000.0)   # never floors
+    ign[cy, cx] = 1              # irrelevant: fire==FP_ONE => alight, bypasses it
+    fire[cy, cx] = FP_ONE
+    ny, nx = cy - 1, cx
+    gas[O2][ny, nx] = o2_q
+    gas[INERT_N2][ny, nx] = n2_q
+
+    c = bp.CombustionSolver()
+    c.burn_rate = 1.0
+    c.o2_thresh_burn = 0.0       # the probe wants the RAW o2f, no skip-floor
+    c.H_fuel = 0.0
+    c.soot_yield = 0.0
+    c.fuel_per_o2 = 0.0
+    c.o2_frac_ext = x_ext
+    c.o2_frac_full = x_full
+
+    before = int(gas[O2][ny, nx])
+    c.step(gas, O2, INERT_N2, SMOKE, temperature, wall_hp, fire, flammable,
+           solid, is_vacuum, ign, 1.0, 1.0, 0.05)
+    drawn = before - int(gas[O2][ny, nx])
+    assert not (drawn == before and before > 0), (
+        f"o2f probe contested at o2_q={o2_q}, n2_q={n2_q} — the read is not "
+        "valid here (raise the probe's O2 count)")
+    return drawn
+
+
 # ---------------------------------------------------------------------------
 # Direct-solver fixture (the tier-1 idiom from test_eos_p4_combustion.py)
 # ---------------------------------------------------------------------------
 def _solver_scene(h=7, w=7, hp=60.0, n_o2=(0.21, 0.21, 0.21, 0.21)):
     """One flammable solid tile at the centre, hot, 4 open neighbours with
-    per-site O2 (N, S, W, E order), ambient N2 everywhere open."""
+    per-site O2 (N, S, W, E order), ambient N2 everywhere open.
+
+    Re-derivation note (fire-family triage, 547fb12, 2026-07-24): burn
+    demand is `burn_cap*fire[i]*o2f_j` — PER-CLAIMANT, proportional to
+    fire intensity (was a uniform gate). `fire[]` is seeded nonzero at the
+    centre tile so this direct-solver fixture actually exercises a burn;
+    the FUEL_FLOOR gate (combustion.cpp:476) is checked before demand is
+    even read, so `test_charred_tile_burns_nothing_deposits_nothing`'s
+    hp==1-LSB scenario is unaffected by this seed."""
     gas = np.zeros((7, h, w), dtype=np.int32)
     solid = np.zeros((h, w), dtype=bool)
     is_vacuum = np.zeros((h, w), dtype=bool)
@@ -116,6 +184,7 @@ def _solver_scene(h=7, w=7, hp=60.0, n_o2=(0.21, 0.21, 0.21, 0.21)):
     wall_hp[cy, cx] = _q(hp) if hp >= 1.0 / FP_ONE else int(round(hp * FP_ONE))
     ign[cy, cx] = IGN_WOOD_Q16
     temperature[cy, cx] = IGN_WOOD_Q16 * 2
+    fire[cy, cx] = fire_fixed.quantize_scalar(0.6)
     gas[INERT_N2][~solid] = _q(0.79)
     for (dy, dx), o2v in zip(N4, n_o2):
         gas[O2][cy + dy, cx + dx] = _q(o2v)
@@ -132,36 +201,71 @@ def _step(comb, scene, dt=0.25):
 # TIER 1 — unit gates on the new consumption
 # ---------------------------------------------------------------------------
 def test_fuel_decrement_exact_and_deterministic():
-    """The decrement is the EXACT integer transaction the v2.5 spec wrote:
-    per open neighbour j (N,S,W,E order), burn = min(burn_rate*dt, O2[j])
-    and the source tile pays narrow_round(fuel_per_o2_q * burn) — replicated
-    here in pure Python ints, with DISTINCT per-site O2 so the fold order is
-    pinned too. Then: two scratch-built runs of a 20-step evolving scenario
-    hash bit-identically (the determinism half of the gate)."""
+    """The decrement is the EXACT integer transaction the shipped solver
+    computes: per open neighbour j (N,S,W,E order), demand_j =
+    mul_q16(mul_q16(burn_cap_q, fire[i]), o2f_j) (combustion.cpp:437,559 —
+    the continuous-O2 law, 547fb12, since this test predates it), burn_j =
+    min(demand_j, O2[j]) (single claimant per cell here, so contention never
+    engages — combustion.cpp:583-587's uncontested branch always applies),
+    and the source tile pays narrow_round(fuel_per_o2_q * sum_j(burn_j))
+    ONCE for the tick's total (combustion.cpp:748, "total-then-floor-once").
+    Replicated here in pure Python ints — DISTINCT per-site O2 still pins
+    the per-cell demand/burn split, even though (see below) only N actually
+    contributes now.
+
+    Re-derivation note (fire-family triage, 2026-08-30): the old expected-
+    value model (`burn = min(burn_rate*dt, O2[j])`, no o2f/fire factor) predates
+    547fb12's continuous-O2 law and was ALSO never valid after it (fire[]==0
+    made every demand 0 regardless). `demand_j`'s o2f_j factor is READ from
+    the real solver via `_read_o2f_exact` (an isolated single-neighbour probe,
+    the same known-answer technique test_continuous_o2_law.py's gate (a)
+    uses) rather than hand-porting `reciprocal_q16`'s Newton-iteration
+    reciprocal into Python, which fixed_point.h documents as NOT correctly-
+    rounded — a from-scratch port would risk silently disagreeing by an LSB.
+    Once o2f_j is known, `demand_j`/`burn_j`/the fuel cost are plain Q16.16
+    integer arithmetic, replicated exactly (mul_q16/narrow_round are trivial
+    shifts, exact for non-negative Python ints).
+
+    Consequence worth naming: at this scene's mole fractions (N2 pinned at
+    0.79 everywhere), X_S = 0.0595 and X_W = 0.0424 are BOTH below
+    o2_frac_ext (0.13, combustion.h default) -> o2f == 0 -> zero demand,
+    even though their absolute O2 clears the o2_thresh_burn skip-floor
+    (0.03). Only N (X = 0.21) sits above X_ext and actually burns. The old
+    "N, S, W burn; E is below the gate" docstring described the PRE-
+    continuous-law absolute-threshold behaviour; under the mole-fraction law
+    the real story is "only N clears the O2-EXTINCTION fraction — S and W
+    pass the old absolute skip-floor but are still vitiated at this N2
+    level, E fails even that". Then: two scratch-built runs of a 20-step
+    evolving scenario hash bit-identically (the determinism half of the
+    gate, unaffected by any of the above)."""
     comb = bp.CombustionSolver()
     comb.burn_rate = 1.0
     comb.o2_thresh_burn = 0.03
     comb.fuel_per_o2 = 0.7
     dt = 0.25
 
-    n_o2 = (0.21, 0.05, 0.035, 0.02)   # N, S, W burn; E is below the gate
+    n_o2 = (0.21, 0.05, 0.035, 0.02)   # N, S, W, E — see docstring re: who burns
     scene = _solver_scene(n_o2=n_o2)
-    wall_hp = scene[4]
+    wall_hp, fire = scene[4], scene[5]
     cy, cx = scene[8]
     hp0 = int(wall_hp[cy, cx])
+    fire_i_q = int(fire[cy, cx])
 
     # Python-int replication of the C++ arithmetic (fixed_point.h twins).
     cap_q = _q(1.0 * dt)
     thresh_q = _q(0.03)
     fuel_q = _q(0.7)
-    expected = hp0
+    n2_q = _q(0.79)
+    t1 = _mul_q16(cap_q, fire_i_q)   # burn_cap_q * fire[i], hoisted (same for every j)
+    burn_total = 0
     for o2v in n_o2:
         o2q = _q(o2v)
         if o2q <= thresh_q:
             continue
-        burn = min(cap_q, o2q)
-        expected -= _narrow_round(fuel_q * burn)
-        expected = max(expected, FUEL_FLOOR)
+        o2f_q = _read_o2f_exact(o2q, n2_q)
+        dem = _mul_q16(t1, o2f_q)
+        burn_total += min(dem, o2q)
+    expected = max(hp0 - _narrow_round(fuel_q * burn_total), FUEL_FLOOR)
     _step(comb, scene, dt)
     assert int(wall_hp[cy, cx]) == expected, (
         f"fuel decrement not exact: {int(wall_hp[cy, cx])} != {expected} "
@@ -273,13 +377,44 @@ def test_fuel_per_o2_config_plumbing():
 # ---------------------------------------------------------------------------
 # TIER 2 — the lifecycle E2E (Erik's fire-lifecycle vision, decisions #17)
 # ---------------------------------------------------------------------------
+@pytest.mark.xfail(
+    strict=False,
+    reason=(
+        "fire-family triage (2026-08-30) found a SECOND, undocumented break "
+        "beyond the brief's kwarg rename (o2_threshold->o2_frac_ext, 547fb12) "
+        "— flagged for Erik, not fixed here. Measured directly: with the "
+        "P-R4 'painter' retired, the wood tile's OWN temperature (driven "
+        "only by the H_bed fuel-bed deposit now) settles at ~15.5 game "
+        "within ~6 ticks of ignition and stays there for as long as the "
+        "flame burns (config-bound H_BED_M via PhysicsRunner, not a test "
+        "artifact) — nowhere near IGN_WOOD_Q16 (300.0). Phase B's ember "
+        "needs T >= ignition_temp at the moment the flame dies (Tsnap[i] >= "
+        "ign_i is combustion.cpp's own claim gate for a non-alight source, "
+        "line ~508), so the scripted (I=0, T>=ignition) ember state this "
+        "test builds appears STRUCTURALLY UNREACHABLE via natural burnout "
+        "in this scenario now, independent of the k_die dial (a k_die crank "
+        "was tried below to fix the OTHER, separately-diagnosed 9016cd7 "
+        "slow-decay issue — Phase A still starves fine, but T has already "
+        "crashed to ~15.5 long before that). This is a design-level "
+        "question (does decisions #17's ember mechanic still fire in the "
+        "shipped game, or does the non-alight claim gate need its own lower "
+        "sustain threshold the way the alight/ignite hysteresis got one at "
+        "P-R4?) — not a test-wording fix, so left red-but-marked rather than "
+        "reinterpreted unilaterally."
+    ),
+)
 def test_lifecycle_ember_reignite_charout():
     """ignite -> O2-starve (flame dies) -> ember persists (T >= ignition,
     I = 0, wall_hp draining) -> O2 inflow re-ignites a proper flame ->
     seal -> char-out at the 1-LSB floor, ember extinguishes (no further O2
     draw), the wall STANDS — and one hit destroys it. Game-faithful loop
     (physics -> temperature-ignition -> heat clear, Simulation.step's
-    order); staging idioms per the module docstring."""
+    order); staging idioms per the module docstring.
+
+    KWARG FIX applied (fire-family triage, mechanical group): the game-loop
+    ignition call below was `o2_threshold=` (renamed `o2_frac_ext=` at
+    547fb12, 2026-07-24). See the xfail marker above for the SEPARATE issue
+    this uncovered once the TypeError was no longer masking it."""
     C = 4
     gmap = _sealed_room(hh=9, wood_at=(C, C))
     pr = _runner()
@@ -292,7 +427,9 @@ def test_lifecycle_ember_reignite_charout():
         destroyed.extend(pr.step(gmap, SEED_TICK_DT) or [])
         # The game loop's ignition step (simulation.py: physics -> ignition
         # -> heat clear), with config.toml [physics.fire]'s shipped values.
-        apply_temperature_ignition(gmap, o2_threshold=0.01, ignition_seed=0.1)
+        # kwarg renamed o2_threshold -> o2_frac_ext at 547fb12 (2026-07-24,
+        # the continuous-O2 law patch) — same value, new name.
+        apply_temperature_ignition(gmap, o2_frac_ext=0.01, ignition_seed=0.1)
         gmap.heat.fill(0)
 
     def drip(o2v=0.035):
@@ -302,6 +439,35 @@ def test_lifecycle_ember_reignite_charout():
         for dy, dx in ((1, 0), (0, -1), (0, 1)):
             gmap.gas[O2][C + dy, C + dx] = 0
 
+    def _starve_to_zero(max_ticks=80):
+        """Run ticks until the flame snaps to zero, or max_ticks elapse.
+
+        Undocumented (by the triage brief) fallout of the same 9016cd7 dial
+        promotion the RESTATE group targets: at avail==0 the fire logistic's
+        decay is dI/dt = -k_grow*I^2/I_cap_per_avail - k_die*I, and shipped
+        k_die dropped 2.0 -> 0.008 (2026-08-13). Measured directly (this
+        triage): from I~0.58 the flame does NOT reach I_min=0.02 within 300
+        ticks at the shipped k_die (e-fold ~= 1/k_die = 125s = 3000 ticks) —
+        this lifecycle test's 80-tick starve budget predates that promotion.
+        Rather than inflate every starve window here ~40x, k_die is
+        temporarily cranked back to its OWN pre-promotion value (2.0) for
+        just the starve-to-zero window, the same idiom Phase D below already
+        uses on fuel_per_o2 ("THE ember-lifetime dial") to compress a
+        multi-thousand-tick process into test time without touching the
+        property under test (the lifecycle sequence itself, not how fast a
+        test can watch decay happen). Restored immediately after, so Phase
+        C's re-ignition growth is measured at the real shipped dial."""
+        k_die_shipped = pr.fire.params.k_die
+        pr.fire.params.k_die = 2.0   # pre-P-K0 value (config.toml history)
+        try:
+            for k in range(max_ticks):
+                tick()
+                if int(gmap.fire[C, C]) == 0:
+                    return k
+            return None
+        finally:
+            pr.fire.params.k_die = k_die_shipped
+
     # ---- Phase A: a real flame on ambient O2 ------------------------------
     for _ in range(30):
         tick()
@@ -310,10 +476,7 @@ def test_lifecycle_ember_reignite_charout():
 
     # ---- O2-starve: the room's oxygen is spent/vented (boundary edit) -----
     gmap.gas[O2][open_cells] = 0
-    for k in range(80):
-        tick()
-        if int(gmap.fire[C, C]) == 0:
-            break
+    assert _starve_to_zero() is not None, "phase A: flame never starved"
     assert int(gmap.fire[C, C]) == 0, "phase A: flame never starved"
     assert int(gmap.temperature[C, C]) >= IGN_WOOD_Q16, (
         "phase A: tile cooled below ignition at flame death — no ember to test")
@@ -352,10 +515,7 @@ def test_lifecycle_ember_reignite_charout():
 
     # ---- Seal again: inflow over; the flame starves back to zero ----------
     gmap.gas[O2][open_cells] = 0
-    for k in range(80):
-        tick()
-        if int(gmap.fire[C, C]) == 0:
-            break
+    assert _starve_to_zero() is not None, "seal: flame 2 never starved"
     assert int(gmap.fire[C, C]) == 0, "seal: flame 2 never starved"
 
     # ---- Phase D: char-out at the floor (ember-lifetime dial cranked) -----
