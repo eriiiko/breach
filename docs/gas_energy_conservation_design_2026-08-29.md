@@ -645,6 +645,21 @@ relax-to-ambient becomes a counted export through the hull; (b) conduction
 priced in books currency (energy flux from `E/N` per face, N-weighted);
 (c) count Pass 3's relaxation as a source and accept the bound for now.
 
+**Erik's rulings 2026-08-30:** **(b) — P-G1c** (after P-G2, so the CUDA
+twin gets the same change): gas↔thermal-solid conduction priced in energy
+currency per face from `E/N` (N-weighted), telescoping like the energy
+step; walls stay infinite ambient reservoirs. (a) is kept as a follow-up
+issue (thermal solids join the books — see the GitHub issue filed
+2026-08-30), to be sized in a fresh session against the value of starting
+the RL track. Tests: Erik delegated test decisions — the STOP gate
+`test_air_boundary` gate 2 is restated mindfully ("rail hits counted,
+decay to 0 within 4 ticks, room refills > 90%", with the flow-work
+rationale); the airlock test keeps its now-honest behaviour (already
+green after P-G1b); the two bands re-baseline in P-G3 with rationale.
+Rule applied throughout: a test that encoded the old term's behaviour is
+restated to the property it protected; only tests whose subject no longer
+exists are deleted, named in the commit.
+
 Red inventory: 34 = 31 pre-existing/expected + 4 new inline
 door-trajectory goldens (EXPECTED → P-G3: `unseal_tiles` now refreshes the
 opened tile's mirror) − 1 fixed (airlock). STOP `t_max_phys_hits` 564
