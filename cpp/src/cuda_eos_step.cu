@@ -94,6 +94,19 @@ inline int mirror_idx_host(int self_i, int ny, int nx, int h, int w,
     return ni;
 }
 
+// ---- face-form divergence face read (eos_solver.cpp face2_u, verbatim) -----
+// arc #54 P-G1d / D4: returns 2·û_f, with û = 0 at a SOLID (or out-of-bounds)
+// face and û = (u_i + u_j)/2 on an open one. The ½ rides in `inv_2dx_q`. The
+// derivation, the interior bit-identity argument and the ring/thermal-solid
+// scope all live in eos_solver.cpp's copy — this is a transcription.
+inline int64_t face2_u_host(const int32_t* u, int self_i, int ny, int nx,
+                            int h, int w, const bool* solid) {
+    if (ny < 0 || ny >= h || nx < 0 || nx >= w) return 0;
+    const int ni = ny * w + nx;
+    if (solid[ni]) return 0;
+    return (int64_t)u[self_i] + (int64_t)u[ni];
+}
+
 long long g_eos_step_cuda_calls = 0;
 
 }  // namespace
@@ -579,12 +592,13 @@ void eos_step_cuda(
             const int i = row + x;
             // BC (audit (b)): the ring is a Dirichlet boundary — div(u*)=0.
             if (solid[i] || is_vacuum[i] || (ambient_mode && is_ambient[i])) { div_u[i] = 0; continue; }
-            const int il = mirror_idx_host(i, y, x - 1, h, w, solid);
-            const int ir = mirror_idx_host(i, y, x + 1, h, w, solid);
-            const int iu = mirror_idx_host(i, y - 1, x, h, w, solid);
-            const int id = mirror_idx_host(i, y + 1, x, h, w, solid);
-            const q16 dux = mul_q16(wind_x[ir] - wind_x[il], inv_2dx_q);
-            const q16 duy = mul_q16(wind_y[id] - wind_y[iu], inv_2dx_q);
+            // arc #54 P-G1d (D4): FACE FORM, û = 0 at solid faces.
+            const int64_t fw = face2_u_host(wind_x, i, y, x - 1, h, w, solid);
+            const int64_t fe = face2_u_host(wind_x, i, y, x + 1, h, w, solid);
+            const int64_t fn = face2_u_host(wind_y, i, y - 1, x, h, w, solid);
+            const int64_t fs = face2_u_host(wind_y, i, y + 1, x, h, w, solid);
+            const q16 dux = mul_q16((q16)(fe - fw), inv_2dx_q);
+            const q16 duy = mul_q16((q16)(fs - fn), inv_2dx_q);
             div_u[i] = dux + duy;
         }
     }

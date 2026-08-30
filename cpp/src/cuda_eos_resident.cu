@@ -84,6 +84,19 @@ __device__ __forceinline__ int mirror_idx_dev_r(
     return ni;
 }
 
+// ---- face-form divergence face read (eos_solver.cpp face2_u, verbatim) -----
+// arc #54 P-G1d / D4: 2·û_f, with û = 0 at a SOLID (or out-of-bounds) face and
+// û = (u_i + u_j)/2 on an open one; the ½ rides in `inv_2dx_q`. Derivation and
+// the interior bit-identity argument: eos_solver.cpp's copy.
+__device__ __forceinline__ int64_t face2_u_dev_r(
+        const int32_t* __restrict__ u, int self_i, int ny, int nx,
+        int h, int w, const bool* __restrict__ solid) {
+    if (ny < 0 || ny >= h || nx < 0 || nx >= w) return 0;
+    const int ni = ny * w + nx;
+    if (solid[ni]) return 0;
+    return (int64_t)u[self_i] + (int64_t)u[ni];
+}
+
 // ============================================================================
 // MID-STAGE kernels — verbatim device transcriptions of eos_step_cuda's host
 // mid-stage (cuda_eos_step.cu "HOST MID-STAGE" block), one writer per cell.
@@ -106,12 +119,13 @@ __global__ void K_div_u(int32_t* __restrict__ div_u,
         }
         const int y = i / w;
         const int x = i - y * w;
-        const int il = mirror_idx_dev_r(i, y, x - 1, h, w, solid);
-        const int ir = mirror_idx_dev_r(i, y, x + 1, h, w, solid);
-        const int iu = mirror_idx_dev_r(i, y - 1, x, h, w, solid);
-        const int id = mirror_idx_dev_r(i, y + 1, x, h, w, solid);
-        const q16 dux = mul_q16(wind_x[ir] - wind_x[il], inv_2dx_q);
-        const q16 duy = mul_q16(wind_y[id] - wind_y[iu], inv_2dx_q);
+        // arc #54 P-G1d (D4): FACE FORM, û = 0 at solid faces.
+        const int64_t fw = face2_u_dev_r(wind_x, i, y, x - 1, h, w, solid);
+        const int64_t fe = face2_u_dev_r(wind_x, i, y, x + 1, h, w, solid);
+        const int64_t fn = face2_u_dev_r(wind_y, i, y - 1, x, h, w, solid);
+        const int64_t fs = face2_u_dev_r(wind_y, i, y + 1, x, h, w, solid);
+        const q16 dux = mul_q16((q16)(fe - fw), inv_2dx_q);
+        const q16 duy = mul_q16((q16)(fs - fn), inv_2dx_q);
         div_u[i] = dux + duy;
     }
 }

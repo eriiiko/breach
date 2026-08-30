@@ -42,6 +42,71 @@ inline int mirror_idx(int self_i, int ny, int nx, int h, int w, const bool* soli
     return ni;
 }
 
+// ===========================================================================
+// arc #54 P-G1d — THE FACE-FORM DIVERGENCE (design item D4).
+//
+// Returns 2·û_f for ONE face of cell `self_i` toward (ny,nx), where û_f is the
+// face-normal velocity the divergence sees:
+//
+//     û_f = (u_i + u_j)/2   on an OPEN face
+//     û_f = 0               on a SOLID face (a wall, or out of bounds)
+//
+// The caller forms `(2û_E − 2û_W)` and multiplies by `inv_2dx_q = 1/(2dx)`,
+// which is exactly `[û_E − û_W]/dx` — the ½ of the arithmetic face mean is
+// folded into the SAME `inv_2dx_q` the old central form already carried, so
+// there is no second shift and no new rounding site.
+//
+// WHY (the D4 finding, measured at P-G1c). `mirror_idx` returns SELF on a
+// solid neighbour, so the old central stencil `(u_ir − u_il)/(2dx)` implied a
+// wall-face velocity of `u_i` (a zero-GRADIENT ghost). That is inconsistent
+// with BOTH of its partners:
+//   (a) the kick, which mirrors `p` and therefore has ZERO pressure gradient
+//       across a solid face — the wall does no work on the gas; and
+//   (b) the §2.4 face-flux energy step, which prices every solid face at
+//       `û = 0` (`face_flux`'s WALL branch returns 0 and books the dropped
+//       term into `e_wall_work_probe_sum`).
+// The solve therefore asked for a compression the energy step never charged
+// for. Measured consequence: a standing thermal dipole formed in ~5 ticks —
+// every wall-adjacent gas layer ~20 game-deg BELOW ambient, interiors ~+25,
+// scaling with `k_work = (γ−1)·T_AMB` — which conduction against
+// ambient-held walls then rectified into a global energy SOURCE (+5.0
+// game-deg per 18 s in the sealed box).
+//
+// BIT-IDENTITY ON INTERIOR CELLS (proved on paper; gated by
+// tests/test_eos_div_face_form.py). With all four neighbours open,
+//     2û_E − 2û_W = (u_i + u_ir) − (u_il + u_i) = u_ir − u_il
+// EXACTLY, as integers — the `u_i` terms cancel before any shift, so the
+// operand handed to `mul_q16` is the very int32 the old form computed and the
+// result is bit-identical. Only faces whose neighbour is SOLID (or out of
+// bounds) move, and they move from `u_i` to `0`.
+//
+// VACUUM / AMBIENT-RING NEIGHBOURS ARE UNCHANGED, deliberately: they are not
+// solid, so this returns `u_i + u_j` with the neighbour's real (identically
+// zero — the kick zeroes ring and vacuum u) wind, i.e. `u_i`, which is what
+// the old mirror form read there too. It is also literally the face value the
+// energy step's OUTFLOW branch uses (`u_f = wind[acc_i]`, the same "u_acc + 0"
+// with the same ½ folded into `k_flux_q`) — so solve and energy step agree
+// face-for-face on this class as well.
+//
+// THERMAL SOLIDS (furniture) ARE NOT WALLS HERE, deliberately (P-G1d scope):
+// `ts` cells that are not `solid` carry N and u and the kick treats them as
+// gas, so the solve keeps its current open-face treatment for them. The energy
+// step's `ts`=wall rule is likewise untouched; the mismatch that remains is
+// reported by `e_ts_work_sum`, not fixed here.
+//
+// RANGE: the kick holds every stored component to ±2^27 (KE_SAFE), so the sum
+// is ≤2^28 and the difference ≤2^29 — comfortably int32. The intermediate is
+// nevertheless accumulated in int64 and narrowed ONCE at the caller (the
+// file's `(q16)` idiom), so an unguarded wind written by FieldEdit or a level
+// load truncates deterministically instead of overflowing signed int32.
+inline int64_t face2_u(const int32_t* u, int self_i, int ny, int nx,
+                       int h, int w, const bool* solid) {
+    if (ny < 0 || ny >= h || nx < 0 || nx >= w) return 0;   // wall: û = 0
+    const int ni = ny * w + nx;
+    if (solid[ni]) return 0;                                // wall: û = 0
+    return (int64_t)u[self_i] + (int64_t)u[ni];             // 2·û_f
+}
+
 // (the single-field eos_backtrace_sample_q was deleted — the FUSED
 // 3-field version below replaced its every call site.)
 
@@ -265,7 +330,7 @@ void EOSSolver::step(
     // thermal_solid on any furniture-free map — build addendum D4). ONLY the
     // two `temperature[i]` writes and the step-1b T sample read `ts`; every
     // other `solid` / `dyn_permeability` meaning in this function (cmask,
-    // mirror_idx, coeffE/S, div(u), p*, the kick, mg_build_levels) is
+    // mirror_idx, face2_u, coeffE/S, div(u), p*, the kick, mg_build_levels) is
     // UNTOUCHED, so pressure / velocity / gas flow are unchanged.
     const bool* ts = (thermal_solid != nullptr) ? thermal_solid : solid;
     // P-E1 (design §2.1.1): the A2 T-ONLY occluder mask (`tcmask_`) and its
@@ -826,6 +891,10 @@ void EOSSolver::step(
     if (dbg_probe_idx >= 0 && dbg_probe_idx < n) dbg_T_post_advect = temperature[dbg_probe_idx];
 
     // div(u*) from the final substep's velocity — the Helmholtz RHS term.
+    // arc #54 P-G1d (D4): the FACE FORM, û = 0 at solid faces —
+    //   div_i = [û_E − û_W + û_S − û_N]/dx,  û_f = (u_i + u_j)/2 open, 0 solid.
+    // `face2_u` returns 2û_f and the ½ rides in `inv_2dx_q` (see its header for
+    // the derivation, the interior bit-identity proof and the ring/ts scope).
     for (int y = 0; y < h; ++y) {
         const int row = y * w;
         for (int x = 0; x < w; ++x) {
@@ -834,12 +903,12 @@ void EOSSolver::step(
             // — div(u*)=0 there, the vacuum idiom (its rhs isn't consumed since
             // the ring is excl==1, but keep it clean).
             if (solid[i] || is_vacuum[i] || (ambient_mode && is_ambient[i])) { div_u_[i] = 0; continue; }
-            const int il = mirror_idx(i, y, x - 1, h, w, solid);
-            const int ir = mirror_idx(i, y, x + 1, h, w, solid);
-            const int iu = mirror_idx(i, y - 1, x, h, w, solid);
-            const int id = mirror_idx(i, y + 1, x, h, w, solid);
-            const q16 dux = mul_q16(wind_x[ir] - wind_x[il], inv_2dx_q);
-            const q16 duy = mul_q16(wind_y[id] - wind_y[iu], inv_2dx_q);
+            const int64_t fw = face2_u(wind_x, i, y, x - 1, h, w, solid);
+            const int64_t fe = face2_u(wind_x, i, y, x + 1, h, w, solid);
+            const int64_t fn = face2_u(wind_y, i, y - 1, x, h, w, solid);
+            const int64_t fs = face2_u(wind_y, i, y + 1, x, h, w, solid);
+            const q16 dux = mul_q16((q16)(fe - fw), inv_2dx_q);
+            const q16 duy = mul_q16((q16)(fs - fn), inv_2dx_q);
             div_u_[i] = dux + duy;
         }
     }
@@ -1327,6 +1396,14 @@ void EOSSolver::step(
                     // is tested FIRST because a wall tile normally carries
                     // thermal mass too, so `ts` alone would swallow the whole
                     // D4 term and report it as furniture.
+                    // arc #54 P-G1d: D4 IS FIXED — the pressure solve now uses
+                    // the same û = 0 wall face this branch does (`face2_u`), so
+                    // `e_wall_work_probe_sum` is no longer a mismatch measure;
+                    // it is the residual |p·u| the projected field still leaves
+                    // pressed against a wall, and the SB gate reports it as a
+                    // regression watch, not as a debt. The ts term is
+                    // UNCHANGED and still an accepted gap (P-G1d left ts
+                    // semantics alone on both sides).
                     if (solid[lo] || solid[hi]) e_wall_work_probe_sum += m;
                     else                        e_ts_work_sum += m;
                 }
@@ -1347,9 +1424,12 @@ void EOSSolver::step(
                                      + (int64_t)pcur_[lo] * n_hi, ns);
                 // ARITHMETIC face mean (F16, a deliberate deviation from
                 // Kwatra eq. 13's density-weighted û): it is exactly the face
-                // value our centred div_u_ stencil implies, so Sigma_f p_f û_f
+                // value our div_u_ stencil implies, so Sigma_f p_f û_f
                 // vanishes where the solve zeroed the divergence. The 1/2 is
                 // folded into k_flux_q — no separate >>1, no rounding bias.
+                // (arc #54 P-G1d: "exactly" is now literal on EVERY face
+                // class, not only the interior — the solve's stencil is the
+                // face form `face2_u` and reads this same u_i + u_j.)
                 u_f = (int64_t)(east ? wind_x[lo] : wind_y[lo])
                     + (int64_t)(east ? wind_x[hi] : wind_y[hi]);
                 cls = 1;
@@ -1357,8 +1437,10 @@ void EOSSolver::step(
                 const int acc_i = a_lo ? lo : hi;
                 p_f = pcur_[acc_i];
                 // ring/vacuum u == 0, so (u_acc + 0)/2 * 2 == u_acc — the
-                // value the divergence stencil reads there (mirror_idx keys
-                // on solid only).
+                // value the divergence stencil reads there (P-G1d's `face2_u`
+                // keys on solid only, so a ring/vacuum neighbour is an OPEN
+                // face and contributes u_acc + 0; pre-P-G1d `mirror_idx` read
+                // the same value by the same "keys on solid only" rule).
                 u_f = east ? wind_x[acc_i] : wind_y[acc_i];
                 // The face is TWO-WAY on purpose. It was briefly made
                 // outflow-only during P-G1a (the name "OUTFLOW face" and §3's
