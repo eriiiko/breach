@@ -614,8 +614,45 @@ value moves (below).
    encoded the 4c law) and `test_air_boundary` gate 3 reflection 2.48% vs
    2%: value moves → P-G3 re-baseline with rationale.
 
-Agent decisions accepted at review: `p*` keeps reading the mirror (ts
-cells' `p*` must read the object's T); rail scales magnitude then
+## P-G1b results (2026-08-30, `gas-energy-arc` 61be37e..d3c6689)
+
+**D1 live**: entry re-sync deleted; `refresh_gas_energy` is the level-load
+initialiser only. **Closure identity exact ACROSS WHOLE TICKS** over five
+counter groups (EOS, thermal-solver gas side, combustion, Python seams,
+water-tail evacuation) — SB, FIRE, QUIET (60 s, 1440 ticks, residual 0;
+drift −0.41 game-deg total). Airlock test **green** (pump seam). FIRE:
+parcel identity + soot shed exact; flame peak 676.3 (no compounding).
+BLAST/HP/VENT/AS unchanged. Two holes the gates found and fixed: VENT
+regressed to negative E on near-vacuum cells until the conduction
+capacity-floor shrink was applied in energy currency; the water-tail
+export term was missing from every identity transcription (zero on dry
+scenarios — verified non-vacuously with a water dump).
+
+**Residual, measured — needs Erik's ruling (candidate P-G1c):** SB (ii)
+`nofire` ΔT_box = **+5.01** (P-G1a +4.97). Bisected to ONE channel:
+**gas ↔ thermal-solid conduction** (`e_gas_cond_sum` = +6.8 box-deg
+equivalent; kill ts faces → −0.002; kill gas–gas faces → unchanged; the
+arena gains too — a global books *source*, not a redistribution).
+Mechanism: conduction diffuses *unweighted* T at `min(cap_gas, cap_solid)`
+while the books are N-weighted; in a ringing cell T and N correlate
+(hot where dense), the unweighted mean sits below the N-weighted one, and
+thermal solids — relaxed to ambient by Pass 3 — top the gas up. P-G1b made
+the channel named and exact but cannot remove it (with `c_v = 1`,
+`cap_gas = N`, the T-form and E-form bookings coincide). Zero in a quiet
+box (QUIET drift −0.41 over 60 s); it is ringing-driven. Options:
+(a) thermal solids join the books with finite thermal mass, Pass 3's
+relax-to-ambient becomes a counted export through the hull; (b) conduction
+priced in books currency (energy flux from `E/N` per face, N-weighted);
+(c) count Pass 3's relaxation as a source and accept the bound for now.
+
+Red inventory: 34 = 31 pre-existing/expected + 4 new inline
+door-trajectory goldens (EXPECTED → P-G3: `unseal_tiles` now refreshes the
+opened tile's mirror) − 1 fixed (airlock). STOP `t_max_phys_hits` 564
+unchanged (ruling 1 above). CUDA combustion/temperature kernels do NOT
+carry `gas_energy` yet — the resident tick breaks the identity until P-G2.
+
+Agent decisions accepted at review (P-G1a): `p*` keeps reading the mirror
+(ts cells' `p*` must read the object's T); rail scales magnitude then
 re-applies sign; `price_face` splits `E = N·q + r` to avoid a 128-bit
 divide; per-face saturation at the `p·u` stage via a folded `pu_cap`;
 sub-cycle pressure refresh ceilinged at `C·N·(T_MAX_PHYS+T_AMB)`
