@@ -48,27 +48,67 @@ def _seed_scenario(g):
         g.temperature[y2:y3, x0:x1] -= q(50.0)
 
 
+def _counters(runner):
+    """arc #54 P-G1d: EVERY int-valued ledger/rail counter the EOS and the
+    thermal solver expose, gathered by NAME so a counter added later joins the
+    parity gate automatically instead of silently escaping it. Returned as one
+    int64 vector in sorted-name order (with the names, for the report)."""
+    names, vals = [], []
+    for owner, prefix in ((runner.eos, "eos."),
+                          (runner.engine.temperature, "temp.")):
+        for a in sorted(dir(owner)):
+            if a.startswith("_") or not (a.endswith("_sum")
+                                         or a.endswith("_hits")
+                                         or a.endswith("_calls")):
+                continue
+            try:
+                v = getattr(owner, a)
+            except Exception:  # noqa: BLE001 — a property that needs live state
+                continue
+            if isinstance(v, bool) or not isinstance(v, int):
+                continue
+            names.append(prefix + a)
+            vals.append(int(v))
+    return names, np.array(vals, dtype=object)
+
+
 def run_trajectory(g, runner, n_steps, dt):
     from config import CFG
     from simulation.physics_runner import PhysicsRunner  # noqa: F401
-    fields = ["gas_energy", "temperature", "wind_x", "wind_y", "atmosphere"]
+    # arc #54 P-G1d: the GAS PLANES join the field list (they are the mass side
+    # of every energy face; a transport twin can diverge on gas alone and leave
+    # gas_energy briefly identical), and the counters join as a pseudo-field so
+    # every rail and ledger is compared tick by tick, not just at the end.
+    fields = ["gas_energy", "temperature", "wind_x", "wind_y", "atmosphere",
+              "gas"]
     traj = {f: [] for f in fields}
+    traj["_counters"] = []
+    names = None
     for _ in range(n_steps):
         runner.step(g, dt)
         for f in fields:
             traj[f].append(np.array(getattr(g, f)).copy())
+        names, vals = _counters(runner)
+        traj["_counters"].append(vals)
+    traj["_counter_names"] = names
     return traj
 
 
 def diff(tag, a, b):
     ok = True
+    names = a.get("_counter_names") or []
     for f in a:
+        if f == "_counter_names":
+            continue
         for t, (fa, fb) in enumerate(zip(a[f], b[f])):
             if not np.array_equal(fa, fb):
                 mism = int(np.count_nonzero(fa != fb))
                 idx = int(np.argmax(fa != fb))
-                print(f"  [{tag}] tick {t} field {f}: {mism} cells differ, "
-                      f"first @ {idx} cpu={fa.flat[idx]} cuda={fb.flat[idx]}")
+                who = (f" ({names[idx]})" if f == "_counters" and idx < len(names)
+                       else "")
+                print(f"  [{tag}] tick {t} field {f}: {mism} entries differ, "
+                      f"first @ {idx}{who} cpu={fa.flat[idx]} "
+                      f"cuda={fb.flat[idx]}")
                 ok = False
                 break
         if not ok:
@@ -103,8 +143,9 @@ def probe_level(level_name, n_steps=20):
 
     ok = diff(level_name, traj_cpu, traj_gpu)
     if ok:
-        print(f"  PASS: {n_steps} ticks bit-identical on "
-              f"{list(traj_cpu.keys())}")
+        shown = [k for k in traj_cpu if k != "_counter_names"]
+        print(f"  PASS: {n_steps} ticks bit-identical on {shown} "
+              f"({len(traj_cpu.get('_counter_names') or [])} counters)")
     return ok
 
 
