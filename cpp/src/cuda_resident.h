@@ -105,28 +105,24 @@ void trace_smoke_resident(
     const float* gas_decay,
     float dt, float advection_rate, float wind_diffusion_scale);
 
-// ---- kick + compression (cuda_kick_compression.cu) — S8a Path A ------------
-// The per-tick scalar folds the kick/compression kernels consume, factored to
-// ONE transcription (design §3.2.3): kick_scalar_folds computes them from the
+// ---- kick + energy flux (cuda_kick_compression.cu) — S8a Path A ------------
+// The per-tick scalar folds the kick kernel (K1) consumes, factored to ONE
+// transcription (design §3.2.3): kick_scalar_folds computes them from the
 // EOSSolver config floats through the IDENTICAL double expressions the CPU
 // step() folds (/fp:strict host pass); consumed by BOTH the per-call
 // eos_kick_compression entry and the resident launch core below.
+//
+// gas-energy conservation arc #54, P-G2: K2 (the old step-4c compression-work
+// kernel) is DELETED — its dials (t_min/t_max_phys/t_work_clamp/u_max/
+// gamma_m1/k_drag_heat_frac/c_v/n_work_ref) retire with it (D5/D10/D11). K1
+// now carries the per-stage KE brackets (design §2.3) straight to
+// `gas_energy`, so this struct shrinks to exactly what K1 reads.
 struct KickScalarFolds {
     int32_t n_floor_q    = 0;
-    int32_t t_min_q      = 0;
-    int32_t t_max_phys_q = 0;
-    int32_t u_max_q      = 0;
-    // T_ABS COMPRESSION WORK (P-W1a, design §5): the A7-floored ambient fold,
-    // threaded through the ABI. NOT read in arithmetic yet — lands at P-W1b.
-    int32_t t_amb_q      = 0;
     // VELOCITY-CLAMP (P-V1, D3): u_max² (Q32.32) for the kick's cap_is_umax
-    // test against the per-cell cap2_plane — the SAME fold every kick site
-    // derives from u_max_q.
+    // test against the per-cell cap2_plane.
     int64_t u_max2_q32   = 0;
-    int32_t gamma_m1_q   = 0;
-    int32_t dt_q         = 0;
     int32_t inv_2dx_q    = 0;
-    int32_t work_clamp_q = 0;
     int32_t absorb_dt_q  = 0;   // absorb_strength·dt (the §2.5 hoist's factor)
     int64_t Kdt_raw      = 0;   // (K·2^16)·dt at raw scale, 128-bit staged
     // P-E3 (energy-books arc, design §2.8): the interior-drag scalar folds,
@@ -139,47 +135,82 @@ struct KickScalarFolds {
     // would be a divide-by-zero at the shipped config).
     int32_t kd2_q        = 0;   // quantize(k_drag2 * dt) — dormancy branches on this
     int64_t rad_dead_q32 = 0;   // U0^2, Q.32; 0 iff kd2_q == 0
-    int32_t heat_frac_q  = 0;   // quantize(k_drag_heat_frac), a plain fraction
-    int64_t recip_cv     = 0;   // make_recip(c_v), Q.32 (RECIP_SHIFT=32)
-    // P-E4 (energy-books arc, design §2.4): the compression-work trust
-    // gate's per-tick fold — 1/n_work_ref, the SAME load-time-constant
-    // idiom recip_cv uses.
-    int64_t recip_n_work_ref = 0;
+    // arc #54 §2.1/§2.3: the derived specific-KE-to-ΔT constant, folded as
+    // make_recip(1/k_ke) (a Q.32 wide reciprocal — see eos_solver.cpp's fold
+    // comment for why the plain Q16.16 constant would lose ~6 bits).
+    int64_t k_ke_recip_q32 = 0;
 };
 KickScalarFolds kick_scalar_folds(
     float dt, float c_max, float dx, float adiabatic_index,
-    float absorb_strength, float n_floor_solver, float t_min,
-    float t_work_clamp, float t_max_phys, float u_max,
-    float k_drag, float k_drag2, float k_drag_heat_frac, float c_v, float n_work_ref,
-    // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K, folded to
-    // t_amb_q the SAME A7-floored expression the CPU live path folds.
+    float absorb_strength, float n_floor_solver, float u_max,
+    float k_drag, float k_drag2,
+    // arc #54 §2.1: T_AMB_K, adiabatic_index and c_max fold k_ke — the
+    // SAME double expression eos_solver.cpp's step() uses.
     float t_amb_k);
 
-// The step-4 + step-4c tail, LAUNCH ONLY, on DEVICE pointers — K1 kick then
-// K2 compression on one stream (the CPU pass boundary), no malloc, no
-// transfer, no memset, no sync, no digest. d_ntot is the post-substep Dalton
-// N_total plane; d_absorb_q the host-hoisted §2.5 absorb plane; d_cnt the
-// 9-slot rail-counter buffer THE CALLER ZEROES each tick (design §3.2.5) —
-// slots 0-4 are the original per-CELL hit counts, slots 5-8 are P-E3's
-// interior-drag int64 ENERGY SUMS (design §2.8: ke_drag_removed,
-// e_drag_deposit, e_drag_drop_sum, e_drag_rail_clipped), written by K1 (the
-// kick kernel now also writes temperature — own-cell T write from K1 is
-// race-free, K2 reads only neighbour u). d_amb/d_udamp nullable (space / no
-// band). The per-call eos_kick_compression wraps this same core with its
-// existing H2D/memset/D2H/digest flow — one kernel transcription, both paths.
+// The step-4 kick, LAUNCH ONLY, on DEVICE pointers (the CPU pass boundary),
+// no malloc, no transfer, no memset, no sync, no digest. d_ntot is the
+// post-substep Dalton N_total plane; d_absorb_q the host-hoisted §2.5 absorb
+// plane; d_gas_energy the arc #54 conserved field (in/out — K1's KE brackets
+// debit/credit it directly, design §2.3); d_cnt the KICK_CNT_SLOTS-slot
+// counter buffer THE CALLER ZEROES each tick (design §3.2.5) — see
+// cuda_kick_compression.cu's slot-map comment. d_amb/d_udamp nullable
+// (space / no band). The per-call eos_kick_compression wraps this same core
+// with its existing H2D/memset/D2H/digest flow — one kernel transcription,
+// both paths.
+constexpr int KICK_CNT_SLOTS = 15;
 void kick_compression_launch_resident(
-    int32_t* d_wind_x, int32_t* d_wind_y, int32_t* d_temperature,
+    int32_t* d_wind_x, int32_t* d_wind_y,
+    int64_t* d_gas_energy,         // arc #54 §2.2/§2.3, in/out
     const int32_t* d_p_new, const int32_t* d_ntot, const int32_t* d_absorb_q,
     const bool* d_solid, const bool* d_is_vacuum,
     const KickScalarFolds& folds,
     const int64_t* d_cap2_plane,   // VELOCITY-CLAMP (P-V1, D2v2), (h,w), >= 0
     unsigned long long* d_cnt, int h, int w,
     const bool* d_is_ambient, const int32_t* d_sponge_udamp,
-    // THERMAL-MASS AXIS, P-EOS: the medium mask K2 (compression work) skips its
-    // T write on. The P2 device-fallback idiom applies — the caller passes
-    // `d_thermal_solid ? d_thermal_solid : d_solid`, so the legacy path
-    // allocates and copies nothing and is not a second code path. K1 (the kick)
-    // never sees it: it writes u, never T.
+    // THERMAL-MASS AXIS, P-EOS: the medium mask the KE brackets export to
+    // (ts cells carry no gas_energy — design §2.3 F5). The P2 device-fallback
+    // idiom applies — the caller passes `d_thermal_solid ? d_thermal_solid :
+    // d_solid`, so the legacy path allocates and copies nothing.
     const bool* d_ts = nullptr);
+
+// ---- the face-flux energy step (cuda_kick_compression.cu K3) — P-G2 -------
+// Replaces the retired step-4c compression work (design §2.4/§2.5, Kwatra
+// eq. 3 with the eq. 15 face pressure). The per-tick scalar folds K3 and the
+// once-per-tick recovery consume, ONE transcription (the KickScalarFolds
+// precedent).
+struct EnergyFluxScalarFolds {
+    int32_t t_amb_q      = 0;   // quantize(T_AMB_K) raw
+    int32_t t_min_q      = 0;   // quantize(T_MIN) raw
+    int32_t t_max_phys_q = 0;   // quantize(T_MAX_PHYS) raw
+    int32_t c_q          = 0;   // quantize(C) — p* = C·E, C = 1/T_AMB_K
+    int32_t k_flux_q     = 0;   // the ONE per-sub-cycle flux constant (§2.4)
+    int64_t flux_pu_cap  = 0;   // FLUX_MAG_CAP / k_flux_q — the int64 corner
+    int     n_sub        = 1;   // the SAME substep schedule the kick/SL share
+};
+EnergyFluxScalarFolds energy_flux_scalar_folds(
+    float dt, float dx, float adiabatic_index, float t_amb_k, float c_value,
+    float t_min, float t_max_phys, int n_sub);
+
+// The face-flux energy step + the once-per-tick recovery, LAUNCH ONLY, on
+// DEVICE pointers — runs AFTER K_store_atm (the step-5 un-shift: the flux
+// step consumes the ABSOLUTE solved pressure, design §2.4). d_atmosphere is
+// the absolute p^{n+1} (post-unshift); d_gas_energy the conserved field,
+// in/out; d_n_total the post-substep Dalton N; d_ts the export mask (walls to
+// the energy step, design F4); d_e0/d_pcur/d_s_plane are caller-owned
+// per-tick scratch, (h,w) int64/int32/int32 (design §2.5 — the two-pass
+// gather shape, no atomics, no face buffer). d_cnt the FLUX_CNT_SLOTS-slot
+// counter buffer the caller zeroes each tick.
+constexpr int FLUX_CNT_SLOTS = 11;
+void energy_flux_launch_resident(
+    int64_t* d_gas_energy, int32_t* d_temperature,
+    const int32_t* d_atmosphere,
+    const int32_t* d_wind_x, const int32_t* d_wind_y,
+    const int32_t* d_n_total,
+    const bool* d_solid, const bool* d_is_vacuum, const bool* d_ts,
+    const bool* d_is_ambient,
+    const EnergyFluxScalarFolds& folds,
+    int64_t* d_e0, int32_t* d_pcur, int32_t* d_s_plane,
+    unsigned long long* d_cnt, int h, int w);
 
 }  // namespace breach_cuda
