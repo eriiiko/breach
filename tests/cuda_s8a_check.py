@@ -500,9 +500,15 @@ def _bench_eos_stage(H, W, reps=60):
         dev = g.device_ptrs()
 
         def fn():
+            # arc #54 §2.2 (P-G0/P-G2): `gas_energy` rides the resident
+            # upload/D2H pair beside `temperature` (physics_runner.py's
+            # `_step_resident` precedent) — K1's KE brackets, K3's face-flux
+            # step and the once-per-tick recovery all read/write its device
+            # buffer now, so an omitted d_gas_energy is a null device pointer
+            # the resident bulk-flux D2D e_pre snapshot then faults on.
             g.from_host(["atmosphere", "wind_x", "wind_y", "temperature",
                          "gas", "solid", "is_vacuum", "is_ambient",
-                         "dyn_permeability"])
+                         "dyn_permeability", "gas_energy"])
             runner.engine.run_substeps_resident(
                 g.wave_p, g.atmosphere, g.wind_x, g.wind_y, g.temperature,
                 g.solid, g.is_vacuum, g.dyn_permeability, g.dyn_wave_absorb,
@@ -512,9 +518,10 @@ def _bench_eos_stage(H, W, reps=60):
                 d_wind_x=dev["wind_x"], d_wind_y=dev["wind_y"],
                 d_temperature=dev["temperature"], d_gas=dev["gas"],
                 d_solid=dev["solid"], d_is_vacuum=dev["is_vacuum"],
-                d_dyn_permeability=dev["dyn_permeability"])
+                d_dyn_permeability=dev["dyn_permeability"],
+                d_gas_energy=dev["gas_energy"])
             g.to_host(["atmosphere", "wave_p", "wind_x", "wind_y",
-                       "temperature", "gas"])
+                       "temperature", "gas", "gas_energy"])
         return fn
 
     def timeit(fn):
