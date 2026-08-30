@@ -274,7 +274,11 @@ PYBIND11_MODULE(breach_physics, m) {
              float gas_advection_rate, float t_max_phys,
              py::object n_bulk_obj, py::object wind_x_obj, py::object wind_y_obj,
              float dt, py::object thermal_solid_obj,
-             py::object cool_shift_grid_obj, int cool_shift_floor) -> py::tuple {
+             py::object cool_shift_grid_obj, int cool_shift_floor,
+             // arc #54 §2.7 row 3: the conserved gas energy field, OPTIONAL —
+             // None -> nullptr -> the pre-#54 T-form law (the CPU `e_on` gate,
+             // same idiom as thermal_solid/cool_shift_grid above).
+             py::object gas_energy_obj, float t_amb_k) -> py::tuple {
               auto [temp, h, w]    = get_2d(temperature);
               auto [hp, h2, w2]    = get_2d_const(heat);
               auto [shift, h3, w3] = get_2d_const(heat_inv_shift);
@@ -326,24 +330,37 @@ PYBIND11_MODULE(breach_physics, m) {
                   auto [csp, hc, wc] = get_2d_const(csg_arr);
                   csg = csp;
               }
-              // P-E2a/P-E2b: the isolated GPU entry now returns
+              // arc #54 §2.7 row 3: gas_energy, OPTIONAL — None -> nullptr ->
+              // the pre-#54 T-form law. Kept alive in this scope (mutable,
+              // in/out — the same `get_2d` idiom the required arrays use).
+              int64_t* ge = nullptr;
+              py::array_t<int64_t> ge_arr;
+              if (!gas_energy_obj.is_none()) {
+                  ge_arr = gas_energy_obj.cast<py::array_t<int64_t>>();
+                  auto [gep, hg, wg] = get_2d(ge_arr);
+                  ge = gep;
+              }
+              const int32_t t_amb_q = fixedpoint::quantize((double)t_amb_k);
+              // P-E2a/P-E2b/arc #54: the isolated GPU entry now returns
               // (t_max_phys_hits, e_cond_trunc_sum, e_cond_cap_sum,
               //  cond_limit_hits, e_cool_sum, e_vac_wipe_sum, e_ring_pin_sum,
-              //  e_deposit_drop_sum) — the energy books the conduction
-              // rewrite (P-E2a) and the Pass-1 attenuation drop (P-E2b) must
-              // be gated on. An AUTHORIZED contract change (Appendix A
-              // P-E2a, extended P-E2b): the callers are
-              // tests/cuda_conduction_check.py, tests/cuda_thermal_mass_check.py
-              // and tests/cuda_cool_shift_check.py, which compare all seven
-              // against the CPU solver's own fields.
+              //  e_deposit_drop_sum, e_gas_deposit_sum, e_gas_cond_sum,
+              //  e_gas_rail_sum) — the energy books the conduction rewrite
+              // (P-E2a), the Pass-1 attenuation drop (P-E2b) and the gas-
+              // energy seam (arc #54 P-G2) must be gated on. Callers:
+              // tests/cuda_conduction_check.py, tests/cuda_thermal_mass_check.py,
+              // tests/cuda_cool_shift_check.py and the arc #54 gas-energy
+              // temperature check, which compare all ten against the CPU
+              // solver's own fields.
               int64_t cnt[breach_cuda::TEMPERATURE_ENERGY_SLOTS] = {0};
               const int64_t hits = breach_cuda::temperature_step(
                   temp, hp, shift, fs, sol, vac, atm, nb, wx, wy,
                   no_face, cool_shift, cool_shift_vacuum, o2_vacuum_thresh,
                   c_v, n_floor_heat, gas_advection_rate, t_max_phys, h, w, dt,
-                  nullptr, tsol, csg, cool_shift_floor, nullptr, nullptr, cnt);
+                  nullptr, tsol, csg, cool_shift_floor, nullptr, nullptr, cnt,
+                  ge, t_amb_q);
               return py::make_tuple(hits, cnt[0], cnt[1], cnt[2], cnt[3],
-                                    cnt[4], cnt[5], cnt[6]);
+                                    cnt[4], cnt[5], cnt[6], cnt[7], cnt[8], cnt[9]);
           },
           py::arg("temperature"), py::arg("heat"), py::arg("heat_inv_shift"),
           py::arg("face_shift"), py::arg("solid"), py::arg("is_vacuum"),
@@ -356,11 +373,15 @@ PYBIND11_MODULE(breach_physics, m) {
           py::arg("thermal_solid") = py::none(),   // thermal-mass axis (optional)
           py::arg("cool_shift_grid") = py::none(), // cool-shift axis (optional)
           py::arg("cool_shift_floor") = 2,         // == config SHIFT_MIN
-          "P6.6 isolated: run the GPU unified temperature solver in place on "
-          "`temperature` (bit-identical to TemperatureSolver.step); returns "
-          "(t_max_phys_hits, e_cond_trunc_sum, e_cond_cap_sum, cond_limit_hits, "
-          "e_cool_sum, e_vac_wipe_sum, e_ring_pin_sum, e_deposit_drop_sum) for "
-          "this call (P-E2a + P-E2b).");
+          py::arg("gas_energy") = py::none(),      // arc #54 §2.2 (optional)
+          py::arg("t_amb_k") = 290.0f,
+          "P6.6/P-G2 isolated: run the GPU unified temperature solver in place "
+          "on `temperature` (+ `gas_energy` when supplied — bit-identical to "
+          "TemperatureSolver.step); returns (t_max_phys_hits, e_cond_trunc_sum, "
+          "e_cond_cap_sum, cond_limit_hits, e_cool_sum, e_vac_wipe_sum, "
+          "e_ring_pin_sum, e_deposit_drop_sum, e_gas_deposit_sum, "
+          "e_gas_cond_sum, e_gas_rail_sum) for this call (P-E2a + P-E2b + "
+          "arc #54).");
 
     // CUDA-S2: the GPU directional raycaster gate. Casts ONE LightSource on the
     // GPU into the (pre-zeroed) output fields, replicating the CPU cast's per-ray
@@ -1162,27 +1183,24 @@ PYBIND11_MODULE(breach_physics, m) {
           "True if the EOS kick+compression tail is flagged for the GPU.");
     m.def("cuda_eos_kick_compression",
           [](py::array_t<int32_t> wind_x, py::array_t<int32_t> wind_y,
-             py::array_t<int32_t> temperature, py::array_t<int32_t> p_new,
+             py::array_t<int64_t> gas_energy,   // arc #54 §2.2/§2.3
+             py::array_t<int32_t> p_new,
              py::array_t<int32_t> gas, py::array_t<bool> gas_conservative,
              py::array_t<bool> solid, py::array_t<bool> is_vacuum,
              py::array_t<float> dyn_wave_absorb,
              float dt, py::array_t<int64_t> cap2_plane,
              float c_max, float dx, float adiabatic_index,
-             float absorb_strength, float n_floor_solver, float t_min,
-             float t_work_clamp, float t_max_phys, float u_max,
-             // trace_mass_scale param RETIRED (P-T0, design §2.6)
+             float absorb_strength, float n_floor_solver, float u_max,
              // P-E3 (design §2.8): interior drag + heat counterparty.
              // drag-law v2 (docs/drag_law_v2_design_2026-08-23.md): k_drag2,
              // the quadratic term (same dormancy idiom).
-             float k_drag, float k_drag2, float k_drag_heat_frac, float c_v,
-             // P-E4 (design §2.4): the compression-work trust gate.
-             float n_work_ref,
-             // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K.
+             float k_drag, float k_drag2,
+             // arc #54 §2.1: T_AMB_K folds the derived k_ke constant.
              float t_amb_k,
              py::object thermal_solid) -> py::tuple {   // THERMAL-MASS AXIS
               auto [wx, h, w]    = get_2d(wind_x);
               auto [wy, h2, w2]  = get_2d(wind_y);
-              auto [t, h3, w3]   = get_2d(temperature);
+              auto [ge, h3, w3]  = get_2d(gas_energy);
               auto [pn, h4, w4]  = get_2d_const(p_new);
               auto gv = gas.unchecked<3>();
               const int32_t* gas_ptr = gv.data(0, 0, 0);
@@ -1203,44 +1221,94 @@ PYBIND11_MODULE(breach_physics, m) {
                   auto ta = tsol_arr.unchecked<2>();
                   tsol = ta.data(0, 0);
               }
-              uint64_t dig_vel = 0, dig_comp = 0;
-              int64_t cnts[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+              uint64_t dig_vel = 0;
+              int64_t cnts[breach_cuda::KICK_CNT_SLOTS] = {0};
               breach_cuda::eos_kick_compression(
-                  wx, wy, t, pn, gas_ptr, gcons, n_gases, sol, vac, ab,
+                  wx, wy, ge, pn, gas_ptr, gcons, n_gases, sol, vac, ab,
                   h, w, dt, cap2,
                   c_max, dx, adiabatic_index, absorb_strength,
-                  n_floor_solver, t_min, t_work_clamp, t_max_phys, u_max,
-                  k_drag, k_drag2, k_drag_heat_frac, c_v, n_work_ref, t_amb_k,
-                  &dig_vel, &dig_comp, cnts,   // trace_mass_scale arg RETIRED
+                  n_floor_solver, u_max,
+                  k_drag, k_drag2, t_amb_k,
+                  &dig_vel, cnts,
                   nullptr, nullptr, tsol);
-              return py::make_tuple(dig_vel, dig_comp, cnts[0], cnts[1],
-                                    cnts[2], cnts[3], cnts[4], cnts[5],
-                                    cnts[6], cnts[7], cnts[8]);
+              py::list cnt_list;
+              for (int c = 0; c < breach_cuda::KICK_CNT_SLOTS; ++c) cnt_list.append(cnts[c]);
+              return py::make_tuple(dig_vel, cnt_list);
           },
-          py::arg("wind_x"), py::arg("wind_y"), py::arg("temperature"),
+          py::arg("wind_x"), py::arg("wind_y"), py::arg("gas_energy"),
           py::arg("p_new"), py::arg("gas"), py::arg("gas_conservative"),
           py::arg("solid"), py::arg("is_vacuum"), py::arg("dyn_wave_absorb"),
           py::arg("dt"), py::arg("cap2_plane"),
           py::arg("c_max"), py::arg("dx"), py::arg("adiabatic_index"),
           py::arg("absorb_strength"), py::arg("n_floor_solver"),
-          py::arg("t_min"), py::arg("t_work_clamp"), py::arg("t_max_phys"),
           py::arg("u_max"),
           py::arg("k_drag") = 0.0f, py::arg("k_drag2") = 0.0f,
-          py::arg("k_drag_heat_frac") = 1.0f,
-          py::arg("c_v") = 1.0f, py::arg("n_work_ref") = 0.25f,
-          // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K, threaded
-          // through the ABI; NOT read in arithmetic yet (P-W1b lands the law).
           py::arg("t_amb_k") = 290.0f,
           py::arg("thermal_solid") = py::none(),
-          "P6.4 isolated: run the GPU kick + compression-work tail in place on "
-          "wind_x/wind_y/temperature; cap2_plane is the per-cell (h,w) int64 "
-          "velocity-cap-squared plane (Q32.32 raw) — MUST be >= 0 everywhere "
-          "(a negative entry makes rad=0 > cap2 reachable, i.e. a divide by "
-          "zero inside the clamp). Returns (digest_velocity, "
-          "digest_compression, u_clamp_hits, u_max_hits, work_clamp_hits, "
-          "energy_floor_hits, t_max_phys_hits, ke_drag_removed, "
-          "e_drag_deposit, e_drag_drop_sum, e_drag_rail_clipped) for this "
-          "call — bit-identical to eos_kick_compression_ref.");
+          "P-G2 isolated: run the GPU kick (K1 only — K2 the old step-4c "
+          "compression-work kernel is DELETED, arc #54) in place on "
+          "wind_x/wind_y/gas_energy; cap2_plane is the per-cell (h,w) int64 "
+          "velocity-cap-squared plane (Q32.32 raw) — MUST be >= 0 everywhere. "
+          "Returns (digest_velocity, counters[KICK_CNT_SLOTS]) for this call — "
+          "see cuda_kick_compression.h for the slot map.");
+
+    // arc #54 P-G2: the face-flux energy step (K3) + the once-per-tick
+    // recovery, isolated GPU entry — the AB/gate twin of eos_energy_flux.
+    m.def("cuda_eos_energy_flux",
+          [](py::array_t<int64_t> gas_energy, py::array_t<int32_t> temperature,
+             py::array_t<int32_t> atmosphere,
+             py::array_t<int32_t> wind_x, py::array_t<int32_t> wind_y,
+             py::array_t<int32_t> n_total,
+             py::array_t<bool> solid, py::array_t<bool> is_vacuum,
+             float dt, int n_sub,
+             float dx, float adiabatic_index, float t_amb_k, float c_value,
+             float t_min, float t_max_phys,
+             py::object is_ambient, py::object thermal_solid) -> py::tuple {
+              auto [ge, h, w]    = get_2d(gas_energy);
+              auto [temp, h2, w2] = get_2d(temperature);
+              auto [atm, h3, w3] = get_2d_const(atmosphere);
+              auto [wx, h4, w4]  = get_2d_const(wind_x);
+              auto [wy, h5, w5]  = get_2d_const(wind_y);
+              auto [ntot, h6, w6] = get_2d_const(n_total);
+              auto [sol, h7, w7] = get_2d_const(solid);
+              auto [vac, h8, w8] = get_2d_const(is_vacuum);
+              const bool* amb = nullptr;
+              py::array_t<bool> amb_arr;
+              if (!is_ambient.is_none()) {
+                  amb_arr = is_ambient.cast<py::array_t<bool>>();
+                  auto aa = amb_arr.unchecked<2>();
+                  amb = aa.data(0, 0);
+              }
+              const bool* tsol = nullptr;
+              py::array_t<bool> tsol_arr;
+              if (!thermal_solid.is_none()) {
+                  tsol_arr = thermal_solid.cast<py::array_t<bool>>();
+                  auto ta = tsol_arr.unchecked<2>();
+                  tsol = ta.data(0, 0);
+              }
+              int64_t cnts[breach_cuda::FLUX_CNT_SLOTS] = {0};
+              breach_cuda::eos_energy_flux(
+                  ge, temp, atm, wx, wy, ntot, sol, vac,
+                  h, w, dt, n_sub, dx, adiabatic_index, t_amb_k, c_value,
+                  t_min, t_max_phys, cnts, amb, tsol);
+              py::list cnt_list;
+              for (int c = 0; c < breach_cuda::FLUX_CNT_SLOTS; ++c) cnt_list.append(cnts[c]);
+              return py::make_tuple(cnt_list);
+          },
+          py::arg("gas_energy"), py::arg("temperature"), py::arg("atmosphere"),
+          py::arg("wind_x"), py::arg("wind_y"), py::arg("n_total"),
+          py::arg("solid"), py::arg("is_vacuum"),
+          py::arg("dt"), py::arg("n_sub"),
+          py::arg("dx"), py::arg("adiabatic_index"), py::arg("t_amb_k"),
+          py::arg("c_value"), py::arg("t_min"), py::arg("t_max_phys"),
+          py::arg("is_ambient") = py::none(),
+          py::arg("thermal_solid") = py::none(),
+          "P-G2 isolated: run the GPU face-flux energy step (K3, sub-cycled "
+          "n_sub times) + the once-per-tick recovery in place on gas_energy/"
+          "temperature. `atmosphere` MUST be the ABSOLUTE solved pressure "
+          "(post step-5 un-shift on an ambient map). Returns "
+          "(counters[FLUX_CNT_SLOTS],) — see cuda_kick_compression.h for the "
+          "slot map.");
 
     // EOS P6.3: the GPU multigrid Helmholtz pressure solve (cuda_mg_solve.cu
     // — per-color RB-GS launches on fine levels, gather-form restriction/
@@ -3315,7 +3383,8 @@ PYBIND11_MODULE(breach_physics, m) {
                                 // THERMAL-MASS AXIS, P-EOS: the mirror + the
                                 // device copy of the per-medium THERMAL mask.
                                 py::object thermal_solid,
-                                std::uintptr_t d_thermal_solid) {
+                                std::uintptr_t d_thermal_solid,
+                                std::uintptr_t d_gas_energy) {
             auto [pp, h, w]    = get_2d(p_prev);
             auto [atm, h4, w4] = get_2d_const(atmosphere);
             auto [wx, h5, w5]  = get_2d_const(wind_x);
@@ -3362,7 +3431,7 @@ PYBIND11_MODULE(breach_physics, m) {
                 d_temperature, d_gas, d_solid, d_is_vacuum,
                 d_dyn_permeability, d_is_ambient,
                 d_sponge_sigma, d_sponge_udamp,
-                tsol, d_thermal_solid);
+                tsol, d_thermal_solid, d_gas_energy);
         }, py::arg("p_prev"), py::arg("atmosphere"),
            py::arg("wind_x"), py::arg("wind_y"), py::arg("temperature"),
            py::arg("solid"), py::arg("is_vacuum"),
@@ -3381,7 +3450,9 @@ PYBIND11_MODULE(breach_physics, m) {
            py::arg("d_sponge_sigma") = 0, py::arg("d_sponge_udamp") = 0,
            // THERMAL-MASS AXIS, P-EOS: default None/0 -> the pre-patch path.
            py::arg("thermal_solid") = py::none(),
-           py::arg("d_thermal_solid") = 0)
+           py::arg("d_thermal_solid") = 0,
+           // arc #54 §2.2 (P-G2): the conserved gas energy field's device ptr.
+           py::arg("d_gas_energy") = 0)
         // --- Patch 1 S4c: the water-layer array arithmetic ------------------
         // step_water moves the array-op body of PhysicsRunner._step_water into
         // C++ (substep loop + W5 flash-boil + W3 displacement/seal + the final

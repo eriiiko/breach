@@ -1267,6 +1267,11 @@ class PhysicsRunner:
             # compression kernels read. Uploaded fresh above.
             thermal_solid=gmap.thermal_solid,
             d_thermal_solid=dev["thermal_solid"],
+            # gas-energy conservation arc #54, design §5 (P-G2): the conserved
+            # field's device buffer now has a real consumer (K1's KE brackets,
+            # K3's face-flux step, the once-per-tick recovery) -- upload/D2H
+            # were already wired in P-G0 beside `temperature`.
+            d_gas_energy=dev["gas_energy"],
         )
 
         # -- 5. TRACE smoke loop + decay RESIDENT (on device) --------------------

@@ -321,7 +321,13 @@ public:
         // the legacy path. The device copy MUST ride the per-tick from_host
         // upload: unlike the sponge grids this mask is not static.
         const bool* thermal_solid = nullptr,
-        std::uintptr_t d_thermal_solid = 0);
+        std::uintptr_t d_thermal_solid = 0,
+        // arc #54 §2.2 (P-G2): the conserved gas energy field's PERSISTENT
+        // device buffer (GameMap's resident `gas_energy`, (h,w) int64). No
+        // host-mirror parameter is needed here — nothing in the resident
+        // pre-stage reduces over it (unlike thermal_solid's cap2 fold); the
+        // caller's from_host/to_host round-trips the mirror around this call.
+        std::uintptr_t d_gas_energy = 0);
 
     // --- Patch 1 S4c: the water-layer ARRAY ARITHMETIC -------------------
     // Moves the array-op core of PhysicsRunner._step_water into C++ — the part
