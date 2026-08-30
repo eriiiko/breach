@@ -666,6 +666,35 @@ opened tile's mirror) − 1 fixed (airlock). STOP `t_max_phys_hits` 564
 unchanged (ruling 1 above). CUDA combustion/temperature kernels do NOT
 carry `gas_energy` yet — the resident tick breaks the identity until P-G2.
 
+## P-G2 results (2026-08-30, `gas-energy-arc` fbe2e74..e676e06)
+
+**AB tol 0 PASS** on the live loop: full-`PhysicsRunner` CPU vs CUDA
+(`tests/_pg2_ab_probe.py`, all backends flipped) bit-identical on
+`gas_energy` / `temperature` / `wind_x/y` / `atmosphere` every tick on
+**playground, planetside_demo (ambient), bench_two_room**; resident
+full-engine identity confirmed independently by `cuda_s8a_check` PART 1a
+(space) + 1b (ambient, sigma + u-damp + ring breach). **Zero CPU file
+changes** (`git diff d3c6689 -- '*.cpp'` empty) — CPU trajectories
+unchanged by construction. Ported: K1 rewritten to the live kick loop
+(brackets, clamps, `rad_clip_hits`, `e_ts_ke_sum`), K2 deleted, new K3
+(pressure-refresh + two-pass flux) + recovery kernel wired after the
+un-shift on both per-call and resident paths, bulk transport priced off
+live E, temperature kernels' gas-side deposits; 25 xfails removed.
+
+**Declared gaps → P-G2b (Sonnet, mechanical, after P-G1c):**
+(1) `tests/cuda_*_check.py` scripts for kick / kick_drag2_timing /
+thermal_mass_eos / bulk_flux PART 3 / eos_step / s8a perf helper still
+pass stale positional args and counter widths → 15 red `test_cuda_*`
+wrappers (8 of them only on stale hardcoded Part-3 goldens → P-G3);
+(2) `_sealedbox_bisect_bench` / `_quiet_books_bench` not yet runnable on
+the resident backend (hardcoded CPU .pyd path) — gate 3's LSB-exact bench
+comparison outstanding; (3) **ACCEPTED GAP: `cuda_combustion.cu` NOT
+ported** — `combustion_backend_is_cuda()` has no consumer in
+physics_runner.py / physics_engine.cpp, so combustion always runs on the
+CPU and parity cannot break; the kernel is dead code diverging from its
+CPU twin, to be ported or deleted when resident combustion is scheduled
+(the RL arc #29 B2).
+
 Agent decisions accepted at review (P-G1a): `p*` keeps reading the mirror
 (ts cells' `p*` must read the object's T); rail scales magnitude then
 re-applies sign; `price_face` splits `E = N·q + r` to avoid a 128-bit
