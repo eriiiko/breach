@@ -59,11 +59,18 @@ COLD_STOPS = np.array([
 # HUMAN-TEST feedback (Erik, 2026-08-21, P-W3 round 1): without it the ramp
 # paints every near-vacuum/vented cell — on a space map that is thousands of
 # cells and the screen floods blue ("i first thought u filled everything with
-# water"). The cold of near-nothing is noise, not information — and the sim
-# itself agrees: the EOS trust gate fades compression work to zero below
-# n_work_ref/2 = 0.125 and to full trust at n_work_ref = 0.25 of ambient.
-# Aligning the overlay with that rule means we only PAINT cold where the
-# engine considers the temperature meaningful. 0.25 = full-trust threshold.
+# water"). The cold of near-nothing is noise, not information.
+#
+# HISTORICAL NOTE (superseded by arc #54, gas-energy conservation,
+# 2026-08-30): this threshold originally aligned with the EOS "trust gate"
+# (n_work_ref), which faded compression work to zero below n_work_ref/2 and
+# to full trust at n_work_ref = 0.25 of ambient. The trust gate is RETIRED
+# (D11 of the gas-energy design; telescoping + the flux step's own
+# positivity rail do its job instead), so 0.25 is no longer derived from
+# anything in the sim — it is kept, by Erik's ruling, as the overlay's OWN
+# constant (HUMAN-TEST ruling 2026-08-21 stands): near-vacuum temperature
+# readings are still visually meaningless below this N fraction regardless
+# of what backs them.
 COLD_N_MIN_FRAC = 0.25
 # Ambient bulk N in the measured (gas_o2 + inert_n2) Q16.16 convention.
 N_AMBIENT_RAW = 65536.0

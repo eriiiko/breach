@@ -7,6 +7,13 @@ re-injected every tick and drives the whole phenomenon.
 Status: **diagnosis, measured and reproduced headlessly. No engine code
 changed. Nothing merged.** Erik blesses before anything lands.
 
+**Superseded by arc #54 (gas-energy conservation, 2026-08-30)**: §"step 4c"
+below (line 214) describes the pre-arc temperature-form compression work,
+since retired and replaced by the conservative face-flux energy step —
+`docs/gas_energy_conservation_design_2026-08-29.md`. The mg_cycles /
+pressure-solve-convergence diagnosis this doc is actually about is
+unaffected by that change.
+
 ---
 
 ## 1. The headline

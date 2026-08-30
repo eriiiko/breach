@@ -10,6 +10,14 @@
 > `docs/architecture/engine/04_atmosphere_and_pressure.md`,
 > `docs/architecture/engine/14_determinism_and_number_ingress.md`
 > Archived to `docs/archive/` at arc close.
+>
+> **Superseded by arc #54 (gas-energy conservation, 2026-08-30)**: line 168's
+> `k_drag_heat_frac` (the drag-heat conversion dial referenced below) is
+> retired and replaced by the derived constant `k_ke = 1/(2·c_v_phys)` — see
+> `docs/gas_energy_conservation_design_2026-08-29.md` §2.1/§2.3 and
+> `docs/architecture/engine/04_atmosphere_and_pressure.md`'s "Gas-energy
+> conservation" as-built section. The two-term drag LAW itself (this doc's
+> subject) is unaffected — only the heat-side conversion constant moved.
 
 ## 0. Rulings (Erik, 2026-08-23 — all locked; do not re-derive)
 

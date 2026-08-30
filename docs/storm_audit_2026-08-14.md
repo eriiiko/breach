@@ -8,6 +8,15 @@ Claude on branch `storm-damping` (base `ee97f61`, post
 temperature-scale-unification merge), per Erik's standing ruling: AUDIT BEFORE
 ANY DAMPING DIAL; nothing feel-adjacent ships from this arc.
 
+**Superseded by arc #54 (gas-energy conservation, 2026-08-30)**: this
+report's `step-4c compression work` / `T_WORK_CLAMP` findings describe a
+mechanism that is now RETIRED — the conservative face-flux energy step
+(`docs/gas_energy_conservation_design_2026-08-29.md`) replaces it, and the
+rate-clamped-but-value-unbounded gap this audit diagnosed (§ "compression
+work needs a VALUE guard") is closed structurally by telescoping (no
+temperature exists unbacked by energy), not by a value guard on 4c. Read as
+historical diagnosis of a since-replaced law.
+
 **For a reader with no session context.** Erik reported (2026-08-03): fire
 perturbs the atmosphere so much that it oscillates unnaturally ("storming").
 The overnight analysis `docs/fire_atmosphere_oscillation_analysis_2026-08-03.md`
