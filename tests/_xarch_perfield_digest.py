@@ -196,7 +196,33 @@ UNIT_FIELD_LABEL = "__unit_state__"
 # one-primitive promotion (design §2.5) and the C/T_AMB_K throw guard +
 # unconsumed k_ke fold (design §2.1) are therefore confirmed
 # behaviour-preserving on the CPU build. (was a2cbc77ac324db99e0fcf2dc76e9ca15b3187c220a6d5abc5f4a110022c65cea)
-GOLDEN_AGGREGATE = "df1f5153c9ce60a4de8e9c2198ff8eab3eb8d8267cf8be43d3ede03650b236bd"
+# GAS-ENERGY CONSERVATION ARC, P-G3 GOLDEN REBASE (2026-08-30, design §6
+# P-G3, value-move event 2). Unlike P-G0's schema-only bump above, this one
+# is arithmetic: the canonical scenario exercises the EOS every tick, and
+# four patches on this branch moved that arithmetic since the P-G0 rebase:
+#   - P-G1a: the kick-loop KE brackets (RAD_SAFE guard moved + tightened,
+#     ∇p/absorb/sponge/clamp/drag each individually booked) and the
+#     sub-cycled face-flux energy step (design §2.3/§2.4) replace step 4c
+#     on the CPU EOS path -- every pressure- and thermal-coupled field the
+#     scenario's fire+smoke exercise the EOS through moves.
+#   - P-G1b: the writer seam went live for combustion, the thermal solver's
+#     gas side, pump primitives, and seal/unseal/destroy_wall/on_tile_changed
+#     (moved mass carries T_abs, minted mass is born at ambient) and the
+#     EOS-entry re-sync was deleted, so `gas_energy` is D1-live across whole
+#     ticks instead of being re-derived from the T mirror each tick.
+#   - P-G1d: the solve's divergence stencil moved to face form (û = 0 at
+#     solid faces, the exact discrete adjoint of the kick's pressure
+#     gradient) -- interior cells are bit-identical, but every field
+#     downstream of a wall-adjacent pressure cell moves (the "feel-adjacent"
+#     fix: BLAST peak |u| 8.7 -> 18.9 m/s in the P-G1d bench).
+#   - P-G2: CUDA twins only (K1/K3, bulk transport, combustion, temperature
+#     kernels) -- zero CPU source touched (`git diff d3c6689 -- '*.cpp'`
+#     empty), so it contributes nothing to the CPU trajectory captured here;
+#     named for completeness since it sits between P-G1d and P-G3.
+# DIGEST_SPEC_VERSION unchanged (v5, set at P-G0) -- values moved; no field
+# added/removed/retyped.
+# (was df1f5153c9ce60a4de8e9c2198ff8eab3eb8d8267cf8be43d3ede03650b236bd)
+GOLDEN_AGGREGATE = "f6daf44f4c2f563fc88bdb4465fb681a776141a9079d0e7c0f62f5c2b7fbb306"
 
 # Q2-lift: the single unit-state hash is additionally SPLIT into per-attribute
 # hashes so a cross-machine diff NAMES the diverging sub-field (hp vs facing vs

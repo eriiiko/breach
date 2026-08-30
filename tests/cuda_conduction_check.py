@@ -453,10 +453,10 @@ def part3_integration() -> bool:
     # golden — proves the P6.6 dispatch/n_bulk-hoist changed no CPU trajectory.
     bp.set_temperature_backend(False)
     dig = trajectory_digest(capture_trajectory(n_steps=30))
-    # EXPECTED RED until P-G3 re-baseline (#54): physics moved under
-    # P-G1a/P-G1b/P-G1d/P-G2 (stored gas_energy, the face-flux energy step,
-    # the D4 divergence face form) — golden regen is P-G3's job, not this
-    # patch's (P-G2b is test-tooling only). Left asserting, not loosened.
+    # Re-baselined in P-G3 (#54, 2026-08-30): the golden this imports was
+    # regenerated in tests/_xarch_perfield_digest.py after physics moved
+    # under P-G1a/P-G1b/P-G1d/P-G2 (stored gas_energy, the face-flux energy
+    # step, the D4 divergence face form) -- see that file's lineage block.
     if dig != GOLDEN:
         ok = False
         print(f"  GOLDEN MISMATCH: {dig[:16]}... != {GOLDEN[:16]}...")

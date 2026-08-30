@@ -101,8 +101,17 @@ def _step(sim, n=1):
 # physics=None, ambient scenario -- verified this level's other fields are
 # untouched by re-running with the old field set and diffing arrays). (was
 # 5d944aa8b085fa24a100575a1292196058f15953e0c0726f95342650cb685d8b)
+# GAS-ENERGY CONSERVATION ARC, P-G3 GOLDEN REBASE (2026-08-30, value-move
+# event 2). physics=None here, so no EOS step ever runs -- but the level-load
+# `gas_energy` seed (design §2.2's `N_raw x T_abs_raw` initializer, refreshed
+# at load per P-G1b) and the constants folded at that seed (§2.1's C derived
+# from T_AMB_K) moved under P-G1a/b/d, so the ONE-TIME seeded plane's bytes
+# move even on this dormant, unstepped-EOS scenario. Re-verified: every
+# other field is untouched (this is still the dormancy gate for everything
+# BUT the new field's own initial value). (was
+# d256de5eb8094e03877e300e98dbe8a19746ce89df73299922a68bed3d7b993e)
 DOORTEST_NOPHYS_TRAJ_DIGEST = \
-    "d256de5eb8094e03877e300e98dbe8a19746ce89df73299922a68bed3d7b993e"
+    "76ba6dc1c2800eae16f9f98f27abd1646c656e4068773a8150e94465e614cc35"
 
 
 def test_dormancy_door_present_wire_free_digest_byte_identical():

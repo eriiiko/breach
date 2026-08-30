@@ -93,8 +93,16 @@ from simulation.entities.registry import registry_content_hash  # noqa: E402
 # HEAD; this loop scenario is a different level but exercises the SAME
 # unmodified EOS/thermal/pump code paths). (was
 # a631c182c5669ebefd390dd321868874bbe17db1cd1f3e3195be1c276ede05dd)
+# GAS-ENERGY CONSERVATION ARC, P-G3 GOLDEN REBASE (2026-08-30, value-move
+# event 2). Unlike P-G0's schema-only move above, this loop scenario runs
+# LIVE physics (breach_physics), so P-G1a's kick-loop KE brackets + sub-cycled
+# face-flux energy step (replacing step 4c), P-G1b's live writer seam
+# (pumps in particular -- this scenario is a pump/vent loop), and P-G1d's
+# face-form wall divergence all move the atmosphere/pump trajectory this
+# golden pins. DIGEST_SPEC_VERSION unchanged. (was
+# 4fa67f37383c9c3abeedef73699f480e2d7f30d35d37397b34719ad653778769)
 LOOP_GOLDEN_TRAJ_DIGEST = \
-    "4fa67f37383c9c3abeedef73699f480e2d7f30d35d37397b34719ad653778769"
+    "38a47454a12b09b7815c9b95b672e815f9291bb0b3e42c30386fdb2577b3b6b3"
 LOOP_GOLDEN_STEPS = 30
 LOOP_GOLDEN_SEED = 1
 
