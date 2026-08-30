@@ -625,6 +625,10 @@ def part3_golden() -> bool:
     from _xarch_perfield_digest import GOLDEN_AGGREGATE as GOLDEN
     base = capture_trajectory(n_steps=30)
     dig = trajectory_digest(base)
+    # EXPECTED RED until P-G3 re-baseline (#54): physics moved under
+    # P-G1a/P-G1b/P-G1d/P-G2 (stored gas_energy, the face-flux energy step,
+    # the D4 divergence face form) — golden regen is P-G3's job, not this
+    # patch's (P-G2b is test-tooling only). Left asserting, not loosened.
     if dig != GOLDEN:
         print(f"  GOLDEN MISMATCH: {dig[:16]}... != {GOLDEN[:16]}...")
         return False
