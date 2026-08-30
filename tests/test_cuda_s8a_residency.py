@@ -20,21 +20,6 @@ import pytest
 
 import cuda_harness
 
-# ---------------------------------------------------------------------------
-# CUDA PARITY SUSPENDED, P-G1a -> P-G2 (gas-energy conservation arc #54,
-# design §5 "CUDA parity is suspended from P-G1a until P-G2 -- named,
-# time-boxed"). P-G1a rewrites the CPU EOS energy chain (the per-stage KE
-# brackets, the face-flux energy step, the once-per-tick recovery, and the
-# transport's energy half) and DELIBERATELY leaves the .cu twins on the old
-# step-4c kernels, so every CPU-vs-GPU bit-identity check in this family is
-# expected to diverge until P-G2 lands K1's brackets and the new K3 flux
-# kernel. `strict=False` so a check that happens to still agree does not
-# fail the suite -- P-G2 removes these marks and re-arms the gate.
-pytestmark = pytest.mark.xfail(
-    reason="P-G2 pending: CUDA twins of the energy step", strict=False)
-
-
-
 pytestmark = pytest.mark.skipif(
     not cuda_harness.cuda_available("s8a_residency"),
     reason="no CUDA build (cpp/build_cuda) or CUDA runtime DLLs present",
