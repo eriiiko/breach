@@ -1,0 +1,21 @@
+# created by tools/map_editor.py (engine/15 §5 NEW)
+version = "2"
+name = "my_ship"
+
+# v2 codes ARE canon material ids (src/simulation/materials.py)
+tilemap = "tilemap.csv"
+
+tile_size_m = 0.333
+
+[art.bare]
+diffuse = "baked_diffuse.png"
+normal = "baked_normal.png"
+
+[art.align]
+offset_px = [0.0, 0.0]
+px_per_tile = [64.00, 64.00]
+
+[bake]
+tileset = "art/tilesets/greybox"
+px_per_tile = 64
+seed = 0
