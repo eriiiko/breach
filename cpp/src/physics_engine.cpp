@@ -297,15 +297,12 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // the documented nullptr fallback for the mask — but no longer selects
         // the medium there, exactly as on the CPU side below.
         //
-        // P-E2a/P-E2b: the GPU pass fills a local 7-slot block which is then
-        // folded into the solver's own accumulators below the call — the same
-        // "backend-agnostic telemetry" idiom t_max_phys_hits / t_low_rail_hits
-        // already use here.
-        // arc #54: the CUDA temperature kernel is a P-G2 twin — parity is
-        // SUSPENDED from P-G1a (design §5), so this branch deliberately does
-        // NOT carry `gas_energy`. It stays on the T-form law until P-G2 ports
-        // the gas-side deposit; the CPU branch below is the arc's live path.
-        (void)gas_energy; (void)t_amb_q;
+        // P-E2a/P-E2b/arc #54: the GPU pass fills a local TEMPERATURE_ENERGY_
+        // SLOTS block which is then folded into the solver's own accumulators
+        // below the call — the same "backend-agnostic telemetry" idiom
+        // t_max_phys_hits / t_low_rail_hits already use here.
+        // arc #54 P-G2: the CUDA temperature kernel now carries `gas_energy`
+        // through the seam (gas_energy.h), same as the CPU branch below.
         int64_t cond_counters[breach_cuda::TEMPERATURE_ENERGY_SLOTS] = {0};
         this->temperature.t_max_phys_hits += breach_cuda::temperature_step(
             temperature_mut, heat, heat_inv_shift, face_shift,
@@ -331,10 +328,13 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             &this->temperature.t_low_rail_hits,
             // P-R4: the SIGNED radiation fold, on the GPU twin too.
             rad_net,
-            // P-E2a: the six energy counters, folded into the SAME solver
-            // fields the CPU path increments — one set of books regardless of
-            // backend. Slot order is pinned by cuda_temperature.h.
-            cond_counters);
+            // P-E2a/arc #54: the ten energy counters, folded into the SAME
+            // solver fields the CPU path increments — one set of books
+            // regardless of backend. Slot order is pinned by cuda_temperature.h.
+            cond_counters,
+            // arc #54 §2.7 row 3: the conserved gas energy field + its ambient
+            // fold — the SAME two args the CPU branch below passes.
+            gas_energy, t_amb_q);
         this->temperature.e_cond_trunc_sum   += cond_counters[0];
         this->temperature.e_cond_cap_sum     += cond_counters[1];
         this->temperature.cond_limit_hits    += cond_counters[2];
@@ -342,6 +342,9 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         this->temperature.e_vac_wipe_sum     += cond_counters[4];
         this->temperature.e_ring_pin_sum     += cond_counters[5];
         this->temperature.e_deposit_drop_sum += cond_counters[6];  // P-E2b
+        this->temperature.e_gas_deposit_sum  += cond_counters[7];  // arc #54
+        this->temperature.e_gas_cond_sum     += cond_counters[8];  // arc #54
+        this->temperature.e_gas_rail_sum     += cond_counters[9];  // arc #54
     } else
 #endif
     {
@@ -429,6 +432,7 @@ void PhysicsEngine::run_substeps(
         breach_cuda::eos_step_cuda(
             this->eos,
             atmosphere, p_prev, wind_x, wind_y, temperature,
+            gas_energy,                                  // arc #54 §2.2 (P-G2)
             gas, gas_conservative, n_gases,
             solid, is_vacuum,
             dyn_permeability, dyn_wave_absorb,
@@ -584,7 +588,8 @@ void PhysicsEngine::run_substeps_resident(
         std::uintptr_t d_dyn_permeability,
         std::uintptr_t d_is_ambient,
         std::uintptr_t d_sponge_sigma, std::uintptr_t d_sponge_udamp,
-        const bool* thermal_solid, std::uintptr_t d_thermal_solid) {
+        const bool* thermal_solid, std::uintptr_t d_thermal_solid,
+        std::uintptr_t d_gas_energy) {
 #ifdef BREACH_HAS_CUDA
     if (!breach_cuda::eos_step_backend_is_cuda()) {
         throw std::runtime_error(
@@ -613,7 +618,9 @@ void PhysicsEngine::run_substeps_resident(
         reinterpret_cast<const int32_t*>(d_sponge_sigma),
         reinterpret_cast<const int32_t*>(d_sponge_udamp),
         // THERMAL-MASS AXIS: the DEVICE mask the SL/compression kernels read.
-        reinterpret_cast<const bool*>(d_thermal_solid));
+        reinterpret_cast<const bool*>(d_thermal_solid),
+        // arc #54 §2.2 (P-G2): the conserved gas energy field's device buffer.
+        reinterpret_cast<int64_t*>(d_gas_energy));
 #else
     (void)p_prev; (void)atmosphere; (void)wind_x; (void)wind_y;
     (void)temperature; (void)solid; (void)is_vacuum; (void)dyn_permeability;
@@ -623,7 +630,7 @@ void PhysicsEngine::run_substeps_resident(
     (void)d_wind_y; (void)d_temperature; (void)d_gas_base; (void)d_solid;
     (void)d_is_vacuum; (void)d_dyn_permeability; (void)d_is_ambient;
     (void)d_sponge_sigma; (void)d_sponge_udamp;
-    (void)thermal_solid; (void)d_thermal_solid;
+    (void)thermal_solid; (void)d_thermal_solid; (void)d_gas_energy;
     throw std::runtime_error(
         "run_substeps_resident requires the CUDA build (BREACH_CUDA=ON).");
 #endif
