@@ -694,6 +694,43 @@ gradient at solid faces and with the energy step) — **P-G1d**, CPU +
 CUDA twin, digest-class; likely also removes the 0.4% cross-wall pressure
 contamination (same stencil).
 
+## P-G1d result (2026-08-30, `gas-energy-arc` 008ab16, fd91ded): the wall stencil was wrong and is fixed — and it was not the +5
+
+Face-form divergence with `û = 0` at solid faces landed (CPU + both CUDA
+twins, `tests/test_eos_div_face_form.py`): interior cells bit-identical
+(the `u_i` terms cancel before the shift), and the new divergence is the
+**exact discrete negative adjoint of the kick's mirror gradient** — the
+old central form had no such partner. AB tol 0 PASS incl. gas planes +
+38 counters on three levels. Ring/vacuum faces already agreed with the
+energy step's OUTFLOW branch; ts faces untouched on both sides.
+
+**But SB (ii) reads +5.59 (was +5.01)** and the dipole survives
+(boundary −21 / interior +24, conduction off). The decisive bracket
+(`pg1d_seal_ic.py`): `seal_tiles` evacuates the ring's gas into the box's
+boundary layer, so the box is born with **N_bnd/N_int = 1.583**;
+flattening N right after the seal → dipole ±0.3 and **ΔT_box −0.001 —
+on both the pre- and post-patch binaries**. The +5 is the seal bench's
+own initial condition: an adiabatic redistribution (dense cold shell,
+thin hot core — physically legitimate) that walls pinned at ambient then
+feed as an infinite reservoir; gas↔ts AND gas↔gas conduction are both
+needed (series circuit — `no_gas_ts` → 0, `no_gas_gas` → 0), which is
+why re-pricing one half (P-G1c's patch, re-tried and DROPPED: 2e-5
+relative) cannot close it. **Verdict: not a solver defect; the bound of
+ambient-reservoir walls. The real fix is #58 (walls with finite thermal
+mass).** The SB gate (ii) is restated: ±2 with conduction off (PASS
++0.00); with conduction on, the residual is the reservoir bound (≤ +6 on
+the seal bench, 0 in QUIET, 0 on HP's rooms).
+
+**The stencil fix is feel-adjacent** (BLAST peak |u| 8.7 → 18.9 m/s,
+outside-disc peak 219 → 170; AS glass bursts 3 → 16 tiles — walls now
+reflect honestly instead of leaking divergence; VENT chill moved one ring
+outward). Kept on the branch as part of the arc's HUMAN-TEST (P-G4) with
+its own line in the brief. Two thin-margin threshold tests flipped
+(airlock evacuation target missed by 1.0%; drag2 leg-4 negative-control
+ratio 1.47 vs 1.5 bound) → P-G3 mindful restatement. The 0.4% cross-wall
+pressure contamination is unchanged (interior collocated mismatch,
+pre-existing, not wall-related).
+
 ## P-G2 results (2026-08-30, `gas-energy-arc` fbe2e74..e676e06)
 
 **AB tol 0 PASS** on the live loop: full-`PhysicsRunner` CPU vs CUDA
