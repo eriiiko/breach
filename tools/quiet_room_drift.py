@@ -12,7 +12,13 @@ air-boundary gates use), recording per tick:
                             binding (Sigma n_bulk*T over the accountable set,
                             raw Q16.16^2; test_destroy_wall_conserves_mass.py
                             gate 6's ``_books()`` reads the identical call).
-  eth_compression_delta    runner.eos.eth_compression_delta — PER-TICK (reset
+  e_kick_ke_sum            runner.eos.e_kick_ke_sum — PER-TICK (reset
+                           (arc #54 P-G1a: `eth_compression_delta` is
+                           structurally 0 now — step 4c is gone and the
+                           face-flux step telescopes, so that bracket can
+                           no longer detect anything. The kick's KE debit
+                           is the live per-tick energy channel to watch
+                           in a QUIET room: it should net ~0.)
                             at every EOSSolver.step() entry; recorded raw,
                             never diffed — the storm_ledger.PER_TICK_COUNTERS
                             idiom).
@@ -118,7 +124,7 @@ def run(ticks: int = DEFAULT_TICKS) -> dict:
     interior = (~g.solid) & (~g.is_ambient)
     _seed_pressure_bump(g, interior)
 
-    cols = ("tick", "eos_energy_books_sum", "eth_compression_delta",
+    cols = ("tick", "eos_energy_books_sum", "e_kick_ke_sum",
             "max_abs_t_rel", "mean_t_rel", "t_min_gas") + COUNTER_NAMES
     series = {c: [] for c in cols}
 
@@ -128,7 +134,7 @@ def run(ticks: int = DEFAULT_TICKS) -> dict:
         t_interior = g.temperature[interior].astype(np.int64)
         series["tick"].append(k)
         series["eos_energy_books_sum"].append(int(runner.energy_books_sum(g)))
-        series["eth_compression_delta"].append(int(eos.eth_compression_delta))
+        series["e_kick_ke_sum"].append(int(eos.e_kick_ke_sum))
         series["max_abs_t_rel"].append(float(np.abs(t_interior).max()) / FP_ONE)
         series["mean_t_rel"].append(float(t_interior.mean()) / FP_ONE)
         series["t_min_gas"].append(float(t_interior.min()) / FP_ONE)
@@ -140,7 +146,7 @@ def run(ticks: int = DEFAULT_TICKS) -> dict:
         "ticks": ticks,
         "eos_energy_books_sum_start": int(series["eos_energy_books_sum"][0]),
         "eos_energy_books_sum_end": int(series["eos_energy_books_sum"][-1]),
-        "eth_compression_delta_sum": int(series["eth_compression_delta"].sum()),
+        "e_kick_ke_sum_sum": int(series["e_kick_ke_sum"].sum()),
         "max_abs_t_rel_over_run": float(series["max_abs_t_rel"].max()),
         "mean_t_rel_final": float(series["mean_t_rel"][-1]),
         "t_min_gas_over_run": float(series["t_min_gas"].min()),
@@ -165,7 +171,7 @@ def main(argv=None) -> int:
     print(f"\n  {'field':28s} {'value':>18s}")
     print(f"  {'eos_energy_books_sum start':28s} {s['eos_energy_books_sum_start']:18d}")
     print(f"  {'eos_energy_books_sum end':28s} {s['eos_energy_books_sum_end']:18d}")
-    print(f"  {'eth_compression_delta sum':28s} {s['eth_compression_delta_sum']:18d}")
+    print(f"  {'e_kick_ke_sum sum':28s} {s['e_kick_ke_sum_sum']:18d}")
     print(f"  {'max|T_rel| over run (deg)':28s} {s['max_abs_t_rel_over_run']:18.6f}")
     print(f"  {'mean T_rel at run end (deg)':28s} {s['mean_t_rel_final']:18.6f}")
     print(f"  {'t_min_gas over run (deg)':28s} {s['t_min_gas_over_run']:18.6f}")

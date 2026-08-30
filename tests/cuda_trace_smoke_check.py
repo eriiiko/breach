@@ -304,7 +304,7 @@ def _tick(runner, g, inert_n2_idx, dt):
     runner.engine.run_substeps(
         g.wave_p, g.atmosphere,
         g.wind_x, g.wind_y,
-        g.temperature,
+        g.temperature, g.gas_energy,   # arc #54 §2.2 (MECHANICAL)
         g.obstacles, g.solid, g.is_vacuum,
         g.dyn_permeability, g.dyn_wave_absorb,
         g.gas, g.gases.diffusion, g.gases.conservative,
@@ -420,6 +420,10 @@ def part3_golden() -> bool:
     from _xarch_perfield_digest import GOLDEN_AGGREGATE as GOLDEN
     base = capture_trajectory(n_steps=30)
     dig = trajectory_digest(base)
+    # Re-baselined in P-G3 (#54, 2026-08-30): the golden this imports was
+    # regenerated in tests/_xarch_perfield_digest.py after physics moved
+    # under P-G1a/P-G1b/P-G1d/P-G2 (stored gas_energy, the face-flux energy
+    # step, the D4 divergence face form) -- see that file's lineage block.
     if dig != GOLDEN:
         print(f"  GOLDEN MISMATCH: {dig[:16]}... != {GOLDEN[:16]}...")
         return False

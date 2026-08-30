@@ -107,11 +107,16 @@ def bench_cpu_tick(n_ticks=60):
 # ---------------------------------------------------------------------------
 # CUDA leg — the isolated cuda_eos_kick_compression call, armed vs dormant.
 # ---------------------------------------------------------------------------
+# arc #54 (P-G2): step 4c (compression work) is DELETED — `temperature`,
+# `t_min`/`t_work_clamp`/`t_max_phys` (moved to the §2.6 recovery, outside
+# this isolated tail) and `k_drag_heat_frac`/`c_v` (the retired deposit
+# formula, D5) are gone from `cuda_eos_kick_compression`'s signature; the
+# kick now runs in place on `gas_energy` (arc #54 §2.2/§2.3) instead, and
+# `t_amb_k` is LOAD-BEARING (folds the derived k_ke constant).
 CONSTS = dict(
     c_max=300.0, dx=1.0 / 3.0, adiabatic_index=1.4, absorb_strength=8.0,
-    n_floor_solver=1e-3, t_min=-289.0, t_work_clamp=0.5,
-    t_max_phys=16000.0, u_max=1000.0,
-    k_drag=0.0, k_drag_heat_frac=1.0, c_v=1.0,
+    n_floor_solver=1e-3, u_max=1000.0,
+    k_drag=0.0, t_amb_k=290.0,
 )
 
 
@@ -119,7 +124,10 @@ def _make_windy_field(h=160, w=160):
     rng = np.random.default_rng(1)
     wind_x = np.full((h, w), int(_quantize(60.0)), dtype=np.int32)
     wind_y = np.full((h, w), int(_quantize(-45.0)), dtype=np.int32)
-    temperature = np.full((h, w), int(_quantize(20.0)), dtype=np.int32)
+    # arc #54: the field the kick's KE brackets debit/credit now — a plausible
+    # ambient-ish magnitude (N~1 raw-count worth of air at T_AMB_K), timing
+    # only, no correctness claim.
+    gas_energy = np.full((h, w), FP_ONE * FP_ONE * 290, dtype=np.int64)
     p_new = _quantize(rng.random((h, w)) * 0.4 - 0.2).astype(np.int32)
     gas = np.zeros((3, h, w), dtype=np.int32)
     gas[0] = _quantize(0.21)
@@ -129,7 +137,7 @@ def _make_windy_field(h=160, w=160):
     is_vacuum = np.zeros((h, w), dtype=bool)
     absorb = np.zeros((h, w), dtype=np.float32)
     cap2 = np.full((h, w), int(_quantize(2300.0)) ** 2, dtype=np.int64)
-    return dict(wind_x=wind_x, wind_y=wind_y, temperature=temperature,
+    return dict(wind_x=wind_x, wind_y=wind_y, gas_energy=gas_energy,
                 p_new=p_new, gas=gas, gas_conservative=gas_conservative,
                 solid=solid, is_vacuum=is_vacuum, absorb=absorb, cap2=cap2)
 
@@ -140,8 +148,8 @@ def _time_cuda_call(fields, k_drag2, dt, n_iter):
 
     def call():
         wx, wy = fields["wind_x"].copy(), fields["wind_y"].copy()
-        t = fields["temperature"].copy()
-        bp.cuda_eos_kick_compression(wx, wy, t, *args_tail, dt, fields["cap2"],
+        ge = fields["gas_energy"].copy()
+        bp.cuda_eos_kick_compression(wx, wy, ge, *args_tail, dt, fields["cap2"],
                                      k_drag2=k_drag2, **CONSTS)
 
     for _ in range(5):

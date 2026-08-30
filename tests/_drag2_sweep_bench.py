@@ -16,8 +16,10 @@ Prints, per k2: the 50%-equalization ratio vs the k2=0 baseline (same exact
 definition as the venting gate -- see that module's docstring for the full
 derivation and the "why mass, not pressure" finding), the worst (max)
 single-tick |u| reached anywhere in the open interior, the mean per-tick
-``e_drag_deposit`` (plus its run-total for context), the rail counters
-(``e_drag_rail_clipped`` energy-sum and ``t_max_phys_hits`` hit-count), and
+``e_drag_heat_sum`` (plus its run-total for context; arc #54 P-G1a
+replaced the deposit/drop/rail-clipped triple with this one counter --
+there is no heat FRACTION, no c_v divide and no rail AT the deposit site
+any more, design D5), the ``t_max_phys_hits`` hit-count, and
 the design §5 int64 ledger-headroom margin (worst single-tick
 ``ke_drag_removed`` vs the 2^31 threshold).
 
@@ -109,8 +111,10 @@ def run_leg(ticks, k_drag2):
         runner.step(g, dt)
         n_trace[k] = n_total()
         ke = int(runner.eos.ke_drag_removed)
-        e_dep_sum += int(runner.eos.e_drag_deposit)
-        e_rail_sum += int(runner.eos.e_drag_rail_clipped)
+        e_dep_sum += int(runner.eos.e_drag_heat_sum)
+        e_rail_sum += 0   # arc #54: e_drag_rail_clipped RETIRED (D5) --
+                          # the T_MAX_PHYS rail moved to the §2.6 recovery,
+                          # so a deposit can no longer be clipped at all
         worst_ke = max(worst_ke, ke)
         rad = (g.wind_x[open_mask].astype(np.int64) ** 2
                + g.wind_y[open_mask].astype(np.int64) ** 2)
@@ -174,9 +178,9 @@ def main(argv=None) -> int:
           "measured k2~=0.15-0.2 empirical crossover at THIS neck)")
     print("worst|u| = max wind speed (m/s) reached anywhere in the open "
           "interior over the whole run")
-    print("mean e_dep/tick, e_dep_sum = drag heat DEPOSIT (e_drag_deposit), "
+    print("mean e_dep/tick, e_dep_sum = drag heat DEPOSIT (e_drag_heat_sum), "
           "per-tick mean and run total (raw Q16.16^2 energy-sum units)")
-    print("e_rail_sum = e_drag_rail_clipped run total (energy-sum units); "
+    print("e_rail_sum = RETIRED at arc #54 (always 0); "
           "t_max_phys = t_max_phys_hits (cumulative hit COUNT)")
     print("headroom_x = design §5's 2^31 int64 ledger bound / worst single-"
           "tick Sigma_cells N*du^2 (real units) -- bigger is safer")

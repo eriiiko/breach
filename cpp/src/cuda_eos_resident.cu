@@ -84,6 +84,19 @@ __device__ __forceinline__ int mirror_idx_dev_r(
     return ni;
 }
 
+// ---- face-form divergence face read (eos_solver.cpp face2_u, verbatim) -----
+// arc #54 P-G1d / D4: 2·û_f, with û = 0 at a SOLID (or out-of-bounds) face and
+// û = (u_i + u_j)/2 on an open one; the ½ rides in `inv_2dx_q`. Derivation and
+// the interior bit-identity argument: eos_solver.cpp's copy.
+__device__ __forceinline__ int64_t face2_u_dev_r(
+        const int32_t* __restrict__ u, int self_i, int ny, int nx,
+        int h, int w, const bool* __restrict__ solid) {
+    if (ny < 0 || ny >= h || nx < 0 || nx >= w) return 0;
+    const int ni = ny * w + nx;
+    if (solid[ni]) return 0;
+    return (int64_t)u[self_i] + (int64_t)u[ni];
+}
+
 // ============================================================================
 // MID-STAGE kernels — verbatim device transcriptions of eos_step_cuda's host
 // mid-stage (cuda_eos_step.cu "HOST MID-STAGE" block), one writer per cell.
@@ -106,12 +119,13 @@ __global__ void K_div_u(int32_t* __restrict__ div_u,
         }
         const int y = i / w;
         const int x = i - y * w;
-        const int il = mirror_idx_dev_r(i, y, x - 1, h, w, solid);
-        const int ir = mirror_idx_dev_r(i, y, x + 1, h, w, solid);
-        const int iu = mirror_idx_dev_r(i, y - 1, x, h, w, solid);
-        const int id = mirror_idx_dev_r(i, y + 1, x, h, w, solid);
-        const q16 dux = mul_q16(wind_x[ir] - wind_x[il], inv_2dx_q);
-        const q16 duy = mul_q16(wind_y[id] - wind_y[iu], inv_2dx_q);
+        // arc #54 P-G1d (D4): FACE FORM, û = 0 at solid faces.
+        const int64_t fw = face2_u_dev_r(wind_x, i, y, x - 1, h, w, solid);
+        const int64_t fe = face2_u_dev_r(wind_x, i, y, x + 1, h, w, solid);
+        const int64_t fn = face2_u_dev_r(wind_y, i, y - 1, x, h, w, solid);
+        const int64_t fs = face2_u_dev_r(wind_y, i, y + 1, x, h, w, solid);
+        const q16 dux = mul_q16((q16)(fe - fw), inv_2dx_q);
+        const q16 duy = mul_q16((q16)(fs - fn), inv_2dx_q);
         div_u[i] = dux + duy;
     }
 }
@@ -558,7 +572,14 @@ struct EOSResidentScratch {
     int64_t* cap2 = nullptr;
     bool* cons_flag = nullptr;                 // (n_gases,) device flags
     unsigned long long* rail = nullptr;        // (n_cons,)
-    unsigned long long* cnt = nullptr;         // (5,)
+    unsigned long long* cnt = nullptr;         // (KICK_CNT_SLOTS,)
+    // arc #54 P-G2: K3's per-tick scratch (design §2.4/§2.5) — the increment-
+    // form pressure-refresh baseline, the refreshed cell pressure, and the
+    // donor-only positivity rail's per-cell scale. Never synced (scratch
+    // only, like e/nbulk/dqsum above).
+    int64_t* e0 = nullptr;
+    int32_t *pcur = nullptr, *s_plane = nullptr;
+    unsigned long long* flux_cnt = nullptr;    // (FLUX_CNT_SLOTS,)
     // MG hierarchy
     DevLevel lv[MG_MAX_LEVELS_RES];
 
@@ -568,12 +589,14 @@ struct EOSResidentScratch {
         f(dq_e); f(dq_s); f(scale); f(div_u); f(ntot); f(pstar);
         f(absorb_q); f(cap2); f(cons_flag); f(rail); f(cnt);
         f(e); f(nbulk); f(dqsum_e); f(dqsum_s); f(ecnt);
+        f(e0); f(pcur); f(s_plane); f(flux_cnt);
         svx = svy = st = coeffE = coeffS = dq_e = dq_s = scale = nullptr;
         div_u = ntot = pstar = absorb_q = nullptr;
         cap2 = nullptr;
         cmask = nullptr;
         cons_flag = nullptr; rail = nullptr; cnt = nullptr;
         e = nbulk = dqsum_e = dqsum_s = nullptr; ecnt = nullptr;
+        e0 = nullptr; pcur = nullptr; s_plane = nullptr; flux_cnt = nullptr;
         for (auto& L : lv) {
             f(L.excl); f(L.m); f(L.gE); f(L.gS); f(L.recip); f(L.b);
             f(L.res); f(L.P);
@@ -607,13 +630,18 @@ struct EOSResidentScratch {
         cuda_check(cudaMalloc(&cons_flag, (size_t)NG), "res malloc cons_flag");
         if (NC > 0)
             cuda_check(cudaMalloc(&rail, (size_t)NC * 8), "res malloc rail");
-        // P-E3 (design §2.8): cnt grows 5 -> 9 slots (drag's four int64
-        // energy sums, written by K1 alongside the original five hit counts).
-        cuda_check(cudaMalloc(&cnt, 9 * 8), "res malloc cnt");
+        // arc #54 P-G2: cnt grows to KICK_CNT_SLOTS (the new per-stage KE-
+        // bracket sums + rad_clip_hits + e_ts_ke_sum, design §2.3).
+        cuda_check(cudaMalloc(&cnt, (size_t)KICK_CNT_SLOTS * 8), "res malloc cnt");
+        cuda_check(cudaMalloc(&flux_cnt, (size_t)FLUX_CNT_SLOTS * 8), "res malloc flux_cnt");
         // P-E1 scratch (int64), same unconditional-allocation idiom.
         auto a64 = [&](int64_t** p, size_t cnt_, const char* what) {
             cuda_check(cudaMalloc(p, cnt_ * 8), what);
         };
+        // arc #54 P-G2: K3's per-tick scratch (design §2.4/§2.5).
+        a64(&e0, n, "res malloc e0");
+        a32(&pcur, n, "res malloc pcur");
+        a32(&s_plane, n, "res malloc s_plane");
         // VELOCITY-CLAMP (P-V1, D2v2): the per-cell cap² plane (P-E1's a64
         // idiom).
         a64(&cap2, n, "res malloc cap2");
@@ -621,7 +649,7 @@ struct EOSResidentScratch {
         a64(&nbulk, n, "res malloc nbulk");
         a64(&dqsum_e, n, "res malloc dqsum_e");
         a64(&dqsum_s, n, "res malloc dqsum_s");
-        cuda_check(cudaMalloc(&ecnt, 5 * 8), "res malloc ecnt");
+        cuda_check(cudaMalloc(&ecnt, 6 * 8), "res malloc ecnt");   // + e_transport_net_sum (arc #54)
         int lh = H, lw = W;
         for (int l = 0; l < NL; ++l) {
             DevLevel& L = lv[l];
@@ -669,7 +697,8 @@ void eos_step_resident(
         const float* d_dyn_permeability,
         const bool* d_is_ambient,
         const int32_t* d_sponge_sigma, const int32_t* d_sponge_udamp,
-        const bool* d_thermal_solid) {
+        const bool* d_thermal_solid,
+        int64_t* d_gas_energy) {
 
     const int n = h * w;
     if (n <= 0 || dt <= 0.0f) return;   // step()'s degenerate early-out
@@ -696,16 +725,17 @@ void eos_step_resident(
         dyn_permeability, h, w, dt, ambient_mode, thermal_solid);
 
     // ---- host fold helpers (ONE transcription each — design §3.2.3) -------
+    // arc #54 P-G2: K2 (the old step-4c compression-work kernel) is DELETED,
+    // and with it the three retired dials (T_WORK_CLAMP/k_drag_heat_frac/
+    // n_work_ref) this fold call used to freeze for the suspended device
+    // path. K1 now only needs the scalars kick_scalar_folds actually reads.
     const KickScalarFolds kf = kick_scalar_folds(
         dt, solver.c_max, solver.dx, solver.adiabatic_index,
-        solver.absorb_strength, solver.N_FLOOR_SOLVER, solver.T_MIN,
-        solver.T_WORK_CLAMP, solver.T_MAX_PHYS, solver.U_MAX,
+        solver.absorb_strength, solver.N_FLOOR_SOLVER, solver.U_MAX,
         // P-E3 (design §2.8): interior drag + heat counterparty.
         // drag-law v2 (docs/drag_law_v2_design_2026-08-23.md): k_drag2.
-        solver.k_drag, solver.k_drag2, solver.k_drag_heat_frac, solver.c_v,
-        // P-E4 (design §2.4): the compression-work trust gate.
-        solver.n_work_ref,
-        // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K.
+        solver.k_drag, solver.k_drag2,
+        // arc #54 §2.1: T_AMB_K folds the derived k_ke constant.
         solver.T_AMB_K);
     const EOSSolver::MGScalarFolds mf = solver.mg_scalar_folds(dt);
 
@@ -742,8 +772,9 @@ void eos_step_resident(
     // ---- PER-TICK ZERO RULE (design §3.2.5): the persistent rail + counter
     //      buffers carry last tick's sums — memset EVERY tick (the per-call
     //      wrappers' memsets, moved here). --------------------------------
-    cuda_check(cudaMemset(S.cnt, 0, 9 * 8), "memset cnt");   // P-E3: 5 -> 9 slots
-    cuda_check(cudaMemset(S.ecnt, 0, 5 * 8), "memset ecnt");   // P-E1
+    cuda_check(cudaMemset(S.cnt, 0, (size_t)KICK_CNT_SLOTS * 8), "memset cnt");
+    cuda_check(cudaMemset(S.flux_cnt, 0, (size_t)FLUX_CNT_SLOTS * 8), "memset flux_cnt");
+    cuda_check(cudaMemset(S.ecnt, 0, 6 * 8), "memset ecnt");   // P-E1 (+ e_transport_net_sum, arc #54)
     const bool use_rail = ambient_mode && n_cons > 0;
     if (use_rail)
         cuda_check(cudaMemset(S.rail, 0, (size_t)n_cons * 8), "memset rail");
@@ -766,6 +797,10 @@ void eos_step_resident(
         rail_ptrs[k] = use_rail ? &S.rail[k] : nullptr;
     }
 
+    // arc #54 §2.7 row 1: the mirror-only ceiling the substep transport's
+    // recovery clamps against.
+    const q16 t_max_phys_q_local = quantize((double)solver.T_MAX_PHYS);
+
     // ---- DEVICE SUBSTEP LOOP (the P6.5 chain, resident buffers). ---------
     for (int s = 0; s < pre.n_sub; ++s) {
         cuda_check(cudaMemcpy(S.svx, d_wind_x, nb,
@@ -779,7 +814,9 @@ void eos_step_resident(
                           d_solid, S.cmask, pre.dt_s_q, h, w);
         // P-E1: the mass flux with the thermal energy riding it (design §2.1).
         bulk_flux_energy_transport_device(
-            gas_planes.data(), n_cons, d_temperature, d_wind_x, d_wind_y,
+            gas_planes.data(), n_cons, d_temperature,
+            d_gas_energy, pre.t_amb_q, t_max_phys_q_local,   // arc #54 §2.2/§2.7
+            d_wind_x, d_wind_y,
             d_solid, d_is_vacuum, d_ts, S.coeffE, S.coeffS, pre.t_min_q, h, w,
             S.e, S.nbulk, S.dqsum_e, S.dqsum_s,
             S.dq_e, S.dq_s, S.scale, S.ecnt,
@@ -822,19 +859,33 @@ void eos_step_resident(
                                solver.mg_coarsest_sweeps, solver.S);
     }
 
-    // ---- KICK + COMPRESSION (the SHARED launch core) on the zeroed L0.P
-    //      (== the per-call p_new bytes) with the device post-substep Dalton.
+    // ---- KICK (the SHARED launch core, K1 only — arc #54 P-G2: K2 deleted)
+    //      on the zeroed L0.P (== the per-call p_new bytes, PRE un-shift)
+    //      with the device post-substep Dalton. The KE brackets (design
+    //      §2.3) land straight in the persistent `d_gas_energy`.
     kick_compression_launch_resident(
-        d_wind_x, d_wind_y, d_temperature, S.lv[0].P, S.ntot, S.absorb_q,
+        d_wind_x, d_wind_y, d_gas_energy, S.lv[0].P, S.ntot, S.absorb_q,
         d_solid, d_is_vacuum, kf, S.cap2,   // D2v2: the per-cell cap² plane
         S.cnt, h, w,
         d_is_ambient, d_sponge_udamp,
-        d_ts);   // THERMAL-MASS AXIS: step 4c skips its T write on thermal_solid
+        d_ts);   // arc #54 §2.3 F5: the KE brackets export on thermal_solid
 
     // ---- step 5: P := P_new (+P_amb masked, ambient). --------------------
     K_store_atm<<<grid, block>>>(d_atmosphere, S.lv[0].P, d_solid,
                                  (int64_t)p_amb, ambient_mode, n);
     cuda_check(cudaGetLastError(), "K_store_atm");
+
+    // ---- K3 + the once-per-tick RECOVERY (arc #54 design §2.4/§2.5/§2.6) —
+    //      MUST run after K_store_atm: it consumes the ABSOLUTE d_atmosphere
+    //      (the step-5 un-shift), never the shifted L0.P (design §2.4 pin).
+    const EnergyFluxScalarFolds ef = energy_flux_scalar_folds(
+        dt, solver.dx, solver.adiabatic_index, solver.T_AMB_K, solver.C,
+        solver.T_MIN, solver.T_MAX_PHYS, pre.n_sub);
+    cuda_check(cudaMemset(S.flux_cnt, 0, (size_t)FLUX_CNT_SLOTS * 8), "memset flux_cnt (re-zero post-fold)");
+    energy_flux_launch_resident(
+        d_gas_energy, d_temperature, d_atmosphere, d_wind_x, d_wind_y,
+        S.ntot, d_solid, d_is_vacuum, d_ts, d_is_ambient,
+        ef, S.e0, S.pcur, S.s_plane, S.flux_cnt, h, w);
 
     cuda_check(cudaDeviceSynchronize(), "resident sync");
 
@@ -847,32 +898,57 @@ void eos_step_resident(
         for (int k = 0; k < n_cons; ++k)
             solver.boundary_flux_[pre.cons[k]] = (int64_t)rail_host[k];
     }
-    unsigned long long cnt_host[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
-    cuda_check(cudaMemcpy(cnt_host, S.cnt, 9 * 8, cudaMemcpyDeviceToHost),
-               "D2H counters");
+    std::vector<unsigned long long> cnt_host(KICK_CNT_SLOTS, 0);
+    cuda_check(cudaMemcpy(cnt_host.data(), S.cnt, (size_t)KICK_CNT_SLOTS * 8,
+                          cudaMemcpyDeviceToHost), "D2H counters");
     solver.u_clamp_hits      += (int64_t)cnt_host[0];
     solver.u_max_hits        += (int64_t)cnt_host[1];
-    solver.work_clamp_hits   += (int64_t)cnt_host[2];
-    solver.energy_floor_hits += (int64_t)cnt_host[3];
-    solver.t_max_phys_hits   += (int64_t)cnt_host[4];
+    // slots 2-4 retired (work_clamp_hits / the T rails — moved to §2.6).
     // P-E3 (design §2.8): PER-TICK semantics (assigned, not accumulated —
     // the P-E1 idiom the sibling ecnt block below also uses).
-    solver.ke_drag_removed     = (int64_t)cnt_host[5];
-    solver.e_drag_deposit      = (int64_t)cnt_host[6];
-    solver.e_drag_drop_sum     = (int64_t)cnt_host[7];
-    solver.e_drag_rail_clipped = (int64_t)cnt_host[8];
+    solver.ke_drag_removed       = (int64_t)cnt_host[5];
+    solver.e_drag_heat_sum       = (int64_t)cnt_host[6];
+    // arc #54 §2.3: the per-stage KE-bracket counters, PER-TICK.
+    solver.e_kick_ke_sum         = (int64_t)cnt_host[9];
+    solver.e_absorb_export_sum   = (int64_t)cnt_host[10];
+    solver.e_sponge_export_sum   = (int64_t)cnt_host[11];
+    solver.e_clamp_destroyed_sum = (int64_t)cnt_host[12];
+    solver.rad_clip_hits         = (int64_t)cnt_host[13];
+    solver.e_ts_ke_sum           = (int64_t)cnt_host[14];
+
+    // arc #54 §2.4/§2.6: the flux step + recovery counters, PER-TICK.
+    std::vector<unsigned long long> fcnt_host(FLUX_CNT_SLOTS, 0);
+    cuda_check(cudaMemcpy(fcnt_host.data(), S.flux_cnt, (size_t)FLUX_CNT_SLOTS * 8,
+                          cudaMemcpyDeviceToHost), "D2H flux counters");
+    solver.p_face_floor_hits     = (int64_t)fcnt_host[0];
+    solver.p_face_ceil_hits      = (int64_t)fcnt_host[1];
+    solver.flux_sat_hits         = (int64_t)fcnt_host[2];
+    solver.e_energy_floor_sum    = (int64_t)fcnt_host[3];
+    solver.e_work_export_sum     = (int64_t)fcnt_host[4];
+    solver.e_ts_work_sum         = (int64_t)fcnt_host[5];
+    solver.e_wall_work_probe_sum = (int64_t)fcnt_host[6];
+    solver.energy_floor_hits    += (int64_t)fcnt_host[7];
+    solver.t_max_phys_hits      += (int64_t)fcnt_host[8];
+    solver.e_rail_sum            = (int64_t)fcnt_host[9];
+    // e_wipe_sum: bulk transport's share (ecnt below) PLUS the §2.6
+    // recovery's (fcnt_host[10]) — the SAME member both sources book into
+    // on the CPU (eos_solver.cpp: `ec.e_wipe_sum` per substep + the
+    // recovery's own `gas_energy[i] - e_amb`).
+
     // P-E1 energy counters — ASSIGNED (per-TICK semantics, matching the CPU's
     // reset-at-step()-entry idiom and the per-call GPU path), not accumulated
     // like the rail counters above. int64 atomicAdd on two's complement is
     // order-free, so these totals equal the CPU's sequential sums exactly.
-    unsigned long long ecnt_host[5] = {0, 0, 0, 0, 0};
-    cuda_check(cudaMemcpy(ecnt_host, S.ecnt, 5 * 8, cudaMemcpyDeviceToHost),
+    unsigned long long ecnt_host[6] = {0, 0, 0, 0, 0, 0};
+    cuda_check(cudaMemcpy(ecnt_host, S.ecnt, 6 * 8, cudaMemcpyDeviceToHost),
                "D2H e-counters");
     solver.e_ts_residual     = (int64_t)ecnt_host[0];
-    solver.e_wipe_sum        = (int64_t)ecnt_host[1];
+    solver.e_wipe_sum        = (int64_t)ecnt_host[1];   // bulk transport's share
+    solver.e_wipe_sum       += (int64_t)fcnt_host[10];  // + the §2.6 recovery's
     solver.e_floor_sum       = (int64_t)ecnt_host[2];
     solver.n_active_flux     = (int64_t)ecnt_host[3];
     solver.n_bulk_active_sum = (int64_t)ecnt_host[4];
+    solver.e_transport_net_sum = (int64_t)ecnt_host[5];
 }
 
 // ============================================================================

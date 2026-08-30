@@ -578,11 +578,29 @@ def test_close_t_hot_room_takes_wall_mean_not_air():
     # The T write carries no conservation weight — N totals exact.
     assert _slice_totals(g) == totals0
 
-    # unseal_tiles' temperature behavior is UNCHANGED (design §4a): the
-    # opened tile's solid T becomes the gas T — unseal writes nothing.
+    # --- arc #54 P-G1b RE-DERIVES the unseal half of this test --------------
+    # The old contract was "unseal writes nothing, so the opened tile's SOLID T
+    # becomes its gas T". Under a stored energy field that is a MINT with a
+    # name: the gas arriving in the doorway is WITHDRAWN from the donors, so it
+    # carries the donors' energy — but the mirror would have read the DOOR
+    # PANEL's leftover temperature, which nothing paid for. A 300-deg door
+    # opening into ambient air would hand out 300 deg of free gas heat on every
+    # cycle, in whichever direction the panel happened to be warm.
+    #
+    # The new contract (design §2.7's unseal row): the opened tile's mirror is
+    # a FLOOR READ of the energy its donors actually gave it. The door panel's
+    # own temperature stays on the solids side of the ledger, where it was
+    # earned, and is simply no longer visible once the tile is gas.
     door_t = int(g.temperature[6, 6])
     g.unseal_tiles([(6, 6)])
-    assert int(g.temperature[6, 6]) == door_t
+    n_open = g.gas_bulk_n_at(6, 6)
+    assert n_open > 0, "fixture: the opened tile was seeded with no mass"
+    assert int(g.temperature[6, 6]) == (
+        int(g.gas_energy[6, 6]) // n_open - g.gas_t_amb_raw()), (
+        "the opened tile's mirror is not a floor read of its stored energy")
+    assert int(g.temperature[6, 6]) != door_t, (
+        "the opened tile inherited the door panel's stale solid temperature — "
+        "that is the free-heat mint arc #54 closes at this seam")
 
 
 def test_close_t_floor_division_three_walls():

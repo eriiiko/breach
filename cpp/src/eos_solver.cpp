@@ -42,6 +42,71 @@ inline int mirror_idx(int self_i, int ny, int nx, int h, int w, const bool* soli
     return ni;
 }
 
+// ===========================================================================
+// arc #54 P-G1d — THE FACE-FORM DIVERGENCE (design item D4).
+//
+// Returns 2·û_f for ONE face of cell `self_i` toward (ny,nx), where û_f is the
+// face-normal velocity the divergence sees:
+//
+//     û_f = (u_i + u_j)/2   on an OPEN face
+//     û_f = 0               on a SOLID face (a wall, or out of bounds)
+//
+// The caller forms `(2û_E − 2û_W)` and multiplies by `inv_2dx_q = 1/(2dx)`,
+// which is exactly `[û_E − û_W]/dx` — the ½ of the arithmetic face mean is
+// folded into the SAME `inv_2dx_q` the old central form already carried, so
+// there is no second shift and no new rounding site.
+//
+// WHY (the D4 finding, measured at P-G1c). `mirror_idx` returns SELF on a
+// solid neighbour, so the old central stencil `(u_ir − u_il)/(2dx)` implied a
+// wall-face velocity of `u_i` (a zero-GRADIENT ghost). That is inconsistent
+// with BOTH of its partners:
+//   (a) the kick, which mirrors `p` and therefore has ZERO pressure gradient
+//       across a solid face — the wall does no work on the gas; and
+//   (b) the §2.4 face-flux energy step, which prices every solid face at
+//       `û = 0` (`face_flux`'s WALL branch returns 0 and books the dropped
+//       term into `e_wall_work_probe_sum`).
+// The solve therefore asked for a compression the energy step never charged
+// for. Measured consequence: a standing thermal dipole formed in ~5 ticks —
+// every wall-adjacent gas layer ~20 game-deg BELOW ambient, interiors ~+25,
+// scaling with `k_work = (γ−1)·T_AMB` — which conduction against
+// ambient-held walls then rectified into a global energy SOURCE (+5.0
+// game-deg per 18 s in the sealed box).
+//
+// BIT-IDENTITY ON INTERIOR CELLS (proved on paper; gated by
+// tests/test_eos_div_face_form.py). With all four neighbours open,
+//     2û_E − 2û_W = (u_i + u_ir) − (u_il + u_i) = u_ir − u_il
+// EXACTLY, as integers — the `u_i` terms cancel before any shift, so the
+// operand handed to `mul_q16` is the very int32 the old form computed and the
+// result is bit-identical. Only faces whose neighbour is SOLID (or out of
+// bounds) move, and they move from `u_i` to `0`.
+//
+// VACUUM / AMBIENT-RING NEIGHBOURS ARE UNCHANGED, deliberately: they are not
+// solid, so this returns `u_i + u_j` with the neighbour's real (identically
+// zero — the kick zeroes ring and vacuum u) wind, i.e. `u_i`, which is what
+// the old mirror form read there too. It is also literally the face value the
+// energy step's OUTFLOW branch uses (`u_f = wind[acc_i]`, the same "u_acc + 0"
+// with the same ½ folded into `k_flux_q`) — so solve and energy step agree
+// face-for-face on this class as well.
+//
+// THERMAL SOLIDS (furniture) ARE NOT WALLS HERE, deliberately (P-G1d scope):
+// `ts` cells that are not `solid` carry N and u and the kick treats them as
+// gas, so the solve keeps its current open-face treatment for them. The energy
+// step's `ts`=wall rule is likewise untouched; the mismatch that remains is
+// reported by `e_ts_work_sum`, not fixed here.
+//
+// RANGE: the kick holds every stored component to ±2^27 (KE_SAFE), so the sum
+// is ≤2^28 and the difference ≤2^29 — comfortably int32. The intermediate is
+// nevertheless accumulated in int64 and narrowed ONCE at the caller (the
+// file's `(q16)` idiom), so an unguarded wind written by FieldEdit or a level
+// load truncates deterministically instead of overflowing signed int32.
+inline int64_t face2_u(const int32_t* u, int self_i, int ny, int nx,
+                       int h, int w, const bool* solid) {
+    if (ny < 0 || ny >= h || nx < 0 || nx >= w) return 0;   // wall: û = 0
+    const int ni = ny * w + nx;
+    if (solid[ni]) return 0;                                // wall: û = 0
+    return (int64_t)u[self_i] + (int64_t)u[ni];             // 2·û_f
+}
+
 // (the single-field eos_backtrace_sample_q was deleted — the FUSED
 // 3-field version below replaced its every call site.)
 
@@ -214,7 +279,8 @@ int64_t eos_energy_books_sum(
         const bool* solid, const bool* is_vacuum,
         int n,
         const bool* is_ambient,
-        const bool* thermal_solid) {
+        const bool* thermal_solid,
+        const int64_t* gas_energy, int32_t t_amb_raw) {
     // Same back-compat idiom as step()'s: the THERMAL axis falls back to the
     // FLOW mask when the caller has no thermal_mass plane.
     const bool* ts = (thermal_solid != nullptr) ? thermal_solid : solid;
@@ -228,7 +294,13 @@ int64_t eos_energy_books_sum(
         for (int gi = 0; gi < n_gases; ++gi)
             if (gas_conservative[gi])
                 nb += (int64_t)gas[(size_t)gi * (size_t)n + (size_t)i];
-        acc += nb * (int64_t)temperature[i];
+        // arc #54 P-G1a (design §2.8): read the books OFF THE FIELD when the
+        // caller has it. The per-cell RELATIVE difference (E − N·T_AMB) is
+        // formed FIRST and only then summed — §2.2 forbids absolute sums.
+        // Dormancy by branch: nullptr -> the pre-#54 expression, byte for byte.
+        acc += (gas_energy != nullptr)
+            ? (gas_energy[i] - nb * (int64_t)t_amb_raw)
+            : (nb * (int64_t)temperature[i]);
     }
     return acc;
 }
@@ -238,6 +310,7 @@ void EOSSolver::step(
         int32_t* p_prev,
         int32_t* wind_x, int32_t* wind_y,
         int32_t* temperature,
+        int64_t* gas_energy,                                 // arc #54 §2.2
         int32_t* gas, const bool* gas_conservative, int n_gases,
         const bool* solid, const bool* is_vacuum,
         const float* dyn_permeability, const float* dyn_wave_absorb,
@@ -257,7 +330,7 @@ void EOSSolver::step(
     // thermal_solid on any furniture-free map — build addendum D4). ONLY the
     // two `temperature[i]` writes and the step-1b T sample read `ts`; every
     // other `solid` / `dyn_permeability` meaning in this function (cmask,
-    // mirror_idx, coeffE/S, div(u), p*, the kick, mg_build_levels) is
+    // mirror_idx, face2_u, coeffE/S, div(u), p*, the kick, mg_build_levels) is
     // UNTOUCHED, so pressure / velocity / gas flow are unchanged.
     const bool* ts = (thermal_solid != nullptr) ? thermal_solid : solid;
     // P-E1 (design §2.1.1): the A2 T-ONLY occluder mask (`tcmask_`) and its
@@ -299,20 +372,37 @@ void EOSSolver::step(
     // P-E3 (design §2.8): the interior-drag oracle, same per-tick reset
     // idiom (P-E1's, not P-E2a's accumulate — see the as-built for why).
     ke_drag_removed = 0;
-    e_drag_deposit = 0;
-    e_drag_drop_sum = 0;
-    e_drag_rail_clipped = 0;
+    // arc #54 P-G1a: the absolute energy counters + the new rail hit counters,
+    // the SAME per-tick reset idiom (design §2.8; the closure identity is
+    // stated one tick at a time, like the transport gate).
+    e_entry_resync_sum = 0;
+    e_transport_net_sum = 0;
+    e_kick_ke_sum = 0;
+    e_absorb_export_sum = 0;
+    e_sponge_export_sum = 0;
+    e_clamp_destroyed_sum = 0;
+    e_drag_heat_sum = 0;
+    e_ts_ke_sum = 0;
+    e_work_export_sum = 0;
+    e_ts_work_sum = 0;
+    e_wall_work_probe_sum = 0;
+    e_energy_floor_sum = 0;
+    e_rail_sum = 0;
+    e_retire_sum = 0;
+    rad_clip_hits = 0;
+    p_face_floor_hits = 0;
+    p_face_ceil_hits = 0;
+    flux_sat_hits = 0;
+    // D10/D11: retired-and-zero for the whole of this tick.
+    work_clamp_hits = 0;
     // P-M4b (mass-books arc): the body moved OUT to the file-scope
     // eos_energy_books_sum (declared in eos_solver.h) so the Python binding
     // measures the books through the SAME skip-set and the SAME arithmetic
     // this bracket does — one implementation, no Python transcription of the
     // four flags. `ts` is already the resolved thermal mask here, so the
     // function's own nullptr->solid fallback is a no-op on this path.
-    const auto eth_books_sum = [&]() -> int64_t {
-        return eos_energy_books_sum(gas, gas_conservative, n_gases,
-                                    temperature, solid, is_vacuum, n,
-                                    ambient_mode ? is_ambient : nullptr, ts);
-    };
+    // (arc #54 P-G1a: the lambda MOVED below the per-tick scalar folds — it
+    // now reads the books off `gas_energy` and needs `t_amb_q`.)
 
     if ((int)n_total_.size() != n) n_total_.assign(n, 0);
     if ((int)vx_src_.size()  != n) vx_src_.assign(n, 0);
@@ -329,6 +419,11 @@ void EOSSolver::step(
     if ((int)e_scratch_.size() != n) e_scratch_.assign(n, 0);
     if ((int)dqsum_e_.size()   != n) dqsum_e_.assign(n, 0);
     if ((int)dqsum_s_.size()   != n) dqsum_s_.assign(n, 0);
+    // arc #54 P-G1a (design §2.4/§2.5): the energy-pass scratch planes.
+    if ((int)n_pre_.size()   != n) n_pre_.assign(n, 0);
+    if ((int)e0_.size()      != n) e0_.assign(n, 0);
+    if ((int)pcur_.size()    != n) pcur_.assign(n, 0);
+    if ((int)s_plane_.size() != n) s_plane_.assign(n, 0);
 
     // ---- step 0: P_prev := P ---------------------------------------------
     for (int i = 0; i < n; ++i) p_prev[i] = atmosphere[i];
@@ -398,13 +493,37 @@ void EOSSolver::step(
     }
     // k_ke = gamma*(gamma-1)*T_AMB_K / (2*c_max^2) -- the specific-KE-to-
     // game-deg bridge (design §2.1); ~9.0e-4 game-deg per (m/s)^2 at the
-    // shipped dials, so it folds as the RECIPROCAL's Q.32 make_recip
-    // reciprocal (a direct Q16.16 fold of k_ke itself would carry only ~59
-    // counts of precision -- 0.22% bias, ~6 bits).
+    // shipped dials, so it folds as a Q.32 `make_recip` reciprocal (a direct
+    // Q16.16 fold of k_ke itself would carry only ~59 counts of precision --
+    // 0.22% bias, ~6 bits).
+    //
+    // P-G1a CORRECTION to P-G0's inert fold: `make_recip(x) == 2^32/x`
+    // (fixed_point.h:235), so the Q.32 representation of k_ke ITSELF is
+    // `make_recip(1/k_ke)`, not `make_recip(k_ke)`. The name stays
+    // `k_ke_recip_q32` (design §2.3 pins the consuming expression by that
+    // name) but the VALUE is k_ke*2^32 == 3,874,876 at the shipped dials
+    // (~2^21.9 -- exactly the "<= 2^22" the §2.3 range budget asserts).
+    // Dimensional check for the pinned shift 48:
+    //   du2_raw (Q32) * (k_ke*2^32) >> 48 == k_ke*|u|^2 * 2^16 == a Q16 dT.
     const double k_ke_d = gamma_d * (gamma_d - 1.0) * (double)T_AMB_K
                         / (2.0 * (double)c_max * (double)c_max);
-    const int64_t k_ke_recip_q32 = make_recip(std::max(k_ke_d, 1e-12));
-    (void)k_ke_recip_q32;   // P-G0: folded + guarded; P-G1a consumes it
+    const int64_t k_ke_recip_q32 = make_recip(1.0 / std::max(k_ke_d, 1e-12));
+    // P-M4b's books bracket (MOVED here from step()'s head at P-G1a — it now
+    // reads the sum OFF `gas_energy`, so it needs `t_amb_q`). One
+    // implementation of the accountable set, shared with the Python binding.
+    const auto eth_books_sum = [&]() -> int64_t {
+        return eos_energy_books_sum(gas, gas_conservative, n_gases,
+                                    temperature, solid, is_vacuum, n,
+                                    ambient_mode ? is_ambient : nullptr, ts,
+                                    gas_energy, t_amb_q);
+    };
+    // arc #54 §2.2: the ACCOUNTABLE SET — the one canonical skip-set
+    // complement, the same predicate `e_participates()` (bulk_transport.cpp)
+    // and `eos_energy_books_sum` above use. ONE transcription in this file.
+    const auto accountable = [&](int i) -> bool {
+        return !solid[i] && !ts[i] && !is_vacuum[i]
+               && !(ambient_mode && is_ambient[i]);
+    };
     const double dt_d    = (double)dt;
     const q16 dt_q       = quantize(dt_d);
     const double dx_d    = std::max((double)dx, 1e-6);
@@ -435,6 +554,47 @@ void EOSSolver::step(
     const double ru = (double)u_max_q / (double)c_amb_q;
     const int64_t ratio_umax = (int64_t)(ru * ru * 65536.0) + 1;
 
+    // ---- arc #54 P-G1a: the Dalton bulk sum HOISTED above the c_LOCAL /
+    // cap2 scan (PURE CODE MOTION — nothing between the old and new sites
+    // read n_total_, so the values are identical). Two consumers need it
+    // here now: the §2.6 N_EPS guard on the max-T scan, and the TRANSITIONAL
+    // entry re-sync below. The step-2 rebuild (post-substep N) stays.
+    // Dalton sum, P-T0 (design §2.6, the 0% ruling): n_total ≡ n_bulk.
+    {
+        for (int i = 0; i < n; ++i) n_total_[i] = 0;
+        for (int gi = 0; gi < n_gases; ++gi) {
+            if (!gas_conservative[gi]) continue;
+            const int32_t* plane = gas + (size_t)gi * n;
+            for (int i = 0; i < n; ++i) n_total_[i] += plane[i];
+        }
+    }
+
+    // ======================================================================
+    // arc #54 P-G1b — THE TRANSITIONAL ENTRY RE-SYNC IS GONE. D1 IS LIVE.
+    //
+    // P-G1a re-derived `gas_energy := N_raw · (T_raw + T_AMB_raw)` here every
+    // tick, because the §2.7 writers (combustion, the thermal solver, the
+    // pumps, the seal / unseal / destroy seams, FieldEdit) still wrote
+    // `temperature` alone and their writes land BETWEEN two EOS steps. P-G1b
+    // moves every one of them onto the gas-energy seam, so `gas_energy` is now
+    // the CROSS-TICK truth and re-deriving it from the mirror here would do
+    // exactly the damage §2.6 warns about — `N·floordiv(E,N) <= E` drains up
+    // to N−1 raw counts per cell per tick, and any energy a seam wrote that
+    // the mirror cannot represent (a sub-count deposit) would vanish unbooked.
+    //
+    // `e_entry_resync_sum` survives as a RETIRED, always-zero counter (the D10
+    // "retired and zero" convention): it stays in the §2.8 identity as a term
+    // that is structurally 0, so the identity's Python transcription — in the
+    // benches, in test_e1_hot_rail and in the ledger tools — did not have to
+    // be rewritten to drop a name, and a future re-introduction of an entry
+    // re-sync would have a booked home rather than being invisible.
+    // ======================================================================
+    e_entry_resync_sum = 0;
+
+    // N_EPS_RAW (design §2.6): the 1-raw-count bulk floor, the SAME constant
+    // bulk_transport.cpp's recovery divides against — ONE value, both files.
+    const int64_t N_EPS_RAW = 1;
+
     int64_t t_max_abs_raw = (int64_t)t_amb_q;
     for (int i = 0; i < n; ++i) {
         // The kick's skip-set (solid||is_vacuum||ambient-ring) is a strict
@@ -442,7 +602,13 @@ void EOSSolver::step(
         // cell ever reads the filler — u_max2_q32 is a safe defined value.
         if (solid[i] || is_vacuum[i]) { cap2_plane_[i] = u_max2_q32; continue; }
         const int64_t t_abs = (((int64_t)s_eos_q * (int64_t)temperature[i]) >> 16) + (int64_t)t_amb_q;
-        if (t_abs > t_max_abs_raw) t_max_abs_raw = t_abs;
+        // arc #54 §2.6: a cell with less than one raw count of bulk N has a
+        // thermodynamically meaningless temperature (that is exactly why the
+        // recovery WIPES it). It must not be allowed to set c_LOCAL / n_sub
+        // for the whole grid. The guard covers ONLY the max reduction — the
+        // per-cell cap2 fold below keeps its own floor/ts policy verbatim.
+        if ((int64_t)n_total_[i] >= N_EPS_RAW && t_abs > t_max_abs_raw)
+            t_max_abs_raw = t_abs;
 
         // D4 + D1: ts-gas cells get the AMBIENT cap (`temperature[i]` is the
         // OBJECT's T here by ruling A1, not the gas's — reading it would
@@ -480,12 +646,9 @@ void EOSSolver::step(
         const int64_t U0 = ((int64_t)FP_ONE + (int64_t)kd2_q - 1) / (int64_t)kd2_q;
         rad_dead_q32 = U0 * U0;
     }
-    const q16 heat_frac_q = quantize((double)k_drag_heat_frac);
-    const int64_t recip_cv = make_recip(std::max((double)c_v, 1e-6));
-    // P-E4 (design §2.4): the compression-work trust gate's per-tick fold —
-    // 1/n_work_ref (make_recip, the SAME load-time-constant idiom recip_cv
-    // uses), self-guarded against a misconfigured 0/negative dial.
-    const int64_t recip_n_work_ref = make_recip(std::max((double)n_work_ref, 1e-6));
+    // (arc #54 P-G1a, D5/D11: `heat_frac_q`, `recip_cv` and
+    // `recip_n_work_ref` are RETIRED with their dials — the drag deposit is
+    // the derived k_ke bracket now, and step 4c's trust gate is gone.)
     const int32_t ratio_q = (int32_t)((t_max_abs_raw << 16) / (int64_t)t_amb_q);
     const q16 sqrt_ratio = sqrt_q16((int64_t)ratio_q << 16);   // Q.32 radicand
     q16 c_local_q = mul_q16(c_amb_q, sqrt_ratio);
@@ -510,18 +673,8 @@ void EOSSolver::step(
         if (rad > max_rad) max_rad = rad;
     }
     const q16 max_u = sqrt_q16(max_rad);
-    // Dalton sum, P-T0 (design §2.6, the 0% ruling): n_total ≡ n_bulk — only
-    // the gas_conservative pair (O2/inert_N2) contributes, at full weight.
-    // trace_mass_scale is RETIRED, not wired to 0.0: trace planes are
-    // skipped outright, never even read here.
-    {
-        for (int i = 0; i < n; ++i) n_total_[i] = 0;
-        for (int gi = 0; gi < n_gases; ++gi) {
-            if (!gas_conservative[gi]) continue;
-            const int32_t* plane = gas + (size_t)gi * n;
-            for (int i = 0; i < n; ++i) n_total_[i] += plane[i];
-        }
-    }
+    // (arc #54 P-G1a: the Dalton sum that stood here is HOISTED above the
+    // c_LOCAL / cap2 scan — same values, same loop, one site earlier.)
     int64_t max_du_raw = 0;   // max K·|∇P|·dt/N̂ over the grid (int64 raw)
     for (int y = 0; y < h; ++y) {
         const int row = y * w;
@@ -568,6 +721,39 @@ void EOSSolver::step(
     if (n_sub > N_SUB_MAX) n_sub = N_SUB_MAX;
     dbg_last_n_sub = n_sub;   // P6.2 telemetry (gate input reconstruction)
     const double dt_s_d = dt_d / (double)n_sub;
+
+    // ---- arc #54 §2.1/§2.4: the FLUX constant, folded once per tick -------
+    // k_work = (γ−1)/C = (γ−1)·T_AMB_K — the ONE unit bridge from the
+    // engine's pressure to the books' energy currency (K CANCELS: it appears
+    // in p_phys = K·p_code and again in c_v_phys = K/((γ−1)T_AMB), so the
+    // work term's constant is independent of it). Derivation:
+    //   d(E_books)/dt = −(K/c_v_phys)·p_code·div u = −k_work·p_code·div u.
+    // k_flux folds in the sub-cycle dt_s, the 1/dx of the divergence AND the
+    // ½ of the arithmetic face mean (the pass uses u_f = u_i + u_j, so no
+    // separate >>1 and no per-face rounding bias — design §2.4).
+    const double k_work_d = (gamma_d - 1.0) * (double)T_AMB_K;
+    const q16 k_flux_q = quantize(k_work_d * dt_s_d / (2.0 * dx_d));
+    // ALWAYS-COMPILED RANGE GUARD (the D-3 guard's idiom — assert() is dead
+    // in every Release build every gate and play session uses). The face
+    // magnitude chain is int64-safe because p_f ≤ 2^31 (int32 pressure) and
+    // |u_f| ≤ 2^28 (two components, each held to the ±2^27 RAD_SAFE guard by
+    // the kick), giving pu = (p_f·|u_f|)>>16 ≤ 2^43; `pu_cap` below then
+    // bounds pu·k_flux_q at 2^60. That whole chain assumes k_flux_q stays a
+    // sane per-tick scalar — at a pathological dx (or dt) it would not, and
+    // the failure mode would be a SILENT 128→64 truncation inside the flux.
+    if (k_flux_q <= 0 || k_flux_q > (1 << 24)) {
+        throw std::runtime_error(
+            "gas-energy flux constant k_flux_q out of range — check dt / dx / "
+            "adiabatic_index / T_AMB_K; see "
+            "docs/gas_energy_conservation_design_2026-08-29.md Sec 2.4");
+    }
+    // FLUX_MAG_CAP (§2.4, the int64 corner): saturate the per-face magnitude
+    // at 2^60 so the 4-face sum (2^62) still fits. Applied at the `pu` stage
+    // through a per-tick-folded cap so the saturation needs NO per-face
+    // divide and the product NEVER overflows before it can be clamped —
+    // identical on both sides of every face, so cancellation is exact.
+    const int64_t FLUX_MAG_CAP = (int64_t)1 << 60;
+    const int64_t flux_pu_cap  = FLUX_MAG_CAP / (int64_t)k_flux_q;
 
     // ---- per-tick caches for the substep loop (micro-opt, all
     // BIT-IDENTITY-PRESERVING: solid/is_vacuum/dyn_permeability and dt_s are
@@ -659,9 +845,11 @@ void EOSSolver::step(
             BulkEnergyCounters ec;
             bulk_flux_energy_transport_cached(
                 gas, gas_conservative, n_gases,
-                temperature, wind_x, wind_y, solid, is_vacuum, ts,
+                temperature, gas_energy, t_amb_q, t_max_phys_q,
+                wind_x, wind_y, solid, is_vacuum, ts,
                 coeffE_.data(), coeffS_.data(), t_min_q, h, w,
-                e_scratch_.data(), dqsum_e_.data(), dqsum_s_.data(), ec,
+                e_scratch_.data(), n_pre_.data(),
+                dqsum_e_.data(), dqsum_s_.data(), ec,
                 ambient_mode ? is_ambient : nullptr,
                 ambient_mode ? n_amb : nullptr,
                 ambient_mode ? boundary_flux_.data() : nullptr);
@@ -670,6 +858,9 @@ void EOSSolver::step(
             e_floor_sum       += ec.e_floor_sum;
             n_active_flux     += ec.n_active_flux;
             n_bulk_active_sum += ec.n_bulk_active_sum;
+            // arc #54 §2.8: the transport's NET contribution to Σ_accountable
+            // gas_energy — the closure identity's transport term.
+            e_transport_net_sum += ec.e_transport_net;
         }
         (void)dt_s;
         // P-E0 bracket close, P-E1 bracket MOVE: the transport bracket now
@@ -700,6 +891,10 @@ void EOSSolver::step(
     if (dbg_probe_idx >= 0 && dbg_probe_idx < n) dbg_T_post_advect = temperature[dbg_probe_idx];
 
     // div(u*) from the final substep's velocity — the Helmholtz RHS term.
+    // arc #54 P-G1d (D4): the FACE FORM, û = 0 at solid faces —
+    //   div_i = [û_E − û_W + û_S − û_N]/dx,  û_f = (u_i + u_j)/2 open, 0 solid.
+    // `face2_u` returns 2û_f and the ½ rides in `inv_2dx_q` (see its header for
+    // the derivation, the interior bit-identity proof and the ring/ts scope).
     for (int y = 0; y < h; ++y) {
         const int row = y * w;
         for (int x = 0; x < w; ++x) {
@@ -708,12 +903,12 @@ void EOSSolver::step(
             // — div(u*)=0 there, the vacuum idiom (its rhs isn't consumed since
             // the ring is excl==1, but keep it clean).
             if (solid[i] || is_vacuum[i] || (ambient_mode && is_ambient[i])) { div_u_[i] = 0; continue; }
-            const int il = mirror_idx(i, y, x - 1, h, w, solid);
-            const int ir = mirror_idx(i, y, x + 1, h, w, solid);
-            const int iu = mirror_idx(i, y - 1, x, h, w, solid);
-            const int id = mirror_idx(i, y + 1, x, h, w, solid);
-            const q16 dux = mul_q16(wind_x[ir] - wind_x[il], inv_2dx_q);
-            const q16 duy = mul_q16(wind_y[id] - wind_y[iu], inv_2dx_q);
+            const int64_t fw = face2_u(wind_x, i, y, x - 1, h, w, solid);
+            const int64_t fe = face2_u(wind_x, i, y, x + 1, h, w, solid);
+            const int64_t fn = face2_u(wind_y, i, y - 1, x, h, w, solid);
+            const int64_t fs = face2_u(wind_y, i, y + 1, x, h, w, solid);
+            const q16 dux = mul_q16((q16)(fe - fw), inv_2dx_q);
+            const q16 duy = mul_q16((q16)(fs - fn), inv_2dx_q);
             div_u_[i] = dux + duy;
         }
     }
@@ -784,6 +979,48 @@ void EOSSolver::step(
     //    q16 ONCE at store.
     // ======================================================================
     const int32_t* Pn = L0.P.data();
+    // ======================================================================
+    // arc #54 §2.3 — THE PER-STAGE KINETIC-ENERGY BRACKETS.
+    //
+    // The kick loop applies, per cell, in order: ∇p kick → dyn_wave_absorb →
+    // B3c sponge_udamp → velocity cap → staged drag L/Q. Each stage changes
+    // |u|; each is ruled INDIVIDUALLY (D6), inside the loop, per cell, on the
+    // cell's own N_i — no u* snapshot buffer, no second pass.
+    //
+    //   ∇p kick            gas_energy_i −= ΔKE   (reversible exchange, eq.2/3)
+    //   dyn_wave_absorb    EXPORT (a numerical damper) — gas_energy untouched
+    //   B3c sponge band    EXPORT (energy leaving to infinity)
+    //   velocity cap       DESTROYED, counted (a rail)
+    //   drag L + Q         gas_energy_i += −ΔKE  (structural drag heat, D5)
+    //
+    // ΔKE = N_i·k_ke·(|u_after|² − |u_before|²), in the PINNED operation
+    // order (§2.3, R3-#3 — v3's >>32 landed ΔT in Q32, a 65,536× debit):
+    //     t  = mul128_shr(k_ke_recip_q32, du2_raw, 48)   // Q32·Q32>>48 = Q16 ΔT
+    //     dE = mul128_shr(N_raw,          t,       0)    // Q16·Q16    = Q32 E
+    // `mul128_shr` is arithmetic on both branches (floors toward −∞ for
+    // either sign) and the counter books the SAME truncated dE the field
+    // gets, so no asymmetry leaks.
+    //
+    // BOUNDS (R3-#5). The pre-guard |u| was measured at ~2^53 raw before this
+    // arc (the comment at the old cap block), and squaring that is 2^106. So
+    // (a) the loaded ux/uy are clamped to ±2^27 AT LOAD — structural, not
+    // inductive: FieldEdit, a level load, or the first tick after a config
+    // change can hand this loop an unguarded wind; and (b) the component
+    // guard MOVES to immediately after the ∇p block, UNCONDITIONALLY (outside
+    // the `gx != 0 || gy != 0` micro-opt) and TIGHTENS from 2^30 to 2^27
+    // (≈2000 m/s, 2× U_MAX). Every stage therefore sees |u|² ≤ 2^55 and
+    // du2_raw is a Q32 (the cap2_q32 / rad convention). The clipped KE is
+    // folded into the KICK bracket — the gas KEEPS the energy the clip
+    // removed (the no-mint direction) — with its own counter, rad_clip_hits.
+    // Moving the guard changes the absorb/sponge inputs only where it binds:
+    // re-baseline-class, declared.
+    // ======================================================================
+    const int64_t KE_SAFE = (int64_t)1 << 27;
+    // ΔKE → energy, the ONE transcription (both twins call this shape).
+    const auto ke_energy = [&](int64_t n_bulk, int64_t du2_raw) -> int64_t {
+        const int64_t t = mul128_shr(k_ke_recip_q32, du2_raw, 48);
+        return mul128_shr(n_bulk, t, 0);
+    };
     for (int y = 0; y < h; ++y) {
         const int row = y * w;
         for (int x = 0; x < w; ++x) {
@@ -798,6 +1035,18 @@ void EOSSolver::step(
             const int64_t gy = mul128_shr((int64_t)(Pn[id] - Pn[iu]), (int64_t)inv_2dx_q, 16);
             int64_t ux = (int64_t)wind_x[i];
             int64_t uy = (int64_t)wind_y[i];
+            // (a) LOAD-SIDE CLAMP (§2.3 R3-#5b) — before any bracket opens, so
+            // an unguarded stored wind is bounded rather than booked.
+            if      (ux >  KE_SAFE) { ux =  KE_SAFE; ++rad_clip_hits; }
+            else if (ux < -KE_SAFE) { ux = -KE_SAFE; ++rad_clip_hits; }
+            if      (uy >  KE_SAFE) { uy =  KE_SAFE; ++rad_clip_hits; }
+            else if (uy < -KE_SAFE) { uy = -KE_SAFE; ++rad_clip_hits; }
+            // arc #54: the cell's own N — the ONE weight every bracket uses.
+            // `ts` cells carry N and u but no gas_energy (D2/F5): their
+            // brackets are EXPORTED to e_ts_ke_sum, never stored.
+            const int64_t n_bulk_ke = (int64_t)n_total_[i];
+            const bool ke_stores = accountable(i);
+            int64_t u2_prev = ux * ux + uy * uy;   // ≤ 2^55
             if (gx != 0 || gy != 0) {   // micro-opt: du == 0 exactly at zero
                                         // gradient — skip the reciprocal
                                         // chain (bit-identical)
@@ -807,6 +1056,20 @@ void EOSSolver::step(
                 // du = (K·dt)·∇P·(1/N̂) — staged 128-bit, the documented order.
                 ux -= mul128_shr(mul128_shr(Kdt_raw, gx, 16), (int64_t)inv_n, 16);
                 uy -= mul128_shr(mul128_shr(Kdt_raw, gy, 16), (int64_t)inv_n, 16);
+            }
+            // (b) THE COMPONENT GUARD, moved here and tightened to 2^27 —
+            // UNCONDITIONAL (outside the micro-opt branch above, R3-#5a).
+            if      (ux >  KE_SAFE) { ux =  KE_SAFE; ++rad_clip_hits; }
+            else if (ux < -KE_SAFE) { ux = -KE_SAFE; ++rad_clip_hits; }
+            if      (uy >  KE_SAFE) { uy =  KE_SAFE; ++rad_clip_hits; }
+            else if (uy < -KE_SAFE) { uy = -KE_SAFE; ++rad_clip_hits; }
+            // BRACKET 1 — the ∇p kick (reversible exchange with the field).
+            {
+                const int64_t u2 = ux * ux + uy * uy;
+                const int64_t dE = ke_energy(n_bulk_ke, u2 - u2_prev);
+                if (ke_stores) { gas_energy[i] -= dE; e_kick_ke_sum += dE; }
+                else           { e_ts_ke_sum -= dE; }
+                u2_prev = u2;
             }
 
             // absorption damping u *= (1 − absorb·dt) (D4) — on the wide
@@ -819,6 +1082,16 @@ void EOSSolver::step(
                 const int64_t my = mul128_shr(uy < 0 ? -uy : uy, (int64_t)kk, 16);
                 ux = (ux < 0) ? -mx : mx;
                 uy = (uy < 0) ? -my : my;
+            }
+            // BRACKET 2 — dyn_wave_absorb: a NUMERICAL damper, so its removed
+            // KE is EXPORTED and counted, never heated (D6). Unconditional
+            // (a == 0 makes du2 exactly 0 and the counter move by 0).
+            {
+                const int64_t u2 = ux * ux + uy * uy;
+                const int64_t dE = ke_energy(n_bulk_ke, u2 - u2_prev);
+                if (ke_stores) e_absorb_export_sum -= dE;   // removed => dE ≤ 0
+                else           e_ts_ke_sum         -= dE;
+                u2_prev = u2;
             }
 
             // BC (spec §3 rung 2, B3c): the u-DAMPING BAND — the real absorber.
@@ -840,6 +1113,15 @@ void EOSSolver::step(
                     ux = (ux < 0) ? -mx : mx;
                     uy = (uy < 0) ? -my : my;
                 }
+            }
+            // BRACKET 3 — the B3c sponge band: models energy leaving to
+            // infinity, so EXPORTED and counted (D6).
+            {
+                const int64_t u2 = ux * ux + uy * uy;
+                const int64_t dE = ke_energy(n_bulk_ke, u2 - u2_prev);
+                if (ke_stores) e_sponge_export_sum -= dE;
+                else           e_ts_ke_sum         -= dE;
+                u2_prev = u2;
             }
 
             // |u| <= per-cell cap2_plane_[i] (VELOCITY-CLAMP, P-V1, D2v2:
@@ -866,12 +1148,13 @@ void EOSSolver::step(
             // anything above the cap and the narrow is safe by construction.
             // Behavior-neutral for every legitimate velocity (all caps are
             // orders of magnitude below the guard).
-            const int64_t RAD_SAFE = (int64_t)1 << 30;
-            if      (ux >  RAD_SAFE) ux =  RAD_SAFE;
-            else if (ux < -RAD_SAFE) ux = -RAD_SAFE;
-            if      (uy >  RAD_SAFE) uy =  RAD_SAFE;
-            else if (uy < -RAD_SAFE) uy = -RAD_SAFE;
-            const int64_t rad = ux * ux + uy * uy;   // int64-safe (guard above)
+            // arc #54 §2.3 (R3-#5a): the ±2^30 component pre-clamp that stood
+            // HERE has MOVED UP — to immediately after the ∇p block, tightened
+            // to ±2^27 (KE_SAFE) and made unconditional — so that every KE
+            // bracket, not just this clamp, sees a bounded |u|². By this point
+            // |u| ≤ 2^27 already (absorb and sponge only shrink through
+            // mul128_shr), so `rad` is int64-safe by construction as before.
+            const int64_t rad = ux * ux + uy * uy;   // ≤ 2^55 (KE_SAFE guard)
             if (rad > cap2_q32) {
                 ++u_clamp_hits;
                 if (cap_is_umax) ++u_max_hits;
@@ -885,6 +1168,17 @@ void EOSSolver::step(
                 // unconditionally (sqrt_q16 self-clamps at INT32_MAX).
                 ux = (ux * (int64_t)u_cap_q) / (int64_t)umag;
                 uy = (uy * (int64_t)u_cap_q) / (int64_t)umag;
+            }
+            // BRACKET 4 — the velocity cap: a numerical RAIL whose pre-clamp
+            // |u| is bounded only by the component guard, so its removed KE is
+            // DESTROYED and counted, never heated (D6 — heating from a rail is
+            // #54 through a new door).
+            {
+                const int64_t u2 = ux * ux + uy * uy;
+                const int64_t dE = ke_energy(n_bulk_ke, u2 - u2_prev);
+                if (ke_stores) e_clamp_destroyed_sum -= dE;
+                else           e_ts_ke_sum           -= dE;
+                u2_prev = u2;
             }
 
             // ==================================================================
@@ -949,44 +1243,23 @@ void EOSSolver::step(
                 const int64_t du2_raw = (ux_old * ux_old + uy_old * uy_old)
                                        - (ux * ux + uy * uy);   // >= 0 structurally
 
-                // n-weighted oracle, raw Q16.16^2 (the SAME "N*T" currency as
-                // eth_transport_delta/e_floor_sum). mul128_shr avoids the naive
-                // n_bulk*du2_raw overflow (n_bulk up to the map's N_cell<2^30
-                // raw invariant, du2_raw up to ~2^53 post-cap).
+                // n-weighted oracle, raw Q16.16^2 — KEPT (design §2.8): it is
+                // the raw KE the drag removed, independent of the constant the
+                // deposit prices it at, and the rewritten P-E3 gate reads it.
                 const int64_t n_bulk = (int64_t)n_total_[i];
                 ke_drag_removed += mul128_shr(n_bulk, du2_raw, 16);
 
-                // Heat deposit: ΔE_cell = Δ(|u|^2)/2, ALREADY a SPECIFIC
-                // (per-N) quantity (u is a velocity, not a momentum) — no
-                // per-cell N divisor, only the load-time c_v reciprocal. Kept
-                // WIDE (int64) until a SATURATING narrow (a full stop from
-                // 1000 m/s is far past int32 — fixed_point.h's
-                // drag_dT_wide_q16 header).
-                const int64_t dE_cell_q16 = (du2_raw >> 16) >> 1;
-                const int64_t dT_intended_wide =
-                    drag_dT_wide_q16(dE_cell_q16, heat_frac_q, recip_cv);
-                const int32_t drop_frac_q = (int32_t)(FP_ONE - heat_frac_q);
-                const int64_t dT_drop_wide =
-                    drag_dT_wide_q16(dE_cell_q16, drop_frac_q, recip_cv);
-                e_drag_drop_sum += mul128_shr(n_bulk, dT_drop_wide, 0);
-
-                const int32_t dT_intended_narrow =
-                    (dT_intended_wide > (int64_t)INT32_MAX)
-                        ? INT32_MAX : (int32_t)dT_intended_wide;
-                const int32_t t_old = temperature[i];
-                int32_t t_candidate = sat_add_q16(t_old, dT_intended_narrow);
-                if (t_candidate > t_max_phys_q) t_candidate = t_max_phys_q;
-                const int64_t dT_applied = (int64_t)t_candidate - (int64_t)t_old;
-                const int64_t dT_clipped = dT_intended_wide - dT_applied;
-                e_drag_deposit      += mul128_shr(n_bulk, dT_applied, 0);
-                e_drag_rail_clipped += mul128_shr(n_bulk, dT_clipped, 0);
-
-                // Phantom-T guard (design §2.8): only WRITE where n_bulk >= 1
-                // raw count (N_EPS) — foregone energy is already ~=0 above
-                // (n-weighted), "counted anyway" per the design; only the
-                // temperature[] WRITE itself is guarded, so a skipped write
-                // cannot desync the oracle.
-                if (n_bulk >= 1) temperature[i] = t_candidate;
+                // BRACKET 5 — DRAG HEAT (D5). The removed KE is STRUCTURAL
+                // heat: the whole of it, at the DERIVED k_ke, straight into
+                // the cell's gas_energy. No heat FRACTION dial (retired), no
+                // c_v divide (that convention dial belongs to the radiation
+                // deposit, not here — §2.1), and NO T_MAX_PHYS rail at the
+                // deposit site: the once-per-tick recovery (§2.6) owns the
+                // rails now, so a deposit can never be silently dropped.
+                // `ts` cells never reach here (the `!ts[i]` guard above).
+                const int64_t dE_drag = ke_energy(n_bulk, du2_raw);   // ≥ 0
+                gas_energy[i] += dE_drag;
+                e_drag_heat_sum += dE_drag;
             }
 
             wind_x[i] = (int32_t)ux;   // the ONE narrow at store — safe: |u| is
@@ -998,117 +1271,26 @@ void EOSSolver::step(
     digest_velocity = digest_of(wind_x, n, digest_of(wind_y, n, 0));
 
     // ======================================================================
-    // 4c. COMPRESSION WORK — once per tick, POST-correction (§3.2 step 4c,
-    //     corrected 2026-07-10): T -= (γ−1)·T·div(u_new)·dt on the CORRECTED
-    //     velocity; feeds NEXT tick's p*, never this tick's solve. Factor
-    //     clamped to ±T_WORK_CLAMP (counter-tracked); T floored at T_MIN
-    //     (the named 4th energy sink, counter-tracked).
+    // 4c. COMPRESSION WORK -- DELETED (gas-energy conservation arc #54,
+    //     design SS1/SS2.4, P-G1a).
+    //
+    // What stood here: T_i <- T_i(1 + w_i) / T_i/(1 + w_i), with
+    // w_i = (gamma-1)*div_i*dt, +/-T_WORK_CLAMP-railed and trust-gated.
+    // Reversible per cell -- but the BOOKS quantity is Sum N_i T_i, and its
+    // change, -(gamma-1)dt*Sum N_i T_abs,i div_i, does NOT telescope
+    // (Sum div_i = 0 over a sealed region, Sum N_i T_i div_i != 0 the moment
+    // N or T is non-uniform). That is issue #54 exactly: measured over 18 s
+    // on the sealed-box bench it destroyed 160k cell*atm*deg in the hall and
+    // pumped it into cavities (+121 in the box, -20 in the arena, 21 m/s).
+    //
+    // Its replacement is step 6 below -- Kwatra's conservative FLUX form,
+    // which applies each face with opposite signs to its two cells and so
+    // telescopes to 0 over any region whose faces are all interior or wall,
+    // as an integer sum, to the LSB. It must run AFTER step 5 because it
+    // consumes the ABSOLUTE solved pressure p^{n+1} (on an ambient map the
+    // solve runs shifted, P' = P - p_amb, and step 5 is where that is
+    // restored). digest_compression / dbg_T_post_compression move with it.
     // ======================================================================
-    {
-        // P-E0 bracket open: around the step-4c loop (design §2.5).
-        const int64_t eth_pre_4c = eth_books_sum();
-        const q16 work_clamp_q = quantize((double)T_WORK_CLAMP);
-        for (int y = 0; y < h; ++y) {
-            const int row = y * w;
-            for (int x = 0; x < w; ++x) {
-                const int i = row + x;
-                // BC (audit (b)): the ring is skipped like vacuum — no
-                // compression work on the still ΔT=0 boundary.
-                // THERMAL-MASS AXIS, P-EOS, T-WRITE SITE 2/2 (ruling A1): `ts` is
-                // ADDED to the skip set (never substituted for `solid`, which
-                // keeps its own flow meaning here) — compression work is work
-                // done ON GAS BY COMPRESSION, and an OBJECT does not compress, so
-                // the EOS may not touch a thermal_solid tile's temperature.
-                // Nothing else in this loop writes anything, so skipping the cell
-                // entirely IS the whole edit. Where thermal_solid == solid the
-                // added term is redundant (gate (a), structurally free).
-                if (solid[i] || ts[i] || is_vacuum[i]
-                        || (ambient_mode && is_ambient[i])) continue;
-                const int il = mirror_idx(i, y, x - 1, h, w, solid);
-                const int ir = mirror_idx(i, y, x + 1, h, w, solid);
-                const int iu = mirror_idx(i, y - 1, x, h, w, solid);
-                const int id = mirror_idx(i, y + 1, x, h, w, solid);
-                const q16 dux = mul_q16(wind_x[ir] - wind_x[il], inv_2dx_q);
-                const q16 duy = mul_q16(wind_y[id] - wind_y[iu], inv_2dx_q);
-                const q16 div_new = dux + duy;
-                q16 k = mul_q16(gamma_m1_q, div_new);
-                k = mul_q16(k, dt_q);
-                // P-E4 TRUST GATE (design §2.4): fade k toward 0 when the
-                // cell's bulk N is too thin to trust — hard-zero below
-                // n_work_ref/2, linear to full trust at n_work_ref. Input n
-                // is the existing n_total_ plane (post-P-T0 the bulk sum,
-                // zero new reductions). Magnitude-first (scale_mag, the
-                // sponge idiom) so a NEGATIVE k fades TOWARD zero, never
-                // past it. Applied BEFORE the ±T_WORK_CLAMP compare.
-                {
-                    const q16 ratio = recip_mul(n_total_[i], recip_n_work_ref);
-                    const q16 fade = fixedpoint::work_fade_clamp01_q(ratio);
-                    k = scale_mag(k, fade);
-                }
-                // P-E4 REVERSIBLE WORK (design §2.7): magnitude-first clamp,
-                // single-compare form (pinned) — identical hit semantics to
-                // the old signed if/else-if pair (|k| > clamp <=> k > clamp
-                // OR k < -clamp). w = |k| after the fade AND this clamp.
-                const bool k_neg = (k < 0);
-                q16 w = k_neg ? (q16)(-(int64_t)k) : k;
-                if (w > work_clamp_q) { w = work_clamp_q; ++work_clamp_hits; }
-                q16 t_new;
-                // T_ABS COMPRESSION WORK (P-W1b, design §2): the "KEPT
-                // VERBATIM" promise from design §2.7 (energy-books) is
-                // DELIBERATELY REVOKED here — see
-                // docs/tabs_compression_work_design_2026-08-20.md §2. The
-                // arithmetic now runs on ABSOLUTE temperature t_abs =
-                // T + t_amb_q (int64, NOT q16 — A1: T_MAX_PHYS is a
-                // Python-writable dial with no 4c-entry rail, so the sum can
-                // overflow int32). Below ambient, compression on T_rel used
-                // to multiply a NEGATIVE number by (1+w) — cold gas got
-                // COLDER under compression, the exact inversion this patch
-                // kills. On t_abs it is honest: compression always WARMS.
-                // t_amb_q is the local already folded in scope (:372, the
-                // A7-floored expression, reused verbatim — no second fold).
-                const int64_t t_abs = (int64_t)temperature[i] + (int64_t)t_amb_q;
-                if (k_neg) {
-                    // COMPRESSION: t_new = T + w*(T+290), heating rounds UP
-                    // (mul_q16/SAR floors a negative dT toward -inf, so the
-                    // subtraction below rounds the increase up — A6's
-                    // reversibility proof: C(a) = ceil(a(1+w))). The sat_add
-                    // wrap protection (eos-p3fix-thermal-ceiling) is
-                    // retained. This term is MULTIPLICATIVE in t_abs — the
-                    // ±T_WORK_CLAMP rail above only bounds the per-tick RATE,
-                    // not the resulting VALUE, so a persistent
-                    // negative-divergence driver (a real local compression
-                    // pocket) compounds it geometrically — the v2.4
-                    // T_MAX_PHYS rail bounds the compounding's VALUE at the
-                    // physical ceiling, counted, never silent.
-                    const q16 k_signed = (q16)(-(int64_t)w);
-                    const q16 dT = (q16)(((int64_t)k_signed * t_abs) >> 16);
-                    t_new = sat_add_q16(temperature[i], (q16)(-(int64_t)dT));
-                } else {
-                    // EXPANSION (k >= 0, including the pinned k==0 identity,
-                    // D-4): the reversible inverse on t_abs, floor toward
-                    // -inf via the SHARED floordiv_q helper (P-E1's recovery
-                    // divide, fixed_point.h), then shift back to the stored
-                    // ambient-relative convention by subtracting t_amb_q
-                    // AFTER the floor (subtract-before-narrow — the design's
-                    // int32-safe ordering). t_abs >= 1 raw for all T >= T_MIN
-                    // = -289 (D-3's guard), so the numerator is non-negative
-                    // and the §2.7 sub-ambient mint hazard dissolves
-                    // structurally; floordiv_q is kept anyway as the shared,
-                    // zero-cost, T_MIN-move-robust idiom.
-                    t_new = (q16)(floordiv_q(t_abs << 16, (int64_t)FP_ONE + (int64_t)w)
-                                  - (int64_t)t_amb_q);
-                }
-                if (t_new < t_min_q) { t_new = t_min_q; ++energy_floor_hits; }
-                else if (t_new > t_max_phys_q) { t_new = t_max_phys_q; ++t_max_phys_hits; }
-                temperature[i] = t_new;
-            }
-        }
-        // P-E0 bracket close: the 4c compression-work energy delta.
-        eth_compression_delta += eth_books_sum() - eth_pre_4c;
-    }
-    digest_compression = digest_of(temperature, n, 0);
-    // DEBUG probe (temporary): T after step 4c (compression work).
-    if (dbg_probe_idx >= 0 && dbg_probe_idx < n) dbg_T_post_compression = temperature[dbg_probe_idx];
 
     // ======================================================================
     // 5. P := P_new — materialized ONCE (the `atmosphere` alias).
@@ -1126,6 +1308,379 @@ void EOSSolver::step(
     } else {
         for (int i = 0; i < n; ++i) atmosphere[i] = L0.P[i];
     }
+
+    // ======================================================================
+    // 6. THE FACE-FLUX ENERGY STEP (gas-energy conservation arc #54, design
+    //    §2.4/§2.5 — Kwatra eq. 3 with the eq. 15 face pressure). REPLACES
+    //    step 4c.
+    //
+    // OPERANDS (pinned): the ABSOLUTE solved pressure p^{n+1} — hence AFTER
+    // step 5's un-shift, never the shifted P' — and `u_new`, the STORED
+    // velocity after absorb / sponge / cap / drag (not the projected
+    // u^{n+1}; where those bands vary spatially they do spurious but
+    // CONSERVATIVE, redistributive work — §7, the same class HEAD's 4c had).
+    //
+    // SHAPE (§2.5, parity-safe): per sub-cycle, TWO passes, both per-cell
+    // 5-point GATHER, no atomics, no face buffer. Every cell recomputes its
+    // four faces from identical inputs in CANONICAL orientation (i = the
+    // LOWER linear index, j = the higher; east and south faces are owned by
+    // i), truncates the magnitude ONCE and applies the sign AFTER — so the
+    // two sides of a face see the same int64 and cancellation is exact.
+    // Pass A prices the faces and computes the donor-only positivity scale;
+    // pass B applies. The CPU twin NEEDS both passes: s_i is not knowable
+    // until the cell's whole face set is priced, and a fused sweep would be
+    // order-dependent (AB tol 0). On device this becomes K3, two launches
+    // after K_store_atm (P-G2).
+    //
+    // FACE CLASSES (§2.4):
+    //   both accountable                  INTERIOR — eq. 15 face pressure,
+    //                                     applied to BOTH cells (telescopes);
+    //   one accountable, other vacuum/ring OUTFLOW — p_f = p_acc, u_f = u_acc
+    //                                     substituted into the FIXED i/j
+    //                                     orientation (F14: the accountable
+    //                                     side may be i OR j; the sign never
+    //                                     flips), applied to the accountable
+    //                                     cell only, booked to
+    //                                     e_work_export_sum. This is the
+    //                                     breach rarefaction; treating these
+    //                                     as walls (v1) would HEAT the mouth.
+    //   other solid OR thermal_solid      WALL, û_f = 0 — NO FACE. Furniture
+    //                                     is a wall to the energy step (F4):
+    //                                     a one-sided flux from a ts cell is
+    //                                     an unbounded uncounted source driven
+    //                                     by the OBJECT's temperature. The
+    //                                     lost work is a D4-class accepted
+    //                                     gap with a probe (e_ts_work_sum).
+    // ======================================================================
+    {
+        // The floor the positivity rail defends: T_MIN in ABSOLUTE raw. The
+        // D-3 guard (T_MIN > -T_AMB_K, checked at the top of this function)
+        // makes it strictly positive, which is what lets `head` below be a
+        // meaningful non-negative budget.
+        const int64_t t_min_abs_raw = (int64_t)t_min_q + (int64_t)t_amb_q;
+
+        // E^{(0)} — the ONE baseline of the increment-form pressure refresh.
+        for (int i = 0; i < n; ++i) e0_[i] = gas_energy[i];
+
+        // ---- the per-face price, the ONE transcription both passes call ---
+        // (lo, hi) is the canonical pair (lo < hi). `east` selects the wind
+        // component. Returns the SIGNED flux: positive == energy flows
+        // lo -> hi. `cls` reports the face class to the caller.
+        //   0 = no face (wall / both non-accountable / N sum 0)
+        //   1 = interior      2 = outflow with lo accountable
+        //   3 = outflow with hi accountable
+        // `book` is TRUE only on pass B: every face is priced twice per
+        // sub-cycle (once per pass) and, for an interior face, once from each
+        // side — so the telemetry is booked from exactly ONE of those visits.
+        const auto face_flux = [&](int lo, int hi, bool east,
+                                   int& cls, bool book) -> int64_t {
+            cls = 0;
+            const bool a_lo = accountable(lo), a_hi = accountable(hi);
+            if (!a_lo && !a_hi) return 0;
+            // WALL: solid or thermal_solid on either side kills the face.
+            // (`ts` already implies !accountable, so only the non-accountable
+            // side can be a wall here.)
+            if (solid[lo] || solid[hi] || ts[lo] || ts[hi]) {
+                // D4-class PROBE (§7): the pressure work the step drops at
+                // this wall. Reported by the SB gate, never applied.
+                if (book) {
+                    const int acc_i = a_lo ? lo : hi;
+                    const int64_t pa = pcur_[acc_i];
+                    const int64_t ua = east ? wind_x[acc_i] : wind_y[acc_i];
+                    const int64_t m = mul128_shr(
+                        mul128_shr(pa, ua < 0 ? -ua : ua, 16),
+                        (int64_t)k_flux_q, 0);
+                    // A structural WALL (solid) is the D4 stencil-mismatch
+                    // probe; a NON-solid thermal_solid (furniture the gas can
+                    // seep through) is the separate ts accepted gap. `solid`
+                    // is tested FIRST because a wall tile normally carries
+                    // thermal mass too, so `ts` alone would swallow the whole
+                    // D4 term and report it as furniture.
+                    // arc #54 P-G1d: D4 IS FIXED — the pressure solve now uses
+                    // the same û = 0 wall face this branch does (`face2_u`), so
+                    // `e_wall_work_probe_sum` is no longer a mismatch measure;
+                    // it is the residual |p·u| the projected field still leaves
+                    // pressed against a wall, and the SB gate reports it as a
+                    // regression watch, not as a debt. The ts term is
+                    // UNCHANGED and still an accepted gap (P-G1d left ts
+                    // semantics alone on both sides).
+                    if (solid[lo] || solid[hi]) e_wall_work_probe_sum += m;
+                    else                        e_ts_work_sum += m;
+                }
+                return 0;
+            }
+            int64_t p_f, u_f;
+            if (a_lo && a_hi) {
+                const int64_t n_lo = (int64_t)n_total_[lo];
+                const int64_t n_hi = (int64_t)n_total_[hi];
+                const int64_t ns = n_lo + n_hi;
+                if (ns <= 0) return 0;
+                // eq. 15 LITERALLY (D3): harmonic-flavoured N x arithmetic
+                // T_abs. Both p operands are already floored >= 0 in pcur_,
+                // so this is a weighted average of non-negatives — no
+                // floordiv sign trap, p_f <= max(p_lo, p_hi) <= INT32_MAX.
+                // Numerator: p(2^31) * N(2^30) x2 = 2^62, int64-safe.
+                p_f = floordiv_q((int64_t)pcur_[hi] * n_lo
+                                     + (int64_t)pcur_[lo] * n_hi, ns);
+                // ARITHMETIC face mean (F16, a deliberate deviation from
+                // Kwatra eq. 13's density-weighted û): it is exactly the face
+                // value our div_u_ stencil implies, so Sigma_f p_f û_f
+                // vanishes where the solve zeroed the divergence. The 1/2 is
+                // folded into k_flux_q — no separate >>1, no rounding bias.
+                // (arc #54 P-G1d: "exactly" is now literal on EVERY face
+                // class, not only the interior — the solve's stencil is the
+                // face form `face2_u` and reads this same u_i + u_j.)
+                u_f = (int64_t)(east ? wind_x[lo] : wind_y[lo])
+                    + (int64_t)(east ? wind_x[hi] : wind_y[hi]);
+                cls = 1;
+            } else {
+                const int acc_i = a_lo ? lo : hi;
+                p_f = pcur_[acc_i];
+                // ring/vacuum u == 0, so (u_acc + 0)/2 * 2 == u_acc — the
+                // value the divergence stencil reads there (P-G1d's `face2_u`
+                // keys on solid only, so a ring/vacuum neighbour is an OPEN
+                // face and contributes u_acc + 0; pre-P-G1d `mirror_idx` read
+                // the same value by the same "keys on solid only" rule).
+                u_f = east ? wind_x[acc_i] : wind_y[acc_i];
+                // The face is TWO-WAY on purpose. It was briefly made
+                // outflow-only during P-G1a (the name "OUTFLOW face" and §3's
+                // one-directional description invite it), and that is WRONG,
+                // measured: an open boundary then becomes a refrigerator. The
+                // reservoir's inward p·u work is precisely the FLOW WORK
+                // (the p/rho half of enthalpy) that the arriving gas turns
+                // into kinetic energy, which the kick debits and the
+                // absorb/sponge bands then destroy. Cut the import and the
+                // interior loses that energy with nothing replacing it: on
+                // tests/test_air_boundary.py's GATE 2 rush-in the interior
+                // recovered to 43% of P_amb instead of >90%, freezing onto
+                // the T_MIN rail (e_rail_sum ~ +3e15 raw per tick). §2.7's
+                // born-at-ambient credit supplies the INTERNAL energy of the
+                // arriving mass; this face supplies its flow work. Both.
+                cls = a_lo ? 2 : 3;
+            }
+            if (u_f == 0 || p_f <= 0) return 0;
+            const int64_t uabs = u_f < 0 ? -u_f : u_f;
+            // The PINNED magnitude chain (§2.4, R3-#4): Q16*Q16>>16 = Q16,
+            // then *Q16>>0 = Q32 — the field's own currency. Shifts total 16.
+            int64_t pu = mul128_shr(p_f, uabs, 16);
+            if (pu > flux_pu_cap) { pu = flux_pu_cap; if (book) ++flux_sat_hits; }
+            const int64_t mag = pu * (int64_t)k_flux_q;   // <= 2^60 by the cap
+            return (u_f > 0) ? mag : -mag;   // sign AFTER truncation
+        };
+
+        for (int k = 0; k < n_sub; ++k) {
+            // ---- (a) the sub-cycle pressure refresh, INCREMENT FORM -------
+            // ONE definition of p across all sub-cycles (R3-#6): sub-cycle 1
+            // is EXACTLY the solved p^{n+1}; later ones carry the
+            // EOS-consistent correction for the energy already moved.
+            // Refreshing to C*E outright would switch the operand to p* after
+            // sub-cycle 1 — the very defect v2 resolved. Without any refresh,
+            // sub-cycling with frozen operands is arithmetically identical to
+            // ONE pass at dt (F2) and the positivity bound is not geometric.
+            //
+            // The per-cell floor at 0 (F15) is applied HERE, once, into the
+            // plane both passes read — so every eq.-15 operand is
+            // non-negative and identical on both sides of every face.
+            for (int i = 0; i < n; ++i) {
+                if (!accountable(i)) { pcur_[i] = 0; continue; }
+                int64_t p = (int64_t)atmosphere[i]
+                          + mul128_shr((int64_t)c_q, gas_energy[i] - e0_[i], 32);
+                if (p < 0) { p = 0; ++p_face_floor_hits; }
+                // THE PHYSICAL CEILING on the refreshed operand (arc #54; a
+                // case §2.4 does not settle — recorded in the as-built).
+                //
+                // R3-#6's increment form is self-limiting in the OUTFLOW
+                // direction — that is the whole argument for it ("the outflow
+                // shrinks as E_i shrinks and the bound is geometric"). In the
+                // INFLOW direction it runs the other way: E rises, so p rises,
+                // so the next sub-cycle imports MORE. With n_sub up to 8 that
+                // is a within-tick positive feedback, and it is exactly what
+                // GATE 2's rush-in trips (a 40x40 interior slammed to 0.1 atm
+                // / 0.1 N and opened to the ring: the solve lifts P to ~0.98
+                // acoustically while N is still 0.1, the kick puts |u| at
+                // ~200 m/s, and a single ring face delivers many times the
+                // receiving cell's whole energy).
+                //
+                // The ceiling is NOT a new rail: it is §2.2's own stated
+                // bound, `E <= N·(T_MAX_PHYS + T_AMB)`, expressed as the
+                // pressure it implies through the EOS the refresh is built
+                // on. Past it the cell's temperature is meaningless anyway —
+                // that is what T_MAX_PHYS means (eos_solver.h) — so letting
+                // the operand run past it only feeds a runaway the §2.6
+                // recovery would have to clip afterwards. Below the ceiling
+                // this is dormant, so ordinary play is untouched.
+                const int64_t e_ceil = (int64_t)n_total_[i]
+                    * ((int64_t)t_max_phys_q + (int64_t)t_amb_q);
+                const int64_t p_ceil = mul128_shr((int64_t)c_q, e_ceil, 32);
+                if (p > p_ceil) { p = p_ceil; ++p_face_ceil_hits; }
+                if (p > (int64_t)INT32_MAX) p = INT32_MAX;
+                pcur_[i] = (int32_t)p;
+            }
+
+            // ---- (b) PASS A: OUT_i and the donor-only rail scale s_i ------
+            // DONOR-ONLY (F3): a rail that also scaled incoming credit could
+            // not reach a fixed point in one pass, and every incoming credit
+            // is >= 0, so ignoring them is safe.
+            for (int y = 0; y < h; ++y) {
+                const int row = y * w;
+                for (int x = 0; x < w; ++x) {
+                    const int i = row + x;
+                    if (!accountable(i)) { s_plane_[i] = FP_ONE; continue; }
+                    int64_t out = 0;
+                    int cls;
+                    // EAST face of i: pair (i, i+1), i is lo.
+                    if (x < w - 1) {
+                        const int64_t f = face_flux(i, i + 1, true, cls, false);
+                        if (cls != 0 && f > 0) out += f;      // leaves i
+                    }
+                    // WEST face of i: pair (i-1, i), i is hi.
+                    if (x > 0) {
+                        const int64_t f = face_flux(i - 1, i, true, cls, false);
+                        if (cls != 0 && f < 0) out += -f;     // leaves i
+                    }
+                    // SOUTH face of i: pair (i, i+w), i is lo.
+                    if (y < h - 1) {
+                        const int64_t f = face_flux(i, i + w, false, cls, false);
+                        if (cls != 0 && f > 0) out += f;
+                    }
+                    // NORTH face of i: pair (i-w, i), i is hi.
+                    if (y > 0) {
+                        const int64_t f = face_flux(i - w, i, false, cls, false);
+                        if (cls != 0 && f < 0) out += -f;
+                    }
+                    int64_t head = gas_energy[i]
+                                 - (int64_t)n_total_[i] * t_min_abs_raw;
+                    if (head < 0) head = 0;
+                    if (head >= out) {
+                        s_plane_[i] = FP_ONE;                 // the common case
+                    } else {
+                        // NO 128-bit divide (device portability) and no
+                        // `head << 16` (R3-#7: that overflows at head ~ 2^60).
+                        // The +1 keeps s_i*OUT_i/2^16 <= head_i STRICTLY.
+                        s_plane_[i] = (int32_t)floordiv_q(head, (out >> 16) + 1);
+                    }
+                }
+            }
+
+            // ---- (c) PASS B: apply, each face scaled by its DONOR's s -----
+            // Donorship follows sign(u_f), so this pass reads s at self + the
+            // 4 neighbours. The MAGNITUDE is scaled and the sign re-applied
+            // (the house scale_mag idiom) rather than scaling the signed
+            // value: mul128_shr floors toward -inf, so scaling a NEGATIVE
+            // flux directly would round its magnitude UP and could breach
+            // `Sum applied <= head`. Magnitude-first is sign-symmetric and
+            // identical on both sides of the face, so cancellation stays exact.
+            // `self` is the cell whose gather this is; the suppressed-transfer
+            // telemetry is booked only when SELF is the donor, so an interior
+            // face (visited from both sides) contributes exactly once.
+            const auto apply_scale = [&](int64_t f, int donor, int self) -> int64_t {
+                const int64_t s = accountable(donor) ? (int64_t)s_plane_[donor]
+                                                     : (int64_t)FP_ONE;
+                if (s >= (int64_t)FP_ONE) return f;
+                const int64_t m = mul128_shr(f < 0 ? -f : f, s, 16);
+                if (donor == self) e_energy_floor_sum += (f < 0 ? -f : f) - m;
+                return (f < 0) ? -m : m;
+            };
+            for (int y = 0; y < h; ++y) {
+                const int row = y * w;
+                for (int x = 0; x < w; ++x) {
+                    const int i = row + x;
+                    if (!accountable(i)) continue;
+                    int64_t de = 0, exp_out = 0;
+                    int cls;
+                    if (x < w - 1) {                 // EAST: i is lo
+                        const int64_t f = face_flux(i, i + 1, true, cls, true);
+                        if (cls != 0) {
+                            const int64_t a = apply_scale(f, f > 0 ? i : i + 1, i);
+                            de -= a;                 // lo loses when f > 0
+                            if (cls != 1) exp_out += a;
+                        }
+                    }
+                    if (x > 0) {                     // WEST: i is hi
+                        const int64_t f = face_flux(i - 1, i, true, cls, true);
+                        if (cls != 0) {
+                            const int64_t a = apply_scale(f, f > 0 ? i - 1 : i, i);
+                            de += a;                 // hi gains when f > 0
+                            if (cls != 1) exp_out -= a;
+                        }
+                    }
+                    if (y < h - 1) {                 // SOUTH: i is lo
+                        const int64_t f = face_flux(i, i + w, false, cls, true);
+                        if (cls != 0) {
+                            const int64_t a = apply_scale(f, f > 0 ? i : i + w, i);
+                            de -= a;
+                            if (cls != 1) exp_out += a;
+                        }
+                    }
+                    if (y > 0) {                     // NORTH: i is hi
+                        const int64_t f = face_flux(i - w, i, false, cls, true);
+                        if (cls != 0) {
+                            const int64_t a = apply_scale(f, f > 0 ? i - w : i, i);
+                            de += a;
+                            if (cls != 1) exp_out -= a;
+                        }
+                    }
+                    gas_energy[i] += de;
+                    e_work_export_sum += exp_out;
+                }
+            }
+        }
+    }
+
+    // ======================================================================
+    // 7. RECOVERY — the mirror refresh + the ONLY rails (design §2.6).
+    //
+    // T_rel,i = floordiv(gas_energy_i, N_i) - T_AMB_raw on the accountable
+    // set, with bulk_transport.cpp's divide policy VERBATIM (N_EPS_RAW = 1:
+    // below it there is no capacity to divide by, so wipe to ambient and book
+    // e_wipe_sum; never divide by 0 — the same on both backends).
+    //
+    // ONCE PER TICK, over the WHOLE accountable set. That cadence is what
+    // bounds the stored E (§2.2: N < 2^30 and T_abs <= 2^30 give E <= 2^60
+    // ONLY because T_MAX_PHYS runs here every tick), what keeps p* = C*E
+    // inside int32, and what keeps t_max_phys_hits meaningful
+    // (tests/test_air_boundary.py:820's `== 0` STOP).
+    //
+    // The rails clamp the mirror AND write gas_energy back ONLY when a rail
+    // BINDS, booking the delta to e_rail_sum. NEVER otherwise: N*floordiv(E,N)
+    // <= E would drain up to N-1 raw per cell per tick — exactly the drip
+    // class this arc exists to kill.
+    // ======================================================================
+    {
+        const int64_t N_EPS = N_EPS_RAW;
+        for (int i = 0; i < n; ++i) {
+            if (!accountable(i)) continue;
+            const int64_t nb = (int64_t)n_total_[i];
+            if (nb < N_EPS) {
+                const int64_t e_amb = nb * (int64_t)t_amb_q;
+                e_wipe_sum += gas_energy[i] - e_amb;
+                gas_energy[i] = e_amb;
+                temperature[i] = 0;
+                continue;
+            }
+            int64_t t_rel = floordiv_q(gas_energy[i], nb) - (int64_t)t_amb_q;
+            if (t_rel < (int64_t)t_min_q) {
+                t_rel = (int64_t)t_min_q;
+                ++energy_floor_hits;
+                const int64_t e_new = nb * (t_rel + (int64_t)t_amb_q);
+                e_rail_sum += e_new - gas_energy[i];
+                gas_energy[i] = e_new;
+            } else if (t_rel > (int64_t)t_max_phys_q) {
+                t_rel = (int64_t)t_max_phys_q;
+                ++t_max_phys_hits;
+                const int64_t e_new = nb * (t_rel + (int64_t)t_amb_q);
+                e_rail_sum += e_new - gas_energy[i];
+                gas_energy[i] = e_new;
+            }
+            temperature[i] = (int32_t)t_rel;
+        }
+    }
+    // The two step-4c checkpoints MOVE here with the law they measured: the
+    // T plane's post-tick digest is now taken after the recovery, which is
+    // where T finally exists for this tick (the P-E1 `digest_advect` move
+    // precedent, §2.1.6 — re-baseline-class, declared).
+    digest_compression = digest_of(temperature, n, 0);
+    if (dbg_probe_idx >= 0 && dbg_probe_idx < n) dbg_T_post_compression = temperature[dbg_probe_idx];
 }
 
 // ===========================================================================
@@ -1680,17 +2235,16 @@ uint64_t eos_sl_advect_reference(
 // ===========================================================================
 void eos_kick_compression_reference(
         int32_t* wind_x, int32_t* wind_y, int32_t* temperature,
+        int64_t* gas_energy,                                 // arc #54 §2.3
         const int32_t* p_new,
         const int32_t* gas, const bool* gas_conservative, int n_gases,
         const bool* solid, const bool* is_vacuum,
         const float* dyn_wave_absorb,
         int h, int w, float dt, const int64_t* cap2_plane,   // D2v2 (h,w) Q32.32, >= 0
         float c_max, float dx, float adiabatic_index, float absorb_strength,
-        float n_floor_solver, float t_min, float t_work_clamp,
-        float t_max_phys, float u_max,   // trace_mass_scale param RETIRED (P-T0)
-        float k_drag, float k_drag2, float k_drag_heat_frac, float c_v,   // P-E3 (design §2.8) / drag-law v2
-        float n_work_ref,   // P-E4 (design §2.4) — the compression-work trust gate
-        // T_ABS COMPRESSION WORK (P-W1a, design §5): ambient K.
+        float n_floor_solver, float t_min,
+        float t_max_phys, float u_max,   // t_work_clamp param RETIRED (arc #54)
+        float k_drag, float k_drag2, float c_v,
         float t_amb_k,
         uint64_t* digest_velocity_out, uint64_t* digest_compression_out,
         int64_t* counters_out /* [9] */,
@@ -1698,24 +2252,29 @@ void eos_kick_compression_reference(
         const int32_t* sponge_udamp) {
     const int n = h * w;
     const bool ambient_mode = (is_ambient != nullptr);   // BC: dormancy by branch
-    // THERMAL-MASS AXIS, P-EOS: step()'s `ts` fold, verbatim (step-4c only —
-    // the momentum kick below is untouched: it writes u, never T).
+    // THERMAL-MASS AXIS, P-EOS: step()'s `ts` fold, verbatim. arc #54 §2.3
+    // gives it a SECOND job here: a ts-gas cell is kicked / absorbed / sponged
+    // / capped like any other cell (the kick's skip-set is solid || vacuum ||
+    // ring, not ts), but it carries NO gas_energy — every bracket it opens is
+    // EXPORTED to the ts counter instead of stored (F5).
     const bool* ts = (thermal_solid != nullptr) ? thermal_solid : solid;
     for (int c = 0; c < 9; ++c) counters_out[c] = 0;
     *digest_velocity_out = 0;
     *digest_compression_out = 0;
     if (n <= 0 || dt <= 0.0f) return;
+    (void)c_v;   // arc #54 D5: the drag deposit is the derived k_ke now; c_v
+                 // stays in the signature as the config echo only.
 
     // ---- per-tick scalar constants (step()'s folds, verbatim) -------------
     const q16 n_floor_q    = quantize((double)n_floor_solver);
-    const q16 t_min_q      = quantize((double)t_min);
     const q16 t_max_phys_q = quantize((double)t_max_phys);
     const q16 u_max_q      = quantize((double)u_max);
+    (void)t_max_phys_q;   // arc #54: the T rails moved to step()'s §2.6
+    // recovery; this isolated tail replay no longer owns them.
     // VELOCITY-CLAMP (P-V1, D2v2): u_max2_q32 for the kick's cap_is_umax test
     // (D3) — the SAME fold every kick site derives from u_max_q.
     const int64_t u_max2_q32 = (int64_t)u_max_q * (int64_t)u_max_q;
     const double gamma_d   = (double)adiabatic_index;
-    const q16 gamma_m1_q   = quantize(gamma_d - 1.0);
     const double dt_d      = (double)dt;
     const q16 dt_q         = quantize(dt_d);
     const double dx_d      = std::max((double)dx, 1e-6);
@@ -1734,18 +2293,20 @@ void eos_kick_compression_reference(
         const int64_t U0 = ((int64_t)FP_ONE + (int64_t)kd2_q - 1) / (int64_t)kd2_q;
         rad_dead_q32 = U0 * U0;
     }
-    const q16 heat_frac_q = quantize((double)k_drag_heat_frac);
-    const int64_t recip_cv = make_recip(std::max((double)c_v, 1e-6));
-    // P-E4 (design §2.4): the trust-gate fold, verbatim step()'s.
-    const int64_t recip_n_work_ref = make_recip(std::max((double)n_work_ref, 1e-6));
-    // T_ABS COMPRESSION WORK (P-W1b, design §2/§5): the A7-floored fold,
-    // VERBATIM eos_solver.cpp:372 / the CUDA kick_scalar_folds() fold —
-    // read in the 4c loop below now that the law has landed. This test-only
-    // reference twin is exempt from D-3's guard by contract (it replays
-    // step() under the dials it is handed).
-    const q16 t_amb_q = std::max<q16>(1, quantize((double)t_amb_k));
-    int64_t ke_drag_removed = 0, e_drag_deposit = 0, e_drag_drop_sum = 0,
-            e_drag_rail_clipped = 0;
+    // arc #54 §2.1: the derived KE constant, folded through the IDENTICAL
+    // double expression step() uses (make_recip(1/k_ke) == k_ke·2^32 — see
+    // the live path's fold for the shift-48 derivation). This test-only twin
+    // is exempt from the D-3 / C-vs-T_AMB_K guards by contract (it replays
+    // step() under the dials it is handed), but the CONSTANT must match.
+    const double k_ke_d = gamma_d * (gamma_d - 1.0) * (double)t_amb_k
+                        / (2.0 * (double)c_max * (double)c_max);
+    const int64_t k_ke_recip_q32 = make_recip(1.0 / std::max(k_ke_d, 1e-12));
+    const int64_t KE_SAFE = (int64_t)1 << 27;
+    const auto ke_energy = [&](int64_t n_bulk, int64_t du2_raw) -> int64_t {
+        const int64_t t = mul128_shr(k_ke_recip_q32, du2_raw, 48);
+        return mul128_shr(n_bulk, t, 0);
+    };
+    int64_t ke_drag_removed = 0, e_drag_heat_sum = 0;
 
     // ---- step 2's Dalton sum (verbatim — the kick's N̂ input) --------------
     // P-T0 (design §2.6): n_total ≡ n_bulk; trace planes skipped outright.
@@ -1758,8 +2319,7 @@ void eos_kick_compression_reference(
         }
     }
 
-    int64_t u_clamp_hits = 0, u_max_hits = 0, work_clamp_hits = 0,
-            energy_floor_hits = 0, t_max_phys_hits = 0;
+    int64_t u_clamp_hits = 0, u_max_hits = 0;
 
     // ---- step 4: the momentum kick (step()'s loop, verbatim) --------------
     const int32_t* Pn = p_new;
@@ -1777,12 +2337,33 @@ void eos_kick_compression_reference(
             const int64_t gy = mul128_shr((int64_t)(Pn[id] - Pn[iu]), (int64_t)inv_2dx_q, 16);
             int64_t ux = (int64_t)wind_x[i];
             int64_t uy = (int64_t)wind_y[i];
+            // arc #54 §2.3 (a): the LOAD-SIDE clamp, step()'s verbatim.
+            if      (ux >  KE_SAFE) ux =  KE_SAFE;
+            else if (ux < -KE_SAFE) ux = -KE_SAFE;
+            if      (uy >  KE_SAFE) uy =  KE_SAFE;
+            else if (uy < -KE_SAFE) uy = -KE_SAFE;
+            const int64_t n_bulk_ke = (int64_t)n_total[i];
+            const bool ke_stores = !ts[i];
+            int64_t u2_prev = ux * ux + uy * uy;
             if (gx != 0 || gy != 0) {
                 q16 nhat = n_total[i];
                 if (nhat < n_floor_q) nhat = n_floor_q;
                 const q16 inv_n = reciprocal_q16(nhat);
                 ux -= mul128_shr(mul128_shr(Kdt_raw, gx, 16), (int64_t)inv_n, 16);
                 uy -= mul128_shr(mul128_shr(Kdt_raw, gy, 16), (int64_t)inv_n, 16);
+            }
+            // arc #54 §2.3 (b): the component guard, moved here from the cap
+            // block and tightened to ±2^27, UNCONDITIONAL — step()'s verbatim.
+            if      (ux >  KE_SAFE) ux =  KE_SAFE;
+            else if (ux < -KE_SAFE) ux = -KE_SAFE;
+            if      (uy >  KE_SAFE) uy =  KE_SAFE;
+            else if (uy < -KE_SAFE) uy = -KE_SAFE;
+            // BRACKET 1 — the ∇p kick (the one bracket that touches the field).
+            {
+                const int64_t u2 = ux * ux + uy * uy;
+                const int64_t dE = ke_energy(n_bulk_ke, u2 - u2_prev);
+                if (ke_stores && gas_energy) gas_energy[i] -= dE;
+                u2_prev = u2;
             }
 
             const q16 a = mul_q16(quantize((double)dyn_wave_absorb[i]), absorb_dt_q);
@@ -1793,16 +2374,12 @@ void eos_kick_compression_reference(
                 ux = (ux < 0) ? -mx : mx;
                 uy = (uy < 0) ? -my : my;
             }
+            // BRACKET 2 — dyn_wave_absorb: EXPORTED, gas_energy untouched (D6).
+            u2_prev = ux * ux + uy * uy;
 
             // B3c SPONGE VELOCITY DAMPING — restored by audit Patch A / A6
-            // (2026-08-04). VERBATIM from step() (eos_solver.cpp:654-663),
-            // placed identically: immediately after the absorb chain, before
-            // the u_cap clamp. It was MISSING here since B3c landed, while the
-            // header claimed this routine "Replays EXACTLY" step()'s chain —
-            // so the P6.4 gate structurally could not cover the ambient path,
-            // and because the CUDA twin (cuda_kick_compression.cu:168) DOES
-            // have the band, a lockstep failure on a planetside map would have
-            // blamed the GPU for the CPU reference being out of step.
+            // (2026-08-04). VERBATIM from step(), placed identically:
+            // immediately after the absorb chain, before the u_cap clamp.
             // MAGNITUDE-FIRST is mandatory (fixed_point.h sign convention: a
             // naive signed truncating multiply leaves a stuck -1-count floor).
             if (ambient_mode && sponge_udamp) {
@@ -1815,18 +2392,17 @@ void eos_kick_compression_reference(
                     uy = (uy < 0) ? -my : my;
                 }
             }
+            // BRACKET 3 — the B3c sponge band: EXPORTED (D6).
+            u2_prev = ux * ux + uy * uy;
 
             // VELOCITY-CLAMP (P-V1, D2v2/D5/D6): per-cell plane, trusted
             // verbatim; exact rad > cap² test (no Chebyshev pre-test, no
-            // diagonal leak) — step()'s block, verbatim.
+            // diagonal leak) — step()'s block, verbatim. arc #54: the ±2^30
+            // component pre-clamp that stood here MOVED UP to the ±2^27
+            // KE_SAFE guard after the ∇p block, so `rad` is bounded on entry.
             const int64_t cap2_q32 = cap2_plane[i];
             const bool cap_is_umax = (cap2_q32 >= u_max2_q32);
-            const int64_t RAD_SAFE = (int64_t)1 << 30;
-            if      (ux >  RAD_SAFE) ux =  RAD_SAFE;
-            else if (ux < -RAD_SAFE) ux = -RAD_SAFE;
-            if      (uy >  RAD_SAFE) uy =  RAD_SAFE;
-            else if (uy < -RAD_SAFE) uy = -RAD_SAFE;
-            const int64_t rad = ux * ux + uy * uy;   // int64-safe (guard above)
+            const int64_t rad = ux * ux + uy * uy;
             if (rad > cap2_q32) {
                 ++u_clamp_hits;
                 if (cap_is_umax) ++u_max_hits;
@@ -1835,12 +2411,13 @@ void eos_kick_compression_reference(
                 ux = (ux * (int64_t)u_cap_q) / (int64_t)umag;   // D6 exact rescale
                 uy = (uy * (int64_t)u_cap_q) / (int64_t)umag;
             }
+            // BRACKET 4 — the velocity cap: DESTROYED and counted (D6).
+            u2_prev = ux * ux + uy * uy;
 
             // P-E3 — interior drag + heat counterparty (design §2.8), VERBATIM
             // from step()'s kick loop: PER TICK, after the |u| cap, before the
             // store; ts cells skip both the drag and the deposit (ruling A1).
-            // drag-law v2 (design §2): widened to the two-term law, stage L /
-            // stage Q, verbatim step()'s restructured block.
+            // drag-law v2 (design §2): the two-term law, stage L / stage Q.
             if ((kd_q > 0 || kd2_q > 0) && !ts[i]) {
                 const int64_t ux_old = ux, uy_old = uy;
                 if (kd_q > 0) {
@@ -1866,28 +2443,12 @@ void eos_kick_compression_reference(
                                        - (ux * ux + uy * uy);   // >= 0 structurally
                 const int64_t n_bulk = (int64_t)n_total[i];
                 ke_drag_removed += mul128_shr(n_bulk, du2_raw, 16);
-
-                const int64_t dE_cell_q16 = (du2_raw >> 16) >> 1;
-                const int64_t dT_intended_wide =
-                    drag_dT_wide_q16(dE_cell_q16, heat_frac_q, recip_cv);
-                const int32_t drop_frac_q = (int32_t)(FP_ONE - heat_frac_q);
-                const int64_t dT_drop_wide =
-                    drag_dT_wide_q16(dE_cell_q16, drop_frac_q, recip_cv);
-                e_drag_drop_sum += mul128_shr(n_bulk, dT_drop_wide, 0);
-
-                const int32_t dT_intended_narrow =
-                    (dT_intended_wide > (int64_t)INT32_MAX)
-                        ? INT32_MAX : (int32_t)dT_intended_wide;
-                const int32_t t_old = temperature[i];
-                int32_t t_candidate = sat_add_q16(t_old, dT_intended_narrow);
-                if (t_candidate > t_max_phys_q) t_candidate = t_max_phys_q;
-                const int64_t dT_applied = (int64_t)t_candidate - (int64_t)t_old;
-                const int64_t dT_clipped = dT_intended_wide - dT_applied;
-                e_drag_deposit      += mul128_shr(n_bulk, dT_applied, 0);
-                e_drag_rail_clipped += mul128_shr(n_bulk, dT_clipped, 0);
-
-                if (n_bulk >= 1) temperature[i] = t_candidate;
+                // BRACKET 5 — DRAG HEAT at the derived k_ke (D5), step()'s.
+                const int64_t dE_drag = ke_energy(n_bulk, du2_raw);
+                if (gas_energy) gas_energy[i] += dE_drag;
+                e_drag_heat_sum += dE_drag;
             }
+            (void)u2_prev;
 
             wind_x[i] = (int32_t)ux;
             wind_y[i] = (int32_t)uy;
@@ -1895,68 +2456,25 @@ void eos_kick_compression_reference(
     }
     *digest_velocity_out = digest_of(wind_x, n, digest_of(wind_y, n, 0));
 
-    // ---- step 4c: compression work (step()'s loop, verbatim) --------------
-    {
-        const q16 work_clamp_q = quantize((double)t_work_clamp);
-        for (int y = 0; y < h; ++y) {
-            const int row = y * w;
-            for (int x = 0; x < w; ++x) {
-                const int i = row + x;
-                // THERMAL-MASS AXIS, T-WRITE SITE 2/2 (step()'s guard, verbatim).
-                if (solid[i] || ts[i] || is_vacuum[i]
-                        || (ambient_mode && is_ambient[i])) continue;   // BC: ring skipped like vacuum
-                const int il = mirror_idx(i, y, x - 1, h, w, solid);
-                const int ir = mirror_idx(i, y, x + 1, h, w, solid);
-                const int iu = mirror_idx(i, y - 1, x, h, w, solid);
-                const int id = mirror_idx(i, y + 1, x, h, w, solid);
-                const q16 dux = mul_q16(wind_x[ir] - wind_x[il], inv_2dx_q);
-                const q16 duy = mul_q16(wind_y[id] - wind_y[iu], inv_2dx_q);
-                const q16 div_new = dux + duy;
-                q16 k = mul_q16(gamma_m1_q, div_new);
-                k = mul_q16(k, dt_q);
-                // P-E4 trust gate (design §2.4, step()'s block verbatim).
-                {
-                    const q16 ratio = recip_mul(n_total[i], recip_n_work_ref);
-                    const q16 fade = fixedpoint::work_fade_clamp01_q(ratio);
-                    k = scale_mag(k, fade);
-                }
-                // P-E4 reversible work (design §2.4/§2.7, step()'s block
-                // verbatim). T_ABS COMPRESSION WORK (P-W1b, design §2):
-                // identical transcription of the live twin's absolute-T
-                // arithmetic — t_abs = T + t_amb_q (int64), compression
-                // warms via t_abs, expansion inverts on t_abs then shifts
-                // back to the stored ambient-relative convention.
-                const bool k_neg = (k < 0);
-                q16 w = k_neg ? (q16)(-(int64_t)k) : k;
-                if (w > work_clamp_q) { w = work_clamp_q; ++work_clamp_hits; }
-                q16 t_new;
-                const int64_t t_abs = (int64_t)temperature[i] + (int64_t)t_amb_q;
-                if (k_neg) {
-                    const q16 k_signed = (q16)(-(int64_t)w);
-                    const q16 dT = (q16)(((int64_t)k_signed * t_abs) >> 16);
-                    t_new = sat_add_q16(temperature[i], (q16)(-(int64_t)dT));
-                } else {
-                    t_new = (q16)(floordiv_q(t_abs << 16, (int64_t)FP_ONE + (int64_t)w)
-                                  - (int64_t)t_amb_q);
-                }
-                if (t_new < t_min_q) { t_new = t_min_q; ++energy_floor_hits; }
-                else if (t_new > t_max_phys_q) { t_new = t_max_phys_q; ++t_max_phys_hits; }
-                temperature[i] = t_new;
-            }
-        }
-    }
+    // ---- step 4c: DELETED (arc #54 D11 — see step()'s own note). This
+    // reference no longer writes `temperature` at all: the recovery that now
+    // owns the T rails is a WHOLE-GRID once-per-tick pass in step(), after
+    // the face-flux energy step, and is out of this isolated tail replay's
+    // scope by construction. The digest is still taken (unchanged plane) so
+    // the return shape and every positional unpack survive.
     *digest_compression_out = digest_of(temperature, n, 0);
 
     counters_out[0] = u_clamp_hits;
     counters_out[1] = u_max_hits;
-    counters_out[2] = work_clamp_hits;
-    counters_out[3] = energy_floor_hits;
-    counters_out[4] = t_max_phys_hits;
+    counters_out[2] = 0;                  // work_clamp_hits — retired (D10)
+    counters_out[3] = 0;                  // energy_floor_hits — moved to §2.6
+    counters_out[4] = 0;                  // t_max_phys_hits — moved to §2.6
     counters_out[5] = ke_drag_removed;
-    counters_out[6] = e_drag_deposit;
-    counters_out[7] = e_drag_drop_sum;
-    counters_out[8] = e_drag_rail_clipped;
+    counters_out[6] = e_drag_heat_sum;    // ex e_drag_deposit (D10 slot 6)
+    counters_out[7] = 0;                  // e_drag_drop_sum — retired
+    counters_out[8] = 0;                  // e_drag_rail_clipped — retired
 }
+
 
 // ===========================================================================
 // EOS P6.3 — standalone CPU reference for the multigrid pressure solve

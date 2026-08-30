@@ -564,19 +564,52 @@ def test_eos_energy_transport_never_heats_gas_from_a_crate():
     # this rung — P-E2a owns them. What rule (d) claims is exactly what the
     # bracket measures: the transport pass itself may only ever DESTROY
     # relative energy at a ts face, never deliver it.
+    #
+    # arc #54 P-G1a (design §2.7 row 1): the SIGN of that bracket is no longer
+    # the right statement of rule (d). `eth_transport_delta` is
+    #     -Σ_faces dq · T_rel(donor)
+    # over every face where mass leaves the accountable set — which is
+    # NEGATIVE only while the transiting gas is ABOVE ambient. Sub-ambient gas
+    # carries NEGATIVE relative energy (which is exactly why `e_ts_residual`
+    # was always declared SIGNED), so a cold cell shedding mass into the crate
+    # legitimately moves the bracket UP. Before this arc that case did not
+    # arise here, because step 4c's per-cell compression work kept the crate's
+    # neighbourhood at or above ambient; the conservative flux step lets the
+    # gas beside a hot obstacle genuinely rarefy and cool, so it now does.
+    #
+    # Rule (d)'s actual claim — "the crate's own 1300 must never ride out the
+    # far side" — is therefore asserted DIRECTLY: mass emerging from a ts cell
+    # is MINTED at ambient (`dq · T_AMB_raw`, §2.7's born-at-ambient rule in
+    # absolute currency), so no gas cell may ever end up hotter than the
+    # hottest gas that entered. The counted-destruction half (`e_ts_residual`
+    # strictly positive, non-vacuous) is kept below.
+    t_gas_max = int(g.temperature[gas_cells].max())   # the 800-deg pocket
+    t_crate = int(g.temperature[furn].min())          # the 1300-deg crate
+    assert t_crate > t_gas_max, "fixture: the crate must be the hottest thing"
     ts_debits = 0
     for _ in range(30):
         runner.engine.run_substeps(
             g.wave_p, g.atmosphere, g.wind_x, g.wind_y, g.temperature,
+            g.gas_energy,              # arc #54 §2.2 (MECHANICAL)
             g.obstacles, g.solid, g.is_vacuum,
             g.dyn_permeability, g.dyn_wave_absorb,
             g.gas, g.gases.diffusion, g.gases.conservative,
             g.gases.decay, inert_n2_idx, dt,
             thermal_solid=g.thermal_solid,   # the axis under test
         )
-        assert int(eos.eth_transport_delta) <= 0, (
-            "the transport pass CREATED %d raw of gas book-energy beside a "
-            "hot crate" % int(eos.eth_transport_delta))
+        # No gas cell ever reaches the CRATE's temperature scale. The gas may
+        # legitimately rise a little above the 800-deg inlet pocket — the
+        # conservative flux step does honest adiabatic compression work where
+        # the wind piles up against the obstacle (measured ~+25 deg, ~3%) —
+        # but the crate's own 1300 is a different order, and if ts->air
+        # delivery were happening at all it is what would show up here.
+        t_now = int(g.temperature[gas_cells].max())
+        assert t_now < t_crate, (
+            "gas beside the crate reached %d raw, at or past the crate's own "
+            "%d — the crate's temperature rode out into the air, i.e. mass "
+            "emerging from a ts cell was NOT minted at ambient (rule (d), "
+            "§2.7's born-at-ambient rule in absolute currency)"
+            % (t_now, t_crate))
         ts_debits += int(eos.e_ts_residual)
     # Non-vacuity: air really did transit the crate, so rule (d) really fired.
     assert ts_debits > 0, (
@@ -614,11 +647,25 @@ def test_eos_step1b_mask_never_moves_velocity():
         "the SL entry is u-only now — neither run may write temperature")
 
 
-def test_eos_step4c_does_not_write_temperature_on_a_thermal_solid():
-    """Ruling A1 / T-WRITE SITE 2/2: compression work is work done ON GAS BY
-    COMPRESSION — an object does not compress, so step 4c may not touch a
-    thermal_solid tile's T. The momentum kick (which writes u, never T) must be
-    bit-identical with and without the mask."""
+def test_eos_kick_tail_never_writes_temperature_and_ts_stores_no_energy():
+    """Ruling A1 / T-WRITE SITE 2/2, RESTATED for the gas-energy arc (#54
+    P-G1a, design §2.3/§2.4 F5).
+
+    The claim used to be "step 4c may not touch a thermal_solid tile's T",
+    gated by a control run WITHOUT the mask that had to show compression work
+    happening there. Step 4c is DELETED, so that control can no longer fire
+    and the old shape is structurally vacuous. The post-arc property is
+    STRICTLY STRONGER and is what this test asserts now:
+
+      (a) the kick tail writes `temperature` NOWHERE, mask or no mask — the
+          mirror is refreshed once per tick by step()'s §2.6 recovery, and
+          this isolated tail replay has no business touching T at all;
+      (b) a thermal_solid cell carries N and u but NO gas_energy: it is
+          kicked / absorbed / sponged / capped like any other cell, and every
+          KE bracket it opens is EXPORTED (e_ts_ke_sum), never stored (F5);
+      (c) the momentum kick itself is still bit-identical with and without
+          the mask (the mask governs energy, never u).
+    """
     h, w = 12, 16
     solid, vac, tsol, perm, furn = _eos_world(h, w)
     rng = np.random.default_rng(99)
@@ -637,21 +684,41 @@ def test_eos_step4c_does_not_write_temperature_on_a_thermal_solid():
     cap2 = np.full((h, w), (300 * FP_ONE) ** 2, dtype=np.int64)
     args = dict(dt=1.0 / 24.0, cap2_plane=cap2, c_max=300.0, dx=1.0 / 3.0,
                 adiabatic_index=1.4, absorb_strength=8.0, n_floor_solver=1e-3,
-                t_min=-289.0, t_work_clamp=0.5, t_max_phys=16000.0,
-                u_max=1000.0)   # trace_mass_scale arg RETIRED (P-T0)
+                t_min=-289.0, t_max_phys=16000.0,
+                u_max=1000.0)   # trace_mass_scale arg RETIRED (P-T0);
+                                # t_work_clamp RETIRED (arc #54 D11, MECHANICAL)
 
     a = (wx0.copy(), wy0.copy(), T0.copy())
     b = (wx0.copy(), wy0.copy(), T0.copy())
+    ge_a = np.zeros((h, w), dtype=np.int64)
+    ge_b = np.zeros((h, w), dtype=np.int64)
+    # k_drag > 0 so the ONE bracket that stores (the drag deposit) is live —
+    # without it (b) would be vacuous.
     bp.eos_kick_compression_ref(a[0], a[1], a[2], p_new, gas, cons, solid, vac,
-                                wabs, thermal_solid=tsol, **args)
+                                wabs, gas_energy=ge_a, k_drag=0.5,
+                                thermal_solid=tsol, **args)
     bp.eos_kick_compression_ref(b[0], b[1], b[2], p_new, gas, cons, solid, vac,
-                                wabs, **args)
-    assert np.array_equal(a[2][furn], T0[furn]), (
-        "step 4c wrote temperature on a thermal_solid tile")
-    assert not np.array_equal(b[2][furn], T0[furn]), (
-        "control failed: the pre-patch path must do compression work there")
-    assert np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1]), (
-        "the thermal mask changed the momentum kick — it must not")
+                                wabs, gas_energy=ge_b, k_drag=0.5, **args)
+    # (a) no T write, anywhere, either way.
+    assert np.array_equal(a[2], T0) and np.array_equal(b[2], T0), (
+        "the kick tail wrote `temperature` — step 4c is deleted (arc #54 "
+        "D11) and the mirror belongs to step()'s once-per-tick recovery")
+    # (b) furniture stores no energy; the control (no mask -> `ts` falls back
+    # to `solid`, so those same tiles are ordinary gas) shows it would have.
+    assert not ge_a[furn].any(), (
+        "a thermal_solid cell's gas_energy was written (F5: ts cells export "
+        "their KE brackets, they never store)")
+    assert ge_b[furn].any(), (
+        "control failed: without the mask those tiles must store normally — "
+        "otherwise (b) proves nothing")
+    # (c) the kick is mask-blind OFF the furniture. On it the two runs are
+    # ALLOWED to differ, and here must: ruling A1 has the drag stage (alone
+    # among the kick's stages) skip a ts cell, so `u` there stays un-dragged.
+    off = ~furn
+    assert np.array_equal(a[0][off], b[0][off]) and \
+           np.array_equal(a[1][off], b[1][off]), (
+        "the thermal mask changed the momentum kick away from the furniture "
+        "— the mask governs energy, never u")
 
 
 @pytest.mark.parametrize("entry", ["sl", "kick"])
@@ -687,8 +754,9 @@ def test_eos_furniture_free_identity_at_the_replay_boundary(entry):
         cap2 = np.full((h, w), (300 * FP_ONE) ** 2, dtype=np.int64)
         args = dict(dt=1.0 / 24.0, cap2_plane=cap2, c_max=300.0,
                     dx=1.0 / 3.0, adiabatic_index=1.4, absorb_strength=8.0,
-                    n_floor_solver=1e-3, t_min=-289.0, t_work_clamp=0.5,
-                    t_max_phys=16000.0, u_max=1000.0)  # trace_mass_scale RETIRED (P-T0)
+                    n_floor_solver=1e-3, t_min=-289.0,
+                    t_max_phys=16000.0, u_max=1000.0)  # trace_mass_scale RETIRED
+                    # (P-T0); t_work_clamp RETIRED (arc #54 D11, MECHANICAL)
         a = (wx0.copy(), wy0.copy(), T0.copy())
         b = (wx0.copy(), wy0.copy(), T0.copy())
         da = bp.eos_kick_compression_ref(a[0], a[1], a[2], p_new, gas, cons,
@@ -797,6 +865,7 @@ def test_run_substeps_thermal_solid_is_nullable_and_solid_equivalent():
         r.eos.dx = float(g.tile_size_m)
         r.engine.run_substeps(
             g.wave_p, g.atmosphere, g.wind_x, g.wind_y, g.temperature,
+            g.gas_energy,              # arc #54 §2.2 (MECHANICAL)
             g.obstacles, g.solid, g.is_vacuum,
             g.dyn_permeability, g.dyn_wave_absorb,
             g.gas, g.gases.diffusion, g.gases.conservative,

@@ -21,7 +21,6 @@ import pytest
 
 import cuda_harness
 
-
 pytestmark = pytest.mark.skipif(
     not cuda_harness.cuda_available(kernel="bulk_flux"),
     reason="no CUDA build (cpp/build_cuda) or CUDA runtime DLLs present",

@@ -272,6 +272,10 @@ def part2_integration() -> bool:
     bp.set_smoke_backend(False)
     base = capture_trajectory(n_steps=30)
     dig = trajectory_digest(base)
+    # Re-baselined in P-G3 (#54, 2026-08-30): the golden this imports was
+    # regenerated in tests/_xarch_perfield_digest.py after physics moved
+    # under P-G1a/P-G1b/P-G1d/P-G2 (stored gas_energy, the face-flux energy
+    # step, the D4 divergence face form) -- see that file's lineage block.
     if dig != GOLDEN:
         ok = False
         print(f"  GOLDEN MISMATCH: {dig[:16]}... != {GOLDEN[:16]}...")

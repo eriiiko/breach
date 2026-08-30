@@ -135,13 +135,21 @@ void bulk_flux_plane_device(
 // d_rail       : host array of `n_cons` device rail pointers, or nullptr.
 // Scratch, caller-owned, all h*w unless noted: d_e / d_nb / d_dqsum_e /
 // d_dqsum_s (int64), d_dq_e / d_dq_s / d_scale (int32).
-// d_ecnt       : 5 int64 slots, ACCUMULATED into (caller memsets per tick):
-//                [0] e_ts_residual [1] e_wipe_sum [2] e_floor_sum
-//                [3] n_active_flux [4] n_bulk_active_sum.
-// ===========================================================================
+// d_ecnt       : 6 int64 slots, ACCUMULATED into (caller memsets per tick):
+//                [0] e_ts_residual [1] e_wipe_sum [2] e_floor_sum (retired,
+//                always 0) [3] n_active_flux [4] n_bulk_active_sum
+//                [5] e_transport_net (arc #54 §2.8's closure-identity term).
+//
+// arc #54 (gas-energy conservation, design §2.7 row 1): `d_gas_energy` is now
+// the LIVE conserved field this pass MOVES — priced off it directly
+// (`price_face`, the exact `floordiv(dq*E,N)` split, bulk_transport.cpp),
+// never rebuilt from `d_temperature` each call. `t_amb_raw` is the ambient
+// K fold minted mass is priced at; `t_max_phys_q` bounds the MIRROR refresh
+// only (the authoritative T_MAX_PHYS rail is the once-per-tick EOS recovery).
 void bulk_flux_energy_transport_device(
     int32_t* const* d_gas_planes, int n_cons,
     int32_t* d_temperature,
+    int64_t* d_gas_energy, int32_t t_amb_raw, int32_t t_max_phys_q,
     const int32_t* d_wind_x, const int32_t* d_wind_y,
     const bool* d_solid, const bool* d_is_vacuum, const bool* d_ts,
     const int32_t* d_coeffE, const int32_t* d_coeffS,

@@ -422,6 +422,36 @@ public:
     mutable int64_t e_cond_trunc_sum = 0;  // endpoint floordiv residual (≤ 0: one-way)
     mutable int64_t e_cond_cap_sum   = 0;  // the capacity floor/ceiling term (signed)
     mutable int64_t cond_limit_hits  = 0;  // constraint-4 per-face limiter engagements
+
+    // --- arc #54 P-G1b: THE GAS SIDE IS ENERGY NOW (design §2.7 row 3) -----
+    //
+    // When `gas_energy` is supplied, an ACCOUNTABLE gas cell no longer takes
+    // the endpoint divide at all: Pass 1's deposit and Pass 2's conduction sum
+    // are handed to the gas-energy seam (`gas_energy::deposit`) and the mirror
+    // is re-read from the stored E. The SOLIDS side is untouched — thermal
+    // solids are their own truth (D2) and keep the T-form law, its capacity
+    // build, and `e_cond_trunc_sum` / `e_cond_cap_sum` exactly as before.
+    //
+    // `gas_energy == nullptr` (the direct-binding / unit-test path) keeps the
+    // whole pre-#54 T-form law bit-identical, including the two counters above
+    // — which is why tests/test_temperature_conduction.py's
+    // `Σ ΔT_i·C_real_i == e_cond_trunc_sum + e_cond_cap_sum` identity survives
+    // unchanged.
+    //
+    // THE STEP'S OWN CLOSURE IDENTITY (gated across ticks by
+    // tests/test_e1_hot_rail.py::test_no_transport_mint):
+    //
+    //     Δ Σ_accountable gas_energy  ==  e_gas_deposit_sum
+    //                                   + e_gas_cond_sum
+    //                                   + e_gas_rail_sum
+    //
+    // exact in int64. Every one of these is a NET signed sum over accountable
+    // cells, so a face that leaks energy into a ring / vacuum / solid cell
+    // shows up as the export it is (that cell is not in the books) rather than
+    // as an unexplained drift.
+    mutable int64_t e_gas_deposit_sum = 0;  // Pass 1 heat->E on gas (net)
+    mutable int64_t e_gas_cond_sum    = 0;  // Pass 2 conduction into gas E (net)
+    mutable int64_t e_gas_rail_sum    = 0;  // Pass 1's T_MAX_PHYS rail (signed)
     // The three OPEN-BY-DESIGN channels, named as SIGNED per round-1 finding
     // L3-6. None of their LAWS changed at P-E2a — they are instrumented so
     // §7's "every creator named and counted" can actually be checked:
@@ -443,6 +473,65 @@ public:
     // here, so >= 0 by construction) — accumulates across step() calls, the
     // t_max_phys_hits/t_low_rail_hits idiom of this class (never reset).
     mutable int64_t e_deposit_drop_sum = 0;
+
+    // --- arc #54 P-G5 (design gas_energy_thermostat_ledger_2026-08-30.md):
+    // THE SOLID-SIDE BOOKS. Erik's ruling (2026-08-30): the walls decaying to
+    // ambient (Pass 3, `cool_shift`, solids only — "the ship's heating
+    // system, not simulated further") is a deliberate, TWO-WAY thermostat: a
+    // wall pinned at ambient also warms a sub-ambient gas/wall through
+    // conduction. Counter only — NO PHYSICS CHANGE, every field trajectory
+    // stays byte-identical; these are pure bookkeeping of what Pass 1/2/3
+    // already compute.
+    //
+    // The solid-side closure identity (the SOLIDS' twin of the gas-side one
+    // above), exact in int64 every tick:
+    //
+    //     Δ solid_energy_books_sum  ==  e_solid_deposit_sum
+    //                                 + e_solid_cond_sum
+    //                                 + e_thermostat_sum
+    //
+    // and therefore the TOTAL ledger (gas books + solid books) closes against
+    // every external channel named across both identities (EOS, the thermal
+    // solver's gas side, combustion, the Python seams, water evac, the solid
+    // deposit, the solid conduction landing, and the thermostat).
+    //
+    // `e_solid_deposit_sum` — Pass 1's landing on THERMAL SOLID cells only:
+    // the radiation fold (rad_net, signed) AND the heat->T bit-shift deposit,
+    // each priced as the cell's OWN actual ΔT (post every rail/clamp that
+    // pass applies) × its real capacity (`cap_real_`). Booking the ACTUAL
+    // applied ΔT (rather than re-deriving a pre-rail quantity) means a
+    // T_MAX_PHYS/low-rail engagement on a thermal solid is counted here
+    // automatically — there is no separate solid-rail counter because this
+    // one already prices whatever the rail actually did.
+    mutable int64_t e_solid_deposit_sum = 0;
+    // `e_solid_cond_sum` — Pass 2's landing on THERMAL SOLID cells: the exact
+    // T-form ΔT × cap_real_ for every ts[i] cell taking the endpoint-divide
+    // path (the SAME `dT` already feeding `e_cond_trunc_sum`/`e_cond_cap_sum`
+    // — this is not a new law, just a THIRD, solid-scoped reading of it).
+    // Whether the energy on the other end of a face came from another solid
+    // (nets to ~0 across the whole solid set, up to the already-counted
+    // trunc/cap residuals) or from an accountable gas cell (the real cross-
+    // book transfer) is not distinguished — the total ΔT·cap_real IS exactly
+    // this tick's change to `solid_energy_books_sum` from conduction, by
+    // construction, so no split is needed for the identity to close.
+    mutable int64_t e_solid_cond_sum = 0;
+    // `e_thermostat_sum` — Pass 3's relax-to-ambient on THERMAL SOLID cells,
+    // SIGNED, positive == energy ENTERING the sim from the thermostat (a
+    // sub-ambient wall being warmed back up). Bit-for-bit the same quantity
+    // `e_cool_sum` above already accumulated (same formula, same site) —
+    // `e_cool_sum` is the P-E2a "open channel" name from before the ruling;
+    // `e_thermostat_sum` is the canonical name the P-G5 closure identity and
+    // the benches use. Both are kept (neither is derived from the other) so
+    // no existing reader of `e_cool_sum` moves.
+    mutable int64_t e_thermostat_sum = 0;
+    // `solid_energy_books_sum` — a SNAPSHOT, not an accumulator: Σ over
+    // thermal_solid cells of `cap_real_[i] * temperature[i]` (thermal_mass_
+    // raw × ΔT_raw, ambient-relative — `temperature` already is), as of the
+    // end of the most recently completed step() call. The solid-side twin of
+    // GameMap.gas_energy: callers diff it tick to tick themselves, exactly as
+    // they diff `Σ_accountable gas_energy`. Recomputed fresh every step() —
+    // NOT a running total — because it is capacity-weighted STATE, not flow.
+    mutable int64_t solid_energy_books_sum = 0;
 
     void  set_gas_advection_rate(float v) { gas_advection_rate = v; }
     float get_gas_advection_rate() const { return gas_advection_rate; }
@@ -554,7 +643,21 @@ public:
         // radiative LOSS would silently never convert and fire could never cool
         // by radiating. Default nullptr -> no fold (every legacy caller and
         // every direct-binding test path stays byte-identical).
-        const int32_t* rad_net = nullptr
+        const int32_t* rad_net = nullptr,
+        // ---- arc #54 P-G1b (design §2.7 row 3): THE GAS SIDE IS ENERGY -----
+        // `gas_energy` — the CONSERVED gas energy field, (h, w) int64, MUTATED
+        // on ACCOUNTABLE gas cells (Pass 1's deposit and Pass 2's conduction
+        // sum both go through the gas-energy seam instead of the endpoint
+        // divide). nullptr keeps the entire pre-#54 T-form law bit-identical,
+        // which is what leaves the direct-binding unit tests — and their
+        // `Σ ΔT_i·C_real_i == e_cond_trunc_sum + e_cond_cap_sum` identity —
+        // untouched. The SOLIDS side never changes either way (D2).
+        // `t_amb_q` — T_AMB_K in raw Q16.16 counts, the absolute-temperature
+        // offset the seam converts through; read only when gas_energy != null.
+        // The engine folds it from the SAME temperature_scale accessor
+        // EOSSolver's own fold reads, so the two cannot drift.
+        int64_t* gas_energy = nullptr,
+        int32_t t_amb_q = 0
     ) const;
 
     // --- DEBUG probe (temporary instrumentation, eos-p3fix-thermal-ceiling
@@ -582,4 +685,10 @@ private:
     // Transient scratch, never synced, never digested (R4).
     mutable std::vector<int64_t> cap_used_;
     mutable std::vector<int64_t> cap_real_;
+    // arc #54 P-G1b: Pass 2's parked per-cell face sum for ACCOUNTABLE gas
+    // cells. It exists because the seam refreshes the mirror, and the pass's
+    // determinism rests on every cell reading the frozen pre-conduction field
+    // — so the deposits are applied only after the double-buffer swap. Sized
+    // (and zeroed) once per step, and only when `gas_energy` is supplied.
+    mutable std::vector<int64_t> de_gas_;
 };

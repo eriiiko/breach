@@ -52,7 +52,7 @@ for _p in (ROOT, ROOT / "src", ROOT / "tests", ROOT / "cpp" / "build" / "Release
 import breach_physics as bp                                       # noqa: E402
 from simulation.gases import O2, INERT_N2, SMOKE            # noqa: E402
 from simulation.materials import MaterialTable, MAT_WOOD          # noqa: E402
-from simulation import gas_fixed                                  # noqa: E402
+from simulation import gas_fixed, fire_fixed                      # noqa: E402
 
 FP_ONE = 65536
 IGN_WOOD_Q16 = int(MaterialTable.from_config().ignition_temp_q16[MAT_WOOD])
@@ -69,7 +69,14 @@ def _plus_scene(center_o2_raw, outer_o2=0.21, hp=60.0, h=9, w=9):
     center_o2_raw is set as a RAW Q16.16 count (so we control divisibility by
     the claimant count exactly). Every open cell carries ambient N2; only the
     centre and the four outer cells carry O2 (everything else is inert, so no
-    other cell can burn and break the symmetry)."""
+    other cell can burn and break the symmetry).
+
+    Re-derivation note (fire-family triage, 547fb12, 2026-07-24): burn demand
+    is proportional to `fire[i]` now (was a uniform gate) — `fire[]` is
+    seeded identically at all four arms' sources so each claimant demands
+    the same amount, preserving the 4-fold symmetry this test's whole
+    argument depends on (a lopsided seed would itself be a scan-direction-
+    shaped bias, defeating the isotropy claim)."""
     gas = np.zeros((7, h, w), dtype=np.int32)
     solid = np.zeros((h, w), dtype=bool)
     is_vacuum = np.zeros((h, w), dtype=bool)
@@ -90,6 +97,7 @@ def _plus_scene(center_o2_raw, outer_o2=0.21, hp=60.0, h=9, w=9):
         wall_hp[sy, sx] = int(round(hp * FP_ONE))
         ign[sy, sx] = IGN_WOOD_Q16
         temperature[sy, sx] = IGN_WOOD_Q16 * 2       # well above ignition
+        fire[sy, sx] = fire_fixed.quantize_scalar(0.6)   # identical at all 4 arms
         # each arm's private outer burn-site
         oy, ox = cy + _outer[0], cx + _outer[1]
         gas[O2][oy, ox] = gas_fixed.quantize_scalar(outer_o2)
@@ -118,8 +126,19 @@ def _arm_readouts(scene):
 
 
 def _comb():
+    """Re-derivation note (fire-family triage, 547fb12, 2026-07-24): demand
+    is now `burn_cap*fire[i]*o2f_j`, not the old uniform `burn_cap` per
+    claimant — at the shipped-scale burn_rate=1.0 this scene's total 4-arm
+    demand tops out around ~13-40k counts (o2f saturates well under FP_ONE
+    at the centre's fixed N2), NEVER exceeding the ~20k-60k centre O2 values
+    below, so the split was silently running the trivial full-demand branch
+    instead of the genuinely CONTESTED branch both tests below are named
+    for. burn_rate=4.0 (measured directly: this is where the sum of all 4
+    arms' demand first exceeds the centre counts used below across that
+    whole range) restores real contention without changing anything the
+    tests read (H_fuel/soot_yield/fuel_per_o2 untouched)."""
     c = bp.CombustionSolver()
-    c.burn_rate = 1.0        # burn_cap = quantize(1.0*0.25) = 16384 counts
+    c.burn_rate = 4.0        # re-derived (see docstring) — was 1.0
     c.o2_thresh_burn = 0.03
     c.H_fuel = 4.0
     c.soot_yield = 0.3
@@ -129,9 +148,11 @@ def _comb():
 
 def test_isotropy_bit_exact_zero_remainder():
     """Centre O2 = 40000 counts is divisible by the 4 claimants (10000 each,
-    zero remainder) and below D = 4*burn_cap = 65536 (so the cell is genuinely
-    CONTESTED, exercising the split — not the trivial full-demand path). The
-    four arms must come out BIT-IDENTICAL over a sustained burn."""
+    zero remainder) and below the scene's total 4-arm demand at burn_rate=4.0
+    (so the cell is genuinely CONTESTED, exercising the split — not the
+    trivial full-demand path; verified directly, this triage: the centre
+    fully drains to 0 every tick). The four arms must come out BIT-IDENTICAL
+    over a sustained burn."""
     comb = _comb()
     scene = _plus_scene(center_o2_raw=40000)
     gas = scene[0]

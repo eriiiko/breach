@@ -61,7 +61,17 @@ def _t_amb_k_raw() -> int:
 
 def _books_identity_holds(gmap, runner) -> tuple[bool, int, int]:
     """Return (ok, lhs, rhs): lhs = Sum_accountable(gas_energy - N*T_AMB_raw),
-    rhs = the existing eos_energy_books_sum (Sum_accountable(N*T_raw))."""
+    rhs = the existing eos_energy_books_sum.
+
+    Still an EXACT equality at P-G1b, but it now means something different
+    and stronger. At P-G0 both sides were derived from the same (N, T)
+    mirror, so it was a transcription check on the accountable-set mask and
+    the T_AMB_K fold. With D1 live the RIGHT side reads the STORED field
+    through the C++ `e_participates()` skip-set, and the LEFT reads it
+    through Python's `_gas_energy_accountable()` — so the equality is now a
+    check that the two INDEPENDENT transcriptions of the accountable set,
+    of the Dalton bulk N and of the T_AMB_K fold still agree on a field that
+    no longer re-derives itself every tick to hide a disagreement."""
     accountable = gmap._gas_energy_accountable()
     n_bulk = gmap._gas_bulk_n_raw()
     t_amb_raw = _t_amb_k_raw()
@@ -69,6 +79,38 @@ def _books_identity_holds(gmap, runner) -> tuple[bool, int, int]:
               .sum(dtype=np.int64))
     rhs = int(runner.energy_books_sum(gmap))
     return lhs == rhs, lhs, rhs
+
+
+def _mirror_is_a_floor_read(gmap) -> tuple[bool, int, int]:
+    """P-G1b GATE: `temperature` is a FLOOR READ of `gas_energy` on every
+    accountable cell — never stale, never over-reading.
+
+        0 <= Sum_accountable(E - N*T_AMB_raw) - Sum_accountable(N*T_mirror)
+          <  Sum_accountable(N)
+
+    The lower bound is the no-mint direction: a mirror that read ABOVE the
+    stored energy would be temperature nothing paid for, which is #54's
+    entire family of bug. The upper bound is the no-staleness direction: the
+    recovery is `T = floordiv(E, N) - T_AMB`, so each cell's shadow can lag
+    the truth by at most `N-1` raw counts — a seam that forgot to refresh
+    its mirror, or a stale write left over from before a mask flip, blows
+    straight through it.
+
+    This is the gate that replaced P-G0's trivial "both sides read the same
+    mirror" identity: under D1 the two quantities are genuinely different
+    readings of genuinely different state, and their exact relationship is
+    the arc's own recovery law."""
+    accountable = gmap._gas_energy_accountable()
+    n_bulk = gmap._gas_bulk_n_raw()
+    t_amb_raw = _t_amb_k_raw()
+    e_rel = int(np.where(accountable, gmap.gas_energy - n_bulk * t_amb_raw, 0)
+                .sum(dtype=np.int64))
+    mirror = int(np.where(accountable,
+                          n_bulk * gmap.temperature.astype(np.int64), 0)
+                 .sum(dtype=np.int64))
+    n_tot = int(np.where(accountable, n_bulk, 0).sum(dtype=np.int64))
+    gap = e_rel - mirror
+    return (0 <= gap <= n_tot), gap, n_tot
 
 
 def _sealed_room_sim():
@@ -159,6 +201,13 @@ def test_gas_energy_books_identity_holds_over_100_ticks(name):
             f"[{name}] tick {t}: books identity broke -- "
             f"Sum(gas_energy - N*T_AMB) = {lhs} != eos_energy_books_sum = {rhs} "
             f"(delta {lhs - rhs})")
+        ok2, gap, n_tot = _mirror_is_a_floor_read(gmap)
+        assert ok2, (
+            f"[{name}] tick {t}: the mirror is no longer a floor read of "
+            f"gas_energy -- Sum(E - N*T_AMB) - Sum(N*T_mirror) = {gap}, "
+            f"outside [0, Sum N = {n_tot}]. Below 0 means the mirror reads "
+            f"MORE than the stored energy (a mint); above Sum N means some "
+            f"cell's mirror is stale by more than one raw count.")
 
 
 @pytest.mark.parametrize("name", sorted(SCENARIOS))

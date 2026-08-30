@@ -74,7 +74,9 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         const int32_t* gas, const bool* gas_conservative, int n_gases, int o2_idx,
         int h, int w, float sim_time,
         const bool* is_ambient,           // BC: ambient ring for the T pre-pass
-        const int32_t* rad_net) const {   // P-R4: SIGNED radiation accumulator
+        const int32_t* rad_net,           // P-R4: SIGNED radiation accumulator
+        int64_t* gas_energy,              // arc #54 P-G1b: the conserved field
+        int32_t t_amb_q) const {          // T_AMB_K raw (the seam's offset)
 
     using namespace fixedpoint;
 
@@ -295,11 +297,14 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         // the documented nullptr fallback for the mask — but no longer selects
         // the medium there, exactly as on the CPU side below.
         //
-        // P-E2a/P-E2b: the GPU pass fills a local 7-slot block which is then
-        // folded into the solver's own accumulators below the call — the same
-        // "backend-agnostic telemetry" idiom t_max_phys_hits / t_low_rail_hits
-        // already use here.
+        // P-E2a/P-E2b/arc #54: the GPU pass fills a local TEMPERATURE_ENERGY_
+        // SLOTS block which is then folded into the solver's own accumulators
+        // below the call — the same "backend-agnostic telemetry" idiom
+        // t_max_phys_hits / t_low_rail_hits already use here.
+        // arc #54 P-G2: the CUDA temperature kernel now carries `gas_energy`
+        // through the seam (gas_energy.h), same as the CPU branch below.
         int64_t cond_counters[breach_cuda::TEMPERATURE_ENERGY_SLOTS] = {0};
+        int64_t solid_books = 0;   // P-G5: SNAPSHOT out-param (see below)
         this->temperature.t_max_phys_hits += breach_cuda::temperature_step(
             temperature_mut, heat, heat_inv_shift, face_shift,
             solid, is_vacuum, atmosphere, n_bulk_.data(),
@@ -324,10 +329,15 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             &this->temperature.t_low_rail_hits,
             // P-R4: the SIGNED radiation fold, on the GPU twin too.
             rad_net,
-            // P-E2a: the six energy counters, folded into the SAME solver
-            // fields the CPU path increments — one set of books regardless of
-            // backend. Slot order is pinned by cuda_temperature.h.
-            cond_counters);
+            // P-E2a/arc #54: the ten energy counters, folded into the SAME
+            // solver fields the CPU path increments — one set of books
+            // regardless of backend. Slot order is pinned by cuda_temperature.h.
+            cond_counters,
+            // arc #54 §2.7 row 3: the conserved gas energy field + its ambient
+            // fold — the SAME two args the CPU branch below passes.
+            gas_energy, t_amb_q,
+            // P-G5: the solid_energy_books_sum snapshot out-param.
+            &solid_books);
         this->temperature.e_cond_trunc_sum   += cond_counters[0];
         this->temperature.e_cond_cap_sum     += cond_counters[1];
         this->temperature.cond_limit_hits    += cond_counters[2];
@@ -335,6 +345,13 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
         this->temperature.e_vac_wipe_sum     += cond_counters[4];
         this->temperature.e_ring_pin_sum     += cond_counters[5];
         this->temperature.e_deposit_drop_sum += cond_counters[6];  // P-E2b
+        this->temperature.e_gas_deposit_sum  += cond_counters[7];  // arc #54
+        this->temperature.e_gas_cond_sum     += cond_counters[8];  // arc #54
+        this->temperature.e_gas_rail_sum     += cond_counters[9];  // arc #54
+        this->temperature.e_solid_deposit_sum += cond_counters[10]; // P-G5
+        this->temperature.e_solid_cond_sum    += cond_counters[11]; // P-G5
+        this->temperature.e_thermostat_sum    += cond_counters[12]; // P-G5
+        this->temperature.solid_energy_books_sum = solid_books;     // P-G5 (=, not +=)
     } else
 #endif
     {
@@ -359,7 +376,13 @@ std::vector<std::pair<int, int>> PhysicsEngine::step_tail(
             // P-R4: the SIGNED radiation accumulator (ruling A1.7). Folded in
             // Pass 1 BEFORE the heat deposit, through each tile's own
             // heat_inv_shift, with shr_round0 + a symmetric saturating add.
-            rad_net);
+            rad_net,
+            // arc #54 P-G1b (design §2.7 row 3): the conserved gas energy
+            // field + the T_AMB_K fold. With these supplied, an accountable
+            // gas cell's Pass-1 deposit and Pass-2 conduction sum go through
+            // the gas-energy seam and the endpoint divide is gone; the solids
+            // side is untouched (D2).
+            gas_energy, t_amb_q);
     }
 
     return destroyed;
@@ -380,6 +403,7 @@ void PhysicsEngine::run_substeps(
         int32_t* atmosphere,                                     // S2c: Q16.16
         int32_t* wind_x, int32_t* wind_y,                        // S2c: Q16.16
         int32_t* temperature,                                    // EOS P3
+        int64_t* gas_energy,                                     // arc #54 §2.2
         const bool* obstacles, const bool* solid, const bool* is_vacuum,
         const float* dyn_permeability, const float* dyn_wave_absorb,
         int32_t* gas, const float* gas_diffusion, int n_gases,   // S2b: gas Q16.16
@@ -415,6 +439,7 @@ void PhysicsEngine::run_substeps(
         breach_cuda::eos_step_cuda(
             this->eos,
             atmosphere, p_prev, wind_x, wind_y, temperature,
+            gas_energy,                                  // arc #54 §2.2 (P-G2)
             gas, gas_conservative, n_gases,
             solid, is_vacuum,
             dyn_permeability, dyn_wave_absorb,
@@ -439,6 +464,7 @@ void PhysicsEngine::run_substeps(
         // are untouched, so gas still seeps through the crate exactly as before.
         this->eos.step(
             atmosphere, p_prev, wind_x, wind_y, temperature,
+            gas_energy,                                  // arc #54 §2.2
             gas, gas_conservative, n_gases,
             solid, is_vacuum,
             dyn_permeability, dyn_wave_absorb,
@@ -569,7 +595,8 @@ void PhysicsEngine::run_substeps_resident(
         std::uintptr_t d_dyn_permeability,
         std::uintptr_t d_is_ambient,
         std::uintptr_t d_sponge_sigma, std::uintptr_t d_sponge_udamp,
-        const bool* thermal_solid, std::uintptr_t d_thermal_solid) {
+        const bool* thermal_solid, std::uintptr_t d_thermal_solid,
+        std::uintptr_t d_gas_energy) {
 #ifdef BREACH_HAS_CUDA
     if (!breach_cuda::eos_step_backend_is_cuda()) {
         throw std::runtime_error(
@@ -598,7 +625,9 @@ void PhysicsEngine::run_substeps_resident(
         reinterpret_cast<const int32_t*>(d_sponge_sigma),
         reinterpret_cast<const int32_t*>(d_sponge_udamp),
         // THERMAL-MASS AXIS: the DEVICE mask the SL/compression kernels read.
-        reinterpret_cast<const bool*>(d_thermal_solid));
+        reinterpret_cast<const bool*>(d_thermal_solid),
+        // arc #54 §2.2 (P-G2): the conserved gas energy field's device buffer.
+        reinterpret_cast<int64_t*>(d_gas_energy));
 #else
     (void)p_prev; (void)atmosphere; (void)wind_x; (void)wind_y;
     (void)temperature; (void)solid; (void)is_vacuum; (void)dyn_permeability;
@@ -608,7 +637,7 @@ void PhysicsEngine::run_substeps_resident(
     (void)d_wind_y; (void)d_temperature; (void)d_gas_base; (void)d_solid;
     (void)d_is_vacuum; (void)d_dyn_permeability; (void)d_is_ambient;
     (void)d_sponge_sigma; (void)d_sponge_udamp;
-    (void)thermal_solid; (void)d_thermal_solid;
+    (void)thermal_solid; (void)d_thermal_solid; (void)d_gas_energy;
     throw std::runtime_error(
         "run_substeps_resident requires the CUDA build (BREACH_CUDA=ON).");
 #endif
@@ -644,7 +673,10 @@ void PhysicsEngine::step_water(
         int steam_idx, float tilt_x, float tilt_y,
         int h, int w, float sim_time,
         double ceiling_h, double flood_eps, double ratio_cap,
-        double boil_rate, double boil_p_thresh, double steam_yield) const {
+        double boil_rate, double boil_p_thresh, double steam_yield,
+        int64_t* gas_energy, const bool* gas_conservative,
+        const bool* thermal_solid, const bool* is_vacuum,
+        const bool* is_ambient, int32_t t_amb_raw) const {
 
     using namespace fixedpoint;
 
@@ -705,7 +737,9 @@ void PhysicsEngine::step_water(
     step_water_tail(water_depth, atmosphere, solid, gas, n_gases, before,
                     dyn_permeability, steam_idx, h, w, sim_time,
                     ceiling_h, flood_eps, ratio_cap,
-                    boil_rate, boil_p_thresh, steam_yield);
+                    boil_rate, boil_p_thresh, steam_yield,
+                    gas_energy, gas_conservative, thermal_solid,
+                    is_vacuum, is_ambient, t_amb_raw);   // arc #54 §2.7
 }
 
 // --- S8a Path B: the water HOST TAIL (W5 flash-boil + W3 displacement + copyto),
@@ -717,11 +751,25 @@ void PhysicsEngine::step_water_tail(
         int32_t* gas, int n_gases, int32_t* before, float* dyn_permeability,
         int steam_idx, int h, int w, float sim_time,
         double ceiling_h, double flood_eps, double ratio_cap,
-        double boil_rate, double boil_p_thresh, double steam_yield) const {
+        double boil_rate, double boil_p_thresh, double steam_yield,
+        int64_t* gas_energy, const bool* gas_conservative,
+        const bool* thermal_solid, const bool* is_vacuum,
+        const bool* is_ambient, int32_t t_amb_raw) const {
 
     using namespace fixedpoint;
     const int n_cells = h * w;
     const double Q = (double)FP_ONE;   // 65536 — dequantize divisor
+    // arc #54 §2.7: dormancy BY BRANCH — a caller without the field takes the
+    // pre-#54 path byte for byte, and the accountable-set predicate collapses
+    // to the ONE canonical form the rest of the arc uses.
+    const bool energy_mode = (gas_energy != nullptr && gas_conservative != nullptr);
+    e_water_evac_export_sum = 0;
+    const auto evac_accountable = [&](int i) -> bool {
+        return !solid[i]
+            && !(thermal_solid != nullptr && thermal_solid[i])
+            && !(is_vacuum != nullptr && is_vacuum[i])
+            && !(is_ambient != nullptr && is_ambient[i]);
+    };
 
     // --- W5 flash-boil vacuum sink (plan W5) — S2c: int<->int -------------
     // atmosphere + gas (steam) are now Q16.16 int32 (S2 group migrated). The boil
@@ -818,10 +866,28 @@ void PhysicsEngine::step_water_tail(
                 }
                 if (cnt > 0) {
                     const q16 frac_q = quantize(1.0 - 1.0 / (double)ratio);
+                    // arc #54 §2.7: the donor's ABSOLUTE temperature, priced
+                    // ONCE per flooding cell off the live (E, N) — before any
+                    // share moves, so every share leaves at the same T_abs and
+                    // the donor's own recovered T is invariant. n_bulk is the
+                    // SAME Dalton sum the EOS uses (gas_conservative planes).
+                    int64_t n_bulk_src = 0, t_abs_src = 0;
+                    const bool src_acct = energy_mode && evac_accountable(i);
+                    if (src_acct) {
+                        for (int gi = 0; gi < n_gases; ++gi)
+                            if (gas_conservative[gi])
+                                n_bulk_src += (int64_t)gas[(size_t)gi * n_cells + i];
+                        t_abs_src = (n_bulk_src >= 1)
+                            ? floordiv_q(gas_energy[i], n_bulk_src)
+                            : (int64_t)t_amb_raw;
+                    }
                     for (int gi = 0; gi < n_gases; ++gi) {
                         int32_t* plane = gas + (size_t)gi * n_cells;
                         const q16 evac = mul_q16(plane[i], frac_q);
                         if (evac <= 0) continue;
+                        // Only BULK shares carry energy: a trace share is mass
+                        // the books never counted (P-T0's 0% ruling).
+                        const bool carries = src_acct && gas_conservative[gi];
                         q16 distributed = 0;
                         for (int k = 0; k < cnt; ++k) {
                             const q16 share = (k == cnt - 1)
@@ -829,6 +895,15 @@ void PhysicsEngine::step_water_tail(
                                 : mul_q16(evac, quantize((double)(wts[k] / wsum)));
                             plane[nbs[k]] += share;
                             distributed += share;
+                            if (carries && share != 0) {
+                                // MOVED mass carries its source's T_abs.
+                                const int64_t de = (int64_t)share * t_abs_src;
+                                gas_energy[i] -= de;
+                                if (evac_accountable(nbs[k]))
+                                    gas_energy[nbs[k]] += de;
+                                else
+                                    e_water_evac_export_sum += de;   // leaves the books
+                            }
                         }
                         plane[i] -= distributed;
                     }

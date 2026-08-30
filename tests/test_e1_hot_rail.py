@@ -134,9 +134,80 @@ def run_scenario(interior, tile, fuel_block, ticks, collect=False):
                   e_ts_residual=0, e_wipe_sum=0, e_floor_sum=0)
         peak_T = 0.0
         o2_start = int(gas[o2i][om].astype(np.int64).sum())
+
+        # ==============================================================
+        # arc #54 (gas-energy conservation) §2.8 — THE CLOSURE IDENTITY,
+        # ACROSS WHOLE TICKS (design §6's REWRITTEN row, P-G1b).
+        #
+        # P-G1a could only bracket the EOS step: it was transitional, so
+        # combustion, the thermal solver and the seam writers still wrote
+        # `temperature` outside the EOS and were absorbed by the solver's
+        # entry re-sync. P-G1b lands every one of those writers on the gas
+        # energy seam and DELETES the re-sync — D1 is live — so the honest
+        # bracket is the WHOLE `Simulation.step`, and the identity has to
+        # account for all four groups of counters that may move the field:
+        #
+        #   EOS        design §2.8's seven terms  (RESET every step)
+        #   tail       the thermal solver's gas side (ACCUMULATING)
+        #   combustion the two-hop energy ledger  (ACCUMULATING)
+        #   seam       every Python writer's net  (ACCUMULATING)
+        #
+        # Anything that changes `Σ_accountable gas_energy` without landing
+        # in one of them is exactly the class of silent mint this arc
+        # exists to make impossible, and this gate is where it shows up.
+        # ==============================================================
+        closure = {"ticks": 0, "bad": 0, "worst": 0}
+        tsolver = sim.physics_runner.engine.temperature
+        comb = sim.physics_runner.combustion
+
+        def _e_acct():
+            acct = gmap._gas_energy_accountable()
+            return int(gmap.gas_energy[acct].astype(object).sum())
+
+        def _terms():
+            return (
+                int(eos.e_entry_resync_sum) + int(eos.e_transport_net_sum)
+                - int(eos.e_wipe_sum) - int(eos.e_kick_ke_sum)
+                + int(eos.e_drag_heat_sum) - int(eos.e_work_export_sum)
+                + int(eos.e_rail_sum),
+                int(tsolver.e_gas_deposit_sum) + int(tsolver.e_gas_cond_sum)
+                + int(tsolver.e_gas_rail_sum),
+                -int(comb.e_comb_draw_sum) + int(comb.e_comb_deliver_sum)
+                + int(comb.e_comb_heat_sum) + int(comb.e_comb_rail_sum),
+                int(gmap.gas_energy_seam_net()),
+                # the water-displacement evacuation's export (design §2.7 row
+                # 2, R3-#10): `step_water_tail` moves `gas_energy` with the
+                # bulk shares a flooding cell pushes out, conservatively
+                # inside the accountable set, so the only term is what LEFT
+                # it. Reset per call, like the EOS group. Zero on this dry
+                # scenario -- named so a future wet one cannot open a hole.
+                -int(sim.physics_runner.engine.e_water_evac_export_sum),
+            )
+
+        # The combustion PARCEL identity (combustion.h identity (B)): nothing
+        # drawn from a donor is lost on the way to the flame. Checked once at
+        # the end of the run — it is a cumulative statement.
+        parcel = {"resid": 0}
+        prev_e = _e_acct()
+        prev_terms = _terms()
+
         for _ in range(ticks):
             sim.set_paused(False)
             sim.step()
+            if collect:
+                e_now = _e_acct()
+                terms = _terms()
+                expected = (terms[0]                       # EOS: reset/step
+                            + (terms[1] - prev_terms[1])   # tail
+                            + (terms[2] - prev_terms[2])   # combustion
+                            + (terms[3] - prev_terms[3])   # seams
+                            + terms[4])                    # water tail
+                resid = (e_now - prev_e) - expected
+                closure["ticks"] += 1
+                if resid:
+                    closure["bad"] += 1
+                    closure["worst"] = max(closure["worst"], abs(resid))
+                prev_e, prev_terms = e_now, terms
             if collect:
                 # SS7 truncation allowance, deliberately GENEROUS and
                 # law-independent: n_sub x (total bulk N raw over the whole
@@ -170,11 +241,20 @@ def run_scenario(interior, tile, fuel_block, ticks, collect=False):
             for name in DIGEST_FIELDS:
                 traj[name].update(_plane_bytes(gmap, name))
         o2_end = int(gas[o2i][om].astype(np.int64).sum())
+        # combustion.h identity (B) — the PARCEL identity, cumulative.
+        parcel["resid"] = (
+            int(comb.e_comb_draw_sum) + int(comb.e_comb_mint_sum)
+            - int(comb.e_comb_deliver_sum) - int(comb.e_soot_shed_sum)
+            - int(comb.e_ts_products_sum) - int(comb.e_comb_export_sum))
+        parcel["drawn"] = int(comb.e_comb_draw_sum)
+        parcel["shed"] = int(comb.e_soot_shed_sum)
         return dict(
+            parcel=parcel,
             digests={n: h.hexdigest() for n, h in traj.items()},
             t_max_phys_hits=int(eos.t_max_phys_hits),
             work_clamp_hits=int(eos.work_clamp_hits),
             eth_ticks=eth_ticks, identity_ticks=identity_ticks,
+            closure=closure,                       # arc #54 §2.8
             tick_peak_T=tick_peak_T, peak_T=peak_T, e1=e1,
             o2_burned_frac=1.0 - o2_end / max(o2_start, 1))
     finally:
@@ -204,7 +284,39 @@ def test_hot_scenario_reaches_the_audit_anatomy(hot_run):
 
 
 def test_no_transport_mint(hot_run):
-    """HEALTHY property, RE-DERIVED to the exact closure identity by P-W1b
+    """HEALTHY property, RE-DERIVED AGAIN by the gas-energy conservation arc
+    (#54 P-G1b, design §2.8) onto the ABSOLUTE closure identity, now holding
+    ACROSS WHOLE TICKS:
+
+        d(Sum_accountable gas_energy) over one Simulation.step ==
+              [ e_entry_resync_sum + e_transport_net_sum - e_wipe_sum
+                - e_kick_ke_sum + e_drag_heat_sum - e_work_export_sum
+                + e_rail_sum ]                                    (EOS)
+            + [ e_gas_deposit_sum + e_gas_cond_sum + e_gas_rail_sum ]
+                                                       (thermal solver, gas)
+            + [ -e_comb_draw_sum + e_comb_deliver_sum + e_comb_heat_sum
+                + e_comb_rail_sum ]                        (combustion)
+            + gas_energy_seam_net()                        (Python seams)
+
+    exact in int64, EVERY TICK. P-G1a could only pin the EOS step, because
+    the writers outside it still wrote `temperature` and were swept up by
+    the solver's entry re-sync. With D1 live that re-sync is gone and this
+    is the real statement: `gas_energy` is the cross-tick truth and NOTHING
+    may change it except a named, counted channel.
+
+    That makes this the strongest form this gate has ever had — the earlier
+    ones bounded the TRANSPORT pass alone, and only in the "books never
+    open" direction. This pins the whole engine: transport, the five KE
+    brackets, the face-flux step, the recovery rails, conduction, the heat
+    deposits, combustion's two hops, and every structural / pump / FieldEdit
+    seam, in both directions at once. The face-flux term contributes exactly
+    0 to it by per-face cancellation: that IS the arc.
+
+    (`e_entry_resync_sum` is RETIRED and structurally 0; it stays named here
+    so this transcription still lists all seven EOS terms.)
+
+    --- the superseded P-W1b statement, kept for the history it carries ---
+    HEALTHY property, RE-DERIVED to the exact closure identity by P-W1b
     (design SS0b R-1): the old allowance (`n_sub x whole-map bulk N`)
     predates any counted creation/destruction channel being live, and under
     the T_abs compression-work law it is provably too loose — the entire
@@ -226,18 +338,40 @@ def test_no_transport_mint(hot_run):
     net-positive across the run without any book ever opening — see
     test_transport_delta_is_one_way_negative for the truncation-bound
     half of the same identity)."""
-    n_bad_open = 0
-    worst_open = 0
-    for eth, e_ts_residual, e_wipe_sum, e_floor_sum, _n_bulk in hot_run["identity_ticks"]:
-        counted = -e_ts_residual - e_wipe_sum + e_floor_sum
-        trunc = eth - counted
-        if trunc > 0:
-            n_bad_open += 1
-            worst_open = max(worst_open, trunc)
-    assert n_bad_open == 0, (
-        f"books OPEN on {n_bad_open} ticks (worst {worst_open} raw "
-        "Q16.16^2 of book-energy appeared beyond the counted terms) — "
-        "the T_abs closure identity does not hold")
+    c = hot_run["closure"]
+    assert c["ticks"] > 0, "vacuous: the closure bracket never ran"
+    assert c["bad"] == 0, (
+        f"the arc #54 §2.8 closure identity FAILED on {c['bad']} of "
+        f"{c['ticks']} TICKS (worst |residual| {c['worst']} raw Q32) — "
+        "energy appeared in or vanished from `gas_energy` beyond the four "
+        "counted groups (EOS / thermal solver / combustion / seams)")
+
+
+def test_combustion_parcel_identity(hot_run):
+    """arc #54 P-G1b (combustion.h identity (B)): nothing a burn DRAWS from
+    its donors is lost on the two hops to the flame.
+
+        e_comb_draw_sum + e_comb_mint_sum ==
+            e_comb_deliver_sum + e_soot_shed_sum
+          + e_ts_products_sum + e_comb_export_sum
+
+    The books identity above already pins what combustion did to the FIELD;
+    this pins where the parcel WENT, which is the half that catches the
+    R3-#9 failure mode specifically — delivering the soot's share as well as
+    the bulk's would satisfy neither side of this equation.
+
+    Non-vacuous by construction: the hot run burns >15% of the room's O2
+    (test_hot_scenario_reaches_the_audit_anatomy), so `e_comb_draw_sum` is
+    large and `e_soot_shed_sum` is a real fraction of it."""
+    p = hot_run["parcel"]
+    assert p["drawn"] > 0, (
+        "vacuous: the hot run drew no combustion energy at all")
+    assert p["shed"] > 0, (
+        "vacuous: soot_yield > 0 but no parcel energy was ever shed — the "
+        "R3-#9 compounding guard is not being exercised")
+    assert p["resid"] == 0, (
+        f"the combustion PARCEL identity failed by {p['resid']} raw Q32 — "
+        "energy drawn from the donors did not all arrive somewhere named")
 
 
 def test_transport_delta_is_one_way_negative(hot_run):

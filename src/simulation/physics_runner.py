@@ -471,12 +471,10 @@ class PhysicsRunner:
         # solver's own [physics.eos] dial.
         self.eos.T_MAX_PHYS      = self._t_max_phys
         self.eos.U_MAX           = _ep("U_MAX", self.eos.U_MAX)
-        # n_work_ref (energy-books arc, design §2.4, RULING 2026-08-17): the
-        # compression-work trust gate's reference density. PLUMBING ONLY at
-        # P-E2b — the fade mechanism itself is P-E4's; this bind exists so the
-        # dial is reachable from config ahead of that patch, and is provably
-        # inert (nothing downstream reads self.eos.n_work_ref yet).
-        self.eos.n_work_ref      = _ep("n_work_ref", self.eos.n_work_ref)
+        # n_work_ref RETIRED (gas-energy conservation arc #54, D11, P-G1a):
+        # the compression-work trust gate it faded is gone with step 4c. The
+        # config row is deleted too; the stale-key guard below names it so a
+        # tree that still carries it fails loudly rather than silently.
         # P-E3 (energy-books arc, design §2.8, NEW patch): interior momentum
         # drag with a heat counterparty. k_drag default 0.0 -> the mechanism
         # ships SILENT (dormancy BY BRANCH on the quantized fold, not this
@@ -488,8 +486,11 @@ class PhysicsRunner:
         # #4 P1): the quadratic term, same dormancy idiom (default 0.0 ->
         # dormant, branch on the quantized kd2_q, not this float).
         self.eos.k_drag2         = _ep("k_drag2", self.eos.k_drag2)
-        self.eos.k_drag_heat_frac = _ep("k_drag_heat_frac",
-                                        self.eos.k_drag_heat_frac)
+        # k_drag_heat_frac RETIRED (arc #54 D5, P-G1a): the drag deposit is
+        # the DERIVED k_ke = gamma(gamma-1)T_AMB/(2 c_max^2) now, not a dial
+        # times 1/c_v. 0.0014 was the hand-rolled stand-in for the same
+        # constant; the P-E5 `= 1.0` detonation cannot recur from a value that
+        # is derived rather than typed. Config row deleted; see the guard.
         # c_v: EOSSolver's own copy of the SAME [physics.thermal] c_v gas
         # heat-capacity constant self.temperature.c_v was bound from above —
         # ONE config key, two solvers, the n_floor_heat/T_MAX_PHYS precedent.
@@ -536,6 +537,33 @@ class PhysicsRunner:
                 "config.toml. See docs/energy_transport_design_2026-08-16."
                 "md §2.6 and docs/e1_p_t0_asbuilt_2026-08-17.md."
             )
+
+        # gas-energy conservation arc #54 (D5/D11, P-G1a): the SAME loud
+        # stale-key guard for the two dials this arc retires. Both had real
+        # effects until now, so a config that still carries them is a config
+        # whose author expects them to do something -- and after P-G1a they do
+        # nothing at all (step 4c, the trust gate it faded and the heat
+        # fraction are gone; the drag deposit is the DERIVED k_ke). Silence
+        # here would be exactly the "dial that stopped mattering and nobody
+        # noticed" failure the P-T0 guard above exists to prevent.
+        for _retired, _why in (
+            ("n_work_ref",
+             "the compression-work TRUST GATE it faded went with step 4c "
+             "(design D11); telescoping plus the flux step's positivity rail "
+             "do its job structurally now"),
+            ("k_drag_heat_frac",
+             "the drag deposit is the DERIVED constant "
+             "k_ke = gamma*(gamma-1)*T_AMB_K/(2*c_max^2) (design D5/§2.1), "
+             "not a dial times 1/c_v -- which is why the P-E5 "
+             "`k_drag_heat_frac = 1.0` detonation cannot recur"),
+        ):
+            if getattr(eos_cfg, _retired, None) is not None:
+                raise RuntimeError(
+                    f"[physics.eos] still carries '{_retired}' -- this key "
+                    f"was retired by the gas-energy conservation arc (#54, "
+                    f"P-G1a): {_why}. Remove it from config.toml. See "
+                    "docs/gas_energy_conservation_design_2026-08-29.md."
+                )
 
         # CombustionSolver (EOS refactor P4, docs/eos_refactor_design.md §5):
         # burns fuel against the REAL local O2, once per tick, right after
@@ -799,6 +827,13 @@ class PhysicsRunner:
             gmap.wave_p, gmap.atmosphere,
             gmap.wind_x, gmap.wind_y,
             gmap.temperature,
+            # gas-energy conservation arc #54 (design §2.2/§6 P-G1a): the
+            # conserved energy field. TRANSITIONAL this patch -- the solver
+            # re-syncs it from the (N, T) mirror at entry and refreshes the
+            # mirror from it at exit, so T is still the cross-tick truth and
+            # the §2.7 writers outside the EOS are absorbed by next tick's
+            # re-sync. P-G1b removes the re-sync and D1 goes live.
+            gmap.gas_energy,
             gmap.obstacles, gmap.solid, gmap.is_vacuum,
             gmap.dyn_permeability, gmap.dyn_wave_absorb,
             gmap.gas, gmap.gases.diffusion, gmap.gases.conservative,
@@ -907,6 +942,14 @@ class PhysicsRunner:
             # radiative GAIN and its emitter's matching LOSS both convert this
             # tick, on one scale, with no painter in sight.
             rad_net=gmap.rad_net,
+            # gas-energy conservation arc #54 P-G1b (design §2.7 row 3): the
+            # CONSERVED energy field. With it supplied, the temperature pass's
+            # Pass-1 deposit and Pass-2 conduction land on an accountable gas
+            # cell's `gas_energy` (and refresh its mirror) instead of taking
+            # the endpoint divide into `temperature`. The solids side is
+            # untouched -- a thermal solid's T is its own truth (D2).
+            gas_energy=gmap.gas_energy,
+            t_amb_q=self._eos_t_amb_raw(),
         )
 
         # NOTE: the per-tick `heat` clear does NOT live here. `heat` has a
@@ -919,12 +962,14 @@ class PhysicsRunner:
         # the recorder snapshot. (STEP A originally placed the clear here, when
         # conversion was the only consumer; STEP D moves it out.)
 
-        # gas-energy conservation arc #54, design §2.2/§5 (P-G0): the
-        # mirror-derived gas_energy maintenance step -- NO physics here
-        # (P-G1a replaces this with the stored, seam-written truth). Runs
-        # LAST, after step_tail's thermal solver, so it reflects this
-        # tick's final (N, T) mirror.
-        gmap.refresh_gas_energy()
+        # gas-energy conservation arc #54 P-G1b: THE MAINTENANCE STEP IS GONE.
+        # D1 is live -- `gas_energy` is the cross-tick truth, written by the
+        # EOS energy pass, by the thermal solver's gas side, by combustion and
+        # by the GameMap seams. Re-deriving it from the (N, T) mirror here
+        # would DESTROY state every tick (design §2.6: `N*floordiv(E,N) <= E`
+        # drains up to N-1 raw counts per cell, and any sub-count energy a seam
+        # wrote would vanish unbooked). `refresh_gas_energy` survives as the
+        # level-load initialiser only.
 
         return destroyed
 
@@ -1020,6 +1065,17 @@ class PhysicsRunner:
                 self._draw_r,
                 gmap.dyn_permeability,
                 int(gmap.dem_acc.shape[0]),
+                # gas-energy conservation arc #54 P-G1b (design §2.7): the
+                # PARALLEL TWO-HOP ENERGY LEDGER. Consumed O2 leaves each donor
+                # carrying `burn_k·T_abs,k`; the products deliver
+                # `(burn − soot)·T_abs` to the flame cell's `gas_energy` and
+                # shed `soot·T_abs` to a counter; a thermal-solid flame cell
+                # exports the whole parcel. `is_ambient` is needed for the
+                # accountable set (a ring cell can donate O2 but holds no
+                # stored energy — its parcel is minted at ambient).
+                gmap.gas_energy,
+                gmap.is_ambient,
+                self._eos_t_amb_raw(),
             )
 
     # ------------------------------------------------------------------
@@ -1145,7 +1201,15 @@ class PhysicsRunner:
                 self._steam_idx, sim_time,
                 self.water_ceiling_h, self.water_flood_eps, self.water_ratio_cap,
                 self.water_boil_rate, self.water_boil_p_thresh,
-                self.water_steam_yield)
+                self.water_steam_yield,
+                # arc #54 §2.7 (the W3 evacuation row) -- the SAME six args
+                # the non-resident `_step_water` passes; see there for why.
+                gas_energy=gmap.gas_energy,
+                gas_conservative=gmap.gases.conservative,
+                thermal_solid=gmap.thermal_solid,
+                is_vacuum=gmap.is_vacuum,
+                is_ambient=amb[0],
+                t_amb_raw=self._eos_t_amb_raw())
 
         # -- 4. EOS stage FULLY RESIDENT (S8a Path A — the bracket is GONE) ------
         # Pre-upload the EOS input set from the authoritative mirror (replaces
@@ -1203,6 +1267,11 @@ class PhysicsRunner:
             # compression kernels read. Uploaded fresh above.
             thermal_solid=gmap.thermal_solid,
             d_thermal_solid=dev["thermal_solid"],
+            # gas-energy conservation arc #54, design §5 (P-G2): the conserved
+            # field's device buffer now has a real consumer (K1's KE brackets,
+            # K3's face-flux step, the once-per-tick recovery) -- upload/D2H
+            # were already wired in P-G0 beside `temperature`.
+            d_gas_energy=dev["gas_energy"],
         )
 
         # -- 5. TRACE smoke loop + decay RESIDENT (on device) --------------------
@@ -1256,18 +1325,28 @@ class PhysicsRunner:
             # P-R4: the radiation accumulator rides the SAME host mirror the
             # rest of this bracket reads (the cast at step 1 filled it there).
             rad_net=gmap.rad_net,
+            # gas-energy conservation arc #54 P-G1b (design §2.7 row 3): the
+            # CONSERVED energy field. With it supplied, the temperature pass's
+            # Pass-1 deposit and Pass-2 conduction land on an accountable gas
+            # cell's `gas_energy` (and refresh its mirror) instead of taking
+            # the endpoint divide into `temperature`. The solids side is
+            # untouched -- a thermal solid's T is its own truth (D2).
+            gas_energy=gmap.gas_energy,
+            t_amb_q=self._eos_t_amb_raw(),
         )
         # The mirror is now authoritative for every synced field (each stage wrote
         # it; the two resident loops' outputs were D2H'd to it). No final batched
         # D2H is needed — consumers read the mirror unchanged (the Q4 baseline);
         # the device set is re-uploaded whole next tick (from_host).
 
-        # gas-energy conservation arc #54, design §2.2/§5 (P-G0): the
-        # mirror-derived gas_energy maintenance step -- NO physics here
-        # (P-G1a replaces this with the stored, seam-written truth). Runs
-        # LAST, after step_tail's thermal solver, so it reflects this
-        # tick's final (N, T) mirror; next tick's upload above re-sends it.
-        gmap.refresh_gas_energy()
+        # gas-energy conservation arc #54 P-G1b: THE MAINTENANCE STEP IS GONE.
+        # D1 is live -- `gas_energy` is the cross-tick truth, written by the
+        # EOS energy pass, by the thermal solver's gas side, by combustion and
+        # by the GameMap seams. Re-deriving it from the (N, T) mirror here
+        # would DESTROY state every tick (design §2.6: `N*floordiv(E,N) <= E`
+        # drains up to N-1 raw counts per cell, and any sub-count energy a seam
+        # wrote would vanish unbooked). `refresh_gas_energy` survives as the
+        # level-load initialiser only.
 
         return destroyed
 
@@ -1356,11 +1435,20 @@ class PhysicsRunner:
 
         Pure instrumentation: reads state, writes none, folds into no digest.
         """
+        # arc #54 P-G1b: THE INSTRUMENT NOW READS THE TRUTH. With D1 live,
+        # `Σ n_bulk·T` is a reading off the MIRROR — a floor of `E/N`, so it
+        # under-reports the books by up to `N-1` raw counts per cell. Handing
+        # the stored field in switches the C++ routine to its
+        # `Σ (gas_energy − n_bulk·T_AMB_raw)` branch, which is the same
+        # quantity computed off the conserved state instead of off its lossy
+        # shadow. `t_amb_raw` is the SAME fold EOSSolver::step does.
         return int(self.bp.eos_energy_books_sum(
             gmap.gas, gmap.gases.conservative, gmap.temperature,
             gmap.solid, gmap.is_vacuum,
             is_ambient=self._ambient_mask(gmap),
             thermal_solid=gmap.thermal_solid,
+            gas_energy=gmap.gas_energy,
+            t_amb_raw=self._eos_t_amb_raw(),
         ))
 
     # ------------------------------------------------------------------
@@ -1624,7 +1712,34 @@ class PhysicsRunner:
             self.water_ceiling_h, self.water_flood_eps, self.water_ratio_cap,
             self.water_boil_rate, self.water_boil_p_thresh,
             self.water_steam_yield,
+            # gas-energy conservation arc #54 (design §2.7, the
+            # water-displacement evacuation row): the W3 displacement pushes
+            # gas out of a flooding cell into neighbours chosen by
+            # `!solid && perm > 0` ALONE -- i.e. also into vacuum, the ambient
+            # ring and thermal solids -- and had no temperature argument at
+            # all. Under a stored energy field that is a silent
+            # mass-without-energy mint at every flood, so the field and the
+            # four masks are threaded through: bulk shares move at the DONOR's
+            # T_abs, and shares leaving the accountable set are exported to
+            # `engine.e_water_evac_export_sum`.
+            gas_energy=gmap.gas_energy,
+            gas_conservative=gmap.gases.conservative,
+            thermal_solid=gmap.thermal_solid,
+            is_vacuum=gmap.is_vacuum,
+            is_ambient=self._ambient_mask(gmap),
+            t_amb_raw=self._eos_t_amb_raw(),
         )
+
+    def _eos_t_amb_raw(self):
+        """``T_AMB_K`` in raw Q16.16 counts -- the SAME A7-floored fold
+        ``EOSSolver::step`` performs every tick (``std::max<q16>(1,
+        quantize(T_AMB_K))``), and the SAME value
+        :meth:`GameMap._gas_energy_t_amb_raw` derives. Read off the LIVE
+        ``self.eos.T_AMB_K`` (never a hardcoded 290) so a config or test
+        override reaches every consumer of the gas-energy seam together.
+        """
+        from simulation import gas_fixed as _gas_fx
+        return max(1, _gas_fx.quantize_scalar(float(self.eos.T_AMB_K)))
 
     # (_step_ripple() DELETED - audit Patch A / A9, 2026-08-04. The ripple
     # pass moved into C++ (PhysicsEngine::step_tail, which reproduces this

@@ -194,6 +194,15 @@
 > - **`digest_advect` moved** across the flux call — it hashes `(wx, wy, T)` and the T it must hash
 >   now only exists after recovery. A declared, one-time digest-stream reorder.
 >
+> **SUPERSEDED by arc #54 (gas-energy conservation, 2026-08-30) — see the
+> "Gas-energy conservation" section below for the current law.** Step 4c
+> (temperature-form compression work), the trust gate (`n_work_ref`), and the
+> reversible-work pair described in this subsection are **deleted**: the
+> books quantity `Σ N·T` does not telescope under 4c's per-cell form, and
+> Kwatra's conservative face-flux form (§2.4 of the arc design) replaces it
+> exactly, with no trust gate needed (the sub-cycled positivity rail does
+> that job in energy currency instead).
+>
 > **Compression work (step 4c) gained a trust gate and became reversible.**
 >
 > - **Trust gate (`n_work_ref`, default 0.25).** The work term is faded by the cell's own bulk N:
@@ -216,6 +225,14 @@
 >   not merely omit physics, it inverts it — compression *freezes* sub-ambient gas — and that is the
 >   cold-rail window's engine. The honest form (`T_new = (T + 290)·(1±w) − 290`) is specified and
 >   queued as its own patch with its own HUMAN-TEST.
+>
+> **PARTIALLY SUPERSEDED by arc #54 (2026-08-30):** the drag mechanism, its
+> placement, and its magnitude-first shrink below are all still current —
+> only the HEAT SIDE moved. `k_drag_heat_frac` (the shipped-0.0014 hand dial
+> below) is **deleted**; the drag deposit now uses the *derived* constant
+> `k_ke = 1/(2·c_v_phys)` (unit-bridge-only, not a tunable — see the
+> gas-energy section below), and the counters `e_drag_deposit` /
+> `e_drag_drop_sum` / `e_drag_rail_clipped` are replaced by `e_drag_heat_sum`.
 >
 > **Interior momentum drag — the storm's honest grave.** The engine had no interior momentum sink
 > at shipped dials, and the undamped door-neck Helmholtz mode *is* the storming. Damping without an
@@ -312,6 +329,81 @@
 > is **unattributed** and owns the next arc. Also open and pre-existing:
 > `test_cuda_p64_kick_compression` PART 2 diverges CPU↔GPU on the blast+venting trajectory
 > (verified at both C=2 and C=8) — the same scenario the mass bug lives on.
+
+> ## Gas-energy conservation (arc #54, 2026-08-30) — as-built
+>
+> Full record: `docs/gas_energy_conservation_design_2026-08-29.md` (design v4)
+> + this arc's per-patch result sections appended to it; re-baseline record:
+> `docs/gas_energy_rebaseline_2026-08-30.md`.
+>
+> **Gas thermal energy is now a STORED, conserved field — `gmap.gas_energy`
+> (int64, the exact unshifted product `N_raw × T_abs_raw`) — not something
+> re-derived per tick from temperature.** `temperature` is downgraded to a
+> **mirror** on gas cells (refreshed once per tick by the recovery, and at
+> every seam write) and stays the **truth** on thermal solids (unchanged,
+> D2). This replaces step 4c (the per-cell temperature-form compression work
+> described above), whose books quantity `Σ N·T` did not telescope over a
+> sealed region once N or T went non-uniform — measured on a sealed 18 s
+> bench, HEAD's 4c manufactured +121 game-deg in an empty box and pumped
+> −20 into another with no source, by destroying energy in the hall and
+> depositing it in cavities.
+>
+> - **The law (Kwatra, Su, Grétarsson, Fedkiw 2009, `docs/papers/ADA492343.pdf`,
+>   eq. 3/15): a per-FACE conservative flux, not a per-cell source term.**
+>   Each face prices `p_f` (eq. 15, N-weighted harmonic-flavoured, arithmetic
+>   T_abs) and the face-mean velocity once, applies the flux with **opposite
+>   signs to the two cells it touches**, and a two-pass donor-only positivity
+>   rail (never scaling incoming credit) keeps every cell's energy at or above
+>   its `T_MIN` floor. `Σ_region ΔE ≡ 0` over any region whose faces are all
+>   interior or wall, exactly, to the int64 LSB — a structural guarantee 4c
+>   never had.
+> - **Kinetic energy is tracked, not silently created or destroyed.** The
+>   kick loop's stages (∇p kick, `dyn_wave_absorb`, the B3c sponge band, the
+>   velocity cap, staged drag) each individually book their `ΔKE`: the ∇p
+>   kick's KE debit and the drag stages' KE credit both land in `gas_energy`
+>   (reversible exchange / structural heat), while absorb, sponge, and the
+>   cap **export or destroy, counted** — never silently heated. The physical
+>   unit-bridge constant `k_ke = 1/(2·c_v_phys)` is **derived** from
+>   `c_max`, `γ`, `T_AMB_K` (§2.1 of the design), replacing the hand-picked
+>   `k_drag_heat_frac` dial entirely (D5) — the derived constant is what
+>   makes the P-E5 `k_drag_heat_frac = 1.0` detonation class of bug
+>   structurally impossible: there is no dial left to mistune.
+> - **The trust gate and the `T_WORK_CLAMP` rail are retired** (D11) — their
+>   job (never trusting a starved cell to do unbounded work on itself) is
+>   done instead by telescoping (no temperature exists unbacked by energy)
+>   and by the flux step's own positivity rail.
+> - **Wall faces are honest zero-flux, in BOTH the energy step and the
+>   pressure solve.** The solve's divergence stencil was moved to **face
+>   form** (`û = 0` at solid faces — the exact discrete adjoint of the
+>   kick's pressure gradient); the old central-difference form implicitly
+>   let `û_wall = u_i`, silently leaking divergence at every wall-adjacent
+>   cell (a ~0.4% cross-wall pressure contamination, and the source of a
+>   diffuse-vs-solid wall-layer heat dipole the energy step's own gate
+>   caught). This is **feel-adjacent**: walls now reflect acoustically
+>   instead of partially absorbing (BLAST peak |u| 8.7 → 18.9 m/s at the
+>   arc's HUMAN-TEST bench).
+> - **Every writer of gas mass N is now a writer of gas energy, through one
+>   seam** (`gas_energy_move` / `gas_energy_deposit`): moved mass carries its
+>   source cell's `T_abs`; mass minted with no gas donor (the `destroy_wall`
+>   seed; ambient/ring/vacuum/thermal-solid-face inflow) is born at ambient.
+>   Every N-writer in the engine (bulk transport, combustion, the thermal
+>   solver's gas side, pump primitives, seal/unseal/`destroy_wall`,
+>   `on_tile_changed`, water-tail evacuation, FieldEdit's `atmosphere` /
+>   `wave_source` / `heat` policies) goes through this seam — see
+>   §2.7 of the design for the full per-site table.
+> - **Blast cores are HOTTER than the old 4c law, not cooler** — 4c's core
+>   was colder than its own surroundings because it was pumping the blast's
+>   own energy outward into the map; the conservative form keeps the energy
+>   where the physics put it. Breach rarefaction cools honestly through the
+>   outflow face export and the kick's KE debit (jet enthalpy → kinetic),
+>   not a per-cell expansion factor.
+> - **Accepted gaps** (bounded, not built): kinetic energy itself is not a
+>   book (SL advection and transport-ΔN both move it uncounted, bounded by
+>   `k_ke`, sub-degree at wind speeds); a permeable thermal-solid (furniture)
+>   face is a wall to the energy step, so the pressure work of gas seeping
+>   through it is lost, probed not counted; walls are ambient-held infinite
+>   thermal reservoirs (thermal solids do not yet carry their own finite
+>   heat capacity — filed as a follow-up issue, 2026-08-30).
 
 ## 1. What this system is
 

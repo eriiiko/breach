@@ -101,22 +101,37 @@ import breach_physics as bp
 FP_ONE = 65536
 
 # EOSSolver's config defaults (eos_solver.h) — the isolated Part-1 constants.
+# arc #54 (P-G2): step 4c (compression work) is DELETED. `cuda_eos_kick_
+# compression`'s signature dropped `temperature`/`t_min`/`t_work_clamp`/
+# `t_max_phys`/`k_drag_heat_frac`/`c_v` outright (moved to the §2.6 recovery,
+# or retired with the old drag-deposit formula, D5); `t_amb_k` joined,
+# LOAD-BEARING now (folds the derived k_ke constant). CONSTS below is the
+# dict BOTH twins accept; `eos_kick_compression_ref` (the CPU reference)
+# additionally requires `t_min`/`t_max_phys` in its own signature (D10 keeps
+# the old layout) — those two are dormant (unused by the loop) so
+# `_run_pair` fills them with the module-level DORMANT_* literals rather
+# than threading them through every CONSTS variant.
 CONSTS = dict(
     c_max=300.0, dx=1.0 / 3.0, adiabatic_index=1.4, absorb_strength=8.0,
-    n_floor_solver=1e-3, t_min=-289.0, t_work_clamp=0.5,
-    t_max_phys=16000.0, u_max=1000.0,
-    # trace_mass_scale key RETIRED (P-T0, design §2.6)
+    n_floor_solver=1e-3, u_max=1000.0,
     # P-E3 (design §2.8): interior drag + heat counterparty. Shipped
     # defaults here (k_drag=0.0) so the base CONSTS dict stays DORMANT —
     # every Part 1/2 config below therefore ALSO doubles as drag-dormancy
     # CPU<->GPU parity coverage. The dedicated drag-active config below
     # (CONSTS_DRAG) is what exercises the mechanism itself.
-    k_drag=0.0, k_drag_heat_frac=1.0, c_v=1.0,
+    k_drag=0.0,
+    # arc #54 §2.1: T_AMB_K — folds the derived k_ke constant (LOAD-BEARING).
+    t_amb_k=290.0,
 )
+# the CPU reference's own two D10-layout, functionally-dormant params (never
+# read inside the loop any more — arc #54 moved the T rails to §2.6).
+DORMANT_T_MIN = -289.0
+DORMANT_T_MAX_PHYS = 16000.0
 
-# A drag-ACTIVE variant: k_drag > 0 (dormancy branch open) and
-# k_drag_heat_frac < 1 (so e_drag_drop_sum is non-vacuous too).
-CONSTS_DRAG = dict(CONSTS, k_drag=0.02, k_drag_heat_frac=0.5)
+# A drag-ACTIVE variant: k_drag > 0 (dormancy branch open). `k_drag_heat_frac`
+# RETIRED (arc #54 D5 — the deposit fraction/rail-clip formula is gone,
+# e_drag_heat_sum is unconditional now).
+CONSTS_DRAG = dict(CONSTS, k_drag=0.02)
 
 # drag-law v2 (docs/drag_law_v2_design_2026-08-23.md §8 gate 2) — the TWO
 # pinned k_drag2-armed legs: the "main" leg (k_drag2=1.0, U0=24 raw — too
@@ -128,9 +143,27 @@ CONSTS_DRAG = dict(CONSTS, k_drag=0.02, k_drag_heat_frac=0.5)
 CONSTS_DRAG2 = dict(CONSTS_DRAG, k_drag2=1.0)
 CONSTS_DRAG2_DEAD_ZONE = dict(CONSTS_DRAG, k_drag2=0.01)
 
-COUNTER_NAMES = ("u_clamp", "u_max", "work_clamp", "energy_floor", "t_max_phys",
-                 "ke_drag_removed", "e_drag_deposit", "e_drag_drop_sum",
-                 "e_drag_rail_clipped")
+# The KICK_CNT_SLOTS layout (cuda_kick_compression.h), position for position.
+# Slots 2/3/4/7/8 are structurally retired-and-zero (D10): work_clamp_hits /
+# energy_floor_hits / t_max_phys_hits moved to the T-dependent §2.6 recovery
+# (out of this isolated tail's scope by construction); e_drag_drop_sum /
+# e_drag_rail_clipped no longer exist at all (e_drag_heat_sum replaces all
+# three, D5). The CPU reference (`eos_kick_compression_ref`) only ever
+# returns slots 0-8 (its own D10-layout 9-tuple); slots 9-14 are new arc #54
+# telemetry (design §2.3) that only the GPU isolated entry surfaces here.
+COUNTER_NAMES = ("u_clamp", "u_max", "_retired_work_clamp",
+                 "_retired_energy_floor", "_retired_t_max_phys",
+                 "ke_drag_removed", "e_drag_heat_sum",
+                 "_retired_e_drag_drop_sum", "_retired_e_drag_rail_clipped",
+                 "e_kick_ke_sum", "e_absorb_export_sum", "e_sponge_export_sum",
+                 "e_clamp_destroyed_sum", "rad_clip_hits", "e_ts_ke_sum")
+# The subset PART 1 requires to actually engage somewhere (coverage). The
+# retired slots (D10) and the slots this file's forcers structurally never
+# arm (11 e_sponge_export_sum — no ambient/sponge_udamp forcer here; 14
+# e_ts_ke_sum — no thermal_solid forcer here) must instead stay exactly 0.
+_LIVE_COUNTER_IDX = (0, 1, 5, 6, 9, 10, 12, 13)
+_RETIRED_COUNTER_IDX = (2, 3, 4, 7, 8)
+_DORMANT_HERE_IDX = (11, 14)
 
 
 def _quantize(x):
@@ -146,17 +179,27 @@ def _run_pair(inp, dt, cap2_plane, consts):
     VELOCITY-CLAMP (P-V1, D2v2): `cap2_plane` drops into the old `c_local_q`
     positional slot as an (h,w) int64 array (Q32.32 raw, >= 0 everywhere —
     the hard contract both bindings document).
+
+    arc #54 (P-G2): `temperature` is no longer written by either twin — the
+    field both now mutate in place is `gas_energy` (design §2.2/§2.3), threaded
+    on BOTH calls so the KE brackets' debit/credit is part of the bit-identity
+    proof. The CPU reference keeps `temperature`/`t_min`/`t_max_phys` in its
+    own signature (D10 layout) but none of the three is read by the loop any
+    more (the T rails moved to the §2.6 recovery) — `t_min`/`t_max_phys` are
+    filled from the module-level DORMANT_* constants; `temperature` is passed
+    through unchanged and its post-call value is asserted untouched below.
     """
     args_tail = (inp["p_new"], inp["gas"], inp["gas_conservative"],
                  inp["solid"], inp["is_vacuum"], inp["absorb"])
     cap2_plane = np.ascontiguousarray(cap2_plane, dtype=np.int64)
-    f_ref = {k: inp[k].copy() for k in ("wind_x", "wind_y", "temperature")}
+    ref_consts = dict(consts, t_min=DORMANT_T_MIN, t_max_phys=DORMANT_T_MAX_PHYS)
+    f_ref = {k: inp[k].copy() for k in ("wind_x", "wind_y", "temperature", "gas_energy")}
     res_ref = bp.eos_kick_compression_ref(
         f_ref["wind_x"], f_ref["wind_y"], f_ref["temperature"],
-        *args_tail, dt, cap2_plane, **consts)
-    f_gpu = {k: inp[k].copy() for k in ("wind_x", "wind_y", "temperature")}
+        *args_tail, dt, cap2_plane, gas_energy=f_ref["gas_energy"], **ref_consts)
+    f_gpu = {k: inp[k].copy() for k in ("wind_x", "wind_y", "gas_energy")}
     res_gpu = bp.cuda_eos_kick_compression(
-        f_gpu["wind_x"], f_gpu["wind_y"], f_gpu["temperature"],
+        f_gpu["wind_x"], f_gpu["wind_y"], f_gpu["gas_energy"],
         *args_tail, dt, cap2_plane, **consts)
     return f_ref, res_ref, f_gpu, res_gpu
 
@@ -207,18 +250,46 @@ def _fold_cap2_plane(temperature, solid, is_vacuum, ts, eos):
 
 
 def _compare(tag, f_ref, res_ref, f_gpu, res_gpu):
+    """Bit-identity + counter-parity check.
+
+    Fields: wind_x/wind_y/gas_energy, CPU ref vs GPU (temperature is no
+    longer written by either twin — arc #54 P-G2 — so it is not compared
+    here; callers that care assert it stays byte-identical to the input).
+    Counters: the CPU reference returns only the 9 D10-layout slots
+    (`res_ref[2:11]`); the GPU returns all 15 KICK_CNT_SLOTS
+    (`res_gpu[1]`). Only the overlapping 9 are cross-checked here — slots
+    9-14 (the new arc #54 telemetry) have no CPU-reference counterpart in
+    this isolated call and are covered instead by PART 2's live-solver
+    ground truth.
+    """
     ok = True
-    for k in ("wind_x", "wind_y", "temperature"):
+    for k in ("wind_x", "wind_y", "gas_energy"):
         if not np.array_equal(f_ref[k], f_gpu[k]):
             ok = False
             mism = int(np.count_nonzero(f_ref[k] != f_gpu[k]))
             idx = int(np.argmax(f_ref[k] != f_gpu[k]))
             print(f"  {tag}: {k} {mism} MISMATCH (first @ {idx}: "
                   f"cpu={f_ref[k].flat[idx]} gpu={f_gpu[k].flat[idx]})")
-    if tuple(res_ref) != tuple(res_gpu):
+    dig_ref, dig_gpu = res_ref[0], res_gpu[0]
+    cnts_ref = tuple(int(v) for v in res_ref[2:11])
+    cnts_gpu = tuple(int(v) for v in res_gpu[1][:9])
+    if dig_ref != dig_gpu or cnts_ref != cnts_gpu:
         ok = False
-        print(f"  {tag}: result mismatch\n    ref={res_ref}\n    gpu={res_gpu}")
+        print(f"  {tag}: result mismatch\n    ref digest={dig_ref} cnts={cnts_ref}"
+              f"\n    gpu digest={dig_gpu} cnts={cnts_gpu}")
     return ok
+
+
+def _make_gas_energy(h, w, rng=None, lo=1e8, hi=1e13):
+    """arc #54 §2.2: a plausible-magnitude `gas_energy` (h,w) int64 field —
+    the value's PHYSICAL correctness is irrelevant here (this is a bit-
+    identity gate: both twins run the identical arithmetic on the identical
+    input), only that it stays comfortably inside int64 through a debit/
+    credit chain bounded by the ±2^27 KE_SAFE guard (design §2.3 F1: every
+    stage sees |u|^2 <= 2^55, dE <= 2^59)."""
+    if rng is None:
+        return np.full((h, w), int(1e10), dtype=np.int64)
+    return rng.integers(int(lo), int(hi), size=(h, w), dtype=np.int64)
 
 
 def _make_random_inputs(rng, h, w, wind_mag, t_lo, t_hi, p_mag, n_scale):
@@ -257,6 +328,7 @@ def _make_random_inputs(rng, h, w, wind_mag, t_lo, t_hi, p_mag, n_scale):
         "wind_x": np.ascontiguousarray(wx.astype(np.int32)),
         "wind_y": np.ascontiguousarray(wy.astype(np.int32)),
         "temperature": np.ascontiguousarray(temperature.astype(np.int32)),
+        "gas_energy": np.ascontiguousarray(_make_gas_energy(h, w, rng)),
         "p_new": np.ascontiguousarray(p_new.astype(np.int32)),
         "gas": np.ascontiguousarray(gas),
         "gas_conservative": np.ascontiguousarray(gas_conservative),
@@ -267,30 +339,30 @@ def _make_random_inputs(rng, h, w, wind_mag, t_lo, t_hi, p_mag, n_scale):
 
 
 def _make_rail_forcer(h=24, w=24):
-    """A deterministic config engaging every rail in one call:
-    - a blast quadrant: huge P spike against near-zero N̂ -> RAD_SAFE + |u| clamp;
-    - a convergent-flow band around a near-ceiling-hot column -> work clamp
-      (k pinned negative) + T_MAX_PHYS ceiling;
-    - a DIVERGENT-flow band at the T_MIN floor column -> work clamp
-      (k pinned positive) + T_MIN energy floor.
+    """A deterministic config engaging every LIVE kick-loop rail in one call:
+    - a blast quadrant: huge P spike against near-zero N̂ -> the ∇p kick +
+      the counted |u| clamp (u_clamp_hits / u_max_hits) + e_kick_ke_sum /
+      e_clamp_destroyed_sum;
+    - direct overspeed seeds far past the ±2^27 KE_SAFE guard (arc #54 §2.3
+      F1, TIGHTENED from ±2^30 — R3-#5) -> rad_clip_hits, with the clipped
+      KE folded into the kick bracket (the no-mint direction);
+    - two wind bands (still present for general ∇p-kick / u_clamp coverage,
+      unchanged from the pre-#54 forcer's shape).
 
-    T_ABS COMPRESSION WORK (P-W1b, design SS2): under the retired ambient-
-    relative law, compression on a T_MIN-seeded cell (-289*(1+w)=-433.5 at
-    the clamp) was how this forcer crossed the T_MIN floor. Under the new
-    law compression runs on t_abs = T + t_amb_q and always WARMS -- a
-    T=-289 seed has t_abs=1 (real units; T_MIN sits EXACTLY at t_abs=1 by
-    construction), so compression can no longer push it lower at all. The
-    floor is now crossed by EXPANSION instead: t_abs=1, divided by (1+w)
-    for ANY w>0, floors to something <1 -- i.e. strictly below T_MIN by
-    construction, not merely "at large w". At the clamp (w=0.5):
-    floordiv_q(65536<<16, 98304) = 43690 raw (0.6667 real) -> T_rel =
-    43690 - t_amb_q = -289.33, below t_min_q=-289 -> the floor fires
-    (critique C15's worked numbers, design SS6 P-W1b row).
+    arc #54 (P-G2) RETIREMENT NOTE: step 4c (compression work) is DELETED —
+    the two bands' ORIGINAL job here was pushing a hot/cold column past
+    T_MAX_PHYS/T_MIN via compression/expansion work (T_ABS COMPRESSION WORK,
+    P-W1b). That mechanism no longer exists in this isolated tail at all
+    (moved to the T-dependent §2.6 recovery, out of scope here — see
+    `_RETIRED_COUNTER_IDX`); the seeded `temperature` values below are
+    harmless leftovers (never written back, never read by the kick) kept
+    only so the wind pattern is unchanged from the pre-#54 forcer.
     """
     inp = {
         "wind_x": np.zeros((h, w), dtype=np.int32),
         "wind_y": np.zeros((h, w), dtype=np.int32),
         "temperature": np.zeros((h, w), dtype=np.int32),
+        "gas_energy": _make_gas_energy(h, w),
         "p_new": np.full((h, w), _quantize(1.0), dtype=np.int32),
         "gas": np.zeros((3, h, w), dtype=np.int32),
         "gas_conservative": np.array([True, True, False]),
@@ -304,29 +376,23 @@ def _make_rail_forcer(h=24, w=24):
     inp["p_new"][4:7, 4:7] = _quantize(3000.0)
     inp["gas"][0][2:9, 2:9] = 0
     inp["gas"][1][2:9, 2:9] = 0
-    # Direct overspeed seeds (RAD_SAFE: |u| raw > 2^30 == 16384 m/s).
+    # Direct overspeed seeds -- FAR past the ±2^27 (~2000 m/s) KE_SAFE guard
+    # (arc #54 §2.3 F1) -> rad_clip_hits fires on load, both components.
     inp["wind_x"][1, 12] = _quantize(25000.0)
     inp["wind_y"][1, 14] = _quantize(-25000.0)
-    # Band 1: CONVERGENT flow (div < 0 at the meeting cell, +u on the left
-    # half / -u on the right) around a near-ceiling-hot column -> k pinned
-    # at -T_WORK_CLAMP -> compression, t_abs=(15000+290)=15290 real ->
-    # (15290)*1.5-290 = 22645 real, past T_MAX_PHYS=16000 -> the ceiling
-    # fires (re-verified under the new law, design SS3/P-W1b: still fires --
-    # the clamp-rate compounding is unchanged in kind, only in base).
+    # Band 1: CONVERGENT flow (div < 0 at the meeting cell) around a hot
+    # column -- retained for general ∇p-kick / u_clamp coverage only (see
+    # the RETIREMENT NOTE above; T_MAX_PHYS no longer fires from this tail).
     cy, cx = 16, 12
     inp["wind_x"][cy, :cx] = _quantize(400.0)
     inp["wind_x"][cy, cx:] = _quantize(-400.0)
-    inp["temperature"][cy, cx] = _quantize(15000.0)   # -> past T_MAX_PHYS
-    # Band 2: DIVERGENT flow (div > 0 at the meeting cell, -u on the left
-    # half / +u on the right — the MIRROR of band 1's wind pattern) at the
-    # T_MIN-seeded column -> k pinned at +T_WORK_CLAMP -> EXPANSION crosses
-    # the floor (see the T_ABS COMPRESSION WORK docstring note above; the
-    # old compression-based forcer no longer reaches T_MIN at all under the
-    # new law -- this is P-W1b's deterministic-will-fail re-derivation).
+    inp["temperature"][cy, cx] = _quantize(15000.0)
+    # Band 2: DIVERGENT flow (div > 0 at the meeting cell) -- likewise
+    # retained for coverage shape only; T_MIN no longer fires from this tail.
     cy2 = 20
     inp["wind_x"][cy2, :cx] = _quantize(-400.0)
     inp["wind_x"][cy2, cx:] = _quantize(400.0)
-    inp["temperature"][cy2, cx] = _quantize(-289.0)   # -> past T_MIN (k>=0, expansion)
+    inp["temperature"][cy2, cx] = _quantize(-289.0)
     for k in inp:
         inp[k] = np.ascontiguousarray(inp[k])
     return inp
@@ -334,15 +400,19 @@ def _make_rail_forcer(h=24, w=24):
 
 def _make_drag_forcer(h=24, w=24):
     """P-E3 (design §2.8) drag-rail forcer: substantial velocity everywhere
-    (real KE to remove), a near-ceiling hot band (a sustained drag deposit
-    there clips at T_MAX_PHYS — e_drag_rail_clipped), ordinary ambient N
-    (n_bulk >= 1, so the deposit WRITES most places), and a near-vacuum strip
-    (n_bulk < 1 raw count — the phantom-T guard: still priced, n-weighted to
-    ~0, T never written there)."""
+    (real KE to remove -> ke_drag_removed / e_drag_heat_sum), ordinary
+    ambient N (n_bulk >= 1, so the drag heat credit lands in `gas_energy`
+    most places), and a near-vacuum strip (n_bulk < 1 raw count — priced,
+    n-weighted to ~0). arc #54 (P-G2) RETIREMENT NOTE: the hot band's
+    original job (a sustained drag deposit clipping at T_MAX_PHYS,
+    e_drag_rail_clipped) no longer applies — that rail, and the whole
+    deposit-fraction/rail-clip formula, is retired with step 4c (D5); the
+    seeded temperature is a harmless leftover, never read by the kick."""
     inp = {
         "wind_x": np.full((h, w), _quantize(900.0), dtype=np.int32),
         "wind_y": np.full((h, w), _quantize(-900.0), dtype=np.int32),
         "temperature": np.full((h, w), _quantize(100.0), dtype=np.int32),
+        "gas_energy": _make_gas_energy(h, w),
         "p_new": np.full((h, w), _quantize(1.0), dtype=np.int32),
         "gas": np.zeros((3, h, w), dtype=np.int32),
         "gas_conservative": np.array([True, True, False]),
@@ -352,7 +422,6 @@ def _make_drag_forcer(h=24, w=24):
     }
     inp["gas"][0][:, :] = _quantize(0.21)
     inp["gas"][1][:, :] = _quantize(0.79)
-    # Near-ceiling hot band: the drag deposit here should clip at T_MAX_PHYS.
     inp["temperature"][8:16, :] = _quantize(15990.0)
     # Near-vacuum strip: n_bulk < 1 raw count -> the phantom-T guard engages.
     inp["gas"][0][20:24, :] = 0
@@ -377,6 +446,7 @@ def _make_drag2_dead_zone_forcer(h=24, w=24):
         "wind_x": np.zeros((h, w), dtype=np.int32),
         "wind_y": np.zeros((h, w), dtype=np.int32),
         "temperature": np.full((h, w), _quantize(20.0), dtype=np.int32),
+        "gas_energy": _make_gas_energy(h, w),
         "p_new": np.full((h, w), _quantize(1.0), dtype=np.int32),
         "gas": np.zeros((3, h, w), dtype=np.int32),
         "gas_conservative": np.array([True, True, False]),
@@ -399,11 +469,20 @@ def _make_drag2_dead_zone_forcer(h=24, w=24):
     return inp
 
 
+def _accumulate(totals, res_ref, res_gpu):
+    """totals[0:9] from the CPU reference's own 9-slot return (bit-identical
+    to res_gpu[1][:9], already asserted by `_compare`); totals[9:15] from the
+    GPU-only arc #54 telemetry (no CPU-reference counterpart in this isolated
+    call — design §2.3's new signed energy counters)."""
+    totals[0:9] += np.array([int(v) for v in res_ref[2:11]], dtype=np.int64)
+    totals[9:15] += np.array([int(v) for v in res_gpu[1][9:15]], dtype=np.int64)
+
+
 def part1_isolated() -> bool:
     print("PART 1 — isolated GPU vs CPU reference (synthetic, all rails):")
     ok = True
     rng = np.random.default_rng(20260711)
-    totals = np.zeros(9, dtype=np.int64)   # ref counter engagement coverage
+    totals = np.zeros(15, dtype=np.int64)   # KICK_CNT_SLOTS engagement coverage
     n_cfg = 0
 
     # (a) the deterministic all-rails forcer, both cap regimes — VELOCITY-
@@ -419,7 +498,7 @@ def part1_isolated() -> bool:
         cap2 = _uniform_cap2(RAIL_FORCER_H, RAIL_FORCER_W, cap_val)
         f_ref, res_ref, f_gpu, res_gpu = _run_pair(inp, 1.0 / 24.0, cap2, CONSTS)
         ok &= _compare(tag, f_ref, res_ref, f_gpu, res_gpu)
-        totals += np.array(res_ref[2:], dtype=np.int64)
+        _accumulate(totals, res_ref, res_gpu)
         if is_umax:
             if res_ref[2] == 0 or res_ref[3] == 0:
                 ok = False
@@ -430,9 +509,12 @@ def part1_isolated() -> bool:
                 ok = False
                 print(f"  {tag}: ambient cap regime wrong "
                       f"(u_clamp={res_ref[2]} u_max={res_ref[3]})")
-        if res_ref[4] == 0 or res_ref[5] == 0 or res_ref[6] == 0:
+        # arc #54 (D10): slots 2/3/4 (work_clamp/energy_floor/t_max_phys) are
+        # structurally retired-and-zero in this isolated tail now (moved to
+        # the §2.6 recovery) — sanity, not a "must engage" requirement.
+        if res_ref[4] != 0 or res_ref[5] != 0 or res_ref[6] != 0:
             ok = False
-            print(f"  {tag}: 4c rails did not all engage "
+            print(f"  {tag}: a RETIRED counter came back nonzero "
                   f"(work={res_ref[4]} floor={res_ref[5]} tmax={res_ref[6]})")
 
     # (b) random fuzz over sizes/regimes (incl. degenerate 1xN / Nx1).
@@ -459,18 +541,18 @@ def part1_isolated() -> bool:
             f_ref, res_ref, f_gpu, res_gpu = _run_pair(inp, dt, cap2, CONSTS)
             ok &= _compare(f"{h}x{w} dt={dt} wmag={wmag} c_loc={c_local}",
                            f_ref, res_ref, f_gpu, res_gpu)
-            totals += np.array(res_ref[2:], dtype=np.int64)
+            _accumulate(totals, res_ref, res_gpu)
 
     # (c) P-E3 (design §2.8): the dedicated drag-active forcer, both cap
-    # regimes — CONSTS_DRAG (k_drag=0.02, k_drag_heat_frac=0.5) so all four
-    # new counters engage (ke_drag_removed, e_drag_deposit non-vacuous from
-    # the heat_frac<1 split; e_drag_drop_sum non-vacuous for the same
-    # reason; e_drag_rail_clipped from the near-ceiling hot band). The two
-    # regimes use a c_amb2 plane and a u_max2 plane DIRECTLY (D5: NOT a
-    # 2300²-style plane — the drag forcer's ~1272 m/s is below 2300, so
-    # that literal fill would DISENGAGE the clamp under D5's no-re-min
-    # contract and lose the U_MAX-regime coverage the old min(c_local,
-    # u_max)=u_max semantics gave for free).
+    # regimes — CONSTS_DRAG (k_drag=0.02) so ke_drag_removed / e_drag_heat_sum
+    # both engage. arc #54 (D5) RETIRED the old e_drag_deposit/e_drag_drop_
+    # sum/e_drag_rail_clipped triple (the heat-fraction/rail-clip formula) —
+    # e_drag_heat_sum replaces all three; only the two LIVE counters are
+    # required to engage now. The two regimes use a c_amb2 plane and a
+    # u_max2 plane DIRECTLY (D5: NOT a 2300²-style plane — the drag forcer's
+    # ~1272 m/s is below 2300, so that literal fill would DISENGAGE the
+    # clamp under D5's no-re-min contract and lose the U_MAX-regime coverage
+    # the old min(c_local, u_max)=u_max semantics gave for free).
     DRAG_FORCER_H, DRAG_FORCER_W = 24, 24
     for cap_val, tag in ((CONSTS["c_max"], "drag forcer c_amb2 plane (ambient binds)"),
                          (CONSTS["u_max"], "drag forcer u_max2 plane (U_MAX binds)")):
@@ -480,12 +562,11 @@ def part1_isolated() -> bool:
         f_ref, res_ref, f_gpu, res_gpu = _run_pair(
             inp, 1.0 / 24.0, cap2, CONSTS_DRAG)
         ok &= _compare(tag, f_ref, res_ref, f_gpu, res_gpu)
-        totals += np.array(res_ref[2:], dtype=np.int64)
-        if res_ref[7] == 0 or res_ref[8] == 0 or res_ref[9] == 0 or res_ref[10] == 0:
+        _accumulate(totals, res_ref, res_gpu)
+        if res_ref[7] == 0 or res_ref[8] == 0:
             ok = False
             print(f"  {tag}: drag rails did not all engage "
-                  f"(ke_removed={res_ref[7]} deposit={res_ref[8]} "
-                  f"drop={res_ref[9]} clipped={res_ref[10]})")
+                  f"(ke_removed={res_ref[7]} heat_sum={res_ref[8]})")
 
     # (d) drag-law v2 (design §8 gate 2): the k_drag2-ARMED cross-mirror
     # gate — TWO pinned legs (CONSTS_DRAG2 main @ k2=1.0; CONSTS_DRAG2_
@@ -506,7 +587,7 @@ def part1_isolated() -> bool:
             f_ref, res_ref, f_gpu, res_gpu = _run_pair(
                 inp, 1.0 / 24.0, cap2, consts_drag2)
             ok &= _compare(tag, f_ref, res_ref, f_gpu, res_gpu)
-            totals += np.array(res_ref[2:], dtype=np.int64)
+            _accumulate(totals, res_ref, res_gpu)
             if res_ref[7] == 0:
                 ok = False
                 print(f"  {tag}: ke_drag_removed did not engage "
@@ -523,14 +604,17 @@ def part1_isolated() -> bool:
     cap2 = _uniform_cap2(DRAG2_H, DRAG2_W, CONSTS["c_max"])
     args_tail = (inp["p_new"], inp["gas"], inp["gas_conservative"],
                  inp["solid"], inp["is_vacuum"], inp["absorb"])
+    straddle_on = dict(CONSTS_DRAG2_DEAD_ZONE, t_min=DORMANT_T_MIN,
+                       t_max_phys=DORMANT_T_MAX_PHYS)
+    straddle_off = dict(straddle_on, k_drag2=0.0)
     wx_on, wy_on = inp["wind_x"].copy(), inp["wind_y"].copy()
     t_on = inp["temperature"].copy()
     bp.eos_kick_compression_ref(wx_on, wy_on, t_on, *args_tail,
-                                1.0 / 24.0, cap2, **CONSTS_DRAG2_DEAD_ZONE)
+                                1.0 / 24.0, cap2, **straddle_on)
     wx_off, wy_off = inp["wind_x"].copy(), inp["wind_y"].copy()
     t_off = inp["temperature"].copy()
     bp.eos_kick_compression_ref(wx_off, wy_off, t_off, *args_tail, 1.0 / 24.0,
-                                cap2, **dict(CONSTS_DRAG2_DEAD_ZONE, k_drag2=0.0))
+                                cap2, **straddle_off)
     if not (np.array_equal(wx_on[0:12], wx_off[0:12])
             and np.array_equal(wy_on[0:12], wy_off[0:12])):
         ok = False
@@ -544,15 +628,22 @@ def part1_isolated() -> bool:
               "matched the k_drag2=0 control — stage Q never fired "
               "(gate is vacuous)")
 
-    # Coverage: every rail counter must have engaged somewhere in Part 1.
-    for i, name in enumerate(COUNTER_NAMES):
+    # Coverage: every LIVE rail counter must have engaged somewhere in Part 1;
+    # every RETIRED (D10) or structurally-dormant-in-this-file slot must
+    # instead have stayed EXACTLY 0 throughout.
+    for i in _LIVE_COUNTER_IDX:
         if totals[i] == 0:
             ok = False
-            print(f"  COVERAGE HOLE: rail counter {name!r} never engaged")
+            print(f"  COVERAGE HOLE: rail counter {COUNTER_NAMES[i]!r} never engaged")
+    for i in (*_RETIRED_COUNTER_IDX, *_DORMANT_HERE_IDX):
+        if totals[i] != 0:
+            ok = False
+            print(f"  {COUNTER_NAMES[i]!r} should be structurally 0 here but "
+                  f"totalled {int(totals[i])}")
     if ok:
-        print(f"  all {n_cfg} configs bit-identical on (wind_x, wind_y, T), "
-              f"digests + ALL rail counters equal; rail engagements "
-              f"(ref totals): "
+        print(f"  all {n_cfg} configs bit-identical on (wind_x, wind_y, "
+              f"gas_energy), digest_velocity + the 9 D10-layout rail "
+              f"counters (CPU<->GPU); rail engagements (totals): "
               + ", ".join(f"{n}={int(t)}" for n, t in zip(COUNTER_NAMES, totals)))
     return ok
 
@@ -599,68 +690,65 @@ def part2_trajectory() -> bool:
     inert_n2_idx = int(g.gases.name_to_id["inert_n2"])
     dt = 1.0 / float(CFG.clock.ticks_per_second)
 
+    # arc #54 (P-G2): `t_work_clamp`/`k_drag_heat_frac`/`n_work_ref` are
+    # RETIRED bindings — `eos.T_WORK_CLAMP`/`eos.k_drag_heat_frac`/
+    # `eos.n_work_ref` no longer exist on EOSSolver at all (D10/D11), and
+    # `cuda_eos_kick_compression`'s own signature dropped `temperature`/
+    # `t_min`/`t_max_phys`/`k_drag_heat_frac`/`c_v` outright (moved to the
+    # §2.6 recovery or retired with the old drag-deposit formula). `consts`
+    # below is what BOTH twins accept; `_run_pair` fills the CPU reference's
+    # two dormant D10-layout params (t_min/t_max_phys) from the module-level
+    # DORMANT_* literals.
     consts = dict(
         c_max=float(eos.c_max), dx=float(eos.dx),
         adiabatic_index=float(eos.adiabatic_index),
         absorb_strength=float(eos.absorb_strength),
         n_floor_solver=float(eos.N_FLOOR_SOLVER),
-        t_min=float(eos.T_MIN), t_work_clamp=float(eos.T_WORK_CLAMP),
-        t_max_phys=float(eos.T_MAX_PHYS), u_max=float(eos.U_MAX),
-        # trace_mass_scale key RETIRED (P-T0, design §2.6) — the EOSSolver
-        # member is gone; eos.trace_mass_scale no longer exists to read.
+        u_max=float(eos.U_MAX),
         # P-E3 (design §2.8) BUGFIX (VELOCITY-CLAMP arc investigation,
-        # 2026-08-19): read the LIVE k_drag/k_drag_heat_frac/c_v from `eos`
-        # instead of leaving them at the pybind dormant default — the shipped
-        # config ([physics.eos] k_drag = 0.5) has drag ACTIVE by default, so
-        # the old "matches the live engine's shipped default" comment here
-        # was stale (true only before P-E3 shipped a nonzero k_drag) and the
-        # CPU reference was silently running drag-dormant against a
-        # drag-ACTIVE live solver — the actual source of this gate's
-        # wind-side digest_velocity/wind_x/wind_y divergence (confirmed by
-        # reproducing it bit-for-bit on the UNMODIFIED pre-P-V1 tree; the
-        # velocity-clamp per-cell cap plane was not involved). Pre-existing,
-        # unrelated to D2v2 — fixed here because it was silently defeating
-        # THIS gate's wind-side ground-truth check.
+        # 2026-08-19): read the LIVE k_drag from `eos` instead of leaving it
+        # at the pybind dormant default — the shipped config
+        # ([physics.eos] k_drag = 0.5) has drag ACTIVE by default, so a
+        # silent pybind default here would compare a defaulted reference
+        # against a drag-ACTIVE live solver.
         # drag-law v2 (docs/drag_law_v2_design_2026-08-23.md, issue #4 P1
-        # gate 3): thread the LIVE k_drag2 too, the same P-V1-incident
-        # reasoning as k_drag above — a silent pybind default here would
-        # compare a defaulted reference against a solver-valued device path.
-        # Dormant (0.0) at this scenario's shipped config, same as k_drag2
-        # everywhere else until P3 arms it.
+        # gate 3): thread the LIVE k_drag2 too, same reasoning.
         k_drag=float(eos.k_drag), k_drag2=float(eos.k_drag2),
-        k_drag_heat_frac=float(eos.k_drag_heat_frac),
-        c_v=float(eos.c_v),
-        # P-E4 (design §2.4): the trust gate's reference density.
-        n_work_ref=float(eos.n_work_ref),
-        # T_ABS COMPRESSION WORK (P-W1a, design §5): thread the solver's own
-        # T_AMB_K explicitly — a silent pybind default here would compare a
-        # defaulted reference against a solver-valued device path, exactly
-        # the quiet hole this lockstep gate exists to close.
+        # T_ABS COMPRESSION WORK (P-W1a, design §5) / arc #54 §2.1: thread
+        # the solver's own T_AMB_K explicitly (LOAD-BEARING now — folds the
+        # derived k_ke constant) — a silent pybind default here would
+        # compare a defaulted reference against a solver-valued device path.
         t_amb_k=float(eos.T_AMB_K),
     )
     trace_planes = [gi for gi in range(g.gas.shape[0])
                     if not bool(g.gases.conservative[gi])]
 
     def counters():
-        # u_clamp/u_max/work_clamp/energy_floor/t_max_phys: CUMULATIVE (the
-        # caller diffs two snapshots). ke_drag_removed/e_drag_deposit/
-        # e_drag_drop_sum/e_drag_rail_clipped (P-E3, design §2.8): PER-TICK
-        # (reset at every step() entry) — at this scenario's default
-        # k_drag=0.0 (dormant, matching the live engine everywhere else)
-        # these four stay 0 throughout, so a plain diff is harmless here,
-        # but the caller still takes them as a direct per-tick READ (not a
-        # diff) to stay correct in general — see the loop below.
-        return np.array([eos.u_clamp_hits, eos.u_max_hits,
-                         eos.work_clamp_hits, eos.energy_floor_hits,
-                         eos.t_max_phys_hits,
-                         eos.ke_drag_removed, eos.e_drag_deposit,
-                         eos.e_drag_drop_sum, eos.e_drag_rail_clipped],
-                        dtype=np.int64)
+        """Direct reads of the LIVE EOSSolver members the K1 kick loop
+        writes, laid out to match KICK_CNT_SLOTS position for position (see
+        COUNTER_NAMES / _run_pair). Slots 2/3/4/7/8 are structurally
+        retired (D10): work_clamp_hits stays 0 forever; energy_floor_hits/
+        t_max_phys_hits moved to the T-DEPENDENT §2.6 recovery — a wholly
+        separate pass this isolated kick-tail replay does not cover, so they
+        are hardcoded 0 here rather than read (reading them would silently
+        compare two different passes' telemetry under the same old slot
+        number); e_drag_drop_sum/e_drag_rail_clipped no longer exist as
+        members at all (e_drag_heat_sum replaces all three, D5).
+        u_clamp_hits/u_max_hits/work_clamp_hits are CUMULATIVE (the caller
+        diffs two snapshots); every other slot is PER-TICK (reset at every
+        step() entry) — read directly.
+        """
+        return np.array([
+            eos.u_clamp_hits, eos.u_max_hits, 0, 0, 0,
+            eos.ke_drag_removed, eos.e_drag_heat_sum, 0, 0,
+            eos.e_kick_ke_sum, eos.e_absorb_export_sum, eos.e_sponge_export_sum,
+            eos.e_clamp_destroyed_sum, eos.rad_clip_hits, eos.e_ts_ke_sum,
+        ], dtype=np.int64)
 
     n_ticks = 120
     max_n_sub = 0
     max_u_counts = 0
-    totals = np.zeros(9, dtype=np.int64)
+    totals = np.zeros(15, dtype=np.int64)
     bad = 0
     for tick in range(n_ticks):
         # Snapshot the eos.step step-1-entry state (run_substeps calls
@@ -668,12 +756,16 @@ def part2_trajectory() -> bool:
         wx0 = np.ascontiguousarray(g.wind_x.copy())
         wy0 = np.ascontiguousarray(g.wind_y.copy())
         t0 = np.ascontiguousarray(g.temperature.copy())
+        # arc #54 §2.2: the field the kick's KE brackets debit/credit —
+        # snapshotted alongside wind/T so the isolated replay starts from
+        # the SAME tick-entry state the live kick loop will consume.
+        ge0 = np.ascontiguousarray(g.gas_energy.copy())
         cnt0 = counters()
 
         runner.engine.run_substeps(
             g.wave_p, g.atmosphere,
             g.wind_x, g.wind_y,
-            g.temperature,
+            g.temperature, g.gas_energy,   # arc #54 §2.2 (MECHANICAL)
             g.obstacles, g.solid, g.is_vacuum,
             g.dyn_permeability, g.dyn_wave_absorb,
             g.gas, g.gases.diffusion, g.gases.conservative,
@@ -683,12 +775,12 @@ def part2_trajectory() -> bool:
         n_sub = int(eos.dbg_last_n_sub)
         cnt_now = counters()
         cnt_delta = cnt_now - cnt0
-        # P-E3 (design §2.8): indices 5..8 are PER-TICK (reset every
-        # step() entry) — READ directly rather than diffed against cnt0
-        # (which holds the PREVIOUS tick's per-tick snapshot, not a base to
-        # subtract from). Harmless at this scenario's k_drag=0.0, correct
-        # in general.
-        cnt_delta[5:] = cnt_now[5:]
+        # Only slots 0/1 (u_clamp_hits/u_max_hits) are CUMULATIVE; every
+        # other slot (2 included — work_clamp_hits is reset to 0 every tick
+        # too now, D10) is PER-TICK — READ directly rather than diffed
+        # against cnt0 (which holds the PREVIOUS tick's per-tick snapshot,
+        # not a base to subtract from).
+        cnt_delta[2:] = cnt_now[2:]
         totals += cnt_delta
         max_n_sub = max(max_n_sub, n_sub)
         max_u_counts = max(max_u_counts,
@@ -737,6 +829,7 @@ def part2_trajectory() -> bool:
         cap2 = _fold_cap2_plane(t0, g.solid, g.is_vacuum, g.solid, eos)
 
         inp = {"wind_x": wx0, "wind_y": wy0, "temperature": t0,
+               "gas_energy": ge0,
                "p_new": np.ascontiguousarray(g.atmosphere),
                "gas": np.ascontiguousarray(g.gas),
                "gas_conservative": np.ascontiguousarray(g.gases.conservative),
@@ -778,6 +871,24 @@ def part2_trajectory() -> bool:
                   f"solver deltas "
                   f"{dict(zip(wind_counter_names, wind_counters_solver))}")
 
+        # arc #54 (design §2.3): the six NEW per-cell energy-accounting
+        # counters (e_kick_ke_sum, e_absorb_export_sum, e_sponge_export_sum,
+        # e_clamp_destroyed_sum, rad_clip_hits, e_ts_ke_sum) are written by
+        # the SAME kick loop as u_clamp/u_max — never read temperature —
+        # so they are T-independent exactly like the wind-side counters
+        # above, and the GPU isolated replay (fed the reconstructed t0
+        # state) must reproduce the LIVE solver's own per-tick reads
+        # (cnt_delta[9:15]) even though `eos_kick_compression_ref` has no
+        # return slot for them (D10 layout, 9-wide only).
+        extra_names = COUNTER_NAMES[9:15]
+        extra_gpu = tuple(int(v) for v in res_gpu[1][9:15])
+        extra_solver = tuple(int(v) for v in cnt_delta[9:15])
+        if extra_gpu != extra_solver:
+            bad += 1
+            print(f"  tick {tick}: GPU isolated-replay energy counters "
+                  f"{dict(zip(extra_names, extra_gpu))} != solver reads "
+                  f"{dict(zip(extra_names, extra_solver))}")
+
         # The GPU chain must be bit-identical to the CPU reference on
         # EVERYTHING — fields, digests, and ALL rail counters (including the
         # T-dependent ones): both are fed the SAME (possibly-stale-T) input,
@@ -801,12 +912,14 @@ def part2_trajectory() -> bool:
         ok = False
         print(f"  scenario too tame: peak |u| {max_u_counts / FP_ONE:.1f} m/s "
               f"< 30 m/s")
-    # Required in-engine rails: the |u| clamp and the work clamp. The
-    # T_MIN/T_MAX_PHYS field rails do NOT fire in a pure run_substeps loop
-    # (the v2.4 measured outcome: "rails untouched" in the game-faithful
-    # loop — they need fire/combustion heat, which is not part of this
-    # pass's surface); their digest + counter coverage is Part 1's
-    # deterministic forcer.
+    # Required in-engine rails: the |u| clamp (and, downstream of it, the
+    # kick's own KE bracket + clamp-destroyed sum). `work_clamp` is
+    # structurally retired (D10, always 0 — see COUNTER_NAMES) and is
+    # asserted 0 below instead of "must engage". The T_MIN/T_MAX_PHYS field
+    # rails do NOT fire in a pure run_substeps loop (the v2.4 measured
+    # outcome: "rails untouched" in the game-faithful loop — they need
+    # fire/combustion heat, which is not part of this pass's surface); their
+    # digest + counter coverage is Part 1's deterministic forcer.
     #
     # VELOCITY-CLAMP (P-V1, D2v2) — u_max is DELIBERATELY not required here
     # any more. Pre-D2v2, "u_max" bound trivially: c_LOCAL was a GLOBAL
@@ -819,12 +932,16 @@ def part2_trajectory() -> bool:
     # it never engages the rail, which is now CORRECT behavior, not a
     # scenario weakness (P-V2's job is to measure how often this combination
     # occurs in a real blast, not this gate's).
-    for name in ("u_clamp", "work_clamp"):
-        i = COUNTER_NAMES.index(name)   # totals is 9-wide, positional — NOT
-                                        # the (shortened) loop tuple's own index
+    for name in ("u_clamp", "e_kick_ke_sum"):
+        i = COUNTER_NAMES.index(name)   # totals is 15-wide, KICK_CNT_SLOTS-positional
         if totals[i] == 0:
             ok = False
             print(f"  scenario too tame: rail {name!r} never engaged in-engine")
+    for i in (*_RETIRED_COUNTER_IDX, *_DORMANT_HERE_IDX):
+        if totals[i] != 0:
+            ok = False
+            print(f"  {COUNTER_NAMES[i]!r} should be structurally 0 in-engine "
+                  f"but totalled {int(totals[i])}")
     if ok:
         print(f"  {n_ticks} ticks: wind-side ground truth held (per-tick "
               f"digest_velocity + wind_x/wind_y + T-independent counters == "
@@ -876,6 +993,10 @@ def part3_golden() -> bool:
     from _xarch_perfield_digest import GOLDEN_AGGREGATE as GOLDEN
     base = capture_trajectory(n_steps=30)
     dig = trajectory_digest(base)
+    # Re-baselined in P-G3 (#54, 2026-08-30): the golden this imports was
+    # regenerated in tests/_xarch_perfield_digest.py after physics moved
+    # under P-G1a/P-G1b/P-G1d/P-G2 (stored gas_energy, the face-flux energy
+    # step, the D4 divergence face form) -- see that file's lineage block.
     if dig != GOLDEN:
         print(f"  GOLDEN MISMATCH: {dig[:16]}... != {GOLDEN[:16]}...")
         return False

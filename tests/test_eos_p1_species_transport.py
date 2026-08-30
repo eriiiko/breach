@@ -337,7 +337,14 @@ def test_sealed_room_bulk_conservation_e2e_1000_ticks():
     ys, xs = np.where(interior)
     cy, cx = int(np.median(ys)), int(np.median(xs))
     bump = (np.abs(ys - cy) < 3) & (np.abs(xs - cx) < 3)
-    g.temperature[ys[bump], xs[bump]] += atmosphere_fixed.quantize_scalar(200.0)
+    # arc #54 P-G1b: through the ONE sanctioned seeding seam. A direct
+    # `temperature[...] +=` used to be rescued by the solver's entry re-sync;
+    # with D1 live nothing re-derives `gas_energy` from the mirror any more, so
+    # a bare T write raises no pressure, drives no wind, and this gate would go
+    # vacuous rather than fail loudly. (CLAUDE.md: gas temperature is a mirror.)
+    _sel = (ys[bump], xs[bump])
+    g.seed_gas_temperature(
+        _sel, g.temperature[_sel] + atmosphere_fixed.quantize_scalar(200.0))
 
     total0 = _isum2(g.gas[O2], g.gas[INERT_N2])
     sim_time = 1.0 / float(CFG.clock.ticks_per_second)
@@ -360,7 +367,7 @@ def test_sealed_room_bulk_conservation_e2e_1000_ticks():
         runner.engine.run_substeps(
             g.wave_p, g.atmosphere,
             g.wind_x, g.wind_y,
-            g.temperature,
+            g.temperature, g.gas_energy,   # arc #54 §2.2 (MECHANICAL)
             g.obstacles, g.solid, g.is_vacuum,
             g.dyn_permeability, g.dyn_wave_absorb,
             g.gas, g.gases.diffusion, g.gases.conservative,
@@ -385,23 +392,62 @@ def test_sealed_room_bulk_conservation_e2e_1000_ticks():
 # ---------------------------------------------------------------------------
 # 5. field_edit round-trip on the new channel ids
 # ---------------------------------------------------------------------------
-def test_field_edit_gas_channel_accepts_new_bulk_ids():
-    """FieldEdit's channel-indexed 'gas' policy is generic over the (N,h,w)
-    array — it must accept the new O2/inert_N2 ids without any policy code
-    change (the array simply grew two planes)."""
+def test_field_edit_gas_policy_refuses_the_conservative_bulk_slices():
+    """arc #54 P-G1b (design §2.7 FieldEdit row) INVERTS this test.
+
+    It used to assert that the channel-indexed `gas` policy is generic over
+    the whole (N, h, w) array, O2 and inert_N2 included. Under a stored energy
+    field that genericity is precisely the bug: the `gas` policy is a FLOAT
+    BRIDGE (dequantize -> float -> [0,1] clamp -> requantize, plus an optional
+    RNG draw), and the two conservative slices ARE bulk N — the quantity
+    `gas_energy` is denominated against. Moving N through it would move mass
+    without moving energy and mint or destroy `ΔN·T_abs` invisibly, once per
+    edit, with nothing on either side of the seam to see it.
+
+    So the policy now REFUSES a conservative slice, loudly. Every shipped
+    caller is trace-only (combat.py's smoke, payloads.py's gas payloads), so
+    this costs nothing today and closes the door before someone opens it; a
+    caller that really wants to move bulk N has the pump primitives and the
+    `atmosphere` policy, both of which carry the energy with the mass."""
     import random
+    import pytest as _pytest
     g = _make_gmap()
     rng = random.Random(0)
 
     for gid, name in ((O2, "o2"), (INERT_N2, "inert_n2")):
+        assert bool(g.gases.conservative[gid]), f"fixture: {name} must be bulk"
+        edit = field_edit.FieldEdit(
+            field="gas", region=field_edit.Region.TILE, coords=(5, 5),
+            amount=0.05, mode=field_edit.EditMode.ADD, channel=gid,
+        )
+        before = int(g.gas[gid][5, 5])
+        with _pytest.raises(AssertionError, match="CONSERVATIVE"):
+            field_edit.apply_field_edit(g, edit, rng)
+        assert int(g.gas[gid][5, 5]) == before, (
+            f"the refused {name} edit still mutated the plane")
+
+
+def test_field_edit_gas_channel_still_generic_over_trace_ids():
+    """The other half of the old test's property SURVIVES: the policy is still
+    generic over the (N, h, w) array for every TRACE slice — the array growing
+    two bulk planes did not need a policy code change, and still doesn't. This
+    is what keeps the refusal above a targeted rule rather than a regression in
+    the emitter path."""
+    import random
+    g = _make_gmap()
+    rng = random.Random(0)
+    trace = [i for i in range(g.gas.shape[0])
+             if not bool(g.gases.conservative[i])]
+    assert trace, "fixture: there must be at least one trace slice"
+    for gid in trace:
         edit = field_edit.FieldEdit(
             field="gas", region=field_edit.Region.TILE, coords=(5, 5),
             amount=0.05, mode=field_edit.EditMode.ADD, channel=gid,
         )
         before = int(g.gas[gid][5, 5])
         field_edit.apply_field_edit(g, edit, rng)
-        after = int(g.gas[gid][5, 5])
-        assert after != before, f"gas channel {gid} ({name}) edit was a no-op"
+        assert int(g.gas[gid][5, 5]) != before, (
+            f"trace gas channel {gid} edit was a no-op")
 
 
 if __name__ == "__main__":
@@ -414,5 +460,6 @@ if __name__ == "__main__":
     test_bulk_flux_transport_moves_mass_downwind()
     test_bulk_flux_transport_never_goes_negative_under_high_cfl_stress()
     test_sealed_room_bulk_conservation_e2e_1000_ticks()
-    test_field_edit_gas_channel_accepts_new_bulk_ids()
+    test_field_edit_gas_policy_refuses_the_conservative_bulk_slices()
+    test_field_edit_gas_channel_still_generic_over_trace_ids()
     print("OK: EOS P1 species + conservative transport tests passed")

@@ -162,6 +162,17 @@ def part1_isolated() -> bool:
               f"and by the mask-omitted control; velocity moved everywhere.")
 
     # ---------------- 1b: kick + compression (step-4c) ---------------------
+    # arc #54 (P-G2): step 4c (compression work) is DELETED. `temperature` is
+    # no longer written by EITHER twin (moved to the §2.6 recovery, outside
+    # this isolated tail); `t_work_clamp`/`k_drag_heat_frac`/`c_v` are RETIRED
+    # from both signatures (the CPU reference keeps t_min/t_max_phys in its
+    # own signature, D10 layout, but they are dormant here — the GPU entry
+    # dropped them outright). `gas_energy` (arc #54 §2.2/§2.3) is now the
+    # field the kick's KE brackets debit/credit; the ts mask's live role at
+    # this site moved from "gates a temperature write" to "gates whether the
+    # KE debit lands in gas_energy (bulk) or is exported (F5, ts cells never
+    # carry gas_energy)" — the mask-omitted control below now diverges there
+    # instead of on temperature.
     n_cfg = n_div = 0
     for size in (16, 24, 33):
         for seed in (44, 55):
@@ -179,30 +190,47 @@ def part1_isolated() -> bool:
             # CPU vs GPU, not clamp behavior, so any valid (>= 0) plane
             # works; a uniform fill reproduces the old regime exactly (D5).
             cap2 = np.full((h, w), (300 * FP_ONE) ** 2, dtype=np.int64)
-            args = dict(dt=1.0 / 24.0, cap2_plane=cap2,
-                        c_max=300.0, dx=1.0 / 3.0, adiabatic_index=1.4,
-                        absorb_strength=8.0, n_floor_solver=1e-3, t_min=-289.0,
-                        t_work_clamp=0.5, t_max_phys=16000.0, u_max=1000.0)
-                        # trace_mass_scale arg RETIRED (P-T0)
+            ref_args = dict(dt=1.0 / 24.0, cap2_plane=cap2,
+                             c_max=300.0, dx=1.0 / 3.0, adiabatic_index=1.4,
+                             absorb_strength=8.0, n_floor_solver=1e-3,
+                             t_min=-289.0, t_max_phys=16000.0, u_max=1000.0,
+                             t_amb_k=290.0)
+            gpu_args = dict(dt=1.0 / 24.0, cap2_plane=cap2,
+                             c_max=300.0, dx=1.0 / 3.0, adiabatic_index=1.4,
+                             absorb_strength=8.0, n_floor_solver=1e-3,
+                             u_max=1000.0, t_amb_k=290.0)
             n_cfg += 1
-            A = (wx.copy(), wy.copy(), t.copy())
-            B = (wx.copy(), wy.copy(), t.copy())
-            C = (wx.copy(), wy.copy(), t.copy())
+            ge0 = _c((_q(rng.uniform(200.0, 400.0, size=(h, w))).astype(np.int64)) << 16)
+            A = (wx.copy(), wy.copy(), t.copy(), ge0.copy())
+            B = (wx.copy(), wy.copy(), t.copy(), ge0.copy())
+            C = (wx.copy(), wy.copy(), t.copy(), ge0.copy())
             r_cpu = bp.eos_kick_compression_ref(
                 A[0], A[1], A[2], p_new, gas, cons, solid, vac, wabs,
-                thermal_solid=tsol, **args)
+                thermal_solid=tsol, gas_energy=A[3], **ref_args)
             r_gpu = bp.cuda_eos_kick_compression(
-                B[0], B[1], B[2], p_new, gas, cons, solid, vac, wabs,
-                thermal_solid=tsol, **args)
+                B[0], B[1], B[3], p_new, gas, cons, solid, vac, wabs,
+                thermal_solid=tsol, **gpu_args)
             bp.cuda_eos_kick_compression(
-                C[0], C[1], C[2], p_new, gas, cons, solid, vac, wabs,
-                thermal_solid=None, **args)
-            if tuple(r_cpu) != tuple(r_gpu) or any(
-                    not np.array_equal(x, y) for x, y in zip(A, B)):
+                C[0], C[1], C[3], p_new, gas, cons, solid, vac, wabs,
+                thermal_solid=None, **gpu_args)
+            dig_cpu = r_cpu[0]
+            cnts_cpu = tuple(int(v) for v in r_cpu[2:11])   # the 9 D10-layout slots
+            dig_gpu, cnts_gpu_full = r_gpu
+            cnts_gpu = tuple(int(v) for v in cnts_gpu_full[:9])
+            if (dig_cpu != dig_gpu or cnts_cpu != cnts_gpu
+                    or not np.array_equal(A[0], B[0])
+                    or not np.array_equal(A[1], B[1])
+                    or not np.array_equal(A[3], B[3])
+                    or not np.array_equal(A[2], t)):
                 ok = False
                 print(f"  1b {size}^2 seed{seed}: CPU/GPU DIVERGE "
-                      f"(digests/counters {tuple(r_cpu)} vs {tuple(r_gpu)})")
-            if not np.array_equal(B[2], C[2]):
+                      f"(digest_velocity {dig_cpu} vs {dig_gpu}, counters "
+                      f"{cnts_cpu} vs {cnts_gpu})")
+            # the mask-is-live control: with the mask, furniture (ts) cells
+            # export their KE debit instead of storing it in gas_energy; drop
+            # the mask (falls back to `solid`, and furniture is NOT solid) and
+            # those same cells switch to storing — gas_energy must diverge.
+            if not np.array_equal(B[3], C[3]):
                 n_div += 1
             if not (np.array_equal(B[0], C[0]) and np.array_equal(B[1], C[1])):
                 ok = False
@@ -213,8 +241,10 @@ def part1_isolated() -> bool:
         print("  1b: the mask-omitted control never diverged — VACUOUS")
     else:
         print(f"  1b kick+compression: {n_cfg} configs bit-identical CPU<->GPU "
-              f"(tol 0, digests + all 5 rail counters); the mask-omitted control "
-              f"diverged in {n_div}/{n_cfg} and NEVER moved velocity.")
+              f"(tol 0, digest_velocity + gas_energy + the 9 D10-layout rail "
+              f"counters); the mask-omitted control diverged (gas_energy's "
+              f"ts-export split, F5) in {n_div}/{n_cfg} and NEVER moved "
+              f"velocity.")
 
     # ---------------- 1c: combustion deposit (ruling §2 site 3) -----------
     from simulation.materials import MAT_AIR, MAT_FURNITURE  # noqa: F401

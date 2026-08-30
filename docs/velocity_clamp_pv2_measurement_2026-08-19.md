@@ -5,6 +5,12 @@ re-baselines nothing. Compares P-V1's fixed build against
 `docs/velocity_clamp_audit_2026-08-19.md`'s pre-fix numbers, per the patch
 contract in `docs/archive/velocity_clamp_impl_2026-08-19.md`.
 
+**Superseded by arc #54 (gas-energy conservation, 2026-08-30)**: line 210's
+"compression work" is the pre-arc step 4c mechanism, since retired and
+replaced by the conservative face-flux energy step —
+`docs/gas_energy_conservation_design_2026-08-29.md`. The velocity-clamp
+measurement itself is unaffected.
+
 ## 1. The scripted scenario
 
 Erik's manual session cannot be replayed bit-for-bit (it was human input on

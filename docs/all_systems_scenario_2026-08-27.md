@@ -7,6 +7,14 @@ Harness: `tests/_scenario_all_systems_bench.py` (headless, seed 1, 45 s sim,
 vents stripped in-memory like the #54 hot-plate bench). This doc is the
 capture of the design + the first run's findings.
 
+**Superseded by arc #54 (gas-energy conservation, 2026-08-30)**: the
+`k_drag_heat_frac` dial (line 114), `T_WORK_CLAMP` (line 148), and
+"compression work" (step 4c, line 129) this capture measured are all
+RETIRED — replaced by the derived `k_ke` constant and the conservative
+face-flux energy step, `docs/gas_energy_conservation_design_2026-08-29.md`.
+The scenario's own PASS/FAIL findings for the water/blast/breach properties
+are re-measured fresh in that design doc's P-G1a/AS results, not here.
+
 ## The scenario
 
 Two water tanks (0.3 m fill), both meant to keep every drop:

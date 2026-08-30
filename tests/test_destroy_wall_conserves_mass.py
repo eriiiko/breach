@@ -691,7 +691,13 @@ def test_gate6_energy_books_on_an_AMBIENT_map_exclude_the_ring():
     nb = tile_n(gmap, iy, ix)
     assert nb > 0
     mid = _books(sim)
-    gmap.temperature[iy, ix] = int(gmap.temperature[iy, ix]) + 250
+    # arc #54 P-G1b: through the SEAM. The books instrument reads the STORED
+    # `gas_energy` now, and `temperature` is its mirror -- so a bare
+    # `temperature[...] = ` write moves no books at all, which is exactly the
+    # property the arc wanted. `seed_gas_temperature` writes both planes
+    # together, which is what a scenario builder means by 'heat this cell'.
+    gmap.seed_gas_temperature((iy, ix),
+                              int(gmap.temperature[iy, ix]) + 250)
     assert _books(sim) - mid == nb * 250
 
     # And the gate-6 claim on this map class: a burning interior wall.
@@ -726,7 +732,13 @@ def test_gate6_the_instrument_can_see_energy_when_there_is_energy():
     assert nb > 0
 
     before = _books(sim)
-    gmap.temperature[fy, fx] = int(gmap.temperature[fy, fx]) + 250
+    # arc #54 P-G1b: through the SEAM. The books instrument reads the STORED
+    # `gas_energy` now, and `temperature` is its mirror -- so a bare
+    # `temperature[...] = ` write moves no books at all, which is exactly the
+    # property the arc wanted. `seed_gas_temperature` writes both planes
+    # together, which is what a scenario builder means by 'heat this cell'.
+    gmap.seed_gas_temperature((fy, fx),
+                              int(gmap.temperature[fy, fx]) + 250)
     assert _books(sim) - before == nb * 250
 
     # ...and a cell OUTSIDE the set moves it by nothing, which is the skip-set

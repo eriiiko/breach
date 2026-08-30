@@ -154,6 +154,9 @@ void eos_step_cuda(
     int32_t* p_prev,
     int32_t* wind_x, int32_t* wind_y,
     int32_t* temperature,
+    // arc #54 §2.2 (P-G2): the conserved gas energy field, in/out — K1's KE
+    // brackets and K3's face-flux step + recovery all read/write it here.
+    int64_t* gas_energy,
     int32_t* gas, const bool* gas_conservative, int n_gases,
     const bool* solid, const bool* is_vacuum,
     const float* dyn_permeability, const float* dyn_wave_absorb,

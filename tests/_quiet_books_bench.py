@@ -1,0 +1,199 @@
+"""arc #54 P-G1b — THE QUIET GATE (design §6, the P-G1b row).
+
+*A 60 s no-forcing playground run: books drift == Σ counted channels, exactly.*
+
+This is the gate that proves D1 is really live. Every other gate in the arc
+brackets ONE subsystem — the SB bench measures a sealed box, VENT measures a
+breach, FIRE measures a burn. This one just lets the whole engine run, on the
+real level, with every system awake and nothing driving it, and asks the only
+question that matters once `gas_energy` is the cross-tick truth:
+
+    did anything change the field without saying so?
+
+The identity, exact in int64, EVERY tick:
+
+    Δ Σ_accountable gas_energy  ==
+          [ e_entry_resync_sum + e_transport_net_sum − e_wipe_sum
+            − e_kick_ke_sum + e_drag_heat_sum − e_work_export_sum
+            + e_rail_sum ]                                        (EOS §2.8)
+        + [ e_gas_deposit_sum + e_gas_cond_sum + e_gas_rail_sum ]
+                                                    (thermal solver, gas side)
+        + [ −e_comb_draw_sum + e_comb_deliver_sum + e_comb_heat_sum
+            + e_comb_rail_sum ]                            (combustion §2.7)
+        + gas_energy_seam_net()                (every Python seam's net)
+
+The EOS group RESETS every step, so it is read absolutely; the other three
+accumulate, so they are differenced tick to tick.
+
+WHY THE PLAYGROUND, AND WHY "QUIET". The playground carries doors, vents and
+ducts, so the pump primitives, the vent plenum's relative↔absolute conversion
+and the door seal/unseal seams all fire on their own during an idle run — the
+seams that a hand-built synthetic would never touch. "Quiet" means no fire, no
+blast, no breach: any drift this bench sees is the engine's own resting
+behaviour, which is precisely the class #54 was opened for (a sealed box that
+heated +121 with nobody in it).
+
+HARNESS, not a pytest gate (`_` prefix): a 60 s run is minutes of wall clock.
+The same identity is gated per-tick, on a shorter scenario, by
+tests/test_e1_hot_rail.py::test_no_transport_mint.
+
+Run:
+    conda run -n data python tests/_quiet_books_bench.py [seconds]
+    conda run -n data python tests/_quiet_books_bench.py --cuda [seconds]
+
+P-G2b: ``--cuda`` (stripped before the optional `seconds` positional is
+parsed) selects the CUDA build through the SAME plumbing
+``tools/run_on_cuda.py`` (== ``python main.py --cuda``) uses — the project's
+one GPU-launch path (CLAUDE.md) — never a second launch path here.
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import numpy as np
+
+ROOT = Path(__file__).resolve().parent.parent
+
+# P-G2b: --cuda must be resolved BEFORE `import breach_physics` — whichever
+# build lands in sys.modules first wins for the rest of this process.
+_USE_CUDA = "--cuda" in sys.argv
+if _USE_CUDA:
+    sys.argv.remove("--cuda")
+    sys.path.insert(0, str(ROOT / "tools"))
+    from run_on_cuda import enable_all_backends, setup_cuda_import  # noqa: E402
+    setup_cuda_import()
+    if str(ROOT / "tests") not in sys.path:
+        sys.path.insert(0, str(ROOT / "tests"))
+else:
+    for _p in (ROOT, ROOT / "src", ROOT / "tests", ROOT / "cpp" / "build" / "Release"):
+        if str(_p) not in sys.path:
+            sys.path.insert(0, str(_p))
+
+import breach_physics as bp  # noqa: E402
+from level_loader import load as load_level  # noqa: E402
+from simulation import Simulation  # noqa: E402
+
+if _USE_CUDA:
+    enable_all_backends(bp)
+
+TPS = 24
+Q = 65536.0
+
+
+def main() -> None:
+    seconds = float(sys.argv[1]) if len(sys.argv) > 1 else 60.0
+    ticks = int(seconds * TPS)
+
+    sim = Simulation(load_level("playground", levels_dir=str(ROOT / "levels")),
+                     seed=1, breach_physics=bp, enable_recorder=False)
+    g = sim.gmap
+    eos = sim.physics_runner.eos
+    tsolver = sim.physics_runner.engine.temperature
+    comb = sim.physics_runner.combustion
+
+    def e_acct():
+        """Σ_accountable gas_energy as a PYTHON int — design §2.2 forbids an
+        absolute int64 sum, and the gate must not be the thing that wraps."""
+        return int(g.gas_energy[g._gas_energy_accountable()]
+                   .astype(object).sum())
+
+    def terms():
+        return (
+            int(eos.e_entry_resync_sum) + int(eos.e_transport_net_sum)
+            - int(eos.e_wipe_sum) - int(eos.e_kick_ke_sum)
+            + int(eos.e_drag_heat_sum) - int(eos.e_work_export_sum)
+            + int(eos.e_rail_sum),
+            int(tsolver.e_gas_deposit_sum) + int(tsolver.e_gas_cond_sum)
+            + int(tsolver.e_gas_rail_sum),
+            -int(comb.e_comb_draw_sum) + int(comb.e_comb_deliver_sum)
+            + int(comb.e_comb_heat_sum) + int(comb.e_comb_rail_sum),
+            int(g.gas_energy_seam_net()),
+            # the water-displacement evacuation's export (design 2.7, R3-#10):
+            # `step_water_tail` moves gas_energy with the bulk shares a
+            # flooding cell pushes out. Conservative inside the accountable
+            # set, so the only term is what left it. Reset per call.
+            -int(sim.physics_runner.engine.e_water_evac_export_sum),
+            # P-G5 (design gas_energy_thermostat_ledger_2026-08-30.md): the
+            # SOLID side's own channels — Pass 1/Pass 2 landings on thermal
+            # solids, the thermostat (Pass 3 relax-to-ambient), and
+            # combustion's own object-site solid heat deposit (bypasses
+            # TemperatureSolver's Pass 1 entirely). Accumulating.
+            int(tsolver.e_solid_deposit_sum) + int(tsolver.e_solid_cond_sum)
+            + int(tsolver.e_thermostat_sum) + int(comb.e_comb_solid_heat_sum),
+        )
+
+    def solid_books():
+        """(P-G5) Σ thermal_mass_raw·T_raw over thermal_solid cells."""
+        return int(tsolver.solid_energy_books_sum)
+
+    e0 = e_acct()
+    solid0 = solid_books()
+    prev_e, prev_t = e0, terms()
+    prev_solid = solid0
+    bad = worst = worst_tick = 0
+    bad_total = worst_total = worst_total_tick = 0
+    # Per-group running totals, so a failure names the group as well as the
+    # tick — the four groups are the four places a new writer can appear.
+    total = [0, 0, 0, 0, 0, 0]
+    for t in range(1, ticks + 1):
+        sim.set_paused(False)
+        sim.step()
+        e_now, cur = e_acct(), terms()
+        solid_now = solid_books()
+        d = (cur[0],
+             cur[1] - prev_t[1], cur[2] - prev_t[2], cur[3] - prev_t[3],
+             cur[4], cur[5] - prev_t[5])
+        for i in range(6):
+            total[i] += d[i]
+        resid = (e_now - prev_e) - sum(d[:5])
+        if resid:
+            bad += 1
+            if abs(resid) > abs(worst):
+                worst, worst_tick = resid, t
+        # P-G5: the TOTAL ledger — gas books + solid books — against the same
+        # five gas-side terms PLUS the solid side's own (d[5]).
+        resid_total = ((e_now + solid_now) - (prev_e + prev_solid)) - sum(d)
+        if resid_total:
+            bad_total += 1
+            if abs(resid_total) > abs(worst_total):
+                worst_total, worst_total_tick = resid_total, t
+        prev_e, prev_t, prev_solid = e_now, cur, solid_now
+
+    e1 = e_acct()
+    solid1 = solid_books()
+    n_acct = int(g._gas_bulk_n_raw()[g._gas_energy_accountable()]
+                 .astype(object).sum())
+    print(f"QUIET gate — playground, {seconds:.0f} s ({ticks} ticks), "
+          f"no fire / no blast / no breach")
+    print(f"  identity: {'EXACT' if bad == 0 else 'BROKEN'} over {ticks} ticks"
+          + ("" if bad == 0 else
+             f" ({bad} bad, worst {worst} @ tick {worst_tick})"))
+    print(f"  books drift  d(Sum_accountable gas_energy) = {e1 - e0}")
+    print(f"  == counted:  EOS={total[0]}  tail={total[1]}  "
+          f"combustion={total[2]}  seams={total[3]}  "
+          f"water_evac_export={total[4]}")
+    print(f"     sum      = {sum(total[:5])}   "
+          f"residual = {(e1 - e0) - sum(total[:5])}")
+    if n_acct:
+        print(f"  in game-deg over the accountable set: "
+              f"{(e1 - e0) / n_acct / Q:+.4f}")
+    print(f"  seam channels: {g.gas_energy_books}")
+    # P-G5: the EXTENDED identity — gas books + solid books.
+    print(f"  P-G5 solid books drift  d(solid_energy_books_sum) = "
+          f"{solid1 - solid0}  (solid group={total[5]})")
+    print(f"  P-G5 TOTAL ledger (gas+solid): "
+          f"{'EXACT' if bad_total == 0 else 'BROKEN'} over {ticks} ticks"
+          + ("" if bad_total == 0 else
+             f" ({bad_total} bad, worst {worst_total} @ tick "
+             f"{worst_total_tick})"))
+    assert bad == 0, (
+        f"QUIET gate gas-books identity BROKEN: {bad} bad tick(s), "
+        f"worst {worst} @ tick {worst_tick}")
+    assert bad_total == 0, (
+        f"P-G5 TOTAL ledger BROKEN: {bad_total} bad tick(s), "
+        f"worst {worst_total} @ tick {worst_total_tick}")
+
+
+if __name__ == "__main__":
+    main()

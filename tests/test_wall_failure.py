@@ -125,6 +125,14 @@ def test_pops_under_overpressure():
     from simulation.gases import O2, INERT_N2
     g.gas[O2][interior] = g.gas[O2][interior] * 50
     g.gas[INERT_N2][interior] = g.gas[INERT_N2][interior] * 50
+    # arc #54 P-G1b: a direct bulk-N write is a seam violation, and under D1
+    # it has a VISIBLE consequence -- `gas_energy` is the stored truth now, so
+    # multiplying N by 50 without it divides this room's `E/N` by 50: the room
+    # gets 50x COLDER instead of 50x denser and `p = C*N*T_abs` does not move
+    # at all, so no wall ever pops. Re-derive the energy over exactly the
+    # cells this scenario just authored (design 2.2's seeding act, restricted
+    # to a selection) and the intended 50-atm overpressure exists again.
+    g.reseed_gas_energy(interior)
     g.atmosphere[interior] = atmosphere_fixed.quantize_scalar(50.0)  # P_prev seed (solver refreshes)
     peak_before = atmosphere_fixed.dequantize(g.atmosphere.max())
 
@@ -231,6 +239,10 @@ def _pump_rooms(g, left_only: bool, factor: int = 50):
     room = interior & (xs < 7) if left_only else interior
     for sp in (O2, INERT_N2):
         g.gas[sp][room] = g.gas[sp][room] * factor
+    # arc #54 P-G1b: re-derive the stored energy over the cells just authored
+    # -- see the note in test_pops_under_overpressure for why a direct bulk-N
+    # write without this makes the room COLDER rather than denser.
+    g.reseed_gas_energy(room)
     g.atmosphere[room] = atmosphere_fixed.quantize_scalar(float(factor))
     return room
 
