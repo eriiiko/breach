@@ -71,7 +71,14 @@ void eos_step_resident(
     // patches it when a crate burns out — so now that DEVICE kernels read it,
     // the caller MUST include it in the per-tick from_host upload beside
     // solid/is_vacuum/is_ambient. physics_runner._step_resident does.
-    const bool* d_thermal_solid = nullptr);
+    const bool* d_thermal_solid = nullptr,
+    // arc #54 §2.2 (P-G2): the conserved gas energy field's PERSISTENT device
+    // buffer (GameMap's resident `gas_energy` buffer, (h,w) int64 — RL-batch
+    // habits row: device shape (N,h,w), N=1). 0/nullptr is not a supported
+    // legacy path here (unlike thermal_solid) — the resident tick always
+    // carries gas_energy now that D1 is live; physics_runner._step_resident
+    // uploads/downloads it every tick beside temperature.
+    int64_t* d_gas_energy = nullptr);
 
 // Telemetry: how many ticks ran the resident EOS chain (the gate's
 // vacuousness guard — proves the bracket is gone, not silently per-call).
